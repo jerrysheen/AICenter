@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseBehaviorEvent, parsePairInput, parsePostInput, ValidationError } from '../packages/contracts/src/index.js';
+import { parseBehaviorEvent, parseMarketQuery, parseNoteInput, parsePairInput, parsePostInput, ValidationError } from '../packages/contracts/src/index.js';
 
 test('post input normalizes title, url, and tags', () => {
   assert.deepEqual(parsePostInput({
@@ -25,4 +25,14 @@ test('pair and behavior inputs reject unsupported data', () => {
     code: '123456', deviceName: '鸿蒙手机',
   });
   assert.throws(() => parseBehaviorEvent({ name: 'unknown.event' }), ValidationError);
+});
+
+test('market query accepts us asia overview only', () => {
+  assert.equal(parseMarketQuery({ board: 'asia' }).board, 'asia');
+  assert.throws(() => parseMarketQuery({ board: 'crypto' }), ValidationError);
+});
+
+test('note input requires body', () => {
+  assert.equal(parseNoteInput({ body: '  一条灵感  ', wantAi: 1 }).body, '一条灵感');
+  assert.throws(() => parseNoteInput({ body: '' }), ValidationError);
 });

@@ -31,6 +31,19 @@
 
 第一版不实现抓取平台、知识库、Codex、金融行情、互联网公网访问或应用商店发布。
 
+## Current Phase: Work Package B
+
+第一版 Web 连接闭环完成后，当前后端阶段遵守以下边界：
+
+1. 使用 `schema_migrations` 演进 SQLite，不删除或重建用户数据库。
+2. Web 只处理 HTTP/API/SSE；长时间抓取与 AI 任务进入 `apps/worker`。
+3. Worker 只执行显式注册的 handler，不接受来自 HTTP 的任意命令。
+4. 外部能力通过 `packages/connectors` 适配，旧仓路径只从环境变量读取。
+5. 业务写入与 `outbox_events` 同事务，SSE 支持 `Last-Event-ID` 补发。
+6. HarmonyOS 源码位于 `apps/harmony`；DevEco、签名和真机安装继续由用户执行。
+
+业务页面和功能 API 契约由前端工作包确定；后端不得让供应商字段直接成为页面契约。
+
 ## Safety and User-Executed Steps
 
 - 服务端不得把数据库、Codex Bridge、浏览器调试端口或未来的 worker 直接暴露到局域网。

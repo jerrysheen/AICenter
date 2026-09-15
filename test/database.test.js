@@ -36,3 +36,18 @@ test('posts and behavior metrics are persisted', () => {
   store.close();
   rmSync(directory, { recursive: true, force: true });
 });
+
+test('inspiration notes archive into knowledge', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-note-'));
+  const store = createStore(path.join(directory, 'test.db'));
+  const plain = store.createNote({ body: '只记一句，不要回复', wantAi: false });
+  assert.equal(plain.aiReply, '');
+  const sketched = store.createNote({ body: '这条需要一点思路', wantAi: true });
+  assert.match(sketched.aiReply, /下一步/);
+  const archived = store.archiveNote(sketched.id);
+  assert.equal(archived.status, 'archived');
+  assert.equal(store.listNotes('inbox').length, 1);
+  assert.equal(store.listKnowledge()[0].source, 'inspiration');
+  store.close();
+  rmSync(directory, { recursive: true, force: true });
+});

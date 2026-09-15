@@ -22,6 +22,14 @@ build/
 *.hap
 *.app
 
+# HarmonyOS local signing configuration and key material
+apps/harmony/build-profile.json5
+*.p12
+*.p7b
+*.cer
+*.pem
+*.key
+
 # Logs and operating-system files
 *.log
 .DS_Store

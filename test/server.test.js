@@ -44,7 +44,17 @@ test('HTTP flow supports health, pairing, publishing, and persistence', async ()
     const eventText = decoder.decode(eventChunk.value);
     assert.match(eventText, /event: post\.created/);
     assert.match(eventText, new RegExp(created.post.id));
+    const eventId = Number(eventText.match(/id: (\d+)/)?.[1]);
+    assert.ok(eventId > 0);
     await streamReader.cancel();
+
+    const replayResponse = await fetch(`${address.localUrl}/api/v1/events/stream`, {
+      headers: { Cookie: cookie, 'Last-Event-ID': String(eventId - 1) },
+    });
+    const replayReader = replayResponse.body.getReader();
+    const replayChunk = await replayReader.read();
+    assert.match(decoder.decode(replayChunk.value), /event: post\.created/);
+    await replayReader.cancel();
 
     const posts = await fetch(`${address.localUrl}/api/v1/posts`, { headers: { Cookie: cookie } })
       .then((response) => response.json());

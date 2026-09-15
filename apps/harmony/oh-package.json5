@@ -1,0 +1,7 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "ai-center-harmony",
+  "version": "0.2.0",
+  "description": "HarmonyOS ArkWeb shell for AI Center",
+  "dependencies": {}
+}

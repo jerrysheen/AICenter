@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "AI Center 鸿蒙薄壳" },
+    { "name": "entry_desc", "value": "连接本地 AI Center" },
+    { "name": "entry_label", "value": "AI Center" }
+  ]
+}

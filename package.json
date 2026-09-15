@@ -1,6 +1,6 @@
 {
   "name": "ai-center",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Local-first information center for desktop and HarmonyOS mobile access.",
@@ -9,10 +9,13 @@
   },
   "scripts": {
     "dev": "node --watch apps/web/src/server.js",
+    "dev:worker": "node --watch apps/worker/src/worker.js",
     "start": "node apps/web/src/server.js",
-    "syntax": "node --check apps/web/src/server.js && node --check apps/web/public/app.js && node --check packages/contracts/src/index.js && node --check packages/database/src/index.js",
+    "start:worker": "node apps/worker/src/worker.js",
+    "harmony:verify": "node scripts/validate-harmony-scaffold.js",
+    "syntax": "node --check apps/web/src/server.js && node --check apps/worker/src/worker.js && node --check apps/web/public/app.js && node --check apps/web/public/mock.js && node --check packages/contracts/src/index.js && node --check packages/database/src/index.js && node --check packages/database/src/migrations.js && node --check packages/runtime/src/job-runner.js && node --check packages/connectors/src/index.js && node --check packages/connectors/src/process-json-adapter.js && node --check packages/connectors/src/yahoo.js && node --check packages/connectors/src/market-boards.js && node --check packages/connectors/src/market-service.js && node --check scripts/validate-harmony-scaffold.js",
     "test": "node --test",
-    "check": "npm run syntax && npm test"
+    "check": "npm run syntax && npm run harmony:verify && npm test"
   },
   "dependencies": {
     "better-sqlite3": "13.0.3",

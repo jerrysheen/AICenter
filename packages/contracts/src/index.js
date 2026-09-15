@@ -85,3 +85,30 @@ export function parseBehaviorEvent(value) {
   if (encoded.length > 2048) throw new ValidationError('行为事件信息过大', ['metadata']);
   return { name, metadata };
 }
+
+export function parseMarketQuery(value) {
+  const query = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const board = cleanText(query.board || 'overview', { field: '行情看板', max: 16 }) || 'overview';
+  if (!['overview', 'us', 'asia'].includes(board)) throw new ValidationError('不支持的行情看板', ['board']);
+  return {
+    board,
+    extra: cleanText(query.extra, { field: '自选代码', max: 400 }),
+    extraUs: cleanText(query.extraUs || query.extra, { field: '美股自选', max: 400 }),
+    extraAsia: cleanText(query.extraAsia || query.extra, { field: '亚洲自选', max: 400 }),
+  };
+}
+
+export function parseMarketSearchQuery(value) {
+  const query = cleanText(value, { field: '搜索关键字', max: 64 });
+  return query;
+}
+
+export function parseNoteInput(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ValidationError('请求内容必须是对象');
+  }
+  return {
+    body: cleanText(value.body, { field: '灵感', max: 4000, required: true }),
+    wantAi: Boolean(value.wantAi),
+  };
+}
