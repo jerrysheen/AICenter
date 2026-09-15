@@ -1,0 +1,28 @@
+# Dependencies and build output
+node_modules/
+.next/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Local configuration
+.env
+.env.*
+!.env.example
+
+# Local data
+data/*
+!data/.gitkeep
+
+# HarmonyOS and IDE output
+.idea/
+.hvigor/
+oh_modules/
+build/
+*.hap
+*.app
+
+# Logs and operating-system files
+*.log
+.DS_Store
+Thumbs.db
