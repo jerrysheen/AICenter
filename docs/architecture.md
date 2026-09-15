@@ -35,6 +35,16 @@ AI-Center/
 
 第一版使用一个 Web 进程，避免过早拆出 API、worker 和消息队列。后续接入平台采集时，再增加独立 worker。
 
+## 当前实现
+
+- `apps/web/src/server.js`：Node HTTP 服务、静态页面、版本化 API、配对和 SSE。
+- `apps/web/public/`：无构建步骤的响应式网页。
+- `packages/contracts/`：发布、配对和行为事件的运行时校验。
+- `packages/database/`：SQLite 表、设备授权、信息流和行为指标。
+- `test/`：契约、数据库和完整 HTTP 流程测试。
+
+原型阶段选择单进程和少量依赖，以便先验证连接与用户路径。功能边界稳定后，再评估是否迁移到更完整的前端框架。
+
 ## 运行边界
 
 - 对手机开放的只有 Web/API 端口。

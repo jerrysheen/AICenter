@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111913">
+  <title>AI Center</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="AI Center 首页">
+        <span class="brand-mark">衡</span>
+        <span><strong>AI Center</strong><small>个人信息中枢</small></span>
+      </a>
+      <div class="connection-state" id="connection-state"><i></i><span>正在连接</span></div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div>
+          <span class="eyebrow">LOCAL FIRST · VERSION 0.1</span>
+          <h1>信息从这里抵达，<br><em>也从这里出发。</em></h1>
+          <p>第一版只验证手机与本机之间的连接、查看和快速发布。</p>
+        </div>
+        <div class="server-card">
+          <span>当前服务</span>
+          <strong id="server-name">连接中…</strong>
+          <small id="session-description">正在确认设备授权</small>
+        </div>
+      </section>
+
+      <section class="pairing-panel hidden" id="pairing-panel">
+        <div class="section-heading">
+          <div><span class="eyebrow">PAIR DEVICE</span><h2>连接手机</h2></div>
+          <button class="text-button" id="refresh-pairing" type="button">刷新二维码</button>
+        </div>
+        <div class="pairing-content">
+          <div class="qr-frame"><img id="pairing-qr" alt="手机配对二维码"></div>
+          <div class="pairing-copy">
+            <strong>用手机相机扫描</strong>
+            <p>二维码 10 分钟内有效且只能使用一次。配对成功后，手机授权长期保留。</p>
+            <label><span>局域网地址</span><select id="network-address"></select></label>
+            <code id="pairing-code">------</code>
+          </div>
+        </div>
+      </section>
+
+      <section class="unpaired-panel hidden" id="unpaired-panel">
+        <span class="eyebrow">PAIRING REQUIRED</span>
+        <h2>这台设备还没有连接</h2>
+        <p>请从电脑端 AI Center 页面生成二维码，再用手机扫描。</p>
+      </section>
+
+      <div id="authorized-content" class="hidden">
+        <section class="workspace-grid">
+          <article class="composer-panel">
+            <div class="section-heading">
+              <div><span class="eyebrow">QUICK PUBLISH</span><h2>快速发布</h2></div>
+              <span class="shortcut">⌘ / Ctrl + Enter</span>
+            </div>
+            <form id="post-form">
+              <label><span>标题</span><input id="post-title" name="title" maxlength="120" placeholder="准备发布什么？"></label>
+              <label><span>正文</span><textarea id="post-body" name="body" maxlength="10000" rows="5" placeholder="记录信息、想法或需要稍后处理的内容"></textarea></label>
+              <div class="form-row">
+                <label><span>来源链接</span><input name="sourceUrl" type="url" placeholder="https://"></label>
+                <label><span>标签</span><input name="tags" placeholder="例如：系统, 测试"></label>
+              </div>
+              <div class="form-actions"><span id="form-message"></span><button class="primary-button" type="submit">发布到中枢</button></div>
+            </form>
+          </article>
+
+          <aside class="metrics-panel hidden" id="metrics-panel">
+            <div class="section-heading"><div><span class="eyebrow">24H SIGNAL</span><h2>行为验证</h2></div></div>
+            <div class="metric-grid">
+              <div><strong id="metric-devices">0</strong><span>已连接设备</span></div>
+              <div><strong id="metric-opens">0</strong><span>打开次数</span></div>
+              <div><strong id="metric-published">0</strong><span>发布数量</span></div>
+              <div><strong id="metric-details">0</strong><span>详情查看</span></div>
+            </div>
+            <div class="device-list" id="device-list"></div>
+          </aside>
+        </section>
+
+        <section class="feed-section">
+          <div class="section-heading">
+            <div><span class="eyebrow">LIVE FEED</span><h2>首发信息流</h2></div>
+            <span class="feed-count" id="feed-count">0 条</span>
+          </div>
+          <div class="feed" id="feed"><div class="loading-card">正在载入信息…</div></div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="post-dialog">
+    <button class="dialog-close" type="button" aria-label="关闭">×</button>
+    <span class="eyebrow">INFORMATION</span>
+    <h2 id="dialog-title"></h2>
+    <p id="dialog-body"></p>
+    <div id="dialog-tags" class="tags"></div>
+    <a id="dialog-source" target="_blank" rel="noreferrer">打开来源</a>
+    <small id="dialog-time"></small>
+  </dialog>
+
+  <div class="toast" id="toast" role="status"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

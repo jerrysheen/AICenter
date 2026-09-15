@@ -1,0 +1,21 @@
+{
+  "name": "ai-center",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local-first information center for desktop and HarmonyOS mobile access.",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "node --watch apps/web/src/server.js",
+    "start": "node apps/web/src/server.js",
+    "syntax": "node --check apps/web/src/server.js && node --check apps/web/public/app.js && node --check packages/contracts/src/index.js && node --check packages/database/src/index.js",
+    "test": "node --test",
+    "check": "npm run syntax && npm test"
+  },
+  "dependencies": {
+    "better-sqlite3": "13.0.3",
+    "qrcode": "1.5.4"
+  }
+}
