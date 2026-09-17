@@ -1,0 +1,11 @@
+{
+  "version": "tags_v1",
+  "tags": [
+    { "id": "general", "name": "综合", "level": 1, "parent_id": null, "keywords": ["综合", "其他", "通用"] },
+    { "id": "technology", "name": "科技", "level": 1, "parent_id": null, "keywords": ["科技", "技术", "软件", "硬件", "互联网"] },
+    { "id": "business", "name": "商业", "level": 1, "parent_id": null, "keywords": ["商业", "公司", "产品", "行业", "管理"] },
+    { "id": "markets", "name": "市场", "level": 1, "parent_id": null, "keywords": ["市场", "股票", "债券", "外汇", "商品"] },
+    { "id": "science", "name": "科学", "level": 1, "parent_id": null, "keywords": ["科学", "研究", "论文", "实验"] },
+    { "id": "society", "name": "社会", "level": 1, "parent_id": null, "keywords": ["社会", "政策", "教育", "文化"] }
+  ]
+}

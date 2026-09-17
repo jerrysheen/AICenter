@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "us": {
+    "groups": ["全部", "指数", "ETF", "自选"],
+    "indices": [
+      { "symbol": "^GSPC", "name": "标普 500", "group": "指数", "summary": "美国大盘股基准" },
+      { "symbol": "^DJI", "name": "道琼斯工业指数", "group": "指数", "summary": "美国蓝筹股基准" },
+      { "symbol": "^IXIC", "name": "纳斯达克综合指数", "group": "指数", "summary": "美国纳斯达克市场基准" }
+    ],
+    "watchlist": [
+      { "symbol": "SPY", "name": "SPDR 标普 500 ETF", "group": "ETF", "summary": "跟踪标普 500 的宽基 ETF" },
+      { "symbol": "QQQ", "name": "Invesco QQQ", "group": "ETF", "summary": "跟踪纳斯达克 100 的宽基 ETF" }
+    ]
+  },
+  "asia": {
+    "groups": ["全部", "指数", "ETF", "自选"],
+    "indices": [
+      { "symbol": "000001.SS", "name": "上证指数", "group": "指数", "summary": "中国内地股票市场基准" },
+      { "symbol": "^HSI", "name": "恒生指数", "group": "指数", "summary": "中国香港股票市场基准" },
+      { "symbol": "^N225", "name": "日经 225", "group": "指数", "summary": "日本股票市场基准" }
+    ],
+    "watchlist": []
+  },
+  "global": {
+    "groups": ["指数", "外汇", "利率", "贵金属", "能源", "期货", "加密"],
+    "watchlist": [
+      { "symbol": "000001.SH", "yahoo": "000001.SS", "name": "上证指数", "group": "指数", "summary": "中国内地股票市场基准", "market": "cn", "assetClass": "index", "currency": "CNY" },
+      { "symbol": "^GSPC", "yahoo": "^GSPC", "name": "标普 500", "group": "指数", "summary": "美国大盘股基准", "market": "us", "assetClass": "index", "currency": "USD" },
+      { "symbol": "DXY", "yahoo": "DX-Y.NYB", "name": "美元指数", "group": "外汇", "summary": "ICE 美元指数", "market": "global", "assetClass": "fx", "currency": "USD" },
+      { "symbol": "USDCNY", "yahoo": "CNY=X", "name": "美元兑人民币", "group": "外汇", "summary": "美元兑人民币即期汇率", "market": "global", "assetClass": "fx", "currency": "CNY" },
+      { "symbol": "US10Y", "yahoo": "^TNX", "name": "美国十年期国债收益率", "group": "利率", "summary": "美国十年期国债收益率", "market": "us", "assetClass": "rate", "currency": "USD" },
+      { "symbol": "XAUUSD", "yahoo": "GC=F", "name": "黄金", "group": "贵金属", "summary": "COMEX 黄金主力", "market": "global", "assetClass": "metal", "currency": "USD" },
+      { "symbol": "CL", "yahoo": "CL=F", "name": "WTI 原油", "group": "能源", "summary": "NYMEX 原油主力", "market": "us", "assetClass": "energy", "currency": "USD" },
+      { "symbol": "GC", "yahoo": "GC=F", "name": "COMEX 黄金主连", "group": "期货", "summary": "黄金期货主力", "market": "us", "assetClass": "future", "currency": "USD" },
+      { "symbol": "BTC-USD", "yahoo": "BTC-USD", "name": "比特币", "group": "加密", "summary": "美元计价现货", "market": "global", "assetClass": "crypto", "currency": "USD" }
+    ]
+  }
+}

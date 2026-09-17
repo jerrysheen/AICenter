@@ -5,13 +5,26 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#FFFFFF">
   <title>AI Center</title>
-  <link rel="stylesheet" href="/styles.css?v=markets-3">
+  <link rel="stylesheet" href="/styles.css?v=feed-delete-click-v1">
 </head>
-<body data-view="feed">
+<body data-view="sources">
+  <section class="connection-gate hidden" id="unpaired-panel" aria-live="polite">
+    <article class="connection-gate-card">
+      <span class="connection-gate-mark" aria-hidden="true">衡</span>
+      <p class="connection-gate-kicker">AI CENTER · DEVICE CONNECTION</p>
+      <h1 id="unpaired-title">这台设备尚未配对</h1>
+      <p id="unpaired-message">请回到电脑上的 AI Center，刷新二维码后重新扫描。</p>
+      <div class="connection-gate-actions">
+        <button class="primary-button" id="exit-to-pairing" type="button">退出并重新扫码</button>
+        <button class="text-button" id="retry-session" type="button">重新检查连接</button>
+      </div>
+      <small>二维码 10 分钟内有效且只能使用一次。</small>
+    </article>
+  </section>
+
   <div class="app-shell">
     <aside class="side-nav" aria-label="主导航">
-      <a class="brand" href="/#feed" aria-label="AI Center 首页">
-        <span class="brand-mark" aria-hidden="true">衡</span>
+      <a class="brand" href="/#sources" aria-label="AI Center 首页">
         <span class="brand-copy">
           <strong>AI Center</strong>
           <small>个人信息中枢</small>
@@ -23,16 +36,17 @@
     <div class="app-frame">
       <header class="title-bar">
         <div class="title-default">
-          <h1 id="page-title">信息</h1>
-          <p class="title-sub" id="page-subtitle">外部信息与手工发布的统一入口</p>
+          <h1 id="page-title">总览</h1>
+          <p class="title-sub" id="page-subtitle">信息、市场与新闻里抽出的最高优先级内容</p>
         </div>
         <label class="search-field">
           <span class="vh">搜索</span>
           <input id="global-search" type="search" placeholder="搜索信息 / 标的 / 问题" autocomplete="off">
         </label>
         <div class="title-actions">
-          <button class="icon-button" id="open-compose" type="button" aria-label="快速发布" data-action="compose">+</button>
-          <button class="icon-button" id="open-settings" type="button" aria-label="设置">⚙</button>
+          <button class="icon-button" id="reload-view" type="button" aria-label="刷新当前页"></button>
+          <button class="icon-button" id="open-compose" type="button" aria-label="快速发布" data-action="compose"></button>
+          <button class="icon-button" id="open-settings" type="button" aria-label="设置"></button>
           <div class="connection-state" id="connection-state"><i></i><span>正在连接</span></div>
         </div>
         <div class="title-meta hidden-visual">
@@ -42,17 +56,38 @@
       </header>
 
       <main>
-        <section class="view is-active" id="view-feed" data-view-panel="feed">
-          <div class="unpaired-banner hidden" id="unpaired-panel">
-            <p>这台设备还没有连接。请到电脑上的 AI Center 扫描二维码。</p>
-            <button class="text-button" type="button" data-nav="settings">去设置</button>
-          </div>
+        <nav class="overview-subnav market-tabs" id="overview-subnav" aria-label="总览二级"></nav>
+        <section class="view" id="view-feed" data-view-panel="feed">
           <div id="authorized-feed">
             <div class="channel-bar">
               <div class="channel-tabs" id="channel-tabs" role="tablist" aria-label="信息范围"></div>
               <span class="feed-count" id="feed-count">0 条</span>
             </div>
             <div class="chip-tabs" id="platform-filters" role="tablist" aria-label="平台筛选"></div>
+            <div class="follow-toolbar hidden" id="bilibili-toolbar">
+              <p id="bilibili-feed-status">粘贴 B 站视频链接，用已登录浏览器只抓 AI 中文字幕；没有就直接返回没有。</p>
+              <form class="x-toolbar-actions" id="bilibili-import-form">
+                <label class="inline-field url-field">
+                  <span class="vh">B站链接</span>
+                  <input id="bilibili-url" name="url" type="text" placeholder="粘贴 bilibili.com 或 b23.tv 链接" autocomplete="off">
+                </label>
+                <button class="text-button" id="bilibili-import" type="submit">拉取字幕</button>
+              </form>
+            </div>
+            <div class="follow-toolbar hidden" id="x-toolbar">
+              <p id="x-feed-status">用已连接 BrowserSkill 的浏览器拉取首页 50 条。需要先在该浏览器登录 X。</p>
+              <div class="x-toolbar-actions">
+                <div class="chip-tabs" id="x-feed-tabs" role="tablist" aria-label="X 时间线"></div>
+              </div>
+            </div>
+            <div class="follow-toolbar hidden" id="x-translate-bar">
+              <p id="x-translate-status">从最新的非中文推文开始翻译，一次最多 30 条，按约 5000 字分组发给模型。</p>
+              <div class="x-action-buttons">
+                <button class="primary-button" id="x-refresh" type="button">拉取 50 条</button>
+                <button class="primary-button" id="x-translate" type="button">翻译 30 条</button>
+                <button class="primary-button" id="x-tag" type="button">打 Tag</button>
+              </div>
+            </div>
             <div class="follow-toolbar hidden" id="follow-toolbar">
               <p>关注对象是平台账号，不是标签。</p>
               <button class="text-button" id="open-subscriptions" type="button">管理关注</button>
@@ -61,13 +96,12 @@
           </div>
         </section>
 
-        <section class="view" id="view-trade" data-view-panel="trade">
-          <div class="market-tabs" id="trade-tabs" role="tablist" aria-label="交易分类"></div>
-          <p class="section-kicker" id="trade-sync-hint">股票页：总览看市场指标，美股 / 亚洲看分组观察池。数据来自 Yahoo，约 30 秒刷新。</p>
-
+        <section class="view" id="view-market" data-view-panel="market">
+          <div class="market-tabs hidden" id="market-tabs" role="tablist" aria-label="市场分类"></div>
+          <p class="section-kicker hidden" id="market-sync-hint"></p>
           <div class="trade-pane is-active" data-trade-pane="stocks">
             <div class="chip-tabs" id="stock-boards" role="tablist" aria-label="股票看板"></div>
-            <div class="market-status" id="market-status">正在连接行情…</div>
+            <div class="market-status hidden" id="market-status"></div>
             <div id="market-overview"></div>
             <div class="chip-tabs" id="quote-filters" role="tablist" aria-label="观察分组"></div>
             <label class="market-filter hidden" id="market-filter-wrap">
@@ -80,7 +114,7 @@
                   <span>标的</span>
                   <span>走势</span>
                   <span>最新价</span>
-                  <button class="market-sort" id="market-sort" type="button" aria-label="按涨跌幅排序">涨跌幅 <i>↕</i></button>
+                  <button class="market-sort" id="market-sort" type="button" aria-label="按涨跌幅排序">涨跌幅</button>
                   <span>成交</span>
                 </div>
                 <div class="quote-list" id="quote-list"></div>
@@ -89,75 +123,170 @@
           </div>
 
           <div class="trade-pane" data-trade-pane="assets">
-            <div class="chip-tabs" id="asset-filters"></div>
-            <div class="quote-head">
-              <span>名称 / 类别</span>
-              <span class="quote-metrics">
-                <span class="quote-price">最新价</span>
-                <span class="quote-change-label">涨跌幅</span>
-              </span>
+            <div class="chip-tabs" id="asset-filters" role="tablist" aria-label="资产分类"></div>
+            <label class="market-filter" id="asset-filter-wrap">
+              <span class="vh">筛选全球资产</span>
+              <input id="asset-filter" type="search" placeholder="名称 / 代码 / 介绍" autocomplete="off">
+            </label>
+            <div class="market-table-scroll" id="asset-table-scroll">
+              <div class="market-table">
+                <div class="market-head">
+                  <span>标的</span>
+                  <span>走势</span>
+                  <span>最新价</span>
+                  <button class="market-sort" id="asset-sort" type="button" aria-label="按涨跌幅排序">涨跌幅</button>
+                  <span>成交</span>
+                </div>
+                <div class="quote-list" id="asset-list"></div>
+              </div>
             </div>
-            <div class="quote-list" id="asset-list"></div>
+          </div>
+        </section>
+
+        <section class="view" id="view-assets" data-view-panel="assets">
+          <div class="market-tabs" id="book-tabs" role="tablist" aria-label="资产分类"></div>
+          <p class="section-kicker" id="book-sync-hint">持仓来自本地批次账本。首页看 A 股 / B 股今日；点进去看该组日周年变化。</p>
+
+          <div class="trade-pane is-active" data-trade-pane="holdings">
+            <div class="holdings-toolbar">
+              <p class="section-kicker" id="holdings-note">打开后读取本地批次账本，并用实时行情和汇率核算。</p>
+              <button class="text-button" id="holdings-refresh" type="button">刷新行情</button>
+            </div>
+            <div id="holdings-overview">
+              <div class="holdings-lines" id="portfolio-summary"></div>
+              <div class="holdings-moves" id="holdings-moves"></div>
+              <div class="chip-tabs" id="holdings-filters"></div>
+              <div class="market-table-scroll holdings-table-scroll">
+                <div class="holdings-table">
+                  <div class="quote-head holdings-head" id="holdings-head"></div>
+                  <div class="quote-list" id="holdings-list"></div>
+                </div>
+              </div>
+            </div>
+            <div id="holdings-group-detail" class="hidden">
+              <button class="text-button holdings-group-back" id="holdings-group-back" type="button">返回持仓</button>
+              <h2 class="holdings-group-title" id="holdings-group-title">资产变化</h2>
+              <p class="section-kicker">日、周、月按原持仓价格和汇率波动核算；期间新买入单独列出。</p>
+              <div class="holdings-moves holdings-moves-detail" id="holdings-group-moves"></div>
+            </div>
           </div>
 
-          <div class="trade-pane" data-trade-pane="holdings">
-            <div class="summary-grid" id="portfolio-summary"></div>
-            <div class="chip-tabs" id="holdings-filters"></div>
-            <div class="quote-head">
-              <span>持仓 / 成本</span>
-              <span class="quote-metrics">
-                <span class="quote-price">现价</span>
-                <span class="quote-change-label">持仓盈亏</span>
-              </span>
+          <div class="trade-pane" data-trade-pane="analysis">
+            <p class="section-kicker" id="analysis-period">打开后从本地收支草记读取资产明细和分红所得。</p>
+            <div class="summary-grid" id="analysis-kpis"></div>
+            <div class="analysis-split">
+              <article class="analysis-card">
+                <h2>资产增长轨迹</h2>
+                <div class="analysis-chart" id="analysis-trend"></div>
+              </article>
+              <article class="analysis-card">
+                <h2>当前资产结构</h2>
+                <div class="analysis-chart analysis-chart-pie" id="analysis-pie"></div>
+                <div class="analysis-note">
+                  <strong>财务健康度扫描</strong>
+                  <p id="analysis-diagnosis-1">正在根据最新表格数据生成资产结构判断。</p>
+                  <p id="analysis-diagnosis-2">数据加载完成后会自动更新。</p>
+                </div>
+              </article>
             </div>
-            <div class="quote-list" id="holdings-list"></div>
+            <div class="analysis-split analysis-split-dividend">
+              <article class="analysis-card analysis-dividend-total">
+                <span>累计分红总收益</span>
+                <strong id="analysis-dividend-total">--</strong>
+                <small>被动收入核心来源</small>
+              </article>
+              <article class="analysis-card">
+                <h2>各标的分红贡献榜单</h2>
+                <div class="analysis-bars" id="analysis-dividend"></div>
+              </article>
+            </div>
+            <div class="analysis-insights" id="analysis-insights"></div>
           </div>
         </section>
 
         <section class="view" id="view-tools" data-view-panel="tools">
-          <div class="section-kicker">工具里放主动输入和长期沉淀。日报已移到底栏。</div>
+          <div class="section-kicker">工具里放知识库、日报和连接。灵感已作为独立入口。</div>
           <div class="tool-grid" id="tool-grid"></div>
         </section>
 
+        <section class="view is-active" id="view-sources" data-view-panel="sources">
+          <section class="hub-stage">
+            <div class="hub-chart-slot">
+              <header class="hub-stage-label">行情看板 · 图表位</header>
+              <div class="hub-ticker" id="hub-ticker"></div>
+            </div>
+            <div class="hub-excerpt-slot">
+              <header class="hub-stage-label">信息摘选</header>
+              <div class="hub-excerpts" id="hub-excerpts"></div>
+            </div>
+          </section>
+          <p class="section-kicker">后续在这里继续加自选图表、宽度和重点看板。</p>
+        </section>
+
         <section class="view" id="view-inspire" data-view-panel="inspire">
-          <button class="text-button" type="button" data-nav="tools">返回工具</button>
           <form id="note-form" class="note-composer">
             <label>
               <span>灵感</span>
-              <textarea id="note-body" name="body" maxlength="4000" rows="5" placeholder="马上记下一条，不必写标题"></textarea>
+              <textarea id="note-body" name="body" maxlength="100000" rows="5" placeholder="马上记下一条，不必写标题"></textarea>
             </label>
+            <div class="note-share-source hidden" id="note-share-source" aria-live="polite"></div>
+            <input id="note-title" name="title" type="hidden">
+            <input id="note-source-url" name="sourceUrl" type="hidden">
+            <input id="note-source-title" name="sourceTitle" type="hidden">
+            <input id="note-source-type" name="sourceType" type="hidden">
+            <input id="note-capture-channel" name="captureChannel" type="hidden" value="web">
+            <input id="note-source-app" name="sourceApp" type="hidden">
             <div class="form-actions">
               <button class="ai-toggle" id="note-ai-toggle" type="button" aria-pressed="false">AI 加工</button>
               <button class="primary-button" type="submit">记下</button>
             </div>
           </form>
-          <div class="section-kicker">默认只保存原文。AI 结果将分开展示，不会覆盖这条灵感。</div>
+          <div class="section-kicker">列表只显示标题；点开后才看正文。左滑可置顶、转入知识库或删除。</div>
           <div id="note-list"></div>
         </section>
 
         <section class="view" id="view-knowledge" data-view-panel="knowledge">
           <button class="text-button" type="button" data-nav="tools">返回工具</button>
-          <p class="section-kicker">知识库是可长期复用内容的规范层，来源可以是灵感、B站、X 或手工文档。</p>
+          <p class="section-kicker">知识库是可长期复用内容的规范层。左滑一条可从库中删除。</p>
           <div id="knowledge-list"></div>
         </section>
 
         <section class="view" id="view-ask" data-view-panel="ask">
-          <div class="ask-shell">
+          <div class="ask-records" id="ask-records">
+            <button class="ask-start" id="ask-start" type="button">
+              <strong>开始提问</strong>
+              <span>用当前知识库、信息流和持仓作答。完成后会出现在下方记录里。</span>
+            </button>
+            <section class="ask-history">
+              <h2 class="ask-history-title">历史记录</h2>
+              <div id="ask-session-list"><div class="empty-state">正在载入 AI 记录…</div></div>
+            </section>
+          </div>
+          <div class="ask-shell hidden" id="ask-session-shell">
+            <button class="text-button ask-back" id="ask-back" type="button">返回记录</button>
             <div class="ask-thread" id="ask-thread">
-              <article class="ask-card">
-                <h2>问答默认只查知识库</h2>
-                <p>回答需要带来源。当前仍是结构占位，不会调用模型，也不会检索信息流，除非打开下面的开关。</p>
+              <article class="ask-card" id="ask-intro">
+                <h2>新的问答</h2>
+                <p>这次提问会读取当前知识库、信息流和持仓上下文。完成后会出现在 AI 记录里，之后还能继续追问。</p>
               </article>
-              <label class="ask-scope">
-                <input id="ask-include-feed" type="checkbox">
-                <span>同时查询最近信息流</span>
-              </label>
-              <div class="block-label">试试这些问题</div>
+              <div class="block-label" id="ask-prompt-label">试试这些问题</div>
               <div class="ask-prompts" id="ask-prompts"></div>
             </div>
             <form class="ask-composer" id="ask-form">
-              <input name="question" maxlength="500" placeholder="问知识库，或打开信息流开关" autocomplete="off">
-              <button class="icon-button brand" type="submit" aria-label="发送">↑</button>
+              <div class="ask-ref-chips hidden" id="ask-ref-chips"></div>
+              <div class="ask-mention-menu hidden" id="ask-mention-menu" role="listbox" aria-label="可引用的本地知识"></div>
+              <div class="ask-composer-row">
+                <label class="ask-web-mode">
+                  <span class="vh">联网检索</span>
+                  <select name="webMode" aria-label="联网检索">
+                    <option value="off">仅本地</option>
+                    <option value="fallback" selected>必要时联网</option>
+                    <option value="always">允许联网</option>
+                  </select>
+                </label>
+                <input name="question" maxlength="500" placeholder="输入你的问题" autocomplete="off">
+                <button class="icon-button brand" id="ask-send" type="submit" aria-label="发送"></button>
+              </div>
             </form>
           </div>
         </section>
@@ -176,6 +305,12 @@
             <article class="status-card">
               <h2>设置</h2>
               <p>设备、连接器、数据源和账户管理放在这里，不再占用底栏。二维码只携带短期配对码。</p>
+            </article>
+
+            <article class="status-card hidden" id="device-repair-panel">
+              <h2>重新连接电脑</h2>
+              <p>电脑地址变化、配对状态异常，或者想改连另一台电脑时，可以退出当前连接并重新扫码。</p>
+              <button class="text-button danger-button" id="restart-pairing" type="button">退出并重新扫码</button>
             </article>
 
             <section class="pairing-panel hidden" id="pairing-panel">
@@ -268,15 +403,32 @@
   </dialog>
 
   <dialog id="post-dialog">
-    <button class="dialog-close" type="button" aria-label="关闭">关闭</button>
-    <h2 id="dialog-title"></h2>
-    <p id="dialog-body"></p>
-    <div id="dialog-tags" class="tags"></div>
-    <a id="dialog-source" target="_blank" rel="noreferrer">打开原文</a>
-    <small id="dialog-time"></small>
+    <div class="dialog-panel">
+      <button class="dialog-close" type="button" aria-label="关闭">关闭</button>
+      <h2 id="dialog-title"></h2>
+      <div id="dialog-translation" class="post-quote hidden"></div>
+      <div id="dialog-body" class="post-body"></div>
+      <div id="dialog-tags" class="tags"></div>
+      <div class="post-foot" id="dialog-actions">
+        <span class="post-link" id="dialog-source" role="button" tabindex="0">打开原文</span>
+        <span class="post-link" id="dialog-translate" role="button" tabindex="0">翻译</span>
+      </div>
+      <small id="dialog-time"></small>
+    </div>
   </dialog>
 
+  <dialog id="reference-preview">
+    <div class="dialog-panel">
+      <button class="dialog-close" type="button" aria-label="关闭">关闭</button>
+      <h2 id="reference-preview-title"></h2>
+      <p class="section-desc" id="reference-preview-meta"></p>
+      <div id="reference-preview-body" class="post-body"></div>
+    </div>
+  </dialog>
+
+  <button class="reference-dock hidden" id="reference-dock" type="button" aria-label="打开引用">引用 0 项</button>
+
   <div class="toast" id="toast" role="status"></div>
-  <script type="module" src="/app.js?v=markets-3"></script>
+  <script type="module" src="/app.js?v=inspire-hidden-fields-v1"></script>
 </body>
 </html>

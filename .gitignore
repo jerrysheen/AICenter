@@ -9,10 +9,28 @@ coverage/
 .env
 .env.*
 !.env.example
+.codex-grok/
+instances/
 
-# Local data
+# Portable private Instance snapshot. Keep the durable DB/content, not live WAL/runtime state.
 data/*
 !data/.gitkeep
+!data/ai-center.db
+!data/imports/
+!data/imports/**
+!data/blobs/
+!data/blobs/**
+data/**/*.db-wal
+data/**/*.db-shm
+data/logs/
+.ai-data/
+
+# Local browser profiles (cookies / Login Data). Do not commit; do not delete on disk.
+.chrome-sider-profile/
+.chrome-*-profile/
+
+# CodeGraph local index / db (machine-specific)
+.codegraph/
 
 # HarmonyOS and IDE output
 .idea/
@@ -34,3 +52,7 @@ apps/harmony/build-profile.json5
 *.log
 .DS_Store
 Thumbs.db
+
+
+# cursor
+.cursor/

@@ -1,10 +1,22 @@
-export class ValidationError extends Error {
-  constructor(message, issues = []) {
-    super(message);
-    this.name = 'ValidationError';
-    this.issues = issues;
-  }
-}
+import { parseContract, ValidationError } from './errors.js';
+import { PageRequestSchema } from './common.js';
+import { BuildContextInputSchema } from './context.js';
+import { CreateAgentRunInputSchema } from './agent.js';
+import { CreateInspirationFromRunInputSchema, CreateInspirationInputSchema, CreateKnowledgeFromRunInputSchema, CreateKnowledgeFromUserInputSchema, KnowledgeMentionQuerySchema } from './knowledge.js';
+import { TagAnalyzeJobInputSchema } from './tagging.js';
+import { PatchUserItemStateInputSchema } from './feed.js';
+
+export * from './errors.js';
+export * from './common.js';
+export * from './feed.js';
+export * from './trading.js';
+export * from './knowledge.js';
+export * from './taxonomy.js';
+export * from './context.js';
+export * from './agent.js';
+export * from './runtime.js';
+export * from './source.js';
+export * from './tagging.js';
 
 function cleanText(value, { field, max, required = false } = {}) {
   const text = typeof value === 'string' ? value.trim() : '';
@@ -66,7 +78,7 @@ export function parsePairInput(value) {
     throw new ValidationError('请求内容必须是对象');
   }
   return {
-    code: cleanText(value.code, { field: '配对码', max: 16, required: true }),
+    code: cleanText(value.code, { field: '配对凭证', max: 128, required: true }),
     deviceName: cleanText(value.deviceName, { field: '设备名称', max: 60, required: true }),
   };
 }
@@ -89,7 +101,7 @@ export function parseBehaviorEvent(value) {
 export function parseMarketQuery(value) {
   const query = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const board = cleanText(query.board || 'overview', { field: '行情看板', max: 16 }) || 'overview';
-  if (!['overview', 'us', 'asia'].includes(board)) throw new ValidationError('不支持的行情看板', ['board']);
+  if (!['overview', 'us', 'asia', 'global'].includes(board)) throw new ValidationError('不支持的行情看板', ['board']);
   return {
     board,
     extra: cleanText(query.extra, { field: '自选代码', max: 400 }),
@@ -103,12 +115,194 @@ export function parseMarketSearchQuery(value) {
   return query;
 }
 
+export function parseHoldingsQuery(value) {
+  const query = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const refresh = query.refresh === true || query.refresh === '1' || query.refresh === 'true';
+  return { refresh };
+}
+
+export function parseBilibiliFeedQuery(value) {
+  const query = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const platform = cleanText(query.platform || 'bilibili', { field: '平台', max: 16 }) || 'bilibili';
+  if (platform !== 'bilibili') throw new ValidationError('当前只支持 B 站链接抓取', ['platform']);
+  const refresh = query.refresh === true || query.refresh === '1' || query.refresh === 'true';
+  const url = cleanText(query.url || query.text || query.sourceUrl, { field: 'B站链接', max: 2048 });
+  return { platform: 'bilibili', feed: 'imports', url, refresh };
+}
+
+export function parseBilibiliImportInput(value) {
+  const query = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const url = cleanText(query.url || query.text || query.sourceUrl, { field: 'B站链接', max: 2048, required: true });
+  return { platform: 'bilibili', feed: 'imports', url, refresh: true };
+}
+
+export function parseXFeedQuery(value) {
+  const query = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const platform = cleanText(query.platform || 'x', { field: '平台', max: 16 }) || 'x';
+  if (platform !== 'x') throw new ValidationError('当前只支持 X 时间线', ['platform']);
+  const feedKey = cleanText(query.feed || 'for-you', { field: '时间线', max: 24 }).toLowerCase().replace(/[_\s]+/g, '-');
+  const feed = ['following', 'latest', 'chronological'].includes(feedKey) ? 'following' : 'for-you';
+  const rawLimit = query.limit === undefined || query.limit === '' ? 50 : Number(query.limit);
+  if (!Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > 50) {
+    throw new ValidationError('条数必须是 1 到 50', ['limit']);
+  }
+  const refresh = query.refresh === true || query.refresh === '1' || query.refresh === 'true';
+  return { platform: 'x', feed, limit: rawLimit, refresh };
+}
+
 export function parseNoteInput(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new ValidationError('请求内容必须是对象');
   }
-  return {
-    body: cleanText(value.body, { field: '灵感', max: 4000, required: true }),
+  const payload = {
+    title: value.title ?? '',
+    body: value.body,
+    inspirationType: value.inspirationType ?? '',
     wantAi: Boolean(value.wantAi),
+    sourceType: value.sourceType ?? '',
+    sourceId: value.sourceId ?? '',
+    sourceUrl: value.sourceUrl ?? '',
+    sourceTitle: value.sourceTitle ?? '',
+    captureChannel: value.captureChannel ?? 'web',
+    sourceApp: value.sourceApp ?? '',
+    clientMutationId: value.clientMutationId ?? '',
   };
+  if (value.capturedAt !== undefined) payload.capturedAt = value.capturedAt;
+  return parseContract(CreateInspirationInputSchema, payload);
+}
+
+export function parseBuildContextInput(value) {
+  return parseContract(BuildContextInputSchema, value);
+}
+
+export function parseCreateAgentRunInput(value) {
+  const input = value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : value;
+  if (input && (input.sessionId === '' || input.sessionId === 'new')) delete input.sessionId;
+  return parseContract(CreateAgentRunInputSchema, input);
+}
+
+export function parseCreateInspirationFromRunInput(value) {
+  return parseContract(CreateInspirationFromRunInputSchema, value);
+}
+
+export function parseCreateKnowledgeFromRunInput(value) {
+  return parseContract(CreateKnowledgeFromRunInputSchema, value);
+}
+
+export function parseCreateKnowledgeFromUserInput(value) {
+  return parseContract(CreateKnowledgeFromUserInputSchema, value);
+}
+
+export function parseKnowledgeMentionQuery(value) {
+  const query = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const payload = { q: String(query.q ?? query.query ?? '') };
+  if (query.limit !== undefined && query.limit !== null && query.limit !== '') payload.limit = Number(query.limit);
+  return parseContract(KnowledgeMentionQuerySchema, payload);
+}
+
+export function parseTagAnalyzeInput(value) {
+  const query = value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {};
+  if (query.resourceIds !== undefined && !Array.isArray(query.resourceIds)) {
+    query.resourceIds = [query.resourceIds];
+  }
+  if (query.force === '1' || query.force === 'true') query.force = true;
+  if (query.limit !== undefined && query.limit !== null && query.limit !== '') query.limit = Number(query.limit);
+  return parseContract(TagAnalyzeJobInputSchema, query);
+}
+
+export function parsePageRequest(value) {
+  const query = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const cursor = cleanText(query.cursor, { field: '分页游标', max: 512 });
+  const payload = {};
+  if (cursor) payload.cursor = cursor;
+  if (query.limit !== undefined && query.limit !== null && query.limit !== '') payload.limit = query.limit;
+  return parseContract(PageRequestSchema, payload);
+}
+
+export function parseTranslateInput(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ValidationError('请求内容必须是对象');
+  }
+  const sourceText = cleanText(value.text || value.body, { field: '译文原文', max: 20_000, required: true });
+  const target = cleanText(value.targetLang || value.target || 'zh', { field: '目标语言', max: 16 }) || 'zh';
+  const targetLang = ['en', 'en-us', 'english'].includes(target.toLowerCase()) ? 'en' : 'zh';
+  const id = cleanText(value.id, { field: '条目 id', max: 128 });
+  return id ? { id, text: sourceText, targetLang } : { text: sourceText, targetLang };
+}
+
+const TRANSLATE_BATCH_LIMIT = 30;
+
+export function parseTranslateBatchInput(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ValidationError('请求内容必须是对象');
+  }
+  const rawItems = Array.isArray(value.items) ? value.items : [];
+  if (!rawItems.length) throw new ValidationError('没有可翻译的条目', ['items']);
+  if (rawItems.length > TRANSLATE_BATCH_LIMIT) {
+    throw new ValidationError(`一次最多翻译 ${TRANSLATE_BATCH_LIMIT} 条`, ['items']);
+  }
+  const target = cleanText(value.targetLang || value.target || 'zh', { field: '目标语言', max: 16 }) || 'zh';
+  const targetLang = ['en', 'en-us', 'english'].includes(target.toLowerCase()) ? 'en' : 'zh';
+  const seen = new Set();
+  const items = [];
+  for (const [index, row] of rawItems.entries()) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) {
+      throw new ValidationError('翻译条目必须是对象', ['items']);
+    }
+    const id = cleanText(row.id, { field: `条目 ${index + 1} 的 id`, max: 256, required: true });
+    if (seen.has(id)) throw new ValidationError('翻译条目 id 不能重复', ['items']);
+    seen.add(id);
+    items.push({
+      id,
+      text: cleanText(row.text || row.body, { field: `条目 ${index + 1} 的正文`, max: 20_000, required: true }),
+    });
+  }
+  return { items, targetLang };
+}
+
+const PERSIST_TRANSLATION_LIMIT = 200;
+
+export function parsePersistFeedTranslationsInput(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ValidationError('请求内容必须是对象');
+  }
+  const rawItems = Array.isArray(value.translations) ? value.translations : [];
+  if (!rawItems.length) throw new ValidationError('没有可保存的译文', ['translations']);
+  if (rawItems.length > PERSIST_TRANSLATION_LIMIT) {
+    throw new ValidationError(`一次最多保存 ${PERSIST_TRANSLATION_LIMIT} 条译文`, ['translations']);
+  }
+  const target = cleanText(value.targetLang || value.target || 'zh', { field: '目标语言', max: 16 }) || 'zh';
+  const targetLang = ['en', 'en-us', 'english'].includes(target.toLowerCase()) ? 'en' : 'zh';
+  const seen = new Set();
+  const translations = [];
+  for (const [index, row] of rawItems.entries()) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) {
+      throw new ValidationError('译文条目必须是对象', ['translations']);
+    }
+    const id = cleanText(row.id, { field: `译文 ${index + 1} 的 id`, max: 128, required: true });
+    if (seen.has(id)) throw new ValidationError('译文条目 id 不能重复', ['translations']);
+    seen.add(id);
+    translations.push({
+      id,
+      sourceText: cleanText(row.sourceText || row.body, { field: `译文 ${index + 1} 的原文`, max: 20_000, required: true }),
+      translatedText: cleanText(row.translatedText, { field: `译文 ${index + 1}`, max: 8_000, required: true }),
+      engine: cleanText(row.engine, { field: '翻译引擎', max: 32 }),
+      targetLang,
+    });
+  }
+  return { translations, targetLang };
+}
+
+export function parsePatchUserItemStateInput(value) {
+  return parseContract(PatchUserItemStateInputSchema, value);
+}
+
+export function parseHideFlag(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ValidationError('请求内容必须是对象');
+  }
+  if (value.isHidden !== true && value.hidden !== true) {
+    throw new ValidationError('目前只支持隐藏信息流条目', ['isHidden']);
+  }
+  return { isHidden: true };
 }

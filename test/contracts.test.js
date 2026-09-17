@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseBehaviorEvent, parseMarketQuery, parseNoteInput, parsePairInput, parsePostInput, ValidationError } from '../packages/contracts/src/index.js';
+import { parseBehaviorEvent, parseBilibiliFeedQuery, parseBilibiliImportInput, parseBuildContextInput, parseContract, parseCreateAgentRunInput, parseHoldingsQuery, parseKnowledgeMentionQuery, parseMarketQuery, parseNoteInput, parsePageRequest, parsePairInput, parsePersistFeedTranslationsInput, parsePostInput, parseTranslateBatchInput, parseTranslateInput, parseXFeedQuery, PortfolioImportSchema, ValidationError } from '../packages/contracts/src/index.js';
 
 test('post input normalizes title, url, and tags', () => {
   assert.deepEqual(parsePostInput({
@@ -27,12 +27,167 @@ test('pair and behavior inputs reject unsupported data', () => {
   assert.throws(() => parseBehaviorEvent({ name: 'unknown.event' }), ValidationError);
 });
 
-test('market query accepts us asia overview only', () => {
+test('market query accepts us asia overview and global', () => {
   assert.equal(parseMarketQuery({ board: 'asia' }).board, 'asia');
+  assert.equal(parseMarketQuery({ board: 'global' }).board, 'global');
   assert.throws(() => parseMarketQuery({ board: 'crypto' }), ValidationError);
 });
 
+test('x feed query defaults to 50 home timeline items', () => {
+  assert.deepEqual(parseXFeedQuery({}), {
+    platform: 'x', feed: 'for-you', limit: 50, refresh: false,
+  });
+  assert.equal(parseXFeedQuery({ refresh: '1' }).refresh, true);
+  assert.equal(parseXFeedQuery({ feed: 'following', limit: '50' }).feed, 'following');
+  assert.throws(() => parseXFeedQuery({ limit: '80' }), ValidationError);
+});
+
+test('bilibili import accepts share text and requires a link', () => {
+  assert.deepEqual(parseBilibiliFeedQuery({}), {
+    platform: 'bilibili', feed: 'imports', url: '', refresh: false,
+  });
+  assert.equal(parseBilibiliImportInput({
+    url: '【研读1081份专利后，我终于搞懂了华为为什么要做阔直板-哔哩哔哩】 https://b23.tv/BV1cwtN6sEDr',
+  }).url.includes('b23.tv/BV1cwtN6sEDr'), true);
+  assert.throws(() => parseBilibiliImportInput({}), ValidationError);
+});
+
+test('holdings query treats refresh=1 as a live quote fetch', () => {
+  assert.deepEqual(parseHoldingsQuery({}), { refresh: false });
+  assert.equal(parseHoldingsQuery({ refresh: '1' }).refresh, true);
+});
+
+test('portfolio import contract is strict, decimal-safe, and validates account references', () => {
+  const valid = {
+    schemaVersion: 1,
+    mode: 'merge',
+    accounts: [{
+      id: 'synthetic-account', name: '合成账户', marketScope: 'cn', baseCurrency: 'CNY', initialCapital: '0',
+    }],
+    positions: [{
+      id: 'synthetic-lot', portfolioId: 'synthetic-account', board: 'a_share', quantity: '12.5',
+      costPrice: '10.01', listingCurrency: 'CNY', note: '', openedAt: null,
+      instrument: {
+        id: 'synthetic-instrument', canonicalKey: 'CN:XSHG:600000', symbol: '600000', name: '合成证券',
+        assetClass: 'equity', market: 'cn', exchangeCode: 'XSHG', currency: 'CNY', metadata: {},
+      },
+      aliases: [{ providerId: 'fixture', providerSymbol: 'SYNTHETIC', metadata: {} }],
+    }],
+    cash: [{ portfolioId: 'synthetic-account', currency: 'CNY', amount: '100.25' }],
+  };
+  assert.equal(parseContract(PortfolioImportSchema, valid).positions[0].quantity, '12.5');
+  assert.throws(() => parseContract(PortfolioImportSchema, {
+    ...valid,
+    positions: [{ ...valid.positions[0], quantity: 12.5 }],
+  }), ValidationError);
+  assert.throws(() => parseContract(PortfolioImportSchema, {
+    ...valid,
+    positions: [{ ...valid.positions[0], portfolioId: 'missing-account' }],
+  }), ValidationError);
+  assert.throws(() => parseContract(PortfolioImportSchema, { ...valid, replace: true }), ValidationError);
+});
+
 test('note input requires body', () => {
-  assert.equal(parseNoteInput({ body: '  一条灵感  ', wantAi: 1 }).body, '一条灵感');
+  assert.deepEqual(parseNoteInput({
+    body: '  一条灵感  ',
+    wantAi: 1,
+    sourceUrl: 'https://example.com/article',
+    sourceTitle: ' 示例文章 ',
+    sourceType: 'external-share',
+    captureChannel: 'harmony-share',
+    sourceApp: 'com.example.browser',
+  }), {
+    title: '',
+    body: '一条灵感',
+    inspirationType: '',
+    wantAi: true,
+    sourceType: 'external-share',
+    sourceId: '',
+    sourceUrl: 'https://example.com/article',
+    sourceTitle: '示例文章',
+    captureChannel: 'harmony-share',
+    sourceApp: 'com.example.browser',
+    clientMutationId: '',
+  });
   assert.throws(() => parseNoteInput({ body: '' }), ValidationError);
+  assert.throws(() => parseNoteInput({ body: '非法链接', sourceUrl: 'javascript:alert(1)' }), ValidationError);
+  assert.throws(() => parseNoteInput({ body: '非法入口', captureChannel: 'unknown' }), ValidationError);
+});
+
+test('translate input defaults to chinese', () => {
+  assert.deepEqual(parseTranslateInput({ text: ' hello ' }), { text: 'hello', targetLang: 'zh' });
+  assert.deepEqual(parseTranslateInput({ id: 'x:1', text: 'hello' }), { id: 'x:1', text: 'hello', targetLang: 'zh' });
+  assert.throws(() => parseTranslateInput({ text: '' }), ValidationError);
+});
+
+test('translate batch input keeps ids and caps at 30 items', () => {
+  assert.deepEqual(parseTranslateBatchInput({
+    items: [{ id: 'x:1', text: ' hello ' }, { id: 'x:2', body: 'world' }],
+  }), {
+    targetLang: 'zh',
+    items: [{ id: 'x:1', text: 'hello' }, { id: 'x:2', text: 'world' }],
+  });
+  assert.ok(parseTranslateBatchInput({ items: [{ id: 'x:1', text: 'a'.repeat(5_000) }] }).items[0].text.length === 5_000);
+  assert.throws(() => parseTranslateBatchInput({ items: [] }), ValidationError);
+  assert.throws(() => parseTranslateBatchInput({
+    items: Array.from({ length: 31 }, (_, index) => ({ id: `x:${index}`, text: 'hello' })),
+  }), ValidationError);
+});
+
+test('persist feed translations keeps item ids and source text', () => {
+  assert.deepEqual(parsePersistFeedTranslationsInput({
+    translations: [{ id: 'x:1', sourceText: ' hello ', translatedText: ' 你好 ', engine: 'gemini' }],
+  }), {
+    targetLang: 'zh',
+    translations: [{
+      id: 'x:1',
+      sourceText: 'hello',
+      translatedText: '你好',
+      engine: 'gemini',
+      targetLang: 'zh',
+    }],
+  });
+  assert.throws(() => parsePersistFeedTranslationsInput({ translations: [] }), ValidationError);
+});
+
+test('context input defaults to the local workspace and bounded result count', () => {
+  assert.deepEqual(parseBuildContextInput({ query: '今天市场发生了什么？' }), {
+    workspaceId: 'local', query: '今天市场发生了什么？', limit: 8,
+  });
+  assert.throws(() => parseBuildContextInput({ query: '' }), ValidationError);
+  assert.throws(() => parseBuildContextInput({ query: '有效问题', limit: 21 }), ValidationError);
+});
+
+test('knowledge mention query defaults and caps the list', () => {
+  assert.deepEqual(parseKnowledgeMentionQuery({}), { q: '', limit: 8 });
+  assert.equal(parseKnowledgeMentionQuery({ q: ' 框架 ', limit: '5' }).q, '框架');
+  assert.equal(parseKnowledgeMentionQuery({ q: '框架', limit: '5' }).limit, 5);
+  assert.throws(() => parseKnowledgeMentionQuery({ limit: 99 }), ValidationError);
+});
+
+test('agent run input accepts selected references', () => {
+  assert.deepEqual(parseCreateAgentRunInput({
+    message: '结合起来怎么看',
+    references: [{ resourceType: 'content-item', resourceId: 'item-1' }],
+  }).references, [{ resourceType: 'content-item', resourceId: 'item-1' }]);
+  assert.equal(parseCreateAgentRunInput({ message: '你好' }).webMode, 'off');
+  assert.equal(parseCreateAgentRunInput({ message: '你好', webMode: 'fallback' }).webMode, 'fallback');
+  assert.throws(() => parseCreateAgentRunInput({ message: '你好', webMode: 'remote' }), ValidationError);
+  assert.throws(() => parseCreateAgentRunInput({
+    message: '你好',
+    references: [{ resourceType: 'stock', resourceId: '1' }],
+  }), ValidationError);
+});
+
+test('agent run input accepts an optional session id', () => {
+  assert.equal(parseCreateAgentRunInput({ message: ' 持仓如何 ' }).message, '持仓如何');
+  assert.equal(parseCreateAgentRunInput({ message: '继续', sessionId: 'new' }).sessionId, undefined);
+  assert.equal(parseCreateAgentRunInput({ message: '继续', sessionId: 'session-1' }).sessionId, 'session-1');
+  assert.throws(() => parseCreateAgentRunInput({ message: '' }), ValidationError);
+});
+
+test('page request keeps an opaque cursor and bounded limit', () => {
+  assert.deepEqual(parsePageRequest({}), { limit: 50 });
+  assert.equal(parsePageRequest({ limit: '20', cursor: ' abc ' }).limit, 20);
+  assert.throws(() => parsePageRequest({ limit: 0 }), ValidationError);
 });

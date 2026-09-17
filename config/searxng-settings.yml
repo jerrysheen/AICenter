@@ -1,0 +1,36 @@
+# AI Center Search Worker template. Copied to .ai-data/searxng/settings.yml on setup.
+# This is a localhost helper for Agent web.search, not a public SearXNG site.
+
+use_default_settings:
+  engines:
+    keep_only:
+      - wikipedia
+      - brave
+      - duckduckgo
+      - bing
+      - google
+
+engines:
+  - name: bing
+    disabled: false
+  - name: google
+    disabled: false
+
+general:
+  debug: false
+  instance_name: "AI Center Search"
+
+search:
+  safe_search: 0
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "__SECRET_KEY__"
+  bind_address: "127.0.0.1"
+  port: 8888
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  base_url: false

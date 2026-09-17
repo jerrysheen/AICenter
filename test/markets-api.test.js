@@ -33,6 +33,9 @@ test('markets API returns injected board payload', async () => {
     const payload = await fetch(`${address.localUrl}/api/v1/markets?board=us`).then((response) => response.json());
     assert.equal(payload.ok, true);
     assert.equal(payload.market.watchlist[0].symbol, 'AAPL');
+    const globalBoard = await fetch(`${address.localUrl}/api/v1/markets?board=global`).then((response) => response.json());
+    assert.equal(globalBoard.ok, true);
+    assert.equal(globalBoard.market.board, 'global');
     const search = await fetch(`${address.localUrl}/api/v1/markets/search?q=nvda`).then((response) => response.json());
     assert.equal(search.items[0].symbol, 'NVDA');
   } finally {

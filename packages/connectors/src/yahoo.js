@@ -78,6 +78,23 @@ export function quoteFromSpark(result, nowSec = Math.floor(Date.now() / 1000)) {
   };
 }
 
+export function seriesFromSpark(result) {
+  const chart = result.response?.[0];
+  const meta = chart?.meta;
+  const symbol = text(result.symbol || meta?.symbol).toUpperCase();
+  if (!symbol) return null;
+  const timestamps = Array.isArray(chart?.timestamp) ? chart.timestamp : [];
+  const closes = chart?.indicators?.quote?.[0]?.close || [];
+  const points = [];
+  for (let index = 0; index < timestamps.length; index += 1) {
+    const at = num(timestamps[index]);
+    const close = num(closes[index]);
+    if (at == null || close == null) continue;
+    points.push({ at: at * 1000, close });
+  }
+  return points.length ? { symbol, points } : null;
+}
+
 export function createYahooClient(options = {}) {
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -97,30 +114,54 @@ export function createYahooClient(options = {}) {
     }
   }
 
-  async function fetchQuotes(symbols) {
+  async function fetchSparkGroup(group, range, interval, includePrePost) {
+    const url = new URL(SPARK_URL);
+    url.searchParams.set('symbols', group.join(','));
+    url.searchParams.set('range', range);
+    url.searchParams.set('interval', interval);
+    url.searchParams.set('includePrePost', includePrePost ? 'true' : 'false');
+    const payload = await request(url);
+    const results = isRecord(payload) && isRecord(payload.spark) && Array.isArray(payload.spark.result)
+      ? payload.spark.result
+      : [];
+    return results;
+  }
+
+  async function fetchQuoteGroup(group, interval = '5m') {
+    return (await fetchSparkGroup(group, '1d', interval, true)).map((result) => quoteFromSpark(result)).filter(Boolean);
+  }
+
+  async function fetchQuotes(symbols, { interval = '5m' } = {}) {
     const unique = [...new Set(symbols.map((symbol) => String(symbol || '').trim().toUpperCase()).filter(Boolean))];
+    const settled = await Promise.allSettled(chunk(unique, BATCH_SIZE).map((group) => fetchQuoteGroup(group, interval)));
     const quotes = [];
-    let sessionMeta;
-
-    for (const group of chunk(unique, BATCH_SIZE)) {
-      const url = `${SPARK_URL}?symbols=${group.map(encodeURIComponent).join(',')}&range=1d&interval=5m&includePrePost=true`;
-      const payload = await request(url);
-      const results = isRecord(payload) && isRecord(payload.spark) && Array.isArray(payload.spark.result)
-        ? payload.spark.result
-        : [];
-      for (const result of results) {
-        const quote = quoteFromSpark(result);
-        if (!quote) continue;
-        quotes.push(quote);
-        sessionMeta ??= result.response?.[0]?.meta;
-      }
+    for (const item of settled) {
+      if (item.status === 'fulfilled') quotes.push(...item.value);
     }
-
     const bySymbol = new Map(quotes.map((quote) => [quote.symbol, quote]));
+    const sessionQuote = quotes.find((quote) => quote.session === 'regular')
+      || quotes.find((quote) => quote.session === 'pre')
+      || quotes.find((quote) => quote.session === 'post')
+      || quotes[0];
     return {
       quotes: unique.map((symbol) => bySymbol.get(symbol)).filter(Boolean),
-      session: parseMarketSession(sessionMeta),
+      session: sessionQuote?.session || 'closed',
     };
+  }
+
+  async function fetchHistory(symbols, { range = '3mo', interval = '1d' } = {}) {
+    const unique = [...new Set(symbols.map((symbol) => String(symbol || '').trim().toUpperCase()).filter(Boolean))];
+    const settled = await Promise.allSettled(chunk(unique, BATCH_SIZE).map((group) => fetchSparkGroup(group, range, interval, false)));
+    const series = [];
+    for (const item of settled) {
+      if (item.status !== 'fulfilled') continue;
+      for (const result of item.value) {
+        const mapped = seriesFromSpark(result);
+        if (mapped) series.push(mapped);
+      }
+    }
+    const bySymbol = new Map(series.map((item) => [item.symbol, item]));
+    return unique.map((symbol) => bySymbol.get(symbol)).filter(Boolean);
   }
 
   async function searchSymbols(query) {
@@ -148,5 +189,5 @@ export function createYahooClient(options = {}) {
     });
   }
 
-  return { fetchQuotes, searchSymbols };
+  return { fetchQuotes, fetchHistory, searchSymbols };
 }

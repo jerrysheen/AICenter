@@ -1,0 +1,9 @@
+{
+  "version": "tags_v1",
+  "tags": [
+    { "id": "ai", "name": "AI", "level": 1, "parent_id": null, "keywords": ["AI", "人工智能", "大模型", "LLM"] },
+    { "id": "ai_compute", "name": "AI算力", "level": 2, "parent_id": "ai", "keywords": ["GPU", "算力", "训练集群", "推理集群"] },
+    { "id": "semiconductor", "name": "半导体", "level": 1, "parent_id": null, "keywords": ["芯片", "半导体"] },
+    { "id": "semiconductor_memory", "name": "存储", "level": 2, "parent_id": "semiconductor", "keywords": ["HBM", "DRAM"] }
+  ]
+}

@@ -76,7 +76,7 @@ export const assetClasses = [
   { id: 'rate', label: '利率' },
   { id: 'metal', label: '贵金属' },
   { id: 'energy', label: '能源' },
-  { id: 'futures', label: '期货' },
+  { id: 'future', label: '期货' },
   { id: 'crypto', label: '加密' },
 ];
 
@@ -99,7 +99,7 @@ export const globalAssets = [
   { name: '十年期美债', symbol: 'US10Y', market: 'us', assetClass: 'rate', price: '4.12', changePct: 0.03, currency: 'USD' },
   { name: '黄金', symbol: 'XAUUSD', market: 'global', assetClass: 'metal', price: '3642.8', changePct: 0.42, currency: 'USD' },
   { name: 'WTI 原油', symbol: 'CL', market: 'us', assetClass: 'energy', price: '71.26', changePct: -1.02, currency: 'USD' },
-  { name: 'COMEX 黄金主连', symbol: 'GC', market: 'us', assetClass: 'futures', price: '3648.2', changePct: 0.38, currency: 'USD', expiry: '2026-12' },
+  { name: 'COMEX 黄金主连', symbol: 'GC', market: 'us', assetClass: 'future', price: '3648.2', changePct: 0.38, currency: 'USD', expiry: '2026-12' },
   { name: '比特币', symbol: 'BTC-USD', market: 'global', assetClass: 'crypto', price: '111250', changePct: 1.18, currency: 'USD' },
   { name: '以太坊', symbol: 'ETH-USD', market: 'global', assetClass: 'crypto', price: '4286.4', changePct: -0.56, currency: 'USD' },
 ];
@@ -109,10 +109,40 @@ export const marketIndex = {
   us: { name: '标普500', value: '5628.40', change: '+11.82', percent: '+0.21%' },
 };
 
-export const tradeTabs = [
+export const marketTabs = [
   { id: 'stocks', label: '股票' },
   { id: 'assets', label: '全球资产' },
+];
+
+export const bookTabs = [
   { id: 'holdings', label: '持仓' },
+  { id: 'analysis', label: '个人资产分析' },
+];
+
+export const tradeTabs = [...marketTabs, ...bookTabs];
+
+export const hubNews = [
+  {
+    id: 'mock-news-1',
+    time: '12 分钟前',
+    source: '新闻 · mock',
+    title: '半导体设备订单回暖，市场重新定价资本开支周期',
+    body: '多家设备商上修全年指引。这是总览里的「新闻」占位：接入 RSS / 公告后，这里只保留被整理出来的头条，而不是来源卡片。',
+  },
+  {
+    id: 'mock-news-2',
+    time: '1 小时前',
+    source: '新闻 · mock',
+    title: '美元指数走弱，黄金与非美货币同步走强',
+    body: '宏观日历尚未接入。总览先用一条最高优先级的宏观头条，提醒市场页里的外汇和贵金属为什么在动。',
+  },
+  {
+    id: 'mock-news-3',
+    time: '今天 07:20',
+    source: '新闻 · mock',
+    title: '中概与亚洲科技盘前分化，关注财报周拥挤交易',
+    body: '完整行情去市场页；完整讨论去信息页。总览只放一条足够决定「要不要点进去」的摘要。',
+  },
 ];
 
 export const portfolioSummary = {
@@ -147,12 +177,12 @@ export const searchUniverse = [
 ];
 
 export const tools = [
-  { id: 'inspire', title: '灵感', desc: '马上写、可选 AI', action: 'inspire', ready: true },
-  { id: 'knowledge', title: '知识库', desc: '长期可复用内容', action: 'knowledge', ready: true },
-  { id: 'publish', title: '快速发布', desc: '写入信息流', action: 'compose', ready: true },
-  { id: 'pair', title: '设备与连接', desc: '配对、数据源', action: 'settings', ready: true },
-  { id: 'search', title: '信息检索', desc: '后续接入问答', action: '', ready: false },
-  { id: 'capture', title: '采集箱', desc: '后续接 Worker', action: '', ready: false },
+  { id: 'knowledge', title: '知识库', desc: '长期可复用内容', action: 'knowledge', icon: 'notebook-text', ready: true },
+  { id: 'publish', title: '快速发布', desc: '写入信息流', action: 'compose', icon: 'plus', ready: true },
+  { id: 'report', title: '日报', desc: '跨模块汇总', action: 'report', icon: 'newspaper', ready: true },
+  { id: 'pair', title: '设备与连接', desc: '配对、数据源', action: 'settings', icon: 'settings', ready: true },
+  { id: 'search', title: '信息检索', desc: '后续接入问答', action: '', icon: 'search', ready: false },
+  { id: 'capture', title: '采集箱', desc: '后续接 Worker', action: '', icon: 'layout-grid', ready: false },
 ];
 
 export const askPrompts = [

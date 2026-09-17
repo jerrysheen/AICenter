@@ -35,10 +35,39 @@
         ]
       }
     ],
+    "extensionAbilities": [
+      {
+        "name": "ShareExtensionAbility",
+        "srcEntry": "./ets/shareability/ShareExtensionAbility.ets",
+        "description": "$string:share_extension_desc",
+        "label": "$string:share_extension_label",
+        "icon": "$media:app_icon",
+        "type": "share",
+        "exported": true,
+        "skills": [
+          {
+            "actions": ["ohos.want.action.sendData"],
+            "uris": [
+              {
+                "scheme": "file",
+                "utd": "general.text",
+                "maxFileSupported": 1
+              },
+              {
+                "scheme": "file",
+                "utd": "general.hyperlink",
+                "maxFileSupported": 1
+              }
+            ]
+          }
+        ]
+      }
+    ],
     "requestPermissions": [
       {
         "name": "ohos.permission.INTERNET"
       }
-    ]
+    ],
+    "querySchemes": ["https", "http"]
   }
 }

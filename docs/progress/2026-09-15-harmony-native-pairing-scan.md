@@ -10,7 +10,7 @@
 - 鸿蒙 App 使用系统 Scan Kit 默认扫码页，仅识别 QR Code，并允许从相册选图。
 - App 内扫码只接受带 `?pair=` 的 AI Center HTTP 地址或 `aicenter://pair` 深链，不打开普通网址。
 - Scan Kit 默认 UI 使用系统预授权相机能力，应用不额外申请相机权限。
-- 旧地址主页面加载失败或 12 秒未完成时，删除 Preferences 中的地址并回到扫码页。
+- 旧地址在 5 秒内最多尝试 3 次；仍未完成时删除 Preferences 中的地址并回到扫码页。
 
 ## 改动
 

@@ -31,3 +31,4 @@
 - 把本机自选迁到 `watchlists` 表。
 - 指数 sparkline 为空时补数据源。
 - 再接同花顺 A 股总览。
+- 全球资产已另接 `board=global`。

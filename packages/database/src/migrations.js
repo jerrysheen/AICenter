@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto';
+import { seedWorkspaceTaxonomy } from './taxonomy-seed.js';
+
 export const DEFAULT_WORKSPACE_ID = 'local';
 
 function hasColumn(database, tableName, columnName) {
@@ -411,7 +414,541 @@ const migrations = [
       `);
     },
   },
+  {
+    version: 5,
+    name: 'note-pin',
+    up(database) {
+      addColumn(database, 'notes', 'pinned', 'INTEGER NOT NULL DEFAULT 0');
+    },
+  },
+  {
+    version: 6,
+    name: 'modular-domain-contracts',
+    up(database) {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS collector_nodes (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'offline',
+          capabilities_json TEXT NOT NULL DEFAULT '[]',
+          last_seen_at INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS credential_refs (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          collector_node_id TEXT,
+          provider_id TEXT NOT NULL,
+          label TEXT NOT NULL DEFAULT '',
+          ref_key TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          UNIQUE(workspace_id, ref_key),
+          FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+          FOREIGN KEY(collector_node_id) REFERENCES collector_nodes(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS source_account_bindings (
+          source_account_id TEXT PRIMARY KEY,
+          collector_node_id TEXT,
+          credential_ref_id TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY(source_account_id) REFERENCES source_accounts(id),
+          FOREIGN KEY(collector_node_id) REFERENCES collector_nodes(id),
+          FOREIGN KEY(credential_ref_id) REFERENCES credential_refs(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS instrument_aliases (
+          instrument_id TEXT NOT NULL,
+          provider_id TEXT NOT NULL,
+          provider_symbol TEXT NOT NULL,
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY(provider_id, provider_symbol),
+          FOREIGN KEY(instrument_id) REFERENCES instruments(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS job_attempts (
+          id TEXT PRIMARY KEY,
+          job_id TEXT NOT NULL,
+          attempt_number INTEGER NOT NULL,
+          worker_id TEXT NOT NULL,
+          status TEXT NOT NULL,
+          error_json TEXT,
+          started_at INTEGER NOT NULL,
+          completed_at INTEGER,
+          UNIQUE(job_id, attempt_number),
+          FOREIGN KEY(job_id) REFERENCES jobs(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS knowledge_revisions (
+          id TEXT PRIMARY KEY,
+          knowledge_id TEXT NOT NULL,
+          revision INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          body TEXT NOT NULL,
+          created_by_type TEXT NOT NULL,
+          created_by_id TEXT,
+          created_at INTEGER NOT NULL,
+          UNIQUE(knowledge_id, revision),
+          FOREIGN KEY(knowledge_id) REFERENCES knowledge_items(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS knowledge_chunks (
+          id TEXT PRIMARY KEY,
+          knowledge_id TEXT NOT NULL,
+          revision INTEGER NOT NULL,
+          chunk_index INTEGER NOT NULL,
+          body TEXT NOT NULL,
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          created_at INTEGER NOT NULL,
+          UNIQUE(knowledge_id, revision, chunk_index),
+          FOREIGN KEY(knowledge_id) REFERENCES knowledge_items(id)
+        );
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
+          knowledge_id UNINDEXED,
+          revision UNINDEXED,
+          title,
+          body,
+          tokenize = 'trigram'
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_collector_nodes_workspace ON collector_nodes(workspace_id, status);
+        CREATE INDEX IF NOT EXISTS idx_credentials_node ON credential_refs(collector_node_id, provider_id);
+        CREATE INDEX IF NOT EXISTS idx_aliases_instrument ON instrument_aliases(instrument_id);
+        CREATE INDEX IF NOT EXISTS idx_job_attempts_job ON job_attempts(job_id, attempt_number DESC);
+        CREATE INDEX IF NOT EXISTS idx_knowledge_revisions_document ON knowledge_revisions(knowledge_id, revision DESC);
+        CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_document ON knowledge_chunks(knowledge_id, revision, chunk_index);
+      `);
+
+      addColumn(database, 'instruments', 'symbol', "TEXT NOT NULL DEFAULT ''");
+      addColumn(database, 'portfolios', 'initial_capital_decimal', "TEXT NOT NULL DEFAULT '0'");
+      addColumn(database, 'transactions', 'quantity_decimal', "TEXT NOT NULL DEFAULT '0'");
+      addColumn(database, 'transactions', 'price_decimal', "TEXT NOT NULL DEFAULT '0'");
+      addColumn(database, 'transactions', 'cash_amount_decimal', "TEXT NOT NULL DEFAULT '0'");
+      addColumn(database, 'transactions', 'fees_decimal', "TEXT NOT NULL DEFAULT '0'");
+      addColumn(database, 'quote_snapshots', 'price_decimal', "TEXT NOT NULL DEFAULT '0'");
+      addColumn(database, 'quote_snapshots', 'previous_close_decimal', 'TEXT');
+      addColumn(database, 'quote_snapshots', 'session', "TEXT NOT NULL DEFAULT 'unknown'");
+      addColumn(database, 'position_snapshots', 'quantity_decimal', "TEXT NOT NULL DEFAULT '0'");
+      addColumn(database, 'position_snapshots', 'cost_basis_decimal', "TEXT NOT NULL DEFAULT '0'");
+      addColumn(database, 'position_snapshots', 'market_value_decimal', "TEXT NOT NULL DEFAULT '0'");
+      addColumn(database, 'position_snapshots', 'daily_pnl_decimal', "TEXT NOT NULL DEFAULT '0'");
+      addColumn(database, 'position_snapshots', 'total_pnl_decimal', "TEXT NOT NULL DEFAULT '0'");
+      addColumn(database, 'fx_rates', 'rate_decimal', "TEXT NOT NULL DEFAULT '0'");
+      addColumn(database, 'knowledge_items', 'status', "TEXT NOT NULL DEFAULT 'active'");
+      addColumn(database, 'knowledge_items', 'current_revision', 'INTEGER NOT NULL DEFAULT 1');
+      addColumn(database, 'knowledge_items', 'metadata_json', "TEXT NOT NULL DEFAULT '{}'");
+      addColumn(database, 'outbox_events', 'schema_version', 'INTEGER NOT NULL DEFAULT 1');
+      addColumn(database, 'outbox_events', 'correlation_id', 'TEXT');
+      addColumn(database, 'outbox_events', 'causation_id', 'TEXT');
+      addColumn(database, 'outbox_events', 'occurred_at', 'INTEGER');
+
+      database.exec(`
+        UPDATE instruments SET symbol = canonical_symbol WHERE symbol = '';
+        UPDATE portfolios SET initial_capital_decimal = CAST(initial_capital AS TEXT)
+          WHERE initial_capital_decimal = '0' AND initial_capital != 0;
+        UPDATE transactions SET
+          quantity_decimal = CAST(quantity AS TEXT),
+          price_decimal = CAST(price AS TEXT),
+          fees_decimal = CAST(fees AS TEXT)
+          WHERE quantity_decimal = '0' AND price_decimal = '0' AND fees_decimal = '0';
+        UPDATE quote_snapshots SET
+          price_decimal = CAST(price AS TEXT),
+          previous_close_decimal = CASE WHEN previous_close IS NULL THEN NULL ELSE CAST(previous_close AS TEXT) END
+          WHERE price_decimal = '0';
+        UPDATE position_snapshots SET
+          quantity_decimal = CAST(quantity AS TEXT),
+          cost_basis_decimal = CAST(cost_basis AS TEXT),
+          market_value_decimal = CAST(market_value AS TEXT),
+          daily_pnl_decimal = CAST(daily_pnl AS TEXT),
+          total_pnl_decimal = CAST(total_pnl AS TEXT)
+          WHERE quantity_decimal = '0' AND market_value_decimal = '0';
+        UPDATE fx_rates SET rate_decimal = CAST(rate AS TEXT) WHERE rate_decimal = '0';
+        UPDATE outbox_events SET occurred_at = created_at WHERE occurred_at IS NULL;
+
+        INSERT OR IGNORE INTO knowledge_revisions
+          (id, knowledge_id, revision, title, body, created_by_type, created_by_id, created_at)
+        SELECT 'legacy:' || id, id, 1, title, body, 'import', source_note_id, created_at
+        FROM knowledge_items;
+
+        INSERT INTO knowledge_fts (knowledge_id, revision, title, body)
+        SELECT k.id, 1, k.title, k.body
+        FROM knowledge_items k
+        WHERE NOT EXISTS (
+          SELECT 1 FROM knowledge_fts f WHERE f.knowledge_id = k.id AND f.revision = 1
+        );
+      `);
+    },
+  },
+  {
+    version: 7,
+    name: 'manual-holding-lots',
+    up(database) {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS holding_lots (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          portfolio_id TEXT NOT NULL,
+          instrument_id TEXT NOT NULL,
+          board TEXT NOT NULL,
+          quantity_decimal TEXT NOT NULL,
+          cost_price_decimal TEXT NOT NULL,
+          listing_currency TEXT NOT NULL,
+          note TEXT NOT NULL DEFAULT '',
+          archived_at INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+          FOREIGN KEY(portfolio_id) REFERENCES portfolios(id),
+          FOREIGN KEY(instrument_id) REFERENCES instruments(id)
+        );
+        CREATE TABLE IF NOT EXISTS portfolio_cash (
+          portfolio_id TEXT NOT NULL,
+          currency TEXT NOT NULL,
+          amount_decimal TEXT NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY(portfolio_id, currency),
+          FOREIGN KEY(portfolio_id) REFERENCES portfolios(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_holding_lots_portfolio ON holding_lots(portfolio_id, archived_at);
+      `);
+    },
+  },
+  {
+    version: 8,
+    name: 'public-gateway-pairing',
+    up(database) {
+      addColumn(database, 'pairing_codes', 'public_secret_hash', 'TEXT');
+      database.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_pairing_public_secret
+          ON pairing_codes(public_secret_hash)
+          WHERE public_secret_hash IS NOT NULL;
+      `);
+    },
+  },
+  {
+    version: 9,
+    name: 'holding-lot-opened-at',
+    up(database) {
+      addColumn(database, 'holding_lots', 'opened_at', 'INTEGER');
+    },
+  },
+  {
+    version: 10,
+    name: 'ai-run-context-refs',
+    up(database) {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS ai_run_context_refs (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          resource_type TEXT NOT NULL,
+          resource_id TEXT NOT NULL,
+          revision INTEGER,
+          as_of INTEGER,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY(run_id) REFERENCES ai_runs(id),
+          FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_run_context_refs_run
+          ON ai_run_context_refs(run_id, created_at ASC);
+      `);
+    },
+  },
+  {
+    version: 11,
+    name: 'feed-item-translations',
+    up(database) {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS feed_item_translations (
+          workspace_id TEXT NOT NULL,
+          item_id TEXT NOT NULL,
+          target_lang TEXT NOT NULL,
+          source_hash TEXT NOT NULL,
+          translated_text TEXT NOT NULL,
+          engine TEXT NOT NULL DEFAULT '',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY(workspace_id, item_id, target_lang),
+          FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_feed_item_translations_hash
+          ON feed_item_translations(workspace_id, source_hash, target_lang);
+      `);
+    },
+  },
+  {
+    version: 12,
+    name: 'ai-sessions',
+    up(database) {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS ai_sessions (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          title TEXT NOT NULL,
+          preview TEXT NOT NULL DEFAULT '',
+          source_type TEXT NOT NULL DEFAULT '',
+          source_id TEXT NOT NULL DEFAULT '',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_sessions_workspace
+          ON ai_sessions(workspace_id, updated_at DESC, id DESC);
+      `);
+      addColumn(database, 'ai_runs', 'session_id', "TEXT NOT NULL DEFAULT ''");
+      addColumn(database, 'ai_runs', 'input_text', "TEXT NOT NULL DEFAULT ''");
+      database.exec(`CREATE INDEX IF NOT EXISTS idx_ai_runs_session ON ai_runs(session_id, created_at ASC)`);
+
+      const runs = database.prepare(`SELECT * FROM ai_runs WHERE session_id = '' ORDER BY created_at ASC`).all();
+      const inspirationSessions = new Map();
+      const insertSession = database.prepare(`INSERT INTO ai_sessions
+        (id, workspace_id, kind, title, preview, source_type, source_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      const attachRun = database.prepare('UPDATE ai_runs SET session_id = ? WHERE id = ?');
+      for (const run of runs) {
+        const kind = run.source_type === 'inspiration' || run.task_type === 'idea-sketch'
+          ? 'inspiration' : 'question-answer';
+        let sessionId = '';
+        if (kind === 'inspiration' && run.source_id) {
+          sessionId = inspirationSessions.get(`${run.workspace_id}:${run.source_id}`) || '';
+        }
+        if (!sessionId) {
+          sessionId = randomUUID();
+          const titleSource = String(run.input_text || run.output_text || 'AI 记录').replace(/\s+/g, ' ').trim();
+          const title = titleSource ? titleSource.slice(0, 36) : 'AI 记录';
+          const preview = String(run.output_text || run.input_text || '').replace(/\s+/g, ' ').trim().slice(0, 180);
+          insertSession.run(
+            sessionId, run.workspace_id, kind, title, preview,
+            run.source_type || '', run.source_id || '', run.created_at, run.completed_at || run.created_at,
+          );
+          if (kind === 'inspiration' && run.source_id) {
+            inspirationSessions.set(`${run.workspace_id}:${run.source_id}`, sessionId);
+          }
+        }
+        attachRun.run(sessionId, run.id);
+      }
+    },
+  },
+  {
+    version: 13,
+    name: 'knowledge-revision-search-repair',
+    up: backfillKnowledgeRevisionIndex,
+  },
+  {
+    version: 14,
+    name: 'ai-run-question-backfill',
+    up: backfillAiRunQuestions,
+  },
+  {
+    version: 15,
+    name: 'selected-context-refs',
+    up(database) {
+      addColumn(database, 'ai_run_context_refs', 'origin', `TEXT NOT NULL DEFAULT 'tool'`);
+      addColumn(database, 'ai_run_context_refs', 'label', `TEXT NOT NULL DEFAULT ''`);
+      addColumn(database, 'notes', 'source_type', `TEXT NOT NULL DEFAULT ''`);
+      addColumn(database, 'notes', 'source_id', `TEXT NOT NULL DEFAULT ''`);
+    },
+  },
+  {
+    version: 16,
+    name: 'knowledge-taxonomy-structure',
+    up(database) {
+      addColumn(database, 'notes', 'title', `TEXT NOT NULL DEFAULT ''`);
+      addColumn(database, 'notes', 'inspiration_type', `TEXT NOT NULL DEFAULT ''`);
+      addColumn(database, 'knowledge_items', 'knowledge_type', `TEXT NOT NULL DEFAULT ''`);
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS taxonomy_nodes (
+          workspace_id TEXT NOT NULL,
+          key TEXT NOT NULL,
+          dimension TEXT NOT NULL,
+          name TEXT NOT NULL,
+          parent_key TEXT,
+          description TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'active',
+          created_by TEXT NOT NULL DEFAULT 'system',
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (workspace_id, key),
+          FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_taxonomy_nodes_dimension
+          ON taxonomy_nodes(workspace_id, dimension, sort_order, key);
+
+        CREATE TABLE IF NOT EXISTS resource_taxonomy (
+          workspace_id TEXT NOT NULL,
+          resource_type TEXT NOT NULL,
+          resource_id TEXT NOT NULL,
+          taxonomy_key TEXT NOT NULL,
+          is_primary INTEGER NOT NULL DEFAULT 0,
+          assigned_by TEXT NOT NULL DEFAULT 'ai',
+          confidence TEXT NOT NULL DEFAULT '',
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY (workspace_id, resource_type, resource_id, taxonomy_key),
+          FOREIGN KEY(workspace_id, taxonomy_key) REFERENCES taxonomy_nodes(workspace_id, key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_resource_taxonomy_resource
+          ON resource_taxonomy(workspace_id, resource_type, resource_id);
+        CREATE INDEX IF NOT EXISTS idx_resource_taxonomy_key
+          ON resource_taxonomy(workspace_id, taxonomy_key, resource_type);
+
+        CREATE TABLE IF NOT EXISTS taxonomy_proposals (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          resource_type TEXT NOT NULL,
+          resource_id TEXT NOT NULL,
+          dimension TEXT NOT NULL,
+          key TEXT NOT NULL,
+          name TEXT NOT NULL,
+          parent_key TEXT NOT NULL,
+          reason TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'pending',
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_taxonomy_proposals_resource
+          ON taxonomy_proposals(workspace_id, resource_type, resource_id, created_at DESC);
+      `);
+      seedWorkspaceTaxonomy(database, DEFAULT_WORKSPACE_ID);
+    },
+  },
+  {
+    version: 17,
+    name: 'resource-taggings',
+    up(database) {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS resource_taggings (
+          workspace_id TEXT NOT NULL,
+          resource_type TEXT NOT NULL,
+          resource_id TEXT NOT NULL,
+          tags_json TEXT NOT NULL,
+          tag_catalog_version TEXT NOT NULL,
+          prompt_version TEXT NOT NULL,
+          model TEXT NOT NULL DEFAULT '',
+          truncated_for_model INTEGER NOT NULL DEFAULT 0,
+          analyzed_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (workspace_id, resource_type, resource_id),
+          FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_resource_taggings_catalog
+          ON resource_taggings(workspace_id, resource_type, tag_catalog_version, prompt_version);
+      `);
+    },
+  },
+  {
+    version: 18,
+    name: 'inspiration-capture-provenance',
+    up(database) {
+      addColumn(database, 'notes', 'source_url', `TEXT NOT NULL DEFAULT ''`);
+      addColumn(database, 'notes', 'source_title', `TEXT NOT NULL DEFAULT ''`);
+      addColumn(database, 'notes', 'capture_channel', `TEXT NOT NULL DEFAULT 'web'`);
+      addColumn(database, 'notes', 'source_app', `TEXT NOT NULL DEFAULT ''`);
+      database.prepare(`UPDATE notes SET capture_channel = CASE
+        WHEN source_type = 'ai-run' THEN 'agent'
+        WHEN source_type = 'content-item' THEN 'feed'
+        ELSE 'web'
+      END`).run();
+    },
+  },
+  {
+    version: 19,
+    name: 'inspiration-offline-sync',
+    up(database) {
+      addColumn(database, 'notes', 'client_mutation_id', `TEXT NOT NULL DEFAULT ''`);
+      addColumn(database, 'notes', 'captured_at', `INTEGER NOT NULL DEFAULT 0`);
+      database.prepare(`UPDATE notes SET captured_at = created_at WHERE captured_at = 0`).run();
+      database.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_client_mutation
+        ON notes(workspace_id, client_mutation_id)
+        WHERE client_mutation_id != ''`);
+    },
+  },
+  {
+    version: 20,
+    name: 'hide-legacy-posts',
+    up(database) {
+      addColumn(database, 'posts', 'hidden_at', 'INTEGER');
+    },
+  },
 ];
+
+export function backfillKnowledgeRevisionIndex(database) {
+  database.exec(`
+    INSERT OR IGNORE INTO knowledge_revisions
+      (id, knowledge_id, revision, title, body, created_by_type, created_by_id, created_at)
+    SELECT 'repair:' || id, id, COALESCE(current_revision, 1), title, body,
+      CASE WHEN source = 'inspiration' THEN 'user' ELSE 'import' END, source_note_id, created_at
+    FROM knowledge_items
+    WHERE NOT EXISTS (
+      SELECT 1 FROM knowledge_revisions r WHERE r.knowledge_id = knowledge_items.id
+    );
+
+    INSERT INTO knowledge_fts (knowledge_id, revision, title, body)
+    SELECT k.id, k.current_revision, k.title, k.body
+    FROM knowledge_items k
+    WHERE NOT EXISTS (
+      SELECT 1 FROM knowledge_fts f
+      WHERE f.knowledge_id = k.id AND f.revision = k.current_revision
+    );
+
+    INSERT OR IGNORE INTO knowledge_links
+      (knowledge_id, source_type, source_id, relation_type, created_at)
+    SELECT knowledge_id, 'inspiration', id, 'derived_from', COALESCE(archived_at, updated_at, created_at)
+    FROM notes
+    WHERE status = 'archived' AND knowledge_id IS NOT NULL AND knowledge_id != '';
+  `);
+}
+
+function readJsonObject(value) {
+  try {
+    const parsed = JSON.parse(value || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function backfillAiRunQuestions(database) {
+  const updateRun = database.prepare(`UPDATE ai_runs SET input_text = ?
+    WHERE id = ? AND (input_text = '' OR input_text IS NULL)`);
+  for (const job of database.prepare(`SELECT id, input_json FROM jobs WHERE type = 'ai.agent.run'`).all()) {
+    const message = String(readJsonObject(job.input_json).message || '').trim();
+    if (!message) continue;
+    const runs = database.prepare(`SELECT id FROM ai_runs
+      WHERE source_id = ? AND (input_text = '' OR input_text IS NULL)`).all(job.id);
+    for (const run of runs) updateRun.run(message, run.id);
+  }
+  if (database.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'notes'`).get()) {
+    for (const note of database.prepare('SELECT id, body FROM notes').all()) {
+      const body = String(note.body || '').trim();
+      if (!body) continue;
+      const runs = database.prepare(`SELECT id FROM ai_runs
+        WHERE source_type = 'inspiration' AND source_id = ? AND (input_text = '' OR input_text IS NULL)`).all(note.id);
+      for (const run of runs) updateRun.run(body, run.id);
+    }
+  }
+  const firstRun = database.prepare(`SELECT input_text FROM ai_runs
+    WHERE session_id = ? AND input_text != '' ORDER BY created_at ASC LIMIT 1`);
+  const updateSession = database.prepare('UPDATE ai_sessions SET title = ? WHERE id = ?');
+  for (const session of database.prepare('SELECT id, title FROM ai_sessions').all()) {
+    const run = firstRun.get(session.id);
+    const question = String(run?.input_text || '').replace(/\s+/g, ' ').trim();
+    if (!question) continue;
+    const title = question.length > 36 ? `${question.slice(0, 36)}…` : question;
+    if (title && title !== session.title) updateSession.run(title, session.id);
+  }
+}
 
 export function runMigrations(database) {
   database.exec(`

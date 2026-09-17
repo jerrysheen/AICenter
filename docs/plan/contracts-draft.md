@@ -27,6 +27,8 @@
 
 `platform`: `manual | bilibili | x`。`processing`: `"" | subtitle | ai`。
 
+第一版 X 接入：`GET /api/v1/feed/x?feed=for-you|following&limit=50` 调用旧仓 `fetch_home_timeline`（已登录 Chrome），返回 `{ ok, feed }`，`feed.items` 为 `FeedItem[]`。页面不得依赖 GraphQL / CDP 原始字段。
+
 ## Subscription
 
 ```json

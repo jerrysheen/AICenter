@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { quoteFromSpark } from '../packages/connectors/src/yahoo.js';
-import { buildOverviewBoard, buildUsMarketBoard, parseUsExtraSymbols } from '../packages/connectors/src/market-boards.js';
+import { quoteFromSpark, seriesFromSpark } from '../packages/connectors/src/yahoo.js';
+import { buildGlobalAssetBoard, buildOverviewBoard, buildUsMarketBoard, expiryFromFuturesName, parseUsExtraSymbols } from '../packages/connectors/src/market-boards.js';
 import { createMarketService } from '../packages/connectors/src/market-service.js';
 import { parseMarketQuery } from '../packages/contracts/src/index.js';
 
@@ -32,7 +32,30 @@ test('yahoo spark result maps to a quote snapshot without raw provider fields', 
   assert.equal(quote.session, 'closed');
 });
 
+test('yahoo spark history maps timestamps to daily closes', () => {
+  const series = seriesFromSpark({
+    symbol: '000858.sz',
+    response: [{
+      timestamp: [1_700_000_000, 1_700_086_400],
+      indicators: { quote: [{ close: [69.5, 69.7] }] },
+    }],
+  });
+  assert.equal(series.symbol, '000858.SZ');
+  assert.equal(series.points.length, 2);
+  assert.equal(series.points[1].close, 69.7);
+});
+
 test('us board keeps catalog names, groups, and summaries', () => {
+  const marketCatalog = {
+    version: 1,
+    us: {
+      groups: ['全部', '科技'],
+      indices: [],
+      watchlist: [{ symbol: 'NVDA', name: 'NVIDIA', group: '科技', summary: 'GPU 测试标的' }],
+    },
+    asia: { groups: ['全部'], indices: [], watchlist: [] },
+    global: { groups: ['指数'], watchlist: [] },
+  };
   const board = buildUsMarketBoard({
     quotes: [{
       symbol: 'NVDA', name: 'NVIDIA Corporation', lastPrice: 212.18, changePct: 0.58, change: 1.23,
@@ -42,15 +65,16 @@ test('us board keeps catalog names, groups, and summaries', () => {
     session: 'regular',
     fetchedAt: 1_700_000_000_000,
     errors: 1,
+    marketCatalog,
   });
   const nvidia = board.watchlist.find((item) => item.symbol === 'NVDA');
   assert.equal(nvidia.name, 'NVIDIA');
-  assert.equal(nvidia.group, '科技巨头');
-  assert.equal(nvidia.summary, 'GPU / AI 算力');
+  assert.equal(nvidia.group, '科技');
+  assert.equal(nvidia.summary, 'GPU 测试标的');
   assert.equal(nvidia.provider, 'yahoo');
   assert.equal(nvidia.market, 'us');
-  assert.equal(board.groups[1], '科技巨头');
-  assert.equal(parseUsExtraSymbols('nvda,ZZZZ').join(','), 'ZZZZ');
+  assert.equal(board.groups[1], '科技');
+  assert.equal(parseUsExtraSymbols('nvda,ZZZZ', marketCatalog).join(','), 'ZZZZ');
 });
 
 test('overview board aggregates us and asia breadth', () => {
@@ -62,7 +86,7 @@ test('overview board aggregates us and asia breadth', () => {
   asia.sessions = { kr: 'closed', tw: 'closed', jp: 'closed' };
   const overview = buildOverviewBoard(us, asia);
   assert.equal(overview.sections[0].id, 'us');
-  assert.equal(overview.sections[1].title, '亚洲半导体');
+  assert.equal(overview.sections[1].title, '亚洲市场');
   assert.equal(overview.sections[1].breadth.decliners, 27);
 });
 
@@ -94,7 +118,93 @@ test('market service uses injected yahoo client and cache', async () => {
   assert.equal(items[0].symbol, 'NVDA');
 });
 
-test('market query only allows overview, us, and asia', () => {
+test('market service refresh option bypasses quote cache', async () => {
+  let calls = 0;
+  const yahoo = {
+    async fetchQuotes() {
+      calls += 1;
+      return { quotes: [{ symbol: 'USDCNY=X', lastPrice: calls, prevClose: 1, currency: 'CNY', session: 'regular' }] };
+    },
+  };
+  const service = createMarketService({ yahoo, ttlMs: 60_000, now: () => 1_000 });
+  const first = await service.fetchQuotes(['USDCNY=X']);
+  const cached = await service.fetchQuotes(['USDCNY=X']);
+  const live = await service.fetchQuotes(['USDCNY=X'], { refresh: true });
+  assert.equal(first[0].lastPrice, 1);
+  assert.equal(cached[0].lastPrice, 1);
+  assert.equal(live[0].lastPrice, 2);
+  assert.equal(calls, 2);
+});
+
+test('market service returns a partial board when yahoo fails', async () => {
+  const yahoo = {
+    async fetchQuotes() {
+      throw new Error('Yahoo 行情请求超时。');
+    },
+    async searchSymbols() {
+      return [];
+    },
+  };
+  const service = createMarketService({ yahoo, ttlMs: 60_000, now: () => 1_000 });
+  const board = await service.getBoard({ board: 'us' });
+  assert.equal(board.board, 'us');
+  assert.equal(board.mode, 'partial');
+  assert.match(board.note, /暂未获取成功/);
+  assert.equal(board.watchlist[0].lastPrice, null);
+});
+
+test('market query allows overview, us, asia, and global', () => {
   assert.equal(parseMarketQuery({ board: 'us' }).board, 'us');
+  assert.equal(parseMarketQuery({ board: 'global' }).board, 'global');
   assert.throws(() => parseMarketQuery({ board: 'cn' }));
+});
+
+test('global asset board maps yahoo symbols to stable display codes', () => {
+  const board = buildGlobalAssetBoard({
+    quotes: [
+      { symbol: 'DX-Y.NYB', name: 'ICE US Dollar Index', lastPrice: 99.55, changePct: 0.16, change: 0.16, high: 100, low: 99, prevClose: 99.4, volume: 1, sparkline: [99, 99.55], currency: 'USD', exchange: 'ICE', marketTime: 1, session: 'regular' },
+      { symbol: 'GC=F', name: 'Gold Dec 26', lastPrice: 4334.7, changePct: -0.4, change: -17, high: 4350, low: 4320, prevClose: 4352, volume: 1, sparkline: [4330, 4334.7], currency: 'USD', exchange: 'COMEX', marketTime: 1, session: 'regular' },
+      { symbol: 'CNY=X', name: 'USD/CNY', lastPrice: 6.6995, changePct: 0.02, change: 0.001, high: 6.7, low: 6.69, prevClose: 6.698, volume: 0, sparkline: [6.7, 6.6995], currency: 'CNY', exchange: 'CCY', marketTime: 1, session: 'regular' },
+    ],
+    session: 'regular',
+    fetchedAt: 1_700_000_000_000,
+    errors: 0,
+  });
+  const dxy = board.watchlist.find((item) => item.symbol === 'DXY');
+  const gold = board.watchlist.find((item) => item.symbol === 'XAUUSD');
+  const cny = board.watchlist.find((item) => item.symbol === 'USDCNY');
+  const future = board.watchlist.find((item) => item.symbol === 'GC');
+  assert.equal(board.board, 'global');
+  assert.equal(dxy.assetClass, 'fx');
+  assert.equal(dxy.lastPrice, 99.55);
+  assert.equal(gold.assetClass, 'metal');
+  assert.equal(gold.summary, 'COMEX 黄金主力');
+  assert.equal(gold.expiry, '2026-12');
+  assert.equal(future.assetClass, 'future');
+  assert.equal(future.lastPrice, gold.lastPrice);
+  assert.equal(cny.market, 'global');
+  assert.equal(expiryFromFuturesName('Crude Oil Oct 26'), '2026-10');
+});
+
+test('market service returns a global board from injected yahoo quotes', async () => {
+  const yahoo = {
+    async fetchQuotes(symbols) {
+      return {
+        session: 'regular',
+        quotes: symbols.map((symbol) => ({
+          symbol, name: symbol, lastPrice: 10, changePct: 0.1, change: 0.01, high: 11, low: 9,
+          prevClose: 9.9, volume: 1, sparkline: [10, 10], currency: 'USD', exchange: 'TEST',
+          marketTime: 1, session: 'regular',
+        })),
+      };
+    },
+    async searchSymbols() {
+      return [];
+    },
+  };
+  const service = createMarketService({ yahoo, ttlMs: 60_000, now: () => 1_000 });
+  const board = await service.getBoard({ board: 'global' });
+  assert.equal(board.board, 'global');
+  assert.equal(board.watchlist[0].symbol, '000001.SH');
+  assert.equal(board.mode, 'live');
 });

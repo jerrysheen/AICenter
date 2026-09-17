@@ -1,0 +1,145 @@
+{
+  "version": "tags_v1",
+  "tags": [
+    {
+      "id": "ai",
+      "name": "AI",
+      "level": 1,
+      "parent_id": null,
+      "keywords": ["AI", "人工智能", "大模型", "LLM", "foundation model"]
+    },
+    {
+      "id": "ai_compute",
+      "name": "AI算力",
+      "level": 2,
+      "parent_id": "ai",
+      "keywords": ["GPU", "算力", "训练集群", "推理集群", "AI服务器"]
+    },
+    {
+      "id": "ai_model",
+      "name": "模型与算法",
+      "level": 2,
+      "parent_id": "ai",
+      "keywords": ["OpenAI", "Anthropic", "Gemini", "推理模型", "agent"]
+    },
+    {
+      "id": "ai_application",
+      "name": "AI应用",
+      "level": 2,
+      "parent_id": "ai",
+      "keywords": ["Copilot", "AI编程", "AI搜索", "智能体产品"]
+    },
+    {
+      "id": "semiconductor",
+      "name": "半导体",
+      "level": 1,
+      "parent_id": null,
+      "keywords": ["芯片", "半导体", "晶圆", "foundry"]
+    },
+    {
+      "id": "semiconductor_memory",
+      "name": "存储",
+      "level": 2,
+      "parent_id": "semiconductor",
+      "keywords": ["DRAM", "NAND", "HBM", "DDR4", "DDR5", "NOR Flash"]
+    },
+    {
+      "id": "semiconductor_optical",
+      "name": "光通信",
+      "level": 2,
+      "parent_id": "semiconductor",
+      "keywords": ["CPO", "光模块", "硅光", "光纤"]
+    },
+    {
+      "id": "semiconductor_equipment",
+      "name": "半导体设备",
+      "level": 2,
+      "parent_id": "semiconductor",
+      "keywords": ["光刻", "ASML", "薄膜沉积", "刻蚀", "CMP"]
+    },
+    {
+      "id": "semiconductor_packaging",
+      "name": "先进封装",
+      "level": 2,
+      "parent_id": "semiconductor",
+      "keywords": ["CoWoS", "HBM封装", "先进封装", "Chiplet"]
+    },
+    {
+      "id": "internet",
+      "name": "互联网",
+      "level": 1,
+      "parent_id": null,
+      "keywords": ["互联网", "广告", "电商", "社交"]
+    },
+    {
+      "id": "software",
+      "name": "软件",
+      "level": 1,
+      "parent_id": null,
+      "keywords": ["SaaS", "云", "企业软件", "操作系统"]
+    },
+    {
+      "id": "gaming",
+      "name": "游戏",
+      "level": 1,
+      "parent_id": null,
+      "keywords": ["游戏", "主机", "手游", "Steam"]
+    },
+    {
+      "id": "graphics",
+      "name": "图形引擎",
+      "level": 1,
+      "parent_id": null,
+      "keywords": ["渲染", "引擎", "GPU Driven", "Unity", "Unreal"]
+    },
+    {
+      "id": "auto",
+      "name": "汽车",
+      "level": 1,
+      "parent_id": null,
+      "keywords": ["电动车", "智能驾驶", "汽车电子"]
+    },
+    {
+      "id": "energy",
+      "name": "能源",
+      "level": 1,
+      "parent_id": null,
+      "keywords": ["电力", "电网", "核电", "光伏", "储能"]
+    },
+    {
+      "id": "macro",
+      "name": "宏观",
+      "level": 1,
+      "parent_id": null,
+      "keywords": ["利率", "通胀", "央行", "就业", "GDP"]
+    },
+    {
+      "id": "market_us",
+      "name": "美股",
+      "level": 1,
+      "parent_id": null,
+      "keywords": ["美股", "纳斯达克", "标普", "NYSE"]
+    },
+    {
+      "id": "market_cn",
+      "name": "A股",
+      "level": 1,
+      "parent_id": null,
+      "keywords": ["A股", "沪深", "创业板", "科创板"]
+    },
+    {
+      "id": "market_hk",
+      "name": "港股",
+      "level": 1,
+      "parent_id": null,
+      "keywords": ["港股", "恒生", "港股通"]
+    },
+    {
+      "id": "geopolitics",
+      "name": "地缘",
+      "level": 1,
+      "parent_id": null,
+      "keywords": ["出口管制", "关税", "制裁", "供应链安全"]
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "key": "domain.general",
+      "name": "通用",
+      "parentKey": null,
+      "description": "未进入个人领域树的通用内容",
+      "sortOrder": 10
+    },
+    {
+      "key": "domain.research",
+      "name": "研究",
+      "parentKey": null,
+      "description": "通用研究与分析内容",
+      "sortOrder": 20
+    },
+    {
+      "key": "topic.general",
+      "name": "通用主题",
+      "parentKey": null,
+      "description": "由 Instance 继续扩展的主题根",
+      "sortOrder": 10
+    },
+    {
+      "key": "lens.mechanism",
+      "name": "机制分析",
+      "parentKey": null,
+      "description": "解释事物如何运作",
+      "sortOrder": 10
+    },
+    {
+      "key": "lens.implementation",
+      "name": "实现方案",
+      "parentKey": null,
+      "description": "记录可执行的实现路径",
+      "sortOrder": 20
+    },
+    {
+      "key": "lens.learning",
+      "name": "原理学习",
+      "parentKey": null,
+      "description": "整理概念、原理与学习材料",
+      "sortOrder": 30
+    },
+    {
+      "key": "lens.comparison",
+      "name": "方案比较",
+      "parentKey": null,
+      "description": "比较不同方案及其权衡",
+      "sortOrder": 40
+    },
+    {
+      "key": "project.general",
+      "name": "通用项目",
+      "parentKey": null,
+      "description": "由 Instance 定义具体项目节点",
+      "sortOrder": 10
+    }
+  ]
+}

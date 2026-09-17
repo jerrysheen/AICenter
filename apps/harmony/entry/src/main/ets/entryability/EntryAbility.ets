@@ -8,7 +8,13 @@ const TAG = 'AI_CENTER_SHELL';
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, _launchParam: AbilityConstant.LaunchParam): void {
     AppStorage.setOrCreate<string>('launchUri', want.uri ?? '');
+    AppStorage.setOrCreate<number>('localInspirationRefreshVersion', 0);
     hilog.info(DOMAIN, TAG, 'AI Center shell created');
+  }
+
+  onForeground(): void {
+    const version = AppStorage.get<number>('localInspirationRefreshVersion') ?? 0;
+    AppStorage.set<number>('localInspirationRefreshVersion', version + 1);
   }
 
   onNewWant(want: Want, _launchParam: AbilityConstant.LaunchParam): void {

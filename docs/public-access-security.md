@@ -1,0 +1,135 @@
+# 公网访问与安全边界
+
+## 当前结论
+
+默认情况下 AI Center 仍然只有局域网入口。`192.168.x.x`、`10.x.x.x` 和 `172.16-31.x.x` 都是私有地址，
+手机离开家庭网络后无法路由到这些地址，因此外网扫描局域网二维码一定失败。
+
+禁止直接在路由器上把 8787 端口转发到公网。推荐使用：
+
+```text
+Harmony / Browser
+        │ HTTPS
+        ▼
+Cloudflare Edge / 可选 Access
+        │ 出站 Tunnel
+        ▼
+cloudflared（本机）
+        │ http://127.0.0.1:8787
+        ▼
+AI Center Public Gateway
+```
+
+Cloudflare Tunnel 由本机主动向外建立连接，不要求公网 IP 或开放入站端口。公网 Hostname 只映射 AI Center Web 端口，
+不能映射 Worker、SQLite、浏览器调试口、旧 AI/AI-Hub 服务、本机管理端口，或 Local Files MCP 的本机监听口。
+
+ChatGPT 访问本机文件走另一条可选链路：Tailscale Funnel → `local-files-mcp`。怎么配见 `docs/ops/local-files-mcp-tailscale.md`。那条 Funnel 不要指到 AI Center Web，也不列入 0.2.0 发布验收。仓库说明里不得写入真实 Hostname 或 Origin。
+
+官方参考：[Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/)、
+[创建 Named Tunnel](https://developers.cloudflare.com/tunnel/get-started/)、
+[保护 Self-hosted Application](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/)、
+[Windows 服务](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/as-a-service/windows/)。
+
+## 为什么不能直接给原有 8787 套隧道
+
+旧实现按 TCP 来源地址判断本机管理员。反向隧道连接 Origin 时来源可能是 `127.0.0.1`，如果不区分代理请求，
+公网访客就可能被误认为桌面管理员。
+
+当前实现已经增加公网请求隔离：
+
+- 带 Cloudflare 代理标记或访问配置的公网 Hostname 永远不是桌面管理员。
+- 未配对公网请求访问业务 API 返回 401。
+- 已配对手机访问桌面管理 API 返回 403。
+- `/api/v1/pairing`、设备管理、指标和 Runtime 状态不能从公网调用。
+- 公网健康检查不返回电脑主机名。
+
+这层隔离必须保留。不能通过信任任意 `X-Forwarded-*` 请求头重新获得管理员身份。
+
+## 公网配对
+
+配置 `AI_CENTER_PUBLIC_URL` 后，桌面生成二维码时公网地址排在第一位：
+
+```text
+https://center.example.com/?pair=<一次性随机凭证>
+```
+
+安全规则：
+
+- 公网凭证使用 32 字节随机数，不使用六位码。
+- 默认 2 分钟过期。
+- 使用一次后立即失效。
+- 非本机来源 5 分钟最多尝试 10 次。
+- 公网接口拒绝用六位局域网码兑换授权。
+- 长期设备 token 只通过 HttpOnly Cookie 下发，数据库只保存哈希。
+- 公网 Cookie 使用 `__Host-` 前缀、`Secure`、`HttpOnly` 和 `SameSite=Strict`，当前浏览器有效期 180 天。
+- 公网稳定域名不随家庭 IP 改变，因此正常重启或宽带换 IP 不需要重新扫码。
+
+公网一次性凭证会短暂出现在二维码 URL 中，因此 Cloudflare 和 Origin 日志不得记录完整 Query String；凭证使用后应视为失效，
+但仍不应把它复制到聊天、Issue 或 Git。
+
+## 两种防护等级
+
+### 推荐：Cloudflare Access + AI Center 设备授权
+
+第一层由 Cloudflare Access 只允许你的邮箱或身份提供商通过，第二层再执行 AI Center 扫码配对。
+
+优点：
+
+- 未通过 Cloudflare 身份验证的请求到不了应用。
+- 可以在 Cloudflare 侧撤销登录和查看访问记录。
+- 即使一次性配对 URL 泄露，也需要先通过 Access。
+
+代价：首次使用以及 Access Session 到期后，鸿蒙 ArkWeb 需要完成一次 Cloudflare 登录。必须用真机验证登录跳转、Cookie 和 SSE；
+Access 登录不是 AI Center 重新配对，两者生命周期独立。
+
+### 简洁模式：Tunnel + AI Center 设备授权
+
+无需 Cloudflare 登录，扫码后直接进入应用。安全性依赖高熵配对凭证、设备 token、限速和 Cloudflare 边缘防护。
+体验更顺，但对所有互联网用户开放静态页面、健康检查和配对兑换入口。
+
+金融数据长期使用时优先选择双层防护。
+
+## 用户执行：Cloudflare 配置
+
+以下步骤需要用户在 Cloudflare 控制台和 Windows 管理员终端执行，Agent 不接管桌面：
+
+1. 准备 Cloudflare 账号和一个托管在 Cloudflare 的域名。
+2. 在 Zero Trust / Networking / Tunnels 创建 Named Tunnel，例如 `ai-center-home`。
+3. 添加精确的 Public Hostname，例如 `center.example.com`。
+4. Service URL 设置为 `http://127.0.0.1:8787`。
+5. 只配置这一个精确 Hostname，并保留最终 `http_status:404` catch-all；不要使用泛域名把其他本机服务带出去。
+6. 推荐先创建 Cloudflare Access Self-hosted Application，只允许自己的邮箱。
+7. 在 Windows 安装 Cloudflare 提供的 `cloudflared` 服务命令。Tunnel token 是敏感凭证，不能写入仓库、截图或聊天。
+8. 启动 AI Center 前设置：
+
+```powershell
+$env:AI_CENTER_PUBLIC_URL = 'https://center.example.com'
+```
+
+9. 重启 AI Center，桌面配对页应优先展示公网 HTTPS 二维码。
+
+不要使用 Quick Tunnel 作为正式方案：随机域名每次可能变化，并且官方文档明确 Quick Tunnel 不支持 SSE；AI Center 的实时信息流依赖 SSE。
+
+## 验收清单
+
+必须在手机关闭 Wi-Fi、使用移动网络时验证：
+
+1. 公网二维码打开 `https://` 稳定域名。
+2. 未配对时只能看到配对状态，读取 `/api/v1/posts` 返回 401。
+3. 公网无法访问 `/api/v1/pairing`、`/api/v1/devices`、`/api/v1/runtime`。
+4. 扫码后可以读取信息、发布并收到 SSE。
+5. 重启 Web、Worker 和 cloudflared 后仍可连接，不重新扫码。
+6. 撤销手机设备后，公网 Cookie 立即失效。
+7. 错误配对超过限制后返回 429。
+8. Cloudflare Tunnel 停止后公网不可达，但局域网功能仍然正常。
+
+## 仍需外部决定
+
+真正启用公网入口前必须确定：
+
+- 公网域名，例如 `center.example.com`。
+- 是否启用 Cloudflare Access 双层身份验证。
+- Access Session 时长。
+- cloudflared 作为 Windows 服务运行，还是开发阶段手工运行。
+
+这些属于外部账号和部署状态，不能写死在代码或提交敏感 token。

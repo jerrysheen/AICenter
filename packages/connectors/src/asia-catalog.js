@@ -1,45 +1,7 @@
-export const ASIA_INDICES = [
-  { symbol: '^KS11', name: '韩国综指', group: '指数' },
-  { symbol: '^KQ11', name: '科斯达克', group: '指数' },
-  { symbol: '^TWII', name: '台湾加权', group: '指数' },
-  { symbol: '^N225', name: '日经 225', group: '指数' },
-];
+// Phase-1 compatibility adapter. New code should consume MarketCatalog through
+// packages/source; this module remains until user acceptance permits cleanup.
+import { DEFAULT_MARKET_CATALOG } from '../../source/src/market/catalog.js';
 
-export const ASIA_WATCHLIST = [
-  { symbol: '000660.KS', name: 'SK 海力士', group: '韩国存储', summary: 'HBM / DRAM' },
-  { symbol: '005930.KS', name: '三星电子', group: '韩国存储', summary: '存储 + 代工' },
-  { symbol: '042700.KS', name: '韩美半导体', group: '韩国设备', summary: 'HBM 键合设备' },
-  { symbol: '403870.KQ', name: 'HPSP', group: '韩国设备', summary: '高压退火设备' },
-  { symbol: '058470.KQ', name: '李诺', group: '韩国设备', summary: '测试探针' },
-  { symbol: '089030.KQ', name: 'Techwing', group: '韩国设备', summary: '测试分选设备' },
-  { symbol: '8035.T', name: '东京电子', group: '日本设备', summary: '薄膜 / 刻蚀设备' },
-  { symbol: '6857.T', name: '爱德万', group: '日本设备', summary: '测试设备' },
-  { symbol: '7735.T', name: 'SCREEN', group: '日本设备', summary: '清洗 / 涂布设备' },
-  { symbol: '6146.T', name: 'Disco', group: '日本设备', summary: '切割 / 研磨' },
-  { symbol: '6920.T', name: 'Lasertec', group: '日本设备', summary: 'EUV 掩模检测' },
-  { symbol: '6525.T', name: '国际电气', group: '日本设备', summary: '薄膜沉积设备' },
-  { symbol: '2802.T', name: '味之素', group: '日本材料', summary: 'ABF 封装基板材料' },
-  { symbol: '4063.T', name: '信越化学', group: '日本材料', summary: '硅片 / 光刻胶' },
-  { symbol: '3436.T', name: 'SUMCO', group: '日本材料', summary: '硅片' },
-  { symbol: '4062.T', name: '揖斐电', group: '日本材料', summary: 'IC 载板' },
-  { symbol: '2330.TW', name: '台积电', group: '台湾晶圆', summary: '先进制程代工' },
-  { symbol: '2303.TW', name: '联电', group: '台湾晶圆', summary: '成熟制程代工' },
-  { symbol: '3711.TW', name: '日月光', group: '台湾晶圆', summary: '先进封装' },
-  { symbol: '2454.TW', name: '联发科', group: '台湾晶圆', summary: '手机 / 边缘 AI 芯片' },
-  { symbol: '3661.TW', name: '世芯', group: '台湾晶圆', summary: 'AI ASIC 设计' },
-  { symbol: '6488.TWO', name: '环球晶', group: '台湾设备', summary: '硅片' },
-  { symbol: '3680.TWO', name: '家登', group: '台湾设备', summary: 'EUV 光罩盒' },
-  { symbol: '6196.TW', name: '帆宣', group: '台湾设备', summary: '厂务与设备工程' },
-  { symbol: '5434.TW', name: '崇越', group: '台湾设备', summary: '半导体材料通路' },
-  { symbol: '3037.TW', name: '欣兴', group: '台湾设备', summary: 'IC 载板' },
-  { symbol: '2449.TW', name: '京元电', group: '台湾设备', summary: '芯片测试' },
-  { symbol: '3006.TW', name: '晶豪科', group: '利基存储', summary: 'Fabless DDR2/DDR3 + SLC NAND + NOR' },
-  { symbol: '2344.TW', name: '华邦电', group: '利基存储', summary: 'IDM DDR3/DDR4/LPDDR4 + NOR + SLC NAND' },
-  { symbol: '5351.TWO', name: '钰创', group: '利基存储', summary: 'Fabless Specialty DRAM' },
-  { symbol: '2337.TW', name: '旺宏', group: '利基存储', summary: 'IDM NOR + SLC NAND' },
-  { symbol: '2408.TW', name: '南亚科', group: '利基存储', summary: 'DRAM IDM · DDR4/LPDDR4/DDR5' },
-  { symbol: '6531.TW', name: '爱普', group: '利基存储', summary: 'PSRAM / 低功耗 DRAM' },
-  { symbol: '6770.TW', name: '力积电', group: '利基存储', summary: '特殊记忆体代工' },
-];
-
-export const ASIA_GROUPS = ['全部', '韩国存储', '韩国设备', '日本设备', '日本材料', '台湾晶圆', '台湾设备', '利基存储', '自选'];
+export const ASIA_GROUPS = DEFAULT_MARKET_CATALOG.asia.groups;
+export const ASIA_INDICES = DEFAULT_MARKET_CATALOG.asia.indices;
+export const ASIA_WATCHLIST = DEFAULT_MARKET_CATALOG.asia.watchlist;

@@ -2,6 +2,8 @@
   "string": [
     { "name": "module_desc", "value": "AI Center 鸿蒙薄壳" },
     { "name": "entry_desc", "value": "连接本地 AI Center" },
-    { "name": "entry_label", "value": "AI Center" }
+    { "name": "entry_label", "value": "AI Center" },
+    { "name": "share_extension_label", "value": "存到 AI Center" },
+    { "name": "share_extension_desc", "value": "将文字或链接保存为灵感" }
   ]
 }
