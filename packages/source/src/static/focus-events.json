@@ -1,0 +1,32 @@
+{
+  "US": [
+    "consumer price index",
+    "producer price index",
+    "employment situation",
+    "job openings and labor turnover",
+    "jolts",
+    "initial jobless claims",
+    "gross domestic product",
+    "personal income and outlays",
+    "retail sales",
+    "ism manufacturing",
+    "ism services",
+    "fomc"
+  ],
+  "CN": [
+    "国民经济运行情况",
+    "采购经理指数",
+    "居民消费价格",
+    "工业生产者价格",
+    "规模以上工业",
+    "固定资产投资",
+    "社会消费品零售",
+    "贷款市场报价利率",
+    "lpr",
+    "进出口",
+    "海关统计"
+  ],
+  "alwaysSourceIds": [
+    "calendar.cn.scio"
+  ]
+}

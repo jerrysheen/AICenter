@@ -5,10 +5,14 @@ import {
 import {
   createXJobHandlers, createTwitterService, xConnectorManifest,
 } from '../../connectors/src/x/index.js';
+import { createOfficialSourcesClient } from '../../connectors/src/official-sources.js';
+import { createMarketNativeClient } from '../../connectors/src/market-native.js';
 import { createBilibiliSourceDefinition, createXSourceDefinition } from './content/definitions.js';
 import { createMarketSourceDefinitions } from './market/definitions.js';
 import { createMarketService } from './market/service.js';
 import { createWebSearchSourceDefinition } from './search/definitions.js';
+import { createOfficialSourceDetailDefinition, createStaticSignalSourceDefinitions } from './static/definitions.js';
+import { createMarketNativeSourceDefinitions } from './static/market-native-definitions.js';
 
 export function createSourceModuleRegistry(options = {}) {
   const registry = createCapabilityRegistry();
@@ -18,6 +22,8 @@ export function createSourceModuleRegistry(options = {}) {
     browserRuntime: options.browserRuntime,
   });
   const marketService = options.marketService || createMarketService(options);
+  const officialSources = options.officialSources || createOfficialSourcesClient(options);
+  const marketNativeSources = options.marketNativeSources || createMarketNativeClient(options);
   registry.register({
     manifest: {
       id: 'system.health', version: '1.0.0', capabilities: ['runtime.healthcheck'],
@@ -69,6 +75,23 @@ export function createSourceModuleRegistry(options = {}) {
       sourceIds: marketSources.map((source) => source.manifest.id),
     },
     sources: marketSources,
+  });
+  const staticSignalSources = createStaticSignalSourceDefinitions(officialSources, options);
+  const officialDetailSource = createOfficialSourceDetailDefinition(officialSources, options);
+  registry.register({
+    manifest: {
+      id: 'connector.official-sources', version: '1.0.0', capabilities: ['static-signal.read'], jobTypes: [],
+      sourceIds: [...staticSignalSources.map((source) => source.manifest.id), officialDetailSource.manifest.id],
+    },
+    sources: [...staticSignalSources, officialDetailSource],
+  });
+  const marketNativeDefinitions = createMarketNativeSourceDefinitions(marketNativeSources, options);
+  registry.register({
+    manifest: {
+      id: 'connector.market-native', version: '1.0.0', capabilities: ['market-native.read'], jobTypes: [],
+      sourceIds: marketNativeDefinitions.map((source) => source.manifest.id),
+    },
+    sources: marketNativeDefinitions,
   });
   if (options.webSearchPort?.search) {
     registry.register({

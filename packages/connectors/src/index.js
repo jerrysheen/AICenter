@@ -1,8 +1,16 @@
 export { ConnectorProcessError, createJsonProcessAdapter } from './process-json-adapter.js';
 export { createYahooClient, quoteFromSpark, parseMarketSession } from './yahoo.js';
 export { createCnQuoteClient, isCnBShareYahooSymbol, isCnFundYahooSymbol, isCnYahooSymbol, quoteFromHithinkItem, thscodeToYahoo, yahooToThscode } from './cn-quotes.js';
+export {
+  createXueqiuQuoteClient,
+  isHkYahooSymbol,
+  isXueqiuYahooSymbol,
+  quoteFromXueqiuItem,
+  sessionFromXueqiuMarket,
+  yahooToXueqiuSymbol,
+} from './xueqiu-quotes.js';
 export { createMarketService } from './market-service.js';
-export { buildAsiaMarketBoard, buildGlobalAssetBoard, buildOverviewBoard, buildUsMarketBoard, parseAsiaExtraSymbols, parseUsExtraSymbols } from './market-boards.js';
+export { buildAsiaMarketBoard, buildCnMarketBoard, buildGlobalAssetBoard, buildOverviewBoard, buildUsMarketBoard, parseAsiaExtraSymbols, parseCnExtraSymbols, parseUsExtraSymbols, preferredOverviewFocus } from './market-boards.js';
 export { US_GROUPS, US_INDICES, US_WATCHLIST } from './us-catalog.js';
 export { ASIA_GROUPS, ASIA_INDICES, ASIA_WATCHLIST } from './asia-catalog.js';
 export { GLOBAL_GROUPS, GLOBAL_WATCHLIST } from './global-catalog.js';
@@ -44,6 +52,15 @@ export { createGeminiAgentClient } from './gemini-agent.js';
 export { createElucidGrokAgentClient } from './elucid-grok-agent.js';
 export { createLocalKnowledgeFiles, parseKnowledgeFrontMatter } from './local-knowledge-files.js';
 export { createSearxngSearchProvider, WebSearchUnavailableError, normalizeWebSearchResults } from './searxng.js';
+export { createOfficialSourcesClient, OFFICIAL_SOURCE_URLS } from './official-sources.js';
+export {
+  createMarketNativeClient,
+  parsePolymarketMarkets,
+  parseKalshiEvents,
+  parseHyperliquidMetaAndAssetContexts,
+  parseDefillamaStablecoins,
+  MARKET_NATIVE_URLS,
+} from './market-native.js';
 export {
   BrowserCommandError,
   BrowserError,

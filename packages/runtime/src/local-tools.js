@@ -2,7 +2,8 @@ import { createToolRegistry } from './tool-registry.js';
 import {
   ContextBuildToolInputSchema, EmptyAgentToolInputSchema, FeedSearchToolInputSchema,
   FeedTagSearchToolInputSchema, HoldingsRankToolInputSchema, KnowledgeGetToolInputSchema, KnowledgeSearchToolInputSchema,
-  SaveStructuredArtifactToolInputSchema, WebSearchToolInputSchema,
+  OfficialSourceGetToolInputSchema, SaveStructuredArtifactToolInputSchema, StaticSignalsListToolInputSchema,
+  WebSearchToolInputSchema,
 } from '../../contracts/src/index.js';
 import { formatTaxonomyPath } from '../../domain/src/knowledge-service.js';
 import { sanitizeStructuredArtifact } from '../../domain/src/structured-artifact.js';
@@ -10,6 +11,7 @@ import {
   projectBuiltContext, projectHoldingPosition, projectHoldingsBoard, projectPersonalAssets,
 } from './tool-projections.js';
 import { marketBoardAiWarnings, projectMarketBoardForAI } from '../../source/src/source-projections.js';
+import { readStaticSignalBoard } from '../../source/src/static/board.js';
 import { contentItemInTimeRange, resolveTimeRangeWindow } from './runtime-context.js';
 
 function number(value, fallback = 0) {
@@ -190,7 +192,7 @@ export function createLocalToolRegistry({
 
   registry.register({
     id: 'market.overview.get', effect: 'read',
-    description: '读取当前市场概览、涨跌和宽度。A 股/亚洲当日结构优先用这个，不要顺手再调 market.global.get。',
+    description: '读取当前市场概览、涨跌和宽度。北京时间工作日 17:00 前是 A 股观察，之后及周末是美股观察。不要顺手再调 market.global.get。',
     inputSchema: EmptyAgentToolInputSchema,
     async execute() {
       if (!sourcePort) {
@@ -263,8 +265,55 @@ export function createLocalToolRegistry({
     },
   });
 
-  const hasWebSearchSource = sourcePort?.list({ includeInternal: true })
-    .some((source) => source.id === 'search.web');
+  const sourceManifests = sourcePort?.list({ includeInternal: true }) || [];
+  const hasStaticSignalSources = sourceManifests.some((source) => (
+    source.viewKind === 'calendar' || source.viewKind === 'official-release'
+  ));
+  if (hasStaticSignalSources) {
+    registry.register({
+      id: 'static.signals.list', effect: 'read',
+      description: '读取中美官方宏观日程、央行日程和最新政策/会议发布。返回标题、时间、机构和官方 sourceUrl；需要理解某条发布或模板化会议预告的具体内容时，再把该 sourceUrl 传给 official.source.get。',
+      inputSchema: StaticSignalsListToolInputSchema,
+      async execute(input, context) {
+        const current = Date.parse(context.runtimeContext?.currentTime || context.runtimeContext?.currentUtcTime || '');
+        const at = Number.isFinite(current) ? current : Date.now();
+        const board = await readStaticSignalBoard(sourcePort, {
+          from: input.from ?? at - 7 * 86_400_000,
+          to: input.to ?? at + 90 * 86_400_000,
+          focus: input.focus,
+          includeUndated: input.includeUndated,
+          limit: input.limit,
+          releaseLimit: input.releaseLimit,
+        });
+        const refs = [
+          ...board.upcoming.map((item) => ref('scheduled-event', item.eventId.slice(0, 256), item.title, { asOf: item.scheduledAt })),
+          ...board.releases.map((item) => ref('official-release', item.releaseId.slice(0, 256), item.title, { asOf: item.publishedAt })),
+        ];
+        return result(board, refs, board.generatedAt,
+          board.sourceHealth.filter((item) => item.status !== 'ready').map((item) => `${item.title}：${item.note || item.status}`));
+      },
+    });
+  }
+
+  if (sourceManifests.some((source) => source.id === 'policy.official-detail')) {
+    registry.register({
+      id: 'official.source.get', effect: 'read',
+      description: '按 static.signals.list 返回的官方 sourceUrl 读取官方页面详情。返回官网标题、官方摘要和经过清理、限长的正文；不生成解释、影响判断或投资结论。只允许已登记的政府/央行/官方统计域名。',
+      inputSchema: OfficialSourceGetToolInputSchema,
+      maxResultBytes: 64 * 1024,
+      async execute(input, context) {
+        const snapshot = await sourcePort.projectForAI('policy.official-detail', { sourceUrl: input.sourceUrl }, {
+          signal: context.signal,
+        });
+        const label = snapshot.data.title || input.title || '官方信源详情';
+        return result(snapshot.data, [ref('official-source', input.sourceUrl.slice(0, 256), label, {
+          asOf: snapshot.data.publishedAt || snapshot.observedAt,
+        })], snapshot.observedAt, snapshot.warnings);
+      },
+    });
+  }
+
+  const hasWebSearchSource = sourceManifests.some((source) => source.id === 'search.web');
   if (hasWebSearchSource) {
     registry.register({
       id: 'web.search', effect: 'read', description: '搜索公开互联网网页。不要用它代替本地 Feed、Tag、Knowledge、持仓等已经存在的本地数据源。不抓取正文。',

@@ -1,6 +1,21 @@
 import { parseCreateAgentRunInput, parsePageRequest } from '../../../../packages/contracts/src/index.js';
 import { json, readJson } from '../http/response.js';
 
+function pendingExchange(run) {
+  return {
+    id: run.runId,
+    question: run.question,
+    answer: '',
+    status: run.status,
+    providerId: '',
+    modelId: '',
+    createdAt: run.createdAt,
+    completedAt: null,
+    refs: [],
+    sourceFooter: null,
+  };
+}
+
 export function createAgentRoutes() {
   return [
     {
@@ -12,7 +27,8 @@ export function createAgentRoutes() {
           limit: url.searchParams.get('limit') || undefined,
         });
         const result = services.knowledge.listAiSessions(workspaceId, page);
-        json(response, 200, { ok: true, ...result });
+        const pendingRuns = services.runtime.listActiveAgentRuns(workspaceId);
+        json(response, 200, { ok: true, ...result, pendingRuns });
       },
     },
     {
@@ -24,7 +40,17 @@ export function createAgentRoutes() {
           json(response, 404, { ok: false, error: 'AI 记录不存在' });
           return;
         }
-        json(response, 200, { ok: true, ...detail });
+        const pending = services.runtime.listActiveAgentRuns(workspaceId)
+          .filter((run) => run.sessionId === detail.session.id)
+          .map(pendingExchange);
+        json(response, 200, { ok: true, ...detail, exchanges: [...detail.exchanges, ...pending] });
+      },
+    },
+    {
+      method: 'GET', path: '/api/v1/agent/runs',
+      handler({ response, services, identity }) {
+        const workspaceId = identity?.device?.workspaceId || 'local';
+        json(response, 200, { ok: true, runs: services.runtime.listActiveAgentRuns(workspaceId) });
       },
     },
     {

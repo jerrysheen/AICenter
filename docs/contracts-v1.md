@@ -21,8 +21,8 @@ SourceAccount -> Subscription -> Capture -> ContentItem -> UserItemState
 
 - `Capture` 是不可替代的来源证据，保存 provider、external ID、hash 和原始文件相对路径。
 - `ContentItem` 是页面和下游 Agent 使用的标准内容。
-- 信息流按 `Capture.capturedAt`（写入来源的先后）排列，不按推文 `publishedAt`。卡片仍显示发帖时间；相同内容去重时不刷新 `capturedAt`，避免把已看过的条目顶回前面。同一批抓取里，时间线越靠前的条目 `capturedAt` 越大。
-- `FeedItemTranslation` 是信息流译文，按条目 ID + 正文哈希落在 SQLite，不覆盖 Capture / ContentItem 原文。电脑和手机读同一份。批量翻译一次只发一封豆包网页 JSONL（`task=translate_feed_items`）；输出必须是 `feed_translate_output.v0.1` 且 `id` 对齐。发给豆包网页的消息走 Connector 内进程队列，一次一条。JSON 齐了立刻结束等待；豆包挂起或超时则立刻返回，由用户再点翻译，不在同一次请求里自动重试或串 Gemini / DeepL / Google。仅当豆包已返回但格式不合格时，才回退一次 Gemini。页面仍只消费 `translatedText`，不暴露供应商。
+- 信息流按 `Capture.capturedAt`（写入来源的先后）排列，不按推文 `publishedAt`。已读条目（`UserItemState.isRead`）仍保留在列表中，但排在未读之后；左滑删除只写 `isHidden`，不物理删除 Capture / ContentItem，再拉取同一条也不会回来。卡片仍显示发帖时间；相同内容去重时不刷新 `capturedAt`。同一批抓取里，时间线越靠前的条目 `capturedAt` 越大。
+- `FeedItemTranslation` 是信息流与抓取文本的中文投影，按条目 ID + 正文哈希落在 SQLite，不覆盖 Capture / ContentItem 原文。电脑和手机读同一份。英文或韩文在抓取入库后统一走豆包网页 JSONL（`task=translate_feed_items`）翻译并轻度清洗（去界面残渣、不总结、不扩写）。批量一次只发一封；输出必须是 `feed_translate_output.v0.1` 且 `id` 对齐。发给豆包网页的消息走 Connector 内进程队列，一次一条。JSON 齐了立刻结束等待；豆包挂起或超时则立刻返回，由后续刷新或补翻译再试，不在同一次请求里自动重试或串 Gemini / DeepL / Google。仅当豆包已返回但格式不合格时，才回退一次 Gemini。用户 view 只消费译文；原文继续保存在 Capture / ContentItem，经 `GET /api/v1/content-items/:id/original` 或 `GET /api/v1/feed/items/:id/original` 读取。页面 Contract 不暴露供应商。官方日程、官媒标题和预测市场问题复用同一张译文表，Source Snapshot 字段保持原文事实。
 - 发给模型的信息流请求走 Domain `packFeedAiBatches`：先给每条标注字数。翻译一次最多 30 条、打成一组信封（条目模型输入仍可截到约 5000 字）；不再按 5000 字拆成多次豆包会话。Capture/ContentItem 仍保存全文；只有模型输入可以截断，并标记 `truncatedForModel`。粗筛 Tag 复用同一函数：`purpose=analyze`，默认每批最多 20 条 / 30k chars，单条最多 6000 字（超长取头 4500 + 尾 1500）。一行 JSONL 是一批文本，不是一条。
 - Tag 是全局粗筛：输入一批文本，按 `item_id` 回收 `tags[]`。当前可挂 `content-item`（多标）、`inspiration`（单标）、`knowledge`（多标）。字典来自 Instance 的 `config/tags.json`，缺省模板为仓库的 `config/tags.default.json`，与 Knowledge Taxonomy 分离。结果写入 `resource_taggings`，不改 ContentItem 字段。未知 tag / 未知 item 丢弃；漏项重试；空数组是合法成功。
 
@@ -31,11 +31,23 @@ SourceAccount -> Subscription -> Capture -> ContentItem -> UserItemState
 
 ## Source
 
-- `ProviderId` 是格式受限的稳定供应商字符串，例如 `yahoo`、`hithink`、`x`。
+- `ProviderId` 是格式受限的稳定供应商字符串，例如 `yahoo`、`xueqiu`、`hithink`、`x`。
 - `SourceId` 是点分读取能力，例如 `market.global`、`content.x.home`；不得拿 Feed 的 `SourceProvider` 枚举表示行情供应商。
 - Source Manifest 公开 `category`、`viewKind`、capabilities、TTL 与 guide refs；页面按 `viewKind` 选择 Renderer，不按 Provider 分支。
 - Source Definition 的 input/output 都必须运行时校验。统一输出 `SourceSnapshot`，包含来源、供应商、观测时间、状态、数据和 warnings。
 - Snapshot 持久化本轮只留引用边界，不新增 `source_snapshots` 表；日报真正保存行情快照时再做新迁移。
+- `calendar` 视图只输出 `ScheduledEvent`：国家、发布机构、事件类型、标题、计划时间/结束时间、参考期、状态、日程依据、时间精度、官方链接与观测时间。`scheduleBasis=official-calendar` 表示官网逐项列出；`official-rule` 表示按官方固定规则生成，此时必须使用 `status=tentative`，并保留“遇节假日顺延”等原始限定。
+- `official-release` 视图只输出 `OfficialRelease`：国家、机构、文件类型、标题、发布时间、时间精度、生效时间、文号、官方链接与观测时间。
+- `official-detail` 是仅供内部 AI Tool 使用的按需详情视图，输出 `OfficialSourceDetail`：是否可用、最终官方链接、官网标题、官方摘要、清洗后的限长正文、发布时间、观测时间、是否截断和客观读取说明。它不包含生成式摘要、影响判断、重要性或多空含义。
+- `official.source.get` 只接受 `static.signals.list` 等可信记录携带的 HTTP(S) 官方链接；Connector 必须执行官方域名白名单、SCIO HTTP 单点例外、跳转后域名复核、原始页面与 Tool 结果大小上限。Federal Register 优先使用官方 JSON API 与 raw text，避免把访问拦截页当正文。
+- `StaticSignalBoard` 只组合 `upcoming: ScheduledEvent[]`、`releases: OfficialRelease[]` 与 `sourceHealth[]`；
+  `sourceHealth` 只含 Source ID、标题、类别、Snapshot 状态、观测时间和客观读取说明。首页关注范围由静态目录投影，
+  不向事件添加 `importance` 字段。
+- 静态信号契约不接受 `importance`、`forecast`、`consensus`、`surprise`、`impact`、`bullish` 或 `bearish`。这些属于市场预期或解释层，不得塞入来源 metadata 绕过建模。
+- `prediction-market` 只保存场所原始报价事实：venue、问题、outcome、mid / bid / ask / spread、成交量、流动性、OI、到期时间和观测时间。Polymarket 与 Kalshi 的行保持分离，不生成跨场所加权或“真实概率”。
+- `crypto-derivatives` 当前只投影 Hyperliquid 的 BTC / ETH mark、mid、oracle、funding、OI、24h notional volume 与昨价。`openInterestUnit=base-asset`，不得在没有价格与时间口径说明时冒充美元 OI。
+- `stablecoin-liquidity` 保存美元锚定稳定币的总供给、USDT / USDC 与选定链分布；1d / 7d / 30d 字段是当前供给减去对应历史供给的 Decimal 字符串，不是涨跌判断。
+- `MarketNativeBoard` 与 `StaticSignalBoard` 分开：前者聚合市场原生 Snapshot，后者只聚合官方日程和发布。任一 market-native 来源不可用时只返回对应 source health，不回填第三方推测值。
 
 ## Trading
 
@@ -45,9 +57,9 @@ Portfolio -> Transaction -> PositionSnapshot
 ```
 
 - `canonicalKey` 使用 `市场:交易所:代码`，例如 `US:XNAS:AAPL`、`CN:XSHG:600519`。
-- Yahoo、同花顺、券商代码进入 `InstrumentAlias`。
+- Yahoo、雪球、同花顺、券商代码进入 `InstrumentAlias`。
 - 目标模型：`Transaction` 是持仓变化的事实来源，`PositionSnapshot` 是可重建的投影。**当前实现仍是 `HoldingLot` 手工批次账本**，不宣称完整流水会计；不要把目标模型写成已经交付。
-- `HoldingLot` 批次按 `a_share` / `hk_connect` / `b_sh` / `b_sz` 记账，`openedAt` 为空表示导入仓（开仓日未知）。港股通 `costPrice` 是券商人民币成本单价，市值才用港币现价 × `HKDCNY`；不得把人民币成本再乘一遍汇率。持仓页汇总三行：A 股（含港股通+人民币现金）、B 股沪市（美元股票+美元现金）、B 股深市（港币股票+港币现金）。页面大字是 CNY，外币只作小字；汇率不单独展示。沪深股票现价走同花顺 A 股快照，场内 ETF/LOF 走同花顺基金快照（Yahoo 符号 `.SS` 对应 thscode `.SH`）。ETF 不得混入 A 股 `thscodes`。Yahoo 约 15 分钟延迟只作回退；港股通、汇率和当前同花顺未覆盖的 B 股仍走 Yahoo。`moveGroups` 把波动按 A 股 / B 股拆开；首页各组「今日」等于该组持仓行 `dayPnlCny` 之和（现价对昨收，再折人民币），对齐券商「当日」；点进子页后，周 / 月仍按原持仓市值波动（含汇率）。`moves` 仍是全账户日周年对照，其中「今日」同样改走报价当日盈亏。`addedPnlCny` 是期间新开仓从开仓价到期末的波动。现金目前仍是余额快照，只计入汇兑，不把转入本金算成收益。转入本金的完整拆分要等 `Transaction` / 现金流水。`GET /api/v1/holdings?refresh=1` 跳过行情缓存并改拉更密的报价，用于核对是否实时。
+- `HoldingLot` 批次按 `a_share` / `hk_connect` / `b_sh` / `b_sz` 记账，`openedAt` 为空表示导入仓（开仓日未知）。港股通 `costPrice` 是券商人民币成本单价，市值才用港币现价 × `HKDCNY`；不得把人民币成本再乘一遍汇率。持仓页汇总三行：A 股（含港股通+人民币现金）、B 股沪市（美元股票+美元现金）、B 股深市（港币股票+港币现金）。页面大字是 CNY，外币只作小字；汇率不单独展示。沪深股票、场内 ETF/LOF、B 股和港股通现价优先走雪球批量行情（Yahoo 符号 `.SS` → `SH600519`，`.SZ` → `SZ300750`，港股补齐 5 位如 `0981.HK` → `00981`）。同花顺 A 股/基金快照仅作缺票回退；Yahoo 约 15 分钟延迟只作再回退。汇率仍走 Yahoo。页面 Contract 不暴露雪球或同花顺字段。`market.quotes` 的 Source TTL 为 3 秒。`moveGroups` 把波动按 A 股 / B 股拆开；首页各组「今日」等于该组持仓行 `dayPnlCny` 之和（现价对昨收，再折人民币），对齐券商「当日」；点进子页后，周 / 月仍按原持仓市值波动（含汇率）。`moves` 仍是全账户日周年对照，其中「今日」同样改走报价当日盈亏。`addedPnlCny` 是期间新开仓从开仓价到期末的波动。现金目前仍是余额快照，只计入汇兑，不把转入本金算成收益。转入本金的完整拆分要等 `Transaction` / 现金流水。`GET /api/v1/holdings?refresh=1` 跳过行情缓存并改拉更密的报价，用于核对是否实时。
 - `PortfolioImport` 是外部持仓的统一输入契约。账户、持仓批次和现金必须携带稳定的数据侧 ID；金额、数量和成本继续使用 Decimal 字符串。Provider symbol 只能放入 aliases，不能替代 `canonicalKey`。重复导入按稳定 ID 合并，不删除未出现在本次输入中的现有数据。
 - SQLite 中的 Portfolio / HoldingLot / Cash 是运行时唯一真源。Web / Worker 启动不读取或灌入个人 JS 持仓；旧格式只能通过显式 Legacy Importer 转换成 `PortfolioImport`。
 - 新增持仓必须显式指定 `portfolioId` 并验证其属于当前 workspace；Core 只知道 board 的市场、交易所和计价币种，不知道某个 board 属于哪个个人账户。
@@ -71,7 +83,7 @@ V6 保留旧 REAL 列用于兼容，新增 `*_decimal` 列作为新代码的权�
 - AI 不得直接新建 taxonomy 节点。找不到时归最近父节点，并把 proposal 写入 `taxonomy_proposals`。
 - `POST /api/v1/notes/from-run` 与 `POST /api/v1/knowledge/from-run` 入队 `inspiration.from-run` / `knowledge.from-run`，返回 `{ jobId }`，不在 HTTP 进程里等模型。
 - AI 处理写入独立 `AiRun`，并归入 `AiSession`；不覆盖原文。同一会话内的多次问答按时间追加，便于回溯和继续。
-- 问答进行中的页面进度来自本地 Agent trace 的压缩投影 `AgentRunProgressStep`（label / 最多 100 字的 detail），不把 Tool 原始 data 回给页面。
+- 问答进行中的页面进度来自本地 Agent trace 的压缩投影 `AgentRunProgressStep`（label / 最多 100 字的 detail），不把 Tool 原始 data 回给页面。未完成的 `ai.agent.run` 作为 `ActiveAgentRun` 出现在 `GET /api/v1/agent/runs`、会话列表的 `pendingRuns` 和会话详情 exchanges（`queued` / `running`）。Worker 一次只执行一条 Agent Job，后到的提问排队，不并行抢同一个 Runtime。
 - 用户主动引用是协议，不是独立领域：`resourceType + resourceId + revision`。当前 P0 支持 `content-item`、`post`、`inspiration`、`knowledge-revision`、`ai-run`。页面 ID（例如 `x:externalId`）不能当作 Resource ID；信息流 DTO 使用 `resourceId` 指向 `content_items.id`。
 - `CreateAgentRunInput.references` 进入 Job 后，由 Context Service `resolveReferences()` 确定性读取并写入模型上下文，不走 Tool Registry。写入 `ai_run_context_refs.origin = selected`；Tool 产生的引用为 `origin = tool`。问答会话详情把这些 refs 投影为 `sourceFooter`（去重、分组、最多 24 条），页面在回答文末展示并可跳转；不解析模型正文。
 - `GET /api/v1/knowledge/mentions` 给问答输入框 `@` 补全：返回本地 Knowledge 文件（分析框架等）和 SQLite 知识文档，形状是 `knowledge-revision` 引用，不含文件路径。不是独立 MCP Skill 领域。

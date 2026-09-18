@@ -123,7 +123,7 @@ docs/
 | `feed-routes.js` | 手工信息和外部信息流 |
 | `trading-routes.js` | 行情、证券搜索和个人资产仪表盘 |
 | `knowledge-routes.js` | 灵感、知识库、Taxonomy 与 from-run 整理任务 |
-| `agent-routes.js` | 问答 Job、AI 记录列表与会话详情 |
+| `agent-routes.js` | 问答 Job、进行中的 Run 列表、AI 记录列表与会话详情 |
 | `runtime-routes.js` | Worker 状态和 Job |
 | `event-routes.js` | SSE 长连接入口 |
 
@@ -131,9 +131,9 @@ docs/
 
 ### 1. 供应商不是领域
 
-B站、X、Yahoo、同花顺、券商和 AI 模型都是可替换 Provider，不是页面或数据库的核心模型。
+B站、X、Yahoo、雪球、同花顺、券商和 AI 模型都是可替换 Provider，不是页面或数据库的核心模型。
 
-- 页面不得依赖 Yahoo spark、同花顺 `thscode`、B站 Skill JSON、SearXNG 引擎名或 Nitter RSS 字段。
+- 页面不得依赖 Yahoo spark、雪球 `xq_a_token`、同花顺 `thscode`、B站 Skill JSON、SearXNG 引擎名或 Nitter RSS 字段。
 - Connector 必须先把结果转换为 Contract。
 - 原始响应进入 `Capture` 或 `data/blobs`，不能直接成为 `ContentItem`、Position 或知识正文。
 - 替换 Provider 时，Route 和页面契约应保持不变。
@@ -153,7 +153,7 @@ Route 不允许：
 - import `packages/database` 或 `packages/connectors`。
 - 直接执行 SQL。
 - 计算持仓、收益、订阅调度或知识版本。
-- 根据 Yahoo/B站/同花顺等 Provider 字段分支。
+- 根据 Yahoo/B站/雪球/同花顺等 Provider 字段分支。
 
 ### 3. Domain 不知道基础设施
 
@@ -265,6 +265,15 @@ knowledge.document.revised.v1
 3. `packages/source/src/search/definitions.js` 把 Connector 注册为 `search.web`，负责输入/输出校验、`unavailable` Snapshot、warnings 与 AI Projection。
 4. Tool `web.search` 在 `packages/runtime/src/local-tools.js` 注册，只通过 SourcePort 读取 `search.web`，并按 `webMode` 暴露；失败时 warning，不失败整次 Run。`webMode` 只控制是否暴露工具与 Prompt 倾向，Runtime 不在首轮强制 `toolChoice=required`。Final Guard 仍拒绝虚构的联网声称，以及用户明确要求联网但未调用 `web.search` 的终稿。
 5. 替换为其他搜索引擎时不改 Agent Runtime 循环或页面 Contract。Connector 负责把引擎日期标准化为 `publishedAt`，没有日期则为 `null`。
+
+### 读取官方信源详情
+
+官方列表与正文分开读取：
+
+1. `static.signals.list` 通过 SourcePort 聚合公开的 `calendar` / `official-release` Source，向 Agent 返回时间、标题、机构和官方 `sourceUrl`。
+2. 需要理解某一条发布时，Agent 再调用 `official.source.get`；它只通过内部 `policy.official-detail` Source 获取官网摘要和限长正文。
+3. Connector 必须限制官方域名、复核跳转后的最终域名并限制页面与 Tool 结果大小。SCIO 的 HTTP 例外只能用于 `english.scio.gov.cn`。
+4. 详情原文不进入首页 Board、不落数据库、不生成“意味着什么”的判断。模型作出的推断必须与工具返回的官方事实明确区分。
 
 ### 增加一条可复用 Knowledge 文件
 
@@ -393,9 +402,9 @@ npm run check
 - Web/Harmony 连接、配对、快速发布和 SSE。
 - 工作包 B 的模块边界、Contract、migration、Domain Service、分域路由与 Worker。
 - 单 Agent Runtime（无前置 Intent Router）。
-- B站贴链接抓 AI 中文字幕；同花顺适配代码；Yahoo / X 等信息源。
+- B站贴链接抓 AI 中文字幕；雪球优先、同花顺回退的行情适配；Yahoo / X 等信息源。
 
-豆包网页聊天入口是 `node scripts/ask-doubao.mjs "问题"`，JSONL 信封是 `node scripts/ask-doubao-jsonl-envelope.mjs`。每个进程实例内部用 `createDoubaoAskQueue` 一次一条；**Web / Worker / CLI 不共用一条跨进程队列**。信息流 `translateMany` 一次只发一封 `translate_feed_items`；JSON 齐了立刻结束。Tag 走 `task=tag_texts`，Worker Job `tagging.analyze`。豆包挂起则返回，由用户再点翻译。仅格式验收失败才走一次 Gemini。实现在 `packages/connectors/src/doubao` 与 `translate`，只复用 BrowserRuntime。不接入 Agent Tool，不回退 Chrome CDP。
+豆包网页聊天入口是 `node scripts/ask-doubao.mjs "问题"`，JSONL 信封是 `node scripts/ask-doubao-jsonl-envelope.mjs`。每个进程实例内部用 `createDoubaoAskQueue` 一次一条；**Web / Worker / CLI 不共用一条跨进程队列**。信息流 `translateMany` 一次只发一封 `translate_feed_items`；英文抓取入库后自动走这一层，并允许轻度清洗。JSON 齐了立刻结束。Tag 走 `task=tag_texts`，Worker Job `tagging.analyze`。豆包挂起则返回，由刷新或补翻译再试。仅格式验收失败才走一次 Gemini。实现在 `packages/connectors/src/doubao` 与 `translate`，只复用 BrowserRuntime。不接入 Agent Tool，不回退 Chrome CDP。用户 view 不展示原文；原文接口为 `GET /api/v1/content-items/:id/original`。
 
 B站贴链接链路（已接入，本轮不扩展为关注同步）：
 

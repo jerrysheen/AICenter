@@ -1,4 +1,4 @@
-import { parseBilibiliImportInput, parseHideFlag, parsePersistFeedTranslationsInput, parsePostInput, parseTranslateBatchInput, parseTranslateInput, ValidationError } from '../../../../packages/contracts/src/index.js';
+import { parseBilibiliImportInput, parseHideFlag, parsePatchUserItemStateInput, parsePersistFeedTranslationsInput, parsePostInput, parseTranslateBatchInput, parseTranslateInput, ValidationError } from '../../../../packages/contracts/src/index.js';
 import { json, readJson } from '../http/response.js';
 
 export function createFeedRoutes() {
@@ -32,6 +32,15 @@ export function createFeedRoutes() {
       },
     },
     {
+      method: 'GET', path: /^\/api\/v1\/(?:content-items|feed\/items)\/([^/]+)\/original$/i,
+      handler({ response, services, identity, params }) {
+        const workspaceId = identity?.device?.workspaceId || 'local';
+        const original = services.feed.getOriginalContent(workspaceId, decodeURIComponent(params.values[0]));
+        if (!original) json(response, 404, { ok: false, error: '原文不存在' });
+        else json(response, 200, { ok: true, original });
+      },
+    },
+    {
       method: 'GET', path: /^\/api\/v1\/posts\/([0-9a-f-]+)$/i,
       handler({ response, services, params }) {
         const post = services.feed.getLegacyPost(params.values[0]);
@@ -43,8 +52,12 @@ export function createFeedRoutes() {
       method: 'PATCH', path: /^\/api\/v1\/content-items\/([0-9a-f-]{36})\/state$/i,
       async handler({ request, response, services, identity, events, params }) {
         const workspaceId = identity?.device?.workspaceId || 'local';
-        parseHideFlag(await readJson(request));
-        const state = services.feed.hideContentItem(workspaceId, params.values[0]);
+        const body = await readJson(request);
+        const state = services.feed.patchContentItemState(parsePatchUserItemStateInput({
+          workspaceId,
+          contentItemId: params.values[0],
+          ...body,
+        }));
         if (!state) json(response, 404, { ok: false, error: '信息不存在' });
         else {
           events.flush();

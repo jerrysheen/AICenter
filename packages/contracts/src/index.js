@@ -101,12 +101,13 @@ export function parseBehaviorEvent(value) {
 export function parseMarketQuery(value) {
   const query = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const board = cleanText(query.board || 'overview', { field: '行情看板', max: 16 }) || 'overview';
-  if (!['overview', 'us', 'asia', 'global'].includes(board)) throw new ValidationError('不支持的行情看板', ['board']);
+  if (!['overview', 'us', 'asia', 'cn', 'global'].includes(board)) throw new ValidationError('不支持的行情看板', ['board']);
   return {
     board,
     extra: cleanText(query.extra, { field: '自选代码', max: 400 }),
     extraUs: cleanText(query.extraUs || query.extra, { field: '美股自选', max: 400 }),
     extraAsia: cleanText(query.extraAsia || query.extra, { field: '亚洲自选', max: 400 }),
+    extraCn: cleanText(query.extraCn || query.extra, { field: 'A股自选', max: 400 }),
   };
 }
 

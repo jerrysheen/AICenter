@@ -1,4 +1,4 @@
-import { AgentRunProgressStepSchema, parseContract } from '../../contracts/src/index.js';
+import { ActiveAgentRunSchema, AgentRunProgressStepSchema, parseContract } from '../../contracts/src/index.js';
 
 export function createRuntimeService({ runtimeRepository, agentProgressPort }) {
   if (!runtimeRepository) throw new Error('runtimeRepository is required');
@@ -59,6 +59,23 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort }) {
     },
     listJobs(limit) {
       return runtimeRepository.listJobs(limit);
+    },
+    listActiveAgentRuns(workspaceId) {
+      const jobs = runtimeRepository.listActiveAgentJobs
+        ? runtimeRepository.listActiveAgentJobs(workspaceId)
+        : runtimeRepository.listJobs(200).filter((job) => (
+          job.workspaceId === workspaceId
+          && job.type === 'ai.agent.run'
+          && (job.status === 'queued' || job.status === 'running')
+        ));
+      return jobs.map((job) => parseContract(ActiveAgentRunSchema, {
+        runId: job.id,
+        sessionId: job.input?.sessionId || '',
+        status: job.status,
+        question: String(job.input?.message || ''),
+        createdAt: job.createdAt,
+        updatedAt: job.updatedAt,
+      }));
     },
     listEvents(afterId, limit, workspaceId) {
       return runtimeRepository.listEvents(afterId, limit, workspaceId);

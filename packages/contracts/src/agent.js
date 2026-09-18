@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { EntityIdSchema, EpochMillisSchema } from './common.js';
+import { EntityIdSchema, EpochMillisSchema, HttpUrlSchema } from './common.js';
 import { SaveStructuredArtifactInputSchema, TaxonomyKeySchema } from './taxonomy.js';
 
 export const AgentWebModeSchema = z.enum(['off', 'fallback', 'always']);
@@ -36,6 +36,15 @@ export const AgentRunProgressStepSchema = z.object({
   status: AgentRunProgressStatusSchema,
   toolId: z.string().trim().min(1).max(64).nullable(),
   round: z.number().int().nonnegative().nullable(),
+}).strict();
+
+export const ActiveAgentRunSchema = z.object({
+  runId: EntityIdSchema,
+  sessionId: EntityIdSchema.or(z.literal('')),
+  status: z.enum(['queued', 'running']),
+  question: z.string().max(4_000),
+  createdAt: EpochMillisSchema,
+  updatedAt: EpochMillisSchema,
 }).strict();
 
 export const AgentContextRefOriginSchema = z.enum(['selected', 'tool']);
@@ -94,6 +103,22 @@ export const KnowledgeGetToolInputSchema = z.object({
 export const WebSearchToolInputSchema = z.object({
   query: z.string().trim().min(1).max(4_000),
   limit: ToolLimitSchema.default(5),
+}).strict();
+
+export const StaticSignalsListToolInputSchema = z.object({
+  from: EpochMillisSchema.optional(),
+  to: EpochMillisSchema.optional(),
+  focus: z.boolean().default(false),
+  includeUndated: z.boolean().default(false),
+  limit: z.number().int().min(1).max(100).default(40),
+  releaseLimit: z.number().int().min(1).max(50).default(20),
+}).strict().refine((value) => value.from === undefined || value.to === undefined || value.from <= value.to, {
+  message: 'from 不能晚于 to', path: ['from'],
+});
+
+export const OfficialSourceGetToolInputSchema = z.object({
+  sourceUrl: HttpUrlSchema.refine((value) => value !== '', 'sourceUrl 不能为空'),
+  title: z.string().trim().max(1_000).optional(),
 }).strict();
 
 export const EmptyAgentToolInputSchema = z.object({}).strict();

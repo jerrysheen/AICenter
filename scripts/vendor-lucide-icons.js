@@ -20,8 +20,17 @@ const names = [
   'wallet',
   'bookmark',
   'bookmark-check',
+  'star',
   'corner-up-right',
   'refresh-cw',
+  'list',
+  'list-filter',
+  'x',
+  'chevron-left',
+  'chevron-right',
+  'eye',
+  'eye-off',
+  'calendar',
 ];
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');

@@ -142,6 +142,53 @@ test('local read tools use domain services and return stable refs', async () => 
   assert.equal(saved.refs[0].resourceType, 'inspiration');
 });
 
+test('static signal tools list official records and fetch bounded official detail for AI', async () => {
+  const fixtures = services();
+  const event = {
+    eventId: 'scio:event-1', country: 'CN', authority: '国务院新闻办公室', eventType: 'government-meeting',
+    title: 'Notice of SCIO press conference on July 28 (10 a.m.)', scheduledAt: Date.parse('2026-07-28T02:00:00Z'),
+    scheduledEndAt: null, referencePeriod: null, status: 'scheduled', scheduleBasis: 'official-calendar',
+    timePrecision: 'exact', sourceUrl: 'http://english.scio.gov.cn/pressroom/2026-07/25/content_118617731.html', observedAt: 10,
+  };
+  const detail = {
+    available: true, sourceUrl: event.sourceUrl, title: event.title,
+    officialSummary: 'The conference concerns tax reform and development in the 15th Five-Year Plan period.',
+    bodyText: 'Official attendance and contact information.', publishedAt: Date.parse('2026-07-25T00:00:00Z'),
+    observedAt: 20, truncated: false, note: '',
+  };
+  fixtures.sourcePort = {
+    list({ includeInternal = false } = {}) {
+      const rows = [
+        { id: 'calendar.cn.scio', title: '国新办新闻发布会预告', category: 'calendar', visibility: 'public', viewKind: 'calendar' },
+        { id: 'policy.official-detail', title: '官方信源详情读取', category: 'policy', visibility: 'internal', viewKind: 'official-detail' },
+      ];
+      return includeInternal ? rows : rows.filter((item) => item.visibility === 'public');
+    },
+    async read(sourceId) {
+      assert.equal(sourceId, 'calendar.cn.scio');
+      return { sourceId, providerId: 'scio', observedAt: 10, status: 'ready', data: {
+        available: true, observedAt: 10, sourceUrl: event.sourceUrl, events: [event], note: '',
+      }, warnings: [] };
+    },
+    async projectForAI(sourceId, input) {
+      assert.equal(sourceId, 'policy.official-detail');
+      assert.equal(input.sourceUrl, event.sourceUrl);
+      return { sourceId, providerId: 'official-sources', observedAt: 20, status: 'ready', data: detail, warnings: [] };
+    },
+  };
+  const registry = createLocalToolRegistry(fixtures);
+  assert.ok(registry.list().some((tool) => tool.id === 'static.signals.list'));
+  assert.ok(registry.list().some((tool) => tool.id === 'official.source.get'));
+
+  const listed = await registry.execute('static.signals.list', { limit: 10, releaseLimit: 10 }, {
+    workspaceId: 'local', runtimeContext: { currentTime: '2026-07-26T00:00:00.000Z' },
+  });
+  assert.equal(listed.data.upcoming[0].sourceUrl, event.sourceUrl);
+  const loaded = await registry.execute('official.source.get', { sourceUrl: event.sourceUrl }, { workspaceId: 'local' });
+  assert.match(loaded.data.officialSummary, /tax reform/);
+  assert.equal(loaded.refs[0].resourceType, 'official-source');
+});
+
 test('context.build applies the shared bounded holdings projection to large results', async () => {
   const fixtures = services();
   fixtures.contextService = {

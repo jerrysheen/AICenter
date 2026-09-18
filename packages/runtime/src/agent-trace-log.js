@@ -14,6 +14,8 @@ const TOOL_LABELS = Object.freeze({
   'tag.list': 'Tag 字典',
   'knowledge.search': '知识库',
   'knowledge.get': '知识文档',
+  'static.signals.list': '官方信源',
+  'official.source.get': '官方原文',
   'user.method.get': '投资方法',
   'market.overview.get': '市场概览',
   'market.global.get': '全球资产',

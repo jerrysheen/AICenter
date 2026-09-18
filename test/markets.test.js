@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { quoteFromSpark, seriesFromSpark } from '../packages/connectors/src/yahoo.js';
-import { buildGlobalAssetBoard, buildOverviewBoard, buildUsMarketBoard, expiryFromFuturesName, parseUsExtraSymbols } from '../packages/connectors/src/market-boards.js';
+import { buildCnMarketBoard, buildGlobalAssetBoard, buildOverviewBoard, buildUsMarketBoard, expiryFromFuturesName, parseCnExtraSymbols, parseUsExtraSymbols, preferredOverviewFocus } from '../packages/connectors/src/market-boards.js';
 import { createMarketService } from '../packages/connectors/src/market-service.js';
 import { parseMarketQuery } from '../packages/contracts/src/index.js';
 
@@ -77,17 +77,68 @@ test('us board keeps catalog names, groups, and summaries', () => {
   assert.equal(parseUsExtraSymbols('nvda,ZZZZ', marketCatalog).join(','), 'ZZZZ');
 });
 
-test('overview board aggregates us and asia breadth', () => {
-  const us = buildUsMarketBoard({ quotes: [], session: 'closed', fetchedAt: 10 });
-  const asia = buildUsMarketBoard({ quotes: [], session: 'closed', fetchedAt: 20 });
-  asia.board = 'asia';
-  asia.market = 'asia';
-  asia.breadth = { advancers: 7, decliners: 27, unchanged: 0 };
-  asia.sessions = { kr: 'closed', tw: 'closed', jp: 'closed' };
-  const overview = buildOverviewBoard(us, asia);
-  assert.equal(overview.sections[0].id, 'us');
-  assert.equal(overview.sections[1].title, '亚洲市场');
-  assert.equal(overview.sections[1].breadth.decliners, 27);
+test('overview board switches A shares and US by Shanghai 17:00', () => {
+  const catalog = {
+    version: 1,
+    us: { groups: ['全部'], indices: [], watchlist: [] },
+    asia: { groups: ['全部'], indices: [], watchlist: [] },
+    cn: {
+      groups: ['全部', '芯片设计'],
+      indices: [{ symbol: '000001.SS', name: '上证指数', group: '指数', summary: '' }],
+      watchlist: [{ symbol: '688110.SS', name: '东芯股份', group: '芯片设计', summary: '存储芯片' }],
+    },
+    global: { groups: ['指数'], watchlist: [] },
+  };
+  const us = buildUsMarketBoard({ quotes: [], session: 'closed', fetchedAt: 10, marketCatalog: catalog });
+  const cn = buildCnMarketBoard({
+    quotes: [{ symbol: '688110.SS', name: '东芯股份', lastPrice: 80, prevClose: 70, change: 10, changePct: 14.29, session: 'regular', currency: 'CNY' }],
+    fetchedAt: 20,
+    marketCatalog: catalog,
+  });
+  const daytime = buildOverviewBoard(us, null, cn, { now: Date.UTC(2026, 8, 18, 8, 0, 0) });
+  const evening = buildOverviewBoard(us, null, cn, { now: Date.UTC(2026, 8, 18, 9, 0, 0) });
+  assert.equal(preferredOverviewFocus(Date.UTC(2026, 8, 18, 8, 59, 0)), 'cn');
+  assert.equal(preferredOverviewFocus(Date.UTC(2026, 8, 18, 9, 0, 0)), 'us');
+  assert.equal(preferredOverviewFocus(Date.UTC(2026, 8, 19, 2, 0, 0)), 'us');
+  assert.equal(daytime.focus, 'cn');
+  assert.equal(daytime.sections.length, 1);
+  assert.equal(daytime.sections[0].id, 'cn');
+  assert.equal(daytime.sections[0].title, 'A股观察');
+  assert.equal(evening.focus, 'us');
+  assert.equal(evening.sections[0].id, 'us');
+  assert.equal(evening.sections[0].title, '美股观察');
+});
+
+test('cn board keeps the same ticker in multiple industry groups', () => {
+  const marketCatalog = {
+    version: 1,
+    us: { groups: ['全部'], indices: [], watchlist: [] },
+    asia: { groups: ['全部'], indices: [], watchlist: [] },
+    cn: {
+      groups: ['全部', '半导体设备', '功率半导体', '自选'],
+      indices: [],
+      watchlist: [
+        { symbol: '300316.SZ', name: '晶盛机电', group: '半导体设备', summary: '减薄 / 划片 / 激光加工' },
+        { symbol: '300316.SZ', name: '晶盛机电', group: '功率半导体', summary: 'SiC 衬底 / 外延' },
+      ],
+    },
+    global: { groups: ['指数'], watchlist: [] },
+  };
+  const board = buildCnMarketBoard({
+    quotes: [{
+      symbol: '300316.SZ', name: '晶盛机电', lastPrice: 70, prevClose: 68, change: 2, changePct: 2.94,
+      currency: 'CNY', session: 'regular',
+    }],
+    extraSymbols: ['688001.SS'],
+    fetchedAt: 1,
+    marketCatalog,
+  });
+  const rows = board.watchlist.filter((item) => item.symbol === '300316.SZ');
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((item) => item.group), ['半导体设备', '功率半导体']);
+  assert.equal(rows[0].lastPrice, 70);
+  assert.equal(board.provider || rows[0].provider, 'market');
+  assert.equal(parseCnExtraSymbols('688001.SS,NVDA,300316.SZ', marketCatalog).join(','), '688001.SS');
 });
 
 test('market service uses injected yahoo client and cache', async () => {
@@ -153,10 +204,12 @@ test('market service returns a partial board when yahoo fails', async () => {
   assert.equal(board.watchlist[0].lastPrice, null);
 });
 
-test('market query allows overview, us, asia, and global', () => {
+test('market query allows overview, us, asia, cn, and global', () => {
   assert.equal(parseMarketQuery({ board: 'us' }).board, 'us');
   assert.equal(parseMarketQuery({ board: 'global' }).board, 'global');
-  assert.throws(() => parseMarketQuery({ board: 'cn' }));
+  assert.equal(parseMarketQuery({ board: 'cn' }).board, 'cn');
+  assert.equal(parseMarketQuery({ extraCn: '688110.SS' }).extraCn, '688110.SS');
+  assert.throws(() => parseMarketQuery({ board: 'crypto' }));
 });
 
 test('global asset board maps yahoo symbols to stable display codes', () => {
@@ -207,4 +260,68 @@ test('market service returns a global board from injected yahoo quotes', async (
   assert.equal(board.board, 'global');
   assert.equal(board.watchlist[0].symbol, '000001.SH');
   assert.equal(board.mode, 'live');
+});
+
+test('overview service loads A shares before Shanghai 17:00 and US after', async () => {
+  const xueqiuSymbols = [];
+  const yahooSymbols = [];
+  const marketCatalog = {
+    version: 1,
+    us: {
+      groups: ['全部'],
+      indices: [],
+      watchlist: [{ symbol: 'NVDA', name: 'NVIDIA', group: '全部', summary: 'GPU' }],
+    },
+    asia: { groups: ['全部'], indices: [], watchlist: [] },
+    cn: {
+      groups: ['全部', '芯片设计'],
+      indices: [{ symbol: '000001.SS', name: '上证指数', group: '指数', summary: '' }],
+      watchlist: [{ symbol: '688110.SS', name: '东芯股份', group: '芯片设计', summary: '存储芯片' }],
+    },
+    global: { groups: ['指数'], watchlist: [] },
+  };
+  function service(nowMs) {
+    xueqiuSymbols.length = 0;
+    yahooSymbols.length = 0;
+    return createMarketService({
+      marketCatalog,
+      ttlMs: 1,
+      xueqiuTtlMs: 1,
+      now: () => nowMs,
+      yahoo: {
+        async fetchQuotes(symbols) {
+          yahooSymbols.push(...symbols);
+          return {
+            session: 'closed',
+            quotes: symbols.map((symbol) => ({
+              symbol, name: symbol, lastPrice: 10, changePct: 1, change: 0.1, high: 11, low: 9,
+              prevClose: 9.9, volume: 1, sparkline: [10], currency: 'USD', exchange: 'TEST',
+              marketTime: 1, session: 'closed',
+            })),
+          };
+        },
+        async searchSymbols() { return []; },
+      },
+      xueqiuQuotes: {
+        async fetchQuotes(symbols) {
+          xueqiuSymbols.push(...symbols);
+          return symbols.map((symbol) => ({
+            symbol, name: symbol, lastPrice: 80, prevClose: 70, change: 10, changePct: 14.29,
+            session: 'regular', currency: 'CNY',
+          }));
+        },
+      },
+      cnQuotes: { async fetchQuotes() { return []; } },
+    });
+  }
+  const day = await service(Date.UTC(2026, 8, 18, 8, 0, 0)).getBoard({ board: 'overview' });
+  assert.equal(day.focus, 'cn');
+  assert.equal(day.sections[0].id, 'cn');
+  assert.ok(xueqiuSymbols.includes('688110.SS'));
+  assert.equal(yahooSymbols.includes('NVDA'), false);
+  const night = await service(Date.UTC(2026, 8, 18, 9, 0, 0)).getBoard({ board: 'overview' });
+  assert.equal(night.focus, 'us');
+  assert.equal(night.sections[0].id, 'us');
+  assert.ok(yahooSymbols.includes('NVDA'));
+  assert.equal(xueqiuSymbols.includes('688110.SS'), false);
 });

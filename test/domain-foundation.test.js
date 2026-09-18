@@ -131,6 +131,37 @@ test('hidden content items leave the provider feed but stay readable by id', () 
   temporary.remove();
 });
 
+test('read content items stay in the feed but rank after unread items', () => {
+  const temporary = temporaryStore();
+  const feed = temporary.store.repositories.feed;
+  const source = feed.upsertSourceAccount({
+    workspaceId: 'local', provider: 'x', externalId: 'home', displayName: 'X',
+  });
+  const older = feed.saveCapture({
+    workspaceId: 'local', provider: 'x', externalId: 'older', sourceAccountId: source.id,
+    sourceUrl: 'https://x.com/user/status/older', contentHash: 'sha256-older', capturedAt: 100,
+  });
+  const newer = feed.saveCapture({
+    workspaceId: 'local', provider: 'x', externalId: 'newer', sourceAccountId: source.id,
+    sourceUrl: 'https://x.com/user/status/newer', contentHash: 'sha256-newer', capturedAt: 200,
+  });
+  const olderItem = feed.saveContentItem({
+    workspaceId: 'local', captureId: older.id, originType: 'subscription', contentType: 'post',
+    title: '旧', body: '旧', sourceUrl: older.sourceUrl,
+  });
+  const newerItem = feed.saveContentItem({
+    workspaceId: 'local', captureId: newer.id, originType: 'subscription', contentType: 'post',
+    title: '新', body: '新', sourceUrl: newer.sourceUrl,
+  });
+  feed.upsertUserItemState({ workspaceId: 'local', contentItemId: newerItem.id, isRead: true });
+  const rows = feed.listContentItemsByProvider('local', 'x', { sourceExternalId: 'home' });
+  assert.equal(rows.length, 2);
+  assert.equal(rows.find((row) => row.id === newerItem.id).isRead, true);
+  assert.equal(rows.find((row) => row.id === olderItem.id).isRead, false);
+  temporary.store.close();
+  temporary.remove();
+});
+
 test('trading repository separates canonical instruments from provider aliases', () => {
   const temporary = temporaryStore();
   const trading = temporary.store.repositories.trading;

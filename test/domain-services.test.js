@@ -128,6 +128,28 @@ test('feed service attaches persisted translations to cached items', async () =>
   assert.equal(feed.items[0].translation.text, '英伟达宣布了新的 HBM 合作。');
 });
 
+test('feed service ranks unread items ahead of read items', async () => {
+  const service = createFeedService({
+    legacyRepository: noOpRepository(),
+    feedRepository: noOpRepository({
+      listContentItemsByProvider() {
+        return [{
+          id: 'read', workspaceId: 'local', captureId: 'cap-read', externalId: 'read',
+          title: '已读', body: '已读', summary: '', sourceUrl: 'https://x.com/u/status/read',
+          authorName: 'u', publishedAt: 2, capturedAt: 200, isRead: true,
+        }, {
+          id: 'unread', workspaceId: 'local', captureId: 'cap-unread', externalId: 'unread',
+          title: '未读', body: '未读', summary: '', sourceUrl: 'https://x.com/u/status/unread',
+          authorName: 'u', publishedAt: 1, capturedAt: 100, isRead: false,
+        }];
+      },
+    }),
+    sourcePort: feedSourcePort(new Map([['x', { async getFeed() { return { items: [] }; } }]])),
+  });
+  const feed = await service.getExternalFeed('x', { feed: 'for-you', limit: 50, refresh: false });
+  assert.deepEqual(feed.items.map((item) => item.externalId), ['unread', 'read']);
+});
+
 test('feed service persists uploaded translations onto later feed reads', async () => {
   const saved = [];
   const body = 'Hello world';
@@ -392,4 +414,129 @@ test('context service resolves user-selected references without searching', asyn
   assert.match(resolved.promptText, /用户主动引用/);
   assert.match(resolved.promptText, /SK海力士/);
   assert.match(resolved.promptText, /不要再用工具搜索/);
+});
+
+test('feed refresh auto-translates english items without replacing original body', async () => {
+  const { createHash } = await import('node:crypto');
+  const body = 'NVIDIA announced a new HBM partnership.';
+  const stored = [];
+  const savedTranslations = [];
+  const service = createFeedService({
+    legacyRepository: noOpRepository(),
+    feedRepository: noOpRepository({
+      upsertSourceAccount(input) { return { id: 'source-1', ...input }; },
+      upsertSubscription(input) { return { id: 'sub-1', ...input }; },
+      saveCapture(input) { return { id: `cap-${input.externalId}` }; },
+      saveContentItem(input) {
+        stored.push({
+          id: 'item-99',
+          workspaceId: 'local',
+          captureId: input.captureId,
+          provider: 'x',
+          externalId: '99',
+          title: input.title,
+          body: input.body,
+          summary: input.summary,
+          sourceUrl: input.sourceUrl,
+          authorName: input.authorName,
+          publishedAt: input.publishedAt,
+          captureMetadata: { originalText: body },
+        });
+        return stored[0];
+      },
+      listContentItemsByProvider() { return stored; },
+      saveTranslations(records) { savedTranslations.push(...records); return records; },
+      listTranslations() {
+        return savedTranslations.map((row) => ({
+          itemId: row.itemId,
+          targetLang: row.targetLang,
+          sourceHash: row.sourceHash,
+          translatedText: row.translatedText,
+          engine: row.engine,
+          updatedAt: 1,
+        }));
+      },
+      getContentItem(_workspaceId, id) {
+        return stored.find((row) => row.id === id) || null;
+      },
+    }),
+    sourcePort: feedSourcePort(new Map([['x', {
+      async getFeed() {
+        return {
+          feed: 'for-you',
+          mode: 'live',
+          fetchedAt: Date.now(),
+          items: [{
+            externalId: '99',
+            title: body,
+            body,
+            summary: body,
+            sourceUrl: 'https://x.com/user/status/99',
+            authorName: 'user',
+            publishedAt: 1,
+          }],
+        };
+      },
+    }]])),
+    translationPort: {
+      async translateMany({ items, targetLang }) {
+        return {
+          targetLang,
+          translations: items.map((item) => ({
+            id: item.id,
+            sourceText: item.text,
+            translatedText: '英伟达宣布了新的 HBM 合作。',
+            engine: 'doubao-jsonl',
+            targetLang,
+          })),
+        };
+      },
+    },
+  });
+  const feed = await service.getExternalFeed('x', { feed: 'for-you', limit: 50, refresh: true });
+  assert.equal(feed.items[0].body, body);
+  assert.equal(feed.items[0].translation.text, '英伟达宣布了新的 HBM 合作。');
+  assert.equal(savedTranslations[0].sourceHash, createHash('sha256').update(body).digest('hex'));
+  assert.equal(service.getOriginalContent('local', 'item-99').rawText, body);
+});
+
+test('feed localizeTexts caches source titles without rewriting source facts', async () => {
+  const saved = [];
+  const service = createFeedService({
+    legacyRepository: noOpRepository(),
+    feedRepository: noOpRepository({
+      saveTranslations(records) { saved.push(...records); return records; },
+      listTranslations(_workspaceId, ids) {
+        return saved.filter((row) => ids.includes(row.itemId)).map((row) => ({
+          itemId: row.itemId,
+          targetLang: row.targetLang,
+          sourceHash: row.sourceHash,
+          translatedText: row.translatedText,
+          engine: row.engine,
+          updatedAt: 1,
+        }));
+      },
+    }),
+    sourcePort: feedSourcePort(new Map()),
+    translationPort: {
+      async translateMany({ items, targetLang }) {
+        return {
+          targetLang,
+          translations: items.map((item) => ({
+            id: item.id,
+            sourceText: item.text,
+            translatedText: '非农就业报告',
+            engine: 'doubao-jsonl',
+            targetLang,
+          })),
+        };
+      },
+    },
+  });
+  const first = await service.localizeTexts({
+    upcoming: [{ eventId: 'bls-nfp', title: 'Employment Situation' }],
+  }, { workspaceId: 'local' }, { wait: true });
+  assert.equal(first.localizations['bls-nfp'].text, '非农就业报告');
+  assert.equal(first.localizations['bls-nfp'].pending, false);
+  assert.equal(first.localizations['bls-nfp'].sourceText, 'Employment Situation');
 });

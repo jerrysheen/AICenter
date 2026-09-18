@@ -6,4 +6,15 @@ export * from './market/boards.js';
 export { createMarketSourceDefinitions } from './market/definitions.js';
 export { createXSourceDefinition, createBilibiliSourceDefinition } from './content/definitions.js';
 export { createWebSearchSourceDefinition } from './search/definitions.js';
+export {
+  createStaticSignalSourceDefinitions, createOfficialSourceDetailDefinition, OfficialDetailInputSchema,
+} from './static/definitions.js';
+export { readStaticSignalBoard, StaticSignalBoardInputSchema } from './static/board.js';
+export {
+  createMarketNativeSourceDefinitions,
+  PredictionMarketInputSchema,
+  CryptoDerivativesInputSchema,
+  StablecoinLiquidityInputSchema,
+} from './static/market-native-definitions.js';
+export { readMarketNativeBoard, MarketNativeBoardInputSchema } from './static/market-native-board.js';
 export { projectMarketBoardForAI, projectGlobalMarketBoardForAI, projectOverviewMarketBoardForAI, marketBoardAiWarnings } from './source-projections.js';

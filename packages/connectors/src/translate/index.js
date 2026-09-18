@@ -6,15 +6,14 @@ import { createDoubaoJsonlTranslatePort, isDoubaoTranslateHangReason } from '../
 const DEFAULT_TARGET = 'zh';
 const GEMINI_DEFAULT_ROOT = 'https://generativelanguage.googleapis.com/v1beta';
 const GEMINI_DEFAULT_MODEL = 'gemini-3.1-flash-lite';
-const TRANSLATE_SYSTEM = '你是翻译器。将用户提供的英语或韩语翻译成简体中文。保持原意、数字、公司名和专业术语准确。只输出译文，不要解释。';
-const TRANSLATE_BATCH_SYSTEM = `你是财经新闻翻译器。将输入中的英文或韩文翻译成简体中文。
+const TRANSLATE_SYSTEM = '你是翻译器。将用户提供的英语或韩语译成简体中文，并做轻度清洗：去掉界面残渣和重复空白，不要总结、不要扩写、不要加评论。保持数字、公司名和专业术语准确。只输出译文。';
+const TRANSLATE_BATCH_SYSTEM = `你是财经信息翻译器。将输入中的英文或韩文译成简体中文，并做轻度清洗。
 
 要求：
-1. 不总结，不删减。
-2. 公司名、产品名、股票代码保持准确。
-3. 金额、百分比、日期不得修改。
-4. 只返回 JSON 数组，不要解释。
-5. id 必须保持不变。
+1. 保持事实、数字、日期、金额、百分比、公司名、产品名和股票代码准确。
+2. 允许去掉界面残渣、重复空白和无信息尾巴；不要总结，不要扩写，不要加评论。
+3. 只返回 JSON 数组，不要解释。
+4. id 必须保持不变。
 
 输出格式：
 [{"id":"原始id","translated":"中文翻译"}]`;

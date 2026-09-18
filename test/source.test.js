@@ -84,15 +84,70 @@ test('source API lists manifests and reads a source while legacy market API rema
       };
     },
   };
+  const officialSources = {
+    urls: { bls: 'https://www.bls.gov/schedule/news_release/bls.ics' },
+    async bls() {
+      return {
+        available: true, observedAt: 3, sourceUrl: this.urls.bls, note: '',
+        events: [{
+          eventId: 'bls:test', country: 'US', authority: 'U.S. Bureau of Labor Statistics',
+          eventType: 'economic-release', title: 'Consumer Price Index', scheduledAt: 4,
+          scheduledEndAt: null, referencePeriod: null, status: 'scheduled',
+          scheduleBasis: 'official-calendar', timePrecision: 'exact', sourceUrl: this.urls.bls, observedAt: 3,
+        }],
+      };
+    },
+  };
+  const emptyLiquidityMetric = (key, label) => ({
+    key, label, supplyUsd: '1', change1dUsd: '0', change7dUsd: '0', change30dUsd: '0',
+  });
+  const marketNativeSources = {
+    async polymarket() {
+      return {
+        available: true, observedAt: 5, sourceUrl: 'https://example.com/polymarket', note: '',
+        quotes: [{
+          quoteId: 'polymarket:test:yes', venue: 'polymarket', marketId: 'test',
+          marketQuestion: 'Will the Fed cut?', outcome: 'Yes', midPrice: '0.6', bestBid: '0.59', bestAsk: '0.61',
+          spread: '0.02', lastPrice: '0.6', volume24h: '10', totalVolume: '100', liquidity: '20',
+          openInterest: '30', endAt: 10, sourceUrl: 'https://example.com/polymarket/test', observedAt: 5,
+        }],
+      };
+    },
+    async kalshi() { return { available: true, observedAt: 5, sourceUrl: 'https://example.com/kalshi', note: '', quotes: [] }; },
+    async hyperliquid() {
+      return {
+        available: true, observedAt: 5, sourceUrl: 'https://example.com/hyperliquid', note: '',
+        quotes: [{
+          quoteId: 'hyperliquid:BTC:perp', venue: 'hyperliquid', symbol: 'BTC', markPrice: '1', midPrice: '1',
+          oraclePrice: '1', previousDayPrice: '1', fundingRate: '0', openInterest: '2',
+          openInterestUnit: 'base-asset', volume24h: '3', sourceUrl: 'https://example.com/hyperliquid/btc', observedAt: 5,
+        }],
+      };
+    },
+    async stablecoins() {
+      return {
+        available: true, observedAt: 5, sourceUrl: 'https://example.com/stablecoins', note: '',
+        total: emptyLiquidityMetric('total', 'Total'), assets: [emptyLiquidityMetric('USDT', 'USDT')], chains: [],
+      };
+    },
+  };
   const app = createAiCenterServer({
-    host: '127.0.0.1', port: 0, dataDirectory: directory, marketService, webSearchPort,
+    host: '127.0.0.1', port: 0, dataDirectory: directory, marketService, webSearchPort, officialSources, marketNativeSources,
   });
   const address = await app.listen();
   try {
     const catalog = await fetch(`${address.localUrl}/api/v1/sources`).then((response) => response.json());
     assert.equal(catalog.ok, true);
     assert.ok(catalog.sources.some((source) => source.id === 'market.us' && source.viewKind === 'market-board'));
+    assert.ok(catalog.sources.some((source) => source.id === 'market.cn' && source.viewKind === 'market-board'));
     assert.ok(catalog.sources.some((source) => source.id === 'search.web' && source.viewKind === 'search-results'));
+    assert.ok(catalog.sources.some((source) => source.id === 'calendar.us.bls' && source.viewKind === 'calendar'));
+    assert.ok(catalog.sources.some((source) => source.id === 'policy.cn.gov' && source.viewKind === 'official-release'));
+    assert.ok(catalog.sources.some((source) => source.id === 'market-native.prediction.polymarket' && source.viewKind === 'prediction-market'));
+    assert.ok(catalog.sources.some((source) => source.id === 'market-native.derivatives.hyperliquid' && source.viewKind === 'crypto-derivatives'));
+    assert.ok(catalog.sources.some((source) => source.id === 'calendar.cn.scio' && source.viewKind === 'calendar'));
+    assert.ok(catalog.sources.some((source) => source.id === 'policy.cn.gov-news' && source.viewKind === 'official-release'));
+    assert.equal(catalog.sources.some((source) => source.id === 'policy.official-detail'), false);
     assert.equal(catalog.sources.some((source) => source.id === 'market.quotes'), false);
 
     const source = await fetch(`${address.localUrl}/api/v1/sources/market.us`).then((response) => response.json());
@@ -104,6 +159,28 @@ test('source API lists manifests and reads a source while legacy market API rema
     assert.equal(search.ok, true);
     assert.equal(search.snapshot.sourceId, 'search.web');
     assert.equal(search.snapshot.data.results[0].title, 'Example');
+
+    const calendar = await fetch(`${address.localUrl}/api/v1/sources/calendar.us.bls?limit=10`).then((response) => response.json());
+    assert.equal(calendar.ok, true);
+    assert.equal(calendar.snapshot.data.events[0].title, 'Consumer Price Index');
+    assert.equal('forecast' in calendar.snapshot.data.events[0], false);
+
+    const internalDetail = await fetch(`${address.localUrl}/api/v1/sources/policy.official-detail?sourceUrl=https%3A%2F%2Fwww.gov.cn%2F`);
+    assert.equal(internalDetail.status, 404);
+
+    const missingOfficial = await fetch(`${address.localUrl}/api/v1/official-detail`);
+    assert.equal(missingOfficial.status, 400);
+
+    const marketNative = await fetch(`${address.localUrl}/api/v1/market-native/board?predictionLimit=10`).then((response) => response.json());
+    assert.equal(marketNative.ok, true);
+    assert.equal(marketNative.board.predictionMarkets[0].venue, 'polymarket');
+    assert.equal(marketNative.board.cryptoDerivatives[0].symbol, 'BTC');
+    assert.equal(marketNative.board.stablecoinLiquidity.total.supplyUsd, '1');
+
+    const staticBoard = await fetch(`${address.localUrl}/api/v1/static-signals/board?from=0&to=10000&focus=1&includeUndated=0`).then((response) => response.json());
+    assert.equal(staticBoard.ok, true);
+    assert.ok(staticBoard.board.sourceHealth.some((source) => source.sourceId === 'calendar.cn.scio'));
+    assert.equal(Array.isArray(staticBoard.board.upcoming), true);
 
     const legacy = await fetch(`${address.localUrl}/api/v1/markets?board=us`).then((response) => response.json());
     assert.equal(legacy.ok, true);

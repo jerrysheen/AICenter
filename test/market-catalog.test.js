@@ -44,6 +44,15 @@ test('default market catalog is runtime validated outside connector code', () =>
   assert.equal(JSON.stringify(catalog).includes('CPO'), false);
 });
 
+test('instance cn industry map catalog allows the same ticker in multiple groups', () => {
+  const catalog = readMarketCatalogFile(path.resolve('config/markets.json'));
+  assert.ok(catalog.cn.groups.includes('芯片设计'));
+  assert.ok(catalog.cn.groups.includes('光通信'));
+  const jingsheng = catalog.cn.watchlist.filter((item) => item.symbol === '300316.SZ');
+  assert.ok(jingsheng.length >= 2);
+  assert.equal(new Set(jingsheng.map((item) => item.group)).size, jingsheng.length);
+});
+
 test('market service consumes an instance catalog instead of core constants', async () => {
   const requested = [];
   const service = createMarketService({

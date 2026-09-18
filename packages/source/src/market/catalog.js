@@ -20,18 +20,23 @@ const GlobalCatalogItemSchema = CatalogItemSchema.extend({
   currency: z.string().trim().regex(/^[A-Z]{3,8}$/),
 }).strict();
 
+const EquitySectionSchema = z.object({
+  groups: z.array(z.string().trim().min(1).max(64)).min(1).max(64),
+  indices: z.array(CatalogItemSchema).max(32),
+  watchlist: z.array(CatalogItemSchema).max(500),
+}).strict();
+
+const EMPTY_CN_SECTION = Object.freeze({
+  groups: ['全部', '自选'],
+  indices: [],
+  watchlist: [],
+});
+
 export const MarketCatalogSchema = z.object({
   version: z.literal(1),
-  us: z.object({
-    groups: z.array(z.string().trim().min(1).max(64)).min(1).max(64),
-    indices: z.array(CatalogItemSchema).max(32),
-    watchlist: z.array(CatalogItemSchema).max(500),
-  }).strict(),
-  asia: z.object({
-    groups: z.array(z.string().trim().min(1).max(64)).min(1).max(64),
-    indices: z.array(CatalogItemSchema).max(32),
-    watchlist: z.array(CatalogItemSchema).max(500),
-  }).strict(),
+  us: EquitySectionSchema,
+  asia: EquitySectionSchema,
+  cn: EquitySectionSchema.default(EMPTY_CN_SECTION),
   global: z.object({
     groups: z.array(z.string().trim().min(1).max(64)).min(1).max(64),
     watchlist: z.array(GlobalCatalogItemSchema).max(500),
@@ -42,9 +47,9 @@ export const MarketCatalogSchema = z.object({
     const items = [...(section.indices || []), ...(section.watchlist || [])];
     const seen = new Set();
     for (const item of items) {
-      const key = item.symbol.toUpperCase();
+      const key = `${item.symbol.toUpperCase()}::${item.group}`;
       if (seen.has(key)) {
-        ctx.addIssue({ code: 'custom', path: [sectionName, 'watchlist'], message: `重复的市场标的: ${item.symbol}` });
+        ctx.addIssue({ code: 'custom', path: [sectionName, 'watchlist'], message: `重复的市场标的: ${item.symbol} / ${item.group}` });
         return;
       }
       seen.add(key);

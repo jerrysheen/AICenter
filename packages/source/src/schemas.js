@@ -29,10 +29,11 @@ const MarketSectionSchema = z.looseObject({
 });
 
 export const MarketBoardViewSchema = z.looseObject({
-  board: z.enum(['overview', 'us', 'asia', 'global']),
+  board: z.enum(['overview', 'us', 'asia', 'cn', 'global']),
   mode: z.enum(['live', 'partial']),
   fetchedAt: z.number().int().nonnegative(),
   session: z.string().max(32),
+  focus: z.enum(['us', 'cn']).optional(),
   note: z.string().max(1_000),
   groups: z.array(z.string()),
   indices: z.array(MarketQuoteViewSchema),

@@ -746,5 +746,1489 @@
         "summary": "美元计价现货"
       }
     ]
+  },
+  "cn": {
+    "groups": [
+      "全部",
+      "半导体材料",
+      "半导体设备",
+      "芯片设计",
+      "晶圆制造",
+      "封装测试",
+      "功率半导体",
+      "光通信",
+      "PCB覆铜板",
+      "玻璃基板",
+      "工具配套",
+      "自选"
+    ],
+    "indices": [
+      {
+        "symbol": "000001.SS",
+        "name": "上证指数",
+        "group": "指数",
+        "summary": "上海市场基准"
+      },
+      {
+        "symbol": "399001.SZ",
+        "name": "深证成指",
+        "group": "指数",
+        "summary": "深圳市场基准"
+      },
+      {
+        "symbol": "399006.SZ",
+        "name": "创业板指",
+        "group": "指数",
+        "summary": "创业板基准"
+      }
+    ],
+    "watchlist": [
+      {
+        "symbol": "688126.SS",
+        "name": "沪硅产业",
+        "group": "半导体材料",
+        "summary": "硅片 / SOI"
+      },
+      {
+        "symbol": "605358.SS",
+        "name": "立昂微",
+        "group": "半导体材料",
+        "summary": "硅片 / SOI"
+      },
+      {
+        "symbol": "688432.SS",
+        "name": "有研硅",
+        "group": "半导体材料",
+        "summary": "硅片 / SOI"
+      },
+      {
+        "symbol": "002129.SZ",
+        "name": "TCL中环",
+        "group": "半导体材料",
+        "summary": "硅片 / SOI"
+      },
+      {
+        "symbol": "300346.SZ",
+        "name": "南大光电",
+        "group": "半导体材料",
+        "summary": "光刻胶 / 电子特气 / 前驱体 / 沉积材料"
+      },
+      {
+        "symbol": "300236.SZ",
+        "name": "上海新阳",
+        "group": "半导体材料",
+        "summary": "光刻胶 / 湿电子化学品"
+      },
+      {
+        "symbol": "300655.SZ",
+        "name": "晶瑞电材",
+        "group": "半导体材料",
+        "summary": "光刻胶 / 湿电子化学品"
+      },
+      {
+        "symbol": "603306.SS",
+        "name": "华懋科技",
+        "group": "半导体材料",
+        "summary": "光刻胶"
+      },
+      {
+        "symbol": "300429.SZ",
+        "name": "强力新材",
+        "group": "半导体材料",
+        "summary": "光刻胶"
+      },
+      {
+        "symbol": "688106.SS",
+        "name": "金宏气体",
+        "group": "半导体材料",
+        "summary": "电子特气"
+      },
+      {
+        "symbol": "688268.SS",
+        "name": "华特气体",
+        "group": "半导体材料",
+        "summary": "电子特气"
+      },
+      {
+        "symbol": "002409.SZ",
+        "name": "雅克科技",
+        "group": "半导体材料",
+        "summary": "电子特气 / 前驱体 / 沉积材料"
+      },
+      {
+        "symbol": "002549.SZ",
+        "name": "凯美特气",
+        "group": "半导体材料",
+        "summary": "电子特气"
+      },
+      {
+        "symbol": "688146.SS",
+        "name": "中船特气",
+        "group": "半导体材料",
+        "summary": "电子特气"
+      },
+      {
+        "symbol": "688019.SS",
+        "name": "安集科技",
+        "group": "半导体材料",
+        "summary": "CMP 抛光材料"
+      },
+      {
+        "symbol": "300054.SZ",
+        "name": "鼎龙股份",
+        "group": "半导体材料",
+        "summary": "CMP 抛光材料"
+      },
+      {
+        "symbol": "603078.SS",
+        "name": "江化微",
+        "group": "半导体材料",
+        "summary": "湿电子化学品"
+      },
+      {
+        "symbol": "603931.SS",
+        "name": "格林达",
+        "group": "半导体材料",
+        "summary": "湿电子化学品"
+      },
+      {
+        "symbol": "300666.SZ",
+        "name": "江丰电子",
+        "group": "半导体材料",
+        "summary": "溅射靶材"
+      },
+      {
+        "symbol": "600206.SS",
+        "name": "有研新材",
+        "group": "半导体材料",
+        "summary": "溅射靶材"
+      },
+      {
+        "symbol": "688456.SS",
+        "name": "有研粉材",
+        "group": "半导体材料",
+        "summary": "溅射靶材"
+      },
+      {
+        "symbol": "603688.SS",
+        "name": "石英股份",
+        "group": "半导体材料",
+        "summary": "石英与硅微粉"
+      },
+      {
+        "symbol": "300395.SZ",
+        "name": "菲利华",
+        "group": "半导体材料",
+        "summary": "石英与硅微粉"
+      },
+      {
+        "symbol": "688300.SS",
+        "name": "联瑞新材",
+        "group": "半导体材料",
+        "summary": "石英与硅微粉"
+      },
+      {
+        "symbol": "301611.SZ",
+        "name": "珂玛科技",
+        "group": "半导体材料",
+        "summary": "电子陶瓷 / 碳材料"
+      },
+      {
+        "symbol": "300285.SZ",
+        "name": "国瓷材料",
+        "group": "半导体材料",
+        "summary": "电子陶瓷 / 碳材料"
+      },
+      {
+        "symbol": "300576.SZ",
+        "name": "容大感光",
+        "group": "半导体材料",
+        "summary": "光刻胶"
+      },
+      {
+        "symbol": "688012.SS",
+        "name": "中微公司",
+        "group": "半导体设备",
+        "summary": "刻蚀设备、薄膜沉积"
+      },
+      {
+        "symbol": "002371.SZ",
+        "name": "北方华创",
+        "group": "半导体设备",
+        "summary": "刻蚀、薄膜沉积、热处理 / 离子注入"
+      },
+      {
+        "symbol": "688072.SS",
+        "name": "拓荆科技",
+        "group": "半导体设备",
+        "summary": "薄膜沉积"
+      },
+      {
+        "symbol": "688082.SS",
+        "name": "盛美上海",
+        "group": "半导体设备",
+        "summary": "清洗设备"
+      },
+      {
+        "symbol": "688037.SS",
+        "name": "芯源微",
+        "group": "半导体设备",
+        "summary": "清洗设备、涂胶显影"
+      },
+      {
+        "symbol": "688120.SS",
+        "name": "华海清科",
+        "group": "半导体设备",
+        "summary": "CMP 设备"
+      },
+      {
+        "symbol": "300567.SZ",
+        "name": "精测电子",
+        "group": "半导体设备",
+        "summary": "量测与缺陷检测"
+      },
+      {
+        "symbol": "688200.SS",
+        "name": "华峰测控",
+        "group": "半导体设备",
+        "summary": "测试机 / 分选机 / 探针台"
+      },
+      {
+        "symbol": "300604.SZ",
+        "name": "长川科技",
+        "group": "半导体设备",
+        "summary": "测试机 / 分选机 / 探针台"
+      },
+      {
+        "symbol": "603061.SS",
+        "name": "金海通",
+        "group": "半导体设备",
+        "summary": "测试机 / 分选机 / 探针台"
+      },
+      {
+        "symbol": "301629.SZ",
+        "name": "矽电股份",
+        "group": "半导体设备",
+        "summary": "测试机 / 分选机 / 探针台"
+      },
+      {
+        "symbol": "300316.SZ",
+        "name": "晶盛机电",
+        "group": "半导体设备",
+        "summary": "减薄 / 划片 / 激光加工"
+      },
+      {
+        "symbol": "688170.SS",
+        "name": "德龙激光",
+        "group": "半导体设备",
+        "summary": "减薄 / 划片 / 激光加工"
+      },
+      {
+        "symbol": "002008.SZ",
+        "name": "大族激光",
+        "group": "半导体设备",
+        "summary": "减薄 / 划片 / 激光加工"
+      },
+      {
+        "symbol": "688025.SS",
+        "name": "杰普特",
+        "group": "半导体设备",
+        "summary": "减薄 / 划片 / 激光加工"
+      },
+      {
+        "symbol": "688361.SS",
+        "name": "中科飞测",
+        "group": "半导体设备",
+        "summary": "量测与缺陷检测"
+      },
+      {
+        "symbol": "688627.SS",
+        "name": "精智达",
+        "group": "半导体设备",
+        "summary": "量测与缺陷检测"
+      },
+      {
+        "symbol": "688652.SS",
+        "name": "京仪装备",
+        "group": "半导体设备",
+        "summary": "半导体辅助设备"
+      },
+      {
+        "symbol": "688478.SS",
+        "name": "晶升股份",
+        "group": "半导体设备",
+        "summary": "半导体辅助设备"
+      },
+      {
+        "symbol": "688256.SS",
+        "name": "寒武纪",
+        "group": "芯片设计",
+        "summary": "CPU / GPU / AI 加速"
+      },
+      {
+        "symbol": "688041.SS",
+        "name": "海光信息",
+        "group": "芯片设计",
+        "summary": "CPU / GPU / AI 加速"
+      },
+      {
+        "symbol": "688047.SS",
+        "name": "龙芯中科",
+        "group": "芯片设计",
+        "summary": "CPU / GPU / AI 加速"
+      },
+      {
+        "symbol": "300474.SZ",
+        "name": "景嘉微",
+        "group": "芯片设计",
+        "summary": "CPU / GPU / AI 加速"
+      },
+      {
+        "symbol": "688262.SS",
+        "name": "国芯科技",
+        "group": "芯片设计",
+        "summary": "CPU / GPU / AI 加速"
+      },
+      {
+        "symbol": "603986.SS",
+        "name": "兆易创新",
+        "group": "芯片设计",
+        "summary": "存储芯片 + MCU"
+      },
+      {
+        "symbol": "688110.SS",
+        "name": "东芯股份",
+        "group": "芯片设计",
+        "summary": "存储芯片"
+      },
+      {
+        "symbol": "688766.SS",
+        "name": "普冉股份",
+        "group": "芯片设计",
+        "summary": "存储芯片"
+      },
+      {
+        "symbol": "688123.SS",
+        "name": "聚辰股份",
+        "group": "芯片设计",
+        "summary": "存储芯片"
+      },
+      {
+        "symbol": "300223.SZ",
+        "name": "北京君正",
+        "group": "芯片设计",
+        "summary": "存储芯片 + 图像/显示"
+      },
+      {
+        "symbol": "301308.SZ",
+        "name": "江波龙",
+        "group": "芯片设计",
+        "summary": "存储模组 / 控制器"
+      },
+      {
+        "symbol": "688525.SS",
+        "name": "佰维存储",
+        "group": "芯片设计",
+        "summary": "存储模组 / 控制器"
+      },
+      {
+        "symbol": "001309.SZ",
+        "name": "德明利",
+        "group": "芯片设计",
+        "summary": "存储模组 / 控制器"
+      },
+      {
+        "symbol": "688380.SS",
+        "name": "中微半导",
+        "group": "芯片设计",
+        "summary": "MCU / 嵌入式"
+      },
+      {
+        "symbol": "300327.SZ",
+        "name": "中颖电子",
+        "group": "芯片设计",
+        "summary": "MCU / 嵌入式"
+      },
+      {
+        "symbol": "688595.SS",
+        "name": "芯海科技",
+        "group": "芯片设计",
+        "summary": "MCU / 嵌入式"
+      },
+      {
+        "symbol": "002180.SZ",
+        "name": "纳思达",
+        "group": "芯片设计",
+        "summary": "MCU / 嵌入式"
+      },
+      {
+        "symbol": "300661.SZ",
+        "name": "圣邦股份",
+        "group": "芯片设计",
+        "summary": "模拟 / 电源管理"
+      },
+      {
+        "symbol": "688536.SS",
+        "name": "思瑞浦",
+        "group": "芯片设计",
+        "summary": "模拟 / 电源管理"
+      },
+      {
+        "symbol": "688368.SS",
+        "name": "晶丰明源",
+        "group": "芯片设计",
+        "summary": "模拟 / 电源管理"
+      },
+      {
+        "symbol": "688798.SS",
+        "name": "艾为电子",
+        "group": "芯片设计",
+        "summary": "模拟 / 电源管理"
+      },
+      {
+        "symbol": "688508.SS",
+        "name": "芯朋微",
+        "group": "芯片设计",
+        "summary": "模拟 / 电源管理"
+      },
+      {
+        "symbol": "688052.SS",
+        "name": "纳芯微",
+        "group": "芯片设计",
+        "summary": "模拟 / 电源管理"
+      },
+      {
+        "symbol": "688279.SS",
+        "name": "峰岹科技",
+        "group": "芯片设计",
+        "summary": "模拟 / 电源管理"
+      },
+      {
+        "symbol": "688391.SS",
+        "name": "钜泉科技",
+        "group": "芯片设计",
+        "summary": "模拟 / 电源管理"
+      },
+      {
+        "symbol": "688141.SS",
+        "name": "杰华特",
+        "group": "芯片设计",
+        "summary": "模拟 / 电源管理"
+      },
+      {
+        "symbol": "688458.SS",
+        "name": "美芯晟",
+        "group": "芯片设计",
+        "summary": "模拟 / 电源管理"
+      },
+      {
+        "symbol": "688325.SS",
+        "name": "赛微微电",
+        "group": "芯片设计",
+        "summary": "模拟 / 电源管理"
+      },
+      {
+        "symbol": "688484.SS",
+        "name": "南芯科技",
+        "group": "芯片设计",
+        "summary": "模拟 / 电源管理"
+      },
+      {
+        "symbol": "688439.SS",
+        "name": "振华风光",
+        "group": "芯片设计",
+        "summary": "模拟 / 电源管理"
+      },
+      {
+        "symbol": "300782.SZ",
+        "name": "卓胜微",
+        "group": "芯片设计",
+        "summary": "射频前端"
+      },
+      {
+        "symbol": "688153.SS",
+        "name": "唯捷创芯",
+        "group": "芯片设计",
+        "summary": "射频前端"
+      },
+      {
+        "symbol": "688375.SS",
+        "name": "国博电子",
+        "group": "芯片设计",
+        "summary": "射频前端"
+      },
+      {
+        "symbol": "300319.SZ",
+        "name": "麦捷科技",
+        "group": "芯片设计",
+        "summary": "射频前端"
+      },
+      {
+        "symbol": "688099.SS",
+        "name": "晶晨股份",
+        "group": "芯片设计",
+        "summary": "SoC / 多媒体 / IoT"
+      },
+      {
+        "symbol": "603893.SS",
+        "name": "瑞芯微",
+        "group": "芯片设计",
+        "summary": "SoC / 多媒体 / IoT"
+      },
+      {
+        "symbol": "300672.SZ",
+        "name": "国科微",
+        "group": "芯片设计",
+        "summary": "SoC / 多媒体 / IoT"
+      },
+      {
+        "symbol": "688608.SS",
+        "name": "恒玄科技",
+        "group": "芯片设计",
+        "summary": "SoC / 多媒体 / IoT"
+      },
+      {
+        "symbol": "688018.SS",
+        "name": "乐鑫科技",
+        "group": "芯片设计",
+        "summary": "SoC / 多媒体 / IoT"
+      },
+      {
+        "symbol": "688049.SS",
+        "name": "炬芯科技",
+        "group": "芯片设计",
+        "summary": "SoC / 多媒体 / IoT"
+      },
+      {
+        "symbol": "603068.SS",
+        "name": "博通集成",
+        "group": "芯片设计",
+        "summary": "SoC / 多媒体 / IoT"
+      },
+      {
+        "symbol": "688332.SS",
+        "name": "中科蓝讯",
+        "group": "芯片设计",
+        "summary": "SoC / 多媒体 / IoT"
+      },
+      {
+        "symbol": "688220.SS",
+        "name": "翱捷科技",
+        "group": "芯片设计",
+        "summary": "SoC / 多媒体 / IoT"
+      },
+      {
+        "symbol": "603160.SS",
+        "name": "汇顶科技",
+        "group": "芯片设计",
+        "summary": "SoC / 多媒体 / IoT"
+      },
+      {
+        "symbol": "301536.SZ",
+        "name": "星宸科技",
+        "group": "芯片设计",
+        "summary": "SoC / 多媒体 / IoT"
+      },
+      {
+        "symbol": "688591.SS",
+        "name": "泰凌微",
+        "group": "芯片设计",
+        "summary": "SoC / 多媒体 / IoT"
+      },
+      {
+        "symbol": "300458.SZ",
+        "name": "全志科技",
+        "group": "芯片设计",
+        "summary": "SoC / 多媒体 / IoT"
+      },
+      {
+        "symbol": "688385.SS",
+        "name": "复旦微电",
+        "group": "芯片设计",
+        "summary": "FPGA / 安全芯片"
+      },
+      {
+        "symbol": "002049.SZ",
+        "name": "紫光国微",
+        "group": "芯片设计",
+        "summary": "FPGA / 安全芯片"
+      },
+      {
+        "symbol": "600171.SS",
+        "name": "上海贝岭",
+        "group": "芯片设计",
+        "summary": "FPGA / 安全芯片"
+      },
+      {
+        "symbol": "300077.SZ",
+        "name": "国民技术",
+        "group": "芯片设计",
+        "summary": "FPGA / 安全芯片"
+      },
+      {
+        "symbol": "603501.SS",
+        "name": "豪威集团",
+        "group": "芯片设计",
+        "summary": "图像传感 / 显示驱动"
+      },
+      {
+        "symbol": "300613.SZ",
+        "name": "富瀚微",
+        "group": "芯片设计",
+        "summary": "图像传感 / 显示驱动"
+      },
+      {
+        "symbol": "688213.SS",
+        "name": "思特威",
+        "group": "芯片设计",
+        "summary": "图像传感 / 显示驱动"
+      },
+      {
+        "symbol": "688728.SS",
+        "name": "格科微",
+        "group": "芯片设计",
+        "summary": "图像传感 / 显示驱动"
+      },
+      {
+        "symbol": "688699.SS",
+        "name": "明微电子",
+        "group": "芯片设计",
+        "summary": "图像传感 / 显示驱动"
+      },
+      {
+        "symbol": "688008.SS",
+        "name": "澜起科技",
+        "group": "芯片设计",
+        "summary": "高速接口 / 内存接口"
+      },
+      {
+        "symbol": "688286.SS",
+        "name": "敏芯股份",
+        "group": "芯片设计",
+        "summary": "MEMS / 传感器"
+      },
+      {
+        "symbol": "688665.SS",
+        "name": "四方光电",
+        "group": "芯片设计",
+        "summary": "MEMS / 传感器"
+      },
+      {
+        "symbol": "300007.SZ",
+        "name": "汉威科技",
+        "group": "芯片设计",
+        "summary": "MEMS / 传感器"
+      },
+      {
+        "symbol": "688582.SS",
+        "name": "芯动联科",
+        "group": "芯片设计",
+        "summary": "MEMS / 传感器"
+      },
+      {
+        "symbol": "688709.SS",
+        "name": "成都华微",
+        "group": "芯片设计",
+        "summary": "MEMS / 传感器"
+      },
+      {
+        "symbol": "688981.SS",
+        "name": "中芯国际",
+        "group": "晶圆制造",
+        "summary": "晶圆代工"
+      },
+      {
+        "symbol": "688347.SS",
+        "name": "华虹公司",
+        "group": "晶圆制造",
+        "summary": "晶圆代工"
+      },
+      {
+        "symbol": "688396.SS",
+        "name": "华润微",
+        "group": "晶圆制造",
+        "summary": "特色工艺 / IDM"
+      },
+      {
+        "symbol": "600460.SS",
+        "name": "士兰微",
+        "group": "晶圆制造",
+        "summary": "特色工艺 / IDM"
+      },
+      {
+        "symbol": "605358.SS",
+        "name": "立昂微",
+        "group": "晶圆制造",
+        "summary": "特色工艺 / IDM"
+      },
+      {
+        "symbol": "300456.SZ",
+        "name": "赛微电子",
+        "group": "晶圆制造",
+        "summary": "特色工艺 / IDM"
+      },
+      {
+        "symbol": "688249.SS",
+        "name": "晶合集成",
+        "group": "晶圆制造",
+        "summary": "晶圆代工"
+      },
+      {
+        "symbol": "600584.SS",
+        "name": "长电科技",
+        "group": "封装测试",
+        "summary": "传统封测 + 先进封装 / Chiplet + 混合键合 / TSV"
+      },
+      {
+        "symbol": "002156.SZ",
+        "name": "通富微电",
+        "group": "封装测试",
+        "summary": "传统封测 + 先进封装 / Chiplet + 混合键合 / TSV"
+      },
+      {
+        "symbol": "002185.SZ",
+        "name": "华天科技",
+        "group": "封装测试",
+        "summary": "传统封测 + 先进封装 / Chiplet + 混合键合 / TSV"
+      },
+      {
+        "symbol": "688362.SS",
+        "name": "甬矽电子",
+        "group": "封装测试",
+        "summary": "传统封测 + 先进封装 / Chiplet"
+      },
+      {
+        "symbol": "603005.SS",
+        "name": "晶方科技",
+        "group": "封装测试",
+        "summary": "传统封测 + 先进封装 / Chiplet"
+      },
+      {
+        "symbol": "688135.SS",
+        "name": "利扬芯片",
+        "group": "封装测试",
+        "summary": "传统封测"
+      },
+      {
+        "symbol": "688372.SS",
+        "name": "伟测科技",
+        "group": "封装测试",
+        "summary": "传统封测"
+      },
+      {
+        "symbol": "688216.SS",
+        "name": "气派科技",
+        "group": "封装测试",
+        "summary": "传统封测"
+      },
+      {
+        "symbol": "600667.SS",
+        "name": "太极实业",
+        "group": "封装测试",
+        "summary": "传统封测"
+      },
+      {
+        "symbol": "002916.SZ",
+        "name": "深南电路",
+        "group": "封装测试",
+        "summary": "封装基板"
+      },
+      {
+        "symbol": "002436.SZ",
+        "name": "兴森科技",
+        "group": "封装测试",
+        "summary": "封装基板"
+      },
+      {
+        "symbol": "688535.SS",
+        "name": "华海诚科",
+        "group": "封装测试",
+        "summary": "塑封料 / 引线框架 / 键合丝"
+      },
+      {
+        "symbol": "002119.SZ",
+        "name": "康强电子",
+        "group": "封装测试",
+        "summary": "塑封料 / 引线框架 / 键合丝"
+      },
+      {
+        "symbol": "688396.SS",
+        "name": "华润微",
+        "group": "功率半导体",
+        "summary": "硅功率 + SiC / GaN"
+      },
+      {
+        "symbol": "600460.SS",
+        "name": "士兰微",
+        "group": "功率半导体",
+        "summary": "硅功率 + SiC / GaN"
+      },
+      {
+        "symbol": "603290.SS",
+        "name": "斯达半导",
+        "group": "功率半导体",
+        "summary": "硅功率 + SiC / GaN"
+      },
+      {
+        "symbol": "300373.SZ",
+        "name": "扬杰科技",
+        "group": "功率半导体",
+        "summary": "硅功率 + SiC / GaN"
+      },
+      {
+        "symbol": "300623.SZ",
+        "name": "捷捷微电",
+        "group": "功率半导体",
+        "summary": "硅功率"
+      },
+      {
+        "symbol": "688261.SS",
+        "name": "东微半导",
+        "group": "功率半导体",
+        "summary": "硅功率 + SiC / GaN"
+      },
+      {
+        "symbol": "605111.SS",
+        "name": "新洁能",
+        "group": "功率半导体",
+        "summary": "硅功率"
+      },
+      {
+        "symbol": "688711.SS",
+        "name": "宏微科技",
+        "group": "功率半导体",
+        "summary": "硅功率"
+      },
+      {
+        "symbol": "300046.SZ",
+        "name": "台基股份",
+        "group": "功率半导体",
+        "summary": "硅功率"
+      },
+      {
+        "symbol": "600360.SS",
+        "name": "华微电子",
+        "group": "功率半导体",
+        "summary": "硅功率"
+      },
+      {
+        "symbol": "002079.SZ",
+        "name": "苏州固锝",
+        "group": "功率半导体",
+        "summary": "硅功率"
+      },
+      {
+        "symbol": "688689.SS",
+        "name": "银河微电",
+        "group": "功率半导体",
+        "summary": "硅功率"
+      },
+      {
+        "symbol": "688187.SS",
+        "name": "时代电气",
+        "group": "功率半导体",
+        "summary": "硅功率 + SiC / GaN"
+      },
+      {
+        "symbol": "688234.SS",
+        "name": "天岳先进",
+        "group": "功率半导体",
+        "summary": "SiC 衬底 / 外延"
+      },
+      {
+        "symbol": "600703.SS",
+        "name": "三安光电",
+        "group": "功率半导体",
+        "summary": "SiC 衬底 / 外延；LED / 化合物光电"
+      },
+      {
+        "symbol": "300316.SZ",
+        "name": "晶盛机电",
+        "group": "功率半导体",
+        "summary": "SiC 衬底 / 外延"
+      },
+      {
+        "symbol": "300323.SZ",
+        "name": "华灿光电",
+        "group": "功率半导体",
+        "summary": "LED / 化合物光电"
+      },
+      {
+        "symbol": "002983.SZ",
+        "name": "芯瑞达",
+        "group": "功率半导体",
+        "summary": "LED / 化合物光电"
+      },
+      {
+        "symbol": "300102.SZ",
+        "name": "乾照光电",
+        "group": "功率半导体",
+        "summary": "LED / 化合物光电"
+      },
+      {
+        "symbol": "002449.SZ",
+        "name": "国星光电",
+        "group": "功率半导体",
+        "summary": "LED / 化合物光电"
+      },
+      {
+        "symbol": "300303.SZ",
+        "name": "聚飞光电",
+        "group": "功率半导体",
+        "summary": "LED / 化合物光电"
+      },
+      {
+        "symbol": "002428.SZ",
+        "name": "云南锗业",
+        "group": "光通信",
+        "summary": "InP / GaAs 衬底"
+      },
+      {
+        "symbol": "688498.SS",
+        "name": "源杰科技",
+        "group": "光通信",
+        "summary": "激光芯片、DFB、EML、CW 光源"
+      },
+      {
+        "symbol": "688048.SS",
+        "name": "长光华芯",
+        "group": "光通信",
+        "summary": "激光芯片、VCSEL"
+      },
+      {
+        "symbol": "688167.SS",
+        "name": "炬光科技",
+        "group": "光通信",
+        "summary": "激光光芯片"
+      },
+      {
+        "symbol": "002281.SZ",
+        "name": "光迅科技",
+        "group": "光通信",
+        "summary": "激光芯片、探测芯片、硅光/CPO/LPO、光模块、无源器件"
+      },
+      {
+        "symbol": "600105.SS",
+        "name": "永鼎股份",
+        "group": "光通信",
+        "summary": "激光芯片 + 光纤光缆"
+      },
+      {
+        "symbol": "300308.SZ",
+        "name": "中际旭创",
+        "group": "光通信",
+        "summary": "硅光 / CPO / LPO、光模块、相干通信"
+      },
+      {
+        "symbol": "300502.SZ",
+        "name": "新易盛",
+        "group": "光通信",
+        "summary": "硅光 / CPO / LPO、光模块"
+      },
+      {
+        "symbol": "300394.SZ",
+        "name": "天孚通信",
+        "group": "光通信",
+        "summary": "硅光/CPO/LPO、无源器件、FAU/MPO"
+      },
+      {
+        "symbol": "688205.SS",
+        "name": "德科立",
+        "group": "光通信",
+        "summary": "硅光/CPO/LPO、光模块、相干通信"
+      },
+      {
+        "symbol": "300570.SZ",
+        "name": "太辰光",
+        "group": "光通信",
+        "summary": "硅光/CPO/LPO、无源器件、FAU/MPO"
+      },
+      {
+        "symbol": "300548.SZ",
+        "name": "长芯博创",
+        "group": "光通信",
+        "summary": "光模块、无源器件、FAU/MPO"
+      },
+      {
+        "symbol": "603083.SS",
+        "name": "剑桥科技",
+        "group": "光通信",
+        "summary": "光模块"
+      },
+      {
+        "symbol": "300620.SZ",
+        "name": "光库科技",
+        "group": "光通信",
+        "summary": "无源光器件、薄膜铌酸锂调制"
+      },
+      {
+        "symbol": "688143.SS",
+        "name": "长盈通",
+        "group": "光通信",
+        "summary": "无源器件 + 光纤光缆"
+      },
+      {
+        "symbol": "601869.SS",
+        "name": "长飞光纤",
+        "group": "光通信",
+        "summary": "光纤 / 光缆 / 预制棒"
+      },
+      {
+        "symbol": "600487.SS",
+        "name": "亨通光电",
+        "group": "光通信",
+        "summary": "光纤 / 光缆 / 预制棒"
+      },
+      {
+        "symbol": "600522.SS",
+        "name": "中天科技",
+        "group": "光通信",
+        "summary": "光纤 / 光缆 / 预制棒"
+      },
+      {
+        "symbol": "000586.SZ",
+        "name": "汇源通信",
+        "group": "光通信",
+        "summary": "光纤 / 光缆 / 预制棒"
+      },
+      {
+        "symbol": "600498.SS",
+        "name": "烽火通信",
+        "group": "光通信",
+        "summary": "光纤 / 光缆 / 预制棒"
+      },
+      {
+        "symbol": "300757.SZ",
+        "name": "罗博特科",
+        "group": "光通信",
+        "summary": "光耦合 / 封装 / 测试设备"
+      },
+      {
+        "symbol": "688097.SS",
+        "name": "博众精工",
+        "group": "光通信",
+        "summary": "光耦合 / 封装 / 测试设备"
+      },
+      {
+        "symbol": "002957.SZ",
+        "name": "科瑞技术",
+        "group": "光通信",
+        "summary": "光耦合 / 封装 / 测试设备"
+      },
+      {
+        "symbol": "688170.SS",
+        "name": "德龙激光",
+        "group": "光通信",
+        "summary": "光耦合 / 封装 / 测试设备"
+      },
+      {
+        "symbol": "688025.SS",
+        "name": "杰普特",
+        "group": "光通信",
+        "summary": "光耦合 / 封装 / 测试设备"
+      },
+      {
+        "symbol": "688312.SS",
+        "name": "燕麦科技",
+        "group": "光通信",
+        "summary": "光耦合 / 封装 / 测试设备"
+      },
+      {
+        "symbol": "002463.SZ",
+        "name": "沪电股份",
+        "group": "PCB覆铜板",
+        "summary": "PCB / FPC / HDI 候选"
+      },
+      {
+        "symbol": "300476.SZ",
+        "name": "胜宏科技",
+        "group": "PCB覆铜板",
+        "summary": "PCB / FPC / HDI 候选"
+      },
+      {
+        "symbol": "002916.SZ",
+        "name": "深南电路",
+        "group": "PCB覆铜板",
+        "summary": "PCB / FPC / HDI 候选"
+      },
+      {
+        "symbol": "688183.SS",
+        "name": "生益电子",
+        "group": "PCB覆铜板",
+        "summary": "PCB / FPC / HDI 候选"
+      },
+      {
+        "symbol": "603920.SS",
+        "name": "世运电路",
+        "group": "PCB覆铜板",
+        "summary": "PCB / FPC / HDI 候选"
+      },
+      {
+        "symbol": "002815.SZ",
+        "name": "崇达技术",
+        "group": "PCB覆铜板",
+        "summary": "PCB / FPC / HDI 候选"
+      },
+      {
+        "symbol": "002134.SZ",
+        "name": "天津普林",
+        "group": "PCB覆铜板",
+        "summary": "PCB / FPC / HDI 候选"
+      },
+      {
+        "symbol": "002579.SZ",
+        "name": "中京电子",
+        "group": "PCB覆铜板",
+        "summary": "PCB / FPC / HDI 候选"
+      },
+      {
+        "symbol": "002913.SZ",
+        "name": "奥士康",
+        "group": "PCB覆铜板",
+        "summary": "PCB / FPC / HDI 候选"
+      },
+      {
+        "symbol": "603228.SS",
+        "name": "景旺电子",
+        "group": "PCB覆铜板",
+        "summary": "PCB / FPC / HDI 候选"
+      },
+      {
+        "symbol": "603386.SS",
+        "name": "骏亚科技",
+        "group": "PCB覆铜板",
+        "summary": "PCB / FPC / HDI 候选"
+      },
+      {
+        "symbol": "300852.SZ",
+        "name": "四会富仕",
+        "group": "PCB覆铜板",
+        "summary": "PCB / FPC / HDI 候选"
+      },
+      {
+        "symbol": "603936.SS",
+        "name": "博敏电子",
+        "group": "PCB覆铜板",
+        "summary": "PCB / FPC / HDI 候选"
+      },
+      {
+        "symbol": "002436.SZ",
+        "name": "兴森科技",
+        "group": "PCB覆铜板",
+        "summary": "PCB / FPC / HDI 候选"
+      },
+      {
+        "symbol": "002384.SZ",
+        "name": "东山精密",
+        "group": "PCB覆铜板",
+        "summary": "PCB / FPC / HDI 候选"
+      },
+      {
+        "symbol": "002938.SZ",
+        "name": "鹏鼎控股",
+        "group": "PCB覆铜板",
+        "summary": "PCB / FPC / HDI 候选"
+      },
+      {
+        "symbol": "300657.SZ",
+        "name": "弘信电子",
+        "group": "PCB覆铜板",
+        "summary": "PCB / FPC / HDI 候选"
+      },
+      {
+        "symbol": "300814.SZ",
+        "name": "中富电路",
+        "group": "PCB覆铜板",
+        "summary": "PCB / FPC / HDI 候选"
+      },
+      {
+        "symbol": "600183.SS",
+        "name": "生益科技",
+        "group": "PCB覆铜板",
+        "summary": "覆铜板 / 粘结片"
+      },
+      {
+        "symbol": "002636.SZ",
+        "name": "金安国纪",
+        "group": "PCB覆铜板",
+        "summary": "覆铜板 / 上游材料"
+      },
+      {
+        "symbol": "603186.SS",
+        "name": "华正新材",
+        "group": "PCB覆铜板",
+        "summary": "覆铜板 / 上游材料"
+      },
+      {
+        "symbol": "688519.SS",
+        "name": "南亚新材",
+        "group": "PCB覆铜板",
+        "summary": "覆铜板 / 上游材料"
+      },
+      {
+        "symbol": "301511.SZ",
+        "name": "德福科技",
+        "group": "PCB覆铜板",
+        "summary": "覆铜板 / 上游材料"
+      },
+      {
+        "symbol": "600176.SS",
+        "name": "中国巨石",
+        "group": "PCB覆铜板",
+        "summary": "覆铜板 / 上游材料"
+      },
+      {
+        "symbol": "002080.SZ",
+        "name": "中材科技",
+        "group": "PCB覆铜板",
+        "summary": "覆铜板 / 上游材料"
+      },
+      {
+        "symbol": "603256.SS",
+        "name": "宏和科技",
+        "group": "PCB覆铜板",
+        "summary": "覆铜板 / 上游材料"
+      },
+      {
+        "symbol": "605006.SS",
+        "name": "山东玻纤",
+        "group": "PCB覆铜板",
+        "summary": "覆铜板 / 上游材料"
+      },
+      {
+        "symbol": "600309.SS",
+        "name": "万华化学",
+        "group": "PCB覆铜板",
+        "summary": "覆铜板 / 上游材料"
+      },
+      {
+        "symbol": "300398.SZ",
+        "name": "飞凯材料",
+        "group": "PCB覆铜板",
+        "summary": "覆铜板 / 上游材料"
+      },
+      {
+        "symbol": "688300.SS",
+        "name": "联瑞新材",
+        "group": "PCB覆铜板",
+        "summary": "覆铜板 / 上游材料"
+      },
+      {
+        "symbol": "301377.SZ",
+        "name": "鼎泰高科",
+        "group": "PCB覆铜板",
+        "summary": "PCB 设备 / 材料候选"
+      },
+      {
+        "symbol": "688630.SS",
+        "name": "芯碁微装",
+        "group": "PCB覆铜板",
+        "summary": "PCB 设备 / 材料候选"
+      },
+      {
+        "symbol": "002008.SZ",
+        "name": "大族激光",
+        "group": "PCB覆铜板",
+        "summary": "PCB 设备 / 材料候选"
+      },
+      {
+        "symbol": "688700.SS",
+        "name": "东威科技",
+        "group": "PCB覆铜板",
+        "summary": "PCB 设备 / 材料候选"
+      },
+      {
+        "symbol": "300331.SZ",
+        "name": "苏大维格",
+        "group": "PCB覆铜板",
+        "summary": "PCB 设备 / 材料候选"
+      },
+      {
+        "symbol": "300576.SZ",
+        "name": "容大感光",
+        "group": "PCB覆铜板",
+        "summary": "PCB 设备 / 材料候选"
+      },
+      {
+        "symbol": "300429.SZ",
+        "name": "强力新材",
+        "group": "PCB覆铜板",
+        "summary": "PCB 设备 / 材料候选"
+      },
+      {
+        "symbol": "300410.SZ",
+        "name": "正业科技",
+        "group": "PCB覆铜板",
+        "summary": "PCB 设备 / 材料候选"
+      },
+      {
+        "symbol": "688603.SS",
+        "name": "天承科技",
+        "group": "PCB覆铜板",
+        "summary": "PCB 设备 / 材料候选"
+      },
+      {
+        "symbol": "300537.SZ",
+        "name": "广信材料",
+        "group": "PCB覆铜板",
+        "summary": "PCB 设备 / 材料候选"
+      },
+      {
+        "symbol": "603773.SS",
+        "name": "沃格光电",
+        "group": "玻璃基板",
+        "summary": "TGV、金属化、玻璃键合"
+      },
+      {
+        "symbol": "300331.SZ",
+        "name": "苏大维格",
+        "group": "玻璃基板",
+        "summary": "先进玻璃 / 微纳研究候选"
+      },
+      {
+        "symbol": "688170.SS",
+        "name": "德龙激光",
+        "group": "玻璃基板",
+        "summary": "玻璃加工设备相关"
+      },
+      {
+        "symbol": "688025.SS",
+        "name": "杰普特",
+        "group": "玻璃基板",
+        "summary": "激光加工相关"
+      },
+      {
+        "symbol": "688700.SS",
+        "name": "东威科技",
+        "group": "玻璃基板",
+        "summary": "电镀 / 金属化设备相关"
+      },
+      {
+        "symbol": "600552.SS",
+        "name": "凯盛科技",
+        "group": "玻璃基板",
+        "summary": "玻璃材料相关"
+      },
+      {
+        "symbol": "000012.SZ",
+        "name": "南玻A",
+        "group": "玻璃基板",
+        "summary": "玻璃材料相关"
+      },
+      {
+        "symbol": "002273.SZ",
+        "name": "水晶光电",
+        "group": "玻璃基板",
+        "summary": "光学 / 玻璃相关"
+      },
+      {
+        "symbol": "002008.SZ",
+        "name": "大族激光",
+        "group": "玻璃基板",
+        "summary": "激光加工相关"
+      },
+      {
+        "symbol": "301269.SZ",
+        "name": "华大九天",
+        "group": "工具配套",
+        "summary": "EDA"
+      },
+      {
+        "symbol": "688206.SS",
+        "name": "概伦电子",
+        "group": "工具配套",
+        "summary": "EDA"
+      },
+      {
+        "symbol": "301095.SZ",
+        "name": "广立微",
+        "group": "工具配套",
+        "summary": "EDA / 良率相关"
+      },
+      {
+        "symbol": "688521.SS",
+        "name": "芯原股份",
+        "group": "工具配套",
+        "summary": "半导体 IP / 芯片设计服务"
+      },
+      {
+        "symbol": "688409.SS",
+        "name": "富创精密",
+        "group": "工具配套",
+        "summary": "半导体设备精密零部件"
+      },
+      {
+        "symbol": "300260.SZ",
+        "name": "新莱应材",
+        "group": "工具配套",
+        "summary": "高纯流体系统零部件"
+      },
+      {
+        "symbol": "688596.SS",
+        "name": "正帆科技",
+        "group": "工具配套",
+        "summary": "高纯工艺系统 / 厂务"
+      },
+      {
+        "symbol": "603690.SS",
+        "name": "至纯科技",
+        "group": "工具配套",
+        "summary": "高纯工艺 / 清洗及厂务"
+      },
+      {
+        "symbol": "603929.SS",
+        "name": "亚翔集成",
+        "group": "工具配套",
+        "summary": "洁净室 / 半导体工程"
+      },
+      {
+        "symbol": "603163.SS",
+        "name": "圣晖集成",
+        "group": "工具配套",
+        "summary": "洁净室 / 工程"
+      },
+      {
+        "symbol": "688376.SS",
+        "name": "美埃科技",
+        "group": "工具配套",
+        "summary": "洁净空气系统"
+      },
+      {
+        "symbol": "688548.SS",
+        "name": "广钢气体",
+        "group": "工具配套",
+        "summary": "电子大宗气体"
+      },
+      {
+        "symbol": "688135.SS",
+        "name": "利扬芯片",
+        "group": "工具配套",
+        "summary": "芯片测试"
+      },
+      {
+        "symbol": "688372.SS",
+        "name": "伟测科技",
+        "group": "工具配套",
+        "summary": "芯片测试"
+      },
+      {
+        "symbol": "300012.SZ",
+        "name": "华测检测",
+        "group": "工具配套",
+        "summary": "检测服务"
+      },
+      {
+        "symbol": "300416.SZ",
+        "name": "苏试试验",
+        "group": "工具配套",
+        "summary": "可靠性测试"
+      },
+      {
+        "symbol": "301306.SZ",
+        "name": "西测测试",
+        "group": "工具配套",
+        "summary": "检测 / 可靠性测试"
+      }
+    ]
   }
 }

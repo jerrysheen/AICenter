@@ -1,0 +1,2430 @@
+{
+  "version": 1,
+  "source": "nano-ai",
+  "asOf": "2026-09-17",
+  "note": "nano-ai 页面截至 2026-09-17 的国产半导体研究底库，尚非全市场穷尽名单；大量公司待核验。同一公司可跨模块重复。不是推荐池。",
+  "groups": [
+    "半导体材料",
+    "半导体设备",
+    "芯片设计",
+    "晶圆制造",
+    "封装测试",
+    "功率半导体",
+    "光通信",
+    "PCB覆铜板",
+    "玻璃基板",
+    "工具配套"
+  ],
+  "items": [
+    {
+      "name": "沪硅产业",
+      "ticker": "688126",
+      "symbol": "688126.SS",
+      "group": "半导体材料",
+      "summary": "硅片 / SOI",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "立昂微",
+      "ticker": "605358",
+      "symbol": "605358.SS",
+      "group": "半导体材料",
+      "summary": "硅片 / SOI",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "有研硅",
+      "ticker": "688432",
+      "symbol": "688432.SS",
+      "group": "半导体材料",
+      "summary": "硅片 / SOI",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "TCL中环",
+      "ticker": "002129",
+      "symbol": "002129.SZ",
+      "group": "半导体材料",
+      "summary": "硅片 / SOI",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "南大光电",
+      "ticker": "300346",
+      "symbol": "300346.SZ",
+      "group": "半导体材料",
+      "summary": "光刻胶 / 电子特气 / 前驱体 / 沉积材料",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "上海新阳",
+      "ticker": "300236",
+      "symbol": "300236.SZ",
+      "group": "半导体材料",
+      "summary": "光刻胶 / 湿电子化学品",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "晶瑞电材",
+      "ticker": "300655",
+      "symbol": "300655.SZ",
+      "group": "半导体材料",
+      "summary": "光刻胶 / 湿电子化学品",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "华懋科技",
+      "ticker": "603306",
+      "symbol": "603306.SS",
+      "group": "半导体材料",
+      "summary": "光刻胶",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "强力新材",
+      "ticker": "300429",
+      "symbol": "300429.SZ",
+      "group": "半导体材料",
+      "summary": "光刻胶",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "金宏气体",
+      "ticker": "688106",
+      "symbol": "688106.SS",
+      "group": "半导体材料",
+      "summary": "电子特气",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "华特气体",
+      "ticker": "688268",
+      "symbol": "688268.SS",
+      "group": "半导体材料",
+      "summary": "电子特气",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "雅克科技",
+      "ticker": "002409",
+      "symbol": "002409.SZ",
+      "group": "半导体材料",
+      "summary": "电子特气 / 前驱体 / 沉积材料",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "凯美特气",
+      "ticker": "002549",
+      "symbol": "002549.SZ",
+      "group": "半导体材料",
+      "summary": "电子特气",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "中船特气",
+      "ticker": "688146",
+      "symbol": "688146.SS",
+      "group": "半导体材料",
+      "summary": "电子特气",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "安集科技",
+      "ticker": "688019",
+      "symbol": "688019.SS",
+      "group": "半导体材料",
+      "summary": "CMP 抛光材料",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "鼎龙股份",
+      "ticker": "300054",
+      "symbol": "300054.SZ",
+      "group": "半导体材料",
+      "summary": "CMP 抛光材料",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "江化微",
+      "ticker": "603078",
+      "symbol": "603078.SS",
+      "group": "半导体材料",
+      "summary": "湿电子化学品",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "格林达",
+      "ticker": "603931",
+      "symbol": "603931.SS",
+      "group": "半导体材料",
+      "summary": "湿电子化学品",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "江丰电子",
+      "ticker": "300666",
+      "symbol": "300666.SZ",
+      "group": "半导体材料",
+      "summary": "溅射靶材",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "有研新材",
+      "ticker": "600206",
+      "symbol": "600206.SS",
+      "group": "半导体材料",
+      "summary": "溅射靶材",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "有研粉材",
+      "ticker": "688456",
+      "symbol": "688456.SS",
+      "group": "半导体材料",
+      "summary": "溅射靶材",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "石英股份",
+      "ticker": "603688",
+      "symbol": "603688.SS",
+      "group": "半导体材料",
+      "summary": "石英与硅微粉",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "菲利华",
+      "ticker": "300395",
+      "symbol": "300395.SZ",
+      "group": "半导体材料",
+      "summary": "石英与硅微粉",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "联瑞新材",
+      "ticker": "688300",
+      "symbol": "688300.SS",
+      "group": "半导体材料",
+      "summary": "石英与硅微粉",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "珂玛科技",
+      "ticker": "301611",
+      "symbol": "301611.SZ",
+      "group": "半导体材料",
+      "summary": "电子陶瓷 / 碳材料",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "国瓷材料",
+      "ticker": "300285",
+      "symbol": "300285.SZ",
+      "group": "半导体材料",
+      "summary": "电子陶瓷 / 碳材料",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "容大感光",
+      "ticker": "300576",
+      "symbol": "300576.SZ",
+      "group": "半导体材料",
+      "summary": "光刻胶",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "中微公司",
+      "ticker": "688012",
+      "symbol": "688012.SS",
+      "group": "半导体设备",
+      "summary": "刻蚀设备、薄膜沉积",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "北方华创",
+      "ticker": "002371",
+      "symbol": "002371.SZ",
+      "group": "半导体设备",
+      "summary": "刻蚀、薄膜沉积、热处理 / 离子注入",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "拓荆科技",
+      "ticker": "688072",
+      "symbol": "688072.SS",
+      "group": "半导体设备",
+      "summary": "薄膜沉积",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "盛美上海",
+      "ticker": "688082",
+      "symbol": "688082.SS",
+      "group": "半导体设备",
+      "summary": "清洗设备",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "芯源微",
+      "ticker": "688037",
+      "symbol": "688037.SS",
+      "group": "半导体设备",
+      "summary": "清洗设备、涂胶显影",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "华海清科",
+      "ticker": "688120",
+      "symbol": "688120.SS",
+      "group": "半导体设备",
+      "summary": "CMP 设备",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "精测电子",
+      "ticker": "300567",
+      "symbol": "300567.SZ",
+      "group": "半导体设备",
+      "summary": "量测与缺陷检测",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "华峰测控",
+      "ticker": "688200",
+      "symbol": "688200.SS",
+      "group": "半导体设备",
+      "summary": "测试机 / 分选机 / 探针台",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "长川科技",
+      "ticker": "300604",
+      "symbol": "300604.SZ",
+      "group": "半导体设备",
+      "summary": "测试机 / 分选机 / 探针台",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "金海通",
+      "ticker": "603061",
+      "symbol": "603061.SS",
+      "group": "半导体设备",
+      "summary": "测试机 / 分选机 / 探针台",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "矽电股份",
+      "ticker": "301629",
+      "symbol": "301629.SZ",
+      "group": "半导体设备",
+      "summary": "测试机 / 分选机 / 探针台",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "晶盛机电",
+      "ticker": "300316",
+      "symbol": "300316.SZ",
+      "group": "半导体设备",
+      "summary": "减薄 / 划片 / 激光加工",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "德龙激光",
+      "ticker": "688170",
+      "symbol": "688170.SS",
+      "group": "半导体设备",
+      "summary": "减薄 / 划片 / 激光加工",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "大族激光",
+      "ticker": "002008",
+      "symbol": "002008.SZ",
+      "group": "半导体设备",
+      "summary": "减薄 / 划片 / 激光加工",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "杰普特",
+      "ticker": "688025",
+      "symbol": "688025.SS",
+      "group": "半导体设备",
+      "summary": "减薄 / 划片 / 激光加工",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "中科飞测",
+      "ticker": "688361",
+      "symbol": "688361.SS",
+      "group": "半导体设备",
+      "summary": "量测与缺陷检测",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "精智达",
+      "ticker": "688627",
+      "symbol": "688627.SS",
+      "group": "半导体设备",
+      "summary": "量测与缺陷检测",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "京仪装备",
+      "ticker": "688652",
+      "symbol": "688652.SS",
+      "group": "半导体设备",
+      "summary": "半导体辅助设备",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "晶升股份",
+      "ticker": "688478",
+      "symbol": "688478.SS",
+      "group": "半导体设备",
+      "summary": "半导体辅助设备",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "寒武纪",
+      "ticker": "688256",
+      "symbol": "688256.SS",
+      "group": "芯片设计",
+      "summary": "CPU / GPU / AI 加速",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "海光信息",
+      "ticker": "688041",
+      "symbol": "688041.SS",
+      "group": "芯片设计",
+      "summary": "CPU / GPU / AI 加速",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "龙芯中科",
+      "ticker": "688047",
+      "symbol": "688047.SS",
+      "group": "芯片设计",
+      "summary": "CPU / GPU / AI 加速",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "景嘉微",
+      "ticker": "300474",
+      "symbol": "300474.SZ",
+      "group": "芯片设计",
+      "summary": "CPU / GPU / AI 加速",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "国芯科技",
+      "ticker": "688262",
+      "symbol": "688262.SS",
+      "group": "芯片设计",
+      "summary": "CPU / GPU / AI 加速",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "兆易创新",
+      "ticker": "603986",
+      "symbol": "603986.SS",
+      "group": "芯片设计",
+      "summary": "存储芯片 + MCU",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "东芯股份",
+      "ticker": "688110",
+      "symbol": "688110.SS",
+      "group": "芯片设计",
+      "summary": "存储芯片",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "普冉股份",
+      "ticker": "688766",
+      "symbol": "688766.SS",
+      "group": "芯片设计",
+      "summary": "存储芯片",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "聚辰股份",
+      "ticker": "688123",
+      "symbol": "688123.SS",
+      "group": "芯片设计",
+      "summary": "存储芯片",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "北京君正",
+      "ticker": "300223",
+      "symbol": "300223.SZ",
+      "group": "芯片设计",
+      "summary": "存储芯片 + 图像/显示",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "江波龙",
+      "ticker": "301308",
+      "symbol": "301308.SZ",
+      "group": "芯片设计",
+      "summary": "存储模组 / 控制器",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "佰维存储",
+      "ticker": "688525",
+      "symbol": "688525.SS",
+      "group": "芯片设计",
+      "summary": "存储模组 / 控制器",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "德明利",
+      "ticker": "001309",
+      "symbol": "001309.SZ",
+      "group": "芯片设计",
+      "summary": "存储模组 / 控制器",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "中微半导",
+      "ticker": "688380",
+      "symbol": "688380.SS",
+      "group": "芯片设计",
+      "summary": "MCU / 嵌入式",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "中颖电子",
+      "ticker": "300327",
+      "symbol": "300327.SZ",
+      "group": "芯片设计",
+      "summary": "MCU / 嵌入式",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "芯海科技",
+      "ticker": "688595",
+      "symbol": "688595.SS",
+      "group": "芯片设计",
+      "summary": "MCU / 嵌入式",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "纳思达",
+      "ticker": "002180",
+      "symbol": "002180.SZ",
+      "group": "芯片设计",
+      "summary": "MCU / 嵌入式",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "圣邦股份",
+      "ticker": "300661",
+      "symbol": "300661.SZ",
+      "group": "芯片设计",
+      "summary": "模拟 / 电源管理",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "思瑞浦",
+      "ticker": "688536",
+      "symbol": "688536.SS",
+      "group": "芯片设计",
+      "summary": "模拟 / 电源管理",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "晶丰明源",
+      "ticker": "688368",
+      "symbol": "688368.SS",
+      "group": "芯片设计",
+      "summary": "模拟 / 电源管理",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "艾为电子",
+      "ticker": "688798",
+      "symbol": "688798.SS",
+      "group": "芯片设计",
+      "summary": "模拟 / 电源管理",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "芯朋微",
+      "ticker": "688508",
+      "symbol": "688508.SS",
+      "group": "芯片设计",
+      "summary": "模拟 / 电源管理",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "纳芯微",
+      "ticker": "688052",
+      "symbol": "688052.SS",
+      "group": "芯片设计",
+      "summary": "模拟 / 电源管理",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "峰岹科技",
+      "ticker": "688279",
+      "symbol": "688279.SS",
+      "group": "芯片设计",
+      "summary": "模拟 / 电源管理",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "钜泉科技",
+      "ticker": "688391",
+      "symbol": "688391.SS",
+      "group": "芯片设计",
+      "summary": "模拟 / 电源管理",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "杰华特",
+      "ticker": "688141",
+      "symbol": "688141.SS",
+      "group": "芯片设计",
+      "summary": "模拟 / 电源管理",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "美芯晟",
+      "ticker": "688458",
+      "symbol": "688458.SS",
+      "group": "芯片设计",
+      "summary": "模拟 / 电源管理",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "赛微微电",
+      "ticker": "688325",
+      "symbol": "688325.SS",
+      "group": "芯片设计",
+      "summary": "模拟 / 电源管理",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "南芯科技",
+      "ticker": "688484",
+      "symbol": "688484.SS",
+      "group": "芯片设计",
+      "summary": "模拟 / 电源管理",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "振华风光",
+      "ticker": "688439",
+      "symbol": "688439.SS",
+      "group": "芯片设计",
+      "summary": "模拟 / 电源管理",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "卓胜微",
+      "ticker": "300782",
+      "symbol": "300782.SZ",
+      "group": "芯片设计",
+      "summary": "射频前端",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "唯捷创芯",
+      "ticker": "688153",
+      "symbol": "688153.SS",
+      "group": "芯片设计",
+      "summary": "射频前端",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "国博电子",
+      "ticker": "688375",
+      "symbol": "688375.SS",
+      "group": "芯片设计",
+      "summary": "射频前端",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "麦捷科技",
+      "ticker": "300319",
+      "symbol": "300319.SZ",
+      "group": "芯片设计",
+      "summary": "射频前端",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "晶晨股份",
+      "ticker": "688099",
+      "symbol": "688099.SS",
+      "group": "芯片设计",
+      "summary": "SoC / 多媒体 / IoT",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "瑞芯微",
+      "ticker": "603893",
+      "symbol": "603893.SS",
+      "group": "芯片设计",
+      "summary": "SoC / 多媒体 / IoT",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "国科微",
+      "ticker": "300672",
+      "symbol": "300672.SZ",
+      "group": "芯片设计",
+      "summary": "SoC / 多媒体 / IoT",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "恒玄科技",
+      "ticker": "688608",
+      "symbol": "688608.SS",
+      "group": "芯片设计",
+      "summary": "SoC / 多媒体 / IoT",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "乐鑫科技",
+      "ticker": "688018",
+      "symbol": "688018.SS",
+      "group": "芯片设计",
+      "summary": "SoC / 多媒体 / IoT",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "炬芯科技",
+      "ticker": "688049",
+      "symbol": "688049.SS",
+      "group": "芯片设计",
+      "summary": "SoC / 多媒体 / IoT",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "博通集成",
+      "ticker": "603068",
+      "symbol": "603068.SS",
+      "group": "芯片设计",
+      "summary": "SoC / 多媒体 / IoT",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "中科蓝讯",
+      "ticker": "688332",
+      "symbol": "688332.SS",
+      "group": "芯片设计",
+      "summary": "SoC / 多媒体 / IoT",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "翱捷科技",
+      "ticker": "688220",
+      "symbol": "688220.SS",
+      "group": "芯片设计",
+      "summary": "SoC / 多媒体 / IoT",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "汇顶科技",
+      "ticker": "603160",
+      "symbol": "603160.SS",
+      "group": "芯片设计",
+      "summary": "SoC / 多媒体 / IoT",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "星宸科技",
+      "ticker": "301536",
+      "symbol": "301536.SZ",
+      "group": "芯片设计",
+      "summary": "SoC / 多媒体 / IoT",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "泰凌微",
+      "ticker": "688591",
+      "symbol": "688591.SS",
+      "group": "芯片设计",
+      "summary": "SoC / 多媒体 / IoT",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "全志科技",
+      "ticker": "300458",
+      "symbol": "300458.SZ",
+      "group": "芯片设计",
+      "summary": "SoC / 多媒体 / IoT",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "复旦微电",
+      "ticker": "688385",
+      "symbol": "688385.SS",
+      "group": "芯片设计",
+      "summary": "FPGA / 安全芯片",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "紫光国微",
+      "ticker": "002049",
+      "symbol": "002049.SZ",
+      "group": "芯片设计",
+      "summary": "FPGA / 安全芯片",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "上海贝岭",
+      "ticker": "600171",
+      "symbol": "600171.SS",
+      "group": "芯片设计",
+      "summary": "FPGA / 安全芯片",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "国民技术",
+      "ticker": "300077",
+      "symbol": "300077.SZ",
+      "group": "芯片设计",
+      "summary": "FPGA / 安全芯片",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "豪威集团",
+      "ticker": "603501",
+      "symbol": "603501.SS",
+      "group": "芯片设计",
+      "summary": "图像传感 / 显示驱动",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "富瀚微",
+      "ticker": "300613",
+      "symbol": "300613.SZ",
+      "group": "芯片设计",
+      "summary": "图像传感 / 显示驱动",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "思特威",
+      "ticker": "688213",
+      "symbol": "688213.SS",
+      "group": "芯片设计",
+      "summary": "图像传感 / 显示驱动",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "格科微",
+      "ticker": "688728",
+      "symbol": "688728.SS",
+      "group": "芯片设计",
+      "summary": "图像传感 / 显示驱动",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "明微电子",
+      "ticker": "688699",
+      "symbol": "688699.SS",
+      "group": "芯片设计",
+      "summary": "图像传感 / 显示驱动",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "澜起科技",
+      "ticker": "688008",
+      "symbol": "688008.SS",
+      "group": "芯片设计",
+      "summary": "高速接口 / 内存接口",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "敏芯股份",
+      "ticker": "688286",
+      "symbol": "688286.SS",
+      "group": "芯片设计",
+      "summary": "MEMS / 传感器",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "四方光电",
+      "ticker": "688665",
+      "symbol": "688665.SS",
+      "group": "芯片设计",
+      "summary": "MEMS / 传感器",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "汉威科技",
+      "ticker": "300007",
+      "symbol": "300007.SZ",
+      "group": "芯片设计",
+      "summary": "MEMS / 传感器",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "芯动联科",
+      "ticker": "688582",
+      "symbol": "688582.SS",
+      "group": "芯片设计",
+      "summary": "MEMS / 传感器",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "成都华微",
+      "ticker": "688709",
+      "symbol": "688709.SS",
+      "group": "芯片设计",
+      "summary": "MEMS / 传感器",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "中芯国际",
+      "ticker": "688981",
+      "symbol": "688981.SS",
+      "group": "晶圆制造",
+      "summary": "晶圆代工",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "华虹公司",
+      "ticker": "688347",
+      "symbol": "688347.SS",
+      "group": "晶圆制造",
+      "summary": "晶圆代工",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "华润微",
+      "ticker": "688396",
+      "symbol": "688396.SS",
+      "group": "晶圆制造",
+      "summary": "特色工艺 / IDM",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "士兰微",
+      "ticker": "600460",
+      "symbol": "600460.SS",
+      "group": "晶圆制造",
+      "summary": "特色工艺 / IDM",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "立昂微",
+      "ticker": "605358",
+      "symbol": "605358.SS",
+      "group": "晶圆制造",
+      "summary": "特色工艺 / IDM",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "赛微电子",
+      "ticker": "300456",
+      "symbol": "300456.SZ",
+      "group": "晶圆制造",
+      "summary": "特色工艺 / IDM",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "晶合集成",
+      "ticker": "688249",
+      "symbol": "688249.SS",
+      "group": "晶圆制造",
+      "summary": "晶圆代工",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "长电科技",
+      "ticker": "600584",
+      "symbol": "600584.SS",
+      "group": "封装测试",
+      "summary": "传统封测 + 先进封装 / Chiplet + 混合键合 / TSV",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "通富微电",
+      "ticker": "002156",
+      "symbol": "002156.SZ",
+      "group": "封装测试",
+      "summary": "传统封测 + 先进封装 / Chiplet + 混合键合 / TSV",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "华天科技",
+      "ticker": "002185",
+      "symbol": "002185.SZ",
+      "group": "封装测试",
+      "summary": "传统封测 + 先进封装 / Chiplet + 混合键合 / TSV",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "甬矽电子",
+      "ticker": "688362",
+      "symbol": "688362.SS",
+      "group": "封装测试",
+      "summary": "传统封测 + 先进封装 / Chiplet",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "晶方科技",
+      "ticker": "603005",
+      "symbol": "603005.SS",
+      "group": "封装测试",
+      "summary": "传统封测 + 先进封装 / Chiplet",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "利扬芯片",
+      "ticker": "688135",
+      "symbol": "688135.SS",
+      "group": "封装测试",
+      "summary": "传统封测",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "伟测科技",
+      "ticker": "688372",
+      "symbol": "688372.SS",
+      "group": "封装测试",
+      "summary": "传统封测",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "气派科技",
+      "ticker": "688216",
+      "symbol": "688216.SS",
+      "group": "封装测试",
+      "summary": "传统封测",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "太极实业",
+      "ticker": "600667",
+      "symbol": "600667.SS",
+      "group": "封装测试",
+      "summary": "传统封测",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "深南电路",
+      "ticker": "002916",
+      "symbol": "002916.SZ",
+      "group": "封装测试",
+      "summary": "封装基板",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "兴森科技",
+      "ticker": "002436",
+      "symbol": "002436.SZ",
+      "group": "封装测试",
+      "summary": "封装基板",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "华海诚科",
+      "ticker": "688535",
+      "symbol": "688535.SS",
+      "group": "封装测试",
+      "summary": "塑封料 / 引线框架 / 键合丝",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "康强电子",
+      "ticker": "002119",
+      "symbol": "002119.SZ",
+      "group": "封装测试",
+      "summary": "塑封料 / 引线框架 / 键合丝",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "华润微",
+      "ticker": "688396",
+      "symbol": "688396.SS",
+      "group": "功率半导体",
+      "summary": "硅功率 + SiC / GaN",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "士兰微",
+      "ticker": "600460",
+      "symbol": "600460.SS",
+      "group": "功率半导体",
+      "summary": "硅功率 + SiC / GaN",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "斯达半导",
+      "ticker": "603290",
+      "symbol": "603290.SS",
+      "group": "功率半导体",
+      "summary": "硅功率 + SiC / GaN",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "扬杰科技",
+      "ticker": "300373",
+      "symbol": "300373.SZ",
+      "group": "功率半导体",
+      "summary": "硅功率 + SiC / GaN",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "捷捷微电",
+      "ticker": "300623",
+      "symbol": "300623.SZ",
+      "group": "功率半导体",
+      "summary": "硅功率",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "东微半导",
+      "ticker": "688261",
+      "symbol": "688261.SS",
+      "group": "功率半导体",
+      "summary": "硅功率 + SiC / GaN",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "新洁能",
+      "ticker": "605111",
+      "symbol": "605111.SS",
+      "group": "功率半导体",
+      "summary": "硅功率",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "宏微科技",
+      "ticker": "688711",
+      "symbol": "688711.SS",
+      "group": "功率半导体",
+      "summary": "硅功率",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "台基股份",
+      "ticker": "300046",
+      "symbol": "300046.SZ",
+      "group": "功率半导体",
+      "summary": "硅功率",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "华微电子",
+      "ticker": "600360",
+      "symbol": "600360.SS",
+      "group": "功率半导体",
+      "summary": "硅功率",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "苏州固锝",
+      "ticker": "002079",
+      "symbol": "002079.SZ",
+      "group": "功率半导体",
+      "summary": "硅功率",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "银河微电",
+      "ticker": "688689",
+      "symbol": "688689.SS",
+      "group": "功率半导体",
+      "summary": "硅功率",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "时代电气",
+      "ticker": "688187",
+      "symbol": "688187.SS",
+      "group": "功率半导体",
+      "summary": "硅功率 + SiC / GaN",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "天岳先进",
+      "ticker": "688234",
+      "symbol": "688234.SS",
+      "group": "功率半导体",
+      "summary": "SiC 衬底 / 外延",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "三安光电",
+      "ticker": "600703",
+      "symbol": "600703.SS",
+      "group": "功率半导体",
+      "summary": "SiC 衬底 / 外延；LED / 化合物光电",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "晶盛机电",
+      "ticker": "300316",
+      "symbol": "300316.SZ",
+      "group": "功率半导体",
+      "summary": "SiC 衬底 / 外延",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "华灿光电",
+      "ticker": "300323",
+      "symbol": "300323.SZ",
+      "group": "功率半导体",
+      "summary": "LED / 化合物光电",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "芯瑞达",
+      "ticker": "002983",
+      "symbol": "002983.SZ",
+      "group": "功率半导体",
+      "summary": "LED / 化合物光电",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "乾照光电",
+      "ticker": "300102",
+      "symbol": "300102.SZ",
+      "group": "功率半导体",
+      "summary": "LED / 化合物光电",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "国星光电",
+      "ticker": "002449",
+      "symbol": "002449.SZ",
+      "group": "功率半导体",
+      "summary": "LED / 化合物光电",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "聚飞光电",
+      "ticker": "300303",
+      "symbol": "300303.SZ",
+      "group": "功率半导体",
+      "summary": "LED / 化合物光电",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "云南锗业",
+      "ticker": "002428",
+      "symbol": "002428.SZ",
+      "group": "光通信",
+      "summary": "InP / GaAs 衬底",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "源杰科技",
+      "ticker": "688498",
+      "symbol": "688498.SS",
+      "group": "光通信",
+      "summary": "激光芯片、DFB、EML、CW 光源",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "长光华芯",
+      "ticker": "688048",
+      "symbol": "688048.SS",
+      "group": "光通信",
+      "summary": "激光芯片、VCSEL",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "炬光科技",
+      "ticker": "688167",
+      "symbol": "688167.SS",
+      "group": "光通信",
+      "summary": "激光光芯片",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "光迅科技",
+      "ticker": "002281",
+      "symbol": "002281.SZ",
+      "group": "光通信",
+      "summary": "激光芯片、探测芯片、硅光/CPO/LPO、光模块、无源器件",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "永鼎股份",
+      "ticker": "600105",
+      "symbol": "600105.SS",
+      "group": "光通信",
+      "summary": "激光芯片 + 光纤光缆",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "中际旭创",
+      "ticker": "300308",
+      "symbol": "300308.SZ",
+      "group": "光通信",
+      "summary": "硅光 / CPO / LPO、光模块、相干通信",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "新易盛",
+      "ticker": "300502",
+      "symbol": "300502.SZ",
+      "group": "光通信",
+      "summary": "硅光 / CPO / LPO、光模块",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "天孚通信",
+      "ticker": "300394",
+      "symbol": "300394.SZ",
+      "group": "光通信",
+      "summary": "硅光/CPO/LPO、无源器件、FAU/MPO",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "德科立",
+      "ticker": "688205",
+      "symbol": "688205.SS",
+      "group": "光通信",
+      "summary": "硅光/CPO/LPO、光模块、相干通信",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "太辰光",
+      "ticker": "300570",
+      "symbol": "300570.SZ",
+      "group": "光通信",
+      "summary": "硅光/CPO/LPO、无源器件、FAU/MPO",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "长芯博创",
+      "ticker": "300548",
+      "symbol": "300548.SZ",
+      "group": "光通信",
+      "summary": "光模块、无源器件、FAU/MPO",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "剑桥科技",
+      "ticker": "603083",
+      "symbol": "603083.SS",
+      "group": "光通信",
+      "summary": "光模块",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "光库科技",
+      "ticker": "300620",
+      "symbol": "300620.SZ",
+      "group": "光通信",
+      "summary": "无源光器件、薄膜铌酸锂调制",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "长盈通",
+      "ticker": "688143",
+      "symbol": "688143.SS",
+      "group": "光通信",
+      "summary": "无源器件 + 光纤光缆",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "长飞光纤",
+      "ticker": "601869",
+      "symbol": "601869.SS",
+      "group": "光通信",
+      "summary": "光纤 / 光缆 / 预制棒",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "亨通光电",
+      "ticker": "600487",
+      "symbol": "600487.SS",
+      "group": "光通信",
+      "summary": "光纤 / 光缆 / 预制棒",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "中天科技",
+      "ticker": "600522",
+      "symbol": "600522.SS",
+      "group": "光通信",
+      "summary": "光纤 / 光缆 / 预制棒",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "汇源通信",
+      "ticker": "000586",
+      "symbol": "000586.SZ",
+      "group": "光通信",
+      "summary": "光纤 / 光缆 / 预制棒",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "烽火通信",
+      "ticker": "600498",
+      "symbol": "600498.SS",
+      "group": "光通信",
+      "summary": "光纤 / 光缆 / 预制棒",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "罗博特科",
+      "ticker": "300757",
+      "symbol": "300757.SZ",
+      "group": "光通信",
+      "summary": "光耦合 / 封装 / 测试设备",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "博众精工",
+      "ticker": "688097",
+      "symbol": "688097.SS",
+      "group": "光通信",
+      "summary": "光耦合 / 封装 / 测试设备",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "科瑞技术",
+      "ticker": "002957",
+      "symbol": "002957.SZ",
+      "group": "光通信",
+      "summary": "光耦合 / 封装 / 测试设备",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "德龙激光",
+      "ticker": "688170",
+      "symbol": "688170.SS",
+      "group": "光通信",
+      "summary": "光耦合 / 封装 / 测试设备",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "杰普特",
+      "ticker": "688025",
+      "symbol": "688025.SS",
+      "group": "光通信",
+      "summary": "光耦合 / 封装 / 测试设备",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "燕麦科技",
+      "ticker": "688312",
+      "symbol": "688312.SS",
+      "group": "光通信",
+      "summary": "光耦合 / 封装 / 测试设备",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "沪电股份",
+      "ticker": "002463",
+      "symbol": "002463.SZ",
+      "group": "PCB覆铜板",
+      "summary": "PCB / FPC / HDI 候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "胜宏科技",
+      "ticker": "300476",
+      "symbol": "300476.SZ",
+      "group": "PCB覆铜板",
+      "summary": "PCB / FPC / HDI 候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "深南电路",
+      "ticker": "002916",
+      "symbol": "002916.SZ",
+      "group": "PCB覆铜板",
+      "summary": "PCB / FPC / HDI 候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "生益电子",
+      "ticker": "688183",
+      "symbol": "688183.SS",
+      "group": "PCB覆铜板",
+      "summary": "PCB / FPC / HDI 候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "世运电路",
+      "ticker": "603920",
+      "symbol": "603920.SS",
+      "group": "PCB覆铜板",
+      "summary": "PCB / FPC / HDI 候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "崇达技术",
+      "ticker": "002815",
+      "symbol": "002815.SZ",
+      "group": "PCB覆铜板",
+      "summary": "PCB / FPC / HDI 候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "天津普林",
+      "ticker": "002134",
+      "symbol": "002134.SZ",
+      "group": "PCB覆铜板",
+      "summary": "PCB / FPC / HDI 候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "中京电子",
+      "ticker": "002579",
+      "symbol": "002579.SZ",
+      "group": "PCB覆铜板",
+      "summary": "PCB / FPC / HDI 候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "奥士康",
+      "ticker": "002913",
+      "symbol": "002913.SZ",
+      "group": "PCB覆铜板",
+      "summary": "PCB / FPC / HDI 候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "景旺电子",
+      "ticker": "603228",
+      "symbol": "603228.SS",
+      "group": "PCB覆铜板",
+      "summary": "PCB / FPC / HDI 候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "骏亚科技",
+      "ticker": "603386",
+      "symbol": "603386.SS",
+      "group": "PCB覆铜板",
+      "summary": "PCB / FPC / HDI 候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "四会富仕",
+      "ticker": "300852",
+      "symbol": "300852.SZ",
+      "group": "PCB覆铜板",
+      "summary": "PCB / FPC / HDI 候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "博敏电子",
+      "ticker": "603936",
+      "symbol": "603936.SS",
+      "group": "PCB覆铜板",
+      "summary": "PCB / FPC / HDI 候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "兴森科技",
+      "ticker": "002436",
+      "symbol": "002436.SZ",
+      "group": "PCB覆铜板",
+      "summary": "PCB / FPC / HDI 候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "东山精密",
+      "ticker": "002384",
+      "symbol": "002384.SZ",
+      "group": "PCB覆铜板",
+      "summary": "PCB / FPC / HDI 候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "鹏鼎控股",
+      "ticker": "002938",
+      "symbol": "002938.SZ",
+      "group": "PCB覆铜板",
+      "summary": "PCB / FPC / HDI 候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "弘信电子",
+      "ticker": "300657",
+      "symbol": "300657.SZ",
+      "group": "PCB覆铜板",
+      "summary": "PCB / FPC / HDI 候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "中富电路",
+      "ticker": "300814",
+      "symbol": "300814.SZ",
+      "group": "PCB覆铜板",
+      "summary": "PCB / FPC / HDI 候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "生益科技",
+      "ticker": "600183",
+      "symbol": "600183.SS",
+      "group": "PCB覆铜板",
+      "summary": "覆铜板 / 粘结片",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "金安国纪",
+      "ticker": "002636",
+      "symbol": "002636.SZ",
+      "group": "PCB覆铜板",
+      "summary": "覆铜板 / 上游材料",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "华正新材",
+      "ticker": "603186",
+      "symbol": "603186.SS",
+      "group": "PCB覆铜板",
+      "summary": "覆铜板 / 上游材料",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "南亚新材",
+      "ticker": "688519",
+      "symbol": "688519.SS",
+      "group": "PCB覆铜板",
+      "summary": "覆铜板 / 上游材料",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "德福科技",
+      "ticker": "301511",
+      "symbol": "301511.SZ",
+      "group": "PCB覆铜板",
+      "summary": "覆铜板 / 上游材料",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "中国巨石",
+      "ticker": "600176",
+      "symbol": "600176.SS",
+      "group": "PCB覆铜板",
+      "summary": "覆铜板 / 上游材料",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "中材科技",
+      "ticker": "002080",
+      "symbol": "002080.SZ",
+      "group": "PCB覆铜板",
+      "summary": "覆铜板 / 上游材料",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "宏和科技",
+      "ticker": "603256",
+      "symbol": "603256.SS",
+      "group": "PCB覆铜板",
+      "summary": "覆铜板 / 上游材料",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "山东玻纤",
+      "ticker": "605006",
+      "symbol": "605006.SS",
+      "group": "PCB覆铜板",
+      "summary": "覆铜板 / 上游材料",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "万华化学",
+      "ticker": "600309",
+      "symbol": "600309.SS",
+      "group": "PCB覆铜板",
+      "summary": "覆铜板 / 上游材料",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "飞凯材料",
+      "ticker": "300398",
+      "symbol": "300398.SZ",
+      "group": "PCB覆铜板",
+      "summary": "覆铜板 / 上游材料",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "联瑞新材",
+      "ticker": "688300",
+      "symbol": "688300.SS",
+      "group": "PCB覆铜板",
+      "summary": "覆铜板 / 上游材料",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "鼎泰高科",
+      "ticker": "301377",
+      "symbol": "301377.SZ",
+      "group": "PCB覆铜板",
+      "summary": "PCB 设备 / 材料候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "芯碁微装",
+      "ticker": "688630",
+      "symbol": "688630.SS",
+      "group": "PCB覆铜板",
+      "summary": "PCB 设备 / 材料候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "大族激光",
+      "ticker": "002008",
+      "symbol": "002008.SZ",
+      "group": "PCB覆铜板",
+      "summary": "PCB 设备 / 材料候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "东威科技",
+      "ticker": "688700",
+      "symbol": "688700.SS",
+      "group": "PCB覆铜板",
+      "summary": "PCB 设备 / 材料候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "苏大维格",
+      "ticker": "300331",
+      "symbol": "300331.SZ",
+      "group": "PCB覆铜板",
+      "summary": "PCB 设备 / 材料候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "容大感光",
+      "ticker": "300576",
+      "symbol": "300576.SZ",
+      "group": "PCB覆铜板",
+      "summary": "PCB 设备 / 材料候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "强力新材",
+      "ticker": "300429",
+      "symbol": "300429.SZ",
+      "group": "PCB覆铜板",
+      "summary": "PCB 设备 / 材料候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "正业科技",
+      "ticker": "300410",
+      "symbol": "300410.SZ",
+      "group": "PCB覆铜板",
+      "summary": "PCB 设备 / 材料候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "天承科技",
+      "ticker": "688603",
+      "symbol": "688603.SS",
+      "group": "PCB覆铜板",
+      "summary": "PCB 设备 / 材料候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "广信材料",
+      "ticker": "300537",
+      "symbol": "300537.SZ",
+      "group": "PCB覆铜板",
+      "summary": "PCB 设备 / 材料候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "沃格光电",
+      "ticker": "603773",
+      "symbol": "603773.SS",
+      "group": "玻璃基板",
+      "summary": "TGV、金属化、玻璃键合",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "苏大维格",
+      "ticker": "300331",
+      "symbol": "300331.SZ",
+      "group": "玻璃基板",
+      "summary": "先进玻璃 / 微纳研究候选",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "德龙激光",
+      "ticker": "688170",
+      "symbol": "688170.SS",
+      "group": "玻璃基板",
+      "summary": "玻璃加工设备相关",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "杰普特",
+      "ticker": "688025",
+      "symbol": "688025.SS",
+      "group": "玻璃基板",
+      "summary": "激光加工相关",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "东威科技",
+      "ticker": "688700",
+      "symbol": "688700.SS",
+      "group": "玻璃基板",
+      "summary": "电镀 / 金属化设备相关",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "凯盛科技",
+      "ticker": "600552",
+      "symbol": "600552.SS",
+      "group": "玻璃基板",
+      "summary": "玻璃材料相关",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "南玻A",
+      "ticker": "000012",
+      "symbol": "000012.SZ",
+      "group": "玻璃基板",
+      "summary": "玻璃材料相关",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "水晶光电",
+      "ticker": "002273",
+      "symbol": "002273.SZ",
+      "group": "玻璃基板",
+      "summary": "光学 / 玻璃相关",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "大族激光",
+      "ticker": "002008",
+      "symbol": "002008.SZ",
+      "group": "玻璃基板",
+      "summary": "激光加工相关",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "华大九天",
+      "ticker": "301269",
+      "symbol": "301269.SZ",
+      "group": "工具配套",
+      "summary": "EDA",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "概伦电子",
+      "ticker": "688206",
+      "symbol": "688206.SS",
+      "group": "工具配套",
+      "summary": "EDA",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "广立微",
+      "ticker": "301095",
+      "symbol": "301095.SZ",
+      "group": "工具配套",
+      "summary": "EDA / 良率相关",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "芯原股份",
+      "ticker": "688521",
+      "symbol": "688521.SS",
+      "group": "工具配套",
+      "summary": "半导体 IP / 芯片设计服务",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "富创精密",
+      "ticker": "688409",
+      "symbol": "688409.SS",
+      "group": "工具配套",
+      "summary": "半导体设备精密零部件",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "新莱应材",
+      "ticker": "300260",
+      "symbol": "300260.SZ",
+      "group": "工具配套",
+      "summary": "高纯流体系统零部件",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "正帆科技",
+      "ticker": "688596",
+      "symbol": "688596.SS",
+      "group": "工具配套",
+      "summary": "高纯工艺系统 / 厂务",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "至纯科技",
+      "ticker": "603690",
+      "symbol": "603690.SS",
+      "group": "工具配套",
+      "summary": "高纯工艺 / 清洗及厂务",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "亚翔集成",
+      "ticker": "603929",
+      "symbol": "603929.SS",
+      "group": "工具配套",
+      "summary": "洁净室 / 半导体工程",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "圣晖集成",
+      "ticker": "603163",
+      "symbol": "603163.SS",
+      "group": "工具配套",
+      "summary": "洁净室 / 工程",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "美埃科技",
+      "ticker": "688376",
+      "symbol": "688376.SS",
+      "group": "工具配套",
+      "summary": "洁净空气系统",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "广钢气体",
+      "ticker": "688548",
+      "symbol": "688548.SS",
+      "group": "工具配套",
+      "summary": "电子大宗气体",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "利扬芯片",
+      "ticker": "688135",
+      "symbol": "688135.SS",
+      "group": "工具配套",
+      "summary": "芯片测试",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "伟测科技",
+      "ticker": "688372",
+      "symbol": "688372.SS",
+      "group": "工具配套",
+      "summary": "芯片测试",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "华测检测",
+      "ticker": "300012",
+      "symbol": "300012.SZ",
+      "group": "工具配套",
+      "summary": "检测服务",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "苏试试验",
+      "ticker": "300416",
+      "symbol": "300416.SZ",
+      "group": "工具配套",
+      "summary": "可靠性测试",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    },
+    {
+      "name": "西测测试",
+      "ticker": "301306",
+      "symbol": "301306.SZ",
+      "group": "工具配套",
+      "summary": "检测 / 可靠性测试",
+      "market": "CN",
+      "verification": "pending",
+      "source": "nano-ai"
+    }
+  ]
+}

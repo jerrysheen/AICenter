@@ -451,8 +451,15 @@ test('agent HTTP endpoint accepts an authenticated question and exposes job stat
     assert.equal(listed.status, 200);
     const sessions = await listed.json();
     assert.ok(sessions.sessions.some((session) => session.id === created.sessionId));
+    assert.ok(sessions.pendingRuns.some((run) => run.runId === created.runId && run.status === 'queued'));
+    const active = await fetch(`${address.localUrl}/api/v1/agent/runs`, { headers: { Cookie: cookie } });
+    assert.equal(active.status, 200);
+    const activePayload = await active.json();
+    assert.ok(activePayload.runs.some((run) => run.runId === created.runId && run.sessionId === created.sessionId));
     const detail = await fetch(`${address.localUrl}/api/v1/agent/sessions/${created.sessionId}`, { headers: { Cookie: cookie } });
     assert.equal(detail.status, 200);
+    const detailPayload = await detail.json();
+    assert.ok(detailPayload.exchanges.some((item) => item.id === created.runId && item.status === 'queued'));
     const status = await fetch(`${address.localUrl}/api/v1/agent/runs/${created.runId}`, { headers: { Cookie: cookie } });
     assert.equal(status.status, 200);
     const payload = await status.json();

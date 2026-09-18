@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#FFFFFF">
   <title>AI Center</title>
-  <link rel="stylesheet" href="/styles.css?v=feed-delete-click-v1">
+  <link rel="stylesheet" href="/styles.css?v=ask-dock-v2">
 </head>
 <body data-view="sources">
   <section class="connection-gate hidden" id="unpaired-panel" aria-live="polite">
@@ -35,18 +35,20 @@
 
     <div class="app-frame">
       <header class="title-bar">
+        <button class="icon-button hidden" id="nav-back" type="button" aria-label="返回"></button>
         <div class="title-default">
           <h1 id="page-title">总览</h1>
           <p class="title-sub" id="page-subtitle">信息、市场与新闻里抽出的最高优先级内容</p>
         </div>
-        <label class="search-field">
+        <label class="search-field" id="header-search">
           <span class="vh">搜索</span>
           <input id="global-search" type="search" placeholder="搜索信息 / 标的 / 问题" autocomplete="off">
         </label>
         <div class="title-actions">
-          <button class="icon-button" id="reload-view" type="button" aria-label="刷新当前页"></button>
-          <button class="icon-button" id="open-compose" type="button" aria-label="快速发布" data-action="compose"></button>
-          <button class="icon-button" id="open-settings" type="button" aria-label="设置"></button>
+          <button class="icon-button ghost" id="toggle-search" type="button" aria-label="搜索"></button>
+          <button class="icon-button ghost" id="reload-view" type="button" aria-label="刷新当前页"></button>
+          <button class="icon-button ghost" id="open-compose" type="button" aria-label="快速发布" data-action="compose"></button>
+          <button class="icon-button ghost" id="open-settings" type="button" aria-label="设置"></button>
           <div class="connection-state" id="connection-state"><i></i><span>正在连接</span></div>
         </div>
         <div class="title-meta hidden-visual">
@@ -59,14 +61,19 @@
         <nav class="overview-subnav market-tabs" id="overview-subnav" aria-label="总览二级"></nav>
         <section class="view" id="view-feed" data-view-panel="feed">
           <div id="authorized-feed">
-            <div class="channel-bar">
+            <div class="channel-bar source-control">
               <div class="channel-tabs" id="channel-tabs" role="tablist" aria-label="信息范围"></div>
-              <span class="feed-count" id="feed-count">0 条</span>
+              <button class="icon-button ghost" id="feed-filter" type="button" aria-label="信息流筛选"></button>
             </div>
-            <div class="chip-tabs" id="platform-filters" role="tablist" aria-label="平台筛选"></div>
-            <div class="follow-toolbar hidden" id="bilibili-toolbar">
-              <p id="bilibili-feed-status">粘贴 B 站视频链接，用已登录浏览器只抓 AI 中文字幕；没有就直接返回没有。</p>
-              <form class="x-toolbar-actions" id="bilibili-import-form">
+            <div class="chip-tabs hidden" id="platform-filters" role="tablist" aria-label="平台筛选"></div>
+            <div class="mini-status" id="feed-status-row">
+              <span class="feed-count" id="feed-count">0 条</span>
+              <button class="text-button" id="feed-open-calendar" type="button">日程 ›</button>
+            </div>
+            <div class="social-toolbar hidden" id="bilibili-toolbar">
+              <p id="bilibili-feed-status">已保存的 B 站字幕</p>
+              <button class="text-button" id="bilibili-more" type="button">更多</button>
+              <form class="hidden" id="bilibili-import-form">
                 <label class="inline-field url-field">
                   <span class="vh">B站链接</span>
                   <input id="bilibili-url" name="url" type="text" placeholder="粘贴 bilibili.com 或 b23.tv 链接" autocomplete="off">
@@ -74,14 +81,13 @@
                 <button class="text-button" id="bilibili-import" type="submit">拉取字幕</button>
               </form>
             </div>
-            <div class="follow-toolbar hidden" id="x-toolbar">
-              <p id="x-feed-status">用已连接 BrowserSkill 的浏览器拉取首页 50 条。需要先在该浏览器登录 X。</p>
-              <div class="x-toolbar-actions">
-                <div class="chip-tabs" id="x-feed-tabs" role="tablist" aria-label="X 时间线"></div>
-              </div>
+            <div class="social-toolbar hidden" id="x-toolbar">
+              <div class="chip-tabs" id="x-feed-tabs" role="tablist" aria-label="X 时间线"></div>
+              <button class="text-button" id="x-more" type="button">更多</button>
             </div>
+            <p class="source-read-state hidden" id="x-feed-status"></p>
             <div class="follow-toolbar hidden" id="x-translate-bar">
-              <p id="x-translate-status">从最新的非中文推文开始翻译，一次最多 30 条，按约 5000 字分组发给模型。</p>
+              <p id="x-translate-status">来源任务里可拉取、翻译和标注。</p>
               <div class="x-action-buttons">
                 <button class="primary-button" id="x-refresh" type="button">拉取 50 条</button>
                 <button class="primary-button" id="x-translate" type="button">翻译 30 条</button>
@@ -111,11 +117,9 @@
             <div class="market-table-scroll hidden" id="market-table-scroll">
               <div class="market-table">
                 <div class="market-head" id="market-head">
-                  <span>标的</span>
-                  <span>走势</span>
-                  <span>最新价</span>
-                  <button class="market-sort" id="market-sort" type="button" aria-label="按涨跌幅排序">涨跌幅</button>
-                  <span>成交</span>
+                  <span>名称</span>
+                  <span class="spark-head">走势</span>
+                  <button class="market-sort" id="market-sort" type="button" aria-label="按涨跌幅排序">现价 / 涨跌</button>
                 </div>
                 <div class="quote-list" id="quote-list"></div>
               </div>
@@ -125,17 +129,15 @@
           <div class="trade-pane" data-trade-pane="assets">
             <div class="chip-tabs" id="asset-filters" role="tablist" aria-label="资产分类"></div>
             <label class="market-filter" id="asset-filter-wrap">
-              <span class="vh">筛选全球资产</span>
+              <span class="vh">筛选全球行情</span>
               <input id="asset-filter" type="search" placeholder="名称 / 代码 / 介绍" autocomplete="off">
             </label>
             <div class="market-table-scroll" id="asset-table-scroll">
               <div class="market-table">
                 <div class="market-head">
-                  <span>标的</span>
-                  <span>走势</span>
-                  <span>最新价</span>
-                  <button class="market-sort" id="asset-sort" type="button" aria-label="按涨跌幅排序">涨跌幅</button>
-                  <span>成交</span>
+                  <span>名称</span>
+                  <span class="spark-head">走势</span>
+                  <button class="market-sort" id="asset-sort" type="button" aria-label="按涨跌幅排序">现价 / 涨跌</button>
                 </div>
                 <div class="quote-list" id="asset-list"></div>
               </div>
@@ -150,6 +152,7 @@
           <div class="trade-pane is-active" data-trade-pane="holdings">
             <div class="holdings-toolbar">
               <p class="section-kicker" id="holdings-note">打开后读取本地批次账本，并用实时行情和汇率核算。</p>
+              <button class="icon-button ghost" id="holdings-privacy" type="button" aria-label="隐藏或显示金额"></button>
               <button class="text-button" id="holdings-refresh" type="button">刷新行情</button>
             </div>
             <div id="holdings-overview">
@@ -210,24 +213,95 @@
         </section>
 
         <section class="view is-active" id="view-sources" data-view-panel="sources">
-          <section class="hub-stage">
-            <div class="hub-chart-slot">
-              <header class="hub-stage-label">行情看板 · 图表位</header>
-              <div class="hub-ticker" id="hub-ticker"></div>
+          <div id="overview-home">
+            <div class="overview-columns dashboard">
+              <section class="dashboard-market">
+                <div class="ticker-strip" id="hub-ticker"></div>
+                <div class="mini-status" id="hub-market-status">
+                  <span id="hub-market-note">行情连接后显示更新时间</span>
+                  <button class="text-button" id="open-all-quotes" type="button">全部行情 ›</button>
+                </div>
+              </section>
+              <section class="dashboard-upcoming agenda-peek">
+                <div class="compact-label">
+                  <h2>近期日程</h2>
+                  <button class="text-button" id="open-full-schedule" type="button">完整日历 ›</button>
+                </div>
+                <div id="static-upcoming"></div>
+              </section>
+              <section class="dashboard-feed">
+                <div class="timeline-controls latest-head">
+                  <h2>最新内容</h2>
+                  <div class="dense-tabs" id="overview-timeline-tabs" role="tablist" aria-label="内容筛选"></div>
+                </div>
+                <div class="timeline-day hidden" id="overview-timeline-day"></div>
+                <div id="overview-timeline"></div>
+                <div class="section-links">
+                  <button class="text-button" id="open-full-feed" type="button">进入完整信息流 ›</button>
+                  <button class="text-button" id="open-source-catalog" type="button">查看信源 ›</button>
+                </div>
+              </section>
             </div>
-            <div class="hub-excerpt-slot">
-              <header class="hub-stage-label">信息摘选</header>
-              <div class="hub-excerpts" id="hub-excerpts"></div>
+            <p class="static-board-note" id="static-board-note" aria-live="polite"></p>
+            <section class="market-native-section" aria-labelledby="market-native-title">
+              <div class="source-group-heading">
+                <div>
+                  <p class="section-kicker">市场原生数据</p>
+                  <h2 id="market-native-title">公开市场正在交易什么</h2>
+                </div>
+              </div>
+              <div class="market-native-board">
+                <article class="market-native-panel market-native-prediction-panel">
+                  <header>
+                    <div><small>P0</small><h3>事件市场</h3></div>
+                    <span>Polymarket · Kalshi</span>
+                  </header>
+                  <div class="market-native-list" id="market-native-predictions"></div>
+                </article>
+                <article class="market-native-panel">
+                  <header>
+                    <div><small>P1</small><h3>Crypto 永续</h3></div>
+                    <span>Hyperliquid</span>
+                  </header>
+                  <div class="market-native-list" id="market-native-derivatives"></div>
+                </article>
+                <article class="market-native-panel">
+                  <header>
+                    <div><small>P1</small><h3>稳定币流动性</h3></div>
+                    <span>DefiLlama</span>
+                  </header>
+                  <div class="market-native-list" id="market-native-liquidity"></div>
+                </article>
+              </div>
+              <p class="static-board-note" id="market-native-note" aria-live="polite"></p>
+            </section>
+          </div>
+
+          <div class="hidden" id="overview-schedule">
+            <button class="text-button" id="schedule-back" type="button">返回总览</button>
+            <div class="static-board-heading">
+              <h2>完整日程</h2>
+              <div class="static-board-tabs" id="static-schedule-tabs"></div>
             </div>
-          </section>
-          <p class="section-kicker">后续在这里继续加自选图表、宽度和重点看板。</p>
+            <div class="static-board-list" id="static-schedule-list"></div>
+          </div>
+
+          <div class="hidden" id="overview-catalog">
+            <button class="text-button" id="catalog-back" type="button">返回总览</button>
+            <label class="search-box">
+              <span class="vh">查找信源</span>
+              <input id="source-catalog-filter" type="search" placeholder="查找信源名称" autocomplete="off">
+            </label>
+            <div class="dense-tabs" id="source-catalog-tabs" role="tablist" aria-label="信源类型"></div>
+            <div class="source-groups" id="static-source-groups"></div>
+          </div>
         </section>
 
         <section class="view" id="view-inspire" data-view-panel="inspire">
-          <form id="note-form" class="note-composer">
+          <form id="note-form" class="note-composer capture">
             <label>
-              <span>灵感</span>
-              <textarea id="note-body" name="body" maxlength="100000" rows="5" placeholder="马上记下一条，不必写标题"></textarea>
+              <span class="vh">灵感</span>
+              <textarea id="note-body" name="body" maxlength="100000" rows="2" placeholder="有什么想法，先记下来…"></textarea>
             </label>
             <div class="note-share-source hidden" id="note-share-source" aria-live="polite"></div>
             <input id="note-title" name="title" type="hidden">
@@ -236,12 +310,19 @@
             <input id="note-source-type" name="sourceType" type="hidden">
             <input id="note-capture-channel" name="captureChannel" type="hidden" value="web">
             <input id="note-source-app" name="sourceApp" type="hidden">
-            <div class="form-actions">
-              <button class="ai-toggle" id="note-ai-toggle" type="button" aria-pressed="false">AI 加工</button>
-              <button class="primary-button" type="submit">记下</button>
+            <div class="capture-actions">
+              <small class="muted">无需标题 · 先保存原文</small>
+              <div class="form-actions">
+                <button class="ai-toggle" id="note-ai-toggle" type="button" aria-pressed="false">AI 加工</button>
+                <button class="primary-button" type="submit">记下</button>
+              </div>
             </div>
           </form>
-          <div class="section-kicker">列表只显示标题；点开后才看正文。左滑可置顶、转入知识库或删除。</div>
+          <button class="return-entry hidden" id="note-focus-entry" type="button">
+            <strong>接着想一想</strong>
+            <small id="note-focus-hint">回看标记的重点，不催着清空</small>
+          </button>
+          <div class="chip-tabs" id="note-filters" role="tablist" aria-label="灵感筛选"></div>
           <div id="note-list"></div>
         </section>
 
@@ -254,39 +335,45 @@
         <section class="view" id="view-ask" data-view-panel="ask">
           <div class="ask-records" id="ask-records">
             <button class="ask-start" id="ask-start" type="button">
-              <strong>开始提问</strong>
-              <span>用当前知识库、信息流和持仓作答。完成后会出现在下方记录里。</span>
+              <strong>新提问</strong>
+              <span>带着已选材料继续研究，快捷问题只填入输入框。</span>
             </button>
             <section class="ask-history">
-              <h2 class="ask-history-title">历史记录</h2>
+              <h2 class="ask-history-title">继续研究</h2>
               <div id="ask-session-list"><div class="empty-state">正在载入 AI 记录…</div></div>
             </section>
           </div>
           <div class="ask-shell hidden" id="ask-session-shell">
             <button class="text-button ask-back" id="ask-back" type="button">返回记录</button>
             <div class="ask-thread" id="ask-thread">
-              <article class="ask-card" id="ask-intro">
-                <h2>新的问答</h2>
-                <p>这次提问会读取当前知识库、信息流和持仓上下文。完成后会出现在 AI 记录里，之后还能继续追问。</p>
-              </article>
-              <div class="block-label" id="ask-prompt-label">试试这些问题</div>
-              <div class="ask-prompts" id="ask-prompts"></div>
+            <article class="ask-card" id="ask-intro">
+              <h2>新提问</h2>
+              <p class="research-intro">列表里看得见，不等于已经发给模型。指定引用由你选择。</p>
+            </article>
+            <div class="prompt-strip" id="ask-prompts"></div>
+            <div class="dense-tabs" id="ask-material-tabs" role="tablist" aria-label="可选材料"></div>
+            <div id="ask-materials"></div>
+            <div class="block-label hidden" id="ask-prompt-label">试试这些问题</div>
             </div>
             <form class="ask-composer" id="ask-form">
               <div class="ask-ref-chips hidden" id="ask-ref-chips"></div>
               <div class="ask-mention-menu hidden" id="ask-mention-menu" role="listbox" aria-label="可引用的本地知识"></div>
-              <div class="ask-composer-row">
-                <label class="ask-web-mode">
-                  <span class="vh">联网检索</span>
-                  <select name="webMode" aria-label="联网检索">
-                    <option value="off">仅本地</option>
-                    <option value="fallback" selected>必要时联网</option>
-                    <option value="always">允许联网</option>
-                  </select>
-                </label>
-                <input name="question" maxlength="500" placeholder="输入你的问题" autocomplete="off">
-                <button class="icon-button brand" id="ask-send" type="submit" aria-label="发送"></button>
+              <div class="compose-box">
+                <label class="vh" for="ask-question">问题</label>
+                <textarea id="ask-question" name="question" maxlength="4000" rows="1" placeholder="发消息，或 @ 选择资料…"></textarea>
+                <div class="ask-composer-row">
+                  <label class="ask-web-mode">
+                    <span class="vh">联网检索</span>
+                    <select name="webMode" aria-label="联网检索">
+                      <option value="off">仅本地</option>
+                      <option value="fallback" selected>必要时联网</option>
+                      <option value="always">允许联网</option>
+                    </select>
+                  </label>
+                  <button class="icon-button brand ask-send" id="ask-send" type="submit" aria-label="发送"></button>
+                </div>
               </div>
+              <p class="composer-note vh">允许联网是设置；本轮是否实际使用了联网资料，以回答来源为准。</p>
             </form>
           </div>
         </section>
@@ -300,10 +387,15 @@
           <div id="report-list"></div>
         </section>
 
+        <section class="view" id="view-page" data-view-panel="page">
+          <div id="page-root"></div>
+        </section>
+
         <section class="view" id="view-settings" data-view-panel="settings">
-          <div class="connect-stack">
+          <div id="settings-hub"></div>
+          <div class="connect-stack hidden" id="settings-connections">
             <article class="status-card">
-              <h2>设置</h2>
+              <h2>设备连接</h2>
               <p>设备、连接器、数据源和账户管理放在这里，不再占用底栏。二维码只携带短期配对码。</p>
             </article>
 
@@ -352,11 +444,12 @@
       </main>
     </div>
 
+    <button class="ask-live-chip hidden" id="ask-live-chip" type="button">问答进行中</button>
     <nav class="bottom-tab" id="bottom-tab" aria-label="底部页签"></nav>
   </div>
 
   <dialog id="compose-dialog">
-    <button class="dialog-close" type="button" aria-label="关闭">关闭</button>
+    <button class="dialog-close icon-close" type="button" aria-label="关闭"></button>
     <h2>快速发布</h2>
     <p class="section-desc">标题、正文、来源和标签会进入信息流的「全部 / 手工」。</p>
     <div id="authorized-content">
@@ -375,8 +468,15 @@
     </div>
   </dialog>
 
+  <dialog id="feed-filter-dialog">
+    <button class="dialog-close icon-close" type="button" aria-label="关闭"></button>
+    <h2>信息流筛选</h2>
+    <p class="section-desc">排序默认保持收录顺序。平台筛选不会改成全局「关注」。</p>
+    <div id="feed-filter-body"></div>
+  </dialog>
+
   <dialog id="search-dialog">
-    <button class="dialog-close" type="button" aria-label="关闭">关闭</button>
+    <button class="dialog-close icon-close" type="button" aria-label="关闭"></button>
     <h2>搜索标的</h2>
     <p class="section-desc">搜索 Yahoo 公开代码，加入当前看板的本机自选。尚未写入数据库。</p>
     <label>
@@ -387,14 +487,14 @@
   </dialog>
 
   <dialog id="subscriptions-dialog">
-    <button class="dialog-close" type="button" aria-label="关闭">关闭</button>
+    <button class="dialog-close icon-close" type="button" aria-label="关闭"></button>
     <h2>关注对象</h2>
     <p class="section-desc">添加、暂停、删除和刷新会在接口就绪后写入订阅表。当前只确认交互位置。</p>
     <div id="subscription-list"></div>
   </dialog>
 
   <dialog id="holding-dialog">
-    <button class="dialog-close" type="button" aria-label="关闭">关闭</button>
+    <button class="dialog-close icon-close" type="button" aria-label="关闭"></button>
     <h2 id="holding-title">持仓详情</h2>
     <p class="section-desc" id="holding-meta"></p>
     <div class="summary-grid compact" id="holding-metrics"></div>
@@ -402,33 +502,55 @@
     <div class="ledger-list" id="ledger-list"></div>
   </dialog>
 
-  <dialog id="post-dialog">
-    <div class="dialog-panel">
-      <button class="dialog-close" type="button" aria-label="关闭">关闭</button>
-      <h2 id="dialog-title"></h2>
+  <dialog id="post-dialog" class="reader-dialog">
+    <div class="dialog-panel reader-panel">
+      <button class="dialog-close icon-close" type="button" aria-label="关闭"></button>
+      <h2 class="reader-title" id="dialog-title"></h2>
+      <div class="reader-language hidden" id="dialog-language"></div>
       <div id="dialog-translation" class="post-quote hidden"></div>
-      <div id="dialog-body" class="post-body"></div>
+      <div id="dialog-body" class="post-body reader-content"></div>
       <div id="dialog-tags" class="tags"></div>
-      <div class="post-foot" id="dialog-actions">
-        <span class="post-link" id="dialog-source" role="button" tabindex="0">打开原文</span>
-        <span class="post-link" id="dialog-translate" role="button" tabindex="0">翻译</span>
+      <p class="reader-notice hidden" id="dialog-notice"></p>
+      <div class="post-foot reader-bottom" id="dialog-actions">
+        <span class="post-link" id="dialog-source" role="button" tabindex="0">打开来源</span>
+        <span class="post-link" id="dialog-save" role="button" tabindex="0">存入灵感</span>
+        <span class="post-link" id="dialog-cite" role="button" tabindex="0">引用到问答</span>
+        <span class="post-link hidden" id="dialog-translate" role="button" tabindex="0">翻译</span>
       </div>
       <small id="dialog-time"></small>
     </div>
   </dialog>
 
+  <dialog id="source-dialog">
+    <div class="dialog-panel source-dialog-panel">
+      <button class="dialog-close icon-close" type="button" aria-label="关闭"></button>
+      <h2 id="source-dialog-title">静态信号源</h2>
+      <p class="section-desc" id="source-dialog-meta"></p>
+      <div class="static-source-items" id="source-dialog-items"></div>
+    </div>
+  </dialog>
+
   <dialog id="reference-preview">
     <div class="dialog-panel">
-      <button class="dialog-close" type="button" aria-label="关闭">关闭</button>
+      <button class="dialog-close icon-close" type="button" aria-label="关闭"></button>
       <h2 id="reference-preview-title"></h2>
       <p class="section-desc" id="reference-preview-meta"></p>
       <div id="reference-preview-body" class="post-body"></div>
     </div>
   </dialog>
 
+  <dialog id="source-tasks-dialog">
+    <div class="dialog-panel">
+      <button class="dialog-close icon-close" type="button" aria-label="关闭"></button>
+      <h2 id="source-tasks-title">来源任务</h2>
+      <p class="section-desc" id="source-tasks-meta">维护入口。自动化草案不会启动后台调度。</p>
+      <div id="source-tasks-body"></div>
+    </div>
+  </dialog>
+
   <button class="reference-dock hidden" id="reference-dock" type="button" aria-label="打开引用">引用 0 项</button>
 
   <div class="toast" id="toast" role="status"></div>
-  <script type="module" src="/app.js?v=inspire-hidden-fields-v1"></script>
+      <script type="module" src="/app.js?v=ask-dock-v2"></script>
 </body>
 </html>

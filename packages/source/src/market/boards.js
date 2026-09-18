@@ -79,6 +79,12 @@ export function parseAsiaExtraSymbols(raw, marketCatalog) {
   return parseExtras(raw, /^[A-Z0-9^][A-Z0-9.^-]{0,14}$/, known);
 }
 
+export function parseCnExtraSymbols(raw, marketCatalog) {
+  const section = catalogOrDefault(marketCatalog).cn || { indices: [], watchlist: [] };
+  const known = new Set([...section.indices, ...section.watchlist].map((item) => item.symbol));
+  return parseExtras(raw, /^\d{6}\.(SS|SZ)$/, known);
+}
+
 export function usTrackedItems(extraSymbols = [], marketCatalog) {
   const { indices, watchlist } = catalogOrDefault(marketCatalog).us;
   const extras = extraSymbols.map((symbol) => ({ symbol, name: symbol, group: '自选' }));
@@ -89,6 +95,12 @@ export function asiaTrackedItems(extraSymbols = [], marketCatalog) {
   const { indices, watchlist } = catalogOrDefault(marketCatalog).asia;
   const extras = extraSymbols.map((symbol) => ({ symbol, name: symbol, group: '自选' }));
   return [...indices, ...watchlist, ...extras];
+}
+
+export function cnTrackedItems(extraSymbols = [], marketCatalog) {
+  const section = catalogOrDefault(marketCatalog).cn || { indices: [], watchlist: [] };
+  const extras = extraSymbols.map((symbol) => ({ symbol, name: symbol, group: '自选' }));
+  return [...section.indices, ...section.watchlist, ...extras];
 }
 
 function sessionInWindow(nowMs, timeZone, openMinutes, closeMinutes) {
@@ -111,10 +123,37 @@ export function asiaSessionsAt(nowMs = Date.now()) {
   };
 }
 
+export function cnSessionAt(nowMs = Date.now()) {
+  return sessionInWindow(nowMs, 'Asia/Shanghai', 9 * 60 + 30, 15 * 60);
+}
+
+export function preferredOverviewFocus(nowMs = Date.now()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date(nowMs));
+  const weekday = parts.find((part) => part.type === 'weekday')?.value || '';
+  const hour = Number(parts.find((part) => part.type === 'hour')?.value || 0);
+  const minute = Number(parts.find((part) => part.type === 'minute')?.value || 0);
+  const current = hour * 60 + minute;
+  if (weekday !== 'Sat' && weekday !== 'Sun' && current < 17 * 60) return 'cn';
+  return 'us';
+}
+
+function uniqueBySymbol(items) {
+  const seen = new Set();
+  return items.filter((item) => {
+    const key = String(item.symbol || '').toUpperCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function assembleBoard({
-  board, market, session, sessions, note, groups, indices, watchlist, errors, fetchedAt, indexSymbols, currency,
+  board, market, session, sessions, note, groups, indices, watchlist, errors, fetchedAt, indexSymbols, currency, provider, uniqueRankedBySymbol = false,
 }) {
-  const ranked = watchlist.filter((item) => item.changePct !== null && !indexSymbols.has(item.symbol));
+  const rankedSource = uniqueRankedBySymbol ? uniqueBySymbol(watchlist) : watchlist;
+  const ranked = rankedSource.filter((item) => item.changePct !== null && !indexSymbols.has(item.symbol));
   const advancers = ranked.filter((item) => (item.changePct ?? 0) > 0.005).length;
   const decliners = ranked.filter((item) => (item.changePct ?? 0) < -0.005).length;
   const unchanged = Math.max(ranked.length - advancers - decliners, 0);
@@ -127,7 +166,7 @@ function assembleBoard({
     sessions: sessions || null,
     note,
     groups,
-    indices: indices.map((item) => toSnapshot(item, { market: item.market || market, assetClass: 'index', group: '指数', fetchedAt, session, currency })),
+    indices: indices.map((item) => toSnapshot(item, { market: item.market || market, assetClass: 'index', group: '指数', fetchedAt, session, currency, provider })),
     watchlist: watchlist.map((item) => toSnapshot(item, {
       market: item.market || market,
       assetClass: item.assetClass || (item.group === 'ETF' ? 'etf' : 'equity'),
@@ -137,12 +176,13 @@ function assembleBoard({
       fetchedAt,
       session,
       currency,
+      provider,
     })),
     gainers: byMove.filter((item) => (item.changePct ?? 0) > 0).slice(0, 5).map((item) => toSnapshot(item, {
-      market: item.market || market, assetClass: item.assetClass, group: item.group, summary: item.summary, expiry: item.expiry, fetchedAt, session, currency,
+      market: item.market || market, assetClass: item.assetClass, group: item.group, summary: item.summary, expiry: item.expiry, fetchedAt, session, currency, provider,
     })),
     losers: [...byMove].reverse().filter((item) => (item.changePct ?? 0) < 0).slice(0, 5).map((item) => toSnapshot(item, {
-      market: item.market || market, assetClass: item.assetClass, group: item.group, summary: item.summary, expiry: item.expiry, fetchedAt, session, currency,
+      market: item.market || market, assetClass: item.assetClass, group: item.group, summary: item.summary, expiry: item.expiry, fetchedAt, session, currency, provider,
     })),
     breadth: { advancers, decliners, unchanged },
   };
@@ -222,6 +262,51 @@ export function buildAsiaMarketBoard({ quotes, extraSymbols = [], fetchedAt = Da
   });
 }
 
+export function buildCnMarketBoard({ quotes, extraSymbols = [], fetchedAt = Date.now(), errors = 0, marketCatalog }) {
+  const section = catalogOrDefault(marketCatalog).cn || { groups: ['全部', '自选'], indices: [], watchlist: [] };
+  const catalog = new Map(cnTrackedItems(extraSymbols, marketCatalog).map((item) => [item.symbol, item]));
+  const quoteMap = new Map(quotes.map((quote) => [quote.symbol, quote]));
+  const indices = section.indices.map((item) => {
+    const quote = quoteMap.get(item.symbol);
+    return quote ? { ...quote, name: item.name, group: item.group } : { ...emptyQuote(item.symbol, item.name, 'CNY'), group: item.group };
+  });
+  const watchlist = [...section.watchlist, ...extraSymbols.map((symbol) => catalog.get(symbol)).filter(Boolean)]
+    .map((item) => {
+      const quote = quoteMap.get(item.symbol);
+      const base = quote || emptyQuote(item.symbol, item.name, 'CNY');
+      const lastPrice = base.lastPrice;
+      const prevClose = base.prevClose;
+      const changePct = base.changePct ?? (lastPrice != null && prevClose ? ((lastPrice - prevClose) / prevClose) * 100 : null);
+      const change = base.change ?? (lastPrice != null && prevClose != null ? lastPrice - prevClose : null);
+      return {
+        ...base,
+        name: quote?.name && item.group === '自选' ? quote.name : item.name,
+        group: item.group,
+        summary: item.summary,
+        change,
+        changePct,
+      };
+    });
+  const session = cnSessionAt(fetchedAt);
+  return assembleBoard({
+    board: 'cn',
+    market: 'cn',
+    session,
+    note: errors
+      ? `部分 A 股行情暂未获取成功（${errors} 项），页面保留已成功数据。产业地图是研究底库，不是推荐池。`
+      : 'A 股观察池来自国产半导体产业地图种子。报价为近实时公开行情，非投资建议。',
+    groups: section.groups,
+    indices,
+    watchlist,
+    errors,
+    fetchedAt,
+    indexSymbols: new Set(section.indices.map((item) => item.symbol)),
+    currency: 'CNY',
+    provider: 'market',
+    uniqueRankedBySymbol: true,
+  });
+}
+
 export function globalTrackedItems(marketCatalog) {
   return catalogOrDefault(marketCatalog).global.watchlist;
 }
@@ -260,45 +345,49 @@ export function buildGlobalAssetBoard({ quotes, session = 'closed', fetchedAt = 
   });
 }
 
-export function buildOverviewBoard(usBoard, asiaBoard) {
+export function buildOverviewBoard(usBoard, asiaBoard, cnBoard, options = {}) {
+  const focus = options.focus || preferredOverviewFocus(options.now || Date.now());
+  const focused = focus === 'cn' ? cnBoard : usBoard;
+  const cnSection = {
+    id: 'cn',
+    title: 'A股观察',
+    session: cnBoard?.session || 'closed',
+    mode: cnBoard?.mode || 'partial',
+    indices: cnBoard?.indices || [],
+    breadth: cnBoard?.breadth || { advancers: 0, decliners: 0, unchanged: 0 },
+    gainers: cnBoard?.gainers || [],
+    losers: cnBoard?.losers || [],
+  };
+  const usSection = {
+    id: 'us',
+    title: '美股观察',
+    session: usBoard?.session || 'closed',
+    mode: usBoard?.mode || 'partial',
+    indices: usBoard?.indices || [],
+    breadth: usBoard?.breadth || { advancers: 0, decliners: 0, unchanged: 0 },
+    gainers: usBoard?.gainers || [],
+    losers: usBoard?.losers || [],
+  };
   return {
     board: 'overview',
-    mode: usBoard.mode === 'live' && asiaBoard.mode === 'live' ? 'live' : 'partial',
-    fetchedAt: Math.max(usBoard.fetchedAt, asiaBoard.fetchedAt),
-    session: usBoard.session,
-    sessions: asiaBoard.sessions,
-    note: '总览放美股和亚洲的指数、宽度和涨跌。分组标的在美股 / 亚洲分览。',
+    mode: focused?.mode || 'partial',
+    fetchedAt: focused?.fetchedAt || Date.now(),
+    session: focused?.session || 'closed',
+    sessions: asiaBoard?.sessions || null,
+    focus,
+    note: focus === 'cn'
+      ? '北京时间工作日 17:00 前显示 A 股观察。完整分组在 A 股分览。'
+      : '北京时间 17:00 后及周末显示美股观察。完整分组在美股分览。',
     groups: [],
     indices: [],
     watchlist: [],
     gainers: [],
     losers: [],
     breadth: {
-      us: usBoard.breadth,
-      asia: asiaBoard.breadth,
+      us: usBoard?.breadth || { advancers: 0, decliners: 0, unchanged: 0 },
+      asia: asiaBoard?.breadth || { advancers: 0, decliners: 0, unchanged: 0 },
+      cn: cnBoard?.breadth || { advancers: 0, decliners: 0, unchanged: 0 },
     },
-    sections: [
-      {
-        id: 'us',
-        title: '美股观察',
-        session: usBoard.session,
-        mode: usBoard.mode,
-        indices: usBoard.indices,
-        breadth: usBoard.breadth,
-        gainers: usBoard.gainers,
-        losers: usBoard.losers,
-      },
-      {
-        id: 'asia',
-        title: '亚洲市场',
-        session: asiaBoard.session,
-        sessions: asiaBoard.sessions,
-        mode: asiaBoard.mode,
-        indices: asiaBoard.indices,
-        breadth: asiaBoard.breadth,
-        gainers: asiaBoard.gainers,
-        losers: asiaBoard.losers,
-      },
-    ],
+    sections: [focus === 'cn' ? cnSection : usSection],
   };
 }

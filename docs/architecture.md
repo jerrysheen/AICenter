@@ -73,8 +73,8 @@ SQLite + 原始文件 + 任务/事件表
 后台 Worker（Node）        Search Worker（本机 Python / SearXNG）
  ┌──────┴──────────────┐     仅 127.0.0.1:8888
  ▼                     ▼
-旧 AI Skills Adapter   旧 AI-Hub 行情 Adapter
-B站 / X / 字幕          同花顺 / Yahoo（本机 HTTP）
+旧 AI Skills Adapter   行情 Adapter
+B站 / X / 字幕          雪球 / 同花顺 / Yahoo
 ```
 
 关键变化：
@@ -88,7 +88,7 @@ B站 / X / 字幕          同花顺 / Yahoo（本机 HTTP）
 - Worker 写入 `jobs` 与 `outbox_events`。只回收租约已过期的 `running` 任务（启动一次 + 周期回收），不在启动时重置全部运行中任务。`complete` / `fail` 必须匹配当前 worker 与 attempt。SSE 按 `Last-Event-ID` 分页补发，超过窗口时 `ready.snapshotRequired`。
 - 新业务数据带 `workspace_id`；P0 只有默认用户。
 
-当前实现已经完成上述进程与数据骨架。B站链接抓取已注册 `feed.bilibili.sync`，通过 Connector 内部 `BrowserRuntime`（`bsk` / BrowserSkill）只取 AI 中文字幕并写入 Capture / ContentItem。Yahoo 行情（美股/亚洲/全球资产/港股通）与同花顺 A 股快照、场内 ETF 快照、以及 X 首页已登录时间线已通过同一 BrowserRuntime 接入。豆包网页聊天是同一 BrowserRuntime 上的 Connector：用户在扩展所连 Chrome 里登录，脚本只负责发一条 JSONL 信封并回收固定 JSON，不是 Agent Browser Tool，也不走 Chrome CDP。信息流翻译优先这条信封；合法 JSON 一出现就结束等待。发给豆包的消息在**当前进程实例内**串行、一次一条；Web、Worker、CLI 并不共用一条跨进程队列。豆包挂起则立刻失败，等用户再点翻译。只有格式验收失败才回退一次 Gemini。页面只消费 `lastPrice` / `previousClose` 和统一 FeedItem，不暴露供应商字段。同花顺已有适配代码，真实依赖与延迟见发布门槛，不要写成「尚未接入」。
+当前实现已经完成上述进程与数据骨架。B站链接抓取已注册 `feed.bilibili.sync`，通过 Connector 内部 `BrowserRuntime`（`bsk` / BrowserSkill）只取 AI 中文字幕并写入 Capture / ContentItem。Yahoo 行情（美股/亚洲/全球资产/汇率）走公开 HTTP。沪深股票、场内 ETF、B 股和港股通优先走雪球 `batch/quote.json`；同花顺 A 股/基金快照只作缺票回退。X 首页已登录时间线已通过同一 BrowserRuntime 接入。豆包网页聊天是同一 BrowserRuntime 上的 Connector：用户在扩展所连 Chrome 里登录，脚本只负责发一条 JSONL 信封并回收固定 JSON，不是 Agent Browser Tool，也不走 Chrome CDP。信息流翻译优先这条信封；合法 JSON 一出现就结束等待。发给豆包的消息在**当前进程实例内**串行、一次一条；Web、Worker、CLI 并不共用一条跨进程队列。豆包挂起则立刻失败，等用户再点翻译。只有格式验收失败才回退一次 Gemini。页面只消费 `lastPrice` / `previousClose` 和统一 FeedItem，不暴露供应商字段。雪球与同花顺都已有适配代码，真实延迟与覆盖见发布门槛，不要写成「尚未接入」。
 
 未来 1～2 年保持轻量边界：Feed、Trading、Knowledge、Runtime、Identity 继续作为稳定领域；Context Service 是跨领域的 AI 读取入口，而不是新的 Decision、Policy、Strategy 或 Thesis 领域。当前不建设 OMS、自动交易、复杂 AI Memory、Vector DB 或完整资产负债表。
 
@@ -185,11 +185,25 @@ Domain / Route / Tool Registry。Source Definition 必须声明自己的 input/o
 SourceHub 在 reader 前后分别校验，并产生带 `sourceId`、`providerId`、`observedAt`、status 和 warnings
 的 `SourceSnapshot`。
 
-当前迁入 `market.*`、`content.x.home`、`content.bilibili.import` 与 `search.web`。旧 `/api/v1/markets`、
+当前迁入 `market.*`、`content.x.home`、`content.bilibili.import`、`search.web`，以及只读的
+`calendar.*` / `policy.*` 静态信号源。后两类统一投影为 `ScheduledEvent` / `OfficialRelease`：
+只记录官方已公开的时间、文件和事件，不包含 importance、forecast、consensus、impact 或多空判断。
+按公开固定规则生成而非逐日列在官网日历上的条目必须标记 `scheduleBasis=official-rule` 与
+`status=tentative`，不能伪装成已确认日程。旧 `/api/v1/markets`、
 `/api/v1/feed/*` 仍是兼容接口；统一读取接口是 `GET /api/v1/sources` 与
-`GET /api/v1/sources/:id`。`SourceAccount` 仍只属于 Feed 的账号/频道持久化生命周期，不能用来保存行情来源。
+`GET /api/v1/sources/:id`。总览通过 `packages/source/src/static/board.js` 并发读取这些低层 Source，
+确定性完成 merge、dedupe、sort 和静态关注目录投影，输出 `StaticSignalBoard`；该层不调用 AI、
+不新增 Domain，也不持久化 Snapshot。FOMC 专门日程优先于 Fed 综合日历；政策发布先按同 URL，
+再按同机构、同标题、同发布日去重，不合并 White House 公告与后续 Federal Register 正式刊登。
+对应只读接口是 `GET /api/v1/static-signals/board`。`SourceAccount` 仍只属于 Feed 的账号/频道持久化生命周期，不能用来保存行情来源。
 SearXNG Connector 通过 `search.web` Source Definition 接入；Agent Tool `web.search` 只消费 SourcePort，
 继续保留原 Tool ID、结果投影、网页证据校验与不可用降级行为。
+
+静态 Signal Layer 的另一半是 `market-native.*` 只读来源，当前注册 Polymarket、Kalshi、Hyperliquid
+与 DefiLlama。它们分别输出独立场所的事件报价、BTC/ETH 永续原始状态和稳定币供给；不把不同场所
+合成为“真实概率”，也不推导开盘方向。事件报价保留 venue，Hyperliquid OI 明确以 base asset 为单位，
+稳定币只做当前供给及 1d/7d/30d 的确定性差额。Market-native Board 与官方 Calendar / Release Board
+使用不同 Contract 和 API，单源失败只降级自己的 health，不影响原有官方事实。
 
 模块通过 capability manifest、显式 job handler 和领域端口接入。跨领域协作使用带版本事件或独立关系表，
 禁止由一个模块直接修改另一个模块拥有的数据表。

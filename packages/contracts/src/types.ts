@@ -18,11 +18,19 @@ import type { AgentJobSchema, DomainEventSchema, CapabilityManifestSchema } from
 import type {
   TagDefinitionSchema, TagCatalogFileSchema, ResourceTaggingSchema, TagAnalyzeJobInputSchema,
 } from './tagging.js';
-import type { ProviderIdSchema, SourceIdSchema, SourceManifestSchema, SourceSnapshotSchema } from './source.js';
+import type {
+  ProviderIdSchema, SourceIdSchema, SourceManifestSchema, SourceSnapshotSchema,
+  ScheduledEventSchema, CalendarSourceViewSchema, OfficialReleaseSchema, OfficialReleaseSourceViewSchema,
+  OfficialSourceDetailSchema, StaticSignalSourceHealthSchema, StaticSignalBoardSchema, PredictionMarketQuoteSchema,
+  PredictionMarketSourceViewSchema, CryptoDerivativeQuoteSchema, CryptoDerivativesSourceViewSchema,
+  StablecoinLiquidityMetricSchema, StablecoinLiquiditySourceViewSchema, MarketNativeSourceHealthSchema,
+  MarketNativeBoardSchema,
+} from './source.js';
 import type {
   AgentToolReferenceSchema, AgentToolResultSchema, ContextBuildToolInputSchema,
   FeedSearchToolInputSchema, FeedTagSearchToolInputSchema, KnowledgeGetToolInputSchema, HoldingsRankToolInputSchema,
-  AgentRunProgressStepSchema, ReferenceInputSchema, CreateAgentRunInputSchema,
+  StaticSignalsListToolInputSchema, OfficialSourceGetToolInputSchema,
+  AgentRunProgressStepSchema, ActiveAgentRunSchema, ReferenceInputSchema, CreateAgentRunInputSchema,
   SaveStructuredArtifactToolInputSchema,
 } from './agent.js';
 
@@ -69,6 +77,21 @@ export type ProviderId = z.infer<typeof ProviderIdSchema>;
 export type SourceId = z.infer<typeof SourceIdSchema>;
 export type SourceManifest = z.infer<typeof SourceManifestSchema>;
 export type SourceSnapshot = z.infer<typeof SourceSnapshotSchema>;
+export type ScheduledEvent = z.infer<typeof ScheduledEventSchema>;
+export type CalendarSourceView = z.infer<typeof CalendarSourceViewSchema>;
+export type OfficialRelease = z.infer<typeof OfficialReleaseSchema>;
+export type OfficialReleaseSourceView = z.infer<typeof OfficialReleaseSourceViewSchema>;
+export type OfficialSourceDetail = z.infer<typeof OfficialSourceDetailSchema>;
+export type StaticSignalSourceHealth = z.infer<typeof StaticSignalSourceHealthSchema>;
+export type StaticSignalBoard = z.infer<typeof StaticSignalBoardSchema>;
+export type PredictionMarketQuote = z.infer<typeof PredictionMarketQuoteSchema>;
+export type PredictionMarketSourceView = z.infer<typeof PredictionMarketSourceViewSchema>;
+export type CryptoDerivativeQuote = z.infer<typeof CryptoDerivativeQuoteSchema>;
+export type CryptoDerivativesSourceView = z.infer<typeof CryptoDerivativesSourceViewSchema>;
+export type StablecoinLiquidityMetric = z.infer<typeof StablecoinLiquidityMetricSchema>;
+export type StablecoinLiquiditySourceView = z.infer<typeof StablecoinLiquiditySourceViewSchema>;
+export type MarketNativeSourceHealth = z.infer<typeof MarketNativeSourceHealthSchema>;
+export type MarketNativeBoard = z.infer<typeof MarketNativeBoardSchema>;
 export type AgentToolReference = z.infer<typeof AgentToolReferenceSchema>;
 export type AgentToolResult = z.infer<typeof AgentToolResultSchema>;
 export type ContextBuildToolInput = z.infer<typeof ContextBuildToolInputSchema>;
@@ -76,7 +99,10 @@ export type FeedSearchToolInput = z.infer<typeof FeedSearchToolInputSchema>;
 export type FeedTagSearchToolInput = z.infer<typeof FeedTagSearchToolInputSchema>;
 export type KnowledgeGetToolInput = z.infer<typeof KnowledgeGetToolInputSchema>;
 export type HoldingsRankToolInput = z.infer<typeof HoldingsRankToolInputSchema>;
+export type StaticSignalsListToolInput = z.infer<typeof StaticSignalsListToolInputSchema>;
+export type OfficialSourceGetToolInput = z.infer<typeof OfficialSourceGetToolInputSchema>;
 export type AgentRunProgressStep = z.infer<typeof AgentRunProgressStepSchema>;
+export type ActiveAgentRun = z.infer<typeof ActiveAgentRunSchema>;
 export type ReferenceInput = z.infer<typeof ReferenceInputSchema>;
 export type CreateAgentRunInput = z.infer<typeof CreateAgentRunInputSchema>;
 export type SaveStructuredArtifactToolInput = z.infer<typeof SaveStructuredArtifactToolInputSchema>;

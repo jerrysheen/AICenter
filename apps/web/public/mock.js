@@ -1,6 +1,8 @@
 export const channels = [
   { id: 'all', label: '全部' },
-  { id: 'following', label: '关注' },
+  { id: 'focus', label: '重点' },
+  { id: 'social', label: '社媒' },
+  { id: 'official', label: '官方' },
 ];
 
 export const platformFilters = [
@@ -60,6 +62,7 @@ export const subscriptions = [
 
 export const stockBoards = [
   { id: 'overview', label: '总览' },
+  { id: 'cn', label: 'A股' },
   { id: 'us', label: '美股' },
   { id: 'asia', label: '亚洲' },
 ];
@@ -111,7 +114,7 @@ export const marketIndex = {
 
 export const marketTabs = [
   { id: 'stocks', label: '股票' },
-  { id: 'assets', label: '全球资产' },
+  { id: 'assets', label: '全球行情' },
 ];
 
 export const bookTabs = [

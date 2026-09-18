@@ -75,7 +75,7 @@ test('market service uses mainland last price for SS SZ holdings quotes', async 
       return symbols.map((symbol) => ({ symbol, lastPrice: 1.375, prevClose: 1.342, session: 'regular' }));
     },
   };
-  const service = createMarketService({ yahoo, cnQuotes, ttlMs: 1, now: () => 1 });
+  const service = createMarketService({ yahoo, cnQuotes, xueqiuQuotes: { async fetchQuotes() { return []; } }, ttlMs: 1, now: () => 1 });
   const quotes = await service.fetchQuotes(['516640.SS', 'USDCNY=X']);
   assert.equal(quotes.find((item) => item.symbol === '516640.SS').lastPrice, 1.375);
   assert.equal(quotes.find((item) => item.symbol === 'USDCNY=X').lastPrice, 9);
@@ -91,6 +91,7 @@ test('market service falls back to yahoo when mainland quotes are missing', asyn
   const service = createMarketService({
     yahoo,
     cnQuotes: { async fetchQuotes() { return []; } },
+    xueqiuQuotes: { async fetchQuotes() { return []; } },
     ttlMs: 1,
     now: () => 1,
   });

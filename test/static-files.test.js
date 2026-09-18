@@ -70,7 +70,7 @@ test('static assets are gzipped on request and versioned JS/CSS are cacheable', 
     assert.match(htmlText, /id="view-sources"/);
     assert.match(htmlText, /id="overview-subnav"/);
     assert.match(htmlText, /id="view-market"/);
-    assert.match(htmlText, /id="view-assets"/);
+    assert.match(htmlText, /id="ask-live-chip"/);
 
     const gzipped = await getRaw(`${address.localUrl}/app.js`, { 'Accept-Encoding': 'gzip' });
     assert.equal(gzipped.status, 200);
@@ -81,12 +81,14 @@ test('static assets are gzipped on request and versioned JS/CSS are cacheable', 
     assert.match(decoded, /async function initialize/);
     assert.match(decoded, /Promise\.all\(startupLoads\)/);
     assert.match(decoded, /async function askAgent/);
+    assert.match(decoded, /async function pollAskJobs/);
     assert.match(decoded, /async function loadSourcesPage/);
     assert.match(decoded, /const navItems = \[/);
     assert.match(decoded, /label: '灵感'/);
-    assert.match(decoded, /label: '社媒'/);
+    assert.match(decoded, /label: '信息流'/);
     assert.match(decoded, /function renderHub\(\)/);
-    assert.match(decoded, /futureSourceSlots/);
+    assert.match(decoded, /function renderStaticSignalBoard/);
+    assert.match(decoded, /async function loadStaticSignalBoard/);
 
     const markdown = await getRaw(`${address.localUrl}/markdown.js`, { 'Accept-Encoding': 'identity' });
     assert.equal(markdown.status, 200);

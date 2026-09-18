@@ -14,6 +14,7 @@ export function projectOverviewMarketBoardForAI(data = {}) {
     mode: data.mode,
     fetchedAt: data.fetchedAt,
     session: data.session,
+    focus: data.focus,
     breadth: data.breadth,
     note: data.note,
     sections: (data.sections || []).map((section) => ({

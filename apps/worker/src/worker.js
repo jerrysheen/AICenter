@@ -76,6 +76,8 @@ export function createAiCenterWorker(options = {}) {
     twitterService: options.twitterService,
     bilibiliService: options.bilibiliService,
     marketService: options.marketService,
+    officialSources: options.officialSources,
+    marketNativeSources: options.marketNativeSources,
     webSearchPort,
     browserRuntime,
     marketCatalog: options.marketCatalog,

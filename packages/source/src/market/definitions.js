@@ -6,6 +6,7 @@ const BoardInputSchema = z.object({
   extra: z.string().max(400).default(''),
   extraUs: z.string().max(400).default(''),
   extraAsia: z.string().max(400).default(''),
+  extraCn: z.string().max(400).default(''),
 }).strict();
 
 const EmptyInputSchema = z.object({}).strict();
@@ -21,6 +22,7 @@ const SearchInputSchema = z.object({ query: z.string().trim().min(1).max(64) }).
 
 const boardMeta = {
   overview: ['市场概览', ['read', 'refresh']],
+  cn: ['A股', ['read', 'refresh']],
   us: ['美股市场', ['read', 'refresh']],
   asia: ['亚洲市场', ['read', 'refresh']],
   global: ['全球资产', ['read', 'refresh']],
@@ -55,7 +57,7 @@ export function createMarketSourceDefinitions(marketService) {
   return [
     ...boards,
     {
-      manifest: { id: 'market.quotes', title: '行情报价', category: 'market', providerId: 'market-composite', visibility: 'internal', viewKind: 'quote-list', capabilities: ['read', 'refresh'], refresh: { ttlMs: 20_000 }, guideRefs: [] },
+      manifest: { id: 'market.quotes', title: '行情报价', category: 'market', providerId: 'market-composite', visibility: 'internal', viewKind: 'quote-list', capabilities: ['read', 'refresh'], refresh: { ttlMs: 3_000 }, guideRefs: [] },
       inputSchema: QuoteInputSchema,
       outputSchema: QuoteListSchema,
       read: (input, context) => marketService.fetchQuotes

@@ -243,18 +243,24 @@ export function createFeedRepository(database, emitEvent) {
       const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
       const rows = sourceExternalId
         ? database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id,
-            c.captured_at AS captured_at, c.metadata_json AS capture_metadata_json
+            c.captured_at AS captured_at, c.metadata_json AS capture_metadata_json,
+            COALESCE(item_state.is_read, 0) AS is_read
             FROM content_items ci
             INNER JOIN captures c ON c.id = ci.capture_id
             INNER JOIN source_accounts sa ON sa.id = c.source_account_id
+            LEFT JOIN user_item_states item_state
+              ON item_state.workspace_id = ci.workspace_id AND item_state.content_item_id = ci.id
             WHERE ci.workspace_id = ? AND c.provider = ? AND sa.external_id = ?
               AND ${VISIBLE_CONTENT_SQL}
             ORDER BY c.captured_at DESC, ci.created_at DESC, ci.id DESC
             LIMIT ?`).all(workspaceId, provider, sourceExternalId, safeLimit)
         : database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id,
-            c.captured_at AS captured_at, c.metadata_json AS capture_metadata_json
+            c.captured_at AS captured_at, c.metadata_json AS capture_metadata_json,
+            COALESCE(item_state.is_read, 0) AS is_read
             FROM content_items ci
             INNER JOIN captures c ON c.id = ci.capture_id
+            LEFT JOIN user_item_states item_state
+              ON item_state.workspace_id = ci.workspace_id AND item_state.content_item_id = ci.id
             WHERE ci.workspace_id = ? AND c.provider = ?
               AND ${VISIBLE_CONTENT_SQL}
             ORDER BY c.captured_at DESC, ci.created_at DESC, ci.id DESC
@@ -265,11 +271,12 @@ export function createFeedRepository(database, emitEvent) {
         externalId: row.external_id,
         capturedAt: row.captured_at,
         captureMetadata: parseJson(row.capture_metadata_json),
+        isRead: Boolean(row.is_read),
       }));
     },
 
     getContentItem(workspaceId, id) {
-      const row = database.prepare(`SELECT ci.*, c.provider, c.external_id, c.captured_at
+      const row = database.prepare(`SELECT ci.*, c.provider, c.external_id, c.captured_at, c.metadata_json AS capture_metadata_json
         FROM content_items ci
         LEFT JOIN captures c ON c.id = ci.capture_id
         WHERE ci.workspace_id = ? AND ci.id = ?`).get(workspaceId, id);
@@ -279,6 +286,22 @@ export function createFeedRepository(database, emitEvent) {
         provider: row.provider || '',
         externalId: row.external_id || '',
         capturedAt: row.captured_at || row.created_at,
+        captureMetadata: parseJson(row.capture_metadata_json),
+      };
+    },
+
+    getContentItemByCaptureId(workspaceId, captureId) {
+      const row = database.prepare(`SELECT ci.*, c.provider, c.external_id, c.captured_at, c.metadata_json AS capture_metadata_json
+        FROM content_items ci
+        LEFT JOIN captures c ON c.id = ci.capture_id
+        WHERE ci.workspace_id = ? AND ci.capture_id = ?`).get(workspaceId, captureId);
+      if (!row) return null;
+      return {
+        ...mapContentItem(row),
+        provider: row.provider || '',
+        externalId: row.external_id || '',
+        capturedAt: row.captured_at || row.created_at,
+        captureMetadata: parseJson(row.capture_metadata_json),
       };
     },
 

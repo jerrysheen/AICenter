@@ -35,7 +35,7 @@ POST /api/v1/agent/runs → ai.agent.run Job → Worker → AgentRuntime → LLM
 ```
 
 - `AgentRuntime` 是薄循环：每轮把用户问题、会话历史、已解析的 `@ref`、当前时间和当前可见 Tool Table 交给模型；由模型自己决定直接回答、调用一个或多个 Tool。Runtime 负责 Tool visibility、权限、Schema、预算、并发、超时、`@ref` 确定性解析和 provenance validation。Runtime 不在模型首轮前执行 Intent Router，也不因「今天 / 最新 / 新闻 / 搜一下 / 社媒」裁剪 Tool。
-- 当前注册只读检索 Tool（含 `tag.list`、`feed.tag.search`）、可选联网 Tool `web.search`，以及写入 Tool `memory.save`（经 Domain Service 落灵感/知识）。不开放任意脚本执行。`destructive` 仍禁止。
+- 当前注册只读检索 Tool（含 `tag.list`、`feed.tag.search`、`static.signals.list`、`official.source.get`）、可选联网 Tool `web.search`，以及写入 Tool `memory.save`（经 Domain Service 落灵感/知识）。不开放任意脚本执行。`destructive` 仍禁止。
 - `web.search` 通过 SourcePort 读取 `search.web`（当前 Provider 为本机 SearXNG Connector），返回标题、URL、摘要和 `publishedAt`；不把供应商原始字段、本机路径或 HTML 交给模型。`webMode` 只控制能力是否可用与用户倾向：`off` 不暴露该工具；`fallback` 与 `always` 都暴露，区别只在统一 Agent System Prompt。`always` 不是必须调用 Web。正常轮次 `toolChoice` 为 AUTO / 不传。Search Worker 不可用时 SourceSnapshot 为 `unavailable` 并携带 warning，问答继续。
 - Runtime 每轮向模型注入权威当前时间（UTC + 用户时区 `Asia/Shanghai` 本地时间）和 Provider-neutral System Prompt。`budgetNote` 只含当前时间与 Tool budget。相对时间窗口由支持 `timeRange` 的 Tool 确定性计算。模型不得用训练知识推断“今天”。Final Guard 拒绝虚构的 `web.search` 使用，以及用户明确要求联网但整次 Run 没有调用 `web.search` 的终稿；不因为时效词强制 Web。
 - `market.global.get` 是市场价格快照，不是新闻或央行决议工具。Global Board 的真实字段在 `watchlist` / `groups`（利率、美债、黄金、原油等），Agent projection 必须保留这些字段，而不是只投影 overview 用的 `sections`。
@@ -44,7 +44,7 @@ POST /api/v1/agent/runs → ai.agent.run Job → Worker → AgentRuntime → LLM
 - `ai.agent.run` 必须通过 `agent.runtime` capability manifest 注册；HTTP 只创建固定契约的 Job，不能指定 handler、脚本或 Provider。
 - 模型是 Connector。`AI_CENTER_AGENT_API_KEY` 可替换测试阶段的 `GEMINI_API_KEY`，两者均不进入 API、事件或数据库输出。
 - 成功回答写入 Knowledge 所拥有的 `AiSession` / `AiRun`，并以 `knowledge.ai-session.created.v1`、`knowledge.ai-run.completed.v1` 记录可复盘的会话、provider、model 与 Job 引用；实际读取的来源同时写入 `AiRunContextRef`，会话详情可以读回。
-- 问答页轮询 `GET /api/v1/agent/runs/:id` 时附带 `progress`：从本地 JSONL trace 投影工具/思考步骤，不经 Worker 重启、不把 Tool data 回传页面。
+- 问答页轮询 `GET /api/v1/agent/runs/:id` 时附带 `progress`：从本地 JSONL trace 投影工具/思考步骤，不经 Worker 重启、不把 Tool data 回传页面。进行中的任务不绑定当前页生命周期：离开会话或切到其他一级入口后，Worker 继续跑；页面用 `GET /api/v1/agent/runs` 对齐队列，并在记录列表、会话详情和主导航显示 `queued` / `running`。同一会话可连续入队多问；Worker 仍一次一条。
 
 ## 数据所有权
 
@@ -90,11 +90,29 @@ Source Definition 包含 manifest、input/output Schema、reader 和可选 AI Pr
 ConnectorRegistry / SourceRegistry / AdapterRegistry。Provider ID 是供应商稳定标识，Source ID 是读取能力
 （例如 `market.global`）；两者不能混用。
 
-Market 聚合、观察池与 Human/AI Projection 属于 `packages/source`，Yahoo/同花顺 Connector 只负责协议转换。
+Market 聚合、观察池与 Human/AI Projection 属于 `packages/source`，Yahoo / 雪球 / 同花顺 Connector 只负责协议转换。
 观察池内容来自 Instance `config/markets.json`；`config/markets.default.json` 只是新实例模板和兼容 fallback，Core JS 不保存个人观察分组。当前私有部署仓库可以版本化 `config/markets.json` 作为 Instance 快照，这不改变其 ownership。
+`market.cn` 是独立 A 股看板，不覆盖亚洲 KR/JP/TW 观察池；同一 `symbol` 允许挂多个 `group`。`market.overview` 按 `Asia/Shanghai` 工作日 17:00 切换单一 section：白天 A 股观察，之后及周末美股观察。
 FeedService 通过 SourcePort 读取外部内容，再写入原有 `SourceAccount -> Capture -> ContentItem` 生命周期。
 联网搜索以 `search.web` 注册到同一 Module Registry；SearXNG 仍只负责协议转换，Source Definition
 负责输入/输出契约、不可用状态与 AI Projection，`web.search` Tool 不直接持有 Connector。
+中美宏观日程、央行日程和官方政策发布同样注册在 Module Registry：Connector 只处理官方
+HTML / ICS / RSS / JSON 协议，Source Definition 输出统一 `calendar` / `official-release` 视图。
+当前 Snapshot 仍是只读缓存，不新增持久化表；规则生成日程必须保留 `official-rule + tentative` 来源标记。
+`packages/source/src/static/board.js` 是 Source 层内的薄聚合器：并发读取公开静态 Source，确定性
+合并、去重、排序并应用 `focus-events.json` 的首页关注投影，返回日程、最新发布和来源健康状态。
+它不创建新 Domain、不写数据库、不调用 AI；完整低层日历仍可从各 Source 单独读取。
+SCIO 英文站当前 HTTPS 证书与域名不匹配；经产品所有者明确接受后，`calendar.cn.scio` 仅对其
+官方 Notices URL 使用 HTTP。该例外不关闭全局 TLS 校验，也不扩展到其他 Source 或任意跳转目标。
+官方列表与正文读取分层：公开的 `calendar` / `official-release` Source 只负责发现记录；内部
+`policy.official-detail` Source 按记录的 `sourceUrl` 读取官网标题、官方摘要和限长正文。详情读取只允许
+登记过的官方域名，SCIO HTTP 例外仍严格限定为 `english.scio.gov.cn`，并校验最终跳转地址。
+Agent 通过 `static.signals.list` 获取记录，再按需调用 `official.source.get`；全文不进入首页 Board、
+不落数据库，也不经过 AI 总结或解释。内部 Source 不通过通用 `/api/v1/sources/:id` 暴露。
+市场原生数据沿用同一 SourceHub，但使用独立 `prediction-market`、`crypto-derivatives`、
+`stablecoin-liquidity` viewKind：Polymarket 与 Kalshi 报价不跨场所合并，Hyperliquid Funding / OI / Volume
+保留原单位，DefiLlama 只投影稳定币供给与确定性时间差额。它们不写 Trading QuoteSnapshot，
+也不进入官方事实 Board；当前仍是有 TTL 的只读 Snapshot。
 
 运行时只接收 manifest 声明过的 handler。任务类型不能被两个模块重复注册。一个 capability 可以有多个实现，
 由配置或领域服务选择，页面不得按模块名称分支。

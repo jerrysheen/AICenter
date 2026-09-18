@@ -27,8 +27,9 @@ test('pair and behavior inputs reject unsupported data', () => {
   assert.throws(() => parseBehaviorEvent({ name: 'unknown.event' }), ValidationError);
 });
 
-test('market query accepts us asia overview and global', () => {
+test('market query accepts us asia cn overview and global', () => {
   assert.equal(parseMarketQuery({ board: 'asia' }).board, 'asia');
+  assert.equal(parseMarketQuery({ board: 'cn' }).board, 'cn');
   assert.equal(parseMarketQuery({ board: 'global' }).board, 'global');
   assert.throws(() => parseMarketQuery({ board: 'crypto' }), ValidationError);
 });

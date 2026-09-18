@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { ValidationError } from '../../contracts/src/index.js';
 import { packFeedAiBatches } from './feed-ai-batch.js';
+import { collectLocalizationUnits, localizationItemId, needsZhLocalization } from './localize-texts.js';
 
 const DEFAULT_WORKSPACE_ID = 'local';
 const STORED_FEED_LIMIT = 200;
@@ -27,8 +28,17 @@ function toFeedItem(providerId, row) {
     processing: '',
     subscriptionId: '',
     captureId: row.captureId || '',
+    isRead: Boolean(row.isRead),
     translation: null,
   };
+}
+
+function rankFeedItems(items) {
+  return [...(items || [])].sort((left, right) => (
+    Number(Boolean(left.isRead)) - Number(Boolean(right.isRead))
+    || (Number(right.capturedAt) || 0) - (Number(left.capturedAt) || 0)
+    || String(right.id).localeCompare(String(left.id))
+  ));
 }
 
 function attachTranslations(feedRepository, workspaceId, items, targetLang = 'zh') {
@@ -67,6 +77,131 @@ function persistTranslations(feedRepository, workspaceId, translations) {
     });
   }
   if (records.length) feedRepository.saveTranslations(records);
+}
+
+const localizeLocks = new Map();
+
+function translationMap(rows = []) {
+  return new Map((rows || []).map((row) => [row.itemId, row]));
+}
+
+function projectLocalizations(units, byItemId) {
+  const localizations = {};
+  for (const unit of units) {
+    const row = byItemId.get(unit.localizationId);
+    const hash = contentHash(unit.text);
+    const ready = Boolean(row && row.sourceHash === hash && row.translatedText);
+    localizations[unit.id] = {
+      id: unit.localizationId,
+      text: ready ? row.translatedText : '',
+      pending: needsZhLocalization(unit.text) && !ready,
+      engine: ready ? (row.engine || '') : '',
+      sourceText: unit.text,
+    };
+  }
+  return localizations;
+}
+
+async function translatePendingUnits(translationPort, pending, targetLang) {
+  if (!pending.length || !translationPort) return [];
+  const packed = packFeedAiBatches(pending.map((unit) => ({
+    id: unit.localizationId,
+    text: unit.text,
+  })), {
+    purpose: 'translate',
+    charBudget: 80_000,
+    itemClipChars: 5_000,
+    itemLimit: 30,
+  });
+  const originals = new Map(pending.map((unit) => [unit.localizationId, unit.text]));
+  const translations = [];
+  async function translateChunk(items) {
+    if (translationPort.translateMany) {
+      return translationPort.translateMany({ items, targetLang });
+    }
+    if (!translationPort.translate) return { translations: [] };
+    const rows = [];
+    for (const item of items) {
+      const translation = await translationPort.translate({
+        text: item.text,
+        targetLang,
+      });
+      rows.push({ id: item.id, ...translation });
+    }
+    return { translations: rows, targetLang };
+  }
+  for (const batch of packed.batches) {
+    const chunk = batch.units.map((unit) => ({ id: unit.itemId, text: unit.text }));
+    const result = await translateChunk(chunk);
+    for (const row of result.translations || []) {
+      translations.push({
+        ...row,
+        sourceText: originals.get(row.id) || row.sourceText,
+      });
+    }
+  }
+  return translations;
+}
+
+async function localizeCollected(feedRepository, translationPort, workspaceId, units, targetLang, options = {}) {
+  const unique = [];
+  const seen = new Set();
+  for (const unit of units || []) {
+    if (!unit?.id || !unit.localizationId || !unit.text || seen.has(unit.id)) continue;
+    seen.add(unit.id);
+    unique.push(unit);
+  }
+  const existing = translationMap(feedRepository?.listTranslations?.(
+    workspaceId,
+    unique.map((unit) => unit.localizationId),
+    targetLang,
+  ));
+  const localizations = projectLocalizations(unique, existing);
+  const pending = unique.filter((unit) => localizations[unit.id]?.pending);
+  if (!pending.length || !translationPort) return { localizations, pendingIds: pending.map((unit) => unit.id) };
+
+  const lockKey = `${workspaceId}:${targetLang}:${pending.map((unit) => unit.localizationId).sort().join(',')}`;
+  const run = async () => {
+    try {
+      const translations = await translatePendingUnits(translationPort, pending, targetLang);
+      persistTranslations(feedRepository, workspaceId, translations);
+    } catch {
+      // Keep cached/empty localizations; the view can retry.
+    }
+    const latest = translationMap(feedRepository?.listTranslations?.(
+      workspaceId,
+      unique.map((unit) => unit.localizationId),
+      targetLang,
+    ));
+    return {
+      localizations: projectLocalizations(unique, latest),
+      pendingIds: unique.filter((unit) => projectLocalizations(unique, latest)[unit.id]?.pending).map((unit) => unit.id),
+    };
+  };
+
+  if (options.wait === false) {
+    return { localizations, pendingIds: pending.map((unit) => unit.id) };
+  }
+
+  const existingLock = localizeLocks.get(lockKey);
+  const task = existingLock || run().finally(() => localizeLocks.delete(lockKey));
+  if (!existingLock) localizeLocks.set(lockKey, task);
+  return task;
+}
+
+async function localizeFeedItems(feedRepository, translationPort, workspaceId, items, targetLang = 'zh', options = {}) {
+  const units = (items || [])
+    .filter((item) => item?.id && needsZhLocalization(item.body || item.summary || ''))
+    .map((item) => ({
+      id: item.id,
+      localizationId: localizationItemId(item.id),
+      text: item.body || item.summary || '',
+    }));
+  if (!units.length) return items;
+  await localizeCollected(feedRepository, translationPort, workspaceId, units, targetLang, {
+    wait: options.wait !== false,
+  });
+  return attachTranslations(feedRepository, workspaceId, items, targetLang);
 }
 
 function ingestExternalItems(feedRepository, workspaceId, persistence, snapshot) {
@@ -118,9 +253,8 @@ function ingestExternalItems(feedRepository, workspaceId, persistence, snapshot)
       publishedAt: item.publishedAt || null,
       capturedAt: Math.max(0, batchCapturedAt - index),
       metadata: {
-        ...(originalText && originalText !== item.body
-          ? { originalText, formatEngine: item.formatEngine || '' }
-          : {}),
+        originalText,
+        ...(item.formatEngine ? { formatEngine: item.formatEngine } : {}),
         ...(item.authorHandle ? { authorHandle: item.authorHandle } : {}),
       },
     });
@@ -148,11 +282,11 @@ function readStoredFeed(feedRepository, workspaceId, persistence, query, extra =
     sourceExternalId: persistence.sourceAccount.externalId,
     limit: STORED_FEED_LIMIT,
   }) || [];
-  const items = attachTranslations(
+  const items = rankFeedItems(attachTranslations(
     feedRepository,
     workspaceId,
     rows.map((row) => toFeedItem(providerId, row)),
-  );
+  ));
   return {
     platform: providerId,
     workspaceId,
@@ -245,7 +379,9 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       if (!persistence?.sourceAccount) throw new ValidationError(`${source.id} 未声明 Feed 持久化投影`, ['sourceId']);
       const workspaceId = actor.workspaceId || DEFAULT_WORKSPACE_ID;
       if (!query?.refresh) {
-        return readStoredFeed(feedRepository, workspaceId, persistence, sourceInput);
+        const stored = readStoredFeed(feedRepository, workspaceId, persistence, sourceInput);
+        stored.items = rankFeedItems(await localizeFeedItems(feedRepository, translationPort, workspaceId, stored.items, 'zh', { wait: false }));
+        return stored;
       }
       const sourceSnapshot = await sourcePort.read(source.id, sourceInput, { refresh: true });
       const snapshot = sourceSnapshot.data;
@@ -260,6 +396,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
         added: stats.added,
         skipped: stats.skipped,
       });
+      stored.items = rankFeedItems(await localizeFeedItems(feedRepository, translationPort, workspaceId, stored.items));
       const total = stored.items.length;
       if ((snapshot.mode === 'error' || snapshot.mode === 'unavailable') && !total) {
         return { ...snapshot, source: snapshot.source, items: [] };
@@ -294,6 +431,27 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
     },
     getContentItem(workspaceId, id) {
       return feedRepository.getContentItem(workspaceId, id);
+    },
+    getOriginalContent(workspaceId, id) {
+      const requested = String(id || '').trim();
+      if (!requested) return null;
+      let row = feedRepository.getContentItem?.(workspaceId, requested);
+      if (!row && requested.includes(':')) {
+        const split = requested.indexOf(':');
+        const capture = feedRepository.getCapture?.(workspaceId, requested.slice(0, split), requested.slice(split + 1));
+        if (capture?.id) row = feedRepository.getContentItemByCaptureId?.(workspaceId, capture.id);
+      }
+      if (!row) return null;
+      const rawText = String(row.captureMetadata?.originalText || row.body || '').trim();
+      return {
+        id: row.id,
+        feedItemId: row.provider && row.externalId ? `${row.provider}:${row.externalId}` : '',
+        title: row.title || '',
+        body: row.body || '',
+        summary: row.summary || '',
+        sourceUrl: row.sourceUrl || '',
+        rawText: rawText || row.body || '',
+      };
     },
     listContentItemsByIds(workspaceId, ids = []) {
       const wanted = [...new Set((ids || []).map((id) => String(id || '').trim()).filter(Boolean))];
@@ -366,14 +524,27 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
     persistItemTranslations(translations, actor = {}) {
       persistTranslations(feedRepository, actor.workspaceId || DEFAULT_WORKSPACE_ID, translations);
     },
-    hideContentItem(workspaceId, contentItemId) {
-      const item = feedRepository.getContentItem(workspaceId, contentItemId);
-      if (!item) return null;
-      return feedRepository.upsertUserItemState({
-        workspaceId,
-        contentItemId,
-        isHidden: true,
+    async localizeTexts(units, actor = {}, options = {}) {
+      const workspaceId = actor.workspaceId || DEFAULT_WORKSPACE_ID;
+      const targetLang = options.targetLang === 'en' ? 'en' : 'zh';
+      const collected = Array.isArray(units) && units.length
+        ? units.map((unit) => ({
+          id: String(unit?.id || '').trim(),
+          localizationId: localizationItemId(unit?.localizationId || unit?.id),
+          text: String(unit?.text || unit?.body || '').trim(),
+        })).filter((unit) => unit.id && unit.localizationId && unit.text)
+        : collectLocalizationUnits(units);
+      return localizeCollected(feedRepository, translationPort, workspaceId, collected, targetLang, {
+        wait: options.wait !== false,
       });
+    },
+    hideContentItem(workspaceId, contentItemId) {
+      return this.patchContentItemState({ workspaceId, contentItemId, isHidden: true });
+    },
+    patchContentItemState(input) {
+      const item = feedRepository.getContentItem(input.workspaceId, input.contentItemId);
+      if (!item) return null;
+      return feedRepository.upsertUserItemState(input);
     },
     hideLegacyPost(id) {
       if (!legacyRepository.hidePost) return false;

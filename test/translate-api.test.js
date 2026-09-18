@@ -112,3 +112,50 @@ test('feed translation persist API accepts client-uploaded translations', async 
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('original content API returns saved capture text without going through the view DTO', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-original-'));
+  const app = createAiCenterServer({
+    host: '127.0.0.1',
+    port: 0,
+    dataDirectory: directory,
+  });
+  const address = await app.listen();
+  try {
+    const source = app.store.repositories.feed.upsertSourceAccount({
+      workspaceId: 'local', provider: 'x', externalId: 'x:home:for-you', displayName: 'X',
+      profileUrl: 'https://x.com/home',
+    });
+    const capture = app.store.repositories.feed.saveCapture({
+      workspaceId: 'local',
+      provider: 'x',
+      externalId: '99',
+      sourceAccountId: source.id,
+      sourceUrl: 'https://x.com/user/status/99',
+      title: 'NVIDIA announced a new HBM partnership.',
+      contentHash: 'sha256-original-test',
+      metadata: { originalText: 'NVIDIA announced a new HBM partnership.' },
+    });
+    const item = app.store.repositories.feed.saveContentItem({
+      workspaceId: 'local',
+      captureId: capture.id,
+      originType: 'subscription',
+      contentType: 'post',
+      title: 'NVIDIA announced a new HBM partnership.',
+      body: 'NVIDIA announced a new HBM partnership.',
+      sourceUrl: 'https://x.com/user/status/99',
+    });
+    const byUuid = await fetch(`${address.localUrl}/api/v1/content-items/${item.id}/original`)
+      .then((response) => response.json());
+    assert.equal(byUuid.ok, true);
+    assert.equal(byUuid.original.body, 'NVIDIA announced a new HBM partnership.');
+    assert.equal(byUuid.original.rawText, 'NVIDIA announced a new HBM partnership.');
+    const byFeedId = await fetch(`${address.localUrl}/api/v1/feed/items/${encodeURIComponent('x:99')}/original`)
+      .then((response) => response.json());
+    assert.equal(byFeedId.ok, true);
+    assert.equal(byFeedId.original.id, item.id);
+  } finally {
+    await app.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

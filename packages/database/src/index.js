@@ -585,6 +585,13 @@ export function createStore(databasePath) {
         .all(Math.max(1, Math.min(Number(limit) || 50, 200))).map(mapJob);
     },
 
+    listActiveAgentJobs(workspaceId = DEFAULT_WORKSPACE_ID) {
+      return database.prepare(`SELECT * FROM jobs
+        WHERE workspace_id = ? AND type = 'ai.agent.run' AND status IN ('queued', 'running')
+        ORDER BY created_at ASC`)
+        .all(workspaceId).map(mapJob);
+    },
+
     listEvents(afterId = 0, limit = 200, workspaceId = null) {
       const safeAfterId = Math.max(0, Number(afterId) || 0);
       const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 1_000));

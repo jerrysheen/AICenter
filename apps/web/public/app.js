@@ -2,8 +2,8 @@ import {
   askPrompts, assetClasses, bookTabs, channels, feedItems, globalAssets, holdings, marketTabs,
   platformFilters, portfolioSummary, quotes, reportSections, stockBoards as fallbackStockBoards,
   subscriptions, tools, tradeLedger,
-} from './mock.js?v=nav-inspire-v1';
-import { icon } from './icons.js?v=feed-restore-v1';
+} from './mock.js?v=ia-align-v2';
+import { icon } from './icons.js?v=ia-align-v2';
 import { renderMarkdownInto } from './markdown.js?v=inspire-link-v2';
 
 const platformLabels = { manual: '手工', bilibili: 'B站', x: 'X' };
@@ -30,10 +30,11 @@ const state = {
   holdingsMoveGroup: null,
   tradePane: 'stocks',
   stockBoard: 'overview',
+
   stockGroup: '全部',
   changeSort: 'none',
   marketFilter: '',
-  markets: { overview: null, us: null, asia: null },
+  markets: { overview: null, us: null, asia: null, cn: null },
   marketLoading: false,
   marketError: '',
   marketRequestId: 0,
@@ -46,7 +47,7 @@ const state = {
   assetDashboardError: '',
   assetDashboardLoading: false,
   bootstrapped: false,
-  extras: { us: [], asia: [] },
+  extras: { us: [], asia: [], cn: [] },
   xItems: [],
   xFeed: 'for-you',
   xNote: '',
@@ -73,34 +74,76 @@ const state = {
   askSessions: [],
   askSessionId: '',
   askDetail: null,
-  askPending: null,
+  askJobs: [],
   referenceDraft: [],
   mentionItems: [],
   mentionIndex: 0,
   mentionRange: null,
   sourceCatalog: [],
   sourceSnapshots: {},
+  staticBoard: null,
+  staticBoardWindow: 'today',
+  staticReleaseCountry: 'all',
+  staticBoardLoading: false,
+  staticBoardError: '',
+  sourceLocalizations: {},
+  sourceLocalizing: false,
+  marketNativeBoard: null,
+  marketNativeLoading: false,
+  marketNativeError: '',
   hubLane: 'overview',
+  overviewPane: 'home',
+  overviewTimeline: 'latest',
+  noteFilter: 'all',
+  askMaterialTab: 'feed',
+  sourceCatalogKind: 'all',
+  sourceCatalogQuery: '',
   sourceLoading: false,
   viewReloading: false,
   hiddenFeedIds: new Set(),
+  hiddenSourceIds: new Set(),
+  focusIds: new Set(),
   lastOverviewTarget: '',
+  feedQuery: '',
+  showHeaderSearch: false,
+  feedSort: 'captured',
+  feedRange: 'all',
+  feedPlatform: 'all',
+  expandedFeedIds: new Set(),
+  readerLang: 'translation',
+  privacy: false,
+  settingsPane: 'hub',
+  pageKind: '',
+  pageId: '',
+  trail: [],
+  originalBodies: {},
+  officialBodies: {},
+  runtimeJobs: [],
+  runtimeJobsError: '',
+};
+
+const pageKinds = {
+  article: { nav: 'sources', title: '阅读' },
+  event: { nav: 'sources', title: '日程详情' },
+  source: { nav: 'sources', title: '信源' },
+  quote: { nav: 'sources', title: '行情详情' },
+  tasks: { nav: 'tools', title: '采集与处理' },
+  task: { nav: 'tools', title: '任务详情' },
+  note: { nav: 'inspire', title: '灵感详情' },
+  account: { nav: 'assets', title: '账户明细' },
+  holding: { nav: 'assets', title: '持仓详情' },
+  automation: { nav: 'tools', title: '自动任务配置' },
+  publish: { nav: 'tools', title: '快速发布' },
 };
 
 const hubLanes = [
   { id: 'overview', label: '总览', view: 'sources' },
-  { id: 'feed', label: '社媒', view: 'feed' },
+  { id: 'feed', label: '信息流', view: 'feed' },
   { id: 'stocks', label: '股票', view: 'market' },
-  { id: 'global', label: '全球资产', view: 'market/global' },
+  { id: 'global', label: '全球行情', view: 'market/global' },
 ];
 
 const overviewViews = ['sources', 'feed', 'market'];
-
-const futureSourceSlots = [
-  { id: 'future.news', title: '新闻与 RSS', category: 'future', providerId: '待选择', viewKind: 'content-feed', description: '网站、RSS 和公开新闻统一进入信息流。' },
-  { id: 'future.filings', title: '公司公告', category: 'future', providerId: '待选择', viewKind: 'content-feed', description: '财报、公告和投资者关系材料。' },
-  { id: 'future.calendar', title: '宏观日历', category: 'future', providerId: '待选择', viewKind: 'calendar', description: '经济数据、财报日和重要事件日历。' },
-];
 
 const navItems = [
   { id: 'sources', label: '总览', icon: 'house' },
@@ -111,16 +154,17 @@ const navItems = [
 ];
 
 const viewCopy = {
-  sources: { title: '总览', subtitle: '图表、摘选和后续看板' },
-  feed: { title: '社媒', subtitle: '外部信息与手工发布的完整信息流' },
-  market: { title: '市场', subtitle: '股票观察池与全球资产报价' },
+  sources: { title: '总览', subtitle: '行情、即将发生，以及已发布内容' },
+  feed: { title: '信息流', subtitle: '已收录内容的统一时间线' },
+  market: { title: '市场', subtitle: '股票观察池与全球行情报价' },
   assets: { title: '资产', subtitle: '持仓账本与个人资产分析' },
   tools: { title: '工具', subtitle: '知识库、日报和连接' },
-  inspire: { title: '灵感', subtitle: '马上写下来，默认只保存原文' },
+  inspire: { title: '灵感', subtitle: '留下尚未完成的思考' },
   knowledge: { title: '知识库', subtitle: '可长期复用的规范内容' },
-  ask: { title: '问答', subtitle: 'AI 记录，可回溯也可继续' },
+  ask: { title: '问答', subtitle: '研究记录，可回溯也可继续' },
   report: { title: '日报', subtitle: '跨模块汇总，先定结构' },
-  settings: { title: '设置', subtitle: '设备、连接器和账户' },
+  settings: { title: '设备与连接', subtitle: '信源、任务、自动化和配对' },
+  page: { title: '详情', subtitle: '' },
 };
 
 const elements = Object.fromEntries([
@@ -130,12 +174,19 @@ const elements = Object.fromEntries([
   'authorized-feed', 'page-title', 'page-subtitle', 'post-form', 'post-title', 'post-body',
   'form-message', 'feed', 'feed-count', 'metrics-panel', 'metric-devices', 'metric-opens',
   'metric-published', 'metric-details', 'device-list', 'post-dialog', 'dialog-title',
-  'dialog-body', 'dialog-translation', 'dialog-tags', 'dialog-source', 'dialog-translate', 'dialog-time', 'toast', 'channel-tabs',
-  'platform-filters', 'follow-toolbar', 'bilibili-toolbar', 'bilibili-feed-status', 'bilibili-import-form', 'bilibili-url', 'bilibili-import', 'x-toolbar', 'x-translate-bar', 'x-feed-status', 'x-translate-status', 'x-feed-tabs', 'x-refresh', 'x-translate', 'x-tag', 'quote-filters', 'quote-list', 'tool-grid',
+  'dialog-body', 'dialog-translation', 'dialog-tags', 'dialog-source', 'dialog-save', 'dialog-cite', 'dialog-translate', 'dialog-time', 'dialog-notice', 'dialog-language', 'toast', 'channel-tabs',
+  'platform-filters', 'follow-toolbar', 'bilibili-toolbar', 'bilibili-feed-status', 'bilibili-import-form', 'bilibili-url', 'bilibili-import', 'bilibili-more', 'x-toolbar', 'x-more', 'x-translate-bar', 'x-feed-status', 'x-translate-status', 'x-feed-tabs', 'x-refresh', 'x-translate', 'x-tag', 'quote-filters', 'quote-list', 'tool-grid',
   'ask-records', 'ask-start', 'ask-session-list', 'ask-session-shell', 'ask-back', 'ask-intro', 'ask-prompt-label',
-  'ask-thread', 'ask-prompts', 'ask-form', 'ask-send', 'ask-ref-chips', 'ask-mention-menu', 'compose-dialog', 'reload-view', 'open-compose', 'open-settings',
+  'ask-thread', 'ask-prompts', 'ask-materials', 'ask-material-tabs', 'ask-form', 'ask-send', 'ask-ref-chips', 'ask-mention-menu', 'ask-live-chip', 'compose-dialog', 'reload-view', 'open-compose', 'open-settings', 'global-search',
   'side-nav-list', 'bottom-tab', 'market-tabs', 'book-tabs', 'holdings-list', 'holdings-filters', 'asset-filters',
   'asset-list', 'ledger-list', 'search-dialog', 'symbol-search', 'search-results',
+  'static-source-groups', 'static-schedule-tabs', 'static-upcoming', 'static-schedule-list',
+  'static-board-note', 'source-dialog', 'source-dialog-title', 'source-dialog-meta', 'source-dialog-items',
+  'overview-home', 'overview-schedule', 'overview-catalog', 'overview-timeline', 'overview-timeline-tabs', 'overview-timeline-day',
+  'open-source-catalog', 'open-full-schedule', 'schedule-back', 'catalog-back', 'source-catalog-filter', 'source-catalog-tabs',
+  'note-filters', 'note-focus-entry', 'note-focus-hint',
+  'source-tasks-dialog', 'source-tasks-title', 'source-tasks-meta', 'source-tasks-body',
+  'market-native-predictions', 'market-native-derivatives', 'market-native-liquidity', 'market-native-note',
   'note-form', 'note-body', 'note-title', 'note-source-url', 'note-source-title', 'note-source-type',
   'note-capture-channel', 'note-source-app', 'note-share-source', 'note-ai-toggle', 'note-list',
   'knowledge-list', 'portfolio-summary',
@@ -146,15 +197,52 @@ const elements = Object.fromEntries([
   'market-sync-hint', 'book-sync-hint', 'analysis-period', 'analysis-kpis', 'analysis-trend', 'analysis-pie',
   'analysis-diagnosis-1', 'analysis-diagnosis-2', 'analysis-dividend-total', 'analysis-dividend', 'analysis-insights',
   'holdings-note', 'holdings-head', 'holdings-moves', 'holdings-overview', 'holdings-group-detail',
-  'holdings-group-title', 'holdings-group-moves', 'holdings-group-back', 'holdings-refresh',
+  'holdings-group-title', 'holdings-group-moves', 'holdings-group-back', 'holdings-refresh', 'holdings-privacy',
   'reference-dock', 'reference-preview', 'reference-preview-title', 'reference-preview-meta', 'reference-preview-body',
-  'hub-ticker', 'hub-excerpts', 'overview-subnav',
+  'hub-ticker', 'overview-subnav', 'nav-back', 'toggle-search', 'feed-filter', 'feed-open-calendar',
+  'feed-filter-dialog', 'feed-filter-body', 'open-all-quotes', 'open-full-feed', 'hub-market-note',
+  'page-root', 'settings-hub', 'settings-connections',
 ].map((id) => [id, document.getElementById(id)]));
 
 const TRANSLATION_STORE_KEY = 'ai-center.translations.v1';
 const TRANSLATION_STORE_LIMIT = 400;
 const TRANSLATE_BATCH_SIZE = 30;
 const TAG_BATCH_SIZE = 50;
+const HIDDEN_SOURCES_KEY = 'ai-center.hidden-sources.v1';
+const FOCUS_KEY = 'ai-center.focus-ids.v1';
+const AUTO_DRAFT_KEY = 'ai-center.automation-draft.v1';
+const INSPIRATION_BODY_MAX = 100_000;
+
+function readJsonSet(key) {
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(key) || '[]');
+    return new Set(Array.isArray(raw) ? raw.map(String) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeJsonSet(key, values) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify([...values]));
+  } catch {}
+}
+
+state.hiddenSourceIds = readJsonSet(HIDDEN_SOURCES_KEY);
+state.focusIds = readJsonSet(FOCUS_KEY);
+
+function isFocused(id) {
+  return state.focusIds.has(String(id || ''));
+}
+
+function toggleFocus(id, render) {
+  const key = String(id || '');
+  if (!key) return;
+  if (state.focusIds.has(key)) state.focusIds.delete(key);
+  else state.focusIds.add(key);
+  writeJsonSet(FOCUS_KEY, state.focusIds);
+  if (typeof render === 'function') render();
+}
 
 function hashText(value) {
   let hash = 2166136261;
@@ -205,8 +293,8 @@ function rememberTranslation(post, translation) {
   saveTranslationStore(store);
 }
 
-function postNeedsChineseTranslation(post) {
-  const source = String(post?.body || '').trim();
+function textNeedsZhView(sourceText) {
+  const source = String(sourceText || '').trim();
   if (!source) return false;
   const hangul = (source.match(/\p{Script=Hangul}/gu) || []).length;
   const latin = (source.match(/[A-Za-z]/g) || []).length;
@@ -215,6 +303,23 @@ function postNeedsChineseTranslation(post) {
   const foreign = hangul + latin;
   if (han >= 8 && foreign < Math.max(8, Math.ceil(han * 0.25))) return false;
   return true;
+}
+
+function postNeedsChineseTranslation(post) {
+  return textNeedsZhView(post?.body);
+}
+
+function mergeLocalizations(payload) {
+  const incoming = payload?.localizations;
+  if (!incoming || typeof incoming !== 'object') return;
+  state.sourceLocalizations = { ...state.sourceLocalizations, ...incoming };
+}
+
+function localizedCopy(id, fallback = '') {
+  const row = state.sourceLocalizations[id];
+  if (row?.text) return row.text;
+  if (row?.pending || textNeedsZhView(fallback)) return '正在翻译…';
+  return fallback || '';
 }
 
 function pendingXTranslations(limit = TRANSLATE_BATCH_SIZE) {
@@ -269,17 +374,25 @@ function renderNav() {
     button.innerHTML = `${icon(item.icon)}<span>${item.label}</span>`;
     return button;
   }));
+  renderAskLiveUi();
 }
 
 function isPrimaryNavActive(navId, view) {
+  if (view === 'page') {
+    const mapped = pageKinds[state.pageKind]?.nav || 'sources';
+    if (navId === 'sources') return mapped === 'sources';
+    if (navId === 'tools') return mapped === 'tools';
+    return navId === mapped;
+  }
   if (navId === 'sources') return overviewViews.includes(view);
-  if (navId === 'tools') return view === 'tools' || view === 'knowledge' || view === 'report';
+  if (navId === 'tools') return view === 'tools' || view === 'knowledge' || view === 'report' || view === 'settings';
   return navId === view;
 }
 
 function resolveView(name) {
   if (name === 'trade') return 'market';
   if (name === 'account') return 'settings';
+  if (pageKinds[name]) return 'page';
   return viewCopy[name] ? name : 'sources';
 }
 
@@ -289,7 +402,11 @@ function parseLocation(name = (location.hash || '#sources').slice(1)) {
   const view = resolveView(head);
   const marketPane = view === 'market' && rest[0] === 'global' ? 'assets' : (view === 'market' ? 'stocks' : '');
   const askSessionId = view === 'ask' && rest[0] ? rest.join('/') : '';
-  return { view, askSessionId, marketPane };
+  const sourcesPane = view === 'sources' && ['catalog', 'schedule'].includes(rest[0]) ? rest[0] : 'home';
+  const settingsPane = view === 'settings' && rest[0] === 'connections' ? 'connections' : (view === 'settings' ? 'hub' : '');
+  const pageKind = pageKinds[head] ? head : '';
+  const pageId = pageKind ? rest.join('/') : '';
+  return { view, askSessionId, marketPane, sourcesPane, settingsPane, pageKind, pageId };
 }
 
 const OVERVIEW_LANE_KEY = 'ai-center.last-overview';
@@ -344,6 +461,41 @@ function askHash(sessionId = state.askSessionId) {
   return sessionId ? `#ask/${sessionId}` : '#ask';
 }
 
+function pageHash(kind = state.pageKind, id = state.pageId) {
+  return id ? `#${kind}/${id}` : `#${kind}`;
+}
+
+function openPage(kind, id = '', { back = false } = {}) {
+  if (!back && (document.body.dataset.view !== 'page' || state.pageKind !== kind || state.pageId !== String(id || ''))) {
+    state.trail.push(location.hash || '#sources');
+  }
+  setView(id ? `${kind}/${id}` : kind, { back });
+}
+
+function goBack() {
+  const previous = state.trail.pop();
+  if (previous) {
+    setView(previous.replace(/^#/, ''), { back: true });
+    return;
+  }
+  setView('sources', { back: true });
+}
+
+function syncHeaderSearch() {
+  document.body.classList.toggle('search-open', Boolean(state.showHeaderSearch));
+  if (elements['toggle-search']) {
+    elements['toggle-search'].hidden = document.body.dataset.view === 'ask';
+    setIconButton(elements['toggle-search'], state.showHeaderSearch ? 'x' : 'search');
+  }
+  if (elements['nav-back']) {
+    const showBack = document.body.dataset.view === 'page'
+      || (document.body.dataset.view === 'settings' && state.settingsPane === 'connections')
+      || (document.body.dataset.view === 'sources' && state.overviewPane !== 'home');
+    elements['nav-back'].classList.toggle('hidden', !showBack);
+    setIconButton(elements['nav-back'], 'chevron-left');
+  }
+}
+
 function setView(name, options = {}) {
   const incoming = String(name || '').replace(/^#/, '');
   const requested = options.fromPrimaryNav && incoming === 'sources'
@@ -356,6 +508,10 @@ function setView(name, options = {}) {
   if (leaving) captureViewScroll(previous);
   state.askSessionId = view === 'ask' ? parsed.askSessionId : '';
   if (view === 'market' && parsed.marketPane) state.tradePane = parsed.marketPane;
+  if (view === 'sources') state.overviewPane = parsed.sourcesPane || 'home';
+  if (view === 'settings') state.settingsPane = parsed.settingsPane || 'hub';
+  state.pageKind = view === 'page' ? parsed.pageKind : '';
+  state.pageId = view === 'page' ? parsed.pageId : '';
   state.hubLane = overviewLane(view, state.tradePane);
   rememberOverviewTarget(view, state.tradePane);
   document.body.dataset.view = view;
@@ -368,16 +524,23 @@ function setView(name, options = {}) {
     control.classList.toggle('is-parent-active', false);
   });
   if (view === 'market') {
-    elements['page-title'].textContent = state.tradePane === 'assets' ? '全球资产' : '股票';
+    elements['page-title'].textContent = state.tradePane === 'assets' ? '全球行情' : '股票';
     elements['page-subtitle'].textContent = state.tradePane === 'assets'
       ? '指数、外汇、利率、贵金属、能源与加密'
-      : '总览、美股和亚洲观察池';
+      : '总览按时切换 A 股/美股，亚洲观察池仍单独成页';
+  } else if (view === 'page') {
+    elements['page-title'].textContent = pageKinds[state.pageKind]?.title || '详情';
+    elements['page-subtitle'].textContent = '';
+  } else if (view === 'settings') {
+    elements['page-title'].textContent = state.settingsPane === 'connections' ? '设备连接' : '设备与连接';
+    elements['page-subtitle'].textContent = viewCopy.settings.subtitle;
   } else {
     elements['page-title'].textContent = viewCopy[view].title;
     elements['page-subtitle'].textContent = viewCopy[view].subtitle;
   }
   updateHeaderAction(view);
   renderOverviewLanes();
+  syncHeaderSearch();
   if (view === 'inspire') loadNotes().catch((error) => showToast(error.message));
   if (view === 'knowledge') loadKnowledge().catch((error) => showToast(error.message));
   if (view === 'market' || view === 'assets') {
@@ -385,16 +548,30 @@ function setView(name, options = {}) {
     renderTradeTabs();
     if (state.bootstrapped) syncTradePaneData().catch((error) => showToast(error.message));
   }
+  if (view === 'sources') syncOverviewPanes();
   if (view === 'sources' && state.bootstrapped) loadSourcesPage().catch((error) => showToast(error.message));
+  if (view === 'feed' && state.bootstrapped && !state.staticBoard) {
+    loadStaticSignalBoard().catch((error) => showToast(error.message));
+  }
   if (view === 'ask') syncAskView().catch((error) => showToast(error.message));
+  if (view === 'settings') renderSettingsHub();
+  if (view === 'page') renderPage();
+  renderAskLiveUi();
   renderReferenceUi();
   const nextHash = view === 'ask'
     ? askHash(state.askSessionId)
     : view === 'market'
       ? overviewHash(state.tradePane === 'assets' ? 'global' : 'stocks')
-      : `#${view}`;
+      : view === 'sources' && state.overviewPane !== 'home'
+        ? `#sources/${state.overviewPane}`
+        : view === 'settings' && state.settingsPane === 'connections'
+          ? '#settings/connections'
+          : view === 'page'
+            ? pageHash()
+            : `#${view}`;
   if (location.hash !== nextHash) history.replaceState({}, '', `${location.pathname}${location.search}${nextHash}`);
   if (leaving) restoreViewScroll(view);
+  syncAskKeyboard();
 }
 
 function updateHeaderAction(view) {
@@ -433,7 +610,7 @@ async function reloadCurrentView() {
       tasks.push(loadXFeed({ refresh: false }));
       tasks.push(loadBilibiliFeed({ refresh: false }));
     }
-    if (view === 'sources') tasks.push(loadSourcesPage());
+    if (view === 'sources') tasks.push(loadSourcesPage({ refresh: true }));
     if (view === 'inspire') tasks.push(loadNotes());
     if (view === 'ask') tasks.push(syncAskView());
     if (view === 'market') tasks.push(syncTradePaneData());
@@ -499,6 +676,7 @@ function isHttpUrl(value) {
 }
 
 function openExternalHttpUrl(url, event) {
+  persistFeedBrowseState();
   const href = String(url || '').trim();
   if (!isHttpUrl(href)) {
     event?.preventDefault();
@@ -643,31 +821,70 @@ function formatAskClock(timestamp) {
 }
 
 const FEED_PAGE_SIZE = 12;
+const FEED_BROWSE_KEY = 'ai-center.feed-browse';
+const LAST_LOCATION_KEY = 'ai-center.last-location';
 let pageScrollY = 0;
 let feedObserver = null;
 let restoringViewScroll = false;
+let pendingFeedDialogId = '';
 const viewScrollY = Object.fromEntries(Object.keys(viewCopy).map((name) => [name, 0]));
 
 function persistFeedBrowseState() {
   try {
-    sessionStorage.setItem('ai-center.feed-browse', JSON.stringify({
+    const view = document.body.dataset.view || '';
+    if (view === 'feed' && !document.body.classList.contains('is-dialog-open')) {
+      viewScrollY.feed = window.scrollY;
+      const cards = [...document.querySelectorAll('#feed .post-card[data-post-id]')];
+      const visible = cards.find((card) => card.getBoundingClientRect().bottom > 96);
+      if (visible?.dataset.postId) state.feedAnchorId = visible.dataset.postId;
+    }
+    window.localStorage.setItem(LAST_LOCATION_KEY, JSON.stringify({
+      hash: location.hash || '#sources',
+      platform: state.platform,
+      xFeed: state.xFeed,
+      channel: state.channel,
+    }));
+    window.localStorage.setItem(FEED_BROWSE_KEY, JSON.stringify({
       y: viewScrollY.feed || 0,
       anchorId: state.feedAnchorId || '',
+      restoreId: state.feedRestoreId || '',
+      dialogPostId: state.dialogPost?.id || '',
       shown: state.feedShown,
+      platform: state.platform,
+      xFeed: state.xFeed,
     }));
   } catch {}
 }
 
 function restorePersistedFeedBrowseState() {
   try {
-    const saved = JSON.parse(sessionStorage.getItem('ai-center.feed-browse') || 'null');
-    if (!saved) return;
+    const saved = JSON.parse(window.localStorage.getItem(FEED_BROWSE_KEY)
+      || window.sessionStorage.getItem(FEED_BROWSE_KEY)
+      || 'null');
+    if (!saved) return null;
     if (Number.isFinite(saved.y)) viewScrollY.feed = saved.y;
     if (saved.anchorId) state.feedAnchorId = saved.anchorId;
+    if (saved.restoreId) state.feedRestoreId = saved.restoreId;
     if (Number.isFinite(saved.shown) && saved.shown > state.feedShown) {
       state.feedShown = saved.shown;
     }
-  } catch {}
+    if (saved.platform) state.platform = saved.platform;
+    if (saved.xFeed) state.xFeed = saved.xFeed;
+    pendingFeedDialogId = saved.dialogPostId || pendingFeedDialogId;
+    return saved;
+  } catch {
+    return null;
+  }
+}
+
+function restoreLastLocationHash() {
+  if (location.hash && location.hash !== '#') return location.hash;
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(LAST_LOCATION_KEY) || 'null');
+    return saved?.hash || '#sources';
+  } catch {
+    return '#sources';
+  }
 }
 
 function captureViewScroll(view) {
@@ -710,6 +927,14 @@ function restoreViewScroll(view) {
       }
     });
   });
+}
+
+function restoreOpenFeedItem() {
+  const postId = pendingFeedDialogId || '';
+  pendingFeedDialogId = '';
+  if (!postId || document.body.dataset.view !== 'feed') return;
+  const post = visibleFeedItems().find((item) => String(item.id) === String(postId));
+  if (post) openPost(post);
 }
 
 function capturePageScroll() {
@@ -771,7 +996,7 @@ function createPostLink(label, onClick) {
 }
 
 function anyDialogOpen() {
-  return ['compose-dialog', 'search-dialog', 'post-dialog', 'subscriptions-dialog', 'holding-dialog', 'reference-preview']
+  return ['compose-dialog', 'search-dialog', 'post-dialog', 'subscriptions-dialog', 'holding-dialog', 'reference-preview', 'feed-filter-dialog', 'source-tasks-dialog']
     .some((id) => document.getElementById(id)?.open);
 }
 
@@ -787,6 +1012,7 @@ function liveAsItem(post) {
     resourceId: post.id,
     resourceType: 'post',
     live: true,
+    kind: 'social',
     platform: 'manual',
     author: post.createdByDevice ? '手机' : '本机',
     handle: '',
@@ -798,6 +1024,7 @@ function liveAsItem(post) {
     processing: '',
     following: false,
     createdAt: post.createdAt,
+    publishedAt: post.createdAt,
   };
 }
 
@@ -826,7 +1053,14 @@ function isPostSaved(post) {
 }
 
 function inspirationBodyFromPost(post) {
-  return [post.author, post.handle, post.body].filter(Boolean).join('\n\n').slice(0, 4000);
+  const parts = [post.author, post.handle, post.body].filter(Boolean);
+  return parts.join('\n\n');
+}
+
+function clipInspirationBody(body) {
+  const text = String(body || '').trim();
+  if (text.length <= INSPIRATION_BODY_MAX) return { body: text, clipped: false };
+  return { body: text.slice(0, INSPIRATION_BODY_MAX), clipped: true };
 }
 
 function clearSharedInspirationDraft() {
@@ -946,19 +1180,20 @@ async function savePostToInspiration(post) {
   }
   if (existing || isPostSaved(post)) {
     if (existing) {
-      await api(`/api/v1/notes/${existing.id}`, { method: 'DELETE' });
-      state.notes = state.notes.filter((note) => note.id !== existing.id);
+      showToast('已保存为灵感，打开查看。取消收藏不会删除原文。');
+      setView('inspire');
+      setInspirationExpanded(existing.id, true);
+      return;
     }
-    if (post.sourceUrl) state.xSavedUrls.delete(post.sourceUrl);
-    showToast('已取消收藏');
-    renderPosts();
-    loadNotes().catch(() => {});
+    showToast('已保存过这条内容。删除请进入灵感后单独确认。');
+    setView('inspire');
     return;
   }
+  const clipped = clipInspirationBody(inspirationBodyFromPost(post));
   const payload = await api('/api/v1/notes', {
     method: 'POST',
     body: JSON.stringify({
-      body: inspirationBodyFromPost(post),
+      body: clipped.body,
       wantAi: false,
       sourceType: 'content-item',
       sourceId: post.resourceId || post.id,
@@ -971,7 +1206,7 @@ async function savePostToInspiration(post) {
     state.notes = [payload.note, ...state.notes.filter((note) => note.id !== payload.note.id)];
   }
   if (post.sourceUrl) state.xSavedUrls.add(post.sourceUrl);
-  showToast('已加入灵感');
+  showToast(clipped.clipped ? '已加入灵感。正文超过存储上限，已保存前 10 万字；完整内容看来源链接。' : '已加入灵感');
   renderPosts();
   loadNotes().catch(() => {});
 }
@@ -1012,6 +1247,21 @@ function dropFeedItemLocally(post) {
   state.posts = state.posts.filter((item) => item.id !== post.id);
   state.xItems = state.xItems.filter((item) => item.id !== post.id && item.resourceId !== post.resourceId);
   state.bilibiliItems = state.bilibiliItems.filter((item) => item.id !== post.id && item.resourceId !== post.resourceId);
+}
+
+function markFeedItemRead(post) {
+  if (!post?.id || post.isRead) return;
+  post.isRead = true;
+  for (const list of [state.xItems, state.bilibiliItems, state.posts]) {
+    const hit = list.find((item) => item.id === post.id || (post.resourceId && item.resourceId === post.resourceId));
+    if (hit) hit.isRead = true;
+  }
+  const contentItemId = post.resourceType === 'content-item' ? post.resourceId : '';
+  if (!contentItemId || !state.session) return;
+  api(`/api/v1/content-items/${contentItemId}/state`, {
+    method: 'PATCH',
+    body: JSON.stringify({ isRead: true }),
+  }).catch(() => {});
 }
 
 async function hideFeedItem(post) {
@@ -1451,6 +1701,8 @@ function applyAskMention(item) {
 
 function onAskComposerInput() {
   const input = elements['ask-form']?.elements?.question;
+  resizeAskComposer();
+  syncAskKeyboard();
   if (!input || state.askSubmitting) {
     hideAskMentions();
     return;
@@ -1550,6 +1802,7 @@ function textAfterLead(source, lead) {
 function postDisplayTitle(post) {
   const translated = translationFor(post)?.text;
   if (translated) return clipFeedText(firstFeedSentence(translated) || plainFeedText(translated), FEED_TITLE_MAX);
+  if (postNeedsChineseTranslation(post)) return '正在翻译…';
   const title = String(post?.title || '').trim();
   if (title) return title;
   return clipFeedText(plainFeedText(post?.body), FEED_TITLE_MAX) || '无标题';
@@ -1558,7 +1811,15 @@ function postDisplayTitle(post) {
 function postListExcerpt(post) {
   const translated = translationFor(post)?.text;
   if (translated) return clipFeedText(textAfterLead(translated, postDisplayTitle(post)), FEED_EXCERPT_MAX);
+  if (postNeedsChineseTranslation(post)) return '';
   return clipFeedText(textAfterLead(post?.body, post?.title), FEED_EXCERPT_MAX);
+}
+
+function postViewBody(post) {
+  const translated = translationFor(post)?.text;
+  if (translated) return translated;
+  if (postNeedsChineseTranslation(post)) return '正在翻译…';
+  return post?.body || post?.summary || '无正文';
 }
 
 function fillPostBody(element, value) {
@@ -1566,18 +1827,21 @@ function fillPostBody(element, value) {
   if (looksLikeMarkdown(text)) {
     element.classList.add('post-markdown');
     renderMarkdownInto(element, text);
-    return;
+  } else {
+    element.classList.remove('post-markdown');
+    element.textContent = text;
   }
-  element.classList.remove('post-markdown');
-  element.textContent = text;
 }
 
 function feedAsItem(item, platform) {
+  const publishedAt = item.publishedAt || item.capturedAt || Date.now();
+  const createdAt = item.capturedAt || item.publishedAt || Date.now();
   return {
     id: item.id,
     resourceId: item.resourceId || '',
     resourceType: 'content-item',
     live: true,
+    kind: 'social',
     platform,
     author: item.authorName || item.authorHandle || (platform === 'bilibili' ? 'B站' : 'X'),
     handle: item.authorHandle || '',
@@ -1588,7 +1852,9 @@ function feedAsItem(item, platform) {
     sourceUrl: item.sourceUrl,
     processing: item.processing || '',
     following: false,
-    createdAt: item.capturedAt || item.publishedAt || Date.now(),
+    createdAt,
+    publishedAt,
+    isRead: Boolean(item.isRead),
     translation: item.translation || null,
   };
 }
@@ -1642,22 +1908,98 @@ async function syncLocalTranslationsToServer(items) {
 }
 
 function matchesPlatform(item) {
-  return state.platform === 'all' || item.platform === state.platform;
+  const platform = state.feedPlatform || state.platform;
+  return platform === 'all' || item.platform === platform;
 }
 
-function visibleFeedItems() {
+function officialAsItem(release) {
+  const publishedAt = release.publishedAt || release.observedAt || Date.now();
+  return {
+    id: release.releaseId,
+    resourceId: release.releaseId,
+    resourceType: 'official-release',
+    live: true,
+    kind: 'official',
+    platform: 'official',
+    author: release.authority || '官方',
+    handle: '',
+    time: release.publishedAt ? formatTime(release.publishedAt) : '',
+    title: localizedCopy(release.releaseId, release.title),
+    body: '',
+    excerpt: [release.authority, release.documentNumber].filter(Boolean).join(' · '),
+    tags: [],
+    sourceUrl: release.sourceUrl || '',
+    processing: '',
+    following: false,
+    createdAt: release.observedAt || publishedAt,
+    publishedAt,
+    complete: false,
+    release,
+  };
+}
+
+function socialFeedItems() {
   const live = state.posts.map(liveAsItem).filter(matchesPlatform);
   const xItems = state.xItems.map(xAsItem).filter(matchesPlatform);
   const bilibiliItems = state.bilibiliItems.map(bilibiliAsItem).filter(matchesPlatform);
   const demo = feedItems.filter((item) => {
     if (item.platform === 'x' && state.xItems.length) return false;
     if (item.platform === 'bilibili' && state.bilibiliItems.length) return false;
-    return matchesPlatform(item) && (state.channel === 'all' || item.following);
-  });
-  const items = state.channel === 'following' ? demo : [...bilibiliItems, ...xItems, ...live, ...demo];
-  return items
-    .filter((item) => !state.hiddenFeedIds.has(item.id) && !state.hiddenFeedIds.has(item.resourceId))
-    .sort((left, right) => (Number(right.createdAt) || 0) - (Number(left.createdAt) || 0));
+    return matchesPlatform({ ...item, kind: 'social' });
+  }).map((item) => ({ ...item, kind: 'social', createdAt: item.createdAt || Date.now(), publishedAt: item.publishedAt || item.createdAt || Date.now() }));
+  return [...bilibiliItems, ...xItems, ...live, ...demo]
+    .filter((item) => !state.hiddenFeedIds.has(item.id) && !state.hiddenFeedIds.has(item.resourceId));
+}
+
+function officialFeedItems() {
+  const hidden = state.hiddenSourceIds;
+  return (state.staticBoard?.releases || [])
+    .filter((item) => !hidden.has(`policy.${item.authority}`))
+    .map(officialAsItem);
+}
+
+function matchesFeedQuery(item, query) {
+  if (!query) return true;
+  const haystack = [
+    item.title,
+    item.author,
+    item.body,
+    item.excerpt,
+    postDisplayTitle(item),
+    translationFor(item)?.text,
+    postListExcerpt(item),
+    item.release?.title,
+  ].join(' ').toLowerCase();
+  return haystack.includes(query);
+}
+
+function matchesFeedRange(item) {
+  if (state.feedRange === 'all') return true;
+  const at = Number(item.publishedAt || item.createdAt || 0);
+  if (!at) return state.feedRange !== 'today';
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  if (state.feedRange === 'today') return at >= start.getTime();
+  if (state.feedRange === '7d') return at >= start.getTime() - 6 * 24 * 60 * 60 * 1000;
+  return true;
+}
+
+function sortFeedItems(items) {
+  const key = state.feedSort === 'published' ? 'publishedAt' : 'createdAt';
+  return [...items].sort((left, right) => Number(Boolean(left.isRead)) - Number(Boolean(right.isRead))
+    || (Number(right[key]) || 0) - (Number(left[key]) || 0));
+}
+
+function visibleFeedItems() {
+  const social = socialFeedItems();
+  const official = officialFeedItems();
+  let items = state.channel === 'official' ? official
+    : state.channel === 'social' ? social
+      : [...social, ...official];
+  if (state.channel === 'focus') items = items.filter((item) => isFocused(item.id) || isFocused(item.resourceId));
+  const query = String(state.feedQuery || '').trim().toLowerCase();
+  items = items.filter((item) => matchesFeedQuery(item, query) && matchesFeedRange(item));
+  return sortFeedItems(items);
 }
 
 function renderChipTabs(target, items, current, onSelect) {
@@ -1686,11 +2028,16 @@ function renderChannels() {
     });
     return button;
   }));
-  elements['follow-toolbar'].classList.toggle('hidden', state.channel !== 'following');
+  elements['follow-toolbar']?.classList.add('hidden');
+  if (elements['feed-filter']) setIconButton(elements['feed-filter'], 'list-filter');
 }
 
 function renderPlatformFilters() {
-  renderChipTabs(elements['platform-filters'], platformFilters, state.platform, (id) => {
+  const show = state.feedPlatform !== 'all';
+  elements['platform-filters']?.classList.toggle('hidden', !show);
+  if (!show) return;
+  renderChipTabs(elements['platform-filters'], platformFilters, state.feedPlatform, (id) => {
+    state.feedPlatform = id;
     state.platform = id;
     resetFeedWindow();
     renderPlatformFilters();
@@ -1708,30 +2055,38 @@ function renderPlatformFilters() {
 
 function renderXToolbar() {
   const toolbar = elements['x-toolbar'];
-  if (toolbar) toolbar.classList.toggle('hidden', state.platform !== 'x');
+  if (toolbar) toolbar.classList.toggle('hidden', state.feedPlatform !== 'x');
   if (elements['x-feed-status']) {
-    elements['x-feed-status'].textContent = state.xLoading
-      ? (state.xRefreshing ? '正在用已登录浏览器拉取最多 50 条…' : '正在读取已缓存来源…')
-      : (state.xNote || '点拉取会写入 SourceAccount，并按推文 ID 去重保留。');
+    const status = state.xLoading
+      ? (state.xRefreshing ? '正在拉取…' : '正在读取已缓存来源…')
+      : (state.xNote || `${state.xItems.length} 条 · ${state.xFeed === 'following' ? '正在关注' : '为你推荐'}`);
+    elements['x-feed-status'].textContent = status;
+    elements['x-feed-status'].classList.toggle('hidden', state.feedPlatform !== 'x');
   }
   if (elements['x-feed-tabs']) {
     renderChipTabs(elements['x-feed-tabs'], [
       { id: 'for-you', label: '为你推荐' },
       { id: 'following', label: '正在关注' },
     ], state.xFeed, (id) => {
+      if (id === state.xFeed) return;
       state.xFeed = id;
+      state.xItems = [];
+      state.xNote = '';
+      resetFeedWindow();
       renderXToolbar();
+      renderPosts();
+      loadXFeed({ refresh: false }).catch((error) => showToast(error.message));
     });
   }
   const pending = pendingXTranslations().length;
   const pendingTags = pendingXTaggings().length;
   const busy = state.xLoading || state.xTranslating || state.xTagging;
-  const showTranslate = state.platform === 'x' || (state.platform === 'all' && state.xItems.length > 0);
+  const showTranslate = false;
   if (elements['x-translate-bar']) {
     elements['x-translate-bar'].classList.toggle('hidden', !showTranslate);
   }
   if (elements['x-refresh']) {
-    elements['x-refresh'].classList.toggle('hidden', state.platform !== 'x');
+    elements['x-refresh'].classList.toggle('hidden', state.feedPlatform !== 'x');
     elements['x-refresh'].disabled = busy;
     elements['x-refresh'].textContent = state.xRefreshing ? '拉取中…' : '拉取 50 条';
   }
@@ -1760,16 +2115,34 @@ function renderXToolbar() {
 
 function renderBilibiliToolbar() {
   const toolbar = elements['bilibili-toolbar'];
-  if (toolbar) toolbar.classList.toggle('hidden', state.platform !== 'bilibili');
+  if (toolbar) toolbar.classList.toggle('hidden', state.feedPlatform !== 'bilibili');
+  if (elements['bilibili-import-form']) elements['bilibili-import-form'].classList.add('hidden');
   if (elements['bilibili-feed-status']) {
     elements['bilibili-feed-status'].textContent = state.bilibiliLoading
-      ? '正在用已登录浏览器读取 AI 中文字幕…'
-      : (state.bilibiliNote || '贴链接后只抓 ai-zh。没有 AI 中文字幕就返回没有。');
+      ? '正在读取已保存字幕…'
+      : (state.bilibiliNote || `${state.bilibiliItems.length} 条已保存`);
   }
   if (elements['bilibili-import']) {
     elements['bilibili-import'].disabled = state.bilibiliLoading;
     elements['bilibili-import'].textContent = state.bilibiliLoading ? '拉取中…' : '拉取字幕';
   }
+}
+
+function sortLabel() {
+  return state.feedSort === 'published' ? '按发布时间' : '按收录顺序';
+}
+
+function rangeLabel() {
+  if (state.feedRange === 'today') return '今天';
+  if (state.feedRange === '7d') return '近 7 天';
+  return '全部日期';
+}
+
+function feedKindLabel(item) {
+  if (item.kind === 'official' || item.platform === 'official') return '官方';
+  if (item.platform === 'bilibili') return '字幕';
+  if (item.platform === 'manual') return '手工';
+  return '社媒';
 }
 
 function resetFeedWindow() {
@@ -1812,13 +2185,13 @@ function renderPosts() {
     : null;
   elements.feed.replaceChildren();
   elements['feed-count'].textContent = items.length > shown.length
-    ? `已显示 ${shown.length} / ${items.length} 条`
-    : `${items.length} 条`;
+    ? `${sortLabel()} · ${rangeLabel()} · 已显示 ${shown.length} / ${items.length} 条`
+    : `${sortLabel()} · ${rangeLabel()} · ${items.length} 条`;
   if (!items.length) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
-    empty.textContent = state.channel === 'following'
-      ? '还没有关注对象的内容。添加账号后会出现在这里。'
+    empty.textContent = state.feedQuery
+      ? '没有匹配的已收录内容。清除搜索后再看。'
       : '这个筛选下还没有信息。';
     elements.feed.append(empty);
     observeFeedSentinel(null, false);
@@ -1841,59 +2214,64 @@ function renderPosts() {
     actionsRow.append(remove);
 
     const card = document.createElement('article');
-    card.className = 'post-card is-compact swipe-front';
+    card.className = `post-card is-compact swipe-front${post.isRead ? ' is-read' : ''}${isFocused(post.id) ? ' is-focus' : ''}`;
     card.dataset.postId = post.id;
-    const head = document.createElement('div');
-    head.className = 'post-card-head';
     const meta = document.createElement('div');
     meta.className = 'post-meta';
-    const avatar = document.createElement('span');
-    avatar.className = 'post-author';
-    avatar.textContent = post.author.slice(0, 1);
+    const kind = document.createElement('span');
+    kind.className = `kind-tag${post.kind === 'official' ? ' official' : ''}`;
+    kind.textContent = feedKindLabel(post);
     const author = document.createElement('span');
     author.className = 'post-identity';
     author.textContent = post.author;
-    const platform = document.createElement('span');
-    platform.className = 'status-pill';
-    platform.textContent = platformLabels[post.platform] || post.platform;
     const time = document.createElement('span');
-    time.textContent = post.time;
-    meta.append(avatar, author, platform, time);
-    if (post.processing) {
-      const processing = document.createElement('span');
-      processing.className = 'status-pill warning';
-      processing.textContent = processingLabels[post.processing] || '处理中';
-      meta.append(processing);
-    }
-    const actions = document.createElement('div');
-    actions.className = 'post-actions';
-    const save = document.createElement('button');
-    save.type = 'button';
-    save.className = `icon-button post-save${isPostSaved(post) ? ' is-saved' : ''}`;
-    save.setAttribute('aria-label', isPostSaved(post) ? '已加入灵感' : '收藏到灵感');
-    save.innerHTML = icon(isPostSaved(post) ? 'bookmark-check' : 'bookmark');
-    save.addEventListener('click', (event) => {
-      event.stopPropagation();
-      savePostToInspiration(post).catch((error) => showToast(error.message));
-    });
-    actions.append(save, createCiteButton({
-      resourceType: post.resourceType || (post.live && post.platform !== 'manual' ? 'content-item' : 'post'),
-      resourceId: post.resourceId || (post.platform === 'manual' ? post.id : ''),
-      label: postDisplayTitle(post),
-      preview: translationFor(post)?.text || post.body,
-    }));
-    head.append(meta, actions);
+    time.className = 'post-time';
+    time.textContent = post.time || overviewClock(post.publishedAt || post.createdAt);
+    meta.append(kind, author, time);
+    const content = document.createElement('button');
+    content.type = 'button';
+    content.className = 'feed-content';
     const title = document.createElement('h3');
     title.textContent = postDisplayTitle(post);
-    card.append(head, title);
-    const excerpt = postListExcerpt(post);
-    if (excerpt) {
+    content.append(title);
+    const excerpt = post.excerpt || postListExcerpt(post);
+    const expanded = state.expandedFeedIds.has(post.id);
+    if (expanded) {
+      const full = document.createElement('div');
+      full.className = 'post-body';
+      fillPostBody(full, postViewBody(post));
+      content.append(full);
+    } else if (excerpt) {
       const preview = document.createElement('p');
       preview.className = translationFor(post) ? 'post-excerpt is-translated' : 'post-excerpt';
       preview.textContent = excerpt;
-      card.append(preview);
+      content.append(preview);
     }
-    attachSwipe(card, FEED_SWIPE_WIDTH, () => openPost(post));
+    content.addEventListener('click', () => openArticle(post));
+    const star = document.createElement('button');
+    star.type = 'button';
+    star.className = `icon-button ghost focus-btn${isFocused(post.id) ? ' on' : ''}`;
+    star.setAttribute('aria-label', isFocused(post.id) ? '取消重点' : '标为重点');
+    star.innerHTML = icon('star');
+    star.addEventListener('click', (event) => {
+      event.stopPropagation();
+      toggleFocus(post.id, () => {
+        renderPosts();
+        renderOverviewTimeline();
+      });
+    });
+    const expand = document.createElement('button');
+    expand.type = 'button';
+    expand.className = 'feed-expand';
+    expand.textContent = expanded ? '收起' : '原地展开全文';
+    expand.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (state.expandedFeedIds.has(post.id)) state.expandedFeedIds.delete(post.id);
+      else state.expandedFeedIds.add(post.id);
+      renderPosts();
+    });
+    card.append(meta, content, star, expand);
+    attachSwipe(card, FEED_SWIPE_WIDTH, () => openArticle(post));
     row.append(actionsRow, card);
     elements.feed.append(row);
   }
@@ -1912,53 +2290,34 @@ function renderPosts() {
 }
 
 function syncDialogTranslation(post) {
-  const translation = translationFor(post);
   const box = elements['dialog-translation'];
   if (box) {
-    box.textContent = translation?.text || '';
-    box.classList.toggle('hidden', !translation?.text);
+    box.textContent = '';
+    box.classList.add('hidden');
   }
-  elements['post-dialog']?.classList.toggle('has-translation', Boolean(translation?.text));
-  if (elements['dialog-translate']) {
-    elements['dialog-translate'].classList.toggle('hidden', !post.body);
-    elements['dialog-translate'].textContent = translateActionLabel(post);
+  elements['post-dialog']?.classList.remove('has-translation');
+  elements['dialog-translate']?.classList.add('hidden');
+}
+
+function openArticle(post) {
+  if (!post) return;
+  if (post.release || post.kind === 'official') {
+    openPage('article', `official/${post.release?.releaseId || post.id}`);
+    return;
   }
+  openPage('article', post.id);
+}
+
+function findUnifiedItem(id) {
+  const key = String(id || '');
+  return visibleFeedItems().find((item) => item.id === key || item.resourceId === key)
+    || socialFeedItems().find((item) => item.id === key || item.resourceId === key)
+    || officialFeedItems().find((item) => item.id === key || item.resourceId === key)
+    || null;
 }
 
 function openPost(post) {
-  state.dialogPost = post;
-  const live = state.posts.find((item) => item.id === post.id);
-  const xItem = state.xItems.find((item) => item.id === post.id);
-  const bilibiliItem = state.bilibiliItems.find((item) => item.id === post.id);
-  const payload = live || {
-    id: post.id,
-    title: post.title,
-    body: post.body,
-    tags: post.tags || [],
-    sourceUrl: post.sourceUrl || '',
-    createdAt: post.createdAt || Date.now(),
-  };
-  elements['dialog-title'].textContent = payload.title;
-  fillPostBody(elements['dialog-body'], payload.body || '无正文');
-  syncDialogTranslation(post);
-  elements['dialog-tags'].replaceChildren(...(payload.tags || []).map((tag) => {
-    const chip = document.createElement('span');
-    chip.textContent = tag;
-    return chip;
-  }));
-  elements['dialog-source'].classList.toggle('hidden', !payload.sourceUrl);
-  elements['dialog-time'].textContent = live
-    ? `发布于 ${new Date(payload.createdAt).toLocaleString('zh-CN')}`
-    : xItem
-      ? `X 公开时间线 · ${new Date(payload.createdAt).toLocaleString('zh-CN')}`
-      : bilibiliItem
-        ? `B站 AI 字幕 · ${new Date(payload.createdAt).toLocaleString('zh-CN')}`
-        : post.processing
-          ? '示例卡片：字幕或 AI 完成后会更新，不阻塞信息流'
-          : '示例内容，用于确认信息架构，尚未写入本地数据库';
-  state.feedRestoreId = String(post.id || '');
-  openDialog(elements['post-dialog']);
-  if (live) logBehavior('post.opened', { postId: payload.id });
+  openArticle(post);
 }
 
 function renderTradeTabs() {
@@ -2043,34 +2402,40 @@ function renderPortfolioSummary() {
     { id: 'b_sh', label: 'B股沪市' },
     { id: 'b_sz', label: 'B股深市' },
   ];
-  for (const line of lines) {
-    const row = document.createElement('article');
-    row.className = 'holdings-line';
-    const title = document.createElement('h3');
-    title.textContent = line.label;
-    const metrics = document.createElement('div');
-    metrics.className = 'holdings-line-metrics';
-    metrics.append(
-      holdingsLineMetric('股票', line.stockCny, line.listingCurrency === 'CNY' ? null : line.stockListing, line.listingCurrency),
-      holdingsLineMetric('现金', line.cashCny, line.listingCurrency === 'CNY' ? null : line.cashListing, line.listingCurrency),
-      holdingsLineMetric('合计', line.totalCny, line.listingCurrency === 'CNY' ? null : line.totalListing, line.listingCurrency),
-    );
-    const pnl = holdingsLinePnl(line.id);
-    if (pnl) {
-      metrics.append(
-        holdingsSignedMetric('当日', pnl.day),
-        holdingsSignedMetric('浮动', pnl.unrealized),
-      );
-    }
-    row.append(title, metrics);
-    target.append(row);
-  }
   if (board?.summary?.totalCny) {
     const total = document.createElement('p');
-    total.className = 'holdings-lines-total';
-    total.append(Object.assign(document.createElement('span'), { textContent: '总资产' }));
-    total.append(Object.assign(document.createElement('strong'), { textContent: `¥${formatMoneyAmount(board.summary.totalCny, 2)}` }));
+    total.className = 'holdings-lines-total asset-top';
+    total.append(Object.assign(document.createElement('span'), { textContent: '账户合计' }));
+    total.append(Object.assign(document.createElement('strong'), { className: 'total-value', textContent: privacyText(`¥${formatMoneyAmount(board.summary.totalCny, 2)}`) }));
     target.append(total);
+  }
+  for (const line of lines) {
+    const row = document.createElement('article');
+    row.className = 'holdings-line account-panel';
+    const head = document.createElement('div');
+    head.className = 'holdings-line-head';
+    head.append(Object.assign(document.createElement('h3'), { textContent: line.label }));
+    head.append(Object.assign(document.createElement('strong'), {
+      textContent: line.totalCny == null ? '--' : privacyText(`¥${formatMoneyAmount(line.totalCny, 2)}`),
+    }));
+    const metrics = document.createElement('div');
+    metrics.className = 'holdings-line-metrics';
+    const pnl = holdingsLinePnl(line.id);
+    metrics.append(
+      holdingsLineMetric('股票市值', line.stockCny),
+      holdingsLineMetric('现金', line.cashCny),
+      holdingsSignedMetric('当日盈亏', pnl?.day),
+      holdingsSignedMetric('持仓浮动', pnl?.unrealized),
+    );
+    row.append(head, metrics);
+    if (line.listingCurrency && line.listingCurrency !== 'CNY') {
+      const native = document.createElement('small');
+      native.className = 'holdings-native';
+      native.textContent = `原币 ${line.listingCurrency} · 股票 ${formatNativeAmount(line.stockListing, line.listingCurrency)} / 现金 ${formatNativeAmount(line.cashListing, line.listingCurrency)}`;
+      row.append(native);
+    }
+    row.addEventListener('click', () => openPage('account', line.id));
+    target.append(row);
   }
 }
 
@@ -2093,31 +2458,30 @@ function holdingsLinePnl(lineId) {
 
 function holdingsSignedMetric(label, value) {
   const item = document.createElement('div');
-  item.className = 'holdings-line-metric';
+  item.className = 'holdings-line-metric account-fact';
   const strong = document.createElement('strong');
-  const number = moneyNumber(value);
-  strong.className = number >= 0 ? 'up' : 'down';
-  strong.textContent = formatSignedAmount(number);
-  const caption = document.createElement('span');
+  strong.className = 'day-amount';
+  if (value == null) {
+    strong.textContent = '--';
+  } else {
+    const number = moneyNumber(value);
+    strong.classList.add(number >= 0 ? 'up' : 'down');
+    strong.textContent = formatSignedAmount(number);
+  }
+  const caption = document.createElement('small');
   caption.textContent = label;
-  item.append(strong, caption);
+  item.append(caption, strong);
   return item;
 }
 
-function holdingsLineMetric(label, cny, nativeAmount, nativeCurrency) {
+function holdingsLineMetric(label, cny) {
   const item = document.createElement('div');
-  item.className = 'holdings-line-metric';
+  item.className = 'holdings-line-metric account-fact';
   const strong = document.createElement('strong');
   strong.textContent = cny == null ? '--' : `¥${formatMoneyAmount(cny, 2)}`;
-  const caption = document.createElement('span');
+  const caption = document.createElement('small');
   caption.textContent = label;
-  item.append(strong);
-  if (nativeAmount != null && nativeCurrency && nativeCurrency !== 'CNY') {
-    const native = document.createElement('small');
-    native.textContent = formatNativeAmount(nativeAmount, nativeCurrency);
-    item.append(native);
-  }
-  item.append(caption);
+  item.append(caption, strong);
   return item;
 }
 
@@ -2398,27 +2762,7 @@ function renderHoldings() {
 }
 
 function openHolding(item) {
-  elements['holding-title'].textContent = item.name;
-  elements['holding-meta'].textContent = `${item.symbol} · ${boardLabels[item.board]} · 报价货币 ${item.listingCurrency}`;
-  const metrics = elements['holding-metrics'];
-  metrics.replaceChildren();
-  appendMetric(metrics, '现价', item.lastPrice || '无行情');
-  appendMetric(metrics, '成本', item.costPrice);
-  appendMetric(metrics, `市值 ${item.listingCurrency}`, item.marketValueListing || '--');
-  appendMetric(metrics, '市值 CNY', formatMoneyAmount(item.marketValueCny, 2));
-  appendMetric(metrics, '浮动盈亏', formatMoneyAmount(item.positionPnlCny, 2), moneyNumber(item.positionPnlCny) >= 0 ? 'up' : 'down');
-  appendMetric(metrics, '当日盈亏', formatMoneyAmount(item.dayPnlCny, 2), moneyNumber(item.dayPnlCny) >= 0 ? 'up' : 'down');
-  const remove = document.createElement('button');
-  remove.type = 'button';
-  remove.className = 'text-button';
-  remove.textContent = '从账本删除';
-  remove.addEventListener('click', async () => {
-    await api(`/api/v1/holdings/lots/${encodeURIComponent(item.lotId)}`, { method: 'DELETE' });
-    elements['holding-dialog'].close();
-    await loadHoldings();
-  });
-  elements['ledger-list'].replaceChildren(remove);
-  openDialog(elements['holding-dialog']);
+  openPage('holding', item.lotId);
 }
 
 async function loadHoldings({ refresh = false } = {}) {
@@ -2461,7 +2805,7 @@ function renderAssets() {
   if (!rows.length) {
     elements['asset-list'].replaceChildren(Object.assign(document.createElement('div'), {
       className: 'empty-state',
-      textContent: state.assetLoading ? '正在加载全球资产…' : (state.assetError || '没有符合筛选的标的。'),
+      textContent: state.assetLoading ? '正在加载全球行情…' : (state.assetError || '没有符合筛选的标的。'),
     }));
     if (document.body.dataset.view === 'sources') renderHub();
     return;
@@ -2495,7 +2839,7 @@ async function loadGlobalAssets() {
     state.assetBoard = payload.market;
   } catch (error) {
     if (requestId !== state.assetRequestId) return;
-    state.assetError = error instanceof Error ? error.message : '全球资产加载失败';
+    state.assetError = error instanceof Error ? error.message : '全球行情加载失败';
     throw error;
   } finally {
     if (requestId === state.assetRequestId) {
@@ -2734,7 +3078,14 @@ async function loadPersonalAssets() {
   }
 }
 
-const extraKeys = { us: 'ai-center:us-watchlist', asia: 'ai-center:asia-watchlist' };
+const extraKeys = { us: 'ai-center:us-watchlist', asia: 'ai-center:asia-watchlist', cn: 'ai-center:cn-watchlist' };
+
+function extrasBoardFor(symbol) {
+  const code = String(symbol || '').toUpperCase();
+  if (/^\d{6}\.(SS|SZ)$/.test(code)) return 'cn';
+  if (state.stockBoard === 'asia') return 'asia';
+  return 'us';
+}
 
 function readExtras(board) {
   try {
@@ -2800,9 +3151,11 @@ function sparkSvg(points, changePct) {
 function extraQuery() {
   const us = state.extras.us.join(',');
   const asia = state.extras.asia.join(',');
+  const cn = state.extras.cn.join(',');
   const params = new URLSearchParams({ board: state.stockBoard });
   if (us) params.set('extraUs', us);
   if (asia) params.set('extraAsia', asia);
+  if (cn) params.set('extraCn', cn);
   return `/api/v1/markets?${params}`;
 }
 
@@ -2815,7 +3168,7 @@ async function loadMarket() {
   renderMarketStatus();
   try {
     if (!state.session) throw new Error('此设备尚未配对，无法加载行情');
-    const payload = await api(extraQuery(), { timeoutMs: 25_000 });
+    const payload = await api(extraQuery(), { timeoutMs: 40_000 });
     if (requestId !== state.marketRequestId) return;
     state.markets[payload.market.board] = payload.market;
     renderMarket();
@@ -2950,21 +3303,28 @@ function hubStreamItems() {
 function renderHubTicker() {
   const ticker = elements['hub-ticker'];
   if (!ticker) return;
-  const quotesForTick = hubQuotes().slice(0, 5);
+  const quotesForTick = hubQuotes().slice(0, 6);
   ticker.replaceChildren(...quotesForTick.map((item) => {
     const up = (item.changePct ?? 0) >= 0;
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'hub-tick';
     button.innerHTML = `<small>${item.name}</small>
-      <strong class="${up ? 'up' : 'down'}">${formatPrice(item.lastPrice)}</strong>
+      <strong class="num ${up ? 'up' : 'down'}">${formatPrice(item.lastPrice)}</strong>
       <b class="${up ? 'up' : 'down'}">${item.changePct === null || item.changePct === undefined ? '—' : formatPct(up, item.changePct)}</b>`;
-    button.addEventListener('click', () => {
-      state.tradePane = 'stocks';
-      setView('market');
-    });
+    button.addEventListener('click', () => openPage('quote', item.symbol));
     return button;
   }));
+  if (elements['hub-market-note']) {
+    const board = state.assetBoard || state.markets.overview;
+    const updated = board?.fetchedAt || board?.updatedAt;
+    const live = Boolean(board && !state.marketError && !state.assetError);
+    elements['hub-market-note'].textContent = state.marketLoading || state.assetLoading
+      ? '正在读取行情…'
+      : (state.marketError || state.assetError || (live
+        ? `行情已连接 · 更新 ${updated ? formatTime(updated) : '刚刚'}`
+        : '行情连接后显示更新时间'));
+  }
 }
 
 function renderHubExcerpts() {
@@ -2999,22 +3359,566 @@ function renderHubExcerpts() {
 
 function renderHub() {
   renderHubTicker();
-  renderHubExcerpts();
+  renderOverviewTimeline();
+}
+
+function syncOverviewPanes() {
+  const pane = state.overviewPane || 'home';
+  elements['overview-home']?.classList.toggle('hidden', pane !== 'home');
+  elements['overview-schedule']?.classList.toggle('hidden', pane !== 'schedule');
+  elements['overview-catalog']?.classList.toggle('hidden', pane !== 'catalog');
+}
+
+function setOverviewPane(pane) {
+  state.overviewPane = pane;
+  syncOverviewPanes();
+  const nextHash = pane === 'home' ? '#sources' : `#sources/${pane}`;
+  if (location.hash !== nextHash) history.replaceState({}, '', `${location.pathname}${location.search}${nextHash}`);
+  if (pane === 'catalog') renderStaticSourceCatalog();
+  if (pane === 'schedule') renderStaticSignalBoard();
 }
 
 function renderSources() {
+  syncOverviewPanes();
   renderHub();
+  renderStaticSignalBoard();
+  renderMarketNativeBoard();
+  renderStaticSourceCatalog();
 }
 
-async function loadSourcesPage() {
+function sourceKind(source) {
+  if (source.category === 'calendar' || source.viewKind === 'calendar') return 'calendar';
+  if (source.category === 'policy' || source.viewKind === 'official-release') return 'release';
+  if (source.category === 'market' || source.viewKind === 'market-board') return 'market';
+  return 'content';
+}
+
+function sourceGroupLabel(kind) {
+  return { content: '社媒', calendar: '日程', release: '官方发布', market: '行情' }[kind] || kind;
+}
+
+function sourceDisplayTitle(source) {
+  if (source.id === 'market.global' || source.title === '全球资产') return '全球行情';
+  return source.title;
+}
+
+function renderStaticSourceCatalog() {
+  const root = elements['static-source-groups'];
+  if (!root) return;
+  if (elements['source-catalog-tabs']) {
+    renderChipTabs(elements['source-catalog-tabs'], [
+      { id: 'all', label: '全部' },
+      { id: 'content', label: '社媒' },
+      { id: 'calendar', label: '日程' },
+      { id: 'release', label: '官方' },
+      { id: 'market', label: '行情' },
+    ], state.sourceCatalogKind, (id) => {
+      state.sourceCatalogKind = id;
+      renderStaticSourceCatalog();
+    });
+  }
+  const query = state.sourceCatalogQuery.trim().toLowerCase();
+  const social = [
+    { id: 'x', title: 'X', category: 'content', viewKind: 'content-feed', letter: 'X', note: '首页时间线' },
+    { id: 'bilibili', title: 'B站', category: 'content', viewKind: 'content-feed', letter: 'B', note: '已采集字幕' },
+    { id: 'manual', title: '手工发布', category: 'content', viewKind: 'content-feed', letter: '手', note: '自己保存的资料' },
+  ];
+  const official = state.sourceCatalog.filter((source) => ['calendar', 'policy'].includes(source.category));
+  const market = state.sourceCatalog.filter((source) => source.category === 'market' && source.viewKind === 'market-board');
+  const sources = [...social, ...official, ...market].filter((source) => {
+    const kind = sourceKind(source);
+    if (state.sourceCatalogKind !== 'all' && kind !== state.sourceCatalogKind) return false;
+    if (query && !`${sourceDisplayTitle(source)} ${source.id} ${source.note || ''}`.toLowerCase().includes(query)) return false;
+    return true;
+  });
+  if (!sources.length) {
+    root.replaceChildren(Object.assign(document.createElement('p'), {
+      className: 'section-desc', textContent: state.sourceLoading ? '正在读取信源目录…' : '没有符合筛选的信源。',
+    }));
+    return;
+  }
+  const healthById = new Map((state.staticBoard?.sourceHealth || []).map((item) => [item.sourceId, item]));
+  const groups = ['content', 'calendar', 'release', 'market'];
+  const nodes = [];
+  for (const group of groups) {
+    const rows = sources.filter((source) => sourceKind(source) === group);
+    if (!rows.length) continue;
+    nodes.push(Object.assign(document.createElement('h2'), {
+      className: 'source-group-name',
+      textContent: `${sourceGroupLabel(group)} · ${rows.length}`,
+    }));
+    for (const source of rows) {
+      const health = healthById.get(source.id);
+      const hidden = state.hiddenSourceIds.has(source.id);
+      const status = health?.status || (source.id === 'manual' ? 'ready' : 'unchecked');
+      const row = document.createElement('div');
+      row.className = 'source-line';
+      const letter = Object.assign(document.createElement('span'), {
+        className: 'source-mark',
+        textContent: source.letter || sourceDisplayTitle(source).slice(0, 1),
+      });
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.className = 'source-title';
+      copy.append(
+        Object.assign(document.createElement('strong'), { textContent: sourceDisplayTitle(source) }),
+        Object.assign(document.createElement('small'), {
+          textContent: health?.note || source.note || source.id,
+        }),
+        Object.assign(document.createElement('span'), {
+          className: `status source-state ${status}`,
+          textContent: status === 'ready' ? '最近检查成功' : status === 'partial' ? '部分可用' : status === 'unavailable' ? '暂不可用' : '尚未检查',
+        }),
+      );
+      copy.addEventListener('click', () => openPage('source', source.id));
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'icon-button ghost';
+      more.setAttribute('aria-label', `${sourceDisplayTitle(source)}的更多操作`);
+      more.innerHTML = icon('settings');
+      more.addEventListener('click', (event) => {
+        event.stopPropagation();
+        openSourceMenu(source);
+      });
+      row.append(letter, copy, more);
+      nodes.push(row);
+    }
+  }
+  root.replaceChildren(...nodes);
+}
+
+const staticScheduleWindows = [
+  { id: 'today', label: '今天' },
+  { id: 'tomorrow', label: '明天' },
+  { id: '7d', label: '未来 7 天' },
+  { id: 'all', label: '全部日程' },
+];
+
+const staticReleaseCountries = [
+  { id: 'all', label: '全部' },
+  { id: 'CN', label: '中国' },
+  { id: 'US', label: '美国' },
+];
+
+function staticBoardRange(windowId) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const start = new Date(today);
+  const end = new Date(today);
+  if (windowId === 'tomorrow') {
+    start.setDate(start.getDate() + 1);
+    end.setDate(end.getDate() + 2);
+  } else if (windowId === '7d') {
+    end.setDate(end.getDate() + 7);
+  } else if (windowId === 'all') {
+    end.setDate(end.getDate() + 400);
+  } else {
+    end.setDate(end.getDate() + 1);
+  }
+  return { from: start.getTime(), to: end.getTime() - 1 };
+}
+
+async function loadStaticSignalBoard({ refresh = false } = {}) {
+  if (!state.session || state.staticBoardLoading) return;
+  state.staticBoardLoading = true;
+  state.staticBoardError = '';
+  renderStaticSignalBoard();
+  try {
+    const range = staticBoardRange(state.staticBoardWindow);
+    const params = new URLSearchParams({
+      from: String(range.from), to: String(range.to), limit: '300', releaseLimit: '60',
+      focus: state.staticBoardWindow === 'all' ? '0' : '1',
+      includeUndated: state.staticBoardWindow === 'all' ? '1' : '0',
+    });
+    if (refresh) params.set('refresh', '1');
+    const payload = await api(`/api/v1/static-signals/board?${params}`, { timeoutMs: 45_000 });
+    state.staticBoard = payload.board;
+    mergeLocalizations(payload);
+    autoLocalizeSources().catch(() => {});
+  } catch (error) {
+    state.staticBoardError = error instanceof Error ? error.message : '静态信号读取失败';
+    throw error;
+  } finally {
+    state.staticBoardLoading = false;
+    renderStaticSignalBoard();
+    renderStaticSourceCatalog();
+    renderOverviewTimeline();
+    renderPosts();
+  }
+}
+
+function renderStaticSignalBoard() {
+  if (elements['static-schedule-tabs']) {
+    renderChipTabs(elements['static-schedule-tabs'], staticScheduleWindows, state.staticBoardWindow, (id) => {
+      if (id === state.staticBoardWindow || state.staticBoardLoading) return;
+      state.staticBoardWindow = id;
+      loadStaticSignalBoard().catch((error) => showToast(error.message));
+    });
+  }
+
+  const board = state.staticBoard;
+  const upcoming = board?.upcoming || [];
+  const fill = (root, rows, viewKind, emptyText) => {
+    if (!root) return;
+    if (!rows.length) {
+      root.replaceChildren(Object.assign(document.createElement('div'), {
+        className: 'empty-state',
+        textContent: state.staticBoardLoading ? '正在读取官方来源…' : emptyText,
+      }));
+      return;
+    }
+    root.replaceChildren();
+    rows.forEach((item) => appendStaticSignalItem(root, item, viewKind));
+  };
+  fill(elements['static-upcoming'], upcoming.slice(0, 2), 'calendar', '近期暂无日程。');
+  fill(elements['static-schedule-list'], upcoming, 'calendar', '这个时间范围内暂无默认关注日程。');
+  if (elements['static-board-note']) {
+    elements['static-board-note'].textContent = state.staticBoardError
+      || (state.staticBoardLoading ? '正在同步官方来源…' : board ? `生成于 ${formatTime(board.generatedAt)} · 仅陈列公开事实` : '等待同步官方来源');
+  }
+}
+
+function overviewClock(value) {
+  if (value == null) return '—';
+  return new Date(value).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function renderOverviewTimeline() {
+  const root = elements['overview-timeline'];
+  if (!root) return;
+  if (elements['overview-timeline-tabs']) {
+    renderChipTabs(elements['overview-timeline-tabs'], [
+      { id: 'latest', label: '全部' },
+      { id: 'focus', label: '重点' },
+      { id: 'social', label: '社媒' },
+      { id: 'official', label: '官方' },
+    ], state.overviewTimeline === 'latest' ? 'latest' : state.overviewTimeline, (id) => {
+      state.overviewTimeline = id;
+      renderOverviewTimeline();
+    });
+  }
+  const previousChannel = state.channel;
+  state.channel = state.overviewTimeline === 'latest' ? 'all' : state.overviewTimeline;
+  const rows = visibleFeedItems().slice(0, 7);
+  state.channel = previousChannel;
+  if (elements['overview-timeline-day']) {
+    elements['overview-timeline-day'].textContent = '';
+  }
+  if (!rows.length) {
+    root.replaceChildren(Object.assign(document.createElement('div'), {
+      className: 'empty-state',
+      textContent: state.staticBoardLoading ? '正在读取内容…' : '这个筛选下还没有已发布内容。',
+    }));
+    return;
+  }
+  root.replaceChildren(...rows.map((post) => {
+    const row = document.createElement('article');
+    row.className = `post-card is-compact timeline-row${isFocused(post.id) ? ' is-focus' : ''}`;
+    const meta = document.createElement('div');
+    meta.className = 'post-meta';
+    const kind = Object.assign(document.createElement('span'), {
+      className: `kind-tag${post.kind === 'official' ? ' official' : ''}`,
+      textContent: feedKindLabel(post),
+    });
+    const author = Object.assign(document.createElement('span'), { className: 'post-identity', textContent: post.author });
+    const time = Object.assign(document.createElement('span'), {
+      className: 'post-time',
+      textContent: post.time || overviewClock(post.publishedAt || post.createdAt),
+    });
+    meta.append(kind, author, time);
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'feed-content';
+    open.append(Object.assign(document.createElement('h3'), { textContent: postDisplayTitle(post) }));
+    const excerpt = post.excerpt || postListExcerpt(post);
+    if (excerpt) open.append(Object.assign(document.createElement('p'), { className: 'post-excerpt', textContent: excerpt }));
+    open.addEventListener('click', () => openArticle(post));
+    const star = document.createElement('button');
+    star.type = 'button';
+    star.className = `icon-button ghost focus-btn${isFocused(post.id) ? ' on' : ''}`;
+    star.setAttribute('aria-label', isFocused(post.id) ? '取消重点' : '标为重点');
+    star.innerHTML = icon('star');
+    star.addEventListener('click', () => toggleFocus(post.id, () => {
+      renderOverviewTimeline();
+      renderPosts();
+    }));
+    row.append(meta, open, star);
+    return row;
+  }));
+}
+
+function openOfficialRelease(item) {
+  state.dialogPost = null;
+  elements['dialog-title'].textContent = localizedCopy(item.releaseId, item.title);
+  fillPostBody(elements['dialog-body'], [
+    `机构：${item.authority}`,
+    item.documentType ? `类型：${item.documentType}` : '',
+    item.documentNumber ? `文号：${item.documentNumber}` : '',
+    `发布：${staticSignalTime(item, 'official-release')}`,
+    `观测：${formatTime(item.observedAt)}`,
+  ].filter(Boolean).join('\n'));
+  if (elements['dialog-notice']) {
+    elements['dialog-notice'].textContent = '当前契约只有元数据，没有文件正文。摘要不能冒充全文。请打开原始链接核对。';
+    elements['dialog-notice'].classList.remove('hidden');
+  }
+  elements['dialog-translation']?.classList.add('hidden');
+  elements['dialog-tags']?.replaceChildren();
+  elements['dialog-translate']?.classList.add('hidden');
+  if (elements['dialog-source']) {
+    elements['dialog-source'].classList.toggle('hidden', !item.sourceUrl);
+    elements['dialog-source'].onclick = () => openExternalHttpUrl(item.sourceUrl);
+  }
+  if (elements['dialog-save']) {
+    elements['dialog-save'].onclick = () => saveOfficialAsInspiration(item);
+  }
+  if (elements['dialog-cite']) {
+    elements['dialog-cite'].classList.add('hidden');
+  }
+  elements['dialog-time'].textContent = '官方文件 · 元数据';
+  openDialog(elements['post-dialog']);
+}
+
+async function saveOfficialAsInspiration(item) {
+  if (!state.session) {
+    showToast('请先在设置中完成设备连接');
+    return;
+  }
+  const body = [
+    item.title,
+    `来源：${item.authority}`,
+    item.documentNumber ? `文号：${item.documentNumber}` : '',
+    item.sourceUrl ? `来源：${item.sourceUrl}` : '',
+    '说明：保存的是官方元数据，不是已采集全文。',
+  ].filter(Boolean).join('\n');
+  await api('/api/v1/notes', {
+    method: 'POST',
+    body: JSON.stringify({
+      body,
+      wantAi: false,
+      sourceType: 'official-release',
+      sourceId: item.releaseId,
+      sourceUrl: item.sourceUrl || '',
+      sourceTitle: item.title,
+      captureChannel: 'feed',
+    }),
+  });
+  showToast('已存为带来源的灵感，可再引用到问答');
+  loadNotes().catch(() => {});
+}
+
+function marketNativeAmount(value, { currency = true } = {}) {
+  if (value === null || value === undefined) return '—';
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '—';
+  const prefix = currency ? '$' : '';
+  if (Math.abs(number) >= 1e12) return `${prefix}${(number / 1e12).toFixed(2)}T`;
+  if (Math.abs(number) >= 1e9) return `${prefix}${(number / 1e9).toFixed(2)}B`;
+  if (Math.abs(number) >= 1e6) return `${prefix}${(number / 1e6).toFixed(1)}M`;
+  if (Math.abs(number) >= 1e3) return `${prefix}${(number / 1e3).toFixed(1)}K`;
+  return `${prefix}${number.toLocaleString('en-US', { maximumFractionDigits: 4 })}`;
+}
+
+function predictionPrice(value) {
+  return value === null || value === undefined ? '—' : `${(Number(value) * 100).toFixed(1)}¢`;
+}
+
+function marketNativeEmpty(root, text) {
+  if (!root) return;
+  root.replaceChildren(Object.assign(document.createElement('div'), { className: 'empty-state', textContent: text }));
+}
+
+function appendPredictionQuote(root, quote) {
+  const article = document.createElement('article');
+  article.className = 'market-native-row prediction-row';
+  const price = Object.assign(document.createElement('strong'), { className: 'market-native-price', textContent: predictionPrice(quote.midPrice) });
+  const body = document.createElement('div');
+  const title = Object.assign(document.createElement('b'), { textContent: localizedCopy(quote.quoteId, quote.marketQuestion) });
+  const detail = Object.assign(document.createElement('small'), {
+    textContent: [quote.venue, quote.outcome, `Bid ${predictionPrice(quote.bestBid)}`, `Ask ${predictionPrice(quote.bestAsk)}`, `24h ${marketNativeAmount(quote.volume24h)}`, `OI ${marketNativeAmount(quote.openInterest)}`].join(' · '),
+  });
+  body.append(title, detail);
+  const link = Object.assign(document.createElement('button'), { type: 'button', className: 'text-button', textContent: '市场 ↗' });
+  link.addEventListener('click', () => openExternalHttpUrl(quote.sourceUrl));
+  article.append(price, body, link);
+  root.append(article);
+}
+
+function appendDerivativeQuote(root, quote) {
+  const article = document.createElement('article');
+  article.className = 'market-native-row derivative-row';
+  const symbol = Object.assign(document.createElement('strong'), { className: 'market-native-symbol', textContent: quote.symbol });
+  const body = document.createElement('div');
+  const title = Object.assign(document.createElement('b'), { textContent: `Mark ${formatPrice(quote.markPrice, Number(quote.markPrice) >= 1000 ? 1 : 2)}` });
+  const funding = quote.fundingRate == null ? '—' : `${(Number(quote.fundingRate) * 100).toFixed(4)}%`;
+  const detail = Object.assign(document.createElement('small'), {
+    textContent: `Funding ${funding} · OI ${marketNativeAmount(quote.openInterest, { currency: false })} ${quote.symbol} · 24h ${marketNativeAmount(quote.volume24h)}`,
+  });
+  body.append(title, detail);
+  const link = Object.assign(document.createElement('button'), { type: 'button', className: 'text-button', textContent: '市场 ↗' });
+  link.addEventListener('click', () => openExternalHttpUrl(quote.sourceUrl));
+  article.append(symbol, body, link);
+  root.append(article);
+}
+
+function appendLiquidityMetric(root, metric, primary = false) {
+  const article = document.createElement('article');
+  article.className = `market-native-row liquidity-row${primary ? ' is-primary' : ''}`;
+  const body = document.createElement('div');
+  const title = Object.assign(document.createElement('b'), { textContent: metric.label });
+  const detail = Object.assign(document.createElement('small'), {
+    textContent: `1d ${marketNativeAmount(metric.change1dUsd)} · 7d ${marketNativeAmount(metric.change7dUsd)} · 30d ${marketNativeAmount(metric.change30dUsd)}`,
+  });
+  body.append(title, detail);
+  const amount = Object.assign(document.createElement('strong'), { className: 'market-native-supply', textContent: marketNativeAmount(metric.supplyUsd) });
+  article.append(body, amount);
+  root.append(article);
+}
+
+function renderMarketNativeBoard() {
+  const predictions = elements['market-native-predictions'];
+  if (!predictions) return;
+  const board = state.marketNativeBoard;
+  const loadingText = state.marketNativeLoading ? '正在读取公开市场数据…' : '当前没有可用数据。';
+  predictions.replaceChildren();
+  if (board?.predictionMarkets?.length) board.predictionMarkets.forEach((quote) => appendPredictionQuote(predictions, quote));
+  else marketNativeEmpty(predictions, loadingText);
+
+  const derivatives = elements['market-native-derivatives'];
+  derivatives.replaceChildren();
+  if (board?.cryptoDerivatives?.length) board.cryptoDerivatives.forEach((quote) => appendDerivativeQuote(derivatives, quote));
+  else marketNativeEmpty(derivatives, loadingText);
+
+  const liquidity = elements['market-native-liquidity'];
+  liquidity.replaceChildren();
+  if (board?.stablecoinLiquidity) {
+    appendLiquidityMetric(liquidity, board.stablecoinLiquidity.total, true);
+    board.stablecoinLiquidity.assets.forEach((metric) => appendLiquidityMetric(liquidity, metric));
+    board.stablecoinLiquidity.chains.forEach((metric) => appendLiquidityMetric(liquidity, metric));
+  } else marketNativeEmpty(liquidity, loadingText);
+
+  if (elements['market-native-note']) {
+    const unavailable = (board?.sourceHealth || []).filter((item) => item.status === 'unavailable').length;
+    elements['market-native-note'].textContent = state.marketNativeError
+      || (state.marketNativeLoading ? '正在同步市场原生来源…' : board
+        ? `生成于 ${formatTime(board.generatedAt)} · Price / Volume / Liquidity / OI / Funding / Supply / Time${unavailable ? ` · ${unavailable} 个来源暂不可用` : ''}`
+        : '等待同步市场原生来源');
+  }
+}
+
+async function loadMarketNativeBoard({ refresh = false } = {}) {
+  if (!state.session || state.marketNativeLoading) return;
+  state.marketNativeLoading = true;
+  state.marketNativeError = '';
+  renderMarketNativeBoard();
+  try {
+    const params = new URLSearchParams({ predictionLimit: '10' });
+    if (refresh) params.set('refresh', '1');
+    const payload = await api(`/api/v1/market-native/board?${params}`, { timeoutMs: 45_000 });
+    state.marketNativeBoard = payload.board;
+    mergeLocalizations(payload);
+    autoLocalizeSources().catch(() => {});
+  } catch (error) {
+    state.marketNativeError = error instanceof Error ? error.message : '市场原生数据读取失败';
+    throw error;
+  } finally {
+    state.marketNativeLoading = false;
+    renderMarketNativeBoard();
+  }
+}
+
+function staticSignalTime(item, viewKind) {
+  const value = viewKind === 'calendar' ? item.scheduledAt : item.publishedAt;
+  if (value === null || value === undefined) {
+    if (item.status === 'suspended') return '已暂停';
+    if (item.status === 'cancelled') return '已取消';
+    if (item.status === 'tba') return '待公布';
+    return '时间待公布';
+  }
+  const date = new Date(value);
+  const releaseIsDateOnly = viewKind !== 'calendar' && date.getHours() === 0 && date.getMinutes() === 0;
+  const options = item.timePrecision === 'date' || releaseIsDateOnly
+    ? { year: 'numeric', month: 'short', day: 'numeric' }
+    : { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
+  return date.toLocaleString('zh-CN', options);
+}
+
+function staticSignalLinkLabel(item, viewKind) {
+  if (viewKind !== 'calendar') return '官方文件 ↗';
+  return item.scheduleBasis === 'official-rule' ? '规则依据 ↗' : '官方日程 ↗';
+}
+
+function appendStaticSignalItem(root, item, viewKind) {
+  const article = document.createElement('article');
+  article.className = viewKind === 'calendar' ? 'agenda-row' : 'static-source-item';
+  const time = document.createElement('time');
+  time.textContent = staticSignalTime(item, viewKind);
+  const title = document.createElement('strong');
+  title.textContent = localizedCopy(viewKind === 'calendar' ? item.eventId : item.releaseId, item.title);
+  const meta = document.createElement('small');
+  const facts = viewKind === 'calendar'
+    ? [item.country, item.authority, item.referencePeriod, item.scheduleBasis === 'official-rule' ? '规则生成 · 待官网逐日确认' : '官方日历']
+    : [item.country, item.authority, item.documentType, item.documentNumber];
+  meta.textContent = facts.filter(Boolean).join(' · ');
+  const source = document.createElement('button');
+  source.type = 'button';
+  source.className = 'text-button static-source-link';
+  source.textContent = staticSignalLinkLabel(item, viewKind);
+  source.addEventListener('click', () => openExternalHttpUrl(item.sourceUrl));
+  article.addEventListener('click', () => {
+    if (viewKind === 'calendar') openPage('event', item.eventId);
+    else openArticle(officialAsItem(item));
+  });
+  root.append(article);
+}
+
+async function openStaticSource(source) {
+  elements['source-dialog-title'].textContent = source.title;
+  elements['source-dialog-meta'].textContent = '正在读取官方来源…';
+  elements['source-dialog-items'].replaceChildren();
+  openDialog(elements['source-dialog']);
+  try {
+    const params = new URLSearchParams({ limit: source.viewKind === 'calendar' ? '200' : '50' });
+    if (source.viewKind === 'calendar') {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      params.set('from', String(today.getTime()));
+      params.set('to', String(today.getTime() + 400 * 86_400_000));
+    }
+    const payload = await api(`/api/v1/sources/${source.id}?${params}`, { timeoutMs: 30_000 });
+    const snapshot = payload.snapshot;
+    state.sourceSnapshots[source.id] = snapshot;
+    mergeLocalizations(payload);
+    autoLocalizeSources().catch(() => {});
+    const rows = source.viewKind === 'calendar' ? snapshot.data.events : snapshot.data.releases;
+    const status = snapshot.status === 'ready' ? '可用' : snapshot.status === 'partial' ? '部分可用' : '暂不可用';
+    elements['source-dialog-meta'].textContent = [status, snapshot.data.note, `观测于 ${formatTime(snapshot.observedAt)}`].filter(Boolean).join(' · ');
+    if (!rows.length) {
+      elements['source-dialog-items'].replaceChildren(Object.assign(document.createElement('div'), {
+        className: 'empty-state', textContent: snapshot.status === 'unavailable' ? '官方来源当前无法读取。' : '所选范围内暂无条目。',
+      }));
+      return;
+    }
+    elements['source-dialog-items'].replaceChildren();
+    rows.forEach((item) => appendStaticSignalItem(elements['source-dialog-items'], item, source.viewKind));
+  } catch (error) {
+    elements['source-dialog-meta'].textContent = error.message;
+    elements['source-dialog-items'].replaceChildren(Object.assign(document.createElement('div'), {
+      className: 'empty-state', textContent: '读取失败，请稍后重试。',
+    }));
+  }
+}
+
+async function loadSourcesPage({ refresh = false } = {}) {
   renderHub();
   const tasks = [];
   if (state.session) {
     if (!state.markets.overview) tasks.push(loadMarket().catch(() => {}));
     if (!state.assetBoard) tasks.push(loadGlobalAssets().catch(() => {}));
+    if (!state.staticBoard || refresh) tasks.push(loadStaticSignalBoard({ refresh }));
+    if (!state.marketNativeBoard || refresh) tasks.push(loadMarketNativeBoard({ refresh }));
   }
   if (tasks.length) await Promise.all(tasks);
-  renderHub();
+  renderSources();
 }
 
 function renderMarketStatus() {
@@ -3044,12 +3948,18 @@ function renderIndexScroller(indices) {
 function renderOverview(market) {
   const root = elements['market-overview'];
   root.replaceChildren();
+  if (market?.note) {
+    root.append(Object.assign(document.createElement('p'), { className: 'muted small', textContent: market.note }));
+  }
   for (const section of market?.sections || []) {
     const wrap = document.createElement('section');
     wrap.className = 'market-section';
     const heading = document.createElement('div');
     heading.className = 'market-section-title';
     heading.append(Object.assign(document.createElement('h2'), { textContent: section.title }));
+    if (section.session) {
+      heading.append(Object.assign(document.createElement('small'), { className: 'muted', textContent: sessionLabel(section.session) }));
+    }
     const brief = document.createElement('div');
     brief.className = 'market-brief';
     renderBreadth(brief, section.breadth, '观察池宽度');
@@ -3065,18 +3975,42 @@ function renderBreadth(target, breadth, title) {
   const flat = breadth.unchanged;
   const down = breadth.decliners;
   const total = up + flat + down;
-  const share = (count) => (total ? (count / total) * 100 : 0);
   const article = document.createElement('article');
   article.className = 'breadth-card';
-  article.innerHTML = `<h3>${title}</h3>
-    <strong>${total}<small>家</small></strong>
-    <span>已报价</span>
-    <div class="breadth-track">
-      <i class="up" style="flex-basis:${share(up)}%"></i>
-      <i class="flat" style="flex-basis:${share(flat)}%"></i>
-      <i class="down" style="flex-basis:${share(down)}%"></i>
-    </div>
-    <p>${up} 涨 · ${flat} 平 · ${down} 跌</p>`;
+  const heading = document.createElement('h3');
+  heading.textContent = title;
+  const strong = document.createElement('strong');
+  const unit = document.createElement('small');
+  unit.textContent = '家';
+  strong.append(String(total), unit);
+  const caption = document.createElement('span');
+  caption.textContent = '已报价';
+  const track = document.createElement('div');
+  track.className = 'breadth-track';
+  const summaryText = `${up} 涨 · ${flat} 平 · ${down} 跌`;
+  const svg = svgNode('svg', {
+    viewBox: '0 0 1000 10',
+    preserveAspectRatio: 'none',
+    role: 'img',
+    'aria-label': summaryText,
+  });
+  let x = 0;
+  for (const [name, count] of [['up', up], ['flat', flat], ['down', down]]) {
+    const width = total ? (count / total) * 1000 : 0;
+    if (width <= 0) continue;
+    svg.append(svgNode('rect', {
+      x: String(x),
+      y: '0',
+      width: String(width),
+      height: '10',
+      class: name,
+    }));
+    x += width;
+  }
+  track.append(svg);
+  const summary = document.createElement('p');
+  summary.textContent = summaryText;
+  article.append(heading, strong, caption, track, summary);
   target.append(article);
 }
 
@@ -3150,15 +4084,15 @@ function renderWatchRows(target, rows, { formatValue } = {}) {
     const row = document.createElement('div');
     row.className = 'market-row';
     const code = item.expiry ? `${item.symbol} · ${item.group} · ${item.expiry}` : `${item.symbol} · ${item.group}`;
-    row.innerHTML = `<span class="quote-identity">
+    row.innerHTML = `<span class="quote-identity identity">
         <strong class="quote-name">${item.name}</strong>
-        ${item.summary ? `<em class="quote-blurb">${item.summary}</em>` : ''}
         <small class="quote-code">${code}</small>
       </span>
       <span class="market-spark">${sparkSvg(item.sparkline, item.changePct)}</span>
-      <span class="quote-price ${up ? 'up' : 'down'}">${format(item, item.lastPrice)}</span>
-      <span class="quote-change ${up ? 'up' : 'down'}">${item.changePct === null ? '—' : formatPct(up, item.changePct)}</span>
-      <span class="market-meta"><span>量 ${formatVolume(item.volume)}</span><span class="market-range">${format(item, item.low)} – ${format(item, item.high)}</span></span>`;
+      <span class="q-price">
+        <strong class="quote-price ${up ? 'up' : 'down'}">${format(item, item.lastPrice)}</strong>
+        <b class="quote-change ${up ? 'up' : 'down'}">${item.changePct === null ? '—' : formatPct(up, item.changePct)}</b>
+      </span>`;
     if (item.group === '自选') {
       const identity = row.querySelector('.quote-identity');
       const remove = document.createElement('button');
@@ -3167,12 +4101,13 @@ function renderWatchRows(target, rows, { formatValue } = {}) {
       remove.textContent = '移除';
       remove.addEventListener('click', (event) => {
         event.stopPropagation();
-        const board = state.stockBoard === 'asia' ? 'asia' : 'us';
+        const board = extrasBoardFor(item.symbol);
         writeExtras(board, state.extras[board].filter((symbol) => symbol !== item.symbol));
         loadMarket().catch((error) => showToast(error.message));
       });
       identity.append(remove);
     }
+    row.addEventListener('click', () => openPage('quote', item.symbol));
     return row;
   }));
 }
@@ -3234,7 +4169,7 @@ async function renderSearch(query = '') {
       add.className = 'text-button';
       add.textContent = '加入自选';
       add.addEventListener('click', () => {
-        const board = state.stockBoard === 'asia' ? 'asia' : 'us';
+        const board = extrasBoardFor(item.symbol);
         if (state.extras[board].includes(item.symbol)) {
           showToast(`${item.symbol} 已在自选`);
           return;
@@ -3281,8 +4216,760 @@ function renderSubscriptions() {
   }));
 }
 
+function openSourceTasks(sourceId = 'all') {
+  const dialog = elements['source-tasks-dialog'];
+  if (!dialog) {
+    showToast('来源任务入口尚未就绪');
+    return;
+  }
+  if (elements['source-tasks-title']) {
+    elements['source-tasks-title'].textContent = sourceId === 'x' ? 'X 来源任务' : sourceId === 'bilibili' ? 'B站来源任务' : '后台任务';
+  }
+  const body = elements['source-tasks-body'];
+  body.replaceChildren();
+  const addAction = (label, detail, onClick) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'task-row';
+    button.append(
+      Object.assign(document.createElement('span'), {
+        innerHTML: `<strong>${label}</strong><small>${detail}</small>`,
+      }),
+    );
+    button.addEventListener('click', onClick);
+    body.append(button);
+  };
+  if (sourceId === 'x' || sourceId === 'all') {
+    addAction('拉取 X 时间线', `当前范围：${state.xFeed === 'following' ? '正在关注' : '为你推荐'} · 上限 50 条`, () => {
+      loadXFeed({ refresh: true }).catch((error) => showToast(error.message));
+    });
+    addAction('补翻译未完成条目', '抓取后会自动走豆包；这里只补失败项，一次最多 30 条', () => {
+      translateXBatch().catch((error) => showToast(error.message));
+    });
+    addAction('标注未标注内容', '走已注册 Worker 标注任务', () => elements['x-tag']?.click());
+  }
+  if (sourceId === 'bilibili' || sourceId === 'all') {
+    const form = document.createElement('form');
+    form.className = 'task-control-panel';
+    form.innerHTML = '<label class="task-field">B站视频链接<input name="url" placeholder="https://www.bilibili.com/video/..."></label><button class="primary-button" type="submit">采集字幕</button>';
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const url = String(new FormData(form).get('url') || '').trim();
+      if (!url) return showToast('请输入视频链接');
+      loadBilibiliFeed({ url, refresh: true }).catch((error) => showToast(error.message));
+    });
+    body.append(form);
+  }
+  const auto = document.createElement('div');
+  auto.className = 'auto-chain';
+  let draft = {};
+  try { draft = JSON.parse(window.localStorage.getItem(AUTO_DRAFT_KEY) || '{}'); } catch { draft = {}; }
+  auto.innerHTML = `<strong>自动化设置（草案）</strong>
+    <p>采集 → 去重 → 保存原文 → 英文自动豆包翻译清洗。页面只看中文。</p>
+    <label>频率 <select name="freq"><option ${draft.freq === 'manual' ? 'selected' : ''} value="manual">仅手动</option><option ${draft.freq === 'hourly' ? 'selected' : ''} value="hourly">每小时（未启用）</option></select></label>
+    <button class="secondary" type="button" id="save-auto-draft">保存草案</button>
+    <p id="auto-draft-status">${draft.saved ? '草案已保存，自动化未启用' : '尚未保存草案'}</p>`;
+  auto.querySelector('#save-auto-draft')?.addEventListener('click', () => {
+    const freq = auto.querySelector('select')?.value || 'manual';
+    window.localStorage.setItem(AUTO_DRAFT_KEY, JSON.stringify({ freq, saved: true, savedAt: Date.now() }));
+    const status = auto.querySelector('#auto-draft-status');
+    if (status) status.textContent = '草案已保存，自动化未启用';
+    showToast('草案已保存，自动化未启用');
+  });
+  body.append(auto);
+  openDialog(dialog);
+}
+
+function pageRoot() {
+  return elements['page-root'];
+}
+
+function htmlToNode(html) {
+  const wrap = document.createElement('div');
+  wrap.innerHTML = html;
+  return wrap;
+}
+
+function renderPage() {
+  const root = pageRoot();
+  if (!root) return;
+  const kind = state.pageKind;
+  if (kind === 'article') renderArticlePage();
+  else if (kind === 'event') renderEventPage();
+  else if (kind === 'source') renderSourcePage();
+  else if (kind === 'quote') renderQuotePage();
+  else if (kind === 'tasks' || kind === 'task') renderTasksPage();
+  else if (kind === 'note') renderNotePage();
+  else if (kind === 'account') renderAccountPage();
+  else if (kind === 'holding') renderHoldingPage();
+  else if (kind === 'automation') renderAutomationPage();
+  else if (kind === 'publish') renderPublishPage();
+  else root.replaceChildren(Object.assign(document.createElement('p'), { className: 'empty-state', textContent: '找不到这个页面。' }));
+  syncHeaderSearch();
+}
+
+function readerLangLabel() {
+  return state.readerLang === 'original' ? '原文' : state.readerLang === 'compare' ? '对照' : '译文';
+}
+
+async function loadOriginalBody(post) {
+  const id = post.resourceId || post.id;
+  if (state.originalBodies[id]) return state.originalBodies[id];
+  try {
+    const payload = await api(`/api/v1/feed/items/${encodeURIComponent(id)}/original`);
+    state.originalBodies[id] = payload.original?.body || payload.original?.text || post.body || '';
+  } catch {
+    state.originalBodies[id] = post.body || '';
+  }
+  return state.originalBodies[id];
+}
+
+function renderArticlePage() {
+  const root = pageRoot();
+  const id = state.pageId || '';
+  const official = id.startsWith('official/');
+  const itemId = official ? id.slice('official/'.length) : id;
+  const post = official
+    ? officialFeedItems().find((item) => item.id === itemId || item.resourceId === itemId)
+    : findUnifiedItem(itemId);
+  if (!post) {
+    root.replaceChildren(Object.assign(document.createElement('p'), { className: 'empty-state', textContent: '这条内容已不在当前列表里。' }));
+    return;
+  }
+  state.dialogPost = post;
+  markFeedItemRead(post);
+  persistFeedBrowseState();
+  const translated = translationFor(post)?.text;
+  const hasTranslation = Boolean(translated);
+  const shell = document.createElement('article');
+  shell.className = 'page-article';
+  const head = document.createElement('header');
+  head.className = 'reader-head';
+  head.innerHTML = `<h2></h2><div class="reader-meta"></div>`;
+  head.querySelector('h2').textContent = postDisplayTitle(post);
+  const meta = head.querySelector('.reader-meta');
+  meta.append(
+    Object.assign(document.createElement('button'), { className: 'text-button', textContent: `${post.author} ›` }),
+    Object.assign(document.createElement('span'), { textContent: `${post.time || formatTime(post.publishedAt)} 发布` }),
+    Object.assign(document.createElement('span'), { className: 'kind-tag', textContent: feedKindLabel(post) }),
+    Object.assign(document.createElement('span'), { className: 'kind-tag official', textContent: post.complete === false ? '仅索引' : '正文完整' }),
+  );
+  meta.querySelector('button').addEventListener('click', () => {
+    if (post.platform === 'official') openPage('source', `policy.${post.author}`);
+    else openPage('source', post.platform === 'manual' ? 'manual' : post.platform);
+  });
+  const body = document.createElement('div');
+  if (post.kind === 'official' && post.complete === false) {
+    const fetched = state.officialBodies[post.id];
+    const status = fetched?.status || 'idle';
+    const metaGrid = document.createElement('dl');
+    metaGrid.className = 'metadata-grid';
+    metaGrid.innerHTML = `<dt>收录内容</dt><dd>发布索引，尚无正文</dd>
+      <dt>发布机构</dt><dd></dd>
+      <dt>原始链接</dt><dd></dd>`;
+    metaGrid.querySelectorAll('dd')[1].textContent = post.author;
+    metaGrid.querySelectorAll('dd')[2].textContent = post.sourceUrl || '未提供';
+    const stateBox = document.createElement('section');
+    stateBox.className = 'body-state';
+    if (status === 'loading') {
+      stateBox.innerHTML = '<strong>正在获取全文</strong><p>走现有官方详情 Source，不把标题当成正文。</p>';
+    } else if (status === 'ready' && fetched?.text) {
+      stateBox.replaceChildren();
+      const content = document.createElement('div');
+      content.className = 'reader-content';
+      fillPostBody(content, fetched.text);
+      body.append(metaGrid, content);
+    } else if (status === 'failed') {
+      stateBox.innerHTML = '<strong>正文获取失败</strong><p></p><button class="primary-button" type="button">重新获取全文</button>';
+      stateBox.querySelector('p').textContent = fetched?.error || '当前索引契约没有正文。';
+      stateBox.querySelector('button').addEventListener('click', () => fetchOfficialBody(post));
+    } else {
+      stateBox.innerHTML = '<strong>仅收录索引，正文未抓取</strong><p>不能把标题或摘要当作全文。获取会调用官方详情 Source。</p><button class="primary-button" type="button">获取全文</button>';
+      stateBox.querySelector('button').addEventListener('click', () => fetchOfficialBody(post));
+    }
+    if (status !== 'ready') body.append(metaGrid, stateBox);
+  } else {
+    if (hasTranslation) {
+      const tabs = document.createElement('div');
+      tabs.className = 'dense-tabs reader-tabs';
+      renderChipTabs(tabs, [
+        { id: 'translation', label: '译文' },
+        { id: 'original', label: '原文' },
+        { id: 'compare', label: '对照' },
+      ], state.readerLang, (id) => {
+        state.readerLang = id;
+        renderArticlePage();
+        if (id !== 'translation') loadOriginalBody(post).then(() => renderArticlePage());
+      });
+      body.append(tabs);
+    }
+    const content = document.createElement('div');
+    content.className = 'reader-content';
+    const original = state.originalBodies[post.resourceId || post.id] || post.body;
+    const viewText = state.readerLang === 'original' ? original : (translated || original);
+    fillPostBody(content, viewText);
+    if (state.readerLang === 'compare' && translated) {
+      content.append(Object.assign(document.createElement('h3'), { className: 'lang-label', textContent: '原文' }));
+      const orig = document.createElement('div');
+      fillPostBody(orig, original);
+      content.append(orig);
+    }
+    body.append(content);
+  }
+  const bar = document.createElement('div');
+  bar.className = 'reader-bar';
+  const save = document.createElement('button');
+  save.type = 'button';
+  save.innerHTML = `${icon('bookmark')}${isPostSaved(post) ? '查看灵感' : '存入灵感'}`;
+  save.addEventListener('click', () => {
+    if (post.release) saveOfficialAsInspiration(post.release);
+    else savePostToInspiration(post).catch((error) => showToast(error.message));
+  });
+  const cite = document.createElement('button');
+  cite.type = 'button';
+  cite.innerHTML = `${icon('corner-up-right')}引用到问答`;
+  cite.addEventListener('click', () => toggleReference({
+    resourceType: post.resourceType || 'content-item',
+    resourceId: post.resourceId || post.id,
+    label: postDisplayTitle(post),
+    preview: post.body,
+  }));
+  const star = document.createElement('button');
+  star.type = 'button';
+  star.className = `icon-button ghost${isFocused(post.id) ? ' on' : ''}`;
+  star.innerHTML = icon('star');
+  star.addEventListener('click', () => toggleFocus(post.id, () => renderArticlePage()));
+  bar.append(save, cite, star);
+  shell.append(head, body, bar);
+  root.replaceChildren(shell);
+  if (postNeedsChineseTranslation(post) && !translationFor(post)) {
+    requestTranslate(post).catch((error) => showToast(error.message));
+  }
+}
+
+async function fetchOfficialBody(post) {
+  const sourceUrl = post.sourceUrl;
+  if (!sourceUrl) {
+    showToast('这条索引没有官方链接');
+    return;
+  }
+  state.officialBodies[post.id] = { status: 'loading' };
+  renderArticlePage();
+  try {
+    const payload = await api(`/api/v1/official-detail?sourceUrl=${encodeURIComponent(sourceUrl)}`, { timeoutMs: 45_000 });
+    const data = payload.snapshot?.data || payload.detail || {};
+    if (!data.available || !data.bodyText) {
+      state.officialBodies[post.id] = { status: 'failed', error: data.note || '官方页面没有可展示正文' };
+    } else {
+      state.officialBodies[post.id] = { status: 'ready', text: data.bodyText };
+    }
+  } catch (error) {
+    state.officialBodies[post.id] = { status: 'failed', error: error instanceof Error ? error.message : '获取失败' };
+  }
+  renderArticlePage();
+}
+
+function renderEventPage() {
+  const root = pageRoot();
+  const event = (state.staticBoard?.upcoming || []).find((item) => String(item.eventId || item.id) === state.pageId);
+  if (!event) {
+    root.replaceChildren(Object.assign(document.createElement('p'), { className: 'empty-state', textContent: '这条日程已不在当前窗口。' }));
+    return;
+  }
+  const wrap = document.createElement('article');
+  wrap.innerHTML = `<div class="event-label"></div><h2 class="event-card-title"></h2><div class="event-time"></div>
+    <dl class="metadata-grid"></dl><p class="page-note"></p><div class="content-tools"></div>`;
+  wrap.querySelector('.event-card-title').textContent = localizedCopy(event.eventId, event.title);
+  wrap.querySelector('.event-time').textContent = `${staticSignalTime(event, 'calendar')}`;
+  const grid = wrap.querySelector('.metadata-grid');
+  const rows = [
+    ['发布机构', event.authority || event.sourceId],
+    ['国家', event.country === 'CN' ? '中国' : event.country === 'US' ? '美国' : event.country || '未提供'],
+    ['状态', event.status === 'tentative' ? '暂定' : event.status === 'cancelled' ? '已取消' : event.status || '官方日程'],
+    ['时间精度', event.timePrecision === 'exact' ? '精确到分钟' : event.timePrecision === 'date' ? '仅日期；不补写时刻' : '时间待公布'],
+    ['日程依据', event.scheduleBasis === 'official-rule' ? '官方规则生成，待逐日确认' : '官网逐项日程'],
+    ['参考期', event.referencePeriod || '来源未提供'],
+    ['来源观测', formatTime(event.observedAt)],
+  ];
+  for (const [dt, dd] of rows) {
+    grid.append(Object.assign(document.createElement('dt'), { textContent: dt }), Object.assign(document.createElement('dd'), { textContent: dd }));
+  }
+  wrap.querySelector('.page-note').textContent = event.note || event.description || '';
+  const save = document.createElement('button');
+  save.className = 'text-button';
+  save.type = 'button';
+  save.textContent = '存为灵感';
+  save.addEventListener('click', () => saveEventAsInspiration(event));
+  const source = document.createElement('button');
+  source.className = 'text-button';
+  source.type = 'button';
+  source.textContent = '查看信源';
+  source.addEventListener('click', () => openPage('source', event.sourceId));
+  wrap.querySelector('.content-tools').append(save, source);
+  root.replaceChildren(wrap);
+}
+
+async function saveEventAsInspiration(event) {
+  if (!state.session) {
+    showToast('请先在设置中完成设备连接');
+    return;
+  }
+  await api('/api/v1/notes', {
+    method: 'POST',
+    body: JSON.stringify({
+      body: [event.title, event.authority, event.note].filter(Boolean).join('\n'),
+      wantAi: false,
+      sourceType: 'scheduled-event',
+      sourceId: event.eventId || event.id,
+      sourceUrl: event.sourceUrl || '',
+      sourceTitle: event.title,
+      captureChannel: 'feed',
+    }),
+  });
+  showToast('已存为带来源的灵感');
+  loadNotes().catch(() => {});
+}
+
+function renderSourcePage() {
+  const root = pageRoot();
+  const id = state.pageId;
+  const def = [{ id: 'x', title: 'X' }, { id: 'bilibili', title: 'B站' }, { id: 'manual', title: '手工发布' }]
+    .find((item) => item.id === id)
+    || state.sourceCatalog.find((item) => item.id === id);
+  if (!def) {
+    root.replaceChildren(Object.assign(document.createElement('p'), { className: 'empty-state', textContent: '未知信源。' }));
+    return;
+  }
+  elements['page-title'].textContent = sourceDisplayTitle(def);
+  const wrap = document.createElement('div');
+  const health = (state.staticBoard?.sourceHealth || []).find((item) => item.sourceId === id);
+  wrap.innerHTML = `<div class="health-line mini-status"><span></span><button class="text-button" type="button">自动任务 ›</button></div>`;
+  wrap.querySelector('span').textContent = health
+    ? `${health.status === 'ready' ? '最近检查成功' : health.note || health.status} · ${health.observedAt ? formatTime(health.observedAt) : ''}`
+    : '只读已保存结果，新采集在右上角任务里发起';
+  wrap.querySelector('button').addEventListener('click', () => openPage('automation', id));
+  if (id === 'x' || id === 'bilibili' || id === 'manual') {
+    state.feedPlatform = id === 'manual' ? 'manual' : id;
+    state.platform = state.feedPlatform;
+    const list = document.createElement('div');
+    list.className = 'source-feed';
+    const rows = socialFeedItems().filter((item) => item.platform === (id === 'manual' ? 'manual' : id)
+      && (id !== 'x' || !item.mode || item.mode === state.xFeed));
+    if (!rows.length) list.append(Object.assign(document.createElement('p'), { className: 'empty-state', textContent: '当前信源尚无已存内容。' }));
+    else rows.slice(0, 40).forEach((post) => {
+      const card = document.createElement('article');
+      card.className = 'post-card is-compact';
+      card.innerHTML = `<div class="post-meta"><span class="post-identity"></span><span class="post-time"></span></div><button class="feed-content" type="button"><h3></h3></button>`;
+      card.querySelector('.post-identity').textContent = post.author;
+      card.querySelector('.post-time').textContent = post.time;
+      card.querySelector('h3').textContent = postDisplayTitle(post);
+      card.querySelector('.feed-content').addEventListener('click', () => openArticle(post));
+      list.append(card);
+    });
+    const more = document.createElement('button');
+    more.className = 'text-button';
+    more.type = 'button';
+    more.textContent = '采集与处理 ›';
+    more.addEventListener('click', () => openSourceTasks(id));
+    wrap.append(list, more);
+  } else if (sourceKind(def) === 'calendar') {
+    const events = (state.staticBoard?.upcoming || []).filter((item) => item.sourceId === id);
+    if (!events.length) wrap.append(Object.assign(document.createElement('p'), { className: 'empty-state', textContent: '该信源在当前窗口没有日程。' }));
+    events.forEach((event) => wrap.append(scheduleRow(event)));
+  } else if (sourceKind(def) === 'release') {
+    const rows = officialFeedItems().filter((item) => item.release?.sourceId === id || `policy.${item.author}` === id);
+    if (!rows.length) wrap.append(Object.assign(document.createElement('p'), { className: 'empty-state', textContent: '此信源当前没有发布索引。' }));
+    rows.forEach((post) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'post-card is-compact';
+      button.innerHTML = '<h3></h3>';
+      button.querySelector('h3').textContent = postDisplayTitle(post);
+      button.addEventListener('click', () => openArticle(post));
+      wrap.append(button);
+    });
+  } else {
+    const go = document.createElement('button');
+    go.className = 'primary-button';
+    go.type = 'button';
+    go.textContent = id === 'market.global' ? '打开全球行情' : '打开股票看板';
+    go.addEventListener('click', () => setView(id === 'market.global' ? 'market/global' : 'market'));
+    wrap.append(go);
+  }
+  root.replaceChildren(wrap);
+}
+
+function scheduleRow(event) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'schedule-mini agenda-row';
+  button.innerHTML = `<time></time><div><strong></strong><small></small></div>`;
+  button.querySelector('time').textContent = staticSignalTime(event, 'calendar');
+  button.querySelector('strong').textContent = localizedCopy(event.eventId, event.title);
+  button.querySelector('small').textContent = event.authority || event.sourceId;
+  button.addEventListener('click', () => openPage('event', event.eventId || event.id));
+  return button;
+}
+
+function findQuote(symbol) {
+  const lists = [
+    ...(state.markets.us?.watchlist || []),
+    ...(state.markets.asia?.watchlist || []),
+    ...(state.markets.cn?.watchlist || []),
+    ...(state.assetBoard?.watchlist || []),
+    ...hubQuotes(),
+  ];
+  return lists.find((item) => item.symbol === symbol) || { symbol, name: symbol, lastPrice: null, changePct: null };
+}
+
+function renderQuotePage() {
+  const root = pageRoot();
+  const quote = findQuote(state.pageId);
+  const up = (quote.changePct ?? 0) >= 0;
+  const wrap = document.createElement('section');
+  wrap.className = 'quote-detail';
+  wrap.innerHTML = `<h2></h2><p class="small muted"></p><div class="last num"></div><div class="change"></div>
+    <div class="large-spark"></div>
+    <dl class="metadata-grid"></dl>
+    <button class="primary-button" type="button">Web 完整表格</button>`;
+  wrap.querySelector('h2').textContent = quote.name || quote.symbol;
+  wrap.querySelector('p').textContent = `${quote.symbol || ''} · 现有报价`;
+  wrap.querySelector('.last').textContent = quote.lastPrice == null ? '—' : formatPrice(quote.lastPrice);
+  wrap.querySelector('.last').classList.add(up ? 'up' : 'down');
+  wrap.querySelector('.change').textContent = quote.changePct == null ? '—' : formatPct(up, quote.changePct);
+  wrap.querySelector('.change').classList.add(up ? 'up' : 'down');
+  wrap.querySelector('.large-spark').innerHTML = sparkSvg(quote.sparkline, quote.changePct);
+  const grid = wrap.querySelector('.metadata-grid');
+  for (const [dt, dd] of [['所属分组', quote.group || '未分组'], ['报价状态', state.marketError || '已连接现有行情 Adapter'], ['页面读取', formatTime(Date.now())]]) {
+    grid.append(Object.assign(document.createElement('dt'), { textContent: dt }), Object.assign(document.createElement('dd'), { textContent: dd }));
+  }
+  wrap.querySelector('.primary-button').addEventListener('click', () => setView(quote.assetClass && quote.assetClass !== 'equity' ? 'market/global' : 'market'));
+  root.replaceChildren(wrap);
+}
+
+function localTaskRows() {
+  const rows = [];
+  if (state.xLoading) rows.push({ id: 'local-x', title: '读取 X 缓存', status: 'running', detail: state.xNote || '进行中', scope: 'x', time: formatTime(Date.now()) });
+  if (state.xTranslating) rows.push({ id: 'local-x-tr', title: '翻译非中文内容', status: 'running', detail: '豆包队列', scope: 'x', time: formatTime(Date.now()) });
+  if (state.xTagging) rows.push({ id: 'local-x-tag', title: '标注待处理内容', status: 'running', detail: 'Worker 打 Tag', scope: 'x', time: formatTime(Date.now()) });
+  if (state.bilibiliLoading) rows.push({ id: 'local-bili', title: '读取 B站字幕', status: 'running', detail: state.bilibiliNote || '进行中', scope: 'bilibili', time: formatTime(Date.now()) });
+  for (const job of state.runtimeJobs || []) {
+    rows.push({
+      id: job.id || job.jobId,
+      title: job.title || job.capability || job.type || '后台任务',
+      status: job.status || 'queued',
+      detail: job.detail || job.error || '',
+      scope: job.scope || 'all',
+      time: formatTime(job.updatedAt || job.createdAt),
+      job,
+    });
+  }
+  return rows;
+}
+
+function renderTasksPage() {
+  const root = pageRoot();
+  const filter = state.taskFilter || '全部';
+  const jobs = localTaskRows().filter((item) => filter === '全部'
+    || (filter === '进行中' && ['queued', 'running'].includes(item.status))
+    || (filter === '失败' && item.status === 'failed'));
+  const wrap = document.createElement('div');
+  const tabs = document.createElement('div');
+  tabs.className = 'dense-tabs';
+  renderChipTabs(tabs, [{ id: '全部', label: '全部' }, { id: '进行中', label: '进行中' }, { id: '失败', label: '失败' }], filter, (id) => {
+    state.taskFilter = id;
+    renderTasksPage();
+  });
+  wrap.append(tabs);
+  if (!jobs.length) wrap.append(Object.assign(document.createElement('p'), { className: 'empty-state', textContent: '暂无该筛选下的任务。采集与翻译走已注册的 Worker，不在页面里模拟成功。' }));
+  jobs.forEach((job) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'task-item';
+    button.innerHTML = `<div class="row between"><strong></strong><span class="task-status ${job.status}"></span></div><p></p><small class="muted"></small>`;
+    button.querySelector('strong').textContent = job.title;
+    button.querySelector('.task-status').textContent = job.status;
+    button.querySelector('p').textContent = job.detail || '';
+    button.querySelector('small').textContent = job.time;
+    button.addEventListener('click', () => {
+      if (job.job) openPage('task', job.id);
+      else showToast('这是当前页的进行中操作，完成后会从列表消失');
+    });
+    wrap.append(button);
+  });
+  const auto = document.createElement('button');
+  auto.type = 'button';
+  auto.className = 'setting-row';
+  auto.innerHTML = '<span><strong>自动任务配置</strong><small>频率、翻译和标签规则；保存后仍是本机草案</small></span>';
+  auto.addEventListener('click', () => openPage('automation', 'x'));
+  wrap.append(auto);
+  root.replaceChildren(wrap);
+  loadRuntimeJobs().catch(() => {});
+}
+
+async function loadRuntimeJobs() {
+  try {
+    const payload = await api('/api/v1/runtime/jobs?limit=50');
+    state.runtimeJobs = payload.jobs || [];
+    state.runtimeJobsError = '';
+    if (state.pageKind === 'tasks') renderTasksPage();
+  } catch (error) {
+    state.runtimeJobsError = error instanceof Error ? error.message : '无法读取本机任务';
+  }
+}
+
+function renderNotePage() {
+  const root = pageRoot();
+  const note = state.notes.find((item) => item.id === state.pageId);
+  if (!note) {
+    root.replaceChildren(Object.assign(document.createElement('p'), { className: 'empty-state', textContent: '找不到这条灵感。' }));
+    return;
+  }
+  const wrap = document.createElement('article');
+  wrap.innerHTML = `<div class="reader-content"></div><p class="page-note"></p><div class="content-tools"></div>`;
+  fillPostBody(wrap.querySelector('.reader-content'), note.body);
+  wrap.querySelector('.page-note').textContent = `${note.sourceTitle || '我的随记'} · ${formatTime(note.createdAt)}`;
+  const research = document.createElement('button');
+  research.className = 'primary-button';
+  research.type = 'button';
+  research.textContent = '接着研究';
+  research.addEventListener('click', () => {
+    toggleReference({ resourceType: 'inspiration', resourceId: note.id, label: inspirationCardTitle(note), preview: note.body });
+    setView('ask');
+    openAskSession('new');
+  });
+  wrap.querySelector('.content-tools').append(research);
+  root.replaceChildren(wrap);
+}
+
+function renderAccountPage() {
+  const root = pageRoot();
+  const line = (state.holdingsBoard?.summary?.lines || []).find((item) => item.id === state.pageId);
+  if (!line) {
+    root.replaceChildren(Object.assign(document.createElement('p'), { className: 'empty-state', textContent: '找不到这个账户。' }));
+    return;
+  }
+  const wrap = document.createElement('div');
+  wrap.append(accountCardNode(line));
+  const rows = (state.holdingsBoard?.positions || []).filter((item) => holdingsLineBoards(line.id).includes(item.board));
+  rows.forEach((item) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'quote-row holdings-row';
+    button.textContent = `${item.name} · ${privacyText(item.lastPrice)}`;
+    button.addEventListener('click', () => openPage('holding', item.lotId));
+    wrap.append(button);
+  });
+  root.replaceChildren(wrap);
+}
+
+function accountCardNode(line) {
+  const row = document.createElement('article');
+  row.className = 'holdings-line account-panel';
+  row.innerHTML = `<div class="holdings-line-head"><h3></h3><strong class="total-value num"></strong></div>`;
+  row.querySelector('h3').textContent = line.label;
+  row.querySelector('strong').textContent = privacyText(line.totalCny == null ? '--' : `¥${formatMoneyAmount(line.totalCny, 2)}`);
+  return row;
+}
+
+function privacyText(value) {
+  return state.privacy ? '••••••' : value;
+}
+
+function renderHoldingPage() {
+  const root = pageRoot();
+  const item = (state.holdingsBoard?.positions || []).find((row) => row.lotId === state.pageId);
+  if (!item) {
+    root.replaceChildren(Object.assign(document.createElement('p'), { className: 'empty-state', textContent: '找不到这只持仓。' }));
+    return;
+  }
+  const wrap = document.createElement('article');
+  wrap.innerHTML = `<header class="reader-head"><h2></h2><p class="page-note"></p></header><dl class="metadata-grid"></dl>`;
+  wrap.querySelector('h2').textContent = item.name;
+  wrap.querySelector('p').textContent = `${boardLabels[item.board] || item.board} · 批次账本`;
+  const grid = wrap.querySelector('.metadata-grid');
+  for (const [dt, dd] of [
+    ['持仓数量', privacyText(formatMoneyAmount(item.quantity, 0))],
+    ['现价 / 成本', `${item.lastPrice || '无行情'} / ${item.costPrice}`],
+    ['市值 CNY', privacyText(formatMoneyAmount(item.marketValueCny, 2))],
+    ['当日盈亏', privacyText(formatSignedAmount(item.dayPnlCny))],
+    ['持仓浮动盈亏', privacyText(formatSignedAmount(item.positionPnlCny))],
+  ]) {
+    grid.append(Object.assign(document.createElement('dt'), { textContent: dt }), Object.assign(document.createElement('dd'), { textContent: dd }));
+  }
+  root.replaceChildren(wrap);
+}
+
+function renderAutomationPage() {
+  const root = pageRoot();
+  const id = state.pageId || 'x';
+  const draft = JSON.parse(window.localStorage.getItem(AUTO_DRAFT_KEY) || '{}');
+  const wrap = document.createElement('div');
+  wrap.innerHTML = `<header class="reader-head"><h2></h2><p class="page-note">保存后仍是本机草案，不会启动真实定时任务。</p></header>
+    <label class="check-line"><span>启用自动任务</span><input id="auto-enabled" type="checkbox"></label>
+    <label class="field"><span>采集频率</span><select id="auto-interval">
+      <option value="30">每 30 分钟</option>
+      <option value="60">每 60 分钟</option>
+      <option value="360">每 6 小时</option>
+      <option value="manual">仅手动</option>
+    </select></label>
+    <label class="check-line"><span>新内容入库后翻译非中文部分</span><input id="auto-translate" type="checkbox"></label>
+    <label class="check-line"><span>新内容入库后按已有标签标注</span><input id="auto-tag" type="checkbox"></label>
+    <button class="primary-button" type="button" id="save-auto-rule">保存草案</button>
+    <p class="endnote">未接入持久化调度前，不得显示「自动运行中」。</p>`;
+  wrap.querySelector('h2').textContent = id;
+  wrap.querySelector('#auto-enabled').checked = Boolean(draft.enabled);
+  wrap.querySelector('#auto-interval').value = draft.interval || draft.freq || '60';
+  wrap.querySelector('#auto-translate').checked = Boolean(draft.translate);
+  wrap.querySelector('#auto-tag').checked = Boolean(draft.tag);
+  wrap.querySelector('#save-auto-rule').addEventListener('click', () => {
+    const next = {
+      enabled: wrap.querySelector('#auto-enabled').checked,
+      interval: wrap.querySelector('#auto-interval').value,
+      translate: wrap.querySelector('#auto-translate').checked,
+      tag: wrap.querySelector('#auto-tag').checked,
+      saved: true,
+      savedAt: Date.now(),
+    };
+    window.localStorage.setItem(AUTO_DRAFT_KEY, JSON.stringify(next));
+    showToast('草案已保存，自动化未启用');
+  });
+  root.replaceChildren(wrap);
+}
+
+function renderPublishPage() {
+  openCompose();
+  goBack();
+}
+
+function renderSettingsHub() {
+  const hub = elements['settings-hub'];
+  const connections = elements['settings-connections'];
+  if (!hub || !connections) return;
+  const showHub = state.settingsPane !== 'connections';
+  hub.classList.toggle('hidden', !showHub);
+  connections.classList.toggle('hidden', showHub);
+  if (!showHub) return;
+  hub.replaceChildren();
+  const rows = [
+    ['sources', '信源', '查看来源内容与可用状态', () => setOverviewPane('catalog')],
+    ['tasks', '采集与处理', '手工拉取、翻译、标注及任务记录', () => openPage('tasks')],
+    ['automation', '自动任务', '规则配置 · 不实际调度', () => openPage('automation', 'x')],
+    ['connections', '设备连接', '配对与授权入口', () => setView('settings/connections')],
+  ];
+  for (const [id, title, desc, onClick] of rows) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'setting-row';
+    button.innerHTML = `<span><strong></strong><small></small></span>`;
+    button.querySelector('strong').textContent = title;
+    button.querySelector('small').textContent = desc;
+    button.addEventListener('click', onClick);
+    hub.append(button);
+  }
+}
+
+function openSourceMenu(source) {
+  modalSheet(`${sourceDisplayTitle(source)} · 采集与处理`, [
+    ['查看内容', '只读已保存结果', () => openPage('source', source.id)],
+    ['任务记录', '进行中、成功与失败', () => openPage('tasks')],
+    ['自动任务', '频率、翻译和标签草案', () => openPage('automation', source.id)],
+    [state.hiddenSourceIds.has(source.id) ? '显示信源' : '隐藏信源', '只影响本机目录投影', () => {
+      if (state.hiddenSourceIds.has(source.id)) state.hiddenSourceIds.delete(source.id);
+      else state.hiddenSourceIds.add(source.id);
+      writeJsonSet(HIDDEN_SOURCES_KEY, state.hiddenSourceIds);
+      renderStaticSourceCatalog();
+    }],
+  ]);
+}
+
+function modalSheet(title, actions) {
+  const dialog = elements['source-tasks-dialog'] || elements['feed-filter-dialog'];
+  if (!dialog) {
+    showToast(title);
+    return;
+  }
+  if (elements['source-tasks-title']) elements['source-tasks-title'].textContent = title;
+  const body = elements['source-tasks-body'];
+  if (!body) return;
+  body.replaceChildren(...actions.map(([label, desc, onClick]) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'setting-row';
+    button.innerHTML = `<span><strong></strong><small></small></span>`;
+    button.querySelector('strong').textContent = label;
+    button.querySelector('small').textContent = desc;
+    button.addEventListener('click', () => {
+      dialog.close();
+      onClick();
+    });
+    return button;
+  }));
+  openDialog(dialog);
+}
+
+function renderFeedFilterDialog() {
+  const body = elements['feed-filter-body'];
+  if (!body) return;
+  body.replaceChildren();
+  const add = (label, options, current, onSelect) => {
+    body.append(Object.assign(document.createElement('p'), { className: 'filter-label', textContent: label }));
+    const row = document.createElement('div');
+    row.className = 'dense-tabs';
+    renderChipTabs(row, options, current, onSelect);
+    body.append(row);
+  };
+  add('排序方式', [
+    { id: 'captured', label: '收录顺序' },
+    { id: 'published', label: '发布时间' },
+  ], state.feedSort, (id) => {
+    state.feedSort = id;
+    renderPosts();
+    renderFeedFilterDialog();
+  });
+  add('日期范围', [
+    { id: 'today', label: '今天' },
+    { id: '7d', label: '近 7 天' },
+    { id: 'all', label: '全部' },
+  ], state.feedRange, (id) => {
+    state.feedRange = id;
+    renderPosts();
+    renderFeedFilterDialog();
+  });
+  add('平台', platformFilters, state.feedPlatform, (id) => {
+    state.feedPlatform = id;
+    state.platform = id;
+    renderPlatformFilters();
+    renderPosts();
+    renderFeedFilterDialog();
+  });
+  const calendar = document.createElement('button');
+  calendar.type = 'button';
+  calendar.className = 'setting-row';
+  calendar.innerHTML = '<span><strong>查看未来日程</strong><small>不混进最新发布</small></span>';
+  calendar.addEventListener('click', () => {
+    elements['feed-filter-dialog'].close();
+    setOverviewPane('schedule');
+    setView('sources/schedule');
+  });
+  const catalog = document.createElement('button');
+  catalog.type = 'button';
+  catalog.className = 'setting-row';
+  catalog.innerHTML = '<span><strong>打开信源目录</strong><small>社媒、日程、官方与行情</small></span>';
+  catalog.addEventListener('click', () => {
+    elements['feed-filter-dialog'].close();
+    setOverviewPane('catalog');
+    setView('sources/catalog');
+  });
+  body.append(calendar, catalog);
+}
+
 function renderTools() {
-  elements['tool-grid'].replaceChildren(...tools.map((tool) => {
+  const items = tools.map((tool) => ({
+    ...tool,
+    ready: tool.ready,
+  }));
+  elements['tool-grid'].replaceChildren(...items.map((tool) => {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'tool-item';
@@ -3290,7 +4977,8 @@ function renderTools() {
     const mark = tool.icon ? icon(tool.icon) : tool.title.slice(0, 1);
     button.innerHTML = `<span class="tool-icon">${mark}</span><strong>${tool.title}</strong><small>${tool.desc}</small>`;
     button.addEventListener('click', () => {
-      if (tool.action === 'compose') return openCompose();
+      if (!tool.ready) return;
+      if (tool.action === 'compose') return openPage('publish');
       if (tool.action === 'settings') return setView('settings');
       if (viewCopy[tool.action]) return setView(tool.action);
       showToast('这项能力将在闭环稳定后接入');
@@ -3301,6 +4989,197 @@ function renderTools() {
 
 function askKindLabel(kind) {
   return kind === 'inspiration' ? '灵感加工' : '问答';
+}
+
+function liveAskJobs() {
+  return state.askJobs.filter((job) => job.status === 'queued' || job.status === 'running');
+}
+
+function sessionAskJobs(sessionId) {
+  if (!sessionId) return liveAskJobs();
+  return liveAskJobs().filter((job) => job.sessionId === sessionId || (sessionId === 'new' && job.sessionId === 'new'));
+}
+
+function upsertAskJob(next) {
+  const index = state.askJobs.findIndex((job) => job.runId === next.runId);
+  const current = index >= 0 ? state.askJobs[index] : {
+    runId: next.runId,
+    sessionId: next.sessionId || '',
+    question: next.question || '',
+    status: 'queued',
+    progress: [],
+    text: '正在等待 AI Worker…',
+    error: false,
+    refs: [],
+  };
+  const merged = { ...current, ...next };
+  if (index >= 0) state.askJobs[index] = merged;
+  else state.askJobs.push(merged);
+  return merged;
+}
+
+function removeAskJob(runId) {
+  state.askJobs = state.askJobs.filter((job) => job.runId !== runId);
+}
+
+function askStatusLabel(status) {
+  if (status === 'running') return '正在回答';
+  if (status === 'queued') return '排队等待';
+  if (status === 'failed') return '未能完成';
+  return '';
+}
+
+function renderAskLiveUi() {
+  const live = liveAskJobs();
+  const count = live.length;
+  document.querySelectorAll('.nav-item[data-nav="ask"], .tab-item[data-nav="ask"]').forEach((node) => {
+    node.classList.toggle('has-live', count > 0);
+  });
+  const chip = elements['ask-live-chip'];
+  if (!chip) return;
+  const onAsk = document.body.dataset.view === 'ask';
+  chip.classList.toggle('hidden', !count || onAsk);
+  if (!count) return;
+  const running = live.some((job) => job.status === 'running');
+  const head = live.find((job) => job.status === 'running') || live[0];
+  chip.textContent = count > 1
+    ? `${running ? '问答进行中' : '问答排队中'} · ${count} 条`
+    : `${askStatusLabel(head.status)}：${String(head.question || '未命名').slice(0, 18)}`;
+}
+
+function adoptPendingRuns(runs = [], { replaceLive = false } = {}) {
+  for (const run of runs) {
+    if (!run?.runId) continue;
+    upsertAskJob({
+      runId: run.runId,
+      sessionId: run.sessionId || '',
+      question: run.question || run.input?.message || '',
+      status: run.status,
+    });
+  }
+  if (replaceLive) {
+    const liveIds = new Set(runs.map((run) => run.runId));
+    state.askJobs = state.askJobs.filter((job) => {
+      if (job.status !== 'queued' && job.status !== 'running') return true;
+      if (String(job.runId).startsWith('local-')) return true;
+      return liveIds.has(job.runId);
+    });
+  }
+  if (liveAskJobs().length) ensureAskPoller();
+  renderAskLiveUi();
+}
+
+let askPollTimer = 0;
+let askPollInFlight = false;
+function ensureAskPoller() {
+  if (askPollTimer) return;
+  askPollTimer = window.setInterval(() => {
+    void pollAskJobs();
+  }, 800);
+}
+
+function stopAskPollerIfIdle() {
+  if (liveAskJobs().length) return;
+  if (askPollTimer) {
+    window.clearInterval(askPollTimer);
+    askPollTimer = 0;
+  }
+}
+
+function updateAskProgressNode(job) {
+  const answer = elements['ask-thread']?.querySelector(`[data-run-id="${job.runId}"] .ask-answer`);
+  if (!answer) return;
+  if (job.error) {
+    setAskAnswer(answer, job.text, { error: true });
+    return;
+  }
+  if (job.status === 'queued' || job.status === 'running') {
+    setAskAnswer(answer, job.text, { pending: true, progress: job.progress || [] });
+  }
+}
+
+async function finishAskJob(job, payload) {
+  removeAskJob(job.runId);
+  renderAskLiveUi();
+  const viewing = document.body.dataset.view === 'ask' && state.askSessionId && state.askSessionId === job.sessionId;
+  if (viewing) await loadAskSession(job.sessionId);
+  else if (document.body.dataset.view === 'ask' && !state.askSessionId) await loadAskSessions();
+  else loadAskSessions().catch(() => {});
+  if (payload?.status === 'failed' || payload?.status === 'cancelled') {
+    showToast(payload.job?.error?.message || '问答任务未能完成');
+  }
+  stopAskPollerIfIdle();
+}
+
+async function pollAskJobs() {
+  if (askPollInFlight) return;
+  const jobs = liveAskJobs();
+  if (!jobs.length) {
+    stopAskPollerIfIdle();
+    renderAskLiveUi();
+    return;
+  }
+  askPollInFlight = true;
+  try {
+    await Promise.all(jobs.map(async (job) => {
+      try {
+        const payload = await api(`/api/v1/agent/runs/${job.runId}`, { timeoutMs: 15_000 });
+        if (payload.status === 'completed') {
+          await finishAskJob(job, payload);
+          return;
+        }
+        if (payload.status === 'failed' || payload.status === 'cancelled') {
+          const failed = upsertAskJob({
+            runId: job.runId,
+            sessionId: payload.sessionId || job.sessionId,
+            status: payload.status,
+            error: true,
+            text: payload.job?.error?.message || '问答任务未能完成',
+          });
+          updateAskProgressNode(failed);
+          renderAskLiveUi();
+          showToast(failed.text);
+          return;
+        }
+        const updated = upsertAskJob({
+          runId: job.runId,
+          sessionId: payload.sessionId || job.sessionId,
+          status: payload.status,
+          progress: payload.progress || [],
+          text: payload.status === 'running' ? '正在生成回答…' : '正在等待 AI Worker…',
+        });
+        updateAskProgressNode(updated);
+      } catch {
+        /* 单次轮询失败不打断后台任务 */
+      }
+    }));
+    renderAskLiveUi();
+    if (document.body.dataset.view === 'ask' && !state.askSessionId) renderAskRecords();
+    stopAskPollerIfIdle();
+  } finally {
+    askPollInFlight = false;
+  }
+}
+
+async function loadActiveAskRuns() {
+  if (!state.session) return;
+  try {
+    const payload = await api('/api/v1/agent/runs');
+    adoptPendingRuns(payload.runs || [], { replaceLive: true });
+  } catch {
+    /* 尚未连接时忽略 */
+  }
+}
+
+function onAgentJobEvent(event) {
+  let payload = {};
+  try { payload = JSON.parse(event.data || '{}'); } catch { payload = {}; }
+  const runId = payload.jobId || payload.runId || payload.job?.id;
+  if (runId && liveAskJobs().some((job) => job.runId === runId)) {
+    void pollAskJobs();
+    return;
+  }
+  void loadActiveAskRuns();
 }
 
 function syncAskLayer() {
@@ -3327,6 +5206,7 @@ async function syncAskView() {
   if (state.askSessionId === 'new') {
     state.askDetail = null;
     renderAskSession();
+    focusAskComposer();
     return;
   }
   await loadAskSession(state.askSessionId);
@@ -3342,6 +5222,7 @@ async function loadAskSessions() {
   }
   const payload = await api('/api/v1/agent/sessions?limit=50');
   state.askSessions = payload.sessions || [];
+  adoptPendingRuns(payload.pendingRuns || [], { replaceLive: true });
   renderAskRecords();
 }
 
@@ -3349,13 +5230,57 @@ async function loadAskSession(sessionId) {
   if (!state.session) return;
   const payload = await api(`/api/v1/agent/sessions/${sessionId}`);
   state.askDetail = { session: payload.session, exchanges: payload.exchanges || [] };
-  if (state.askPending?.sessionId && state.askPending.sessionId !== sessionId) state.askPending = null;
+  adoptPendingRuns((payload.exchanges || [])
+    .filter((item) => item.status === 'queued' || item.status === 'running')
+    .map((item) => ({
+      runId: item.id,
+      sessionId,
+      question: item.question,
+      status: item.status,
+    })));
   renderAskSession();
   syncAskLayer();
 }
 
+function resizeAskComposer() {
+  const input = elements['ask-form']?.elements?.question;
+  if (!input) return;
+  input.style.height = 'auto';
+  input.style.height = `${Math.min(120, Math.max(22, input.scrollHeight))}px`;
+}
+
+function syncAskKeyboard() {
+  const input = elements['ask-form']?.elements?.question;
+  const typing = Boolean(input) && document.activeElement === input
+    && document.body.dataset.view === 'ask'
+    && document.body.dataset.askLayer === 'session';
+  const viewport = window.visualViewport;
+  const covered = viewport
+    ? Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop)
+    : 0;
+  const keyboard = typing && covered > 48;
+  document.body.classList.toggle('is-ask-keyboard', keyboard);
+  document.documentElement.style.setProperty('--ask-kb', `${keyboard ? covered : 0}px`);
+}
+
+function focusAskComposer() {
+  const input = elements['ask-form']?.elements?.question;
+  if (!input) return;
+  const run = () => {
+    if (elements['ask-session-shell']?.classList.contains('hidden')) return;
+    try { input.focus({ preventScroll: true }); } catch { input.focus(); }
+    resizeAskComposer();
+    input.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    syncAskKeyboard();
+  };
+  run();
+  window.setTimeout(run, 50);
+  window.setTimeout(run, 240);
+}
+
 function openAskSession(sessionId) {
   setView(`ask/${sessionId}`);
+  if (sessionId === 'new') focusAskComposer();
 }
 
 function renderAskRecords() {
@@ -3379,15 +5304,36 @@ function renderAskRecords() {
         textContent: day,
       }));
     }
+    const live = sessionAskJobs(session.id);
+    const liveHead = live.find((job) => job.status === 'running') || live[0];
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'ask-session-item';
+    button.className = `ask-session-item${live.length ? ' is-live' : ''}`;
     button.append(
       Object.assign(document.createElement('strong'), { textContent: session.title || '未命名记录' }),
-      Object.assign(document.createElement('small'), {
-        textContent: `${askKindLabel(session.kind)} · ${formatAskClock(stamp)}`,
+      Object.assign(document.createElement('p'), {
+        className: 'session-preview',
+        textContent: liveHead
+          ? `${askStatusLabel(liveHead.status)}：${liveHead.question}`
+          : String(session.preview || '').trim()
+            ? `回答预览：${session.preview}`
+            : '还没有保存的回答预览。',
       }),
     );
+    const foot = document.createElement('div');
+    foot.className = 'session-bottom';
+    foot.append(
+      Object.assign(document.createElement('span'), {
+        textContent: live.length
+          ? `${askStatusLabel(liveHead.status)} · ${live.length} 条进行中 · ${formatAskClock(stamp)}`
+          : `${session.runCount || 0} 轮讨论 · ${askKindLabel(session.kind)} · ${formatAskClock(stamp)}`,
+      }),
+      Object.assign(document.createElement('span'), {
+        className: 'resume',
+        textContent: live.length ? '查看进度 →' : '继续研究 →',
+      }),
+    );
+    button.append(foot);
     button.addEventListener('click', () => openAskSession(session.id));
     nodes.push(button);
   }
@@ -3401,7 +5347,8 @@ function renderAskPrompts() {
     button.textContent = prompt;
     button.addEventListener('click', () => {
       elements['ask-form'].question.value = prompt;
-      elements['ask-form'].requestSubmit();
+      resizeAskComposer();
+      focusAskComposer();
     });
     return button;
   }));
@@ -3410,6 +5357,108 @@ function renderAskPrompts() {
 function renderAsk() {
   renderAskPrompts();
   renderAskRecords();
+}
+
+function renderAskMaterials() {
+  const root = elements['ask-materials'];
+  const tabs = elements['ask-material-tabs'];
+  if (!root || !tabs) return;
+  const show = state.askSessionId === 'new' && !(state.askDetail?.exchanges || []).length && !sessionAskJobs(state.askSessionId).length;
+  root.classList.toggle('hidden', !show);
+  tabs.classList.toggle('hidden', !show);
+  if (!show) return;
+  renderChipTabs(tabs, [
+    { id: 'feed', label: '信息流' },
+    { id: 'inspire', label: '灵感' },
+    { id: 'knowledge', label: '知识库' },
+    { id: 'holdings', label: '持仓' },
+  ], state.askMaterialTab, (id) => {
+    state.askMaterialTab = id;
+    renderAskMaterials();
+  });
+  const feed = visibleFeedItems().slice(0, 12).map((item) => ({
+    id: item.resourceId || item.id,
+    type: item.resourceType || (item.live ? 'content-item' : 'post'),
+    title: postDisplayTitle(item),
+    meta: `${platformLabels[item.platform] || item.platform} · ${item.time || ''}`.trim(),
+    preview: item.body,
+    post: item,
+  }));
+  const notes = state.notes.slice(0, 12).map((note) => ({
+    id: note.id,
+    type: 'inspiration',
+    title: inspirationCardTitle(note),
+    meta: note.sourceTitle || '我的随记',
+    preview: note.body,
+  }));
+  const frames = state.mentionItems.filter((item) => item.resourceType === 'knowledge-revision').slice(0, 12);
+  const knowledge = (frames.length ? frames : state.knowledge).slice(0, 12).map((item) => ({
+    id: item.resourceId || item.id,
+    type: item.resourceType || 'knowledge-revision',
+    title: item.label || item.title,
+    meta: item.parentName || '知识库',
+    preview: item.preview || item.body,
+    revision: item.revision,
+  }));
+  const holdings = (state.holdingsBoard?.positions || []).slice(0, 12).map((item) => ({
+    id: item.lotId,
+    type: 'holdings-board',
+    title: `询问 ${item.name} 的持仓与当日盈亏`,
+    meta: `${boardLabels[item.board] || item.board} · 持仓工具`,
+    preview: '作为问题意图交给现有持仓工具，发送前不声称已读取。',
+  }));
+  const rows = state.askMaterialTab === 'inspire' ? notes
+    : state.askMaterialTab === 'knowledge' ? knowledge
+      : state.askMaterialTab === 'holdings' ? holdings
+        : feed;
+  const status = document.createElement('div');
+  status.className = 'mini-status';
+  status.innerHTML = `<span>近期材料 · 点正文预览</span><span class="material-count">已选 ${state.referenceDraft.length} / 8</span>`;
+  if (!rows.length) {
+    root.replaceChildren(status, Object.assign(document.createElement('p'), {
+      className: 'empty-state',
+      textContent: '这一组暂时没有可选材料，也可以直接提问。',
+    }));
+    return;
+  }
+  root.replaceChildren(status, ...rows.map((item) => {
+    const selected = isReferenced({ resourceType: item.type, resourceId: item.id });
+    const row = document.createElement('div');
+    row.className = 'material-row';
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'material-copy';
+    copy.append(
+      Object.assign(document.createElement('h3'), { textContent: item.title }),
+      Object.assign(document.createElement('div'), { className: 'material-meta', textContent: item.meta }),
+    );
+    copy.addEventListener('click', () => {
+      if (item.post) openPost(item.post);
+      else openReferencePreview({
+        resourceType: item.type,
+        resourceId: item.id,
+        label: item.title,
+        preview: item.preview,
+      }, 0);
+    });
+    const select = document.createElement('button');
+    select.type = 'button';
+    select.className = `select-material${selected ? ' is-on' : ''}`;
+    select.setAttribute('aria-label', selected ? '取消引用' : '加入引用');
+    select.textContent = selected ? '✓' : '+';
+    select.addEventListener('click', () => {
+      toggleReference({
+        resourceType: item.type,
+        resourceId: item.id,
+        revision: item.revision,
+        label: item.title,
+        preview: item.preview,
+      });
+      renderAskMaterials();
+    });
+    row.append(copy, select);
+    return row;
+  }));
 }
 
 function clearAskThreadExtras() {
@@ -3457,10 +5506,11 @@ function renderAskProgress(target, steps, fallback) {
 }
 
 function appendAskExchange(question, answerText, {
-  pending = false, error = false, refs = [], runId = '', answer = '', sourceFooter = null,
+  pending = false, error = false, refs = [], runId = '', answer = '', sourceFooter = null, progress = [], scroll = false,
 } = {}) {
   const card = document.createElement('article');
   card.className = 'ask-card ask-exchange';
+  if (runId) card.dataset.runId = runId;
   const questionBlock = document.createElement('div');
   questionBlock.className = 'ask-turn ask-turn-q';
   questionBlock.append(
@@ -3486,7 +5536,7 @@ function appendAskExchange(question, answerText, {
   answerBlock.append(Object.assign(document.createElement('span'), { className: 'ask-turn-label', textContent: '回答' }));
   const answerNode = document.createElement('div');
   answerNode.className = 'ask-answer';
-  setAskAnswer(answerNode, answerText, { pending, error });
+  setAskAnswer(answerNode, answerText, { pending, error, progress });
   answerBlock.append(answerNode);
   card.append(answerBlock);
   if (!pending && !error) appendAskSourceFooter(card, sourceFooter);
@@ -3517,7 +5567,7 @@ function appendAskExchange(question, answerText, {
     card.append(actions);
   }
   elements['ask-prompts'].before(card);
-  card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  if (scroll) card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   return answerNode;
 }
 
@@ -3591,38 +5641,59 @@ async function saveAnswerAsKnowledge(runId, button) {
 function renderAskSession() {
   const isNew = state.askSessionId === 'new';
   const exchanges = state.askDetail?.exchanges || [];
-  const showIntro = isNew && !exchanges.length && !state.askPending;
+  const live = [
+    ...sessionAskJobs(state.askSessionId),
+    ...state.askJobs.filter((job) => job.sessionId === state.askSessionId && job.error),
+  ];
+  const showIntro = isNew && !exchanges.length && !live.length;
   elements['ask-intro'].classList.toggle('hidden', !showIntro);
   elements['ask-prompt-label'].classList.toggle('hidden', !showIntro);
   elements['ask-prompts'].classList.toggle('hidden', !showIntro);
   clearAskThreadExtras();
+  const seen = new Set();
   for (const exchange of exchanges) {
-    appendAskExchange(exchange.question, exchange.answer || '（没有可显示的回答）', {
+    const job = state.askJobs.find((item) => item.runId === exchange.id);
+    const pending = exchange.status === 'queued' || exchange.status === 'running';
+    const error = Boolean(job?.error) || exchange.status === 'failed' || exchange.status === 'cancelled';
+    seen.add(exchange.id);
+    appendAskExchange(exchange.question, error
+      ? (job?.text || '问答任务未能完成')
+      : (pending ? (job?.text || '正在等待 AI Worker…') : (exchange.answer || '（没有可显示的回答）')), {
+      pending: pending && !error,
+      error,
+      progress: job?.progress || [],
       refs: exchange.refs || [],
       sourceFooter: exchange.sourceFooter,
       runId: exchange.id,
       answer: exchange.answer || '',
     });
   }
-  if (state.askPending && (state.askPending.sessionId === state.askSessionId || isNew)) {
-    appendAskExchange(state.askPending.question, state.askPending.text, {
-      pending: !state.askPending.error,
-      error: Boolean(state.askPending.error),
-      refs: state.askPending.refs || [],
+  for (const job of live) {
+    if (seen.has(job.runId)) continue;
+    appendAskExchange(job.question, job.text, {
+      pending: !job.error,
+      error: Boolean(job.error),
+      progress: job.progress || [],
+      refs: job.refs || [],
+      runId: job.runId,
     });
   }
-  if (showIntro) renderAskPrompts();
+  if (showIntro) {
+    renderAskPrompts();
+    if (!state.notes.length) loadNotes().catch(() => {});
+    if (!state.knowledge.length) loadKnowledge().catch(() => {});
+    renderAskMaterials();
+  } else {
+    elements['ask-materials']?.classList.add('hidden');
+    elements['ask-material-tabs']?.classList.add('hidden');
+  }
   syncAskLayer();
 }
 
 function setAskComposerBusy(busy) {
   state.askSubmitting = busy;
-  const input = elements['ask-form'].elements.question;
-  const webMode = elements['ask-form'].elements.webMode;
-  input.disabled = busy;
-  if (webMode) webMode.disabled = busy;
   elements['ask-send'].disabled = busy;
-  elements['ask-send'].setAttribute('aria-label', busy ? '正在回答' : '发送');
+  elements['ask-send'].setAttribute('aria-label', busy ? '正在提交' : '发送');
 }
 
 function currentWebMode() {
@@ -3646,20 +5717,6 @@ function wait(milliseconds) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
-async function waitForAgentAnswer(runId, answerElement) {
-  for (let attempt = 0; attempt < 180; attempt += 1) {
-    await wait(650);
-    const payload = await api(`/api/v1/agent/runs/${runId}`, { timeoutMs: 15_000 });
-    if (payload.status === 'completed') return payload.job.output?.answer || '模型没有返回可显示的回答。';
-    if (payload.status === 'failed' || payload.status === 'cancelled') {
-      throw new Error(payload.job.error?.message || '问答任务未能完成');
-    }
-    const fallback = payload.status === 'running' ? '正在生成回答…' : '正在等待 AI Worker…';
-    setAskAnswer(answerElement, fallback, { pending: true, progress: payload.progress || [] });
-  }
-  throw new Error('等待回答超时，请确认 Worker 正在运行');
-}
-
 async function askAgent(question) {
   if (!state.session) {
     showToast('请先在设置中完成设备连接');
@@ -3675,7 +5732,15 @@ async function askAgent(question) {
   const sessionId = state.askSessionId === 'new' ? undefined : state.askSessionId;
   const sentRefs = state.referenceDraft.slice();
   const references = draftPayload();
-  state.askPending = { sessionId: state.askSessionId, question, text: '正在提交问题…', error: false, refs: sentRefs };
+  const tempId = `local-${Date.now()}`;
+  upsertAskJob({
+    runId: tempId,
+    sessionId: state.askSessionId,
+    question,
+    status: 'queued',
+    text: '正在提交问题…',
+    refs: sentRefs,
+  });
   renderAskSession();
   setAskComposerBusy(true);
   try {
@@ -3684,26 +5749,39 @@ async function askAgent(question) {
       body: JSON.stringify({ message: question, webMode: currentWebMode(), sessionId, references }),
     });
     clearReferences();
+    removeAskJob(tempId);
     if (created.sessionId && state.askSessionId === 'new') {
       state.askSessionId = created.sessionId;
-      state.askPending.sessionId = created.sessionId;
       const nextHash = askHash(created.sessionId);
       if (location.hash !== nextHash) history.replaceState({}, '', `${location.pathname}${location.search}${nextHash}`);
     }
-    const answerNode = elements['ask-thread'].querySelector('.ask-exchange:last-of-type .ask-answer');
-    const target = answerNode || appendAskExchange(question, '正在等待 AI Worker…', { pending: true });
-    state.askPending.text = '正在等待 AI Worker…';
-    const answer = await waitForAgentAnswer(created.runId, target);
-    state.askPending = null;
-    if (created.sessionId) await loadAskSession(created.sessionId);
-    else {
-      setAskAnswer(target, answer);
-    }
+    upsertAskJob({
+      runId: created.runId,
+      sessionId: created.sessionId || state.askSessionId,
+      question,
+      status: created.job?.status || 'queued',
+      text: '正在等待 AI Worker…',
+      refs: sentRefs,
+    });
+    renderAskSession();
+    elements['ask-thread']?.querySelector(`[data-run-id="${created.runId}"]`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    renderAskLiveUi();
+    ensureAskPoller();
     loadAskSessions().catch(() => {});
+    return true;
   } catch (error) {
     const message = `未能回答：${error instanceof Error ? error.message : '未知错误'}`;
-    state.askPending = { ...state.askPending, text: message, error: true };
+    upsertAskJob({
+      runId: tempId,
+      question,
+      status: 'failed',
+      error: true,
+      text: message,
+      refs: sentRefs,
+    });
     renderAskSession();
+    return false;
   } finally {
     setAskComposerBusy(false);
   }
@@ -3898,17 +5976,51 @@ async function runNoteAction(note, action) {
   }
 }
 
+function continueWithInspiration(note) {
+  toggleReference({
+    resourceType: 'inspiration',
+    resourceId: note.id,
+    label: note.title || note.body,
+    preview: note.body,
+  });
+  openAskSession('new');
+}
+
+function renderNoteFilters() {
+  const target = elements['note-filters'];
+  if (!target) return;
+  const focused = state.notes.filter((note) => isFocused(note.id)).length;
+  renderChipTabs(target, [
+    { id: 'all', label: `全部 ${state.notes.length}` },
+    { id: 'focus', label: `重点 ${focused}` },
+  ], state.noteFilter, (id) => {
+    state.noteFilter = id;
+    renderNotes();
+  });
+  const entry = elements['note-focus-entry'];
+  if (entry) {
+    entry.classList.toggle('hidden', focused === 0);
+    if (elements['note-focus-hint']) {
+      elements['note-focus-hint'].textContent = `回看你标记的 ${focused} 条重点，不催着清空`;
+    }
+  }
+}
+
 function renderNotes() {
   closeNoteSwipes();
+  renderNoteFilters();
   elements['note-list'].replaceChildren();
-  if (!state.notes.length) {
+  const notes = state.noteFilter === 'focus'
+    ? state.notes.filter((note) => isFocused(note.id))
+    : state.notes;
+  if (!notes.length) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
-    empty.textContent = '还没有灵感。写一条就能看见。';
+    empty.textContent = state.noteFilter === 'focus' ? '暂无重点。用星标留下真正想继续思考的内容。' : '还没有灵感。写一条就能看见。';
     elements['note-list'].append(empty);
     return;
   }
-  for (const note of state.notes) {
+  for (const note of notes) {
     const row = document.createElement('div');
     row.className = 'swipe-item';
     const actions = document.createElement('div');
@@ -3931,7 +6043,7 @@ function renderNotes() {
     actions.append(pin, archive, remove);
 
     const card = document.createElement('article');
-    card.className = 'note-card swipe-front';
+    card.className = `note-card swipe-front${isFocused(note.id) ? ' is-focus' : ''}`;
     card.dataset.inspirationId = note.id;
     const expanded = state.expandedInspirationIds.has(note.id);
     card.classList.toggle('is-expanded', expanded);
@@ -3940,22 +6052,27 @@ function renderNotes() {
     const head = document.createElement('div');
     head.className = 'note-card-head';
     const copy = document.createElement('div');
-    copy.className = 'note-card-head-copy';
-    copy.append(Object.assign(document.createElement('strong'), { textContent: inspirationCardTitle(note) }));
-    const time = document.createElement('small');
-    time.textContent = note.pinned ? `置顶 · ${formatTime(note.createdAt)}` : formatTime(note.createdAt);
-    copy.append(time);
-    const chevron = document.createElement('span');
-    chevron.className = 'note-card-chevron';
-    chevron.setAttribute('aria-hidden', 'true');
-    head.append(copy, chevron);
-
-    const detail = document.createElement('div');
-    detail.className = 'note-card-detail';
-    appendResourceTags(detail, {
-      typeLabel: INSPIRATION_TYPE_LABELS[note.inspirationType] || '',
+    copy.className = 'note-card-head-copy note-meta';
+    appendResourceTags(copy, {
+      typeLabel: INSPIRATION_TYPE_LABELS[note.inspirationType] || '随记',
       taxonomy: note.taxonomy,
     });
+    const star = document.createElement('button');
+    star.type = 'button';
+    star.className = `icon-button star${isFocused(note.id) ? ' on' : ''}`;
+    star.setAttribute('aria-label', isFocused(note.id) ? '取消重点' : '标记重点');
+    star.innerHTML = icon('star');
+    star.addEventListener('click', (event) => {
+      event.stopPropagation();
+      toggleFocus(note.id, renderNotes);
+    });
+    head.append(copy, star);
+    const bodyButton = document.createElement('button');
+    bodyButton.type = 'button';
+    bodyButton.className = 'note-card-body';
+    bodyButton.append(Object.assign(document.createElement('h3'), { textContent: inspirationCardTitle(note) }));
+    const detail = document.createElement('div');
+    detail.className = 'note-card-detail';
     fillNoteBody(detail, note.body, note.title);
     if (note.sourceTitle || note.sourceUrl) {
       const source = document.createElement('div');
@@ -3971,25 +6088,28 @@ function renderNotes() {
     }
     const cite = document.createElement('button');
     cite.type = 'button';
-    cite.className = 'card-cite';
-    cite.textContent = '引用';
+    cite.className = 'text-button';
+    cite.textContent = '接着研究 ↗';
     cite.addEventListener('click', (event) => {
       event.stopPropagation();
-      toggleReference({
-        resourceType: 'inspiration',
-        resourceId: note.id,
-        label: note.title || note.body,
-        preview: note.body,
-      });
+      continueWithInspiration(note);
     });
-    detail.append(cite);
+    const foot = document.createElement('div');
+    foot.className = 'note-foot';
+    foot.append(
+      Object.assign(document.createElement('small'), {
+        textContent: `${note.sourceTitle || (note.sourceUrl ? '来自信息流' : '我的随记')} · ${note.pinned ? '置顶 · ' : ''}${formatTime(note.createdAt)}`,
+      }),
+      cite,
+    );
+    detail.append(foot);
     if (note.aiReply) {
       const reply = document.createElement('div');
       reply.className = 'post-quote';
       reply.textContent = `AI 结果（与原文分开）：\n${note.aiReply}`;
       detail.append(reply);
     }
-    card.append(head, detail);
+    card.append(head, bodyButton, detail, foot);
     attachNoteSwipe(card, (event) => {
       if (card.classList.contains('is-open')) {
         closeNoteSwipes();
@@ -3999,6 +6119,7 @@ function renderNotes() {
       const onHead = target instanceof Element && Boolean(target.closest('.note-card-head'));
       if (card.classList.contains('is-expanded') && !onHead) return;
       setInspirationExpanded(note.id, !state.expandedInspirationIds.has(note.id));
+      openPage('note', note.id);
     });
     row.append(actions, card);
     elements['note-list'].append(row);
@@ -4119,10 +6240,12 @@ async function requestTranslate(post) {
   await translatePost(post);
 }
 
-async function translateXBatch() {
+async function translateXBatch({ silent = false } = {}) {
   if (!state.session) {
-    showToast('请先在设置中完成设备连接');
-    setView('settings');
+    if (!silent) {
+      showToast('请先在设置中完成设备连接');
+      setView('settings');
+    }
     return;
   }
   if (state.xTranslating) return;
@@ -4151,15 +6274,67 @@ async function translateXBatch() {
     }
     renderPosts();
     renderXToolbar();
-    if (state.dialogPost) syncDialogTranslation(state.dialogPost);
+    if (state.dialogPost) {
+      const live = state.xItems.find((item) => item.id === state.dialogPost.id);
+      if (live) fillPostBody(elements['dialog-body'], postViewBody(xAsItem(live)));
+      syncDialogTranslation(state.dialogPost);
+    }
     const count = pending.filter((post) => translationFor(post)).length;
-    if (count) showToast(`已翻译 ${count} 条`);
-    else showToast('这次没有译出新内容，可再点一次翻译');
+    if (!silent) {
+      if (count) showToast(`已翻译 ${count} 条`);
+      else showToast('这次没有译出新内容，可再点一次翻译');
+    }
   } catch (error) {
-    showToast(error instanceof Error ? error.message : '翻译失败');
+    if (!silent) showToast(error instanceof Error ? error.message : '翻译失败');
   } finally {
     state.xTranslating = false;
     renderXToolbar();
+  }
+}
+
+async function autoLocalizeSources() {
+  if (!state.session || state.sourceLocalizing) return;
+  const pending = Object.values(state.sourceLocalizations)
+    .filter((row) => row?.pending && row.id && row.sourceText)
+    .filter((row, index, rows) => rows.findIndex((item) => item.id === row.id) === index)
+    .slice(0, TRANSLATE_BATCH_SIZE);
+  if (!pending.length) return;
+  state.sourceLocalizing = true;
+  try {
+    const payload = await api('/api/v1/translate/batch', {
+      method: 'POST',
+      timeoutMs: 120_000,
+      body: JSON.stringify({
+        targetLang: 'zh',
+        items: pending.map((row) => ({ id: row.id, text: row.sourceText })),
+      }),
+    });
+    const byId = new Map((payload.translations || []).map((row) => [row.id, row.translatedText]));
+    for (const [sourceId, row] of Object.entries(state.sourceLocalizations)) {
+      const text = byId.get(row.id);
+      if (!text) continue;
+      state.sourceLocalizations[sourceId] = { ...row, text, pending: false };
+    }
+    renderStaticSignalBoard();
+    renderMarketNativeBoard();
+    renderOverviewTimeline();
+    const dialogItems = elements['source-dialog-items'];
+    if (dialogItems && elements['source-dialog']?.open) {
+      const sourceTitle = elements['source-dialog-title']?.textContent;
+      const source = state.sourceCatalog.find((item) => item.title === sourceTitle);
+      if (source) {
+        const snapshot = state.sourceSnapshots[source.id];
+        const rows = source.viewKind === 'calendar' ? snapshot?.data?.events : snapshot?.data?.releases;
+        if (rows?.length) {
+          dialogItems.replaceChildren();
+          rows.forEach((item) => appendStaticSignalItem(dialogItems, item, source.viewKind));
+        }
+      }
+    }
+  } catch {
+    // Keep pending placeholders; a later refresh retries Doubao.
+  } finally {
+    state.sourceLocalizing = false;
   }
 }
 
@@ -4185,7 +6360,10 @@ async function translatePost(post) {
     cached: Boolean(translation.cached),
   });
   renderPosts();
-  if (state.dialogPost?.id === post.id) syncDialogTranslation(post);
+  if (state.dialogPost?.id === post.id) {
+    fillPostBody(elements['dialog-body'], postViewBody(post));
+    syncDialogTranslation(post);
+  }
   if (translation.engine === 'gemini') {
     showToast('已用 Gemini 翻译');
     return;
@@ -4280,6 +6458,7 @@ async function loadXFeed({ refresh = false } = {}) {
     await loadFeedTaggings(state.xItems);
     renderPosts();
     renderXToolbar();
+    translateXBatch({ silent: true }).catch(() => {});
   } catch (error) {
     state.xNote = error instanceof Error ? error.message : 'X 时间线加载失败';
     renderXToolbar();
@@ -4414,6 +6593,11 @@ function connectStream() {
     loadMetrics().catch(() => {});
   });
   state.stream.addEventListener('device.paired', () => loadMetrics().catch(() => {}));
+  state.stream.addEventListener('job.queued', onAgentJobEvent);
+  state.stream.addEventListener('job.started', onAgentJobEvent);
+  state.stream.addEventListener('job.completed', onAgentJobEvent);
+  state.stream.addEventListener('job.failed', onAgentJobEvent);
+  state.stream.addEventListener('knowledge.ai-run.completed.v1', onAgentJobEvent);
   state.stream.onerror = () => setConnection('waiting', '正在重连');
 }
 
@@ -4434,7 +6618,14 @@ async function initialize() {
   setIconButton(elements['open-settings'], 'settings');
   setIconButton(elements['reload-view'], 'refresh-cw');
   setIconButton(elements['ask-send'], 'send-horizontal');
+  resizeAskComposer();
   setIconButton(elements['open-compose'], 'plus');
+  setIconButton(elements['toggle-search'], 'search');
+  setIconButton(elements['nav-back'], 'chevron-left');
+  setIconButton(elements['feed-filter'], 'list-filter');
+  setIconButton(elements['holdings-privacy'], 'eye');
+  document.querySelectorAll('.dialog-close').forEach((button) => setIconButton(button, 'x'));
+  if (elements['nav-back']) elements['nav-back'].style.transform = '';
   updateChangeSortControl();
   renderNav();
   renderChannels();
@@ -4454,7 +6645,9 @@ async function initialize() {
   renderPosts();
   renderReferenceUi();
   restorePersistedFeedBrowseState();
-  setView((location.hash || '#sources').slice(1));
+  renderPlatformFilters();
+  renderXToolbar();
+  setView(restoreLastLocationHash().slice(1));
   try {
     await pairFromUrl();
     const { ok, ...session } = await api('/api/v1/session');
@@ -4471,6 +6664,7 @@ async function initialize() {
     }
     state.extras.us = readExtras('us');
     state.extras.asia = readExtras('asia');
+    state.extras.cn = readExtras('cn');
     state.bootstrapped = true;
     connectStream();
     logBehavior('app.open', { role: session.role });
@@ -4494,6 +6688,7 @@ async function initialize() {
     if (document.body.dataset.view === 'ask') {
       startupLoads.push(syncAskView().catch((error) => showToast(error.message)));
     }
+    startupLoads.push(loadActiveAskRuns().catch(() => {}));
     if (session.role === 'desktop') {
       startupLoads.push(loadPairing().catch((error) => showToast(error.message)));
       startupLoads.push(loadMetrics().catch(() => {}));
@@ -4501,11 +6696,14 @@ async function initialize() {
     if (isQuotesView()) {
       startupLoads.push(syncTradePaneData().catch((error) => showToast(error.message)));
     }
-    if (document.body.dataset.view === 'sources') {
+    if (document.body.dataset.view === 'sources' || document.body.dataset.view === 'feed') {
       startupLoads.push(loadSourcesPage().catch(() => {}));
     }
     await Promise.all(startupLoads);
-    if (document.body.dataset.view === 'feed') restoreViewScroll('feed');
+    if (document.body.dataset.view === 'feed') {
+      restoreViewScroll('feed');
+      restoreOpenFeedItem();
+    }
   } catch (error) {
     state.bootstrapped = true;
     setConnection('offline', '尚未连接');
@@ -4564,12 +6762,56 @@ elements['reload-view']?.addEventListener('click', () => {
   reloadCurrentView().catch((error) => showToast(error.message));
 });
 elements['open-settings'].addEventListener('click', () => setView('settings'));
+elements['nav-back']?.addEventListener('click', () => {
+  if (document.body.dataset.view === 'sources' && state.overviewPane !== 'home') {
+    setOverviewPane('home');
+    return;
+  }
+  if (document.body.dataset.view === 'settings' && state.settingsPane === 'connections') {
+    setView('settings');
+    return;
+  }
+  goBack();
+});
+elements['toggle-search']?.addEventListener('click', () => {
+  state.showHeaderSearch = !state.showHeaderSearch;
+  syncHeaderSearch();
+  if (state.showHeaderSearch) elements['global-search']?.focus();
+});
+elements['feed-filter']?.addEventListener('click', () => {
+  renderFeedFilterDialog();
+  if (elements['feed-filter-dialog']) openDialog(elements['feed-filter-dialog']);
+});
+elements['feed-open-calendar']?.addEventListener('click', () => {
+  setView('sources/schedule');
+  setOverviewPane('schedule');
+});
+elements['open-all-quotes']?.addEventListener('click', () => setView('market/global'));
+elements['open-full-feed']?.addEventListener('click', () => setView('feed'));
+elements['holdings-privacy']?.addEventListener('click', () => {
+  state.privacy = !state.privacy;
+  document.body.classList.toggle('privacy-on', state.privacy);
+  setIconButton(elements['holdings-privacy'], state.privacy ? 'eye-off' : 'eye');
+  renderHoldings();
+});
 elements['x-refresh']?.addEventListener('click', () => loadXFeed({ refresh: true }).catch((error) => showToast(error.message)));
+function isBilibiliUrl(value) {
+  try {
+    const url = new URL(String(value || '').trim());
+    return /(^|\.)bilibili\.com$/i.test(url.hostname) || /(^|\.)b23\.tv$/i.test(url.hostname);
+  } catch {
+    return false;
+  }
+}
 elements['bilibili-import-form']?.addEventListener('submit', (event) => {
   event.preventDefault();
   const url = String(elements['bilibili-url']?.value || '').trim();
   if (!url) {
     showToast('请先粘贴 B 站链接');
+    return;
+  }
+  if (!isBilibiliUrl(url)) {
+    showToast('请粘贴 bilibili.com 或 b23.tv 链接');
     return;
   }
   loadBilibiliFeed({ url, refresh: true }).catch((error) => showToast(error.message));
@@ -4579,6 +6821,57 @@ elements['x-translate']?.addEventListener('click', () => {
 });
 elements['x-tag']?.addEventListener('click', () => {
   tagXBatch().catch((error) => showToast(error.message));
+});
+elements['x-more']?.addEventListener('click', () => openSourceTasks('x'));
+elements['bilibili-more']?.addEventListener('click', () => openSourceTasks('bilibili'));
+elements['open-source-catalog']?.addEventListener('click', () => setOverviewPane('catalog'));
+elements['open-full-schedule']?.addEventListener('click', () => setOverviewPane('schedule'));
+elements['catalog-back']?.addEventListener('click', () => setOverviewPane('home'));
+elements['schedule-back']?.addEventListener('click', () => setOverviewPane('home'));
+elements['source-catalog-filter']?.addEventListener('input', (event) => {
+  state.sourceCatalogQuery = event.currentTarget.value;
+  renderStaticSourceCatalog();
+});
+elements['note-focus-entry']?.addEventListener('click', () => {
+  state.noteFilter = 'focus';
+  renderNotes();
+});
+elements['global-search']?.addEventListener('input', (event) => {
+  const query = String(event.currentTarget.value || '').trim();
+  const view = document.body.dataset.view;
+  if (view === 'feed' || view === 'sources') {
+    state.feedQuery = query;
+    if (view === 'feed') {
+      resetFeedWindow();
+      renderPosts();
+    } else {
+      renderOverviewTimeline();
+    }
+  }
+});
+elements['global-search']?.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter') return;
+  const query = String(event.currentTarget.value || '').trim();
+  const view = document.body.dataset.view;
+  if (view === 'market' || view === 'assets') {
+    openSearch();
+    elements['symbol-search'].value = query;
+    renderSearch(query);
+    return;
+  }
+  if (view === 'feed' || view === 'sources') {
+    state.feedQuery = query;
+    if (view === 'feed') {
+      resetFeedWindow();
+      renderPosts();
+    } else renderOverviewTimeline();
+    return;
+  }
+  if (view === 'inspire' && query) {
+    const hit = state.notes.find((note) => `${note.title} ${note.body}`.includes(query));
+    if (hit) openPage('note', hit.id);
+    showToast(hit ? '已打开匹配灵感' : '没有匹配的灵感');
+  }
 });
 function bindPostLink(element, onClick) {
   if (!element) return;
@@ -4594,15 +6887,35 @@ function bindPostLink(element, onClick) {
 }
 bindPostLink(elements['dialog-source'], () => {
   const url = state.dialogPost?.sourceUrl;
-  if (url) openExternalHttpUrl(url);
+  if (url) {
+    persistFeedBrowseState();
+    markFeedItemRead(state.dialogPost);
+    openExternalHttpUrl(url);
+  }
 });
 bindPostLink(elements['dialog-translate'], () => {
   if (!state.dialogPost) return;
   requestTranslate(state.dialogPost).catch((error) => showToast(error.message));
 });
-for (const id of ['compose-dialog', 'search-dialog', 'post-dialog', 'subscriptions-dialog', 'holding-dialog', 'reference-preview']) {
+bindPostLink(elements['dialog-save'], () => {
+  if (!state.dialogPost) return;
+  savePostToInspiration(state.dialogPost).catch((error) => showToast(error.message));
+});
+bindPostLink(elements['dialog-cite'], () => {
+  if (!state.dialogPost) return;
+  toggleReference({
+    resourceType: state.dialogPost.resourceType || (state.dialogPost.live && state.dialogPost.platform !== 'manual' ? 'content-item' : 'post'),
+    resourceId: state.dialogPost.resourceId || (state.dialogPost.platform === 'manual' ? state.dialogPost.id : ''),
+    label: postDisplayTitle(state.dialogPost),
+    preview: translationFor(state.dialogPost)?.text || state.dialogPost.body,
+  });
+  elements['post-dialog']?.close();
+  openAskSession(state.askSessionId || 'new');
+});
+for (const id of ['compose-dialog', 'search-dialog', 'post-dialog', 'source-dialog', 'subscriptions-dialog', 'holding-dialog', 'reference-preview', 'source-tasks-dialog', 'feed-filter-dialog']) {
   const dialog = elements[id];
-  dialog.querySelector('.dialog-close').addEventListener('click', () => {
+  if (!dialog) continue;
+  dialog.querySelector('.dialog-close')?.addEventListener('click', () => {
     dialog.close();
     releaseDialogScroll();
   });
@@ -4610,7 +6923,13 @@ for (const id of ['compose-dialog', 'search-dialog', 'post-dialog', 'subscriptio
     if (event.target === dialog) dialog.close();
   });
   dialog.addEventListener('close', () => {
-    if (id === 'post-dialog') state.dialogPost = null;
+    if (id === 'post-dialog') {
+      const stayId = state.feedRestoreId;
+      state.dialogPost = null;
+      renderPosts();
+      state.feedRestoreId = stayId;
+      persistFeedBrowseState();
+    }
     releaseDialogScroll();
     if (id === 'post-dialog') {
       window.setTimeout(() => { state.feedRestoreId = ''; }, 400);
@@ -4682,10 +7001,11 @@ elements['note-form'].addEventListener('submit', async (event) => {
     });
     elements['note-form'].reset();
     clearSharedInspirationDraft();
+    const askedWithAi = state.wantAi;
     state.wantAi = false;
     elements['note-ai-toggle'].classList.remove('is-on');
     elements['note-ai-toggle'].setAttribute('aria-pressed', 'false');
-    showToast('已记下');
+    showToast(askedWithAi ? '原文已记下。AI 加工会另外反馈结果。' : '已记下');
     await loadNotes();
     if (captureChannel === 'harmony-share' && typeof window.AICenterShareHost?.closeShare === 'function') {
       window.AICenterShareHost.closeShare();
@@ -4696,6 +7016,12 @@ elements['note-form'].addEventListener('submit', async (event) => {
 });
 elements['ask-start'].addEventListener('click', () => openAskSession('new'));
 elements['ask-back'].addEventListener('click', () => setView('ask'));
+elements['ask-live-chip']?.addEventListener('click', () => {
+  const live = liveAskJobs();
+  const target = live.find((job) => job.status === 'running') || live[0];
+  if (target?.sessionId && target.sessionId !== 'new') openAskSession(target.sessionId);
+  else setView('ask');
+});
 elements['reference-dock'].addEventListener('click', () => openAskSession('new'));
 elements['ask-form'].addEventListener('submit', (event) => {
   event.preventDefault();
@@ -4703,18 +7029,39 @@ elements['ask-form'].addEventListener('submit', (event) => {
   const form = event.currentTarget;
   const question = String(new FormData(form).get('question') || '').trim();
   if (!question) return;
-  form.elements.question.value = '';
-  void askAgent(question);
+  void askAgent(question).then((ok) => {
+    if (ok) form.elements.question.value = '';
+  });
 });
 elements['ask-form'].elements.question.addEventListener('input', onAskComposerInput);
 elements['ask-form'].elements.question.addEventListener('keydown', onAskComposerKeydown);
+elements['ask-form'].elements.question.addEventListener('focus', syncAskKeyboard);
 elements['ask-form'].elements.question.addEventListener('blur', () => {
-  window.setTimeout(() => hideAskMentions(), 120);
+  window.setTimeout(() => {
+    hideAskMentions();
+    syncAskKeyboard();
+  }, 120);
 });
+window.visualViewport?.addEventListener('resize', syncAskKeyboard);
+window.visualViewport?.addEventListener('scroll', syncAskKeyboard);
+window.addEventListener('resize', syncAskKeyboard);
 restoreWebMode();
 window.addEventListener('hashchange', () => setView(location.hash.slice(1)));
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') syncHarmonyLocalInspirations().catch(() => {});
+  if (document.visibilityState === 'hidden') persistFeedBrowseState();
+  if (document.visibilityState === 'visible') {
+    syncHarmonyLocalInspirations().catch(() => {});
+    if (liveAskJobs().length) void pollAskJobs();
+    else void loadActiveAskRuns();
+  }
+});
+window.addEventListener('pagehide', persistFeedBrowseState);
+elements['dialog-body']?.addEventListener('click', (event) => {
+  const link = event.target instanceof Element ? event.target.closest('a') : null;
+  if (!link || !elements['dialog-body'].contains(link)) return;
+  persistFeedBrowseState();
+  markFeedItemRead(state.dialogPost);
+  openExternalHttpUrl(link.href, event);
 });
 window.addEventListener('scroll', () => {
   const view = document.body.dataset.view;

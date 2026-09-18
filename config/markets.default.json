@@ -12,6 +12,15 @@
       { "symbol": "QQQ", "name": "Invesco QQQ", "group": "ETF", "summary": "跟踪纳斯达克 100 的宽基 ETF" }
     ]
   },
+  "cn": {
+    "groups": ["全部", "自选"],
+    "indices": [
+      { "symbol": "000001.SS", "name": "上证指数", "group": "指数", "summary": "上海市场基准" },
+      { "symbol": "399001.SZ", "name": "深证成指", "group": "指数", "summary": "深圳市场基准" },
+      { "symbol": "399006.SZ", "name": "创业板指", "group": "指数", "summary": "创业板基准" }
+    ],
+    "watchlist": []
+  },
   "asia": {
     "groups": ["全部", "指数", "ETF", "自选"],
     "indices": [

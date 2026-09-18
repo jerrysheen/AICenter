@@ -8,6 +8,7 @@ import { createTaggingService } from './tagging-service.js';
 
 export { createContextService, createFeedService, createIdentityService, createKnowledgeService, createRuntimeService, createTradingService, createTaggingService };
 export { packFeedAiBatches } from './feed-ai-batch.js';
+export { collectLocalizationUnits, localizationItemId, needsZhLocalization } from './localize-texts.js';
 export { loadTagCatalog, projectTagCatalog, selectionModeFor } from './tag-catalog.js';
 export { parseTagBatchOutput, extractTagBatchObject, tagBatchOutputComplete } from './tag-parser.js';
 export { TAG_PROMPT_VERSION } from './tag-prompt.js';

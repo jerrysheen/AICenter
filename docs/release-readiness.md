@@ -15,13 +15,15 @@
 | 主题 | 文档里容易写错的说法 | 当前事实 |
 |---|---|---|
 | 产品范围 | 根 README / AGENTS 仍以连接原型为当前范围 | 0.2.0 基线候选，进入隐私、安全和稳定性验收 |
-| 同花顺 | 尚未接入 | 已有适配代码；真实依赖、覆盖范围与延迟需验收 |
+| 同花顺 / 雪球 | 尚未接入行情 | 沪深/港股通/B 股现价优先雪球批量行情；同花顺快照作缺票回退。延迟与风控需验收 |
 | AI | AI Worker 后续接入 | 已有单 Agent / Worker；Context Service 已向其供数 |
 | 鸿蒙分享 | 分享详情页加载远端 ArkWeb | 原生分享先写本地 RDB Outbox；主 ArkWeb 恢复授权后上传 |
 | 豆包队列 | Web、Worker、CLI 共用一条队列 | 目前仅各进程实例内部串行，进程之间不共享 |
 | 下一步 | 固定做 B4 关注同步 | 先完成发布门槛，不继续扩大功能 |
 | 持仓 | 加减仓都产生交易流水 | 仍是手工批次账本（`HoldingLot`），不宣称完整流水会计 |
 | Instance | 已实现多用户 / 多租户 | 仅完成 single-user Instance 边界；没有 User、Tenant、权限后台或动态扩展加载 |
+| 静态信号源 | 宏观日历仍只是未来占位 | 已注册 17 个中美宏观、央行、会议和政策官方源，并提供确定性聚合首页；SCIO 使用已明确接受的官方 HTTP 列表，GACC 在当前主机仍受官网证书链影响降级为 unavailable |
+| 市场原生源 | 与官方日历混成一类或自动解释成预测 | 已注册 Polymarket、Kalshi、Hyperliquid、DefiLlama 只读 Snapshot；场所报价保持分离，真实网络可用性与字段漂移仍需逐源验收 |
 
 B站贴链接抓 AI 中文字幕已接入。关注 UP 列表同步不是本轮范围。
 
@@ -31,6 +33,8 @@ B站贴链接抓 AI 中文字幕已接入。关注 UP 列表同步不是本轮�
 - **Instance 边界**：进程启动不灌入个人持仓；Market / Tag / Taxonomy / Knowledge / imports 通过统一 Instance 路径；V16 Taxonomy 只作 Legacy Bootstrap；Browser / Search 仍是 Host 服务。
 - **安全**：对手机只开放 Web/API；Worker、SQLite、浏览器调试口、Search Worker、旧仓服务只听本机。公网模式遵守 `docs/public-access-security.md`。二维码只带一次性配对码。
 - **稳定性**：`npm run check`；重启后数据与授权仍在；SSE 可按 `Last-Event-ID` 补发；换 Adapter 不改页面字段。
+- **静态信号源**：BEA TBA、Census Suspended、NBS 单月双日期与 GACC 年度缺失/日期精度已有确定性测试；官方固定规则生成项必须显示为 tentative；来源不可达时降级为 unavailable/partial，不能回填第三方预测数据。SCIO 的 HTTP 例外必须保持 URL 级隔离；GACC 的真实网络可用性仍需在官网证书恢复或另一受信网络环境复核。
+- **市场原生源**：逐源核对公开 API 的字段与限速；不得把两个预测市场报价合成“真实概率”，不得把 tokenized / derivative 价格当官方股票现价；Funding、OI、Volume、Supply 的单位必须在页面可辨认。
 
 Local Files MCP / Tailscale Funnel 不是 AI Center 公网入口，也不列入本产品发布范围。操作说明不得写入真实 Hostname 或本机路径。
 

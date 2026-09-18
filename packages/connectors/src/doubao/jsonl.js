@@ -43,12 +43,12 @@ export function buildDoubaoTranslateJsonlPrompt(items, options = {}) {
     .filter((item) => item.id && item.text);
   const lines = toJsonl(payload);
   return [
-    `你是财经新闻翻译器。把下面 JSONL 每一行的 text 翻译成${targetLabel}。`,
+    `你是财经信息翻译器。把下面 JSONL 每一行的 text 译成${targetLabel}，并做轻度清洗。`,
     '',
     '要求：',
-    '1. 不总结，不删减。',
-    '2. 公司名、产品名、股票代码保持准确。',
-    '3. 金额、百分比、日期不得修改。',
+    '1. 保持事实、数字、日期、金额、百分比、公司名、产品名和股票代码准确。',
+    '2. 允许轻度清洗：去掉点赞/转发/导航等界面残渣、重复空白和明显无信息尾巴；不要总结，不要扩写，不要加评论。',
+    '3. 已经通顺的中文保持原意，只清噪音。',
     '4. id 必须原样返回。',
     '5. 只输出 JSONL：一行一个 JSON 对象，不要 Markdown，不要解释，不要 JSON 数组。',
     '',
