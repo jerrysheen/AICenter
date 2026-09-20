@@ -109,6 +109,7 @@ export function createToolRegistry() {
         providerName: name,
         description: String(definition.description || '').trim(),
         effect,
+        researchOnly: Boolean(definition.researchOnly),
         parameters,
         inputSchema,
         resultSchema,
@@ -120,8 +121,8 @@ export function createToolRegistry() {
       return { id: record.id, description: record.description, effect: record.effect, parameters: record.parameters };
     },
     list() {
-      return [...tools.values()].map(({ id, providerName: name, description, effect, parameters }) => ({
-        id, name, description, effect, parameters,
+      return [...tools.values()].map(({ id, providerName: name, description, effect, parameters, researchOnly }) => ({
+        id, name, description, effect, parameters, researchOnly,
       }));
     },
     async execute(id, input, context) {

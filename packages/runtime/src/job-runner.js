@@ -1,4 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import {
+  parseWorkerJobConcurrency,
+  WORK_PACKAGE_DISPATCH_JOB_TYPE,
+} from '../../contracts/src/index.js';
+
+export { WORK_PACKAGE_DISPATCH_JOB_TYPE };
 
 export function wait(milliseconds, signal) {
   if (signal?.aborted) return Promise.resolve();
@@ -15,6 +21,13 @@ export function wait(milliseconds, signal) {
   });
 }
 
+export function resolveJobTypeConcurrency(type, concurrency) {
+  const limits = parseWorkerJobConcurrency(concurrency || {});
+  return type === WORK_PACKAGE_DISPATCH_JOB_TYPE
+    ? limits.workPackageDispatchLimit
+    : limits.defaultLimit;
+}
+
 export function createJobRunner(options) {
   const store = options.store;
   const handlers = new Map(Object.entries(options.handlers || {}));
@@ -24,17 +37,30 @@ export function createJobRunner(options) {
     ? Number(options.staleAfterMs)
     : 10 * 60_000;
   const recoverEveryMs = Math.max(100, Number(options.recoverEveryMs) || 30_000);
+  const concurrency = parseWorkerJobConcurrency(options.concurrency || {});
   const abortController = new AbortController();
   let running = false;
+  const inFlight = new Map();
 
   function recoverStale() {
     store.recoverStaleJobs?.(staleAfterMs);
   }
 
-  async function runOnce() {
-    if (!handlers.size) return null;
-    const job = store.claimNextJob(workerId, [...handlers.keys()]);
-    if (!job) return null;
+  function runningCount(type) {
+    let count = 0;
+    for (const item of inFlight.values()) {
+      if (item.type === type) count += 1;
+    }
+    return count;
+  }
+
+  function claimableTypes() {
+    return [...handlers.keys()].filter((type) => (
+      runningCount(type) < resolveJobTypeConcurrency(type, concurrency)
+    ));
+  }
+
+  async function execute(job) {
     const handler = handlers.get(job.type);
     const heartbeat = setInterval(() => store.touchJob(job.id, workerId), 30_000);
     heartbeat.unref?.();
@@ -56,6 +82,29 @@ export function createJobRunner(options) {
     }
   }
 
+  function launch(job) {
+    const tracked = {
+      type: job.type,
+      promise: execute(job)
+        .catch((error) => {
+          options.onError?.(error, job);
+          return null;
+        })
+        .finally(() => {
+          inFlight.delete(job.id);
+        }),
+    };
+    inFlight.set(job.id, tracked);
+    return tracked.promise;
+  }
+
+  async function runOnce() {
+    if (!handlers.size) return null;
+    const job = store.claimNextJob(workerId, [...handlers.keys()]);
+    if (!job) return null;
+    return execute(job);
+  }
+
   async function start() {
     if (running) return;
     running = true;
@@ -64,9 +113,22 @@ export function createJobRunner(options) {
     recoverTimer.unref?.();
     try {
       while (!abortController.signal.aborted) {
-        const job = await runOnce();
-        if (!job) await wait(pollIntervalMs, abortController.signal);
+        const types = claimableTypes();
+        const job = types.length ? store.claimNextJob(workerId, types) : null;
+        if (job) {
+          launch(job);
+          continue;
+        }
+        if (!inFlight.size) {
+          await wait(pollIntervalMs, abortController.signal);
+          continue;
+        }
+        await Promise.race([
+          wait(pollIntervalMs, abortController.signal),
+          ...[...inFlight.values()].map((item) => item.promise),
+        ]);
       }
+      await Promise.allSettled([...inFlight.values()].map((item) => item.promise));
     } finally {
       clearInterval(recoverTimer);
       running = false;
@@ -79,7 +141,9 @@ export function createJobRunner(options) {
 
   return {
     workerId,
+    concurrency,
     get running() { return running; },
+    get inFlightCount() { return inFlight.size; },
     runOnce,
     start,
     stop,

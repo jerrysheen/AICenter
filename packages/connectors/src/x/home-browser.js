@@ -7,6 +7,44 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+export function normalizeXArticleUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const href = raw.startsWith('http') ? raw : `https://x.com${raw.startsWith('/') ? raw : `/${raw}`}`;
+  const match = href.match(/^https?:\/\/(?:www\.)?(?:x|twitter)\.com\/(i\/article\/\d+|[^/?#]+\/article\/\d+)/i);
+  return match ? `https://x.com/${match[1]}` : '';
+}
+
+export function findXArticleUrl(tweet) {
+  const direct = normalizeXArticleUrl(tweet?.article_url || tweet?.articleUrl);
+  if (direct) return direct;
+  const text = String(tweet?.text || tweet?.body || '');
+  const match = text.match(/https?:\/\/(?:www\.)?(?:x|twitter)\.com\/(?:i\/article\/\d+|[^/\s?#]+\/article\/\d+)/i);
+  return normalizeXArticleUrl(match ? match[0] : '');
+}
+
+export function mergeArticleIntoTweetText(tweetText, articleText) {
+  const tweet = String(tweetText || '').replace(/\r\n/g, '\n').trim();
+  const article = String(articleText || '').replace(/\r\n/g, '\n').trim();
+  if (!article) return tweet;
+  if (!tweet) return article;
+  if (article.includes(tweet)) return article;
+  if (tweet.includes(article)) return tweet;
+  return `${tweet}\n\n${article}`;
+}
+
+export function tabTextMatchesFeed(text, feed) {
+  const labels = FEED_TAB_LABELS[feed] || FEED_TAB_LABELS['for-you'];
+  return labels.some((label) => String(text || '').includes(label));
+}
+
+export function inspectMatchesRequestedFeed(inspect, feed) {
+  const selected = inspect?.selected_tab;
+  const text = typeof selected === 'string' ? selected : (selected?.text || '');
+  if (!text) return null;
+  return tabTextMatchesFeed(text, feed);
+}
+
 function buildPageInspectExpression(feed) {
   const labels = FEED_TAB_LABELS[feed] || FEED_TAB_LABELS['for-you'];
   return `(() => {
@@ -25,16 +63,29 @@ function buildPageInspectExpression(feed) {
       document.querySelector('[aria-label="Post"]') ||
       document.querySelector('[data-testid="tweetButtonInline"]')
     );
-    const tabs = [...document.querySelectorAll('[role="tab"]')].map((tab) => ({
-      text: (tab.textContent || "").trim(),
-      selected: tab.getAttribute("aria-selected") === "true",
-    }));
-    const targetTab = [...document.querySelectorAll('[role="tab"]')].find((tab) => {
-      const text = tab.textContent || "";
+    const nodes = [
+      ...document.querySelectorAll('[role="tab"]'),
+      ...document.querySelectorAll('[role="tablist"] a, [role="tablist"] button'),
+      ...document.querySelectorAll('[data-testid="ScrollSnap-List"] a, [data-testid="ScrollSnap-List"] button'),
+    ];
+    const seen = new Set();
+    const tabs = [];
+    for (const tab of nodes) {
+      if (seen.has(tab)) continue;
+      seen.add(tab);
+      const text = ((tab.textContent || tab.getAttribute("aria-label") || "")).trim();
+      if (!text) continue;
+      tabs.push({
+        text,
+        selected: tab.getAttribute("aria-selected") === "true" || tab.getAttribute("aria-current") === "page",
+      });
+    }
+    const targetTab = [...seen].find((tab) => {
+      const text = (tab.textContent || tab.getAttribute("aria-label") || "");
       return labels.some((label) => text.includes(label));
     });
     let clicked = false;
-    if (targetTab && targetTab.getAttribute("aria-selected") !== "true") {
+    if (targetTab && targetTab.getAttribute("aria-selected") !== "true" && targetTab.getAttribute("aria-current") !== "page") {
       targetTab.click();
       clicked = true;
     }
@@ -45,7 +96,7 @@ function buildPageInspectExpression(feed) {
       logged_in: loggedIn && !loginWall,
       tabs,
       selected_tab: tabs.find((tab) => tab.selected) || null,
-      clicked_tab: clicked ? (targetTab ? (targetTab.textContent || "").trim() : null) : null,
+      clicked_tab: clicked ? (targetTab ? ((targetTab.textContent || targetTab.getAttribute("aria-label") || "")).trim() : null) : null,
     };
   })()`;
 }
@@ -94,6 +145,12 @@ export function buildTweetExtractExpression() {
           const match = tweetUrl.match(/\\/status\\/(\\d+)/);
           tweetId = match ? match[1] : null;
         }
+        const articleLinks = [...article.querySelectorAll('a[href*="/article/"]')].map((link) => {
+          const href = link.getAttribute("href") || link.href || "";
+          return href.startsWith("http") ? href : ("https://x.com" + href);
+        }).filter((href) => /\\/(?:i\\/article\\/\\d+|[^/]+\\/article\\/\\d+)/.test(href));
+        const textArticle = (text.match(/https?:\\/\\/(?:www\\.)?(?:x|twitter)\\.com\\/(?:i\\/article\\/\\d+|[^/\\s?#]+\\/article\\/\\d+)/i) || [])[0] || "";
+        const articleUrl = articleLinks[0] || textArticle || null;
         const authorEl = article.querySelector('[data-testid="User-Name"]');
         let authorHandle = null;
         let authorName = null;
@@ -111,6 +168,7 @@ export function buildTweetExtractExpression() {
           tweet_id: tweetId,
           tweet_url: tweetUrl,
           text,
+          article_url: articleUrl,
           truncated: showMoreControl || overflow,
           author_handle: authorHandle,
           author_name: authorName,
@@ -140,11 +198,39 @@ export function looksTruncatedTweet(tweet) {
   return Boolean(tweet?.truncated);
 }
 
-export function mergeTweets(existing, incoming, limit) {
+export function looksLikeArticleTweet(tweet) {
+  return Boolean(findXArticleUrl(tweet));
+}
+
+export function buildArticleExtractExpression() {
+  return `(() => {
+    /* x-article-body */
+    const text = (el) => (el ? (el.innerText || el.textContent || "") : "");
+    const bodyText = document.body ? document.body.innerText || "" : "";
+    const loginWall = !!(
+      document.querySelector('[data-testid="login"]') ||
+      document.querySelector('a[href*="/i/flow/login"]') ||
+      /We're unable to show this content|Article Not Found|Sign in to X|登录 X/i.test(bodyText)
+    );
+    const article = document.querySelector('[data-testid="twitterArticle"]')
+      || document.querySelector('article')
+      || document.body;
+    return {
+      url: location.href,
+      title: document.title || "",
+      login_wall: loginWall,
+      body: text(article).replace(/\\s+/g, " ").trim()
+    };
+  })()`;
+}
+
+export function mergeTweets(existing, incoming, limit, options = {}) {
+  const exclude = new Set((options.excludeExternalIds || []).map((id) => String(id || '')).filter(Boolean));
   const byId = new Map(existing.map((item) => [item.tweet_id, item]));
   const order = existing.map((item) => item.tweet_id);
   for (const item of incoming || []) {
     if (!item?.tweet_id) continue;
+    if (exclude.has(String(item.tweet_id))) continue;
     const previous = byId.get(item.tweet_id);
     if (previous) {
       const next = { ...previous, ...item };
@@ -200,26 +286,62 @@ export function createXHomeBrowserClient(options = {}) {
     return { ...best, truncated: looksTruncatedTweet(best) && String(best.text || '').length < 400 };
   }
 
+  async function completeArticleTweet(session, tweet) {
+    const articleUrl = findXArticleUrl(tweet);
+    if (!articleUrl) return tweet;
+    await session.navigate(articleUrl, { timeoutMs: EXTRACT_TIMEOUT_MS });
+    await wait(3_000);
+    const extracted = await session.evaluate(buildArticleExtractExpression(), { timeoutMs: EXTRACT_TIMEOUT_MS });
+    if (extracted?.login_wall || !extracted?.body) return tweet;
+    const merged = mergeArticleIntoTweetText(tweet.text, extracted.body);
+    if (merged === tweet.text) return tweet;
+    return { ...tweet, text: merged, article_url: undefined };
+  }
+
   return {
-    async fetchHomeTimeline({ feed = 'for-you', limit = 50 } = {}) {
+    async fetchHomeTimeline({ feed = 'for-you', limit = 50, excludeExternalIds = [] } = {}) {
       const parsedLimit = Math.min(50, Math.max(1, Number(limit) || 50));
+      const exclude = [...new Set((excludeExternalIds || []).map((id) => String(id || '')).filter(Boolean))];
       return runtime.withSession({ purpose: 'x.home', focused: false }, async (session) => {
         await session.navigate('https://x.com/home');
         await wait(3_500);
-        let inspect = await session.evaluate(buildPageInspectExpression(feed));
-        if (inspect?.clicked_tab) {
-          await wait(2_500);
-          inspect = { ...inspect, ...(await session.evaluate(buildPageInspectExpression(feed))), clicked_tab: inspect.clicked_tab };
+        const inspectHome = async () => {
+          let inspect = await session.evaluate(buildPageInspectExpression(feed));
+          if (inspect?.clicked_tab) {
+            await wait(2_500);
+            inspect = { ...inspect, ...(await session.evaluate(buildPageInspectExpression(feed))), clicked_tab: inspect.clicked_tab };
+          }
+          return inspect;
+        };
+        let inspect = await inspectHome();
+        if (inspectMatchesRequestedFeed(inspect, feed) === false) {
+          inspect = await inspectHome();
+        }
+        if (inspectMatchesRequestedFeed(inspect, feed) === false) {
+          return {
+            source: 'browser_runtime_home',
+            feed,
+            logged_in: Boolean(inspect?.logged_in),
+            login_wall: Boolean(inspect?.login_wall),
+            page_url: inspect?.url || null,
+            page_title: inspect?.title || null,
+            selected_tab: inspect?.selected_tab || null,
+            tweet_count: 0,
+            tweets: [],
+            error: 'feed_tab_mismatch',
+          };
         }
         let items = [];
         const harvest = () => harvestTweets(session);
-        items = mergeTweets(items, await harvest(), parsedLimit);
+        const merge = (current, incoming) => mergeTweets(current, incoming, parsedLimit, { excludeExternalIds: exclude });
+        items = merge(items, await harvest());
         let stale = 0;
-        for (let round = 0; round < 8 && items.length < parsedLimit; round += 1) {
+        const maxRounds = exclude.length ? 20 : 8;
+        for (let round = 0; round < maxRounds && items.length < parsedLimit; round += 1) {
           const before = items.length;
           await session.evaluate(buildScrollExpression());
           await wait(1_800);
-          items = mergeTweets(items, await harvest(), parsedLimit);
+          items = merge(items, await harvest());
           if (items.length === before) {
             stale += 1;
             if (stale >= 2) break;
@@ -232,6 +354,11 @@ export function createXHomeBrowserClient(options = {}) {
           .sort((left, right) => String(left.text || '').length - String(right.text || '').length);
         for (const tweet of truncated) {
           const completed = await completeTruncatedTweet(session, tweet);
+          items = items.map((item) => (item.tweet_id === tweet.tweet_id ? completed : item));
+        }
+        const withArticles = items.filter((item) => looksLikeArticleTweet(item)).slice(0, 8);
+        for (const tweet of withArticles) {
+          const completed = await completeArticleTweet(session, tweet);
           items = items.map((item) => (item.tweet_id === tweet.tweet_id ? completed : item));
         }
         const loggedIn = Boolean(inspect?.logged_in);

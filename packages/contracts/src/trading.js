@@ -105,8 +105,25 @@ export const AppendTransactionInputSchema = TransactionSchema.omit({
   createdAt: true,
 }).extend({ id: EntityIdSchema.optional() }).strict();
 
+export const PersonalAssetTypeKeySchema = z.enum([
+  'bank', 'cash', 'investment', 'fund', 'crypto', 'housing_fund', 'extra',
+]);
+
+export const PERSONAL_ASSET_TYPE_SEEDS = Object.freeze([
+  { key: 'bank', name: '银行卡', sortOrder: 10 },
+  { key: 'cash', name: '现金', sortOrder: 20 },
+  { key: 'investment', name: '投资', sortOrder: 30 },
+  { key: 'fund', name: '基金与余额', sortOrder: 40 },
+  { key: 'crypto', name: '数字货币', sortOrder: 50 },
+  { key: 'housing_fund', name: '公积金', sortOrder: 60 },
+  { key: 'extra', name: '额外资金', sortOrder: 70 },
+]);
+
+export const PersonalAssetAccountSourceSchema = z.enum(['manual', 'holdings']);
+
 export const PersonalAssetAllocationKeySchema = z.enum([
   'equity', 'housingFund', 'other', 'crypto', 'cash', 'fund',
+  'bank', 'investment', 'extra', 'housing_fund',
 ]);
 
 export const PersonalAssetPointSchema = z.object({
@@ -116,6 +133,7 @@ export const PersonalAssetPointSchema = z.object({
   housingFund: DecimalStringSchema,
   increase: DecimalStringSchema,
   increaseRate: DecimalStringSchema,
+  recorded: z.boolean().default(true),
 }).strict();
 
 export const PersonalAssetAllocationSchema = z.object({
@@ -129,11 +147,150 @@ export const PersonalAssetDividendItemSchema = z.object({
   value: DecimalStringSchema,
 }).strict();
 
+export const PersonalAssetTypeSchema = z.object({
+  key: PersonalAssetTypeKeySchema,
+  workspaceId: WorkspaceIdSchema,
+  name: z.string().trim().min(1).max(32),
+  sortOrder: z.number().int().nonnegative(),
+  hiddenAt: EpochMillisSchema.nullable(),
+  createdAt: EpochMillisSchema,
+  updatedAt: EpochMillisSchema,
+}).strict();
+
+export const PersonalAssetAccountSchema = z.object({
+  id: EntityIdSchema,
+  workspaceId: WorkspaceIdSchema,
+  typeKey: PersonalAssetTypeKeySchema,
+  name: z.string().trim().min(1).max(64),
+  note: z.string().max(128).default(''),
+  source: PersonalAssetAccountSourceSchema,
+  amount: DecimalStringSchema,
+  currency: CurrencySchema,
+  sortOrder: z.number().int().nonnegative(),
+  archivedAt: EpochMillisSchema.nullable(),
+  createdAt: EpochMillisSchema,
+  updatedAt: EpochMillisSchema,
+}).strict();
+
+export const PersonalAssetAccountViewSchema = PersonalAssetAccountSchema.extend({
+  typeName: z.string().trim().min(1).max(32),
+  readOnly: z.boolean(),
+  displayAmount: DecimalStringSchema,
+}).strict();
+
+export const PersonalAssetSnapshotLineSchema = z.object({
+  accountId: EntityIdSchema,
+  typeKey: PersonalAssetTypeKeySchema,
+  amount: DecimalStringSchema,
+}).strict();
+
+export const PersonalAssetSnapshotSchema = z.object({
+  id: EntityIdSchema,
+  workspaceId: WorkspaceIdSchema,
+  label: z.string().trim().min(1).max(32),
+  total: DecimalStringSchema,
+  increase: DecimalStringSchema,
+  increaseRate: DecimalStringSchema,
+  recordedAt: EpochMillisSchema,
+  createdAt: EpochMillisSchema,
+  lines: z.array(PersonalAssetSnapshotLineSchema).max(1_000).default([]),
+}).strict();
+
+export const PersonalAssetImportAccountSchema = z.object({
+  id: EntityIdSchema,
+  typeKey: PersonalAssetTypeKeySchema,
+  name: z.string().trim().min(1).max(64),
+  note: z.string().max(128).default(''),
+  source: PersonalAssetAccountSourceSchema.default('manual'),
+  amount: DecimalStringSchema,
+  currency: CurrencySchema.default('CNY'),
+  sortOrder: z.number().int().nonnegative().default(0),
+}).strict();
+
+export const PersonalAssetImportSnapshotSchema = z.object({
+  id: EntityIdSchema,
+  label: z.string().trim().min(1).max(32),
+  total: DecimalStringSchema,
+  increase: DecimalStringSchema.default('0'),
+  increaseRate: DecimalStringSchema.default('0'),
+  recordedAt: EpochMillisSchema,
+  lines: z.array(z.object({
+    accountId: EntityIdSchema,
+    amount: DecimalStringSchema,
+  }).strict()).max(1_000),
+}).strict();
+
+export const PersonalAssetImportSchema = z.object({
+  schemaVersion: z.literal(1).default(1),
+  mode: z.literal('merge').default('merge'),
+  accounts: z.array(PersonalAssetImportAccountSchema).max(1_000),
+  snapshots: z.array(PersonalAssetImportSnapshotSchema).max(10_000),
+  dividends: z.array(PersonalAssetDividendItemSchema).max(1_000).default([]),
+}).strict().superRefine((value, context) => {
+  const accountIds = new Set();
+  for (const [index, account] of value.accounts.entries()) {
+    if (accountIds.has(account.id)) {
+      context.addIssue({ code: 'custom', path: ['accounts', index, 'id'], message: '资产账户 id 不能重复' });
+    }
+    accountIds.add(account.id);
+  }
+  const snapshotIds = new Set();
+  for (const [index, snapshot] of value.snapshots.entries()) {
+    if (snapshotIds.has(snapshot.id)) {
+      context.addIssue({ code: 'custom', path: ['snapshots', index, 'id'], message: '资产快照 id 不能重复' });
+    }
+    snapshotIds.add(snapshot.id);
+    for (const [lineIndex, line] of snapshot.lines.entries()) {
+      if (!accountIds.has(line.accountId)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['snapshots', index, 'lines', lineIndex, 'accountId'],
+          message: '快照引用的资产账户不存在',
+        });
+      }
+    }
+  }
+});
+
+export const PersonalAssetImportResultSchema = z.object({
+  typesEnsured: z.number().int().nonnegative(),
+  accountsMerged: z.number().int().nonnegative(),
+  snapshotsMerged: z.number().int().nonnegative(),
+  dividendsMerged: z.number().int().nonnegative(),
+}).strict();
+
+export const UpsertPersonalAssetAccountInputSchema = PersonalAssetAccountSchema.omit({
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  createdAt: EpochMillisSchema.optional(),
+  updatedAt: EpochMillisSchema.optional(),
+}).strict();
+
+export const CreatePersonalAssetAccountInputSchema = z.object({
+  typeKey: PersonalAssetTypeKeySchema,
+  note: z.string().max(128).default(''),
+  amount: DecimalStringSchema.default('0'),
+}).strict();
+
+export const UpdatePersonalAssetAccountInputSchema = z.object({
+  note: z.string().max(128).optional(),
+  amount: DecimalStringSchema.optional(),
+}).strict().refine((value) => value.note !== undefined || value.amount !== undefined, {
+  message: '至少提供备注或金额',
+});
+
+export const CreatePersonalAssetSnapshotInputSchema = z.object({
+  label: z.string().trim().min(1).max(32).optional(),
+}).strict();
+
 export const PersonalAssetDashboardSchema = z.object({
-  source: z.literal('workbook'),
+  source: z.enum(['workbook', 'ledger']),
   currency: CurrencySchema,
   points: z.array(PersonalAssetPointSchema),
   allocation: z.array(PersonalAssetAllocationSchema),
+  types: z.array(PersonalAssetTypeSchema).default([]),
+  accounts: z.array(PersonalAssetAccountViewSchema).default([]),
   dividend: z.object({
     total: DecimalStringSchema,
     items: z.array(PersonalAssetDividendItemSchema),
@@ -148,6 +305,8 @@ export const PersonalAssetDashboardSchema = z.object({
     cumulativeGrowthRate: DecimalStringSchema,
     firstLabel: z.string().trim().max(32),
     firstTotal: DecimalStringSchema,
+    recordedLabel: z.string().trim().max(32).default(''),
+    recordedTotal: DecimalStringSchema.default('0'),
   }).strict(),
   updatedAt: EpochMillisSchema,
   note: z.string().max(240).default(''),
@@ -391,6 +550,8 @@ export function emptyPersonalAssetDashboard(updatedAt = 0, note = '') {
     currency: 'CNY',
     points: [],
     allocation: [],
+    types: [],
+    accounts: [],
     dividend: { total: '0', items: [] },
     latest: {
       label: '',
@@ -402,6 +563,8 @@ export function emptyPersonalAssetDashboard(updatedAt = 0, note = '') {
       cumulativeGrowthRate: '0',
       firstLabel: '',
       firstTotal: '0',
+      recordedLabel: '',
+      recordedTotal: '0',
     },
     updatedAt,
     note,

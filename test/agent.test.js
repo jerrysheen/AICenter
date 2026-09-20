@@ -465,6 +465,15 @@ test('agent HTTP endpoint accepts an authenticated question and exposes job stat
     const payload = await status.json();
     assert.equal(payload.status, 'queued');
     assert.deepEqual(payload.progress, []);
+    const research = await fetch(`${address.localUrl}/api/v1/agent/runs`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ message: '专业研究一下供给', researchMode: 'research' }),
+    });
+    assert.equal(research.status, 202);
+    const researchCreated = await research.json();
+    assert.equal(researchCreated.job.input.researchMode, 'research');
+    assert.equal(researchCreated.job.input.researchProfile.modelProfile, 'research');
+    assert.deepEqual(researchCreated.job.input.researchProfile.methodKeywords, []);
   } finally {
     await app.close();
     rmSync(directory, { recursive: true, force: true });
@@ -820,4 +829,354 @@ test('webMode=off hides web.search but still calls the model', async () => {
   assert.equal(firstRequest.tools.some((tool) => tool.id === 'web.search'), false);
   assert.ok(firstRequest.tools.some((tool) => tool.id === 'feed.search'));
   assert.match(result.answer, /没有联网搜索/);
+});
+
+test('web.search starts auxiliary search once and merges it after the model answer', async () => {
+  const tools = createToolRegistry();
+  registerReadTool(tools, 'web.search', async () => ({
+    data: { available: true, results: [{ title: 'Fed', url: 'https://example.com/fed', snippet: 'held', publishedAt: null }] },
+    refs: [], observedAt: 1, warnings: [],
+  }));
+  const begins = [];
+  let round = 0;
+  const runtime = createAgentRuntime({
+    tools,
+    auxiliarySearch: {
+      begin(input) {
+        begins.push(input);
+        return { startedAt: Date.now(), promise: Promise.resolve({ text: '公开报道：维持利率。', status: 'ok' }) };
+      },
+    },
+    llm: {
+      respond: async () => {
+        round += 1;
+        if (round === 1) {
+          return {
+            toolCalls: [
+              { name: 'web_search', args: { query: 'FOMC' } },
+              { name: 'web_search', callId: 'second', args: { query: 'FOMC again' } },
+            ],
+            modelContent: { role: 'model', parts: [] }, providerId: 'fake', modelId: 'fake',
+          };
+        }
+        return { text: '根据网页结果，美联储维持利率。', providerId: 'fake', modelId: 'fake' };
+      },
+    },
+  });
+  const result = await runtime.run({
+    message: '联网搜一下今天有没有加息',
+    workspaceId: 'local',
+    webMode: 'always',
+  });
+  assert.equal(begins.length, 1);
+  assert.equal(begins[0].question, '联网搜一下今天有没有加息');
+  assert.equal(begins[0].query, 'FOMC');
+  assert.match(result.answer, /维持利率/);
+  assert.match(result.answer, /### 补充资讯/);
+  assert.match(result.answer, /公开报道/);
+});
+
+test('enableAuxiliarySearch false keeps web.search from starting the sidecar', async () => {
+  const tools = createToolRegistry();
+  registerReadTool(tools, 'web.search', async () => ({
+    data: { available: true, results: [{ title: 'Fed', url: 'https://example.com/fed', snippet: 'held', publishedAt: null }] },
+    refs: [], observedAt: 1, warnings: [],
+  }));
+  const begins = [];
+  let round = 0;
+  const runtime = createAgentRuntime({
+    tools,
+    auxiliarySearch: {
+      begin(input) {
+        begins.push(input);
+        return { startedAt: Date.now(), promise: Promise.resolve({ text: '公开报道：维持利率。', status: 'ok' }) };
+      },
+    },
+    llm: {
+      respond: async () => {
+        round += 1;
+        if (round === 1) {
+          return {
+            toolCalls: [{ name: 'web_search', args: { query: 'FOMC' } }],
+            modelContent: { role: 'model', parts: [] }, providerId: 'fake', modelId: 'fake',
+          };
+        }
+        return { text: '根据网页结果，美联储维持利率。', providerId: 'fake', modelId: 'fake' };
+      },
+    },
+  });
+  const result = await runtime.run({
+    message: '联网搜一下今天有没有加息',
+    workspaceId: 'local',
+    webMode: 'always',
+    enableAuxiliarySearch: false,
+  });
+  assert.equal(begins.length, 0);
+  assert.match(result.answer, /维持利率/);
+  assert.equal(result.answer.includes('补充资讯'), false);
+});
+
+test('a late auxiliary search does not block the accepted answer', async () => {
+  const tools = createToolRegistry();
+  registerReadTool(tools, 'web.search', async () => ({
+    data: { available: true, results: [{ title: 'Fed', url: 'https://example.com/fed', snippet: 'held', publishedAt: null }] },
+    refs: [], observedAt: 1, warnings: [],
+  }));
+  let round = 0;
+  const runtime = createAgentRuntime({
+    tools,
+    auxiliarySearch: {
+      begin() {
+        return { startedAt: Date.now() - 80_000, promise: new Promise(() => {}) };
+      },
+    },
+    llm: {
+      respond: async () => {
+        round += 1;
+        if (round === 1) {
+          return {
+            toolCalls: [{ name: 'web_search', args: { query: 'FOMC' } }],
+            modelContent: { role: 'model', parts: [] }, providerId: 'fake', modelId: 'fake',
+          };
+        }
+        return { text: '根据网页结果，美联储维持利率。', providerId: 'fake', modelId: 'fake' };
+      },
+    },
+  });
+  const result = await runtime.run({ message: '搜一下今天加息', workspaceId: 'local', webMode: 'always' });
+  assert.match(result.answer, /维持利率/);
+  assert.equal(result.answer.includes('补充资讯'), false);
+  assert.match(result.warnings.join('\n'), /补充检索未返回/);
+});
+
+test('shadow quality does not change the model prompt and a failed Jev call still answers', async () => {
+  const tools = createToolRegistry();
+  tools.register({
+    id: 'holdings.get', effect: 'read', description: '读取当前持仓',
+    parameters: { type: 'object', properties: {} },
+    async execute() {
+      return {
+        data: { positions: [{ symbol: 'NVDA', costCny: '100000' }] },
+        refs: [], observedAt: 1, warnings: [],
+      };
+    },
+  });
+  const events = [];
+  let seenInstruction = '';
+  const runtime = createAgentRuntime({
+    tools,
+    quality: {
+      config: { priorMode: 'shadow', reviewerEnabled: true, disabled: false },
+      async advisePrior() {
+        throw new Error('TypeSafe down');
+      },
+    },
+    llm: {
+      respond: async (request) => {
+        seenInstruction = request.systemInstruction || '';
+        return { text: '今天没有加仓。', providerId: 'fake', modelId: 'fake' };
+      },
+    },
+  });
+  const result = await runtime.run({
+    message: '我现在持仓亏多少',
+    workspaceId: 'local',
+    webMode: 'off',
+    trace: async ({ event, detail }) => { events.push({ event, detail }); },
+  });
+  assert.equal(result.answer, '今天没有加仓。');
+  assert.equal(seenInstruction.includes('Tool relevance hint'), false);
+  assert.equal(events.some((item) => item.event === 'advisor.prior.failed'), true);
+  assert.equal(events.some((item) => item.event === 'run.completed'), true);
+});
+
+test('advisory quality appends a hint but still sends the full tool table', async () => {
+  const tools = createToolRegistry();
+  tools.register({
+    id: 'holdings.get', effect: 'read', description: '读取当前持仓',
+    parameters: { type: 'object', properties: {} },
+    async execute() {
+      return { data: { positions: [{ symbol: 'NVDA' }] }, refs: [], observedAt: 1, warnings: [] };
+    },
+  });
+  tools.register({
+    id: 'web.search', effect: 'read', description: '搜索公开网页',
+    parameters: { type: 'object', properties: { query: { type: 'string' } } },
+    async execute() {
+      return { data: { results: [] }, refs: [], observedAt: 1, warnings: [] };
+    },
+  });
+  let request;
+  const responses = [
+    async (payload) => {
+      request = payload;
+      return {
+        toolCalls: [{ name: 'holdings_get', args: {} }],
+        modelContent: { role: 'model', parts: [] },
+        providerId: 'fake',
+        modelId: 'fake',
+      };
+    },
+    async () => ({ text: '已读取持仓。', providerId: 'fake', modelId: 'fake' }),
+  ];
+  const runtime = createAgentRuntime({
+    tools,
+    quality: {
+      config: { priorMode: 'advisory', reviewerEnabled: false, disabled: false },
+      async advisePrior() {
+        return {
+          status: 'ok',
+          mode: 'advisory',
+          scores: { 'holdings.get': 0.97, 'web.search': 0.12 },
+          bands: { 'holdings.get': 'high', 'web.search': 'low' },
+        };
+      },
+    },
+    llm: { respond: async (payload) => responses.shift()(payload) },
+  });
+  const result = await runtime.run({
+    message: '我现在持仓亏多少',
+    workspaceId: 'local',
+    webMode: 'always',
+  });
+  assert.equal(result.answer, '已读取持仓。');
+  assert.match(request.systemInstruction, /T0 root-tool necessity hint/);
+  assert.match(request.systemInstruction, /holdings\.get: high/);
+  assert.deepEqual(request.tools.map((tool) => tool.id).sort(), ['holdings.get', 'web.search']);
+  assert.equal(result.toolCalls[0].audit.resultKind, 'positions');
+  assert.equal(JSON.stringify(result.toolCalls[0].audit).includes('NVDA'), false);
+});
+
+test('evidence gate keeps only accepted web hits in model context and source refs', async () => {
+  const tools = createToolRegistry();
+  tools.register({
+    id: 'web.search', effect: 'read', description: '搜索公开网页',
+    parameters: { type: 'object', properties: { query: { type: 'string' } } },
+    async execute() {
+      return {
+        data: {
+          query: 'CIOE NPO',
+          available: true,
+          results: [
+            { title: 'Accelink 3.2T NPO', url: 'https://accelink.com/npo', snippet: 'official launch' },
+            { title: 'Monkeytype', url: 'https://monkeytype.com', snippet: 'A minimalistic typing test' },
+          ],
+        },
+        refs: [
+          { resourceType: 'web-result', resourceId: 'https://accelink.com/npo', revision: null, asOf: 1, label: 'Accelink' },
+          { resourceType: 'web-result', resourceId: 'https://monkeytype.com', revision: null, asOf: 1, label: 'Monkeytype' },
+        ],
+        observedAt: 1,
+        warnings: [],
+      };
+    },
+  });
+  const events = [];
+  let round = 0;
+  let secondRequest;
+  const runtime = createAgentRuntime({
+    tools,
+    quality: {
+      config: { priorMode: 'off', reviewerEnabled: false, evidenceGateMode: 'enforce', disabled: false },
+      async gateEvidence({ toolResult }) {
+        const results = toolResult.data.results;
+        return {
+          status: 'ok',
+          kind: 'evidence-gate',
+          mode: 'enforce',
+          hits: [
+            { index: 0, ...results[0], host: 'accelink.com', relevance: 0.97, evidence: 0.95, quality: 0.97, confidence: 0.96, accepted: true },
+            { index: 1, ...results[1], host: 'monkeytype.com', relevance: 0.01, evidence: 0, quality: 0.1, confidence: 0.02, accepted: false, reason: 'low-relevance' },
+          ],
+          accepted: [{ index: 0, ...results[0], host: 'accelink.com', relevance: 0.97, evidence: 0.95, quality: 0.97, confidence: 0.96, accepted: true }],
+          rejected: [{ index: 1, ...results[1], host: 'monkeytype.com', relevance: 0.01, evidence: 0, quality: 0.1, confidence: 0.02, accepted: false }],
+          sufficiency: 0.91,
+          confidence: 0.93,
+          hint: 'Evidence appears sufficient. Further search is probably unnecessary unless you need to resolve a contradiction.',
+        };
+      },
+    },
+    llm: {
+      async respond(request) {
+        round += 1;
+        if (round === 1) {
+          return {
+            toolCalls: [{ name: 'web_search', args: { query: 'CIOE NPO' } }],
+            modelContent: { role: 'model', parts: [] },
+            providerId: 'fake',
+            modelId: 'fake',
+          };
+        }
+        secondRequest = request;
+        return { text: '光迅官方材料已足够。', providerId: 'fake', modelId: 'fake' };
+      },
+    },
+  });
+  const result = await runtime.run({
+    message: '光迅 3.2T NPO 是否已经发布',
+    workspaceId: 'local',
+    webMode: 'always',
+    trace: async ({ event }) => { events.push(event); },
+  });
+  const observed = JSON.stringify(secondRequest.contents);
+  assert.match(observed, /accelink\.com\/npo/);
+  assert.equal(observed.includes('Monkeytype'), false);
+  assert.deepEqual(result.refs.map((item) => item.resourceId), ['https://accelink.com/npo']);
+  assert.equal(JSON.stringify(result.refs).includes('Monkeytype'), false);
+  assert.equal(result.evidenceGate.acceptedCount, 1);
+  assert.equal(result.evidenceGate.rejectedCount, 1);
+  assert.equal(result.toolCalls[0].webSearch.resultCount, 1);
+  assert.ok(events.includes('evidence.gate.completed'));
+});
+
+test('evidence gate failure leaves raw search results in context', async () => {
+  const tools = createToolRegistry();
+  tools.register({
+    id: 'web.search', effect: 'read', description: '搜索公开网页',
+    parameters: { type: 'object', properties: { query: { type: 'string' } } },
+    async execute() {
+      return {
+        data: {
+          available: true,
+          results: [
+            { title: 'Monkeytype', url: 'https://monkeytype.com', snippet: 'typing test' },
+          ],
+        },
+        refs: [{ resourceType: 'web-result', resourceId: 'https://monkeytype.com', revision: null, asOf: 1, label: 'Monkeytype' }],
+        observedAt: 1,
+        warnings: [],
+      };
+    },
+  });
+  let responded = false;
+  const runtime = createAgentRuntime({
+    tools,
+    quality: {
+      config: { priorMode: 'off', reviewerEnabled: false, evidenceGateMode: 'enforce', disabled: false },
+      async gateEvidence() {
+        return { status: 'failed', kind: 'evidence-gate', error: 'TypeSafe down', hits: [], accepted: [], rejected: [] };
+      },
+    },
+    llm: {
+      async respond() {
+        if (!responded) {
+          responded = true;
+          return {
+            toolCalls: [{ name: 'web_search', args: { query: 'NPO' } }],
+            modelContent: { role: 'model', parts: [] },
+            providerId: 'fake',
+            modelId: 'fake',
+          };
+        }
+        return { text: '搜索结果已返回。', providerId: 'fake', modelId: 'fake' };
+      },
+    },
+  });
+  const result = await runtime.run({
+    message: 'NPO',
+    workspaceId: 'local',
+    webMode: 'always',
+  });
+  assert.equal(result.refs[0].resourceId, 'https://monkeytype.com');
+  assert.equal(result.evidenceGate, null);
 });

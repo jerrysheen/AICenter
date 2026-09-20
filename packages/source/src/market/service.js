@@ -1,5 +1,6 @@
 import { asiaTrackedItems, buildAsiaMarketBoard, buildCnMarketBoard, buildGlobalAssetBoard, buildOverviewBoard, buildUsMarketBoard, cnTrackedItems, globalTrackedItems, parseAsiaExtraSymbols, parseCnExtraSymbols, parseUsExtraSymbols, preferredOverviewFocus, usTrackedItems } from './boards.js';
 import { createCnQuoteClient, isCnYahooSymbol } from '../../../connectors/src/cn-quotes.js';
+import { createSinaFuturesClient, isSinaFutureSymbol } from '../../../connectors/src/sina-futures.js';
 import { createXueqiuQuoteClient, isXueqiuYahooSymbol } from '../../../connectors/src/xueqiu-quotes.js';
 import { createYahooClient } from '../../../connectors/src/yahoo.js';
 import { resolveMarketCatalog } from './catalog.js';
@@ -8,6 +9,7 @@ export function createMarketService(options = {}) {
   const marketCatalog = options.marketCatalog || resolveMarketCatalog(options.marketCatalogPath);
   const yahoo = options.yahoo || createYahooClient(options);
   const cnQuotes = options.cnQuotes || createCnQuoteClient(options);
+  const sinaFutures = options.sinaFutures === undefined ? createSinaFuturesClient(options) : options.sinaFutures;
   const xueqiuQuotes = options.xueqiuQuotes === undefined ? createXueqiuQuoteClient(options) : options.xueqiuQuotes;
   const ttlMs = options.ttlMs ?? 20_000;
   const xueqiuTtlMs = options.xueqiuTtlMs ?? 3_000;
@@ -61,7 +63,8 @@ export function createMarketService(options = {}) {
       const tracked = globalTrackedItems(marketCatalog);
       const symbols = [...new Set(tracked.map((item) => item.yahoo))];
       try {
-        const { quotes, session } = await yahoo.fetchQuotes(symbols);
+        const quotes = await fetchQuotes(symbols);
+        const session = quotes.some((item) => item.session === 'regular') ? 'regular' : 'closed';
         return buildGlobalAssetBoard({
           quotes,
           session,
@@ -187,6 +190,17 @@ export function createMarketService(options = {}) {
     }, { refresh });
   }
 
+  async function fetchSinaFutures(symbols, { refresh = false } = {}) {
+    if (!symbols.length || !sinaFutures?.fetchQuotes) return [];
+    return cached(`sina-futures:${symbols.slice().sort().join(',')}`, async () => {
+      try {
+        return (await sinaFutures.fetchQuotes(symbols)).map((item) => mapQuote(item));
+      } catch {
+        return [];
+      }
+    }, { refresh });
+  }
+
   async function fetchXueqiuQuotes(symbols, { refresh = false } = {}) {
     if (!symbols.length || !xueqiuQuotes?.fetchQuotes) return [];
     return cached(`xueqiu:${symbols.slice().sort().join(',')}`, async () => {
@@ -201,9 +215,11 @@ export function createMarketService(options = {}) {
   async function fetchQuotes(symbols, { refresh = false } = {}) {
     const unique = [...new Set((symbols || []).map((item) => String(item || '').trim().toUpperCase()).filter(Boolean))];
     if (!unique.length) return [];
-    const xueqiuSymbols = unique.filter(isXueqiuYahooSymbol);
-    const otherSymbols = unique.filter((symbol) => !isXueqiuYahooSymbol(symbol));
-    const [xueqiuList, otherList] = await Promise.all([
+    const sinaSymbols = unique.filter(isSinaFutureSymbol);
+    const xueqiuSymbols = unique.filter((symbol) => isXueqiuYahooSymbol(symbol) && !isSinaFutureSymbol(symbol));
+    const otherSymbols = unique.filter((symbol) => !isXueqiuYahooSymbol(symbol) && !isSinaFutureSymbol(symbol));
+    const [sinaList, xueqiuList, otherList] = await Promise.all([
+      fetchSinaFutures(sinaSymbols, { refresh }),
       fetchXueqiuQuotes(xueqiuSymbols, { refresh }),
       fetchYahooQuotes(otherSymbols, { refresh }),
     ]);
@@ -212,7 +228,7 @@ export function createMarketService(options = {}) {
     const thsList = missingCn.length ? await fetchCnQuotes(missingCn, { refresh }) : [];
     const stillMissing = missingXueqiu.filter((symbol) => !thsList.some((item) => item.symbol === symbol));
     const fallback = stillMissing.length ? await fetchYahooQuotes(stillMissing, { refresh }) : [];
-    const bySymbol = new Map([...otherList, ...fallback, ...thsList, ...xueqiuList].map((item) => [item.symbol, item]));
+    const bySymbol = new Map([...otherList, ...fallback, ...thsList, ...xueqiuList, ...sinaList].map((item) => [item.symbol, item]));
     return unique.map((symbol) => bySymbol.get(symbol)).filter(Boolean);
   }
 

@@ -92,7 +92,7 @@ test('parseTagBatchOutput drops unknown tags and keeps empty arrays', () => {
   assert.equal(parsed.unknownTags[0].tagId, 'fake_tag');
 });
 
-test('parseTagBatchOutput recovers items from messy Doubao chatter', () => {
+test('parseTagBatchOutput recovers items from messy model chatter', () => {
   const parsed = parseTagBatchOutput(`好的，标签如下
 \`\`\`json
 {"schema_version":"tag_texts_output.v0.1","items":[{"item_id":"x1","tags":["ai"]}]}

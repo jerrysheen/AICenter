@@ -183,6 +183,23 @@ test('withSession still stops when callback throws', async () => {
   assert.deepEqual(provider.calls.map((item) => item[0]), ['start', 'stop']);
 });
 
+test('stop failure does not discard a successful harvest', async () => {
+  const warnings = [];
+  const provider = createRecordingProvider({
+    async stop() {
+      throw new Error('No window with id: 699805515');
+    },
+  });
+  const runtime = createBrowserRuntime({
+    provider,
+    logger: { warn(message) { warnings.push(message); } },
+  });
+  const value = await runtime.withSession({}, async () => 'harvested');
+  assert.equal(value, 'harvested');
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /session stop failed/);
+});
+
 test('stop failure does not overlay the original callback error', async () => {
   const warnings = [];
   const provider = createRecordingProvider({

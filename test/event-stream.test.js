@@ -22,10 +22,10 @@ function createMemoryRuntime(count, workspaceId = 'local') {
   };
 }
 
-function openToChunks(runtime, lastEventId, options = {}) {
+async function openToChunks(runtime, lastEventId, options = {}) {
   const chunks = [];
   const hub = createEventStreamHub(runtime, options);
-  hub.open(
+  await hub.open(
     { on() {} },
     {
       writeHead() {},
@@ -42,17 +42,24 @@ function openToChunks(runtime, lastEventId, options = {}) {
   return chunks.join('');
 }
 
-test('SSE replay pages past a single listEvents window', () => {
-  const body = openToChunks(createMemoryRuntime(12), 1, { replayPageSize: 3, replayMaxEvents: 50 });
+test('SSE replay pages past a single listEvents window', async () => {
+  const body = await openToChunks(createMemoryRuntime(12), 1, { replayPageSize: 3, replayMaxEvents: 50 });
   assert.match(body, /id: 2\n/);
   assert.match(body, /id: 12\n/);
   assert.match(body, /"snapshotRequired":false/);
   assert.match(body, /"replayedThrough":12/);
 });
 
-test('SSE ready asks the client for a snapshot when replay hits the window', () => {
-  const body = openToChunks(createMemoryRuntime(8), 1, { replayPageSize: 2, replayMaxEvents: 4 });
+test('SSE ready asks the client for a snapshot when replay hits the window', async () => {
+  const body = await openToChunks(createMemoryRuntime(8), 1, { replayPageSize: 2, replayMaxEvents: 4 });
   assert.match(body, /id: 5\n/);
   assert.doesNotMatch(body, /id: 8\n/);
   assert.match(body, /"snapshotRequired":true/);
+});
+
+test('SSE ready carries the current ui revision', async () => {
+  const body = await openToChunks(createMemoryRuntime(1), 0, {
+    getUiRevision: async () => 'abc123def456',
+  });
+  assert.match(body, /"uiRevision":"abc123def456"/);
 });

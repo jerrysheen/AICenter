@@ -3,6 +3,13 @@ import {
   AppendTransactionInputSchema,
   CreatePortfolioInputSchema,
   parseContract,
+  PERSONAL_ASSET_TYPE_SEEDS,
+  PersonalAssetAccountSchema,
+  PersonalAssetImportSchema,
+  UpsertPersonalAssetAccountInputSchema,
+  PersonalAssetImportResultSchema,
+  PersonalAssetSnapshotSchema,
+  PersonalAssetTypeSchema,
   PortfolioImportSchema,
   UpsertHoldingCashInputSchema,
   UpsertHoldingLotInputSchema,
@@ -88,6 +95,49 @@ function mapHoldingLot(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function mapPersonalAssetType(row) {
+  return parseContract(PersonalAssetTypeSchema, {
+    key: row.key,
+    workspaceId: row.workspace_id,
+    name: row.name,
+    sortOrder: row.sort_order,
+    hiddenAt: row.hidden_at ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
+}
+
+function mapPersonalAssetAccount(row) {
+  return parseContract(PersonalAssetAccountSchema, {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    typeKey: row.type_key,
+    name: row.name,
+    note: row.note || '',
+    source: row.source,
+    amount: row.amount_decimal,
+    currency: row.currency,
+    sortOrder: row.sort_order,
+    archivedAt: row.archived_at ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
+}
+
+function mapPersonalAssetSnapshot(row, lines = []) {
+  return parseContract(PersonalAssetSnapshotSchema, {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    label: row.label,
+    total: row.total_decimal,
+    increase: row.increase_decimal,
+    increaseRate: row.increase_rate_decimal,
+    recordedAt: row.recorded_at,
+    createdAt: row.created_at,
+    lines,
+  });
 }
 
 export function createTradingRepository(database, emitEvent) {
@@ -365,6 +415,195 @@ export function createTradingRepository(database, emitEvent) {
           positionsMerged: input.positions.length,
           cashMerged: input.cash.length,
         };
+      });
+      return merge();
+    },
+
+    ensurePersonalAssetTypes(workspaceId) {
+      const now = Date.now();
+      const existing = new Set(this.listPersonalAssetTypes(workspaceId).map((item) => item.key));
+      database.transaction(() => {
+        for (const seed of PERSONAL_ASSET_TYPE_SEEDS) {
+          if (existing.has(seed.key)) continue;
+          database.prepare(`INSERT INTO personal_asset_types
+            (workspace_id, key, name, sort_order, hidden_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, NULL, ?, ?)`)
+            .run(workspaceId, seed.key, seed.name, seed.sortOrder, now, now);
+        }
+      })();
+      return this.listPersonalAssetTypes(workspaceId);
+    },
+
+    listPersonalAssetTypes(workspaceId) {
+      return database.prepare(`SELECT * FROM personal_asset_types
+        WHERE workspace_id = ? ORDER BY sort_order, key`)
+        .all(workspaceId).map(mapPersonalAssetType);
+    },
+
+    listPersonalAssetAccounts(workspaceId) {
+      return database.prepare(`SELECT * FROM personal_asset_accounts
+        WHERE workspace_id = ? ORDER BY sort_order, name`)
+        .all(workspaceId).map(mapPersonalAssetAccount);
+    },
+
+    getPersonalAssetAccount(id) {
+      const row = database.prepare('SELECT * FROM personal_asset_accounts WHERE id = ?').get(id);
+      return row ? mapPersonalAssetAccount(row) : null;
+    },
+
+    upsertPersonalAssetAccount(value) {
+      const input = parseContract(UpsertPersonalAssetAccountInputSchema, value);
+      const now = Date.now();
+      const existing = this.getPersonalAssetAccount(input.id);
+      database.transaction(() => {
+        database.prepare(`INSERT INTO personal_asset_accounts
+          (id, workspace_id, type_key, name, note, source, amount_decimal, currency, sort_order,
+           archived_at, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            type_key = excluded.type_key,
+            name = excluded.name,
+            note = excluded.note,
+            source = excluded.source,
+            amount_decimal = excluded.amount_decimal,
+            currency = excluded.currency,
+            sort_order = excluded.sort_order,
+            archived_at = excluded.archived_at,
+            updated_at = excluded.updated_at`)
+          .run(
+            input.id, input.workspaceId, input.typeKey, input.name, input.note || '',
+            input.source, input.amount, input.currency, input.sortOrder,
+            input.archivedAt ?? null, existing?.createdAt || now, now,
+          );
+        emitEvent('trading.personal-asset.account.upserted.v1', 'personal-asset-account', input.id,
+          { accountId: input.id, typeKey: input.typeKey }, input.workspaceId);
+      })();
+      return this.getPersonalAssetAccount(input.id);
+    },
+
+    listPersonalAssetSnapshots(workspaceId) {
+      const rows = database.prepare(`SELECT * FROM personal_asset_snapshots
+        WHERE workspace_id = ? ORDER BY recorded_at, label`)
+        .all(workspaceId);
+      const lines = database.prepare(`SELECT l.* FROM personal_asset_snapshot_lines l
+        JOIN personal_asset_snapshots s ON s.id = l.snapshot_id
+        WHERE s.workspace_id = ?`)
+        .all(workspaceId);
+      const linesBySnapshot = new Map();
+      for (const line of lines) {
+        const list = linesBySnapshot.get(line.snapshot_id) || [];
+        list.push({
+          accountId: line.account_id,
+          typeKey: line.type_key,
+          amount: line.amount_decimal,
+        });
+        linesBySnapshot.set(line.snapshot_id, list);
+      }
+      return rows.map((row) => mapPersonalAssetSnapshot(row, linesBySnapshot.get(row.id) || []));
+    },
+
+    upsertPersonalAssetSnapshot(workspaceId, snapshot) {
+      const input = parseContract(PersonalAssetSnapshotSchema.omit({
+        workspaceId: true,
+        createdAt: true,
+      }).extend({
+        id: PersonalAssetSnapshotSchema.shape.id.optional(),
+        workspaceId: PersonalAssetSnapshotSchema.shape.workspaceId.optional(),
+        createdAt: PersonalAssetSnapshotSchema.shape.createdAt.optional(),
+      }), { ...snapshot, workspaceId });
+      const now = Date.now();
+      const existing = input.id
+        ? database.prepare('SELECT * FROM personal_asset_snapshots WHERE id = ?').get(input.id)
+        : null;
+      const id = existing?.id || input.id || randomUUID();
+      database.transaction(() => {
+        database.prepare(`INSERT INTO personal_asset_snapshots
+          (id, workspace_id, label, total_decimal, increase_decimal, increase_rate_decimal, recorded_at, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            label = excluded.label,
+            total_decimal = excluded.total_decimal,
+            increase_decimal = excluded.increase_decimal,
+            increase_rate_decimal = excluded.increase_rate_decimal,
+            recorded_at = excluded.recorded_at`)
+          .run(id, workspaceId, input.label, input.total, input.increase, input.increaseRate,
+            input.recordedAt, existing?.created_at || now);
+        database.prepare('DELETE FROM personal_asset_snapshot_lines WHERE snapshot_id = ?').run(id);
+        const insertLine = database.prepare(`INSERT INTO personal_asset_snapshot_lines
+          (snapshot_id, account_id, type_key, amount_decimal) VALUES (?, ?, ?, ?)`);
+        for (const line of input.lines) {
+          insertLine.run(id, line.accountId, line.typeKey, line.amount);
+        }
+        emitEvent('trading.personal-asset.snapshot.upserted.v1', 'personal-asset-snapshot', id,
+          { snapshotId: id, label: input.label }, workspaceId);
+      })();
+      return this.listPersonalAssetSnapshots(workspaceId).find((item) => item.id === id);
+    },
+
+    listPersonalAssetDividends(workspaceId) {
+      return database.prepare(`SELECT * FROM personal_asset_dividends
+        WHERE workspace_id = ? ORDER BY sort_order, name`)
+        .all(workspaceId).map((row) => ({
+          name: row.name,
+          value: row.value_decimal,
+        }));
+    },
+
+    mergePersonalAssetImport(workspaceId, value) {
+      const input = parseContract(PersonalAssetImportSchema, value);
+      const types = this.ensurePersonalAssetTypes(workspaceId);
+      const typeKeys = new Set(types.map((item) => item.key));
+      for (const account of input.accounts) {
+        if (!typeKeys.has(account.typeKey)) {
+          throw new ValidationError('导入账户引用了未知资产类型', ['accounts', account.id, 'typeKey']);
+        }
+        const existing = this.getPersonalAssetAccount(account.id);
+        if (existing && existing.workspaceId !== workspaceId) {
+          throw new ValidationError('导入资产账户已属于其他工作区', ['accounts', account.id]);
+        }
+      }
+      const merge = database.transaction(() => {
+        for (const account of input.accounts) {
+          const existing = this.getPersonalAssetAccount(account.id);
+          this.upsertPersonalAssetAccount({
+            id: account.id,
+            workspaceId,
+            typeKey: account.typeKey,
+            name: existing?.name || account.name,
+            note: existing ? existing.note : account.note,
+            source: account.source,
+            amount: existing && existing.source === 'manual' && existing.updatedAt > (existing.createdAt || 0)
+              ? existing.amount
+              : account.amount,
+            currency: account.currency,
+            sortOrder: existing?.sortOrder ?? account.sortOrder,
+            archivedAt: existing?.archivedAt ?? null,
+          });
+        }
+        const accountById = new Map(this.listPersonalAssetAccounts(workspaceId).map((item) => [item.id, item]));
+        for (const snapshot of input.snapshots) {
+          this.upsertPersonalAssetSnapshot(workspaceId, {
+            id: snapshot.id,
+            label: snapshot.label,
+            total: snapshot.total,
+            increase: snapshot.increase,
+            increaseRate: snapshot.increaseRate,
+            recordedAt: snapshot.recordedAt,
+            lines: snapshot.lines.map((line) => ({
+              accountId: line.accountId,
+              typeKey: accountById.get(line.accountId)?.typeKey || 'extra',
+              amount: line.amount,
+            })),
+          });
+        }
+        emitEvent('trading.personal-asset.imported.v1', 'personal-asset-ledger', workspaceId,
+          { accountsMerged: input.accounts.length, snapshotsMerged: input.snapshots.length }, workspaceId);
+        return parseContract(PersonalAssetImportResultSchema, {
+          typesEnsured: types.length,
+          accountsMerged: input.accounts.length,
+          snapshotsMerged: input.snapshots.length,
+          dividendsMerged: 0,
+        });
       });
       return merge();
     },

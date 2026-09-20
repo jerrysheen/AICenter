@@ -192,7 +192,7 @@ export function createLocalToolRegistry({
 
   registry.register({
     id: 'market.overview.get', effect: 'read',
-    description: '读取当前市场概览、涨跌和宽度。北京时间工作日 17:00 前是 A 股观察，之后及周末是美股观察。不要顺手再调 market.global.get。',
+    description: '读取当前市场概览、涨跌和宽度。北京时间工作日 17:00 前是 A 股与港股观察，之后及周末是美股观察。不要顺手再调 market.global.get。',
     inputSchema: EmptyAgentToolInputSchema,
     async execute() {
       if (!sourcePort) {
@@ -256,7 +256,7 @@ export function createLocalToolRegistry({
   });
 
   registry.register({
-    id: 'assets.get', effect: 'read', description: '读取个人资产工作簿形成的只读资产分析。',
+    id: 'assets.get', effect: 'read', description: '读取个人资产账本：类型、账户和期间统计。',
     inputSchema: EmptyAgentToolInputSchema,
     async execute() {
       const data = await tradingService.getPersonalAssetDashboard();
@@ -339,15 +339,16 @@ export function createLocalToolRegistry({
               engine: item.engine || '',
               publishedAt: item.publishedAt ?? null,
             })),
+            note: data.note || '',
           }, refs, snapshot.observedAt, snapshot.warnings);
         } catch (error) {
           if (error?.name === 'AbortError' || context.signal?.aborted) throw error;
           if (error?.name === 'WebSearchUnavailableError' || /unavailable|ECONNREFUSED|超时/i.test(String(error?.message || ''))) {
             return result(
-              { query: input.query, available: false, results: [] },
+              { query: input.query, available: false, results: [], note: 'Web 搜索不可用' },
               [],
               Date.now(),
-              [`web.search unavailable：${String(error.message || 'Search Worker 不可用').slice(0, 240)}`],
+              [`web.search unavailable：${String(error.message || 'Web 搜索不可用').slice(0, 240)}`],
             );
           }
           throw error;

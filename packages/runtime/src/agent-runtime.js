@@ -1,7 +1,20 @@
 import { createToolRegistry } from './tool-registry.js';
 import { buildRuntimeContext, DEFAULT_USER_TIME_ZONE, formatRuntimeContextNote } from './runtime-context.js';
 import { buildAgentSystemInstruction } from './agent-prompt.js';
+import { resolveResearchProfile } from '../../domain/src/research-profile.js';
 import { explicitSearchIntent, resolveFinalAnswer, webSearchEvidence } from './web-evidence.js';
+import {
+  appendAuxiliarySearchNote,
+  auxiliarySearchWarning,
+  takeAuxiliarySearch,
+} from './auxiliary-web-search.js';
+import { formatPriorHint, projectToolAudit } from './agent-quality.js';
+import {
+  aggregateEvidenceGate,
+  applyEvidenceGateToToolResult,
+  extractRetrievalHits,
+  isEvidenceGateTool,
+} from './evidence-gate.js';
 
 const DEFAULT_LIMITS = Object.freeze({
   maxModelCalls: 7,
@@ -36,6 +49,21 @@ export function toolsVisibleForWebMode(tools, webMode = 'off') {
   });
 }
 
+export function toolsVisibleForResearchProfile(tools, researchProfile) {
+  const extra = new Set(
+    Array.isArray(researchProfile?.extraToolIds)
+      ? researchProfile.extraToolIds.map((item) => String(item || '').trim()).filter(Boolean)
+      : [],
+  );
+  return tools.filter((tool) => !tool.researchOnly || extra.has(tool.id));
+}
+
+export function toolsVisibleForAllowlist(tools, allowedToolIds) {
+  if (!Array.isArray(allowedToolIds)) return tools;
+  const allow = new Set(allowedToolIds.map((item) => String(item || '').trim()).filter(Boolean));
+  return tools.filter((tool) => allow.has(tool.id));
+}
+
 export function formatToolBudgetNote(budget, extra = '', { runtimeContext } = {}) {
   const lines = [];
   if (runtimeContext) lines.push(formatRuntimeContextNote(runtimeContext));
@@ -56,9 +84,12 @@ function clipPreview(text, max = 100) {
 
 function summarizeWebSearch(toolResult) {
   const rows = Array.isArray(toolResult?.data?.results) ? toolResult.data.results : [];
+  const gate = toolResult?.data?.evidenceGate || toolResult?.evidenceGate;
   return {
     available: toolResult?.data?.available !== false && !toolResult?.error,
     resultCount: rows.length,
+    acceptedCount: Number.isFinite(Number(gate?.acceptedCount)) ? Number(gate.acceptedCount) : rows.length,
+    rejectedCount: Number.isFinite(Number(gate?.rejectedCount)) ? Number(gate.rejectedCount) : 0,
   };
 }
 
@@ -82,9 +113,43 @@ async function mapConcurrent(items, concurrency, mapper) {
  * tool budget skips the oversized batch and forces an answer from existing
  * evidence; it does not fail the run.
  */
+async function settlePriorAdvice(priorTask, record) {
+  if (!priorTask) return null;
+  try {
+    const prior = await priorTask;
+    if (!prior || prior.status === 'skipped') {
+      await record('advisor.prior.skipped', { reason: prior?.reason || 'off' });
+      return prior || null;
+    }
+    if (prior.status !== 'ok') {
+      await record('advisor.prior.failed', {
+        message: prior.error || 'prior failed',
+        code: prior.code || '',
+        durationMs: prior.durationMs ?? null,
+      });
+      return prior;
+    }
+    await record('advisor.prior.completed', {
+      mode: prior.mode,
+      scores: prior.scores,
+      bands: prior.bands,
+      model: prior.model || '',
+      usage: prior.usage || {},
+      durationMs: prior.durationMs ?? null,
+    });
+    return prior;
+  } catch (error) {
+    if (error?.name === 'AbortError') return null;
+    await record('advisor.prior.failed', { message: String(error?.message || error).slice(0, 240) });
+    return null;
+  }
+}
+
 export function createAgentRuntime({
   llm, tools = createToolRegistry(), limits = {},
   clock = () => new Date(), timeZone = DEFAULT_USER_TIME_ZONE,
+  auxiliarySearch = null,
+  quality = null,
 } = {}) {
   if (!llm || (typeof llm.respond !== 'function' && typeof llm.ask !== 'function')) {
     throw new Error('agent llm.respond or llm.ask is required');
@@ -99,14 +164,25 @@ export function createAgentRuntime({
     },
     async run({
       message, workspaceId, sessionId = '', jobId = '', selectedRefs = [], signal,
-      priorTurns = [], selectedContext = '', webMode = 'off', trace, now,
+      priorTurns = [], selectedContext = '', webMode = 'off',
+      researchMode = 'standard', researchProfile, taskInstruction = '',
+      allowedToolIds, timeoutMs, enableAuxiliarySearch = true, trace, now,
     }) {
       const runStartedAt = Date.now();
       const runtimeContext = buildRuntimeContext(now ?? clock(), timeZone);
       const record = async (event, detail) => {
         try { await trace?.({ event, detail }); } catch {}
       };
-      const toolDefinitions = toolsVisibleForWebMode(tools.list(), webMode);
+      const profile = researchProfile?.mode
+        ? researchProfile
+        : resolveResearchProfile(researchMode);
+      const toolDefinitions = toolsVisibleForAllowlist(
+        toolsVisibleForResearchProfile(
+          toolsVisibleForWebMode(tools.list(), webMode),
+          profile,
+        ),
+        allowedToolIds,
+      );
       const webSearchAvailable = toolDefinitions.some((tool) => tool.id === 'web.search');
       const explicitWebSearchRequested = explicitSearchIntent(message);
       const history = [];
@@ -121,15 +197,46 @@ export function createAgentRuntime({
           : String(message || '') }],
       });
       const toolCalls = [];
+      const toolAudits = [];
+      const evidenceGates = [];
       const refs = [];
       const warnings = [];
       const seenCallIds = new Set();
+      let auxiliaryHandle = null;
       let providerId = '';
       let modelId = '';
       let modelCallCount = 0;
       let toolCallCount = 0;
-      const systemInstruction = buildAgentSystemInstruction(webMode);
+      let rejectedAnswers = 0;
+      const priorInput = {
+        message, webMode, researchMode: profile.mode, tools: toolDefinitions, signal,
+      };
+      const priorTask = quality?.advisePrior && quality.config?.priorMode !== 'off'
+        ? quality.advisePrior(priorInput)
+        : null;
+      if (priorTask) await record('advisor.prior.started', {
+        mode: quality.config?.priorMode || 'shadow',
+        toolIds: toolDefinitions.map((tool) => tool.id),
+      });
+      let qualityPrior = null;
+      let priorRecorded = false;
+      const finishPrior = async () => {
+        if (priorRecorded || !priorTask) return qualityPrior;
+        priorRecorded = true;
+        qualityPrior = await settlePriorAdvice(priorTask, record);
+        return qualityPrior;
+      };
+      if (quality?.config?.priorMode === 'advisory') await finishPrior();
+      const priorHint = quality?.config?.priorMode === 'advisory' && qualityPrior?.status === 'ok'
+        ? formatPriorHint(qualityPrior.scores)
+        : '';
+      const systemInstruction = [
+        buildAgentSystemInstruction(webMode, profile),
+        String(taskInstruction || '').trim(),
+        priorHint,
+      ].filter(Boolean).join('\n\n');
 
+      try {
       while (modelCallCount < maxModelCalls) {
         const round = modelCallCount;
         modelCallCount += 1;
@@ -146,7 +253,8 @@ export function createAgentRuntime({
         });
         const request = {
           contents: history, tools: requestTools, signal, budget, budgetNote, runtimeContext,
-          systemInstruction,
+          systemInstruction, researchProfile: profile, researchMode: profile.mode,
+          ...(Number(timeoutMs) > 0 ? { timeoutMs: Number(timeoutMs) } : {}),
         };
         const response = typeof llm.respond === 'function'
           ? await llm.respond(request)
@@ -173,6 +281,7 @@ export function createAgentRuntime({
             webSearchAvailable,
           });
           if (decision.action === 'correct') {
+            rejectedAnswers += 1;
             warnings.push('Runtime 拒绝了缺少 Web 证据或虚构 Tool 使用的最终回答');
             await record('answer.rejected', {
               round, reason: decision.reason, modelCallCount,
@@ -183,12 +292,31 @@ export function createAgentRuntime({
             continue;
           }
           if (decision.action === 'fail') throw new Error('Agent Runtime 未能完成回答');
+          let finalAnswer = decision.answer;
+          if (auxiliaryHandle) {
+            if (signal?.aborted) throw new DOMException('The operation was aborted', 'AbortError');
+            const settled = await takeAuxiliarySearch(auxiliaryHandle, { signal });
+            if (signal?.aborted) throw new DOMException('The operation was aborted', 'AbortError');
+            if (settled?.text) {
+              finalAnswer = appendAuxiliarySearchNote(finalAnswer, settled.text);
+              await record('auxiliary.merged', { chars: settled.text.length });
+            } else {
+              warnings.push(auxiliarySearchWarning(settled));
+              await record('auxiliary.skipped', { status: settled?.status || 'timeout' });
+            }
+          }
+          const evidenceGate = aggregateEvidenceGate(evidenceGates);
+          await finishPrior();
           await record('run.completed', {
-            providerId, modelId, answer: decision.answer, modelCallCount, toolCallCount,
+            providerId, modelId, answer: finalAnswer, modelCallCount, toolCallCount,
             toolCalls, refs, warnings, durationMs: Date.now() - runStartedAt,
             currentLocalTime: runtimeContext.currentLocalTime,
+            evidenceGate,
           });
-          return { answer: decision.answer, providerId, modelId, toolCalls, refs, warnings, runtimeContext };
+          return {
+            answer: finalAnswer, providerId, modelId, toolCalls, toolAudits, refs, warnings,
+            runtimeContext, qualityPrior, evidenceGate, rejectedAnswers, visibleTools: toolDefinitions,
+          };
         }
         if (modelCallCount >= maxModelCalls) throw new Error('模型调用次数超过上限，无法为工具结果生成最终回答');
         if (calls.length > budget.remainingToolCalls) {
@@ -225,23 +353,95 @@ export function createAgentRuntime({
         const functionResponses = await mapConcurrent(planned, concurrency, async ({ call, callId, definition }) => {
           const toolStartedAt = Date.now();
           const input = call.args ?? {};
+          const startAuxiliary = enableAuxiliarySearch !== false
+            && definition.id === 'web.search'
+            && !auxiliaryHandle
+            && auxiliarySearch?.begin;
+          if (startAuxiliary) {
+            try {
+              auxiliaryHandle = auxiliarySearch.begin({
+                question: String(message || ''),
+                query: String(input?.query || ''),
+                signal,
+              });
+            } catch {
+              auxiliaryHandle = null;
+            }
+          }
           await record('tool.started', { round, callId, id: definition.id, input });
+          if (startAuxiliary && auxiliaryHandle) await record('auxiliary.started', { query: clipPreview(input?.query) });
           try {
             const toolResult = await tools.execute(definition.id, input, {
               workspaceId, message, signal, sessionId, jobId, selectedRefs, runtimeContext,
             });
-            toolCalls.push({
-              callId, id: definition.id, input, observedAt: toolResult.observedAt, warnings: toolResult.warnings,
-              ...(definition.id === 'web.search' ? { webSearch: summarizeWebSearch(toolResult) } : {}),
-            });
-            refs.push(...toolResult.refs);
-            warnings.push(...toolResult.warnings);
-            await record('tool.completed', {
-              round, callId, id: definition.id, input, data: toolResult.data,
-              refs: toolResult.refs, observedAt: toolResult.observedAt, warnings: toolResult.warnings,
+            const audit = projectToolAudit(definition.id, toolResult, {
               durationMs: Date.now() - toolStartedAt,
             });
-            return { functionResponse: { name: definition.name, callId, response: { result: toolResult } } };
+            toolAudits.push(audit);
+            let observed = toolResult;
+            if (
+              isEvidenceGateTool(definition.id)
+              && quality?.gateEvidence
+              && quality.config?.evidenceGateMode
+              && quality.config.evidenceGateMode !== 'off'
+            ) {
+              const rawHits = extractRetrievalHits(definition.id, toolResult.data);
+              await record('evidence.gate.started', {
+                round, callId, id: definition.id, resultCount: rawHits.length, query: input?.query || '',
+              });
+              const gated = await quality.gateEvidence({
+                message,
+                query: input?.query || '',
+                toolId: definition.id,
+                toolResult,
+                signal,
+                mode: quality.config.evidenceGateMode,
+              });
+              evidenceGates.push(gated);
+              if (gated?.status === 'ok') {
+                observed = applyEvidenceGateToToolResult({
+                  toolId: definition.id,
+                  toolResult,
+                  decision: gated,
+                  mode: quality.config.evidenceGateMode,
+                });
+                await record('evidence.gate.completed', {
+                  round, callId, id: definition.id,
+                  mode: gated.mode,
+                  acceptedCount: gated.accepted?.length || 0,
+                  rejectedCount: gated.rejected?.length || 0,
+                  rejectedHosts: (gated.rejected || []).map((hit) => hit.host).filter(Boolean).slice(0, 8),
+                  confidence: gated.confidence ?? null,
+                  sufficiency: gated.sufficiency ?? null,
+                  hint: gated.hint || '',
+                  durationMs: gated.durationMs ?? null,
+                });
+              } else if (gated?.status === 'skipped') {
+                await record('evidence.gate.skipped', { round, callId, id: definition.id, reason: gated.reason || 'off' });
+              } else {
+                await record('evidence.gate.failed', {
+                  round, callId, id: definition.id,
+                  message: gated?.error || 'evidence gate failed',
+                  code: gated?.code || '',
+                  durationMs: gated?.durationMs ?? null,
+                });
+              }
+            }
+            toolCalls.push({
+              callId, id: definition.id, input, observedAt: observed.observedAt, warnings: observed.warnings,
+              audit,
+              ...(definition.id === 'web.search' ? { webSearch: summarizeWebSearch(observed) } : {}),
+              ...(observed.evidenceGate ? { evidenceGate: observed.evidenceGate } : {}),
+            });
+            refs.push(...(observed.refs || []));
+            warnings.push(...(observed.warnings || []));
+            await record('tool.completed', {
+              round, callId, id: definition.id, input, data: observed.data,
+              refs: observed.refs, observedAt: observed.observedAt, warnings: observed.warnings,
+              durationMs: Date.now() - toolStartedAt,
+              evidenceGate: observed.evidenceGate || null,
+            });
+            return { functionResponse: { name: definition.name, callId, response: { result: observed } } };
           } catch (error) {
             if (signal?.aborted || error?.name === 'AbortError') throw error;
             const messageText = safeErrorMessage(error);
@@ -253,8 +453,14 @@ export function createAgentRuntime({
               warnings: [warning],
               error: { code: error?.name === 'ValidationError' ? 'TOOL_VALIDATION_FAILED' : 'TOOL_EXECUTION_FAILED', message: messageText },
             };
+            const audit = projectToolAudit(definition.id, failure, {
+              durationMs: Date.now() - toolStartedAt,
+              error: failure.error,
+            });
+            toolAudits.push(audit);
             toolCalls.push({
               callId, id: definition.id, input, observedAt: failure.observedAt, warnings: failure.warnings, error: failure.error,
+              audit,
               ...(definition.id === 'web.search' ? { webSearch: { available: false, resultCount: 0 } } : {}),
             });
             warnings.push(warning);
@@ -268,6 +474,9 @@ export function createAgentRuntime({
         history.push({ role: 'user', parts: functionResponses });
       }
       throw new Error('Agent Runtime 未能完成回答');
+      } finally {
+        await finishPrior();
+      }
     },
   });
 }

@@ -9,21 +9,41 @@ export {
   sessionFromXueqiuMarket,
   yahooToXueqiuSymbol,
 } from './xueqiu-quotes.js';
+export {
+  createSinaFuturesClient,
+  isSinaFutureSymbol,
+  quoteFromSinaLine,
+  yahooToSinaFutureSymbol,
+} from './sina-futures.js';
 export { createMarketService } from './market-service.js';
 export { buildAsiaMarketBoard, buildCnMarketBoard, buildGlobalAssetBoard, buildOverviewBoard, buildUsMarketBoard, parseAsiaExtraSymbols, parseCnExtraSymbols, parseUsExtraSymbols, preferredOverviewFocus } from './market-boards.js';
 export { US_GROUPS, US_INDICES, US_WATCHLIST } from './us-catalog.js';
 export { ASIA_GROUPS, ASIA_INDICES, ASIA_WATCHLIST } from './asia-catalog.js';
 export { GLOBAL_GROUPS, GLOBAL_WATCHLIST } from './global-catalog.js';
 export {
+  createTrendForceJobHandlers,
+  createTrendForceService,
+  parseInsightArticle,
+  parseInsightCards,
+  parsePricePage,
+  parseResearchAjax,
+  parseResearchCards,
+  trendForceToFeedItem,
+  trendforceConnectorManifest,
+} from './trendforce.js';
+export {
   createTwitterHomeClient,
   createTwitterService,
   explainXConnectorError,
+  findXArticleUrl,
+  mergeArticleIntoTweetText,
   normalizeTweetBody,
+  normalizeXArticleUrl,
   normalizeXHomeFeed,
   parseTwitterHandle,
   tweetToFeedItem,
 } from './x/home-timeline.js';
-export { createPersonalAssetService, buildPersonalAssetDashboard, formatPeriodLabel, toDecimalString } from './personal-asset-workbook.js';
+export { createPersonalAssetService, buildPersonalAssetDashboard, buildPersonalAssetImport, formatPeriodLabel, toDecimalString } from './personal-asset-workbook.js';
 export {
   createManualHoldingsBook,
   legacyHoldingsBookToPortfolioImport,
@@ -50,8 +70,32 @@ export {
 } from './bilibili/index.js';
 export { createGeminiAgentClient } from './gemini-agent.js';
 export { createElucidGrokAgentClient } from './elucid-grok-agent.js';
+export { createTypeSafeSystemOneClient, resolveTypeSafeApiKey } from './typesafe-system-one.js';
+export { modelIdForProfile } from './agent-model-profile.js';
 export { createLocalKnowledgeFiles, parseKnowledgeFrontMatter } from './local-knowledge-files.js';
-export { createSearxngSearchProvider, WebSearchUnavailableError, normalizeWebSearchResults } from './searxng.js';
+export {
+  createSearxngSearchProvider,
+  WebSearchUnavailableError,
+  normalizeWebSearchResults,
+  parseUnresponsiveEngines,
+  searchLanguage,
+} from './searxng.js';
+export {
+  DEEPSEEK_SEARCH_DEFAULT_BASE_URL,
+  DEEPSEEK_SEARCH_DEFAULT_MODEL,
+  DEEPSEEK_SEARCH_PROVIDER_ID,
+  citationSnippetsFromBlocks,
+  createDeepSeekSearchProvider,
+  mapDeepSeekSearchResponse,
+} from './deepseek-search.js';
+export { createDoubaoAuxiliarySearch } from './doubao/index.js';
+export {
+  CHATGPT_CHAT_URL,
+  conversationIdFromUrl,
+  createChatGptChatClient,
+  parseConversationUrl,
+  thinkingTickNumber,
+} from './chatgpt/index.js';
 export { createOfficialSourcesClient, OFFICIAL_SOURCE_URLS } from './official-sources.js';
 export {
   createMarketNativeClient,
@@ -74,38 +118,6 @@ export {
   resolveDefaultBskPath,
 } from './browser/index.js';
 export {
-  DOUBAO_CHAT_URL,
-  DOUBAO_TRANSLATE_JSONL_SAMPLE,
-  applyWaitSnapshot,
-  buildDoubaoTranslateJsonlPrompt,
-  confirmSend,
-  createDoubaoAskQueue,
-  createDoubaoChatClient,
-  createDoubaoConnector,
-  createWaitAccumulator,
-  normalizeText,
-  parseDoubaoTranslateJsonl,
-  parseJsonlRecords,
-  toJsonl,
-  toTipTapHtml,
-  FEED_TRANSLATE_INPUT_SCHEMA,
-  FEED_TRANSLATE_OUTPUT_SCHEMA,
-  acceptFeedTranslateOutput,
-  feedTranslateOutputComplete,
-  buildConceptSeedExtractEnvelope,
-  buildFeedTranslateEnvelope,
-  createDoubaoJsonlTranslatePort,
-  isDoubaoTranslateHangReason,
-  extractJsonValue,
-  jsonlEnvelopeLine,
-  materializeJsonlEnvelope,
-  normalizeConceptSeedOutput,
-  TAG_INPUT_SCHEMA,
-  TAG_OUTPUT_SCHEMA,
-  buildTagEnvelope,
-  createDoubaoJsonlTagPort,
-} from './doubao/index.js';
-export {
   createTranslateService,
   needsTranslation,
   normalizeTranslateTarget,
@@ -113,6 +125,27 @@ export {
   parseGeminiGenerateContent,
   parseGoogleTranslatePayload,
 } from './translate/index.js';
+export { createGeminiTagPort } from './gemini-tag.js';
+export {
+  buildCursorAgentArgs,
+  buildCursorSessionPrompt,
+  createCursorAgentSpawnOptions,
+  createCursorSessionPort,
+  cursorSessionActor,
+  resolveCursorAgentBin,
+  resolveCursorAgentLaunch,
+  resolveCursorAgentModel,
+  resolveVisibleCursorAgentLaunch,
+  runCursorAgentProcess,
+  workPackageTraceId,
+  writeCursorAgentPromptFile,
+} from './cursor-session.js';
+export {
+  createLauncherRestartPort,
+  requestLauncherRestart,
+  restartRequestPath,
+  RESTART_REQUEST_NAME,
+} from './launcher-restart.js';
 
 export {
   createSourceModuleRegistry as createConnectorRegistry,

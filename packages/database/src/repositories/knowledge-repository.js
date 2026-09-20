@@ -7,6 +7,7 @@ import {
   parseContract,
   ValidationError,
 } from '../../../contracts/src/index.js';
+import { escapeFts5MatchQuery } from '../fts-query.js';
 
 function mapDocument(row) {
   return {
@@ -68,6 +69,9 @@ function clipText(value, max) {
 
 function sessionKindOf(sourceType, taskType) {
   if (sourceType === 'inspiration' || taskType === 'idea-sketch') return 'inspiration';
+  if (sourceType === 'article-analysis' || String(taskType || '').startsWith('article-analysis.')) {
+    return 'article-analysis';
+  }
   return 'question-answer';
 }
 
@@ -99,6 +103,25 @@ function mapSession(row) {
   };
 }
 
+function readEvidenceGate(outputJson) {
+  if (!outputJson) return null;
+  try {
+    const output = typeof outputJson === 'string' ? JSON.parse(outputJson) : outputJson;
+    const gate = output?.evidenceGate;
+    if (!gate || typeof gate !== 'object') return null;
+    const confidence = Number(gate.confidence);
+    const sufficiency = Number(gate.sufficiency);
+    return {
+      confidence: Number.isFinite(confidence) ? confidence : null,
+      sufficiency: Number.isFinite(sufficiency) ? sufficiency : null,
+      acceptedCount: Number(gate.acceptedCount) || 0,
+      rejectedCount: Number(gate.rejectedCount) || 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function mapExchange(row) {
   return {
     id: row.id,
@@ -110,6 +133,7 @@ function mapExchange(row) {
     createdAt: row.created_at,
     completedAt: row.completed_at || null,
     refs: [],
+    evidenceGate: readEvidenceGate(row.output_json),
   };
 }
 
@@ -289,13 +313,15 @@ export function createKnowledgeRepository(database, emitEvent) {
         : '';
       const taxonomyParams = taxonomy.length ? [workspaceId, ...taxonomy, taxonomy.length] : [];
       if (term) {
+        const matchQuery = escapeFts5MatchQuery(term);
+        if (!matchQuery) return [];
         return database.prepare(`SELECT f.knowledge_id AS knowledgeId, f.revision, f.title,
           snippet(knowledge_fts, 3, '', '', '…', 24) AS snippet
           FROM knowledge_fts f
           JOIN knowledge_items k ON k.id = f.knowledge_id
           WHERE k.workspace_id = ? AND f.revision = k.current_revision AND knowledge_fts MATCH ?
             ${taxonomyClause}
-          ORDER BY rank LIMIT ?`).all(workspaceId, term, ...taxonomyParams, cap);
+          ORDER BY rank LIMIT ?`).all(workspaceId, matchQuery, ...taxonomyParams, cap);
       }
       return database.prepare(`SELECT k.id AS knowledgeId, k.current_revision AS revision, k.title,
         substr(k.body, 1, 80) AS snippet
@@ -409,7 +435,7 @@ export function createKnowledgeRepository(database, emitEvent) {
     createSession({ workspaceId, kind = 'question-answer', title, preview = '', sourceType = '', sourceId = '' }) {
       const now = Date.now();
       const id = randomUUID();
-      const sessionKind = kind === 'inspiration' ? 'inspiration' : 'question-answer';
+      const sessionKind = kind === 'inspiration' || kind === 'article-analysis' ? kind : 'question-answer';
       database.transaction(() => {
         database.prepare(`INSERT INTO ai_sessions
           (id, workspace_id, kind, title, preview, source_type, source_id, created_at, updated_at)
@@ -503,6 +529,7 @@ export function createKnowledgeRepository(database, emitEvent) {
     recordAgentRun({
       jobId, workspaceId, sessionId = '', message, answer, providerId, modelId,
       toolCalls = [], refs = [], warnings = [], sourceType = 'agent-run', sourceId, taskType = 'question-answer',
+      output,
     }) {
       const now = Date.now();
       const id = randomUUID();
@@ -555,7 +582,8 @@ export function createKnowledgeRepository(database, emitEvent) {
            input_hash, input_text, output_text, output_json, error_json, created_at, completed_at)
           VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, NULL, ?, ?)`)
           .run(id, workspaceId, resolvedSessionId, sourceType, runSourceId, taskType, providerId, modelId,
-            inputHash, String(message || ''), answer, JSON.stringify({ toolCalls, warnings }), now, now);
+            inputHash, String(message || ''), answer,
+            JSON.stringify(output !== undefined ? output : { toolCalls, warnings }), now, now);
         database.prepare('UPDATE ai_sessions SET preview = ?, updated_at = ? WHERE id = ?')
           .run(clipText(answer || message, SESSION_PREVIEW_MAX), now, resolvedSessionId);
         const insertRef = database.prepare(`INSERT INTO ai_run_context_refs
@@ -570,5 +598,339 @@ export function createKnowledgeRepository(database, emitEvent) {
       })();
       return mapAiRun(database.prepare('SELECT * FROM ai_runs WHERE id = ?').get(existingRunId || id));
     },
+
+    createWorkPackage(value) {
+      if (value.clientMutationId) {
+        const existing = database.prepare(`SELECT * FROM work_packages
+          WHERE workspace_id = ? AND client_mutation_id = ?`)
+          .get(value.workspaceId, value.clientMutationId);
+        if (existing) return mapWorkPackage(existing);
+      }
+      const now = Date.now();
+      const pack = {
+        id: randomUUID(),
+        workspaceId: value.workspaceId,
+        inspirationId: value.inspirationId,
+        title: value.title || '',
+        body: value.body,
+        status: 'open',
+        restartRequired: 'unknown',
+        restartAppliedAt: null,
+        claimedBy: '',
+        claimedAt: null,
+        claimExpiresAt: null,
+        completedAt: null,
+        resultSummary: '',
+        cursorAgentId: '',
+        cursorRunId: '',
+        dispatchJobId: '',
+        parentWorkPackageId: value.parentWorkPackageId || '',
+        clientMutationId: value.clientMutationId || '',
+        createdAt: now,
+        updatedAt: now,
+      };
+      database.transaction(() => {
+        database.prepare(`INSERT INTO work_packages
+          (id, workspace_id, inspiration_id, title, body, status, restart_required, restart_applied_at,
+           claimed_by, claimed_at, claim_expires_at, completed_at, result_summary, client_mutation_id,
+           parent_work_package_id, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, 'open', 'unknown', NULL, '', NULL, NULL, NULL, '', ?, ?, ?, ?)`)
+          .run(pack.id, pack.workspaceId, pack.inspirationId, pack.title, pack.body,
+            pack.clientMutationId, pack.parentWorkPackageId, now, now);
+        emitEvent('knowledge.work-package.created.v1', 'work-package', pack.id, {
+          workPackageId: pack.id, inspirationId: pack.inspirationId, status: 'open',
+        }, pack.workspaceId);
+      })();
+      return pack;
+    },
+
+    getWorkPackage(workspaceId, id) {
+      const row = database.prepare('SELECT * FROM work_packages WHERE workspace_id = ? AND id = ?')
+        .get(workspaceId, id);
+      return row ? mapWorkPackage(row) : null;
+    },
+
+    getWorkPackageByInspiration(workspaceId, inspirationId) {
+      const row = database.prepare('SELECT * FROM work_packages WHERE workspace_id = ? AND inspiration_id = ?')
+        .get(workspaceId, inspirationId);
+      return row ? mapWorkPackage(row) : null;
+    },
+
+    getWorkPackageByMutation(workspaceId, clientMutationId) {
+      if (!clientMutationId) return null;
+      const row = database.prepare(`SELECT * FROM work_packages
+        WHERE workspace_id = ? AND client_mutation_id = ?`).get(workspaceId, clientMutationId);
+      return row ? mapWorkPackage(row) : null;
+    },
+
+    listWorkPackages(workspaceId, status = 'active') {
+      const now = Date.now();
+      let rows;
+      if (status === 'all') {
+        rows = database.prepare(`SELECT * FROM work_packages WHERE workspace_id = ?
+          ORDER BY created_at DESC`).all(workspaceId);
+      } else if (status === 'active' || status === 'open') {
+        rows = database.prepare(`SELECT * FROM work_packages WHERE workspace_id = ?
+          AND (
+            status = 'open'
+            OR (status = 'claimed' AND claim_expires_at IS NOT NULL AND claim_expires_at < ?)
+            ${status === 'active' ? "OR status = 'claimed'" : ''}
+          )
+          ORDER BY created_at ASC`).all(workspaceId, now);
+      } else {
+        rows = database.prepare(`SELECT * FROM work_packages WHERE workspace_id = ? AND status = ?
+          ORDER BY created_at DESC`).all(workspaceId, status);
+      }
+      return rows.map(mapWorkPackage);
+    },
+
+    listWorkPackagesByInspirationIds(workspaceId, ids) {
+      const wanted = [...new Set((ids || []).map((id) => String(id || '').trim()).filter(Boolean))];
+      if (!wanted.length) return [];
+      const placeholders = wanted.map(() => '?').join(', ');
+      return database.prepare(`SELECT * FROM work_packages WHERE workspace_id = ? AND inspiration_id IN (${placeholders})`)
+        .all(workspaceId, ...wanted)
+        .map(mapWorkPackage);
+    },
+
+    claimWorkPackage(workspaceId, { id, claimedBy, leaseMs }) {
+      const now = Date.now();
+      const expiresAt = now + leaseMs;
+      return database.transaction(() => {
+        let target = id
+          ? database.prepare('SELECT * FROM work_packages WHERE workspace_id = ? AND id = ?').get(workspaceId, id)
+          : database.prepare(`SELECT * FROM work_packages WHERE workspace_id = ?
+              AND (
+                status = 'open'
+                OR (status = 'claimed' AND claim_expires_at IS NOT NULL AND claim_expires_at < ?)
+              )
+              ORDER BY created_at ASC LIMIT 1`).get(workspaceId, now);
+        if (!target) return null;
+        const result = database.prepare(`UPDATE work_packages
+          SET status = 'claimed', claimed_by = ?, claimed_at = ?, claim_expires_at = ?, updated_at = ?
+          WHERE id = ? AND workspace_id = ?
+            AND (
+              status = 'open'
+              OR (status = 'claimed' AND claim_expires_at IS NOT NULL AND claim_expires_at < ?)
+            )`).run(claimedBy, now, expiresAt, now, target.id, workspaceId, now);
+        if (!result.changes) return null;
+        const next = mapWorkPackage(database.prepare('SELECT * FROM work_packages WHERE id = ?').get(target.id));
+        emitEvent('knowledge.work-package.claimed.v1', 'work-package', next.id, {
+          workPackageId: next.id, inspirationId: next.inspirationId, status: 'claimed', claimedBy,
+        }, workspaceId);
+        return next;
+      })();
+    },
+
+    completeWorkPackage(workspaceId, id, { claimedBy, resultSummary, restartRequired }) {
+      const now = Date.now();
+      return database.transaction(() => {
+        const result = database.prepare(`UPDATE work_packages
+          SET status = 'completed', result_summary = ?, restart_required = ?, completed_at = ?, updated_at = ?
+          WHERE id = ? AND workspace_id = ? AND status = 'claimed' AND claimed_by = ?`)
+          .run(resultSummary, restartRequired, now, now, id, workspaceId, claimedBy);
+        if (!result.changes) return null;
+        const next = mapWorkPackage(database.prepare('SELECT * FROM work_packages WHERE id = ?').get(id));
+        emitEvent('knowledge.work-package.completed.v1', 'work-package', next.id, {
+          workPackageId: next.id, inspirationId: next.inspirationId, status: 'completed', restartRequired,
+        }, workspaceId);
+        return next;
+      })();
+    },
+
+    failWorkPackage(workspaceId, id, { claimedBy, resultSummary }) {
+      const now = Date.now();
+      return database.transaction(() => {
+        const result = database.prepare(`UPDATE work_packages
+          SET status = 'failed', result_summary = ?, completed_at = ?, updated_at = ?
+          WHERE id = ? AND workspace_id = ? AND status = 'claimed' AND claimed_by = ?`)
+          .run(resultSummary, now, now, id, workspaceId, claimedBy);
+        if (!result.changes) return null;
+        const next = mapWorkPackage(database.prepare('SELECT * FROM work_packages WHERE id = ?').get(id));
+        emitEvent('knowledge.work-package.failed.v1', 'work-package', next.id, {
+          workPackageId: next.id, inspirationId: next.inspirationId, status: 'failed',
+        }, workspaceId);
+        return next;
+      })();
+    },
+
+    attachCursorSession(workspaceId, id, { cursorAgentId, cursorRunId, dispatchJobId } = {}) {
+      const now = Date.now();
+      return database.transaction(() => {
+        const current = database.prepare('SELECT * FROM work_packages WHERE workspace_id = ? AND id = ?')
+          .get(workspaceId, id);
+        if (!current) return null;
+        database.prepare(`UPDATE work_packages
+          SET cursor_agent_id = CASE WHEN ? != '' THEN ? ELSE cursor_agent_id END,
+              cursor_run_id = CASE WHEN ? != '' THEN ? ELSE cursor_run_id END,
+              dispatch_job_id = CASE WHEN ? != '' THEN ? ELSE dispatch_job_id END,
+              updated_at = ?
+          WHERE workspace_id = ? AND id = ?`)
+          .run(
+            cursorAgentId || '', cursorAgentId || '',
+            cursorRunId || '', cursorRunId || '',
+            dispatchJobId || '', dispatchJobId || '',
+            now, workspaceId, id,
+          );
+        const next = mapWorkPackage(database.prepare('SELECT * FROM work_packages WHERE id = ?').get(id));
+        if (next.cursorAgentId && next.cursorAgentId !== (current.cursor_agent_id || '')) {
+          emitEvent('knowledge.work-package.dispatched.v1', 'work-package', next.id, {
+            workPackageId: next.id, status: next.status, cursorAgentId: next.cursorAgentId,
+          }, workspaceId);
+        }
+        return next;
+      })();
+    },
+
+    notifyWorkPackages(workspaceId, ids) {
+      const wanted = [...new Set((ids || []).map((id) => String(id || '').trim()).filter(Boolean))];
+      database.transaction(() => {
+        for (const id of wanted) {
+          emitEvent('knowledge.work-package.notified.v1', 'work-package', id, {
+            workPackageId: id, status: 'open',
+          }, workspaceId);
+        }
+      })();
+      return wanted.length;
+    },
+
+    createAttachment(value) {
+      const now = Date.now();
+      const id = value.id || randomUUID();
+      database.prepare(`INSERT INTO attachments
+        (id, workspace_id, mime, byte_size, sha256, relative_path, original_name, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(
+          id,
+          value.workspaceId,
+          value.mime,
+          value.byteSize,
+          value.sha256,
+          value.relativePath,
+          value.originalName || '',
+          now,
+        );
+      return mapAttachment(database.prepare('SELECT * FROM attachments WHERE id = ?').get(id));
+    },
+
+    getAttachment(workspaceId, id) {
+      const row = database.prepare('SELECT * FROM attachments WHERE workspace_id = ? AND id = ?')
+        .get(workspaceId, id);
+      return row ? mapAttachment(row) : null;
+    },
+
+    listAttachmentsByIds(workspaceId, ids) {
+      const wanted = [...new Set((ids || []).map((id) => String(id || '').trim()).filter(Boolean))];
+      if (!wanted.length) return [];
+      const placeholders = wanted.map(() => '?').join(', ');
+      const rows = database.prepare(`SELECT * FROM attachments WHERE workspace_id = ? AND id IN (${placeholders})`)
+        .all(workspaceId, ...wanted);
+      const byId = new Map(rows.map((row) => [row.id, mapAttachment(row)]));
+      return wanted.map((id) => byId.get(id)).filter(Boolean);
+    },
+
+    listResourceAttachments(workspaceId, resourceType, resourceId) {
+      return database.prepare(`SELECT a.* FROM attachments a
+        INNER JOIN resource_attachments r
+          ON r.attachment_id = a.id AND r.workspace_id = a.workspace_id
+        WHERE r.workspace_id = ? AND r.resource_type = ? AND r.resource_id = ?
+        ORDER BY r.sort_order ASC`).all(workspaceId, resourceType, resourceId)
+        .map(mapAttachment);
+    },
+
+    listResourceAttachmentsForMany(workspaceId, resourceType, resourceIds) {
+      const wanted = [...new Set((resourceIds || []).map((id) => String(id || '').trim()).filter(Boolean))];
+      if (!wanted.length) return new Map();
+      const placeholders = wanted.map(() => '?').join(', ');
+      const rows = database.prepare(`SELECT r.resource_id AS resource_id, a.* FROM attachments a
+        INNER JOIN resource_attachments r
+          ON r.attachment_id = a.id AND r.workspace_id = a.workspace_id
+        WHERE r.workspace_id = ? AND r.resource_type = ? AND r.resource_id IN (${placeholders})
+        ORDER BY r.sort_order ASC`).all(workspaceId, resourceType, ...wanted);
+      const grouped = new Map(wanted.map((id) => [id, []]));
+      for (const row of rows) {
+        const list = grouped.get(row.resource_id) || [];
+        list.push(mapAttachment(row));
+        grouped.set(row.resource_id, list);
+      }
+      return grouped;
+    },
+
+    replaceResourceAttachments(workspaceId, resourceType, resourceId, attachmentIds) {
+      const ids = [...new Set((attachmentIds || []).map((id) => String(id || '').trim()).filter(Boolean))];
+      database.transaction(() => {
+        database.prepare(`DELETE FROM resource_attachments
+          WHERE workspace_id = ? AND resource_type = ? AND resource_id = ?`)
+          .run(workspaceId, resourceType, resourceId);
+        const insert = database.prepare(`INSERT INTO resource_attachments
+          (workspace_id, resource_type, resource_id, attachment_id, sort_order)
+          VALUES (?, ?, ?, ?, ?)`);
+        ids.forEach((id, index) => insert.run(workspaceId, resourceType, resourceId, id, index));
+      })();
+      return ids;
+    },
+
+    clearResourceAttachments(workspaceId, resourceType, resourceId) {
+      const result = database.prepare(`DELETE FROM resource_attachments
+        WHERE workspace_id = ? AND resource_type = ? AND resource_id = ?`)
+        .run(workspaceId, resourceType, resourceId);
+      return result.changes > 0;
+    },
+
+    deleteWorkPackageByInspiration(workspaceId, inspirationId) {
+      const packs = database.prepare('SELECT id FROM work_packages WHERE workspace_id = ? AND inspiration_id = ?')
+        .all(workspaceId, inspirationId);
+      database.transaction(() => {
+        for (const pack of packs) {
+          database.prepare(`DELETE FROM resource_attachments
+            WHERE workspace_id = ? AND resource_type = 'work-package' AND resource_id = ?`)
+            .run(workspaceId, pack.id);
+        }
+        database.prepare(`DELETE FROM resource_attachments
+          WHERE workspace_id = ? AND resource_type = 'inspiration' AND resource_id = ?`)
+          .run(workspaceId, inspirationId);
+        database.prepare('DELETE FROM work_packages WHERE workspace_id = ? AND inspiration_id = ?')
+          .run(workspaceId, inspirationId);
+      })();
+      return packs.length > 0;
+    },
   });
+}
+
+function mapAttachment(row) {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    mime: row.mime,
+    byteSize: row.byte_size,
+    sha256: row.sha256,
+    relativePath: row.relative_path,
+    originalName: row.original_name || '',
+    createdAt: row.created_at,
+  };
+}
+
+function mapWorkPackage(row) {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    inspirationId: row.inspiration_id,
+    title: row.title || '',
+    body: row.body,
+    status: row.status,
+    restartRequired: row.restart_required || 'unknown',
+    restartAppliedAt: row.restart_applied_at || null,
+    claimedBy: row.claimed_by || '',
+    claimedAt: row.claimed_at || null,
+    claimExpiresAt: row.claim_expires_at || null,
+    completedAt: row.completed_at || null,
+    resultSummary: row.result_summary || '',
+    cursorAgentId: row.cursor_agent_id || '',
+    cursorRunId: row.cursor_run_id || '',
+    dispatchJobId: row.dispatch_job_id || '',
+    parentWorkPackageId: row.parent_work_package_id || '',
+    clientMutationId: row.client_mutation_id || '',
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }

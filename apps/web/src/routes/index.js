@@ -1,5 +1,6 @@
 import { createEventRoutes } from './event-routes.js';
 import { createAgentRoutes } from './agent-routes.js';
+import { createArticleAnalysisRoutes } from './article-analysis-routes.js';
 import { createContextRoutes } from './context-routes.js';
 import { createFeedRoutes } from './feed-routes.js';
 import { createIdentityRoutes } from './identity-routes.js';
@@ -21,6 +22,7 @@ export function createApiRoutes() {
     ...createTaggingRoutes(),
     ...createContextRoutes(),
     ...createAgentRoutes(),
+    ...createArticleAnalysisRoutes(),
     ...createTradingRoutes(),
     ...createEventRoutes(),
   ];

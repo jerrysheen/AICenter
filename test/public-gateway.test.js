@@ -5,6 +5,19 @@ import os from 'node:os';
 import path from 'node:path';
 import { createAiCenterServer } from '../apps/web/src/server.js';
 
+function cookieLines(response) {
+  if (typeof response.headers.getSetCookie === 'function') {
+    return response.headers.getSetCookie();
+  }
+  return String(response.headers.get('set-cookie') || '').split(/,(?=\s*(?:__Host-)?[A-Za-z0-9_]+=)/);
+}
+
+function cookiePair(lines, name) {
+  const line = lines.find((item) => item.startsWith(`${name}=`));
+  assert.ok(line, `missing cookie ${name}`);
+  return line.split(';')[0];
+}
+
 test('public hostname never inherits loopback desktop privileges', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-public-'));
   const app = createAiCenterServer({
@@ -35,9 +48,10 @@ test('public hostname never inherits loopback desktop privileges', async () => {
       body: JSON.stringify({ code: pairToken, deviceName: '公网测试手机' }),
     });
     assert.equal(pairResponse.status, 201);
-    const cookie = pairResponse.headers.get('set-cookie').split(';')[0];
-    assert.match(pairResponse.headers.get('set-cookie'), /__Host-ai_center_device=/);
-    assert.match(pairResponse.headers.get('set-cookie'), /; Secure/);
+    const cookies = cookieLines(pairResponse);
+    assert.ok(cookies.some((line) => line.startsWith('__Host-ai_center_device=')));
+    assert.ok(cookies.some((line) => line.startsWith('ai_center_device=')));
+    const cookie = cookiePair(cookies, '__Host-ai_center_device');
 
     const unauthenticatedRuntime = await fetch(`${address.localUrl}/api/v1/runtime`, {
       headers: publicHeaders,
@@ -49,6 +63,45 @@ test('public hostname never inherits loopback desktop privileges', async () => {
     });
     assert.equal(deviceRuntime.status, 403);
 
+    const posts = await fetch(`${address.localUrl}/api/v1/posts`, {
+      headers: { ...publicHeaders, Cookie: cookie },
+    });
+    assert.equal(posts.status, 200);
+  } finally {
+    await app.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('public password login issues a device session and cannot call desktop APIs', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-public-login-'));
+  const app = createAiCenterServer({
+    host: '127.0.0.1',
+    port: 0,
+    dataDirectory: directory,
+    publicUrl: 'https://center.example.com',
+    loginCredential: { username: 'owner', password: 'secret-pass' },
+  });
+  const address = await app.listen();
+  const publicHeaders = { Host: 'center.example.com', 'CF-Connecting-IP': '203.0.113.9' };
+  try {
+    const login = await fetch(`${address.localUrl}/api/v1/session/login`, {
+      method: 'POST',
+      headers: { ...publicHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'owner', password: 'secret-pass', deviceName: '公网密码登录' }),
+    });
+    assert.equal(login.status, 201);
+    const cookies = cookieLines(login);
+    assert.ok(cookies.some((line) => line.startsWith('__Host-ai_center_device=')));
+    assert.ok(cookies.some((line) => line.startsWith('ai_center_device=')));
+    const cookie = cookiePair(cookies, 'ai_center_device');
+
+    const pairing = await fetch(`${address.localUrl}/api/v1/pairing`, { headers: publicHeaders });
+    assert.equal(pairing.status, 403);
+    const runtime = await fetch(`${address.localUrl}/api/v1/runtime`, {
+      headers: { ...publicHeaders, Cookie: cookie },
+    });
+    assert.equal(runtime.status, 403);
     const posts = await fetch(`${address.localUrl}/api/v1/posts`, {
       headers: { ...publicHeaders, Cookie: cookie },
     });

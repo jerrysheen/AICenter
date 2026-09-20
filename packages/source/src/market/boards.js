@@ -1,4 +1,4 @@
-import { DEFAULT_MARKET_CATALOG } from './catalog.js';
+import { DEFAULT_MARKET_CATALOG, isForeignToUsListingSymbol } from './catalog.js';
 
 function catalogOrDefault(catalog) {
   return catalog || DEFAULT_MARKET_CATALOG;
@@ -70,7 +70,7 @@ function parseExtras(raw, pattern, known) {
 export function parseUsExtraSymbols(raw, marketCatalog) {
   const { indices, watchlist } = catalogOrDefault(marketCatalog).us;
   const known = new Set([...indices, ...watchlist].map((item) => item.symbol));
-  return parseExtras(raw, /^[A-Z^][A-Z0-9.^-]{0,11}$/, known);
+  return parseExtras(raw, /^[A-Z^][A-Z0-9.^-]{0,11}$/, known).filter((symbol) => !isForeignToUsListingSymbol(symbol));
 }
 
 export function parseAsiaExtraSymbols(raw, marketCatalog) {
@@ -335,7 +335,7 @@ export function buildGlobalAssetBoard({ quotes, session = 'closed', fetchedAt = 
     session,
     note: errors
       ? `部分全球资产行情暂未获取成功（${errors} 项），页面保留已成功数据。延迟约 0–15 分钟，非投资建议。`
-      : '数据来自 Yahoo Finance 公开接口。黄金与原油使用期货主力合约，美元指数使用 ICE DXY；报价通常延迟约 0–15 分钟，非投资建议。',
+      : '数据来自公开行情。美债收益率与国际期货走 Yahoo；国内国债与商品主连走新浪。报价通常延迟约 0–15 分钟，非投资建议。',
     groups: section.groups,
     indices: [],
     watchlist,
@@ -350,7 +350,7 @@ export function buildOverviewBoard(usBoard, asiaBoard, cnBoard, options = {}) {
   const focused = focus === 'cn' ? cnBoard : usBoard;
   const cnSection = {
     id: 'cn',
-    title: 'A股观察',
+    title: 'A股 / 港股观察',
     session: cnBoard?.session || 'closed',
     mode: cnBoard?.mode || 'partial',
     indices: cnBoard?.indices || [],
@@ -376,7 +376,7 @@ export function buildOverviewBoard(usBoard, asiaBoard, cnBoard, options = {}) {
     sessions: asiaBoard?.sessions || null,
     focus,
     note: focus === 'cn'
-      ? '北京时间工作日 17:00 前显示 A 股观察。完整分组在 A 股分览。'
+      ? '北京时间工作日 17:00 前显示 A 股与港股观察。完整分组在 A 股分览。'
       : '北京时间 17:00 后及周末显示美股观察。完整分组在美股分览。',
     groups: [],
     indices: [],

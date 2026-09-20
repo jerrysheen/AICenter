@@ -100,19 +100,14 @@ export function createBrowserRuntime(options = {}) {
       }
       const started = await provider.startSession(resolvedSessionOptions);
       const session = createBrowserSession(provider, started);
-      let callbackError = null;
       try {
         return await callback(session);
-      } catch (error) {
-        callbackError = error;
-        throw error;
       } finally {
         try {
           await session.close();
         } catch (stopError) {
           const message = stopError instanceof Error ? stopError.message : String(stopError);
           logger.warn?.(`[browser-runtime] session stop failed: ${message}`);
-          if (!callbackError) throw stopError;
         }
       }
     },

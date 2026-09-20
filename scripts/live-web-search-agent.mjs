@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSearchToolInputSchema } from '../packages/contracts/src/index.js';
-import { createElucidGrokAgentClient, createGeminiAgentClient, createSearxngSearchProvider } from '../packages/connectors/src/index.js';
+import { createDeepSeekSearchProvider, createElucidGrokAgentClient, createGeminiAgentClient } from '../packages/connectors/src/index.js';
 import { createAgentRuntime } from '../packages/runtime/src/agent-runtime.js';
 import { createToolRegistry } from '../packages/runtime/src/tool-registry.js';
 import { resolveInstanceConfig } from '../packages/instance/src/index.js';
@@ -19,7 +19,7 @@ function createConfiguredAgentClient() {
 
 resolveInstanceConfig({ repositoryRoot });
 
-const search = createSearxngSearchProvider();
+const search = createDeepSeekSearchProvider();
 const tools = createToolRegistry();
 tools.register({
   id: 'web.search',

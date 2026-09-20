@@ -16,9 +16,9 @@
 |---|---|---|
 | 产品范围 | 根 README / AGENTS 仍以连接原型为当前范围 | 0.2.0 基线候选，进入隐私、安全和稳定性验收 |
 | 同花顺 / 雪球 | 尚未接入行情 | 沪深/港股通/B 股现价优先雪球批量行情；同花顺快照作缺票回退。延迟与风控需验收 |
-| AI | AI Worker 后续接入 | 已有单 Agent / Worker；Context Service 已向其供数 |
+| AI | AI Worker 后续接入 | 已有单 Agent / Worker；Context Service 已向其供数。Search Agent（文章阅读 / `ai.article.analyze`）复用同一个 AgentRuntime，不改普通问答 Tool Loop |
 | 鸿蒙分享 | 分享详情页加载远端 ArkWeb | 原生分享先写本地 RDB Outbox；主 ArkWeb 恢复授权后上传 |
-| 豆包队列 | Web、Worker、CLI 共用一条队列 | 目前仅各进程实例内部串行，进程之间不共享 |
+| 翻译 / Tag | 仍走豆包网页或手动 CLI | 自动翻译和粗筛 Tag 走 Gemini。联网搜索默认 DeepSeek Native Search；Agent 调用 `web.search` 时仍可并行问豆包，终稿并入补充资讯。SearXNG 保留代码，主链路不调用。豆包翻译 / 标注不恢复，历史译文 / Tag 行保留 |
 | 下一步 | 固定做 B4 关注同步 | 先完成发布门槛，不继续扩大功能 |
 | 持仓 | 加减仓都产生交易流水 | 仍是手工批次账本（`HoldingLot`），不宣称完整流水会计 |
 | Instance | 已实现多用户 / 多租户 | 仅完成 single-user Instance 边界；没有 User、Tenant、权限后台或动态扩展加载 |

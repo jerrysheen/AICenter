@@ -395,6 +395,17 @@ test('context service resolves user-selected references without searching', asyn
         if (id !== 'content-1') return null;
         return { id: 'content-1', title: 'SK海力士', body: 'HBM4 进度', sourceUrl: 'https://x.com/a/status/1', createdAt: 5 };
       },
+      getLocalizedContentItem(_workspaceId, id) {
+        if (id !== 'content-1') return null;
+        return {
+          id: 'content-1',
+          title: 'SK海力士',
+          body: 'HBM4 进度',
+          sourceUrl: 'https://x.com/a/status/1',
+          createdAt: 5,
+          translation: null,
+        };
+      },
       getLegacyPost() { return { id: 'post-1', title: '手工', body: '备忘', sourceUrl: '', createdAt: 6 }; },
       listContentItems() { return []; },
     },
@@ -486,7 +497,7 @@ test('feed refresh auto-translates english items without replacing original body
             id: item.id,
             sourceText: item.text,
             translatedText: '英伟达宣布了新的 HBM 合作。',
-            engine: 'doubao-jsonl',
+            engine: 'gemini',
             targetLang,
           })),
         };
@@ -526,7 +537,7 @@ test('feed localizeTexts caches source titles without rewriting source facts', a
             id: item.id,
             sourceText: item.text,
             translatedText: '非农就业报告',
-            engine: 'doubao-jsonl',
+            engine: 'gemini',
             targetLang,
           })),
         };

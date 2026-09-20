@@ -53,6 +53,28 @@ class ConnectionTarget {
   }
 }
 
+class ProbeResult {
+  online: boolean = false;
+  uiRevision: string = '';
+
+  constructor(online: boolean, uiRevision: string) {
+    this.online = online;
+    this.uiRevision = uiRevision;
+  }
+}
+
+function withUiRevision(pageUrl: string, revision: string): string {
+  if (!revision || !pageUrl) return pageUrl;
+  const hashIndex = pageUrl.indexOf('#');
+  const hash = hashIndex >= 0 ? pageUrl.substring(hashIndex) : '';
+  const beforeHash = hashIndex >= 0 ? pageUrl.substring(0, hashIndex) : pageUrl;
+  if (beforeHash.indexOf('v=') >= 0 && (beforeHash.indexOf('?v=') >= 0 || beforeHash.indexOf('&v=') >= 0)) {
+    return beforeHash.replace(/([?&]v=)[^&#]*/, `$1${revision}`) + hash;
+  }
+  const sep = beforeHash.indexOf('?') >= 0 ? '&' : '?';
+  return `${beforeHash}${sep}v=${revision}${hash}`;
+}
+
 function isHttpUrl(value: string): boolean {
   return value.startsWith('http://') || value.startsWith('https://');
 }
@@ -298,7 +320,7 @@ struct Index {
     return serverUrl.startsWith('https://') ? WAN_PROBE_TIMEOUT_MS : LAN_PROBE_TIMEOUT_MS;
   }
 
-  private async probeServer(serverUrl: string): Promise<boolean> {
+  private async probeServer(serverUrl: string): Promise<ProbeResult> {
     const timeout = this.probeTimeoutMs(serverUrl);
     const client = http.createHttp();
     try {
@@ -309,9 +331,19 @@ struct Index {
         expectDataType: http.HttpDataType.STRING,
         header: { 'Accept': 'application/json' },
       });
-      return Boolean(response && response.responseCode > 0 && response.responseCode < 600);
+      const online = Boolean(response && response.responseCode > 0 && response.responseCode < 600);
+      let uiRevision = '';
+      if (online && typeof response.result === 'string') {
+        try {
+          const payload = JSON.parse(response.result) as Record<string, Object>;
+          if (typeof payload.uiRevision === 'string') uiRevision = payload.uiRevision;
+        } catch (_error) {
+          uiRevision = '';
+        }
+      }
+      return new ProbeResult(online, uiRevision);
     } catch (_error) {
-      return false;
+      return new ProbeResult(false, '');
     } finally {
       try {
         client.destroy();
@@ -377,13 +409,13 @@ struct Index {
     this.errorMessage = '正在确认电脑是否在线';
     this.shellStatus = ShellStatus.CHECKING;
     await this.rememberServer(target.serverUrl);
-    const online = await this.probeServer(target.serverUrl);
+    const probe = await this.probeServer(target.serverUrl);
     if (generation !== this.probeGeneration) return;
-    if (!online) {
+    if (!probe.online) {
       this.showUnreachableError(target.serverUrl);
       return;
     }
-    this.pageUrl = target.pageUrl || target.serverUrl;
+    this.pageUrl = withUiRevision(target.pageUrl || target.serverUrl, probe.uiRevision);
     this.errorMessage = '';
     this.shellStatus = ShellStatus.READY;
   }
@@ -400,7 +432,16 @@ struct Index {
 
   private handleMainFrameError(): void {
     if (this.shellStatus !== ShellStatus.READY && this.shellStatus !== ShellStatus.CHECKING) return;
-    this.showUnreachableError(this.serverUrl);
+    const generation = this.probeGeneration;
+    const serverUrl = this.serverUrl;
+    this.probeServer(serverUrl).then((probe: ProbeResult) => {
+      if (generation !== this.probeGeneration) return;
+      if (probe.online) return;
+      this.showUnreachableError(serverUrl);
+    }).catch(() => {
+      if (generation !== this.probeGeneration) return;
+      this.showUnreachableError(serverUrl);
+    });
   }
 
   private async forgetSavedServer(): Promise<void> {

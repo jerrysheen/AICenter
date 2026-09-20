@@ -1,5 +1,6 @@
 # AI Center Search Worker template. Copied to .ai-data/searxng/settings.yml on setup.
 # This is a localhost helper for Agent web.search, not a public SearXNG site.
+# Bing HTML scrape from self-hosted instances often returns non-SERP links; keep it disabled.
 
 use_default_settings:
   engines:
@@ -7,12 +8,11 @@ use_default_settings:
       - wikipedia
       - brave
       - duckduckgo
-      - bing
       - google
 
 engines:
   - name: bing
-    disabled: false
+    disabled: true
   - name: google
     disabled: false
 

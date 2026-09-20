@@ -53,6 +53,54 @@ test('instance cn industry map catalog allows the same ticker in multiple groups
   assert.equal(new Set(jingsheng.map((item) => item.group)).size, jingsheng.length);
 });
 
+test('instance US watchlist uses US listings for Hynix and SanDisk', () => {
+  const catalog = readMarketCatalogFile(path.resolve('config/markets.json'));
+  const us = new Map(catalog.us.watchlist.map((item) => [item.symbol, item]));
+  const asia = new Map(catalog.asia.watchlist.map((item) => [item.symbol, item]));
+  assert.equal(us.has('000660.KS'), false);
+  assert.equal(us.has('005930.KS'), false);
+  assert.equal(us.get('SKHY')?.name, 'SK 海力士');
+  assert.equal(us.get('SKHY')?.group, '算力链');
+  assert.equal(us.get('SNDK')?.name, '闪迪');
+  assert.equal(us.get('SNDK')?.group, '算力链');
+  assert.equal(us.get('MU')?.name, '美光');
+  assert.equal(asia.get('000660.KS')?.name, 'SK 海力士');
+  assert.equal(asia.get('005930.KS')?.name, '三星电子');
+});
+
+test('catalog rejects Korean listings on the US board and US listings on Asia watchlist', () => {
+  const mixedUs = {
+    ...smallCatalog(),
+    us: {
+      groups: ['全部', '自选'],
+      indices: [],
+      watchlist: [{ symbol: '000660.KS', name: 'SK 海力士', group: '全部', summary: '韩交所' }],
+    },
+  };
+  const mixedAsia = {
+    ...smallCatalog(),
+    asia: {
+      groups: ['全部', '自选'],
+      indices: [],
+      watchlist: [{ symbol: 'SNDK', name: '闪迪', group: '全部', summary: '纳斯达克' }],
+    },
+  };
+  assert.equal(MarketCatalogSchema.safeParse(mixedUs).success, false);
+  assert.equal(MarketCatalogSchema.safeParse(mixedAsia).success, false);
+});
+
+test('instance overview indices use SSE 50 ChiNext 50 STAR 50 Hang Seng and HSTECH', () => {
+  const catalog = readMarketCatalogFile(path.resolve('config/markets.json'));
+  assert.deepEqual(catalog.cn.indices.map((item) => item.symbol), [
+    '000016.SS', '399673.SZ', '000688.SS', '^HSI', '^HSTECH',
+  ]);
+  const globalSymbols = catalog.global.watchlist.map((item) => item.symbol);
+  assert.ok(catalog.global.groups.includes('国债'));
+  for (const symbol of ['US2Y', 'US5Y', 'US10Y', 'US30Y', 'CNTS', 'CNTF', 'CNT', 'CNTL', 'XAGUSD', 'LC', 'M']) {
+    assert.ok(globalSymbols.includes(symbol), symbol);
+  }
+});
+
 test('market service consumes an instance catalog instead of core constants', async () => {
   const requested = [];
   const service = createMarketService({

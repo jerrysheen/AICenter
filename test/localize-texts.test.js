@@ -12,6 +12,13 @@ test('needsZhLocalization matches the feed translation heuristic', () => {
   assert.equal(needsZhLocalization('SK하이닉스가 HBM 생산능력을 확대할 계획이라고 밝혔다.'), true);
 });
 
+test('needsZhLocalization keeps Chinese posts that only mix in English product names', () => {
+  assert.equal(needsZhLocalization('卧槽，Python 画 K 线直接上 TradingView 同款图表库，它就是 lightweight-charts-python。'), false);
+  assert.equal(needsZhLocalization('推荐一个挺硬核的开源量化项目：stock，作者直接把量化交易代码扔 GitHub 了。'), false);
+  assert.equal(needsZhLocalization('强烈建议大家都亲自试试Jev，能让你的Codex操作速度提高10倍并省下大量token！'), false);
+  assert.equal(needsZhLocalization('The latest AI Spotlight explores QwenWork International.'), true);
+});
+
 test('localizationItemId hashes identifiers longer than 128 characters', () => {
   assert.equal(localizationItemId('bls-nfp'), 'bls-nfp');
   const longId = `event:${'a'.repeat(200)}`;

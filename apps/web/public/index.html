@@ -4,21 +4,35 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#FFFFFF">
+  <meta name="ai-center-ui-revision" content="dev">
   <title>AI Center</title>
-  <link rel="stylesheet" href="/styles.css?v=ask-dock-v2">
+  <script src="/ui-boot.js"></script>
+  <link rel="stylesheet" href="/styles.css?v=dev">
 </head>
-<body data-view="sources">
-  <section class="connection-gate hidden" id="unpaired-panel" aria-live="polite">
+<body class="is-unpaired" data-view="sources">
+  <section class="connection-gate" id="unpaired-panel" aria-live="polite">
     <article class="connection-gate-card">
       <span class="connection-gate-mark" aria-hidden="true">衡</span>
       <p class="connection-gate-kicker">AI CENTER · DEVICE CONNECTION</p>
-      <h1 id="unpaired-title">这台设备尚未配对</h1>
-      <p id="unpaired-message">请回到电脑上的 AI Center，刷新二维码后重新扫描。</p>
-      <div class="connection-gate-actions">
+      <h1 id="unpaired-title">正在连接</h1>
+      <p id="unpaired-message">正在确认这台设备的授权…</p>
+      <form class="connection-login hidden" id="login-form">
+        <label class="field">
+          <span>账号</span>
+          <input id="login-username" name="username" type="text" autocomplete="username" required>
+        </label>
+        <label class="field">
+          <span>密码</span>
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+        </label>
+        <p class="connection-login-message hidden" id="login-message"></p>
+        <button class="primary-button" id="login-submit" type="submit">登录</button>
+      </form>
+      <div class="connection-gate-actions hidden" id="unpaired-actions">
         <button class="primary-button" id="exit-to-pairing" type="button">退出并重新扫码</button>
         <button class="text-button" id="retry-session" type="button">重新检查连接</button>
       </div>
-      <small>二维码 10 分钟内有效且只能使用一次。</small>
+      <small id="unpaired-hint">打开后先确认登录，通过后再进入应用。公网请使用 https。</small>
     </article>
   </section>
 
@@ -46,7 +60,7 @@
         </label>
         <div class="title-actions">
           <button class="icon-button ghost" id="toggle-search" type="button" aria-label="搜索"></button>
-          <button class="icon-button ghost" id="reload-view" type="button" aria-label="刷新当前页"></button>
+          <button class="icon-button ghost" id="reload-view" type="button" aria-label="刷新当前页，长按强制更新界面"></button>
           <button class="icon-button ghost" id="open-compose" type="button" aria-label="快速发布" data-action="compose"></button>
           <button class="icon-button ghost" id="open-settings" type="button" aria-label="设置"></button>
           <div class="connection-state" id="connection-state"><i></i><span>正在连接</span></div>
@@ -84,6 +98,16 @@
             <div class="social-toolbar hidden" id="x-toolbar">
               <div class="chip-tabs" id="x-feed-tabs" role="tablist" aria-label="X 时间线"></div>
               <button class="text-button" id="x-more" type="button">更多</button>
+            </div>
+            <div class="social-toolbar hidden" id="trendforce-toolbar">
+              <p id="trendforce-feed-status">TrendForce 公开洞察与价表</p>
+              <button class="text-button" id="trendforce-more" type="button">更多</button>
+            </div>
+            <div class="follow-toolbar hidden" id="trendforce-action-bar">
+              <p id="trendforce-action-status">免费全文直接抓；会员报告只收标题和介绍。</p>
+              <div class="x-action-buttons">
+                <button class="primary-button" id="trendforce-refresh" type="button">抓取公开页</button>
+              </div>
             </div>
             <p class="source-read-state hidden" id="x-feed-status"></p>
             <div class="follow-toolbar hidden" id="x-translate-bar">
@@ -128,6 +152,25 @@
 
           <div class="trade-pane" data-trade-pane="assets">
             <div class="chip-tabs" id="asset-filters" role="tablist" aria-label="资产分类"></div>
+            <section class="global-native-section hidden" id="global-native-section" aria-label="加密与稳定币">
+              <div class="global-native-board">
+                <article class="market-native-panel">
+                  <header>
+                    <div><small>永续</small><h3>数字货币</h3></div>
+                    <span>Hyperliquid</span>
+                  </header>
+                  <div class="market-native-list" id="market-native-derivatives"></div>
+                </article>
+                <article class="market-native-panel">
+                  <header>
+                    <div><small>供给</small><h3>稳定币流动性</h3></div>
+                    <span>DefiLlama</span>
+                  </header>
+                  <div class="market-native-list" id="market-native-liquidity"></div>
+                </article>
+              </div>
+              <p class="static-board-note" id="global-native-note" aria-live="polite"></p>
+            </section>
             <label class="market-filter" id="asset-filter-wrap">
               <span class="vh">筛选全球行情</span>
               <input id="asset-filter" type="search" placeholder="名称 / 代码 / 介绍" autocomplete="off">
@@ -175,7 +218,7 @@
           </div>
 
           <div class="trade-pane" data-trade-pane="analysis">
-            <p class="section-kicker" id="analysis-period">打开后从本地收支草记读取资产明细和分红所得。</p>
+            <p class="section-kicker" id="analysis-period">上面看统计，下面按来源分组记账。投资随持仓同步；其他来源是静态记录。</p>
             <div class="summary-grid" id="analysis-kpis"></div>
             <div class="analysis-split">
               <article class="analysis-card">
@@ -186,24 +229,13 @@
                 <h2>当前资产结构</h2>
                 <div class="analysis-chart analysis-chart-pie" id="analysis-pie"></div>
                 <div class="analysis-note">
-                  <strong>财务健康度扫描</strong>
-                  <p id="analysis-diagnosis-1">正在根据最新表格数据生成资产结构判断。</p>
-                  <p id="analysis-diagnosis-2">数据加载完成后会自动更新。</p>
+                  <strong>结构说明</strong>
+                  <p id="analysis-diagnosis-1">正在按类型汇总当前账户。</p>
+                  <p id="analysis-diagnosis-2">持仓股票市值和券商现金计入投资类。</p>
                 </div>
               </article>
             </div>
-            <div class="analysis-split analysis-split-dividend">
-              <article class="analysis-card analysis-dividend-total">
-                <span>累计分红总收益</span>
-                <strong id="analysis-dividend-total">--</strong>
-                <small>被动收入核心来源</small>
-              </article>
-              <article class="analysis-card">
-                <h2>各标的分红贡献榜单</h2>
-                <div class="analysis-bars" id="analysis-dividend"></div>
-              </article>
-            </div>
-            <div class="analysis-insights" id="analysis-insights"></div>
+            <article class="analysis-card analysis-ledger" id="analysis-ledger"></article>
           </div>
         </section>
 
@@ -246,31 +278,17 @@
             <section class="market-native-section" aria-labelledby="market-native-title">
               <div class="source-group-heading">
                 <div>
-                  <p class="section-kicker">市场原生数据</p>
-                  <h2 id="market-native-title">公开市场正在交易什么</h2>
+                  <p class="section-kicker">事件市场</p>
+                  <h2 id="market-native-title">现在市场怎么看这些事</h2>
                 </div>
               </div>
               <div class="market-native-board">
                 <article class="market-native-panel market-native-prediction-panel">
                   <header>
-                    <div><small>P0</small><h3>事件市场</h3></div>
-                    <span>Polymarket · Kalshi</span>
+                    <div><small>关注中</small><h3>事件报价</h3></div>
+                    <span>Polymarket · Kalshi · 单场所报价</span>
                   </header>
                   <div class="market-native-list" id="market-native-predictions"></div>
-                </article>
-                <article class="market-native-panel">
-                  <header>
-                    <div><small>P1</small><h3>Crypto 永续</h3></div>
-                    <span>Hyperliquid</span>
-                  </header>
-                  <div class="market-native-list" id="market-native-derivatives"></div>
-                </article>
-                <article class="market-native-panel">
-                  <header>
-                    <div><small>P1</small><h3>稳定币流动性</h3></div>
-                    <span>DefiLlama</span>
-                  </header>
-                  <div class="market-native-list" id="market-native-liquidity"></div>
                 </article>
               </div>
               <p class="static-board-note" id="market-native-note" aria-live="polite"></p>
@@ -298,32 +316,62 @@
         </section>
 
         <section class="view" id="view-inspire" data-view-panel="inspire">
-          <form id="note-form" class="note-composer capture">
-            <label>
-              <span class="vh">灵感</span>
-              <textarea id="note-body" name="body" maxlength="100000" rows="2" placeholder="有什么想法，先记下来…"></textarea>
-            </label>
-            <div class="note-share-source hidden" id="note-share-source" aria-live="polite"></div>
-            <input id="note-title" name="title" type="hidden">
-            <input id="note-source-url" name="sourceUrl" type="hidden">
-            <input id="note-source-title" name="sourceTitle" type="hidden">
-            <input id="note-source-type" name="sourceType" type="hidden">
-            <input id="note-capture-channel" name="captureChannel" type="hidden" value="web">
-            <input id="note-source-app" name="sourceApp" type="hidden">
-            <div class="capture-actions">
-              <small class="muted">无需标题 · 先保存原文</small>
-              <div class="form-actions">
-                <button class="ai-toggle" id="note-ai-toggle" type="button" aria-pressed="false">AI 加工</button>
-                <button class="primary-button" type="submit">记下</button>
+          <nav class="chip-tabs inspire-subnav" id="inspire-subnav" role="tablist" aria-label="灵感二级"></nav>
+          <form id="note-form" class="dispatch-composer">
+            <div class="compose-box dispatch-box">
+              <label>
+                <span class="vh">发送内容</span>
+                <textarea id="note-body" name="body" maxlength="100000" rows="1" placeholder="有什么想法，先记下来…"></textarea>
+              </label>
+              <div class="note-share-source hidden" id="note-share-source" aria-live="polite"></div>
+              <div class="attachment-draft hidden" id="note-attachments"></div>
+              <input id="note-image-input" class="vh" type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple>
+              <input id="note-title" name="title" type="hidden">
+              <input id="note-source-url" name="sourceUrl" type="hidden">
+              <input id="note-source-title" name="sourceTitle" type="hidden">
+              <input id="note-source-type" name="sourceType" type="hidden">
+              <input id="note-capture-channel" name="captureChannel" type="hidden" value="web">
+              <input id="note-source-app" name="sourceApp" type="hidden">
+              <div class="dispatch-toolbar">
+                <div class="dispatch-tools">
+                  <div class="dispatch-pop">
+                    <button class="dispatch-icon-btn" id="dispatch-plus" type="button" aria-label="添加" aria-haspopup="true" aria-expanded="false"></button>
+                    <div class="dispatch-menu hidden" id="dispatch-plus-menu" role="menu">
+                      <button type="button" role="menuitem" id="dispatch-image">图片</button>
+                      <button type="button" role="menuitem" id="note-ai-toggle" aria-pressed="false">AI 加工</button>
+                    </div>
+                  </div>
+                  <div class="dispatch-pop">
+                    <button class="dispatch-target-btn" id="dispatch-target" type="button" aria-haspopup="true" aria-expanded="false">
+                      <span id="dispatch-target-label">灵感</span>
+                      <span class="dispatch-chevron" aria-hidden="true"></span>
+                    </button>
+                    <div class="dispatch-menu hidden" id="dispatch-target-menu" role="menu">
+                      <button type="button" role="menuitem" data-dispatch-target="inspiration">灵感</button>
+                      <button type="button" role="menuitem" data-dispatch-target="task">任务</button>
+                      <button type="button" role="menuitem" data-dispatch-target="ask">对话</button>
+                    </div>
+                  </div>
+                </div>
+                <button class="icon-button brand ask-send" id="dispatch-send" type="submit" aria-label="记下"></button>
               </div>
             </div>
           </form>
-          <button class="return-entry hidden" id="note-focus-entry" type="button">
-            <strong>接着想一想</strong>
-            <small id="note-focus-hint">回看标记的重点，不催着清空</small>
-          </button>
-          <div class="chip-tabs" id="note-filters" role="tablist" aria-label="灵感筛选"></div>
-          <div id="note-list"></div>
+          <div id="inspire-notes-pane">
+            <button class="return-entry hidden" id="note-focus-entry" type="button">
+              <strong>接着想一想</strong>
+              <small id="note-focus-hint">回看标记的重点，不催着清空</small>
+            </button>
+            <div class="chip-tabs" id="note-filters" role="tablist" aria-label="灵感筛选"></div>
+            <div id="note-list"></div>
+          </div>
+          <div id="inspire-tasks-pane" class="hidden">
+            <div id="task-list-pane">
+              <div class="chip-tabs" id="task-filters" role="tablist" aria-label="任务筛选"></div>
+              <div id="task-list"></div>
+            </div>
+            <div id="task-detail-pane" class="hidden"></div>
+          </div>
         </section>
 
         <section class="view" id="view-knowledge" data-view-panel="knowledge">
@@ -357,19 +405,37 @@
             </div>
             <form class="ask-composer" id="ask-form">
               <div class="ask-ref-chips hidden" id="ask-ref-chips"></div>
+              <div class="ask-ref-actions hidden" id="ask-ref-actions">
+                <button class="text-button" type="button" id="ask-ref-export">导出</button>
+                <button class="text-button" type="button" id="ask-ref-task">发给任务</button>
+              </div>
               <div class="ask-mention-menu hidden" id="ask-mention-menu" role="listbox" aria-label="可引用的本地知识"></div>
               <div class="compose-box">
                 <label class="vh" for="ask-question">问题</label>
                 <textarea id="ask-question" name="question" maxlength="4000" rows="1" placeholder="发消息，或 @ 选择资料…"></textarea>
                 <div class="ask-composer-row">
-                  <label class="ask-web-mode">
-                    <span class="vh">联网检索</span>
-                    <select name="webMode" aria-label="联网检索">
-                      <option value="off">仅本地</option>
-                      <option value="fallback" selected>必要时联网</option>
-                      <option value="always">允许联网</option>
-                    </select>
-                  </label>
+                  <div class="ask-composer-tools">
+                    <label class="ask-agent-mode">
+                      <span class="vh">智能体</span>
+                      <select name="agentMode" aria-label="智能体">
+                        <option value="ask" selected>问答</option>
+                        <option value="article-analysis">文章阅读</option>
+                      </select>
+                    </label>
+                    <label class="ask-web-mode">
+                      <span class="vh">联网检索</span>
+                      <select name="webMode" aria-label="联网检索">
+                        <option value="off">仅本地</option>
+                        <option value="fallback" selected>必要时联网</option>
+                        <option value="always">允许联网</option>
+                      </select>
+                    </label>
+                    <label class="ask-research-mode">
+                      <input class="vh" type="checkbox" name="researchMode" value="research" role="switch">
+                      <span class="ask-research-label">专业研究</span>
+                      <span class="ask-research-switch" aria-hidden="true"></span>
+                    </label>
+                  </div>
                   <button class="icon-button brand ask-send" id="ask-send" type="submit" aria-label="发送"></button>
                 </div>
               </div>
@@ -397,6 +463,12 @@
             <article class="status-card">
               <h2>设备连接</h2>
               <p>设备、连接器、数据源和账户管理放在这里，不再占用底栏。二维码只携带短期配对码。</p>
+            </article>
+
+            <article class="status-card" id="process-restart-panel">
+              <h2>重启本机服务</h2>
+              <p>远端改完服务端代码后如果界面还是旧的，点这里只弹 Web/Worker。公网隧道不关。不要另开端口。</p>
+              <button class="text-button" id="request-process-restart" type="button">重启 Web/Worker</button>
             </article>
 
             <article class="status-card hidden" id="device-repair-panel">
@@ -539,11 +611,26 @@
     </div>
   </dialog>
 
+  <dialog id="reference-pack">
+    <div class="dialog-panel reference-pack-panel">
+      <button class="dialog-close icon-close" type="button" aria-label="关闭"></button>
+      <h2>已选材料</h2>
+      <p class="section-desc" id="reference-pack-meta">同一组引用可以导出、发给任务或带去问答。</p>
+      <div class="ask-used-refs" id="reference-pack-chips"></div>
+      <div class="form-actions reference-pack-actions">
+        <button class="primary-button" type="button" id="reference-pack-ask">去问答</button>
+        <button class="text-button" type="button" id="reference-pack-task">发给任务</button>
+        <button class="text-button" type="button" id="reference-pack-export">导出</button>
+      </div>
+      <button class="text-button" type="button" id="reference-pack-clear">清空</button>
+    </div>
+  </dialog>
+
   <dialog id="source-tasks-dialog">
     <div class="dialog-panel">
       <button class="dialog-close icon-close" type="button" aria-label="关闭"></button>
       <h2 id="source-tasks-title">来源任务</h2>
-      <p class="section-desc" id="source-tasks-meta">维护入口。自动化草案不会启动后台调度。</p>
+      <p class="section-desc" id="source-tasks-meta">先选正在关注或为你推荐，再抓取。抓取会立刻跑采集、翻译和打 Tag。自动化草案不会启动定时任务。</p>
       <div id="source-tasks-body"></div>
     </div>
   </dialog>
@@ -551,6 +638,6 @@
   <button class="reference-dock hidden" id="reference-dock" type="button" aria-label="打开引用">引用 0 项</button>
 
   <div class="toast" id="toast" role="status"></div>
-      <script type="module" src="/app.js?v=ask-dock-v2"></script>
+      <script type="module" src="/app.js?v=dev"></script>
 </body>
 </html>

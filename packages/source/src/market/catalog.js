@@ -32,6 +32,17 @@ const EMPTY_CN_SECTION = Object.freeze({
   watchlist: [],
 });
 
+export const ASIA_LISTING_SUFFIX = /\.(KS|KQ|TWO|TW|T)$/i;
+export const NON_US_LISTING_SUFFIX = /\.(KS|KQ|TWO|TW|T|SS|SZ|HK)$/i;
+
+export function isAsiaListingSymbol(symbol) {
+  return ASIA_LISTING_SUFFIX.test(String(symbol || '').trim());
+}
+
+export function isForeignToUsListingSymbol(symbol) {
+  return NON_US_LISTING_SUFFIX.test(String(symbol || '').trim());
+}
+
 export const MarketCatalogSchema = z.object({
   version: z.literal(1),
   us: EquitySectionSchema,
@@ -55,6 +66,14 @@ export const MarketCatalogSchema = z.object({
       seen.add(key);
       if (!section.groups.includes(item.group) && item.group !== '指数') {
         ctx.addIssue({ code: 'custom', path: [sectionName, 'groups'], message: `未声明的市场分组: ${item.group}` });
+        return;
+      }
+      if (sectionName === 'us' && isForeignToUsListingSymbol(item.symbol)) {
+        ctx.addIssue({ code: 'custom', path: [sectionName, 'watchlist'], message: `美股观察池只能用美股代码，不能放入 ${item.symbol}` });
+        return;
+      }
+      if (sectionName === 'asia' && item.group !== '指数' && !isAsiaListingSymbol(item.symbol)) {
+        ctx.addIssue({ code: 'custom', path: [sectionName, 'watchlist'], message: `亚洲观察池只能用 KR/JP/TW 本地代码，不能放入 ${item.symbol}` });
         return;
       }
     }

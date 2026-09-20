@@ -12,8 +12,10 @@ export function needsZhLocalization(sourceText) {
   const han = countMatches(source, /\p{Script=Han}/gu);
   if (hangul === 0 && latin === 0) return false;
   const foreign = hangul + latin;
+  if (hangul >= 2 && hangul >= han && hangul >= latin) return true;
+  if (han >= 12) return false;
   if (han >= 8 && foreign < Math.max(8, Math.ceil(han * 0.25))) return false;
-  return true;
+  return latin >= 8 || hangul >= 2;
 }
 
 export function localizationItemId(id) {

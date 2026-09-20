@@ -1,11 +1,37 @@
-import { ActiveAgentRunSchema, AgentRunProgressStepSchema, parseContract } from '../../contracts/src/index.js';
+import {
+  ActiveAgentRunSchema,
+  AgentRunProgressStepSchema,
+  ARTICLE_ANALYSIS_JOB_TYPE,
+  parseContract,
+} from '../../contracts/src/index.js';
+import { resolveResearchProfile } from './research-profile.js';
 
-export function createRuntimeService({ runtimeRepository, agentProgressPort }) {
+function articleAnalysisQuestion(input = {}) {
+  const source = input.source;
+  if (source?.type === 'inline') {
+    return String(source.title || source.body || '文章分析').replace(/\s+/g, ' ').trim().slice(0, 4_000) || '文章分析';
+  }
+  if (source?.type === 'reference') return '分析已选材料';
+  return String(input.message || '').slice(0, 4_000);
+}
+
+function articleAnalysisStage(job) {
+  if (job.status === 'queued') return 'queued';
+  if (job.status === 'completed') return 'completed';
+  if (job.status === 'failed' || job.status === 'cancelled') return 'failed';
+  return 'running';
+}
+
+export function createRuntimeService({ runtimeRepository, agentProgressPort, restartPort }) {
   if (!runtimeRepository) throw new Error('runtimeRepository is required');
 
   return Object.freeze({
     getStatus() {
       return runtimeRepository.getRuntimeStatus();
+    },
+    requestProcessRestart(input = {}) {
+      if (!restartPort?.requestRestart) return { requested: false, reason: 'unavailable' };
+      return restartPort.requestRestart(input);
     },
     requestHealthcheck(requestedAt = Date.now()) {
       return runtimeRepository.createJob({
@@ -15,9 +41,14 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort }) {
       });
     },
     requestAgentRun(input) {
+      const researchProfile = resolveResearchProfile(input.researchMode, input.researchProfile);
       return runtimeRepository.createJob({
         type: 'ai.agent.run',
-        input,
+        input: {
+          ...input,
+          researchMode: researchProfile.mode,
+          researchProfile,
+        },
         workspaceId: input.workspaceId,
         maxAttempts: 1,
       });
@@ -36,6 +67,26 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort }) {
         input,
         workspaceId: input.workspaceId,
         maxAttempts: 3,
+      });
+    },
+    requestArticleAnalysis(input) {
+      return runtimeRepository.createJob({
+        type: ARTICLE_ANALYSIS_JOB_TYPE,
+        input: {
+          source: input.source,
+          workspaceId: input.workspaceId,
+          sessionId: input.sessionId,
+        },
+        workspaceId: input.workspaceId,
+        maxAttempts: 1,
+      });
+    },
+    requestWorkPackageDispatch(input) {
+      return runtimeRepository.createJob({
+        type: 'work-package.dispatch',
+        input,
+        workspaceId: input.workspaceId || 'local',
+        maxAttempts: 2,
       });
     },
     getJob(id) {
@@ -57,6 +108,35 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort }) {
         progress,
       };
     },
+    async getArticleAnalysisRun(id) {
+      const job = runtimeRepository.getJob(id);
+      if (!job || job.type !== ARTICLE_ANALYSIS_JOB_TYPE) return null;
+      const window = { fromAt: job.createdAt, toAt: Date.now() };
+      const records = agentProgressPort?.listSteps
+        ? await agentProgressPort.listSteps(job.id, window)
+        : [];
+      const progress = (Array.isArray(records) ? records : [])
+        .map((step) => parseContract(AgentRunProgressStepSchema, step));
+      const base = {
+        runId: job.id,
+        workspaceId: job.workspaceId,
+        sessionId: job.input?.sessionId || job.output?.sessionId || '',
+        status: job.status,
+        stage: articleAnalysisStage(job),
+        progress,
+      };
+      if (job.status === 'completed') {
+        return {
+          ...base,
+          aiRunId: job.output?.aiRunId,
+          outputText: job.output?.outputText || '',
+        };
+      }
+      if (job.status === 'failed' || job.status === 'cancelled') {
+        return { ...base, error: job.error };
+      }
+      return base;
+    },
     listJobs(limit) {
       return runtimeRepository.listJobs(limit);
     },
@@ -72,9 +152,10 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort }) {
         runId: job.id,
         sessionId: job.input?.sessionId || '',
         status: job.status,
-        question: String(job.input?.message || ''),
+        question: articleAnalysisQuestion(job.input),
         createdAt: job.createdAt,
         updatedAt: job.updatedAt,
+        ...(job.type === ARTICLE_ANALYSIS_JOB_TYPE ? { agentMode: 'article-analysis' } : {}),
       }));
     },
     listEvents(afterId, limit, workspaceId) {

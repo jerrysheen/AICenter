@@ -15,20 +15,20 @@ test('Doubao ask queue runs one message at a time and returns each reply', async
       await Promise.resolve();
       current -= 1;
       order.push(question);
-      return { status: 'ok', reply_text: `回:${question}`, sent_message: question };
+      return { status: 'ok', reply_text: `答 ${question}`, sent_message: question };
     },
   });
 
-  const first = queue.enqueue({ question: 'one', purpose: 'feed.translate' });
-  const second = queue.enqueue({ question: 'two', purpose: 'knowledge.seed' });
+  const first = queue.enqueue({ question: 'one', purpose: 'web-search' });
+  const second = queue.enqueue({ question: 'two', purpose: 'web-search' });
   const results = await Promise.all([first, second]);
 
   assert.deepEqual(started, ['one', 'two']);
   assert.deepEqual(order, ['one', 'two']);
-  assert.equal(results[0].reply_text, '回:one');
-  assert.equal(results[1].reply_text, '回:two');
-  assert.equal(results[0].queue.purpose, 'feed.translate');
-  assert.equal(results[1].queue.purpose, 'knowledge.seed');
+  assert.equal(results[0].reply_text, '答 one');
+  assert.equal(results[1].reply_text, '答 two');
+  assert.equal(results[0].queue.purpose, 'web-search');
+  assert.equal(results[1].queue.purpose, 'web-search');
   assert.equal(queue.snapshot().queued, 0);
   assert.equal(queue.snapshot().active, null);
 });

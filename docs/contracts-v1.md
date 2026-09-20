@@ -13,17 +13,25 @@
 - 扩展字段：只有平台原始元数据可以进入 `metadata`；稳定业务字段必须进入正式 Contract。
 - 分页：列表使用不透明 cursor；调用方不得解析 cursor 内容。
 
+## Identity
+
+- 当前没有 User / Tenant。设备授权是手机和远端浏览器进入业务 API 的唯一会话。
+- `POST /api/v1/pair` 用一次性配对码换设备 token；`POST /api/v1/session/login` 用 Instance 共享账号换同一类设备 token。两者都写入 `devices`，服务端只存 token 哈希。长期 token 只经 HttpOnly Cookie 下发，不进入页面 JSON。
+- 未配对的 `GET /api/v1/session` 返回 401，并带 `loginAvailable`。该字段只表示 Instance 是否配置了账号登录，不返回账号名。
+- 账号密码只从 Instance 环境读取，不进入页面 Contract，也不写入 SQLite。
+
 ## Feed
 
 ```text
 SourceAccount -> Subscription -> Capture -> ContentItem -> UserItemState
 ```
 
-- `Capture` 是不可替代的来源证据，保存 provider、external ID、hash 和原始文件相对路径。
+- `Capture` 是不可替代的来源证据，保存 provider、external ID、hash 和原始文件相对路径。`status=ignored` 的 Capture 不去建 ContentItem，只供去重与审计。
 - `ContentItem` 是页面和下游 Agent 使用的标准内容。
 - 信息流按 `Capture.capturedAt`（写入来源的先后）排列，不按推文 `publishedAt`。已读条目（`UserItemState.isRead`）仍保留在列表中，但排在未读之后；左滑删除只写 `isHidden`，不物理删除 Capture / ContentItem，再拉取同一条也不会回来。卡片仍显示发帖时间；相同内容去重时不刷新 `capturedAt`。同一批抓取里，时间线越靠前的条目 `capturedAt` 越大。
-- `FeedItemTranslation` 是信息流与抓取文本的中文投影，按条目 ID + 正文哈希落在 SQLite，不覆盖 Capture / ContentItem 原文。电脑和手机读同一份。英文或韩文在抓取入库后统一走豆包网页 JSONL（`task=translate_feed_items`）翻译并轻度清洗（去界面残渣、不总结、不扩写）。批量一次只发一封；输出必须是 `feed_translate_output.v0.1` 且 `id` 对齐。发给豆包网页的消息走 Connector 内进程队列，一次一条。JSON 齐了立刻结束等待；豆包挂起或超时则立刻返回，由后续刷新或补翻译再试，不在同一次请求里自动重试或串 Gemini / DeepL / Google。仅当豆包已返回但格式不合格时，才回退一次 Gemini。用户 view 只消费译文；原文继续保存在 Capture / ContentItem，经 `GET /api/v1/content-items/:id/original` 或 `GET /api/v1/feed/items/:id/original` 读取。页面 Contract 不暴露供应商。官方日程、官媒标题和预测市场问题复用同一张译文表，Source Snapshot 字段保持原文事实。
-- 发给模型的信息流请求走 Domain `packFeedAiBatches`：先给每条标注字数。翻译一次最多 30 条、打成一组信封（条目模型输入仍可截到约 5000 字）；不再按 5000 字拆成多次豆包会话。Capture/ContentItem 仍保存全文；只有模型输入可以截断，并标记 `truncatedForModel`。粗筛 Tag 复用同一函数：`purpose=analyze`，默认每批最多 20 条 / 30k chars，单条最多 6000 字（超长取头 4500 + 尾 1500）。一行 JSONL 是一批文本，不是一条。
+- `FeedIdentityFingerprint` 是作者 + 正文的稳定身份（SHA-256），与 tweet / 视频 ID 分开保存。正文可以按保留期清掉，fingerprint 继续留着：同一作者同一段文字再次投递时跳过，左滑删除后即使 Capture 已不在也不会再出现。无正文时退回 `external:{id}`，避免图文空帖互相撞车。表里只存 hash、externalId 和时间，不存推文正文。
+- `FeedItemTranslation` 是信息流与抓取文本的中文投影，按条目 ID + 正文哈希落在 SQLite，不覆盖 Capture / ContentItem 原文。电脑和手机读同一份。英文或韩文在抓取入库后统一走 Gemini 批量翻译并轻度清洗（去界面残渣、不总结、不扩写）。一次最多 30 条；`id` 必须对齐。Gemini 失败或缺 Key 时回退 DeepL / Google。用户 view 只消费译文；原文继续保存在 Capture / ContentItem，经 `GET /api/v1/content-items/:id/original` 或 `GET /api/v1/feed/items/:id/original` 读取。页面 Contract 不暴露供应商。官方日程、官媒标题和预测市场问题复用同一张译文表，Source Snapshot 字段保持原文事实。
+- 发给模型的信息流请求走 Domain `packFeedAiBatches`：先给每条标注字数。翻译一次最多 30 条打成一组（条目模型输入仍可截到约 5000 字）。Capture/ContentItem 仍保存全文；只有模型输入可以截断，并标记 `truncatedForModel`。粗筛 Tag 复用同一函数：`purpose=analyze`，默认每批最多 20 条 / 30k chars，单条最多 6000 字（超长取头 4500 + 尾 1500）。Tag 走 Gemini，输出仍按 `item_id` + `tags[]` 验收。
 - Tag 是全局粗筛：输入一批文本，按 `item_id` 回收 `tags[]`。当前可挂 `content-item`（多标）、`inspiration`（单标）、`knowledge`（多标）。字典来自 Instance 的 `config/tags.json`，缺省模板为仓库的 `config/tags.default.json`，与 Knowledge Taxonomy 分离。结果写入 `resource_taggings`，不改 ContentItem 字段。未知 tag / 未知 item 丢弃；漏项重试；空数组是合法成功。
 
 - 重新生成字幕、摘要或结构化结果时，不能覆盖原始 Capture。
@@ -63,7 +71,7 @@ Portfolio -> Transaction -> PositionSnapshot
 - `PortfolioImport` 是外部持仓的统一输入契约。账户、持仓批次和现金必须携带稳定的数据侧 ID；金额、数量和成本继续使用 Decimal 字符串。Provider symbol 只能放入 aliases，不能替代 `canonicalKey`。重复导入按稳定 ID 合并，不删除未出现在本次输入中的现有数据。
 - SQLite 中的 Portfolio / HoldingLot / Cash 是运行时唯一真源。Web / Worker 启动不读取或灌入个人 JS 持仓；旧格式只能通过显式 Legacy Importer 转换成 `PortfolioImport`。
 - 新增持仓必须显式指定 `portfolioId` 并验证其属于当前 workspace；Core 只知道 board 的市场、交易所和计价币种，不知道某个 board 属于哪个个人账户。
-- `PersonalAssetDashboard` 是个人资产分析页的只读投影，来自工作簿 Adapter，不是券商流水。金额仍使用十进制定点字符串；`increaseRate` 与 `cumulativeGrowthRate` 都是比率，例如 `"0.1"` 表示 10%。页面不得依赖 Excel 列号或工作表名称。
+- `PersonalAssetDashboard` 是个人资产分析页投影。运行时真源是 Trading 账本：`PersonalAssetType`（银行卡 / 现金 / 投资 / 基金 / 加密 / 公积金 / 额外资金）、`PersonalAssetAccount`（银行卡1 + 备注，不是机构名当类型）和期间 `PersonalAssetSnapshot`。`source=ledger` 表示账本；工作簿 Adapter 只产出 `PersonalAssetImport`，不再当日常真源。金额仍用十进制定点字符串；`increaseRate` 与 `cumulativeGrowthRate` 是比率，例如 `"0.1"` 表示 10%。历史点只保留导入或「记本期」的静态记录，曲线不追加「现在」。`latest` 的总资产和投资用当前值：投资类 `source=holdings` 只读，随持仓页 A 股 + B 股股票市值 + 券商现金同步；其他账户保持手改或导入的静态余额。分红榜不导入、不展示，`dividend` 保持空列表以兼容契约。页面不得依赖 Excel 列号或工作表名称。`latest.equity` / `latest.housingFund` 仍是投资类与公积金的合计别名，供大屏沿用。
 - `buy`、`sell`、`split` 必须引用 Instrument。
 - `cashAmount` 使用带符号十进制字符串：资金流入为正，流出为负。
 
@@ -73,21 +81,25 @@ V6 保留旧 REAL 列用于兼容，新增 `*_decimal` 列作为新代码的权�
 
 - `TaxonomyCatalog` 是 Instance 分类树的配置契约：`version=1`，节点包含稳定 `key`、显示名、可选父节点、说明和排序；重复 key、缺失父节点或跨 dimension 父子关系必须拒绝。仓库的 `config/taxonomy.default.json` 只提供中立模板。V16 已写入的旧分类树属于兼容数据，不由该契约自动删除或替换。
 - Inspiration 的原文与来源分开保存：`sourceType/sourceId` 表示可追溯业务来源；`sourceUrl/sourceTitle` 表示外部网页；`captureChannel` 表示 `web`、`harmony-share`、`harmony-local`、`feed`、`agent` 或 `import` 等进入入口；`sourceApp` 仅在可靠取得时保存，未知使用空字符串。
+- 图片是 Knowledge 附件，不是问答 `@ref`，也不进入 `notes.body`。`POST /api/v1/attachments` 接收 base64，服务端按魔数识别 JPEG / PNG / WebP / GIF，单张不超过 8MB，最多 4 张。字节写入 `data/blobs/attachments/<id>.<ext>`，`attachments` 表只存相对路径；`resource_attachments` 把同一附件挂到 `inspiration` 或 `work-package`。页面 Contract 只有 `id / mime / originalName / byteSize / createdAt / url`，`url` 为 `/api/v1/attachments/:id/content`，不含本机盘符。创建灵感或工作包时带 `attachmentIds`；继续做若省略该字段则继承上一任务附图，显式传数组（含空数组）则按新列表。Worker 派发时把相对路径写成 prompt 提示，并把绝对路径交给 `agent -p --image`。信息不流抓图、鸿蒙分享收图仍未做。
 - HarmonyOS 系统分享使用 `sourceType=external-share`、`captureChannel=harmony-share`。网页链接只允许 `http` / `https`，不得把链接、应用名或 UTD 拼进 `body` 逃避字段建模。
 - 离线创建携带稳定 `clientMutationId`；服务端按 workspace + clientMutationId 幂等返回同一条 Inspiration。同步前，鸿蒙客户端还会对完整 `body + sourceUrl` 做精确匹配：服务端已存在同内容时直接关联，不再次创建。该匹配不做模糊文本推断。`capturedAt` 是用户在手机记下内容的原始时间，`createdAt` 是服务端首次落库时间。同步重试不得生成新 mutation ID，也不得用服务端时间覆盖 capturedAt。
 - 鸿蒙本地灵感是设备侧单向投递箱，不是服务端镜像。手机只重放 create Outbox；本地删除不调用服务端 DELETE。同步前可读取 `GET /api/v1/notes?status=all` 做完整 `body + sourceUrl` 精确查重，但不得把快照写回本地列表。
 - Agent `knowledge.search` / `knowledge.get` 同时覆盖 SQLite 知识文档与仓库 `knowledge/**/*.md` 文件框架。文件知识使用稳定语义 ID（例如 `finance.framework.tech_growth`），正文是判断结构（How to think），不写易过期事实。模型只按 id search/get，不得看到本地路径。
 - Inspiration 永久保留用户原文。归档进入 Knowledge 时必须走 `KnowledgeDocument` 创建路径：同时写入 `knowledge_revisions`、`knowledge_fts` 和 `knowledge_links.derived_from`，不得只插 `knowledge_items`。
+- 工作包是 Knowledge 拥有的执行状态，一对一挂 Inspiration。页面上它出现在灵感下的任务窗（`#inspire/tasks`），不进入随记列表。`POST /api/v1/work-packages` 供已配对设备（含公网）投递；投递当下先在 Instance `logs/work-packages/<hashId>/` 落下 `goal.json`（目标）和 `progress.json`（进展），再 `POST /notify` 入队 `work-package.dispatch`。Worker 领取后用 `sha256(id)` 前 12 位作 `hashId`（派生字段），补写 `prompt.txt` / `meta.json`，并追加第一行 `steps.jsonl`。提示词要求 CLI 每一步再追加一行 JSON，不改已有行；追加必须 UTF-8 无 BOM，Windows 禁止 `Add-Content` / `Out-File` / `>>`。读 `steps.jsonl` 时按行先 UTF-8，无效则按 GBK，避免系统码页把步骤拆解写成乱码。`parentTrace` 若摘要含替换字符，回读父目录原文件，不改已有行。`GET /api/v1/work-packages/:id/trace` 反查 goal / progress / 步骤。详情页打开且状态为 open/claimed 时，按 `progress.updatedAt` 与 `steps` 轮询该接口刷新，不另发明细 SSE。轮询间隙由客户端显示「正在思考下一步」动态占位（闪烁与省略号），新步骤到达后落成结果再接下一条思考。投递框和「继续做」输入保存在页面 localStorage，刷新或重绘不得清空。一级任务列表只显示状态、主题和两句摘要；点进 `#inspire/tasks/:id` 再看正文、状态与拆解。`POST /api/v1/work-packages/:id/continue` 用新指令另建一条工作包（`parentWorkPackageId`，V24）作为新 session 并入队派发。Cursor CLI 是一次性进程，不能 resume 上一轮；正文按「上一任务 / 上一目标 / 上一进展 / 上一步骤 / 上一结果 / 继续指令」带上上一轮全过程，并在新目录落下 `parent-trace.json`。`GET /trace` 的 `parentTrace` 是这份快照。列表主题和详情目标只取最后一段继续指令，不把嵌套上一任务整段当标题。`setView` 当时把路由 hash 写入 `ai-center.last-location`，刷新或鸿蒙重开可回到问答会话或任务详情。Worker 拉起本机 Cursor CLI：`agent -p --force --trust --workspace <仓库> --model cursor-grok-4.6-high-fast`，Windows 弹出可见 PowerShell，做完上报后进程退出。同一 Worker 默认同行最多 3 个 `work-package.dispatch`（各开一个 Cursor CLI），可用 `AI_CENTER_WORKER_WORK_PACKAGE_CONCURRENCY` 覆盖，范围 1–8。问答 `ai.agent.run` 仍一次一条。可用 `AI_CENTER_CURSOR_MODEL` 覆盖。不把 Cursor 当带 API Key 的云端供应商。收件箱对话不实现。`claim` / `complete` / `fail` 只对本机桌面开放。`complete` 根据 `changedPaths` 判定 `restartRequired`；CLI 退出后，若需要则写 Instance `runtime/restart.request`，由启动器弹 Web/Worker，不拆隧道。`apps/web/public`、文档和测试不弹进程。已配对设备可 `POST /api/v1/runtime/restart` 手动请求同一次弹进程。不另开公网管理端口。
 - 知识组织是多维 Taxonomy，不是目录树。稳定 key 形如 `industry.semiconductor.memory`；`AI` 不是单一节点。`knowledge_type` / `inspiration_type` 是内容类型，不进入分类表。
 - `memory.save` 是问答里的写入工具：用户用自然语言下令后，模型整理 Structured Artifact，工具经 Domain Service 落库；禁止模型传入 `sourceRefs`，来源记当前 `ai-session`。
 - AI 不得直接新建 taxonomy 节点。找不到时归最近父节点，并把 proposal 写入 `taxonomy_proposals`。
 - `POST /api/v1/notes/from-run` 与 `POST /api/v1/knowledge/from-run` 入队 `inspiration.from-run` / `knowledge.from-run`，返回 `{ jobId }`，不在 HTTP 进程里等模型。
 - AI 处理写入独立 `AiRun`，并归入 `AiSession`；不覆盖原文。同一会话内的多次问答按时间追加，便于回溯和继续。
 - 问答进行中的页面进度来自本地 Agent trace 的压缩投影 `AgentRunProgressStep`（label / 最多 100 字的 detail），不把 Tool 原始 data 回给页面。未完成的 `ai.agent.run` 作为 `ActiveAgentRun` 出现在 `GET /api/v1/agent/runs`、会话列表的 `pendingRuns` 和会话详情 exchanges（`queued` / `running`）。Worker 一次只执行一条 Agent Job，后到的提问排队，不并行抢同一个 Runtime。
-- 用户主动引用是协议，不是独立领域：`resourceType + resourceId + revision`。当前 P0 支持 `content-item`、`post`、`inspiration`、`knowledge-revision`、`ai-run`。页面 ID（例如 `x:externalId`）不能当作 Resource ID；信息流 DTO 使用 `resourceId` 指向 `content_items.id`。
-- `CreateAgentRunInput.references` 进入 Job 后，由 Context Service `resolveReferences()` 确定性读取并写入模型上下文，不走 Tool Registry。写入 `ai_run_context_refs.origin = selected`；Tool 产生的引用为 `origin = tool`。问答会话详情把这些 refs 投影为 `sourceFooter`（去重、分组、最多 24 条），页面在回答文末展示并可跳转；不解析模型正文。
+- Search Agent / 文章阅读使用独立输入 Contract `CreateArticleAnalysisInput`，不要复用 `CreateAgentRunInput.message`。`AiSession.kind` 为 `article-analysis`。`AiRun.taskType` 统一为 `article-analysis.reader.v1`；`output` 只保存 Markdown `outputText`（上限 40,000），不保存结构化 Artifact。News 核验若发生，必须来自 `web.search` Tool Result。设计见 `docs/search-agent-v1.md`。
+- 用户主动引用是协议，不是独立领域：`resourceType + resourceId + revision`。当前 P0 支持 `content-item`、`post`、`inspiration`、`knowledge-revision`、`ai-run`。页面 ID（例如 `x:externalId`）不能当作 Resource ID；信息流 DTO 使用 `resourceId` 指向 `content_items.id`。同一组 refs 不只给问答：`POST /api/v1/context/pack` 把当前落库内容打成 Markdown 材料包（日期、来源链接、已有译文），页面可导出、放入任务框或继续带去问答。不新增 Pack / Bundle 领域，也不经隧道外发。
+- `CreateAgentRunInput.references` 进入 Job 后，由 Context Service `resolveReferences()` 确定性读取并写入模型上下文，不走 Tool Registry。写入 `ai_run_context_refs.origin = selected`；Tool 产生的引用为 `origin = tool`。问答会话详情把这些 refs 投影为 `sourceFooter`（去重、分组、最多 24 条），页面在回答文末展示并可跳转；不解析模型正文。信息流条目优先用已落盘译文作为正文。
 - `GET /api/v1/knowledge/mentions` 给问答输入框 `@` 补全：返回本地 Knowledge 文件（分析框架等）和 SQLite 知识文档，形状是 `knowledge-revision` 引用，不含文件路径。不是独立 MCP Skill 领域。
-- `webMode` 控制 `web.search` 是否暴露给模型，以及 System Prompt 中的使用倾向：`off` 不暴露该工具；`fallback` 暴露，并提示优先本地来源、本地不足或确需公开互联网事实时再用 Web；`always` 同样暴露，并提示用户允许在有帮助时使用 Web，但 Web 仍是普通 Tool，不是必须调用。以后若收成「不联网 / 允许联网」两档，`fallback` 可作兼容 alias。该 Tool 通过 SourcePort 读取 `search.web`；`refs.resourceType` 保持 `web-result`，`resourceId` 为结果 URL（截断到契约长度），不持久化搜索原文。结果投影保留 `publishedAt`（引擎未提供则为 `null`）。
+- `webMode` 控制 `web.search` 是否暴露给模型，以及 System Prompt 中的使用倾向：`off` 不暴露该工具；`fallback` 暴露，并提示优先本地来源、本地不足或确需公开互联网事实时再用 Web；`always` 同样暴露，并提示用户允许在有帮助时使用 Web，但 Web 仍是普通 Tool，不是必须调用。以后若收成「不联网 / 允许联网」两档，`fallback` 可作兼容 alias。该 Tool 通过 SourcePort 读取 `search.web`；`refs.resourceType` 保持 `web-result`，`resourceId` 为结果 URL（截断到契约长度），不持久化搜索原文。结果投影保留 `publishedAt`（无法解析为 ISO datetime 则为 `null`）和 `note`（Provider 不可用时的说明，空字符串表示正常）。当前默认 Provider 是 DeepSeek Native Search；只映射结构化 sources，不把生成答案写入结果。
+- `researchMode` 是问答的专业研究开关：`standard`（默认）走普通档；`research` 由 Domain `resolveResearchProfile` 解析为 `AgentResearchProfile`（`modelProfile` / `thinking` / `methodKeywords` / `extraToolIds`），写入 `ai.agent.run` Job input，不新增表。页面 Contract 不暴露供应商或具体模型名。`modelProfile=research` 只表示更高模型档位；Connector 可映射 `AI_CENTER_AGENT_RESEARCH_MODEL` / `AI_CENTER_ELUCID_GROK_RESEARCH_MODEL`，未配置时仍用当前默认模型。`methodKeywords` 与 `extraToolIds` 是预留口，当前默认空数组；`researchOnly` 工具只有出现在 `extraToolIds` 时才暴露。不要用 `metadata` 塞研究方法。
 - Agent 只读 Tag 工具：`tag.list` 读取 Catalog；`feed.tag.search` 按已落盘 Tag 查 ContentItem。`tag` 同时接受稳定 id、中文名和关键词，由 TaggingService 解析。`timeRange` 为 `all | today | yesterday | last-24h | last-48h`，由 Runtime 当前本地时区确定性计算，优先 `publishedAt`，缺失时 fallback `createdAt`。
 - `POST /api/v1/notes/from-run`、`POST /api/v1/knowledge/from-run` 把 AI 回答编译为 Inspiration / Knowledge Document，来源记在 `sourceType` / `sourceId` 或 `knowledge_links.derived_from`，不把来源塞进正文。手工创建仍用 `POST /api/v1/knowledge`。
 - `AiSession.kind` 区分 `question-answer` 与 `inspiration`（以及后续其他 AI 处理记录）。页面第一层列出记录，第二层打开会话。

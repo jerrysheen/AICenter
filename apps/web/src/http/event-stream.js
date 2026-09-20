@@ -57,7 +57,7 @@ export function createEventStreamHub(runtimeService, options = {}) {
     return { replayedThrough, snapshotRequired, replayed };
   }
 
-  function open(request, response, identity, lastEventId) {
+  async function open(request, response, identity, lastEventId) {
     response.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache, no-transform',
@@ -72,11 +72,20 @@ export function createEventStreamHub(runtimeService, options = {}) {
       replayedThrough = replay.replayedThrough;
       snapshotRequired = replay.snapshotRequired;
     }
+    let uiRevision = '';
+    if (typeof options.getUiRevision === 'function') {
+      try {
+        uiRevision = String(await options.getUiRevision() || '');
+      } catch {
+        uiRevision = '';
+      }
+    }
     response.write(`event: ready\ndata: ${JSON.stringify({
       now: Date.now(),
       latestEventId: runtimeService.latestEventId(),
       replayedThrough,
       snapshotRequired,
+      uiRevision,
     })}\n\n`);
     const client = { response, workspaceId, deviceId: identity.device?.id || null };
     clients.add(client);

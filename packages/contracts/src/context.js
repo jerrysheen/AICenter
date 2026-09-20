@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ReferenceInputSchema } from './agent.js';
 import { EntityIdSchema, EpochMillisSchema, WorkspaceIdSchema } from './common.js';
 
 export const ContextReferenceSchema = z.object({
@@ -15,6 +16,10 @@ export const BuildContextInputSchema = z.object({
   includeRecentFeed: z.boolean().optional(),
   includeTrading: z.boolean().optional(),
   limit: z.number().int().min(1).max(20).default(8),
+}).strict();
+
+export const PackReferencesInputSchema = z.object({
+  references: z.array(ReferenceInputSchema).max(8).default([]),
 }).strict();
 
 export const AiRunContextRefSchema = z.object({

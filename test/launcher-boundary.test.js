@@ -19,6 +19,17 @@ test('launcher state and logs belong to the selected instance runtime', () => {
   assert.match(launcher, /\$WorkerOutLog = Join-Path \$LogDirectory/);
   assert.match(launcher, /\$SearchOutLog = Join-Path \$HostLogDirectory/);
   assert.match(launcher, /\$BrowserOutLog = Join-Path \$HostLogDirectory/);
+  assert.match(launcher, /\$CloudflareOutLog = Join-Path \$HostLogDirectory/);
+});
+
+test('launcher applies work-package restart without stopping the public tunnel', () => {
+  assert.match(launcher, /restart\.request/);
+  assert.match(launcher, /Restarting Web\/Worker\. Tunnel stays up\./);
+  assert.match(launcher, /Web or Worker exited\. Restarting them; tunnel stays up\./);
+  assert.match(launcher, /Start-AiCenterWebAndWorker/);
+  const restartBlock = launcher.match(/Restarting Web\/Worker[\s\S]*?Web\/Worker restarted/)?.[0] || '';
+  assert.match(restartBlock, /Stop-StartedAiCenterProcesses/);
+  assert.doesNotMatch(restartBlock, /Stop-AiCenterCloudflared|cloudflareProcess = \$null/);
 });
 
 test('launcher only stops recorded web and worker processes', () => {
@@ -29,7 +40,15 @@ test('launcher only stops recorded web and worker processes', () => {
   const stopBlock = launcher.match(/function Stop-StartedAiCenterProcesses \{([\s\S]*?)\n\}/)?.[1] || '';
   assert.match(stopBlock, /\$workerProcess/);
   assert.match(stopBlock, /\$webProcess/);
-  assert.doesNotMatch(stopBlock, /\$searchProcess|\$browserProcess/);
+  assert.doesNotMatch(stopBlock, /\$searchProcess|\$browserProcess|\$cloudflareProcess|cloudflared/);
+});
+
+test('launcher can start a configured public tunnel as a host service', () => {
+  assert.match(launcher, /cloudflared-process\.ps1/);
+  assert.match(launcher, /Start-AiCenterCloudflaredProcess/);
+  assert.match(launcher, /Test-CloudflaredConfigured/);
+  const stateBlock = launcher.match(/function Write-InstanceProcessState \{([\s\S]*?)\n\}/)?.[1] || '';
+  assert.doesNotMatch(stateBlock, /cloudflare|tunnel/i);
 });
 
 test('standalone Search launcher reuses or refuses and never scans or kills Python', () => {

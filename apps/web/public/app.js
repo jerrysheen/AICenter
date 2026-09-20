@@ -2,17 +2,18 @@ import {
   askPrompts, assetClasses, bookTabs, channels, feedItems, globalAssets, holdings, marketTabs,
   platformFilters, portfolioSummary, quotes, reportSections, stockBoards as fallbackStockBoards,
   subscriptions, tools, tradeLedger,
-} from './mock.js?v=ia-align-v2';
-import { icon } from './icons.js?v=ia-align-v2';
-import { renderMarkdownInto } from './markdown.js?v=inspire-link-v2';
+} from './mock.js?v=dev';
+import { icon } from './icons.js?v=dev';
+import { renderMarkdownInto } from './markdown.js?v=dev';
 
-const platformLabels = { manual: '手工', bilibili: 'B站', x: 'X' };
+const platformLabels = { manual: '手工', bilibili: 'B站', x: 'X', trendforce: 'TrendForce' };
 const processingLabels = { subtitle: '字幕处理中', ai: 'AI 加工中' };
 const isHarmonyShell = navigator.userAgent.includes('AI-Center-Harmony/');
 const resetConnectionUri = 'aicenter://reset';
 
 const state = {
   session: null,
+  loginAvailable: false,
   posts: [],
   pairing: null,
   stream: null,
@@ -46,20 +47,26 @@ const state = {
   assetDashboard: null,
   assetDashboardError: '',
   assetDashboardLoading: false,
+  assetLedgerBusy: false,
   bootstrapped: false,
   extras: { us: [], asia: [], cn: [] },
   xItems: [],
-  xFeed: 'for-you',
+  xFeed: 'following',
   xNote: '',
   xLoading: false,
   xRefreshing: false,
   xTranslating: false,
   xTagging: false,
+  xPipeline: false,
   feedTaggings: {},
   tagCatalog: null,
   bilibiliItems: [],
   bilibiliNote: '',
   bilibiliLoading: false,
+  trendforceItems: [],
+  trendforceNote: '',
+  trendforceLoading: false,
+  trendforceRefreshing: false,
   translations: {},
   xSavedUrls: new Set(),
   dialogPost: null,
@@ -70,6 +77,11 @@ const state = {
   expandedInspirationIds: new Set(),
   knowledge: [],
   wantAi: false,
+  composeTarget: 'inspiration',
+  dispatchAttachments: [],
+  attachmentBlobUrls: {},
+  taskContinueAttachments: [],
+  taskContinuePackId: '',
   askSubmitting: false,
   askSessions: [],
   askSessionId: '',
@@ -95,6 +107,16 @@ const state = {
   overviewPane: 'home',
   overviewTimeline: 'latest',
   noteFilter: 'all',
+  inspirePane: 'notes',
+  taskFilter: 'all',
+  selectedWorkPackageId: '',
+  workPackages: [],
+  workPackageTraces: {},
+  workPackageProgressTimer: 0,
+  workPackageProgressWatchId: '',
+  workPackageProgressBusy: false,
+  workPackageProgressFingerprint: '',
+  taskContinueSelection: null,
   askMaterialTab: 'feed',
   sourceCatalogKind: 'all',
   sourceCatalogQuery: '',
@@ -103,6 +125,8 @@ const state = {
   hiddenFeedIds: new Set(),
   hiddenSourceIds: new Set(),
   focusIds: new Set(),
+  focusItems: {},
+  recentItems: {},
   lastOverviewTarget: '',
   feedQuery: '',
   showHeaderSearch: false,
@@ -118,6 +142,7 @@ const state = {
   trail: [],
   originalBodies: {},
   officialBodies: {},
+  articleAnalysis: {},
   runtimeJobs: [],
   runtimeJobsError: '',
 };
@@ -170,35 +195,44 @@ const viewCopy = {
 const elements = Object.fromEntries([
   'connection-state', 'server-name', 'session-description', 'pairing-panel', 'pairing-qr',
   'network-address', 'pairing-code', 'refresh-pairing', 'unpaired-panel', 'unpaired-title',
-  'unpaired-message', 'exit-to-pairing', 'retry-session', 'device-repair-panel', 'restart-pairing', 'authorized-content',
+  'unpaired-message', 'unpaired-hint', 'unpaired-actions', 'login-form', 'login-username', 'login-password', 'login-message', 'login-submit',
+  'exit-to-pairing', 'retry-session', 'device-repair-panel', 'restart-pairing', 'request-process-restart', 'authorized-content',
   'authorized-feed', 'page-title', 'page-subtitle', 'post-form', 'post-title', 'post-body',
   'form-message', 'feed', 'feed-count', 'metrics-panel', 'metric-devices', 'metric-opens',
   'metric-published', 'metric-details', 'device-list', 'post-dialog', 'dialog-title',
   'dialog-body', 'dialog-translation', 'dialog-tags', 'dialog-source', 'dialog-save', 'dialog-cite', 'dialog-translate', 'dialog-time', 'dialog-notice', 'dialog-language', 'toast', 'channel-tabs',
-  'platform-filters', 'follow-toolbar', 'bilibili-toolbar', 'bilibili-feed-status', 'bilibili-import-form', 'bilibili-url', 'bilibili-import', 'bilibili-more', 'x-toolbar', 'x-more', 'x-translate-bar', 'x-feed-status', 'x-translate-status', 'x-feed-tabs', 'x-refresh', 'x-translate', 'x-tag', 'quote-filters', 'quote-list', 'tool-grid',
+  'platform-filters', 'follow-toolbar', 'bilibili-toolbar', 'bilibili-feed-status', 'bilibili-import-form', 'bilibili-url', 'bilibili-import', 'bilibili-more', 'x-toolbar', 'x-more', 'x-translate-bar', 'x-feed-status', 'x-translate-status', 'x-feed-tabs', 'x-refresh', 'x-translate', 'x-tag', 'trendforce-toolbar', 'trendforce-feed-status', 'trendforce-more', 'trendforce-action-bar', 'trendforce-action-status', 'trendforce-refresh', 'quote-filters', 'quote-list', 'tool-grid',
   'ask-records', 'ask-start', 'ask-session-list', 'ask-session-shell', 'ask-back', 'ask-intro', 'ask-prompt-label',
-  'ask-thread', 'ask-prompts', 'ask-materials', 'ask-material-tabs', 'ask-form', 'ask-send', 'ask-ref-chips', 'ask-mention-menu', 'ask-live-chip', 'compose-dialog', 'reload-view', 'open-compose', 'open-settings', 'global-search',
+  'ask-thread', 'ask-prompts', 'ask-materials', 'ask-material-tabs', 'ask-form', 'ask-send', 'ask-ref-chips', 'ask-ref-actions', 'ask-ref-export', 'ask-ref-task', 'ask-mention-menu', 'ask-live-chip', 'compose-dialog', 'reload-view', 'open-compose', 'open-settings', 'global-search',
   'side-nav-list', 'bottom-tab', 'market-tabs', 'book-tabs', 'holdings-list', 'holdings-filters', 'asset-filters',
   'asset-list', 'ledger-list', 'search-dialog', 'symbol-search', 'search-results',
   'static-source-groups', 'static-schedule-tabs', 'static-upcoming', 'static-schedule-list',
   'static-board-note', 'source-dialog', 'source-dialog-title', 'source-dialog-meta', 'source-dialog-items',
   'overview-home', 'overview-schedule', 'overview-catalog', 'overview-timeline', 'overview-timeline-tabs', 'overview-timeline-day',
   'open-source-catalog', 'open-full-schedule', 'schedule-back', 'catalog-back', 'source-catalog-filter', 'source-catalog-tabs',
+  'inspire-subnav', 'inspire-notes-pane', 'inspire-tasks-pane',
   'note-filters', 'note-focus-entry', 'note-focus-hint',
+  'task-filters', 'task-list', 'task-list-pane', 'task-detail-pane',
+  'dispatch-plus', 'dispatch-plus-menu', 'dispatch-image', 'dispatch-target', 'dispatch-target-label',
+  'dispatch-target-menu', 'dispatch-send',
   'source-tasks-dialog', 'source-tasks-title', 'source-tasks-meta', 'source-tasks-body',
   'market-native-predictions', 'market-native-derivatives', 'market-native-liquidity', 'market-native-note',
+  'global-native-note',
   'note-form', 'note-body', 'note-title', 'note-source-url', 'note-source-title', 'note-source-type',
   'note-capture-channel', 'note-source-app', 'note-share-source', 'note-ai-toggle', 'note-list',
+  'note-attachments', 'note-image-input',
   'knowledge-list', 'portfolio-summary',
   'report-list', 'open-subscriptions', 'subscriptions-dialog', 'subscription-list',
   'holding-dialog', 'holding-title', 'holding-meta', 'holding-metrics',
   'stock-boards', 'market-status', 'market-overview', 'market-head', 'market-table-scroll', 'market-sort', 'market-filter', 'market-filter-wrap',
   'asset-sort', 'asset-filter', 'asset-filter-wrap', 'asset-table-scroll',
-  'market-sync-hint', 'book-sync-hint', 'analysis-period', 'analysis-kpis', 'analysis-trend', 'analysis-pie',
-  'analysis-diagnosis-1', 'analysis-diagnosis-2', 'analysis-dividend-total', 'analysis-dividend', 'analysis-insights',
+  'market-sync-hint', 'book-sync-hint',   'analysis-period', 'analysis-kpis', 'analysis-ledger', 'analysis-trend', 'analysis-pie',
+  'analysis-diagnosis-1', 'analysis-diagnosis-2',
   'holdings-note', 'holdings-head', 'holdings-moves', 'holdings-overview', 'holdings-group-detail',
   'holdings-group-title', 'holdings-group-moves', 'holdings-group-back', 'holdings-refresh', 'holdings-privacy',
   'reference-dock', 'reference-preview', 'reference-preview-title', 'reference-preview-meta', 'reference-preview-body',
+  'reference-pack', 'reference-pack-meta', 'reference-pack-chips', 'reference-pack-ask', 'reference-pack-task',
+  'reference-pack-export', 'reference-pack-clear',
   'hub-ticker', 'overview-subnav', 'nav-back', 'toggle-search', 'feed-filter', 'feed-open-calendar',
   'feed-filter-dialog', 'feed-filter-body', 'open-all-quotes', 'open-full-feed', 'hub-market-note',
   'page-root', 'settings-hub', 'settings-connections',
@@ -209,8 +243,15 @@ const TRANSLATION_STORE_LIMIT = 400;
 const TRANSLATE_BATCH_SIZE = 30;
 const TAG_BATCH_SIZE = 50;
 const HIDDEN_SOURCES_KEY = 'ai-center.hidden-sources.v1';
+const HIDDEN_FEED_KEY = 'ai-center.hidden-feed.v1';
 const FOCUS_KEY = 'ai-center.focus-ids.v1';
+const FOCUS_ITEMS_KEY = 'ai-center.focus-items.v1';
+const RECENT_ITEMS_KEY = 'ai-center.recent-items.v1';
+const RECENT_ITEMS_LIMIT = 80;
 const AUTO_DRAFT_KEY = 'ai-center.automation-draft.v1';
+const TASK_COMPOSE_DRAFT_KEY = 'ai-center.task-compose-draft.v1';
+const TASK_CONTINUE_DRAFT_KEY = 'ai-center.task-continue-draft.v1';
+const WORK_PACKAGE_PROGRESS_POLL_MS = 2500;
 const INSPIRATION_BODY_MAX = 100_000;
 
 function readJsonSet(key) {
@@ -228,20 +269,153 @@ function writeJsonSet(key, values) {
   } catch {}
 }
 
+function readJsonMap(key) {
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(key) || '{}');
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeJsonMap(key, value) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value || {}));
+  } catch {}
+}
+
 state.hiddenSourceIds = readJsonSet(HIDDEN_SOURCES_KEY);
+state.hiddenFeedIds = readJsonSet(HIDDEN_FEED_KEY);
 state.focusIds = readJsonSet(FOCUS_KEY);
+state.focusItems = readJsonMap(FOCUS_ITEMS_KEY);
+state.recentItems = readJsonMap(RECENT_ITEMS_KEY);
 
 function isFocused(id) {
   return state.focusIds.has(String(id || ''));
 }
 
-function toggleFocus(id, render) {
+function itemIsFocused(item) {
+  return isFocused(item?.id) || isFocused(item?.resourceId);
+}
+
+function isFeedFocusItem(item) {
+  return Boolean(item && (
+    item.kind === 'social'
+    || item.kind === 'official'
+    || item.release
+    || item.platform
+    || item.resourceType === 'content-item'
+    || item.resourceType === 'official-release'
+    || item.resourceType === 'post'
+  ));
+}
+
+function snapshotFocusItem(item) {
+  return {
+    id: item.id,
+    resourceId: item.resourceId || '',
+    resourceType: item.resourceType || '',
+    live: Boolean(item.live),
+    kind: item.kind || 'social',
+    platform: item.platform || '',
+    externalId: item.externalId || '',
+    author: item.author || '',
+    handle: item.handle || '',
+    time: item.time || '',
+    title: item.title || '',
+    body: item.body || '',
+    excerpt: item.excerpt || '',
+    tags: Array.isArray(item.tags) ? item.tags : [],
+    sourceUrl: item.sourceUrl || '',
+    processing: item.processing || '',
+    createdAt: item.createdAt || 0,
+    publishedAt: item.publishedAt || 0,
+    isRead: Boolean(item.isRead),
+    release: item.release || null,
+  };
+}
+
+function persistFocusItems() {
+  writeJsonMap(FOCUS_ITEMS_KEY, state.focusItems);
+}
+
+function rememberFocusItem(item) {
+  if (!isFeedFocusItem(item) || !item.id) return;
+  state.focusItems[String(item.id)] = snapshotFocusItem(item);
+  persistFocusItems();
+}
+
+function forgetFocusItem(itemOrId) {
+  const keys = new Set();
+  if (itemOrId && typeof itemOrId === 'object') {
+    for (const value of [itemOrId.id, itemOrId.resourceId]) {
+      if (value) keys.add(String(value));
+    }
+  } else if (itemOrId) {
+    keys.add(String(itemOrId));
+  }
+  let changed = false;
+  for (const [id, snap] of Object.entries(state.focusItems)) {
+    if (keys.has(id) || keys.has(String(snap?.id || '')) || keys.has(String(snap?.resourceId || ''))) {
+      delete state.focusItems[id];
+      changed = true;
+    }
+  }
+  if (changed) persistFocusItems();
+}
+
+function toggleFocus(id, render, item) {
   const key = String(id || '');
   if (!key) return;
-  if (state.focusIds.has(key)) state.focusIds.delete(key);
-  else state.focusIds.add(key);
+  if (state.focusIds.has(key)) {
+    state.focusIds.delete(key);
+    if (item?.resourceId) state.focusIds.delete(String(item.resourceId));
+    forgetFocusItem(item || key);
+  } else {
+    state.focusIds.add(key);
+    if (item) rememberFocusItem(item);
+  }
   writeJsonSet(FOCUS_KEY, state.focusIds);
   if (typeof render === 'function') render();
+}
+
+function removeFocusItem(post) {
+  for (const key of [post?.id, post?.resourceId]) {
+    if (key) state.focusIds.delete(String(key));
+  }
+  forgetFocusItem(post);
+  writeJsonSet(FOCUS_KEY, state.focusIds);
+}
+
+function persistRecentItems() {
+  writeJsonMap(RECENT_ITEMS_KEY, state.recentItems);
+}
+
+function pruneRecentItems() {
+  const rows = Object.entries(state.recentItems)
+    .sort((left, right) => (Number(right[1]?.viewedAt) || 0) - (Number(left[1]?.viewedAt) || 0));
+  if (rows.length <= RECENT_ITEMS_LIMIT) return;
+  state.recentItems = Object.fromEntries(rows.slice(0, RECENT_ITEMS_LIMIT));
+}
+
+function rememberRecentItem(item) {
+  if (!isFeedFocusItem(item) || !item.id) return;
+  state.recentItems[String(item.id)] = {
+    ...snapshotFocusItem(item),
+    isRead: true,
+    viewedAt: Date.now(),
+  };
+  pruneRecentItems();
+  persistRecentItems();
+}
+
+function removeRecentItem(post) {
+  for (const [id, snap] of Object.entries(state.recentItems)) {
+    if (id === String(post?.id) || snap?.id === post?.id || (post?.resourceId && snap?.resourceId === post.resourceId)) {
+      delete state.recentItems[id];
+    }
+  }
+  persistRecentItems();
 }
 
 function hashText(value) {
@@ -276,6 +450,14 @@ function saveTranslationStore(store) {
 function translationFor(post) {
   if (!post?.id) return null;
   if (state.translations[post.id]) return state.translations[post.id];
+  if (post.translation?.text) {
+    state.translations[post.id] = {
+      text: post.translation.text,
+      engine: post.translation.engine || '',
+      cached: true,
+    };
+    return state.translations[post.id];
+  }
   const stored = loadTranslationStore()[translationStoreKey(post)];
   if (!stored?.text) return null;
   state.translations[post.id] = { text: stored.text, engine: stored.engine || '', cached: true };
@@ -301,8 +483,10 @@ function textNeedsZhView(sourceText) {
   const han = (source.match(/\p{Script=Han}/gu) || []).length;
   if (hangul === 0 && latin === 0) return false;
   const foreign = hangul + latin;
+  if (hangul >= 2 && hangul >= han && hangul >= latin) return true;
+  if (han >= 12) return false;
   if (han >= 8 && foreign < Math.max(8, Math.ceil(han * 0.25))) return false;
-  return true;
+  return latin >= 8 || hangul >= 2;
 }
 
 function postNeedsChineseTranslation(post) {
@@ -315,10 +499,15 @@ function mergeLocalizations(payload) {
   state.sourceLocalizations = { ...state.sourceLocalizations, ...incoming };
 }
 
+function postIsTranslating(post) {
+  if (!postNeedsChineseTranslation(post) || translationFor(post)) return false;
+  return Boolean(post?.platform === 'x' && state.xTranslating);
+}
+
 function localizedCopy(id, fallback = '') {
   const row = state.sourceLocalizations[id];
   if (row?.text) return row.text;
-  if (row?.pending || textNeedsZhView(fallback)) return '正在翻译…';
+  if (row?.pending && state.sourceLocalizing) return '正在翻译…';
   return fallback || '';
 }
 
@@ -336,7 +525,13 @@ function taggingFor(resourceId) {
 function pendingXTaggings(limit = TAG_BATCH_SIZE) {
   return state.xItems
     .filter((item) => item.resourceId && !taggingFor(item.resourceId))
+    .sort((left, right) => (right.capturedAt || right.createdAt || right.publishedAt || 0)
+      - (left.capturedAt || left.createdAt || left.publishedAt || 0))
     .slice(0, limit);
+}
+
+function xTaskBusy() {
+  return state.xLoading || state.xTranslating || state.xTagging || state.xPipeline;
 }
 
 function tagNames(tagIds = []) {
@@ -404,9 +599,13 @@ function parseLocation(name = (location.hash || '#sources').slice(1)) {
   const askSessionId = view === 'ask' && rest[0] ? rest.join('/') : '';
   const sourcesPane = view === 'sources' && ['catalog', 'schedule'].includes(rest[0]) ? rest[0] : 'home';
   const settingsPane = view === 'settings' && rest[0] === 'connections' ? 'connections' : (view === 'settings' ? 'hub' : '');
+  const inspirePane = view === 'inspire' && rest[0] === 'tasks' ? 'tasks' : (view === 'inspire' ? 'notes' : '');
+  const selectedWorkPackageId = view === 'inspire' && rest[0] === 'tasks' && /^[0-9a-f-]{36}$/i.test(rest[1] || '')
+    ? rest[1]
+    : '';
   const pageKind = pageKinds[head] ? head : '';
   const pageId = pageKind ? rest.join('/') : '';
-  return { view, askSessionId, marketPane, sourcesPane, settingsPane, pageKind, pageId };
+  return { view, askSessionId, marketPane, sourcesPane, settingsPane, inspirePane, selectedWorkPackageId, pageKind, pageId };
 }
 
 const OVERVIEW_LANE_KEY = 'ai-center.last-overview';
@@ -481,6 +680,14 @@ function goBack() {
   setView('sources', { back: true });
 }
 
+function leaveArticle() {
+  if (state.trail.length) {
+    goBack();
+    return;
+  }
+  setView('feed', { back: true });
+}
+
 function syncHeaderSearch() {
   document.body.classList.toggle('search-open', Boolean(state.showHeaderSearch));
   if (elements['toggle-search']) {
@@ -490,13 +697,15 @@ function syncHeaderSearch() {
   if (elements['nav-back']) {
     const showBack = document.body.dataset.view === 'page'
       || (document.body.dataset.view === 'settings' && state.settingsPane === 'connections')
-      || (document.body.dataset.view === 'sources' && state.overviewPane !== 'home');
+      || (document.body.dataset.view === 'sources' && state.overviewPane !== 'home')
+      || (document.body.dataset.view === 'inspire' && Boolean(state.selectedWorkPackageId));
     elements['nav-back'].classList.toggle('hidden', !showBack);
     setIconButton(elements['nav-back'], 'chevron-left');
   }
 }
 
 function setView(name, options = {}) {
+  persistTaskDraftsFromDom();
   const incoming = String(name || '').replace(/^#/, '');
   const requested = options.fromPrimaryNav && incoming === 'sources'
     ? (readLastOverviewTarget() || 'sources')
@@ -510,8 +719,16 @@ function setView(name, options = {}) {
   if (view === 'market' && parsed.marketPane) state.tradePane = parsed.marketPane;
   if (view === 'sources') state.overviewPane = parsed.sourcesPane || 'home';
   if (view === 'settings') state.settingsPane = parsed.settingsPane || 'hub';
+  if (view === 'inspire') state.inspirePane = parsed.inspirePane || 'notes';
+  state.selectedWorkPackageId = view === 'inspire' ? (parsed.selectedWorkPackageId || '') : '';
+  if (view === 'inspire' && previous !== 'inspire' && !state.selectedWorkPackageId) {
+    state.composeTarget = state.inspirePane === 'tasks' ? 'task' : 'inspiration';
+  }
   state.pageKind = view === 'page' ? parsed.pageKind : '';
   state.pageId = view === 'page' ? parsed.pageId : '';
+  if ((view !== 'page' || parsed.pageKind !== 'article') && !elements['post-dialog']?.open) {
+    state.dialogPost = null;
+  }
   state.hubLane = overviewLane(view, state.tradePane);
   rememberOverviewTarget(view, state.tradePane);
   document.body.dataset.view = view;
@@ -526,18 +743,27 @@ function setView(name, options = {}) {
   if (view === 'market') {
     elements['page-title'].textContent = state.tradePane === 'assets' ? '全球行情' : '股票';
     elements['page-subtitle'].textContent = state.tradePane === 'assets'
-      ? '指数、外汇、利率、贵金属、能源与加密'
-      : '总览按时切换 A 股/美股，亚洲观察池仍单独成页';
+      ? '指数、外汇、利率、国债、贵金属、能源与加密'
+      : '总览按时切换 A 股/港股与美股，亚洲观察池仍单独成页';
   } else if (view === 'page') {
     elements['page-title'].textContent = pageKinds[state.pageKind]?.title || '详情';
     elements['page-subtitle'].textContent = '';
   } else if (view === 'settings') {
     elements['page-title'].textContent = state.settingsPane === 'connections' ? '设备连接' : '设备与连接';
     elements['page-subtitle'].textContent = viewCopy.settings.subtitle;
+  } else if (view === 'inspire') {
+    elements['page-title'].textContent = state.selectedWorkPackageId ? '任务详情' : '灵感';
+    elements['page-subtitle'].textContent = state.selectedWorkPackageId
+      ? '进展随步骤刷新；本地输入会留下来，可带着旧指令继续做'
+      : state.inspirePane === 'tasks'
+        ? '每条任务在本机 Cursor 开独立窗口，完成后自己写回这里'
+        : viewCopy.inspire.subtitle;
+    syncInspirePanes();
   } else {
     elements['page-title'].textContent = viewCopy[view].title;
     elements['page-subtitle'].textContent = viewCopy[view].subtitle;
   }
+  syncWorkPackageProgressWatch();
   updateHeaderAction(view);
   renderOverviewLanes();
   syncHeaderSearch();
@@ -568,9 +794,12 @@ function setView(name, options = {}) {
           ? '#settings/connections'
           : view === 'page'
             ? pageHash()
-            : `#${view}`;
+            : view === 'inspire' && state.inspirePane === 'tasks'
+              ? (state.selectedWorkPackageId ? `#inspire/tasks/${state.selectedWorkPackageId}` : '#inspire/tasks')
+              : `#${view}`;
   if (location.hash !== nextHash) history.replaceState({}, '', `${location.pathname}${location.search}${nextHash}`);
   if (leaving) restoreViewScroll(view);
+  persistFeedBrowseState();
   syncAskKeyboard();
 }
 
@@ -595,13 +824,101 @@ function updateHeaderAction(view) {
   setIconButton(button, 'plus');
 }
 
-async function reloadCurrentView() {
+function bootUiRevision() {
+  return document.querySelector('meta[name="ai-center-ui-revision"]')?.getAttribute('content') || '';
+}
+
+async function fetchUiRevision() {
+  const payload = await api('/api/v1/ui/revision');
+  return String(payload.revision || '');
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function settleUiRevision(read = fetchUiRevision) {
+  let last = await read();
+  let stable = 1;
+  for (let i = 1; i < 8 && stable < 3; i += 1) {
+    await sleep(450);
+    const next = await read().catch(() => last);
+    if (next === last) stable += 1;
+    else {
+      last = next;
+      stable = 1;
+    }
+  }
+  return last;
+}
+
+function forceReloadShell(revision, { bust = false } = {}) {
+  const base = String(revision || '').trim() || String(Date.now());
+  const next = bust ? `${base}-${Date.now()}` : base;
+  try {
+    if (!bust && sessionStorage.getItem('ai-center.ui-reload') === next) return false;
+    sessionStorage.setItem('ai-center.ui-reload', bust ? base : next);
+  } catch {
+    // sessionStorage 不可用时仍整页重载。
+  }
+  window.aiCenterUiReloading = true;
+  const url = new URL(location.href);
+  url.searchParams.set('v', next);
+  location.replace(`${url.pathname}${url.search}${location.hash}`);
+  return true;
+}
+
+let shellReloadPending = null;
+
+async function reloadShellWhenStable(revision) {
+  if (window.aiCenterUiReloading) return false;
+  if (shellReloadPending) return shellReloadPending;
+  const hinted = String(revision || '').trim();
+  if (hinted && hinted === bootUiRevision()) return false;
+  showToast('界面已更新，正在加载新版本');
+  shellReloadPending = (async () => {
+    try {
+      const local = bootUiRevision();
+      const remote = await settleUiRevision();
+      if (window.aiCenterUiReloading) return false;
+      if (!remote || remote === local) return false;
+      return forceReloadShell(remote);
+    } finally {
+      if (!window.aiCenterUiReloading) shellReloadPending = null;
+    }
+  })();
+  return shellReloadPending;
+}
+
+async function maybeReloadStaleShell() {
+  if (window.aiCenterUiBoot) {
+    const boot = await window.aiCenterUiBoot.catch(() => null);
+    if (boot?.reloading || window.aiCenterUiReloading) return true;
+  }
+  const remote = await fetchUiRevision().catch(() => '');
+  const local = bootUiRevision();
+  if (!remote || !local || remote === local) return false;
+  return reloadShellWhenStable(remote);
+}
+
+async function reloadCurrentView({ forceShell = false } = {}) {
   if (state.viewReloading) return;
   const button = elements['reload-view'];
   state.viewReloading = true;
   button?.classList.add('is-spinning');
   button?.setAttribute('aria-busy', 'true');
   try {
+    const remote = await fetchUiRevision().catch(() => '');
+    const local = bootUiRevision();
+    if (forceShell) {
+      showToast('正在强制更新界面');
+      forceReloadShell(remote || local, { bust: true });
+      return;
+    }
+    if (remote && local && remote !== local) {
+      await reloadShellWhenStable(remote);
+      return;
+    }
     if (!state.session) throw new Error('尚未连接，无法刷新');
     const view = document.body.dataset.view;
     const tasks = [];
@@ -613,7 +930,7 @@ async function reloadCurrentView() {
     if (view === 'sources') tasks.push(loadSourcesPage({ refresh: true }));
     if (view === 'inspire') tasks.push(loadNotes());
     if (view === 'ask') tasks.push(syncAskView());
-    if (view === 'market') tasks.push(syncTradePaneData());
+    if (view === 'market') tasks.push(syncTradePaneData({ refresh: true }));
     if (view === 'assets') {
       tasks.push(state.tradePane === 'holdings' ? loadHoldings({ refresh: true }) : syncTradePaneData());
     }
@@ -640,6 +957,15 @@ async function reloadCurrentView() {
   }
 }
 
+function forgetLegacyDeviceGrant() {
+  try {
+    window.localStorage.removeItem('ai-center.device-token');
+    window.sessionStorage.removeItem('ai-center.device-token');
+  } catch (_error) {
+    // 旧退路留下的本地 token 清不掉也不影响 Cookie 登录。
+  }
+}
+
 async function api(path, options = {}) {
   const { timeoutMs, ...fetchOptions } = options;
   const controller = timeoutMs ? new AbortController() : null;
@@ -655,6 +981,7 @@ async function api(path, options = {}) {
     if (!response.ok) {
       const error = new Error(payload.error || `请求失败 (${response.status})`);
       error.status = response.status;
+      error.payload = payload;
       throw error;
     }
     return payload;
@@ -742,19 +1069,61 @@ function removePairingCodeFromAddress() {
   history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
 }
 
-function showUnpairedPage(message, pairingFailed = false) {
+function guessDeviceName() {
+  return /Mobile|HarmonyOS|Android|iPhone/i.test(navigator.userAgent) ? '我的鸿蒙手机' : '浏览器设备';
+}
+
+function showUnpairedPage(message, pairingFailed = false, options = {}) {
   state.session = null;
   state.stream?.close();
+  const loginAvailable = Boolean(options.loginAvailable);
+  state.loginAvailable = loginAvailable;
   document.body.classList.add('is-unpaired');
+  document.body.classList.remove('is-ready');
   elements['unpaired-panel'].classList.remove('hidden');
-  elements['unpaired-title'].textContent = pairingFailed ? '配对没有完成' : '这台设备尚未配对';
-  elements['unpaired-message'].textContent = message || '请回到电脑上的 AI Center，刷新二维码后重新扫描。';
+  if (elements['unpaired-actions']) elements['unpaired-actions'].classList.remove('hidden');
+  elements['unpaired-panel'].querySelector('.connection-gate-card')?.classList.toggle('has-login', loginAvailable);
+  if (elements['login-form']) elements['login-form'].classList.toggle('hidden', !loginAvailable);
+  if (elements['login-message']) {
+    elements['login-message'].classList.add('hidden');
+    elements['login-message'].textContent = '';
+  }
+  if (pairingFailed) {
+    elements['unpaired-title'].textContent = '配对没有完成';
+    elements['unpaired-message'].textContent = message || '请回到电脑上的 AI Center，刷新二维码后重新扫描。';
+  } else if (loginAvailable) {
+    elements['unpaired-title'].textContent = '登录 AI Center';
+    elements['unpaired-message'].textContent = message || '输入账号密码，或回到电脑端扫描二维码。';
+  } else {
+    elements['unpaired-title'].textContent = '这台设备尚未配对';
+    elements['unpaired-message'].textContent = message || '请回到电脑上的 AI Center，刷新二维码后重新扫描。';
+  }
   elements['exit-to-pairing'].textContent = isHarmonyShell ? '退出并重新扫码' : '清除连接并重新扫码';
+  if (elements['unpaired-hint']) {
+    elements['unpaired-hint'].textContent = loginAvailable
+      ? '账号登录与扫码配对都会签发同一份设备授权。'
+      : '二维码 10 分钟内有效且只能使用一次。';
+  }
+}
+
+async function revealUnpairedPage(message, pairingFailed = false) {
+  let loginAvailable = state.loginAvailable === true;
+  try {
+    await api('/api/v1/session');
+  } catch (error) {
+    if (error?.payload && typeof error.payload === 'object' && 'loginAvailable' in error.payload) {
+      loginAvailable = Boolean(error.payload.loginAvailable);
+    }
+  }
+  showUnpairedPage(message, pairingFailed, { loginAvailable });
 }
 
 function hideUnpairedPage() {
   document.body.classList.remove('is-unpaired');
+  document.body.classList.add('is-ready');
   elements['unpaired-panel'].classList.add('hidden');
+  if (elements['unpaired-actions']) elements['unpaired-actions'].classList.add('hidden');
+  elements['unpaired-panel'].querySelector('.connection-gate-card')?.classList.remove('has-login');
 }
 
 async function exitAndRePair() {
@@ -767,6 +1136,7 @@ async function exitAndRePair() {
   } catch (_error) {
     // 即使电脑服务暂不可用，鸿蒙薄壳仍然需要能够清除旧地址。
   }
+  forgetLegacyDeviceGrant();
 
   if (isHarmonyShell) {
     try {
@@ -787,7 +1157,7 @@ async function exitAndRePair() {
     return;
   }
 
-  showUnpairedPage('当前浏览器连接已清除。请关闭此页面，回到电脑端刷新二维码后重新扫描。');
+  await revealUnpairedPage('当前浏览器连接已清除。可直接登录，或回到电脑端刷新二维码后重新扫描。');
   controls.forEach((control) => {
     control.disabled = false;
   });
@@ -840,7 +1210,7 @@ function persistFeedBrowseState() {
     }
     window.localStorage.setItem(LAST_LOCATION_KEY, JSON.stringify({
       hash: location.hash || '#sources',
-      platform: state.platform,
+      platform: state.feedPlatform || state.platform,
       xFeed: state.xFeed,
       channel: state.channel,
     }));
@@ -850,7 +1220,8 @@ function persistFeedBrowseState() {
       restoreId: state.feedRestoreId || '',
       dialogPostId: state.dialogPost?.id || '',
       shown: state.feedShown,
-      platform: state.platform,
+      platform: state.feedPlatform || state.platform,
+      channel: state.channel,
       xFeed: state.xFeed,
     }));
   } catch {}
@@ -868,7 +1239,11 @@ function restorePersistedFeedBrowseState() {
     if (Number.isFinite(saved.shown) && saved.shown > state.feedShown) {
       state.feedShown = saved.shown;
     }
-    if (saved.platform) state.platform = saved.platform;
+    if (saved.platform) {
+      state.platform = saved.platform;
+      state.feedPlatform = saved.platform;
+    }
+    if (saved.channel) state.channel = saved.channel;
     if (saved.xFeed) state.xFeed = saved.xFeed;
     pendingFeedDialogId = saved.dialogPostId || pendingFeedDialogId;
     return saved;
@@ -930,11 +1305,7 @@ function restoreViewScroll(view) {
 }
 
 function restoreOpenFeedItem() {
-  const postId = pendingFeedDialogId || '';
   pendingFeedDialogId = '';
-  if (!postId || document.body.dataset.view !== 'feed') return;
-  const post = visibleFeedItems().find((item) => String(item.id) === String(postId));
-  if (post) openPost(post);
 }
 
 function capturePageScroll() {
@@ -996,7 +1367,7 @@ function createPostLink(label, onClick) {
 }
 
 function anyDialogOpen() {
-  return ['compose-dialog', 'search-dialog', 'post-dialog', 'subscriptions-dialog', 'holding-dialog', 'reference-preview', 'feed-filter-dialog', 'source-tasks-dialog']
+  return ['compose-dialog', 'search-dialog', 'post-dialog', 'subscriptions-dialog', 'holding-dialog', 'reference-preview', 'reference-pack', 'feed-filter-dialog', 'source-tasks-dialog']
     .some((id) => document.getElementById(id)?.open);
 }
 
@@ -1053,7 +1424,8 @@ function isPostSaved(post) {
 }
 
 function inspirationBodyFromPost(post) {
-  const parts = [post.author, post.handle, post.body].filter(Boolean);
+  const body = translationFor(post)?.text || post.body;
+  const parts = [post.author, post.handle, body].filter(Boolean);
   return parts.join('\n\n');
 }
 
@@ -1095,7 +1467,9 @@ function receiveHarmonyShare(payload = {}) {
     appendExternalLink(source, sourceUrl, '查看来源');
   }
   source.classList.remove('hidden');
+  state.composeTarget = 'inspiration';
   setView('inspire');
+  syncDispatchComposer();
   requestAnimationFrame(() => elements['note-body'].focus());
   return true;
 }
@@ -1221,6 +1595,7 @@ function insertFeedListItem(list, item, index) {
 function stashFeedItem(post) {
   const xIndex = state.xItems.findIndex((item) => item.id === post.id || item.resourceId === post.resourceId);
   const biliIndex = state.bilibiliItems.findIndex((item) => item.id === post.id || item.resourceId === post.resourceId);
+  const trendforceIndex = state.trendforceItems.findIndex((item) => item.id === post.id || item.resourceId === post.resourceId);
   const liveIndex = state.posts.findIndex((item) => item.id === post.id);
   return {
     post,
@@ -1228,33 +1603,63 @@ function stashFeedItem(post) {
     xIndex,
     biliItem: biliIndex >= 0 ? state.bilibiliItems[biliIndex] : null,
     biliIndex,
+    trendforceItem: trendforceIndex >= 0 ? state.trendforceItems[trendforceIndex] : null,
+    trendforceIndex,
     liveItem: liveIndex >= 0 ? state.posts[liveIndex] : null,
     liveIndex,
   };
 }
 
+function feedHideKeys(post) {
+  const platform = String(post?.platform || '').trim();
+  const externalId = String(post?.externalId || '').trim();
+  return [
+    post?.id,
+    post?.resourceId,
+    externalId && platform ? `${platform}:${externalId}` : '',
+    externalId && !platform ? externalId : '',
+  ].map((value) => String(value || '').trim()).filter(Boolean);
+}
+
+function isHiddenFeedItem(item) {
+  return feedHideKeys(item).some((key) => state.hiddenFeedIds.has(key));
+}
+
+function persistHiddenFeedIds() {
+  writeJsonSet(HIDDEN_FEED_KEY, state.hiddenFeedIds);
+}
+
 function restoreStashedFeedItem(stash) {
-  state.hiddenFeedIds.delete(stash.post.id);
-  if (stash.post.resourceId) state.hiddenFeedIds.delete(stash.post.resourceId);
+  for (const key of feedHideKeys(stash.post)) state.hiddenFeedIds.delete(key);
+  persistHiddenFeedIds();
   if (stash.xItem) state.xItems = insertFeedListItem(state.xItems, stash.xItem, stash.xIndex);
   if (stash.biliItem) state.bilibiliItems = insertFeedListItem(state.bilibiliItems, stash.biliItem, stash.biliIndex);
+  if (stash.trendforceItem) state.trendforceItems = insertFeedListItem(state.trendforceItems, stash.trendforceItem, stash.trendforceIndex);
   if (stash.liveItem) state.posts = insertFeedListItem(state.posts, stash.liveItem, stash.liveIndex);
 }
 
 function dropFeedItemLocally(post) {
-  state.hiddenFeedIds.add(post.id);
-  if (post.resourceId) state.hiddenFeedIds.add(post.resourceId);
+  for (const key of feedHideKeys(post)) state.hiddenFeedIds.add(key);
+  persistHiddenFeedIds();
   state.posts = state.posts.filter((item) => item.id !== post.id);
   state.xItems = state.xItems.filter((item) => item.id !== post.id && item.resourceId !== post.resourceId);
   state.bilibiliItems = state.bilibiliItems.filter((item) => item.id !== post.id && item.resourceId !== post.resourceId);
+  state.trendforceItems = state.trendforceItems.filter((item) => item.id !== post.id && item.resourceId !== post.resourceId);
 }
 
 function markFeedItemRead(post) {
-  if (!post?.id || post.isRead) return;
+  if (!post?.id) return;
+  rememberRecentItem(post);
+  if (post.isRead) return;
   post.isRead = true;
-  for (const list of [state.xItems, state.bilibiliItems, state.posts]) {
+  for (const list of [state.xItems, state.bilibiliItems, state.trendforceItems, state.posts]) {
     const hit = list.find((item) => item.id === post.id || (post.resourceId && item.resourceId === post.resourceId));
     if (hit) hit.isRead = true;
+  }
+  const snap = state.focusItems[post.id] || (post.resourceId && state.focusItems[post.resourceId]);
+  if (snap) {
+    snap.isRead = true;
+    persistFocusItems();
   }
   const contentItemId = post.resourceType === 'content-item' ? post.resourceId : '';
   if (!contentItemId || !state.session) return;
@@ -1265,14 +1670,12 @@ function markFeedItemRead(post) {
 }
 
 async function hideFeedItem(post) {
+  if (itemIsFocused(post)) rememberFocusItem(post);
+  if (state.recentItems[post?.id] || (post?.resourceId && Object.values(state.recentItems).some((item) => item.resourceId === post.resourceId))) {
+    rememberRecentItem(post);
+  }
   const contentItemId = post.resourceType === 'content-item' ? post.resourceId : '';
   const isManual = post.platform === 'manual' && post.live;
-  if ((contentItemId || isManual) && !state.session) {
-    showToast('请先在设置中完成设备连接');
-    setView('settings');
-    return;
-  }
-  const stash = stashFeedItem(post);
   dropFeedItemLocally(post);
   renderPosts();
   try {
@@ -1288,9 +1691,7 @@ async function hideFeedItem(post) {
       });
     }
   } catch (error) {
-    restoreStashedFeedItem(stash);
-    renderPosts();
-    showToast(error.message || '删除失败，已恢复');
+    showToast(error.message || '已从本机信息流删除');
   }
 }
 
@@ -1428,7 +1829,7 @@ function flashSourceTarget(node) {
 
 function contentItemAsPost(item) {
   const provider = String(item.provider || '');
-  const platform = provider === 'bilibili' || provider === 'x' ? provider : 'manual';
+  const platform = provider === 'bilibili' || provider === 'x' || provider === 'trendforce' ? provider : 'manual';
   return {
     id: item.externalId && platform !== 'manual' ? `${platform}:${item.externalId}` : item.id,
     resourceId: item.id,
@@ -1447,7 +1848,7 @@ function contentItemAsPost(item) {
 
 function findFeedPost(ref) {
   const id = String(ref.resourceId || '');
-  return [...state.posts, ...state.xItems, ...state.bilibiliItems]
+  return [...state.posts, ...state.xItems, ...state.bilibiliItems, ...state.trendforceItems]
     .find((item) => item.resourceId === id || item.id === id) || null;
 }
 
@@ -1583,6 +1984,26 @@ function appendAskSourceFooter(card, footer) {
       textContent: `另有 ${footer.extraCount} 条检索命中未展开`,
     }));
   }
+  if (footer.evidence) {
+    const bits = [];
+    if (Number.isFinite(Number(footer.evidence.confidence))) {
+      bits.push(`证据置信 ${Number(footer.evidence.confidence).toFixed(2)}`);
+    }
+    if (Number.isFinite(Number(footer.evidence.sufficiency))) {
+      bits.push(`充分度 ${Number(footer.evidence.sufficiency).toFixed(2)}`);
+    }
+    const accepted = Number(footer.evidence.acceptedCount);
+    const rejected = Number(footer.evidence.rejectedCount);
+    if (Number.isFinite(accepted) || Number.isFinite(rejected)) {
+      bits.push(`采用 ${Number.isFinite(accepted) ? accepted : 0}，筛掉 ${Number.isFinite(rejected) ? rejected : 0}`);
+    }
+    if (bits.length) {
+      section.append(Object.assign(document.createElement('p'), {
+        className: 'ask-source-evidence',
+        textContent: bits.join(' · '),
+      }));
+    }
+  }
   card.append(section);
 }
 
@@ -1591,19 +2012,145 @@ function renderAskRefChips() {
   if (!host) return;
   host.replaceChildren(...state.referenceDraft.map((ref, index) => createRefChip(ref, index, { removable: true })));
   host.classList.toggle('hidden', !state.referenceDraft.length);
+  elements['ask-ref-actions']?.classList.toggle('hidden', !state.referenceDraft.length);
 }
 
 function renderReferenceDock() {
   const dock = elements['reference-dock'];
   if (!dock) return;
   const count = state.referenceDraft.length;
-  dock.textContent = `引用 ${count} 项`;
+  dock.textContent = count ? `材料 ${count} 条` : '材料 0 条';
   dock.classList.toggle('hidden', count === 0);
+}
+
+function renderReferencePackDialog() {
+  const chips = elements['reference-pack-chips'];
+  const meta = elements['reference-pack-meta'];
+  if (chips) {
+    chips.replaceChildren(...state.referenceDraft.map((ref, index) => createRefChip(ref, index, { removable: true })));
+  }
+  if (meta) {
+    meta.textContent = state.referenceDraft.length
+      ? `已选 ${state.referenceDraft.length} 条。同一组可以导出、发给任务或带去问答。`
+      : '还没有材料。信息流或灵感里点引用即可加入。';
+  }
 }
 
 function renderReferenceUi() {
   renderAskRefChips();
   renderReferenceDock();
+  if (elements['reference-pack']?.open) renderReferencePackDialog();
+}
+
+function openReferencePack() {
+  if (!state.referenceDraft.length) {
+    showToast('先在信息流或灵感里点引用');
+    return;
+  }
+  renderReferencePackDialog();
+  openDialog(elements['reference-pack']);
+}
+
+function closeReferencePack() {
+  elements['reference-pack']?.close();
+  releaseDialogScroll();
+}
+
+async function fetchReferencePack() {
+  if (!state.referenceDraft.length) {
+    showToast('先选几条材料');
+    return null;
+  }
+  const payload = await api('/api/v1/context/pack', {
+    method: 'POST',
+    body: JSON.stringify({ references: draftPayload() }),
+  });
+  if (!payload?.pack?.markdown) {
+    showToast('这组材料现在读不出来');
+    return null;
+  }
+  if (payload.pack.missing?.length) {
+    showToast(`有 ${payload.pack.missing.length} 条已经找不到，先导出能读到的`);
+  }
+  return payload.pack;
+}
+
+async function copyTextToClipboard(text) {
+  const value = String(text || '');
+  if (!value) return false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch { /* 下面用 execCommand 兜住 */ }
+  const area = document.createElement('textarea');
+  area.value = value;
+  area.setAttribute('readonly', '');
+  area.style.position = 'fixed';
+  area.style.left = '-9999px';
+  document.body.append(area);
+  area.select();
+  const ok = document.execCommand('copy');
+  area.remove();
+  return ok;
+}
+
+function downloadTextFile(filename, text) {
+  const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function packDownloadName(title) {
+  const stamp = new Date().toISOString().slice(0, 10);
+  const slug = String(title || '材料包').replace(/[\\/:*?"<>|]+/g, '').slice(0, 24) || '材料包';
+  return `${slug}-${stamp}.md`;
+}
+
+async function exportReferencePack() {
+  try {
+    const pack = await fetchReferencePack();
+    if (!pack) return;
+    const copied = await copyTextToClipboard(pack.markdown);
+    downloadTextFile(packDownloadName(pack.title), pack.markdown);
+    closeReferencePack();
+    showToast(copied ? '已复制并下载材料包' : '已下载材料包');
+  } catch (error) {
+    showToast(error.message || '导出失败');
+  }
+}
+
+async function sendReferencePackToTask() {
+  try {
+    const pack = await fetchReferencePack();
+    if (!pack) return;
+    const current = String(elements['note-body']?.value || '').trim();
+    const instruction = current && !current.includes('----- 材料 -----')
+      ? current
+      : '请根据下面这组材料：';
+    const next = `${instruction}\n\n----- 材料 -----\n${pack.markdown}`.trim();
+    persistTaskComposerDraft(next);
+    if (elements['note-body']) elements['note-body'].value = next;
+    closeReferencePack();
+    setComposeTarget('task');
+    elements['note-body']?.focus();
+    resizeDispatchComposer();
+    showToast('材料已放入任务框，补一句指令再投递');
+  } catch (error) {
+    showToast(error.message || '发给任务失败');
+  }
+}
+
+function sendReferencePackToAsk() {
+  closeReferencePack();
+  openAskSession(state.askSessionId || 'new');
 }
 
 function mentionQueryAt(value, caret) {
@@ -1802,7 +2349,7 @@ function textAfterLead(source, lead) {
 function postDisplayTitle(post) {
   const translated = translationFor(post)?.text;
   if (translated) return clipFeedText(firstFeedSentence(translated) || plainFeedText(translated), FEED_TITLE_MAX);
-  if (postNeedsChineseTranslation(post)) return '正在翻译…';
+  if (postIsTranslating(post)) return '正在翻译…';
   const title = String(post?.title || '').trim();
   if (title) return title;
   return clipFeedText(plainFeedText(post?.body), FEED_TITLE_MAX) || '无标题';
@@ -1811,14 +2358,14 @@ function postDisplayTitle(post) {
 function postListExcerpt(post) {
   const translated = translationFor(post)?.text;
   if (translated) return clipFeedText(textAfterLead(translated, postDisplayTitle(post)), FEED_EXCERPT_MAX);
-  if (postNeedsChineseTranslation(post)) return '';
+  if (postIsTranslating(post)) return '';
   return clipFeedText(textAfterLead(post?.body, post?.title), FEED_EXCERPT_MAX);
 }
 
 function postViewBody(post) {
   const translated = translationFor(post)?.text;
   if (translated) return translated;
-  if (postNeedsChineseTranslation(post)) return '正在翻译…';
+  if (postIsTranslating(post)) return '正在翻译…';
   return post?.body || post?.summary || '无正文';
 }
 
@@ -1843,7 +2390,8 @@ function feedAsItem(item, platform) {
     live: true,
     kind: 'social',
     platform,
-    author: item.authorName || item.authorHandle || (platform === 'bilibili' ? 'B站' : 'X'),
+    externalId: item.externalId || '',
+    author: item.authorName || item.authorHandle || (platform === 'bilibili' ? 'B站' : platform === 'trendforce' ? 'TrendForce' : 'X'),
     handle: item.authorHandle || '',
     time: item.publishedAt ? formatTime(item.publishedAt) : '',
     title: item.title,
@@ -1865,6 +2413,10 @@ function xAsItem(item) {
 
 function bilibiliAsItem(item) {
   return feedAsItem(item, 'bilibili');
+}
+
+function trendforceAsItem(item) {
+  return feedAsItem(item, 'trendforce');
 }
 
 function hydrateFeedTranslations(items) {
@@ -1938,24 +2490,56 @@ function officialAsItem(release) {
   };
 }
 
-function socialFeedItems() {
+function socialFeedItems(options = {}) {
   const live = state.posts.map(liveAsItem).filter(matchesPlatform);
   const xItems = state.xItems.map(xAsItem).filter(matchesPlatform);
   const bilibiliItems = state.bilibiliItems.map(bilibiliAsItem).filter(matchesPlatform);
+  const trendforceItems = state.trendforceItems.map(trendforceAsItem).filter(matchesPlatform);
   const demo = feedItems.filter((item) => {
     if (item.platform === 'x' && state.xItems.length) return false;
     if (item.platform === 'bilibili' && state.bilibiliItems.length) return false;
+    if (item.platform === 'trendforce' && state.trendforceItems.length) return false;
     return matchesPlatform({ ...item, kind: 'social' });
   }).map((item) => ({ ...item, kind: 'social', createdAt: item.createdAt || Date.now(), publishedAt: item.publishedAt || item.createdAt || Date.now() }));
-  return [...bilibiliItems, ...xItems, ...live, ...demo]
-    .filter((item) => !state.hiddenFeedIds.has(item.id) && !state.hiddenFeedIds.has(item.resourceId));
+  return [...bilibiliItems, ...trendforceItems, ...xItems, ...live, ...demo]
+    .filter((item) => options.includeHidden || !isHiddenFeedItem(item));
 }
 
-function officialFeedItems() {
+function officialFeedItems(options = {}) {
   const hidden = state.hiddenSourceIds;
   return (state.staticBoard?.releases || [])
     .filter((item) => !hidden.has(`policy.${item.authority}`))
-    .map(officialAsItem);
+    .map(officialAsItem)
+    .filter((item) => options.includeHidden || !isHiddenFeedItem(item));
+}
+
+function focusedFeedItems() {
+  const live = [
+    ...socialFeedItems({ includeHidden: true }),
+    ...officialFeedItems({ includeHidden: true }),
+  ];
+  const byId = new Map();
+  for (const item of live) {
+    if (itemIsFocused(item)) byId.set(item.id, item);
+  }
+  for (const [id, snap] of Object.entries(state.focusItems)) {
+    if (!isFeedFocusItem(snap)) continue;
+    if (!isFocused(id) && !itemIsFocused(snap)) continue;
+    const key = snap.id || id;
+    const current = byId.get(key);
+    if (!current) {
+      byId.set(key, { ...snap, isRead: Boolean(snap.isRead) });
+      continue;
+    }
+    if (snap.isRead && !current.isRead) byId.set(key, { ...current, isRead: true });
+  }
+  return [...byId.values()];
+}
+
+function recentFeedItems() {
+  return Object.values(state.recentItems)
+    .filter(isFeedFocusItem)
+    .sort((left, right) => (Number(right.viewedAt) || 0) - (Number(left.viewedAt) || 0));
 }
 
 function matchesFeedQuery(item, query) {
@@ -1975,7 +2559,9 @@ function matchesFeedQuery(item, query) {
 
 function matchesFeedRange(item) {
   if (state.feedRange === 'all') return true;
-  const at = Number(item.publishedAt || item.createdAt || 0);
+  const at = state.channel === 'recent'
+    ? Number(item.viewedAt || item.publishedAt || item.createdAt || 0)
+    : Number(item.publishedAt || item.createdAt || 0);
   if (!at) return state.feedRange !== 'today';
   const start = new Date();
   start.setHours(0, 0, 0, 0);
@@ -1985,6 +2571,9 @@ function matchesFeedRange(item) {
 }
 
 function sortFeedItems(items) {
+  if (state.channel === 'recent') {
+    return [...items].sort((left, right) => (Number(right.viewedAt) || 0) - (Number(left.viewedAt) || 0));
+  }
   const key = state.feedSort === 'published' ? 'publishedAt' : 'createdAt';
   return [...items].sort((left, right) => Number(Boolean(left.isRead)) - Number(Boolean(right.isRead))
     || (Number(right[key]) || 0) - (Number(left[key]) || 0));
@@ -1993,13 +2582,71 @@ function sortFeedItems(items) {
 function visibleFeedItems() {
   const social = socialFeedItems();
   const official = officialFeedItems();
-  let items = state.channel === 'official' ? official
-    : state.channel === 'social' ? social
-      : [...social, ...official];
-  if (state.channel === 'focus') items = items.filter((item) => isFocused(item.id) || isFocused(item.resourceId));
+  let items = state.channel === 'focus' ? focusedFeedItems()
+    : state.channel === 'recent' ? recentFeedItems()
+    : state.channel === 'official' ? official
+      : state.channel === 'social' ? social
+        : [...social, ...official];
   const query = String(state.feedQuery || '').trim().toLowerCase();
   items = items.filter((item) => matchesFeedQuery(item, query) && matchesFeedRange(item));
   return sortFeedItems(items);
+}
+
+function bindHorizontalTabScroll(root = document) {
+  root.querySelectorAll('.chip-tabs, .channel-tabs, .market-tabs').forEach((scroller) => {
+    if (scroller.dataset.chipScrollBound === '1') return;
+    scroller.dataset.chipScrollBound = '1';
+    let dragging = false;
+    let moved = false;
+    let startX = 0;
+    let startLeft = 0;
+    let pointerId = null;
+    const releaseCapture = () => {
+      if (pointerId == null) return;
+      try { scroller.releasePointerCapture(pointerId); } catch { /* already released */ }
+      pointerId = null;
+    };
+    scroller.addEventListener('pointerdown', (event) => {
+      if (event.pointerType === 'touch' || event.button !== 0) return;
+      dragging = true;
+      moved = false;
+      startX = event.clientX;
+      startLeft = scroller.scrollLeft;
+    });
+    scroller.addEventListener('pointermove', (event) => {
+      if (!dragging) return;
+      const dx = event.clientX - startX;
+      if (!moved && Math.abs(dx) <= 6) return;
+      moved = true;
+      if (pointerId == null) {
+        try {
+          scroller.setPointerCapture(event.pointerId);
+          pointerId = event.pointerId;
+        } catch { /* some WebViews reject capture */ }
+      }
+      scroller.scrollLeft = startLeft - dx;
+    });
+    const stopDrag = () => {
+      dragging = false;
+      releaseCapture();
+    };
+    scroller.addEventListener('pointerup', stopDrag);
+    scroller.addEventListener('pointercancel', stopDrag);
+    scroller.addEventListener('click', (event) => {
+      if (!moved) return;
+      event.preventDefault();
+      event.stopPropagation();
+      moved = false;
+    }, true);
+    scroller.addEventListener('wheel', (event) => {
+      if (scroller.scrollWidth <= scroller.clientWidth) return;
+      const horizontal = Math.abs(event.deltaX) > Math.abs(event.deltaY);
+      if (horizontal) return;
+      if (!event.deltaY) return;
+      event.preventDefault();
+      scroller.scrollLeft += event.deltaY;
+    }, { passive: false });
+  });
 }
 
 function renderChipTabs(target, items, current, onSelect) {
@@ -2011,76 +2658,153 @@ function renderChipTabs(target, items, current, onSelect) {
     button.addEventListener('click', () => onSelect(item.id));
     return button;
   }));
+  bindHorizontalTabScroll();
+}
+
+const feedSourceTabs = [
+  { id: 'x', label: 'X' },
+  { id: 'bilibili', label: 'B站' },
+  { id: 'trendforce', label: 'TrendForce' },
+];
+
+function isSourceFeedScope(id) {
+  return id === 'x' || id === 'bilibili' || id === 'trendforce';
+}
+
+function currentFeedScopeId() {
+  return isSourceFeedScope(state.feedPlatform) ? state.feedPlatform : state.channel;
+}
+
+function applyFeedPlatform(id) {
+  const next = id || 'all';
+  state.feedPlatform = next;
+  state.platform = next;
+  if (isSourceFeedScope(next)) state.channel = 'social';
+  resetFeedWindow();
+  renderChannels();
+  renderPlatformFilters();
+  renderXToolbar();
+  renderBilibiliToolbar();
+  renderTrendForceToolbar();
+  renderPosts();
+  if (next === 'x' && !state.xItems.length && !state.xLoading) {
+    loadXFeed({ refresh: false }).catch((error) => showToast(error.message));
+  }
+  if (next === 'bilibili' && !state.bilibiliItems.length && !state.bilibiliLoading) {
+    loadBilibiliFeed().catch((error) => showToast(error.message));
+  }
+  if (next === 'trendforce' && !state.trendforceItems.length && !state.trendforceLoading) {
+    loadTrendForceFeed({ refresh: false }).catch((error) => showToast(error.message));
+  }
+}
+
+function selectFeedScope(id) {
+  if (isSourceFeedScope(id)) {
+    applyFeedPlatform(id);
+    return;
+  }
+  state.channel = id;
+  applyFeedPlatform('all');
+}
+
+function renderFeedActionButton() {
+  const button = elements['feed-filter'];
+  if (!button) return;
+  button.classList.remove('is-source-more');
+  button.setAttribute('aria-label', isSourceFeedScope(state.feedPlatform)
+    ? (state.feedPlatform === 'x' ? 'X 来源任务' : state.feedPlatform === 'bilibili' ? 'B站来源任务' : 'TrendForce 来源任务')
+    : '信息流筛选');
+  setIconButton(button, 'list-filter');
 }
 
 function renderChannels() {
-  elements['channel-tabs'].replaceChildren(...channels.map((channel) => {
+  const current = currentFeedScopeId();
+  const tabs = [...channels, ...feedSourceTabs];
+  if (elements['channel-tabs']) {
+    elements['channel-tabs'].setAttribute('aria-label', '信息范围与信源');
+  }
+  elements['channel-tabs'].replaceChildren(...tabs.map((tab) => {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = `channel-tab${channel.id === state.channel ? ' is-active' : ''}`;
-    button.textContent = channel.label;
+    button.className = `channel-tab${tab.id === current ? ' is-active' : ''}`;
+    button.textContent = tab.label;
     button.addEventListener('click', () => {
-      state.channel = channel.id;
-      resetFeedWindow();
-      renderChannels();
-      renderPlatformFilters();
-      renderPosts();
+      if (tab.id === current) return;
+      selectFeedScope(tab.id);
     });
     return button;
   }));
+  const active = elements['channel-tabs']?.querySelector('.channel-tab.is-active');
+  const scroller = elements['channel-tabs'];
+  if (active && scroller) {
+    const left = Math.max(0, active.offsetLeft - 16);
+    const right = active.offsetLeft + active.offsetWidth;
+    if (left < scroller.scrollLeft || right > scroller.scrollLeft + scroller.clientWidth) {
+      scroller.scrollLeft = left;
+    }
+  }
   elements['follow-toolbar']?.classList.add('hidden');
-  if (elements['feed-filter']) setIconButton(elements['feed-filter'], 'list-filter');
+  renderFeedActionButton();
 }
 
 function renderPlatformFilters() {
-  const show = state.feedPlatform !== 'all';
-  elements['platform-filters']?.classList.toggle('hidden', !show);
-  if (!show) return;
-  renderChipTabs(elements['platform-filters'], platformFilters, state.feedPlatform, (id) => {
-    state.feedPlatform = id;
-    state.platform = id;
-    resetFeedWindow();
-    renderPlatformFilters();
-    renderXToolbar();
-    renderBilibiliToolbar();
-    renderPosts();
-    if (id === 'x' && !state.xItems.length && !state.xLoading) {
-      loadXFeed({ refresh: false }).catch((error) => showToast(error.message));
-    }
-    if (id === 'bilibili' && !state.bilibiliItems.length && !state.bilibiliLoading) {
-      loadBilibiliFeed().catch((error) => showToast(error.message));
-    }
-  });
+  elements['platform-filters']?.classList.add('hidden');
+}
+
+function xFeedLabel(feed = state.xFeed) {
+  return feed === 'following' ? '正在关注' : '为你推荐';
+}
+
+function xCaptureActionLabel(feed = state.xFeed) {
+  return feed === 'following' ? '抓取关注 50 条' : '抓取推荐 50 条';
+}
+
+function xCaptureScopeNote(feed = state.xFeed) {
+  return feed === 'following'
+    ? '当前范围：正在关注。抓你已关注账号的时间线，不是算法推荐。跳过已入库内容，尽量补满 50 条新的，然后翻译并打 Tag。'
+    : '当前范围：为你推荐。抓首页推荐时间线。跳过已入库内容，尽量补满 50 条新的，然后翻译并打 Tag。';
+}
+
+function setXFeed(feed, { reload = false } = {}) {
+  const next = feed === 'following' ? 'following' : 'for-you';
+  if (state.xFeed === next) return false;
+  state.xFeed = next;
+  state.xItems = [];
+  state.xNote = '';
+  resetFeedWindow();
+  persistFeedBrowseState();
+  renderXToolbar();
+  renderPosts();
+  if (reload && state.feedPlatform === 'x') {
+    loadXFeed({ refresh: false }).catch((error) => showToast(error.message));
+  }
+  return true;
 }
 
 function renderXToolbar() {
   const toolbar = elements['x-toolbar'];
   if (toolbar) toolbar.classList.toggle('hidden', state.feedPlatform !== 'x');
   if (elements['x-feed-status']) {
-    const status = state.xLoading
-      ? (state.xRefreshing ? '正在拉取…' : '正在读取已缓存来源…')
-      : (state.xNote || `${state.xItems.length} 条 · ${state.xFeed === 'following' ? '正在关注' : '为你推荐'}`);
+    const status = state.xPipeline && !state.xLoading
+      ? (state.xTagging ? '正在给新内容打 Tag…' : state.xTranslating ? '正在翻译新内容…' : '抓取后处理中…')
+      : state.xLoading
+        ? (state.xRefreshing ? `正在拉取最多 50 条${xFeedLabel()}…` : '正在读取已缓存来源…')
+        : (state.xNote || `${state.xItems.length} 条 · ${xFeedLabel()}`);
     elements['x-feed-status'].textContent = status;
     elements['x-feed-status'].classList.toggle('hidden', state.feedPlatform !== 'x');
   }
+  elements['x-more']?.classList.add('hidden');
   if (elements['x-feed-tabs']) {
     renderChipTabs(elements['x-feed-tabs'], [
-      { id: 'for-you', label: '为你推荐' },
       { id: 'following', label: '正在关注' },
+      { id: 'for-you', label: '为你推荐' },
     ], state.xFeed, (id) => {
-      if (id === state.xFeed) return;
-      state.xFeed = id;
-      state.xItems = [];
-      state.xNote = '';
-      resetFeedWindow();
-      renderXToolbar();
-      renderPosts();
-      loadXFeed({ refresh: false }).catch((error) => showToast(error.message));
+      setXFeed(id, { reload: true });
     });
   }
   const pending = pendingXTranslations().length;
   const pendingTags = pendingXTaggings().length;
-  const busy = state.xLoading || state.xTranslating || state.xTagging;
+  const busy = xTaskBusy();
   const showTranslate = false;
   if (elements['x-translate-bar']) {
     elements['x-translate-bar'].classList.toggle('hidden', !showTranslate);
@@ -2088,11 +2812,11 @@ function renderXToolbar() {
   if (elements['x-refresh']) {
     elements['x-refresh'].classList.toggle('hidden', state.feedPlatform !== 'x');
     elements['x-refresh'].disabled = busy;
-    elements['x-refresh'].textContent = state.xRefreshing ? '拉取中…' : '拉取 50 条';
+    elements['x-refresh'].textContent = state.xRefreshing ? '拉取中…' : (state.xFeed === 'following' ? '拉取关注 50 条' : '拉取推荐 50 条');
   }
   if (elements['x-translate-status']) {
     elements['x-translate-status'].textContent = state.xTagging
-      ? '正在给尚未标注的信息流打 Tag，走 Worker 豆包队列…'
+      ? '正在给尚未标注的信息流打 Tag…'
       : state.xTranslating
         ? '正在翻译最新的非中文推文…'
         : (pending
@@ -2116,6 +2840,7 @@ function renderXToolbar() {
 function renderBilibiliToolbar() {
   const toolbar = elements['bilibili-toolbar'];
   if (toolbar) toolbar.classList.toggle('hidden', state.feedPlatform !== 'bilibili');
+  elements['bilibili-more']?.classList.add('hidden');
   if (elements['bilibili-import-form']) elements['bilibili-import-form'].classList.add('hidden');
   if (elements['bilibili-feed-status']) {
     elements['bilibili-feed-status'].textContent = state.bilibiliLoading
@@ -2125,6 +2850,29 @@ function renderBilibiliToolbar() {
   if (elements['bilibili-import']) {
     elements['bilibili-import'].disabled = state.bilibiliLoading;
     elements['bilibili-import'].textContent = state.bilibiliLoading ? '拉取中…' : '拉取字幕';
+  }
+}
+
+function renderTrendForceToolbar() {
+  const toolbar = elements['trendforce-toolbar'];
+  if (toolbar) toolbar.classList.toggle('hidden', state.feedPlatform !== 'trendforce');
+  elements['trendforce-more']?.classList.add('hidden');
+  if (elements['trendforce-feed-status']) {
+    elements['trendforce-feed-status'].textContent = state.trendforceLoading
+      ? (state.trendforceRefreshing ? '正在抓取公开洞察、报告索引和价表…' : '正在读取已缓存来源…')
+      : (state.trendforceNote || `${state.trendforceItems.length} 条已保存`);
+  }
+  if (elements['trendforce-action-bar']) {
+    elements['trendforce-action-bar'].classList.toggle('hidden', state.feedPlatform !== 'trendforce');
+  }
+  if (elements['trendforce-action-status']) {
+    elements['trendforce-action-status'].textContent = state.trendforceRefreshing
+      ? '正在抓取公开页…'
+      : '免费洞察和价表抓全文；会员报告只收标题和介绍。';
+  }
+  if (elements['trendforce-refresh']) {
+    elements['trendforce-refresh'].disabled = state.trendforceLoading;
+    elements['trendforce-refresh'].textContent = state.trendforceRefreshing ? '抓取中…' : '抓取公开页';
   }
 }
 
@@ -2141,8 +2889,101 @@ function rangeLabel() {
 function feedKindLabel(item) {
   if (item.kind === 'official' || item.platform === 'official') return '官方';
   if (item.platform === 'bilibili') return '字幕';
+  if (item.platform === 'trendforce') return '洞察';
   if (item.platform === 'manual') return '手工';
   return '社媒';
+}
+
+function isOfficialItem(item) {
+  return item?.kind === 'official' || item?.platform === 'official' || Boolean(item?.release);
+}
+
+function officialDayKey(item) {
+  const value = item?.publishedAt || item?.createdAt;
+  if (value == null) return '时间待公布';
+  return new Date(value).toLocaleDateString('zh-CN', {
+    year: 'numeric', month: 'long', day: 'numeric', weekday: 'short',
+  });
+}
+
+function officialEventMeta(post) {
+  return [
+    post.author,
+    post.release?.documentNumber,
+    post.release?.documentType,
+    post.release?.authority && post.release.authority !== post.author ? post.release.authority : '',
+  ].filter(Boolean).join(' · ');
+}
+
+function appendOfficialStar(target, post, onToggle) {
+  const star = document.createElement('button');
+  star.type = 'button';
+  star.className = `icon-button ghost focus-btn${itemIsFocused(post) ? ' on' : ''}`;
+  star.setAttribute('aria-label', itemIsFocused(post) ? '取消重点' : '标为重点');
+  star.innerHTML = icon('star');
+  star.addEventListener('click', (event) => {
+    event.stopPropagation();
+    toggleFocus(post.id, onToggle, post);
+  });
+  target.append(star);
+}
+
+function appendOfficialEvent(list, post, onToggle) {
+  const item = document.createElement('li');
+  item.className = `official-event${itemIsFocused(post) ? ' is-focus' : ''}`;
+  const open = document.createElement('button');
+  open.type = 'button';
+  open.className = 'official-event-body';
+  open.append(Object.assign(document.createElement('time'), {
+    dateTime: post.publishedAt ? new Date(post.publishedAt).toISOString() : '',
+    textContent: overviewClock(post.publishedAt || post.createdAt),
+  }));
+  open.append(Object.assign(document.createElement('strong'), { textContent: postDisplayTitle(post) }));
+  const meta = officialEventMeta(post);
+  if (meta) open.append(Object.assign(document.createElement('small'), { textContent: meta }));
+  attachGuardedOpen(open, () => openArticle(post));
+  item.append(open);
+  appendOfficialStar(item, post, onToggle);
+  list.append(item);
+}
+
+function renderOfficialTimeline(root, items, { emptyText = '这个筛选下还没有官方信息。' } = {}) {
+  root.replaceChildren();
+  if (!items.length) {
+    root.append(Object.assign(document.createElement('div'), { className: 'empty-state', textContent: emptyText }));
+    return;
+  }
+  const wrap = document.createElement('div');
+  wrap.className = 'official-timeline';
+  const groups = [];
+  const index = new Map();
+  for (const post of items) {
+    const key = officialDayKey(post);
+    if (!index.has(key)) {
+      const group = { key, items: [] };
+      index.set(key, group);
+      groups.push(group);
+    }
+    index.get(key).items.push(post);
+  }
+  const refresh = () => {
+    if (document.body.dataset.view === 'feed') renderPosts();
+    renderOverviewTimeline();
+  };
+  for (const group of groups) {
+    const day = document.createElement('section');
+    day.className = 'official-day';
+    day.append(Object.assign(document.createElement('h3'), {
+      className: 'official-day-label',
+      textContent: group.key,
+    }));
+    const list = document.createElement('ol');
+    list.className = 'official-day-list';
+    group.items.forEach((post) => appendOfficialEvent(list, post, refresh));
+    day.append(list);
+    wrap.append(day);
+  }
+  root.append(wrap);
 }
 
 function resetFeedWindow() {
@@ -2175,6 +3016,7 @@ function observeFeedSentinel(node, canLoad) {
 }
 
 function renderPosts() {
+  const restoreSwipeId = document.querySelector('#feed .swipe-front.is-open')?.dataset.postId || '';
   const items = visibleFeedItems();
   if (state.feedShown > items.length) state.feedShown = Math.max(FEED_PAGE_SIZE, items.length);
   const shown = items.slice(0, state.feedShown);
@@ -2184,17 +3026,41 @@ function renderPosts() {
     ? window.scrollY
     : null;
   elements.feed.replaceChildren();
-  elements['feed-count'].textContent = items.length > shown.length
-    ? `${sortLabel()} · ${rangeLabel()} · 已显示 ${shown.length} / ${items.length} 条`
-    : `${sortLabel()} · ${rangeLabel()} · ${items.length} 条`;
+  elements['feed-count'].textContent = state.channel === 'recent'
+    ? (items.length > shown.length
+      ? `按浏览时间 · 已显示 ${shown.length} / ${items.length} 条`
+      : `按浏览时间 · ${items.length} 条`)
+    : (items.length > shown.length
+      ? `${sortLabel()} · ${rangeLabel()} · 已显示 ${shown.length} / ${items.length} 条`
+      : `${sortLabel()} · ${rangeLabel()} · ${items.length} 条`);
   if (!items.length) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
     empty.textContent = state.feedQuery
       ? '没有匹配的已收录内容。清除搜索后再看。'
-      : '这个筛选下还没有信息。';
+      : state.channel === 'recent'
+        ? '打开一条就会出现在这里，方便找回看过的内容。'
+        : '这个筛选下还没有信息。';
     elements.feed.append(empty);
     observeFeedSentinel(null, false);
+    return;
+  }
+  if (state.channel === 'official') {
+    renderOfficialTimeline(elements.feed, shown, {
+      emptyText: state.staticBoardLoading ? '正在读取官方信息…' : '这个筛选下还没有官方信息。',
+    });
+    const more = document.createElement('div');
+    more.className = 'feed-more';
+    more.id = 'feed-sentinel';
+    const canLoad = shown.length < items.length;
+    more.dataset.done = canLoad ? '0' : '1';
+    more.textContent = canLoad ? '下滑显示更多' : '已经到底了';
+    elements.feed.append(more);
+    observeFeedSentinel(more, canLoad);
+    if (keepY !== null) window.scrollTo(0, keepY);
+    renderXToolbar();
+    renderBilibiliToolbar();
+    if (document.body.dataset.view === 'sources') renderHub();
     return;
   }
   for (const post of shown) {
@@ -2209,12 +3075,50 @@ function renderPosts() {
     remove.addEventListener('pointerdown', (event) => event.stopPropagation());
     remove.addEventListener('click', (event) => {
       event.stopPropagation();
+      if (state.channel === 'focus') {
+        removeFocusItem(post);
+        renderPosts();
+        renderOverviewTimeline();
+        return;
+      }
+      if (state.channel === 'recent') {
+        removeRecentItem(post);
+        renderPosts();
+        renderOverviewTimeline();
+        return;
+      }
       hideFeedItem(post).catch((error) => showToast(error.message));
     });
     actionsRow.append(remove);
 
+    if (isOfficialItem(post)) {
+      const card = document.createElement('article');
+      card.className = `official-event swipe-front${itemIsFocused(post) ? ' is-focus' : ''}`;
+      card.dataset.postId = post.id;
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.className = 'official-event-body';
+      open.append(Object.assign(document.createElement('time'), {
+        dateTime: post.publishedAt ? new Date(post.publishedAt).toISOString() : '',
+        textContent: officialDayKey(post),
+      }));
+      open.append(Object.assign(document.createElement('strong'), { textContent: postDisplayTitle(post) }));
+      const meta = officialEventMeta(post);
+      if (meta) open.append(Object.assign(document.createElement('small'), { textContent: meta }));
+      card.append(open);
+      appendOfficialStar(card, post, () => {
+        renderPosts();
+        renderOverviewTimeline();
+      });
+      attachSwipe(card, FEED_SWIPE_WIDTH, () => openArticle(post));
+      row.append(actionsRow, card);
+      elements.feed.append(row);
+      continue;
+    }
+
     const card = document.createElement('article');
-    card.className = `post-card is-compact swipe-front${post.isRead ? ' is-read' : ''}${isFocused(post.id) ? ' is-focus' : ''}`;
+    const readFade = state.channel === 'focus' && post.isRead;
+    card.className = `post-card is-compact swipe-front${readFade ? ' is-read' : ''}${itemIsFocused(post) ? ' is-focus' : ''}`;
     card.dataset.postId = post.id;
     const meta = document.createElement('div');
     meta.className = 'post-meta';
@@ -2228,8 +3132,7 @@ function renderPosts() {
     time.className = 'post-time';
     time.textContent = post.time || overviewClock(post.publishedAt || post.createdAt);
     meta.append(kind, author, time);
-    const content = document.createElement('button');
-    content.type = 'button';
+    const content = document.createElement('div');
     content.className = 'feed-content';
     const title = document.createElement('h3');
     title.textContent = postDisplayTitle(post);
@@ -2247,18 +3150,17 @@ function renderPosts() {
       preview.textContent = excerpt;
       content.append(preview);
     }
-    content.addEventListener('click', () => openArticle(post));
     const star = document.createElement('button');
     star.type = 'button';
-    star.className = `icon-button ghost focus-btn${isFocused(post.id) ? ' on' : ''}`;
-    star.setAttribute('aria-label', isFocused(post.id) ? '取消重点' : '标为重点');
+    star.className = `icon-button ghost focus-btn${itemIsFocused(post) ? ' on' : ''}`;
+    star.setAttribute('aria-label', itemIsFocused(post) ? '取消重点' : '标为重点');
     star.innerHTML = icon('star');
     star.addEventListener('click', (event) => {
       event.stopPropagation();
       toggleFocus(post.id, () => {
         renderPosts();
         renderOverviewTimeline();
-      });
+      }, post);
     });
     const expand = document.createElement('button');
     expand.type = 'button';
@@ -2283,6 +3185,10 @@ function renderPosts() {
   more.textContent = canLoad ? '下滑显示更多' : '已经到底了';
   elements.feed.append(more);
   observeFeedSentinel(more, canLoad);
+  if (restoreSwipeId) {
+    const front = elements.feed.querySelector(`.swipe-front[data-post-id="${restoreSwipeId}"]`);
+    if (front) setSwipeOpen(front, true, FEED_SWIPE_WIDTH);
+  }
   if (keepY !== null) window.scrollTo(0, keepY);
   renderXToolbar();
   renderBilibiliToolbar();
@@ -2311,8 +3217,12 @@ function openArticle(post) {
 function findUnifiedItem(id) {
   const key = String(id || '');
   return visibleFeedItems().find((item) => item.id === key || item.resourceId === key)
-    || socialFeedItems().find((item) => item.id === key || item.resourceId === key)
-    || officialFeedItems().find((item) => item.id === key || item.resourceId === key)
+    || socialFeedItems({ includeHidden: true }).find((item) => item.id === key || item.resourceId === key)
+    || officialFeedItems({ includeHidden: true }).find((item) => item.id === key || item.resourceId === key)
+    || Object.values(state.focusItems).find((item) => item.id === key || item.resourceId === key)
+    || state.focusItems[key]
+    || Object.values(state.recentItems).find((item) => item.id === key || item.resourceId === key)
+    || state.recentItems[key]
     || null;
 }
 
@@ -2336,7 +3246,7 @@ function renderTradeTabs() {
 }
 
 function tradeHint(id) {
-  if (id === 'analysis') return '个人资产分析：读取本地收支草记的资产明细和分红所得，结构与原资产大屏一致。';
+  if (id === 'analysis') return '投资随持仓现价同步。其他来源是静态记录，改完需点「记本期」。';
   if (id === 'holdings') return '持仓来自本地批次账本。首页看 A 股 / B 股今日；点进去看该组日周年变化。';
   return '';
 }
@@ -2369,13 +3279,18 @@ function setTradePane(id) {
   syncTradePaneData().catch((error) => showToast(error.message));
 }
 
-async function syncTradePaneData() {
+async function syncTradePaneData({ refresh = false } = {}) {
   if (state.tradePane === 'stocks') {
     await loadMarket();
     return;
   }
   if (state.tradePane === 'assets') {
-    await loadGlobalAssets();
+    await Promise.all([
+      loadGlobalAssets(),
+      loadMarketNativeBoard({ refresh }).catch((error) => {
+        state.marketNativeError = error instanceof Error ? error.message : '市场原生数据读取失败';
+      }),
+    ]);
     return;
   }
   if (state.tradePane === 'analysis') await loadPersonalAssets();
@@ -2811,6 +3726,7 @@ function renderAssets() {
     return;
   }
   renderWatchRows(elements['asset-list'], rows, { formatValue: formatQuoteNumber });
+  renderMarketNativeBoard();
   if (document.body.dataset.view === 'sources') renderHub();
 }
 
@@ -2937,34 +3853,66 @@ function renderTrendChart(target, dashboard) {
   target.append(svg, legend);
 }
 
+function donutSlicePath(cx, cy, innerRadius, outerRadius, startDeg, endDeg) {
+  const point = (radius, deg) => {
+    const rad = ((deg - 90) * Math.PI) / 180;
+    return [cx + radius * Math.cos(rad), cy + radius * Math.sin(rad)];
+  };
+  const sweep = Math.min(360, Math.max(0, endDeg - startDeg));
+  if (sweep < 0.01) return '';
+  if (sweep >= 359.99) {
+    const [ox, oy] = point(outerRadius, 0);
+    const [ix, iy] = point(innerRadius, 0);
+    const [ox2, oy2] = point(outerRadius, 180);
+    const [ix2, iy2] = point(innerRadius, 180);
+    return [
+      `M${ox} ${oy}`,
+      `A${outerRadius} ${outerRadius} 0 1 1 ${ox2} ${oy2}`,
+      `A${outerRadius} ${outerRadius} 0 1 1 ${ox} ${oy}`,
+      `L${ix} ${iy}`,
+      `A${innerRadius} ${innerRadius} 0 1 0 ${ix2} ${iy2}`,
+      `A${innerRadius} ${innerRadius} 0 1 0 ${ix} ${iy}`,
+      'Z',
+    ].join(' ');
+  }
+  const large = sweep > 180 ? 1 : 0;
+  const [ox1, oy1] = point(outerRadius, startDeg);
+  const [ox2, oy2] = point(outerRadius, endDeg);
+  const [ix2, iy2] = point(innerRadius, endDeg);
+  const [ix1, iy1] = point(innerRadius, startDeg);
+  return [
+    `M${ox1} ${oy1}`,
+    `A${outerRadius} ${outerRadius} 0 ${large} 1 ${ox2} ${oy2}`,
+    `L${ix2} ${iy2}`,
+    `A${innerRadius} ${innerRadius} 0 ${large} 0 ${ix1} ${iy1}`,
+    'Z',
+  ].join(' ');
+}
+
 function renderPieChart(target, slices) {
   target.replaceChildren();
   if (!slices.length) {
     target.textContent = '当前没有可展示的资产结构。';
     return;
   }
-  const colors = ['#7C6AF7', '#F59E0B', '#22C55E', '#EAB308', '#0A59F7', '#A78BFA'];
+  const colors = ['#7C6AF7', '#F59E0B', '#22C55E', '#EAB308', '#0A59F7', '#A78BFA', '#14B8A6'];
   const total = slices.reduce((sum, item) => sum + moneyNumber(item.value), 0) || 1;
-  const size = 200;
-  const radius = 58;
-  const circumference = 2 * Math.PI * radius;
-  const svg = svgNode('svg', { viewBox: `0 0 ${size} ${size}`, role: 'img', 'aria-label': '当前资产结构' });
-  let offset = 0;
+  const svg = svgNode('svg', {
+    viewBox: '0 0 200 200',
+    preserveAspectRatio: 'xMidYMid meet',
+    role: 'img',
+    'aria-label': '当前资产结构',
+  });
+  let angle = 0;
   slices.forEach((slice, index) => {
     const portion = moneyNumber(slice.value) / total;
-    const dash = portion * circumference;
-    svg.append(svgNode('circle', {
-      cx: '100',
-      cy: '100',
-      r: String(radius),
-      fill: 'none',
-      stroke: colors[index % colors.length],
-      'stroke-width': '28',
-      'stroke-dasharray': `${dash} ${circumference - dash}`,
-      'stroke-dashoffset': String(-offset),
-      transform: 'rotate(-90 100 100)',
-    }));
-    offset += dash;
+    const start = angle;
+    const end = index === slices.length - 1 ? 360 : angle + (portion * 360);
+    const path = donutSlicePath(100, 100, 44, 72, start, end < 360 ? Math.min(end + 0.25, 360) : end);
+    if (path) {
+      svg.append(svgNode('path', { d: path, fill: colors[index % colors.length] }));
+    }
+    angle = end;
   });
   const legend = document.createElement('div');
   legend.className = 'analysis-legend';
@@ -2980,28 +3928,103 @@ function renderPieChart(target, slices) {
   target.append(svg, legend);
 }
 
-function renderDividendBars(target, items) {
+function applyPersonalAssetDashboard(dashboard) {
+  state.assetDashboard = dashboard;
+  state.assetDashboardError = '';
+  renderPersonalAssetDashboard();
+}
+
+function renderPersonalAssetLedger(dashboard) {
+  const target = elements['analysis-ledger'];
+  if (!target) return;
   target.replaceChildren();
-  if (!items.length) {
-    target.textContent = '分红表为空。';
-    return;
+  if (!dashboard) return;
+  const accounts = dashboard.accounts || [];
+  const types = dashboard.types || [];
+  const heading = document.createElement('div');
+  heading.className = 'analysis-ledger-toolbar';
+  heading.append(Object.assign(document.createElement('h2'), { textContent: '来源记录' }));
+  const record = document.createElement('button');
+  record.type = 'button';
+  record.className = 'text-button';
+  record.textContent = '记本期';
+  record.disabled = state.assetLedgerBusy || !accounts.length;
+  record.addEventListener('click', () => recordPersonalAssetSnapshot());
+  heading.append(record);
+  target.append(heading);
+
+  const add = document.createElement('div');
+  add.className = 'analysis-ledger-add';
+  const typeSelect = document.createElement('select');
+  for (const type of types.filter((item) => !item.hiddenAt)) {
+    typeSelect.append(new Option(type.name, type.key));
   }
-  const sorted = [...items].sort((left, right) => moneyNumber(right.value) - moneyNumber(left.value));
-  const max = Math.max(...sorted.map((item) => moneyNumber(item.value)), 1);
-  target.append(...sorted.map((item) => {
-    const row = document.createElement('div');
-    row.className = 'analysis-bar';
-    const name = document.createElement('span');
-    name.textContent = item.name;
-    const track = document.createElement('div');
-    const bar = document.createElement('i');
-    bar.style.width = `${(moneyNumber(item.value) / max) * 100}%`;
-    track.append(bar);
-    const amount = document.createElement('b');
-    amount.textContent = `¥${formatMoneyAmount(item.value)}`;
-    row.append(name, track, amount);
-    return row;
+  if (!typeSelect.options.length) {
+    typeSelect.append(new Option('银行卡', 'bank'));
+  }
+  const noteInput = Object.assign(document.createElement('input'), {
+    type: 'text',
+    placeholder: '备注，如交通银行',
+    maxlength: 128,
+  });
+  const addButton = document.createElement('button');
+  addButton.type = 'button';
+  addButton.className = 'text-button';
+  addButton.textContent = '添加账户';
+  addButton.disabled = state.assetLedgerBusy;
+  addButton.addEventListener('click', () => createPersonalAssetAccount({
+    typeKey: typeSelect.value,
+    note: noteInput.value.trim(),
   }));
+  add.append(typeSelect, noteInput, addButton);
+  target.append(add);
+
+  const groups = document.createElement('div');
+  groups.className = 'analysis-ledger-groups';
+  const grouped = new Map();
+  for (const account of accounts) {
+    const list = grouped.get(account.typeKey) || [];
+    list.push(account);
+    grouped.set(account.typeKey, list);
+  }
+  for (const type of types) {
+    const list = grouped.get(type.key);
+    if (!list?.length) continue;
+    const group = document.createElement('section');
+    group.className = 'analysis-ledger-group';
+    group.append(Object.assign(document.createElement('h3'), { textContent: type.name }));
+    for (const account of list) {
+      const row = document.createElement('div');
+      row.className = 'analysis-ledger-row';
+      const name = document.createElement('div');
+      name.className = 'analysis-ledger-name';
+      name.append(Object.assign(document.createElement('strong'), {
+        textContent: account.note ? `${account.name} · ${account.note}` : account.name,
+      }));
+      if (account.readOnly) {
+        name.append(Object.assign(document.createElement('small'), { textContent: '由持仓页股票市值与券商现金加总' }));
+      }
+      const noteField = Object.assign(document.createElement('input'), {
+        type: 'text',
+        value: account.note,
+        placeholder: '备注',
+        maxlength: 128,
+        disabled: state.assetLedgerBusy,
+      });
+      noteField.addEventListener('change', () => updatePersonalAssetAccount(account.id, { note: noteField.value.trim() }));
+      const amountField = Object.assign(document.createElement('input'), {
+        type: 'text',
+        value: account.displayAmount,
+        inputMode: 'decimal',
+        disabled: state.assetLedgerBusy || account.readOnly,
+      });
+      amountField.addEventListener('change', () => updatePersonalAssetAccount(account.id, { amount: amountField.value.trim() }));
+      row.append(name, noteField, amountField);
+      group.append(row);
+    }
+    groups.append(group);
+  }
+  target.append(groups);
 }
 
 function renderPersonalAssetDashboard() {
@@ -3011,55 +4034,85 @@ function renderPersonalAssetDashboard() {
   const kpis = elements['analysis-kpis'];
   kpis.replaceChildren();
   if (state.assetDashboardLoading && !dashboard) {
-    period.textContent = '正在读取收支草记…';
+    period.textContent = '正在读取个人资产账本…';
+    elements['analysis-ledger']?.replaceChildren();
     return;
   }
   if (state.assetDashboardError) {
     period.textContent = state.assetDashboardError;
+    elements['analysis-ledger']?.replaceChildren();
     return;
   }
-  if (!dashboard || !dashboard.points?.length) {
+  if (!dashboard || (!dashboard.points?.length && !dashboard.accounts?.length)) {
     period.textContent = dashboard?.note || '还没有资产记录';
+    renderPersonalAssetLedger(dashboard);
     elements['analysis-trend'].replaceChildren();
     elements['analysis-pie'].replaceChildren();
-    elements['analysis-dividend'].replaceChildren();
-    elements['analysis-insights'].replaceChildren();
-    elements['analysis-dividend-total'].textContent = '--';
     return;
   }
   const labels = dashboard.points.map((point) => point.label);
-  period.textContent = `统计周期：${labels[0]} - ${labels[labels.length - 1]} | ${dashboard.note || '数据来源：收支草记'}`;
-  appendMetric(kpis, '当前总资产 (人民币)', `¥ ${formatMoneyAmount(latest.total)}`, moneyNumber(latest.increase) >= 0 ? 'up' : 'down');
-  appendMetric(kpis, '核心引擎：股票余额', `¥ ${formatMoneyAmount(latest.equity)}`);
+  const recorded = latest.recordedLabel
+    ? `记录 ${latest.recordedLabel} · ¥${formatMoneyAmount(latest.recordedTotal)}`
+    : '';
+  period.textContent = labels.length
+    ? `统计周期：${labels[0]} - ${labels[labels.length - 1]}${recorded ? ` | ${recorded}` : ''} | ${dashboard.note || '个人资产账本'}`
+    : (dashboard.note || '个人资产账本');
+  appendMetric(kpis, '当前总资产', `¥ ${formatMoneyAmount(latest.total)}`, moneyNumber(latest.increase) >= 0 ? 'up' : 'down');
+  appendMetric(kpis, '投资（含券商现金）', `¥ ${formatMoneyAmount(latest.equity)}`);
   appendMetric(kpis, '累计增长率', formatRatioPercent(latest.cumulativeGrowthRate));
-  appendMetric(kpis, '稳定基石：公积金', `¥ ${formatMoneyAmount(latest.housingFund)}`);
+  appendMetric(kpis, '公积金', `¥ ${formatMoneyAmount(latest.housingFund)}`);
   appendMetric(kpis, '最新变动', `${formatSignedMoneyAmount(latest.increase)} / ${formatSignedRatioPercent(latest.increaseRate)}`, moneyNumber(latest.increase) >= 0 ? 'up' : 'down');
   appendMetric(kpis, '起始记录', latest.firstLabel ? `${latest.firstLabel} · ${formatMoneyAmount(latest.firstTotal)}` : '暂无');
   renderTrendChart(elements['analysis-trend'], dashboard);
   renderPieChart(elements['analysis-pie'], dashboard.allocation || []);
   const stockRatio = moneyNumber(latest.total) ? moneyNumber(latest.equity) / moneyNumber(latest.total) : 0;
   const fundRatio = moneyNumber(latest.total) ? moneyNumber(latest.housingFund) / moneyNumber(latest.total) : 0;
-  elements['analysis-diagnosis-1'].replaceChildren(
-    '当前股票资产约占总资产 ',
+  elements['analysis-diagnosis-1']?.replaceChildren(
+    '投资约占 ',
     Object.assign(document.createElement('strong'), { textContent: formatRatioPercent(stockRatio) }),
-    '，是资产波动和增长的主要来源。',
+    '，含持仓股票市值和券商现金。',
   );
-  elements['analysis-diagnosis-2'].textContent = `公积金约占 ${formatRatioPercent(fundRatio)}，提供相对稳定的长期储蓄底座。`;
-  elements['analysis-dividend-total'].textContent = `¥ ${formatMoneyAmount(dashboard.dividend?.total)}`;
-  renderDividendBars(elements['analysis-dividend'], dashboard.dividend?.items || []);
-  const insights = [
-    { title: '增长复盘', body: `最新记录为 ${latest.label}，总资产为 ¥${formatMoneyAmount(latest.total, 2)}，较上一条记录变化 ${formatSignedMoneyAmount(latest.increase)}。` },
-    { title: '资产集中度', body: `股票资产占比约 ${formatRatioPercent(stockRatio)}。如果占比长期高于 60%，资产收益弹性强，但净值波动也会更明显。` },
-    { title: '记录更新', body: `打开页签时读取本地工作簿。当前读取时间：${new Date(dashboard.updatedAt).toLocaleString('zh-CN')}。` },
-  ];
-  elements['analysis-insights'].replaceChildren(...insights.map((item) => {
-    const article = document.createElement('article');
-    article.append(
-      Object.assign(document.createElement('h3'), { textContent: item.title }),
-      Object.assign(document.createElement('p'), { textContent: item.body }),
-    );
-    return article;
-  }));
+  if (elements['analysis-diagnosis-2']) {
+    elements['analysis-diagnosis-2'].textContent = `公积金约占 ${formatRatioPercent(fundRatio)}。银行等静态账户改完需点「记本期」。`;
+  }
+  renderPersonalAssetLedger(dashboard);
+}
+
+async function mutatePersonalAsset(path, options, fallback) {
+  if (state.assetLedgerBusy) return;
+  state.assetLedgerBusy = true;
+  renderPersonalAssetLedger(state.assetDashboard);
+  try {
+    const payload = await api(path, options);
+    applyPersonalAssetDashboard(payload.dashboard);
+  } catch (error) {
+    state.assetDashboardError = error instanceof Error ? error.message : fallback;
+    renderPersonalAssetDashboard();
+  } finally {
+    state.assetLedgerBusy = false;
+    renderPersonalAssetLedger(state.assetDashboard);
+  }
+}
+
+function createPersonalAssetAccount(body) {
+  return mutatePersonalAsset('/api/v1/assets/personal/accounts', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }, '添加资产账户失败');
+}
+
+function updatePersonalAssetAccount(id, body) {
+  return mutatePersonalAsset(`/api/v1/assets/personal/accounts/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  }, '更新资产账户失败');
+}
+
+function recordPersonalAssetSnapshot() {
+  return mutatePersonalAsset('/api/v1/assets/personal/snapshots', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  }, '记录本期资产失败');
 }
 
 async function loadPersonalAssets() {
@@ -3083,6 +4136,7 @@ const extraKeys = { us: 'ai-center:us-watchlist', asia: 'ai-center:asia-watchlis
 function extrasBoardFor(symbol) {
   const code = String(symbol || '').toUpperCase();
   if (/^\d{6}\.(SS|SZ)$/.test(code)) return 'cn';
+  if (/\.(KS|KQ|TWO|TW|T)$/.test(code)) return 'asia';
   if (state.stockBoard === 'asia') return 'asia';
   return 'us';
 }
@@ -3247,13 +4301,15 @@ function hubFeedPicks(limit = 12) {
   const live = state.posts.map(liveAsItem);
   const xItems = state.xItems.map(xAsItem);
   const bilibiliItems = state.bilibiliItems.map(bilibiliAsItem);
+  const trendforceItems = state.trendforceItems.map(trendforceAsItem);
   const demo = feedItems.filter((item) => {
     if (item.platform === 'x' && state.xItems.length) return false;
     if (item.platform === 'bilibili' && state.bilibiliItems.length) return false;
+    if (item.platform === 'trendforce' && state.trendforceItems.length) return false;
     return true;
   });
-  return [...bilibiliItems, ...xItems, ...live, ...demo]
-    .filter((item) => !state.hiddenFeedIds.has(item.id) && !state.hiddenFeedIds.has(item.resourceId))
+  return [...bilibiliItems, ...trendforceItems, ...xItems, ...live, ...demo]
+    .filter((item) => !isHiddenFeedItem(item))
     .sort((left, right) => (Number(right.createdAt) || 0) - (Number(left.createdAt) || 0))
     .slice(0, limit);
 }
@@ -3421,6 +4477,7 @@ function renderStaticSourceCatalog() {
   const social = [
     { id: 'x', title: 'X', category: 'content', viewKind: 'content-feed', letter: 'X', note: '首页时间线' },
     { id: 'bilibili', title: 'B站', category: 'content', viewKind: 'content-feed', letter: 'B', note: '已采集字幕' },
+    { id: 'trendforce', title: 'TrendForce', category: 'content', viewKind: 'content-feed', letter: 'T', note: '公开洞察与价表' },
     { id: 'manual', title: '手工发布', category: 'content', viewKind: 'content-feed', letter: '手', note: '自己保存的资料' },
   ];
   const official = state.sourceCatalog.filter((source) => ['calendar', 'policy'].includes(source.category));
@@ -3590,6 +4647,7 @@ function renderOverviewTimeline() {
     renderChipTabs(elements['overview-timeline-tabs'], [
       { id: 'latest', label: '全部' },
       { id: 'focus', label: '重点' },
+      { id: 'recent', label: '最近' },
       { id: 'social', label: '社媒' },
       { id: 'official', label: '官方' },
     ], state.overviewTimeline === 'latest' ? 'latest' : state.overviewTimeline, (id) => {
@@ -3611,9 +4669,35 @@ function renderOverviewTimeline() {
     }));
     return;
   }
+  if (state.overviewTimeline === 'official') {
+    renderOfficialTimeline(root, rows, {
+      emptyText: state.staticBoardLoading ? '正在读取官方信息…' : '这个筛选下还没有官方信息。',
+    });
+    return;
+  }
   root.replaceChildren(...rows.map((post) => {
+    if (isOfficialItem(post)) {
+      const row = document.createElement('article');
+      row.className = `official-event${itemIsFocused(post) ? ' is-focus' : ''}`;
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.className = 'official-event-body';
+      open.append(Object.assign(document.createElement('time'), {
+        textContent: officialDayKey(post),
+      }));
+      open.append(Object.assign(document.createElement('strong'), { textContent: postDisplayTitle(post) }));
+      const officialMeta = officialEventMeta(post);
+      if (officialMeta) open.append(Object.assign(document.createElement('small'), { textContent: officialMeta }));
+      attachGuardedOpen(open, () => openArticle(post));
+      row.append(open);
+      appendOfficialStar(row, post, () => {
+        renderOverviewTimeline();
+        renderPosts();
+      });
+      return row;
+    }
     const row = document.createElement('article');
-    row.className = `post-card is-compact timeline-row${isFocused(post.id) ? ' is-focus' : ''}`;
+    row.className = `post-card is-compact timeline-row${itemIsFocused(post) ? ' is-focus' : ''}`;
     const meta = document.createElement('div');
     meta.className = 'post-meta';
     const kind = Object.assign(document.createElement('span'), {
@@ -3632,16 +4716,16 @@ function renderOverviewTimeline() {
     open.append(Object.assign(document.createElement('h3'), { textContent: postDisplayTitle(post) }));
     const excerpt = post.excerpt || postListExcerpt(post);
     if (excerpt) open.append(Object.assign(document.createElement('p'), { className: 'post-excerpt', textContent: excerpt }));
-    open.addEventListener('click', () => openArticle(post));
+    attachGuardedOpen(open, () => openArticle(post));
     const star = document.createElement('button');
     star.type = 'button';
-    star.className = `icon-button ghost focus-btn${isFocused(post.id) ? ' on' : ''}`;
-    star.setAttribute('aria-label', isFocused(post.id) ? '取消重点' : '标为重点');
+    star.className = `icon-button ghost focus-btn${itemIsFocused(post) ? ' on' : ''}`;
+    star.setAttribute('aria-label', itemIsFocused(post) ? '取消重点' : '标为重点');
     star.innerHTML = icon('star');
     star.addEventListener('click', () => toggleFocus(post.id, () => {
       renderOverviewTimeline();
       renderPosts();
-    }));
+    }, post));
     row.append(meta, open, star);
     return row;
   }));
@@ -3718,8 +4802,19 @@ function marketNativeAmount(value, { currency = true } = {}) {
   return `${prefix}${number.toLocaleString('en-US', { maximumFractionDigits: 4 })}`;
 }
 
+function predictionShare(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.min(1, Math.max(0, number));
+}
+
+function formatPredictionShare(value) {
+  const share = predictionShare(value);
+  return share == null ? '—' : `${(share * 100).toFixed(1)}%`;
+}
+
 function predictionPrice(value) {
-  return value === null || value === undefined ? '—' : `${(Number(value) * 100).toFixed(1)}¢`;
+  return formatPredictionShare(value);
 }
 
 function marketNativeEmpty(root, text) {
@@ -3729,34 +4824,67 @@ function marketNativeEmpty(root, text) {
 
 function appendPredictionQuote(root, quote) {
   const article = document.createElement('article');
-  article.className = 'market-native-row prediction-row';
-  const price = Object.assign(document.createElement('strong'), { className: 'market-native-price', textContent: predictionPrice(quote.midPrice) });
-  const body = document.createElement('div');
+  article.className = 'prediction-quote';
+  const yes = predictionShare(quote.midPrice);
+  const last = predictionShare(quote.lastPrice);
+  const no = yes == null ? null : 1 - yes;
+  const outcome = String(quote.outcome || 'Yes');
   const title = Object.assign(document.createElement('b'), { textContent: localizedCopy(quote.quoteId, quote.marketQuestion) });
-  const detail = Object.assign(document.createElement('small'), {
-    textContent: [quote.venue, quote.outcome, `Bid ${predictionPrice(quote.bestBid)}`, `Ask ${predictionPrice(quote.bestAsk)}`, `24h ${marketNativeAmount(quote.volume24h)}`, `OI ${marketNativeAmount(quote.openInterest)}`].join(' · '),
-  });
-  body.append(title, detail);
-  const link = Object.assign(document.createElement('button'), { type: 'button', className: 'text-button', textContent: '市场 ↗' });
-  link.addEventListener('click', () => openExternalHttpUrl(quote.sourceUrl));
-  article.append(price, body, link);
+  const sides = document.createElement('div');
+  sides.className = 'prediction-sides';
+  const yesCol = document.createElement('div');
+  yesCol.className = 'prediction-side is-yes';
+  yesCol.append(
+    Object.assign(document.createElement('span'), { textContent: outcome }),
+    Object.assign(document.createElement('strong'), { textContent: formatPredictionShare(yes) }),
+  );
+  const noCol = document.createElement('div');
+  noCol.className = 'prediction-side is-no';
+  noCol.append(
+    Object.assign(document.createElement('span'), { textContent: '对立' }),
+    Object.assign(document.createElement('strong'), { textContent: formatPredictionShare(no) }),
+  );
+  sides.append(yesCol, noCol);
+  const bar = document.createElement('div');
+  bar.className = 'prediction-bar';
+  const fill = document.createElement('i');
+  fill.style.width = yes == null ? '0%' : `${(yes * 100).toFixed(1)}%`;
+  bar.append(fill);
+  const moved = last != null && yes != null && Math.abs(yes - last) >= 0.005;
+  const detail = [
+    moved ? `上次 ${formatPredictionShare(last)}` : '',
+    quote.venue,
+    quote.endAt ? `截止 ${formatTime(quote.endAt)}` : '',
+    quote.volume24h ? `24h ${marketNativeAmount(quote.volume24h)}` : '',
+  ].filter(Boolean).join(' · ');
+  article.append(title, sides, bar, Object.assign(document.createElement('small'), { textContent: detail }));
+  attachGuardedOpen(article, () => openExternalHttpUrl(quote.sourceUrl));
   root.append(article);
 }
 
 function appendDerivativeQuote(root, quote) {
   const article = document.createElement('article');
   article.className = 'market-native-row derivative-row';
+  const mark = Number(quote.markPrice);
+  const prev = Number(quote.previousDayPrice);
+  const change = Number.isFinite(mark) && Number.isFinite(prev) && prev !== 0 ? ((mark - prev) / prev) * 100 : null;
+  const up = (change ?? 0) >= 0;
   const symbol = Object.assign(document.createElement('strong'), { className: 'market-native-symbol', textContent: quote.symbol });
   const body = document.createElement('div');
-  const title = Object.assign(document.createElement('b'), { textContent: `Mark ${formatPrice(quote.markPrice, Number(quote.markPrice) >= 1000 ? 1 : 2)}` });
+  const title = Object.assign(document.createElement('b'), {
+    textContent: `Mark ${formatPrice(quote.markPrice, Number(quote.markPrice) >= 1000 ? 0 : 2)}`,
+  });
   const funding = quote.fundingRate == null ? '—' : `${(Number(quote.fundingRate) * 100).toFixed(4)}%`;
   const detail = Object.assign(document.createElement('small'), {
     textContent: `Funding ${funding} · OI ${marketNativeAmount(quote.openInterest, { currency: false })} ${quote.symbol} · 24h ${marketNativeAmount(quote.volume24h)}`,
   });
   body.append(title, detail);
-  const link = Object.assign(document.createElement('button'), { type: 'button', className: 'text-button', textContent: '市场 ↗' });
-  link.addEventListener('click', () => openExternalHttpUrl(quote.sourceUrl));
-  article.append(symbol, body, link);
+  const changeEl = Object.assign(document.createElement('strong'), {
+    className: `quote-change ${change == null ? '' : (up ? 'up' : 'down')}`.trim(),
+    textContent: change == null ? '—' : formatPct(up, change),
+  });
+  article.append(symbol, body, changeEl);
+  attachGuardedOpen(article, () => openExternalHttpUrl(quote.sourceUrl));
   root.append(article);
 }
 
@@ -3774,39 +4902,56 @@ function appendLiquidityMetric(root, metric, primary = false) {
   root.append(article);
 }
 
+function syncGlobalNativeSection() {
+  const section = document.getElementById('global-native-section');
+  if (!section) return;
+  const onGlobal = document.body.dataset.view === 'market' && state.tradePane === 'assets';
+  const showCrypto = onGlobal && (state.assetClass === 'all' || state.assetClass === 'crypto');
+  section.classList.toggle('hidden', !showCrypto);
+}
+
 function renderMarketNativeBoard() {
-  const predictions = elements['market-native-predictions'];
-  if (!predictions) return;
   const board = state.marketNativeBoard;
   const loadingText = state.marketNativeLoading ? '正在读取公开市场数据…' : '当前没有可用数据。';
-  predictions.replaceChildren();
-  if (board?.predictionMarkets?.length) board.predictionMarkets.forEach((quote) => appendPredictionQuote(predictions, quote));
-  else marketNativeEmpty(predictions, loadingText);
+  const predictions = elements['market-native-predictions'];
+  if (predictions) {
+    predictions.replaceChildren();
+    if (board?.predictionMarkets?.length) board.predictionMarkets.forEach((quote) => appendPredictionQuote(predictions, quote));
+    else marketNativeEmpty(predictions, loadingText);
+  }
 
   const derivatives = elements['market-native-derivatives'];
-  derivatives.replaceChildren();
-  if (board?.cryptoDerivatives?.length) board.cryptoDerivatives.forEach((quote) => appendDerivativeQuote(derivatives, quote));
-  else marketNativeEmpty(derivatives, loadingText);
+  if (derivatives) {
+    derivatives.replaceChildren();
+    if (board?.cryptoDerivatives?.length) board.cryptoDerivatives.forEach((quote) => appendDerivativeQuote(derivatives, quote));
+    else marketNativeEmpty(derivatives, loadingText);
+  }
 
   const liquidity = elements['market-native-liquidity'];
-  liquidity.replaceChildren();
-  if (board?.stablecoinLiquidity) {
-    appendLiquidityMetric(liquidity, board.stablecoinLiquidity.total, true);
-    board.stablecoinLiquidity.assets.forEach((metric) => appendLiquidityMetric(liquidity, metric));
-    board.stablecoinLiquidity.chains.forEach((metric) => appendLiquidityMetric(liquidity, metric));
-  } else marketNativeEmpty(liquidity, loadingText);
-
-  if (elements['market-native-note']) {
-    const unavailable = (board?.sourceHealth || []).filter((item) => item.status === 'unavailable').length;
-    elements['market-native-note'].textContent = state.marketNativeError
-      || (state.marketNativeLoading ? '正在同步市场原生来源…' : board
-        ? `生成于 ${formatTime(board.generatedAt)} · Price / Volume / Liquidity / OI / Funding / Supply / Time${unavailable ? ` · ${unavailable} 个来源暂不可用` : ''}`
-        : '等待同步市场原生来源');
+  if (liquidity) {
+    liquidity.replaceChildren();
+    if (board?.stablecoinLiquidity) {
+      appendLiquidityMetric(liquidity, board.stablecoinLiquidity.total, true);
+      board.stablecoinLiquidity.assets.forEach((metric) => appendLiquidityMetric(liquidity, metric));
+      board.stablecoinLiquidity.chains.forEach((metric) => appendLiquidityMetric(liquidity, metric));
+    } else marketNativeEmpty(liquidity, loadingText);
   }
+
+  const noteText = state.marketNativeError
+    || (state.marketNativeLoading ? '正在同步市场原生来源…' : board
+      ? `生成于 ${formatTime(board.generatedAt)} · 场所报价，不是综合概率${(board.sourceHealth || []).some((item) => item.status === 'unavailable') ? ' · 部分来源暂不可用' : ''}`
+      : '等待同步市场原生来源');
+  if (elements['market-native-note']) elements['market-native-note'].textContent = noteText;
+  if (elements['global-native-note']) elements['global-native-note'].textContent = noteText;
+  syncGlobalNativeSection();
 }
 
 async function loadMarketNativeBoard({ refresh = false } = {}) {
   if (!state.session || state.marketNativeLoading) return;
+  if (state.marketNativeBoard && !refresh) {
+    renderMarketNativeBoard();
+    return;
+  }
   state.marketNativeLoading = true;
   state.marketNativeError = '';
   renderMarketNativeBoard();
@@ -4223,30 +5368,82 @@ function openSourceTasks(sourceId = 'all') {
     return;
   }
   if (elements['source-tasks-title']) {
-    elements['source-tasks-title'].textContent = sourceId === 'x' ? 'X 来源任务' : sourceId === 'bilibili' ? 'B站来源任务' : '后台任务';
+    elements['source-tasks-title'].textContent = sourceId === 'x'
+      ? 'X 来源任务'
+      : sourceId === 'bilibili'
+        ? 'B站来源任务'
+        : sourceId === 'trendforce'
+          ? 'TrendForce 来源任务'
+          : '后台任务';
+  }
+  if (elements['source-tasks-meta']) {
+    elements['source-tasks-meta'].textContent = sourceId === 'x'
+      ? '先选正在关注或为你推荐，再抓取。抓取会立刻跑采集、翻译和打 Tag。下面的自动化草案不会启动定时任务。'
+      : sourceId === 'trendforce'
+        ? '公开洞察和价表抓全文。会员研报只收标题与介绍，不下载 PDF。'
+        : '维护入口。自动化草案不会启动后台调度。';
   }
   const body = elements['source-tasks-body'];
   body.replaceChildren();
-  const addAction = (label, detail, onClick) => {
+  const addAction = (label, detail, onClick, { primary = false } = {}) => {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'task-row';
-    button.append(
-      Object.assign(document.createElement('span'), {
-        innerHTML: `<strong>${label}</strong><small>${detail}</small>`,
-      }),
-    );
+    button.className = primary ? 'primary-button task-run' : 'task-row';
+    if (primary) {
+      button.textContent = label;
+    } else {
+      button.append(
+        Object.assign(document.createElement('span'), {
+          innerHTML: `<strong>${label}</strong><small>${detail}</small>`,
+        }),
+      );
+    }
     button.addEventListener('click', onClick);
     body.append(button);
+    if (primary && detail) {
+      body.append(Object.assign(document.createElement('p'), {
+        className: 'page-note task-run-note',
+        textContent: detail,
+      }));
+    }
   };
   if (sourceId === 'x' || sourceId === 'all') {
-    addAction('拉取 X 时间线', `当前范围：${state.xFeed === 'following' ? '正在关注' : '为你推荐'} · 上限 50 条`, () => {
-      loadXFeed({ refresh: true }).catch((error) => showToast(error.message));
+    if (state.xFeed !== 'following') setXFeed('following', { reload: true });
+    const scopeTabs = document.createElement('div');
+    scopeTabs.className = 'chip-tabs';
+    scopeTabs.setAttribute('role', 'tablist');
+    scopeTabs.setAttribute('aria-label', 'X 时间线');
+    body.append(scopeTabs);
+    const captureButton = document.createElement('button');
+    captureButton.type = 'button';
+    captureButton.className = 'primary-button task-run';
+    captureButton.addEventListener('click', () => {
+      runXCapturePipeline().catch((error) => showToast(error.message));
     });
-    addAction('补翻译未完成条目', '抓取后会自动走豆包；这里只补失败项，一次最多 30 条', () => {
+    body.append(captureButton);
+    const captureNote = document.createElement('p');
+    captureNote.className = 'page-note task-run-note';
+    body.append(captureNote);
+    const paintScope = () => {
+      renderChipTabs(scopeTabs, [
+        { id: 'following', label: '正在关注' },
+        { id: 'for-you', label: '为你推荐' },
+      ], state.xFeed, (id) => {
+        setXFeed(id, { reload: true });
+        paintScope();
+      });
+      captureButton.textContent = xCaptureActionLabel();
+      captureNote.textContent = xCaptureScopeNote();
+    };
+    paintScope();
+    addAction('补翻译未完成条目', '抓取后会自动走 Gemini；这里只补失败项，一次最多 30 条', () => {
+      dialog.close();
       translateXBatch().catch((error) => showToast(error.message));
     });
-    addAction('标注未标注内容', '走已注册 Worker 标注任务', () => elements['x-tag']?.click());
+    addAction('标注未标注内容', '走已注册 Worker 标注任务', () => {
+      dialog.close();
+      tagXBatch().catch((error) => showToast(error.message));
+    });
   }
   if (sourceId === 'bilibili' || sourceId === 'all') {
     const form = document.createElement('form');
@@ -4260,12 +5457,18 @@ function openSourceTasks(sourceId = 'all') {
     });
     body.append(form);
   }
+  if (sourceId === 'trendforce' || sourceId === 'all') {
+    addAction('抓取公开页', '洞察全文、会员报告索引、最新 DRAM/NAND 价表', () => {
+      dialog.close();
+      loadTrendForceFeed({ refresh: true }).catch((error) => showToast(error.message));
+    }, { primary: true });
+  }
   const auto = document.createElement('div');
   auto.className = 'auto-chain';
   let draft = {};
   try { draft = JSON.parse(window.localStorage.getItem(AUTO_DRAFT_KEY) || '{}'); } catch { draft = {}; }
   auto.innerHTML = `<strong>自动化设置（草案）</strong>
-    <p>采集 → 去重 → 保存原文 → 英文自动豆包翻译清洗。页面只看中文。</p>
+    <p>这里只记本机偏好，保存后不会启动定时任务。要真正抓取，请用上面的抓取按钮。</p>
     <label>频率 <select name="freq"><option ${draft.freq === 'manual' ? 'selected' : ''} value="manual">仅手动</option><option ${draft.freq === 'hourly' ? 'selected' : ''} value="hourly">每小时（未启用）</option></select></label>
     <button class="secondary" type="button" id="save-auto-draft">保存草案</button>
     <p id="auto-draft-status">${draft.saved ? '草案已保存，自动化未启用' : '尚未保存草案'}</p>`;
@@ -4352,8 +5555,15 @@ function renderArticlePage() {
     Object.assign(document.createElement('button'), { className: 'text-button', textContent: `${post.author} ›` }),
     Object.assign(document.createElement('span'), { textContent: `${post.time || formatTime(post.publishedAt)} 发布` }),
     Object.assign(document.createElement('span'), { className: 'kind-tag', textContent: feedKindLabel(post) }),
-    Object.assign(document.createElement('span'), { className: 'kind-tag official', textContent: post.complete === false ? '仅索引' : '正文完整' }),
   );
+  const completeLabel = post.complete === false ? '仅索引' : '正文完整';
+  if (isHttpUrl(post.sourceUrl)) {
+    const source = appendExternalLink(meta, post.sourceUrl, completeLabel);
+    source.className = 'kind-tag official';
+    source.setAttribute('aria-label', `打开原文（${completeLabel}）`);
+  } else {
+    meta.append(Object.assign(document.createElement('span'), { className: 'kind-tag official', textContent: completeLabel }));
+  }
   meta.querySelector('button').addEventListener('click', () => {
     if (post.platform === 'official') openPage('source', `policy.${post.author}`);
     else openPage('source', post.platform === 'manual' ? 'manual' : post.platform);
@@ -4420,27 +5630,40 @@ function renderArticlePage() {
   bar.className = 'reader-bar';
   const save = document.createElement('button');
   save.type = 'button';
-  save.innerHTML = `${icon('bookmark')}${isPostSaved(post) ? '查看灵感' : '存入灵感'}`;
+  save.innerHTML = `${icon('bookmark')}<span>${isPostSaved(post) ? '查看灵感' : '存入灵感'}</span>`;
   save.addEventListener('click', () => {
     if (post.release) saveOfficialAsInspiration(post.release);
     else savePostToInspiration(post).catch((error) => showToast(error.message));
   });
   const cite = document.createElement('button');
   cite.type = 'button';
-  cite.innerHTML = `${icon('corner-up-right')}引用到问答`;
+  cite.innerHTML = `${icon('corner-up-right')}<span>引用到问答</span>`;
   cite.addEventListener('click', () => toggleReference({
     resourceType: post.resourceType || 'content-item',
     resourceId: post.resourceId || post.id,
     label: postDisplayTitle(post),
     preview: post.body,
   }));
+  const focused = itemIsFocused(post);
   const star = document.createElement('button');
   star.type = 'button';
-  star.className = `icon-button ghost${isFocused(post.id) ? ' on' : ''}`;
-  star.innerHTML = icon('star');
-  star.addEventListener('click', () => toggleFocus(post.id, () => renderArticlePage()));
-  bar.append(save, cite, star);
-  shell.append(head, body, bar);
+  star.className = focused ? 'is-focus-on' : '';
+  star.setAttribute('aria-label', focused ? '取消重要新闻' : '加入重要新闻');
+  star.innerHTML = `${icon('star')}<span>${focused ? '取消重要' : '加入重要新闻'}</span>`;
+  star.addEventListener('click', () => toggleFocus(post.id, () => renderArticlePage(), post));
+  const analyze = document.createElement('button');
+  analyze.type = 'button';
+  analyze.innerHTML = `${icon('search')}<span>分析</span>`;
+  analyze.addEventListener('click', () => startArticleAnalysis(post).catch((error) => showToast(error.message)));
+  const back = document.createElement('button');
+  back.type = 'button';
+  back.setAttribute('aria-label', '返回上层');
+  back.innerHTML = `${icon('chevron-left')}<span>返回上层</span>`;
+  back.addEventListener('click', leaveArticle);
+  bar.append(save, cite, analyze, star, back);
+  const analysis = renderArticleAnalysisPanel(post);
+  if (analysis) shell.append(head, body, analysis, bar);
+  else shell.append(head, body, bar);
   root.replaceChildren(shell);
   if (postNeedsChineseTranslation(post) && !translationFor(post)) {
     requestTranslate(post).catch((error) => showToast(error.message));
@@ -4467,6 +5690,113 @@ async function fetchOfficialBody(post) {
     state.officialBodies[post.id] = { status: 'failed', error: error instanceof Error ? error.message : '获取失败' };
   }
   renderArticlePage();
+}
+
+function formatArticleProgressText(progress) {
+  const steps = Array.isArray(progress) ? progress : [];
+  const active = [...steps].reverse().find((step) => step.status === 'active') || steps.at(-1);
+  if (!active) return '';
+  return [active.label, active.detail].filter(Boolean).join(' · ');
+}
+
+function articleAnalysisKey(post) {
+  return String(post.resourceId || post.id || '');
+}
+
+function articleAnalysisSource(post) {
+  const resourceType = post.resourceType || (post.platform === 'manual' ? 'post' : 'content-item');
+  const resourceId = post.resourceId || (resourceType === 'content-item' ? post.id : '');
+  if (resourceId && (resourceType === 'content-item' || resourceType === 'post' || resourceType === 'inspiration')) {
+    return { type: 'reference', reference: { resourceType, resourceId } };
+  }
+  const fetched = state.officialBodies[post.id]?.text || '';
+  const body = String(fetched || post.body || translationFor(post)?.text || '').trim();
+  return {
+    type: 'inline',
+    title: postDisplayTitle(post),
+    body,
+    sourceUrl: isHttpUrl(post.sourceUrl) ? post.sourceUrl : undefined,
+  };
+}
+
+function renderArticleAnalysisPanel(post) {
+  const record = state.articleAnalysis[articleAnalysisKey(post)];
+  if (!record) return null;
+  const section = document.createElement('section');
+  section.className = 'article-analysis';
+  const title = document.createElement('h3');
+  title.textContent = '文章阅读';
+  section.append(title);
+  if (record.status === 'running' || record.status === 'queued') {
+    const status = document.createElement('p');
+    status.className = 'page-note';
+    status.textContent = record.stageLabel || '正在分析这份材料';
+    section.append(status);
+    return section;
+  }
+  if (record.status === 'failed') {
+    const status = document.createElement('p');
+    status.className = 'page-note';
+    status.textContent = record.error || '分析未能完成';
+    section.append(status);
+    return section;
+  }
+  const answer = document.createElement('div');
+  answer.className = 'article-analysis-answer';
+  renderMarkdownInto(answer, record.outputText || '分析已完成');
+  section.append(answer);
+  return section;
+}
+
+async function pollArticleAnalysis(key, runId) {
+  try {
+    const payload = await api(`/api/v1/article-analysis/runs/${runId}`, { timeoutMs: 15_000 });
+    const current = state.articleAnalysis[key] || {};
+    state.articleAnalysis[key] = {
+      ...current,
+      runId,
+      status: payload.status,
+      stage: payload.stage,
+      stageLabel: payload.status === 'completed'
+        ? '分析已完成'
+        : (formatArticleProgressText(payload.progress) || current.stageLabel || '正在分析这份材料'),
+      outputText: payload.outputText || '',
+      error: payload.error?.message || payload.error || '',
+    };
+    if (state.pageKind === 'article') renderArticlePage();
+    if (payload.status === 'queued' || payload.status === 'running') {
+      window.setTimeout(() => pollArticleAnalysis(key, runId), 1_200);
+    }
+  } catch (error) {
+    state.articleAnalysis[key] = {
+      ...(state.articleAnalysis[key] || {}),
+      runId,
+      status: 'failed',
+      error: error.message || '分析查询失败',
+    };
+    if (state.pageKind === 'article') renderArticlePage();
+  }
+}
+
+async function startArticleAnalysis(post) {
+  const key = articleAnalysisKey(post);
+  const source = articleAnalysisSource(post);
+  if (source.type === 'inline' && !source.body) {
+    showToast('这条材料没有可分析正文');
+    return;
+  }
+  state.articleAnalysis[key] = { status: 'queued', stage: 'queued', stageLabel: '正在阅读材料' };
+  renderArticlePage();
+  const created = await api('/api/v1/article-analysis/runs', {
+    method: 'POST',
+    body: JSON.stringify({ source }),
+  });
+  state.articleAnalysis[key] = {
+    ...state.articleAnalysis[key],
+    runId: created.runId,
+    status: 'queued',
+  };
+  pollArticleAnalysis(key, created.runId);
 }
 
 function renderEventPage() {
@@ -4533,7 +5863,7 @@ async function saveEventAsInspiration(event) {
 function renderSourcePage() {
   const root = pageRoot();
   const id = state.pageId;
-  const def = [{ id: 'x', title: 'X' }, { id: 'bilibili', title: 'B站' }, { id: 'manual', title: '手工发布' }]
+  const def = [{ id: 'x', title: 'X' }, { id: 'bilibili', title: 'B站' }, { id: 'trendforce', title: 'TrendForce' }, { id: 'manual', title: '手工发布' }]
     .find((item) => item.id === id)
     || state.sourceCatalog.find((item) => item.id === id);
   if (!def) {
@@ -4548,7 +5878,7 @@ function renderSourcePage() {
     ? `${health.status === 'ready' ? '最近检查成功' : health.note || health.status} · ${health.observedAt ? formatTime(health.observedAt) : ''}`
     : '只读已保存结果，新采集在右上角任务里发起';
   wrap.querySelector('button').addEventListener('click', () => openPage('automation', id));
-  if (id === 'x' || id === 'bilibili' || id === 'manual') {
+  if (id === 'x' || id === 'bilibili' || id === 'trendforce' || id === 'manual') {
     state.feedPlatform = id === 'manual' ? 'manual' : id;
     state.platform = state.feedPlatform;
     const list = document.createElement('div');
@@ -4563,7 +5893,7 @@ function renderSourcePage() {
       card.querySelector('.post-identity').textContent = post.author;
       card.querySelector('.post-time').textContent = post.time;
       card.querySelector('h3').textContent = postDisplayTitle(post);
-      card.querySelector('.feed-content').addEventListener('click', () => openArticle(post));
+      attachGuardedOpen(card.querySelector('.feed-content'), () => openArticle(post));
       list.append(card);
     });
     const more = document.createElement('button');
@@ -4650,7 +5980,7 @@ function renderQuotePage() {
 function localTaskRows() {
   const rows = [];
   if (state.xLoading) rows.push({ id: 'local-x', title: '读取 X 缓存', status: 'running', detail: state.xNote || '进行中', scope: 'x', time: formatTime(Date.now()) });
-  if (state.xTranslating) rows.push({ id: 'local-x-tr', title: '翻译非中文内容', status: 'running', detail: '豆包队列', scope: 'x', time: formatTime(Date.now()) });
+  if (state.xTranslating) rows.push({ id: 'local-x-tr', title: '翻译非中文内容', status: 'running', detail: 'Gemini', scope: 'x', time: formatTime(Date.now()) });
   if (state.xTagging) rows.push({ id: 'local-x-tag', title: '标注待处理内容', status: 'running', detail: 'Worker 打 Tag', scope: 'x', time: formatTime(Date.now()) });
   if (state.bilibiliLoading) rows.push({ id: 'local-bili', title: '读取 B站字幕', status: 'running', detail: state.bilibiliNote || '进行中', scope: 'bilibili', time: formatTime(Date.now()) });
   for (const job of state.runtimeJobs || []) {
@@ -4728,6 +6058,8 @@ function renderNotePage() {
   const wrap = document.createElement('article');
   wrap.innerHTML = `<div class="reader-content"></div><p class="page-note"></p><div class="content-tools"></div>`;
   fillPostBody(wrap.querySelector('.reader-content'), note.body);
+  const pictures = renderAttachmentView(note.attachments);
+  if (pictures) wrap.querySelector('.reader-content').after(pictures);
   wrap.querySelector('.page-note').textContent = `${note.sourceTitle || '我的随记'} · ${formatTime(note.createdAt)}`;
   const research = document.createElement('button');
   research.className = 'primary-button';
@@ -4806,6 +6138,7 @@ function renderAutomationPage() {
   const draft = JSON.parse(window.localStorage.getItem(AUTO_DRAFT_KEY) || '{}');
   const wrap = document.createElement('div');
   wrap.innerHTML = `<header class="reader-head"><h2></h2><p class="page-note">保存后仍是本机草案，不会启动真实定时任务。</p></header>
+    ${id === 'x' ? `<button class="primary-button" type="button" id="run-x-capture">${xCaptureActionLabel()}</button><p class="page-note">${xCaptureScopeNote()} 这不是定时任务。</p>` : ''}
     <label class="check-line"><span>启用自动任务</span><input id="auto-enabled" type="checkbox"></label>
     <label class="field"><span>采集频率</span><select id="auto-interval">
       <option value="30">每 30 分钟</option>
@@ -4817,7 +6150,10 @@ function renderAutomationPage() {
     <label class="check-line"><span>新内容入库后按已有标签标注</span><input id="auto-tag" type="checkbox"></label>
     <button class="primary-button" type="button" id="save-auto-rule">保存草案</button>
     <p class="endnote">未接入持久化调度前，不得显示「自动运行中」。</p>`;
-  wrap.querySelector('h2').textContent = id;
+  wrap.querySelector('h2').textContent = id === 'x' ? 'X' : id;
+  wrap.querySelector('#run-x-capture')?.addEventListener('click', () => {
+    runXCapturePipeline().catch((error) => showToast(error.message));
+  });
   wrap.querySelector('#auto-enabled').checked = Boolean(draft.enabled);
   wrap.querySelector('#auto-interval').value = draft.interval || draft.freq || '60';
   wrap.querySelector('#auto-translate').checked = Boolean(draft.translate);
@@ -4854,7 +6190,7 @@ function renderSettingsHub() {
   const rows = [
     ['sources', '信源', '查看来源内容与可用状态', () => setOverviewPane('catalog')],
     ['tasks', '采集与处理', '手工拉取、翻译、标注及任务记录', () => openPage('tasks')],
-    ['automation', '自动任务', '规则配置 · 不实际调度', () => openPage('automation', 'x')],
+    ['automation', '自动任务', '规则只是草案；X 的抓取关注/推荐在来源任务里', () => openPage('automation', 'x')],
     ['connections', '设备连接', '配对与授权入口', () => setView('settings/connections')],
   ];
   for (const [id, title, desc, onClick] of rows) {
@@ -4870,17 +6206,24 @@ function renderSettingsHub() {
 }
 
 function openSourceMenu(source) {
-  modalSheet(`${sourceDisplayTitle(source)} · 采集与处理`, [
+  const actions = [];
+  if (source.id === 'x') {
+    actions.push([xCaptureActionLabel(), xCaptureScopeNote(), () => {
+      runXCapturePipeline().catch((error) => showToast(error.message));
+    }]);
+  }
+  actions.push(
     ['查看内容', '只读已保存结果', () => openPage('source', source.id)],
     ['任务记录', '进行中、成功与失败', () => openPage('tasks')],
-    ['自动任务', '频率、翻译和标签草案', () => openPage('automation', source.id)],
+    ['自动任务', '规则只是本机草案，不会定时跑', () => openPage('automation', source.id)],
     [state.hiddenSourceIds.has(source.id) ? '显示信源' : '隐藏信源', '只影响本机目录投影', () => {
       if (state.hiddenSourceIds.has(source.id)) state.hiddenSourceIds.delete(source.id);
       else state.hiddenSourceIds.add(source.id);
       writeJsonSet(HIDDEN_SOURCES_KEY, state.hiddenSourceIds);
       renderStaticSourceCatalog();
     }],
-  ]);
+  );
+  modalSheet(`${sourceDisplayTitle(source)} · 采集与处理`, actions);
 }
 
 function modalSheet(title, actions) {
@@ -4937,10 +6280,7 @@ function renderFeedFilterDialog() {
     renderFeedFilterDialog();
   });
   add('平台', platformFilters, state.feedPlatform, (id) => {
-    state.feedPlatform = id;
-    state.platform = id;
-    renderPlatformFilters();
-    renderPosts();
+    applyFeedPlatform(id);
     renderFeedFilterDialog();
   });
   const calendar = document.createElement('button');
@@ -4988,7 +6328,9 @@ function renderTools() {
 }
 
 function askKindLabel(kind) {
-  return kind === 'inspiration' ? '灵感加工' : '问答';
+  if (kind === 'inspiration') return '灵感加工';
+  if (kind === 'article-analysis') return '文章分析';
+  return '问答';
 }
 
 function liveAskJobs() {
@@ -5055,6 +6397,7 @@ function adoptPendingRuns(runs = [], { replaceLive = false } = {}) {
       sessionId: run.sessionId || '',
       question: run.question || run.input?.message || '',
       status: run.status,
+      ...(run.agentMode ? { agentMode: run.agentMode } : {}),
     });
   }
   if (replaceLive) {
@@ -5106,7 +6449,7 @@ async function finishAskJob(job, payload) {
   else if (document.body.dataset.view === 'ask' && !state.askSessionId) await loadAskSessions();
   else loadAskSessions().catch(() => {});
   if (payload?.status === 'failed' || payload?.status === 'cancelled') {
-    showToast(payload.job?.error?.message || '问答任务未能完成');
+    showToast(payload.error?.message || payload.job?.error?.message || '问答任务未能完成');
   }
   stopAskPollerIfIdle();
 }
@@ -5123,7 +6466,10 @@ async function pollAskJobs() {
   try {
     await Promise.all(jobs.map(async (job) => {
       try {
-        const payload = await api(`/api/v1/agent/runs/${job.runId}`, { timeoutMs: 15_000 });
+        const path = job.agentMode === 'article-analysis'
+          ? `/api/v1/article-analysis/runs/${job.runId}`
+          : `/api/v1/agent/runs/${job.runId}`;
+        const payload = await api(path, { timeoutMs: 15_000 });
         if (payload.status === 'completed') {
           await finishAskJob(job, payload);
           return;
@@ -5134,7 +6480,7 @@ async function pollAskJobs() {
             sessionId: payload.sessionId || job.sessionId,
             status: payload.status,
             error: true,
-            text: payload.job?.error?.message || '问答任务未能完成',
+            text: payload.error?.message || payload.job?.error?.message || '问答任务未能完成',
           });
           updateAskProgressNode(failed);
           renderAskLiveUi();
@@ -5146,7 +6492,11 @@ async function pollAskJobs() {
           sessionId: payload.sessionId || job.sessionId,
           status: payload.status,
           progress: payload.progress || [],
-          text: payload.status === 'running' ? '正在生成回答…' : '正在等待 AI Worker…',
+          text: payload.status === 'running'
+            ? (job.agentMode === 'article-analysis'
+              ? (formatArticleProgressText(payload.progress) || '正在分析材料…')
+              : '正在生成回答…')
+            : '正在等待 AI Worker…',
         });
         updateAskProgressNode(updated);
       } catch {
@@ -5237,7 +6587,9 @@ async function loadAskSession(sessionId) {
       sessionId,
       question: item.question,
       status: item.status,
+      ...(item.agentMode ? { agentMode: item.agentMode } : {}),
     })));
+  applySessionAgentMode(payload.session?.kind);
   renderAskSession();
   syncAskLayer();
 }
@@ -5384,7 +6736,7 @@ function renderAskMaterials() {
     preview: item.body,
     post: item,
   }));
-  const notes = state.notes.slice(0, 12).map((note) => ({
+  const notes = regularNotes().slice(0, 12).map((note) => ({
     id: note.id,
     type: 'inspiration',
     title: inspirationCardTitle(note),
@@ -5701,6 +7053,31 @@ function currentWebMode() {
   return value === 'always' || value === 'fallback' || value === 'off' ? value : 'fallback';
 }
 
+function currentResearchMode() {
+  return elements['ask-form']?.elements?.researchMode?.checked ? 'research' : 'standard';
+}
+
+function currentAgentMode() {
+  return elements['ask-form']?.elements?.agentMode?.value === 'article-analysis' ? 'article-analysis' : 'ask';
+}
+
+function syncAgentModeComposer() {
+  const mode = currentAgentMode();
+  document.body.dataset.agentMode = mode;
+  const input = elements['ask-form']?.elements?.question;
+  if (input) {
+    input.maxLength = mode === 'article-analysis' ? 20_000 : 4_000;
+    input.placeholder = mode === 'article-analysis'
+      ? '粘贴文章，或 @ 选择一条材料…'
+      : '发消息，或 @ 选择资料…';
+  }
+}
+
+function syncResearchModeSwitch(input) {
+  if (!input) return;
+  input.setAttribute('aria-checked', input.checked ? 'true' : 'false');
+}
+
 function restoreWebMode() {
   const select = elements['ask-form']?.elements?.webMode;
   if (!select) return;
@@ -5710,6 +7087,41 @@ function restoreWebMode() {
   } catch {}
   select.addEventListener('change', () => {
     try { window.localStorage.setItem('ai-center-web-mode', select.value); } catch {}
+  });
+}
+
+function restoreResearchMode() {
+  const input = elements['ask-form']?.elements?.researchMode;
+  if (!input) return;
+  try {
+    input.checked = window.localStorage.getItem('ai-center-research-mode') === 'research';
+  } catch {}
+  syncResearchModeSwitch(input);
+  input.addEventListener('change', () => {
+    syncResearchModeSwitch(input);
+    try { window.localStorage.setItem('ai-center-research-mode', input.checked ? 'research' : 'standard'); } catch {}
+  });
+}
+
+function applySessionAgentMode(kind) {
+  const select = elements['ask-form']?.elements?.agentMode;
+  if (!select) return;
+  if (kind === 'article-analysis' && select.value !== 'article-analysis') {
+    select.value = 'article-analysis';
+    syncAgentModeComposer();
+  }
+}
+
+function restoreAgentMode() {
+  const select = elements['ask-form']?.elements?.agentMode;
+  if (!select) return;
+  try {
+    if (window.localStorage.getItem('ai-center-agent-mode') === 'article-analysis') select.value = 'article-analysis';
+  } catch {}
+  syncAgentModeComposer();
+  select.addEventListener('change', () => {
+    syncAgentModeComposer();
+    try { window.localStorage.setItem('ai-center-agent-mode', currentAgentMode()); } catch {}
   });
 }
 
@@ -5724,8 +7136,8 @@ async function askAgent(question) {
     return;
   }
   if (state.askSubmitting) return;
-  if (state.askDetail?.session?.kind === 'inspiration') {
-    showToast('灵感加工记录请点 + 开新问答');
+  if (state.askDetail?.session?.kind === 'inspiration' || state.askDetail?.session?.kind === 'article-analysis') {
+    showToast('这条记录请点 + 开新问答');
     return;
   }
   if (!state.askSessionId) openAskSession('new');
@@ -5746,7 +7158,13 @@ async function askAgent(question) {
   try {
     const created = await api('/api/v1/agent/runs', {
       method: 'POST',
-      body: JSON.stringify({ message: question, webMode: currentWebMode(), sessionId, references }),
+      body: JSON.stringify({
+        message: question,
+        webMode: currentWebMode(),
+        researchMode: currentResearchMode(),
+        sessionId,
+        references,
+      }),
     });
     clearReferences();
     removeAskJob(tempId);
@@ -5787,6 +7205,107 @@ async function askAgent(question) {
   }
 }
 
+function articleAnalysisSourceFromAsk(question) {
+  const ref = state.referenceDraft.find((item) => (
+    item.resourceType === 'content-item' || item.resourceType === 'post' || item.resourceType === 'inspiration'
+  ));
+  if (ref) {
+    return {
+      type: 'reference',
+      reference: { resourceType: ref.resourceType, resourceId: ref.resourceId },
+      question: ref.label || question || '分析已选材料',
+    };
+  }
+  const body = String(question || '').trim();
+  if (!body) return null;
+  return {
+    type: 'inline',
+    title: body.slice(0, 80),
+    body,
+    question: body.slice(0, 80),
+  };
+}
+
+async function askArticleAnalysis(question) {
+  if (!state.session) {
+    showToast('请先在设置中完成设备连接');
+    setView('settings');
+    return;
+  }
+  if (state.askSubmitting) return;
+  if (state.askDetail?.session?.kind === 'inspiration' || state.askDetail?.session?.kind === 'question-answer') {
+    showToast('问答记录请点 + 再开文章阅读');
+    return;
+  }
+  const packed = articleAnalysisSourceFromAsk(question);
+  if (!packed) {
+    showToast('粘贴文章，或 @ 选择一条材料');
+    return;
+  }
+  if (!state.askSessionId) openAskSession('new');
+  const sessionId = state.askDetail?.session?.kind === 'article-analysis' ? state.askSessionId : undefined;
+  const displayQuestion = packed.question;
+  const source = packed.type === 'reference'
+    ? { type: 'reference', reference: packed.reference }
+    : { type: 'inline', title: packed.title, body: packed.body };
+  const sentRefs = state.referenceDraft.slice();
+  const tempId = `local-${Date.now()}`;
+  upsertAskJob({
+    runId: tempId,
+    sessionId: state.askSessionId,
+    question: displayQuestion,
+    status: 'queued',
+    text: '正在提交文章分析…',
+    refs: sentRefs,
+    agentMode: 'article-analysis',
+  });
+  renderAskSession();
+  setAskComposerBusy(true);
+  try {
+    const created = await api('/api/v1/article-analysis/runs', {
+      method: 'POST',
+      body: JSON.stringify({ source, sessionId }),
+    });
+    clearReferences();
+    removeAskJob(tempId);
+    if (created.sessionId && (state.askSessionId === 'new' || !state.askSessionId)) {
+      state.askSessionId = created.sessionId;
+      const nextHash = askHash(created.sessionId);
+      if (location.hash !== nextHash) history.replaceState({}, '', `${location.pathname}${location.search}${nextHash}`);
+    }
+    upsertAskJob({
+      runId: created.runId,
+      sessionId: created.sessionId || state.askSessionId,
+      question: displayQuestion,
+      status: 'queued',
+      text: '正在阅读材料…',
+      refs: sentRefs,
+      agentMode: 'article-analysis',
+    });
+    renderAskSession();
+    elements['ask-thread']?.querySelector(`[data-run-id="${created.runId}"]`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    renderAskLiveUi();
+    ensureAskPoller();
+    loadAskSessions().catch(() => {});
+    return true;
+  } catch (error) {
+    upsertAskJob({
+      runId: tempId,
+      question: displayQuestion,
+      status: 'failed',
+      error: true,
+      text: `未能分析：${error instanceof Error ? error.message : '未知错误'}`,
+      refs: sentRefs,
+      agentMode: 'article-analysis',
+    });
+    renderAskSession();
+    return false;
+  } finally {
+    setAskComposerBusy(false);
+  }
+}
+
 function renderReport() {
   elements['report-list'].replaceChildren(...reportSections.map((section) => {
     const card = document.createElement('article');
@@ -5800,14 +7319,22 @@ function renderReport() {
 }
 
 const NOTE_SWIPE_WIDTH = 168;
-const KNOWLEDGE_SWIPE_WIDTH = 72;
-const FEED_SWIPE_WIDTH = 72;
+const KNOWLEDGE_SWIPE_WIDTH = 84;
+const FEED_SWIPE_WIDTH = 84;
 
 const INSPIRATION_TYPE_LABELS = {
   observation: '观察',
   hypothesis: '假设',
   question: '问题',
   idea: '想法',
+};
+
+const WORK_PACKAGE_STATUS_LABELS = {
+  open: '待领取',
+  claimed: '实现中',
+  completed: '已完成',
+  failed: '未完成',
+  cancelled: '已取消',
 };
 
 const KNOWLEDGE_TYPE_LABELS = {
@@ -5823,44 +7350,125 @@ function closeNoteSwipes(except) {
   document.querySelectorAll('.swipe-front.is-open').forEach((front) => {
     if (front === except) return;
     front.classList.remove('is-open');
+    front.closest('.swipe-item')?.classList.remove('is-open');
     front.style.transform = 'translateX(0)';
   });
 }
 
+function swipeActionTarget(target) {
+  return target instanceof Element && Boolean(target.closest('.swipe-delete, .swipe-pin, .swipe-archive, .swipe-actions'));
+}
+
+function swipeKeepsOwnTap(target) {
+  return target instanceof Element && Boolean(target.closest(
+    'a, input, textarea, select, .icon-button, .focus-btn, .feed-expand, .card-cite, .text-button',
+  ));
+}
+
+function setSwipeOpen(front, open, width) {
+  front.classList.toggle('is-open', open);
+  front.closest('.swipe-item')?.classList.toggle('is-open', open);
+  front.style.transform = `translateX(${open ? -width : 0}px)`;
+}
+
+function attachGuardedOpen(node, onOpen) {
+  if (!node || typeof onOpen !== 'function') return;
+  let startX = 0;
+  let startY = 0;
+  let armed = false;
+  let ignore = false;
+  node.addEventListener('pointerdown', (event) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    armed = true;
+    ignore = false;
+    startX = event.clientX;
+    startY = event.clientY;
+  });
+  node.addEventListener('pointermove', (event) => {
+    if (!armed) return;
+    if (Math.abs(event.clientX - startX) > 8 || Math.abs(event.clientY - startY) > 8) ignore = true;
+  });
+  node.addEventListener('pointercancel', () => {
+    ignore = true;
+    armed = false;
+  });
+  node.addEventListener('pointerup', () => {
+    armed = false;
+  });
+  node.addEventListener('click', (event) => {
+    if (ignore) {
+      event.preventDefault();
+      event.stopPropagation();
+      ignore = false;
+      return;
+    }
+    onOpen(event);
+  });
+}
+
 function attachSwipe(front, width = NOTE_SWIPE_WIDTH, onTap) {
+  const host = front.closest('.swipe-item') || front;
   let startX = 0;
   let startY = 0;
   let origin = 0;
   let dx = 0;
   let tracking = false;
   let axis = '';
+  let suppressClick = false;
+  let startTarget = null;
+  let pointerId = null;
 
-  const settle = (event) => {
-    const tapped = tracking && !axis;
-    tracking = false;
-    axis = '';
-    front.style.transition = '';
-    const open = dx < -(width / 3);
-    front.classList.toggle('is-open', open);
-    front.style.transform = `translateX(${open ? -width : 0}px)`;
-    if (tapped && !open && typeof onTap === 'function') onTap(event);
+  const releaseCapture = () => {
+    if (pointerId == null) return;
+    try {
+      host.releasePointerCapture(pointerId);
+    } catch {
+      // Capture may already be gone after cancel or a rejected setPointerCapture.
+    }
+    pointerId = null;
   };
 
-  front.addEventListener('pointerdown', (event) => {
+  const finish = (event) => {
+    if (!tracking && axis !== 'x') return;
+    const canceled = event?.type === 'pointercancel';
+    const tapped = tracking && !axis && !canceled;
+    const swiped = axis === 'x';
+    const tapTarget = startTarget || event?.target;
+    tracking = false;
+    axis = '';
+    startTarget = null;
+    front.style.transition = '';
+    front.style.touchAction = '';
+    releaseCapture();
+    if (canceled && !swiped) {
+      setSwipeOpen(front, origin < 0, width);
+      suppressClick = true;
+      return;
+    }
+    const open = dx < -(width / 3);
+    setSwipeOpen(front, open, width);
+    if (swiped) suppressClick = true;
+    if (tapped && !open && !swipeKeepsOwnTap(tapTarget) && typeof onTap === 'function') {
+      onTap(event);
+    }
+  };
+
+  host.addEventListener('pointerdown', (event) => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
-    const target = event.target;
-    if (target instanceof Element && target.closest('a, button, input, textarea, select, [role="button"]')) return;
+    if (swipeActionTarget(event.target)) return;
     closeNoteSwipes(front);
     startX = event.clientX;
     startY = event.clientY;
+    startTarget = event.target;
     origin = front.classList.contains('is-open') ? -width : 0;
     dx = origin;
     tracking = true;
     axis = '';
+    suppressClick = false;
+    pointerId = event.pointerId;
     front.style.transition = 'none';
-    front.setPointerCapture(event.pointerId);
   });
-  front.addEventListener('pointermove', (event) => {
+  host.addEventListener('pointermove', (event) => {
     if (!tracking) return;
     const moveX = event.clientX - startX;
     const moveY = event.clientY - startY;
@@ -5870,14 +7478,31 @@ function attachSwipe(front, width = NOTE_SWIPE_WIDTH, onTap) {
       if (axis === 'y') {
         tracking = false;
         front.style.transition = '';
+        front.style.touchAction = '';
+        releaseCapture();
+        suppressClick = true;
         return;
+      }
+      front.style.touchAction = 'none';
+      try {
+        host.setPointerCapture(event.pointerId);
+        pointerId = event.pointerId;
+      } catch {
+        // Some mobile WebViews reject capture; move/up still land on host.
       }
     }
     dx = Math.min(0, Math.max(-width, origin + moveX));
     front.style.transform = `translateX(${dx}px)`;
   });
-  front.addEventListener('pointerup', settle);
-  front.addEventListener('pointercancel', () => settle());
+  host.addEventListener('pointerup', finish);
+  host.addEventListener('pointercancel', finish);
+  front.addEventListener('click', (event) => {
+    if (!suppressClick && !front.classList.contains('is-open')) return;
+    if (swipeKeepsOwnTap(startTarget || event.target) && !suppressClick) return;
+    suppressClick = false;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
 }
 
 function attachNoteSwipe(front, onTap) {
@@ -5986,12 +7611,56 @@ function continueWithInspiration(note) {
   openAskSession('new');
 }
 
+function workPackageForNote(note) {
+  return note?.workPackage || state.workPackages.find((item) => item.inspirationId === note?.id) || null;
+}
+
+function isWorkPackageNote(note) {
+  return note?.sourceType === 'work-package' || Boolean(workPackageForNote(note));
+}
+
+function regularNotes() {
+  return state.notes.filter((note) => !isWorkPackageNote(note));
+}
+
+function syncInspirePanes() {
+  const tasks = state.inspirePane === 'tasks';
+  const detail = tasks && Boolean(state.selectedWorkPackageId);
+  if (!detail && state.composeTarget !== 'ask') {
+    state.composeTarget = tasks ? 'task' : 'inspiration';
+  }
+  document.body.dataset.inspireDetail = detail ? '1' : '';
+  elements['inspire-notes-pane']?.classList.toggle('hidden', tasks);
+  elements['inspire-tasks-pane']?.classList.toggle('hidden', !tasks);
+  elements['task-list-pane']?.classList.toggle('hidden', detail);
+  elements['task-detail-pane']?.classList.toggle('hidden', !detail);
+  elements['inspire-subnav']?.classList.toggle('hidden', detail);
+  elements['note-form']?.classList.toggle('hidden', detail);
+  renderInspireSubnav();
+  syncDispatchComposer();
+  if (detail) renderTaskDetail();
+}
+
+function renderInspireSubnav() {
+  const target = elements['inspire-subnav'];
+  if (!target) return;
+  renderChipTabs(target, [
+    { id: 'notes', label: '随记' },
+    { id: 'tasks', label: '任务' },
+  ], state.inspirePane === 'tasks' ? 'tasks' : 'notes', (id) => {
+    state.composeTarget = id === 'tasks' ? 'task' : 'inspiration';
+    setView(id === 'tasks' ? 'inspire/tasks' : 'inspire');
+  });
+}
+
 function renderNoteFilters() {
   const target = elements['note-filters'];
   if (!target) return;
-  const focused = state.notes.filter((note) => isFocused(note.id)).length;
+  const notes = regularNotes();
+  const focused = notes.filter((note) => isFocused(note.id)).length;
+  if (state.noteFilter === 'work-package') state.noteFilter = 'all';
   renderChipTabs(target, [
-    { id: 'all', label: `全部 ${state.notes.length}` },
+    { id: 'all', label: `全部 ${notes.length}` },
     { id: 'focus', label: `重点 ${focused}` },
   ], state.noteFilter, (id) => {
     state.noteFilter = id;
@@ -6006,17 +7675,1053 @@ function renderNoteFilters() {
   }
 }
 
+function renderTaskFilters() {
+  const target = elements['task-filters'];
+  if (!target) return;
+  const openCount = state.workPackages.filter((item) => item.status === 'open' || item.status === 'claimed').length;
+  const doneCount = state.workPackages.filter((item) => item.status === 'completed' || item.status === 'failed').length;
+  renderChipTabs(target, [
+    { id: 'all', label: `全部 ${state.workPackages.length}` },
+    { id: 'open', label: `待办 ${openCount}` },
+    { id: 'done', label: `已回写 ${doneCount}` },
+  ], state.taskFilter, (id) => {
+    state.taskFilter = id;
+    renderTasks();
+  });
+}
+
+function visibleWorkPackages() {
+  if (state.taskFilter === 'open') {
+    return state.workPackages.filter((item) => item.status === 'open' || item.status === 'claimed');
+  }
+  if (state.taskFilter === 'done') {
+    return state.workPackages.filter((item) => item.status === 'completed' || item.status === 'failed');
+  }
+  return state.workPackages;
+}
+
+function takeContinuedSection(text, mark) {
+  const source = String(text || '');
+  const token = `\n${mark}\n`;
+  const at = source.lastIndexOf(token);
+  if (at >= 0) {
+    return {
+      value: source.slice(at + token.length).trim(),
+      rest: source.slice(0, at).trim(),
+    };
+  }
+  if (source.startsWith(`${mark}\n`)) {
+    return { value: source.slice(mark.length + 1).trim(), rest: '' };
+  }
+  return { value: '', rest: source };
+}
+
+function parseContinuedWorkPackageBody(body) {
+  const text = String(body || '').replace(/\r\n/g, '\n').trim();
+  if (!text) {
+    return {
+      previous: '', result: '', instruction: '', goal: '', progress: '', steps: '', continued: false,
+    };
+  }
+  const instructionMark = '\n继续指令：\n';
+  const instructionAt = text.lastIndexOf(instructionMark);
+  let instruction = '';
+  let rest = text;
+  if (instructionAt >= 0) {
+    instruction = text.slice(instructionAt + instructionMark.length).trim();
+    rest = text.slice(0, instructionAt).trim();
+  } else if (text.startsWith('继续指令：\n')) {
+    instruction = text.slice('继续指令：\n'.length).trim();
+    rest = '';
+  } else {
+    return {
+      previous: '', result: '', instruction: text, goal: '', progress: '', steps: '', continued: false,
+    };
+  }
+
+  let taken = takeContinuedSection(rest, '上一结果：');
+  const result = taken.value;
+  taken = takeContinuedSection(taken.rest, '上一步骤：');
+  const steps = taken.value;
+  taken = takeContinuedSection(taken.rest, '上一进展：');
+  const progress = taken.value;
+  taken = takeContinuedSection(taken.rest, '上一目标：');
+  const goal = taken.value;
+  rest = taken.rest;
+  let previous = '';
+  if (rest.startsWith('上一任务：')) {
+    previous = rest.replace(/^上一任务：\s*/, '').trim();
+  } else {
+    previous = rest;
+  }
+  return { previous, result, instruction, goal, progress, steps, continued: true };
+}
+
+function continuedPreviousSummary(previous) {
+  const nested = parseContinuedWorkPackageBody(previous);
+  if (nested.continued && nested.instruction) return nested.instruction;
+  return String(previous || '').trim();
+}
+
+function workPackageCardTitle(pack, note) {
+  const body = pack?.body || note?.body || '';
+  const sections = parseContinuedWorkPackageBody(body);
+  if (sections.continued && sections.instruction) {
+    return clipFeedText(sections.instruction, 40);
+  }
+  const explicit = String(pack?.title || '').replace(/\s+/g, ' ').trim();
+  if (explicit && !explicit.endsWith('…') && explicit.length <= 48) return explicit;
+  return clipFeedText(
+    firstFeedSentence(body) || explicit || inspirationCardTitle(note || { title: pack?.title, body }),
+    40,
+  );
+}
+
+function workPackageCardPreview(pack, note) {
+  const body = pack?.body || note?.body || '';
+  const sections = parseContinuedWorkPackageBody(body);
+  if (sections.continued) {
+    if (sections.result) return clipFeedText(sections.result, 96);
+    const rest = textAfterLead(sections.instruction, workPackageCardTitle(pack, note));
+    if (rest) return clipFeedText(rest, 96);
+    if (sections.previous) return clipFeedText(continuedPreviousSummary(sections.previous), 96);
+  }
+  const title = workPackageCardTitle(pack, note);
+  const excerpt = clipFeedText(textAfterLead(body, title), 96);
+  if (excerpt) return excerpt;
+  if (pack?.resultSummary) {
+    return pack.status === 'failed'
+      ? `未完成：${clipFeedText(pack.resultSummary, 72)}`
+      : clipFeedText(pack.resultSummary, 96);
+  }
+  return workPackageProgressText(pack, state.workPackageTraces[pack?.id]);
+}
+
+function workPackageCardWhen(pack) {
+  const when = pack.completedAt || pack.claimedAt || pack.createdAt;
+  if (pack.status === 'completed') return `已写回 · ${formatTime(when)}`;
+  if (pack.status === 'claimed') {
+    return `${pack.cursorAgentId ? '独立会话实现中' : '实现中'} · ${formatTime(when)}`;
+  }
+  if (pack.status === 'failed') return `未完成 · ${formatTime(when)}`;
+  if (pack.dispatchJobId) return `已派发独立会话 · ${formatTime(when)}`;
+  return `已投递 · ${formatTime(when)}`;
+}
+
+function renderTasks() {
+  closeNoteSwipes();
+  renderTaskFilters();
+  const list = elements['task-list'];
+  if (!list) return;
+  list.replaceChildren();
+  const packs = visibleWorkPackages();
+  if (!packs.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = state.taskFilter === 'done'
+      ? '还没有写回结果的任务。'
+      : state.taskFilter === 'open'
+        ? '没有待办。投递后本机 Cursor 会开独立窗口。'
+        : '还没有任务。投一条不足点，独立 session 做完会把状态写回这里。';
+    list.append(empty);
+    return;
+  }
+  for (const pack of packs) {
+    const note = pack.note || { id: pack.inspirationId, body: pack.body, title: pack.title };
+    const row = document.createElement('div');
+    row.className = 'swipe-item task-row';
+    const actions = document.createElement('div');
+    actions.className = 'swipe-actions swipe-actions-single';
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'swipe-delete';
+    remove.textContent = '删除';
+    remove.addEventListener('click', () => runNoteAction(note, 'delete'));
+    actions.append(remove);
+
+    const card = document.createElement('article');
+    card.className = `note-card swipe-front task-card is-${pack.status}`;
+    card.dataset.workPackageId = pack.id;
+    card.setAttribute('aria-label', workPackageCardTitle(pack, note));
+    const head = document.createElement('div');
+    head.className = 'task-card-head';
+    head.append(Object.assign(document.createElement('span'), {
+      className: `note-tag task-status is-${pack.status}`,
+      textContent: WORK_PACKAGE_STATUS_LABELS[pack.status] || pack.status,
+    }));
+    head.append(Object.assign(document.createElement('small'), {
+      className: 'task-card-when',
+      textContent: workPackageCardWhen(pack),
+    }));
+    const chevron = document.createElement('span');
+    chevron.className = 'note-card-chevron';
+    chevron.setAttribute('aria-hidden', 'true');
+    head.append(chevron);
+    card.append(head);
+    card.append(Object.assign(document.createElement('h3'), {
+      className: 'task-card-theme',
+      textContent: workPackageCardTitle(pack, note),
+    }));
+    const preview = workPackageCardPreview(pack, note);
+    if (preview) {
+      card.append(Object.assign(document.createElement('p'), {
+        className: 'task-card-preview',
+        textContent: preview,
+      }));
+    }
+    attachSwipe(card, KNOWLEDGE_SWIPE_WIDTH);
+    attachGuardedOpen(card, () => openWorkPackage(pack.id));
+    row.append(actions, card);
+    list.append(row);
+  }
+}
+
+function openWorkPackage(id) {
+  const packId = String(id || '').trim();
+  if (!packId) return;
+  setView(`inspire/tasks/${packId}`);
+}
+
+function workPackageIsLive(pack) {
+  return pack?.status === 'open' || pack?.status === 'claimed';
+}
+
+function workPackageProgressText(pack, trace) {
+  if (trace?.progress?.summary) return trace.progress.summary;
+  const lastStep = trace?.steps?.at(-1);
+  if (lastStep?.summary) return `${lastStep.step} ${lastStep.status}：${lastStep.summary}`;
+  if (pack?.resultSummary) return pack.resultSummary;
+  if (pack?.status === 'claimed') return pack.cursorAgentId ? '独立会话实现中' : '实现中';
+  if (pack?.dispatchJobId) return '已派发独立会话';
+  return '已投递，等待本机 Cursor 领取';
+}
+
+function workPackageHasActiveStep(trace) {
+  const last = Array.isArray(trace?.steps) ? trace.steps.at(-1) : null;
+  return last?.status === 'started';
+}
+
+function appendTaskThinkingMark(target) {
+  const mark = document.createElement('span');
+  mark.className = 'task-thinking-dots';
+  mark.setAttribute('aria-hidden', 'true');
+  target.append(mark);
+}
+
+function createTaskThinkingLine(text = '正在思考下一步') {
+  const line = document.createElement('p');
+  line.className = 'task-thinking';
+  line.setAttribute('aria-live', 'polite');
+  line.append(Object.assign(document.createElement('span'), {
+    className: 'task-thinking-label',
+    textContent: text,
+  }));
+  appendTaskThinkingMark(line);
+  return line;
+}
+
+function workPackageTraceFingerprint(pack, trace) {
+  const last = Array.isArray(trace?.steps) ? trace.steps.at(-1) : null;
+  return [
+    pack?.status || '',
+    pack?.updatedAt || '',
+    pack?.resultSummary || '',
+    trace?.progress?.updatedAt || '',
+    trace?.progress?.summary || '',
+    Array.isArray(trace?.steps) ? trace.steps.length : 0,
+    last?.at || '',
+    last?.status || '',
+    last?.summary || '',
+  ].join('|');
+}
+
+const ATTACHMENT_MAX_COUNT = 4;
+const DISPATCH_TARGETS = {
+  inspiration: { label: '灵感', placeholder: '有什么想法，先记下来…', send: '记下' },
+  task: { label: '任务', placeholder: '看到的不足或 bug，投给本机 Cursor…', send: '投递' },
+  ask: { label: '对话', placeholder: '问一句，发给问答…', send: '发送' },
+};
+
+function attachmentUrl(item) {
+  return item?.url || (item?.id ? `/api/v1/attachments/${item.id}/content` : '');
+}
+
+function revokeAttachmentPreview(item) {
+  if (item?.previewUrl && String(item.previewUrl).startsWith('blob:')) {
+    URL.revokeObjectURL(item.previewUrl);
+  }
+}
+
+function localAttachmentPreview(item) {
+  if (item?.previewUrl) return item.previewUrl;
+  const id = String(item?.id || '');
+  return id && state.attachmentBlobUrls[id] ? state.attachmentBlobUrls[id] : '';
+}
+
+async function authenticatedImageUrl(item) {
+  const local = localAttachmentPreview(item);
+  if (local) return local;
+  const id = String(item?.id || '');
+  if (!id || id.startsWith('local-')) throw new Error('图片未就绪');
+  const response = await fetch(attachmentUrl(item), {
+    credentials: 'include',
+  });
+  if (!response.ok) throw new Error('图片未就绪');
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  state.attachmentBlobUrls[id] = url;
+  return url;
+}
+
+function bindAuthenticatedImage(image, item) {
+  const local = localAttachmentPreview(item);
+  image.alt = item?.originalName || '附图';
+  if (local) {
+    image.src = local;
+    return;
+  }
+  void authenticatedImageUrl(item).then((url) => {
+    image.src = url;
+  }).catch(() => {
+    image.replaceWith(Object.assign(document.createElement('span'), {
+      className: 'attachment-missing',
+      textContent: '图片未就绪',
+    }));
+  });
+}
+
+function renderAttachmentDraft(root, items, onRemove) {
+  if (!root) return;
+  root.replaceChildren();
+  root.classList.toggle('hidden', !items.length);
+  for (const item of items) {
+    const thumb = document.createElement('div');
+    thumb.className = 'attachment-thumb';
+    const image = document.createElement('img');
+    bindAuthenticatedImage(image, item);
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.setAttribute('aria-label', '去掉这张图');
+    remove.textContent = '×';
+    remove.addEventListener('click', () => onRemove(item.id));
+    thumb.append(image, remove);
+    root.append(thumb);
+  }
+}
+
+function renderAttachmentView(items) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return null;
+  const wrap = document.createElement('div');
+  wrap.className = 'attachment-view';
+  for (const item of list) {
+    const link = document.createElement('a');
+    link.href = attachmentUrl(item) || '#';
+    link.target = '_blank';
+    link.rel = 'noreferrer';
+    link.addEventListener('click', (event) => {
+      event.preventDefault();
+      void authenticatedImageUrl(item).then((url) => {
+        window.open(url, '_blank', 'noopener');
+      }).catch(() => showToast('图片未就绪'));
+    });
+    const image = document.createElement('img');
+    bindAuthenticatedImage(image, item);
+    link.append(image);
+    wrap.append(link);
+  }
+  return wrap;
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const value = String(reader.result || '');
+      const comma = value.indexOf(',');
+      resolve(comma >= 0 ? value.slice(comma + 1) : value);
+    };
+    reader.onerror = () => reject(new Error('无法读取图片'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function uploadAttachmentFile(file) {
+  if (!file || !String(file.type || '').startsWith('image/')) {
+    throw new Error('只支持图片');
+  }
+  const data = await fileToBase64(file);
+  const payload = await api('/api/v1/attachments', {
+    method: 'POST',
+    body: JSON.stringify({
+      mime: file.type,
+      originalName: file.name || '',
+      data,
+    }),
+  });
+  return payload.attachment;
+}
+
+function createLocalDraft(file) {
+  return {
+    id: `local-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    mime: file.type || '',
+    originalName: file.name || '',
+    previewUrl: URL.createObjectURL(file),
+    pending: true,
+    file,
+  };
+}
+
+async function addDraftAttachments(getItems, setItems, files, render) {
+  const next = [...getItems()];
+  const queued = [];
+  for (const file of files) {
+    if (!file || !String(file.type || '').startsWith('image/')) continue;
+    if (next.length >= ATTACHMENT_MAX_COUNT) {
+      showToast('一次最多 4 张图');
+      break;
+    }
+    const draft = createLocalDraft(file);
+    next.push(draft);
+    queued.push(draft);
+  }
+  setItems(next);
+  render?.();
+  for (const draft of queued) {
+    try {
+      const attachment = await uploadAttachmentFile(draft.file);
+      setItems(getItems().map((item) => (
+        item.id === draft.id ? { ...attachment, previewUrl: draft.previewUrl } : item
+      )));
+    } catch (error) {
+      setItems(getItems().map((item) => (
+        item.id === draft.id ? { ...item, failed: true } : item
+      )));
+      showToast(error.message);
+    }
+    render?.();
+  }
+}
+
+async function ensureUploadedAttachments(items) {
+  const next = [];
+  for (const item of items) {
+    if (item.id && !item.pending && !item.failed && !String(item.id).startsWith('local-')) {
+      next.push(item);
+      continue;
+    }
+    if (!item.file) throw new Error('图片未就绪');
+    const attachment = await uploadAttachmentFile(item.file);
+    next.push({ ...attachment, previewUrl: item.previewUrl });
+  }
+  return next;
+}
+
+function bindImageComposer({ button, input, textarea, getItems, setItems, render }) {
+  button?.addEventListener('click', () => input?.click());
+  input?.addEventListener('change', async (event) => {
+    const files = [...(event.currentTarget.files || [])];
+    event.currentTarget.value = '';
+    if (!files.length) return;
+    try {
+      await addDraftAttachments(getItems, setItems, files, render);
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+  textarea?.addEventListener('paste', async (event) => {
+    const files = [...(event.clipboardData?.items || [])]
+      .filter((item) => item.kind === 'file' && String(item.type || '').startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter(Boolean);
+    if (!files.length) return;
+    event.preventDefault();
+    try {
+      await addDraftAttachments(getItems, setItems, files, render);
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+}
+
+function renderDispatchAttachmentDraft() {
+  renderAttachmentDraft(elements['note-attachments'], state.dispatchAttachments, (id) => {
+    const removed = state.dispatchAttachments.find((item) => item.id === id);
+    revokeAttachmentPreview(removed);
+    state.dispatchAttachments = state.dispatchAttachments.filter((item) => item.id !== id);
+    renderDispatchAttachmentDraft();
+  });
+}
+
+function clearDispatchAttachments() {
+  for (const item of state.dispatchAttachments) revokeAttachmentPreview(item);
+  state.dispatchAttachments = [];
+  renderDispatchAttachmentDraft();
+}
+
+function readyAttachmentIds(items) {
+  return (Array.isArray(items) ? items : [])
+    .map((item) => item.id)
+    .filter((id) => id && !String(id).startsWith('local-'));
+}
+
+function resizeDispatchComposer() {
+  const input = elements['note-body'];
+  if (!input) return;
+  input.style.height = 'auto';
+  input.style.height = `${Math.min(120, Math.max(22, input.scrollHeight))}px`;
+}
+
+function closeDispatchMenus() {
+  document.querySelectorAll('.dispatch-menu').forEach((menu) => menu.classList.add('hidden'));
+  elements['dispatch-plus']?.setAttribute('aria-expanded', 'false');
+  elements['dispatch-target']?.setAttribute('aria-expanded', 'false');
+}
+
+function toggleDispatchMenu(menu, button) {
+  const open = menu?.classList.contains('hidden');
+  closeDispatchMenus();
+  menu?.classList.toggle('hidden', !open);
+  button?.setAttribute('aria-expanded', String(Boolean(open)));
+}
+
+function syncDispatchComposer() {
+  const target = DISPATCH_TARGETS[state.composeTarget] || DISPATCH_TARGETS.inspiration;
+  if (elements['dispatch-target-label']) elements['dispatch-target-label'].textContent = target.label;
+  if (elements['note-body']) elements['note-body'].placeholder = target.placeholder;
+  elements['dispatch-send']?.setAttribute('aria-label', target.send);
+  elements['note-ai-toggle']?.classList.toggle('hidden', state.composeTarget !== 'inspiration');
+  elements['note-ai-toggle']?.classList.toggle('is-on', state.wantAi);
+  elements['note-ai-toggle']?.setAttribute('aria-pressed', String(state.wantAi));
+  resizeDispatchComposer();
+}
+
+function setComposeTarget(target) {
+  const next = target === 'task' || target === 'ask' ? target : 'inspiration';
+  state.composeTarget = next;
+  if (next === 'task' && (state.inspirePane !== 'tasks' || state.selectedWorkPackageId)) {
+    setView('inspire/tasks');
+    return;
+  }
+  if (next === 'inspiration' && (document.body.dataset.view !== 'inspire' || state.inspirePane !== 'notes')) {
+    setView('inspire');
+    return;
+  }
+  syncDispatchComposer();
+}
+
+function persistTaskComposerDraft(value) {
+  const text = value === undefined
+    ? String(elements['note-body']?.value || '')
+    : String(value || '');
+  try {
+    if (text.trim()) window.localStorage.setItem(TASK_COMPOSE_DRAFT_KEY, text);
+    else window.localStorage.removeItem(TASK_COMPOSE_DRAFT_KEY);
+  } catch { /* 草稿写不进去时仍可继续输入 */ }
+}
+
+function restoreTaskComposerDraft() {
+  const area = elements['note-body'];
+  if (!area || String(area.value || '').trim()) return;
+  try {
+    const saved = window.localStorage.getItem(TASK_COMPOSE_DRAFT_KEY) || '';
+    if (saved) area.value = saved;
+  } catch { /* 读不到就保持空框 */ }
+}
+
+function persistTaskContinueDraft(packId, value) {
+  const id = String(packId || '').trim();
+  if (!id) return;
+  const drafts = readJsonMap(TASK_CONTINUE_DRAFT_KEY);
+  const text = String(value ?? '');
+  if (text.trim()) drafts[id] = text;
+  else delete drafts[id];
+  writeJsonMap(TASK_CONTINUE_DRAFT_KEY, drafts);
+}
+
+function readTaskContinueDraft(packId) {
+  const id = String(packId || '').trim();
+  if (!id) return '';
+  const drafts = readJsonMap(TASK_CONTINUE_DRAFT_KEY);
+  return typeof drafts[id] === 'string' ? drafts[id] : '';
+}
+
+function persistTaskDraftsFromDom() {
+  persistTaskComposerDraft();
+  const area = document.getElementById('task-continue-body');
+  if (area && state.selectedWorkPackageId) {
+    persistTaskContinueDraft(state.selectedWorkPackageId, area.value);
+    if (document.activeElement === area) {
+      state.taskContinueSelection = {
+        start: area.selectionStart,
+        end: area.selectionEnd,
+      };
+    }
+  }
+}
+
+function stopWorkPackageProgressWatch() {
+  if (state.workPackageProgressTimer) {
+    clearInterval(state.workPackageProgressTimer);
+    state.workPackageProgressTimer = 0;
+  }
+  state.workPackageProgressWatchId = '';
+}
+
+function syncWorkPackageProgressWatch() {
+  const id = state.selectedWorkPackageId;
+  if (!id) {
+    stopWorkPackageProgressWatch();
+    state.workPackageProgressFingerprint = '';
+    return;
+  }
+  const pack = state.workPackages.find((item) => item.id === id);
+  if (pack && pack.status !== 'open' && pack.status !== 'claimed') {
+    stopWorkPackageProgressWatch();
+    return;
+  }
+  if (state.workPackageProgressWatchId === id && state.workPackageProgressTimer) return;
+  stopWorkPackageProgressWatch();
+  state.workPackageProgressWatchId = id;
+  state.workPackageProgressFingerprint = workPackageTraceFingerprint(pack, state.workPackageTraces[id]);
+  refreshSelectedWorkPackageProgress().catch(() => {});
+  state.workPackageProgressTimer = window.setInterval(() => {
+    refreshSelectedWorkPackageProgress().catch(() => {});
+  }, WORK_PACKAGE_PROGRESS_POLL_MS);
+}
+
+async function refreshSelectedWorkPackageProgress() {
+  const id = state.selectedWorkPackageId;
+  if (!id || state.workPackageProgressBusy) return;
+  state.workPackageProgressBusy = true;
+  try {
+    const [packPayload, tracePayload] = await Promise.all([
+      api(`/api/v1/work-packages/${id}`).catch(() => null),
+      api(`/api/v1/work-packages/${id}/trace`).catch(() => null),
+    ]);
+    if (state.selectedWorkPackageId !== id) return;
+    if (packPayload?.workPackage) {
+      const next = packPayload.workPackage;
+      const index = state.workPackages.findIndex((item) => item.id === id);
+      if (index >= 0) state.workPackages[index] = { ...state.workPackages[index], ...next };
+      else state.workPackages.unshift(next);
+    }
+    if (tracePayload?.trace) state.workPackageTraces[id] = tracePayload.trace;
+    const pack = state.workPackages.find((item) => item.id === id);
+    const fingerprint = workPackageTraceFingerprint(pack, state.workPackageTraces[id]);
+    if (fingerprint !== state.workPackageProgressFingerprint) {
+      state.workPackageProgressFingerprint = fingerprint;
+      persistTaskDraftsFromDom();
+      renderTaskDetail();
+      renderTasks();
+    }
+    if (pack && pack.status !== 'open' && pack.status !== 'claimed') {
+      stopWorkPackageProgressWatch();
+    }
+  } finally {
+    state.workPackageProgressBusy = false;
+  }
+}
+
+function renderTaskDetail() {
+  const root = elements['task-detail-pane'];
+  if (!root) return;
+  const pack = state.workPackages.find((item) => item.id === state.selectedWorkPackageId);
+  if (!pack) {
+    root.replaceChildren(Object.assign(document.createElement('p'), {
+      className: 'empty-state',
+      textContent: '找不到这个任务。',
+    }));
+    return;
+  }
+  const trace = state.workPackageTraces[pack.id] || { steps: [] };
+  const note = pack.note || { id: pack.inspirationId, body: pack.body, title: pack.title };
+  const parent = pack.parentWorkPackageId
+    ? state.workPackages.find((item) => item.id === pack.parentWorkPackageId)
+    : null;
+  const sections = parseContinuedWorkPackageBody(pack.body || note.body || '');
+  const wrap = document.createElement('article');
+  wrap.className = `task-detail is-${pack.status}`;
+
+  const status = document.createElement('div');
+  status.className = 'task-detail-status';
+  status.append(Object.assign(document.createElement('span'), {
+    className: `note-tag task-status is-${pack.status}`,
+    textContent: WORK_PACKAGE_STATUS_LABELS[pack.status] || pack.status,
+  }));
+  if (pack.hashId) {
+    status.append(Object.assign(document.createElement('small'), {
+      className: 'muted',
+      textContent: pack.hashId,
+    }));
+  }
+  wrap.append(status);
+  wrap.append(Object.assign(document.createElement('h2'), {
+    textContent: sections.continued && sections.instruction
+      ? clipFeedText(sections.instruction, 48)
+      : (pack.title || inspirationCardTitle(note)),
+  }));
+
+  if (parent || pack.parentWorkPackageId) {
+    const lineage = document.createElement('p');
+    lineage.className = 'task-detail-parent muted';
+    lineage.textContent = parent
+      ? `续自：${workPackageCardTitle(parent, parent.note)}`
+      : '续自上一 session';
+    if (parent) {
+      lineage.classList.add('is-link');
+      lineage.addEventListener('click', () => openWorkPackage(parent.id));
+    }
+    wrap.append(lineage);
+  }
+
+  const pictures = renderAttachmentView(pack.attachments);
+  if (pictures) wrap.append(pictures);
+
+  if (sections.continued && sections.previous) {
+    const previous = document.createElement('section');
+    previous.className = 'task-panel';
+    previous.append(Object.assign(document.createElement('h3'), { textContent: '上一任务' }));
+    previous.append(Object.assign(document.createElement('p'), {
+      textContent: continuedPreviousSummary(sections.previous),
+    }));
+    wrap.append(previous);
+  }
+  if (sections.continued && sections.result) {
+    const prior = document.createElement('section');
+    prior.className = 'task-panel';
+    prior.append(Object.assign(document.createElement('h3'), { textContent: '上一结果' }));
+    prior.append(Object.assign(document.createElement('p'), { textContent: sections.result }));
+    wrap.append(prior);
+  }
+  const parentTrace = trace.parentTrace;
+  const priorGoal = parentTrace?.goal?.objective || sections.goal;
+  const priorProgress = parentTrace?.progress
+    ? [parentTrace.progress.status, parentTrace.progress.summary].filter(Boolean).join(' · ')
+    : sections.progress;
+  const priorSteps = Array.isArray(parentTrace?.steps) ? parentTrace.steps : [];
+  if (sections.continued && (priorGoal || priorProgress || priorSteps.length || sections.steps)) {
+    const process = document.createElement('section');
+    process.className = 'task-panel';
+    process.append(Object.assign(document.createElement('h3'), { textContent: '上一过程' }));
+    if (priorGoal) {
+      process.append(Object.assign(document.createElement('p'), { textContent: priorGoal }));
+    }
+    if (priorProgress) {
+      process.append(Object.assign(document.createElement('p'), {
+        className: 'muted',
+        textContent: priorProgress,
+      }));
+    }
+    if (priorSteps.length) {
+      const list = document.createElement('ol');
+      list.className = 'task-step-list';
+      for (const item of priorSteps) {
+        const row = document.createElement('li');
+        row.className = `is-${item.status || 'done'}`;
+        row.append(Object.assign(document.createElement('strong'), {
+          textContent: `${item.step || 'step'} · ${item.status || ''}`,
+        }));
+        row.append(Object.assign(document.createElement('span'), {
+          textContent: item.summary || '',
+        }));
+        list.append(row);
+      }
+      process.append(list);
+    } else if (sections.steps && sections.steps !== '（无步骤账本）') {
+      process.append(Object.assign(document.createElement('p'), { textContent: sections.steps }));
+    }
+    wrap.append(process);
+  }
+
+  const goal = document.createElement('section');
+  goal.className = 'task-panel';
+  goal.append(Object.assign(document.createElement('h3'), { textContent: '目标' }));
+  goal.append(Object.assign(document.createElement('p'), {
+    textContent: sections.continued && sections.instruction
+      ? sections.instruction
+      : (trace.goal?.objective || pack.body || pack.title),
+  }));
+  wrap.append(goal);
+
+  const live = workPackageIsLive(pack);
+  const progress = document.createElement('section');
+  progress.className = 'task-panel';
+  progress.append(Object.assign(document.createElement('h3'), { textContent: '进展' }));
+  progress.append(Object.assign(document.createElement('p'), {
+    textContent: workPackageProgressText(pack, trace),
+  }));
+  if (live) {
+    progress.append(createTaskThinkingLine('正在思考下一步'));
+  }
+  progress.append(Object.assign(document.createElement('small'), {
+    className: 'muted task-progress-when',
+    textContent: live
+      ? (trace.progress?.updatedAt
+        ? `等待下一步 · ${formatTime(trace.progress.updatedAt)}`
+        : '打开详情后按进展刷新')
+      : (trace.progress?.updatedAt
+        ? `随步骤刷新 · ${formatTime(trace.progress.updatedAt)}`
+        : '打开详情后按进展刷新'),
+  }));
+  wrap.append(progress);
+
+  const steps = document.createElement('section');
+  steps.className = 'task-panel';
+  steps.append(Object.assign(document.createElement('h3'), { textContent: '步骤拆解' }));
+  const stepList = document.createElement('ol');
+  stepList.className = 'task-step-list';
+  const records = Array.isArray(trace.steps) ? trace.steps : [];
+  if (!records.length) {
+    if (live) {
+      const waiting = document.createElement('li');
+      waiting.className = 'is-thinking';
+      waiting.append(createTaskThinkingLine('正在思考下一步'));
+      stepList.append(waiting);
+    } else {
+      stepList.append(Object.assign(document.createElement('li'), {
+        className: 'muted',
+        textContent: '投递后会先落下目标与进展，本机 Cursor 领取后再追加每一步。',
+      }));
+    }
+  } else {
+    for (const item of records) {
+      const active = live && item === records.at(-1) && item.status === 'started';
+      const row = document.createElement('li');
+      row.className = active ? 'is-started is-thinking' : `is-${item.status || 'done'}`;
+      row.append(Object.assign(document.createElement('strong'), {
+        textContent: `${item.step || 'step'} · ${item.status || ''}`,
+      }));
+      const summary = document.createElement('span');
+      if (active) {
+        summary.className = 'task-thinking';
+        summary.setAttribute('aria-live', 'polite');
+        summary.append(Object.assign(document.createElement('span'), {
+          className: 'task-thinking-label',
+          textContent: item.summary || '正在思考下一步',
+        }));
+        appendTaskThinkingMark(summary);
+      } else {
+        summary.textContent = item.summary || '';
+      }
+      row.append(summary);
+      if (item.at) {
+        row.append(Object.assign(document.createElement('small'), {
+          className: 'muted',
+          textContent: formatTime(item.at),
+        }));
+      }
+      stepList.append(row);
+    }
+    if (live && !workPackageHasActiveStep(trace)) {
+      const waiting = document.createElement('li');
+      waiting.className = 'is-thinking';
+      waiting.append(createTaskThinkingLine('正在思考下一步'));
+      stepList.append(waiting);
+    }
+  }
+  steps.append(stepList);
+  wrap.append(steps);
+
+  if (pack.resultSummary) {
+    const result = document.createElement('section');
+    result.className = 'task-panel';
+    result.append(Object.assign(document.createElement('h3'), { textContent: pack.status === 'failed' ? '未完成' : '结果' }));
+    result.append(Object.assign(document.createElement('p'), { textContent: pack.resultSummary }));
+    wrap.append(result);
+  }
+
+  const continueBox = document.createElement('form');
+  continueBox.className = 'dispatch-composer task-continue';
+  continueBox.append(Object.assign(document.createElement('h3'), { textContent: '继续做' }));
+  const box = document.createElement('div');
+  box.className = 'compose-box dispatch-box';
+  const label = document.createElement('label');
+  label.append(Object.assign(document.createElement('span'), { className: 'vh', textContent: '继续指令' }));
+  const area = document.createElement('textarea');
+  area.id = 'task-continue-body';
+  area.name = 'body';
+  area.maxLength = 100000;
+  area.rows = 1;
+  area.placeholder = '带着上一任务的目标、进展和步骤，开一个新 session…';
+  area.value = readTaskContinueDraft(pack.id);
+  area.addEventListener('input', () => persistTaskContinueDraft(pack.id, area.value));
+  const selection = state.taskContinueSelection;
+  if (selection) {
+    queueMicrotask(() => {
+      area.focus();
+      try { area.setSelectionRange(selection.start, selection.end); } catch { /* 忽略非法选区 */ }
+    });
+    state.taskContinueSelection = null;
+  }
+  label.append(area);
+  box.append(label);
+  if (state.taskContinuePackId !== pack.id) {
+    state.taskContinuePackId = pack.id;
+    state.taskContinueAttachments = (pack.attachments || []).map((item) => ({ ...item }));
+  }
+  const continuePics = document.createElement('div');
+  continuePics.className = 'attachment-draft';
+  const continueInput = document.createElement('input');
+  continueInput.className = 'vh';
+  continueInput.type = 'file';
+  continueInput.accept = 'image/jpeg,image/png,image/webp,image/gif';
+  continueInput.multiple = true;
+  const renderContinuePics = () => {
+    renderAttachmentDraft(continuePics, state.taskContinueAttachments, (id) => {
+      const removed = state.taskContinueAttachments.find((item) => item.id === id);
+      revokeAttachmentPreview(removed);
+      state.taskContinueAttachments = state.taskContinueAttachments.filter((item) => item.id !== id);
+      renderContinuePics();
+    });
+  };
+  renderContinuePics();
+  box.append(continuePics, continueInput);
+  const toolbar = document.createElement('div');
+  toolbar.className = 'dispatch-toolbar';
+  const tools = document.createElement('div');
+  tools.className = 'dispatch-tools';
+  const plusPop = document.createElement('div');
+  plusPop.className = 'dispatch-pop';
+  const plus = document.createElement('button');
+  plus.className = 'dispatch-icon-btn';
+  plus.type = 'button';
+  plus.setAttribute('aria-label', '添加');
+  plus.setAttribute('aria-haspopup', 'true');
+  plus.setAttribute('aria-expanded', 'false');
+  plus.innerHTML = icon('plus');
+  const plusMenu = document.createElement('div');
+  plusMenu.className = 'dispatch-menu hidden';
+  plusMenu.setAttribute('role', 'menu');
+  const pickImage = document.createElement('button');
+  pickImage.type = 'button';
+  pickImage.setAttribute('role', 'menuitem');
+  pickImage.innerHTML = `${icon('image')}<span>图片</span>`;
+  plusMenu.append(pickImage);
+  plus.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const open = plusMenu.classList.contains('hidden');
+    closeDispatchMenus();
+    plusMenu.classList.toggle('hidden', !open);
+    plus.setAttribute('aria-expanded', String(open));
+  });
+  pickImage.addEventListener('click', () => {
+    closeDispatchMenus();
+    continueInput.click();
+  });
+  plusPop.append(plus, plusMenu);
+  tools.append(plusPop);
+  const submit = document.createElement('button');
+  submit.className = 'icon-button brand ask-send';
+  submit.type = 'submit';
+  submit.setAttribute('aria-label', '继续做');
+  submit.innerHTML = icon('send-horizontal');
+  toolbar.append(tools, submit);
+  box.append(toolbar);
+  continueBox.append(box);
+  bindImageComposer({
+    input: continueInput,
+    textarea: area,
+    getItems: () => state.taskContinueAttachments,
+    setItems: (items) => { state.taskContinueAttachments = items; },
+    render: renderContinuePics,
+  });
+  continueBox.addEventListener('submit', (event) => {
+    event.preventDefault();
+    void (async () => {
+      try {
+        if (state.taskContinueAttachments.some((item) => item.pending || item.failed)) {
+          state.taskContinueAttachments = await ensureUploadedAttachments(state.taskContinueAttachments);
+          renderContinuePics();
+        }
+        await continueWorkPackageSession(pack.id, area.value, readyAttachmentIds(state.taskContinueAttachments));
+      } catch (error) {
+        showToast(error.message);
+      }
+    })();
+  });
+  wrap.append(continueBox);
+  root.replaceChildren(wrap);
+}
+
+async function continueWorkPackageSession(parentId, rawBody, attachmentIds = []) {
+  if (!state.session) {
+    showToast('请先在设置中完成设备连接');
+    setView('settings');
+    return;
+  }
+  const body = String(rawBody || '').trim();
+  if (!body) {
+    showToast('先写一下要继续做的事');
+    return;
+  }
+  let created;
+  try {
+    created = await api(`/api/v1/work-packages/${parentId}/continue`, {
+      method: 'POST',
+      body: JSON.stringify({
+        body,
+        attachmentIds: Array.isArray(attachmentIds) ? attachmentIds : [],
+      }),
+    });
+  } catch (error) {
+    const parent = state.workPackages.find((item) => item.id === parentId);
+    if (!parent) throw error;
+    const parentTrace = state.workPackageTraces[parentId];
+    const priorSteps = Array.isArray(parentTrace?.steps)
+      ? parentTrace.steps.map((item) => `${item.step || 'step'} ${item.status || ''}: ${item.summary || ''}`.trim()).join('\n')
+      : '';
+    const combined = [
+      '上一任务：',
+      parent.body || '',
+      parentTrace?.goal?.objective ? `上一目标：\n${parentTrace.goal.objective}` : '',
+      parentTrace?.progress
+        ? `上一进展：\n${[parentTrace.progress.status, parentTrace.progress.summary].filter(Boolean).join(' · ')}`
+        : '',
+      `上一步骤：\n${priorSteps || '（无步骤账本）'}`,
+      parent.resultSummary ? `上一结果：\n${parent.resultSummary}` : '',
+      '继续指令：',
+      body,
+    ].filter(Boolean).join('\n');
+    created = await api('/api/v1/work-packages', {
+      method: 'POST',
+      body: JSON.stringify({
+        body: combined,
+        attachmentIds: Array.isArray(attachmentIds) ? attachmentIds : [],
+      }),
+    });
+    const fallbackId = created.workPackage?.id;
+    if (fallbackId) {
+      await api('/api/v1/work-packages/notify', {
+        method: 'POST',
+        body: JSON.stringify({ id: fallbackId }),
+      }).catch(() => {});
+    }
+  }
+  const nextId = created.workPackage?.id;
+  persistTaskContinueDraft(parentId, '');
+  state.taskContinuePackId = '';
+  state.taskContinueAttachments = [];
+  showToast('已开新 session。本机 Cursor CLI 会带上上一轮全过程继续做。');
+  await loadNotes();
+  if (nextId) openWorkPackage(nextId);
+}
+
 function renderNotes() {
   closeNoteSwipes();
   renderNoteFilters();
   elements['note-list'].replaceChildren();
+  const inbox = regularNotes();
   const notes = state.noteFilter === 'focus'
-    ? state.notes.filter((note) => isFocused(note.id))
-    : state.notes;
+    ? inbox.filter((note) => isFocused(note.id))
+    : inbox;
   if (!notes.length) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
-    empty.textContent = state.noteFilter === 'focus' ? '暂无重点。用星标留下真正想继续思考的内容。' : '还没有灵感。写一条就能看见。';
+    empty.textContent = state.noteFilter === 'focus'
+      ? '暂无重点。用星标留下真正想继续思考的内容。'
+      : '还没有灵感。写一条就能看见。';
     elements['note-list'].append(empty);
     return;
   }
@@ -6190,11 +8895,36 @@ async function runKnowledgeAction(item, action) {
 
 async function loadNotes() {
   if (!state.session) return;
+  persistTaskDraftsFromDom();
   const payload = await api('/api/v1/notes?status=inbox');
   state.notes = payload.notes;
+  try {
+    const packs = await api('/api/v1/work-packages?status=all');
+    state.workPackages = packs.workPackages || [];
+    const traces = {};
+    const claimed = (state.workPackages || []).filter((item) => item.status === 'claimed');
+    const others = (state.workPackages || []).filter((item) => item.status !== 'claimed').slice(0, 8);
+    const selected = (state.workPackages || []).filter((item) => item.id === state.selectedWorkPackageId);
+    const unique = new Map([...claimed, ...others, ...selected].map((item) => [item.id, item]));
+    await Promise.all([...unique.values()].map(async (item) => {
+      try {
+        const payload = await api(`/api/v1/work-packages/${item.id}/trace`);
+        traces[item.id] = payload.trace;
+      } catch {
+        traces[item.id] = { hashId: item.hashId, steps: [] };
+      }
+    }));
+    state.workPackageTraces = traces;
+  } catch {
+    state.workPackages = [];
+    state.workPackageTraces = {};
+  }
   refreshSavedMarks();
   renderNotes();
+  renderTasks();
+  if (state.selectedWorkPackageId) renderTaskDetail();
   renderPosts();
+  syncWorkPackageProgressWatch();
 }
 
 async function loadKnowledge() {
@@ -6332,7 +9062,7 @@ async function autoLocalizeSources() {
       }
     }
   } catch {
-    // Keep pending placeholders; a later refresh retries Doubao.
+    // Keep pending placeholders; a later refresh retries Gemini.
   } finally {
     state.sourceLocalizing = false;
   }
@@ -6403,18 +9133,20 @@ async function waitForTaggingJob(jobId) {
       throw new Error(payload.job.error?.message || '标注未能完成');
     }
   }
-  throw new Error('标注仍在进行，豆包还没停就请再等一会，或看 Worker 是否还在跑');
+  throw new Error('标注仍在进行，请再等一会，或看 Worker 是否还在跑');
 }
 
-async function tagXBatch() {
+async function tagXBatch({ silent = false } = {}) {
   if (!state.session) {
-    showToast('请先在设置中完成设备连接');
-    setView('settings');
-    return;
+    if (!silent) {
+      showToast('请先在设置中完成设备连接');
+      setView('settings');
+    }
+    return { saved: 0 };
   }
-  if (state.xTagging) return;
+  if (state.xTagging) return { saved: 0 };
   const pending = pendingXTaggings();
-  if (!pending.length) return;
+  if (!pending.length) return { saved: 0 };
   state.xTagging = true;
   renderXToolbar();
   try {
@@ -6431,18 +9163,22 @@ async function tagXBatch() {
     renderPosts();
     renderXToolbar();
     const saved = Array.isArray(output.saved) ? output.saved.length : pending.filter((item) => taggingFor(item.resourceId)).length;
-    if (saved) showToast(`已标注 ${saved} 条`);
-    else showToast('这次没有新的 Tag，可再点一次');
+    if (!silent) {
+      if (saved) showToast(`已标注 ${saved} 条`);
+      else showToast('这次没有新的 Tag，可再点一次');
+    }
+    return { saved };
   } catch (error) {
-    showToast(error instanceof Error ? error.message : '标注失败');
+    if (!silent) showToast(error instanceof Error ? error.message : '标注失败');
+    throw error;
   } finally {
     state.xTagging = false;
     renderXToolbar();
   }
 }
 
-async function loadXFeed({ refresh = false } = {}) {
-  if (!state.session) return;
+async function loadXFeed({ refresh = false, autoTranslate = true } = {}) {
+  if (!state.session) return null;
   state.xLoading = true;
   state.xRefreshing = refresh;
   renderXToolbar();
@@ -6450,15 +9186,17 @@ async function loadXFeed({ refresh = false } = {}) {
     const params = new URLSearchParams({ platform: 'x', feed: state.xFeed, limit: '50' });
     if (refresh) params.set('refresh', '1');
     const payload = await api(`/api/v1/feed/x?${params}`, { timeoutMs: refresh ? 180_000 : 15_000 });
-    state.xItems = payload.feed?.items || [];
-    state.xFeed = payload.feed?.feed || state.xFeed;
-    state.xNote = payload.feed?.note || '';
+    const feed = payload.feed || {};
+    state.xItems = (feed.items || []).filter((item) => !isHiddenFeedItem(item));
+    state.xFeed = feed.feed || state.xFeed;
+    state.xNote = feed.note || '';
     hydrateFeedTranslations(state.xItems);
     await syncLocalTranslationsToServer(state.xItems);
     await loadFeedTaggings(state.xItems);
     renderPosts();
     renderXToolbar();
-    translateXBatch({ silent: true }).catch(() => {});
+    if (autoTranslate) translateXBatch({ silent: true }).catch(() => {});
+    return feed;
   } catch (error) {
     state.xNote = error instanceof Error ? error.message : 'X 时间线加载失败';
     renderXToolbar();
@@ -6467,6 +9205,81 @@ async function loadXFeed({ refresh = false } = {}) {
     state.xLoading = false;
     state.xRefreshing = false;
     renderXToolbar();
+  }
+}
+
+async function runXCapturePipeline() {
+  if (!state.session) {
+    showToast('请先在设置中完成设备连接');
+    setView('settings');
+    return;
+  }
+  if (xTaskBusy()) {
+    showToast('已有 X 任务在进行');
+    return;
+  }
+  elements['source-tasks-dialog']?.close();
+  state.xPipeline = true;
+  renderXToolbar();
+  try {
+    showToast(`开始抓取${xFeedLabel()} 50 条新内容…`);
+    const feed = await loadXFeed({ refresh: true, autoTranslate: false });
+    if (!feed) return;
+    if (feed.mode === 'error' || feed.mode === 'unavailable') {
+      showToast(feed.note || 'X 抓取失败');
+      return;
+    }
+    await translateXBatch({ silent: true });
+    let tagged = { saved: 0 };
+    try {
+      tagged = await tagXBatch({ silent: true }) || { saved: 0 };
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '抓取完成，但打 Tag 失败');
+      return;
+    }
+    const added = Number(feed.added) || 0;
+    const skipped = Number(feed.skipped) || 0;
+    const taggedCount = Number(tagged.saved) || 0;
+    showToast(`新增 ${added} 条，去重 ${skipped}。已翻译${taggedCount ? `，并标注 ${taggedCount} 条` : '，当前没有待标注'}`);
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : '抓取失败');
+  } finally {
+    state.xPipeline = false;
+    renderXToolbar();
+  }
+}
+
+async function loadTrendForceFeed({ refresh = false } = {}) {
+  if (!state.session) {
+    showToast('请先在设置中完成设备连接');
+    return;
+  }
+  state.trendforceLoading = true;
+  state.trendforceRefreshing = Boolean(refresh);
+  renderTrendForceToolbar();
+  try {
+    const params = new URLSearchParams({ platform: 'trendforce' });
+    if (refresh) params.set('refresh', '1');
+    const payload = await api(`/api/v1/feed/trendforce?${params}`, { timeoutMs: refresh ? 180_000 : 15_000 });
+    state.trendforceItems = (payload.feed?.items || []).filter((item) => !isHiddenFeedItem(item));
+    state.trendforceNote = payload.feed?.note || '';
+    hydrateFeedTranslations(state.trendforceItems);
+    await loadFeedTaggings(state.trendforceItems);
+    renderPosts();
+    renderTrendForceToolbar();
+    if (refresh) {
+      if (payload.feed?.mode === 'error') showToast(payload.feed.note || 'TrendForce 抓取失败');
+      else showToast(payload.feed?.note || `已写入 ${state.trendforceItems.length} 条`);
+    }
+    return payload.feed;
+  } catch (error) {
+    state.trendforceNote = error instanceof Error ? error.message : 'TrendForce 抓取失败';
+    renderTrendForceToolbar();
+    throw error;
+  } finally {
+    state.trendforceLoading = false;
+    state.trendforceRefreshing = false;
+    renderTrendForceToolbar();
   }
 }
 
@@ -6485,8 +9298,9 @@ async function loadBilibiliFeed({ url = '', refresh = false } = {}) {
     } else {
       payload = await api('/api/v1/feed/bilibili', { timeoutMs: 15_000 });
     }
-    state.bilibiliItems = payload.feed?.items || [];
+    state.bilibiliItems = (payload.feed?.items || []).filter((item) => !isHiddenFeedItem(item));
     state.bilibiliNote = payload.feed?.note || '';
+    hydrateFeedTranslations(state.bilibiliItems);
     await loadFeedTaggings(state.bilibiliItems);
     renderPosts();
     renderBilibiliToolbar();
@@ -6511,7 +9325,7 @@ async function loadBilibiliFeed({ url = '', refresh = false } = {}) {
 
 async function loadPosts() {
   const payload = await api('/api/v1/posts');
-  state.posts = payload.posts;
+  state.posts = (payload.posts || []).filter((item) => !isHiddenFeedItem(item));
   renderPosts();
   logBehavior('feed.loaded', { count: state.posts.length });
 }
@@ -6580,6 +9394,12 @@ function connectStream() {
     setConnection('online', '实时连接');
     try {
       const payload = JSON.parse(event.data || '{}');
+      if (payload.uiRevision && payload.uiRevision !== bootUiRevision()) {
+        reloadShellWhenStable(payload.uiRevision).then((reloaded) => {
+          if (!reloaded && payload.snapshotRequired) refreshAfterStreamGap();
+        });
+        return;
+      }
       if (payload.snapshotRequired) refreshAfterStreamGap();
     } catch {
       /* ready 帧损坏时仍保持在线，下次重连再对齐 */
@@ -6598,6 +9418,16 @@ function connectStream() {
   state.stream.addEventListener('job.completed', onAgentJobEvent);
   state.stream.addEventListener('job.failed', onAgentJobEvent);
   state.stream.addEventListener('knowledge.ai-run.completed.v1', onAgentJobEvent);
+  state.stream.addEventListener('knowledge.work-package.created.v1', () => {
+    loadNotes().catch(() => {});
+  });
+  state.stream.addEventListener('knowledge.work-package.notified.v1', () => {
+    loadNotes().catch(() => {});
+    showToast('已通知：有任务了');
+  });
+  state.stream.addEventListener('knowledge.work-package.claimed.v1', () => loadNotes().catch(() => {}));
+  state.stream.addEventListener('knowledge.work-package.completed.v1', () => loadNotes().catch(() => {}));
+  state.stream.addEventListener('knowledge.work-package.failed.v1', () => loadNotes().catch(() => {}));
   state.stream.onerror = () => setConnection('waiting', '正在重连');
 }
 
@@ -6605,7 +9435,7 @@ async function pairFromUrl() {
   const url = new URL(window.location.href);
   const code = url.searchParams.get('pair');
   if (!code) return false;
-  const deviceName = /Mobile|HarmonyOS|Android|iPhone/i.test(navigator.userAgent) ? '我的鸿蒙手机' : '浏览器设备';
+  const deviceName = guessDeviceName();
   setConnection('waiting', '正在配对');
   await api('/api/v1/pair', { method: 'POST', body: JSON.stringify({ code, deviceName }) });
   url.searchParams.delete('pair');
@@ -6614,11 +9444,22 @@ async function pairFromUrl() {
   return true;
 }
 
-async function initialize() {
+function paintAuthorizedChrome() {
+  bindHorizontalTabScroll();
   setIconButton(elements['open-settings'], 'settings');
   setIconButton(elements['reload-view'], 'refresh-cw');
   setIconButton(elements['ask-send'], 'send-horizontal');
+  setIconButton(elements['dispatch-plus'], 'plus');
+  setIconButton(elements['dispatch-send'], 'send-horizontal');
+  const chevron = elements['dispatch-target']?.querySelector('.dispatch-chevron');
+  if (chevron) chevron.innerHTML = icon('chevron-right');
+  if (elements['dispatch-image'] && !elements['dispatch-image'].dataset.iconed) {
+    elements['dispatch-image'].dataset.iconed = '1';
+    elements['dispatch-image'].insertAdjacentHTML('afterbegin', icon('image'));
+  }
   resizeAskComposer();
+  resizeDispatchComposer();
+  syncDispatchComposer();
   setIconButton(elements['open-compose'], 'plus');
   setIconButton(elements['toggle-search'], 'search');
   setIconButton(elements['nav-back'], 'chevron-left');
@@ -6645,30 +9486,51 @@ async function initialize() {
   renderPosts();
   renderReferenceUi();
   restorePersistedFeedBrowseState();
+  renderChannels();
   renderPlatformFilters();
   renderXToolbar();
+  renderBilibiliToolbar();
   setView(restoreLastLocationHash().slice(1));
-  try {
-    await pairFromUrl();
-    const { ok, ...session } = await api('/api/v1/session');
-    state.session = session;
-    elements['server-name'].textContent = session.serverName;
-    elements['session-description'].textContent = session.role === 'desktop'
-      ? '本机管理端 · 可生成手机二维码'
-      : `${session.device.name} · 已长期授权`;
-    hideUnpairedPage();
-    elements['device-repair-panel'].classList.toggle('hidden', session.role === 'desktop');
-    if (session.role === 'desktop') {
-      elements['pairing-panel'].classList.remove('hidden');
-      elements['metrics-panel'].classList.remove('hidden');
+}
+
+async function readAuthorizedSession() {
+  const { ok, ...session } = await api('/api/v1/session');
+  if (!session.role) throw new Error('此设备尚未配对');
+  return session;
+}
+
+async function waitForAuthorizedSession(attempts = 6) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await readAuthorizedSession();
+    } catch (_error) {
+      await sleep(250);
     }
-    state.extras.us = readExtras('us');
-    state.extras.asia = readExtras('asia');
-    state.extras.cn = readExtras('cn');
-    state.bootstrapped = true;
-    connectStream();
-    logBehavior('app.open', { role: session.role });
-    window.setInterval(() => {
+  }
+  throw new Error('登录已通过，但设备授权还没写进浏览器。请再试一次。');
+}
+
+async function completeAuthorizedStart(session) {
+  state.session = session;
+  elements['server-name'].textContent = session.serverName;
+  elements['session-description'].textContent = session.role === 'desktop'
+    ? '本机管理端 · 可生成手机二维码'
+    : `${session.device.name} · 已长期授权`;
+  paintAuthorizedChrome();
+  hideUnpairedPage();
+  elements['device-repair-panel'].classList.toggle('hidden', session.role === 'desktop');
+  if (session.role === 'desktop') {
+    elements['pairing-panel'].classList.remove('hidden');
+    elements['metrics-panel'].classList.remove('hidden');
+  }
+  state.extras.us = readExtras('us');
+  state.extras.asia = readExtras('asia');
+  state.extras.cn = readExtras('cn');
+  state.bootstrapped = true;
+  connectStream();
+  logBehavior('app.open', { role: session.role });
+  if (!completeAuthorizedStart.heartbeat) {
+    completeAuthorizedStart.heartbeat = window.setInterval(() => {
       syncHarmonyLocalInspirations().catch(() => {});
       if (isQuotesView() && state.session) {
         if (state.tradePane === 'stocks') loadMarket().catch(() => {});
@@ -6676,46 +9538,50 @@ async function initialize() {
         if (state.tradePane === 'holdings') loadHoldings().catch(() => {});
       }
     }, 30_000);
-    const startupLoads = [
-      syncHarmonyLocalInspirations().catch(() => {}),
-      loadSourceCatalog().catch(() => {}),
-      loadPosts().catch((error) => showToast(error.message)),
-      loadXFeed({ refresh: false }).catch(() => {}),
-      loadBilibiliFeed().catch(() => {}),
-      loadNotes().catch(() => {}),
-      loadKnowledge().catch(() => {}),
-    ];
-    if (document.body.dataset.view === 'ask') {
-      startupLoads.push(syncAskView().catch((error) => showToast(error.message)));
-    }
-    startupLoads.push(loadActiveAskRuns().catch(() => {}));
-    if (session.role === 'desktop') {
-      startupLoads.push(loadPairing().catch((error) => showToast(error.message)));
-      startupLoads.push(loadMetrics().catch(() => {}));
-    }
-    if (isQuotesView()) {
-      startupLoads.push(syncTradePaneData().catch((error) => showToast(error.message)));
-    }
-    if (document.body.dataset.view === 'sources' || document.body.dataset.view === 'feed') {
-      startupLoads.push(loadSourcesPage().catch(() => {}));
-    }
-    await Promise.all(startupLoads);
-    if (document.body.dataset.view === 'feed') {
-      restoreViewScroll('feed');
-      restoreOpenFeedItem();
-    }
+  }
+  const startupLoads = [
+    syncHarmonyLocalInspirations().catch(() => {}),
+    loadSourceCatalog().catch(() => {}),
+    loadPosts().catch((error) => showToast(error.message)),
+    loadXFeed({ refresh: false }).catch(() => {}),
+    loadBilibiliFeed().catch(() => {}),
+    loadNotes().catch(() => {}),
+    loadKnowledge().catch(() => {}),
+  ];
+  if (document.body.dataset.view === 'ask') {
+    startupLoads.push(syncAskView().catch((error) => showToast(error.message)));
+  }
+  startupLoads.push(loadActiveAskRuns().catch(() => {}));
+  if (session.role === 'desktop') {
+    startupLoads.push(loadPairing().catch((error) => showToast(error.message)));
+    startupLoads.push(loadMetrics().catch(() => {}));
+  }
+  if (isQuotesView()) {
+    startupLoads.push(syncTradePaneData().catch((error) => showToast(error.message)));
+  }
+  if (document.body.dataset.view === 'sources' || document.body.dataset.view === 'feed') {
+    startupLoads.push(loadSourcesPage().catch(() => {}));
+  }
+  await Promise.all(startupLoads);
+  if (document.body.dataset.view === 'feed') {
+    restoreViewScroll('feed');
+    restoreOpenFeedItem();
+  }
+}
+
+async function initialize() {
+  forgetLegacyDeviceGrant();
+  try {
+    await pairFromUrl();
+    if (await maybeReloadStaleShell()) return;
+    await completeAuthorizedStart(await readAuthorizedSession());
   } catch (error) {
-    state.bootstrapped = true;
     setConnection('offline', '尚未连接');
     elements['session-description'].textContent = error.message;
     const url = new URL(window.location.href);
     const pairingFailed = url.searchParams.has('pair');
     if (pairingFailed) removePairingCodeFromAddress();
-    showUnpairedPage(error.message, pairingFailed);
-    if (isQuotesView()) {
-      state.marketError = error.message || '此设备尚未配对，无法加载行情';
-      renderMarketStatus();
-    }
+    showUnpairedPage(error.message, pairingFailed, { loginAvailable: Boolean(error.payload?.loginAvailable) });
   }
 }
 
@@ -6756,9 +9622,69 @@ elements['network-address'].addEventListener('change', updatePairingCandidate);
 elements['refresh-pairing'].addEventListener('click', () => loadPairing().catch((error) => showToast(error.message)));
 elements['exit-to-pairing'].addEventListener('click', () => exitAndRePair());
 elements['restart-pairing'].addEventListener('click', () => exitAndRePair());
+elements['login-form']?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const submit = elements['login-submit'];
+  const message = elements['login-message'];
+  submit.disabled = true;
+  message.classList.add('hidden');
+  message.textContent = '';
+  setConnection('waiting', '正在登录');
+  try {
+    await api('/api/v1/session/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        username: elements['login-username'].value,
+        password: elements['login-password'].value,
+        deviceName: guessDeviceName(),
+      }),
+    });
+    await completeAuthorizedStart(await waitForAuthorizedSession());
+  } catch (error) {
+    message.textContent = error.message || '登录失败';
+    message.classList.remove('hidden');
+    setConnection('offline', '尚未连接');
+    submit.disabled = false;
+  }
+});
+elements['request-process-restart']?.addEventListener('click', async () => {
+  try {
+    const result = await api('/api/v1/runtime/restart', { method: 'POST' });
+    showToast(result.restart?.requested
+      ? '已请求重启 Web/Worker，隧道保持。十几秒后刷新。'
+      : result.restart?.reason === 'cooldown'
+        ? '刚刚已经请求过重启，稍等再试。'
+        : '启动器未接手重启请求。');
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : '无法请求重启');
+  }
+});
 elements['retry-session'].addEventListener('click', () => window.location.reload());
 elements['open-compose'].addEventListener('click', openHeaderAction);
-elements['reload-view']?.addEventListener('click', () => {
+let reloadHoldTimer = 0;
+let reloadForcedByHold = false;
+function clearReloadHold() {
+  if (reloadHoldTimer) window.clearTimeout(reloadHoldTimer);
+  reloadHoldTimer = 0;
+}
+elements['reload-view']?.addEventListener('pointerdown', (event) => {
+  if (event.button) return;
+  reloadForcedByHold = false;
+  clearReloadHold();
+  reloadHoldTimer = window.setTimeout(() => {
+    reloadHoldTimer = 0;
+    reloadForcedByHold = true;
+    reloadCurrentView({ forceShell: true }).catch((error) => showToast(error.message));
+  }, 550);
+});
+elements['reload-view']?.addEventListener('pointerup', clearReloadHold);
+elements['reload-view']?.addEventListener('pointercancel', clearReloadHold);
+elements['reload-view']?.addEventListener('click', (event) => {
+  if (reloadForcedByHold) {
+    event.preventDefault();
+    reloadForcedByHold = false;
+    return;
+  }
   reloadCurrentView().catch((error) => showToast(error.message));
 });
 elements['open-settings'].addEventListener('click', () => setView('settings'));
@@ -6771,6 +9697,10 @@ elements['nav-back']?.addEventListener('click', () => {
     setView('settings');
     return;
   }
+  if (document.body.dataset.view === 'inspire' && state.selectedWorkPackageId) {
+    setView('inspire/tasks');
+    return;
+  }
   goBack();
 });
 elements['toggle-search']?.addEventListener('click', () => {
@@ -6779,6 +9709,10 @@ elements['toggle-search']?.addEventListener('click', () => {
   if (state.showHeaderSearch) elements['global-search']?.focus();
 });
 elements['feed-filter']?.addEventListener('click', () => {
+  if (isSourceFeedScope(state.feedPlatform)) {
+    openSourceTasks(state.feedPlatform);
+    return;
+  }
   renderFeedFilterDialog();
   if (elements['feed-filter-dialog']) openDialog(elements['feed-filter-dialog']);
 });
@@ -6795,6 +9729,8 @@ elements['holdings-privacy']?.addEventListener('click', () => {
   renderHoldings();
 });
 elements['x-refresh']?.addEventListener('click', () => loadXFeed({ refresh: true }).catch((error) => showToast(error.message)));
+elements['trendforce-refresh']?.addEventListener('click', () => loadTrendForceFeed({ refresh: true }).catch((error) => showToast(error.message)));
+elements['trendforce-more']?.addEventListener('click', () => openSourceTasks('trendforce'));
 function isBilibiliUrl(value) {
   try {
     const url = new URL(String(value || '').trim());
@@ -6912,7 +9848,7 @@ bindPostLink(elements['dialog-cite'], () => {
   elements['post-dialog']?.close();
   openAskSession(state.askSessionId || 'new');
 });
-for (const id of ['compose-dialog', 'search-dialog', 'post-dialog', 'source-dialog', 'subscriptions-dialog', 'holding-dialog', 'reference-preview', 'source-tasks-dialog', 'feed-filter-dialog']) {
+for (const id of ['compose-dialog', 'search-dialog', 'post-dialog', 'source-dialog', 'subscriptions-dialog', 'holding-dialog', 'reference-preview', 'reference-pack', 'source-tasks-dialog', 'feed-filter-dialog']) {
   const dialog = elements[id];
   if (!dialog) continue;
   dialog.querySelector('.dialog-close')?.addEventListener('click', () => {
@@ -6968,23 +9904,114 @@ function cycleChangeSort() {
 }
 elements['market-sort'].addEventListener('click', cycleChangeSort);
 elements['asset-sort']?.addEventListener('click', cycleChangeSort);
-elements['note-ai-toggle'].addEventListener('click', () => {
+bindImageComposer({
+  input: elements['note-image-input'],
+  textarea: elements['note-body'],
+  getItems: () => state.dispatchAttachments,
+  setItems: (items) => { state.dispatchAttachments = items; },
+  render: renderDispatchAttachmentDraft,
+});
+elements['dispatch-plus']?.addEventListener('click', (event) => {
+  event.stopPropagation();
+  toggleDispatchMenu(elements['dispatch-plus-menu'], elements['dispatch-plus']);
+});
+elements['dispatch-target']?.addEventListener('click', (event) => {
+  event.stopPropagation();
+  toggleDispatchMenu(elements['dispatch-target-menu'], elements['dispatch-target']);
+});
+elements['dispatch-image']?.addEventListener('click', () => {
+  closeDispatchMenus();
+  elements['note-image-input']?.click();
+});
+elements['dispatch-target-menu']?.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-dispatch-target]');
+  if (!button) return;
+  closeDispatchMenus();
+  setComposeTarget(button.dataset.dispatchTarget);
+});
+elements['note-ai-toggle']?.addEventListener('click', () => {
   state.wantAi = !state.wantAi;
-  elements['note-ai-toggle'].classList.toggle('is-on', state.wantAi);
-  elements['note-ai-toggle'].setAttribute('aria-pressed', String(state.wantAi));
+  syncDispatchComposer();
 });
 document.addEventListener('pointerdown', (event) => {
+  if (!event.target.closest('.dispatch-pop')) closeDispatchMenus();
+  if (swipeActionTarget(event.target)) return;
   const item = event.target.closest('.swipe-item');
   closeNoteSwipes(item?.querySelector('.swipe-front') || undefined);
 });
+elements['note-body']?.addEventListener('input', () => {
+  persistTaskComposerDraft();
+  resizeDispatchComposer();
+});
+restoreTaskComposerDraft();
+setIconButton(elements['dispatch-plus'], 'plus');
+setIconButton(elements['dispatch-send'], 'send-horizontal');
+const dispatchChevron = elements['dispatch-target']?.querySelector('.dispatch-chevron');
+if (dispatchChevron) dispatchChevron.innerHTML = icon('chevron-right');
+if (elements['dispatch-image'] && !elements['dispatch-image'].dataset.iconed) {
+  elements['dispatch-image'].dataset.iconed = '1';
+  elements['dispatch-image'].insertAdjacentHTML('afterbegin', icon('image'));
+}
+resizeDispatchComposer();
+syncDispatchComposer();
 elements['note-form'].addEventListener('submit', async (event) => {
   event.preventDefault();
+  closeDispatchMenus();
   if (!state.session) {
     showToast('请先在设置中完成设备连接');
     setView('settings');
     return;
   }
+  const body = String(elements['note-body']?.value || '').trim();
   try {
+    if (state.composeTarget === 'ask') {
+      if (!body) {
+        showToast('先写一句再发给问答');
+        return;
+      }
+      if (state.dispatchAttachments.length) {
+        showToast('问答只发文字，图片请改投灵感或任务');
+      }
+      const ok = await askAgent(body);
+      if (ok) {
+        elements['note-body'].value = '';
+        persistTaskComposerDraft('');
+        resizeDispatchComposer();
+      }
+      return;
+    }
+    if (state.dispatchAttachments.some((item) => item.pending || item.failed)) {
+      state.dispatchAttachments = await ensureUploadedAttachments(state.dispatchAttachments);
+      renderDispatchAttachmentDraft();
+    }
+    const attachmentIds = readyAttachmentIds(state.dispatchAttachments);
+    if (state.composeTarget === 'task') {
+      if (!body) {
+        showToast('先写一下不足或 bug');
+        return;
+      }
+      const created = await api('/api/v1/work-packages', {
+        method: 'POST',
+        body: JSON.stringify({ body, attachmentIds }),
+      });
+      const workPackageId = created.workPackage?.id;
+      try {
+        await api('/api/v1/work-packages/notify', {
+          method: 'POST',
+          body: JSON.stringify(workPackageId ? { id: workPackageId } : {}),
+        });
+      } catch {
+        /* 旧服务端没有 notify 时，任务本身已经落库 */
+      }
+      elements['note-body'].value = '';
+      elements['note-form'].reset();
+      clearDispatchAttachments();
+      persistTaskComposerDraft('');
+      showToast('已投递。本机 Cursor CLI 会做完退出，状态写回这里。');
+      await loadNotes();
+      syncDispatchComposer();
+      return;
+    }
     const captureChannel = elements['note-capture-channel'].value || 'web';
     await api('/api/v1/notes', {
       method: 'POST',
@@ -6997,14 +10024,15 @@ elements['note-form'].addEventListener('submit', async (event) => {
         sourceTitle: elements['note-source-title'].value,
         captureChannel,
         sourceApp: elements['note-source-app'].value,
+        attachmentIds,
       }),
     });
     elements['note-form'].reset();
+    clearDispatchAttachments();
     clearSharedInspirationDraft();
     const askedWithAi = state.wantAi;
     state.wantAi = false;
-    elements['note-ai-toggle'].classList.remove('is-on');
-    elements['note-ai-toggle'].setAttribute('aria-pressed', 'false');
+    syncDispatchComposer();
     showToast(askedWithAi ? '原文已记下。AI 加工会另外反馈结果。' : '已记下');
     await loadNotes();
     if (captureChannel === 'harmony-share' && typeof window.AICenterShareHost?.closeShare === 'function') {
@@ -7022,12 +10050,40 @@ elements['ask-live-chip']?.addEventListener('click', () => {
   if (target?.sessionId && target.sessionId !== 'new') openAskSession(target.sessionId);
   else setView('ask');
 });
-elements['reference-dock'].addEventListener('click', () => openAskSession('new'));
+elements['reference-dock'].addEventListener('click', () => openReferencePack());
+elements['reference-pack-ask']?.addEventListener('click', () => sendReferencePackToAsk());
+elements['reference-pack-task']?.addEventListener('click', () => {
+  sendReferencePackToTask().catch((error) => showToast(error.message));
+});
+elements['reference-pack-export']?.addEventListener('click', () => {
+  exportReferencePack().catch((error) => showToast(error.message));
+});
+elements['reference-pack-clear']?.addEventListener('click', () => {
+  clearReferences();
+  closeReferencePack();
+  showToast('已清空材料');
+});
+elements['ask-ref-export']?.addEventListener('click', () => {
+  exportReferencePack().catch((error) => showToast(error.message));
+});
+elements['ask-ref-task']?.addEventListener('click', () => {
+  sendReferencePackToTask().catch((error) => showToast(error.message));
+});
 elements['ask-form'].addEventListener('submit', (event) => {
   event.preventDefault();
   hideAskMentions();
   const form = event.currentTarget;
   const question = String(new FormData(form).get('question') || '').trim();
+  if (currentAgentMode() === 'article-analysis') {
+    if (!question && !state.referenceDraft.length) {
+      showToast('粘贴文章，或 @ 选择一条材料');
+      return;
+    }
+    void askArticleAnalysis(question).then((ok) => {
+      if (ok) form.elements.question.value = '';
+    });
+    return;
+  }
   if (!question) return;
   void askAgent(question).then((ok) => {
     if (ok) form.elements.question.value = '';
@@ -7046,16 +10102,29 @@ window.visualViewport?.addEventListener('resize', syncAskKeyboard);
 window.visualViewport?.addEventListener('scroll', syncAskKeyboard);
 window.addEventListener('resize', syncAskKeyboard);
 restoreWebMode();
-window.addEventListener('hashchange', () => setView(location.hash.slice(1)));
+restoreResearchMode();
+restoreAgentMode();
+window.addEventListener('hashchange', () => {
+  if (!state.session) return;
+  setView(location.hash.slice(1));
+});
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') persistFeedBrowseState();
+  if (document.visibilityState === 'hidden') {
+    persistFeedBrowseState();
+    persistTaskDraftsFromDom();
+  }
   if (document.visibilityState === 'visible') {
+    if (!state.session) return;
     syncHarmonyLocalInspirations().catch(() => {});
     if (liveAskJobs().length) void pollAskJobs();
     else void loadActiveAskRuns();
+    if (state.selectedWorkPackageId) refreshSelectedWorkPackageProgress().catch(() => {});
   }
 });
-window.addEventListener('pagehide', persistFeedBrowseState);
+window.addEventListener('pagehide', () => {
+  persistFeedBrowseState();
+  persistTaskDraftsFromDom();
+});
 elements['dialog-body']?.addEventListener('click', (event) => {
   const link = event.target instanceof Element ? event.target.closest('a') : null;
   if (!link || !elements['dialog-body'].contains(link)) return;

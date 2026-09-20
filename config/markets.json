@@ -110,6 +110,18 @@
         "summary": "HBM 与存储"
       },
       {
+        "symbol": "SKHY",
+        "name": "SK 海力士",
+        "group": "算力链",
+        "summary": "HBM / DRAM，纳斯达克"
+      },
+      {
+        "symbol": "SNDK",
+        "name": "闪迪",
+        "group": "算力链",
+        "summary": "NAND 闪存"
+      },
+      {
         "symbol": "INTC",
         "name": "Intel",
         "group": "算力链",
@@ -639,6 +651,7 @@
       "指数",
       "外汇",
       "利率",
+      "国债",
       "贵金属",
       "能源",
       "期货",
@@ -646,14 +659,24 @@
     ],
     "watchlist": [
       {
-        "symbol": "000001.SH",
-        "yahoo": "000001.SS",
-        "name": "上证指数",
+        "symbol": "000016.SH",
+        "yahoo": "000016.SS",
+        "name": "上证50",
         "market": "cn",
         "assetClass": "index",
         "group": "指数",
         "currency": "CNY",
-        "summary": "A股大盘基准"
+        "summary": "上证50"
+      },
+      {
+        "symbol": "^HSI",
+        "yahoo": "^HSI",
+        "name": "恒生指数",
+        "market": "hk",
+        "assetClass": "index",
+        "group": "指数",
+        "currency": "HKD",
+        "summary": "香港市场基准"
       },
       {
         "symbol": "^GSPC",
@@ -686,6 +709,26 @@
         "summary": "美元兑人民币即期"
       },
       {
+        "symbol": "US2Y",
+        "yahoo": "2YY=F",
+        "name": "两年期美债",
+        "market": "us",
+        "assetClass": "rate",
+        "group": "利率",
+        "currency": "USD",
+        "summary": "2 年期国债收益率"
+      },
+      {
+        "symbol": "US5Y",
+        "yahoo": "^FVX",
+        "name": "五年期美债",
+        "market": "us",
+        "assetClass": "rate",
+        "group": "利率",
+        "currency": "USD",
+        "summary": "5 年期国债收益率"
+      },
+      {
         "symbol": "US10Y",
         "yahoo": "^TNX",
         "name": "十年期美债",
@@ -694,6 +737,56 @@
         "group": "利率",
         "currency": "USD",
         "summary": "10 年期国债收益率"
+      },
+      {
+        "symbol": "US30Y",
+        "yahoo": "^TYX",
+        "name": "三十年期美债",
+        "market": "us",
+        "assetClass": "rate",
+        "group": "利率",
+        "currency": "USD",
+        "summary": "30 年期国债收益率"
+      },
+      {
+        "symbol": "CNTS",
+        "yahoo": "TS00Y",
+        "name": "二年国债",
+        "market": "cn",
+        "assetClass": "future",
+        "group": "国债",
+        "currency": "CNY",
+        "summary": "中金所二年国债主连"
+      },
+      {
+        "symbol": "CNTF",
+        "yahoo": "TF00Y",
+        "name": "五年国债",
+        "market": "cn",
+        "assetClass": "future",
+        "group": "国债",
+        "currency": "CNY",
+        "summary": "中金所五年国债主连"
+      },
+      {
+        "symbol": "CNT",
+        "yahoo": "T00Y",
+        "name": "十年国债",
+        "market": "cn",
+        "assetClass": "future",
+        "group": "国债",
+        "currency": "CNY",
+        "summary": "中金所十年国债主连"
+      },
+      {
+        "symbol": "CNTL",
+        "yahoo": "TL00Y",
+        "name": "三十年国债",
+        "market": "cn",
+        "assetClass": "future",
+        "group": "国债",
+        "currency": "CNY",
+        "summary": "中金所三十年国债主连"
       },
       {
         "symbol": "XAUUSD",
@@ -706,6 +799,36 @@
         "summary": "COMEX 黄金主力"
       },
       {
+        "symbol": "XAGUSD",
+        "yahoo": "SI=F",
+        "name": "白银",
+        "market": "global",
+        "assetClass": "metal",
+        "group": "贵金属",
+        "currency": "USD",
+        "summary": "COMEX 白银主力"
+      },
+      {
+        "symbol": "XPTUSD",
+        "yahoo": "PL=F",
+        "name": "铂金",
+        "market": "global",
+        "assetClass": "metal",
+        "group": "贵金属",
+        "currency": "USD",
+        "summary": "NYMEX 铂金主力"
+      },
+      {
+        "symbol": "AG",
+        "yahoo": "AG00Y",
+        "name": "沪银主连",
+        "market": "cn",
+        "assetClass": "future",
+        "group": "贵金属",
+        "currency": "CNY",
+        "summary": "上期所白银主连"
+      },
+      {
         "symbol": "CL",
         "yahoo": "CL=F",
         "name": "WTI 原油",
@@ -716,6 +839,26 @@
         "summary": "NYMEX 原油主力"
       },
       {
+        "symbol": "BZ",
+        "yahoo": "BZ=F",
+        "name": "布伦特原油",
+        "market": "global",
+        "assetClass": "energy",
+        "group": "能源",
+        "currency": "USD",
+        "summary": "ICE 布伦特主力"
+      },
+      {
+        "symbol": "NG",
+        "yahoo": "NG=F",
+        "name": "天然气",
+        "market": "us",
+        "assetClass": "energy",
+        "group": "能源",
+        "currency": "USD",
+        "summary": "NYMEX 天然气主力"
+      },
+      {
         "symbol": "GC",
         "yahoo": "GC=F",
         "name": "COMEX 黄金主连",
@@ -724,6 +867,96 @@
         "group": "期货",
         "currency": "USD",
         "summary": "黄金期货主力"
+      },
+      {
+        "symbol": "LC",
+        "yahoo": "LC00Y",
+        "name": "碳酸锂",
+        "market": "cn",
+        "assetClass": "future",
+        "group": "期货",
+        "currency": "CNY",
+        "summary": "广期所碳酸锂主连"
+      },
+      {
+        "symbol": "M",
+        "yahoo": "M00Y",
+        "name": "豆粕",
+        "market": "cn",
+        "assetClass": "future",
+        "group": "期货",
+        "currency": "CNY",
+        "summary": "大商所豆粕主连"
+      },
+      {
+        "symbol": "ZM",
+        "yahoo": "ZM=F",
+        "name": "CBOT 豆粕",
+        "market": "us",
+        "assetClass": "future",
+        "group": "期货",
+        "currency": "USD",
+        "summary": "CBOT 豆粕主力"
+      },
+      {
+        "symbol": "HG",
+        "yahoo": "HG=F",
+        "name": "COMEX 铜",
+        "market": "us",
+        "assetClass": "future",
+        "group": "期货",
+        "currency": "USD",
+        "summary": "COMEX 铜主力"
+      },
+      {
+        "symbol": "CU",
+        "yahoo": "CU00Y",
+        "name": "沪铜主连",
+        "market": "cn",
+        "assetClass": "future",
+        "group": "期货",
+        "currency": "CNY",
+        "summary": "上期所铜主连"
+      },
+      {
+        "symbol": "ZS",
+        "yahoo": "ZS=F",
+        "name": "大豆",
+        "market": "us",
+        "assetClass": "future",
+        "group": "期货",
+        "currency": "USD",
+        "summary": "CBOT 大豆主力"
+      },
+      {
+        "symbol": "ZC",
+        "yahoo": "ZC=F",
+        "name": "玉米",
+        "market": "us",
+        "assetClass": "future",
+        "group": "期货",
+        "currency": "USD",
+        "summary": "CBOT 玉米主力"
+      },
+      {
+        "symbol": "RB",
+        "yahoo": "RB00Y",
+        "name": "螺纹钢",
+        "market": "cn",
+        "assetClass": "future",
+        "group": "期货",
+        "currency": "CNY",
+        "summary": "上期所螺纹钢主连"
+      },
+      {
+        "symbol": "I",
+        "yahoo": "I00Y",
+        "name": "铁矿石",
+        "market": "cn",
+        "assetClass": "future",
+        "group": "期货",
+        "currency": "CNY",
+        "summary": "大商所铁矿石主连"
       },
       {
         "symbol": "BTC-USD",
@@ -764,22 +997,34 @@
     ],
     "indices": [
       {
-        "symbol": "000001.SS",
-        "name": "上证指数",
+        "symbol": "000016.SS",
+        "name": "上证50",
         "group": "指数",
-        "summary": "上海市场基准"
+        "summary": "上证50"
       },
       {
-        "symbol": "399001.SZ",
-        "name": "深证成指",
+        "symbol": "399673.SZ",
+        "name": "创业板50",
         "group": "指数",
-        "summary": "深圳市场基准"
+        "summary": "创业板50"
       },
       {
-        "symbol": "399006.SZ",
-        "name": "创业板指",
+        "symbol": "000688.SS",
+        "name": "科创50",
         "group": "指数",
-        "summary": "创业板基准"
+        "summary": "科创50"
+      },
+      {
+        "symbol": "^HSI",
+        "name": "恒生指数",
+        "group": "指数",
+        "summary": "香港市场基准"
+      },
+      {
+        "symbol": "^HSTECH",
+        "name": "恒生科技",
+        "group": "指数",
+        "summary": "港科"
       }
     ],
     "watchlist": [

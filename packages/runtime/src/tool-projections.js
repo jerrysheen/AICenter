@@ -70,7 +70,13 @@ export function projectPersonalAssets(data = {}) {
     currency: data.currency,
     latest: data.latest,
     allocation: data.allocation,
-    dividend: data.dividend,
+    accounts: (data.accounts || []).map((account) => ({
+      typeKey: account.typeKey,
+      name: account.name,
+      note: account.note,
+      displayAmount: account.displayAmount,
+      source: account.source,
+    })),
     updatedAt: data.updatedAt,
     note: text(data.note, 500),
   };

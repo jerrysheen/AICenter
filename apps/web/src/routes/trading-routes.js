@@ -36,6 +36,53 @@ export function createTradingRoutes() {
       },
     },
     {
+      method: 'POST', path: '/api/v1/assets/personal/import',
+      async handler({ response, services }) {
+        try {
+          const payload = await services.trading.importPersonalAssets();
+          json(response, 200, { ok: true, ...payload });
+        } catch (error) {
+          json(response, error.statusCode || 400, { ok: false, error: error instanceof Error ? error.message : '导入个人资产失败' });
+        }
+      },
+    },
+    {
+      method: 'POST', path: '/api/v1/assets/personal/accounts',
+      async handler({ request, response, services }) {
+        try {
+          const body = await readJson(request);
+          const payload = await services.trading.createPersonalAssetAccount(body);
+          json(response, 201, { ok: true, ...payload });
+        } catch (error) {
+          json(response, error.statusCode || 400, { ok: false, error: error instanceof Error ? error.message : '添加资产账户失败' });
+        }
+      },
+    },
+    {
+      method: 'PATCH', path: /^\/api\/v1\/assets\/personal\/accounts\/([^/]+)$/,
+      async handler({ request, response, services, params }) {
+        try {
+          const body = await readJson(request);
+          const payload = await services.trading.updatePersonalAssetAccount(decodeURIComponent(params.values[0]), body);
+          json(response, 200, { ok: true, ...payload });
+        } catch (error) {
+          json(response, error.statusCode || 400, { ok: false, error: error instanceof Error ? error.message : '更新资产账户失败' });
+        }
+      },
+    },
+    {
+      method: 'POST', path: '/api/v1/assets/personal/snapshots',
+      async handler({ request, response, services }) {
+        try {
+          const body = await readJson(request).catch(() => ({}));
+          const payload = await services.trading.recordPersonalAssetSnapshot(body);
+          json(response, 201, { ok: true, ...payload });
+        } catch (error) {
+          json(response, error.statusCode || 400, { ok: false, error: error instanceof Error ? error.message : '记录本期资产失败' });
+        }
+      },
+    },
+    {
       method: 'GET', path: '/api/v1/holdings',
       async handler({ response, services, url }) {
         try {

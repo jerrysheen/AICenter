@@ -7,7 +7,7 @@
   → 本文
   → content-and-commit-guide（内容归属与提交规则）
   → release-readiness（当前问题与验收）
-  → architecture / modules / contracts（稳定规则）
+  → architecture / modules / agent / contracts（稳定规则）
   → 专题文档
 ```
 
@@ -20,8 +20,11 @@
 - `architecture.md`：进程、数据与运行边界。
 - `architecture.md#single-user-instance-边界`：Core / Instance / Host 的现行边界与兼容布局。
 - `architecture-modules-v1.md`：模块依赖、端口、单 Agent Runtime。
+- `architecture-agent-v1.md`：Ask Agent 冻结职责——Single Agent + Runtime Guardrails + Jev Quality Observer（Prior / Evidence Gate / Reviewer）。Jev 不指挥 Agent 想什么。
 - `contracts-v1.md` + `packages/contracts/src`：可执行数据契约。
 - `ai-development-guide.md`：如何在现有分层上改代码；当前停止线见发布门槛。
+- `search-agent-v1.md`：Search Agent / 文章阅读冻结设计。同一个 AgentRuntime + 阅读框架 + 受限 Knowledge/Web Tool。
+- `article-analysis-v1.md`：当前 Job / API / 输入字段，设计以 Search Agent V1 为准。
 - `product-v2.md`：现行信息架构与领域范围（已按实现校正，不是「尚未开工」清单）。
 
 ## 专题
@@ -29,6 +32,7 @@
 - `connection-and-pairing.md`：二维码、授权、自动重连；鸿蒙分享走本地 Outbox。
 - `harmony-share-to-inspiration.md`：系统分享字段、鉴权与真机验收。
 - `public-access-security.md`：可选公网 HTTPS、隧道和管理员隔离。示例域名是占位符，不是真实部署。
+- `ops/cloudflare-tunnel.md`：本机 `cloudflared` 安装与 token 落盘；域名和 Tunnel 仍在 Cloudflare 控制台创建。
 - `ops/local-files-mcp-tailscale.md`：本机 Local Files MCP 经 Tailscale Funnel 给 ChatGPT 的配置提示；**不是** AI Center 公网入口，不含本机 Hostname。
 
 ## 历史（不驱动当前开发）

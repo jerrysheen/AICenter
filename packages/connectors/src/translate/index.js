@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { createDoubaoJsonlTranslatePort, isDoubaoTranslateHangReason } from '../doubao/translate.js';
 
 // 翻译只走 Gemini / DeepL / Google Translate。禁止读取 Elucid（ELUCID_GROK_API_KEY）。
 
@@ -76,33 +75,14 @@ export function needsTranslation(sourceText, targetLang = DEFAULT_TARGET) {
   const han = countMatches(source, /\p{Script=Han}/gu);
   if (hangul === 0 && latin === 0) return false;
   const foreign = hangul + latin;
+  if (hangul >= 2 && hangul >= han && hangul >= latin) return true;
+  if (han >= 12) return false;
   if (han >= 8 && foreign < Math.max(8, Math.ceil(han * 0.25))) return false;
-  return true;
+  return latin >= 8 || hangul >= 2;
 }
 
 function cacheKey(sourceText, targetLang) {
   return createHash('sha256').update(`${targetLang}\n${sourceText}`).digest('hex');
-}
-
-function jsonlTranslateEnabled(env = process.env) {
-  const flag = String(env.AI_TRANSLATE_JSONL || '1').trim().toLowerCase();
-  return flag !== '0' && flag !== 'off' && flag !== 'false';
-}
-
-function resolveJsonlTranslatePort(options = {}) {
-  if (options.jsonlTranslatePort === null) return null;
-  if (options.jsonlTranslatePort) return options.jsonlTranslatePort;
-  if (!jsonlTranslateEnabled(options.env || process.env)) return null;
-  if (options.doubaoAskQueue || options.browserRuntime || options.ask || options.doubaoClient) {
-    return createDoubaoJsonlTranslatePort({
-      browserRuntime: options.browserRuntime,
-      client: options.doubaoClient,
-      queue: options.doubaoAskQueue,
-      ask: options.ask,
-      now: options.now,
-    });
-  }
-  return null;
 }
 
 function envText(...keys) {
@@ -238,8 +218,6 @@ export function createTranslateService(options = {}) {
   const geminiModel = options.geminiModel !== undefined
     ? text(options.geminiModel)
     : envText('AI_CENTER_GEMINI_MODEL') || GEMINI_DEFAULT_MODEL;
-  const jsonlTranslatePort = resolveJsonlTranslatePort(options);
-  const logger = options.logger || console;
 
   async function runEngine(name, source, target) {
     if (name === 'gemini') {
@@ -336,42 +314,7 @@ export function createTranslateService(options = {}) {
       pending.push({ id, text: source, key });
     }
 
-    let jsonlAttempted = false;
-    let jsonlFormatRejected = false;
-    if (pending.length && jsonlTranslatePort) {
-      jsonlAttempted = true;
-      const accepted = await jsonlTranslatePort.translateBatch({ items: pending, targetLang });
-      if (isDoubaoTranslateHangReason(accepted?.reason) && !(accepted?.translations || []).length) {
-        throw new Error('豆包这次没有读完回复，请再点一次翻译');
-      }
-      if (accepted?.ok && Array.isArray(accepted.translations) && accepted.translations.length) {
-        const byId = new Map(accepted.translations.map((row) => [row.id, row.translatedText]));
-        const leftover = [];
-        for (const item of pending) {
-          const translatedText = byId.get(item.id);
-          if (!translatedText) {
-            leftover.push(item);
-            continue;
-          }
-          const payload = {
-            sourceText: item.text,
-            translatedText,
-            targetLang: target,
-            engine: 'doubao-jsonl',
-            cached: false,
-          };
-          cache.set(item.key, { at: now(), payload });
-          translations.push({ id: item.id, ...payload });
-        }
-        pending.length = 0;
-        pending.push(...leftover);
-      } else {
-        jsonlFormatRejected = true;
-        logger.warn?.(`[translate] Doubao JSONL 格式验收失败（${accepted?.reason || 'rejected'}），改走 Gemini`);
-      }
-    }
-
-    if (pending.length && geminiApiKey && (!jsonlAttempted || jsonlFormatRejected)) {
+    if (pending.length && geminiApiKey) {
       try {
         const batch = await translateWithGeminiBatch(fetchImpl, {
           apiKey: geminiApiKey,
@@ -399,15 +342,13 @@ export function createTranslateService(options = {}) {
         pending.length = 0;
         pending.push(...leftover);
       } catch {
-        // Fall through to one-by-one engines only when Doubao was not attempted.
+        // Fall through to one-by-one Gemini / DeepL / Google.
       }
     }
 
-    if (!jsonlAttempted) {
-      for (const item of pending) {
-        const payload = await translate({ text: item.text, targetLang: target });
-        translations.push({ id: item.id, ...payload });
-      }
+    for (const item of pending) {
+      const payload = await translate({ text: item.text, targetLang: target });
+      translations.push({ id: item.id, ...payload });
     }
 
     return { translations, targetLang: target };

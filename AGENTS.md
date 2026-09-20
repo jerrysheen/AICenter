@@ -7,8 +7,8 @@
 1. `docs/README.md`：文档总入口。
 2. `docs/content-and-commit-guide.md`：Core / Instance / Host 内容归属、默认模板与提交规则。
 3. `docs/release-readiness.md`：当前问题、验收状态与停止线。
-4. `docs/architecture.md`、`docs/architecture-modules-v1.md`、`docs/contracts-v1.md` + `packages/contracts/src`：稳定规则。
-5. 专题：`docs/connection-and-pairing.md`、`docs/public-access-security.md`、`docs/ai-development-guide.md`。
+4. `docs/architecture.md`、`docs/architecture-modules-v1.md`、`docs/architecture-agent-v1.md`、`docs/contracts-v1.md` + `packages/contracts/src`：稳定规则。Ask Agent 职责以 `architecture-agent-v1.md` 为准。
+5. 专题：`docs/search-agent-v1.md`（文章阅读 / Search Agent）、`docs/connection-and-pairing.md`、`docs/public-access-security.md`、`docs/ai-development-guide.md`。
 6. `.cursor/rules/`：与手册同义，不能替代上述文档。
 
 `docs/product-v1.md`、`docs/plan/`、`docs/progress/` 是历史。不要用它们重新驱动当前开发。

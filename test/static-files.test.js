@@ -67,6 +67,26 @@ test('static assets are gzipped on request and versioned JS/CSS are cacheable', 
     assert.equal(html.headers['content-encoding'], undefined);
     const htmlText = html.body.toString('utf8');
     assert.match(htmlText, /app\.js\?v=/);
+    assert.match(htmlText, /src="\/ui-boot\.js"/);
+    assert.match(htmlText, /name="ai-center-ui-revision"/);
+    const boot = await getRaw(`${address.localUrl}/ui-boot.js`, { 'Accept-Encoding': 'identity' });
+    assert.equal(boot.status, 200);
+    assert.equal(boot.headers['cache-control'], 'no-store');
+    assert.match(boot.body.toString('utf8'), /\/api\/v1\/ui\/revision/);
+    assert.match(boot.body.toString('utf8'), /aiCenterUiBoot/);
+    assert.match(boot.body.toString('utf8'), /settleRevision/);
+    const health = await getRaw(`${address.localUrl}/api/v1/health`);
+    const healthBody = JSON.parse(health.body.toString('utf8'));
+    assert.match(healthBody.uiRevision, /^[0-9a-f]{12}$/);
+    assert.match(htmlText, new RegExp(`app\\.js\\?v=${healthBody.uiRevision}`));
+    const revision = await getRaw(`${address.localUrl}/api/v1/ui/revision`);
+    assert.equal(JSON.parse(revision.body.toString('utf8')).revision, healthBody.uiRevision);
+    assert.match(htmlText, /class="is-unpaired"/);
+    assert.match(htmlText, /id="unpaired-panel"/);
+    assert.match(htmlText, /正在连接/);
+    assert.doesNotMatch(htmlText, /id="unpaired-panel"[^>]*\bhidden\b/);
+    const css = await getRaw(`${address.localUrl}/styles.css`, { 'Accept-Encoding': 'identity' });
+    assert.match(css.body.toString('utf8'), /body:not\(\.is-ready\) \.app-shell/);
     assert.match(htmlText, /id="view-sources"/);
     assert.match(htmlText, /id="overview-subnav"/);
     assert.match(htmlText, /id="view-market"/);
@@ -78,7 +98,12 @@ test('static assets are gzipped on request and versioned JS/CSS are cacheable', 
     assert.equal(gzipped.headers['vary'], 'Accept-Encoding');
     assert.equal(gzipped.headers['content-encoding'], 'gzip');
     const decoded = gunzipSync(gzipped.body).toString('utf8');
+    assert.match(decoded, /function paintAuthorizedChrome/);
+    assert.match(decoded, /async function completeAuthorizedStart/);
+    assert.match(decoded, /async function waitForAuthorizedSession/);
     assert.match(decoded, /async function initialize/);
+    assert.match(decoded, /async function settleUiRevision/);
+    assert.match(decoded, /async function reloadShellWhenStable/);
     assert.match(decoded, /Promise\.all\(startupLoads\)/);
     assert.match(decoded, /async function askAgent/);
     assert.match(decoded, /async function pollAskJobs/);
@@ -93,8 +118,34 @@ test('static assets are gzipped on request and versioned JS/CSS are cacheable', 
     const markdown = await getRaw(`${address.localUrl}/markdown.js`, { 'Accept-Encoding': 'identity' });
     assert.equal(markdown.status, 200);
     assert.match(markdown.body.toString('utf8'), /export function markdownToHtml/);
+    const appJs = await getRaw(`${address.localUrl}/app.js`, { 'Accept-Encoding': 'identity' });
+    assert.match(appJs.body.toString('utf8'), new RegExp(`icons\\.js\\?v=${healthBody.uiRevision}`));
   } finally {
     await app.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('ui revision changes after a public file is edited', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-ui-revision-'));
+  try {
+    writeFileSync(path.join(directory, 'index.html'), '<meta name="ai-center-ui-revision" content="dev"><link href="/styles.css?v=old">');
+    writeFileSync(path.join(directory, 'app.js'), 'import "./icons.js?v=old"');
+    writeFileSync(path.join(directory, 'styles.css'), 'body{}');
+    writeFileSync(path.join(directory, 'icons.js'), '');
+    writeFileSync(path.join(directory, 'markdown.js'), '');
+    writeFileSync(path.join(directory, 'mock.js'), '');
+    const handler = createStaticFileHandler(directory);
+    const firstRevision = await handler.getUiRevision();
+    const firstHtml = await readStatic(handler, '/');
+    assert.match(firstHtml.body.toString('utf8'), new RegExp(`styles\\.css\\?v=${firstRevision}`));
+
+    writeFileSync(path.join(directory, 'styles.css'), 'body{color:red}');
+    const secondRevision = await handler.getUiRevision();
+    assert.notEqual(secondRevision, firstRevision);
+    const secondHtml = await readStatic(handler, '/');
+    assert.match(secondHtml.body.toString('utf8'), new RegExp(`styles\\.css\\?v=${secondRevision}`));
+  } finally {
     rmSync(directory, { recursive: true, force: true });
   }
 });

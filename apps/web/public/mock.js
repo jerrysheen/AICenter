@@ -1,6 +1,7 @@
 export const channels = [
   { id: 'all', label: '全部' },
   { id: 'focus', label: '重点' },
+  { id: 'recent', label: '最近' },
   { id: 'social', label: '社媒' },
   { id: 'official', label: '官方' },
 ];
@@ -95,20 +96,24 @@ export const quotes = [
 ];
 
 export const globalAssets = [
-  { name: '上证指数', symbol: '000001.SH', market: 'cn', assetClass: 'index', price: '3864.28', changePct: -0.54, currency: 'CNY' },
+  { name: '上证50', symbol: '000016.SH', market: 'cn', assetClass: 'index', price: '3864.28', changePct: -0.54, currency: 'CNY' },
+  { name: '恒生指数', symbol: '^HSI', market: 'hk', assetClass: 'index', price: '24407.96', changePct: -0.64, currency: 'HKD' },
   { name: '标普500', symbol: '^GSPC', market: 'us', assetClass: 'index', price: '5628.40', changePct: 0.21, currency: 'USD' },
   { name: '美元指数', symbol: 'DXY', market: 'global', assetClass: 'fx', price: '101.38', changePct: 0.21, currency: 'USD' },
   { name: '美元兑人民币', symbol: 'USDCNY', market: 'global', assetClass: 'fx', price: '7.18', changePct: -0.08, currency: 'CNY' },
   { name: '十年期美债', symbol: 'US10Y', market: 'us', assetClass: 'rate', price: '4.12', changePct: 0.03, currency: 'USD' },
   { name: '黄金', symbol: 'XAUUSD', market: 'global', assetClass: 'metal', price: '3642.8', changePct: 0.42, currency: 'USD' },
+  { name: '白银', symbol: 'XAGUSD', market: 'global', assetClass: 'metal', price: '42.18', changePct: 0.86, currency: 'USD' },
   { name: 'WTI 原油', symbol: 'CL', market: 'us', assetClass: 'energy', price: '71.26', changePct: -1.02, currency: 'USD' },
   { name: 'COMEX 黄金主连', symbol: 'GC', market: 'us', assetClass: 'future', price: '3648.2', changePct: 0.38, currency: 'USD', expiry: '2026-12' },
+  { name: '碳酸锂', symbol: 'LC', market: 'cn', assetClass: 'future', price: '72800', changePct: -1.22, currency: 'CNY' },
+  { name: '豆粕', symbol: 'M', market: 'cn', assetClass: 'future', price: '3052', changePct: 0.46, currency: 'CNY' },
   { name: '比特币', symbol: 'BTC-USD', market: 'global', assetClass: 'crypto', price: '111250', changePct: 1.18, currency: 'USD' },
   { name: '以太坊', symbol: 'ETH-USD', market: 'global', assetClass: 'crypto', price: '4286.4', changePct: -0.56, currency: 'USD' },
 ];
 
 export const marketIndex = {
-  cn: { name: '上证指数', value: '3864.28', change: '-21.05', percent: '-0.54%' },
+  cn: { name: '上证50', value: '3864.28', change: '-21.05', percent: '-0.54%' },
   us: { name: '标普500', value: '5628.40', change: '+11.82', percent: '+0.21%' },
 };
 

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseBehaviorEvent, parseBilibiliFeedQuery, parseBilibiliImportInput, parseBuildContextInput, parseContract, parseCreateAgentRunInput, parseHoldingsQuery, parseKnowledgeMentionQuery, parseMarketQuery, parseNoteInput, parsePageRequest, parsePairInput, parsePersistFeedTranslationsInput, parsePostInput, parseTranslateBatchInput, parseTranslateInput, parseXFeedQuery, PortfolioImportSchema, ValidationError } from '../packages/contracts/src/index.js';
+import { FeedIdentityFingerprintSchema, parseBehaviorEvent, parseBilibiliFeedQuery, parseBilibiliImportInput, parseBuildContextInput, parseContract, parseCreateAgentRunInput, parseCreateWorkPackageInput, parseHoldingsQuery, parseKnowledgeMentionQuery, parseLoginInput, parseMarketQuery, parseNoteInput, parsePackReferencesInput, parsePageRequest, parsePairInput, parsePersistFeedTranslationsInput, parsePostInput, parseTranslateBatchInput, parseTranslateInput, parseTrendForceFeedQuery, parseWorkerJobConcurrency, parseXFeedQuery, PortfolioImportSchema, UpsertFeedIdentityFingerprintInputSchema, ValidationError } from '../packages/contracts/src/index.js';
 
 test('post input normalizes title, url, and tags', () => {
   assert.deepEqual(parsePostInput({
@@ -27,6 +27,19 @@ test('pair and behavior inputs reject unsupported data', () => {
   assert.throws(() => parseBehaviorEvent({ name: 'unknown.event' }), ValidationError);
 });
 
+test('login input requires username, password, and device name', () => {
+  assert.deepEqual(parseLoginInput({
+    username: ' owner ',
+    password: ' secret-pass ',
+    deviceName: '浏览器设备',
+  }), {
+    username: 'owner',
+    password: 'secret-pass',
+    deviceName: '浏览器设备',
+  });
+  assert.throws(() => parseLoginInput({ username: 'owner', deviceName: '浏览器设备' }), ValidationError);
+});
+
 test('market query accepts us asia cn overview and global', () => {
   assert.equal(parseMarketQuery({ board: 'asia' }).board, 'asia');
   assert.equal(parseMarketQuery({ board: 'cn' }).board, 'cn');
@@ -41,6 +54,14 @@ test('x feed query defaults to 50 home timeline items', () => {
   assert.equal(parseXFeedQuery({ refresh: '1' }).refresh, true);
   assert.equal(parseXFeedQuery({ feed: 'following', limit: '50' }).feed, 'following');
   assert.throws(() => parseXFeedQuery({ limit: '80' }), ValidationError);
+});
+
+test('trendforce feed query is the public page only', () => {
+  assert.deepEqual(parseTrendForceFeedQuery({}), {
+    platform: 'trendforce', feed: 'public', refresh: false,
+  });
+  assert.equal(parseTrendForceFeedQuery({ refresh: '1' }).refresh, true);
+  assert.throws(() => parseTrendForceFeedQuery({ platform: 'x' }), ValidationError);
 });
 
 test('bilibili import accepts share text and requires a link', () => {
@@ -109,10 +130,12 @@ test('note input requires body', () => {
     captureChannel: 'harmony-share',
     sourceApp: 'com.example.browser',
     clientMutationId: '',
+    attachmentIds: [],
   });
   assert.throws(() => parseNoteInput({ body: '' }), ValidationError);
   assert.throws(() => parseNoteInput({ body: '非法链接', sourceUrl: 'javascript:alert(1)' }), ValidationError);
   assert.throws(() => parseNoteInput({ body: '非法入口', captureChannel: 'unknown' }), ValidationError);
+  assert.equal(parseCreateWorkPackageInput({ body: '  底栏裁切  ' }).body, '底栏裁切');
 });
 
 test('translate input defaults to chinese', () => {
@@ -159,6 +182,23 @@ test('context input defaults to the local workspace and bounded result count', (
   assert.throws(() => parseBuildContextInput({ query: '有效问题', limit: 21 }), ValidationError);
 });
 
+test('reference pack input reuses the same selected-reference contract', () => {
+  assert.deepEqual(parsePackReferencesInput({
+    references: [{ resourceType: 'content-item', resourceId: 'item-1' }],
+  }), {
+    references: [{ resourceType: 'content-item', resourceId: 'item-1' }],
+  });
+  assert.deepEqual(parsePackReferencesInput({}).references, []);
+  assert.throws(() => parsePackReferencesInput({
+    references: [{ resourceType: 'stock', resourceId: '1' }],
+  }), ValidationError);
+  assert.throws(() => parsePackReferencesInput({
+    references: Array.from({ length: 9 }, (_, index) => (
+      { resourceType: 'content-item', resourceId: `item-${index}` }
+    )),
+  }), ValidationError);
+});
+
 test('knowledge mention query defaults and caps the list', () => {
   assert.deepEqual(parseKnowledgeMentionQuery({}), { q: '', limit: 8 });
   assert.equal(parseKnowledgeMentionQuery({ q: ' 框架 ', limit: '5' }).q, '框架');
@@ -173,7 +213,10 @@ test('agent run input accepts selected references', () => {
   }).references, [{ resourceType: 'content-item', resourceId: 'item-1' }]);
   assert.equal(parseCreateAgentRunInput({ message: '你好' }).webMode, 'off');
   assert.equal(parseCreateAgentRunInput({ message: '你好', webMode: 'fallback' }).webMode, 'fallback');
+  assert.equal(parseCreateAgentRunInput({ message: '你好' }).researchMode, 'standard');
+  assert.equal(parseCreateAgentRunInput({ message: '你好', researchMode: 'research' }).researchMode, 'research');
   assert.throws(() => parseCreateAgentRunInput({ message: '你好', webMode: 'remote' }), ValidationError);
+  assert.throws(() => parseCreateAgentRunInput({ message: '你好', researchMode: 'deep' }), ValidationError);
   assert.throws(() => parseCreateAgentRunInput({
     message: '你好',
     references: [{ resourceType: 'stock', resourceId: '1' }],
@@ -185,6 +228,49 @@ test('agent run input accepts an optional session id', () => {
   assert.equal(parseCreateAgentRunInput({ message: '继续', sessionId: 'new' }).sessionId, undefined);
   assert.equal(parseCreateAgentRunInput({ message: '继续', sessionId: 'session-1' }).sessionId, 'session-1');
   assert.throws(() => parseCreateAgentRunInput({ message: '' }), ValidationError);
+});
+
+test('feed identity fingerprint is a durable hash id without tweet text', () => {
+  const now = Date.now();
+  assert.equal(parseContract(FeedIdentityFingerprintSchema, {
+    workspaceId: 'local',
+    provider: 'x',
+    identityHash: 'a'.repeat(64),
+    externalId: '123',
+    hiddenAt: now,
+    firstSeenAt: now,
+    lastSeenAt: now,
+  }).identityHash.length, 64);
+  assert.equal(parseContract(UpsertFeedIdentityFingerprintInputSchema, {
+    workspaceId: 'local',
+    provider: 'x',
+    identityHash: 'b'.repeat(64),
+  }).externalId, '');
+  assert.throws(() => parseContract(FeedIdentityFingerprintSchema, {
+    workspaceId: 'local',
+    provider: 'x',
+    identityHash: '',
+    hiddenAt: null,
+    firstSeenAt: now,
+    lastSeenAt: now,
+  }), ValidationError);
+  assert.throws(() => parseContract(UpsertFeedIdentityFingerprintInputSchema, {
+    workspaceId: 'local',
+    provider: 'x',
+    identityHash: 'c'.repeat(64),
+    body: 'should not be stored',
+  }), ValidationError);
+});
+
+test('worker job concurrency defaults to three work-package CLI slots', () => {
+  assert.deepEqual(parseWorkerJobConcurrency({}), {
+    defaultLimit: 1,
+    workPackageDispatchLimit: 3,
+  });
+  assert.equal(parseWorkerJobConcurrency({ workPackageDispatchLimit: '3' }).workPackageDispatchLimit, 3);
+  assert.equal(parseWorkerJobConcurrency({ workPackageDispatchLimit: 8 }).workPackageDispatchLimit, 8);
+  assert.throws(() => parseWorkerJobConcurrency({ workPackageDispatchLimit: 0 }), ValidationError);
+  assert.throws(() => parseWorkerJobConcurrency({ workPackageDispatchLimit: 9 }), ValidationError);
 });
 
 test('page request keeps an opaque cursor and bounded limit', () => {

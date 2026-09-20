@@ -49,6 +49,8 @@ const expectations = [
   [pageText, 'WAN_PROBE_TIMEOUT_MS'],
   [pageText, 'probeServer'],
   [pageText, '/api/v1/health'],
+  [pageText, 'uiRevision'],
+  [pageText, 'withUiRevision'],
   [pageText, 'saveCookieAsync'],
   [pageText, 'rememberServer'],
   [pageText, 'interface ShellWebInterceptEvent'],

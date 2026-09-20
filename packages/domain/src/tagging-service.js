@@ -122,7 +122,7 @@ export function createTaggingService({ catalog, taggingRepository, taggingPort, 
         tags: row.tags,
         tagCatalogVersion: loaded.version,
         promptVersion: TAG_PROMPT_VERSION,
-        model: asked?.model || 'doubao',
+        model: asked?.model || 'gemini',
         truncatedForModel: Boolean(truncated.get(row.itemId)),
         analyzedAt: now(),
       }));

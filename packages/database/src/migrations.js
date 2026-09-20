@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { computeFeedIdentityHash } from '../../domain/src/feed-identity.js';
 import { seedWorkspaceTaxonomy } from './taxonomy-seed.js';
 
 export const DEFAULT_WORKSPACE_ID = 'local';
@@ -879,6 +880,237 @@ const migrations = [
     name: 'hide-legacy-posts',
     up(database) {
       addColumn(database, 'posts', 'hidden_at', 'INTEGER');
+    },
+  },
+  {
+    version: 21,
+    name: 'inspiration-work-packages',
+    up(database) {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS work_packages (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          inspiration_id TEXT NOT NULL UNIQUE,
+          title TEXT NOT NULL DEFAULT '',
+          body TEXT NOT NULL,
+          status TEXT NOT NULL,
+          restart_required TEXT NOT NULL DEFAULT 'unknown',
+          restart_applied_at INTEGER,
+          claimed_by TEXT NOT NULL DEFAULT '',
+          claimed_at INTEGER,
+          claim_expires_at INTEGER,
+          completed_at INTEGER,
+          result_summary TEXT NOT NULL DEFAULT '',
+          client_mutation_id TEXT NOT NULL DEFAULT '',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY(inspiration_id) REFERENCES notes(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_work_packages_status
+          ON work_packages(workspace_id, status, created_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_work_packages_mutation
+          ON work_packages(workspace_id, client_mutation_id)
+          WHERE client_mutation_id != '';
+      `);
+    },
+  },
+  {
+    version: 22,
+    name: 'work-package-cursor-session',
+    up(database) {
+      addColumn(database, 'work_packages', 'cursor_agent_id', "TEXT NOT NULL DEFAULT ''");
+      addColumn(database, 'work_packages', 'cursor_run_id', "TEXT NOT NULL DEFAULT ''");
+      addColumn(database, 'work_packages', 'dispatch_job_id', "TEXT NOT NULL DEFAULT ''");
+    },
+  },
+  {
+    version: 23,
+    name: 'feed-identity-fingerprints',
+    up(database) {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS feed_identity_fingerprints (
+          workspace_id TEXT NOT NULL,
+          provider TEXT NOT NULL,
+          identity_hash TEXT NOT NULL,
+          external_id TEXT NOT NULL DEFAULT '',
+          hidden_at INTEGER,
+          first_seen_at INTEGER NOT NULL,
+          last_seen_at INTEGER NOT NULL,
+          PRIMARY KEY (workspace_id, provider, identity_hash)
+        );
+        CREATE INDEX IF NOT EXISTS idx_feed_identity_fingerprints_external
+          ON feed_identity_fingerprints(workspace_id, provider, external_id)
+          WHERE external_id != '';
+        CREATE INDEX IF NOT EXISTS idx_feed_identity_fingerprints_hidden
+          ON feed_identity_fingerprints(workspace_id, provider, hidden_at)
+          WHERE hidden_at IS NOT NULL;
+      `);
+      const existing = database.prepare(`SELECT name FROM sqlite_master
+        WHERE type = 'table' AND name = 'captures'`).get();
+      if (!existing) return;
+      const rows = database.prepare(`SELECT c.workspace_id AS workspace_id,
+          c.provider AS provider,
+          c.external_id AS external_id,
+          c.captured_at AS captured_at,
+          c.metadata_json AS metadata_json,
+          ci.author_name AS author_name,
+          ci.body AS body,
+          ci.title AS title,
+          uis.is_hidden AS is_hidden,
+          uis.updated_at AS state_updated_at
+        FROM captures c
+        LEFT JOIN content_items ci ON ci.capture_id = c.id
+        LEFT JOIN user_item_states uis
+          ON uis.workspace_id = ci.workspace_id AND uis.content_item_id = ci.id`).all();
+      const insert = database.prepare(`INSERT OR IGNORE INTO feed_identity_fingerprints
+        (workspace_id, provider, identity_hash, external_id, hidden_at, first_seen_at, last_seen_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`);
+      for (const row of rows) {
+        const metadata = readJsonObject(row.metadata_json);
+        const seenAt = Number(row.captured_at) || Date.now();
+        const hiddenAt = row.is_hidden ? (Number(row.state_updated_at) || seenAt) : null;
+        insert.run(
+          row.workspace_id,
+          row.provider,
+          computeFeedIdentityHash({
+            provider: row.provider,
+            authorHandle: metadata.authorHandle || '',
+            authorName: row.author_name || '',
+            text: metadata.originalText || row.body || row.title || '',
+            externalId: row.external_id || '',
+          }),
+          String(row.external_id || ''),
+          hiddenAt,
+          seenAt,
+          seenAt,
+        );
+      }
+    },
+  },
+  {
+    version: 24,
+    name: 'work-package-parent-session',
+    up(database) {
+      addColumn(database, 'work_packages', 'parent_work_package_id', "TEXT NOT NULL DEFAULT ''");
+    },
+  },
+  {
+    version: 25,
+    name: 'knowledge-attachments',
+    up(database) {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS attachments (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          mime TEXT NOT NULL,
+          byte_size INTEGER NOT NULL,
+          sha256 TEXT NOT NULL,
+          relative_path TEXT NOT NULL,
+          original_name TEXT NOT NULL DEFAULT '',
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_attachments_workspace
+          ON attachments(workspace_id, created_at DESC);
+        CREATE TABLE IF NOT EXISTS resource_attachments (
+          workspace_id TEXT NOT NULL,
+          resource_type TEXT NOT NULL,
+          resource_id TEXT NOT NULL,
+          attachment_id TEXT NOT NULL,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (workspace_id, resource_type, resource_id, attachment_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_resource_attachments_attachment
+          ON resource_attachments(attachment_id);
+        CREATE INDEX IF NOT EXISTS idx_resource_attachments_resource
+          ON resource_attachments(workspace_id, resource_type, resource_id, sort_order);
+      `);
+    },
+  },
+  {
+    version: 26,
+    name: 'personal-asset-ledger',
+    up(database) {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS personal_asset_types (
+          workspace_id TEXT NOT NULL,
+          key TEXT NOT NULL,
+          name TEXT NOT NULL,
+          sort_order INTEGER NOT NULL,
+          hidden_at INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (workspace_id, key)
+        );
+        CREATE TABLE IF NOT EXISTS personal_asset_accounts (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          type_key TEXT NOT NULL,
+          name TEXT NOT NULL,
+          note TEXT NOT NULL DEFAULT '',
+          source TEXT NOT NULL,
+          amount_decimal TEXT NOT NULL,
+          currency TEXT NOT NULL,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          archived_at INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_personal_asset_accounts_workspace
+          ON personal_asset_accounts(workspace_id, type_key, sort_order);
+        CREATE TABLE IF NOT EXISTS personal_asset_snapshots (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          label TEXT NOT NULL,
+          total_decimal TEXT NOT NULL,
+          increase_decimal TEXT NOT NULL,
+          increase_rate_decimal TEXT NOT NULL,
+          recorded_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          UNIQUE (workspace_id, label)
+        );
+        CREATE INDEX IF NOT EXISTS idx_personal_asset_snapshots_workspace
+          ON personal_asset_snapshots(workspace_id, recorded_at);
+        CREATE TABLE IF NOT EXISTS personal_asset_snapshot_lines (
+          snapshot_id TEXT NOT NULL,
+          account_id TEXT NOT NULL,
+          type_key TEXT NOT NULL,
+          amount_decimal TEXT NOT NULL,
+          PRIMARY KEY (snapshot_id, account_id)
+        );
+        CREATE TABLE IF NOT EXISTS personal_asset_dividends (
+          workspace_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          value_decimal TEXT NOT NULL,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (workspace_id, name)
+        );
+      `);
+    },
+  },
+  {
+    version: 27,
+    name: 'personal-asset-snapshot-label-repeat',
+    up(database) {
+      database.exec(`
+        CREATE TABLE personal_asset_snapshots_v27 (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          label TEXT NOT NULL,
+          total_decimal TEXT NOT NULL,
+          increase_decimal TEXT NOT NULL,
+          increase_rate_decimal TEXT NOT NULL,
+          recorded_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL
+        );
+        INSERT INTO personal_asset_snapshots_v27
+          (id, workspace_id, label, total_decimal, increase_decimal, increase_rate_decimal, recorded_at, created_at)
+          SELECT id, workspace_id, label, total_decimal, increase_decimal, increase_rate_decimal, recorded_at, created_at
+          FROM personal_asset_snapshots;
+        DROP TABLE personal_asset_snapshots;
+        ALTER TABLE personal_asset_snapshots_v27 RENAME TO personal_asset_snapshots;
+        CREATE INDEX IF NOT EXISTS idx_personal_asset_snapshots_workspace
+          ON personal_asset_snapshots(workspace_id, recorded_at);
+      `);
     },
   },
 ];

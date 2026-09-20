@@ -207,20 +207,18 @@ export function buildCompilerPrompt({ target, sourceText, instruction, catalogTe
   ].filter(Boolean).join('\n');
 }
 
-export async function compileStructuredArtifact({
+export async function generateStructured({
   generateText,
-  catalog,
-  target,
-  sourceText,
-  instruction = '',
-  question = '',
+  systemInstruction,
+  prompt,
+  parse = extractJsonObject,
+  validate,
 }) {
   if (typeof generateText !== 'function') throw new Error('generateText is required');
-  const catalogText = formatTaxonomyCatalog(catalog);
-  const prompt = buildCompilerPrompt({ target, sourceText, instruction, catalogText, question });
-  const first = await generateText({ prompt, systemInstruction: compilerSystemInstruction(target), repair: false });
+  if (typeof validate !== 'function') throw new Error('validate is required');
+  const first = await generateText({ prompt, systemInstruction, repair: false });
   try {
-    return sanitizeStructuredArtifact(extractJsonObject(first), { target, catalog });
+    return validate(parse(first));
   } catch (error) {
     const repairPrompt = [
       `上一次 JSON 无法通过校验：${error.message}`,
@@ -229,9 +227,27 @@ export async function compileStructuredArtifact({
     ].join('\n\n');
     const second = await generateText({
       prompt: repairPrompt,
-      systemInstruction: compilerSystemInstruction(target),
+      systemInstruction,
       repair: true,
     });
-    return sanitizeStructuredArtifact(extractJsonObject(second), { target, catalog });
+    return validate(parse(second));
   }
+}
+
+export async function compileStructuredArtifact({
+  generateText,
+  catalog,
+  target,
+  sourceText,
+  instruction = '',
+  question = '',
+}) {
+  const catalogText = formatTaxonomyCatalog(catalog);
+  const prompt = buildCompilerPrompt({ target, sourceText, instruction, catalogText, question });
+  return generateStructured({
+    generateText,
+    systemInstruction: compilerSystemInstruction(target),
+    prompt,
+    validate: (raw) => sanitizeStructuredArtifact(raw, { target, catalog }),
+  });
 }

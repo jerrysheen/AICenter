@@ -155,7 +155,8 @@ Host 是机器级公共运行能力：
 
 ```text
 BrowserSkill daemon
-SearXNG
+可选 cloudflared（只转发 AI Center Web）
+本机 SearXNG（legacy，不再作为 search.web 默认 Provider）
 ```
 
 原则：
@@ -303,7 +304,7 @@ BrowserSkill
 对应 Chrome
 ```
 
-X、Bilibili、Doubao 等 Connector 只调用 BrowserRuntime。
+X、Bilibili 等 Connector 只调用 BrowserRuntime。
 
 它们不应该知道：
 
@@ -358,6 +359,7 @@ BrowserSkill daemon 如何启动
 ```text
 docs/architecture.md
 docs/architecture-modules-v1.md
+docs/architecture-agent-v1.md
 docs/contracts-v1.md
 docs/product-v2.md
 ```

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSearxngSearchProvider, normalizeWebSearchResults, WebSearchUnavailableError } from '../packages/connectors/src/searxng.js';
+import { createSearxngSearchProvider, normalizeWebSearchResults, searchLanguage, WebSearchUnavailableError } from '../packages/connectors/src/searxng.js';
 import { createLocalToolRegistry } from '../packages/runtime/src/local-tools.js';
 import { createToolRegistry } from '../packages/runtime/src/tool-registry.js';
 import { createModuleRegistry } from '../packages/runtime/src/capability-registry.js';
@@ -26,7 +26,7 @@ test('searxng connector maps json results and rejects remote hosts', async () =>
   const mapped = normalizeWebSearchResults({
     query: 'HBM',
     results: [
-      { title: 'SK hynix', url: 'https://example.com/hbm', content: 'capacity', engine: 'bing' },
+      { title: 'SK hynix', url: 'https://example.com/hbm', content: 'capacity', engine: 'duckduckgo' },
       { title: 'skip', url: 'ftp://example.com/x' },
     ],
   }, { query: 'HBM', limit: 8 });
@@ -34,6 +34,9 @@ test('searxng connector maps json results and rejects remote hosts', async () =>
   assert.equal(mapped.results[0].url, 'https://example.com/hbm');
   assert.equal(mapped.results[0].snippet, 'capacity');
   assert.equal(mapped.results[0].publishedAt, null);
+  assert.equal(mapped.note, '');
+  assert.equal(searchLanguage('Melanie Mitchell'), 'en-US');
+  assert.equal(searchLanguage('复杂 中文译本'), 'zh-CN');
 
   const dated = normalizeWebSearchResults({
     query: 'FOMC',
@@ -41,7 +44,7 @@ test('searxng connector maps json results and rejects remote hosts', async () =>
       title: 'Fed',
       url: 'https://example.com/fed',
       content: 'decision',
-      engine: 'bing',
+      engine: 'duckduckgo',
       publishedDate: '2026-09-16T18:00:00Z',
     }],
   }, { query: 'FOMC', limit: 5 });
@@ -49,15 +52,75 @@ test('searxng connector maps json results and rejects remote hosts', async () =>
 
   assert.throws(() => createSearxngSearchProvider({ baseUrl: 'https://searx.example' }), /回环地址/);
 
+  let requested = '';
   const provider = createSearxngSearchProvider({
-    fetchImpl: async () => ({
-      ok: true,
-      headers: { get: () => 'application/json' },
-      json: async () => ({ query: 'nvda', results: [{ title: 'NVIDIA', url: 'https://nvidia.com', content: 'gpu' }] }),
-    }),
+    fetchImpl: async (url) => {
+      requested = String(url);
+      return {
+        ok: true,
+        headers: { get: () => 'application/json' },
+        json: async () => ({ query: 'nvda', results: [{ title: 'NVIDIA', url: 'https://nvidia.com', content: 'gpu' }] }),
+      };
+    },
   });
   const data = await provider.search({ query: 'nvda', limit: 3 });
   assert.equal(data.results[0].title, 'NVIDIA');
+  assert.equal(data.note, '');
+  assert.match(requested, /language=en-US/);
+});
+
+test('searxng connector drops host floods, login shells, and bing-only dumps when other engines fail', () => {
+  const flood = normalizeWebSearchResults({
+    query: 'Complexity A Guided Tour',
+    unresponsive_engines: [['google', 'CAPTCHA'], ['brave', 'Too many request']],
+    results: [
+      { title: 'UP 1', url: 'https://scholarship.up.gov.in/a', content: 'a', engine: 'bing' },
+      { title: 'UP 2', url: 'https://scholarship.up.gov.in/b', content: 'b', engine: 'bing' },
+      { title: 'UP 3', url: 'https://scholarship.up.gov.in/c', content: 'c', engine: 'bing' },
+      { title: 'Account', url: 'https://account.microsoft.com/', content: 'login', engine: 'bing' },
+    ],
+  }, { query: 'Complexity A Guided Tour', limit: 8 });
+  assert.equal(flood.results.length, 0);
+  assert.match(flood.note, /同一站点刷屏/);
+  assert.match(flood.note, /登录页/);
+
+  const degraded = normalizeWebSearchResults({
+    query: 'Melanie Mitchell',
+    unresponsive_engines: [['google', 'CAPTCHA'], ['duckduckgo', 'CAPTCHA'], ['brave', '429']],
+    results: [
+      { title: 'QR', url: 'https://qrcodescanner.net/', content: 'scan', engine: 'bing' },
+      { title: 'Hindi', url: 'https://www.easyhindityping.com/', content: 'translate', engine: 'bing' },
+    ],
+  }, { query: 'Melanie Mitchell', limit: 5 });
+  assert.equal(degraded.results.length, 0);
+  assert.match(degraded.note, /降级检索源/);
+
+  const mixedEngines = normalizeWebSearchResults({
+    query: 'Melanie Mitchell Complexity',
+    unresponsive_engines: [['google', 'CAPTCHA']],
+    results: [
+      { title: '复杂 (豆瓣)', url: 'https://book.douban.com/subject/30171338/', content: 'Waldrop', engine: 'duckduckgo' },
+      { title: 'Calculator', url: 'https://www.calculatorsoup.com/math', content: 'math', engine: 'bing' },
+      { title: 'Mathway', url: 'https://www.mathway.com/', content: 'math', engine: 'bing' },
+    ],
+  }, { query: 'Melanie Mitchell Complexity', limit: 8 });
+  assert.equal(mixedEngines.results.length, 1);
+  assert.equal(mixedEngines.results[0].url, 'https://book.douban.com/subject/30171338/');
+  assert.match(mixedEngines.note, /降级检索源/);
+
+  const mixed = normalizeWebSearchResults({
+    query: 'Melanie Mitchell Complexity',
+    unresponsive_engines: [['google', 'CAPTCHA'], ['brave', '429']],
+    results: [
+      { title: '复杂 (豆瓣)', url: 'https://book.douban.com/subject/30171338/', content: 'Waldrop', engine: 'duckduckgo' },
+      { title: 'eBay', url: 'https://www.ebay.com/', content: 'shop', engine: 'bing' },
+      { title: 'eBay main', url: 'https://www.ebay.com/d/main', content: 'shop', engine: 'bing' },
+      { title: 'Welcome to eBay', url: 'https://pages.ebay.com/welcome-to-ebay/', content: 'shop', engine: 'bing' },
+    ],
+  }, { query: 'Melanie Mitchell Complexity', limit: 8 });
+  assert.equal(mixed.results.length, 1);
+  assert.equal(mixed.results[0].url, 'https://book.douban.com/subject/30171338/');
+  assert.match(mixed.note, /同一站点刷屏/);
 });
 
 test('searxng connector treats connection failure as unavailable', async () => {

@@ -22,6 +22,16 @@ test('answer source footer dedupes tool hits, keeps selected, and drops unknown 
   assert.equal(footer.groups[0].items[0].label, '你指定的帖');
   assert.equal(footer.groups[1].id, 'web');
   assert.equal(footer.extraCount, 0);
+  assert.equal(footer.evidence, null);
+});
+
+test('answer source footer can attach evidence confidence without extra refs', () => {
+  const footer = projectAnswerSourceFooter([
+    { resourceType: 'web-result', resourceId: 'https://www.cioe.cn/npo', origin: 'tool', label: 'CIOE' },
+  ], { evidence: { confidence: 0.88, sufficiency: 0.91, acceptedCount: 1, rejectedCount: 3 } });
+  assert.equal(footer.evidence.confidence, 0.88);
+  assert.equal(footer.evidence.rejectedCount, 3);
+  assert.equal(footer.total, 1);
 });
 
 test('answer source footer caps at 24 unique local refs', () => {

@@ -5,15 +5,17 @@ import { hostname as systemHostname, networkInterfaces } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import QRCode from 'qrcode';
-import { parseBilibiliFeedQuery, parseXFeedQuery, ValidationError } from '../../../packages/contracts/src/index.js';
-import { createConfiguredBrowserRuntime, createDoubaoConnector, createLocalKnowledgeFiles, createPersonalAssetService, createSearxngSearchProvider, createTranslateService } from '../../../packages/connectors/src/index.js';
-import { createStore } from '../../../packages/database/src/index.js';
-import { createDomainServices } from '../../../packages/domain/src/index.js';
+import { parseBilibiliFeedQuery, parseTrendForceFeedQuery, parseXFeedQuery, ValidationError } from '../../../packages/contracts/src/index.js';
+import { createConfiguredBrowserRuntime, createDeepSeekSearchProvider, createLauncherRestartPort, createLocalKnowledgeFiles, createPersonalAssetService, createTranslateService, createTypeSafeSystemOneClient } from '../../../packages/connectors/src/index.js';
+import { createAttachmentStore, createStore } from '../../../packages/database/src/index.js';
+import { createDomainServices, createFeedFilterFromEnv, resolveLoginCredential } from '../../../packages/domain/src/index.js';
 import { resolveInstanceConfig } from '../../../packages/instance/src/index.js';
 import { createAgentTraceLog } from '../../../packages/runtime/src/agent-trace-log.js';
+import { createWorkPackageTracePort } from '../../../packages/runtime/src/work-package-trace.js';
 import { readTagCatalogFile } from '../../../packages/runtime/src/tagging-module.js';
 import { createSourceHub, createSourceModuleRegistry } from '../../../packages/source/src/index.js';
 import { createEventStreamHub } from './http/event-stream.js';
+import { publicHttpsLocation } from './http/device-auth.js';
 import { parseCookies, json } from './http/response.js';
 import { createRouter } from './http/router.js';
 import { createStaticFileHandler } from './http/static-files.js';
@@ -52,15 +54,20 @@ function parsePublicBaseUrl(value) {
 function createCookieAdapter(cookieName, secureCookieName) {
   return Object.freeze({
     authorize(token, secure = false) {
-      const name = secure ? secureCookieName : cookieName;
-      const secureFlag = secure ? '; Secure' : '';
-      return `${name}=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=15552000${secureFlag}`;
+      const encoded = encodeURIComponent(token);
+      const base = 'HttpOnly; Path=/; Max-Age=15552000';
+      const regular = `${cookieName}=${encoded}; ${base}; SameSite=${secure ? 'Lax' : 'Strict'}${secure ? '; Secure' : ''}`;
+      if (!secure) return regular;
+      return [
+        `${secureCookieName}=${encoded}; ${base}; SameSite=Strict; Secure`,
+        regular,
+      ];
     },
     clear() {
-      const expires = 'HttpOnly; SameSite=Strict; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT';
+      const expires = 'HttpOnly; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT';
       return [
-        `${cookieName}=; ${expires}`,
-        `${secureCookieName}=; ${expires}; Secure`,
+        `${cookieName}=; ${expires}; SameSite=Lax`,
+        `${secureCookieName}=; ${expires}; SameSite=Strict; Secure`,
       ];
     },
   });
@@ -94,7 +101,7 @@ function createOptionalSearchPort(explicit) {
   if (explicit !== undefined) return explicit;
   if (String(process.env.AI_CENTER_SEARCH_DISABLED || '').trim() === '1') return null;
   try {
-    return createSearxngSearchProvider();
+    return createDeepSeekSearchProvider();
   } catch (error) {
     console.error('[web] search.web 未启用：', error?.message || error);
     return null;
@@ -127,9 +134,6 @@ export function createAiCenterServer(options = {}) {
     env: options.env || process.env,
     defaultBrowserId: instance.browserId,
   });
-  const doubao = options.doubaoConnector || (browserRuntime
-    ? createDoubaoConnector({ browserRuntime })
-    : null);
   let services;
   const moduleRegistry = options.moduleRegistry || createSourceModuleRegistry({
     twitterService: options.twitterService,
@@ -148,14 +152,16 @@ export function createAiCenterServer(options = {}) {
     dataDirectory,
     workbookPath: instance.assetWorkbookPath,
   });
+  const env = options.env || process.env;
+  const typesafeClient = options.typesafeClient || createTypeSafeSystemOneClient({ env });
   services = options.services || createDomainServices({
     store,
     sourcePort,
     personalAssetPort,
-    translationPort: options.translateService || createTranslateService({
-      browserRuntime,
-      doubaoAskQueue: doubao?.queue,
-    }),
+    translationPort: options.translateService || createTranslateService(),
+    feedFilter: options.feedFilter !== undefined
+      ? options.feedFilter
+      : createFeedFilterFromEnv({ client: typesafeClient, env }),
     agentProgressPort: options.agentProgressPort || createAgentTraceLog({
       dataDirectory,
       logDirectory: instance.legacyLayout ? undefined : path.join(instance.runtimeDirectory, 'logs'),
@@ -166,14 +172,33 @@ export function createAiCenterServer(options = {}) {
     tagCatalog: options.tagCatalog || readTagCatalogFile(
       existsSync(instance.tagCatalogPath) ? instance.tagCatalogPath : path.join(repositoryRoot, 'config/tags.default.json'),
     ),
+    restartPort: options.restartPort || createLauncherRestartPort({
+      runtimeDirectory: instance.runtimeDirectory,
+    }),
+    workPackageTracePort: options.workPackageTracePort || createWorkPackageTracePort({
+      logDirectory: path.join(instance.runtimeDirectory, 'logs'),
+      repositoryRoot,
+    }),
+    attachmentStore: options.attachmentStore || createAttachmentStore({
+      dataDirectory,
+    }),
+    loginCredential: options.loginCredential !== undefined
+      ? options.loginCredential
+      : resolveLoginCredential(options.env || process.env),
   });
   const feedQueryParsers = options.feedQueryParsers || new Map([
     ['x', parseXFeedQuery],
     ['bilibili', parseBilibiliFeedQuery],
+    ['trendforce', parseTrendForceFeedQuery],
   ]);
-  const events = createEventStreamHub(services.runtime);
-  const router = createRouter(createApiRoutes());
   const serveStatic = createStaticFileHandler(publicDirectory);
+  const uiAssets = Object.freeze({
+    getRevision: () => serveStatic.getUiRevision(),
+  });
+  const events = createEventStreamHub(services.runtime, {
+    getUiRevision: () => serveStatic.getUiRevision(),
+  });
+  const router = createRouter(createApiRoutes());
   const { cookieName, secureCookieName } = createInstanceCookieNames(instance);
   const cookies = createCookieAdapter(cookieName, secureCookieName);
   const appInfo = Object.freeze({ version, serverName: systemHostname() });
@@ -247,6 +272,12 @@ export function createAiCenterServer(options = {}) {
   const server = createServer(async (request, response) => {
     const url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
     try {
+      const httpsLocation = publicHttpsLocation(request, url, publicBaseUrl);
+      if (httpsLocation) {
+        response.writeHead(308, { Location: httpsLocation, 'Cache-Control': 'no-store' });
+        response.end();
+        return;
+      }
       if (!url.pathname.startsWith('/api/')) {
         if (await serveStatic(url.pathname, request, response)) return;
         json(response, 404, { ok: false, error: 'Not found' });
@@ -265,6 +296,7 @@ export function createAiCenterServer(options = {}) {
         pairing,
         cookies,
         appInfo,
+        uiAssets,
         feedQueryParsers,
       });
       if (!handled) json(response, 404, { ok: false, error: 'Not found' });

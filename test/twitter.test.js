@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { tweetToFeedItem, createTwitterService, normalizeXHomeFeed, explainXConnectorError, normalizeTweetBody } from '../packages/connectors/src/twitter.js';
-import { createXHomeBrowserClient, looksTruncatedTweet, mergeTweets } from '../packages/connectors/src/x/home-browser.js';
+import { tweetToFeedItem, createTwitterService, normalizeXHomeFeed, explainXConnectorError, normalizeTweetBody, mergeArticleIntoTweetText, findXArticleUrl } from '../packages/connectors/src/twitter.js';
+import { createXHomeBrowserClient, inspectMatchesRequestedFeed, looksTruncatedTweet, mergeTweets, tabTextMatchesFeed } from '../packages/connectors/src/x/home-browser.js';
 import { createConnectorRegistry } from '../packages/connectors/src/index.js';
 
 test('home tweet maps to a feed item without chrome fields', () => {
@@ -191,6 +191,137 @@ test('truncated home tweets are completed from the status page', async () => {
   assert.ok(calls.some((item) => item[0] === 'navigate' && String(item[1]).includes('/status/2100340374804070659')));
 });
 
+test('mergeTweets skips already captured tweet ids and keeps later new ones', () => {
+  const merged = mergeTweets(
+    [],
+    [
+      { tweet_id: '1', text: 'old one' },
+      { tweet_id: '2', text: 'also old' },
+      { tweet_id: '3', text: 'fresh tweet' },
+    ],
+    2,
+    { excludeExternalIds: ['1', '2'] },
+  );
+  assert.deepEqual(merged.map((item) => item.tweet_id), ['3']);
+});
+
+test('twitter service asks the home client to skip known tweet ids', async () => {
+  let asked;
+  const twitter = {
+    async fetchHomeTimeline(input) {
+      asked = input;
+      return {
+        source: 'browser_runtime_home',
+        feed: input.feed,
+        logged_in: true,
+        tweet_count: 1,
+        tweets: [{
+          tweet_id: '99',
+          tweet_url: 'https://x.com/user/status/99',
+          text: 'fresh tweet',
+          author_handle: 'user',
+        }],
+      };
+    },
+  };
+  const service = createTwitterService({ twitter, ttlMs: 60_000, now: () => 1_000 });
+  const feed = await service.getFeed({
+    feed: 'for-you',
+    limit: 50,
+    bypassCache: true,
+    excludeExternalIds: ['1', '2'],
+  });
+  assert.deepEqual(asked.excludeExternalIds, ['1', '2']);
+  assert.equal(asked.limit, 50);
+  assert.equal(feed.items[0].externalId, '99');
+});
+
+test('home browser harvest skips known tweets and keeps a later new one', async () => {
+  const runtime = {
+    async withSession(_options, callback) {
+      return callback({
+        async navigate() {},
+        async evaluate(expression) {
+          const source = String(expression);
+          if (source.includes('tweetText')) {
+            return {
+              items: [
+                { tweet_id: '1', tweet_url: 'https://x.com/u/status/1', text: 'old', author_handle: 'u' },
+                { tweet_id: '2', tweet_url: 'https://x.com/u/status/2', text: 'fresh', author_handle: 'u' },
+              ],
+            };
+          }
+          return { url: 'https://x.com/home', title: 'Home', logged_in: true, login_wall: false };
+        },
+      });
+    },
+  };
+  const client = createXHomeBrowserClient({ browserRuntime: runtime, delay: async () => {} });
+  const result = await client.fetchHomeTimeline({
+    feed: 'for-you',
+    limit: 1,
+    excludeExternalIds: ['1'],
+  });
+  assert.equal(result.tweets.length, 1);
+  assert.equal(result.tweets[0].tweet_id, '2');
+});
+
+test('following harvest stops when the home page stays on For you', async () => {
+  let harvested = false;
+  const runtime = {
+    async withSession(_options, callback) {
+      return callback({
+        async navigate() {},
+        async evaluate(expression) {
+          if (String(expression).includes('tweetText')) {
+            harvested = true;
+            return { items: [{ tweet_id: '1', tweet_url: 'https://x.com/u/status/1', text: 'recommended', author_handle: 'u' }] };
+          }
+          return {
+            url: 'https://x.com/home',
+            title: 'Home',
+            logged_in: true,
+            login_wall: false,
+            selected_tab: { text: 'For you', selected: true },
+            tabs: [
+              { text: 'For you', selected: true },
+              { text: 'Following', selected: false },
+            ],
+          };
+        },
+      });
+    },
+  };
+  const client = createXHomeBrowserClient({ browserRuntime: runtime, delay: async () => {} });
+  const result = await client.fetchHomeTimeline({ feed: 'following', limit: 5 });
+  assert.equal(result.error, 'feed_tab_mismatch');
+  assert.equal(result.tweets.length, 0);
+  assert.equal(harvested, false);
+  assert.equal(tabTextMatchesFeed('正在关注', 'following'), true);
+  assert.equal(inspectMatchesRequestedFeed({ selected_tab: { text: 'For you' } }, 'following'), false);
+});
+
+test('twitter service explains a following tab mismatch without returning recommended tweets', async () => {
+  const twitter = {
+    async fetchHomeTimeline() {
+      return {
+        source: 'browser_runtime_home',
+        feed: 'following',
+        logged_in: true,
+        error: 'feed_tab_mismatch',
+        selected_tab: { text: 'For you', selected: true },
+        tweets: [],
+      };
+    },
+  };
+  const service = createTwitterService({ twitter, ttlMs: 60_000, now: () => 1_000 });
+  const feed = await service.getFeed({ feed: 'following', limit: 50, bypassCache: true });
+  assert.equal(feed.mode, 'error');
+  assert.equal(feed.feed, 'following');
+  assert.equal(feed.items.length, 0);
+  assert.match(feed.note, /正在关注/);
+});
+
 test('mergeTweets replaces a truncated tweet with a longer body', () => {
   assert.equal(looksTruncatedTweet({ text: 'the story continues...' }), false);
   assert.equal(looksTruncatedTweet({ text: 'half…', truncated: true }), true);
@@ -208,4 +339,61 @@ test('mergeTweets replaces a truncated tweet with a longer body', () => {
   );
   assert.equal(filled[0].text.length, 900);
   assert.equal(filled[0].truncated, false);
+});
+
+test('article text is merged into the existing tweet body without a new field', () => {
+  assert.equal(findXArticleUrl({
+    text: '写了篇文章 https://x.com/i/article/2100776556025278464',
+  }), 'https://x.com/i/article/2100776556025278464');
+  const merged = mergeArticleIntoTweetText(
+    '写了篇文章从Jev的研究背景到原理',
+    '新决策模型 Jev 深度剖析\n\n看完 Jev 的发布，我关注的点是它比LLM放弃了什么',
+  );
+  assert.match(merged, /写了篇文章/);
+  assert.match(merged, /比LLM放弃了什么/);
+  const item = tweetToFeedItem({
+    tweet_id: '2100782328557777353',
+    tweet_url: 'https://x.com/SkyhighFeng/status/2100782328557777353',
+    text: merged,
+    article_url: 'https://x.com/i/article/2100776556025278464',
+    author_handle: 'SkyhighFeng',
+  });
+  assert.equal(item.body, merged);
+  assert.equal('article_url' in item, false);
+  assert.equal('articleUrl' in item, false);
+});
+
+test('home client opens an article page and appends its body to tweet text', async () => {
+  const calls = [];
+  const runtime = {
+    async withSession(_options, callback) {
+      return callback({
+        async navigate(url) { calls.push(['navigate', url]); },
+        async evaluate(expression) {
+          const source = String(expression);
+          if (source.includes('x-article-body')) {
+            return { login_wall: false, body: '新决策模型 Jev 深度剖析 一段话讲清楚 Jev' };
+          }
+          if (source.includes('tweetText')) {
+            return {
+              items: [{
+                tweet_id: '2100782328557777353',
+                tweet_url: 'https://x.com/SkyhighFeng/status/2100782328557777353',
+                text: '写了篇文章从Jev的研究背景到原理',
+                article_url: 'https://x.com/i/article/2100776556025278464',
+                author_handle: 'SkyhighFeng',
+              }],
+            };
+          }
+          return { url: 'https://x.com/home', title: 'Home', logged_in: true, login_wall: false };
+        },
+      });
+    },
+  };
+  const client = createXHomeBrowserClient({ browserRuntime: runtime, delay: async () => {} });
+  const result = await client.fetchHomeTimeline({ feed: 'for-you', limit: 1 });
+  assert.match(result.tweets[0].text, /写了篇文章/);
+  assert.match(result.tweets[0].text, /一段话讲清楚 Jev/);
+  assert.equal('article_url' in result.tweets[0], false);
+  assert.ok(calls.some((item) => item[0] === 'navigate' && String(item[1]).includes('/article/')));
 });

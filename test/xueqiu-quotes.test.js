@@ -69,6 +69,8 @@ test('yahoo symbols map to xueqiu codes across A shares ETFs B shares and HK', (
   assert.equal(isHkYahooSymbol('USDCNY=X'), false);
   assert.equal(isXueqiuYahooSymbol('AAPL'), false);
   assert.equal(yahooToXueqiuSymbol('AAPL'), null);
+  assert.equal(isXueqiuYahooSymbol('AG00Y'), false);
+  assert.equal(yahooToXueqiuSymbol('M00Y'), null);
 });
 
 test('xueqiu quote item maps to last price previous close and session', () => {

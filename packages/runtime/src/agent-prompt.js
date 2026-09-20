@@ -18,6 +18,7 @@ const CORE_PROMPT = `你是 AI Center 的单 Agent。直接完成用户任务。
 - 用户明确指定某个数据范围时优先尊重该范围。
 - 优先专用 Tool，不要用通用关键词搜索模拟已经存在的结构化能力。
 - Tool 返回后判断信息是否够；够了就回答，不够再继续调用。
+- Retrieval 结果若带 evidence 分数，先按相关性、证据强度和来源质量再筛一次；低分或被筛掉的条目不能当事实。证据充分时不必为了凑次数继续搜。
 - 不重复调用重叠 Tool 获取同一事实。
 - 没有实际调用某个 Tool，就不能声称调用过。
 - holdings.get 已含当前盈亏；holdings.rank 只取短排序切片。
@@ -31,7 +32,23 @@ const WEB_MODE_PROMPT = Object.freeze({
   always: '用户允许并倾向在有帮助时使用 Web，但 web.search 仍是普通工具，不是必须调用。',
 });
 
-export function buildAgentSystemInstruction(webMode = 'off') {
+const RESEARCH_MODE_PROMPT = Object.freeze({
+  standard: '当前是普通问答。不要声称已经启用专业研究流程。',
+  research: '当前是专业研究模式。先界定问题、所需证据和未知项，再调用工具。研究方法关键词与额外研究工具由研究配置注入；清单为空时不要假装已经使用了未暴露的方法或工具。',
+});
+
+export function buildResearchInstruction(researchProfile) {
+  const profile = researchProfile && typeof researchProfile === 'object' ? researchProfile : {};
+  const mode = profile.mode === 'research' ? 'research' : 'standard';
+  const keywords = Array.isArray(profile.methodKeywords)
+    ? profile.methodKeywords.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+  if (mode !== 'research') return RESEARCH_MODE_PROMPT.standard;
+  if (!keywords.length) return RESEARCH_MODE_PROMPT.research;
+  return `${RESEARCH_MODE_PROMPT.research}\n本轮研究方法关键词：${keywords.join('、')}。`;
+}
+
+export function buildAgentSystemInstruction(webMode = 'off', researchProfile) {
   const mode = webMode === 'always' || webMode === 'fallback' ? webMode : 'off';
-  return `${CORE_PROMPT}\n\n${WEB_MODE_PROMPT[mode]}`;
+  return `${CORE_PROMPT}\n\n${WEB_MODE_PROMPT[mode]}\n\n${buildResearchInstruction(researchProfile)}`;
 }

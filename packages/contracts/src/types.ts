@@ -1,20 +1,26 @@
 import { z } from 'zod';
-import type { SourceAccountSchema, SubscriptionSchema, CaptureSchema, ContentItemSchema, UserItemStateSchema, FeedItemTranslationSchema } from './feed.js';
+import type { SourceAccountSchema, SubscriptionSchema, CaptureSchema, ContentItemSchema, UserItemStateSchema, FeedItemTranslationSchema, FeedIdentityFingerprintSchema } from './feed.js';
 import type {
   InstrumentSchema, InstrumentAliasSchema, QuoteSnapshotSchema, PortfolioSchema, TransactionSchema,
-  PersonalAssetDashboardSchema, HoldingLotSchema, HoldingsBoardSchema, PortfolioImportSchema,
+  PersonalAssetDashboardSchema, PersonalAssetTypeSchema, PersonalAssetAccountSchema,
+  PersonalAssetAccountViewSchema, PersonalAssetSnapshotSchema, PersonalAssetImportSchema,
+  PersonalAssetImportResultSchema, HoldingLotSchema, HoldingsBoardSchema, PortfolioImportSchema,
   PortfolioImportResultSchema,
 } from './trading.js';
 import type {
   InspirationSchema, AiSessionSchema, AiSessionExchangeSchema, AiRunSchema,
   KnowledgeDocumentSchema, KnowledgeRevisionSchema, CreateInspirationInputSchema,
+  AttachmentSchema, CreateAttachmentInputSchema,
+  WorkPackageSchema, CreateWorkPackageInputSchema, ContinueWorkPackageInputSchema,
+  WorkPackageGoalSchema, WorkPackageProgressSchema, WorkPackageParentTraceSchema,
+  WorkPackageTraceSchema,
 } from './knowledge.js';
 import type {
   TaxonomyNodeSchema, TaxonomyCatalogSchema, TaxonomyAssignmentSchema, StructuredArtifactSchema,
   StructureJobInputSchema, StructureJobOutputSchema, SaveStructuredArtifactInputSchema,
 } from './taxonomy.js';
-import type { AiRunContextRefSchema, ContextReferenceSchema } from './context.js';
-import type { AgentJobSchema, DomainEventSchema, CapabilityManifestSchema } from './runtime.js';
+import type { AiRunContextRefSchema, ContextReferenceSchema, PackReferencesInputSchema } from './context.js';
+import type { AgentJobSchema, DomainEventSchema, CapabilityManifestSchema, WorkerJobConcurrencySchema } from './runtime.js';
 import type {
   TagDefinitionSchema, TagCatalogFileSchema, ResourceTaggingSchema, TagAnalyzeJobInputSchema,
 } from './tagging.js';
@@ -31,8 +37,11 @@ import type {
   FeedSearchToolInputSchema, FeedTagSearchToolInputSchema, KnowledgeGetToolInputSchema, HoldingsRankToolInputSchema,
   StaticSignalsListToolInputSchema, OfficialSourceGetToolInputSchema,
   AgentRunProgressStepSchema, ActiveAgentRunSchema, ReferenceInputSchema, CreateAgentRunInputSchema,
-  SaveStructuredArtifactToolInputSchema,
+  AgentResearchModeSchema, AgentResearchProfileSchema, SaveStructuredArtifactToolInputSchema,
 } from './agent.js';
+import type {
+  ArticleAnalysisSourceSchema, CreateArticleAnalysisInputSchema, ArticleAnalysisRunViewSchema,
+} from './article-analysis.js';
 
 export type SourceAccount = z.infer<typeof SourceAccountSchema>;
 export type Subscription = z.infer<typeof SubscriptionSchema>;
@@ -40,18 +49,34 @@ export type Capture = z.infer<typeof CaptureSchema>;
 export type ContentItem = z.infer<typeof ContentItemSchema>;
 export type UserItemState = z.infer<typeof UserItemStateSchema>;
 export type FeedItemTranslation = z.infer<typeof FeedItemTranslationSchema>;
+export type FeedIdentityFingerprint = z.infer<typeof FeedIdentityFingerprintSchema>;
 export type Instrument = z.infer<typeof InstrumentSchema>;
 export type InstrumentAlias = z.infer<typeof InstrumentAliasSchema>;
 export type QuoteSnapshot = z.infer<typeof QuoteSnapshotSchema>;
 export type Portfolio = z.infer<typeof PortfolioSchema>;
 export type Transaction = z.infer<typeof TransactionSchema>;
 export type PersonalAssetDashboard = z.infer<typeof PersonalAssetDashboardSchema>;
+export type PersonalAssetType = z.infer<typeof PersonalAssetTypeSchema>;
+export type PersonalAssetAccount = z.infer<typeof PersonalAssetAccountSchema>;
+export type PersonalAssetAccountView = z.infer<typeof PersonalAssetAccountViewSchema>;
+export type PersonalAssetSnapshot = z.infer<typeof PersonalAssetSnapshotSchema>;
+export type PersonalAssetImport = z.infer<typeof PersonalAssetImportSchema>;
+export type PersonalAssetImportResult = z.infer<typeof PersonalAssetImportResultSchema>;
 export type HoldingLot = z.infer<typeof HoldingLotSchema>;
 export type HoldingsBoard = z.infer<typeof HoldingsBoardSchema>;
 export type PortfolioImport = z.infer<typeof PortfolioImportSchema>;
 export type PortfolioImportResult = z.infer<typeof PortfolioImportResultSchema>;
 export type Inspiration = z.infer<typeof InspirationSchema>;
 export type CreateInspirationInput = z.infer<typeof CreateInspirationInputSchema>;
+export type Attachment = z.infer<typeof AttachmentSchema>;
+export type CreateAttachmentInput = z.infer<typeof CreateAttachmentInputSchema>;
+export type WorkPackage = z.infer<typeof WorkPackageSchema>;
+export type CreateWorkPackageInput = z.infer<typeof CreateWorkPackageInputSchema>;
+export type ContinueWorkPackageInput = z.infer<typeof ContinueWorkPackageInputSchema>;
+export type WorkPackageGoal = z.infer<typeof WorkPackageGoalSchema>;
+export type WorkPackageProgress = z.infer<typeof WorkPackageProgressSchema>;
+export type WorkPackageParentTrace = z.infer<typeof WorkPackageParentTraceSchema>;
+export type WorkPackageTrace = z.infer<typeof WorkPackageTraceSchema>;
 export type AiSession = z.infer<typeof AiSessionSchema>;
 export type AiSessionExchange = z.infer<typeof AiSessionExchangeSchema>;
 export type AiRun = z.infer<typeof AiRunSchema>;
@@ -69,6 +94,7 @@ export type AiRunContextRef = z.infer<typeof AiRunContextRefSchema>;
 export type AgentJob = z.infer<typeof AgentJobSchema>;
 export type DomainEvent = z.infer<typeof DomainEventSchema>;
 export type CapabilityManifest = z.infer<typeof CapabilityManifestSchema>;
+export type WorkerJobConcurrency = z.infer<typeof WorkerJobConcurrencySchema>;
 export type TagDefinition = z.infer<typeof TagDefinitionSchema>;
 export type TagCatalogFile = z.infer<typeof TagCatalogFileSchema>;
 export type ResourceTagging = z.infer<typeof ResourceTaggingSchema>;
@@ -104,5 +130,11 @@ export type OfficialSourceGetToolInput = z.infer<typeof OfficialSourceGetToolInp
 export type AgentRunProgressStep = z.infer<typeof AgentRunProgressStepSchema>;
 export type ActiveAgentRun = z.infer<typeof ActiveAgentRunSchema>;
 export type ReferenceInput = z.infer<typeof ReferenceInputSchema>;
+export type PackReferencesInput = z.infer<typeof PackReferencesInputSchema>;
 export type CreateAgentRunInput = z.infer<typeof CreateAgentRunInputSchema>;
+export type AgentResearchMode = z.infer<typeof AgentResearchModeSchema>;
+export type AgentResearchProfile = z.infer<typeof AgentResearchProfileSchema>;
 export type SaveStructuredArtifactToolInput = z.infer<typeof SaveStructuredArtifactToolInputSchema>;
+export type ArticleAnalysisSource = z.infer<typeof ArticleAnalysisSourceSchema>;
+export type CreateArticleAnalysisInput = z.infer<typeof CreateArticleAnalysisInputSchema>;
+export type ArticleAnalysisRunView = z.infer<typeof ArticleAnalysisRunViewSchema>;

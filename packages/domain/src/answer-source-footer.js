@@ -22,7 +22,24 @@ function refKey(item) {
   return `${item.resourceType}:${item.resourceId}${revision}`;
 }
 
-export function projectAnswerSourceFooter(refs = [], { limit = ANSWER_SOURCE_FOOTER_LIMIT } = {}) {
+function projectEvidenceNote(evidence) {
+  if (!evidence || typeof evidence !== 'object') return null;
+  const confidence = Number(evidence.confidence);
+  const sufficiency = Number(evidence.sufficiency);
+  const acceptedCount = Number(evidence.acceptedCount);
+  const rejectedCount = Number(evidence.rejectedCount);
+  if (![confidence, sufficiency, acceptedCount, rejectedCount].some((value) => Number.isFinite(value))) {
+    return null;
+  }
+  return {
+    confidence: Number.isFinite(confidence) ? Math.min(1, Math.max(0, confidence)) : null,
+    sufficiency: Number.isFinite(sufficiency) ? Math.min(1, Math.max(0, sufficiency)) : null,
+    acceptedCount: Number.isFinite(acceptedCount) ? acceptedCount : 0,
+    rejectedCount: Number.isFinite(rejectedCount) ? rejectedCount : 0,
+  };
+}
+
+export function projectAnswerSourceFooter(refs = [], { limit = ANSWER_SOURCE_FOOTER_LIMIT, evidence } = {}) {
   const cap = Math.max(0, Number.isInteger(limit) ? limit : ANSWER_SOURCE_FOOTER_LIMIT);
   const ranked = [];
   const index = new Map();
@@ -63,5 +80,6 @@ export function projectAnswerSourceFooter(refs = [], { limit = ANSWER_SOURCE_FOO
       .filter((group) => group.items.length),
     extraCount: Math.max(0, ranked.length - items.length),
     total: ranked.length,
+    evidence: projectEvidenceNote(evidence),
   };
 }

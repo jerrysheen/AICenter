@@ -1,4 +1,4 @@
-import { parseBuildContextInput } from '../../../../packages/contracts/src/index.js';
+import { parseBuildContextInput, parsePackReferencesInput } from '../../../../packages/contracts/src/index.js';
 import { json, readJson } from '../http/response.js';
 
 export function createContextRoutes() {
@@ -9,6 +9,14 @@ export function createContextRoutes() {
       const workspaceId = identity?.device?.workspaceId || input.workspaceId;
       const context = await services.context.build({ ...input, workspaceId });
       json(response, 200, { ok: true, context });
+    },
+  }, {
+    method: 'POST', path: '/api/v1/context/pack',
+    async handler({ request, response, services, identity }) {
+      const input = parsePackReferencesInput(await readJson(request));
+      const workspaceId = identity?.device?.workspaceId || 'local';
+      const pack = await services.context.packReferences({ workspaceId, references: input.references });
+      json(response, 200, { ok: true, pack });
     },
   }];
 }

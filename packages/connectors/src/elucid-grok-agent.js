@@ -1,5 +1,119 @@
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+import { modelIdForProfile } from './agent-model-profile.js';
+
 const DEFAULT_ROOT = 'https://hk.getelucid.com/v1';
 const DEFAULT_MODEL = 'grok-4.6';
+export const ELUCID_GROK_DEFAULT_TIMEOUT_MS = 90_000;
+export const ELUCID_GROK_MAX_TIMEOUT_MS = 600_000;
+
+export function clampElucidTimeoutMs(value, fallback = ELUCID_GROK_DEFAULT_TIMEOUT_MS) {
+  const limit = Number(value);
+  if (!Number.isFinite(limit) || limit <= 0) return fallback;
+  return Math.max(10_000, Math.min(limit, ELUCID_GROK_MAX_TIMEOUT_MS));
+}
+
+export function elucidDispatcherOptions(timeoutMs) {
+  const limit = clampElucidTimeoutMs(timeoutMs);
+  return {
+    headersTimeout: limit,
+    bodyTimeout: limit,
+    connectTimeout: 30_000,
+  };
+}
+
+export function elucidHttpRequest(url, {
+  method = 'GET',
+  headers = {},
+  body,
+  signal,
+  timeoutMs = ELUCID_GROK_DEFAULT_TIMEOUT_MS,
+  onTransport,
+} = {}) {
+  const parsed = new URL(url);
+  const transport = parsed.protocol === 'http:' ? httpRequest : httpsRequest;
+  const requested = Number(timeoutMs);
+  const limit = Number.isFinite(requested) && requested > 0 ? requested : ELUCID_GROK_DEFAULT_TIMEOUT_MS;
+  const startedAt = Date.now();
+  let bytesReceived = 0;
+  let lastChunkEmit = 0;
+  let sawFirstByte = false;
+  const emit = (phase, extra = {}) => {
+    if (typeof onTransport !== 'function') return;
+    try {
+      onTransport({
+        phase,
+        elapsedMs: Date.now() - startedAt,
+        bytesReceived,
+        ...extra,
+      });
+    } catch {
+      /* transport observers must not fail the request */
+    }
+  };
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn) => {
+      if (settled) return;
+      settled = true;
+      fn();
+    };
+    const req = transport({
+      protocol: parsed.protocol,
+      hostname: parsed.hostname,
+      port: parsed.port || undefined,
+      path: `${parsed.pathname}${parsed.search}`,
+      method,
+      headers,
+    }, (response) => {
+      emit('headers', { status: response.statusCode });
+      const chunks = [];
+      response.on('data', (chunk) => {
+        chunks.push(chunk);
+        bytesReceived += chunk.length;
+        if (!sawFirstByte) {
+          sawFirstByte = true;
+          lastChunkEmit = bytesReceived;
+          emit('first-byte');
+          return;
+        }
+        if (bytesReceived - lastChunkEmit >= 2048) {
+          lastChunkEmit = bytesReceived;
+          emit('chunk');
+        }
+      });
+      response.on('error', (error) => finish(() => reject(error)));
+      response.on('end', () => {
+        emit('complete');
+        finish(() => resolve(new Response(Buffer.concat(chunks), {
+          status: response.statusCode,
+          headers: response.headers,
+        })));
+      });
+    });
+    req.on('socket', () => emit('socket'));
+    req.setTimeout(limit, () => {
+      const error = new Error(`Elucid Grok 等待响应超过 ${Math.round(limit / 1000)} 秒`);
+      error.name = 'TimeoutError';
+      req.destroy();
+      finish(() => reject(error));
+    });
+    if (signal) {
+      if (signal.aborted) {
+        req.destroy();
+        finish(() => reject(signal.reason instanceof Error ? signal.reason : new Error('Aborted')));
+        return;
+      }
+      signal.addEventListener('abort', () => {
+        req.destroy();
+        finish(() => reject(signal.reason instanceof Error ? signal.reason : new Error('Aborted')));
+      }, { once: true });
+    }
+    req.on('error', (error) => finish(() => reject(error)));
+    req.end(body);
+    emit('request');
+  });
+}
 
 function text(value) {
   return typeof value === 'string' ? value.trim() : '';
@@ -87,24 +201,40 @@ Runtime 会告知 Tool budget（used / remaining / max）；单轮请求数不�
 
 /** OpenAI Responses-compatible adapter for the Elucid Grok endpoint used by local Codex. */
 export function createElucidGrokAgentClient(options = {}) {
-  const fetchImpl = options.fetch || fetch;
+  const fetchImpl = options.fetch || ((url, init) => elucidHttpRequest(url, {
+    method: init.method,
+    headers: init.headers,
+    body: init.body,
+    signal: init.signal,
+    timeoutMs: init.timeoutMs,
+    onTransport: init.onTransport,
+  }));
   const apiKey = options.apiKey !== undefined ? text(options.apiKey) : envText('ELUCID_GROK_API_KEY', 'AI_CENTER_GROK_API_KEY');
   const apiRoot = (text(options.apiRoot) || envText('AI_CENTER_ELUCID_GROK_API_ROOT') || DEFAULT_ROOT).replace(/\/$/, '');
   const modelId = text(options.model) || envText('AI_CENTER_ELUCID_GROK_MODEL') || DEFAULT_MODEL;
+  const researchModelId = text(options.researchModel) || envText('AI_CENTER_ELUCID_GROK_RESEARCH_MODEL', 'AI_CENTER_AGENT_RESEARCH_MODEL');
   const configuredTimeout = options.timeoutMs ?? envText('AI_CENTER_ELUCID_GROK_TIMEOUT_MS');
-  const timeoutMs = Math.max(10_000, Math.min(Number(configuredTimeout) || 90_000, 180_000));
+  const timeoutMs = clampElucidTimeoutMs(configuredTimeout);
 
   return Object.freeze({
-    async respond({ contents = [], tools = [], signal, budgetNote, systemInstruction, toolChoice, timeoutMs: respondTimeout } = {}) {
+    async respond({
+      contents = [],
+      tools = [],
+      signal,
+      budgetNote,
+      systemInstruction,
+      toolChoice,
+      timeoutMs: respondTimeout,
+      researchProfile,
+      onTransport,
+    } = {}) {
       if (!apiKey) throw new Error('未配置 ELUCID_GROK_API_KEY');
+      const usedModel = modelIdForProfile(modelId, researchModelId, researchProfile);
       const instruction = mergeInstruction(systemInstruction || INSTRUCTIONS, budgetNote);
       const forcedTool = elucidToolChoice(toolChoice);
-      const requestedTimeout = Number(respondTimeout);
-      const limit = Number.isFinite(requestedTimeout) && requestedTimeout > 0
-        ? Math.max(10_000, Math.min(requestedTimeout, 180_000))
-        : timeoutMs;
+      const limit = clampElucidTimeoutMs(respondTimeout, timeoutMs);
       const body = {
-        model: modelId,
+        model: usedModel,
         instructions: instruction,
         tools: tools.map((tool) => ({
           type: 'function',
@@ -120,7 +250,9 @@ export function createElucidGrokAgentClient(options = {}) {
       const response = await fetchImpl(`${apiRoot}/responses`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(limit)]) : AbortSignal.timeout(limit),
+        signal,
+        timeoutMs: limit,
+        onTransport,
         body: JSON.stringify(body),
       });
       if (!response.ok) {
@@ -142,7 +274,7 @@ export function createElucidGrokAgentClient(options = {}) {
         text: answer,
         toolCalls: calls,
         modelContent: { role: 'model', provider: 'elucid-responses', output: payload.output || [] },
-        providerId: 'elucid-grok', modelId, warnings: [],
+        providerId: 'elucid-grok', modelId: usedModel, warnings: [],
       };
     },
   });

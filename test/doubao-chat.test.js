@@ -10,7 +10,7 @@ import {
   createDoubaoChatClient,
   splitFillChunks,
   toTipTapHtml,
-} from '../packages/connectors/src/doubao/index.js';
+} from '../packages/connectors/src/doubao/chat-browser.js';
 
 test('TipTap HTML escapes the question', () => {
   assert.equal(toTipTapHtml('a<b>\nc'), '<p>a&lt;b&gt;</p><p>c</p>');
@@ -58,26 +58,26 @@ test('send is confirmed by echo, cleared input, streaming or chat url', () => {
 
 test('wait uses an earlier assistant bubble when the latest is a follow-up', () => {
   let acc = createWaitAccumulator(0);
-  const json = '{"schema_version":"feed_translate_output.v0.1","batch_id":"b","translations":[{"id":"x:1","translated":"你好"}]}';
+  const facts = '公开报道：美联储维持利率。来源：美联储。';
   const ctx = {
     startedAt: 0,
     beforeReplyCount: 1,
     idleTimeoutMs: 30_000,
     maxTimeoutMs: 180_000,
     stableChecks: 1,
-    isComplete: (text) => text.includes('"translated":"你好"'),
+    isComplete: (text) => text.includes('维持利率'),
   };
   let stepped = applyWaitSnapshot(acc, {
-    assistantReplies: ['#0', json, '还需要我继续翻译吗？'],
+    assistantReplies: ['#0', facts, '还需要我继续补充吗？'],
     generating: false,
   }, { ...ctx, now: 100 });
   acc = stepped.acc;
   stepped = applyWaitSnapshot(acc, {
-    assistantReplies: ['#0', json, '还需要我继续翻译吗？'],
+    assistantReplies: ['#0', facts, '还需要我继续补充吗？'],
     generating: false,
   }, { ...ctx, now: 200 });
   assert.equal(stepped.done, true);
-  assert.equal(stepped.acc.lastCandidate.includes('"translated":"你好"'), true);
+  assert.equal(stepped.acc.lastCandidate.includes('维持利率'), true);
 });
 
 test('wait does not finish while assistant text is still growing, even past max timeout', () => {
@@ -89,10 +89,10 @@ test('wait does not finish while assistant text is still growing, even past max 
     maxTimeoutMs: 1_000,
     stableChecks: 2,
   };
-  let stepped = applyWaitSnapshot(acc, { assistantReplies: ['{"items":['], generating: true }, { ...ctx, now: 2_000 });
+  let stepped = applyWaitSnapshot(acc, { assistantReplies: ['公开报道：'], generating: true }, { ...ctx, now: 2_000 });
   acc = stepped.acc;
   assert.equal(stepped.done, false);
-  stepped = applyWaitSnapshot(acc, { assistantReplies: ['{"items":[{"item_id":"x1"'], generating: true }, { ...ctx, now: 3_000 });
+  stepped = applyWaitSnapshot(acc, { assistantReplies: ['公开报道：美联储维持'], generating: true }, { ...ctx, now: 3_000 });
   assert.equal(stepped.done, false);
   assert.equal(stepped.grewThisPoll, true);
 });
@@ -106,7 +106,7 @@ test('wait takes a settled reply without calling it a timeout while streaming fl
     maxTimeoutMs: 180_000,
     stableChecks: 2,
   };
-  const reply = '{"items":[{"item_id":"x1","tags":["ai"]}]}';
+  const reply = '公开报道：美联储维持利率。来源：美联储。';
   let stepped = applyWaitSnapshot(acc, { assistantReplies: [reply], generating: true }, { ...ctx, now: 100 });
   acc = stepped.acc;
   stepped = applyWaitSnapshot(acc, { assistantReplies: [reply], generating: true }, { ...ctx, now: 200 });

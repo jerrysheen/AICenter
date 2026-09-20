@@ -12,6 +12,7 @@ import {
   ValidationError,
 } from '../packages/contracts/src/index.js';
 import { createStore } from '../packages/database/src/index.js';
+import { createFeedService } from '../packages/domain/src/feed-service.js';
 import { createCapabilityRegistry } from '../packages/runtime/src/capability-registry.js';
 
 function temporaryStore() {
@@ -128,6 +129,281 @@ test('hidden content items leave the provider feed but stay readable by id', () 
   assert.equal(temporary.store.hidePost(post.id), true);
   assert.equal(temporary.store.listPosts().some((row) => row.id === post.id), false);
   temporary.store.close();
+  temporary.remove();
+});
+
+test('X refresh tells the source which tweet ids are already captured', async () => {
+  const temporary = temporaryStore();
+  const feed = temporary.store.repositories.feed;
+  const source = feed.upsertSourceAccount({
+    workspaceId: 'local', provider: 'x', externalId: 'x:home:for-you', displayName: 'X',
+    profileUrl: 'https://x.com/home',
+  });
+  feed.saveCapture({
+    workspaceId: 'local', provider: 'x', externalId: 'already-there', sourceAccountId: source.id,
+    sourceUrl: 'https://x.com/user/status/already-there', contentHash: 'sha256-old',
+  });
+  const reads = [];
+  const service = createFeedService({
+    legacyRepository: temporary.store,
+    feedRepository: feed,
+    sourcePort: {
+      findByProvider(providerId) {
+        return providerId === 'x' ? { id: 'content.x.test' } : null;
+      },
+      persistence() {
+        return {
+          providerId: 'x',
+          sourceAccount: {
+            externalId: 'x:home:for-you',
+            displayName: 'X',
+            profileUrl: 'https://x.com/home',
+            authMode: 'browser-session',
+          },
+        };
+      },
+      async read(_id, _input, context) {
+        reads.push(context?.excludeExternalIds || []);
+        return {
+          data: {
+            feed: 'for-you',
+            mode: 'live',
+            loggedIn: true,
+            note: 'live',
+            fetchedAt: Date.now(),
+            items: [{
+              externalId: 'brand-new',
+              title: '新内容',
+              body: '新内容',
+              summary: '新内容',
+              sourceUrl: 'https://x.com/user/status/brand-new',
+              authorName: 'user',
+              publishedAt: 2,
+            }],
+          },
+        };
+      },
+    },
+  });
+  const result = await service.getExternalFeed('x', { feed: 'for-you', limit: 50, refresh: true });
+  assert.ok(reads[0].includes('already-there'));
+  assert.equal(result.added, 1);
+  assert.equal(result.items.some((item) => item.externalId === 'brand-new'), true);
+  temporary.store.close();
+  temporary.remove();
+});
+
+test('hidden social items stay hidden after the same tweet is ingested again', async () => {
+  const temporary = temporaryStore();
+  const snapshotItems = [{
+    externalId: 'stay-hidden',
+    title: '待删除',
+    body: '正文',
+    summary: '正文',
+    sourceUrl: 'https://x.com/user/status/stay-hidden',
+    authorName: 'user',
+    publishedAt: 1,
+  }];
+  const service = createFeedService({
+    legacyRepository: temporary.store,
+    feedRepository: temporary.store.repositories.feed,
+    sourcePort: {
+      findByProvider(providerId) {
+        return providerId === 'x' ? { id: 'content.x.test' } : null;
+      },
+      persistence() {
+        return {
+          providerId: 'x',
+          sourceAccount: {
+            externalId: 'x:home:for-you',
+            displayName: 'X',
+            profileUrl: 'https://x.com/home',
+            authMode: 'browser-session',
+          },
+        };
+      },
+      async read() {
+        return {
+          data: {
+            feed: 'for-you',
+            mode: 'live',
+            loggedIn: true,
+            note: 'live',
+            fetchedAt: Date.now(),
+            items: snapshotItems,
+          },
+        };
+      },
+    },
+  });
+  const first = await service.getExternalFeed('x', { feed: 'for-you', limit: 50, refresh: true });
+  assert.equal(first.items.length, 1);
+  const hidden = service.hideContentItem('local', first.items[0].resourceId);
+  assert.equal(hidden.isHidden, true);
+  snapshotItems[0] = { ...snapshotItems[0], body: '改过的正文', title: '改过的正文' };
+  const again = await service.getExternalFeed('x', { feed: 'for-you', limit: 50, refresh: true });
+  assert.equal(again.items.length, 0);
+  assert.equal(service.getContentItem('local', first.items[0].resourceId).title, '待删除');
+  temporary.store.close();
+  temporary.remove();
+});
+
+test('same author and tweet text skip ingest even with a new tweet id', async () => {
+  const temporary = temporaryStore();
+  const snapshotItems = [{
+    externalId: 'tweet-a',
+    title: '同一段话',
+    body: '同一段话',
+    summary: '同一段话',
+    sourceUrl: 'https://x.com/user/status/tweet-a',
+    authorName: 'user',
+    authorHandle: '@user',
+    publishedAt: 1,
+  }];
+  const service = createFeedService({
+    legacyRepository: temporary.store,
+    feedRepository: temporary.store.repositories.feed,
+    sourcePort: {
+      findByProvider(providerId) {
+        return providerId === 'x' ? { id: 'content.x.test' } : null;
+      },
+      persistence() {
+        return {
+          providerId: 'x',
+          sourceAccount: {
+            externalId: 'x:home:for-you',
+            displayName: 'X',
+            profileUrl: 'https://x.com/home',
+            authMode: 'browser-session',
+          },
+        };
+      },
+      async read() {
+        return {
+          data: {
+            feed: 'for-you',
+            mode: 'live',
+            loggedIn: true,
+            note: 'live',
+            fetchedAt: Date.now(),
+            items: snapshotItems,
+          },
+        };
+      },
+    },
+  });
+  const first = await service.getExternalFeed('x', { feed: 'for-you', refresh: true });
+  assert.equal(first.added, 1);
+  snapshotItems[0] = {
+    ...snapshotItems[0],
+    externalId: 'tweet-b',
+    sourceUrl: 'https://x.com/user/status/tweet-b',
+  };
+  const again = await service.getExternalFeed('x', { feed: 'for-you', refresh: true });
+  assert.equal(again.added, 0);
+  assert.equal(again.items.length, 1);
+  assert.equal(again.items[0].externalId, 'tweet-a');
+  temporary.store.close();
+  temporary.remove();
+});
+
+test('identity fingerprints survive content purge and keep hidden tweets out', async () => {
+  const temporary = temporaryStore();
+  const snapshotItems = [{
+    externalId: 'forget-me',
+    title: '垃圾广告',
+    body: '垃圾广告',
+    summary: '垃圾广告',
+    sourceUrl: 'https://x.com/user/status/forget-me',
+    authorName: 'spammer',
+    authorHandle: '@spammer',
+    publishedAt: 1,
+  }];
+  const service = createFeedService({
+    legacyRepository: temporary.store,
+    feedRepository: temporary.store.repositories.feed,
+    sourcePort: {
+      findByProvider(providerId) {
+        return providerId === 'x' ? { id: 'content.x.test' } : null;
+      },
+      persistence() {
+        return {
+          providerId: 'x',
+          sourceAccount: {
+            externalId: 'x:home:for-you',
+            displayName: 'X',
+            profileUrl: 'https://x.com/home',
+            authMode: 'browser-session',
+          },
+        };
+      },
+      async read() {
+        return {
+          data: {
+            feed: 'for-you',
+            mode: 'live',
+            loggedIn: true,
+            note: 'live',
+            fetchedAt: Date.now(),
+            items: snapshotItems,
+          },
+        };
+      },
+    },
+  });
+  const first = await service.getExternalFeed('x', { feed: 'for-you', refresh: true });
+  assert.equal(first.items.length, 1);
+  assert.equal(service.hideContentItem('local', first.items[0].resourceId).isHidden, true);
+  temporary.store.close();
+  const purged = new Database(temporary.databasePath);
+  purged.exec(`
+    DELETE FROM user_item_states;
+    DELETE FROM content_items;
+    DELETE FROM captures;
+  `);
+  assert.equal(purged.prepare('SELECT COUNT(*) AS count FROM feed_identity_fingerprints').get().count, 1);
+  purged.close();
+  const restored = createStore(temporary.databasePath);
+  const againService = createFeedService({
+    legacyRepository: restored,
+    feedRepository: restored.repositories.feed,
+    sourcePort: {
+      findByProvider(providerId) {
+        return providerId === 'x' ? { id: 'content.x.test' } : null;
+      },
+      persistence() {
+        return {
+          providerId: 'x',
+          sourceAccount: {
+            externalId: 'x:home:for-you',
+            displayName: 'X',
+            profileUrl: 'https://x.com/home',
+            authMode: 'browser-session',
+          },
+        };
+      },
+      async read() {
+        return {
+          data: {
+            feed: 'for-you',
+            mode: 'live',
+            loggedIn: true,
+            note: 'live',
+            fetchedAt: Date.now(),
+            items: [{
+              ...snapshotItems[0],
+              externalId: 'forget-me-again',
+              sourceUrl: 'https://x.com/user/status/forget-me-again',
+            }],
+          },
+        };
+      },
+    },
+  });
+  const again = await againService.getExternalFeed('x', { feed: 'for-you', refresh: true });
+  assert.equal(again.added, 0);
+  assert.equal(again.items.length, 0);
+  restored.close();
   temporary.remove();
 });
 

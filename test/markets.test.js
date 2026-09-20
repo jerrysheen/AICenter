@@ -74,7 +74,7 @@ test('us board keeps catalog names, groups, and summaries', () => {
   assert.equal(nvidia.provider, 'yahoo');
   assert.equal(nvidia.market, 'us');
   assert.equal(board.groups[1], '科技');
-  assert.equal(parseUsExtraSymbols('nvda,ZZZZ', marketCatalog).join(','), 'ZZZZ');
+  assert.equal(parseUsExtraSymbols('nvda,ZZZZ,FOO.T,000660.KS', marketCatalog).join(','), 'ZZZZ');
 });
 
 test('overview board switches A shares and US by Shanghai 17:00', () => {
@@ -103,7 +103,7 @@ test('overview board switches A shares and US by Shanghai 17:00', () => {
   assert.equal(daytime.focus, 'cn');
   assert.equal(daytime.sections.length, 1);
   assert.equal(daytime.sections[0].id, 'cn');
-  assert.equal(daytime.sections[0].title, 'A股观察');
+  assert.equal(daytime.sections[0].title, 'A股 / 港股观察');
   assert.equal(evening.focus, 'us');
   assert.equal(evening.sections[0].id, 'us');
   assert.equal(evening.sections[0].title, '美股观察');
@@ -255,10 +255,24 @@ test('market service returns a global board from injected yahoo quotes', async (
       return [];
     },
   };
-  const service = createMarketService({ yahoo, ttlMs: 60_000, now: () => 1_000 });
+  const service = createMarketService({
+    yahoo,
+    ttlMs: 60_000,
+    now: () => 1_000,
+    xueqiuQuotes: { async fetchQuotes() { return []; } },
+    cnQuotes: { async fetchQuotes() { return []; } },
+    sinaFutures: {
+      async fetchQuotes(symbols) {
+        return symbols.map((symbol) => ({
+          symbol, lastPrice: 10, prevClose: 9.9, changePct: 0.1, change: 0.1,
+          high: 11, low: 9, volume: 1, sparkline: [10], currency: 'CNY', session: 'regular',
+        }));
+      },
+    },
+  });
   const board = await service.getBoard({ board: 'global' });
   assert.equal(board.board, 'global');
-  assert.equal(board.watchlist[0].symbol, '000001.SH');
+  assert.equal(board.watchlist[0].symbol, '000016.SH');
   assert.equal(board.mode, 'live');
 });
 
@@ -275,7 +289,10 @@ test('overview service loads A shares before Shanghai 17:00 and US after', async
     asia: { groups: ['全部'], indices: [], watchlist: [] },
     cn: {
       groups: ['全部', '芯片设计'],
-      indices: [{ symbol: '000001.SS', name: '上证指数', group: '指数', summary: '' }],
+      indices: [
+        { symbol: '000016.SS', name: '上证50', group: '指数', summary: '' },
+        { symbol: '^HSI', name: '恒生指数', group: '指数', summary: '' },
+      ],
       watchlist: [{ symbol: '688110.SS', name: '东芯股份', group: '芯片设计', summary: '存储芯片' }],
     },
     global: { groups: ['指数'], watchlist: [] },
@@ -318,10 +335,65 @@ test('overview service loads A shares before Shanghai 17:00 and US after', async
   assert.equal(day.focus, 'cn');
   assert.equal(day.sections[0].id, 'cn');
   assert.ok(xueqiuSymbols.includes('688110.SS'));
+  assert.ok(xueqiuSymbols.includes('000016.SS'));
+  assert.ok(yahooSymbols.includes('^HSI'));
   assert.equal(yahooSymbols.includes('NVDA'), false);
+  assert.equal(day.sections[0].title, 'A股 / 港股观察');
+  assert.deepEqual(day.sections[0].indices.map((item) => item.symbol), ['000016.SS', '^HSI']);
   const night = await service(Date.UTC(2026, 8, 18, 9, 0, 0)).getBoard({ board: 'overview' });
   assert.equal(night.focus, 'us');
   assert.equal(night.sections[0].id, 'us');
   assert.ok(yahooSymbols.includes('NVDA'));
   assert.equal(xueqiuSymbols.includes('688110.SS'), false);
+});
+
+test('global board routes Chinese futures through sina', async () => {
+  const sinaSymbols = [];
+  const yahooSymbols = [];
+  const service = createMarketService({
+    ttlMs: 1,
+    xueqiuTtlMs: 1,
+    now: () => 1,
+    marketCatalog: {
+      version: 1,
+      us: { groups: ['全部'], indices: [], watchlist: [] },
+      asia: { groups: ['全部'], indices: [], watchlist: [] },
+      cn: { groups: ['全部'], indices: [], watchlist: [] },
+      global: {
+        groups: ['贵金属', '期货'],
+        watchlist: [
+          { symbol: 'XAGUSD', yahoo: 'SI=F', name: '白银', group: '贵金属', summary: '', market: 'global', assetClass: 'metal', currency: 'USD' },
+          { symbol: 'LC', yahoo: 'LC00Y', name: '碳酸锂', group: '期货', summary: '', market: 'cn', assetClass: 'future', currency: 'CNY' },
+        ],
+      },
+    },
+    yahoo: {
+      async fetchQuotes(symbols) {
+        yahooSymbols.push(...symbols);
+        return {
+          session: 'regular',
+          quotes: symbols.map((symbol) => ({
+            symbol, name: symbol, lastPrice: 42, changePct: 1, change: 0.4, high: 43, low: 41,
+            prevClose: 41.6, volume: 1, sparkline: [42], currency: 'USD', session: 'regular',
+          })),
+        };
+      },
+    },
+    sinaFutures: {
+      async fetchQuotes(symbols) {
+        sinaSymbols.push(...symbols);
+        return symbols.map((symbol) => ({
+          symbol, name: symbol, lastPrice: 72800, prevClose: 73000, change: -200, changePct: -0.27,
+          session: 'regular', currency: 'CNY',
+        }));
+      },
+    },
+    xueqiuQuotes: { async fetchQuotes() { return []; } },
+    cnQuotes: { async fetchQuotes() { return []; } },
+  });
+  const board = await service.getBoard({ board: 'global' });
+  assert.deepEqual(sinaSymbols, ['LC00Y']);
+  assert.deepEqual(yahooSymbols, ['SI=F']);
+  assert.equal(board.watchlist.find((item) => item.symbol === 'LC').lastPrice, 72800);
+  assert.equal(board.watchlist.find((item) => item.symbol === 'XAGUSD').lastPrice, 42);
 });

@@ -15,9 +15,11 @@
   "cn": {
     "groups": ["全部", "自选"],
     "indices": [
-      { "symbol": "000001.SS", "name": "上证指数", "group": "指数", "summary": "上海市场基准" },
-      { "symbol": "399001.SZ", "name": "深证成指", "group": "指数", "summary": "深圳市场基准" },
-      { "symbol": "399006.SZ", "name": "创业板指", "group": "指数", "summary": "创业板基准" }
+      { "symbol": "000016.SS", "name": "上证50", "group": "指数", "summary": "上证50" },
+      { "symbol": "399673.SZ", "name": "创业板50", "group": "指数", "summary": "创业板50" },
+      { "symbol": "000688.SS", "name": "科创50", "group": "指数", "summary": "科创50" },
+      { "symbol": "^HSI", "name": "恒生指数", "group": "指数", "summary": "香港市场基准" },
+      { "symbol": "^HSTECH", "name": "恒生科技", "group": "指数", "summary": "港科" }
     ],
     "watchlist": []
   },
@@ -31,16 +33,27 @@
     "watchlist": []
   },
   "global": {
-    "groups": ["指数", "外汇", "利率", "贵金属", "能源", "期货", "加密"],
+    "groups": ["指数", "外汇", "利率", "国债", "贵金属", "能源", "期货", "加密"],
     "watchlist": [
-      { "symbol": "000001.SH", "yahoo": "000001.SS", "name": "上证指数", "group": "指数", "summary": "中国内地股票市场基准", "market": "cn", "assetClass": "index", "currency": "CNY" },
+      { "symbol": "000016.SH", "yahoo": "000016.SS", "name": "上证50", "group": "指数", "summary": "上证50", "market": "cn", "assetClass": "index", "currency": "CNY" },
+      { "symbol": "^HSI", "yahoo": "^HSI", "name": "恒生指数", "group": "指数", "summary": "香港市场基准", "market": "hk", "assetClass": "index", "currency": "HKD" },
       { "symbol": "^GSPC", "yahoo": "^GSPC", "name": "标普 500", "group": "指数", "summary": "美国大盘股基准", "market": "us", "assetClass": "index", "currency": "USD" },
       { "symbol": "DXY", "yahoo": "DX-Y.NYB", "name": "美元指数", "group": "外汇", "summary": "ICE 美元指数", "market": "global", "assetClass": "fx", "currency": "USD" },
       { "symbol": "USDCNY", "yahoo": "CNY=X", "name": "美元兑人民币", "group": "外汇", "summary": "美元兑人民币即期汇率", "market": "global", "assetClass": "fx", "currency": "CNY" },
-      { "symbol": "US10Y", "yahoo": "^TNX", "name": "美国十年期国债收益率", "group": "利率", "summary": "美国十年期国债收益率", "market": "us", "assetClass": "rate", "currency": "USD" },
+      { "symbol": "US2Y", "yahoo": "2YY=F", "name": "两年期美债", "group": "利率", "summary": "2 年期国债收益率", "market": "us", "assetClass": "rate", "currency": "USD" },
+      { "symbol": "US5Y", "yahoo": "^FVX", "name": "五年期美债", "group": "利率", "summary": "5 年期国债收益率", "market": "us", "assetClass": "rate", "currency": "USD" },
+      { "symbol": "US10Y", "yahoo": "^TNX", "name": "十年期美债", "group": "利率", "summary": "10 年期国债收益率", "market": "us", "assetClass": "rate", "currency": "USD" },
+      { "symbol": "US30Y", "yahoo": "^TYX", "name": "三十年期美债", "group": "利率", "summary": "30 年期国债收益率", "market": "us", "assetClass": "rate", "currency": "USD" },
+      { "symbol": "CNTS", "yahoo": "TS00Y", "name": "二年国债", "group": "国债", "summary": "中金所二年国债主连", "market": "cn", "assetClass": "future", "currency": "CNY" },
+      { "symbol": "CNTF", "yahoo": "TF00Y", "name": "五年国债", "group": "国债", "summary": "中金所五年国债主连", "market": "cn", "assetClass": "future", "currency": "CNY" },
+      { "symbol": "CNT", "yahoo": "T00Y", "name": "十年国债", "group": "国债", "summary": "中金所十年国债主连", "market": "cn", "assetClass": "future", "currency": "CNY" },
+      { "symbol": "CNTL", "yahoo": "TL00Y", "name": "三十年国债", "group": "国债", "summary": "中金所三十年国债主连", "market": "cn", "assetClass": "future", "currency": "CNY" },
       { "symbol": "XAUUSD", "yahoo": "GC=F", "name": "黄金", "group": "贵金属", "summary": "COMEX 黄金主力", "market": "global", "assetClass": "metal", "currency": "USD" },
+      { "symbol": "XAGUSD", "yahoo": "SI=F", "name": "白银", "group": "贵金属", "summary": "COMEX 白银主力", "market": "global", "assetClass": "metal", "currency": "USD" },
       { "symbol": "CL", "yahoo": "CL=F", "name": "WTI 原油", "group": "能源", "summary": "NYMEX 原油主力", "market": "us", "assetClass": "energy", "currency": "USD" },
       { "symbol": "GC", "yahoo": "GC=F", "name": "COMEX 黄金主连", "group": "期货", "summary": "黄金期货主力", "market": "us", "assetClass": "future", "currency": "USD" },
+      { "symbol": "LC", "yahoo": "LC00Y", "name": "碳酸锂", "group": "期货", "summary": "广期所碳酸锂主连", "market": "cn", "assetClass": "future", "currency": "CNY" },
+      { "symbol": "M", "yahoo": "M00Y", "name": "豆粕", "group": "期货", "summary": "大商所豆粕主连", "market": "cn", "assetClass": "future", "currency": "CNY" },
       { "symbol": "BTC-USD", "yahoo": "BTC-USD", "name": "比特币", "group": "加密", "summary": "美元计价现货", "market": "global", "assetClass": "crypto", "currency": "USD" }
     ]
   }

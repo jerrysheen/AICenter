@@ -1,12 +1,37 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { EntityIdSchema, EpochMillisSchema, HttpUrlSchema, MetadataSchema, WorkspaceIdSchema } from './common.js';
 import { ReferenceInputSchema } from './agent.js';
 import { InspirationTypeSchema, KnowledgeTypeSchema } from './taxonomy.js';
 
+export function workPackageTraceId(workPackageId) {
+  const id = typeof workPackageId === 'string' ? workPackageId.trim() : '';
+  return createHash('sha256').update(id).digest('hex').slice(0, 12);
+}
+
 const InspirationSourceUrlSchema = z.preprocess(
   (value) => typeof value === 'string' ? value.trim() : value,
   HttpUrlSchema.refine((value) => value.length <= 2048, '来源链接不能超过 2048 个字符'),
 );
+
+export const AttachmentMimeSchema = z.enum(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+export const AttachmentResourceTypeSchema = z.enum(['inspiration', 'work-package']);
+export const AttachmentIdListSchema = z.array(EntityIdSchema).max(4);
+
+export const AttachmentSchema = z.object({
+  id: EntityIdSchema,
+  mime: AttachmentMimeSchema,
+  originalName: z.string().max(200).default(''),
+  byteSize: z.number().int().positive().max(8 * 1024 * 1024),
+  createdAt: EpochMillisSchema,
+  url: z.string().trim().min(1).max(300),
+}).strict();
+
+export const CreateAttachmentInputSchema = z.object({
+  mime: z.string().trim().max(64).default(''),
+  originalName: z.string().trim().max(200).default(''),
+  data: z.string().trim().min(1).max(16_000_000),
+}).strict();
 
 export const InspirationSchema = z.object({
   id: EntityIdSchema,
@@ -27,6 +52,7 @@ export const InspirationSchema = z.object({
   createdAt: EpochMillisSchema,
   updatedAt: EpochMillisSchema,
   archivedAt: EpochMillisSchema.nullable(),
+  attachments: z.array(AttachmentSchema).max(4).default([]),
 }).strict();
 
 export const CreateInspirationInputSchema = z.object({
@@ -42,9 +68,10 @@ export const CreateInspirationInputSchema = z.object({
   sourceApp: z.string().trim().max(200).default(''),
   clientMutationId: z.string().trim().max(128).default(''),
   capturedAt: EpochMillisSchema.optional(),
+  attachmentIds: AttachmentIdListSchema.default([]),
 }).strict();
 
-export const AiSessionKindSchema = z.enum(['question-answer', 'inspiration']);
+export const AiSessionKindSchema = z.enum(['question-answer', 'inspiration', 'article-analysis']);
 
 export const AiSessionSchema = z.object({
   id: EntityIdSchema,
@@ -160,4 +187,118 @@ export const KnowledgeMentionSchema = z.object({
   label: z.string().trim().min(1).max(200),
   kind: z.string().trim().min(1).max(64),
   preview: z.string().trim().max(400),
+}).strict();
+
+export const WorkPackageStatusSchema = z.enum(['open', 'claimed', 'completed', 'failed', 'cancelled']);
+export const RestartDecisionSchema = z.enum(['unknown', 'required', 'not_required']);
+
+export const WorkPackageSchema = z.object({
+  id: EntityIdSchema,
+  workspaceId: WorkspaceIdSchema,
+  inspirationId: EntityIdSchema,
+  parentWorkPackageId: z.union([EntityIdSchema, z.literal('')]).default(''),
+  title: z.string().max(200).default(''),
+  body: z.string().trim().min(1).max(100_000),
+  status: WorkPackageStatusSchema,
+  restartRequired: RestartDecisionSchema,
+  restartAppliedAt: EpochMillisSchema.nullable(),
+  claimedBy: z.string().max(128).default(''),
+  claimedAt: EpochMillisSchema.nullable(),
+  claimExpiresAt: EpochMillisSchema.nullable(),
+  completedAt: EpochMillisSchema.nullable(),
+  resultSummary: z.string().max(2_000).default(''),
+  cursorAgentId: z.string().max(200).default(''),
+  cursorRunId: z.string().max(200).default(''),
+  dispatchJobId: z.string().max(64).default(''),
+  clientMutationId: z.string().max(128).default(''),
+  createdAt: EpochMillisSchema,
+  updatedAt: EpochMillisSchema,
+  hashId: z.string().trim().regex(/^[0-9a-f]{12}$/).optional(),
+  attachments: z.array(AttachmentSchema).max(4).default([]),
+}).strict();
+
+export const DispatchWorkPackageJobInputSchema = z.object({
+  workspaceId: WorkspaceIdSchema.default('local'),
+  workPackageId: EntityIdSchema,
+}).strict();
+
+export const WorkPackageTraceStepSchema = z.object({
+  at: EpochMillisSchema,
+  step: z.string().trim().min(1).max(64),
+  status: z.enum(['started', 'done', 'failed']),
+  summary: z.string().trim().max(500).default(''),
+  paths: z.array(z.string().trim().min(1).max(500)).max(50).default([]),
+}).strict();
+
+export const WorkPackageGoalSchema = z.object({
+  objective: z.string().trim().min(1).max(100_000),
+  parentWorkPackageId: z.union([EntityIdSchema, z.literal('')]).default(''),
+  createdAt: EpochMillisSchema,
+}).strict();
+
+export const WorkPackageProgressSchema = z.object({
+  status: WorkPackageStatusSchema,
+  summary: z.string().trim().max(2_000).default(''),
+  updatedAt: EpochMillisSchema,
+}).strict();
+
+export const WorkPackageParentTraceSchema = z.object({
+  workPackageId: EntityIdSchema,
+  hashId: z.string().trim().regex(/^[0-9a-f]{12}$/),
+  goal: WorkPackageGoalSchema.nullable().default(null),
+  progress: WorkPackageProgressSchema.nullable().default(null),
+  steps: z.array(WorkPackageTraceStepSchema).max(200).default([]),
+}).strict();
+
+export const WorkPackageTraceSchema = z.object({
+  hashId: z.string().trim().regex(/^[0-9a-f]{12}$/),
+  workPackageId: EntityIdSchema,
+  relativeDir: z.string().max(500).default(''),
+  prompt: z.string().default(''),
+  goal: WorkPackageGoalSchema.nullable().default(null),
+  progress: WorkPackageProgressSchema.nullable().default(null),
+  steps: z.array(WorkPackageTraceStepSchema).default([]),
+  parentTrace: WorkPackageParentTraceSchema.nullable().default(null),
+}).strict();
+
+export const CreateWorkPackageInputSchema = z.object({
+  title: z.string().trim().max(200).default(''),
+  body: z.string().trim().min(1).max(100_000),
+  parentWorkPackageId: z.union([EntityIdSchema, z.literal('')]).default(''),
+  sourceUrl: InspirationSourceUrlSchema.default(''),
+  sourceTitle: z.string().trim().max(500).default(''),
+  captureChannel: z.enum(['web', 'harmony-share', 'harmony-local', 'feed', 'agent', 'import']).default('web'),
+  sourceApp: z.string().trim().max(200).default(''),
+  clientMutationId: z.string().trim().max(128).default(''),
+  capturedAt: EpochMillisSchema.optional(),
+  attachmentIds: AttachmentIdListSchema.default([]),
+}).strict();
+
+export const ContinueWorkPackageInputSchema = z.object({
+  body: z.string().trim().min(1).max(100_000),
+  attachmentIds: AttachmentIdListSchema.optional(),
+}).strict();
+
+export const ClaimWorkPackageInputSchema = z.object({
+  id: EntityIdSchema.optional(),
+  claimedBy: z.string().trim().min(1).max(128).default('cursor-session'),
+  leaseMs: z.number().int().min(60_000).max(14_400_000).default(1_800_000),
+}).strict();
+
+export const CompleteWorkPackageInputSchema = z.object({
+  resultSummary: z.string().trim().max(2_000).default(''),
+  changedPaths: z.array(z.string().trim().min(1).max(500)).max(200).default([]),
+  restartRequired: RestartDecisionSchema.optional(),
+}).strict();
+
+export const FailWorkPackageInputSchema = z.object({
+  resultSummary: z.string().trim().min(1).max(2_000),
+}).strict();
+
+export const WorkPackageListQuerySchema = z.object({
+  status: z.enum(['open', 'claimed', 'completed', 'failed', 'cancelled', 'active', 'all']).default('active'),
+}).strict();
+
+export const NotifyWorkPackageInputSchema = z.object({
+  id: EntityIdSchema.optional(),
 }).strict();

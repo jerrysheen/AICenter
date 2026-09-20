@@ -1,14 +1,26 @@
+import { randomUUID } from 'node:crypto';
 import {
   AddHoldingLotInputSchema,
+  CreatePersonalAssetAccountInputSchema,
+  CreatePersonalAssetSnapshotInputSchema,
   emptyPersonalAssetDashboard,
   HoldingsBoardSchema,
   parseContract,
+  PersonalAssetImportResultSchema,
+  PersonalAssetImportSchema,
   PortfolioImportResultSchema,
   PortfolioImportSchema,
+  UpdatePersonalAssetAccountInputSchema,
   UpsertHoldingCashInputSchema,
   ValidationError,
 } from '../../contracts/src/index.js';
-import { buildHoldingsBoard, buildHoldingsMoveGroups, buildHoldingsMoves } from './holdings-board.js';
+import { buildHoldingsBoard, buildHoldingsMoveGroups, buildHoldingsMoves, toDecimalNumber, toDecimalString } from './holdings-board.js';
+import {
+  buildLedgerDashboard,
+  currentAccountAmount,
+  defaultSnapshotLabel,
+  nextAccountName,
+} from './personal-asset-ledger.js';
 
 const BOARD_META = {
   a_share: { listingCurrency: 'CNY', market: 'cn', exchangeCode: 'XSHG' },
@@ -94,10 +106,168 @@ export function createTradingService({
     async search(query) {
       return query ? (await sourcePort.read('market.search', { query })).data : [];
     },
-    getPersonalAssetDashboard() {
-      return personalAssetPort
-        ? personalAssetPort.getDashboard()
-        : emptyPersonalAssetDashboard(Date.now(), '个人资产端口未配置');
+    supportsPersonalAssetLedger() {
+      return typeof tradingRepository.listPersonalAssetAccounts === 'function'
+        && typeof tradingRepository.mergePersonalAssetImport === 'function';
+    },
+
+    async loadHoldingsProjection() {
+      const lots = typeof tradingRepository.listHoldingLots === 'function'
+        ? tradingRepository.listHoldingLots(configuredWorkspaceId)
+        : [];
+      if (!Array.isArray(lots) || !lots.length) return null;
+      try {
+        return await this.getHoldingsBoard({});
+      } catch {
+        return null;
+      }
+    },
+
+    async assemblePersonalAssetDashboard(note = '') {
+      const workspaceId = configuredWorkspaceId;
+      tradingRepository.ensurePersonalAssetTypes(workspaceId);
+      const types = tradingRepository.listPersonalAssetTypes(workspaceId);
+      const accounts = tradingRepository.listPersonalAssetAccounts(workspaceId);
+      const snapshots = tradingRepository.listPersonalAssetSnapshots(workspaceId);
+      const holdings = await this.loadHoldingsProjection();
+      return buildLedgerDashboard({
+        types,
+        accounts,
+        snapshots,
+        dividends: [],
+        holdings,
+        now: Date.now(),
+        note: note || (snapshots.length
+          ? '投资随持仓现价同步；其他来源是静态记录，改完需点「记本期」。'
+          : '个人资产账本为空。导入收支草记或直接添加账户。'),
+      });
+    },
+
+    async getPersonalAssetDashboard() {
+      if (!this.supportsPersonalAssetLedger()) {
+        return personalAssetPort
+          ? personalAssetPort.getDashboard()
+          : emptyPersonalAssetDashboard(Date.now(), '个人资产端口未配置');
+      }
+      const existingAccounts = tradingRepository.listPersonalAssetAccounts(configuredWorkspaceId);
+      if (!Array.isArray(existingAccounts)) {
+        return personalAssetPort
+          ? personalAssetPort.getDashboard()
+          : emptyPersonalAssetDashboard(Date.now(), '个人资产端口未配置');
+      }
+      const existingSnapshots = tradingRepository.listPersonalAssetSnapshots(configuredWorkspaceId) || [];
+      if (!existingAccounts.length && !existingSnapshots.length && typeof personalAssetPort?.parseImport === 'function') {
+        const imported = await personalAssetPort.parseImport();
+        if (imported) {
+          tradingRepository.mergePersonalAssetImport(configuredWorkspaceId, imported);
+        }
+      }
+      return this.assemblePersonalAssetDashboard();
+    },
+
+    async importPersonalAssets() {
+      if (!this.supportsPersonalAssetLedger()) {
+        throw new ValidationError('当前账本不支持个人资产导入', ['personalAsset']);
+      }
+      if (typeof personalAssetPort?.parseImport !== 'function') {
+        throw new ValidationError('个人资产导入端口未配置', ['personalAsset']);
+      }
+      const imported = await personalAssetPort.parseImport();
+      if (!imported) {
+        throw new ValidationError('未找到个人资产工作簿', ['personalAsset']);
+      }
+      const result = parseContract(
+        PersonalAssetImportResultSchema,
+        tradingRepository.mergePersonalAssetImport(
+          configuredWorkspaceId,
+          parseContract(PersonalAssetImportSchema, imported),
+        ),
+      );
+      return {
+        result,
+        dashboard: await this.assemblePersonalAssetDashboard('已从收支草记导入历史期间。'),
+      };
+    },
+
+    async createPersonalAssetAccount(input) {
+      input = parseContract(CreatePersonalAssetAccountInputSchema, input);
+      if (!this.supportsPersonalAssetLedger()) {
+        throw new ValidationError('当前账本不支持个人资产账户', ['personalAsset']);
+      }
+      const types = tradingRepository.ensurePersonalAssetTypes(configuredWorkspaceId);
+      const type = types.find((item) => item.key === input.typeKey);
+      if (!type) throw new ValidationError('未知资产类型', ['typeKey']);
+      const existing = tradingRepository.listPersonalAssetAccounts(configuredWorkspaceId)
+        .filter((item) => item.typeKey === input.typeKey && item.archivedAt == null);
+      const account = tradingRepository.upsertPersonalAssetAccount({
+        id: randomUUID(),
+        workspaceId: configuredWorkspaceId,
+        typeKey: input.typeKey,
+        name: nextAccountName(type.name, existing.map((item) => item.name)),
+        note: input.note || '',
+        source: 'manual',
+        amount: input.amount,
+        currency: 'CNY',
+        sortOrder: (existing.at(-1)?.sortOrder || type.sortOrder * 10) + 1,
+        archivedAt: null,
+      });
+      return {
+        account,
+        dashboard: await this.assemblePersonalAssetDashboard(),
+      };
+    },
+
+    async updatePersonalAssetAccount(id, input) {
+      input = parseContract(UpdatePersonalAssetAccountInputSchema, input);
+      const account = tradingRepository.getPersonalAssetAccount?.(id);
+      if (!account || account.workspaceId !== configuredWorkspaceId) {
+        throw new ValidationError('资产账户不存在', ['id']);
+      }
+      if (account.source === 'holdings' && input.amount !== undefined) {
+        throw new ValidationError('持仓合计由持仓页加总，不能手改金额', ['amount']);
+      }
+      const updated = tradingRepository.upsertPersonalAssetAccount({
+        ...account,
+        note: input.note === undefined ? account.note : input.note,
+        amount: input.amount === undefined ? account.amount : input.amount,
+      });
+      return {
+        account: updated,
+        dashboard: await this.assemblePersonalAssetDashboard(),
+      };
+    },
+
+    async recordPersonalAssetSnapshot(input = {}) {
+      input = parseContract(CreatePersonalAssetSnapshotInputSchema, input || {});
+      if (!this.supportsPersonalAssetLedger()) {
+        throw new ValidationError('当前账本不支持个人资产快照', ['personalAsset']);
+      }
+      const accounts = tradingRepository.listPersonalAssetAccounts(configuredWorkspaceId)
+        .filter((item) => item.archivedAt == null);
+      if (!accounts.length) throw new ValidationError('没有可记录的资产账户', ['accounts']);
+      const holdings = await this.loadHoldingsProjection();
+      const lines = accounts.map((account) => ({
+        accountId: account.id,
+        typeKey: account.typeKey,
+        amount: currentAccountAmount(account, holdings),
+      }));
+      const total = lines.reduce((sum, line) => sum + toDecimalNumber(line.amount), 0);
+      const snapshots = tradingRepository.listPersonalAssetSnapshots(configuredWorkspaceId);
+      const last = snapshots[snapshots.length - 1];
+      const previousTotal = last ? toDecimalNumber(last.total) : 0;
+      const increase = total - previousTotal;
+      const snapshot = tradingRepository.upsertPersonalAssetSnapshot(configuredWorkspaceId, {
+        label: input.label || defaultSnapshotLabel(),
+        total: toDecimalString(total),
+        increase: toDecimalString(increase),
+        increaseRate: previousTotal ? toDecimalString(increase / previousTotal) : '0',
+        recordedAt: Date.now(),
+        lines,
+      });
+      return {
+        snapshot,
+        dashboard: await this.assemblePersonalAssetDashboard('已记下本期资产。'),
+      };
     },
     async getHoldingsBoard(query = {}) {
       const refresh = Boolean(query.refresh);

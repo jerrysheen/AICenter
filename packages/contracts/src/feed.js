@@ -8,7 +8,7 @@ import {
   WorkspaceIdSchema,
 } from './common.js';
 
-export const SourceProviderSchema = z.enum(['manual', 'bilibili', 'x', 'youtube', 'rss', 'custom']);
+export const SourceProviderSchema = z.enum(['manual', 'bilibili', 'x', 'youtube', 'rss', 'custom', 'trendforce']);
 export const CaptureStatusSchema = z.enum(['captured', 'normalizing', 'ready', 'failed', 'ignored']);
 export const ContentTypeSchema = z.enum(['post', 'article', 'video', 'audio', 'transcript', 'note']);
 
@@ -177,4 +177,22 @@ export const FeedAiBatchSchema = z.object({
   totalChars: z.number().int().min(0),
   itemCount: z.number().int().min(1).max(50),
   units: z.array(FeedAiPackedUnitSchema).min(1).max(50),
+}).strict();
+
+export const FeedIdentityFingerprintSchema = z.object({
+  workspaceId: WorkspaceIdSchema,
+  provider: SourceProviderSchema,
+  identityHash: z.string().trim().min(1).max(128),
+  externalId: z.string().trim().max(512).default(''),
+  hiddenAt: NullableEpochMillisSchema,
+  firstSeenAt: EpochMillisSchema,
+  lastSeenAt: EpochMillisSchema,
+}).strict();
+
+export const UpsertFeedIdentityFingerprintInputSchema = z.object({
+  workspaceId: WorkspaceIdSchema,
+  provider: SourceProviderSchema,
+  identityHash: z.string().trim().min(1).max(128),
+  externalId: z.string().trim().max(512).default(''),
+  hiddenAt: NullableEpochMillisSchema.optional(),
 }).strict();

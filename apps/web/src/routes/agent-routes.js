@@ -13,6 +13,7 @@ function pendingExchange(run) {
     completedAt: null,
     refs: [],
     sourceFooter: null,
+    ...(run.agentMode ? { agentMode: run.agentMode } : {}),
   };
 }
 
@@ -78,6 +79,7 @@ export function createAgentRoutes() {
         const job = services.runtime.requestAgentRun({
           message: input.message,
           webMode: input.webMode,
+          researchMode: input.researchMode,
           workspaceId,
           sessionId: session.id,
           references: input.references,

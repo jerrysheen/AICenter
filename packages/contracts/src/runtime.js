@@ -41,3 +41,10 @@ export const CapabilityManifestSchema = z.object({
   jobTypes: z.array(z.string().trim()).default([]),
   sourceIds: z.array(SourceIdSchema).default([]),
 }).strict();
+
+export const WORK_PACKAGE_DISPATCH_JOB_TYPE = 'work-package.dispatch';
+
+export const WorkerJobConcurrencySchema = z.object({
+  defaultLimit: z.number().int().min(1).max(8).default(1),
+  workPackageDispatchLimit: z.number().int().min(1).max(8).default(3),
+}).strict();

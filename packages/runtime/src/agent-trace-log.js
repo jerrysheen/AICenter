@@ -76,6 +76,12 @@ function clipSnippet(value) {
   return text.length > SNIPPET_MAX ? `${text.slice(0, SNIPPET_MAX)}…` : text;
 }
 
+function formatFallbackWait(elapsedMs) {
+  const elapsed = Number(elapsedMs);
+  if (!Number.isFinite(elapsed) || elapsed < 1_000) return '';
+  return `已等待 ${Math.round(elapsed / 1000)} 秒`;
+}
+
 function firstTitle(items) {
   if (!Array.isArray(items)) return '';
   for (const item of items.slice(0, 3)) {
@@ -149,7 +155,40 @@ function snippetFromToolCalls(detail) {
   return clipSnippet(bits.join('；'));
 }
 
+function transportSnippet(detail) {
+  const phase = String(detail.phase || '');
+  const elapsed = Number(detail.elapsedMs);
+  const bytes = Number(detail.bytesReceived);
+  const wait = Number.isFinite(elapsed) && elapsed >= 1_000 ? `已等待 ${Math.round(elapsed / 1000)} 秒` : '';
+  const size = Number.isFinite(bytes) && bytes > 0
+    ? `${bytes >= 1024 ? `${Math.round(bytes / 1024)} KB` : `${bytes} B`}`
+    : '';
+  if (phase === 'request') return clipSnippet(['已发出模型请求', wait].filter(Boolean).join(' · '));
+  if (phase === 'socket') return clipSnippet(['已建立连接', wait].filter(Boolean).join(' · '));
+  if (phase === 'headers') return clipSnippet(['已收到响应头', wait].filter(Boolean).join(' · '));
+  if (phase === 'first-byte') return clipSnippet(['已收到模型首包', wait].filter(Boolean).join(' · '));
+  if (phase === 'chunk') return clipSnippet([size && `已收到 ${size}`, wait].filter(Boolean).join(' · ') || '模型仍在生成');
+  if (phase === 'complete') return clipSnippet([size && `已收齐 ${size}`, wait].filter(Boolean).join(' · '));
+  return clipSnippet(wait);
+}
+
 function progressSnippet(event, detail, toolId) {
+  if (event === 'article.started') {
+    const chars = Number(detail.chars);
+    return clipSnippet([
+      Number.isFinite(chars) && chars > 0 ? `${chars.toLocaleString('zh-CN')} 字` : '',
+      detail.title,
+    ].filter(Boolean).join(' · '));
+  }
+  if (event === 'article.wait') return clipSnippet(detail.label || formatFallbackWait(detail.elapsedMs));
+  if (event === 'article.transport') return transportSnippet(detail);
+  if (event === 'article.model.started') return '正在调用模型';
+  if (event === 'article.model.completed') {
+    const elapsed = Number(detail.elapsedMs);
+    return Number.isFinite(elapsed) && elapsed > 0
+      ? clipSnippet(`已收到模型响应 · ${Math.round(elapsed / 1000)} 秒`)
+      : '已收到模型响应';
+  }
   if (event === 'run.started') return clipSnippet(detail.message);
   if (event === 'model.requested') return '';
   if (event === 'model.responded') {
@@ -163,10 +202,30 @@ function progressSnippet(event, detail, toolId) {
   }
   if (event === 'tool.failed') return clipSnippet(detail.error?.message || detail.message);
   if (event === 'tool.started') return snippetFromInput(detail.input);
+  if (event === 'evidence.gate.started') {
+    const count = Number(detail.resultCount);
+    return clipSnippet([
+      Number.isFinite(count) ? `${count} 条检索结果` : '',
+      detail.query && `检索：${detail.query}`,
+    ].filter(Boolean).join(' · '));
+  }
+  if (event === 'evidence.gate.completed') {
+    return clipSnippet([
+      `采用 ${Number(detail.acceptedCount) || 0}`,
+      `筛掉 ${Number(detail.rejectedCount) || 0}`,
+      Number.isFinite(Number(detail.confidence)) ? `置信 ${Number(detail.confidence).toFixed(2)}` : '',
+      Number.isFinite(Number(detail.sufficiency)) ? `充分度 ${Number(detail.sufficiency).toFixed(2)}` : '',
+    ].filter(Boolean).join(' · '));
+  }
+  if (event === 'evidence.gate.failed') return clipSnippet(detail.message || '证据筛查未完成');
+  if (event === 'evidence.gate.skipped') return clipSnippet(detail.reason || '');
   if (event === 'tool.completed') {
     return snippetFromData(toolId || detail.id, detail.data) || snippetFromInput(detail.input);
   }
   if (event === 'tool.batch.skipped') return clipSnippet(toolNames(detail) && `未执行：${toolNames(detail)}`);
+  if (event === 'auxiliary.started') return clipSnippet(detail.query);
+  if (event === 'auxiliary.merged') return '已并入补充资讯';
+  if (event === 'auxiliary.skipped') return '补充检索未赶上';
   if (event === 'run.failed') return clipSnippet(detail.message);
   if (event === 'run.completed') return clipSnippet(detail.answer);
   return '';
@@ -195,6 +254,58 @@ export function projectAgentProgress(records) {
 
     const snippet = progressSnippet(event, detail, toolId);
 
+    if (event === 'article.started') {
+      upsert('article-start', { at, event, label: '开始分析材料', detail: snippet, status: 'done' });
+      continue;
+    }
+    if (event === 'article.stage') {
+      const stage = String(detail.stage || '');
+      for (const step of steps) {
+        if (String(step.key || '').startsWith('article-') && step.status === 'active') {
+          upsert(step.key, { status: 'done' });
+        }
+      }
+      upsert(`article-${stage || 'stage'}`, {
+        at, event,
+        label: detail.label || stage || '文章分析',
+        detail: clipSnippet(detail.summary || detail.note || snippet),
+        status: stage === 'completed' ? 'done' : stage === 'failed' ? 'error' : 'active',
+      });
+      continue;
+    }
+    if (
+      event === 'article.wait'
+      || event === 'article.transport'
+      || event === 'article.model.started'
+      || event === 'article.model.completed'
+    ) {
+      const stage = String(detail.stage || 'stage');
+      const key = `article-${stage}`;
+      if (index.has(key)) {
+        upsert(key, { at, event, detail: snippet });
+      } else {
+        upsert(key, {
+          at, event,
+          label: detail.label || '正在等待模型',
+          detail: snippet,
+          status: 'active',
+        });
+      }
+      continue;
+    }
+    if (event === 'article.completed') {
+      for (const step of steps) {
+        if (String(step.key || '').startsWith('article-') && step.status === 'active') {
+          upsert(step.key, { status: 'done' });
+        }
+      }
+      upsert('article-end', { at, event, label: '分析已完成', detail: snippet, status: 'done' });
+      continue;
+    }
+    if (event === 'article.failed') {
+      upsert('article-end', { at, event, label: '分析未能完成', detail: clipSnippet(detail.message), status: 'error' });
+      continue;
+    }
     if (event === 'run.started') {
       upsert('run', { at, event, label: '开始处理问题', detail: snippet, status: 'done' });
       continue;
@@ -236,6 +347,20 @@ export function projectAgentProgress(records) {
       });
       continue;
     }
+    if (event === 'evidence.gate.started' || event === 'evidence.gate.completed' || event === 'evidence.gate.failed') {
+      const key = `evidence-${String(detail.callId || `${toolId}-${at}`)}`;
+      const status = event === 'evidence.gate.completed' ? 'done' : event === 'evidence.gate.failed' ? 'error' : 'active';
+      upsert(key, {
+        at, event, toolId, round, status,
+        label: event === 'evidence.gate.completed'
+          ? `已筛查检索结果 · 采用 ${Number(detail.acceptedCount) || 0}`
+          : event === 'evidence.gate.failed'
+            ? '检索结果筛查未完成'
+            : '正在筛查检索结果',
+        detail: snippet,
+      });
+      continue;
+    }
     if (event === 'tool.started' || event === 'tool.completed' || event === 'tool.failed') {
       const key = String(detail.callId || `${toolId}-${at}`);
       const status = event === 'tool.completed' ? 'done' : event === 'tool.failed' ? 'error' : 'active';
@@ -256,6 +381,16 @@ export function projectAgentProgress(records) {
       upsert(`skip-${at}`, {
         at, event, round, label: '工具预算已满，改为根据已有结果作答', detail: snippet, status: 'done',
       });
+      continue;
+    }
+    if (event === 'auxiliary.started' || event === 'auxiliary.merged' || event === 'auxiliary.skipped') {
+      const status = event === 'auxiliary.started' ? 'active' : 'done';
+      const label = event === 'auxiliary.merged'
+        ? '已并入补充资讯'
+        : event === 'auxiliary.skipped'
+          ? '补充检索未赶上，回答先返回'
+          : '正在补充检索';
+      upsert('auxiliary', { at, event, label, detail: snippet, status });
       continue;
     }
     if (event === 'run.completed') {

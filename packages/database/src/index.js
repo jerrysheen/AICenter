@@ -4,6 +4,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { DEFAULT_WORKSPACE_ID, runMigrations } from './migrations.js';
 import { createDomainRepositories } from './repositories/index.js';
+export { createAttachmentStore } from './attachment-store.js';
 
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
@@ -176,6 +177,18 @@ export function createStore(databasePath) {
       );
   }
 
+  function insertDevice(deviceName) {
+    const now = Date.now();
+    const token = `${randomUUID().replaceAll('-', '')}${randomUUID().replaceAll('-', '')}`;
+    const device = { id: randomUUID(), name: deviceName, pairedAt: now, lastSeenAt: now, revokedAt: null };
+    database.prepare(`INSERT INTO devices
+      (id, name, token_hash, paired_at, last_seen_at, revoked_at, workspace_id)
+      VALUES (?, ?, ?, ?, ?, NULL, ?)`)
+      .run(device.id, device.name, sha256(token), now, now, DEFAULT_WORKSPACE_ID);
+    insertEvent('device.paired', 'device', device.id, { device }, DEFAULT_WORKSPACE_ID);
+    return { device, token };
+  }
+
   return {
     repositories,
     createPairingCode(ttlMinutes = 10) {
@@ -189,6 +202,18 @@ export function createStore(databasePath) {
         VALUES (?, ?, ?, NULL, ?)`)
         .run(sha256(code), sha256(pairToken), expiresAt, now);
       return { code, pairToken, expiresAt };
+    },
+
+    issueDevice(deviceName) {
+      database.exec('BEGIN IMMEDIATE');
+      try {
+        const result = insertDevice(deviceName);
+        database.exec('COMMIT');
+        return result;
+      } catch (error) {
+        try { database.exec('ROLLBACK'); } catch {}
+        throw error;
+      }
     },
 
     redeemPairingCode(code, deviceName, { requireSecret = false } = {}) {
@@ -205,16 +230,10 @@ export function createStore(databasePath) {
           database.exec('ROLLBACK');
           return null;
         }
-        database.prepare('UPDATE pairing_codes SET used_at = ? WHERE code_hash = ?').run(now, codeHash);
-        const token = `${randomUUID().replaceAll('-', '')}${randomUUID().replaceAll('-', '')}`;
-        const device = { id: randomUUID(), name: deviceName, pairedAt: now, lastSeenAt: now, revokedAt: null };
-        database.prepare(`INSERT INTO devices
-          (id, name, token_hash, paired_at, last_seen_at, revoked_at, workspace_id)
-          VALUES (?, ?, ?, ?, ?, NULL, ?)`)
-          .run(device.id, device.name, sha256(token), now, now, DEFAULT_WORKSPACE_ID);
-        insertEvent('device.paired', 'device', device.id, { device }, DEFAULT_WORKSPACE_ID);
+        database.prepare('UPDATE pairing_codes SET used_at = ? WHERE code_hash = ?').run(now, pairing.code_hash);
+        const result = insertDevice(deviceName);
         database.exec('COMMIT');
-        return { device, token };
+        return result;
       } catch (error) {
         try { database.exec('ROLLBACK'); } catch {}
         throw error;
@@ -587,7 +606,7 @@ export function createStore(databasePath) {
 
     listActiveAgentJobs(workspaceId = DEFAULT_WORKSPACE_ID) {
       return database.prepare(`SELECT * FROM jobs
-        WHERE workspace_id = ? AND type = 'ai.agent.run' AND status IN ('queued', 'running')
+        WHERE workspace_id = ? AND type IN ('ai.agent.run', 'ai.article.analyze') AND status IN ('queued', 'running')
         ORDER BY created_at ASC`)
         .all(workspaceId).map(mapJob);
     },

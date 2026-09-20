@@ -4,6 +4,7 @@ import {
   SaveCaptureInputSchema,
   SaveContentItemInputSchema,
   SaveFeedItemTranslationInputSchema,
+  UpsertFeedIdentityFingerprintInputSchema,
   UpsertSubscriptionInputSchema,
   UpsertSourceAccountInputSchema,
   PatchUserItemStateInputSchema,
@@ -86,6 +87,18 @@ function mapContentItem(row) {
     publishedAt: row.published_at ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function mapIdentityFingerprint(row) {
+  return {
+    workspaceId: row.workspace_id,
+    provider: row.provider,
+    identityHash: row.identity_hash,
+    externalId: row.external_id || '',
+    hiddenAt: row.hidden_at ?? null,
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at,
   };
 }
 
@@ -239,6 +252,25 @@ export function createFeedRepository(database, emitEvent) {
       return row ? mapCapture(row) : null;
     },
 
+    getCaptureByContentHash(workspaceId, provider, contentHash) {
+      const hash = String(contentHash || '').trim();
+      if (!hash) return null;
+      const row = database.prepare(`SELECT * FROM captures
+        WHERE workspace_id = ? AND provider = ? AND content_hash = ?
+        LIMIT 1`)
+        .get(workspaceId, provider, hash);
+      return row ? mapCapture(row) : null;
+    },
+
+    listCaptureExternalIds(workspaceId, provider) {
+      return database.prepare(`SELECT external_id AS externalId
+        FROM captures
+        WHERE workspace_id = ? AND provider = ?`)
+        .all(workspaceId, provider)
+        .map((row) => String(row.externalId || ''))
+        .filter(Boolean);
+    },
+
     listContentItemsByProvider(workspaceId, provider, { limit = 200, sourceExternalId = '' } = {}) {
       const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
       const rows = sourceExternalId
@@ -273,6 +305,124 @@ export function createFeedRepository(database, emitEvent) {
         captureMetadata: parseJson(row.capture_metadata_json),
         isRead: Boolean(row.is_read),
       }));
+    },
+
+    getContentItemByCapture(workspaceId, captureId) {
+      if (!captureId) return null;
+      const row = database.prepare(`SELECT ci.*, c.provider, c.external_id, c.captured_at, c.metadata_json AS capture_metadata_json
+        FROM content_items ci
+        LEFT JOIN captures c ON c.id = ci.capture_id
+        WHERE ci.workspace_id = ? AND ci.capture_id = ?`).get(workspaceId, captureId);
+      return row ? {
+        ...mapContentItem(row),
+        provider: row.provider || '',
+        externalId: row.external_id || '',
+        capturedAt: row.captured_at || row.created_at,
+        captureMetadata: parseJson(row.capture_metadata_json),
+      } : null;
+    },
+
+    isContentHidden(workspaceId, contentItemId) {
+      if (!contentItemId) return false;
+      const row = database.prepare(`SELECT is_hidden FROM user_item_states
+        WHERE workspace_id = ? AND content_item_id = ?`).get(workspaceId, contentItemId);
+      return Boolean(row?.is_hidden);
+    },
+
+    listHiddenExternalIds(workspaceId, provider) {
+      const fromItems = database.prepare(`SELECT c.external_id AS externalId
+        FROM user_item_states uis
+        INNER JOIN content_items ci
+          ON ci.id = uis.content_item_id AND ci.workspace_id = uis.workspace_id
+        INNER JOIN captures c ON c.id = ci.capture_id
+        WHERE uis.workspace_id = ? AND uis.is_hidden = 1 AND c.provider = ?`)
+        .all(workspaceId, provider)
+        .map((row) => String(row.externalId || ''))
+        .filter(Boolean);
+      const fromFingerprints = database.prepare(`SELECT external_id AS externalId
+        FROM feed_identity_fingerprints
+        WHERE workspace_id = ? AND provider = ? AND hidden_at IS NOT NULL AND external_id != ''`)
+        .all(workspaceId, provider)
+        .map((row) => String(row.externalId || ''))
+        .filter(Boolean);
+      return [...new Set([...fromItems, ...fromFingerprints])];
+    },
+
+    upsertIdentityFingerprint(value) {
+      const input = parseContract(UpsertFeedIdentityFingerprintInputSchema, value);
+      const now = Date.now();
+      let saved = null;
+      database.transaction(() => {
+        const existing = database.prepare(`SELECT * FROM feed_identity_fingerprints
+          WHERE workspace_id = ? AND provider = ? AND identity_hash = ?`)
+          .get(input.workspaceId, input.provider, input.identityHash);
+        const hiddenAt = input.hiddenAt !== undefined
+          ? input.hiddenAt
+          : (existing?.hidden_at ?? null);
+        const firstSeenAt = existing?.first_seen_at || now;
+        const externalId = String(existing?.external_id || '') || String(input.externalId || '');
+        database.prepare(`INSERT INTO feed_identity_fingerprints
+          (workspace_id, provider, identity_hash, external_id, hidden_at, first_seen_at, last_seen_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(workspace_id, provider, identity_hash) DO UPDATE SET
+            external_id = excluded.external_id,
+            hidden_at = excluded.hidden_at,
+            last_seen_at = excluded.last_seen_at`)
+          .run(
+            input.workspaceId,
+            input.provider,
+            input.identityHash,
+            externalId,
+            hiddenAt,
+            firstSeenAt,
+            now,
+          );
+        const row = database.prepare(`SELECT * FROM feed_identity_fingerprints
+          WHERE workspace_id = ? AND provider = ? AND identity_hash = ?`)
+          .get(input.workspaceId, input.provider, input.identityHash);
+        emitEvent('feed.identity-fingerprint.upserted.v1', 'identity-fingerprint', input.identityHash, {
+          identityHash: input.identityHash,
+          provider: input.provider,
+          hiddenAt: row.hidden_at ?? null,
+        }, input.workspaceId);
+        saved = mapIdentityFingerprint(row);
+      })();
+      return saved;
+    },
+
+    getIdentityFingerprint(workspaceId, provider, identityHash) {
+      const row = database.prepare(`SELECT * FROM feed_identity_fingerprints
+        WHERE workspace_id = ? AND provider = ? AND identity_hash = ?`)
+        .get(workspaceId, provider, String(identityHash || ''));
+      return row ? mapIdentityFingerprint(row) : null;
+    },
+
+    hasIdentityFingerprint(workspaceId, provider, identityHash) {
+      if (!identityHash) return false;
+      const row = database.prepare(`SELECT 1 AS present FROM feed_identity_fingerprints
+        WHERE workspace_id = ? AND provider = ? AND identity_hash = ?`)
+        .get(workspaceId, provider, String(identityHash));
+      return Boolean(row);
+    },
+
+    isIdentityHidden(workspaceId, provider, { identityHash = '', externalId = '' } = {}) {
+      const hash = String(identityHash || '');
+      const id = String(externalId || '');
+      if (!hash && !id) return false;
+      const row = database.prepare(`SELECT 1 AS present FROM feed_identity_fingerprints
+        WHERE workspace_id = ? AND provider = ? AND hidden_at IS NOT NULL
+          AND (identity_hash = ? OR (external_id != '' AND external_id = ?))`)
+        .get(workspaceId, provider, hash, id);
+      return Boolean(row);
+    },
+
+    listIdentityExternalIds(workspaceId, provider) {
+      return database.prepare(`SELECT external_id AS externalId
+        FROM feed_identity_fingerprints
+        WHERE workspace_id = ? AND provider = ? AND external_id != ''`)
+        .all(workspaceId, provider)
+        .map((row) => String(row.externalId || ''))
+        .filter(Boolean);
     },
 
     getContentItem(workspaceId, id) {

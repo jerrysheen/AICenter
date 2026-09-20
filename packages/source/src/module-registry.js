@@ -5,9 +5,12 @@ import {
 import {
   createXJobHandlers, createTwitterService, xConnectorManifest,
 } from '../../connectors/src/x/index.js';
+import {
+  createTrendForceJobHandlers, createTrendForceService, trendforceConnectorManifest,
+} from '../../connectors/src/trendforce.js';
 import { createOfficialSourcesClient } from '../../connectors/src/official-sources.js';
 import { createMarketNativeClient } from '../../connectors/src/market-native.js';
-import { createBilibiliSourceDefinition, createXSourceDefinition } from './content/definitions.js';
+import { createBilibiliSourceDefinition, createTrendForceSourceDefinition, createXSourceDefinition } from './content/definitions.js';
 import { createMarketSourceDefinitions } from './market/definitions.js';
 import { createMarketService } from './market/service.js';
 import { createWebSearchSourceDefinition } from './search/definitions.js';
@@ -17,6 +20,7 @@ import { createMarketNativeSourceDefinitions } from './static/market-native-defi
 export function createSourceModuleRegistry(options = {}) {
   const registry = createCapabilityRegistry();
   const twitterService = options.twitterService || createTwitterService(options);
+  const trendforceService = options.trendforceService || createTrendForceService(options);
   const bilibiliService = options.bilibiliService || createBilibiliService({
     ...options,
     browserRuntime: options.browserRuntime,
@@ -68,6 +72,11 @@ export function createSourceModuleRegistry(options = {}) {
     jobHandlers: createBilibiliJobHandlers(options),
     sources: [createBilibiliSourceDefinition(bilibiliService)],
   });
+  registry.register({
+    manifest: trendforceConnectorManifest,
+    jobHandlers: createTrendForceJobHandlers(options),
+    sources: [createTrendForceSourceDefinition(trendforceService)],
+  });
   const marketSources = createMarketSourceDefinitions(marketService);
   registry.register({
     manifest: {
@@ -96,7 +105,7 @@ export function createSourceModuleRegistry(options = {}) {
   if (options.webSearchPort?.search) {
     registry.register({
       manifest: {
-        id: 'connector.searxng', version: '1.0.0', capabilities: ['search.web'], jobTypes: [],
+        id: `connector.${options.webSearchPort.id || 'search'}`, version: '1.0.0', capabilities: ['search.web'], jobTypes: [],
         sourceIds: ['search.web'],
       },
       sources: [createWebSearchSourceDefinition(options.webSearchPort)],

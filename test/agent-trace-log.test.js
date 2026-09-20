@@ -107,6 +107,37 @@ test('agent trace log projects compact progress steps without tool payloads', as
     ]);
     assert.equal(searchHit[0].label, '已获取联网结果');
     assert.match(searchHit[0].detail, /Fed holds rates/);
+    const gated = projectAgentProgress([
+      {
+        at: 20, event: 'evidence.gate.started',
+        detail: { id: 'web.search', callId: 'g1', resultCount: 8, query: 'CIOE NPO' },
+      },
+      {
+        at: 21, event: 'evidence.gate.completed',
+        detail: { id: 'web.search', callId: 'g1', acceptedCount: 3, rejectedCount: 5, confidence: 0.84, sufficiency: 0.91 },
+      },
+    ]);
+    assert.equal(gated[0].label, '已筛查检索结果 · 采用 3');
+    assert.equal(gated[0].status, 'done');
+    assert.match(gated[0].detail, /筛掉 5/);
+    const auxiliary = projectAgentProgress([
+      { at: 8, event: 'auxiliary.started', detail: { query: 'FOMC' } },
+      { at: 9, event: 'auxiliary.merged', detail: { chars: 12 } },
+    ]);
+    assert.equal(auxiliary[0].label, '已并入补充资讯');
+    assert.equal(auxiliary[0].status, 'done');
+    const article = projectAgentProgress([
+      { at: 10, event: 'article.started', detail: { sourceType: 'inline', chars: 1637, title: 'JEV' } },
+      { at: 11, event: 'article.stage', detail: { stage: 'running', label: '开始阅读材料' } },
+      { at: 12, event: 'article.wait', detail: { stage: 'running', label: '模型正在生成 · 已等待 10 秒', elapsedMs: 10_000 } },
+      { at: 13, event: 'model.requested', detail: { round: 0 } },
+      { at: 14, event: 'article.completed', detail: {} },
+    ]);
+    assert.equal(article[0].label, '开始分析材料');
+    assert.match(article[0].detail, /1,?637 字/);
+    assert.equal(article[1].label, '开始阅读材料');
+    assert.match(article[1].detail, /已等待 10 秒/);
+    assert.equal(article[3].label, '分析已完成');
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

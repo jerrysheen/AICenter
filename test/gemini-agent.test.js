@@ -62,3 +62,26 @@ test('Gemini adapter sends tools in AUTO mode, budgetNote, and ignores thought-o
   assert.equal(result.text, '');
   assert.equal(result.toolCalls[0].name, 'web_search');
 });
+
+test('Gemini adapter uses the reserved research model only when configured', async () => {
+  const urls = [];
+  const client = createGeminiAgentClient({
+    apiKey: 'test-key', apiRoot: 'https://example.test/v1beta',
+    model: 'gemini-lite', researchModel: 'gemini-research',
+    fetch: async (url) => {
+      urls.push(url);
+      return new Response(JSON.stringify({
+        candidates: [{ content: { parts: [{ text: 'ok' }] } }],
+      }), { status: 200 });
+    },
+  });
+  const standard = await client.respond({ contents: [{ role: 'user', parts: [{ text: 'hi' }] }] });
+  const research = await client.respond({
+    contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
+    researchProfile: { modelProfile: 'research' },
+  });
+  assert.match(urls[0], /gemini-lite/);
+  assert.match(urls[1], /gemini-research/);
+  assert.equal(standard.modelId, 'gemini-lite');
+  assert.equal(research.modelId, 'gemini-research');
+});

@@ -1,10 +1,32 @@
 import { parseContract, ValidationError } from './errors.js';
 import { PageRequestSchema } from './common.js';
-import { BuildContextInputSchema } from './context.js';
+import { BuildContextInputSchema, PackReferencesInputSchema } from './context.js';
 import { CreateAgentRunInputSchema } from './agent.js';
-import { CreateInspirationFromRunInputSchema, CreateInspirationInputSchema, CreateKnowledgeFromRunInputSchema, CreateKnowledgeFromUserInputSchema, KnowledgeMentionQuerySchema } from './knowledge.js';
+import { CreateArticleAnalysisInputSchema } from './article-analysis.js';
+import {
+  ClaimWorkPackageInputSchema,
+  CompleteWorkPackageInputSchema,
+  CreateAttachmentInputSchema,
+  CreateInspirationFromRunInputSchema,
+  CreateInspirationInputSchema,
+  CreateKnowledgeFromRunInputSchema,
+  CreateKnowledgeFromUserInputSchema,
+  ContinueWorkPackageInputSchema,
+  CreateWorkPackageInputSchema,
+  DispatchWorkPackageJobInputSchema,
+  FailWorkPackageInputSchema,
+  KnowledgeMentionQuerySchema,
+  NotifyWorkPackageInputSchema,
+  WorkPackageGoalSchema,
+  WorkPackageListQuerySchema,
+  WorkPackageParentTraceSchema,
+  WorkPackageProgressSchema,
+  WorkPackageTraceSchema,
+  WorkPackageTraceStepSchema,
+} from './knowledge.js';
 import { TagAnalyzeJobInputSchema } from './tagging.js';
 import { PatchUserItemStateInputSchema } from './feed.js';
+import { WorkerJobConcurrencySchema } from './runtime.js';
 
 export * from './errors.js';
 export * from './common.js';
@@ -14,6 +36,7 @@ export * from './knowledge.js';
 export * from './taxonomy.js';
 export * from './context.js';
 export * from './agent.js';
+export * from './article-analysis.js';
 export * from './runtime.js';
 export * from './source.js';
 export * from './tagging.js';
@@ -79,6 +102,17 @@ export function parsePairInput(value) {
   }
   return {
     code: cleanText(value.code, { field: '配对凭证', max: 128, required: true }),
+    deviceName: cleanText(value.deviceName, { field: '设备名称', max: 60, required: true }),
+  };
+}
+
+export function parseLoginInput(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ValidationError('请求内容必须是对象');
+  }
+  return {
+    username: cleanText(value.username, { field: '账号', max: 64, required: true }),
+    password: cleanText(value.password, { field: '密码', max: 128, required: true }),
     deviceName: cleanText(value.deviceName, { field: '设备名称', max: 60, required: true }),
   };
 }
@@ -151,6 +185,14 @@ export function parseXFeedQuery(value) {
   return { platform: 'x', feed, limit: rawLimit, refresh };
 }
 
+export function parseTrendForceFeedQuery(value) {
+  const query = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const platform = cleanText(query.platform || 'trendforce', { field: '平台', max: 16 }) || 'trendforce';
+  if (platform !== 'trendforce') throw new ValidationError('当前只支持 TrendForce 公开页', ['platform']);
+  const refresh = query.refresh === true || query.refresh === '1' || query.refresh === 'true';
+  return { platform: 'trendforce', feed: 'public', refresh };
+}
+
 export function parseNoteInput(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new ValidationError('请求内容必须是对象');
@@ -167,13 +209,38 @@ export function parseNoteInput(value) {
     captureChannel: value.captureChannel ?? 'web',
     sourceApp: value.sourceApp ?? '',
     clientMutationId: value.clientMutationId ?? '',
+    attachmentIds: Array.isArray(value.attachmentIds) ? value.attachmentIds : [],
   };
   if (value.capturedAt !== undefined) payload.capturedAt = value.capturedAt;
   return parseContract(CreateInspirationInputSchema, payload);
 }
 
+export function parseCreateAttachmentInput(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ValidationError('请求内容必须是对象');
+  }
+  return parseContract(CreateAttachmentInputSchema, {
+    mime: value.mime ?? '',
+    originalName: value.originalName ?? '',
+    data: value.data,
+  });
+}
+
 export function parseBuildContextInput(value) {
   return parseContract(BuildContextInputSchema, value);
+}
+
+export function parsePackReferencesInput(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ValidationError('请求内容必须是对象');
+  }
+  return parseContract(PackReferencesInputSchema, {
+    references: Array.isArray(value.references) ? value.references : [],
+  });
+}
+
+export function parseCreateArticleAnalysisInput(value) {
+  return parseContract(CreateArticleAnalysisInputSchema, value);
 }
 
 export function parseCreateAgentRunInput(value) {
@@ -192,6 +259,107 @@ export function parseCreateKnowledgeFromRunInput(value) {
 
 export function parseCreateKnowledgeFromUserInput(value) {
   return parseContract(CreateKnowledgeFromUserInputSchema, value);
+}
+
+export function parseCreateWorkPackageInput(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ValidationError('请求内容必须是对象');
+  }
+  const payload = {
+    title: value.title ?? '',
+    body: value.body,
+    parentWorkPackageId: value.parentWorkPackageId ?? '',
+    sourceUrl: value.sourceUrl ?? '',
+    sourceTitle: value.sourceTitle ?? '',
+    captureChannel: value.captureChannel ?? 'web',
+    sourceApp: value.sourceApp ?? '',
+    clientMutationId: value.clientMutationId ?? '',
+    attachmentIds: Array.isArray(value.attachmentIds) ? value.attachmentIds : [],
+  };
+  if (value.capturedAt !== undefined) payload.capturedAt = value.capturedAt;
+  return parseContract(CreateWorkPackageInputSchema, payload);
+}
+
+export function parseContinueWorkPackageInput(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ValidationError('请求内容必须是对象');
+  }
+  const payload = { body: value.body };
+  if (value.attachmentIds !== undefined) payload.attachmentIds = value.attachmentIds;
+  return parseContract(ContinueWorkPackageInputSchema, payload);
+}
+
+export function parseClaimWorkPackageInput(value) {
+  const input = value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {};
+  if (input.leaseMs !== undefined && input.leaseMs !== null && input.leaseMs !== '') {
+    input.leaseMs = Number(input.leaseMs);
+  }
+  if (!input.id) delete input.id;
+  return parseContract(ClaimWorkPackageInputSchema, input);
+}
+
+export function parseCompleteWorkPackageInput(value) {
+  const input = value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {};
+  delete input.claimedBy;
+  if (input.changedPaths !== undefined && !Array.isArray(input.changedPaths)) {
+    input.changedPaths = [input.changedPaths];
+  }
+  return parseContract(CompleteWorkPackageInputSchema, input);
+}
+
+export function parseFailWorkPackageInput(value) {
+  const input = value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {};
+  delete input.claimedBy;
+  return parseContract(FailWorkPackageInputSchema, input);
+}
+
+export function parseNotifyWorkPackageInput(value) {
+  const input = value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {};
+  if (!input.id) delete input.id;
+  return parseContract(NotifyWorkPackageInputSchema, input);
+}
+
+export function parseDispatchWorkPackageJobInput(value) {
+  return parseContract(DispatchWorkPackageJobInputSchema, value || {});
+}
+
+export function parseWorkerJobConcurrency(value) {
+  const input = value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {};
+  for (const key of ['defaultLimit', 'workPackageDispatchLimit']) {
+    if (input[key] === undefined || input[key] === null || input[key] === '') {
+      delete input[key];
+    } else {
+      input[key] = Number(input[key]);
+    }
+  }
+  return parseContract(WorkerJobConcurrencySchema, input);
+}
+
+export function parseWorkPackageTraceStep(value) {
+  return parseContract(WorkPackageTraceStepSchema, value || {});
+}
+
+export function parseWorkPackageGoal(value) {
+  return parseContract(WorkPackageGoalSchema, value || {});
+}
+
+export function parseWorkPackageProgress(value) {
+  return parseContract(WorkPackageProgressSchema, value || {});
+}
+
+export function parseWorkPackageParentTrace(value) {
+  return parseContract(WorkPackageParentTraceSchema, value || {});
+}
+
+export function parseWorkPackageTrace(value) {
+  return parseContract(WorkPackageTraceSchema, value || {});
+}
+
+export function parseWorkPackageListQuery(value) {
+  const query = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return parseContract(WorkPackageListQuerySchema, {
+    status: query.status || 'active',
+  });
 }
 
 export function parseKnowledgeMentionQuery(value) {

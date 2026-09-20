@@ -21,7 +21,8 @@ AI Center Public Gateway
 ```
 
 Cloudflare Tunnel 由本机主动向外建立连接，不要求公网 IP 或开放入站端口。公网 Hostname 只映射 AI Center Web 端口，
-不能映射 Worker、SQLite、浏览器调试口、旧 AI/AI-Hub 服务、本机管理端口，或 Local Files MCP 的本机监听口。
+不能映射 Worker、SQLite、浏览器调试口、旧 AI/AI-Hub 服务、本机管理端口、只做重启的第二端口，或 Local Files MCP 的本机监听口。
+远端需要弹 Web/Worker 时走已配对的 `POST /api/v1/runtime/restart`（仍是 8787）；进程挂了由本机启动器弹回，隧道不关。
 
 ChatGPT 访问本机文件走另一条可选链路：Tailscale Funnel → `local-files-mcp`。怎么配见 `docs/ops/local-files-mcp-tailscale.md`。那条 Funnel 不要指到 AI Center Web，也不列入 0.2.0 发布验收。仓库说明里不得写入真实 Hostname 或 Origin。
 
@@ -39,7 +40,8 @@ ChatGPT 访问本机文件走另一条可选链路：Tailscale Funnel → `local
 
 - 带 Cloudflare 代理标记或访问配置的公网 Hostname 永远不是桌面管理员。
 - 未配对公网请求访问业务 API 返回 401。
-- 已配对手机访问桌面管理 API 返回 403。
+- 已配对或账号登录后的手机访问桌面管理 API 返回 403。
+- 账号密码登录与扫码配对签发同一类设备授权，不能把公网请求升级成本机管理员。
 - `/api/v1/pairing`、设备管理、指标和 Runtime 状态不能从公网调用。
 - 公网健康检查不返回电脑主机名。
 
@@ -61,7 +63,8 @@ https://center.example.com/?pair=<一次性随机凭证>
 - 非本机来源 5 分钟最多尝试 10 次。
 - 公网接口拒绝用六位局域网码兑换授权。
 - 长期设备 token 只通过 HttpOnly Cookie 下发，数据库只保存哈希。
-- 公网 Cookie 使用 `__Host-` 前缀、`Secure`、`HttpOnly` 和 `SameSite=Strict`，当前浏览器有效期 180 天。
+- 公网同时下发 `__Host-` Cookie 和一份同值的 `Secure` 设备 Cookie。
+- 公网入口必须是 HTTPS。Cloudflare 打开 Always Use HTTPS；源站在看到 `X-Forwarded-Proto: http` 时把页面 308 到配置的 `https` 域名。
 - 公网稳定域名不随家庭 IP 改变，因此正常重启或宽带换 IP 不需要重新扫码。
 
 公网一次性凭证会短暂出现在二维码 URL 中，因此 Cloudflare 和 Origin 日志不得记录完整 Query String；凭证使用后应视为失效，
@@ -85,7 +88,7 @@ Access 登录不是 AI Center 重新配对，两者生命周期独立。
 ### 简洁模式：Tunnel + AI Center 设备授权
 
 无需 Cloudflare 登录，扫码后直接进入应用。安全性依赖高熵配对凭证、设备 token、限速和 Cloudflare 边缘防护。
-体验更顺，但对所有互联网用户开放静态页面、健康检查和配对兑换入口。
+体验更顺，但对所有互联网用户开放静态页面、健康检查、`/api/v1/ui/revision` 和配对兑换入口。界面指纹接口只返回哈希，不含主机名。
 
 金融数据长期使用时优先选择双层防护。
 
@@ -99,7 +102,7 @@ Access 登录不是 AI Center 重新配对，两者生命周期独立。
 4. Service URL 设置为 `http://127.0.0.1:8787`。
 5. 只配置这一个精确 Hostname，并保留最终 `http_status:404` catch-all；不要使用泛域名把其他本机服务带出去。
 6. 推荐先创建 Cloudflare Access Self-hosted Application，只允许自己的邮箱。
-7. 在 Windows 安装 Cloudflare 提供的 `cloudflared` 服务命令。Tunnel token 是敏感凭证，不能写入仓库、截图或聊天。
+7. 本机先跑 `scripts/setup-cloudflared.ps1`：安装 `cloudflared`，并准备 `.ai-data/cloudflare/`。把 Zero Trust 复制的 token 写入 `.ai-data/cloudflare/tunnel.token`，或使用本机 Named Tunnel 的 `config.yml`。之后 `start-ai-center.bat` 会在 Web 就绪后探活或拉起隧道。也可单独跑 `scripts/start-cloudflared.ps1`。Tunnel token 是敏感凭证，不能写入仓库、截图或聊天。
 8. 启动 AI Center 前设置：
 
 ```powershell
@@ -117,7 +120,7 @@ $env:AI_CENTER_PUBLIC_URL = 'https://center.example.com'
 1. 公网二维码打开 `https://` 稳定域名。
 2. 未配对时只能看到配对状态，读取 `/api/v1/posts` 返回 401。
 3. 公网无法访问 `/api/v1/pairing`、`/api/v1/devices`、`/api/v1/runtime`。
-4. 扫码后可以读取信息、发布并收到 SSE。
+4. 扫码或账号登录后可以读取信息、发布并收到 SSE。账号登录不能调用桌面管理 API。
 5. 重启 Web、Worker 和 cloudflared 后仍可连接，不重新扫码。
 6. 撤销手机设备后，公网 Cookie 立即失效。
 7. 错误配对超过限制后返回 429。

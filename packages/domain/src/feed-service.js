@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { ValidationError } from '../../contracts/src/index.js';
 import { packFeedAiBatches } from './feed-ai-batch.js';
+import { feedItemIdentityHash } from './feed-identity.js';
 import { collectLocalizationUnits, localizationItemId, needsZhLocalization } from './localize-texts.js';
 
 const DEFAULT_WORKSPACE_ID = 'local';
@@ -204,7 +205,14 @@ async function localizeFeedItems(feedRepository, translationPort, workspaceId, i
   return attachTranslations(feedRepository, workspaceId, items, targetLang);
 }
 
-function ingestExternalItems(feedRepository, workspaceId, persistence, snapshot) {
+async function resolveIngestFilter(feedFilter, input) {
+  if (!feedFilter?.evaluate) {
+    return { action: 'keep', createContentItem: true, status: 'ready', metadata: {} };
+  }
+  return feedFilter.evaluate(input);
+}
+
+async function ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter) {
   if (!feedRepository?.saveCapture || !Array.isArray(snapshot?.items) || !snapshot.items.length) {
     return { added: 0, skipped: 0 };
   }
@@ -217,7 +225,9 @@ function ingestExternalItems(feedRepository, workspaceId, persistence, snapshot)
     handle: '',
     displayName: sourceMeta.displayName,
     profileUrl: sourceMeta.profileUrl,
-    authMode: 'browser-session',
+    authMode: ['public', 'credential', 'browser-session'].includes(sourceMeta.authMode)
+      ? sourceMeta.authMode
+      : 'browser-session',
     metadata: {},
   });
   feedRepository.upsertSubscription?.({
@@ -228,17 +238,79 @@ function ingestExternalItems(feedRepository, workspaceId, persistence, snapshot)
   });
   let added = 0;
   let skipped = 0;
+  const hiddenExternalIds = new Set(feedRepository.listHiddenExternalIds?.(workspaceId, providerId) || []);
   const batchCapturedAt = Number(snapshot.fetchedAt) > snapshot.items.length
     ? Number(snapshot.fetchedAt)
     : Date.now();
-  snapshot.items.forEach((item, index) => {
-    if (!item.externalId || !item.sourceUrl) return;
+  for (const [index, item] of snapshot.items.entries()) {
+    if (!item.externalId || !item.sourceUrl) continue;
+    const identityHash = feedItemIdentityHash(providerId, item);
+    const rememberFingerprint = (hiddenAt) => {
+      feedRepository.upsertIdentityFingerprint?.({
+        workspaceId,
+        provider: providerId,
+        identityHash,
+        externalId: String(item.externalId),
+        ...(hiddenAt === undefined ? {} : { hiddenAt }),
+      });
+    };
+    if (hiddenExternalIds.has(String(item.externalId))
+      || feedRepository.isIdentityHidden?.(workspaceId, providerId, {
+        identityHash,
+        externalId: String(item.externalId),
+      })) {
+      rememberFingerprint(Date.now());
+      skipped += 1;
+      continue;
+    }
     const originalText = item.originalText || item.body || '';
     const hash = contentHash(`${item.externalId}\n${originalText}\n${item.body || ''}`);
     const existing = feedRepository.getCapture?.(workspaceId, providerId, item.externalId);
-    if (existing && existing.contentHash === hash) {
+    const existingByContentHash = feedRepository.getCaptureByContentHash?.(workspaceId, providerId, hash);
+    const hasIdentityFingerprint = Boolean(
+      feedRepository.hasIdentityFingerprint?.(workspaceId, providerId, identityHash),
+    );
+    if (existing) {
+      const linked = feedRepository.getContentItemByCapture?.(workspaceId, existing.id)
+        || feedRepository.getContentItemByCaptureId?.(workspaceId, existing.id);
+      if (linked && feedRepository.isContentHidden?.(workspaceId, linked.id)) {
+        rememberFingerprint(Date.now());
+        skipped += 1;
+        continue;
+      }
+      if (existing.contentHash === hash) {
+        rememberFingerprint();
+        skipped += 1;
+        continue;
+      }
+    } else if (hasIdentityFingerprint) {
+      rememberFingerprint();
       skipped += 1;
-      return;
+      continue;
+    }
+    const filterInput = {
+      workspaceId,
+      provider: providerId,
+      item,
+      originalText,
+      contentHash: hash,
+      identityHash,
+      existingCapture: existing || null,
+      existingByContentHash: existingByContentHash || null,
+      hasIdentityFingerprint: existing ? false : hasIdentityFingerprint,
+    };
+    let verdict = await resolveIngestFilter(feedFilter, filterInput);
+    const linked = existing
+      ? (feedRepository.getContentItemByCapture?.(workspaceId, existing.id)
+        || feedRepository.getContentItemByCaptureId?.(workspaceId, existing.id))
+      : null;
+    if (verdict.action === 'skip') {
+      rememberFingerprint();
+      skipped += 1;
+      continue;
+    }
+    if (verdict.action === 'ignore' && linked) {
+      verdict = { ...verdict, action: 'keep', createContentItem: true, status: 'ready' };
     }
     const capture = feedRepository.saveCapture({
       workspaceId,
@@ -249,15 +321,21 @@ function ingestExternalItems(feedRepository, workspaceId, persistence, snapshot)
       title: item.title || '',
       contentHash: hash,
       rawArtifactPath: null,
-      status: 'ready',
+      status: verdict.status || 'ready',
       publishedAt: item.publishedAt || null,
       capturedAt: Math.max(0, batchCapturedAt - index),
       metadata: {
         originalText,
         ...(item.formatEngine ? { formatEngine: item.formatEngine } : {}),
         ...(item.authorHandle ? { authorHandle: item.authorHandle } : {}),
+        ...(verdict.metadata || {}),
       },
     });
+    if (!verdict.createContentItem) {
+      rememberFingerprint();
+      skipped += 1;
+      continue;
+    }
     feedRepository.saveContentItem({
       workspaceId,
       captureId: capture.id,
@@ -270,8 +348,9 @@ function ingestExternalItems(feedRepository, workspaceId, persistence, snapshot)
       authorName: item.authorName || '',
       publishedAt: item.publishedAt || null,
     });
+    rememberFingerprint();
     added += 1;
-  });
+  }
   return { added, skipped };
 }
 
@@ -324,6 +403,15 @@ function searchStoredItems(feedRepository, workspaceId, query, limit) {
     .map(({ item }) => item);
 }
 
+function knownExternalIds(feedRepository, workspaceId, providerId) {
+  const ids = [
+    ...(feedRepository.listCaptureExternalIds?.(workspaceId, providerId) || []),
+    ...(feedRepository.listHiddenExternalIds?.(workspaceId, providerId) || []),
+    ...(feedRepository.listIdentityExternalIds?.(workspaceId, providerId) || []),
+  ];
+  return [...new Set(ids.map((id) => String(id || '')).filter(Boolean))];
+}
+
 function wrapFeedProviders(feedProviders) {
   if (!feedProviders || typeof feedProviders.get !== 'function') return null;
   return {
@@ -348,13 +436,18 @@ function wrapFeedProviders(feedProviders) {
     async read(sourceId, query = {}, context = {}) {
       const providerId = String(sourceId || '').replace(/^content\./, '');
       const provider = feedProviders.get(providerId);
-      const data = await provider.getFeed({ ...query, refresh: Boolean(context.refresh), bypassCache: Boolean(context.refresh) });
+      const data = await provider.getFeed({
+        ...query,
+        refresh: Boolean(context.refresh),
+        bypassCache: Boolean(context.refresh),
+        excludeExternalIds: context.excludeExternalIds,
+      });
       return { data };
     },
   };
 }
 
-export function createFeedService({ legacyRepository, feedRepository, sourcePort, feedProviders, translationPort }) {
+export function createFeedService({ legacyRepository, feedRepository, sourcePort, feedProviders, translationPort, feedFilter = null }) {
   const resolvedSourcePort = sourcePort || wrapFeedProviders(feedProviders);
   if (!legacyRepository || !feedRepository || !resolvedSourcePort) throw new Error('feed repositories and source port are required');
   sourcePort = resolvedSourcePort;
@@ -383,11 +476,14 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
         stored.items = rankFeedItems(await localizeFeedItems(feedRepository, translationPort, workspaceId, stored.items, 'zh', { wait: false }));
         return stored;
       }
-      const sourceSnapshot = await sourcePort.read(source.id, sourceInput, { refresh: true });
+      const sourceSnapshot = await sourcePort.read(source.id, sourceInput, {
+        refresh: true,
+        excludeExternalIds: knownExternalIds(feedRepository, workspaceId, providerId),
+      });
       const snapshot = sourceSnapshot.data;
       let stats = { added: 0, skipped: 0 };
       try {
-        stats = ingestExternalItems(feedRepository, workspaceId, persistence, snapshot);
+        stats = await ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter);
       } catch {
         // Live snapshot still returns even if persistence fails.
       }
@@ -397,7 +493,17 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
         skipped: stats.skipped,
       });
       stored.items = rankFeedItems(await localizeFeedItems(feedRepository, translationPort, workspaceId, stored.items));
+      const hiddenExternalIds = new Set(feedRepository.listHiddenExternalIds?.(workspaceId, providerId) || []);
+      stored.items = stored.items.filter((item) => !hiddenExternalIds.has(String(item.externalId || '')));
       const total = stored.items.length;
+      const visibleSnapshotItems = (snapshot.items || []).filter((item) => {
+        const externalId = String(item.externalId || '');
+        if (hiddenExternalIds.has(externalId)) return false;
+        const identityHash = feedItemIdentityHash(providerId, item);
+        if (feedRepository.isIdentityHidden?.(workspaceId, providerId, { identityHash, externalId })) return false;
+        if (feedRepository.hasIdentityFingerprint?.(workspaceId, providerId, identityHash)) return false;
+        return true;
+      });
       if ((snapshot.mode === 'error' || snapshot.mode === 'unavailable') && !total) {
         return { ...snapshot, source: snapshot.source, items: [] };
       }
@@ -410,7 +516,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
           : snapshot.mode === 'error' && total
             ? `${snapshot.note} · 仍显示已缓存 ${total} 条`
             : `${snapshot.note || '已拉取'} · 新增 ${stats.added} · 去重 ${stats.skipped} · 共 ${total} 条`,
-        items: stored.items.length ? stored.items : snapshot.items || [],
+        items: stored.items.length ? stored.items : visibleSnapshotItems,
       };
     },
     listContentItems(workspaceId, page) {
@@ -431,6 +537,22 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
     },
     getContentItem(workspaceId, id) {
       return feedRepository.getContentItem(workspaceId, id);
+    },
+    getLocalizedContentItem(workspaceId, id) {
+      const item = feedRepository.getContentItem(workspaceId, id);
+      if (!item) return null;
+      const ids = [item.id];
+      if (item.provider && item.externalId) ids.push(`${item.provider}:${item.externalId}`);
+      const rows = feedRepository.listTranslations?.(workspaceId, ids, 'zh') || [];
+      const hash = contentHash(item.body || '');
+      const row = rows.find((entry) => entry.sourceHash === hash && entry.translatedText)
+        || rows.find((entry) => entry.translatedText);
+      return {
+        ...item,
+        translation: row?.translatedText
+          ? { text: row.translatedText, engine: row.engine || '', targetLang: row.targetLang || 'zh' }
+          : null,
+      };
     },
     getOriginalContent(workspaceId, id) {
       const requested = String(id || '').trim();
@@ -544,7 +666,17 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
     patchContentItemState(input) {
       const item = feedRepository.getContentItem(input.workspaceId, input.contentItemId);
       if (!item) return null;
-      return feedRepository.upsertUserItemState(input);
+      const state = feedRepository.upsertUserItemState(input);
+      if (item.provider && input.isHidden !== undefined) {
+        feedRepository.upsertIdentityFingerprint?.({
+          workspaceId: input.workspaceId,
+          provider: item.provider,
+          identityHash: feedItemIdentityHash(item.provider, item),
+          externalId: item.externalId || '',
+          hiddenAt: input.isHidden ? state.updatedAt : null,
+        });
+      }
+      return state;
     },
     hideLegacyPost(id) {
       if (!legacyRepository.hidePost) return false;

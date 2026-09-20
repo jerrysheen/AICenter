@@ -78,7 +78,7 @@ export const ContentFeedItemSchema = z.looseObject({
 });
 
 export const ContentFeedViewSchema = z.looseObject({
-  platform: z.enum(['x', 'bilibili']),
+  platform: z.enum(['x', 'bilibili', 'trendforce']),
   feed: z.string().trim().min(1).max(64),
   source: z.string().max(128),
   mode: z.enum(['empty', 'live', 'partial', 'cached', 'error', 'unavailable']),
@@ -105,4 +105,5 @@ export const WebSearchViewSchema = z.object({
   available: z.boolean(),
   results: z.array(WebSearchResultSchema).max(20),
   observedAt: z.number().int().nonnegative(),
+  note: z.string().max(1_000).default(''),
 }).strict();

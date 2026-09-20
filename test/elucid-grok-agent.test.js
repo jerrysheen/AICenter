@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createElucidGrokAgentClient } from '../packages/connectors/src/elucid-grok-agent.js';
+import { createServer } from 'node:http';
+import {
+  clampElucidTimeoutMs,
+  createElucidGrokAgentClient,
+  elucidDispatcherOptions,
+  elucidHttpRequest,
+  ELUCID_GROK_DEFAULT_TIMEOUT_MS,
+  ELUCID_GROK_MAX_TIMEOUT_MS,
+} from '../packages/connectors/src/elucid-grok-agent.js';
 
 test('Elucid Grok adapter uses Responses tool calls and continues with function output', async () => {
   const requests = [];
@@ -110,4 +118,75 @@ test('Elucid Grok adapter appends budgetNote and does not send tool_choice in AU
   assert.equal(body.tool_choice, undefined);
   assert.equal(body.tools[0].name, 'public_web_search');
   assert.equal(body.tools[1].name, 'feed_search');
+});
+
+test('Elucid Grok adapter uses the reserved research model only when configured', async () => {
+  const urls = [];
+  const models = [];
+  const client = createElucidGrokAgentClient({
+    apiKey: 'test-key', apiRoot: 'https://example.test/v1',
+    model: 'grok-4.6', researchModel: 'grok-research',
+    fetch: async (_url, request) => {
+      urls.push(_url);
+      models.push(JSON.parse(request.body).model);
+      return new Response(JSON.stringify({ output_text: 'ok', output: [] }), { status: 200 });
+    },
+  });
+  const standard = await client.respond({ contents: [{ role: 'user', parts: [{ text: 'hi' }] }] });
+  const research = await client.respond({
+    contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
+    researchProfile: { modelProfile: 'research' },
+  });
+  assert.equal(models[0], 'grok-4.6');
+  assert.equal(models[1], 'grok-research');
+  assert.equal(standard.modelId, 'grok-4.6');
+  assert.equal(research.modelId, 'grok-research');
+});
+
+test('Elucid Grok allows article-analysis waits longer than the 90s ask default', () => {
+  assert.equal(clampElucidTimeoutMs(undefined), ELUCID_GROK_DEFAULT_TIMEOUT_MS);
+  assert.equal(clampElucidTimeoutMs(480_000), 480_000);
+  assert.equal(clampElucidTimeoutMs(900_000), ELUCID_GROK_MAX_TIMEOUT_MS);
+  assert.deepEqual(elucidDispatcherOptions(480_000), {
+    headersTimeout: 480_000,
+    bodyTimeout: 480_000,
+    connectTimeout: 30_000,
+  });
+});
+
+test('Elucid HTTP reports request, first byte and complete', async () => {
+  const phases = [];
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.write('{"ok":');
+    setTimeout(() => res.end('true}'), 15);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  try {
+    await elucidHttpRequest(`http://127.0.0.1:${port}/ok`, {
+      onTransport: (info) => phases.push(info.phase),
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+  assert.ok(phases.includes('request'));
+  assert.ok(phases.includes('socket'));
+  assert.ok(phases.includes('headers'));
+  assert.ok(phases.includes('first-byte'));
+  assert.ok(phases.includes('complete'));
+});
+
+test('Elucid HTTP wait uses the request timeout instead of Node 5-minute headers cut', async () => {
+  const server = createServer(() => {});
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  try {
+    await assert.rejects(
+      () => elucidHttpRequest(`http://127.0.0.1:${port}/slow`, { timeoutMs: 50 }),
+      (error) => error.name === 'TimeoutError',
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });

@@ -4,6 +4,16 @@ import { SaveStructuredArtifactInputSchema, TaxonomyKeySchema } from './taxonomy
 
 export const AgentWebModeSchema = z.enum(['off', 'fallback', 'always']);
 
+export const AgentResearchModeSchema = z.enum(['standard', 'research']);
+
+export const AgentResearchProfileSchema = z.object({
+  mode: AgentResearchModeSchema,
+  modelProfile: z.enum(['default', 'research']),
+  methodKeywords: z.array(z.string().trim().min(1).max(64)).max(16).default([]),
+  extraToolIds: z.array(z.string().trim().min(1).max(64)).max(16).default([]),
+  thinking: z.enum(['standard', 'deliberate']),
+}).strict();
+
 // Write tools persist through Domain Service; models still cannot pass source IDs.
 export const ReferenceResourceTypeSchema = z.enum([
   'content-item',
@@ -22,6 +32,7 @@ export const ReferenceInputSchema = z.object({
 export const CreateAgentRunInputSchema = z.object({
   message: z.string().trim().min(1).max(4_000),
   webMode: AgentWebModeSchema.default('off'),
+  researchMode: AgentResearchModeSchema.default('standard'),
   sessionId: EntityIdSchema.optional(),
   references: z.array(ReferenceInputSchema).max(8).default([]),
 }).strict();
@@ -45,6 +56,7 @@ export const ActiveAgentRunSchema = z.object({
   question: z.string().max(4_000),
   createdAt: EpochMillisSchema,
   updatedAt: EpochMillisSchema,
+  agentMode: z.enum(['ask', 'article-analysis']).optional(),
 }).strict();
 
 export const AgentContextRefOriginSchema = z.enum(['selected', 'tool']);

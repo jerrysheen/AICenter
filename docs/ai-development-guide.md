@@ -6,12 +6,13 @@
 2. `docs/release-readiness.md`
 3. `docs/architecture.md`
 4. `docs/architecture-modules-v1.md`
-5. `docs/contracts-v1.md`
-6. `docs/public-access-security.md`
-7. `docs/product-v2.md`
+5. `docs/architecture-agent-v1.md`
+6. `docs/contracts-v1.md`
+7. `docs/public-access-security.md`
+8. `docs/product-v2.md`
 
 `docs/plan/stage-2.md` 是历史拆分，不驱动当前开发。领域边界和字段语义分别以 `architecture-modules-v1.md`、
-`contracts-v1.md` 和 `packages/contracts/src` 为准。不要另加 Intent Router、多 Agent 或新的数据库体系。
+`contracts-v1.md` 和 `packages/contracts/src` 为准。Ask Agent 职责以 `architecture-agent-v1.md` 为准。不要另加 Intent Router、多 Agent 或新的数据库体系。
 
 ## 一、当前架构基线
 
@@ -63,7 +64,7 @@ Connector → Domain Service → Repository → Outbox Event
 ```text
 apps/
   web/src/server.js          进程启动、依赖组装
-  web/src/http/              Router、响应、SSE、静态文件等 HTTP 基础设施
+  web/src/http/              Router、响应、SSE、静态文件等 HTTP 基础设施。public 文件按指纹改写 `?v=`；`ui-boot.js` 不缓存，打开页面先校验热更新。指纹变化要等稳定后再整页重载，boot / SSE / 刷新不要各刷一次。不要手改版本号。
   web/src/routes/            分域 API 路由
   web/public/                Web/Harmony 共用 UI
   worker/                    后台任务执行进程
@@ -73,10 +74,14 @@ scripts/
   setup-searxng.ps1          一次安装本机 Search Worker（clone + venv）
   start-searxng.ps1          启动 127.0.0.1:8888 上的 SearXNG
   searxng-process.ps1        识别/停止 Search 进程的共用函数
+  setup-cloudflared.ps1      一次安装本机 cloudflared，并准备 `.ai-data/cloudflare/`
+  start-cloudflared.ps1      单独启动 Named Tunnel；本机已配置时 start-ai-center 也会拉起
+  cloudflared-process.ps1    识别 cloudflared 可执行文件、token 与服务状态
   start-ai-center.ps1        启动 Web、Worker 与可选 Search
 
 config/
   searxng-settings.yml       SearXNG 极简配置模板；运行时副本在 `.ai-data/searxng/`
+  cloudflared-config.example.yml  可选本地管理 Tunnel 的 ingress 模板；只转发 8787
 
 packages/
   instance/src/              Instance 路径与分层 .env 解析；只在 Composition Root 使用
@@ -106,25 +111,27 @@ docs/
 
 | Service | 文件 | 责任 |
 |---|---|---|
-| Identity | `packages/domain/src/identity-service.js` | 配对、设备、行为指标 |
+| Identity | `packages/domain/src/identity-service.js` | 配对、可选账号登录、设备、行为指标 |
 | Feed | `packages/domain/src/feed-service.js` | 手工信息、外部 Feed、订阅入口 |
-| Trading | `packages/domain/src/trading-service.js` | 行情端口、证券、组合、流水、手工持仓账本和个人资产分析入口 |
-| Knowledge | `packages/domain/src/knowledge-service.js` | 灵感、AI 记录/会话、知识文档、版本、SQLite 检索，以及 FileKnowledgePort 投影 |
-| Context | `packages/domain/src/context-service.js` | 跨领域 AI 读取；`build()` 与用户 `resolveReferences()` |
+| Trading | `packages/domain/src/trading-service.js` | 行情端口、证券、组合、流水、手工持仓账本和个人资产账本（类型 / 账户 / 期间快照） |
+| Knowledge | `packages/domain/src/knowledge-service.js` | 灵感、工作包领取/完成/步骤账本/goal 与 progress 落盘/继续做新 session/派发独立 Cursor session、AI 记录/会话、知识文档、版本、SQLite 检索，以及 FileKnowledgePort 投影 |
+| Context | `packages/domain/src/context-service.js` | 跨领域 AI 读取；`build()`、用户 `resolveReferences()` 与 `packReferences()` |
 | Tagging | `packages/domain/src/tagging-service.js` | Tag Catalog、落盘标签、Agent 只读解析与按 Tag 反查 |
-| Runtime | `packages/domain/src/runtime-service.js` | Job、状态、事件读取 |
+| Runtime | `packages/domain/src/runtime-service.js` | Job、状态、事件读取；写 `runtime/restart.request` 请启动器弹 Web/Worker。问答 `researchMode` 在这里解析为 `AgentResearchProfile` 后写入 Job |
 
 ### 当前 HTTP 路由
 
 | 路由模块 | 责任 |
 |---|---|
 | `system-routes.js` | 健康检查 |
-| `identity-routes.js` | 配对、Session、设备、行为指标 |
+| `identity-routes.js` | 配对、账号登录、Session、设备、行为指标 |
 | `feed-routes.js` | 手工信息和外部信息流 |
-| `trading-routes.js` | 行情、证券搜索和个人资产仪表盘 |
+| `trading-routes.js` | 行情、证券搜索、个人资产账本与仪表盘 |
 | `knowledge-routes.js` | 灵感、知识库、Taxonomy 与 from-run 整理任务 |
+| `context-routes.js` | 跨域上下文组装与引用材料包 |
 | `agent-routes.js` | 问答 Job、进行中的 Run 列表、AI 记录列表与会话详情 |
-| `runtime-routes.js` | Worker 状态和 Job |
+| `runtime-routes.js` | Worker 状态、Job，以及已配对设备请求弹 Web/Worker |
+| `article-analysis-routes.js` | Search Agent 入口：创建与查询 `ai.article.analyze`，不走普通问答。设计见 `docs/search-agent-v1.md` |
 | `event-routes.js` | SSE 长连接入口 |
 
 ## 三、不可破坏的设计原则
@@ -167,8 +174,8 @@ Domain Service 只依赖传入的 Port。禁止 import：
 
 ### 4. Repository 按领域拥有数据
 
-- Feed Repository 只拥有来源、订阅、Capture、ContentItem 和用户状态。
-- Trading Repository 只拥有证券、别名、行情、组合、流水和持仓投影。
+- Feed Repository 只拥有来源、订阅、Capture、ContentItem、用户状态和 identity fingerprint。
+- Trading Repository 只拥有证券、别名、行情、组合、流水、持仓投影和个人资产账本。
 - Knowledge Repository 只拥有知识文档、版本、分块和检索。
 - Runtime Repository 只拥有 Job、Attempt、事件和 Provider 健康状态。
 
@@ -206,10 +213,10 @@ Domain Service 只依赖传入的 Port。禁止 import：
 
 ## 五、数据库迁移规则
 
-数据库当前最新版本为 V20。V7 是手工持仓批次，V8 是公网配对安全字段，V9 是持仓批次开仓日 `opened_at`，V10 是 `ai_run_context_refs`，V11 是信息流译文 `feed_item_translations`，V12 是 `ai_sessions` 与 `ai_runs` 的会话归属，V13 回填归档后缺失的 Knowledge Revision / FTS，V14 从 Job / 灵感原文回填旧问答的提问，V15 为 context refs 增加 `origin` / `label`，并为灵感增加内部来源字段，V16 增加 `taxonomy_nodes` / `resource_taxonomy` / `taxonomy_proposals`，以及 `notes.title` / `inspiration_type` 与 `knowledge_items.knowledge_type`，V17 增加跨域粗筛 `resource_taggings`，V18 增加灵感的 `source_url` / `source_title` / `capture_channel` / `source_app`，V19 增加离线同步的 `client_mutation_id` / `captured_at` 与 workspace 内非空幂等索引，V20 增加 `posts.hidden_at`。
+数据库当前最新版本为 V27。V7 是手工持仓批次，V8 是公网配对安全字段，V9 是持仓批次开仓日 `opened_at`，V10 是 `ai_run_context_refs`，V11 是信息流译文 `feed_item_translations`，V12 是 `ai_sessions` 与 `ai_runs` 的会话归属，V13 回填归档后缺失的 Knowledge Revision / FTS，V14 从 Job / 灵感原文回填旧问答的提问，V15 为 context refs 增加 `origin` / `label`，并为灵感增加内部来源字段，V16 增加 `taxonomy_nodes` / `resource_taxonomy` / `taxonomy_proposals`，以及 `notes.title` / `inspiration_type` 与 `knowledge_items.knowledge_type`，V17 增加跨域粗筛 `resource_taggings`，V18 增加灵感的 `source_url` / `source_title` / `capture_channel` / `source_app`，V19 增加离线同步的 `client_mutation_id` / `captured_at` 与 workspace 内非空幂等索引，V20 增加 `posts.hidden_at`，V21 增加灵感工作包 `work_packages`，V22 为工作包增加独立 Cursor session 字段。工作包步骤目录 `hashId` 由 `id` 派生，不占新列。V23 增加 `feed_identity_fingerprints`：作者 + 正文的稳定 hash，正文清掉后仍用于去重和隐藏。V24 为工作包增加 `parent_work_package_id`，继续做时另开新 session。V25 增加 `attachments` / `resource_attachments`：图片字节落在 `data/blobs/attachments/`，库里只记相对路径，灵感与工作包按 id 引用。V26 增加个人资产账本：类型目录、账户实例、期间快照与分红导入榜；Excel 只作 `PersonalAssetImport`。V27 去掉快照标签唯一约束，投资类计入券商现金，分红不再导入。
 
-- V1–V20 一旦发布即不可修改、重排或删除。
-- 下一次结构变化必须新增 V21。
+- V1–V27 一旦发布即不可修改、重排或删除。
+- 下一次结构变化必须新增 V28。
 - 不允许删除并重建用户数据库。
 - 新列必须考虑旧行的默认值和回填。
 - 需要替换字段类型时，先增加新权威列，完成双读/迁移后再决定是否淘汰旧列。
@@ -252,19 +259,22 @@ knowledge.document.revised.v1
 - Handler 应具备幂等性，重复执行不能产生重复 Capture、交易或知识版本。
 - `completeJob` / `failJob` 必须带当前 `workerId` 与 `attemptCount`；拒绝过期执行者的迟到结果。
 - Worker 只回收租约已过期的 `running` 任务，启动时回收一次，运行期间周期回收；不要启动即重置全部运行中任务。
+- Job Runner 按类型限并发：`work-package.dispatch` 默认 3 路 Cursor CLI，其余 Job（含 `ai.agent.run`）默认 1。可用 `AI_CENTER_WORKER_WORK_PACKAGE_CONCURRENCY` 覆盖任务包上限，不要把问答改成多 Agent 并行。
 - SSE 按 `Last-Event-ID` 分页补发；超过窗口时 `ready.snapshotRequired`，前端拉 REST 快照。
 
 ## 七、如何增加不同类型的功能
 
 ### 增加一个本机 Search Provider
 
-联网检索不是领域。SearXNG 只是 `search.web` 的 Adapter：
+联网检索不是领域。DeepSeek Native Search 是 `search.web` 的默认 Adapter：
 
-1. 运行时源码与 venv 在 `.ai-data/searxng/`，仓库只保存 `scripts/setup-searxng.ps1`、`scripts/start-searxng.ps1` 和 `config/searxng-settings.yml`。
-2. Connector 在 `packages/connectors/src/searxng.js`，只允许回环 HTTP，输出稳定的 `{ query, results, observedAt }`。
-3. `packages/source/src/search/definitions.js` 把 Connector 注册为 `search.web`，负责输入/输出校验、`unavailable` Snapshot、warnings 与 AI Projection。
-4. Tool `web.search` 在 `packages/runtime/src/local-tools.js` 注册，只通过 SourcePort 读取 `search.web`，并按 `webMode` 暴露；失败时 warning，不失败整次 Run。`webMode` 只控制是否暴露工具与 Prompt 倾向，Runtime 不在首轮强制 `toolChoice=required`。Final Guard 仍拒绝虚构的联网声称，以及用户明确要求联网但未调用 `web.search` 的终稿。
-5. 替换为其他搜索引擎时不改 Agent Runtime 循环或页面 Contract。Connector 负责把引擎日期标准化为 `publishedAt`，没有日期则为 `null`。
+1. 默认 Provider 在 `packages/connectors/src/deepseek-search.js`。只需要 `DEEPSEEK_API_KEY`；`baseURL` / `model` / `web_search_20250305` / `max_uses=5` 写死默认值。启动不做 probe。
+2. Connector 调 Anthropic-compatible Messages，只解析 `web_search_tool_result` → `web_search_result`，再用 `text` citations 补 snippet。输出稳定的 `{ query, available, results, observedAt, note }`。不把 DeepSeek 生成的答案、供应商引擎名或原始 content blocks 写进模型投影。
+3. 401 / 403、请求失败，或正常 Messages 但没有 `web_search_tool_result` 时抛 `WebSearchUnavailableError`，Source 映射为 `available: false`。不要回退 Bing / DDG / SearXNG。`packages/connectors/src/searxng.js` 仍保留为 legacy。
+4. `packages/source/src/search/definitions.js` 把 Connector 注册为 `search.web`，负责输入/输出校验、`unavailable` / `partial` Snapshot、warnings 与 AI Projection。
+5. Tool `web.search` 在 `packages/runtime/src/local-tools.js` 注册，只通过 SourcePort 读取 `search.web`，并按 `webMode` 暴露；失败时 warning，不失败整次 Run。`webMode` 只控制是否暴露工具与 Prompt 倾向，Runtime 不在首轮强制 `toolChoice=required`。Final Guard 仍拒绝虚构的联网声称，以及用户明确要求联网但未调用 `web.search` 的终稿。
+6. 替换为其他搜索引擎时不改 Agent Runtime 循环或页面 Contract。Connector 负责把日期标准化为 ISO `publishedAt`，`page_age` 无法解析则为 `null`。
+7. 补充检索不是第二个 Agent，也不替换 `search.web`。Worker 在第一次 `web.search` 时并行调用可选 Port（当前豆包网页），终稿接受后再拼接。Port 由 Composition Root 注入；Runtime 不 import Connector。
 
 ### 读取官方信源详情
 
@@ -295,7 +305,7 @@ knowledge.document.revised.v1
 4. 已有 `viewKind` 与已有高层 Tool 能覆盖时，不改 Route、Domain、Agent Runtime 或 UI Renderer。
 5. 用 `/api/v1/sources` 验证目录，用 `/api/v1/sources/:id` 验证 Human Snapshot，并测试 AI Projection 的大小边界。
 
-`Source` 是读取能力；Feed 的 `SourceAccount` 是账号/频道持久化实体，两者不可合并。SearXNG Search
+`Source` 是读取能力；Feed 的 `SourceAccount` 是账号/频道持久化实体，两者不可合并。DeepSeek Search
 使用 `search.web` Source；Agent 兼容入口仍是 `web.search` Tool。
 
 以 B站为例：
@@ -404,7 +414,7 @@ npm run check
 - 单 Agent Runtime（无前置 Intent Router）。
 - B站贴链接抓 AI 中文字幕；雪球优先、同花顺回退的行情适配；Yahoo / X 等信息源。
 
-豆包网页聊天入口是 `node scripts/ask-doubao.mjs "问题"`，JSONL 信封是 `node scripts/ask-doubao-jsonl-envelope.mjs`。每个进程实例内部用 `createDoubaoAskQueue` 一次一条；**Web / Worker / CLI 不共用一条跨进程队列**。信息流 `translateMany` 一次只发一封 `translate_feed_items`；英文抓取入库后自动走这一层，并允许轻度清洗。JSON 齐了立刻结束。Tag 走 `task=tag_texts`，Worker Job `tagging.analyze`。豆包挂起则返回，由刷新或补翻译再试。仅格式验收失败才走一次 Gemini。实现在 `packages/connectors/src/doubao` 与 `translate`，只复用 BrowserRuntime。不接入 Agent Tool，不回退 Chrome CDP。用户 view 不展示原文；原文接口为 `GET /api/v1/content-items/:id/original`。
+信息流 `translateMany` 和粗筛 Tag（Worker Job `tagging.analyze`）都走 Gemini。翻译缺 Key 时回退 DeepL / Google。后续批量整理走本地任务包给 Cursor。用户 view 不展示原文；原文接口为 `GET /api/v1/content-items/:id/original`。
 
 B站贴链接链路（已接入，本轮不扩展为关注同步）：
 

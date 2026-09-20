@@ -1,3 +1,5 @@
+import { modelIdForProfile } from './agent-model-profile.js';
+
 const DEFAULT_ROOT = 'https://generativelanguage.googleapis.com/v1beta';
 const DEFAULT_MODEL = 'gemini-3.1-flash-lite';
 
@@ -61,13 +63,15 @@ export function createGeminiAgentClient(options = {}) {
     : envText('AI_CENTER_AGENT_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'AI_CENTER_GEMINI_API_KEY');
   const apiRoot = (text(options.apiRoot) || envText('AI_CENTER_AGENT_API_ROOT', 'AI_CENTER_GEMINI_API_ROOT') || DEFAULT_ROOT).replace(/\/$/, '');
   const modelId = text(options.model) || envText('AI_CENTER_AGENT_MODEL', 'AI_CENTER_GEMINI_MODEL') || DEFAULT_MODEL;
+  const researchModelId = text(options.researchModel) || envText('AI_CENTER_AGENT_RESEARCH_MODEL');
 
   return Object.freeze({
-    async respond({ contents = [], tools = [], signal, budgetNote, systemInstruction, toolChoice } = {}) {
+    async respond({ contents = [], tools = [], signal, budgetNote, systemInstruction, toolChoice, researchProfile } = {}) {
       if (!apiKey) throw new Error('未配置 AI_CENTER_AGENT_API_KEY 或 GEMINI_API_KEY');
+      const usedModel = modelIdForProfile(modelId, researchModelId, researchProfile);
       const instruction = mergeInstruction(systemInstruction || INSTRUCTIONS, budgetNote);
       const toolConfig = geminiToolConfig(toolChoice);
-      const response = await fetchImpl(`${apiRoot}/models/${encodeURIComponent(modelId)}:generateContent`, {
+      const response = await fetchImpl(`${apiRoot}/models/${encodeURIComponent(usedModel)}:generateContent`, {
         method: 'POST',
         headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
         signal,
@@ -106,7 +110,7 @@ export function createGeminiAgentClient(options = {}) {
         toolCalls,
         modelContent: { role: 'model', parts },
         providerId: 'gemini',
-        modelId,
+        modelId: usedModel,
         warnings: [],
       };
     },

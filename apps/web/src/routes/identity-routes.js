@@ -1,8 +1,34 @@
-import { parseBehaviorEvent, parsePairInput } from '../../../../packages/contracts/src/index.js';
+import { parseBehaviorEvent, parseLoginInput, parsePairInput } from '../../../../packages/contracts/src/index.js';
 import { json, readJson } from '../http/response.js';
 
 export function createIdentityRoutes() {
   return [
+    {
+      method: 'POST', path: '/api/v1/session/login', access: 'public',
+      async handler({ request, response, services, events, cookies, pairing, publicRequest }) {
+        const rateLimit = pairing.allowAttempt(request, publicRequest);
+        if (!rateLimit.allowed) {
+          json(response, 429, { ok: false, error: '登录尝试过于频繁，请稍后重试' }, {
+            'Retry-After': String(rateLimit.retryAfterSeconds),
+          });
+          return;
+        }
+        const input = parseLoginInput(await readJson(request));
+        const result = services.identity.loginWithPassword(input);
+        if (result.reason === 'disabled') {
+          json(response, 503, { ok: false, error: '未启用账号登录' });
+          return;
+        }
+        if (!result.ok) {
+          json(response, 401, { ok: false, error: '账号或密码不正确' });
+          return;
+        }
+        events.flush();
+        json(response, 201, { ok: true, device: result.device }, {
+          'Set-Cookie': cookies.authorize(result.token, publicRequest),
+        });
+      },
+    },
     {
       method: 'POST', path: '/api/v1/pair', access: 'public',
       async handler({ request, response, services, events, cookies, pairing, publicRequest }) {
@@ -27,9 +53,14 @@ export function createIdentityRoutes() {
     },
     {
       method: 'GET', path: '/api/v1/session', access: 'public',
-      handler({ response, identity, appInfo }) {
+      handler({ response, identity, appInfo, services }) {
         if (!identity) {
-          json(response, 401, { ok: false, paired: false, error: '此设备尚未配对' });
+          json(response, 401, {
+            ok: false,
+            paired: false,
+            loginAvailable: services.identity.loginAvailable(),
+            error: '此设备尚未配对',
+          });
           return;
         }
         json(response, 200, {

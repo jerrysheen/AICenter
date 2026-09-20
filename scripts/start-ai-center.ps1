@@ -28,6 +28,7 @@ $RuntimeDirectory = [IO.Path]::GetFullPath([string]$InstanceConfig.runtimeDirect
 $LogDirectory = Join-Path $RuntimeDirectory 'logs'
 $HostLogDirectory = Join-Path $HostRuntimeDirectory 'logs'
 $StateFile = Join-Path $RuntimeDirectory 'processes.json'
+$RestartRequestFile = Join-Path $RuntimeDirectory 'restart.request'
 $WebOutLog = Join-Path $LogDirectory 'web.out.log'
 $WebErrorLog = Join-Path $LogDirectory 'web.error.log'
 $WorkerOutLog = Join-Path $LogDirectory 'worker.out.log'
@@ -37,9 +38,12 @@ $SearchOutLog = Join-Path $HostLogDirectory 'search.out.log'
 $SearchErrorLog = Join-Path $HostLogDirectory 'search.error.log'
 $BrowserOutLog = Join-Path $HostLogDirectory 'browser.out.log'
 $BrowserErrorLog = Join-Path $HostLogDirectory 'browser.error.log'
+$CloudflareOutLog = Join-Path $HostLogDirectory 'cloudflared.out.log'
+$CloudflareErrorLog = Join-Path $HostLogDirectory 'cloudflared.error.log'
 
 . (Join-Path $PSScriptRoot 'searxng-process.ps1')
 . (Join-Path $PSScriptRoot 'bsk-process.ps1')
+. (Join-Path $PSScriptRoot 'cloudflared-process.ps1')
 
 function Get-ProcessByIdSafe([int]$ProcessId) {
   if ($ProcessId -le 0) { return $null }
@@ -190,6 +194,75 @@ function Write-InstanceProcessState {
   [System.IO.File]::WriteAllText($StateFile, $state, [System.Text.UTF8Encoding]::new($false))
 }
 
+function Start-AiCenterWebAndWorker {
+  $previousPort = $env:AI_CENTER_PORT
+  $previousBrowserProvider = $env:AI_BROWSER_PROVIDER
+  $previousBskAutoStart = $env:BSK_AUTO_START
+  $previousBskPath = $env:AI_BSK_PATH
+  $previousInstanceId = $env:AI_CENTER_INSTANCE_ID
+  $previousInstanceRoot = $env:AI_CENTER_INSTANCE_DIR
+  $env:AI_CENTER_PORT = [string]$Port
+  $env:AI_CENTER_INSTANCE_ID = $InstanceId
+  if (-not $LegacyInstanceLayout) {
+    $env:AI_CENTER_INSTANCE_DIR = $InstanceRoot
+  }
+  if (-not $env:AI_BROWSER_PROVIDER) {
+    $env:AI_BROWSER_PROVIDER = 'bsk'
+  }
+  $bundledBsk = Join-Path $RepositoryRoot 'externaltools\bsk.exe'
+  if (-not $env:AI_BSK_PATH -and (Test-Path -LiteralPath $bundledBsk -PathType Leaf)) {
+    $env:AI_BSK_PATH = $bundledBsk
+  }
+  $env:BSK_AUTO_START = '0'
+  $started = @{ web = $null; worker = $null }
+  try {
+    $started.web = Start-HiddenLoggedProcess `
+      -FilePath $NodeCommand.Source `
+      -ArgumentList @("`"$WebEntry`"") `
+      -WorkingDirectory $RepositoryRoot `
+      -OutLog $WebOutLog `
+      -ErrorLog $WebErrorLog
+    $started.worker = Start-HiddenLoggedProcess `
+      -FilePath $NodeCommand.Source `
+      -ArgumentList @("`"$WorkerEntry`"") `
+      -WorkingDirectory $RepositoryRoot `
+      -OutLog $WorkerOutLog `
+      -ErrorLog $WorkerErrorLog
+  } finally {
+    if ($null -eq $previousPort) { Remove-Item Env:AI_CENTER_PORT -ErrorAction SilentlyContinue } else { $env:AI_CENTER_PORT = $previousPort }
+    if ($null -eq $previousBrowserProvider) { Remove-Item Env:AI_BROWSER_PROVIDER -ErrorAction SilentlyContinue } else { $env:AI_BROWSER_PROVIDER = $previousBrowserProvider }
+    if ($null -eq $previousBskAutoStart) { Remove-Item Env:BSK_AUTO_START -ErrorAction SilentlyContinue } else { $env:BSK_AUTO_START = $previousBskAutoStart }
+    if ($null -eq $previousBskPath) { Remove-Item Env:AI_BSK_PATH -ErrorAction SilentlyContinue } else { $env:AI_BSK_PATH = $previousBskPath }
+    if ($null -eq $previousInstanceId) { Remove-Item Env:AI_CENTER_INSTANCE_ID -ErrorAction SilentlyContinue } else { $env:AI_CENTER_INSTANCE_ID = $previousInstanceId }
+    if ($null -eq $previousInstanceRoot) { Remove-Item Env:AI_CENTER_INSTANCE_DIR -ErrorAction SilentlyContinue } else { $env:AI_CENTER_INSTANCE_DIR = $previousInstanceRoot }
+  }
+  return $started
+}
+
+function Wait-AiCenterWebHealth($Web, $Worker, [int]$Seconds = 15) {
+  $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+  $health = $null
+  do {
+    $Web.Refresh()
+    $Worker.Refresh()
+    if ($Web.HasExited) {
+      throw (Get-ExitedProcessHint -Name 'Web' -LogPath $WebErrorLog)
+    }
+    if ($Worker.HasExited) {
+      throw "Worker exited after start. See $WorkerErrorLog"
+    }
+    try {
+      $health = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/v1/health" -TimeoutSec 2
+    } catch {
+      Start-Sleep -Milliseconds 350
+    }
+  } while (-not $health -and [DateTime]::UtcNow -lt $deadline)
+  if (-not $health -or -not $health.ok) {
+    throw "Web did not pass health check within ${Seconds}s. See $WebErrorLog"
+  }
+  return $health
+}
+
 function Wait-ForCtrlCOrCrash {
   if (-not ('AiCenterConsoleCtrl' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -215,11 +288,15 @@ public static class AiCenterConsoleCtrl {
     while (-not [AiCenterConsoleCtrl]::StopRequested) {
       $webProcess.Refresh()
       $workerProcess.Refresh()
-      if ($webProcess.HasExited) {
-        throw (Get-ExitedProcessHint -Name 'Web' -LogPath $WebErrorLog)
-      }
-      if ($workerProcess.HasExited) {
-        throw "Worker exited unexpectedly. See $WorkerErrorLog"
+      if ($webProcess.HasExited -or $workerProcess.HasExited) {
+        if ($webProcess.HasExited) {
+          Write-Host (Get-ExitedProcessHint -Name 'Web' -LogPath $WebErrorLog) -ForegroundColor Yellow
+        }
+        if ($workerProcess.HasExited) {
+          Write-Host "Worker exited unexpectedly. See $WorkerErrorLog" -ForegroundColor Yellow
+        }
+        Write-Host 'Web or Worker exited. Restarting them; tunnel stays up.' -ForegroundColor Cyan
+        return 'restart'
       }
       if ($searchProcess) {
         $searchProcess.Refresh()
@@ -231,8 +308,20 @@ public static class AiCenterConsoleCtrl {
           $browserProcess = $null
         }
       }
+      if ($cloudflareProcess) {
+        $cloudflareProcess.Refresh()
+        if ($cloudflareProcess.HasExited) {
+          Write-Host "[!] Public tunnel exited. Web and Worker will keep running; see $CloudflareErrorLog" -ForegroundColor Yellow
+          $cloudflareProcess = $null
+          $cloudflareStatus = 'failed'
+        }
+      }
+      if (Test-Path -LiteralPath $RestartRequestFile -PathType Leaf) {
+        return 'restart'
+      }
       Start-Sleep -Milliseconds 800
     }
+    return 'stop'
   } finally {
     if ($registered) {
       [void][AiCenterConsoleCtrl]::SetConsoleCtrlHandler([AiCenterConsoleCtrl]::Handler, $false)
@@ -247,8 +336,10 @@ while ($true) {
   $workerProcess = $null
   $searchProcess = $null
   $browserProcess = $null
+  $cloudflareProcess = $null
   $searchStatus = 'skipped'
   $browserStatus = 'skipped'
+  $cloudflareStatus = 'skipped'
   $browserOwned = $false
 
   try {
@@ -267,7 +358,7 @@ while ($true) {
     Stop-RecordedInstanceProcesses
     Assert-PortAvailable
 
-    Write-Host 'Starting Browser, Web, Worker, and Search...' -ForegroundColor Cyan
+    Write-Host 'Starting Browser, Web, Worker, Search, and Tunnel...' -ForegroundColor Cyan
     $previousPort = $env:AI_CENTER_PORT
     $previousBrowserProvider = $env:AI_BROWSER_PROVIDER
     $previousBskAutoStart = $env:BSK_AUTO_START
@@ -393,6 +484,21 @@ while ($true) {
       throw "Web did not pass health check within 15s. See $WebErrorLog"
     }
 
+    if (-not (Test-CloudflaredConfigured)) {
+      $cloudflareStatus = 'missing'
+    } elseif (Test-CloudflaredRunning) {
+      $cloudflareStatus = 'reused'
+      Write-Host '[OK] Public tunnel already running.' -ForegroundColor DarkGray
+    } else {
+      try {
+        $cloudflareProcess = Start-AiCenterCloudflaredProcess -OutLog $CloudflareOutLog -ErrorLog $CloudflareErrorLog
+        $cloudflareStatus = if ($cloudflareProcess) { 'ok' } else { 'reused' }
+      } catch {
+        $cloudflareStatus = 'failed'
+        Write-Host "[!] Public tunnel failed to start: $($_.Exception.Message)" -ForegroundColor Yellow
+      }
+    }
+
     if (-not (Test-SearxngInstalled)) {
       Write-Host '[!] Search is not installed. Run scripts\setup-searxng.ps1 once.' -ForegroundColor Yellow
     } elseif ($searchStatus -eq 'failed') {
@@ -437,6 +543,13 @@ while ($true) {
     } else {
       Write-Host '[!] Search unavailable' -ForegroundColor Yellow
     }
+    if ($cloudflareStatus -eq 'ok' -or $cloudflareStatus -eq 'reused') {
+      Write-Host '[OK] Tunnel  public HTTPS'
+    } elseif ($cloudflareStatus -eq 'missing') {
+      Write-Host '[!] Tunnel not configured. Public hostname stays off until .ai-data/cloudflare is set up.' -ForegroundColor Yellow
+    } else {
+      Write-Host '[!] Tunnel unavailable' -ForegroundColor Yellow
+    }
     Write-Host "Open: http://127.0.0.1:$Port/"
     $phoneLines = @(Get-Content -LiteralPath $WebOutLog -ErrorAction SilentlyContinue |
         Where-Object { $_ -like 'Phone:*' })
@@ -445,9 +558,24 @@ while ($true) {
     } else {
       Write-Host 'Phone: no LAN IPv4 address found.' -ForegroundColor Yellow
     }
-    Write-Host "Web PID: $($webProcess.Id); Worker PID: $($workerProcess.Id)$(if ($searchProcess -and $searchStatus -eq 'ok') { "; Search PID: $($searchProcess.Id)" } else { '' })$(if ($browserProcess -and $browserOwned) { "; Browser PID: $($browserProcess.Id)" } else { '' })"
+    Write-Host "Web PID: $($webProcess.Id); Worker PID: $($workerProcess.Id)$(if ($searchProcess -and $searchStatus -eq 'ok') { "; Search PID: $($searchProcess.Id)" } else { '' })$(if ($browserProcess -and $browserOwned) { "; Browser PID: $($browserProcess.Id)" } else { '' })$(if ($cloudflareProcess -and $cloudflareStatus -eq 'ok') { "; Tunnel PID: $($cloudflareProcess.Id)" } else { '' })"
     Write-Host "Logs: $LogDirectory"
-    Wait-ForCtrlCOrCrash
+    $waitResult = 'restart'
+    while ($waitResult -eq 'restart') {
+      $waitResult = Wait-ForCtrlCOrCrash
+      if ($waitResult -ne 'restart') { break }
+      Write-Host ''
+      Write-Host 'Restarting Web/Worker. Tunnel stays up.' -ForegroundColor Cyan
+      Remove-Item -LiteralPath $RestartRequestFile -Force -ErrorAction SilentlyContinue
+      Stop-StartedAiCenterProcesses
+      Start-Sleep -Milliseconds 500
+      $started = Start-AiCenterWebAndWorker
+      $webProcess = $started.web
+      $workerProcess = $started.worker
+      Write-InstanceProcessState
+      [void](Wait-AiCenterWebHealth -Web $webProcess -Worker $workerProcess)
+      Write-Host "[OK] Web/Worker restarted. Web PID $($webProcess.Id); Worker PID $($workerProcess.Id)" -ForegroundColor Green
+    }
     Write-Host ''
     Write-Host 'Stopping AI Center...' -ForegroundColor Yellow
   } catch {

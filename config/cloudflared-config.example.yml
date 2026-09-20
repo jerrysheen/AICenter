@@ -1,0 +1,12 @@
+# Optional locally-managed tunnel config.
+# Dashboard token tunnels do not use this file.
+# Copy to .ai-data/cloudflare/config.yml on this machine only.
+# Keep the catch-all 404. Do not add extra ingress targets.
+
+# tunnel: replace-with-tunnel-id
+# credentials-file: replace-with-local-credentials-json
+
+ingress:
+  - hostname: center.example.com
+    service: http://127.0.0.1:8787
+  - service: http_status:404

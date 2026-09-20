@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { PersonalAssetDashboardSchema, parseContract, ValidationError } from '../packages/contracts/src/index.js';
+import { PersonalAssetDashboardSchema, PersonalAssetImportSchema, parseContract, ValidationError } from '../packages/contracts/src/index.js';
 import {
   buildPersonalAssetDashboard,
+  buildPersonalAssetImport,
   createPersonalAssetService,
   formatPeriodLabel,
   zipStore,
@@ -88,6 +89,27 @@ test('personal asset dashboard maps workbook columns like the original screen', 
   parseContract(PersonalAssetDashboardSchema, dashboard);
 });
 
+test('workbook import splits bank columns and keeps recorded totals', () => {
+  const imported = buildPersonalAssetImport({
+    headerRow: ['年份', '总计', '', '交通银行', '', '', '股票(A+B股)'],
+    recordedAt: 10,
+    assetRows: [
+      ['2022/9', 100_000, 0, 1000, 0, 0, 40_000, 0, 0, 0, 0, 0, 2000, 3000, 4000, 20_000, 0, 0, 5000, '', 0, 0],
+      ['2023/1', 110_000, 0, 1500, 0, 0, 50_000, 0, 0, 0, 0, 0, 2500, 3500, 4500, 22_000, 0, 0, 6000, '', 10_000, 0.1],
+    ],
+    dividendRows: [['招商银行', 3200, 2, 128]],
+  });
+  parseContract(PersonalAssetImportSchema, imported);
+  const bank = imported.accounts.find((item) => item.id === 'paacct:bank:col3');
+  assert.equal(bank.name, '银行卡1');
+  assert.equal(bank.note, '交通银行');
+  assert.equal(imported.accounts.find((item) => item.source === 'holdings').id, 'paacct:investment:holdings');
+  assert.equal(imported.snapshots.at(-1).total, '110000');
+  const lineSum = imported.snapshots.at(-1).lines.reduce((sum, line) => sum + Number(line.amount), 0);
+  assert.equal(lineSum, 110000);
+  assert.deepEqual(imported.dividends, []);
+});
+
 test('personal asset contract rejects numeric money fields', () => {
   assert.throws(() => parseContract(PersonalAssetDashboardSchema, {
     source: 'workbook',
@@ -141,7 +163,51 @@ test('workbook adapter and API return the mapped dashboard', async () => {
   try {
     const payload = await fetch(`${address.localUrl}/api/v1/assets/personal`).then((response) => response.json());
     assert.equal(payload.ok, true);
+    assert.equal(payload.dashboard.source, 'ledger');
     assert.equal(payload.dashboard.latest.total, '110000');
+    assert.equal(payload.dashboard.latest.recordedTotal, '110000');
+    assert.equal(payload.dashboard.latest.equity, '50000');
+    assert.deepEqual(payload.dashboard.dividend.items, []);
+    assert.ok(payload.dashboard.accounts.some((item) => item.source === 'holdings'));
+  } finally {
+    await app.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('real personal-assets workbook imports all recorded periods', async () => {
+  const workbookPath = path.join('data', 'imports', 'personal-assets.xlsx');
+  if (!existsSync(workbookPath)) return;
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-real-assets-'));
+  const personalAssetService = createPersonalAssetService({
+    workbookPath,
+    now: () => 42,
+  });
+  const imported = await personalAssetService.parseImport();
+  assert.ok(imported);
+  assert.equal(imported.snapshots.length, 57);
+  assert.equal(imported.snapshots.filter((item) => item.label === '2024/3').length, 2);
+  assert.equal(imported.snapshots.filter((item) => item.label === '2024/12').length, 3);
+  assert.equal(imported.snapshots.at(-1).label, '2026/8.1');
+  assert.equal(imported.snapshots.at(-1).total, '1563354.23');
+  assert.deepEqual(imported.dividends, []);
+  assert.equal(imported.accounts.find((item) => item.id === 'paacct:bank:col3').note, '光大银行卡');
+  assert.equal(imported.accounts.find((item) => item.source === 'holdings').note, 'A股、B股市值与券商现金');
+
+  const app = createAiCenterServer({
+    host: '127.0.0.1',
+    port: 0,
+    dataDirectory: directory,
+    personalAssetService,
+  });
+  const address = await app.listen();
+  try {
+    const payload = await fetch(`${address.localUrl}/api/v1/assets/personal`).then((response) => response.json());
+    assert.equal(payload.ok, true);
+    assert.equal(payload.dashboard.source, 'ledger');
+    assert.equal(payload.dashboard.points.filter((item) => item.recorded).length, 57);
+    assert.equal(payload.dashboard.latest.recordedTotal, '1563354.23');
+    assert.deepEqual(payload.dashboard.dividend.items, []);
   } finally {
     await app.close();
     rmSync(directory, { recursive: true, force: true });

@@ -28,5 +28,12 @@ export function createRuntimeRoutes() {
         });
       },
     },
+    {
+      method: 'POST', path: '/api/v1/runtime/restart',
+      handler({ response, services }) {
+        const restart = services.runtime.requestProcessRestart({ reason: 'manual' });
+        json(response, 202, { ok: true, restart });
+      },
+    },
   ];
 }

@@ -2,8 +2,11 @@ import { hostname } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
-import { createConfiguredBrowserRuntime, createDoubaoConnector, createDoubaoJsonlTagPort, createElucidGrokAgentClient, createGeminiAgentClient, createLocalKnowledgeFiles, createPersonalAssetService, createSearxngSearchProvider } from '../../../packages/connectors/src/index.js';
-import { createStore } from '../../../packages/database/src/index.js';
+import { createConfiguredBrowserRuntime, createCursorSessionPort, createDeepSeekSearchProvider, createDoubaoAuxiliarySearch, createElucidGrokAgentClient, createGeminiAgentClient, createGeminiTagPort, createLauncherRestartPort, createLocalKnowledgeFiles, createPersonalAssetService, createTypeSafeSystemOneClient } from '../../../packages/connectors/src/index.js';
+import { createAgentQualityLayerFromEnv } from '../../../packages/runtime/src/agent-quality.js';
+import { articleAnalysisManifest, createArticleAnalysisJobHandlers } from '../../../packages/runtime/src/article-analysis/article-analysis-module.js';
+import { createAttachmentStore, createStore } from '../../../packages/database/src/index.js';
+import { createFeedFilterFromEnv } from '../../../packages/domain/src/feed-filter.js';
 import { createFeedService } from '../../../packages/domain/src/feed-service.js';
 import { createKnowledgeService } from '../../../packages/domain/src/knowledge-service.js';
 import { createTaggingService } from '../../../packages/domain/src/tagging-service.js';
@@ -14,9 +17,11 @@ import { createAgentRuntime } from '../../../packages/runtime/src/agent-runtime.
 import { agentRuntimeManifest, createAgentJobHandlers } from '../../../packages/runtime/src/agent-module.js';
 import { knowledgeStructureManifest, createStructureJobHandlers } from '../../../packages/runtime/src/structure-module.js';
 import { taggingManifest, createTaggingJobHandlers, readTagCatalogFile } from '../../../packages/runtime/src/tagging-module.js';
+import { workPackageDispatchManifest, createWorkPackageJobHandlers } from '../../../packages/runtime/src/work-package-module.js';
 import { createJobRunner } from '../../../packages/runtime/src/job-runner.js';
 import { createLocalToolRegistry } from '../../../packages/runtime/src/local-tools.js';
 import { createAgentTraceLog } from '../../../packages/runtime/src/agent-trace-log.js';
+import { createWorkPackageTracePort } from '../../../packages/runtime/src/work-package-trace.js';
 import { createSourceHub, createSourceModuleRegistry } from '../../../packages/source/src/index.js';
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -36,9 +41,36 @@ function createOptionalSearchPort(explicit) {
   if (explicit !== undefined) return explicit;
   if (String(process.env.AI_CENTER_SEARCH_DISABLED || '').trim() === '1') return null;
   try {
-    return createSearxngSearchProvider();
+    return createDeepSeekSearchProvider();
   } catch (error) {
     console.error('[worker] web.search 未启用：', error?.message || error);
+    return null;
+  }
+}
+
+export function createOptionalAgentQuality(explicit, env = process.env, client) {
+  if (explicit !== undefined) return explicit || null;
+  try {
+    return createAgentQualityLayerFromEnv({
+      env,
+      client: client && typeof client.evaluate === 'function'
+        ? client
+        : createTypeSafeSystemOneClient({ env }),
+    });
+  } catch (error) {
+    console.error('[worker] Jev quality 未启用：', error?.message || error);
+    return null;
+  }
+}
+
+export function createOptionalAuxiliarySearch(explicit, browserRuntime, env = process.env) {
+  if (explicit !== undefined) return explicit || null;
+  if (String(env.AI_CENTER_DOUBAO_SEARCH_DISABLED || '').trim() === '1') return null;
+  if (!browserRuntime) return null;
+  try {
+    return createDoubaoAuxiliarySearch({ browserRuntime });
+  } catch (error) {
+    console.error('[worker] 补充检索未启用：', error?.message || error);
     return null;
   }
 }
@@ -60,6 +92,9 @@ export function createAiCenterWorker(options = {}) {
     },
   });
   const dataDirectory = instance.dataDirectory;
+  const restartPort = options.restartPort || createLauncherRestartPort({
+    runtimeDirectory: instance.runtimeDirectory,
+  });
   const store = options.store || createStore(instance.databasePath);
   const staleAfterMs = Number(options.staleAfterMs || process.env.AI_CENTER_WORKER_LEASE_MS) || 10 * 60_000;
   store.recoverStaleJobs(staleAfterMs);
@@ -68,9 +103,6 @@ export function createAiCenterWorker(options = {}) {
     env: options.env || process.env,
     defaultBrowserId: instance.browserId,
   });
-  const doubao = options.doubaoConnector || (browserRuntime
-    ? createDoubaoConnector({ browserRuntime })
-    : null);
   let feedService;
   const registry = options.moduleRegistry || createSourceModuleRegistry({
     twitterService: options.twitterService,
@@ -85,16 +117,30 @@ export function createAiCenterWorker(options = {}) {
     syncFeed: (...args) => feedService.getExternalFeed(...args),
   });
   const sourcePort = options.sourcePort || createSourceHub(registry);
+  const env = options.env || process.env;
+  const typesafeClient = options.typesafeClient || createTypeSafeSystemOneClient({ env });
+  const feedFilter = options.feedFilter !== undefined
+    ? options.feedFilter
+    : createFeedFilterFromEnv({ client: typesafeClient, env });
   feedService = options.feedService || createFeedService({
     legacyRepository: store,
     feedRepository: store.repositories.feed,
     sourcePort,
+    feedFilter,
+  });
+  const workPackageTracePort = options.workPackageTracePort || createWorkPackageTracePort({
+    logDirectory: path.join(instance.runtimeDirectory, 'logs'),
+    repositoryRoot,
   });
   const knowledgeService = options.knowledgeService || createKnowledgeService({
     legacyRepository: store,
     knowledgeRepository: store.repositories.knowledge,
     fileKnowledgePort: options.fileKnowledgePort || createLocalKnowledgeFiles({
       rootDirectory: instance.knowledgeDirectory,
+    }),
+    workPackageTracePort,
+    attachmentStore: options.attachmentStore || createAttachmentStore({
+      dataDirectory,
     }),
   });
   const tradingService = options.tradingService || createTradingService({
@@ -110,9 +156,7 @@ export function createAiCenterWorker(options = {}) {
       existsSync(instance.tagCatalogPath) ? instance.tagCatalogPath : path.join(repositoryRoot, 'config/tags.default.json'),
     ),
     taggingRepository: store.repositories.tagging,
-    taggingPort: options.taggingPort || (doubao
-      ? createDoubaoJsonlTagPort({ queue: doubao.queue })
-      : null),
+    taggingPort: options.taggingPort || createGeminiTagPort(),
   });
   const contextService = options.contextService || createContextService({
     feedService,
@@ -120,8 +164,23 @@ export function createAiCenterWorker(options = {}) {
     knowledgeService,
   });
   const agentClient = options.agentClient || createConfiguredAgentClient();
+  const agentQuality = options.agentQuality !== undefined
+    ? options.agentQuality
+    : (options.store && !options.dataDirectory && !options.instanceConfig
+      ? null
+      : createOptionalAgentQuality(undefined, options.env || process.env, typesafeClient));
+  if (agentQuality?.config) {
+    console.log(`[worker] Jev quality prior=${agentQuality.config.priorMode} reviewer=${agentQuality.config.reviewerEnabled ? 'on' : 'off'} evidenceGate=${agentQuality.config.evidenceGateMode || 'off'}`);
+  }
+  const auxiliarySearch = createOptionalAuxiliarySearch(
+    options.auxiliarySearch,
+    browserRuntime,
+    options.env || process.env,
+  );
   const agentRuntime = options.agentRuntime || createAgentRuntime({
     llm: agentClient,
+    auxiliarySearch,
+    quality: agentQuality,
     tools: options.agentTools || createLocalToolRegistry({
       contextService, feedService, knowledgeService, tradingService, taggingService, sourcePort,
     }),
@@ -135,7 +194,17 @@ export function createAiCenterWorker(options = {}) {
       }));
   registry.register({
     manifest: agentRuntimeManifest,
-    jobHandlers: createAgentJobHandlers({ agentRuntime, knowledgeService, contextService, agentTraceLog }),
+    jobHandlers: createAgentJobHandlers({ agentRuntime, knowledgeService, contextService, agentTraceLog, agentQuality }),
+  });
+  registry.register({
+    manifest: articleAnalysisManifest,
+    jobHandlers: options.articleAnalysisJobHandlers || createArticleAnalysisJobHandlers({
+      agentRuntime,
+      knowledgeService,
+      feedService,
+      agentTraceLog,
+      agentQuality,
+    }),
   });
   registry.register({
     manifest: knowledgeStructureManifest,
@@ -153,6 +222,17 @@ export function createAiCenterWorker(options = {}) {
       knowledgeService,
     }),
   });
+  registry.register({
+    manifest: workPackageDispatchManifest,
+    jobHandlers: options.workPackageJobHandlers || createWorkPackageJobHandlers({
+      knowledgeService,
+      cursorSessionPort: options.cursorSessionPort || createCursorSessionPort({
+        workspace: repositoryRoot,
+      }),
+      requestProcessRestart: (input) => restartPort.requestRestart(input),
+      workPackageTracePort,
+    }),
+  });
   const runner = createJobRunner({
     store,
     handlers: options.handlers || registry.createJobHandlers(),
@@ -160,6 +240,10 @@ export function createAiCenterWorker(options = {}) {
     pollIntervalMs: options.pollIntervalMs || process.env.AI_CENTER_WORKER_POLL_MS,
     staleAfterMs,
     recoverEveryMs: options.recoverEveryMs || process.env.AI_CENTER_WORKER_RECOVER_MS,
+    concurrency: options.concurrency || {
+      workPackageDispatchLimit: options.workPackageConcurrency
+        ?? process.env.AI_CENTER_WORKER_WORK_PACKAGE_CONCURRENCY,
+    },
     onError(error, job) {
       console.error(`[worker] ${job.type} ${job.id}:`, error);
     },
