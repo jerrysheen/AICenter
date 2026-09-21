@@ -10,7 +10,7 @@
 - 新 Source `content.trendforce.public`，provider `trendforce`，`authMode=public`。
 - 只打公开 HTML：`/insights`、`/insights/{slug}`、`/research`、`/price/dram/dram_spot`、`/price/flash/flash_spot`。不跟 `/api/*`、`/pricedetail`、历史图、PDF。
 - 会员研报正文加「仅收录标题与介绍」说明。
-- X home 采集若卡片或正文有 `/article/`，同一登录会话打开文章页，把正文拼进 `tweet.text`。`tweetToFeedItem` 不加字段。
+- X home 采集若卡片或正文有 `/article/`，同一登录会话打开文章页，把正文拼进 `tweet.text`。`tweetToFeedItem` 不加字段。首页封面卡实际是 `article-cover-image`，后续补丁见 `2026-09-20-x-article-media-notes.md`。
 
 ## 验证
 

@@ -3,7 +3,7 @@
 当前产品版本是 **0.2.0 基线候选**。当前问题与验收见 `docs/release-readiness.md`。
 下文「第一版兼容层」是仍在运行的连接闭环，不是当前工作范围。
 
-单 Agent / Worker 已经接入；不要再写成「AI Worker 后续接入」。不另建 Intent Router、多 Agent 或新的数据库体系。Ask Agent 冻结为 **Single Agent + Runtime Guardrails + Jev Quality Observer**，见 `docs/architecture-agent-v1.md`。Jev 给置信与质量信号，不指挥 Agent 想什么；Evidence Gate 可在检索结果进入 Context 前过滤，失败则放行。Search Agent（产品入口「文章阅读」，Job `ai.article.analyze`）复用同一个 AgentRuntime，只换阅读框架和 Tool 可见范围，见 `docs/search-agent-v1.md`。不进入普通问答 Job，也不另建 Tool Loop。
+单 Agent / Worker 已经接入；不要再写成「AI Worker 后续接入」。不另建 Intent Router、多 Agent 或新的数据库体系。Ask Agent 冻结为 **Single Agent + Runtime Guardrails + Jev Quality Observer**，见 `docs/architecture-agent-v1.md`。Jev 给置信与质量信号，不指挥 Agent 想什么；Evidence Gate 可在检索结果进入 Context 前过滤，失败则放行。生产执行器是冻结的 DeepSeek Harness（`dsh-base` 0.1.6-alpha.2 / commit `ddefc45`）：Ask 与文章阅读都走 `dsh --profile sdk`，Domain Tool 仍经 Tool Gateway 执行。主模型只走 Harness LLM：`AI_CENTER_HARNESS_PROVIDER` 在 `deepseek-official` 与 `elucid-grok` 之间二选一。`$DSH_HOME/settings.yaml` 同时写入 `llm-deepseek` 与 `llm-pi-ai`。Ask、文章阅读、内置 web 和结构整理共用这一套，不再用 `AI_CENTER_AGENT_PROVIDER`。`elucid-grok` 时 `web_search` 走 Grok 原生搜索，`web_fetch` 仍是 HTTP。本地 `AgentRuntime` 只留给测试注入 fake LLM，或显式 `AI_CENTER_AGENT_RUNTIME=local`。公网已配对设备使用 Domain Tool 问答；改代码、Shell、工作包派发属于 Host 作用，只允许本机 `desktop-host`，见 `docs/public-access-security.md`。文章阅读是 **Article Analysis Skill**（Job `ai.article.analyze`）：同一套执行器上的明确调用，只换阅读框架和 Domain Tool 可见范围，见 `docs/search-agent-v1.md`。不进入普通问答 Job，也不另建 Tool Loop。资料搜索等专用能力以后做成 Harness 插件，当前不要另起执行器。
 
 ## Single-user Instance 边界
 
@@ -81,7 +81,7 @@ B站 / X / 字幕          雪球 / 同花顺 / Yahoo
 
 - Web 只负责页面、API、配对和读取结果。
 - 独立本地 Worker 负责定时抓取、重试、字幕和 AI 加工。
-- `search.web` 的默认 Provider 是 DeepSeek Native Search：Web / Worker 进程内用 `DEEPSEEK_API_KEY` 调 Anthropic-compatible Messages + `web_search_20250305`，只解析结构化 sources。缺 Key、401/403，或正常返回但没有 `web_search_tool_result` 时 `available: false`，不回退 Bing / DDG / SearXNG。本机 SearXNG Connector 仍保留为 legacy，主链路不调用。第一次联网搜索仍可并行问豆包网页，只在终稿后追加补充资讯；豆包慢或未登录时问答仍返回 DeepSeek 结果。
+- `search.web` 的 DeepSeek Native Search Connector、Domain `web.search` 和豆包补充检索只留给显式 `AI_CENTER_AGENT_RUNTIME=local`。生产 Ask / 文章阅读的公开互联网是 Harness 内置 `web_search` / `web_fetch`。缺 Key 时本地回退把 `search.web` 标成 `available: false`，不回退 Bing / DDG / SearXNG。本机 SearXNG Connector 仍保留为 legacy，主链路不调用。
 - 旧仓库继续运行，通过配置路径或本机 HTTP 调用，不立即迁移代码。
 - 只有 AI Center 的 Web 端口对手机开放；旧服务和浏览器调试端口只监听本机。
 - 用正式 `schema_migrations` 替代单纯的 `CREATE TABLE IF NOT EXISTS`。
@@ -105,7 +105,7 @@ Context Service
 AiRun + AiRunContextRef
 ```
 
-`POST /api/v1/context` 提供受设备授权保护的上下文组装，供已实现的 Agent Worker 和问答界面使用；它本身不调用模型，也不伪造回答。`POST /api/v1/context/pack` 把同一组用户引用打成 Markdown 材料包，供导出或带去任务，不新增领域。V10 增加 `ai_run_context_refs`，用于在实际 AI Run 写入时固定本次读取的资源、知识版本和快照时间。V11 增加 `feed_item_translations`，信息流译文按条目 ID 与正文哈希持久化，电脑和手机读同一份。V12 增加 `ai_sessions`，以及 `ai_runs.session_id` / `input_text`，把问答和灵感加工收成可回溯、可继续的 AI 记录。V13 把灵感归档收口到 Knowledge Document，并回填缺失的 Revision / FTS，避免知识库页面看得到但 `knowledge.search` 搜不到。V14 把旧问答的提问从 Job 输入回填到 `ai_runs.input_text`。V15 为 `ai_run_context_refs` 增加 `origin` / `label`，用户主动引用由 Context Service `resolveReferences()` 在进入 Agent 前确定性读取，不占用 Tool Call。V16 在 Knowledge 域增加多维 Taxonomy 与 Structured Artifact 回填：`inspiration.from-run` / `knowledge.from-run` 由 Worker 编译后写入灵感或知识正文，并挂分类与来源。V17 增加跨域粗筛 `resource_taggings`：对文本打预定义 tag，信息流只是其中一个调用方。V18 为灵感增加外部来源 URL、来源标题、采集入口和来源应用字段。V19 增加离线同步幂等键和原始采集时间。V20 为旧发布内容增加 `posts.hidden_at`，支持保留记录同时从默认信息流隐藏。V21 为灵感增加 `work_packages`。V22 增加 `cursor_agent_id` / `cursor_run_id` / `dispatch_job_id`：`notify` 入队 Worker，拉起本机 `agent -p` CLI，做完退出；同一 Worker 默认同时最多 3 个任务包 CLI，问答 Agent 仍一次一条。需要弹进程时由 Worker 在 CLI 退出后写 Instance `runtime/restart.request`，启动器只重启 Web/Worker。Web/Worker 自己退出时同样弹回，不拆 Host 隧道。已配对设备可走 `POST /api/v1/runtime/restart`。公网 Hostname 仍只映射 Web 端口。V23 增加 `feed_identity_fingerprints`：按作者与正文生成稳定 hash，推文正文按保留期清掉后仍能去重和记住左滑删除。V24 为工作包增加 `parent_work_package_id`：详情里继续做时另开新 session，正文带上旧指令。V25 增加 `attachments` / `resource_attachments`：图片落在 `data/blobs/attachments/`，页面只看到 `/api/v1/attachments/:id/content`，Worker 把相对路径解析成本机绝对路径后交给 Cursor CLI `--image`。V26 增加个人资产账本：类型、账户、期间快照与分红导入行；工作簿只作导入。V27 去掉快照期间标签唯一约束，允许同月多次记录；投资类加总含券商现金，分红榜不再导入或展示。
+`POST /api/v1/context` 提供受设备授权保护的上下文组装，供已实现的 Agent Worker 和问答界面使用；它本身不调用模型，也不伪造回答。`POST /api/v1/context/pack` 把同一组用户引用打成 Markdown 材料包，供导出或带去任务，不新增领域。V10 增加 `ai_run_context_refs`，用于在实际 AI Run 写入时固定本次读取的资源、知识版本和快照时间。V11 增加 `feed_item_translations`，信息流译文按条目 ID 与正文哈希持久化，电脑和手机读同一份。V12 增加 `ai_sessions`，以及 `ai_runs.session_id` / `input_text`，把问答和灵感加工收成可回溯、可继续的 AI 记录。V13 把灵感归档收口到 Knowledge Document，并回填缺失的 Revision / FTS，避免知识库页面看得到但 `knowledge.search` 搜不到。V14 把旧问答的提问从 Job 输入回填到 `ai_runs.input_text`。V15 为 `ai_run_context_refs` 增加 `origin` / `label`，用户主动引用由 Context Service `resolveReferences()` 在进入 Agent 前确定性读取，不占用 Tool Call。V16 在 Knowledge 域增加多维 Taxonomy 与 Structured Artifact 回填：`inspiration.from-run` / `knowledge.from-run` 由 Worker 编译后写入灵感或知识正文，并挂分类与来源。V17 增加跨域粗筛 `resource_taggings`：对文本打预定义 tag，信息流只是其中一个调用方。V18 为灵感增加外部来源 URL、来源标题、采集入口和来源应用字段。V19 增加离线同步幂等键和原始采集时间。V20 为旧发布内容增加 `posts.hidden_at`，支持保留记录同时从默认信息流隐藏。V21 为灵感增加 `work_packages`。V22 增加 `cursor_agent_id` / `cursor_run_id` / `dispatch_job_id`：`notify` 入队 Worker，拉起本机 `agent -p` CLI，做完退出；同一 Worker 默认同时最多 3 个任务包 CLI，问答 Agent 仍一次一条。需要弹进程时由 Worker 在 CLI 退出后写 Instance `runtime/restart.request`，启动器只重启 Web/Worker。Web/Worker 自己退出时同样弹回，不拆 Host 隧道。`POST /api/v1/runtime/restart` 与工作包派发只允许本机 `desktop-host`。公网 Hostname 仍只映射 Web 端口。V23 增加 `feed_identity_fingerprints`：按作者与正文生成稳定 hash，推文正文按保留期清掉后仍能去重和记住左滑删除。V24 为工作包增加 `parent_work_package_id`：详情里继续做时另开新 session，正文带上旧指令。V25 增加 `attachments` / `resource_attachments`：图片落在 `data/blobs/attachments/`，页面只看到 `/api/v1/attachments/:id/content`，Worker 把相对路径解析成本机绝对路径后交给 Cursor CLI `--image`。V26 增加个人资产账本：类型、账户、期间快照与分红导入行；工作簿只作导入。V27 去掉快照期间标签唯一约束，允许同月多次记录；投资类加总含券商现金，分红榜不再导入或展示。V28 增加 `agent_run_events`：把 Harness Session 通知与 Tool Gateway 结果写成脱敏、可跨进程查询的应用层进度投影，并通过 Outbox/SSE 通知页面。
 
 领域表边界见 `docs/product-v2.md`。冻结后的模块规则见
 `docs/architecture-modules-v1.md`，Ask Agent 职责见
@@ -126,7 +126,8 @@ packages/
   source/              外部读取能力、SourceHub 与 Human/AI Projection
   domain/              领域服务和端口；不依赖 Web、Worker 或 Connector
     database/            SQLite schema、版本化迁移和分域 Repository
-    runtime/             任务领取、重试和生命周期
+    runtime/             任务领取、重试、Job；本地 AgentRuntime 仅测试/回退
+    harness/             生产 Agent 执行器（dsh-base profile + Tool Gateway）
     connectors/          外部进程与本机 HTTP 适配器；BrowserRuntime 只放这里
   knowledge/             给 Agent 用的稳定 Markdown 认知（framework / concept），不是聊天记录
   data/
@@ -145,8 +146,9 @@ packages/
 - 鸿蒙应用不复制服务端业务数据库；只保存服务器地址、ArkWeb 设备授权，以及有界的本地灵感 Outbox/投影。服务端 SQLite 仍是同步后的权威数据源。
 - API Key、Cookie 和本机路径不得返回给手机。
 - 公网代理请求不得根据 Origin TCP 回环地址获得桌面管理员权限。
+- 已配对只表示可以使用这个 Instance。改仓库、Shell、写盘、subagent、派发工作包和手动重启进程属于 Host 作用，只允许本机 `desktop-host`。公网 Ask 不得复用带这些工具的 Harness Session。
 
-公网模式、一次性高熵配对和 Cloudflare Access 规则见 `docs/public-access-security.md`。
+公网模式、一次性高熵配对、Cloudflare Access，以及 Agent / Host 能力平面见 `docs/public-access-security.md`。
 
 ## 任务与事件
 
@@ -187,8 +189,8 @@ Domain / Route / Tool Registry。Source Definition 必须声明自己的 input/o
 SourceHub 在 reader 前后分别校验，并产生带 `sourceId`、`providerId`、`observedAt`、status 和 warnings
 的 `SourceSnapshot`。
 
-当前迁入 `market.*`、`content.x.home`、`content.bilibili.import`、`content.trendforce.public`、`search.web`，以及只读的
-`calendar.*` / `policy.*` 静态信号源。后两类统一投影为 `ScheduledEvent` / `OfficialRelease`：
+当前迁入 `market.*`、`content.x.home`、`content.xueqiu.home`、`content.bilibili.import`、`content.trendforce.public`，以及只读的
+`calendar.*` / `policy.*` 静态信号源。`search.web` 只在本地循环回退时注册。后两类统一投影为 `ScheduledEvent` / `OfficialRelease`：
 只记录官方已公开的时间、文件和事件，不包含 importance、forecast、consensus、impact 或多空判断。
 按公开固定规则生成而非逐日列在官网日历上的条目必须标记 `scheduleBasis=official-rule` 与
 `status=tentative`，不能伪装成已确认日程。旧 `/api/v1/markets`、
@@ -198,8 +200,7 @@ SourceHub 在 reader 前后分别校验，并产生带 `sourceId`、`providerId`
 不新增 Domain，也不持久化 Snapshot。FOMC 专门日程优先于 Fed 综合日历；政策发布先按同 URL，
 再按同机构、同标题、同发布日去重，不合并 White House 公告与后续 Federal Register 正式刊登。
 对应只读接口是 `GET /api/v1/static-signals/board`。`SourceAccount` 仍只属于 Feed 的账号/频道持久化生命周期，不能用来保存行情来源。
-DeepSeek Search Connector 通过 `search.web` Source Definition 接入；Agent Tool `web.search` 只消费 SourcePort，
-继续保留原 Tool ID、结果投影、网页证据校验与不可用降级行为。Connector 只映射结构化 `web_search_result`（title / url / snippet / publishedAt），不把 DeepSeek 生成的答案交给模型。
+DeepSeek Search Connector 通过 `search.web` Source Definition 接入，只留给本地循环回退；生产 Ask 不注册该 Source。本地 Agent Tool `web.search` 只消费 SourcePort。Connector 只映射结构化 `web_search_result`（title / url / snippet / publishedAt），不把 DeepSeek 生成的答案交给模型。
 
 静态 Signal Layer 的另一半是 `market-native.*` 只读来源，当前注册 Polymarket、Kalshi、Hyperliquid
 与 DefiLlama。它们分别输出独立场所的事件报价、BTC/ETH 永续原始状态和稳定币供给；不把不同场所

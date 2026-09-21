@@ -1,3 +1,9 @@
+/**
+ * LEGACY / LOCAL-RUNTIME ONLY
+ *
+ * Doubao sidecar for the first Domain web.search in the local Agent loop.
+ * Harness does not use this path.
+ */
 export const AUXILIARY_SEARCH_BUDGET_MS = 80_000;
 export const AUXILIARY_SEARCH_GRACE_MS = 35_000;
 const MAX_NOTE_CHARS = 4_000;

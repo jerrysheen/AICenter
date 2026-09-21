@@ -1,3 +1,10 @@
+/**
+ * LEGACY / LOCAL-RUNTIME ONLY
+ *
+ * Domain `search.web` Provider for the in-process Agent loop fallback.
+ * Production Ask / article reading uses Harness built-in web_search / web_fetch.
+ * Do not create this from the default Worker/Web composition root.
+ */
 import { WebSearchUnavailableError } from './searxng.js';
 
 export const DEEPSEEK_SEARCH_PROVIDER_ID = 'deepseek';

@@ -47,6 +47,94 @@ ChatGPT 访问本机文件走另一条可选链路：Tailscale Funnel → `local
 
 这层隔离必须保留。不能通过信任任意 `X-Forwarded-*` 请求头重新获得管理员身份。
 
+## 调用方能力平面（Agent / Host）
+
+HTTP 桌面管理隔离解决的是「公网请求不要变成电脑管理员」。生产执行器换成 DeepSeek Harness 之后，还要挡住另一条路径：**已配对的公网设备去驱动本机高权限 Agent**。
+
+配对只证明「这台设备可以使用这个 Instance」，不证明「这个调用方可以改仓库、跑 Shell、或当成本机编码 Agent」。工作包今天会拉起 `agent -p --force --trust`；Harness 的 `dsh-base` 默认还带 bash / 写盘 / subagent。这两类能力都作用在 Host 上，不能跟问答、信息流共用「已配对即可执行」。
+
+不建设 User、Tenant、权限后台。继续用现有身份：未配对 / 已配对设备 / 桌面管理员。在此之上增加第三平面：
+
+```text
+网络平面     loopback / 局域网 / 公网 Tunnel
+身份平面     unpaired / paired-device / desktop-admin
+能力平面     device-operate / desktop-host
+```
+
+```text
+公网 / 局域网手机
+        │ 已配对设备授权
+        ▼
+  device-operate
+        │ Ask / 文章阅读 / 业务写入
+        ▼
+  DeepSeek Harness（Ask overlay）
+        │ Domain Tool Gateway + 内置 web_search / web_fetch
+        ▼
+持仓 / 知识 / 信息流 / memory.save / 公开网页
+
+本机桌面（loopback，且不是公网代理）
+        │ desktop-admin
+        ▼
+  desktop-host
+        │ 工作包派发 / 进程重启 / 可选 Host Tool
+        ▼
+Cursor CLI --force --trust
+或未来打开的 Harness bash / fs / workspace-write
+```
+
+### 能力剖面
+
+| 剖面 | 谁 | 可以做 | 不可以做 |
+|---|---|---|---|
+| 未配对公网 | 无设备 Cookie | 健康检查、配对、登录、静态页 | 任何业务 API、任何 Agent Job |
+| `device-operate` | 已配对设备（公网或局域网手机） | Ask、文章阅读、信息流、灵感/知识、`memory.save` | Host 作用：改代码、Shell、写盘、subagent、派发工作包、手动重启进程 |
+| `desktop-host` | 本机 loopback，且请求不是公网代理 | 上面全部，外加 Host 作用 | 仍禁止 `destructive` Domain Tool；默认不要 `danger-full-access` |
+
+`desktop-host` 只来自身份平面的 `desktop-admin`（loopback 且 `isPublicRequest=false`）。局域网已配对手机仍是 `device-operate`：人在家里不等于本机管理员。公网账号登录与扫码一样，只签发设备授权，不能升级成 `desktop-host`。
+
+Host 作用（必须 `desktop-host`）：
+
+- 入队或执行 `work-package.dispatch`（本机 Cursor CLI `--force --trust`）
+- 为 Ask / 文章阅读打开 Harness 内置 bash、pwsh、fs、skill、subagent、workflow
+- 把某次 dsh Session 调到 `workspace-write` / `danger-full-access`
+- `POST /api/v1/runtime/restart` 以及读取 Runtime / Job / 指标
+- 生成配对码、列出或撤销设备（现有桌面管理 API）
+
+Instance 作用（`device-operate` 允许）：
+
+- `ai.agent.run` / `ai.article.analyze`，可见 Domain Tool 经 Gateway；公开互联网使用 Harness 内置 `web_search` / `web_fetch`
+- `memory.save` 以及灵感、知识、信息流等业务写入
+- 创建或查看工作包记录、读取 `/trace`
+- 不能把「写下一条任务」自动变成「在这台电脑上改代码」
+
+工作包拆成两步：已配对设备可以创建/继续一条 Knowledge 工作包；**派发**（`notify` → `work-package.dispatch`）只允许 `desktop-host`。Worker 退出后写 `runtime/restart.request` 仍由本机启动器执行，不需要公网再调重启接口。
+
+### 执行点
+
+安全边界按执行点强制，不靠提示词。
+
+1. **Web 入队**：创建 Job 时写入本次 `callerCapability`。`device-operate` 不得入队 Host 作用 Job。
+2. **Worker 失败关闭**：handler 读取 Job 上的能力字段；不足则失败，不执行 Cursor CLI，也不拉起带 Host Tool 的 dsh。Job 入参不能把能力写高。
+3. **Harness overlay**：`device-operate` 继续用当前 `aicenter.cordis.yml`，禁用 bash / fs / subagent。公开互联网是基建，不关 `@deepseek-ai/dsh-tool-web`。这不是 dsh 的 `read-only`：`read-only` 仍可能暴露读盘。公网 Ask 不要注册 Host 工具。
+4. **Tool Gateway**：本机 loopback + 单次 token 之外，还要按本次 Run 的能力拒绝 Host Tool；目录泄漏也不能执行。
+5. **Session 复用**：dsh 子进程只在同一能力剖面、同一可见 Tool 集合内复用。剖面或 allowlist 变化则重启子进程。禁止把公网 Ask 接到刚跑过 Host Tool 的 Session。
+
+System Prompt 里的「不要调用 shell」只是产品说明，不是边界。Cloudflare Access 仍然推荐，但它挡的是未登录访客；Access 通过之后仍是 `device-operate`。
+
+### 与 DeepSeek Harness Permission 的关系
+
+Harness 自己的预设是 sandbox 模式 × 审批策略，例如 `workspace-write` + `ask`，或 `danger-full-access` + `never`。那是 **Host 编码 Agent** 的旋钮，不是 AI Center 公网授权。
+
+- 公网 / 已配对设备 Ask：**不要**进入 Host Permission 预设。用 AI Center overlay 关掉 bash / fs / subagent，保留内置 web，Domain 走 Gateway。
+- 本机以后若要把 Ask 当编码 Agent：只允许 `desktop-host`，默认最多 `workspace-write` + `ask`。`danger-full-access` + `never` 不作为产品默认，更不能从远端打开。
+- 不把 dsh Permission 选择器暴露给公网页面。
+- 不 fork Harness core；能力收缩放在 profile patch、Session 隔离和 Job 入队。
+
+### 现状与兼容
+
+当前实现仍允许已配对公网设备 `POST /notify` 派发工作包，以及 `POST /api/v1/runtime/restart`。Ask overlay 已经关掉 Harness Host 工具，但工作包这条 Host 路径还开着。本文是冻结目标；落地时只收 Host 作用，不收回公网问答、信息流和知识。
+
 ## 公网配对
 
 配置 `AI_CENTER_PUBLIC_URL` 后，桌面生成二维码时公网地址排在第一位：
@@ -121,10 +209,12 @@ $env:AI_CENTER_PUBLIC_URL = 'https://center.example.com'
 2. 未配对时只能看到配对状态，读取 `/api/v1/posts` 返回 401。
 3. 公网无法访问 `/api/v1/pairing`、`/api/v1/devices`、`/api/v1/runtime`。
 4. 扫码或账号登录后可以读取信息、发布并收到 SSE。账号登录不能调用桌面管理 API。
-5. 重启 Web、Worker 和 cloudflared 后仍可连接，不重新扫码。
-6. 撤销手机设备后，公网 Cookie 立即失效。
-7. 错误配对超过限制后返回 429。
-8. Cloudflare Tunnel 停止后公网不可达，但局域网功能仍然正常。
+5. 已配对公网设备可以问答和创建工作包记录，但不能 `notify` 派发 Cursor CLI，也不能手动重启进程。
+6. 公网 Ask 的 dsh Session 看不到 bash / fs / subagent，但可以使用 `web_search` / `web_fetch`；本机若打开 Host Tool，不得把该 Session 复用给公网问答。
+7. 重启 Web、Worker 和 cloudflared 后仍可连接，不重新扫码。
+8. 撤销手机设备后，公网 Cookie 立即失效。
+9. 错误配对超过限制后返回 429。
+10. Cloudflare Tunnel 停止后公网不可达，但局域网功能仍然正常。
 
 ## 仍需外部决定
 

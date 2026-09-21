@@ -23,6 +23,7 @@ const TOOL_LABELS = Object.freeze({
   'holdings.rank': '持仓排序',
   'assets.get': '个人资产',
   'web.search': '联网搜索',
+  'web.fetch': '读取网页',
   'taxonomy.list': '分类目录',
   'memory.save': '保存记录',
 });
@@ -152,7 +153,10 @@ function snippetFromToolCalls(detail) {
     if (args.metric) return `${toolLabel(call.name)}：${args.metric}`;
     return '';
   }).filter(Boolean);
-  return clipSnippet(bits.join('；'));
+  if (bits.length) return clipSnippet(bits.join('；'));
+  if (calls.length) return clipSnippet(`准备调用：${[...new Set(calls.map((call) => toolLabel(call.name || call.id)))]
+    .filter(Boolean).join('、')}`);
+  return '';
 }
 
 function transportSnippet(detail) {
@@ -192,7 +196,7 @@ function progressSnippet(event, detail, toolId) {
   if (event === 'run.started') return clipSnippet(detail.message);
   if (event === 'model.requested') return '';
   if (event === 'model.responded') {
-    return snippetFromToolCalls(detail) || clipSnippet(detail.answerPreview);
+    return snippetFromToolCalls(detail);
   }
   if (event === 'answer.rejected') {
     if (detail.reason === 'fabricated-web-search') return clipSnippet(detail.answerPreview || '草稿声称已搜索，但没有 web.search 调用');
@@ -310,7 +314,24 @@ export function projectAgentProgress(records) {
       upsert('run', { at, event, label: '开始处理问题', detail: snippet, status: 'done' });
       continue;
     }
+    if (event === 'harness.status') {
+      const running = detail.status === 'running';
+      upsert('harness-status', {
+        at,
+        event,
+        label: running ? 'Harness 正在执行' : 'Harness 本轮已结束',
+        detail: '',
+        status: running ? 'active' : 'done',
+      });
+      continue;
+    }
     if (event === 'model.requested') {
+      if (index.has('harness-status')) upsert('harness-status', { status: 'done' });
+      for (const step of steps) {
+        if (step.status === 'active' && String(step.key || '').startsWith('model-')) {
+          upsert(step.key, { status: 'done' });
+        }
+      }
       upsert(`model-${round ?? 0}-wait`, {
         at, event, round,
         label: '正在判断这一轮要读取什么',
@@ -394,10 +415,16 @@ export function projectAgentProgress(records) {
       continue;
     }
     if (event === 'run.completed') {
+      for (const step of steps) {
+        if (step.status === 'active') upsert(step.key, { status: 'done' });
+      }
       upsert('run-end', { at, event, label: '回答已生成', detail: snippet, status: 'done' });
       continue;
     }
     if (event === 'run.failed') {
+      for (const step of steps) {
+        if (step.status === 'active') upsert(step.key, { status: 'error' });
+      }
       upsert('run-end', { at, event, label: '问答未能完成', detail: snippet, status: 'error' });
     }
   }
@@ -414,7 +441,12 @@ export function projectAgentProgress(records) {
 }
 
 /** Append-only local trace for agent runs. Trace failures must not fail a run. */
-export function createAgentTraceLog({ dataDirectory, logDirectory: configuredLogDirectory, now = () => Date.now() }) {
+export function createAgentTraceLog({
+  dataDirectory,
+  logDirectory: configuredLogDirectory,
+  eventStore = null,
+  now = () => Date.now(),
+}) {
   const logDirectory = configuredLogDirectory || (dataDirectory ? path.join(dataDirectory, 'logs') : '');
   if (!logDirectory) throw new Error('agent trace log requires dataDirectory or logDirectory');
   return Object.freeze({
@@ -425,6 +457,9 @@ export function createAgentTraceLog({ dataDirectory, logDirectory: configuredLog
         event: String(event || ''), detail: safeValue(detail),
       };
       try {
+        eventStore?.appendAgentRunEvent?.(record);
+      } catch {}
+      try {
         await mkdir(path.dirname(filePath), { recursive: true });
         await appendFile(filePath, `${JSON.stringify(record)}\n`, 'utf8');
       } catch {}
@@ -433,6 +468,11 @@ export function createAgentTraceLog({ dataDirectory, logDirectory: configuredLog
     async list(runId, { fromAt = now() - 86_400_000, toAt = now() } = {}) {
       const target = String(runId || '');
       if (!target) return [];
+      if (typeof eventStore?.listAgentRunEvents === 'function') {
+        try {
+          return eventStore.listAgentRunEvents(target, { fromAt, toAt });
+        } catch {}
+      }
       const records = [];
       for (const day of daysBetween(fromAt, toAt)) {
         const filePath = logFile(logDirectory, day);
@@ -451,6 +491,14 @@ export function createAgentTraceLog({ dataDirectory, logDirectory: configuredLog
     },
     async listSteps(runId, options) {
       return projectAgentProgress(await this.list(runId, options));
+    },
+    async snapshot(runId, options) {
+      const records = await this.list(runId, options);
+      return {
+        revision: Number(records.at(-1)?.id) || records.length,
+        records,
+        progress: projectAgentProgress(records),
+      };
     },
   });
 }

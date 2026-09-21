@@ -131,7 +131,7 @@ docs/
 | `context-routes.js` | 跨域上下文组装与引用材料包 |
 | `agent-routes.js` | 问答 Job、进行中的 Run 列表、AI 记录列表与会话详情 |
 | `runtime-routes.js` | Worker 状态、Job，以及已配对设备请求弹 Web/Worker |
-| `article-analysis-routes.js` | Search Agent 入口：创建与查询 `ai.article.analyze`，不走普通问答。设计见 `docs/search-agent-v1.md` |
+| `article-analysis-routes.js` | Article Analysis Skill 入口：创建与查询 `ai.article.analyze`，不走普通问答。设计见 `docs/search-agent-v1.md` |
 | `event-routes.js` | SSE 长连接入口 |
 
 ## 三、不可破坏的设计原则
@@ -264,17 +264,17 @@ knowledge.document.revised.v1
 
 ## 七、如何增加不同类型的功能
 
-### 增加一个本机 Search Provider
+### 增加一个本机 Search Provider（仅本地循环回退）
 
-联网检索不是领域。DeepSeek Native Search 是 `search.web` 的默认 Adapter：
+公开互联网不是 Domain。生产 Ask 使用 Harness 内置 `web_search` / `web_fetch`（`@deepseek-ai/dsh-tool-web`），不要再往 Domain Tool Table 加 `web.page.get`，也不要在默认 Worker/Web 启动路径创建 DeepSeek Search Provider。
 
-1. 默认 Provider 在 `packages/connectors/src/deepseek-search.js`。只需要 `DEEPSEEK_API_KEY`；`baseURL` / `model` / `web_search_20250305` / `max_uses=5` 写死默认值。启动不做 probe。
-2. Connector 调 Anthropic-compatible Messages，只解析 `web_search_tool_result` → `web_search_result`，再用 `text` citations 补 snippet。输出稳定的 `{ query, available, results, observedAt, note }`。不把 DeepSeek 生成的答案、供应商引擎名或原始 content blocks 写进模型投影。
-3. 401 / 403、请求失败，或正常 Messages 但没有 `web_search_tool_result` 时抛 `WebSearchUnavailableError`，Source 映射为 `available: false`。不要回退 Bing / DDG / SearXNG。`packages/connectors/src/searxng.js` 仍保留为 legacy。
-4. `packages/source/src/search/definitions.js` 把 Connector 注册为 `search.web`，负责输入/输出校验、`unavailable` / `partial` Snapshot、warnings 与 AI Projection。
-5. Tool `web.search` 在 `packages/runtime/src/local-tools.js` 注册，只通过 SourcePort 读取 `search.web`，并按 `webMode` 暴露；失败时 warning，不失败整次 Run。`webMode` 只控制是否暴露工具与 Prompt 倾向，Runtime 不在首轮强制 `toolChoice=required`。Final Guard 仍拒绝虚构的联网声称，以及用户明确要求联网但未调用 `web.search` 的终稿。
-6. 替换为其他搜索引擎时不改 Agent Runtime 循环或页面 Contract。Connector 负责把日期标准化为 ISO `publishedAt`，`page_age` 无法解析则为 `null`。
-7. 补充检索不是第二个 Agent，也不替换 `search.web`。Worker 在第一次 `web.search` 时并行调用可选 Port（当前豆包网页），终稿接受后再拼接。Port 由 Composition Root 注入；Runtime 不 import Connector。
+本地循环回退（`AI_CENTER_AGENT_RUNTIME=local` 或测试注入 fake LLM）仍可走 `search.web` Source：
+
+1. 默认 Provider 在 `packages/connectors/src/deepseek-search.js`。只需要 `DEEPSEEK_API_KEY`。
+2. Connector 只解析结构化 sources。不要把生成答案写进模型投影。
+3. 不可用时 `available: false`。不要回退 Bing / DDG / SearXNG。
+4. Tool `web.search` 只在本地循环 Registry 注册，通过 SourcePort 读取 `search.web`。生产 Harness 不把该 Tool 注册进 Gateway。
+5. 豆包补充检索只挂在本地循环第一次 Domain `web.search` 上；Harness 启动时不创建 sidecar。
 
 ### 读取官方信源详情
 
@@ -284,6 +284,28 @@ knowledge.document.revised.v1
 2. 需要理解某一条发布时，Agent 再调用 `official.source.get`；它只通过内部 `policy.official-detail` Source 获取官网摘要和限长正文。
 3. Connector 必须限制官方域名、复核跳转后的最终域名并限制页面与 Tool 结果大小。SCIO 的 HTTP 例外只能用于 `english.scio.gov.cn`。
 4. 详情原文不进入首页 Board、不落数据库、不生成“意味着什么”的判断。模型作出的推断必须与工具返回的官方事实明确区分。
+
+### 把 Domain Tool 交给 Harness
+
+生产模型不读 Zod，只读 DSH `defineTool` 参数。中间是我们自己的投影 `toDefineToolParameters`（`packages/harness/src/tool-catalog.js`），不是 DSH 官方格式。
+
+1. 入参语义只改 `packages/contracts` 的 Zod。Gateway 执行仍用这份契约校验。
+2. 改完后必须看投影：`z.toJSONSchema` 会把带 default 的字段放进 `required`；投影不得把它们标成模型必填。
+3. DSH 冻结 schema 不接受 `pattern` / `minLength` / `maxLength` / `minimum` / `maximum`。这些约束写进 `description`，必要时加 `examples`。直接传 `pattern` 会让插件注册失败。
+4. 模型乱填（例如 `knowledge.search` 的 `taxonomy: ["finance"]`）先查投影丢了什么，不要放宽 Contract，也不要在 Skill Prompt 里补一套和第二套格式。
+5. 测试对着 `toDefineToolParameters(z.toJSONSchema(InputSchema))` 断言：可选字段无 `required`，格式说明还在 description 里。
+
+稳定规则见 `docs/architecture-modules-v1.md`。
+
+### 给 Harness 换主模型厂商
+
+Ask 上层没有独立 AI API。只改 `AI_CENTER_HARNESS_PROVIDER`，`$DSH_HOME/settings.yaml` 同时写 `llm-deepseek` 和 `llm-pi-ai`。
+
+1. `deepseek-official`：`DEEPSEEK_API_KEY`，可选 `DEEPSEEK_BASE_URL`。
+2. `elucid-grok`：`ELUCID_GROK_API_KEY`，协议 `openai-responses`，默认 `grok-4.6`。
+3. 模型名只看 `AI_CENTER_HARNESS_MODEL` / `AI_CENTER_HARNESS_RESEARCH_MODEL`。不要继承 `DEEPSEEK_SEARCH_MODEL`，不要再用 `AI_CENTER_AGENT_PROVIDER`。
+4. 主循环、内置 web、本地回退和结构整理共用这一套。Gemini 只给翻译 / Tag。`elucid-grok` 时 `web_search` 走 Grok 原生搜索；不要另加 `web_read`。
+5. 页面 Contract 不暴露供应商字段。
 
 ### 增加一条可复用 Knowledge 文件
 
@@ -306,7 +328,7 @@ knowledge.document.revised.v1
 5. 用 `/api/v1/sources` 验证目录，用 `/api/v1/sources/:id` 验证 Human Snapshot，并测试 AI Projection 的大小边界。
 
 `Source` 是读取能力；Feed 的 `SourceAccount` 是账号/频道持久化实体，两者不可合并。DeepSeek Search
-使用 `search.web` Source；Agent 兼容入口仍是 `web.search` Tool。
+使用 `search.web` Source，只在本地循环回退时注册；兼容入口仍是 Domain `web.search` Tool。生产 Ask 不走这条 Domain 入口。
 
 以 B站为例：
 
@@ -411,7 +433,7 @@ npm run check
 
 - Web/Harmony 连接、配对、快速发布和 SSE。
 - 工作包 B 的模块边界、Contract、migration、Domain Service、分域路由与 Worker。
-- 单 Agent Runtime（无前置 Intent Router）。
+- 单 Agent Runtime（无前置 Intent Router）。生产执行器是冻结 DeepSeek Harness；本地循环只作测试/回退。不改变页面 Contract。
 - B站贴链接抓 AI 中文字幕；雪球优先、同花顺回退的行情适配；Yahoo / X 等信息源。
 
 信息流 `translateMany` 和粗筛 Tag（Worker Job `tagging.analyze`）都走 Gemini。翻译缺 Key 时回退 DeepL / Google。后续批量整理走本地任务包给 Cursor。用户 view 不展示原文；原文接口为 `GET /api/v1/content-items/:id/original`。

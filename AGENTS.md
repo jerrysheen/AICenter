@@ -8,7 +8,7 @@
 2. `docs/content-and-commit-guide.md`：Core / Instance / Host 内容归属、默认模板与提交规则。
 3. `docs/release-readiness.md`：当前问题、验收状态与停止线。
 4. `docs/architecture.md`、`docs/architecture-modules-v1.md`、`docs/architecture-agent-v1.md`、`docs/contracts-v1.md` + `packages/contracts/src`：稳定规则。Ask Agent 职责以 `architecture-agent-v1.md` 为准。
-5. 专题：`docs/search-agent-v1.md`（文章阅读 / Search Agent）、`docs/connection-and-pairing.md`、`docs/public-access-security.md`、`docs/ai-development-guide.md`。
+5. 专题：`docs/search-agent-v1.md`（文章阅读 / Article Analysis Skill）、`docs/connection-and-pairing.md`、`docs/public-access-security.md`、`docs/ai-development-guide.md`。
 6. `.cursor/rules/`：与手册同义，不能替代上述文档。
 
 `docs/product-v1.md`、`docs/plan/`、`docs/progress/` 是历史。不要用它们重新驱动当前开发。
@@ -22,7 +22,7 @@
 - 本仓库是独立产品仓，不是旧 AI 或 AI-Hub 仓库的合并副本。
 - 旧仓只作 Adapter 参考；路径只从环境变量读取。禁止直接复制旧代码。
 - 当前是 **0.2.0 基线候选**：先完成隐私、安全和稳定性验收，不扩大功能。
-- 不重写 Agent、不加 Intent Router、不多 Agent、不换数据库体系。现有分层把边界收清楚即可。
+- 不重写业务 Agent、不加 Intent Router、不多 Agent、不换数据库体系。通用 Agent 执行器不再继续自研：生产默认是冻结的 DeepSeek Harness（`dsh-base` 0.1.6-alpha.2）。Ask 与文章阅读共用同一套执行器；文章阅读是 Article Analysis Skill 的明确调用，不是第二个 Agent。资料搜索等专用能力以后做成这套上的插件，不另建 Runtime。主模型只走 Harness LLM：`AI_CENTER_HARNESS_PROVIDER=deepseek-official|elucid-grok`。Ask、文章阅读、内置 web 和结构整理共用这一套，不再用 `AI_CENTER_AGENT_PROVIDER`。`elucid-grok` 时内置 `web_search` 走 Elucid Grok 原生搜索；`web_fetch` 仍是 HTTP。不加 `web_read`。本地 `AgentRuntime` 只留给测试注入 fake LLM，或显式 `AI_CENTER_AGENT_RUNTIME=local`。当前 Node 22.14 通过 `packages/harness/src/dsh-entry.js` 启动 `dsh`：补上官方 bin 的 `import.meta.main`，并给 `node:zlib` 补 22.15 才有的 zstd 导出。
 
 ## 稳定工程边界
 
@@ -41,6 +41,7 @@
 - 设备凭证在服务端只保存哈希；用户可以撤销已配对设备。
 - DevEco Studio、鸿蒙设备开发者模式、签名和真机安装属于「用户执行」。
 - 不使用 Computer Use 或脚本模拟桌面鼠标、键盘操作。
+- 已配对不等于 Host 编码权限。公网设备不得派发工作包、打开 Harness bash/写盘/subagent，或把权限写进 Job 入参。规则见 `docs/public-access-security.md`。
 - 不要一键批准 Cursor 里与当前任务无关的旧文件补丁。
 
 ## Engineering Conventions

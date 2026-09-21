@@ -119,9 +119,10 @@ function text(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function envText(...keys) {
+function envText(env, ...keys) {
+  const source = env || process.env;
   for (const key of keys) {
-    const value = text(process.env[key]);
+    const value = text(source[key]);
     if (value) return value;
   }
   return '';
@@ -209,11 +210,12 @@ export function createElucidGrokAgentClient(options = {}) {
     timeoutMs: init.timeoutMs,
     onTransport: init.onTransport,
   }));
-  const apiKey = options.apiKey !== undefined ? text(options.apiKey) : envText('ELUCID_GROK_API_KEY', 'AI_CENTER_GROK_API_KEY');
-  const apiRoot = (text(options.apiRoot) || envText('AI_CENTER_ELUCID_GROK_API_ROOT') || DEFAULT_ROOT).replace(/\/$/, '');
-  const modelId = text(options.model) || envText('AI_CENTER_ELUCID_GROK_MODEL') || DEFAULT_MODEL;
-  const researchModelId = text(options.researchModel) || envText('AI_CENTER_ELUCID_GROK_RESEARCH_MODEL', 'AI_CENTER_AGENT_RESEARCH_MODEL');
-  const configuredTimeout = options.timeoutMs ?? envText('AI_CENTER_ELUCID_GROK_TIMEOUT_MS');
+  const env = options.env || process.env;
+  const apiKey = options.apiKey !== undefined ? text(options.apiKey) : envText(env, 'ELUCID_GROK_API_KEY', 'AI_CENTER_GROK_API_KEY');
+  const apiRoot = (text(options.apiRoot) || envText(env, 'AI_CENTER_ELUCID_GROK_API_ROOT') || DEFAULT_ROOT).replace(/\/$/, '');
+  const modelId = text(options.model) || envText(env, 'AI_CENTER_HARNESS_MODEL', 'AI_CENTER_ELUCID_GROK_MODEL') || DEFAULT_MODEL;
+  const researchModelId = text(options.researchModel) || envText(env, 'AI_CENTER_HARNESS_RESEARCH_MODEL', 'AI_CENTER_ELUCID_GROK_RESEARCH_MODEL');
+  const configuredTimeout = options.timeoutMs ?? envText(env, 'AI_CENTER_ELUCID_GROK_TIMEOUT_MS');
   const timeoutMs = clampElucidTimeoutMs(configuredTimeout);
 
   return Object.freeze({

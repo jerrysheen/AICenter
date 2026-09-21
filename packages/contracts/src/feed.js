@@ -8,7 +8,7 @@ import {
   WorkspaceIdSchema,
 } from './common.js';
 
-export const SourceProviderSchema = z.enum(['manual', 'bilibili', 'x', 'youtube', 'rss', 'custom', 'trendforce']);
+export const SourceProviderSchema = z.enum(['manual', 'bilibili', 'x', 'youtube', 'rss', 'custom', 'trendforce', 'xueqiu']);
 export const CaptureStatusSchema = z.enum(['captured', 'normalizing', 'ready', 'failed', 'ignored']);
 export const ContentTypeSchema = z.enum(['post', 'article', 'video', 'audio', 'transcript', 'note']);
 

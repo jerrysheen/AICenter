@@ -35,8 +35,12 @@ const rules = [
     forbidden: ['/packages/database/', '/packages/domain/', '/apps/'],
     description: 'Connector 不能依赖数据库、领域实现或 App',
   },
+  {
+    files: javascriptFiles('packages/harness/src'),
+    forbidden: ['/packages/runtime/src/agent-runtime.js', '/packages/runtime/src/auxiliary-web-search.js'],
+    description: 'Harness 不能 import 本地循环 AgentRuntime 或 auxiliary search',
+  },
 ];
-
 const violations = [];
 for (const rule of rules) {
   for (const file of rule.files) {

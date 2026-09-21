@@ -1113,6 +1113,28 @@ const migrations = [
       `);
     },
   },
+  {
+    version: 28,
+    name: 'agent-run-event-projection',
+    up(database) {
+      database.exec(`
+        CREATE TABLE agent_run_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          run_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          version INTEGER NOT NULL DEFAULT 1,
+          event_name TEXT NOT NULL,
+          detail_json TEXT NOT NULL DEFAULT '{}',
+          occurred_at INTEGER NOT NULL,
+          FOREIGN KEY(run_id) REFERENCES jobs(id)
+        );
+        CREATE INDEX idx_agent_run_events_run
+          ON agent_run_events(run_id, id);
+        CREATE INDEX idx_agent_run_events_workspace
+          ON agent_run_events(workspace_id, id);
+      `);
+    },
+  },
 ];
 
 export function backfillKnowledgeRevisionIndex(database) {

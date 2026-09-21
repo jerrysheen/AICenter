@@ -1,14 +1,14 @@
 export const WEB_EVIDENCE_REQUIRED_NOTE = [
   'The user explicitly asked to search the public web,',
-  'but this run has not called web.search.',
+  'but this run has not called web.search or web.fetch.',
   '',
-  'Call web.search, or clearly say you did not search.',
+  'Call web.search / web.fetch, or clearly say you did not search.',
   'Do not claim that you searched the web unless the tool was actually executed.',
 ].join('\n');
 
 export const WEB_PROVENANCE_NOTE = [
-  'Your draft claims that web.search or web browsing was used,',
-  'but no web.search tool call exists in this run.',
+  'Your draft claims that web.search, web.fetch, or web browsing was used,',
+  'but no public-web tool call exists in this run.',
   '',
   'Regenerate the answer using only tools that were actually executed.',
   'Never claim to have used a tool that was not called.',
@@ -22,7 +22,7 @@ export const WEB_UNAVAILABLE_PROVENANCE_NOTE = [
 ].join('\n');
 
 const EXPLICIT_SEARCH = /帮我搜|搜一下|搜索一下|联网(查|搜|看看)|网上看看|web\s*search|查新闻|帮我查|搜今天|搜下/i;
-const CLAIMED_WEB_TOOL = /web\.search|已经联网搜索|已经搜索公开网页|我查了网页|联网查到|通过\s*web\.search|用\s*web\.search/i;
+const CLAIMED_WEB_TOOL = /web\.search|web\.fetch|web_search|web_fetch|已经联网搜索|已经搜索公开网页|我查了网页|联网查到|通过\s*web\.search|用\s*web\.search/i;
 const CLAIMED_WEB_FINDINGS = /查到|搜索结果(显示|表明|里)|公开网页(显示|表明)|网上(查到|搜到)/i;
 const ADMITS_UNAVAILABLE = /不可用|无法核实|没有结果|未能检索/i;
 
@@ -30,9 +30,15 @@ export function explicitSearchIntent(message) {
   return EXPLICIT_SEARCH.test(String(message || ''));
 }
 
+const WEB_TOOL_IDS = new Set(['web.search', 'web.fetch']);
+
 export function webSearchEvidence(toolCalls = []) {
-  const attempts = toolCalls.filter((call) => call.id === 'web.search');
-  const succeeded = attempts.some((call) => call.webSearch?.available === true && Number(call.webSearch.resultCount || 0) > 0);
+  const attempts = toolCalls.filter((call) => WEB_TOOL_IDS.has(call.id));
+  const succeeded = attempts.some((call) => {
+    if (call.result?.error) return false;
+    if (call.id === 'web.fetch') return true;
+    return call.webSearch?.available !== false;
+  });
   return {
     attempted: attempts.length > 0,
     succeeded,

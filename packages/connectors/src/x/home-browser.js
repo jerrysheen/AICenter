@@ -33,6 +33,36 @@ export function mergeArticleIntoTweetText(tweetText, articleText) {
   return `${tweet}\n\n${article}`;
 }
 
+const UNSCRAPED_NOTE = '[未抓取]';
+
+function hasUnscrapedNote(text, label) {
+  return String(text || '').includes(`${UNSCRAPED_NOTE} ${label}`);
+}
+
+export function appendUnscrapedMediaNotes(text, tweet = {}) {
+  const body = String(text || '').replace(/\r\n/g, '\n').trim();
+  const notes = [];
+  if (tweet.has_video && !hasUnscrapedNote(body, '视频')) notes.push(`${UNSCRAPED_NOTE} 视频`);
+  const photos = Math.max(0, Number(tweet.photo_count) || 0);
+  if (photos > 0 && !hasUnscrapedNote(body, '图片')) {
+    notes.push(photos === 1 ? `${UNSCRAPED_NOTE} 图片` : `${UNSCRAPED_NOTE} 图片 ×${photos}`);
+  }
+  const cardTitle = String(tweet.card_title || '').replace(/\s+/g, ' ').trim();
+  const cardUrl = String(tweet.card_url || '').trim();
+  const externalCard = Boolean(cardUrl) && !/^https?:\/\/(?:www\.)?(?:x|twitter)\.com\//i.test(cardUrl);
+  if (externalCard && !hasUnscrapedNote(body, '链接卡片') && !body.includes(cardUrl)) {
+    notes.push(cardTitle ? `${UNSCRAPED_NOTE} 链接卡片：${cardTitle}` : `${UNSCRAPED_NOTE} 链接卡片`);
+    notes.push(cardUrl);
+  }
+  if (tweet.article_unfetched && !hasUnscrapedNote(body, 'X 长文')) {
+    const articleUrl = findXArticleUrl(tweet) || String(tweet.tweet_url || '').trim();
+    notes.push(`${UNSCRAPED_NOTE} X 长文`);
+    if (articleUrl && !body.includes(articleUrl)) notes.push(articleUrl);
+  }
+  if (!notes.length) return body;
+  return body ? `${body}\n\n${notes.join('\n')}` : notes.join('\n');
+}
+
 export function tabTextMatchesFeed(text, feed) {
   const labels = FEED_TAB_LABELS[feed] || FEED_TAB_LABELS['for-you'];
   return labels.some((label) => String(text || '').includes(label));
@@ -145,12 +175,31 @@ export function buildTweetExtractExpression() {
           const match = tweetUrl.match(/\\/status\\/(\\d+)/);
           tweetId = match ? match[1] : null;
         }
+        const articleCover = Boolean(article.querySelector('[data-testid="article-cover-image"]'));
+        const hasVideo = Boolean(article.querySelector('video, [data-testid="videoPlayer"], [data-testid="videoComponent"]'));
+        const photoCount = article.querySelectorAll('[data-testid="tweetPhoto"]').length;
+        const card = article.querySelector('[data-testid="card.wrapper"]');
+        let cardUrl = null;
+        let cardTitle = null;
+        if (card) {
+          const cardHrefs = [...card.querySelectorAll("a")].map((link) => {
+            const href = link.getAttribute("href") || link.href || "";
+            return href.startsWith("http") ? href : ("https://x.com" + href);
+          }).filter(Boolean);
+          cardUrl = cardHrefs.find((href) => !/https?:\\/\\/(?:www\\.)?(?:x|twitter)\\.com\\//i.test(href)) || null;
+          cardTitle = getText(card).replace(/\\s+/g, " ").trim().slice(0, 80) || null;
+        }
         const articleLinks = [...article.querySelectorAll('a[href*="/article/"]')].map((link) => {
           const href = link.getAttribute("href") || link.href || "";
           return href.startsWith("http") ? href : ("https://x.com" + href);
         }).filter((href) => /\\/(?:i\\/article\\/\\d+|[^/]+\\/article\\/\\d+)/.test(href));
         const textArticle = (text.match(/https?:\\/\\/(?:www\\.)?(?:x|twitter)\\.com\\/(?:i\\/article\\/\\d+|[^/\\s?#]+\\/article\\/\\d+)/i) || [])[0] || "";
-        const articleUrl = articleLinks[0] || textArticle || null;
+        const articleUrl = articleLinks.find((href) => !/\\/media\\//.test(href)) || articleLinks[0] || textArticle || (articleCover ? tweetUrl : null);
+        if (!tweetId) {
+          const fromArticle = String(articleUrl || "").match(/\\/(?:status|article)\\/(\\d+)/);
+          tweetId = fromArticle ? fromArticle[1] : null;
+          if (tweetId && !tweetUrl) tweetUrl = "https://x.com/i/status/" + tweetId;
+        }
         const authorEl = article.querySelector('[data-testid="User-Name"]');
         let authorHandle = null;
         let authorName = null;
@@ -169,6 +218,11 @@ export function buildTweetExtractExpression() {
           tweet_url: tweetUrl,
           text,
           article_url: articleUrl,
+          article_cover: articleCover,
+          has_video: hasVideo,
+          photo_count: photoCount,
+          card_url: cardUrl,
+          card_title: cardTitle,
           truncated: showMoreControl || overflow,
           author_handle: authorHandle,
           author_name: authorName,
@@ -199,7 +253,7 @@ export function looksTruncatedTweet(tweet) {
 }
 
 export function looksLikeArticleTweet(tweet) {
-  return Boolean(findXArticleUrl(tweet));
+  return Boolean(findXArticleUrl(tweet) || tweet?.article_cover);
 }
 
 export function buildArticleExtractExpression() {
@@ -212,14 +266,15 @@ export function buildArticleExtractExpression() {
       document.querySelector('a[href*="/i/flow/login"]') ||
       /We're unable to show this content|Article Not Found|Sign in to X|登录 X/i.test(bodyText)
     );
-    const article = document.querySelector('[data-testid="twitterArticle"]')
-      || document.querySelector('article')
-      || document.body;
+    const titleEl = document.querySelector('[data-testid="twitter-article-title"]');
+    const bodyEl = document.querySelector('[data-testid="twitterArticleRichTextView"]')
+      || document.querySelector('[data-testid="longformRichTextComponent"]')
+      || document.querySelector('[data-testid="twitterArticleReadView"]');
     return {
       url: location.href,
-      title: document.title || "",
+      title: text(titleEl).replace(/\\s+/g, " ").trim(),
       login_wall: loginWall,
-      body: text(article).replace(/\\s+/g, " ").trim()
+      body: text(bodyEl).replace(/\\r\\n/g, "\\n").replace(/\\n{3,}/g, "\\n\\n").trim()
     };
   })()`;
 }
@@ -241,6 +296,12 @@ export function mergeTweets(existing, incoming, limit, options = {}) {
       const keptLen = String(next.text || '').length;
       const grewEnough = keptLen >= previousLen + 200;
       next.truncated = looksTruncatedTweet(next) || (Boolean(previous.truncated) && !grewEnough);
+      next.article_cover = Boolean(previous.article_cover || next.article_cover);
+      next.has_video = Boolean(previous.has_video || next.has_video);
+      next.photo_count = Math.max(Number(previous.photo_count) || 0, Number(next.photo_count) || 0);
+      next.article_url = next.article_url || previous.article_url || null;
+      next.card_url = next.card_url || previous.card_url || null;
+      next.card_title = next.card_title || previous.card_title || null;
       byId.set(item.tweet_id, next);
       continue;
     }
@@ -288,14 +349,30 @@ export function createXHomeBrowserClient(options = {}) {
 
   async function completeArticleTweet(session, tweet) {
     const articleUrl = findXArticleUrl(tweet);
-    if (!articleUrl) return tweet;
-    await session.navigate(articleUrl, { timeoutMs: EXTRACT_TIMEOUT_MS });
-    await wait(3_000);
-    const extracted = await session.evaluate(buildArticleExtractExpression(), { timeoutMs: EXTRACT_TIMEOUT_MS });
-    if (extracted?.login_wall || !extracted?.body) return tweet;
-    const merged = mergeArticleIntoTweetText(tweet.text, extracted.body);
-    if (merged === tweet.text) return tweet;
-    return { ...tweet, text: merged, article_url: undefined };
+    const target = articleUrl || (tweet.article_cover ? tweet.tweet_url : '');
+    if (!target) return { ...tweet, article_unfetched: Boolean(tweet.article_cover) };
+    await session.navigate(target, { timeoutMs: EXTRACT_TIMEOUT_MS });
+    let best = { title: '', body: '' };
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      await wait(attempt === 0 ? 3_000 : 1_000);
+      const extracted = await session.evaluate(buildArticleExtractExpression(), { timeoutMs: EXTRACT_TIMEOUT_MS });
+      if (extracted?.login_wall) break;
+      const title = String(extracted?.title || '').trim();
+      const body = String(extracted?.body || '').trim();
+      if (body.length > String(best.body || '').length) best = { title, body };
+      else if (!best.title && title) best = { ...best, title };
+      if (String(best.body || '').length >= 400) break;
+    }
+    const articleText = [best.title, best.body].filter(Boolean).join('\n\n');
+    if (!articleText) return { ...tweet, article_unfetched: true };
+    const merged = mergeArticleIntoTweetText(tweet.text, articleText);
+    return {
+      ...tweet,
+      text: merged,
+      article_url: undefined,
+      article_cover: false,
+      article_unfetched: false,
+    };
   }
 
   return {
@@ -356,7 +433,7 @@ export function createXHomeBrowserClient(options = {}) {
           const completed = await completeTruncatedTweet(session, tweet);
           items = items.map((item) => (item.tweet_id === tweet.tweet_id ? completed : item));
         }
-        const withArticles = items.filter((item) => looksLikeArticleTweet(item)).slice(0, 8);
+        const withArticles = items.filter((item) => looksLikeArticleTweet(item)).slice(0, 12);
         for (const tweet of withArticles) {
           const completed = await completeArticleTweet(session, tweet);
           items = items.map((item) => (item.tweet_id === tweet.tweet_id ? completed : item));
@@ -375,7 +452,10 @@ export function createXHomeBrowserClient(options = {}) {
           tweets: items.slice(0, parsedLimit).map((item) => ({
             tweet_id: item.tweet_id,
             tweet_url: item.tweet_url,
-            text: item.text,
+            text: appendUnscrapedMediaNotes(item.text, {
+              ...item,
+              article_unfetched: Boolean(item.article_unfetched || item.article_cover),
+            }),
             author_handle: item.author_handle,
             author_name: item.author_name,
             published_at: item.published_at,

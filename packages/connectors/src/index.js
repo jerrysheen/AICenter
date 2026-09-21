@@ -32,9 +32,21 @@ export {
   trendforceConnectorManifest,
 } from './trendforce.js';
 export {
+  createXueqiuHomeClient,
+  createXueqiuHomeBrowserClient,
+  createXueqiuJobHandlers,
+  createXueqiuService,
+  explainXueqiuConnectorError,
+  normalizeXueqiuFeed,
+  stripXueqiuHtml,
+  xueqiuConnectorManifest,
+  xueqiuToFeedItem,
+} from './xueqiu/index.js';
+export {
   createTwitterHomeClient,
   createTwitterService,
   explainXConnectorError,
+  appendUnscrapedMediaNotes,
   findXArticleUrl,
   mergeArticleIntoTweetText,
   normalizeTweetBody,
@@ -73,6 +85,7 @@ export { createElucidGrokAgentClient } from './elucid-grok-agent.js';
 export { createTypeSafeSystemOneClient, resolveTypeSafeApiKey } from './typesafe-system-one.js';
 export { modelIdForProfile } from './agent-model-profile.js';
 export { createLocalKnowledgeFiles, parseKnowledgeFrontMatter } from './local-knowledge-files.js';
+// LEGACY / LOCAL-RUNTIME ONLY: SearXNG and DeepSeek Search are not production Ask web infra.
 export {
   createSearxngSearchProvider,
   WebSearchUnavailableError,

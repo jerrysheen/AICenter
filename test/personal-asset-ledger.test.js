@@ -47,7 +47,7 @@ test('fresh store reaches personal asset ledger schema', () => {
   const temporary = temporaryStore();
   try {
     assert.equal(temporary.store.getRuntimeStatus().schemaVersion, latestSchemaVersion());
-    assert.equal(latestSchemaVersion(), 27);
+    assert.equal(latestSchemaVersion(), 28);
     temporary.store.repositories.trading.ensurePersonalAssetTypes('local');
     assert.equal(temporary.store.repositories.trading.listPersonalAssetTypes('local').length, 7);
   } finally {

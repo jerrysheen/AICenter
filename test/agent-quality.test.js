@@ -29,12 +29,14 @@ test('quality config defaults to shadow prior and can be fully disabled', () => 
     priorMode: 'shadow',
     reviewerEnabled: true,
     evidenceGateMode: 'enforce',
+    evidenceGateTimeoutMs: 15_000,
   });
   assert.equal(resolveAgentQualityConfig({ AI_CENTER_JEV_DISABLED: '1' }).priorMode, 'off');
   assert.equal(resolveAgentQualityConfig({ AI_CENTER_JEV_DISABLED: '1' }).evidenceGateMode, 'off');
   assert.equal(resolveAgentQualityConfig({ AI_CENTER_JEV_PRIOR: 'advisory' }).priorMode, 'advisory');
   assert.equal(resolveAgentQualityConfig({ AI_CENTER_JEV_REVIEWER: 'off' }).reviewerEnabled, false);
   assert.equal(resolveAgentQualityConfig({ AI_CENTER_JEV_EVIDENCE_GATE: 'shadow' }).evidenceGateMode, 'shadow');
+  assert.equal(resolveAgentQualityConfig({ AI_CENTER_JEV_EVIDENCE_TIMEOUT_MS: '4321' }).evidenceGateTimeoutMs, 4321);
   assert.equal(createAgentQualityLayerFromEnv({ env: { AI_CENTER_JEV_DISABLED: '1' }, client: { evaluate: async () => ({}) } }), null);
   assert.equal(createOptionalAgentQuality(undefined, {}), null);
   assert.equal(createOptionalAgentQuality(null, { AI_CENTER_TYPESAFE_API_KEY: 'x' }), null);
@@ -325,4 +327,29 @@ test('evidence gate scores a search batch and fail-opens when Jev errors', async
   });
   assert.equal(failed.status, 'failed');
   assert.equal(failed.kind, 'evidence-gate');
+
+  const timed = createAgentQualityLayer({
+    client: {
+      async evaluate({ signal }) {
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      },
+    },
+    config: {
+      priorMode: 'off',
+      reviewerEnabled: false,
+      evidenceGateMode: 'enforce',
+      evidenceGateTimeoutMs: 20,
+      disabled: false,
+    },
+  });
+  const timeout = await timed.gateEvidence({
+    message: 'NPO',
+    query: 'NPO',
+    toolId: 'web.search',
+    toolResult: { data: { results: [{ title: 'x', url: 'https://example.com' }] } },
+  });
+  assert.equal(timeout.status, 'failed');
+  assert.equal(timeout.code, 'EVIDENCE_GATE_TIMEOUT');
 });

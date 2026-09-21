@@ -9,7 +9,9 @@ import {
   parseContinueWorkPackageInput,
   parseCreateWorkPackageInput,
   parseWorkPackageListQuery,
+  parseWorkPackageTrace,
   parseWorkPackageTraceStep,
+  projectWorkPackageTimeline,
   parseWorkerJobConcurrency,
   ValidationError,
 } from '../packages/contracts/src/index.js';
@@ -46,6 +48,28 @@ function temporaryStore() {
     },
   };
 }
+
+test('work package steps project to the same run timeline as Ask', () => {
+  const timeline = projectWorkPackageTimeline([
+    { at: 1, step: 'claim', status: 'done', summary: 'Worker 已领取并写好提示词', paths: [] },
+    { at: 2, step: 'plan', status: 'started', summary: '正在拆步骤', paths: [] },
+  ], { live: true });
+  assert.equal(timeline.length, 2);
+  assert.equal(timeline[0].status, 'done');
+  assert.equal(timeline[0].label, 'Worker 已领取并写好提示词');
+  assert.equal(timeline[1].status, 'active');
+  assert.equal(timeline[1].event, 'work.plan');
+  const parsed = parseWorkPackageTrace({
+    hashId: '2f3e9d797b18',
+    workPackageId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+    steps: [
+      { at: 1, step: 'claim', status: 'done', summary: '已领取', paths: [] },
+    ],
+    progress: { status: 'claimed', summary: '执行中', updatedAt: 1 },
+  });
+  assert.equal(parsed.timeline[0].label, '已领取');
+  assert.equal(parsed.timeline[0].status, 'done');
+});
 
 test('work package contract trims body and defaults claim actor', () => {
   assert.deepEqual(parseCreateWorkPackageInput({
@@ -151,7 +175,7 @@ test('schema v26 keeps attachment tables and parent session column', () => {
   const temporary = temporaryStore();
   try {
     assert.equal(temporary.store.getRuntimeStatus().schemaVersion, latestSchemaVersion());
-    assert.equal(latestSchemaVersion(), 27);
+    assert.equal(latestSchemaVersion(), 28);
     assert.deepEqual(temporary.store.repositories.knowledge.listWorkPackages('local', 'all'), []);
   } finally {
     temporary.remove();
@@ -247,6 +271,16 @@ test('HTTP allows paired phones to submit work packages and only desktop can cla
     const phoneRestartBody = await phoneRestart.json();
     assert.equal(phoneRestartBody.restart.requested, true);
     assert.equal(existsSync(restartRequestPath(directory)), true);
+
+    const retried = await fetch(`${address.localUrl}/api/v1/work-packages/${created.workPackage.id}/retry`, {
+      method: 'POST',
+      headers: { ...publicHeaders, 'Content-Type': 'application/json', Cookie: cookie },
+      body: '{}',
+    }).then((response) => response.json());
+    assert.equal(retried.ok, true);
+    assert.equal(retried.workPackage.parentWorkPackageId, created.workPackage.id);
+    assert.match(retried.workPackage.body, /继续指令：\n重新执行：/);
+    assert.equal(retried.jobs?.[0]?.type, 'work-package.dispatch');
 
     const continued = await fetch(`${address.localUrl}/api/v1/work-packages/${created.workPackage.id}/continue`, {
       method: 'POST',
@@ -639,19 +673,15 @@ test('task detail refreshes from progress and keeps local drafts', () => {
   assert.equal(parseWorkerJobConcurrency({}).workPackageDispatchLimit, 3);
 });
 
-test('task detail shows thinking placeholder between progress polls', () => {
+test('task detail reuses the Ask run progress list', () => {
   const app = readFileSync(path.join(process.cwd(), 'apps/web/public/app.js'), 'utf8');
   const css = readFileSync(path.join(process.cwd(), 'apps/web/public/styles.css'), 'utf8');
   const contracts = readFileSync(path.join(process.cwd(), 'docs/contracts-v1.md'), 'utf8');
   assert.match(app, /function workPackageIsLive/);
-  assert.match(app, /function createTaskThinkingLine/);
-  assert.match(app, /function workPackageHasActiveStep/);
-  assert.match(app, /正在思考下一步/);
-  assert.match(app, /task-thinking-dots/);
-  assert.match(app, /live && !workPackageHasActiveStep\(trace\)/);
-  assert.match(app, /item\.status === 'started'/);
-  assert.match(css, /\.task-thinking/);
-  assert.match(css, /@keyframes task-thinking-dots/);
-  assert.match(css, /@keyframes task-thinking-pulse/);
-  assert.match(contracts, /正在思考下一步/);
+  assert.match(app, /function renderRunProgress/);
+  assert.match(app, /function createRunProgressList/);
+  assert.match(app, /task:\$\{pack\.id\}/);
+  assert.match(app, /trace\.timeline/);
+  assert.match(css, /\.ask-progress/);
+  assert.match(contracts, /AgentRunProgressStep/);
 });

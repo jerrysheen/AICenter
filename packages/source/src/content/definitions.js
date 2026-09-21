@@ -49,6 +49,37 @@ export function createBilibiliSourceDefinition(service) {
   };
 }
 
+const XueqiuInputSchema = z.object({
+  feed: z.enum(['following', 'featured', 'livenews']).default('following'),
+  limit: z.coerce.number().int().min(1).max(50).default(50),
+}).strict();
+
+export function createXueqiuSourceDefinition(service) {
+  return {
+    manifest: { id: 'content.xueqiu.home', title: '雪球首页', category: 'content', providerId: 'xueqiu', visibility: 'public', viewKind: 'content-feed', capabilities: ['read', 'refresh'], refresh: { ttlMs: 60_000 }, guideRefs: [] },
+    inputSchema: XueqiuInputSchema,
+    outputSchema: ContentFeedViewSchema,
+    read: (input, context) => service.getFeed({
+      ...input,
+      bypassCache: Boolean(context.refresh),
+      excludeExternalIds: context.excludeExternalIds,
+    }),
+    observedAt: (data) => data.fetchedAt,
+    status: (data) => data.mode === 'error' ? 'unavailable' : data.mode === 'partial' ? 'partial' : 'ready',
+    warnings: (data) => ['error', 'unavailable'].includes(data.mode) ? [data.note] : [],
+    persistence: (input) => ({
+      providerId: 'xueqiu',
+      emptyNote: '还没有缓存。点抓取关注、精选或 7x24 会写入来源并去重保留。',
+      sourceAccount: {
+        externalId: `xueqiu:home:${input.feed}`,
+        displayName: input.feed === 'livenews' ? '雪球7x24' : input.feed === 'featured' ? '雪球精选' : '雪球关注',
+        profileUrl: 'https://xueqiu.com/',
+        authMode: 'browser-session',
+      },
+    }),
+  };
+}
+
 const TrendForceInputSchema = z.object({
   feed: z.literal('public').default('public'),
 }).strict();

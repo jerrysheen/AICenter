@@ -4,7 +4,7 @@
 
 实现细节仍以 `docs/architecture-modules-v1.md` 与 `packages/contracts/src/agent.js` 为准。本文冻结职责划分，不另建 Intent Router、Planner 或多 Agent。
 
-Search Agent（产品入口「文章阅读」，Job `ai.article.analyze`）复用同一个 `AgentRuntime`，只换阅读框架和 Tool 可见范围。它不进入普通问答 Job，也不改变本文的 Ask Agent 冻结。设计见 `docs/search-agent-v1.md`。
+文章阅读是 **Article Analysis Skill**（产品入口「文章阅读」，Job `ai.article.analyze`）：复用同一套生产执行器（DeepSeek Harness），由 Job 明确注入阅读框架 Instruction 和 Domain Tool 可见范围。它不是第二个 Agent，不进入普通问答 Job，也不改变本文的 Ask Agent 冻结。资料搜索以后做成 Harness 插件。设计见 `docs/search-agent-v1.md`。
 
 ## 一句话定义
 
@@ -38,7 +38,8 @@ Agent 负责思考和探索，Runtime 负责执行与确定性边界，Tool 提�
 └───────┬───────┘
         │
         ▼
-      Tools      ← 持仓 / Knowledge / Feed / Web / 市场 / 官方源 / 写入能力
+      Tools      ← Domain：持仓 / Knowledge / Feed / 市场 / 官方源 / 写入
+                 ← Harness 基建：web_search / web_fetch
         │
         └──────────────→ Observation 回到 Agent → 继续判断 → 最终回答
 
@@ -61,8 +62,10 @@ Jev：
 
 - 决定哪些 Tool 当前可见，并校验 Tool 输入 / 输出契约。
 - 负责 Tool 调用总预算、模型调用预算、并发、超时、错误隔离。
-- 负责来源和最终回答的确定性 Guardrail，例如不能声称「已联网」却没有真实 `web.search` 记录。
+- 负责来源和最终回答的确定性 Guardrail，例如不能声称「已联网」却没有真实 `web.search` / `web.fetch` 记录。
+- 负责把 Harness 官方 Session 事件与 Tool Gateway 结果转换为 provider-neutral 的运行进度。该投影供 API / SSE / UI 使用，不反向影响 Agent 决策，也不把 DSH 原始事件或文件格式提升为产品 Contract。
 - Runtime 不负责替 Agent 选择工具。
+- Runtime 还负责 **调用方能力剖面**：本次 Run 是 `device-operate` 还是 `desktop-host`。可见 Tool、dsh profile、Session 复用都按该剖面收口。公网已配对不等于本机编码权限。规则见 `docs/public-access-security.md`。
 
 ### 3.3 Tool：Agent 感知和作用于 AI Center 的接口
 
@@ -72,18 +75,20 @@ Jev：
 |---|---|
 | 个人 / 本地状态 | `holdings.get`、`assets.get`、`user.method.get` |
 | 知识与信息流 | `knowledge.search`、`knowledge.get`、`feed.search`、`feed.tag.search` |
-| 公开互联网 | `web.search` |
+| 公开互联网 | Harness 内置 `web_search` / `web_fetch`（基建，不经 Domain Gateway） |
 | 官方事实 | `static.signals.list` → `official.source.get` |
 | 写入 | `taxonomy.list` → `memory.save` |
 
-`ToolRegistry` 是唯一工具入口。Tool 只能调用 Domain Service 或 Connector，不能直接 SQL。
+`ToolRegistry` 是 Domain Tool 的唯一入口。公开互联网由 Harness 内置 `web_search` / `web_fetch` 提供，不经 Gateway。Domain Tool 只能调用 Domain Service 或 Connector，不能直接 SQL。
+
+给 Harness 模型的参数说明走 `toDefineToolParameters`，不是把 Zod JSON Schema 原样交给 DSH。有 default 的字段对模型是可选的；`pattern` 等 DSH 不收的约束必须写进 `description` / `examples`。典型例子：`knowledge.search` 的 `taxonomy` 可省略，合法值是点分 key（`domain.investment`），不是 `finance` 或 `domain:finance`。契约与投影规则见 `docs/architecture-modules-v1.md`。
 
 ### 3.4 Jev：元认知 / 质量信号层
 
 Jev 不拥有路由权、工具执行权或回答权。它回答置信问题；Runtime 决定这些信号如何落地。
 
 - **T0 Prior**：在执行前，根据用户问题和 Tool Table，判断哪些 root-capable Tool 可能是完成任务所必需的。默认 **shadow**，只写 Trace。
-- **Evidence Gate**：在检索 Tool Result 进入模型 Context 之前，给每条结果打 Relevance / Evidence / Quality，再对留下的证据问 Sufficiency。默认 **enforce**：低相关或无证据的条目不进入 Context，也不进入 Source Footer。失败则放行原结果。
+- **Evidence Gate**：对经 Gateway 的检索 Tool Result（`knowledge.search` / `feed.search` / `feed.tag.search`）进入模型 Context 之前打分。Harness 内置 web 结果不经过这道门，由 Jev Reviewer 从 Session 轨迹观察。
 - **Run Reviewer**：执行结束后，只看脱敏后的 Audit Projection 和 Evidence Gate 汇总分，评价 coverage、relevance、evidence、sequence、efficiency、completion。
 - Prior 不裁剪 Tool Table。Evidence Gate 不限制搜索次数，只阻止垃圾检索污染后续推理。
 - Jev 失败不会让问答失败。
@@ -122,7 +127,7 @@ Evidence Gate 是单独的中间层：它必须看到检索条目的标题、URL
 | `holdings.get` / `holdings.rank` | `official.source.get` ← `static.signals.list` |
 | `knowledge.search` | `knowledge.get` ← `knowledge.search` |
 | `taxonomy.list` | `memory.save` ← `taxonomy.list` |
-| `web.search` / `static.signals.list` | |
+| `web.search` / `web.fetch` / `static.signals.list` | |
 | `feed.*` / `market.*` / `assets.get` / `context.build` … | |
 
 这张 role / dependency 表目前只是 Jev 质量层的临时元数据。长期应该收敛到 Tool Registry metadata，避免维护第二份 Tool 目录。
@@ -177,21 +182,28 @@ Jev Prior + Reviewer 打分 / 标签
 - 不把 Process Quality 误当成最终答案正确性。
 - 不把 Evidence Gate 做成 Claim Extraction / Evidence Pipeline / 第二套 Article Reviewer。
 - 不靠限制搜索次数来保证认知质量。
+- 不把「已配对」当成 Host 编码权限；不让公网 Ask 复用带 bash / 写盘 / subagent 的 dsh Session。
+- 不把 DeepSeek Harness 的 `danger-full-access` 作为产品默认，也不从公网页面切换 Permission 预设。
 
 ## 9. 当前冻结状态
 
 | 模块 | 状态 |
 |---|---|
 | Single Agent | 已确认：唯一决策主体 |
-| Runtime | 确定性约束，不做 Router |
-| Tool Registry | 统一能力入口 |
+| Runtime | 确定性约束，不做 Router。生产执行器是冻结 DeepSeek Harness；本地循环仅测试/回退 |
+| Tool Registry | 统一能力入口；Harness 只通过 Gateway 回调，不直连 SQLite |
 | Jev Prior | shadow；T0 root necessity |
 | Jev Evidence Gate | enforce；检索结果进 Context 前打分并过滤 |
 | Jev Reviewer | Process Quality；可看 Evidence Gate 汇总分 |
 | Follow-up Prior | Observation-1 未实现 |
 | 真实评估 | 下一步积累 30–100 条 |
 | Advisory | 暂不开启 |
+| Harness | 生产默认。Ask 与文章阅读共用冻结 `dsh-base`；公开互联网是内置 `web_search` / `web_fetch`；Domain Tool 走 Gateway。主模型只看 `AI_CENTER_HARNESS_PROVIDER`（DeepSeek 官方或 Elucid Grok）。`elucid-grok` 时搜索走 Grok 原生 `web_search`，fetch 仍是 HTTP。`device-operate` 保持 Host 工具关闭。资料搜索以后做成插件。Node 22.14 通过 `packages/harness/src/dsh-entry.js` 启动（补 `import.meta.main` 与 `node:zlib` zstd 导出）。 |
+| 运行进度 | Harness `session.event` / `session.status` + Tool Gateway 是执行事实来源；AI Center SQLite 保存脱敏只读投影并通过 Outbox/SSE 通知页面。产品 GET 不读取 DSH 私有 JSONL/Query DB。 |
+| 调用方能力 | 已确认：配对使用产品，桌面才驱动 Host 作用。工作包记录可从已配对设备创建；`work-package.dispatch` 与手动重启只允许 `desktop-host`。当前实现尚未完全收口，以 `docs/public-access-security.md` 为目标。 |
 
 ## 最终定位
 
 当前 AI Center Agent = **一个负责思考和探索的 Single Agent + 一个负责确定性边界的 Runtime + 一组可插拔 Tool + 一个给出置信与质量信号的 Jev 层**。执行、约束、评价彼此分离。
+
+AI Center **不是** Agent Framework。通用循环、Session 压缩、Retry、Permission 已经收敛到冻结的 DeepSeek Harness；这就是现在的 `AgentRuntime`。本地自研循环只留给测试注入 fake LLM，或显式 `AI_CENTER_AGENT_RUNTIME=local`。AI Center 继续拥有领域数据、Tools、Skills、JEV、UI 和产品 Job。当前 Skill 是明确调用（例如 Article Analysis：Instruction + Domain Tool Scope + Output Goal），不是 DSH `skill-filesystem` 上的可发现 Skill 目录。资料搜索等专用能力以后通过 Plugin / Provider / Seam 加在这套执行器上，而不是修改或 fork core，也不另建第二套 Runtime。Harness Permission 预设管的是本机编码 Agent 的 sandbox / 审批；公网授权仍由 AI Center 的调用方能力平面决定。

@@ -6,7 +6,7 @@ import {
 import { icon } from './icons.js?v=dev';
 import { renderMarkdownInto } from './markdown.js?v=dev';
 
-const platformLabels = { manual: '手工', bilibili: 'B站', x: 'X', trendforce: 'TrendForce' };
+const platformLabels = { manual: '手工', bilibili: 'B站', x: 'X', xueqiu: '雪球', trendforce: 'TrendForce' };
 const processingLabels = { subtitle: '字幕处理中', ai: 'AI 加工中' };
 const isHarmonyShell = navigator.userAgent.includes('AI-Center-Harmony/');
 const resetConnectionUri = 'aicenter://reset';
@@ -67,6 +67,11 @@ const state = {
   trendforceNote: '',
   trendforceLoading: false,
   trendforceRefreshing: false,
+  xueqiuItems: [],
+  xueqiuFeed: 'following',
+  xueqiuNote: '',
+  xueqiuLoading: false,
+  xueqiuRefreshing: false,
   translations: {},
   xSavedUrls: new Set(),
   dialogPost: null,
@@ -87,6 +92,9 @@ const state = {
   askSessionId: '',
   askDetail: null,
   askJobs: [],
+  askProgressExpanded: new Set(),
+  askComposerCompact: false,
+  askThreadLastScrollTop: 0,
   referenceDraft: [],
   mentionItems: [],
   mentionIndex: 0,
@@ -201,8 +209,8 @@ const elements = Object.fromEntries([
   'form-message', 'feed', 'feed-count', 'metrics-panel', 'metric-devices', 'metric-opens',
   'metric-published', 'metric-details', 'device-list', 'post-dialog', 'dialog-title',
   'dialog-body', 'dialog-translation', 'dialog-tags', 'dialog-source', 'dialog-save', 'dialog-cite', 'dialog-translate', 'dialog-time', 'dialog-notice', 'dialog-language', 'toast', 'channel-tabs',
-  'platform-filters', 'follow-toolbar', 'bilibili-toolbar', 'bilibili-feed-status', 'bilibili-import-form', 'bilibili-url', 'bilibili-import', 'bilibili-more', 'x-toolbar', 'x-more', 'x-translate-bar', 'x-feed-status', 'x-translate-status', 'x-feed-tabs', 'x-refresh', 'x-translate', 'x-tag', 'trendforce-toolbar', 'trendforce-feed-status', 'trendforce-more', 'trendforce-action-bar', 'trendforce-action-status', 'trendforce-refresh', 'quote-filters', 'quote-list', 'tool-grid',
-  'ask-records', 'ask-start', 'ask-session-list', 'ask-session-shell', 'ask-back', 'ask-intro', 'ask-prompt-label',
+  'platform-filters', 'follow-toolbar', 'bilibili-toolbar', 'bilibili-feed-status', 'bilibili-import-form', 'bilibili-url', 'bilibili-import', 'bilibili-more', 'x-toolbar', 'x-more', 'x-translate-bar', 'x-feed-status', 'x-translate-status', 'x-feed-tabs', 'x-refresh', 'x-translate', 'x-tag', 'xueqiu-toolbar', 'xueqiu-feed-tabs', 'xueqiu-feed-status', 'xueqiu-action-bar', 'xueqiu-action-status', 'xueqiu-refresh', 'trendforce-toolbar', 'trendforce-feed-status', 'trendforce-more', 'trendforce-action-bar', 'trendforce-action-status', 'trendforce-refresh', 'quote-filters', 'quote-list', 'tool-grid',
+  'ask-records', 'ask-start', 'ask-session-list', 'ask-session-shell', 'ask-intro', 'ask-prompt-label',
   'ask-thread', 'ask-prompts', 'ask-materials', 'ask-material-tabs', 'ask-form', 'ask-send', 'ask-ref-chips', 'ask-ref-actions', 'ask-ref-export', 'ask-ref-task', 'ask-mention-menu', 'ask-live-chip', 'compose-dialog', 'reload-view', 'open-compose', 'open-settings', 'global-search',
   'side-nav-list', 'bottom-tab', 'market-tabs', 'book-tabs', 'holdings-list', 'holdings-filters', 'asset-filters',
   'asset-list', 'ledger-list', 'search-dialog', 'symbol-search', 'search-results',
@@ -233,6 +241,7 @@ const elements = Object.fromEntries([
   'reference-dock', 'reference-preview', 'reference-preview-title', 'reference-preview-meta', 'reference-preview-body',
   'reference-pack', 'reference-pack-meta', 'reference-pack-chips', 'reference-pack-ask', 'reference-pack-task',
   'reference-pack-export', 'reference-pack-clear',
+  'share-image-dialog', 'share-image-preview', 'share-image-save',
   'hub-ticker', 'overview-subnav', 'nav-back', 'toggle-search', 'feed-filter', 'feed-open-calendar',
   'feed-filter-dialog', 'feed-filter-body', 'open-all-quotes', 'open-full-feed', 'hub-market-note',
   'page-root', 'settings-hub', 'settings-connections',
@@ -539,6 +548,42 @@ function tagNames(tagIds = []) {
   return tagIds.map((id) => catalog.get(id) || id);
 }
 
+function postTagging(item) {
+  return taggingFor(item?.resourceId) || taggingFor(item?.id);
+}
+
+function postTagNames(item) {
+  const row = postTagging(item);
+  if (row && Array.isArray(row.tags)) return tagNames(row.tags);
+  return (Array.isArray(item?.tags) ? item.tags : [])
+    .map((name) => String(name || '').trim())
+    .filter(Boolean);
+}
+
+function createTagRow(names) {
+  const labels = [...new Set((names || []).map((name) => String(name || '').trim()).filter(Boolean))];
+  if (!labels.length) return null;
+  const row = document.createElement('div');
+  row.className = 'tags';
+  for (const name of labels) {
+    row.append(Object.assign(document.createElement('span'), { textContent: name }));
+  }
+  return row;
+}
+
+const triedTagHydration = new Set();
+
+function ensurePostTags(post) {
+  const id = String(post?.resourceId || '').trim();
+  if (!id || postTagging(post) || triedTagHydration.has(id)) return;
+  triedTagHydration.add(id);
+  loadFeedTaggings([post]).then(() => {
+    if (state.pageKind === 'article') renderArticlePage();
+    renderPosts();
+    if (typeof renderOverviewTimeline === 'function') renderOverviewTimeline();
+  }).catch(() => {});
+}
+
 function translateActionLabel(post) {
   if (post?.platform !== 'x') return translationFor(post) ? '已翻译' : '翻译';
   if (state.xTranslating) return '翻译中…';
@@ -698,7 +743,8 @@ function syncHeaderSearch() {
     const showBack = document.body.dataset.view === 'page'
       || (document.body.dataset.view === 'settings' && state.settingsPane === 'connections')
       || (document.body.dataset.view === 'sources' && state.overviewPane !== 'home')
-      || (document.body.dataset.view === 'inspire' && Boolean(state.selectedWorkPackageId));
+      || (document.body.dataset.view === 'inspire' && Boolean(state.selectedWorkPackageId))
+      || (document.body.dataset.view === 'ask' && Boolean(state.askSessionId));
     elements['nav-back'].classList.toggle('hidden', !showBack);
     setIconButton(elements['nav-back'], 'chevron-left');
   }
@@ -754,11 +800,13 @@ function setView(name, options = {}) {
   } else if (view === 'inspire') {
     elements['page-title'].textContent = state.selectedWorkPackageId ? '任务详情' : '灵感';
     elements['page-subtitle'].textContent = state.selectedWorkPackageId
-      ? '进展随步骤刷新；本地输入会留下来，可带着旧指令继续做'
+      ? ''
       : state.inspirePane === 'tasks'
         ? '每条任务在本机 Cursor 开独立窗口，完成后自己写回这里'
         : viewCopy.inspire.subtitle;
     syncInspirePanes();
+  } else if (view === 'ask') {
+    applyAskHeaderCopy();
   } else {
     elements['page-title'].textContent = viewCopy[view].title;
     elements['page-subtitle'].textContent = viewCopy[view].subtitle;
@@ -925,6 +973,7 @@ async function reloadCurrentView({ forceShell = false } = {}) {
     if (view === 'feed' || view === 'sources') {
       tasks.push(loadPosts());
       tasks.push(loadXFeed({ refresh: false }));
+      tasks.push(loadXueqiuFeed({ refresh: false }));
       tasks.push(loadBilibiliFeed({ refresh: false }));
     }
     if (view === 'sources') tasks.push(loadSourcesPage({ refresh: true }));
@@ -1212,6 +1261,7 @@ function persistFeedBrowseState() {
       hash: location.hash || '#sources',
       platform: state.feedPlatform || state.platform,
       xFeed: state.xFeed,
+      xueqiuFeed: state.xueqiuFeed,
       channel: state.channel,
     }));
     window.localStorage.setItem(FEED_BROWSE_KEY, JSON.stringify({
@@ -1223,6 +1273,7 @@ function persistFeedBrowseState() {
       platform: state.feedPlatform || state.platform,
       channel: state.channel,
       xFeed: state.xFeed,
+      xueqiuFeed: state.xueqiuFeed,
     }));
   } catch {}
 }
@@ -1245,6 +1296,7 @@ function restorePersistedFeedBrowseState() {
     }
     if (saved.channel) state.channel = saved.channel;
     if (saved.xFeed) state.xFeed = saved.xFeed;
+    if (saved.xueqiuFeed) state.xueqiuFeed = saved.xueqiuFeed;
     pendingFeedDialogId = saved.dialogPostId || pendingFeedDialogId;
     return saved;
   } catch {
@@ -1596,6 +1648,7 @@ function stashFeedItem(post) {
   const xIndex = state.xItems.findIndex((item) => item.id === post.id || item.resourceId === post.resourceId);
   const biliIndex = state.bilibiliItems.findIndex((item) => item.id === post.id || item.resourceId === post.resourceId);
   const trendforceIndex = state.trendforceItems.findIndex((item) => item.id === post.id || item.resourceId === post.resourceId);
+  const xueqiuIndex = state.xueqiuItems.findIndex((item) => item.id === post.id || item.resourceId === post.resourceId);
   const liveIndex = state.posts.findIndex((item) => item.id === post.id);
   return {
     post,
@@ -1605,6 +1658,8 @@ function stashFeedItem(post) {
     biliIndex,
     trendforceItem: trendforceIndex >= 0 ? state.trendforceItems[trendforceIndex] : null,
     trendforceIndex,
+    xueqiuItem: xueqiuIndex >= 0 ? state.xueqiuItems[xueqiuIndex] : null,
+    xueqiuIndex,
     liveItem: liveIndex >= 0 ? state.posts[liveIndex] : null,
     liveIndex,
   };
@@ -1635,6 +1690,7 @@ function restoreStashedFeedItem(stash) {
   if (stash.xItem) state.xItems = insertFeedListItem(state.xItems, stash.xItem, stash.xIndex);
   if (stash.biliItem) state.bilibiliItems = insertFeedListItem(state.bilibiliItems, stash.biliItem, stash.biliIndex);
   if (stash.trendforceItem) state.trendforceItems = insertFeedListItem(state.trendforceItems, stash.trendforceItem, stash.trendforceIndex);
+  if (stash.xueqiuItem) state.xueqiuItems = insertFeedListItem(state.xueqiuItems, stash.xueqiuItem, stash.xueqiuIndex);
   if (stash.liveItem) state.posts = insertFeedListItem(state.posts, stash.liveItem, stash.liveIndex);
 }
 
@@ -1645,6 +1701,7 @@ function dropFeedItemLocally(post) {
   state.xItems = state.xItems.filter((item) => item.id !== post.id && item.resourceId !== post.resourceId);
   state.bilibiliItems = state.bilibiliItems.filter((item) => item.id !== post.id && item.resourceId !== post.resourceId);
   state.trendforceItems = state.trendforceItems.filter((item) => item.id !== post.id && item.resourceId !== post.resourceId);
+  state.xueqiuItems = state.xueqiuItems.filter((item) => item.id !== post.id && item.resourceId !== post.resourceId);
 }
 
 function markFeedItemRead(post) {
@@ -1652,7 +1709,7 @@ function markFeedItemRead(post) {
   rememberRecentItem(post);
   if (post.isRead) return;
   post.isRead = true;
-  for (const list of [state.xItems, state.bilibiliItems, state.trendforceItems, state.posts]) {
+  for (const list of [state.xItems, state.bilibiliItems, state.trendforceItems, state.xueqiuItems, state.posts]) {
     const hit = list.find((item) => item.id === post.id || (post.resourceId && item.resourceId === post.resourceId));
     if (hit) hit.isRead = true;
   }
@@ -1829,7 +1886,7 @@ function flashSourceTarget(node) {
 
 function contentItemAsPost(item) {
   const provider = String(item.provider || '');
-  const platform = provider === 'bilibili' || provider === 'x' || provider === 'trendforce' ? provider : 'manual';
+  const platform = provider === 'bilibili' || provider === 'x' || provider === 'trendforce' || provider === 'xueqiu' ? provider : 'manual';
   return {
     id: item.externalId && platform !== 'manual' ? `${platform}:${item.externalId}` : item.id,
     resourceId: item.id,
@@ -1840,7 +1897,7 @@ function contentItemAsPost(item) {
     handle: '',
     title: item.title,
     body: item.body || item.summary || '无正文',
-    tags: tagNames(taggingFor(item.id)?.tags || []),
+    tags: postTagNames({ ...item, resourceId: item.id }),
     sourceUrl: item.sourceUrl || '',
     createdAt: item.publishedAt || item.createdAt || Date.now(),
   };
@@ -1848,7 +1905,7 @@ function contentItemAsPost(item) {
 
 function findFeedPost(ref) {
   const id = String(ref.resourceId || '');
-  return [...state.posts, ...state.xItems, ...state.bilibiliItems, ...state.trendforceItems]
+  return [...state.posts, ...state.xItems, ...state.bilibiliItems, ...state.trendforceItems, ...state.xueqiuItems]
     .find((item) => item.resourceId === id || item.id === id) || null;
 }
 
@@ -2248,6 +2305,7 @@ function applyAskMention(item) {
 
 function onAskComposerInput() {
   const input = elements['ask-form']?.elements?.question;
+  setAskComposerCompact(false);
   resizeAskComposer();
   syncAskKeyboard();
   if (!input || state.askSubmitting) {
@@ -2391,12 +2449,12 @@ function feedAsItem(item, platform) {
     kind: 'social',
     platform,
     externalId: item.externalId || '',
-    author: item.authorName || item.authorHandle || (platform === 'bilibili' ? 'B站' : platform === 'trendforce' ? 'TrendForce' : 'X'),
+    author: item.authorName || item.authorHandle || (platform === 'bilibili' ? 'B站' : platform === 'trendforce' ? 'TrendForce' : platform === 'xueqiu' ? '雪球' : 'X'),
     handle: item.authorHandle || '',
     time: item.publishedAt ? formatTime(item.publishedAt) : '',
     title: item.title,
     body: item.body || item.summary || '无正文',
-    tags: tagNames(taggingFor(item.resourceId)?.tags || []),
+    tags: postTagNames(item),
     sourceUrl: item.sourceUrl,
     processing: item.processing || '',
     following: false,
@@ -2417,6 +2475,10 @@ function bilibiliAsItem(item) {
 
 function trendforceAsItem(item) {
   return feedAsItem(item, 'trendforce');
+}
+
+function xueqiuAsItem(item) {
+  return feedAsItem(item, 'xueqiu');
 }
 
 function hydrateFeedTranslations(items) {
@@ -2495,13 +2557,15 @@ function socialFeedItems(options = {}) {
   const xItems = state.xItems.map(xAsItem).filter(matchesPlatform);
   const bilibiliItems = state.bilibiliItems.map(bilibiliAsItem).filter(matchesPlatform);
   const trendforceItems = state.trendforceItems.map(trendforceAsItem).filter(matchesPlatform);
+  const xueqiuItems = state.xueqiuItems.map(xueqiuAsItem).filter(matchesPlatform);
   const demo = feedItems.filter((item) => {
     if (item.platform === 'x' && state.xItems.length) return false;
     if (item.platform === 'bilibili' && state.bilibiliItems.length) return false;
     if (item.platform === 'trendforce' && state.trendforceItems.length) return false;
+    if (item.platform === 'xueqiu' && state.xueqiuItems.length) return false;
     return matchesPlatform({ ...item, kind: 'social' });
   }).map((item) => ({ ...item, kind: 'social', createdAt: item.createdAt || Date.now(), publishedAt: item.publishedAt || item.createdAt || Date.now() }));
-  return [...bilibiliItems, ...trendforceItems, ...xItems, ...live, ...demo]
+  return [...bilibiliItems, ...trendforceItems, ...xueqiuItems, ...xItems, ...live, ...demo]
     .filter((item) => options.includeHidden || !isHiddenFeedItem(item));
 }
 
@@ -2553,6 +2617,7 @@ function matchesFeedQuery(item, query) {
     translationFor(item)?.text,
     postListExcerpt(item),
     item.release?.title,
+    postTagNames(item).join(' '),
   ].join(' ').toLowerCase();
   return haystack.includes(query);
 }
@@ -2663,12 +2728,13 @@ function renderChipTabs(target, items, current, onSelect) {
 
 const feedSourceTabs = [
   { id: 'x', label: 'X' },
+  { id: 'xueqiu', label: '雪球' },
   { id: 'bilibili', label: 'B站' },
   { id: 'trendforce', label: 'TrendForce' },
 ];
 
 function isSourceFeedScope(id) {
-  return id === 'x' || id === 'bilibili' || id === 'trendforce';
+  return id === 'x' || id === 'xueqiu' || id === 'bilibili' || id === 'trendforce';
 }
 
 function currentFeedScopeId() {
@@ -2684,11 +2750,15 @@ function applyFeedPlatform(id) {
   renderChannels();
   renderPlatformFilters();
   renderXToolbar();
+  renderXueqiuToolbar();
   renderBilibiliToolbar();
   renderTrendForceToolbar();
   renderPosts();
   if (next === 'x' && !state.xItems.length && !state.xLoading) {
     loadXFeed({ refresh: false }).catch((error) => showToast(error.message));
+  }
+  if (next === 'xueqiu' && !state.xueqiuItems.length && !state.xueqiuLoading) {
+    loadXueqiuFeed({ refresh: false }).catch((error) => showToast(error.message));
   }
   if (next === 'bilibili' && !state.bilibiliItems.length && !state.bilibiliLoading) {
     loadBilibiliFeed().catch((error) => showToast(error.message));
@@ -2712,7 +2782,9 @@ function renderFeedActionButton() {
   if (!button) return;
   button.classList.remove('is-source-more');
   button.setAttribute('aria-label', isSourceFeedScope(state.feedPlatform)
-    ? (state.feedPlatform === 'x' ? 'X 来源任务' : state.feedPlatform === 'bilibili' ? 'B站来源任务' : 'TrendForce 来源任务')
+    ? (state.feedPlatform === 'x' ? 'X 来源任务'
+      : state.feedPlatform === 'xueqiu' ? '雪球来源任务'
+        : state.feedPlatform === 'bilibili' ? 'B站来源任务' : 'TrendForce 来源任务')
     : '信息流筛选');
   setIconButton(button, 'list-filter');
 }
@@ -2837,6 +2909,62 @@ function renderXToolbar() {
   }
 }
 
+function xueqiuFeedLabel(feed = state.xueqiuFeed) {
+  if (feed === 'featured') return '精选';
+  if (feed === 'livenews') return '7x24';
+  return '关注';
+}
+
+function setXueqiuFeed(feed, { reload = false } = {}) {
+  const next = feed === 'featured' || feed === 'livenews' ? feed : 'following';
+  if (state.xueqiuFeed === next) return false;
+  state.xueqiuFeed = next;
+  state.xueqiuItems = [];
+  state.xueqiuNote = '';
+  resetFeedWindow();
+  persistFeedBrowseState();
+  renderXueqiuToolbar();
+  renderPosts();
+  if (reload && state.feedPlatform === 'xueqiu') {
+    loadXueqiuFeed({ refresh: false }).catch((error) => showToast(error.message));
+  }
+  return true;
+}
+
+function renderXueqiuToolbar() {
+  const toolbar = elements['xueqiu-toolbar'];
+  if (toolbar) toolbar.classList.toggle('hidden', state.feedPlatform !== 'xueqiu');
+  if (elements['xueqiu-feed-status']) {
+    elements['xueqiu-feed-status'].textContent = state.xueqiuLoading
+      ? (state.xueqiuRefreshing ? `正在抓取最多 50 条${xueqiuFeedLabel()}…` : '正在读取已缓存来源…')
+      : (state.xueqiuNote || `${state.xueqiuItems.length} 条 · ${xueqiuFeedLabel()}`);
+    elements['xueqiu-feed-status'].classList.toggle('hidden', state.feedPlatform !== 'xueqiu');
+  }
+  if (elements['xueqiu-feed-tabs']) {
+    renderChipTabs(elements['xueqiu-feed-tabs'], [
+      { id: 'following', label: '关注' },
+      { id: 'featured', label: '精选' },
+      { id: 'livenews', label: '7x24' },
+    ], state.xueqiuFeed, (id) => {
+      setXueqiuFeed(id, { reload: true });
+    });
+  }
+  if (elements['xueqiu-action-bar']) {
+    elements['xueqiu-action-bar'].classList.toggle('hidden', state.feedPlatform !== 'xueqiu');
+  }
+  if (elements['xueqiu-action-status']) {
+    elements['xueqiu-action-status'].textContent = state.xueqiuFeed === 'livenews'
+      ? '7x24 走雪球快讯接口。关注和精选需要采集浏览器已登录雪球。'
+      : `当前范围：${xueqiuFeedLabel()}。在 BrowserSkill 已登录的雪球页里打时间线接口，不扒首页 DOM。`;
+  }
+  if (elements['xueqiu-refresh']) {
+    elements['xueqiu-refresh'].disabled = state.xueqiuLoading;
+    elements['xueqiu-refresh'].textContent = state.xueqiuRefreshing
+      ? '抓取中…'
+      : `抓取${xueqiuFeedLabel()} 50 条`;
+  }
+}
+
 function renderBilibiliToolbar() {
   const toolbar = elements['bilibili-toolbar'];
   if (toolbar) toolbar.classList.toggle('hidden', state.feedPlatform !== 'bilibili');
@@ -2890,6 +3018,7 @@ function feedKindLabel(item) {
   if (item.kind === 'official' || item.platform === 'official') return '官方';
   if (item.platform === 'bilibili') return '字幕';
   if (item.platform === 'trendforce') return '洞察';
+  if (item.platform === 'xueqiu') return '雪球';
   if (item.platform === 'manual') return '手工';
   return '社媒';
 }
@@ -3150,6 +3279,8 @@ function renderPosts() {
       preview.textContent = excerpt;
       content.append(preview);
     }
+    const feedTags = createTagRow(postTagNames(post));
+    if (feedTags) content.append(feedTags);
     const star = document.createElement('button');
     star.type = 'button';
     star.className = `icon-button ghost focus-btn${itemIsFocused(post) ? ' on' : ''}`;
@@ -4285,6 +4416,7 @@ function openSource(source) {
     resetFeedWindow();
     renderPlatformFilters();
     renderXToolbar();
+    renderXueqiuToolbar();
     renderBilibiliToolbar();
     renderPosts();
     setView('feed');
@@ -4302,13 +4434,15 @@ function hubFeedPicks(limit = 12) {
   const xItems = state.xItems.map(xAsItem);
   const bilibiliItems = state.bilibiliItems.map(bilibiliAsItem);
   const trendforceItems = state.trendforceItems.map(trendforceAsItem);
+  const xueqiuItems = state.xueqiuItems.map(xueqiuAsItem);
   const demo = feedItems.filter((item) => {
     if (item.platform === 'x' && state.xItems.length) return false;
     if (item.platform === 'bilibili' && state.bilibiliItems.length) return false;
     if (item.platform === 'trendforce' && state.trendforceItems.length) return false;
+    if (item.platform === 'xueqiu' && state.xueqiuItems.length) return false;
     return true;
   });
-  return [...bilibiliItems, ...trendforceItems, ...xItems, ...live, ...demo]
+  return [...bilibiliItems, ...trendforceItems, ...xueqiuItems, ...xItems, ...live, ...demo]
     .filter((item) => !isHiddenFeedItem(item))
     .sort((left, right) => (Number(right.createdAt) || 0) - (Number(left.createdAt) || 0))
     .slice(0, limit);
@@ -4476,6 +4610,7 @@ function renderStaticSourceCatalog() {
   const query = state.sourceCatalogQuery.trim().toLowerCase();
   const social = [
     { id: 'x', title: 'X', category: 'content', viewKind: 'content-feed', letter: 'X', note: '首页时间线' },
+    { id: 'xueqiu', title: '雪球', category: 'content', viewKind: 'content-feed', letter: '雪', note: '关注、精选和 7x24' },
     { id: 'bilibili', title: 'B站', category: 'content', viewKind: 'content-feed', letter: 'B', note: '已采集字幕' },
     { id: 'trendforce', title: 'TrendForce', category: 'content', viewKind: 'content-feed', letter: 'T', note: '公开洞察与价表' },
     { id: 'manual', title: '手工发布', category: 'content', viewKind: 'content-feed', letter: '手', note: '自己保存的资料' },
@@ -4716,6 +4851,8 @@ function renderOverviewTimeline() {
     open.append(Object.assign(document.createElement('h3'), { textContent: postDisplayTitle(post) }));
     const excerpt = post.excerpt || postListExcerpt(post);
     if (excerpt) open.append(Object.assign(document.createElement('p'), { className: 'post-excerpt', textContent: excerpt }));
+    const timelineTags = createTagRow(postTagNames(post));
+    if (timelineTags) open.append(timelineTags);
     attachGuardedOpen(open, () => openArticle(post));
     const star = document.createElement('button');
     star.type = 'button';
@@ -5370,18 +5507,22 @@ function openSourceTasks(sourceId = 'all') {
   if (elements['source-tasks-title']) {
     elements['source-tasks-title'].textContent = sourceId === 'x'
       ? 'X 来源任务'
-      : sourceId === 'bilibili'
-        ? 'B站来源任务'
-        : sourceId === 'trendforce'
-          ? 'TrendForce 来源任务'
-          : '后台任务';
+      : sourceId === 'xueqiu'
+        ? '雪球来源任务'
+        : sourceId === 'bilibili'
+          ? 'B站来源任务'
+          : sourceId === 'trendforce'
+            ? 'TrendForce 来源任务'
+            : '后台任务';
   }
   if (elements['source-tasks-meta']) {
     elements['source-tasks-meta'].textContent = sourceId === 'x'
       ? '先选正在关注或为你推荐，再抓取。抓取会立刻跑采集、翻译和打 Tag。下面的自动化草案不会启动定时任务。'
-      : sourceId === 'trendforce'
-        ? '公开洞察和价表抓全文。会员研报只收标题与介绍，不下载 PDF。'
-        : '维护入口。自动化草案不会启动后台调度。';
+      : sourceId === 'xueqiu'
+        ? '关注和精选需要采集浏览器已登录雪球。7x24 走快讯接口。不扒首页 DOM。'
+        : sourceId === 'trendforce'
+          ? '公开洞察和价表抓全文。会员研报只收标题与介绍，不下载 PDF。'
+          : '维护入口。自动化草案不会启动后台调度。';
   }
   const body = elements['source-tasks-body'];
   body.replaceChildren();
@@ -5444,6 +5585,39 @@ function openSourceTasks(sourceId = 'all') {
       dialog.close();
       tagXBatch().catch((error) => showToast(error.message));
     });
+  }
+  if (sourceId === 'xueqiu' || sourceId === 'all') {
+    const scopeTabs = document.createElement('div');
+    scopeTabs.className = 'chip-tabs';
+    scopeTabs.setAttribute('role', 'tablist');
+    scopeTabs.setAttribute('aria-label', '雪球栏目');
+    body.append(scopeTabs);
+    const captureButton = document.createElement('button');
+    captureButton.type = 'button';
+    captureButton.className = 'primary-button task-run';
+    captureButton.addEventListener('click', () => {
+      dialog.close();
+      loadXueqiuFeed({ refresh: true }).catch((error) => showToast(error.message));
+    });
+    body.append(captureButton);
+    const captureNote = document.createElement('p');
+    captureNote.className = 'page-note task-run-note';
+    body.append(captureNote);
+    const paintScope = () => {
+      renderChipTabs(scopeTabs, [
+        { id: 'following', label: '关注' },
+        { id: 'featured', label: '精选' },
+        { id: 'livenews', label: '7x24' },
+      ], state.xueqiuFeed, (id) => {
+        setXueqiuFeed(id, { reload: true });
+        paintScope();
+      });
+      captureButton.textContent = `抓取${xueqiuFeedLabel()} 50 条`;
+      captureNote.textContent = state.xueqiuFeed === 'livenews'
+        ? '抓雪球 7x24 快讯。'
+        : `抓${xueqiuFeedLabel()}时间线。请先在采集浏览器登录 https://xueqiu.com/ 。`;
+    };
+    paintScope();
   }
   if (sourceId === 'bilibili' || sourceId === 'all') {
     const form = document.createElement('form');
@@ -5527,6 +5701,16 @@ async function loadOriginalBody(post) {
   return state.originalBodies[id];
 }
 
+function createDetailAction({ iconName, label, primary = false, pressed = false, onClick }) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  if (primary) button.classList.add('is-primary');
+  if (pressed) button.classList.add('is-focus-on');
+  button.innerHTML = `${icon(iconName)}<span>${label}</span>`;
+  if (onClick) button.addEventListener('click', onClick);
+  return button;
+}
+
 function renderArticlePage() {
   const root = pageRoot();
   const id = state.pageId || '';
@@ -5545,10 +5729,10 @@ function renderArticlePage() {
   const translated = translationFor(post)?.text;
   const hasTranslation = Boolean(translated);
   const shell = document.createElement('article');
-  shell.className = 'page-article';
+  shell.className = 'page-article detail-shell';
   const head = document.createElement('header');
-  head.className = 'reader-head';
-  head.innerHTML = `<h2></h2><div class="reader-meta"></div>`;
+  head.className = 'detail-head reader-head';
+  head.innerHTML = `<h2 class="detail-title"></h2><div class="detail-meta reader-meta"></div>`;
   head.querySelector('h2').textContent = postDisplayTitle(post);
   const meta = head.querySelector('.reader-meta');
   meta.append(
@@ -5580,7 +5764,7 @@ function renderArticlePage() {
     metaGrid.querySelectorAll('dd')[1].textContent = post.author;
     metaGrid.querySelectorAll('dd')[2].textContent = post.sourceUrl || '未提供';
     const stateBox = document.createElement('section');
-    stateBox.className = 'body-state';
+    stateBox.className = 'body-state detail-surface';
     if (status === 'loading') {
       stateBox.innerHTML = '<strong>正在获取全文</strong><p>走现有官方详情 Source，不把标题当成正文。</p>';
     } else if (status === 'ready' && fetched?.text) {
@@ -5614,7 +5798,7 @@ function renderArticlePage() {
       body.append(tabs);
     }
     const content = document.createElement('div');
-    content.className = 'reader-content';
+    content.className = 'reader-content detail-body';
     const original = state.originalBodies[post.resourceId || post.id] || post.body;
     const viewText = state.readerLang === 'original' ? original : (translated || original);
     fillPostBody(content, viewText);
@@ -5625,42 +5809,48 @@ function renderArticlePage() {
       content.append(orig);
     }
     body.append(content);
+    const articleTags = createTagRow(postTagNames(post));
+    if (articleTags) {
+      articleTags.classList.add('detail-tags');
+      body.append(articleTags);
+    }
+    ensurePostTags(post);
   }
   const bar = document.createElement('div');
-  bar.className = 'reader-bar';
-  const save = document.createElement('button');
-  save.type = 'button';
-  save.innerHTML = `${icon('bookmark')}<span>${isPostSaved(post) ? '查看灵感' : '存入灵感'}</span>`;
-  save.addEventListener('click', () => {
-    if (post.release) saveOfficialAsInspiration(post.release);
-    else savePostToInspiration(post).catch((error) => showToast(error.message));
+  bar.className = 'detail-actions reader-bar';
+  const save = createDetailAction({
+    iconName: 'bookmark',
+    label: isPostSaved(post) ? '查看灵感' : '存入灵感',
+    onClick: () => {
+      if (post.release) saveOfficialAsInspiration(post.release);
+      else savePostToInspiration(post).catch((error) => showToast(error.message));
+    },
   });
-  const cite = document.createElement('button');
-  cite.type = 'button';
-  cite.innerHTML = `${icon('corner-up-right')}<span>引用到问答</span>`;
-  cite.addEventListener('click', () => toggleReference({
-    resourceType: post.resourceType || 'content-item',
-    resourceId: post.resourceId || post.id,
-    label: postDisplayTitle(post),
-    preview: post.body,
-  }));
+  const cite = createDetailAction({
+    iconName: 'corner-up-right',
+    label: '引用',
+    onClick: () => toggleReference({
+      resourceType: post.resourceType || 'content-item',
+      resourceId: post.resourceId || post.id,
+      label: postDisplayTitle(post),
+      preview: post.body,
+    }),
+  });
   const focused = itemIsFocused(post);
-  const star = document.createElement('button');
-  star.type = 'button';
-  star.className = focused ? 'is-focus-on' : '';
-  star.setAttribute('aria-label', focused ? '取消重要新闻' : '加入重要新闻');
-  star.innerHTML = `${icon('star')}<span>${focused ? '取消重要' : '加入重要新闻'}</span>`;
-  star.addEventListener('click', () => toggleFocus(post.id, () => renderArticlePage(), post));
-  const analyze = document.createElement('button');
-  analyze.type = 'button';
-  analyze.innerHTML = `${icon('search')}<span>分析</span>`;
-  analyze.addEventListener('click', () => startArticleAnalysis(post).catch((error) => showToast(error.message)));
-  const back = document.createElement('button');
-  back.type = 'button';
-  back.setAttribute('aria-label', '返回上层');
-  back.innerHTML = `${icon('chevron-left')}<span>返回上层</span>`;
-  back.addEventListener('click', leaveArticle);
-  bar.append(save, cite, analyze, star, back);
+  const star = createDetailAction({
+    iconName: 'star',
+    label: focused ? '取消重点' : '重点',
+    pressed: focused,
+    onClick: () => toggleFocus(post.id, () => renderArticlePage(), post),
+  });
+  star.setAttribute('aria-label', focused ? '取消重点' : '加入重点');
+  const analyze = createDetailAction({
+    iconName: 'search',
+    label: '分析',
+    primary: true,
+    onClick: () => startArticleAnalysis(post).catch((error) => showToast(error.message)),
+  });
+  bar.append(save, cite, analyze, star);
   const analysis = renderArticleAnalysisPanel(post);
   if (analysis) shell.append(head, body, analysis, bar);
   else shell.append(head, body, bar);
@@ -5723,28 +5913,31 @@ function renderArticleAnalysisPanel(post) {
   const record = state.articleAnalysis[articleAnalysisKey(post)];
   if (!record) return null;
   const section = document.createElement('section');
-  section.className = 'article-analysis';
+  section.className = 'detail-section';
   const title = document.createElement('h3');
-  title.textContent = '文章阅读';
-  section.append(title);
+  title.className = 'detail-section-title';
+  title.textContent = record.status === 'completed' ? '研究结果' : '研究';
+  const surface = document.createElement('div');
+  surface.className = 'detail-surface article-analysis';
+  section.append(title, surface);
   if (record.status === 'running' || record.status === 'queued') {
     const status = document.createElement('p');
     status.className = 'page-note';
     status.textContent = record.stageLabel || '正在分析这份材料';
-    section.append(status);
+    surface.append(status);
     return section;
   }
   if (record.status === 'failed') {
     const status = document.createElement('p');
     status.className = 'page-note';
     status.textContent = record.error || '分析未能完成';
-    section.append(status);
+    surface.append(status);
     return section;
   }
   const answer = document.createElement('div');
   answer.className = 'article-analysis-answer';
   renderMarkdownInto(answer, record.outputText || '分析已完成');
-  section.append(answer);
+  surface.append(answer);
   return section;
 }
 
@@ -5863,7 +6056,7 @@ async function saveEventAsInspiration(event) {
 function renderSourcePage() {
   const root = pageRoot();
   const id = state.pageId;
-  const def = [{ id: 'x', title: 'X' }, { id: 'bilibili', title: 'B站' }, { id: 'trendforce', title: 'TrendForce' }, { id: 'manual', title: '手工发布' }]
+  const def = [{ id: 'x', title: 'X' }, { id: 'xueqiu', title: '雪球' }, { id: 'bilibili', title: 'B站' }, { id: 'trendforce', title: 'TrendForce' }, { id: 'manual', title: '手工发布' }]
     .find((item) => item.id === id)
     || state.sourceCatalog.find((item) => item.id === id);
   if (!def) {
@@ -5878,7 +6071,7 @@ function renderSourcePage() {
     ? `${health.status === 'ready' ? '最近检查成功' : health.note || health.status} · ${health.observedAt ? formatTime(health.observedAt) : ''}`
     : '只读已保存结果，新采集在右上角任务里发起';
   wrap.querySelector('button').addEventListener('click', () => openPage('automation', id));
-  if (id === 'x' || id === 'bilibili' || id === 'trendforce' || id === 'manual') {
+  if (id === 'x' || id === 'xueqiu' || id === 'bilibili' || id === 'trendforce' || id === 'manual') {
     state.feedPlatform = id === 'manual' ? 'manual' : id;
     state.platform = state.feedPlatform;
     const list = document.createElement('div');
@@ -6048,6 +6241,18 @@ async function loadRuntimeJobs() {
   }
 }
 
+function inspirationDetailTitle(note) {
+  const explicit = String(note.title || '').replace(/\s+/g, ' ').trim();
+  if (explicit) return explicit;
+  return INSPIRATION_TYPE_LABELS[note.inspirationType] || '随记';
+}
+
+function inspirationDetailMeta(note) {
+  const source = String(note.sourceTitle || '').replace(/\s+/g, ' ').trim();
+  const when = formatTime(note.createdAt);
+  return source ? `来自 ${source} · ${when}` : when;
+}
+
 function renderNotePage() {
   const root = pageRoot();
   const note = state.notes.find((item) => item.id === state.pageId);
@@ -6056,21 +6261,21 @@ function renderNotePage() {
     return;
   }
   const wrap = document.createElement('article');
-  wrap.innerHTML = `<div class="reader-content"></div><p class="page-note"></p><div class="content-tools"></div>`;
-  fillPostBody(wrap.querySelector('.reader-content'), note.body);
+  wrap.className = 'detail-shell';
+  wrap.innerHTML = `<header class="detail-head"><h2 class="detail-title"></h2><div class="detail-meta"></div></header>
+    <div class="detail-body reader-content"></div>
+    <div class="detail-actions is-inline"></div>`;
+  wrap.querySelector('.detail-title').textContent = inspirationDetailTitle(note);
+  wrap.querySelector('.detail-meta').textContent = inspirationDetailMeta(note);
+  fillPostBody(wrap.querySelector('.detail-body'), note.body);
   const pictures = renderAttachmentView(note.attachments);
-  if (pictures) wrap.querySelector('.reader-content').after(pictures);
-  wrap.querySelector('.page-note').textContent = `${note.sourceTitle || '我的随记'} · ${formatTime(note.createdAt)}`;
-  const research = document.createElement('button');
-  research.className = 'primary-button';
-  research.type = 'button';
-  research.textContent = '接着研究';
-  research.addEventListener('click', () => {
-    toggleReference({ resourceType: 'inspiration', resourceId: note.id, label: inspirationCardTitle(note), preview: note.body });
-    setView('ask');
-    openAskSession('new');
-  });
-  wrap.querySelector('.content-tools').append(research);
+  if (pictures) wrap.querySelector('.detail-body').after(pictures);
+  wrap.querySelector('.detail-actions').append(createDetailAction({
+    iconName: 'message-circle',
+    label: '接着研究',
+    primary: true,
+    onClick: () => continueWithInspiration(note),
+  }));
   root.replaceChildren(wrap);
 }
 
@@ -6437,12 +6642,17 @@ function updateAskProgressNode(job) {
     return;
   }
   if (job.status === 'queued' || job.status === 'running') {
-    setAskAnswer(answer, job.text, { pending: true, progress: job.progress || [] });
+    setAskAnswer(answer, job.text, {
+      pending: true,
+      progress: job.progress || [],
+      progressKey: job.runId,
+    });
   }
 }
 
 async function finishAskJob(job, payload) {
   removeAskJob(job.runId);
+  state.askProgressExpanded.delete(job.runId);
   renderAskLiveUi();
   const viewing = document.body.dataset.view === 'ask' && state.askSessionId && state.askSessionId === job.sessionId;
   if (viewing) await loadAskSession(job.sessionId);
@@ -6532,19 +6742,29 @@ function onAgentJobEvent(event) {
   void loadActiveAskRuns();
 }
 
+function askSessionTitle() {
+  if (!state.askSessionId) return viewCopy.ask.title;
+  if (state.askSessionId === 'new') return '新提问';
+  return String(
+    state.askDetail?.session?.title
+    || state.askSessions.find((item) => item.id === state.askSessionId)?.title
+    || '',
+  ).trim() || '问答';
+}
+
+function applyAskHeaderCopy() {
+  const inSession = Boolean(state.askSessionId);
+  elements['page-title'].textContent = askSessionTitle();
+  elements['page-subtitle'].textContent = inSession ? '' : viewCopy.ask.subtitle;
+}
+
 function syncAskLayer() {
   const inSession = Boolean(state.askSessionId);
   elements['ask-records'].classList.toggle('hidden', inSession);
   elements['ask-session-shell'].classList.toggle('hidden', !inSession);
   const kind = state.askSessionId === 'new' ? 'question-answer' : (state.askDetail?.session?.kind || 'question-answer');
   document.body.dataset.askKind = inSession ? kind : '';
-  if (inSession && state.askDetail?.session?.title) {
-    elements['page-subtitle'].textContent = state.askDetail.session.title;
-  } else if (inSession && state.askSessionId === 'new') {
-    elements['page-subtitle'].textContent = '新的问答，使用当前上下文';
-  } else {
-    elements['page-subtitle'].textContent = viewCopy.ask.subtitle;
-  }
+  applyAskHeaderCopy();
 }
 
 async function syncAskView() {
@@ -6580,15 +6800,23 @@ async function loadAskSession(sessionId) {
   if (!state.session) return;
   const payload = await api(`/api/v1/agent/sessions/${sessionId}`);
   state.askDetail = { session: payload.session, exchanges: payload.exchanges || [] };
-  adoptPendingRuns((payload.exchanges || [])
+  const pending = (payload.exchanges || [])
     .filter((item) => item.status === 'queued' || item.status === 'running')
     .map((item) => ({
       runId: item.id,
+      jobId: item.jobId || item.id,
       sessionId,
       question: item.question,
       status: item.status,
       ...(item.agentMode ? { agentMode: item.agentMode } : {}),
-    })));
+    }));
+  const pendingIds = new Set(pending.map((item) => item.runId));
+  state.askJobs = state.askJobs.filter((job) => (
+    job.sessionId !== sessionId
+    || (job.status !== 'queued' && job.status !== 'running')
+    || pendingIds.has(job.runId)
+  ));
+  adoptPendingRuns(pending);
   applySessionAgentMode(payload.session?.kind);
   renderAskSession();
   syncAskLayer();
@@ -6597,8 +6825,35 @@ async function loadAskSession(sessionId) {
 function resizeAskComposer() {
   const input = elements['ask-form']?.elements?.question;
   if (!input) return;
+  if (state.askComposerCompact) {
+    input.style.height = '28px';
+    return;
+  }
   input.style.height = 'auto';
   input.style.height = `${Math.min(120, Math.max(22, input.scrollHeight))}px`;
+}
+
+function setAskComposerCompact(compact) {
+  const form = elements['ask-form'];
+  const input = form?.elements?.question;
+  const next = Boolean(compact)
+    && document.body.dataset.view === 'ask'
+    && document.body.dataset.askLayer === 'session'
+    && document.activeElement !== input;
+  if (state.askComposerCompact === next) return;
+  state.askComposerCompact = next;
+  form?.classList.toggle('is-compact', next);
+  document.body.classList.toggle('is-ask-composer-compact', next);
+  resizeAskComposer();
+}
+
+function onAskThreadScroll() {
+  const thread = elements['ask-thread'];
+  if (!thread) return;
+  const top = thread.scrollTop;
+  const scrollingDown = top > state.askThreadLastScrollTop + 4;
+  state.askThreadLastScrollTop = top;
+  if (scrollingDown && top > 24) setAskComposerCompact(true);
 }
 
 function syncAskKeyboard() {
@@ -6618,6 +6873,7 @@ function syncAskKeyboard() {
 function focusAskComposer() {
   const input = elements['ask-form']?.elements?.question;
   if (!input) return;
+  setAskComposerCompact(false);
   const run = () => {
     if (elements['ask-session-shell']?.classList.contains('hidden')) return;
     try { input.focus({ preventScroll: true }); } catch { input.focus(); }
@@ -6631,6 +6887,8 @@ function focusAskComposer() {
 }
 
 function openAskSession(sessionId) {
+  setAskComposerCompact(false);
+  state.askThreadLastScrollTop = 0;
   setView(`ask/${sessionId}`);
   if (sessionId === 'new') focusAskComposer();
 }
@@ -6814,14 +7072,16 @@ function renderAskMaterials() {
 }
 
 function clearAskThreadExtras() {
-  elements['ask-thread'].querySelectorAll('.ask-exchange').forEach((node) => node.remove());
+  elements['ask-thread'].querySelectorAll('.ask-conversation, .ask-exchange').forEach((node) => node.remove());
 }
 
-function setAskAnswer(answer, answerText, { pending = false, error = false, progress = [] } = {}) {
+function setAskAnswer(answer, answerText, {
+  pending = false, error = false, progress = [], progressKey = '',
+} = {}) {
   answer.classList.toggle('is-pending', pending);
   answer.classList.toggle('is-error', error);
   if (pending) {
-    renderAskProgress(answer, progress, answerText);
+    renderRunProgress(answer, progress, answerText, progressKey);
     return;
   }
   if (error) {
@@ -6831,12 +7091,42 @@ function setAskAnswer(answer, answerText, { pending = false, error = false, prog
   renderMarkdownInto(answer, answerText);
 }
 
-function renderAskProgress(target, steps, fallback) {
+function renderRunProgress(target, steps, fallback, progressKey = '') {
   target.replaceChildren();
   if (!steps.length) {
     target.textContent = fallback;
     return;
   }
+  const resolvedCurrentIndex = steps.length - 1;
+  const current = steps[resolvedCurrentIndex];
+  const previous = steps.filter((_step, index) => index !== resolvedCurrentIndex);
+  if (previous.length) {
+    const history = document.createElement('details');
+    history.className = 'ask-progress-history';
+    history.open = state.askProgressExpanded.has(progressKey);
+    history.addEventListener('toggle', () => {
+      if (!progressKey) return;
+      if (history.open) state.askProgressExpanded.add(progressKey);
+      else state.askProgressExpanded.delete(progressKey);
+    });
+    history.append(Object.assign(document.createElement('summary'), {
+      textContent: `之前 ${previous.length} 步`,
+    }));
+    history.append(createRunProgressList(previous));
+    target.append(history);
+  }
+  const currentWrap = document.createElement('div');
+  currentWrap.className = 'ask-progress-now';
+  currentWrap.append(Object.assign(document.createElement('small'), {
+    textContent: '当前进度',
+  }));
+  const currentList = createRunProgressList([current]);
+  currentList.classList.add('ask-progress-current');
+  currentWrap.append(currentList);
+  target.append(currentWrap);
+}
+
+function createRunProgressList(steps) {
   const list = document.createElement('ol');
   list.className = 'ask-progress';
   for (const step of steps) {
@@ -6854,14 +7144,15 @@ function renderAskProgress(target, steps, fallback) {
     }
     list.append(item);
   }
-  target.append(list);
+  return list;
 }
 
 function appendAskExchange(question, answerText, {
-  pending = false, error = false, refs = [], runId = '', answer = '', sourceFooter = null, progress = [], scroll = false,
+  pending = false, error = false, refs = [], runId = '', jobId = '', answer = '',
+  sourceFooter = null, progress = [], scroll = false, container = null,
 } = {}) {
   const card = document.createElement('article');
-  card.className = 'ask-card ask-exchange';
+  card.className = 'ask-exchange';
   if (runId) card.dataset.runId = runId;
   const questionBlock = document.createElement('div');
   questionBlock.className = 'ask-turn ask-turn-q';
@@ -6884,13 +7175,27 @@ function appendAskExchange(question, answerText, {
     card.append(used);
   }
   const answerBlock = document.createElement('div');
-  answerBlock.className = 'ask-turn ask-turn-a';
+  answerBlock.className = 'ask-turn ask-turn-a detail-surface';
   answerBlock.append(Object.assign(document.createElement('span'), { className: 'ask-turn-label', textContent: '回答' }));
   const answerNode = document.createElement('div');
   answerNode.className = 'ask-answer';
-  setAskAnswer(answerNode, answerText, { pending, error, progress });
+  setAskAnswer(answerNode, answerText, {
+    pending,
+    error,
+    progress,
+    progressKey: jobId || runId,
+  });
   answerBlock.append(answerNode);
   card.append(answerBlock);
+  if (!pending && progress.length) {
+    const trace = document.createElement('details');
+    trace.className = 'ask-run-trace';
+    trace.append(Object.assign(document.createElement('summary'), {
+      textContent: `运行记录 · ${progress.length} 步`,
+    }));
+    trace.append(createRunProgressList(progress));
+    card.append(trace);
+  }
   if (!pending && !error) appendAskSourceFooter(card, sourceFooter);
   if (!pending && !error && runId) {
     const actions = document.createElement('div');
@@ -6915,12 +7220,55 @@ function appendAskExchange(question, answerText, {
     saveKnowledge.className = 'text-button';
     saveKnowledge.textContent = '沉淀为知识';
     saveKnowledge.addEventListener('click', () => saveAnswerAsKnowledge(runId, saveKnowledge));
-    actions.append(cite, saveNote, saveKnowledge);
+    const shareImage = document.createElement('button');
+    shareImage.type = 'button';
+    shareImage.className = 'text-button';
+    shareImage.textContent = '分享';
+    shareImage.addEventListener('click', () => shareAskExchange(card, shareImage));
+    actions.append(cite, saveNote, saveKnowledge, shareImage);
+    if (jobId) {
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'text-button';
+      retry.textContent = '重新做';
+      retry.addEventListener('click', () => {
+        void retryAgentJob(jobId, question, retry);
+      });
+      actions.append(retry);
+    }
     card.append(actions);
   }
-  elements['ask-prompts'].before(card);
+  if (container) container.append(card);
+  else elements['ask-prompts'].before(card);
   if (scroll) card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   return answerNode;
+}
+
+async function retryAgentJob(jobId, question, button) {
+  if (!jobId || button?.disabled) return;
+  if (button) button.disabled = true;
+  try {
+    const created = await api(`/api/v1/agent/runs/${jobId}/retry`, {
+      method: 'POST',
+      body: '{}',
+    });
+    const job = upsertAskJob({
+      runId: created.runId,
+      sessionId: created.sessionId || state.askSessionId,
+      question: question || '重新执行',
+      status: created.status || 'queued',
+      text: '正在等待 AI Worker…',
+      progress: [],
+      ...(created.agentMode === 'article-analysis' ? { agentMode: 'article-analysis' } : {}),
+    });
+    renderAskSession();
+    updateAskProgressNode(job);
+    ensureAskPoller();
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 function formatSavedTaxonomy(taxonomy = []) {
@@ -6952,6 +7300,51 @@ function showStructuredSaveToast(output, view) {
     label: '查看',
     onClick: () => setView(view),
   });
+}
+
+function closeShareImagePreview() {
+  const preview = state.shareImagePreview;
+  state.shareImagePreview = null;
+  if (preview?.url?.startsWith('blob:')) URL.revokeObjectURL(preview.url);
+  const image = elements['share-image-preview'];
+  if (image) image.removeAttribute('src');
+}
+
+async function openShareImagePreview({ blob, filename, title, previewUrl }) {
+  closeShareImagePreview();
+  const url = previewUrl || '';
+  if (!url) throw new Error('图片预览失败');
+  state.shareImagePreview = { blob, filename, title, url };
+  const image = elements['share-image-preview'];
+  if (image) {
+    image.src = url;
+    image.alt = title || '问答分享图';
+  }
+  const dialog = elements['share-image-dialog'];
+  if (!dialog) throw new Error('找不到分享预览');
+  openDialog(dialog);
+}
+
+async function saveShareImagePreview() {
+  const preview = state.shareImagePreview;
+  if (!preview?.blob) return;
+  const { downloadBlob } = await import('./share-card.js?v=dev');
+  downloadBlob(preview.filename, preview.blob);
+}
+
+async function shareAskExchange(card, button) {
+  if (button?.disabled) return;
+  if (button) button.disabled = true;
+  try {
+    const { exportAskSharePng } = await import('./share-card.js?v=dev');
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    const result = await exportAskSharePng(card, { deliver: false });
+    await openShareImagePreview(result);
+  } catch (error) {
+    showToast(error.message || '分享失败');
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 async function saveAnswerAsInspiration(runId, button) {
@@ -7002,6 +7395,11 @@ function renderAskSession() {
   elements['ask-prompt-label'].classList.toggle('hidden', !showIntro);
   elements['ask-prompts'].classList.toggle('hidden', !showIntro);
   clearAskThreadExtras();
+  const conversation = !showIntro ? document.createElement('section') : null;
+  if (conversation) {
+    conversation.className = 'ask-conversation';
+    elements['ask-prompts'].before(conversation);
+  }
   const seen = new Set();
   for (const exchange of exchanges) {
     const job = state.askJobs.find((item) => item.runId === exchange.id);
@@ -7013,11 +7411,13 @@ function renderAskSession() {
       : (pending ? (job?.text || '正在等待 AI Worker…') : (exchange.answer || '（没有可显示的回答）')), {
       pending: pending && !error,
       error,
-      progress: job?.progress || [],
+      progress: job?.progress || exchange.progress || [],
       refs: exchange.refs || [],
       sourceFooter: exchange.sourceFooter,
       runId: exchange.id,
+      jobId: exchange.jobId || '',
       answer: exchange.answer || '',
+      container: conversation,
     });
   }
   for (const job of live) {
@@ -7028,6 +7428,8 @@ function renderAskSession() {
       progress: job.progress || [],
       refs: job.refs || [],
       runId: job.runId,
+      jobId: job.jobId || job.runId,
+      container: conversation,
     });
   }
   if (showIntro) {
@@ -7883,7 +8285,7 @@ function openWorkPackage(id) {
 }
 
 function workPackageIsLive(pack) {
-  return pack?.status === 'open' || pack?.status === 'claimed';
+  return pack?.status === 'claimed';
 }
 
 function workPackageProgressText(pack, trace) {
@@ -8342,10 +8744,12 @@ function renderTaskDetail() {
     : null;
   const sections = parseContinuedWorkPackageBody(pack.body || note.body || '');
   const wrap = document.createElement('article');
-  wrap.className = `task-detail is-${pack.status}`;
+  wrap.className = `task-detail detail-shell is-${pack.status}`;
 
+  const head = document.createElement('header');
+  head.className = 'detail-head';
   const status = document.createElement('div');
-  status.className = 'task-detail-status';
+  status.className = 'detail-status task-detail-status';
   status.append(Object.assign(document.createElement('span'), {
     className: `note-tag task-status is-${pack.status}`,
     textContent: WORK_PACKAGE_STATUS_LABELS[pack.status] || pack.status,
@@ -8356,8 +8760,9 @@ function renderTaskDetail() {
       textContent: pack.hashId,
     }));
   }
-  wrap.append(status);
-  wrap.append(Object.assign(document.createElement('h2'), {
+  head.append(status);
+  head.append(Object.assign(document.createElement('h2'), {
+    className: 'detail-title',
     textContent: sections.continued && sections.instruction
       ? clipFeedText(sections.instruction, 48)
       : (pack.title || inspirationCardTitle(note)),
@@ -8365,7 +8770,7 @@ function renderTaskDetail() {
 
   if (parent || pack.parentWorkPackageId) {
     const lineage = document.createElement('p');
-    lineage.className = 'task-detail-parent muted';
+    lineage.className = 'detail-meta task-detail-parent';
     lineage.textContent = parent
       ? `续自：${workPackageCardTitle(parent, parent.note)}`
       : '续自上一 session';
@@ -8373,25 +8778,26 @@ function renderTaskDetail() {
       lineage.classList.add('is-link');
       lineage.addEventListener('click', () => openWorkPackage(parent.id));
     }
-    wrap.append(lineage);
+    head.append(lineage);
   }
+  wrap.append(head);
 
   const pictures = renderAttachmentView(pack.attachments);
   if (pictures) wrap.append(pictures);
 
   if (sections.continued && sections.previous) {
-    const previous = document.createElement('section');
-    previous.className = 'task-panel';
-    previous.append(Object.assign(document.createElement('h3'), { textContent: '上一任务' }));
+    const previous = document.createElement('details');
+    previous.className = 'detail-section task-history-block';
+    previous.append(Object.assign(document.createElement('summary'), { textContent: '上一任务' }));
     previous.append(Object.assign(document.createElement('p'), {
       textContent: continuedPreviousSummary(sections.previous),
     }));
     wrap.append(previous);
   }
   if (sections.continued && sections.result) {
-    const prior = document.createElement('section');
-    prior.className = 'task-panel';
-    prior.append(Object.assign(document.createElement('h3'), { textContent: '上一结果' }));
+    const prior = document.createElement('details');
+    prior.className = 'detail-section task-history-block';
+    prior.append(Object.assign(document.createElement('summary'), { textContent: '上一结果' }));
     prior.append(Object.assign(document.createElement('p'), { textContent: sections.result }));
     wrap.append(prior);
   }
@@ -8402,9 +8808,9 @@ function renderTaskDetail() {
     : sections.progress;
   const priorSteps = Array.isArray(parentTrace?.steps) ? parentTrace.steps : [];
   if (sections.continued && (priorGoal || priorProgress || priorSteps.length || sections.steps)) {
-    const process = document.createElement('section');
-    process.className = 'task-panel';
-    process.append(Object.assign(document.createElement('h3'), { textContent: '上一过程' }));
+    const process = document.createElement('details');
+    process.className = 'detail-section task-history-block';
+    process.append(Object.assign(document.createElement('summary'), { textContent: '上一过程' }));
     if (priorGoal) {
       process.append(Object.assign(document.createElement('p'), { textContent: priorGoal }));
     }
@@ -8414,21 +8820,11 @@ function renderTaskDetail() {
         textContent: priorProgress,
       }));
     }
-    if (priorSteps.length) {
-      const list = document.createElement('ol');
-      list.className = 'task-step-list';
-      for (const item of priorSteps) {
-        const row = document.createElement('li');
-        row.className = `is-${item.status || 'done'}`;
-        row.append(Object.assign(document.createElement('strong'), {
-          textContent: `${item.step || 'step'} · ${item.status || ''}`,
-        }));
-        row.append(Object.assign(document.createElement('span'), {
-          textContent: item.summary || '',
-        }));
-        list.append(row);
-      }
-      process.append(list);
+    const priorTimeline = Array.isArray(parentTrace?.timeline) && parentTrace.timeline.length
+      ? parentTrace.timeline
+      : [];
+    if (priorTimeline.length) {
+      process.append(createRunProgressList(priorTimeline));
     } else if (sections.steps && sections.steps !== '（无步骤账本）') {
       process.append(Object.assign(document.createElement('p'), { textContent: sections.steps }));
     }
@@ -8436,8 +8832,8 @@ function renderTaskDetail() {
   }
 
   const goal = document.createElement('section');
-  goal.className = 'task-panel';
-  goal.append(Object.assign(document.createElement('h3'), { textContent: '目标' }));
+  goal.className = 'detail-section';
+  goal.append(Object.assign(document.createElement('h3'), { className: 'detail-section-title', textContent: '目标' }));
   goal.append(Object.assign(document.createElement('p'), {
     textContent: sections.continued && sections.instruction
       ? sections.instruction
@@ -8447,15 +8843,14 @@ function renderTaskDetail() {
 
   const live = workPackageIsLive(pack);
   const progress = document.createElement('section');
-  progress.className = 'task-panel';
-  progress.append(Object.assign(document.createElement('h3'), { textContent: '进展' }));
-  progress.append(Object.assign(document.createElement('p'), {
+  progress.className = 'detail-section';
+  progress.append(Object.assign(document.createElement('h3'), { className: 'detail-section-title', textContent: '当前进展' }));
+  const progressSurface = document.createElement('div');
+  progressSurface.className = 'detail-surface';
+  progressSurface.append(Object.assign(document.createElement('p'), {
     textContent: workPackageProgressText(pack, trace),
   }));
-  if (live) {
-    progress.append(createTaskThinkingLine('正在思考下一步'));
-  }
-  progress.append(Object.assign(document.createElement('small'), {
+  progressSurface.append(Object.assign(document.createElement('small'), {
     className: 'muted task-progress-when',
     textContent: live
       ? (trace.progress?.updatedAt
@@ -8465,75 +8860,57 @@ function renderTaskDetail() {
         ? `随步骤刷新 · ${formatTime(trace.progress.updatedAt)}`
         : '打开详情后按进展刷新'),
   }));
+  progress.append(progressSurface);
   wrap.append(progress);
 
   const steps = document.createElement('section');
-  steps.className = 'task-panel';
-  steps.append(Object.assign(document.createElement('h3'), { textContent: '步骤拆解' }));
-  const stepList = document.createElement('ol');
-  stepList.className = 'task-step-list';
-  const records = Array.isArray(trace.steps) ? trace.steps : [];
-  if (!records.length) {
-    if (live) {
-      const waiting = document.createElement('li');
-      waiting.className = 'is-thinking';
-      waiting.append(createTaskThinkingLine('正在思考下一步'));
-      stepList.append(waiting);
-    } else {
-      stepList.append(Object.assign(document.createElement('li'), {
-        className: 'muted',
-        textContent: '投递后会先落下目标与进展，本机 Cursor 领取后再追加每一步。',
-      }));
-    }
-  } else {
-    for (const item of records) {
-      const active = live && item === records.at(-1) && item.status === 'started';
-      const row = document.createElement('li');
-      row.className = active ? 'is-started is-thinking' : `is-${item.status || 'done'}`;
-      row.append(Object.assign(document.createElement('strong'), {
-        textContent: `${item.step || 'step'} · ${item.status || ''}`,
-      }));
-      const summary = document.createElement('span');
-      if (active) {
-        summary.className = 'task-thinking';
-        summary.setAttribute('aria-live', 'polite');
-        summary.append(Object.assign(document.createElement('span'), {
-          className: 'task-thinking-label',
-          textContent: item.summary || '正在思考下一步',
-        }));
-        appendTaskThinkingMark(summary);
-      } else {
-        summary.textContent = item.summary || '';
-      }
-      row.append(summary);
-      if (item.at) {
-        row.append(Object.assign(document.createElement('small'), {
-          className: 'muted',
-          textContent: formatTime(item.at),
-        }));
-      }
-      stepList.append(row);
-    }
-    if (live && !workPackageHasActiveStep(trace)) {
-      const waiting = document.createElement('li');
-      waiting.className = 'is-thinking';
-      waiting.append(createTaskThinkingLine('正在思考下一步'));
-      stepList.append(waiting);
-    }
-  }
-  steps.append(stepList);
+  steps.className = 'detail-section';
+  steps.append(Object.assign(document.createElement('h3'), { className: 'detail-section-title', textContent: '执行记录' }));
+  const stepsSurface = document.createElement('div');
+  stepsSurface.className = 'detail-surface task-terminal';
+  const timeline = Array.isArray(trace.timeline) ? trace.timeline : [];
+  const log = document.createElement('div');
+  log.className = 'ask-run-trace';
+  renderRunProgress(
+    log,
+    timeline,
+    live ? '已派发，等待下一步。' : '投递后会先落下目标与进展，领取后再追加每一步。',
+    `task:${pack.id}`,
+  );
+  stepsSurface.append(log);
+  steps.append(stepsSurface);
   wrap.append(steps);
 
   if (pack.resultSummary) {
     const result = document.createElement('section');
-    result.className = 'task-panel';
-    result.append(Object.assign(document.createElement('h3'), { textContent: pack.status === 'failed' ? '未完成' : '结果' }));
-    result.append(Object.assign(document.createElement('p'), { textContent: pack.resultSummary }));
+    result.className = 'detail-section';
+    result.append(Object.assign(document.createElement('h3'), {
+      className: 'detail-section-title',
+      textContent: pack.status === 'failed' ? '未完成' : '结果',
+    }));
+    const resultSurface = document.createElement('div');
+    resultSurface.className = 'detail-surface';
+    resultSurface.append(Object.assign(document.createElement('p'), { textContent: pack.resultSummary }));
+    result.append(resultSurface);
     wrap.append(result);
+  }
+  if (pack.status === 'completed' || pack.status === 'failed' || pack.status === 'cancelled') {
+    const actions = document.createElement('div');
+    actions.className = 'detail-actions is-inline task-detail-actions';
+    const retry = createDetailAction({
+      iconName: 'refresh-cw',
+      label: '重新做',
+      primary: true,
+      onClick: () => {
+        void retryWorkPackage(pack.id, retry);
+      },
+    });
+    actions.append(retry);
+    wrap.append(actions);
   }
 
   const continueBox = document.createElement('form');
-  continueBox.className = 'dispatch-composer task-continue';
+  continueBox.className = 'detail-section dispatch-composer task-continue';
   continueBox.append(Object.assign(document.createElement('h3'), { textContent: '继续做' }));
   const box = document.createElement('div');
   box.className = 'compose-box dispatch-box';
@@ -8706,6 +9083,31 @@ async function continueWorkPackageSession(parentId, rawBody, attachmentIds = [])
   showToast('已开新 session。本机 Cursor CLI 会带上上一轮全过程继续做。');
   await loadNotes();
   if (nextId) openWorkPackage(nextId);
+}
+
+async function retryWorkPackage(parentId, button) {
+  if (!parentId || button?.disabled) return;
+  if (button) button.disabled = true;
+  try {
+    const created = await api(`/api/v1/work-packages/${parentId}/retry`, {
+      method: 'POST',
+      body: '{}',
+    });
+    if (created.workPackage) {
+      state.workPackages.unshift(created.workPackage);
+      state.selectedWorkPackageId = created.workPackage.id;
+      state.workPackageTraces[created.workPackage.id] = {
+        hashId: created.workPackage.hashId,
+        steps: [],
+      };
+      setView(`inspire/tasks/${created.workPackage.id}`);
+      await loadNotes();
+    }
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 function renderNotes() {
@@ -9249,6 +9651,45 @@ async function runXCapturePipeline() {
   }
 }
 
+async function loadXueqiuFeed({ refresh = false } = {}) {
+  if (!state.session) {
+    if (refresh) {
+      showToast('请先在设置中完成设备连接');
+      setView('settings');
+    }
+    return null;
+  }
+  state.xueqiuLoading = true;
+  state.xueqiuRefreshing = Boolean(refresh);
+  renderXueqiuToolbar();
+  try {
+    const params = new URLSearchParams({ platform: 'xueqiu', feed: state.xueqiuFeed, limit: '50' });
+    if (refresh) params.set('refresh', '1');
+    const payload = await api(`/api/v1/feed/xueqiu?${params}`, { timeoutMs: refresh ? 180_000 : 15_000 });
+    const feed = payload.feed || {};
+    state.xueqiuItems = (feed.items || []).filter((item) => !isHiddenFeedItem(item));
+    state.xueqiuFeed = feed.feed || state.xueqiuFeed;
+    state.xueqiuNote = feed.note || '';
+    hydrateFeedTranslations(state.xueqiuItems);
+    await loadFeedTaggings(state.xueqiuItems);
+    renderPosts();
+    renderXueqiuToolbar();
+    if (refresh) {
+      if (feed.mode === 'error' || feed.mode === 'unavailable') showToast(feed.note || '雪球抓取失败');
+      else showToast(feed.note || `已写入 ${state.xueqiuItems.length} 条`);
+    }
+    return feed;
+  } catch (error) {
+    state.xueqiuNote = error instanceof Error ? error.message : '雪球时间线加载失败';
+    renderXueqiuToolbar();
+    throw error;
+  } finally {
+    state.xueqiuLoading = false;
+    state.xueqiuRefreshing = false;
+    renderXueqiuToolbar();
+  }
+}
+
 async function loadTrendForceFeed({ refresh = false } = {}) {
   if (!state.session) {
     showToast('请先在设置中完成设备连接');
@@ -9379,6 +9820,7 @@ async function loadMetrics() {
 function refreshAfterStreamGap() {
   loadPosts().catch(() => {});
   loadXFeed({ refresh: false }).catch(() => {});
+  loadXueqiuFeed({ refresh: false }).catch(() => {});
   loadBilibiliFeed({ refresh: false }).catch(() => {});
   loadNotes().catch(() => {});
   loadKnowledge().catch(() => {});
@@ -9417,6 +9859,7 @@ function connectStream() {
   state.stream.addEventListener('job.started', onAgentJobEvent);
   state.stream.addEventListener('job.completed', onAgentJobEvent);
   state.stream.addEventListener('job.failed', onAgentJobEvent);
+  state.stream.addEventListener('runtime.agent-run.progressed.v1', onAgentJobEvent);
   state.stream.addEventListener('knowledge.ai-run.completed.v1', onAgentJobEvent);
   state.stream.addEventListener('knowledge.work-package.created.v1', () => {
     loadNotes().catch(() => {});
@@ -9544,6 +9987,7 @@ async function completeAuthorizedStart(session) {
     loadSourceCatalog().catch(() => {}),
     loadPosts().catch((error) => showToast(error.message)),
     loadXFeed({ refresh: false }).catch(() => {}),
+    loadXueqiuFeed({ refresh: false }).catch(() => {}),
     loadBilibiliFeed().catch(() => {}),
     loadNotes().catch(() => {}),
     loadKnowledge().catch(() => {}),
@@ -9701,6 +10145,10 @@ elements['nav-back']?.addEventListener('click', () => {
     setView('inspire/tasks');
     return;
   }
+  if (document.body.dataset.view === 'ask' && state.askSessionId) {
+    setView('ask');
+    return;
+  }
   goBack();
 });
 elements['toggle-search']?.addEventListener('click', () => {
@@ -9729,6 +10177,7 @@ elements['holdings-privacy']?.addEventListener('click', () => {
   renderHoldings();
 });
 elements['x-refresh']?.addEventListener('click', () => loadXFeed({ refresh: true }).catch((error) => showToast(error.message)));
+elements['xueqiu-refresh']?.addEventListener('click', () => loadXueqiuFeed({ refresh: true }).catch((error) => showToast(error.message)));
 elements['trendforce-refresh']?.addEventListener('click', () => loadTrendForceFeed({ refresh: true }).catch((error) => showToast(error.message)));
 elements['trendforce-more']?.addEventListener('click', () => openSourceTasks('trendforce'));
 function isBilibiliUrl(value) {
@@ -9848,7 +10297,7 @@ bindPostLink(elements['dialog-cite'], () => {
   elements['post-dialog']?.close();
   openAskSession(state.askSessionId || 'new');
 });
-for (const id of ['compose-dialog', 'search-dialog', 'post-dialog', 'source-dialog', 'subscriptions-dialog', 'holding-dialog', 'reference-preview', 'reference-pack', 'source-tasks-dialog', 'feed-filter-dialog']) {
+for (const id of ['compose-dialog', 'search-dialog', 'post-dialog', 'source-dialog', 'subscriptions-dialog', 'holding-dialog', 'reference-preview', 'reference-pack', 'source-tasks-dialog', 'feed-filter-dialog', 'share-image-dialog']) {
   const dialog = elements[id];
   if (!dialog) continue;
   dialog.querySelector('.dialog-close')?.addEventListener('click', () => {
@@ -9859,6 +10308,7 @@ for (const id of ['compose-dialog', 'search-dialog', 'post-dialog', 'source-dial
     if (event.target === dialog) dialog.close();
   });
   dialog.addEventListener('close', () => {
+    if (id === 'share-image-dialog') closeShareImagePreview();
     if (id === 'post-dialog') {
       const stayId = state.feedRestoreId;
       state.dialogPost = null;
@@ -10043,7 +10493,6 @@ elements['note-form'].addEventListener('submit', async (event) => {
   }
 });
 elements['ask-start'].addEventListener('click', () => openAskSession('new'));
-elements['ask-back'].addEventListener('click', () => setView('ask'));
 elements['ask-live-chip']?.addEventListener('click', () => {
   const live = liveAskJobs();
   const target = live.find((job) => job.status === 'running') || live[0];
@@ -10062,6 +10511,9 @@ elements['reference-pack-clear']?.addEventListener('click', () => {
   clearReferences();
   closeReferencePack();
   showToast('已清空材料');
+});
+elements['share-image-save']?.addEventListener('click', () => {
+  saveShareImagePreview().catch((error) => showToast(error.message));
 });
 elements['ask-ref-export']?.addEventListener('click', () => {
   exportReferencePack().catch((error) => showToast(error.message));
@@ -10091,7 +10543,12 @@ elements['ask-form'].addEventListener('submit', (event) => {
 });
 elements['ask-form'].elements.question.addEventListener('input', onAskComposerInput);
 elements['ask-form'].elements.question.addEventListener('keydown', onAskComposerKeydown);
-elements['ask-form'].elements.question.addEventListener('focus', syncAskKeyboard);
+elements['ask-form'].elements.question.addEventListener('focus', () => {
+  setAskComposerCompact(false);
+  syncAskKeyboard();
+});
+elements['ask-form']?.addEventListener('pointerdown', () => setAskComposerCompact(false));
+elements['ask-thread']?.addEventListener('scroll', onAskThreadScroll, { passive: true });
 elements['ask-form'].elements.question.addEventListener('blur', () => {
   window.setTimeout(() => {
     hideAskMentions();

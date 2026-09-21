@@ -23,6 +23,7 @@ import {
   WorkPackageProgressSchema,
   WorkPackageTraceSchema,
   WorkPackageTraceStepSchema,
+  projectWorkPackageTimeline,
 } from './knowledge.js';
 import { TagAnalyzeJobInputSchema } from './tagging.js';
 import { PatchUserItemStateInputSchema } from './feed.js';
@@ -183,6 +184,24 @@ export function parseXFeedQuery(value) {
   }
   const refresh = query.refresh === true || query.refresh === '1' || query.refresh === 'true';
   return { platform: 'x', feed, limit: rawLimit, refresh };
+}
+
+export function parseXueqiuFeedQuery(value) {
+  const query = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const platform = cleanText(query.platform || 'xueqiu', { field: '平台', max: 16 }) || 'xueqiu';
+  if (platform !== 'xueqiu') throw new ValidationError('当前只支持雪球时间线', ['platform']);
+  const feedKey = cleanText(query.feed || 'following', { field: '栏目', max: 24 }).toLowerCase().replace(/[_\s]+/g, '-');
+  const feed = feedKey === 'featured' || feedKey === 'selected' || feedKey === 'jingxuan'
+    ? 'featured'
+    : (feedKey === 'livenews' || feedKey === '7x24' || feedKey === 'live' || feedKey === 'news'
+      ? 'livenews'
+      : 'following');
+  const rawLimit = query.limit === undefined || query.limit === '' ? 50 : Number(query.limit);
+  if (!Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > 50) {
+    throw new ValidationError('条数必须是 1 到 50', ['limit']);
+  }
+  const refresh = query.refresh === true || query.refresh === '1' || query.refresh === 'true';
+  return { platform: 'xueqiu', feed, limit: rawLimit, refresh };
 }
 
 export function parseTrendForceFeedQuery(value) {
@@ -351,8 +370,24 @@ export function parseWorkPackageParentTrace(value) {
   return parseContract(WorkPackageParentTraceSchema, value || {});
 }
 
-export function parseWorkPackageTrace(value) {
-  return parseContract(WorkPackageTraceSchema, value || {});
+export function parseWorkPackageTrace(value, { live } = {}) {
+  const parsed = parseContract(WorkPackageTraceSchema, value || {});
+  const running = live ?? parsed.progress?.status === 'claimed';
+  const parent = parsed.parentTrace
+    ? {
+      ...parsed.parentTrace,
+      timeline: parsed.parentTrace.timeline.length
+        ? parsed.parentTrace.timeline
+        : projectWorkPackageTimeline(parsed.parentTrace.steps, { live: false }),
+    }
+    : null;
+  return parseContract(WorkPackageTraceSchema, {
+    ...parsed,
+    timeline: parsed.timeline.length
+      ? parsed.timeline
+      : projectWorkPackageTimeline(parsed.steps, { live: running }),
+    parentTrace: parent,
+  });
 }
 
 export function parseWorkPackageListQuery(value) {

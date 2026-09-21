@@ -1,3 +1,7 @@
+/**
+ * LEGACY Host search connector. Not the production `search.web` Provider.
+ * Production Ask uses Harness built-in web_search / web_fetch.
+ */
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8888';
 const DEFAULT_TIMEOUT_MS = 20_000;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);

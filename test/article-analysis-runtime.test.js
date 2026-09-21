@@ -8,6 +8,12 @@ import { createAiCenterWorker } from '../apps/worker/src/worker.js';
 import { createRuntimeService } from '../packages/domain/src/runtime-service.js';
 import { ARTICLE_ANALYSIS_JOB_TYPE, ARTICLE_ANALYSIS_TASK_TYPE } from '../packages/contracts/src/index.js';
 import { createAgentTraceLog } from '../packages/runtime/src/agent-trace-log.js';
+import {
+  ARTICLE_ANALYSIS_DOMAIN_TOOL_IDS,
+  ARTICLE_ANALYSIS_SKILL_INSTRUCTION,
+  articleAnalysisAllowedToolIds,
+  articleAnalysisSkillInvocation,
+} from '../packages/runtime/src/article-analysis/article-analysis-skill.js';
 
 function temporaryDirectory() {
   return mkdtempSync(path.join(os.tmpdir(), 'ai-center-article-'));
@@ -128,7 +134,32 @@ test('news article can reuse AgentRuntime web.search and return markdown', async
   }
 });
 
-test('article reader only exposes web and knowledge tools', async () => {
+test('article analysis skill is instruction plus domain tool scope, not a classifier or workflow', () => {
+  assert.deepEqual([...ARTICLE_ANALYSIS_DOMAIN_TOOL_IDS].sort(), ['knowledge.get', 'knowledge.search']);
+  assert.equal(ARTICLE_ANALYSIS_DOMAIN_TOOL_IDS.includes('web.search'), false);
+  assert.equal(ARTICLE_ANALYSIS_DOMAIN_TOOL_IDS.includes('memory.save'), false);
+  assert.equal(ARTICLE_ANALYSIS_DOMAIN_TOOL_IDS.includes('taxonomy.list'), false);
+  assert.deepEqual(articleAnalysisAllowedToolIds({ kind: 'harness' }), ARTICLE_ANALYSIS_DOMAIN_TOOL_IDS);
+  assert.deepEqual(
+    articleAnalysisAllowedToolIds({ kind: 'local' }).sort(),
+    ['knowledge.get', 'knowledge.search', 'web.search'],
+  );
+  const invocation = articleAnalysisSkillInvocation({ kind: 'harness' });
+  assert.equal(invocation.taskInstruction, ARTICLE_ANALYSIS_SKILL_INSTRUCTION);
+  assert.deepEqual(invocation.allowedToolIds, ARTICLE_ANALYSIS_DOMAIN_TOOL_IDS);
+  assert.equal(invocation.webMode, 'always');
+  assert.equal(invocation.enableAuxiliarySearch, false);
+  assert.match(ARTICLE_ANALYSIS_SKILL_INSTRUCTION, /不要先单独做分类请求/);
+  assert.match(ARTICLE_ANALYSIS_SKILL_INSTRUCTION, /不要启动固定 Workflow/);
+  assert.match(ARTICLE_ANALYSIS_SKILL_INSTRUCTION, /What changed/);
+  assert.match(ARTICLE_ANALYSIS_SKILL_INSTRUCTION, /今天发布了新架构/);
+  assert.match(ARTICLE_ANALYSIS_SKILL_INSTRUCTION, /knowledge\.search/);
+  assert.match(ARTICLE_ANALYSIS_SKILL_INSTRUCTION, /web_search/);
+  assert.match(ARTICLE_ANALYSIS_SKILL_INSTRUCTION, /不要自动写入 Knowledge/);
+  assert.doesNotMatch(ARTICLE_ANALYSIS_SKILL_INSTRUCTION, /Intent Router|固定 JSON Schema/);
+});
+
+test('article analysis skill only exposes knowledge domain tools plus local web.search fallback', async () => {
   const directory = temporaryDirectory();
   const store = createStore(path.join(directory, 'ai-center.db'));
   const llm = scriptedAgent([
@@ -136,7 +167,7 @@ test('article reader only exposes web and knowledge tools', async () => {
   ]);
   const worker = createAiCenterWorker({
     store,
-    workerId: 'article-reader-tools',
+    workerId: 'article-skill-tools',
     agentClient: llm,
     sourcePort: emptySearchPort(),
     auxiliarySearch: null,
@@ -154,9 +185,12 @@ test('article reader only exposes web and knowledge tools', async () => {
     await worker.runner.runOnce();
     const ids = (llm.requests[0]?.tools || []).map((tool) => tool.id).sort();
     assert.deepEqual(ids, ['knowledge.get', 'knowledge.search', 'web.search']);
+    assert.match(llm.requests[0].systemInstruction, /Article Analysis Skill/);
+    assert.match(llm.requests[0].systemInstruction, /不要先单独做分类请求/);
     assert.match(llm.requests[0].systemInstruction, /不要返回 JSON/);
     assert.equal(ids.includes('holdings.get'), false);
     assert.equal(ids.includes('memory.save'), false);
+    assert.equal(ids.includes('taxonomy.list'), false);
     assert.equal(ids.includes('market.overview.get'), false);
   } finally {
     await worker.close();
@@ -222,6 +256,8 @@ test('article analysis run returns AgentRuntime progress and a readable result',
     assert.equal(events.includes('model.responded') || events.includes('run.completed') || events.includes('article.completed'), true);
     const run = store.repositories.knowledge.getAiRun('local', view.aiRunId);
     assert.equal(store.repositories.knowledge.getSession('local', run.sessionId).kind, 'article-analysis');
+    const session = store.repositories.knowledge.getSessionDetail('local', run.sessionId);
+    assert.equal(session.exchanges[0].jobId, job.id);
   } finally {
     await worker.close();
     rmSync(directory, { recursive: true, force: true });

@@ -1,5 +1,5 @@
 import { createXHomeBrowserClient } from './home-browser.js';
-export { findXArticleUrl, mergeArticleIntoTweetText, normalizeXArticleUrl } from './home-browser.js';
+export { appendUnscrapedMediaNotes, findXArticleUrl, mergeArticleIntoTweetText, normalizeXArticleUrl } from './home-browser.js';
 
 const DEFAULT_LIMIT = 50;
 const DEFAULT_TTL_MS = 60_000;

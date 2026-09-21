@@ -22,7 +22,13 @@ export function createArticleAnalysisRoutes() {
           sessionId: session.id,
         });
         events.flush();
-        json(response, 202, { ok: true, runId: job.id, sessionId: session.id });
+        json(response, 202, {
+          ok: true,
+          runId: job.id,
+          sessionId: session.id,
+          status: job.status,
+          phase: 'queued',
+        });
       },
     },
     {

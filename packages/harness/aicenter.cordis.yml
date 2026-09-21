@@ -1,0 +1,111 @@
+# AI Center overlay on `dsh --profile sdk` / dsh-base 0.1.6-alpha.2
+# Disable coding-agent tools and telemetry; mount Domain tools via Tool Gateway.
+# Patch rows replace the whole targeted config, so disabled tools restate package names.
+
+- id: session-log-deepseek
+  name: '@deepseek-ai/dsh-session-log-deepseek'
+  disabled: true
+
+- id: session-telemetry-otel
+  name: '@deepseek-ai/dsh-session-telemetry-otel'
+  disabled: true
+
+- id: bash-sandbox
+  name: '@deepseek-ai/dsh-bash-sandbox'
+  disabled: true
+
+- id: pwsh-sandbox
+  name: '@deepseek-ai/dsh-pwsh-sandbox'
+  disabled: true
+
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+  disabled: true
+
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+  disabled: true
+
+- id: tool-jobs
+  name: '@deepseek-ai/dsh-tool-jobs'
+  disabled: true
+
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+  disabled: true
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  disabled: true
+
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  disabled: true
+
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+  disabled: true
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+  disabled: true
+
+- id: plan-mode
+  name: '@deepseek-ai/dsh-plan-mode'
+  disabled: true
+
+- id: tool-subagent-control
+  name: '@deepseek-ai/dsh-tool-subagent-control'
+  disabled: true
+
+- id: tool-subagent-list-agents
+  name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+  disabled: true
+
+- id: tool-subagent
+  name: '@deepseek-ai/dsh-tool-subagent'
+  disabled: true
+
+- id: tool-subagent-fork
+  name: '@deepseek-ai/dsh-tool-subagent'
+  disabled: true
+
+- id: tool-workflow
+  name: '@deepseek-ai/dsh-tool-workflow'
+  disabled: true
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  disabled: true
+
+- id: tool-goal
+  name: '@deepseek-ai/dsh-tool-goal'
+  disabled: true
+
+- id: tool-ralph
+  name: '@deepseek-ai/dsh-tool-ralph'
+  disabled: true
+
+# Public web is Harness infrastructure (web_search + web_fetch), not a Host tool.
+# Leave @deepseek-ai/dsh-tool-web enabled. Domain tools stay on the Tool Gateway.
+
+- id: system-prompt
+  name: '@deepseek-ai/dsh-system-prompt'
+  config:
+    personaPrefix: |
+      You are the AI Center ask agent.
+      Use built-in web_search and web_fetch for the public internet.
+      Use registered AI Center tools for local holdings, knowledge, feed, and official sources.
+      Never use shell, filesystem, subagent, or other Host tools.
+
+- id: session-persistence-jsonl
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: !!js dshHomePath('sessions')
+    compression: none
+
+- insert:
+    - id: aicenter-tools
+      name: ./plugin/src/index.js
+    - id: web-search-elucid
+      name: ./plugin/src/web-search-elucid.js

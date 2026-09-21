@@ -1,0 +1,10 @@
+export const HARNESS_PACKAGE_VERSION = '0.1.6-alpha.2';
+export const HARNESS_SOURCE_COMMIT = 'ddefc45fbc7f8e46dd73185e68295696d1297887';
+export const HARNESS_PROFILE = 'sdk';
+export const HARNESS_PROVIDER = 'deepseek-official';
+export const HARNESS_DEFAULT_MODEL = 'deepseek-v4-flash';
+export const HARNESS_ELUCID_PROVIDER = 'elucid-grok';
+export const HARNESS_ELUCID_DEFAULT_MODEL = 'grok-4.6';
+export const HARNESS_ELUCID_DEFAULT_BASE_URL = 'https://hk.getelucid.com/v1';
+export const PHASE1_TOOL_IDS = Object.freeze(['holdings.rank']);
+export const HARNESS_RUNTIME_MODES = Object.freeze(['local', 'harness']);

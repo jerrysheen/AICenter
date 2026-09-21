@@ -5,7 +5,7 @@ import { hostname as systemHostname, networkInterfaces } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import QRCode from 'qrcode';
-import { parseBilibiliFeedQuery, parseTrendForceFeedQuery, parseXFeedQuery, ValidationError } from '../../../packages/contracts/src/index.js';
+import { parseBilibiliFeedQuery, parseTrendForceFeedQuery, parseXFeedQuery, parseXueqiuFeedQuery, ValidationError } from '../../../packages/contracts/src/index.js';
 import { createConfiguredBrowserRuntime, createDeepSeekSearchProvider, createLauncherRestartPort, createLocalKnowledgeFiles, createPersonalAssetService, createTranslateService, createTypeSafeSystemOneClient } from '../../../packages/connectors/src/index.js';
 import { createAttachmentStore, createStore } from '../../../packages/database/src/index.js';
 import { createDomainServices, createFeedFilterFromEnv, resolveLoginCredential } from '../../../packages/domain/src/index.js';
@@ -97,13 +97,14 @@ export function createInstanceCookieNames(instance) {
   });
 }
 
-function createOptionalSearchPort(explicit) {
+function createOptionalSearchPort(explicit, env = process.env) {
   if (explicit !== undefined) return explicit;
-  if (String(process.env.AI_CENTER_SEARCH_DISABLED || '').trim() === '1') return null;
+  if (String(env.AI_CENTER_AGENT_RUNTIME || '').trim().toLowerCase() !== 'local') return null;
+  if (String(env.AI_CENTER_SEARCH_DISABLED || '').trim() === '1') return null;
   try {
     return createDeepSeekSearchProvider();
   } catch (error) {
-    console.error('[web] search.web 未启用：', error?.message || error);
+    console.error('[web] legacy search.web 未启用：', error?.message || error);
     return null;
   }
 }
@@ -129,7 +130,7 @@ export function createAiCenterServer(options = {}) {
   const publicBaseUrl = parsePublicBaseUrl(options.publicUrl ?? process.env.AI_CENTER_PUBLIC_URL ?? '');
   const dataDirectory = instance.dataDirectory;
   const store = options.store || createStore(instance.databasePath);
-  const webSearchPort = createOptionalSearchPort(options.webSearchPort);
+  const webSearchPort = createOptionalSearchPort(options.webSearchPort, options.env || process.env);
   const browserRuntime = options.browserRuntime || createConfiguredBrowserRuntime({
     env: options.env || process.env,
     defaultBrowserId: instance.browserId,
@@ -165,6 +166,7 @@ export function createAiCenterServer(options = {}) {
     agentProgressPort: options.agentProgressPort || createAgentTraceLog({
       dataDirectory,
       logDirectory: instance.legacyLayout ? undefined : path.join(instance.runtimeDirectory, 'logs'),
+      eventStore: store,
     }),
     fileKnowledgePort: options.fileKnowledgePort || createLocalKnowledgeFiles({
       rootDirectory: instance.knowledgeDirectory,
@@ -188,6 +190,7 @@ export function createAiCenterServer(options = {}) {
   });
   const feedQueryParsers = options.feedQueryParsers || new Map([
     ['x', parseXFeedQuery],
+    ['xueqiu', parseXueqiuFeedQuery],
     ['bilibili', parseBilibiliFeedQuery],
     ['trendforce', parseTrendForceFeedQuery],
   ]);

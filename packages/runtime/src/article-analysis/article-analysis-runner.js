@@ -1,9 +1,8 @@
 import { ARTICLE_ANALYSIS_TASK_TYPE } from '../../../contracts/src/index.js';
 import {
-  ARTICLE_READER_INSTRUCTION,
-  ARTICLE_READER_TOOL_IDS,
-  buildArticleReaderMessage,
-} from './article-analysis-prompts.js';
+  articleAnalysisSkillInvocation,
+  buildArticleAnalysisMessage,
+} from './article-analysis-skill.js';
 
 const SOURCE_BODY_MAX = 200_000;
 export const ARTICLE_OUTPUT_MAX = 40_000;
@@ -171,7 +170,7 @@ export function createArticleAnalysisRunner({
       let result;
       try {
         result = await agentRuntime.run({
-          message: buildArticleReaderMessage({
+          message: buildArticleAnalysisMessage({
             title: loaded.title,
             sourceUrl: loaded.sourceUrl,
             sourceText,
@@ -181,11 +180,8 @@ export function createArticleAnalysisRunner({
           jobId,
           selectedRefs: loaded.refs,
           signal,
-          webMode: 'always',
-          taskInstruction: ARTICLE_READER_INSTRUCTION,
-          allowedToolIds: ARTICLE_READER_TOOL_IDS,
+          ...articleAnalysisSkillInvocation(agentRuntime),
           timeoutMs: ARTICLE_LLM_TIMEOUT_MS,
-          enableAuxiliarySearch: false,
           trace,
         });
       } finally {

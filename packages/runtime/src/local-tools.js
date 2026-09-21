@@ -57,7 +57,7 @@ function projectTaggedFeedItem(item) {
   };
 }
 
-const MARKET_GLOBAL_DESCRIPTION = '读取当前全球市场价格与行情快照，例如：美股指数、市场涨跌、债券收益率、黄金、原油、美元等。它是 market data tool，不是新闻搜索工具。不要使用本工具核实：美联储/FOMC 是否加息或降息、央行声明、新闻事件、政策决定、最新公开消息。上述事实使用 web.search。本工具可以在 web.search 确认事件后，辅助观察市场价格反应。';
+const MARKET_GLOBAL_DESCRIPTION = '读取当前全球市场价格与行情快照，例如：美股指数、市场涨跌、债券收益率、黄金、原油、美元等。它是 market data tool，不是新闻搜索工具。不要使用本工具核实：美联储/FOMC 是否加息或降息、央行声明、新闻事件、政策决定、最新公开消息。上述事实使用公开互联网搜索。本工具可以在确认事件后，辅助观察市场价格反应。';
 
 /**
  * Wires Agent tools to domain services and the shared Source Port.
@@ -65,6 +65,7 @@ const MARKET_GLOBAL_DESCRIPTION = '读取当前全球市场价格与行情快照
  */
 export function createLocalToolRegistry({
   contextService, feedService, knowledgeService, tradingService, taggingService = null, sourcePort,
+  includeLegacyWebSearch = false,
 } = {}) {
   if (!contextService || !feedService || !knowledgeService || !tradingService) {
     throw new Error('local agent tools require context, feed, knowledge, and trading services');
@@ -314,7 +315,9 @@ export function createLocalToolRegistry({
   }
 
   const hasWebSearchSource = sourceManifests.some((source) => source.id === 'search.web');
-  if (hasWebSearchSource) {
+  // LEGACY / LOCAL-RUNTIME ONLY: Domain web.search wraps search.web. Production
+  // Harness uses built-in web_search / web_fetch and must not register this tool.
+  if (includeLegacyWebSearch && hasWebSearchSource) {
     registry.register({
       id: 'web.search', effect: 'read', description: '搜索公开互联网网页。不要用它代替本地 Feed、Tag、Knowledge、持仓等已经存在的本地数据源。不抓取正文。',
       inputSchema: WebSearchToolInputSchema,

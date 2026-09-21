@@ -20,18 +20,18 @@
 - `architecture.md`：进程、数据与运行边界。
 - `architecture.md#single-user-instance-边界`：Core / Instance / Host 的现行边界与兼容布局。
 - `architecture-modules-v1.md`：模块依赖、端口、单 Agent Runtime。
-- `architecture-agent-v1.md`：Ask Agent 冻结职责——Single Agent + Runtime Guardrails + Jev Quality Observer（Prior / Evidence Gate / Reviewer）。Jev 不指挥 Agent 想什么。
+- `architecture-agent-v1.md`：Ask Agent 冻结职责——Single Agent + Runtime Guardrails + Jev Quality Observer（Prior / Evidence Gate / Reviewer）。Jev 不指挥 Agent 想什么。生产执行器是冻结 `dsh-base` 0.1.6-alpha.2；本地循环只作测试/回退。Node < 22.18 用 `dsh-entry.js` 启动 Harness 子进程。
 - `contracts-v1.md` + `packages/contracts/src`：可执行数据契约。
 - `ai-development-guide.md`：如何在现有分层上改代码；当前停止线见发布门槛。
-- `search-agent-v1.md`：Search Agent / 文章阅读冻结设计。同一个 AgentRuntime + 阅读框架 + 受限 Knowledge/Web Tool。
-- `article-analysis-v1.md`：当前 Job / API / 输入字段，设计以 Search Agent V1 为准。
+- `search-agent-v1.md`：Article Analysis Skill / 文章阅读冻结设计。同一套生产执行器（Harness）上的明确调用：阅读框架 + Domain Knowledge Tool + Harness 内置 web。不是第二个 Agent。专用搜索插件以后再设计。
+- `article-analysis-v1.md`：当前 Job / API / 输入字段，设计以 Article Analysis Skill 为准。
 - `product-v2.md`：现行信息架构与领域范围（已按实现校正，不是「尚未开工」清单）。
 
 ## 专题
 
 - `connection-and-pairing.md`：二维码、授权、自动重连；鸿蒙分享走本地 Outbox。
 - `harmony-share-to-inspiration.md`：系统分享字段、鉴权与真机验收。
-- `public-access-security.md`：可选公网 HTTPS、隧道和管理员隔离。示例域名是占位符，不是真实部署。
+- `public-access-security.md`：可选公网 HTTPS、隧道和管理员隔离；Agent / Host 调用方能力平面。示例域名是占位符，不是真实部署。
 - `ops/cloudflare-tunnel.md`：本机 `cloudflared` 安装与 token 落盘；域名和 Tunnel 仍在 Cloudflare 控制台创建。
 - `ops/local-files-mcp-tailscale.md`：本机 Local Files MCP 经 Tailscale Funnel 给 ChatGPT 的配置提示；**不是** AI Center 公网入口，不含本机 Hostname。
 

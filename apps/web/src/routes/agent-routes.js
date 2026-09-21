@@ -4,6 +4,7 @@ import { json, readJson } from '../http/response.js';
 function pendingExchange(run) {
   return {
     id: run.runId,
+    jobId: run.runId,
     question: run.question,
     answer: '',
     status: run.status,
@@ -34,7 +35,7 @@ export function createAgentRoutes() {
     },
     {
       method: 'GET', path: /^\/api\/v1\/agent\/sessions\/([0-9a-f-]{36})$/i,
-      handler({ response, services, identity, params }) {
+      async handler({ response, services, identity, params }) {
         const workspaceId = identity?.device?.workspaceId || 'local';
         const detail = services.knowledge.getAiSession(workspaceId, params.values[0]);
         if (!detail) {
@@ -44,7 +45,24 @@ export function createAgentRoutes() {
         const pending = services.runtime.listActiveAgentRuns(workspaceId)
           .filter((run) => run.sessionId === detail.session.id)
           .map(pendingExchange);
-        json(response, 200, { ok: true, ...detail, exchanges: [...detail.exchanges, ...pending] });
+        const completed = await Promise.all(detail.exchanges.map(async (exchange) => {
+          if (!exchange.jobId) return { ...exchange, progress: [] };
+          const execution = await services.runtime.getAgentRun(exchange.jobId);
+          return {
+            ...exchange,
+            progress: execution?.progress || [],
+            execution: execution
+              ? {
+                runId: execution.runId,
+                status: execution.status,
+                phase: execution.phase,
+                revision: execution.revision,
+                updatedAt: execution.updatedAt,
+              }
+              : null,
+          };
+        }));
+        json(response, 200, { ok: true, ...detail, exchanges: [...completed, ...pending] });
       },
     },
     {
@@ -85,7 +103,30 @@ export function createAgentRoutes() {
           references: input.references,
         });
         events.flush();
-        json(response, 202, { ok: true, runId: job.id, sessionId: session.id, job });
+        json(response, 202, {
+          ok: true,
+          runId: job.id,
+          sessionId: session.id,
+          status: job.status,
+          phase: 'queued',
+          job,
+        });
+      },
+    },
+    {
+      method: 'POST', path: /^\/api\/v1\/agent\/runs\/([0-9a-f-]+)\/retry$/i,
+      handler({ response, services, identity, params, events }) {
+        const workspaceId = identity?.device?.workspaceId || 'local';
+        const job = services.runtime.retryAgentRun(params.values[0], workspaceId);
+        events.flush();
+        json(response, 202, {
+          ok: true,
+          runId: job.id,
+          sessionId: job.input?.sessionId || '',
+          status: job.status,
+          phase: 'queued',
+          agentMode: job.type === 'ai.article.analyze' ? 'article-analysis' : 'ask',
+        });
       },
     },
     {

@@ -134,6 +134,7 @@ test('ui revision changes after a public file is edited', async () => {
     writeFileSync(path.join(directory, 'styles.css'), 'body{}');
     writeFileSync(path.join(directory, 'icons.js'), '');
     writeFileSync(path.join(directory, 'markdown.js'), '');
+    writeFileSync(path.join(directory, 'share-card.js'), '');
     writeFileSync(path.join(directory, 'mock.js'), '');
     const handler = createStaticFileHandler(directory);
     const firstRevision = await handler.getUiRevision();

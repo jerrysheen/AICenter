@@ -155,6 +155,7 @@ test('web.search tool is optional and degrades when the port is down', async () 
 
   const down = createLocalToolRegistry({
     ...base,
+    includeLegacyWebSearch: true,
     sourcePort: createSearchSourcePort({
       async search() {
         throw new WebSearchUnavailableError('SearXNG 不可用');
@@ -168,6 +169,7 @@ test('web.search tool is optional and degrades when the port is down', async () 
 
   const up = createLocalToolRegistry({
     ...base,
+    includeLegacyWebSearch: true,
     sourcePort: createSearchSourcePort({
       async search({ query }) {
         return {
@@ -180,6 +182,14 @@ test('web.search tool is optional and degrades when the port is down', async () 
   const ok = await up.execute('web.search', { query: 'HBM', limit: 3 }, { workspaceId: 'local' });
   assert.equal(ok.data.results[0].title, 'Example');
   assert.equal(ok.refs[0].resourceType, 'web-result');
+
+  const production = createLocalToolRegistry({
+    ...base,
+    sourcePort: createSearchSourcePort({
+      async search() { return { query: 'HBM', available: true, observedAt: 1, results: [] }; },
+    }),
+  });
+  assert.equal(production.list().some((tool) => tool.id === 'web.search'), false);
 });
 
 test('web.search projection keeps publishedAt from the search port', async () => {
@@ -210,7 +220,7 @@ test('web.search projection keeps publishedAt from the search port', async () =>
       },
     }),
   };
-  const registry = createLocalToolRegistry(base);
+  const registry = createLocalToolRegistry({ ...base, includeLegacyWebSearch: true });
   const ok = await registry.execute('web.search', { query: 'FOMC', limit: 3 }, { workspaceId: 'local' });
   assert.equal(ok.data.results[0].publishedAt, '2026-09-16T00:00:00.000Z');
 });

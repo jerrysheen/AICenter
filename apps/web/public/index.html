@@ -99,6 +99,9 @@
               <div class="chip-tabs" id="x-feed-tabs" role="tablist" aria-label="X 时间线"></div>
               <button class="text-button" id="x-more" type="button">更多</button>
             </div>
+            <div class="social-toolbar hidden" id="xueqiu-toolbar">
+              <div class="chip-tabs" id="xueqiu-feed-tabs" role="tablist" aria-label="雪球栏目"></div>
+            </div>
             <div class="social-toolbar hidden" id="trendforce-toolbar">
               <p id="trendforce-feed-status">TrendForce 公开洞察与价表</p>
               <button class="text-button" id="trendforce-more" type="button">更多</button>
@@ -107,6 +110,13 @@
               <p id="trendforce-action-status">免费全文直接抓；会员报告只收标题和介绍。</p>
               <div class="x-action-buttons">
                 <button class="primary-button" id="trendforce-refresh" type="button">抓取公开页</button>
+              </div>
+            </div>
+            <p class="source-read-state hidden" id="xueqiu-feed-status"></p>
+            <div class="follow-toolbar hidden" id="xueqiu-action-bar">
+              <p id="xueqiu-action-status">用已登录浏览器抓关注、精选和 7x24。</p>
+              <div class="x-action-buttons">
+                <button class="primary-button" id="xueqiu-refresh" type="button">抓取 50 条</button>
               </div>
             </div>
             <p class="source-read-state hidden" id="x-feed-status"></p>
@@ -391,13 +401,11 @@
               <div id="ask-session-list"><div class="empty-state">正在载入 AI 记录…</div></div>
             </section>
           </div>
-          <div class="ask-shell hidden" id="ask-session-shell">
-            <button class="text-button ask-back" id="ask-back" type="button">返回记录</button>
+          <div class="ask-shell detail-shell hidden" id="ask-session-shell">
             <div class="ask-thread" id="ask-thread">
-            <article class="ask-card" id="ask-intro">
-              <h2>新提问</h2>
-              <p class="research-intro">列表里看得见，不等于已经发给模型。指定引用由你选择。</p>
-            </article>
+            <header class="detail-head ask-intro" id="ask-intro">
+              <p class="detail-meta research-intro">带着已选材料继续研究。指定引用由你选择。</p>
+            </header>
             <div class="prompt-strip" id="ask-prompts"></div>
             <div class="dense-tabs" id="ask-material-tabs" role="tablist" aria-label="可选材料"></div>
             <div id="ask-materials"></div>
@@ -632,6 +640,14 @@
       <h2 id="source-tasks-title">来源任务</h2>
       <p class="section-desc" id="source-tasks-meta">先选正在关注或为你推荐，再抓取。抓取会立刻跑采集、翻译和打 Tag。自动化草案不会启动定时任务。</p>
       <div id="source-tasks-body"></div>
+    </div>
+  </dialog>
+
+  <dialog id="share-image-dialog" class="share-image-dialog">
+    <div class="share-image-window">
+      <button class="dialog-close icon-close" type="button" aria-label="关闭"></button>
+      <img id="share-image-preview" class="share-image-preview" alt="问答分享图">
+      <button class="primary-button" type="button" id="share-image-save">保存</button>
     </div>
   </dialog>
 

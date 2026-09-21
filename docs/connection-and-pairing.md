@@ -72,8 +72,8 @@
 - 不将服务直接暴露到公网。
 - API 不开放跨域访问；配对、发布和实时连接都从同一页面来源发起。
 
-可选公网模式使用稳定 HTTPS 域名和出站 Cloudflare Tunnel，不开放路由器入站端口。公网请求永远不能获得本机管理员身份，
-详细边界和部署步骤见 `docs/public-access-security.md`。
+可选公网模式使用稳定 HTTPS 域名和出站 Cloudflare Tunnel，不开放路由器入站端口。公网请求永远不能获得本机管理员身份，也不能把已配对升级成本机编码权限。
+详细边界、Agent / Host 能力平面和部署步骤见 `docs/public-access-security.md`。
 
 ## 配对流程
 
@@ -113,5 +113,5 @@ POST /api/v1/session/login
 - 未配置时 `GET /api/v1/session` 的未授权响应带 `loginAvailable=false`，登录接口返回 503。
 - 错误账号或密码返回同一句「账号或密码不正确」，不区分哪一项错了。
 - 非本机来源与配对共用 5 分钟最多 10 次的尝试限制。
-- 公网登录仍然只得到设备授权；`/api/v1/pairing`、设备管理和 Runtime 状态继续拒绝。
+- 公网登录仍然只得到设备授权；`/api/v1/pairing`、设备管理和 Runtime 状态继续拒绝。公网已配对可以问答和写业务数据，不能派发工作包或打开 Harness Host 工具。
 - 撤销设备、清空应用数据或重置服务端身份后，需要重新登录或重新配对。

@@ -129,6 +129,18 @@ function mapOutboxEvent(row) {
   };
 }
 
+function mapAgentRunEvent(row) {
+  return {
+    id: Number(row.id),
+    version: Number(row.version) || 1,
+    runId: row.run_id,
+    workspaceId: row.workspace_id,
+    event: row.event_name,
+    detail: parseJson(row.detail_json),
+    at: row.occurred_at,
+  };
+}
+
 function sketchReply(body) {
   const snippet = body.replace(/\s+/g, ' ').slice(0, 72);
   return [
@@ -609,6 +621,41 @@ export function createStore(databasePath) {
         WHERE workspace_id = ? AND type IN ('ai.agent.run', 'ai.article.analyze') AND status IN ('queued', 'running')
         ORDER BY created_at ASC`)
         .all(workspaceId).map(mapJob);
+    },
+
+    appendAgentRunEvent({
+      runId,
+      workspaceId = DEFAULT_WORKSPACE_ID,
+      version = 1,
+      event,
+      detail = {},
+      at = Date.now(),
+    }) {
+      let appended = null;
+      database.transaction(() => {
+        const result = database.prepare(`INSERT INTO agent_run_events
+          (run_id, workspace_id, version, event_name, detail_json, occurred_at)
+          VALUES (?, ?, ?, ?, ?, ?)`)
+          .run(runId, workspaceId, version, event, JSON.stringify(detail), at);
+        const revision = Number(result.lastInsertRowid);
+        appended = mapAgentRunEvent(database.prepare('SELECT * FROM agent_run_events WHERE id = ?').get(revision));
+        insertEvent('runtime.agent-run.progressed.v1', 'agent-run', runId, {
+          runId,
+          revision,
+          event,
+          occurredAt: at,
+        }, workspaceId);
+      })();
+      return appended;
+    },
+
+    listAgentRunEvents(runId, { fromAt = 0, toAt = Number.MAX_SAFE_INTEGER, limit = 2_000 } = {}) {
+      const safeLimit = Math.max(1, Math.min(Number(limit) || 2_000, 10_000));
+      return database.prepare(`SELECT * FROM agent_run_events
+        WHERE run_id = ? AND occurred_at >= ? AND occurred_at <= ?
+        ORDER BY id ASC LIMIT ?`)
+        .all(runId, Math.max(0, Number(fromAt) || 0), Math.max(0, Number(toAt) || Number.MAX_SAFE_INTEGER), safeLimit)
+        .map(mapAgentRunEvent);
     },
 
     listEvents(afterId = 0, limit = 200, workspaceId = null) {

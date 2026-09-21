@@ -2,7 +2,7 @@ import { hostname } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
-import { createConfiguredBrowserRuntime, createCursorSessionPort, createDeepSeekSearchProvider, createDoubaoAuxiliarySearch, createElucidGrokAgentClient, createGeminiAgentClient, createGeminiTagPort, createLauncherRestartPort, createLocalKnowledgeFiles, createPersonalAssetService, createTypeSafeSystemOneClient } from '../../../packages/connectors/src/index.js';
+import { createConfiguredBrowserRuntime, createCursorSessionPort, createDeepSeekSearchProvider, createDoubaoAuxiliarySearch, createElucidGrokAgentClient, createGeminiTagPort, createLauncherRestartPort, createLocalKnowledgeFiles, createPersonalAssetService, createTypeSafeSystemOneClient } from '../../../packages/connectors/src/index.js';
 import { createAgentQualityLayerFromEnv } from '../../../packages/runtime/src/agent-quality.js';
 import { articleAnalysisManifest, createArticleAnalysisJobHandlers } from '../../../packages/runtime/src/article-analysis/article-analysis-module.js';
 import { createAttachmentStore, createStore } from '../../../packages/database/src/index.js';
@@ -15,6 +15,13 @@ import { createContextService } from '../../../packages/domain/src/context-servi
 import { resolveInstanceConfig } from '../../../packages/instance/src/index.js';
 import { createAgentRuntime } from '../../../packages/runtime/src/agent-runtime.js';
 import { agentRuntimeManifest, createAgentJobHandlers } from '../../../packages/runtime/src/agent-module.js';
+import {
+  createHarnessAgentRuntime,
+  HARNESS_ELUCID_PROVIDER,
+  parseHarnessToolIds,
+  resolveAgentRuntimeMode,
+  resolveHarnessLlm,
+} from '../../../packages/harness/src/index.js';
 import { knowledgeStructureManifest, createStructureJobHandlers } from '../../../packages/runtime/src/structure-module.js';
 import { taggingManifest, createTaggingJobHandlers, readTagCatalogFile } from '../../../packages/runtime/src/tagging-module.js';
 import { workPackageDispatchManifest, createWorkPackageJobHandlers } from '../../../packages/runtime/src/work-package-module.js';
@@ -28,13 +35,16 @@ const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(currentDirectory, '../../..');
 resolveInstanceConfig({ repositoryRoot });
 
-function createConfiguredAgentClient() {
-  const provider = String(process.env.AI_CENTER_AGENT_PROVIDER || '').trim().toLowerCase();
-  if (provider === 'gemini') return createGeminiAgentClient();
-  if (provider === 'elucid-grok' || process.env.ELUCID_GROK_API_KEY || process.env.AI_CENTER_GROK_API_KEY) {
-    return createElucidGrokAgentClient();
-  }
-  return createGeminiAgentClient();
+function createConfiguredStructureLlm(env = process.env) {
+  const llm = resolveHarnessLlm(env);
+  if (llm.provider !== HARNESS_ELUCID_PROVIDER) return null;
+  return createElucidGrokAgentClient({
+    env,
+    apiKey: llm.apiKey,
+    apiRoot: llm.baseURL,
+    model: llm.defaultModel,
+    researchModel: llm.researchModel,
+  });
 }
 
 function createOptionalSearchPort(explicit) {
@@ -43,7 +53,7 @@ function createOptionalSearchPort(explicit) {
   try {
     return createDeepSeekSearchProvider();
   } catch (error) {
-    console.error('[worker] web.search 未启用：', error?.message || error);
+    console.error('[worker] legacy search.web 未启用：', error?.message || error);
     return null;
   }
 }
@@ -92,13 +102,17 @@ export function createAiCenterWorker(options = {}) {
     },
   });
   const dataDirectory = instance.dataDirectory;
+  const env = options.env || process.env;
+  const runtimeMode = options.agentRuntime ? 'injected' : resolveAgentRuntimeMode(options, env);
   const restartPort = options.restartPort || createLauncherRestartPort({
     runtimeDirectory: instance.runtimeDirectory,
   });
   const store = options.store || createStore(instance.databasePath);
   const staleAfterMs = Number(options.staleAfterMs || process.env.AI_CENTER_WORKER_LEASE_MS) || 10 * 60_000;
   store.recoverStaleJobs(staleAfterMs);
-  const webSearchPort = createOptionalSearchPort(options.webSearchPort);
+  const webSearchPort = runtimeMode === 'local' || options.webSearchPort !== undefined
+    ? createOptionalSearchPort(options.webSearchPort)
+    : null;
   const browserRuntime = options.browserRuntime || createConfiguredBrowserRuntime({
     env: options.env || process.env,
     defaultBrowserId: instance.browserId,
@@ -117,7 +131,6 @@ export function createAiCenterWorker(options = {}) {
     syncFeed: (...args) => feedService.getExternalFeed(...args),
   });
   const sourcePort = options.sourcePort || createSourceHub(registry);
-  const env = options.env || process.env;
   const typesafeClient = options.typesafeClient || createTypeSafeSystemOneClient({ env });
   const feedFilter = options.feedFilter !== undefined
     ? options.feedFilter
@@ -163,7 +176,11 @@ export function createAiCenterWorker(options = {}) {
     tradingService,
     knowledgeService,
   });
-  const agentClient = options.agentClient || createConfiguredAgentClient();
+  const structureLlm = options.structureLlm || options.agentClient || createConfiguredStructureLlm(env) || {
+    async respond() {
+      throw new Error('结构整理与问答共用 Harness LLM。当前未选择 elucid-grok，也没有可注入的整理模型。');
+    },
+  };
   const agentQuality = options.agentQuality !== undefined
     ? options.agentQuality
     : (options.store && !options.dataDirectory && !options.instanceConfig
@@ -172,25 +189,45 @@ export function createAiCenterWorker(options = {}) {
   if (agentQuality?.config) {
     console.log(`[worker] Jev quality prior=${agentQuality.config.priorMode} reviewer=${agentQuality.config.reviewerEnabled ? 'on' : 'off'} evidenceGate=${agentQuality.config.evidenceGateMode || 'off'}`);
   }
-  const auxiliarySearch = createOptionalAuxiliarySearch(
-    options.auxiliarySearch,
-    browserRuntime,
-    options.env || process.env,
-  );
-  const agentRuntime = options.agentRuntime || createAgentRuntime({
-    llm: agentClient,
-    auxiliarySearch,
-    quality: agentQuality,
-    tools: options.agentTools || createLocalToolRegistry({
-      contextService, feedService, knowledgeService, tradingService, taggingService, sourcePort,
-    }),
+  const auxiliarySearch = runtimeMode === 'local'
+    ? createOptionalAuxiliarySearch(
+      options.auxiliarySearch,
+      browserRuntime,
+      options.env || process.env,
+    )
+    : (options.auxiliarySearch !== undefined ? options.auxiliarySearch || null : null);
+  const agentTools = options.agentTools || createLocalToolRegistry({
+    contextService, feedService, knowledgeService, tradingService, taggingService, sourcePort,
+    includeLegacyWebSearch: runtimeMode === 'local',
   });
+  if (runtimeMode === 'harness') {
+    const ids = parseHarnessToolIds(options.harnessToolIds ?? env.AI_CENTER_HARNESS_TOOL_IDS, []);
+    console.log(`[worker] agent runtime=harness tools=${ids.length ? ids.join(',') : 'all-visible'}`);
+  } else if (runtimeMode === 'local') {
+    console.log('[worker] agent runtime=local');
+  }
+  const agentRuntime = runtimeMode === 'harness'
+    ? createHarnessAgentRuntime({
+      tools: agentTools,
+      quality: agentQuality,
+      env,
+      runtimeDirectory: instance.runtimeDirectory,
+      createClient: options.createHarnessClient,
+      allowedToolIds: options.harnessToolIds,
+    })
+    : (options.agentRuntime || createAgentRuntime({
+      llm: structureLlm,
+      auxiliarySearch,
+      quality: agentQuality,
+      tools: agentTools,
+    }));
   const agentTraceLog = options.agentTraceLog
     || (options.store && !options.dataDirectory && !options.instanceConfig
       ? null
       : createAgentTraceLog({
         dataDirectory,
         logDirectory: instance.legacyLayout ? undefined : path.join(instance.runtimeDirectory, 'logs'),
+        eventStore: store,
       }));
   registry.register({
     manifest: agentRuntimeManifest,
@@ -209,7 +246,7 @@ export function createAiCenterWorker(options = {}) {
   registry.register({
     manifest: knowledgeStructureManifest,
     jobHandlers: options.structureJobHandlers || createStructureJobHandlers({
-      llm: agentClient,
+      llm: structureLlm,
       knowledgeService,
       contextService,
     }),
@@ -263,6 +300,7 @@ export function createAiCenterWorker(options = {}) {
       try {
         await runPromise;
       } finally {
+        try { await agentRuntime.close?.(); } catch {}
         store.close();
       }
     },

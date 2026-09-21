@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { EntityIdSchema, EpochMillisSchema, HttpUrlSchema } from './common.js';
-import { AgentRunProgressStepSchema } from './agent.js';
+import { EntityIdSchema, EpochMillisSchema, HttpUrlSchema, WorkspaceIdSchema } from './common.js';
+import { AgentRunPhaseSchema, AgentRunProgressStepSchema } from './agent.js';
 
 export const ARTICLE_ANALYSIS_JOB_TYPE = 'ai.article.analyze';
 export const ARTICLE_ANALYSIS_TASK_TYPE = 'article-analysis.reader.v1';
@@ -48,8 +48,12 @@ export const ArticleAnalysisJobInputSchema = CreateArticleAnalysisInputSchema.ex
 
 export const ArticleAnalysisRunViewSchema = z.object({
   runId: EntityIdSchema,
+  workspaceId: WorkspaceIdSchema,
   sessionId: EntityIdSchema.or(z.literal('')).default(''),
   status: z.enum(['queued', 'running', 'completed', 'failed', 'cancelled']),
+  phase: AgentRunPhaseSchema,
+  revision: z.number().int().nonnegative(),
+  updatedAt: EpochMillisSchema,
   stage: ArticleAnalysisStageSchema,
   progress: z.array(AgentRunProgressStepSchema).max(40).default([]),
   aiRunId: EntityIdSchema.optional(),

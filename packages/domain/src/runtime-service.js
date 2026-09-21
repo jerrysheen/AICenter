@@ -1,7 +1,10 @@
 import {
   ActiveAgentRunSchema,
+  AgentRunStatusViewSchema,
   AgentRunProgressStepSchema,
   ARTICLE_ANALYSIS_JOB_TYPE,
+  ArticleAnalysisRunViewSchema,
+  ValidationError,
   parseContract,
 } from '../../contracts/src/index.js';
 import { resolveResearchProfile } from './research-profile.js';
@@ -20,6 +23,21 @@ function articleAnalysisStage(job) {
   if (job.status === 'completed') return 'completed';
   if (job.status === 'failed' || job.status === 'cancelled') return 'failed';
   return 'running';
+}
+
+function agentRunPhase(job, progress = []) {
+  if (job.status === 'queued') return 'queued';
+  if (job.status === 'completed') return 'completed';
+  if (job.status === 'failed' || job.status === 'cancelled') return 'failed';
+  const active = [...progress].reverse().find((step) => step.status === 'active');
+  const latest = active || progress.at(-1);
+  const event = String(latest?.event || '');
+  if (event.startsWith('tool.')) return 'tool';
+  if (event.startsWith('evidence.gate.')) return 'evidence';
+  if (event.startsWith('model.')) return 'model';
+  if (event.startsWith('article.')) return 'model';
+  if (event === 'run.completed' || (event === 'harness.status' && latest?.status === 'done')) return 'finalizing';
+  return 'starting';
 }
 
 export function createRuntimeService({ runtimeRepository, agentProgressPort, restartPort }) {
@@ -92,29 +110,65 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort, res
     getJob(id) {
       return runtimeRepository.getJob(id);
     },
+    retryAgentRun(id, workspaceId) {
+      const job = runtimeRepository.getJob(id);
+      if (!job || job.workspaceId !== workspaceId) {
+        throw new ValidationError('Agent 任务不存在', ['runId']);
+      }
+      if (job.type !== 'ai.agent.run' && job.type !== ARTICLE_ANALYSIS_JOB_TYPE) {
+        throw new ValidationError('这类任务不能重新执行', ['runId']);
+      }
+      if (!['completed', 'failed', 'cancelled'].includes(job.status)) {
+        throw new ValidationError('任务仍在排队或执行中', ['runId']);
+      }
+      return runtimeRepository.createJob({
+        type: job.type,
+        input: job.input,
+        workspaceId,
+        maxAttempts: job.maxAttempts,
+      });
+    },
     async getAgentRun(id) {
       const job = runtimeRepository.getJob(id);
       if (!job) return null;
-      const records = agentProgressPort?.listSteps
-        ? await agentProgressPort.listSteps(job.id, { fromAt: job.createdAt, toAt: Date.now() })
-        : [];
+      const window = { fromAt: job.createdAt, toAt: Date.now() };
+      const snapshot = agentProgressPort?.snapshot
+        ? await agentProgressPort.snapshot(job.id, window)
+        : null;
+      const records = snapshot?.progress || (agentProgressPort?.listSteps
+        ? await agentProgressPort.listSteps(job.id, window)
+        : []);
       const progress = (Array.isArray(records) ? records : [])
         .map((step) => parseContract(AgentRunProgressStepSchema, step));
-      return {
+      return parseContract(AgentRunStatusViewSchema, {
         runId: job.id,
         sessionId: job.input?.sessionId || '',
         status: job.status,
+        phase: agentRunPhase(job, progress),
+        revision: Number(snapshot?.revision) || progress.length,
+        updatedAt: Math.max(job.updatedAt || 0, progress.at(-1)?.at || 0),
+        result: job.status === 'completed'
+          ? {
+            aiRunId: job.output?.aiRunId || null,
+            sessionId: job.output?.sessionId || job.input?.sessionId || '',
+          }
+          : null,
+        error: job.status === 'failed' || job.status === 'cancelled' ? job.error : null,
+        // Compatibility carrier for the current Web client. New callers use the fields above.
         job,
         progress,
-      };
+      });
     },
     async getArticleAnalysisRun(id) {
       const job = runtimeRepository.getJob(id);
       if (!job || job.type !== ARTICLE_ANALYSIS_JOB_TYPE) return null;
       const window = { fromAt: job.createdAt, toAt: Date.now() };
-      const records = agentProgressPort?.listSteps
+      const snapshot = agentProgressPort?.snapshot
+        ? await agentProgressPort.snapshot(job.id, window)
+        : null;
+      const records = snapshot?.progress || (agentProgressPort?.listSteps
         ? await agentProgressPort.listSteps(job.id, window)
-        : [];
+        : []);
       const progress = (Array.isArray(records) ? records : [])
         .map((step) => parseContract(AgentRunProgressStepSchema, step));
       const base = {
@@ -122,20 +176,23 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort, res
         workspaceId: job.workspaceId,
         sessionId: job.input?.sessionId || job.output?.sessionId || '',
         status: job.status,
+        phase: agentRunPhase(job, progress),
+        revision: Number(snapshot?.revision) || progress.length,
+        updatedAt: Math.max(job.updatedAt || 0, progress.at(-1)?.at || 0),
         stage: articleAnalysisStage(job),
         progress,
       };
       if (job.status === 'completed') {
-        return {
+        return parseContract(ArticleAnalysisRunViewSchema, {
           ...base,
           aiRunId: job.output?.aiRunId,
           outputText: job.output?.outputText || '',
-        };
+        });
       }
       if (job.status === 'failed' || job.status === 'cancelled') {
-        return { ...base, error: job.error };
+        return parseContract(ArticleAnalysisRunViewSchema, { ...base, error: job.error });
       }
-      return base;
+      return parseContract(ArticleAnalysisRunViewSchema, base);
     },
     listJobs(limit) {
       return runtimeRepository.listJobs(limit);

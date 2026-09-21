@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { EntityIdSchema, EpochMillisSchema, HttpUrlSchema, MetadataSchema, WorkspaceIdSchema } from './common.js';
-import { ReferenceInputSchema } from './agent.js';
+import { AgentRunProgressStepSchema, ReferenceInputSchema } from './agent.js';
 import { InspirationTypeSchema, KnowledgeTypeSchema } from './taxonomy.js';
 
 export function workPackageTraceId(workPackageId) {
@@ -230,6 +230,37 @@ export const WorkPackageTraceStepSchema = z.object({
   paths: z.array(z.string().trim().min(1).max(500)).max(50).default([]),
 }).strict();
 
+function clipProgressText(value, max) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text) return '';
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+export function projectWorkPackageTimeline(steps = [], { live = false } = {}) {
+  const rows = Array.isArray(steps) ? steps : [];
+  return rows.slice(-40).map((step, index, list) => {
+    const last = index === list.length - 1;
+    let status = 'done';
+    if (step?.status === 'failed') status = 'error';
+    else if (step?.status === 'started' && live && last) status = 'active';
+    const summary = clipProgressText(step?.summary, 240);
+    const label = summary || clipProgressText(step?.step, 240) || 'step';
+    const paths = Array.isArray(step?.paths) ? step.paths.filter(Boolean).join(', ') : '';
+    const detail = summary && step?.step
+      ? clipProgressText(paths || step.step, 120)
+      : clipProgressText(paths, 120);
+    return AgentRunProgressStepSchema.parse({
+      at: Number(step?.at) || 0,
+      event: `work.${String(step?.step || 'step').slice(0, 48)}`,
+      label,
+      detail,
+      status,
+      toolId: null,
+      round: index,
+    });
+  });
+}
+
 export const WorkPackageGoalSchema = z.object({
   objective: z.string().trim().min(1).max(100_000),
   parentWorkPackageId: z.union([EntityIdSchema, z.literal('')]).default(''),
@@ -248,6 +279,7 @@ export const WorkPackageParentTraceSchema = z.object({
   goal: WorkPackageGoalSchema.nullable().default(null),
   progress: WorkPackageProgressSchema.nullable().default(null),
   steps: z.array(WorkPackageTraceStepSchema).max(200).default([]),
+  timeline: z.array(AgentRunProgressStepSchema).max(40).default([]),
 }).strict();
 
 export const WorkPackageTraceSchema = z.object({
@@ -258,6 +290,7 @@ export const WorkPackageTraceSchema = z.object({
   goal: WorkPackageGoalSchema.nullable().default(null),
   progress: WorkPackageProgressSchema.nullable().default(null),
   steps: z.array(WorkPackageTraceStepSchema).default([]),
+  timeline: z.array(AgentRunProgressStepSchema).max(40).default([]),
   parentTrace: WorkPackageParentTraceSchema.nullable().default(null),
 }).strict();
 

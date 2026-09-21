@@ -1,3 +1,10 @@
+/**
+ * LEGACY / LOCAL-RUNTIME ONLY
+ *
+ * In-process Agent loop for fake-LLM tests and explicit
+ * `AI_CENTER_AGENT_RUNTIME=local`. Production Ask / article reading uses
+ * `packages/harness`. Harness must not import this file.
+ */
 import { createToolRegistry } from './tool-registry.js';
 import { buildRuntimeContext, DEFAULT_USER_TIME_ZONE, formatRuntimeContextNote } from './runtime-context.js';
 import { buildAgentSystemInstruction } from './agent-prompt.js';
@@ -8,13 +15,25 @@ import {
   auxiliarySearchWarning,
   takeAuxiliarySearch,
 } from './auxiliary-web-search.js';
-import { formatPriorHint, projectToolAudit } from './agent-quality.js';
+import { formatPriorHint, projectToolAudit, settlePriorAdvice } from './agent-quality.js';
+import {
+  toolsVisibleForAllowlist,
+  toolsVisibleForResearchProfile,
+  toolsVisibleForWebMode,
+} from './tool-policy.js';
 import {
   aggregateEvidenceGate,
   applyEvidenceGateToToolResult,
   extractRetrievalHits,
   isEvidenceGateTool,
 } from './evidence-gate.js';
+
+export {
+  toolsVisibleForAllowlist,
+  toolsVisibleForResearchProfile,
+  toolsVisibleForWebMode,
+};
+export { settlePriorAdvice };
 
 const DEFAULT_LIMITS = Object.freeze({
   maxModelCalls: 7,
@@ -35,33 +54,6 @@ function safeErrorMessage(error) {
 function toolBudget(usedToolCalls, maxToolCalls, maxModelCalls, modelCallCount) {
   const remainingToolCalls = Math.max(0, maxToolCalls - usedToolCalls);
   return { usedToolCalls, remainingToolCalls, maxToolCalls, maxModelCalls, modelCallCount };
-}
-
-export function toolsVisibleForWebMode(tools, webMode = 'off') {
-  const mode = webMode === 'always' || webMode === 'fallback' ? webMode : 'off';
-  return tools.flatMap((tool) => {
-    if (tool.id !== 'web.search') return [tool];
-    if (mode === 'off') return [];
-    const description = mode === 'always'
-      ? '搜索公开互联网网页。不要用它代替本地 Feed、Tag、Knowledge、持仓等已经存在的本地数据源。用户允许并倾向在有帮助时使用，但不是必须调用。'
-      : '搜索公开互联网网页。优先用户指定的本地来源；本地数据不足或确实需要公开互联网事实时再使用。不要用它代替本地 Feed、Tag、Knowledge、持仓。';
-    return [{ ...tool, description }];
-  });
-}
-
-export function toolsVisibleForResearchProfile(tools, researchProfile) {
-  const extra = new Set(
-    Array.isArray(researchProfile?.extraToolIds)
-      ? researchProfile.extraToolIds.map((item) => String(item || '').trim()).filter(Boolean)
-      : [],
-  );
-  return tools.filter((tool) => !tool.researchOnly || extra.has(tool.id));
-}
-
-export function toolsVisibleForAllowlist(tools, allowedToolIds) {
-  if (!Array.isArray(allowedToolIds)) return tools;
-  const allow = new Set(allowedToolIds.map((item) => String(item || '').trim()).filter(Boolean));
-  return tools.filter((tool) => allow.has(tool.id));
 }
 
 export function formatToolBudgetNote(budget, extra = '', { runtimeContext } = {}) {
@@ -113,38 +105,6 @@ async function mapConcurrent(items, concurrency, mapper) {
  * tool budget skips the oversized batch and forces an answer from existing
  * evidence; it does not fail the run.
  */
-async function settlePriorAdvice(priorTask, record) {
-  if (!priorTask) return null;
-  try {
-    const prior = await priorTask;
-    if (!prior || prior.status === 'skipped') {
-      await record('advisor.prior.skipped', { reason: prior?.reason || 'off' });
-      return prior || null;
-    }
-    if (prior.status !== 'ok') {
-      await record('advisor.prior.failed', {
-        message: prior.error || 'prior failed',
-        code: prior.code || '',
-        durationMs: prior.durationMs ?? null,
-      });
-      return prior;
-    }
-    await record('advisor.prior.completed', {
-      mode: prior.mode,
-      scores: prior.scores,
-      bands: prior.bands,
-      model: prior.model || '',
-      usage: prior.usage || {},
-      durationMs: prior.durationMs ?? null,
-    });
-    return prior;
-  } catch (error) {
-    if (error?.name === 'AbortError') return null;
-    await record('advisor.prior.failed', { message: String(error?.message || error).slice(0, 240) });
-    return null;
-  }
-}
-
 export function createAgentRuntime({
   llm, tools = createToolRegistry(), limits = {},
   clock = () => new Date(), timeZone = DEFAULT_USER_TIME_ZONE,
@@ -159,6 +119,7 @@ export function createAgentRuntime({
   const maxParallelTools = positiveInteger(limits.maxParallelTools, DEFAULT_LIMITS.maxParallelTools);
 
   return Object.freeze({
+    kind: 'local',
     availableTools() {
       return tools.list();
     },

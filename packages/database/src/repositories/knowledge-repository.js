@@ -125,6 +125,9 @@ function readEvidenceGate(outputJson) {
 function mapExchange(row) {
   return {
     id: row.id,
+    jobId: row.source_type === 'agent-run' || row.source_type === 'article-analysis'
+      ? (row.source_id || '')
+      : '',
     question: row.input_text || '',
     answer: row.output_text || '',
     status: row.status,

@@ -31,6 +31,7 @@ export const TOOL_ROLES = Object.freeze({
   'holdings.rank': { role: 'root' },
   'user.method.get': { role: 'root' },
   'web.search': { role: 'root' },
+  'web.fetch': { role: 'root' },
   'static.signals.list': { role: 'root' },
   'assets.get': { role: 'root' },
   'market.overview.get': { role: 'root' },
@@ -100,9 +101,10 @@ const REVIEW_DIMENSIONS = Object.freeze([
 const STRONG_UTILITY_TOOLS = new Set([
   'holdings.get', 'user.method.get', 'knowledge.get', 'official.source.get',
   'static.signals.list', 'assets.get', 'market.overview.get', 'market.global.get',
-  'memory.save',
+  'memory.save', 'web.fetch',
 ]);
 const WEAK_UTILITY_TOOLS = new Set(['web.search']);
+const DEFAULT_EVIDENCE_GATE_TIMEOUT_MS = 15_000;
 
 function text(value, fallback = '') {
   return typeof value === 'string' && value.trim() ? value.trim() : fallback;
@@ -120,6 +122,35 @@ function isRecord(value) {
 
 function envFlag(value) {
   return text(value).toLowerCase();
+}
+
+function positiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function deadlineSignal(parentSignal, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    const error = new Error(`Evidence Gate 超时（${timeoutMs}ms）`);
+    error.name = 'EvidenceGateTimeoutError';
+    error.code = 'EVIDENCE_GATE_TIMEOUT';
+    controller.abort(error);
+  }, timeoutMs);
+  const onAbort = () => {
+    controller.abort(parentSignal?.reason instanceof Error
+      ? parentSignal.reason
+      : new DOMException('The operation was aborted', 'AbortError'));
+  };
+  if (parentSignal?.aborted) onAbort();
+  else parentSignal?.addEventListener('abort', onAbort, { once: true });
+  return {
+    signal: controller.signal,
+    clear() {
+      clearTimeout(timer);
+      parentSignal?.removeEventListener('abort', onAbort);
+    },
+  };
 }
 
 function questionKey(prefix, toolId) {
@@ -148,6 +179,10 @@ export function resolveAgentQualityConfig(env = process.env) {
     priorMode: disabled ? 'off' : priorMode,
     reviewerEnabled: disabled ? false : reviewerEnabled,
     evidenceGateMode,
+    evidenceGateTimeoutMs: positiveInteger(
+      env.AI_CENTER_JEV_EVIDENCE_TIMEOUT_MS,
+      DEFAULT_EVIDENCE_GATE_TIMEOUT_MS,
+    ),
   });
 }
 
@@ -577,11 +612,15 @@ export function createAgentQualityLayer({ client, config, now = () => Date.now()
         return { status: 'skipped', kind: 'evidence-gate', reason: 'no-hits', hits: [], accepted: [], rejected: [] };
       }
       const startedAt = now();
+      const deadline = deadlineSignal(
+        signal,
+        positiveInteger(resolved.evidenceGateTimeoutMs, DEFAULT_EVIDENCE_GATE_TIMEOUT_MS),
+      );
       try {
         const scoredResponse = await client.evaluate({
           state: buildEvidenceGateState({ message, query, toolId, hits }),
           questions: buildEvidenceGateQuestions(hits),
-          signal,
+          signal: deadline.signal,
         });
         const scoredHits = parseEvidenceHitScores(scoredResponse.answers, hits);
         const accepted = scoredHits.filter((hit) => hit.accepted);
@@ -593,7 +632,7 @@ export function createAgentQualityLayer({ client, config, now = () => Date.now()
           const sufficientResponse = await client.evaluate({
             state: buildSufficiencyState({ message, query, toolId, accepted }),
             questions: buildSufficiencyQuestions(),
-            signal,
+            signal: deadline.signal,
           });
           sufficiency = clampScore(sufficientResponse.answers?.sufficiency?.noul) ?? 0;
           sufficiencyModel = sufficientResponse.model || sufficiencyModel;
@@ -627,7 +666,7 @@ export function createAgentQualityLayer({ client, config, now = () => Date.now()
           summary: publicEvidenceGateSummary(decision),
         };
       } catch (error) {
-        if (error?.name === 'AbortError') throw error;
+        if (signal?.aborted) throw error;
         return {
           ...failedQuality('evidence-gate', error),
           hits: [],
@@ -635,9 +674,43 @@ export function createAgentQualityLayer({ client, config, now = () => Date.now()
           rejected: [],
           durationMs: now() - startedAt,
         };
+      } finally {
+        deadline.clear();
       }
     },
   });
+}
+
+export async function settlePriorAdvice(priorTask, record) {
+  if (!priorTask) return null;
+  try {
+    const prior = await priorTask;
+    if (!prior || prior.status === 'skipped') {
+      await record('advisor.prior.skipped', { reason: prior?.reason || 'off' });
+      return prior || null;
+    }
+    if (prior.status !== 'ok') {
+      await record('advisor.prior.failed', {
+        message: prior.error || 'prior failed',
+        code: prior.code || '',
+        durationMs: prior.durationMs ?? null,
+      });
+      return prior;
+    }
+    await record('advisor.prior.completed', {
+      mode: prior.mode,
+      scores: prior.scores,
+      bands: prior.bands,
+      model: prior.model || '',
+      usage: prior.usage || {},
+      durationMs: prior.durationMs ?? null,
+    });
+    return prior;
+  } catch (error) {
+    if (error?.name === 'AbortError') return null;
+    await record('advisor.prior.failed', { message: String(error?.message || error).slice(0, 240) });
+    return null;
+  }
 }
 
 export async function settleAgentQualityReview({ quality, input = {}, result = {}, record } = {}) {

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { tweetToFeedItem, createTwitterService, normalizeXHomeFeed, explainXConnectorError, normalizeTweetBody, mergeArticleIntoTweetText, findXArticleUrl } from '../packages/connectors/src/twitter.js';
-import { createXHomeBrowserClient, inspectMatchesRequestedFeed, looksTruncatedTweet, mergeTweets, tabTextMatchesFeed } from '../packages/connectors/src/x/home-browser.js';
+import { tweetToFeedItem, createTwitterService, normalizeXHomeFeed, explainXConnectorError, normalizeTweetBody, mergeArticleIntoTweetText, findXArticleUrl, appendUnscrapedMediaNotes } from '../packages/connectors/src/twitter.js';
+import { createXHomeBrowserClient, inspectMatchesRequestedFeed, looksLikeArticleTweet, looksTruncatedTweet, mergeTweets, tabTextMatchesFeed } from '../packages/connectors/src/x/home-browser.js';
 import { createConnectorRegistry } from '../packages/connectors/src/index.js';
 
 test('home tweet maps to a feed item without chrome fields', () => {
@@ -363,6 +363,35 @@ test('article text is merged into the existing tweet body without a new field', 
   assert.equal('articleUrl' in item, false);
 });
 
+test('unscraped media notes stay in the tweet body without extra feed fields', () => {
+  const withVideo = appendUnscrapedMediaNotes('一条推', { has_video: true, photo_count: 2 });
+  assert.match(withVideo, /一条推/);
+  assert.match(withVideo, /\[未抓取\] 视频/);
+  assert.match(withVideo, /\[未抓取\] 图片 ×2/);
+  assert.equal(appendUnscrapedMediaNotes(withVideo, { has_video: true, photo_count: 2 }), withVideo);
+  const card = appendUnscrapedMediaNotes('看这个', {
+    card_title: 'YouTube',
+    card_url: 'https://youtu.be/abc',
+  });
+  assert.match(card, /\[未抓取\] 链接卡片：YouTube/);
+  assert.match(card, /https:\/\/youtu\.be\/abc/);
+  const article = appendUnscrapedMediaNotes('', {
+    article_unfetched: true,
+    tweet_url: 'https://x.com/yibie/status/2101502455544451502',
+  });
+  assert.match(article, /\[未抓取\] X 长文/);
+  assert.match(article, /2101502455544451502/);
+  assert.equal(looksLikeArticleTweet({ article_cover: true }), true);
+  const item = tweetToFeedItem({
+    tweet_id: '1',
+    tweet_url: 'https://x.com/u/status/1',
+    text: withVideo,
+    author_handle: 'u',
+  });
+  assert.equal(item.body, withVideo);
+  assert.equal('has_video' in item, false);
+});
+
 test('home client opens an article page and appends its body to tweet text', async () => {
   const calls = [];
   const runtime = {
@@ -396,4 +425,74 @@ test('home client opens an article page and appends its body to tweet text', asy
   assert.match(result.tweets[0].text, /一段话讲清楚 Jev/);
   assert.equal('article_url' in result.tweets[0], false);
   assert.ok(calls.some((item) => item[0] === 'navigate' && String(item[1]).includes('/article/')));
+});
+
+test('home client opens article-cover tweets on the status page', async () => {
+  const calls = [];
+  const runtime = {
+    async withSession(_options, callback) {
+      return callback({
+        async navigate(url) { calls.push(['navigate', url]); },
+        async evaluate(expression) {
+          const source = String(expression);
+          if (source.includes('x-article-body')) {
+            return {
+              login_wall: false,
+              title: 'Jev Engineering: Full 10-Step Roadmap',
+              body: `${'正文'.repeat(80)} 从零搭一套新大脑`,
+            };
+          }
+          if (source.includes('tweetText')) {
+            return {
+              items: [{
+                tweet_id: '2100984487802708306',
+                tweet_url: 'https://x.com/0xCodila/status/2100984487802708306',
+                text: '',
+                article_cover: true,
+                author_handle: '0xCodila',
+              }],
+            };
+          }
+          return { url: 'https://x.com/home', title: 'Home', logged_in: true, login_wall: false };
+        },
+      });
+    },
+  };
+  const client = createXHomeBrowserClient({ browserRuntime: runtime, delay: async () => {} });
+  const result = await client.fetchHomeTimeline({ feed: 'for-you', limit: 1 });
+  assert.match(result.tweets[0].text, /Jev Engineering/);
+  assert.match(result.tweets[0].text, /从零搭一套新大脑/);
+  assert.equal(result.tweets[0].text.includes('[未抓取] X 长文'), false);
+  assert.ok(calls.some((item) => item[0] === 'navigate' && String(item[1]).includes('/status/2100984487802708306')));
+  assert.equal(calls.some((item) => item[0] === 'navigate' && String(item[1]).includes('/article/')), false);
+});
+
+test('home client keeps a video note in the tweet body', async () => {
+  const runtime = {
+    async withSession(_options, callback) {
+      return callback({
+        async navigate() {},
+        async evaluate(expression) {
+          const source = String(expression);
+          if (source.includes('tweetText')) {
+            return {
+              items: [{
+                tweet_id: '9',
+                tweet_url: 'https://x.com/user/status/9',
+                text: '看这段',
+                has_video: true,
+                author_handle: 'user',
+              }],
+            };
+          }
+          return { url: 'https://x.com/home', title: 'Home', logged_in: true, login_wall: false };
+        },
+      });
+    },
+  };
+  const client = createXHomeBrowserClient({ browserRuntime: runtime, delay: async () => {} });
+  const result = await client.fetchHomeTimeline({ feed: 'for-you', limit: 1 });
+  assert.match(result.tweets[0].text, /看这段/);
+  assert.match(result.tweets[0].text, /\[未抓取\] 视频/);
+  assert.equal('has_video' in result.tweets[0], false);
 });

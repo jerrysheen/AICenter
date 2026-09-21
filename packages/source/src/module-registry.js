@@ -8,9 +8,12 @@ import {
 import {
   createTrendForceJobHandlers, createTrendForceService, trendforceConnectorManifest,
 } from '../../connectors/src/trendforce.js';
+import {
+  createXueqiuJobHandlers, createXueqiuService, xueqiuConnectorManifest,
+} from '../../connectors/src/xueqiu/index.js';
 import { createOfficialSourcesClient } from '../../connectors/src/official-sources.js';
 import { createMarketNativeClient } from '../../connectors/src/market-native.js';
-import { createBilibiliSourceDefinition, createTrendForceSourceDefinition, createXSourceDefinition } from './content/definitions.js';
+import { createBilibiliSourceDefinition, createTrendForceSourceDefinition, createXSourceDefinition, createXueqiuSourceDefinition } from './content/definitions.js';
 import { createMarketSourceDefinitions } from './market/definitions.js';
 import { createMarketService } from './market/service.js';
 import { createWebSearchSourceDefinition } from './search/definitions.js';
@@ -20,6 +23,7 @@ import { createMarketNativeSourceDefinitions } from './static/market-native-defi
 export function createSourceModuleRegistry(options = {}) {
   const registry = createCapabilityRegistry();
   const twitterService = options.twitterService || createTwitterService(options);
+  const xueqiuService = options.xueqiuService || createXueqiuService(options);
   const trendforceService = options.trendforceService || createTrendForceService(options);
   const bilibiliService = options.bilibiliService || createBilibiliService({
     ...options,
@@ -68,6 +72,11 @@ export function createSourceModuleRegistry(options = {}) {
     sources: [createXSourceDefinition(twitterService)],
   });
   registry.register({
+    manifest: xueqiuConnectorManifest,
+    jobHandlers: createXueqiuJobHandlers(options),
+    sources: [createXueqiuSourceDefinition(xueqiuService)],
+  });
+  registry.register({
     manifest: bilibiliConnectorManifest,
     jobHandlers: createBilibiliJobHandlers(options),
     sources: [createBilibiliSourceDefinition(bilibiliService)],
@@ -103,6 +112,7 @@ export function createSourceModuleRegistry(options = {}) {
     sources: marketNativeDefinitions,
   });
   if (options.webSearchPort?.search) {
+    // LEGACY / LOCAL-RUNTIME ONLY. Production Harness does not register search.web.
     registry.register({
       manifest: {
         id: `connector.${options.webSearchPort.id || 'search'}`, version: '1.0.0', capabilities: ['search.web'], jobTypes: [],

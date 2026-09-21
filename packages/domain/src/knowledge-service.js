@@ -434,6 +434,18 @@ export function createKnowledgeService({
         attachmentIds,
       }, workspaceId);
     },
+    retryWorkPackage(workspaceId, parentId, input = {}) {
+      const parent = knowledgeRepository.getWorkPackage(workspaceId, parentId);
+      if (!parent) throw new ValidationError('工作包不存在', ['id']);
+      if (parent.status !== 'completed' && parent.status !== 'failed' && parent.status !== 'cancelled') {
+        throw new ValidationError('任务仍在等待或执行中', ['id']);
+      }
+      const subject = String(parent.title || parent.body || '上一任务').replace(/\s+/g, ' ').trim();
+      return this.continueWorkPackage(workspaceId, parentId, {
+        ...input,
+        body: `重新执行：${subject}`,
+      });
+    },
     listWorkPackages(workspaceId, status = 'active') {
       const packs = knowledgeRepository.listWorkPackages(workspaceId, status);
       const grouped = knowledgeRepository.listResourceAttachmentsForMany
@@ -487,7 +499,7 @@ export function createKnowledgeService({
           progress: null,
           steps: [],
           parentTrace: null,
-        });
+        }, { live: pack.status === 'claimed' });
       }
       const raw = workPackageTracePort.read(pack.id) || {};
       return parseWorkPackageTrace({
@@ -499,7 +511,7 @@ export function createKnowledgeService({
         progress: raw.progress || null,
         steps: raw.steps || [],
         parentTrace: raw.parentTrace || null,
-      });
+      }, { live: pack.status === 'claimed' });
     },
     claimWorkPackage(workspaceId, input) {
       const pack = knowledgeRepository.claimWorkPackage(workspaceId, input);

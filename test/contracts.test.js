@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { FeedIdentityFingerprintSchema, parseBehaviorEvent, parseBilibiliFeedQuery, parseBilibiliImportInput, parseBuildContextInput, parseContract, parseCreateAgentRunInput, parseCreateWorkPackageInput, parseHoldingsQuery, parseKnowledgeMentionQuery, parseLoginInput, parseMarketQuery, parseNoteInput, parsePackReferencesInput, parsePageRequest, parsePairInput, parsePersistFeedTranslationsInput, parsePostInput, parseTranslateBatchInput, parseTranslateInput, parseTrendForceFeedQuery, parseWorkerJobConcurrency, parseXFeedQuery, PortfolioImportSchema, UpsertFeedIdentityFingerprintInputSchema, ValidationError } from '../packages/contracts/src/index.js';
+import { FeedIdentityFingerprintSchema, parseBehaviorEvent, parseBilibiliFeedQuery, parseBilibiliImportInput, parseBuildContextInput, parseContract, parseCreateAgentRunInput, parseCreateWorkPackageInput, parseHoldingsQuery, parseKnowledgeMentionQuery, parseLoginInput, parseMarketQuery, parseNoteInput, parsePackReferencesInput, parsePageRequest, parsePairInput, parsePersistFeedTranslationsInput, parsePostInput, parseTranslateBatchInput, parseTranslateInput, parseTrendForceFeedQuery, parseWorkerJobConcurrency, parseXFeedQuery, parseXueqiuFeedQuery, PortfolioImportSchema, UpsertFeedIdentityFingerprintInputSchema, ValidationError } from '../packages/contracts/src/index.js';
 
 test('post input normalizes title, url, and tags', () => {
   assert.deepEqual(parsePostInput({
@@ -54,6 +54,15 @@ test('x feed query defaults to 50 home timeline items', () => {
   assert.equal(parseXFeedQuery({ refresh: '1' }).refresh, true);
   assert.equal(parseXFeedQuery({ feed: 'following', limit: '50' }).feed, 'following');
   assert.throws(() => parseXFeedQuery({ limit: '80' }), ValidationError);
+});
+
+test('xueqiu feed query maps following featured and livenews', () => {
+  assert.deepEqual(parseXueqiuFeedQuery({}), {
+    platform: 'xueqiu', feed: 'following', limit: 50, refresh: false,
+  });
+  assert.equal(parseXueqiuFeedQuery({ feed: '7x24', refresh: '1' }).feed, 'livenews');
+  assert.equal(parseXueqiuFeedQuery({ feed: 'featured' }).feed, 'featured');
+  assert.throws(() => parseXueqiuFeedQuery({ platform: 'x' }), ValidationError);
 });
 
 test('trendforce feed query is the public page only', () => {

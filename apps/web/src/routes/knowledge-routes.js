@@ -196,6 +196,25 @@ export function createKnowledgeRoutes() {
       },
     },
     {
+      method: 'POST', path: /^\/api\/v1\/work-packages\/([0-9a-f-]{36})\/retry$/i,
+      async handler({ response, services, identity, events, params }) {
+        const workspaceId = identity?.device?.workspaceId || 'local';
+        const workPackage = services.knowledge.retryWorkPackage(workspaceId, params.values[0]);
+        const job = services.runtime.requestWorkPackageDispatch({
+          workspaceId,
+          workPackageId: workPackage.id,
+        });
+        services.knowledge.attachCursorSession(workspaceId, workPackage.id, { dispatchJobId: job.id });
+        events.flush();
+        json(response, 201, {
+          ok: true,
+          workPackage,
+          note: workPackage.note,
+          jobs: [{ id: job.id, type: job.type }],
+        });
+      },
+    },
+    {
       method: 'POST', path: /^\/api\/v1\/work-packages\/([0-9a-f-]{36})\/continue$/i,
       async handler({ request, response, services, identity, events, params }) {
         const workspaceId = identity?.device?.workspaceId || 'local';

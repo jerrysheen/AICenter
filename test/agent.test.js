@@ -460,11 +460,54 @@ test('agent HTTP endpoint accepts an authenticated question and exposes job stat
     assert.equal(detail.status, 200);
     const detailPayload = await detail.json();
     assert.ok(detailPayload.exchanges.some((item) => item.id === created.runId && item.status === 'queued'));
+    const claimed = app.store.claimNextJob('agent-progress-test', ['ai.agent.run']);
+    assert.equal(claimed.id, created.runId);
+    const liveTrace = createAgentTraceLog({ dataDirectory: directory, eventStore: app.store });
+    await liveTrace.append({
+      runId: created.runId,
+      workspaceId: 'local',
+      event: 'run.started',
+      detail: { message: '你好' },
+    });
+    await liveTrace.append({
+      runId: created.runId,
+      workspaceId: 'local',
+      event: 'tool.started',
+      detail: {
+        round: 0,
+        callId: 'status-call',
+        id: 'knowledge.search',
+        input: { query: '你好' },
+      },
+    });
     const status = await fetch(`${address.localUrl}/api/v1/agent/runs/${created.runId}`, { headers: { Cookie: cookie } });
     assert.equal(status.status, 200);
     const payload = await status.json();
-    assert.equal(payload.status, 'queued');
-    assert.deepEqual(payload.progress, []);
+    assert.equal(payload.status, 'running');
+    assert.equal(payload.phase, 'tool');
+    assert.ok(payload.revision > 0);
+    assert.equal(payload.progress.at(-1).toolId, 'knowledge.search');
+    assert.ok(app.store.listEvents(0).some((event) => (
+      event.name === 'runtime.agent-run.progressed.v1'
+      && event.payload.runId === created.runId
+    )));
+    app.store.completeJob(created.runId, {
+      aiRunId: '11111111-1111-4111-8111-111111111111',
+      sessionId: created.sessionId,
+    }, {
+      workerId: 'agent-progress-test',
+      attemptCount: claimed.attemptCount,
+    });
+    const retried = await fetch(`${address.localUrl}/api/v1/agent/runs/${created.runId}/retry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: '{}',
+    });
+    assert.equal(retried.status, 202);
+    const retryPayload = await retried.json();
+    assert.notEqual(retryPayload.runId, created.runId);
+    assert.equal(retryPayload.sessionId, created.sessionId);
+    assert.equal(retryPayload.phase, 'queued');
     const research = await fetch(`${address.localUrl}/api/v1/agent/runs`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({ message: '专业研究一下供给', researchMode: 'research' }),
@@ -626,7 +669,7 @@ test('runtime rejects a final answer that fabricates web.search usage', async ()
       respond: async ({ contents }) => {
         round += 1;
         if (round === 1) return { text: '我已经通过 web.search 查到今天没有加息', providerId: 'fake', modelId: 'fake' };
-        sawProvenanceNote = JSON.stringify(contents).includes('no web.search tool call exists');
+        sawProvenanceNote = JSON.stringify(contents).includes('no public-web tool call exists');
         return { text: '我没有调用联网工具，因此不能核实今天的加息情况。', providerId: 'fake', modelId: 'fake' };
       },
     },

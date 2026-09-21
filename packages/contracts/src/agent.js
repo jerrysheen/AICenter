@@ -39,6 +39,17 @@ export const CreateAgentRunInputSchema = z.object({
 
 export const AgentRunProgressStatusSchema = z.enum(['done', 'active', 'error']);
 
+export const AgentRunPhaseSchema = z.enum([
+  'queued',
+  'starting',
+  'model',
+  'tool',
+  'evidence',
+  'finalizing',
+  'completed',
+  'failed',
+]);
+
 export const AgentRunProgressStepSchema = z.object({
   at: EpochMillisSchema,
   event: z.string().trim().min(1).max(64),
@@ -47,6 +58,24 @@ export const AgentRunProgressStepSchema = z.object({
   status: AgentRunProgressStatusSchema,
   toolId: z.string().trim().min(1).max(64).nullable(),
   round: z.number().int().nonnegative().nullable(),
+}).strict();
+
+export const AgentRunResultSummarySchema = z.object({
+  aiRunId: EntityIdSchema.nullable(),
+  sessionId: EntityIdSchema.or(z.literal('')),
+}).strict();
+
+export const AgentRunStatusViewSchema = z.object({
+  runId: EntityIdSchema,
+  sessionId: EntityIdSchema.or(z.literal('')),
+  status: z.enum(['queued', 'running', 'completed', 'failed', 'cancelled']),
+  phase: AgentRunPhaseSchema,
+  revision: z.number().int().nonnegative(),
+  updatedAt: EpochMillisSchema,
+  progress: z.array(AgentRunProgressStepSchema).max(40),
+  result: AgentRunResultSummarySchema.nullable(),
+  error: z.unknown().nullable(),
+  job: z.unknown().optional(),
 }).strict();
 
 export const ActiveAgentRunSchema = z.object({

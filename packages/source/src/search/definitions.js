@@ -1,3 +1,9 @@
+/**
+ * LEGACY / LOCAL-RUNTIME ONLY
+ *
+ * `search.web` Source for the local Agent loop fallback. Production Ask does
+ * not register this Source; Harness uses built-in web_search / web_fetch.
+ */
 import { WebSearchInputSchema, WebSearchViewSchema } from '../schemas.js';
 
 function isAbortError(error, signal) {

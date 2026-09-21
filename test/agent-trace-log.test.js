@@ -73,8 +73,24 @@ test('agent trace log projects compact progress steps without tool payloads', as
     ]);
     assert.equal(rejected[0].label, '正在判断这一轮要读取什么');
     assert.equal(rejected[1].label, '正在整理回答');
-    assert.equal(rejected[1].detail, '今天没有加息');
+    assert.equal(rejected[1].detail, '');
     assert.equal(rejected[2].label, '回答未采纳，来源声称与 Tool 调用不符');
+    const terminal = projectAgentProgress([
+      { at: 5, event: 'model.requested', detail: { round: 0 } },
+      {
+        at: 6,
+        event: 'model.responded',
+        detail: {
+          round: 0,
+          answerPreview: 'internal reasoning must not appear',
+          toolCalls: [{ name: 'holdings_get', args: {} }],
+        },
+      },
+      { at: 7, event: 'run.completed', detail: { answer: '完成' } },
+    ]);
+    assert.equal(terminal.every((step) => step.status === 'done'), true);
+    assert.equal(JSON.stringify(terminal).includes('internal reasoning'), false);
+    assert.match(terminal[1].detail, /当前持仓/);
     const tagHit = projectAgentProgress([
       {
         at: 8, event: 'model.responded',

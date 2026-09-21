@@ -1,15 +1,15 @@
-# Search Agent V1
+# Article Analysis Skill
 
-当前产品入口：文章阅读（Article Reader）。
+历史名称：Search Agent V1。产品入口仍是「文章阅读」。
 内部 Job：`ai.article.analyze`。
 
-本文所说的 Search Agent，指 AI Center 中「读取一份材料 → 自己理解 → 按需查本地知识 / Web → 输出可读分析」的专用研究入口，不是单独的搜索引擎，也不是第二套 Agent Runtime。
+本文描述的是一个 **Article Analysis Skill**：Instruction + Domain Tool Scope + Output Goal。它不是第二个 Agent，也不是 DSH `skill-filesystem` 里的可发现 Skill 文件。生产上由 `ai.article.analyze` **明确调用**同一套 DeepSeek Harness；Harness 自己 reasoning / tool calling，再回调 AI Center Domain Tools。公开互联网仍是内置 `web_search` / `web_fetch`：`elucid-grok` 时搜索走 Grok 原生搜索，fetch 仍是 HTTP，不加 `web_read`。专用搜索插件以后再设计，当前不要另起循环，也不要打开 `@deepseek-ai/dsh-tool-skill`。
 
-实现入口与输入字段见 `docs/article-analysis-v1.md`。阅读框架的 Prompt 来源见 `knowledge/research/frameworks/article-analysis.md`。
+实现入口与输入字段见 `docs/article-analysis-v1.md`。阅读框架的 Prompt 来源见 `packages/runtime/src/article-analysis/article-analysis-skill.js` 与 `knowledge/research/frameworks/article-analysis.md`。
 
 ## 1. 定位
 
-Search Agent 解决的是一个很简单的问题：
+Article Analysis Skill 解决的是一个很简单的问题：
 
 > 给它一份我还没仔细看的材料，让 AI 先读懂，再决定应该怎么展开、要不要查资料，最后给我一份可以直接阅读的分析。
 
@@ -27,17 +27,19 @@ Search Agent 解决的是一个很简单的问题：
 ## 2. 总体架构
 
 ```text
-Article Source
+AI Center Job（ai.article.analyze）
     │
     ▼
-Article Reader Instruction
+Article Analysis Skill
+  Instruction + knowledge.search/get + Markdown 输出目标
     │
     ▼
-AgentRuntime
+DeepSeek Harness（同一套 agentRuntime.run）
     │
-    ├── knowledge.search
-    ├── knowledge.get
-    └── web.search
+    ├── knowledge.search   ← Domain Tool
+    ├── knowledge.get      ← Domain Tool
+    ├── web_search         ← Harness 基建
+    └── web_fetch          ← Harness 基建
     │
     ▼
 Markdown Analysis
@@ -52,11 +54,12 @@ AiRun
 POST /api/v1/article-analysis/runs
     → ai.article.analyze
     → ArticleAnalysisRunner
-    → AgentRuntime.run(...)
+    → articleAnalysisSkillInvocation()
+    → agentRuntime.run({ taskInstruction, allowedToolIds, ... })
     → AiRun
 ```
 
-它没有自己的 Tool Loop。真正的模型循环、Tool Calling、预算、并发和 Tool 结果回填全部复用现有 AgentRuntime。
+它没有自己的 Tool Loop，也没有 Knowledge / News 程序分支。真正的模型循环、Tool Calling、预算、并发和 Tool 结果回填全部复用现有 `agentRuntime.run()`（生产上是 Harness 适配器）。Knowledge / News / Mixed 只是同一次 Run 内部的分析框架。
 
 ## 3. 为什么这样设计
 
@@ -105,7 +108,7 @@ V1 冻结后的原则是：
 
 如果已有本地知识能帮助连接认知，可以调用 `knowledge.search` / `knowledge.get`。
 
-如果材料依赖重要的外部事实，也允许调用 `web.search` 核验；Knowledge 不等于禁止联网。
+如果材料依赖重要的外部事实，也允许调用 Harness 内置 `web_search` / `web_fetch` 核验；Knowledge 不等于禁止联网。本地循环回退才使用 Domain `web.search`。
 
 ### News
 
@@ -133,18 +136,24 @@ Evidence 必须来自 Tool Result，不能把模型训练记忆伪装成已搜�
 
 ### Mixed
 
-一篇材料可以同时含 News 和 Knowledge。
+一篇材料可以同时含 News 和 Knowledge。由模型自己判断主线，同时保留另一部分，而不是看到「今天 / 发布 / 新产品」就自动判成 News。
 
-AI 应判断哪一部分承载主要价值，同时保留另一部分，而不是看到「今天 / 发布 / 新产品」就自动判成 News。
+例如一篇新发布的技术文章：
+
+- News：「今天发布了新架构」
+- Knowledge：「新架构怎么工作、为什么这样设计」
+
+主线可能是机制，发布只是事件；也可能反过来。这发生在同一次 Harness Run 里，不要先单独请求分类。
 
 ## 5. Tool 边界
 
-Article Reader 当前只看得到：
+Article Analysis Skill 当前只看得到：
 
 ```text
 knowledge.search
 knowledge.get
-web.search
+web_search   ← Harness 基建，始终可用
+web_fetch    ← Harness 基建，始终可用
 ```
 
 明确不暴露：
@@ -166,38 +175,48 @@ memory.save
 - 模型可以不调用任何 Tool。
 - Knowledge 不要求一定查知识库。
 - News 不要求每个 Claim 都搜。
-- `web.search` 可见不代表必须联网。
+- 公开互联网可用不代表必须联网。
 - Tool 失败时尽量基于已有材料继续，并明确证据不足。
 - 本地 Knowledge FTS 查询在进入 SQLite `MATCH` 前必须转义，模型生成的 `non-autoregressive`、`C++` 等普通文本不能被当成 FTS 语法。
 
-## 6. AgentRuntime 复用方式
+## 6. 执行器复用方式
 
-Article Reader 只在通用 `AgentRuntime.run()` 上增加任务上下文：
+Article Analysis Skill 只在通用 `agentRuntime.run()` 上做一次明确调用（生产执行器是 Harness）：
 
 ```js
 agentRuntime.run({
   message: articleText,
-  taskInstruction: ARTICLE_READER_INSTRUCTION,
+  ...articleAnalysisSkillInvocation(agentRuntime),
+})
+```
+
+展开后等价于：
+
+```js
+agentRuntime.run({
+  message: articleText,
+  taskInstruction: ARTICLE_ANALYSIS_SKILL_INSTRUCTION,
   allowedToolIds: [
     'knowledge.search',
     'knowledge.get',
-    'web.search',
   ],
   webMode: 'always',
   enableAuxiliarySearch: false,
 })
 ```
 
+Skill 本质就是这三项：Instruction、Domain Tool Scope、Output Goal。不要设计 Skill class / registry / lifecycle，也不要把 DSH 的 skill 工具打开给文章阅读。
+
 两个通用扩展点：
 
-- `taskInstruction`：在同一个 Agent 上切换任务认知框架。
-- `allowedToolIds`：收窄本任务可见的 Tool Table。
+- `taskInstruction`：在同一个 Harness Run 上切换任务认知框架。
+- `allowedToolIds`：收窄本任务可见的 Domain Tool Table。
 
-这两个能力不属于 Article Reader 私有逻辑，以后其他专用任务也可以复用。
+这两个能力不属于文章阅读私有逻辑，以后其他专用任务也可以复用。
 
 ### Auxiliary Search
 
-Article Reader 显式使用：
+Skill 显式使用：
 
 ```text
 enableAuxiliarySearch = false
@@ -205,7 +224,7 @@ enableAuxiliarySearch = false
 
 因此普通 Ask Agent 的豆包补充检索 sidecar 不会自动在文章分析末尾追加「补充资讯」。
 
-Article Reader 的外部事实只通过显式 `web.search` Tool 进入主模型上下文，由主模型自己综合。
+Skill 的外部事实通过 Harness 内置 `web_search` / `web_fetch` 进入主模型上下文，由主模型自己综合。Domain allowlist 只有 `knowledge.search` / `knowledge.get`。本地循环回退才把 Domain `web.search` 加进 allowlist。
 
 ## 7. Job 与进度
 
@@ -263,7 +282,7 @@ AiRun.outputText = Markdown Analysis
 - Claim / Evidence 状态机
 - 自动 KnowledgeDocument
 
-当前 Article Reader 输出 Contract 上限为 40,000 字，用来避免早期 8,000 字静默截断。
+当前 Skill 输出 Contract 上限为 40,000 字，用来避免早期 8,000 字静默截断。
 
 如果用户以后决定「这篇值得沉淀」，再走独立的 Knowledge 保存 / 蒸馏流程。
 
@@ -271,9 +290,9 @@ AiRun.outputText = Markdown Analysis
 
 ## 9. Jev 的位置
 
-Search Agent 不新增 Jev Router，也不另建 Article Stage Reviewer。
+Article Analysis Skill 不新增 Jev Router，也不另建 Article Stage Reviewer。
 
-Article Reader 进入的仍是同一个 AgentRuntime。`search.web` 当前默认走 DeepSeek Native Search，只回结构化 title / url / snippet / publishedAt；Jev Evidence Gate 再对 `web.search` / `knowledge.search` 结果打 Relevance / Evidence / Quality，再问 Sufficiency。低相关结果不进入模型 Context，也不进入 Source Footer。
+Skill 进入的仍是同一套生产执行器（Harness）。公开互联网走 Harness 内置 `web_search` / `web_fetch`。Jev Evidence Gate 只过滤 Gateway 上的 `knowledge.search` / `feed.search`；内置 web 由 Reviewer 从 Session 轨迹观察。
 
 Jev 仍然不：
 
@@ -294,7 +313,7 @@ Jev 仍然不：
 ```text
 packages/runtime/src/article-analysis/
   article-analysis-module.js
-  article-analysis-prompts.js
+  article-analysis-skill.js
   article-analysis-runner.js
 
 packages/runtime/src/agent-runtime.js
@@ -335,7 +354,10 @@ test/article-analysis-runtime.test.js
 - 大型 Artifact Contract
 - JSON repair
 - 自动写入 Knowledge
-- 为 Article Reader 再造第二个 Agent
+- 为文章阅读再造第二个 Agent
+- Skill class / registry / lifecycle
+- 打开 DSH `skill-filesystem` / `tool-skill` 来加载本文
+- 先单独请求模型判断 Knowledge / News，再走程序 if/else
 
 如果阅读质量不够，优先调整：
 
@@ -343,7 +365,7 @@ test/article-analysis-runtime.test.js
 - 阅读框架 / Prompt
 - Tool 描述和 Tool 能力
 - 模型档位
-- 通用 AgentRuntime 能力
+- 通用执行器能力（Harness；不要另建 Article Runtime）
 
 不要优先增加 Workflow 分支。
 
@@ -370,14 +392,14 @@ test/article-analysis-runtime.test.js
 ```text
 理解 What changed
 → 找出真正关键的事实
-→ 按需 web.search
+→ 按需 web_search / web_fetch
 → 基于 Tool Result 判断哪些已支持、哪些未确认
 → 返回正常 Markdown
 ```
 
 ### 工程验收
 
-- 只暴露 3 个允许 Tool。
+- Domain 只暴露 `knowledge.search` / `knowledge.get`。公开互联网是 Harness 内置 `web_search` / `web_fetch`。
 - 不自动启动 Auxiliary Search。
 - `knowledge.search` 对 FTS 特殊字符安全。
 - Progress 在长请求中持续更新。
@@ -387,6 +409,6 @@ test/article-analysis-runtime.test.js
 
 ## 13. 一句话定义
 
-> Search Agent = 同一个 AgentRuntime + 一套文章阅读框架 + 受限的 Knowledge/Web Tool。
+> Article Analysis Skill = 同一套生产执行器（Harness）上的明确调用：阅读框架 Instruction + Domain `knowledge.search` / `knowledge.get` + Markdown 输出目标。
 
 它的目标不是把文章「结构化入库」，而是先把文章读懂、查清、讲明白。

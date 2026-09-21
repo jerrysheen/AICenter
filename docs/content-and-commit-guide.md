@@ -62,6 +62,7 @@ apps/
 packages/contracts/
 packages/domain/
 packages/runtime/
+packages/harness/
 packages/source/
 packages/connectors/
 packages/database/
@@ -73,6 +74,7 @@ packages/instance/
 * Web / Harmony UI
 * Domain Service
 * Agent Runtime
+* DeepSeek Harness 执行器（冻结 `dsh-base`，不 fork）
 * Tool Registry
 * Source / Connector
 * 数据 Contract
