@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { HistorySeriesSchema, MarketBoardViewSchema, QuoteListSchema, SymbolSearchSchema } from '../schemas.js';
+import { HistorySeriesSchema, IndexWeightSeriesSchema, MarketBoardViewSchema, MarketMetricSeriesSchema, QuoteListSchema, SymbolSearchSchema } from '../schemas.js';
 import { projectMarketBoardForAI, marketBoardAiWarnings } from '../source-projections.js';
 
 const BoardInputSchema = z.object({
@@ -17,8 +17,17 @@ const HistoryInputSchema = z.object({
   symbols: z.array(z.string().trim().min(1).max(64)).min(1).max(200),
   range: z.string().trim().min(1).max(16).default('3mo'),
   interval: z.string().trim().min(1).max(16).default('1d'),
+  ohlc: z.boolean().default(false),
 }).strict();
 const SearchInputSchema = z.object({ query: z.string().trim().min(1).max(64) }).strict();
+const MetricHistoryInputSchema = z.object({
+  symbol: z.string().trim().min(1).max(64),
+  range: z.enum(['1mo', '3mo', '6mo', '1y', '2y', '5y', 'max']).default('5y'),
+}).strict();
+const IndexWeightInputSchema = z.object({
+  index: z.string().trim().regex(/^\d{6}(?:\.(?:SH|SZ|SS))?$/i),
+  range: z.enum(['1y', '2y', '5y', 'max']).default('5y'),
+}).strict();
 
 const boardMeta = {
   overview: ['市场概览', ['read', 'refresh']],
@@ -39,7 +48,7 @@ export function createMarketSourceDefinitions(marketService) {
       visibility: 'public',
       viewKind: 'market-board',
       capabilities,
-      refresh: { ttlMs: 20_000 },
+      refresh: { ttlMs: board === 'overview' ? 0 : 20_000 },
       guideRefs: board === 'global'
         ? ['finance.metric.us10y', 'finance.metric.dxy', 'finance.metric.vix']
         : [],
@@ -65,11 +74,16 @@ export function createMarketSourceDefinitions(marketService) {
         : [],
     },
     {
-      manifest: { id: 'market.history', title: '历史行情', category: 'market', providerId: 'yahoo', visibility: 'internal', viewKind: 'history-series', capabilities: ['read', 'refresh'], refresh: { ttlMs: 20_000 }, guideRefs: [] },
+      manifest: { id: 'market.history', title: '历史行情', category: 'market', providerId: 'market-composite', visibility: 'internal', viewKind: 'history-series', capabilities: ['read', 'refresh'], refresh: { ttlMs: 20_000 }, guideRefs: [] },
       inputSchema: HistoryInputSchema,
       outputSchema: HistorySeriesSchema,
       read: (input, context) => marketService.fetchHistory
-        ? marketService.fetchHistory(input.symbols, { range: input.range, interval: input.interval, refresh: Boolean(context.refresh) })
+        ? marketService.fetchHistory(input.symbols, {
+          range: input.range,
+          interval: input.interval,
+          ohlc: Boolean(input.ohlc),
+          refresh: Boolean(context.refresh),
+        })
         : [],
     },
     {
@@ -77,6 +91,55 @@ export function createMarketSourceDefinitions(marketService) {
       inputSchema: SearchInputSchema,
       outputSchema: SymbolSearchSchema,
       read: (input) => marketService.search(input.query),
+    },
+    {
+      manifest: {
+        id: 'market.metrics.history',
+        title: '个股指标历史',
+        category: 'market',
+        providerId: 'market-composite',
+        visibility: 'internal',
+        viewKind: 'metric-series',
+        capabilities: ['read'],
+        refresh: { ttlMs: 6 * 60 * 60_000 },
+        guideRefs: [],
+      },
+      inputSchema: MetricHistoryInputSchema,
+      outputSchema: MarketMetricSeriesSchema,
+      read: (input) => (marketService.fetchMetricHistory
+        ? marketService.fetchMetricHistory(input.symbol, { range: input.range })
+        : {
+          symbol: String(input.symbol || '').toUpperCase(),
+          range: input.range,
+          status: 'unavailable',
+          points: [],
+          factors: [],
+          warnings: ['指标历史不可用'],
+        }),
+    },
+    {
+      manifest: {
+        id: 'market.index.weights',
+        title: '指数成分权重',
+        category: 'market',
+        providerId: 'market-composite',
+        visibility: 'internal',
+        viewKind: 'index-weights',
+        capabilities: ['read'],
+        refresh: { ttlMs: 12 * 60 * 60_000 },
+        guideRefs: [],
+      },
+      inputSchema: IndexWeightInputSchema,
+      outputSchema: IndexWeightSeriesSchema,
+      read: (input) => (marketService.fetchIndexWeights
+        ? marketService.fetchIndexWeights(input.index, { range: input.range })
+        : {
+          index: String(input.index || '').replace(/\D/g, '').slice(0, 6) || '000000',
+          range: input.range,
+          status: 'unavailable',
+          snapshots: [],
+          warnings: ['指数权重不可用'],
+        }),
     },
   ];
 }

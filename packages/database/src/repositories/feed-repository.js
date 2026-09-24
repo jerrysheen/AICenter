@@ -488,6 +488,24 @@ export function createFeedRepository(database, emitEvent) {
       return rows.map(mapContentItem);
     },
 
+    listContentItemsInWindow(workspaceId, { startAt, endAt, limit = 200 } = {}) {
+      const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
+      const rows = database.prepare(`SELECT ci.*, c.captured_at AS captured_at
+        FROM content_items ci
+        LEFT JOIN captures c ON c.id = ci.capture_id
+        WHERE ci.workspace_id = ?
+          AND ${VISIBLE_CONTENT_SQL}
+          AND COALESCE(ci.published_at, ci.created_at) >= ?
+          AND COALESCE(ci.published_at, ci.created_at) < ?
+        ORDER BY COALESCE(ci.published_at, ci.created_at) ASC, ci.id ASC
+        LIMIT ?`).all(workspaceId, Number(startAt), Number(endAt), safeLimit);
+      return rows.map((row) => ({
+        ...mapContentItem(row),
+        capturedAt: row.captured_at ?? null,
+        eventAt: row.published_at ?? row.created_at,
+      }));
+    },
+
     saveTranslations(values) {
       const records = (Array.isArray(values) ? values : [values])
         .map((value) => parseContract(SaveFeedItemTranslationInputSchema, value));

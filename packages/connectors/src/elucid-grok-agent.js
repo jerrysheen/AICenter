@@ -3,7 +3,7 @@ import { request as httpsRequest } from 'node:https';
 import { modelIdForProfile } from './agent-model-profile.js';
 
 const DEFAULT_ROOT = 'https://hk.getelucid.com/v1';
-const DEFAULT_MODEL = 'grok-4.6';
+const DEFAULT_MODEL = 'grok-4.7';
 export const ELUCID_GROK_DEFAULT_TIMEOUT_MS = 90_000;
 export const ELUCID_GROK_MAX_TIMEOUT_MS = 600_000;
 

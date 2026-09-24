@@ -3,6 +3,8 @@ import {
   ContextBuildToolInputSchema, EmptyAgentToolInputSchema, FeedSearchToolInputSchema,
   FeedTagSearchToolInputSchema, HoldingsRankToolInputSchema, KnowledgeGetToolInputSchema, KnowledgeSearchToolInputSchema,
   OfficialSourceGetToolInputSchema, SaveStructuredArtifactToolInputSchema, StaticSignalsListToolInputSchema,
+  StockStatsToolInputSchema,
+  BasketStatsToolInputSchema,
   WebSearchToolInputSchema,
 } from '../../contracts/src/index.js';
 import { formatTaxonomyPath } from '../../domain/src/knowledge-service.js';
@@ -65,6 +67,7 @@ const MARKET_GLOBAL_DESCRIPTION = '读取当前全球市场价格与行情快照
  */
 export function createLocalToolRegistry({
   contextService, feedService, knowledgeService, tradingService, taggingService = null, sourcePort,
+  marketStatisticsService = null,
   includeLegacyWebSearch = false,
 } = {}) {
   if (!contextService || !feedService || !knowledgeService || !tradingService) {
@@ -193,7 +196,7 @@ export function createLocalToolRegistry({
 
   registry.register({
     id: 'market.overview.get', effect: 'read',
-    description: '读取当前市场概览、涨跌和宽度。北京时间工作日 17:00 前是 A 股与港股观察，之后及周末是美股观察。不要顺手再调 market.global.get。',
+    description: '读取当前市场概览、涨跌和宽度。北京时间工作日 05:00–17:00 是 A 股与港股观察，17:00 后至次日 05:00 及周末是美股观察。不要顺手再调 market.global.get。',
     inputSchema: EmptyAgentToolInputSchema,
     async execute() {
       if (!sourcePort) {
@@ -403,6 +406,42 @@ export function createLocalToolRegistry({
         : ref('knowledge-revision', saved.resourceId, saved.title)], Date.now());
     },
   });
+
+  if (marketStatisticsService?.getStockStatistics) {
+    registry.register({
+      id: 'market.stock.stats',
+      effect: 'read',
+      description: '用于读取某只股票的确定性统计：当前价格、收益、回撤、波动率、估值与历史百分位、换手和数据覆盖。只返回事实，不判断贵贱，也不给出买卖建议。',
+      inputSchema: StockStatsToolInputSchema,
+      async execute(input) {
+        const statistics = await marketStatisticsService.getStockStatistics(input);
+        return result(
+          statistics,
+          [ref('stock-statistics', statistics.instrument.symbol, statistics.instrument.name || statistics.instrument.symbol, { asOf: statistics.asOf })],
+          statistics.asOf,
+          statistics.warnings,
+        );
+      },
+    });
+  }
+
+  if (marketStatisticsService?.getBasketStatistics) {
+    registry.register({
+      id: 'market.basket.stats',
+      effect: 'read',
+      description: '用于读取一篮子指数成分的确定性统计：成分覆盖、按盈利收益率聚合的市盈率、按净资产收益率聚合的市净率、加权股息率、收益、回撤和均线广度。只返回事实，不判断贵贱，也不给出买卖建议。',
+      inputSchema: BasketStatsToolInputSchema,
+      async execute(input) {
+        const basket = await marketStatisticsService.getBasketStatistics(input);
+        return result(
+          basket,
+          [ref('market-basket', basket.index, basket.name || basket.index, { asOf: basket.asOf })],
+          basket.asOf || Date.now(),
+          basket.warnings,
+        );
+      },
+    });
+  }
 
   return registry;
 }

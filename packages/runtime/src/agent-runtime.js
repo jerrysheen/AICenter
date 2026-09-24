@@ -128,6 +128,7 @@ export function createAgentRuntime({
       priorTurns = [], selectedContext = '', webMode = 'off',
       researchMode = 'standard', researchProfile, taskInstruction = '',
       allowedToolIds, timeoutMs, enableAuxiliarySearch = true, trace, now,
+      closedContext = false,
     }) {
       const runStartedAt = Date.now();
       const runtimeContext = buildRuntimeContext(now ?? clock(), timeZone);
@@ -137,9 +138,11 @@ export function createAgentRuntime({
       const profile = researchProfile?.mode
         ? researchProfile
         : resolveResearchProfile(researchMode);
-      const toolDefinitions = toolsVisibleForAllowlist(
+      const closed = closedContext === true;
+      const effectiveWebMode = closed ? 'off' : webMode;
+      const toolDefinitions = closed ? [] : toolsVisibleForAllowlist(
         toolsVisibleForResearchProfile(
-          toolsVisibleForWebMode(tools.list(), webMode),
+          toolsVisibleForWebMode(tools.list(), effectiveWebMode),
           profile,
         ),
         allowedToolIds,
@@ -170,7 +173,7 @@ export function createAgentRuntime({
       let toolCallCount = 0;
       let rejectedAnswers = 0;
       const priorInput = {
-        message, webMode, researchMode: profile.mode, tools: toolDefinitions, signal,
+        message, webMode: effectiveWebMode, researchMode: profile.mode, tools: toolDefinitions, signal,
       };
       const priorTask = quality?.advisePrior && quality.config?.priorMode !== 'off'
         ? quality.advisePrior(priorInput)
@@ -192,7 +195,14 @@ export function createAgentRuntime({
         ? formatPriorHint(qualityPrior.scores)
         : '';
       const systemInstruction = [
-        buildAgentSystemInstruction(webMode, profile),
+        closed
+          ? [
+            '本任务是封闭材料任务。',
+            '只能依据下方给定材料。',
+            '本轮没有开放任何外部工具或互联网能力。',
+            '材料没有的信息必须保持未知。',
+          ].join('\n')
+          : buildAgentSystemInstruction(effectiveWebMode, profile),
         String(taskInstruction || '').trim(),
         priorHint,
       ].filter(Boolean).join('\n\n');
@@ -314,7 +324,7 @@ export function createAgentRuntime({
         const functionResponses = await mapConcurrent(planned, concurrency, async ({ call, callId, definition }) => {
           const toolStartedAt = Date.now();
           const input = call.args ?? {};
-          const startAuxiliary = enableAuxiliarySearch !== false
+          const startAuxiliary = !closed && enableAuxiliarySearch !== false
             && definition.id === 'web.search'
             && !auxiliaryHandle
             && auxiliarySearch?.begin;

@@ -607,6 +607,33 @@ export function createTradingRepository(database, emitEvent) {
       });
       return merge();
     },
+
+    getMarketHistoryCache(symbol, rangeKey, intervalKey) {
+      const row = database.prepare(`SELECT bars_json, updated_at FROM market_history_cache
+        WHERE symbol = ? AND range_key = ? AND interval_key = ?`)
+        .get(String(symbol || ''), String(rangeKey || ''), String(intervalKey || ''));
+      if (!row) return null;
+      try {
+        const bars = JSON.parse(row.bars_json);
+        if (!Array.isArray(bars) || !bars.length) return null;
+        return { bars, updatedAt: row.updated_at };
+      } catch {
+        return null;
+      }
+    },
+
+    putMarketHistoryCache({ symbol, range, interval, bars, updatedAt }) {
+      if (!Array.isArray(bars) || !bars.length) return;
+      const payload = JSON.stringify(bars);
+      if (payload.length > 1_500_000) return;
+      database.prepare(`INSERT INTO market_history_cache
+        (symbol, range_key, interval_key, bars_json, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(symbol, range_key, interval_key) DO UPDATE SET
+          bars_json = excluded.bars_json,
+          updated_at = excluded.updated_at`)
+        .run(String(symbol || ''), String(range || ''), String(interval || ''), payload, Number(updatedAt) || Date.now());
+    },
   };
   return Object.freeze(repository);
 }

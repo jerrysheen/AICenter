@@ -1,9 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import Database from 'better-sqlite3';
 import { createFeedService } from '../packages/domain/src/feed-service.js';
 import { createTradingService } from '../packages/domain/src/trading-service.js';
 import { createContextService } from '../packages/domain/src/context-service.js';
 import { ValidationError } from '../packages/contracts/src/index.js';
+import { runMigrations } from '../packages/database/src/migrations.js';
+import { createTradingRepository } from '../packages/database/src/repositories/trading-repository.js';
 
 function noOpRepository(extra = {}) {
   return new Proxy(extra, {
@@ -366,6 +372,41 @@ test('trading service uses a market-data port without provider-specific fields',
   const dashboard = await service.getPersonalAssetDashboard();
   assert.equal(dashboard.source, 'workbook');
   assert.equal(dashboard.points.length, 0);
+});
+
+test('quote history stays on the server cache and does not refetch upstream', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-history-cache-'));
+  const database = new Database(path.join(directory, 'test.db'));
+  runMigrations(database);
+  const repository = createTradingRepository(database, () => {});
+  let calls = 0;
+  let now = 1_000_000;
+  const bars = [{ at: 1, open: 1, high: 2, low: 1, close: 2, volume: 3 }];
+  const service = createTradingService({
+    tradingRepository: repository,
+    now: () => now,
+    sourcePort: marketSourcePort({
+      async fetchHistory() {
+        calls += 1;
+        return [{ symbol: 'AAPL', bars }];
+      },
+    }),
+  });
+  try {
+    const first = await service.getQuoteHistory({ symbol: 'aapl', range: '2y', interval: '1d' });
+    const second = await service.getQuoteHistory({ symbol: 'AAPL', range: '2y', interval: '1d' });
+    assert.equal(calls, 1);
+    assert.equal(second.updatedAt, first.updatedAt);
+    assert.equal(second.bars[0].close, 2);
+    now += 6 * 60 * 60 * 1000;
+    await service.getQuoteHistory({ symbol: 'AAPL', range: '2y', interval: '1d' });
+    assert.equal(calls, 2);
+    await service.getQuoteHistory({ symbol: 'AAPL', range: '2y', interval: '1d', refresh: true });
+    assert.equal(calls, 3);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('context service combines current knowledge, relevant feed, and holdings through domain ports', async () => {

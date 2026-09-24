@@ -14,8 +14,8 @@ export const SourceIdSchema = z.string().trim()
 export const SourceCategorySchema = z.enum(['market', 'content', 'search', 'calendar', 'policy']);
 export const SourceVisibilitySchema = z.enum(['public', 'internal']);
 export const SourceViewKindSchema = z.enum([
-  'market-board', 'quote-list', 'history-series', 'content-feed', 'search-results',
-  'calendar', 'official-release', 'official-detail', 'prediction-market', 'crypto-derivatives', 'stablecoin-liquidity',
+  'market-board', 'quote-list', 'history-series', 'metric-series', 'content-feed', 'search-results',
+  'calendar', 'official-release', 'official-detail', 'index-weights', 'prediction-market', 'crypto-derivatives', 'stablecoin-liquidity',
 ]);
 
 const NullableDecimalStringSchema = z.string().trim()

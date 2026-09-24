@@ -40,7 +40,7 @@ function agentRunPhase(job, progress = []) {
   return 'starting';
 }
 
-export function createRuntimeService({ runtimeRepository, agentProgressPort, restartPort }) {
+export function createRuntimeService({ runtimeRepository, agentProgressPort, restartPort, dailyConfig = null }) {
   if (!runtimeRepository) throw new Error('runtimeRepository is required');
 
   return Object.freeze({
@@ -56,6 +56,43 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort, res
         type: 'system.healthcheck',
         input: { requestedAt },
         maxAttempts: 1,
+      });
+    },
+    requestDailyReport(input = {}) {
+      const reportDate = input.reportDate || input.date;
+      if (reportDate !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(String(reportDate))) {
+        throw new ValidationError('日报日期必须是 YYYY-MM-DD', ['date']);
+      }
+      const config = dailyConfig || {};
+      return runtimeRepository.createJob({
+        type: 'report.daily.generate',
+        workspaceId: input.workspaceId || 'local',
+        maxAttempts: 2,
+        input: {
+          ...(reportDate ? { reportDate } : {}),
+          ...(config.timezone ? { timezone: config.timezone } : {}),
+          ...(Number.isInteger(config.cutoffHour) ? { cutoffHour: config.cutoffHour } : {}),
+          ...(Number.isInteger(config.cutoffMinute) ? { cutoffMinute: config.cutoffMinute } : {}),
+        },
+      });
+    },
+    requestDailyBrief(input = {}) {
+      const reportId = String(input.reportId || '').trim();
+      if (!reportId) throw new ValidationError('缺少日报', ['reportId']);
+      const workspaceId = input.workspaceId || 'local';
+      return runtimeRepository.createJob({
+        type: 'report.daily.brief.generate',
+        workspaceId,
+        maxAttempts: 2,
+        input: { workspaceId, reportId },
+      });
+    },
+    requestDividendSnapshot(input = {}) {
+      return runtimeRepository.createJob({
+        type: 'strategy.cn-dividend.snapshot',
+        workspaceId: input.workspaceId || 'local',
+        maxAttempts: 2,
+        input: {},
       });
     },
     requestAgentRun(input) {

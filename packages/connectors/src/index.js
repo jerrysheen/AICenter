@@ -1,5 +1,12 @@
 export { ConnectorProcessError, createJsonProcessAdapter } from './process-json-adapter.js';
-export { createYahooClient, quoteFromSpark, parseMarketSession } from './yahoo.js';
+export { createYahooClient, barsFromChart, quoteFromSpark, parseMarketSession, seriesFromSpark } from './yahoo.js';
+export {
+  createTushareClient,
+  isTushareDailySymbol,
+  seriesFromTushareDaily,
+  tushareCodeToYahoo,
+  yahooToTushareCode,
+} from './tushare.js';
 export { createCnQuoteClient, isCnBShareYahooSymbol, isCnFundYahooSymbol, isCnYahooSymbol, quoteFromHithinkItem, thscodeToYahoo, yahooToThscode } from './cn-quotes.js';
 export {
   createXueqiuQuoteClient,

@@ -17,6 +17,7 @@ import { aggregateEvidenceGate, applyHarnessEvidenceGate } from './evidence.js';
 import {
   harnessPatchPath,
   harnessPluginPath,
+  materializeClosedContextPatch,
   materializeHarnessPatch,
   resolveHarnessLaunch,
 } from './launch.js';
@@ -71,8 +72,19 @@ function visibleDomainToolIds(tools, { researchProfile, configuredIds }) {
   ).map((tool) => tool.id));
 }
 
-function engineKey({ workspaceId, allow, provider, model }) {
-  return `${workspaceId || ''}::${provider || ''}::${model || ''}::${allow.join(',')}`;
+function engineKey({ workspaceId, allow, provider, model, closedContext = false }) {
+  return `${workspaceId || ''}::${provider || ''}::${model || ''}::${closedContext ? 'closed' : 'open'}::${allow.join(',')}`;
+}
+
+export function resolveHarnessRunTools(tools, {
+  closedContext = false,
+  researchProfile,
+  configuredIds,
+} = {}) {
+  if (closedContext) return { allow: [], catalog: [], visibleTools: [] };
+  const allow = visibleDomainToolIds(tools, { researchProfile, configuredIds });
+  const catalog = projectToolCatalog(tools, allow);
+  return { allow, catalog, visibleTools: withHarnessWebTools(catalog) };
 }
 
 function stableValue(value) {
@@ -223,13 +235,14 @@ export function createHarnessAgentRuntime({
     try { await rm(current.tempRoot, { recursive: true, force: true }); } catch {}
   }
 
-  async function ensureEngine({ allow, catalog, workspaceId, timeoutMs, researchProfile }) {
+  async function ensureEngine({ allow, catalog, workspaceId, timeoutMs, researchProfile, closedContext = false }) {
     const llm = resolveHarnessLlm(env, { researchProfile });
     const key = engineKey({
       workspaceId,
       allow,
       provider: llm.provider,
       model: llm.model,
+      closedContext,
     });
     if (engine?.key === key) return engine;
     await disposeEngine();
@@ -274,9 +287,12 @@ export function createHarnessAgentRuntime({
     const catalogPath = path.join(tempRoot, 'tool-catalog.json');
     const overlayPath = path.join(tempRoot, 'aicenter.cordis.yml');
     await writeFile(catalogPath, JSON.stringify({ tools: catalog }, null, 2), 'utf8');
+    const patchSource = await readFile(harnessPatchPath(), 'utf8');
     await writeFile(
       overlayPath,
-      materializeHarnessPatch(await readFile(harnessPatchPath(), 'utf8'), harnessPluginPath()),
+      closedContext
+        ? materializeClosedContextPatch(patchSource, harnessPluginPath())
+        : materializeHarnessPatch(patchSource, harnessPluginPath()),
       'utf8',
     );
     const launch = resolveHarnessLaunch({
@@ -337,7 +353,7 @@ export function createHarnessAgentRuntime({
     message, workspaceId, sessionId = '', jobId = '', selectedRefs = [], signal,
     priorTurns = [], selectedContext = '', webMode = 'off',
     researchMode = 'standard', researchProfile, taskInstruction = '',
-    allowedToolIds: runAllow, timeoutMs, trace, now,
+    allowedToolIds: runAllow, timeoutMs, trace, now, closedContext = false,
   } = {}) {
     const runStartedAt = Date.now();
     const runtimeContext = buildRuntimeContext(now ?? clock(), timeZone);
@@ -351,12 +367,13 @@ export function createHarnessAgentRuntime({
     if (missingHarnessLlmCredential(env, llm)) {
       throw new Error(harnessLlmCredentialError(llm));
     }
-    const allow = visibleDomainToolIds(tools, {
+    const closed = closedContext === true;
+    const selection = resolveHarnessRunTools(tools, {
+      closedContext: closed,
       researchProfile: profile,
       configuredIds: runAllow ?? configuredIds,
     });
-    const catalog = projectToolCatalog(tools, allow);
-    const visibleTools = withHarnessWebTools(catalog);
+    const { allow, catalog, visibleTools } = selection;
     const warnings = [];
     const toolDefinitions = visibleTools.map((tool) => ({ id: tool.id, description: tool.description, effect: tool.effect }));
     runRef.current = {
@@ -394,7 +411,9 @@ export function createHarnessAgentRuntime({
 
     let slot;
     try {
-      slot = await ensureEngine({ allow, catalog, workspaceId, timeoutMs, researchProfile: profile });
+      slot = await ensureEngine({
+        allow, catalog, workspaceId, timeoutMs, researchProfile: profile, closedContext: closed,
+      });
     } catch (error) {
       await record('run.failed', {
         runtime: 'harness',
@@ -426,6 +445,7 @@ export function createHarnessAgentRuntime({
           taskInstruction,
           runtimeContext,
           catalog: visibleTools,
+          closedContext: closed,
         }),
         priorHint,
       ].filter(Boolean).join('\n\n');
@@ -483,7 +503,7 @@ export function createHarnessAgentRuntime({
       let answer = String(result?.finalResponse || '').trim();
       if (!answer) throw new Error('Harness 没有返回回答');
       let rejectedAnswers = 0;
-      const webSearchAvailable = true;
+      const webSearchAvailable = !closed;
       const evidence = webSearchEvidence(toolCalls);
       let decision = resolveFinalAnswer({
         answer,

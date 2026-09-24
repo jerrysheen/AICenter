@@ -198,7 +198,7 @@ Jev Prior + Reviewer 打分 / 标签
 | Follow-up Prior | Observation-1 未实现 |
 | 真实评估 | 下一步积累 30–100 条 |
 | Advisory | 暂不开启 |
-| Harness | 生产默认。Ask 与文章阅读共用冻结 `dsh-base`；公开互联网是内置 `web_search` / `web_fetch`；Domain Tool 走 Gateway。主模型只看 `AI_CENTER_HARNESS_PROVIDER`（DeepSeek 官方或 Elucid Grok）。`elucid-grok` 时搜索走 Grok 原生 `web_search`，fetch 仍是 HTTP。`device-operate` 保持 Host 工具关闭。资料搜索以后做成插件。Node 22.14 通过 `packages/harness/src/dsh-entry.js` 启动（补 `import.meta.main` 与 `node:zlib` zstd 导出）。 |
+| Harness | 生产默认。Ask 与文章阅读共用冻结 `dsh-base`；公开互联网是内置 `web_search` / `web_fetch`；Domain Tool 走 Gateway。`agentRuntime.run({ closedContext: true })` 是封闭材料模式：Domain 目录、Gateway allowlist、以及 Cordis 里的 `tool-web` 都为空或禁用，模型只能读调用方传入的文本。空 `allowedToolIds` 仍然表示「未指定，沿用可见工具」，不能拿来表示无工具。主模型只看 `AI_CENTER_HARNESS_PROVIDER`（DeepSeek 官方或 Elucid Grok）。`elucid-grok` 时搜索走 Grok 原生 `web_search`，fetch 仍是 HTTP。`device-operate` 保持 Host 工具关闭。资料搜索以后做成插件。Node 22.14 通过 `packages/harness/src/dsh-entry.js` 启动（补 `import.meta.main` 与 `node:zlib` zstd 导出）。 |
 | 运行进度 | Harness `session.event` / `session.status` + Tool Gateway 是执行事实来源；AI Center SQLite 保存脱敏只读投影并通过 Outbox/SSE 通知页面。产品 GET 不读取 DSH 私有 JSONL/Query DB。 |
 | 调用方能力 | 已确认：配对使用产品，桌面才驱动 Host 作用。工作包记录可从已配对设备创建；`work-package.dispatch` 与手动重启只允许 `desktop-host`。当前实现尚未完全收口，以 `docs/public-access-security.md` 为目标。 |
 

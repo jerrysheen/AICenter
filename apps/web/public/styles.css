@@ -1038,7 +1038,7 @@ main {
 .quote-head.holdings-head,
 .quote-row.holdings-row {
   display: grid;
-  grid-template-columns: minmax(108px, 1.2fr) 58px 72px 88px 64px 102px;
+  grid-template-columns: minmax(108px, 1.2fr) 58px minmax(80px, max-content) 88px 64px 102px;
   gap: 6px;
   align-items: center;
   width: 100%;
@@ -1078,6 +1078,12 @@ main {
   gap: 2px;
   font-size: 13px;
   font-weight: 500;
+}
+.holdings-px,
+.holdings-px strong,
+.holdings-px small {
+  overflow: visible;
+  white-space: nowrap;
 }
 .holdings-px small,
 .holdings-day small {
@@ -1208,7 +1214,7 @@ main {
 }
 .market-head, .market-row {
   display: grid;
-  grid-template-columns: minmax(160px, 1.5fr) 96px 88px 84px 120px;
+  grid-template-columns: minmax(160px, 1.5fr) 96px minmax(96px, max-content) 84px 120px;
   gap: var(--space-2);
   align-items: center;
   width: 100%;
@@ -1258,7 +1264,11 @@ main {
 }
 .quote-blurb { display: block; margin-top: 2px; color: var(--font-tertiary); font-size: 11px; font-style: normal; }
 .market-spark { width: 84px; height: 24px; }
-.market-row .quote-price { width: 88px; }
+.market-row .quote-price {
+  width: auto;
+  min-width: 0;
+  overflow: visible;
+}
 .market-row .quote-change {
   width: auto;
   padding: 0;
@@ -1637,6 +1647,35 @@ main {
 .tool-item strong { margin-top: var(--space-2); font-size: 12px; font-weight: 500; }
 .tool-item small { color: var(--font-tertiary); font-size: 11px; }
 .tool-item:disabled { opacity: 0.45; cursor: default; }
+.strategy-inspect {
+  margin-bottom: var(--space-6);
+  padding: var(--space-4);
+  border-radius: var(--radius-card);
+  background: var(--background-secondary);
+}
+.strategy-inspect-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.strategy-inspect-head h2 { margin: 0; font-size: 15px; }
+.strategy-inspect-head span,
+.strategy-inspect-status,
+.strategy-inspect-note { color: var(--font-tertiary); font-size: 12px; }
+.strategy-inspect-regime { margin: 6px 0 2px; font-size: 18px; font-weight: 650; }
+.strategy-inspect-status { margin: 0 0 12px; }
+.strategy-inspect-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  margin: 0;
+}
+.strategy-inspect-metrics dt { color: var(--font-tertiary); font-size: 11px; }
+.strategy-inspect-metrics dd { margin: 2px 0 0; }
+.strategy-inspect-metrics strong { display: block; font-size: 15px; }
+.strategy-inspect-metrics small { color: var(--font-tertiary); font-size: 11px; }
+.strategy-inspect-note { margin: 10px 0 0; }
 
 .overview-subnav { display: none; }
 .overview-subnav.is-on {
@@ -2990,6 +3029,7 @@ dialog p { margin: 9px 0 0; white-space: pre-wrap; color: var(--font-secondary);
     align-items: stretch;
   }
   .tool-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .strategy-inspect-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .source-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .form-row { grid-template-columns: 1.15fr 0.85fr; }
   .pairing-content { grid-template-columns: 180px 1fr; align-items: center; }
@@ -3827,11 +3867,13 @@ body[data-view="inspire"] .dispatch-composer.hidden { display: none; }
 }
 .market-table { min-width: 0; width: 100%; }
 .market-head, .market-row {
-  grid-template-columns: minmax(0, 1fr) 60px 108px;
+  grid-template-columns: minmax(0, 1fr) 60px minmax(108px, max-content);
 }
 .market-row .quote-price,
 .market-row .quote-change { text-align: right; }
 .market-row .q-price {
+  min-width: 0;
+  overflow: visible;
   text-align: right;
   white-space: nowrap;
 }
@@ -4143,8 +4185,40 @@ body[data-view="inspire"] .dispatch-composer.hidden { display: none; }
 .task-status.running { background: #edf3ff; color: var(--brand); }
 .task-status.failed { background: #fff0ed; color: var(--warning); }
 .task-status.completed { color: var(--confirm); }
-.quote-detail .last { font-size: 2rem; font-weight: 700; margin-top: 12px; }
-.quote-detail .change { font-size: 1rem; margin: 4px 0 12px; }
+.quote-detail .quote-last-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 4px 0 8px;
+}
+.quote-detail .last { font-size: 28px; font-weight: 700; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.quote-detail .change { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.quote-period-tabs { margin: 4px 0 10px; }
+.quote-chart-host {
+  width: 100%;
+  height: max(320px, calc(100dvh - var(--title-bar) - var(--bottom-tab) - 200px));
+  min-height: 320px;
+  overflow: hidden;
+}
+.quote-chart-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.quote-indicator-tabs {
+  flex: 0 0 auto;
+  margin: 0 0 2px;
+}
+.quote-chart-plot {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--comp-tertiary);
+  border-radius: 8px;
+  background: var(--background-primary);
+}
 .large-spark { width: 100%; height: 110px; margin: 14px 0; }
 .privacy-mask .num, .privacy-on .total-value, .privacy-on .day-amount, .privacy-on .quote-name + small { letter-spacing: 1px; }
 .feed-expand { min-height: 32px; font-size: 12px; color: var(--brand); border: 0; background: transparent; }

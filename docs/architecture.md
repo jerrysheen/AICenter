@@ -82,6 +82,7 @@ B站 / X / 字幕          雪球 / 同花顺 / Yahoo
 - Web 只负责页面、API、配对和读取结果。
 - 独立本地 Worker 负责定时抓取、重试、字幕和 AI 加工。
 - `search.web` 的 DeepSeek Native Search Connector、Domain `web.search` 和豆包补充检索只留给显式 `AI_CENTER_AGENT_RUNTIME=local`。生产 Ask / 文章阅读的公开互联网是 Harness 内置 `web_search` / `web_fetch`。缺 Key 时本地回退把 `search.web` 标成 `available: false`，不回退 Bing / DDG / SearXNG。本机 SearXNG Connector 仍保留为 legacy，主链路不调用。
+- `closedContext: true` 用于封闭材料任务（例如 Daily Brief）。这一轮 Domain Tool、Harness 原生网页工具和 Host 工具都不可执行。Ask 与文章阅读不使用这个模式。
 - 旧仓库继续运行，通过配置路径或本机 HTTP 调用，不立即迁移代码。
 - 只有 AI Center 的 Web 端口对手机开放；旧服务和浏览器调试端口只监听本机。
 - 用正式 `schema_migrations` 替代单纯的 `CREATE TABLE IF NOT EXISTS`。
@@ -153,7 +154,9 @@ packages/
 ## 任务与事件
 
 - `jobs` 是 SQLite 持久任务队列。Worker 使用 `BEGIN IMMEDIATE` 原子领取任务。
-- 任务只允许执行 `packages/connectors` 显式注册的 handler。
+- `job_schedules` 是 Runtime 上的薄调度层，只决定何时创建已经注册的 Job。第一版支持 `daily` 与 `interval`，不解析 Cron 表达式。到期入队和推进 `next_run_at` 在同一个 SQLite 事务里完成；停机后的补跑只保留最近一次（latest-only）。Scheduler 与 JobRunner 并列，Scheduler 不执行 Handler。`strategy.cn-dividend.snapshot` 在上海时间 15:30 生成中证红利策略快照；08:00 日报只读取此前已经落库的快照。
+- 任务只允许执行 Worker 显式注册的 handler。调度不能指定 shell、文件路径或任意 handler。
+- 手工重跑日报只创建固定的 `report.daily.generate`，并且只在本机桌面开放。
 - 外部进程使用 `spawn(..., shell: false)`，并要求 stdout 为单个 JSON 对象。
 - 业务变更与 `outbox_events` 同事务写入。
 - Web 每 250ms 转发新事件，SSE 帧携带递增 ID；客户端用 `Last-Event-ID` 分页补回断线期间的事件。超过补发窗口时 `ready` 携带 `snapshotRequired`，页面再拉 REST 快照并对齐水位。
@@ -200,6 +203,7 @@ SourceHub 在 reader 前后分别校验，并产生带 `sourceId`、`providerId`
 不新增 Domain，也不持久化 Snapshot。FOMC 专门日程优先于 Fed 综合日历；政策发布先按同 URL，
 再按同机构、同标题、同发布日去重，不合并 White House 公告与后续 Federal Register 正式刊登。
 对应只读接口是 `GET /api/v1/static-signals/board`。`SourceAccount` 仍只属于 Feed 的账号/频道持久化生命周期，不能用来保存行情来源。
+K 线是慢数据：`market_history_cache` 按标的、区间和周期留下最近一次成功的 OHLCV，六小时内再次打开直接读这份记录，不按定时器去打上游。用户显式刷新才绕过。最新价仍走原来的短缓存，不放进这份表。
 DeepSeek Search Connector 通过 `search.web` Source Definition 接入，只留给本地循环回退；生产 Ask 不注册该 Source。本地 Agent Tool `web.search` 只消费 SourcePort。Connector 只映射结构化 `web_search_result`（title / url / snippet / publishedAt），不把 DeepSeek 生成的答案交给模型。
 
 静态 Signal Layer 的另一半是 `market-native.*` 只读来源，当前注册 Polymarket、Kalshi、Hyperliquid

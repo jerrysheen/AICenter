@@ -51,6 +51,50 @@ export function materializeHarnessPatch(sourceText, pluginPath = harnessPluginPa
   return text;
 }
 
+const CLOSED_CONTEXT_PERSONA = [
+  '本任务是封闭材料任务。',
+  '只能依据用户消息中的给定材料。',
+  '本轮没有开放任何外部工具或互联网能力。',
+  '材料没有的信息必须保持未知。',
+].join('\n');
+
+/**
+ * Closed-context engine overlay: Domain catalog may be empty, and the native
+ * web tool package is disabled so the session never registers web search/fetch.
+ */
+export function materializeClosedContextPatch(sourceText, pluginPath = harnessPluginPath()) {
+  let text = materializeHarnessPatch(sourceText, pluginPath).replaceAll('\r\n', '\n');
+  text = text.replace(
+    /personaPrefix: \|\n(?:[ \t]+.*\n)+/,
+    `personaPrefix: |\n${CLOSED_CONTEXT_PERSONA.split('\n').map((line) => `      ${line}`).join('\n')}\n`,
+  );
+  text = text.replace(/\n[ \t]*- id: web-search-elucid\n[ \t]*name: .+\n/, '\n');
+  text = text.replace(
+    /# Leave @deepseek-ai\/dsh-tool-web enabled\. Domain tools stay on the Tool Gateway\./,
+    '# Closed context disables native web tools. Domain tools stay on the Tool Gateway.',
+  );
+  text += [
+    '',
+    '- id: tool-web',
+    "  name: '@deepseek-ai/dsh-tool-web'",
+    '  disabled: true',
+    '',
+    '- id: web-search-deepseek',
+    "  name: '@deepseek-ai/dsh-web-search-deepseek'",
+    '  disabled: true',
+    '',
+    '- id: web-fetch-http',
+    "  name: '@deepseek-ai/dsh-web-fetch-http'",
+    '  disabled: true',
+    '',
+  ].join('\n');
+  text = text.split('\n').filter((line) => !/web_search|web_fetch/.test(line)).join('\n');
+  if (!/id: tool-web[\s\S]*disabled: true/.test(text)) {
+    throw new Error('closed-context overlay 未能禁用 tool-web');
+  }
+  return text;
+}
+
 export function buildHarnessChildEnv({
   env = process.env,
   gateway,

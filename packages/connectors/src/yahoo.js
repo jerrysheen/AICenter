@@ -1,4 +1,5 @@
 const SPARK_URL = 'https://query1.finance.yahoo.com/v7/finance/spark';
+const CHART_URL = 'https://query1.finance.yahoo.com/v8/finance/chart';
 const SEARCH_URL = 'https://query1.finance.yahoo.com/v1/finance/search';
 const DEFAULT_TIMEOUT_MS = 12_000;
 const BATCH_SIZE = 20;
@@ -78,21 +79,45 @@ export function quoteFromSpark(result, nowSec = Math.floor(Date.now() / 1000)) {
   };
 }
 
+function mapOhlcSeries(symbol, timestamps, quote) {
+  const opens = quote?.open || [];
+  const highs = quote?.high || [];
+  const lows = quote?.low || [];
+  const closes = quote?.close || [];
+  const volumes = quote?.volume || [];
+  const points = [];
+  const bars = [];
+  for (let index = 0; index < timestamps.length; index += 1) {
+    const at = num(timestamps[index]);
+    const close = num(closes[index]);
+    if (at == null || close == null) continue;
+    const open = num(opens[index]) ?? close;
+    const high = num(highs[index]) ?? Math.max(open, close);
+    const low = num(lows[index]) ?? Math.min(open, close);
+    const volume = num(volumes[index]);
+    const ms = at > 10_000_000_000 ? at : at * 1000;
+    points.push({ at: ms, close });
+    bars.push({ at: ms, open, high, low, close, volume });
+  }
+  return points.length ? { symbol, points, bars } : null;
+}
+
 export function seriesFromSpark(result) {
   const chart = result.response?.[0];
   const meta = chart?.meta;
   const symbol = text(result.symbol || meta?.symbol).toUpperCase();
   if (!symbol) return null;
   const timestamps = Array.isArray(chart?.timestamp) ? chart.timestamp : [];
-  const closes = chart?.indicators?.quote?.[0]?.close || [];
-  const points = [];
-  for (let index = 0; index < timestamps.length; index += 1) {
-    const at = num(timestamps[index]);
-    const close = num(closes[index]);
-    if (at == null || close == null) continue;
-    points.push({ at: at * 1000, close });
-  }
-  return points.length ? { symbol, points } : null;
+  return mapOhlcSeries(symbol, timestamps, chart?.indicators?.quote?.[0] || {});
+}
+
+export function barsFromChart(payload, symbolHint = '') {
+  const result = payload?.chart?.result?.[0];
+  if (!isRecord(result)) return null;
+  const symbol = text(result.meta?.symbol || symbolHint).toUpperCase();
+  if (!symbol) return null;
+  const timestamps = Array.isArray(result.timestamp) ? result.timestamp : [];
+  return mapOhlcSeries(symbol, timestamps, result.indicators?.quote?.[0] || {});
 }
 
 export function createYahooClient(options = {}) {
@@ -149,8 +174,26 @@ export function createYahooClient(options = {}) {
     };
   }
 
-  async function fetchHistory(symbols, { range = '3mo', interval = '1d' } = {}) {
+  async function fetchChart(symbol, range, interval) {
+    const url = new URL(`${CHART_URL}/${encodeURIComponent(symbol)}`);
+    url.searchParams.set('range', range);
+    url.searchParams.set('interval', interval);
+    url.searchParams.set('includePrePost', 'false');
+    return barsFromChart(await request(url), symbol);
+  }
+
+  async function fetchHistory(symbols, { range = '3mo', interval = '1d', ohlc = false } = {}) {
     const unique = [...new Set(symbols.map((symbol) => String(symbol || '').trim().toUpperCase()).filter(Boolean))];
+    if (!unique.length) return [];
+    if (ohlc) {
+      const settled = await Promise.allSettled(unique.map((symbol) => fetchChart(symbol, range, interval)));
+      const series = [];
+      for (const item of settled) {
+        if (item.status === 'fulfilled' && item.value) series.push(item.value);
+      }
+      const bySymbol = new Map(series.map((item) => [item.symbol, item]));
+      return unique.map((symbol) => bySymbol.get(symbol)).filter(Boolean);
+    }
     const settled = await Promise.allSettled(chunk(unique, BATCH_SIZE).map((group) => fetchSparkGroup(group, range, interval, false)));
     const series = [];
     for (const item of settled) {

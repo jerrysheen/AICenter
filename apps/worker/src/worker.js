@@ -7,8 +7,12 @@ import { createAgentQualityLayerFromEnv } from '../../../packages/runtime/src/ag
 import { articleAnalysisManifest, createArticleAnalysisJobHandlers } from '../../../packages/runtime/src/article-analysis/article-analysis-module.js';
 import { createAttachmentStore, createStore } from '../../../packages/database/src/index.js';
 import { createFeedFilterFromEnv } from '../../../packages/domain/src/feed-filter.js';
+import { resolveDailyConfig } from '../../../packages/domain/src/daily-window.js';
 import { createFeedService } from '../../../packages/domain/src/feed-service.js';
 import { createKnowledgeService } from '../../../packages/domain/src/knowledge-service.js';
+import { createMarketStatisticsService } from '../../../packages/domain/src/market-statistics-service.js';
+import { createReportService } from '../../../packages/domain/src/report-service.js';
+import { createDividendStrategyService } from '../../../packages/domain/src/trading-strategies/strategy-service.js';
 import { createTaggingService } from '../../../packages/domain/src/tagging-service.js';
 import { createTradingService } from '../../../packages/domain/src/trading-service.js';
 import { createContextService } from '../../../packages/domain/src/context-service.js';
@@ -26,10 +30,14 @@ import { knowledgeStructureManifest, createStructureJobHandlers } from '../../..
 import { taggingManifest, createTaggingJobHandlers, readTagCatalogFile } from '../../../packages/runtime/src/tagging-module.js';
 import { workPackageDispatchManifest, createWorkPackageJobHandlers } from '../../../packages/runtime/src/work-package-module.js';
 import { createJobRunner } from '../../../packages/runtime/src/job-runner.js';
+import { createScheduler } from '../../../packages/runtime/src/scheduler.js';
+import { createDailyBriefService } from '../../../packages/domain/src/daily-brief-service.js';
+import { createReportJobHandlers, ensureDailyReportSchedule, reportDailyManifest } from '../../../packages/runtime/src/report-module.js';
+import { createStrategyJobHandlers, ensureDividendStrategySchedule, strategySnapshotManifest } from '../../../packages/runtime/src/strategy-module.js';
 import { createLocalToolRegistry } from '../../../packages/runtime/src/local-tools.js';
 import { createAgentTraceLog } from '../../../packages/runtime/src/agent-trace-log.js';
 import { createWorkPackageTracePort } from '../../../packages/runtime/src/work-package-trace.js';
-import { createSourceHub, createSourceModuleRegistry } from '../../../packages/source/src/index.js';
+import { createSourceHub, createSourceModuleRegistry, readStaticSignalBoard } from '../../../packages/source/src/index.js';
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(currentDirectory, '../../..');
@@ -164,6 +172,23 @@ export function createAiCenterWorker(options = {}) {
       workbookPath: instance.assetWorkbookPath,
     }),
   });
+  const dailyConfig = options.dailyConfig || resolveDailyConfig(env);
+  const marketStatistics = options.marketStatisticsService
+    || (sourcePort?.read ? createMarketStatisticsService({ sourcePort }) : null);
+  const dividendStrategy = options.dividendStrategyService || createDividendStrategyService({
+    strategyRepository: store.repositories.strategy,
+    basketPort: marketStatistics,
+  });
+  const reportService = options.reportService || createReportService({
+    reportRepository: store.repositories.report,
+    feedService,
+    tradingService,
+    staticSignalPort: options.staticSignalPort || {
+      readBoard: (input, readOptions) => readStaticSignalBoard(sourcePort, input, readOptions),
+    },
+    strategyPort: dividendStrategy,
+    defaultConfig: dailyConfig,
+  });
   const taggingService = options.taggingService || createTaggingService({
     catalog: options.tagCatalog || readTagCatalogFile(
       existsSync(instance.tagCatalogPath) ? instance.tagCatalogPath : path.join(repositoryRoot, 'config/tags.default.json'),
@@ -198,6 +223,7 @@ export function createAiCenterWorker(options = {}) {
     : (options.auxiliarySearch !== undefined ? options.auxiliarySearch || null : null);
   const agentTools = options.agentTools || createLocalToolRegistry({
     contextService, feedService, knowledgeService, tradingService, taggingService, sourcePort,
+    marketStatisticsService: marketStatistics,
     includeLegacyWebSearch: runtimeMode === 'local',
   });
   if (runtimeMode === 'harness') {
@@ -270,9 +296,33 @@ export function createAiCenterWorker(options = {}) {
       workPackageTracePort,
     }),
   });
+  registry.register({
+    manifest: reportDailyManifest,
+    jobHandlers: options.reportJobHandlers || createReportJobHandlers({
+      reportService,
+      briefService: options.briefService || createDailyBriefService({
+        reportRepository: store.repositories.report,
+        agentRuntime,
+      }),
+    }),
+  });
+  registry.register({
+    manifest: strategySnapshotManifest,
+    jobHandlers: options.strategyJobHandlers || createStrategyJobHandlers({ strategyService: dividendStrategy }),
+  });
+  const handlers = options.handlers || registry.createJobHandlers();
+  if (options.enableDefaultSchedules !== false) {
+    ensureDailyReportSchedule(store, dailyConfig);
+    ensureDividendStrategySchedule(store);
+  }
+  const scheduler = options.scheduler || createScheduler({
+    store,
+    allowedJobTypes: Object.keys(handlers),
+    pollIntervalMs: options.schedulePollIntervalMs || env.AI_CENTER_SCHEDULER_POLL_MS || 20_000,
+  });
   const runner = createJobRunner({
     store,
-    handlers: options.handlers || registry.createJobHandlers(),
+    handlers,
     workerId: options.workerId || `${hostname()}-${process.pid}`,
     pollIntervalMs: options.pollIntervalMs || process.env.AI_CENTER_WORKER_POLL_MS,
     staleAfterMs,
@@ -286,19 +336,23 @@ export function createAiCenterWorker(options = {}) {
     },
   });
   let runPromise = null;
+  let schedulePromise = null;
 
   return {
     store,
     runner,
+    scheduler,
     browserRuntime,
     start() {
+      schedulePromise ||= scheduler.start();
       runPromise ||= runner.start();
       return runPromise;
     },
     async close() {
+      scheduler.stop();
       runner.stop();
       try {
-        await runPromise;
+        await Promise.allSettled([schedulePromise, runPromise].filter(Boolean));
       } finally {
         try { await agentRuntime.close?.(); } catch {}
         store.close();

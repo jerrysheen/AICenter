@@ -522,6 +522,9 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
     listContentItems(workspaceId, page) {
       return feedRepository.listContentItems(workspaceId, page);
     },
+    listContentItemsInWindow(workspaceId, window) {
+      return feedRepository.listContentItemsInWindow(workspaceId, window);
+    },
     listTaggableItems(workspaceId, { limit = 200, ids = [] } = {}) {
       const rows = feedRepository.listContentItemsWithSource
         ? feedRepository.listContentItemsWithSource(workspaceId, { limit, ids })

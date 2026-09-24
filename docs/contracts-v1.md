@@ -117,6 +117,12 @@ V6 保留旧 REAL 列用于兼容，新增 `*_decimal` 列作为新代码的权�
 - `GET /api/v1/agent/runs/:id` 组合 SQLite Job 状态与进度投影。Job 的 `queued/running/completed/failed/cancelled` 仍是生命周期真源；Harness 的 `running/idle` 只决定当前执行阶段。进度更新发出 `runtime.agent-run.progressed.v1`，供 SSE 触发客户端刷新；断线补发仍以 Outbox ID 为准。
 - Harness 的持久 Session、Session Query 和 projection cache 属于执行器内部格式。页面 Contract 不返回原始 SessionEvent、Harness Session 文件、Query SQLite 路径、Cordis plugin id 或 Provider 配置。
 - 新事件名称格式为 `<domain>.<aggregate>.<action>.vN`。
+- `JobSchedule` 只描述何时创建 Job：`daily`（时区、小时、分钟）或 `interval`（分钟）。`nextRunAt` / `lastEnqueuedAt` 持久化。停机补跑采用 latest-only，不回补每一档。
+- `DailyWindow` 是左闭右开的 `[startAt, endAt)`。`reportDate` 对应该日 cutoff 的结束时刻，起点是前一日同一 cutoff。默认时区 `Asia/Shanghai`、cutoff `08:00`，由 `AI_CENTER_DAILY_TIMEZONE` 与 `AI_CENTER_DAILY_CUTOFF` 配置。新闻归入窗口使用 `publishedAt ?? createdAt`，不用 `capturedAt`。
+- `DailyReport` 是确定性快照，不含评分、情绪或买卖结论。同一 `workspaceId + reportDate` 重复生成只更新一行。行情快照记录生成时能取到的最新状态。
+- `DailyBrief` 是从当天 `DailyReport` 派生的注意力筛选，不是新的事实层。候选池由程序从日报生成；模型只返回 `candidateId` 和说明。`type`、`occurredAt`、`sourceRefs` 都从候选池回填。模型输出里不存在的 `candidateId` 整份拒绝。`daily_report_briefs` 按 `workspaceId + reportId` 唯一，并保存当时的候选快照和 `sourceReportUpdatedAt`。日报手工重跑后 `updatedAt` 变化，对应 Brief 需要重新生成。Brief 不改写 DailyReport。
+- `StockFactorSnapshot` / `StockStatistics` 是纯统计事实。百分位是 `0~1` 的历史位置，不是好坏分。`peTtm <= 0` 时保留原值，但估值百分位为 null。价格收益优先使用复权序列；没有复权因子时回退原始收盘价并带 `priceSeriesAdjusted=false`。计算必须带 `asOf`，不能使用之后的数据。
+- `BasketStatistics` 是指数成分的聚合事实。市盈率按正盈利成分的盈利收益率加权后再取倒数，市净率按净资产收益率同样处理，股息率按权重直接加权。`StrategySnapshot` 保存 `cn.dividend.value` 的派生状态，只记录价值、回撤和数据质量，不包含分数或买卖结论。
 - `schemaVersion` 描述 payload 版本；事件名后缀与其保持一致。
 - `correlationId` 串联一次用户动作产生的多个任务，`causationId` 指向直接上游事件或任务。
 

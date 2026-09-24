@@ -175,7 +175,7 @@ test('schema v26 keeps attachment tables and parent session column', () => {
   const temporary = temporaryStore();
   try {
     assert.equal(temporary.store.getRuntimeStatus().schemaVersion, latestSchemaVersion());
-    assert.equal(latestSchemaVersion(), 28);
+    assert.equal(latestSchemaVersion(), 32);
     assert.deepEqual(temporary.store.repositories.knowledge.listWorkPackages('local', 'all'), []);
   } finally {
     temporary.remove();

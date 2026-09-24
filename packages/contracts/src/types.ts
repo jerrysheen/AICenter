@@ -20,7 +20,12 @@ import type {
   StructureJobInputSchema, StructureJobOutputSchema, SaveStructuredArtifactInputSchema,
 } from './taxonomy.js';
 import type { AiRunContextRefSchema, ContextReferenceSchema, PackReferencesInputSchema } from './context.js';
-import type { AgentJobSchema, DomainEventSchema, CapabilityManifestSchema, WorkerJobConcurrencySchema } from './runtime.js';
+import type { AgentJobSchema, DomainEventSchema, CapabilityManifestSchema, WorkerJobConcurrencySchema, JobScheduleSchema } from './runtime.js';
+import type {
+  DailyReportSchema, DailyReportContentSchema, GenerateDailyReportInputSchema,
+  DailyBriefCandidateSchema, DailyBriefModelInputSchema, DailyBriefModelOutputSchema, DailyBriefSchema,
+} from './report.js';
+import type { StockFactorSnapshotSchema, StockStatisticsSchema } from './market-stats.js';
 import type {
   TagDefinitionSchema, TagCatalogFileSchema, ResourceTaggingSchema, TagAnalyzeJobInputSchema,
 } from './tagging.js';
@@ -35,7 +40,7 @@ import type {
 import type {
   AgentToolReferenceSchema, AgentToolResultSchema, ContextBuildToolInputSchema,
   FeedSearchToolInputSchema, FeedTagSearchToolInputSchema, KnowledgeGetToolInputSchema, HoldingsRankToolInputSchema,
-  StaticSignalsListToolInputSchema, OfficialSourceGetToolInputSchema,
+  StaticSignalsListToolInputSchema, OfficialSourceGetToolInputSchema, StockStatsToolInputSchema,
   AgentRunProgressStepSchema, ActiveAgentRunSchema, ReferenceInputSchema, CreateAgentRunInputSchema,
   AgentResearchModeSchema, AgentResearchProfileSchema, SaveStructuredArtifactToolInputSchema,
 } from './agent.js';
@@ -92,6 +97,17 @@ export type SaveStructuredArtifactInput = z.infer<typeof SaveStructuredArtifactI
 export type ContextReference = z.infer<typeof ContextReferenceSchema>;
 export type AiRunContextRef = z.infer<typeof AiRunContextRefSchema>;
 export type AgentJob = z.infer<typeof AgentJobSchema>;
+export type JobSchedule = z.infer<typeof JobScheduleSchema>;
+export type DailyReport = z.infer<typeof DailyReportSchema>;
+export type DailyReportContent = z.infer<typeof DailyReportContentSchema>;
+export type GenerateDailyReportInput = z.infer<typeof GenerateDailyReportInputSchema>;
+export type DailyBriefCandidate = z.infer<typeof DailyBriefCandidateSchema>;
+export type DailyBriefModelInput = z.infer<typeof DailyBriefModelInputSchema>;
+export type DailyBriefModelOutput = z.infer<typeof DailyBriefModelOutputSchema>;
+export type DailyBrief = z.infer<typeof DailyBriefSchema>;
+export type StockFactorSnapshot = z.infer<typeof StockFactorSnapshotSchema>;
+export type StockStatistics = z.infer<typeof StockStatisticsSchema>;
+export type StockStatsToolInput = z.infer<typeof StockStatsToolInputSchema>;
 export type DomainEvent = z.infer<typeof DomainEventSchema>;
 export type CapabilityManifest = z.infer<typeof CapabilityManifestSchema>;
 export type WorkerJobConcurrency = z.infer<typeof WorkerJobConcurrencySchema>;

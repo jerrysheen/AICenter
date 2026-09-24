@@ -52,12 +52,22 @@ export const QuoteListSchema = z.array(z.looseObject({
   session: z.string().max(32).optional(),
 }));
 
+export const HistoryBarSchema = z.object({
+  at: z.number().int().nonnegative(),
+  open: z.number().finite(),
+  high: z.number().finite(),
+  low: z.number().finite(),
+  close: z.number().finite(),
+  volume: z.number().finite().nullable().optional(),
+}).strict();
+
 export const HistorySeriesSchema = z.array(z.object({
   symbol: z.string().trim().min(1).max(64),
   points: z.array(z.object({
     at: z.number().int().nonnegative(),
     close: z.number().finite(),
   }).strict()).max(20_000),
+  bars: z.array(HistoryBarSchema).max(20_000).optional(),
 }).strict()).max(200);
 
 export const SymbolSearchSchema = z.array(z.object({
@@ -66,6 +76,61 @@ export const SymbolSearchSchema = z.array(z.object({
   type: z.enum(['EQUITY', 'ETF', 'INDEX']),
   exchange: z.string().max(128),
 }).strict()).max(20);
+
+const NullableMetricSchema = z.number().finite().nullable();
+
+export const MarketMetricPointSchema = z.object({
+  tradeDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  at: z.number().int().nonnegative(),
+  close: NullableMetricSchema,
+  turnoverRate: NullableMetricSchema,
+  turnoverRateFloat: NullableMetricSchema,
+  volumeRatio: NullableMetricSchema,
+  pe: NullableMetricSchema,
+  peTtm: NullableMetricSchema,
+  pb: NullableMetricSchema,
+  ps: NullableMetricSchema,
+  psTtm: NullableMetricSchema,
+  dividendYield: NullableMetricSchema,
+  dividendYieldTtm: NullableMetricSchema,
+  totalShares: NullableMetricSchema,
+  floatShares: NullableMetricSchema,
+  freeShares: NullableMetricSchema,
+  totalMarketValue: NullableMetricSchema,
+  circulatingMarketValue: NullableMetricSchema,
+}).strict();
+
+export const MarketAdjFactorPointSchema = z.object({
+  tradeDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  at: z.number().int().nonnegative(),
+  adjFactor: z.number().finite().positive(),
+}).strict();
+
+export const MarketMetricSeriesSchema = z.object({
+  symbol: z.string().trim().min(1).max(64),
+  range: z.string().trim().min(1).max(16),
+  status: z.enum(['ready', 'partial', 'unavailable']),
+  points: z.array(MarketMetricPointSchema).max(20_000),
+  factors: z.array(MarketAdjFactorPointSchema).max(20_000),
+  warnings: z.array(z.string().trim().min(1).max(500)).max(20),
+}).strict();
+
+export const IndexWeightSnapshotSchema = z.object({
+  tradeDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  at: z.number().int().nonnegative(),
+  members: z.array(z.object({
+    symbol: z.string().trim().min(1).max(64),
+    weight: z.number().positive().max(1),
+  }).strict()).max(400),
+}).strict();
+
+export const IndexWeightSeriesSchema = z.object({
+  index: z.string().regex(/^\d{6}$/),
+  range: z.string().trim().min(1).max(16),
+  status: z.enum(['ready', 'partial', 'unavailable']),
+  snapshots: z.array(IndexWeightSnapshotSchema).max(2_500),
+  warnings: z.array(z.string().trim().min(1).max(500)).max(20),
+}).strict();
 
 export const ContentFeedItemSchema = z.looseObject({
   externalId: z.string().trim().min(1).max(512),

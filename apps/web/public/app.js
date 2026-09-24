@@ -1,6 +1,6 @@
 import {
   askPrompts, assetClasses, bookTabs, channels, feedItems, globalAssets, holdings, marketTabs,
-  platformFilters, portfolioSummary, quotes, reportSections, stockBoards as fallbackStockBoards,
+  platformFilters, portfolioSummary, reportSections, stockBoards as fallbackStockBoards,
   subscriptions, tools, tradeLedger,
 } from './mock.js?v=dev';
 import { icon } from './icons.js?v=dev';
@@ -144,6 +144,9 @@ const state = {
   expandedFeedIds: new Set(),
   readerLang: 'translation',
   privacy: false,
+  quotePeriod: '1d',
+  quoteChart: null,
+  quoteHistoryRequestId: 0,
   settingsPane: 'hub',
   pageKind: '',
   pageId: '',
@@ -159,7 +162,7 @@ const pageKinds = {
   article: { nav: 'sources', title: '阅读' },
   event: { nav: 'sources', title: '日程详情' },
   source: { nav: 'sources', title: '信源' },
-  quote: { nav: 'sources', title: '行情详情' },
+  quote: { nav: 'market', title: '行情' },
   tasks: { nav: 'tools', title: '采集与处理' },
   task: { nav: 'tools', title: '任务详情' },
   note: { nav: 'inspire', title: '灵感详情' },
@@ -209,7 +212,7 @@ const elements = Object.fromEntries([
   'form-message', 'feed', 'feed-count', 'metrics-panel', 'metric-devices', 'metric-opens',
   'metric-published', 'metric-details', 'device-list', 'post-dialog', 'dialog-title',
   'dialog-body', 'dialog-translation', 'dialog-tags', 'dialog-source', 'dialog-save', 'dialog-cite', 'dialog-translate', 'dialog-time', 'dialog-notice', 'dialog-language', 'toast', 'channel-tabs',
-  'platform-filters', 'follow-toolbar', 'bilibili-toolbar', 'bilibili-feed-status', 'bilibili-import-form', 'bilibili-url', 'bilibili-import', 'bilibili-more', 'x-toolbar', 'x-more', 'x-translate-bar', 'x-feed-status', 'x-translate-status', 'x-feed-tabs', 'x-refresh', 'x-translate', 'x-tag', 'xueqiu-toolbar', 'xueqiu-feed-tabs', 'xueqiu-feed-status', 'xueqiu-action-bar', 'xueqiu-action-status', 'xueqiu-refresh', 'trendforce-toolbar', 'trendforce-feed-status', 'trendforce-more', 'trendforce-action-bar', 'trendforce-action-status', 'trendforce-refresh', 'quote-filters', 'quote-list', 'tool-grid',
+  'platform-filters', 'follow-toolbar', 'bilibili-toolbar', 'bilibili-feed-status', 'bilibili-import-form', 'bilibili-url', 'bilibili-import', 'bilibili-more', 'x-toolbar', 'x-more', 'x-translate-bar', 'x-feed-status', 'x-translate-status', 'x-feed-tabs', 'x-refresh', 'x-translate', 'x-tag', 'xueqiu-toolbar', 'xueqiu-feed-tabs', 'xueqiu-feed-status', 'xueqiu-action-bar', 'xueqiu-action-status', 'xueqiu-refresh', 'trendforce-toolbar', 'trendforce-feed-status', 'trendforce-more', 'trendforce-action-bar', 'trendforce-action-status', 'trendforce-refresh', 'quote-filters', 'quote-list', 'tool-grid', 'strategy-inspect',
   'ask-records', 'ask-start', 'ask-session-list', 'ask-session-shell', 'ask-intro', 'ask-prompt-label',
   'ask-thread', 'ask-prompts', 'ask-materials', 'ask-material-tabs', 'ask-form', 'ask-send', 'ask-ref-chips', 'ask-ref-actions', 'ask-ref-export', 'ask-ref-task', 'ask-mention-menu', 'ask-live-chip', 'compose-dialog', 'reload-view', 'open-compose', 'open-settings', 'global-search',
   'side-nav-list', 'bottom-tab', 'market-tabs', 'book-tabs', 'holdings-list', 'holdings-filters', 'asset-filters',
@@ -790,7 +793,7 @@ function setView(name, options = {}) {
     elements['page-title'].textContent = state.tradePane === 'assets' ? '全球行情' : '股票';
     elements['page-subtitle'].textContent = state.tradePane === 'assets'
       ? '指数、外汇、利率、国债、贵金属、能源与加密'
-      : '总览按时切换 A 股/港股与美股，亚洲观察池仍单独成页';
+      : '总览工作日白天看 A 股/港股，17:00 后到次日 05:00 看美股；亚洲观察池仍单独成页';
   } else if (view === 'page') {
     elements['page-title'].textContent = pageKinds[state.pageKind]?.title || '详情';
     elements['page-subtitle'].textContent = '';
@@ -828,6 +831,7 @@ function setView(name, options = {}) {
     loadStaticSignalBoard().catch((error) => showToast(error.message));
   }
   if (view === 'ask') syncAskView().catch((error) => showToast(error.message));
+  if (view === 'tools' && state.bootstrapped) loadDividendInspection().catch((error) => showToast(error.message));
   if (view === 'settings') renderSettingsHub();
   if (view === 'page') renderPage();
   renderAskLiveUi();
@@ -987,6 +991,7 @@ async function reloadCurrentView({ forceShell = false } = {}) {
     if (view === 'tools') {
       tasks.push(loadSourceCatalog());
       tasks.push(loadKnowledge());
+      tasks.push(loadDividendInspection());
     }
     if (view === 'report') renderReport();
     if (view === 'settings' && state.session.role === 'desktop') {
@@ -3776,9 +3781,9 @@ function renderHoldings() {
     price.className = `holdings-px ${up ? 'up' : 'down'}`;
     price.append(
       Object.assign(document.createElement('strong'), {
-        textContent: item.lastPrice == null ? '无行情' : item.lastPrice,
+        textContent: item.lastPrice == null ? '无行情' : formatPrice(item.lastPrice),
       }),
-      Object.assign(document.createElement('small'), { textContent: item.costPrice }),
+      Object.assign(document.createElement('small'), { textContent: formatPrice(item.costPrice) }),
     );
     const dayUp = moneyNumber(item.dayPnlCny) >= 0;
     const day = document.createElement('span');
@@ -4287,9 +4292,18 @@ function writeExtras(board, symbols) {
 }
 
 function formatPrice(value, digits = 2) {
-  return value === null || value === undefined ? '—' : Number(value).toLocaleString('en-US', {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
+  if (value === null || value === undefined || value === '') return '—';
+  const raw = String(value).replace(/,/g, '').trim();
+  const number = Number(raw);
+  if (!Number.isFinite(number)) return '—';
+  const sourceFrac = raw.includes('.')
+    ? (raw.split('.')[1] || '').replace(/0+$/, '').length
+    : 0;
+  const maxDigits = Math.min(8, Math.max(digits, sourceFrac));
+  return number.toLocaleString('zh-CN', {
+    minimumFractionDigits: Math.min(digits, maxDigits),
+    maximumFractionDigits: maxDigits,
+    useGrouping: false,
   });
 }
 
@@ -4333,37 +4347,47 @@ function sparkSvg(points, changePct) {
   return `<svg class="spark ${tone}" viewBox="0 0 100 28" aria-hidden="true"><path d="${d}"></path></svg>`;
 }
 
-function extraQuery() {
+function extraQuery(board = state.stockBoard) {
   const us = state.extras.us.join(',');
   const asia = state.extras.asia.join(',');
   const cn = state.extras.cn.join(',');
-  const params = new URLSearchParams({ board: state.stockBoard });
+  const params = new URLSearchParams({ board });
   if (us) params.set('extraUs', us);
   if (asia) params.set('extraAsia', asia);
   if (cn) params.set('extraCn', cn);
   return `/api/v1/markets?${params}`;
 }
 
-async function loadMarket() {
+async function loadMarket({ board = state.stockBoard } = {}) {
   if (!state.bootstrapped) return;
-  const requestId = state.marketRequestId + 1;
-  state.marketRequestId = requestId;
-  state.marketLoading = true;
-  state.marketError = '';
-  renderMarketStatus();
+  const isActiveBoard = board === state.stockBoard;
+  const requestId = isActiveBoard ? state.marketRequestId + 1 : state.marketRequestId;
+  if (isActiveBoard) {
+    state.marketRequestId = requestId;
+    state.marketLoading = true;
+    state.marketError = '';
+    renderMarketStatus();
+  }
   try {
     if (!state.session) throw new Error('此设备尚未配对，无法加载行情');
-    const payload = await api(extraQuery(), { timeoutMs: 40_000 });
-    if (requestId !== state.marketRequestId) return;
+    const payload = await api(extraQuery(board), { timeoutMs: 40_000 });
+    if (isActiveBoard && requestId !== state.marketRequestId) return;
     state.markets[payload.market.board] = payload.market;
-    renderMarket();
+    if (isActiveBoard) renderMarket();
+    else if (document.body.dataset.view === 'sources' || state.stockBoard === 'overview') {
+      if (state.stockBoard === 'overview') renderMarket();
+      else renderHub();
+    }
+    scheduleOverviewFocusWatch();
   } catch (error) {
-    if (requestId !== state.marketRequestId) return;
-    state.marketError = error instanceof Error ? error.message : '行情加载失败';
-    renderMarket();
+    if (isActiveBoard) {
+      if (requestId !== state.marketRequestId) return;
+      state.marketError = error instanceof Error ? error.message : '行情加载失败';
+      renderMarket();
+    }
     throw error;
   } finally {
-    if (requestId === state.marketRequestId) {
+    if (isActiveBoard && requestId === state.marketRequestId) {
       state.marketLoading = false;
       renderMarketStatus();
     }
@@ -4448,24 +4472,54 @@ function hubFeedPicks(limit = 12) {
     .slice(0, limit);
 }
 
+function shanghaiClock(nowMs = Date.now()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date(nowMs));
+  return {
+    weekday: parts.find((part) => part.type === 'weekday')?.value || '',
+    minutes: Number(parts.find((part) => part.type === 'hour')?.value || 0) * 60
+      + Number(parts.find((part) => part.type === 'minute')?.value || 0),
+  };
+}
+
+function preferredOverviewFocus(nowMs = Date.now()) {
+  const { weekday, minutes } = shanghaiClock(nowMs);
+  if (weekday !== 'Sat' && weekday !== 'Sun' && minutes >= 5 * 60 && minutes < 17 * 60) return 'cn';
+  return 'us';
+}
+
+function nextOverviewFocusChangeMs(nowMs = Date.now()) {
+  const current = preferredOverviewFocus(nowMs);
+  const step = 30_000;
+  for (let offset = step; offset <= 36 * 60 * 60 * 1000; offset += step) {
+    if (preferredOverviewFocus(nowMs + offset) !== current) return nowMs + offset;
+  }
+  return nowMs + 60 * 60 * 1000;
+}
+
+function overviewFocusIsStale(board = state.markets.overview, nowMs = Date.now()) {
+  return !board || board.focus !== preferredOverviewFocus(nowMs);
+}
+
+function overviewIndices() {
+  const live = (state.markets.overview?.sections || [])
+    .flatMap((section) => section.indices || [])
+    .filter((item) => item?.symbol);
+  if (live.length) return live;
+  const focus = preferredOverviewFocus();
+  return globalAssets
+    .filter((item) => item.assetClass === 'index' && (focus === 'cn' ? item.market === 'cn' || item.market === 'hk' : item.market === 'us'))
+    .map((item) => ({
+      name: item.name,
+      symbol: item.symbol,
+      lastPrice: Number(String(item.price).replace(/,/g, '')),
+      changePct: item.changePct,
+    }));
+}
+
 function hubQuotes() {
-  const live = [
-    ...(state.markets.overview?.sections || []).flatMap((section) => section.indices || []),
-    ...(state.markets.us?.watchlist || []).slice(0, 3),
-    ...(state.assetBoard?.watchlist || []).slice(0, 4),
-  ].filter((item) => item?.symbol);
-  const fallback = [...quotes, ...globalAssets].map((item) => ({
-    name: item.name,
-    symbol: item.symbol,
-    lastPrice: Number(String(item.price).replace(/,/g, '')),
-    changePct: item.changePct,
-  }));
-  const seen = new Set();
-  return [...live, ...fallback].filter((item) => {
-    if (seen.has(item.symbol)) return false;
-    seen.add(item.symbol);
-    return true;
-  }).slice(0, 12);
+  return overviewIndices();
 }
 
 function hubMovers() {
@@ -5194,13 +5248,31 @@ async function loadSourcesPage({ refresh = false } = {}) {
   renderHub();
   const tasks = [];
   if (state.session) {
-    if (!state.markets.overview) tasks.push(loadMarket().catch(() => {}));
+    if (refresh || overviewFocusIsStale()) tasks.push(loadMarket({ board: 'overview' }).catch(() => {}));
     if (!state.assetBoard) tasks.push(loadGlobalAssets().catch(() => {}));
     if (!state.staticBoard || refresh) tasks.push(loadStaticSignalBoard({ refresh }));
     if (!state.marketNativeBoard || refresh) tasks.push(loadMarketNativeBoard({ refresh }));
   }
   if (tasks.length) await Promise.all(tasks);
   renderSources();
+  scheduleOverviewFocusWatch();
+}
+
+let overviewFocusTimer = 0;
+
+function scheduleOverviewFocusWatch() {
+  if (overviewFocusTimer) window.clearTimeout(overviewFocusTimer);
+  const delay = Math.min(Math.max(nextOverviewFocusChangeMs() - Date.now() + 750, 1_000), 2_000_000_000);
+  overviewFocusTimer = window.setTimeout(() => {
+    overviewFocusTimer = 0;
+    if (state.session && (document.body.dataset.view === 'sources' || (isQuotesView() && state.tradePane === 'stocks') || overviewFocusIsStale())) {
+      loadMarket({ board: 'overview' }).catch(() => {});
+      if (state.stockBoard !== 'overview' && isQuotesView() && state.tradePane === 'stocks') {
+        loadMarket().catch(() => {});
+      }
+    }
+    scheduleOverviewFocusWatch();
+  }, delay);
 }
 
 function renderMarketStatus() {
@@ -5671,6 +5743,7 @@ function renderPage() {
   const root = pageRoot();
   if (!root) return;
   const kind = state.pageKind;
+  if (kind !== 'quote') destroyQuoteChart();
   if (kind === 'article') renderArticlePage();
   else if (kind === 'event') renderEventPage();
   else if (kind === 'source') renderSourcePage();
@@ -6145,29 +6218,110 @@ function findQuote(symbol) {
   return lists.find((item) => item.symbol === symbol) || { symbol, name: symbol, lastPrice: null, changePct: null };
 }
 
+const quotePeriods = [
+  { id: '1d', label: '日K', range: '2y', interval: '1d' },
+  { id: '1wk', label: '周K', range: '5y', interval: '1wk' },
+  { id: '1y', label: '年K', range: 'max', interval: '1mo' },
+];
+
+function destroyQuoteChart() {
+  state.quoteChart?.destroy?.();
+  state.quoteChart = null;
+}
+
 function renderQuotePage() {
   const root = pageRoot();
   const quote = findQuote(state.pageId);
+  const symbol = quote.symbol || state.pageId;
   const up = (quote.changePct ?? 0) >= 0;
-  const wrap = document.createElement('section');
-  wrap.className = 'quote-detail';
-  wrap.innerHTML = `<h2></h2><p class="small muted"></p><div class="last num"></div><div class="change"></div>
-    <div class="large-spark"></div>
-    <dl class="metadata-grid"></dl>
-    <button class="primary-button" type="button">Web 完整表格</button>`;
-  wrap.querySelector('h2').textContent = quote.name || quote.symbol;
-  wrap.querySelector('p').textContent = `${quote.symbol || ''} · 现有报价`;
+  destroyQuoteChart();
+  const wrap = document.createElement('article');
+  wrap.className = 'detail-shell quote-detail';
+  wrap.innerHTML = `<header class="detail-head">
+      <h2 class="detail-title"></h2>
+      <div class="detail-meta"></div>
+    </header>
+    <div class="detail-body">
+      <div class="quote-last-row">
+        <strong class="last num"></strong>
+        <b class="change"></b>
+      </div>
+      <div class="chip-tabs quote-period-tabs" role="tablist" aria-label="K线周期"></div>
+      <div class="quote-chart-host" id="quote-chart-host"></div>
+    </div>`;
+  wrap.querySelector('.detail-title').textContent = quote.name || symbol;
+  wrap.querySelector('.detail-meta').textContent = `${symbol}${quote.group ? ` · ${quote.group}` : ''}${quote.assetClass ? ` · ${quote.assetClass}` : ''}`;
   wrap.querySelector('.last').textContent = quote.lastPrice == null ? '—' : formatPrice(quote.lastPrice);
   wrap.querySelector('.last').classList.add(up ? 'up' : 'down');
   wrap.querySelector('.change').textContent = quote.changePct == null ? '—' : formatPct(up, quote.changePct);
   wrap.querySelector('.change').classList.add(up ? 'up' : 'down');
-  wrap.querySelector('.large-spark').innerHTML = sparkSvg(quote.sparkline, quote.changePct);
-  const grid = wrap.querySelector('.metadata-grid');
-  for (const [dt, dd] of [['所属分组', quote.group || '未分组'], ['报价状态', state.marketError || '已连接现有行情 Adapter'], ['页面读取', formatTime(Date.now())]]) {
-    grid.append(Object.assign(document.createElement('dt'), { textContent: dt }), Object.assign(document.createElement('dd'), { textContent: dd }));
-  }
-  wrap.querySelector('.primary-button').addEventListener('click', () => setView(quote.assetClass && quote.assetClass !== 'equity' ? 'market/global' : 'market'));
+  const tabs = wrap.querySelector('.quote-period-tabs');
+  quotePeriods.forEach((item) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `chip-tab${state.quotePeriod === item.id ? ' is-active' : ''}`;
+    button.textContent = item.label;
+    button.addEventListener('click', () => {
+      state.quotePeriod = item.id;
+      renderQuotePage();
+    });
+    tabs.append(button);
+  });
   root.replaceChildren(wrap);
+  loadQuoteHistory(symbol, wrap.querySelector('#quote-chart-host')).catch((error) => showToast(error.message));
+}
+
+function paintQuotePrintFromBars(host, bars) {
+  const detail = host.closest('.quote-detail');
+  const lastEl = detail?.querySelector('.last');
+  const changeEl = detail?.querySelector('.change');
+  if (!lastEl || lastEl.textContent !== '—') return;
+  const close = Number(bars.at(-1)?.close);
+  const previous = Number(bars.at(-2)?.close);
+  if (!Number.isFinite(close)) return;
+  const up = Number.isFinite(previous) ? close >= previous : true;
+  const digits = Math.abs(close) >= 1 ? 2 : Math.abs(close) >= 0.01 ? 4 : 6;
+  lastEl.textContent = formatPrice(close.toFixed(digits));
+  lastEl.classList.toggle('up', up);
+  lastEl.classList.toggle('down', !up);
+  if (!changeEl || !Number.isFinite(previous) || previous === 0) return;
+  changeEl.textContent = formatPct(up, ((close - previous) / Math.abs(previous)) * 100);
+  changeEl.classList.toggle('up', up);
+  changeEl.classList.toggle('down', !up);
+}
+
+async function loadQuoteHistory(symbol, host) {
+  if (!host) return;
+  const requestId = state.quoteHistoryRequestId + 1;
+  state.quoteHistoryRequestId = requestId;
+  host.textContent = '正在加载 K 线…';
+  const { createQuoteChart, aggregateYearlyBars } = await import('./quote-chart.js?v=dev');
+  if (requestId !== state.quoteHistoryRequestId) return;
+  const period = quotePeriods.find((item) => item.id === state.quotePeriod) || quotePeriods[0];
+  const payload = await api(`/api/v1/markets/history?symbol=${encodeURIComponent(symbol)}&range=${encodeURIComponent(period.range)}&interval=${encodeURIComponent(period.interval)}`, {
+    timeoutMs: 25_000,
+  });
+  if (requestId !== state.quoteHistoryRequestId) return;
+  const bars = period.id === '1y' ? aggregateYearlyBars(payload.history?.bars || []) : (payload.history?.bars || []);
+  if (!bars.length) {
+    host.replaceChildren(Object.assign(document.createElement('p'), {
+      className: 'empty-state',
+      textContent: '这只标的暂时没有 K 线。股票、期货、利率和全球资产都走同一套历史行情。',
+    }));
+    return;
+  }
+  paintQuotePrintFromBars(host, bars);
+  const chart = await createQuoteChart(host, {
+    ariaLabel: `${symbol} K线`,
+    symbol,
+    interval: period.id,
+  });
+  if (requestId !== state.quoteHistoryRequestId) {
+    chart.destroy();
+    return;
+  }
+  state.quoteChart = chart;
+  chart.setData({ bars, interval: period.id, symbol });
 }
 
 function localTaskRows() {
@@ -6327,7 +6481,7 @@ function renderHoldingPage() {
   const grid = wrap.querySelector('.metadata-grid');
   for (const [dt, dd] of [
     ['持仓数量', privacyText(formatMoneyAmount(item.quantity, 0))],
-    ['现价 / 成本', `${item.lastPrice || '无行情'} / ${item.costPrice}`],
+    ['现价 / 成本', `${item.lastPrice == null ? '无行情' : formatPrice(item.lastPrice)} / ${formatPrice(item.costPrice)}`],
     ['市值 CNY', privacyText(formatMoneyAmount(item.marketValueCny, 2))],
     ['当日盈亏', privacyText(formatSignedAmount(item.dayPnlCny))],
     ['持仓浮动盈亏', privacyText(formatSignedAmount(item.positionPnlCny))],
@@ -6507,6 +6661,135 @@ function renderFeedFilterDialog() {
     setView('sources/catalog');
   });
   body.append(calendar, catalog);
+}
+
+const DIVIDEND_REGIME_LABELS = {
+  NORMAL: '常态',
+  VALUE_HIGH: '价值偏高',
+  VALUE_LOW: '价值偏低',
+  VALUE_HIGH_PAIN_HIGH: '价值偏高，回撤偏高',
+  VALUE_NORMAL_PAIN_HIGH: '回撤偏高',
+  VALUE_LOW_PAIN_HIGH: '价值偏低，回撤偏高',
+  UNKNOWN: '状态不明',
+};
+
+const DIVIDEND_STATUS_LABELS = {
+  ready: '数据齐全',
+  partial: '部分可用',
+  unavailable: '暂不可用',
+};
+
+function formatSignedPercent(value) {
+  if (!Number.isFinite(value)) return '—';
+  const percent = value * 100;
+  const digits = Math.abs(percent) >= 10 ? 1 : 2;
+  const text = `${percent.toFixed(digits)}%`;
+  return percent > 0 ? `+${text}` : text;
+}
+
+function formatPercentile(value) {
+  if (!Number.isFinite(value)) return '—';
+  return `${Math.round(value * 100)}%`;
+}
+
+function formatMultiple(value) {
+  if (!Number.isFinite(value)) return '—';
+  return value.toFixed(2);
+}
+
+function formatShanghaiDate(timestamp) {
+  if (!Number.isFinite(timestamp)) return '';
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+  }).format(timestamp);
+}
+
+function dividendWarningLabel(warning) {
+  if (warning === 'indexWeightHistoryShort') return '成分权重历史太短';
+  if (warning === 'priceSeriesAdjusted=false') return '价格未复权';
+  return warning;
+}
+
+function renderDividendInspection(snapshot, error) {
+  const host = elements['strategy-inspect'];
+  if (!host) return;
+  host.replaceChildren();
+  const head = document.createElement('div');
+  head.className = 'strategy-inspect-head';
+  const title = document.createElement('h2');
+  title.textContent = '中证红利';
+  const meta = document.createElement('span');
+  head.append(title, meta);
+  if (error) {
+    const note = document.createElement('p');
+    note.className = 'strategy-inspect-note';
+    note.textContent = error;
+    host.append(head, note);
+    return;
+  }
+  if (!snapshot) {
+    meta.textContent = '尚无快照';
+    const note = document.createElement('p');
+    note.className = 'strategy-inspect-note';
+    note.textContent = '收盘后写入价值与回撤状态。这里只检视状态，不含目标仓位和买卖。';
+    host.append(head, note);
+    return;
+  }
+  const factors = snapshot.factors || {};
+  const value = factors.value || {};
+  const pain = factors.pain || {};
+  const quality = factors.dataQuality || {};
+  meta.textContent = formatShanghaiDate(snapshot.asOf);
+  const regime = document.createElement('p');
+  regime.className = 'strategy-inspect-regime';
+  regime.textContent = DIVIDEND_REGIME_LABELS[factors.regime] || '状态不明';
+  const status = document.createElement('p');
+  status.className = 'strategy-inspect-status';
+  const coverage = Number.isFinite(quality.coverage) ? `覆盖 ${formatPercentile(quality.coverage)}` : '';
+  const count = Number.isInteger(quality.constituentCount) ? `${quality.constituentCount} 只成分` : '';
+  status.textContent = [DIVIDEND_STATUS_LABELS[snapshot.status] || snapshot.status, count, coverage].filter(Boolean).join(' · ');
+  const metrics = document.createElement('dl');
+  metrics.className = 'strategy-inspect-metrics';
+  const rows = [
+    ['股息率', formatSignedPercent(value.dividendYield), `5年分位 ${formatPercentile(value.dividendYieldPercentile5y)}`],
+    ['市盈率', formatMultiple(value.peTtm), `5年分位 ${formatPercentile(value.pePercentile5y)}`],
+    ['20日收益', formatSignedPercent(pain.return20d), '近20个交易日'],
+    ['252日回撤', formatSignedPercent(pain.drawdown252d), '近252个交易日'],
+  ];
+  for (const [label, main, hint] of rows) {
+    const item = document.createElement('div');
+    const term = document.createElement('dt');
+    term.textContent = label;
+    const detail = document.createElement('dd');
+    const strong = document.createElement('strong');
+    strong.textContent = main;
+    const small = document.createElement('small');
+    small.textContent = hint;
+    detail.append(strong, small);
+    item.append(term, detail);
+    metrics.append(item);
+  }
+  const note = document.createElement('p');
+  note.className = 'strategy-inspect-note';
+  const warnings = (snapshot.warnings || []).map(dividendWarningLabel).filter(Boolean);
+  note.textContent = warnings.length
+    ? warnings.join('；')
+    : '只读当日价值与回撤状态，不含目标仓位和买卖。';
+  host.append(head, regime, status, metrics, note);
+}
+
+async function loadDividendInspection() {
+  try {
+    const payload = await api('/api/v1/strategies/cn-dividend');
+    renderDividendInspection(payload.snapshot || null);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '策略快照读取失败';
+    renderDividendInspection(null, message);
+    throw error;
+  }
 }
 
 function renderTools() {
@@ -9975,7 +10258,9 @@ async function completeAuthorizedStart(session) {
   if (!completeAuthorizedStart.heartbeat) {
     completeAuthorizedStart.heartbeat = window.setInterval(() => {
       syncHarmonyLocalInspirations().catch(() => {});
-      if (isQuotesView() && state.session) {
+      if (!state.session) return;
+      if (document.body.dataset.view === 'sources') loadMarket({ board: 'overview' }).catch(() => {});
+      if (isQuotesView()) {
         if (state.tradePane === 'stocks') loadMarket().catch(() => {});
         if (state.tradePane === 'assets') loadGlobalAssets().catch(() => {});
         if (state.tradePane === 'holdings') loadHoldings().catch(() => {});
@@ -10006,6 +10291,10 @@ async function completeAuthorizedStart(session) {
   if (document.body.dataset.view === 'sources' || document.body.dataset.view === 'feed') {
     startupLoads.push(loadSourcesPage().catch(() => {}));
   }
+  if (document.body.dataset.view === 'tools') {
+    startupLoads.push(loadDividendInspection().catch((error) => showToast(error.message)));
+  }
+  scheduleOverviewFocusWatch();
   await Promise.all(startupLoads);
   if (document.body.dataset.view === 'feed') {
     restoreViewScroll('feed');

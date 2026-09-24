@@ -29,7 +29,7 @@ export {
 export { parseAgentRuntimeMode, parseHarnessToolIds, resolveAgentRuntimeMode, resolveHarnessToolIds } from './runtime-mode.js';
 export { createToolGateway } from './tool-gateway.js';
 export { projectToolCatalog, toDefineToolParameters } from './tool-catalog.js';
-export { createHarnessAgentRuntime } from './harness-agent-runtime.js';
+export { createHarnessAgentRuntime, resolveHarnessRunTools } from './harness-agent-runtime.js';
 export {
   collectToolCallsFromGateway,
   createHarnessTraceProjector,
@@ -42,6 +42,7 @@ export {
   harnessPatchPath,
   harnessPluginPath,
   harnessSearchPluginPath,
+  materializeClosedContextPatch,
   materializeHarnessPatch,
   resolveHarnessLaunch,
 } from './launch.js';

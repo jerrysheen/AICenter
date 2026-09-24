@@ -4,6 +4,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { DEFAULT_WORKSPACE_ID, runMigrations } from './migrations.js';
 import { createDomainRepositories } from './repositories/index.js';
+import { createRuntimeRepository } from './repositories/runtime-repository.js';
 export { createAttachmentStore } from './attachment-store.js';
 
 function sha256(value) {
@@ -172,6 +173,7 @@ export function createStore(databasePath) {
   }
 
   const repositories = createDomainRepositories(database, insertEvent);
+  const runtimeRepository = createRuntimeRepository(database, insertEvent);
 
   const postCount = database.prepare('SELECT COUNT(*) AS count FROM posts').get().count;
   if (postCount === 0) {
@@ -203,6 +205,10 @@ export function createStore(databasePath) {
 
   return {
     repositories,
+    upsertJobSchedule: (value) => runtimeRepository.upsertJobSchedule(value),
+    getJobSchedule: (workspaceId, key) => runtimeRepository.getJobSchedule(workspaceId, key),
+    listDueSchedules: (now, limit) => runtimeRepository.listDueSchedules(now, limit),
+    enqueueDueSchedule: (scheduleId, now) => runtimeRepository.enqueueDueSchedule(scheduleId, now),
     createPairingCode(ttlMinutes = 10) {
       const now = Date.now();
       database.prepare('UPDATE pairing_codes SET used_at = ? WHERE used_at IS NULL').run(now);

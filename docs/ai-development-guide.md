@@ -302,7 +302,7 @@ knowledge.document.revised.v1
 Ask 上层没有独立 AI API。只改 `AI_CENTER_HARNESS_PROVIDER`，`$DSH_HOME/settings.yaml` 同时写 `llm-deepseek` 和 `llm-pi-ai`。
 
 1. `deepseek-official`：`DEEPSEEK_API_KEY`，可选 `DEEPSEEK_BASE_URL`。
-2. `elucid-grok`：`ELUCID_GROK_API_KEY`，协议 `openai-responses`，默认 `grok-4.6`。
+2. `elucid-grok`：`ELUCID_GROK_API_KEY`，协议 `openai-responses`，默认 `grok-4.7`。
 3. 模型名只看 `AI_CENTER_HARNESS_MODEL` / `AI_CENTER_HARNESS_RESEARCH_MODEL`。不要继承 `DEEPSEEK_SEARCH_MODEL`，不要再用 `AI_CENTER_AGENT_PROVIDER`。
 4. 主循环、内置 web、本地回退和结构整理共用这一套。Gemini 只给翻译 / Tag。`elucid-grok` 时 `web_search` 走 Grok 原生搜索；不要另加 `web_read`。
 5. 页面 Contract 不暴露供应商字段。

@@ -1135,6 +1135,98 @@ const migrations = [
       `);
     },
   },
+  {
+    version: 29,
+    name: 'market-history-cache',
+    up(database) {
+      database.exec(`
+        CREATE TABLE market_history_cache (
+          symbol TEXT NOT NULL,
+          range_key TEXT NOT NULL,
+          interval_key TEXT NOT NULL,
+          bars_json TEXT NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (symbol, range_key, interval_key)
+        );
+      `);
+    },
+  },
+  {
+    version: 30,
+    name: 'job-schedules',
+    up(database) {
+      database.exec(`
+        CREATE TABLE job_schedules (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          schedule_key TEXT NOT NULL,
+          job_type TEXT NOT NULL,
+          enabled INTEGER NOT NULL,
+          schedule_json TEXT NOT NULL,
+          input_json TEXT NOT NULL DEFAULT '{}',
+          priority INTEGER NOT NULL DEFAULT 0,
+          max_attempts INTEGER NOT NULL DEFAULT 3,
+          next_run_at INTEGER NOT NULL,
+          last_enqueued_at INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          UNIQUE(workspace_id, schedule_key),
+          FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE INDEX idx_job_schedules_due ON job_schedules(enabled, next_run_at);
+      `);
+    },
+  },
+  {
+    version: 31,
+    name: 'strategy-snapshots',
+    up(database) {
+      database.exec(`
+        CREATE TABLE strategy_snapshots (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          strategy_key TEXT NOT NULL,
+          as_of INTEGER NOT NULL,
+          status TEXT NOT NULL,
+          factors_json TEXT NOT NULL,
+          warnings_json TEXT NOT NULL DEFAULT '[]',
+          created_at INTEGER NOT NULL,
+          UNIQUE(workspace_id, strategy_key, as_of),
+          FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE INDEX idx_strategy_snapshots_lookup
+          ON strategy_snapshots(workspace_id, strategy_key, as_of DESC);
+      `);
+    },
+  },
+  {
+    version: 32,
+    name: 'daily-report-briefs',
+    up(database) {
+      database.exec(`
+        CREATE TABLE daily_report_briefs (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          report_id TEXT NOT NULL,
+          report_date TEXT NOT NULL,
+          status TEXT NOT NULL,
+          source_report_updated_at INTEGER NOT NULL,
+          input_hash TEXT NOT NULL,
+          input_snapshot_json TEXT NOT NULL,
+          brief_json TEXT NOT NULL,
+          provider_id TEXT NOT NULL DEFAULT '',
+          model_id TEXT NOT NULL DEFAULT '',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          UNIQUE(workspace_id, report_id),
+          FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+          FOREIGN KEY(report_id) REFERENCES daily_reports(id)
+        );
+        CREATE INDEX idx_daily_report_briefs_date
+          ON daily_report_briefs(workspace_id, report_date DESC);
+      `);
+    },
+  },
 ];
 
 export function backfillKnowledgeRevisionIndex(database) {

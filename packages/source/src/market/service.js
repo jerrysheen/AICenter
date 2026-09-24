@@ -2,12 +2,14 @@ import { asiaTrackedItems, buildAsiaMarketBoard, buildCnMarketBoard, buildGlobal
 import { createCnQuoteClient, isCnYahooSymbol } from '../../../connectors/src/cn-quotes.js';
 import { createSinaFuturesClient, isSinaFutureSymbol } from '../../../connectors/src/sina-futures.js';
 import { createXueqiuQuoteClient, isXueqiuYahooSymbol } from '../../../connectors/src/xueqiu-quotes.js';
+import { createTushareClient, isTushareDailySymbol } from '../../../connectors/src/tushare.js';
 import { createYahooClient } from '../../../connectors/src/yahoo.js';
 import { resolveMarketCatalog } from './catalog.js';
 
 export function createMarketService(options = {}) {
   const marketCatalog = options.marketCatalog || resolveMarketCatalog(options.marketCatalogPath);
   const yahoo = options.yahoo || createYahooClient(options);
+  const tushare = options.tushare === undefined ? createTushareClient(options) : options.tushare;
   const cnQuotes = options.cnQuotes || createCnQuoteClient(options);
   const sinaFutures = options.sinaFutures === undefined ? createSinaFuturesClient(options) : options.sinaFutures;
   const xueqiuQuotes = options.xueqiuQuotes === undefined ? createXueqiuQuoteClient(options) : options.xueqiuQuotes;
@@ -254,13 +256,25 @@ export function createMarketService(options = {}) {
     if (!unique.length) return [];
     const range = options.range || '3mo';
     const interval = options.interval || '1d';
-    return cached(`history:${range}:${interval}:${unique.slice().sort().join(',')}`, async () => {
-      try {
-        if (!yahoo.fetchHistory) return [];
-        return await yahoo.fetchHistory(unique, { range, interval });
-      } catch {
-        return [];
-      }
+    const ohlc = Boolean(options.ohlc);
+    return cached(`history:${range}:${interval}:${ohlc ? 'ohlc:' : ''}${unique.slice().sort().join(',')}`, async () => {
+      const upper = unique.map((symbol) => String(symbol).toUpperCase());
+      const cnSymbols = ohlc ? upper.filter(isTushareDailySymbol) : [];
+      const otherSymbols = ohlc ? upper.filter((symbol) => !isTushareDailySymbol(symbol)) : upper;
+      const [tushareSeries, yahooSeries] = await Promise.all([
+        cnSymbols.length && tushare?.fetchHistory
+          ? tushare.fetchHistory(cnSymbols, { range, interval }).catch(() => [])
+          : [],
+        otherSymbols.length && yahoo.fetchHistory
+          ? yahoo.fetchHistory(otherSymbols, { range, interval, ohlc }).catch(() => [])
+          : [],
+      ]);
+      const missingCn = cnSymbols.filter((symbol) => !tushareSeries.some((item) => item.symbol === symbol));
+      const fallback = missingCn.length && yahoo.fetchHistory
+        ? await yahoo.fetchHistory(missingCn, { range, interval, ohlc }).catch(() => [])
+        : [];
+      const bySymbol = new Map([...yahooSeries, ...fallback, ...tushareSeries].map((item) => [item.symbol, item]));
+      return upper.map((symbol) => bySymbol.get(symbol)).filter(Boolean);
     }, { refresh: Boolean(options.refresh) });
   }
 
@@ -268,5 +282,85 @@ export function createMarketService(options = {}) {
     return yahoo.searchSymbols(String(query || '').trim());
   }
 
-  return { getBoard, search, fetchQuotes, fetchHistory, parseUsExtraSymbols, parseAsiaExtraSymbols, parseCnExtraSymbols };
+  async function fetchMetricHistory(symbol, { range = '5y' } = {}) {
+    const normalized = String(symbol || '').trim().toUpperCase();
+    const empty = {
+      symbol: normalized,
+      range,
+      status: 'unavailable',
+      points: [],
+      factors: [],
+      warnings: [],
+    };
+    if (!isTushareDailySymbol(normalized)) {
+      return { ...empty, warnings: ['指标历史目前只支持沪深 A 股'] };
+    }
+    if (!tushare?.enabled && !tushare?.fetchDailyBasic) {
+      return { ...empty, warnings: ['TUSHARE_TOKEN 未配置'] };
+    }
+    if (tushare.enabled === false) {
+      return { ...empty, warnings: ['TUSHARE_TOKEN 未配置'] };
+    }
+    const warnings = [];
+    let points = [];
+    let factors = [];
+    try {
+      const basic = tushare.fetchDailyBasic
+        ? await tushare.fetchDailyBasic(normalized, { range })
+        : null;
+      if (basic == null) warnings.push('TUSHARE_TOKEN 未配置');
+      else points = basic;
+    } catch (error) {
+      warnings.push(error instanceof Error ? error.message : 'daily_basic 读取失败');
+    }
+    try {
+      const adj = tushare.fetchAdjFactors
+        ? await tushare.fetchAdjFactors(normalized, { range })
+        : null;
+      if (adj == null && !warnings.includes('TUSHARE_TOKEN 未配置')) warnings.push('复权因子不可用');
+      else if (adj) factors = adj;
+    } catch (error) {
+      warnings.push(error instanceof Error ? error.message : 'adj_factor 读取失败');
+    }
+    const status = warnings.length && !points.length && !factors.length
+      ? 'unavailable'
+      : (warnings.length ? 'partial' : 'ready');
+    return { symbol: normalized, range, status, points, factors, warnings };
+  }
+
+  async function fetchIndexWeights(index, { range = '5y' } = {}) {
+    const normalized = String(index || '').trim();
+    const empty = {
+      index: normalized.replace(/\.(SH|SZ|SS)$/i, '').slice(0, 6),
+      range,
+      status: 'unavailable',
+      snapshots: [],
+      warnings: [],
+    };
+    if (!/^\d{6}(?:\.(?:SH|SZ|SS))?$/i.test(normalized)) {
+      return { ...empty, index: normalized.slice(0, 6) || '000000', warnings: ['无法识别的指数代码'] };
+    }
+    if (!tushare?.fetchIndexWeights || tushare.enabled === false) {
+      return { ...empty, warnings: ['TUSHARE_TOKEN 未配置'] };
+    }
+    try {
+      const loaded = await tushare.fetchIndexWeights(normalized, { range });
+      if (!loaded) return { ...empty, warnings: ['TUSHARE_TOKEN 未配置'] };
+      const snapshots = loaded.snapshots || [];
+      return {
+        index: loaded.index,
+        range,
+        status: snapshots.length ? 'ready' : 'partial',
+        snapshots,
+        warnings: snapshots.length ? [] : ['指数成分权重为空'],
+      };
+    } catch (error) {
+      return {
+        ...empty,
+        warnings: [error instanceof Error ? error.message : '指数权重读取失败'],
+      };
+    }
+  }
+
+  return { getBoard, search, fetchQuotes, fetchHistory, fetchMetricHistory, fetchIndexWeights, parseUsExtraSymbols, parseAsiaExtraSymbols, parseCnExtraSymbols };
 }

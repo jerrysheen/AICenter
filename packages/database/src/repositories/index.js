@@ -1,5 +1,7 @@
 import { createFeedRepository } from './feed-repository.js';
 import { createKnowledgeRepository } from './knowledge-repository.js';
+import { createReportRepository } from './report-repository.js';
+import { createStrategyRepository } from './strategy-repository.js';
 import { createTaggingRepository } from './tagging-repository.js';
 import { createTradingRepository } from './trading-repository.js';
 
@@ -9,5 +11,7 @@ export function createDomainRepositories(database, emitEvent) {
     trading: createTradingRepository(database, emitEvent),
     knowledge: createKnowledgeRepository(database, emitEvent),
     tagging: createTaggingRepository(database, emitEvent),
+    report: createReportRepository(database, emitEvent),
+    strategy: createStrategyRepository(database, emitEvent),
   });
 }

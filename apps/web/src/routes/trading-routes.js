@@ -1,4 +1,4 @@
-import { parseHoldingsQuery, parseMarketQuery, parseMarketSearchQuery } from '../../../../packages/contracts/src/index.js';
+import { parseHoldingsQuery, parseMarketHistoryQuery, parseMarketQuery, parseMarketSearchQuery, BasketStatsToolInputSchema, StockStatsToolInputSchema, parseContract } from '../../../../packages/contracts/src/index.js';
 import { json, readJson } from '../http/response.js';
 
 export function createTradingRoutes() {
@@ -22,6 +22,46 @@ export function createTradingRoutes() {
           json(response, 200, { ok: true, items: await services.trading.search(query) });
         } catch (error) {
           json(response, 502, { ok: false, error: error instanceof Error ? error.message : '标的搜索失败' });
+        }
+      },
+    },
+    {
+      method: 'GET', path: '/api/v1/markets/history',
+      async handler({ response, services, url }) {
+        const query = parseMarketHistoryQuery(Object.fromEntries(url.searchParams.entries()));
+        try {
+          json(response, 200, { ok: true, history: await services.trading.getQuoteHistory(query) });
+        } catch (error) {
+          json(response, error.statusCode || 502, { ok: false, error: error instanceof Error ? error.message : 'K线加载失败' });
+        }
+      },
+    },
+    {
+      method: 'GET', path: '/api/v1/markets/analysis',
+      async handler({ response, services, url }) {
+        const query = parseContract(StockStatsToolInputSchema, {
+          symbol: url.searchParams.get('symbol') || '',
+          range: url.searchParams.get('range') || '5y',
+        });
+        try {
+          json(response, 200, { ok: true, statistics: await services.marketStatistics.getStockStatistics(query) });
+        } catch (error) {
+          json(response, error.statusCode || 502, { ok: false, error: error instanceof Error ? error.message : '个股统计加载失败' });
+        }
+      },
+    },
+    {
+      method: 'GET', path: '/api/v1/markets/baskets',
+      async handler({ response, services, url }) {
+        const query = parseContract(BasketStatsToolInputSchema, {
+          index: url.searchParams.get('index') || '',
+          range: url.searchParams.get('range') || '5y',
+          ...(url.searchParams.get('asOf') ? { asOf: Number(url.searchParams.get('asOf')) } : {}),
+        });
+        try {
+          json(response, 200, { ok: true, basket: await services.marketStatistics.getBasketStatistics(query) });
+        } catch (error) {
+          json(response, error.statusCode || 502, { ok: false, error: error instanceof Error ? error.message : '篮子统计加载失败' });
         }
       },
     },

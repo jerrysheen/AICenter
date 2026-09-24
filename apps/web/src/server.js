@@ -8,12 +8,12 @@ import QRCode from 'qrcode';
 import { parseBilibiliFeedQuery, parseTrendForceFeedQuery, parseXFeedQuery, parseXueqiuFeedQuery, ValidationError } from '../../../packages/contracts/src/index.js';
 import { createConfiguredBrowserRuntime, createDeepSeekSearchProvider, createLauncherRestartPort, createLocalKnowledgeFiles, createPersonalAssetService, createTranslateService, createTypeSafeSystemOneClient } from '../../../packages/connectors/src/index.js';
 import { createAttachmentStore, createStore } from '../../../packages/database/src/index.js';
-import { createDomainServices, createFeedFilterFromEnv, resolveLoginCredential } from '../../../packages/domain/src/index.js';
+import { createDomainServices, createFeedFilterFromEnv, resolveDailyConfig, resolveLoginCredential } from '../../../packages/domain/src/index.js';
 import { resolveInstanceConfig } from '../../../packages/instance/src/index.js';
 import { createAgentTraceLog } from '../../../packages/runtime/src/agent-trace-log.js';
 import { createWorkPackageTracePort } from '../../../packages/runtime/src/work-package-trace.js';
 import { readTagCatalogFile } from '../../../packages/runtime/src/tagging-module.js';
-import { createSourceHub, createSourceModuleRegistry } from '../../../packages/source/src/index.js';
+import { createSourceHub, createSourceModuleRegistry, readStaticSignalBoard } from '../../../packages/source/src/index.js';
 import { createEventStreamHub } from './http/event-stream.js';
 import { publicHttpsLocation } from './http/device-auth.js';
 import { parseCookies, json } from './http/response.js';
@@ -187,6 +187,10 @@ export function createAiCenterServer(options = {}) {
     loginCredential: options.loginCredential !== undefined
       ? options.loginCredential
       : resolveLoginCredential(options.env || process.env),
+    dailyConfig: resolveDailyConfig(env),
+    staticSignalPort: {
+      readBoard: (input, readOptions) => readStaticSignalBoard(sourcePort, input, readOptions),
+    },
   });
   const feedQueryParsers = options.feedQueryParsers || new Map([
     ['x', parseXFeedQuery],

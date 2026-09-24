@@ -30,6 +30,7 @@ const BOARD_META = {
 };
 
 const DEFAULT_FX_SYMBOLS = ['USDCNY=X', 'HKDCNY=X'];
+const HISTORY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
 function exchangeFromYahoo(symbol, fallback) {
   const upper = String(symbol || '').toUpperCase();
@@ -70,6 +71,7 @@ export function createTradingService({
   marketDataPort,
   personalAssetPort,
   workspaceId: configuredWorkspaceId = 'local',
+  now = () => Date.now(),
 }) {
   const resolvedSourcePort = sourcePort || wrapMarketDataPort(marketDataPort);
   if (!tradingRepository || !resolvedSourcePort) throw new Error('trading ports are required');
@@ -105,6 +107,41 @@ export function createTradingService({
     },
     async search(query) {
       return query ? (await sourcePort.read('market.search', { query })).data : [];
+    },
+    async getQuoteHistory(query) {
+      const symbol = String(query.symbol || '').toUpperCase();
+      const range = query.range;
+      const interval = query.interval;
+      const refresh = Boolean(query.refresh);
+      const timestamp = now();
+      if (!refresh && typeof tradingRepository.getMarketHistoryCache === 'function') {
+        const cached = tradingRepository.getMarketHistoryCache(symbol, range, interval);
+        if (cached?.bars?.length && timestamp - Number(cached.updatedAt) < HISTORY_CACHE_TTL_MS) {
+          return { symbol, range, interval, bars: cached.bars, updatedAt: Number(cached.updatedAt) };
+        }
+      }
+      const snapshot = await sourcePort.read('market.history', {
+        symbols: [symbol],
+        range,
+        interval,
+        ohlc: true,
+      }, { refresh });
+      const series = Array.isArray(snapshot?.data) ? snapshot.data[0] : null;
+      const bars = Array.isArray(series?.bars) && series.bars.length
+        ? series.bars
+        : (series?.points || []).map((point) => ({
+          at: point.at,
+          open: point.close,
+          high: point.close,
+          low: point.close,
+          close: point.close,
+          volume: null,
+        }));
+      const updatedAt = Number(snapshot?.observedAt) || timestamp;
+      if (bars.length && typeof tradingRepository.putMarketHistoryCache === 'function') {
+        tradingRepository.putMarketHistoryCache({ symbol, range, interval, bars, updatedAt });
+      }
+      return { symbol, range, interval, bars, updatedAt };
     },
     supportsPersonalAssetLedger() {
       return typeof tradingRepository.listPersonalAssetAccounts === 'function'

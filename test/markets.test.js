@@ -97,8 +97,12 @@ test('overview board switches A shares and US by Shanghai 17:00', () => {
   });
   const daytime = buildOverviewBoard(us, null, cn, { now: Date.UTC(2026, 8, 18, 8, 0, 0) });
   const evening = buildOverviewBoard(us, null, cn, { now: Date.UTC(2026, 8, 18, 9, 0, 0) });
+  const afterMidnight = buildOverviewBoard(us, null, cn, { now: Date.UTC(2026, 8, 17, 17, 30, 0) });
+  assert.equal(preferredOverviewFocus(Date.UTC(2026, 8, 17, 20, 59, 0)), 'us');
+  assert.equal(preferredOverviewFocus(Date.UTC(2026, 8, 17, 21, 0, 0)), 'cn');
   assert.equal(preferredOverviewFocus(Date.UTC(2026, 8, 18, 8, 59, 0)), 'cn');
   assert.equal(preferredOverviewFocus(Date.UTC(2026, 8, 18, 9, 0, 0)), 'us');
+  assert.equal(preferredOverviewFocus(Date.UTC(2026, 8, 18, 16, 30, 0)), 'us');
   assert.equal(preferredOverviewFocus(Date.UTC(2026, 8, 19, 2, 0, 0)), 'us');
   assert.equal(daytime.focus, 'cn');
   assert.equal(daytime.sections.length, 1);
@@ -107,6 +111,8 @@ test('overview board switches A shares and US by Shanghai 17:00', () => {
   assert.equal(evening.focus, 'us');
   assert.equal(evening.sections[0].id, 'us');
   assert.equal(evening.sections[0].title, '美股观察');
+  assert.equal(afterMidnight.focus, 'us');
+  assert.equal(afterMidnight.sections[0].id, 'us');
 });
 
 test('cn board keeps the same ticker in multiple industry groups', () => {
@@ -345,6 +351,9 @@ test('overview service loads A shares before Shanghai 17:00 and US after', async
   assert.equal(night.sections[0].id, 'us');
   assert.ok(yahooSymbols.includes('NVDA'));
   assert.equal(xueqiuSymbols.includes('688110.SS'), false);
+  const afterMidnight = await service(Date.UTC(2026, 8, 17, 17, 30, 0)).getBoard({ board: 'overview' });
+  assert.equal(afterMidnight.focus, 'us');
+  assert.equal(afterMidnight.sections[0].id, 'us');
 });
 
 test('global board routes Chinese futures through sina', async () => {

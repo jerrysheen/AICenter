@@ -6,6 +6,8 @@ import { createFeedRoutes } from './feed-routes.js';
 import { createIdentityRoutes } from './identity-routes.js';
 import { createKnowledgeRoutes } from './knowledge-routes.js';
 import { createRuntimeRoutes } from './runtime-routes.js';
+import { createReportRoutes } from './report-routes.js';
+import { createStrategyRoutes } from './strategy-routes.js';
 import { createSystemRoutes } from './system-routes.js';
 import { createTradingRoutes } from './trading-routes.js';
 import { createSourceRoutes } from './source-routes.js';
@@ -24,6 +26,8 @@ export function createApiRoutes() {
     ...createAgentRoutes(),
     ...createArticleAnalysisRoutes(),
     ...createTradingRoutes(),
+    ...createReportRoutes(),
+    ...createStrategyRoutes(),
     ...createEventRoutes(),
   ];
 }

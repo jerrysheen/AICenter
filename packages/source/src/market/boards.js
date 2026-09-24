@@ -135,7 +135,8 @@ export function preferredOverviewFocus(nowMs = Date.now()) {
   const hour = Number(parts.find((part) => part.type === 'hour')?.value || 0);
   const minute = Number(parts.find((part) => part.type === 'minute')?.value || 0);
   const current = hour * 60 + minute;
-  if (weekday !== 'Sat' && weekday !== 'Sun' && current < 17 * 60) return 'cn';
+  // Weekday Beijing daytime: A-share board. After 17:00 through next 05:00 (US hours) and weekends: US.
+  if (weekday !== 'Sat' && weekday !== 'Sun' && current >= 5 * 60 && current < 17 * 60) return 'cn';
   return 'us';
 }
 
@@ -376,8 +377,8 @@ export function buildOverviewBoard(usBoard, asiaBoard, cnBoard, options = {}) {
     sessions: asiaBoard?.sessions || null,
     focus,
     note: focus === 'cn'
-      ? '北京时间工作日 17:00 前显示 A 股与港股观察。完整分组在 A 股分览。'
-      : '北京时间 17:00 后及周末显示美股观察。完整分组在美股分览。',
+      ? '北京时间工作日 05:00–17:00 显示 A 股与港股观察。完整分组在 A 股分览。'
+      : '北京时间 17:00 后至次日 05:00 及周末显示美股观察。完整分组在美股分览。',
     groups: [],
     indices: [],
     watchlist: [],

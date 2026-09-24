@@ -48,3 +48,38 @@ export const WorkerJobConcurrencySchema = z.object({
   defaultLimit: z.number().int().min(1).max(8).default(1),
   workPackageDispatchLimit: z.number().int().min(1).max(8).default(3),
 }).strict();
+
+const JobTypeSchema = z.string().trim().regex(/^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+$/);
+
+export const DailyScheduleSpecSchema = z.object({
+  kind: z.literal('daily'),
+  timezone: z.string().trim().min(1).max(64),
+  hour: z.number().int().min(0).max(23),
+  minute: z.number().int().min(0).max(59),
+}).strict();
+
+export const IntervalScheduleSpecSchema = z.object({
+  kind: z.literal('interval'),
+  intervalMinutes: z.number().int().min(1).max(10_080),
+}).strict();
+
+export const ScheduleSpecSchema = z.discriminatedUnion('kind', [
+  DailyScheduleSpecSchema,
+  IntervalScheduleSpecSchema,
+]);
+
+export const JobScheduleSchema = z.object({
+  id: EntityIdSchema,
+  workspaceId: WorkspaceIdSchema,
+  key: z.string().trim().min(1).max(128),
+  jobType: JobTypeSchema,
+  enabled: z.boolean(),
+  schedule: ScheduleSpecSchema,
+  input: z.record(z.string(), z.unknown()).default({}),
+  priority: z.number().int(),
+  maxAttempts: z.number().int().positive().max(10),
+  nextRunAt: EpochMillisSchema,
+  lastEnqueuedAt: EpochMillisSchema.nullable(),
+  createdAt: EpochMillisSchema,
+  updatedAt: EpochMillisSchema,
+}).strict();

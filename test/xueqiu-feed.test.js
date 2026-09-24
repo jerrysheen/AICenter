@@ -32,8 +32,9 @@ test('timeline urls use usergroup -1 / -2 and strip html', () => {
   assert.equal(normalizeXueqiuFeed('jingxuan'), 'featured');
   assert.equal(userGroupIdForFeed('following'), -1);
   assert.equal(userGroupIdForFeed('featured'), -2);
+  assert.match(timelineUrl(-2), /^https:\/\/www\.xueqiu\.com\/v4\/statuses\/system\/home_timeline\.json\?/);
   assert.match(timelineUrl(-2), /usergroup_id=-2/);
-  assert.match(livenewsUrl(-1), /livenews\/list\.json/);
+  assert.match(livenewsUrl(-1), /^https:\/\/www\.xueqiu\.com\/statuses\/livenews\/list\.json\?/);
   assert.equal(stripXueqiuHtml('一线<br/>二线&amp;备注'), '一线\n二线&备注');
 });
 

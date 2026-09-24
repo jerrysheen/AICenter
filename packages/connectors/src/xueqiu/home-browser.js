@@ -2,6 +2,8 @@ import { parseBrowserJson } from '../browser/browser-runtime.js';
 
 export const XUEQIU_HOME_URL = 'https://xueqiu.com/';
 export const XUEQIU_ORIGIN = 'https://xueqiu.com';
+// xueqiu.com/hq 会跳到 www。页面在 www 上时，再请求 apex 会被浏览器当成跨源并直接失败。
+const XUEQIU_PAGE_ORIGIN = 'https://www.xueqiu.com';
 
 const FEEDS = {
   following: { userGroupId: -1, label: '关注' },
@@ -73,7 +75,7 @@ export function isXueqiuLoginError(data) {
 }
 
 export function timelineUrl(userGroupId, maxId = -1) {
-  const url = new URL('/v4/statuses/system/home_timeline.json', XUEQIU_ORIGIN);
+  const url = new URL('/v4/statuses/system/home_timeline.json', XUEQIU_PAGE_ORIGIN);
   url.searchParams.set('source', 'user');
   url.searchParams.set('usergroup_id', String(userGroupId));
   if (Number(maxId) > 0) url.searchParams.set('max_id', String(maxId));
@@ -81,7 +83,7 @@ export function timelineUrl(userGroupId, maxId = -1) {
 }
 
 export function livenewsUrl(maxId = -1, count = DEFAULT_PAGE_SIZE) {
-  const url = new URL('/statuses/livenews/list.json', XUEQIU_ORIGIN);
+  const url = new URL('/statuses/livenews/list.json', XUEQIU_PAGE_ORIGIN);
   url.searchParams.set('since_id', '-1');
   url.searchParams.set('count', String(Math.min(30, Math.max(1, Number(count) || DEFAULT_PAGE_SIZE))));
   if (Number(maxId) > 0) url.searchParams.set('max_id', String(maxId));
@@ -109,7 +111,7 @@ export function buildLoginInspectExpression() {
 function jsonHeaders() {
   return {
     Accept: 'application/json, text/plain, */*',
-    Referer: XUEQIU_HOME_URL,
+    Referer: `${XUEQIU_PAGE_ORIGIN}/`,
     'X-Requested-With': 'XMLHttpRequest',
   };
 }
@@ -192,7 +194,7 @@ export function createXueqiuHomeBrowserClient(options = {}) {
     const excluded = new Set((excludeExternalIds || []).map((id) => String(id || '')).filter(Boolean));
 
     return runtime.withSession({ purpose: `xueqiu-${parsedFeed}`, focused: false }, async (session) => {
-      await session.navigate('https://xueqiu.com/hq', { timeoutMs: 90_000 });
+      await session.navigate(`${XUEQIU_PAGE_ORIGIN}/hq`, { timeoutMs: 90_000 });
       await wait(1_200);
       const inspect = await session.evaluate(buildLoginInspectExpression());
       const loggedIn = Boolean(inspect?.logged_in);

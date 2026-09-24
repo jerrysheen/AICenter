@@ -16,12 +16,14 @@ import {
   createToolGateway,
   harnessDshEntryPath,
   harnessPatchPath,
+  materializeClosedContextPatch,
   materializeHarnessPatch,
   parseAgentRuntimeMode,
   projectHarnessTraceEvents,
   projectToolCatalog,
   resolveAgentRuntimeMode,
   toDefineToolParameters,
+  resolveHarnessRunTools,
   resolveHarnessLaunch,
   resolveHarnessLlm,
   resolveHarnessWebSearchProvider,
@@ -95,6 +97,117 @@ test('overlay patch keeps built-in web and rewrites the plugin to a file URL', (
   assert.doesNotMatch(overlay, /name: \.\/plugin\/src\/web-search-elucid\.js/);
 });
 
+test('closed-context overlay disables native web tools', () => {
+  const overlay = materializeClosedContextPatch(readFileSync(harnessPatchPath(), 'utf8'));
+  assert.match(overlay, /id: tool-web/);
+  assert.match(overlay, /dsh-tool-web/);
+  assert.match(overlay, /disabled: true/);
+  assert.match(overlay, /本任务是封闭材料任务/);
+  assert.doesNotMatch(overlay, /web_search/);
+  assert.doesNotMatch(overlay, /web_fetch/);
+  assert.doesNotMatch(overlay, /web-search-elucid/);
+});
+
+test('closed context hides every tool; open context keeps the current catalog', () => {
+  const tools = holdingsTools();
+  tools.register({
+    id: 'market.stock.stats',
+    effect: 'read',
+    description: '股票统计',
+    async execute() {
+      return { data: {}, refs: [], observedAt: 1, warnings: [] };
+    },
+  });
+  const open = resolveHarnessRunTools(tools, { closedContext: false });
+  assert.ok(open.visibleTools.length > 0);
+  assert.ok(open.visibleTools.some((tool) => tool.id === 'web.search'));
+  assert.ok(open.visibleTools.some((tool) => tool.id === 'holdings.rank'));
+  const closed = resolveHarnessRunTools(tools, { closedContext: true });
+  assert.equal(closed.visibleTools.length, 0);
+  assert.deepEqual(closed.catalog, []);
+  assert.deepEqual(closed.allow, []);
+});
+
+test('closed-context prompt does not mention web tools', () => {
+  const prompt = buildHarnessPrompt({
+    message: '根据材料筛选',
+    closedContext: true,
+    catalog: [],
+  });
+  assert.match(prompt, /本任务是封闭材料任务/);
+  assert.match(prompt, /只能依据下方给定材料/);
+  assert.match(prompt, /本轮没有开放任何外部工具或互联网能力/);
+  assert.match(prompt, /材料没有的信息必须保持未知/);
+  assert.doesNotMatch(prompt, /web_search/);
+  assert.doesNotMatch(prompt, /web_fetch/);
+});
+
+test('empty gateway allowlist denies domain tools', async () => {
+  const tools = holdingsTools();
+  tools.register({
+    id: 'market.stock.stats',
+    effect: 'read',
+    description: '股票统计',
+    async execute() {
+      return { data: { ok: true }, refs: [], observedAt: 1, warnings: [] };
+    },
+  });
+  const gateway = await createToolGateway({
+    tools,
+    allowedToolIds: [],
+    context: { workspaceId: 'local' },
+    token: 'b'.repeat(64),
+  });
+  try {
+    const denied = await fetch(`${gateway.url}/tools/execute`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${'b'.repeat(64)}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ id: 'market.stock.stats', input: {} }),
+    });
+    assert.equal(denied.status, 403);
+  } finally {
+    await gateway.close();
+  }
+});
+
+test('closed-context harness run writes an empty catalog and a web-disabled overlay', async () => {
+  const directory = temporaryDirectory();
+  let launchSeen = null;
+  const tools = holdingsTools();
+  try {
+    const runtime = createHarnessAgentRuntime({
+      tools,
+      runtimeDirectory: directory,
+      env: { DEEPSEEK_API_KEY: 'test-key' },
+      async createClient(launch) {
+        launchSeen = launch;
+        return {
+          async run() { return { finalResponse: '只能依据材料。', events: [] }; },
+          async close() {},
+        };
+      },
+    });
+    const result = await runtime.run({
+      message: '封闭材料',
+      workspaceId: 'local',
+      closedContext: true,
+    });
+    assert.equal(result.visibleTools.length, 0);
+    const catalog = JSON.parse(readFileSync(launchSeen.env.AI_CENTER_HARNESS_TOOL_CATALOG_PATH, 'utf8'));
+    assert.deepEqual(catalog.tools, []);
+    const overlay = readFileSync(launchSeen.patches[0], 'utf8');
+    assert.match(overlay, /id: tool-web/);
+    assert.doesNotMatch(overlay, /web_search/);
+    assert.doesNotMatch(overlay, /web_fetch/);
+    await runtime.close();
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('harness model ignores legacy DEEPSEEK_SEARCH_MODEL', () => {
   const directory = temporaryDirectory();
   const gateway = { url: 'http://127.0.0.1:9', token: 'a'.repeat(64) };
@@ -132,14 +245,14 @@ test('harness LLM route can use Elucid Grok through dsh-llm-pi-ai', () => {
       ELUCID_GROK_API_KEY: 'elucid-key',
     });
     assert.equal(auto.provider, HARNESS_ELUCID_PROVIDER);
-    assert.equal(auto.model, 'grok-4.6');
+    assert.equal(auto.model, 'grok-4.7');
     assert.equal(auto.apiKeyEnv, 'ELUCID_GROK_API_KEY');
     assert.equal(auto.protocol, 'openai-responses');
     assert.match(auto.settingsYaml, /llm-deepseek:/);
     assert.match(auto.settingsYaml, /llm-pi-ai:/);
     assert.match(auto.settingsYaml, /api: openai-responses/);
     assert.match(auto.settingsYaml, /hk\.getelucid\.com\/v1/);
-    assert.match(auto.settingsYaml, /grok-4.6/);
+    assert.match(auto.settingsYaml, /grok-4.7/);
     assert.doesNotMatch(auto.settingsYaml, /elucid-key/);
 
     const launch = resolveHarnessLaunch({
@@ -477,10 +590,10 @@ test('harness runtime writes Elucid Grok into dsh settings and launch provider',
   try {
     const result = await runtime.run({ message: '你好', workspaceId: 'local' });
     assert.equal(result.providerId, HARNESS_ELUCID_PROVIDER);
-    assert.equal(result.modelId, 'grok-4.6');
+    assert.equal(result.modelId, 'grok-4.7');
     assert.equal(result.answer, 'Grok 回答');
     assert.equal(seenLaunch.provider, HARNESS_ELUCID_PROVIDER);
-    assert.equal(seenLaunch.model, 'grok-4.6');
+    assert.equal(seenLaunch.model, 'grok-4.7');
     const settings = readFileSync(path.join(seenLaunch.dshHome, 'settings.yaml'), 'utf8');
     assert.match(settings, /api: openai-responses/);
     assert.match(settings, /elucid-grok:/);

@@ -39,6 +39,9 @@ export * from './context.js';
 export * from './agent.js';
 export * from './article-analysis.js';
 export * from './runtime.js';
+export * from './report.js';
+export * from './market-stats.js';
+export * from './strategy.js';
 export * from './source.js';
 export * from './tagging.js';
 
@@ -149,6 +152,21 @@ export function parseMarketQuery(value) {
 export function parseMarketSearchQuery(value) {
   const query = cleanText(value, { field: '搜索关键字', max: 64 });
   return query;
+}
+
+export function parseMarketHistoryQuery(value) {
+  const query = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const symbol = cleanText(query.symbol, { field: '标的代码', max: 64, required: true }).toUpperCase();
+  const range = cleanText(query.range || '6mo', { field: 'K线区间', max: 16 }) || '6mo';
+  const interval = cleanText(query.interval || '1d', { field: 'K线周期', max: 16 }) || '1d';
+  if (!['1mo', '3mo', '6mo', '1y', '2y', '5y', 'max'].includes(range)) {
+    throw new ValidationError('不支持的K线区间', ['range']);
+  }
+  if (!['1d', '1wk', '1mo'].includes(interval)) {
+    throw new ValidationError('不支持的K线周期', ['interval']);
+  }
+  const refresh = query.refresh === true || query.refresh === '1' || query.refresh === 'true';
+  return { symbol, range, interval, refresh };
 }
 
 export function parseHoldingsQuery(value) {

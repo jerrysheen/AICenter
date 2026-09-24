@@ -170,3 +170,14 @@ export const HoldingsRankToolInputSchema = z.object({
   metric: z.enum(['dayPnlPct', 'dayPnlCny', 'positionPnlPct', 'positionPnlCny']).default('dayPnlPct'),
   limit: ToolLimitSchema.default(5),
 }).strict();
+
+export const StockStatsToolInputSchema = z.object({
+  symbol: z.string().trim().min(1).max(64),
+  range: z.enum(['1mo', '3mo', '6mo', '1y', '2y', '5y', 'max']).default('5y'),
+}).strict();
+
+export const BasketStatsToolInputSchema = z.object({
+  index: z.string().trim().regex(/^\d{6}(?:\.(?:SH|SZ|SS))?$/i),
+  range: z.enum(['1y', '2y', '5y', 'max']).default('5y'),
+  asOf: EpochMillisSchema.optional(),
+}).strict();
