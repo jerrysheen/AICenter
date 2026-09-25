@@ -9,11 +9,12 @@ import { createTradingService } from './trading-service.js';
 import { createDividendStrategyService } from './trading-strategies/strategy-service.js';
 import { createContextService } from './context-service.js';
 import { createTaggingService } from './tagging-service.js';
-import { resolveDailyConfig } from './daily-window.js';
+import { createQuantLabService } from './quant-lab-service.js';
 
 export { createContextService, createDailyBriefService, createFeedService, createIdentityService, createKnowledgeService, createMarketStatisticsService, createReportService, createRuntimeService, createTradingService, createTaggingService };
 export { buildDailyBriefCandidates } from './daily-brief-candidates.js';
 export { createDividendStrategyService } from './trading-strategies/strategy-service.js';
+export { createQuantLabService } from './quant-lab-service.js';
 export { resolveDailyConfig, resolveDailyTimeContext, resolveDailyWindow, resolveReportDate } from './daily-window.js';
 export { buildFactorSnapshot } from './market-factors/factor-engine.js';
 export { resolveLoginCredential } from './identity-service.js';
@@ -56,6 +57,7 @@ export function createDomainServices({
   feedFilter = null,
   dailyConfig = null,
   staticSignalPort = null,
+  quantRoot = null,
 }) {
   if (!store?.repositories) throw new Error('store repositories are required');
   const feed = createFeedService({
@@ -118,5 +120,9 @@ export function createDomainServices({
     marketStatistics,
     strategy,
     sources: sourcePort,
+    quant: createQuantLabService({
+      quantRoot,
+      listJobs: () => store.listJobs?.(100) || [],
+    }),
   });
 }

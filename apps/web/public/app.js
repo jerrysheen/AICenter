@@ -5,6 +5,7 @@ import {
 } from './mock.js?v=dev';
 import { icon } from './icons.js?v=dev';
 import { renderMarkdownInto } from './markdown.js?v=dev';
+import { renderQuantLab } from './quant-lab.js?v=dev';
 
 const platformLabels = { manual: '手工', bilibili: 'B站', x: 'X', xueqiu: '雪球', trendforce: 'TrendForce' };
 const processingLabels = { subtitle: '字幕处理中', ai: 'AI 加工中' };
@@ -199,6 +200,7 @@ const viewCopy = {
   knowledge: { title: '知识库', subtitle: '可长期复用的规范内容' },
   ask: { title: '问答', subtitle: '研究记录，可回溯也可继续' },
   report: { title: '日报', subtitle: '跨模块汇总，先定结构' },
+  quant: { title: '量化实验室', subtitle: 'Qlib 研究基线，不连接真实交易' },
   settings: { title: '设备与连接', subtitle: '信源、任务、自动化和配对' },
   page: { title: '详情', subtitle: '' },
 };
@@ -628,7 +630,7 @@ function isPrimaryNavActive(navId, view) {
     return navId === mapped;
   }
   if (navId === 'sources') return overviewViews.includes(view);
-  if (navId === 'tools') return view === 'tools' || view === 'knowledge' || view === 'report' || view === 'settings';
+  if (navId === 'tools') return view === 'tools' || view === 'knowledge' || view === 'report' || view === 'settings' || view === 'quant';
   return navId === view;
 }
 
@@ -832,6 +834,7 @@ function setView(name, options = {}) {
   }
   if (view === 'ask') syncAskView().catch((error) => showToast(error.message));
   if (view === 'tools' && state.bootstrapped) loadDividendInspection().catch((error) => showToast(error.message));
+  if (view === 'quant') renderQuantPage().catch((error) => showToast(error.message));
   if (view === 'settings') renderSettingsHub();
   if (view === 'page') renderPage();
   renderAskLiveUi();
@@ -1092,6 +1095,30 @@ function appendExternalLink(parent, url, label) {
   link.addEventListener('click', (event) => openExternalHttpUrl(url, event));
   parent.append(link);
   return link;
+}
+
+function renderQuantPage() {
+  const root = document.getElementById('quant-lab');
+  if (!root) return Promise.resolve();
+  if (renderQuantPage.timer) {
+    window.clearInterval(renderQuantPage.timer);
+    renderQuantPage.timer = 0;
+  }
+  return renderQuantLab(root, {
+    api,
+    showToast,
+    onLive(live) {
+      if (!live || document.body.dataset.view !== 'quant') return;
+      renderQuantPage.timer = window.setInterval(() => {
+        if (document.body.dataset.view !== 'quant') {
+          window.clearInterval(renderQuantPage.timer);
+          renderQuantPage.timer = 0;
+          return;
+        }
+        renderQuantPage().catch((error) => showToast(error.message));
+      }, 4000);
+    },
+  });
 }
 
 function showToast(message, action) {

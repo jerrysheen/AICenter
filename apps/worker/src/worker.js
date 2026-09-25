@@ -34,6 +34,8 @@ import { createScheduler } from '../../../packages/runtime/src/scheduler.js';
 import { createDailyBriefService } from '../../../packages/domain/src/daily-brief-service.js';
 import { createReportJobHandlers, ensureDailyReportSchedule, reportDailyManifest } from '../../../packages/runtime/src/report-module.js';
 import { createStrategyJobHandlers, ensureDividendStrategySchedule, strategySnapshotManifest } from '../../../packages/runtime/src/strategy-module.js';
+import { createQuantJobHandlers, quantLabManifest } from '../../../packages/runtime/src/quant-module.js';
+import { QUANT_PREPARE_JOB_TYPE, QUANT_RUN_JOB_TYPE } from '../../../packages/contracts/src/index.js';
 import { createLocalToolRegistry } from '../../../packages/runtime/src/local-tools.js';
 import { createAgentTraceLog } from '../../../packages/runtime/src/agent-trace-log.js';
 import { createWorkPackageTracePort } from '../../../packages/runtime/src/work-package-trace.js';
@@ -118,6 +120,10 @@ export function createAiCenterWorker(options = {}) {
   const store = options.store || createStore(instance.databasePath);
   const staleAfterMs = Number(options.staleAfterMs || process.env.AI_CENTER_WORKER_LEASE_MS) || 10 * 60_000;
   store.recoverStaleJobs(staleAfterMs);
+  store.abandonRunningJobs?.(
+    [QUANT_PREPARE_JOB_TYPE, QUANT_RUN_JOB_TYPE],
+    'Worker 已重启，未完成的量化任务不会自动重跑',
+  );
   const webSearchPort = runtimeMode === 'local' || options.webSearchPort !== undefined
     ? createOptionalSearchPort(options.webSearchPort)
     : null;
@@ -310,6 +316,14 @@ export function createAiCenterWorker(options = {}) {
     manifest: strategySnapshotManifest,
     jobHandlers: options.strategyJobHandlers || createStrategyJobHandlers({ strategyService: dividendStrategy }),
   });
+  registry.register({
+    manifest: quantLabManifest,
+    jobHandlers: options.quantJobHandlers || createQuantJobHandlers({
+      repositoryRoot,
+      quantRoot: options.quantRoot || path.join(dataDirectory, 'quant'),
+      env,
+    }),
+  });
   const handlers = options.handlers || registry.createJobHandlers();
   if (options.enableDefaultSchedules !== false) {
     ensureDailyReportSchedule(store, dailyConfig);
@@ -330,6 +344,7 @@ export function createAiCenterWorker(options = {}) {
     concurrency: options.concurrency || {
       workPackageDispatchLimit: options.workPackageConcurrency
         ?? process.env.AI_CENTER_WORKER_WORK_PACKAGE_CONCURRENCY,
+      quantLabLimit: 1,
     },
     onError(error, job) {
       console.error(`[worker] ${job.type} ${job.id}:`, error);

@@ -188,6 +188,7 @@ export const tools = [
   { id: 'knowledge', title: '知识库', desc: '长期可复用内容', action: 'knowledge', icon: 'notebook-text', ready: true },
   { id: 'publish', title: '快速发布', desc: '写入信息流', action: 'compose', icon: 'plus', ready: true },
   { id: 'report', title: '日报', desc: '跨模块汇总', action: 'report', icon: 'newspaper', ready: true },
+  { id: 'quant', title: '量化实验室', desc: 'Qlib 研究基线', action: 'quant', icon: 'chart-line', ready: true },
   { id: 'pair', title: '设备与连接', desc: '配对、数据源', action: 'settings', icon: 'settings', ready: true },
   { id: 'search', title: '信息检索', desc: '后续接入问答', action: '', icon: 'search', ready: false },
   { id: 'capture', title: '采集箱', desc: '后续接 Worker', action: '', icon: 'layout-grid', ready: false },

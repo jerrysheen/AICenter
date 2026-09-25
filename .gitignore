@@ -1,5 +1,9 @@
 # Dependencies and build output
 node_modules/
+quant/.venv/
+quant/**/__pycache__/
+**/__pycache__/
+*.pyc
 .next/
 dist/
 coverage/

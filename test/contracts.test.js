@@ -275,6 +275,7 @@ test('worker job concurrency defaults to three work-package CLI slots', () => {
   assert.deepEqual(parseWorkerJobConcurrency({}), {
     defaultLimit: 1,
     workPackageDispatchLimit: 3,
+    quantLabLimit: 1,
   });
   assert.equal(parseWorkerJobConcurrency({ workPackageDispatchLimit: '3' }).workPackageDispatchLimit, 3);
   assert.equal(parseWorkerJobConcurrency({ workPackageDispatchLimit: 8 }).workPackageDispatchLimit, 8);

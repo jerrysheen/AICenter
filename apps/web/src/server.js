@@ -191,6 +191,7 @@ export function createAiCenterServer(options = {}) {
     staticSignalPort: {
       readBoard: (input, readOptions) => readStaticSignalBoard(sourcePort, input, readOptions),
     },
+    quantRoot: options.quantRoot || path.join(dataDirectory, 'quant'),
   });
   const feedQueryParsers = options.feedQueryParsers || new Map([
     ['x', parseXFeedQuery],

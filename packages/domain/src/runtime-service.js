@@ -4,9 +4,13 @@ import {
   AgentRunProgressStepSchema,
   ARTICLE_ANALYSIS_JOB_TYPE,
   ArticleAnalysisRunViewSchema,
+  QUANT_PREPARE_JOB_TYPE,
+  QUANT_RUN_JOB_TYPE,
+  QuantRunOptionsSchema,
   ValidationError,
   parseContract,
 } from '../../contracts/src/index.js';
+import { randomUUID } from 'node:crypto';
 import { resolveResearchProfile } from './research-profile.js';
 
 function articleAnalysisQuestion(input = {}) {
@@ -233,6 +237,30 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort, res
     },
     listJobs(limit) {
       return runtimeRepository.listJobs(limit);
+    },
+    requestQuantPrepare() {
+      return runtimeRepository.createJob({
+        type: QUANT_PREPARE_JOB_TYPE,
+        workspaceId: 'local',
+        maxAttempts: 1,
+        input: {},
+      });
+    },
+    requestQuantRun(input = {}) {
+      const options = parseContract(QuantRunOptionsSchema, {
+        topk: input.topk == null || input.topk === '' ? 5 : Number(input.topk),
+        nDrop: input.nDrop == null || input.nDrop === '' ? 1 : Number(input.nDrop),
+      });
+      return runtimeRepository.createJob({
+        type: QUANT_RUN_JOB_TYPE,
+        workspaceId: 'local',
+        maxAttempts: 1,
+        input: {
+          experimentId: randomUUID(),
+          topk: options.topk,
+          nDrop: options.nDrop,
+        },
+      });
     },
     listActiveAgentRuns(workspaceId) {
       const jobs = runtimeRepository.listActiveAgentJobs

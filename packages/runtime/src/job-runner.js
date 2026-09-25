@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import {
   parseWorkerJobConcurrency,
+  QUANT_PREPARE_JOB_TYPE,
+  QUANT_RUN_JOB_TYPE,
   WORK_PACKAGE_DISPATCH_JOB_TYPE,
 } from '../../contracts/src/index.js';
 
@@ -23,9 +25,9 @@ export function wait(milliseconds, signal) {
 
 export function resolveJobTypeConcurrency(type, concurrency) {
   const limits = parseWorkerJobConcurrency(concurrency || {});
-  return type === WORK_PACKAGE_DISPATCH_JOB_TYPE
-    ? limits.workPackageDispatchLimit
-    : limits.defaultLimit;
+  if (type === WORK_PACKAGE_DISPATCH_JOB_TYPE) return limits.workPackageDispatchLimit;
+  if (type === QUANT_PREPARE_JOB_TYPE || type === QUANT_RUN_JOB_TYPE) return limits.quantLabLimit;
+  return limits.defaultLimit;
 }
 
 export function createJobRunner(options) {
@@ -47,9 +49,13 @@ export function createJobRunner(options) {
   }
 
   function runningCount(type) {
+    const quant = type === QUANT_PREPARE_JOB_TYPE || type === QUANT_RUN_JOB_TYPE;
     let count = 0;
     for (const item of inFlight.values()) {
-      if (item.type === type) count += 1;
+      const sameFamily = quant
+        ? item.type === QUANT_PREPARE_JOB_TYPE || item.type === QUANT_RUN_JOB_TYPE
+        : item.type === type;
+      if (sameFamily) count += 1;
     }
     return count;
   }

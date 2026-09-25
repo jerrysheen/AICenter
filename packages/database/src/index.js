@@ -612,6 +612,26 @@ export function createStore(databasePath) {
       return rows.length;
     },
 
+    abandonRunningJobs(types, message, now = Date.now()) {
+      const accepted = [...new Set((Array.isArray(types) ? types : []).map((type) => String(type || '')))];
+      if (!accepted.length) return 0;
+      const rows = database.prepare(`SELECT * FROM jobs WHERE status = 'running' AND type IN (${accepted.map(() => '?').join(', ')})`)
+        .all(...accepted);
+      const error = { name: 'WorkerInterrupted', message: String(message || '后台进程已重启，未完成的任务不会自动重跑') };
+      database.transaction(() => {
+        for (const row of rows) {
+          database.prepare(`UPDATE jobs SET status = 'failed', error_json = ?, completed_at = ?,
+            locked_by = NULL, locked_at = NULL, updated_at = ? WHERE id = ? AND status = 'running'`)
+            .run(JSON.stringify(error), now, now, row.id);
+          database.prepare(`UPDATE job_attempts SET status = 'abandoned', error_json = ?, completed_at = ?
+            WHERE job_id = ? AND status = 'running'`)
+            .run(JSON.stringify(error), now, row.id);
+          insertEvent('job.failed', 'job', row.id, { jobId: row.id, error }, row.workspace_id);
+        }
+      })();
+      return rows.length;
+    },
+
     getJob(id) {
       const row = database.prepare('SELECT * FROM jobs WHERE id = ?').get(id);
       return row ? mapJob(row) : null;

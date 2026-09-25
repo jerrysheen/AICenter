@@ -42,6 +42,7 @@ export * from './runtime.js';
 export * from './report.js';
 export * from './market-stats.js';
 export * from './strategy.js';
+export * from './quant.js';
 export * from './source.js';
 export * from './tagging.js';
 
@@ -362,7 +363,7 @@ export function parseDispatchWorkPackageJobInput(value) {
 
 export function parseWorkerJobConcurrency(value) {
   const input = value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {};
-  for (const key of ['defaultLimit', 'workPackageDispatchLimit']) {
+  for (const key of ['defaultLimit', 'workPackageDispatchLimit', 'quantLabLimit']) {
     if (input[key] === undefined || input[key] === null || input[key] === '') {
       delete input[key];
     } else {

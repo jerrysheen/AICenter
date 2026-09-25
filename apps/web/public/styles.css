@@ -1676,6 +1676,12 @@ main {
 .strategy-inspect-metrics strong { display: block; font-size: 15px; }
 .strategy-inspect-metrics small { color: var(--font-tertiary); font-size: 11px; }
 .strategy-inspect-note { margin: 10px 0 0; }
+.quant-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin-top: 12px; }
+.quant-form label { display: grid; gap: 4px; color: var(--font-tertiary); font-size: 12px; }
+.quant-form input { width: 88px; }
+.quant-experiment { padding: 12px 0; border-top: 1px solid var(--border-tertiary, rgba(0,0,0,.08)); }
+.quant-experiment p { margin: 6px 0; font-size: 13px; }
+.quant-day { margin-top: 8px; font-size: 13px; }
 
 .overview-subnav { display: none; }
 .overview-subnav.is-on {

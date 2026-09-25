@@ -8,6 +8,7 @@ import { createKnowledgeRoutes } from './knowledge-routes.js';
 import { createRuntimeRoutes } from './runtime-routes.js';
 import { createReportRoutes } from './report-routes.js';
 import { createStrategyRoutes } from './strategy-routes.js';
+import { createQuantRoutes } from './quant-routes.js';
 import { createSystemRoutes } from './system-routes.js';
 import { createTradingRoutes } from './trading-routes.js';
 import { createSourceRoutes } from './source-routes.js';
@@ -28,6 +29,7 @@ export function createApiRoutes() {
     ...createTradingRoutes(),
     ...createReportRoutes(),
     ...createStrategyRoutes(),
+    ...createQuantRoutes(),
     ...createEventRoutes(),
   ];
 }
