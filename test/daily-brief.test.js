@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createStore } from '../packages/database/src/index.js';
 import { buildDailyBriefCandidates } from '../packages/domain/src/daily-brief-candidates.js';
 import { assembleDailyBrief, createDailyBriefService, parseDailyBriefModelText } from '../packages/domain/src/daily-brief-service.js';
-import { createReportJobHandlers } from '../packages/runtime/src/report-module.js';
+import { createReportJobHandlers, DAILY_BRIEF_CATCHUP_DELAY_MS } from '../packages/runtime/src/report-module.js';
 import { createAgentRuntime } from '../packages/runtime/src/agent-runtime.js';
 import { createToolRegistry } from '../packages/runtime/src/tool-registry.js';
 import { createRouter } from '../apps/web/src/http/router.js';
@@ -287,9 +287,22 @@ test('daily brief job stores one row and refreshes it when the report changes', 
     assert.equal(first.sourceReportUpdatedAt, saved.updatedAt);
     const again = await briefService.generateDailyBrief({ workspaceId: 'local', reportId: saved.id });
     assert.equal(again.id, first.id);
+    let extraCalls = 0;
+    const guarded = createDailyBriefService({
+      reportRepository: store.repositories.report,
+      agentRuntime: { async run() { extraCalls += 1; throw new Error('不应再调用模型'); } },
+    });
+    const skipped = await guarded.generateDailyBrief({ workspaceId: 'local', reportId: saved.id, catchup: true });
+    assert.equal(extraCalls, 0);
+    assert.equal(skipped.id, first.id);
     const row = store.repositories.report.getDailyBriefByReportId('local', saved.id);
     assert.equal(row.id, first.id);
     assert.equal(store.listEvents(0, 20).some((event) => event.name === 'report.daily.brief.generated.v1'), true);
+    const listed = store.repositories.report.listDailyBriefs('local');
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].reportDate, first.reportDate);
+    assert.equal(listed[0].itemCount, 2);
+    assert.equal(listed[0].overview, first.overview);
   } finally {
     store.close();
     temporary.remove();
@@ -345,6 +358,53 @@ test('daily report success enqueues a brief job with only workspace and report i
   }
 });
 
+test('brief failure schedules one catch-up thirty minutes later', async () => {
+  const temporary = temporaryDatabase();
+  const store = createStore(temporary.path);
+  const handlers = createReportJobHandlers({
+    reportService: { async generateDailyReport() { return { id: 'report-1', workspaceId: 'local', reportDate: '2026-09-22', status: 'ready' }; } },
+    briefService: { async generateDailyBrief() { throw new Error('Harness 没有返回回答'); } },
+  });
+  const job = { id: 'job-brief', workspaceId: 'local', attemptCount: 2, maxAttempts: 2 };
+  try {
+    await assert.rejects(
+      () => handlers['report.daily.brief.generate'](
+        { workspaceId: 'local', reportId: 'report-1' },
+        { job: { ...job, attemptCount: 1 }, store },
+      ),
+      /Harness 没有返回回答/,
+    );
+    assert.equal(store.listOpenJobs('report.daily.brief.generate').length, 0);
+
+    const before = Date.now();
+    await assert.rejects(
+      () => handlers['report.daily.brief.generate'](
+        { workspaceId: 'local', reportId: 'report-1' },
+        { job, store },
+      ),
+      /Harness 没有返回回答/,
+    );
+    const open = store.listOpenJobs('report.daily.brief.generate');
+    assert.equal(open.length, 1);
+    assert.equal(open[0].input.catchup, true);
+    assert.equal(open[0].input.reportId, 'report-1');
+    assert.ok(open[0].availableAt >= before + DAILY_BRIEF_CATCHUP_DELAY_MS);
+    assert.ok(open[0].availableAt <= Date.now() + DAILY_BRIEF_CATCHUP_DELAY_MS);
+
+    await assert.rejects(
+      () => handlers['report.daily.brief.generate'](
+        { workspaceId: 'local', reportId: 'report-1', catchup: true },
+        { job: { ...job, id: 'job-catchup' }, store },
+      ),
+      /Harness 没有返回回答/,
+    );
+    assert.equal(store.listOpenJobs('report.daily.brief.generate').length, 1);
+  } finally {
+    store.close();
+    temporary.remove();
+  }
+});
+
 test('brief routes are read-only except desktop generate', async () => {
   const jobs = [];
   const services = {
@@ -353,6 +413,7 @@ test('brief routes are read-only except desktop generate', async () => {
       getDailyReport: () => ({ id: 'report-1', reportDate: '2026-09-22' }),
       getLatestDailyBrief: () => ({ id: 'brief-1', overview: '概览' }),
       getDailyBrief: () => ({ id: 'brief-1', reportDate: '2026-09-22' }),
+      listDailyBriefs: () => [{ reportDate: '2026-09-22', overview: '概览', itemCount: 1, generatedAt: 1 }],
     },
     runtime: {
       requestDailyBrief(input) {
@@ -373,6 +434,18 @@ test('brief routes are read-only except desktop generate', async () => {
   });
   assert.equal(latest.status, 200);
   assert.match(latest.body, /概览/);
+
+  const index = { status: 0, body: '', writeHead(status) { this.status = status; }, end(body = '') { this.body = body; } };
+  await router.dispatch({
+    request: { method: 'GET' },
+    response: index,
+    url: new URL('http://127.0.0.1/api/v1/reports/daily/briefs'),
+    identity: { kind: 'device' },
+    services,
+  });
+  assert.equal(index.status, 200);
+  assert.match(index.body, /2026-09-22/);
+  assert.match(index.body, /itemCount/);
 
   const denied = { status: 0, body: '', writeHead(status) { this.status = status; }, end(body = '') { this.body = body; } };
   await router.dispatch({

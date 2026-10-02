@@ -4,7 +4,7 @@ import { EntityIdSchema, EpochMillisSchema, WorkspaceIdSchema } from './common.j
 export const TagIdSchema = z.string().trim().min(1).max(64)
   .regex(/^[a-z][a-z0-9_]*$/, 'tag id 必须是小写字母、数字或下划线');
 
-export const TagResourceTypeSchema = z.enum(['content-item', 'inspiration', 'knowledge']);
+export const TagResourceTypeSchema = z.enum(['content-item', 'inspiration', 'knowledge', 'media-index']);
 export const TagSelectionModeSchema = z.enum(['multi', 'single']);
 
 export const TagDefinitionSchema = z.object({

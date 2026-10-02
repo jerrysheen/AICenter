@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { tweetToFeedItem, createTwitterService, normalizeXHomeFeed, explainXConnectorError, normalizeTweetBody, mergeArticleIntoTweetText, findXArticleUrl, appendUnscrapedMediaNotes } from '../packages/connectors/src/twitter.js';
+import { tweetToFeedItem, createTwitterService, normalizeXHomeFeed, explainXConnectorError, normalizeTweetBody, mergeArticleIntoTweetText, findXArticleUrl, appendCommentsToBody, appendUnscrapedMediaNotes } from '../packages/connectors/src/twitter.js';
 import { createXHomeBrowserClient, inspectMatchesRequestedFeed, looksLikeArticleTweet, looksTruncatedTweet, mergeTweets, tabTextMatchesFeed } from '../packages/connectors/src/x/home-browser.js';
 import { createConnectorRegistry } from '../packages/connectors/src/index.js';
 
@@ -465,6 +465,91 @@ test('home client opens article-cover tweets on the status page', async () => {
   assert.equal(result.tweets[0].text.includes('[未抓取] X 长文'), false);
   assert.ok(calls.some((item) => item[0] === 'navigate' && String(item[1]).includes('/status/2100984487802708306')));
   assert.equal(calls.some((item) => item[0] === 'navigate' && String(item[1]).includes('/article/')), false);
+});
+
+test('leading replies are appended to the tweet body and kept out of the title', async () => {
+  const calls = [];
+  const runtime = {
+    async withSession(_options, callback) {
+      return callback({
+        async navigate(url) { calls.push(['navigate', url]); },
+        async evaluate(expression) {
+          const source = String(expression);
+          if (source.includes('x-status-comments')) {
+            return {
+              comments: [
+                { author: '甲', text: '同意，仓位先看清楚' },
+                { author: '乙', text: '补充一点流动性' },
+              ],
+            };
+          }
+          if (source.includes('tweetText')) {
+            return {
+              items: [{
+                tweet_id: '5',
+                tweet_url: 'https://x.com/user/status/5',
+                text: '主帖很短',
+                reply_count: 2,
+                author_handle: 'user',
+              }],
+            };
+          }
+          return { url: 'https://x.com/home', title: 'Home', logged_in: true, login_wall: false };
+        },
+      });
+    },
+  };
+  const client = createXHomeBrowserClient({ browserRuntime: runtime, delay: async () => {} });
+  const result = await client.fetchHomeTimeline({ feed: 'for-you', limit: 1 });
+  assert.match(result.tweets[0].text, /主帖很短/);
+  assert.match(result.tweets[0].text, /· 甲：同意，仓位先看清楚/);
+  assert.match(result.tweets[0].text, /· 乙：补充一点流动性/);
+  assert.equal('comments' in result.tweets[0], false);
+  assert.ok(calls.some((item) => item[0] === 'navigate' && String(item[1]).includes('/status/5')));
+  const item = tweetToFeedItem(result.tweets[0]);
+  assert.equal(item.title, '主帖很短');
+  assert.equal(item.summary, '主帖很短');
+  assert.match(item.body, /甲：同意/);
+});
+
+test('a tweet with no replies does not open the status page for comments', async () => {
+  const calls = [];
+  const runtime = {
+    async withSession(_options, callback) {
+      return callback({
+        async navigate(url) { calls.push(url); },
+        async evaluate(expression) {
+          if (String(expression).includes('tweetText')) {
+            return {
+              items: [{
+                tweet_id: '8',
+                tweet_url: 'https://x.com/user/status/8',
+                text: '没有回复',
+                reply_count: 0,
+                author_handle: 'user',
+              }],
+            };
+          }
+          return { url: 'https://x.com/home', title: 'Home', logged_in: true, login_wall: false };
+        },
+      });
+    },
+  };
+  const client = createXHomeBrowserClient({ browserRuntime: runtime, delay: async () => {} });
+  const result = await client.fetchHomeTimeline({ feed: 'for-you', limit: 1 });
+  assert.equal(result.tweets[0].text, '没有回复');
+  assert.equal(calls.some((url) => String(url).includes('/status/')), false);
+});
+
+test('comment preview keeps five lines and does not repeat', () => {
+  const comments = Array.from({ length: 6 }, (_, index) => ({
+    author: `用户${index + 1}`,
+    text: '评'.repeat(300),
+  }));
+  const once = appendCommentsToBody('正文', comments);
+  assert.equal(once.includes('用户6'), false);
+  assert.match(once, /用户5：评{240}…/);
+  assert.equal(appendCommentsToBody(once, comments), once);
 });
 
 test('home client keeps a video note in the tweet body', async () => {

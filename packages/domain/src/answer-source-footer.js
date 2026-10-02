@@ -5,6 +5,7 @@ const GROUPS = Object.freeze([
   { id: 'inspiration', label: '灵感', types: ['inspiration'] },
   { id: 'knowledge', label: '知识', types: ['knowledge-revision'] },
   { id: 'answer', label: '回答', types: ['ai-run'] },
+  { id: 'report', label: '日报', types: ['daily-brief-item'] },
   { id: 'web', label: '网页', types: ['web-result'] },
   { id: 'market', label: '持仓与市场', types: ['holdings-board', 'market-board'] },
 ]);
@@ -18,7 +19,7 @@ function clipLabel(value, resourceType) {
 }
 
 function refKey(item) {
-  const revision = item.resourceType === 'knowledge-revision' && item.revision ? `:${item.revision}` : '';
+  const revision = ['knowledge-revision', 'daily-brief-item'].includes(item.resourceType) && item.revision ? `:${item.revision}` : '';
   return `${item.resourceType}:${item.resourceId}${revision}`;
 }
 

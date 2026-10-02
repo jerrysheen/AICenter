@@ -124,10 +124,46 @@ test('hidden content items leave the provider feed but stay readable by id', () 
   });
   assert.equal(state.isHidden, true);
   assert.equal(feed.listContentItemsByProvider('local', 'x').length, 0);
+  assert.equal(feed.listContentItemsByProvider('local', 'x', { taggedOnly: true }).length, 0);
   assert.equal(feed.getContentItem('local', item.id).title, '待删除');
   const post = temporary.store.createPost({ title: '手工', body: '本地一条', sourceUrl: '', tags: [] });
   assert.equal(temporary.store.hidePost(post.id), true);
   assert.equal(temporary.store.listPosts().some((row) => row.id === post.id), false);
+  temporary.store.close();
+  temporary.remove();
+});
+
+test('tagged feed keeps the newest tagged items and skips empty labels', () => {
+  const temporary = temporaryStore();
+  const feed = temporary.store.repositories.feed;
+  const source = feed.upsertSourceAccount({
+    workspaceId: 'local', provider: 'x', externalId: 'home', displayName: 'X',
+  });
+  function save(externalId, capturedAt, body) {
+    const capture = feed.saveCapture({
+      workspaceId: 'local', provider: 'x', externalId, sourceAccountId: source.id,
+      sourceUrl: `https://x.com/user/status/${externalId}`, contentHash: `sha-${externalId}`,
+      capturedAt,
+    });
+    return feed.saveContentItem({
+      workspaceId: 'local', captureId: capture.id, originType: 'subscription', contentType: 'post',
+      title: body, body, sourceUrl: capture.sourceUrl,
+    });
+  }
+  const tagged = save('tagged', 300, '比特币站上新高');
+  save('empty', 200, '今天天气不错');
+  save('missing', 100, '随便聊聊');
+  temporary.store.repositories.tagging.saveTaggings([{
+    workspaceId: 'local', resourceType: 'content-item', resourceId: tagged.id,
+    tags: ['crypto'], tagCatalogVersion: 'tags_v1', promptVersion: 'tag_v1', model: 'keyword', analyzedAt: 1,
+  }]);
+  temporary.store.repositories.tagging.saveTaggings([{
+    workspaceId: 'local', resourceType: 'content-item', resourceId: feed.listContentItems('local').find((item) => item.title === '今天天气不错').id,
+    tags: [], tagCatalogVersion: 'tags_v1', promptVersion: 'tag_v1', model: 'test', analyzedAt: 1,
+  }]);
+  const visible = feed.listContentItemsByProvider('local', 'x', { taggedOnly: true });
+  assert.deepEqual(visible.map((item) => item.externalId), ['tagged']);
+  assert.equal(feed.listContentItemsByProvider('local', 'x').length, 3);
   temporary.store.close();
   temporary.remove();
 });
@@ -188,7 +224,8 @@ test('X refresh tells the source which tweet ids are already captured', async ()
   const result = await service.getExternalFeed('x', { feed: 'for-you', limit: 50, refresh: true });
   assert.ok(reads[0].includes('already-there'));
   assert.equal(result.added, 1);
-  assert.equal(result.items.some((item) => item.externalId === 'brand-new'), true);
+  assert.equal(result.items.some((item) => item.externalId === 'brand-new'), false);
+  assert.equal(feed.listContentItemsByProvider('local', 'x').some((item) => item.externalId === 'brand-new'), true);
   temporary.store.close();
   temporary.remove();
 });
@@ -237,13 +274,16 @@ test('hidden social items stay hidden after the same tweet is ingested again', a
     },
   });
   const first = await service.getExternalFeed('x', { feed: 'for-you', limit: 50, refresh: true });
-  assert.equal(first.items.length, 1);
-  const hidden = service.hideContentItem('local', first.items[0].resourceId);
+  assert.equal(first.added, 1);
+  assert.equal(first.items.length, 0);
+  const stored = temporary.store.repositories.feed.listContentItemsByProvider('local', 'x');
+  assert.equal(stored.length, 1);
+  const hidden = service.hideContentItem('local', stored[0].id);
   assert.equal(hidden.isHidden, true);
   snapshotItems[0] = { ...snapshotItems[0], body: '改过的正文', title: '改过的正文' };
   const again = await service.getExternalFeed('x', { feed: 'for-you', limit: 50, refresh: true });
   assert.equal(again.items.length, 0);
-  assert.equal(service.getContentItem('local', first.items[0].resourceId).title, '待删除');
+  assert.equal(service.getContentItem('local', stored[0].id).title, '待删除');
   temporary.store.close();
   temporary.remove();
 });
@@ -301,8 +341,10 @@ test('same author and tweet text skip ingest even with a new tweet id', async ()
   };
   const again = await service.getExternalFeed('x', { feed: 'for-you', refresh: true });
   assert.equal(again.added, 0);
-  assert.equal(again.items.length, 1);
-  assert.equal(again.items[0].externalId, 'tweet-a');
+  assert.equal(again.items.length, 0);
+  const stored = temporary.store.repositories.feed.listContentItemsByProvider('local', 'x');
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0].externalId, 'tweet-a');
   temporary.store.close();
   temporary.remove();
 });
@@ -352,8 +394,10 @@ test('identity fingerprints survive content purge and keep hidden tweets out', a
     },
   });
   const first = await service.getExternalFeed('x', { feed: 'for-you', refresh: true });
-  assert.equal(first.items.length, 1);
-  assert.equal(service.hideContentItem('local', first.items[0].resourceId).isHidden, true);
+  assert.equal(first.added, 1);
+  const stored = temporary.store.repositories.feed.listContentItemsByProvider('local', 'x');
+  assert.equal(stored.length, 1);
+  assert.equal(service.hideContentItem('local', stored[0].id).isHidden, true);
   temporary.store.close();
   const purged = new Database(temporary.databasePath);
   purged.exec(`

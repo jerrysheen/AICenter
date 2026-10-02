@@ -1,4 +1,5 @@
 import { createFeedRepository } from './feed-repository.js';
+import { createMediaRepository } from './media-repository.js';
 import { createKnowledgeRepository } from './knowledge-repository.js';
 import { createReportRepository } from './report-repository.js';
 import { createStrategyRepository } from './strategy-repository.js';
@@ -8,6 +9,7 @@ import { createTradingRepository } from './trading-repository.js';
 export function createDomainRepositories(database, emitEvent) {
   return Object.freeze({
     feed: createFeedRepository(database, emitEvent),
+    media: createMediaRepository(database, emitEvent),
     trading: createTradingRepository(database, emitEvent),
     knowledge: createKnowledgeRepository(database, emitEvent),
     tagging: createTaggingRepository(database, emitEvent),

@@ -21,13 +21,25 @@ export const ReferenceResourceTypeSchema = z.enum([
   'inspiration',
   'knowledge-revision',
   'ai-run',
+  'daily-brief-item',
 ]);
 
 export const ReferenceInputSchema = z.object({
   resourceType: ReferenceResourceTypeSchema,
-  resourceId: z.string().trim().min(1).max(256),
+  resourceId: z.string().trim().min(1).max(267),
   revision: z.number().int().positive().optional(),
-}).strict();
+}).strict().superRefine((value, context) => {
+  if (value.resourceType === 'daily-brief-item') {
+    if (!/^\d{4}-\d{2}-\d{2}\/.{1,256}$/s.test(value.resourceId)) {
+      context.addIssue({ code: 'custom', path: ['resourceId'], message: '日报观点引用需要日期/candidateId' });
+    }
+    if (!value.revision) {
+      context.addIssue({ code: 'custom', path: ['revision'], message: '日报观点引用需要生成版本' });
+    }
+  } else if (value.resourceId.length > 256) {
+    context.addIssue({ code: 'custom', path: ['resourceId'], message: '资源 ID 最多 256 字符' });
+  }
+});
 
 export const CreateAgentRunInputSchema = z.object({
   message: z.string().trim().min(1).max(4_000),
@@ -92,12 +104,14 @@ export const AgentContextRefOriginSchema = z.enum(['selected', 'tool']);
 
 export const AgentToolReferenceSchema = z.object({
   resourceType: z.string().trim().min(1).max(64),
-  resourceId: z.string().trim().min(1).max(256),
+  resourceId: z.string().trim().min(1).max(267),
   revision: z.number().int().positive().nullable(),
   asOf: EpochMillisSchema.nullable(),
   label: z.string().trim().min(1).max(1_000),
   origin: AgentContextRefOriginSchema.default('tool'),
-}).strict();
+}).strict().refine((value) => value.resourceType === 'daily-brief-item' || value.resourceId.length <= 256, {
+  path: ['resourceId'], message: '资源 ID 最多 256 字符',
+});
 
 export const AgentToolResultSchema = z.object({
   data: z.custom((value) => value !== undefined, '工具结果必须包含 data'),

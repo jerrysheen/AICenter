@@ -1,4 +1,5 @@
 import { createFeedService } from './feed-service.js';
+import { createMediaIngestionService } from './media-ingestion-service.js';
 import { createIdentityService } from './identity-service.js';
 import { createKnowledgeService } from './knowledge-service.js';
 import { createMarketStatisticsService } from './market-statistics-service.js';
@@ -11,7 +12,7 @@ import { createContextService } from './context-service.js';
 import { createTaggingService } from './tagging-service.js';
 import { createQuantLabService } from './quant-lab-service.js';
 
-export { createContextService, createDailyBriefService, createFeedService, createIdentityService, createKnowledgeService, createMarketStatisticsService, createReportService, createRuntimeService, createTradingService, createTaggingService };
+export { createContextService, createDailyBriefService, createFeedService, createIdentityService, createKnowledgeService, createMarketStatisticsService, createMediaIngestionService, createReportService, createRuntimeService, createTradingService, createTaggingService };
 export { buildDailyBriefCandidates } from './daily-brief-candidates.js';
 export { createDividendStrategyService } from './trading-strategies/strategy-service.js';
 export { createQuantLabService } from './quant-lab-service.js';
@@ -55,17 +56,26 @@ export function createDomainServices({
   attachmentStore = null,
   loginCredential = null,
   feedFilter = null,
+  mediaService = null,
   dailyConfig = null,
   staticSignalPort = null,
   quantRoot = null,
 }) {
   if (!store?.repositories) throw new Error('store repositories are required');
+  const media = mediaService || (store.repositories.media
+    ? createMediaIngestionService({
+      mediaRepository: store.repositories.media,
+      feedRepository: store.repositories.feed,
+      taggingRepository: store.repositories.tagging,
+    })
+    : null);
   const feed = createFeedService({
     legacyRepository: store,
     feedRepository: store.repositories.feed,
     sourcePort,
     translationPort,
     feedFilter,
+    mediaPort: media,
   });
   const trading = createTradingService({
     tradingRepository: store.repositories.trading,
@@ -99,6 +109,7 @@ export function createDomainServices({
     reportRepository: store.repositories.report,
     feedService: feed,
     tradingService: trading,
+    mediaPort: media,
     staticSignalPort,
     strategyPort: strategy,
     defaultConfig: resolvedDailyConfig,
@@ -106,10 +117,11 @@ export function createDomainServices({
   return Object.freeze({
     identity: createIdentityService({ identityRepository: store, loginCredential }),
     feed,
+    media,
     trading,
     knowledge,
     tagging,
-    context: createContextService({ feedService: feed, tradingService: trading, knowledgeService: knowledge }),
+    context: createContextService({ feedService: feed, tradingService: trading, knowledgeService: knowledge, reportService: report }),
     runtime: createRuntimeService({
       runtimeRepository: store,
       agentProgressPort,

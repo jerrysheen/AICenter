@@ -26,7 +26,7 @@ export function resolveHarnessLlmProvider(env = process.env) {
   return HARNESS_PROVIDER;
 }
 
-export function resolveHarnessLlm(env = process.env, { researchProfile } = {}) {
+export function resolveHarnessLlm(env = process.env, { researchProfile, closedTask } = {}) {
   const provider = resolveHarnessLlmProvider(env);
   const elucidKeyEnv = text(env.ELUCID_GROK_API_KEY)
     ? 'ELUCID_GROK_API_KEY'
@@ -50,6 +50,7 @@ export function resolveHarnessLlm(env = process.env, { researchProfile } = {}) {
     baseURL: provider === HARNESS_ELUCID_PROVIDER ? elucidBaseURL : deepseekBaseURL,
     protocol: provider === HARNESS_ELUCID_PROVIDER ? 'openai-responses' : '',
     settingsYaml: materializeHarnessSettings({
+      briefModel: closedTask === 'media-brief' && provider === HARNESS_ELUCID_PROVIDER ? model : '',
       elucidKeyEnv,
       elucidBaseURL,
       deepseekBaseURL,
@@ -79,9 +80,10 @@ export function materializeHarnessSettings({
   elucidBaseURL,
   deepseekBaseURL,
   models = [HARNESS_ELUCID_DEFAULT_MODEL, HARNESS_DEFAULT_MODEL],
+  briefModel = '',
 } = {}) {
   const ids = [...new Set((models.length ? models : [HARNESS_ELUCID_DEFAULT_MODEL]).map((id) => text(id)).filter(Boolean))];
-  const modelLines = ids.map((id) => `        - id: ${yamlString(id)}`).join('\n');
+  const modelLines = ids.map((id) => `        - id: ${yamlString(id)}${id === briefModel ? '\n          maxTokens: 4096\n          reasoningEfforts:\n            low: low' : ''}`).join('\n');
   const deepseek = [
     'llm-deepseek:',
     `  apiKeyEnv: ${yamlString('DEEPSEEK_API_KEY')}`,
@@ -97,6 +99,7 @@ export function materializeHarnessSettings({
     '      api: openai-responses',
     `      baseURL: ${yamlString(elucidBaseURL || HARNESS_ELUCID_DEFAULT_BASE_URL)}`,
     '      displayName: Elucid Grok',
+    ...(briefModel ? ['      reasoning: low'] : []),
     '      models:',
     modelLines,
     '',

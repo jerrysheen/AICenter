@@ -72,8 +72,8 @@ function visibleDomainToolIds(tools, { researchProfile, configuredIds }) {
   ).map((tool) => tool.id));
 }
 
-function engineKey({ workspaceId, allow, provider, model, closedContext = false }) {
-  return `${workspaceId || ''}::${provider || ''}::${model || ''}::${closedContext ? 'closed' : 'open'}::${allow.join(',')}`;
+function engineKey({ workspaceId, allow, provider, model, closedContext = false, closedTask = '' }) {
+  return `${workspaceId || ''}::${provider || ''}::${model || ''}::${closedContext ? 'closed' : 'open'}::${closedTask}::${allow.join(',')}`;
 }
 
 export function resolveHarnessRunTools(tools, {
@@ -235,14 +235,15 @@ export function createHarnessAgentRuntime({
     try { await rm(current.tempRoot, { recursive: true, force: true }); } catch {}
   }
 
-  async function ensureEngine({ allow, catalog, workspaceId, timeoutMs, researchProfile, closedContext = false }) {
-    const llm = resolveHarnessLlm(env, { researchProfile });
+  async function ensureEngine({ allow, catalog, workspaceId, timeoutMs, researchProfile, closedContext = false, closedTask = '' }) {
+    const llm = resolveHarnessLlm(env, { researchProfile, closedTask });
     const key = engineKey({
       workspaceId,
       allow,
       provider: llm.provider,
       model: llm.model,
       closedContext,
+      closedTask,
     });
     if (engine?.key === key) return engine;
     await disposeEngine();
@@ -303,6 +304,7 @@ export function createHarnessAgentRuntime({
       overlayPath,
       workspaceId,
       researchProfile,
+      closedTask,
     });
     await mkdir(launch.dshHome, { recursive: true });
     await mkdir(launch.cwd, { recursive: true });
@@ -353,7 +355,7 @@ export function createHarnessAgentRuntime({
     message, workspaceId, sessionId = '', jobId = '', selectedRefs = [], signal,
     priorTurns = [], selectedContext = '', webMode = 'off',
     researchMode = 'standard', researchProfile, taskInstruction = '',
-    allowedToolIds: runAllow, timeoutMs, trace, now, closedContext = false,
+    allowedToolIds: runAllow, timeoutMs, trace, now, closedContext = false, closedTask = '',
   } = {}) {
     const runStartedAt = Date.now();
     const runtimeContext = buildRuntimeContext(now ?? clock(), timeZone);
@@ -412,7 +414,7 @@ export function createHarnessAgentRuntime({
     let slot;
     try {
       slot = await ensureEngine({
-        allow, catalog, workspaceId, timeoutMs, researchProfile: profile, closedContext: closed,
+        allow, catalog, workspaceId, timeoutMs, researchProfile: profile, closedContext: closed, closedTask: closed && closedTask === 'media-brief' ? closedTask : '',
       });
     } catch (error) {
       await record('run.failed', {

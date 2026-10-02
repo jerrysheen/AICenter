@@ -21,6 +21,15 @@ const VISIBLE_CONTENT_SQL = `NOT EXISTS (
     AND uis.is_hidden = 1
 )`;
 
+const TAGGED_CONTENT_SQL = `EXISTS (
+  SELECT 1 FROM resource_taggings rt
+  WHERE rt.workspace_id = ci.workspace_id
+    AND rt.resource_type = 'content-item'
+    AND rt.resource_id = ci.id
+    AND rt.tags_json != '[]'
+    AND rt.tags_json != ''
+)`;
+
 function mapSourceAccount(row) {
   return {
     id: row.id,
@@ -103,7 +112,7 @@ function mapIdentityFingerprint(row) {
 }
 
 export function createFeedRepository(database, emitEvent) {
-  return Object.freeze({
+  const repository = {
     upsertSourceAccount(value) {
       const input = parseContract(UpsertSourceAccountInputSchema, value);
       const now = Date.now();
@@ -131,6 +140,11 @@ export function createFeedRepository(database, emitEvent) {
       return mapSourceAccount(database.prepare(`SELECT * FROM source_accounts
         WHERE workspace_id = ? AND provider = ? AND external_id = ?`)
         .get(input.workspaceId, input.provider, input.externalId));
+    },
+
+    getSourceAccount(id) {
+      const row = database.prepare('SELECT * FROM source_accounts WHERE id = ?').get(id);
+      return row ? mapSourceAccount(row) : null;
     },
 
     upsertSubscription(value) {
@@ -163,11 +177,119 @@ export function createFeedRepository(database, emitEvent) {
         .get(input.workspaceId, input.sourceAccountId));
     },
 
+    ensureSubscription(value) {
+      const input = parseContract(UpsertSubscriptionInputSchema, value);
+      const now = Date.now();
+      const id = input.id || randomUUID();
+      const priority = input.priority === 'high' ? 10 : input.priority === 'low' ? -10 : 0;
+      database.transaction(() => {
+        const inserted = database.prepare(`INSERT INTO subscriptions
+          (id, workspace_id, source_account_id, enabled, priority, refresh_interval_minutes,
+           notification_policy, last_sync_at, next_sync_at, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+          ON CONFLICT(workspace_id, source_account_id) DO NOTHING`)
+          .run(id, input.workspaceId, input.sourceAccountId, input.enabled ? 1 : 0, priority,
+            input.refreshIntervalMinutes, input.notificationPolicy, input.nextSyncAt, now, now);
+        if (!inserted.changes) return;
+        const row = database.prepare(`SELECT * FROM subscriptions
+          WHERE workspace_id = ? AND source_account_id = ?`)
+          .get(input.workspaceId, input.sourceAccountId);
+        emitEvent('feed.subscription.upserted.v1', 'subscription', row.id,
+          { subscriptionId: row.id, sourceAccountId: input.sourceAccountId }, input.workspaceId);
+      })();
+      return mapSubscription(database.prepare(`SELECT * FROM subscriptions
+        WHERE workspace_id = ? AND source_account_id = ?`)
+        .get(input.workspaceId, input.sourceAccountId));
+    },
+
+    setSubscriptionRefreshInterval(subscriptionId, refreshIntervalMinutes) {
+      const minutes = Number(refreshIntervalMinutes);
+      const row = database.prepare('SELECT * FROM subscriptions WHERE id = ?').get(subscriptionId);
+      if (!row || !Number.isInteger(minutes) || minutes < 1 || minutes > 43_200) return row ? mapSubscription(row) : null;
+      if (row.refresh_interval_minutes === minutes) return mapSubscription(row);
+      database.prepare(`UPDATE subscriptions
+        SET refresh_interval_minutes = ?, updated_at = ?
+        WHERE id = ?`).run(minutes, Date.now(), subscriptionId);
+      return mapSubscription(database.prepare('SELECT * FROM subscriptions WHERE id = ?').get(subscriptionId));
+    },
+
     listDueSubscriptions(now = Date.now(), limit = 50) {
       return database.prepare(`SELECT * FROM subscriptions
         WHERE enabled = 1 AND (next_sync_at IS NULL OR next_sync_at <= ?)
         ORDER BY priority DESC, COALESCE(next_sync_at, 0) ASC LIMIT ?`)
         .all(now, Math.max(1, Math.min(Number(limit) || 50, 200))).map(mapSubscription);
+    },
+
+    claimDueSubscriptions(now = Date.now(), limit = 50, leaseMs = 10 * 60_000) {
+      const safeLimit = Math.max(1, Math.min(Number(limit) || 50, 200));
+      const at = Number(now);
+      const leaseUntil = at + Math.max(1_000, Number(leaseMs) || 10 * 60_000);
+      database.exec('BEGIN IMMEDIATE');
+      try {
+        const rows = database.prepare(`SELECT * FROM subscriptions
+          WHERE enabled = 1 AND (next_sync_at IS NULL OR next_sync_at <= ?)
+          ORDER BY priority DESC, COALESCE(next_sync_at, 0) ASC
+          LIMIT ?`).all(at, safeLimit);
+        const update = database.prepare(`UPDATE subscriptions
+          SET next_sync_at = ?, updated_at = ?
+          WHERE id = ? AND enabled = 1 AND (next_sync_at IS NULL OR next_sync_at <= ?)`);
+        const claimed = [];
+        for (const row of rows) {
+          const result = update.run(leaseUntil, at, row.id, at);
+          if (!result.changes) continue;
+          const fresh = database.prepare('SELECT * FROM subscriptions WHERE id = ?').get(row.id);
+          claimed.push(mapSubscription(fresh));
+        }
+        database.exec('COMMIT');
+        return claimed;
+      } catch (error) {
+        try { database.exec('ROLLBACK'); } catch { /* already closed */ }
+        throw error;
+      }
+    },
+
+    completeSubscriptionSync(subscriptionId, syncedAt = Date.now()) {
+      const at = Number(syncedAt);
+      const row = database.prepare('SELECT * FROM subscriptions WHERE id = ?').get(subscriptionId);
+      if (!row || !Number.isInteger(at) || at < 0) return null;
+      const nextSyncAt = at + row.refresh_interval_minutes * 60_000;
+      database.prepare(`UPDATE subscriptions
+        SET last_sync_at = ?, next_sync_at = ?, updated_at = ?
+        WHERE id = ?`).run(at, nextSyncAt, Date.now(), subscriptionId);
+      return mapSubscription(database.prepare('SELECT * FROM subscriptions WHERE id = ?').get(subscriptionId));
+    },
+
+    failSubscriptionSync(subscriptionId, failedAt = Date.now(), retryAfterMs = 5 * 60_000) {
+      const at = Number(failedAt);
+      const row = database.prepare('SELECT * FROM subscriptions WHERE id = ?').get(subscriptionId);
+      if (!row || !Number.isInteger(at) || at < 0) return null;
+      const nextSyncAt = at + Math.max(1_000, Number(retryAfterMs) || 5 * 60_000);
+      database.prepare(`UPDATE subscriptions
+        SET next_sync_at = ?, updated_at = ?
+        WHERE id = ?`).run(nextSyncAt, Date.now(), subscriptionId);
+      return mapSubscription(database.prepare('SELECT * FROM subscriptions WHERE id = ?').get(subscriptionId));
+    },
+
+    releaseOpenSubscriptionLeases(now = Date.now(), leaseMs = 10 * 60_000) {
+      const at = Number(now);
+      const lease = Math.max(1_000, Number(leaseMs) || 10 * 60_000);
+      if (!Number.isInteger(at) || at < 0) return 0;
+      const result = database.prepare(`UPDATE subscriptions
+        SET next_sync_at = ?, updated_at = ?
+        WHERE enabled = 1 AND next_sync_at > ?
+          AND (next_sync_at - updated_at) <= ?`).run(at, at, at, lease + 5_000);
+      return result.changes;
+    },
+
+    deferSubscriptionSync(subscriptionId, deferredAt = Date.now(), delayMs = 30 * 60_000) {
+      const at = Number(deferredAt);
+      const row = database.prepare('SELECT * FROM subscriptions WHERE id = ?').get(subscriptionId);
+      if (!row || !Number.isInteger(at) || at < 0) return null;
+      const nextSyncAt = at + Math.max(60_000, Number(delayMs) || 30 * 60_000);
+      database.prepare(`UPDATE subscriptions
+        SET next_sync_at = ?, updated_at = ?
+        WHERE id = ?`).run(nextSyncAt, Date.now(), subscriptionId);
+      return mapSubscription(database.prepare('SELECT * FROM subscriptions WHERE id = ?').get(subscriptionId));
     },
 
     saveCapture(value) {
@@ -271,8 +393,9 @@ export function createFeedRepository(database, emitEvent) {
         .filter(Boolean);
     },
 
-    listContentItemsByProvider(workspaceId, provider, { limit = 200, sourceExternalId = '' } = {}) {
+    listContentItemsByProvider(workspaceId, provider, { limit = 200, sourceExternalId = '', taggedOnly = false } = {}) {
       const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
+      const taggedSql = taggedOnly ? `AND ${TAGGED_CONTENT_SQL}` : '';
       const rows = sourceExternalId
         ? database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id,
             c.captured_at AS captured_at, c.metadata_json AS capture_metadata_json,
@@ -284,6 +407,7 @@ export function createFeedRepository(database, emitEvent) {
               ON item_state.workspace_id = ci.workspace_id AND item_state.content_item_id = ci.id
             WHERE ci.workspace_id = ? AND c.provider = ? AND sa.external_id = ?
               AND ${VISIBLE_CONTENT_SQL}
+              ${taggedSql}
             ORDER BY c.captured_at DESC, ci.created_at DESC, ci.id DESC
             LIMIT ?`).all(workspaceId, provider, sourceExternalId, safeLimit)
         : database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id,
@@ -295,6 +419,7 @@ export function createFeedRepository(database, emitEvent) {
               ON item_state.workspace_id = ci.workspace_id AND item_state.content_item_id = ci.id
             WHERE ci.workspace_id = ? AND c.provider = ?
               AND ${VISIBLE_CONTENT_SQL}
+              ${taggedSql}
             ORDER BY c.captured_at DESC, ci.created_at DESC, ci.id DESC
             LIMIT ?`).all(workspaceId, provider, safeLimit);
       return rows.map((row) => ({
@@ -459,11 +584,11 @@ export function createFeedRepository(database, emitEvent) {
       const wanted = [...new Set((ids || []).map((id) => String(id || '').trim()).filter(Boolean))];
       const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
       const rows = wanted.length
-        ? database.prepare(`SELECT ci.*, c.provider AS provider
+        ? database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id
             FROM content_items ci
             LEFT JOIN captures c ON c.id = ci.capture_id
             WHERE ci.workspace_id = ? AND ci.id IN (${wanted.map(() => '?').join(', ')})`).all(workspaceId, ...wanted)
-        : database.prepare(`SELECT ci.*, c.provider AS provider
+        : database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id
             FROM content_items ci
             LEFT JOIN captures c ON c.id = ci.capture_id
             WHERE ci.workspace_id = ? AND ${VISIBLE_CONTENT_SQL}
@@ -471,6 +596,7 @@ export function createFeedRepository(database, emitEvent) {
       return rows.map((row) => ({
         ...mapContentItem(row),
         provider: row.provider || '',
+        externalId: row.external_id || '',
       }));
     },
 
@@ -601,5 +727,6 @@ export function createFeedRepository(database, emitEvent) {
         updatedAt: now,
       };
     },
-  });
+  };
+  return Object.freeze(repository);
 }

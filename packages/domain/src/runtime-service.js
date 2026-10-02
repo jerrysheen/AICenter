@@ -48,6 +48,19 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort, res
   if (!runtimeRepository) throw new Error('runtimeRepository is required');
 
   return Object.freeze({
+    requestMediaProbe({workspaceId='local',sourceKeys=[],policyReviewed=false}={}) {
+      if (!Array.isArray(sourceKeys) || sourceKeys.length > 30 || sourceKeys.some(key=>typeof key!=='string' || !/^[a-z0-9]+$/.test(key))) throw new ValidationError('探针来源集合不合法',['sourceKeys']);
+      return runtimeRepository.createJob({type:'media.sources.probe',workspaceId,input:{workspaceId,sourceKeys,policyReviewed:policyReviewed===true},maxAttempts:1});
+    },
+    requestMediaSync({ workspaceId = 'local', channel = '' } = {}) {
+      if (!['','tech','macro'].includes(channel)) throw new ValidationError('未知媒体频道',['channel']);
+      return runtimeRepository.createJob({ type: 'media.sources.sync', workspaceId, input: { workspaceId, channel, force: true }, maxAttempts: 1 });
+    },
+    requestMediaBodies({ workspaceId = 'local', externalIds = [], repair = false } = {}) {
+      if (!Array.isArray(externalIds) || externalIds.length > 40 || externalIds.some(id => typeof id !== 'string' || id.length > 512 || !id)) throw new ValidationError('正文ID集合不合法',['externalIds']);
+      if (repair && !externalIds.length) throw new ValidationError('修复必须提供明确的正文ID集合',['externalIds']);
+      return runtimeRepository.createJob({ type: 'media.index.enrich', workspaceId, input: { workspaceId, externalIds, repair: Boolean(repair) }, maxAttempts: 1 });
+    },
     getStatus() {
       return runtimeRepository.getRuntimeStatus();
     },

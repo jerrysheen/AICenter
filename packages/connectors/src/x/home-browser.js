@@ -23,6 +23,34 @@ export function findXArticleUrl(tweet) {
   return normalizeXArticleUrl(match ? match[0] : '');
 }
 
+export const COMMENT_PREVIEW_LIMIT = 5;
+const COMMENT_TEXT_MAX = 240;
+const COMMENT_BLOCK_MARKER = '\n\n评论\n';
+
+export function textBeforeCommentBlock(value) {
+  const body = String(value || '').replace(/\r\n/g, '\n').trim();
+  const index = body.indexOf(COMMENT_BLOCK_MARKER);
+  return index === -1 ? body : body.slice(0, index).trim();
+}
+
+export function appendCommentsToBody(text, comments, limit = COMMENT_PREVIEW_LIMIT) {
+  const body = String(text || '').replace(/\r\n/g, '\n').trim();
+  const parsedLimit = Math.min(COMMENT_PREVIEW_LIMIT, Math.max(1, Number(limit) || COMMENT_PREVIEW_LIMIT));
+  const lines = [];
+  for (const comment of comments || []) {
+    const author = String(comment?.author || comment?.author_name || '').replace(/\s+/g, ' ').trim();
+    let content = String(comment?.text || '').replace(/\s+/g, ' ').trim();
+    if (!content) continue;
+    if (content.length > COMMENT_TEXT_MAX) content = `${content.slice(0, COMMENT_TEXT_MAX)}…`;
+    lines.push(author ? `· ${author}：${content}` : `· ${content}`);
+    if (lines.length >= parsedLimit) break;
+  }
+  if (!lines.length) return body;
+  const block = `评论\n${lines.join('\n')}`;
+  if (body.includes(block)) return body;
+  return body ? `${body}${COMMENT_BLOCK_MARKER}${lines.join('\n')}` : block;
+}
+
 export function mergeArticleIntoTweetText(tweetText, articleText) {
   const tweet = String(tweetText || '').replace(/\r\n/g, '\n').trim();
   const article = String(articleText || '').replace(/\r\n/g, '\n').trim();
@@ -213,6 +241,13 @@ export function buildTweetExtractExpression() {
             authorHandle = handleMatch ? handleMatch[1] : getText(handleLink).replace(/^@/, "").trim();
           }
         }
+        const replyEl = article.querySelector('[data-testid="reply"]');
+        let replyCount = null;
+        if (replyEl) {
+          const label = ((replyEl.getAttribute("aria-label") || "") + " " + getText(replyEl)).replace(/,/g, "");
+          const match = label.match(/(\\d+)/);
+          replyCount = match ? Number(match[1]) : 0;
+        }
         return {
           tweet_id: tweetId,
           tweet_url: tweetUrl,
@@ -226,6 +261,7 @@ export function buildTweetExtractExpression() {
           truncated: showMoreControl || overflow,
           author_handle: authorHandle,
           author_name: authorName,
+          reply_count: replyCount,
           published_at: time,
           published_timestamp: time ? Math.floor(new Date(time).getTime() / 1000) : null,
           text_source: "dom",
@@ -254,6 +290,39 @@ export function looksTruncatedTweet(tweet) {
 
 export function looksLikeArticleTweet(tweet) {
   return Boolean(findXArticleUrl(tweet) || tweet?.article_cover);
+}
+
+export function buildStatusCommentsExpression(tweetId, limit = COMMENT_PREVIEW_LIMIT) {
+  const id = String(tweetId || '').replace(/\D/g, '');
+  const parsedLimit = Math.min(COMMENT_PREVIEW_LIMIT, Math.max(1, Number(limit) || COMMENT_PREVIEW_LIMIT));
+  return `(() => {
+    /* x-status-comments */
+    const mainId = ${JSON.stringify(id)};
+    const limit = ${parsedLimit};
+    const getText = (el) => (el ? (el.innerText || el.textContent || "") : "");
+    const statusIdOf = (article) => {
+      const timeEl = article.querySelector("time");
+      const timeLink = timeEl ? timeEl.closest('a[href*="/status/"]') : null;
+      const href = timeLink ? (timeLink.getAttribute("href") || timeLink.href || "") : "";
+      const match = String(href).match(/\\/status\\/(\\d+)/);
+      return match ? match[1] : "";
+    };
+    const articles = [...document.querySelectorAll('article[data-testid="tweet"]')]
+      .filter((article) => !article.parentElement || !article.parentElement.closest('article[data-testid="tweet"]'));
+    const mainIndex = articles.findIndex((article) => statusIdOf(article) === mainId);
+    if (mainIndex < 0) return { comments: [] };
+    const comments = [];
+    for (const article of articles.slice(mainIndex + 1)) {
+      if (article.querySelector('[data-testid="placementTracking"]')) continue;
+      const text = getText(article.querySelector('[data-testid="tweetText"]')).replace(/\\s+/g, " ").trim();
+      if (!text) continue;
+      const nameEl = article.querySelector('[data-testid="User-Name"] a');
+      const author = getText(nameEl).replace(/\\s+/g, " ").trim();
+      comments.push({ author, text });
+      if (comments.length >= limit) break;
+    }
+    return { comments };
+  })()`;
 }
 
 export function buildArticleExtractExpression() {
@@ -302,6 +371,12 @@ export function mergeTweets(existing, incoming, limit, options = {}) {
       next.article_url = next.article_url || previous.article_url || null;
       next.card_url = next.card_url || previous.card_url || null;
       next.card_title = next.card_title || previous.card_title || null;
+      const replyCounts = [previous.reply_count, item.reply_count]
+        .map((value) => (value === null || value === undefined || value === '' ? null : Number(value)))
+        .filter((value) => Number.isFinite(value));
+      if (replyCounts.length) next.reply_count = Math.max(...replyCounts);
+      next.comments = (Array.isArray(item.comments) && item.comments.length) ? item.comments : previous.comments;
+      next.comments_checked = Boolean(previous.comments_checked || item.comments_checked);
       byId.set(item.tweet_id, next);
       continue;
     }
@@ -326,6 +401,16 @@ export function createXHomeBrowserClient(options = {}) {
     return extracted?.items || [];
   }
 
+  async function readStatusComments(session, tweetId) {
+    if (!tweetId) return [];
+    try {
+      const extracted = await session.evaluate(buildStatusCommentsExpression(tweetId), { timeoutMs: EXTRACT_TIMEOUT_MS });
+      return Array.isArray(extracted?.comments) ? extracted.comments : [];
+    } catch {
+      return [];
+    }
+  }
+
   async function completeTruncatedTweet(session, tweet) {
     if (!tweet?.tweet_url || !looksTruncatedTweet(tweet)) return tweet;
     await session.navigate(tweet.tweet_url, { timeoutMs: EXTRACT_TIMEOUT_MS });
@@ -344,7 +429,13 @@ export function createXHomeBrowserClient(options = {}) {
       const grown = String(best.text || '').length >= String(tweet.text || '').length + 200;
       if (grown && !looksTruncatedTweet({ ...best, truncated: Boolean(match?.truncated) })) break;
     }
-    return { ...best, truncated: looksTruncatedTweet(best) && String(best.text || '').length < 400 };
+    const comments = await readStatusComments(session, best.tweet_id || tweet.tweet_id);
+    return {
+      ...best,
+      truncated: looksTruncatedTweet(best) && String(best.text || '').length < 400,
+      comments,
+      comments_checked: true,
+    };
   }
 
   async function completeArticleTweet(session, tweet) {
@@ -366,13 +457,32 @@ export function createXHomeBrowserClient(options = {}) {
     const articleText = [best.title, best.body].filter(Boolean).join('\n\n');
     if (!articleText) return { ...tweet, article_unfetched: true };
     const merged = mergeArticleIntoTweetText(tweet.text, articleText);
-    return {
+    const next = {
       ...tweet,
       text: merged,
       article_url: undefined,
       article_cover: false,
       article_unfetched: false,
     };
+    if (!articleUrl) {
+      next.comments = await readStatusComments(session, tweet.tweet_id);
+      next.comments_checked = true;
+    }
+    return next;
+  }
+
+  async function attachStatusComments(session, tweet) {
+    if (tweet?.comments_checked) return tweet;
+    const replies = Number(tweet?.reply_count);
+    if (!tweet?.tweet_url || !Number.isFinite(replies) || replies <= 0) return tweet;
+    try {
+      await session.navigate(tweet.tweet_url, { timeoutMs: EXTRACT_TIMEOUT_MS });
+      await wait(1_500);
+      const comments = await readStatusComments(session, tweet.tweet_id);
+      return { ...tweet, comments, comments_checked: true };
+    } catch {
+      return { ...tweet, comments_checked: true };
+    }
   }
 
   return {
@@ -380,7 +490,10 @@ export function createXHomeBrowserClient(options = {}) {
       const parsedLimit = Math.min(50, Math.max(1, Number(limit) || 50));
       const exclude = [...new Set((excludeExternalIds || []).map((id) => String(id || '')).filter(Boolean))];
       return runtime.withSession({ purpose: 'x.home', focused: false }, async (session) => {
-        await session.navigate('https://x.com/home');
+        await session.navigate('https://x.com/home', {
+          timeoutMs: 45_000,
+          waitUntil: 'domcontentloaded',
+        });
         await wait(3_500);
         const inspectHome = async () => {
           let inspect = await session.evaluate(buildPageInspectExpression(feed));
@@ -438,6 +551,14 @@ export function createXHomeBrowserClient(options = {}) {
           const completed = await completeArticleTweet(session, tweet);
           items = items.map((item) => (item.tweet_id === tweet.tweet_id ? completed : item));
         }
+        const needsComments = items.filter((item) => {
+          const replies = Number(item.reply_count);
+          return !item.comments_checked && item.tweet_url && Number.isFinite(replies) && replies > 0;
+        });
+        for (const tweet of needsComments) {
+          const completed = await attachStatusComments(session, tweet);
+          items = items.map((item) => (item.tweet_id === tweet.tweet_id ? completed : item));
+        }
         const loggedIn = Boolean(inspect?.logged_in);
         const loginWall = Boolean(inspect?.login_wall);
         return {
@@ -452,7 +573,7 @@ export function createXHomeBrowserClient(options = {}) {
           tweets: items.slice(0, parsedLimit).map((item) => ({
             tweet_id: item.tweet_id,
             tweet_url: item.tweet_url,
-            text: appendUnscrapedMediaNotes(item.text, {
+            text: appendUnscrapedMediaNotes(appendCommentsToBody(item.text, item.comments), {
               ...item,
               article_unfetched: Boolean(item.article_unfetched || item.article_cover),
             }),

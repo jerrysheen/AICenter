@@ -7,15 +7,16 @@ export const TAG_ITEM_MAX_CHARS = 6_000;
 export const TAG_ITEM_HEAD_CHARS = 4_500;
 export const TAG_ITEM_TAIL_CHARS = 1_500;
 
+export function taggingText(item) {
+  const explicit = String(item?.text || '').trim();
+  if (explicit) return explicit;
+  const body = String(item?.body || '').trim();
+  if (body) return body;
+  return String(item?.title || '').trim();
+}
+
 function textOf(item, purpose) {
-  if (purpose === 'analyze') {
-    const explicit = String(item?.text || '').trim();
-    if (explicit) return explicit;
-    return [item?.title, item?.summary, item?.body]
-      .map((part) => String(part || '').trim())
-      .filter(Boolean)
-      .join('\n');
-  }
+  if (purpose === 'analyze') return taggingText(item);
   return String(item?.text || item?.body || '').trim();
 }
 

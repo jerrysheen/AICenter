@@ -4,7 +4,7 @@ AI Center 是本机信息中枢：网页与鸿蒙共用同一套 Web UI，数据
 
 当前版本是 **0.2.0 基线候选**。连接闭环已经可用，现阶段进入隐私、安全和稳定性验收，不继续扩大功能。
 
-当前仓库按**私有完整部署快照**维护：除 Core 代码外，还版本化当前单用户 Instance 的 SQLite、Knowledge、个人 Catalog 和必要导入资料，使另一台 Windows 机器克隆后可以恢复同一套内容。`.env`、API Key、Token、Cookie、浏览器 Profile、WAL/SHM、PID 和运行日志仍只在各主机本地配置或生成。未来抽取只含工具的通用 Core 是另一项独立工作。
+当前仓库按**私有代码与 Instance 配置仓库**维护：除 Core 代码外，还版本化当前单用户 Instance 的 Knowledge 文件、个人 Catalog、必要导入资料和附件。运行中的 SQLite 数据库只保存在本地，持续接收采集、翻译、标签及其他业务写入，不提交 Git，也不启用 LFS；换机恢复业务数据需另外迁移一致数据库备份。`.env`、API Key、Token、Cookie、浏览器 Profile、WAL/SHM、PID 和运行日志仍只在各主机本地配置或生成。未来抽取只含工具的通用 Core 是另一项独立工作。
 
 ## 文档入口
 
@@ -41,7 +41,7 @@ README
 
 Windows 推荐直接双击仓库根目录的 `start-ai-center.bat`。启动器会结束旧的 AI Center Web/Worker 实例、后台启动当前仓库的两个服务、执行健康检查，并显示电脑和手机访问地址。本机已配置 `cloudflared` 时也会探活或拉起公网隧道，但不会在 Ctrl+C 时拆掉。它不会结束其他 Node 服务；如果端口 `8787` 被无关程序占用，会提示后停止。
 
-运行日志和进程记录保存在本机 `.ai-data/`，不会进入 Git；持久业务内容随私有部署快照版本化。
+运行日志和进程记录保存在本机 `.ai-data/`，不会进入 Git；`data/ai-center.db` 同样只在本地保存，数据库结构和前向 migration 随代码版本化。
 
 首次运行仍需安装依赖：
 
@@ -66,7 +66,7 @@ npm run check
 
 ## 迁移到另一台 Windows 主机
 
-私有仓库克隆后已经包含当前 SQLite、Knowledge、个人 Catalog、资产导入资料和 `externaltools/bsk.exe`。新主机只需完成机器相关配置：
+私有仓库克隆后包含 Knowledge 文件、个人 Catalog、资产导入资料和 `externaltools/bsk.exe`，不包含当前业务数据库。新主机先完成机器相关配置：
 
 ```powershell
 npm install
@@ -74,3 +74,5 @@ Copy-Item .env.example .env
 ```
 
 随后在 `.env` 中填写该主机需要的 API Key、服务地址和可选路径，再运行 `start-ai-center.bat`。浏览器扩展、BrowserSkill 连接、站点登录态、鸿蒙/浏览器重新配对和可选 SearXNG 环境需要在新主机重新建立；Cookie、浏览器 Profile、`.ai-data`、WAL/SHM、PID 和日志不会通过 Git 迁移。
+
+要恢复已有文章、译文、标签、笔记、持仓及任务状态，应在源主机使用 SQLite 在线 backup 生成一致备份，在目标主机启动服务前恢复到其 Instance 数据库路径。不要直接复制运行中的 `.db` 并遗漏 WAL，也不要把运行目录整体上传 Git；没有恢复备份的新主机会通过既有 migration 初始化空库。

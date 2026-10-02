@@ -1,5 +1,5 @@
-import { createXHomeBrowserClient } from './home-browser.js';
-export { appendUnscrapedMediaNotes, findXArticleUrl, mergeArticleIntoTweetText, normalizeXArticleUrl } from './home-browser.js';
+import { createXHomeBrowserClient, textBeforeCommentBlock } from './home-browser.js';
+export { appendCommentsToBody, appendUnscrapedMediaNotes, findXArticleUrl, mergeArticleIntoTweetText, normalizeXArticleUrl, textBeforeCommentBlock } from './home-browser.js';
 
 const DEFAULT_LIMIT = 50;
 const DEFAULT_TTL_MS = 60_000;
@@ -46,6 +46,7 @@ export function tweetToFeedItem(tweet, options = {}) {
   const tweetId = text(tweet.tweetId || tweet.tweet_id);
   const handle = parseTwitterHandle(tweet.authorHandle || tweet.author_handle || '');
   const body = normalizeTweetBody(tweet.text || tweet.body);
+  const lead = textBeforeCommentBlock(body) || body;
   const sourceUrl = text(tweet.tweetUrl || tweet.tweet_url)
     || (tweetId && handle ? `https://x.com/${handle}/status/${tweetId}` : '')
     || (tweetId ? `https://x.com/i/status/${tweetId}` : '');
@@ -60,8 +61,8 @@ export function tweetToFeedItem(tweet, options = {}) {
     externalId: tweetId,
     authorName,
     authorHandle: handle ? `@${handle}` : '',
-    title: body ? `${body.slice(0, 48)}${body.length > 48 ? '…' : ''}` : 'X 动态',
-    summary: body.slice(0, 160),
+    title: lead ? `${lead.slice(0, 48)}${lead.length > 48 ? '…' : ''}` : 'X 动态',
+    summary: lead.slice(0, 160),
     body,
     sourceUrl,
     publishedAt,

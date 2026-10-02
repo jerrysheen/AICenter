@@ -104,6 +104,38 @@ function Stop-RecordedInstanceProcesses {
   Remove-Item -LiteralPath $StateFile -Force -ErrorAction SilentlyContinue
 }
 
+function Test-InstanceNodeEntry([string]$CommandLine, [string]$AbsoluteEntry) {
+  if (-not $CommandLine) { return $false }
+  $command = $CommandLine.Replace('/', '\').ToLowerInvariant()
+  $absolute = $AbsoluteEntry.Replace('/', '\').ToLowerInvariant()
+  # Unrecorded processes need an exact entry and explicit Instance identity.
+  # Older processes without markers are handled only by the recorded PID checks.
+  $entryPattern = '^\s*(?:"[^"]+"|\S+)\s+"?' + [regex]::Escape($absolute) + '"?(?=\s|$)'
+  $rootMarker = ('--ai-center-instance-root=' + $InstanceRoot).Replace('/', '\').ToLowerInvariant()
+  $idMarker = ('--ai-center-instance-id=' + $InstanceId).ToLowerInvariant()
+  return $command -match $entryPattern -and
+    $command -match ('(?:^|\s)"?' + [regex]::Escape($rootMarker) + '"?(?=\s|$)') -and
+    $command -match ('(?:^|\s)"?' + [regex]::Escape($idMarker) + '"?(?=\s|$)')
+}
+
+function Stop-PreviousInstanceNodes {
+  $nodes = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue)
+  $stopped = $false
+  foreach ($owner in $nodes) {
+    $command = [string]$owner.CommandLine
+    $isWeb = Test-InstanceNodeEntry $command $WebEntry
+    $isWorker = Test-InstanceNodeEntry $command $WorkerEntry
+    if (-not $isWeb -and -not $isWorker) { continue }
+    $name = if ($isWeb) { 'Web' } else { 'Worker' }
+    Write-Host "Stopping previous $name PID $($owner.ProcessId)..." -ForegroundColor Yellow
+    Stop-Process -Id ([int]$owner.ProcessId) -Force -ErrorAction SilentlyContinue
+    $stopped = $true
+  }
+  if ($stopped) {
+    Start-Sleep -Milliseconds 500
+  }
+}
+
 function Assert-PortAvailable {
   $listeners = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
   if ($listeners.Count -eq 0) {
@@ -218,13 +250,13 @@ function Start-AiCenterWebAndWorker {
   try {
     $started.web = Start-HiddenLoggedProcess `
       -FilePath $NodeCommand.Source `
-      -ArgumentList @("`"$WebEntry`"") `
+      -ArgumentList @("`"$WebEntry`"", "`"--ai-center-instance-root=$InstanceRoot`"", "`"--ai-center-instance-id=$InstanceId`"") `
       -WorkingDirectory $RepositoryRoot `
       -OutLog $WebOutLog `
       -ErrorLog $WebErrorLog
     $started.worker = Start-HiddenLoggedProcess `
       -FilePath $NodeCommand.Source `
-      -ArgumentList @("`"$WorkerEntry`"") `
+      -ArgumentList @("`"$WorkerEntry`"", "`"--ai-center-instance-root=$InstanceRoot`"", "`"--ai-center-instance-id=$InstanceId`"") `
       -WorkingDirectory $RepositoryRoot `
       -OutLog $WorkerOutLog `
       -ErrorLog $WorkerErrorLog
@@ -356,6 +388,7 @@ while ($true) {
     New-Item -ItemType Directory -Path $HostLogDirectory -Force | Out-Null
     Write-Host "Checking recorded processes for instance $InstanceId..." -ForegroundColor Cyan
     Stop-RecordedInstanceProcesses
+    Stop-PreviousInstanceNodes
     Assert-PortAvailable
 
     Write-Host 'Starting Browser, Web, Worker, Search, and Tunnel...' -ForegroundColor Cyan

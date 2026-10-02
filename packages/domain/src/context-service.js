@@ -10,6 +10,7 @@ const TYPE_LABELS = Object.freeze({
   inspiration: '灵感',
   'knowledge-revision': '知识',
   'ai-run': 'AI 回答',
+  'daily-brief-item': '日报观点',
 });
 
 function knowledgeRef(item) {
@@ -103,7 +104,7 @@ export function formatReferencePack(items, { generatedAt = Date.now() } = {}) {
   return `${header.join('\n')}\n\n${blocks.join('\n\n')}\n`;
 }
 
-export function createContextService({ feedService, tradingService, knowledgeService }) {
+export function createContextService({ feedService, tradingService, knowledgeService, reportService = null }) {
   if (!feedService || !tradingService || !knowledgeService) throw new Error('context services are required');
 
   function decorateResolved(base, extra = {}) {
@@ -122,6 +123,39 @@ export function createContextService({ feedService, tradingService, knowledgeSer
 
   async function resolveOne(workspaceId, input) {
     const reference = parseContract(ReferenceInputSchema, input);
+    if (reference.resourceType === 'daily-brief-item') {
+      const resolved = reportService?.getDailyBriefItemReference(workspaceId, reference);
+      if (!resolved) return null;
+      const { item, candidate, reportDate, generatedAt } = resolved;
+      const title = `${reportDate} · ${item.headline}`;
+      const lines = [
+        `日报日期：${reportDate}`,
+        '以下是 DailyBrief 的模型筛选观点，不是新增事实或原始消息。',
+        `观点：${item.headline}`,
+        `为什么值得看：${item.whyItMatters}`,
+        `接着看：${item.watchNext}`,
+      ];
+      if (candidate) {
+        lines.push('', '生成时的候选事实依据：', candidate.title, candidate.summary);
+        if (Object.keys(candidate.data).length) lines.push(JSON.stringify(candidate.data));
+      } else {
+        lines.push('', '生成时的候选快照不可用，仅能读取已保存的观点。');
+      }
+      if (item.sourceRefs.length) {
+        lines.push('', '候选来源引用：', ...item.sourceRefs.map((source) =>
+          `${source.type} · ${source.id}${source.at ? ` · ${source.at}` : ''}`));
+      }
+      const content = clipText(lines.filter((line) => line !== undefined).join('\n'));
+      return decorateResolved({
+        ref: selectedRef('daily-brief-item', reference.resourceId, title, {
+          revision: generatedAt, asOf: item.occurredAt,
+        }),
+        typeLabel: TYPE_LABELS['daily-brief-item'],
+        title,
+        content,
+        sourceUrl: '',
+      }, { occurredAt: item.occurredAt, originalText: content });
+    }
     if (reference.resourceType === 'content-item') {
       const item = feedService.getLocalizedContentItem
         ? feedService.getLocalizedContentItem(workspaceId, reference.resourceId)
@@ -255,10 +289,15 @@ export function createContextService({ feedService, tradingService, knowledgeSer
         }
         items.push({ ...resolved, input: parsed });
       }
+      const missingBrief = missing.some((item) => item?.resourceType === 'daily-brief-item');
+      const promptText = [
+        formatResolvedReferences(items),
+        missingBrief ? '[未能读取的用户引用]\n部分日报观点已更新或不存在。不得猜测缺失观点，请用户回到日报重新选择。' : '',
+      ].filter(Boolean).join('\n\n');
       return {
         items,
         missing,
-        promptText: formatResolvedReferences(items),
+        promptText,
         refs: items.map((item) => item.ref),
       };
     },

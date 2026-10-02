@@ -82,6 +82,86 @@ export function timelineUrl(userGroupId, maxId = -1) {
   return url.toString();
 }
 
+export const COMMENT_PREVIEW_LIMIT = 5;
+const COMMENT_TEXT_MAX = 240;
+const COMMENT_BLOCK_MARKER = '\n\n评论\n';
+
+export function commentsUrl(statusId, count = COMMENT_PREVIEW_LIMIT) {
+  const url = new URL('/statuses/comments.json', XUEQIU_PAGE_ORIGIN);
+  url.searchParams.set('id', String(statusId));
+  url.searchParams.set('count', String(Math.min(COMMENT_PREVIEW_LIMIT, Math.max(1, Number(count) || COMMENT_PREVIEW_LIMIT))));
+  url.searchParams.set('page', '1');
+  url.searchParams.set('asc', 'false');
+  return url.toString();
+}
+
+export function commentsV3Url(statusId, count = COMMENT_PREVIEW_LIMIT) {
+  const url = new URL('/statuses/v3/comments.json', XUEQIU_PAGE_ORIGIN);
+  url.searchParams.set('id', String(statusId));
+  url.searchParams.set('type', '4');
+  url.searchParams.set('size', String(Math.min(COMMENT_PREVIEW_LIMIT, Math.max(1, Number(count) || COMMENT_PREVIEW_LIMIT))));
+  url.searchParams.set('max_id', '-1');
+  return url.toString();
+}
+
+export function textBeforeCommentBlock(value) {
+  const body = String(value || '').replace(/\r\n/g, '\n').trim();
+  const index = body.indexOf(COMMENT_BLOCK_MARKER);
+  return index === -1 ? body : body.slice(0, index).trim();
+}
+
+export function appendCommentsToBody(text, comments, limit = COMMENT_PREVIEW_LIMIT) {
+  const body = String(text || '').replace(/\r\n/g, '\n').trim();
+  const parsedLimit = Math.min(COMMENT_PREVIEW_LIMIT, Math.max(1, Number(limit) || COMMENT_PREVIEW_LIMIT));
+  const lines = [];
+  for (const comment of comments || []) {
+    const author = String(comment?.author || comment?.author_name || '').replace(/\s+/g, ' ').trim();
+    let content = String(comment?.text || '').replace(/\s+/g, ' ').trim();
+    if (!content) continue;
+    if (content.length > COMMENT_TEXT_MAX) content = `${content.slice(0, COMMENT_TEXT_MAX)}…`;
+    lines.push(author ? `· ${author}：${content}` : `· ${content}`);
+    if (lines.length >= parsedLimit) break;
+  }
+  if (!lines.length) return body;
+  const block = `评论\n${lines.join('\n')}`;
+  if (body.includes(block)) return body;
+  return body ? `${body}${COMMENT_BLOCK_MARKER}${lines.join('\n')}` : block;
+}
+
+export function extractXueqiuComments(payload, limit = COMMENT_PREVIEW_LIMIT) {
+  const rows = xueqiuCommentRows(payload);
+  if (!rows) return [];
+  const parsedLimit = Math.min(COMMENT_PREVIEW_LIMIT, Math.max(1, Number(limit) || COMMENT_PREVIEW_LIMIT));
+  const comments = [];
+  for (const row of rows) {
+    const text = stripXueqiuHtml(row?.text || row?.description || '');
+    if (!text) continue;
+    const author = String(row?.user?.screen_name || row?.user?.name || '').trim();
+    comments.push({ author, text });
+    if (comments.length >= parsedLimit) break;
+  }
+  return comments;
+}
+
+function xueqiuCommentRows(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  if (Array.isArray(payload.comments)) return payload.comments;
+  if (Array.isArray(payload.list)) return payload.list;
+  return null;
+}
+
+function commentStatusId(row) {
+  const raw = String(row?.status_id || '');
+  const id = raw.startsWith('livenews:') ? raw.slice('livenews:'.length) : raw;
+  return /^\d+$/.test(id) ? id : '';
+}
+
+function replyCountOf(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const count = Number(value);
+  return Number.isFinite(count) ? count : null;
+}
+
 export function livenewsUrl(maxId = -1, count = DEFAULT_PAGE_SIZE) {
   const url = new URL('/statuses/livenews/list.json', XUEQIU_PAGE_ORIGIN);
   url.searchParams.set('since_id', '-1');
@@ -151,6 +231,7 @@ export function mapTimelineStatus(item, feed) {
     author_handle: handle ? `@${handle}` : '',
     source_url: target,
     published_at: publishedAt,
+    reply_count: replyCountOf(item?.reply_count),
   };
 }
 
@@ -168,7 +249,21 @@ export function mapLivenewsItem(item) {
     author_handle: '',
     source_url: target,
     published_at: Number(item?.created_at) || 0,
+    reply_count: replyCountOf(item?.reply_count),
   };
+}
+
+async function loadStatusComments(session, statusId) {
+  try {
+    const primary = await fetchJsonFromSession(session, commentsUrl(statusId));
+    const primaryRows = xueqiuCommentRows(primary);
+    if (primaryRows) return extractXueqiuComments({ comments: primaryRows });
+  } catch {
+    // 旧评论接口失败时改走 v3。
+  }
+  const fallback = await fetchJsonFromSession(session, commentsV3Url(statusId));
+  const fallbackRows = xueqiuCommentRows(fallback);
+  return extractXueqiuComments(fallbackRows ? { comments: fallbackRows } : null);
 }
 
 async function fetchJsonFromSession(session, url) {
@@ -250,6 +345,19 @@ export function createXueqiuHomeBrowserClient(options = {}) {
         if (!Number.isFinite(nextMax) || nextMax <= 0 || !batch.length || added === 0) break;
         maxId = nextMax;
       }
+
+      for (const row of items) {
+        const statusId = commentStatusId(row);
+        if (!statusId || row.reply_count === 0) continue;
+        try {
+          const comments = await loadStatusComments(session, statusId);
+          row.text = appendCommentsToBody(row.text, comments);
+        } catch {
+          // 评论接口失败时保留帖子正文。
+        }
+        await wait(120);
+      }
+      for (const row of items) delete row.reply_count;
 
       return {
         source: 'browser_runtime_home',

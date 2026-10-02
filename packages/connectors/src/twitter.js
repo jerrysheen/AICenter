@@ -2,6 +2,7 @@ export {
   createTwitterHomeClient,
   createTwitterService,
   explainXConnectorError,
+  appendCommentsToBody,
   appendUnscrapedMediaNotes,
   findXArticleUrl,
   mergeArticleIntoTweetText,

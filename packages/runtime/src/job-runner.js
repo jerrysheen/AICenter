@@ -40,12 +40,30 @@ export function createJobRunner(options) {
     : 10 * 60_000;
   const recoverEveryMs = Math.max(100, Number(options.recoverEveryMs) || 30_000);
   const concurrency = parseWorkerJobConcurrency(options.concurrency || {});
+  const supersedeAfterMs = options.supersedeAfterMs && typeof options.supersedeAfterMs === 'object'
+    ? options.supersedeAfterMs
+    : {};
   const abortController = new AbortController();
   let running = false;
   const inFlight = new Map();
 
   function recoverStale() {
     store.recoverStaleJobs?.(staleAfterMs);
+  }
+
+  function releaseSuperseded(now = Date.now()) {
+    for (const [id, item] of inFlight) {
+      const limit = Number(supersedeAfterMs[item.type]);
+      const current = store.getJob?.(id);
+      const replaced = current && current.status !== 'running';
+      const expired = Number.isFinite(limit) && limit > 0 && now - item.startedAt >= limit;
+      if (!replaced && !expired) continue;
+      if (expired && current?.status === 'running') {
+        store.abandonRunningJobs?.([item.type], '新的订阅同步开始，上一轮仍未结束', now);
+        options.onSupersede?.(item.type, now);
+      }
+      inFlight.delete(id);
+    }
   }
 
   function runningCount(type) {
@@ -91,6 +109,7 @@ export function createJobRunner(options) {
   function launch(job) {
     const tracked = {
       type: job.type,
+      startedAt: Date.now(),
       promise: execute(job)
         .catch((error) => {
           options.onError?.(error, job);
@@ -119,6 +138,7 @@ export function createJobRunner(options) {
     recoverTimer.unref?.();
     try {
       while (!abortController.signal.aborted) {
+        releaseSuperseded();
         const types = claimableTypes();
         const job = types.length ? store.claimNextJob(workerId, types) : null;
         if (job) {

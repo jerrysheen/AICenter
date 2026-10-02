@@ -3,6 +3,7 @@ import {
   TAG_BATCH_MAX_ITEMS,
   TAG_ITEM_MAX_CHARS,
   packFeedAiBatches,
+  taggingText,
 } from './feed-ai-batch.js';
 import { loadTagCatalog, projectTagCatalog, selectionModeFor } from './tag-catalog.js';
 import { parseTagBatchOutput } from './tag-parser.js';
@@ -10,6 +11,60 @@ import { TAG_PROMPT_VERSION, buildTagSystemPrompt, buildTagUserPayload } from '.
 
 function text(value) {
   return String(value || '').trim();
+}
+
+function keywordMatches(keyword, source) {
+  const term = text(keyword);
+  if (!term || !source) return false;
+  if (/^[A-Za-z0-9]+$/.test(term)) {
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`, 'i').test(source);
+  }
+  if (term === '黄金') {
+    return source.replace(/黄金(时间|周|时代|窗口|搭档|比例|坑)/g, '').includes('黄金');
+  }
+  return source.includes(term);
+}
+
+function itemText(item) {
+  return [item?.title, item?.summary, item?.body, item?.text].map((part) => String(part || '')).join('\n');
+}
+
+function weakKeyword(keyword) {
+  return /^[A-Za-z0-9]{1,3}$/.test(text(keyword));
+}
+
+function countKeyword(keyword, source) {
+  const term = text(keyword);
+  if (!term || !source) return 0;
+  if (/^[A-Za-z0-9]+$/.test(term)) {
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return source.match(new RegExp(`(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`, 'gi'))?.length || 0;
+  }
+  if (term === '黄金') {
+    return source.replace(/黄金(时间|周|时代|窗口|搭档|比例|坑)/g, '').split('黄金').length - 1;
+  }
+  return source.split(term).length - 1;
+}
+
+function aiEvidence(tag, source) {
+  const keywords = tag?.keywords || [];
+  const strong = keywords.some((keyword) => !weakKeyword(keyword) && keywordMatches(keyword, source));
+  let weakHits = 0;
+  for (const keyword of keywords) {
+    if (!weakKeyword(keyword)) continue;
+    weakHits += countKeyword(keyword, source);
+  }
+  return { strong, weakHits };
+}
+
+function tagSupportedByText(tag, source) {
+  if (tag?.id !== 'ai') return true;
+  const { strong, weakHits } = aiEvidence(tag, source);
+  if (strong) return true;
+  if (!weakHits) return false;
+  if (weakHits < 2 && String(source || '').length > 80) return false;
+  return true;
 }
 
 function dateStamp(now) {
@@ -25,8 +80,6 @@ function modelItemsForBatch(batch, originals) {
     const origin = originals.get(unit.itemId) || {};
     return {
       item_id: unit.itemId,
-      source: origin.source || '',
-      author: origin.author || '',
       text: unit.text,
     };
   });
@@ -115,17 +168,25 @@ export function createTaggingService({ catalog, taggingRepository, taggingPort, 
       if (!parsed.ok) {
         return { customId, status: 'failed', parsed, model: asked?.model || '' };
       }
-      const records = parsed.accepted.map((row) => ({
-        workspaceId,
-        resourceType,
-        resourceId: row.itemId,
-        tags: row.tags,
-        tagCatalogVersion: loaded.version,
-        promptVersion: TAG_PROMPT_VERSION,
-        model: asked?.model || 'gemini',
-        truncatedForModel: Boolean(truncated.get(row.itemId)),
-        analyzedAt: now(),
-      }));
+      const records = parsed.accepted.map((row) => {
+        const origin = originals.get(row.itemId) || {};
+        const source = taggingText(origin);
+        const tags = row.tags.filter((id) => id !== 'ai' || tagSupportedByText(
+          loaded.tags.find((tag) => tag.id === 'ai'),
+          source,
+        ));
+        return {
+          workspaceId,
+          resourceType,
+          resourceId: row.itemId,
+          tags,
+          tagCatalogVersion: loaded.version,
+          promptVersion: TAG_PROMPT_VERSION,
+          model: asked?.model || 'gemini',
+          truncatedForModel: Boolean(truncated.get(row.itemId)),
+          analyzedAt: now(),
+        };
+      });
       if (records.length && taggingRepository?.saveTaggings) {
         saved.push(...taggingRepository.saveTaggings(records));
       } else {
@@ -210,6 +271,68 @@ export function createTaggingService({ catalog, taggingRepository, taggingPort, 
     };
   }
 
+  function tagsForText(tagIds, source) {
+    const wanted = new Set((tagIds || []).map((id) => text(id)).filter((id) => loaded.ids.has(id)));
+    const hits = [];
+    for (const tag of loaded.tags) {
+      if (!wanted.has(tag.id)) continue;
+      if (!(tag.keywords || []).some((keyword) => keywordMatches(keyword, source))) continue;
+      hits.push(tag.id);
+      if (tag.parent_id && loaded.ids.has(tag.parent_id) && !hits.includes(tag.parent_id)) {
+        hits.push(tag.parent_id);
+      }
+    }
+    return hits;
+  }
+
+  function supplementTags({
+    workspaceId = 'local',
+    resourceType = 'content-item',
+    items = [],
+    tagIds = [],
+    persist = true,
+  } = {}) {
+    const originals = [];
+    for (const item of items) {
+      const id = text(item?.id || item?.itemId);
+      if (!id) continue;
+      originals.push({ id, text: itemText(item) });
+    }
+    const existing = new Map(
+      listSaved(workspaceId, resourceType, originals.map((item) => item.id))
+        .map((row) => [row.resourceId, row]),
+    );
+    const records = [];
+    for (const item of originals) {
+      const hits = tagsForText(tagIds, item.text);
+      if (!hits.length) continue;
+      const row = existing.get(item.id);
+      const current = row?.tags || [];
+      const next = [...new Set([...current, ...hits])];
+      if (next.length === current.length) continue;
+      records.push({
+        workspaceId,
+        resourceType,
+        resourceId: item.id,
+        tags: next,
+        tagCatalogVersion: row?.tagCatalogVersion || loaded.version,
+        promptVersion: row?.promptVersion || TAG_PROMPT_VERSION,
+        model: row?.model || 'keyword',
+        truncatedForModel: Boolean(row?.truncatedForModel),
+        analyzedAt: now(),
+      });
+    }
+    const saved = persist && records.length && taggingRepository?.saveTaggings
+      ? taggingRepository.saveTaggings(records)
+      : [];
+    return {
+      resourceType,
+      considered: originals.length,
+      matched: records,
+      saved,
+    };
+  }
+
   return Object.freeze({
     catalogVersion: loaded.version,
     promptVersion: TAG_PROMPT_VERSION,
@@ -247,5 +370,53 @@ export function createTaggingService({ catalog, taggingRepository, taggingPort, 
       return listSaved(workspaceId, resourceType, resourceIds);
     },
     analyzeItems,
+    supplementTags,
+    pruneUnsupportedTags({
+      workspaceId = 'local',
+      resourceType = 'content-item',
+      items = [],
+      persist = true,
+    } = {}) {
+      const originals = [];
+      for (const item of items) {
+        const id = text(item?.id || item?.itemId);
+        if (!id) continue;
+        originals.push({
+          id,
+          source: taggingText(item),
+          author: text(item?.author || item?.authorName || item?.author_name),
+        });
+      }
+      const existing = new Map(
+        listSaved(workspaceId, resourceType, originals.map((item) => item.id))
+          .map((row) => [row.resourceId, row]),
+      );
+      const records = [];
+      for (const item of originals) {
+        const row = existing.get(item.id);
+        if (!row?.tags?.length) continue;
+        const aiTag = loaded.tags.find((tag) => tag.id === 'ai');
+        const evidence = aiEvidence(aiTag, item.source);
+        const authorLeak = !evidence.strong && !evidence.weakHits
+          && (keywordMatches('AI', item.author) || item.author.includes('人工智能'));
+        const tags = row.tags.filter((id) => id !== 'ai' || !authorLeak);
+        if (tags.length === row.tags.length) continue;
+        records.push({
+          workspaceId,
+          resourceType,
+          resourceId: item.id,
+          tags,
+          tagCatalogVersion: row.tagCatalogVersion || loaded.version,
+          promptVersion: row.promptVersion || TAG_PROMPT_VERSION,
+          model: row.model || '',
+          truncatedForModel: Boolean(row.truncatedForModel),
+          analyzedAt: now(),
+        });
+      }
+      const saved = persist && records.length && taggingRepository?.saveTaggings
+        ? taggingRepository.saveTaggings(records)
+        : [];
+      return { considered: originals.length, matched: records, saved };
+    },
   });
 }

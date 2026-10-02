@@ -4,6 +4,28 @@ import { dailySlotOnInstant } from '../../domain/src/zoned-time.js';
 export const REPORT_DAILY_JOB_TYPE = 'report.daily.generate';
 export const REPORT_DAILY_BRIEF_JOB_TYPE = 'report.daily.brief.generate';
 export const DAILY_REPORT_SCHEDULE_KEY = 'report.daily.default';
+export const DAILY_BRIEF_CATCHUP_DELAY_MS = 30 * 60 * 1000;
+
+export function scheduleDailyBriefCatchup(store, input, job, now = Date.now()) {
+  if (input?.catchup === true) return null;
+  if (!job || job.attemptCount < job.maxAttempts) return null;
+  if (!store?.createJob || !store?.listOpenJobs) return null;
+  const reportId = String(input?.reportId || '').trim();
+  if (!reportId) return null;
+  const open = store.listOpenJobs(REPORT_DAILY_BRIEF_JOB_TYPE) || [];
+  if (open.some((item) => item.id !== job.id && item.input?.reportId === reportId)) return null;
+  return store.createJob({
+    type: REPORT_DAILY_BRIEF_JOB_TYPE,
+    workspaceId: input.workspaceId || job.workspaceId || 'local',
+    maxAttempts: 2,
+    availableAt: now + DAILY_BRIEF_CATCHUP_DELAY_MS,
+    input: {
+      workspaceId: input.workspaceId || 'local',
+      reportId,
+      catchup: true,
+    },
+  });
+}
 
 export const reportDailyManifest = Object.freeze({
   id: 'report.daily',
@@ -26,11 +48,16 @@ export function createReportJobHandlers({ reportService, briefService = null }) 
       });
       return { reportId: report.id, reportDate: report.reportDate, status: report.status };
     },
-    [REPORT_DAILY_BRIEF_JOB_TYPE]: async (rawInput) => {
+    [REPORT_DAILY_BRIEF_JOB_TYPE]: async (rawInput, context) => {
       if (!briefService?.generateDailyBrief) throw new Error('daily brief jobs require briefService');
       const input = parseContract(GenerateDailyBriefInputSchema, rawInput || {});
-      const brief = await briefService.generateDailyBrief(input);
-      return { briefId: brief.id, reportId: brief.reportId, reportDate: brief.reportDate };
+      try {
+        const brief = await briefService.generateDailyBrief(input);
+        return { briefId: brief.id, reportId: brief.reportId, reportDate: brief.reportDate };
+      } catch (error) {
+        scheduleDailyBriefCatchup(context?.store, input, context?.job);
+        throw error;
+      }
     },
   };
 }

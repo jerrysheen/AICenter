@@ -4,6 +4,7 @@ import {
 } from './common.js';
 import { OfficialReleaseSchema, ScheduledEventSchema } from './source.js';
 import { DIVIDEND_STRATEGY_KEY, DividendRegimeSchema, DividendStrategyFactorsSchema } from './strategy.js';
+import { MediaBriefSchema } from './media.js';
 
 export const DailyWindowSchema = z.object({
   startAt: EpochMillisSchema,
@@ -14,6 +15,7 @@ export const DailyNewsItemSchema = z.object({
   id: EntityIdSchema,
   title: z.string().max(1_000),
   summary: z.string().max(500),
+  generatedBrief: MediaBriefSchema.optional(),
   sourceUrl: HttpUrlSchema,
   authorName: z.string().max(512),
   publishedAt: NullableEpochMillisSchema,
@@ -66,7 +68,7 @@ export const DailyReportContentSchema = z.object({
 }).strict();
 
 export const DailyReportSourceRefSchema = z.object({
-  type: z.enum(['content-item', 'scheduled-event', 'official-release', 'market-snapshot', 'strategy-snapshot']),
+  type: z.enum(['content-item', 'scheduled-event', 'official-release', 'market-snapshot', 'strategy-snapshot', 'media-body']),
   id: z.string().trim().min(1).max(512),
   at: NullableEpochMillisSchema,
 }).strict();
@@ -115,7 +117,7 @@ export const DailyBriefCandidateSchema = z.object({
   type: DailyBriefCandidateTypeSchema,
   occurredAt: EpochMillisSchema,
   title: z.string().max(1_000),
-  summary: z.string().max(240),
+  summary: z.string().max(300),
   sourceRefs: z.array(DailyReportSourceRefSchema).max(8),
   data: z.record(z.string(), z.any()),
 }).strict();
@@ -164,9 +166,17 @@ export const DailyBriefSchema = z.object({
   sourceReportUpdatedAt: EpochMillisSchema,
 }).strict();
 
+export const DailyBriefIndexItemSchema = z.object({
+  reportDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  overview: z.string().trim().min(1).max(500),
+  itemCount: z.number().int().min(0).max(8),
+  generatedAt: EpochMillisSchema,
+}).strict();
+
 export const GenerateDailyBriefInputSchema = z.object({
   workspaceId: WorkspaceIdSchema.optional(),
   reportId: EntityIdSchema,
+  catchup: z.boolean().optional(),
 }).strict();
 
 export const GenerateDailyBriefRequestSchema = z.object({

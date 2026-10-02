@@ -1,13 +1,13 @@
 import {
   askPrompts, assetClasses, bookTabs, channels, feedItems, globalAssets, holdings, marketTabs,
-  platformFilters, portfolioSummary, reportSections, stockBoards as fallbackStockBoards,
+  platformFilters, portfolioSummary, stockBoards as fallbackStockBoards,
   subscriptions, tools, tradeLedger,
 } from './mock.js?v=dev';
 import { icon } from './icons.js?v=dev';
 import { renderMarkdownInto } from './markdown.js?v=dev';
 import { renderQuantLab } from './quant-lab.js?v=dev';
 
-const platformLabels = { manual: '手工', bilibili: 'B站', x: 'X', xueqiu: '雪球', trendforce: 'TrendForce' };
+const platformLabels = { manual: '手工', bilibili: 'B站', x: 'X', xueqiu: '雪球', trendforce: 'TrendForce', media: '媒体' };
 const processingLabels = { subtitle: '字幕处理中', ai: 'AI 加工中' };
 const isHarmonyShell = navigator.userAgent.includes('AI-Center-Harmony/');
 const resetConnectionUri = 'aicenter://reset';
@@ -68,6 +68,17 @@ const state = {
   trendforceNote: '',
   trendforceLoading: false,
   trendforceRefreshing: false,
+  mediaItems: [],
+  mediaSources: [],
+  mediaChannel: 'tech',
+  mediaNote: '',
+  mediaLoading: false,
+  mediaRefreshing: false,
+  mediaProbing: false,
+  mediaBudget: null,
+  mediaView: 'full',
+  mediaCounts: {},
+  mediaNextOffset: null,
   xueqiuItems: [],
   xueqiuFeed: 'following',
   xueqiuNote: '',
@@ -178,9 +189,10 @@ const hubLanes = [
   { id: 'feed', label: '信息流', view: 'feed' },
   { id: 'stocks', label: '股票', view: 'market' },
   { id: 'global', label: '全球行情', view: 'market/global' },
+  { id: 'report', label: '日报', view: 'report' },
 ];
 
-const overviewViews = ['sources', 'feed', 'market'];
+const overviewViews = ['sources', 'feed', 'market', 'report'];
 
 const navItems = [
   { id: 'sources', label: '总览', icon: 'house' },
@@ -195,11 +207,11 @@ const viewCopy = {
   feed: { title: '信息流', subtitle: '已收录内容的统一时间线' },
   market: { title: '市场', subtitle: '股票观察池与全球行情报价' },
   assets: { title: '资产', subtitle: '持仓账本与个人资产分析' },
-  tools: { title: '工具', subtitle: '知识库、日报和连接' },
+  tools: { title: '工具', subtitle: '知识库、量化实验室和连接' },
   inspire: { title: '灵感', subtitle: '留下尚未完成的思考' },
   knowledge: { title: '知识库', subtitle: '可长期复用的规范内容' },
   ask: { title: '问答', subtitle: '研究记录，可回溯也可继续' },
-  report: { title: '日报', subtitle: '跨模块汇总，先定结构' },
+  report: { title: '日报', subtitle: '今天值得花注意力看的变化' },
   quant: { title: '量化实验室', subtitle: 'Qlib 研究基线，不连接真实交易' },
   settings: { title: '设备与连接', subtitle: '信源、任务、自动化和配对' },
   page: { title: '详情', subtitle: '' },
@@ -214,7 +226,7 @@ const elements = Object.fromEntries([
   'form-message', 'feed', 'feed-count', 'metrics-panel', 'metric-devices', 'metric-opens',
   'metric-published', 'metric-details', 'device-list', 'post-dialog', 'dialog-title',
   'dialog-body', 'dialog-translation', 'dialog-tags', 'dialog-source', 'dialog-save', 'dialog-cite', 'dialog-translate', 'dialog-time', 'dialog-notice', 'dialog-language', 'toast', 'channel-tabs',
-  'platform-filters', 'follow-toolbar', 'bilibili-toolbar', 'bilibili-feed-status', 'bilibili-import-form', 'bilibili-url', 'bilibili-import', 'bilibili-more', 'x-toolbar', 'x-more', 'x-translate-bar', 'x-feed-status', 'x-translate-status', 'x-feed-tabs', 'x-refresh', 'x-translate', 'x-tag', 'xueqiu-toolbar', 'xueqiu-feed-tabs', 'xueqiu-feed-status', 'xueqiu-action-bar', 'xueqiu-action-status', 'xueqiu-refresh', 'trendforce-toolbar', 'trendforce-feed-status', 'trendforce-more', 'trendforce-action-bar', 'trendforce-action-status', 'trendforce-refresh', 'quote-filters', 'quote-list', 'tool-grid', 'strategy-inspect',
+  'platform-filters', 'follow-toolbar', 'bilibili-toolbar', 'bilibili-feed-status', 'bilibili-import-form', 'bilibili-url', 'bilibili-import', 'bilibili-more', 'x-toolbar', 'x-more', 'x-translate-bar', 'x-feed-status', 'x-translate-status', 'x-feed-tabs', 'x-refresh', 'x-translate', 'x-tag', 'xueqiu-toolbar', 'xueqiu-feed-tabs', 'xueqiu-feed-status', 'xueqiu-action-bar', 'xueqiu-action-status', 'xueqiu-refresh', 'trendforce-toolbar', 'trendforce-feed-status', 'trendforce-more', 'trendforce-action-bar', 'trendforce-action-status', 'trendforce-refresh', 'media-toolbar', 'media-channel-tabs', 'media-feed-status', 'media-action-bar', 'media-action-status', 'media-probe', 'media-refresh', 'media-source-list', 'quote-filters', 'quote-list', 'tool-grid', 'strategy-inspect',
   'ask-records', 'ask-start', 'ask-session-list', 'ask-session-shell', 'ask-intro', 'ask-prompt-label',
   'ask-thread', 'ask-prompts', 'ask-materials', 'ask-material-tabs', 'ask-form', 'ask-send', 'ask-ref-chips', 'ask-ref-actions', 'ask-ref-export', 'ask-ref-task', 'ask-mention-menu', 'ask-live-chip', 'compose-dialog', 'reload-view', 'open-compose', 'open-settings', 'global-search',
   'side-nav-list', 'bottom-tab', 'market-tabs', 'book-tabs', 'holdings-list', 'holdings-filters', 'asset-filters',
@@ -223,6 +235,7 @@ const elements = Object.fromEntries([
   'static-board-note', 'source-dialog', 'source-dialog-title', 'source-dialog-meta', 'source-dialog-items',
   'overview-home', 'overview-schedule', 'overview-catalog', 'overview-timeline', 'overview-timeline-tabs', 'overview-timeline-day',
   'open-source-catalog', 'open-full-schedule', 'schedule-back', 'catalog-back', 'source-catalog-filter', 'source-catalog-tabs',
+  'overview-brief', 'overview-brief-body', 'open-daily-brief',
   'inspire-subnav', 'inspire-notes-pane', 'inspire-tasks-pane',
   'note-filters', 'note-focus-entry', 'note-focus-hint',
   'task-filters', 'task-list', 'task-list-pane', 'task-detail-pane',
@@ -463,6 +476,10 @@ function saveTranslationStore(store) {
 
 function translationFor(post) {
   if (!post?.id) return null;
+  if (post.platform === 'media' && post.complete) {
+    const article = post.articleTranslation;
+    return article?.status === 'ready' ? {text:[article.title,...article.paragraphs.map(p=>p.text)].filter(Boolean).join('\n\n'),cached:true} : null;
+  }
   if (state.translations[post.id]) return state.translations[post.id];
   if (post.translation?.text) {
     state.translations[post.id] = {
@@ -565,6 +582,11 @@ function postTagNames(item) {
     .filter(Boolean);
 }
 
+function hasDisplayTags(item) {
+  if (isOfficialItem(item)) return true;
+  return postTagNames(item).length > 0;
+}
+
 function createTagRow(names) {
   const labels = [...new Set((names || []).map((name) => String(name || '').trim()).filter(Boolean))];
   if (!labels.length) return null;
@@ -630,7 +652,7 @@ function isPrimaryNavActive(navId, view) {
     return navId === mapped;
   }
   if (navId === 'sources') return overviewViews.includes(view);
-  if (navId === 'tools') return view === 'tools' || view === 'knowledge' || view === 'report' || view === 'settings' || view === 'quant';
+  if (navId === 'tools') return view === 'tools' || view === 'knowledge' || view === 'settings' || view === 'quant';
   return navId === view;
 }
 
@@ -655,7 +677,14 @@ function parseLocation(name = (location.hash || '#sources').slice(1)) {
     : '';
   const pageKind = pageKinds[head] ? head : '';
   const pageId = pageKind ? rest.join('/') : '';
-  return { view, askSessionId, marketPane, sourcesPane, settingsPane, inspirePane, selectedWorkPackageId, pageKind, pageId };
+  const reportDate = view === 'report' && /^\d{4}-\d{2}-\d{2}$/.test(rest[0] || '') ? rest[0] : '';
+  const reportPane = view === 'report'
+    ? (reportDate ? 'day' : (rest[0] === 'history' ? 'history' : 'today'))
+    : 'today';
+  return {
+    view, askSessionId, marketPane, sourcesPane, settingsPane, inspirePane,
+    selectedWorkPackageId, pageKind, pageId, reportPane, reportDate,
+  };
 }
 
 const OVERVIEW_LANE_KEY = 'ai-center.last-overview';
@@ -671,9 +700,10 @@ function readLastOverviewTarget() {
 
 function rememberOverviewTarget(view, pane = state.tradePane) {
   if (!overviewViews.includes(view)) return;
-  const target = view === 'market'
-    ? (pane === 'assets' ? 'market/global' : 'market')
-    : view;
+  let target = view;
+  if (view === 'market') target = pane === 'assets' ? 'market/global' : 'market';
+  if (view === 'report' && reportDate) target = `report/${reportDate}`;
+  else if (view === 'report' && reportPane === 'history') target = 'report/history';
   state.lastOverviewTarget = target;
   try { sessionStorage.setItem(OVERVIEW_LANE_KEY, target); } catch {}
 }
@@ -681,6 +711,7 @@ function rememberOverviewTarget(view, pane = state.tradePane) {
 function overviewLane(view = document.body.dataset.view, pane = state.tradePane) {
   if (view === 'feed') return 'feed';
   if (view === 'market') return pane === 'assets' ? 'global' : 'stocks';
+  if (view === 'report') return 'report';
   return 'overview';
 }
 
@@ -688,6 +719,7 @@ function overviewHash(lane = overviewLane()) {
   if (lane === 'feed') return '#feed';
   if (lane === 'stocks') return '#market';
   if (lane === 'global') return '#market/global';
+  if (lane === 'report') return '#report';
   return '#sources';
 }
 
@@ -780,6 +812,10 @@ function setView(name, options = {}) {
   if ((view !== 'page' || parsed.pageKind !== 'article') && !elements['post-dialog']?.open) {
     state.dialogPost = null;
   }
+  if (view === 'report') {
+    reportPane = parsed.reportPane;
+    reportDate = parsed.reportDate;
+  }
   state.hubLane = overviewLane(view, state.tradePane);
   rememberOverviewTarget(view, state.tradePane);
   document.body.dataset.view = view;
@@ -834,6 +870,10 @@ function setView(name, options = {}) {
   }
   if (view === 'ask') syncAskView().catch((error) => showToast(error.message));
   if (view === 'tools' && state.bootstrapped) loadDividendInspection().catch((error) => showToast(error.message));
+  if (view === 'report' && state.bootstrapped) {
+    if (options.reportLoaded) renderReport();
+    else ensureReportPane().catch((error) => showToast(error.message));
+  }
   if (view === 'quant') renderQuantPage().catch((error) => showToast(error.message));
   if (view === 'settings') renderSettingsHub();
   if (view === 'page') renderPage();
@@ -851,7 +891,11 @@ function setView(name, options = {}) {
             ? pageHash()
             : view === 'inspire' && state.inspirePane === 'tasks'
               ? (state.selectedWorkPackageId ? `#inspire/tasks/${state.selectedWorkPackageId}` : '#inspire/tasks')
-              : `#${view}`;
+              : view === 'report' && reportDate
+                ? `#report/${reportDate}`
+                : view === 'report' && reportPane === 'history'
+                  ? '#report/history'
+                  : `#${view}`;
   if (location.hash !== nextHash) history.replaceState({}, '', `${location.pathname}${location.search}${nextHash}`);
   if (leaving) restoreViewScroll(view);
   persistFeedBrowseState();
@@ -996,7 +1040,7 @@ async function reloadCurrentView({ forceShell = false } = {}) {
       tasks.push(loadKnowledge());
       tasks.push(loadDividendInspection());
     }
-    if (view === 'report') renderReport();
+    if (view === 'report') tasks.push(ensureReportPane());
     if (view === 'settings' && state.session.role === 'desktop') {
       tasks.push(loadPairing());
       tasks.push(loadMetrics());
@@ -1790,6 +1834,7 @@ const REFERENCE_TYPE_LABELS = {
   inspiration: '灵感',
   'knowledge-revision': '知识',
   'ai-run': '回答',
+  'daily-brief-item': '日报观点',
   'web-result': '网页',
   'holdings-board': '持仓',
   'market-board': '市场',
@@ -1973,6 +2018,20 @@ async function openContextRef(ref) {
       openAskSession(payload.run.sessionId);
       return;
     }
+    if (type === 'daily-brief-item') {
+      const date = id.slice(0, 10);
+      const candidateId = id.slice(11);
+      await loadReportDay(date);
+      const brief = reportDay.brief;
+      if (!brief || brief.generatedAt !== ref.revision
+        || !brief.items.some((item) => item.candidateId === candidateId)) {
+        showToast('这条日报观点已更新或不存在，请回到日报重新选择');
+        return;
+      }
+      setView(`report/${date}`, { reportLoaded: true });
+      flashSourceTarget(document.querySelector(`[data-report-reference-id="${CSS.escape(id)}"]`));
+      return;
+    }
     if (type === 'content-item') {
       const existing = findFeedPost(ref);
       if (existing) {
@@ -2121,19 +2180,20 @@ function renderReferencePackDialog() {
   if (meta) {
     meta.textContent = state.referenceDraft.length
       ? `已选 ${state.referenceDraft.length} 条。同一组可以导出、发给任务或带去问答。`
-      : '还没有材料。信息流或灵感里点引用即可加入。';
+      : '还没有材料。信息流、灵感或日报里点引用即可加入。';
   }
 }
 
 function renderReferenceUi() {
   renderAskRefChips();
   renderReferenceDock();
+  syncReportReferenceButtons();
   if (elements['reference-pack']?.open) renderReferencePackDialog();
 }
 
 function openReferencePack() {
   if (!state.referenceDraft.length) {
-    showToast('先在信息流或灵感里点引用');
+    showToast('先在信息流、灵感或日报里点引用');
     return;
   }
   renderReferencePackDialog();
@@ -2437,6 +2497,7 @@ function textAfterLead(source, lead) {
 }
 
 function postDisplayTitle(post) {
+  if (post.platform === 'media' && post.articleTranslation?.title) return post.articleTranslation.title;
   const translated = translationFor(post)?.text;
   if (translated) return clipFeedText(firstFeedSentence(translated) || plainFeedText(translated), FEED_TITLE_MAX);
   if (postIsTranslating(post)) return '正在翻译…';
@@ -2457,6 +2518,38 @@ function postViewBody(post) {
   if (translated) return translated;
   if (postIsTranslating(post)) return '正在翻译…';
   return post?.body || post?.summary || '无正文';
+}
+
+function fillMediaParagraphs(element, paragraphs, comparison = []) {
+  element.classList.add('media-article-content');
+  const originals = new Map(comparison.map(p=>[p.id,p]));
+  let list;
+  for (const paragraph of paragraphs) {
+    const section = document.createElement('section');
+    section.dataset.paragraphId = paragraph.id;
+    if (paragraph.kind==='table') {
+      const scroll = document.createElement('div');scroll.className='article-table-scroll';
+      const table = document.createElement('table');
+      for (const line of paragraph.text.split('\n')) {
+        const row = document.createElement('tr');
+        for (const cell of line.split('|')) row.append(Object.assign(document.createElement('td'),{textContent:cell.trim()}));
+        table.append(row);
+      }
+      scroll.append(table);section.append(scroll);
+    } else {
+      const tag = paragraph.kind==='heading' ? 'h3' : paragraph.kind==='quote' ? 'blockquote' : paragraph.kind==='list' ? 'li' : 'p';
+      section.append(Object.assign(document.createElement(tag),{textContent:paragraph.text}));
+    }
+    const original=originals.get(paragraph.id);
+    if (original) section.append(Object.assign(document.createElement('p'),{className:'article-original',textContent:original.text}));
+    if (paragraph.kind==='list') {
+      if (!list) {list=document.createElement('ul');element.append(list);}
+      const item=section.firstChild;
+      item.dataset.paragraphId=paragraph.id;
+      for(const node of [...section.childNodes].slice(1)) item.append(node);
+      list.append(item);
+    } else {list=null;element.append(section);}
+  }
 }
 
 function fillPostBody(element, value) {
@@ -2598,7 +2691,8 @@ function socialFeedItems(options = {}) {
     return matchesPlatform({ ...item, kind: 'social' });
   }).map((item) => ({ ...item, kind: 'social', createdAt: item.createdAt || Date.now(), publishedAt: item.publishedAt || item.createdAt || Date.now() }));
   return [...bilibiliItems, ...trendforceItems, ...xueqiuItems, ...xItems, ...live, ...demo]
-    .filter((item) => options.includeHidden || !isHiddenFeedItem(item));
+    .filter((item) => options.includeHidden || !isHiddenFeedItem(item))
+    .filter((item) => hasDisplayTags(item));
 }
 
 function officialFeedItems(options = {}) {
@@ -2677,6 +2771,11 @@ function sortFeedItems(items) {
 }
 
 function visibleFeedItems() {
+  if (state.feedPlatform === 'media') {
+    const query = String(state.feedQuery || '').trim().toLowerCase();
+    return sortFeedItems(state.mediaItems.map(mediaAsItem)
+      .filter((item) => matchesFeedQuery(item, query) && matchesFeedRange(item)));
+  }
   const social = socialFeedItems();
   const official = officialFeedItems();
   let items = state.channel === 'focus' ? focusedFeedItems()
@@ -2685,7 +2784,7 @@ function visibleFeedItems() {
       : state.channel === 'social' ? social
         : [...social, ...official];
   const query = String(state.feedQuery || '').trim().toLowerCase();
-  items = items.filter((item) => matchesFeedQuery(item, query) && matchesFeedRange(item));
+  items = items.filter((item) => hasDisplayTags(item) && matchesFeedQuery(item, query) && matchesFeedRange(item));
   return sortFeedItems(items);
 }
 
@@ -2770,6 +2869,7 @@ function isSourceFeedScope(id) {
 }
 
 function currentFeedScopeId() {
+  if (state.feedPlatform === 'media') return 'media';
   return isSourceFeedScope(state.feedPlatform) ? state.feedPlatform : state.channel;
 }
 
@@ -2785,6 +2885,7 @@ function applyFeedPlatform(id) {
   renderXueqiuToolbar();
   renderBilibiliToolbar();
   renderTrendForceToolbar();
+  renderMediaToolbar();
   renderPosts();
   if (next === 'x' && !state.xItems.length && !state.xLoading) {
     loadXFeed({ refresh: false }).catch((error) => showToast(error.message));
@@ -2798,10 +2899,13 @@ function applyFeedPlatform(id) {
   if (next === 'trendforce' && !state.trendforceItems.length && !state.trendforceLoading) {
     loadTrendForceFeed({ refresh: false }).catch((error) => showToast(error.message));
   }
+  if (next === 'media' && !state.mediaItems.length && !state.mediaLoading) {
+    loadMediaFeed({ refresh: false }).catch((error) => showToast(error.message));
+  }
 }
 
 function selectFeedScope(id) {
-  if (isSourceFeedScope(id)) {
+  if (id === 'media' || isSourceFeedScope(id)) {
     applyFeedPlatform(id);
     return;
   }
@@ -2823,7 +2927,7 @@ function renderFeedActionButton() {
 
 function renderChannels() {
   const current = currentFeedScopeId();
-  const tabs = [...channels, ...feedSourceTabs];
+  const tabs = [...channels, ...feedSourceTabs, { id: 'media', label: '媒体' }];
   if (elements['channel-tabs']) {
     elements['channel-tabs'].setAttribute('aria-label', '信息范围与信源');
   }
@@ -3036,6 +3140,122 @@ function renderTrendForceToolbar() {
   }
 }
 
+const MEDIA_HEALTH_LABELS = {
+  disabled: '未启用',
+  ready: '可同步',
+  empty: '空订阅',
+  not_modified: '未变化',
+  needs_credentials: '缺凭证',
+  needs_license: '缺许可',
+  needs_host_probe: '待探针',
+  needs_parser: '待解析',
+  not_in_initial_batch: '不在第一批',
+  existing_adapter: '沿用现有',
+  budget_deferred: '超出预算',
+  possible_gap: '可能有缺口',
+  stale: '较旧',
+  blocked: '被拒绝',
+  network: '网络失败',
+  parse_failed: '解析失败',
+  not_a_feed: '不是订阅',
+};
+
+function mediaAsItem(item) {
+  const level = ({ full: '已验证正文', partial: item.truncated ? '部分正文 · 尾部未读' : '部分正文', discovery: '发现', summary_only: '仅摘要', title_only: '仅标题' })[item.contentLevel] || '索引';
+  const reason = ({blocked:'站点拒绝访问',paywall:'付费内容',needs_license:'待确认正文用途',unsupported_template:'正文模板待适配',coverage_unverified:'正文范围待核实',byte_limit:'正文超过保存上限',success_budget:'今日正文配额已用完',request_budget:'今日请求配额已用完',network:'网络失败',http_error:'来源响应失败',preview:'仅公开预览',disallowed_host:'原文域名未接入',rss_summary_match:'仅源站摘要'})[item.fetchState?.extractionReason] || '';
+  const body = item.body || [item.title, item.summary].filter(Boolean).join('\n\n');
+  return {
+    id: item.id || `media:${item.externalId}`,
+    resourceId: item.resourceId || item.id || item.externalId,
+    live: true,
+    kind: 'media',
+    platform: 'media',
+    externalId: item.externalId,
+    resourceType: 'media-index',
+    author: item.publisherName || item.publisherKey || '媒体',
+    handle: '',
+    time: item.publishedAt ? formatTime(item.publishedAt) : '',
+    title: item.title || item.externalId,
+    body,
+    paragraphs: item.paragraphs || [],
+    articleTranslation: item.articleTranslation || null,
+    generatedBrief: item.generatedBrief || null,
+    briefState: item.briefState || {status:'pending'},
+    bodyScope: level,
+    bodyReason: [reason,item.fetchState?.visualEvidenceRequired ? '图表内容需另行核对' : ''].filter(Boolean).join(' · '),
+    excerpt: [level, item.generatedBrief?.text || (item.articleTranslation?.status==='ready' ? item.articleTranslation.paragraphs.find(p=>p.kind==='paragraph')?.text : '') || item.summary].filter(Boolean).join(' · '),
+    tags: Array.isArray(item.tags) ? item.tags : [],
+    sourceUrl: item.originUrl || item.sourceUrl || '',
+    processing: reason,
+    following: false,
+    createdAt: item.publishedAt || Date.now(),
+    publishedAt: item.publishedAt || 0,
+    complete: item.contentLevel === 'full' && !item.truncated,
+    translation: item.translation || null,
+  };
+}
+
+function renderMediaToolbar() {
+  const visible = state.feedPlatform === 'media';
+  elements['media-toolbar']?.classList.toggle('hidden', !visible);
+  elements['media-action-bar']?.classList.toggle('hidden', !visible);
+  if (elements['media-channel-tabs']) {
+    renderChipTabs(elements['media-channel-tabs'], [
+      { id: 'tech', label: '产业科技' },
+      { id: 'macro', label: '宏观与国际' },
+    ], state.mediaChannel, (id) => {
+      if (state.mediaChannel === id) return;
+      state.mediaChannel = id;
+      state.mediaItems = [];
+      loadMediaFeed({ refresh: false }).catch((error) => showToast(error.message));
+    });
+  }
+  let bodyTabs = document.getElementById('media-body-tabs');
+  if (!bodyTabs && elements['media-channel-tabs']) {
+    bodyTabs = document.createElement('div');
+    bodyTabs.id = 'media-body-tabs';
+    bodyTabs.className = 'chip-tabs';
+    elements['media-channel-tabs'].after(bodyTabs);
+  }
+  if (bodyTabs) renderChipTabs(bodyTabs, [
+    ['full','全文'], ['index','摘要与线索'], ['pending','处理中'], ['failed','未取到正文'], ['partial','部分内容'], ['all','全部'],
+  ].map(([id,label]) => ({ id,label: `${label} ${state.mediaCounts[id] || 0}` })), state.mediaView, id => {
+    state.mediaView = id;
+    loadMediaFeed({ refresh: false }).catch(error => showToast(error.message));
+  });
+  if (elements['media-feed-status']) {
+    elements['media-feed-status'].textContent = state.mediaLoading
+      ? (state.mediaProbing ? '正在检查来源…' : state.mediaRefreshing ? '正在更新文章…' : '正在读取文章…')
+      : `${state.mediaCounts.full || 0} 篇全文 · ${state.mediaCounts.pending || 0} 篇处理中`;
+  }
+  if (elements['media-action-status']) {
+    elements['media-action-status'].textContent = '自动检查新文章 → 抓取正文 → 全文翻译与排版 → 打标签';
+  }
+  if (elements['media-probe']) {
+    elements['media-probe'].disabled = state.mediaLoading;
+    elements['media-probe'].textContent = state.mediaProbing ? '检查中…' : '检查来源连接';
+  }
+  if (elements['media-refresh']) {
+    elements['media-refresh'].disabled = state.mediaLoading;
+    elements['media-refresh'].textContent = state.mediaRefreshing ? '更新中…' : '立即更新';
+  }
+  const list = elements['media-source-list'];
+  if (!list) return;
+  list.replaceChildren(...state.mediaSources.map((source) => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'text-button';
+    const health = MEDIA_HEALTH_LABELS[source.health] || source.health || '未启用';
+    const capability = source.contentAccess === 'body' ? '全文 · 自动翻译与标签' : source.contentAccess === 'discovery' ? '聚合线索 · 受信原报道另行抓取' : '摘要 · 原文在出版商网站';
+    row.textContent = `${source.publisher} · ${capability} · ${source.enabled ? (source.transport==='discovery' ? '发现链接时抓取' : `每${source.refreshMinutes || 60}分钟检查`) : health}`;
+    row.disabled = state.mediaLoading || source.enabled || source.deployment !== 'first' || !source.hostDirectVerified;
+    row.addEventListener('click', () => {
+      enableMediaSource(source.sourceKey).catch((error) => showToast(error.message));
+    });
+    return row;
+  }));
+}
+
 function sortLabel() {
   return state.feedSort === 'published' ? '按发布时间' : '按收录顺序';
 }
@@ -3050,6 +3270,7 @@ function feedKindLabel(item) {
   if (item.kind === 'official' || item.platform === 'official') return '官方';
   if (item.platform === 'bilibili') return '字幕';
   if (item.platform === 'trendforce') return '洞察';
+  if (item.platform === 'media') return '媒体';
   if (item.platform === 'xueqiu') return '雪球';
   if (item.platform === 'manual') return '手工';
   return '社媒';
@@ -3158,7 +3379,10 @@ function resetFeedWindow() {
 
 function revealMoreFeed() {
   const total = visibleFeedItems().length;
-  if (state.feedShown >= total) return;
+  if (state.feedShown >= total) {
+    if (state.feedPlatform === 'media' && state.mediaNextOffset != null && !state.mediaLoading) loadMediaFeed({ append: true }).catch(error => showToast(error.message));
+    return;
+  }
   state.feedShown = Math.min(total, state.feedShown + FEED_PAGE_SIZE);
   renderPosts();
 }
@@ -3303,7 +3527,9 @@ function renderPosts() {
     if (expanded) {
       const full = document.createElement('div');
       full.className = 'post-body';
-      fillPostBody(full, postViewBody(post));
+      if (post.platform==='media' && post.paragraphs?.length) {
+        fillMediaParagraphs(full,post.articleTranslation?.status==='ready' ? post.articleTranslation.paragraphs : post.paragraphs);
+      } else fillPostBody(full, postViewBody(post));
       content.append(full);
     } else if (excerpt) {
       const preview = document.createElement('p');
@@ -3328,7 +3554,7 @@ function renderPosts() {
     const expand = document.createElement('button');
     expand.type = 'button';
     expand.className = 'feed-expand';
-    expand.textContent = expanded ? '收起' : '原地展开全文';
+    expand.textContent = expanded ? '收起' : post.platform==='media' && !post.complete ? '展开线索' : '原地展开全文';
     expand.addEventListener('click', (event) => {
       event.stopPropagation();
       if (state.expandedFeedIds.has(post.id)) state.expandedFeedIds.delete(post.id);
@@ -3343,7 +3569,7 @@ function renderPosts() {
   const more = document.createElement('div');
   more.className = 'feed-more';
   more.id = 'feed-sentinel';
-  const canLoad = shown.length < items.length;
+  const canLoad = shown.length < items.length || (state.feedPlatform === 'media' && state.mediaNextOffset != null);
   more.dataset.done = canLoad ? '0' : '1';
   more.textContent = canLoad ? '下滑显示更多' : '已经到底了';
   elements.feed.append(more);
@@ -4494,7 +4720,7 @@ function hubFeedPicks(limit = 12) {
     return true;
   });
   return [...bilibiliItems, ...trendforceItems, ...xueqiuItems, ...xItems, ...live, ...demo]
-    .filter((item) => !isHiddenFeedItem(item))
+    .filter((item) => !isHiddenFeedItem(item) && hasDisplayTags(item))
     .sort((left, right) => (Number(right.createdAt) || 0) - (Number(left.createdAt) || 0))
     .slice(0, limit);
 }
@@ -5280,6 +5506,7 @@ async function loadSourcesPage({ refresh = false } = {}) {
     if (!state.staticBoard || refresh) tasks.push(loadStaticSignalBoard({ refresh }));
     if (!state.marketNativeBoard || refresh) tasks.push(loadMarketNativeBoard({ refresh }));
   }
+  if (state.session) tasks.push(loadDailyBrief().catch(() => {}));
   if (tasks.length) await Promise.all(tasks);
   renderSources();
   scheduleOverviewFocusWatch();
@@ -5801,13 +6028,43 @@ async function loadOriginalBody(post) {
   return state.originalBodies[id];
 }
 
+function bindIntentionalClick(button, onClick) {
+  let armed = false;
+  let startX = 0;
+  let startY = 0;
+  button.addEventListener('pointerdown', (event) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    armed = true;
+    startX = event.clientX;
+    startY = event.clientY;
+  });
+  button.addEventListener('pointermove', (event) => {
+    if (!armed) return;
+    if (Math.abs(event.clientX - startX) > 8 || Math.abs(event.clientY - startY) > 8) armed = false;
+  });
+  button.addEventListener('pointercancel', () => {
+    armed = false;
+  });
+  button.addEventListener('click', (event) => {
+    const keyboard = event.detail === 0;
+    const intentional = keyboard || armed;
+    armed = false;
+    if (!intentional) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    onClick(event);
+  });
+}
+
 function createDetailAction({ iconName, label, primary = false, pressed = false, onClick }) {
   const button = document.createElement('button');
   button.type = 'button';
   if (primary) button.classList.add('is-primary');
   if (pressed) button.classList.add('is-focus-on');
   button.innerHTML = `${icon(iconName)}<span>${label}</span>`;
-  if (onClick) button.addEventListener('click', onClick);
+  if (onClick) bindIntentionalClick(button, onClick);
   return button;
 }
 
@@ -5833,7 +6090,7 @@ function renderArticlePage() {
   const head = document.createElement('header');
   head.className = 'detail-head reader-head';
   head.innerHTML = `<h2 class="detail-title"></h2><div class="detail-meta reader-meta"></div>`;
-  head.querySelector('h2').textContent = postDisplayTitle(post);
+  head.querySelector('h2').textContent = post.platform==='media' && state.readerLang==='original' ? post.title : postDisplayTitle(post);
   const meta = head.querySelector('.reader-meta');
   meta.append(
     Object.assign(document.createElement('button'), { className: 'text-button', textContent: `${post.author} ›` }),
@@ -5853,7 +6110,38 @@ function renderArticlePage() {
     else openPage('source', post.platform === 'manual' ? 'manual' : post.platform);
   });
   const body = document.createElement('div');
-  if (post.kind === 'official' && post.complete === false) {
+  let mediaBrief;
+  if (post.platform === 'media') {
+    body.append(Object.assign(document.createElement('p'), {className:'body-state',textContent:[post.bodyScope,post.bodyReason].filter(Boolean).join(' · ')}));
+    if (post.generatedBrief) {
+      const brief = document.createElement('details');
+      brief.className = 'detail-surface';
+      brief.append(Object.assign(document.createElement('summary'),{textContent:'文章提要'}),Object.assign(document.createElement('p'),{textContent:post.generatedBrief.text}));
+      const evidence = document.createElement('details');
+      evidence.append(Object.assign(document.createElement('summary'),{textContent:`原文证据 · 正文版本 ${post.generatedBrief.snapshotRevision}`}));
+      for (const cite of post.generatedBrief.evidence) evidence.append(Object.assign(document.createElement('blockquote'),{textContent:`${cite.paragraphId} · ${cite.quote}`}));
+      brief.append(evidence);mediaBrief=brief;
+      if (!post.paragraphs?.length) body.append(brief);
+    }
+  }
+  if (post.platform === 'media' && post.paragraphs?.length) {
+    const article = post.articleTranslation;
+    const ready = article?.status === 'ready';
+    if (ready) {
+      const tabs = document.createElement('div'); tabs.className='dense-tabs reader-tabs';
+      renderChipTabs(tabs,[{id:'translation',label:'中文全文'},{id:'original',label:'原文'},{id:'compare',label:'逐段对照'}],state.readerLang,id=>{state.readerLang=id;renderArticlePage();});
+      body.append(tabs);
+    } else {
+      body.append(Object.assign(document.createElement('p'),{className:'body-state',textContent:post.complete ? `正文已保存，全文翻译处理中（${article?.completedChunks || 0}/${article?.totalChunks || 0}段片）` : '以下为已保存的部分原文'}));
+    }
+    const content=document.createElement('div');content.className='reader-content detail-body';
+    const chinese=ready && state.readerLang!=='original';
+    fillMediaParagraphs(content,chinese ? article.paragraphs : post.paragraphs,state.readerLang==='compare' && ready ? post.paragraphs : []);
+    body.append(content);
+    const tags=createTagRow(postTagNames(post));if(tags){tags.classList.add('detail-tags');body.append(tags);}
+    if (mediaBrief) body.append(mediaBrief);
+    ensurePostTags(post);
+  } else if (post.kind === 'official' && post.complete === false) {
     const fetched = state.officialBodies[post.id];
     const status = fetched?.status || 'idle';
     const metaGrid = document.createElement('dl');
@@ -5944,18 +6232,21 @@ function renderArticlePage() {
     onClick: () => toggleFocus(post.id, () => renderArticlePage(), post),
   });
   star.setAttribute('aria-label', focused ? '取消重点' : '加入重点');
+  const analysisRecord = state.articleAnalysis[articleAnalysisKey(post)];
+  const analysisBusy = analysisRecord?.status === 'queued' || analysisRecord?.status === 'running';
   const analyze = createDetailAction({
     iconName: 'search',
-    label: '分析',
+    label: analysisBusy ? '分析中' : '分析',
     primary: true,
     onClick: () => startArticleAnalysis(post).catch((error) => showToast(error.message)),
   });
+  if (analysisBusy) analyze.disabled = true;
   bar.append(save, cite, analyze, star);
   const analysis = renderArticleAnalysisPanel(post);
   if (analysis) shell.append(head, body, analysis, bar);
   else shell.append(head, body, bar);
   root.replaceChildren(shell);
-  if (postNeedsChineseTranslation(post) && !translationFor(post)) {
+  if (post.platform !== 'media' && postNeedsChineseTranslation(post) && !translationFor(post)) {
     requestTranslate(post).catch((error) => showToast(error.message));
   }
 }
@@ -6073,6 +6364,8 @@ async function pollArticleAnalysis(key, runId) {
 
 async function startArticleAnalysis(post) {
   const key = articleAnalysisKey(post);
+  const current = state.articleAnalysis[key];
+  if (current?.status === 'queued' || current?.status === 'running') return;
   const source = articleAnalysisSource(post);
   if (source.type === 'inline' && !source.body) {
     showToast('这条材料没有可分析正文');
@@ -8018,16 +8311,277 @@ async function askArticleAnalysis(question) {
   }
 }
 
-function renderReport() {
-  elements['report-list'].replaceChildren(...reportSections.map((section) => {
+const BRIEF_TYPE_LABELS = {
+  news: '信息',
+  'official-release': '官方',
+  'upcoming-event': '日程',
+  market: '市场',
+  strategy: '策略',
+  'strategy-transition': '状态变化',
+};
+
+let dailyBriefSnapshot = { brief: null, loaded: false, error: '' };
+let reportPane = 'today';
+let reportDate = '';
+let reportHistory = { items: [], loaded: false, error: '' };
+let reportDay = { date: '', brief: null, loaded: false, error: '' };
+
+function shanghaiDateKey(now = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now);
+}
+
+function shiftDateKey(iso, days) {
+  const [year, month, day] = String(iso || '').split('-').map(Number);
+  if (!year || !month || !day) return '';
+  const utc = new Date(Date.UTC(year, month - 1, day));
+  utc.setUTCDate(utc.getUTCDate() + days);
+  return utc.toISOString().slice(0, 10);
+}
+
+function expectedBriefDate(now = new Date()) {
+  const hour = Number(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    hour: '2-digit',
+    hourCycle: 'h23',
+  }).format(now));
+  const today = shanghaiDateKey(now);
+  return hour >= 8 ? today : shiftDateKey(today, -1);
+}
+
+function briefDateLabel(iso) {
+  const match = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return '';
+  return `${Number(match[2])}月${Number(match[3])}日`;
+}
+
+function briefIsCurrent(brief, now = new Date()) {
+  return Boolean(brief?.reportDate) && brief.reportDate >= expectedBriefDate(now);
+}
+
+async function loadDailyBrief() {
+  const payload = await api('/api/v1/reports/daily/latest/brief');
+  dailyBriefSnapshot = { brief: payload.brief || null, loaded: true, error: '' };
+  renderDailyBriefPeek();
+  if (document.body.dataset.view === 'report' && reportPane === 'today') renderReport();
+}
+
+async function loadReportHistory() {
+  try {
+    const payload = await api('/api/v1/reports/daily/briefs');
+    reportHistory = { items: Array.isArray(payload.briefs) ? payload.briefs : [], loaded: true, error: '' };
+  } catch (error) {
+    reportHistory = { items: [], loaded: true, error: error instanceof Error ? error.message : '历史没有读出来' };
+  }
+  if (document.body.dataset.view === 'report' && reportPane === 'history') renderReport();
+}
+
+async function loadReportDay(date) {
+  try {
+    const payload = await api(`/api/v1/reports/daily/brief?date=${encodeURIComponent(date)}`);
+    reportDay = { date, brief: payload.brief || null, loaded: true, error: '' };
+  } catch (error) {
+    reportDay = { date, brief: null, loaded: true, error: error instanceof Error ? error.message : '这一天没有读出来' };
+  }
+  if (document.body.dataset.view === 'report' && reportPane === 'day' && reportDate === date) renderReport();
+}
+
+function ensureReportPane() {
+  renderReport();
+  if (reportPane === 'history') return loadReportHistory();
+  if (reportPane === 'day') return loadReportDay(reportDate);
+  return loadDailyBrief();
+}
+
+function renderDailyBriefPeek() {
+  const root = elements['overview-brief-body'];
+  if (!root) return;
+  root.replaceChildren();
+  const brief = dailyBriefSnapshot.brief;
+  if (!dailyBriefSnapshot.loaded) {
+    root.append(Object.assign(document.createElement('p'), { textContent: '正在读取今日关注' }));
+    return;
+  }
+  if (dailyBriefSnapshot.error) {
+    root.append(Object.assign(document.createElement('p'), { className: 'is-missing', textContent: dailyBriefSnapshot.error }));
+    return;
+  }
+  if (!brief || !briefIsCurrent(brief)) {
+    const missing = document.createElement('p');
+    missing.className = 'is-missing';
+    missing.textContent = brief
+      ? `今天的筛选还没生成，上一份是 ${briefDateLabel(brief.reportDate)}。立刻重试失败后，大约 30 分钟会再试一次。`
+      : '今天的筛选还没生成。立刻重试失败后，大约 30 分钟会再试一次。';
+    root.append(missing);
+    return;
+  }
+  const summary = document.createElement('p');
+  summary.textContent = brief.overview;
+  root.append(summary);
+}
+
+function renderReportTabs() {
+  document.getElementById('report-tab-today')?.classList.toggle('is-active', reportPane === 'today');
+  document.getElementById('report-tab-history')?.classList.toggle('is-active', reportPane !== 'today');
+}
+
+function dailyBriefItemReference(brief, item) {
+  return {
+    resourceType: 'daily-brief-item',
+    resourceId: `${brief.reportDate}/${item.candidateId}`,
+    revision: brief.generatedAt,
+    label: item.headline,
+    preview: `${brief.reportDate} · 日报观点\n${item.headline}\n\n为什么值得看：${item.whyItMatters}\n\n接着看：${item.watchNext}`,
+  };
+}
+
+function syncReportReferenceButtons() {
+  document.querySelectorAll('.report-ref-cite').forEach((button) => {
+    const selected = isReferenced({
+      resourceType: 'daily-brief-item',
+      resourceId: button.dataset.resourceId,
+      revision: Number(button.dataset.revision),
+    });
+    button.textContent = selected ? '取消引用' : '引用';
+    button.setAttribute('aria-pressed', String(selected));
+    button.setAttribute('aria-label', `${selected ? '取消引用' : '引用'}日报观点：${button.dataset.headline}`);
+  });
+}
+
+function renderBriefCards(root, brief) {
+  const head = document.createElement('p');
+  head.className = 'section-kicker';
+  head.textContent = `${briefDateLabel(brief.reportDate)} · ${brief.items?.length || 0} 条`;
+  const overview = document.createElement('article');
+  overview.className = 'note-card';
+  overview.append(
+    Object.assign(document.createElement('strong'), { textContent: '今天看这些' }),
+    Object.assign(document.createElement('p'), { textContent: brief.overview }),
+  );
+  root.append(head, overview);
+  for (const item of brief.items || []) {
     const card = document.createElement('article');
     card.className = 'note-card';
+    const reference = dailyBriefItemReference(brief, item);
+    card.dataset.reportReferenceId = reference.resourceId;
     card.append(
-      Object.assign(document.createElement('strong'), { textContent: section.title }),
-      Object.assign(document.createElement('p'), { textContent: section.body }),
+      Object.assign(document.createElement('small'), {
+        textContent: BRIEF_TYPE_LABELS[item.type] || '关注',
+      }),
+      Object.assign(document.createElement('strong'), { textContent: item.headline }),
+      Object.assign(document.createElement('p'), { textContent: item.whyItMatters }),
+      Object.assign(document.createElement('p'), { textContent: `接着看：${item.watchNext}` }),
     );
-    return card;
-  }));
+    const foot = document.createElement('div');
+    foot.className = 'note-foot';
+    const cite = document.createElement('button');
+    cite.type = 'button';
+    cite.className = 'text-button report-ref-cite';
+    cite.dataset.resourceId = reference.resourceId;
+    cite.dataset.revision = String(reference.revision);
+    cite.dataset.headline = item.headline;
+    cite.textContent = isReferenced(reference) ? '取消引用' : '引用';
+    cite.setAttribute('aria-pressed', String(isReferenced(reference)));
+    cite.setAttribute('aria-label', `${isReferenced(reference) ? '取消引用' : '引用'}日报观点：${item.headline}`);
+    cite.addEventListener('click', () => toggleReference(reference));
+    foot.append(cite);
+    card.append(foot);
+    root.append(card);
+  }
+}
+
+function renderReportHistory(root) {
+  if (!reportHistory.loaded) {
+    root.append(Object.assign(document.createElement('p'), { className: 'section-kicker', textContent: '正在读取' }));
+    return;
+  }
+  if (reportHistory.error) {
+    root.append(Object.assign(document.createElement('p'), { textContent: reportHistory.error }));
+    return;
+  }
+  if (!reportHistory.items.length) {
+    root.append(Object.assign(document.createElement('p'), { textContent: '还没有往日的筛选。' }));
+    return;
+  }
+  for (const item of reportHistory.items) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'report-history-row';
+    const copy = document.createElement('span');
+    copy.append(
+      Object.assign(document.createElement('strong'), { textContent: briefDateLabel(item.reportDate) }),
+      Object.assign(document.createElement('small'), { textContent: item.overview }),
+    );
+    row.append(copy, Object.assign(document.createElement('span'), { textContent: `${item.itemCount} 条` }));
+    row.addEventListener('click', () => setView(`report/${item.reportDate}`));
+    root.append(row);
+  }
+}
+
+function renderReport() {
+  const root = elements['report-list'];
+  if (!root) return;
+  renderReportTabs();
+  root.replaceChildren();
+  if (reportPane === 'history') {
+    renderReportHistory(root);
+    return;
+  }
+  if (reportPane === 'day') {
+    if (!reportDay.loaded || reportDay.date !== reportDate) {
+      root.append(Object.assign(document.createElement('p'), { className: 'section-kicker', textContent: '正在读取' }));
+      return;
+    }
+    if (reportDay.error) {
+      root.append(Object.assign(document.createElement('p'), { textContent: reportDay.error }));
+      return;
+    }
+    if (!reportDay.brief) {
+      root.append(Object.assign(document.createElement('p'), { textContent: `${briefDateLabel(reportDate)} 没有筛选结果。` }));
+      return;
+    }
+    renderBriefCards(root, reportDay.brief);
+    return;
+  }
+  if (!dailyBriefSnapshot.loaded) {
+    root.append(Object.assign(document.createElement('p'), { className: 'section-kicker', textContent: '正在读取' }));
+    return;
+  }
+  const brief = dailyBriefSnapshot.brief;
+  if (!brief) {
+    root.append(Object.assign(document.createElement('p'), {
+      textContent: '还没有筛选结果。早上 8 点会自动生成。',
+    }));
+    root.append(createBriefRetry());
+    return;
+  }
+  if (!briefIsCurrent(brief)) {
+    const note = document.createElement('p');
+    note.className = 'section-kicker';
+    note.textContent = `今天的筛选还没生成。下面是 ${briefDateLabel(brief.reportDate)} 的结果。`;
+    root.append(note, createBriefRetry());
+  }
+  renderBriefCards(root, brief);
+}
+
+function createBriefRetry() {
+  if (state.session?.role !== 'desktop') return document.createElement('span');
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'text-button';
+  button.textContent = '再生成一次';
+  button.addEventListener('click', () => {
+    button.disabled = true;
+    api('/api/v1/reports/daily/brief/generate', { method: 'POST', body: '{}' })
+      .then(() => showToast('已排队，生成后刷新日报'))
+      .catch((error) => showToast(error instanceof Error ? error.message : '没能重新生成'))
+      .finally(() => { button.disabled = false; });
+  });
+  return button;
 }
 
 const NOTE_SWIPE_WIDTH = 168;
@@ -8118,6 +8672,16 @@ function attachGuardedOpen(node, onOpen) {
   });
 }
 
+function swallowFollowingClick() {
+  const stop = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    document.removeEventListener('click', stop, true);
+  };
+  document.addEventListener('click', stop, true);
+  window.setTimeout(() => document.removeEventListener('click', stop, true), 500);
+}
+
 function attachSwipe(front, width = NOTE_SWIPE_WIDTH, onTap) {
   const host = front.closest('.swipe-item') || front;
   let startX = 0;
@@ -8161,6 +8725,8 @@ function attachSwipe(front, width = NOTE_SWIPE_WIDTH, onTap) {
     setSwipeOpen(front, open, width);
     if (swiped) suppressClick = true;
     if (tapped && !open && !swipeKeepsOwnTap(tapTarget) && typeof onTap === 'function') {
+      suppressClick = true;
+      swallowFollowingClick();
       onTap(event);
     }
   };
@@ -9820,11 +10386,11 @@ async function ensureTagCatalog() {
   return state.tagCatalog;
 }
 
-async function loadFeedTaggings(items = []) {
+async function loadFeedTaggings(items = [], resourceType = 'content-item') {
   const ids = [...new Set((items || []).map((item) => String(item?.resourceId || '').trim()).filter(Boolean))];
   if (!ids.length) return;
   await ensureTagCatalog();
-  const params = new URLSearchParams({ resourceType: 'content-item' });
+  const params = new URLSearchParams({ resourceType });
   for (const id of ids) params.append('resourceId', id);
   const payload = await api(`/api/v1/tagging?${params}`);
   const rows = payload.items || (payload.tagging ? [payload.tagging] : []);
@@ -10000,6 +10566,80 @@ async function loadXueqiuFeed({ refresh = false } = {}) {
   }
 }
 
+async function loadMediaFeed({ refresh = false, append = false } = {}) {
+  if (!state.session) {
+    showToast('请先在设置中完成设备连接');
+    return;
+  }
+  state.mediaLoading = true;
+  state.mediaRefreshing = Boolean(refresh);
+  renderMediaToolbar();
+  try {
+    const params = new URLSearchParams({ platform: 'media', channel: state.mediaChannel });
+    params.set('view',state.mediaView);
+    if (append && state.mediaNextOffset != null) params.set('offset',String(state.mediaNextOffset));
+    if (refresh) params.set('refresh', '1');
+    const payload = await api(`/api/v1/feed/media?${params}`, { timeoutMs: refresh ? 180_000 : 15_000 });
+    state.mediaItems = append ? [...state.mediaItems,...(payload.feed?.items || [])] : payload.feed?.items || [];
+    state.mediaCounts = payload.feed?.counts || {};
+    state.mediaNextOffset = payload.feed?.nextOffset ?? null;
+    if (payload.jobId) showToast('同步已排入后台任务');
+    state.mediaSources = payload.feed?.sources || [];
+    state.mediaNote = payload.feed?.note || '';
+    state.mediaBudget = payload.feed?.budget || null;
+    hydrateFeedTranslations(state.mediaItems.map(mediaAsItem));
+    await loadFeedTaggings(state.mediaItems, 'media-index');
+    renderPosts();
+    renderMediaToolbar();
+    if (state.pageKind === 'article') renderArticlePage();
+    return payload.feed;
+  } catch (error) {
+    state.mediaNote = error instanceof Error ? error.message : '媒体索引加载失败';
+    renderMediaToolbar();
+    throw error;
+  } finally {
+    state.mediaLoading = false;
+    state.mediaRefreshing = false;
+    renderMediaToolbar();
+  }
+}
+
+async function probeMediaSources() {
+  if (!state.session) return;
+  state.mediaLoading = true;
+  state.mediaProbing = true;
+  renderMediaToolbar();
+  try {
+    const keys = (state.mediaSources.length ? state.mediaSources : [
+      { sourceKey: 'nextplatform', deployment: 'first', transport: 'rss' },
+      { sourceKey: 'dcd', deployment: 'first', transport: 'rss' },
+      { sourceKey: 'techmeme', deployment: 'first', transport: 'rss' },
+      { sourceKey: 'decoder', deployment: 'first', transport: 'rss' },
+      { sourceKey: 'ft', deployment: 'first', transport: 'rss' },
+      { sourceKey: 'bbc', deployment: 'first', transport: 'rss' },
+    ]).filter((item) => item.deployment === 'first' && item.transport === 'rss').map((item) => item.sourceKey);
+    const payload = await api('/api/v1/feed/media/probe', {
+      method: 'POST',
+      body: JSON.stringify({ sourceKeys: keys, policyReviewed: true, run: true }),
+      timeoutMs: 180_000,
+    });
+    if (payload.jobId) { showToast('探针已排队，完成后更新来源状态'); return; }
+    const failed = (payload.probe?.results || []).filter((item) => item.health && item.health !== 'ready' && item.health !== 'empty');
+    showToast(failed.length ? `探针完成，${failed.length} 个来源未通过` : '第一批探针完成');
+    await loadMediaFeed({ refresh: false });
+  } finally {
+    state.mediaProbing = false;
+    state.mediaLoading = false;
+    renderMediaToolbar();
+  }
+}
+
+async function enableMediaSource(sourceKey) {
+  await api(`/api/v1/feed/media/sources/${sourceKey}/enable`, { method: 'POST', body: '{}' });
+  showToast('已启用，开始同步索引');
+  await loadMediaFeed({ refresh: true });
+}
+
 async function loadTrendForceFeed({ refresh = false } = {}) {
   if (!state.session) {
     showToast('请先在设置中完成设备连接');
@@ -10170,6 +10810,21 @@ function connectStream() {
   state.stream.addEventListener('job.completed', onAgentJobEvent);
   state.stream.addEventListener('job.failed', onAgentJobEvent);
   state.stream.addEventListener('runtime.agent-run.progressed.v1', onAgentJobEvent);
+  let mediaRefreshTimer;
+  const refreshMedia = () => {
+    clearTimeout(mediaRefreshTimer);
+    mediaRefreshTimer = setTimeout(() => {
+      if (state.feedPlatform === 'media' && !state.mediaLoading) loadMediaFeed({ refresh: false }).catch(() => {});
+    },1000);
+  };
+  state.stream.addEventListener('feed.media-body.observed.v1',refreshMedia);
+  state.stream.addEventListener('feed.media-index.saved.v1',refreshMedia);
+  state.stream.addEventListener('feed.media-source.saved.v1',refreshMedia);
+  state.stream.addEventListener('feed.media-brief.saved.v1',refreshMedia);
+  state.stream.addEventListener('feed.media-brief.observed.v1',refreshMedia);
+  state.stream.addEventListener('feed.item-translation.saved.v1',refreshMedia);
+  state.stream.addEventListener('tagging.resource.saved.v1',refreshMedia);
+  state.stream.addEventListener('job.completed',refreshMedia);
   state.stream.addEventListener('knowledge.ai-run.completed.v1', onAgentJobEvent);
   state.stream.addEventListener('knowledge.work-package.created.v1', () => {
     loadNotes().catch(() => {});
@@ -10317,6 +10972,9 @@ async function completeAuthorizedStart(session) {
   }
   if (document.body.dataset.view === 'sources' || document.body.dataset.view === 'feed') {
     startupLoads.push(loadSourcesPage().catch(() => {}));
+  }
+  if (document.body.dataset.view === 'report') {
+    startupLoads.push(ensureReportPane().catch((error) => showToast(error.message)));
   }
   if (document.body.dataset.view === 'tools') {
     startupLoads.push(loadDividendInspection().catch((error) => showToast(error.message)));
@@ -10486,6 +11144,9 @@ elements['feed-open-calendar']?.addEventListener('click', () => {
 });
 elements['open-all-quotes']?.addEventListener('click', () => setView('market/global'));
 elements['open-full-feed']?.addEventListener('click', () => setView('feed'));
+elements['open-daily-brief']?.addEventListener('click', () => setView('report'));
+document.getElementById('report-tab-today')?.addEventListener('click', () => setView('report'));
+document.getElementById('report-tab-history')?.addEventListener('click', () => setView('report/history'));
 elements['holdings-privacy']?.addEventListener('click', () => {
   state.privacy = !state.privacy;
   document.body.classList.toggle('privacy-on', state.privacy);
@@ -10495,6 +11156,8 @@ elements['holdings-privacy']?.addEventListener('click', () => {
 elements['x-refresh']?.addEventListener('click', () => loadXFeed({ refresh: true }).catch((error) => showToast(error.message)));
 elements['xueqiu-refresh']?.addEventListener('click', () => loadXueqiuFeed({ refresh: true }).catch((error) => showToast(error.message)));
 elements['trendforce-refresh']?.addEventListener('click', () => loadTrendForceFeed({ refresh: true }).catch((error) => showToast(error.message)));
+elements['media-refresh']?.addEventListener('click', () => loadMediaFeed({ refresh: true }).catch((error) => showToast(error.message)));
+elements['media-probe']?.addEventListener('click', () => probeMediaSources().catch((error) => showToast(error.message)));
 elements['trendforce-more']?.addEventListener('click', () => openSourceTasks('trendforce'));
 function isBilibiliUrl(value) {
   try {

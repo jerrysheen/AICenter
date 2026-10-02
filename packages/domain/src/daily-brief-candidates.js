@@ -41,9 +41,9 @@ function newsCandidates(news = []) {
     type: 'news',
     occurredAt: Number.isInteger(item.eventAt) ? item.eventAt : 0,
     title: String(item.title || ''),
-    summary: clip(item.summary, 240),
-    sourceRefs: [sourceRef('content-item', item.id, item.eventAt)].filter(Boolean),
-    data: {},
+    summary: item.generatedBrief ? item.generatedBrief.text : clip(item.summary, 240),
+    sourceRefs: [sourceRef('content-item', item.id, item.eventAt), ...(item.generatedBrief ? [sourceRef('media-body', item.generatedBrief.bodyHash, item.generatedBrief.generatedAt)] : [])].filter(Boolean),
+    data: item.generatedBrief ? { bodyHash: item.generatedBrief.bodyHash, snapshotRevision: item.generatedBrief.snapshotRevision, evidence: item.generatedBrief.evidence } : {},
   }));
 }
 

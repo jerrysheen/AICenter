@@ -1,11 +1,8 @@
-import { execFile as execFileCallback } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import { BrowserCommandError, BrowserUnavailableError } from './errors.js';
-
-const execFile = promisify(execFileCallback);
 const UNAVAILABLE_CODES = new Set(['no_browser_connected', 'daemon_unavailable']);
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 
@@ -94,17 +91,79 @@ function normalizeFailure(error, parsed) {
   return new BrowserCommandError(message, details);
 }
 
+function stopChild(child) {
+  if (!child || child.exitCode !== null || child.signalCode) return;
+  child.stdout?.destroy();
+  child.stderr?.destroy();
+  child.kill();
+}
+
+// execFile only settles on the process `close` event. A killed bsk process can
+// leave that event pending, which pins the worker on one navigate forever.
+export function runBrowserProcess(file, args, options = {}) {
+  const timeoutMs = Math.max(1, Number(options.timeoutMs) || 60_000);
+  const maxBuffer = Math.max(1, Number(options.maxBuffer) || 8 * 1024 * 1024);
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn(file, args, {
+        shell: false,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: commandEnv(options),
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const timer = setTimeout(() => {
+      finish(Object.assign(new Error(`bsk timed out after ${timeoutMs}ms`), {
+        killed: true,
+        signal: 'SIGTERM',
+        stdout,
+        stderr,
+      }));
+    }, timeoutMs);
+
+    function finish(error, result) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) {
+        stopChild(child);
+        reject(error);
+        return;
+      }
+      resolve(result);
+    }
+
+    child.on('error', (error) => finish(error));
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk;
+      if (stdout.length > maxBuffer) {
+        finish(Object.assign(new Error('bsk stdout exceeded maxBuffer'), { stdout, stderr }));
+      }
+    });
+    child.stderr?.on('data', (chunk) => {
+      stderr += chunk;
+      if (stderr.length > maxBuffer) {
+        finish(Object.assign(new Error('bsk stderr exceeded maxBuffer'), { stdout, stderr }));
+      }
+    });
+    child.on('close', (code) => {
+      finish(null, { code: code ?? 1, stdout, stderr });
+    });
+  });
+}
+
 async function defaultRunCommand(bskPath, args, options) {
   try {
-    const result = await execFile(bskPath, args, {
-      shell: false,
-      windowsHide: true,
-      timeout: options.timeoutMs,
-      maxBuffer: options.maxBuffer,
-      env: commandEnv(options),
-    });
+    const result = await runBrowserProcess(bskPath, args, options);
     return {
-      code: 0,
+      code: result.code,
       stdout: String(result.stdout || ''),
       stderr: String(result.stderr || ''),
     };
@@ -207,9 +266,12 @@ export function createBrowserSkillClient(options = {}) {
       if (!/^https?:\/\//i.test(String(url || ''))) {
         throw new BrowserCommandError('navigate url must be http(s)', { kind: 'invalid_params' });
       }
-      const args = ['navigate', String(url), '--session', String(sessionId)];
-      if (navigateOptions.timeoutMs) args.push('--timeout', `${Math.floor(navigateOptions.timeoutMs)}ms`);
-      return run(args, { timeoutMs: navigateOptions.timeoutMs || timeoutMs });
+      const limit = Math.max(1_000, Number(navigateOptions.timeoutMs) || timeoutMs);
+      const args = ['navigate', String(url), '--session', String(sessionId), '--timeout', `${Math.floor(limit)}ms`];
+      if (navigateOptions.waitUntil) args.push('--wait-until', String(navigateOptions.waitUntil));
+      // bsk keeps the IPC open for the tool timeout plus 15s. Leave room so a
+      // timeout result can return before the process is killed.
+      return run(args, { timeoutMs: limit + 20_000 });
     },
 
     async evaluate(sessionId, expression, evaluateOptions = {}) {

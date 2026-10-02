@@ -8,7 +8,7 @@ import {
   WorkspaceIdSchema,
 } from './common.js';
 
-export const SourceProviderSchema = z.enum(['manual', 'bilibili', 'x', 'youtube', 'rss', 'custom', 'trendforce', 'xueqiu']);
+export const SourceProviderSchema = z.enum(['manual', 'bilibili', 'x', 'youtube', 'rss', 'custom', 'trendforce', 'xueqiu', 'media']);
 export const CaptureStatusSchema = z.enum(['captured', 'normalizing', 'ready', 'failed', 'ignored']);
 export const ContentTypeSchema = z.enum(['post', 'article', 'video', 'audio', 'transcript', 'note']);
 
@@ -195,4 +195,18 @@ export const UpsertFeedIdentityFingerprintInputSchema = z.object({
   identityHash: z.string().trim().min(1).max(128),
   externalId: z.string().trim().max(512).default(''),
   hiddenAt: NullableEpochMillisSchema.optional(),
+}).strict();
+
+export const FeedSubscriptionsSyncJobInputSchema = z.object({
+  workspaceId: WorkspaceIdSchema.default('local'),
+  limit: z.number().int().min(1).max(200).optional(),
+  scheduledFor: EpochMillisSchema.optional(),
+  scheduleKey: z.string().trim().min(1).max(128).optional(),
+}).strict();
+
+export const FeedItemsEnrichJobInputSchema = z.object({
+  workspaceId: WorkspaceIdSchema.default('local'),
+  resourceIds: z.array(EntityIdSchema).max(200).default([]),
+  scheduledFor: EpochMillisSchema.optional(),
+  scheduleKey: z.string().trim().min(1).max(128).optional(),
 }).strict();

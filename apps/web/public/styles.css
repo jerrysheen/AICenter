@@ -3244,6 +3244,51 @@ dialog p { margin: 9px 0 0; white-space: pre-wrap; color: var(--font-secondary);
   min-height: 36px;
 }
 .compact-label h2 { margin: 0; font-size: 14px; }
+.daily-brief-peek { margin: 0 0 8px; }
+.daily-brief-peek p {
+  margin: 6px 0 0;
+  color: var(--font-secondary);
+  font-size: 14px;
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.daily-brief-peek .is-missing { color: var(--font-tertiary); }
+.report-history-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  min-height: 64px;
+  padding: 12px 0;
+  border: 0;
+  border-bottom: 1px solid var(--comp-tertiary);
+  background: transparent;
+  text-align: left;
+}
+.report-history-row > span:first-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.report-history-row strong { font-size: 15px; }
+.report-history-row small {
+  color: var(--font-tertiary);
+  font-size: 13px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.report-history-row > span:last-child {
+  flex: none;
+  color: var(--font-tertiary);
+  font-size: 12px;
+}
 .agenda-row, .event-row {
   display: grid;
   grid-template-columns: 58px minmax(0, 1fr);
@@ -4470,4 +4515,140 @@ body.is-ask-keyboard .ask-live-chip {
   }
 }
 
+/* =========================================================
+   Desktop Layout v1
+   >= 1200px
+   Mobile / tablet behavior intentionally stays unchanged.
+   ========================================================= */
 
+@media (min-width: 1200px) {
+  /* Shell */
+  :root {
+    --desktop-content-max: 1440px;
+    --desktop-gutter: 32px;
+    --desktop-inspire-max: 960px;
+    --desktop-report-max: 920px;
+    --desktop-assets-max: 1360px;
+    --page-gutter: var(--desktop-gutter);
+    --bottom-tab: 0px;
+  }
+
+  .app-shell {
+    display: grid;
+    grid-template-columns: var(--side-nav) minmax(0, 1fr);
+  }
+
+  .side-nav { display: flex; }
+  .bottom-tab { display: none; }
+
+  /* Shared desktop content: the header keeps its full-width background. */
+  body {
+    --desktop-axis-max: calc(var(--desktop-content-max) - 2 * var(--desktop-gutter));
+    --desktop-axis-gutter: max(var(--desktop-gutter), calc((100% - var(--desktop-axis-max)) / 2));
+  }
+
+  main {
+    max-width: var(--desktop-content-max);
+    margin-inline: auto;
+    padding-inline: var(--desktop-gutter);
+    padding-bottom: var(--desktop-gutter);
+  }
+
+  .title-bar { padding-inline: var(--desktop-axis-gutter); }
+
+  /* Inspiration: one reading column, with a fixed composer on the same axis. */
+  body[data-view="inspire"] {
+    --desktop-axis-max: var(--desktop-inspire-max);
+    --desktop-composer-attachments: 0px;
+    --desktop-composer-source: 0px;
+  }
+
+  body[data-view="inspire"]:has(#note-attachments:not(.hidden)) {
+    --desktop-composer-attachments: 72px;
+  }
+
+  body[data-view="inspire"]:has(#note-share-source:not(.hidden)) {
+    --desktop-composer-source: 88px;
+  }
+
+  #view-inspire {
+    width: 100%;
+    max-width: var(--desktop-inspire-max);
+    margin-inline: auto;
+  }
+
+  body[data-view="inspire"]:not([data-inspire-detail="1"]) main {
+    /* Maximum 120px textarea + toolbar/padding + space below the last card. */
+    padding-bottom: calc(120px + 112px + var(--desktop-composer-attachments) + var(--desktop-composer-source) + env(safe-area-inset-bottom));
+  }
+
+  body[data-view="inspire"] .dispatch-composer:not(.task-continue) {
+    left: var(--side-nav);
+    right: 0;
+    bottom: 0;
+    /* Fixed padding percentages use the viewport, unlike the header's frame. */
+    padding-inline: max(var(--desktop-gutter), calc((100% - var(--side-nav) - var(--desktop-inspire-max)) / 2));
+    padding-bottom: calc(10px + env(safe-area-inset-bottom));
+  }
+
+  body[data-view="inspire"] .dispatch-box {
+    width: 100%;
+    max-width: var(--desktop-inspire-max);
+    margin-inline: auto;
+  }
+
+  body[data-view="inspire"] .dispatch-composer:not(.task-continue) .note-share-source {
+    max-height: 80px;
+    overflow-y: auto;
+  }
+
+  /* Assets: totals span the row; accounts fit without squeezing small windows. */
+  body[data-view="assets"] { --desktop-axis-max: var(--desktop-assets-max); }
+
+  #view-assets {
+    width: 100%;
+    max-width: var(--desktop-assets-max);
+    margin-inline: auto;
+  }
+
+  #view-assets .holdings-lines {
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 16px;
+  }
+
+  #view-assets .holdings-lines-total { grid-column: 1 / -1; }
+
+  #view-assets .market-table-scroll {
+    margin-inline: 0;
+    padding-inline: 0;
+  }
+
+  /* Daily report */
+  body[data-view="report"] { --desktop-axis-max: var(--desktop-report-max); }
+
+  #view-report {
+    width: 100%;
+    max-width: var(--desktop-report-max);
+    margin-inline: auto;
+  }
+
+  #view-report .note-card { padding: 24px; }
+  #view-report .note-card p { max-width: 72ch; }
+}
+.media-controls { margin: 8px 0 18px; }
+.media-controls-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.media-controls-head p { margin: 0; color: var(--font-secondary); font-size: 13px; }
+.media-source-settings { margin-top: 10px; font-size: 13px; color: var(--font-secondary); }
+.media-source-settings summary { cursor: pointer; padding: 8px 0; }
+#media-source-list { display: grid; gap: 8px; padding: 8px 0 14px; }
+#media-source-list button { text-align: left; white-space: normal; line-height: 1.6; }
+.media-article-content { max-width: 760px; margin-inline: auto; font-size: 16px; line-height: 1.95; overflow-wrap: anywhere; }
+.media-article-content p { margin: 0 0 1.2em; white-space: pre-wrap; }
+.media-article-content h3 { margin: 1.8em 0 .7em; font-size: 1.15em; line-height: 1.5; }
+.media-article-content ul { padding-left: 1.5em; margin: 1em 0; }
+.media-article-content li { margin: .6em 0; white-space: pre-wrap; }
+.media-article-content blockquote { margin: 1.2em 0; padding: .5em 1em; border-left: 3px solid var(--comp-tertiary); color: var(--font-secondary); white-space: pre-wrap; }
+.media-article-content .article-original { color: var(--font-secondary); font-size: .9em; line-height: 1.7; margin-top: -.5em; }
+.article-table-scroll { overflow-x: auto; margin: 1em 0; }
+.article-table-scroll table { border-collapse: collapse; min-width: 100%; font-size: .9em; }
+.article-table-scroll td { border: 1px solid var(--comp-tertiary); padding: .45em .7em; min-width: 90px; }

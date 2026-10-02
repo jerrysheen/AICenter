@@ -143,7 +143,7 @@ export const ContentFeedItemSchema = z.looseObject({
 });
 
 export const ContentFeedViewSchema = z.looseObject({
-  platform: z.enum(['x', 'bilibili', 'trendforce', 'xueqiu']),
+  platform: z.enum(['x', 'bilibili', 'trendforce', 'xueqiu', 'media']),
   feed: z.string().trim().min(1).max(64),
   source: z.string().max(128),
   mode: z.enum(['empty', 'live', 'partial', 'cached', 'error', 'unavailable']),

@@ -6,6 +6,9 @@ import {
   createXueqiuService,
   explainXueqiuConnectorError,
   livenewsUrl,
+  appendCommentsToBody,
+  commentsUrl,
+  extractXueqiuComments,
   mapLivenewsItem,
   mapTimelineStatus,
   normalizeXueqiuFeed,
@@ -157,6 +160,113 @@ test('browser client uses fetchJson APIs and stops the session', async () => {
   assert.equal(calls.at(-1)[0], 'stop');
   assert.equal(calls.some((item) => item[0] === 'navigate' && String(item[1]).includes('/hq')), true);
   assert.equal(calls.some((item) => item[0] === 'fetch' && String(item[1]).includes('usergroup_id=-2')), true);
+});
+
+test('xueqiu comments are appended into the status body', async () => {
+  const calls = [];
+  const runtime = {
+    async withSession(_options, callback) {
+      return callback({
+        async navigate() {},
+        async evaluate() {
+          return { url: 'https://xueqiu.com/', title: '雪球', logged_in: true, login_wall: false };
+        },
+        async fetchJson(url) {
+          calls.push(url);
+          if (String(url).includes('home_timeline')) {
+            return {
+              status: 200,
+              url,
+              text: JSON.stringify({
+                home_timeline: [{
+                  id: 7,
+                  text: '先看仓位',
+                  reply_count: 3,
+                  created_at: 1_700_000_000_000,
+                  target: '/2/7',
+                  user: { screen_name: '乙', id: 2 },
+                }],
+                next_max_id: -1,
+              }),
+            };
+          }
+          if (String(url).includes('/statuses/comments.json')) {
+            return {
+              status: 200,
+              url,
+              text: JSON.stringify({
+                comments: [
+                  { text: '<p>同意</p>', user: { screen_name: '丙' } },
+                  { text: '再看成交', user: { screen_name: '丁' } },
+                ],
+              }),
+            };
+          }
+          return { status: 200, url, text: JSON.stringify({ comments: [] }) };
+        },
+      });
+    },
+  };
+  const client = createXueqiuHomeBrowserClient({ browserRuntime: runtime, delay: async () => {} });
+  const result = await client.fetchHomeTimeline({ feed: 'following', limit: 5 });
+  assert.match(result.items[0].text, /先看仓位/);
+  assert.match(result.items[0].text, /· 丙：同意/);
+  assert.match(result.items[0].text, /· 丁：再看成交/);
+  assert.equal('reply_count' in result.items[0], false);
+  assert.equal(calls.some((url) => String(url).includes('/statuses/comments.json?id=7')), true);
+  const item = xueqiuToFeedItem(result.items[0]);
+  assert.equal(item.title.includes('评论'), false);
+  assert.match(item.body, /丙：同意/);
+  assert.equal(item.summary, '先看仓位');
+});
+
+test('xueqiu skips the comment request when reply count is zero', async () => {
+  const calls = [];
+  const runtime = {
+    async withSession(_options, callback) {
+      return callback({
+        async navigate() {},
+        async evaluate() {
+          return { url: 'https://xueqiu.com/', title: '雪球', logged_in: true, login_wall: false };
+        },
+        async fetchJson(url) {
+          calls.push(url);
+          return {
+            status: 200,
+            url,
+            text: JSON.stringify({
+              home_timeline: [{
+                id: 8,
+                text: '没有评论',
+                reply_count: 0,
+                created_at: 1_700_000_000_000,
+                target: '/2/8',
+                user: { screen_name: '乙', id: 2 },
+              }],
+              next_max_id: -1,
+            }),
+          };
+        },
+      });
+    },
+  };
+  const client = createXueqiuHomeBrowserClient({ browserRuntime: runtime, delay: async () => {} });
+  const result = await client.fetchHomeTimeline({ feed: 'featured', limit: 5 });
+  assert.equal(result.items[0].text, '没有评论');
+  assert.equal(calls.some((url) => String(url).includes('comments.json')), false);
+});
+
+test('xueqiu comment mapper strips html and keeps the first lines', () => {
+  assert.match(commentsUrl(88), /\/statuses\/comments\.json\?id=88/);
+  const comments = extractXueqiuComments({
+    comments: [
+      { text: '甲<br/>说完', user: { screen_name: '球友' } },
+      { description: '第二条', user: { name: '路人' } },
+    ],
+  });
+  const body = appendCommentsToBody('正文', comments);
+  assert.match(body, /· 球友：甲 说完/);
+  assert.match(body, /· 路人：第二条/);
 });
 
 test('xueqiu connector registers feed.xueqiu.sync', () => {

@@ -2,6 +2,7 @@ import {
   createXueqiuHomeBrowserClient,
   explainXueqiuApiError,
   normalizeXueqiuFeed,
+  textBeforeCommentBlock,
   xueqiuFeedLabel,
 } from './home-browser.js';
 
@@ -12,10 +13,15 @@ export {
   extractLivenewsItems,
   extractTimelineItems,
   livenewsUrl,
+  appendCommentsToBody,
+  commentsUrl,
+  commentsV3Url,
+  extractXueqiuComments,
   mapLivenewsItem,
   mapTimelineStatus,
   normalizeXueqiuFeed,
   stripXueqiuHtml,
+  textBeforeCommentBlock,
   timelineUrl,
   userGroupIdForFeed,
   xueqiuAbsoluteUrl,
@@ -37,7 +43,8 @@ export function xueqiuToFeedItem(row, options = {}) {
   const feed = normalizeXueqiuFeed(row.feed || options.feed);
   const externalId = String(row.status_id || row.externalId || '').trim();
   const body = String(row.text || row.body || '').trim();
-  const title = String(row.title || '').trim() || (body ? `${body.slice(0, 48)}${body.length > 48 ? '…' : ''}` : '雪球动态');
+  const lead = textBeforeCommentBlock(body) || body;
+  const title = String(row.title || '').trim() || (lead ? `${lead.slice(0, 48)}${lead.length > 48 ? '…' : ''}` : '雪球动态');
   const sourceUrl = String(row.source_url || row.sourceUrl || '').trim() || 'https://xueqiu.com/';
   return {
     id: externalId ? `xueqiu:${externalId}` : `xueqiu:${feed}:${sourceUrl}`,
@@ -47,7 +54,7 @@ export function xueqiuToFeedItem(row, options = {}) {
     authorName: String(row.author_name || row.authorName || '雪球').trim(),
     authorHandle: String(row.author_handle || row.authorHandle || '').trim(),
     title,
-    summary: body.slice(0, 160),
+    summary: lead.slice(0, 160),
     body,
     sourceUrl,
     publishedAt: Number(row.published_at || row.publishedAt) || 0,

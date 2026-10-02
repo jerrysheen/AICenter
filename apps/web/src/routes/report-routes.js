@@ -34,6 +34,14 @@ export function createReportRoutes() {
     },
     {
       method: 'GET',
+      path: '/api/v1/reports/daily/briefs',
+      handler({ response, services, url }) {
+        const limit = Number(url.searchParams.get('limit') || 60);
+        json(response, 200, { ok: true, briefs: services.report.listDailyBriefs('local', limit) });
+      },
+    },
+    {
+      method: 'GET',
       path: '/api/v1/reports/daily/brief',
       handler({ response, services, url }) {
         const query = parseContract(DailyReportDateQuerySchema, {

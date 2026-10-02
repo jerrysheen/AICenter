@@ -106,6 +106,20 @@
               <p id="trendforce-feed-status">TrendForce 公开洞察与价表</p>
               <button class="text-button" id="trendforce-more" type="button">更多</button>
             </div>
+            <div class="social-toolbar hidden" id="media-toolbar">
+              <div class="chip-tabs" id="media-channel-tabs" role="tablist" aria-label="媒体栏目"></div>
+              <p id="media-feed-status">媒体资讯默认关闭</p>
+            </div>
+            <div class="media-controls hidden" id="media-action-bar">
+              <div class="media-controls-head"><p id="media-action-status">自动抓取新文章，翻译全文并打标签。</p>
+                <button class="text-button" id="media-refresh" type="button">立即更新</button>
+              </div>
+              <details class="media-source-settings"><summary>来源与自动更新</summary>
+                <p class="page-note">“全文”来源会抓取原文、翻译和打标签；“摘要”只提供线索，原文需在出版商网站阅读。</p>
+                <div id="media-source-list"></div>
+                <button class="text-button" id="media-probe" type="button">检查来源连接</button>
+              </details>
+            </div>
             <div class="follow-toolbar hidden" id="trendforce-action-bar">
               <p id="trendforce-action-status">免费全文直接抓；会员报告只收标题和介绍。</p>
               <div class="x-action-buttons">
@@ -250,7 +264,7 @@
         </section>
 
         <section class="view" id="view-tools" data-view-panel="tools">
-          <div class="section-kicker">工具里放知识库、日报和连接。灵感已作为独立入口。</div>
+          <div class="section-kicker">工具里放知识库、量化实验室和连接。</div>
           <section class="strategy-inspect" id="strategy-inspect" aria-live="polite">
             <div class="strategy-inspect-head"><h2>中证红利</h2><span>读取中</span></div>
           </section>
@@ -263,6 +277,13 @@
 
         <section class="view is-active" id="view-sources" data-view-panel="sources">
           <div id="overview-home">
+            <section class="daily-brief-peek" id="overview-brief">
+              <div class="compact-label">
+                <h2>今日关注</h2>
+                <button class="text-button" id="open-daily-brief" type="button">打开日报 ›</button>
+              </div>
+              <div id="overview-brief-body"></div>
+            </section>
             <div class="overview-columns dashboard">
               <section class="dashboard-market">
                 <div class="ticker-strip" id="hub-ticker"></div>
@@ -460,10 +481,10 @@
         </section>
 
         <section class="view" id="view-report" data-view-panel="report">
-          <p class="section-kicker">日报只保存来源引用和生成结果。今天先定结构，不自动生成。</p>
+          <p class="section-kicker">早上 8 点从当天日报里选出值得看的变化。立刻重试仍失败时，大约 30 分钟后再试一次。</p>
           <div class="chip-tabs" role="tablist" aria-label="日报范围">
-            <button class="chip-tab is-active" type="button">今日</button>
-            <button class="chip-tab" type="button" disabled>历史</button>
+            <button class="chip-tab is-active" id="report-tab-today" type="button">今日</button>
+            <button class="chip-tab" id="report-tab-history" type="button">历史</button>
           </div>
           <div id="report-list"></div>
         </section>

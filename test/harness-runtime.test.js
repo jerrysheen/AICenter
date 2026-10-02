@@ -33,6 +33,22 @@ import { HARNESS_ELUCID_SEARCH_PROVIDER_ID } from '../packages/harness/src/web-s
 import { fromHarnessToolName, toHarnessToolName } from '../packages/harness/src/tool-id.js';
 import { applyHarnessEvidenceGate } from '../packages/harness/src/evidence.js';
 
+test('media brief uses bounded existing Harness settings without changing other task profiles',async()=> {
+  const directory=mkdtempSync(path.join(os.tmpdir(),'harness-brief-profile-'));
+  const settings=[];
+  const runtime=createHarnessAgentRuntime({tools:createToolRegistry(),runtimeDirectory:directory,
+    env:{AI_CENTER_HARNESS_PROVIDER:'elucid-grok',ELUCID_GROK_API_KEY:'test-key',AI_CENTER_HARNESS_MODEL:'grok-4.7'},
+    createClient:async launch=>{settings.push(readFileSync(path.join(launch.dshHome,'settings.yaml'),'utf8'));return {run:async()=>({finalResponse:'ok',events:[]}),close:async()=>{}};}});
+  try {
+    await runtime.run({message:'Summarize saved material',closedContext:true,closedTask:'media-brief'});
+    assert.match(settings[0],/maxTokens: 4096/);assert.match(settings[0],/reasoning: low/);assert.doesNotMatch(settings[0],/test-key/);
+    await runtime.run({message:'Organize saved material',closedContext:true});
+    assert.doesNotMatch(settings[1],/maxTokens: 4096|reasoning: low/);
+    await runtime.run({message:'Normal request',closedTask:'media-brief'});
+    assert.doesNotMatch(settings[2],/maxTokens: 4096|reasoning: low/);
+  }finally{await runtime.close();rmSync(directory,{recursive:true,force:true});}
+});
+
 function temporaryDirectory() {
   return mkdtempSync(path.join(os.tmpdir(), 'ai-center-harness-'));
 }

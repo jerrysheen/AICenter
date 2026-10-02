@@ -1,0 +1,838 @@
+{
+  "version": 1,
+  "timeZone": "Asia/Shanghai",
+  "budget": {
+    "maxNewMetadataPerDay": 300,
+    "maxSelectedBodiesPerDay": 32,
+    "maxCardsPerEdition": 10,
+    "maxBodyBytes": 100000,
+    "maxFeedBytes": 2097152,
+    "maxActiveSources": 6,
+    "backfillHours": 48,
+    "maxFeedNodes": 20000,
+    "perOriginConcurrency": 1,
+    "totalConcurrency": 3,
+    "maxBodyRequestsPerDay": 48,
+    "maxSourceRequestsPerDay": 16
+  },
+  "focusKeywords": [],
+  "sources": [
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [],
+      "articleHosts": [
+        "www.nextplatform.com"
+      ],
+      "contentAccess": "body",
+      "sourceKey": "nextplatform",
+      "publisher": "The Next Platform",
+      "channel": "tech",
+      "transport": "rss",
+      "probeUrl": "https://www.nextplatform.com/feed/",
+      "allowedHosts": [
+        "www.nextplatform.com"
+      ],
+      "refreshMinutes": 120,
+      "detailDailyCap": 8,
+      "deployment": "first"
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [],
+      "articleHosts": [
+        "www.datacenterdynamics.com"
+      ],
+      "contentAccess": "body",
+      "sourceKey": "dcd",
+      "publisher": "Data Center Dynamics",
+      "channel": "tech",
+      "transport": "rss",
+      "probeUrl": "https://www.datacenterdynamics.com/en/rss/",
+      "allowedHosts": [
+        "www.datacenterdynamics.com"
+      ],
+      "refreshMinutes": 120,
+      "detailDailyCap": 8,
+      "deployment": "first"
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [],
+      "articleHosts": [
+        "www.techmeme.com"
+      ],
+      "contentAccess": "discovery",
+      "sourceKey": "techmeme",
+      "publisher": "Techmeme",
+      "channel": "tech",
+      "transport": "rss",
+      "probeUrl": "https://www.techmeme.com/feed.xml",
+      "allowedHosts": [
+        "www.techmeme.com"
+      ],
+      "refreshMinutes": 60,
+      "detailDailyCap": 0,
+      "deployment": "first"
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [
+        "idxno"
+      ],
+      "redirectHosts": [],
+      "articleHosts": [
+        "www.thelec.net"
+      ],
+      "contentAccess": "index",
+      "sourceKey": "thelec",
+      "publisher": "THE ELEC",
+      "channel": "tech",
+      "transport": "html",
+      "probeUrl": "https://www.thelec.net/",
+      "allowedHosts": [
+        "www.thelec.net"
+      ],
+      "refreshMinutes": 180,
+      "detailDailyCap": 3,
+      "deployment": "later"
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [],
+      "articleHosts": [
+        "www.digitimes.com"
+      ],
+      "contentAccess": "index",
+      "sourceKey": "digitimes",
+      "publisher": "DIGITIMES",
+      "channel": "tech",
+      "transport": "vendor_api",
+      "probeUrl": "https://www.digitimes.com/services/newsfeed-api/",
+      "allowedHosts": [
+        "www.digitimes.com"
+      ],
+      "refreshMinutes": 180,
+      "detailDailyCap": 3,
+      "deployment": "licensed"
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [],
+      "articleHosts": [
+        "the-decoder.com"
+      ],
+      "contentAccess": "body",
+      "sourceKey": "decoder",
+      "publisher": "The Decoder",
+      "channel": "tech",
+      "transport": "rss",
+      "probeUrl": "https://the-decoder.com/feed/",
+      "allowedHosts": [
+        "the-decoder.com"
+      ],
+      "refreshMinutes": 120,
+      "detailDailyCap": 8,
+      "deployment": "first"
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [],
+      "articleHosts": [
+        "www.blocksandfiles.com"
+      ],
+      "contentAccess": "index",
+      "sourceKey": "blocksfiles",
+      "publisher": "Blocks & Files",
+      "channel": "tech",
+      "transport": "rss",
+      "probeUrl": "https://www.blocksandfiles.com/feed/",
+      "allowedHosts": [
+        "www.blocksandfiles.com"
+      ],
+      "refreshMinutes": 180,
+      "detailDailyCap": 2,
+      "deployment": "later"
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [
+        "a",
+        "c"
+      ],
+      "redirectHosts": [],
+      "articleHosts": [
+        "www.moneydj.com"
+      ],
+      "contentAccess": "index",
+      "sourceKey": "moneydj",
+      "publisher": "MoneyDJ",
+      "channel": "tech",
+      "transport": "html",
+      "probeUrl": "https://www.moneydj.com/KMDJ/News/NewsRealList.aspx?a=MB010000",
+      "allowedHosts": [
+        "www.moneydj.com"
+      ],
+      "refreshMinutes": 180,
+      "detailDailyCap": 2,
+      "deployment": "later"
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [],
+      "articleHosts": [
+        "www.trendforce.com.tw"
+      ],
+      "contentAccess": "index",
+      "sourceKey": "trendforce",
+      "publisher": "TrendForce",
+      "channel": "tech",
+      "transport": "existing_adapter",
+      "probeUrl": "https://www.trendforce.com.tw/insights",
+      "allowedHosts": [
+        "www.trendforce.com.tw"
+      ],
+      "refreshMinutes": 120,
+      "detailDailyCap": 3,
+      "deployment": "existing"
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [],
+      "articleHosts": [
+        "www.reuters.com"
+      ],
+      "contentAccess": "index",
+      "sourceKey": "reuters",
+      "publisher": "Reuters",
+      "channel": "macro",
+      "transport": "vendor_api",
+      "probeUrl": "https://www.reuters.com/markets/",
+      "allowedHosts": [
+        "www.reuters.com"
+      ],
+      "refreshMinutes": 60,
+      "detailDailyCap": 3,
+      "deployment": "licensed"
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [],
+      "articleHosts": [
+        "apnews.com"
+      ],
+      "contentAccess": "index",
+      "sourceKey": "ap",
+      "publisher": "AP",
+      "channel": "macro",
+      "transport": "vendor_api",
+      "probeUrl": "https://apnews.com/hub/world-news",
+      "allowedHosts": [
+        "apnews.com"
+      ],
+      "refreshMinutes": 120,
+      "detailDailyCap": 2,
+      "deployment": "licensed"
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [],
+      "articleHosts": [
+        "www.ft.com"
+      ],
+      "contentAccess": "index",
+      "sourceKey": "ft",
+      "publisher": "Financial Times",
+      "channel": "macro",
+      "transport": "rss",
+      "probeUrl": "https://www.ft.com/global-economy?format=rss",
+      "allowedHosts": [
+        "www.ft.com"
+      ],
+      "refreshMinutes": 120,
+      "detailDailyCap": 2,
+      "deployment": "first"
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [
+        "www.bloomberg.com"
+      ],
+      "articleHosts": [
+        "www.bloomberg.com"
+      ],
+      "contentAccess": "index",
+      "sourceKey": "bloomberg",
+      "publisher": "Bloomberg",
+      "channel": "macro",
+      "transport": "rss",
+      "probeUrl": "https://feeds.bloomberg.com/economics/news.rss",
+      "allowedHosts": [
+        "feeds.bloomberg.com"
+      ],
+      "refreshMinutes": 120,
+      "detailDailyCap": 2,
+      "deployment": "later"
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [
+        "www.bbc.co.uk",
+        "www.bbc.com"
+      ],
+      "articleHosts": [
+        "www.bbc.co.uk",
+        "www.bbc.com"
+      ],
+      "contentAccess": "index",
+      "sourceKey": "bbc",
+      "publisher": "BBC News",
+      "channel": "macro",
+      "transport": "rss",
+      "probeUrl": "https://feeds.bbci.co.uk/news/business/rss.xml",
+      "allowedHosts": [
+        "feeds.bbci.co.uk"
+      ],
+      "refreshMinutes": 120,
+      "detailDailyCap": 2,
+      "deployment": "first"
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [],
+      "articleHosts": [
+        "www.economist.com"
+      ],
+      "contentAccess": "index",
+      "sourceKey": "economist",
+      "publisher": "The Economist",
+      "channel": "macro",
+      "transport": "rss",
+      "probeUrl": "https://www.economist.com/finance-and-economics/rss.xml",
+      "allowedHosts": [
+        "www.economist.com"
+      ],
+      "refreshMinutes": 360,
+      "detailDailyCap": 1,
+      "deployment": "later"
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [
+        "www.wsj.com"
+      ],
+      "articleHosts": [
+        "www.wsj.com"
+      ],
+      "contentAccess": "index",
+      "sourceKey": "wsj",
+      "publisher": "The Wall Street Journal",
+      "channel": "macro",
+      "transport": "rss",
+      "probeUrl": "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain",
+      "allowedHosts": [
+        "feeds.content.dowjones.io"
+      ],
+      "refreshMinutes": 120,
+      "detailDailyCap": 2,
+      "deployment": "later"
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [
+        "rss.politico.com"
+      ],
+      "articleHosts": [
+        "www.politico.com"
+      ],
+      "contentAccess": "index",
+      "sourceKey": "politico",
+      "publisher": "POLITICO",
+      "channel": "macro",
+      "transport": "rss",
+      "probeUrl": "https://www.politico.com/rss/economy.xml",
+      "allowedHosts": [
+        "www.politico.com"
+      ],
+      "refreshMinutes": 180,
+      "detailDailyCap": 2,
+      "deployment": "recheck"
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [],
+      "articleHosts": [
+        "www.theguardian.com",
+        "content.guardianapis.com"
+      ],
+      "contentAccess": "index",
+      "sourceKey": "guardian",
+      "publisher": "The Guardian",
+      "channel": "macro",
+      "transport": "vendor_api",
+      "probeUrl": "https://www.theguardian.com/business/economics/rss",
+      "allowedHosts": [
+        "www.theguardian.com",
+        "content.guardianapis.com"
+      ],
+      "refreshMinutes": 120,
+      "detailDailyCap": 2,
+      "deployment": "licensed"
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [
+        "www.nytimes.com"
+      ],
+      "articleHosts": [
+        "rss.nytimes.com"
+      ],
+      "contentAccess": "index",
+      "sourceKey": "nyt",
+      "publisher": "The New York Times",
+      "channel": "candidate",
+      "transport": "rss",
+      "probeUrl": "https://rss.nytimes.com/services/xml/rss/nyt/Economy.xml",
+      "allowedHosts": [
+        "rss.nytimes.com"
+      ],
+      "refreshMinutes": 240,
+      "detailDailyCap": 1,
+      "deployment": "candidate"
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [],
+      "articleHosts": [
+        "time.com"
+      ],
+      "contentAccess": "index",
+      "sourceKey": "time",
+      "publisher": "TIME",
+      "channel": "candidate",
+      "transport": "rss",
+      "probeUrl": "https://time.com/feed/",
+      "allowedHosts": [
+        "time.com"
+      ],
+      "refreshMinutes": 360,
+      "detailDailyCap": 1,
+      "deployment": "candidate"
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [],
+      "articleHosts": [
+        "www.thetimes.com"
+      ],
+      "contentAccess": "index",
+      "sourceKey": "times",
+      "publisher": "The Times",
+      "channel": "candidate",
+      "transport": "html",
+      "probeUrl": "https://www.thetimes.com/business",
+      "allowedHosts": [
+        "www.thetimes.com"
+      ],
+      "refreshMinutes": 360,
+      "detailDailyCap": 1,
+      "deployment": "candidate"
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [],
+      "articleHosts": [
+        "www.usnews.com"
+      ],
+      "contentAccess": "index",
+      "sourceKey": "usnews",
+      "publisher": "U.S. News & World Report",
+      "channel": "candidate",
+      "transport": "html",
+      "probeUrl": "https://www.usnews.com/news",
+      "allowedHosts": [
+        "www.usnews.com"
+      ],
+      "refreshMinutes": 360,
+      "detailDailyCap": 1,
+      "deployment": "candidate"
+    },
+    {
+      "sourceKey": "fed",
+      "publisher": "Federal Reserve",
+      "channel": "macro",
+      "transport": "existing_adapter",
+      "sourceId": "policy.us.fed",
+      "probeUrl": "https://www.federalreserve.gov/feeds/feeds.htm",
+      "allowedHosts": [
+        "www.federalreserve.gov"
+      ],
+      "articleHosts": [
+        "www.federalreserve.gov"
+      ],
+      "redirectHosts": [],
+      "trackingParams": [],
+      "identityParams": [],
+      "contentAccess": "body",
+      "detailDailyCap": 8,
+      "refreshMinutes": 120,
+      "deployment": "existing",
+      "enabled": false
+    }
+  ],
+  "discoveryPublishers": [
+    {
+      "sourceKey": "microsoftai",
+      "publisher": "Microsoft AI",
+      "articleHosts": [
+        "microsoft.ai"
+      ],
+      "pathPrefixes": [
+        "/news/"
+      ],
+      "redirectHosts": [],
+      "detailDailyCap": 2,
+      "bodyUseAcknowledged": true
+    },
+    {
+      "sourceKey": "cryptography",
+      "publisher": "Matthew Green",
+      "articleHosts": [
+        "blog.cryptographyengineering.com"
+      ],
+      "pathPrefixes": [
+        "/2026/"
+      ],
+      "redirectHosts": [],
+      "detailDailyCap": 2,
+      "bodyUseAcknowledged": true
+    }
+  ]
+}

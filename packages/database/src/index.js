@@ -612,6 +612,30 @@ export function createStore(databasePath) {
       return rows.length;
     },
 
+    listOpenJobs(type) {
+      const jobType = String(type || '').trim();
+      if (!jobType) return [];
+      return database.prepare(`SELECT * FROM jobs
+        WHERE type = ? AND status IN ('queued', 'running')
+        ORDER BY created_at ASC`).all(jobType).map(mapJob);
+    },
+
+    discardQueuedJobs(type, message, now = Date.now()) {
+      const jobType = String(type || '').trim();
+      if (!jobType) return 0;
+      const rows = database.prepare(`SELECT * FROM jobs WHERE type = ? AND status = 'queued'`).all(jobType);
+      const error = { name: 'FeedSyncCollapsed', message: String(message || '积压的订阅同步已合并为新的一轮') };
+      database.transaction(() => {
+        for (const row of rows) {
+          database.prepare(`UPDATE jobs SET status = 'failed', error_json = ?, completed_at = ?,
+            locked_by = NULL, locked_at = NULL, updated_at = ? WHERE id = ? AND status = 'queued'`)
+            .run(JSON.stringify(error), now, now, row.id);
+          insertEvent('job.failed', 'job', row.id, { jobId: row.id, error }, row.workspace_id);
+        }
+      })();
+      return rows.length;
+    },
+
     abandonRunningJobs(types, message, now = Date.now()) {
       const accepted = [...new Set((Array.isArray(types) ? types : []).map((type) => String(type || '')))];
       if (!accepted.length) return 0;

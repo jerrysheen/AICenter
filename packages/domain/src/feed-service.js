@@ -44,11 +44,16 @@ function rankFeedItems(items) {
 
 function attachTranslations(feedRepository, workspaceId, items, targetLang = 'zh') {
   if (!items.length || !feedRepository?.listTranslations) return items;
-  const rows = feedRepository.listTranslations(workspaceId, items.map((item) => item.id), targetLang) || [];
+  const ids = [];
+  for (const item of items) {
+    if (item?.id) ids.push(item.id);
+    if (item?.resourceId) ids.push(item.resourceId);
+  }
+  const rows = feedRepository.listTranslations(workspaceId, ids, targetLang) || [];
   if (!rows.length) return items;
   const byId = new Map(rows.map((row) => [row.itemId, row]));
   return items.map((item) => {
-    const row = byId.get(item.id);
+    const row = byId.get(item.id) || (item.resourceId ? byId.get(item.resourceId) : null);
     if (!row || row.sourceHash !== contentHash(item.body || '')) {
       return { ...item, translation: null };
     }
@@ -214,10 +219,13 @@ async function resolveIngestFilter(feedFilter, input) {
 
 async function ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter) {
   if (!feedRepository?.saveCapture || !Array.isArray(snapshot?.items) || !snapshot.items.length) {
-    return { added: 0, skipped: 0 };
+    return { added: 0, skipped: 0, addedItemIds: [] };
   }
   const providerId = persistence.providerId;
   const sourceMeta = persistence.sourceAccount;
+  const replay = sourceMeta.metadata && typeof sourceMeta.metadata === 'object' && !Array.isArray(sourceMeta.metadata)
+    ? sourceMeta.metadata
+    : {};
   const source = feedRepository.upsertSourceAccount({
     workspaceId,
     provider: providerId,
@@ -228,16 +236,20 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
     authMode: ['public', 'credential', 'browser-session'].includes(sourceMeta.authMode)
       ? sourceMeta.authMode
       : 'browser-session',
-    metadata: {},
+    metadata: replay,
   });
-  feedRepository.upsertSubscription?.({
-    workspaceId,
-    sourceAccountId: source.id,
-    enabled: true,
-    refreshIntervalMinutes: 30,
-  });
+  if (replay.autoRefresh === true && typeof feedRepository.ensureSubscription === 'function') {
+    const interval = Number(persistence.refreshIntervalMinutes);
+    feedRepository.ensureSubscription({
+      workspaceId,
+      sourceAccountId: source.id,
+      enabled: true,
+      ...(Number.isInteger(interval) && interval >= 1 ? { refreshIntervalMinutes: interval } : {}),
+    });
+  }
   let added = 0;
   let skipped = 0;
+  const addedItemIds = [];
   const hiddenExternalIds = new Set(feedRepository.listHiddenExternalIds?.(workspaceId, providerId) || []);
   const batchCapturedAt = Number(snapshot.fetchedAt) > snapshot.items.length
     ? Number(snapshot.fetchedAt)
@@ -336,7 +348,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
       skipped += 1;
       continue;
     }
-    feedRepository.saveContentItem({
+    const savedItem = feedRepository.saveContentItem({
       workspaceId,
       captureId: capture.id,
       originType: item.originType || 'subscription',
@@ -348,10 +360,11 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
       authorName: item.authorName || '',
       publishedAt: item.publishedAt || null,
     });
+    if (savedItem?.id) addedItemIds.push(savedItem.id);
     rememberFingerprint();
     added += 1;
   }
-  return { added, skipped };
+  return { added, skipped, addedItemIds: [...new Set(addedItemIds)] };
 }
 
 function readStoredFeed(feedRepository, workspaceId, persistence, query, extra = {}) {
@@ -360,6 +373,7 @@ function readStoredFeed(feedRepository, workspaceId, persistence, query, extra =
   const rows = feedRepository.listContentItemsByProvider?.(workspaceId, providerId, {
     sourceExternalId: persistence.sourceAccount.externalId,
     limit: STORED_FEED_LIMIT,
+    taggedOnly: true,
   }) || [];
   const items = rankFeedItems(attachTranslations(
     feedRepository,
@@ -447,7 +461,7 @@ function wrapFeedProviders(feedProviders) {
   };
 }
 
-export function createFeedService({ legacyRepository, feedRepository, sourcePort, feedProviders, translationPort, feedFilter = null }) {
+export function createFeedService({ legacyRepository, feedRepository, sourcePort, feedProviders, translationPort, feedFilter = null, mediaPort = null }) {
   const resolvedSourcePort = sourcePort || wrapFeedProviders(feedProviders);
   if (!legacyRepository || !feedRepository || !resolvedSourcePort) throw new Error('feed repositories and source port are required');
   sourcePort = resolvedSourcePort;
@@ -465,6 +479,12 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       return post;
     },
     async getExternalFeed(providerId, query, actor = {}) {
+      if (providerId === 'media') {
+        if (!mediaPort?.readFeed) throw new ValidationError('尚未启用 media 信息源', ['platform']);
+        const workspaceId = actor.workspaceId || DEFAULT_WORKSPACE_ID;
+        const channel = query?.channel || query?.feed || 'tech';
+        return mediaPort.readFeed({ ...query, channel }, { workspaceId });
+      }
       const source = sourcePort.findByProvider(providerId, 'content-feed');
       if (!source) throw new ValidationError(`尚未启用 ${providerId} 信息源`, ['platform']);
       const { platform: _platform, refresh: _refresh, ...sourceInput } = query || {};
@@ -518,6 +538,24 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
             : `${snapshot.note || '已拉取'} · 新增 ${stats.added} · 去重 ${stats.skipped} · 共 ${total} 条`,
         items: stored.items.length ? stored.items : visibleSnapshotItems,
       };
+    },
+    async refreshPersistedSource({ workspaceId = DEFAULT_WORKSPACE_ID, sourceId, sourceInput } = {}) {
+      if (!sourceId || !sourceInput || typeof sourceInput !== 'object' || Array.isArray(sourceInput)) {
+        throw new ValidationError('来源缺少可重放参数', ['sourceId']);
+      }
+      const persistence = sourcePort.persistence(sourceId, sourceInput);
+      if (!persistence?.sourceAccount) {
+        throw new ValidationError(`${sourceId} 未声明 Feed 持久化投影`, ['sourceId']);
+      }
+      const sourceSnapshot = await sourcePort.read(sourceId, sourceInput, {
+        refresh: true,
+        excludeExternalIds: knownExternalIds(feedRepository, workspaceId, persistence.providerId),
+      });
+      const snapshot = sourceSnapshot?.data || {};
+      if (snapshot.mode === 'error' || snapshot.mode === 'unavailable') {
+        throw new Error(snapshot.note || `${sourceId} 抓取失败`);
+      }
+      return ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter);
     },
     listContentItems(workspaceId, page) {
       return feedRepository.listContentItems(workspaceId, page);
@@ -648,6 +686,24 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
     },
     persistItemTranslations(translations, actor = {}) {
       persistTranslations(feedRepository, actor.workspaceId || DEFAULT_WORKSPACE_ID, translations);
+    },
+    async localizeContentItems(workspaceId, ids = []) {
+      const rows = this.listContentItemsByIds(workspaceId, ids);
+      const units = [];
+      for (const row of rows) {
+        const text = String(row.body || row.summary || '').trim();
+        if (!text || !needsZhLocalization(text)) continue;
+        const id = row.provider && row.externalId ? `${row.provider}:${row.externalId}` : row.id;
+        units.push({ id, text });
+      }
+      if (!units.length) return { considered: 0, pendingIds: [], translated: 0 };
+      const result = await this.localizeTexts(units, { workspaceId });
+      const pendingIds = result?.pendingIds || [];
+      return {
+        considered: units.length,
+        pendingIds,
+        translated: Math.max(0, units.length - pendingIds.length),
+      };
     },
     async localizeTexts(units, actor = {}, options = {}) {
       const workspaceId = actor.workspaceId || DEFAULT_WORKSPACE_ID;

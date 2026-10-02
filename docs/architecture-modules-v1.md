@@ -73,6 +73,7 @@ POST /api/v1/article-analysis/runs → ai.article.analyze → 同一套 Harness.
 同一领域内部可以使用外键保证完整性。跨领域只允许：
 
 1. 稳定 ID 引用，不把对方字段复制进自己的主表。
+   日报观点引用沿用 `ReferenceInput`，由 Context Service 调用 Report Service，再经 Report Repository 读取观点与候选快照；Web 与 Context Service 都不直接访问日报表，不新增 Agent 或 Tool Loop。
 2. 独立关系表，例如 `knowledge_links`。
 3. 带版本的领域事件，例如 `feed.content-item.saved.v1`。
 
@@ -152,6 +153,44 @@ Agent 通过 `static.signals.list` 获取记录，再按需调用 `official.sour
 而不是向 `server.js` 或现有大表持续添加供应商特有字段。
 
 ## 兼容策略
+
+媒体正文修复沿用 SourceHub / Module Registry / Worker。HTTP、XML、DOM 与域名策略留在
+Connector；Domain 只依赖注入的 MediaConnectorPort，不直接导入 connectors 或 source。
+出版商目录、用途和额度属于 Instance 的 `config/media.json`；Core 的
+`config/media.default.json` 是无个人来源的空模板。Fed 复用已有 `policy.us.fed` 发现列表，
+再由登记过的官方域名正文适配器读取，不增加第二套宏观 Runtime。
+
+`content.media.articles` 与 Feed GET 只读缓存。同步、实际探针和正文抓取分别进入已注册的
+`media.sources.sync`、`media.sources.probe`、`media.index.enrich`。正文用途确认与 repair
+只允许本机；repair 必须给出明确 ID 集合。Worker 重启时中断的正文任务终止并保留已有状态，
+不在启动时盲目重抓全部历史文章。
+
+正文用 DOM 解析且不执行页面脚本。已验证 full 必须同时满足当前提取版本、索引修订、完整性
+状态和未截断快照；旧 full 保留为历史材料并在读取端降级，不能直接删除。请求成本和成功配额
+分开持久化；失败不退还 HTTP 请求，暂时失败最多五次并退避，付费/挑战不自动绕行。
+正文修订独立递增，任何失败或 partial 修复都不覆盖已有全文与旧报告引用。
+
+提要使用同一个冻结 Harness 的 closedContext 调用，无工具、无联网；正文段落属于不可信材料。
+150–300 字符的提要与 RSS 摘要分开，引用已保存 bodyHash / snapshotRevision / paragraphId。
+模型只选择保存片段的编号，由适配器填入连续原文 quote，再由 Domain 核对；不要求模型复制长段引文。
+模型格式失败仅做一次纠正，单次调用限 180 秒；超时停止本批剩余模型请求，失败不会自动反复生成。
+正文提要由可信内部调用指定 `closedTask=media-brief`：在现有 Elucid Harness 适配器配置中
+使用已支持的 low 推理与4096输出token上限，避免短提要耗尽长推理预算。这只是冻结执行器的
+任务配置，不改变模型、工具或执行循环；Ask、文章阅读、日报与结构整理保持原配置。
+该字段不从HTTP/Job透传。DeepSeek官方路由保留原有供应商设置。
+日报只消费当前有效版本的提要和证据，维持闭集筛选。
+
+媒体阅读默认展示完整正文。全文翻译按保存段落切成不超过2400字符的连续片段，复用
+FeedService.localizeTexts 与 feed_item_translations；缓存ID包含文章身份、bodyHash、标题哈希、
+段落/分片编号，逐片 sourceHash 匹配后才标为 ready。原有短信息流译文不能冒充全文译文。
+段落ID和类型保持一致，UI按标题、段落、列表、引文和表格安全排版。翻译与Tag先完成，
+可选提要随后处理；Tag复用X的Instance目录、Prompt和multi策略，不另建媒体标签体系。
+
+Techmeme只发现链接。Instance可登记少量 discoveryPublishers（域名、路径、用途、额度），
+由Connector匹配受信原报道。Domain保存独立原文索引及 discoveredVia，不将聚合摘要改称全文。
+原报道计入自身出版商和全局预算，跳转仍校验白名单；未接入/付费链接只保留发现记录。
+已有媒体同步Schedule继续每小时检查各来源自己的间隔，随后入队固定enrich handler；
+每日预算延后不丢索引，下一日继续处理。页面来源配置折叠，状态明确区分全文与摘要能力。
 
 - V1–V28 数据库迁移保持不可变；模块化底座从 V6 开始，V10 增加 `ai_run_context_refs`，V12–V14 完成会话归属与旧问答回填，V15 区分用户主动引用与 Tool 读取，V16 增加 Taxonomy 与结构化回填字段，V17 增加 `resource_taggings`，V18 增加灵感外部来源与采集入口字段，V19 增加离线同步幂等键与原始采集时间，V20 增加 `posts.hidden_at`，V21 增加灵感工作包 `work_packages`，V22 增加独立 Cursor session 字段，V23 增加 `feed_identity_fingerprints`，V24 增加工作包 `parent_work_package_id`，V25 增加 `attachments` / `resource_attachments`，V26 增加个人资产账本 `personal_asset_types` / `accounts` / `snapshots` / `dividends`，V27 允许同一期间标签多次快照，V28 增加 Harness Agent Run 的脱敏事件投影 `agent_run_events`。
 - 旧 `posts`、`notes`、`knowledge_items` 接口继续工作，通过兼容层逐步转到领域服务。

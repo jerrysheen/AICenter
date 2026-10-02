@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { PersonalAssetDashboardSchema, PersonalAssetImportSchema, parseContract, ValidationError } from '../packages/contracts/src/index.js';
@@ -13,6 +13,7 @@ import {
 } from '../packages/connectors/src/index.js';
 import { createTradingService } from '../packages/domain/src/trading-service.js';
 import { createAiCenterServer } from '../apps/web/src/server.js';
+import { readWorkbookSheets } from '../packages/connectors/src/xlsx-workbook.js';
 
 function cell(ref, value, type) {
   if (type === 's') return `<c r="${ref}" t="s"><v>${value}</v></c>`;
@@ -185,11 +186,12 @@ test('real personal-assets workbook imports all recorded periods', async () => {
   });
   const imported = await personalAssetService.parseImport();
   assert.ok(imported);
-  assert.equal(imported.snapshots.length, 57);
-  assert.equal(imported.snapshots.filter((item) => item.label === '2024/3').length, 2);
-  assert.equal(imported.snapshots.filter((item) => item.label === '2024/12').length, 3);
-  assert.equal(imported.snapshots.at(-1).label, '2026/8.1');
-  assert.equal(imported.snapshots.at(-1).total, '1563354.23');
+  const sourceRows=readWorkbookSheets(readFileSync(workbookPath))['资产明细'].slice(1).filter(row=>formatPeriodLabel(row[0]));
+  assert.ok(sourceRows.length>0);
+  assert.equal(imported.snapshots.length,sourceRows.length);
+  assert.deepEqual(imported.snapshots.map(item=>item.label),sourceRows.map(row=>formatPeriodLabel(row[0])));
+  assert.deepEqual(imported.snapshots.map(item=>Number(item.total).toFixed(2)),sourceRows.map(row=>Number(row[1]).toFixed(2)));
+  assert.equal(new Set(imported.snapshots.map(item=>item.id)).size,sourceRows.length);
   assert.deepEqual(imported.dividends, []);
   assert.equal(imported.accounts.find((item) => item.id === 'paacct:bank:col3').note, '光大银行卡');
   assert.equal(imported.accounts.find((item) => item.source === 'holdings').note, 'A股、B股市值与券商现金');
@@ -205,8 +207,8 @@ test('real personal-assets workbook imports all recorded periods', async () => {
     const payload = await fetch(`${address.localUrl}/api/v1/assets/personal`).then((response) => response.json());
     assert.equal(payload.ok, true);
     assert.equal(payload.dashboard.source, 'ledger');
-    assert.equal(payload.dashboard.points.filter((item) => item.recorded).length, 57);
-    assert.equal(payload.dashboard.latest.recordedTotal, '1563354.23');
+    assert.equal(payload.dashboard.points.filter((item) => item.recorded).length,sourceRows.length);
+    assert.equal(payload.dashboard.latest.recordedTotal,imported.snapshots.at(-1).total);
     assert.deepEqual(payload.dashboard.dividend.items, []);
   } finally {
     await app.close();

@@ -15,6 +15,15 @@ test('feed swipe does not treat pointercancel or vertical scroll as an article t
   assert.doesNotMatch(js, /front\.style\.transition = 'none';\s*try \{\s*host\.setPointerCapture\(event\.pointerId\)/);
 });
 
+test('opening an article from a card tap swallows the synthesized click', () => {
+  assert.match(js, /function swallowFollowingClick/);
+  assert.match(js, /swallowFollowingClick\(\);\s*onTap\(event\);/);
+  assert.match(js, /function bindIntentionalClick/);
+  assert.match(js, /const keyboard = event\.detail === 0/);
+  assert.match(js, /const intentional = keyboard \|\| armed/);
+  assert.match(js, /if \(current\?\.status === 'queued' \|\| current\?\.status === 'running'\) return/);
+});
+
 test('overview and source cards open only after a guarded click', () => {
   assert.match(js, /function attachGuardedOpen/);
   assert.match(js, /pointercancel[\s\S]*ignore = true/);

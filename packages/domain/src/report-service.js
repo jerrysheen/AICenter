@@ -4,6 +4,7 @@ import {
   resolveDailyTimeContext,
   resolveReportDate,
 } from './daily-window.js';
+import { DailyBriefCandidateSchema, ReferenceInputSchema } from '../../contracts/src/index.js';
 
 const MARKET_NOTE = '这是生成日报时能够取得的最新行情状态，不是刚好截止到日报窗口结束的历史快照。';
 
@@ -42,6 +43,7 @@ function unavailableBoard(key) {
 export function createReportService({
   reportRepository,
   feedService,
+  mediaPort = null,
   tradingService,
   staticSignalPort,
   strategyPort = null,
@@ -67,6 +69,28 @@ export function createReportService({
     },
     getLatestDailyBrief(workspaceId) {
       return reportRepository.getLatestDailyBrief(workspaceId || 'local');
+    },
+    listDailyBriefs(workspaceId, limit) {
+      return reportRepository.listDailyBriefs(workspaceId || 'local', limit);
+    },
+    getDailyBriefItemReference(workspaceId, input) {
+      const parsed = ReferenceInputSchema.safeParse(input);
+      if (!parsed.success || parsed.data.resourceType !== 'daily-brief-item') return null;
+      const { resourceId, revision } = parsed.data;
+      const reportDate = resourceId.slice(0, 10);
+      const candidateId = resourceId.slice(11);
+      const snapshot = reportRepository.getDailyBriefReferenceSnapshot(workspaceId || 'local', reportDate);
+      if (!snapshot || snapshot.brief.generatedAt !== revision) return null;
+      const item = snapshot.brief.items.find((entry) => entry.candidateId === candidateId);
+      if (!item) return null;
+      const candidates = Array.isArray(snapshot.inputSnapshot?.candidates) ? snapshot.inputSnapshot.candidates : [];
+      const candidate = DailyBriefCandidateSchema.safeParse(candidates.find((entry) => entry?.id === candidateId));
+      return {
+        reportDate,
+        generatedAt: snapshot.brief.generatedAt,
+        item,
+        candidate: candidate.success ? candidate.data : null,
+      };
     },
     async generateDailyReport(input = {}) {
       const generatedAt = now();
@@ -96,6 +120,7 @@ export function createReportService({
         id: item.id,
         title: clip(item.title, 1_000),
         summary: clip(item.summary, 500),
+        ...(mediaPort?.briefForContentItem(workspaceId,item.id) ? { generatedBrief: mediaPort.briefForContentItem(workspaceId,item.id) } : {}),
         sourceUrl: item.sourceUrl || '',
         authorName: clip(item.authorName, 512),
         publishedAt: item.publishedAt ?? null,

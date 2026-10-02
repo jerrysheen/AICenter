@@ -6,7 +6,7 @@ export async function resolve(specifier, context, nextResolve) {
     }
     // Only DeepSeek Harness plugins import Node 22.15 zstd names at load time.
     // undici must keep the real node:zlib: a function-valued createZstdDecompress
-    // makes fetch request zstd and crash native web_fetch on Node 22.14.
+    // makes fetch request zstd and then crash native web_fetch when Node cannot decode it.
     if (parent.includes('@deepseek-ai/') || parent.includes('dsh-session')) {
       return {
         shortCircuit: true,

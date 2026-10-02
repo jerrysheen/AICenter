@@ -126,10 +126,11 @@ export function resolveHarnessLaunch({
   overlayPath,
   workspaceId,
   researchProfile,
+  closedTask,
 } = {}) {
   const home = dshHome || path.join(runtimeDirectory, 'dsh-home');
   const workspace = cwd || path.join(runtimeDirectory, 'dsh-workspace');
-  const llm = resolveHarnessLlm(env, { researchProfile });
+  const llm = resolveHarnessLlm(env, { researchProfile, closedTask });
   return {
     profile: HARNESS_PROFILE,
     dshBin: harnessDshEntryPath(),

@@ -162,8 +162,8 @@ test('tagging service saves by item id, retries missing, and is idempotent', asy
     workspaceId: 'local',
     resourceType: 'content-item',
     items: [
-      { id: 'x1', text: 'OpenAI released a model' },
-      { id: 'x2', text: 'Micron HBM is sold out' },
+      { id: 'x1', text: 'A new LLM was released' },
+      { id: 'x2', text: 'Micron HBM 芯片 is sold out' },
       { id: 'x3', text: 'Weather is nice today' },
     ],
   });
@@ -177,8 +177,8 @@ test('tagging service saves by item id, retries missing, and is idempotent', asy
     workspaceId: 'local',
     resourceType: 'content-item',
     items: [
-      { id: 'x1', text: 'OpenAI released a model' },
-      { id: 'x2', text: 'Micron HBM is sold out' },
+      { id: 'x1', text: 'A new LLM was released' },
+      { id: 'x2', text: 'Micron HBM 芯片 is sold out' },
     ],
   });
   assert.equal(calls.length, 2);
@@ -188,10 +188,104 @@ test('tagging service saves by item id, retries missing, and is idempotent', asy
     workspaceId: 'local',
     resourceType: 'content-item',
     force: true,
-    items: [{ id: 'x1', text: 'OpenAI released a model' }],
+    items: [{ id: 'x1', text: 'A new LLM was released' }],
   });
   assert.equal(calls.length, 3);
   assert.equal(forced.saved.length, 1);
+  temporary.remove();
+});
+
+test('instance tag catalog includes the missed crypto and commodity tags', () => {
+  const loaded = loadTagCatalog(readFileSync(path.join('config', 'tags.json'), 'utf8'));
+  assert.equal(loaded.ids.has('crypto'), true);
+  assert.equal(loaded.tags.find((tag) => tag.id === 'macro_commodity').parent_id, 'macro');
+});
+
+test('keyword supplement fills missed tags without matching short tokens inside words', () => {
+  const temporary = temporaryStore();
+  const service = createTaggingService({
+    catalog: {
+      version: 'tags_v1',
+      tags: [
+        { id: 'macro', name: '宏观', parent_id: null, keywords: ['利率'] },
+        { id: 'macro_commodity', name: '大宗商品', parent_id: 'macro', keywords: ['黄金', 'WTI'] },
+        { id: 'crypto', name: '加密资产', parent_id: null, keywords: ['比特币', 'ETH', 'USDC'] },
+        { id: 'ai', name: 'AI', parent_id: null, keywords: ['AI'] },
+      ],
+    },
+    taggingRepository: temporary.store.repositories.tagging,
+  });
+  temporary.store.repositories.tagging.saveTaggings([{
+    workspaceId: 'local', resourceType: 'content-item', resourceId: 'already',
+    tags: ['ai'], tagCatalogVersion: 'tags_v1', promptVersion: 'tag_v1', model: 'gemini', analyzedAt: 1,
+  }]);
+  const preview = service.supplementTags({
+    workspaceId: 'local',
+    persist: false,
+    tagIds: ['crypto', 'macro_commodity'],
+    items: [
+      { id: 'already', body: 'USDC 稳定币和 ETH gas' },
+      { id: 'gold', title: 'COMEX黄金期货上涨', body: 'WTI' },
+      { id: 'inside', body: 'something about methods' },
+      { id: 'idiom', body: '接下来进入短线黄金时间' },
+      { id: 'plain', body: '今天喝咖啡' },
+    ],
+  });
+  assert.deepEqual(preview.matched.map((row) => [row.resourceId, row.tags]), [
+    ['already', ['ai', 'crypto']],
+    ['gold', ['macro_commodity', 'macro']],
+  ]);
+  assert.equal(service.getTagging('local', 'content-item', 'already').tags.join(','), 'ai');
+  const saved = service.supplementTags({
+    workspaceId: 'local',
+    tagIds: ['crypto', 'macro_commodity'],
+    items: preview.matched.map((row) => ({
+      id: row.resourceId,
+      body: row.resourceId === 'already' ? 'USDC 稳定币和 ETH gas' : '黄金 WTI',
+    })),
+  });
+  assert.equal(saved.saved.length, 2);
+  assert.deepEqual(service.getTagging('local', 'content-item', 'already').tags, ['ai', 'crypto']);
+  assert.deepEqual(service.getTagging('local', 'content-item', 'gold').tags, ['macro_commodity', 'macro']);
+  temporary.remove();
+});
+
+test('tagging ignores author names and a single aside mention of AI', async () => {
+  const temporary = temporaryStore();
+  const service = createTaggingService({
+    catalog: {
+      version: 'tags_v1',
+      tags: [
+        { id: 'ai', name: 'AI', parent_id: null, keywords: ['AI', '人工智能', '大模型', 'LLM'] },
+      ],
+    },
+    taggingRepository: temporary.store.repositories.tagging,
+    taggingPort: {
+      async tagBatch(input) {
+        assert.equal(input.userPayload.items[0].author, undefined);
+        assert.equal(input.userPayload.items[0].text.includes('山海AI'), false);
+        return {
+          reply_text: JSON.stringify({
+            items: input.userPayload.items.map((item) => ({ item_id: item.item_id, tags: ['ai'] })),
+          }),
+          model: 'test',
+        };
+      },
+    },
+  });
+  const aside = '我认识的A9、A10的确也普遍几房，为了筛选继承人，竞岗。但很少能做到以水端平，各房相安无事。如果一个都搞不定，还来第二、第三、甚至第四个，也是给自己找麻烦。还有现在已经是AI时代了。';
+  await service.analyzeItems({
+    workspaceId: 'local',
+    resourceType: 'content-item',
+    items: [
+      { id: 'author-only', author: '山海AI', title: '认识又能咋滴？', body: '认识又能咋滴？' },
+      { id: 'aside', author: 'Chris Lee', body: aside },
+      { id: 'real', body: '人工智能和大模型这次一起更新，LLM 的价格也降了。' },
+    ],
+  });
+  assert.deepEqual(service.getTagging('local', 'content-item', 'author-only').tags, []);
+  assert.deepEqual(service.getTagging('local', 'content-item', 'aside').tags, []);
+  assert.deepEqual(service.getTagging('local', 'content-item', 'real').tags, ['ai']);
   temporary.remove();
 });
 

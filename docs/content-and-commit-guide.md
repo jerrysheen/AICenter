@@ -4,12 +4,11 @@
 
 ## 当前仓库的分发模式
 
-当前仓库是**私有完整部署快照**，不是准备公开发布的纯 Core 仓库。Core / Instance / Host 描述的是 ownership 和运行边界，不等于所有 Instance 文件都必须被 Git 忽略。
+当前仓库是**私有代码与 Instance 配置仓库**，不是准备公开发布的纯 Core 仓库，也不再通过 Git 分发运行中的数据库。Core / Instance / Host 描述的是 ownership 和运行边界，不等于所有 Instance 文件都必须被 Git 忽略。
 
-为了让另一台 Windows 机器恢复当前单用户 AI Center，当前基线有意版本化：
+为了让另一台 Windows 机器安装并恢复当前单用户 AI Center 的配置和文件资料，当前基线有意版本化：
 
 ```text
-data/ai-center.db
 data/imports/
 data/blobs/
 knowledge/
@@ -23,6 +22,7 @@ externaltools/bsk.exe
 
 ```text
 .env / Instance .env
+data/ai-center.db / 其他运行 SQLite 数据库及备份
 API Key / Token / Cookie
 Browser Profile
 *.db-wal / *.db-shm
@@ -30,7 +30,11 @@ Browser Profile
 签名材料与本机缓存
 ```
 
-未来抽取“只包含工具和中立模板的 Core”是独立工作；不要为了那个未来目标删掉当前私有部署快照。
+SQLite 仍是业务真源，采集、译文、标签、笔记、持仓、设备授权及任务状态继续写入本地数据库。只停止 Git 跟踪，不删除、重建或冻结用户数据库；Schema 与 migration 仍进入 Git。不启用 LFS。数据库备份和换机恢复独立于 Git：使用 SQLite 在线 backup 生成一致备份，目标服务启动前恢复；不得仅复制运行中的 `.db` 而遗漏 WAL。
+
+在另一台已有部署的主机拉取停止跟踪数据库的提交前，应先备份它自己的数据库；Git 的删除条目可能移除该主机的旧受跟踪文件，拉取后需在服务停止时恢复本地数据库。已有远端历史中的旧数据库不在本轮重写范围内，禁止为此强推或清理已发布历史。
+
+未来抽取“只包含工具和中立模板的 Core”是独立工作；不要为了那个未来目标删掉当前 Instance 的配置、资料或本地数据库。
 
 ---
 
@@ -486,12 +490,13 @@ tests
 git status --short
 ```
 
-当前私有部署快照应确认 SQLite、Knowledge、个人 Catalog 和必要导入资料都已进入 Git，同时确认没有把以下主机秘密或瞬时状态加入 Git：
+当前私有仓库应确认 Schema / migration、Knowledge 文件、个人 Catalog 和必要导入资料已进入 Git；确认本地 SQLite 已备份且不受 Git 跟踪，同时没有把以下数据库、主机秘密或瞬时状态加入 Git：
 
 ```text
 .env
 Instance .env
 
+运行 SQLite 数据库及备份
 *.db-wal
 *.db-shm
 
@@ -510,7 +515,7 @@ API Key
 临时输出
 ```
 
-如果发现这些主机秘密或瞬时文件，不是“提交后再删”，而是提交前解决 `.gitignore` 或文件位置。可移植的个人业务内容不属于此排除列表。
+如果发现这些文件，不是“提交后再删”，而是提交前解决 `.gitignore`、跟踪状态或文件位置。已进入尚未推送提交的超限文件须从该提交移除，仅追加一次删除提交仍会携带旧大对象；修正仅限明确属于本次工作的未发布提交，不重写已发布历史。允许版本化的 Instance 配置、导入资料和附件仍按既有边界维护。
 
 ---
 
@@ -534,7 +539,6 @@ package-lock.json
 config/*.default.json
 config/searxng-settings.yml
 
-data/ai-center.db
 data/imports/
 data/blobs/
 knowledge/
@@ -683,5 +687,11 @@ Instance Manager
 ---
 
 ## 当前架构的一句话定义
+
+媒体来源、频率、正文用途策略和主题关键词保存为 Instance 的 `config/media.json`。
+Core 只提供空的 `config/media.default.json` 和契约，不硬编码个人观察范围。
+正文验收响应、样本 HTML、模型运行记录与诊断 JSON 属于 Host 的 `.ai-data/media-audit/`，
+不得提交原站完整受版权保护的 HTML、Cookie、Key 或完整数据库诊断导出。可提交最小 DOM
+形状 fixture（合成正文）与响应状态/哈希的验收记录；真实已保存正文仍属于用户 Instance。
 
 > AI Center 是一个 Local-first、Single-user Instance 的个人 AI 信息与投资研究平台。Core 提供能力，Instance 保存个人数据与认知体系，Host 提供机器级公共服务；当前优先保证单 Instance 的完整、稳定和可复原，并为未来复制多个独立 Instance 保留清晰边界。

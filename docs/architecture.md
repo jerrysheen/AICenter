@@ -23,7 +23,7 @@ Runtime / Connector / UI      imports / runtime / .env        BrowserSkill / 可
 - `AI_CENTER_DATA_DIR`、`AI_CENTER_KNOWLEDGE_DIR`、`AI_CENTER_ASSET_WORKBOOK` 继续作为字段级兼容覆盖。`AI_CENTER_BROWSER_ID` 指定该 Instance 默认使用的浏览器，单次 session 显式值仍优先。端口优先级为显式 Launcher / Composition Root 参数 → Process Environment → Instance `.env` → Repository `.env` → `8787`。
 - 不自动加载 `instance/extensions/` 下的任意 JS；扩展执行、安全和版本契约等第二个真实 Instance 出现后再设计。
 
-持仓运行时事实只来自 SQLite 的 Portfolio / HoldingLot / Cash。外部 JSON、Excel、旧账本或未来券商 Adapter 必须先转成 `PortfolioImport`，再经 Trading Service 与 Repository 合并；进程启动不得再次灌入个人持仓。市场观察池、粗筛 Tag 与知识分类树分别归属 Instance `config/markets.json`、`config/tags.json`、`config/taxonomy.json`。Core 只提供中立的 `.default.json` 模板；当前私有部署仓库另外版本化现有单用户 Instance 快照，但这些文件仍属于 Instance，不得变回 Core 常量。
+持仓运行时事实只来自 SQLite 的 Portfolio / HoldingLot / Cash。外部 JSON、Excel、旧账本或未来券商 Adapter 必须先转成 `PortfolioImport`，再经 Trading Service 与 Repository 合并；进程启动不得再次灌入个人持仓。市场观察池、粗筛 Tag 与知识分类树分别归属 Instance `config/markets.json`、`config/tags.json`、`config/taxonomy.json`。Core 只提供中立的 `.default.json` 模板；当前私有仓库另外版本化单用户 Instance 的配置、Knowledge 文件、导入资料和附件，但这些文件仍属于 Instance，不得变回 Core 常量。运行 SQLite 及其备份只在本地保存，持续写入业务数据，不通过 Git / LFS 分发；换机使用独立一致备份恢复，Schema 与前向 migration 仍随代码版本化。
 
 V16 已写入的个人 Taxonomy 不删除、不迁移，也不改写历史 migration。`packages/database/src/taxonomy-seed.js` 仅是冻结的 Legacy Bootstrap，不得继续增加个人节点；`TaxonomyCatalog` 与 `config/taxonomy.default.json` 已建立未来 Instance 输入边界，真正切换新数据库 bootstrap 必须通过后续显式设计或前向 migration 完成。
 
@@ -89,7 +89,7 @@ B站 / X / 字幕          雪球 / 同花顺 / Yahoo
 - Worker 写入 `jobs` 与 `outbox_events`。只回收租约已过期的 `running` 任务（启动一次 + 周期回收），不在启动时重置全部运行中任务。`complete` / `fail` 必须匹配当前 worker 与 attempt。SSE 按 `Last-Event-ID` 分页补发，超过窗口时 `ready.snapshotRequired`。
 - 新业务数据带 `workspace_id`；P0 只有默认用户。
 
-当前实现已经完成上述进程与数据骨架。B站链接抓取已注册 `feed.bilibili.sync`，通过 Connector 内部 `BrowserRuntime`（`bsk` / BrowserSkill）只取 AI 中文字幕并写入 Capture / ContentItem。Yahoo 行情（美股/亚洲/国际期货/汇率）走公开 HTTP。沪深股票、场内 ETF、B 股和港股通优先走雪球 `batch/quote.json`；国内国债与商品主连走新浪公开期货行情；同花顺 A 股/基金快照只作缺票回退。X 首页已登录时间线已通过同一 BrowserRuntime 接入。Web / Worker 的自动翻译和粗筛 Tag 都走 Gemini `generateContent`。翻译缺 Key 时回退 DeepL / Google。后续本地任务包交给 Cursor；每条先建 hashId 步骤目录，CLI 用 JSONL 记每一步。页面只消费 `lastPrice` / `previousClose` 和统一 FeedItem，不暴露供应商字段。雪球与同花顺都已有适配代码，真实延迟与覆盖见发布门槛，不要写成「尚未接入」。
+当前实现已经完成上述进程与数据骨架。B站链接抓取已注册 `feed.bilibili.sync`，通过 Connector 内部 `BrowserRuntime`（`bsk` / BrowserSkill）只取 AI 中文字幕并写入 Capture / ContentItem。Yahoo 行情（美股/亚洲/国际期货/汇率）走公开 HTTP。沪深股票、场内 ETF、B 股和港股通优先走雪球 `batch/quote.json`；国内国债与商品主连走新浪公开期货行情；同花顺 A 股/基金快照只作缺票回退。X 首页已登录时间线已通过同一 BrowserRuntime 接入。X 与雪球时间线入库时，在帖子正文后附上当时可见的前 5 条评论，不另加字段。Web / Worker 的自动翻译和粗筛 Tag 都走 Gemini `generateContent`。翻译缺 Key 时回退 DeepL / Google。后续本地任务包交给 Cursor；每条先建 hashId 步骤目录，CLI 用 JSONL 记每一步。页面只消费 `lastPrice` / `previousClose` 和统一 FeedItem，不暴露供应商字段。雪球与同花顺都已有适配代码，真实延迟与覆盖见发布门槛，不要写成「尚未接入」。
 
 未来 1～2 年保持轻量边界：Feed、Trading、Knowledge、Runtime、Identity 继续作为稳定领域；Context Service 是跨领域的 AI 读取入口，而不是新的 Decision、Policy、Strategy 或 Thesis 领域。当前不建设 OMS、自动交易、复杂 AI Memory、Vector DB 或完整资产负债表。
 
@@ -154,9 +154,10 @@ packages/
 ## 任务与事件
 
 - `jobs` 是 SQLite 持久任务队列。Worker 使用 `BEGIN IMMEDIATE` 原子领取任务。
-- `job_schedules` 是 Runtime 上的薄调度层，只决定何时创建已经注册的 Job。第一版支持 `daily` 与 `interval`，不解析 Cron 表达式。到期入队和推进 `next_run_at` 在同一个 SQLite 事务里完成；停机后的补跑只保留最近一次（latest-only）。Scheduler 与 JobRunner 并列，Scheduler 不执行 Handler。`strategy.cn-dividend.snapshot` 在上海时间 15:30 生成中证红利策略快照；08:00 日报只读取此前已经落库的快照。
+- `job_schedules` 是 Runtime 上的薄调度层，只决定何时创建已经注册的 Job。第一版支持 `daily` 与 `interval`，不解析 Cron 表达式。到期入队和推进 `next_run_at` 在同一个 SQLite 事务里完成；停机后的补跑只保留最近一次（latest-only）。Scheduler 与 JobRunner 并列，Scheduler 不执行 Handler。`strategy.cn-dividend.snapshot` 在上海时间 15:30 生成中证红利策略快照；08:00 日报只读取此前已经落库的快照。`feed.subscriptions.sync` 每分钟检查一次哪些订阅到期，真正的抓取间隔仍是每条 subscription 的 `refreshIntervalMinutes`。X 关注、X 推荐、雪球关注、雪球精选和雪球 7x24 默认 30 分钟。新内容入库后入队 `feed.items.enrich` 做翻译和打标。停机后同样只补跑最近一次检查，不按错过的分钟数回补。
 - 任务只允许执行 Worker 显式注册的 handler。调度不能指定 shell、文件路径或任意 handler。
-- 手工重跑日报只创建固定的 `report.daily.generate`，并且只在本机桌面开放。
+- 手工重跑日报只创建固定的 `report.daily.generate`，并且只在本机桌面开放。注意力筛选在同一次任务里会立刻重试；两次都失败后，如果这份日报还没有筛选结果，30 分钟后再排一次。这次补跑若发现结果已经写好，就不再调用模型。
+
 - 外部进程使用 `spawn(..., shell: false)`，并要求 stdout 为单个 JSON 对象。
 - 业务变更与 `outbox_events` 同事务写入。
 - Web 每 250ms 转发新事件，SSE 帧携带递增 ID；客户端用 `Last-Event-ID` 分页补回断线期间的事件。超过补发窗口时 `ready` 携带 `snapshotRequired`，页面再拉 REST 快照并对齐水位。
@@ -164,7 +165,7 @@ packages/
 
 本地运行使用 `start-ai-center.bat`（Web + Worker + 可选 Search / 公网隧道）。双击后进入独立 PowerShell 窗口；`Ctrl+C` 停止 Web / Worker 后按 Enter 即可在同一目录再拉起，不必再点 bat。Search、Browser 与公网隧道作为 Host 继续运行。也可以两个终端：`npm start` 和 `npm run start:worker`。Search 第一次需执行 `scripts/setup-searxng.ps1`；启动器按命令行识别 `.ai-data\searxng` + `searx.webapp`，不按 `python.exe` 批量结束进程。
 
-启动器只停止当前 Instance `runtime/processes.json`（旧布局为 `.ai-data/processes.json`）中记录且入口与启动时间都匹配的 Web / Worker PID。它不会扫描或终止其他 AI Center Instance；端口被占用时只报告冲突。未显式传 `-Port` 时读取当前 Instance `.env`。BrowserSkill 与可选 `cloudflared` 使用 Host 级 `.ai-data`，可由启动器探活或拉起，但不写入 Instance PID 状态，也不随 Instance 退出。`cloudflared` 运行时目录为 `.ai-data/cloudflare/`。本机 SearXNG 仍可由启动器探活，但不参与 `search.web`。非旧 local 布局的设备 Cookie 使用可读 instanceId 加 instanceId / canonical instanceRoot 短哈希，避免不同端口实例共享 Cookie key。
+启动器先停掉进程记录里入口和启动时间都匹配的 Web / Worker，再检查未记录的 Node 进程：只有命令行第一个脚本参数精确匹配本仓库 Web / Worker 绝对入口，并且 `--ai-center-instance-root` 与 `--ai-center-instance-id` 都匹配当前 Instance，才允许清理。启动器启动时添加这两个身份参数；相对路径、另一仓库、另一 Instance、入口名称前缀和包装脚本均不匹配。旧进程没有身份参数时只走原有 PID/启动时间记录检查；无法确认归属的端口占用仍报告冲突，不自动结束。记录文件是当前 Instance 的 `runtime/processes.json`（旧布局为 `.ai-data/processes.json`）。未显式传 `-Port` 时读取当前 Instance `.env`。BrowserSkill 与可选 `cloudflared` 使用 Host 级 `.ai-data`，可由启动器探活或拉起，但不写入 Instance PID 状态，也不随 Instance 退出。`cloudflared` 运行时目录为 `.ai-data/cloudflare/`。本机 SearXNG 仍可由启动器探活，但不参与 `search.web`。非旧 local 布局的设备 Cookie 使用可读 instanceId 加 instanceId / canonical instanceRoot 短哈希，避免不同端口实例共享 Cookie key。
 
 ## 鸿蒙端策略
 
@@ -192,7 +193,7 @@ Domain / Route / Tool Registry。Source Definition 必须声明自己的 input/o
 SourceHub 在 reader 前后分别校验，并产生带 `sourceId`、`providerId`、`observedAt`、status 和 warnings
 的 `SourceSnapshot`。
 
-当前迁入 `market.*`、`content.x.home`、`content.xueqiu.home`、`content.bilibili.import`、`content.trendforce.public`，以及只读的
+当前迁入 `market.*`、`content.x.home`、`content.xueqiu.home`、`content.bilibili.import`、`content.trendforce.public`、`content.media.articles`，以及只读的
 `calendar.*` / `policy.*` 静态信号源。`search.web` 只在本地循环回退时注册。后两类统一投影为 `ScheduledEvent` / `OfficialRelease`：
 只记录官方已公开的时间、文件和事件，不包含 importance、forecast、consensus、impact 或多空判断。
 按公开固定规则生成而非逐日列在官网日历上的条目必须标记 `scheduleBasis=official-rule` 与

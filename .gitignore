@@ -16,16 +16,22 @@ coverage/
 .codex-grok/
 instances/
 
-# Portable private Instance snapshot. Keep the durable DB/content, not live WAL/runtime state.
+# Private Instance catalogs/imports/blobs are versioned; runtime SQLite stays local.
 data/*
 !data/.gitkeep
-!data/ai-center.db
 !data/imports/
 !data/imports/**
 !data/blobs/
 !data/blobs/**
+data/**/*.db
+data/**/*.sqlite
+data/**/*.sqlite3
 data/**/*.db-wal
 data/**/*.db-shm
+data/**/*.sqlite-wal
+data/**/*.sqlite-shm
+data/**/*.sqlite3-wal
+data/**/*.sqlite3-shm
 data/logs/
 .ai-data/
 

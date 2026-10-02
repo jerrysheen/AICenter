@@ -114,6 +114,20 @@
       "keywords": ["利率", "通胀", "央行", "就业", "GDP"]
     },
     {
+      "id": "macro_commodity",
+      "name": "大宗商品",
+      "level": 2,
+      "parent_id": "macro",
+      "keywords": ["黄金", "贵金属", "COMEX", "沪金", "沪银", "金价", "原油", "WTI", "布伦特", "碳酸锂", "集运指数", "集运欧线"]
+    },
+    {
+      "id": "crypto",
+      "name": "加密资产",
+      "level": 1,
+      "parent_id": null,
+      "keywords": ["比特币", "以太坊", "加密货币", "稳定币", "BTC", "ETH", "USDT", "USDC", "DeFi", "Coinbase", "Binance", "山寨币"]
+    },
+    {
       "id": "market_us",
       "name": "美股",
       "level": 1,

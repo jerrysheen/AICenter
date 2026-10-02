@@ -27,7 +27,7 @@ export const AiRunContextRefSchema = z.object({
   runId: EntityIdSchema,
   workspaceId: WorkspaceIdSchema,
   resourceType: z.string().trim().min(1).max(64),
-  resourceId: z.string().trim().min(1).max(256),
+  resourceId: z.string().trim().min(1).max(267),
   revision: z.number().int().positive().nullable(),
   asOf: EpochMillisSchema.nullable(),
   origin: z.enum(['selected', 'tool']).default('tool'),

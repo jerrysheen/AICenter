@@ -31,6 +31,9 @@ test('ask exchange exposes a page-only share image action', () => {
   const share = readFileSync(path.join('apps', 'web', 'public', 'share-card.js'), 'utf8');
   assert.match(share, /share-sheet-question/);
   assert.match(share, /function paintTree/);
+  assert.match(share, /function textLineBoxes/);
+  assert.match(share, /function paintListMarker/);
+  assert.doesNotMatch(share, /const maxWidth = Math\.max/);
   assert.match(share, /function makePreviewDataUrl/);
   assert.match(share, /image\/jpeg/);
   assert.doesNotMatch(share, /foreignObject/);

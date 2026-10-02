@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import type { MediaArticleTranslationSchema } from './media.js';
+export type MediaArticleTranslation = z.infer<typeof MediaArticleTranslationSchema>;
 import type { SourceAccountSchema, SubscriptionSchema, CaptureSchema, ContentItemSchema, UserItemStateSchema, FeedItemTranslationSchema, FeedIdentityFingerprintSchema } from './feed.js';
 import type {
   InstrumentSchema, InstrumentAliasSchema, QuoteSnapshotSchema, PortfolioSchema, TransactionSchema,

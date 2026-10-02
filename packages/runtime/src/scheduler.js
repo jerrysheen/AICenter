@@ -16,6 +16,7 @@ export function createScheduler(options) {
     const created = [];
     for (const schedule of due) {
       if (!allowedJobTypes.has(schedule.jobType)) continue;
+      if (typeof options.beforeEnqueue === 'function' && options.beforeEnqueue(schedule, at) === false) continue;
       const result = store.enqueueDueSchedule(schedule.id, at);
       if (result) created.push(result);
     }

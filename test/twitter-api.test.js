@@ -3,7 +3,23 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { createAiCenterServer } from '../apps/web/src/server.js';
+
+function tagStoredItems(databasePath) {
+  const db = new Database(databasePath);
+  const now = Date.now();
+  const insert = db.prepare(`INSERT INTO resource_taggings
+    (workspace_id, resource_type, resource_id, tags_json, tag_catalog_version, prompt_version,
+     model, truncated_for_model, analyzed_at, created_at, updated_at)
+    VALUES (?, 'content-item', ?, '["ai"]', 'tags_v1', 'tag_v1', 'test', 0, ?, ?, ?)
+    ON CONFLICT(workspace_id, resource_type, resource_id) DO UPDATE SET
+      tags_json = excluded.tags_json`);
+  for (const item of db.prepare('SELECT id, workspace_id FROM content_items').all()) {
+    insert.run(item.workspace_id, item.id, now, now, now);
+  }
+  db.close();
+}
 
 test('x feed API caches source items and only refreshes on demand', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-xfeed-'));
@@ -48,7 +64,9 @@ test('x feed API caches source items and only refreshes on demand', async () => 
     const live = await fetch(`${address.localUrl}/api/v1/feed/x?feed=for-you&limit=50&refresh=1`).then((response) => response.json());
     assert.equal(live.ok, true);
     assert.equal(calls, 1);
-    assert.equal(live.feed.items[0].externalId, '1');
+    assert.equal(live.feed.added, 1);
+    assert.equal(live.feed.items.length, 0);
+    tagStoredItems(path.join(directory, 'ai-center.db'));
     const again = await fetch(`${address.localUrl}/api/v1/feed/x?feed=for-you&limit=50`).then((response) => response.json());
     assert.equal(calls, 1);
     assert.equal(again.feed.mode, 'cached');

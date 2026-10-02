@@ -9,6 +9,7 @@ import {
   fetchBilibiliAiSubtitle,
   resolveDefaultBskPath,
 } from '../packages/connectors/src/index.js';
+import { runBrowserProcess } from '../packages/connectors/src/browser/browserskill-client.js';
 
 function createRecordingProvider(options = {}) {
   const calls = [];
@@ -97,6 +98,32 @@ test('BrowserSkillClient parses JSON session start and status', async () => {
   assert.deepEqual(commands[1].slice(0, 3), ['--json', 'session', 'start']);
   assert.ok(commands[1].includes('--no-focus'));
   assert.ok(commands[1].includes('bilibili.subtitle'));
+});
+
+test('BrowserSkill navigate passes a timeout and optional wait condition', async () => {
+  const commands = [];
+  const client = createBrowserSkillClient({
+    timeoutMs: 60_000,
+    async runCommand(args, options) {
+      commands.push({ args, timeoutMs: options.timeoutMs });
+      return { code: 0, stdout: JSON.stringify({ ok: true, final_url: args[2] }), stderr: '' };
+    },
+  });
+  await client.navigate('SESS', 'https://x.com/home', { timeoutMs: 45_000, waitUntil: 'domcontentloaded' });
+  assert.ok(commands[0].args.includes('--timeout'));
+  assert.ok(commands[0].args.includes('45000ms'));
+  assert.ok(commands[0].args.includes('--wait-until'));
+  assert.ok(commands[0].args.includes('domcontentloaded'));
+  assert.equal(commands[0].timeoutMs, 65_000);
+});
+
+test('browser process timeout settles without waiting for close', async () => {
+  const started = Date.now();
+  await assert.rejects(
+    () => runBrowserProcess(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { timeoutMs: 200 }),
+    (error) => error.killed === true,
+  );
+  assert.ok(Date.now() - started < 2_000);
 });
 
 test('BrowserSkillClient click and fill use selector flags', async () => {

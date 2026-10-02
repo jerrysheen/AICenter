@@ -108,6 +108,10 @@ export function createDailyBriefService({
       const workspaceId = input.workspaceId || 'local';
       const report = reportRepository.getDailyReportById(workspaceId, input.reportId);
       if (!report) throw new Error('日报不存在');
+      const existing = reportRepository.getDailyBriefByReportId?.(workspaceId, report.id);
+      if (input.catchup === true && existing?.sourceReportUpdatedAt === report.updatedAt) {
+        return existing;
+      }
       const previous = reportRepository.getPreviousDailyReport(workspaceId, report.reportDate);
       const pool = buildDailyBriefCandidates(report, previous);
       const generatedAt = now();
@@ -120,7 +124,6 @@ export function createDailyBriefService({
         taskInstruction: DAILY_BRIEF_TASK_INSTRUCTION,
       });
       const modelOutput = parseDailyBriefModelText(result?.answer);
-      const existing = reportRepository.getDailyBriefByReportId?.(workspaceId, report.id);
       const brief = assembleDailyBrief({
         id: existing?.id || input.id || randomUUID(),
         report,

@@ -1,8 +1,61 @@
 import { parseBilibiliImportInput, parseHideFlag, parsePatchUserItemStateInput, parsePersistFeedTranslationsInput, parsePostInput, parseTranslateBatchInput, parseTranslateInput, ValidationError } from '../../../../packages/contracts/src/index.js';
 import { json, readJson } from '../http/response.js';
 
+function workspaceIdFrom(identity) {
+  return identity?.device?.workspaceId || 'local';
+}
+
 export function createFeedRoutes() {
   return [
+    {
+      method: 'POST', path: '/api/v1/feed/media/probe',
+      async handler({ request, response, services, identity }) {
+        if (!services.media) throw new ValidationError('尚未启用 media 信息源', ['platform']);
+        const body = await readJson(request);
+        const sourceKeys = Array.isArray(body.sourceKeys)
+          ? body.sourceKeys
+          : String(body.sourceKeys || '').split(',').map((item) => item.trim()).filter(Boolean);
+        if (body.run === true) {
+          const job = services.runtime.requestMediaProbe({workspaceId:workspaceIdFrom(identity),sourceKeys,policyReviewed:body.policyReviewed === true});
+          json(response,202,{ok:true,jobId:job.id});return;
+        }
+        const probe = await services.media.probe({
+          workspaceId: workspaceIdFrom(identity),
+          sourceKeys,
+          policyReviewed: body.policyReviewed === true,
+          run: body.run === true,
+        });
+        json(response, 200, { ok: true, probe });
+      },
+    },
+    {
+      method: 'POST', path: /^\/api\/v1\/feed\/media\/sources\/([a-z0-9]+)\/(enable|disable)$/,
+      handler({ response, services, identity, params }) {
+        if (!services.media) throw new ValidationError('尚未启用 media 信息源', ['platform']);
+        const workspaceId = workspaceIdFrom(identity);
+        const result = params.values[1] === 'enable'
+          ? services.media.enableSource(workspaceId, params.values[0])
+          : services.media.disableSource(workspaceId, params.values[0]);
+        json(response, result.ok ? 200 : 409, {
+          ok: result.ok,
+          error: result.ok ? '' : `来源未启用：${result.health}`,
+          result,
+        });
+      },
+    },
+    {
+      method: 'POST', path: '/api/v1/feed/media/bodies',
+      async handler({ request, response, services, identity }) {
+        if (!services.media) throw new ValidationError('尚未启用 media 信息源', ['platform']);
+        const body = await readJson(request);
+        if (body.usageReviewed === true || body.repair === true) {
+          if (identity?.kind !== 'desktop') { json(response,403,{ ok: false,error: '正文用途确认与修复只能在本机执行' }); return; }
+          if (body.usageReviewed === true) services.media.acknowledgeBodyUse(workspaceIdFrom(identity),body.sourceKeys || []);
+        }
+        const job = services.runtime.requestMediaBodies({ workspaceId: workspaceIdFrom(identity), externalIds: body.externalIds || [], repair: body.repair === true });
+        json(response, 202, { ok: true, jobId: job.id });
+      },
+    },
     {
       method: 'GET', path: '/api/v1/posts',
       handler({ response, services, url }) {
@@ -84,12 +137,14 @@ export function createFeedRoutes() {
         const parser = feedQueryParsers.get(providerId);
         if (!parser) throw new ValidationError(`尚未启用 ${providerId} 信息源`, ['platform']);
         try {
+          const query = parser(Object.fromEntries(url.searchParams.entries()));
+          const mediaJob = providerId === 'media' && query.refresh ? services.runtime.requestMediaSync({ workspaceId: workspaceIdFrom(identity), channel: query.channel }) : null;
           const feed = await services.feed.getExternalFeed(
             providerId,
-            parser(Object.fromEntries(url.searchParams.entries())),
+            query,
             { workspaceId: identity?.device?.workspaceId || 'local' },
           );
-          json(response, 200, { ok: true, feed });
+          json(response, 200, { ok: true, feed, ...(mediaJob ? { jobId: mediaJob.id } : {}) });
         } catch (error) {
           if (error instanceof ValidationError) throw error;
           json(response, 502, { ok: false, error: error instanceof Error ? error.message : '信息流加载失败' });

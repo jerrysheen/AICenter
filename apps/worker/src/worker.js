@@ -1,14 +1,20 @@
+import { loadMediaConfig } from '../../../packages/instance/src/media-config.js';
+import { createMediaConnector } from '../../../packages/connectors/src/media/port.js';
+import { createMediaBriefPort } from '../../../packages/runtime/src/media-brief-port.js';
 import { hostname } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
-import { createConfiguredBrowserRuntime, createCursorSessionPort, createDeepSeekSearchProvider, createDoubaoAuxiliarySearch, createElucidGrokAgentClient, createGeminiTagPort, createLauncherRestartPort, createLocalKnowledgeFiles, createPersonalAssetService, createTypeSafeSystemOneClient } from '../../../packages/connectors/src/index.js';
+import { createConfiguredBrowserRuntime, createCursorSessionPort, createDeepSeekSearchProvider, createDoubaoAuxiliarySearch, createElucidGrokAgentClient, createGeminiTagPort, createLauncherRestartPort, createLocalKnowledgeFiles, createPersonalAssetService, createTranslateService, createTypeSafeSystemOneClient } from '../../../packages/connectors/src/index.js';
 import { createAgentQualityLayerFromEnv } from '../../../packages/runtime/src/agent-quality.js';
 import { articleAnalysisManifest, createArticleAnalysisJobHandlers } from '../../../packages/runtime/src/article-analysis/article-analysis-module.js';
 import { createAttachmentStore, createStore } from '../../../packages/database/src/index.js';
 import { createFeedFilterFromEnv } from '../../../packages/domain/src/feed-filter.js';
 import { resolveDailyConfig } from '../../../packages/domain/src/daily-window.js';
 import { createFeedService } from '../../../packages/domain/src/feed-service.js';
+import { createMediaIngestionService } from '../../../packages/domain/src/media-ingestion-service.js';
+import { ensureMediaIndexSyncSchedule, MEDIA_ENRICH_JOB_TYPE } from '../../../packages/connectors/src/media/index.js';
+import { createMediaEnrichJobHandlers } from '../../../packages/runtime/src/media-enrich-module.js';
 import { createKnowledgeService } from '../../../packages/domain/src/knowledge-service.js';
 import { createMarketStatisticsService } from '../../../packages/domain/src/market-statistics-service.js';
 import { createReportService } from '../../../packages/domain/src/report-service.js';
@@ -33,6 +39,7 @@ import { createJobRunner } from '../../../packages/runtime/src/job-runner.js';
 import { createScheduler } from '../../../packages/runtime/src/scheduler.js';
 import { createDailyBriefService } from '../../../packages/domain/src/daily-brief-service.js';
 import { createReportJobHandlers, ensureDailyReportSchedule, reportDailyManifest } from '../../../packages/runtime/src/report-module.js';
+import { createFeedAutomationJobHandlers, ensureDefaultContentSubscriptions, ensureFeedSubscriptionSyncSchedule, FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE, FEED_SYNC_MAX_RUNTIME_MS, feedAutomationManifest, prepareFeedSyncEnqueue } from '../../../packages/runtime/src/feed-automation-module.js';
 import { createStrategyJobHandlers, ensureDividendStrategySchedule, strategySnapshotManifest } from '../../../packages/runtime/src/strategy-module.js';
 import { createQuantJobHandlers, quantLabManifest } from '../../../packages/runtime/src/quant-module.js';
 import { QUANT_PREPARE_JOB_TYPE, QUANT_RUN_JOB_TYPE } from '../../../packages/contracts/src/index.js';
@@ -120,10 +127,21 @@ export function createAiCenterWorker(options = {}) {
   const store = options.store || createStore(instance.databasePath);
   const staleAfterMs = Number(options.staleAfterMs || process.env.AI_CENTER_WORKER_LEASE_MS) || 10 * 60_000;
   store.recoverStaleJobs(staleAfterMs);
+  store.abandonRunningJobs?.([MEDIA_ENRICH_JOB_TYPE], 'Worker 已重启，未完成的正文任务需按保存状态继续');
+  store.repositories?.media?.recoverBriefProcessing?.();
   store.abandonRunningJobs?.(
     [QUANT_PREPARE_JOB_TYPE, QUANT_RUN_JOB_TYPE],
     'Worker 已重启，未完成的量化任务不会自动重跑',
   );
+  store.abandonRunningJobs?.(
+    [FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE],
+    'Worker 已重启，未完成的订阅同步改由新的一轮执行',
+  );
+  store.discardQueuedJobs?.(
+    FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE,
+    'Worker 重启时合并了积压的订阅同步',
+  );
+  store.repositories?.feed?.releaseOpenSubscriptionLeases?.();
   const webSearchPort = runtimeMode === 'local' || options.webSearchPort !== undefined
     ? createOptionalSearchPort(options.webSearchPort)
     : null;
@@ -132,6 +150,14 @@ export function createAiCenterWorker(options = {}) {
     defaultBrowserId: instance.browserId,
   });
   let feedService;
+  const mediaService = options.mediaService || (store.repositories?.media
+    ? createMediaIngestionService({
+      mediaRepository: store.repositories.media,
+      mediaPort: createMediaConnector({ ...loadMediaConfig(instance.configDirectory), readSource: (...args) => sourcePort.read(...args) }),
+      feedRepository: store.repositories.feed,
+      taggingRepository: store.repositories.tagging,
+    })
+    : null);
   const registry = options.moduleRegistry || createSourceModuleRegistry({
     twitterService: options.twitterService,
     bilibiliService: options.bilibiliService,
@@ -143,6 +169,7 @@ export function createAiCenterWorker(options = {}) {
     marketCatalog: options.marketCatalog,
     marketCatalogPath: instance.marketCatalogPath,
     syncFeed: (...args) => feedService.getExternalFeed(...args),
+    mediaService,
   });
   const sourcePort = options.sourcePort || createSourceHub(registry);
   const typesafeClient = options.typesafeClient || createTypeSafeSystemOneClient({ env });
@@ -154,6 +181,8 @@ export function createAiCenterWorker(options = {}) {
     feedRepository: store.repositories.feed,
     sourcePort,
     feedFilter,
+    mediaPort: mediaService,
+    translationPort: options.translateService || createTranslateService(),
   });
   const workPackageTracePort = options.workPackageTracePort || createWorkPackageTracePort({
     logDirectory: path.join(instance.runtimeDirectory, 'logs'),
@@ -188,6 +217,7 @@ export function createAiCenterWorker(options = {}) {
   const reportService = options.reportService || createReportService({
     reportRepository: store.repositories.report,
     feedService,
+    mediaPort: mediaService,
     tradingService,
     staticSignalPort: options.staticSignalPort || {
       readBoard: (input, readOptions) => readStaticSignalBoard(sourcePort, input, readOptions),
@@ -206,6 +236,7 @@ export function createAiCenterWorker(options = {}) {
     feedService,
     tradingService,
     knowledgeService,
+    reportService,
   });
   const structureLlm = options.structureLlm || options.agentClient || createConfiguredStructureLlm(env) || {
     async respond() {
@@ -324,15 +355,47 @@ export function createAiCenterWorker(options = {}) {
       env,
     }),
   });
+  registry.register({
+    manifest: feedAutomationManifest,
+    jobHandlers: options.feedAutomationJobHandlers || createFeedAutomationJobHandlers({
+      feedService,
+      feedRepository: store.repositories.feed,
+      taggingService,
+    }),
+  });
+  if (mediaService) {
+    registry.register({
+      manifest: {
+        id: 'media.index.enrich',
+        version: '1.0.0',
+        capabilities: ['media.enrich'],
+        jobTypes: [MEDIA_ENRICH_JOB_TYPE],
+        sourceIds: [],
+      },
+      jobHandlers: options.mediaEnrichJobHandlers || createMediaEnrichJobHandlers({
+        mediaService,
+        feedService,
+        taggingService,
+        briefPort: createMediaBriefPort(agentRuntime),
+      }),
+    });
+  }
   const handlers = options.handlers || registry.createJobHandlers();
   if (options.enableDefaultSchedules !== false) {
     ensureDailyReportSchedule(store, dailyConfig);
     ensureDividendStrategySchedule(store);
+    ensureFeedSubscriptionSyncSchedule(store);
+    ensureMediaIndexSyncSchedule(store);
+    ensureDefaultContentSubscriptions(store.repositories.feed);
   }
   const scheduler = options.scheduler || createScheduler({
     store,
     allowedJobTypes: Object.keys(handlers),
     pollIntervalMs: options.schedulePollIntervalMs || env.AI_CENTER_SCHEDULER_POLL_MS || 20_000,
+    beforeEnqueue(schedule, at) {
+      if (schedule.jobType !== FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE) return true;
+      return prepareFeedSyncEnqueue(store, at);
+    },
   });
   const runner = createJobRunner({
     store,
@@ -341,6 +404,12 @@ export function createAiCenterWorker(options = {}) {
     pollIntervalMs: options.pollIntervalMs || process.env.AI_CENTER_WORKER_POLL_MS,
     staleAfterMs,
     recoverEveryMs: options.recoverEveryMs || process.env.AI_CENTER_WORKER_RECOVER_MS,
+    supersedeAfterMs: {
+      [FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE]: FEED_SYNC_MAX_RUNTIME_MS,
+    },
+    onSupersede() {
+      store.repositories?.feed?.releaseOpenSubscriptionLeases?.(Date.now(), FEED_SYNC_MAX_RUNTIME_MS);
+    },
     concurrency: options.concurrency || {
       workPackageDispatchLimit: options.workPackageConcurrency
         ?? process.env.AI_CENTER_WORKER_WORK_PACKAGE_CONCURRENCY,

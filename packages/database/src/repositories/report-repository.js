@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  DailyBriefIndexItemSchema,
   DailyBriefSchema,
   DailyReportSchema,
   parseContract,
@@ -97,10 +98,43 @@ export function createReportRepository(database, emitEvent) {
       return row ? mapBrief(row) : null;
     },
 
+    getDailyBriefReferenceSnapshot(workspaceId, reportDate) {
+      const row = database.prepare(`SELECT brief_json, input_snapshot_json FROM daily_report_briefs
+        WHERE workspace_id = ? AND report_date = ?`).get(workspaceId, reportDate);
+      return row ? {
+        brief: mapBrief(row),
+        inputSnapshot: parseJson(row.input_snapshot_json, {}),
+      } : null;
+    },
+
     getLatestDailyBrief(workspaceId) {
       const row = database.prepare(`SELECT * FROM daily_report_briefs
         WHERE workspace_id = ? ORDER BY report_date DESC, updated_at DESC LIMIT 1`).get(workspaceId);
       return row ? mapBrief(row) : null;
+    },
+
+    listDailyBriefs(workspaceId, limit = 60) {
+      const safeLimit = Math.max(1, Math.min(Number(limit) || 60, 200));
+      const rows = database.prepare(`SELECT report_date,
+          json_extract(brief_json, '$.overview') AS overview,
+          COALESCE(json_array_length(json_extract(brief_json, '$.items')), 0) AS item_count,
+          json_extract(brief_json, '$.generatedAt') AS generated_at
+        FROM daily_report_briefs
+        WHERE workspace_id = ?
+        ORDER BY report_date DESC
+        LIMIT ?`).all(workspaceId, safeLimit);
+      return rows.flatMap((row) => {
+        try {
+          return [parseContract(DailyBriefIndexItemSchema, {
+            reportDate: row.report_date,
+            overview: row.overview,
+            itemCount: Number(row.item_count) || 0,
+            generatedAt: Number(row.generated_at),
+          })];
+        } catch {
+          return [];
+        }
+      });
     },
 
     upsertDailyBrief(value) {

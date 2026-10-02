@@ -1,3 +1,5 @@
+import { loadMediaConfig } from '../../../packages/instance/src/media-config.js';
+import { createMediaConnector } from '../../../packages/connectors/src/media/port.js';
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -5,10 +7,10 @@ import { hostname as systemHostname, networkInterfaces } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import QRCode from 'qrcode';
-import { parseBilibiliFeedQuery, parseTrendForceFeedQuery, parseXFeedQuery, parseXueqiuFeedQuery, ValidationError } from '../../../packages/contracts/src/index.js';
+import { parseBilibiliFeedQuery, parseMediaFeedQuery, parseTrendForceFeedQuery, parseXFeedQuery, parseXueqiuFeedQuery, ValidationError } from '../../../packages/contracts/src/index.js';
 import { createConfiguredBrowserRuntime, createDeepSeekSearchProvider, createLauncherRestartPort, createLocalKnowledgeFiles, createPersonalAssetService, createTranslateService, createTypeSafeSystemOneClient } from '../../../packages/connectors/src/index.js';
 import { createAttachmentStore, createStore } from '../../../packages/database/src/index.js';
-import { createDomainServices, createFeedFilterFromEnv, resolveDailyConfig, resolveLoginCredential } from '../../../packages/domain/src/index.js';
+import { createDomainServices, createFeedFilterFromEnv, createMediaIngestionService, resolveDailyConfig, resolveLoginCredential } from '../../../packages/domain/src/index.js';
 import { resolveInstanceConfig } from '../../../packages/instance/src/index.js';
 import { createAgentTraceLog } from '../../../packages/runtime/src/agent-trace-log.js';
 import { createWorkPackageTracePort } from '../../../packages/runtime/src/work-package-trace.js';
@@ -136,6 +138,14 @@ export function createAiCenterServer(options = {}) {
     defaultBrowserId: instance.browserId,
   });
   let services;
+  const mediaService = options.mediaService || (store.repositories?.media
+    ? createMediaIngestionService({
+      mediaRepository: store.repositories.media,
+      mediaPort: createMediaConnector({ ...loadMediaConfig(instance.configDirectory), readSource: (...args) => sourcePort.read(...args) }),
+      feedRepository: store.repositories.feed,
+      taggingRepository: store.repositories.tagging,
+    })
+    : null);
   const moduleRegistry = options.moduleRegistry || createSourceModuleRegistry({
     twitterService: options.twitterService,
     bilibiliService: options.bilibiliService,
@@ -147,6 +157,7 @@ export function createAiCenterServer(options = {}) {
     marketCatalog: options.marketCatalog,
     marketCatalogPath: instance.marketCatalogPath,
     syncFeed: (...args) => services.feed.getExternalFeed(...args),
+    mediaService,
   });
   const sourcePort = options.sourcePort || createSourceHub(moduleRegistry);
   const personalAssetPort = options.personalAssetService || createPersonalAssetService({
@@ -163,6 +174,7 @@ export function createAiCenterServer(options = {}) {
     feedFilter: options.feedFilter !== undefined
       ? options.feedFilter
       : createFeedFilterFromEnv({ client: typesafeClient, env }),
+    mediaService,
     agentProgressPort: options.agentProgressPort || createAgentTraceLog({
       dataDirectory,
       logDirectory: instance.legacyLayout ? undefined : path.join(instance.runtimeDirectory, 'logs'),
@@ -198,6 +210,7 @@ export function createAiCenterServer(options = {}) {
     ['xueqiu', parseXueqiuFeedQuery],
     ['bilibili', parseBilibiliFeedQuery],
     ['trendforce', parseTrendForceFeedQuery],
+    ['media', parseMediaFeedQuery],
   ]);
   const serveStatic = createStaticFileHandler(publicDirectory);
   const uiAssets = Object.freeze({

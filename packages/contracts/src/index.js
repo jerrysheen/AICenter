@@ -32,6 +32,7 @@ import { WorkerJobConcurrencySchema } from './runtime.js';
 export * from './errors.js';
 export * from './common.js';
 export * from './feed.js';
+export * from './media.js';
 export * from './trading.js';
 export * from './knowledge.js';
 export * from './taxonomy.js';
@@ -221,6 +222,26 @@ export function parseXueqiuFeedQuery(value) {
   }
   const refresh = query.refresh === true || query.refresh === '1' || query.refresh === 'true';
   return { platform: 'xueqiu', feed, limit: rawLimit, refresh };
+}
+
+export function parseMediaFeedQuery(value) {
+  const query = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const platform = cleanText(query.platform || 'media', { field: '平台', max: 16 }) || 'media';
+  if (platform !== 'media') throw new ValidationError('当前只支持媒体资讯索引', ['platform']);
+  const channelKey = cleanText(query.channel || query.feed || 'tech', { field: '栏目', max: 16 }).toLowerCase();
+  const channel = channelKey === 'macro' ? 'macro' : 'tech';
+  const refresh = query.refresh === true || query.refresh === '1' || query.refresh === 'true';
+  const options = {};
+  if (query.view !== undefined) {
+    if (!['all','full','partial','index','pending','failed'].includes(query.view)) throw new ValidationError('未知正文视图', ['view']);
+    options.view = query.view;
+  }
+  for (const key of ['offset','limit']) if (query[key] !== undefined) {
+    const number = Number(query[key]);
+    if (!Number.isInteger(number) || number < (key === 'limit' ? 1 : 0) || number > (key === 'limit' ? 100 : 10000)) throw new ValidationError('分页范围不合法',[key]);
+    options[key] = number;
+  }
+  return { platform: 'media', feed: channel, channel, refresh, ...options };
 }
 
 export function parseTrendForceFeedQuery(value) {

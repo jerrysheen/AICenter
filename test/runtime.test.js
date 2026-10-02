@@ -159,6 +159,47 @@ test('job runner recovers stale leases on an interval and does not reset fresh j
   assert.ok(recoveredAt.length >= 2, `expected periodic recover, got ${recoveredAt.length}`);
 });
 
+test('job runner lets a new run replace a subscription sync that exceeded its budget', async () => {
+  const temporary = temporaryDatabase('ai-center-supersede-');
+  const store = createStore(temporary.path);
+  let releaseHang = () => {};
+  const started = [];
+  const runner = createJobRunner({
+    store,
+    workerId: 'supersede-worker',
+    pollIntervalMs: 20,
+    supersedeAfterMs: { 'feed.subscriptions.sync': 60 },
+    handlers: {
+      'feed.subscriptions.sync': (input) => {
+        started.push(input.n);
+        if (input.n === 1) return new Promise((resolve) => { releaseHang = resolve; });
+        return { n: input.n };
+      },
+    },
+  });
+  store.createJob({ type: 'feed.subscriptions.sync', input: { n: 1 }, maxAttempts: 1 });
+  const running = runner.start();
+  const claimedDeadline = Date.now() + 1_000;
+  while (!started.includes(1) && Date.now() < claimedDeadline) await wait(20);
+  store.createJob({ type: 'feed.subscriptions.sync', input: { n: 2 }, maxAttempts: 1 });
+  const replacedDeadline = Date.now() + 1_000;
+  while (!started.includes(2) && Date.now() < replacedDeadline) await wait(20);
+  assert.deepEqual(started, [1, 2]);
+  const jobs = store.listJobs(10);
+  assert.equal(jobs.find((job) => job.input.n === 1).status, 'failed');
+  assert.match(jobs.find((job) => job.input.n === 1).error.message, /上一轮仍未结束/);
+  releaseHang({ superseded: true });
+  const doneDeadline = Date.now() + 1_000;
+  while (jobs.find((job) => job.input.n === 2) && store.getJob(jobs.find((job) => job.input.n === 2).id).status !== 'completed' && Date.now() < doneDeadline) {
+    await wait(20);
+  }
+  assert.equal(store.getJob(jobs.find((job) => job.input.n === 2).id).status, 'completed');
+  runner.stop();
+  await running;
+  store.close();
+  temporary.remove();
+});
+
 test('idle job poll does not accumulate abort listeners', async () => {
   const controller = new AbortController();
   for (let index = 0; index < 40; index += 1) {

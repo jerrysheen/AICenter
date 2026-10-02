@@ -1227,6 +1227,119 @@ const migrations = [
       `);
     },
   },
+  {
+    version: 33,
+    name: 'media-index',
+    up(database) {
+      database.exec(`
+        CREATE TABLE media_source_states (
+          workspace_id TEXT NOT NULL,
+          source_key TEXT NOT NULL,
+          enabled INTEGER NOT NULL DEFAULT 0,
+          host_direct_verified INTEGER NOT NULL DEFAULT 0,
+          body_use_acknowledged INTEGER NOT NULL DEFAULT 0,
+          health TEXT NOT NULL DEFAULT 'disabled',
+          health_detail TEXT NOT NULL DEFAULT '',
+          etag TEXT NOT NULL DEFAULT '',
+          last_modified TEXT NOT NULL DEFAULT '',
+          feed_hash TEXT NOT NULL DEFAULT '',
+          last_probe_json TEXT NOT NULL DEFAULT '',
+          last_sync_at INTEGER,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (workspace_id, source_key),
+          FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+
+        CREATE TABLE media_index_entries (
+          workspace_id TEXT NOT NULL,
+          external_id TEXT NOT NULL,
+          source_key TEXT NOT NULL,
+          publisher_key TEXT NOT NULL,
+          channel TEXT NOT NULL,
+          canonical_url TEXT NOT NULL,
+          title TEXT NOT NULL DEFAULT '',
+          summary TEXT NOT NULL DEFAULT '',
+          published_at INTEGER,
+          published_at_raw TEXT NOT NULL DEFAULT '',
+          content_level TEXT NOT NULL,
+          content_hash TEXT NOT NULL,
+          revision INTEGER NOT NULL DEFAULT 1,
+          status TEXT NOT NULL,
+          origin_url TEXT NOT NULL DEFAULT '',
+          discovered_via_json TEXT NOT NULL DEFAULT '',
+          observed_at INTEGER NOT NULL,
+          body_hash TEXT NOT NULL DEFAULT '',
+          truncated INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (workspace_id, external_id),
+          FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        CREATE INDEX idx_media_index_channel
+          ON media_index_entries(workspace_id, channel, observed_at DESC);
+
+        CREATE TABLE media_budget_days (
+          workspace_id TEXT NOT NULL,
+          day_key TEXT NOT NULL,
+          new_metadata INTEGER NOT NULL DEFAULT 0,
+          selected_bodies INTEGER NOT NULL DEFAULT 0,
+          deferred_count INTEGER NOT NULL DEFAULT 0,
+          earliest_deferred_at INTEGER,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (workspace_id, day_key),
+          FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+
+        CREATE TABLE media_source_budgets (
+          workspace_id TEXT NOT NULL,
+          day_key TEXT NOT NULL,
+          source_key TEXT NOT NULL,
+          bodies INTEGER NOT NULL DEFAULT 0,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (workspace_id, day_key, source_key),
+          FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+
+        CREATE TABLE media_body_snapshots (
+          workspace_id TEXT NOT NULL,
+          external_id TEXT NOT NULL,
+          revision INTEGER NOT NULL,
+          body_hash TEXT NOT NULL,
+          body_text TEXT NOT NULL,
+          truncated INTEGER NOT NULL DEFAULT 0,
+          content_level TEXT NOT NULL,
+          observed_at INTEGER NOT NULL,
+          PRIMARY KEY (workspace_id, external_id, revision),
+          FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+      `);
+    },
+  },
+  {
+    version: 34,
+    name: 'media-body-observation',
+    up(database) {
+      database.exec(`
+        ALTER TABLE media_index_entries ADD COLUMN fetch_state_json TEXT NOT NULL DEFAULT '{}';
+        ALTER TABLE media_index_entries ADD COLUMN feed_body_html TEXT NOT NULL DEFAULT '';
+        ALTER TABLE media_body_snapshots ADD COLUMN article_json TEXT NOT NULL DEFAULT '{}';
+        ALTER TABLE media_body_snapshots ADD COLUMN brief_json TEXT;
+        ALTER TABLE media_budget_days ADD COLUMN body_requests INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE media_source_budgets ADD COLUMN requests INTEGER NOT NULL DEFAULT 0;
+      `);
+    },
+  },
+  {
+    version: 35,
+    name: 'media-processing-state',
+    up(database) {
+      database.exec(`CREATE TABLE media_article_processing (
+        workspace_id TEXT NOT NULL, external_id TEXT NOT NULL, body_hash TEXT NOT NULL,
+        brief_status TEXT NOT NULL, brief_reason TEXT NOT NULL DEFAULT '', last_attempt_at INTEGER NOT NULL,
+        PRIMARY KEY (workspace_id,external_id,body_hash), FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+      );`);
+    },
+  },
 ];
 
 export function backfillKnowledgeRevisionIndex(database) {

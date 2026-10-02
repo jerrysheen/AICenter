@@ -250,7 +250,7 @@ test('shadow still creates ContentItem when Jev would ignore', async () => {
   });
   const feed = await service.getExternalFeed('x', { feed: 'for-you', refresh: true });
   assert.equal(feed.added, 1);
-  assert.equal(feed.items.length, 1);
+  assert.equal(feed.items.length, 0);
   const capture = temporary.store.repositories.feed.getCapture('local', 'x', 'cta-1');
   assert.equal(capture.status, 'ready');
   assert.equal(capture.metadata.wouldKeep, false);
@@ -318,7 +318,8 @@ test('short factual posts stay KEEP and repository can look up by content hash',
   });
   const feed = await service.getExternalFeed('x', { feed: 'for-you', refresh: true });
   assert.equal(feed.added, 1);
-  assert.equal(feed.items[0].body, 'NVDA +5%');
+  assert.equal(feed.items.length, 0);
+  assert.equal(temporary.store.repositories.feed.listContentItemsByProvider('local', 'x')[0].body, 'NVDA +5%');
   const capture = temporary.store.repositories.feed.getCapture('local', 'x', 'nvda-1');
   const hashed = createHash('sha256').update(`nvda-1\nNVDA +5%\nNVDA +5%`).digest('hex');
   assert.equal(capture.contentHash, hashed);
@@ -343,7 +344,7 @@ test('missing feedFilter keeps previous ingest behavior', async () => {
   });
   const feed = await service.getExternalFeed('x', { feed: 'for-you', refresh: true });
   assert.equal(feed.added, 1);
-  assert.equal(feed.items.length, 1);
+  assert.equal(feed.items.length, 0);
   temporary.store.close();
   temporary.remove();
 });
