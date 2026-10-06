@@ -6,6 +6,7 @@ const GROUPS = Object.freeze([
   { id: 'knowledge', label: '知识', types: ['knowledge-revision'] },
   { id: 'answer', label: '回答', types: ['ai-run'] },
   { id: 'report', label: '日报', types: ['daily-brief-item'] },
+  { id: 'hourly-report', label: '小时摘选', types: ['hourly-digest'] },
   { id: 'web', label: '网页', types: ['web-result'] },
   { id: 'market', label: '持仓与市场', types: ['holdings-board', 'market-board'] },
 ]);

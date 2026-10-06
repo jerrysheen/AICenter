@@ -27,18 +27,20 @@ export function resolveHarnessLlmProvider(env = process.env) {
 }
 
 export function resolveHarnessLlm(env = process.env, { researchProfile, closedTask } = {}) {
-  const provider = resolveHarnessLlmProvider(env);
+  const hourly = closedTask === 'hourly-brief';
+  const configuredProvider = resolveHarnessLlmProvider(env);
+  const provider = hourly ? HARNESS_ELUCID_PROVIDER : configuredProvider;
   const elucidKeyEnv = text(env.ELUCID_GROK_API_KEY)
     ? 'ELUCID_GROK_API_KEY'
     : (text(env.AI_CENTER_GROK_API_KEY) ? 'AI_CENTER_GROK_API_KEY' : 'ELUCID_GROK_API_KEY');
   const elucidBaseURL = (text(env.AI_CENTER_ELUCID_GROK_API_ROOT) || HARNESS_ELUCID_DEFAULT_BASE_URL)
     .replace(/\/+$/, '');
   const deepseekBaseURL = text(env.DEEPSEEK_BASE_URL).replace(/\/+$/, '');
-  const elucidDefaultModel = text(env.AI_CENTER_HARNESS_MODEL) || HARNESS_ELUCID_DEFAULT_MODEL;
+  const elucidDefaultModel = (hourly ? text(env.AI_CENTER_HARNESS_HOURLY_MODEL) || (configuredProvider===HARNESS_ELUCID_PROVIDER ? text(env.AI_CENTER_HARNESS_MODEL) : '') : text(env.AI_CENTER_HARNESS_MODEL)) || HARNESS_ELUCID_DEFAULT_MODEL;
   const deepseekDefaultModel = text(env.AI_CENTER_HARNESS_MODEL) || HARNESS_DEFAULT_MODEL;
   const researchModel = text(env.AI_CENTER_HARNESS_RESEARCH_MODEL);
   const defaultModel = provider === HARNESS_ELUCID_PROVIDER ? elucidDefaultModel : deepseekDefaultModel;
-  const model = modelIdForProfile(defaultModel, researchModel, researchProfile);
+  const model = hourly ? defaultModel : modelIdForProfile(defaultModel, researchModel, researchProfile);
   const apiKeyEnv = provider === HARNESS_ELUCID_PROVIDER ? elucidKeyEnv : 'DEEPSEEK_API_KEY';
   return {
     provider,
@@ -50,7 +52,8 @@ export function resolveHarnessLlm(env = process.env, { researchProfile, closedTa
     baseURL: provider === HARNESS_ELUCID_PROVIDER ? elucidBaseURL : deepseekBaseURL,
     protocol: provider === HARNESS_ELUCID_PROVIDER ? 'openai-responses' : '',
     settingsYaml: materializeHarnessSettings({
-      briefModel: closedTask === 'media-brief' && provider === HARNESS_ELUCID_PROVIDER ? model : '',
+      briefModel: ['media-brief','daily-analysis','hourly-brief'].includes(closedTask) && provider === HARNESS_ELUCID_PROVIDER ? model : '',
+      briefMaxTokens:hourly ? 8192 : 4096,
       elucidKeyEnv,
       elucidBaseURL,
       deepseekBaseURL,
@@ -81,9 +84,10 @@ export function materializeHarnessSettings({
   deepseekBaseURL,
   models = [HARNESS_ELUCID_DEFAULT_MODEL, HARNESS_DEFAULT_MODEL],
   briefModel = '',
+  briefMaxTokens = 4096,
 } = {}) {
   const ids = [...new Set((models.length ? models : [HARNESS_ELUCID_DEFAULT_MODEL]).map((id) => text(id)).filter(Boolean))];
-  const modelLines = ids.map((id) => `        - id: ${yamlString(id)}${id === briefModel ? '\n          maxTokens: 4096\n          reasoningEfforts:\n            low: low' : ''}`).join('\n');
+  const modelLines = ids.map((id) => `        - id: ${yamlString(id)}${id === briefModel ? `\n          maxTokens: ${briefMaxTokens}\n          reasoningEfforts:\n            low: low` : ''}`).join('\n');
   const deepseek = [
     'llm-deepseek:',
     `  apiKeyEnv: ${yamlString('DEEPSEEK_API_KEY')}`,

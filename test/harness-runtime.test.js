@@ -46,12 +46,48 @@ test('media brief uses bounded existing Harness settings without changing other 
     assert.doesNotMatch(settings[1],/maxTokens: 4096|reasoning: low/);
     await runtime.run({message:'Normal request',closedTask:'media-brief'});
     assert.doesNotMatch(settings[2],/maxTokens: 4096|reasoning: low/);
+    await runtime.run({message:'Daily analysis',closedContext:true,closedTask:'daily-analysis'});
+    assert.match(settings[3],/maxTokens: 4096/);assert.match(settings[3],/reasoning: low/);
+    await runtime.run({message:'Ask again',closedTask:'daily-analysis'});
+    assert.doesNotMatch(settings[4],/maxTokens: 4096|reasoning: low/);
+  }finally{await runtime.close();rmSync(directory,{recursive:true,force:true});}
+});
+
+test('hourly closed stages use Elucid through the same Harness runtime and cannot change open Ask routing',async()=>{
+  const env={AI_CENTER_HARNESS_PROVIDER:'deepseek-official',AI_CENTER_HARNESS_MODEL:'deepseek-v4-flash',
+    AI_CENTER_HARNESS_RESEARCH_MODEL:'deepseek-research',ELUCID_GROK_API_KEY:'elucid-test',DEEPSEEK_API_KEY:'deepseek-test'};
+  const hourly=resolveHarnessLlm(env,{closedTask:'hourly-brief',researchProfile:{modelProfile:'research'}});
+  assert.equal(hourly.provider,'elucid-grok');assert.equal(hourly.model,'grok-4.7');assert.match(hourly.settingsYaml,/maxTokens: 8192/);
+  assert.equal(resolveHarnessLlm({...env,AI_CENTER_HARNESS_HOURLY_MODEL:'hourly-test'},{closedTask:'hourly-brief'}).model,'hourly-test');
+  assert.equal(resolveHarnessLlm(env).model,'deepseek-v4-flash');
+  const directory=temporaryDirectory(),settings=[];
+  const runtime=createHarnessAgentRuntime({tools:createToolRegistry(),runtimeDirectory:directory,env:{...env,DEEPSEEK_API_KEY:''},
+    createClient:async launch=>{settings.push(readFileSync(path.join(launch.dshHome,'settings.yaml'),'utf8'));return {run:async()=>({finalResponse:'ok',events:[]}),close:async()=>{}};}});
+  try {
+    await runtime.run({message:'小时编辑',closedContext:true,closedTask:'hourly-brief'});
+    await assert.rejects(()=>runtime.run({message:'普通 Ask',closedTask:'hourly-brief'}),/DEEPSEEK_API_KEY/);
+    assert.match(settings[0],/maxTokens: 8192/);
+    assert.ok(settings.every(s=>!s.includes('elucid-test') && !s.includes('deepseek-test')));
   }finally{await runtime.close();rmSync(directory,{recursive:true,force:true});}
 });
 
 function temporaryDirectory() {
   return mkdtempSync(path.join(os.tmpdir(), 'ai-center-harness-'));
 }
+
+test('changing a stage timeout recreates the Harness SDK client instead of reusing the old deadline',async()=>{
+  const directory=temporaryDirectory(),timeouts=[];let closed=0;
+  const runtime=createHarnessAgentRuntime({tools:createToolRegistry(),runtimeDirectory:directory,
+    env:{DEEPSEEK_API_KEY:'test-key'},createClient:async launch=>{
+      timeouts.push(launch.requestTimeoutMs);
+      return {run:async()=>({finalResponse:'ok',events:[]}),close:async()=>{closed++;}};
+    }});
+  try {
+    await runtime.run({message:'Read',closedContext:true,closedTask:'daily-analysis',timeoutMs:180000});
+    await runtime.run({message:'Edit',closedContext:true,closedTask:'daily-analysis',timeoutMs:360000});
+    assert.deepEqual(timeouts,[180000,360000]);assert.equal(closed,1);
+  }finally{await runtime.close();rmSync(directory,{recursive:true,force:true});}
+});
 
 function holdingsTools() {
   const tools = createToolRegistry();

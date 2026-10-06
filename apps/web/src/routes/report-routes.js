@@ -2,12 +2,70 @@ import {
   DailyReportDateQuerySchema,
   GenerateDailyBriefRequestSchema,
   GenerateDailyReportRequestSchema,
+  SaveDailyTrackingQuestionsSchema,
   parseContract,
+  HourlyDigestQuerySchema, GenerateHourlyDigestRequestSchema, InformationSearchInputSchema, InformationEvidenceInputSchema,
+  HourlySnapshotQuerySchema,
+  HourlyDigestIndexQuerySchema,
+  DailyBriefWindowQuerySchema,
 } from '../../../../packages/contracts/src/index.js';
 import { json, readJson } from '../http/response.js';
 
+function briefView(brief) {
+  if(!brief) return null;
+  const {providerId,modelId,...view}=brief;
+  return view;
+}
+
 export function createReportRoutes() {
   return [
+    {method:'GET',path:'/api/v1/reports/daily/brief/window',handler({response,services,url}) {
+      const input=parseContract(DailyBriefWindowQuerySchema,{date:url.searchParams.get('date') || '',revision:Number(url.searchParams.get('revision') ?? NaN)});
+      json(response,200,{ok:true,...services.report.getDailyBriefWindow('local',input)});
+    }},
+    {method:'GET',path:'/api/v1/reports/hourly/index',handler({response,services,url}) {
+      const input=parseContract(HourlyDigestIndexQuerySchema,{startAt:Number(url.searchParams.get('startAt') ?? NaN),endAt:Number(url.searchParams.get('endAt') ?? NaN)});
+      json(response,200,{ok:true,...services.report.getHourlyDigestIndex('local',input)});
+    }},
+    {method:'GET',path:'/api/v1/reports/hourly/snapshot',handler({response,services,url}) {
+      const input=parseContract(HourlySnapshotQuerySchema,{snapshotId:url.searchParams.get('snapshotId')});
+      const digest=services.report.getHourlySnapshotDigest('local',input.snapshotId);
+      json(response,digest ? 200 : 404,{ok:Boolean(digest),digest});
+    }},
+    {method:'GET',path:'/api/v1/reports/hourly',handler({response,services,url}) {
+      const input=parseContract(HourlyDigestQuerySchema,{hourStart:Number(url.searchParams.get('hourStart') ?? NaN)});
+      json(response,200,{ok:true,digest:services.report.getHourlyDigest('local',input.hourStart)});
+    }},
+    {method:'GET',path:'/api/v1/reports/hourly/search',handler({response,services,url}) {
+      const input=parseContract(InformationSearchInputSchema,{startAt:Number(url.searchParams.get('startAt') ?? NaN),endAt:Number(url.searchParams.get('endAt') ?? NaN),
+        query:url.searchParams.get('query') || '',limit:Number(url.searchParams.get('limit') || 40),offset:Number(url.searchParams.get('offset') || 0)});
+      json(response,200,{ok:true,...services.report.searchInformation('local',input)});
+    }},
+    {method:'GET',path:'/api/v1/reports/hourly/evidence',handler({response,services,url}) {
+      const input=parseContract(InformationEvidenceInputSchema,Object.fromEntries(['snapshotId','materialId','paragraphId','materialHash','materialVersion'].map(k=>[k,url.searchParams.get(k)])));
+      const evidence=services.report.getInformationEvidence('local',input);
+      json(response,evidence ? 200 : 404,{ok:Boolean(evidence),evidence});
+    }},
+    {method:'POST',path:'/api/v1/reports/hourly/generate',access:'desktop',async handler({request,response,services}) {
+      const input=parseContract(GenerateHourlyDigestRequestSchema,await readJson(request));
+      json(response,202,{ok:true,job:services.runtime.requestHourlyDigest(input)});
+    }},
+    {method:'GET',path:'/api/v1/reports/daily/tracking',handler({response,services}) {
+      json(response,200,{ok:true,questions:services.report.getTrackingQuestions('local')});
+    }},
+    {method:'PUT',path:'/api/v1/reports/daily/tracking',access:'desktop',async handler({request,response,services}) {
+      const value=parseContract(SaveDailyTrackingQuestionsSchema,await readJson(request));
+      json(response,200,{ok:true,questions:services.report.saveTrackingQuestions('local',value)});
+    }},
+    {method:'GET',path:'/api/v1/reports/daily/analysis/status',handler({response,services,url}) {
+      const query=parseContract(DailyReportDateQuerySchema,{date:url.searchParams.get('date') || ''});
+      json(response,200,{ok:true,analysis:services.report.getAnalysisStatus('local',query.date)});
+    }},
+    {method:'GET',path:'/api/v1/reports/daily/evidence',handler({response,services,url}) {
+      const query=parseContract(DailyReportDateQuerySchema,{date:url.searchParams.get('date') || ''});
+      const evidence=services.report.getDailyEvidence('local',query.date,Number(url.searchParams.get('revision')),url.searchParams.get('materialId'),url.searchParams.get('paragraphId'));
+      json(response,evidence ? 200 : 404,{ok:Boolean(evidence),evidence});
+    }},
     {
       method: 'GET',
       path: '/api/v1/reports/daily/latest',
@@ -29,7 +87,7 @@ export function createReportRoutes() {
       method: 'GET',
       path: '/api/v1/reports/daily/latest/brief',
       handler({ response, services }) {
-        json(response, 200, { ok: true, brief: services.report.getLatestDailyBrief('local') });
+        json(response, 200, { ok: true, brief: briefView(services.report.getLatestDailyBrief('local')) });
       },
     },
     {
@@ -37,7 +95,7 @@ export function createReportRoutes() {
       path: '/api/v1/reports/daily/briefs',
       handler({ response, services, url }) {
         const limit = Number(url.searchParams.get('limit') || 60);
-        json(response, 200, { ok: true, briefs: services.report.listDailyBriefs('local', limit) });
+        json(response, 200, { ok: true, briefs: services.report.listDailyBriefs('local', limit).map(briefView) });
       },
     },
     {
@@ -47,7 +105,7 @@ export function createReportRoutes() {
         const query = parseContract(DailyReportDateQuerySchema, {
           date: url.searchParams.get('date') || '',
         });
-        json(response, 200, { ok: true, brief: services.report.getDailyBrief('local', query.date) });
+        json(response, 200, { ok: true, brief: briefView(services.report.getDailyBrief('local', query.date)) });
       },
     },
     {
@@ -56,6 +114,10 @@ export function createReportRoutes() {
       access: 'desktop',
       async handler({ request, response, services }) {
         const body = parseContract(GenerateDailyBriefRequestSchema, await readJson(request));
+        if(!body.mode || body.mode==='refresh') {
+          const job=services.runtime.requestDailyReport({reportDate:body.date});
+          json(response,202,{ok:true,job});return;
+        }
         const report = body.date
           ? services.report.getDailyReport('local', body.date)
           : services.report.getLatestDailyReport('local');
@@ -63,7 +125,8 @@ export function createReportRoutes() {
           json(response, 404, { ok: false, error: '日报不存在' });
           return;
         }
-        const job = services.runtime.requestDailyBrief({ reportId: report.id });
+        const job = services.runtime.requestDailyBrief({ reportId: report.id,mode:body.mode,
+          ...(body.mode==='resume' ? {sourceReportUpdatedAt:report.updatedAt} : {}) });
         json(response, 202, { ok: true, job });
       },
     },

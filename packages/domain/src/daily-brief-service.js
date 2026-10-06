@@ -5,6 +5,7 @@ import {
   parseContract,
 } from '../../contracts/src/index.js';
 import { buildDailyBriefCandidates } from './daily-brief-candidates.js';
+import {generateDailyAnalysis} from './daily-analysis.js';
 
 export const DAILY_BRIEF_TASK_INSTRUCTION = [
   '你的任务是做注意力筛选，不是事实发现。',
@@ -93,6 +94,8 @@ export function createDailyBriefService({
   reportRepository,
   agentRuntime,
   now = () => Date.now(),
+  analysisBudget = {},
+  informationService = null,
 }) {
   if (!reportRepository?.getDailyReportById) throw new Error('daily brief service requires report repository');
   if (!agentRuntime?.run) throw new Error('daily brief service requires agent runtime');
@@ -106,12 +109,19 @@ export function createDailyBriefService({
     },
     async generateDailyBrief(input = {}) {
       const workspaceId = input.workspaceId || 'local';
-      const report = reportRepository.getDailyReportById(workspaceId, input.reportId);
+      let report = reportRepository.getDailyReportById(workspaceId, input.reportId);
       if (!report) throw new Error('日报不存在');
+      if(input.mode==='rewrite') {
+        const frozen=reportRepository.getDailyBriefReferenceSnapshot(workspaceId,report.reportDate)?.inputSnapshot?.report;
+        if(frozen) report=frozen;
+      }
+      if(input.sourceReportUpdatedAt && input.sourceReportUpdatedAt!==report.updatedAt) throw new Error('日报材料版本已变化，请使用当前版本');
       const existing = reportRepository.getDailyBriefByReportId?.(workspaceId, report.id);
       if (input.catchup === true && existing?.sourceReportUpdatedAt === report.updatedAt) {
         return existing;
       }
+      if(report.content.schemaVersion===2 && informationService) return informationService.generateDailyInformation({report,input});
+      if(report.content.schemaVersion===2) return generateDailyAnalysis({reportRepository,agentRuntime,report,input,now,budget:analysisBudget});
       const previous = reportRepository.getPreviousDailyReport(workspaceId, report.reportDate);
       const pool = buildDailyBriefCandidates(report, previous);
       const generatedAt = now();

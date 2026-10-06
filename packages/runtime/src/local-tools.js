@@ -6,6 +6,7 @@ import {
   StockStatsToolInputSchema,
   BasketStatsToolInputSchema,
   WebSearchToolInputSchema,
+  InformationSearchInputSchema, InformationEvidenceInputSchema,
 } from '../../contracts/src/index.js';
 import { formatTaxonomyPath } from '../../domain/src/knowledge-service.js';
 import { sanitizeStructuredArtifact } from '../../domain/src/structured-artifact.js';
@@ -68,12 +69,31 @@ const MARKET_GLOBAL_DESCRIPTION = '读取当前全球市场价格与行情快照
 export function createLocalToolRegistry({
   contextService, feedService, knowledgeService, tradingService, taggingService = null, sourcePort,
   marketStatisticsService = null,
+  reportService = null,
   includeLegacyWebSearch = false,
 } = {}) {
   if (!contextService || !feedService || !knowledgeService || !tradingService) {
     throw new Error('local agent tools require context, feed, knowledge, and trading services');
   }
   const registry = createToolRegistry();
+
+  if(reportService) {
+    registry.register({id:'report.information.search',effect:'read',inputSchema:InformationSearchInputSchema,maxResultBytes:256*1024,
+      description:'读取指定时间窗口的已保存小时信息摘选。适用于某小时发生了什么、近期信息概览。startAt/endAt是UTC毫秒、左闭右开、最多7天；可用query筛句子，offset分页。仅代表来源发布时间/入库时间，不代表事件精确发生时间；遗漏/未读见hours。每条展示前8条证据，evidenceCount记录完整数量，完整摘选保存在对应snapshot。先看信息句，需细节再用report.information.evidence读取冻结原段落，仍不足可继续搜索。不会联网。',
+      execute(input,context) {
+        const data=reportService.searchInformation(context.workspaceId,input);
+        data.items=data.items.map(i=>({...i,evidence:i.evidence.slice(0,8),evidenceCount:i.evidence.length}));
+        while(data.items.length>1 && Buffer.byteLength(JSON.stringify(data))>120000) data.items.pop();
+        data.nextOffset=input.offset+data.items.length<data.total ? input.offset+data.items.length : null;
+        return result(data,data.hours.map(h=>ref('hourly-digest',h.id,'小时信息摘选',{asOf:h.window.endAt})),Date.now(),data.warnings);
+      }});
+    registry.register({id:'report.information.evidence',effect:'read',inputSchema:InformationEvidenceInputSchema,
+      description:'按信息事项返回的完整evidence字段读取生成时冻结的原段落和上下文。snapshotId/materialId/paragraphId/materialHash/materialVersion均原样传回；不同版本不能混用，不联网。',
+      execute(input,context) {
+        const evidence=reportService.getInformationEvidence(context.workspaceId,input);
+        return result({evidence},evidence ? [ref('hourly-digest',input.snapshotId,evidence.material.title || '小时摘选原文',{asOf:evidence.material.eventAt})] : [],Date.now(),evidence ? [] : ['引用不存在或材料版本不匹配。']);
+      }});
+  }
 
   registry.register({
     id: 'context.build', effect: 'read', description: '用于用户需要同时快速浏览多个本地域摘要时使用。如果问题明确指向单一来源，例如 Tag、持仓、Knowledge，优先专用 Tool。与 holdings.get / feed.search / knowledge.search 重叠，不要为同一事实再调那些工具。',

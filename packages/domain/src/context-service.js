@@ -1,4 +1,5 @@
 import { parseContract, BuildContextInputSchema, ReferenceInputSchema } from '../../contracts/src/index.js';
+import {editorialReadingItems} from './brief-editorial.js';
 
 const tradingTerms = /持仓|仓位|组合|交易|资产|收益|资金|股票|市场|行情|指数|涨跌|今日|今天/;
 const feedTerms = /信息流|新闻|最近|消息|发生|市场|行情|事件|影响|今天|今日/;
@@ -11,6 +12,7 @@ const TYPE_LABELS = Object.freeze({
   'knowledge-revision': '知识',
   'ai-run': 'AI 回答',
   'daily-brief-item': '日报观点',
+  'hourly-digest': '小时简报',
 });
 
 function knowledgeRef(item) {
@@ -123,6 +125,28 @@ export function createContextService({ feedService, tradingService, knowledgeSer
 
   async function resolveOne(workspaceId, input) {
     const reference = parseContract(ReferenceInputSchema, input);
+    if(reference.resourceType==='hourly-digest') {
+      const [snapshotId,articleId,...extra]=reference.resourceId.split('/');
+      if(extra.length) return null;
+      const digest=reportService?.getHourlySnapshotDigest(workspaceId,snapshotId);
+      if(!digest) return null;
+      const selected=editorialReadingItems(digest.editorial).filter(i=>!articleId || i.id===articleId);
+      if(articleId && !selected.length) return null;
+      const title=`小时简报 · ${formatPackTime(digest.window.startAt)} — ${formatPackTime(digest.window.endAt)}${articleId ? ` · ${selected[0].title}` : ''}`;
+      const lines=[`冻结快照：${digest.id}`,`发布/入库时间窗口（左闭右开）：${digest.window.startAt} — ${digest.window.endAt}`,
+        '以下是冻结材料上的模型编辑结果，不能当成新增事实或独立核验。',
+        `完整提炼底稿保留 ${digest.items.length} 条；未采用事项没有删除。按需使用 report.information.search 查询底稿、report.information.evidence 读取冻结原段落。引用正文有字数预算，不代表完整底稿。`];
+      if(digest.editorial?.status==='ready') {
+        if(!articleId) lines.push('总览：',digest.editorial.overview);
+        for(const item of selected) lines.push(item.title,item.body,`该文章/主题冻结证据：${JSON.stringify(item.evidence)}`);
+      } else {
+        lines.push('主题整理未完成。以下仅为提炼底稿：',...digest.items.map(i=>`${i.id}：${i.sentence}\n证据：${JSON.stringify(i.evidence)}`));
+      }
+      lines.push('覆盖与处理说明：',JSON.stringify(digest.coverage),...digest.warnings);
+      const content=clipText(lines.join('\n'));
+      return decorateResolved({ref:selectedRef('hourly-digest',reference.resourceId,title,{asOf:digest.window.endAt}),
+        typeLabel:TYPE_LABELS['hourly-digest'],title,content,sourceUrl:''},{occurredAt:digest.window.endAt,originalText:content});
+    }
     if (reference.resourceType === 'daily-brief-item') {
       const resolved = reportService?.getDailyBriefItemReference(workspaceId, reference);
       if (!resolved) return null;
@@ -135,7 +159,9 @@ export function createContextService({ feedService, tradingService, knowledgeSer
         `为什么值得看：${item.whyItMatters}`,
         `接着看：${item.watchNext}`,
       ];
-      if (candidate) {
+      if(resolved.body) {
+        lines.push('', '综合分析正文：',resolved.body,'', '生成时已读原文证据：',...(resolved.evidence || []).map(e=>`${e.material.title} · ${e.material.author || e.material.publisher} · ${e.material.sourceUrl}\n版本${e.material.version} 哈希${e.material.hash} 段落${e.paragraph.id}\n${e.paragraph.text}`));
+      } else if (candidate) {
         lines.push('', '生成时的候选事实依据：', candidate.title, candidate.summary);
         if (Object.keys(candidate.data).length) lines.push(JSON.stringify(candidate.data));
       } else {
@@ -290,9 +316,11 @@ export function createContextService({ feedService, tradingService, knowledgeSer
         items.push({ ...resolved, input: parsed });
       }
       const missingBrief = missing.some((item) => item?.resourceType === 'daily-brief-item');
+      const missingHourly = missing.some((item) => item?.resourceType === 'hourly-digest');
       const promptText = [
         formatResolvedReferences(items),
         missingBrief ? '[未能读取的用户引用]\n部分日报观点已更新或不存在。不得猜测缺失观点，请用户回到日报重新选择。' : '',
+        missingHourly ? '[未能读取的用户引用]\n小时简报快照不存在或不可访问。不得猜测缺失内容。' : '',
       ].filter(Boolean).join('\n\n');
       return {
         items,

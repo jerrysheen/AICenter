@@ -416,6 +416,9 @@ test('brief routes are read-only except desktop generate', async () => {
       listDailyBriefs: () => [{ reportDate: '2026-09-22', overview: '概览', itemCount: 1, generatedAt: 1 }],
     },
     runtime: {
+      requestDailyReport(input) {
+        const job = {id:'job-refresh',type:'report.daily.generate',input};jobs.push(job);return job;
+      },
       requestDailyBrief(input) {
         const job = { id: 'job-brief', type: 'report.daily.brief.generate', input };
         jobs.push(job);
@@ -466,8 +469,8 @@ test('brief routes are read-only except desktop generate', async () => {
     services,
   });
   assert.equal(accepted.status, 202);
-  assert.deepEqual(jobs[0].input, { reportId: 'report-1' });
-  assert.equal(jobs[0].type, 'report.daily.brief.generate');
+  assert.deepEqual(jobs[0].input, { reportDate: '2026-09-22' });
+  assert.equal(jobs[0].type, 'report.daily.generate');
 });
 
 test('local runtime closed context exposes no tools', async () => {

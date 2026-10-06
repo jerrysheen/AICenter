@@ -72,8 +72,8 @@ function visibleDomainToolIds(tools, { researchProfile, configuredIds }) {
   ).map((tool) => tool.id));
 }
 
-function engineKey({ workspaceId, allow, provider, model, closedContext = false, closedTask = '' }) {
-  return `${workspaceId || ''}::${provider || ''}::${model || ''}::${closedContext ? 'closed' : 'open'}::${closedTask}::${allow.join(',')}`;
+function engineKey({ workspaceId, allow, provider, model, timeoutMs, closedContext = false, closedTask = '' }) {
+  return `${workspaceId || ''}::${provider || ''}::${model || ''}::${closedContext ? 'closed' : 'open'}::${closedTask}::${Number(timeoutMs) > 0 ? Number(timeoutMs) : 'default'}::${allow.join(',')}`;
 }
 
 export function resolveHarnessRunTools(tools, {
@@ -95,6 +95,16 @@ function stableValue(value) {
 
 function sameInput(left, right) {
   return JSON.stringify(stableValue(left || {})) === JSON.stringify(stableValue(right || {}));
+}
+
+function assertSuccessfulTurn(result) {
+  const end=(result?.events || []).findLast(event=>event.type==='turn/end');
+  const reason=end?.data?.reason;
+  if(reason?.kind==='error') {
+    const code=reason.error?.code ? `${String(reason.error.code)}: ` : '';
+    throw Object.assign(new Error(`模型调用失败：${code}${String(reason.error?.message || '模型执行未完成').slice(0,2000)}`),{name:'HarnessModelError'});
+  }
+  if(reason?.kind==='aborted') throw Object.assign(new Error('模型调用已中止，未产生完成稿'),{name:'AbortError'});
 }
 
 function followUpPrompt({ message, selectedContext, priorHint }) {
@@ -224,7 +234,8 @@ export function createHarnessAgentRuntime({
     },
   };
   let engine = null;
-  let queue = Promise.resolve();
+  const queue = [];
+  let activeEntry = null, closing = false, sequence = 0;
 
   async function disposeEngine() {
     const current = engine;
@@ -239,6 +250,7 @@ export function createHarnessAgentRuntime({
     const llm = resolveHarnessLlm(env, { researchProfile, closedTask });
     const key = engineKey({
       workspaceId,
+      timeoutMs,
       allow,
       provider: llm.provider,
       model: llm.model,
@@ -328,14 +340,37 @@ export function createHarnessAgentRuntime({
     return engine;
   }
 
-  function withLock(work) {
-    const run = queue.then(work, work);
-    queue = run.then(() => undefined, () => undefined);
-    return run;
+  function drain() {
+    if(activeEntry || closing || !queue.length) return;
+    queue.sort((a,b)=>b.priority-a.priority || a.sequence-b.sequence);
+    const entry=queue.shift();activeEntry=entry;
+    entry.input.signal?.removeEventListener('abort',entry.cancel);
+    Promise.resolve().then(async()=>{
+      entry.input.signal?.throwIfAborted();
+      entry.input.onExecutionStart?.();
+      try {await entry.input.trace?.({event:'runtime.execution.started',detail:{queueMs:Date.now()-entry.queuedAt}});} catch {}
+      return runOnce(entry.input);
+    }).then(entry.resolve,entry.reject).finally(()=>{activeEntry=null;drain();});
+  }
+  function withLock(input) {
+    if(closing) return Promise.reject(new Error('Harness 已关闭'));
+    if(input.signal?.aborted) return Promise.reject(input.signal.reason || new DOMException('The operation was aborted','AbortError'));
+    return new Promise((resolve,reject)=>{
+      const entry={input,resolve,reject,sequence:sequence++,queuedAt:Date.now(),
+        priority:input.closedContext===true ? Math.max(-10,Math.min(10,Number(input.executionPriority)||0)) : 20};
+      entry.cancel=()=>{
+        const index=queue.indexOf(entry);
+        if(index<0) return;
+        queue.splice(index,1);input.signal?.removeEventListener('abort',entry.cancel);
+        reject(input.signal.reason || new DOMException('The operation was aborted','AbortError'));
+      };
+      input.signal?.addEventListener('abort',entry.cancel,{once:true});queue.push(entry);drain();
+    });
   }
 
   return Object.freeze({
     kind: 'harness',
+    supportsExecutionAdmission: true,
     availableTools({ researchProfile } = {}) {
       const profile = researchProfile?.mode ? researchProfile : resolveResearchProfile('standard');
       const domain = projectToolCatalog(tools, visibleDomainToolIds(tools, {
@@ -344,10 +379,12 @@ export function createHarnessAgentRuntime({
       return withHarnessWebTools(domain);
     },
     async close() {
+      closing=true;
+      for(const entry of queue.splice(0)) {entry.input.signal?.removeEventListener('abort',entry.cancel);entry.reject(new Error('Harness 已关闭'));}
       await disposeEngine();
     },
     async run(input = {}) {
-      return withLock(() => runOnce(input));
+      return withLock(input);
     },
   });
 
@@ -365,11 +402,12 @@ export function createHarnessAgentRuntime({
     const profile = researchProfile?.mode
       ? researchProfile
       : resolveResearchProfile(researchMode);
-    const llm = resolveHarnessLlm(env, { researchProfile: profile });
+    const closed = closedContext === true;
+    const task = closed && ['media-brief','daily-analysis','hourly-brief'].includes(closedTask) ? closedTask : '';
+    const llm = resolveHarnessLlm(env, { researchProfile: profile, closedTask:task });
     if (missingHarnessLlmCredential(env, llm)) {
       throw new Error(harnessLlmCredentialError(llm));
     }
-    const closed = closedContext === true;
     const selection = resolveHarnessRunTools(tools, {
       closedContext: closed,
       researchProfile: profile,
@@ -414,7 +452,7 @@ export function createHarnessAgentRuntime({
     let slot;
     try {
       slot = await ensureEngine({
-        allow, catalog, workspaceId, timeoutMs, researchProfile: profile, closedContext: closed, closedTask: closed && closedTask === 'media-brief' ? closedTask : '',
+        allow, catalog, workspaceId, timeoutMs, researchProfile: profile, closedContext: closed, closedTask:task,
       });
     } catch (error) {
       await record('run.failed', {
@@ -483,6 +521,7 @@ export function createHarnessAgentRuntime({
         liveTrace.add(stamp);
         await record(item.event, item.detail);
       }
+      assertSuccessfulTurn(result);
       const { toolCalls, leftover } = collectHarnessToolCalls(runRef.current);
       const refs = [
         ...runRef.current.executions.flatMap((item) => item.result?.refs || []),
@@ -522,6 +561,7 @@ export function createHarnessAgentRuntime({
           sessionId: harnessSessionId || result.sessionId,
           onNotification,
         });
+        assertSuccessfulTurn(retry);
         answer = String(retry?.finalResponse || '').trim();
         if (!answer) throw new Error('Harness 没有返回回答');
         decision = resolveFinalAnswer({
