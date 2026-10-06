@@ -321,7 +321,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
       skipped += 1;
       continue;
     }
-    if (verdict.action === 'ignore' && linked) {
+    if (verdict.action === 'ignore' && linked && verdict.metadata?.filterRule!=='all-three-0.60') {
       verdict = { ...verdict, action: 'keep', createContentItem: true, status: 'ready' };
     }
     const capture = feedRepository.saveCapture({
@@ -373,7 +373,8 @@ function readStoredFeed(feedRepository, workspaceId, persistence, query, extra =
   const rows = feedRepository.listContentItemsByProvider?.(workspaceId, providerId, {
     sourceExternalId: persistence.sourceAccount.externalId,
     limit: STORED_FEED_LIMIT,
-    taggedOnly: true,
+    taggedOnly: false,
+    qualityRule:extra.qualityRule || '',
   }) || [];
   const items = rankFeedItems(attachTranslations(
     feedRepository,
@@ -402,10 +403,10 @@ function searchTerms(query) {
   return String(query || '').trim().toLocaleLowerCase().split(/\s+/).filter(Boolean).slice(0, 8);
 }
 
-function searchStoredItems(feedRepository, workspaceId, query, limit) {
+function searchStoredItems(feedRepository, workspaceId, query, limit, qualityRule) {
   const terms = searchTerms(query);
   if (!terms.length) return [];
-  const rows = feedRepository.listContentItems(workspaceId, { limit: STORED_FEED_LIMIT }) || [];
+  const rows = feedRepository.listContentItems(workspaceId, { limit: STORED_FEED_LIMIT, qualityRule }) || [];
   return rows.map((item) => {
     const searchable = [item.title, item.summary, item.body, item.authorName].join('\n').toLocaleLowerCase();
     const score = terms.reduce((total, term) => total + (searchable.includes(term) ? 1 : 0), 0);
@@ -461,10 +462,11 @@ function wrapFeedProviders(feedProviders) {
   };
 }
 
-export function createFeedService({ legacyRepository, feedRepository, sourcePort, feedProviders, translationPort, feedFilter = null, mediaPort = null }) {
+export function createFeedService({ legacyRepository, feedRepository, sourcePort, feedProviders, translationPort, feedFilter = null, mediaPort = null, contentRoutingPort = null }) {
   const resolvedSourcePort = sourcePort || wrapFeedProviders(feedProviders);
   if (!legacyRepository || !feedRepository || !resolvedSourcePort) throw new Error('feed repositories and source port are required');
   sourcePort = resolvedSourcePort;
+  const qualityRule=feedFilter?.config?.mode==='enforce' && feedFilter.config.rule==='all-three-0.60'?'all-three-0.60':'';
 
   return Object.freeze({
     listLegacyPosts(limit) {
@@ -479,6 +481,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       return post;
     },
     async getExternalFeed(providerId, query, actor = {}) {
+      if(providerId==='trendforce' && contentRoutingPort && !query?.refresh) return mediaPort.readFeed({channel:'tech',sourceKey:'trendforce',view:'all'},{workspaceId:actor.workspaceId || DEFAULT_WORKSPACE_ID});
       if (providerId === 'media') {
         if (!mediaPort?.readFeed) throw new ValidationError('尚未启用 media 信息源', ['platform']);
         const workspaceId = actor.workspaceId || DEFAULT_WORKSPACE_ID;
@@ -492,22 +495,26 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       if (!persistence?.sourceAccount) throw new ValidationError(`${source.id} 未声明 Feed 持久化投影`, ['sourceId']);
       const workspaceId = actor.workspaceId || DEFAULT_WORKSPACE_ID;
       if (!query?.refresh) {
-        const stored = readStoredFeed(feedRepository, workspaceId, persistence, sourceInput);
+        const stored = readStoredFeed(feedRepository, workspaceId, persistence, sourceInput,{qualityRule});
         stored.items = rankFeedItems(await localizeFeedItems(feedRepository, translationPort, workspaceId, stored.items, 'zh', { wait: false }));
         return stored;
       }
-      const sourceSnapshot = await sourcePort.read(source.id, sourceInput, {
+      const sourceSnapshot = await sourcePort.read(contentRoutingPort && providerId==='trendforce' ? 'content.trendforce.collection' : source.id, sourceInput, {
         refresh: true,
-        excludeExternalIds: knownExternalIds(feedRepository, workspaceId, providerId),
+        workspaceId,
+        excludeExternalIds: contentRoutingPort && providerId==='trendforce'?contentRoutingPort.knownFullArticleIds(workspaceId):knownExternalIds(feedRepository, workspaceId, providerId),
       });
       const snapshot = sourceSnapshot.data;
       let stats = { added: 0, skipped: 0 };
       try {
-        stats = await ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter);
-      } catch {
+        stats = contentRoutingPort && providerId==='trendforce' ? await contentRoutingPort.ingest(workspaceId,snapshot) : await ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter);
+      } catch (error) {
+        if(contentRoutingPort && providerId==='trendforce') throw error;
         // Live snapshot still returns even if persistence fails.
       }
+      if(contentRoutingPort && providerId==='trendforce')return {...mediaPort.readFeed({channel:'tech',sourceKey:'trendforce',view:'all'},{workspaceId}),added:stats.added,mediaExternalIds:stats.mediaExternalIds || []};
       const stored = readStoredFeed(feedRepository, workspaceId, persistence, sourceInput, {
+        qualityRule,
         fetchedAt: snapshot.fetchedAt,
         added: stats.added,
         skipped: stats.skipped,
@@ -536,7 +543,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
           : snapshot.mode === 'error' && total
             ? `${snapshot.note} · 仍显示已缓存 ${total} 条`
             : `${snapshot.note || '已拉取'} · 新增 ${stats.added} · 去重 ${stats.skipped} · 共 ${total} 条`,
-        items: stored.items.length ? stored.items : visibleSnapshotItems,
+        items: stored.items.length || qualityRule ? stored.items : visibleSnapshotItems,
       };
     },
     async refreshPersistedSource({ workspaceId = DEFAULT_WORKSPACE_ID, sourceId, sourceInput } = {}) {
@@ -547,26 +554,29 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       if (!persistence?.sourceAccount) {
         throw new ValidationError(`${sourceId} 未声明 Feed 持久化投影`, ['sourceId']);
       }
-      const sourceSnapshot = await sourcePort.read(sourceId, sourceInput, {
-        refresh: true,
-        excludeExternalIds: knownExternalIds(feedRepository, workspaceId, persistence.providerId),
+      const sourceSnapshot = await sourcePort.read(contentRoutingPort && persistence.providerId==='trendforce' ? 'content.trendforce.collection' : sourceId, sourceInput, {
+        refresh: true,workspaceId,
+        excludeExternalIds: contentRoutingPort && persistence.providerId==='trendforce'?contentRoutingPort.knownFullArticleIds(workspaceId):knownExternalIds(feedRepository, workspaceId, persistence.providerId),
       });
       const snapshot = sourceSnapshot?.data || {};
       if (snapshot.mode === 'error' || snapshot.mode === 'unavailable') {
         throw new Error(snapshot.note || `${sourceId} 抓取失败`);
       }
-      return ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter);
+      return contentRoutingPort && persistence.providerId==='trendforce' ? contentRoutingPort.ingest(workspaceId,snapshot) : ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter);
     },
     listContentItems(workspaceId, page) {
-      return feedRepository.listContentItems(workspaceId, page);
+      return feedRepository.listContentItems(workspaceId, {...page,qualityRule});
     },
     listContentItemsInWindow(workspaceId, window) {
-      return feedRepository.listContentItemsInWindow(workspaceId, window);
+      return feedRepository.listContentItemsInWindow(workspaceId, {...window,qualityRule,excludedItemIds:contentRoutingPort?.routedItemIds?.(workspaceId) || []});
+    },
+    listWindowSources(workspaceId, window) {
+      return feedRepository.listWindowSources(workspaceId, {...window,qualityRule,excludedItemIds:contentRoutingPort?.routedItemIds?.(workspaceId) || []});
     },
     listTaggableItems(workspaceId, { limit = 200, ids = [] } = {}) {
       const rows = feedRepository.listContentItemsWithSource
-        ? feedRepository.listContentItemsWithSource(workspaceId, { limit, ids })
-        : feedRepository.listContentItems(workspaceId, { limit });
+        ? feedRepository.listContentItemsWithSource(workspaceId, { limit, ids,qualityRule })
+        : feedRepository.listContentItems(workspaceId, { limit,qualityRule });
       return rows.map((row) => ({
         id: row.id,
         source: row.provider || '',
@@ -614,6 +624,9 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
         summary: row.summary || '',
         sourceUrl: row.sourceUrl || '',
         rawText: rawText || row.body || '',
+        provider: row.provider || '', externalId: row.externalId || '',
+        contentLevel: row.captureMetadata?.contentLevel || 'summary_only',
+        hardwareSnapshot: contentRoutingPort?.legacySnapshot?.(workspaceId,row.id) || null,
       };
     },
     listContentItemsByIds(workspaceId, ids = []) {
@@ -625,7 +638,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       return wanted.map((id) => feedRepository.getContentItem(workspaceId, id)).filter(Boolean);
     },
     searchContentItems(workspaceId, query, { limit = 8 } = {}) {
-      return searchStoredItems(feedRepository, workspaceId, query, limit);
+      return searchStoredItems(feedRepository, workspaceId, query, limit, qualityRule);
     },
     upsertSourceAccount(input) {
       return feedRepository.upsertSourceAccount(input);

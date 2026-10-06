@@ -99,8 +99,9 @@ export function createFeedAutomationJobHandlers({ feedService, feedRepository, t
               subscriptions,
             };
           }
+          if(stats?.mediaExternalIds?.length && context?.store?.createJob)context.store.createJob({type:'media.index.enrich',workspaceId:subscription.workspaceId,maxAttempts:2,input:{workspaceId:subscription.workspaceId,externalIds:stats.mediaExternalIds}});
           const addedItemIds = stats?.addedItemIds || [];
-          if (addedItemIds.length && context?.store?.createJob) {
+          if (!stats?.mediaExternalIds?.length && addedItemIds.length && context?.store?.createJob) {
             context.store.createJob({
               type: FEED_ITEMS_ENRICH_JOB_TYPE,
               workspaceId: subscription.workspaceId,

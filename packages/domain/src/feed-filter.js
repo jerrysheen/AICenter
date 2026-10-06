@@ -1,4 +1,10 @@
-export const FEED_FILTER_VERSION = 'feed-filter-v1';
+import { createFeedValueEvaluator, normalizeFeedValueText, FEED_VALUE_VERSION, FEED_VALUE_RULE, feedValueRuleHash } from './feed-value.js';
+import { FeedValueRuleSchema } from '../../contracts/src/feed-value.js';
+export const FEED_FILTER_VERSION = FEED_VALUE_VERSION;
+
+// V1 remains explicitly selectable; V2 is a frozen offline comparison.
+export { createFeedQualityEvaluator, decideFeedQuality, normalizeFeedQualityText,
+  FEED_QUALITY_VERSION, FEED_QUALITY_PROFILES } from './feed-quality.js';
 
 const INFORMATION_LOW = 0.35;
 const RESIDUE_HIGH = 0.65;
@@ -48,6 +54,7 @@ export function resolveFeedFilterConfig(env = process.env) {
   return Object.freeze({
     mode,
     version: text(env.AI_CENTER_FEED_FILTER_VERSION, FEED_FILTER_VERSION),
+    rule: FeedValueRuleSchema.parse(text(env.AI_CENTER_FEED_FILTER_RULE, FEED_VALUE_RULE)),
   });
 }
 
@@ -196,8 +203,10 @@ function verdict({
   });
 }
 
-export function createFeedFilter({ client = null, config, lookup = {} } = {}) {
+export function createFeedFilter({ client = null, config, lookup = {}, calibration = null } = {}) {
   const resolved = config || resolveFeedFilterConfig();
+  if (resolved.version === FEED_VALUE_VERSION) return createFeedValueFilter({ client, config: resolved, lookup, calibration });
+  if (resolved.version !== 'feed-filter-v1') throw new Error('Unsupported feed filter version');
 
   return Object.freeze({
     config: resolved,
@@ -275,8 +284,36 @@ export function createFeedFilter({ client = null, config, lookup = {} } = {}) {
   });
 }
 
-export function createFeedFilterFromEnv({ client = null, env = process.env, lookup } = {}) {
+function createFeedValueFilter({ client, config, lookup, calibration }) {
+  const rule=FeedValueRuleSchema.parse(config.rule || 'calibrated-value');
+  const evaluator = createFeedValueEvaluator({ client, model: calibration?.model || client?.modelId || '', calibration, rule });
+  return Object.freeze({ config, async evaluate(input = {}) {
+    if (config.mode === 'off') return verdict({ action:'keep', reason:'off', stage:'off', mode:config.mode, version:config.version });
+    const duplicate = evaluateDeterministic(input, lookup);
+    if (duplicate?.kind === 'duplicate') return verdict({ action:'skip', reason:duplicate.reason, stage:'deterministic', mode:config.mode, version:config.version });
+    const fields=itemFields(input), capture=input.item?.captureContext || {};
+    const normalized=normalizeFeedValueText(fields.originalText || fields.body || fields.summary,
+      { title:fields.title, authorName:fields.authorName, capture });
+    const result=await evaluator.evaluate(normalized,{signal:input.signal});
+    // Explicit enforce of the user-selected rule is independent of empirical calibration qualification.
+    const strictAdmission=rule===FEED_VALUE_RULE;
+    const canDrop=strictAdmission || rule==='two-of-three-0.60' || config.mode!=='enforce' || calibration?.productionQualified===true;
+    const blocked=strictAdmission ? result.decision.decision!=='KEEP' : result.decision.decision==='DROP';
+    const action=blocked && canDrop?'ignore':'keep';
+    const output=verdict({action,reason:result.decision.reason,stage:'jev-value',mode:config.mode,
+      version:config.version,model:result.model,scores:result.scores || {},failOpen:!strictAdmission && result.decision.reviewKind==='technical'});
+    return {...output,...(strictAdmission && config.mode==='enforce' && result.decision.decision==='REVIEW'?{status:'captured'}:{}),metadata:{...output.metadata,filterDecision:result.decision.decision,
+      filterReviewKind:result.decision.reviewKind,filterScores:result.scores,
+      filterPolicyHash:result.policyHash,filterCacheKey:result.cacheKey,
+      calibrationApplied:calibration?.sampleHash || '',enforceQualified:calibration?.productionQualified===true,
+      filterMode:config.mode,filterApplied:output.action==='ignore',filterRule:rule,filterRuleHash:feedValueRuleHash(rule),
+      captureContext:input.item?.captureContext || {},
+      qualityMissingParts:normalized.missingParts}};
+  }});
+}
+
+export function createFeedFilterFromEnv({ client = null, env = process.env, lookup, calibration } = {}) {
   const config = resolveFeedFilterConfig(env);
   if (config.mode === 'off') return null;
-  return createFeedFilter({ client, config, lookup });
+  return createFeedFilter({ client, config, lookup, calibration });
 }
