@@ -1,5 +1,9 @@
 # 模块架构 V1
 
+TrendForce 内容分流扩展现有 Feed/Media 与行情边界：一次采集由 Feed Service 经注入 Port 分流，硬件报价独立 Contract/Service/Repository，媒体不另抓一次。报价与股票历史完全分开；旧身份映射保留状态和引用。详见 `hardware-prices-v1.md`。
+
+当前入选池更新由 `feed.quality.refresh` 注册模块执行，Runtime Service 只派发严格 Contract 的 Job，HTTP 本机入口只返回 jobId。Domain Refresh Service 经 Repository 读取每来源最近 200 条与已保存媒体索引，复用完全相同的模型/问题/输入评分，否则调用 JEV Connector；Review Service 再核对当前输入并事务写 Capture/outbox。Repository 入选读查询只接受现行三项规则明确 KEEP，旧未知内容、实时快照回退不能旁路。Host 评分缓存由 Instance composition root 读取注入，Domain 不读 Host 文件。页面示例回退与 Tag 显示门槛移除，不更改用户收藏、阅读或隐藏状态。
+
 本文档冻结工作包 B 的依赖方向。目标不是把所有功能做成一个通用大模块，而是让信息、交易、知识和未来模块能够独立演进。
 
 ## 依赖方向
@@ -54,11 +58,13 @@ POST /api/v1/article-analysis/runs → ai.article.analyze → 同一套 Harness.
 - Runtime 分别限制模型请求数、Tool 调用总数与并发数；默认总 Tool 调用上限为 12，模型请求上限仍为 7。每轮把 used / remaining / max 传给模型。单轮请求超过剩余次数时整批不执行（不部分执行），改为要求基于已有证据作答；工具预算耗尽不是 Run 失败。
 - `ai.agent.run` 必须通过 `agent.runtime` capability manifest 注册；HTTP 只创建固定契约的 Job，不能指定 handler、脚本或 Provider。
 - 文章阅读是 Article Analysis Skill，不是第二条 Agent 架构：`POST /api/v1/article-analysis/runs` → `ai.article.analyze` → 读取 Source → 同一套 `agentRuntime.run({ taskInstruction, allowedToolIds, enableAuxiliarySearch: false })`（生产上是 Harness）。问答页用智能体选择「文章阅读」显式进入，不走普通 `ai.agent.run` Job。Domain 可见 Tool 是 `knowledge.search`、`knowledge.get`；公开互联网复用 Harness 内置 `web_search` / `web_fetch`。AI 自己在同一次 Run 里判断 Knowledge / News / Mixed，并按需检索；最终只写 Markdown `AiRun.outputText`，`taskType` 为 `article-analysis.reader.v1`，不创建 KnowledgeDocument，不保存 Artifact JSON。进度与问答共用 `agent-trace-log`。冻结设计见 `docs/search-agent-v1.md`。专用搜索插件尚未实现。
-- 生产 Ask 的主模型是 dsh LLM 路由，不是 `AI_CENTER_AGENT_PROVIDER`。Gemini 只给翻译 / Tag。Key 不进入 API、事件或数据库输出。
+- 生产 Ask 的主模型是 dsh LLM 路由，不是 `AI_CENTER_AGENT_PROVIDER`。翻译 / Tag优先Gemini，429 / RESOURCE_EXHAUSTED时由Connector回退Elucid Grok；复用现有Responses适配但不运行Agent或工具循环。Key不进入API、事件或数据库输出。
 - 成功回答写入 Knowledge 所拥有的 `AiSession` / `AiRun`，并以 `knowledge.ai-session.created.v1`、`knowledge.ai-run.completed.v1` 记录可复盘的会话、provider、model 与 Job 引用；实际读取的来源同时写入 `AiRunContextRef`，会话详情可以读回。
 - 问答页轮询 `GET /api/v1/agent/runs/:id` 时附带 `progress`：从本地 JSONL trace 投影工具/思考步骤，不经 Worker 重启、不把 Tool data 回传页面。进行中的任务不绑定当前页生命周期：离开会话或切到其他一级入口后，Worker 继续跑；页面用 `GET /api/v1/agent/runs` 对齐队列，并在记录列表、会话详情和主导航显示 `queued` / `running`。同一会话可连续入队多问；Worker 仍一次一条。
 
 ## 数据所有权
+
+Report 域另保存小时信息快照（前向 migration 38）及当前发布指针（39）：Service 经 Feed/Media 查询 Port 冻结原文，Worker 注册 `report.hourly.extract`；Repository 事务保存结果和 Outbox。新日报沿用 DailyReport/DailyBrief，复用信息句而非重读重写文章。Ask 通过 `report.information.search` 分页读事项、`report.information.evidence` 定向读原文；无 Intent Router、无新 Agent、无直接 SQL。引用按不可变 snapshotId、materialHash、materialVersion、paragraphId读取；日报直接继承，旧稿不自动覆盖，历史日报重写不替换较新小时发布版本。细则见 `information-digest-v1.md`。
 
 | 领域 | 拥有的数据 | 不允许直接修改 |
 |---|---|---|
@@ -104,10 +110,14 @@ ConnectorRegistry / SourceRegistry / AdapterRegistry。Provider ID 是供应商�
 （例如 `market.global`）；两者不能混用。
 
 Market 聚合、观察池与 Human/AI Projection 属于 `packages/source`，Yahoo / 雪球 / 同花顺 Connector 只负责协议转换。
+沪深 A/B 股交易日与午休规则由 Domain 纯函数 `cn-trading-calendar` 统一提供给市场投影和持仓。
+交易所公告的年度休市日与政府调休工作日分开；未核验年度不得标为已确认开市。
+Connector保留真实报价时间，经Source透传；报价时间缺失保持null，不使用抓取时钟填充。
 观察池内容来自 Instance `config/markets.json`；`config/markets.default.json` 只是新实例模板和兼容 fallback，Core JS 不保存个人观察分组。当前私有部署仓库可以版本化 `config/markets.json` 作为 Instance 快照，这不改变其 ownership。
 `market.cn` 是独立 A 股看板，不覆盖亚洲 KR/JP/TW 观察池；同一 `symbol` 允许挂多个 `group`。`market.us` 只收美股上市代码（含 ADR），`market.asia` 只收 KR/JP/TW 本地代码；同一公司可以两边各挂自己的上市代码，不得把韩交所代码放进美股观察池。`market.overview` 按 `Asia/Shanghai` 切换单一 section：工作日 05:00–17:00 为 A 股与港股观察（上证50 / 创业板50 / 科创50 / 恒生 / 港科），17:00 后至次日 05:00 及周末为美股观察。
 雪球信息流 `content.xueqiu.home` 与行情 `xueqiu-quotes` 不是同一个 Connector：前者用 BrowserSkill 打已登录页的关注 / 精选 / 7x24 JSON，后者只做公开批量报价。
 FeedService 通过 SourcePort 读取外部内容，再写入原有 `SourceAccount -> Capture -> ContentItem` 生命周期。Feed Filter 在 Source Snapshot 与 ContentItem 之间，确定性规则与 Jev 语义判断都放在 `packages/domain/src/feed-filter.js`，与 Agent Quality 分文件。
+入库保存价值 V3 由 `feed-value.js` 实现：一条原文一次五个 Noul，不传兴趣范围或 Tag。最新生产规则为 `all-three-0.60`：保存价值/具体程度/信息充分程度三项全部 >=0.60；广告不否决。Connector 提供账号、已核验回复/引用关系和缺失事实；Domain 只合并同作者同线程续写及必要引用，显示名只能产生疑似续帖。关键缺失与技术异常先 REVIEW。当前 Instance 明确 enforce，新安装默认 shadow；不改旧校准生产资格冒称验收。社交和媒体索引/正文共用 gate，先保存原始 Capture 或媒体快照，仅 KEEP 可新建 ContentItem/进入可读池；DROP 拦截，REVIEW 只存原始 Capture captured 待补，技术失败也不放行。Tag 后处理，无 Tag 可读；媒体已拦截项不进入后处理。Repository 可读与日报材料查询排除已实际应用的拦截，不写用户隐藏状态。旧 calibrated-value/two-of-three/V1 显式兼容，V2 与原 V3 分数冻结；授权历史重分类经 Domain Review Service 对照当前输入一致性后通过 Repository 写 Capture 与 outbox，输入改变则隔离待重新评分。规则哈希与评分缓存分开；详见 `feed-value-v3.md`。
 联网搜索不再作为生产 Source。DeepSeek Search Connector / `search.web` / Domain `web.search` 只在显式本地循环回退时注册；Source Definition 仍负责输入/输出契约、不可用状态与 AI Projection。SearXNG Connector 仍保留为 legacy，主链路不调用。
 中美宏观日程、央行日程和官方政策发布同样注册在 Module Registry：Connector 只处理官方
 HTML / ICS / RSS / JSON 协议，Source Definition 输出统一 `calendar` / `official-release` 视图。
@@ -154,10 +164,12 @@ Agent 通过 `static.signals.list` 获取记录，再按需调用 `official.sour
 
 ## 兼容策略
 
+客户端阅读期间固定已载入的中文正文版本，后台换版或翻译处理中只提示，原文切换由用户主动选择。译文未就绪显示段落进度，授权失效清空阅读快照。
+
 媒体正文修复沿用 SourceHub / Module Registry / Worker。HTTP、XML、DOM 与域名策略留在
 Connector；Domain 只依赖注入的 MediaConnectorPort，不直接导入 connectors 或 source。
 出版商目录、用途和额度属于 Instance 的 `config/media.json`；Core 的
-`config/media.default.json` 是无个人来源的空模板。Fed 复用已有 `policy.us.fed` 发现列表，
+`config/media.default.json` 是无个人来源的空模板。官方发布复用已有 `policy.*` 的 release 列表，
 再由登记过的官方域名正文适配器读取，不增加第二套宏观 Runtime。
 
 `content.media.articles` 与 Feed GET 只读缓存。同步、实际探针和正文抓取分别进入已注册的
@@ -165,7 +177,7 @@ Connector；Domain 只依赖注入的 MediaConnectorPort，不直接导入 conne
 只允许本机；repair 必须给出明确 ID 集合。Worker 重启时中断的正文任务终止并保留已有状态，
 不在启动时盲目重抓全部历史文章。
 
-正文用 DOM 解析且不执行页面脚本。已验证 full 必须同时满足当前提取版本、索引修订、完整性
+HTTP正文用DOM解析且不执行页面脚本；浏览器只运行Connector登记的固定可见DOM读取与公开续读逻辑。已验证 full 必须同时满足当前提取版本、索引修订、完整性
 状态和未截断快照；旧 full 保留为历史材料并在读取端降级，不能直接删除。请求成本和成功配额
 分开持久化；失败不退还 HTTP 请求，暂时失败最多五次并退避，付费/挑战不自动绕行。
 正文修订独立递增，任何失败或 partial 修复都不覆盖已有全文与旧报告引用。
@@ -176,23 +188,43 @@ Connector；Domain 只依赖注入的 MediaConnectorPort，不直接导入 conne
 模型格式失败仅做一次纠正，单次调用限 180 秒；超时停止本批剩余模型请求，失败不会自动反复生成。
 正文提要由可信内部调用指定 `closedTask=media-brief`：在现有 Elucid Harness 适配器配置中
 使用已支持的 low 推理与4096输出token上限，避免短提要耗尽长推理预算。这只是冻结执行器的
-任务配置，不改变模型、工具或执行循环；Ask、文章阅读、日报与结构整理保持原配置。
+任务配置，不改变模型、工具或执行循环；Ask、文章阅读与结构整理保持原配置。
+日报V2可信内部调用指定`closedTask=daily-analysis`，同一Elucid模型使用low推理与4096输出token上限。
 该字段不从HTTP/Job透传。DeepSeek官方路由保留原有供应商设置。
-日报只消费当前有效版本的提要和证据，维持闭集筛选。
+日报 V2 直接分来源读取当前验证正文，提要可辅助导航，译文与Tag不作为进入门槛。
+社交、新闻、关注问题与编辑依次复用同一Harness；closedContext保持封闭材料。
+阶段、材料哈希与V2成稿版本由Report Repository保存，见`daily-analysis-v2.md`。
 
 媒体阅读默认展示完整正文。全文翻译按保存段落切成不超过2400字符的连续片段，复用
 FeedService.localizeTexts 与 feed_item_translations；缓存ID包含文章身份、bodyHash、标题哈希、
 段落/分片编号，逐片 sourceHash 匹配后才标为 ready。原有短信息流译文不能冒充全文译文。
 段落ID和类型保持一致，UI按标题、段落、列表、引文和表格安全排版。翻译与Tag先完成，
 可选提要随后处理；Tag复用X的Instance目录、Prompt和multi策略，不另建媒体标签体系。
+标签模型不可用时，已保存的正文和译文继续可读；enrich明确返回partial与待补Tag ID，
+不生成空标签记录冒充完成，不继续调用可选提要。下一轮沿用同一Tag流程补齐。
 
 Techmeme只发现链接。Instance可登记少量 discoveryPublishers（域名、路径、用途、额度），
 由Connector匹配受信原报道。Domain保存独立原文索引及 discoveredVia，不将聚合摘要改称全文。
-原报道计入自身出版商和全局预算，跳转仍校验白名单；未接入/付费链接只保留发现记录。
+原报道保留自身出版商和全局采集统计，跳转仍校验白名单；未接入/付费链接只保留发现记录。
 已有媒体同步Schedule继续每小时检查各来源自己的间隔，随后入队固定enrich handler；
-每日预算延后不丢索引，下一日继续处理。页面来源配置折叠，状态明确区分全文与摘要能力。
+Instance 可把已有央行、政府与白宫官方发布登记为正文源，并按来源配置回看窗口。日历仍只产生日程。
+正文候选按频道轮流取，频道内优先新增待处理文章，保留所选RSS或主列表顺序；没有可靠顺序时按发布时间，缺失时间不伪造。不按关键词、数字或标题相似度选文；用户隐藏与失败冷却仍生效。已完成且版本未变化的正文不因经过24小时重新进入普通新文章队列；修复/版本变化沿用既有显式处理。每日成功、请求和单源额度保持有界。
+媒体读取由 Feed Repository 批量关联已有 Capture / ContentItem 的阅读状态，分页前未读优先；页面使用真实 ContentItem ID 写入，Tag / 翻译 / 引用沿用原 media-index ID。
+
+新闻公开入口沿用同一媒体链路：RSS由HTTP发现；已登记的Yahoo转载栏目可通过Instance
+BrowserRuntime读取可见列表。Yahoo Economy只读取已核对的`main .stream section.story-item`主新闻流，排除导航、侧栏和赞助组件，不代表频道顶部精选卡片或全部历史。所有出版商保留索引和真实署名，不再按Reuters/Bloomberg署名筛选；现有两家正文适配继续逐篇核对署名与结尾，其他出版商保留待适配原因，不套用两家的完整性规则。配置显式选择
+`listReadMethod / bodyReadMethod`（缺省HTTP），浏览器采集仅由Worker调用Connector中的固定
+读取逻辑，不接收HTTP传入的脚本或站点。浏览器读取不是HTTP拒绝/付费墙的自动回退。
+公开续读按钮可以展开；挑战、订阅页、署名不匹配、未展开或无法确认正文末尾均不得标为全文。
+转载保存原出版商、阅读入口与可见原报道链接，使用现有discoveredVia/originUrl投影并按
+规范化URL精确匹配复用已有文章身份，并另存多个发现入口。旧Yahoo入口作为来源别名保留，合并预算计算旧用量；历史阅读与引用身份不重算。策略版本变化触发一次受控无条件读取，避免旧304永久遮蔽此前漏采文章。FT官方周报是独立来源，RSS正文不等于FT各篇报道已获得全文。
+用户扩大经济与国际新闻覆盖后，Instance可以配置最多24个活动新闻/科技来源；缺省仍为6，旧16上限配置继续有效，登记总数仍最多40。2026-10-05扩栏只沿用现有RSS/正文链路，HTTP正文按publisherKey复用BBC/Guardian适配（缺失时兼容sourceKey），不另建采集Runtime。新栏目逐源探测与隔离样本验收后通过Service启用，特殊页面保持真实正文等级；
+每日元数据、正文成功数、全局/单来源请求数以及来源detailDailyCap缺省为null（不限额），当前Instance全部取消每日配额；数字上限仍兼容旧Instance。统计不清空，取消配额后旧request_budget/success_budget延期立即恢复。自动enrich按40条分批完成所有已选候选，不把第一批作为任务总额度。刷新间隔、失败退避、字节限制与并发仍生效。已有官方发布Adapter仍不占活动来源额度。
+页面来源配置折叠，状态明确区分全文与摘要能力。
 
 - V1–V28 数据库迁移保持不可变；模块化底座从 V6 开始，V10 增加 `ai_run_context_refs`，V12–V14 完成会话归属与旧问答回填，V15 区分用户主动引用与 Tool 读取，V16 增加 Taxonomy 与结构化回填字段，V17 增加 `resource_taggings`，V18 增加灵感外部来源与采集入口字段，V19 增加离线同步幂等键与原始采集时间，V20 增加 `posts.hidden_at`，V21 增加灵感工作包 `work_packages`，V22 增加独立 Cursor session 字段，V23 增加 `feed_identity_fingerprints`，V24 增加工作包 `parent_work_package_id`，V25 增加 `attachments` / `resource_attachments`，V26 增加个人资产账本 `personal_asset_types` / `accounts` / `snapshots` / `dividends`，V27 允许同一期间标签多次快照，V28 增加 Harness Agent Run 的脱敏事件投影 `agent_run_events`。
 - 旧 `posts`、`notes`、`knowledge_items` 接口继续工作，通过兼容层逐步转到领域服务。
 - 新事件必须带 `.vN` 后缀；旧事件在兼容接口移除前继续保留。
 - Contract 新增可选字段属于兼容变更；删除字段、修改语义或改变数值单位必须发布新版本。
+
+翻译/打标的配额检测由gemini-grok-task Connector统一处理，以实际429响应为准，不假设本地计数等于项目总额度。按Key指纹、API入口和模型隔离冷却；每日配额在America/Los_Angeles次日零点恢复（含夏令时），其他限流使用Retry-After/RetryInfo，缺少信息时冷却60秒。状态在进程内共享，Web与Worker不互相假报项目剩余额度；重启后首次实际响应重新确认。鉴权/参数错误不误报配额。Grok批量沿用原id、JSON解析、目录标签校验和译文哈希缓存；失败保持pending。AI_CENTER_FEED_GROK_MODEL缺省grok-4.7，与Harness主模型独立；不再使用DeepL/Google翻译。

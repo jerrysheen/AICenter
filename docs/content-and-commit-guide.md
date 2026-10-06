@@ -492,6 +492,8 @@ git status --short
 
 当前私有仓库应确认 Schema / migration、Knowledge 文件、个人 Catalog 和必要导入资料已进入 Git；确认本地 SQLite 已备份且不受 Git 跟踪，同时没有把以下数据库、主机秘密或瞬时状态加入 Git：
 
+硬件报价的原页 HTML／legacy-text 冻结证据位于 `data/blobs/hardware-prices/`，与运行 SQLite 一起在本机备份和恢复，不通过 Git 分发原站完整页面；忽略规则仅排除这个子目录，不删除附件或改变数据库相对路径。其余允许版本化的 Instance 附件规则保持。
+
 ```text
 .env
 Instance .env
@@ -688,7 +690,7 @@ Instance Manager
 
 ## 当前架构的一句话定义
 
-媒体来源、频率、正文用途策略和主题关键词保存为 Instance 的 `config/media.json`。
+媒体频道入口、频率、正文用途策略和抓取预算保存为 Instance 的 `config/media.json`；旧主题关键词兼容读取但不再参与媒体采集。
 Core 只提供空的 `config/media.default.json` 和契约，不硬编码个人观察范围。
 正文验收响应、样本 HTML、模型运行记录与诊断 JSON 属于 Host 的 `.ai-data/media-audit/`，
 不得提交原站完整受版权保护的 HTML、Cookie、Key 或完整数据库诊断导出。可提交最小 DOM

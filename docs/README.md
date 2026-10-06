@@ -15,6 +15,8 @@
 
 ## 当前
 
+- `hardware-prices-v1.md`：用户授权的内容分流、结构化硬件报价与旧身份兼容规则。
+
 - `content-and-commit-guide.md`：Core / Instance / Host 内容归属、默认模板和 Git 提交规则。
 - `release-readiness.md`：0.2.0 基线候选、发布门槛、容易写错的现状对照。
 - `architecture.md`：进程、数据与运行边界。
@@ -29,6 +31,7 @@
 
 ## 专题
 
+- `feed-value-v3.md`：JEV 只判断保存价值、结构化采集完整性、入库后 Tag、版本缓存与 A/B/C 校准边界。
 - `connection-and-pairing.md`：二维码、授权、自动重连；鸿蒙分享走本地 Outbox。
 - `harmony-share-to-inspiration.md`：系统分享字段、鉴权与真机验收。
 - `public-access-security.md`：可选公网 HTTPS、隧道和管理员隔离；Agent / Host 调用方能力平面。示例域名是占位符，不是真实部署。
@@ -50,3 +53,6 @@
 ## 旧仓库参考
 
 - 旧 AI / AI-Hub 仓库只作 Adapter 参考，路径从环境变量读取。不得直接复制旧仓代码。
+
+- `daily-analysis-v2.md`：用户授权的日报分层阅读、材料覆盖、追踪问题、阶段重试与版本引用。
+- `information-digest-v1.md`：小时提炼底稿与逐项冻结引用，当前阅读正文为版本化方向文章；日报复用小时成果和完整底稿，旧主题稿/旧分析兼容读取。

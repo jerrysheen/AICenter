@@ -1,8 +1,20 @@
 # 数据契约 V1
 
+硬件报价以独立结构化 Contract 保存完整规格、类型、Decimal 数值、币种/单位/报价期、来源更新时间与采集时间；未知字段为 null。报告简介是内容种类，summary_only 是完整度，两者独立。报价高低不表示股票 OHLC。兼容与去重规则见 `hardware-prices-v1.md`。
+
+硬件行情行的 `history` 是真实报价期的最新修订均价序列（`at / period / average`），不包含同期旧修订或无日期记录。当前列表只读每个来源页面最新的价表及相应序列当前值；历史解析版本、退下来的规格与旧文本快照通过精确快照／序列链接保留，不在当前行情重复混排。前端在全球行情内呈现统一的行情行与价格折线，仍与证券 OHLC 契约分开。
+
 可执行定义位于 `packages/contracts/src`。本文档解释不应只靠字段名猜测的语义。
 
+`feed-quality.js`提供离线入库质量V2内部契约：六项概率必须是有限number且在[0,1]，不把null/字符串/越界值钳制成有效分；KEEP/DROP/REVIEW由Domain规则决定，原因来自代码分支。缺正文、输入截断、关键上下文缺失或评分失败必须REVIEW。概率是命题成立的判断，不是真实性、重要性或价值分数。当前不新增页面API、生产入库状态或数据库migration，完整原文/概率/输入版本仅供Host离线shadow审核。
+
+`feed-value.js` 是当前 V3 内部契约：五项有限概率，无主题相关性；主帖、已确认续写、必要引用、普通评论分开保存。`FeedCaptureContext` 记录账号/回复关系和缺失对象、关键性、依据；已知关键缺失不得由模型低分覆盖。`FeedValueReference` 分开质量、完整性、兴趣以及主信息能否独立判断；疑似线程不等于主帖无法判断，争议与 UNKNOWN 不拟合质量阈值。校准固定版本/问题哈希/模型/样本哈希和生产资格。判定同时记录 KEEP/DROP/REVIEW 与技术/待补/语义待定类型。Capture metadata 保留判断，shadow 下 ContentItem 继续创建，Tag 后处理不回流为入库质量依据。不新增页面供应商字段或数据库 migration。
+
 ## 通用约定
+
+最新用户选定 `FeedValueRule=all-three-0.60`：reading_value、specific_content、sufficient_information 三项全部 >=0.60；KEEP 原因 all-three，DROP 原因 below-all-three。enforce 仅 KEEP 进入 ContentItem/新闻池，REVIEW 包括技术失败只存 captured 状态的原始 Capture，不放行。旧 calibrated-value/two-of-three-0.60 保留回放兼容。Capture metadata 另记 filterMode/rule/ruleHash/filterApplied，与评分问题 policyHash 分开；切 enforce 不修改旧 calibration.productionQualified。相同模型/问题/输入可复用评分，历史回放由 Domain 校验一致性；输入变化不套旧分数，当前采集待重新评分并退出可读池。生产社交/媒体入口共用 gate；AI Tag 后处理与质量无关，无 Tag 可读。不新增 migration。
+
+当前池刷新使用 `FeedValueRefreshInput`：workspaceId 由本机身份决定，perSourceLimit 为 1–200（默认 200），concurrency 为 1–8（默认 6），拒绝额外字段。仅本机 `POST /api/v1/feed/quality/refresh` 创建或复用同 workspace 的 `feed.quality.refresh` Job，返回 202 与 jobId；Worker 显式 handler 执行评估。Job output 记录 KEEP/DROP/REVIEW、复用/请求/预检、输入变更和缺失/无效数量，不向信息流页面增加供应商字段。入选读查询须存在当前规则明确 KEEP 与三项达标结果，未评分历史不默认为通过。
 
 - ID：稳定字符串。内部新记录默认 UUID；`local` 等保留 ID 允许继续使用。
 - 时间：数据库和进程契约统一使用 UTC 毫秒时间戳。
@@ -22,25 +34,34 @@
 
 ## Feed
 
+2026-10-05用户授权阅读语言稳定性修复：阅读会话保留当前已载入正文/译文版本，后台译文缺失或换版不得自动切到英文；译文未就绪显示段落进度，原文由用户显式选择。换版可用时主动切换，授权失效清空阅读快照。
+
 ```text
 SourceAccount -> Subscription -> Capture -> ContentItem -> UserItemState
 ```
 
 - `Capture` 是不可替代的来源证据，保存 provider、external ID、hash 和原始文件相对路径。`status=ignored` 的 Capture 不去建 ContentItem，只供去重与审计。
 - `ContentItem` 是页面和下游 Agent 使用的标准内容。
+- 信息流的阅读投影合并 X / 雪球，排除 B站；B站仍保存原 Capture / ContentItem，并通过原字幕接口供工具回看。B站工具读取允许未打 Tag 的已存字幕，隐藏状态仍生效，不增加页面字段或重写已有数据。评论仍保存在原 body，正文与评论分区只在 UI 渲染时解析。
 - 信息流按 `Capture.capturedAt`（写入来源的先后）排列，不按推文 `publishedAt`。已读条目（`UserItemState.isRead`）仍保留在列表中，但排在未读之后；左滑删除只写 `isHidden`，不物理删除 Capture / ContentItem，再拉取同一条也不会回来。卡片仍显示发帖时间；相同内容去重时不刷新 `capturedAt`。同一批抓取里，时间线越靠前的条目 `capturedAt` 越大。
 - `FeedIdentityFingerprint` 是作者 + 正文的稳定身份（SHA-256），与 tweet / 视频 ID 分开保存。正文可以按保留期清掉，fingerprint 继续留着：同一作者同一段文字再次投递时跳过，左滑删除后即使 Capture 已不在也不会再出现。无正文时退回 `external:{id}`，避免图文空帖互相撞车。表里只存 hash、externalId 和时间，不存推文正文。X 与雪球的入库正文会在帖子原文后附上抓取当时可见的前 5 条评论摘录，指纹按这份正文计算；已经记下的 external ID 不会为了刷新评论再打开。
-- `FeedItemTranslation` 是信息流与抓取文本的中文投影，按条目 ID + 正文哈希落在 SQLite，不覆盖 Capture / ContentItem 原文。电脑和手机读同一份。英文或韩文在抓取入库后统一走 Gemini 批量翻译并轻度清洗（去界面残渣、不总结、不扩写）。一次最多 30 条；`id` 必须对齐。Gemini 失败或缺 Key 时回退 DeepL / Google。用户 view 只消费译文；原文继续保存在 Capture / ContentItem，经 `GET /api/v1/content-items/:id/original` 或 `GET /api/v1/feed/items/:id/original` 读取。页面 Contract 不暴露供应商。官方日程、官媒标题和预测市场问题复用同一张译文表，Source Snapshot 字段保持原文事实。
+- `FeedItemTranslation` 是信息流与抓取文本的中文投影，按条目 ID + 正文哈希落在 SQLite，不覆盖 Capture / ContentItem 原文。电脑和手机读同一份。英文或韩文在抓取入库后统一走 Gemini 批量翻译并轻度清洗（去界面残渣、不总结、不扩写）。一次最多 30 条；`id` 必须对齐。Gemini返回429 / RESOURCE_EXHAUSTED时回退Elucid Grok；不再调用DeepL / Google翻译。翻译和打标在同一进程共享配额冷却，短限流按Retry-After / RetryInfo恢复，每日配额耗尽等到太平洋时间次日零点再尝试。缺Gemini Key时可使用已配置的Elucid；两者均不可用则保留待处理，不把原文或空结果当译文。用户 view 只消费译文；原文继续保存在 Capture / ContentItem，经 `GET /api/v1/content-items/:id/original` 或 `GET /api/v1/feed/items/:id/original` 读取。页面 Contract 不暴露供应商。官方日程、官媒标题和预测市场问题复用同一张译文表，Source Snapshot 字段保持原文事实。
 - 发给模型的信息流请求走 Domain `packFeedAiBatches`：先给每条标注字数。翻译一次最多 30 条打成一组（条目模型输入仍可截到约 5000 字）。Capture/ContentItem 仍保存全文；只有模型输入可以截断，并标记 `truncatedForModel`。粗筛 Tag 复用同一函数：`purpose=analyze`，默认每批最多 20 条 / 30k chars，单条最多 6000 字（超长取头 4500 + 尾 1500）。Tag 走 Gemini，输出仍按 `item_id` + `tags[]` 验收。
 - Tag 是全局粗筛：输入一批文本，按 `item_id` 回收 `tags[]`。当前可挂 `content-item`（多标）、`inspiration`（单标）、`knowledge`（多标）、`media-index`（多标）。字典来自 Instance 的 `config/tags.json`，缺省模板为仓库的 `config/tags.default.json`，与 Knowledge Taxonomy 分离。结果写入 `resource_taggings`，不改 ContentItem 字段。未知 tag / 未知 item 丢弃；漏项重试；空数组是合法成功。
 
 - 重新生成字幕、摘要或结构化结果时，不能覆盖原始 Capture。
 - 平台登录、Cookie 和抓取脚本内部字段不得进入 ContentItem。
-- `media` 是媒体资讯提供者，和 RSS 传输、出版商身份分开。`content.media.articles` 只接受目录里的 `sourceKey`。索引写在 `media_index_entries`，不进入社交 ContentItem 列表。同步后的 `media.index.enrich` 先处理正文、全文翻译和现有 X Tag 流程，Tag 资源类型是 `media-index`。`contentAccess=body` 的来源在每日额度内抓正文快照，并另存一条 Capture / ContentItem。FT、BBC 保持索引；Techmeme 保留发现记录，只有显式登记在 Instance `discoveryPublishers` 的域名、路径和正文用途可建立独立原报道，保留 `discoveredVia` 并计入原出版商额度。来源默认关闭，不进入 X / 雪球的自动订阅列表。
+- `media` 是媒体资讯提供者，和 RSS 传输、出版商身份分开。`content.media.articles` 只接受目录里的 `sourceKey`。索引写在 `media_index_entries`，不进入社交 ContentItem 列表。同步后的 `media.index.enrich` 先处理正文、全文翻译和现有 X Tag 流程，Tag 资源类型是 `media-index`。`contentAccess=body` 的来源按配置抓正文快照（每日上限为null时不限额），并另存一条 Capture / ContentItem。FT主站保持索引；BBC/Guardian公开文章、FT官方周报与署名转载按Instance登记范围读取正文。Techmeme 保留发现记录，只有显式登记在 Instance `discoveryPublishers` 的域名、路径和正文用途可建立独立原报道，保留 `discoveredVia` 并计入原出版商采集统计。来源默认关闭，不进入 X / 雪球的自动订阅列表。
 - `packages/contracts/src/media.js` 校验正文等级、抓取状态、段落与提要。fetchState 独立记录 HTTP 状态、失败原因、尝试/连续失败次数、冷却时间、请求/正文字节、解析版本、原文作者/日期/最终 URL；翻译和提要各有独立状态。Feed 新增 `view / offset / limit`、全视图 counts 与 nextOffset，默认参数兼容旧 GET。
+- 媒体全文保留 `media-index` 的资源身份用于翻译、Tag和阅读引用；另投影真实 `contentItemId` 与 `isRead`，通过既有 ContentItem 状态接口保存已读。未读优先排序在分页前完成。来源可配置 `backfillHours`（1–2160小时），缺省沿用全局48小时；官方发布的 Instance 配置使用720小时，日历不自动变成文章。
+- 媒体来源可选`listReadMethod / bodyReadMethod`为`http / browser`，缺省HTTP；活动来源上限可配置1–24、缺省6，旧1–16配置继续有效。2026-10-05用户授权扩充新闻栏目，当前Instance设为24；登记总数仍最多40，已有官方Adapter不占活动额度，discovery出版商占用额度。刷新间隔、串行域请求和字节限制保持。仅固定登记的公开栏目使用BrowserRuntime，缺少浏览器返回不可用，付费页不自动回退。转载在既有`discoveredVia`保存阅读入口，`publisherKey`保持原媒体；Feed可选`readingVia`投影入口名称，原文链接仍为可读入口，`originUrl`只保存真实发现的原报道地址。
+- HTTP正文适配优先使用来源的`publisherKey`，缺失时兼容旧`sourceKey`；新BBC/Guardian栏目共用出版商适配，不修改历史文章身份。普通文章与live/video页面分别判定；特殊页面不能套用普通正文的full条件。真实入口与正文抽样只读验收使用Host隔离输出，无模型调用；生产启用仍通过Service探针与显式启用，不以配置enabled默认值代替数据库状态。
+- 媒体采集范围来自媒体原生频道列表；`includeKeywords / excludeKeywords / focusKeywords`只兼容读取，不参与索引、正文候选或默认页面筛选。`sourceKey`表示采集入口，`publisherKey / publisherName`表示文章出版商，`channel`保持现有tech/macro分组。可选`channelName / channelUrl / listSelector / sourceAliases`描述入口及历史兼容，不新增主题分类系统。
+- migration 36增加`media_entry_discoveries`，保留文章的多个频道入口、列表位置和首次/最近发现时间。规范化URL精确相同的新增发现复用已有externalId；不按标题合并，不重算历史Capture、译文、已读/隐藏与引用身份。Yahoo Economy替代两个旧署名入口，旧sourceKey作为兼容别名；采集统计合并计算旧别名与新入口的用量，不重置计数。
+- `media_source_states.ingestion_policy`记录已成功应用的采集策略版本。版本变化触发一次无ETag/Last-Modified的受控读取，成功解析落库后才更新版本；失败保留待恢复状态。重新解析仍受既有回看窗口约束；每日元数据、正文成功数、请求数和来源detailDailyCap缺省为null，取消配额后原配额延期立即恢复。未知发布时间保持null，列表位置不代替发布时间。
 - Feed 的可选 `articleTranslation` 是完整正文翻译投影，包含 `status / bodyHash / snapshotRevision / title / paragraphs / completedChunks / totalChunks / updatedAt`。每个当前正文分片 sourceHash 都匹配时才是 `ready`，旧的单条信息流译文不计入全文完成度。已译段落保持原段落 ID 与类型；正文或标题变化生成新缓存身份，读取端立即使旧译文失效。`translation` 兼容字段继续供摘要索引使用，不代表全文。UI 默认读取全文视图，未完成翻译时展示原文及进度。
 - 提要绑定 `bodyHash / snapshotRevision`，每条 evidence 必须是已存段落的连续 quote。来源摘要不被生成文本覆盖。日报候选使用完整的有效提要（最多300字符）及 `media-body` SourceRef，旧索引修订上的提要不进入新报告。
-- migration 34 增加正文观测、结构快照、提要与真实请求计数；35 增加按正文版本保存的提要处理状态。1–33 不改写，不重建用户数据库。正文和投影保存与 outbox 同事务。
+- migration 34 增加正文观测、结构快照、提要与真实请求计数；35 增加按正文版本保存的提要处理状态；36增加频道发现、策略版本与逐篇出版商/作者字段。既有迁移不改写，不重建用户数据库。正文和投影保存与 outbox 同事务。
 
 ## Source
 
@@ -103,7 +124,7 @@ V6 保留旧 REAL 列用于兼容，新增 `*_decimal` 列作为新代码的权�
 - 文章阅读使用独立输入 Contract `CreateArticleAnalysisInput`，不要复用 `CreateAgentRunInput.message`。`AiSession.kind` 为 `article-analysis`。`AiRun.taskType` 统一为 `article-analysis.reader.v1`；`output` 只保存 Markdown `outputText`（上限 40,000），不保存结构化 Artifact。News 核验若发生，必须来自真实联网 Tool Result。这是 Article Analysis Skill，不是第二个 Agent。设计见 `docs/search-agent-v1.md`。
 - 用户主动引用是协议，不是独立领域：`resourceType + resourceId + revision`。当前支持 `content-item`、`post`、`inspiration`、`knowledge-revision`、`ai-run`、`daily-brief-item`。页面 ID（例如 `x:externalId`）不能当作 Resource ID；信息流 DTO 使用 `resourceId` 指向 `content_items.id`。同一组 refs 不只给问答：`POST /api/v1/context/pack` 把当前落库内容打成 Markdown 材料包（日期、来源链接、已有译文），页面可导出、放入任务框或继续带去问答。不新增 Pack / Bundle 领域，也不经隧道外发。
 - `CreateAgentRunInput.references` 进入 Job 后，由 Context Service `resolveReferences()` 确定性读取并写入模型上下文，不走 Tool Registry。写入 `ai_run_context_refs.origin = selected`；Tool 产生的引用为 `origin = tool`。问答会话详情把这些 refs 投影为 `sourceFooter`（去重、分组、最多 24 条），页面在回答文末展示并可跳转；不解析模型正文。信息流条目优先用已落盘译文作为正文。
-- 日报每条筛选观点可作为 `daily-brief-item` 引用，沿用同一 references / 材料包 / 问答链路。`resourceId` 为 `reportDate/candidateId`（最长 267 字符），`revision` 必填，等于该 DailyBrief 的 `generatedAt`。其他主动引用 ID 仍最多 256 字符。Context Service 经 Report Service 读取同 workspace 的已落库观点及生成时的候选快照，明确区分模型观点与候选事实依据，不把供应商字段放入上下文。重生成后版本不匹配或观点不存在时视为 missing，不按数组序号引用，不静默替换成新版观点；当前单行 Brief 存储不新增历史版本表。已发送的引用按既有 AiRunContextRef 保存，来源栏归入「日报」并可回到对应日期的观点。
+- 日报观点可作为 `daily-brief-item` 引用，沿用同一 references / 材料包 / 问答链路。`resourceId` 为 `reportDate/candidateId`（最长 267 字符），`revision` 必填，等于该 DailyBrief 的 `generatedAt`。其他主动引用 ID 仍最多 256 字符。Context Service 经 Report Service 读取同 workspace 的已落库观点及生成时快照，明确区分模型观点与原文依据，不暴露供应商字段。旧版之间重生成保持版本不匹配即missing；首次升级为V2时归档原旧稿。V2的`daily_brief_versions`按生成时间归档正文、材料快照与多源证据，旧引用读取对应版本，绝不指向新版结论。已发送引用按既有AiRunContextRef保存，来源栏归入日报。
 - `GET /api/v1/knowledge/mentions` 给问答输入框 `@` 补全：返回本地 Knowledge 文件（分析框架等）和 SQLite 知识文档，形状是 `knowledge-revision` 引用，不含文件路径。不是独立 MCP Skill 领域。
 - `webMode` 在生产 Harness 上只表示 Prompt 倾向，不再隐藏联网工具：`off` / `fallback` / `always` 都有完整 `web_search` + `web_fetch`。本地循环回退仍可用 `webMode=off` 隐藏 Domain `web.search`。Domain `web.search` 经 SourcePort 读 `search.web`，只留给测试或 `AI_CENTER_AGENT_RUNTIME=local`。News 核验若发生，必须来自真实联网 Tool（Harness `web_search` / `web_fetch`，或本地 `web.search`）。
 - `researchMode` 是问答的专业研究开关：`standard`（默认）走普通档；`research` 由 Domain `resolveResearchProfile` 解析为 `AgentResearchProfile`（`modelProfile` / `thinking` / `methodKeywords` / `extraToolIds`），写入 `ai.agent.run` Job input，不新增表。页面 Contract 不暴露供应商或具体模型名。`modelProfile=research` 只表示更高模型档位；Harness 映射 `AI_CENTER_HARNESS_RESEARCH_MODEL`，未配置时仍用 `AI_CENTER_HARNESS_MODEL`。`methodKeywords` 与 `extraToolIds` 是预留口，当前默认空数组；`researchOnly` 工具只有出现在 `extraToolIds` 时才暴露。不要用 `metadata` 塞研究方法。
@@ -116,6 +137,20 @@ V6 保留旧 REAL 列用于兼容，新增 `*_decimal` 列作为新代码的权�
 
 ## Runtime 与事件
 
+- 2026-10-06 用户要求方向文章：当前 `BriefEditorialOutput` 为 overview 与 directions/key/label/articleTitle/lead/sections/paragraphs，导语和段落保存 text/itemIds，方向身份固定，不接受模型链接。`brief-editorial-v3` 保存程序生成的文章/段落 ID、逐段冻结 evidence 与事项 inputVersion；ready 复用须同时匹配版号和输入指纹。事项正文主要归属唯一方向文章，同一文章的章节间可合理分段引用，导语可复述该方向正文；未知 ID、段内重复事项 ID、跨方向重复归属、标签错配或无依据导语整份拒绝。历史 v2 结构仍可解析，不伪造新版段落证据。
+- 固定小时生成输入新增 `mode=resume|rewrite` 与可选 `snapshotId`；重编必须指定 hourStart，指定快照须使用 rewrite 且同 workspace/完整小时。只重编已保存冻结底稿，新不可变快照失败不替换旧 ready 发布指针。目录 itemCount 对 v3 表示方向文章数量，v2 表示主题数量，底稿查询保持全部原事项；日报文章 ID、旧主题 ID及底稿 ID仍按对应冻结版本可引用。
+- 小时方向文章沿用 `hourly-digest` 引用类型，resourceId 可为 `snapshotId/articleId`，只解析该冻结文章；找不到文章时返回missing，不回退到整小时。旧 snapshotId 引用仍读取整小时，日报方向文章沿用 date/articleId 与成稿 revision；两者不创建问答线程。
+
+- 2026-10-05 整小时编辑：`HourlyDigest` 与 `DailyBrief` 新增可选 `editorial`，兼容原 JSON。`BriefEditorialOutput` 只包含 overview、overviewItemIds、directions/topics（title/body/itemIds），不接受链接、供应商或任意命令。Domain 拒绝未知、重复事项、无依据总览和空方向，程序回填主题 ID、时间和全部冻结 evidence；ready 正文与底稿分别保存，未采用事项不自动追加。failed 明确表示“主题整理未完成”，旧 ready 发布指针保持有效。小时/日报目录的 itemCount 对 ready 新稿表示阅读主题数量；搜索结果 hours.itemCount 仍表示底稿数量。
+- `ReferenceInput` 允许 `hourly-digest`，resourceId 是不可变快照 ID，不需要额外成稿版本；Context Service 按冻结 ID 读取总览、主题和证据，并提示字数预算、底稿查询入口及覆盖。它不创建 Agent Session；更新发布指针不改旧引用。日报主题 ID 与底稿 ID 都可按原日报 date/revision 解析。
+- `MediaSavedArticleQuery` 严格校验 externalId；`GET /api/v1/feed/media/article` 经 Media Service/Repository 按身份与 workspace 读取已保存文章，复用列表文章投影、全文结构与译文，找不到返回404，不扫描列表、不抓取、不派发任务。来源身份由冻结材料 sourceRefs 解析，媒体列表未加载不影响站内阅读。
+
+- 简报只读元数据：`HourlyDigestIndexQuery`严格校验大于零、七日以内的UTC窗口；`HourlyDigestIndex`返回实例timezone及每个完整小时的hourStart、已发布id（可null）、generatedAt、itemCount、最近处理status/updatedAt、unread/failed计数，独立表达旧发布版本与新重试状态，不携带正文、供应商或Host路径。`running`须持有有效租约，已过期运行记录作为`failed`读取，不在GET中写回状态。`DailyBriefWindowQuery`按date/revision读取指定成稿版本的冻结window/timezone，无法核对的旧版本返回null。两条读取路径均经Report Service/Repository，不生成Job、不改变现有InformationItem/DailyBrief存储契约。
+
+- 2026-10-06 小时状态补全：目录列出请求范围内全部已结束完整小时（不含未来/当前未结束小时），缺处理记录时status/phase为`not-started`。可选`readable`表示发布指针确有可读文章，`draftId/draftItemCount`单独描述最新保存底稿；旧ready与新失败可同时存在。`phase`区分queued-extraction/extracting/queued-editing/editing/draft/ready/empty/failed，`failureStage/failureReason`为固定枚举，`queueMs/executionMs`是最近模型阶段耗时；不返回原始错误或供应商字段。旧目录响应可继续兼容。每个阶段的诊断不进入模型输入和缓存身份，不改变冻结事项或证据契约。
+
+- 信息摘选新稿沿用 DailyBrief `schemaVersion=2` 并以 `flowVersion=information-digest-v1` 区分流程。`informationItems` 保存全部逐条信息，`hourlySnapshots` 固定来源快照；旧 `items` 前八项仅为兼容概览，历史目录条数读取完整清单。`DailyAnalysisOutput` 新形状是 `items[{sentence,evidence}]`，旧 analysis 字符串阶段使用 `LegacyDailyAnalysisOutput`，不可把两种输出混读。每条 `InformationEvidence` 包含 snapshotId/materialId/paragraphId/materialHash/materialVersion；日报继承原引用并直接读证据，无须依赖新的日报生成时间。HourlyDigest 保存窗口、冻结/生成时间、事项、覆盖和警告。HTTP 生成只接受 hourStart 并入队固定 `report.hourly.extract`，不接收预算/Provider/命令。只读 Ask 工具支持七日以内窗口和 offset 分页。非整点日报截止的边界快照仅供该日报使用，不替换独立小时查询。详见 `information-digest-v1.md`。
+
 - Job 保存期望执行的工作和最终状态。
 - JobAttempt 保存每次 Worker 执行、worker ID、开始/结束时间和错误。
 - Agent Run 的实时进度是应用层只读投影，不是第二套 Agent Session。Worker 消费 Harness `session.event` / `session.status` 与 Tool Gateway 结果后，追加脱敏事件并投影为 `AgentRunProgressStep`；每步只允许 `label`、限长 `detail`、`status`、provider-neutral `toolId` 与轮次，不保存 Tool 原文、Prompt、供应商字段或 DSH 文件路径。
@@ -126,7 +161,11 @@ V6 保留旧 REAL 列用于兼容，新增 `*_decimal` 列作为新代码的权�
 - `JobSchedule` 只描述何时创建 Job：`daily`（时区、小时、分钟）或 `interval`（分钟）。`nextRunAt` / `lastEnqueuedAt` 持久化。停机补跑采用 latest-only，不回补每一档。
 - `DailyWindow` 是左闭右开的 `[startAt, endAt)`。`reportDate` 对应该日 cutoff 的结束时刻，起点是前一日同一 cutoff。默认时区 `Asia/Shanghai`、cutoff `08:00`，由 `AI_CENTER_DAILY_TIMEZONE` 与 `AI_CENTER_DAILY_CUTOFF` 配置。新闻归入窗口使用 `publishedAt ?? createdAt`，不用 `capturedAt`。
 - `DailyReport` 是确定性快照，不含评分、情绪或买卖结论。同一 `workspaceId + reportDate` 重复生成只更新一行。行情快照记录生成时能取到的最新状态。
-- `DailyBrief` 是从当天 `DailyReport` 派生的注意力筛选，不是新的事实层。候选池由程序从日报生成；模型只返回 `candidateId` 和说明。`type`、`occurredAt`、`sourceRefs` 都从候选池回填。模型输出里不存在的 `candidateId` 整份拒绝。`daily_report_briefs` 按 `workspaceId + reportId` 唯一，并保存当时的候选快照和 `sourceReportUpdatedAt`。日报手工重跑后 `updatedAt` 变化，对应 Brief 需要重新生成。Brief 不改写 DailyReport。`catchup: true` 只用于失败后的延迟补跑：同一 `reportId` 已有且 `sourceReportUpdatedAt` 仍等于日报 `updatedAt` 时直接返回，不调用模型。`GET /api/v1/reports/daily/briefs` 只返回日期、概述、条数和生成时间，点进某一天再读完整 `DailyBrief`。
+  行情 `asOf` 仅使用来源报价时间；没有时为 null，不能用获取时间代替。`fetchedAt` / 持仓 `updatedAt` 是获取时间。
+  沪深市场及持仓附带可选 `calendar`（交易日期、交易日状态、交易阶段、休市原因、下次交易时间、已核验年度）。
+  2026 年按交易所休市公告，调休周末仍休市；未核验年度工作日状态为 unknown，不推断节假日。
+  持仓可选 `quoteAsOf` / `session` 保留报价时间和市场状态；休市时现价对前收盘价表示最近交易日变动。
+- `DailyBrief` V1 是旧快照的注意力筛选；V2 (`schemaVersion=2`) 是材料快照后的分轮综合分析，仍不是新的事实层。V2 支持完整 `sections.body`、多材料段落证据、来源覆盖与追踪问题更新；前8项提供兼容概览卡片。`DailyMaterial` 固定来源、时间、正文等级、版本与哈希。`daily_analysis_stages` 保存输入/输出与失败状态，`daily_analysis_runs` 固定运行快照和租约。接口 `/daily/brief/generate` 默认刷新所选日期材料，`mode=rewrite` 读取已成稿冻结版本并复用阅读阶段，原文 `/daily/evidence` 按日期、生成版本和段落解析。以下候选行为仅适用于V1。候选池由程序从日报生成；模型只返回 `candidateId` 和说明。`type`、`occurredAt`、`sourceRefs` 都从候选池回填。模型输出里不存在的 `candidateId` 整份拒绝。`daily_report_briefs` 按 `workspaceId + reportId` 唯一，并保存当时的候选快照和 `sourceReportUpdatedAt`。日报手工重跑后 `updatedAt` 变化，对应 Brief 需要重新生成。Brief 不改写 DailyReport。`catchup: true` 只用于失败后的延迟补跑：同一 `reportId` 已有且 `sourceReportUpdatedAt` 仍等于日报 `updatedAt` 时直接返回，不调用模型。`GET /api/v1/reports/daily/briefs` 只返回日期、概述、条数和生成时间，点进某一天再读完整 `DailyBrief`。
 - `StockFactorSnapshot` / `StockStatistics` 是纯统计事实。百分位是 `0~1` 的历史位置，不是好坏分。`peTtm <= 0` 时保留原值，但估值百分位为 null。价格收益优先使用复权序列；没有复权因子时回退原始收盘价并带 `priceSeriesAdjusted=false`。计算必须带 `asOf`，不能使用之后的数据。
 - `BasketStatistics` 是指数成分的聚合事实。市盈率按正盈利成分的盈利收益率加权后再取倒数，市净率按净资产收益率同样处理，股息率按权重直接加权。`StrategySnapshot` 保存 `cn.dividend.value` 的派生状态，只记录价值、回撤和数据质量，不包含分数或买卖结论。
 - `schemaVersion` 描述 payload 版本；事件名后缀与其保持一致。

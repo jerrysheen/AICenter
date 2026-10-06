@@ -6,6 +6,10 @@
 
 文章阅读是 **Article Analysis Skill**（产品入口「文章阅读」，Job `ai.article.analyze`）：复用同一套生产执行器（DeepSeek Harness），由 Job 明确注入阅读框架 Instruction 和 Domain Tool 可见范围。它不是第二个 Agent，不进入普通问答 Job，也不改变本文的 Ask Agent 冻结。资料搜索以后做成 Harness 插件。设计见 `docs/search-agent-v1.md`。
 
+2026-10-06 执行准入修复：Worker仍共用一个冻结Harness并串行调用。包装器的等待队列支持取消与固定优先级，交互请求、最新小时、其他封闭任务、旧补编依次准入，不中止当前调用或创建第二个执行器。封闭Domain阶段分别记录排队与执行耗时，执行截止在准入后开始，墙钟总预算与检查点仍保留。页面与HTTP输入不能设置执行权限、优先级或供应商。小时调度与状态规则见 `information-digest-v1.md`。
+
+Harness的终止事件错误保留为`HarnessModelError`，中止事件不交付部分回答；不能仅凭SDK无finalResponse将真实失败丢成泛化空答。该修复位于AICenter包装层，不修改冻结的dsh源码或另建执行循环。
+
 ## 一句话定义
 
 Agent 负责思考和探索，Runtime 负责执行与确定性边界，Tool 提供感知与行动能力，Jev 负责置信与质量信号。**Jev 不指挥 Agent 想什么，也不裁剪 Tool Table。**

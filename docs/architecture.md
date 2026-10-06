@@ -1,5 +1,7 @@
 # 架构
 
+2026-10-05 用户授权按内容类型分流 TrendForce：原采集任务一次获取，经 Feed 注入 Port 分别写 Media 与行情报价 Service/Repository；硬件报价独立于股票 OHLC。来源和旧 ContentItem 身份保留，迁移显式执行；细则见 `hardware-prices-v1.md`。
+
 当前产品版本是 **0.2.0 基线候选**。当前问题与验收见 `docs/release-readiness.md`。
 下文「第一版兼容层」是仍在运行的连接闭环，不是当前工作范围。
 
@@ -151,7 +153,15 @@ packages/
 
 公网模式、一次性高熵配对、Cloudflare Access，以及 Agent / Host 能力平面见 `docs/public-access-security.md`。
 
+## 媒体页读取与设备显示缓存
+
+媒体页首先读取 SQLite 已落库的文章，抓取、翻译和标签仍由 Worker 执行。客户端首次读取使用现有 `limit=12` 分页，继续滚动才取后续文章；媒体响应已经包含标签，页面不再等待第二次 tagging 请求。媒体 Feed JSON 按 `Accept-Encoding` 协商 gzip，保持 `Cache-Control: no-store`，不把设备数据缓存到公共 CDN。
+
+浏览器/ArkWeb 在设备授权成功后读取同源、设备身份隔离的显示缓存，先显示已有文章，再后台对齐服务端。`media-feed.js` 最多保存六个栏目/视图的首批12篇，合计不超过1,000,000字符，有效期24小时；存储被禁用或超额时继续正常联网读取。退出、授权失效或切换设备身份清除缓存，未授权页面不显示缓存。SQLite仍是真源；此缓存不提供离线授权，也不替代同步、译文版本校验或阅读状态写入。重复读取合并，旧栏目/旧会话的晚到响应不得覆盖当前视图。恢复媒体页时先读当前栏目，其他重数据读取在首批完成后进行。
+
 ## 任务与事件
+
+- 用户授权的信息摘选沿用 Report 域：`report.hourly.extract` 每整小时检查最近24个已结束窗口，正文版本相同则复用，部分阅读从阶段检查点续读。小时快照独立于日报版本保存，绑定正文哈希/版本及段落。日报以 `informationItems` 保存全部信息，`items` 前八项仅为兼容概览。复用同一 Harness 的封闭材料模式，不改 Ask 职责。非整点日报截止生成独立边界快照，不替换完整小时结果。见 `information-digest-v1.md`。
 
 - `jobs` 是 SQLite 持久任务队列。Worker 使用 `BEGIN IMMEDIATE` 原子领取任务。
 - `job_schedules` 是 Runtime 上的薄调度层，只决定何时创建已经注册的 Job。第一版支持 `daily` 与 `interval`，不解析 Cron 表达式。到期入队和推进 `next_run_at` 在同一个 SQLite 事务里完成；停机后的补跑只保留最近一次（latest-only）。Scheduler 与 JobRunner 并列，Scheduler 不执行 Handler。`strategy.cn-dividend.snapshot` 在上海时间 15:30 生成中证红利策略快照；08:00 日报只读取此前已经落库的快照。`feed.subscriptions.sync` 每分钟检查一次哪些订阅到期，真正的抓取间隔仍是每条 subscription 的 `refreshIntervalMinutes`。X 关注、X 推荐、雪球关注、雪球精选和雪球 7x24 默认 30 分钟。新内容入库后入队 `feed.items.enrich` 做翻译和打标。停机后同样只补跑最近一次检查，不按错过的分钟数回补。
@@ -215,3 +225,12 @@ DeepSeek Search Connector 通过 `search.web` Source Definition 接入，只留�
 
 模块通过 capability manifest、显式 job handler 和领域端口接入。跨领域协作使用带版本事件或独立关系表，
 禁止由一个模块直接修改另一个模块拥有的数据表。
+
+## 日报分析 V2
+
+日报阅读入口收为「简报」：独立前端组件共用小时/日报状态、事项行与冻结来源面板；新增小时版本清单及指定成稿统计窗口的只读投影继续由 Report Service / Repository 拥有，不引入新领域、Agent 或阅读任务。简报设备已读/收藏只保存本地显示签名，退出或授权变化清除，不写关联文章状态。宿主布局、弹层与现有引用保持共用。接入语义见 `information-digest-v1.md`。
+
+2026-10-04用户授权日报分层阅读升级，设计见`daily-analysis-v2.md`。
+保留DailyReport、Worker、JobRunner、Report/Feed/Media Service与同一Harness。
+材料按来源keyset分页，直接使用已保存正文；模型分轮分批，关注问题只有用户明确启用才参与。
+重生成与固定材料重写分别入队；V2保存阶段与历史版本，不重写旧日报。
