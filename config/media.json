@@ -2,20 +2,19 @@
   "version": 1,
   "timeZone": "Asia/Shanghai",
   "budget": {
-    "maxNewMetadataPerDay": 300,
-    "maxSelectedBodiesPerDay": 32,
+    "maxNewMetadataPerDay": null,
+    "maxSelectedBodiesPerDay": null,
     "maxCardsPerEdition": 10,
     "maxBodyBytes": 100000,
     "maxFeedBytes": 2097152,
-    "maxActiveSources": 6,
+    "maxActiveSources": 24,
     "backfillHours": 48,
     "maxFeedNodes": 20000,
     "perOriginConcurrency": 1,
     "totalConcurrency": 3,
-    "maxBodyRequestsPerDay": 48,
-    "maxSourceRequestsPerDay": 16
+    "maxBodyRequestsPerDay": null,
+    "maxSourceRequestsPerDay": null
   },
-  "focusKeywords": [],
   "sources": [
     {
       "enabled": false,
@@ -48,7 +47,7 @@
         "www.nextplatform.com"
       ],
       "refreshMinutes": 120,
-      "detailDailyCap": 8,
+      "detailDailyCap": null,
       "deployment": "first"
     },
     {
@@ -82,7 +81,7 @@
         "www.datacenterdynamics.com"
       ],
       "refreshMinutes": 120,
-      "detailDailyCap": 8,
+      "detailDailyCap": null,
       "deployment": "first"
     },
     {
@@ -116,7 +115,7 @@
         "www.techmeme.com"
       ],
       "refreshMinutes": 60,
-      "detailDailyCap": 0,
+      "detailDailyCap": null,
       "deployment": "first"
     },
     {
@@ -142,18 +141,22 @@
       "articleHosts": [
         "www.thelec.net"
       ],
-      "contentAccess": "index",
+      "contentAccess": "body",
       "sourceKey": "thelec",
       "publisher": "THE ELEC",
       "channel": "tech",
-      "transport": "html",
-      "probeUrl": "https://www.thelec.net/",
+      "transport": "rss",
+      "probeUrl": "https://cdn.thelec.net/rss/gn_rss_allArticle.xml",
       "allowedHosts": [
-        "www.thelec.net"
+        "cdn.thelec.net"
       ],
       "refreshMinutes": 180,
-      "detailDailyCap": 3,
-      "deployment": "later"
+      "detailDailyCap": null,
+      "deployment": "first",
+      "publisherKey": "thelec",
+      "channelName": "THE ELEC All articles",
+      "channelUrl": "https://www.thelec.net/",
+      "backfillHours": 168
     },
     {
       "enabled": false,
@@ -186,7 +189,7 @@
         "www.digitimes.com"
       ],
       "refreshMinutes": 180,
-      "detailDailyCap": 3,
+      "detailDailyCap": null,
       "deployment": "licensed"
     },
     {
@@ -220,7 +223,7 @@
         "the-decoder.com"
       ],
       "refreshMinutes": 120,
-      "detailDailyCap": 8,
+      "detailDailyCap": null,
       "deployment": "first"
     },
     {
@@ -254,7 +257,7 @@
         "www.blocksandfiles.com"
       ],
       "refreshMinutes": 180,
-      "detailDailyCap": 2,
+      "detailDailyCap": null,
       "deployment": "later"
     },
     {
@@ -291,7 +294,7 @@
         "www.moneydj.com"
       ],
       "refreshMinutes": 180,
-      "detailDailyCap": 2,
+      "detailDailyCap": null,
       "deployment": "later"
     },
     {
@@ -325,7 +328,7 @@
         "www.trendforce.com.tw"
       ],
       "refreshMinutes": 120,
-      "detailDailyCap": 3,
+      "detailDailyCap": null,
       "deployment": "existing"
     },
     {
@@ -359,7 +362,7 @@
         "www.reuters.com"
       ],
       "refreshMinutes": 60,
-      "detailDailyCap": 3,
+      "detailDailyCap": null,
       "deployment": "licensed"
     },
     {
@@ -393,7 +396,7 @@
         "apnews.com"
       ],
       "refreshMinutes": 120,
-      "detailDailyCap": 2,
+      "detailDailyCap": null,
       "deployment": "licensed"
     },
     {
@@ -427,7 +430,7 @@
         "www.ft.com"
       ],
       "refreshMinutes": 120,
-      "detailDailyCap": 2,
+      "detailDailyCap": null,
       "deployment": "first"
     },
     {
@@ -463,7 +466,7 @@
         "feeds.bloomberg.com"
       ],
       "refreshMinutes": 120,
-      "detailDailyCap": 2,
+      "detailDailyCap": null,
       "deployment": "later"
     },
     {
@@ -491,9 +494,9 @@
         "www.bbc.co.uk",
         "www.bbc.com"
       ],
-      "contentAccess": "index",
+      "contentAccess": "body",
       "sourceKey": "bbc",
-      "publisher": "BBC News",
+      "publisher": "BBC",
       "channel": "macro",
       "transport": "rss",
       "probeUrl": "https://feeds.bbci.co.uk/news/business/rss.xml",
@@ -501,8 +504,11 @@
         "feeds.bbci.co.uk"
       ],
       "refreshMinutes": 120,
-      "detailDailyCap": 2,
-      "deployment": "first"
+      "detailDailyCap": null,
+      "deployment": "first",
+      "channelName": "BBC Business",
+      "publisherKey": "bbc",
+      "channelUrl": "https://www.bbc.com/business"
     },
     {
       "enabled": false,
@@ -535,7 +541,7 @@
         "www.economist.com"
       ],
       "refreshMinutes": 360,
-      "detailDailyCap": 1,
+      "detailDailyCap": null,
       "deployment": "later"
     },
     {
@@ -571,7 +577,7 @@
         "feeds.content.dowjones.io"
       ],
       "refreshMinutes": 120,
-      "detailDailyCap": 2,
+      "detailDailyCap": null,
       "deployment": "later"
     },
     {
@@ -607,7 +613,7 @@
         "www.politico.com"
       ],
       "refreshMinutes": 180,
-      "detailDailyCap": 2,
+      "detailDailyCap": null,
       "deployment": "recheck"
     },
     {
@@ -629,22 +635,23 @@
       "identityParams": [],
       "redirectHosts": [],
       "articleHosts": [
-        "www.theguardian.com",
-        "content.guardianapis.com"
+        "www.theguardian.com"
       ],
-      "contentAccess": "index",
+      "contentAccess": "body",
       "sourceKey": "guardian",
       "publisher": "The Guardian",
       "channel": "macro",
-      "transport": "vendor_api",
+      "transport": "rss",
       "probeUrl": "https://www.theguardian.com/business/economics/rss",
       "allowedHosts": [
-        "www.theguardian.com",
-        "content.guardianapis.com"
+        "www.theguardian.com"
       ],
       "refreshMinutes": 120,
-      "detailDailyCap": 2,
-      "deployment": "licensed"
+      "detailDailyCap": null,
+      "deployment": "first",
+      "channelName": "Guardian Economics",
+      "publisherKey": "guardian",
+      "channelUrl": "https://www.theguardian.com/business/economics"
     },
     {
       "enabled": false,
@@ -679,7 +686,7 @@
         "rss.nytimes.com"
       ],
       "refreshMinutes": 240,
-      "detailDailyCap": 1,
+      "detailDailyCap": null,
       "deployment": "candidate"
     },
     {
@@ -713,7 +720,7 @@
         "time.com"
       ],
       "refreshMinutes": 360,
-      "detailDailyCap": 1,
+      "detailDailyCap": null,
       "deployment": "candidate"
     },
     {
@@ -747,7 +754,7 @@
         "www.thetimes.com"
       ],
       "refreshMinutes": 360,
-      "detailDailyCap": 1,
+      "detailDailyCap": null,
       "deployment": "candidate"
     },
     {
@@ -781,7 +788,7 @@
         "www.usnews.com"
       ],
       "refreshMinutes": 360,
-      "detailDailyCap": 1,
+      "detailDailyCap": null,
       "deployment": "candidate"
     },
     {
@@ -801,10 +808,566 @@
       "trackingParams": [],
       "identityParams": [],
       "contentAccess": "body",
-      "detailDailyCap": 8,
+      "detailDailyCap": null,
       "refreshMinutes": 120,
       "deployment": "existing",
+      "enabled": false,
+      "backfillHours": 720
+    },
+    {
+      "sourceKey": "whitehouse",
+      "publisher": "The White House",
+      "sourceId": "policy.us.white-house",
+      "probeUrl": "https://www.whitehouse.gov/news/",
+      "channel": "macro",
+      "transport": "existing_adapter",
+      "allowedHosts": [
+        "www.whitehouse.gov"
+      ],
+      "articleHosts": [
+        "www.whitehouse.gov"
+      ],
+      "redirectHosts": [],
+      "trackingParams": [],
+      "identityParams": [],
+      "contentAccess": "body",
+      "detailDailyCap": null,
+      "refreshMinutes": 120,
+      "backfillHours": 720,
+      "deployment": "existing",
       "enabled": false
+    },
+    {
+      "sourceKey": "federalregister",
+      "publisher": "Federal Register",
+      "sourceId": "policy.us.federal-register",
+      "probeUrl": "https://www.federalregister.gov/api/v1/documents.json",
+      "channel": "macro",
+      "transport": "existing_adapter",
+      "allowedHosts": [
+        "www.federalregister.gov"
+      ],
+      "articleHosts": [
+        "www.federalregister.gov"
+      ],
+      "redirectHosts": [],
+      "trackingParams": [],
+      "identityParams": [],
+      "contentAccess": "body",
+      "detailDailyCap": null,
+      "refreshMinutes": 120,
+      "backfillHours": 720,
+      "deployment": "existing",
+      "enabled": false
+    },
+    {
+      "sourceKey": "govcn",
+      "publisher": "国务院政策文件库",
+      "sourceId": "policy.cn.gov",
+      "probeUrl": "https://sousuo.www.gov.cn/zcwjk/policyDocumentLibrary",
+      "channel": "macro",
+      "transport": "existing_adapter",
+      "allowedHosts": [
+        "www.gov.cn",
+        "sousuo.www.gov.cn"
+      ],
+      "articleHosts": [
+        "www.gov.cn",
+        "sousuo.www.gov.cn"
+      ],
+      "redirectHosts": [],
+      "trackingParams": [],
+      "identityParams": [],
+      "contentAccess": "body",
+      "detailDailyCap": null,
+      "refreshMinutes": 120,
+      "backfillHours": 720,
+      "deployment": "existing",
+      "enabled": false
+    },
+    {
+      "sourceKey": "govnews",
+      "publisher": "中国政府重要会议发布",
+      "sourceId": "policy.cn.gov-news",
+      "probeUrl": "https://www.gov.cn/yaowen/liebiao/YAOWENLIEBIAO.json",
+      "channel": "macro",
+      "transport": "existing_adapter",
+      "allowedHosts": [
+        "www.gov.cn"
+      ],
+      "articleHosts": [
+        "www.gov.cn"
+      ],
+      "redirectHosts": [],
+      "trackingParams": [],
+      "identityParams": [],
+      "contentAccess": "body",
+      "detailDailyCap": null,
+      "refreshMinutes": 120,
+      "backfillHours": 720,
+      "deployment": "existing",
+      "enabled": false
+    },
+    {
+      "sourceKey": "pboc",
+      "publisher": "中国人民银行",
+      "sourceId": "policy.cn.pboc",
+      "probeUrl": "https://www.pbc.gov.cn/goutongjiaoliu/113456/113469/index.html",
+      "channel": "macro",
+      "transport": "existing_adapter",
+      "allowedHosts": [
+        "www.pbc.gov.cn"
+      ],
+      "articleHosts": [
+        "www.pbc.gov.cn"
+      ],
+      "redirectHosts": [],
+      "trackingParams": [],
+      "identityParams": [],
+      "contentAccess": "body",
+      "detailDailyCap": null,
+      "refreshMinutes": 120,
+      "backfillHours": 720,
+      "deployment": "existing",
+      "enabled": false
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [
+        "www.bbc.co.uk",
+        "www.bbc.com"
+      ],
+      "articleHosts": [
+        "www.bbc.co.uk",
+        "www.bbc.com"
+      ],
+      "contentAccess": "body",
+      "sourceKey": "bbcworld",
+      "publisher": "BBC",
+      "channel": "macro",
+      "transport": "rss",
+      "probeUrl": "https://feeds.bbci.co.uk/news/world/rss.xml",
+      "allowedHosts": [
+        "feeds.bbci.co.uk"
+      ],
+      "refreshMinutes": 120,
+      "detailDailyCap": null,
+      "deployment": "first",
+      "channelName": "BBC World",
+      "publisherKey": "bbc",
+      "channelUrl": "https://www.bbc.com/news/world"
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [],
+      "articleHosts": [
+        "www.theguardian.com"
+      ],
+      "contentAccess": "body",
+      "sourceKey": "guardianworld",
+      "publisher": "The Guardian",
+      "channel": "macro",
+      "transport": "rss",
+      "probeUrl": "https://www.theguardian.com/world/rss",
+      "allowedHosts": [
+        "www.theguardian.com"
+      ],
+      "refreshMinutes": 120,
+      "detailDailyCap": null,
+      "deployment": "first",
+      "channelName": "Guardian World",
+      "publisherKey": "guardian",
+      "channelUrl": "https://www.theguardian.com/world"
+    },
+    {
+      "sourceKey": "ftav",
+      "publisher": "FT Alphaville 周报",
+      "channel": "macro",
+      "transport": "rss",
+      "probeUrl": "https://ftav.substack.com/feed",
+      "allowedHosts": [
+        "ftav.substack.com"
+      ],
+      "articleHosts": [
+        "ftav.substack.com"
+      ],
+      "redirectHosts": [],
+      "contentAccess": "body",
+      "detailDailyCap": null,
+      "refreshMinutes": 360,
+      "deployment": "first",
+      "backfillHours": 336,
+      "enabled": false
+    },
+    {
+      "sourceKey": "yahooeconomy",
+      "publisher": "Yahoo Finance",
+      "channel": "macro",
+      "transport": "html",
+      "probeUrl": "https://finance.yahoo.com/topic/economy/",
+      "allowedHosts": [
+        "finance.yahoo.com"
+      ],
+      "articleHosts": [
+        "finance.yahoo.com"
+      ],
+      "redirectHosts": [],
+      "contentAccess": "body",
+      "detailDailyCap": null,
+      "refreshMinutes": 120,
+      "deployment": "first",
+      "listReadMethod": "browser",
+      "bodyReadMethod": "browser",
+      "enabled": false,
+      "channelName": "Yahoo Economy — main stream",
+      "channelUrl": "https://finance.yahoo.com/topic/economy/",
+      "listSelector": "main .stream section.story-item",
+      "sourceAliases": [
+        "reuterswire",
+        "bloombergwire"
+      ]
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [
+        "www.bbc.co.uk",
+        "www.bbc.com"
+      ],
+      "articleHosts": [
+        "www.bbc.co.uk",
+        "www.bbc.com"
+      ],
+      "contentAccess": "body",
+      "sourceKey": "bbctech",
+      "publisher": "BBC",
+      "channel": "tech",
+      "transport": "rss",
+      "probeUrl": "https://feeds.bbci.co.uk/news/technology/rss.xml",
+      "allowedHosts": [
+        "feeds.bbci.co.uk"
+      ],
+      "refreshMinutes": 120,
+      "detailDailyCap": null,
+      "deployment": "first",
+      "channelName": "BBC Technology",
+      "publisherKey": "bbc",
+      "channelUrl": "https://www.bbc.com/technology",
+      "backfillHours": 168
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [
+        "www.bbc.co.uk",
+        "www.bbc.com"
+      ],
+      "articleHosts": [
+        "www.bbc.co.uk",
+        "www.bbc.com"
+      ],
+      "contentAccess": "body",
+      "sourceKey": "bbcscience",
+      "publisher": "BBC",
+      "channel": "tech",
+      "transport": "rss",
+      "probeUrl": "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
+      "allowedHosts": [
+        "feeds.bbci.co.uk"
+      ],
+      "refreshMinutes": 120,
+      "detailDailyCap": null,
+      "deployment": "first",
+      "channelName": "BBC Science & Environment",
+      "publisherKey": "bbc",
+      "channelUrl": "https://www.bbc.com/news/science_and_environment",
+      "backfillHours": 168
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [],
+      "articleHosts": [
+        "www.theguardian.com"
+      ],
+      "contentAccess": "body",
+      "sourceKey": "guardianai",
+      "publisher": "The Guardian",
+      "channel": "tech",
+      "transport": "rss",
+      "probeUrl": "https://www.theguardian.com/technology/artificialintelligenceai/rss",
+      "allowedHosts": [
+        "www.theguardian.com"
+      ],
+      "refreshMinutes": 120,
+      "detailDailyCap": null,
+      "deployment": "first",
+      "channelName": "Guardian AI",
+      "publisherKey": "guardian",
+      "channelUrl": "https://www.theguardian.com/technology/artificialintelligenceai",
+      "backfillHours": 168
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [],
+      "articleHosts": [
+        "www.theguardian.com"
+      ],
+      "contentAccess": "body",
+      "sourceKey": "guardianenergy",
+      "publisher": "The Guardian",
+      "channel": "macro",
+      "transport": "rss",
+      "probeUrl": "https://www.theguardian.com/business/energy-industry/rss",
+      "allowedHosts": [
+        "www.theguardian.com"
+      ],
+      "refreshMinutes": 120,
+      "detailDailyCap": null,
+      "deployment": "first",
+      "channelName": "Guardian Energy industry",
+      "publisherKey": "guardian",
+      "channelUrl": "https://www.theguardian.com/business/energy-industry",
+      "backfillHours": 168
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [],
+      "articleHosts": [
+        "www.theguardian.com"
+      ],
+      "contentAccess": "body",
+      "sourceKey": "guardianmanufacturing",
+      "publisher": "The Guardian",
+      "channel": "macro",
+      "transport": "rss",
+      "probeUrl": "https://www.theguardian.com/business/manufacturing-sector/rss",
+      "allowedHosts": [
+        "www.theguardian.com"
+      ],
+      "refreshMinutes": 120,
+      "detailDailyCap": null,
+      "deployment": "first",
+      "channelName": "Guardian Manufacturing sector",
+      "publisherKey": "guardian",
+      "channelUrl": "https://www.theguardian.com/business/manufacturing-sector",
+      "backfillHours": 168
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [],
+      "articleHosts": [
+        "www.theguardian.com"
+      ],
+      "contentAccess": "body",
+      "sourceKey": "guardiantrade",
+      "publisher": "The Guardian",
+      "channel": "macro",
+      "transport": "rss",
+      "probeUrl": "https://www.theguardian.com/business/internationaltrade/rss",
+      "allowedHosts": [
+        "www.theguardian.com"
+      ],
+      "refreshMinutes": 120,
+      "detailDailyCap": null,
+      "deployment": "first",
+      "channelName": "Guardian International trade",
+      "publisherKey": "guardian",
+      "channelUrl": "https://www.theguardian.com/business/internationaltrade",
+      "backfillHours": 168
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [],
+      "contentAccess": "body",
+      "transport": "rss",
+      "deployment": "first",
+      "detailDailyCap": null,
+      "backfillHours": 168,
+      "sourceKey": "eia",
+      "publisher": "U.S. Energy Information Administration",
+      "publisherKey": "eia",
+      "channelName": "EIA Today in Energy",
+      "channel": "macro",
+      "probeUrl": "https://www.eia.gov/rss/todayinenergy.xml",
+      "channelUrl": "https://www.eia.gov/todayinenergy/",
+      "allowedHosts": [
+        "www.eia.gov"
+      ],
+      "articleHosts": [
+        "www.eia.gov"
+      ],
+      "refreshMinutes": 360
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid"
+      ],
+      "identityParams": [],
+      "redirectHosts": [],
+      "contentAccess": "body",
+      "transport": "rss",
+      "deployment": "first",
+      "detailDailyCap": null,
+      "backfillHours": 168,
+      "sourceKey": "utilitydive",
+      "publisher": "Utility Dive",
+      "publisherKey": "utilitydive",
+      "channelName": "Utility Dive News",
+      "channel": "macro",
+      "probeUrl": "https://www.utilitydive.com/feeds/news/",
+      "channelUrl": "https://www.utilitydive.com/",
+      "allowedHosts": [
+        "www.utilitydive.com"
+      ],
+      "articleHosts": [
+        "www.utilitydive.com"
+      ],
+      "refreshMinutes": 180
     }
   ],
   "discoveryPublishers": [
@@ -818,7 +1381,7 @@
         "/news/"
       ],
       "redirectHosts": [],
-      "detailDailyCap": 2,
+      "detailDailyCap": null,
       "bodyUseAcknowledged": true
     },
     {
@@ -831,7 +1394,7 @@
         "/2026/"
       ],
       "redirectHosts": [],
-      "detailDailyCap": 2,
+      "detailDailyCap": null,
       "bodyUseAcknowledged": true
     }
   ]

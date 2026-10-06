@@ -58,7 +58,7 @@ test('bilibili feed API caches imported transcripts and only fetches on POST', a
       };
     },
   };
-  const app = createAiCenterServer({ host: '127.0.0.1', port: 0, dataDirectory: directory, bilibiliService });
+  const app = createAiCenterServer({ host: '127.0.0.1', port: 0, dataDirectory: directory, bilibiliService,feedFilter:null });
   const address = await app.listen();
   try {
     const cached = await fetch(`${address.localUrl}/api/v1/feed/bilibili`).then((response) => response.json());
@@ -75,7 +75,8 @@ test('bilibili feed API caches imported transcripts and only fetches on POST', a
     assert.equal(live.ok, true);
     assert.equal(calls, 1);
     assert.equal(live.feed.added, 1);
-    assert.equal(live.feed.items.length, 0);
+    assert.equal(live.feed.items.length, 1);
+    assert.equal(live.feed.items[0].id, 'bilibili:BV1cwtN6sEDr');
     tagStoredItems(path.join(directory, 'ai-center.db'));
     const again = await fetch(`${address.localUrl}/api/v1/feed/bilibili`).then((response) => response.json());
     assert.equal(calls, 1);

@@ -7,25 +7,30 @@ export function createMediaEnrichJobHandlers({ mediaService, feedService, taggin
     throw new Error('media enrich jobs require mediaService');
   }
   if (!feedService?.localizeTexts) throw new Error('media enrich jobs require feedService');
-  if (!taggingService?.analyzeItems) throw new Error('media enrich jobs require taggingService');
+  if (!taggingService?.analyzeItems) taggingService={analyzeItems:async()=>{throw new Error('tagging unavailable');}};
 
   return {
     [MEDIA_ENRICH_JOB_TYPE]: async (input = {}) => {
       const workspaceId = input.workspaceId || 'local';
       const discovery = mediaService.discoverOriginals?.(workspaceId) || {added:0};
-      const selected = mediaService.selectBodyCandidates?.(workspaceId) || [];
+      const selected = mediaService.selectBodyCandidates?.(workspaceId, 10_000) || [];
       const candidates = input.externalIds?.length ? input.externalIds : selected.length ? selected.map(r => r.externalId) : mediaService.listBodyCandidates(workspaceId);
-      const bodies = candidates.length
-        ? await mediaService.fetchBodies({
+      // Forty is a request batch size, not a quota for the enrichment job.
+      const bodies = { ok: true, fetched: [], stats: {} };
+      for (let offset = 0; offset < candidates.length; offset += 40) {
+        const batch = await mediaService.fetchBodies({
           workspaceId,
-          externalIds: candidates,
+          externalIds: candidates.slice(offset, offset + 40),
           repair: input.repair === true,
           selectedReasons: Object.fromEntries(selected.map(r => [r.externalId,r.reason])),
-        })
-        : { ok: true, fetched: [] };
+        });
+        bodies.fetched.push(...(batch.fetched || []));
+        if (batch.health) bodies.health = batch.health;
+        for (const [key, value] of Object.entries(batch.stats || {})) bodies.stats[key] = (bodies.stats[key] || 0) + value;
+      }
       const explicit = input.externalIds?.length ? new Set(input.externalIds) : null;
-      const briefIds = explicit ? [...explicit] : [...new Set([...candidates, ...mediaService.listEnrichmentItems(workspaceId).map(i => i.externalId)])];
-      const items = mediaService.listEnrichmentItems(workspaceId).filter(item => !explicit || explicit.has(item.externalId));
+      const items = mediaService.listEnrichmentItems(workspaceId, 120, candidates).filter(item => !explicit || explicit.has(item.externalId));
+      const briefIds = explicit ? [...explicit] : [...new Set([...candidates, ...items.map(i => i.externalId)])];
       const units = items.filter(item => item.contentLevel !== 'full').map((item) => ({
         id: item.resourceId,
         localizationId: item.resourceId,
@@ -34,7 +39,7 @@ export function createMediaEnrichJobHandlers({ mediaService, feedService, taggin
       const fullUnits = mediaService.listArticleTranslationUnits?.(workspaceId,items.map(item=>item.externalId)) || [];
       let pendingIds = [];
       let translated = 0;
-      for (const batch of mediaTranslationBatches([...units,...fullUnits])) {
+      for (const batch of mediaTranslationBatches([...fullUnits,...units])) {
         const localization = await feedService.localizeTexts(batch, { workspaceId });
         pendingIds.push(...(localization.pendingIds || []));
         translated += batch.length - (localization.pendingIds?.length || 0);
@@ -56,7 +61,9 @@ export function createMediaEnrichJobHandlers({ mediaService, feedService, taggin
         body: item.body,
       });
       const stableItems=items.filter(item=>!freshIds.has(item.resourceId));
-      const tagging = stableItems.length
+      let tagging={saved:[],skipped:0,missingItemIds:[]}, taggingError='';
+      try {
+      tagging = stableItems.length
         ? await taggingService.analyzeItems({
           workspaceId,
           resourceType: 'media-index',
@@ -78,12 +85,17 @@ export function createMediaEnrichJobHandlers({ mediaService, feedService, taggin
       if (tagging.missingItemIds?.length) {
         throw new Error(`还有 ${tagging.missingItemIds.length} 条媒体索引没有完成打标`);
       }
+      } catch {
+        taggingError='tagging_unavailable';
+        const saved=new Set((tagging.saved || []).map(row=>row.resourceId));
+        tagging.missingItemIds=items.filter(item=>!saved.has(item.resourceId)&&(!priorTags.has(item.resourceId)||freshIds.has(item.resourceId))).map(item=>item.resourceId);
+      }
       // Reading, full translation and the shared X tag flow take priority over optional summaries.
-      const briefs = await mediaService.generateBodyBriefs?.({ workspaceId, externalIds: briefIds, briefPort, retryFailed: Boolean(explicit) }) || [];
+      const briefs = taggingError ? [] : await mediaService.generateBodyBriefs?.({ workspaceId, externalIds: briefIds, briefPort, retryFailed: Boolean(explicit) }) || [];
       const fetched = bodies.fetched || [];
       return {
         workspaceId,
-        health: pendingIds.length || briefs.some(b => ['failed','unavailable'].includes(b.status)) ? 'partial' : bodies.health || 'ready',
+        health: taggingError || pendingIds.length || briefs.some(b => ['failed','unavailable'].includes(b.status)) ? 'partial' : bodies.health || 'ready',
         discovery,
         translationStats: {totalChunks: fullUnits.length, pendingChunks: pendingIds.filter(id=>fullUnits.some(u=>u.id===id)).length},
         bodyStats: bodies.stats || {},
@@ -97,6 +109,9 @@ export function createMediaEnrichJobHandlers({ mediaService, feedService, taggin
         bodiesDeferred: fetched.filter((item) => item.health === 'budget_deferred').length,
         translated,
         tagged: tagging.saved?.length || 0,
+        taggingStatus: taggingError ? 'pending' : 'ready',
+        taggingError,
+        pendingTagIds: tagging.missingItemIds || [],
         skippedTagging: tagging.skipped || 0,
       };
     },

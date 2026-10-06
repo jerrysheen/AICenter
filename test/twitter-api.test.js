@@ -54,7 +54,7 @@ test('x feed API caches source items and only refreshes on demand', async () => 
       };
     },
   };
-  const app = createAiCenterServer({ host: '127.0.0.1', port: 0, dataDirectory: directory, twitterService });
+  const app = createAiCenterServer({ host: '127.0.0.1', port: 0, dataDirectory: directory, twitterService,feedFilter:null });
   const address = await app.listen();
   try {
     const cached = await fetch(`${address.localUrl}/api/v1/feed/x?feed=for-you&limit=50`).then((response) => response.json());
@@ -62,10 +62,10 @@ test('x feed API caches source items and only refreshes on demand', async () => 
     assert.equal(calls, 0);
     assert.equal(cached.feed.mode, 'empty');
     const live = await fetch(`${address.localUrl}/api/v1/feed/x?feed=for-you&limit=50&refresh=1`).then((response) => response.json());
-    assert.equal(live.ok, true);
+    assert.equal(live.ok, true, JSON.stringify(live));
     assert.equal(calls, 1);
     assert.equal(live.feed.added, 1);
-    assert.equal(live.feed.items.length, 0);
+    assert.equal(live.feed.items.length, 1);
     tagStoredItems(path.join(directory, 'ai-center.db'));
     const again = await fetch(`${address.localUrl}/api/v1/feed/x?feed=for-you&limit=50`).then((response) => response.json());
     assert.equal(calls, 1);

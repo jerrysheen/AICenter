@@ -17,7 +17,7 @@ test('translate API returns injected engine payload', async () => {
           sourceText: input.text,
           translatedText: '你好',
           targetLang: input.targetLang,
-          engine: 'deepl',
+          engine: 'elucid-grok',
         };
       },
     },
@@ -30,7 +30,7 @@ test('translate API returns injected engine payload', async () => {
       body: JSON.stringify({ text: 'hello' }),
     }).then((response) => response.json());
     assert.equal(payload.ok, true);
-    assert.equal(payload.translation.engine, 'deepl');
+    assert.equal(payload.translation.engine, 'elucid-grok');
     assert.equal(payload.translation.translatedText, '你好');
   } finally {
     await app.close();

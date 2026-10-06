@@ -5,12 +5,7 @@ import {
   needsTranslation,
   parseGeminiBatchTranslations,
   parseGeminiGenerateContent,
-  parseGoogleTranslatePayload,
 } from '../packages/connectors/src/translate/index.js';
-
-test('google payload concatenates translated segments', () => {
-  assert.equal(parseGoogleTranslatePayload([[['你好', 'hello'], ['世界', 'world']]]), '你好世界');
-});
 
 test('gemini generateContent payload reads candidate text', () => {
   assert.equal(parseGeminiGenerateContent({
@@ -64,78 +59,6 @@ test('translate service prefers Gemini when a key is configured', async () => {
   assert.equal(body.contents[0].parts[0].text.includes('SK하이닉스'), true);
 });
 
-test('translate service never calls Elucid even if an Elucid Grok key is in the environment', async () => {
-  const previous = process.env.ELUCID_GROK_API_KEY;
-  process.env.ELUCID_GROK_API_KEY = 'elucid-must-not-be-used';
-  try {
-    const service = createTranslateService({
-      geminiApiKey: '',
-      authKey: '',
-      async fetch(url) {
-        assert.doesNotMatch(String(url), /getelucid\.com/);
-        assert.match(String(url), /translate\.googleapis\.com/);
-        return {
-          ok: true,
-          async json() {
-            return [[['测试', 'test']]];
-          },
-        };
-      },
-    });
-    const result = await service.translate({ text: 'hello world today' });
-    assert.equal(result.engine, 'google');
-  } finally {
-    if (previous === undefined) delete process.env.ELUCID_GROK_API_KEY;
-    else process.env.ELUCID_GROK_API_KEY = previous;
-  }
-});
-
-test('translate service prefers DeepL when a key is configured', async () => {
-  const calls = [];
-  const service = createTranslateService({
-    geminiApiKey: '',
-    authKey: 'test-key',
-    apiUrl: 'https://api-free.deepl.com/v2/translate',
-    ttlMs: 60_000,
-    now: () => 1,
-    async fetch(url, options = {}) {
-      calls.push([String(url), options.method || 'GET']);
-      return {
-        ok: true,
-        async json() {
-          return { translations: [{ text: '你好' }] };
-        },
-      };
-    },
-  });
-  const first = await service.translate({ text: 'hello world today', targetLang: 'zh' });
-  const second = await service.translate({ text: 'hello world today' });
-  assert.equal(first.engine, 'deepl');
-  assert.equal(first.translatedText, '你好');
-  assert.equal(second.translatedText, '你好');
-  assert.equal(second.cached, true);
-  assert.equal(calls.length, 1);
-});
-
-test('translate service falls back to Google without a DeepL or Gemini key', async () => {
-  const service = createTranslateService({
-    geminiApiKey: '',
-    authKey: '',
-    async fetch(url) {
-      assert.match(String(url), /translate\.googleapis\.com/);
-      return {
-        ok: true,
-        async json() {
-          return [[['测试', 'test']]];
-        },
-      };
-    },
-  });
-  const result = await service.translate({ text: 'hello world today' });
-  assert.equal(result.engine, 'google');
-  assert.equal(result.translatedText, '测试');
-});
-
 test('already-chinese text does not call an engine', async () => {
   const service = createTranslateService({
     geminiApiKey: 'gemini-test',
@@ -147,37 +70,6 @@ test('already-chinese text does not call an engine', async () => {
   const result = await service.translate({ text: '这条推文已经是简体中文正文。' });
   assert.equal(result.engine, 'passthrough');
   assert.equal(result.translatedText, '这条推文已经是简体中文正文。');
-});
-
-test('gemini 429 falls back to DeepL', async () => {
-  const calls = [];
-  const service = createTranslateService({
-    geminiApiKey: 'gemini-test',
-    authKey: 'deepl-key',
-    apiUrl: 'https://api-free.deepl.com/v2/translate',
-    async fetch(url) {
-      calls.push(String(url));
-      if (String(url).includes('generativelanguage.googleapis.com')) {
-        return {
-          ok: false,
-          status: 429,
-          async json() {
-            return { error: { message: 'RESOURCE_EXHAUSTED' } };
-          },
-        };
-      }
-      return {
-        ok: true,
-        async json() {
-          return { translations: [{ text: '你好' }] };
-        },
-      };
-    },
-  });
-  const result = await service.translate({ text: 'hello world today' });
-  assert.equal(result.engine, 'deepl');
-  assert.equal(result.translatedText, '你好');
-  assert.equal(calls.length, 2);
 });
 
 test('gemini batch payload maps ids without changing them', () => {
@@ -239,4 +131,9 @@ test('translateMany sends one Gemini request for pending english and korean item
   assert.equal(first.translations.find((row) => row.id === 'x:1').engine, 'gemini');
   assert.equal(first.translations.find((row) => row.id === 'x:2').translatedText, 'SK海力士将扩大产能。');
   assert.equal(second.translations[0].cached, true);
+});
+
+test('translation requires Gemini or Elucid credentials and never uses removed providers',async()=>{
+ const service=createTranslateService({geminiApiKey:'',elucidApiKey:'',authKey:'ignored',fetch:async()=>{throw new Error('Unexpected provider request');}});
+ await assert.rejects(service.translate({text:'Hello from another business report.'}),/GEMINI_API_KEY.*ELUCID_GROK_API_KEY/);
 });

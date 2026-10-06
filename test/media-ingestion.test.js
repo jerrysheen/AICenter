@@ -31,12 +31,13 @@ function item({ title, link, guid, date = 'Thu, 01 Oct 2026 08:00:00 GMT', descr
   return `<item><title>${title}</title><link>${link}</link><guid>${guid}</guid><pubDate>${date}</pubDate><description>${description}</description></item>`;
 }
 
-function temporaryMedia(fetchImpl, budget) {
+function temporaryMedia(fetchImpl, budget, feedFilter=null) {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-media-'));
   const store = createStore(path.join(directory, 'test.db'));
   const service = createMediaIngestionService({
     mediaRepository: store.repositories.media,
     feedRepository: store.repositories.feed,
+    feedFilter,
     mediaPort: createMediaConnector({ ...mediaConfig, fetchImpl, lookupImpl: PUBLIC_LOOKUP }),
     now: () => NOW,
     budget: { ...MEDIA_BUDGET, ...budget },
@@ -51,6 +52,28 @@ function temporaryMedia(fetchImpl, budget) {
   };
 }
 
+test('production media gate keeps raw index, excludes DROP from feed and daily, and restores after body passes',async()=>{
+  let passed=false,calls=0;
+  const gate={async evaluate(){calls++;return {createContentItem:passed,status:passed?'ready':'ignored',metadata:{filterMode:'enforce',filterApplied:!passed,filterDecision:passed?'KEEP':'DROP',filterRule:'two-of-three-0.60'}};}};
+  const fixture=temporaryMedia(async url=>String(url).includes('/feed/') ? response({body:rss(item({title:'Model price',link:'https://the-decoder.com/model-price/',guid:'gate-1'}))})
+    : response({body:`<article><div class="content-wrapper"><p>${'The API price changed by 2 dollars per million tokens. '.repeat(4)}</p><p>${'The company reported the change for this period. '.repeat(4)}</p></div></article>`}),{},gate);
+  try {
+    await fixture.service.probe({sourceKeys:['decoder'],policyReviewed:true,run:true});fixture.service.enableSource('local','decoder');
+    await fixture.service.syncEnabled({workspaceId:'local',channel:'tech',force:true});
+    const row=fixture.store.repositories.media.listEntries('local',{limit:10})[0];
+    assert.ok(row);assert.equal(calls,1);
+    assert.equal(fixture.service.readFeed({channel:'tech'},{workspaceId:'local'}).items.length,0);
+    assert.equal(fixture.service.dailyMaterials('local',{startAt:NOW-86400000,endAt:NOW+86400000,limit:100}).length,0);
+    assert.equal(fixture.store.repositories.feed.getCapture('local','media',row.externalId).metadata.filterDecision,'DROP');
+    passed=true;fixture.service.acknowledgeBodyUse('local',['decoder']);
+    await fixture.service.fetchBodies({workspaceId:'local',externalIds:[row.externalId],usageReviewed:true});
+    assert.equal(calls,2);assert.equal(fixture.service.readFeed({channel:'tech'},{workspaceId:'local'}).items.length,1);
+    const capture=fixture.store.repositories.feed.getCapture('local','media',row.externalId);
+    assert.equal(capture.metadata.filterDecision,'KEEP');assert.ok(fixture.store.repositories.feed.getContentItemByCapture('local',capture.id));
+    assert.ok(fixture.store.repositories.media.latestBodies('local',[row.externalId])[0].bodyText);
+  } finally{fixture.remove();}
+});
+
 function response({ status = 200, body = '', headers = {} }) {
   const normalized = Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]));
   return {
@@ -61,9 +84,9 @@ function response({ status = 200, body = '', headers = {} }) {
 }
 
 test('media catalog stays disabled and outside social auto refresh', () => {
-  assert.equal(MEDIA_SOURCES.length, 23);
+  assert.equal(MEDIA_SOURCES.filter(source => source.transport === 'existing_adapter' && source.channel === 'macro').length, 6);
   assert.equal(MEDIA_SOURCES.every((entry) => entry.enabled === false), true);
-  assert.deepEqual(initialBatchSourceKeys(), ['nextplatform', 'dcd', 'techmeme', 'decoder', 'ft', 'bbc']);
+  assert.deepEqual(initialBatchSourceKeys(), ['nextplatform', 'dcd', 'techmeme', 'thelec', 'decoder', 'ft', 'bbc', 'guardian', 'bbcworld', 'guardianworld', 'ftav', 'yahooeconomy', 'bbctech', 'bbcscience', 'guardianai', 'guardianenergy', 'guardianmanufacturing', 'guardiantrade', 'eia', 'utilitydive']);
   assert.equal(defaultAutoRefreshProjections().some((item) => item.providerId === 'media'), false);
   assert.deepEqual(parseMediaFeedQuery({ channel: 'macro', refresh: '1' }), {
     platform: 'media', feed: 'macro', channel: 'macro', refresh: true,

@@ -1,11 +1,14 @@
 import { createHash } from 'node:crypto';
 import { ValidationError } from '../../contracts/src/errors.js';
-import { MediaBriefSchema, MediaConfigSchema } from '../../contracts/src/media.js';
+import { ImportedMediaArticleSchema } from '../../contracts/src/hardware-prices.js';
+import { MediaBriefSchema, MediaConfigSchema, MediaSavedArticleQuerySchema } from '../../contracts/src/media.js';
 import { localizationItemId } from './localize-texts.js';
 import { mediaTranslationUnits, projectMediaTranslation } from './media-translation.js';
 import { formatYmd, zonedParts } from './zoned-time.js';
+import { normalizeMediaUrl } from './media-url.js';
 const MEDIA_BUDGET = MediaConfigSchema.parse({ version: 1, sources: [] }).budget;
 const MEDIA_TIMEZONE = 'Asia/Shanghai';
+export const MEDIA_INGESTION_POLICY = 'native-channels-v1';
 
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
@@ -57,14 +60,16 @@ function entryRow(workspaceId, entry, item, { at, previous, status }) {
   return {
     workspaceId,
     externalId: item.externalId,
-    sourceKey: entry.sourceKey,
-    publisherKey: entry.sourceKey,
+    sourceKey: previous?.sourceKey || entry.sourceKey,
+    publisherKey: item.publisherKey || previous?.publisherKey || entry.publisherKey || entry.sourceKey,
+    publisherName: item.publisherName || previous?.publisherName || entry.publisher,
+    authorName: item.authorName || previous?.authorName || '',
     channel: entry.channel,
     canonicalUrl: item.sourceUrl || item.canonicalUrl,
     title: item.title,
     summary: item.summary,
-    publishedAt: item.publishedAt,
-    publishedAtRaw: item.publishedAtRaw,
+    publishedAt: item.publishedAt ?? previous?.publishedAt ?? null,
+    publishedAtRaw: item.publishedAtRaw || previous?.publishedAtRaw || '',
     contentLevel: previous?.contentLevel === 'full' ? 'full' : contentLevelFor(entry),
     contentHash: indexHash(item),
     revision: previous ? previous.revision + (previous.contentHash === indexHash(item) ? 0 : 1) : 1,
@@ -80,6 +85,7 @@ function entryRow(workspaceId, entry, item, { at, previous, status }) {
 }
 
 export function createMediaIngestionService({
+  feedFilter = null,
   mediaRepository,
   feedRepository = null,
   taggingRepository = null,
@@ -92,27 +98,47 @@ export function createMediaIngestionService({
   const dayKey = at => formatYmd(zonedParts(at,mediaPort?.timeZone || MEDIA_TIMEZONE));
   budget = { ...MEDIA_BUDGET, ...(mediaPort?.budget || {}), ...budget };
   const MEDIA_PUBLISHERS = [...MEDIA_SOURCES, ...(mediaPort?.publishers || [])];
-  const mediaSource = key => MEDIA_PUBLISHERS.find(s => s.sourceKey === key) || null;
+  const mediaSource = key => MEDIA_PUBLISHERS.find(s => s.sourceKey === key || s.sourceAliases?.includes(key)) || null;
   const mediaSourcesByChannel = channel => MEDIA_SOURCES.filter(s => !channel || s.channel === channel);
+  const strictAdmission=feedFilter?.config?.mode==='enforce' && feedFilter.config.rule==='all-three-0.60';
+  function qualityExcluded(workspaceId) {
+    if(!strictAdmission) return feedRepository?.listQualityExcludedExternalIds?.(workspaceId,'media') || [];
+    const approved=new Set(feedRepository?.listQualityApprovedExternalIds?.(workspaceId,'media') || []);
+    return mediaRepository.listEntries(workspaceId,{limit:10000}).filter(r=>!approved.has(r.externalId)).map(r=>r.externalId);
+  }
   const redactUrl = mediaPort?.redactUrl || (url => url);
   const fetchAllowlisted = (input, options) => mediaPort.fetch(input, options);
   const parseFeedXml = (xml, entry) => mediaPort.parseFeed(xml, entry);
   const extractorVersion = mediaPort?.extractorVersion || '';
+  const budgetCooldownRemoved = (state, entry) => state.fetchStatus === 'deferred' && (
+    state.extractionReason === 'success_budget' ? budget.maxSelectedBodiesPerDay == null && entry?.detailDailyCap == null :
+    state.extractionReason === 'request_budget' && budget.maxBodyRequestsPerDay == null && budget.maxSourceRequestsPerDay == null
+  );
   const initialFetchState = () => ({ fetchStatus: 'pending', httpStatus: null, extractionReason: '', attemptCount: 0, failureCount: 0, lastAttemptAt: null, nextRetryAt: null,
     responseBytes: 0, extractedBytes: 0, paragraphCount: 0, extractionMethod: '', extractorVersion: '', fetchedRevision: 0, etag: '', lastModified: '',
     finalUrl: '', author: '', publishedAtRaw: '', updatedAtRaw: '', selectedReason: '', visualEvidenceRequired: false });
 
   function stateOf(workspaceId, sourceKey, at) {
-    return mediaRepository.getState(workspaceId, sourceKey) || blankState(workspaceId, sourceKey, at);
+    const entry = mediaSource(sourceKey);
+    const canonical = entry?.sourceKey || sourceKey;
+    const saved = mediaRepository.getState(workspaceId, canonical);
+    if (saved) return saved;
+    const legacy = (entry?.sourceAliases || []).map(key=>mediaRepository.getState(workspaceId,key)).filter(Boolean);
+    return { ...blankState(workspaceId,canonical,at), enabled:legacy.some(s=>s.enabled), hostDirectVerified:legacy.some(s=>s.hostDirectVerified),
+      bodyUseAcknowledged:legacy.some(s=>s.enabled && s.bodyUseAcknowledged) };
   }
 
   function catalogView(workspaceId) {
     const states = new Map(mediaRepository.listStates(workspaceId).map((item) => [item.sourceKey, item]));
     return MEDIA_PUBLISHERS.map((entry) => {
-      const state = states.get(entry.sourceKey);
+      const state = states.get(entry.sourceKey) || stateOf(workspaceId,entry.sourceKey,now());
       return {
         sourceKey: entry.sourceKey,
         publisher: entry.publisher,
+        channelName: entry.channelName || entry.publisher,
+        channelUrl: entry.channelUrl || entry.probeUrl,
+        listUrl: entry.probeUrl,
+        listSelector: entry.listSelector || '',
         channel: entry.channel,
         transport: entry.transport,
         deployment: entry.deployment,
@@ -127,14 +153,25 @@ export function createMediaIngestionService({
     });
   }
 
-  function readFeed(workspaceId, { channel = 'tech', view = 'all', offset = 0, limit = 50 } = {}) {
+  function readFeed(workspaceId, { channel = 'tech', view = 'all', sourceKey = '', offset = 0, limit = 50, externalId = '' } = {}) {
     const wanted = channel === 'macro' || channel === 'tech' ? channel : 'tech';
-    const allItems = mediaRepository.listEntries(workspaceId, { channel: wanted, limit: 10_000 });
-    const category = row => row.fetchState?.fetchStatus === 'ready' && row.contentLevel === 'full' && row.fetchState?.extractorVersion === extractorVersion && row.fetchState?.fetchedRevision === row.revision ? 'full' : ['failed','policy_skipped'].includes(row.fetchState?.fetchStatus) ? 'failed' : ['full','partial'].includes(row.contentLevel) ? 'partial' : row.fetchState?.fetchStatus === 'pending' || row.fetchState?.fetchStatus === 'deferred' ? 'pending' : 'index';
+    const entries = (externalId ? mediaRepository.getEntries(workspaceId,[externalId]) : mediaRepository.listEntries(workspaceId, { channel: wanted, limit: 10_000 })).filter(row=>!sourceKey || row.sourceKey===sourceKey || row.publisherKey===sourceKey);
+    const itemStates = new Map((feedRepository?.listContentItemStatesByExternalIds?.(
+      workspaceId, 'media', entries.map(item => item.externalId),
+    ) || []).map(row => [row.externalId, row]));
+    for(const link of mediaRepository.legacyLinks?.(workspaceId) || []) {
+      const legacy=feedRepository?.listContentItemStatesByExternalIds?.(workspaceId,link.legacyProvider,[link.legacyExternalId])?.[0];
+      if(legacy) itemStates.set(link.externalId,legacy);
+    }
+    const excluded=new Set(qualityExcluded(workspaceId));
+    const allItems = entries.filter(item => externalId || (!itemStates.get(item.externalId)?.isHidden && !excluded.has(item.externalId)))
+      .sort((a, b) => Number(Boolean(itemStates.get(a.externalId)?.isRead)) - Number(Boolean(itemStates.get(b.externalId)?.isRead)));
+    const category = row => row.articleKind==='report-intro' ? 'index' : row.fetchState?.fetchStatus === 'ready' && row.contentLevel === 'full' && row.fetchState?.extractorVersion === extractorVersion && row.fetchState?.fetchedRevision === row.revision ? 'full' : ['failed','policy_skipped'].includes(row.fetchState?.fetchStatus) ? 'failed' : ['full','partial'].includes(row.contentLevel) ? 'partial' : row.fetchState?.fetchStatus === 'pending' || row.fetchState?.fetchStatus === 'deferred' ? 'pending' : 'index';
     const counts = { all: allItems.length, full: 0, partial: 0, index: 0, pending: 0, failed: 0 };
     for (const item of allItems) counts[category(item)] += 1;
     const filtered = allItems.filter(row => view === 'all' || category(row) === view);
     const items = filtered.slice(offset, offset + Math.min(100,limit));
+    const discoveries = mediaRepository.listDiscoveries?.(workspaceId,items.map(item=>item.externalId)) || [];
     const visibleSources = catalogView(workspaceId).filter((item) => item.channel === wanted);
     const bodies = new Map((mediaRepository.latestBodies?.(workspaceId, items.map((item) => item.externalId)) || [])
       .map((row) => [row.externalId, row]));
@@ -147,13 +184,20 @@ export function createMediaIngestionService({
       return {
         id,
         resourceId: id,
+        contentItemId: itemStates.get(item.externalId)?.contentItemId || null,
+        legacyContentItemId: (mediaRepository.legacyLinks?.(workspaceId) || []).find(l=>l.externalId===item.externalId)?.contentItemId || null,
+        legacyFeedItemId: (()=>{const l=(mediaRepository.legacyLinks?.(workspaceId) || []).find(l=>l.externalId===item.externalId);return l?`${l.legacyProvider}:${l.legacyExternalId}`:null;})(),
+        articleKind: item.articleKind || 'article',
+        isRead: Boolean(itemStates.get(item.externalId)?.isRead),
+        isSaved: Boolean(itemStates.get(item.externalId)?.isSaved),
+        createdAt: item.createdAt,
         externalId: item.externalId,
         title: item.title,
         summary: item.summary,
         body,
         sourceUrl: item.canonicalUrl,
-        authorName: snapshot?.article?.author || item.fetchState?.author || item.publisherKey,
-        publishedAt: item.publishedAt || 0,
+        authorName: snapshot?.article?.author || item.fetchState?.author || item.authorName || item.publisherName || item.publisherKey,
+        publishedAt: item.publishedAt,
         contentLevel: article ? verifiedFull ? 'full' : 'partial' : item.contentLevel,
         truncated: Boolean(snapshot?.truncated),
         fetchState: item.fetchState || {},
@@ -164,9 +208,12 @@ export function createMediaIngestionService({
         bodyHash: item.bodyHash,
         snapshotRevision: snapshot?.revision || null,
         publisherKey: item.publisherKey,
-        publisherName: mediaSource(item.publisherKey)?.publisher || item.publisherKey,
+        publisherName: item.publisherName || mediaSource(item.publisherKey)?.publisher || item.publisherKey,
+        sourceKey: item.sourceKey,
+        discoveryChannels: discoveries.filter(d=>d.externalId===item.externalId).map(d=>({...d,channelName:mediaSource(d.sourceKey)?.channelName || mediaSource(d.sourceKey)?.publisher || d.sourceKey})),
         channel: item.channel,
         originUrl: item.originUrl,
+        readingVia: item.discoveredVia?.sourceKey === 'yahoo' ? 'Yahoo Finance' : '',
         status: item.status,
       };
     });
@@ -197,7 +244,7 @@ export function createMediaIngestionService({
         const ready = Boolean(saved && saved.sourceHash === textHash(item.body) && saved.translatedText);
         return {
           ...item,
-          tags: tagsById.get(item.resourceId) || [],
+          tags: tagsById.get(item.resourceId) || (item.legacyContentItemId ? taggingRepository?.listTaggings?.(workspaceId,'content-item',[item.legacyContentItemId])?.[0]?.tags : null) || [],
           translation: ready ? {
             text: saved.translatedText,
             engine: saved.engine || '',
@@ -215,7 +262,7 @@ export function createMediaIngestionService({
   }
 
   async function probe({ workspaceId = 'local', sourceKeys = [], policyReviewed = false, run = false } = {}) {
-    const keys = [...new Set(sourceKeys.map((item) => String(item || '').trim()).filter(Boolean))].slice(0, MEDIA_BUDGET.maxActiveSources);
+    const keys = [...new Set(sourceKeys.map((item) => String(item || '').trim()).filter(Boolean))].slice(0, budget.maxActiveSources);
     const unknown = keys.filter((key) => !mediaSource(key));
     if (!keys.length || unknown.length) {
       throw new ValidationError('探针只能选择目录内的来源', ['sourceKeys']);
@@ -247,7 +294,8 @@ export function createMediaIngestionService({
         results.push({ sourceKey: key, health: 'existing_adapter', status: null, requestCount: 0, items: null });
         continue;
       }
-      const fetched = await fetchAllowlisted({
+      const browserList = entry.transport === 'html' && entry.listReadMethod === 'browser';
+      const fetched = browserList ? await mediaPort.readList(entry) : await fetchAllowlisted({
         url: entry.probeUrl,
         allowedHosts: entry.allowedHosts,
         redirectHosts: entry.redirectHosts,
@@ -256,8 +304,8 @@ export function createMediaIngestionService({
       let health = fetched.health;
       let itemCount = null;
       let verified = false;
-      if (entry.transport === 'rss' && fetched.ok && !fetched.notModified) {
-        const parsed = parseFeedXml(fetched.body, entry);
+      if ((entry.transport === 'rss' || browserList) && fetched.ok && !fetched.notModified) {
+        const parsed = browserList ? fetched : parseFeedXml(fetched.body, entry);
         health = parsed.ok ? (parsed.items.length ? 'ready' : 'empty') : parsed.health;
         itemCount = parsed.ok ? parsed.items.length : null;
         verified = parsed.ok && parsed.items.length > 0;
@@ -292,12 +340,13 @@ export function createMediaIngestionService({
     if (!entry) throw new ValidationError('未知媒体来源', ['sourceKey']);
     const at = now();
     const current = stateOf(workspaceId, sourceKey, at);
-    const existingBody = entry.transport === 'existing_adapter' && entry.contentAccess === 'body';
-    if (!existingBody && (entry.deployment !== 'first' || entry.transport !== 'rss')) {
+    const existingBody = entry.transport === 'existing_adapter' && (entry.contentAccess === 'body' || entry.sourceKey === 'trendforce');
+    const browserList = entry.transport === 'html' && entry.listReadMethod === 'browser';
+    if (!existingBody && (entry.deployment !== 'first' || entry.transport !== 'rss' && !browserList)) {
       return { ok: false, health: entry.transport === 'vendor_api' ? 'needs_credentials' : 'not_in_initial_batch' };
     }
     if (!existingBody && !current.hostDirectVerified) return { ok: false, health: 'needs_host_probe' };
-    const enabled = mediaRepository.listStates(workspaceId).filter((item) => item.enabled && item.sourceKey !== sourceKey && mediaSource(item.sourceKey)?.transport !== 'existing_adapter');
+    const enabled = MEDIA_PUBLISHERS.filter(source=>source.sourceKey!==entry.sourceKey && source.transport!=='existing_adapter' && stateOf(workspaceId,source.sourceKey,at).enabled);
     if (!existingBody && enabled.length >= budget.maxActiveSources) return { ok: false, health: 'budget_deferred' };
     mediaRepository.saveState({ ...current, enabled: true, health: 'ready', updatedAt: at });
     return { ok: true, health: 'ready' };
@@ -311,7 +360,7 @@ export function createMediaIngestionService({
   }
 
   function acceptDeferred(workspaceId, entry, at) {
-    const waiting = mediaRepository.listDeferred(workspaceId, entry.sourceKey);
+    const waiting = [entry.sourceKey,...(entry.sourceAliases || [])].flatMap(key=>mediaRepository.listDeferred(workspaceId,key));
     if (!waiting.length) return 0;
     const reservation = mediaRepository.reserveMetadata(
       workspaceId, dayKey(at), waiting.length, at, budget.maxNewMetadataPerDay, { recordDeferred: false },
@@ -325,7 +374,8 @@ export function createMediaIngestionService({
   async function syncSource(workspaceId, entry, at, force = false) {
     const current = stateOf(workspaceId, entry.sourceKey, at);
     if (!current.enabled) return { sourceKey: entry.sourceKey, health: 'disabled', added: 0, items: null };
-    if (!force && current.lastSyncAt && at < current.lastSyncAt + entry.refreshMinutes * 60_000) return { sourceKey: entry.sourceKey, health: 'not_due', added: 0, items: null };
+    const reparse = current.ingestionPolicy !== MEDIA_INGESTION_POLICY;
+    if (!reparse && !force && current.lastSyncAt && at < current.lastSyncAt + entry.refreshMinutes * 60_000) return { sourceKey: entry.sourceKey, health: 'not_due', added: 0, items: null };
     if (entry.transport === 'vendor_api') {
       mediaRepository.saveState({
         ...current,
@@ -338,23 +388,25 @@ export function createMediaIngestionService({
     if (entry.transport === 'existing_adapter' && !mediaPort?.readExisting) {
       return { sourceKey: entry.sourceKey, health: 'existing_adapter', added: 0, items: null };
     }
-    if (entry.transport !== 'rss' && entry.transport !== 'existing_adapter') {
+    const browserList = entry.transport === 'html' && entry.listReadMethod === 'browser';
+    if (entry.transport !== 'rss' && entry.transport !== 'existing_adapter' && !browserList) {
       mediaRepository.saveState({ ...current, health: 'needs_parser', healthDetail: '栏目页还没有验收过的列表解析', updatedAt: at });
       return { sourceKey: entry.sourceKey, health: 'needs_parser', added: 0, items: null };
     }
-    const existing = entry.transport === 'existing_adapter' ? await mediaPort.readExisting(entry) : null;
+    const existing = entry.transport === 'existing_adapter' ? await mediaPort.readExisting(entry) : browserList ? await mediaPort.readList(entry) : null;
     const fetched = existing ? { ok: existing.ok, health: existing.health, body: JSON.stringify(existing.items), etag: '', lastModified: '' } : await fetchAllowlisted({
       url: entry.probeUrl,
       allowedHosts: entry.allowedHosts,
       redirectHosts: entry.redirectHosts,
-      etag: current.etag,
-      lastModified: current.lastModified,
+      etag: reparse ? '' : current.etag,
+      lastModified: reparse ? '' : current.lastModified,
     }, { maxBytes: budget.maxFeedBytes });
     if (!fetched.ok) {
       mediaRepository.saveState({ ...current, health: fetched.health, healthDetail: fetched.note || '', updatedAt: at });
       return { sourceKey: entry.sourceKey, health: fetched.health, added: 0, items: null };
     }
     if (fetched.notModified) {
+      if (reparse) return {sourceKey:entry.sourceKey,health:'policy_reparse_required',added:0,items:null,note:'unconditional request returned 304; policy remains pending'};
       const acceptedDeferred = acceptDeferred(workspaceId, entry, at);
       mediaRepository.saveState({
         ...current,
@@ -371,7 +423,16 @@ export function createMediaIngestionService({
       mediaRepository.saveState({ ...current, health: parsed.health, healthDetail: parsed.note, updatedAt: at });
       return { sourceKey: entry.sourceKey, health: parsed.health, added: 0, items: null };
     }
-    const feedHash = sha256(fetched.body);
+    const comparisonInput = parsed.observations || parsed.items;
+    const comparisons = () => comparisonInput.slice(0,10).map((item,position)=>{
+      const url=normalizeMediaUrl(item.sourceUrl || item.url || item.canonicalUrl,entry.trackingParams || []);
+      const row=mediaRepository.findByUrl?.(workspaceId,url) || mediaRepository.getEntries(workspaceId,[item.externalId]).at(0);
+      return {position:item.listPosition ?? position,title:item.title,url,externalId:row?.externalId || item.externalId || '',
+        alreadyExisted:Boolean(row),indexed:Boolean(row && row.status!=='budget_deferred'),inLookback:item.publishedAt==null || item.publishedAt>=at-(entry.backfillHours ?? budget.backfillHours)*3600000,
+        excludedReason:item.excludedReason || '',status:row?.status || item.excludedReason || 'outside_lookback',bodyStatus:row?.fetchState?.fetchStatus || 'pending'};
+    });
+    const initialComparisons=comparisons();
+    const feedHash = sha256(`${MEDIA_INGESTION_POLICY}\n${entry.backfillHours ?? budget.backfillHours}\n${fetched.body}`);
     if (feedHash && feedHash === current.feedHash) {
       const acceptedDeferred = acceptDeferred(workspaceId, entry, at);
       mediaRepository.saveState({
@@ -383,13 +444,23 @@ export function createMediaIngestionService({
         lastSyncAt: at,
         updatedAt: at,
       });
-      return { sourceKey: entry.sourceKey, health: 'not_modified', added: acceptedDeferred, items: null };
+      return { sourceKey: entry.sourceKey, health: 'not_modified', added: acceptedDeferred, listUrl:entry.probeUrl,listKind:entry.transport,comparisons:initialComparisons,items: null };
     }
-    const cutoff = at - budget.backfillHours * 60 * 60 * 1000;
-    const fresh = parsed.items.filter((item) => item.publishedAt == null || item.publishedAt >= cutoff);
+    const cutoff = at - (entry.backfillHours ?? budget.backfillHours) * 60 * 60 * 1000;
+    const urlIds = new Map();
+    const fresh = parsed.items.map((item,position)=>{
+      const sourceUrl = normalizeMediaUrl(item.sourceUrl || item.canonicalUrl,entry.trackingParams || []);
+      const previous = mediaRepository.findByUrl?.(workspaceId,sourceUrl);
+      const externalId = previous?.externalId || urlIds.get(sourceUrl) || item.externalId;
+      urlIds.set(sourceUrl,externalId);
+      return {...item,sourceUrl,externalId,listPosition:item.listPosition ?? position};
+    }).filter((item) => item.publishedAt == null || item.publishedAt >= cutoff);
     const known = new Map(mediaRepository.getEntries(workspaceId, fresh.map((item) => item.externalId))
       .map((item) => [item.externalId, item]));
-    const changed = fresh.filter((item) => known.get(item.externalId)?.contentHash !== indexHash(item));
+    const changed = [...new Map(fresh.filter((item) => {
+      const previous = known.get(item.externalId);
+      return (!previous || mediaSource(previous.sourceKey)?.sourceKey === entry.sourceKey) && previous?.contentHash !== indexHash(item);
+    }).map(item=>[item.externalId,item])).values()];
     const created = changed.filter((item) => !known.has(item.externalId));
     const retry = changed.filter((item) => known.get(item.externalId)?.status === 'budget_deferred');
     const reservation = mediaRepository.reserveMetadata(
@@ -409,6 +480,9 @@ export function createMediaIngestionService({
     for (const item of changed) {
       const previous = known.get(item.externalId);
       const deferred = deferredIds.has(item.externalId);
+      // Index and body are separate scoring inputs. Preserve both originals in media storage.
+      const gateRow=entryRow(workspaceId,entry,item,{at,previous,status:deferred?'budget_deferred':'indexed'});
+      const gate= !deferred && previous?.contentLevel!=='full' ? await evaluateMediaGate(workspaceId,gateRow,{text:item.summary || '',truncated:false}) : null;
       mediaRepository.atomic(() => {
       mediaRepository.upsertEntry(entryRow(workspaceId, entry, item, {
         at,
@@ -416,10 +490,21 @@ export function createMediaIngestionService({
         status: deferred ? 'budget_deferred' : (previous?.status === 'body_ready' ? 'body_ready' : 'indexed'),
       }));
       if (item.feedBodyHtml) mediaRepository.saveFeedBody(workspaceId, item.externalId, item.feedBodyHtml);
+      if(gate) saveMediaGate(workspaceId,gateRow,{text:item.summary || '',truncated:false},indexHash(item),gate);
       });
       if (!deferred && (!previous || previous.status === 'budget_deferred')) added += 1;
     }
+    for (const item of fresh) {
+      const previous=known.get(item.externalId);
+      if (previous && mediaSource(previous.sourceKey)?.sourceKey===entry.sourceKey && previous.contentHash===indexHash(item) &&
+        ((item.publisherName && previous.publisherName!==item.publisherName) || (item.authorName && previous.authorName!==item.authorName))) {
+        mediaRepository.upsertEntry({...previous,publisherKey:item.publisherKey || previous.publisherKey,
+          publisherName:item.publisherName || previous.publisherName,authorName:item.authorName || previous.authorName,updatedAt:at});
+      }
+    }
     added += acceptDeferred(workspaceId, entry, at);
+    for (const item of fresh) mediaRepository.saveDiscovery?.({workspaceId,externalId:item.externalId,sourceKey:entry.sourceKey,
+      entryUrl:entry.probeUrl,listPosition:item.listPosition,firstSeenAt:at,lastSeenAt:at});
     const dated = parsed.items.map((item) => item.publishedAt).filter((value) => Number.isInteger(value));
     const newest = dated.length ? Math.max(...dated) : null;
     const oldest = dated.length ? Math.min(...dated) : null;
@@ -433,15 +518,17 @@ export function createMediaIngestionService({
       etag: fetched.etag || '',
       lastModified: fetched.lastModified || '',
       feedHash,
+      ingestionPolicy: MEDIA_INGESTION_POLICY,
       lastSyncAt: at,
       updatedAt: at,
     });
-    return { sourceKey: entry.sourceKey, health, added, deferred: reservation.deferred, items: null };
+    return { sourceKey: entry.sourceKey, health, added, deferred: reservation.deferred, policyReparsed:reparse,
+      listUrl:entry.probeUrl, listKind:entry.transport, comparisons:comparisons().map((item,i)=>({...item,alreadyExisted:initialComparisons[i].alreadyExisted})),items:null };
   }
 
   async function syncEnabled({ workspaceId = 'local', channel = '', force = false } = {}) {
     const at = now();
-    const entries = mediaSourcesByChannel(channel).filter((entry) => stateOf(workspaceId, entry.sourceKey, at).enabled);
+    const entries = mediaSourcesByChannel(channel).filter((entry) => entry.sourceKey!=='trendforce' && stateOf(workspaceId, entry.sourceKey, at).enabled);
     const results = [];
     for (const entry of entries) {
       try {
@@ -479,25 +566,32 @@ export function createMediaIngestionService({
     for (const row of rows) {
       const entry = mediaSource(row.sourceKey);
       const old = { ...initialFetchState(), ...row.fetchState };
+      if (budgetCooldownRemoved(old, entry)) old.nextRetryAt = null;
       let state = { ...old, selectedReason: selectedReasons[row.externalId] || old.selectedReason || 'explicit_selection' };
       const result = (health, kind, extra = {}) => {
         stats[kind] += 1;
         fetched.push({ externalId: row.externalId, sourceKey: row.sourceKey, health, contentLevel: row.contentLevel, ...extra });
       };
+      // TrendForce's owner collector has already saved the verified body or report intro.
+      if (row.sourceKey === 'trendforce') { result(old.fetchStatus === 'ready' ? 'ready' : 'source_owned','skipped',{skipped:true}); continue; }
       if (!entry || entry.contentAccess !== 'body' || !stateOf(workspaceId,row.sourceKey,at).bodyUseAcknowledged) {
         state = { ...state, fetchStatus: 'policy_skipped', extractionReason: entry?.contentAccess === 'body' ? 'needs_license' : 'index_only' };
         mediaRepository.saveFetchState(workspaceId,row.externalId,state);
         result(state.extractionReason,'policySkipped'); continue;
       }
       const previous = mediaRepository.latestBodies(workspaceId,[row.externalId])[0];
-      if (!repair && row.contentLevel === 'full' && row.bodyHash && old.extractorVersion === extractorVersion && old.fetchedRevision === row.revision && old.nextRetryAt > at) {
+      if (!repair && row.contentLevel === 'full' && row.bodyHash && old.fetchStatus==='ready' && old.extractorVersion === extractorVersion && old.fetchedRevision === row.revision) {
         result('ready','skipped',{ skipped: true }); continue;
+      }
+      if (entry.bodyReadMethod==='browser' && entry.sourceKey==='yahooeconomy' && !['reuters','bloomberg'].includes(row.publisherKey)) {
+        mediaRepository.saveFetchState(workspaceId,row.externalId,{...state,fetchStatus:'policy_skipped',extractionReason:row.publisherKey==='unknown'?'publisher_unknown':'publisher_adapter_pending',extractorVersion});
+        result('publisher_adapter_pending','policySkipped');continue;
       }
       if (!repair && old.fetchStatus === 'failed' && (!old.nextRetryAt || old.nextRetryAt > at)) { result('retry_cooldown','deferred'); continue; }
       if (!repair && old.nextRetryAt > at && old.fetchStatus !== 'ready') { result('retry_cooldown','deferred'); continue; }
       const alreadyCounted = previous?.contentLevel === 'full';
-      const reservation = alreadyCounted ? { reserved: true } : mediaRepository.reserveBody(workspaceId, dayKey(at), row.sourceKey, at, {
-        globalMax: budget.maxSelectedBodiesPerDay, sourceMax: entry.detailDailyCap,
+      const reservation = alreadyCounted ? { reserved: true } : mediaRepository.reserveBody(workspaceId, dayKey(at), entry.sourceKey, at, {
+        globalMax: budget.maxSelectedBodiesPerDay, sourceMax: entry.detailDailyCap, sourceAliases:entry.sourceAliases || [],
       });
       if (!reservation.reserved) {
         mediaRepository.saveFetchState(workspaceId,row.externalId,{ ...state, fetchStatus: 'deferred', extractionReason: 'success_budget', nextRetryAt: at + 3_600_000 });
@@ -508,23 +602,24 @@ export function createMediaIngestionService({
       // A feed preview is never enough to suppress an article request.
       if (article?.contentLevel !== 'full') {
         const validators = previous?.article?.extractorVersion === extractorVersion && !repair ? { etag: old.etag, lastModified: old.lastModified } : {};
-        response = await mediaPort.fetch({ url: row.canonicalUrl, allowedHosts: entry.articleHosts, redirectHosts: entry.redirectHosts, kind: 'article', ...validators }, { maxBytes: budget.maxFeedBytes, onRequest() {
-          const reserved = mediaRepository.reserveRequest(workspaceId,dayKey(at),row.sourceKey,at,budget.maxBodyRequestsPerDay,budget.maxSourceRequestsPerDay);
+        const readArticle = mediaPort.readArticle ? (input,options)=>mediaPort.readArticle(entry,input,options) : mediaPort.fetch;
+        response = await readArticle({ url: row.canonicalUrl, publisherKey:row.publisherKey, publisherName:row.publisherName, allowedHosts: entry.articleHosts, redirectHosts: entry.redirectHosts, kind: 'article', ...validators }, { maxBytes: budget.maxFeedBytes, maxBodyBytes: budget.maxBodyBytes, onRequest() {
+          const reserved = mediaRepository.reserveRequest(workspaceId,dayKey(at),entry.sourceKey,at,budget.maxBodyRequestsPerDay,budget.maxSourceRequestsPerDay,entry.sourceAliases || []);
           if (reserved) stats.requests += 1;
           return reserved;
         } });
         if (response.health === 'budget_deferred') {
-          if (!alreadyCounted) mediaRepository.releaseBody(workspaceId,dayKey(at),row.sourceKey,at);
+          if (!alreadyCounted) mediaRepository.releaseBody(workspaceId,dayKey(at),entry.sourceKey,at);
           mediaRepository.saveFetchState(workspaceId,row.externalId,{ ...state, fetchStatus: 'deferred', extractionReason: 'request_budget', nextRetryAt: at + 3_600_000 });
           result('budget_deferred','deferred'); continue;
         }
         if (response.notModified && previous) {
           mediaRepository.saveFetchState(workspaceId,row.externalId,{ ...state, fetchStatus: previous.contentLevel === 'full' ? 'ready' : 'partial', httpStatus: 304, lastAttemptAt: at,
             attemptCount: old.attemptCount + 1, fetchedRevision: row.revision, nextRetryAt: at + 86_400_000, extractionReason: 'not_modified' });
-          if (!alreadyCounted) mediaRepository.releaseBody(workspaceId,dayKey(at),row.sourceKey,at);
+          if (!alreadyCounted) mediaRepository.releaseBody(workspaceId,dayKey(at),entry.sourceKey,at);
           stats.attempted += 1; result('not_modified','skipped',{ skipped: true }); continue;
         }
-        article = response.ok ? mediaPort.extract(response.body,{ status: response.status, sourceKey: entry.sourceKey, title: row.title, summary: row.summary, maxBytes: budget.maxBodyBytes }) : { ok: false, reason: response.health, text: '' };
+        article = response.ok ? response.article || mediaPort.extract(response.body,{ status: response.status, sourceKey: entry.sourceKey, title: row.title, summary: row.summary, maxBytes: budget.maxBodyBytes }) : { ok: false, reason: response.health, text: '' };
       }
       stats.attempted += 1;
       const attemptCount = old.attemptCount + 1;
@@ -537,32 +632,58 @@ export function createMediaIngestionService({
         fetchedRevision: article.ok ? row.revision : old.fetchedRevision, etag: String(response.etag || '').slice(0,1000), lastModified: String(response.lastModified || '').slice(0,1000), finalUrl: String(response.finalUrl || '').slice(0,2048),
         author: article.author || '', publishedAtRaw: article.publishedAtRaw || '', updatedAtRaw: article.updatedAtRaw || '', visualEvidenceRequired: Boolean(article.visualEvidenceRequired) };
       if (!article.ok) {
-        if (!alreadyCounted) mediaRepository.releaseBody(workspaceId,dayKey(at),row.sourceKey,at);
+        if (!alreadyCounted) mediaRepository.releaseBody(workspaceId,dayKey(at),entry.sourceKey,at);
         mediaRepository.saveFetchState(workspaceId,row.externalId,state);
         result(article.reason || 'failed','failed'); continue;
       }
       const bodyHash = sha256(article.text);
       const changed = previous?.bodyHash !== bodyHash || previous?.article?.extractorVersion !== extractorVersion ||
-        (previous.article?.author || '') !== (article.author || '') || (previous.article?.publishedAtRaw || '') !== (article.publishedAtRaw || '');
+        (previous.article?.author || '') !== (article.author || '') || (previous.article?.publishedAtRaw || '') !== (article.publishedAtRaw || '') || Boolean(previous.article?.visualEvidenceRequired) !== Boolean(article.visualEvidenceRequired);
       const revision = changed ? mediaRepository.nextSnapshotRevision(workspaceId,row.externalId) : previous.revision;
+      const gate=await evaluateMediaGate(workspaceId,row,article);
       mediaRepository.atomic(() => {
         if (changed) mediaRepository.saveSnapshot({ workspaceId, externalId: row.externalId, revision, bodyHash, bodyText: article.text,
           truncated: article.truncated, contentLevel: article.contentLevel, observedAt: at, article: { ...article, text: undefined, sourceRevision: row.revision, finalUrl: response.finalUrl || row.canonicalUrl } });
         const degrade = previous?.contentLevel === 'full' && article.contentLevel !== 'full';
         if (!degrade) {
-          mediaRepository.upsertEntry({ ...row, contentLevel: article.contentLevel, bodyHash, truncated: article.truncated, status: 'body_ready', updatedAt: at });
-          promoteBody(workspaceId,row,article,bodyHash);
+          const articleDate=Date.parse(article.publishedAtRaw || '');
+          mediaRepository.upsertEntry({ ...row, publishedAt: row.publishedAt ?? (Number.isFinite(articleDate) && articleDate>=0 ? articleDate : null), publishedAtRaw: row.publishedAtRaw || article.publishedAtRaw || '', originUrl: response.originUrl || row.originUrl, contentLevel: article.contentLevel, bodyHash, truncated: article.truncated, status: 'body_ready', updatedAt: at });
+          promoteBody(workspaceId,row,article,bodyHash,gate);
         }
         mediaRepository.saveFetchState(workspaceId,row.externalId,state);
       });
-      if (article.contentLevel !== 'full' && !alreadyCounted) mediaRepository.releaseBody(workspaceId,dayKey(at),row.sourceKey,at);
+      if (article.contentLevel !== 'full' && !alreadyCounted) mediaRepository.releaseBody(workspaceId,dayKey(at),entry.sourceKey,at);
       result(article.contentLevel === 'full' ? 'ready' : 'partial', article.contentLevel === 'full' ? 'validFull' : 'partial', { contentLevel: article.contentLevel, bodyHash, snapshotRevision: revision, truncated: article.truncated });
     }
     return { ok: !stats.failed && !stats.partial && !stats.policySkipped && !stats.deferred, health: stats.failed || stats.partial || stats.policySkipped || stats.deferred ? 'partial' : 'ready', stats, fetched };
   }
 
-  function promoteBody(workspaceId, row, article, bodyHash) {
+  async function evaluateMediaGate(workspaceId,row,article) {
+    if(!feedFilter?.evaluate) return null;
+    return feedFilter.evaluate({workspaceId,provider:'media',existingCapture:null,existingByContentHash:null,hasIdentityFingerprint:false,
+      item:{title:row.title,body:article.text || row.title,authorName:article.author || '',captureContext:{truncated:Boolean(article.truncated)}}});
+  }
+
+  function saveMediaGate(workspaceId,row,article,bodyHash,gate) {
+    if(!feedRepository?.saveCapture) return null;
+    const source=feedRepository.upsertSourceAccount({workspaceId,provider:'media',externalId:`media:${row.sourceKey}`,
+      displayName:mediaSource(row.sourceKey)?.publisher || row.sourceKey,profileUrl:row.canonicalUrl,authMode:'public',
+      metadata:{sourceId:'content.media.articles',autoRefresh:false,sourceKey:row.sourceKey}});
+    return feedRepository.saveCapture({workspaceId,provider:'media',externalId:row.externalId,sourceAccountId:source.id,
+      sourceUrl:row.canonicalUrl,title:row.title,contentHash:bodyHash,status:gate?.status || 'ready',publishedAt:row.publishedAt,
+      metadata:{...(gate?.metadata || {}),originalText:article.text || row.title,publisherKey:row.publisherKey,articleKind:row.articleKind || 'article',contentLevel:article.contentLevel || 'summary_only',
+        extractorVersion,bodyHash,truncated:Boolean(article.truncated),publishedAtRaw:row.publishedAtRaw,channel:row.channel}});
+  }
+
+  function promoteBody(workspaceId, row, article, bodyHash, gate=null) {
     if (!feedRepository?.saveCapture || !feedRepository?.saveContentItem) return;
+    if(gate) {
+      const capture=saveMediaGate(workspaceId,row,article,bodyHash,gate);
+      if(!gate.createContentItem) return;
+      feedRepository.saveContentItem({workspaceId,captureId:capture.id,originType:'subscription',contentType:'article',
+        title:row.title,body:article.text,summary:row.summary,sourceUrl:row.canonicalUrl,authorName:article.author || row.publisherKey,publishedAt:row.publishedAt});
+      return;
+    }
     const source = feedRepository.upsertSourceAccount({
       workspaceId,
       provider: 'media',
@@ -608,27 +729,56 @@ export function createMediaIngestionService({
 
   function selectBodyCandidates(workspaceId, limit = 40) {
     const at = now();
-    const rows = mediaRepository.listEntries(workspaceId,{ limit: 200 });
+    const rows = mediaRepository.listEntries(workspaceId,{ limit: 10_000 });
+    const rowsById=new Map(rows.map(row=>[row.externalId,row]));
+    const hidden = new Set((feedRepository?.listContentItemStatesByExternalIds?.(workspaceId,'media',rows.map(row=>row.externalId)) || []).filter(row=>row.isHidden).map(row=>row.externalId));
+    const discoveries = mediaRepository.listDiscoveries?.(workspaceId,rows.map(row=>row.externalId)) || [];
+    const completedUrls=new Set(rows.filter(row=>row.contentLevel==='full' && row.bodyHash && row.fetchState?.fetchStatus==='ready' && row.fetchState.extractorVersion===extractorVersion && row.fetchState.fetchedRevision===row.revision)
+      .map(row=>normalizeMediaUrl(row.canonicalUrl,mediaSource(row.sourceKey)?.trackingParams || [])));
+    const byId = new Map();
+    for (const d of discoveries) {
+      const source = mediaSource(d.sourceKey);
+      if (!source || !stateOf(workspaceId,source.sourceKey,at).enabled) continue;
+      const previous = byId.get(d.externalId);
+      if (!previous || d.lastSeenAt > previous.lastSeenAt) byId.set(d.externalId,{...d,sourceKey:source.sourceKey});
+    }
     const ranked = rows.filter(row => {
       if (row.contentLevel === 'full' && !row.fetchState?.extractorVersion) return false;
       const entry = mediaSource(row.sourceKey);
       const state = row.fetchState || {};
-      if (!entry || entry.contentAccess !== 'body' || !stateOf(workspaceId,row.sourceKey,at).enabled || row.status === 'budget_deferred') return false;
+      if (!entry || hidden.has(row.externalId) || entry.contentAccess !== 'body' || !stateOf(workspaceId,row.sourceKey,at).enabled || row.status === 'budget_deferred') return false;
+      if (row.contentLevel!=='full' && completedUrls.has(normalizeMediaUrl(row.canonicalUrl,entry.trackingParams || []))) return false;
+      if (row.contentLevel === 'full' && row.bodyHash && state.fetchStatus==='ready' && state.extractorVersion === extractorVersion && state.fetchedRevision === row.revision) return false;
+      if (state.fetchStatus==='policy_skipped' && ['publisher_adapter_pending','publisher_unknown'].includes(state.extractionReason) && state.extractorVersion===extractorVersion) return false;
       if (state.fetchStatus === 'failed' && (!state.nextRetryAt || state.nextRetryAt > at)) return false;
-      if (state.nextRetryAt > at && state.extractorVersion === extractorVersion && state.fetchedRevision === row.revision) return false;
+      if (state.nextRetryAt > at && !budgetCooldownRemoved(state, entry) && state.extractorVersion === extractorVersion && state.fetchedRevision === row.revision) return false;
       return true;
     }).map(row => {
-      const text = (row.title + ' ' + row.summary).toLowerCase();
-      const matched = (mediaPort?.focusKeywords || []).filter(k => text.includes(k.toLowerCase()));
-      const informative = /\d|announc|launch|rais|change|report|acquir|policy|rate|price|build|发布|新增|变更/i.test(text);
-      const score = matched.length * 20 + (informative ? 5 : 0) + (row.summary ? 1 : 0) - (row.fetchState?.attemptCount || 0);
-      return { externalId: row.externalId, title: row.title, score, reason: matched.length ? 'focus:' + matched.join(',') : informative ? 'new_event_or_data' : 'source_revision_check', at: row.publishedAt || row.observedAt };
-    }).sort((a,b) => b.score-a.score || b.at-a.at || a.externalId.localeCompare(b.externalId));
-    const selected = [], events = new Set();
+      const d=byId.get(row.externalId);
+      return { externalId:row.externalId,sourceKey:mediaSource(row.sourceKey).sourceKey,title:row.title,
+        reason:d?.listPosition != null ? 'channel_list_order' : 'publication_order',
+        firstSeenAt:d?.firstSeenAt ?? row.createdAt,listPosition:d?.listPosition ?? null,
+        at:row.publishedAt,revisionCheck:row.contentLevel==='full' };
+    }).sort((a,b) => Number(a.revisionCheck)-Number(b.revisionCheck) || (a.listPosition != null || b.listPosition != null
+      ? b.firstSeenAt-a.firstSeenAt || (a.listPosition ?? Infinity)-(b.listPosition ?? Infinity)
+      : (b.at ?? -1)-(a.at ?? -1)) || a.externalId.localeCompare(b.externalId));
+    const selected = [], selectedUrls=new Set();
+    const queues = new Map();
     for (const row of ranked) {
-      const event = row.title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
-      if (events.has(event) || selected.length >= limit) continue;
-      events.add(event); selected.push(row);
+      if (!queues.has(row.sourceKey)) queues.set(row.sourceKey, []);
+      queues.get(row.sourceKey).push(row);
+    }
+    const fair = [];
+    while ([...queues.values()].some(queue => queue.length)) {
+      for (const queue of queues.values()) if (queue.length) fair.push(queue.shift());
+    }
+    for (const row of fair) {
+      if (selected.length >= limit) break;
+      const entry=rowsById.get(row.externalId);
+      const url=normalizeMediaUrl(entry.canonicalUrl,mediaSource(entry.sourceKey)?.trackingParams || []);
+      if(selectedUrls.has(url))continue;
+      selectedUrls.add(url);
+      selected.push(row);
     }
     return selected;
   }
@@ -713,16 +863,19 @@ export function createMediaIngestionService({
   function briefForContentItem(workspaceId,itemId) {
     const item = feedRepository?.getContentItem(workspaceId,itemId);
     if (!item) return null;
-    const rows = mediaRepository.listEntries(workspaceId,{ limit: 200 });
-    const row = rows.find(r => r.canonicalUrl === item.sourceUrl);
+    const row = mediaRepository.findByUrl(workspaceId,item.sourceUrl);
     if (!row) return null;
     const snapshot = mediaRepository.latestBodies(workspaceId,[row.externalId])[0];
     if (!snapshot?.brief || snapshot.bodyHash !== sha256(item.body) || row.fetchState?.fetchStatus !== 'ready' || row.fetchState?.fetchedRevision !== row.revision) return null;
     return snapshot.brief;
   }
 
-  function listEnrichmentItems(workspaceId, limit = 120) {
-    const rows = mediaRepository.listEntries(workspaceId, { limit }).filter((row) => row.status !== 'budget_deferred');
+  function listEnrichmentItems(workspaceId, limit = 120, externalIds = []) {
+    const excluded=new Set(qualityExcluded(workspaceId));
+    const recent = mediaRepository.listEntries(workspaceId, { limit });
+    const requested = mediaRepository.getEntries(workspaceId, externalIds);
+    const rows = [...new Map([...requested, ...recent].map(row => [row.externalId, row])).values()]
+      .filter((row) => row.status !== 'budget_deferred' && !excluded.has(row.externalId));
     const bodies = new Map((mediaRepository.latestBodies?.(workspaceId, rows.map((row) => row.externalId)) || [])
       .map((row) => [row.externalId, row]));
     return rows.map((row) => {
@@ -745,12 +898,91 @@ export function createMediaIngestionService({
     }).filter((item) => item.text);
   }
 
+  function legacyHidden(workspaceId) {
+    return (mediaRepository.legacyLinks?.(workspaceId) || []).filter(link=>feedRepository?.listContentItemStatesByExternalIds?.(workspaceId,link.legacyProvider,[link.legacyExternalId])?.[0]?.isHidden).map(link=>link.externalId);
+  }
   return Object.freeze({
+    async ingestArticles(workspaceId, articles, legacyProvider = 'trendforce', {preserveLegacyGate=false} = {}) {
+      let added=0; const ids=[],externalIds=[];
+      const linkLegacy=(externalId,legacyItem,item)=>{
+        mediaRepository.linkLegacy(workspaceId,externalId,legacyItem.id,legacyProvider,item.externalId);
+        const resourceId=mediaResourceId(externalId),saved=taggingRepository?.listTaggings?.(workspaceId,'media-index',[resourceId])?.[0];
+        const prior=taggingRepository?.listTaggings?.(workspaceId,'content-item',[legacyItem.id])?.[0];
+        if(prior && !saved)taggingRepository.saveTaggings({...prior,resourceType:'media-index',resourceId});
+      };
+      for(const input of articles) {
+        const item=ImportedMediaArticleSchema.parse(input),at=item.observedAt ?? now();
+        const entry=mediaSource('trendforce');if(!entry)throw new ValidationError('缺少 TrendForce 媒体配置',['sourceKey']);
+        const externalId=`trendforce:${item.externalId}`;
+        const previous=mediaRepository.getEntries(workspaceId,[externalId])[0];
+        const legacy=feedRepository?.getCapture?.(workspaceId,legacyProvider,item.externalId);
+        const legacyItem=legacy && feedRepository?.getContentItemByCaptureId?.(workspaceId,legacy.id);
+        if(previous?.contentLevel==='full' && item.contentLevel!=='full') {
+          if(legacyItem)mediaRepository.atomic(()=>linkLegacy(externalId,legacyItem,item));
+          continue;
+        }
+        const row=entryRow(workspaceId,entry,{...item,externalId},{at,previous,status:'indexed'});
+        row.articleKind=item.articleKind;
+        const article={text:item.body || item.summary,contentLevel:item.contentLevel,paragraphs:item.paragraphs,extractorVersion:item.extractorVersion,author:'TrendForce',truncated:false};
+        const bodyHash=sha256(article.text),latest=mediaRepository.latestBodies(workspaceId,[externalId])[0];
+        if(previous && previous.contentHash===row.contentHash && previous.articleKind===item.articleKind && previous.contentLevel===item.contentLevel && previous.fetchState?.extractorVersion===item.extractorVersion && previous.fetchState?.fetchedRevision===previous.revision && (!['full','partial'].includes(item.contentLevel) || latest?.bodyHash===bodyHash)) {
+          if(legacyItem)mediaRepository.atomic(()=>linkLegacy(externalId,legacyItem,item));
+          continue;
+        }
+        const gate=preserveLegacyGate && legacy ? {status:legacy.status,metadata:legacy.metadata,createContentItem:false} : await evaluateMediaGate(workspaceId,row,article);
+        mediaRepository.atomic(()=>{
+          row.contentLevel=item.contentLevel;row.bodyHash=['full','partial'].includes(item.contentLevel)?bodyHash:'';
+          row.status=row.bodyHash?'body_ready':'indexed';row.truncated=false;
+          mediaRepository.upsertEntry(row);mediaRepository.saveArticleKind(workspaceId,externalId,item.articleKind);
+          if(row.bodyHash) {
+            const revision=(mediaRepository.listSnapshots(workspaceId,externalId).at(-1)?.revision || 0)+1;
+            mediaRepository.saveSnapshot({workspaceId,externalId,revision,bodyHash,bodyText:article.text,truncated:false,contentLevel:item.contentLevel,observedAt:at,article});
+          }
+          mediaRepository.saveFetchState(workspaceId,externalId,{...initialFetchState(),fetchStatus:item.contentLevel==='full'?'ready':item.contentLevel==='partial'?'partial':'policy_skipped',
+            extractionReason:item.articleKind==='report-intro'?'report_intro':item.contentLevel==='full'?'':'source_summary',extractorVersion:item.extractorVersion,fetchedRevision:row.revision,paragraphCount:item.paragraphs.length,lastAttemptAt:at});
+          if(legacyItem)linkLegacy(externalId,legacyItem,item);
+          const capture=saveMediaGate(workspaceId,row,article,bodyHash,gate);
+          if(!legacyItem && (!gate || gate.createContentItem) && capture) {
+            const ci=feedRepository.saveContentItem({workspaceId,captureId:capture.id,originType:'subscription',contentType:'article',title:item.title,summary:item.summary,body:article.text,authorName:'TrendForce',sourceUrl:item.sourceUrl,publishedAt:item.publishedAt});ids.push(ci.id);
+          }
+        });
+        added++;externalIds.push(externalId);
+      }
+      return {added,addedItemIds:ids,mediaExternalIds:externalIds};
+    },
+    verifiedTrendforceExternalIds(workspaceId) {return mediaRepository.listEntries(workspaceId,{limit:10000}).filter(r=>r.sourceKey==='trendforce' && r.contentLevel==='full' && r.fetchState?.fetchStatus==='ready' && r.fetchState?.extractorVersion===extractorVersion && r.fetchState?.fetchedRevision===r.revision).map(r=>r.externalId.replace(/^trendforce:/,''));},
+    legacyItemIds(workspaceId) {return (mediaRepository.legacyLinks?.(workspaceId) || []).map(r=>r.contentItemId);},
+    isLegacyRouted(workspaceId,id) {return (mediaRepository.legacyLinks?.(workspaceId) || []).some(r=>r.contentItemId===id);},
+    dailySources(workspaceId,window) {
+      const excluded=[...legacyHidden(workspaceId),...(feedRepository?.listHiddenExternalIds?.(workspaceId,'media') || []),...qualityExcluded(workspaceId)];
+      const counts=mediaRepository.listWindowSources(workspaceId,{...window,hiddenExternalIds:excluded});
+      const states=mediaRepository.listStates(workspaceId);
+      const byKey=new Map(counts.map(r=>[r.sourceId,r]));
+      for(const state of states.filter(s=>s.enabled)) if(!byKey.has(state.sourceKey)) byKey.set(state.sourceKey,{sourceId:state.sourceKey,channel:mediaSource(state.sourceKey)?.channel || 'macro',available:0});
+      return [...byKey.values()].map(r=>{const s=states.find(s=>s.sourceKey===r.sourceId);return {...r,lastSyncAt:s?.lastSyncAt ?? null,status:s?.health || 'unknown',note:s?.healthDetail || ''};});
+    },
+    dailyMaterials(workspaceId,window) {
+      const excluded=[...legacyHidden(workspaceId),...(feedRepository?.listHiddenExternalIds?.(workspaceId,'media') || []),...qualityExcluded(workspaceId)];
+      const rows=mediaRepository.listEntriesInWindow(workspaceId,{...window,hiddenExternalIds:excluded});
+      const bodies=new Map(mediaRepository.latestBodies(workspaceId,rows.map(r=>r.externalId)).map(b=>[b.externalId,b]));
+      return rows.map(row=>{
+        const body=bodies.get(row.externalId);
+        const valid=body && body.contentLevel==='full' && !body.truncated && body.article?.extractorVersion===extractorVersion && row.fetchState?.fetchStatus==='ready' && row.fetchState?.extractorVersion===extractorVersion && row.fetchState?.fetchedRevision===row.revision;
+        const partial=body && !valid && body.contentLevel==='partial';
+        return {...row,eventAt:row.publishedAt ?? row.observedAt,body:valid || partial ? body : null,
+          effectiveLevel:valid ? 'full' : partial ? 'partial' : row.contentLevel==='discovery' ? 'discovery' : 'summary_only',
+          bodyReason:valid ? '' : row.fetchState?.extractionReason || (body ? 'saved_body_not_current_verified_full' : 'body_not_saved')};
+      });
+    },
     catalog: () => MEDIA_SOURCES.map((entry) => ({ ...entry })),
     discoverOriginals,
     listArticleTranslationUnits,
     catalogView,
     readFeed: (query, actor = {}) => readFeed(actor.workspaceId || 'local', query || {}),
+    getSavedArticle(raw, actor = {}) {
+      const {externalId}=MediaSavedArticleQuerySchema.parse(raw);
+      return readFeed(actor.workspaceId || 'local',{externalId,limit:1}).items[0] || null;
+    },
     probe,
     enableSource: (workspaceId, sourceKey) => enableSource(workspaceId, sourceKey),
     disableSource,

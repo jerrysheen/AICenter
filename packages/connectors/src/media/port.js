@@ -4,8 +4,9 @@ import { fetchAllowlisted } from './http.js';
 import { redactUrl } from './article-url.js';
 import { stableArticleId } from './article-url.js';
 import { isPublicHttpsUrl, hostAllowed } from './article-url.js';
+import { readYahooList, readYahooArticle } from './yahoo-public.js';
 
-export function createMediaConnector({ sources = [], discoveryPublishers = [], budget = {}, timeZone = 'Asia/Shanghai', focusKeywords = [], fetchImpl, lookupImpl, readExisting, readSource } = {}) {
+export function createMediaConnector({ sources = [], discoveryPublishers = [], budget = {}, timeZone = 'Asia/Shanghai', focusKeywords = [], fetchImpl, lookupImpl, readExisting, readSource, browserRuntime } = {}) {
   const publishers = discoveryPublishers.map(p => ({ ...p, channel: 'tech', contentAccess: 'body', transport: 'discovery', deployment: 'existing' }));
   return Object.freeze({ sources, publishers, budget, timeZone, focusKeywords, extractorVersion: EXTRACTOR_VERSION, redactUrl,
     matchOriginal(row) {
@@ -23,10 +24,19 @@ export function createMediaConnector({ sources = [], discoveryPublishers = [], b
       const snapshot = await readSource(entry.sourceId,{ limit: 20 });
       const view = snapshot.data;
       return { ok: Boolean(view?.available), health: view?.available ? 'ready' : 'unavailable', note: view?.note || '',
-        items: (view?.releases || []).map(r => ({ externalId: stableArticleId(entry.sourceKey,{ link: r.sourceUrl }), sourceUrl: r.sourceUrl,
+        items: (view?.items || view?.releases || []).filter(r=>!r.externalId?.startsWith('price:')).map(r => ({ externalId: stableArticleId(entry.sourceKey,{ link: r.sourceUrl }), sourceUrl: r.sourceUrl,
           title: r.title, summary: '', publishedAt: r.publishedAt, publishedAtRaw: r.publishedAt ? new Date(r.publishedAt).toISOString() : '' })) };
     } : null),
-    parseFeed: parseFeedXml, extract: extractArticleText,
+    parseFeed: parseFeedXml,
+    extract: (html,options={}) => {
+      const entry = sources.find(source => source.sourceKey === options.sourceKey || source.sourceAliases?.includes(options.sourceKey));
+      return extractArticleText(options.fragment && options.sourceKey==='ftav' ? `<article itemprop="articleBody">${html}</article>` : html,
+        { ...options, publisherKey: entry?.publisherKey || options.sourceKey });
+    },
+    readList: entry => readYahooList(browserRuntime,entry),
+    readArticle: (entry,input,options={}) => entry.bodyReadMethod==='browser'
+      ? readYahooArticle(browserRuntime,{...entry,expectedPublisherKey:input.publisherKey,expectedPublisherName:input.publisherName},input,options)
+      : fetchAllowlisted(input,{fetchImpl,lookupImpl,...options}),
     fetch: (input, options = {}) => fetchAllowlisted(input, { fetchImpl, lookupImpl, ...options }),
   });
 }

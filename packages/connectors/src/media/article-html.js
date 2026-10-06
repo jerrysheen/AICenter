@@ -7,7 +7,7 @@ const DROP = new Set(['script', 'style', 'nav', 'footer', 'aside', 'form', 'butt
 const BODY_HINT = /article[-_]?body|article[-_]?content|entry[-_]?content|post[-_]?content|news[-_]?body|rich[-_]?text|wysiwyg|body-copy|story-body|bodytext|content-wrapper/i;
 const all = (node, predicate) => DomUtils.findAll(predicate, node.children || []);
 function excluded(node) {
-  return DROP.has(node.name) || CHROME.test(`${node.attribs?.class || ''} ${node.attribs?.id || ''}`) || /auto_featured_content|articleFooter|not-prose|RelatedTopics|RelatedContent/i.test(node.attribs?.class || '') || node.attribs?.hidden != null || /display\s*:\s*none/.test(node.attribs?.style || '');
+  return DROP.has(node.name) || CHROME.test(`${node.attribs?.class || ''} ${node.attribs?.id || ''}`) || /NewsletterSignup|Callout|Advert/i.test(node.attribs?.['data-spacefinder-type'] || '') || /auto_featured_content|articleFooter|not-prose|RelatedTopics|RelatedContent/i.test(node.attribs?.class || '') || node.attribs?.hidden != null || /display\s*:\s*none/.test(node.attribs?.style || '');
 }
 function inline(node) {
   if (node.type === 'text') return node.data || '';
@@ -52,12 +52,19 @@ export function clipUtf8(text, maxBytes) {
   while (end > 0 && (buffer[end] & 0xc0) === 0x80) end -= 1;
   return buffer.subarray(0, end).toString('utf8');
 }
-export function extractArticleText(html, { status = 200, title = '', summary = '', sourceKey = '', maxBytes = 100_000, fragment = false } = {}) {
+export function extractArticleText(html, { status = 200, title = '', summary = '', sourceKey = '', publisherKey = sourceKey, maxBytes = 100_000, fragment = false } = {}) {
   const dom = parseDocument(String(html || ''));
   const ld = jsonLdArticle(html);
   const pageTitle = DomUtils.textContent(all(dom, n => n.name === 'title')[0] || dom).slice(0,300);
   const visible = clean(inline(dom));
   const failed = reason => ({ ok: false, contentLevel: 'summary_only', reason, text: '', paragraphs: [], truncated: false, extractorVersion: EXTRACTOR_VERSION, extractionMethod: '', visualEvidenceRequired: false });
+  const bbc = publisherKey === 'bbc' || ['bbc','bbcworld'].includes(sourceKey);
+  const guardian = publisherKey === 'guardian';
+  const canonicalUrl = all(dom,n=>n.name==='link' && n.attribs?.rel==='canonical')[0]?.attribs?.href || ld?.canonical || '';
+  if (bbc && /^(?:Watch|Listen|Video):/i.test(title || pageTitle)) return failed('non_article');
+  if ((bbc || guardian) && /\/(?:video|av)\//.test(canonicalUrl)) return failed('non_article');
+  if (guardian && /\/live\//.test(canonicalUrl)) return failed('live_template_unverified');
+  if (bbc && (ldNodes(dom).some(a => /LiveBlogPosting/i.test(String(a['@type'] || ''))) || all(dom,n=>n.name==='link' && n.attribs?.rel==='canonical' && /\/news\/live\//.test(n.attribs?.href || '')).length)) return failed('live_template_unverified');
   if ([401,402,403].includes(status)) return failed(status === 402 ? 'paywall' : 'blocked');
   const challengeContainer = all(dom, n => n.name === 'form' && /challenge|captcha|verification/i.test(`${n.attribs?.id || ''} ${n.attribs?.action || ''}`)).length;
   const titleNode = all(dom, n => n.name === 'title')[0];
@@ -80,14 +87,45 @@ export function extractArticleText(html, { status = 200, title = '', summary = '
     const sections = main ? all(main,n=>/\bwysiwyg\b/.test(n.attribs?.class || '')) : [];
     if (sections.length) nodes=[{name:'article',attribs:{itemprop:'articleBody'},children:sections}];
   }
+  if (sourceKey === 'govcn' || sourceKey === 'govnews') {
+    // Policy pages repeat the same body for desktop/mobile. Keep one editor body,
+    // excluding the document metadata, print/share controls and footer.
+    const editors = all(dom, n => /\btrs_editor_view\b/.test(n.attribs?.class || ''));
+    const content = editors[0] || all(dom, n => n.attribs?.id === 'UCAP-CONTENT')[0];
+    if (content) nodes = [{ ...content, attribs: { ...content.attribs, itemprop: 'articleBody' } }];
+  }
+  if (sourceKey === 'pboc') {
+    const content = all(dom, n => n.attribs?.id === 'zoom')[0];
+    if (content) nodes = [{ ...content, attribs: { ...content.attribs, itemprop: 'articleBody' } }];
+  }
+  if (sourceKey === 'whitehouse') {
+    const content = all(dom, n => /\bwp-block-post-content\b/.test(n.attribs?.class || ''))[0];
+    if (content) nodes = [{ ...content, attribs: { ...content.attribs, itemprop: 'articleBody' } }];
+  }
   if (sourceKey === 'cryptography') {
     const bodies=all(dom,n=>/\bentry-content\b/.test(n.attribs?.class || ''));
     if (bodies.length) nodes=bodies.map(n=>({...n,children:(n.children || []).filter(c=>!/sharedaddy|jp-relatedposts/.test(`${c.attribs?.class || ''} ${c.attribs?.id || ''}`))}));
   }
-  if (sourceKey === 'bbc') {
+  if (bbc) {
     const article = all(dom,n => n.name === 'article')[0];
     const textBlocks = article ? all(article,n => n.name === 'p' && /Paragraph/.test(n.attribs?.class || '') && !/Follow BBC|Send your story|BBC Sounds|Tell us which stories|Sign up for.*newsletter|Sign up here|newsletter to follow/i.test(inline(n))) : [];
     if (textBlocks.length) nodes = [{ name: 'article', children: textBlocks, attribs: { itemprop: 'articleBody' } }];
+  }
+  if (guardian && !fragment) {
+    const body = all(dom,n=>/\barticle-body-commercial-selector\b/.test(n.attribs?.class || ''))[0];
+    if (!body) return failed('unsupported_template');
+    nodes = [{ ...body, attribs: { ...body.attribs, itemprop: 'articleBody' } }];
+  }
+  if (publisherKey === 'eia' && !fragment) {
+    const body = all(dom,n=>/\btie-article\b/.test(n.attribs?.class || ''))[0];
+    if (!body) return failed('unsupported_template');
+    // Preserve the article, data-source captions, charts and lists; exclude topic navigation.
+    nodes = [{ ...body, attribs: { itemprop: 'articleBody' }, children: (body.children || []).filter(n=>!/do-not-print/.test(n.attribs?.class || '')).map(n=>/\bsource\b/.test(n.attribs?.class || '') ? { ...n, name:'p' } : n) }];
+  }
+  if (publisherKey === 'thelec' && !fragment) {
+    const body = all(dom,n=>n.attribs?.id==='article-view-content-div')[0];
+    if (!body) return failed('unsupported_template');
+    nodes = [{ ...body, attribs: { ...body.attribs, itemprop: 'articleBody' } }];
   }
   if (fragment) nodes.unshift(dom);
   for (const node of nodes) {
@@ -99,7 +137,7 @@ export function extractArticleText(html, { status = 200, title = '', summary = '
     const specific = BODY_HINT.test(`${node.attribs?.class || ''} ${node.attribs?.id || ''}`) || node.attribs?.itemprop === 'articleBody';
     candidates.push({ text, paragraphs, density, specific, method: fragment ? 'rss-content' : specific ? `site:${sourceKey || 'generic'}` : node.name, score: text.length * (1 - Math.min(0.95,density)) + (specific ? 200 : 0) });
   }
-  if (ld?.body) {
+  if (ld?.body && !(guardian && !fragment)) {
     const text = clean(ld.body);
     const paragraphs = text.split(/\n\s*\n/).filter(Boolean).map(text => ({ kind: 'paragraph', text }));
     candidates.push({ text, paragraphs, density: 0, specific: true, method: 'json-ld', score: text.length });
@@ -127,8 +165,10 @@ export function extractArticleText(html, { status = 200, title = '', summary = '
   const meta = key => all(dom,n => n.name === 'meta' && [n.attribs?.name,n.attribs?.property].includes(key))[0]?.attribs?.content || '';
   const fedAuthor = sourceKey === 'fed' ? clean(inline(all(dom,n=>n.name==='p' && /\bspeaker\b/.test(n.attribs?.class || ''))[0] || {children:[]})) : '';
   const fedDate = sourceKey === 'fed' ? clean(inline(all(dom,n=>n.name==='p' && /\barticle__time\b/.test(n.attribs?.class || ''))[0] || {children:[]})) : '';
-  const visualEvidenceRequired = all(nodes[0] || dom, n => n.name === 'img' && /chart|graph|figure/i.test(n.attribs?.alt || '')).length > 0;
+  const eiaDate = publisherKey === 'eia' ? clean(inline(all(nodes[0] || dom,n=>/\bdate\b/.test(n.attribs?.class || ''))[0] || {children:[]})) : '';
+  const eiaAuthor = publisherKey === 'eia' ? prose.find(p=>/^Principal contributors?:/i.test(p.text))?.text.replace(/^Principal contributors?:\s*/i,'') || '' : '';
+  const visualEvidenceRequired = all(nodes[0] || dom, n => n.name === 'img' && (sourceKey === 'ftav' && fragment || publisherKey === 'eia' || /chart|graph|figure/i.test(n.attribs?.alt || ''))).length > 0;
   return { ok: ['full','partial'].includes(level), contentLevel: level, reason: truncated ? 'byte_limit' : summaryMatch ? 'rss_summary_match' : teaser ? 'preview' : level === 'full' ? 'structured_body' : 'coverage_unverified',
     text, paragraphs, truncated, extractionMethod: chosen.method, extractorVersion: EXTRACTOR_VERSION, visualEvidenceRequired,
-    author: (ld?.author || meta('author') || meta('article:author') || fedAuthor).slice(0,512), canonical: (canonicalNode?.attribs?.href || ld?.canonical || '').slice(0,2048), publishedAtRaw: (ld?.publishedAtRaw || meta('article:published_time') || fedDate).slice(0,128), updatedAtRaw: (ld?.updatedAtRaw || meta('article:modified_time')).slice(0,128), title: title || pageTitle };
+    author: (ld?.author || meta('author') || meta('article:author') || fedAuthor || eiaAuthor).slice(0,512), canonical: (canonicalNode?.attribs?.href || ld?.canonical || '').slice(0,2048), publishedAtRaw: (ld?.publishedAtRaw || meta('article:published_time') || fedDate || eiaDate).slice(0,128), updatedAtRaw: (ld?.updatedAtRaw || meta('article:modified_time')).slice(0,128), title: title || pageTitle };
 }

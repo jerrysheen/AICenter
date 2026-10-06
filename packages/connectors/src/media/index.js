@@ -46,7 +46,7 @@ export function createMediaJobHandlers(service) {
       const channel = input.channel === 'macro' || input.channel === 'tech' ? input.channel : '';
       const workspaceId = input.workspaceId || 'local';
       const result = await service.syncEnabled({ workspaceId, channel, force: input.force === true });
-      if (context?.store && result.feed?.items?.length) enqueueMediaIndexEnrich(context.store, workspaceId);
+      if (context?.store && (result.feed?.items?.length || service.selectBodyCandidates?.(workspaceId)?.length)) enqueueMediaIndexEnrich(context.store, workspaceId);
       return result;
     },
   };

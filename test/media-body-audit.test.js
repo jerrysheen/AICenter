@@ -208,6 +208,11 @@ test('media API reads stored body, paginates counts and queues all network work'
     const before=calls;
     const read=await fetch(`${address.localUrl}/api/v1/feed?platform=media&channel=tech&view=full&limit=1`).then(r=>r.json());
     assert.equal(read.feed.counts.full,1);assert.equal(read.feed.total,1);assert.match(read.feed.items[0].body,/2 dollars/);
+    const compressed = await fetch(`${address.localUrl}/api/v1/feed/media?channel=tech&view=full&limit=1`,{headers:{'Accept-Encoding':'gzip'}});
+    assert.equal(compressed.headers.get('content-encoding'),'gzip');
+    assert.equal(compressed.headers.get('cache-control'),'no-store');
+    assert.equal(compressed.headers.get('vary'),'Accept-Encoding');
+    assert.deepEqual((await compressed.json()).feed,read.feed);
     const refresh=await fetch(`${address.localUrl}/api/v1/feed?platform=media&channel=tech&refresh=1`).then(r=>r.json());
     assert.ok(refresh.jobId);
     const response=await fetch(`${address.localUrl}/api/v1/feed/media/bodies`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({externalIds:['decoder:2']})});

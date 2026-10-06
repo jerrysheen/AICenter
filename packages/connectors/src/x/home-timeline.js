@@ -1,4 +1,5 @@
 import { createXHomeBrowserClient, textBeforeCommentBlock } from './home-browser.js';
+import { FeedCaptureContextSchema } from '../../../contracts/src/feed-value.js';
 export { appendCommentsToBody, appendUnscrapedMediaNotes, findXArticleUrl, mergeArticleIntoTweetText, normalizeXArticleUrl, textBeforeCommentBlock } from './home-browser.js';
 
 const DEFAULT_LIMIT = 50;
@@ -69,6 +70,7 @@ export function tweetToFeedItem(tweet, options = {}) {
     processing: '',
     subscriptionId: '',
     captureId: '',
+    ...(tweet.capture_context ? { captureContext: FeedCaptureContextSchema.parse(tweet.capture_context) } : {}),
   };
 }
 

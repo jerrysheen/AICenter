@@ -100,7 +100,7 @@ export function parseFeedXml(xml, source) {
   if (!document?.rss && !document?.feed) {
     return { ok: false, health: 'parse_failed', items: [], bytes, note: '没有 rss/channel/item 或 Atom feed/entry' };
   }
-  const items = nodes.map((node) => {
+  const items = nodes.map((node, listPosition) => {
     const rawLink = linkFrom(node);
     let link = rawLink;
     try {
@@ -131,9 +131,10 @@ export function parseFeedXml(xml, source) {
       : [];
     return {
       externalId,
+      listPosition,
       title,
       summary,
-      feedBodyHtml: decodeXmlText(node['content:encoded'] ?? node.content ?? '').slice(0, 200_000),
+      feedBodyHtml: decodeXmlText(node['content:encoded'] ?? node.content ?? '').length <= 200_000 ? decodeXmlText(node['content:encoded'] ?? node.content ?? '') : '',
       sourceUrl: link,
       guid,
       authorName: decodeXmlText(node['dc:creator'] || node.author?.name || node.author || '').slice(0, 512),

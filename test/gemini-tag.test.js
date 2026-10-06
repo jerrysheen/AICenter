@@ -37,6 +37,6 @@ test('gemini tag port posts generateContent and returns reply text', async () =>
 });
 
 test('gemini tag port fails closed without a key', async () => {
-  const port = createGeminiTagPort({ apiKey: '' });
+  const port = createGeminiTagPort({ apiKey: '', elucidApiKey: '' });
   await assert.rejects(() => port.tagBatch({ userPayload: { items: [] } }), /GEMINI_API_KEY/);
 });

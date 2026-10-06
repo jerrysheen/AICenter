@@ -1,3 +1,18 @@
+import { FeedCaptureContextSchema } from '../../../contracts/src/feed-value.js';
+
+export function buildXCaptureContext(tweet) {
+  const rootId=String(tweet.tweet_id || tweet.tweetId || '');
+  const continuations=(tweet.comments || []).filter(p=>p.id && (p.authorHandle || p.authorId))
+    .map(p=>({id:String(p.id),author:{handle:String(p.authorHandle || ''),accountId:String(p.authorId || '')},replyToId:String(p.replyToId || ''),
+      relationVerified:p.relationVerified===true,text:String(p.text || ''),truncated:p.truncated===true}));
+  return FeedCaptureContextSchema.parse({rootId,author:{handle:String(tweet.author_handle || tweet.authorHandle || ''),accountId:String(tweet.author_id || tweet.authorId || '')},
+    references:(tweet.references || []).map(p=>({id:String(p.id || ''),referencedById:String(p.referencedById || ''),
+      relationVerified:p.relationVerified===true,necessary:p.necessary===true,text:String(p.text || ''),truncated:p.truncated===true})),
+    continuations,truncated:tweet.truncated===true,threadIncomplete:tweet.thread_incomplete===true,
+    missingParts:tweet.article_unfetched || tweet.article_cover
+      ? [{kind:'article',critical:true,status:'confirmed',evidence:'collector-article-unexpanded'}] : []});
+}
+
 const FEED_TAB_LABELS = {
   'for-you': ['For you', '为你推荐', '推薦'],
   following: ['Following', '正在关注', '正在關注', '跟隨'],
@@ -318,7 +333,13 @@ export function buildStatusCommentsExpression(tweetId, limit = COMMENT_PREVIEW_L
       if (!text) continue;
       const nameEl = article.querySelector('[data-testid="User-Name"] a');
       const author = getText(nameEl).replace(/\\s+/g, " ").trim();
-      comments.push({ author, text });
+      const statusId=statusIdOf(article);
+      const handleLink=[...article.querySelectorAll('[data-testid="User-Name"] a')]
+        .find(link=>/^\\/[^/?#]+$/.test(link.getAttribute('href') || ''));
+      const authorHandle=handleLink ? (handleLink.getAttribute('href') || '').slice(1) : '';
+      // DOM order on a status page does not prove the reply parent; retain identity, never assert a relation.
+      comments.push({ author, text, id:statusId, authorHandle, replyToId:'', relationVerified:false,
+        truncated:Boolean(article.querySelector('[data-testid="tweet-text-show-more-link"]')) });
       if (comments.length >= limit) break;
     }
     return { comments };
@@ -432,7 +453,7 @@ export function createXHomeBrowserClient(options = {}) {
     const comments = await readStatusComments(session, best.tweet_id || tweet.tweet_id);
     return {
       ...best,
-      truncated: looksTruncatedTweet(best) && String(best.text || '').length < 400,
+      truncated: looksTruncatedTweet(best),
       comments,
       comments_checked: true,
     };
@@ -582,6 +603,7 @@ export function createXHomeBrowserClient(options = {}) {
             published_at: item.published_at,
             published_timestamp: item.published_timestamp,
             text_source: item.text_source,
+            capture_context: buildXCaptureContext(item),
           })),
           error: loggedIn ? null : loginWall ? 'login_required' : 'login_state_unclear',
         };
