@@ -22,6 +22,7 @@ export const ReferenceResourceTypeSchema = z.enum([
   'knowledge-revision',
   'ai-run',
   'daily-brief-item',
+  'hourly-digest',
 ]);
 
 export const ReferenceInputSchema = z.object({

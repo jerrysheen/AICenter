@@ -1,4 +1,35 @@
+import type {LegacyBriefEditorialOutputSchema} from './report.js';
+export type LegacyBriefEditorialOutput = z.infer<typeof LegacyBriefEditorialOutputSchema>;
 import { z } from 'zod';
+import type { MediaSavedArticleQuerySchema } from './media.js';
+export type MediaSavedArticleQuery = z.infer<typeof MediaSavedArticleQuerySchema>;
+import type { BriefEditorialSchema, BriefEditorialOutputSchema } from './report.js';
+export type BriefEditorial = z.infer<typeof BriefEditorialSchema>;
+export type BriefEditorialOutput = z.infer<typeof BriefEditorialOutputSchema>;
+import type { DailyBriefWindowQuerySchema, DailyBriefWindowSchema } from './report.js';
+export type DailyBriefWindowQuery = z.infer<typeof DailyBriefWindowQuerySchema>;
+export type DailyBriefWindow = z.infer<typeof DailyBriefWindowSchema>;
+import type { HourlyDigestIndexQuerySchema, HourlyDigestIndexSchema } from './report.js';
+export type HourlyDigestIndexQuery = z.infer<typeof HourlyDigestIndexQuerySchema>;
+export type HourlyDigestIndex = z.infer<typeof HourlyDigestIndexSchema>;
+import type {InformationEvidenceSchema, InformationItemSchema, HourlyDigestSchema, GenerateHourlyDigestInputSchema, InformationSearchInputSchema} from './report.js';
+export type InformationEvidence = z.infer<typeof InformationEvidenceSchema>;
+export type InformationItem = z.infer<typeof InformationItemSchema>;
+export type HourlyDigest = z.infer<typeof HourlyDigestSchema>;
+export type GenerateHourlyDigestInput = z.infer<typeof GenerateHourlyDigestInputSchema>;
+export type InformationSearchInput = z.infer<typeof InformationSearchInputSchema>;
+import type { FeedCaptureContextSchema, FeedValueInputSchema, FeedValueScoresSchema, FeedValueReferenceSchema, FeedValueCalibrationSchema, FeedValueDecisionSchema, FeedValueRefreshInputSchema } from './feed-value.js';
+export type FeedValueRefreshInput = z.infer<typeof FeedValueRefreshInputSchema>;
+export type FeedCaptureContext = z.infer<typeof FeedCaptureContextSchema>;
+export type FeedValueInput = z.infer<typeof FeedValueInputSchema>;
+export type FeedValueScores = z.infer<typeof FeedValueScoresSchema>;
+export type FeedValueReference = z.infer<typeof FeedValueReferenceSchema>;
+export type FeedValueCalibration = z.infer<typeof FeedValueCalibrationSchema>;
+export type FeedValueDecision = z.infer<typeof FeedValueDecisionSchema>;
+import type { FeedQualityScoresSchema, FeedQualityInputSchema, FeedQualityDecisionSchema } from './feed-quality.js';
+export type FeedQualityScores = z.infer<typeof FeedQualityScoresSchema>;
+export type FeedQualityInput = z.infer<typeof FeedQualityInputSchema>;
+export type FeedQualityDecision = z.infer<typeof FeedQualityDecisionSchema>;
 import type { MediaArticleTranslationSchema } from './media.js';
 export type MediaArticleTranslation = z.infer<typeof MediaArticleTranslationSchema>;
 import type { SourceAccountSchema, SubscriptionSchema, CaptureSchema, ContentItemSchema, UserItemStateSchema, FeedItemTranslationSchema, FeedIdentityFingerprintSchema } from './feed.js';
@@ -26,6 +57,8 @@ import type { AgentJobSchema, DomainEventSchema, CapabilityManifestSchema, Worke
 import type {
   DailyReportSchema, DailyReportContentSchema, GenerateDailyReportInputSchema,
   DailyBriefCandidateSchema, DailyBriefModelInputSchema, DailyBriefModelOutputSchema, DailyBriefSchema,
+  DailyMaterialSchema, DailyCoverageSchema, DailyEvidenceSchema, DailyTrackingQuestionSchema,
+  DailyTrackingUpdateSchema, DailyAnalysisOutputSchema, DailyEditorialOutputSchema,
 } from './report.js';
 import type { StockFactorSnapshotSchema, StockStatisticsSchema } from './market-stats.js';
 import type {
@@ -107,6 +140,13 @@ export type DailyBriefCandidate = z.infer<typeof DailyBriefCandidateSchema>;
 export type DailyBriefModelInput = z.infer<typeof DailyBriefModelInputSchema>;
 export type DailyBriefModelOutput = z.infer<typeof DailyBriefModelOutputSchema>;
 export type DailyBrief = z.infer<typeof DailyBriefSchema>;
+export type DailyMaterial = z.infer<typeof DailyMaterialSchema>;
+export type DailyCoverage = z.infer<typeof DailyCoverageSchema>;
+export type DailyEvidence = z.infer<typeof DailyEvidenceSchema>;
+export type DailyTrackingQuestion = z.infer<typeof DailyTrackingQuestionSchema>;
+export type DailyTrackingUpdate = z.infer<typeof DailyTrackingUpdateSchema>;
+export type DailyAnalysisOutput = z.infer<typeof DailyAnalysisOutputSchema>;
+export type DailyEditorialOutput = z.infer<typeof DailyEditorialOutputSchema>;
 export type StockFactorSnapshot = z.infer<typeof StockFactorSnapshotSchema>;
 export type StockStatistics = z.infer<typeof StockStatisticsSchema>;
 export type StockStatsToolInput = z.infer<typeof StockStatsToolInputSchema>;
@@ -156,3 +196,16 @@ export type SaveStructuredArtifactToolInput = z.infer<typeof SaveStructuredArtif
 export type ArticleAnalysisSource = z.infer<typeof ArticleAnalysisSourceSchema>;
 export type CreateArticleAnalysisInput = z.infer<typeof CreateArticleAnalysisInputSchema>;
 export type ArticleAnalysisRunView = z.infer<typeof ArticleAnalysisRunViewSchema>;
+
+import type {HardwareQuoteRowSchema,HardwarePriceSnapshotInputSchema,HardwarePriceListQuerySchema,ImportedMediaArticleSchema} from './hardware-prices.js';
+export type HardwareQuoteRow=z.infer<typeof HardwareQuoteRowSchema>;
+export type HardwarePriceSnapshotInput=z.infer<typeof HardwarePriceSnapshotInputSchema>;
+export type HardwarePriceListQuery=z.infer<typeof HardwarePriceListQuerySchema>;
+export type ImportedMediaArticle=z.infer<typeof ImportedMediaArticleSchema>;
+
+import type {HardwareQuoteViewSchema,HardwareSnapshotViewSchema,HardwarePriceListViewSchema,HardwarePriceDetailViewSchema,HardwarePriceSnapshotViewSchema} from "./hardware-prices.js";
+export type HardwareQuoteView=z.infer<typeof HardwareQuoteViewSchema>;
+export type HardwareSnapshotView=z.infer<typeof HardwareSnapshotViewSchema>;
+export type HardwarePriceListView=z.infer<typeof HardwarePriceListViewSchema>;
+export type HardwarePriceDetailView=z.infer<typeof HardwarePriceDetailViewSchema>;
+export type HardwarePriceSnapshotView=z.infer<typeof HardwarePriceSnapshotViewSchema>;

@@ -17,6 +17,14 @@ export const HttpUrlSchema = z.union([z.literal(''), z.url().refine(
 )]);
 export const MetadataSchema = z.record(z.string(), z.unknown()).default({});
 
+export const CnTradingCalendarSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  tradingDay: z.boolean().nullable(),
+  session: z.enum(['pre', 'regular', 'break', 'closed', 'unknown']),
+  reason: z.string().max(100), nextOpenAt: NullableEpochMillisSchema,
+  calendarYear: z.number().int(), timezone: z.literal('Asia/Shanghai'),
+}).strict();
+
 export const PageRequestSchema = z.object({
   cursor: z.string().trim().max(512).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),

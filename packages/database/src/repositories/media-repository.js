@@ -1,5 +1,5 @@
 // Listing/filtering indexes must not load every RSS HTML body into memory.
-const ENTRY_INDEX_COLUMNS = 'workspace_id,external_id,source_key,publisher_key,channel,canonical_url,title,summary,published_at,published_at_raw,content_level,content_hash,revision,status,origin_url,discovered_via_json,observed_at,body_hash,truncated,created_at,updated_at,fetch_state_json';
+const ENTRY_INDEX_COLUMNS = 'workspace_id,external_id,source_key,publisher_key,publisher_name,author_name,channel,canonical_url,title,summary,published_at,published_at_raw,content_level,content_hash,revision,status,origin_url,discovered_via_json,observed_at,body_hash,truncated,created_at,updated_at,fetch_state_json,article_kind';
 
 function mapState(row) {
   if (!row) return null;
@@ -14,6 +14,7 @@ function mapState(row) {
     etag: row.etag || '',
     lastModified: row.last_modified || '',
     feedHash: row.feed_hash || '',
+    ingestionPolicy: row.ingestion_policy || '',
     lastProbe: row.last_probe_json ? JSON.parse(row.last_probe_json) : null,
     lastSyncAt: row.last_sync_at || null,
     updatedAt: row.updated_at,
@@ -27,12 +28,15 @@ function mapEntry(row) {
     externalId: row.external_id,
     sourceKey: row.source_key,
     publisherKey: row.publisher_key,
+    publisherName: row.publisher_name || '',
+    authorName: row.author_name || '',
     channel: row.channel,
     canonicalUrl: row.canonical_url,
     title: row.title || '',
     summary: row.summary || '',
     publishedAt: row.published_at || null,
     publishedAtRaw: row.published_at_raw || '',
+    articleKind: row.article_kind || 'article',
     contentLevel: row.content_level,
     contentHash: row.content_hash,
     revision: row.revision,
@@ -51,6 +55,49 @@ function mapEntry(row) {
 
 export function createMediaRepository(database, emitEvent = () => {}) {
   return {
+    saveArticleKind(workspaceId,externalId,kind) { database.prepare('UPDATE media_index_entries SET article_kind=? WHERE workspace_id=? AND external_id=?').run(kind,workspaceId,externalId); },
+    linkLegacy(workspaceId,externalId,contentItemId,legacyProvider,legacyExternalId) {
+      database.prepare('INSERT OR IGNORE INTO media_entry_legacy_links VALUES (?,?,?,?,?)').run(workspaceId,externalId,contentItemId,legacyProvider,legacyExternalId);
+    },
+    legacyLinks(workspaceId) { return database.prepare('SELECT external_id externalId,content_item_id contentItemId,legacy_provider legacyProvider,legacy_external_id legacyExternalId FROM media_entry_legacy_links WHERE workspace_id=?').all(workspaceId); },
+    listWindowSources(workspaceId, {startAt,endAt,hiddenExternalIds=[]}) {
+      const visible=hiddenExternalIds.length ? `AND e.external_id NOT IN (${hiddenExternalIds.map(()=>'?').join(',')})` : '';
+      return database.prepare(`SELECT e.source_key sourceId,e.channel,COUNT(*) available
+        FROM media_index_entries e WHERE e.workspace_id=?
+        AND COALESCE(e.published_at,e.observed_at)>=? AND COALESCE(e.published_at,e.observed_at)<?
+        ${visible} GROUP BY e.source_key`).all(workspaceId,startAt,endAt,...hiddenExternalIds);
+    },
+    listEntriesInWindow(workspaceId, {startAt,endAt,sourceId,cursor=null,limit=100,hiddenExternalIds=[]}) {
+      const visible=hiddenExternalIds.length ? `AND external_id NOT IN (${hiddenExternalIds.map(()=>'?').join(',')})` : '';
+      return database.prepare(`SELECT ${ENTRY_INDEX_COLUMNS} FROM media_index_entries
+        WHERE workspace_id=? AND source_key=?
+        AND COALESCE(published_at,observed_at)>=? AND COALESCE(published_at,observed_at)<?
+        ${visible}
+        AND (? IS NULL OR (COALESCE(published_at,observed_at),external_id) > (?,?))
+        ORDER BY COALESCE(published_at,observed_at),external_id LIMIT ?`)
+        .all(workspaceId,sourceId,startAt,endAt,...hiddenExternalIds,cursor?.eventAt ?? null,cursor?.eventAt ?? 0,cursor?.id ?? '',Math.min(200,limit)).map(mapEntry);
+    },
+    findByUrl(workspaceId, url) {
+      // Preserve the oldest existing identity, including its Capture and reading state.
+      return mapEntry(database.prepare('SELECT * FROM media_index_entries WHERE workspace_id=? AND canonical_url=? ORDER BY created_at,external_id LIMIT 1').get(workspaceId,url));
+    },
+    saveDiscovery(value) {
+      const row = MediaDiscoverySchema.parse(value);
+      return database.transaction(() => {
+        database.prepare(`INSERT INTO media_entry_discoveries VALUES (?,?,?,?,?,?,?)
+          ON CONFLICT(workspace_id,external_id,source_key) DO UPDATE SET
+            entry_url=excluded.entry_url,list_position=excluded.list_position,last_seen_at=excluded.last_seen_at`)
+          .run(row.workspaceId,row.externalId,row.sourceKey,row.entryUrl,row.listPosition,row.firstSeenAt,row.lastSeenAt);
+        emitEvent('feed.media-discovery.saved.v1','media-index',row.externalId,{externalId:row.externalId,sourceKey:row.sourceKey},row.workspaceId);
+      })();
+    },
+    listDiscoveries(workspaceId, externalIds) {
+      const ids = [...new Set(externalIds || [])];
+      if (!ids.length) return [];
+      return database.prepare(`SELECT * FROM media_entry_discoveries WHERE workspace_id=? AND external_id IN (${ids.map(()=>'?').join(',')})`)
+        .all(workspaceId,...ids).map(row=>({workspaceId:row.workspace_id,externalId:row.external_id,sourceKey:row.source_key,entryUrl:row.entry_url,
+          listPosition:row.list_position,firstSeenAt:row.first_seen_at,lastSeenAt:row.last_seen_at}));
+    },
     recoverBriefProcessing() {
       const rows=database.prepare("SELECT workspace_id,external_id,body_hash FROM media_article_processing WHERE brief_status='running'").all();
       return database.transaction(()=>{for(const r of rows) this.saveBriefProcessing(r.workspace_id,r.external_id,r.body_hash,'failed','worker_interrupted',Date.now());return rows.length;})();
@@ -81,13 +128,14 @@ export function createMediaRepository(database, emitEvent = () => {}) {
     saveFeedBody(workspaceId, externalId, html) {
       database.prepare('UPDATE media_index_entries SET feed_body_html=? WHERE workspace_id=? AND external_id=?').run(html, workspaceId, externalId);
     },
-    reserveRequest(workspaceId, dayKey, sourceKey, now, globalMax = 48, sourceMax = 16) {
+    reserveRequest(workspaceId, dayKey, sourceKey, now, globalMax = null, sourceMax = null, sourceAliases = []) {
       return database.transaction(() => {
         database.prepare(`INSERT OR IGNORE INTO media_budget_days (workspace_id,day_key,new_metadata,selected_bodies,deferred_count,updated_at) VALUES (?,?,0,0,0,?)`).run(workspaceId,dayKey,now);
         database.prepare(`INSERT OR IGNORE INTO media_source_budgets (workspace_id,day_key,source_key,bodies,updated_at) VALUES (?,?,?,0,?)`).run(workspaceId,dayKey,sourceKey,now);
         const day = database.prepare('SELECT body_requests FROM media_budget_days WHERE workspace_id=? AND day_key=?').get(workspaceId,dayKey);
-        const source = database.prepare('SELECT requests FROM media_source_budgets WHERE workspace_id=? AND day_key=? AND source_key=?').get(workspaceId,dayKey,sourceKey);
-        if (day.body_requests >= globalMax || source.requests >= sourceMax) return false;
+        const keys = [...new Set([sourceKey,...sourceAliases])];
+        const source = database.prepare(`SELECT COALESCE(SUM(requests),0) requests FROM media_source_budgets WHERE workspace_id=? AND day_key=? AND source_key IN (${keys.map(()=>'?').join(',')})`).get(workspaceId,dayKey,...keys);
+        if ((globalMax != null && day.body_requests >= globalMax) || (sourceMax != null && source.requests >= sourceMax)) return false;
         database.prepare('UPDATE media_budget_days SET body_requests=body_requests+1 WHERE workspace_id=? AND day_key=?').run(workspaceId,dayKey);
         database.prepare('UPDATE media_source_budgets SET requests=requests+1 WHERE workspace_id=? AND day_key=? AND source_key=?').run(workspaceId,dayKey,sourceKey);
         return true;
@@ -112,8 +160,8 @@ export function createMediaRepository(database, emitEvent = () => {}) {
       return database.transaction(() => {
       database.prepare(`INSERT INTO media_source_states
         (workspace_id, source_key, enabled, host_direct_verified, body_use_acknowledged, health,
-         health_detail, etag, last_modified, feed_hash, last_probe_json, last_sync_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         health_detail, etag, last_modified, feed_hash, last_probe_json, last_sync_at, updated_at, ingestion_policy)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(workspace_id, source_key) DO UPDATE SET
           enabled = excluded.enabled,
           host_direct_verified = excluded.host_direct_verified,
@@ -125,12 +173,13 @@ export function createMediaRepository(database, emitEvent = () => {}) {
           feed_hash = excluded.feed_hash,
           last_probe_json = excluded.last_probe_json,
           last_sync_at = excluded.last_sync_at,
-          updated_at = excluded.updated_at`)
+          updated_at = excluded.updated_at,
+          ingestion_policy = excluded.ingestion_policy`)
         .run(
           state.workspaceId, state.sourceKey, state.enabled ? 1 : 0, state.hostDirectVerified ? 1 : 0,
           state.bodyUseAcknowledged ? 1 : 0, state.health, state.healthDetail || '', state.etag || '',
           state.lastModified || '', state.feedHash || '', JSON.stringify(state.lastProbe || null),
-          state.lastSyncAt || null, state.updatedAt,
+          state.lastSyncAt || null, state.updatedAt, state.ingestionPolicy || '',
         );
       emitEvent('feed.media-source.saved.v1','media-source',state.sourceKey,{sourceKey:state.sourceKey,enabled:state.enabled,health:state.health},state.workspaceId);
       return this.getState(state.workspaceId, state.sourceKey);
@@ -185,10 +234,13 @@ export function createMediaRepository(database, emitEvent = () => {}) {
       database.prepare(`INSERT INTO media_index_entries
         (workspace_id, external_id, source_key, publisher_key, channel, canonical_url, title, summary,
          published_at, published_at_raw, content_level, content_hash, revision, status, origin_url,
-         discovered_via_json, observed_at, body_hash, truncated, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         discovered_via_json, observed_at, body_hash, truncated, created_at, updated_at, publisher_name, author_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(workspace_id, external_id) DO UPDATE SET
           title = excluded.title,
+          publisher_key = CASE WHEN excluded.publisher_name != '' THEN excluded.publisher_key ELSE media_index_entries.publisher_key END,
+          publisher_name = CASE WHEN excluded.publisher_name != '' THEN excluded.publisher_name ELSE media_index_entries.publisher_name END,
+          author_name = CASE WHEN excluded.author_name != '' THEN excluded.author_name ELSE media_index_entries.author_name END,
           summary = excluded.summary,
           canonical_url = excluded.canonical_url,
           published_at = excluded.published_at,
@@ -208,7 +260,7 @@ export function createMediaRepository(database, emitEvent = () => {}) {
           entry.canonicalUrl, entry.title || '', entry.summary || '', entry.publishedAt || null,
           entry.publishedAtRaw || '', entry.contentLevel, entry.contentHash, entry.revision, entry.status,
           entry.originUrl || '', JSON.stringify(entry.discoveredVia || null), entry.observedAt,
-          entry.bodyHash || '', entry.truncated ? 1 : 0, entry.createdAt, entry.updatedAt,
+          entry.bodyHash || '', entry.truncated ? 1 : 0, entry.createdAt, entry.updatedAt, entry.publisherName || '', entry.authorName || '',
         );
       emitEvent('feed.media-index.saved.v1','media-index',entry.externalId,{externalId:entry.externalId,revision:entry.revision},entry.workspaceId);
       })();
@@ -223,7 +275,7 @@ export function createMediaRepository(database, emitEvent = () => {}) {
         const row = database.prepare(`SELECT * FROM media_budget_days
           WHERE workspace_id = ? AND day_key = ?`).get(workspaceId, dayKey);
         const used = row?.new_metadata || 0;
-        const allowed = Math.max(0, Math.min(requested, maxNew - used));
+        const allowed = maxNew == null ? requested : Math.max(0, Math.min(requested, maxNew - used));
         const deferred = recordDeferred ? Math.max(0, requested - allowed) : 0;
         if (!row) {
           database.prepare(`INSERT INTO media_budget_days
@@ -243,15 +295,16 @@ export function createMediaRepository(database, emitEvent = () => {}) {
         return { allowed, deferred };
       })();
     },
-    reserveBody(workspaceId, dayKey, sourceKey, now, { globalMax, sourceMax }) {
+    reserveBody(workspaceId, dayKey, sourceKey, now, { globalMax, sourceMax, sourceAliases = [] }) {
       return database.transaction(() => {
         const day = database.prepare(`SELECT * FROM media_budget_days
           WHERE workspace_id = ? AND day_key = ?`).get(workspaceId, dayKey);
-        const source = database.prepare(`SELECT * FROM media_source_budgets
-          WHERE workspace_id = ? AND day_key = ? AND source_key = ?`).get(workspaceId, dayKey, sourceKey);
+        const keys = [...new Set([sourceKey,...sourceAliases])];
+        const source = database.prepare(`SELECT COALESCE(SUM(bodies),0) bodies FROM media_source_budgets
+          WHERE workspace_id = ? AND day_key = ? AND source_key IN (${keys.map(()=>'?').join(',')})`).get(workspaceId, dayKey, ...keys);
         const globalUsed = day?.selected_bodies || 0;
         const sourceUsed = source?.bodies || 0;
-        if (globalUsed >= globalMax || sourceUsed >= sourceMax) {
+        if ((globalMax != null && globalUsed >= globalMax) || (sourceMax != null && sourceUsed >= sourceMax)) {
           if (!day) {
             database.prepare(`INSERT INTO media_budget_days
               (workspace_id, day_key, new_metadata, selected_bodies, deferred_count, earliest_deferred_at, updated_at)
@@ -274,7 +327,8 @@ export function createMediaRepository(database, emitEvent = () => {}) {
             SET selected_bodies = selected_bodies + 1, updated_at = ?
             WHERE workspace_id = ? AND day_key = ?`).run(now, workspaceId, dayKey);
         }
-        if (!source) {
+        const currentSource = database.prepare('SELECT 1 FROM media_source_budgets WHERE workspace_id=? AND day_key=? AND source_key=?').get(workspaceId,dayKey,sourceKey);
+        if (!currentSource) {
           database.prepare(`INSERT INTO media_source_budgets
             (workspace_id, day_key, source_key, bodies, updated_at)
             VALUES (?, ?, ?, 1, ?)`).run(workspaceId, dayKey, sourceKey, now);
@@ -334,4 +388,4 @@ export function createMediaRepository(database, emitEvent = () => {}) {
     },
   };
 }
-import { MediaBriefSchema, MediaFetchStateSchema, MediaParagraphSchema } from '../../../contracts/src/media.js';
+import { MediaBriefSchema, MediaDiscoverySchema, MediaFetchStateSchema, MediaParagraphSchema } from '../../../contracts/src/media.js';

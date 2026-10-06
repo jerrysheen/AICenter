@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   CurrencySchema,
+  CnTradingCalendarSchema,
   DecimalStringSchema,
   EntityIdSchema,
   EpochMillisSchema,
@@ -458,6 +459,8 @@ export const PortfolioImportResultSchema = z.object({
 }).strict();
 
 export const HoldingsPositionSchema = z.object({
+  quoteAsOf: EpochMillisSchema.nullable().optional(),
+  session: z.string().max(32).optional(),
   lotId: EntityIdSchema,
   portfolioId: EntityIdSchema,
   board: HoldingBoardSchema,
@@ -502,6 +505,7 @@ export const HoldingsMoveGroupSchema = z.object({
 }).strict();
 
 export const HoldingsBoardSchema = z.object({
+  calendar: CnTradingCalendarSchema.optional(),
   baseCurrency: z.literal('CNY'),
   fx: z.object({
     usdCny: DecimalStringSchema.nullable(),

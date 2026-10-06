@@ -32,6 +32,8 @@ import { WorkerJobConcurrencySchema } from './runtime.js';
 export * from './errors.js';
 export * from './common.js';
 export * from './feed.js';
+export * from './feed-quality.js';
+export * from './feed-value.js';
 export * from './media.js';
 export * from './trading.js';
 export * from './knowledge.js';
@@ -224,6 +226,8 @@ export function parseXueqiuFeedQuery(value) {
   return { platform: 'xueqiu', feed, limit: rawLimit, refresh };
 }
 
+export * from './hardware-prices.js';
+
 export function parseMediaFeedQuery(value) {
   const query = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const platform = cleanText(query.platform || 'media', { field: '平台', max: 16 }) || 'media';
@@ -232,6 +236,10 @@ export function parseMediaFeedQuery(value) {
   const channel = channelKey === 'macro' ? 'macro' : 'tech';
   const refresh = query.refresh === true || query.refresh === '1' || query.refresh === 'true';
   const options = {};
+  if (query.sourceKey !== undefined) {
+    if (!/^[a-z0-9]+$/.test(query.sourceKey)) throw new ValidationError('来源筛选不合法',['sourceKey']);
+    options.sourceKey=query.sourceKey;
+  }
   if (query.view !== undefined) {
     if (!['all','full','partial','index','pending','failed'].includes(query.view)) throw new ValidationError('未知正文视图', ['view']);
     options.view = query.view;

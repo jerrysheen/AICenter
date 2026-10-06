@@ -1340,7 +1340,124 @@ const migrations = [
       );`);
     },
   },
+  {
+    version: 36,
+    name: 'media-native-channel-discovery',
+    up(database) {
+      database.exec(`
+        ALTER TABLE media_source_states ADD COLUMN ingestion_policy TEXT NOT NULL DEFAULT '';
+        ALTER TABLE media_index_entries ADD COLUMN publisher_name TEXT NOT NULL DEFAULT '';
+        ALTER TABLE media_index_entries ADD COLUMN author_name TEXT NOT NULL DEFAULT '';
+        CREATE INDEX media_index_url ON media_index_entries(workspace_id, canonical_url);
+        CREATE TABLE media_entry_discoveries (
+          workspace_id TEXT NOT NULL, external_id TEXT NOT NULL, source_key TEXT NOT NULL,
+          entry_url TEXT NOT NULL, list_position INTEGER, first_seen_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL,
+          PRIMARY KEY(workspace_id, external_id, source_key),
+          FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+        );
+        INSERT INTO media_entry_discoveries
+          SELECT workspace_id,external_id,source_key,'',NULL,created_at,observed_at FROM media_index_entries;
+      `);
+    },
+  },
 ];
+
+// Append-only: the media migrations above remain unchanged.
+migrations.push({
+  version: 37, name: 'daily_analysis_v2',
+  up(database) {
+    database.exec(`
+      CREATE TABLE daily_tracking_questions (
+        workspace_id TEXT NOT NULL, id TEXT NOT NULL, question_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL, PRIMARY KEY(workspace_id,id)
+      );
+      CREATE TABLE daily_analysis_runs (
+        workspace_id TEXT NOT NULL, run_key TEXT NOT NULL, report_date TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL, status TEXT NOT NULL, owner TEXT NOT NULL,
+        lease_until INTEGER NOT NULL, error TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL,
+        PRIMARY KEY(workspace_id,run_key)
+      );
+      CREATE TABLE daily_analysis_stages (
+        workspace_id TEXT NOT NULL, report_date TEXT NOT NULL, stage_key TEXT NOT NULL,
+        input_hash TEXT NOT NULL, input_json TEXT NOT NULL, output_json TEXT,
+        status TEXT NOT NULL, error TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL,
+        PRIMARY KEY(workspace_id,report_date,stage_key,input_hash)
+      );
+      CREATE TABLE daily_brief_versions (
+        workspace_id TEXT NOT NULL, report_date TEXT NOT NULL, generated_at INTEGER NOT NULL,
+        brief_json TEXT NOT NULL, input_snapshot_json TEXT NOT NULL,
+        PRIMARY KEY(workspace_id,report_date,generated_at)
+      );
+      CREATE INDEX daily_analysis_runs_date ON daily_analysis_runs(workspace_id,report_date,updated_at);
+    `);
+  },
+});
+
+migrations.push({
+  version: 38, name: 'hourly_information_snapshots',
+  up(database) {
+    database.exec(`CREATE TABLE hourly_information_snapshots (
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, hour_start INTEGER NOT NULL,
+      material_version TEXT NOT NULL, frozen_json TEXT NOT NULL, digest_json TEXT,
+      status TEXT NOT NULL, owner TEXT NOT NULL, lease_until INTEGER NOT NULL,
+      error TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL,
+      UNIQUE(workspace_id,hour_start,material_version)
+    );
+    CREATE INDEX hourly_information_window ON hourly_information_snapshots(workspace_id,hour_start,updated_at);`);
+  },
+});
+
+migrations.push({
+  version: 39, name: 'hourly_information_current_heads',
+  up(database) {
+    database.exec(`CREATE TABLE hourly_information_heads (
+      workspace_id TEXT NOT NULL, hour_start INTEGER NOT NULL, snapshot_id TEXT NOT NULL,
+      updated_at INTEGER NOT NULL, PRIMARY KEY(workspace_id,hour_start)
+    );
+    INSERT INTO hourly_information_heads (workspace_id,hour_start,snapshot_id,updated_at)
+      SELECT workspace_id,hour_start,id,updated_at FROM (
+        SELECT *,ROW_NUMBER() OVER (PARTITION BY workspace_id,hour_start ORDER BY updated_at DESC,rowid DESC) AS position
+        FROM hourly_information_snapshots WHERE status='completed'
+          AND json_extract(digest_json,'$.window.startAt')=hour_start
+          AND json_extract(digest_json,'$.window.endAt')=hour_start+3600000
+      ) WHERE position=1;`);
+  },
+});
+
+migrations.push({
+  version: 40, name: 'hardware_prices_and_media_identity',
+  up(database) {
+    database.exec(`
+      CREATE TABLE hardware_price_snapshots (
+        id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, source_key TEXT NOT NULL, page_key TEXT NOT NULL,
+        source_url TEXT NOT NULL, title TEXT NOT NULL, captured_at INTEGER NOT NULL, content_hash TEXT NOT NULL,
+        artifact_path TEXT NOT NULL, format TEXT NOT NULL, parser_version TEXT NOT NULL, warnings_json TEXT NOT NULL,
+        UNIQUE(workspace_id,source_key,page_key,content_hash,parser_version)
+      );
+      CREATE TABLE hardware_price_observations (
+        id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, series_key TEXT NOT NULL, period_key TEXT NOT NULL,
+        revision INTEGER NOT NULL, previous_id TEXT, value_hash TEXT NOT NULL, snapshot_id TEXT NOT NULL,
+        captured_at INTEGER NOT NULL, period_start INTEGER, source_updated_at INTEGER, is_current INTEGER NOT NULL,
+        row_json TEXT NOT NULL, UNIQUE(workspace_id,series_key,period_key,revision)
+      );
+      CREATE INDEX hardware_price_series ON hardware_price_observations(workspace_id,series_key,period_start,revision);
+      CREATE TABLE hardware_price_snapshot_rows (
+        workspace_id TEXT NOT NULL, snapshot_id TEXT NOT NULL, table_index INTEGER NOT NULL, row_index INTEGER NOT NULL,
+        observation_id TEXT NOT NULL, row_json TEXT NOT NULL, PRIMARY KEY(workspace_id,snapshot_id,table_index,row_index)
+      );
+      CREATE TABLE hardware_price_legacy_links (
+        workspace_id TEXT NOT NULL, external_id TEXT NOT NULL, content_item_id TEXT NOT NULL, snapshot_id TEXT NOT NULL,
+        PRIMARY KEY(workspace_id,external_id)
+      );
+      ALTER TABLE media_index_entries ADD COLUMN article_kind TEXT NOT NULL DEFAULT 'article';
+      CREATE TABLE media_entry_legacy_links (
+        workspace_id TEXT NOT NULL, external_id TEXT NOT NULL, content_item_id TEXT NOT NULL,
+        legacy_provider TEXT NOT NULL, legacy_external_id TEXT NOT NULL,
+        PRIMARY KEY(workspace_id,external_id)
+      );
+    `);
+  },
+});
 
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`

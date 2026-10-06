@@ -14,12 +14,28 @@ function parseJson(value, fallback = {}) {
   try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
 }
 
-const VISIBLE_CONTENT_SQL = `NOT EXISTS (
+const USER_VISIBLE_CONTENT_SQL = `NOT EXISTS (
   SELECT 1 FROM user_item_states uis
   WHERE uis.workspace_id = ci.workspace_id
     AND uis.content_item_id = ci.id
     AND uis.is_hidden = 1
 )`;
+const VISIBLE_CONTENT_SQL = `${USER_VISIBLE_CONTENT_SQL} AND NOT EXISTS (SELECT 1 FROM captures quality_capture
+  WHERE quality_capture.id=ci.capture_id AND quality_capture.workspace_id=ci.workspace_id
+    AND json_extract(quality_capture.metadata_json,'$.filterMode')='enforce'
+    AND json_extract(quality_capture.metadata_json,'$.filterDecision') IN ('DROP','REVIEW')
+    AND json_extract(quality_capture.metadata_json,'$.filterApplied')=1)`;
+
+function approvedQualitySql(rule='') {
+  if(!rule) return '1=1';
+  if(rule!=='all-three-0.60') throw new Error('Unsupported admission rule');
+  return `EXISTS (SELECT 1 FROM captures qa WHERE qa.id=ci.capture_id AND qa.workspace_id=ci.workspace_id
+    AND json_extract(qa.metadata_json,'$.filterRule')='all-three-0.60'
+    AND json_extract(qa.metadata_json,'$.filterDecision')='KEEP'
+    AND json_extract(qa.metadata_json,'$.filterScores.reading_value')>=0.60
+    AND json_extract(qa.metadata_json,'$.filterScores.specific_content')>=0.60
+    AND json_extract(qa.metadata_json,'$.filterScores.sufficient_information')>=0.60)`;
+}
 
 const TAGGED_CONTENT_SQL = `EXISTS (
   SELECT 1 FROM resource_taggings rt
@@ -393,9 +409,48 @@ export function createFeedRepository(database, emitEvent) {
         .filter(Boolean);
     },
 
-    listContentItemsByProvider(workspaceId, provider, { limit = 200, sourceExternalId = '', taggedOnly = false } = {}) {
+    listContentItemStatesByExternalIds(workspaceId, provider, externalIds) {
+      const ids = [...new Set(externalIds)].slice(0, 10_000);
+      if (!ids.length) return [];
+      return database.prepare(`SELECT c.external_id AS externalId, ci.id AS contentItemId,
+          ci.created_at AS createdAt, COALESCE(s.is_read, 0) AS isRead,
+          COALESCE(s.is_hidden, 0) AS isHidden, COALESCE(s.is_saved,0) AS isSaved
+        FROM captures c INNER JOIN content_items ci ON ci.capture_id = c.id AND ci.workspace_id = c.workspace_id
+        LEFT JOIN user_item_states s ON s.workspace_id = ci.workspace_id AND s.content_item_id = ci.id
+        WHERE c.workspace_id = ? AND c.provider = ? AND c.external_id IN (${ids.map(() => '?').join(',')})`)
+        .all(workspaceId, provider, ...ids)
+        .map(row => ({ ...row, isRead: Boolean(row.isRead), isHidden: Boolean(row.isHidden), isSaved:Boolean(row.isSaved) }));
+    },
+
+    listQualityExcludedExternalIds(workspaceId,provider) {
+      return database.prepare(`SELECT external_id FROM captures WHERE workspace_id=? AND provider=?
+        AND json_extract(metadata_json,'$.filterMode')='enforce' AND json_extract(metadata_json,'$.filterDecision') IN ('DROP','REVIEW')
+        AND json_extract(metadata_json,'$.filterApplied')=1`)
+        .all(workspaceId,provider).map(r=>r.external_id);
+    },
+
+    listQualityApprovedExternalIds(workspaceId,provider) {
+      return database.prepare(`SELECT external_id FROM captures WHERE workspace_id=? AND provider=?
+        AND json_extract(metadata_json,'$.filterRule')='all-three-0.60' AND json_extract(metadata_json,'$.filterDecision')='KEEP'
+        AND json_extract(metadata_json,'$.filterScores.reading_value')>=0.60
+        AND json_extract(metadata_json,'$.filterScores.specific_content')>=0.60
+        AND json_extract(metadata_json,'$.filterScores.sufficient_information')>=0.60`)
+        .all(workspaceId,provider).map(r=>r.external_id);
+    },
+
+    listQualityRefreshItems(workspaceId,{perSourceLimit=200}={}) {
+      const limit=Math.max(1,Math.min(200,Number(perSourceLimit)||200));
+      return database.prepare(`SELECT * FROM (SELECT ci.*,c.provider,c.external_id,c.captured_at,c.metadata_json AS capture_metadata_json,
+        ROW_NUMBER() OVER (PARTITION BY c.source_account_id ORDER BY c.captured_at DESC,ci.created_at DESC,ci.id DESC) AS pool_rank
+        FROM content_items ci JOIN captures c ON c.id=ci.capture_id AND c.workspace_id=ci.workspace_id
+        WHERE ci.workspace_id=? AND c.provider IN ('x','xueqiu','trendforce','bilibili') AND ${USER_VISIBLE_CONTENT_SQL})
+        WHERE pool_rank<=? ORDER BY provider,captured_at DESC`).all(workspaceId,limit)
+        .map(r=>({...mapContentItem(r),provider:r.provider,externalId:r.external_id,captureMetadata:parseJson(r.capture_metadata_json)}));
+    },
+
+    listContentItemsByProvider(workspaceId, provider, { limit = 200, sourceExternalId = '', taggedOnly = false, qualityRule='' } = {}) {
       const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
-      const taggedSql = taggedOnly ? `AND ${TAGGED_CONTENT_SQL}` : '';
+      const taggedSql = `${taggedOnly ? `AND ${TAGGED_CONTENT_SQL}` : ''} AND ${approvedQualitySql(qualityRule)}`;
       const rows = sourceExternalId
         ? database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id,
             c.captured_at AS captured_at, c.metadata_json AS capture_metadata_json,
@@ -580,18 +635,18 @@ export function createFeedRepository(database, emitEvent) {
       };
     },
 
-    listContentItemsWithSource(workspaceId, { limit = 200, ids = [] } = {}) {
+    listContentItemsWithSource(workspaceId, { limit = 200, ids = [],qualityRule='' } = {}) {
       const wanted = [...new Set((ids || []).map((id) => String(id || '').trim()).filter(Boolean))];
       const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
       const rows = wanted.length
         ? database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id
             FROM content_items ci
             LEFT JOIN captures c ON c.id = ci.capture_id
-            WHERE ci.workspace_id = ? AND ci.id IN (${wanted.map(() => '?').join(', ')})`).all(workspaceId, ...wanted)
+            WHERE ci.workspace_id = ? AND ci.id IN (${wanted.map(() => '?').join(', ')}) AND ${approvedQualitySql(qualityRule)}`).all(workspaceId, ...wanted)
         : database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id
             FROM content_items ci
             LEFT JOIN captures c ON c.id = ci.capture_id
-            WHERE ci.workspace_id = ? AND ${VISIBLE_CONTENT_SQL}
+            WHERE ci.workspace_id = ? AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
             ORDER BY ci.created_at DESC, ci.id DESC LIMIT ?`).all(workspaceId, safeLimit);
       return rows.map((row) => ({
         ...mapContentItem(row),
@@ -600,36 +655,70 @@ export function createFeedRepository(database, emitEvent) {
       }));
     },
 
-    listContentItems(workspaceId, { limit = 50, before = null } = {}) {
+    listContentItems(workspaceId, { limit = 50, before = null,qualityRule='' } = {}) {
       const safeLimit = Math.max(1, Math.min(Number(limit) || 50, 200));
       const rows = before === null
         ? database.prepare(`SELECT * FROM content_items ci WHERE ci.workspace_id = ?
-            AND ${VISIBLE_CONTENT_SQL}
+            AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
             ORDER BY ci.created_at DESC, ci.id DESC LIMIT ?`).all(workspaceId, safeLimit)
         : database.prepare(`SELECT * FROM content_items ci WHERE ci.workspace_id = ?
             AND ci.created_at < ?
-            AND ${VISIBLE_CONTENT_SQL}
+            AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
             ORDER BY ci.created_at DESC, ci.id DESC LIMIT ?`)
           .all(workspaceId, Number(before), safeLimit);
       return rows.map(mapContentItem);
     },
 
-    listContentItemsInWindow(workspaceId, { startAt, endAt, limit = 200 } = {}) {
+    listWindowSources(workspaceId, { startAt, endAt,qualityRule='',excludedItemIds=[] }) {
+      const rows=database.prepare(`SELECT COALESCE(c.source_account_id,'local') sourceId,
+        COALESCE(sa.display_name,'本地信息') sourceName,
+        COALESCE(sa.provider,c.provider,'local') provider, COUNT(ci.id) available,
+        MAX(sub.last_sync_at) lastSyncAt FROM content_items ci
+        LEFT JOIN captures c ON c.id=ci.capture_id AND c.workspace_id=ci.workspace_id
+        LEFT JOIN source_accounts sa ON sa.id=c.source_account_id AND sa.workspace_id=ci.workspace_id
+        LEFT JOIN subscriptions sub ON sub.source_account_id=sa.id AND sub.workspace_id=ci.workspace_id
+        WHERE ci.workspace_id=? AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
+          AND COALESCE(ci.published_at,ci.created_at)>=? AND COALESCE(ci.published_at,ci.created_at)<?
+        AND ci.id NOT IN (SELECT value FROM json_each(?))
+        GROUP BY COALESCE(c.source_account_id,'local')`).all(workspaceId,startAt,endAt,JSON.stringify(excludedItemIds));
+      const configured=database.prepare(`SELECT sa.id sourceId,sa.display_name sourceName,sa.provider,sub.last_sync_at lastSyncAt
+        FROM subscriptions sub JOIN source_accounts sa ON sa.id=sub.source_account_id
+        WHERE sub.workspace_id=? AND sub.enabled=1`).all(workspaceId);
+      for(const source of configured) if(!rows.some(r=>r.sourceId===source.sourceId)) rows.push({...source,available:0});
+      return rows;
+    },
+
+    listContentItemsInWindow(workspaceId, { startAt, endAt, limit = 200, sourceId = null, cursor = null,qualityRule='',excludedItemIds=[] } = {}) {
       const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
-      const rows = database.prepare(`SELECT ci.*, c.captured_at AS captured_at
+      const rows = database.prepare(`SELECT ci.*, c.captured_at AS captured_at,
+        COALESCE(sa.provider,c.provider,'local') AS provider, COALESCE(c.source_account_id,'local') AS source_id,
+        COALESCE(sa.display_name,'') AS source_name, c.metadata_json AS capture_metadata
         FROM content_items ci
         LEFT JOIN captures c ON c.id = ci.capture_id
+        LEFT JOIN source_accounts sa ON sa.id=c.source_account_id
         WHERE ci.workspace_id = ?
-          AND ${VISIBLE_CONTENT_SQL}
+          AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
           AND COALESCE(ci.published_at, ci.created_at) >= ?
           AND COALESCE(ci.published_at, ci.created_at) < ?
+          AND (? IS NULL OR COALESCE(c.source_account_id,'local')=?)
+          AND (? IS NULL OR (COALESCE(ci.published_at,ci.created_at),ci.id) > (?,?))
+          AND ci.id NOT IN (SELECT value FROM json_each(?))
         ORDER BY COALESCE(ci.published_at, ci.created_at) ASC, ci.id ASC
-        LIMIT ?`).all(workspaceId, Number(startAt), Number(endAt), safeLimit);
+        LIMIT ?`).all(workspaceId, Number(startAt), Number(endAt), sourceId, sourceId,
+          cursor?.eventAt ?? null, cursor?.eventAt ?? 0, cursor?.id ?? '', JSON.stringify(excludedItemIds), safeLimit);
       return rows.map((row) => ({
         ...mapContentItem(row),
         capturedAt: row.captured_at ?? null,
         eventAt: row.published_at ?? row.created_at,
+        provider: row.provider, sourceId: row.source_id, sourceName: row.source_name,
+        captureMetadata: parseJson(row.capture_metadata),
       }));
+    },
+
+    listLegacyProviderItems(workspaceId,provider) {
+      return database.prepare(`SELECT ci.*,c.external_id,c.captured_at,c.metadata_json capture_metadata FROM content_items ci
+        JOIN captures c ON c.id=ci.capture_id AND c.workspace_id=ci.workspace_id WHERE ci.workspace_id=? AND c.provider=? ORDER BY ci.created_at`)
+        .all(workspaceId,provider).map(r=>({...mapContentItem(r),externalId:r.external_id,capturedAt:r.captured_at,captureMetadata:parseJson(r.capture_metadata)}));
     },
 
     saveTranslations(values) {
