@@ -1,11 +1,24 @@
 import { ValidationError } from '../../../../packages/contracts/src/index.js';
+import { gzipSync } from 'node:zlib';
 
-export function json(response, status, payload, headers = {}) {
-  const body = JSON.stringify(payload);
+export function json(response, status, payload, headers = {}, { compress = false } = {}) {
+  let body = JSON.stringify(payload);
+  let encoding = '';
+  const acceptsGzip = String(response.req?.headers?.['accept-encoding'] || '').split(',').some(part => {
+    const [name, ...parameters] = part.trim().split(';');
+    const quality = parameters.find(value => /^\s*q\s*=/i.test(value));
+    return name.toLowerCase() === 'gzip' && (!quality || Number(quality.split('=')[1]) > 0);
+  });
+  if (compress && acceptsGzip && Buffer.byteLength(body) >= 2048) {
+    const zipped = gzipSync(body);
+    if (zipped.length < Buffer.byteLength(body)) { body = zipped; encoding = 'gzip'; }
+  }
   const outgoing = {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
     'Cache-Control': 'no-store',
+    ...(compress ? { Vary: 'Accept-Encoding' } : {}),
+    ...(encoding ? { 'Content-Encoding': encoding } : {}),
     ...headers,
   };
   if (outgoing['Set-Cookie'] !== undefined && !Array.isArray(outgoing['Set-Cookie'])) {

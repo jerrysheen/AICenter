@@ -1,16 +1,58 @@
+const { createHardwarePricesPage, hardwareMarketItem } = await import('./hardware-prices.js?v=dev').catch(() => ({
+  createHardwarePricesPage: () => ({render(root) {root.textContent='硬件报价界面等待服务重载。';}}),
+  hardwareMarketItem: () => null,
+}));
 import {
-  askPrompts, assetClasses, bookTabs, channels, feedItems, globalAssets, holdings, marketTabs,
+  askPrompts, assetClasses, bookTabs, channels, globalAssets, holdings, marketTabs,
   platformFilters, portfolioSummary, stockBoards as fallbackStockBoards,
   subscriptions, tools, tradeLedger,
 } from './mock.js?v=dev';
 import { icon } from './icons.js?v=dev';
-import { renderMarkdownInto } from './markdown.js?v=dev';
+import { renderMarkdownInto, renderFeedTextInto, splitFeedText } from './markdown.js?v=dev';
 import { renderQuantLab } from './quant-lab.js?v=dev';
+import { createMediaFeedCache, createMediaFeedLoader, createMediaReaderSession, mediaReaderParagraphs } from './media-feed.js?v=dev';
+// An older running Web process may not have registered the new module yet.
+// Keep the existing reader available until the normal service reload.
+const { createBriefPage, briefReadingItems = () => [] } = await import('./brief-page.js?v=dev').catch(() => ({createBriefPage:null}));
 
 const platformLabels = { manual: '手工', bilibili: 'B站', x: 'X', xueqiu: '雪球', trendforce: 'TrendForce', media: '媒体' };
 const processingLabels = { subtitle: '字幕处理中', ai: 'AI 加工中' };
 const isHarmonyShell = navigator.userAgent.includes('AI-Center-Harmony/');
 const resetConnectionUri = 'aicenter://reset';
+
+function normalizeRoute(value = '') {
+  return String(value).replace(/^#?\/*/, '') || 'sources';
+}
+
+function routeLabel(value) {
+  const route = normalizeRoute(value);
+  if (route === 'sources/catalog') return '信源目录';
+  if (route === 'sources/schedule') return '完整日历';
+  if (route.startsWith('market/global')) return '全球行情';
+  if (route.startsWith('hardware/series/')) return '报价详情';
+  if (route.startsWith('inspire/tasks')) return '任务列表';
+  return ({ sources: '总览', feed: '信息流', market: '股票', report: '简报',
+    tools: '工具', knowledge: '知识库', settings: '设备与连接', inspire: '灵感', ask: '问答记录',
+    article: '文章', source: '信源详情' })[route.split('/')[0]] || '总览';
+}
+
+// Shared read feedback. API responses remain the source of business truth.
+function renderViewState(root, { kind, title, message = '', action, onAction }) {
+  root.dataset.loadState = kind;
+  root.setAttribute('aria-busy', String(kind === 'loading'));
+  if (kind === 'success') return;
+  const box = document.createElement('div');
+  box.className = `view-state view-state-${kind}`;
+  box.setAttribute('role', 'status');
+  box.append(Object.assign(document.createElement('strong'), { textContent: title }));
+  if (message) box.append(Object.assign(document.createElement('p'), { textContent: message }));
+  if (action && onAction) {
+    const button = Object.assign(document.createElement('button'), { type: 'button', className: 'text-button', textContent: action });
+    button.addEventListener('click', onAction);
+    box.append(button);
+  }
+  root.replaceChildren(box);
+}
 
 const state = {
   session: null,
@@ -44,6 +86,13 @@ const state = {
   assetLoading: false,
   assetError: '',
   assetRequestId: 0,
+  hardwareItems: [],
+  hardwareLoading: false,
+  hardwareLoaded: false,
+  hardwareError: '',
+  hardwareRequestId: 0,
+  hardwareKind: 'all',
+  hardwareReview: false,
   assetFilter: '',
   assetDashboard: null,
   assetDashboardError: '',
@@ -73,10 +122,14 @@ const state = {
   mediaChannel: 'tech',
   mediaNote: '',
   mediaLoading: false,
+  mediaCached: false,
+  mediaError: '',
   mediaRefreshing: false,
   mediaProbing: false,
   mediaBudget: null,
-  mediaView: 'full',
+  mediaView: 'all',
+  mediaSourceKey: '',
+  restoredArticles: {},
   mediaCounts: {},
   mediaNextOffset: null,
   xueqiuItems: [],
@@ -93,6 +146,9 @@ const state = {
   notes: [],
   expandedInspirationIds: new Set(),
   knowledge: [],
+  knowledgeLoaded: false,
+  knowledgeError: '',
+  knowledgeQuery: '',
   wantAi: false,
   composeTarget: 'inspiration',
   dispatchAttachments: [],
@@ -101,6 +157,10 @@ const state = {
   taskContinuePackId: '',
   askSubmitting: false,
   askSessions: [],
+  askSessionsLoaded: false,
+  askSessionsLoading: false,
+  askSessionsError: '',
+  askDetailRequest: 0,
   askSessionId: '',
   askDetail: null,
   askJobs: [],
@@ -112,6 +172,8 @@ const state = {
   mentionIndex: 0,
   mentionRange: null,
   sourceCatalog: [],
+  sourceCatalogLoaded: false,
+  sourceCatalogError: '',
   sourceSnapshots: {},
   staticBoard: null,
   staticBoardWindow: 'today',
@@ -155,6 +217,7 @@ const state = {
   feedPlatform: 'all',
   expandedFeedIds: new Set(),
   readerLang: 'translation',
+  readerFont: 17,
   privacy: false,
   quotePeriod: '1d',
   quoteChart: null,
@@ -171,6 +234,7 @@ const state = {
 };
 
 const pageKinds = {
+  hardware: {title:'AI硬件价格',nav:'market'},
   article: { nav: 'sources', title: '阅读' },
   event: { nav: 'sources', title: '日程详情' },
   source: { nav: 'sources', title: '信源' },
@@ -189,7 +253,7 @@ const hubLanes = [
   { id: 'feed', label: '信息流', view: 'feed' },
   { id: 'stocks', label: '股票', view: 'market' },
   { id: 'global', label: '全球行情', view: 'market/global' },
-  { id: 'report', label: '日报', view: 'report' },
+  { id: 'report', label: '简报', view: 'report' },
 ];
 
 const overviewViews = ['sources', 'feed', 'market', 'report'];
@@ -211,7 +275,7 @@ const viewCopy = {
   inspire: { title: '灵感', subtitle: '留下尚未完成的思考' },
   knowledge: { title: '知识库', subtitle: '可长期复用的规范内容' },
   ask: { title: '问答', subtitle: '研究记录，可回溯也可继续' },
-  report: { title: '日报', subtitle: '今天值得花注意力看的变化' },
+  report: { title: '简报', subtitle: '小时更新与日报精选，信息在前，依据在后' },
   quant: { title: '量化实验室', subtitle: 'Qlib 研究基线，不连接真实交易' },
   settings: { title: '设备与连接', subtitle: '信源、任务、自动化和配对' },
   page: { title: '详情', subtitle: '' },
@@ -226,7 +290,7 @@ const elements = Object.fromEntries([
   'form-message', 'feed', 'feed-count', 'metrics-panel', 'metric-devices', 'metric-opens',
   'metric-published', 'metric-details', 'device-list', 'post-dialog', 'dialog-title',
   'dialog-body', 'dialog-translation', 'dialog-tags', 'dialog-source', 'dialog-save', 'dialog-cite', 'dialog-translate', 'dialog-time', 'dialog-notice', 'dialog-language', 'toast', 'channel-tabs',
-  'platform-filters', 'follow-toolbar', 'bilibili-toolbar', 'bilibili-feed-status', 'bilibili-import-form', 'bilibili-url', 'bilibili-import', 'bilibili-more', 'x-toolbar', 'x-more', 'x-translate-bar', 'x-feed-status', 'x-translate-status', 'x-feed-tabs', 'x-refresh', 'x-translate', 'x-tag', 'xueqiu-toolbar', 'xueqiu-feed-tabs', 'xueqiu-feed-status', 'xueqiu-action-bar', 'xueqiu-action-status', 'xueqiu-refresh', 'trendforce-toolbar', 'trendforce-feed-status', 'trendforce-more', 'trendforce-action-bar', 'trendforce-action-status', 'trendforce-refresh', 'media-toolbar', 'media-channel-tabs', 'media-feed-status', 'media-action-bar', 'media-action-status', 'media-probe', 'media-refresh', 'media-source-list', 'quote-filters', 'quote-list', 'tool-grid', 'strategy-inspect',
+  'platform-filters', 'follow-toolbar', 'bilibili-toolbar', 'bilibili-feed-status', 'bilibili-import-form', 'bilibili-url', 'bilibili-import', 'bilibili-more', 'x-toolbar', 'x-more', 'x-translate-bar', 'x-feed-status', 'x-translate-status', 'x-feed-tabs', 'x-refresh', 'x-translate', 'x-tag', 'xueqiu-toolbar', 'xueqiu-feed-tabs', 'xueqiu-feed-status', 'xueqiu-action-bar', 'xueqiu-action-status', 'xueqiu-refresh', 'trendforce-toolbar', 'trendforce-feed-status', 'trendforce-more', 'trendforce-action-bar', 'trendforce-action-status', 'trendforce-refresh', 'media-toolbar', 'media-channel-tabs', 'quote-filters', 'quote-list', 'tool-grid', 'strategy-inspect',
   'ask-records', 'ask-start', 'ask-session-list', 'ask-session-shell', 'ask-intro', 'ask-prompt-label',
   'ask-thread', 'ask-prompts', 'ask-materials', 'ask-material-tabs', 'ask-form', 'ask-send', 'ask-ref-chips', 'ask-ref-actions', 'ask-ref-export', 'ask-ref-task', 'ask-mention-menu', 'ask-live-chip', 'compose-dialog', 'reload-view', 'open-compose', 'open-settings', 'global-search',
   'side-nav-list', 'bottom-tab', 'market-tabs', 'book-tabs', 'holdings-list', 'holdings-filters', 'asset-filters',
@@ -263,6 +327,7 @@ const elements = Object.fromEntries([
   'hub-ticker', 'overview-subnav', 'nav-back', 'toggle-search', 'feed-filter', 'feed-open-calendar',
   'feed-filter-dialog', 'feed-filter-body', 'open-all-quotes', 'open-full-feed', 'hub-market-note',
   'page-root', 'settings-hub', 'settings-connections',
+  'reader-menu', 'reader-menu-body', 'ask-read-state',
 ].map((id) => [id, document.getElementById(id)]));
 
 const TRANSLATION_STORE_KEY = 'ai-center.translations.v1';
@@ -322,7 +387,7 @@ function isFocused(id) {
 }
 
 function itemIsFocused(item) {
-  return isFocused(item?.id) || isFocused(item?.resourceId);
+  return Boolean(item?.isSaved) || [item?.id,item?.resourceId,item?.contentItemId,item?.legacyContentItemId,item?.legacyFeedItemId].some(isFocused);
 }
 
 function isFeedFocusItem(item) {
@@ -358,6 +423,8 @@ function snapshotFocusItem(item) {
     createdAt: item.createdAt || 0,
     publishedAt: item.publishedAt || 0,
     isRead: Boolean(item.isRead),
+    isSaved:Boolean(item.isSaved),legacyContentItemId:item.legacyContentItemId || null,legacyFeedItemId:item.legacyFeedItemId || null,
+    articleKind:item.articleKind || 'article',contentLevel:item.contentLevel || null,complete:item.complete,bodyScope:item.bodyScope || '',hardwareSnapshot:item.hardwareSnapshot || null,
     release: item.release || null,
   };
 }
@@ -394,9 +461,9 @@ function forgetFocusItem(itemOrId) {
 function toggleFocus(id, render, item) {
   const key = String(id || '');
   if (!key) return;
-  if (state.focusIds.has(key)) {
-    state.focusIds.delete(key);
-    if (item?.resourceId) state.focusIds.delete(String(item.resourceId));
+  if (item ? itemIsFocused(item) : state.focusIds.has(key)) {
+    for(const alias of [key,item?.resourceId,item?.contentItemId,item?.legacyContentItemId,item?.legacyFeedItemId])if(alias)state.focusIds.delete(String(alias));
+    if(item?.isSaved && item.contentItemId){item.isSaved=false;api(`/api/v1/content-items/${encodeURIComponent(item.contentItemId)}/state`,{method:'PATCH',body:JSON.stringify({isSaved:false})}).catch(error=>showToast(error.message));}
     forgetFocusItem(item || key);
   } else {
     state.focusIds.add(key);
@@ -656,6 +723,16 @@ function isPrimaryNavActive(navId, view) {
   return navId === view;
 }
 
+function primaryNavTarget(navId, view = document.body.dataset.view) {
+  if (navId === 'sources') {
+    if (!overviewViews.includes(view) || view === 'sources' && state.overviewPane !== 'home') return 'feed';
+    const index = hubLanes.findIndex(item => item.id === overviewLane(view));
+    return hubLanes[(index + 1) % hubLanes.length].view;
+  }
+  if (navId === 'assets') return view === 'assets' && state.tradePane === 'holdings' ? 'assets/analysis' : 'assets';
+  return navId;
+}
+
 function resolveView(name) {
   if (name === 'trade') return 'market';
   if (name === 'account') return 'settings';
@@ -664,10 +741,11 @@ function resolveView(name) {
 }
 
 function parseLocation(name = (location.hash || '#sources').slice(1)) {
-  const raw = String(name || 'sources').replace(/^#/, '');
+  const raw = normalizeRoute(name);
   const [head, ...rest] = raw.split('/');
   const view = resolveView(head);
   const marketPane = view === 'market' && rest[0] === 'global' ? 'assets' : (view === 'market' ? 'stocks' : '');
+  const assetPane = view === 'assets' ? (rest[0] === 'analysis' ? 'analysis' : 'holdings') : '';
   const askSessionId = view === 'ask' && rest[0] ? rest.join('/') : '';
   const sourcesPane = view === 'sources' && ['catalog', 'schedule'].includes(rest[0]) ? rest[0] : 'home';
   const settingsPane = view === 'settings' && rest[0] === 'connections' ? 'connections' : (view === 'settings' ? 'hub' : '');
@@ -682,7 +760,7 @@ function parseLocation(name = (location.hash || '#sources').slice(1)) {
     ? (reportDate ? 'day' : (rest[0] === 'history' ? 'history' : 'today'))
     : 'today';
   return {
-    view, askSessionId, marketPane, sourcesPane, settingsPane, inspirePane,
+    view, askSessionId, marketPane, assetPane, sourcesPane, settingsPane, inspirePane,
     selectedWorkPackageId, pageKind, pageId, reportPane, reportDate,
   };
 }
@@ -732,6 +810,7 @@ function renderOverviewLanes() {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = `text-tab${item.id === current ? ' is-active' : ''}`;
+    if (item.id === current) button.setAttribute('aria-current', 'page');
     button.textContent = item.label;
     button.addEventListener('click', () => setView(item.view));
     return button;
@@ -754,52 +833,98 @@ function openPage(kind, id = '', { back = false } = {}) {
 }
 
 function goBack() {
+  const target = history.state?.aiCenterPrevious;
+  if (target) {
+    state.trail.pop();
+    history.back();
+    return;
+  }
   const previous = state.trail.pop();
   if (previous) {
     setView(previous.replace(/^#/, ''), { back: true });
     return;
   }
-  setView('sources', { back: true });
+  setView(returnTarget(), { back: true });
 }
 
 function leaveArticle() {
-  if (state.trail.length) {
-    goBack();
-    return;
+  goBack();
+}
+
+function returnTarget() {
+  const view = document.body.dataset.view;
+  if (view === 'page') {
+    if(state.pageKind==='hardware' && state.pageId.startsWith('series/'))return 'market/global/hardware';
+    return normalizeRoute(state.navigationFrom || history.state?.aiCenterPrevious || state.trail.at(-1)
+      || (state.pageKind === 'article' ? 'feed' : state.pageKind === 'source' && state.pageId === 'bilibili' ? 'tools' : 'sources'));
   }
-  setView('feed', { back: true });
+  if (view === 'sources') return 'sources';
+  if (view === 'ask') return 'ask';
+  if (view === 'inspire') return 'inspire/tasks';
+  if (view === 'settings' && state.settingsPane === 'connections') return 'settings';
+  return 'tools';
+}
+
+function navigateBack() {
+  if(document.body.dataset.view==='page' && state.pageKind==='hardware' && state.pageId.startsWith('series/')){setView('market/global/hardware');return;}
+  if (document.body.dataset.view === 'page') goBack();
+  else setView(returnTarget());
 }
 
 function syncHeaderSearch() {
+  const view = document.body.dataset.view;
+  const searchLabel = view === 'feed' ? '搜索信息流' : view === 'sources' ? (state.overviewPane === 'catalog' ? '搜索信源目录' : '搜索总览资讯') : '搜索灵感';
+  const searchable = ['feed', 'sources', 'inspire'].includes(view) && !(view === 'sources' && state.overviewPane === 'schedule');
+  if (!searchable) state.showHeaderSearch = false;
   document.body.classList.toggle('search-open', Boolean(state.showHeaderSearch));
   if (elements['toggle-search']) {
-    elements['toggle-search'].hidden = document.body.dataset.view === 'ask';
+    elements['toggle-search'].hidden = !searchable;
     setIconButton(elements['toggle-search'], state.showHeaderSearch ? 'x' : 'search');
+    elements['toggle-search'].setAttribute('aria-label', state.showHeaderSearch ? '关闭搜索' : searchLabel);
+    elements['toggle-search'].title = searchLabel;
+    elements['toggle-search'].setAttribute('aria-expanded', String(state.showHeaderSearch));
+  }
+  if (elements['global-search']) {
+    elements['global-search'].placeholder = searchLabel;
+    elements['global-search'].setAttribute('aria-label', searchLabel);
+    const query = view === 'feed' || view === 'sources' && state.overviewPane === 'home' ? state.feedQuery
+      : view === 'sources' && state.overviewPane === 'catalog' ? state.sourceCatalogQuery : '';
+    if (document.activeElement !== elements['global-search']) elements['global-search'].value = query;
   }
   if (elements['nav-back']) {
     const showBack = document.body.dataset.view === 'page'
+      || ['knowledge', 'quant', 'settings'].includes(view)
       || (document.body.dataset.view === 'settings' && state.settingsPane === 'connections')
       || (document.body.dataset.view === 'sources' && state.overviewPane !== 'home')
       || (document.body.dataset.view === 'inspire' && Boolean(state.selectedWorkPackageId))
       || (document.body.dataset.view === 'ask' && Boolean(state.askSessionId));
     elements['nav-back'].classList.toggle('hidden', !showBack);
-    setIconButton(elements['nav-back'], 'chevron-left');
+    const label = `返回${routeLabel(returnTarget())}`;
+    elements['nav-back'].innerHTML = `${icon('chevron-left')}<span>${label}</span>`;
+    elements['nav-back'].setAttribute('aria-label', label);
   }
 }
 
 function setView(name, options = {}) {
   persistTaskDraftsFromDom();
-  const incoming = String(name || '').replace(/^#/, '');
-  const requested = options.fromPrimaryNav && incoming === 'sources'
-    ? (readLastOverviewTarget() || 'sources')
-    : incoming;
+  const incoming = normalizeRoute(options.fromPrimaryNav ? primaryNavTarget(name) : name);
+  const requested = incoming === 'hardware' ? 'market/global/hardware' : incoming;
   const parsed = parseLocation(requested);
   const view = parsed.view;
   const previous = document.body.dataset.view || '';
+  const previousPageKind = state.pageKind;
+  const previousPageId = state.pageId;
+  const previousHash = location.hash || '#sources';
+  if (elements['reader-menu']?.open) elements['reader-menu'].close();
   const leaving = previous && previous !== view;
   if (leaving) captureViewScroll(previous);
   state.askSessionId = view === 'ask' ? parsed.askSessionId : '';
   if (view === 'market' && parsed.marketPane) state.tradePane = parsed.marketPane;
+  if (view === 'market' && parsed.marketPane === 'assets' && requested.startsWith('market/global/hardware')) state.assetClass = 'hardware';
+  if (view === 'assets') {
+    state.tradePane = parsed.assetPane;
+    if (state.tradePane !== 'holdings') state.holdingsMoveGroup = null;
+  }
   if (view === 'sources') state.overviewPane = parsed.sourcesPane || 'home';
   if (view === 'settings') state.settingsPane = parsed.settingsPane || 'hub';
   if (view === 'inspire') state.inspirePane = parsed.inspirePane || 'notes';
@@ -809,6 +934,9 @@ function setView(name, options = {}) {
   }
   state.pageKind = view === 'page' ? parsed.pageKind : '';
   state.pageId = view === 'page' ? parsed.pageId : '';
+  const newArticle = view === 'page' && state.pageKind === 'article'
+    && (previousPageKind !== 'article' || previousPageId !== state.pageId) && !options.fromHistory;
+  if (newArticle) viewScrollY.page = 0;
   if ((view !== 'page' || parsed.pageKind !== 'article') && !elements['post-dialog']?.open) {
     state.dialogPost = null;
   }
@@ -819,12 +947,21 @@ function setView(name, options = {}) {
   state.hubLane = overviewLane(view, state.tradePane);
   rememberOverviewTarget(view, state.tradePane);
   document.body.dataset.view = view;
+  if (view !== 'report') briefPage.stop();
+  document.body.dataset.reader = view === 'page' && state.pageKind === 'article' ? '1' : '';
+  if (view === 'page' && !options.fromHistory && !options.back && !options.replace
+    && normalizeRoute(previousHash) !== requested) {
+    // Make the return label available during the first render, before committing history.
+    state.navigationFrom = previousHash;
+  } else state.navigationFrom = '';
   document.body.dataset.askLayer = view === 'ask' && state.askSessionId ? 'session' : 'list';
   document.querySelectorAll('[data-view-panel]').forEach((panel) => {
     panel.classList.toggle('is-active', panel.dataset.viewPanel === view);
   });
   document.querySelectorAll('.nav-item, .tab-item').forEach((control) => {
     control.classList.toggle('is-active', isPrimaryNavActive(control.dataset.nav, view));
+    if (isPrimaryNavActive(control.dataset.nav, view)) control.setAttribute('aria-current', 'page');
+    else control.removeAttribute('aria-current');
     control.classList.toggle('is-parent-active', false);
   });
   if (view === 'market') {
@@ -835,6 +972,9 @@ function setView(name, options = {}) {
   } else if (view === 'page') {
     elements['page-title'].textContent = pageKinds[state.pageKind]?.title || '详情';
     elements['page-subtitle'].textContent = '';
+  } else if (view === 'sources') {
+    elements['page-title'].textContent = state.overviewPane === 'catalog' ? '信源目录' : state.overviewPane === 'schedule' ? '完整日历' : '总览';
+    elements['page-subtitle'].textContent = state.overviewPane === 'home' ? viewCopy.sources.subtitle : '';
   } else if (view === 'settings') {
     elements['page-title'].textContent = state.settingsPane === 'connections' ? '设备连接' : '设备与连接';
     elements['page-subtitle'].textContent = viewCopy.settings.subtitle;
@@ -863,9 +1003,17 @@ function setView(name, options = {}) {
     renderTradeTabs();
     if (state.bootstrapped) syncTradePaneData().catch((error) => showToast(error.message));
   }
-  if (view === 'sources') syncOverviewPanes();
+  if (view === 'sources') {
+    syncOverviewPanes();
+    renderStaticSourceCatalog();
+    renderStaticSignalBoard();
+    if (state.overviewPane === 'catalog' && state.session) loadSourceCatalog().catch(() => {});
+  }
   if (view === 'sources' && state.bootstrapped) loadSourcesPage().catch((error) => showToast(error.message));
-  if (view === 'feed' && state.bootstrapped && !state.staticBoard) {
+  if (view === 'feed' && state.bootstrapped && state.feedPlatform === 'media' && !state.mediaLoading) {
+    loadMediaFeed().catch(error => showToast(error.message));
+  }
+  if (view === 'feed' && state.bootstrapped && state.feedPlatform !== 'media' && !state.staticBoard) {
     loadStaticSignalBoard().catch((error) => showToast(error.message));
   }
   if (view === 'ask') syncAskView().catch((error) => showToast(error.message));
@@ -883,6 +1031,8 @@ function setView(name, options = {}) {
     ? askHash(state.askSessionId)
     : view === 'market'
       ? overviewHash(state.tradePane === 'assets' ? 'global' : 'stocks')
+      : view === 'assets' && state.tradePane === 'analysis'
+        ? '#assets/analysis'
       : view === 'sources' && state.overviewPane !== 'home'
         ? `#sources/${state.overviewPane}`
         : view === 'settings' && state.settingsPane === 'connections'
@@ -896,8 +1046,16 @@ function setView(name, options = {}) {
                 : view === 'report' && reportPane === 'history'
                   ? '#report/history'
                   : `#${view}`;
-  if (location.hash !== nextHash) history.replaceState({}, '', `${location.pathname}${location.search}${nextHash}`);
+  if (location.hash !== nextHash) {
+    const entry = { ...(options.fromHistory ? history.state : {}), aiCenter: true, hash: nextHash,
+      ...(!options.fromHistory && !options.back && !options.replace ? { aiCenterPrevious: previousHash } : {}) };
+    if (options.fromHistory || options.back || options.replace) history.replaceState(entry, '', `${location.pathname}${location.search}${nextHash}`);
+    else history.pushState(entry, '', `${location.pathname}${location.search}${nextHash}`);
+  }
+  state.navigationFrom = '';
+  syncHeaderSearch();
   if (leaving) restoreViewScroll(view);
+  else if (newArticle) window.scrollTo(0, 0);
   persistFeedBrowseState();
   syncAskKeyboard();
 }
@@ -914,7 +1072,7 @@ function updateHeaderAction(view) {
   }
   if (view === 'ask') {
     button.dataset.action = 'ask-new';
-    button.setAttribute('aria-label', '新的问答');
+    button.setAttribute('aria-label', '新提问');
     setIconButton(button, 'plus');
     return;
   }
@@ -1068,7 +1226,7 @@ function forgetLegacyDeviceGrant() {
 }
 
 async function api(path, options = {}) {
-  const { timeoutMs, ...fetchOptions } = options;
+  const { timeoutMs = 20_000, ...fetchOptions } = options;
   const controller = timeoutMs ? new AbortController() : null;
   const timer = timeoutMs ? window.setTimeout(() => controller.abort(), timeoutMs) : 0;
   try {
@@ -1151,6 +1309,7 @@ function renderQuantPage() {
   return renderQuantLab(root, {
     api,
     showToast,
+    renderViewState,
     onLive(live) {
       if (!live || document.body.dataset.view !== 'quant') return;
       renderQuantPage.timer = window.setInterval(() => {
@@ -1199,6 +1358,23 @@ function guessDeviceName() {
 }
 
 function showUnpairedPage(message, pairingFailed = false, options = {}) {
+  briefPage.reset(true);
+  dailyBriefSnapshot = { brief: null, loaded: false, error: '' };
+  reportDay = { date: '', brief: null, loaded: false, error: '' };
+  reportHistory = { items: [], loaded: false, error: '' };
+  mediaFeedLoader.reset();
+  state.restoredArticles={};
+  restoredArticleRequests.clear();
+  restoredArticleErrors.clear();
+  mediaReaderSession.clear();
+  state.mediaItems = [];
+  state.mediaLoading = false;
+  state.mediaCached = false;
+  state.hardwareRequestId++;
+  state.hardwareItems=[];
+  state.hardwareLoaded=false;
+  state.hardwareLoading=false;
+  state.hardwareError='';
   state.session = null;
   state.stream?.close();
   const loginAvailable = Boolean(options.loginAvailable);
@@ -1252,6 +1428,11 @@ function hideUnpairedPage() {
 }
 
 async function exitAndRePair() {
+  mediaFeedLoader.reset();
+  state.restoredArticles={};
+  restoredArticleRequests.clear();
+  restoredArticleErrors.clear();
+  mediaReaderSession.clear();
   const controls = [elements['exit-to-pairing'], elements['restart-pairing']];
   controls.forEach((control) => {
     control.disabled = true;
@@ -1316,6 +1497,47 @@ function formatAskClock(timestamp) {
 }
 
 const FEED_PAGE_SIZE = 12;
+const mediaReaderSession = createMediaReaderSession();
+const mediaFeedCache = createMediaFeedCache({ storage: (() => {
+  try { return window.localStorage; } catch { return null; }
+})() });
+const mediaFeedLoader = createMediaFeedLoader({
+  cache: mediaFeedCache,
+  getScope: () => state.session ? `${state.session.role}:${state.session.device?.id || 'desktop'}` : '',
+  getSelection: () => ({ channel: state.mediaChannel, view: state.mediaView, sourceKey: state.mediaSourceKey }),
+  readFeed: ({ channel, view, sourceKey, limit, offset, refresh }) => {
+    const params = new URLSearchParams({ platform: 'media', channel, view, limit: String(limit), offset: String(offset) });
+    if(sourceKey) params.set('sourceKey',sourceKey);
+    if (refresh) params.set('refresh', '1');
+    return api(`/api/v1/feed/media?${params}`, { timeoutMs: refresh ? 180_000 : 15_000 });
+  },
+  onFeed: (feed, { cached, jobId, append }) => {
+    state.mediaItems = feed.items || [];
+    state.mediaCounts = feed.counts || {};
+    state.mediaNextOffset = feed.nextOffset ?? null;
+    state.mediaSources = feed.sources || [];
+    state.mediaNote = feed.note || '';
+    state.mediaBudget = feed.budget || null;
+    state.mediaCached = cached;
+    if (append) state.feedShown += FEED_PAGE_SIZE;
+    for (const item of state.mediaItems) {
+      if (item.resourceId) state.feedTaggings[item.resourceId] = { tags: item.tags || [] };
+    }
+    hydrateFeedTranslations(state.mediaItems.map(mediaAsItem));
+    renderPosts();
+    renderMediaToolbar();
+    if (state.pageKind === 'article') renderArticlePage();
+    if (jobId) showToast('同步已排入后台任务');
+  },
+  onLoading: (loading, { refresh }) => {
+    state.mediaLoading = loading;
+    state.mediaRefreshing = refresh;
+    if (loading) state.mediaError = '';
+    renderMediaToolbar();
+    // Reattach the pagination observer after loading, including an empty filtered page.
+    if (!loading) renderPosts();
+  },
+});
 const FEED_BROWSE_KEY = 'ai-center.feed-browse';
 const LAST_LOCATION_KEY = 'ai-center.last-location';
 let pageScrollY = 0;
@@ -1339,6 +1561,12 @@ function persistFeedBrowseState() {
       xFeed: state.xFeed,
       xueqiuFeed: state.xueqiuFeed,
       channel: state.channel,
+      mediaChannel: state.mediaChannel,
+      mediaView: state.mediaView,
+      mediaSourceKey: state.mediaSourceKey,
+      query: state.feedQuery,
+      sort: state.feedSort,
+      range: state.feedRange,
     }));
     window.localStorage.setItem(FEED_BROWSE_KEY, JSON.stringify({
       y: viewScrollY.feed || 0,
@@ -1346,10 +1574,16 @@ function persistFeedBrowseState() {
       restoreId: state.feedRestoreId || '',
       dialogPostId: state.dialogPost?.id || '',
       shown: state.feedShown,
+      query: state.feedQuery,
+      sort: state.feedSort,
+      range: state.feedRange,
       platform: state.feedPlatform || state.platform,
       channel: state.channel,
       xFeed: state.xFeed,
       xueqiuFeed: state.xueqiuFeed,
+      mediaChannel: state.mediaChannel,
+      mediaView: state.mediaView,
+      mediaSourceKey: state.mediaSourceKey,
     }));
   } catch {}
 }
@@ -1367,12 +1601,23 @@ function restorePersistedFeedBrowseState() {
       state.feedShown = saved.shown;
     }
     if (saved.platform) {
-      state.platform = saved.platform;
-      state.feedPlatform = saved.platform;
+      state.platform = ['x', 'xueqiu'].includes(saved.platform) ? 'social' : saved.platform === 'bilibili' ? 'all' : saved.platform;
+      state.feedPlatform = state.platform;
     }
     if (saved.channel) state.channel = saved.channel;
+    if (typeof saved.query === 'string') state.feedQuery = saved.query;
+    if (['captured', 'published'].includes(saved.sort)) state.feedSort = saved.sort;
+    if (['all', 'today', '7d'].includes(saved.range)) state.feedRange = saved.range;
+    if (state.feedPlatform === 'social' || (state.channel === 'social' && state.feedPlatform === 'all')) {
+      state.channel = 'social';
+      state.platform = state.feedPlatform = 'social';
+    }
     if (saved.xFeed) state.xFeed = saved.xFeed;
     if (saved.xueqiuFeed) state.xueqiuFeed = saved.xueqiuFeed;
+    if (['tech', 'macro'].includes(saved.mediaChannel)) state.mediaChannel = saved.mediaChannel;
+    if(['all','full','partial','index','pending','failed'].includes(saved.mediaView))state.mediaView=saved.mediaView;
+    if(typeof saved.mediaSourceKey==='string' && /^[a-z0-9]*$/.test(saved.mediaSourceKey))state.mediaSourceKey=saved.mediaSourceKey;
+    if(saved.platform==='trendforce'){state.platform=state.feedPlatform='media';state.mediaChannel='tech';state.mediaSourceKey='trendforce';state.mediaView='all';}
     pendingFeedDialogId = saved.dialogPostId || pendingFeedDialogId;
     return saved;
   } catch {
@@ -1476,6 +1721,13 @@ function openDialog(dialog) {
   lockPageScroll(true);
 }
 
+function openReaderMenu(trigger) {
+  const dialog = elements['reader-menu'];
+  dialog.dataset.returnAction = trigger?.dataset.detailAction || 'list';
+  dialog.dataset.returnSurface = trigger?.closest('.reader-mobile-bar') ? 'mobile' : 'toolbar';
+  openDialog(dialog);
+}
+
 function createPostLink(label, onClick) {
   const link = document.createElement('span');
   link.className = 'post-link';
@@ -1495,7 +1747,7 @@ function createPostLink(label, onClick) {
 }
 
 function anyDialogOpen() {
-  return ['compose-dialog', 'search-dialog', 'post-dialog', 'subscriptions-dialog', 'holding-dialog', 'reference-preview', 'reference-pack', 'feed-filter-dialog', 'source-tasks-dialog']
+  return ['brief-evidence', 'reader-menu', 'compose-dialog', 'search-dialog', 'post-dialog', 'subscriptions-dialog', 'holding-dialog', 'reference-preview', 'reference-pack', 'feed-filter-dialog', 'source-tasks-dialog']
     .some((id) => document.getElementById(id)?.open);
 }
 
@@ -1785,7 +2037,10 @@ function markFeedItemRead(post) {
   rememberRecentItem(post);
   if (post.isRead) return;
   post.isRead = true;
-  for (const list of [state.xItems, state.bilibiliItems, state.trendforceItems, state.xueqiuItems, state.posts]) {
+  if (post.platform === 'media' && state.session) {
+    mediaFeedCache.markRead(`${state.session.role}:${state.session.device?.id || 'desktop'}`, post.id);
+  }
+  for (const list of [state.xItems, state.bilibiliItems, state.trendforceItems, state.xueqiuItems, state.mediaItems, state.posts]) {
     const hit = list.find((item) => item.id === post.id || (post.resourceId && item.resourceId === post.resourceId));
     if (hit) hit.isRead = true;
   }
@@ -1794,7 +2049,7 @@ function markFeedItemRead(post) {
     snap.isRead = true;
     persistFocusItems();
   }
-  const contentItemId = post.resourceType === 'content-item' ? post.resourceId : '';
+  const contentItemId = post.contentItemId || (post.resourceType === 'content-item' ? post.resourceId : '');
   if (!contentItemId || !state.session) return;
   api(`/api/v1/content-items/${contentItemId}/state`, {
     method: 'PATCH',
@@ -1835,6 +2090,7 @@ const REFERENCE_TYPE_LABELS = {
   'knowledge-revision': '知识',
   'ai-run': '回答',
   'daily-brief-item': '日报观点',
+  'hourly-digest': '小时简报',
   'web-result': '网页',
   'holdings-board': '持仓',
   'market-board': '市场',
@@ -2024,13 +2280,32 @@ async function openContextRef(ref) {
       await loadReportDay(date);
       const brief = reportDay.brief;
       if (!brief || brief.generatedAt !== ref.revision
-        || !brief.items.some((item) => item.candidateId === candidateId)) {
+        || !(brief.items.some((item) => item.candidateId === candidateId) || brief.informationItems?.some(item=>item.id===candidateId)
+          || briefReadingItems(brief.editorial).some(t=>t.id===candidateId))) {
         showToast('这条日报观点已更新或不存在，请回到日报重新选择');
         return;
       }
       setView(`report/${date}`, { reportLoaded: true });
+      const direction=brief.editorial?.directions.find(d=>d.id===candidateId);
+      if(direction && briefPage) {await briefPage.mount(elements['report-list'],{date});briefPage.selectDirection(direction.key);}
       flashSourceTarget(document.querySelector(`[data-report-reference-id="${CSS.escape(id)}"]`));
       return;
+    }
+    if(type==='hourly-digest') {
+      const [snapshotId,articleId]=id.split('/');
+      const {digest}=await api(`/api/v1/reports/hourly/snapshot?snapshotId=${encodeURIComponent(snapshotId)}`);
+      const selected=briefReadingItems(digest.editorial).filter(item=>!articleId || item.id===articleId);
+      if(articleId && !selected.length) {showToast('这篇冻结文章不存在');return;}
+      const dialog=elements['reference-preview'];
+      elements['reference-preview-title'].textContent='小时简报';
+      elements['reference-preview-meta'].textContent=`${new Date(digest.window.startAt).toLocaleString()} · 按来源发布/入库时间归属`;
+      const body=elements['reference-preview-body'];body.replaceChildren();
+      if(digest.editorial?.status==='ready') {
+        if(!articleId) body.append(Object.assign(document.createElement('p'),{textContent:digest.editorial.overview}));
+        for(const item of selected) body.append(Object.assign(document.createElement('h3'),{textContent:item.title}),Object.assign(document.createElement('p'),{textContent:item.body}));
+      } else body.append(Object.assign(document.createElement('p'),{textContent:'主题整理未完成；提炼底稿仍可按小时搜索。'}));
+      digest.warnings.forEach(text=>body.append(Object.assign(document.createElement('p'),{textContent:text})));
+      openDialog(dialog);return;
     }
     if (type === 'content-item') {
       const existing = findFeedPost(ref);
@@ -2499,18 +2774,25 @@ function textAfterLead(source, lead) {
 function postDisplayTitle(post) {
   if (post.platform === 'media' && post.articleTranslation?.title) return post.articleTranslation.title;
   const translated = translationFor(post)?.text;
-  if (translated) return clipFeedText(firstFeedSentence(translated) || plainFeedText(translated), FEED_TITLE_MAX);
+  if (translated) {
+    const body = socialBodyText(post, translated);
+    return clipFeedText(firstFeedSentence(body) || plainFeedText(body), FEED_TITLE_MAX) || '无标题';
+  }
   if (postIsTranslating(post)) return '正在翻译…';
   const title = String(post?.title || '').trim();
   if (title) return title;
-  return clipFeedText(plainFeedText(post?.body), FEED_TITLE_MAX) || '无标题';
+  return clipFeedText(plainFeedText(socialBodyText(post, post?.body)), FEED_TITLE_MAX) || '无标题';
+}
+
+function socialBodyText(post, value) {
+  return post?.platform === 'x' || post?.platform === 'xueqiu' ? splitFeedText(value).body : value;
 }
 
 function postListExcerpt(post) {
   const translated = translationFor(post)?.text;
-  if (translated) return clipFeedText(textAfterLead(translated, postDisplayTitle(post)), FEED_EXCERPT_MAX);
+  if (translated) return clipFeedText(textAfterLead(socialBodyText(post, translated), postDisplayTitle(post)), FEED_EXCERPT_MAX);
   if (postIsTranslating(post)) return '';
-  return clipFeedText(textAfterLead(post?.body, post?.title), FEED_EXCERPT_MAX);
+  return clipFeedText(textAfterLead(socialBodyText(post, post?.body), post?.title), FEED_EXCERPT_MAX);
 }
 
 function postViewBody(post) {
@@ -2552,8 +2834,15 @@ function fillMediaParagraphs(element, paragraphs, comparison = []) {
   }
 }
 
-function fillPostBody(element, value) {
+function fillPostBody(element, value, post = null) {
   const text = String(value || '无正文');
+  element.classList.remove('feed-readable');
+  if (post?.platform === 'x' || post?.platform === 'xueqiu') {
+    element.classList.add('feed-readable');
+    element.classList.remove('post-markdown');
+    renderFeedTextInto(element, text);
+    return;
+  }
   if (looksLikeMarkdown(text)) {
     element.classList.add('post-markdown');
     renderMarkdownInto(element, text);
@@ -2648,6 +2937,7 @@ async function syncLocalTranslationsToServer(items) {
 
 function matchesPlatform(item) {
   const platform = state.feedPlatform || state.platform;
+  if (platform === 'social') return item.platform === 'x' || item.platform === 'xueqiu';
   return platform === 'all' || item.platform === platform;
 }
 
@@ -2678,21 +2968,15 @@ function officialAsItem(release) {
 }
 
 function socialFeedItems(options = {}) {
-  const live = state.posts.map(liveAsItem).filter(matchesPlatform);
-  const xItems = state.xItems.map(xAsItem).filter(matchesPlatform);
-  const bilibiliItems = state.bilibiliItems.map(bilibiliAsItem).filter(matchesPlatform);
-  const trendforceItems = state.trendforceItems.map(trendforceAsItem).filter(matchesPlatform);
-  const xueqiuItems = state.xueqiuItems.map(xueqiuAsItem).filter(matchesPlatform);
-  const demo = feedItems.filter((item) => {
-    if (item.platform === 'x' && state.xItems.length) return false;
-    if (item.platform === 'bilibili' && state.bilibiliItems.length) return false;
-    if (item.platform === 'trendforce' && state.trendforceItems.length) return false;
-    if (item.platform === 'xueqiu' && state.xueqiuItems.length) return false;
-    return matchesPlatform({ ...item, kind: 'social' });
-  }).map((item) => ({ ...item, kind: 'social', createdAt: item.createdAt || Date.now(), publishedAt: item.publishedAt || item.createdAt || Date.now() }));
-  return [...bilibiliItems, ...trendforceItems, ...xueqiuItems, ...xItems, ...live, ...demo]
-    .filter((item) => options.includeHidden || !isHiddenFeedItem(item))
-    .filter((item) => hasDisplayTags(item));
+  const matches = item => options.platform ? item.platform === options.platform : options.ignorePlatform || matchesPlatform(item);
+  const live = state.posts.map(liveAsItem).filter(matches);
+  const xItems = state.xItems.map(xAsItem).filter(matches);
+  const bilibiliItems = options.includeTools ? state.bilibiliItems.map(bilibiliAsItem).filter(matches) : [];
+  const trendforceItems = state.trendforceItems.map(trendforceAsItem).filter(matches);
+  const xueqiuItems = state.xueqiuItems.map(xueqiuAsItem).filter(matches);
+  return [...bilibiliItems, ...trendforceItems, ...xueqiuItems, ...xItems, ...live]
+    .filter((item) => options.includeTools || item.platform !== 'bilibili')
+    .filter((item) => options.includeHidden || !isHiddenFeedItem(item));
 }
 
 function officialFeedItems(options = {}) {
@@ -2784,14 +3068,21 @@ function visibleFeedItems() {
       : state.channel === 'social' ? social
         : [...social, ...official];
   const query = String(state.feedQuery || '').trim().toLowerCase();
-  items = items.filter((item) => hasDisplayTags(item) && matchesFeedQuery(item, query) && matchesFeedRange(item));
+  items = items.filter((item) => item.platform !== 'bilibili' && matchesFeedQuery(item, query) && matchesFeedRange(item));
   return sortFeedItems(items);
 }
 
 function bindHorizontalTabScroll(root = document) {
   root.querySelectorAll('.chip-tabs, .channel-tabs, .market-tabs').forEach((scroller) => {
+    const hint = () => {
+      scroller.dataset.moreRight = String(scroller.scrollWidth - scroller.clientWidth - scroller.scrollLeft > 4);
+      if (scroller.scrollWidth > scroller.clientWidth + 4) scroller.title = '左右滑动查看更多';
+      else scroller.removeAttribute('title');
+    };
+    requestAnimationFrame(hint);
     if (scroller.dataset.chipScrollBound === '1') return;
     scroller.dataset.chipScrollBound = '1';
+    scroller.addEventListener('scroll', hint, { passive: true });
     let dragging = false;
     let moved = false;
     let startX = 0;
@@ -2850,6 +3141,7 @@ function renderChipTabs(target, items, current, onSelect) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = `chip-tab${item.id === current ? ' is-active' : ''}`;
+    button.setAttribute('aria-pressed', String(item.id === current));
     button.textContent = item.label;
     button.addEventListener('click', () => onSelect(item.id));
     return button;
@@ -2858,14 +3150,10 @@ function renderChipTabs(target, items, current, onSelect) {
 }
 
 const feedSourceTabs = [
-  { id: 'x', label: 'X' },
-  { id: 'xueqiu', label: '雪球' },
-  { id: 'bilibili', label: 'B站' },
-  { id: 'trendforce', label: 'TrendForce' },
 ];
 
 function isSourceFeedScope(id) {
-  return id === 'x' || id === 'xueqiu' || id === 'bilibili' || id === 'trendforce';
+  return id === 'trendforce';
 }
 
 function currentFeedScopeId() {
@@ -2874,10 +3162,11 @@ function currentFeedScopeId() {
 }
 
 function applyFeedPlatform(id) {
-  const next = id || 'all';
+  if(id==='trendforce'){id='media';state.mediaChannel='tech';state.mediaSourceKey='trendforce';state.mediaView='all';}
+  const next = ['x', 'xueqiu'].includes(id) ? 'social' : id === 'bilibili' ? 'all' : id || 'all';
   state.feedPlatform = next;
   state.platform = next;
-  if (isSourceFeedScope(next)) state.channel = 'social';
+  if (isSourceFeedScope(next) || next === 'social') state.channel = 'social';
   resetFeedWindow();
   renderChannels();
   renderPlatformFilters();
@@ -2887,19 +3176,16 @@ function applyFeedPlatform(id) {
   renderTrendForceToolbar();
   renderMediaToolbar();
   renderPosts();
-  if (next === 'x' && !state.xItems.length && !state.xLoading) {
+  if (next === 'social' && !state.xItems.length && !state.xLoading) {
     loadXFeed({ refresh: false }).catch((error) => showToast(error.message));
   }
-  if (next === 'xueqiu' && !state.xueqiuItems.length && !state.xueqiuLoading) {
+  if (next === 'social' && !state.xueqiuItems.length && !state.xueqiuLoading) {
     loadXueqiuFeed({ refresh: false }).catch((error) => showToast(error.message));
-  }
-  if (next === 'bilibili' && !state.bilibiliItems.length && !state.bilibiliLoading) {
-    loadBilibiliFeed().catch((error) => showToast(error.message));
   }
   if (next === 'trendforce' && !state.trendforceItems.length && !state.trendforceLoading) {
     loadTrendForceFeed({ refresh: false }).catch((error) => showToast(error.message));
   }
-  if (next === 'media' && !state.mediaItems.length && !state.mediaLoading) {
+  if (next === 'media' && !state.mediaLoading) {
     loadMediaFeed({ refresh: false }).catch((error) => showToast(error.message));
   }
 }
@@ -2910,7 +3196,7 @@ function selectFeedScope(id) {
     return;
   }
   state.channel = id;
-  applyFeedPlatform('all');
+  applyFeedPlatform(id === 'social' ? 'social' : 'all');
 }
 
 function renderFeedActionButton() {
@@ -2918,9 +3204,7 @@ function renderFeedActionButton() {
   if (!button) return;
   button.classList.remove('is-source-more');
   button.setAttribute('aria-label', isSourceFeedScope(state.feedPlatform)
-    ? (state.feedPlatform === 'x' ? 'X 来源任务'
-      : state.feedPlatform === 'xueqiu' ? '雪球来源任务'
-        : state.feedPlatform === 'bilibili' ? 'B站来源任务' : 'TrendForce 来源任务')
+    ? 'TrendForce 来源任务'
     : '信息流筛选');
   setIconButton(button, 'list-filter');
 }
@@ -2983,7 +3267,7 @@ function setXFeed(feed, { reload = false } = {}) {
   persistFeedBrowseState();
   renderXToolbar();
   renderPosts();
-  if (reload && state.feedPlatform === 'x') {
+  if (reload) {
     loadXFeed({ refresh: false }).catch((error) => showToast(error.message));
   }
   return true;
@@ -2991,7 +3275,7 @@ function setXFeed(feed, { reload = false } = {}) {
 
 function renderXToolbar() {
   const toolbar = elements['x-toolbar'];
-  if (toolbar) toolbar.classList.toggle('hidden', state.feedPlatform !== 'x');
+  if (toolbar) toolbar.classList.add('hidden');
   if (elements['x-feed-status']) {
     const status = state.xPipeline && !state.xLoading
       ? (state.xTagging ? '正在给新内容打 Tag…' : state.xTranslating ? '正在翻译新内容…' : '抓取后处理中…')
@@ -2999,7 +3283,7 @@ function renderXToolbar() {
         ? (state.xRefreshing ? `正在拉取最多 50 条${xFeedLabel()}…` : '正在读取已缓存来源…')
         : (state.xNote || `${state.xItems.length} 条 · ${xFeedLabel()}`);
     elements['x-feed-status'].textContent = status;
-    elements['x-feed-status'].classList.toggle('hidden', state.feedPlatform !== 'x');
+    elements['x-feed-status'].classList.add('hidden');
   }
   elements['x-more']?.classList.add('hidden');
   if (elements['x-feed-tabs']) {
@@ -3018,7 +3302,7 @@ function renderXToolbar() {
     elements['x-translate-bar'].classList.toggle('hidden', !showTranslate);
   }
   if (elements['x-refresh']) {
-    elements['x-refresh'].classList.toggle('hidden', state.feedPlatform !== 'x');
+    elements['x-refresh'].classList.add('hidden');
     elements['x-refresh'].disabled = busy;
     elements['x-refresh'].textContent = state.xRefreshing ? '拉取中…' : (state.xFeed === 'following' ? '拉取关注 50 条' : '拉取推荐 50 条');
   }
@@ -3061,7 +3345,7 @@ function setXueqiuFeed(feed, { reload = false } = {}) {
   persistFeedBrowseState();
   renderXueqiuToolbar();
   renderPosts();
-  if (reload && state.feedPlatform === 'xueqiu') {
+  if (reload) {
     loadXueqiuFeed({ refresh: false }).catch((error) => showToast(error.message));
   }
   return true;
@@ -3069,12 +3353,12 @@ function setXueqiuFeed(feed, { reload = false } = {}) {
 
 function renderXueqiuToolbar() {
   const toolbar = elements['xueqiu-toolbar'];
-  if (toolbar) toolbar.classList.toggle('hidden', state.feedPlatform !== 'xueqiu');
+  if (toolbar) toolbar.classList.add('hidden');
   if (elements['xueqiu-feed-status']) {
     elements['xueqiu-feed-status'].textContent = state.xueqiuLoading
       ? (state.xueqiuRefreshing ? `正在抓取最多 50 条${xueqiuFeedLabel()}…` : '正在读取已缓存来源…')
       : (state.xueqiuNote || `${state.xueqiuItems.length} 条 · ${xueqiuFeedLabel()}`);
-    elements['xueqiu-feed-status'].classList.toggle('hidden', state.feedPlatform !== 'xueqiu');
+    elements['xueqiu-feed-status'].classList.add('hidden');
   }
   if (elements['xueqiu-feed-tabs']) {
     renderChipTabs(elements['xueqiu-feed-tabs'], [
@@ -3086,7 +3370,7 @@ function renderXueqiuToolbar() {
     });
   }
   if (elements['xueqiu-action-bar']) {
-    elements['xueqiu-action-bar'].classList.toggle('hidden', state.feedPlatform !== 'xueqiu');
+    elements['xueqiu-action-bar'].classList.add('hidden');
   }
   if (elements['xueqiu-action-status']) {
     elements['xueqiu-action-status'].textContent = state.xueqiuFeed === 'livenews'
@@ -3103,7 +3387,7 @@ function renderXueqiuToolbar() {
 
 function renderBilibiliToolbar() {
   const toolbar = elements['bilibili-toolbar'];
-  if (toolbar) toolbar.classList.toggle('hidden', state.feedPlatform !== 'bilibili');
+  if (toolbar) toolbar.classList.add('hidden');
   elements['bilibili-more']?.classList.add('hidden');
   if (elements['bilibili-import-form']) elements['bilibili-import-form'].classList.add('hidden');
   if (elements['bilibili-feed-status']) {
@@ -3157,11 +3441,12 @@ const MEDIA_HEALTH_LABELS = {
   blocked: '被拒绝',
   network: '网络失败',
   parse_failed: '解析失败',
+  browser_unavailable: '浏览器未连接',
   not_a_feed: '不是订阅',
 };
 
 function mediaAsItem(item) {
-  const level = ({ full: '已验证正文', partial: item.truncated ? '部分正文 · 尾部未读' : '部分正文', discovery: '发现', summary_only: '仅摘要', title_only: '仅标题' })[item.contentLevel] || '索引';
+  const level = item.articleKind==='report-intro' ? '报告简介' : ({ full: '已验证正文', partial: item.truncated ? '部分正文 · 尾部未读' : '部分正文', discovery: '发现', summary_only: '仅摘要', title_only: '仅标题' })[item.contentLevel] || '索引';
   const reason = ({blocked:'站点拒绝访问',paywall:'付费内容',needs_license:'待确认正文用途',unsupported_template:'正文模板待适配',coverage_unverified:'正文范围待核实',byte_limit:'正文超过保存上限',success_budget:'今日正文配额已用完',request_budget:'今日请求配额已用完',network:'网络失败',http_error:'来源响应失败',preview:'仅公开预览',disallowed_host:'原文域名未接入',rss_summary_match:'仅源站摘要'})[item.fetchState?.extractionReason] || '';
   const body = item.body || [item.title, item.summary].filter(Boolean).join('\n\n');
   return {
@@ -3172,23 +3457,31 @@ function mediaAsItem(item) {
     platform: 'media',
     externalId: item.externalId,
     resourceType: 'media-index',
-    author: item.publisherName || item.publisherKey || '媒体',
+    contentItemId: item.contentItemId || null,
+    legacyContentItemId: item.legacyContentItemId || null,
+    legacyFeedItemId: item.legacyFeedItemId || null,
+    articleKind: item.articleKind || 'article',
+    isSaved: Boolean(item.isSaved),
+    isRead: Boolean(item.isRead),
+    author: [item.publisherName || item.publisherKey || '媒体', item.readingVia ? `转载于 ${item.readingVia}` : ''].filter(Boolean).join(' · '),
     handle: '',
     time: item.publishedAt ? formatTime(item.publishedAt) : '',
     title: item.title || item.externalId,
     body,
     paragraphs: item.paragraphs || [],
     articleTranslation: item.articleTranslation || null,
+    bodyHash: item.bodyHash || '',
+    snapshotRevision: item.snapshotRevision || null,
     generatedBrief: item.generatedBrief || null,
     briefState: item.briefState || {status:'pending'},
     bodyScope: level,
     bodyReason: [reason,item.fetchState?.visualEvidenceRequired ? '图表内容需另行核对' : ''].filter(Boolean).join(' · '),
     excerpt: [level, item.generatedBrief?.text || (item.articleTranslation?.status==='ready' ? item.articleTranslation.paragraphs.find(p=>p.kind==='paragraph')?.text : '') || item.summary].filter(Boolean).join(' · '),
     tags: Array.isArray(item.tags) ? item.tags : [],
-    sourceUrl: item.originUrl || item.sourceUrl || '',
+    sourceUrl: item.readingVia ? item.sourceUrl || '' : item.originUrl || item.sourceUrl || '',
     processing: reason,
     following: false,
-    createdAt: item.publishedAt || Date.now(),
+    createdAt: item.createdAt || item.publishedAt || 0,
     publishedAt: item.publishedAt || 0,
     complete: item.contentLevel === 'full' && !item.truncated,
     translation: item.translation || null,
@@ -3198,62 +3491,30 @@ function mediaAsItem(item) {
 function renderMediaToolbar() {
   const visible = state.feedPlatform === 'media';
   elements['media-toolbar']?.classList.toggle('hidden', !visible);
-  elements['media-action-bar']?.classList.toggle('hidden', !visible);
+  document.getElementById('feed-status-row')?.classList.toggle('hidden', visible);
+  elements['feed-filter']?.classList.toggle('hidden', visible);
   if (elements['media-channel-tabs']) {
     renderChipTabs(elements['media-channel-tabs'], [
-      { id: 'tech', label: '产业科技' },
       { id: 'macro', label: '宏观与国际' },
+      { id: 'tech', label: '科技产业' },
     ], state.mediaChannel, (id) => {
       if (state.mediaChannel === id) return;
       state.mediaChannel = id;
-      state.mediaItems = [];
+      state.mediaSourceKey = '';
+      resetFeedWindow();
       loadMediaFeed({ refresh: false }).catch((error) => showToast(error.message));
     });
   }
-  let bodyTabs = document.getElementById('media-body-tabs');
-  if (!bodyTabs && elements['media-channel-tabs']) {
-    bodyTabs = document.createElement('div');
-    bodyTabs.id = 'media-body-tabs';
-    bodyTabs.className = 'chip-tabs';
-    elements['media-channel-tabs'].after(bodyTabs);
+  const toolbar=elements['media-toolbar'];
+  if(toolbar) {
+    let controls=document.getElementById('media-selection-controls');
+    if(!controls){controls=document.createElement('div');controls.id='media-selection-controls';controls.className='dense-tabs';toolbar.append(controls);}
+    controls.replaceChildren();
+    const source=document.createElement('select');source.setAttribute('aria-label','媒体来源');
+    for(const item of [{sourceKey:'',publisher:'全部来源'},...state.mediaSources]) {const option=document.createElement('option');option.value=item.sourceKey;option.textContent=item.publisher;option.selected=state.mediaSourceKey===item.sourceKey;source.append(option);}
+    source.addEventListener('change',()=>{state.mediaSourceKey=source.value;resetFeedWindow();loadMediaFeed().catch(e=>showToast(e.message));});controls.append(source);
+    const views=document.createElement('div');renderChipTabs(views,[{id:'all',label:'全部内容'},{id:'full',label:'全文'},{id:'index',label:'简介与索引'}],state.mediaView,id=>{state.mediaView=id;resetFeedWindow();loadMediaFeed().catch(e=>showToast(e.message));});controls.append(views);
   }
-  if (bodyTabs) renderChipTabs(bodyTabs, [
-    ['full','全文'], ['index','摘要与线索'], ['pending','处理中'], ['failed','未取到正文'], ['partial','部分内容'], ['all','全部'],
-  ].map(([id,label]) => ({ id,label: `${label} ${state.mediaCounts[id] || 0}` })), state.mediaView, id => {
-    state.mediaView = id;
-    loadMediaFeed({ refresh: false }).catch(error => showToast(error.message));
-  });
-  if (elements['media-feed-status']) {
-    elements['media-feed-status'].textContent = state.mediaLoading
-      ? (state.mediaProbing ? '正在检查来源…' : state.mediaRefreshing ? '正在更新文章…' : '正在读取文章…')
-      : `${state.mediaCounts.full || 0} 篇全文 · ${state.mediaCounts.pending || 0} 篇处理中`;
-  }
-  if (elements['media-action-status']) {
-    elements['media-action-status'].textContent = '自动检查新文章 → 抓取正文 → 全文翻译与排版 → 打标签';
-  }
-  if (elements['media-probe']) {
-    elements['media-probe'].disabled = state.mediaLoading;
-    elements['media-probe'].textContent = state.mediaProbing ? '检查中…' : '检查来源连接';
-  }
-  if (elements['media-refresh']) {
-    elements['media-refresh'].disabled = state.mediaLoading;
-    elements['media-refresh'].textContent = state.mediaRefreshing ? '更新中…' : '立即更新';
-  }
-  const list = elements['media-source-list'];
-  if (!list) return;
-  list.replaceChildren(...state.mediaSources.map((source) => {
-    const row = document.createElement('button');
-    row.type = 'button';
-    row.className = 'text-button';
-    const health = MEDIA_HEALTH_LABELS[source.health] || source.health || '未启用';
-    const capability = source.contentAccess === 'body' ? '全文 · 自动翻译与标签' : source.contentAccess === 'discovery' ? '聚合线索 · 受信原报道另行抓取' : '摘要 · 原文在出版商网站';
-    row.textContent = `${source.publisher} · ${capability} · ${source.enabled ? (source.transport==='discovery' ? '发现链接时抓取' : `每${source.refreshMinutes || 60}分钟检查`) : health}`;
-    row.disabled = state.mediaLoading || source.enabled || source.deployment !== 'first' || !source.hostDirectVerified;
-    row.addEventListener('click', () => {
-      enableMediaSource(source.sourceKey).catch((error) => showToast(error.message));
-    });
-    return row;
-  }));
 }
 
 function sortLabel() {
@@ -3427,7 +3688,13 @@ function renderPosts() {
         ? '打开一条就会出现在这里，方便找回看过的内容。'
         : '这个筛选下还没有信息。';
     elements.feed.append(empty);
-    observeFeedSentinel(null, false);
+    if (state.feedPlatform === 'media' && state.mediaNextOffset != null) {
+      const more = document.createElement('div');
+      more.className = 'feed-more';
+      more.textContent = '继续读取文章…';
+      elements.feed.append(more);
+      observeFeedSentinel(more, !state.mediaLoading);
+    } else observeFeedSentinel(null, false);
     return;
   }
   if (state.channel === 'official') {
@@ -3528,14 +3795,20 @@ function renderPosts() {
       const full = document.createElement('div');
       full.className = 'post-body';
       if (post.platform==='media' && post.paragraphs?.length) {
-        fillMediaParagraphs(full,post.articleTranslation?.status==='ready' ? post.articleTranslation.paragraphs : post.paragraphs);
-      } else fillPostBody(full, postViewBody(post));
+        fillMediaParagraphs(full,mediaReaderParagraphs(post,'translation'));
+      } else fillPostBody(full, postViewBody(post), post);
       content.append(full);
     } else if (excerpt) {
       const preview = document.createElement('p');
       preview.className = translationFor(post) ? 'post-excerpt is-translated' : 'post-excerpt';
       preview.textContent = excerpt;
       content.append(preview);
+    }
+    if (!expanded && (post.platform === 'x' || post.platform === 'xueqiu')) {
+      const count = splitFeedText(postViewBody(post)).comments.length;
+      if (count) content.append(Object.assign(document.createElement('p'), {
+        className: 'feed-comment-preview', textContent: `评论 · ${count} 条 · 展开查看`,
+      }));
     }
     const feedTags = createTagRow(postTagNames(post));
     if (feedTags) content.append(feedTags);
@@ -3554,7 +3827,7 @@ function renderPosts() {
     const expand = document.createElement('button');
     expand.type = 'button';
     expand.className = 'feed-expand';
-    expand.textContent = expanded ? '收起' : post.platform==='media' && !post.complete ? '展开线索' : '原地展开全文';
+    expand.textContent = expanded ? '收起' : post.articleKind==='report-intro' ? '展开报告简介' : post.platform==='media' && !post.complete ? '展开线索' : '原地展开全文';
     expand.addEventListener('click', (event) => {
       event.stopPropagation();
       if (state.expandedFeedIds.has(post.id)) state.expandedFeedIds.delete(post.id);
@@ -3596,6 +3869,9 @@ function syncDialogTranslation(post) {
 
 function openArticle(post) {
   if (!post) return;
+  rememberRecentItem(post);
+  mediaReaderSession.clear();
+  state.readerLang = 'translation';
   if (post.release || post.kind === 'official') {
     openPage('article', `official/${post.release?.releaseId || post.id}`);
     return;
@@ -3606,7 +3882,7 @@ function openArticle(post) {
 function findUnifiedItem(id) {
   const key = String(id || '');
   return visibleFeedItems().find((item) => item.id === key || item.resourceId === key)
-    || socialFeedItems({ includeHidden: true }).find((item) => item.id === key || item.resourceId === key)
+    || socialFeedItems({ includeHidden: true, includeTools: true, ignorePlatform: true }).find((item) => item.id === key || item.resourceId === key)
     || officialFeedItems({ includeHidden: true }).find((item) => item.id === key || item.resourceId === key)
     || Object.values(state.focusItems).find((item) => item.id === key || item.resourceId === key)
     || state.focusItems[key]
@@ -3628,6 +3904,7 @@ function renderTradeTabs() {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = `text-tab${tab.id === state.tradePane ? ' is-active' : ''}`;
+    if (tab.id === state.tradePane) button.setAttribute('aria-current', 'page');
     button.textContent = tab.label;
     button.addEventListener('click', () => setTradePane(tab.id));
     return button;
@@ -3661,6 +3938,10 @@ function alignTradePane(view = document.body.dataset.view) {
 
 function setTradePane(id) {
   if (id !== 'holdings') state.holdingsMoveGroup = null;
+  if (document.body.dataset.view === 'assets' && ['holdings', 'analysis'].includes(id)) {
+    setView(id === 'analysis' ? 'assets/analysis' : 'assets');
+    return;
+  }
   state.tradePane = id;
   alignTradePane();
   setTradeHint(tradeHint(id));
@@ -3674,8 +3955,10 @@ async function syncTradePaneData({ refresh = false } = {}) {
     return;
   }
   if (state.tradePane === 'assets') {
+    if(state.assetClass==='hardware'){await loadHardwarePrices();return;}
     await Promise.all([
       loadGlobalAssets(),
+      loadHardwarePrices(),
       loadMarketNativeBoard({ refresh }).catch((error) => {
         state.marketNativeError = error instanceof Error ? error.message : '市场原生数据读取失败';
       }),
@@ -3952,8 +4235,8 @@ function renderHoldingsMoves() {
   target.replaceChildren(...groups.map((group) => {
     const day = (group.moves || []).find((item) => item.id === 'day') || {};
     return createHoldingsMoveCard(day, {
-      title: `${group.label}今日`,
-      caption: '当日盈亏按现价对昨收，对齐券商「当日」；点开再看周 / 月市值波动',
+      title: `${group.label}${state.holdingsBoard?.calendar?.tradingDay === false ? '最近交易日' : '今日'}`,
+      caption: '按最新报价对该报价的前收盘价；休市时保留最近交易日变动，点开看周 / 月市值波动',
       onOpen: () => {
         state.holdingsMoveGroup = group.id;
         renderHoldings();
@@ -3973,7 +4256,8 @@ function renderHoldingsGroupDetail() {
     { id: 'week', label: '本周' },
     { id: 'month', label: '本月' },
   ];
-  target.replaceChildren(...moves.map((move) => createHoldingsMoveCard(move)));
+  target.replaceChildren(...moves.map((move) => createHoldingsMoveCard(move, move.id === 'day'
+    ? {title: state.holdingsBoard?.calendar?.tradingDay === false ? '最近交易日' : '今日', caption: '最新报价相对该报价前收盘价的变动'} : {})));
 }
 
 function renderHoldings() {
@@ -4000,7 +4284,7 @@ function renderHoldings() {
     else {
       const base = state.holdingsBoard?.note || '持仓批次落在本地账本，价格和汇率实时刷新。';
       const updated = formatHoldingsClock(state.holdingsBoard?.updatedAt);
-      note.textContent = updated ? `${base} 报价 ${updated}` : base;
+      note.textContent = updated ? `${base} 获取 ${updated}` : base;
     }
   }
   const rows = sortHoldingRows((state.holdingsBoard?.positions || []).filter((item) => (
@@ -4011,6 +4295,7 @@ function renderHoldings() {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'quote-row holdings-row';
+    button.title = `报价时间：${formatQuoteTime(item.quoteAsOf)}`;
     const name = document.createElement('span');
     name.className = 'quote-identity holdings-name';
     const valueText = item.marketValueCny == null ? '--' : `¥${formatMoneyAmount(item.marketValueCny, 0)}`;
@@ -4097,20 +4382,37 @@ elements['holdings-group-back']?.addEventListener('click', () => {
 });
 
 function renderAssets() {
-  renderChipTabs(elements['asset-filters'], assetClasses, state.assetClass, (id) => {
+  renderChipTabs(elements['asset-filters'], [assetClasses[0],{id:'hardware',label:'AI硬件'},...assetClasses.slice(1)], state.assetClass, (id) => {
     state.assetClass = id;
+    if(id==='hardware' && state.hardwareLoaded && !state.hardwareItems.some(r=>r.verification==='verified'))state.hardwareReview=true;
+    if(id==='hardware'){setView('market/global/hardware');return;}
+    if(normalizeRoute(location.hash)==='market/global/hardware'){setView('market/global');return;}
     renderAssets();
   });
+  const hardwareFilters=document.getElementById('hardware-market-filters');
+  const onHardware=state.assetClass==='hardware';
+  elements['asset-filter'].placeholder=onHardware?'完整规格 / 报价类型':'名称 / 代码 / 介绍';
+  hardwareFilters.classList.toggle('hidden',!onHardware);
+  if(onHardware) {
+    const kinds=document.createElement('div');kinds.className='chip-tabs';
+    renderChipTabs(kinds,[{id:'all',label:'全部报价'},{id:'spot',label:'现货'},{id:'contract',label:'合约'},{id:'retail',label:'零售价'},{id:'other-storage',label:'其他存储参考'}],state.hardwareKind,id=>{state.hardwareKind=id;renderAssets();});
+    const review=document.createElement('button');review.type='button';review.className='text-button';
+    const pending=state.hardwareItems.filter(r=>r.verification==='pending').length;
+    review.textContent=state.hardwareReview?'包含待核验':'查看待核验'+(pending?` (${pending})`:'');review.setAttribute('aria-pressed',String(state.hardwareReview));
+    review.addEventListener('click',()=>{state.hardwareReview=!state.hardwareReview;renderAssets();});
+    hardwareFilters.replaceChildren(kinds,review);
+  }
   if (state.tradePane === 'assets') {
-    setTradeHint(state.assetError && !state.assetLoading ? state.assetError : '');
+    setTradeHint(onHardware ? state.hardwareError : state.assetError && !state.assetLoading ? state.assetError : '');
     updateChangeSortControl();
   }
   const rows = visibleAssets();
   if (!rows.length) {
     elements['asset-list'].replaceChildren(Object.assign(document.createElement('div'), {
       className: 'empty-state',
-      textContent: state.assetLoading ? '正在加载全球行情…' : (state.assetError || '没有符合筛选的标的。'),
+      textContent: onHardware ? (state.hardwareLoading?'正在读取硬件报价…':state.hardwareError || '没有符合筛选的报价。') : state.assetLoading ? '正在加载全球行情…' : (state.assetError || '没有符合筛选的标的。'),
     }));
+    renderMarketNativeBoard();
     if (document.body.dataset.view === 'sources') renderHub();
     return;
   }
@@ -4122,12 +4424,25 @@ function renderAssets() {
 function visibleAssets() {
   const board = state.assetBoard;
   const needle = state.assetFilter.trim().toLowerCase();
-  const filtered = (board?.watchlist || []).filter((item) => {
+  const hardware=state.hardwareItems.filter(r=>r.average!==null && (state.assetClass==='hardware' ? (state.hardwareReview || r.verification==='verified') && (state.hardwareKind==='other-storage'?r.category==='other-storage':r.category!=='other-storage' && (state.hardwareKind==='all' || r.quoteType===state.hardwareKind)) : r.verification==='verified' && r.category!=='other-storage'))
+    .sort((a,b)=>['dram','nand','ssd','other-storage'].indexOf(a.category)-['dram','nand','ssd','other-storage'].indexOf(b.category) || ['spot','contract','retail','unknown'].indexOf(a.quoteType)-['spot','contract','retail','unknown'].indexOf(b.quoteType) || (b.periodStart ?? -1)-(a.periodStart ?? -1) || a.specification.localeCompare(b.specification,undefined,{numeric:true})).map(hardwareMarketItem).filter(Boolean);
+  const filtered = [...(board?.watchlist || []),...hardware].filter((item) => {
     const classOk = state.assetClass === 'all' || item.assetClass === state.assetClass;
     const text = `${item.name} ${item.symbol} ${item.summary || ''} ${item.group || ''}`.toLowerCase();
     return classOk && (!needle || text.includes(needle));
   });
   return sortByChange(filtered);
+}
+
+async function loadHardwarePrices() {
+  if(!state.bootstrapped || !state.session)return;
+  const requestId=++state.hardwareRequestId;state.hardwareLoading=true;state.hardwareError='';renderAssets();
+  try {
+    const payload=await api('/api/v1/hardware-prices?limit=500');if(requestId!==state.hardwareRequestId)return;
+    state.hardwareItems=payload.items || [];state.hardwareLoaded=true;
+    if(!state.hardwareItems.some(r=>r.verification==='verified'))state.hardwareReview=true;
+  }catch(error){if(requestId===state.hardwareRequestId)state.hardwareError=error.message;}
+  finally{if(requestId===state.hardwareRequestId){state.hardwareLoading=false;renderAssets();}}
 }
 
 async function loadGlobalAssets() {
@@ -4196,9 +4511,9 @@ function renderTrendChart(target, dashboard) {
     target.textContent = '记录不足，暂无法绘制增长轨迹。';
     return;
   }
-  const width = 640;
+  const width = Math.max(240, Math.round(target.getBoundingClientRect().width || 640));
   const height = 220;
-  const pad = { left: 44, right: 12, top: 16, bottom: 28 };
+  const pad = { left: 48, right: 12, top: 16, bottom: 30 };
   const series = [
     { key: 'total', color: '#0A59F7', label: '总资产' },
     { key: 'equity', color: '#7C6AF7', label: '股票金额' },
@@ -4219,7 +4534,7 @@ function renderTrendChart(target, dashboard) {
       x1: pad.left, x2: width - pad.right, y1: top, y2: top, stroke: 'rgba(0,0,0,0.08)',
     }));
     svg.append(svgNode('text', {
-      x: 0, y: top + 4, fill: 'rgba(0,0,0,0.4)', 'font-size': '10',
+      x: 0, y: top + 4, fill: 'var(--font-secondary)', 'font-size': '12',
     }, [document.createTextNode(value >= 10000 ? `${Math.round(value / 10000)}万` : String(Math.round(value)))]));
   }
   for (const item of series) {
@@ -4228,9 +4543,9 @@ function renderTrendChart(target, dashboard) {
   }
   const first = points[0].label;
   const last = points[points.length - 1].label;
-  svg.append(svgNode('text', { x: pad.left, y: height - 8, fill: 'rgba(0,0,0,0.4)', 'font-size': '10' }, [document.createTextNode(first)]));
+  svg.append(svgNode('text', { x: pad.left, y: height - 8, fill: 'var(--font-secondary)', 'font-size': '12' }, [document.createTextNode(first)]));
   svg.append(svgNode('text', {
-    x: width - pad.right, y: height - 8, fill: 'rgba(0,0,0,0.4)', 'font-size': '10', 'text-anchor': 'end',
+    x: width - pad.right, y: height - 8, fill: 'var(--font-secondary)', 'font-size': '12', 'text-anchor': 'end',
   }, [document.createTextNode(last)]));
   const legend = document.createElement('div');
   legend.className = 'analysis-legend';
@@ -4402,10 +4717,10 @@ function renderPersonalAssetLedger(dashboard) {
       });
       noteField.addEventListener('change', () => updatePersonalAssetAccount(account.id, { note: noteField.value.trim() }));
       const amountField = Object.assign(document.createElement('input'), {
-        type: 'text',
+        type: state.privacy ? 'password' : 'text',
         value: account.displayAmount,
         inputMode: 'decimal',
-        disabled: state.assetLedgerBusy || account.readOnly,
+        disabled: state.assetLedgerBusy || account.readOnly || state.privacy,
       });
       amountField.addEventListener('change', () => updatePersonalAssetAccount(account.id, { amount: amountField.value.trim() }));
       row.append(name, noteField, amountField);
@@ -4437,6 +4752,16 @@ function renderPersonalAssetDashboard() {
     renderPersonalAssetLedger(dashboard);
     elements['analysis-trend'].replaceChildren();
     elements['analysis-pie'].replaceChildren();
+    return;
+  }
+  if (state.privacy) {
+    period.textContent = '金额已隐藏，与持仓页使用相同设置。显示金额后可查看图表与修改账本。';
+    for (const label of ['当前总资产', '投资（含券商现金）', '累计增长率', '公积金', '最新变动', '起始记录']) appendMetric(kpis, label, '••••');
+    elements['analysis-trend'].textContent = '金额已隐藏';
+    elements['analysis-pie'].textContent = '金额已隐藏';
+    elements['analysis-diagnosis-1'].textContent = '资产结构已隐藏。';
+    elements['analysis-diagnosis-2'].textContent = '可用上方按钮重新显示。';
+    renderPersonalAssetLedger(dashboard);
     return;
   }
   const labels = dashboard.points.map((point) => point.label);
@@ -4580,10 +4905,18 @@ function formatVolume(value) {
 }
 
 function sessionLabel(session) {
+  if (session === 'break') return '午间休市';
+  if (session === 'unknown') return '状态待核验';
   if (session === 'regular') return '盘中';
   if (session === 'pre') return '盘前';
   if (session === 'post') return '盘后';
   return '休市';
+}
+
+function formatQuoteTime(asOf) {
+  return asOf == null ? '来源未提供' : new Date(asOf).toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai', hour12: false,
+  });
 }
 
 function sparkSvg(points, changePct) {
@@ -4667,10 +5000,26 @@ function renderStockBoards() {
 }
 
 async function loadSourceCatalog() {
-  const payload = await api('/api/v1/sources');
-  state.sourceCatalog = payload.sources || [];
-  renderStockBoards();
-  renderSources();
+  if (loadSourceCatalog.pending) return loadSourceCatalog.pending;
+  state.sourceLoading = true;
+  state.sourceCatalogError = '';
+  renderStaticSourceCatalog();
+  loadSourceCatalog.pending = (async () => {
+    try {
+      const payload = await api('/api/v1/sources');
+      state.sourceCatalog = payload.sources || [];
+      state.sourceCatalogLoaded = true;
+      renderStockBoards();
+    } catch (error) {
+      state.sourceCatalogError = error.message;
+      throw error;
+    } finally {
+      state.sourceLoading = false;
+      loadSourceCatalog.pending = null;
+      renderSources();
+    }
+  })();
+  return loadSourceCatalog.pending;
 }
 
 function openSource(source) {
@@ -4689,6 +5038,7 @@ function openSource(source) {
     return;
   }
   if (source.category === 'content') {
+    if(source.providerId==='trendforce'){setView('feed');applyFeedPlatform('trendforce');return;}
     state.platform = source.providerId;
     resetFeedWindow();
     renderPlatformFilters();
@@ -4712,15 +5062,8 @@ function hubFeedPicks(limit = 12) {
   const bilibiliItems = state.bilibiliItems.map(bilibiliAsItem);
   const trendforceItems = state.trendforceItems.map(trendforceAsItem);
   const xueqiuItems = state.xueqiuItems.map(xueqiuAsItem);
-  const demo = feedItems.filter((item) => {
-    if (item.platform === 'x' && state.xItems.length) return false;
-    if (item.platform === 'bilibili' && state.bilibiliItems.length) return false;
-    if (item.platform === 'trendforce' && state.trendforceItems.length) return false;
-    if (item.platform === 'xueqiu' && state.xueqiuItems.length) return false;
-    return true;
-  });
-  return [...bilibiliItems, ...trendforceItems, ...xueqiuItems, ...xItems, ...live, ...demo]
-    .filter((item) => !isHiddenFeedItem(item) && hasDisplayTags(item))
+  return [...bilibiliItems, ...trendforceItems, ...xueqiuItems, ...xItems, ...live]
+    .filter((item) => item.platform !== 'bilibili' && !isHiddenFeedItem(item))
     .sort((left, right) => (Number(right.createdAt) || 0) - (Number(left.createdAt) || 0))
     .slice(0, limit);
 }
@@ -4867,10 +5210,7 @@ function syncOverviewPanes() {
 }
 
 function setOverviewPane(pane) {
-  state.overviewPane = pane;
-  syncOverviewPanes();
-  const nextHash = pane === 'home' ? '#sources' : `#sources/${pane}`;
-  if (location.hash !== nextHash) history.replaceState({}, '', `${location.pathname}${location.search}${nextHash}`);
+  setView(pane === 'home' ? 'sources' : `sources/${pane}`);
   if (pane === 'catalog') renderStaticSourceCatalog();
   if (pane === 'schedule') renderStaticSignalBoard();
 }
@@ -4902,6 +5242,13 @@ function sourceDisplayTitle(source) {
 function renderStaticSourceCatalog() {
   const root = elements['static-source-groups'];
   if (!root) return;
+  if (!state.sourceCatalogLoaded) {
+    renderViewState(root, { kind: state.sourceCatalogError ? 'error' : 'loading',
+      title: state.sourceCatalogError ? '信源目录读取失败' : '正在读取信源目录…',
+      message: state.sourceCatalogError, action: '重试', onAction: () => loadSourceCatalog().catch(() => {}) });
+    return;
+  }
+  renderViewState(root, { kind: 'success' });
   if (elements['source-catalog-tabs']) {
     renderChipTabs(elements['source-catalog-tabs'], [
       { id: 'all', label: '全部' },
@@ -4918,7 +5265,6 @@ function renderStaticSourceCatalog() {
   const social = [
     { id: 'x', title: 'X', category: 'content', viewKind: 'content-feed', letter: 'X', note: '首页时间线' },
     { id: 'xueqiu', title: '雪球', category: 'content', viewKind: 'content-feed', letter: '雪', note: '关注、精选和 7x24' },
-    { id: 'bilibili', title: 'B站', category: 'content', viewKind: 'content-feed', letter: 'B', note: '已采集字幕' },
     { id: 'trendforce', title: 'TrendForce', category: 'content', viewKind: 'content-feed', letter: 'T', note: '公开洞察与价表' },
     { id: 'manual', title: '手工发布', category: 'content', viewKind: 'content-feed', letter: '手', note: '自己保存的资料' },
   ];
@@ -5060,12 +5406,16 @@ function renderStaticSignalBoard() {
   const fill = (root, rows, viewKind, emptyText) => {
     if (!root) return;
     if (!rows.length) {
-      root.replaceChildren(Object.assign(document.createElement('div'), {
-        className: 'empty-state',
-        textContent: state.staticBoardLoading ? '正在读取官方来源…' : emptyText,
-      }));
+      const unavailable = board?.sourceHealth?.filter(item => item.category === 'calendar').some(item => item.status === 'unavailable');
+      const loading = state.staticBoardLoading || !board && !state.staticBoardError;
+      const error = state.staticBoardError || unavailable;
+      renderViewState(root, { kind: loading ? 'loading' : error ? 'error' : 'empty',
+        title: loading ? '正在读取官方日程…' : error ? '日程暂未完整读取' : '暂无日程',
+        message: loading ? '正在核对所选时间范围。' : state.staticBoardError || (unavailable ? '部分官方来源暂不可用，不能确认没有日程。' : emptyText),
+        action: error ? '重试' : '', onAction: () => loadStaticSignalBoard({ refresh: true }).catch(() => {}) });
       return;
     }
+    renderViewState(root, { kind: 'success' });
     root.replaceChildren();
     rows.forEach((item) => appendStaticSignalItem(root, item, viewKind));
   };
@@ -5693,14 +6043,24 @@ function renderWatchRows(target, rows, { formatValue } = {}) {
     row.className = 'market-row';
     const code = item.expiry ? `${item.symbol} · ${item.group} · ${item.expiry}` : `${item.symbol} · ${item.group}`;
     row.innerHTML = `<span class="quote-identity identity">
-        <strong class="quote-name">${item.name}</strong>
-        <small class="quote-code">${code}</small>
+        <strong class="quote-name"></strong>
+        <small class="quote-code"></small>
       </span>
       <span class="market-spark">${sparkSvg(item.sparkline, item.changePct)}</span>
       <span class="q-price">
         <strong class="quote-price ${up ? 'up' : 'down'}">${format(item, item.lastPrice)}</strong>
         <b class="quote-change ${up ? 'up' : 'down'}">${item.changePct === null ? '—' : formatPct(up, item.changePct)}</b>
       </span>`;
+    row.querySelector('.quote-name').textContent=item.name;
+    row.querySelector('.quote-code').textContent=code;
+    if(item.hardware) {
+      row.dataset.hardwareSeries=item.hardware.seriesKey;row.tabIndex=0;row.setAttribute('role','button');row.setAttribute('aria-label',`${item.name} ${item.lastPrice}，查看报价走势`);
+      row.querySelector('.quote-code').textContent=item.group;
+      row.querySelector('.quote-price').classList.toggle('up',item.changePct!==null && up);
+      row.querySelector('.quote-change').classList.toggle('up',item.changePct!==null && up);
+      if(!item.sparkline || item.sparkline.length<2)row.querySelector('.market-spark').textContent='暂无历史';
+      row.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openPage('hardware',`series/${item.hardware.seriesKey}`);}});
+    }
     if (item.group === '自选') {
       const identity = row.querySelector('.quote-identity');
       const remove = document.createElement('button');
@@ -5715,7 +6075,7 @@ function renderWatchRows(target, rows, { formatValue } = {}) {
       });
       identity.append(remove);
     }
-    row.addEventListener('click', () => openPage('quote', item.symbol));
+    row.addEventListener('click', () => item.hardware ? openPage('hardware',`series/${item.hardware.seriesKey}`) : openPage('quote', item.symbol));
     return row;
   }));
 }
@@ -5993,6 +6353,7 @@ function htmlToNode(html) {
   return wrap;
 }
 
+const hardwarePricesPage=createHardwarePricesPage({api,openPage,setView,renderRows:(root,rows)=>renderWatchRows(root,rows.map(hardwareMarketItem)),isCurrent:id=>state.pageKind==='hardware' && state.pageId===id && Boolean(state.session)});
 function renderPage() {
   const root = pageRoot();
   if (!root) return;
@@ -6002,6 +6363,7 @@ function renderPage() {
   else if (kind === 'event') renderEventPage();
   else if (kind === 'source') renderSourcePage();
   else if (kind === 'quote') renderQuotePage();
+  else if (kind === 'hardware') {if(state.session)hardwarePricesPage.render(root,state.pageId);else renderViewState(root,{kind:'loading',title:'正在读取硬件报价…'});}
   else if (kind === 'tasks' || kind === 'task') renderTasksPage();
   else if (kind === 'note') renderNotePage();
   else if (kind === 'account') renderAccountPage();
@@ -6061,6 +6423,7 @@ function bindIntentionalClick(button, onClick) {
 function createDetailAction({ iconName, label, primary = false, pressed = false, onClick }) {
   const button = document.createElement('button');
   button.type = 'button';
+  button.dataset.detailAction = iconName;
   if (primary) button.classList.add('is-primary');
   if (pressed) button.classList.add('is-focus-on');
   button.innerHTML = `${icon(iconName)}<span>${label}</span>`;
@@ -6068,16 +6431,42 @@ function createDetailAction({ iconName, label, primary = false, pressed = false,
   return button;
 }
 
+const restoredArticleRequests=new Set();
+const restoredArticleErrors=new Map();
+async function restoreSavedArticle(id) {
+  if(!state.session || restoredArticleRequests.has(id))return;restoredArticleRequests.add(id);
+  const scope=state.session;
+  if(id.startsWith('media:')) {
+    try {const {item}=await api(`/api/v1/feed/media/article?externalId=${encodeURIComponent(id.slice(6))}`);if(state.session!==scope)return;
+      state.restoredArticles[id]=mediaAsItem(item);if(state.pageKind==='article' && state.pageId===id)renderArticlePage();
+    } catch(error) {if(state.session!==scope)return;restoredArticleErrors.set(id,error.message);if(state.pageKind==='article' && state.pageId===id)renderArticlePage();}
+    return;
+  }
+  try {const {original:o}=await api(`/api/v1/feed/items/${encodeURIComponent(id)}/original`);if(state.session!==scope)return;
+    state.restoredArticles[id]={id,resourceId:o.id,resourceType:'content-item',contentItemId:o.id,platform:o.provider || 'trendforce',kind:'article',author:'TrendForce',title:o.title,body:o.body,sourceUrl:o.sourceUrl,complete:o.contentLevel==='full',contentLevel:o.contentLevel,bodyScope:o.contentLevel==='partial'?'部分正文':'仅摘要',articleKind:o.externalId?.startsWith('research:')?'report-intro':'article',hardwareSnapshot:o.hardwareSnapshot};
+    if(state.pageKind==='article' && state.pageId===id)renderArticlePage();
+  } catch(error) {if(state.session!==scope)return;restoredArticleErrors.set(id,error.message);if(state.pageKind==='article' && state.pageId===id)renderArticlePage();}
+}
 function renderArticlePage() {
   const root = pageRoot();
+  const menuFocus = elements['reader-menu']?.contains(document.activeElement) ? document.activeElement.dataset.detailAction : '';
   const id = state.pageId || '';
   const official = id.startsWith('official/');
   const itemId = official ? id.slice('official/'.length) : id;
-  const post = official
+  let post = official
     ? officialFeedItems().find((item) => item.id === itemId || item.resourceId === itemId)
-    : findUnifiedItem(itemId);
+    : state.restoredArticles[itemId] || findUnifiedItem(itemId);
+  if(state.bootstrapped && itemId.startsWith('trendforce:') && !state.restoredArticles[itemId] && !restoredArticleErrors.has(itemId)){restoreSavedArticle(itemId);post=null;}
+  const mediaReading = (post?.platform === 'media' || !post && state.feedPlatform === 'media' && !official)
+    ? mediaReaderSession.resolve(post?.platform === 'media' ? post : null, { id:itemId, scope:state.session ? `${state.session.role}:${state.session.device?.id || 'desktop'}` : '' })
+    : null;
+  if (mediaReading) post = mediaReading.post;
   if (!post) {
-    root.replaceChildren(Object.assign(document.createElement('p'), { className: 'empty-state', textContent: '这条内容已不在当前列表里。' }));
+    if(state.bootstrapped && !official) restoreSavedArticle(itemId);
+    const loading=!state.bootstrapped || restoredArticleRequests.has(itemId) && !restoredArticleErrors.has(itemId);
+    renderViewState(root, { kind: loading ? 'loading' : 'empty',
+      title: loading ? '正在读取文章…' : '当前未找到这篇文章',
+      message: loading?'正在查找已保存的原文快照。':'可以返回信息流查看已保存内容。', action: '返回信息流', onAction: leaveArticle });
     return;
   }
   state.dialogPost = post;
@@ -6087,6 +6476,13 @@ function renderArticlePage() {
   const hasTranslation = Boolean(translated);
   const shell = document.createElement('article');
   shell.className = 'page-article detail-shell';
+  const toolbar = document.createElement('div');
+  toolbar.className = 'reading-toolbar';
+  const back = createDetailAction({ iconName: 'chevron-left', label: `返回${routeLabel(returnTarget())}`, onClick: leaveArticle });
+  back.className = 'reading-back';
+  const settings = createDetailAction({ iconName: 'settings', label: '阅读设置', onClick: event => openReaderMenu(event.currentTarget) });
+  const more = createDetailAction({ iconName: 'list', label: '更多', onClick: event => openReaderMenu(event.currentTarget) });
+  toolbar.append(back, settings, more);
   const head = document.createElement('header');
   head.className = 'detail-head reader-head';
   head.innerHTML = `<h2 class="detail-title"></h2><div class="detail-meta reader-meta"></div>`;
@@ -6097,7 +6493,7 @@ function renderArticlePage() {
     Object.assign(document.createElement('span'), { textContent: `${post.time || formatTime(post.publishedAt)} 发布` }),
     Object.assign(document.createElement('span'), { className: 'kind-tag', textContent: feedKindLabel(post) }),
   );
-  const completeLabel = post.complete === false ? '仅索引' : '正文完整';
+  const completeLabel = post.articleKind==='report-intro' ? '报告简介' : post.complete === false ? (post.bodyScope || '仅索引') : '正文完整';
   if (isHttpUrl(post.sourceUrl)) {
     const source = appendExternalLink(meta, post.sourceUrl, completeLabel);
     source.className = 'kind-tag official';
@@ -6110,6 +6506,7 @@ function renderArticlePage() {
     else openPage('source', post.platform === 'manual' ? 'manual' : post.platform);
   });
   const body = document.createElement('div');
+  if(post.hardwareSnapshot) {const go=document.createElement('button');go.className='text-button';go.textContent='查看AI硬件价格';go.addEventListener('click',()=>openPage('hardware',`snapshot/${post.hardwareSnapshot.id}`));body.append(go);}
   let mediaBrief;
   if (post.platform === 'media') {
     body.append(Object.assign(document.createElement('p'), {className:'body-state',textContent:[post.bodyScope,post.bodyReason].filter(Boolean).join(' · ')}));
@@ -6127,20 +6524,30 @@ function renderArticlePage() {
   if (post.platform === 'media' && post.paragraphs?.length) {
     const article = post.articleTranslation;
     const ready = article?.status === 'ready';
-    if (ready) {
+    if (mediaReading?.notice) {
+      const notice=Object.assign(document.createElement('p'),{className:'body-state',textContent:mediaReading.notice});
+      if(mediaReading.canUpdate)notice.append(createDetailAction({iconName:'refresh-cw',label:'阅读更新版本',onClick:()=>{mediaReaderSession.acceptUpdate();renderArticlePage();}}));
+      body.append(notice);
+    }
+    {
       const tabs = document.createElement('div'); tabs.className='dense-tabs reader-tabs';
-      renderChipTabs(tabs,[{id:'translation',label:'中文全文'},{id:'original',label:'原文'},{id:'compare',label:'逐段对照'}],state.readerLang,id=>{state.readerLang=id;renderArticlePage();});
+      renderChipTabs(tabs,[{id:'translation',label:post.complete?'中文全文':'中文译文'},{id:'original',label:'原文'},{id:'compare',label:'逐段对照'}],state.readerLang,id=>{state.readerLang=id;renderArticlePage();});
       body.append(tabs);
-    } else {
-      body.append(Object.assign(document.createElement('p'),{className:'body-state',textContent:post.complete ? `正文已保存，全文翻译处理中（${article?.completedChunks || 0}/${article?.totalChunks || 0}段片）` : '以下为已保存的部分原文'}));
+    }
+    if (!ready) {
+      body.append(Object.assign(document.createElement('p'),{className:'body-state',textContent:post.complete ? `正文已保存，全文翻译处理中（${article?.completedChunks || 0}/${article?.totalChunks || 0}段片）` : '已保存部分正文，未完成的译文将显示翻译进度'}));
     }
     const content=document.createElement('div');content.className='reader-content detail-body';
-    const chinese=ready && state.readerLang!=='original';
-    fillMediaParagraphs(content,chinese ? article.paragraphs : post.paragraphs,state.readerLang==='compare' && ready ? post.paragraphs : []);
+    fillMediaParagraphs(content,post.complete===false && !post.articleTranslation ? post.paragraphs : mediaReaderParagraphs(post,state.readerLang),state.readerLang==='compare' ? post.paragraphs : []);
     body.append(content);
     const tags=createTagRow(postTagNames(post));if(tags){tags.classList.add('detail-tags');body.append(tags);}
     if (mediaBrief) body.append(mediaBrief);
     ensurePostTags(post);
+  } else if(post.articleKind==='report-intro') {
+    body.append(Object.assign(document.createElement('p'),{className:'body-state',textContent:`报告简介 · ${translated && state.readerLang!=='original'?'译文':'原文'}`}));
+    const content=document.createElement('div');content.className='reader-content detail-body';
+    fillPostBody(content,state.readerLang==='original'?post.body:translated || post.body,post);body.append(content);
+    const tags=createTagRow(postTagNames(post));if(tags){tags.classList.add('detail-tags');body.append(tags);}
   } else if (post.kind === 'official' && post.complete === false) {
     const fetched = state.officialBodies[post.id];
     const status = fetched?.status || 'idle';
@@ -6188,12 +6595,12 @@ function renderArticlePage() {
     const content = document.createElement('div');
     content.className = 'reader-content detail-body';
     const original = state.originalBodies[post.resourceId || post.id] || post.body;
-    const viewText = state.readerLang === 'original' ? original : (translated || original);
-    fillPostBody(content, viewText);
+    const viewText = state.readerLang === 'original' ? original : (translated || (post.platform==='media' ? '中文翻译尚未就绪，可以切换到原文查看。' : original));
+    fillPostBody(content, viewText, post);
     if (state.readerLang === 'compare' && translated) {
       content.append(Object.assign(document.createElement('h3'), { className: 'lang-label', textContent: '原文' }));
       const orig = document.createElement('div');
-      fillPostBody(orig, original);
+      fillPostBody(orig, original, post);
       content.append(orig);
     }
     body.append(content);
@@ -6242,10 +6649,35 @@ function renderArticlePage() {
   });
   if (analysisBusy) analyze.disabled = true;
   bar.append(save, cite, analyze, star);
+  if (isHttpUrl(post.sourceUrl)) bar.append(createDetailAction({ iconName: 'newspaper', label: '打开原文', onClick: () => openExternalHttpUrl(post.sourceUrl) }));
+  const fontControls = document.createElement('div');
+  fontControls.className = 'reader-font-controls';
+  const size = Object.assign(document.createElement('span'), { textContent: `正文字号 ${state.readerFont}px` });
+  const changeFont = (delta) => {
+    state.readerFont = Math.max(16, Math.min(24, state.readerFont + delta));
+    document.documentElement.style.setProperty('--reader-font', `${state.readerFont}px`);
+    size.textContent = `正文字号 ${state.readerFont}px`;
+    smaller.disabled = state.readerFont <= 16;
+    larger.disabled = state.readerFont >= 24;
+  };
+  const smaller = createDetailAction({ iconName: 'chevron-left', label: '缩小字号', onClick: () => changeFont(-1) });
+  const larger = createDetailAction({ iconName: 'chevron-right', label: '放大字号', onClick: () => changeFont(1) });
+  smaller.disabled = state.readerFont <= 16;
+  larger.disabled = state.readerFont >= 24;
+  fontControls.append(smaller, size, larger);
+  elements['reader-menu-body'].replaceChildren(fontControls, bar);
+  const mobile = document.createElement('div');
+  mobile.className = 'reader-mobile-bar';
+  mobile.setAttribute('aria-label', '阅读操作');
+  mobile.append(createDetailAction({ iconName: 'bookmark', label: isPostSaved(post) ? '查看灵感' : '存入灵感', onClick: () => save.click() }),
+    createDetailAction({ iconName: 'list', label: '更多', onClick: event => openReaderMenu(event.currentTarget) }),
+    createDetailAction({ iconName: 'chevron-left', label: `返回${routeLabel(returnTarget())}`, onClick: leaveArticle }));
   const analysis = renderArticleAnalysisPanel(post);
-  if (analysis) shell.append(head, body, analysis, bar);
-  else shell.append(head, body, bar);
+  shell.append(toolbar, head, body);
+  if (analysis) shell.append(analysis);
+  shell.append(mobile);
   root.replaceChildren(shell);
+  if (menuFocus) [...elements['reader-menu'].querySelectorAll('button')].find(button => button.dataset.detailAction === menuFocus)?.focus();
   if (post.platform !== 'media' && postNeedsChineseTranslation(post) && !translationFor(post)) {
     requestTranslate(post).catch((error) => showToast(error.message));
   }
@@ -6465,11 +6897,9 @@ function renderSourcePage() {
     : '只读已保存结果，新采集在右上角任务里发起';
   wrap.querySelector('button').addEventListener('click', () => openPage('automation', id));
   if (id === 'x' || id === 'xueqiu' || id === 'bilibili' || id === 'trendforce' || id === 'manual') {
-    state.feedPlatform = id === 'manual' ? 'manual' : id;
-    state.platform = state.feedPlatform;
     const list = document.createElement('div');
     list.className = 'source-feed';
-    const rows = socialFeedItems().filter((item) => item.platform === (id === 'manual' ? 'manual' : id)
+    const rows = socialFeedItems({ platform: id, includeTools: id === 'bilibili' }).filter((item) => item.platform === id
       && (id !== 'x' || !item.mode || item.mode === state.xFeed));
     if (!rows.length) list.append(Object.assign(document.createElement('p'), { className: 'empty-state', textContent: '当前信源尚无已存内容。' }));
     else rows.slice(0, 40).forEach((post) => {
@@ -6570,7 +7000,7 @@ function renderQuotePage() {
       <div class="quote-chart-host" id="quote-chart-host"></div>
     </div>`;
   wrap.querySelector('.detail-title').textContent = quote.name || symbol;
-  wrap.querySelector('.detail-meta').textContent = `${symbol}${quote.group ? ` · ${quote.group}` : ''}${quote.assetClass ? ` · ${quote.assetClass}` : ''}`;
+  wrap.querySelector('.detail-meta').textContent = `${symbol}${quote.group ? ` · ${quote.group}` : ''}${quote.assetClass ? ` · ${quote.assetClass}` : ''} · ${sessionLabel(quote.session)} · 报价时间 ${formatQuoteTime(quote.asOf)}`;
   wrap.querySelector('.last').textContent = quote.lastPrice == null ? '—' : formatPrice(quote.lastPrice);
   wrap.querySelector('.last').classList.add(up ? 'up' : 'down');
   wrap.querySelector('.change').textContent = quote.changePct == null ? '—' : formatPct(up, quote.changePct);
@@ -6802,8 +7232,9 @@ function renderHoldingPage() {
   for (const [dt, dd] of [
     ['持仓数量', privacyText(formatMoneyAmount(item.quantity, 0))],
     ['现价 / 成本', `${item.lastPrice == null ? '无行情' : formatPrice(item.lastPrice)} / ${formatPrice(item.costPrice)}`],
+    ['报价时间（北京时间）', formatQuoteTime(item.quoteAsOf)],
     ['市值 CNY', privacyText(formatMoneyAmount(item.marketValueCny, 2))],
-    ['当日盈亏', privacyText(formatSignedAmount(item.dayPnlCny))],
+    [state.holdingsBoard?.calendar?.tradingDay === false && item.board !== 'hk_connect' ? '最近交易日盈亏' : '当日盈亏', privacyText(formatSignedAmount(item.dayPnlCny))],
     ['持仓浮动盈亏', privacyText(formatSignedAmount(item.positionPnlCny))],
   ]) {
     grid.append(Object.assign(document.createElement('dt'), { textContent: dt }), Object.assign(document.createElement('dd'), { textContent: dd }));
@@ -7122,11 +7553,18 @@ function renderTools() {
     button.type = 'button';
     button.className = 'tool-item';
     button.disabled = !tool.ready;
-    const mark = tool.icon ? icon(tool.icon) : tool.title.slice(0, 1);
-    button.innerHTML = `<span class="tool-icon">${mark}</span><strong>${tool.title}</strong><small>${tool.desc}</small>`;
+    const mark = (tool.icon && icon(tool.icon)) || tool.title.slice(0, 1);
+    button.innerHTML = `<span class="tool-icon">${mark}</span><strong>${tool.title}</strong><small>${tool.ready ? tool.desc : '暂未开放'}</small>`;
     button.addEventListener('click', () => {
       if (!tool.ready) return;
       if (tool.action === 'compose') return openPage('publish');
+      if (tool.action === 'bilibili') {
+        openPage('source', 'bilibili');
+        loadBilibiliFeed().then(() => {
+          if (state.pageKind === 'source' && state.pageId === 'bilibili') renderSourcePage();
+        }).catch(error => showToast(error.message));
+        return;
+      }
       if (tool.action === 'settings') return setView('settings');
       if (viewCopy[tool.action]) return setView(tool.action);
       showToast('这项能力将在闭环稳定后接入');
@@ -7393,15 +7831,49 @@ async function loadAskSessions() {
     }));
     return;
   }
-  const payload = await api('/api/v1/agent/sessions?limit=50');
-  state.askSessions = payload.sessions || [];
-  adoptPendingRuns(payload.pendingRuns || [], { replaceLive: true });
+  if (loadAskSessions.pending) return loadAskSessions.pending;
+  state.askSessionsLoading = true;
+  state.askSessionsError = '';
   renderAskRecords();
+  loadAskSessions.pending = (async () => {
+    try {
+      const payload = await api('/api/v1/agent/sessions?limit=50');
+      state.askSessions = payload.sessions || [];
+      state.askSessionsLoaded = true;
+      adoptPendingRuns(payload.pendingRuns || [], { replaceLive: true });
+    } catch (error) {
+      state.askSessionsError = error.message;
+      throw error;
+    } finally {
+      state.askSessionsLoading = false;
+      loadAskSessions.pending = null;
+      renderAskRecords();
+    }
+  })();
+  return loadAskSessions.pending;
 }
 
 async function loadAskSession(sessionId) {
   if (!state.session) return;
-  const payload = await api(`/api/v1/agent/sessions/${sessionId}`);
+  const request = ++state.askDetailRequest;
+  if (state.askDetail?.session?.id !== sessionId) {
+    state.askDetail = null;
+    renderAskSession();
+    renderViewState(elements['ask-read-state'], { kind: 'loading', title: '正在读取问答…' });
+  }
+  let payload;
+  try {
+    payload = await api(`/api/v1/agent/sessions/${sessionId}`);
+  } catch (error) {
+    if (request === state.askDetailRequest && state.askSessionId === sessionId) {
+      renderViewState(elements['ask-read-state'], { kind: 'error', title: '问答读取失败', message: error.message,
+        action: '重试', onAction: () => loadAskSession(sessionId).catch(() => {}) });
+    }
+    throw error;
+  }
+  if (request !== state.askDetailRequest || state.askSessionId !== sessionId) return;
+  renderViewState(elements['ask-read-state'], { kind: 'success' });
+  elements['ask-read-state'].replaceChildren();
   state.askDetail = { session: payload.session, exchanges: payload.exchanges || [] };
   const pending = (payload.exchanges || [])
     .filter((item) => item.status === 'queued' || item.status === 'running')
@@ -7471,6 +7943,9 @@ function syncAskKeyboard() {
   const keyboard = typing && covered > 48;
   document.body.classList.toggle('is-ask-keyboard', keyboard);
   document.documentElement.style.setProperty('--ask-kb', `${keyboard ? covered : 0}px`);
+  const composingInspiration = document.body.dataset.view === 'inspire' && document.activeElement === elements['note-body'];
+  document.body.classList.toggle('is-inspire-keyboard', composingInspiration && covered > 48);
+  document.documentElement.style.setProperty('--inspire-kb', `${composingInspiration && covered > 48 ? covered : 0}px`);
 }
 
 function focusAskComposer() {
@@ -7498,11 +7973,16 @@ function openAskSession(sessionId) {
 
 function renderAskRecords() {
   const list = elements['ask-session-list'];
+  if (state.askSessionsError || !state.askSessionsLoaded) {
+    renderViewState(list, { kind: state.askSessionsError ? 'error' : 'loading',
+      title: state.askSessionsError ? '问答历史读取失败' : '正在读取问答历史…',
+      message: state.askSessionsError, action: '重试', onAction: () => loadAskSessions().catch(() => {}) });
+    return;
+  }
+  renderViewState(list, { kind: 'success' });
   if (!state.askSessions.length) {
-    list.replaceChildren(Object.assign(document.createElement('div'), {
-      className: 'empty-state',
-      textContent: '还没有 AI 记录。点上方「开始提问」或右上角 + 开一次新的问答。',
-    }));
+    renderViewState(list, { kind: 'empty', title: '还没有问答记录', message: '用「新提问」开始一次问答。',
+      action: '新提问', onAction: () => openAskSession('new') });
     return;
   }
   const nodes = [];
@@ -7987,6 +8467,7 @@ async function saveAnswerAsKnowledge(runId, button) {
 }
 
 function renderAskSession() {
+  if (state.askSessionId === 'new') elements['ask-read-state'].replaceChildren();
   const isNew = state.askSessionId === 'new';
   const exchanges = state.askDetail?.exchanges || [];
   const live = [
@@ -8326,6 +8807,86 @@ let reportDate = '';
 let reportHistory = { items: [], loaded: false, error: '' };
 let reportDay = { date: '', brief: null, loaded: false, error: '' };
 
+const briefPage = createBriefPage ? createBriefPage({
+  api, session: () => state.session, active: () => document.body.dataset.view === 'report',
+  toast: showToast, openDialog, releaseDialogScroll,
+  adjustScroll: delta => {
+    if (document.body.classList.contains('is-dialog-open')) {
+      pageScrollY+=delta; document.body.style.top=`-${pageScrollY}px`;
+    } else window.scrollBy(0,delta);
+  },
+  dailyReference: dailyBriefItemReference, isReferenced, toggleReference,
+  canReadSavedSource: material => (material.sourceRefs || []).some(ref=>ref.type==='content-item' || ref.type==='media-body'),
+  async readSavedSource(material) {
+    const session=state.session;
+    const media=(material.sourceRefs || []).find(ref=>ref.type==='media-body');
+    if(media) {
+      const cached=state.mediaItems.find(item=>item.externalId===media.id);
+      const article=cached || (await api(`/api/v1/feed/media/article?externalId=${encodeURIComponent(media.id)}`)).item;
+      if(session!==state.session) return;
+      if(!article) throw new Error('已保存文章不存在');
+      openArticle(mediaAsItem(article));return;
+    }
+    const content=(material.sourceRefs || []).find(ref=>ref.type==='content-item');
+    if (!content) throw new Error('这份材料没有对应的站内文章');
+    const cached=findFeedPost({resourceId:content.id});
+    if (cached) openArticle(cached);
+    else {const {item}=await api(`/api/v1/content-items/${encodeURIComponent(content.id)}`);if(session===state.session) openArticle(contentItemAsPost(item));}
+  },
+  latestBrief: () => dailyBriefSnapshot.brief,
+  renderLegacy: (root,brief) => renderBriefCards(root,brief,{compact:true,showIntro:false}),
+  renderManagement: renderBriefManagement,
+}) : {
+  epoch:0, stop() {this.epoch++;}, reset() {this.epoch++;elements['report-list']?.replaceChildren();},
+  state: {timezone:'Asia/Shanghai'},
+  async mount(root,{date='',history=false}={}) {
+    const epoch=++this.epoch;
+    const session=state.session;if(!session)return;
+    root.replaceChildren(Object.assign(document.createElement('p'),{className:'section-kicker',textContent:'简报新版等待服务重载，当前仍可阅读已保存的日报与小时摘选。'}));
+    if(history) {await loadReportHistory();if(session!==state.session || epoch!==this.epoch)return;renderReportHistory(root);return;}
+    const {brief}=await api(date ? `/api/v1/reports/daily/brief?date=${encodeURIComponent(date)}` : '/api/v1/reports/daily/latest/brief');
+    if(session!==state.session || epoch!==this.epoch)return;
+    if(brief) renderBriefCards(root,brief);
+    else root.append(Object.assign(document.createElement('p'),{textContent:'尚无已发布日报。'}));
+    renderHourlyDigestBrowser(root);
+  },
+};
+
+function renderBriefManagement(root,date,brief,mode,hours) {
+  const status=document.createElement('p');status.textContent='正在读取处理状态…';root.append(status);
+  api(`/api/v1/reports/daily/analysis/status?date=${encodeURIComponent(date)}`).then(({analysis})=>{
+    if (!root.isConnected) return;
+    status.textContent=analysis?.status==='running' ? '日报正在处理，已发布版本继续可读。' :
+      analysis?.status==='failed' ? '本轮日报处理失败，已发布版本继续可读。' : analysis ? '当前没有正在执行的日报任务。' : '本日尚无日报处理记录。';
+    if (analysis?.status==='failed' && state.session?.role==='desktop') root.append(createBriefRetry(date,'resume'));
+  }).catch(()=>{if(root.isConnected) status.textContent='处理状态读取失败，可稍后重试；已载入内容继续可读。';});
+  if (brief?.coverage) for (const c of brief.coverage) root.append(Object.assign(document.createElement('p'),{
+    textContent:`${c.sourceName || c.sourceId}：完整读取 ${c.read || 0}，未完整读取 ${c.unread || 0}，失败 ${c.failed}`,
+  }));
+  if (state.session?.role!=='desktop') return;
+  root.append(createBriefRetry(date,'refresh'));
+  if (brief) root.append(createBriefRetry(brief.reportDate,'rewrite'));
+  if (mode==='hourly') {
+    const select=document.createElement('select');select.setAttribute('aria-label','选择要重新整理的小时');
+    const end=Math.floor(Date.now()/3600000)*3600000;
+    const starts=[...new Set([...hours.map(h=>h.window.startAt),...Array.from({length:24},(_,i)=>end-(i+1)*3600000)])].sort((a,b)=>b-a);
+    for (const start of starts) {const option=document.createElement('option');option.value=String(start);option.textContent=new Date(start).toLocaleString('zh-CN',{timeZone:briefPage.state.timezone});select.append(option);}
+    if(briefPage.state.hourStart!==null) select.value=String(briefPage.state.hourStart);
+    const generate=document.createElement('button');generate.type='button';generate.className='brief-button';generate.textContent='继续处理所选小时';
+    generate.addEventListener('click',async()=>{generate.disabled=true;try {await api('/api/v1/reports/hourly/generate',{method:'POST',body:JSON.stringify({hourStart:Number(select.value)})});showToast('已进入后台队列，稍后检查更新');}catch(error){showToast(error.message);}finally{generate.disabled=false;}});
+    const rewrite=document.createElement('button');rewrite.type='button';rewrite.className='brief-button';rewrite.textContent='只重编所选小时正文';
+    const saved=()=>hours.find(h=>h.window.startAt===Number(select.value));
+    const updateRewrite=()=>{rewrite.disabled=!saved();};select.addEventListener('change',updateRewrite);updateRewrite();
+    rewrite.addEventListener('click',async()=>{
+      const snapshot=saved();if(!snapshot)return;rewrite.disabled=true;
+      try{await api('/api/v1/reports/hourly/generate',{method:'POST',body:JSON.stringify({hourStart:snapshot.window.startAt,mode:'rewrite',snapshotId:snapshot.id})});showToast('已安排重编冻结正文，原稿继续可读');}
+      catch(error){showToast(error.message);}finally{if(rewrite.isConnected)updateRewrite();}
+    });
+    root.append(select,generate,rewrite);
+  }
+  renderTrackingEditor(root);
+}
+
 function shanghaiDateKey(now = new Date()) {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai',
@@ -8364,37 +8925,40 @@ function briefIsCurrent(brief, now = new Date()) {
 }
 
 async function loadDailyBrief() {
+  const session=state.session;
   const payload = await api('/api/v1/reports/daily/latest/brief');
+  if (session!==state.session) return;
   dailyBriefSnapshot = { brief: payload.brief || null, loaded: true, error: '' };
   renderDailyBriefPeek();
-  if (document.body.dataset.view === 'report' && reportPane === 'today') renderReport();
 }
 
 async function loadReportHistory() {
+  const session=state.session;
   try {
     const payload = await api('/api/v1/reports/daily/briefs');
+    if (session!==state.session) return;
     reportHistory = { items: Array.isArray(payload.briefs) ? payload.briefs : [], loaded: true, error: '' };
   } catch (error) {
+    if (session!==state.session) return;
     reportHistory = { items: [], loaded: true, error: error instanceof Error ? error.message : '历史没有读出来' };
   }
-  if (document.body.dataset.view === 'report' && reportPane === 'history') renderReport();
 }
 
 async function loadReportDay(date) {
+  const session=state.session;
   try {
     const payload = await api(`/api/v1/reports/daily/brief?date=${encodeURIComponent(date)}`);
+    if (session!==state.session) return;
     reportDay = { date, brief: payload.brief || null, loaded: true, error: '' };
   } catch (error) {
+    if (session!==state.session) return;
     reportDay = { date, brief: null, loaded: true, error: error instanceof Error ? error.message : '这一天没有读出来' };
   }
   if (document.body.dataset.view === 'report' && reportPane === 'day' && reportDate === date) renderReport();
 }
 
 function ensureReportPane() {
-  renderReport();
-  if (reportPane === 'history') return loadReportHistory();
-  if (reportPane === 'day') return loadReportDay(reportDate);
-  return loadDailyBrief();
+  return renderReport();
 }
 
 function renderDailyBriefPeek() {
@@ -8422,6 +8986,16 @@ function renderDailyBriefPeek() {
   const summary = document.createElement('p');
   summary.textContent = brief.overview;
   root.append(summary);
+  if(brief.informationItems) {
+    const list=document.createElement('ul');let characters=0;
+    for(const item of brief.informationItems) {
+      if(characters+item.sentence.length>1000) break;
+      characters+=item.sentence.length;list.append(Object.assign(document.createElement('li'),{textContent:item.sentence}));
+    }
+    root.append(list);
+    const more=document.createElement('button');more.type='button';more.className='text-button';more.textContent=`查看全部 ${brief.informationItems.length} 条及来源`;
+    more.addEventListener('click',()=>setView(`report/${brief.reportDate}`));root.append(more);
+  }
 }
 
 function renderReportTabs() {
@@ -8435,7 +9009,7 @@ function dailyBriefItemReference(brief, item) {
     resourceId: `${brief.reportDate}/${item.candidateId}`,
     revision: brief.generatedAt,
     label: item.headline,
-    preview: `${brief.reportDate} · 日报观点\n${item.headline}\n\n为什么值得看：${item.whyItMatters}\n\n接着看：${item.watchNext}`,
+    preview: `${brief.reportDate} · 日报观点\n${item.headline}\n\n${item.body || item.whyItMatters}\n\n接着看：${item.watchNext}`,
   };
 }
 
@@ -8452,7 +9026,8 @@ function syncReportReferenceButtons() {
   });
 }
 
-function renderBriefCards(root, brief) {
+function renderBriefCards(root, brief, options={}) {
+  if(brief.schemaVersion===2) {renderAnalysisBrief(root,brief,options);return;}
   const head = document.createElement('p');
   head.className = 'section-kicker';
   head.textContent = `${briefDateLabel(brief.reportDate)} · ${brief.items?.length || 0} 条`;
@@ -8494,6 +9069,155 @@ function renderBriefCards(root, brief) {
   }
 }
 
+function createDailyEvidenceDetail(brief,e,index) {
+      const detail=document.createElement('details'),summary=document.createElement('summary');
+      summary.textContent=`原文证据 ${index+1}`;detail.append(summary);
+      detail.addEventListener('toggle',async()=>{
+        if(!detail.open || detail.dataset.loaded) return;
+        detail.dataset.loaded='loading';
+        try {
+          const params=new URLSearchParams(e.snapshotId ? e : {date:brief.reportDate,revision:String(brief.generatedAt),materialId:e.materialId,paragraphId:e.paragraphId});
+          const {evidence}=await api(`/api/v1/reports/${e.snapshotId ? 'hourly' : 'daily'}/evidence?${params}`);
+          const m=evidence.material,p=evidence.paragraph;
+          detail.append(Object.assign(document.createElement('p'),{textContent:`${m.title} · 作者 ${m.author || '未提供'} · 来源 ${m.publisher || '未提供'} · ${m.contentLevel}${p.role==='comment' ? ' · 评论段落，评论作者见原文' : p.role==='summary' ? ' · 摘要片段' : ''}${m.late ? ' · 截止后获得或更新的补充材料' : ''}`}));
+          detail.append(Object.assign(document.createElement('small'),{textContent:`发布时间 ${m.publishedAt ? new Date(m.publishedAt).toLocaleString() : '未知'} · 获得时间 ${new Date(m.obtainedAt).toLocaleString()} · 版本 ${m.version} · 段落 ${p.id} · ${m.hash.slice(0,12)}`}));
+          detail.append(Object.assign(document.createElement('p'),{textContent:p.text}));
+          for(const adjacent of evidence.context || []) if(adjacent.id!==p.id) detail.append(Object.assign(document.createElement('p'),{className:'section-kicker',textContent:`上下文：${adjacent.text}`}));
+          if(/^https?:\/\//.test(m.sourceUrl)) {const a=document.createElement('a');a.href=m.sourceUrl;a.target='_blank';a.rel='noopener noreferrer';a.textContent='打开来源';detail.append(a);}
+          detail.dataset.loaded='done';
+        } catch(error) {detail.append(Object.assign(document.createElement('p'),{textContent:error.message || '证据未能读取'}));detail.dataset.loaded='failed';}
+      });return detail;
+}
+
+function renderAnalysisBrief(root,brief,{compact=false,showIntro=true}={}) {
+  if(!compact) root.append(Object.assign(document.createElement('p'),{className:'section-kicker',textContent:`${briefDateLabel(brief.reportDate)} · 材料冻结 ${new Date(brief.frozenAt).toLocaleString()} · 成稿 ${new Date(brief.generatedAt).toLocaleString()}`}));
+  if(showIntro) root.append(Object.assign(document.createElement('p'),{className:compact ? 'brief-overview' : '',textContent:brief.overview}));
+  if(brief.informationItems) renderInformationItems(root,brief.informationItems,brief,true);
+  for(const section of brief.sections || []) {
+    const card=document.createElement('article');card.className=compact ? 'brief-legacy-entry' : 'note-card';
+    card.append(Object.assign(document.createElement('strong'),{textContent:section.title}));
+    const body=document.createElement('div');renderMarkdownInto(body,section.body);card.append(body);
+    for(const [index,e] of section.evidence.entries()) card.append(createDailyEvidenceDetail(brief,e,index));
+    const item=brief.items.find(i=>i.candidateId===section.id);
+    if(item) {const cite=document.createElement('button');const ref=dailyBriefItemReference(brief,item);cite.type='button';cite.className='text-button report-ref-cite';cite.dataset.resourceId=ref.resourceId;cite.dataset.revision=String(ref.revision);cite.dataset.headline=item.headline;cite.textContent=isReferenced(ref) ? '取消引用' : '引用';cite.addEventListener('click',()=>toggleReference(ref));card.append(cite);}
+    root.append(card);
+  }
+  if(brief.trackingUpdates?.length) {
+    const card=document.createElement('article');card.className=compact ? 'brief-legacy-entry' : 'note-card';card.append(Object.assign(document.createElement('strong'),{textContent:'持续关注问题'}));
+    const labels={supported:'得到支持',challenged:'受到挑战',unchanged:'未改变','no-new-evidence':'本期没有新证据',insufficient:'材料不足','source-failed':'相关来源读取失败'};
+    for(const update of brief.trackingUpdates) {
+      if(update.question) card.append(Object.assign(document.createElement('strong'),{textContent:update.question}));
+      card.append(Object.assign(document.createElement('p'),{textContent:`${labels[update.status]}：${update.judgment}\n下一验证条件：${update.nextCheck}`}));
+      for(const [index,e] of update.evidence.entries()) card.append(createDailyEvidenceDetail(brief,e,index));
+    }
+    root.append(card);
+  } else if(!compact) root.append(Object.assign(document.createElement('p'),{textContent:'持续关注问题尚未配置。'}));
+  if(brief.nextWatch && !compact) root.append(Object.assign(document.createElement('p'),{textContent:`下一步观察：${brief.nextWatch}`}));
+  const coverage=document.createElement('details');coverage.append(Object.assign(document.createElement('summary'),{textContent:'材料覆盖与限制'}));
+  const table=document.createElement('table');table.className='daily-coverage';
+  const header=document.createElement('tr');for(const label of ['来源','窗口可用','快照收录','全文','仅摘要等','完整读取','未完整读取','失败/状态']) header.append(Object.assign(document.createElement('th'),{textContent:label}));table.append(header);
+  for(const c of brief.coverage || []) {const tr=document.createElement('tr');tr.title=c.note;for(const value of [c.sourceName || c.sourceId,c.available,c.included,c.full,c.summaryOnly,c.read ?? 0,c.unread ?? c.omitted,`${c.failed}/${c.status}`]) tr.append(Object.assign(document.createElement('td'),{textContent:String(value)}));table.append(tr);}
+  if(compact) {
+    coverage.append(Object.assign(document.createElement('p'),{textContent:`材料冻结 ${new Date(brief.frozenAt).toLocaleString()} · 成稿 ${new Date(brief.generatedAt).toLocaleString()}`}));
+    if(brief.nextWatch)coverage.append(Object.assign(document.createElement('p'),{textContent:`下一步观察：${brief.nextWatch}`}));
+  }
+  coverage.append(table,Object.assign(document.createElement('p'),{textContent:brief.limitations || ''}));root.append(coverage);
+}
+
+function renderInformationItems(root,items,brief,allowReference=false) {
+  const list=document.createElement('ol');list.className='information-items';
+  for(const item of items) {
+    const row=document.createElement('li');row.append(Object.assign(document.createElement('p'),{textContent:item.sentence}));
+    if(allowReference) row.dataset.reportReferenceId=`${brief.reportDate}/${item.id}`;
+    for(const [index,e] of item.evidence.entries()) row.append(createDailyEvidenceDetail(brief,e,index));
+    if(allowReference) {
+      const ref=dailyBriefItemReference(brief,{candidateId:item.id,headline:item.sentence.slice(0,120)});
+      const cite=document.createElement('button');cite.type='button';cite.className='text-button report-ref-cite';
+      cite.dataset.resourceId=ref.resourceId;cite.dataset.revision=String(ref.revision);cite.dataset.headline=item.sentence;
+      cite.textContent=isReferenced(ref) ? '取消引用' : '引用';cite.addEventListener('click',()=>toggleReference(ref));row.append(cite);
+    }
+    list.append(row);
+  }
+  root.append(list);
+}
+
+function renderHourlyDigestBrowser(root) {
+  const panel=document.createElement('details');panel.className='note-card';
+  panel.append(Object.assign(document.createElement('summary'),{textContent:'小时信息摘选'}));root.append(panel);
+  panel.addEventListener('toggle',async()=>{
+    if(!panel.open || panel.dataset.loaded) return;panel.dataset.loaded='loading';
+    const hour=document.createElement('input');hour.type='datetime-local';hour.step='3600';hour.setAttribute('aria-label','选择已结束小时（本机时区）');
+    const endAt=Math.floor(Date.now()/3600000)*3600000;
+    const local=new Date(endAt-3600000);hour.value=new Date(local.getTime()-local.getTimezoneOffset()*60000).toISOString().slice(0,16);
+    const read=document.createElement('button');read.type='button';read.className='text-button';read.textContent='查看这个小时';
+    const output=document.createElement('div');panel.append(hour,read,output);
+    let requestVersion=0;
+    const load=async start=>{
+      const currentRequest=++requestVersion;
+      output.replaceChildren();read.disabled=true;
+      try {
+        const {digest}=await api(`/api/v1/reports/hourly?hourStart=${start}`);
+        if(currentRequest!==requestVersion) return;
+        if(!digest) output.append(Object.assign(document.createElement('p'),{textContent:'这个小时尚无摘选记录。'}));
+        else {
+          const format=at=>new Date(at).toLocaleString('zh-CN',{timeZone:digest.timezone});
+          output.append(Object.assign(document.createElement('p'),{textContent:`${format(digest.window.startAt)} — ${format(digest.window.endAt)} · ${digest.timezone} · ${digest.items.length} 条`}));
+          output.append(Object.assign(document.createElement('small'),{textContent:'按来源发布/入库时间归属；生成于 '+format(digest.generatedAt)}));
+          if(digest.items.length) renderInformationItems(output,digest.items,{},false);
+          else output.append(Object.assign(document.createElement('p'),{textContent:'已读材料未提炼出值得保留的信息。'}));
+          const coverage=document.createElement('details');coverage.append(Object.assign(document.createElement('summary'),{textContent:'读取范围与限制'}));
+          for(const c of digest.coverage) coverage.append(Object.assign(document.createElement('p'),{textContent:`${c.sourceName || c.sourceId}：可用 ${c.available}，完整读取 ${c.read || 0}，未完整读取 ${c.unread || 0}，失败 ${c.failed}`}));
+          for(const warning of digest.warnings) coverage.append(Object.assign(document.createElement('p'),{textContent:warning}));
+          output.append(coverage);
+        }
+        if(state.session?.role==='desktop') {
+          const generate=document.createElement('button');generate.type='button';generate.className='text-button';generate.textContent='重新提炼这个小时';
+          generate.addEventListener('click',async()=>{generate.disabled=true;try {await api('/api/v1/reports/hourly/generate',{method:'POST',body:JSON.stringify({hourStart:start})});showToast('已进入后台队列，稍后点击查看');}catch(error){showToast(error.message);}finally{generate.disabled=false;}});output.append(generate);
+        }
+      } catch(error) {if(currentRequest===requestVersion) output.append(Object.assign(document.createElement('p'),{textContent:error.message}));}
+      finally {if(currentRequest===requestVersion) read.disabled=false;}
+    };
+    read.addEventListener('click',()=>{const start=new Date(hour.value).getTime();if(!Number.isFinite(start) || start%3600000) {showToast('请选择整小时');return;}load(start);});
+    try {
+      const data=await api(`/api/v1/reports/hourly/search?startAt=${endAt-24*3600000}&endAt=${endAt}&limit=1`);
+      const recent=document.createElement('div');
+      for(const h of data.hours) {const button=document.createElement('button');button.type='button';button.className='text-button';button.textContent=`${new Date(h.window.startAt).toLocaleString()} · ${h.itemCount} 条`;button.addEventListener('click',()=>load(h.window.startAt));recent.append(button);}
+      if(!data.hours.length) recent.append(Object.assign(document.createElement('p'),{textContent:'尚无最近24小时的摘选；后台按小时生成。'}));
+      panel.append(recent);panel.dataset.loaded='done';
+    } catch(error) {panel.append(Object.assign(document.createElement('p'),{textContent:error.message}));panel.dataset.loaded='failed';}
+  });
+}
+
+function renderTrackingEditor(root) {
+  const details=document.createElement('details');details.className='note-card report-settings';details.append(Object.assign(document.createElement('summary'),{textContent:'配置持续关注问题'}));root.append(details);
+  details.addEventListener('toggle',async()=>{
+    if(!details.open || details.dataset.loaded) return;details.dataset.loaded='loading';
+    try {
+      const {questions}=await api('/api/v1/reports/daily/tracking');
+      const rows=document.createElement('div');details.append(rows);
+      function add(q={id:crypto.randomUUID(),question:'',enabled:false,baseline:'',pending:''}) {
+        const field=document.createElement('fieldset');field.dataset.questionId=q.id;
+        const enabled=document.createElement('input');enabled.type='checkbox';enabled.checked=q.enabled;
+        const label=document.createElement('label');label.append(enabled,document.createTextNode('明确启用'));field.append(label);
+        for(const [key,name] of [['question','关注的问题'],['baseline','当前判断（可留空）'],['pending','尚待验证内容（可留空）']]) {
+          const label=document.createElement('label');label.textContent=name;const input=document.createElement('textarea');input.value=q[key] || '';input.dataset.field=key;input.maxLength=key==='question' ? 1000 : key==='baseline' ? 3000 : 2000;label.append(input);field.append(label);
+        }
+        const remove=document.createElement('button');remove.type='button';remove.textContent='移除';remove.className='text-button';remove.addEventListener('click',()=>field.remove());field.append(remove);rows.append(field);
+      }
+      questions.forEach(add);
+      details.append(Object.assign(document.createElement('p'),{textContent:questions.length ? '仅明确启用的问题进入下一次汇集材料。' : '尚未配置；不会自动加入历史聊天或持仓主题。'}));
+      if(state.session?.role==='desktop') {
+        const addButton=document.createElement('button');addButton.type='button';addButton.textContent='新增问题';addButton.className='text-button';addButton.addEventListener('click',()=>add());
+        const save=document.createElement('button');save.type='button';save.textContent='保存关注问题';save.className='text-button';save.addEventListener('click',async()=>{
+          const questions=[...rows.querySelectorAll('fieldset')].map(field=>({id:field.dataset.questionId,enabled:field.querySelector('input').checked,...Object.fromEntries([...field.querySelectorAll('textarea')].map(i=>[i.dataset.field,i.value]))}));
+          save.disabled=true;try {await api('/api/v1/reports/daily/tracking',{method:'PUT',body:JSON.stringify({questions})});showToast('已保存，下次汇集材料时使用');}catch(error){showToast(error.message);}finally{save.disabled=false;}
+        });details.append(addButton,save);
+      } else rows.querySelectorAll('input,textarea,button').forEach(i=>{i.disabled=true;});
+      details.dataset.loaded='done';
+    } catch(error){details.append(Object.assign(document.createElement('p'),{textContent:error.message}));details.dataset.loaded='failed';}
+  });
+}
+
 function renderReportHistory(root) {
   if (!reportHistory.loaded) {
     root.append(Object.assign(document.createElement('p'), { className: 'section-kicker', textContent: '正在读取' }));
@@ -8525,58 +9249,18 @@ function renderReportHistory(root) {
 function renderReport() {
   const root = elements['report-list'];
   if (!root) return;
-  renderReportTabs();
-  root.replaceChildren();
-  if (reportPane === 'history') {
-    renderReportHistory(root);
-    return;
-  }
-  if (reportPane === 'day') {
-    if (!reportDay.loaded || reportDay.date !== reportDate) {
-      root.append(Object.assign(document.createElement('p'), { className: 'section-kicker', textContent: '正在读取' }));
-      return;
-    }
-    if (reportDay.error) {
-      root.append(Object.assign(document.createElement('p'), { textContent: reportDay.error }));
-      return;
-    }
-    if (!reportDay.brief) {
-      root.append(Object.assign(document.createElement('p'), { textContent: `${briefDateLabel(reportDate)} 没有筛选结果。` }));
-      return;
-    }
-    renderBriefCards(root, reportDay.brief);
-    return;
-  }
-  if (!dailyBriefSnapshot.loaded) {
-    root.append(Object.assign(document.createElement('p'), { className: 'section-kicker', textContent: '正在读取' }));
-    return;
-  }
-  const brief = dailyBriefSnapshot.brief;
-  if (!brief) {
-    root.append(Object.assign(document.createElement('p'), {
-      textContent: '还没有筛选结果。早上 8 点会自动生成。',
-    }));
-    root.append(createBriefRetry());
-    return;
-  }
-  if (!briefIsCurrent(brief)) {
-    const note = document.createElement('p');
-    note.className = 'section-kicker';
-    note.textContent = `今天的筛选还没生成。下面是 ${briefDateLabel(brief.reportDate)} 的结果。`;
-    root.append(note, createBriefRetry());
-  }
-  renderBriefCards(root, brief);
+  return briefPage.mount(root,{date:reportPane==='day' ? reportDate : '',history:reportPane==='history'});
 }
 
-function createBriefRetry() {
+function createBriefRetry(date=reportPane==='day' ? reportDate : expectedBriefDate(new Date()),mode='refresh') {
   if (state.session?.role !== 'desktop') return document.createElement('span');
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'text-button';
-  button.textContent = '再生成一次';
+  button.textContent = mode==='rewrite' ? '固定材料，仅重新撰写' : mode==='resume' ? '继续本轮分析' : '重新汇集材料并生成';
   button.addEventListener('click', () => {
     button.disabled = true;
-    api('/api/v1/reports/daily/brief/generate', { method: 'POST', body: '{}' })
+    api('/api/v1/reports/daily/brief/generate', { method: 'POST', body: JSON.stringify({date,mode}) })
       .then(() => showToast('已排队，生成后刷新日报'))
       .catch((error) => showToast(error instanceof Error ? error.message : '没能重新生成'))
       .finally(() => { button.disabled = false; });
@@ -10112,6 +10796,13 @@ function renderNotes() {
 function renderKnowledge() {
   closeNoteSwipes();
   elements['knowledge-list'].replaceChildren();
+  if (state.knowledgeError || !state.knowledgeLoaded) {
+    renderViewState(elements['knowledge-list'], { kind: state.knowledgeError ? 'error' : 'loading',
+      title: state.knowledgeError ? '知识库读取失败' : '正在读取知识库…', message: state.knowledgeError,
+      action: '重试', onAction: () => loadKnowledge().catch(() => {}) });
+    return;
+  }
+  renderViewState(elements['knowledge-list'], { kind: 'success' });
   if (!state.knowledge.length) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
@@ -10119,7 +10810,13 @@ function renderKnowledge() {
     elements['knowledge-list'].append(empty);
     return;
   }
-  for (const item of state.knowledge) {
+  const query = state.knowledgeQuery.trim().toLowerCase();
+  const visible = state.knowledge.filter(item => !query || `${item.title} ${item.body}`.toLowerCase().includes(query));
+  if (!visible.length) {
+    renderViewState(elements['knowledge-list'], { kind: 'empty', title: '没有匹配的知识', message: '试试其他关键词。' });
+    return;
+  }
+  for (const item of visible) {
     const row = document.createElement('div');
     row.className = 'swipe-item';
     const actions = document.createElement('div');
@@ -10207,9 +10904,23 @@ async function loadNotes() {
 
 async function loadKnowledge() {
   if (!state.session) return;
-  const payload = await api('/api/v1/knowledge');
-  state.knowledge = payload.items;
+  if (loadKnowledge.pending) return loadKnowledge.pending;
+  state.knowledgeError = '';
   renderKnowledge();
+  loadKnowledge.pending = (async () => {
+    try {
+      const payload = await api('/api/v1/knowledge');
+      state.knowledge = payload.items || [];
+      state.knowledgeLoaded = true;
+    } catch (error) {
+      state.knowledgeError = error.message;
+      throw error;
+    } finally {
+      loadKnowledge.pending = null;
+      renderKnowledge();
+    }
+  })();
+  return loadKnowledge.pending;
 }
 
 function openSearch() {
@@ -10284,7 +10995,7 @@ async function translateXBatch({ silent = false } = {}) {
     renderXToolbar();
     if (state.dialogPost) {
       const live = state.xItems.find((item) => item.id === state.dialogPost.id);
-      if (live) fillPostBody(elements['dialog-body'], postViewBody(xAsItem(live)));
+      if (live) fillPostBody(elements['dialog-body'], postViewBody(xAsItem(live)), xAsItem(live));
       syncDialogTranslation(state.dialogPost);
     }
     const count = pending.filter((post) => translationFor(post)).length;
@@ -10369,7 +11080,7 @@ async function translatePost(post) {
   });
   renderPosts();
   if (state.dialogPost?.id === post.id) {
-    fillPostBody(elements['dialog-body'], postViewBody(post));
+    fillPostBody(elements['dialog-body'], postViewBody(post), post);
     syncDialogTranslation(post);
   }
   if (translation.engine === 'gemini') {
@@ -10571,36 +11282,25 @@ async function loadMediaFeed({ refresh = false, append = false } = {}) {
     showToast('请先在设置中完成设备连接');
     return;
   }
-  state.mediaLoading = true;
-  state.mediaRefreshing = Boolean(refresh);
-  renderMediaToolbar();
+  const channel = state.mediaChannel;
+  const view = state.mediaView;
   try {
-    const params = new URLSearchParams({ platform: 'media', channel: state.mediaChannel });
-    params.set('view',state.mediaView);
-    if (append && state.mediaNextOffset != null) params.set('offset',String(state.mediaNextOffset));
-    if (refresh) params.set('refresh', '1');
-    const payload = await api(`/api/v1/feed/media?${params}`, { timeoutMs: refresh ? 180_000 : 15_000 });
-    state.mediaItems = append ? [...state.mediaItems,...(payload.feed?.items || [])] : payload.feed?.items || [];
-    state.mediaCounts = payload.feed?.counts || {};
-    state.mediaNextOffset = payload.feed?.nextOffset ?? null;
-    if (payload.jobId) showToast('同步已排入后台任务');
-    state.mediaSources = payload.feed?.sources || [];
-    state.mediaNote = payload.feed?.note || '';
-    state.mediaBudget = payload.feed?.budget || null;
-    hydrateFeedTranslations(state.mediaItems.map(mediaAsItem));
-    await loadFeedTaggings(state.mediaItems, 'media-index');
-    renderPosts();
-    renderMediaToolbar();
-    if (state.pageKind === 'article') renderArticlePage();
-    return payload.feed;
+    const request = mediaFeedLoader.load({ refresh, append });
+    ensureTagCatalog().then(() => {
+      renderPosts();
+      if (state.pageKind === 'article') renderArticlePage();
+    }).catch(() => {});
+    return await request;
   } catch (error) {
+    if (error.status === 401 || error.status === 403) {
+      showUnpairedPage('设备授权已失效，请重新连接');
+      throw error;
+    }
+    if (channel !== state.mediaChannel || view !== state.mediaView) return null;
     state.mediaNote = error instanceof Error ? error.message : '媒体索引加载失败';
+    state.mediaError = state.mediaNote;
     renderMediaToolbar();
     throw error;
-  } finally {
-    state.mediaLoading = false;
-    state.mediaRefreshing = false;
-    renderMediaToolbar();
   }
 }
 
@@ -10652,7 +11352,8 @@ async function loadTrendForceFeed({ refresh = false } = {}) {
     const params = new URLSearchParams({ platform: 'trendforce' });
     if (refresh) params.set('refresh', '1');
     const payload = await api(`/api/v1/feed/trendforce?${params}`, { timeoutMs: refresh ? 180_000 : 15_000 });
-    state.trendforceItems = (payload.feed?.items || []).filter((item) => !isHiddenFeedItem(item));
+    state.trendforceItems = [];
+    if(state.feedPlatform==='media')await loadMediaFeed();
     state.trendforceNote = payload.feed?.note || '';
     hydrateFeedTranslations(state.trendforceItems);
     await loadFeedTaggings(state.trendforceItems);
@@ -10660,7 +11361,7 @@ async function loadTrendForceFeed({ refresh = false } = {}) {
     renderTrendForceToolbar();
     if (refresh) {
       if (payload.feed?.mode === 'error') showToast(payload.feed.note || 'TrendForce 抓取失败');
-      else showToast(payload.feed?.note || `已写入 ${state.trendforceItems.length} 条`);
+      else showToast(payload.jobId ? '采集已排入后台任务' : payload.feed?.note || '已读取保存内容');
     }
     return payload.feed;
   } catch (error) {
@@ -10695,6 +11396,7 @@ async function loadBilibiliFeed({ url = '', refresh = false } = {}) {
     await loadFeedTaggings(state.bilibiliItems);
     renderPosts();
     renderBilibiliToolbar();
+    if (state.pageKind === 'source' && state.pageId === 'bilibili') renderSourcePage();
     if (refresh) {
       if (payload.feed?.mode === 'unavailable' || payload.feed?.note === '没有') {
         showToast('没有');
@@ -10768,6 +11470,7 @@ async function loadMetrics() {
 }
 
 function refreshAfterStreamGap() {
+  if (state.feedPlatform === 'media') loadMediaFeed().catch(() => {});
   loadPosts().catch(() => {});
   loadXFeed({ refresh: false }).catch(() => {});
   loadXueqiuFeed({ refresh: false }).catch(() => {});
@@ -10825,6 +11528,19 @@ function connectStream() {
   state.stream.addEventListener('feed.item-translation.saved.v1',refreshMedia);
   state.stream.addEventListener('tagging.resource.saved.v1',refreshMedia);
   state.stream.addEventListener('job.completed',refreshMedia);
+  let admissionRefreshTimer;
+  state.stream.addEventListener('feed.capture.saved.v1',()=>{
+    clearTimeout(admissionRefreshTimer);
+    admissionRefreshTimer=setTimeout(()=>{
+      const view=document.body.dataset.view;
+      if(view!=='feed' && view!=='sources')return;
+      if(state.xItems.length || state.feedPlatform==='x')loadXFeed({autoTranslate:false}).catch(()=>{});
+      if(state.xueqiuItems.length || state.feedPlatform==='xueqiu')loadXueqiuFeed().catch(()=>{});
+      if(state.trendforceItems.length || state.feedPlatform==='trendforce')loadTrendforceFeed().catch(()=>{});
+      if(state.bilibiliItems.length || state.feedPlatform==='bilibili')loadBilibiliFeed().catch(()=>{});
+      refreshMedia();
+    },1200);
+  });
   state.stream.addEventListener('knowledge.ai-run.completed.v1', onAgentJobEvent);
   state.stream.addEventListener('knowledge.work-package.created.v1', () => {
     loadNotes().catch(() => {});
@@ -10898,7 +11614,7 @@ function paintAuthorizedChrome() {
   renderPlatformFilters();
   renderXToolbar();
   renderBilibiliToolbar();
-  setView(restoreLastLocationHash().slice(1));
+  setView(restoreLastLocationHash().slice(1), { replace: true });
 }
 
 async function readAuthorizedSession() {
@@ -10935,6 +11651,7 @@ async function completeAuthorizedStart(session) {
   state.extras.asia = readExtras('asia');
   state.extras.cn = readExtras('cn');
   state.bootstrapped = true;
+  if(state.pageKind==='hardware')renderPage();
   connectStream();
   logBehavior('app.open', { role: session.role });
   if (!completeAuthorizedStart.heartbeat) {
@@ -10944,21 +11661,27 @@ async function completeAuthorizedStart(session) {
       if (document.body.dataset.view === 'sources') loadMarket({ board: 'overview' }).catch(() => {});
       if (isQuotesView()) {
         if (state.tradePane === 'stocks') loadMarket().catch(() => {});
-        if (state.tradePane === 'assets') loadGlobalAssets().catch(() => {});
+        if (state.tradePane === 'assets') {if(state.assetClass!=='hardware')loadGlobalAssets().catch(() => {});loadHardwarePrices().catch(() => {});}
         if (state.tradePane === 'holdings') loadHoldings().catch(() => {});
       }
     }, 30_000);
   }
-  const startupLoads = [
-    syncHarmonyLocalInspirations().catch(() => {}),
-    loadSourceCatalog().catch(() => {}),
-    loadPosts().catch((error) => showToast(error.message)),
+  const mediaFirst = state.feedPlatform === 'media' && (document.body.dataset.view === 'feed' || state.pageKind === 'article');
+  const loadSecondaryFeeds = () => Promise.all([
     loadXFeed({ refresh: false }).catch(() => {}),
     loadXueqiuFeed({ refresh: false }).catch(() => {}),
     loadBilibiliFeed().catch(() => {}),
     loadNotes().catch(() => {}),
     loadKnowledge().catch(() => {}),
+  ]);
+  const primaryFeed = mediaFirst ? loadMediaFeed().catch(error => showToast(error.message)) : null;
+  const startupLoads = [
+    syncHarmonyLocalInspirations().catch(() => {}),
+    loadSourceCatalog().catch(() => {}),
+    loadPosts().catch((error) => showToast(error.message)),
+    mediaFirst ? primaryFeed : loadSecondaryFeeds(),
   ];
+  if (mediaFirst) primaryFeed.then(() => { if (state.session) loadSecondaryFeeds(); });
   if (document.body.dataset.view === 'ask') {
     startupLoads.push(syncAskView().catch((error) => showToast(error.message)));
   }
@@ -10970,7 +11693,7 @@ async function completeAuthorizedStart(session) {
   if (isQuotesView()) {
     startupLoads.push(syncTradePaneData().catch((error) => showToast(error.message)));
   }
-  if (document.body.dataset.view === 'sources' || document.body.dataset.view === 'feed') {
+  if (document.body.dataset.view === 'sources' || (document.body.dataset.view === 'feed' && !mediaFirst)) {
     startupLoads.push(loadSourcesPage().catch(() => {}));
   }
   if (document.body.dataset.view === 'report') {
@@ -10981,6 +11704,7 @@ async function completeAuthorizedStart(session) {
   }
   scheduleOverviewFocusWatch();
   await Promise.all(startupLoads);
+  if (document.body.dataset.view === 'page' && state.pageKind === 'article') renderArticlePage();
   if (document.body.dataset.view === 'feed') {
     restoreViewScroll('feed');
     restoreOpenFeedItem();
@@ -11106,25 +11830,7 @@ elements['reload-view']?.addEventListener('click', (event) => {
   reloadCurrentView().catch((error) => showToast(error.message));
 });
 elements['open-settings'].addEventListener('click', () => setView('settings'));
-elements['nav-back']?.addEventListener('click', () => {
-  if (document.body.dataset.view === 'sources' && state.overviewPane !== 'home') {
-    setOverviewPane('home');
-    return;
-  }
-  if (document.body.dataset.view === 'settings' && state.settingsPane === 'connections') {
-    setView('settings');
-    return;
-  }
-  if (document.body.dataset.view === 'inspire' && state.selectedWorkPackageId) {
-    setView('inspire/tasks');
-    return;
-  }
-  if (document.body.dataset.view === 'ask' && state.askSessionId) {
-    setView('ask');
-    return;
-  }
-  goBack();
-});
+elements['nav-back']?.addEventListener('click', navigateBack);
 elements['toggle-search']?.addEventListener('click', () => {
   state.showHeaderSearch = !state.showHeaderSearch;
   syncHeaderSearch();
@@ -11147,17 +11853,26 @@ elements['open-full-feed']?.addEventListener('click', () => setView('feed'));
 elements['open-daily-brief']?.addEventListener('click', () => setView('report'));
 document.getElementById('report-tab-today')?.addEventListener('click', () => setView('report'));
 document.getElementById('report-tab-history')?.addEventListener('click', () => setView('report/history'));
-elements['holdings-privacy']?.addEventListener('click', () => {
+function toggleAssetPrivacy() {
   state.privacy = !state.privacy;
   document.body.classList.toggle('privacy-on', state.privacy);
   setIconButton(elements['holdings-privacy'], state.privacy ? 'eye-off' : 'eye');
+  const label = state.privacy ? '显示金额' : '隐藏金额';
+  elements['holdings-privacy']?.setAttribute('aria-label', label);
+  const analysisButton = document.getElementById('analysis-privacy');
+  if (analysisButton) analysisButton.textContent = label;
   renderHoldings();
+  renderPersonalAssetDashboard();
+}
+elements['holdings-privacy']?.addEventListener('click', toggleAssetPrivacy);
+document.getElementById('analysis-privacy')?.addEventListener('click', toggleAssetPrivacy);
+document.getElementById('knowledge-filter')?.addEventListener('input', (event) => {
+  state.knowledgeQuery = event.currentTarget.value;
+  renderKnowledge();
 });
 elements['x-refresh']?.addEventListener('click', () => loadXFeed({ refresh: true }).catch((error) => showToast(error.message)));
 elements['xueqiu-refresh']?.addEventListener('click', () => loadXueqiuFeed({ refresh: true }).catch((error) => showToast(error.message)));
 elements['trendforce-refresh']?.addEventListener('click', () => loadTrendForceFeed({ refresh: true }).catch((error) => showToast(error.message)));
-elements['media-refresh']?.addEventListener('click', () => loadMediaFeed({ refresh: true }).catch((error) => showToast(error.message)));
-elements['media-probe']?.addEventListener('click', () => probeMediaSources().catch((error) => showToast(error.message)));
 elements['trendforce-more']?.addEventListener('click', () => openSourceTasks('trendforce'));
 function isBilibiliUrl(value) {
   try {
@@ -11204,6 +11919,12 @@ elements['global-search']?.addEventListener('input', (event) => {
   const query = String(event.currentTarget.value || '').trim();
   const view = document.body.dataset.view;
   if (view === 'feed' || view === 'sources') {
+    if (view === 'sources' && state.overviewPane === 'catalog') {
+      state.sourceCatalogQuery = query;
+      if (elements['source-catalog-filter']) elements['source-catalog-filter'].value = query;
+      renderStaticSourceCatalog();
+      return;
+    }
     state.feedQuery = query;
     if (view === 'feed') {
       resetFeedWindow();
@@ -11224,6 +11945,11 @@ elements['global-search']?.addEventListener('keydown', (event) => {
     return;
   }
   if (view === 'feed' || view === 'sources') {
+    if (view === 'sources' && state.overviewPane === 'catalog') {
+      state.sourceCatalogQuery = query;
+      renderStaticSourceCatalog();
+      return;
+    }
     state.feedQuery = query;
     if (view === 'feed') {
       resetFeedWindow();
@@ -11276,7 +12002,7 @@ bindPostLink(elements['dialog-cite'], () => {
   elements['post-dialog']?.close();
   openAskSession(state.askSessionId || 'new');
 });
-for (const id of ['compose-dialog', 'search-dialog', 'post-dialog', 'source-dialog', 'subscriptions-dialog', 'holding-dialog', 'reference-preview', 'reference-pack', 'source-tasks-dialog', 'feed-filter-dialog', 'share-image-dialog']) {
+for (const id of ['reader-menu', 'compose-dialog', 'search-dialog', 'post-dialog', 'source-dialog', 'subscriptions-dialog', 'holding-dialog', 'reference-preview', 'reference-pack', 'source-tasks-dialog', 'feed-filter-dialog', 'share-image-dialog']) {
   const dialog = elements[id];
   if (!dialog) continue;
   dialog.querySelector('.dialog-close')?.addEventListener('click', () => {
@@ -11287,6 +12013,10 @@ for (const id of ['compose-dialog', 'search-dialog', 'post-dialog', 'source-dial
     if (event.target === dialog) dialog.close();
   });
   dialog.addEventListener('close', () => {
+    if (id === 'reader-menu' && document.body.dataset.reader === '1') {
+      const surface = dialog.dataset.returnSurface === 'mobile' ? '.reader-mobile-bar' : '.reading-toolbar';
+      pageRoot().querySelector(`${surface} [data-detail-action="${dialog.dataset.returnAction || 'list'}"]`)?.focus({ preventScroll: true });
+    }
     if (id === 'share-image-dialog') closeShareImagePreview();
     if (id === 'post-dialog') {
       const stayId = state.feedRestoreId;
@@ -11372,6 +12102,8 @@ elements['note-body']?.addEventListener('input', () => {
   persistTaskComposerDraft();
   resizeDispatchComposer();
 });
+elements['note-body']?.addEventListener('focus', syncAskKeyboard);
+elements['note-body']?.addEventListener('blur', () => window.setTimeout(syncAskKeyboard, 120));
 restoreTaskComposerDraft();
 setIconButton(elements['dispatch-plus'], 'plus');
 setIconButton(elements['dispatch-send'], 'send-horizontal');
@@ -11537,12 +12269,22 @@ elements['ask-form'].elements.question.addEventListener('blur', () => {
 window.visualViewport?.addEventListener('resize', syncAskKeyboard);
 window.visualViewport?.addEventListener('scroll', syncAskKeyboard);
 window.addEventListener('resize', syncAskKeyboard);
+if (typeof ResizeObserver !== 'undefined') {
+  let chartWidth = 0;
+  new ResizeObserver(([entry]) => {
+    const width = Math.round(entry.contentRect.width);
+    if (!width || width === chartWidth) return;
+    chartWidth = width;
+    if (state.assetDashboard && !state.privacy) renderTrendChart(elements['analysis-trend'], state.assetDashboard);
+  }).observe(elements['analysis-trend']);
+}
 restoreWebMode();
 restoreResearchMode();
 restoreAgentMode();
 window.addEventListener('hashchange', () => {
   if (!state.session) return;
-  setView(location.hash.slice(1));
+  state.trail = [];
+  setView(location.hash.slice(1), { fromHistory: true });
 });
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {

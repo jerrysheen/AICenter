@@ -9,6 +9,8 @@ import {
   QuantRunOptionsSchema,
   ValidationError,
   parseContract,
+  FeedValueRefreshInputSchema,
+  GenerateHourlyDigestInputSchema,
 } from '../../contracts/src/index.js';
 import { randomUUID } from 'node:crypto';
 import { resolveResearchProfile } from './research-profile.js';
@@ -44,13 +46,31 @@ function agentRunPhase(job, progress = []) {
   return 'starting';
 }
 
-export function createRuntimeService({ runtimeRepository, agentProgressPort, restartPort, dailyConfig = null }) {
+export function createRuntimeService({ runtimeRepository, agentProgressPort, restartPort, dailyConfig = null, feedFilterConfig=null }) {
   if (!runtimeRepository) throw new Error('runtimeRepository is required');
 
   return Object.freeze({
+    requestHourlyDigest(input={}) {
+      const value=GenerateHourlyDigestInputSchema.parse(input),workspaceId=value.workspaceId || 'local';
+      const open=runtimeRepository.listOpenJobs?.('report.hourly.extract')?.find(j=>j.workspaceId===workspaceId && j.input?.hourStart===value.hourStart
+        && (j.input?.mode || 'resume')===(value.mode || 'resume') && j.input?.snapshotId===value.snapshotId);
+      return open || runtimeRepository.createJob({type:'report.hourly.extract',workspaceId,input:value,maxAttempts:2});
+    },
+    requestFeedQualityRefresh(input={}) {
+      const value=FeedValueRefreshInputSchema.parse(input);
+      const open=runtimeRepository.listOpenJobs?.('feed.quality.refresh')?.find(j=>j.workspaceId===value.workspaceId);
+      if(open) return open;
+      return runtimeRepository.createJob({type:'feed.quality.refresh',workspaceId:value.workspaceId,input:value,maxAttempts:1});
+    },
     requestMediaProbe({workspaceId='local',sourceKeys=[],policyReviewed=false}={}) {
       if (!Array.isArray(sourceKeys) || sourceKeys.length > 30 || sourceKeys.some(key=>typeof key!=='string' || !/^[a-z0-9]+$/.test(key))) throw new ValidationError('探针来源集合不合法',['sourceKeys']);
       return runtimeRepository.createJob({type:'media.sources.probe',workspaceId,input:{workspaceId,sourceKeys,policyReviewed:policyReviewed===true},maxAttempts:1});
+    },
+    requestTrendforceSync({workspaceId='local'}={}) {
+      return runtimeRepository.createJob({type:'feed.trendforce.sync',workspaceId,input:{workspaceId},maxAttempts:2});
+    },
+    requestTrendforceMigration({workspaceId='local'}={}) {
+      return runtimeRepository.createJob({type:'feed.trendforce.migrate',workspaceId,input:{workspaceId},maxAttempts:2});
     },
     requestMediaSync({ workspaceId = 'local', channel = '' } = {}) {
       if (!['','tech','macro'].includes(channel)) throw new ValidationError('未知媒体频道',['channel']);
@@ -62,7 +82,7 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort, res
       return runtimeRepository.createJob({ type: 'media.index.enrich', workspaceId, input: { workspaceId, externalIds, repair: Boolean(repair) }, maxAttempts: 1 });
     },
     getStatus() {
-      return runtimeRepository.getRuntimeStatus();
+      return {...runtimeRepository.getRuntimeStatus(),...(feedFilterConfig?{feedFilter:feedFilterConfig}:{})};
     },
     requestProcessRestart(input = {}) {
       if (!restartPort?.requestRestart) return { requested: false, reason: 'unavailable' };
@@ -81,11 +101,16 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort, res
         throw new ValidationError('日报日期必须是 YYYY-MM-DD', ['date']);
       }
       const config = dailyConfig || {};
+      const workspaceId=input.workspaceId || 'local';
+      const open=runtimeRepository.listOpenJobs?.('report.daily.generate')?.find(j=>j.workspaceId===workspaceId && j.input?.reportDate===reportDate);
+      if(open) return open;
       return runtimeRepository.createJob({
         type: 'report.daily.generate',
         workspaceId: input.workspaceId || 'local',
         maxAttempts: 2,
         input: {
+          workspaceId,
+          requestKey:randomUUID(),
           ...(reportDate ? { reportDate } : {}),
           ...(config.timezone ? { timezone: config.timezone } : {}),
           ...(Number.isInteger(config.cutoffHour) ? { cutoffHour: config.cutoffHour } : {}),
@@ -97,11 +122,14 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort, res
       const reportId = String(input.reportId || '').trim();
       if (!reportId) throw new ValidationError('缺少日报', ['reportId']);
       const workspaceId = input.workspaceId || 'local';
+      const mode=input.mode || 'resume';
+      const open=runtimeRepository.listOpenJobs?.('report.daily.brief.generate')?.find(j=>j.workspaceId===workspaceId && j.input?.reportId===reportId && (j.input?.mode || 'resume')===mode);
+      if(open) return open;
       return runtimeRepository.createJob({
         type: 'report.daily.brief.generate',
         workspaceId,
         maxAttempts: 2,
-        input: { workspaceId, reportId },
+        input: { workspaceId, reportId, mode,requestKey:randomUUID(),...(input.sourceReportUpdatedAt ? {sourceReportUpdatedAt:input.sourceReportUpdatedAt} : {}) },
       });
     },
     requestDividendSnapshot(input = {}) {

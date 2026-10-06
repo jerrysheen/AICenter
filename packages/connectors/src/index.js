@@ -143,7 +143,6 @@ export {
   normalizeTranslateTarget,
   parseGeminiBatchTranslations,
   parseGeminiGenerateContent,
-  parseGoogleTranslatePayload,
 } from './translate/index.js';
 export { createGeminiTagPort } from './gemini-tag.js';
 export {

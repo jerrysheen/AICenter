@@ -158,3 +158,59 @@ export function markdownToHtml(value) {
 export function renderMarkdownInto(element, value) {
   element.innerHTML = markdownToHtml(value);
 }
+
+// Read-only presentation of the existing connector comment marker. No stored
+// content or translation cache is rewritten by these helpers.
+export function splitFeedText(value) {
+  const lines = String(value || '').replace(/\r\n?/g, '\n').trim().split('\n');
+  const heading = /^\s*(?:#{1,6}\s*)?(?:\*\*)?(?:评论(?:区|预览)?|Comments?|Replies)(?:\*\*)?\s*[：:]?\s*$/iu;
+  const marker = /^\s*(?:[·•*−-]|\d+[.)、])\s+/u;
+  const index = lines.findIndex((line, i) => heading.test(line)
+    && lines.slice(i + 1).find(next => next.trim())?.match(marker));
+  if (index < 0) return { body: lines.join('\n'), comments: [], notes: '' };
+  const comments = [];
+  const tail = lines.slice(index + 1);
+  const noteIndex = tail.findIndex(line => /^\s*\[未抓取\]/u.test(line));
+  const commentLines = noteIndex < 0 ? tail : tail.slice(0, noteIndex);
+  for (const line of commentLines) {
+    if (marker.test(line)) comments.push(line.replace(marker, '').trim());
+    else if (line.trim() && comments.length) comments[comments.length - 1] += `\n${line.trim()}`;
+  }
+  return {
+    body: lines.slice(0, index).join('\n').trim(),
+    comments,
+    notes: noteIndex < 0 ? '' : tail.slice(noteIndex).join('\n').trim(),
+  };
+}
+
+function readableParagraphs(value) {
+  return String(value || '').split('\n').map(line => {
+    line = line.replace(/^(\s*)[·•]\s+/u, '$1- ')
+      .replace(/^(\s*)(\d+)[)、]\s+/u, '$1$2. ');
+    // Lists, headings and table rows already carry meaningful structure.
+    if (line.length <= 320 || /^\s*(?:#{1,6}\s|[-*·•]\s|\d+[.)、]\s|\|)/u.test(line)) return line;
+    const sentences = line.match(/.*?(?:[。！？][”’」』]?|[.!?](?=\s|$)|$)/gu)?.filter(Boolean) || [line];
+    const paragraphs = [];
+    let paragraph = '';
+    for (const sentence of sentences) {
+      paragraph += sentence;
+      if (paragraph.length >= 240) { paragraphs.push(paragraph.trim()); paragraph = ''; }
+    }
+    if (paragraph.trim()) paragraphs.push(paragraph.trim());
+    return paragraphs.join('\n\n');
+  }).join('\n');
+}
+
+export function feedTextToHtml(value) {
+  const { body, comments, notes } = splitFeedText(value);
+  const html = body ? markdownToHtml(readableParagraphs(body)) : '';
+  const commentHtml = comments.length
+    ? `<section class="feed-comments" aria-label="评论"><h4>评论 · ${comments.length}</h4><ul>${comments.map(comment => `<li>${inlineHtml(comment).replace(/\n/g, '<br>')}</li>`).join('')}</ul></section>`
+    : '';
+  const noteHtml = notes ? `<div class="feed-media-notes">${markdownToHtml(notes)}</div>` : '';
+  return `<div class="feed-prose">${html}</div>${commentHtml}${noteHtml}`;
+}
+
+export function renderFeedTextInto(element, value) {
+  element.innerHTML = feedTextToHtml(value);
+}

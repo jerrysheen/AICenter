@@ -4,6 +4,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const names = [
   'plus',
+  'image',
+  'video',
   'search',
   'settings',
   'send-horizontal',

@@ -104,6 +104,37 @@ test('feed repository stores provider-neutral capture and content records', () =
   temporary.remove();
 });
 
+test('saved subtitles and social content remain readable without tags', async () => {
+  const temporary = temporaryStore();
+  const repository = temporary.store.repositories.feed;
+  try {
+    for (const provider of ['bilibili', 'x']) {
+      const source = repository.upsertSourceAccount({ workspaceId: 'local', provider, externalId: `${provider}:test`, displayName: provider });
+      const capture = repository.saveCapture({ workspaceId: 'local', provider, externalId: `${provider}-untagged`, sourceAccountId: source.id, contentHash: `hash-${provider}` });
+      repository.saveContentItem({ workspaceId: 'local', captureId: capture.id, originType: 'import', contentType: provider === 'bilibili' ? 'video' : 'post', title: '已保存内容', body: '未经打标的原文。' });
+    }
+    const service = createFeedService({ legacyRepository: temporary.store, feedRepository: repository, sourcePort: {
+      findByProvider: providerId => ({ id: `content.${providerId}.test` }),
+      persistence: sourceId => {
+        const providerId = sourceId.split('.')[1];
+        return { providerId, sourceAccount: { externalId: `${providerId}:test` } };
+      },
+      read: () => { throw new Error('Cached tool history must not scrape'); },
+    } });
+    const subtitles = await service.getExternalFeed('bilibili', { feed: 'imports' });
+    assert.equal(subtitles.items.length, 1);
+    assert.equal(subtitles.items[0].body, '未经打标的原文。');
+    assert.equal((await service.getExternalFeed('x', { feed: 'following' })).items.length, 1);
+    assert.equal(repository.listContentItems('local').length, 2);
+    repository.upsertUserItemState({ workspaceId: 'local', contentItemId: subtitles.items[0].resourceId, isHidden: true });
+    assert.equal((await service.getExternalFeed('bilibili', { feed: 'imports' })).items.length, 0);
+    assert.equal(repository.getContentItem('local', subtitles.items[0].resourceId).body, '未经打标的原文。');
+  } finally {
+    temporary.store.close();
+    temporary.remove();
+  }
+});
+
 test('hidden content items leave the provider feed but stay readable by id', () => {
   const temporary = temporaryStore();
   const feed = temporary.store.repositories.feed;
@@ -224,7 +255,7 @@ test('X refresh tells the source which tweet ids are already captured', async ()
   const result = await service.getExternalFeed('x', { feed: 'for-you', limit: 50, refresh: true });
   assert.ok(reads[0].includes('already-there'));
   assert.equal(result.added, 1);
-  assert.equal(result.items.some((item) => item.externalId === 'brand-new'), false);
+  assert.equal(result.items.some((item) => item.externalId === 'brand-new'), true);
   assert.equal(feed.listContentItemsByProvider('local', 'x').some((item) => item.externalId === 'brand-new'), true);
   temporary.store.close();
   temporary.remove();
@@ -275,7 +306,7 @@ test('hidden social items stay hidden after the same tweet is ingested again', a
   });
   const first = await service.getExternalFeed('x', { feed: 'for-you', limit: 50, refresh: true });
   assert.equal(first.added, 1);
-  assert.equal(first.items.length, 0);
+  assert.equal(first.items.length, 1);
   const stored = temporary.store.repositories.feed.listContentItemsByProvider('local', 'x');
   assert.equal(stored.length, 1);
   const hidden = service.hideContentItem('local', stored[0].id);
@@ -341,7 +372,7 @@ test('same author and tweet text skip ingest even with a new tweet id', async ()
   };
   const again = await service.getExternalFeed('x', { feed: 'for-you', refresh: true });
   assert.equal(again.added, 0);
-  assert.equal(again.items.length, 0);
+  assert.equal(again.items.length, 1);
   const stored = temporary.store.repositories.feed.listContentItemsByProvider('local', 'x');
   assert.equal(stored.length, 1);
   assert.equal(stored[0].externalId, 'tweet-a');

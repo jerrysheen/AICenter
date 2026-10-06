@@ -8,8 +8,9 @@ export const channels = [
 
 export const platformFilters = [
   { id: 'all', label: '全部来源' },
-  { id: 'bilibili', label: 'B站' },
-  { id: 'x', label: 'X' },
+  { id: 'social', label: 'X / 雪球' },
+  { id: 'trendforce', label: 'TrendForce' },
+  { id: 'media', label: '媒体' },
   { id: 'manual', label: '手工' },
 ];
 
@@ -186,6 +187,7 @@ export const searchUniverse = [
 
 export const tools = [
   { id: 'knowledge', title: '知识库', desc: '长期可复用内容', action: 'knowledge', icon: 'notebook-text', ready: true },
+  { id: 'bilibili', title: 'B站字幕', desc: '粘贴链接采集、阅读字幕', action: 'bilibili', icon: 'video', ready: true },
   { id: 'publish', title: '快速发布', desc: '写入信息流', action: 'compose', icon: 'plus', ready: true },
   { id: 'quant', title: '量化实验室', desc: 'Qlib 研究基线', action: 'quant', icon: 'chart-line', ready: true },
   { id: 'pair', title: '设备与连接', desc: '配对、数据源', action: 'settings', icon: 'settings', ready: true },

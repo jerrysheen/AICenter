@@ -98,6 +98,14 @@ test('static assets are gzipped on request and versioned JS/CSS are cacheable', 
     assert.equal(gzipped.headers['vary'], 'Accept-Encoding');
     assert.equal(gzipped.headers['content-encoding'], 'gzip');
     const decoded = gunzipSync(gzipped.body).toString('utf8');
+    assert.match(decoded, /createMediaReaderSession.*from '\.\/media-feed\.js\?v=/);
+    assert.match(decoded, /import\('\.\/brief-page\.js\?v=/);
+    const briefModule = await getRaw(`${address.localUrl}/brief-page.js`, { 'Accept-Encoding': 'identity' });
+    assert.equal(briefModule.status,200);
+    assert.match(briefModule.body.toString('utf8'),/export function createBriefPage/);
+    const mediaReader = await getRaw(`${address.localUrl}/media-feed.js`, { 'Accept-Encoding': 'identity' });
+    assert.equal(mediaReader.status,200);
+    assert.match(mediaReader.body.toString('utf8'),/export function createMediaReaderSession/);
     assert.match(decoded, /function paintAuthorizedChrome/);
     assert.match(decoded, /async function completeAuthorizedStart/);
     assert.match(decoded, /async function waitForAuthorizedSession/);
@@ -116,6 +124,10 @@ test('static assets are gzipped on request and versioned JS/CSS are cacheable', 
     assert.match(decoded, /async function loadStaticSignalBoard/);
 
     const markdown = await getRaw(`${address.localUrl}/markdown.js`, { 'Accept-Encoding': 'identity' });
+    const mediaLoader = await getRaw(`${address.localUrl}/media-feed.js?v=${healthBody.uiRevision}`, { 'Accept-Encoding': 'gzip' });
+    assert.equal(mediaLoader.status, 200);
+    assert.equal(mediaLoader.headers['content-encoding'], 'gzip');
+    assert.match(gunzipSync(mediaLoader.body).toString('utf8'), /export function createMediaFeedLoader/);
     assert.equal(markdown.status, 200);
     assert.match(markdown.body.toString('utf8'), /export function markdownToHtml/);
     const appJs = await getRaw(`${address.localUrl}/app.js`, { 'Accept-Encoding': 'identity' });

@@ -1,4 +1,11 @@
+import { createHardwareArtifactStore } from '../../../packages/connectors/src/hardware-artifacts.js';
+import { legacyPriceSnapshot } from '../../../packages/connectors/src/trendforce-prices.js';
+import { createHardwarePriceService } from '../../../packages/domain/src/hardware-price-service.js';
+import { createContentRoutingService } from '../../../packages/domain/src/content-routing-service.js';
 import { loadMediaConfig } from '../../../packages/instance/src/media-config.js';
+import { loadFeedValueCalibration,loadFeedValueScoreCache } from '../../../packages/instance/src/feed-value-config.js';
+import {createFeedValueRefreshService} from '../../../packages/domain/src/feed-value-refresh-service.js';
+import {feedValueRefreshManifest,createFeedValueRefreshJobHandlers} from '../../../packages/runtime/src/feed-value-refresh-module.js';
 import { createMediaConnector } from '../../../packages/connectors/src/media/port.js';
 import { createMediaBriefPort } from '../../../packages/runtime/src/media-brief-port.js';
 import { hostname } from 'node:os';
@@ -38,7 +45,8 @@ import { workPackageDispatchManifest, createWorkPackageJobHandlers } from '../..
 import { createJobRunner } from '../../../packages/runtime/src/job-runner.js';
 import { createScheduler } from '../../../packages/runtime/src/scheduler.js';
 import { createDailyBriefService } from '../../../packages/domain/src/daily-brief-service.js';
-import { createReportJobHandlers, ensureDailyReportSchedule, reportDailyManifest } from '../../../packages/runtime/src/report-module.js';
+import {createInformationDigestService} from '../../../packages/domain/src/information-digest-service.js';
+import { createReportJobHandlers, ensureDailyReportSchedule, ensureHourlyDigestSchedule, reportDailyManifest } from '../../../packages/runtime/src/report-module.js';
 import { createFeedAutomationJobHandlers, ensureDefaultContentSubscriptions, ensureFeedSubscriptionSyncSchedule, FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE, FEED_SYNC_MAX_RUNTIME_MS, feedAutomationManifest, prepareFeedSyncEnqueue } from '../../../packages/runtime/src/feed-automation-module.js';
 import { createStrategyJobHandlers, ensureDividendStrategySchedule, strategySnapshotManifest } from '../../../packages/runtime/src/strategy-module.js';
 import { createQuantJobHandlers, quantLabManifest } from '../../../packages/runtime/src/quant-module.js';
@@ -150,14 +158,21 @@ export function createAiCenterWorker(options = {}) {
     defaultBrowserId: instance.browserId,
   });
   let feedService;
+  const typesafeClient = options.typesafeClient || createTypeSafeSystemOneClient({ env });
+  const feedFilter = options.feedFilter !== undefined
+    ? options.feedFilter
+    : createFeedFilterFromEnv({ client: typesafeClient, env, calibration: loadFeedValueCalibration(instance) });
   const mediaService = options.mediaService || (store.repositories?.media
     ? createMediaIngestionService({
       mediaRepository: store.repositories.media,
-      mediaPort: createMediaConnector({ ...loadMediaConfig(instance.configDirectory), readSource: (...args) => sourcePort.read(...args) }),
+      mediaPort: createMediaConnector({ ...loadMediaConfig(instance.configDirectory), browserRuntime, readSource: (...args) => sourcePort.read(...args) }),
       feedRepository: store.repositories.feed,
+      feedFilter,
       taggingRepository: store.repositories.tagging,
     })
     : null);
+  const hardwarePriceService = options.hardwarePriceService || createHardwarePriceService({repository:store.repositories.hardwarePrices,artifactStore:createHardwareArtifactStore({dataDirectory})});
+  const contentRoutingPort = options.contentRoutingPort || createContentRoutingService({mediaService,hardwarePrices:hardwarePriceService,feedRepository:store.repositories.feed,legacyPricePort:legacyPriceSnapshot});
   const registry = options.moduleRegistry || createSourceModuleRegistry({
     twitterService: options.twitterService,
     bilibiliService: options.bilibiliService,
@@ -170,18 +185,18 @@ export function createAiCenterWorker(options = {}) {
     marketCatalogPath: instance.marketCatalogPath,
     syncFeed: (...args) => feedService.getExternalFeed(...args),
     mediaService,
+    readTrendforceStored: workspaceId => mediaService.readFeed({channel:'tech',sourceKey:'trendforce',view:'all'},{workspaceId}),
+    migrateTrendforce: workspaceId=>contentRoutingPort.migrate(workspaceId),
+    hardwarePriceService,
   });
   const sourcePort = options.sourcePort || createSourceHub(registry);
-  const typesafeClient = options.typesafeClient || createTypeSafeSystemOneClient({ env });
-  const feedFilter = options.feedFilter !== undefined
-    ? options.feedFilter
-    : createFeedFilterFromEnv({ client: typesafeClient, env });
   feedService = options.feedService || createFeedService({
     legacyRepository: store,
     feedRepository: store.repositories.feed,
     sourcePort,
     feedFilter,
     mediaPort: mediaService,
+    contentRoutingPort,
     translationPort: options.translateService || createTranslateService(),
   });
   const workPackageTracePort = options.workPackageTracePort || createWorkPackageTracePort({
@@ -219,6 +234,17 @@ export function createAiCenterWorker(options = {}) {
     feedService,
     mediaPort: mediaService,
     tradingService,
+    sourceReadinessPort:{notes() {
+      const types=['media.sources.sync','feed.subscriptions.sync'];
+      const recent=store.listJobs?.(100) || [];
+      return types.flatMap(type=>{
+        const job=recent.find(j=>j.type===type);
+        if(!job) return [];
+        if(['queued','running'].includes(job.status)) return [`${type} 同步尚在进行，使用冻结时已落库材料，不等待译文或标签`];
+        if(job.status==='failed') return [`${type} 最近一次同步失败；不能解释成今天没有新增材料`];
+        return [];
+      });
+    }},
     staticSignalPort: options.staticSignalPort || {
       readBoard: (input, readOptions) => readStaticSignalBoard(sourcePort, input, readOptions),
     },
@@ -260,6 +286,7 @@ export function createAiCenterWorker(options = {}) {
     : (options.auxiliarySearch !== undefined ? options.auxiliarySearch || null : null);
   const agentTools = options.agentTools || createLocalToolRegistry({
     contextService, feedService, knowledgeService, tradingService, taggingService, sourcePort,
+    reportService,
     marketStatisticsService: marketStatistics,
     includeLegacyWebSearch: runtimeMode === 'local',
   });
@@ -333,13 +360,18 @@ export function createAiCenterWorker(options = {}) {
       workPackageTracePort,
     }),
   });
+  const informationService=options.informationService || createInformationDigestService({
+    reportRepository:store.repositories.report,feedService,mediaPort:mediaService,agentRuntime,timezone:dailyConfig.timezone,
+  });
   registry.register({
     manifest: reportDailyManifest,
     jobHandlers: options.reportJobHandlers || createReportJobHandlers({
       reportService,
+      informationService,
       briefService: options.briefService || createDailyBriefService({
         reportRepository: store.repositories.report,
         agentRuntime,
+        informationService,
       }),
     }),
   });
@@ -380,9 +412,15 @@ export function createAiCenterWorker(options = {}) {
       }),
     });
   }
+  registry.register({manifest:feedValueRefreshManifest,jobHandlers:createFeedValueRefreshJobHandlers({
+    service:createFeedValueRefreshService({feedRepository:store.repositories.feed,mediaRepository:store.repositories.media,
+      client:typesafeClient,model:loadFeedValueCalibration(instance)?.model || 'jev-1.13.0',scoreCache:loadFeedValueScoreCache(instance)}),
+    onProgress:progress=>console.log('[feed.quality.refresh]',JSON.stringify(progress)),
+  })});
   const handlers = options.handlers || registry.createJobHandlers();
   if (options.enableDefaultSchedules !== false) {
     ensureDailyReportSchedule(store, dailyConfig);
+    ensureHourlyDigestSchedule(store);
     ensureDividendStrategySchedule(store);
     ensureFeedSubscriptionSyncSchedule(store);
     ensureMediaIndexSyncSchedule(store);

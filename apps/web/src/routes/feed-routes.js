@@ -7,6 +7,16 @@ function workspaceIdFrom(identity) {
 
 export function createFeedRoutes() {
   return [
+    {method:'GET',path:'/api/v1/feed/media/article',handler({response,services,identity,url}) {
+      if(!services.media) {json(response,404,{ok:false,error:'文章不存在'});return;}
+      const item=services.media.getSavedArticle(Object.fromEntries(url.searchParams),{workspaceId:workspaceIdFrom(identity)});
+      json(response,item ? 200 : 404,item ? {ok:true,item} : {ok:false,error:'已保存文章不存在'});
+    }},
+    {method:'POST',path:'/api/v1/feed/quality/refresh',access:'desktop',async handler({request,response,services,identity}) {
+      const body=await readJson(request);
+      const job=services.runtime.requestFeedQualityRefresh({...body,workspaceId:workspaceIdFrom(identity)});
+      json(response,202,{ok:true,jobId:job.id});
+    }},
     {
       method: 'POST', path: '/api/v1/feed/media/probe',
       async handler({ request, response, services, identity }) {
@@ -138,13 +148,15 @@ export function createFeedRoutes() {
         if (!parser) throw new ValidationError(`尚未启用 ${providerId} 信息源`, ['platform']);
         try {
           const query = parser(Object.fromEntries(url.searchParams.entries()));
+          const trendforceJob = providerId==='trendforce' && query.refresh ? services.runtime.requestTrendforceSync({workspaceId:workspaceIdFrom(identity)}) : null;
+          if(trendforceJob) query.refresh=false;
           const mediaJob = providerId === 'media' && query.refresh ? services.runtime.requestMediaSync({ workspaceId: workspaceIdFrom(identity), channel: query.channel }) : null;
           const feed = await services.feed.getExternalFeed(
             providerId,
             query,
             { workspaceId: identity?.device?.workspaceId || 'local' },
           );
-          json(response, 200, { ok: true, feed, ...(mediaJob ? { jobId: mediaJob.id } : {}) });
+          json(response, 200, { ok: true, feed, ...((mediaJob || trendforceJob) ? { jobId: (mediaJob || trendforceJob).id } : {}) }, {}, { compress: providerId === 'media' });
         } catch (error) {
           if (error instanceof ValidationError) throw error;
           json(response, 502, { ok: false, error: error instanceof Error ? error.message : '信息流加载失败' });

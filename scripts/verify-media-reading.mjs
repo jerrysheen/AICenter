@@ -18,8 +18,13 @@ const sha=text=>createHash('sha256').update(text).digest('hex');
 const catalog=loadTagCatalog(fs.readFileSync(instance.tagCatalogPath,'utf8'));
 try {
   const feeds=await Promise.all(['tech','macro'].map(async channel=>{
-    const response=await fetch(`http://127.0.0.1:${instance.port}/api/v1/feed?platform=media&channel=${channel}&limit=100`);
-    assert.equal(response.status,200);return {channel,...await response.json()};
+    let offset=0, result, items=[];
+    do {
+      const response=await fetch(`http://127.0.0.1:${instance.port}/api/v1/feed?platform=media&channel=${channel}&view=full&limit=100&offset=${offset}`);
+      assert.equal(response.status,200);result=await response.json();
+      items.push(...result.feed.items);offset=result.feed.nextOffset;
+    }while(offset!==null && offset!==undefined);
+    return {channel,...result,feed:{...result.feed,items}};
   }));
   const rows=[];
   for(const item of feeds.flatMap(f=>f.feed.items).filter(i=>i.contentLevel==='full')) {
@@ -40,7 +45,8 @@ try {
       for(const p of item.paragraphs) assert.equal(units.filter(u=>u.paragraphId===p.id).map(u=>u.text).join(' ').replace(/\s+/g,' ').trim(),p.text.replace(/\s+/g,' ').trim());
     }
     const tagging=db.prepare('SELECT * FROM resource_taggings WHERE workspace_id=? AND resource_type=? AND resource_id=?').get('local','media-index',mediaResourceId(item.externalId));
-    if(tagging) {
+    const currentTagging=Boolean(tagging&&tagging.analyzed_at>=snapshot.observed_at&&tagging.tag_catalog_version===catalog.version&&tagging.prompt_version===TAG_PROMPT_VERSION);
+    if(tagging&&(!process.argv.includes('--allow-pending-tags')||currentTagging)) {
       assert.equal(tagging.tag_catalog_version,catalog.version);assert.equal(tagging.prompt_version,TAG_PROMPT_VERSION);
       assert.ok(tagging.analyzed_at>=snapshot.observed_at,'tagging predates current body');
       assert.ok(JSON.parse(tagging.tags_json).every(id=>catalog.ids.has(id)));
@@ -48,7 +54,7 @@ try {
     rows.push({externalId:item.externalId,channel:item.channel,bodyChars:snapshot.body_text.length,bodyHash:item.bodyHash,
       snapshotRevision:snapshot.revision,paragraphCount:item.paragraphs.length,translationStatus:translation.status,
       completedChunks:complete,totalChunks:units.length,translatedParagraphs:translation.paragraphs.length,
-      tagged:Boolean(tagging),tags:tagging?JSON.parse(tagging.tags_json):[],tagCatalogVersion:tagging?.tag_catalog_version,
+      tagged:currentTagging,taggingStatus:currentTagging?'ready':'pending',tags:tagging?JSON.parse(tagging.tags_json):[],tagCatalogVersion:tagging?.tag_catalog_version,
       tagPromptVersion:tagging?.prompt_version,taggedAt:tagging?.analyzed_at});
   }
   const jobs=db.prepare("SELECT id,status,type,output_json,error_json FROM jobs WHERE type='media.index.enrich' ORDER BY created_at DESC LIMIT 5").all().map(j=>{

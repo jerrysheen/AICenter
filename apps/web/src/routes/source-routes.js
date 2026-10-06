@@ -66,7 +66,7 @@ export function createSourceRoutes() {
         const input = Object.fromEntries(url.searchParams.entries());
         const refresh = input.refresh === '1' || input.refresh === 'true';
         delete input.refresh;
-        const snapshot = await services.sources.read(sourceId, input, { refresh });
+        const snapshot = await services.sources.read(sourceId, input, { refresh,workspaceId:identity?.device?.workspaceId || 'local' });
         const { localizations } = await withLocalizations(services, identity, snapshot);
         json(response, 200, { ok: true, source, snapshot, localizations });
       },

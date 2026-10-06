@@ -57,6 +57,8 @@ export function createDomainServices({
   loginCredential = null,
   feedFilter = null,
   mediaService = null,
+  hardwarePriceService = null,
+  contentRoutingPort = null,
   dailyConfig = null,
   staticSignalPort = null,
   quantRoot = null,
@@ -67,6 +69,7 @@ export function createDomainServices({
       mediaRepository: store.repositories.media,
       feedRepository: store.repositories.feed,
       taggingRepository: store.repositories.tagging,
+      feedFilter,
     })
     : null);
   const feed = createFeedService({
@@ -76,6 +79,7 @@ export function createDomainServices({
     translationPort,
     feedFilter,
     mediaPort: media,
+    contentRoutingPort,
   });
   const trading = createTradingService({
     tradingRepository: store.repositories.trading,
@@ -118,6 +122,7 @@ export function createDomainServices({
     identity: createIdentityService({ identityRepository: store, loginCredential }),
     feed,
     media,
+    hardwarePrices: hardwarePriceService,
     trading,
     knowledge,
     tagging,
@@ -126,6 +131,7 @@ export function createDomainServices({
       runtimeRepository: store,
       agentProgressPort,
       restartPort,
+      feedFilterConfig:feedFilter?.config || null,
       dailyConfig: resolvedDailyConfig,
     }),
     report,

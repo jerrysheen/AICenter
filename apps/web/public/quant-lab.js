@@ -1,3 +1,5 @@
+const requests = new WeakMap();
+
 function field(label, value) {
   const wrap = document.createElement('div');
   const name = document.createElement('dt');
@@ -23,8 +25,28 @@ function metricText(metric) {
   return `${metric.value}（${metric.meaning}）`;
 }
 
-export async function renderQuantLab(root, { api, showToast, onLive }) {
-  const payload = await api('/api/v1/quant/lab');
+export async function renderQuantLab(root, { api, showToast, onLive, renderViewState }) {
+  if (requests.has(root)) return requests.get(root);
+  const pending = readQuantLab(root, { api, showToast, onLive, renderViewState }).finally(() => requests.delete(root));
+  requests.set(root, pending);
+  return pending;
+}
+
+async function readQuantLab(root, { api, showToast, onLive, renderViewState }) {
+  if (!root.querySelector('.quant-form')) {
+    renderViewState(root, { kind: 'loading', title: '正在读取量化实验室…', message: '正在检查环境、数据与已有实验。' });
+  } else root.setAttribute('aria-busy', 'true');
+  let payload;
+  try {
+    payload = await api('/api/v1/quant/lab', { timeoutMs: 15_000 });
+    if (!payload.lab?.overview || !Array.isArray(payload.lab.experiments)) throw new Error('实验室数据不完整，请重试');
+  } catch (error) {
+    onLive?.(false);
+    renderViewState(root, { kind: 'error', title: error.status === 404 || error.status === 503 ? '量化实验室暂不可用' : '量化实验室读取失败',
+      message: error.message, action: '重试', onAction: () => renderQuantLab(root, { api, showToast, onLive, renderViewState }) });
+    return;
+  }
+  renderViewState(root, { kind: 'success' });
   const lab = payload.lab;
   const overview = lab.overview;
   root.replaceChildren();

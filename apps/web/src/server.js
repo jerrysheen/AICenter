@@ -1,4 +1,9 @@
+import { createHardwareArtifactStore } from '../../../packages/connectors/src/hardware-artifacts.js';
+import { legacyPriceSnapshot } from '../../../packages/connectors/src/trendforce-prices.js';
+import { createHardwarePriceService } from '../../../packages/domain/src/hardware-price-service.js';
+import { createContentRoutingService } from '../../../packages/domain/src/content-routing-service.js';
 import { loadMediaConfig } from '../../../packages/instance/src/media-config.js';
+import { loadFeedValueCalibration } from '../../../packages/instance/src/feed-value-config.js';
 import { createMediaConnector } from '../../../packages/connectors/src/media/port.js';
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -138,14 +143,21 @@ export function createAiCenterServer(options = {}) {
     defaultBrowserId: instance.browserId,
   });
   let services;
+  const env = options.env || process.env;
+  const typesafeClient = options.typesafeClient || createTypeSafeSystemOneClient({ env });
+  const feedFilter=options.feedFilter !== undefined ? options.feedFilter
+    : createFeedFilterFromEnv({client:typesafeClient,env,calibration:loadFeedValueCalibration(instance)});
   const mediaService = options.mediaService || (store.repositories?.media
     ? createMediaIngestionService({
       mediaRepository: store.repositories.media,
       mediaPort: createMediaConnector({ ...loadMediaConfig(instance.configDirectory), readSource: (...args) => sourcePort.read(...args) }),
       feedRepository: store.repositories.feed,
+      feedFilter,
       taggingRepository: store.repositories.tagging,
     })
     : null);
+  const hardwarePriceService = options.hardwarePriceService || createHardwarePriceService({repository:store.repositories.hardwarePrices,artifactStore:createHardwareArtifactStore({dataDirectory})});
+  const contentRoutingPort = options.contentRoutingPort || createContentRoutingService({mediaService,hardwarePrices:hardwarePriceService,feedRepository:store.repositories.feed,legacyPricePort:legacyPriceSnapshot});
   const moduleRegistry = options.moduleRegistry || createSourceModuleRegistry({
     twitterService: options.twitterService,
     bilibiliService: options.bilibiliService,
@@ -158,23 +170,24 @@ export function createAiCenterServer(options = {}) {
     marketCatalogPath: instance.marketCatalogPath,
     syncFeed: (...args) => services.feed.getExternalFeed(...args),
     mediaService,
+    readTrendforceStored: workspaceId => mediaService.readFeed({channel:'tech',sourceKey:'trendforce',view:'all'},{workspaceId}),
+    migrateTrendforce: workspaceId=>contentRoutingPort.migrate(workspaceId),
+    hardwarePriceService,
   });
   const sourcePort = options.sourcePort || createSourceHub(moduleRegistry);
   const personalAssetPort = options.personalAssetService || createPersonalAssetService({
     dataDirectory,
     workbookPath: instance.assetWorkbookPath,
   });
-  const env = options.env || process.env;
-  const typesafeClient = options.typesafeClient || createTypeSafeSystemOneClient({ env });
   services = options.services || createDomainServices({
     store,
     sourcePort,
     personalAssetPort,
     translationPort: options.translateService || createTranslateService(),
-    feedFilter: options.feedFilter !== undefined
-      ? options.feedFilter
-      : createFeedFilterFromEnv({ client: typesafeClient, env }),
+    feedFilter,
     mediaService,
+    hardwarePriceService,
+    contentRoutingPort,
     agentProgressPort: options.agentProgressPort || createAgentTraceLog({
       dataDirectory,
       logDirectory: instance.legacyLayout ? undefined : path.join(instance.runtimeDirectory, 'logs'),
