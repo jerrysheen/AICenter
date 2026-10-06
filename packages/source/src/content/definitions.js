@@ -59,11 +59,9 @@ export function createXSourceDefinition(service) {
     manifest: { id: 'content.x.home', title: 'X 首页', category: 'content', providerId: 'x', visibility: 'public', viewKind: 'content-feed', capabilities: ['read', 'refresh'], refresh: { ttlMs: 60_000 }, guideRefs: [] },
     inputSchema: XInputSchema,
     outputSchema: ContentFeedViewSchema,
-    read: (input, context) => service.getFeed({
-      ...input,
-      bypassCache: Boolean(context.refresh),
-      excludeExternalIds: context.excludeExternalIds,
-    }),
+    read: async (input, context) => {
+      const {priceSnapshots:_prices,...feed}=await service.getFeed({...input,bypassCache:Boolean(context.refresh),excludeExternalIds:context.excludeExternalIds});return feed;
+    },
     observedAt: (data) => data.fetchedAt,
     status: (data) => data.mode === 'error' ? 'unavailable' : data.mode === 'partial' ? 'partial' : 'ready',
     warnings: (data) => ['error', 'unavailable'].includes(data.mode) ? [data.note] : [],
@@ -115,11 +113,10 @@ export function createXueqiuSourceDefinition(service) {
     manifest: { id: 'content.xueqiu.home', title: '雪球首页', category: 'content', providerId: 'xueqiu', visibility: 'public', viewKind: 'content-feed', capabilities: ['read', 'refresh'], refresh: { ttlMs: 60_000 }, guideRefs: [] },
     inputSchema: XueqiuInputSchema,
     outputSchema: ContentFeedViewSchema,
-    read: (input, context) => service.getFeed({
-      ...input,
-      bypassCache: Boolean(context.refresh),
-      excludeExternalIds: context.excludeExternalIds,
-    }),
+    read: async (input, context) => {
+      const {priceSnapshots:_prices,...view}=await service.getFeed({...input,bypassCache:Boolean(context.refresh),excludeExternalIds:context.excludeExternalIds});
+      return view;
+    },
     observedAt: (data) => data.fetchedAt,
     status: (data) => data.mode === 'error' ? 'unavailable' : data.mode === 'partial' ? 'partial' : 'ready',
     warnings: (data) => ['error', 'unavailable'].includes(data.mode) ? [data.note] : [],
@@ -138,6 +135,7 @@ export function createXueqiuSourceDefinition(service) {
   };
 }
 
+import { HardwarePriceSnapshotInputSchema } from '../../../contracts/src/hardware-prices.js';
 const TrendForceInputSchema = z.object({
   feed: z.literal('public').default('public'),
 }).strict();
@@ -161,7 +159,7 @@ export function createMediaSourceDefinition(service) {
     },
     inputSchema: MediaInputSchema,
     outputSchema: ContentFeedViewSchema,
-    read: input => service.readFeed(input),
+    read: (input,context) => service.readFeed(input,{workspaceId:context.workspaceId || 'local'}),
     observedAt: (data) => data.fetchedAt,
     status: (data) => data.mode === 'empty' ? 'partial' : 'ready',
     warnings: (data) => data.mode === 'empty' ? [data.note] : [],
@@ -180,16 +178,16 @@ export function createMediaSourceDefinition(service) {
   };
 }
 
-export function createTrendForceSourceDefinition(service) {
+export function createTrendForceSourceDefinition(service, options = {}) {
   return {
     manifest: { id: 'content.trendforce.public', title: 'TrendForce', category: 'content', providerId: 'trendforce', visibility: 'public', viewKind: 'content-feed', capabilities: ['read', 'refresh'], refresh: { ttlMs: 600_000 }, guideRefs: [] },
     inputSchema: TrendForceInputSchema,
     outputSchema: ContentFeedViewSchema,
-    read: (input, context) => service.getFeed({
-      ...input,
-      bypassCache: Boolean(context.refresh),
-      excludeExternalIds: context.excludeExternalIds,
-    }),
+    read: async (input, context) => {
+      if(options.readTrendforceStored)return options.readTrendforceStored(context.workspaceId || 'local');
+      const {priceSnapshots:_prices,...view}=await service.getFeed({...input,bypassCache:Boolean(context.refresh),excludeExternalIds:context.excludeExternalIds});
+      return view;
+    },
     observedAt: (data) => data.fetchedAt,
     status: (data) => data.mode === 'error' ? 'unavailable' : data.mode === 'partial' ? 'partial' : 'ready',
     warnings: (data) => ['error', 'unavailable'].includes(data.mode) ? [data.note] : [],
@@ -206,4 +204,11 @@ export function createTrendForceSourceDefinition(service) {
       emptyNote: '还没有缓存。抓取后会写入公开洞察全文、会员报告索引和最新价表。',
     }),
   };
+}
+
+export function createTrendForceCollectionDefinition(service) {
+  return {manifest:{id:'content.trendforce.collection',title:'TrendForce 采集',category:'content',providerId:'trendforce',visibility:'internal',viewKind:'content-feed',capabilities:['read','refresh'],refresh:{ttlMs:600000},guideRefs:[]},
+    inputSchema:TrendForceInputSchema,outputSchema:ContentFeedViewSchema.extend({priceSnapshots: z.array(HardwarePriceSnapshotInputSchema).default([])}),
+    read:(input,context)=>service.getFeed({...input,bypassCache:Boolean(context.refresh),excludeExternalIds:context.excludeExternalIds || []}),observedAt:data=>data.fetchedAt,
+    status:data=>data.mode==='error'?'unavailable':data.mode==='partial'?'partial':'ready',warnings:data=>data.mode==='error'?[data.note]:[]};
 }

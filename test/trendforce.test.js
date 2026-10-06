@@ -110,13 +110,15 @@ test('trendforce service pulls public pages and skips known insight ids', async 
   assert.equal(first.mode, 'live');
   assert.ok(first.items.some((item) => item.externalId === 'insight:memory-hierarchy-paradigm-shift'));
   assert.ok(first.items.some((item) => item.externalId === 'research:RP260802XS'));
-  assert.ok(first.items.some((item) => item.externalId.startsWith('price:')));
+  assert.equal(first.items.some((item) => item.externalId.startsWith('price:')),false);
+  assert.equal(first.priceSnapshots.length,2);
+  assert.equal(first.priceSnapshots[0].rows[0].average,'56.00');
   const again = await service.getFeed({
     bypassCache: true,
     excludeExternalIds: ['insight:memory-hierarchy-paradigm-shift', 'research:RP260802XS'],
   });
   assert.equal(again.items.some((item) => item.externalId.startsWith('insight:')), false);
-  assert.ok(again.items.some((item) => item.externalId.startsWith('price:')));
+  assert.equal(again.priceSnapshots.length,2);
   assert.equal(seen.some((url) => url.includes('/pricedetail/')), false);
   assert.equal(seen.some((url) => url.includes('/api/')), false);
 });

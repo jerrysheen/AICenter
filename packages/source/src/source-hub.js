@@ -40,7 +40,7 @@ export function createSourceHub(moduleRegistry, options = {}) {
   async function read(sourceId, input = {}, context = {}) {
     const definition = definitionFrom(moduleRegistry, sourceId);
     const parsedInput = parseContract(definition.inputSchema, input);
-    const key = `${sourceId}:${stableKey(parsedInput)}`;
+    const key = `${context.workspaceId || 'local'}:${sourceId}:${stableKey(parsedInput)}`;
     const ttlMs = definition.manifest.refresh?.ttlMs || 0;
     const refresh = Boolean(context.refresh);
     const timestamp = now();

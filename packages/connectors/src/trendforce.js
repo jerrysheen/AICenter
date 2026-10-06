@@ -1,3 +1,6 @@
+import { z } from 'zod';
+import { parseStructuredPricePage } from './trendforce-prices.js';
+import { EXTRACTOR_VERSION } from './media/article-html.js';
 const ROOT = 'https://www.trendforce.com.tw';
 const DEFAULT_TTL_MS = 10 * 60_000;
 const FETCH_TIMEOUT_MS = 20_000;
@@ -95,6 +98,8 @@ export function parseInsightArticle(html, url = '') {
   const slug = (String(url).match(/\/insights\/([^/?#]+)/i) || [])[1] || '';
   return {
     kind: 'insight',
+    contentLevel: article && !/subscribe to read|會員專享|付费阅读/i.test(article) ? 'full' : summary ? 'summary_only' : 'title_only',
+    paragraphs: article ? article.split(/\n\s*\n/).filter(Boolean).map((text,i)=>({id:`p${String(i+1).padStart(4,'0')}`,text,kind:'paragraph'})) : [],
     slug,
     title,
     summary,
@@ -203,6 +208,10 @@ export function trendForceToFeedItem(record, options = {}) {
     : text(record.body, intro);
   return {
     id: `trendforce:${id}`,
+    articleKind: kind === 'research' ? 'report-intro' : 'article',
+    contentLevel: kind === 'research' ? (intro ? 'summary_only' : 'title_only') : record.contentLevel || 'summary_only',
+    extractorVersion: EXTRACTOR_VERSION,
+    paragraphs: record.paragraphs || [],
     workspaceId: options.workspaceId || 'local',
     platform: 'trendforce',
     externalId: id,
@@ -246,11 +255,13 @@ export function createTrendForceService(options = {}) {
   const wait = options.delay || delay;
   const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
   const cache = new Map();
+  const pending = new Map();
 
   async function getFeed({ feed = 'public', bypassCache = false, excludeExternalIds = [] } = {}) {
     const excluded = new Set((excludeExternalIds || []).map((id) => String(id || '')).filter(Boolean));
     const load = async () => {
       const items = [];
+      const priceSnapshots = [];
       const warnings = [];
       try {
         const list = await readText(fetchImpl, `${ROOT}/insights`);
@@ -303,8 +314,7 @@ export function createTrendForceService(options = {}) {
             warnings.push(`${page.id} ${result.status}`);
             continue;
           }
-          const parsed = parsePricePage(result.body, `${ROOT}${page.path}`, page.title);
-          items.push(trendForceToFeedItem({ ...parsed, id: page.id, title: page.title }));
+          priceSnapshots.push(parseStructuredPricePage(result.body,{pageKey:page.id,sourceUrl:`${ROOT}${page.path}`,title:page.title,capturedAt:now()}));
         } catch (error) {
           warnings.push(error instanceof Error ? error.message : String(error));
         }
@@ -312,27 +322,27 @@ export function createTrendForceService(options = {}) {
 
       const usable = items.filter((item) => item.externalId && item.sourceUrl);
       return {
+        priceSnapshots,
         platform: 'trendforce',
         workspaceId: 'local',
         feed: 'public',
         source: 'trendforce_public',
-        mode: usable.length ? (warnings.length ? 'partial' : 'live') : 'error',
+        mode: usable.length || priceSnapshots.length ? (warnings.length ? 'partial' : 'live') : 'error',
         fetchedAt: now(),
-        note: usable.length
-          ? `公开洞察全文 + 会员报告索引 + 最新价表 · ${usable.length} 条${warnings.length ? ` · ${warnings[0]}` : ''}`
+        note: usable.length || priceSnapshots.length
+          ? `公开文章 / 报告简介 ${usable.length} 条 · 价表快照 ${priceSnapshots.length} 张${warnings.length ? ` · ${warnings[0]}` : ''}`
           : (warnings[0] || 'TrendForce 公开页读取失败'),
         items: usable,
       };
     };
 
-    if (bypassCache) return load();
     const key = `public:${[...excluded].sort().join(',')}`;
+    if(pending.has(key))return pending.get(key);
     const hit = cache.get(key);
     const timestamp = now();
-    if (hit && timestamp - hit.at < ttlMs) return hit.payload;
-    const payload = await load();
-    cache.set(key, { at: now(), payload });
-    return payload;
+    if (!bypassCache && hit && timestamp - hit.at < ttlMs) return hit.payload;
+    const task=load().then(payload=>{cache.set(key,{at:now(),payload});return payload;}).finally(()=>pending.delete(key));
+    pending.set(key,task);return task;
   }
 
   return { getFeed };
@@ -342,19 +352,36 @@ export const trendforceConnectorManifest = {
   id: 'connector.trendforce',
   version: '1.0.0',
   capabilities: ['feed.capture'],
-  jobTypes: ['feed.trendforce.sync'],
-  sourceIds: ['content.trendforce.public'],
+  jobTypes: ['feed.trendforce.sync','feed.trendforce.migrate','feed.trendforce.reparse'],
+  sourceIds: ['content.trendforce.public', 'content.trendforce.collection'],
 };
 
 export function createTrendForceJobHandlers(options = {}) {
   return {
+    async 'feed.trendforce.reparse'(input,context) {
+      const value=z.object({workspaceId:z.string().min(1).default('local')}).strict().parse(input || {});
+      const workspaceId=context.job?.workspaceId || value.workspaceId,service=options.hardwarePriceService;
+      if(!service)throw new Error('缺少硬件报价端口');
+      const before=service.savedSnapshots(workspaceId);let processed=0;
+      for(const saved of before.filter(s=>s.format==='html')) {
+        const snapshot=service.snapshot(workspaceId,saved.id);
+        service.ingest(workspaceId,parseStructuredPricePage(snapshot.raw,{pageKey:saved.pageKey,sourceUrl:saved.sourceUrl,title:saved.title,capturedAt:saved.capturedAt}));processed++;
+      }
+      return {processed,added:service.savedSnapshots(workspaceId).length-before.length};
+    },
+    async 'feed.trendforce.migrate'(input,context) {
+      const value=z.object({workspaceId:z.string().min(1).default('local')}).strict().parse(input || {});
+      if(!options.migrateTrendforce)throw new Error('缺少内容迁移端口');
+      return options.migrateTrendforce(context.job?.workspaceId || value.workspaceId);
+    },
     async 'feed.trendforce.sync'(input, context) {
       if (typeof options.syncFeed !== 'function') {
         throw new Error('feed.trendforce.sync 缺少 Worker 注入的 Feed Port');
       }
-      const feed = await options.syncFeed('trendforce', { ...(input || {}), refresh: true }, {
-        workspaceId: context.job?.workspaceId || 'local',
-      });
+      const value=z.object({workspaceId:z.string().min(1).default('local'),feed:z.literal('public').optional()}).strict().parse(input || {});
+      const workspaceId=context.job?.workspaceId || value.workspaceId;
+      const feed = await options.syncFeed('trendforce', {feed:'public',refresh:true}, {workspaceId});
+      if(feed.mediaExternalIds?.length)context.store.createJob({type:'media.index.enrich',workspaceId,maxAttempts:2,input:{workspaceId,externalIds:feed.mediaExternalIds}});
       context.store.setProviderHealth('trendforce', feed.mode === 'error' ? 'error' : 'healthy', feed.note, {
         itemCount: feed.items?.length || 0,
       });

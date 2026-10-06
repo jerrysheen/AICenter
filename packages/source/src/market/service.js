@@ -5,6 +5,7 @@ import { createXueqiuQuoteClient, isXueqiuYahooSymbol } from '../../../connector
 import { createTushareClient, isTushareDailySymbol } from '../../../connectors/src/tushare.js';
 import { createYahooClient } from '../../../connectors/src/yahoo.js';
 import { resolveMarketCatalog } from './catalog.js';
+import { cnTradingCalendarAt } from '../../../domain/src/cn-trading-calendar.js';
 
 export function createMarketService(options = {}) {
   const marketCatalog = options.marketCatalog || resolveMarketCatalog(options.marketCatalogPath);
@@ -153,6 +154,7 @@ export function createMarketService(options = {}) {
           sparkline: item.sparkline,
           currency: item.currency,
           session: item.session,
+          asOf: item.asOf ?? (item.marketTime ? item.marketTime * 1000 : null),
         }));
       } catch {
         return [];
@@ -176,6 +178,7 @@ export function createMarketService(options = {}) {
       low: item.low ?? null,
       volume: item.volume ?? null,
       sparkline: Array.isArray(item.sparkline) ? item.sparkline : [],
+      asOf: item.asOf ?? (item.marketTime ? item.marketTime * 1000 : null),
       session: item.session || sessionFallback,
       ...(item.currency ? { currency: item.currency } : {}),
     };
@@ -231,7 +234,8 @@ export function createMarketService(options = {}) {
     const stillMissing = missingXueqiu.filter((symbol) => !thsList.some((item) => item.symbol === symbol));
     const fallback = stillMissing.length ? await fetchYahooQuotes(stillMissing, { refresh }) : [];
     const bySymbol = new Map([...otherList, ...fallback, ...thsList, ...xueqiuList, ...sinaList].map((item) => [item.symbol, item]));
-    return unique.map((symbol) => bySymbol.get(symbol)).filter(Boolean);
+    return unique.map((symbol) => bySymbol.get(symbol)).filter(Boolean).map(item => isCnYahooSymbol(item.symbol)
+      ? { ...item, session: cnTradingCalendarAt(now()).session } : item);
   }
 
   async function getBoard({ board = 'overview', extra = '', extraUs = extra, extraAsia = extra, extraCn = extra } = {}) {

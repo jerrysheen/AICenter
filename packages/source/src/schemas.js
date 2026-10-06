@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { CnTradingCalendarSchema } from '../../contracts/src/common.js';
 
 const NullableNumberSchema = z.number().finite().nullable();
 
@@ -29,6 +30,7 @@ const MarketSectionSchema = z.looseObject({
 });
 
 export const MarketBoardViewSchema = z.looseObject({
+  calendar: CnTradingCalendarSchema.optional(),
   board: z.enum(['overview', 'us', 'asia', 'cn', 'global']),
   mode: z.enum(['live', 'partial']),
   fetchedAt: z.number().int().nonnegative(),
@@ -45,6 +47,7 @@ export const MarketBoardViewSchema = z.looseObject({
 });
 
 export const QuoteListSchema = z.array(z.looseObject({
+  asOf: z.number().int().nonnegative().nullable().optional(),
   symbol: z.string().trim().min(1).max(64),
   lastPrice: NullableNumberSchema,
   prevClose: NullableNumberSchema,
@@ -133,13 +136,16 @@ export const IndexWeightSeriesSchema = z.object({
 }).strict();
 
 export const ContentFeedItemSchema = z.looseObject({
+  contentItemId: z.string().trim().min(1).max(256).nullable().optional(),
+  isRead: z.boolean().optional(),
+  readingVia: z.string().max(64).optional(),
   externalId: z.string().trim().min(1).max(512),
   title: z.string().max(1_000).default(''),
   body: z.string().max(2_000_000).default(''),
   summary: z.string().max(20_000).default(''),
   sourceUrl: z.string().url(),
   authorName: z.string().max(512).default(''),
-  publishedAt: z.number().int().nonnegative().default(0),
+  publishedAt: z.number().int().nonnegative().nullable().default(0),
 });
 
 export const ContentFeedViewSchema = z.looseObject({

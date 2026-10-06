@@ -127,6 +127,7 @@ export function quoteFromXueqiuItem(item, yahooSymbol) {
   const lastPrice = num(quote.current);
   if (!symbol || lastPrice == null) return null;
   const currency = text(quote.currency);
+  const timestamp = num(quote.timestamp);
   return {
     symbol,
     name: text(quote.name),
@@ -138,6 +139,7 @@ export function quoteFromXueqiuItem(item, yahooSymbol) {
     low: num(quote.low),
     volume: num(quote.volume),
     sparkline: [],
+    asOf: timestamp != null && timestamp > 0 ? Math.trunc(timestamp) : null,
     session: sessionFromXueqiuMarket(item.market, quote),
     ...(currency ? { currency } : {}),
   };

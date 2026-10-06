@@ -1,3 +1,5 @@
+import { cnTradingCalendarAt, cnTradingCalendarNote } from './cn-trading-calendar.js';
+
 export function toDecimalNumber(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return Object.is(value, -0) ? 0 : value;
   if (value === null || value === undefined || value === '') return 0;
@@ -90,6 +92,8 @@ export function buildHoldingsBoard({
       dayPnlCny: dayPnlCny == null ? null : toDecimalString(dayPnlCny, 4),
       dayPnlPct: dayPnlPct == null ? null : toDecimalString(dayPnlPct, 6),
       quoteStatus: live ? 'live' : 'missing',
+      quoteAsOf: quote?.asOf ?? (quote?.marketTime ? quote.marketTime * 1000 : null),
+      session: quote?.session || 'unknown',
     };
   }).filter((item) => item.symbol && item.name)
     .sort((left, right) => toDecimalNumber(right.marketValueCny) - toDecimalNumber(left.marketValueCny));
@@ -199,7 +203,8 @@ export function buildHoldingsBoard({
     moves: [],
     missingQuotes: [...new Set(missingQuotes)],
     updatedAt: now,
-    note,
+    calendar: cnTradingCalendarAt(now),
+    note: `${cnTradingCalendarNote(cnTradingCalendarAt(now))} ${note}`.slice(0,500),
   };
 }
 

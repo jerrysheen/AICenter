@@ -1,4 +1,5 @@
 import { DEFAULT_MARKET_CATALOG, isForeignToUsListingSymbol } from './catalog.js';
+import { cnTradingCalendarAt, cnTradingCalendarNote } from '../../../domain/src/cn-trading-calendar.js';
 
 function catalogOrDefault(catalog) {
   return catalog || DEFAULT_MARKET_CATALOG;
@@ -42,8 +43,9 @@ function toSnapshot(quote, extras = {}) {
     sparkline: Array.isArray(quote.sparkline) ? quote.sparkline : [],
     currency: quote.currency || extras.currency || '',
     exchange: quote.exchange || '',
-    session: quote.session || extras.session || 'closed',
-    asOf: quote.marketTime ? quote.marketTime * 1000 : extras.fetchedAt || null,
+    session: /^\d{6}\.(SS|SZ)$/.test(quote.symbol) && extras.fetchedAt != null
+      ? cnTradingCalendarAt(extras.fetchedAt).session : quote.session || extras.session || 'closed',
+    asOf: quote.asOf ?? (quote.marketTime ? quote.marketTime * 1000 : null),
     provider: extras.provider || 'yahoo',
     expiry: extras.expiry || '',
   };
@@ -124,7 +126,7 @@ export function asiaSessionsAt(nowMs = Date.now()) {
 }
 
 export function cnSessionAt(nowMs = Date.now()) {
-  return sessionInWindow(nowMs, 'Asia/Shanghai', 9 * 60 + 30, 15 * 60);
+  return cnTradingCalendarAt(nowMs).session;
 }
 
 export function preferredOverviewFocus(nowMs = Date.now()) {
@@ -151,7 +153,7 @@ function uniqueBySymbol(items) {
 }
 
 function assembleBoard({
-  board, market, session, sessions, note, groups, indices, watchlist, errors, fetchedAt, indexSymbols, currency, provider, uniqueRankedBySymbol = false,
+  board, market, session, sessions, calendar, note, groups, indices, watchlist, errors, fetchedAt, indexSymbols, currency, provider, uniqueRankedBySymbol = false,
 }) {
   const rankedSource = uniqueRankedBySymbol ? uniqueBySymbol(watchlist) : watchlist;
   const ranked = rankedSource.filter((item) => item.changePct !== null && !indexSymbols.has(item.symbol));
@@ -164,6 +166,7 @@ function assembleBoard({
     mode: errors || watchlist.some((item) => item.lastPrice === null) ? 'partial' : 'live',
     fetchedAt,
     session,
+    ...(calendar ? { calendar } : {}),
     sessions: sessions || null,
     note,
     groups,
@@ -289,13 +292,15 @@ export function buildCnMarketBoard({ quotes, extraSymbols = [], fetchedAt = Date
       };
     });
   const session = cnSessionAt(fetchedAt);
+  const calendar = cnTradingCalendarAt(fetchedAt);
   return assembleBoard({
     board: 'cn',
     market: 'cn',
     session,
+    calendar,
     note: errors
-      ? `部分 A 股行情暂未获取成功（${errors} 项），页面保留已成功数据。产业地图是研究底库，不是推荐池。`
-      : 'A 股观察池来自国产半导体产业地图种子。报价为近实时公开行情，非投资建议。',
+      ? `${cnTradingCalendarNote(calendar)} 部分行情暂未获取成功（${errors} 项），页面保留已成功数据。`
+      : `${cnTradingCalendarNote(calendar)} 报价时间缺失时不视为实时行情。`,
     groups: section.groups,
     indices,
     watchlist,
@@ -374,10 +379,11 @@ export function buildOverviewBoard(usBoard, asiaBoard, cnBoard, options = {}) {
     mode: focused?.mode || 'partial',
     fetchedAt: focused?.fetchedAt || Date.now(),
     session: focused?.session || 'closed',
+    ...(focused?.calendar ? { calendar: focused.calendar } : {}),
     sessions: asiaBoard?.sessions || null,
     focus,
     note: focus === 'cn'
-      ? '北京时间工作日 05:00–17:00 显示 A 股与港股观察。完整分组在 A 股分览。'
+      ? `北京时间工作日 05:00–17:00 显示 A 股与港股观察。${focused?.calendar ? cnTradingCalendarNote(focused.calendar) : ''} 港股按香港市场状态显示。`
       : '北京时间 17:00 后至次日 05:00 及周末显示美股观察。完整分组在美股分览。',
     groups: [],
     indices: [],

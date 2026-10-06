@@ -13,7 +13,7 @@ import {
 } from '../../connectors/src/xueqiu/index.js';
 import { createOfficialSourcesClient } from '../../connectors/src/official-sources.js';
 import { createMarketNativeClient } from '../../connectors/src/market-native.js';
-import { createBilibiliSourceDefinition, createMediaSourceDefinition, createTrendForceSourceDefinition, createXSourceDefinition, createXueqiuSourceDefinition } from './content/definitions.js';
+import { createBilibiliSourceDefinition, createMediaSourceDefinition, createTrendForceSourceDefinition, createTrendForceCollectionDefinition, createXSourceDefinition, createXueqiuSourceDefinition } from './content/definitions.js';
 import { createMediaJobHandlers, mediaConnectorManifest } from '../../connectors/src/media/index.js';
 import { createMarketSourceDefinitions } from './market/definitions.js';
 import { createMarketService } from './market/service.js';
@@ -85,7 +85,7 @@ export function createSourceModuleRegistry(options = {}) {
   registry.register({
     manifest: trendforceConnectorManifest,
     jobHandlers: createTrendForceJobHandlers(options),
-    sources: [createTrendForceSourceDefinition(trendforceService)],
+    sources: [createTrendForceSourceDefinition(trendforceService, options), createTrendForceCollectionDefinition(trendforceService)],
   });
   if (options.mediaService) {
     registry.register({
