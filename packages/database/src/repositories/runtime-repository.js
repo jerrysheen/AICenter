@@ -67,12 +67,13 @@ export function createRuntimeRepository(database, insertEvent) {
             priority = excluded.priority,
             max_attempts = excluded.max_attempts,
             next_run_at = CASE
+              WHEN ? = 1 THEN excluded.next_run_at
               WHEN job_schedules.schedule_json = excluded.schedule_json THEN job_schedules.next_run_at
               ELSE excluded.next_run_at
             END,
             updated_at = excluded.updated_at`)
           .run(id, workspaceId, key, jobType, value.enabled === false ? 0 : 1, scheduleJson,
-            JSON.stringify(input), priority, maxAttempts, nextRunAt, now, now);
+            JSON.stringify(input), priority, maxAttempts, nextRunAt, now, now, value.resetNextRunAt===true ? 1 : 0);
       })();
       return mapSchedule(database.prepare(`SELECT * FROM job_schedules
         WHERE workspace_id = ? AND schedule_key = ?`).get(workspaceId, key));

@@ -1,5 +1,9 @@
 # 数据契约 V1
 
+三层浓缩树见`information-tree-v3.md`和`packages/contracts/src/information-tree.js`：统一协议在Contract的treeResponseProtocol定义，模型完成返回单篇title/text/tagId或模块及inputIds，缺内容只返回status:needs_content。宿主先识别状态，再校验完成响应；无害额外字段丢弃并记录，非法归属仍拒绝。宿主生成不可变节点ID、版本、children和去重文章篇数；小时只连信息、日报只连小时，同一期每个可用输入恰好一个父模块。主Tag以人工锁定或信息主旨为准，旧多标签仅提示；版本化阅读映射只改变上层分组。待补保存原因、可重试性和冷却时间；发布与最近尝试分开，页面不暴露供应商字段。
+
+模型用量见 `model-usage-v1.md`：`ModelUsageRecord` 严格校验 Runtime 内部索引，区分 request 与官方 turn 汇总；所有缺失桶/供应商金额用 null。`ModelUsageView` 移除供应商路由与私有日志格式/路径，返回中立执行身份、业务阶段和独立版本费率估算。`ModelUsageQuery` 校验按 Job 分页，本机读取不得执行模型调用、导入或修复任务。
+
 硬件报价以独立结构化 Contract 保存完整规格、类型、Decimal 数值、币种/单位/报价期、来源更新时间与采集时间；未知字段为 null。报告简介是内容种类，summary_only 是完整度，两者独立。报价高低不表示股票 OHLC。兼容与去重规则见 `hardware-prices-v1.md`。
 
 硬件行情行的 `history` 是真实报价期的最新修订均价序列（`at / period / average`），不包含同期旧修订或无日期记录。当前列表只读每个来源页面最新的价表及相应序列当前值；历史解析版本、退下来的规格与旧文本快照通过精确快照／序列链接保留，不在当前行情重复混排。前端在全球行情内呈现统一的行情行与价格折线，仍与证券 OHLC 契约分开。
@@ -180,3 +184,11 @@ V6 保留旧 REAL 列用于兼容，新增 `*_decimal` 列作为新代码的权�
 - 可以执行的 job type。
 
 未声明任务、重复任务 handler 和不符合命名规则的模块会在注册阶段被拒绝。
+## X 点赞试用契约（2026-10-07）
+
+`feed-interaction.js` 声明固定 `feed.x.like`、严格 ContentItem ID 入参、`confirmed:true` HTTP 命令与脱敏结果。结果区分 `liked` / `already-liked` / `login-required` / `blocked` / `unavailable` / `not-found` / `unconfirmed`；账号仅返回 handle，不输出登录态或 BrowserRuntime 信息。接口与兼容边界见 `feed-interaction-v1.md`。
+
+
+文章整理隔离协议 `article-normalize-v1`：模型返回 title/tagId/summary/body 或 needs_content。信息节点仅以 text 保存摘要，新增可选 body 和 formatVersion；新格式无 body 校验失败。旧短稿读取不回填正文。小时/日报沿用原短文 Schema，输入投影排除 body。详见 `article-normalize-pilot.md`。
+
+2026-10-07 用户授权Gemini信息整理接入：同一冻结Harness新增封闭article-normalize路由，一次生成标题/Tag/摘要/正文；正文可选字段按版本校验，小时/日报仍只传摘要投影。三Key按项目持久化限流，明确quota冷却后显式Grok fallback，正常报告半点调度；不增加Agent或页面供应商字段。设计和兼容边界见 `gemini-article-normalize.md`。

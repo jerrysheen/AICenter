@@ -79,7 +79,7 @@ export function createTranslateService(options = {}) {
   const ttlMs = options.ttlMs ?? 24 * 60 * 60_000;
   const now = options.now || Date.now;
   const cache = new Map();
-  const router = createGeminiGrokTaskRouter(options);
+  const router = createGeminiGrokTaskRouter({ usageStage: 'translation', ...options });
   const systemFor = (target, batch = false) => (batch ? TRANSLATE_BATCH_SYSTEM : TRANSLATE_SYSTEM).replaceAll('简体中文', target === 'en' ? '英文' : '简体中文');
 
   function cachedOrPassthrough(source, target) {

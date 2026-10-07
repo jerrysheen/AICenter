@@ -808,7 +808,7 @@ export function createMediaIngestionService({
 
   function articleTranslation(workspaceId,row,snapshot) {
     const article = {externalId:row.externalId,bodyHash:snapshot.bodyHash,snapshotRevision:snapshot.revision,title:row.title,paragraphs:snapshot.article.paragraphs || []};
-    const saved = feedRepository?.listTranslations?.(workspaceId,mediaTranslationUnits(article).map(u=>u.id),'zh') || [];
+    const saved = feedRepository?.listTranslations?.(workspaceId,mediaTranslationUnits(article).flatMap(u=>[u.id,u.legacyId]),'zh') || [];
     return projectMediaTranslation(article,saved);
   }
 
@@ -816,7 +816,14 @@ export function createMediaIngestionService({
     return mediaRepository.getEntries(workspaceId,externalIds).flatMap(row=>{
       const snapshot=mediaRepository.latestBodies(workspaceId,[row.externalId])[0];
       if (!snapshot || snapshot.contentLevel!=='full' || snapshot.truncated || snapshot.article.extractorVersion!==extractorVersion || row.fetchState?.fetchStatus!=='ready' || row.fetchState.fetchedRevision!==row.revision) return [];
-      return mediaTranslationUnits({externalId:row.externalId,bodyHash:snapshot.bodyHash,title:row.title,paragraphs:snapshot.article.paragraphs});
+      const units=mediaTranslationUnits({externalId:row.externalId,bodyHash:snapshot.bodyHash,title:row.title,paragraphs:snapshot.article.paragraphs});
+      const saved=feedRepository?.listTranslations?.(workspaceId,units.flatMap(u=>[u.id,u.legacyId]),'zh') || [];
+      const byId=new Map(saved.map(r=>[r.itemId,r]));
+      const reuse=units.filter(u=>!byId.has(u.id) && byId.get(u.legacyId)?.sourceHash===sha256(u.text)).map(u=>{
+        const old=byId.get(u.legacyId);return {workspaceId,itemId:u.id,targetLang:'zh',sourceHash:old.sourceHash,translatedText:old.translatedText,engine:old.engine};
+      });
+      if(reuse.length) feedRepository?.saveTranslations?.(reuse);
+      return units;
     });
   }
 
@@ -963,7 +970,7 @@ export function createMediaIngestionService({
     },
     dailyMaterials(workspaceId,window) {
       const excluded=[...legacyHidden(workspaceId),...(feedRepository?.listHiddenExternalIds?.(workspaceId,'media') || []),...qualityExcluded(workspaceId)];
-      const rows=mediaRepository.listEntriesInWindow(workspaceId,{...window,hiddenExternalIds:excluded});
+      const rows=window.externalIds?.length ? mediaRepository.getEntries(workspaceId,window.externalIds).filter(row=>!excluded.includes(row.externalId)) : mediaRepository.listEntriesInWindow(workspaceId,{...window,hiddenExternalIds:excluded});
       const bodies=new Map(mediaRepository.latestBodies(workspaceId,rows.map(r=>r.externalId)).map(b=>[b.externalId,b]));
       return rows.map(row=>{
         const body=bodies.get(row.externalId);
@@ -973,6 +980,10 @@ export function createMediaIngestionService({
           effectiveLevel:valid ? 'full' : partial ? 'partial' : row.contentLevel==='discovery' ? 'discovery' : 'summary_only',
           bodyReason:valid ? '' : row.fetchState?.extractionReason || (body ? 'saved_body_not_current_verified_full' : 'body_not_saved')};
       });
+    },
+    informationCandidates(workspaceId,window) {
+      const excluded=[...legacyHidden(workspaceId),...(feedRepository?.listHiddenExternalIds?.(workspaceId,'media') || []),...qualityExcluded(workspaceId)];
+      return mediaRepository.informationCandidates(workspaceId,{...window,hiddenExternalIds:excluded,extractorVersion});
     },
     catalog: () => MEDIA_SOURCES.map((entry) => ({ ...entry })),
     discoverOriginals,

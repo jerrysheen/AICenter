@@ -1,3 +1,4 @@
+import {createInformationTreePage} from './information-tree.js?v=1';
 const HOUR = 3600000;
 const ARTICLE_VERSION='brief-editorial-v3';
 const DIRECTION_LABELS={finance:'金融与市场',policy:'时事与政策',tech:'科技与产业',other:'其他'};
@@ -60,6 +61,8 @@ function button(text, action, className='brief-button') {
 }
 
 export function createBriefPage(host) {
+  let treeActive=false;
+  const tree=createInformationTreePage({...host,back:()=>{treeActive=false;tree.stop();root.classList.remove('tree-page');routeKey='';mount(root,{history:true});}});
   const s = {identity:'', mode:'hourly', date:'', timezone:'', hours:[], manifest:[], brief:null, window:null,
     direction:'finance', directionInitialized:false, hourStart:null, positions:new Map(), history:[], pending:null, read:new Set(), saved:new Set(), expanded:new Set(), query:'', unread:false,
     savedOnly:false, loading:false, error:'', checkedAt:0, viewingHistory:false};
@@ -93,6 +96,7 @@ export function createBriefPage(host) {
   }
 
   function reset(clearStorage=false) {
+    tree.reset();treeActive=false;
     stop(); generation++; request++; evidenceRequest++;
     if (clearStorage && s.identity) {try {storage()?.removeItem(key());} catch {}}
     dialog?.close(); dialog?.remove(); dialog=null;
@@ -102,18 +106,29 @@ export function createBriefPage(host) {
     root?.replaceChildren(); root=null; busy=null; routeKey='';
   }
 
-  function stop() {clearInterval(timer); timer=0;}
+  function stop() {clearInterval(timer); timer=0;tree.stop();}
 
   function start() {
     stop();
     if (active() && !document.hidden) timer=setInterval(()=>check().catch(()=>{}),60000);
   }
 
-  function mount(target, {date='',history=false}={}) {
+  async function mount(target, {date='',history=false}={}) {
     setIdentity();
     const nextRoute=date || (history ? 'history' : 'current');
-    if (root===target && routeKey===nextRoute && root.childElementCount) {start();return check();}
+    if (root===target && routeKey===nextRoute && root.childElementCount) {if(treeActive)return tree.resume();start();return check();}
     routeKey=nextRoute; root=target; generation++; request++; busy=null;
+    if(!history) {
+      const token=generation,endAt=Date.now()+1;
+      const manifest=await host.api(`/api/v1/reports/tree?startAt=${endAt-7*86400000}&endAt=${endAt}`).catch(()=>null);
+      if(token!==generation)return;
+      if(!manifest){root.replaceChildren(node('p','brief-empty','暂时无法读取简报刊期，请稍后重新打开。'));return;}
+      // During a rolling upgrade the older reader lacks pipeline; independently prepared
+      // v3.1 heads prove the tree preparation path is active. Explicit legacy always wins.
+      const treeEnabled=manifest.pipeline==='tree-v3' || (manifest.pipeline===undefined && manifest.information?.some(n=>n.validatorVersion==='tree-response-v3.1.0'));
+      if(treeEnabled) {stop();treeActive=true;return tree.mount(root,{manifest,date,mode:date ? 'daily' : 'hourly'});}
+    }
+    treeActive=false;tree.stop();root.classList.remove('tree-page');
     if (date) {s.date=date; s.mode='daily'; s.brief=null; s.window=null; s.pending=null;}
     s.loading=true; build(history); start();
     return loadInitial(history);
@@ -131,6 +146,7 @@ export function createBriefPage(host) {
       tabs.append(tab);
     }
     const controls=node('div','brief-controls');
+    controls.append(button('三层浓缩树',()=>{stop();treeActive=true;tree.mount(root);}));
     datePicker=node('details','brief-date-picker'); dateLabel=node('summary','brief-date-label','日期');
     const dates=node('div','brief-date-options');
     dateInput=node('input','brief-date'); dateInput.type='date'; dateInput.setAttribute('aria-label','选择简报日期');
@@ -293,6 +309,7 @@ export function createBriefPage(host) {
   }
 
   async function check(manual=false) {
+    if(treeActive)return tree.check();
     if (!active() || document.hidden) return;
     if (!s.timezone || !s.date) return loadInitial();
     if (s.loading) return;
@@ -429,6 +446,7 @@ export function createBriefPage(host) {
     if(active()) window.scrollTo({top:s.positions.get(positionKey()) || 0,behavior:'instant'});
   }
   function selectDirection(key,focus=false) {
+    if(treeActive)return tree.selectDirection(key);
     if(!DIRECTION_LABELS[key]) return;
     rememberPosition();s.direction=key;s.directionInitialized=true;persist();renderContent();
     if(focus) directionTabs.querySelector(`[data-direction="${key}"]`)?.focus({preventScroll:true});
@@ -720,7 +738,7 @@ export function createBriefPage(host) {
   }
 
   document.addEventListener('visibilitychange',()=>{
-    if (document.hidden) stop(); else if (active()) {start();check().catch(()=>{});}
+    if (document.hidden) stop(); else if (active()) {if(treeActive)tree.resume();else {start();check().catch(()=>{});}}
   });
   window.addEventListener('online',()=>{if (active()) check().catch(()=>{});});
   document.addEventListener('click',event=>{

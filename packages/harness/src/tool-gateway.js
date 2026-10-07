@@ -66,16 +66,18 @@ export async function createToolGateway({
   context = {},
   token = randomToken(),
   onExecuted,
+  onUsage,
 } = {}) {
   if (!tools || typeof tools.execute !== 'function') {
     throw new Error('tool gateway 需要现有 ToolRegistry');
   }
   const allow = new Set(allowedToolIds.map((item) => String(item || '').trim()).filter(Boolean));
   const contextRef = { current: context };
+  const usageContexts = new Map();
 
   const server = createServer(async (request, response) => {
     try {
-      if (request.method !== 'POST' || request.url !== '/tools/execute') {
+      if (request.method !== 'POST' || !['/tools/execute', '/usage/observe'].includes(request.url)) {
         send(response, 404, { ok: false, error: 'not found' });
         return;
       }
@@ -84,6 +86,16 @@ export async function createToolGateway({
         return;
       }
       const payload = await readJson(request);
+      if (request.url === '/usage/observe') {
+        if (payload.status === 'pending' && !usageContexts.has(payload.id)) {
+          usageContexts.set(payload.id, { usageAttribution: { ...contextRef.current?.usageAttribution } });
+          if (usageContexts.size > 2048) usageContexts.delete(usageContexts.keys().next().value);
+        }
+        const attribution = usageContexts.get(payload.id);
+        if (attribution) { try { await onUsage?.(payload, attribution); } catch {} }
+        send(response, 200, { ok: true });
+        return;
+      }
       const id = fromHarnessToolName(payload.id || payload.name);
       if (!allow.has(id)) {
         send(response, 403, { ok: false, error: `工具 ${id || '(empty)'} 未对 Harness 开放` });
@@ -125,6 +137,9 @@ export async function createToolGateway({
     token,
     setContext(next) {
       contextRef.current = next || {};
+    },
+    setUsageAttribution(next) {
+      contextRef.current.usageAttribution = { ...contextRef.current.usageAttribution, ...next };
     },
     close() {
       return new Promise((resolve, reject) => {

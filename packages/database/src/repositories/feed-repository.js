@@ -688,9 +688,9 @@ export function createFeedRepository(database, emitEvent) {
       return rows;
     },
 
-    listContentItemsInWindow(workspaceId, { startAt, endAt, limit = 200, sourceId = null, cursor = null,qualityRule='',excludedItemIds=[] } = {}) {
+    listContentItemsInWindow(workspaceId, { startAt, endAt, limit = 200, sourceId = null, cursor = null,qualityRule='',excludedItemIds=[],metadataOnly=false } = {}) {
       const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
-      const rows = database.prepare(`SELECT ci.*, c.captured_at AS captured_at,
+      const rows = database.prepare(`SELECT ${metadataOnly ? 'ci.id,ci.title,ci.published_at,ci.created_at,ci.updated_at' : 'ci.*'}, c.captured_at AS captured_at,
         COALESCE(sa.provider,c.provider,'local') AS provider, COALESCE(c.source_account_id,'local') AS source_id,
         COALESCE(sa.display_name,'') AS source_name, c.metadata_json AS capture_metadata
         FROM content_items ci
@@ -706,6 +706,7 @@ export function createFeedRepository(database, emitEvent) {
         ORDER BY COALESCE(ci.published_at, ci.created_at) ASC, ci.id ASC
         LIMIT ?`).all(workspaceId, Number(startAt), Number(endAt), sourceId, sourceId,
           cursor?.eventAt ?? null, cursor?.eventAt ?? 0, cursor?.id ?? '', JSON.stringify(excludedItemIds), safeLimit);
+      if(metadataOnly)return rows.map(row=>({id:`feed:${row.id}`,version:String(row.updated_at || row.created_at),eventAt:row.published_at ?? row.created_at}));
       return rows.map((row) => ({
         ...mapContentItem(row),
         capturedAt: row.captured_at ?? null,

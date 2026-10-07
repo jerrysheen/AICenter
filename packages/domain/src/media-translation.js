@@ -6,7 +6,8 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 
 export function mediaTranslationUnits({ externalId, bodyHash, title, paragraphs = [] }) {
   const units = [];
-  for (const paragraph of [{ id: 'title', text: title, kind: 'heading' }, ...paragraphs]) {
+  const all=[{ id: 'title', text: title, kind: 'heading' }, ...paragraphs];
+  for (const [index,paragraph] of all.entries()) {
     const text = String(paragraph.text || '').trim();
     for (let start = 0, part = 0; start < text.length; part++) {
       let end = Math.min(start + 2400, text.length);
@@ -16,8 +17,11 @@ export function mediaTranslationUnits({ externalId, bodyHash, title, paragraphs 
       }
       if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1])) end--;
       const source = text.slice(start, end).trim();
-      const id = localizationItemId(`media-full:${externalId}:${bodyHash}:${hash(title || '')}:${paragraph.id}:${part}`);
-      if (source) units.push({ id, localizationId: id, paragraphId: paragraph.id, part, kind: paragraph.kind, text: source });
+      // Body edits invalidate only the changed block and its adjacent context, not the whole article.
+      const context=JSON.stringify([title,all[index-1]?.text?.slice(-240) || '',all[index+1]?.text?.slice(0,240) || '']);
+      const id = localizationItemId(`media-block-v2:${externalId}:${hash(source)}:${hash(context)}`);
+      const legacyId=localizationItemId(`media-full:${externalId}:${bodyHash}:${hash(title || '')}:${paragraph.id}:${part}`);
+      if (source) units.push({ id, legacyId, localizationId: id, paragraphId: paragraph.id, part, kind: paragraph.kind, text: source });
       start = end;
     }
   }
@@ -43,7 +47,7 @@ export function projectMediaTranslation(article, saved = []) {
   const groups = new Map();
   let completedChunks = 0, updatedAt = null;
   for (const unit of units) {
-    const row = byId.get(unit.id);
+    const row = byId.get(unit.id) || byId.get(unit.legacyId);
     const ready = row?.sourceHash === hash(unit.text) && Boolean(row.translatedText);
     const passthrough = !needsZhLocalization(unit.text);
     const text = ready ? row.translatedText : passthrough ? unit.text : '';

@@ -16,6 +16,7 @@ import {
 import { marketBoardAiWarnings, projectMarketBoardForAI } from '../../source/src/source-projections.js';
 import { readStaticSignalBoard } from '../../source/src/static/board.js';
 import { contentItemInTimeRange, resolveTimeRangeWindow } from './runtime-context.js';
+import {ModelUsageToolInputSchema} from '../../contracts/src/model-usage.js';
 
 function number(value, fallback = 0) {
   const parsed = Number(value);
@@ -70,12 +71,21 @@ export function createLocalToolRegistry({
   contextService, feedService, knowledgeService, tradingService, taggingService = null, sourcePort,
   marketStatisticsService = null,
   reportService = null,
+  modelUsageService = null,
   includeLegacyWebSearch = false,
 } = {}) {
   if (!contextService || !feedService || !knowledgeService || !tradingService) {
     throw new Error('local agent tools require context, feed, knowledge, and trading services');
   }
   const registry = createToolRegistry();
+
+  if(modelUsageService)registry.register({id:'model.usage.get',effect:'read',inputSchema:ModelUsageToolInputSchema,
+    description:'查询本实例已记录的整体模型Token用量，可按今天/昨天/近24或48小时、Job或阶段筛选。timeRange省略为all。仅累计真实request，不重复加Harness整轮turn；每个桶分别报告已知量和未知请求数，缓存命中是供应商报告的缓存读取Token，不等于应用缓存次数。涵盖问答、提炼、翻译、打标等已接入阶段。不会联网、不会调用模型，不代表账户余额或实际扣款；本次尚未结束的问答用量可能仍未知。不返回供应商、模型、会话日志、密钥或任务内容。',
+    execute(input,context){const window=resolveTimeRangeWindow(input.timeRange,context.runtimeContext || {});
+      const data=modelUsageService.summary({...(window.startMs===null ? {} : {startAt:window.startMs,endAt:window.endMs+1}),...(input.jobId ? {jobId:input.jobId} : {}),...(input.stage ? {stage:input.stage} : {})});
+      if(data.scope.workspaceId!==context.workspaceId)throw new Error('用量工具工作区不匹配');
+      return result(data,[],data.asOf,['仅代表已接入账本的已报告用量；未知不按零消费解释，供应商实际费用未确认。']);
+    }});
 
   if(reportService) {
     registry.register({id:'report.information.search',effect:'read',inputSchema:InformationSearchInputSchema,maxResultBytes:256*1024,

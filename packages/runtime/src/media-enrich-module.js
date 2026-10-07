@@ -1,16 +1,17 @@
 import { MEDIA_ENRICH_JOB_TYPE } from '../../connectors/src/media/index.js';
 import { mediaResourceId } from '../../domain/src/media-ingestion-service.js';
 import { mediaTranslationBatches } from '../../domain/src/media-translation.js';
+import {enqueueTreePreparation} from './information-tree-module.js';
 
-export function createMediaEnrichJobHandlers({ mediaService, feedService, taggingService, briefPort }) {
+export function createMediaEnrichJobHandlers({ mediaService, feedService, taggingService, briefPort, articleNormalizePort=null, treeEnabled=false }) {
   if (!mediaService?.fetchBodies || !mediaService?.listBodyCandidates || !mediaService?.listEnrichmentItems) {
     throw new Error('media enrich jobs require mediaService');
   }
-  if (!feedService?.localizeTexts) throw new Error('media enrich jobs require feedService');
+  if (!articleNormalizePort && !feedService?.localizeTexts) throw new Error('media enrich jobs require feedService');
   if (!taggingService?.analyzeItems) taggingService={analyzeItems:async()=>{throw new Error('tagging unavailable');}};
 
   return {
-    [MEDIA_ENRICH_JOB_TYPE]: async (input = {}) => {
+    [MEDIA_ENRICH_JOB_TYPE]: async (input = {},context) => {
       const workspaceId = input.workspaceId || 'local';
       const discovery = mediaService.discoverOriginals?.(workspaceId) || {added:0};
       const selected = mediaService.selectBodyCandidates?.(workspaceId, 10_000) || [];
@@ -25,11 +26,14 @@ export function createMediaEnrichJobHandlers({ mediaService, feedService, taggin
           selectedReasons: Object.fromEntries(selected.map(r => [r.externalId,r.reason])),
         });
         bodies.fetched.push(...(batch.fetched || []));
+        if(treeEnabled && !articleNormalizePort)enqueueTreePreparation(context?.store,workspaceId,candidates.slice(offset,offset+40).map(id=>`media:${id}`));
         if (batch.health) bodies.health = batch.health;
         for (const [key, value] of Object.entries(batch.stats || {})) bodies.stats[key] = (bodies.stats[key] || 0) + value;
       }
       const explicit = input.externalIds?.length ? new Set(input.externalIds) : null;
+      if(treeEnabled && !articleNormalizePort)enqueueTreePreparation(context?.store,workspaceId,[...new Set([...candidates,...bodies.fetched.map(row=>row.externalId)])].map(id=>`media:${id}`));
       const items = mediaService.listEnrichmentItems(workspaceId, 120, candidates).filter(item => !explicit || explicit.has(item.externalId));
+      if(articleNormalizePort)return articleNormalizePort.prepareInformation({workspaceId,sourceIds:items.map(item=>`media:${item.externalId}`)});
       const briefIds = explicit ? [...explicit] : [...new Set([...candidates, ...items.map(i => i.externalId)])];
       const units = items.filter(item => item.contentLevel !== 'full').map((item) => ({
         id: item.resourceId,
@@ -91,7 +95,7 @@ export function createMediaEnrichJobHandlers({ mediaService, feedService, taggin
         tagging.missingItemIds=items.filter(item=>!saved.has(item.resourceId)&&(!priorTags.has(item.resourceId)||freshIds.has(item.resourceId))).map(item=>item.resourceId);
       }
       // Reading, full translation and the shared X tag flow take priority over optional summaries.
-      const briefs = taggingError ? [] : await mediaService.generateBodyBriefs?.({ workspaceId, externalIds: briefIds, briefPort, retryFailed: Boolean(explicit) }) || [];
+      const briefs = treeEnabled ? [] : await mediaService.generateBodyBriefs?.({ workspaceId, externalIds: briefIds, briefPort, retryFailed: Boolean(explicit) }) || [];
       const fetched = bodies.fetched || [];
       return {
         workspaceId,

@@ -9,6 +9,7 @@ const SNIPPET_MAX = 100;
 
 const TOOL_LABELS = Object.freeze({
   'context.build': '上下文摘要',
+  'model.usage.get': '模型Token用量',
   'feed.search': '信息流',
   'feed.tag.search': 'Tag 信息流',
   'tag.list': 'Tag 字典',

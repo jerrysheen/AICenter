@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { withModelUsageContext } from './model-usage-context.js';
 import {
   parseWorkerJobConcurrency,
   QUANT_PREPARE_JOB_TYPE,
@@ -90,12 +91,13 @@ export function createJobRunner(options) {
     heartbeat.unref?.();
     const executor = { workerId, attemptCount: job.attemptCount };
     try {
-      const output = await handler(job.input, {
+      const output = await withModelUsageContext({ workspaceId: job.workspaceId || 'local', jobId: job.id,
+        jobAttempt: job.attemptCount, stage: job.type, observe: value => store.repositories?.modelUsage?.save(value) }, () => handler(job.input, {
         job,
         workerId,
         signal: abortController.signal,
         store,
-      });
+      }));
       return store.completeJob(job.id, output ?? {}, executor);
     } catch (error) {
       const retryDelayMs = Math.min(60_000, 1_000 * (2 ** Math.max(0, job.attemptCount - 1)));

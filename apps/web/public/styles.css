@@ -1,3 +1,9 @@
+.model-usage-dialog { width: min(900px, 92vw); max-height: 85vh; overflow: auto; padding: 20px; box-sizing: border-box; }
+.model-usage-detail { overflow-wrap: anywhere; white-space: pre-wrap; }
+.model-usage-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.model-usage-actions input { min-width: 0; max-width: 100%; }
+.model-usage-dialog summary { overflow-wrap: anywhere; cursor: pointer; }
+
 :root {
   color-scheme: only light;
   --brand: #0A59F7;
@@ -4992,3 +4998,25 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
   .brief-page .brief-prose > p, .brief-page .brief-article-lead > p { padding-bottom:12px; }
 }
 @media (min-width:1440px) { .brief-page .brief-layout { grid-template-columns:minmax(0,740px) minmax(180px,236px);gap:60px; } }
+.tree-page { max-width: 900px; margin-inline: auto; padding: 8px 0; }
+.tree-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.tree-controls button, .tree-controls select, .tree-card button, .tree-ref>summary { min-height: 44px; max-width: 100%; padding: 8px 12px; cursor: pointer; }
+.tree-controls select { min-width: 0; }
+.tree-card { padding: 18px 0; border-bottom: 1px solid var(--border, #ddd); overflow-wrap: anywhere; }
+.tree-card h3 { font-size: 17px; margin: 0 0 10px; }
+.tree-text { white-space: pre-wrap; line-height: 1.85; margin: 0; }
+.tree-ref { margin-top: 8px; }
+.tree-ref>summary { width: fit-content; color: var(--muted, #666); }
+.tree-children { margin-left: 12px; padding-left: 12px; border-left: 2px solid var(--border, #ddd); }
+.tree-status { font-size: 13px; color: var(--muted, #666); overflow-wrap: anywhere; }
+#report-list.tree-page { max-width: 900px; }
+.tree-controls button, .tree-card button { font: inherit; border: 0; border-radius: 0; background: transparent; color: var(--font-tertiary); }
+.tree-controls button[aria-pressed="true"] { color: var(--font-primary); font-weight: 700; box-shadow: inset 0 -2px var(--font-primary); }
+.tree-controls select { font: inherit; border: 1px solid var(--comp-tertiary); border-radius: 6px; background: var(--background-primary); width: auto; }
+.tree-card button { color: var(--brand); font-size: 13px; padding-left: 0; }
+.tree-list { padding-bottom: 24px; }
+.tree-page :is(button,summary,select):focus-visible { outline: 2px solid var(--brand); outline-offset: 3px; }
+.tree-update { position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:30;display:flex;align-items:center;gap:12px;width:max-content;max-width:calc(100vw - 32px);padding:12px 16px;background:var(--background-primary,#fff);border:1px solid var(--comp-tertiary,#ddd);box-shadow:0 4px 16px #0002; }
+.tree-update[hidden] { display:none; }
+.tree-update button { min-height:44px;flex-shrink:0; }
+.tree-page { overflow-anchor:none; }

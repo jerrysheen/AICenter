@@ -15,11 +15,14 @@ export function resolveDailyConfig(env = {}) {
   } catch {
     throw new ValidationError('日报时区无法识别', ['AI_CENTER_DAILY_TIMEZONE']);
   }
+  const runMinute=env.AI_CENTER_DAILY_RUN_MINUTE===undefined ? cutoffMinute : Number(env.AI_CENTER_DAILY_RUN_MINUTE);
+  if(!Number.isInteger(runMinute) || runMinute<cutoffMinute || runMinute>59)throw new ValidationError('日报生成分钟须在截止分钟之后且不超过59', ['AI_CENTER_DAILY_RUN_MINUTE']);
   const upcomingHours = Number(env.AI_CENTER_DAILY_UPCOMING_HOURS);
   return {
     timezone,
     cutoffHour,
     cutoffMinute,
+    ...(env.AI_CENTER_DAILY_RUN_MINUTE===undefined ? {} : {runMinute}),
     upcomingHours: Number.isFinite(upcomingHours) && upcomingHours > 0 ? upcomingHours : 36,
   };
 }

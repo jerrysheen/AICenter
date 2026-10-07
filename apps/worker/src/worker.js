@@ -1,3 +1,4 @@
+import {createGeminiArticleAdmission} from '../../../packages/runtime/src/gemini-article-admission.js';
 import { createHardwareArtifactStore } from '../../../packages/connectors/src/hardware-artifacts.js';
 import { legacyPriceSnapshot } from '../../../packages/connectors/src/trendforce-prices.js';
 import { createHardwarePriceService } from '../../../packages/domain/src/hardware-price-service.js';
@@ -19,7 +20,10 @@ import { createAttachmentStore, createStore } from '../../../packages/database/s
 import { createFeedFilterFromEnv } from '../../../packages/domain/src/feed-filter.js';
 import { resolveDailyConfig } from '../../../packages/domain/src/daily-window.js';
 import { createFeedService } from '../../../packages/domain/src/feed-service.js';
-import { createMediaIngestionService } from '../../../packages/domain/src/media-ingestion-service.js';
+import { createFeedInteractionService } from '../../../packages/domain/src/feed-interaction-service.js';
+import { createXLikeBrowserPort } from '../../../packages/connectors/src/x/like-browser.js';
+import { feedInteractionManifest, createFeedInteractionJobHandlers } from '../../../packages/runtime/src/feed-interaction-module.js';
+import { createMediaIngestionService,mediaResourceId } from '../../../packages/domain/src/media-ingestion-service.js';
 import { ensureMediaIndexSyncSchedule, MEDIA_ENRICH_JOB_TYPE } from '../../../packages/connectors/src/media/index.js';
 import { createMediaEnrichJobHandlers } from '../../../packages/runtime/src/media-enrich-module.js';
 import { createKnowledgeService } from '../../../packages/domain/src/knowledge-service.js';
@@ -46,6 +50,11 @@ import { createJobRunner } from '../../../packages/runtime/src/job-runner.js';
 import { createScheduler } from '../../../packages/runtime/src/scheduler.js';
 import { createDailyBriefService } from '../../../packages/domain/src/daily-brief-service.js';
 import {createInformationDigestService} from '../../../packages/domain/src/information-digest-service.js';
+import {createInformationTreeService} from '../../../packages/domain/src/information-tree-service.js';
+import {loadInformationTreeSkills,loadArticleNormalizeSkills} from '../../../packages/runtime/src/information-tree/skills.js';
+import {createTreeMaterialPort} from '../../../packages/domain/src/information-tree-materials.js';
+import {informationTreeManifest,createInformationTreeJobHandlers,enqueueTreePreparation,prioritizeRecentTreePreparation} from '../../../packages/runtime/src/information-tree-module.js';
+import {createModelUsageService} from '../../../packages/domain/src/model-usage-service.js';
 import { createReportJobHandlers, ensureDailyReportSchedule, ensureHourlyDigestSchedule, reportDailyManifest } from '../../../packages/runtime/src/report-module.js';
 import { createFeedAutomationJobHandlers, ensureDefaultContentSubscriptions, ensureFeedSubscriptionSyncSchedule, FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE, FEED_SYNC_MAX_RUNTIME_MS, feedAutomationManifest, prepareFeedSyncEnqueue } from '../../../packages/runtime/src/feed-automation-module.js';
 import { createStrategyJobHandlers, ensureDividendStrategySchedule, strategySnapshotManifest } from '../../../packages/runtime/src/strategy-module.js';
@@ -190,6 +199,10 @@ export function createAiCenterWorker(options = {}) {
     hardwarePriceService,
   });
   const sourcePort = options.sourcePort || createSourceHub(registry);
+  registry.register({ manifest: feedInteractionManifest, jobHandlers: createFeedInteractionJobHandlers(createFeedInteractionService({
+    feedRepository: store.repositories.feed, runtimeRepository: store,
+    likePort: options.xLikePort !== undefined ? options.xLikePort : browserRuntime?.withSession ? createXLikeBrowserPort({ browserRuntime }) : null,
+  })) });
   feedService = options.feedService || createFeedService({
     legacyRepository: store,
     feedRepository: store.repositories.feed,
@@ -197,6 +210,7 @@ export function createAiCenterWorker(options = {}) {
     feedFilter,
     mediaPort: mediaService,
     contentRoutingPort,
+    onContentReady:env.AI_CENTER_INFORMATION_PIPELINE==='tree-v3' ? ({workspaceId,sourceIds})=>enqueueTreePreparation(store,workspaceId,sourceIds) : null,
     translationPort: options.translateService || createTranslateService(),
   });
   const workPackageTracePort = options.workPackageTracePort || createWorkPackageTracePort({
@@ -222,7 +236,7 @@ export function createAiCenterWorker(options = {}) {
       workbookPath: instance.assetWorkbookPath,
     }),
   });
-  const dailyConfig = options.dailyConfig || resolveDailyConfig(env);
+  const dailyConfig = options.dailyConfig || resolveDailyConfig(env.AI_CENTER_ARTICLE_NORMALIZE==='1' && !env.AI_CENTER_DAILY_RUN_MINUTE ? {...env,AI_CENTER_DAILY_RUN_MINUTE:'30'} : env);
   const marketStatistics = options.marketStatisticsService
     || (sourcePort?.read ? createMarketStatisticsService({ sourcePort }) : null);
   const dividendStrategy = options.dividendStrategyService || createDividendStrategyService({
@@ -288,6 +302,7 @@ export function createAiCenterWorker(options = {}) {
     contextService, feedService, knowledgeService, tradingService, taggingService, sourcePort,
     reportService,
     marketStatisticsService: marketStatistics,
+    modelUsageService:createModelUsageService({repository:store.repositories.modelUsage,workspaceId:'local',getJob:id=>store.getJob(id)}),
     includeLegacyWebSearch: runtimeMode === 'local',
   });
   if (runtimeMode === 'harness') {
@@ -298,12 +313,14 @@ export function createAiCenterWorker(options = {}) {
   }
   const agentRuntime = runtimeMode === 'harness'
     ? createHarnessAgentRuntime({
+      articleAdmission:env.AI_CENTER_ARTICLE_NORMALIZE==='1' && env.AI_CENTER_HARNESS_ARTICLE_PROVIDER==='google' ? createGeminiArticleAdmission({repository:store.repositories.modelQuota,env}) : null,
       tools: agentTools,
       quality: agentQuality,
       env,
       runtimeDirectory: instance.runtimeDirectory,
       createClient: options.createHarnessClient,
       allowedToolIds: options.harnessToolIds,
+      usageLedger: { record: value => store.repositories?.modelUsage?.save(value) },
     })
     : (options.agentRuntime || createAgentRuntime({
       llm: structureLlm,
@@ -360,14 +377,35 @@ export function createAiCenterWorker(options = {}) {
       workPackageTracePort,
     }),
   });
-  const informationService=options.informationService || createInformationDigestService({
+  const treeEnabled=env.AI_CENTER_INFORMATION_PIPELINE==='tree-v3';
+  const articleStrategy=treeEnabled && env.AI_CENTER_ARTICLE_NORMALIZE==='1';
+  const articleNormalizePort=articleStrategy ? {async prepareInformation(input) {return {queued:enqueueTreePreparation(store,input.workspaceId || 'local',input.sourceIds || []).length};}} : null;
+  const treeCatalog=treeEnabled ? options.tagCatalog || readTagCatalogFile(existsSync(instance.tagCatalogPath) ? instance.tagCatalogPath : path.join(repositoryRoot,'config/tags.default.json')) : null;
+  const treeMaterials=treeEnabled ? createTreeMaterialPort({feedService,mediaService}) : null;
+  const treeService=treeEnabled ? createInformationTreeService({repository:store.repositories.informationTree,reportRepository:store.repositories.report,
+    feedService,mediaPort:mediaService,agentRuntime,articleStrategy,skills:articleStrategy ? loadArticleNormalizeSkills() : loadInformationTreeSkills(),timezone:dailyConfig.timezone,
+    catalog:treeCatalog,
+    candidatePort:treeMaterials?.candidates,materialPort:treeMaterials?.materials,
+    primaryTag:(_workspaceId,m)=>Object.hasOwn(treeCatalog.reading?.primaryLocks || {},m.id) ? {locked:true,tagId:treeCatalog.reading.primaryLocks[m.id]} : undefined,
+    tagHints:(workspaceId,m)=>{
+      const ref=m.sourceRefs?.find(r=>r.type==='media-body' || r.type==='content-item');if(!ref)return [];
+      const row=store.repositories.tagging.listTaggings(workspaceId,ref.type==='media-body' ? 'media-index' : 'content-item',[ref.type==='media-body' ? mediaResourceId(ref.id) : ref.id])[0];
+      if(row && (row.tagCatalogVersion!==treeCatalog.version || row.analyzedAt<(m.updatedAt || 0)))return undefined;
+      return row?.tags || [];
+    },
+    generationConfig:Object.fromEntries([...(articleStrategy ? ['article-normalize'] : []),'hourly-brief','daily-analysis'].map(task=>{const route=resolveHarnessLlm(env,{closedTask:task});return [task==='article-normalize' ? 'information' : task,{provider:route.provider,model:route.model,protocol:route.protocol,...(route.execution ? {execution:route.execution} : {})}];})),
+  }) : null;
+  const informationService=options.informationService || treeService || createInformationDigestService({
     reportRepository:store.repositories.report,feedService,mediaPort:mediaService,agentRuntime,timezone:dailyConfig.timezone,
   });
+  if(treeService)registry.register({manifest:informationTreeManifest,jobHandlers:createInformationTreeJobHandlers(treeService,{candidates:treeMaterials.candidates,refreshMinute:articleStrategy ? 30 : null})});
   registry.register({
     manifest: reportDailyManifest,
     jobHandlers: options.reportJobHandlers || createReportJobHandlers({
       reportService,
       informationService,
+      treeService,dailyConfig,
+      beforeHourly:treeService ? (input)=>prioritizeRecentTreePreparation(store,treeMaterials.candidates,input.workspaceId || 'local') : null,
       briefService: options.briefService || createDailyBriefService({
         reportRepository: store.repositories.report,
         agentRuntime,
@@ -390,6 +428,7 @@ export function createAiCenterWorker(options = {}) {
   registry.register({
     manifest: feedAutomationManifest,
     jobHandlers: options.feedAutomationJobHandlers || createFeedAutomationJobHandlers({
+      treeEnabled,articleNormalizePort,
       feedService,
       feedRepository: store.repositories.feed,
       taggingService,
@@ -409,6 +448,7 @@ export function createAiCenterWorker(options = {}) {
         feedService,
         taggingService,
         briefPort: createMediaBriefPort(agentRuntime),
+        treeEnabled,articleNormalizePort,
       }),
     });
   }
@@ -420,7 +460,7 @@ export function createAiCenterWorker(options = {}) {
   const handlers = options.handlers || registry.createJobHandlers();
   if (options.enableDefaultSchedules !== false) {
     ensureDailyReportSchedule(store, dailyConfig);
-    ensureHourlyDigestSchedule(store);
+    ensureHourlyDigestSchedule(store,Date.now(),{minute:articleStrategy ? 30 : 0});
     ensureDividendStrategySchedule(store);
     ensureFeedSubscriptionSyncSchedule(store);
     ensureMediaIndexSyncSchedule(store);

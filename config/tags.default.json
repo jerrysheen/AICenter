@@ -1,11 +1,150 @@
 {
   "version": "tags_v1",
   "tags": [
-    { "id": "general", "name": "综合", "level": 1, "parent_id": null, "keywords": ["综合", "其他", "通用"] },
-    { "id": "technology", "name": "科技", "level": 1, "parent_id": null, "keywords": ["科技", "技术", "软件", "硬件", "互联网"] },
-    { "id": "business", "name": "商业", "level": 1, "parent_id": null, "keywords": ["商业", "公司", "产品", "行业", "管理"] },
-    { "id": "markets", "name": "市场", "level": 1, "parent_id": null, "keywords": ["市场", "股票", "债券", "外汇", "商品"] },
-    { "id": "science", "name": "科学", "level": 1, "parent_id": null, "keywords": ["科学", "研究", "论文", "实验"] },
-    { "id": "society", "name": "社会", "level": 1, "parent_id": null, "keywords": ["社会", "政策", "教育", "文化"] }
-  ]
+    {
+      "id": "general",
+      "name": "综合",
+      "level": 1,
+      "parent_id": null,
+      "keywords": [
+        "综合",
+        "其他",
+        "通用"
+      ]
+    },
+    {
+      "id": "technology",
+      "name": "科技",
+      "level": 1,
+      "parent_id": null,
+      "keywords": [
+        "科技",
+        "技术",
+        "软件",
+        "硬件",
+        "互联网"
+      ]
+    },
+    {
+      "id": "business",
+      "name": "商业",
+      "level": 1,
+      "parent_id": null,
+      "keywords": [
+        "商业",
+        "公司",
+        "产品",
+        "行业",
+        "管理"
+      ]
+    },
+    {
+      "id": "markets",
+      "name": "市场",
+      "level": 1,
+      "parent_id": null,
+      "keywords": [
+        "市场",
+        "股票",
+        "债券",
+        "外汇",
+        "商品"
+      ]
+    },
+    {
+      "id": "science",
+      "name": "科学",
+      "level": 1,
+      "parent_id": null,
+      "keywords": [
+        "科学",
+        "研究",
+        "论文",
+        "实验"
+      ]
+    },
+    {
+      "id": "society",
+      "name": "社会",
+      "level": 1,
+      "parent_id": null,
+      "keywords": [
+        "社会",
+        "政策",
+        "教育",
+        "文化"
+      ]
+    },
+    {
+      "id": "communications",
+      "name": "通信与网络",
+      "level": 1,
+      "parent_id": null,
+      "keywords": [
+        "通信",
+        "卫星网络",
+        "海缆",
+        "电信",
+        "光纤",
+        "5G",
+        "6G"
+      ],
+      "description": "一般通信、电信运营、卫星互联网、海底光缆与网络基础设施；无需AI用途，不归软件或AI算力。"
+    },
+    {
+      "id": "datacenter",
+      "name": "数据中心",
+      "level": 1,
+      "parent_id": null,
+      "keywords": [
+        "数据中心",
+        "机房",
+        "托管",
+        "colocation"
+      ],
+      "description": "一般数据中心、机房、托管与供电冷却基础设施。仅明确用于AI训练或推理的项目归AI算力，不能凭出现GPU或数据中心就推断AI用途。"
+    }
+  ],
+  "reading": {
+    "version": "tree-reading-v2",
+    "groupByTag": {
+      "general": "general",
+      "technology": "technology",
+      "business": "business",
+      "markets": "markets",
+      "science": "science",
+      "society": "society",
+      "communications": "communications",
+      "datacenter": "datacenter"
+    },
+    "primaryLocks": {},
+    "directionByTag": {
+      "general": "tech",
+      "technology": "tech",
+      "business": "tech",
+      "markets": "tech",
+      "science": "tech",
+      "society": "tech",
+      "communications": "tech",
+      "datacenter": "tech"
+    },
+    "reclassification": {
+      "fromVersion": "d1d36f44383620e30bb6564ccf6e7cae8a72ef888f119d40bbce5ed696a99e20",
+      "keywords": [
+        "通信",
+        "通讯",
+        "卫星",
+        "海缆",
+        "海底光缆",
+        "数据中心",
+        "机房",
+        "telecom",
+        "satellite",
+        "submarine cable",
+        "data center",
+        "datacenter",
+        "colocation"
+      ]
+    }
+  }
 }

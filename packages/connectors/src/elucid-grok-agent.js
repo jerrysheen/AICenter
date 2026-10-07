@@ -1,6 +1,7 @@
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { modelIdForProfile } from './agent-model-profile.js';
+import { createUsageFetch } from './model-usage-fetch.js';
 
 const DEFAULT_ROOT = 'https://hk.getelucid.com/v1';
 const DEFAULT_MODEL = 'grok-4.7';
@@ -202,14 +203,14 @@ Runtime 会告知 Tool budget（used / remaining / max）；单轮请求数不�
 
 /** OpenAI Responses-compatible adapter for the Elucid Grok endpoint used by local Codex. */
 export function createElucidGrokAgentClient(options = {}) {
-  const fetchImpl = options.fetch || ((url, init) => elucidHttpRequest(url, {
+  const fetchImpl = createUsageFetch(options.fetch || ((url, init) => elucidHttpRequest(url, {
     method: init.method,
     headers: init.headers,
     body: init.body,
     signal: init.signal,
     timeoutMs: init.timeoutMs,
     onTransport: init.onTransport,
-  }));
+  })), { provider: 'elucid-grok', observer: options.usageObserver, stage: options.usageStage });
   const env = options.env || process.env;
   const apiKey = options.apiKey !== undefined ? text(options.apiKey) : envText(env, 'ELUCID_GROK_API_KEY', 'AI_CENTER_GROK_API_KEY');
   const apiRoot = (text(options.apiRoot) || envText(env, 'AI_CENTER_ELUCID_GROK_API_ROOT') || DEFAULT_ROOT).replace(/\/$/, '');

@@ -1,6 +1,7 @@
 import { parseContract, GenerateDailyBriefInputSchema, GenerateDailyReportInputSchema } from '../../contracts/src/index.js';
 import { dailySlotOnInstant } from '../../domain/src/zoned-time.js';
 import {GenerateHourlyDigestInputSchema} from '../../contracts/src/report.js';
+import {resolveDailyConfig,resolveDailyWindow,resolveReportDate} from '../../domain/src/daily-window.js';
 
 export const REPORT_DAILY_JOB_TYPE = 'report.daily.generate';
 export const REPORT_DAILY_BRIEF_JOB_TYPE = 'report.daily.brief.generate';
@@ -39,12 +40,21 @@ export const reportDailyManifest = Object.freeze({
   jobTypes: [REPORT_DAILY_JOB_TYPE, REPORT_DAILY_BRIEF_JOB_TYPE, REPORT_HOURLY_JOB_TYPE],
 });
 
-export function createReportJobHandlers({ reportService, briefService = null, informationService=null }) {
+export function createReportJobHandlers({ reportService, briefService = null, informationService=null, treeService=null, beforeHourly=null, dailyConfig=resolveDailyConfig() }) {
   if (!reportService?.generateDailyReport) throw new Error('daily report jobs require reportService');
   return {
-    [REPORT_HOURLY_JOB_TYPE]: async rawInput => {
+    [REPORT_HOURLY_JOB_TYPE]: async (rawInput,context) => {
       if(!informationService) throw new Error('小时摘选服务未配置');
-      const digests=await informationService.generateHourlyDigests(parseContract(GenerateHourlyDigestInputSchema,rawInput || {}));
+      const input=parseContract(GenerateHourlyDigestInputSchema,rawInput || {});
+      await beforeHourly?.(input,context);
+      const digests=await informationService.generateHourlyDigests(input);
+      if(treeService) {
+        if(digests[0]?.status==='failed' && digests[0].groupFailures?.some(p=>p.retryable)) throw new Error('小时浓缩临时失败；成功分类及检查点已保留');
+        const main=digests[0];
+        return {snapshotIds:digests.map(d=>d.id),editionId:main?.id,status:main?.status,published:main?.published===true,
+          window:main?.window,pendingCount:main?.pendingIds.length || 0,groupFailureCount:main?.groupFailures?.length || 0,
+          backgroundIncomplete:digests.slice(1).filter(d=>d.status!=='ready').map(d=>d.window.startAt)};
+      }
       const failed=(rawInput?.hourStart!==undefined ? digests : digests.slice(0,1)).filter(d=>d.editorial?.status==='failed');
       if(failed.length) throw new Error(`${failed.length} 个小时主题整理未完成；提炼底稿已保存，可继续重试。`);
       return {snapshotIds:digests.map(d=>d.id),itemCount:digests.reduce((s,d)=>s+d.items.length,0),
@@ -52,6 +62,13 @@ export function createReportJobHandlers({ reportService, briefService = null, in
     },
     [REPORT_DAILY_JOB_TYPE]: async (rawInput, context) => {
       const input = parseContract(GenerateDailyReportInputSchema, rawInput || {});
+      if(treeService) {
+        const reportDate=input.reportDate || resolveReportDate(Date.now(),dailyConfig);
+        const window=resolveDailyWindow({reportDate,...dailyConfig});
+        const edition=await treeService.generateDaily({workspaceId:input.workspaceId || 'local',window:{startAt:window.startAt,endAt:window.endAt}});
+        if(edition.status==='failed') throw new Error('日报浓缩树生成失败，旧刊期继续可读');
+        return {editionId:edition.id,reportDate,status:edition.status};
+      }
       if(!input.requestKey && context?.job?.id) input.requestKey=context.job.id;
       const report = await reportService.generateDailyReport(input);
       context?.store?.createJob?.({
@@ -64,6 +81,7 @@ export function createReportJobHandlers({ reportService, briefService = null, in
       return { reportId: report.id, reportDate: report.reportDate, status: report.status };
     },
     [REPORT_DAILY_BRIEF_JOB_TYPE]: async (rawInput, context) => {
+      if(treeService) return {status:'superseded',reason:'tree-v3 replaces legacy editorial; daily job reads only saved hourly modules'};
       if (!briefService?.generateDailyBrief) throw new Error('daily brief jobs require briefService');
       const input = parseContract(GenerateDailyBriefInputSchema, rawInput || {});
       try {
@@ -81,7 +99,7 @@ export function ensureDailyReportSchedule(store, config, now = Date.now()) {
   const nextRunAt = dailySlotOnInstant(now, {
     timeZone: config.timezone,
     hour: config.cutoffHour,
-    minute: config.cutoffMinute,
+    minute: config.runMinute ?? config.cutoffMinute,
   });
   return store.upsertJobSchedule({
     workspaceId: 'local',
@@ -92,7 +110,7 @@ export function ensureDailyReportSchedule(store, config, now = Date.now()) {
       kind: 'daily',
       timezone: config.timezone,
       hour: config.cutoffHour,
-      minute: config.cutoffMinute,
+      minute: config.runMinute ?? config.cutoffMinute,
     },
     input: {
       timezone: config.timezone,
@@ -105,8 +123,11 @@ export function ensureDailyReportSchedule(store, config, now = Date.now()) {
   });
 }
 
-export function ensureHourlyDigestSchedule(store,now=Date.now()) {
-  return store.upsertJobSchedule({workspaceId:'local',key:'report.hourly.default',jobType:REPORT_HOURLY_JOB_TYPE,
+export function ensureHourlyDigestSchedule(store,now=Date.now(),{minute=0}={}) {
+  if(!Number.isInteger(minute) || minute<0 || minute>59)throw new Error("invalid hourly schedule minute");
+  const prior=store.getJobSchedule?.('local','report.hourly.default');
+  const resetNextRunAt=Boolean(prior && prior.nextRunAt%3600000!==minute*60000);
+  return store.upsertJobSchedule({resetNextRunAt,workspaceId:'local',key:'report.hourly.default',jobType:REPORT_HOURLY_JOB_TYPE,
     enabled:true,schedule:{kind:'interval',intervalMinutes:60},input:{},priority:0,maxAttempts:2,
-    nextRunAt:(Math.floor(now/3600000)+1)*3600000});
+    nextRunAt:Math.floor(now/3600000)*3600000+minute*60000+(now>=Math.floor(now/3600000)*3600000+minute*60000 ? 3600000 : 0)});
 }

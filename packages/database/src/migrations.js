@@ -1459,6 +1459,41 @@ migrations.push({
   },
 });
 
+migrations.push({
+  version: 41, name: 'model_usage_query_index',
+  up(database) {
+    database.exec(`CREATE TABLE model_usage_index (
+      workspace_id TEXT NOT NULL, id TEXT NOT NULL, job_id TEXT NOT NULL,
+      occurred_at INTEGER NOT NULL, record_json TEXT NOT NULL, PRIMARY KEY(workspace_id,id)
+    );
+    CREATE INDEX model_usage_by_job ON model_usage_index(workspace_id,job_id,occurred_at);
+    CREATE INDEX model_usage_by_time ON model_usage_index(workspace_id,occurred_at);`);
+  },
+});
+
+migrations.push({
+  version: 42, name: 'information_condensation_tree',
+  up(database) {
+    database.exec(`CREATE TABLE information_tree_nodes (workspace_id TEXT NOT NULL,id TEXT NOT NULL,value_json TEXT NOT NULL,PRIMARY KEY(workspace_id,id));
+      CREATE TABLE information_tree_editions (workspace_id TEXT NOT NULL,id TEXT NOT NULL,value_json TEXT NOT NULL,PRIMARY KEY(workspace_id,id));
+      CREATE TABLE information_tree_heads (workspace_id TEXT NOT NULL,period_key TEXT NOT NULL,layer TEXT NOT NULL,start_at INTEGER NOT NULL,published_id TEXT,attempt_id TEXT NOT NULL,PRIMARY KEY(workspace_id,period_key));
+      CREATE TABLE information_tree_leases (workspace_id TEXT NOT NULL,cache_key TEXT NOT NULL,owner TEXT NOT NULL,lease_until INTEGER NOT NULL,PRIMARY KEY(workspace_id,cache_key));`);
+  },
+});
+
+migrations.push({version:43,name:'tree_information_preparation_and_policy',up(database) {
+  database.exec(`CREATE TABLE information_tree_information_heads (workspace_id TEXT NOT NULL,source_id TEXT NOT NULL,node_id TEXT NOT NULL,source_version TEXT NOT NULL,event_at INTEGER NOT NULL,source_at INTEGER NOT NULL,PRIMARY KEY(workspace_id,source_id));
+    CREATE INDEX information_tree_information_window ON information_tree_information_heads(workspace_id,event_at);
+    CREATE TABLE information_tree_policies (workspace_id TEXT PRIMARY KEY,policy_hash TEXT NOT NULL);`);
+}});
+
+migrations.push({version:44,name:'gemini_article_quota_admission',up(database) {
+  database.exec(`CREATE TABLE model_quota_reservations(id TEXT PRIMARY KEY,project TEXT NOT NULL,model TEXT NOT NULL,at INTEGER NOT NULL,estimated_tokens INTEGER NOT NULL);
+    CREATE INDEX model_quota_time ON model_quota_reservations(at);
+    CREATE INDEX model_quota_project_time ON model_quota_reservations(project,model,at);
+    CREATE TABLE model_quota_cooldowns(project TEXT NOT NULL,model TEXT NOT NULL,until_at INTEGER NOT NULL,PRIMARY KEY(project,model));`);
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

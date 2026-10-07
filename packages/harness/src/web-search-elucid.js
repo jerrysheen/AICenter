@@ -5,6 +5,7 @@ import {
   HARNESS_PROVIDER,
 } from './constants.js';
 import { resolveHarnessLlm, resolveHarnessLlmProvider } from './llm-route.js';
+import { createUsageFetch } from '../../connectors/src/model-usage-fetch.js';
 
 export const HARNESS_ELUCID_SEARCH_PROVIDER_ID = HARNESS_ELUCID_PROVIDER;
 export const HARNESS_DEEPSEEK_SEARCH_PROVIDER_ID = HARNESS_PROVIDER;
@@ -111,7 +112,7 @@ export async function searchElucidWeb(request = {}, options = {}) {
   const baseURL = (text(options.baseURL || llm.baseURL) || HARNESS_ELUCID_DEFAULT_BASE_URL).replace(/\/+$/, '');
   const model = text(options.model || llm.model) || HARNESS_ELUCID_DEFAULT_MODEL;
   if (!apiKey) throw new Error('Harness 搜索需要 ELUCID_GROK_API_KEY');
-  const fetchImpl = options.fetchImpl || fetch;
+  const fetchImpl = createUsageFetch(options.fetchImpl || fetch, { provider: 'elucid-grok', model, observer: options.usageObserver, stage: 'web-search' });
   const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 90_000;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);

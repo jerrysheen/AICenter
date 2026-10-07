@@ -1,4 +1,7 @@
 import { createFeedService } from './feed-service.js';
+import { createFeedInteractionService } from './feed-interaction-service.js';
+import { createInformationTreeReader } from './information-tree-service.js';
+import { createModelUsageService } from './model-usage-service.js';
 import { createMediaIngestionService } from './media-ingestion-service.js';
 import { createIdentityService } from './identity-service.js';
 import { createKnowledgeService } from './knowledge-service.js';
@@ -62,6 +65,9 @@ export function createDomainServices({
   dailyConfig = null,
   staticSignalPort = null,
   quantRoot = null,
+  modelUsageRates = [],
+  informationPipeline = 'legacy',
+  onContentReady = null,
 }) {
   if (!store?.repositories) throw new Error('store repositories are required');
   const media = mediaService || (store.repositories.media
@@ -80,6 +86,7 @@ export function createDomainServices({
     feedFilter,
     mediaPort: media,
     contentRoutingPort,
+    onContentReady,
   });
   const trading = createTradingService({
     tradingRepository: store.repositories.trading,
@@ -119,8 +126,11 @@ export function createDomainServices({
     defaultConfig: resolvedDailyConfig,
   });
   return Object.freeze({
+    informationTree: createInformationTreeReader({repository:store.repositories.informationTree,timezone:resolvedDailyConfig.timezone,pipeline:informationPipeline,catalog:tagCatalog || {}}),
+    modelUsage: createModelUsageService({ repository: store.repositories.modelUsage, workspaceId, rates: modelUsageRates, getJob: id => store.getJob(id) }),
     identity: createIdentityService({ identityRepository: store, loginCredential }),
     feed,
+    feedInteraction: createFeedInteractionService({ feedRepository: store.repositories.feed, runtimeRepository: store }),
     media,
     hardwarePrices: hardwarePriceService,
     trading,

@@ -33,6 +33,18 @@ function seed(f,id='decoder:one',extra={}) {
   f.store.repositories.media.upsertEntry({workspaceId:'local',externalId:id,sourceKey:id.split(':')[0],publisherKey:id.split(':')[0],channel:'tech',canonicalUrl:'https://the-decoder.com/one/',title:'API price',summary:'Source preview',publishedAt:now,publishedAtRaw:'',contentLevel:'summary_only',contentHash:'index',revision:1,status:'indexed',observedAt:now,createdAt:now,updatedAt:now,...extra});
 }
 
+test('tree metadata version matches saved body and information queues before translation failure',async()=>{
+  const f=fixture(async()=>new Response(`<article><div class="content-wrapper"><p>${'Saved article explains product plans and operating conditions. '.repeat(50)}</p></div></article>`));
+  try{
+    seed(f);
+    const handler=createMediaEnrichJobHandlers({mediaService:f.service,feedService:{localizeTexts:async()=>{throw new Error('translation unavailable');}},treeEnabled:true})['media.index.enrich'];
+    await assert.rejects(()=>handler({externalIds:['decoder:one']},{store:f.store}),/translation unavailable/);
+    const candidates=f.service.informationCandidates('local',{startAt:now,endAt:now+1000}),saved=f.service.dailyMaterials('local',{externalIds:['decoder:one']});
+    assert.equal(candidates.length,1);assert.equal(candidates[0].version,`index:${saved[0].revision}/body:${saved[0].body.revision}`);assert.ok(!Object.hasOwn(candidates[0],'body'));
+    assert.equal(f.store.listOpenJobs('report.information.prepare').length,1);
+  }finally{f.close();}
+});
+
 test('saved article reads directly by stable ID outside listing pages without fetching or crossing workspaces',async()=>{
   let network=0;const f=fixture(async()=>{network++;throw Error('read must not fetch');});
   try {

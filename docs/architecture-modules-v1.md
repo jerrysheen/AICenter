@@ -228,3 +228,6 @@ BrowserRuntime读取可见列表。Yahoo Economy只读取已核对的`main .stre
 - Contract 新增可选字段属于兼容变更；删除字段、修改语义或改变数值单位必须发布新版本。
 
 翻译/打标的配额检测由gemini-grok-task Connector统一处理，以实际429响应为准，不假设本地计数等于项目总额度。按Key指纹、API入口和模型隔离冷却；每日配额在America/Los_Angeles次日零点恢复（含夏令时），其他限流使用Retry-After/RetryInfo，缺少信息时冷却60秒。状态在进程内共享，Web与Worker不互相假报项目剩余额度；重启后首次实际响应重新确认。鉴权/参数错误不误报配额。Grok批量沿用原id、JSON解析、目录标签校验和译文哈希缓存；失败保持pending。AI_CENTER_FEED_GROK_MODEL缺省grok-4.7，与Harness主模型独立；不再使用DeepL/Google翻译。
+## X 点赞命令补充（2026-10-07）
+
+用户明确授权的阅读页单条点赞属于 Feed 写命令：Contract → FeedInteractionService / Repository → 固定 `feed.x.like` Job → 注册 Worker handler → BrowserRuntime Connector。不是只读 Source，不暴露给 Harness，不接受浏览器 ID、URL 或脚本参数。状态查询只投影当前 workspace 与内容关联的 Job；原帖重新加载核验才确认成功，已点赞不切换取消。完整边界与兼容见 `feed-interaction-v1.md`。

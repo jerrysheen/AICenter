@@ -31,6 +31,7 @@ import { WorkerJobConcurrencySchema } from './runtime.js';
 
 export * from './errors.js';
 export * from './common.js';
+export * from './model-usage.js';
 export * from './feed.js';
 export * from './feed-quality.js';
 export * from './feed-value.js';
@@ -549,6 +550,8 @@ export function parsePatchUserItemStateInput(value) {
   return parseContract(PatchUserItemStateInputSchema, value);
 }
 
+export * from './information-tree.js';
+
 export function parseHideFlag(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new ValidationError('请求内容必须是对象');
@@ -558,3 +561,4 @@ export function parseHideFlag(value) {
   }
   return { isHidden: true };
 }
+export * from './feed-interaction.js';

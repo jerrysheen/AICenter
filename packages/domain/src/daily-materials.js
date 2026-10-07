@@ -22,7 +22,7 @@ export function paragraphs(text,role='body') {
   return pieces;
 }
 
-function socialParagraphs(text) {
+export function socialParagraphs(text) {
   const match=String(text || '').match(/\n(?:\n)?(?:【)?(?:评论|热门评论|可见评论|Comments)(?:】)?[:：]?/i);
   if(!match) return paragraphs(text);
   return [...paragraphs(text.slice(0,match.index)),...paragraphs(text.slice(match.index),'comment').map(p=>({...p,id:`comment-${p.id}`}))];

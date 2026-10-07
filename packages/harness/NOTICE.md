@@ -7,3 +7,10 @@ Domain tools through a loopback gateway.
 
 DeepSeek Harness is copyright DeepSeek AI and licensed under MIT.
 See https://github.com/deepseek-ai/deepseek-harness/blob/master/LICENSE
+
+The accounting integration directly consumes the same pinned MIT packages:
+`dsh-token-meter/client`, `dsh-llm/assistant-stream`, and the released
+`dsh-session-format-catalog` codec. Native token folds are not copied.
+The JSONL read path also uses the pinned official persistence backend and
+Cordis 4.0.2. The original frozen-commit MIT text is included in
+`LICENSE.deepseek-harness`.

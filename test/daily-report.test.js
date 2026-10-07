@@ -343,3 +343,8 @@ test('market analysis route delegates to stock statistics', async () => {
   assert.deepEqual(calls, [{ symbol: '600519.SS', range: '5y' }]);
   assert.match(response.body, /600519\.SS/);
 });
+
+test('tree hour Job reports main edition status and pending instead of treating task completion as ready',async()=>{
+  const handlers=createReportJobHandlers({reportService:{generateDailyReport(){}},treeService:{},informationService:{async generateHourlyDigests(input){assert.equal(input.hourStart,1791331200000);return [{id:'edition:partial',status:'partial',published:true,window:{startAt:1791331200000,endAt:1791334800000},pendingIds:['missing'],groupFailures:[]}];}}});
+  const result=await handlers['report.hourly.extract']({workspaceId:'local',hourStart:1791331200000});assert.equal(result.status,'partial');assert.equal(result.published,true);assert.equal(result.pendingCount,1);assert.equal(result.editionId,'edition:partial');assert.deepEqual(result.window,{startAt:1791331200000,endAt:1791334800000});
+});

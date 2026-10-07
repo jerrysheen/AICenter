@@ -10,6 +10,9 @@ import {
 import { icon } from './icons.js?v=dev';
 import { renderMarkdownInto, renderFeedTextInto, splitFeedText } from './markdown.js?v=dev';
 import { renderQuantLab } from './quant-lab.js?v=dev';
+const { openModelUsageDialog } = await import('./model-usage.js?v=dev').catch(() => ({ openModelUsageDialog: null }));
+const { createFeedLikeAction } = await import('./feed-interaction.js?v=dev').catch(() => ({ createFeedLikeAction: () => () => null }));
+const feedLikeButton = createFeedLikeAction({ api: (...args) => api(...args), showToast: text => showToast(text), createAction: options => createDetailAction(options), session: () => state.session });
 import { createMediaFeedCache, createMediaFeedLoader, createMediaReaderSession, mediaReaderParagraphs } from './media-feed.js?v=dev';
 // An older running Web process may not have registered the new module yet.
 // Keep the existing reader available until the normal service reload.
@@ -6505,6 +6508,8 @@ function renderArticlePage() {
     if (post.platform === 'official') openPage('source', `policy.${post.author}`);
     else openPage('source', post.platform === 'manual' ? 'manual' : post.platform);
   });
+  const xLike = feedLikeButton(post);
+  if (xLike) meta.append(xLike);
   const body = document.createElement('div');
   if(post.hardwareSnapshot) {const go=document.createElement('button');go.className='text-button';go.textContent='查看AI硬件价格';go.addEventListener('click',()=>openPage('hardware',`snapshot/${post.hardwareSnapshot.id}`));body.append(go);}
   let mediaBrief;
@@ -7130,6 +7135,11 @@ function renderTasksPage() {
   auto.innerHTML = '<span><strong>自动任务配置</strong><small>频率、翻译和标签规则；保存后仍是本机草案</small></span>';
   auto.addEventListener('click', () => openPage('automation', 'x'));
   wrap.append(auto);
+  if (openModelUsageDialog) {
+    const usage = document.createElement('button'); usage.type = 'button'; usage.className = 'setting-row';
+    usage.textContent = '模型用量账本（本机）';
+    usage.addEventListener('click', () => openModelUsageDialog({ api })); wrap.append(usage);
+  }
   root.replaceChildren(wrap);
   loadRuntimeJobs().catch(() => {});
 }

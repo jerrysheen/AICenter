@@ -37,6 +37,9 @@ import {
 } from './session-events.js';
 import { projectToolCatalog } from './tool-catalog.js';
 import { createToolGateway } from './tool-gateway.js';
+import { createHarnessUsageObserver } from './model-usage-observer.js';
+import { supplementHarnessUsage } from './model-usage-history.js';
+import { modelUsageContext, withModelUsageContext } from '../../runtime/src/model-usage-context.js';
 import {
   excludeDomainWebTools,
   isHarnessWebToolId,
@@ -216,6 +219,8 @@ export function createHarnessAgentRuntime({
   runtimeDirectory,
   createClient = loadDefaultClient,
   allowedToolIds,
+  usageLedger = null,
+  articleAdmission = null,
 } = {}) {
   if (!tools || typeof tools.list !== 'function' || typeof tools.execute !== 'function') {
     throw new Error('Harness runtime 需要现有 ToolRegistry');
@@ -246,14 +251,14 @@ export function createHarnessAgentRuntime({
     try { await rm(current.tempRoot, { recursive: true, force: true }); } catch {}
   }
 
-  async function ensureEngine({ allow, catalog, workspaceId, timeoutMs, researchProfile, closedContext = false, closedTask = '' }) {
-    const llm = resolveHarnessLlm(env, { researchProfile, closedTask });
+  async function ensureEngine({ executionEnv=env, allow, catalog, workspaceId, timeoutMs, researchProfile, closedContext = false, closedTask = '' }) {
+    const llm = resolveHarnessLlm(executionEnv, { researchProfile, closedTask });
     const key = engineKey({
       workspaceId,
       timeoutMs,
       allow,
       provider: llm.provider,
-      model: llm.model,
+      model: llm.model+'::'+llm.apiKeyEnv+'::'+JSON.stringify(llm.execution || {}),
       closedContext,
       closedTask,
     });
@@ -263,6 +268,7 @@ export function createHarnessAgentRuntime({
       tools,
       allowedToolIds: allow,
       context: {},
+      onUsage(value, context) { usageLedger?.record({ ...value, ...context.usageAttribution }); },
       async onExecuted(item) {
         const run = runRef.current;
         let pendingIndex = run.pendingCalls.findIndex((call) => (
@@ -309,7 +315,7 @@ export function createHarnessAgentRuntime({
       'utf8',
     );
     const launch = resolveHarnessLaunch({
-      env,
+      env:executionEnv,
       runtimeDirectory,
       gateway,
       catalogPath,
@@ -349,14 +355,14 @@ export function createHarnessAgentRuntime({
       entry.input.signal?.throwIfAborted();
       entry.input.onExecutionStart?.();
       try {await entry.input.trace?.({event:'runtime.execution.started',detail:{queueMs:Date.now()-entry.queuedAt}});} catch {}
-      return runOnce(entry.input);
+      return withModelUsageContext(entry.usageContext, () => runWithFallback(entry.input));
     }).then(entry.resolve,entry.reject).finally(()=>{activeEntry=null;drain();});
   }
   function withLock(input) {
     if(closing) return Promise.reject(new Error('Harness 已关闭'));
     if(input.signal?.aborted) return Promise.reject(input.signal.reason || new DOMException('The operation was aborted','AbortError'));
     return new Promise((resolve,reject)=>{
-      const entry={input,resolve,reject,sequence:sequence++,queuedAt:Date.now(),
+      const entry={input,resolve,reject,usageContext:modelUsageContext(),sequence:sequence++,queuedAt:Date.now(),
         priority:input.closedContext===true ? Math.max(-10,Math.min(10,Number(input.executionPriority)||0)) : 20};
       entry.cancel=()=>{
         const index=queue.indexOf(entry);
@@ -388,12 +394,21 @@ export function createHarnessAgentRuntime({
     },
   });
 
+  async function runWithFallback(input) {
+    try {return await runOnce(input);}catch(error) {
+      if(input.closedContext!==true || input.closedTask!=='article-normalize' || !error.quotaExhausted || env.AI_CENTER_HARNESS_ARTICLE_FALLBACK!=='elucid-grok')throw error;
+      await input.trace?.({event:'article.provider.fallback',detail:{from:'google',to:'elucid-grok',reason:'quota-exhausted'}});
+      return runOnce(input,true);
+    }
+  }
+
   async function runOnce({
     message, workspaceId, sessionId = '', jobId = '', selectedRefs = [], signal,
     priorTurns = [], selectedContext = '', webMode = 'off',
     researchMode = 'standard', researchProfile, taskInstruction = '',
-    allowedToolIds: runAllow, timeoutMs, trace, now, closedContext = false, closedTask = '',
-  } = {}) {
+    allowedToolIds: runAllow, timeoutMs, trace, now, closedContext = false, closedTask = '', usageStage = '',
+  } = {}, articleFallback=false) {
+    const runEnv=articleFallback ? {...env,AI_CENTER_HARNESS_ARTICLE_PROVIDER:'elucid-grok',AI_CENTER_HARNESS_ARTICLE_MODEL:env.AI_CENTER_HARNESS_ARTICLE_FALLBACK_MODEL || 'grok-4.7'} : env;
     const runStartedAt = Date.now();
     const runtimeContext = buildRuntimeContext(now ?? clock(), timeZone);
     const record = async (event, detail) => {
@@ -403,8 +418,8 @@ export function createHarnessAgentRuntime({
       ? researchProfile
       : resolveResearchProfile(researchMode);
     const closed = closedContext === true;
-    const task = closed && ['media-brief','daily-analysis','hourly-brief'].includes(closedTask) ? closedTask : '';
-    const llm = resolveHarnessLlm(env, { researchProfile: profile, closedTask:task });
+    const task = closed && ['media-brief','daily-analysis','hourly-brief','article-normalize'].includes(closedTask) ? closedTask : '';
+    const llm = resolveHarnessLlm(runEnv, { researchProfile: profile, closedTask:task });
     if (missingHarnessLlmCredential(env, llm)) {
       throw new Error(harnessLlmCredentialError(llm));
     }
@@ -429,7 +444,7 @@ export function createHarnessAgentRuntime({
     const priorInput = {
       message, webMode, researchMode: profile.mode, tools: toolDefinitions, signal,
     };
-    const priorTask = quality?.advisePrior && quality.config?.priorMode !== 'off'
+    const priorTask = !(closed && String(usageStage).startsWith('tree-')) && quality?.advisePrior && quality.config?.priorMode !== 'off'
       ? quality.advisePrior(priorInput)
       : null;
     if (priorTask) await record('advisor.prior.started', {
@@ -449,12 +464,19 @@ export function createHarnessAgentRuntime({
       ? formatPriorHint(qualityPrior.scores)
       : '';
 
-    let slot;
+    let slot, articleTicket, executionEnv=runEnv;
+    if(task==='article-normalize' && llm.provider==='google') {
+      if(!articleAdmission)throw new Error('Google article task requires persistent traffic admission');
+      articleTicket=articleAdmission.reserve({model:llm.model,inputBytes:Buffer.byteLength(buildHarnessPrompt({closedContext:true,taskInstruction,message})),maxTokens:llm.execution.maxTokens});
+      executionEnv={...runEnv,AI_CENTER_HARNESS_ARTICLE_KEY_ENV:articleTicket.keyEnv};
+    }
+    if(articleFallback)articleAdmission.reserveFallback({model:llm.model,inputBytes:Buffer.byteLength(buildHarnessPrompt({closedContext:true,taskInstruction,message})),maxTokens:llm.execution.maxTokens});
     try {
       slot = await ensureEngine({
-        allow, catalog, workspaceId, timeoutMs, researchProfile: profile, closedContext: closed, closedTask:task,
+        executionEnv, allow, catalog, workspaceId, timeoutMs, researchProfile: profile, closedContext: closed, closedTask:task,
       });
     } catch (error) {
+      if(articleTicket)articleAdmission.failed(articleTicket,error);
       await record('run.failed', {
         runtime: 'harness',
         name: error?.name || 'Error',
@@ -464,6 +486,8 @@ export function createHarnessAgentRuntime({
     }
     slot.gateway.setContext({
       workspaceId, message, signal, sessionId, jobId, selectedRefs, runtimeContext,
+      usageAttribution: { workspaceId: workspaceId || modelUsageContext().workspaceId || 'local', jobId: jobId || modelUsageContext().jobId || '',
+        jobAttempt: modelUsageContext().jobAttempt ?? null, applicationSessionId: sessionId || '', harnessSessionId: '', stage: 'web-search' },
     });
 
     const applicationSessionId = String(sessionId || '').trim();
@@ -473,6 +497,12 @@ export function createHarnessAgentRuntime({
       harnessSessionId = `aicenter-${randomUUID().replaceAll('-', '')}`;
       slot.sessionIds.set(applicationSessionId, harnessSessionId);
     }
+    if (!harnessSessionId) harnessSessionId = `aicenter-${randomUUID().replaceAll('-', '')}`;
+    slot.gateway.setUsageAttribution({ harnessSessionId });
+    const usageObserver = createHarnessUsageObserver({
+      record: value => usageLedger?.record(value), provider: slot.launch.provider, model: slot.launch.model,
+      attribution: { workspaceId, jobId, applicationSessionId, stage: usageStage || task || (taskInstruction ? 'article-analysis' : 'ask') },
+    });
     const prompt = warm
       ? followUpPrompt({ message, selectedContext, priorHint })
       : [
@@ -483,7 +513,7 @@ export function createHarnessAgentRuntime({
           webMode,
           researchProfile: profile,
           taskInstruction,
-          runtimeContext,
+          runtimeContext:task=='article-normalize' ? undefined : runtimeContext,
           catalog: visibleTools,
           closedContext: closed,
         }),
@@ -500,6 +530,11 @@ export function createHarnessAgentRuntime({
     const liveTrace = new Set();
     const liveProjector = createHarnessTraceProjector();
     const onNotification = async (notification) => {
+      usageObserver.notification(notification);
+      const event = notification?.params?.event;
+      if (notification?.method === 'session.event' && notification.params.sessionId === harnessSessionId && event?.type === 'step/start') {
+        slot.gateway.setUsageAttribution({ turn: event.data?.turn ?? null, step: event.data?.step ?? null });
+      }
       for (const item of notificationToTraceEvents(notification, liveProjector)) {
         noteHarnessTrace(runRef.current, item);
         const stamp = `${item.event}:${JSON.stringify(item.detail || {})}`;
@@ -514,6 +549,7 @@ export function createHarnessAgentRuntime({
         ...(harnessSessionId ? { sessionId: harnessSessionId } : {}),
         onNotification,
       });
+      usageObserver.events(result?.sessionId || harnessSessionId, result?.events || []);
       for (const item of projectHarnessTraceEvents(result?.events || [])) {
         const stamp = `${item.event}:${JSON.stringify(item.detail || {})}`;
         if (liveTrace.has(stamp)) continue;
@@ -549,7 +585,7 @@ export function createHarnessAgentRuntime({
       let decision = resolveFinalAnswer({
         answer,
         evidence,
-        remainingModelCalls: 1,
+        remainingModelCalls: task==='article-normalize' ? 0 : 1,
         explicitWebSearchRequested: explicitSearchIntent(message),
         webSearchAvailable,
       });
@@ -561,6 +597,7 @@ export function createHarnessAgentRuntime({
           sessionId: harnessSessionId || result.sessionId,
           onNotification,
         });
+        usageObserver.events(retry?.sessionId || harnessSessionId, retry?.events || []);
         assertSuccessfulTurn(retry);
         answer = String(retry?.finalResponse || '').trim();
         if (!answer) throw new Error('Harness 没有返回回答');
@@ -600,6 +637,7 @@ export function createHarnessAgentRuntime({
         visibleTools,
       };
     } catch (error) {
+      if(articleTicket)articleAdmission.failed(articleTicket,error);
       await record('run.failed', {
         runtime: 'harness',
         name: error?.name || 'Error',
@@ -611,6 +649,8 @@ export function createHarnessAgentRuntime({
       throw error;
     } finally {
       signal?.removeEventListener('abort', onAbort);
+      await supplementHarnessUsage({ dshHome: slot.launch.dshHome, sessionId: harnessSessionId, observer: usageObserver });
+      usageObserver.interrupt();
     }
   }
 }

@@ -581,6 +581,7 @@ test('worker starts the subscription sync schedule and enriches new items withou
   const worker = createAiCenterWorker({
     store: temporary.store,
     workerId: 'feed-auto-worker',
+    env: {AI_CENTER_INFORMATION_PIPELINE:'legacy'},
     browserRuntime: { async health() { return { available: false }; } },
     agentQuality: null,
     auxiliarySearch: null,

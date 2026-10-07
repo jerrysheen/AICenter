@@ -101,5 +101,5 @@ test('tag provider failure leaves completed reading available and reports pendin
  let briefCalls=0;
  const handlers=createMediaEnrichJobHandlers({mediaService:{fetchBodies:async()=>({health:'ready',stats:{validFull:1},fetched:[{externalId:'reuterswire:one',health:'ready',contentLevel:'full'}]}),listBodyCandidates:()=>['reuterswire:one'],listEnrichmentItems:()=>[{externalId:'reuterswire:one',resourceId:'one',contentLevel:'full',body:prose,text:prose}],listArticleTranslationUnits:()=>[{id:'chunk-one',text:prose}],generateBodyBriefs:async()=>{briefCalls++;return [];}},feedService:{localizeTexts:async()=>({pendingIds:[]})},taggingService:{analyzeItems:async()=>{throw new Error('Provider quota exhausted');}}});
  const output=await handlers['media.index.enrich']({});
- assert.equal(output.health,'partial');assert.equal(output.bodiesFetched,1);assert.equal(output.translationStats.pendingChunks,0);assert.equal(output.taggingStatus,'pending');assert.deepEqual(output.pendingTagIds,['one']);assert.equal(briefCalls,0);
+ assert.equal(output.health,'partial');assert.equal(output.bodiesFetched,1);assert.equal(output.translationStats.pendingChunks,0);assert.equal(output.taggingStatus,'pending');assert.deepEqual(output.pendingTagIds,['one']);assert.equal(briefCalls,1);
 });

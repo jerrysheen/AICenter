@@ -1,5 +1,11 @@
 # 架构
 
+2026-10-06 用户授权三层浓缩树：在原Report / Repository / Worker和封闭Harness边界内，以单一`AI_CENTER_INFORMATION_PIPELINE=tree-v3`开关替代新稿的逐项事实底稿和方向长文；默认legacy，旧引用保持。迁移42追加不可变节点/刊期及独立发布/尝试指针，父节点固定直接子版本，HTTP仅只读展开。设计与兼容决定见`information-tree-v3.md`。
+
+tree-v3.1审核修复：注册固定report.information.prepare任务，在采集或正文就绪后独立准备信息稿；常规小时任务只读取信息头和材料版本元数据，不重新读原文。迁移43追加信息头和允许发布的策略指纹，事务内核对策略、预期发布head及覆盖；旧运行不能覆盖新策略。阶段失败、负缓存、耗时继续复用原有daily_analysis_stages，Token计量沿用原账本。封闭tree-*任务只隔离Ask prior建议，不关闭Ask与入库JEV。本轮实现先隔离验收，不视为已获生产重载授权。
+
+2026-10-06 用户授权模型用量账本：Runtime 的旁路 Service/Repository 以原始 Harness 通知、最终事件和官方只读 JSONL backend 建立脱敏请求归因索引；整轮汇总复用 token-meter/client，不复制会话日志。直连模型HTTP边界单独记账，查询只对本机开放，不改变业务Agent。详见 `model-usage-v1.md`。
+
 2026-10-05 用户授权按内容类型分流 TrendForce：原采集任务一次获取，经 Feed 注入 Port 分别写 Media 与行情报价 Service/Repository；硬件报价独立于股票 OHLC。来源和旧 ContentItem 身份保留，迁移显式执行；细则见 `hardware-prices-v1.md`。
 
 当前产品版本是 **0.2.0 基线候选**。当前问题与验收见 `docs/release-readiness.md`。

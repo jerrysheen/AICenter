@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { DEFAULT_WORKSPACE_ID, runMigrations } from './migrations.js';
 import { createDomainRepositories } from './repositories/index.js';
 import { createRuntimeRepository } from './repositories/runtime-repository.js';
+import {PrepareTreeInformationInputSchema} from '../../contracts/src/information-tree.js';
 export { createAttachmentStore } from './attachment-store.js';
 
 function sha256(value) {
@@ -498,6 +499,44 @@ export function createStore(databasePath) {
       return job;
     },
 
+    prioritizeQueuedJobs(workspaceId, ids, priority) {
+      if(!Array.isArray(ids) || !Number.isSafeInteger(priority))throw new Error('队列优先级参数不合法');
+      return database.transaction(()=>{
+        const changed=[];
+        for(const id of new Set(ids)) {
+          const result=database.prepare("UPDATE jobs SET priority=?,updated_at=? WHERE id=? AND workspace_id=? AND status='queued' AND priority<?").run(priority,Date.now(),id,workspaceId,priority);
+          if(result.changes){insertEvent('job.prioritized','job',id,{jobId:id,priority},workspaceId);changed.push(id);}
+        }
+        return changed;
+      })();
+    },
+
+    reprioritizeQueuedJobs(workspaceId,changes) {
+      if(!Array.isArray(changes) || changes.some(c=>typeof c.id!=='string' || !Number.isSafeInteger(c.priority) || !Number.isSafeInteger(c.expectedPriority)))throw new Error('队列优先级参数不合法');
+      return database.transaction(()=>{
+        const changed=[];
+        for(const value of changes) {
+          const result=database.prepare("UPDATE jobs SET priority=?,updated_at=? WHERE id=? AND workspace_id=? AND status='queued' AND priority=?")
+            .run(value.priority,Date.now(),value.id,workspaceId,value.expectedPriority);
+          if(result.changes){insertEvent('job.prioritized','job',value.id,{jobId:value.id,priority:value.priority},workspaceId);changed.push(value.id);}
+        }
+        return changed;
+      })();
+    },
+
+    rescheduleQueuedJobs(workspaceId,changes) {
+      if(!Array.isArray(changes) || changes.some(c=>typeof c.id!=='string' || !Number.isSafeInteger(c.availableAt) || c.availableAt<0 || !Number.isSafeInteger(c.expectedAvailableAt)))throw new Error('队列时间参数不合法');
+      return database.transaction(()=>{
+        const changed=[];
+        for(const value of changes){
+          const result=database.prepare("UPDATE jobs SET available_at=?,updated_at=? WHERE id=? AND workspace_id=? AND status='queued' AND available_at=?")
+            .run(value.availableAt,Date.now(),value.id,workspaceId,value.expectedAvailableAt);
+          if(result.changes){insertEvent('job.rescheduled','job',value.id,{jobId:value.id,availableAt:value.availableAt},workspaceId);changed.push(value.id);}
+        }
+        return changed;
+      })();
+    },
+
     claimNextJob(workerId, acceptedTypes = []) {
       const now = Date.now();
       database.exec('BEGIN IMMEDIATE');
@@ -610,6 +649,28 @@ export function createStore(databasePath) {
         }
       })();
       return rows.length;
+    },
+
+    splitQueuedInformationPreparation(workspaceId,ids) {
+      if(!Array.isArray(ids) || ids.length>100 || ids.some(id=>typeof id!=='string'))throw new Error('准备任务拆分参数不合法');
+      return database.transaction(()=>{
+        const results=[];
+        for(const id of new Set(ids)) {
+          const row=database.prepare("SELECT * FROM jobs WHERE id=? AND workspace_id=? AND type='report.information.prepare' AND status='queued' AND attempt_count=0").get(id,workspaceId);
+          if(!row)continue;
+          const input=PrepareTreeInformationInputSchema.parse(JSON.parse(row.input_json));
+          if(input.workspaceId!==workspaceId)throw new Error('准备任务工作区不符');
+          const sources=[...new Set(input.sourceIds)];if(sources.length<=1)continue;
+          const children=sources.map(sourceId=>this.createJob({type:row.type,workspaceId,input:{...input,sourceIds:[sourceId]},
+            priority:row.priority,maxAttempts:row.max_attempts,availableAt:row.available_at}));
+          const output={status:'superseded',reason:'single-material-preparation',jobIds:children.map(j=>j.id)},now=Date.now();
+          database.prepare("UPDATE jobs SET status='cancelled',output_json=?,completed_at=?,updated_at=? WHERE id=? AND status='queued'")
+            .run(JSON.stringify(output),now,now,id);
+          insertEvent('job.cancelled','job',id,{jobId:id,...output},workspaceId);
+          results.push({originalId:id,jobIds:output.jobIds});
+        }
+        return results;
+      }).immediate();
     },
 
     listOpenJobs(type) {

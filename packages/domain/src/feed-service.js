@@ -108,7 +108,7 @@ function projectLocalizations(units, byItemId) {
   return localizations;
 }
 
-async function translatePendingUnits(translationPort, pending, targetLang) {
+async function translatePendingUnits(translationPort, pending, targetLang, checkpoint=()=>{}) {
   if (!pending.length || !translationPort) return [];
   const packed = packFeedAiBatches(pending.map((unit) => ({
     id: unit.localizationId,
@@ -117,9 +117,10 @@ async function translatePendingUnits(translationPort, pending, targetLang) {
     purpose: 'translate',
     charBudget: 80_000,
     itemClipChars: 5_000,
-    itemLimit: 30,
+    itemLimit: pending.length,
   });
   const originals = new Map(pending.map((unit) => [unit.localizationId, unit.text]));
+  const truncated=new Set(packed.batches.flatMap(batch=>batch.units.filter(u=>u.truncatedForModel).map(u=>u.itemId)));
   const translations = [];
   async function translateChunk(items) {
     if (translationPort.translateMany) {
@@ -133,18 +134,24 @@ async function translatePendingUnits(translationPort, pending, targetLang) {
         targetLang,
       });
       rows.push({ id: item.id, ...translation });
+      checkpoint([{id:item.id,...translation,sourceText:originals.get(item.id)}]);
     }
     return { translations: rows, targetLang };
   }
   for (const batch of packed.batches) {
-    const chunk = batch.units.map((unit) => ({ id: unit.itemId, text: unit.text }));
+    const chunk = batch.units.filter(unit=>!truncated.has(unit.itemId)).map((unit) => ({ id: unit.itemId, text: unit.text }));
+    if(!chunk.length)continue;
     const result = await translateChunk(chunk);
+    const completed=[];
     for (const row of result.translations || []) {
-      translations.push({
+      if(!originals.has(row.id))continue;
+      completed.push({
         ...row,
         sourceText: originals.get(row.id) || row.sourceText,
       });
     }
+    translations.push(...completed);
+    if(translationPort.translateMany)checkpoint(completed);
   }
   return translations;
 }
@@ -169,8 +176,7 @@ async function localizeCollected(feedRepository, translationPort, workspaceId, u
   const lockKey = `${workspaceId}:${targetLang}:${pending.map((unit) => unit.localizationId).sort().join(',')}`;
   const run = async () => {
     try {
-      const translations = await translatePendingUnits(translationPort, pending, targetLang);
-      persistTranslations(feedRepository, workspaceId, translations);
+      await translatePendingUnits(translationPort, pending, targetLang, rows=>persistTranslations(feedRepository,workspaceId,rows));
     } catch {
       // Keep cached/empty localizations; the view can retry.
     }
@@ -462,7 +468,7 @@ function wrapFeedProviders(feedProviders) {
   };
 }
 
-export function createFeedService({ legacyRepository, feedRepository, sourcePort, feedProviders, translationPort, feedFilter = null, mediaPort = null, contentRoutingPort = null }) {
+export function createFeedService({ legacyRepository, feedRepository, sourcePort, feedProviders, translationPort, feedFilter = null, mediaPort = null, contentRoutingPort = null,onContentReady=null }) {
   const resolvedSourcePort = sourcePort || wrapFeedProviders(feedProviders);
   if (!legacyRepository || !feedRepository || !resolvedSourcePort) throw new Error('feed repositories and source port are required');
   sourcePort = resolvedSourcePort;
@@ -512,6 +518,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
         if(contentRoutingPort && providerId==='trendforce') throw error;
         // Live snapshot still returns even if persistence fails.
       }
+      if(stats.addedItemIds?.length)await onContentReady?.({workspaceId,sourceIds:stats.addedItemIds.map(id=>`feed:${id}`)});
       if(contentRoutingPort && providerId==='trendforce')return {...mediaPort.readFeed({channel:'tech',sourceKey:'trendforce',view:'all'},{workspaceId}),added:stats.added,mediaExternalIds:stats.mediaExternalIds || []};
       const stored = readStoredFeed(feedRepository, workspaceId, persistence, sourceInput, {
         qualityRule,
@@ -562,7 +569,9 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       if (snapshot.mode === 'error' || snapshot.mode === 'unavailable') {
         throw new Error(snapshot.note || `${sourceId} 抓取失败`);
       }
-      return contentRoutingPort && persistence.providerId==='trendforce' ? contentRoutingPort.ingest(workspaceId,snapshot) : ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter);
+      const stats=await (contentRoutingPort && persistence.providerId==='trendforce' ? contentRoutingPort.ingest(workspaceId,snapshot) : ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter));
+      if(stats.addedItemIds?.length)await onContentReady?.({workspaceId,sourceIds:stats.addedItemIds.map(id=>`feed:${id}`)});
+      return stats;
     },
     listContentItems(workspaceId, page) {
       return feedRepository.listContentItems(workspaceId, {...page,qualityRule});
@@ -596,8 +605,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       if (item.provider && item.externalId) ids.push(`${item.provider}:${item.externalId}`);
       const rows = feedRepository.listTranslations?.(workspaceId, ids, 'zh') || [];
       const hash = contentHash(item.body || '');
-      const row = rows.find((entry) => entry.sourceHash === hash && entry.translatedText)
-        || rows.find((entry) => entry.translatedText);
+      const row = rows.find((entry) => entry.sourceHash === hash && entry.translatedText);
       return {
         ...item,
         translation: row?.translatedText

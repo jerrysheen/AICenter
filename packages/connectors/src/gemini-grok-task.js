@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createElucidGrokAgentClient } from './elucid-grok-agent.js';
+import { createUsageFetch } from './model-usage-fetch.js';
 
 // Translation and tagging share quota knowledge in each Web/Worker process.
 const sharedQuotaState = new Map();
@@ -43,7 +44,7 @@ export function geminiQuotaCooldown(response, payload, at) {
 }
 
 export function createGeminiGrokTaskRouter(options = {}) {
-  const fetchImpl = options.fetch || fetch;
+  const fetchImpl = createUsageFetch(options.fetch || fetch, { provider: 'gemini', model: options.geminiModel || envText('AI_CENTER_GEMINI_MODEL') || 'gemini-3.1-flash-lite', observer: options.usageObserver, stage: options.usageStage || 'feed-enrichment' });
   const apiKey = options.geminiApiKey !== undefined ? text(options.geminiApiKey) : envText('GEMINI_API_KEY','GOOGLE_API_KEY','AI_CENTER_GEMINI_API_KEY');
   const apiRoot = (text(options.geminiApiRoot) || envText('AI_CENTER_GEMINI_API_ROOT') || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '');
   const model = text(options.geminiModel) || envText('AI_CENTER_GEMINI_MODEL') || 'gemini-3.1-flash-lite';
@@ -53,6 +54,7 @@ export function createGeminiGrokTaskRouter(options = {}) {
   const quotas = options.quotaState || sharedQuotaState;
   const quotaKey = createHash('sha256').update(`${apiRoot}\n${model}\n${apiKey}`).digest('hex');
   const grok = createElucidGrokAgentClient({
+    usageObserver: options.usageObserver, usageStage: options.usageStage || 'feed-enrichment',
     apiKey:elucidApiKey,apiRoot:options.elucidApiRoot,
     model:text(options.elucidModel) || envText('AI_CENTER_FEED_GROK_MODEL','AI_CENTER_ELUCID_GROK_MODEL') || 'grok-4.7',timeoutMs,
     ...(options.fetch ? {fetch:options.fetch} : {}),

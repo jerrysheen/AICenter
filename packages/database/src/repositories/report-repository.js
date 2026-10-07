@@ -210,9 +210,14 @@ export function createReportRepository(database, emitEvent) {
         emitEvent('report.analysis.updated.v1','daily-analysis',runKey,{status},workspaceId);
       })();
     },
+    listTreePreparationStates(workspaceId,sourceIds) {
+      if(!sourceIds.length)return [];
+      return database.prepare(`SELECT input_json,output_json,status FROM daily_analysis_stages WHERE workspace_id=? AND report_date='tree-preparation' AND stage_key IN (SELECT 'information:' || value FROM json_each(?)) ORDER BY updated_at DESC`)
+        .all(workspaceId,JSON.stringify(sourceIds)).map(r=>({input:JSON.parse(r.input_json),output:r.output_json ? JSON.parse(r.output_json) : null,status:r.status}));
+    },
     getAnalysisStage(workspaceId,reportDate,stageKey,inputHash) {
       const row=database.prepare('SELECT * FROM daily_analysis_stages WHERE workspace_id=? AND report_date=? AND stage_key=? AND input_hash=?').get(workspaceId,reportDate,stageKey,inputHash);
-      return row ? {status:row.status,output:parseJson(row.output_json,null)} : null;
+      return row ? {status:row.status,output:parseJson(row.output_json,null),input:parseJson(row.input_json,null),error:row.error,updatedAt:row.updated_at} : null;
     },
     saveAnalysisStage(workspaceId,reportDate,stageKey,inputHash,input,output,status,error='') {
       database.transaction(()=>{

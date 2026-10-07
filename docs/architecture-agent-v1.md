@@ -78,6 +78,7 @@ Jev：
 | 能力类型 | 例子 |
 |---|---|
 | 个人 / 本地状态 | `holdings.get`、`assets.get`、`user.method.get` |
+| 实例模型用量汇总 | `model.usage.get`（只读请求统计，缺失用量显式保留，不读取明细日志或账户余额） |
 | 知识与信息流 | `knowledge.search`、`knowledge.get`、`feed.search`、`feed.tag.search` |
 | 公开互联网 | Harness 内置 `web_search` / `web_fetch`（基建，不经 Domain Gateway） |
 | 官方事实 | `static.signals.list` → `official.source.get` |
@@ -211,3 +212,5 @@ Jev Prior + Reviewer 打分 / 标签
 当前 AI Center Agent = **一个负责思考和探索的 Single Agent + 一个负责确定性边界的 Runtime + 一组可插拔 Tool + 一个给出置信与质量信号的 Jev 层**。执行、约束、评价彼此分离。
 
 AI Center **不是** Agent Framework。通用循环、Session 压缩、Retry、Permission 已经收敛到冻结的 DeepSeek Harness；这就是现在的 `AgentRuntime`。本地自研循环只留给测试注入 fake LLM，或显式 `AI_CENTER_AGENT_RUNTIME=local`。AI Center 继续拥有领域数据、Tools、Skills、JEV、UI 和产品 Job。当前 Skill 是明确调用（例如 Article Analysis：Instruction + Domain Tool Scope + Output Goal），不是 DSH `skill-filesystem` 上的可发现 Skill 目录。资料搜索等专用能力以后通过 Plugin / Provider / Seam 加在这套执行器上，而不是修改或 fork core，也不另建第二套 Runtime。Harness Permission 预设管的是本机编码 Agent 的 sandbox / 审批；公网授权仍由 AI Center 的调用方能力平面决定。
+
+2026-10-07 用户授权Gemini信息整理接入：同一冻结Harness新增封闭article-normalize路由，一次生成标题/Tag/摘要/正文；正文可选字段按版本校验，小时/日报仍只传摘要投影。三Key按项目持久化限流，明确quota冷却后显式Grok fallback，正常报告半点调度；不增加Agent或页面供应商字段。设计和兼容边界见 `gemini-article-normalize.md`。

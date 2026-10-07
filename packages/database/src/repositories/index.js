@@ -1,4 +1,7 @@
+import { createModelQuotaRepository } from './model-quota-repository.js';
 import { createFeedRepository } from './feed-repository.js';
+import { createInformationTreeRepository } from './information-tree-repository.js';
+import { createModelUsageRepository } from './model-usage-repository.js';
 import { createMediaRepository } from './media-repository.js';
 import { createHardwarePriceRepository } from './hardware-price-repository.js';
 import { createKnowledgeRepository } from './knowledge-repository.js';
@@ -9,6 +12,9 @@ import { createTradingRepository } from './trading-repository.js';
 
 export function createDomainRepositories(database, emitEvent) {
   return Object.freeze({
+    informationTree: createInformationTreeRepository(database, emitEvent),
+    modelUsage: createModelUsageRepository(database, emitEvent),
+    modelQuota: createModelQuotaRepository(database, emitEvent),
     feed: createFeedRepository(database, emitEvent),
     media: createMediaRepository(database, emitEvent),
     hardwarePrices: createHardwarePriceRepository(database, emitEvent),

@@ -1,5 +1,7 @@
 # AI Center 文档索引
 
+- `feed-interaction-v1.md`：用户授权的 X 阅读页单条点赞试用；BrowserRuntime 精确定位、Worker 固定任务及重开原帖核验。
+
 阅读顺序：
 
 ```text
@@ -14,6 +16,20 @@
 `plan/` 与 `progress/` 保留历史，不重新驱动当前开发。旧计划与已执行迁移记录不要批量删除。
 
 ## 当前
+
+- `progress/2026-10-07-local-commit.md`：本轮信息树、Gemini整理、用量账本和已完成互动能力的提交范围、882项检查及本机运行产物边界。
+
+- `ops/hourly-readiness-diagnostics.md`：小时信息未就绪逐篇原因、只读证据导出、历史刊期对照、队列/模型等待与吞吐口径；本轮核对见`progress/2026-10-07-information-readiness-diagnosis.md`。
+
+- `progress/2026-10-07-hourly-publication-recovery.md`：提前空ready纠正、未结束小时防护、单篇准备与有限低优先补编、旧queued批次保留式拆分；850项检查及正式API/页面发布引用回读，积压仍有待补。
+
+- `progress/2026-10-07-usage-tool-social-chain.md`：Harness问答用量工具、直接X/雪球信息准备入口及安全重载、实际问答/社媒小时回读验收。
+- `progress/2026-10-07-tree-hour-repair.md`：四项最小修复、836项回归、实际采集/信息准备/小时发布与自动版本验证；指定时段与实例时钟差异另行记录。
+
+- `information-tree-v3.md`：2026-10-06 用户授权的「单篇短文 → 小时模块 → 日报模块」链路、固定Skill、隔离回放与回退开关；新模式覆盖旧信息摘选设计，仓库默认legacy，本机Instance已按用户后续授权启用tree-v3。
+- `progress/2026-10-06-tree-v3-next-round.md`：tree-v3.1审核修复、固定12篇对照、18份完整正文、全部重复、实际用量与本轮生产启动异常/恢复授权边界。
+
+- `model-usage-v1.md`：用户授权的 Harness 原生用量复用、请求归因索引、直连补记与本机查询；费用未知不补零。
 
 - `hardware-prices-v1.md`：用户授权的内容分流、结构化硬件报价与旧身份兼容规则。
 
@@ -56,3 +72,8 @@
 
 - `daily-analysis-v2.md`：用户授权的日报分层阅读、材料覆盖、追踪问题、阶段重试与版本引用。
 - `information-digest-v1.md`：小时提炼底稿与逐项冻结引用，当前阅读正文为版本化方向文章；日报复用小时成果和完整底稿，旧主题稿/旧分析兼容读取。
+
+
+- `article-normalize-pilot.md`：2026-10-07信息层一次中文整理的隔离原型与历史验收；后续正式接入见 gemini-article-normalize。
+
+- `gemini-article-normalize.md`：同一Harness的Gemini四字段整理、三Key项目配额、限流与明确quota fallback；实际状态见对应progress。

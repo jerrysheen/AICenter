@@ -16,6 +16,7 @@ import { parseBilibiliFeedQuery, parseMediaFeedQuery, parseTrendForceFeedQuery, 
 import { createConfiguredBrowserRuntime, createDeepSeekSearchProvider, createLauncherRestartPort, createLocalKnowledgeFiles, createPersonalAssetService, createTranslateService, createTypeSafeSystemOneClient } from '../../../packages/connectors/src/index.js';
 import { createAttachmentStore, createStore } from '../../../packages/database/src/index.js';
 import { createDomainServices, createFeedFilterFromEnv, createMediaIngestionService, resolveDailyConfig, resolveLoginCredential } from '../../../packages/domain/src/index.js';
+import {enqueueTreePreparation} from '../../../packages/runtime/src/information-tree-module.js';
 import { resolveInstanceConfig } from '../../../packages/instance/src/index.js';
 import { createAgentTraceLog } from '../../../packages/runtime/src/agent-trace-log.js';
 import { createWorkPackageTracePort } from '../../../packages/runtime/src/work-package-trace.js';
@@ -180,10 +181,11 @@ export function createAiCenterServer(options = {}) {
     workbookPath: instance.assetWorkbookPath,
   });
   services = options.services || createDomainServices({
+    modelUsageRates: env.AI_CENTER_MODEL_USAGE_RATES_JSON || [],
     store,
     sourcePort,
     personalAssetPort,
-    translationPort: options.translateService || createTranslateService(),
+    translationPort: options.translateService || createTranslateService({ usageObserver: value => store.repositories?.modelUsage?.save({ ...value, stage: 'translation', workspaceId: 'local' }) }),
     feedFilter,
     mediaService,
     hardwarePriceService,
@@ -213,6 +215,8 @@ export function createAiCenterServer(options = {}) {
       ? options.loginCredential
       : resolveLoginCredential(options.env || process.env),
     dailyConfig: resolveDailyConfig(env),
+    informationPipeline: env.AI_CENTER_INFORMATION_PIPELINE === 'tree-v3' ? 'tree-v3' : 'legacy',
+    onContentReady:env.AI_CENTER_INFORMATION_PIPELINE==='tree-v3' ? ({workspaceId,sourceIds})=>enqueueTreePreparation(store,workspaceId,sourceIds) : null,
     staticSignalPort: {
       readBoard: (input, readOptions) => readStaticSignalBoard(sourcePort, input, readOptions),
     },

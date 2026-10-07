@@ -158,7 +158,7 @@ export function createInformationDigestService({reportRepository, feedService, m
       if(remaining()<=0) throw new Error('整小时编辑耗时预算耗尽');
       renew();repo.saveAnalysisStage(workspaceId,`hour:${hourStart}`,key,hash,payload,null,'running');
       const result=await runBounded(agentRuntime,{workspaceId,message:JSON.stringify(payload),taskInstruction:BRIEF_EDITORIAL_INSTRUCTION,
-        executionPriority:execution.priority || 0,closedContext:true,closedTask:'hourly-brief',webMode:'off',enableAuxiliarySearch:false},
+        usageStage:'hourly-editorial',executionPriority:execution.priority || 0,closedContext:true,closedTask:'hourly-brief',webMode:'off',enableAuxiliarySearch:false},
         Math.min(budget.editorialTimeoutMs ?? budget.timeoutMs ?? callBudgetMs,remaining()),renew,config.heartbeatMs,
         {queueTimeoutMs:execution.queueTimeoutMs ?? scheduling.queueTimeoutMs,totalTimeoutMs:remaining(),onTiming:t=>{
           executionTiming=t;repo.saveAnalysisStage(workspaceId,`hour:${hourStart}`,key,hash,stageInput(),null,'running');}});
@@ -237,7 +237,7 @@ export function createInformationDigestService({reportRepository, feedService, m
           try {
             calls++;
             const result=await runBounded(agentRuntime,{workspaceId,message:JSON.stringify(payload),closedContext:true,executionPriority:execution.priority || 0,
-              closedTask:'hourly-brief',webMode:'off',enableAuxiliarySearch:false,taskInstruction:INFORMATION_EXTRACTION_INSTRUCTION},
+              usageStage:'hourly-extraction',closedTask:'hourly-brief',webMode:'off',enableAuxiliarySearch:false,taskInstruction:INFORMATION_EXTRACTION_INSTRUCTION},
               Math.min(config.timeoutMs,Math.max(1,extractionMs-(Date.now()-started))),renew,config.heartbeatMs,
               {queueTimeoutMs:execution.queueTimeoutMs ?? scheduling.queueTimeoutMs,totalTimeoutMs:Math.max(1,extractionMs-(Date.now()-started)),onTiming:t=>{
                 executionTiming=t;repo.saveAnalysisStage(workspaceId,`hour:${hourStart}`,key,hash,stageInput(),null,'running');}});
@@ -366,7 +366,7 @@ export function createInformationDigestService({reportRepository, feedService, m
           const stageInput=()=>({...payload,...(executionTiming ? {executionTiming} : {})});
           try {
             const result=await runBounded(agentRuntime,{workspaceId,message:JSON.stringify(payload),taskInstruction:instruction,
-              closedContext:true,closedTask:payload.stage==='daily-editorial' ? 'hourly-brief' : 'daily-analysis',webMode:'off',enableAuxiliarySearch:false},Math.min(payload.stage==='daily-editorial' ? 360000 : config.timeoutMs,remaining),renew,config.heartbeatMs,
+              usageStage:payload.stage,closedContext:true,closedTask:payload.stage==='daily-editorial' ? 'hourly-brief' : 'daily-analysis',webMode:'off',enableAuxiliarySearch:false},Math.min(payload.stage==='daily-editorial' ? 360000 : config.timeoutMs,remaining),renew,config.heartbeatMs,
               {queueTimeoutMs:scheduling.queueTimeoutMs,totalTimeoutMs:remaining,onTiming:t=>{
                 executionTiming=t;repo.saveAnalysisStage(workspaceId,report.reportDate,key,hash,stageInput(),null,'running');}});
             const output=parse(result.answer,schema);

@@ -19,6 +19,7 @@ export function loadTagCatalog(source) {
       level: tag.level || (tag.parent_id ? 2 : 1),
       parent_id: tag.parent_id ?? null,
       keywords: Array.isArray(tag.keywords) ? tag.keywords.map((item) => text(item)).filter(Boolean) : [],
+      ...(tag.description ? {description:tag.description} : {}),
     });
   }
   for (const tag of byId.values()) {
@@ -34,6 +35,7 @@ export function loadTagCatalog(source) {
     version: catalog.version,
     tags: [...byId.values()],
     ids: new Set(byId.keys()),
+    ...(catalog.reading ? {reading:catalog.reading} : {}),
   };
 }
 

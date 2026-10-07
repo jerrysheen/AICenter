@@ -1,5 +1,6 @@
 import { FeedItemsEnrichJobInputSchema, FeedSubscriptionsSyncJobInputSchema, parseContract } from '../../contracts/src/index.js';
 import { defaultAutoRefreshProjections } from '../../source/src/content/definitions.js';
+import {enqueueTreePreparation} from './information-tree-module.js';
 
 export const FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE = 'feed.subscriptions.sync';
 export const FEED_ITEMS_ENRICH_JOB_TYPE = 'feed.items.enrich';
@@ -25,12 +26,12 @@ function replayMetadata(account) {
   return metadata;
 }
 
-export function createFeedAutomationJobHandlers({ feedService, feedRepository, taggingService }) {
-  if (!feedService?.refreshPersistedSource || !feedService?.localizeContentItems) {
+export function createFeedAutomationJobHandlers({ feedService, feedRepository, taggingService,articleNormalizePort=null,treeEnabled=false }) {
+  if (!feedService?.refreshPersistedSource || (!articleNormalizePort && !feedService?.localizeContentItems)) {
     throw new Error('feed automation jobs require feedService');
   }
   if (!feedRepository?.claimDueSubscriptions) throw new Error('feed automation jobs require feedRepository');
-  if (!taggingService?.analyzeItems) throw new Error('feed automation jobs require taggingService');
+  if (!articleNormalizePort && !taggingService?.analyzeItems) throw new Error('feed automation jobs require taggingService');
 
   function ownsCurrentRun(context) {
     if (!context?.job?.id || !context?.store?.getJob) return true;
@@ -101,6 +102,7 @@ export function createFeedAutomationJobHandlers({ feedService, feedRepository, t
           }
           if(stats?.mediaExternalIds?.length && context?.store?.createJob)context.store.createJob({type:'media.index.enrich',workspaceId:subscription.workspaceId,maxAttempts:2,input:{workspaceId:subscription.workspaceId,externalIds:stats.mediaExternalIds}});
           const addedItemIds = stats?.addedItemIds || [];
+          if(treeEnabled && !articleNormalizePort)enqueueTreePreparation(context?.store,subscription.workspaceId,[...addedItemIds.map(id=>`feed:${id}`),...(stats?.mediaExternalIds || []).map(id=>`media:${id}`)]);
           if (!stats?.mediaExternalIds?.length && addedItemIds.length && context?.store?.createJob) {
             context.store.createJob({
               type: FEED_ITEMS_ENRICH_JOB_TYPE,
@@ -157,9 +159,10 @@ export function createFeedAutomationJobHandlers({ feedService, feedRepository, t
       };
     },
 
-    [FEED_ITEMS_ENRICH_JOB_TYPE]: async (rawInput) => {
+    [FEED_ITEMS_ENRICH_JOB_TYPE]: async (rawInput,context) => {
       const input = parseContract(FeedItemsEnrichJobInputSchema, rawInput || {});
       const resourceIds = input.resourceIds || [];
+      if(treeEnabled && !articleNormalizePort)enqueueTreePreparation(context?.store,input.workspaceId,resourceIds.map(id=>`feed:${id}`));
       if (!resourceIds.length) {
         return {
           workspaceId: input.workspaceId,
@@ -169,10 +172,8 @@ export function createFeedAutomationJobHandlers({ feedService, feedRepository, t
           skippedTagging: 0,
         };
       }
+      if(articleNormalizePort)return articleNormalizePort.prepareInformation({workspaceId:input.workspaceId,sourceIds:resourceIds.map(id=>`feed:${id}`)});
       const localization = await feedService.localizeContentItems(input.workspaceId, resourceIds);
-      if (localization.pendingIds?.length) {
-        throw new Error(`还有 ${localization.pendingIds.length} 条内容没有完成翻译`);
-      }
       const items = feedService.listTaggableItems(input.workspaceId, {
         ids: resourceIds,
         limit: resourceIds.length,
@@ -186,6 +187,7 @@ export function createFeedAutomationJobHandlers({ feedService, feedRepository, t
       if (tagging.missingItemIds?.length) {
         throw new Error(`还有 ${tagging.missingItemIds.length} 条内容没有完成打标`);
       }
+      if (localization.pendingIds?.length) throw new Error(`还有 ${localization.pendingIds.length} 条内容没有完成翻译；成功标签已保留`);
       return {
         workspaceId: input.workspaceId,
         resourceIds,

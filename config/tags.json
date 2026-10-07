@@ -6,154 +6,394 @@
       "name": "AI",
       "level": 1,
       "parent_id": null,
-      "keywords": ["AI", "人工智能", "大模型", "LLM", "foundation model"]
+      "keywords": [
+        "AI",
+        "人工智能",
+        "大模型",
+        "LLM",
+        "foundation model"
+      ]
     },
     {
       "id": "ai_compute",
       "name": "AI算力",
       "level": 2,
       "parent_id": "ai",
-      "keywords": ["GPU", "算力", "训练集群", "推理集群", "AI服务器"]
+      "keywords": [
+        "GPU",
+        "算力",
+        "训练集群",
+        "推理集群",
+        "AI服务器"
+      ],
+      "description": "明确用于AI训练或推理的计算基础设施；一般数据中心或通信不可据此推定AI用途。"
     },
     {
       "id": "ai_model",
       "name": "模型与算法",
       "level": 2,
       "parent_id": "ai",
-      "keywords": ["OpenAI", "Anthropic", "Gemini", "推理模型", "agent"]
+      "keywords": [
+        "OpenAI",
+        "Anthropic",
+        "Gemini",
+        "推理模型",
+        "agent"
+      ],
+      "description": "模型结构、算法、训练或评测方法；使用模型制作内容不属于模型研发。"
     },
     {
       "id": "ai_application",
       "name": "AI应用",
       "level": 2,
       "parent_id": "ai",
-      "keywords": ["Copilot", "AI编程", "AI搜索", "智能体产品"]
+      "keywords": [
+        "Copilot",
+        "AI编程",
+        "AI搜索",
+        "智能体产品"
+      ],
+      "description": "使用AI完成具体业务或创作的产品、方法和工作流。"
     },
     {
       "id": "semiconductor",
       "name": "半导体",
       "level": 1,
       "parent_id": null,
-      "keywords": ["芯片", "半导体", "晶圆", "foundry"]
+      "keywords": [
+        "芯片",
+        "半导体",
+        "晶圆",
+        "foundry"
+      ]
     },
     {
       "id": "semiconductor_memory",
       "name": "存储",
       "level": 2,
       "parent_id": "semiconductor",
-      "keywords": ["DRAM", "NAND", "HBM", "DDR4", "DDR5", "NOR Flash"]
+      "keywords": [
+        "DRAM",
+        "NAND",
+        "HBM",
+        "DDR4",
+        "DDR5",
+        "NOR Flash"
+      ]
     },
     {
       "id": "semiconductor_optical",
       "name": "光通信",
       "level": 2,
       "parent_id": "semiconductor",
-      "keywords": ["CPO", "光模块", "硅光", "光纤"]
+      "keywords": [
+        "CPO",
+        "光模块",
+        "硅光",
+        "光纤"
+      ]
     },
     {
       "id": "semiconductor_equipment",
       "name": "半导体设备",
       "level": 2,
       "parent_id": "semiconductor",
-      "keywords": ["光刻", "ASML", "薄膜沉积", "刻蚀", "CMP"]
+      "keywords": [
+        "光刻",
+        "ASML",
+        "薄膜沉积",
+        "刻蚀",
+        "CMP"
+      ]
     },
     {
       "id": "semiconductor_packaging",
       "name": "先进封装",
       "level": 2,
       "parent_id": "semiconductor",
-      "keywords": ["CoWoS", "HBM封装", "先进封装", "Chiplet"]
+      "keywords": [
+        "CoWoS",
+        "HBM封装",
+        "先进封装",
+        "Chiplet"
+      ]
     },
     {
       "id": "internet",
       "name": "互联网",
       "level": 1,
       "parent_id": null,
-      "keywords": ["互联网", "广告", "电商", "社交"]
+      "keywords": [
+        "互联网",
+        "广告",
+        "电商",
+        "社交"
+      ]
     },
     {
       "id": "software",
       "name": "软件",
       "level": 1,
       "parent_id": null,
-      "keywords": ["SaaS", "云", "企业软件", "操作系统"]
+      "keywords": [
+        "SaaS",
+        "云",
+        "企业软件",
+        "操作系统"
+      ],
+      "description": "软件产品、开发与交付；一般通信、海缆和数据中心不直接归此类。"
     },
     {
       "id": "gaming",
       "name": "游戏",
       "level": 1,
       "parent_id": null,
-      "keywords": ["游戏", "主机", "手游", "Steam"]
+      "keywords": [
+        "游戏",
+        "主机",
+        "手游",
+        "Steam"
+      ]
     },
     {
       "id": "graphics",
       "name": "图形引擎",
       "level": 1,
       "parent_id": null,
-      "keywords": ["渲染", "引擎", "GPU Driven", "Unity", "Unreal"]
+      "keywords": [
+        "渲染",
+        "引擎",
+        "GPU Driven",
+        "Unity",
+        "Unreal"
+      ]
     },
     {
       "id": "auto",
       "name": "汽车",
       "level": 1,
       "parent_id": null,
-      "keywords": ["电动车", "智能驾驶", "汽车电子"]
+      "keywords": [
+        "电动车",
+        "智能驾驶",
+        "汽车电子"
+      ]
     },
     {
       "id": "energy",
       "name": "能源",
       "level": 1,
       "parent_id": null,
-      "keywords": ["电力", "电网", "核电", "光伏", "储能"]
+      "keywords": [
+        "电力",
+        "电网",
+        "核电",
+        "光伏",
+        "储能"
+      ]
     },
     {
       "id": "macro",
       "name": "宏观",
       "level": 1,
       "parent_id": null,
-      "keywords": ["利率", "通胀", "央行", "就业", "GDP"]
+      "keywords": [
+        "利率",
+        "通胀",
+        "央行",
+        "就业",
+        "GDP"
+      ]
     },
     {
       "id": "macro_commodity",
       "name": "大宗商品",
       "level": 2,
       "parent_id": "macro",
-      "keywords": ["黄金", "贵金属", "COMEX", "沪金", "沪银", "金价", "原油", "WTI", "布伦特", "碳酸锂", "集运指数", "集运欧线"]
+      "keywords": [
+        "黄金",
+        "贵金属",
+        "COMEX",
+        "沪金",
+        "沪银",
+        "金价",
+        "原油",
+        "WTI",
+        "布伦特",
+        "碳酸锂",
+        "集运指数",
+        "集运欧线"
+      ]
     },
     {
       "id": "crypto",
       "name": "加密资产",
       "level": 1,
       "parent_id": null,
-      "keywords": ["比特币", "以太坊", "加密货币", "稳定币", "BTC", "ETH", "USDT", "USDC", "DeFi", "Coinbase", "Binance", "山寨币"]
+      "keywords": [
+        "比特币",
+        "以太坊",
+        "加密货币",
+        "稳定币",
+        "BTC",
+        "ETH",
+        "USDT",
+        "USDC",
+        "DeFi",
+        "Coinbase",
+        "Binance",
+        "山寨币"
+      ]
     },
     {
       "id": "market_us",
       "name": "美股",
       "level": 1,
       "parent_id": null,
-      "keywords": ["美股", "纳斯达克", "标普", "NYSE"]
+      "keywords": [
+        "美股",
+        "纳斯达克",
+        "标普",
+        "NYSE"
+      ]
     },
     {
       "id": "market_cn",
       "name": "A股",
       "level": 1,
       "parent_id": null,
-      "keywords": ["A股", "沪深", "创业板", "科创板"]
+      "keywords": [
+        "A股",
+        "沪深",
+        "创业板",
+        "科创板"
+      ]
     },
     {
       "id": "market_hk",
       "name": "港股",
       "level": 1,
       "parent_id": null,
-      "keywords": ["港股", "恒生", "港股通"]
+      "keywords": [
+        "港股",
+        "恒生",
+        "港股通"
+      ]
     },
     {
       "id": "geopolitics",
       "name": "地缘",
       "level": 1,
       "parent_id": null,
-      "keywords": ["出口管制", "关税", "制裁", "供应链安全"]
+      "keywords": [
+        "出口管制",
+        "关税",
+        "制裁",
+        "供应链安全"
+      ]
+    },
+    {
+      "id": "communications",
+      "name": "通信与网络",
+      "level": 1,
+      "parent_id": null,
+      "keywords": [
+        "通信",
+        "卫星网络",
+        "海缆",
+        "电信",
+        "光纤",
+        "5G",
+        "6G"
+      ],
+      "description": "一般通信、电信运营、卫星互联网、海底光缆与网络基础设施；无需AI用途，不归软件或AI算力。"
+    },
+    {
+      "id": "datacenter",
+      "name": "数据中心",
+      "level": 1,
+      "parent_id": null,
+      "keywords": [
+        "数据中心",
+        "机房",
+        "托管",
+        "colocation"
+      ],
+      "description": "一般数据中心、机房、托管与供电冷却基础设施。仅明确用于AI训练或推理的项目归AI算力，不能凭出现GPU或数据中心就推断AI用途。"
     }
-  ]
+  ],
+  "reading": {
+    "version": "tree-reading-v2",
+    "groupByTag": {
+      "ai": "ai",
+      "ai_compute": "ai",
+      "ai_model": "ai",
+      "ai_application": "ai",
+      "semiconductor": "semiconductor",
+      "semiconductor_memory": "semiconductor",
+      "semiconductor_optical": "semiconductor",
+      "semiconductor_equipment": "semiconductor",
+      "semiconductor_packaging": "semiconductor",
+      "internet": "internet",
+      "software": "software",
+      "gaming": "gaming",
+      "graphics": "graphics",
+      "auto": "auto",
+      "energy": "energy",
+      "macro": "macro",
+      "macro_commodity": "macro",
+      "crypto": "crypto",
+      "market_us": "market_us",
+      "market_cn": "market_cn",
+      "market_hk": "market_hk",
+      "geopolitics": "geopolitics",
+      "communications": "communications",
+      "datacenter": "datacenter"
+    },
+    "primaryLocks": {},
+    "directionByTag": {
+      "ai": "tech",
+      "ai_compute": "tech",
+      "ai_model": "tech",
+      "ai_application": "tech",
+      "semiconductor": "tech",
+      "semiconductor_memory": "tech",
+      "semiconductor_optical": "tech",
+      "semiconductor_equipment": "tech",
+      "semiconductor_packaging": "tech",
+      "internet": "tech",
+      "software": "tech",
+      "gaming": "tech",
+      "graphics": "tech",
+      "auto": "tech",
+      "energy": "tech",
+      "macro": "finance",
+      "macro_commodity": "finance",
+      "crypto": "finance",
+      "market_us": "finance",
+      "market_cn": "finance",
+      "market_hk": "finance",
+      "geopolitics": "policy",
+      "communications": "tech",
+      "datacenter": "tech"
+    },
+    "reclassification": {
+      "fromVersion": "d1d36f44383620e30bb6564ccf6e7cae8a72ef888f119d40bbce5ed696a99e20",
+      "keywords": [
+        "通信",
+        "通讯",
+        "卫星",
+        "海缆",
+        "海底光缆",
+        "数据中心",
+        "机房",
+        "telecom",
+        "satellite",
+        "submarine cable",
+        "data center",
+        "datacenter",
+        "colocation"
+      ]
+    }
+  }
 }

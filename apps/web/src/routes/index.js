@@ -4,6 +4,7 @@ import { createArticleAnalysisRoutes } from './article-analysis-routes.js';
 import { createContextRoutes } from './context-routes.js';
 import { createHardwarePriceRoutes } from './hardware-price-routes.js';
 import { createFeedRoutes } from './feed-routes.js';
+import { createFeedInteractionRoutes } from './feed-interaction-routes.js';
 import { createIdentityRoutes } from './identity-routes.js';
 import { createKnowledgeRoutes } from './knowledge-routes.js';
 import { createRuntimeRoutes } from './runtime-routes.js';
@@ -22,6 +23,7 @@ export function createApiRoutes() {
     ...createRuntimeRoutes(),
     ...createSourceRoutes(),
     ...createFeedRoutes(),
+    ...createFeedInteractionRoutes(),
     ...createHardwarePriceRoutes(),
     ...createKnowledgeRoutes(),
     ...createTaggingRoutes(),

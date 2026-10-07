@@ -33,6 +33,19 @@ import { HARNESS_ELUCID_SEARCH_PROVIDER_ID } from '../packages/harness/src/web-s
 import { fromHarnessToolName, toHarnessToolName } from '../packages/harness/src/tool-id.js';
 import { applyHarnessEvidenceGate } from '../packages/harness/src/evidence.js';
 
+test('tree closed tasks bypass Ask prior advice without disabling open Ask',async()=>{
+  const directory=mkdtempSync(path.join(os.tmpdir(),'harness-tree-prior-'));let priorCalls=0;
+  const runtime=createHarnessAgentRuntime({tools:createToolRegistry(),runtimeDirectory:directory,
+    env:{AI_CENTER_HARNESS_PROVIDER:'elucid-grok',ELUCID_GROK_API_KEY:'test-key'},
+    quality:{config:{priorMode:'shadow'},advisePrior:async()=>{priorCalls++;return {status:'unavailable'};}},
+    createClient:async()=>({run:async()=>({finalResponse:'ok',events:[]}),close:async()=>{}})});
+  try{
+    for(const stage of ['information','classification','hourly','daily'])await runtime.run({message:'saved JSON',closedContext:true,closedTask:'hourly-brief',usageStage:`tree-${stage}`});
+    assert.equal(priorCalls,0);
+    await runtime.run({message:'Ask normal request'});assert.equal(priorCalls,1);
+  }finally{await runtime.close();rmSync(directory,{recursive:true,force:true});}
+});
+
 test('media brief uses bounded existing Harness settings without changing other task profiles',async()=> {
   const directory=mkdtempSync(path.join(os.tmpdir(),'harness-brief-profile-'));
   const settings=[];

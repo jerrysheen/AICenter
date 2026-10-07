@@ -13,11 +13,15 @@ export const TagDefinitionSchema = z.object({
   level: z.number().int().min(1).max(8).optional(),
   parent_id: TagIdSchema.nullable().optional(),
   keywords: z.array(z.string().trim().min(1).max(64)).max(24).default([]),
+  description:z.string().max(300).optional(),
 }).strict();
 
 export const TagCatalogFileSchema = z.object({
   version: z.string().trim().min(1).max(64),
   tags: z.array(TagDefinitionSchema).min(1).max(500),
+  reading:z.object({version:z.string().min(1).max(64),groupByTag:z.record(TagIdSchema,TagIdSchema),primaryLocks:z.record(z.string(),TagIdSchema.nullable()).default({}),
+    directionByTag:z.record(TagIdSchema,z.enum(['finance','policy','tech','other'])).optional(),
+    reclassification:z.object({fromVersion:z.string().length(64),keywords:z.array(z.string().min(1)).min(1)}).optional()}).optional(),
 }).strict();
 
 export const TagCatalogProjectionSchema = z.object({
