@@ -125,7 +125,8 @@ test('real SQLite metadata port matches saved feed material version without body
     const item=r.saveContentItem({workspaceId:'local',captureId:capture.id,originType:'subscription',contentType:'post',title:'简讯',body:'作者完整内容。\n评论：\n普通评论不作为作者事实。',publishedAt:start+1});
     const feed=createFeedService({legacyRepository:{},feedRepository:r,sourcePort:{read:async()=>{throw new Error('no network');}}});
     const port=createTreeMaterialPort({feedService:feed});
-    const candidates=await port.candidates('local',{startAt:start,endAt:start+H});assert.equal(candidates[0].id,`feed:${item.id}`);assert.ok(!Object.hasOwn(candidates[0],'body'));
+    const ingestedHour=Math.floor(item.createdAt/H)*H;
+    const candidates=await port.candidates('local',{startAt:ingestedHour,endAt:ingestedHour+H});assert.equal(candidates[0].id,`feed:${item.id}`);assert.equal(candidates[0].eventAt,item.createdAt);assert.ok(!Object.hasOwn(candidates[0],'body'));
     const saved=await port.materials('local',[candidates[0].id]);assert.equal(saved[0].version,candidates[0].version);assert.equal(saved[0].contentLevel,'full');assert.ok(saved[0].paragraphs.some(p=>p.role==='comment'));
     assert.deepEqual(f.store.repositories.media.informationCandidates('local',{startAt:start,endAt:start+H,extractorVersion:'fixture'}),[]);
   }finally{f.store.close();}

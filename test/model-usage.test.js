@@ -161,8 +161,9 @@ test('queued Harness execution preserves each submitting job context', async () 
 
 test('translation cache avoids another HTTP attempt', async () => {
   const rows = new Map(); let calls = 0;
-  const translation = createTranslateService({ geminiApiKey: 'fixture', quotaState: new Map(),
-    usageObserver: row => rows.set(row.id, structuredClone(row)), fetch: async () => { calls++; return Response.json({ candidates: [{ content: { parts: [{ text: '测试译文' }] } }], usageMetadata: { promptTokenCount: 10, totalTokenCount: 14 } }); } });
+  const translation = createTranslateService({ env: { GEMINI_API_KEY5: 'fixture' },
+    quotaRepository: { reserve: spec => ({ admitted: true, model: spec.model }), release() {} },
+    usageObserver: row => rows.set(row.id, structuredClone(row)), fetch: async () => { calls++; return new Response('data: '+JSON.stringify({ candidates: [{ content: { parts: [{ text: '测试译文' }] }, finishReason:'STOP' }], usageMetadata: { promptTokenCount: 10, totalTokenCount: 14 } })+'\n\n'); } });
   const input = { text: 'This is a sufficiently long English fixture for translation.' };
   await translation.translate(input); await translation.translate(input);
   assert.equal(calls, 1); assert.equal(rows.size, 1);

@@ -48,6 +48,8 @@ export const WorkerJobConcurrencySchema = z.object({
   defaultLimit: z.number().int().min(1).max(8).default(1),
   workPackageDispatchLimit: z.number().int().min(1).max(8).default(3),
   quantLabLimit: z.number().int().min(1).max(1).default(1),
+  informationPreparationLimit: z.number().int().min(1).max(5).default(1),
+  translationLimit: z.number().int().min(1).max(5).default(1),
 }).strict();
 
 const JobTypeSchema = z.string().trim().regex(/^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+$/);

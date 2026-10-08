@@ -32,6 +32,33 @@ const BOARD_META = {
 const DEFAULT_FX_SYMBOLS = ['USDCNY=X', 'HKDCNY=X'];
 const HISTORY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
+function isPrecisePrice(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+function retainPreciseQuotes(stored, symbols, freshQuotes) {
+  const fresh = new Map();
+  for (const quote of Array.isArray(freshQuotes) ? freshQuotes : []) {
+    const symbol = String(quote?.symbol || '').trim().toUpperCase();
+    if (!symbol || !isPrecisePrice(quote.lastPrice)) continue;
+    fresh.set(symbol, { ...quote, symbol });
+  }
+  const merged = [];
+  for (const symbol of symbols) {
+    const key = String(symbol || '').trim().toUpperCase();
+    if (!key) continue;
+    const next = fresh.get(key);
+    if (next) {
+      stored.set(key, next);
+      merged.push(next);
+      continue;
+    }
+    const previous = stored.get(key);
+    if (previous && isPrecisePrice(previous.lastPrice)) merged.push(previous);
+  }
+  return merged;
+}
+
 function exchangeFromYahoo(symbol, fallback) {
   const upper = String(symbol || '').toUpperCase();
   if (upper.endsWith('.SZ')) return 'XSHE';
@@ -76,6 +103,7 @@ export function createTradingService({
   const resolvedSourcePort = sourcePort || wrapMarketDataPort(marketDataPort);
   if (!tradingRepository || !resolvedSourcePort) throw new Error('trading ports are required');
   sourcePort = resolvedSourcePort;
+  const preciseQuotes = new Map();
 
   function resolveWorkspaceId(requested) {
     const workspaceId = requested || configuredWorkspaceId;
@@ -326,7 +354,7 @@ export function createTradingService({
         sourcePort.read('market.quotes', { symbols: yahooSymbols }, { refresh }),
         sourcePort.read('market.history', { symbols: yahooSymbols, range: '3mo', interval: '1d' }, { refresh }),
       ]);
-      const quotes = quotesSnapshot.data;
+      const quotes = retainPreciseQuotes(preciseQuotes, yahooSymbols, quotesSnapshot.data);
       const series = historySnapshot.data;
       const board = buildHoldingsBoard({
         accounts: portfolios.map((portfolio) => ({

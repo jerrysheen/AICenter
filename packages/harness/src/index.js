@@ -14,6 +14,8 @@ export {
   materializeHarnessSettings,
   missingHarnessLlmCredential,
   resolveHarnessLlm,
+  resolveGoogleArticleModel,
+  resolveGoogleArticleModelPool,
   resolveHarnessLlmProvider,
 } from './llm-route.js';
 export { HARNESS_WEB_TOOLS, HARNESS_WEB_TOOL_IDS, isHarnessWebToolId, withHarnessWebTools } from './web-infra.js';
@@ -30,6 +32,7 @@ export { parseAgentRuntimeMode, parseHarnessToolIds, resolveAgentRuntimeMode, re
 export { createToolGateway } from './tool-gateway.js';
 export { projectToolCatalog, toDefineToolParameters } from './tool-catalog.js';
 export { createHarnessAgentRuntime, resolveHarnessRunTools } from './harness-agent-runtime.js';
+export {createHarnessExecutionRuntime} from './article-execution-pool.js';
 export {
   collectToolCallsFromGateway,
   createHarnessTraceProjector,

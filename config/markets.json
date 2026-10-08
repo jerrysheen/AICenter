@@ -1025,6 +1025,18 @@
         "name": "恒生科技",
         "group": "指数",
         "summary": "港科"
+      },
+      {
+        "symbol": "^KS11",
+        "name": "韩国综指",
+        "group": "指数",
+        "summary": "韩国综合股价指数"
+      },
+      {
+        "symbol": "^TWII",
+        "name": "台湾加权",
+        "group": "指数",
+        "summary": "台湾综合指数"
       }
     ],
     "watchlist": [

@@ -42,6 +42,9 @@ test('default market catalog is runtime validated outside connector code', () =>
   assert.deepEqual(catalog.us.groups, ['全部', '指数', 'ETF', '自选']);
   assert.equal(JSON.stringify(catalog).includes('算力链'), false);
   assert.equal(JSON.stringify(catalog).includes('CPO'), false);
+  assert.deepEqual(catalog.cn.indices.map((item) => item.symbol), [
+    '000016.SS', '399673.SZ', '000688.SS', '^HSI', '^HSTECH', '^KS11', '^TWII',
+  ]);
 });
 
 test('instance cn industry map catalog allows the same ticker in multiple groups', () => {
@@ -89,11 +92,12 @@ test('catalog rejects Korean listings on the US board and US listings on Asia wa
   assert.equal(MarketCatalogSchema.safeParse(mixedAsia).success, false);
 });
 
-test('instance overview indices use SSE 50 ChiNext 50 STAR 50 Hang Seng and HSTECH', () => {
+test('instance overview indices include Korea and Taiwan benchmarks with A shares and Hong Kong', () => {
   const catalog = readMarketCatalogFile(path.resolve('config/markets.json'));
   assert.deepEqual(catalog.cn.indices.map((item) => item.symbol), [
-    '000016.SS', '399673.SZ', '000688.SS', '^HSI', '^HSTECH',
+    '000016.SS', '399673.SZ', '000688.SS', '^HSI', '^HSTECH', '^KS11', '^TWII',
   ]);
+  assert.deepEqual(catalog.cn.indices.slice(-2).map((item) => item.name), ['韩国综指', '台湾加权']);
   const globalSymbols = catalog.global.watchlist.map((item) => item.symbol);
   assert.ok(catalog.global.groups.includes('国债'));
   for (const symbol of ['US2Y', 'US5Y', 'US10Y', 'US30Y', 'CNTS', 'CNTF', 'CNT', 'CNTL', 'XAGUSD', 'LC', 'M']) {

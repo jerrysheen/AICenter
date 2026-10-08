@@ -14,6 +14,8 @@ function pendingExchange(run) {
     completedAt: null,
     refs: [],
     sourceFooter: null,
+    activatedSkills: [],
+    ...(run.selectedSkills?.length ? { selectedSkills: run.selectedSkills } : {}),
     ...(run.agentMode ? { agentMode: run.agentMode } : {}),
   };
 }
@@ -66,6 +68,13 @@ export function createAgentRoutes() {
       },
     },
     {
+      method: 'GET', path: '/api/v1/agent/analysis-skills',
+      handler({ response, services }) {
+        const skills = services.runtime.listSelectableAnalysisSkills?.() || [];
+        json(response, 200, { ok: true, skills });
+      },
+    },
+    {
       method: 'GET', path: '/api/v1/agent/runs',
       handler({ response, services, identity }) {
         const workspaceId = identity?.device?.workspaceId || 'local';
@@ -89,6 +98,7 @@ export function createAgentRoutes() {
       async handler({ request, response, services, identity, events }) {
         const input = parseCreateAgentRunInput(await readJson(request));
         const workspaceId = identity?.device?.workspaceId || 'local';
+        services.runtime.assertAnalysisSkills?.(input.selectedSkills);
         const session = services.knowledge.ensureQaSession({
           workspaceId,
           sessionId: input.sessionId,
@@ -101,6 +111,7 @@ export function createAgentRoutes() {
           workspaceId,
           sessionId: session.id,
           references: input.references,
+          selectedSkills: input.selectedSkills,
         });
         events.flush();
         json(response, 202, {

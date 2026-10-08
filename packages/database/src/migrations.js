@@ -1494,6 +1494,16 @@ migrations.push({version:44,name:'gemini_article_quota_admission',up(database) {
     CREATE TABLE model_quota_cooldowns(project TEXT NOT NULL,model TEXT NOT NULL,until_at INTEGER NOT NULL,PRIMARY KEY(project,model));`);
 }});
 
+migrations.push({version:45,name:'gemini_article_account_leases',up(database) {
+  database.exec(`CREATE TABLE model_quota_leases(project TEXT NOT NULL,model TEXT NOT NULL,owner TEXT NOT NULL,until_at INTEGER NOT NULL,PRIMARY KEY(project,model));`);
+}});
+
+migrations.push({version:46,name:'daily_editorial',up(database) {
+  database.exec(`CREATE TABLE information_tree_editorials (workspace_id TEXT NOT NULL,id TEXT NOT NULL,start_at INTEGER NOT NULL,value_json TEXT NOT NULL,PRIMARY KEY(workspace_id,id));
+    CREATE INDEX information_tree_editorials_window ON information_tree_editorials(workspace_id,start_at);
+    CREATE TABLE information_tree_editorial_heads (workspace_id TEXT NOT NULL,period_key TEXT NOT NULL,published_id TEXT,PRIMARY KEY(workspace_id,period_key));`);
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

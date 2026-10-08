@@ -1,4 +1,6 @@
+import { formatActiveSkillGuidance } from './analysis-skill-guidance.js';
 import { settleAgentQualityReview } from './agent-quality.js';
+import { ValidationError } from '../../contracts/src/index.js';
 
 export const agentRuntimeManifest = Object.freeze({
   id: 'agent.runtime',
@@ -30,11 +32,33 @@ async function priorTurnsWithSelectedRefs({ knowledgeService, contextService, wo
   return result;
 }
 
-export function createAgentJobHandlers({ agentRuntime, knowledgeService, contextService, agentTraceLog, agentQuality }) {
+function activatedSkillRecord(skill) {
+  return {
+    id: skill.id,
+    version: skill.version,
+    name: skill.name,
+    contentHash: skill.contentHash,
+  };
+}
+
+function resolveActivatedSkills(analysisSkillCatalog, selectedSkills) {
+  if (selectedSkills == null || (Array.isArray(selectedSkills) && selectedSkills.length === 0)) return [];
+  if (!analysisSkillCatalog?.activate) throw new ValidationError('分析方法目录不可用', ['selectedSkills']);
+  return analysisSkillCatalog.activate(selectedSkills);
+}
+
+export function createAgentJobHandlers({
+  agentRuntime, knowledgeService, contextService, agentTraceLog, agentQuality, analysisSkillCatalog = null,
+}) {
   if (!agentRuntime || !knowledgeService) throw new Error('agent runtime and knowledge service are required');
   return {
     'ai.agent.run': async (input, context) => {
       const workspaceId = context.job.workspaceId || input.workspaceId;
+      const activatedSkills = resolveActivatedSkills(analysisSkillCatalog, input.selectedSkills);
+      const taskInstruction = formatActiveSkillGuidance({
+        activatedSkills,
+        webMode: input.webMode || 'off',
+      });
       const trace = agentTraceLog ? (entry) => agentTraceLog.append({
         runId: context.job.id,
         workspaceId,
@@ -44,6 +68,7 @@ export function createAgentJobHandlers({ agentRuntime, knowledgeService, context
         message: input.message,
         webMode: input.webMode || 'off',
         researchMode: input.researchMode || input.researchProfile?.mode || 'standard',
+        selectedSkills: activatedSkills.map(activatedSkillRecord),
       } });
       const resolved = contextService?.resolveReferences && input.references?.length
         ? await contextService.resolveReferences({ workspaceId, references: input.references })
@@ -62,6 +87,7 @@ export function createAgentJobHandlers({ agentRuntime, knowledgeService, context
           selectedRefs: input.references || [],
           signal: context.signal,
           trace,
+          taskInstruction,
         });
       } catch (error) {
         await trace?.({ event: 'run.failed', detail: { name: error?.name || 'Error', message: error?.message || String(error) } });
@@ -92,6 +118,7 @@ export function createAgentJobHandlers({ agentRuntime, knowledgeService, context
           toolCalls: result.toolCalls,
           warnings,
           evidenceGate: result.evidenceGate || null,
+          activatedSkills: activatedSkills.map(activatedSkillRecord),
         },
       });
       return {

@@ -1,4 +1,5 @@
 import {TreeNodeSchema,TreeEditionSchema,isUnavailableTreeText} from '../../../contracts/src/information-tree.js';
+import {DailyEditorialSchema} from '../../../contracts/src/daily-editorial.js';
 
 export function createInformationTreeRepository(db,emit) {
   const read=(table,workspace,id)=>{
@@ -89,6 +90,23 @@ export function createInformationTreeRepository(db,emit) {
     list(workspace,startAt,endAt,layer='hourly') {
       return db.prepare('SELECT published_id,attempt_id FROM information_tree_heads WHERE workspace_id=? AND layer=? AND start_at>=? AND start_at<? ORDER BY start_at DESC').all(workspace,layer,startAt,endAt)
         .map(row=>({edition:row.published_id ? this.getEdition(workspace,row.published_id) : null,attempt:this.getEdition(workspace,row.attempt_id)}));
+    },
+    saveEditorial(workspace,value) {
+      const editorial=DailyEditorialSchema.parse(value);
+      return db.transaction(()=>{
+        db.prepare('INSERT OR IGNORE INTO information_tree_editorials (workspace_id,id,start_at,value_json) VALUES (?,?,?,?)').run(workspace,editorial.id,editorial.window.startAt,JSON.stringify(editorial));
+        const key=`${editorial.window.startAt}:${editorial.window.endAt}`;
+        const head=db.prepare('SELECT published_id FROM information_tree_editorial_heads WHERE workspace_id=? AND period_key=?').get(workspace,key);
+        const publishedId=editorial.status==='failed' ? head?.published_id || null : editorial.id;
+        db.prepare('INSERT OR REPLACE INTO information_tree_editorial_heads (workspace_id,period_key,published_id) VALUES (?,?,?)').run(workspace,key,publishedId);
+        emit('report.tree.editorial.saved.v1','daily-editorial',editorial.id,{status:editorial.status,published:publishedId===editorial.id},workspace);
+        return this.getEditorial(workspace,editorial.id);
+      })();
+    },
+    getEditorial:(workspace,id)=>read('information_tree_editorials',workspace,id),
+    editorialForWindow(workspace,window) {
+      const id=db.prepare('SELECT published_id FROM information_tree_editorial_heads WHERE workspace_id=? AND period_key=?').get(workspace,`${window.startAt}:${window.endAt}`)?.published_id;
+      return id ? this.getEditorial(workspace,id) : null;
     },
   };
 }

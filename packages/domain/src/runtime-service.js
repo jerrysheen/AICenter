@@ -11,6 +11,7 @@ import {
   parseContract,
   FeedValueRefreshInputSchema,
   GenerateHourlyDigestInputSchema,
+  FeedTranslationJobInputSchema,
 } from '../../contracts/src/index.js';
 import { randomUUID } from 'node:crypto';
 import { resolveResearchProfile } from './research-profile.js';
@@ -46,14 +47,37 @@ function agentRunPhase(job, progress = []) {
   return 'starting';
 }
 
-export function createRuntimeService({ runtimeRepository, agentProgressPort, restartPort, dailyConfig = null, feedFilterConfig=null }) {
+function presentSelectedSkills(selectedSkills, analysisSkillCatalog) {
+  if (!Array.isArray(selectedSkills) || !selectedSkills.length) return [];
+  return selectedSkills.slice(0, 1).flatMap((item) => {
+    const known = analysisSkillCatalog?.describe?.(item);
+    const id = String(known?.id || item?.id || '').trim();
+    const version = String(known?.version || item?.version || '').trim();
+    const name = String(known?.name || id).trim();
+    if (!id || !version || !name) return [];
+    return [{ id, version, name }];
+  });
+}
+
+function acceptedAnalysisSkills(selectedSkills, analysisSkillCatalog) {
+  if (selectedSkills == null || (Array.isArray(selectedSkills) && selectedSkills.length === 0)) return [];
+  if (!analysisSkillCatalog?.activate) throw new ValidationError('分析方法目录不可用', ['selectedSkills']);
+  return analysisSkillCatalog.activate(selectedSkills).map(({ id, version }) => ({ id, version }));
+}
+
+export function createRuntimeService({ runtimeRepository, agentProgressPort, restartPort, dailyConfig = null, feedFilterConfig=null, analysisSkillCatalog = null }) {
   if (!runtimeRepository) throw new Error('runtimeRepository is required');
 
   return Object.freeze({
+    requestTranslation(input) {
+      const value = FeedTranslationJobInputSchema.parse(input);
+      const open = runtimeRepository.listOpenJobs?.('feed.translation.run')?.find(job => job.workspaceId === value.workspaceId && JSON.stringify(job.input) === JSON.stringify(value));
+      return open || runtimeRepository.createJob({ type: 'feed.translation.run', workspaceId: value.workspaceId, input: value, maxAttempts: 2 });
+    },
     requestHourlyDigest(input={}) {
       const value=GenerateHourlyDigestInputSchema.parse(input),workspaceId=value.workspaceId || 'local';
       const open=runtimeRepository.listOpenJobs?.('report.hourly.extract')?.find(j=>j.workspaceId===workspaceId && j.input?.hourStart===value.hourStart
-        && (j.input?.mode || 'resume')===(value.mode || 'resume') && j.input?.snapshotId===value.snapshotId);
+        && j.input?.mode===value.mode && j.input?.snapshotId===value.snapshotId);
       return open || runtimeRepository.createJob({type:'report.hourly.extract',workspaceId,input:value,maxAttempts:2});
     },
     requestFeedQualityRefresh(input={}) {
@@ -140,14 +164,22 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort, res
         input: {},
       });
     },
+    listSelectableAnalysisSkills() {
+      return analysisSkillCatalog?.listSelectable?.() || [];
+    },
+    assertAnalysisSkills(selectedSkills) {
+      acceptedAnalysisSkills(selectedSkills, analysisSkillCatalog);
+    },
     requestAgentRun(input) {
       const researchProfile = resolveResearchProfile(input.researchMode, input.researchProfile);
+      const selectedSkills = acceptedAnalysisSkills(input.selectedSkills, analysisSkillCatalog);
       return runtimeRepository.createJob({
         type: 'ai.agent.run',
         input: {
           ...input,
           researchMode: researchProfile.mode,
           researchProfile,
+          selectedSkills,
         },
         workspaceId: input.workspaceId,
         maxAttempts: 1,
@@ -311,15 +343,21 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort, res
           && job.type === 'ai.agent.run'
           && (job.status === 'queued' || job.status === 'running')
         ));
-      return jobs.map((job) => parseContract(ActiveAgentRunSchema, {
-        runId: job.id,
-        sessionId: job.input?.sessionId || '',
-        status: job.status,
-        question: articleAnalysisQuestion(job.input),
-        createdAt: job.createdAt,
-        updatedAt: job.updatedAt,
-        ...(job.type === ARTICLE_ANALYSIS_JOB_TYPE ? { agentMode: 'article-analysis' } : {}),
-      }));
+      return jobs.map((job) => {
+        const selectedSkills = job.type === 'ai.agent.run'
+          ? presentSelectedSkills(job.input?.selectedSkills, analysisSkillCatalog)
+          : [];
+        return parseContract(ActiveAgentRunSchema, {
+          runId: job.id,
+          sessionId: job.input?.sessionId || '',
+          status: job.status,
+          question: articleAnalysisQuestion(job.input),
+          createdAt: job.createdAt,
+          updatedAt: job.updatedAt,
+          ...(job.type === ARTICLE_ANALYSIS_JOB_TYPE ? { agentMode: 'article-analysis' } : {}),
+          ...(selectedSkills.length ? { selectedSkills } : {}),
+        });
+      });
     },
     listEvents(afterId, limit, workspaceId) {
       return runtimeRepository.listEvents(afterId, limit, workspaceId);

@@ -23,6 +23,42 @@ test('whole-input ownership rejects omissions, duplicate parents and invented ID
   for(const ids of [['a'],['a','b','a'],['a','unknown']])assert.throws(()=>validateTreeModules({modules:[{...module,inputIds:ids}]},inputs,new Set()));
   assert.throws(()=>validateTreeModules({modules:[module,module]},inputs,new Set()));
 });
+
+test('explicit hourly resume retries transient failures only; automatic and quota waits remain intact',async()=>{
+ for(const quota of [false,true]) {
+  const f=fixture();let attempts=0;
+  try {
+   const original=f.runtime.run;
+   f.runtime.run=async input=>{
+    if(input.usageStage==='tree-hourly' && ++attempts===1)throw Object.assign(new Error(quota?'429 quota':'503 unavailable'),quota?{code:'budget-deferred',retryAt:Date.now()+60000}:{});
+    return original(input);
+   };
+   const first=await f.service.generateHour({hourStart:start,materials:[material('a'),material('b')]});
+   assert.equal(first.status,'failed');assert.equal(attempts,1);
+   await f.service.generateHour({hourStart:start});assert.equal(attempts,1);
+   const resumed=(await f.service.generateHourlyDigests({hourStart:start,mode:'resume'}))[0];
+   assert.equal(attempts,quota?1:2);assert.equal(resumed.status,quota?'failed':'ready');
+  }finally{f.store.close();}
+ }
+});
+
+test('reading manifest omits article prose and edition batches only immutable roots in its workspace',async()=>{
+  const f=fixture();try {
+    const edition=await f.service.generateHour({hourStart:start,materials:[material('a'),material('b')]});
+    const window={startAt:start,endAt:start+H};
+    const full=f.service.list('local',window),reading=f.service.list('local',{...window,view:'reading'});
+    assert.ok(full.information[0].text);
+    assert.equal(reading.information[0].text,undefined);
+    assert.equal(reading.information[0].title,undefined);
+    assert.deepEqual(reading.hours,full.hours);
+    assert.deepEqual(reading.information.map(n=>n.id),full.information.map(n=>n.id));
+    const batch=f.service.edition('local',edition.id);
+    assert.deepEqual(batch.nodes.map(n=>n.id),edition.roots);
+    assert.ok(batch.nodes.every(n=>n.layer==='hourly' && n.articleCount>0));
+    assert.equal(f.service.edition('other',edition.id),null);
+    assert.equal(f.service.edition('local','missing'),null);
+  }finally{f.store.close();}
+});
 test('bounded repair tells the model the concrete ownership failure',async()=>{
   const f=fixture();try {
     const original=f.runtime.run;let attempts=0,repair;

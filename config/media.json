@@ -1368,6 +1368,59 @@
         "www.utilitydive.com"
       ],
       "refreshMinutes": 180
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "at_medium",
+        "at_campaign",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "mod",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid",
+        "ref"
+      ],
+      "identityParams": [],
+      "redirectHosts": [
+        "www.zaobao.com",
+        "www.zaobao.com.sg"
+      ],
+      "articleHosts": [
+        "www.zaobao.com",
+        "www.zaobao.com.sg"
+      ],
+      "allowedHosts": [
+        "www.zaobao.com",
+        "www.zaobao.com.sg"
+      ],
+      "contentAccess": "body",
+      "sourceKey": "zaobaoworld",
+      "publisher": "早报",
+      "publisherKey": "zaobao",
+      "channel": "macro",
+      "channelName": "早报",
+      "channelUrl": "https://www.zaobao.com/news/world",
+      "transport": "html",
+      "probeUrl": "https://www.zaobao.com/news/world",
+      "listUrls": [
+        "https://www.zaobao.com/news/world",
+        "https://www.zaobao.com/news/china"
+      ],
+      "refreshMinutes": 60,
+      "backfillHours": 48,
+      "detailDailyCap": null,
+      "deployment": "first",
+      "listReadMethod": "http",
+      "bodyReadMethod": "http",
+      "maxListCandidates": 80,
+      "maxNewBodiesPerRound": 80,
+      "minRequestIntervalMs": 3000
     }
   ],
   "discoveryPublishers": [

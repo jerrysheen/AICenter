@@ -210,3 +210,12 @@ export const FeedItemsEnrichJobInputSchema = z.object({
   scheduledFor: EpochMillisSchema.optional(),
   scheduleKey: z.string().trim().min(1).max(128).optional(),
 }).strict();
+
+export const FeedTranslationJobInputSchema = z.object({
+  workspaceId: WorkspaceIdSchema.default('local'),
+  targetLang: z.enum(['zh', 'en']).default('zh'),
+  items: z.array(z.object({
+    id: z.string().trim().min(1).max(256),
+    text: z.string().trim().min(1).max(20_000),
+  }).strict()).min(1).max(30),
+}).strict().refine(value => new Set(value.items.map(item => item.id)).size === value.items.length, '翻译项目 ID 重复');

@@ -1,6 +1,8 @@
 import type {LegacyBriefEditorialOutputSchema} from './report.js';
 export type LegacyBriefEditorialOutput = z.infer<typeof LegacyBriefEditorialOutputSchema>;
 import { z } from 'zod';
+import type { FeedTranslationJobInputSchema } from './feed.js';
+export type FeedTranslationJobInput = z.infer<typeof FeedTranslationJobInputSchema>;
 import type { LikeContentInputSchema, LikeResultSchema } from './feed-interaction.js';
 export type LikeContentInput = z.infer<typeof LikeContentInputSchema>;
 export type LikeResult = z.infer<typeof LikeResultSchema>;

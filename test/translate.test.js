@@ -6,6 +6,11 @@ import {
   parseGeminiBatchTranslations,
   parseGeminiGenerateContent,
 } from '../packages/connectors/src/translate/index.js';
+import { createGeminiGrokTaskRouter } from '../packages/connectors/src/gemini-grok-task.js';
+
+// Existing format/cache tests use an injected router. Gemma production routing
+// and failure isolation are exercised in gemma-translation.test.js.
+const createLegacyService = options => createTranslateService({ ...options, router: createGeminiGrokTaskRouter(options) });
 
 test('gemini generateContent payload reads candidate text', () => {
   assert.equal(parseGeminiGenerateContent({
@@ -22,7 +27,7 @@ test('needsTranslation skips already-chinese text and keeps english/korean', () 
 
 test('translate service prefers Gemini when a key is configured', async () => {
   const calls = [];
-  const service = createTranslateService({
+  const service = createLegacyService({
     geminiApiKey: 'gemini-test',
     geminiApiRoot: 'https://generativelanguage.googleapis.com/v1beta',
     geminiModel: 'gemini-3.1-flash-lite',
@@ -60,7 +65,7 @@ test('translate service prefers Gemini when a key is configured', async () => {
 });
 
 test('already-chinese text does not call an engine', async () => {
-  const service = createTranslateService({
+  const service = createLegacyService({
     geminiApiKey: 'gemini-test',
     authKey: 'deepl-unused',
     async fetch() {
@@ -85,7 +90,7 @@ test('gemini batch payload maps ids without changing them', () => {
 
 test('translateMany sends one Gemini request for pending english and korean items', async () => {
   const calls = [];
-  const service = createTranslateService({
+  const service = createLegacyService({
     geminiApiKey: 'gemini-test',
     geminiApiRoot: 'https://generativelanguage.googleapis.com/v1beta',
     geminiModel: 'gemini-3.1-flash-lite',
@@ -134,6 +139,6 @@ test('translateMany sends one Gemini request for pending english and korean item
 });
 
 test('translation requires Gemini or Elucid credentials and never uses removed providers',async()=>{
- const service=createTranslateService({geminiApiKey:'',elucidApiKey:'',authKey:'ignored',fetch:async()=>{throw new Error('Unexpected provider request');}});
+ const service=createLegacyService({geminiApiKey:'',elucidApiKey:'',authKey:'ignored',fetch:async()=>{throw new Error('Unexpected provider request');}});
  await assert.rejects(service.translate({text:'Hello from another business report.'}),/GEMINI_API_KEY.*ELUCID_GROK_API_KEY/);
 });

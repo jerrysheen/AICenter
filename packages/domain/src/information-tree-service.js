@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {validateTreeModules,normalizeInformationResponse,treeResponseProtocol,TREE_VALIDATOR_VERSION,TreeNodeSchema,normalizeArticleResponse,ArticleOutputSchema,ARTICLE_VALIDATOR_VERSION,projectTreeInput} from '../../contracts/src/information-tree.js';
+import {validateTreeModules,normalizeInformationResponse,treeResponseProtocol,TREE_VALIDATOR_VERSION,TreeNodeSchema,normalizeArticleResponse,ArticleOutputSchema,ARTICLE_VALIDATOR_VERSION,projectTreeInput,FeedNormalizedArticleSchema} from '../../contracts/src/information-tree.js';
 import {materialHash,prepareDailyMaterials} from './daily-materials.js';
 import {runBounded} from './daily-analysis.js';
 import {treeCatalog,treeSource,treeFailure} from './information-tree-policy.js';
@@ -36,7 +36,18 @@ export function packTreeInputs(rows,maxBytes) {
 
 export function createInformationTreeReader({repository,timezone='Asia/Shanghai',pipeline='legacy',catalog={}}) {
   return {
-    list(workspace,window) {return {timezone,pipeline,directions:catalog.reading?.directionByTag || {},information:repository.listInformation(workspace,window).map(({body,...summary})=>summary),hours:repository.list(workspace,window.startAt,window.endAt,'hourly'),days:repository.list(workspace,window.startAt,window.endAt,'daily')};},
+    normalizedArticle(workspace,sourceId,sourceVersion) {
+      if(pipeline!=='tree-v3' || !sourceVersion)return null;
+      const head=repository.informationHead(workspace,sourceId),node=head?.node;
+      if(head?.sourceVersion!==String(sourceVersion) || node?.sourceId!==sourceId || node.sourceVersion!==String(sourceVersion) || node.layer!=='information' || node.formatVersion!==ARTICLE_VALIDATOR_VERSION)return null;
+      const result=FeedNormalizedArticleSchema.safeParse({nodeId:node.id,title:node.title,summary:node.text,body:node.body,generatedAt:node.generatedAt});
+      return result.success ? result.data : null;
+    },
+    list(workspace,window) {return {timezone,pipeline,directions:catalog.reading?.directionByTag || {},information:repository.listInformation(workspace,window).map(({body,...summary})=>window.view==='reading' ? {id:summary.id,eventAt:summary.eventAt,window:summary.window,validatorVersion:summary.validatorVersion} : summary),hours:repository.list(workspace,window.startAt,window.endAt,'hourly'),days:repository.list(workspace,window.startAt,window.endAt,'daily')};},
+    edition(workspace,id) {
+      const edition=repository.getEdition(workspace,id);
+      return edition ? {edition,nodes:edition.roots.map(id=>this.node(workspace,id))} : null;
+    },
     node(workspace,id) {
       const node=repository.getNode(workspace,id);
       if(!node) return null;
@@ -50,7 +61,7 @@ export function createInformationTreeReader({repository,timezone='Asia/Shanghai'
 }
 
 export function createInformationTreeService({repository,reportRepository,feedService,mediaPort,agentRuntime,skills,
-  cacheNamespace='',articleStrategy=false,catalog={tags:[]},primaryTag=null,tagHints=null,classificationOverrideForReplay=null,candidatePort=null,materialPort=null,generationConfig={},timezone='Asia/Shanghai',now=()=>Date.now(),budget={}}) {
+  cacheNamespace='',articleStrategy=false,budgetReady=null,catalog={tags:[]},primaryTag=null,tagHints=null,classificationOverrideForReplay=null,candidatePort=null,materialPort=null,generationConfig={},timezone='Asia/Shanghai',now=()=>Date.now(),budget={}}) {
   const validatorVersion=articleStrategy ? ARTICLE_VALIDATOR_VERSION : TREE_VALIDATOR_VERSION;
   const config={articleRequestBytes:100000,batchBytes:12000,maxCalls:80,totalMs:20*60000,timeoutMs:180000,queueTimeoutMs:120000,...budget};
   const tagNames=new Map(catalog.tags.map(t=>[t.id,t.name]));
@@ -58,7 +69,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
   const route=stage=>generationConfig[stage] || generationConfig[stage==='daily' ? 'daily-analysis' : 'hourly-brief'] || {};
   const generationVersion=stage=>materialHash(cacheNamespace ? {...route(stage),cacheNamespace} : route(stage));
   const policyHash=materialHash({skills:Object.fromEntries(Object.entries(skills).map(([key,value])=>[key,{version:value.version,compatiblePromptHashes:value.compatiblePromptHashes || []}])),
-    validator:validatorVersion,passthrough:'validated-short-independent-v2',generationConfig,groups:classification.groupVersion,catalog:classification.classificationVersion,reclassification:catalog.reading?.reclassification});
+    validator:validatorVersion,passthrough:'validated-short-independent-v2',timeGrouping:'first-ingested-v1',generationConfig,groups:classification.groupVersion,catalog:classification.classificationVersion,reclassification:catalog.reading?.reclassification});
   const activated=new Set();
   const ensurePolicy=workspace=>{if(!activated.has(workspace)){repository.activatePolicy(workspace,policyHash);activated.add(workspace);}};
   ensurePolicy('local');
@@ -134,6 +145,16 @@ export function createInformationTreeService({repository,reportRepository,feedSe
     } finally {repository.release(s.workspaceId,key,owner);}
   }
   async function information(m,window,s) {
+    const node=await informationDraft(m,window,s),eventAt=m.eventAt ?? m.publishedAt ?? window.startAt;
+    return groupInformation(s.workspaceId,node,window,eventAt);
+  }
+  function groupInformation(workspaceId,node,window,eventAt) {
+    if(node.window.startAt===window.startAt && node.window.endAt===window.endAt && node.eventAt===eventAt)return node;
+    // Reuse validated prose; changing the grouping clock creates an immutable revision.
+    const version=materialHash({nodeId:node.id,window,eventAt});
+    return repository.saveNode(workspaceId,{...node,id:`i:${version}`,version,window,eventAt});
+  }
+  async function informationDraft(m,window,s) {
     const source=treeSource(m),sourceHash=materialHash(source),sourceVersion=String(m.version || m.updatedAt || sourceHash);
     // This prompt revision only clarifies titles; completed, validated text remains reusable.
     const head=repository.informationHead(s.workspaceId,m.id)?.node;
@@ -141,7 +162,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
     const version=materialHash({source,skill:skills.information.version,generationVersion:generationVersion('information')}),id=`i:${version}`;
     const stateKey=`${articleStrategy ? 'article' : 'information'}:${m.id}`,previous=reportRepository.getAnalysisStage(s.workspaceId,'tree-preparation',stateKey,sourceHash);
     const saved=repository.getNode(s.workspaceId,id);
-    if(previous?.output?.pending && (!articleStrategy || previous.input?.generationVersion===generationVersion('information')) && previous.output.pending.sourceVersion===sourceVersion && (!previous.output.pending.retryable || previous.output.pending.retryAt>now()) && !s.force && !(saved?.catalogVersion===classification.classificationVersion && saved?.validatorVersion===TREE_VALIDATOR_VERSION))throw Object.assign(new Error(previous.output.pending.reason),{code:previous.output.pending.reason,cachedPending:previous.output.pending});
+    if(previous?.output?.pending && (!articleStrategy || previous.input?.generationVersion===generationVersion('information')) && previous.output.pending.sourceVersion===sourceVersion && (!previous.output.pending.retryable || previous.output.pending.retryAt>now()) && !s.force && !(previous.output.pending.reason==='budget-deferred' && budgetReady?.()) && !(saved?.catalogVersion===classification.classificationVersion && saved?.validatorVersion===TREE_VALIDATOR_VERSION))throw Object.assign(new Error(previous.output.pending.reason),{code:previous.output.pending.reason,cachedPending:previous.output.pending});
     if(saved) {
       s.cacheHits=(s.cacheHits || 0)+1;
       const revisionVersion=materialHash({draftKey:version,sourceVersion});
@@ -201,7 +222,8 @@ export function createInformationTreeService({repository,reportRepository,feedSe
       const version=materialHash({layer,inputs:rows.map(i=>({id:i.id,version:i.version})),tagId,window,skill:skills[layer].version,generationVersion:generationVersion(layer),groups:classification.groupVersion});
       const stageKey=`tree-${layer}:${version}`,cached=reportRepository.getAnalysisStage(s.workspaceId,'tree-cache',stageKey,version);
       try {
-      if(cached?.status==='failed' && cached.input?.failure?.retryAt>now())throw Object.assign(new Error(cached.input.failure.reason),{code:cached.input.failure.reason,cachedPending:cached.input.failure});
+      const manualTransientRetry=s.retryTransient===true && cached?.input?.failure?.reason==='retryable-model-error';
+      if(cached?.status==='failed' && cached.input?.failure?.retryAt>now() && !manualTransientRetry)throw Object.assign(new Error(cached.input.failure.reason),{code:cached.input.failure.reason,cachedPending:cached.input.failure});
       if(cached?.status==='completed') {
         try {const nodes=cached.output.ids.map(id=>TreeNodeSchema.parse(repository.getNode(s.workspaceId,id)));validateTreeModules({modules:nodes.map(n=>({...n,inputIds:n.children}))},rows,modelTags);s.cacheHits=(s.cacheHits || 0)+1;result.push(...nodes);continue;}catch{/* Locally rebuild the invalid group; other completed caches remain. */}
       }
@@ -275,16 +297,25 @@ export function createInformationTreeService({repository,reportRepository,feedSe
     }
     return {nodes,pending,calls:s.calls,cacheHits:s.cacheHits || 0};
   }
-  async function generateHour({workspaceId='local',hourStart,materials,coverage=[],priority=10,totalMs,prepare=false}={}) {
+  async function generateHour({workspaceId='local',hourStart,materials,coverage=[],priority=10,totalMs,prepare=false,retryTransient=false}={}) {
     if(hourStart>now())throw new Error('目标小时尚未开始；拒绝把未来零材料窗口发布成ready');
     if(hourStart+HOUR>now())throw new Error('目标小时尚未结束；请在整小时结束后生成正式刊期');
     ensurePolicy(workspaceId);
-    const window={startAt:hourStart,endAt:hourStart+HOUR},s={...session(priority,totalMs),workspaceId};
+    const window={startAt:hourStart,endAt:hourStart+HOUR},s={...session(priority,totalMs),workspaceId,retryTransient};
     // Explicit migration/replay input may prepare; the normal Worker path never reads full materials.
     let prepared;
     if(materials)prepared=await prepareInformation({workspaceId,materials,priority,totalMs:config.informationMs ?? s.totalMs*0.6});
     else if(prepare){const frozen=await prepareDailyMaterials({feedService,mediaPort,workspaceId,time:{contentWindow:window},frozenAt:now()});coverage=frozen.coverage;prepared=await prepareInformation({workspaceId,materials:frozen.materials,priority,totalMs:s.totalMs*0.6});}
     const candidates=materials || await candidatePort?.(workspaceId,window) || [];
+    // Upgrade only matching, already validated heads using candidate metadata. No original
+    // reads or AI calls are needed when first-ingestion grouping replaces publication grouping.
+    for(const candidate of candidates) {
+      if(!Number.isFinite(candidate.eventAt) || candidate.eventAt<window.startAt || candidate.eventAt>=window.endAt)continue;
+      const head=repository.informationHead(workspaceId,candidate.id)?.node;
+      if(!head || !reusableInformation(head) || head.sourceVersion!==String(candidate.version || candidate.updatedAt || ''))continue;
+      const grouped=groupInformation(workspaceId,head,window,candidate.eventAt);
+      if(grouped.id!==head.id)repository.setInformationHead(workspaceId,grouped,policyHash);
+    }
     const ready=repository.listInformation(workspaceId,window),nodes=[],pending=[...(prepared?.pending || [])];
     const wanted=new Map(candidates.map(m=>[m.id,String(m.version || m.updatedAt || '')]));
     for(const n of ready) {
@@ -331,10 +362,10 @@ export function createInformationTreeService({repository,reportRepository,feedSe
       .flatMap(h=>h.roots.map(id=>repository.getNode(workspaceId,id)));
     return edition('daily',inputs,window,s,{missingHours});
   }
-  return {...reader,prepareInformation,generateHour,generateDaily,policyHash,effectivePromptHashes:Object.fromEntries(Object.entries(skills).map(([stage,value])=>[stage,value.version])),async generateHourlyDigests({workspaceId='local',hourStart,mode,snapshotId}={}) {
+  return {...reader,prepareInformation,generateHour,generateDaily,editorial(workspace,window){return repository.editorialForWindow?.(workspace,window) || null;},policyHash,effectivePromptHashes:Object.fromEntries(Object.entries(skills).map(([stage,value])=>[stage,value.version])),async generateHourlyDigests({workspaceId='local',hourStart,mode,snapshotId}={}) {
     if(mode==='rewrite' || snapshotId)throw new Error('历史稿重编请使用legacy；浓缩树不把旧事实底稿当作单篇信息');
     const latest=Math.floor(now()/HOUR)*HOUR-HOUR;
-    if(hourStart!==undefined) return [await generateHour({workspaceId,hourStart,priority:hourStart===latest ? 10 : -10,
+    if(hourStart!==undefined) return [await generateHour({workspaceId,hourStart,retryTransient:mode==='resume',priority:hourStart===latest ? 10 : -10,
       ...(hourStart!==latest ? {totalMs:8*60000} : {})})];
     const result=[await generateHour({workspaceId,hourStart:latest})];
     // Reuse original latest-first scheduling; one older window per run, no replacement scheduler.

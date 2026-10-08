@@ -1,5 +1,7 @@
 # AI Center 后续开发手册
 
+当前原文全文翻译使用 Gemma 31B/26B 专用 Connector 与 `feed.translation.run` Worker 任务，无其他模型回退；覆盖下文历史 Gemini/DeepL 翻译描述。中文整理、Tag、小时/日报保持各自原路由，详见 `gemma-original-translation.md`。
+
 本文档说明如何在**现有分层**上改代码。当前停止线是 0.2.0 发布门槛，不是继续做 B4 关注同步。开始改代码前阅读：
 
 1. `AGENTS.md`

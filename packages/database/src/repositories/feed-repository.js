@@ -688,8 +688,9 @@ export function createFeedRepository(database, emitEvent) {
       return rows;
     },
 
-    listContentItemsInWindow(workspaceId, { startAt, endAt, limit = 200, sourceId = null, cursor = null,qualityRule='',excludedItemIds=[],metadataOnly=false } = {}) {
+    listContentItemsInWindow(workspaceId, { startAt, endAt, limit = 200, sourceId = null, cursor = null,qualityRule='',excludedItemIds=[],metadataOnly=false,timeBasis='published' } = {}) {
       const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
+      const timeSql=timeBasis==='ingested' ? 'ci.created_at' : 'COALESCE(ci.published_at, ci.created_at)';
       const rows = database.prepare(`SELECT ${metadataOnly ? 'ci.id,ci.title,ci.published_at,ci.created_at,ci.updated_at' : 'ci.*'}, c.captured_at AS captured_at,
         COALESCE(sa.provider,c.provider,'local') AS provider, COALESCE(c.source_account_id,'local') AS source_id,
         COALESCE(sa.display_name,'') AS source_name, c.metadata_json AS capture_metadata
@@ -698,19 +699,19 @@ export function createFeedRepository(database, emitEvent) {
         LEFT JOIN source_accounts sa ON sa.id=c.source_account_id
         WHERE ci.workspace_id = ?
           AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
-          AND COALESCE(ci.published_at, ci.created_at) >= ?
-          AND COALESCE(ci.published_at, ci.created_at) < ?
+          AND ${timeSql} >= ?
+          AND ${timeSql} < ?
           AND (? IS NULL OR COALESCE(c.source_account_id,'local')=?)
-          AND (? IS NULL OR (COALESCE(ci.published_at,ci.created_at),ci.id) > (?,?))
+          AND (? IS NULL OR (${timeSql},ci.id) > (?,?))
           AND ci.id NOT IN (SELECT value FROM json_each(?))
-        ORDER BY COALESCE(ci.published_at, ci.created_at) ASC, ci.id ASC
+        ORDER BY ${timeSql} ASC, ci.id ASC
         LIMIT ?`).all(workspaceId, Number(startAt), Number(endAt), sourceId, sourceId,
           cursor?.eventAt ?? null, cursor?.eventAt ?? 0, cursor?.id ?? '', JSON.stringify(excludedItemIds), safeLimit);
-      if(metadataOnly)return rows.map(row=>({id:`feed:${row.id}`,version:String(row.updated_at || row.created_at),eventAt:row.published_at ?? row.created_at}));
+      if(metadataOnly)return rows.map(row=>({id:`feed:${row.id}`,version:String(row.updated_at || row.created_at),eventAt:timeBasis==='ingested' ? row.created_at : row.published_at ?? row.created_at}));
       return rows.map((row) => ({
         ...mapContentItem(row),
         capturedAt: row.captured_at ?? null,
-        eventAt: row.published_at ?? row.created_at,
+        eventAt: timeBasis==='ingested' ? row.created_at : row.published_at ?? row.created_at,
         provider: row.provider, sourceId: row.source_id, sourceName: row.source_name,
         captureMetadata: parseJson(row.capture_metadata),
       }));
@@ -764,6 +765,16 @@ export function createFeedRepository(database, emitEvent) {
         }
       })();
       return saved;
+    },
+
+    removeTranslationIfUnchanged(value,expectedUpdatedAt) {
+      const input=parseContract(SaveFeedItemTranslationInputSchema,value);
+      if(!Number.isSafeInteger(expectedUpdatedAt))throw new Error('expected translation version is required');
+      return database.transaction(()=>{
+        const result=database.prepare('DELETE FROM feed_item_translations WHERE workspace_id=? AND item_id=? AND target_lang=? AND source_hash=? AND translated_text=? AND engine=? AND updated_at=?').run(input.workspaceId,input.itemId,input.targetLang,input.sourceHash,input.translatedText,input.engine,expectedUpdatedAt);
+        if(result.changes)emitEvent('feed.item-translation.removed.v1','item-translation',input.itemId,{itemId:input.itemId,targetLang:input.targetLang},input.workspaceId);
+        return result.changes===1;
+      })();
     },
 
     listTranslations(workspaceId, itemIds = [], targetLang = 'zh') {

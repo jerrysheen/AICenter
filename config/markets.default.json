@@ -19,7 +19,9 @@
       { "symbol": "399673.SZ", "name": "创业板50", "group": "指数", "summary": "创业板50" },
       { "symbol": "000688.SS", "name": "科创50", "group": "指数", "summary": "科创50" },
       { "symbol": "^HSI", "name": "恒生指数", "group": "指数", "summary": "香港市场基准" },
-      { "symbol": "^HSTECH", "name": "恒生科技", "group": "指数", "summary": "港科" }
+      { "symbol": "^HSTECH", "name": "恒生科技", "group": "指数", "summary": "港科" },
+      { "symbol": "^KS11", "name": "韩国综指", "group": "指数", "summary": "韩国综合股价指数" },
+      { "symbol": "^TWII", "name": "台湾加权", "group": "指数", "summary": "台湾综合指数" }
     ],
     "watchlist": []
   },

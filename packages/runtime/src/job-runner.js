@@ -28,6 +28,8 @@ export function resolveJobTypeConcurrency(type, concurrency) {
   const limits = parseWorkerJobConcurrency(concurrency || {});
   if (type === WORK_PACKAGE_DISPATCH_JOB_TYPE) return limits.workPackageDispatchLimit;
   if (type === QUANT_PREPARE_JOB_TYPE || type === QUANT_RUN_JOB_TYPE) return limits.quantLabLimit;
+  if(type==='report.information.prepare')return limits.informationPreparationLimit;
+  if(type==='feed.translation.run')return limits.translationLimit;
   return limits.defaultLimit;
 }
 
@@ -82,6 +84,7 @@ export function createJobRunner(options) {
   function claimableTypes() {
     return [...handlers.keys()].filter((type) => (
       runningCount(type) < resolveJobTypeConcurrency(type, concurrency)
+      && (!options.readyAt?.[type] || options.readyAt[type]()<=Date.now())
     ));
   }
 
@@ -100,7 +103,9 @@ export function createJobRunner(options) {
       }));
       return store.completeJob(job.id, output ?? {}, executor);
     } catch (error) {
-      const retryDelayMs = Math.min(60_000, 1_000 * (2 ** Math.max(0, job.attemptCount - 1)));
+      const retryDelayMs = job.type === 'feed.translation.run' && error.code === 'budget-deferred' && Number.isFinite(error.retryAt)
+        ? Math.max(1000, error.retryAt - Date.now())
+        : Math.min(60_000, 1_000 * (2 ** Math.max(0, job.attemptCount - 1)));
       options.onError?.(error, job);
       return store.failJob(job.id, error, retryDelayMs, executor);
     } finally {
@@ -127,7 +132,9 @@ export function createJobRunner(options) {
 
   async function runOnce() {
     if (!handlers.size) return null;
-    const job = store.claimNextJob(workerId, [...handlers.keys()]);
+    const types=claimableTypes();
+    if(!types.length)return null;
+    const job = store.claimNextJob(workerId, types);
     if (!job) return null;
     return execute(job);
   }

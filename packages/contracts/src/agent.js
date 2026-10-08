@@ -42,12 +42,18 @@ export const ReferenceInputSchema = z.object({
   }
 });
 
+export const SelectedAnalysisSkillInputSchema = z.object({
+  id: z.string().trim().regex(/^[a-z][a-z0-9-]{0,63}$/, '分析方法编号无效'),
+  version: z.string().trim().regex(/^\d+\.\d+\.\d+$/, '分析方法版本无效'),
+}).strict();
+
 export const CreateAgentRunInputSchema = z.object({
   message: z.string().trim().min(1).max(4_000),
   webMode: AgentWebModeSchema.default('off'),
   researchMode: AgentResearchModeSchema.default('standard'),
   sessionId: EntityIdSchema.optional(),
   references: z.array(ReferenceInputSchema).max(8).default([]),
+  selectedSkills: z.array(SelectedAnalysisSkillInputSchema).max(1, '本轮最多选择一个分析方法').default([]),
 }).strict();
 
 export const AgentRunProgressStatusSchema = z.enum(['done', 'active', 'error']);
@@ -99,6 +105,11 @@ export const ActiveAgentRunSchema = z.object({
   createdAt: EpochMillisSchema,
   updatedAt: EpochMillisSchema,
   agentMode: z.enum(['ask', 'article-analysis']).optional(),
+  selectedSkills: z.array(z.object({
+    id: z.string().trim().min(1).max(64),
+    version: z.string().trim().min(1).max(32),
+    name: z.string().trim().min(1).max(80),
+  }).strict()).max(1).optional(),
 }).strict();
 
 export const AgentContextRefOriginSchema = z.enum(['selected', 'tool']);

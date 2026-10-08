@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createTranslateService} from '../packages/connectors/src/translate/index.js';
+import {createTranslateService as createService} from '../packages/connectors/src/translate/index.js';
+import {createGeminiGrokTaskRouter} from '../packages/connectors/src/gemini-grok-task.js';
+// Legacy shared router is still used by tagging; production translation uses Gemma only.
+const createTranslateService = options => createService({...options, router:createGeminiGrokTaskRouter(options)});
 import {createGeminiTagPort} from '../packages/connectors/src/gemini-tag.js';
 import {geminiQuotaCooldown,nextGeminiDailyReset} from '../packages/connectors/src/gemini-grok-task.js';
 import {parseTagBatchOutput} from '../packages/domain/src/tag-parser.js';

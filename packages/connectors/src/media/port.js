@@ -5,8 +5,13 @@ import { redactUrl } from './article-url.js';
 import { stableArticleId } from './article-url.js';
 import { isPublicHttpsUrl, hostAllowed } from './article-url.js';
 import { readYahooList, readYahooArticle } from './yahoo-public.js';
+import { extractZaobaoArticle, readZaobaoArticle, readZaobaoList } from './zaobao-public.js';
 
-export function createMediaConnector({ sources = [], discoveryPublishers = [], budget = {}, timeZone = 'Asia/Shanghai', focusKeywords = [], fetchImpl, lookupImpl, readExisting, readSource, browserRuntime } = {}) {
+function isZaobao(entry) {
+  return entry?.publisherKey === 'zaobao' || entry?.sourceKey === 'zaobaoworld';
+}
+
+export function createMediaConnector({ sources = [], discoveryPublishers = [], budget = {}, timeZone = 'Asia/Shanghai', focusKeywords = [], fetchImpl, lookupImpl, readExisting, readSource, browserRuntime, now = () => Date.now() } = {}) {
   const publishers = discoveryPublishers.map(p => ({ ...p, channel: 'tech', contentAccess: 'body', transport: 'discovery', deployment: 'existing' }));
   return Object.freeze({ sources, publishers, budget, timeZone, focusKeywords, extractorVersion: EXTRACTOR_VERSION, redactUrl,
     matchOriginal(row) {
@@ -28,13 +33,19 @@ export function createMediaConnector({ sources = [], discoveryPublishers = [], b
           title: r.title, summary: '', publishedAt: r.publishedAt, publishedAtRaw: r.publishedAt ? new Date(r.publishedAt).toISOString() : '' })) };
     } : null),
     parseFeed: parseFeedXml,
+    supportsHtmlList: isZaobao,
     extract: (html,options={}) => {
       const entry = sources.find(source => source.sourceKey === options.sourceKey || source.sourceAliases?.includes(options.sourceKey));
+      if (isZaobao(entry) || isZaobao(options)) return extractZaobaoArticle(html, options);
       return extractArticleText(options.fragment && options.sourceKey==='ftav' ? `<article itemprop="articleBody">${html}</article>` : html,
         { ...options, publisherKey: entry?.publisherKey || options.sourceKey });
     },
-    readList: entry => readYahooList(browserRuntime,entry),
-    readArticle: (entry,input,options={}) => entry.bodyReadMethod==='browser'
+    readList: entry => isZaobao(entry)
+      ? readZaobaoList(entry, { fetchImpl, lookupImpl, maxBytes: budget.maxFeedBytes, now: now() })
+      : readYahooList(browserRuntime,entry),
+    readArticle: (entry,input,options={}) => isZaobao(entry)
+      ? readZaobaoArticle(entry, input, { fetchImpl, lookupImpl, ...options })
+      : entry.bodyReadMethod==='browser'
       ? readYahooArticle(browserRuntime,{...entry,expectedPublisherKey:input.publisherKey,expectedPublisherName:input.publisherName},input,options)
       : fetchAllowlisted(input,{fetchImpl,lookupImpl,...options}),
     fetch: (input, options = {}) => fetchAllowlisted(input, { fetchImpl, lookupImpl, ...options }),

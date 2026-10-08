@@ -276,11 +276,17 @@ test('worker job concurrency defaults to three work-package CLI slots', () => {
     defaultLimit: 1,
     workPackageDispatchLimit: 3,
     quantLabLimit: 1,
+    informationPreparationLimit: 1,
+    translationLimit: 1,
   });
   assert.equal(parseWorkerJobConcurrency({ workPackageDispatchLimit: '3' }).workPackageDispatchLimit, 3);
   assert.equal(parseWorkerJobConcurrency({ workPackageDispatchLimit: 8 }).workPackageDispatchLimit, 8);
   assert.throws(() => parseWorkerJobConcurrency({ workPackageDispatchLimit: 0 }), ValidationError);
   assert.throws(() => parseWorkerJobConcurrency({ workPackageDispatchLimit: 9 }), ValidationError);
+  assert.equal(parseWorkerJobConcurrency({ informationPreparationLimit: '5' }).informationPreparationLimit, 5);
+  assert.throws(() => parseWorkerJobConcurrency({ informationPreparationLimit: 6 }), ValidationError);
+  assert.equal(parseWorkerJobConcurrency({translationLimit:'5'}).translationLimit,5);
+  assert.throws(()=>parseWorkerJobConcurrency({translationLimit:6}),ValidationError);
 });
 
 test('page request keeps an opaque cursor and bounded limit', () => {

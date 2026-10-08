@@ -1,5 +1,7 @@
 # 架构
 
+2026-10-07 用户后续授权原文翻译改为 Gemma 31B/26B 专用池，仅调用官方流式接口，不回退其他模型；HTTP 提交 `feed.translation.run`，Worker 调用 Connector，Feed Service/Repository 保存完整译文和原段落排版。Article Normalize、Tag、小时/日报保持原路由。当前规则覆盖下文旧的 Gemini 翻译描述，兼容边界见 `gemma-original-translation.md`。
+
 2026-10-06 用户授权三层浓缩树：在原Report / Repository / Worker和封闭Harness边界内，以单一`AI_CENTER_INFORMATION_PIPELINE=tree-v3`开关替代新稿的逐项事实底稿和方向长文；默认legacy，旧引用保持。迁移42追加不可变节点/刊期及独立发布/尝试指针，父节点固定直接子版本，HTTP仅只读展开。设计与兼容决定见`information-tree-v3.md`。
 
 tree-v3.1审核修复：注册固定report.information.prepare任务，在采集或正文就绪后独立准备信息稿；常规小时任务只读取信息头和材料版本元数据，不重新读原文。迁移43追加信息头和允许发布的策略指纹，事务内核对策略、预期发布head及覆盖；旧运行不能覆盖新策略。阶段失败、负缓存、耗时继续复用原有daily_analysis_stages，Token计量沿用原账本。封闭tree-*任务只隔离Ask prior建议，不关闭Ask与入库JEV。本轮实现先隔离验收，不视为已获生产重载授权。

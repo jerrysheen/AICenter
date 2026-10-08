@@ -20,6 +20,9 @@ try {
     await page.setViewportSize({width,height:900});
     for(const mode of (process.argv.includes('--hours-only') ? ['小时报'] : ['日报','小时报'])) {
       await page.getByRole('tab',{name:mode,exact:true}).evaluate(n=>n.click());
+      if(mode==='小时报' || mode==='日报'){
+        if(!await page.locator('.tree-card').count()) await page.locator('.feed-content').first().click();
+      }
       // Direction is a display filter; choose a nonempty direction before testing ref traversal.
       for(const direction of ['金融与市场','时事与政策','科技与产业','其他']) {
         if(await page.locator('.tree-card').count())break;
@@ -43,14 +46,9 @@ try {
       checks.push({width,mode,overflow,blank:false});
     }
   }
+  await page.getByRole('tab',{name:'日报',exact:true}).evaluate(n=>n.click());
   await page.getByRole('button',{name:'本期材料',exact:true}).evaluate(n=>n.click());
   await page.waitForFunction(()=>document.querySelector('.tree-card') || document.querySelector('.tree-list')?.textContent.includes('本期没有'));
-  await page.getByRole('button',{name:'Tag',exact:true}).click();
-  const tag=page.getByRole('combobox',{name:'主Tag筛选'}),options=await tag.locator('option').count();
-  if(options>1) {
-    await tag.evaluate(n=>{n.selectedIndex=1;n.dispatchEvent(new Event('change'));});
-    await page.waitForFunction(()=>document.querySelector('.tree-card') && !document.querySelector('.tree-list')?.textContent.includes('读取中…'));
-  }
   let sourceReadAndReturn=false;
   const original=page.locator('.tree-card').getByRole('button',{name:'原文',exact:true}).first();
   if(await original.count()) {

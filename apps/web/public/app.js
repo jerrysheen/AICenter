@@ -13,7 +13,7 @@ import { renderQuantLab } from './quant-lab.js?v=dev';
 const { openModelUsageDialog } = await import('./model-usage.js?v=dev').catch(() => ({ openModelUsageDialog: null }));
 const { createFeedLikeAction } = await import('./feed-interaction.js?v=dev').catch(() => ({ createFeedLikeAction: () => () => null }));
 const feedLikeButton = createFeedLikeAction({ api: (...args) => api(...args), showToast: text => showToast(text), createAction: options => createDetailAction(options), session: () => state.session });
-import { createMediaFeedCache, createMediaFeedLoader, createMediaReaderSession, mediaReaderParagraphs } from './media-feed.js?v=dev';
+import { createMediaFeedCache, createMediaFeedLoader, createMediaReaderSession, mediaIndexBody, mediaReaderParagraphs } from './media-feed.js?v=dev';
 // An older running Web process may not have registered the new module yet.
 // Keep the existing reader available until the normal service reload.
 const { createBriefPage, briefReadingItems = () => [] } = await import('./brief-page.js?v=dev').catch(() => ({createBriefPage:null}));
@@ -171,9 +171,15 @@ const state = {
   askComposerCompact: false,
   askThreadLastScrollTop: 0,
   referenceDraft: [],
+  analysisSkillDraft: null,
+  analysisSkillCatalog: [],
+  analysisSkillCatalogLoaded: false,
   mentionItems: [],
+  mentionSkills: [],
+  mentionOptions: [],
   mentionIndex: 0,
   mentionRange: null,
+  askComposing: false,
   sourceCatalog: [],
   sourceCatalogLoaded: false,
   sourceCatalogError: '',
@@ -295,7 +301,7 @@ const elements = Object.fromEntries([
   'dialog-body', 'dialog-translation', 'dialog-tags', 'dialog-source', 'dialog-save', 'dialog-cite', 'dialog-translate', 'dialog-time', 'dialog-notice', 'dialog-language', 'toast', 'channel-tabs',
   'platform-filters', 'follow-toolbar', 'bilibili-toolbar', 'bilibili-feed-status', 'bilibili-import-form', 'bilibili-url', 'bilibili-import', 'bilibili-more', 'x-toolbar', 'x-more', 'x-translate-bar', 'x-feed-status', 'x-translate-status', 'x-feed-tabs', 'x-refresh', 'x-translate', 'x-tag', 'xueqiu-toolbar', 'xueqiu-feed-tabs', 'xueqiu-feed-status', 'xueqiu-action-bar', 'xueqiu-action-status', 'xueqiu-refresh', 'trendforce-toolbar', 'trendforce-feed-status', 'trendforce-more', 'trendforce-action-bar', 'trendforce-action-status', 'trendforce-refresh', 'media-toolbar', 'media-channel-tabs', 'quote-filters', 'quote-list', 'tool-grid', 'strategy-inspect',
   'ask-records', 'ask-start', 'ask-session-list', 'ask-session-shell', 'ask-intro', 'ask-prompt-label',
-  'ask-thread', 'ask-prompts', 'ask-materials', 'ask-material-tabs', 'ask-form', 'ask-send', 'ask-ref-chips', 'ask-ref-actions', 'ask-ref-export', 'ask-ref-task', 'ask-mention-menu', 'ask-live-chip', 'compose-dialog', 'reload-view', 'open-compose', 'open-settings', 'global-search',
+  'ask-thread', 'ask-prompts', 'ask-materials', 'ask-material-tabs', 'ask-form', 'ask-send', 'ask-skill-chips', 'ask-ref-chips', 'ask-ref-actions', 'ask-ref-export', 'ask-ref-task', 'ask-mention-menu', 'ask-live-chip', 'compose-dialog', 'reload-view', 'open-compose', 'open-settings', 'global-search',
   'side-nav-list', 'bottom-tab', 'market-tabs', 'book-tabs', 'holdings-list', 'holdings-filters', 'asset-filters',
   'asset-list', 'ledger-list', 'search-dialog', 'symbol-search', 'search-results',
   'static-source-groups', 'static-schedule-tabs', 'static-upcoming', 'static-schedule-list',
@@ -550,6 +556,7 @@ function translationFor(post) {
     const article = post.articleTranslation;
     return article?.status === 'ready' ? {text:[article.title,...article.paragraphs.map(p=>p.text)].filter(Boolean).join('\n\n'),cached:true} : null;
   }
+  if(post.normalizedArticle?.body && (!post.translation?.text || !post.translation.engine && post.translation.text===post.normalizedArticle.body))return {text:post.normalizedArticle.body,kind:'normalized',cached:true};
   if (state.translations[post.id]) return state.translations[post.id];
   if (post.translation?.text) {
     state.translations[post.id] = {
@@ -615,7 +622,7 @@ function localizedCopy(id, fallback = '') {
 function pendingXTranslations(limit = TRANSLATE_BATCH_SIZE) {
   return state.xItems.map(xAsItem)
     .sort((left, right) => (right.createdAt || 0) - (left.createdAt || 0))
-    .filter((post) => postNeedsChineseTranslation(post) && !translationFor(post))
+    .filter((post) => post.processing!=='ai' && postNeedsChineseTranslation(post) && !translationFor(post))
     .slice(0, limit);
 }
 
@@ -760,7 +767,7 @@ function parseLocation(name = (location.hash || '#sources').slice(1)) {
   const pageId = pageKind ? rest.join('/') : '';
   const reportDate = view === 'report' && /^\d{4}-\d{2}-\d{2}$/.test(rest[0] || '') ? rest[0] : '';
   const reportPane = view === 'report'
-    ? (reportDate ? 'day' : (rest[0] === 'history' ? 'history' : 'today'))
+    ? (reportDate ? 'day' : (rest[0] === 'archive' ? 'archive' : rest[0] === 'history' ? 'history' : 'today'))
     : 'today';
   return {
     view, askSessionId, marketPane, assetPane, sourcesPane, settingsPane, inspirePane,
@@ -785,6 +792,7 @@ function rememberOverviewTarget(view, pane = state.tradePane) {
   if (view === 'market') target = pane === 'assets' ? 'market/global' : 'market';
   if (view === 'report' && reportDate) target = `report/${reportDate}`;
   else if (view === 'report' && reportPane === 'history') target = 'report/history';
+  else if (view === 'report' && reportPane === 'archive') target = 'report/archive';
   state.lastOverviewTarget = target;
   try { sessionStorage.setItem(OVERVIEW_LANE_KEY, target); } catch {}
 }
@@ -971,7 +979,7 @@ function setView(name, options = {}) {
     elements['page-title'].textContent = state.tradePane === 'assets' ? '全球行情' : '股票';
     elements['page-subtitle'].textContent = state.tradePane === 'assets'
       ? '指数、外汇、利率、国债、贵金属、能源与加密'
-      : '总览工作日白天看 A 股/港股，17:00 后到次日 05:00 看美股；亚洲观察池仍单独成页';
+      : '总览工作日白天看 A 股/港股，指数行含韩国综指与台湾加权；17:00 后到次日 05:00 看美股；亚洲观察池仍单独成页';
   } else if (view === 'page') {
     elements['page-title'].textContent = pageKinds[state.pageKind]?.title || '详情';
     elements['page-subtitle'].textContent = '';
@@ -1048,6 +1056,8 @@ function setView(name, options = {}) {
                 ? `#report/${reportDate}`
                 : view === 'report' && reportPane === 'history'
                   ? '#report/history'
+                  : view === 'report' && reportPane === 'archive'
+                    ? '#report/archive'
                   : `#${view}`;
   if (location.hash !== nextHash) {
     const entry = { ...(options.fromHistory ? history.state : {}), aiCenter: true, hash: nextHash,
@@ -2233,6 +2243,8 @@ function contentItemAsPost(item) {
     handle: '',
     title: item.title,
     body: item.body || item.summary || '无正文',
+    translation: item.translation || null,
+    normalizedArticle: item.normalizedArticle || null,
     tags: postTagNames({ ...item, resourceId: item.id }),
     sourceUrl: item.sourceUrl || '',
     createdAt: item.publishedAt || item.createdAt || Date.now(),
@@ -2592,12 +2604,47 @@ function mentionQueryAt(value, caret) {
 
 function hideAskMentions() {
   state.mentionItems = [];
+  state.mentionSkills = [];
+  state.mentionOptions = [];
   state.mentionIndex = 0;
   state.mentionRange = null;
   const menu = elements['ask-mention-menu'];
   if (!menu) return;
   menu.replaceChildren();
   menu.classList.add('hidden');
+}
+
+function analysisSkillsForQuery(skills, query) {
+  const term = String(query || '').trim().toLowerCase();
+  return (skills || []).filter((skill) => {
+    if (!term) return true;
+    return [skill.name, skill.description, skill.id].join('\n').toLowerCase().includes(term);
+  });
+}
+
+function mentionChoice(item, index) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = `ask-mention-item${index === state.mentionIndex ? ' is-active' : ''}`;
+  button.setAttribute('role', 'option');
+  button.setAttribute('aria-selected', index === state.mentionIndex ? 'true' : 'false');
+  const title = document.createElement('strong');
+  const meta = document.createElement('small');
+  if (item.choice === 'skill') {
+    title.textContent = item.name;
+    meta.textContent = item.description || '分析方法';
+    button.dataset.mentionKind = 'analysis-skill';
+  } else {
+    title.textContent = item.label;
+    meta.textContent = [MENTION_KIND_LABELS[item.kind] || item.kind, item.preview].filter(Boolean).join(' · ');
+    button.dataset.mentionKind = 'reference';
+  }
+  button.append(title, meta);
+  button.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    applyAskMention(item);
+  });
+  return button;
 }
 
 function renderAskMentions() {
@@ -2607,44 +2654,78 @@ function renderAskMentions() {
     hideAskMentions();
     return;
   }
-  const items = state.mentionItems;
+  const skills = currentAgentMode() === 'article-analysis' ? [] : state.mentionSkills;
+  const references = state.mentionItems;
+  const options = [
+    ...skills.map((skill) => ({ ...skill, choice: 'skill' })),
+    ...references.map((item) => ({ ...item, choice: 'reference' })),
+  ];
+  state.mentionOptions = options;
+  if (state.mentionIndex >= options.length) state.mentionIndex = 0;
   menu.classList.remove('hidden');
-  if (!items.length) {
+  if (!options.length) {
     const empty = document.createElement('div');
     empty.className = 'ask-mention-empty';
-    empty.textContent = state.mentionRange.query ? '没有匹配的本地知识' : '还没有可引用的分析框架或知识';
+    empty.textContent = state.mentionRange.query ? '没有匹配的分析方法或参考材料' : '还没有可引用的分析方法或知识';
     menu.replaceChildren(empty);
     return;
   }
-  menu.replaceChildren(...items.map((item, index) => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = `ask-mention-item${index === state.mentionIndex ? ' is-active' : ''}`;
-    button.setAttribute('role', 'option');
-    button.setAttribute('aria-selected', index === state.mentionIndex ? 'true' : 'false');
-    const title = document.createElement('strong');
-    title.textContent = item.label;
-    const meta = document.createElement('small');
-    meta.textContent = [MENTION_KIND_LABELS[item.kind] || item.kind, item.preview].filter(Boolean).join(' · ');
-    button.append(title, meta);
-    button.addEventListener('mousedown', (event) => {
-      event.preventDefault();
-      applyAskMention(item);
-    });
-    return button;
-  }));
+  const nodes = [];
+  if (skills.length) {
+    const heading = document.createElement('div');
+    heading.className = 'ask-mention-group';
+    heading.textContent = '分析方法';
+    nodes.push(heading);
+  }
+  options.forEach((item, index) => {
+    if (item.choice === 'reference' && skills.length && index === skills.length) {
+      const heading = document.createElement('div');
+      heading.className = 'ask-mention-group';
+      heading.textContent = '参考材料';
+      nodes.push(heading);
+    }
+    nodes.push(mentionChoice(item, index));
+  });
+  menu.replaceChildren(...nodes);
+  const active = menu.querySelector('.is-active');
+  if (!active) return;
+  const top = active.offsetTop;
+  const bottom = top + active.offsetHeight;
+  if (top < menu.scrollTop) menu.scrollTop = top;
+  else if (bottom > menu.scrollTop + menu.clientHeight) menu.scrollTop = bottom - menu.clientHeight;
 }
 
 let mentionRequest = 0;
+let analysisSkillCatalogPromise = null;
+
+function ensureAnalysisSkills() {
+  if (state.analysisSkillCatalogLoaded) return Promise.resolve(state.analysisSkillCatalog);
+  if (!analysisSkillCatalogPromise) {
+    analysisSkillCatalogPromise = api('/api/v1/agent/analysis-skills').then((payload) => {
+      state.analysisSkillCatalog = Array.isArray(payload.skills) ? payload.skills : [];
+      state.analysisSkillCatalogLoaded = true;
+      return state.analysisSkillCatalog;
+    }).catch((error) => {
+      analysisSkillCatalogPromise = null;
+      throw error;
+    });
+  }
+  return analysisSkillCatalogPromise;
+}
+
 async function refreshAskMentions(range) {
   const requestId = mentionRequest + 1;
   mentionRequest = requestId;
   state.mentionRange = range;
   try {
     const query = encodeURIComponent(range.query || '');
-    const payload = await api(`/api/v1/knowledge/mentions?q=${query}&limit=8`);
+    const [knowledge, skills] = await Promise.all([
+      api(`/api/v1/knowledge/mentions?q=${query}&limit=8`).catch(() => ({ items: [] })),
+      ensureAnalysisSkills().catch(() => []),
+    ]);
     if (mentionRequest !== requestId) return;
-    state.mentionItems = payload.items || [];
+    state.mentionItems = knowledge.items || [];
+    state.mentionSkills = analysisSkillsForQuery(skills, range.query);
     state.mentionIndex = 0;
     renderAskMentions();
   } catch (error) {
@@ -2654,7 +2735,48 @@ async function refreshAskMentions(range) {
   }
 }
 
+function renderAskSkillChip() {
+  const host = elements['ask-skill-chips'];
+  if (!host) return;
+  const skill = state.analysisSkillDraft;
+  host.classList.toggle('hidden', !skill);
+  host.replaceChildren();
+  if (!skill) return;
+  const chip = document.createElement('div');
+  chip.className = 'ask-ref-chip ask-skill-chip';
+  const label = document.createElement('span');
+  label.textContent = `${skill.name} · 本轮`;
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.setAttribute('aria-label', '移除分析方法');
+  remove.textContent = '×';
+  remove.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    state.analysisSkillDraft = null;
+    renderAskSkillChip();
+  });
+  chip.append(label, remove);
+  host.append(chip);
+}
+
+function applyAnalysisSkill(skill) {
+  const input = elements['ask-form']?.elements?.question;
+  const range = state.mentionRange;
+  if (!input || !range || !skill?.id || !skill.version) return;
+  state.analysisSkillDraft = { id: skill.id, version: skill.version, name: skill.name || skill.id };
+  input.value = `${input.value.slice(0, range.start)}${input.value.slice(range.end)}`;
+  input.setSelectionRange(range.start, range.start);
+  hideAskMentions();
+  renderAskSkillChip();
+  input.focus();
+}
+
 function applyAskMention(item) {
+  if (item?.choice === 'skill') {
+    applyAnalysisSkill(item);
+    return;
+  }
   const input = elements['ask-form']?.elements?.question;
   const range = state.mentionRange;
   if (!input || !range) return;
@@ -2691,22 +2813,24 @@ function onAskComposerInput() {
 }
 
 function onAskComposerKeydown(event) {
+  if (event.isComposing || state.askComposing) return;
   const menu = elements['ask-mention-menu'];
-  if (!menu || menu.classList.contains('hidden') || !state.mentionItems.length) {
+  const options = state.mentionOptions || [];
+  if (!menu || menu.classList.contains('hidden') || !options.length) {
     if (event.key === 'Escape') hideAskMentions();
     return;
   }
   if (event.key === 'ArrowDown') {
     event.preventDefault();
-    state.mentionIndex = (state.mentionIndex + 1) % state.mentionItems.length;
+    state.mentionIndex = (state.mentionIndex + 1) % options.length;
     renderAskMentions();
   } else if (event.key === 'ArrowUp') {
     event.preventDefault();
-    state.mentionIndex = (state.mentionIndex - 1 + state.mentionItems.length) % state.mentionItems.length;
+    state.mentionIndex = (state.mentionIndex - 1 + options.length) % options.length;
     renderAskMentions();
   } else if (event.key === 'Enter' || event.key === 'Tab') {
     event.preventDefault();
-    applyAskMention(state.mentionItems[state.mentionIndex]);
+    applyAskMention(options[state.mentionIndex]);
   } else if (event.key === 'Escape') {
     event.preventDefault();
     hideAskMentions();
@@ -2775,6 +2899,7 @@ function textAfterLead(source, lead) {
 }
 
 function postDisplayTitle(post) {
+  if(post.normalizedArticle?.title)return post.normalizedArticle.title;
   if (post.platform === 'media' && post.articleTranslation?.title) return post.articleTranslation.title;
   const translated = translationFor(post)?.text;
   if (translated) {
@@ -2792,6 +2917,7 @@ function socialBodyText(post, value) {
 }
 
 function postListExcerpt(post) {
+  if(post.normalizedArticle?.summary)return clipFeedText(post.normalizedArticle.summary,FEED_EXCERPT_MAX);
   const translated = translationFor(post)?.text;
   if (translated) return clipFeedText(textAfterLead(socialBodyText(post, translated), postDisplayTitle(post)), FEED_EXCERPT_MAX);
   if (postIsTranslating(post)) return '';
@@ -2879,6 +3005,7 @@ function feedAsItem(item, platform) {
     publishedAt,
     isRead: Boolean(item.isRead),
     translation: item.translation || null,
+    normalizedArticle: item.normalizedArticle || null,
   };
 }
 
@@ -2916,7 +3043,7 @@ async function syncLocalTranslationsToServer(items) {
     if (item?.translation?.text) continue;
     const post = xAsItem(item);
     const local = translationFor(post);
-    if (!local?.text) continue;
+    if (!local?.text || local.kind==='normalized') continue;
     translations.push({
       id: post.id,
       sourceText: post.body || '',
@@ -3689,7 +3816,9 @@ function renderPosts() {
       ? '没有匹配的已收录内容。清除搜索后再看。'
       : state.channel === 'recent'
         ? '打开一条就会出现在这里，方便找回看过的内容。'
-        : '这个筛选下还没有信息。';
+        : (state.channel === 'social' || state.channel === 'all') && (state.xLoading || state.xueqiuLoading)
+          ? '正在读取已收录的社媒内容…'
+          : '这个筛选下还没有信息。';
     elements.feed.append(empty);
     if (state.feedPlatform === 'media' && state.mediaNextOffset != null) {
       const more = document.createElement('div');
@@ -5146,7 +5275,7 @@ function hubStreamItems() {
 function renderHubTicker() {
   const ticker = elements['hub-ticker'];
   if (!ticker) return;
-  const quotesForTick = hubQuotes().slice(0, 6);
+  const quotesForTick = hubQuotes().slice(0, 8);
   ticker.replaceChildren(...quotesForTick.map((item) => {
     const up = (item.changePct ?? 0) >= 0;
     const button = document.createElement('button');
@@ -6464,6 +6593,9 @@ function renderArticlePage() {
     ? mediaReaderSession.resolve(post?.platform === 'media' ? post : null, { id:itemId, scope:state.session ? `${state.session.role}:${state.session.device?.id || 'desktop'}` : '' })
     : null;
   if (mediaReading) post = mediaReading.post;
+  if (post?.platform === 'media' && !post.paragraphs?.length && itemId.startsWith('media:') && !state.restoredArticles[itemId]) {
+    restoreSavedArticle(itemId);
+  }
   if (!post) {
     if(state.bootstrapped && !official) restoreSavedArticle(itemId);
     const loading=!state.bootstrapped || restoredArticleRequests.has(itemId) && !restoredArticleErrors.has(itemId);
@@ -6489,7 +6621,7 @@ function renderArticlePage() {
   const head = document.createElement('header');
   head.className = 'detail-head reader-head';
   head.innerHTML = `<h2 class="detail-title"></h2><div class="detail-meta reader-meta"></div>`;
-  head.querySelector('h2').textContent = post.platform==='media' && state.readerLang==='original' ? post.title : postDisplayTitle(post);
+  head.querySelector('h2').textContent = state.readerLang==='original' ? post.title : postDisplayTitle(post);
   const meta = head.querySelector('.reader-meta');
   meta.append(
     Object.assign(document.createElement('button'), { className: 'text-button', textContent: `${post.author} ›` }),
@@ -6587,7 +6719,7 @@ function renderArticlePage() {
       const tabs = document.createElement('div');
       tabs.className = 'dense-tabs reader-tabs';
       renderChipTabs(tabs, [
-        { id: 'translation', label: '译文' },
+        { id: 'translation', label: translationFor(post)?.kind==='normalized' ? '中文整理' : '译文' },
         { id: 'original', label: '原文' },
         { id: 'compare', label: '对照' },
       ], state.readerLang, (id) => {
@@ -6600,7 +6732,7 @@ function renderArticlePage() {
     const content = document.createElement('div');
     content.className = 'reader-content detail-body';
     const original = state.originalBodies[post.resourceId || post.id] || post.body;
-    const viewText = state.readerLang === 'original' ? original : (translated || (post.platform==='media' ? '中文翻译尚未就绪，可以切换到原文查看。' : original));
+    const viewText = mediaIndexBody({ ...post, body: original }, state.readerLang, translated);
     fillPostBody(content, viewText, post);
     if (state.readerLang === 'compare' && translated) {
       content.append(Object.assign(document.createElement('h3'), { className: 'lang-label', textContent: '原文' }));
@@ -8240,9 +8372,25 @@ function createRunProgressList(steps) {
   return list;
 }
 
+function appendAnalysisSkillChips(card, skills) {
+  const list = Array.isArray(skills) ? skills.filter((skill) => skill?.name || skill?.id) : [];
+  if (!list.length) return;
+  const used = document.createElement('div');
+  used.className = 'ask-used-refs';
+  for (const skill of list) {
+    const chip = document.createElement('div');
+    chip.className = 'ask-used-chip ask-skill-chip';
+    chip.dataset.skillId = skill.id || '';
+    chip.dataset.skillVersion = skill.version || '';
+    chip.textContent = `${skill.name || skill.id} · ${skill.version || '本轮'}`;
+    used.append(chip);
+  }
+  card.append(used);
+}
+
 function appendAskExchange(question, answerText, {
   pending = false, error = false, refs = [], runId = '', jobId = '', answer = '',
-  sourceFooter = null, progress = [], scroll = false, container = null,
+  sourceFooter = null, progress = [], scroll = false, container = null, activatedSkills = [],
 } = {}) {
   const card = document.createElement('article');
   card.className = 'ask-exchange';
@@ -8254,6 +8402,7 @@ function appendAskExchange(question, answerText, {
     Object.assign(document.createElement('h2'), { className: 'ask-question', textContent: question || '（无提问原文）' }),
   );
   card.append(questionBlock);
+  appendAnalysisSkillChips(card, activatedSkills);
   const selected = (refs || []).filter((item) => !item.origin || item.origin === 'selected');
   if (selected.length) {
     const used = document.createElement('div');
@@ -8512,6 +8661,9 @@ function renderAskSession() {
       jobId: exchange.jobId || '',
       answer: exchange.answer || '',
       container: conversation,
+      activatedSkills: exchange.activatedSkills?.length
+        ? exchange.activatedSkills
+        : (exchange.selectedSkills || job?.activatedSkills || []),
     });
   }
   for (const job of live) {
@@ -8524,6 +8676,7 @@ function renderAskSession() {
       runId: job.runId,
       jobId: job.jobId || job.runId,
       container: conversation,
+      activatedSkills: job.activatedSkills || [],
     });
   }
   if (showIntro) {
@@ -8565,7 +8718,7 @@ function syncAgentModeComposer() {
     input.maxLength = mode === 'article-analysis' ? 20_000 : 4_000;
     input.placeholder = mode === 'article-analysis'
       ? '粘贴文章，或 @ 选择一条材料…'
-      : '发消息，或 @ 选择资料…';
+      : '发消息，或 @ 选择分析方法与资料…';
   }
 }
 
@@ -8639,6 +8792,9 @@ async function askAgent(question) {
   if (!state.askSessionId) openAskSession('new');
   const sessionId = state.askSessionId === 'new' ? undefined : state.askSessionId;
   const sentRefs = state.referenceDraft.slice();
+  const sentSkill = state.analysisSkillDraft
+    ? { id: state.analysisSkillDraft.id, version: state.analysisSkillDraft.version, name: state.analysisSkillDraft.name }
+    : null;
   const references = draftPayload();
   const tempId = `local-${Date.now()}`;
   upsertAskJob({
@@ -8648,6 +8804,7 @@ async function askAgent(question) {
     status: 'queued',
     text: '正在提交问题…',
     refs: sentRefs,
+    activatedSkills: sentSkill ? [sentSkill] : [],
   });
   renderAskSession();
   setAskComposerBusy(true);
@@ -8660,9 +8817,12 @@ async function askAgent(question) {
         researchMode: currentResearchMode(),
         sessionId,
         references,
+        selectedSkills: sentSkill ? [{ id: sentSkill.id, version: sentSkill.version }] : [],
       }),
     });
     clearReferences();
+    state.analysisSkillDraft = null;
+    renderAskSkillChip();
     removeAskJob(tempId);
     if (created.sessionId && state.askSessionId === 'new') {
       state.askSessionId = created.sessionId;
@@ -8676,6 +8836,7 @@ async function askAgent(question) {
       status: created.job?.status || 'queued',
       text: '正在等待 AI Worker…',
       refs: sentRefs,
+      activatedSkills: sentSkill ? [sentSkill] : [],
     });
     renderAskSession();
     elements['ask-thread']?.querySelector(`[data-run-id="${created.runId}"]`)
@@ -8693,6 +8854,7 @@ async function askAgent(question) {
       error: true,
       text: message,
       refs: sentRefs,
+      activatedSkills: sentSkill ? [sentSkill] : [],
     });
     renderAskSession();
     return false;
@@ -8818,7 +8980,7 @@ let reportHistory = { items: [], loaded: false, error: '' };
 let reportDay = { date: '', brief: null, loaded: false, error: '' };
 
 const briefPage = createBriefPage ? createBriefPage({
-  api, session: () => state.session, active: () => document.body.dataset.view === 'report',
+  api, navigate: setView, session: () => state.session, active: () => document.body.dataset.view === 'report',
   toast: showToast, openDialog, releaseDialogScroll,
   adjustScroll: delta => {
     if (document.body.classList.contains('is-dialog-open')) {
@@ -9259,7 +9421,7 @@ function renderReportHistory(root) {
 function renderReport() {
   const root = elements['report-list'];
   if (!root) return;
-  return briefPage.mount(root,{date:reportPane==='day' ? reportDate : '',history:reportPane==='history'});
+  return briefPage.mount(root,{date:reportPane==='day' ? reportDate : '',history:reportPane==='history',archive:reportPane==='archive'});
 }
 
 function createBriefRetry(date=reportPane==='day' ? reportDate : expectedBriefDate(new Date()),mode='refresh') {
@@ -10969,6 +11131,21 @@ async function requestTranslate(post) {
   await translatePost(post);
 }
 
+async function requestTranslation(path, options) {
+  const submitted = await api(path, options);
+  if (!submitted.jobId) return submitted;
+  for (let attempt = 0; attempt < 900; attempt++) {
+    await wait(1000);
+    const payload = await api(`/api/v1/translate/jobs/${submitted.jobId}`);
+    if (payload.status === 'completed') {
+      const result = payload.result || {};
+      return path.endsWith('/batch') ? result : { translation: result.translations?.[0] || {} };
+    }
+    if (['failed', 'cancelled'].includes(payload.status)) throw new Error(payload.error || '翻译未完成，请稍后重试');
+  }
+  throw new Error('翻译仍在后台进行，完成后可重新打开查看');
+}
+
 async function translateXBatch({ silent = false } = {}) {
   if (!state.session) {
     if (!silent) {
@@ -10983,7 +11160,7 @@ async function translateXBatch({ silent = false } = {}) {
   state.xTranslating = true;
   renderXToolbar();
   try {
-    const payload = await api('/api/v1/translate/batch', {
+    const payload = await requestTranslation('/api/v1/translate/batch', {
       method: 'POST',
       timeoutMs: 120_000,
       body: JSON.stringify({
@@ -11030,7 +11207,7 @@ async function autoLocalizeSources() {
   if (!pending.length) return;
   state.sourceLocalizing = true;
   try {
-    const payload = await api('/api/v1/translate/batch', {
+    const payload = await requestTranslation('/api/v1/translate/batch', {
       method: 'POST',
       timeoutMs: 120_000,
       body: JSON.stringify({
@@ -11078,7 +11255,7 @@ async function translatePost(post) {
     return;
   }
   if (translationFor(post) || !postNeedsChineseTranslation(post)) return;
-  const payload = await api('/api/v1/translate', {
+  const payload = await requestTranslation('/api/v1/translate', {
     method: 'POST',
     body: JSON.stringify({ id: post.id, text: post.body, targetLang: 'zh' }),
   });
@@ -11181,6 +11358,7 @@ async function loadXFeed({ refresh = false, autoTranslate = true } = {}) {
   state.xLoading = true;
   state.xRefreshing = refresh;
   renderXToolbar();
+  renderPosts();
   try {
     const params = new URLSearchParams({ platform: 'x', feed: state.xFeed, limit: '50' });
     if (refresh) params.set('refresh', '1');
@@ -11190,10 +11368,10 @@ async function loadXFeed({ refresh = false, autoTranslate = true } = {}) {
     state.xFeed = feed.feed || state.xFeed;
     state.xNote = feed.note || '';
     hydrateFeedTranslations(state.xItems);
-    await syncLocalTranslationsToServer(state.xItems);
-    await loadFeedTaggings(state.xItems);
     renderPosts();
     renderXToolbar();
+    syncLocalTranslationsToServer(state.xItems).catch(() => {});
+    loadFeedTaggings(state.xItems).then(() => renderPosts()).catch(() => {});
     if (autoTranslate) translateXBatch({ silent: true }).catch(() => {});
     return feed;
   } catch (error) {
@@ -11204,6 +11382,7 @@ async function loadXFeed({ refresh = false, autoTranslate = true } = {}) {
     state.xLoading = false;
     state.xRefreshing = false;
     renderXToolbar();
+    renderPosts();
   }
 }
 
@@ -11259,6 +11438,7 @@ async function loadXueqiuFeed({ refresh = false } = {}) {
   state.xueqiuLoading = true;
   state.xueqiuRefreshing = Boolean(refresh);
   renderXueqiuToolbar();
+  renderPosts();
   try {
     const params = new URLSearchParams({ platform: 'xueqiu', feed: state.xueqiuFeed, limit: '50' });
     if (refresh) params.set('refresh', '1');
@@ -11268,9 +11448,9 @@ async function loadXueqiuFeed({ refresh = false } = {}) {
     state.xueqiuFeed = feed.feed || state.xueqiuFeed;
     state.xueqiuNote = feed.note || '';
     hydrateFeedTranslations(state.xueqiuItems);
-    await loadFeedTaggings(state.xueqiuItems);
     renderPosts();
     renderXueqiuToolbar();
+    loadFeedTaggings(state.xueqiuItems).then(() => renderPosts()).catch(() => {});
     if (refresh) {
       if (feed.mode === 'error' || feed.mode === 'unavailable') showToast(feed.note || '雪球抓取失败');
       else showToast(feed.note || `已写入 ${state.xueqiuItems.length} 条`);
@@ -11284,6 +11464,7 @@ async function loadXueqiuFeed({ refresh = false } = {}) {
     state.xueqiuLoading = false;
     state.xueqiuRefreshing = false;
     renderXueqiuToolbar();
+    renderPosts();
   }
 }
 
@@ -11539,7 +11720,7 @@ function connectStream() {
   state.stream.addEventListener('tagging.resource.saved.v1',refreshMedia);
   state.stream.addEventListener('job.completed',refreshMedia);
   let admissionRefreshTimer;
-  state.stream.addEventListener('feed.capture.saved.v1',()=>{
+  const refreshAdmittedFeed=()=>{
     clearTimeout(admissionRefreshTimer);
     admissionRefreshTimer=setTimeout(()=>{
       const view=document.body.dataset.view;
@@ -11550,7 +11731,10 @@ function connectStream() {
       if(state.bilibiliItems.length || state.feedPlatform==='bilibili')loadBilibiliFeed().catch(()=>{});
       refreshMedia();
     },1200);
-  });
+  };
+  state.stream.addEventListener('feed.capture.saved.v1',refreshAdmittedFeed);
+  state.stream.addEventListener('report.tree.information.ready.v1',refreshAdmittedFeed);
+  state.stream.addEventListener('feed.item-translation.removed.v1',refreshAdmittedFeed);
   state.stream.addEventListener('knowledge.ai-run.completed.v1', onAgentJobEvent);
   state.stream.addEventListener('knowledge.work-package.created.v1', () => {
     loadNotes().catch(() => {});
@@ -12264,6 +12448,13 @@ elements['ask-form'].addEventListener('submit', (event) => {
 });
 elements['ask-form'].elements.question.addEventListener('input', onAskComposerInput);
 elements['ask-form'].elements.question.addEventListener('keydown', onAskComposerKeydown);
+elements['ask-form'].elements.question.addEventListener('compositionstart', () => {
+  state.askComposing = true;
+});
+elements['ask-form'].elements.question.addEventListener('compositionend', () => {
+  state.askComposing = false;
+  onAskComposerInput();
+});
 elements['ask-form'].elements.question.addEventListener('focus', () => {
   setAskComposerCompact(false);
   syncAskKeyboard();

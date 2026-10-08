@@ -21,7 +21,7 @@ import {
   materializeHarnessPatch,
   resolveHarnessLaunch,
 } from './launch.js';
-import { buildHarnessPrompt } from './prompt.js';
+import { buildHarnessFollowUpPrompt, buildHarnessPrompt } from './prompt.js';
 import {
   harnessLlmCredentialError,
   materializeHarnessSettings,
@@ -110,10 +110,8 @@ function assertSuccessfulTurn(result) {
   if(reason?.kind==='aborted') throw Object.assign(new Error('模型调用已中止，未产生完成稿'),{name:'AbortError'});
 }
 
-function followUpPrompt({ message, selectedContext, priorHint }) {
-  return [selectedContext && String(selectedContext).trim(), String(message || '').trim(), priorHint]
-    .filter(Boolean)
-    .join('\n\n');
+function followUpPrompt({ message, selectedContext, priorHint, taskInstruction, priorTurns }) {
+  return buildHarnessFollowUpPrompt({ message, selectedContext, priorHint, taskInstruction, priorTurns });
 }
 
 function recordNativeWebExecution(run, item) {
@@ -221,6 +219,7 @@ export function createHarnessAgentRuntime({
   allowedToolIds,
   usageLedger = null,
   articleAdmission = null,
+  hourlyAdmission = null,
 } = {}) {
   if (!tools || typeof tools.list !== 'function' || typeof tools.execute !== 'function') {
     throw new Error('Harness runtime 需要现有 ToolRegistry');
@@ -406,9 +405,14 @@ export function createHarnessAgentRuntime({
     message, workspaceId, sessionId = '', jobId = '', selectedRefs = [], signal,
     priorTurns = [], selectedContext = '', webMode = 'off',
     researchMode = 'standard', researchProfile, taskInstruction = '',
-    allowedToolIds: runAllow, timeoutMs, trace, now, closedContext = false, closedTask = '', usageStage = '',
+    allowedToolIds: runAllow, timeoutMs, trace, now, closedContext = false, closedTask = '', usageStage = '', googleModel, googleKeyEnv,
   } = {}, articleFallback=false) {
-    const runEnv=articleFallback ? {...env,AI_CENTER_HARNESS_ARTICLE_PROVIDER:'elucid-grok',AI_CENTER_HARNESS_ARTICLE_MODEL:env.AI_CENTER_HARNESS_ARTICLE_FALLBACK_MODEL || 'grok-4.7'} : env;
+    let runEnv=articleFallback ? {...env,AI_CENTER_HARNESS_ARTICLE_PROVIDER:'elucid-grok',AI_CENTER_HARNESS_ARTICLE_MODEL:env.AI_CENTER_HARNESS_ARTICLE_FALLBACK_MODEL || 'grok-4.7'} : env;
+    if(!articleFallback && (googleModel!==undefined || googleKeyEnv!==undefined)) {
+      if(closedContext!==true || closedTask!=='article-normalize' || env.AI_CENTER_HARNESS_ARTICLE_PROVIDER!=='google')throw new Error('Google selectors require a closed Google article task');
+      const selected=resolveHarnessLlm(env,{closedTask,googleModel});
+      runEnv={...env,AI_CENTER_HARNESS_ARTICLE_MODEL:selected.model};
+    }
     const runStartedAt = Date.now();
     const runtimeContext = buildRuntimeContext(now ?? clock(), timeZone);
     const record = async (event, detail) => {
@@ -419,7 +423,7 @@ export function createHarnessAgentRuntime({
       : resolveResearchProfile(researchMode);
     const closed = closedContext === true;
     const task = closed && ['media-brief','daily-analysis','hourly-brief','article-normalize'].includes(closedTask) ? closedTask : '';
-    const llm = resolveHarnessLlm(runEnv, { researchProfile: profile, closedTask:task });
+    let llm = resolveHarnessLlm(runEnv, { researchProfile: profile, closedTask:task });
     if (missingHarnessLlmCredential(env, llm)) {
       throw new Error(harnessLlmCredentialError(llm));
     }
@@ -465,10 +469,13 @@ export function createHarnessAgentRuntime({
       : '';
 
     let slot, articleTicket, executionEnv=runEnv;
-    if(task==='article-normalize' && llm.provider==='google') {
-      if(!articleAdmission)throw new Error('Google article task requires persistent traffic admission');
-      articleTicket=articleAdmission.reserve({model:llm.model,inputBytes:Buffer.byteLength(buildHarnessPrompt({closedContext:true,taskInstruction,message})),maxTokens:llm.execution.maxTokens});
-      executionEnv={...runEnv,AI_CENTER_HARNESS_ARTICLE_KEY_ENV:articleTicket.keyEnv};
+    const googleAdmission=task==='hourly-brief' ? hourlyAdmission : articleAdmission;
+    if(['article-normalize','hourly-brief'].includes(task) && llm.provider==='google') {
+      if(!googleAdmission)throw new Error('Google article task requires persistent traffic admission');
+      articleTicket=googleAdmission.reserve({model:llm.model,keyEnv:googleKeyEnv,useModelPool:googleModel===undefined,inputBytes:Buffer.byteLength(buildHarnessPrompt({closedContext:true,taskInstruction,message})),maxTokens:llm.execution.maxTokens});
+      const prefix=task==='hourly-brief' ? 'AI_CENTER_HARNESS_HOURLY' : 'AI_CENTER_HARNESS_ARTICLE';
+      executionEnv={...runEnv,[prefix+'_KEY_ENV']:articleTicket.keyEnv,[prefix+'_MODEL']:articleTicket.model};
+      llm=resolveHarnessLlm(executionEnv,{researchProfile:profile,closedTask:task});
     }
     if(articleFallback)articleAdmission.reserveFallback({model:llm.model,inputBytes:Buffer.byteLength(buildHarnessPrompt({closedContext:true,taskInstruction,message})),maxTokens:llm.execution.maxTokens});
     try {
@@ -476,7 +483,7 @@ export function createHarnessAgentRuntime({
         executionEnv, allow, catalog, workspaceId, timeoutMs, researchProfile: profile, closedContext: closed, closedTask:task,
       });
     } catch (error) {
-      if(articleTicket)articleAdmission.failed(articleTicket,error);
+      if(articleTicket){googleAdmission.failed(articleTicket,error);googleAdmission.release?.(articleTicket);}
       await record('run.failed', {
         runtime: 'harness',
         name: error?.name || 'Error',
@@ -504,7 +511,7 @@ export function createHarnessAgentRuntime({
       attribution: { workspaceId, jobId, applicationSessionId, stage: usageStage || task || (taskInstruction ? 'article-analysis' : 'ask') },
     });
     const prompt = warm
-      ? followUpPrompt({ message, selectedContext, priorHint })
+      ? followUpPrompt({ message, selectedContext, priorHint, taskInstruction, priorTurns })
       : [
         buildHarnessPrompt({
           message,
@@ -637,7 +644,7 @@ export function createHarnessAgentRuntime({
         visibleTools,
       };
     } catch (error) {
-      if(articleTicket)articleAdmission.failed(articleTicket,error);
+      if(articleTicket)googleAdmission.failed(articleTicket,error);
       await record('run.failed', {
         runtime: 'harness',
         name: error?.name || 'Error',
@@ -649,8 +656,8 @@ export function createHarnessAgentRuntime({
       throw error;
     } finally {
       signal?.removeEventListener('abort', onAbort);
-      await supplementHarnessUsage({ dshHome: slot.launch.dshHome, sessionId: harnessSessionId, observer: usageObserver });
-      usageObserver.interrupt();
+      try {await supplementHarnessUsage({ dshHome: slot.launch.dshHome, sessionId: harnessSessionId, observer: usageObserver });}
+      finally {usageObserver.interrupt();if(articleTicket)googleAdmission.release?.(articleTicket);}
     }
   }
 }

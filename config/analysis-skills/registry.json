@@ -1,0 +1,14 @@
+{
+  "_comment": "已发布版本不要改 SKILL.md 或 contentHash。更新指导时新增版本目录，并在 skills 里追加一条记录。",
+  "skills": [
+    {
+      "id": "market-driver-search",
+      "version": "1.0.0",
+      "name": "美股涨跌原因探索",
+      "description": "从候选驱动因素出发，检索美股涨跌的证据与反证。",
+      "selectable": true,
+      "contentFile": "market-driver-search/1.0.0/SKILL.md",
+      "contentHash": "78038a1c14bd9a6decd8818e65245972a26cd638a731a890a3b844d6332cbce3"
+    }
+  ]
+}

@@ -19,6 +19,17 @@ function header(response, name) {
   return response.headers?.get?.(name) || response.headers?.[name] || '';
 }
 
+function retryAfterDelayMs(value, now = Date.now()) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  if (/^\d+(?:\.\d+)?$/.test(raw)) {
+    const seconds = Number(raw);
+    return Number.isFinite(seconds) && seconds >= 0 ? Math.round(seconds * 1000) : null;
+  }
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? Math.max(0, parsed - now) : null;
+}
+
 export async function fetchAllowlisted(input, options = {}) {
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   const lookupImpl = options.lookupImpl || defaultLookup;
@@ -91,18 +102,21 @@ export async function fetchAllowlisted(input, options = {}) {
           note: '条件请求未修改',
         };
       }
-      if (status === 429 && input.kind === 'article') {
-        return { ok: false, health: 'rate_limited', status, bytes: 0, redirectChain, finalUrl: redactUrl(current), note: '来源要求稍后重试' };
-      }
-      if (status === 429 && !rateRetry) {
-        const retryAfter = Number(header(response, 'retry-after'));
-        if (Number.isFinite(retryAfter) && retryAfter >= 0 && retryAfter <= 60) {
+      if (status === 429) {
+        const waitMs = retryAfterDelayMs(header(response, 'retry-after'));
+        const honorMs = Number.isFinite(options.maxRetryAfterMs) ? options.maxRetryAfterMs : 60_000;
+        const mayHonor = options.honorRetryAfter === true || input.kind !== 'article';
+        if (mayHonor && !rateRetry && waitMs != null && waitMs <= honorMs) {
           rateRetry = true;
-          await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
+          if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
           attempt -= 1;
           continue;
         }
-        return { ok: false, health: 'rate_limited', status, bytes: 0, redirectChain, finalUrl: redactUrl(current), contentType: header(response, 'content-type'), date: header(response, 'date'), note: '来源要求稍后重试' };
+        return {
+          ok: false, health: 'rate_limited', status, bytes: 0, redirectChain, finalUrl: redactUrl(current),
+          contentType: header(response, 'content-type'), date: header(response, 'date'),
+          retryAfterMs: Number.isFinite(waitMs) ? waitMs : null, note: '来源要求稍后重试',
+        };
       }
       if (status === 401 || status === 402 || status === 403) {
         return { ok: false, health: 'blocked', status, bytes: 0, redirectChain, finalUrl: redactUrl(current), contentType: header(response, 'content-type'), date: header(response, 'date'), note: '来源拒绝或需要授权，不改走浏览器' };

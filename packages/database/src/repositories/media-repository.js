@@ -221,11 +221,11 @@ export function createMediaRepository(database, emitEvent = () => {}) {
       }));
     },
     informationCandidates(workspaceId,{startAt,endAt,hiddenExternalIds=[],extractorVersion}) {
-      return database.prepare(`SELECT e.external_id,e.revision,coalesce(e.published_at,e.observed_at) event_at,
+      return database.prepare(`SELECT e.external_id,e.revision,e.created_at event_at,
         coalesce((SELECT b.revision FROM media_body_snapshots b WHERE b.workspace_id=e.workspace_id AND b.external_id=e.external_id AND b.body_hash=e.body_hash
           AND b.revision=(SELECT max(s.revision) FROM media_body_snapshots s WHERE s.workspace_id=e.workspace_id AND s.external_id=e.external_id AND s.body_hash=e.body_hash)
           AND (b.content_level='partial' OR (b.content_level='full' AND b.truncated=0 AND json_extract(b.article_json,'$.extractorVersion')=? AND json_extract(e.fetch_state_json,'$.fetchStatus')='ready' AND json_extract(e.fetch_state_json,'$.fetchedRevision')=e.revision AND json_extract(e.fetch_state_json,'$.extractorVersion')=?))),0) body_revision
-        FROM media_index_entries e WHERE e.workspace_id=? AND coalesce(e.published_at,e.observed_at)>=? AND coalesce(e.published_at,e.observed_at)<? AND e.external_id NOT IN (SELECT value FROM json_each(?)) ORDER BY event_at,e.external_id`)
+        FROM media_index_entries e WHERE e.workspace_id=? AND e.created_at>=? AND e.created_at<? AND e.external_id NOT IN (SELECT value FROM json_each(?)) ORDER BY event_at,e.external_id`)
         .all(extractorVersion,extractorVersion,workspaceId,startAt,endAt,JSON.stringify(hiddenExternalIds)).map(r=>({id:`media:${r.external_id}`,version:`index:${r.revision}/body:${r.body_revision}`,eventAt:r.event_at}));
     },
     getEntries(workspaceId, externalIds) {

@@ -116,7 +116,7 @@ async function translatePendingUnits(translationPort, pending, targetLang, check
   })), {
     purpose: 'translate',
     charBudget: 80_000,
-    itemClipChars: 5_000,
+    itemClipChars: 20_000,
     itemLimit: pending.length,
   });
   const originals = new Map(pending.map((unit) => [unit.localizationId, unit.text]));
@@ -468,12 +468,22 @@ function wrapFeedProviders(feedProviders) {
   };
 }
 
-export function createFeedService({ legacyRepository, feedRepository, sourcePort, feedProviders, translationPort, feedFilter = null, mediaPort = null, contentRoutingPort = null,onContentReady=null }) {
+export function createFeedService({ legacyRepository, feedRepository, sourcePort, feedProviders, translationPort, feedFilter = null, mediaPort = null, contentRoutingPort = null,onContentReady=null,normalizedArticlePort=null }) {
   const resolvedSourcePort = sourcePort || wrapFeedProviders(feedProviders);
   if (!legacyRepository || !feedRepository || !resolvedSourcePort) throw new Error('feed repositories and source port are required');
   sourcePort = resolvedSourcePort;
   const qualityRule=feedFilter?.config?.mode==='enforce' && feedFilter.config.rule==='all-three-0.60'?'all-three-0.60':'';
 
+  const attachNormalizedArticle=(workspaceId,item)=>{
+    if(!normalizedArticlePort || !item)return item;
+    const id=item.resourceId || item.id;
+    const original=feedRepository.getContentItem(workspaceId,id);
+    const article=original && normalizedArticlePort.normalizedArticle(workspaceId,`feed:${id}`,original.updatedAt);
+    return {...item,normalizedArticle:article || null,processing:!article && needsZhLocalization(item.body || '') ? 'ai' : item.processing || ''};
+  };
+  const localizeForReading=async(workspaceId,items,options={})=>normalizedArticlePort
+    ? attachTranslations(feedRepository,workspaceId,items).map(item=>attachNormalizedArticle(workspaceId,item))
+    : localizeFeedItems(feedRepository,translationPort,workspaceId,items,'zh',options);
   return Object.freeze({
     listLegacyPosts(limit) {
       return legacyRepository.listPosts(limit);
@@ -502,7 +512,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       const workspaceId = actor.workspaceId || DEFAULT_WORKSPACE_ID;
       if (!query?.refresh) {
         const stored = readStoredFeed(feedRepository, workspaceId, persistence, sourceInput,{qualityRule});
-        stored.items = rankFeedItems(await localizeFeedItems(feedRepository, translationPort, workspaceId, stored.items, 'zh', { wait: false }));
+        stored.items = rankFeedItems(await localizeForReading(workspaceId,stored.items,{wait:false}));
         return stored;
       }
       const sourceSnapshot = await sourcePort.read(contentRoutingPort && providerId==='trendforce' ? 'content.trendforce.collection' : source.id, sourceInput, {
@@ -526,7 +536,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
         added: stats.added,
         skipped: stats.skipped,
       });
-      stored.items = rankFeedItems(await localizeFeedItems(feedRepository, translationPort, workspaceId, stored.items));
+      stored.items = rankFeedItems(await localizeForReading(workspaceId,stored.items));
       const hiddenExternalIds = new Set(feedRepository.listHiddenExternalIds?.(workspaceId, providerId) || []);
       stored.items = stored.items.filter((item) => !hiddenExternalIds.has(String(item.externalId || '')));
       const total = stored.items.length;
@@ -606,12 +616,12 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       const rows = feedRepository.listTranslations?.(workspaceId, ids, 'zh') || [];
       const hash = contentHash(item.body || '');
       const row = rows.find((entry) => entry.sourceHash === hash && entry.translatedText);
-      return {
+      return attachNormalizedArticle(workspaceId,{
         ...item,
         translation: row?.translatedText
           ? { text: row.translatedText, engine: row.engine || '', targetLang: row.targetLang || 'zh' }
           : null,
-      };
+      });
     },
     getOriginalContent(workspaceId, id) {
       const requested = String(id || '').trim();
@@ -669,14 +679,22 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       return translation;
     },
     async translateMany(input, actor = {}) {
-      const packed = packFeedAiBatches(input.items, {
+      const workspaceId = actor.workspaceId || DEFAULT_WORKSPACE_ID;
+      const stored = translationMap(feedRepository.listTranslations?.(workspaceId, input.items.map(item => item.id), input.targetLang || 'zh'));
+      const translations = [];
+      const pending = input.items.filter(item => {
+        const row = stored.get(item.id);
+        if (row?.sourceHash !== contentHash(item.text) || !row.translatedText) return true;
+        translations.push({ id: item.id, sourceText: item.text, translatedText: row.translatedText, targetLang: input.targetLang || 'zh', engine: row.engine, cached: true });
+        return false;
+      });
+      const packed = packFeedAiBatches(pending, {
         purpose: 'translate',
         charBudget: 80_000,
-        itemClipChars: 5_000,
+        itemClipChars: 20_000,
         itemLimit: 30,
       });
       const originals = new Map((input.items || []).map((item) => [item.id, item.text]));
-      const translations = [];
       async function translateChunk(items) {
         if (translationPort?.translateMany) {
           return translationPort.translateMany({ items, targetLang: input.targetLang });
@@ -695,18 +713,28 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       for (const batch of packed.batches) {
         const chunk = batch.units.map((unit) => ({ id: unit.itemId, text: unit.text }));
         const result = await translateChunk(chunk);
+        const completed = [];
         for (const row of result.translations || []) {
-          translations.push({
+          if (!originals.has(row.id)) continue;
+          completed.push({
             ...row,
             sourceText: originals.get(row.id) || row.sourceText,
           });
         }
+        persistTranslations(feedRepository, workspaceId, completed);
+        translations.push(...completed);
       }
-      persistTranslations(feedRepository, actor.workspaceId || DEFAULT_WORKSPACE_ID, translations);
       return { translations, targetLang: input.targetLang };
     },
     persistItemTranslations(translations, actor = {}) {
-      persistTranslations(feedRepository, actor.workspaceId || DEFAULT_WORKSPACE_ID, translations);
+      const workspaceId=actor.workspaceId || DEFAULT_WORKSPACE_ID;
+      const safe=normalizedArticlePort ? translations.filter(row=>{
+        const original=this.getOriginalContent(workspaceId,row.id);
+        const item=original && feedRepository.getContentItem(workspaceId,original.id);
+        const normalized=item && normalizedArticlePort.normalizedArticle(workspaceId,`feed:${item.id}`,item.updatedAt);
+        return !normalized || row.translatedText!==normalized.body || Boolean(row.engine);
+      }) : translations;
+      persistTranslations(feedRepository,workspaceId,safe);
     },
     async localizeContentItems(workspaceId, ids = []) {
       const rows = this.listContentItemsByIds(workspaceId, ids);

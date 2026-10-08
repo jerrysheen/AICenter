@@ -145,6 +145,14 @@ export function createMediaReaderSession() {
   };
 }
 
+// A card, recent item, or focus snapshot can carry the saved text without paragraphs.
+// That text is the body. It must not be replaced by a translation notice that has no switch.
+export function mediaIndexBody(post, language, translated = '') {
+  const original = String(post?.body || '');
+  if (language === 'original' || !translated) return original;
+  return translated;
+}
+
 export function mediaReaderParagraphs(post, language) {
   if (language === 'original') return post.paragraphs || [];
   const article = post.articleTranslation;

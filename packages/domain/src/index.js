@@ -68,6 +68,7 @@ export function createDomainServices({
   modelUsageRates = [],
   informationPipeline = 'legacy',
   onContentReady = null,
+  analysisSkillCatalog = null,
 }) {
   if (!store?.repositories) throw new Error('store repositories are required');
   const media = mediaService || (store.repositories.media
@@ -87,6 +88,7 @@ export function createDomainServices({
     mediaPort: media,
     contentRoutingPort,
     onContentReady,
+    normalizedArticlePort:informationPipeline==='tree-v3' ? createInformationTreeReader({repository:store.repositories.informationTree,pipeline:informationPipeline}) : null,
   });
   const trading = createTradingService({
     tradingRepository: store.repositories.trading,
@@ -143,6 +145,7 @@ export function createDomainServices({
       restartPort,
       feedFilterConfig:feedFilter?.config || null,
       dailyConfig: resolvedDailyConfig,
+      analysisSkillCatalog,
     }),
     report,
     marketStatistics,

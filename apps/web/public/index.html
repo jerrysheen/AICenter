@@ -421,15 +421,16 @@
             <div class="block-label hidden" id="ask-prompt-label">试试这些问题</div>
             </div>
             <form class="ask-composer" id="ask-form">
+              <div class="ask-ref-chips ask-skill-chips hidden" id="ask-skill-chips"></div>
               <div class="ask-ref-chips hidden" id="ask-ref-chips"></div>
               <div class="ask-ref-actions hidden" id="ask-ref-actions">
                 <button class="text-button" type="button" id="ask-ref-export">导出</button>
                 <button class="text-button" type="button" id="ask-ref-task">发给任务</button>
               </div>
-              <div class="ask-mention-menu hidden" id="ask-mention-menu" role="listbox" aria-label="可引用的本地知识"></div>
+              <div class="ask-mention-menu hidden" id="ask-mention-menu" role="listbox" aria-label="分析方法和参考材料"></div>
               <div class="compose-box">
                 <label class="vh" for="ask-question">问题</label>
-                <textarea id="ask-question" name="question" maxlength="4000" rows="1" placeholder="发消息，或 @ 选择资料…"></textarea>
+                <textarea id="ask-question" name="question" maxlength="4000" rows="1" placeholder="发消息，或 @ 选择分析方法与资料…"></textarea>
                 <div class="ask-composer-row">
                   <div class="ask-composer-tools">
                     <label class="ask-agent-mode">

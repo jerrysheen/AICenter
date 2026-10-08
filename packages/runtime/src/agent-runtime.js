@@ -5,6 +5,7 @@
  * `AI_CENTER_AGENT_RUNTIME=local`. Production Ask / article reading uses
  * `packages/harness`. Harness must not import this file.
  */
+import { composeAskUserText, formatHistorySkillNote } from './analysis-skill-guidance.js';
 import { createToolRegistry } from './tool-registry.js';
 import { buildRuntimeContext, DEFAULT_USER_TIME_ZONE, formatRuntimeContextNote } from './runtime-context.js';
 import { buildAgentSystemInstruction } from './agent-prompt.js';
@@ -151,14 +152,14 @@ export function createAgentRuntime({
       const explicitWebSearchRequested = explicitSearchIntent(message);
       const history = [];
       for (const turn of priorTurns) {
-        if (turn.inputText) history.push({ role: 'user', parts: [{ text: String(turn.inputText) }] });
+        const note = formatHistorySkillNote(turn);
+        const userText = [note, turn.inputText].filter(Boolean).join('\n');
+        if (userText) history.push({ role: 'user', parts: [{ text: userText }] });
         if (turn.outputText) history.push({ role: 'model', parts: [{ text: String(turn.outputText) }] });
       }
       history.push({
         role: 'user',
-        parts: [{ text: selectedContext
-          ? `${selectedContext}\n\n用户问题：\n${String(message || '')}`
-          : String(message || '') }],
+        parts: [{ text: composeAskUserText({ message, selectedContext }) }],
       });
       const toolCalls = [];
       const toolAudits = [];

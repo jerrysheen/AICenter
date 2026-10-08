@@ -1,6 +1,7 @@
 import { FeedItemsEnrichJobInputSchema, FeedSubscriptionsSyncJobInputSchema, parseContract } from '../../contracts/src/index.js';
 import { defaultAutoRefreshProjections } from '../../source/src/content/definitions.js';
 import {enqueueTreePreparation} from './information-tree-module.js';
+import { enqueueOriginalTranslations } from './feed-translation-module.js';
 
 export const FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE = 'feed.subscriptions.sync';
 export const FEED_ITEMS_ENRICH_JOB_TYPE = 'feed.items.enrich';
@@ -172,7 +173,12 @@ export function createFeedAutomationJobHandlers({ feedService, feedRepository, t
           skippedTagging: 0,
         };
       }
-      if(articleNormalizePort)return articleNormalizePort.prepareInformation({workspaceId:input.workspaceId,sourceIds:resourceIds.map(id=>`feed:${id}`)});
+      if(articleNormalizePort) {
+        const rows = feedService.listTaggableItems?.(input.workspaceId, { ids: resourceIds, limit: resourceIds.length }) || [];
+        const units = rows.map(row => ({ id: row.id, text: row.body || row.summary || row.title || '' })).filter(row => row.text);
+        await enqueueOriginalTranslations({ store: context?.store, feedService, workspaceId: input.workspaceId, units });
+        return articleNormalizePort.prepareInformation({workspaceId:input.workspaceId,sourceIds:resourceIds.map(id=>`feed:${id}`)});
+      }
       const localization = await feedService.localizeContentItems(input.workspaceId, resourceIds);
       const items = feedService.listTaggableItems(input.workspaceId, {
         ids: resourceIds,

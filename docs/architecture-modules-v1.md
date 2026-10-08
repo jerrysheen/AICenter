@@ -1,5 +1,9 @@
 # 模块架构 V1
 
+原文全文翻译使用独立 Gemma 31B/26B Connector 与持久化配额，不回退其他模型。HTTP 仅提交已注册 `feed.translation.run` Worker 任务，沿用 Feed Service/Repository 保存译文和 Outbox；Article Normalize、Tag、小时/日报保持原路径。兼容和限制见 `gemma-original-translation.md`。
+
+用户后续授权翻译五账号并发：仅 `feed.translation.run` 使用内部 `translationLimit` 的最多五个 Worker 执行位；账号跨 31B/26B 的 10 秒发起间隔由现有 quota Repository 在事务中持久检查，本地日/小时请求数无硬上限。供应商冷却、TPM、完整译文校验不变。此处是 Connector HTTP 并发，不增加业务 Agent 或 Runtime。
+
 TrendForce 内容分流扩展现有 Feed/Media 与行情边界：一次采集由 Feed Service 经注入 Port 分流，硬件报价独立 Contract/Service/Repository，媒体不另抓一次。报价与股票历史完全分开；旧身份映射保留状态和引用。详见 `hardware-prices-v1.md`。
 
 当前入选池更新由 `feed.quality.refresh` 注册模块执行，Runtime Service 只派发严格 Contract 的 Job，HTTP 本机入口只返回 jobId。Domain Refresh Service 经 Repository 读取每来源最近 200 条与已保存媒体索引，复用完全相同的模型/问题/输入评分，否则调用 JEV Connector；Review Service 再核对当前输入并事务写 Capture/outbox。Repository 入选读查询只接受现行三项规则明确 KEEP，旧未知内容、实时快照回退不能旁路。Host 评分缓存由 Instance composition root 读取注入，Domain 不读 Host 文件。页面示例回退与 Tag 显示门槛移除，不更改用户收藏、阅读或隐藏状态。
@@ -114,7 +118,7 @@ Market 聚合、观察池与 Human/AI Projection 属于 `packages/source`，Yaho
 交易所公告的年度休市日与政府调休工作日分开；未核验年度不得标为已确认开市。
 Connector保留真实报价时间，经Source透传；报价时间缺失保持null，不使用抓取时钟填充。
 观察池内容来自 Instance `config/markets.json`；`config/markets.default.json` 只是新实例模板和兼容 fallback，Core JS 不保存个人观察分组。当前私有部署仓库可以版本化 `config/markets.json` 作为 Instance 快照，这不改变其 ownership。
-`market.cn` 是独立 A 股看板，不覆盖亚洲 KR/JP/TW 观察池；同一 `symbol` 允许挂多个 `group`。`market.us` 只收美股上市代码（含 ADR），`market.asia` 只收 KR/JP/TW 本地代码；同一公司可以两边各挂自己的上市代码，不得把韩交所代码放进美股观察池。`market.overview` 按 `Asia/Shanghai` 切换单一 section：工作日 05:00–17:00 为 A 股与港股观察（上证50 / 创业板50 / 科创50 / 恒生 / 港科），17:00 后至次日 05:00 及周末为美股观察。
+`market.cn` 是独立 A 股看板，不覆盖亚洲 KR/JP/TW 观察池；同一 `symbol` 允许挂多个 `group`。`market.us` 只收美股上市代码（含 ADR），`market.asia` 只收 KR/JP/TW 本地代码；同一公司可以两边各挂自己的上市代码，不得把韩交所代码放进美股观察池。`market.overview` 按 `Asia/Shanghai` 切换单一 section：工作日 05:00–17:00 为 A 股与港股观察（上证50 / 创业板50 / 科创50 / 恒生 / 港科，指数行另含韩国综指 `^KS11` 与台湾加权 `^TWII`），17:00 后至次日 05:00 及周末为美股观察。韩国综指与台湾加权只进入白天指数行，不并入 A 股观察池的涨跌宽度。
 雪球信息流 `content.xueqiu.home` 与行情 `xueqiu-quotes` 不是同一个 Connector：前者用 BrowserSkill 打已登录页的关注 / 精选 / 7x24 JSON，后者只做公开批量报价。
 FeedService 通过 SourcePort 读取外部内容，再写入原有 `SourceAccount -> Capture -> ContentItem` 生命周期。Feed Filter 在 Source Snapshot 与 ContentItem 之间，确定性规则与 Jev 语义判断都放在 `packages/domain/src/feed-filter.js`，与 Agent Quality 分文件。
 入库保存价值 V3 由 `feed-value.js` 实现：一条原文一次五个 Noul，不传兴趣范围或 Tag。最新生产规则为 `all-three-0.60`：保存价值/具体程度/信息充分程度三项全部 >=0.60；广告不否决。Connector 提供账号、已核验回复/引用关系和缺失事实；Domain 只合并同作者同线程续写及必要引用，显示名只能产生疑似续帖。关键缺失与技术异常先 REVIEW。当前 Instance 明确 enforce，新安装默认 shadow；不改旧校准生产资格冒称验收。社交和媒体索引/正文共用 gate，先保存原始 Capture 或媒体快照，仅 KEEP 可新建 ContentItem/进入可读池；DROP 拦截，REVIEW 只存原始 Capture captured 待补，技术失败也不放行。Tag 后处理，无 Tag 可读；媒体已拦截项不进入后处理。Repository 可读与日报材料查询排除已实际应用的拦截，不写用户隐藏状态。旧 calibrated-value/two-of-three/V1 显式兼容，V2 与原 V3 分数冻结；授权历史重分类经 Domain Review Service 对照当前输入一致性后通过 Repository 写 Capture 与 outbox，输入改变则隔离待重新评分。规则哈希与评分缓存分开；详见 `feed-value-v3.md`。
@@ -218,7 +222,7 @@ BrowserRuntime读取可见列表。Yahoo Economy只读取已核对的`main .stre
 公开续读按钮可以展开；挑战、订阅页、署名不匹配、未展开或无法确认正文末尾均不得标为全文。
 转载保存原出版商、阅读入口与可见原报道链接，使用现有discoveredVia/originUrl投影并按
 规范化URL精确匹配复用已有文章身份，并另存多个发现入口。旧Yahoo入口作为来源别名保留，合并预算计算旧用量；历史阅读与引用身份不重算。策略版本变化触发一次受控无条件读取，避免旧304永久遮蔽此前漏采文章。FT官方周报是独立来源，RSS正文不等于FT各篇报道已获得全文。
-用户扩大经济与国际新闻覆盖后，Instance可以配置最多24个活动新闻/科技来源；缺省仍为6，旧16上限配置继续有效，登记总数仍最多40。2026-10-05扩栏只沿用现有RSS/正文链路，HTTP正文按publisherKey复用BBC/Guardian适配（缺失时兼容sourceKey），不另建采集Runtime。新栏目逐源探测与隔离样本验收后通过Service启用，特殊页面保持真实正文等级；
+用户扩大经济与国际新闻覆盖后，Instance可以配置最多24个活动新闻/科技来源；缺省仍为6，旧16上限配置继续有效。2026-10-05扩栏后登记总数曾为40；2026-10-07联合早报国际栏目使用独立HTML列表与正文适配，登记上限为41，默认关闭，不另建采集Runtime。2026-10-05扩栏只沿用现有RSS/正文链路，HTTP正文按publisherKey复用BBC/Guardian适配（缺失时兼容sourceKey）。新栏目逐源探测与隔离样本验收后通过Service启用，特殊页面保持真实正文等级；
 每日元数据、正文成功数、全局/单来源请求数以及来源detailDailyCap缺省为null（不限额），当前Instance全部取消每日配额；数字上限仍兼容旧Instance。统计不清空，取消配额后旧request_budget/success_budget延期立即恢复。自动enrich按40条分批完成所有已选候选，不把第一批作为任务总额度。刷新间隔、失败退避、字节限制与并发仍生效。已有官方发布Adapter仍不占活动来源额度。
 页面来源配置折叠，状态明确区分全文与摘要能力。
 
@@ -231,3 +235,7 @@ BrowserRuntime读取可见列表。Yahoo Economy只读取已核对的`main .stre
 ## X 点赞命令补充（2026-10-07）
 
 用户明确授权的阅读页单条点赞属于 Feed 写命令：Contract → FeedInteractionService / Repository → 固定 `feed.x.like` Job → 注册 Worker handler → BrowserRuntime Connector。不是只读 Source，不暴露给 Harness，不接受浏览器 ID、URL 或脚本参数。状态查询只投影当前 workspace 与内容关联的 Job；原帖重新加载核验才确认成功，已点赞不切换取消。完整边界与兼容见 `feed-interaction-v1.md`。
+
+2026-10-07 用户授权五账号并发文章整理：封闭article-normalize任务可通过同一冻结Harness适配器的最多5个隔离执行上下文并行，不共享Session/Gateway/DSH Home；Ask、文章阅读和报告保留原串行上下文，不新增业务Agent。WorkerJobConcurrency新增informationPreparationLimit（1—5，默认1）。领取文章准备Job前检查持久化预算，关闭窗口不领取、不消耗attempt、不派生短周期重试；每账号租约及分钟/日预算经Repository事务准入，新增migration45，不改历史迁移。预算与兼容开关见gemini-article-normalize.md。
+
+补充：用户重新授权上述并发上线，准入和在途租约的最小单位为账号/已知项目＋模型。同账号不同模型可同时执行，分钟/日/滚动小时预算与冷却独立；总封闭任务并发仍最多5。Host模型选择参数不进入HTTP/Page契约，正式运行状态见progress/2026-10-07-gemini-account-model-pool.md。

@@ -149,3 +149,39 @@ test('Harness uses key2 then key3 after key1 rejection before any Grok fallback'
     assert.deepEqual(used,[['google','GEMINI_API_KEY'],['google','GEMINI_API_KEY2'],['google','GEMINI_API_KEY3']]);
   }finally{await runtime.close();store.close();fs.rmSync(dir,{recursive:true,force:true});}
 });
+
+test('Google request model selection uses an allowlist and leaves other task routes unchanged',()=>{
+ const env={GEMINI_API_KEY:'secret',AI_CENTER_HARNESS_ARTICLE_PROVIDER:'google',AI_CENTER_GEMINI_ARTICLE_MODELS:'gemini-test-a,gemini-test-b'};
+ for(const model of ['gemini-test-a','gemini-test-b']){
+  const route=resolveHarnessLlm(env,{closedTask:'article-normalize',googleModel:model});
+  assert.equal(route.model,model);assert.equal(route.apiKeyEnv,'GEMINI_API_KEY');
+  assert.ok(route.settingsYaml.includes(`id: "${model}"`));assert.ok(!route.settingsYaml.includes('secret'));
+ }
+ assert.throws(()=>resolveHarnessLlm(env,{closedTask:'article-normalize',googleModel:'unconfigured'}));
+ assert.throws(()=>resolveHarnessLlm(env,{closedTask:'hourly-brief',googleModel:'gemini-test-a'}));
+});
+
+test('same Google key executes different request models with isolated cooldown and correct Harness settings',async()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'gemini-model-switch-')),store=createStore(':memory:');let at=1000000;
+ const env={GEMINI_API_KEY:'one',GEMINI_API_KEY2:'two',AI_CENTER_HARNESS_ARTICLE_PROVIDER:'google',AI_CENTER_GEMINI_ARTICLE_MODELS:'gemini-test-a,gemini-test-b'};
+ const admission=createGeminiArticleAdmission({repository:store.repositories.modelQuota,env,now:()=>at}),launches=[];
+ const runtime=createHarnessAgentRuntime({tools:createToolRegistry(),env,articleAdmission:admission,runtimeDirectory:dir,createClient:async launch=>{
+  launches.push({model:launch.llm.model,key:launch.llm.apiKeyEnv,settings:launch.llm.settingsYaml});
+  return {run:async()=>({finalResponse:launch.llm.model,events:[]}),close:async()=>{}};
+ }});
+ const input={message:'saved article',closedContext:true,closedTask:'article-normalize',googleKeyEnv:'GEMINI_API_KEY2'};
+ try {
+  const a=await runtime.run({...input,googleModel:'gemini-test-a'});assert.equal(a.answer,'gemini-test-a');
+  // Cooldown applies only to the first model on this key.
+  const slot=admission.policy.slots.find(s=>s.keyEnv===input.googleKeyEnv);
+  admission.failed({...slot,model:'gemini-test-a'},new Error('429 PerDay retryDelay: 3600s'));
+  at+=10000;
+  const b=await runtime.run({...input,googleModel:'gemini-test-b'});assert.equal(b.answer,'gemini-test-b');
+  assert.deepEqual(launches.map(l=>[l.key,l.model]),[['GEMINI_API_KEY2','gemini-test-a'],['GEMINI_API_KEY2','gemini-test-b']]);
+  assert.ok(launches.every(l=>l.settings.includes(`id: "${l.model}"`)));
+  at+=10000;await assert.rejects(runtime.run({...input,googleModel:'gemini-test-a'}),e=>e.code==='budget-deferred');
+  await assert.rejects(runtime.run({...input,googleModel:'gemini-test-b',googleKeyEnv:'UNKNOWN_KEY'}),/not configured/);
+  await assert.rejects(runtime.run({...input,googleModel:'unknown'}),/not configured/);
+  assert.equal(launches.length,2);
+ }finally{await runtime.close();store.close();fs.rmSync(dir,{recursive:true,force:true});}
+});

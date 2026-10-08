@@ -356,6 +356,58 @@ test('overview service loads A shares before Shanghai 17:00 and US after', async
   assert.equal(afterMidnight.sections[0].id, 'us');
 });
 
+test('daytime overview fetches Korea and Taiwan benchmarks from Yahoo', async () => {
+  const yahooSymbols = [];
+  const xueqiuSymbols = [];
+  const marketCatalog = {
+    version: 1,
+    us: { groups: ['全部'], indices: [], watchlist: [] },
+    asia: { groups: ['全部'], indices: [], watchlist: [] },
+    cn: {
+      groups: ['全部'],
+      indices: [
+        { symbol: '^KS11', name: '韩国综指', group: '指数', summary: '韩国综合股价指数' },
+        { symbol: '^TWII', name: '台湾加权', group: '指数', summary: '台湾综合指数' },
+      ],
+      watchlist: [],
+    },
+    global: { groups: ['指数'], watchlist: [] },
+  };
+  const service = createMarketService({
+    marketCatalog,
+    ttlMs: 1,
+    now: () => Date.UTC(2026, 8, 18, 2, 0, 0),
+    yahoo: {
+      async fetchQuotes(symbols) {
+        yahooSymbols.push(...symbols);
+        return {
+          session: 'regular',
+          quotes: symbols.map((symbol) => ({
+            symbol, name: symbol, lastPrice: 100, changePct: 0.5, change: 0.5, high: 101, low: 99,
+            prevClose: 99.5, volume: 1, sparkline: [100], currency: symbol === '^KS11' ? 'KRW' : 'TWD',
+            exchange: 'TEST', marketTime: 1, session: 'regular',
+          })),
+        };
+      },
+      async searchSymbols() { return []; },
+    },
+    xueqiuQuotes: {
+      async fetchQuotes(symbols) {
+        xueqiuSymbols.push(...symbols);
+        return [];
+      },
+    },
+    cnQuotes: { async fetchQuotes() { return []; } },
+  });
+  const board = await service.getBoard({ board: 'overview' });
+  assert.equal(board.focus, 'cn');
+  assert.deepEqual(board.sections[0].indices.map((item) => item.symbol), ['^KS11', '^TWII']);
+  assert.deepEqual(board.sections[0].indices.map((item) => item.name), ['韩国综指', '台湾加权']);
+  assert.deepEqual(yahooSymbols, ['^KS11', '^TWII']);
+  assert.deepEqual(xueqiuSymbols, []);
+  assert.equal(board.sections[0].breadth.advancers, 0);
+});
+
 test('global board routes Chinese futures through sina', async () => {
   const sinaSymbols = [];
   const yahooSymbols = [];

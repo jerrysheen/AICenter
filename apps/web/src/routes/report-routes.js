@@ -10,7 +10,7 @@ import {
   DailyBriefWindowQuerySchema,
 } from '../../../../packages/contracts/src/index.js';
 import { json, readJson } from '../http/response.js';
-import {TreeWindowQuerySchema,TreeNodeQuerySchema} from '../../../../packages/contracts/src/information-tree.js';
+import {TreeManifestQuerySchema,TreeNodeQuerySchema,TreeWindowQuerySchema} from '../../../../packages/contracts/src/information-tree.js';
 
 function briefView(brief) {
   if(!brief) return null;
@@ -21,8 +21,13 @@ function briefView(brief) {
 export function createReportRoutes() {
   return [
     {method:'GET',path:'/api/v1/reports/tree',handler({response,services,url,identity}) {
-      const window=parseContract(TreeWindowQuerySchema,{startAt:url.searchParams.get('startAt'),endAt:url.searchParams.get('endAt')});
-      json(response,200,{ok:true,...services.informationTree.list(identity?.device?.workspaceId || 'local',window)});
+      const window=parseContract(TreeManifestQuerySchema,{startAt:url.searchParams.get('startAt'),endAt:url.searchParams.get('endAt'),view:url.searchParams.get('view') || undefined});
+      json(response,200,{ok:true,...services.informationTree.list(identity?.device?.workspaceId || 'local',window)},{},{compress:true});
+    }},
+    {method:'GET',path:'/api/v1/reports/tree/edition',handler({response,services,url,identity}) {
+      const {id}=parseContract(TreeNodeQuerySchema,{id:url.searchParams.get('id')});
+      const result=services.informationTree.edition(identity?.device?.workspaceId || 'local',id);
+      json(response,result ? 200 : 404,{ok:Boolean(result),...result},{},{compress:true});
     }},
     {method:'GET',path:'/api/v1/reports/tree/node',handler({response,services,url,identity}) {
       const {id}=parseContract(TreeNodeQuerySchema,{id:url.searchParams.get('id')});
@@ -31,6 +36,11 @@ export function createReportRoutes() {
     {method:'GET',path:'/api/v1/reports/tree/children',handler({response,services,url,identity}) {
       const {id}=parseContract(TreeNodeQuerySchema,{id:url.searchParams.get('id')});
       const children=services.informationTree.children(identity?.device?.workspaceId || 'local',id);json(response,children ? 200 : 404,{ok:Boolean(children),children});
+    }},
+    {method:'GET',path:'/api/v1/reports/tree/editorial',handler({response,services,url,identity}) {
+      const window=parseContract(TreeWindowQuerySchema,{startAt:url.searchParams.get('startAt'),endAt:url.searchParams.get('endAt')});
+      const editorial=services.informationTree.editorial?.(identity?.device?.workspaceId || 'local',window) || null;
+      json(response,editorial ? 200 : 404,{ok:Boolean(editorial),editorial});
     }},
     {method:'GET',path:'/api/v1/reports/daily/brief/window',handler({response,services,url}) {
       const input=parseContract(DailyBriefWindowQuerySchema,{date:url.searchParams.get('date') || '',revision:Number(url.searchParams.get('revision') ?? NaN)});

@@ -1,11 +1,14 @@
 import { buildAgentSystemInstruction } from '../../runtime/src/agent-prompt.js';
+import { composeAskUserText, formatClearedSkillScope, formatHistorySkillNote } from '../../runtime/src/analysis-skill-guidance.js';
 import { formatRuntimeContextNote } from '../../runtime/src/runtime-context.js';
 
 function turnLine(turn) {
   const question = String(turn?.inputText || '').trim();
   const answer = String(turn?.outputText || '').trim();
-  if (!question && !answer) return '';
+  const note = formatHistorySkillNote(turn);
+  if (!question && !answer && !note) return '';
   return [
+    note,
     question && `用户：${question}`,
     answer && `助手：${answer}`,
   ].filter(Boolean).join('\n');
@@ -30,9 +33,7 @@ export function buildHarnessPrompt({
   closedContext = false,
 } = {}) {
   const history = priorTurns.map(turnLine).filter(Boolean).join('\n\n');
-  const question = selectedContext
-    ? `${selectedContext}\n\n用户问题：\n${String(message || '')}`
-    : String(message || '');
+  const question = composeAskUserText({ message, selectedContext });
   const toolSection = closedContext
     ? CLOSED_CONTEXT_PROMPT
     : [
@@ -52,4 +53,11 @@ export function buildHarnessPrompt({
     history && `此前对话：\n${history}`,
     question,
   ].filter(Boolean).join('\n\n');
+}
+
+export function buildHarnessFollowUpPrompt({
+  message, selectedContext, priorHint, taskInstruction = '', priorTurns = [],
+} = {}) {
+  const instruction = String(taskInstruction || '').trim() || formatClearedSkillScope(priorTurns);
+  return [instruction, composeAskUserText({ message, selectedContext }), priorHint].filter(Boolean).join('\n\n');
 }

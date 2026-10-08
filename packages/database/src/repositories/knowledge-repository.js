@@ -122,6 +122,25 @@ function readEvidenceGate(outputJson) {
   }
 }
 
+function readActivatedSkills(outputJson) {
+  if (!outputJson) return [];
+  try {
+    const output = typeof outputJson === 'string' ? JSON.parse(outputJson) : outputJson;
+    const list = Array.isArray(output?.activatedSkills) ? output.activatedSkills : [];
+    return list.slice(0, 1).flatMap((item) => {
+      if (!item || typeof item !== 'object') return [];
+      const id = String(item.id || '').trim();
+      const version = String(item.version || '').trim();
+      const name = String(item.name || '').trim();
+      const contentHash = String(item.contentHash || '').trim().toLowerCase();
+      if (!id || !version || !name || !/^[a-f0-9]{64}$/.test(contentHash)) return [];
+      return [{ id, version, name, contentHash }];
+    });
+  } catch {
+    return [];
+  }
+}
+
 function mapExchange(row) {
   return {
     id: row.id,
@@ -137,6 +156,7 @@ function mapExchange(row) {
     completedAt: row.completed_at || null,
     refs: [],
     evidenceGate: readEvidenceGate(row.output_json),
+    activatedSkills: readActivatedSkills(row.output_json),
   };
 }
 
@@ -504,7 +524,7 @@ export function createKnowledgeRepository(database, emitEvent) {
     listSessionTurns(workspaceId, sessionId, limit = SESSION_HISTORY_LIMIT) {
       const session = this.getSession(workspaceId, sessionId);
       if (!session) return [];
-      const rows = database.prepare(`SELECT id, input_text, output_text FROM ai_runs
+      const rows = database.prepare(`SELECT id, input_text, output_text, output_json FROM ai_runs
         WHERE session_id = ? AND status = 'completed' ORDER BY created_at ASC`).all(sessionId);
       const page = rows.slice(-Math.max(1, Math.min(Number(limit) || SESSION_HISTORY_LIMIT, 20)));
       const selectedByRun = new Map();
@@ -526,6 +546,7 @@ export function createKnowledgeRepository(database, emitEvent) {
         inputText: row.input_text || '',
         outputText: row.output_text || '',
         selectedRefs: selectedByRun.get(row.id) || [],
+        activatedSkills: readActivatedSkills(row.output_json),
       }));
     },
 

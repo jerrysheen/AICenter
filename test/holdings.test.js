@@ -261,6 +261,57 @@ test('holdings moves keep new lots out of original holding pnl', () => {
   assert.equal(month.sampleAddedPnlCny, null);
 });
 
+test('holdings keep the last precise price when a refresh misses it', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-holdings-precise-'));
+  const store = createStore(path.join(directory, 'test.db'));
+  let fx = { usd: 7, hkd: 0.9 };
+  let bSharePrice = 3;
+  let dropFx = false;
+  const service = createTradingService({
+    tradingRepository: store.repositories.trading,
+    sourcePort: {
+      async read(sourceId) {
+        if (sourceId !== 'market.quotes') return { data: [] };
+        const quotes = [
+          { symbol: '600000.SS', lastPrice: 12, prevClose: 11 },
+          { symbol: '0001.HK', lastPrice: 25, prevClose: 24 },
+          { symbol: '200001.SZ', lastPrice: bSharePrice, prevClose: 2.8 },
+        ];
+        if (!dropFx) {
+          quotes.push(
+            { symbol: 'USDCNY=X', lastPrice: fx.usd, prevClose: fx.usd },
+            { symbol: 'HKDCNY=X', lastPrice: fx.hkd, prevClose: fx.hkd },
+          );
+        }
+        return { data: quotes };
+      },
+    },
+  });
+  service.importPortfolio(syntheticPortfolioImport());
+  const first = await service.getHoldingsBoard({ refresh: true });
+  dropFx = true;
+  bSharePrice = 4;
+  const retained = await service.getHoldingsBoard({ refresh: true });
+  assert.equal(retained.fx.usdCny, '7');
+  assert.equal(retained.fx.hkdCny, '0.9');
+  assert.equal(retained.missingQuotes.includes('USDCNY=X'), false);
+  assert.equal(retained.missingQuotes.includes('HKDCNY=X'), false);
+  assert.equal(first.summary.bShareCny, '540');
+  const bShare = retained.positions.find((item) => item.symbol === '200001');
+  assert.equal(bShare.lastPrice, '4');
+  assert.equal(bShare.marketValueCny, '720');
+  assert.equal(retained.summary.bShareCny, '720');
+  dropFx = false;
+  fx = { usd: 7.2, hkd: 1 };
+  bSharePrice = 4;
+  const updated = await service.getHoldingsBoard({ refresh: true });
+  assert.equal(updated.fx.usdCny, '7.2');
+  assert.equal(updated.fx.hkdCny, '1');
+  assert.equal(updated.positions.find((item) => item.symbol === '200001').marketValueCny, '800');
+  store.close();
+  rmSync(directory, { recursive: true, force: true });
+});
+
 test('portfolio import merges synthetic data idempotently and sqlite drives holdings reads', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-holdings-'));
   const store = createStore(path.join(directory, 'test.db'));

@@ -1,4 +1,6 @@
 import {createGeminiArticleAdmission} from '../../../packages/runtime/src/gemini-article-admission.js';
+import {resolveGoogleHourlyModelPool} from '../../../packages/harness/src/llm-route.js';
+import { createFeedTranslationJobHandlers, feedTranslationManifest } from '../../../packages/runtime/src/feed-translation-module.js';
 import { createHardwareArtifactStore } from '../../../packages/connectors/src/hardware-artifacts.js';
 import { legacyPriceSnapshot } from '../../../packages/connectors/src/trendforce-prices.js';
 import { createHardwarePriceService } from '../../../packages/domain/src/hardware-price-service.js';
@@ -13,7 +15,7 @@ import { hostname } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
-import { createConfiguredBrowserRuntime, createCursorSessionPort, createDeepSeekSearchProvider, createDoubaoAuxiliarySearch, createElucidGrokAgentClient, createGeminiTagPort, createLauncherRestartPort, createLocalKnowledgeFiles, createPersonalAssetService, createTranslateService, createTypeSafeSystemOneClient } from '../../../packages/connectors/src/index.js';
+import { createAnalysisSkillCatalog, createConfiguredBrowserRuntime, createCursorSessionPort, createDeepSeekSearchProvider, createDoubaoAuxiliarySearch, createElucidGrokAgentClient, createGeminiTagPort, createLauncherRestartPort, createLocalKnowledgeFiles, createPersonalAssetService, createTranslateService, createTypeSafeSystemOneClient } from '../../../packages/connectors/src/index.js';
 import { createAgentQualityLayerFromEnv } from '../../../packages/runtime/src/agent-quality.js';
 import { articleAnalysisManifest, createArticleAnalysisJobHandlers } from '../../../packages/runtime/src/article-analysis/article-analysis-module.js';
 import { createAttachmentStore, createStore } from '../../../packages/database/src/index.js';
@@ -37,7 +39,7 @@ import { resolveInstanceConfig } from '../../../packages/instance/src/index.js';
 import { createAgentRuntime } from '../../../packages/runtime/src/agent-runtime.js';
 import { agentRuntimeManifest, createAgentJobHandlers } from '../../../packages/runtime/src/agent-module.js';
 import {
-  createHarnessAgentRuntime,
+  createHarnessExecutionRuntime,
   HARNESS_ELUCID_PROVIDER,
   parseHarnessToolIds,
   resolveAgentRuntimeMode,
@@ -211,8 +213,9 @@ export function createAiCenterWorker(options = {}) {
     mediaPort: mediaService,
     contentRoutingPort,
     onContentReady:env.AI_CENTER_INFORMATION_PIPELINE==='tree-v3' ? ({workspaceId,sourceIds})=>enqueueTreePreparation(store,workspaceId,sourceIds) : null,
-    translationPort: options.translateService || createTranslateService(),
+    translationPort: options.translateService || createTranslateService({ env, quotaRepository: store.repositories.modelQuota }),
   });
+  registry.register({ manifest: feedTranslationManifest, jobHandlers: createFeedTranslationJobHandlers({ feedService }) });
   const workPackageTracePort = options.workPackageTracePort || createWorkPackageTracePort({
     logDirectory: path.join(instance.runtimeDirectory, 'logs'),
     repositoryRoot,
@@ -311,9 +314,12 @@ export function createAiCenterWorker(options = {}) {
   } else if (runtimeMode === 'local') {
     console.log('[worker] agent runtime=local');
   }
+  const articleAdmission=env.AI_CENTER_ARTICLE_NORMALIZE==='1' && env.AI_CENTER_HARNESS_ARTICLE_PROVIDER==='google' ? createGeminiArticleAdmission({repository:store.repositories.modelQuota,env}) : null;
+  const hourlyAdmission=env.AI_CENTER_HARNESS_HOURLY_PROVIDER==='google' ? createGeminiArticleAdmission({repository:store.repositories.modelQuota,env,models:resolveGoogleHourlyModelPool(env),allowFallback:false}) : null;
   const agentRuntime = runtimeMode === 'harness'
-    ? createHarnessAgentRuntime({
-      articleAdmission:env.AI_CENTER_ARTICLE_NORMALIZE==='1' && env.AI_CENTER_HARNESS_ARTICLE_PROVIDER==='google' ? createGeminiArticleAdmission({repository:store.repositories.modelQuota,env}) : null,
+    ? createHarnessExecutionRuntime({
+      articleAdmission,
+      hourlyAdmission,
       tools: agentTools,
       quality: agentQuality,
       env,
@@ -338,7 +344,12 @@ export function createAiCenterWorker(options = {}) {
       }));
   registry.register({
     manifest: agentRuntimeManifest,
-    jobHandlers: createAgentJobHandlers({ agentRuntime, knowledgeService, contextService, agentTraceLog, agentQuality }),
+    jobHandlers: createAgentJobHandlers({
+      agentRuntime, knowledgeService, contextService, agentTraceLog, agentQuality,
+      analysisSkillCatalog: options.analysisSkillCatalog !== undefined
+        ? options.analysisSkillCatalog
+        : createAnalysisSkillCatalog({ rootDirectory: path.join(repositoryRoot, 'config/analysis-skills') }),
+    }),
   });
   registry.register({
     manifest: articleAnalysisManifest,
@@ -383,7 +394,7 @@ export function createAiCenterWorker(options = {}) {
   const treeCatalog=treeEnabled ? options.tagCatalog || readTagCatalogFile(existsSync(instance.tagCatalogPath) ? instance.tagCatalogPath : path.join(repositoryRoot,'config/tags.default.json')) : null;
   const treeMaterials=treeEnabled ? createTreeMaterialPort({feedService,mediaService}) : null;
   const treeService=treeEnabled ? createInformationTreeService({repository:store.repositories.informationTree,reportRepository:store.repositories.report,
-    feedService,mediaPort:mediaService,agentRuntime,articleStrategy,skills:articleStrategy ? loadArticleNormalizeSkills() : loadInformationTreeSkills(),timezone:dailyConfig.timezone,
+    feedService,mediaPort:mediaService,agentRuntime,articleStrategy,budgetReady:articleAdmission?.policy.accountMode ? ()=>articleAdmission.nextReadyAt(env.AI_CENTER_HARNESS_ARTICLE_MODEL || 'gemini-3.1-flash-lite')<=Date.now() : null,skills:articleStrategy ? loadArticleNormalizeSkills() : loadInformationTreeSkills(),timezone:dailyConfig.timezone,
     catalog:treeCatalog,
     candidatePort:treeMaterials?.candidates,materialPort:treeMaterials?.materials,
     primaryTag:(_workspaceId,m)=>Object.hasOwn(treeCatalog.reading?.primaryLocks || {},m.id) ? {locked:true,tagId:treeCatalog.reading.primaryLocks[m.id]} : undefined,
@@ -482,6 +493,7 @@ export function createAiCenterWorker(options = {}) {
     pollIntervalMs: options.pollIntervalMs || process.env.AI_CENTER_WORKER_POLL_MS,
     staleAfterMs,
     recoverEveryMs: options.recoverEveryMs || process.env.AI_CENTER_WORKER_RECOVER_MS,
+    readyAt:articleAdmission?.policy.accountMode ? {'report.information.prepare':()=>articleAdmission.nextReadyAt(env.AI_CENTER_HARNESS_ARTICLE_MODEL || 'gemini-3.1-flash-lite')} : {},
     supersedeAfterMs: {
       [FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE]: FEED_SYNC_MAX_RUNTIME_MS,
     },
@@ -492,6 +504,8 @@ export function createAiCenterWorker(options = {}) {
       workPackageDispatchLimit: options.workPackageConcurrency
         ?? process.env.AI_CENTER_WORKER_WORK_PACKAGE_CONCURRENCY,
       quantLabLimit: 1,
+      informationPreparationLimit: articleAdmission?.policy.concurrency || 1,
+      translationLimit: Number(env.AI_CENTER_WORKER_TRANSLATION_CONCURRENCY || 5),
     },
     onError(error, job) {
       console.error(`[worker] ${job.type} ${job.id}:`, error);

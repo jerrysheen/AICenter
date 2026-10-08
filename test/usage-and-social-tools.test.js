@@ -54,7 +54,7 @@ test('usage tool is in open Harness catalog and callable through Gateway; closed
  }finally{await gateway?.close();store.close();}
 });
 test('direct X and Xueqiu sync prepare approved original posts before translation and include them in hourly refs',async()=>{
- const store=createStore(':memory:'),hour=Math.floor(Date.now()/3600000)*3600000-3600000,seen=[];
+ const store=createStore(':memory:'),hour=Math.floor(Date.now()/3600000)*3600000,seen=[];
  const snapshot=provider=>({mode:'live',items:[{externalId:`${provider}-1`,sourceUrl:`https://example.com/${provider}`,title:`${provider}原作者发布产品`,body:'原作者宣布新产品开放测试，并说明试用条件。',authorName:'原作者',publishedAt:hour+1000},{externalId:`${provider}-drop`,sourceUrl:`https://example.com/${provider}/drop`,title:'推广',body:'广告推广',publishedAt:hour+1000}]});
  const feed=createFeedService({legacyRepository:store,feedRepository:store.repositories.feed,sourcePort:{findByProvider:provider=>({id:`content.${provider}.home`}),persistence:id=>({providerId:id.split('.')[1],sourceAccount:{externalId:`${id}:test`}}),read:async id=>({data:snapshot(id.split('.')[1])})},
   translationPort:{translate:async()=>{throw Error('树准备不能等待翻译');}},feedFilter:{evaluate:async input=>input.item.externalId.endsWith('drop') ? {action:'skip',createContentItem:false} : {action:'keep',createContentItem:true,status:'ready'}},
@@ -65,8 +65,9 @@ test('direct X and Xueqiu sync prepare approved original posts before translatio
   }
   const jobs=store.listOpenJobs('report.information.prepare');assert.equal(jobs.length,2);assert.equal(jobs.flatMap(j=>j.input.sourceIds).length,2);
   const port=createTreeMaterialPort({feedService:feed}),materials=await port.materials('local',jobs.flatMap(j=>j.input.sourceIds));assert.ok(materials.every(m=>m.kind==='social'));
-  const service=createInformationTreeService({repository:store.repositories.informationTree,reportRepository:store.repositories.report,materialPort:port.materials,candidatePort:port.candidates,skills:loadInformationTreeSkills(),catalog:{tags:[{id:'ai',name:'AI'}]},agentRuntime:{run:async input=>{seen.push(input);const p=JSON.parse(input.message);return {answer:JSON.stringify(input.usageStage==='tree-information' ? {title:p.source.title,text:'原作者宣布新产品开放测试，并说明试用条件。',tagId:'ai'} : {modules:[{title:'原作者产品开放测试',text:'两位作者发布新产品测试消息。',tagId:p.tagId,inputIds:p.inputs.map(n=>n.id)}]})};}}});
+  const service=createInformationTreeService({now:()=>hour+2*3600000,repository:store.repositories.informationTree,reportRepository:store.repositories.report,materialPort:port.materials,candidatePort:port.candidates,skills:loadInformationTreeSkills(),catalog:{tags:[{id:'ai',name:'AI'}]},agentRuntime:{run:async input=>{seen.push(input);const p=JSON.parse(input.message);return {answer:JSON.stringify(input.usageStage==='tree-information' ? {title:p.source.title,text:'原作者宣布新产品开放测试，并说明试用条件。',tagId:'ai'} : {modules:[{title:'原作者产品开放测试',text:'两位作者发布新产品测试消息。',tagId:p.tagId,inputIds:p.inputs.map(n=>n.id)}]})};}}});
   const prepared=await service.prepareInformation({materials});assert.equal(prepared.nodes.length,2);
+  // Ingestion happens in the current hour even when the source publication is older.
   const edition=await service.generateHour({workspaceId:'local',hourStart:hour});assert.equal(edition.status,'ready');
   const sourceIds=edition.roots.flatMap(id=>store.repositories.informationTree.getNode('local',id).articleIds);assert.deepEqual(new Set(sourceIds),new Set(materials.map(m=>m.id)));
   assert.ok(seen.every(r=>r.closedContext));

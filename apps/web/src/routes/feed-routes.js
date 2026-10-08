@@ -7,6 +7,17 @@ function workspaceIdFrom(identity) {
 
 export function createFeedRoutes() {
   return [
+    { method: 'GET', path: /^\/api\/v1\/translate\/jobs\/([0-9a-f-]+)$/i,
+      handler({ response, services, identity, params }) {
+        const job = services.runtime.getJob(params.values[0]);
+        if (!job || job.type !== 'feed.translation.run' || job.workspaceId !== workspaceIdFrom(identity)) {
+          json(response, 404, { ok: false, error: '翻译任务不存在' }); return;
+        }
+        json(response, 200, { ok: true, status: job.status,
+          result: job.status === 'completed' ? job.output : null,
+          error: job.status === 'failed' ? '翻译未完成，请稍后重试' : null });
+      },
+    },
     {method:'GET',path:'/api/v1/feed/media/article',handler({response,services,identity,url}) {
       if(!services.media) {json(response,404,{ok:false,error:'文章不存在'});return;}
       const item=services.media.getSavedArticle(Object.fromEntries(url.searchParams),{workspaceId:workspaceIdFrom(identity)});
@@ -89,7 +100,9 @@ export function createFeedRoutes() {
       method: 'GET', path: /^\/api\/v1\/content-items\/([0-9a-f-]{36})$/i,
       handler({ response, services, identity, params }) {
         const workspaceId = identity?.device?.workspaceId || 'local';
-        const item = services.feed.getContentItem(workspaceId, params.values[0]);
+        const item = services.feed.getLocalizedContentItem
+          ? services.feed.getLocalizedContentItem(workspaceId, params.values[0])
+          : services.feed.getContentItem(workspaceId, params.values[0]);
         if (!item) json(response, 404, { ok: false, error: '信息不存在' });
         else json(response, 200, { ok: true, item });
       },
@@ -184,11 +197,11 @@ export function createFeedRoutes() {
       method: 'POST', path: '/api/v1/translate',
       async handler({ request, response, services, identity, events }) {
         try {
-          const translation = await services.feed.translate(parseTranslateInput(await readJson(request)), {
-            workspaceId: identity?.device?.workspaceId || 'local',
-          });
+          const input = parseTranslateInput(await readJson(request));
+          const job = services.runtime.requestTranslation({ workspaceId: workspaceIdFrom(identity), targetLang: input.targetLang,
+            items: [{ id: input.id || 'translation', text: input.text }] });
           events.flush();
-          json(response, 200, { ok: true, translation });
+          json(response, 202, { ok: true, jobId: job.id });
         } catch (error) {
           if (error instanceof ValidationError) throw error;
           json(response, 502, { ok: false, error: error instanceof Error ? error.message : '翻译失败' });
@@ -199,11 +212,10 @@ export function createFeedRoutes() {
       method: 'POST', path: '/api/v1/translate/batch',
       async handler({ request, response, services, identity, events }) {
         try {
-          const payload = await services.feed.translateMany(parseTranslateBatchInput(await readJson(request)), {
-            workspaceId: identity?.device?.workspaceId || 'local',
-          });
+          const input = parseTranslateBatchInput(await readJson(request));
+          const job = services.runtime.requestTranslation({ ...input, workspaceId: workspaceIdFrom(identity) });
           events.flush();
-          json(response, 200, { ok: true, ...payload });
+          json(response, 202, { ok: true, jobId: job.id });
         } catch (error) {
           if (error instanceof ValidationError) throw error;
           const message = error instanceof Error ? error.message : '翻译失败';

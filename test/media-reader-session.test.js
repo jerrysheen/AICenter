@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
-import {createMediaReaderSession,mediaReaderParagraphs} from '../apps/web/public/media-feed.js';
+import {createMediaReaderSession,mediaIndexBody,mediaReaderParagraphs} from '../apps/web/public/media-feed.js';
 
 const scope={scope:'desktop:local',id:'one'};
 function article(hash='a',status='ready') {
@@ -37,6 +37,16 @@ test('article switch, logout and a different device discard the previous reading
     const reader=createMediaReaderSession();reader.resolve(article(),scope);
     assert.equal(reader.resolve(null,next).post,null);
   }
+});
+test('a saved article without paragraphs shows its text instead of a translation notice',()=>{
+  const post={platform:'media',complete:true,body:'Samsung expects a nine-fold surge in quarterly profit.',paragraphs:[]};
+  assert.equal(mediaIndexBody(post,'translation',''),post.body);
+  assert.equal(mediaIndexBody(post,'original',''),post.body);
+  assert.equal(mediaIndexBody(post,'translation','三星预计利润大增。'),'三星预计利润大增。');
+  assert.equal(mediaIndexBody({...post,body:''},'compare',''),'');
+  const code=readFileSync(new URL('../apps/web/public/app.js',import.meta.url),'utf8');
+  assert.equal(code.includes('中文翻译尚未就绪'),false);
+  assert.match(code,/post\?\.platform === 'media' && !post\.paragraphs\?\.length && itemId\.startsWith\('media:'\)/);
 });
 test('the real media projection preserves the version used to validate Chinese',()=>{
   const code=readFileSync(new URL('../apps/web/public/app.js',import.meta.url),'utf8');

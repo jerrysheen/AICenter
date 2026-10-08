@@ -6,6 +6,8 @@
 
 文章阅读是 **Article Analysis Skill**（产品入口「文章阅读」，Job `ai.article.analyze`）：复用同一套生产执行器（DeepSeek Harness），由 Job 明确注入阅读框架 Instruction 和 Domain Tool 可见范围。它不是第二个 Agent，不进入普通问答 Job，也不改变本文的 Ask Agent 冻结。资料搜索以后做成 Harness 插件。设计见 `docs/search-agent-v1.md`。
 
+问答里的分析方法是本轮指导，不是第二个 Agent，也不是 Harness 文件系统技能插件。用户最多选择一个已登记版本；服务端把受控正文放进当前轮，不改变模型、工具权限、联网开关或预算。未选择时当前激活为空。历史里的技能正文不代表后续轮次继续激活。
+
 2026-10-06 执行准入修复：Worker仍共用一个冻结Harness并串行调用。包装器的等待队列支持取消与固定优先级，交互请求、最新小时、其他封闭任务、旧补编依次准入，不中止当前调用或创建第二个执行器。封闭Domain阶段分别记录排队与执行耗时，执行截止在准入后开始，墙钟总预算与检查点仍保留。页面与HTTP输入不能设置执行权限、优先级或供应商。小时调度与状态规则见 `information-digest-v1.md`。
 
 Harness的终止事件错误保留为`HarnessModelError`，中止事件不交付部分回答；不能仅凭SDK无finalResponse将真实失败丢成泛化空答。该修复位于AICenter包装层，不修改冻结的dsh源码或另建执行循环。
@@ -214,3 +216,14 @@ Jev Prior + Reviewer 打分 / 标签
 AI Center **不是** Agent Framework。通用循环、Session 压缩、Retry、Permission 已经收敛到冻结的 DeepSeek Harness；这就是现在的 `AgentRuntime`。本地自研循环只留给测试注入 fake LLM，或显式 `AI_CENTER_AGENT_RUNTIME=local`。AI Center 继续拥有领域数据、Tools、Skills、JEV、UI 和产品 Job。当前 Skill 是明确调用（例如 Article Analysis：Instruction + Domain Tool Scope + Output Goal），不是 DSH `skill-filesystem` 上的可发现 Skill 目录。资料搜索等专用能力以后通过 Plugin / Provider / Seam 加在这套执行器上，而不是修改或 fork core，也不另建第二套 Runtime。Harness Permission 预设管的是本机编码 Agent 的 sandbox / 审批；公网授权仍由 AI Center 的调用方能力平面决定。
 
 2026-10-07 用户授权Gemini信息整理接入：同一冻结Harness新增封闭article-normalize路由，一次生成标题/Tag/摘要/正文；正文可选字段按版本校验，小时/日报仍只传摘要投影。三Key按项目持久化限流，明确quota冷却后显式Grok fallback，正常报告半点调度；不增加Agent或页面供应商字段。设计和兼容边界见 `gemini-article-normalize.md`。
+
+2026-10-07 用户授权五账号并发文章整理：封闭article-normalize任务可通过同一冻结Harness适配器的最多5个隔离执行上下文并行，不共享Session/Gateway/DSH Home；Ask、文章阅读和报告保留原串行上下文，不新增业务Agent。WorkerJobConcurrency新增informationPreparationLimit（1—5，默认1）。领取文章准备Job前检查持久化预算，关闭窗口不领取、不消耗attempt、不派生短周期重试；每账号租约及分钟/日预算经Repository事务准入，新增migration45，不改历史迁移。预算与兼容开关见gemini-article-normalize.md。
+
+补充：用户重新授权上述并发上线，准入和在途租约的最小单位为账号/已知项目＋模型。同账号不同模型可同时执行，分钟/日/滚动小时预算与冷却独立；总封闭任务并发仍最多5。Host模型选择参数不进入HTTP/Page契约，正式运行状态见progress/2026-10-07-gemini-account-model-pool.md。
+## 小时报封闭任务的 Google 路由
+
+小时报通过 `AI_CENTER_HARNESS_HOURLY_PROVIDER=google` 独立选择冻结 Harness 的 Google 原生协议；默认仍兼容 Elucid Grok。模型由 `AI_CENTER_HARNESS_HOURLY_MODEL` 指定，白名单与轮换池分别为 `AI_CENTER_GEMINI_HOURLY_MODELS`、`AI_CENTER_GEMINI_HOURLY_MODEL_POOL`。不改变 Ask、文章阅读、日报路由。Google 默认输出上限 4096，可配置 4096/6144/8192；关闭 reasoning 和供应商自动重试。
+
+小时报与文章整理通过同一持久化 quota Repository 对账号/模型限流、租约和冷却记账；模型池可独立设置，额度不足走现有延后重试，不回退付费模型。仍由注册 Worker handler 调用 InformationTree Service，使用已保存的信息摘要，不读取原文、不搜索。供应商、模型、协议与执行配置进入 generation fingerprint，防止换模型后错误复用旧合并缓存；版本和引用完整性校验及事务发布规则不变。
+
+指定小时且显式 `mode=resume` 时，可立即重试缓存中 `retryable-model-error` 的失败分组，已完成分组继续复用。自动调度保留原退避；`budget-deferred`（包括配额冷却）及其他失败原因不绕过原 `retryAt`。不增加供应商自动重试或付费回退。

@@ -104,7 +104,7 @@ test('feed translateMany sends packed chunks and hashes the original full text',
   }, { workspaceId: 'local' });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].length, 2);
-  assert.equal(calls[0][1].chars, 5_000);
+  assert.equal(calls[0][1].chars, long.trim().length);
   assert.equal(result.translations.length, 2);
   assert.equal(saved[1].sourceHash.length, 64);
 });

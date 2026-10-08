@@ -100,6 +100,9 @@ export function createMediaIngestionService({
   const MEDIA_PUBLISHERS = [...MEDIA_SOURCES, ...(mediaPort?.publishers || [])];
   const mediaSource = key => MEDIA_PUBLISHERS.find(s => s.sourceKey === key || s.sourceAliases?.includes(key)) || null;
   const mediaSourcesByChannel = channel => MEDIA_SOURCES.filter(s => !channel || s.channel === channel);
+  const parsedHtmlList = entry => entry?.transport === 'html' && (
+    entry.listReadMethod === 'browser' || (entry.listReadMethod === 'http' && Boolean(mediaPort?.supportsHtmlList?.(entry)))
+  );
   const strictAdmission=feedFilter?.config?.mode==='enforce' && feedFilter.config.rule==='all-three-0.60';
   function qualityExcluded(workspaceId) {
     if(!strictAdmission) return feedRepository?.listQualityExcludedExternalIds?.(workspaceId,'media') || [];
@@ -294,7 +297,7 @@ export function createMediaIngestionService({
         results.push({ sourceKey: key, health: 'existing_adapter', status: null, requestCount: 0, items: null });
         continue;
       }
-      const browserList = entry.transport === 'html' && entry.listReadMethod === 'browser';
+      const browserList = parsedHtmlList(entry);
       const fetched = browserList ? await mediaPort.readList(entry) : await fetchAllowlisted({
         url: entry.probeUrl,
         allowedHosts: entry.allowedHosts,
@@ -341,7 +344,7 @@ export function createMediaIngestionService({
     const at = now();
     const current = stateOf(workspaceId, sourceKey, at);
     const existingBody = entry.transport === 'existing_adapter' && (entry.contentAccess === 'body' || entry.sourceKey === 'trendforce');
-    const browserList = entry.transport === 'html' && entry.listReadMethod === 'browser';
+    const browserList = parsedHtmlList(entry);
     if (!existingBody && (entry.deployment !== 'first' || entry.transport !== 'rss' && !browserList)) {
       return { ok: false, health: entry.transport === 'vendor_api' ? 'needs_credentials' : 'not_in_initial_batch' };
     }
@@ -388,7 +391,7 @@ export function createMediaIngestionService({
     if (entry.transport === 'existing_adapter' && !mediaPort?.readExisting) {
       return { sourceKey: entry.sourceKey, health: 'existing_adapter', added: 0, items: null };
     }
-    const browserList = entry.transport === 'html' && entry.listReadMethod === 'browser';
+    const browserList = parsedHtmlList(entry);
     if (entry.transport !== 'rss' && entry.transport !== 'existing_adapter' && !browserList) {
       mediaRepository.saveState({ ...current, health: 'needs_parser', healthDetail: '栏目页还没有验收过的列表解析', updatedAt: at });
       return { sourceKey: entry.sourceKey, health: 'needs_parser', added: 0, items: null };
@@ -462,22 +465,26 @@ export function createMediaIngestionService({
       return (!previous || mediaSource(previous.sourceKey)?.sourceKey === entry.sourceKey) && previous?.contentHash !== indexHash(item);
     }).map(item=>[item.externalId,item])).values()];
     const created = changed.filter((item) => !known.has(item.externalId));
+    const listCap = Number.isInteger(entry.maxListCandidates) ? entry.maxListCandidates : null;
+    const cappedOut = new Set(listCap == null ? [] : created.slice(listCap).map((item) => item.externalId));
+    const createdWithinCap = created.filter((item) => !cappedOut.has(item.externalId));
     const retry = changed.filter((item) => known.get(item.externalId)?.status === 'budget_deferred');
     const reservation = mediaRepository.reserveMetadata(
-      workspaceId, dayKey(at), created.length, at, budget.maxNewMetadataPerDay,
+      workspaceId, dayKey(at), createdWithinCap.length, at, budget.maxNewMetadataPerDay,
     );
     const retryReservation = mediaRepository.reserveMetadata(
       workspaceId, dayKey(at), retry.length, at, budget.maxNewMetadataPerDay, { recordDeferred: false },
     );
     const accepted = new Set([
-      ...created.slice(0, reservation.allowed),
+      ...createdWithinCap.slice(0, reservation.allowed),
       ...retry.slice(0, retryReservation.allowed),
     ].map((item) => item.externalId));
-    const deferredIds = new Set([...created, ...retry]
+    const deferredIds = new Set([...createdWithinCap, ...retry]
       .filter((item) => !accepted.has(item.externalId))
       .map((item) => item.externalId));
     let added = 0;
     for (const item of changed) {
+      if (cappedOut.has(item.externalId)) continue;
       const previous = known.get(item.externalId);
       const deferred = deferredIds.has(item.externalId);
       // Index and body are separate scoring inputs. Preserve both originals in media storage.
@@ -503,8 +510,11 @@ export function createMediaIngestionService({
       }
     }
     added += acceptDeferred(workspaceId, entry, at);
-    for (const item of fresh) mediaRepository.saveDiscovery?.({workspaceId,externalId:item.externalId,sourceKey:entry.sourceKey,
-      entryUrl:entry.probeUrl,listPosition:item.listPosition,firstSeenAt:at,lastSeenAt:at});
+    for (const item of fresh) {
+      if (cappedOut.has(item.externalId)) continue;
+      mediaRepository.saveDiscovery?.({workspaceId,externalId:item.externalId,sourceKey:entry.sourceKey,
+        entryUrl:entry.probeUrl,listPosition:item.listPosition,firstSeenAt:at,lastSeenAt:at});
+    }
     const dated = parsed.items.map((item) => item.publishedAt).filter((value) => Number.isInteger(value));
     const newest = dated.length ? Math.max(...dated) : null;
     const oldest = dated.length ? Math.min(...dated) : null;
@@ -514,10 +524,10 @@ export function createMediaIngestionService({
     mediaRepository.saveState({
       ...current,
       health,
-      healthDetail: reservation.deferred ? `budget_deferred ${reservation.deferred}` : '',
+      healthDetail: [reservation.deferred ? `budget_deferred ${reservation.deferred}` : '', cappedOut.size ? `candidate_limit ${cappedOut.size}` : ''].filter(Boolean).join('; '),
       etag: fetched.etag || '',
       lastModified: fetched.lastModified || '',
-      feedHash,
+      feedHash: cappedOut.size ? '' : feedHash,
       ingestionPolicy: MEDIA_INGESTION_POLICY,
       lastSyncAt: at,
       updatedAt: at,
@@ -562,6 +572,7 @@ export function createMediaIngestionService({
     if (usageReviewed === true) acknowledgeBodyUse(workspaceId, [...new Set(rows.map(r => r.sourceKey))]);
     const at = now();
     const fetched = [];
+    const pausedSources = new Set();
     const stats = { selected: rows.length, attempted: 0, requests: 0, validFull: 0, partial: 0, failed: 0, policySkipped: 0, deferred: 0, skipped: 0 };
     for (const row of rows) {
       const entry = mediaSource(row.sourceKey);
@@ -589,6 +600,7 @@ export function createMediaIngestionService({
       }
       if (!repair && old.fetchStatus === 'failed' && (!old.nextRetryAt || old.nextRetryAt > at)) { result('retry_cooldown','deferred'); continue; }
       if (!repair && old.nextRetryAt > at && old.fetchStatus !== 'ready') { result('retry_cooldown','deferred'); continue; }
+      if (pausedSources.has(entry.sourceKey)) { result('rate_limited','deferred'); continue; }
       const alreadyCounted = previous?.contentLevel === 'full';
       const reservation = alreadyCounted ? { reserved: true } : mediaRepository.reserveBody(workspaceId, dayKey(at), entry.sourceKey, at, {
         globalMax: budget.maxSelectedBodiesPerDay, sourceMax: entry.detailDailyCap, sourceAliases:entry.sourceAliases || [],
@@ -625,7 +637,11 @@ export function createMediaIngestionService({
       const attemptCount = old.attemptCount + 1;
       const failureCount = article.ok ? 0 : (old.failureCount || 0) + 1;
       const transient = ['network','rate_limited','http_error'].includes(article.reason) && (response.status == null || response.status === 429 || response.status >= 500);
-      const nextRetryAt = article.ok ? at + 86_400_000 : transient && failureCount < 5 ? at + Math.min(86_400_000, 900_000 * 2 ** (failureCount-1)) : null;
+      const retryAfterMs = Number(response.retryAfterMs);
+      const nextRetryAt = article.ok ? at + 86_400_000
+        : article.reason === 'rate_limited' && Number.isFinite(retryAfterMs) && retryAfterMs >= 0 ? at + retryAfterMs
+        : transient && failureCount < 5 ? at + Math.min(86_400_000, 900_000 * 2 ** (failureCount-1)) : null;
+      if (article.reason === 'rate_limited') pausedSources.add(entry.sourceKey);
       state = { ...state, fetchStatus: article.ok ? article.contentLevel === 'full' ? 'ready' : 'partial' : 'failed', httpStatus: response.status ?? null,
         extractionReason: article.reason || '', attemptCount, failureCount, lastAttemptAt: at, nextRetryAt, responseBytes: response.bytes || 0,
         extractedBytes: Buffer.byteLength(article.text || ''), paragraphCount: article.paragraphs?.length || 0, extractionMethod: article.extractionMethod || '', extractorVersion,
@@ -772,12 +788,17 @@ export function createMediaIngestionService({
     while ([...queues.values()].some(queue => queue.length)) {
       for (const queue of queues.values()) if (queue.length) fair.push(queue.shift());
     }
+    const roundCount = new Map();
     for (const row of fair) {
       if (selected.length >= limit) break;
+      const source = mediaSource(row.sourceKey);
+      const cap = source?.maxNewBodiesPerRound;
+      if (Number.isInteger(cap) && (roundCount.get(source.sourceKey) || 0) >= cap) continue;
       const entry=rowsById.get(row.externalId);
-      const url=normalizeMediaUrl(entry.canonicalUrl,mediaSource(entry.sourceKey)?.trackingParams || []);
+      const url=normalizeMediaUrl(entry.canonicalUrl,source?.trackingParams || []);
       if(selectedUrls.has(url))continue;
       selectedUrls.add(url);
+      if (Number.isInteger(cap)) roundCount.set(source.sourceKey, (roundCount.get(source.sourceKey) || 0) + 1);
       selected.push(row);
     }
     return selected;

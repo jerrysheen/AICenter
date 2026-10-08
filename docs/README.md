@@ -1,5 +1,13 @@
 # AI Center 文档索引
 
+- `progress/2026-10-07-gemma-five-accounts.md`：五账号原文翻译、跨模型每账号 10 秒节流、Worker 五并发及本地无日上限。
+
+- `progress/2026-10-07-gemini-hourly.md`：小时报独立 Google Harness 路由、共享配额及 19—20 点固定材料验收。
+
+- `progress/2026-10-07-gemma-original-translation.md`：912项检查、安全重载和真实原文翻译落库验收。
+
+- `gemma-original-translation.md`：Gemma 31B/26B 专用原文翻译、Worker 排队、排版落库和无其他模型回退规则。
+
 - `feed-interaction-v1.md`：用户授权的 X 阅读页单条点赞试用；BrowserRuntime 精确定位、Worker 固定任务及重开原帖核验。
 
 阅读顺序：
@@ -16,6 +24,24 @@
 `plan/` 与 `progress/` 保留历史，不重新驱动当前开发。旧计划与已执行迁移记录不要批量删除。
 
 ## 当前
+
+- `progress/2026-10-08-daily-editorial-v1.md`：日报研究报告隔离稿。生产 `generateDaily()` 仍是小时模块浓缩；新稿未写入生产库，也未改接 Elucid。
+
+- `progress/2026-10-07-analysis-skill-selection.md`：问答 `@` 选择本轮分析方法，第一份技能为美股涨跌原因探索；同一 Ask 执行器，不新增 Agent。
+
+- `progress/2026-10-07-zaobao-world.md`：联合早报国际栏目接入现有宏观媒体链路，默认关闭；隔离库实采列表与 3 篇正文并复核去重。
+
+- `progress/2026-10-07-hourly-ingestion-and-social-loading.md`：社媒首屏先显示已收录内容，小时树按首次入库归窗、不可变正文复用及16点/17点运行核验。
+
+- `progress/2026-10-07-tree-ref-resume.md`：修复小时ref从站内原文或后台返回后版本标记失效、卡在读取中；正式浏览器连续阅读回归。
+
+- `progress/2026-10-07-brief-navigation-performance.md`：手机简报/历史/旧版存档入口统一、目录内存缓存、不可变刊期批量读取与传输优化验收。
+
+- `progress/2026-10-07-feed-normalized-reading.md`：主页社交Feed复用已有中文整理，修复已完成整理仍显示英文。
+
+- `progress/2026-10-07-dual-main-model-and-translation-test.md`：正式3.1/3.5文章模型池、Gemma纯翻译对比与官方调用规则诊断。
+
+- `progress/2026-10-07-gemini-account-model-pool.md`：五账号并发和同账号不同模型独立限流、Host模型切换接口及正式重载核验。
 
 - `progress/2026-10-07-local-commit.md`：本轮信息树、Gemini整理、用量账本和已完成互动能力的提交范围、882项检查及本机运行产物边界。
 

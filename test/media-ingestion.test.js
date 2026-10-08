@@ -86,7 +86,7 @@ function response({ status = 200, body = '', headers = {} }) {
 test('media catalog stays disabled and outside social auto refresh', () => {
   assert.equal(MEDIA_SOURCES.filter(source => source.transport === 'existing_adapter' && source.channel === 'macro').length, 6);
   assert.equal(MEDIA_SOURCES.every((entry) => entry.enabled === false), true);
-  assert.deepEqual(initialBatchSourceKeys(), ['nextplatform', 'dcd', 'techmeme', 'thelec', 'decoder', 'ft', 'bbc', 'guardian', 'bbcworld', 'guardianworld', 'ftav', 'yahooeconomy', 'bbctech', 'bbcscience', 'guardianai', 'guardianenergy', 'guardianmanufacturing', 'guardiantrade', 'eia', 'utilitydive']);
+  assert.deepEqual(initialBatchSourceKeys(), ['nextplatform', 'dcd', 'techmeme', 'thelec', 'decoder', 'ft', 'bbc', 'guardian', 'bbcworld', 'guardianworld', 'ftav', 'yahooeconomy', 'bbctech', 'bbcscience', 'guardianai', 'guardianenergy', 'guardianmanufacturing', 'guardiantrade', 'eia', 'utilitydive', 'zaobaoworld']);
   assert.equal(defaultAutoRefreshProjections().some((item) => item.providerId === 'media'), false);
   assert.deepEqual(parseMediaFeedQuery({ channel: 'macro', refresh: '1' }), {
     platform: 'media', feed: 'macro', channel: 'macro', refresh: true,

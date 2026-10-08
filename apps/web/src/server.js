@@ -13,7 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import QRCode from 'qrcode';
 import { parseBilibiliFeedQuery, parseMediaFeedQuery, parseTrendForceFeedQuery, parseXFeedQuery, parseXueqiuFeedQuery, ValidationError } from '../../../packages/contracts/src/index.js';
-import { createConfiguredBrowserRuntime, createDeepSeekSearchProvider, createLauncherRestartPort, createLocalKnowledgeFiles, createPersonalAssetService, createTranslateService, createTypeSafeSystemOneClient } from '../../../packages/connectors/src/index.js';
+import { createAnalysisSkillCatalog, createConfiguredBrowserRuntime, createDeepSeekSearchProvider, createLauncherRestartPort, createLocalKnowledgeFiles, createPersonalAssetService, createTranslateService, createTypeSafeSystemOneClient } from '../../../packages/connectors/src/index.js';
 import { createAttachmentStore, createStore } from '../../../packages/database/src/index.js';
 import { createDomainServices, createFeedFilterFromEnv, createMediaIngestionService, resolveDailyConfig, resolveLoginCredential } from '../../../packages/domain/src/index.js';
 import {enqueueTreePreparation} from '../../../packages/runtime/src/information-tree-module.js';
@@ -185,7 +185,7 @@ export function createAiCenterServer(options = {}) {
     store,
     sourcePort,
     personalAssetPort,
-    translationPort: options.translateService || createTranslateService({ usageObserver: value => store.repositories?.modelUsage?.save({ ...value, stage: 'translation', workspaceId: 'local' }) }),
+    translationPort: options.translateService || createTranslateService({ env, quotaRepository: store.repositories.modelQuota, usageObserver: value => store.repositories?.modelUsage?.save({ ...value, stage: 'translation', workspaceId: 'local' }) }),
     feedFilter,
     mediaService,
     hardwarePriceService,
@@ -221,6 +221,9 @@ export function createAiCenterServer(options = {}) {
       readBoard: (input, readOptions) => readStaticSignalBoard(sourcePort, input, readOptions),
     },
     quantRoot: options.quantRoot || path.join(dataDirectory, 'quant'),
+    analysisSkillCatalog: options.analysisSkillCatalog !== undefined
+      ? options.analysisSkillCatalog
+      : createAnalysisSkillCatalog({ rootDirectory: path.join(repositoryRoot, 'config/analysis-skills') }),
   });
   const feedQueryParsers = options.feedQueryParsers || new Map([
     ['x', parseXFeedQuery],

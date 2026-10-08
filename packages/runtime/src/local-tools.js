@@ -226,7 +226,7 @@ export function createLocalToolRegistry({
 
   registry.register({
     id: 'market.overview.get', effect: 'read',
-    description: '读取当前市场概览、涨跌和宽度。北京时间工作日 05:00–17:00 是 A 股与港股观察，17:00 后至次日 05:00 及周末是美股观察。不要顺手再调 market.global.get。',
+    description: '读取当前市场概览、涨跌和宽度。北京时间工作日 05:00–17:00 是 A 股与港股观察，指数行另含韩国综指与台湾加权；17:00 后至次日 05:00 及周末是美股观察。不要顺手再调 market.global.get。',
     inputSchema: EmptyAgentToolInputSchema,
     async execute() {
       if (!sourcePort) {

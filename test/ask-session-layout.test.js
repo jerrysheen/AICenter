@@ -16,7 +16,7 @@ test('ask session keeps records, thread and composer in one shell', () => {
 
 test('ask session uses a viewport column; composer stays in-flow on desktop', () => {
   assert.match(css, /body\[data-view="ask"\]\[data-ask-layer="session"\] \.ask-thread \{[\s\S]*overflow-y:\s*auto/);
-  assert.match(css, /body\[data-view="ask"\]\[data-ask-layer="session"\] \.ask-composer \{[\s\S]*position:\s*static/);
+  assert.match(css, /body\[data-view="ask"\]\[data-ask-layer="session"\] \.ask-composer \{[\s\S]*position:\s*relative/);
   assert.match(css, /@media \(max-width:\s*699px\) \{[\s\S]*\.ask-composer \{[\s\S]*position:\s*fixed/);
   assert.doesNotMatch(css, /\.ask-composer,\s*\.ask-shell \{ max-width: 720px; \}/);
   assert.doesNotMatch(css, /body\[data-view="ask"\]\[data-ask-layer="session"\] \.ask-composer \.compose-box,[\s\S]*max-width:\s*720px/);

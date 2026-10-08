@@ -393,7 +393,7 @@ export function parseDispatchWorkPackageJobInput(value) {
 
 export function parseWorkerJobConcurrency(value) {
   const input = value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {};
-  for (const key of ['defaultLimit', 'workPackageDispatchLimit', 'quantLabLimit']) {
+  for (const key of ['defaultLimit', 'workPackageDispatchLimit', 'quantLabLimit','informationPreparationLimit','translationLimit']) {
     if (input[key] === undefined || input[key] === null || input[key] === '') {
       delete input[key];
     } else {
@@ -551,6 +551,7 @@ export function parsePatchUserItemStateInput(value) {
 }
 
 export * from './information-tree.js';
+export * from './daily-editorial.js';
 
 export function parseHideFlag(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {

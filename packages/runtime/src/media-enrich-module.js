@@ -2,6 +2,7 @@ import { MEDIA_ENRICH_JOB_TYPE } from '../../connectors/src/media/index.js';
 import { mediaResourceId } from '../../domain/src/media-ingestion-service.js';
 import { mediaTranslationBatches } from '../../domain/src/media-translation.js';
 import {enqueueTreePreparation} from './information-tree-module.js';
+import { enqueueOriginalTranslations } from './feed-translation-module.js';
 
 export function createMediaEnrichJobHandlers({ mediaService, feedService, taggingService, briefPort, articleNormalizePort=null, treeEnabled=false }) {
   if (!mediaService?.fetchBodies || !mediaService?.listBodyCandidates || !mediaService?.listEnrichmentItems) {
@@ -33,7 +34,12 @@ export function createMediaEnrichJobHandlers({ mediaService, feedService, taggin
       const explicit = input.externalIds?.length ? new Set(input.externalIds) : null;
       if(treeEnabled && !articleNormalizePort)enqueueTreePreparation(context?.store,workspaceId,[...new Set([...candidates,...bodies.fetched.map(row=>row.externalId)])].map(id=>`media:${id}`));
       const items = mediaService.listEnrichmentItems(workspaceId, 120, candidates).filter(item => !explicit || explicit.has(item.externalId));
-      if(articleNormalizePort)return articleNormalizePort.prepareInformation({workspaceId,sourceIds:items.map(item=>`media:${item.externalId}`)});
+      if(articleNormalizePort) {
+        const units = context?.store?.createJob && feedService?.localizeTexts
+          ? mediaService.listArticleTranslationUnits?.(workspaceId, items.map(item => item.externalId)) || [] : [];
+        await enqueueOriginalTranslations({ store: context?.store, feedService, workspaceId, units });
+        return articleNormalizePort.prepareInformation({workspaceId,sourceIds:items.map(item=>`media:${item.externalId}`)});
+      }
       const briefIds = explicit ? [...explicit] : [...new Set([...candidates, ...items.map(i => i.externalId)])];
       const units = items.filter(item => item.contentLevel !== 'full').map((item) => ({
         id: item.resourceId,

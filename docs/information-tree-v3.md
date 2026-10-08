@@ -30,6 +30,14 @@
 
 ## 调度与读取
 
+### 简报入口和手机读取（2026-10-07）
+
+启用tree-v3时，`#report`、`#report/history`、`#report/YYYY-MM-DD`统一使用树阅读器。当前页默认最新可读刊期，历史页提供日期/刊期选择及返回最新入口；只有明确的`#report/archive`进入停止更新的旧版存档，存档保留原稿和引用并提供返回历史简报入口。不再将「历史简报」隐式等同于旧版界面。
+
+`GET /api/v1/reports/tree`保留原完整响应；可选`view=reading`只返回信息节点身份/时间/校验版本及现有刊期，省去信息层正文与标题。`GET /api/v1/reports/tree/edition?id=...`通过同一Report Service/Repository读取指定不可变刊期及其全部根模块，沿用workspace鉴权、未知版本404；不按当前head替换请求版本。两个接口协商gzip并保持`no-store`，不让CDN缓存个人数据。
+
+客户端按设备会话复用30秒目录缓存，合并同一在途目录请求；不可变节点最多400个、刊期批量最多8份，仅保存在内存，身份切换/退出清除。主阅读不再逐个请求根模块，标签后台加载，不阻塞正文；首次挂载不立即重复检查七日目录。手动检查绕过目录时效，版本变化仍提示接受更新并保留所读刊期。滚动升级暂未加载批量接口时可用原节点接口读取相同不可变ID。该缓存只加速显示，不改变生产模型、任务或发布指针。
+
 新入队的信息准备以单份材料为领取单位，保留同类型单并发，避免旧材料与最新材料混在一个十篇批次内长时间占用准备槽。既有批次输入与历史任务不改写。轻量优先级随窗口推进降回0，保留人工更高优先级；正文版本与模型缓存规则保持。
 
 旧队列显式维护入口`node scripts/split-tree-preparation.mjs --apply`仅处理最多100个未领取、attempt=0的queued信息准备批次。Repository在同一事务建立逐篇子Job并将原Job标记为带子ID的superseded/cancelled，原输入、attempt和历史仍保留；复制原availableAt、priority、maxAttempts与force/catchup语义，同事务写outbox。重复执行无新增；running、单篇、其他任务类型/workspace或已尝试任务均跳过。任一输入不合法则整次回滚，不改材料、信息稿缓存或刊期。
@@ -85,3 +93,20 @@ UI脚本需已有 `UIUX_RUNTIME_PACKAGE` 与 `UIUX_BROWSER` 指向Host的Playwri
 本轮用户覆盖信息层只保留短稿/另行翻译与打标的要求。实验使用一次 title/tagId/summary/body 输出，summary 唯一适配为 text，body 同节点保存且保留自然段；旧短稿、ref及小时日报短文结构继续兼容。只在当前有效代码的隔离副本注入 articleStrategy/articleNormalizePort；生产默认及已部署实例不改变。执行与预算、兼容和复跑边界见 `article-normalize-pilot.md`。未将实验稿导入生产。
 
 2026-10-07 用户授权Gemini信息整理接入：同一冻结Harness新增封闭article-normalize路由，一次生成标题/Tag/摘要/正文；正文可选字段按版本校验，小时/日报仍只传摘要投影。三Key按项目持久化限流，明确quota冷却后显式Grok fallback，正常报告半点调度；不增加Agent或页面供应商字段。设计和兼容边界见 `gemini-article-normalize.md`。
+
+2026-10-07 ref恢复修复：树阅读器的stop仅暂停检查定时器，不递增页面epoch；同一DOM上的ref处理器在站内原文返回或visibility恢复后继续有效。重新挂载、reset及实际render继续递增epoch，过期页面响应仍不能改写新视图。暂停期间允许不可变节点请求完成到保留的DOM，滚动位置恢复仅在当前阅读器活动时执行。回归见`progress/2026-10-07-tree-ref-resume.md`。
+# 小时收录口径修正（2026-10-07）
+
+正式 tree-v3 的小时候选和信息头统一按首次入库时间归窗：社交内容使用 ContentItem.createdAt，媒体使用索引 createdAt。不能用 publishedAt、重复发现时更新的 observedAt 或正文整理完成时间决定小时。publishedAt 继续保留为原文事实和模型阅读上下文。旧 legacy 日报的发布时间窗口保持兼容，不随此修复改变。
+
+已完成信息稿调整归窗时复用正文，以新不可变节点保存 window/eventAt；正常小时任务可根据候选元数据调整匹配当前原文版本的信息头，不重新读取原文或调用单篇模型。旧节点、刊期及已发送引用保留，既有发布覆盖保护不放宽，因此旧刊期不会因本轮重分窗被删减。
+
+当前 Gemini 整理模式仍在每小时 :30 触发上一完整小时，日报仍为 08:30；整点结束不等于整点已有成稿。单篇准备、报告队列和模型耗时还会影响实际发布时刻。
+
+## 日报研究报告 v1（尚未替换生产生成）
+
+浓缩树的 `generateDaily()` 仍然只读小时模块并调用 `daily.md`。那份 Skill 禁止写影响和共同主题，适合树形引用，不适合每日研究文章。新稿走旁边的 `daily-editorial-v1`：展开小时模块下的信息节点，合并同一事件，按金融与市场、科技与产业、时事与政策写成导读和主题段落，其余事件进入其他动态。事实仍只存在事件上，文章只引用 eventId。
+
+存储是迁移 46 的 `information_tree_editorials`，不改写小时刊期或旧 TreeEdition。失败成稿不替换已发布研究稿。`report.daily.generate` 尚未改道，因此不会自动调用 Elucid，也不会覆盖生产日报。Skill 文本在 `packages/runtime/src/information-tree/skills/daily-editorial.md`，供后续接入；本轮样稿由 Cursor 按该要求写成，用量里的模型名是 `cursor-grok-4.7`，Token 和费用记为未知。
+
+窗口有未完成小时或待补材料时，状态只能是 partial。正文里的多位数字必须能在所引事件的原文事实里找到，计划、至多、最高、洽谈这类限定不能在使用该数字时丢掉。阅读页在接口返回研究稿时改成导读加方向文章；没有研究稿时，日报仍是原来的卡片。小时报入口不变。

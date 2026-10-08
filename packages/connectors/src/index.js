@@ -92,6 +92,7 @@ export { createElucidGrokAgentClient } from './elucid-grok-agent.js';
 export { createTypeSafeSystemOneClient, resolveTypeSafeApiKey } from './typesafe-system-one.js';
 export { modelIdForProfile } from './agent-model-profile.js';
 export { createLocalKnowledgeFiles, parseKnowledgeFrontMatter } from './local-knowledge-files.js';
+export { createAnalysisSkillCatalog } from './analysis-skill-catalog.js';
 // LEGACY / LOCAL-RUNTIME ONLY: SearXNG and DeepSeek Search are not production Ask web infra.
 export {
   createSearxngSearchProvider,

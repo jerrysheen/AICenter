@@ -2,6 +2,7 @@ import {z} from 'zod';
 
 export const ARTICLE_VALIDATOR_VERSION='article-normalize-v1';
 export const ArticleOutputSchema=z.object({title:z.string().trim().min(1).max(160),tagId:z.string().min(1).max(128).nullable(),summary:z.string().trim().min(1).max(2000),body:z.string().trim().min(1).max(40000)}).strict();
+export const FeedNormalizedArticleSchema=ArticleOutputSchema.omit({tagId:true}).extend({nodeId:z.string().min(1).max(2048),generatedAt:z.number().int()}).strict();
 export const ArticleResponseSchema=z.union([z.object({status:z.literal('needs_content')}).strict(),ArticleOutputSchema]);
 export function normalizeArticleResponse(raw,tags) {
   if(raw?.status!==undefined)return ArticleResponseSchema.parse(raw);
@@ -39,6 +40,7 @@ export const TreeEditionSchema=z.object({id,layer:z.enum(['hourly','daily']),win
 export const PrepareTreeInformationInputSchema=z.object({workspaceId:z.string().default('local'),sourceIds:z.array(id).min(1).max(100),force:z.boolean().default(false),catchup:z.boolean().default(false)}).strict();
 export const TreeWindowQuerySchema=z.object({startAt:z.coerce.number().int().nonnegative(),endAt:z.coerce.number().int().positive()}).refine(v=>v.endAt>v.startAt && v.endAt-v.startAt<=7*86400000,'树查询窗口最多七日');
 export const TreeNodeQuerySchema=z.object({id}).strict();
+export const TreeManifestQuerySchema=TreeWindowQuerySchema.safeExtend({view:z.enum(['reading']).optional()});
 
 // Only whole direct children participate in coverage; never repair omissions by appending source text.
 export function validateTreeModules(value,inputs,tags) {

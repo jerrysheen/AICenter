@@ -4,8 +4,17 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createAiCenterServer } from '../apps/web/src/server.js';
+import {createFeedTranslationJobHandlers} from '../packages/runtime/src/feed-translation-module.js';
+import {createJobRunner} from '../packages/runtime/src/job-runner.js';
+async function finishTranslation(app, address, submitted) {
+  const queued=await fetch(`${address.localUrl}/api/v1/translate/jobs/${submitted.jobId}`).then(r=>r.json());
+  assert.equal(queued.status,'queued');
+  await createJobRunner({store:app.store,handlers:createFeedTranslationJobHandlers({feedService:app.services.feed})}).runOnce();
+  const done=await fetch(`${address.localUrl}/api/v1/translate/jobs/${submitted.jobId}`).then(r=>r.json());
+  assert.equal(done.status,'completed');return done.result;
+}
 
-test('translate API returns injected engine payload', async () => {
+test('translate API queues work and worker returns persisted payload', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-translate-'));
   const app = createAiCenterServer({
     host: '127.0.0.1',
@@ -30,8 +39,9 @@ test('translate API returns injected engine payload', async () => {
       body: JSON.stringify({ text: 'hello' }),
     }).then((response) => response.json());
     assert.equal(payload.ok, true);
-    assert.equal(payload.translation.engine, 'elucid-grok');
-    assert.equal(payload.translation.translatedText, '你好');
+    const result = await finishTranslation(app, address, payload);
+    assert.equal(result.translations[0].engine, 'elucid-grok');
+    assert.equal(result.translations[0].translatedText, '你好');
   } finally {
     await app.close();
     rmSync(directory, { recursive: true, force: true });
@@ -76,8 +86,9 @@ test('translate batch API returns injected item translations', async () => {
       }),
     }).then((response) => response.json());
     assert.equal(payload.ok, true);
-    assert.equal(payload.translations.length, 2);
-    assert.equal(payload.translations[0].translatedText, '译:hello');
+    const result = await finishTranslation(app, address, payload);
+    assert.equal(result.translations.length, 2);
+    assert.equal(result.translations[0].translatedText, '译:hello');
   } finally {
     await app.close();
     rmSync(directory, { recursive: true, force: true });
