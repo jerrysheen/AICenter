@@ -32,13 +32,15 @@ try{
     await page.clock.install();await page.goto(`http://127.0.0.1:${server.address().port}/`);await page.waitForSelector('.tree-card');
     assert.equal(await page.locator('#root').getAttribute('data-edition-id'),'edition-1');
     assert.equal(await page.getByRole('tab',{name:'科技与产业'}).getAttribute('aria-selected'),'true');
+    await page.getByRole('button',{name:'Tag',exact:true}).click();
     await page.getByRole('combobox',{name:'主Tag筛选'}).selectOption('communications');await page.waitForSelector('.tree-card');
     await page.locator('.tree-ref').first().evaluate(n=>{n.open=true;});await page.waitForSelector('.tree-children .tree-card');
     await page.evaluate(()=>window.scrollTo(0,600));const before=await page.evaluate(()=>scrollY);
     revision=2;await page.clock.runFor(30001);await page.getByRole('button',{name:'接受更新'}).waitFor();
     assert.equal(await page.locator('#root').getAttribute('data-edition-id'),'edition-1');assert.equal(await page.evaluate(()=>scrollY),before);
     await page.getByRole('button',{name:'接受更新'}).evaluate(n=>n.click());await page.waitForFunction(()=>document.querySelector('#root').dataset.editionId==='edition-2' && !document.querySelector('.tree-list').textContent.includes('读取中…'));
-    assert.equal(await page.getByRole('combobox',{name:'选择树刊期'}).inputValue(),String(at));assert.equal(await page.getByRole('combobox',{name:'主Tag筛选'}).inputValue(),'communications');
+    await page.getByRole('button',{name:'往期',exact:true}).click();
+    assert.equal(await page.getByRole('combobox',{name:'选择往期'}).inputValue(),String(at));assert.equal(await page.getByRole('combobox',{name:'主Tag筛选'}).inputValue(),'communications');
     assert.equal(await page.evaluate(()=>scrollY),before);assert.equal(await page.locator('.tree-ref').first().evaluate(n=>n.open),true);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false);assert.deepEqual(errors,[]);
     await page.screenshot({path:`${directory}/${width}.png`,fullPage:true});checks.push({width,browserTimezone:'UTC',instanceTimezone:'Asia/Shanghai',oldVersion:'edition-1',acceptedVersion:'edition-2',window:at,filter:'communications',scrollBefore:before,scrollAfter:await page.evaluate(()=>scrollY),errors});await context.close();

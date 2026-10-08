@@ -18,8 +18,8 @@ try {
   await page.waitForFunction(()=>document.querySelector('.tree-card'));
   for(const width of [320,375,390,502,699,700,768,1024,1199,1200,1366,1440,1920]) {
     await page.setViewportSize({width,height:900});
-    for(const mode of (process.argv.includes('--hours-only') ? ['信息','小时'] : ['信息','小时','日报'])) {
-      await page.getByRole('button',{name:mode,exact:true}).evaluate(n=>n.click());
+    for(const mode of (process.argv.includes('--hours-only') ? ['小时报'] : ['日报','小时报'])) {
+      await page.getByRole('tab',{name:mode,exact:true}).evaluate(n=>n.click());
       // Direction is a display filter; choose a nonempty direction before testing ref traversal.
       for(const direction of ['金融与市场','时事与政策','科技与产业','其他']) {
         if(await page.locator('.tree-card').count())break;
@@ -29,8 +29,7 @@ try {
       await page.waitForFunction(()=>document.querySelector('.tree-card') && !document.querySelector('.tree-list')?.textContent.includes('读取中…'));
       const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1);assert.equal(overflow,false,`${width}/${mode} overflow`);
       const blanks=await page.locator('.tree-text').evaluateAll(nodes=>nodes.some(n=>!n.textContent.trim()));assert.equal(blanks,false);
-      if(mode==='信息')assert.equal(await page.locator('.tree-ref').count(),0);
-      if(mode!=='信息') {
+      if(mode!=='本期材料') {
         assert.equal(await page.locator('.tree-card').evaluateAll(nodes=>nodes.filter(n=>n.dataset.layer!=='information').some(n=>[...n.children].filter(c=>c.matches('.tree-ref')).length!==1)),false);
         await page.locator('.tree-ref').first().evaluate(n=>{n.open=true;});
         await page.waitForFunction(()=>document.querySelector('.tree-children .tree-card'));
@@ -44,8 +43,9 @@ try {
       checks.push({width,mode,overflow,blank:false});
     }
   }
-  await page.getByRole('button',{name:'信息',exact:true}).evaluate(n=>n.click());
-  await page.waitForFunction(()=>document.querySelector('.tree-card') && !document.querySelector('.tree-ref'));
+  await page.getByRole('button',{name:'本期材料',exact:true}).evaluate(n=>n.click());
+  await page.waitForFunction(()=>document.querySelector('.tree-card') || document.querySelector('.tree-list')?.textContent.includes('本期没有'));
+  await page.getByRole('button',{name:'Tag',exact:true}).click();
   const tag=page.getByRole('combobox',{name:'主Tag筛选'}),options=await tag.locator('option').count();
   if(options>1) {
     await tag.evaluate(n=>{n.selectedIndex=1;n.dispatchEvent(new Event('change'));});

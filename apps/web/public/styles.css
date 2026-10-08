@@ -5020,3 +5020,22 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
 .tree-update[hidden] { display:none; }
 .tree-update button { min-height:44px;flex-shrink:0; }
 .tree-page { overflow-anchor:none; }
+
+.tree-primary { display:flex; gap:28px; border-bottom:1px solid var(--comp-tertiary); }
+.tree-primary button { min-height:52px; padding:0; border:0; background:transparent; font:inherit; font-size:20px; color:var(--font-tertiary); }
+.tree-primary button[aria-pressed="true"] { color:var(--font-primary); font-weight:700; box-shadow:inset 0 -2px var(--font-primary); }
+.tree-issue { padding-top:18px; }
+.tree-issue-heading { display:flex; align-items:baseline; justify-content:space-between; gap:16px; }
+.tree-issue-title { margin:0; font-size:28px; line-height:1.3; }
+.tree-issue-heading > button, .tree-tools button, .tree-status-row button, .tree-back-issues button { min-height:44px; padding:8px 0; border:0; background:transparent; font:inherit; font-size:14px; color:var(--font-tertiary); cursor:pointer; }
+.tree-coverage { margin:6px 0 0; font-size:14px; color:var(--font-tertiary); }
+.tree-status-row { display:flex; align-items:center; gap:16px; }
+.tree-status-detail { margin:0 0 8px; font-size:13px; line-height:1.6; color:var(--font-tertiary); }
+.tree-status-detail[hidden], .tree-back-issues[hidden], .tree-tag-panel[hidden] { display:none; }
+.tree-back-issues, .tree-tag-panel { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:8px; }
+.tree-back-issues select, .tree-back-issues input, .tree-tag-panel select { font:inherit; min-height:44px; border:1px solid var(--comp-tertiary); border-radius:6px; background:var(--background-primary); }
+.tree-tools { display:flex; gap:16px; }
+.tree-page .brief-direction-tabs { gap:16px; margin-top:14px; border-bottom:0; }
+.tree-page .brief-direction-tab { min-height:36px; font-size:14px; font-weight:500; }
+.tree-page .brief-direction-tab[aria-selected="true"] { box-shadow:none; }
+.tree-tools button[aria-pressed="true"], .tree-issue-heading > button[aria-expanded="true"] { color:var(--font-primary); font-weight:700; }
