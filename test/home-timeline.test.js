@@ -212,6 +212,8 @@ test('home requests are the overview set and not the old feed fan-out', () => {
   assert.match(css, /\.home-title \{[^}]*white-space: normal/s);
   assert.match(css, /\.tree-primary \{[^}]*position:sticky/s);
   assert.doesNotMatch(css, /\.tree-list \.reading-item h3 \{[^}]*ellipsis/s);
+  assert.match(css, /\.tree-page \.post-card\.is-compact h3,[\s\S]*-webkit-line-clamp: unset/);
+  assert.match(css, /\.home-brief-list li \{[\s\S]*?-webkit-line-clamp: unset/);
   const html = readFileSync(new URL('../apps/web/public/index.html', import.meta.url), 'utf8');
   assert.match(html, /id="home-timeline"/);
   assert.match(html, /id="global-events"/);

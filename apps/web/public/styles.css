@@ -3422,6 +3422,7 @@ dialog p { margin: 9px 0 0; white-space: pre-wrap; color: var(--font-secondary);
   white-space: normal;
   overflow: visible;
   text-overflow: unset;
+  -webkit-line-clamp: unset;
   overflow-wrap: anywhere;
 }
 button.home-title {
@@ -3446,7 +3447,17 @@ button.home-title {
 }
 .home-reading-retry { color: var(--font-tertiary); }
 .home-brief-list { margin: 6px 0 0; padding: 0; list-style: none; }
-.home-brief-list li { margin: 0; color: var(--font-secondary); font-size: 15px; line-height: 1.6; }
+.home-brief-list li {
+  margin: 0;
+  color: var(--font-secondary);
+  font-size: 15px;
+  line-height: 1.6;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: unset;
+  -webkit-line-clamp: unset;
+  overflow-wrap: anywhere;
+}
 .home-expand { display: grid; gap: 2px; margin-top: 2px; }
 .home-expand .text-button, .home-meta.text-button, .home-official.text-button {
   min-height: 28px;
@@ -5234,7 +5245,21 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
 .tree-list .reading-item .feed-content { padding: 0; }
 .tree-list .reading-line { display: flex; align-items: flex-start; min-width: 0; gap: 8px; }
 .tree-list .reading-stale { flex: none; padding: 0 4px; border: 1px solid var(--font-tertiary); border-radius: 4px; color: var(--font-tertiary); font-size: 12px; font-weight: 500; white-space: nowrap; }
-.tree-list .reading-item h3 { display: block; flex: 1; min-width: 0; margin: 0; font-size: 15px; font-weight: 600; line-height: 1.6; white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+.tree-list .reading-item h3 { display: block; flex: 1; min-width: 0; margin: 0; font-size: 15px; font-weight: 600; line-height: 1.6; }
+.tree-list .reading-item h3,
+.tree-page .post-card.is-compact h3,
+.tree-page .daily-direction-card h3,
+.tree-page .daily-research > h3,
+.brief-page .brief-headline,
+.brief-page .brief-article-title {
+  display: block;
+  overflow: visible;
+  white-space: normal;
+  text-overflow: unset;
+  -webkit-line-clamp: unset;
+  -webkit-box-orient: unset;
+  overflow-wrap: anywhere;
+}
 .reading-hour-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin: 4px 0 12px; }
 .reading-hour-title { margin: 0; font-size: 16px; font-weight: 700; line-height: 1.4; }
 .reading-hour-meta { margin: 0; color: var(--font-tertiary); font-size: 12px; }
