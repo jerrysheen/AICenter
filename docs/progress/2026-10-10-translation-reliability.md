@@ -14,4 +14,4 @@
 
 ## 验证
 
-`npm run syntax` 通过。`npm test` 1001 项里 990 通过、10 失败、1 跳过。失败项与 main 基线相同：analysis-skill 7、information-tree-next 1、model-usage 1、work-package CLI 1。
+`npm run syntax` 通过。`npm test` 1003 项里 992 通过、10 失败、1 跳过。失败项与 main 基线相同：analysis-skill 7、information-tree-next 1、model-usage 1、work-package CLI 1。
