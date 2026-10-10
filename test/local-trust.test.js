@@ -24,19 +24,20 @@ function freePort() {
   });
 }
 
-function rawGet(port, headers) {
+function rawRequest(port, { method = 'GET', path: requestPath = '/api/v1/session', headers = {}, body = '' } = {}) {
   return new Promise((resolve, reject) => {
     const req = httpRequest({
       hostname: '127.0.0.1',
       port,
-      path: '/api/v1/session',
-      method: 'GET',
+      path: requestPath,
+      method,
       headers,
     }, (response) => {
       response.resume();
-      response.on('end', () => resolve(response.statusCode));
+      response.on('end', () => resolve({ status: response.statusCode }));
     });
     req.once('error', reject);
+    if (body) req.write(body);
     req.end();
   });
 }
@@ -92,8 +93,8 @@ test('loopback trust fails closed for proxy headers, rebinding, cross-site write
     assert.equal(cfRay.status, 401);
     const forwarded = await fetch(`${base}/api/v1/session`, { headers: { 'x-forwarded-for': '203.0.113.7' } });
     assert.equal(forwarded.status, 401);
-    const rebound = await rawGet(port, { Host: `evil.example:${port}` });
-    assert.equal(rebound, 401);
+    const rebound = await rawRequest(port, { headers: { Host: `evil.example:${port}` } });
+    assert.equal(rebound.status, 401);
 
     const crossSite = await fetch(`${base}/api/v1/runtime/healthcheck`, {
       method: 'POST',
@@ -106,12 +107,23 @@ test('loopback trust fails closed for proxy headers, rebinding, cross-site write
     });
     assert.equal(crossSite.status, 401);
 
-    const plain = await fetch(`${base}/api/v1/posts`, {
+    const scriptPlain = await fetch(`${base}/api/v1/posts`, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
       body: '{"title":"x","body":"y"}',
     });
-    assert.equal(plain.status, 415);
+    assert.equal(scriptPlain.status, 201);
+    for (const headers of [
+      { 'Content-Type': 'text/plain', Origin: 'https://evil.example' },
+      { 'Content-Type': 'text/plain', 'Sec-Fetch-Site': 'cross-site' },
+    ]) {
+      const browserPlain = await fetch(`${base}/api/v1/posts`, {
+        method: 'POST',
+        headers,
+        body: '{"title":"x","body":"y"}',
+      });
+      assert.equal(browserPlain.status, 415);
+    }
 
     const pairing = await fetch(`${base}/api/v1/pairing`).then((response) => response.json());
     const pairToken = new URL(pairing.candidates.find((item) => item.scope === 'public').webPairUrl).searchParams.get('pair');
@@ -158,10 +170,15 @@ test('loopback trust fails closed for proxy headers, rebinding, cross-site write
       body: JSON.stringify({ id: created.workPackage.id, claimedBy: 'cursor-local' }),
     });
     assert.equal(claimed.status, 200);
-    const completed = await fetch(`${base}/api/v1/work-packages/${created.workPackage.id}/complete`, {
+    const completeBody = JSON.stringify({ claimedBy: 'cursor-local', resultSummary: '本机 CLI 回调', changedPaths: [] });
+    const completed = await rawRequest(port, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Host: `127.0.0.1:${port}` },
-      body: JSON.stringify({ claimedBy: 'cursor-local', resultSummary: '本机 CLI 回调', changedPaths: [] }),
+      path: `/api/v1/work-packages/${created.workPackage.id}/complete`,
+      headers: {
+        Host: `127.0.0.1:${port}`,
+        'Content-Length': Buffer.byteLength(completeBody),
+      },
+      body: completeBody,
     });
     assert.equal(completed.status, 200);
 

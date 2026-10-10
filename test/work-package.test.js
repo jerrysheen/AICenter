@@ -699,6 +699,9 @@ test('task detail reuses the Ask run progress list', () => {
   const app = readFileSync(path.join(process.cwd(), 'apps/web/public/app.js'), 'utf8');
   const css = readFileSync(path.join(process.cwd(), 'apps/web/public/styles.css'), 'utf8');
   const contracts = readFileSync(path.join(process.cwd(), 'docs/contracts-v1.md'), 'utf8');
+  assert.match(app, /function workPackageAwaitingDispatch/);
+  assert.match(app, /label: '派发'/);
+  assert.match(app, /派发全部 \(\$\{pending\.length\}\)/);
   assert.match(app, /function workPackageIsLive/);
   assert.match(app, /function renderRunProgress/);
   assert.match(app, /function createRunProgressList/);

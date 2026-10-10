@@ -34,6 +34,10 @@ export function isCrossSiteBrowserWrite(request, port) {
   return !allowed.has(origin);
 }
 
+export function browserWriteCarriesOrigin(headers = {}) {
+  return Boolean(String(headers.origin || '').trim() || String(headers['sec-fetch-site'] || '').trim());
+}
+
 export function isTrustedLocal(request, port) {
   return isLoopbackAddress(request?.socket?.remoteAddress)
     && !hasProxyHeaders(request?.headers)

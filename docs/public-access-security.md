@@ -136,7 +136,7 @@ Harness 自己的预设是 sandbox 模式 × 审批策略，例如 `workspace-wr
 
 已配对设备不能 `POST /work-packages/notify`、`POST /work-packages/:id/retry` 或 `POST /api/v1/runtime/restart`。`continue` 仍可追加记录，派发只在 desktop 执行，其他身份返回 `jobs: []`。X 点赞、媒体源启停、`media/probe` 的 `run: true`、`media/bodies` 的 `repair: true` 同样只在本机。Ask overlay 继续关掉 Harness Host 工具。公网问答、信息流和知识保持设备可用。
 
-写请求必须带 `Content-Type: application/json`，否则 415。网页 `api()` 一直这样发。鸿蒙薄壳原生层只对 `/api/v1/health` 做 GET；业务写入走主 ArkWeb 里的同一套网页。本机 Cursor CLI 回调 `complete` / `fail` 时 Host 为 `127.0.0.1`，且不能带代理头。
+带 `Origin` 或 `Sec-Fetch-Site` 的写请求必须是 `Content-Type: application/json`，否则 415。跨站伪造来自浏览器，现代浏览器总会带上这两个头之一。没有这两个头的本机脚本和旧版 Cursor CLI 回调仍可写入。网页 `api()` 一直带 JSON。鸿蒙薄壳原生层只对 `/api/v1/health` 做 GET；业务写入走主 ArkWeb 里的同一套网页。本机 Cursor CLI 回调 `complete` / `fail` 时 Host 为 `127.0.0.1`，且不能带代理头。部署时最好没有任务在跑：进程重启仍会打断正在执行的 CLI。本机任务列表对尚未派发的待领取任务提供「派发」和「派发全部」。
 
 `web_fetch` 由冻结包 `@deepseek-ai/dsh-web-fetch-http` 0.1.6-alpha.2 执行。它在连接前解析地址，只接受公网 unicast，拒绝回环、私网、链路本地、运营商级 NAT，以及 NAT64 落到私网的地址，并把连接钉在已校验的地址上。跨源重定向直接拒绝，同源重定向会重新解析。因此问答 Agent 读 `http://127.0.0.1:8787` 不会打到本机 API。不要给 Harness 进程设置 `HTTP_PROXY` / `HTTPS_PROXY`：走代理时，非字面量主机名会跳过这次本地 DNS 校验（IP 字面量仍然拒绝）。
 

@@ -24,7 +24,7 @@ import { readTagCatalogFile } from '../../../packages/runtime/src/tagging-module
 import { createSourceHub, createSourceModuleRegistry, readStaticSignalBoard } from '../../../packages/source/src/index.js';
 import { createEventStreamHub } from './http/event-stream.js';
 import { publicHttpsLocation } from './http/device-auth.js';
-import { hasProxyHeaders, isTrustedLocal } from './http/local-trust.js';
+import { browserWriteCarriesOrigin, hasProxyHeaders, isTrustedLocal } from './http/local-trust.js';
 import { isJsonContentType, parseCookies, json } from './http/response.js';
 import { createRouter } from './http/router.js';
 import { createStaticFileHandler } from './http/static-files.js';
@@ -353,7 +353,9 @@ export function createAiCenterServer(options = {}) {
         json(response, 404, { ok: false, error: 'Not found' });
         return;
       }
-      if (WRITE_METHODS.has(request.method || '') && !isJsonContentType(request.headers['content-type'])) {
+      if (WRITE_METHODS.has(request.method || '')
+        && browserWriteCarriesOrigin(request.headers)
+        && !isJsonContentType(request.headers['content-type'])) {
         request.resume();
         json(response, 415, { ok: false, error: '写请求必须使用 Content-Type: application/json' });
         return;
