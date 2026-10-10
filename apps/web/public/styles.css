@@ -1766,6 +1766,20 @@ body[data-view="report"] .overview-subnav.is-on {
   background: var(--background-primary);
   box-shadow: 0 -2px 0 var(--background-primary);
 }
+@media (max-width: 1199px) {
+  .title-bar {
+    z-index: 12;
+    background: var(--background-primary);
+    backdrop-filter: none;
+  }
+  .overview-subnav.is-on {
+    position: sticky;
+    top: calc(var(--title-bar) + env(safe-area-inset-top));
+    z-index: 11;
+    background: var(--background-primary);
+    box-shadow: 0 -2px 0 var(--background-primary);
+  }
+}
 .hub-stage {
   display: grid;
   gap: var(--space-4);

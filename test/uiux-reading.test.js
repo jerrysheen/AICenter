@@ -67,6 +67,25 @@ test('overview primary navigation enters feed and then cycles from the selected 
   assert.equal(context.primaryNavTarget('ask', 'ask'), 'ask');
 });
 
+test('bottom overview tab always opens the overview home', () => {
+  const context = vm.createContext({});
+  vm.runInContext(functionSource('primaryNavActivation'), context);
+  const home = context.primaryNavActivation('sources', true);
+  const side = context.primaryNavActivation('sources', false);
+  const inspire = context.primaryNavActivation('inspire', true);
+  const assets = context.primaryNavActivation('assets', true);
+  assert.equal(home.route, 'sources');
+  assert.equal(home.fromPrimaryNav, false);
+  assert.equal(side.route, 'sources');
+  assert.equal(side.fromPrimaryNav, true);
+  assert.equal(inspire.route, 'inspire');
+  assert.equal(inspire.fromPrimaryNav, true);
+  assert.equal(assets.route, 'assets');
+  assert.equal(assets.fromPrimaryNav, true);
+  const css = readFileSync(new URL('../apps/web/public/styles.css', import.meta.url), 'utf8');
+  assert.match(css, /@media \(max-width: 1199px\) \{\s*\.title-bar \{\s*z-index: 12;\s*background: var\(--background-primary\);\s*backdrop-filter: none;\s*\}\s*\.overview-subnav\.is-on \{\s*position: sticky;/);
+});
+
 test('assets primary navigation starts at holdings and alternates both panes', () => {
   const state = { tradePane: 'analysis' };
   const context = vm.createContext({ state });
