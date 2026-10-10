@@ -19,6 +19,7 @@ import {
   homeRequestPlan,
   hourlyEditions,
   absorbReadingIndex,
+  mergeReadingHours,
   unavailableOfficialCount,
   buildHomeTimelineModel,
   renderHomeTimeline as paintHomeTimeline,
@@ -781,7 +782,7 @@ function isPrimaryNavActive(navId, view) {
     if (navId === 'tools') return mapped === 'tools';
     return navId === mapped;
   }
-  if (navId === 'sources') return overviewViews.includes(view);
+  if (navId === 'sources') return view === 'sources' || view === 'feed' || view === 'market';
   if (navId === 'tools') return view === 'tools' || view === 'knowledge' || view === 'settings' || view === 'quant';
   return navId === view;
 }
@@ -954,7 +955,10 @@ function syncHeaderSearch() {
   const kind = headerSearchKind();
   const searchLabel = kind === 'dialog'
     ? '搜索标的'
-    : view === 'feed' ? '搜索信息流' : view === 'sources' ? (state.overviewPane === 'catalog' ? '搜索信源目录' : '搜索总览资讯') : '搜索灵感';
+    : view === 'feed' ? '搜索信息流'
+      : view === 'sources' ? (state.overviewPane === 'catalog' ? '搜索信源目录' : '搜索总览资讯')
+        : view === 'report' ? '搜索简报'
+          : '搜索灵感';
   if (kind !== 'field') state.showHeaderSearch = false;
   document.body.classList.toggle('search-open', Boolean(state.showHeaderSearch));
   if (elements['toggle-search']) {
@@ -6612,7 +6616,7 @@ async function loadHomeReadingIndex(path, token) {
     const payload = await api(path);
     if (token !== state.homeLoadToken) return;
     state.homeReadingIndexMissing = false;
-    state.homeReadingHours = { ...state.homeReadingHours, ...absorbReadingIndex(payload) };
+    state.homeReadingHours = mergeReadingHours(state.homeReadingHours, absorbReadingIndex(payload));
   } catch (error) {
     if (token !== state.homeLoadToken) return;
     if (error?.status === 404) state.homeReadingIndexMissing = true;
@@ -9828,6 +9832,10 @@ let reportDay = { date: '', brief: null, loaded: false, error: '' };
 
 const briefPage = createBriefPage ? createBriefPage({
   api, navigate: setView, session: () => state.session, active: () => document.body.dataset.view === 'report',
+  syncHour(hour) {
+    reportHour = Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : null;
+    if (document.body.dataset.view === 'report') rememberOverviewTarget('report');
+  },
   toast: showToast, openDialog, releaseDialogScroll,
   adjustScroll: delta => {
     if (document.body.classList.contains('is-dialog-open')) {

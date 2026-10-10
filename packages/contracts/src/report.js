@@ -274,7 +274,6 @@ export const GenerateDailyReportInputSchema = z.object({
   scheduleKey: z.string().trim().min(1).max(128).optional(),
   newsLimit: z.number().int().min(1).max(3000).optional(),
   requestKey: z.string().max(128).optional(),
-  catchup: z.number().int().optional(),
 }).strict();
 
 export const GenerateDailyReportRequestSchema = z.object({

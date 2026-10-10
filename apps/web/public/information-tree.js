@@ -221,6 +221,7 @@ export function createInformationTreePage(host) {
     if(next===mode && !showMaterials) return;
     if(next!==mode) rememberIssue();
     mode=next;showMaterials=false;openedId='';
+    if(mode==='daily') clearHourQuery();
     const saved=memory[mode] || {};
     direction=saved.direction ?? null;directionExplicit=Boolean(saved.directionExplicit);
     if(tag) tag.value=saved.tag || '*';
@@ -272,15 +273,28 @@ export function createInformationTreePage(host) {
   function hourStripMobile(){
     try{const media=globalThis.window?.matchMedia;if(typeof media!=='function')return false;return media('(max-width: 700px)').matches===true;}catch{return false;}
   }
+  function replaceLocationHash(hash){
+    const hist=globalThis.history, loc=globalThis.location;
+    if(!hist || typeof hist.replaceState!=='function' || !loc || loc.hash===hash)return;
+    try{hist.replaceState({aiCenter:true,hash},'',`${loc.pathname||''}${loc.search||''}${hash}`);}catch{}
+  }
   function writeHourHash(startAt){
     if(!startAt || mode!=='hourly')return;
-    const hist=globalThis.history, loc=globalThis.location;
-    if(!hist || typeof hist.replaceState!=='function' || !loc)return;
     const hh=String(hourClock(startAt)).padStart(2,'0');
     const date=day(startAt), today=day(Date.now());
     const hash=date===today ? `#report?hour=${hh}` : `#report/${date}?hour=${hh}`;
-    if(loc.hash===hash)return;
-    try{hist.replaceState({aiCenter:true,hash},'',`${loc.pathname||''}${loc.search||''}${hash}`);}catch{}
+    replaceLocationHash(hash);
+    host.syncHour?.(hourClock(startAt));
+  }
+  function clearHourQuery(){
+    host.syncHour?.(null);
+    const loc=globalThis.location;
+    if(!loc?.hash || !/[?&]hour=/.test(loc.hash))return;
+    const [path, query='']=loc.hash.slice(1).split('?');
+    const params=new URLSearchParams(query);
+    params.delete('hour');
+    const rest=params.toString();
+    replaceLocationHash(`#${path}${rest ? `?${rest}` : ''}`);
   }
   function closePeriodPop(){
     if(!periodPop) return;

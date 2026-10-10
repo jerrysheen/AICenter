@@ -137,9 +137,12 @@ export function homeRequestPlan(nowMs = Date.now()) {
 
 export function hourlyEditions(tree) {
   const editions = [];
+  const seen = new Set();
   for (const row of tree?.hours || []) {
     const edition = row?.edition || (row?.window ? row : null);
-    if (!edition?.window || !Number.isFinite(Number(edition.window.startAt))) continue;
+    const startAt = Number(edition?.window?.startAt);
+    if (!edition?.window || !Number.isFinite(startAt) || seen.has(startAt)) continue;
+    seen.add(startAt);
     editions.push(edition);
   }
   return editions.sort((left, right) => right.window.startAt - left.window.startAt);
@@ -186,6 +189,19 @@ export function absorbReadingIndex(payload) {
     map[startAt] = row?.snapshot || row;
   }
   return map;
+}
+
+export function mergeReadingHours(current = {}, incoming = {}) {
+  const next = { ...current };
+  for (const [key, row] of Object.entries(incoming || {})) {
+    const prior = next[key];
+    if (prior && Array.isArray(prior.items) && !Array.isArray(row?.items)) {
+      next[key] = { ...row, ...prior, items: prior.items };
+      continue;
+    }
+    next[key] = row;
+  }
+  return next;
 }
 
 export function foldOfficialByHour(releases) {
@@ -296,22 +312,31 @@ export function buildHomeTimelineModel({
   boardStatus = 'loading',
 } = {}) {
   const limit = narrow ? HOME_VISIBLE_HOURS.narrow : HOME_VISIBLE_HOURS.wide;
-  const sorted = [...editions].sort((left, right) => right.window.startAt - left.window.startAt);
+  const sorted = [];
+  const seenStart = new Set();
+  for (const edition of [...editions].sort((left, right) => right.window.startAt - left.window.startAt)) {
+    const startAt = Number(edition?.window?.startAt);
+    if (!Number.isFinite(startAt) || seenStart.has(startAt)) continue;
+    seenStart.add(startAt);
+    sorted.push(edition);
+  }
   const shown = earlier ? sorted : sorted.slice(0, limit);
-  const coverage = hourCoverage({ editions: sorted, nowMs });
-  const gaps = visibleHourGaps(coverage, shown.length ? shown : sorted);
+  const verified = treeStatus === 'ready';
+  const coverage = verified ? hourCoverage({ editions: sorted, nowMs }) : { delay: null, gaps: [] };
+  const gaps = verified ? visibleHourGaps(coverage, shown.length ? shown : sorted) : [];
   const official = foldOfficialByHour(releases);
   const officialByStart = new Map(official.map((group) => [group.startAt, group]));
   const latest = sorted[0] || null;
   const hours = shown.map((edition, index) => {
     const startAt = edition.window.startAt;
+    const clock = shanghaiHourLabel(startAt);
     const summary = readingSummary(readings[startAt]);
     const titles = readingTitles(readings[startAt], index === 0 ? 5 : 2);
     return {
       startAt,
       endAt: edition.window.endAt,
-      label: shanghaiHourLabel(startAt).hourText,
-      href: reportHourHref(startAt),
+      label: clock.hourText,
+      href: `#report?hour=${clock.hour}`,
       lead: titles[0] || '',
       titles,
       hitCount: summary && Number.isFinite(summary.count) ? summary.count : null,
@@ -323,7 +348,7 @@ export function buildHomeTimelineModel({
     latestText: latest ? `最新小时报 ${shanghaiHourLabel(latest.window.startAt).hourText}` : '',
     briefHref: latest ? reportHourHref(latest.window.startAt) : '#report',
     nowText: `现在 ${shanghaiHourLabel(nowMs).hhmm}`,
-    statusText: [coverage.delay?.text, ...gaps.map((gap) => gap.text)].filter(Boolean).join(' · '),
+    statusText: verified ? [coverage.delay?.text, ...gaps.map((gap) => gap.text)].filter(Boolean).join(' · ') : '',
     events: nextEvents(upcoming, nowMs, 2),
     delay: coverage.delay,
     gaps,
@@ -396,6 +421,13 @@ export function renderHomeTimeline(root, model, handlers = {}) {
   rule.setAttribute('aria-hidden', 'true');
   now.append(rule);
   root.append(now);
+
+  if (model.treeStatus === 'loading' && !model.hours.length) {
+    const skeleton = el('div', 'home-timeline-skeleton');
+    skeleton.setAttribute('aria-busy', 'true');
+    skeleton.append(el('span', ''), el('span', ''), el('span', ''));
+    root.append(skeleton);
+  }
 
   const rail = el('div', 'home-rail');
   for (const hour of model.hours) {
