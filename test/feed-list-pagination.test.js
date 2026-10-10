@@ -72,6 +72,8 @@ test('feed cursors and list fields parse, and reject unknown values', () => {
   assert.throws(() => parseFeedBefore('later'), ValidationError);
   assert.throws(() => parseFeedBefore('2,1,id'), ValidationError);
   assert.equal(parseXFeedQuery({ limit: '12' }).fields, 'list');
+  assert.equal(parseXFeedQuery({ limit: '12' }).saved, false);
+  assert.equal(parseXFeedQuery({ limit: '12', saved: '1' }).saved, true);
   assert.equal(parseXFeedQuery({ fields: 'full', before: '1,20,abc' }).fields, 'full');
   assert.deepEqual(parseXFeedQuery({ fields: 'full', before: '1,20,abc' }).before, { isRead: 1, at: 20, id: 'abc' });
   assert.throws(() => parseXFeedQuery({ fields: 'body' }), ValidationError);
