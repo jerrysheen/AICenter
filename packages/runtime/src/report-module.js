@@ -40,7 +40,7 @@ export const reportDailyManifest = Object.freeze({
   jobTypes: [REPORT_DAILY_JOB_TYPE, REPORT_DAILY_BRIEF_JOB_TYPE, REPORT_HOURLY_JOB_TYPE],
 });
 
-export function createReportJobHandlers({ reportService, briefService = null, informationService=null, treeService=null, beforeHourly=null, dailyConfig=resolveDailyConfig() }) {
+export function createReportJobHandlers({ reportService, briefService = null, informationService=null, treeService=null, readingHour=null, beforeHourly=null, dailyConfig=resolveDailyConfig() }) {
   if (!reportService?.generateDailyReport) throw new Error('daily report jobs require reportService');
   return {
     [REPORT_HOURLY_JOB_TYPE]: async (rawInput,context) => {
@@ -48,16 +48,27 @@ export function createReportJobHandlers({ reportService, briefService = null, in
       const input=parseContract(GenerateHourlyDigestInputSchema,rawInput || {});
       await beforeHourly?.(input,context);
       const digests=await informationService.generateHourlyDigests(input);
+      const hourMs=3600000;
+      const windows=input.hourStart!==undefined ? [{startAt:input.hourStart,endAt:input.hourStart+hourMs}] : digests.map(item=>item?.window).filter(item=>Number.isFinite(item?.startAt) && Number.isFinite(item?.endAt));
+      const readingErrors=[];
+      if(readingHour?.enabled) {
+        for(const window of windows) {
+          try {const saved=await readingHour.scoreWindow({workspace: input.workspaceId || 'local', window}); if(saved?.readingErrors?.length) readingErrors.push(...saved.readingErrors.map(error=>({...error,window})));}
+          catch(error) {readingErrors.push({window,reason:String(error?.message || error).slice(0,180)});}
+        }
+      }
       if(treeService) {
         if(digests[0]?.status==='failed' && digests[0].groupFailures?.some(p=>p.retryable)) throw new Error('小时浓缩临时失败；成功分类及检查点已保留');
         const main=digests[0];
         return {snapshotIds:digests.map(d=>d.id),editionId:main?.id,status:main?.status,published:main?.published===true,
           window:main?.window,pendingCount:main?.pendingIds.length || 0,groupFailureCount:main?.groupFailures?.length || 0,
+          readingFailed:readingErrors.length>0,readingErrors,
           backgroundIncomplete:digests.slice(1).filter(d=>d.status!=='ready').map(d=>d.window.startAt)};
       }
       const failed=(rawInput?.hourStart!==undefined ? digests : digests.slice(0,1)).filter(d=>d.editorial?.status==='failed');
       if(failed.length) throw new Error(`${failed.length} 个小时主题整理未完成；提炼底稿已保存，可继续重试。`);
       return {snapshotIds:digests.map(d=>d.id),itemCount:digests.reduce((s,d)=>s+d.items.length,0),
+        readingFailed:readingErrors.length>0,readingErrors,
         backgroundIncomplete:rawInput?.hourStart===undefined ? digests.slice(1).filter(d=>d.editorial?.status==='failed').map(d=>d.window.startAt) : []};
     },
     [REPORT_DAILY_JOB_TYPE]: async (rawInput, context) => {

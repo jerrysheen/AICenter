@@ -1,3 +1,4 @@
+import { icon } from './icons.js';
 const el=(tag,text='',className='')=>{const n=document.createElement(tag);n.textContent=text;n.className=className;return n;};
 const button=(text,action)=>{const n=el('button',text);n.type='button';n.addEventListener('click',action);return n;};
 const directions={finance:'金融与市场',policy:'时事与政策',tech:'科技与产业',other:'其他'};
@@ -8,7 +9,8 @@ const previousDirections={macro:'finance',macro_commodity:'finance',crypto:'fina
   ai:'tech',ai_compute:'tech',ai_model:'tech',ai_application:'tech',semiconductor:'tech',semiconductor_memory:'tech',semiconductor_optical:'tech',semiconductor_equipment:'tech',semiconductor_packaging:'tech',internet:'tech',software:'tech',gaming:'tech',graphics:'tech',auto:'tech',energy:'tech',communications:'tech',datacenter:'tech'};
 const reasons={'needs-content':'正文待补','information-not-ready':'信息加工待完成','retryable-model-error':'模型暂时故障','queue-timeout':'排队超时','execution-timeout':'执行超时','budget-deferred':'预算延期','lease-conflict':'同版本加工中','invalid-output':'输出不合法','stale-policy':'规则已更新'};
 export function createInformationTreePage(host) {
-  let root,list,titleEl,coverageEl,statusRow,statusToggle,statusDetail,pastBtn,directionNav,hourChips,dayChips,tools,materialsBtn,tagPanel,tag,period,backIssues,notice,mode='daily',direction=null,directionExplicit=false,showMaterials=false,selectedHourStart=0,dailyStart=0,openedId='',openedDirection='',manifest,selected=null,epoch=0,timer=0,dateFilter='',checking=null;
+  let root,list,titleEl,coverageEl,statusRow,statusToggle,statusDetail,pastBtn,directionNav,hourChips,dayChips,tools,materialsBtn,tagPanel,tag,period,backIssues,notice,mode='daily',direction=null,directionExplicit=false,showMaterials=false,selectedHourStart=0,dailyStart=0,openedId='',openedDirection='',manifest,selected=null,epoch=0,timer=0,dateFilter='',checking=null,pinnedReadingId='';
+  const readingOpen=new Set();
   const names=new Map(),cache=new Map(),nodeRequests=new Map(),editionCache=new Map(),editorialCache=new Map(),expanded=new Set(),positions=new Map(),memory={hourly:{},daily:{}};let viewKey='',nextManifest=null;
   const relationLabels={'same-event':'同一事件的后续进展','shared-theme':'共同主题','complementary':'相互补充','contradictory':'不同说法','supported-impact':'有依据的影响','unverified-link':'尚待验证的潜在联系'};
   const remember=n=>{if(!n)return;cache.delete(n.id);cache.set(n.id,n);while(cache.size>400)cache.delete(cache.keys().next().value);};
@@ -39,11 +41,42 @@ export function createInformationTreePage(host) {
     }
     return editionCache.get(edition.id);
   }
-  async function card(n,token) {
+  function detailAction(iconName, label, onClick) {
+    const n=document.createElement('button');n.type='button';n.setAttribute('aria-label',label);
+    const glyph=document.createElement('span');glyph.innerHTML=icon(iconName);glyph.setAttribute('aria-hidden','true');
+    n.append(glyph,el('span',label));n.addEventListener('click',onClick);return n;
+  }
+  function canReadSource(n) {return Boolean(n?.layer==='information' && n.sourceRefs?.length && host.readSavedSource);}
+  function syncReadingChrome(spec) {
+    root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());
+    if(!root)return;
+    if(!spec){root.classList.remove('is-reading');return;}
+    root.classList.add('is-reading');
+    const toolbar=el('div','','reading-toolbar tree-reading-chrome');
+    const back=detailAction('chevron-left',spec.label,spec.onBack);back.classList.add('reading-back');toolbar.append(back);
+    const mobile=el('div','','reader-mobile-bar tree-reading-chrome');mobile.setAttribute('aria-label','阅读操作');
+    if(canReadSource(spec.node)){
+      const openSource=()=>host.readSavedSource(spec.node);
+      toolbar.append(detailAction('newspaper','原文',openSource));
+      mobile.append(detailAction('newspaper','原文',openSource));
+    }
+    const mobileBack=detailAction('chevron-left',spec.label,spec.onBack);mobileBack.classList.add('is-back');mobile.append(mobileBack);
+    if(list && list.parentNode===root) root.insertBefore(toolbar,list);
+    else root.append(toolbar);
+    root.append(mobile);
+  }
+  function closeHour(){openedId='';pinnedReadingId='';return render();}
+  function closeDaily(){openedId='';openedDirection='';return render();}
+  function restoreScroll(opened) {
+    if(!active())return;
+    if(positions.has(viewKey))window.scrollTo({top:positions.get(viewKey),behavior:'instant'});
+    else if(opened)window.scrollTo({top:0,behavior:'instant'});
+  }
+  async function card(n,token,options={}) {
     const article=el('article','','tree-card');article.dataset.nodeId=n.id;article.dataset.layer=n.layer;
     article.append(el('h3',n.title),el('p',n.text,'tree-text'));
     if(n.layer==='information' && n.body && n.body!==n.text) {const body=el('details','','tree-ref');body.append(el('summary','中文正文'),el('p',n.body,'tree-text'));article.append(body);}
-    if(n.layer==='information') {if(n.sourceRefs?.length && host.readSavedSource)article.append(button('原文',()=>host.readSavedSource(n)));}
+    if(n.layer==='information') {if(options.actions!==false && n.sourceRefs?.length && host.readSavedSource)article.append(button('原文',()=>host.readSavedSource(n)));}
     else {
       const details=el('details','','tree-ref'),children=el('div','','tree-children'),key=expansionKey(n);
       details.append(el('summary',`${n.articleCount} 篇 · ref`),children);article.append(details);let loaded=false;
@@ -149,7 +182,7 @@ export function createInformationTreePage(host) {
     if(key!==hourStripKey){
       hourStripKey=key;hourChips.replaceChildren();
       rows.forEach((edition,index)=>{
-        const chip=button(hourLabel(edition,index),()=>{selectedHourStart=edition.window.startAt;openedId='';return render();});
+        const chip=button(hourLabel(edition,index),()=>{selectedHourStart=edition.window.startAt;openedId='';pinnedReadingId='';readingOpen.clear();return render();});
         chip.className='chip-tab';chip.dataset.start=String(edition.window.startAt);hourChips.append(chip);
       });
     }
@@ -207,13 +240,12 @@ export function createInformationTreePage(host) {
     const opened=openedId ? items.find(item=>item.n.id===openedId) : null;
     list.replaceChildren();
     if(opened){
-      const back=button('返回',()=>{openedId='';render();});back.className='text-button';
-      list.append(back,await card(opened.n,token));
+      syncReadingChrome({node:opened.n,label:'返回日报',onBack:closeDaily});
+      list.append(await card(opened.n,token,{actions:false}));
       titleEl.hidden=false;titleEl.textContent=opened.n.title;
-    } else if(!items.length) list.textContent='这一天还没有日报。';
-    else for(const item of items) list.append(compactCard(item));
+    } else {syncReadingChrome(null);if(!items.length) list.textContent='这一天还没有日报。';else for(const item of items) list.append(compactCard(item));}
     viewKey=`daily-feed:${dailyStart}:${openedId}`;
-    if(active() && positions.has(viewKey)) window.scrollTo({top:positions.get(viewKey),behavior:'instant'});
+    restoreScroll(Boolean(opened));
   }
   function loadEditorial(edition) {
     const key=`${edition.window.startAt}:${edition.window.endAt}`;
@@ -250,6 +282,7 @@ export function createInformationTreePage(host) {
     statusToggle.hidden=false;statusToggle.textContent=editorial.status==='partial' ? '部分覆盖' : '当前材料已覆盖';
     statusDetail.hidden=false;statusDetail.textContent=editorial.statusNote;
     const page=el('div','','daily-research');
+    syncReadingChrome(openedDirection ? {node:null,label:'返回日报',onBack:closeDaily} : null);
     if(!openedDirection) {
       page.append(el('p',editorial.overview,'daily-overview'));
       for(const article of editorial.articles) {
@@ -261,8 +294,6 @@ export function createInformationTreePage(host) {
       }
     } else {
       const article=editorial.articles.find(item=>item.direction===openedDirection);
-      const back=button('返回日报',()=>{openedDirection='';render();});back.className='text-button';
-      page.append(back);
       if(!article) page.append(el('p','这个方向没有成稿。'));
       else {
         page.append(el('h3',article.title),el('p',article.lead,'daily-overview'));
@@ -293,12 +324,12 @@ export function createInformationTreePage(host) {
     }
     list.replaceChildren(page);
     viewKey=`daily-research:${dailyStart}:${openedDirection}`;
-    if(active() && positions.has(viewKey)) window.scrollTo({top:positions.get(viewKey),behavior:'instant'});
+    restoreScroll(Boolean(openedDirection));
   }
   function compactCard(item) {
     const card=el('article','','post-card is-compact');card.dataset.nodeId=item.n.id;
     const open=document.createElement('button');open.type='button';open.className='feed-content';
-    open.addEventListener('click',()=>{openedId=item.n.id;render();});
+    open.addEventListener('click',()=>{openedId=item.n.id;return render();});
     const meta=el('div','','post-meta');
     const when=item.edition.layer==='hourly' ? `${clock(item.edition.window.startAt)}–${clock(item.edition.window.endAt)}` : '';
     meta.append(el('span',directions[group(item.n)] || '其他','kind-tag'));
@@ -308,34 +339,118 @@ export function createInformationTreePage(host) {
     if(excerpt) open.append(el('p',excerpt.length>72 ? `${excerpt.slice(0,72).trim()}…` : excerpt,'post-excerpt'));
     card.append(open);return card;
   }
+  async function readingSnapshot(edition) {
+    if(!edition?.window) return null;
+    const path=pinnedReadingId && openedId ? `/api/v1/reports/reading-hour/snapshot?id=${encodeURIComponent(pinnedReadingId)}` : `/api/v1/reports/reading-hour?startAt=${edition.window.startAt}&endAt=${edition.window.endAt}&scope=hour`;
+    try{const data=await host.api(path);return data?.snapshot || null;}catch{return null;}
+  }
+  function readingFold(id, title, {note, seed, stale} = {}) {
+    const details=document.createElement('details');details.className='reading-fold';details.open=readingOpen.has(id);
+    const summary=document.createElement('summary');summary.className='feed-content';
+    const heading=el('h3',title);
+    if(stale) heading.append(el('span','时效不足','reading-stale'));
+    summary.append(heading);
+    if(note)summary.append(el('p',note,'post-excerpt'));
+    const panel=el('div','','reading-fold-body');details.append(summary,panel);
+    let loaded=false;
+    async function load() {
+      if(!details.open){readingOpen.delete(id);return;}
+      readingOpen.add(id);if(loaded)return;loaded=true;panel.textContent='读取中…';
+      const saved=await node(id).catch(()=>null);
+      const view=(saved?.body || saved?.text) ? saved : (seed || saved);
+      panel.replaceChildren(el('p',view?.body || view?.text || '这篇的正文暂时读不到。','tree-text'));
+      if(canReadSource(view))panel.append(button('原文',()=>host.readSavedSource(view)));
+    }
+    details.addEventListener('toggle',load);
+    if(details.open)void load();
+    const card=el('article','','post-card is-compact reading-item');card.append(details);return card;
+  }
+  function appendTitleGroup(name, rows) {
+    const section=el('section');section.append(el('h2',name,'reading-group'));
+    for (const row of rows) section.append(readingFold(row.id,row.title,{seed:row}));
+    list.append(section);
+  }
+  const readingDirectionOrder=['金融','产业个股','科技与AI','地缘政治','待分类'];
+  const readingSliceOrder=['中国','美国','欧洲','日本','韩国','中国台湾','多地','其他','模型与技术','应用与工作流','安全与外交','贸易与限制'];
+  function renderReadingDirections(rows, className = '') {
+    if(!rows.length) return;
+    const rank=(order,value)=> {const index=order.indexOf(value);return index<0 ? order.length : index;};
+    const directions=[...new Set(rows.map(item=>item.readingDirectionName).filter(Boolean))].sort((a,b)=>rank(readingDirectionOrder,a)-rank(readingDirectionOrder,b));
+    for(const directionName of directions){
+      const matched=rows.filter(item=>item.readingDirectionName===directionName);
+      const block=el('section','',className ? `reading-block ${className}` : 'reading-block');
+      block.append(el('h2',directionName,'reading-direction'));
+      const themes=[...new Set(matched.map(item=>item.readingThemeName).filter(Boolean))].sort((a,b)=>rank(readingSliceOrder,a)-rank(readingSliceOrder,b));
+      for(const themeName of themes){
+        const themeRows=matched.filter(item=>item.readingThemeName===themeName);
+        const themeBlock=el('div','','reading-slice');
+        themeBlock.append(el('div',themeName,'reading-group'));
+        for(const item of themeRows) themeBlock.append(readingFold(item.nodeId,item.title,{stale:item.timely===false}));
+        block.append(themeBlock);
+      }
+      for(const item of matched.filter(item=>!item.readingThemeName)) block.append(readingFold(item.nodeId,item.title,{stale:item.timely===false}));
+      list.append(block);
+    }
+  }
+  async function renderReadingHour(token,claim,edition,snapshot) {
+    if(openedId) pinnedReadingId=snapshot.id; else pinnedReadingId='';
+    finishOpening(claim,true);paintHourUnread();
+    list.replaceChildren();
+    list.append(el('p',`已处理 ${snapshot.scored}/${snapshot.candidates}，命中 ${snapshot.selected}。`,'tree-coverage'));
+    syncReadingChrome(null);
+    const shown=snapshot.items.filter(item=>item.readingDirectionName && item.readingDirectionName!=='待分类' && item.disposition!=='out-of-scope');
+    renderReadingDirections(shown.filter(item=>item.disposition==='hit'));
+    const rest=shown.filter(item=>item.disposition!=='hit');
+    if(rest.length){list.append(el('h2','其他','reading-rest'));renderReadingDirections(rest,'is-rest');}
+    root.dataset.readingSnapshot=snapshot.id;
+    viewKey=`hourly-reading:${edition.window.startAt}:${snapshot.id}`;
+    restoreScroll(false);
+  }
   async function renderHourFeed(token,claim) {
     syncHourChrome();
     const rows=hourRows();
     paintHourStrip(rows);
     const edition=rows.find(item=>item.window.startAt===selectedHourStart) || null;
     selected=edition;root.dataset.editionId=edition?.id || '';root.dataset.windowStart=String(edition?.window.startAt ?? '');root.dataset.briefMode='hourly';
+    const snapshot=await readingSnapshot(edition);
+    if(token!==epoch){const current=claim?.ticket===opening.ticket;finishOpening(claim,false);if(current && root?.isConnected)paintHourUnread();return;}
+    if(snapshot) return renderReadingHour(token,claim,edition,snapshot);
     const nodes=edition ? await editionNodes(edition) : [];
     if(token!==epoch){const current=claim?.ticket===opening.ticket;finishOpening(claim,false);if(current && root?.isConnected)paintHourUnread();return;}
+    const articles=[];
+    for(const module of (nodes || []).filter(Boolean)) {
+      if(module.layer==='information' || !module.children?.length) {articles.push(module);continue;}
+      try {
+        const data=await host.api(`/api/v1/reports/tree/children?id=${encodeURIComponent(module.id)}`);
+        const children=(data.children || []).filter(Boolean);
+        if(token!==epoch)return;
+        if(children.length){children.forEach(remember);articles.push(...children);} else articles.push(module);
+      } catch {articles.push(module);}
+    }
+    if(token!==epoch){const current=claim?.ticket===opening.ticket;finishOpening(claim,false);if(current && root?.isConnected)paintHourUnread();return;}
     finishOpening(claim,true);paintHourUnread(rows);
-    const items=(nodes || []).filter(Boolean).map(n=>({n,edition}));
-    const opened=openedId ? items.find(item=>item.n.id===openedId) : null;
     list.replaceChildren();
-    if(opened){
-      const back=button('返回',()=>{openedId='';render();});back.className='text-button';
-      list.append(back,await card(opened.n,token));
-    } else if(!items.length) list.textContent='这个小时还没有小时报。';
-    else for(const item of items) list.append(compactCard(item));
-    viewKey=`hourly-feed:${selectedHourStart}:${openedId}`;
-    if(active() && positions.has(viewKey)) window.scrollTo({top:positions.get(viewKey),behavior:'instant'});
+    syncReadingChrome(null);
+    if(!articles.length) list.textContent='这个小时还没有小时报。';
+    else for(const name of directionOrder) {
+      const grouped=articles.filter(item=>group(item)===name);
+      if(grouped.length) appendTitleGroup(directions[name],grouped);
+    }
+    viewKey=`hourly-feed:${selectedHourStart}`;
+    restoreScroll(false);
   }
   async function render() {
     if(viewKey)positions.set(viewKey,window.scrollY);const token=++epoch;
     const hourlyFeed=mode==='hourly' && !showMaterials;
+    const dailyFeed=mode==='daily' && !showMaterials;
     const openingClaim=hourlyFeed?beginOpening(ensureSelectedHour(hourRows())):null;
     list.textContent='读取中…';setPrimary();syncHourChrome();
+    if(hourlyFeed && openedId) syncReadingChrome({node:null,label:'返回小时报',onBack:closeHour});
+    else if(dailyFeed && (openedId || openedDirection)) syncReadingChrome({node:null,label:'返回日报',onBack:closeDaily});
     try {
       if(hourlyFeed) return await renderHourFeed(token,openingClaim);
-      if(mode==='daily' && !showMaterials) return await renderDailyFeed(token);
+      if(dailyFeed) return await renderDailyFeed(token);
+      syncReadingChrome(null);
       const rows=editionRows(),row=rows.find(r=>choice(r)?.window.startAt===Number(period.value)) || rows[0];selected=choice(row);
       root.dataset.editionId=selected?.id || '';root.dataset.windowStart=String(selected?.window.startAt ?? '');root.dataset.briefMode=mode;
       if(!selected){
@@ -362,8 +477,10 @@ export function createInformationTreePage(host) {
       else if(!inDirection.length) list.textContent=showMaterials ? '本期材料里这个方向没有条目。' : '本期这个方向没有模块。';
       rememberIssue();
       viewKey=`${mode}:${selected.window.startAt}:${direction}:${tag.value}:${showMaterials?'materials':'brief'}`;
-      if(active() && positions.has(viewKey)) window.scrollTo({top:positions.get(viewKey),behavior:'instant'});
-    }catch{if(token===epoch){finishOpening(openingClaim,false);paintHourUnread();list.replaceChildren(el('p','读取失败，请重试。'),button('重试读取',render));}}
+      restoreScroll(false);
+    }catch{if(token===epoch){finishOpening(openingClaim,false);paintHourUnread();list.replaceChildren(el('p','读取失败，请重试。'),button('重试读取',render));
+      if((hourlyFeed || dailyFeed) && (openedId || openedDirection)) syncReadingChrome({node:null,label:hourlyFeed?'返回小时报':'返回日报',onBack:hourlyFeed?closeHour:closeDaily});
+      else syncReadingChrome(null);}}
   }
   async function check(force=false){
     if(!active() || document.hidden)return;if(checking)return checking;const token=epoch;
@@ -418,5 +535,5 @@ export function createInformationTreePage(host) {
       const saved=memory[mode] || {};direction=saved.direction ?? null;directionExplicit=Boolean(saved.directionExplicit);if(saved.tag)tag.value=saved.tag;
       periods();await render();resume(false);
     }catch{if(token===epoch)list.replaceChildren(el('p','暂时无法读取简报。'),button('重试读取',()=>this.mount(target,options)));}
-  },check,acceptUpdate,resume,stop,selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){stop();epoch++;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();expanded.clear();positions.clear();viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
+  },check,acceptUpdate,resume,stop,selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());root?.classList.remove('is-reading');stop();epoch++;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();expanded.clear();positions.clear();viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
 }

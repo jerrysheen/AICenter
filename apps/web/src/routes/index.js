@@ -1,3 +1,4 @@
+import { createAudioTranscriptionRoutes } from './audio-transcription-routes.js';
 import { createEventRoutes } from './event-routes.js';
 import { createAgentRoutes } from './agent-routes.js';
 import { createArticleAnalysisRoutes } from './article-analysis-routes.js';
@@ -11,6 +12,7 @@ import { createRuntimeRoutes } from './runtime-routes.js';
 import { createReportRoutes } from './report-routes.js';
 import { createStrategyRoutes } from './strategy-routes.js';
 import { createQuantRoutes } from './quant-routes.js';
+import { createEtfWhaleRoutes } from './etf-whale-routes.js';
 import { createSystemRoutes } from './system-routes.js';
 import { createTradingRoutes } from './trading-routes.js';
 import { createSourceRoutes } from './source-routes.js';
@@ -34,6 +36,8 @@ export function createApiRoutes() {
     ...createReportRoutes(),
     ...createStrategyRoutes(),
     ...createQuantRoutes(),
+    ...createEtfWhaleRoutes(),
+    ...createAudioTranscriptionRoutes(),
     ...createEventRoutes(),
   ];
 }

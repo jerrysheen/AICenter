@@ -37,6 +37,19 @@ export function createReportRoutes() {
       const {id}=parseContract(TreeNodeQuerySchema,{id:url.searchParams.get('id')});
       const children=services.informationTree.children(identity?.device?.workspaceId || 'local',id);json(response,children ? 200 : 404,{ok:Boolean(children),children});
     }},
+    {method:'GET',path:'/api/v1/reports/reading-hour',handler({response,services,url,identity}) {
+      if(!services.readingHour) return json(response,404,{ok:false});
+      const window={startAt:Number(url.searchParams.get('startAt')),endAt:Number(url.searchParams.get('endAt'))};
+      const scope=url.searchParams.get('scope') || 'hour';
+      const workspace=identity?.device?.workspaceId || 'local';
+      const snapshot=services.readingHour.forWindow(workspace,window,scope);
+      json(response,snapshot ? 200 : 404,{ok:Boolean(snapshot),snapshot});
+    }},
+    {method:'GET',path:'/api/v1/reports/reading-hour/snapshot',handler({response,services,url,identity}) {
+      if(!services.readingHour) return json(response,404,{ok:false});
+      const snapshot=services.readingHour.get(identity?.device?.workspaceId || 'local',url.searchParams.get('id') || '');
+      json(response,snapshot ? 200 : 404,{ok:Boolean(snapshot),snapshot});
+    }},
     {method:'GET',path:'/api/v1/reports/tree/editorial',handler({response,services,url,identity}) {
       const window=parseContract(TreeWindowQuerySchema,{startAt:url.searchParams.get('startAt'),endAt:url.searchParams.get('endAt')});
       const editorial=services.informationTree.editorial?.(identity?.device?.workspaceId || 'local',window) || null;

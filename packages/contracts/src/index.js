@@ -42,6 +42,7 @@ export * from './taxonomy.js';
 export * from './context.js';
 export * from './agent.js';
 export * from './article-analysis.js';
+export * from './audio-transcription.js';
 export * from './runtime.js';
 export * from './report.js';
 export * from './market-stats.js';
@@ -552,6 +553,7 @@ export function parsePatchUserItemStateInput(value) {
 
 export * from './information-tree.js';
 export * from './daily-editorial.js';
+export * from './research-recall.js';
 
 export function parseHideFlag(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {

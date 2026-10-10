@@ -182,6 +182,8 @@ export function createAiCenterServer(options = {}) {
   });
   services = options.services || createDomainServices({
     modelUsageRates: env.AI_CENTER_MODEL_USAGE_RATES_JSON || [],
+    dataDirectory,
+    env,
     store,
     sourcePort,
     personalAssetPort,
@@ -221,6 +223,7 @@ export function createAiCenterServer(options = {}) {
       readBoard: (input, readOptions) => readStaticSignalBoard(sourcePort, input, readOptions),
     },
     quantRoot: options.quantRoot || path.join(dataDirectory, 'quant'),
+    parityDirectory: options.parityDirectory || path.join(repositoryRoot, '.ai-data', 'etf-whale-parity'),
     analysisSkillCatalog: options.analysisSkillCatalog !== undefined
       ? options.analysisSkillCatalog
       : createAnalysisSkillCatalog({ rootDirectory: path.join(repositoryRoot, 'config/analysis-skills') }),

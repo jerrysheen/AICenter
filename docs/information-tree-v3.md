@@ -95,6 +95,8 @@ UI脚本需已有 `UIUX_RUNTIME_PACKAGE` 与 `UIUX_BROWSER` 指向Host的Playwri
 2026-10-07 用户授权Gemini信息整理接入：同一冻结Harness新增封闭article-normalize路由，一次生成标题/Tag/摘要/正文；正文可选字段按版本校验，小时/日报仍只传摘要投影。三Key按项目持久化限流，明确quota冷却后显式Grok fallback，正常报告半点调度；不增加Agent或页面供应商字段。设计和兼容边界见 `gemini-article-normalize.md`。
 
 2026-10-07 ref恢复修复：树阅读器的stop仅暂停检查定时器，不递增页面epoch；同一DOM上的ref处理器在站内原文返回或visibility恢复后继续有效。重新挂载、reset及实际render继续递增epoch，过期页面响应仍不能改写新视图。暂停期间允许不可变节点请求完成到保留的DOM，滚动位置恢复仅在当前阅读器活动时执行。回归见`progress/2026-10-07-tree-ref-resume.md`。
+
+2026-10-08 小时报与日报点开单条后，操作条与信息流阅读页同一套：宽于 699px 时固定在正文上方，699px 及以下固定在底部，包含返回；信息节点有站内原文时一并放上。此状态下隐藏底部页签，并留出底栏高度。列表和「本期材料」里的原文按钮保持原位。
 # 小时收录口径修正（2026-10-07）
 
 正式 tree-v3 的小时候选和信息头统一按首次入库时间归窗：社交内容使用 ContentItem.createdAt，媒体使用索引 createdAt。不能用 publishedAt、重复发现时更新的 observedAt 或正文整理完成时间决定小时。publishedAt 继续保留为原文事实和模型阅读上下文。旧 legacy 日报的发布时间窗口保持兼容，不随此修复改变。

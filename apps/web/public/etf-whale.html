@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ETF 鲸鱼资金</title>
+  <link rel="stylesheet" href="/etf-whale.css">
+</head>
+<body>
+  <main>
+    <p class="eyebrow">ETF 鲸鱼资金追踪</p>
+    <h1 id="title">正在读取本地计算结果</h1>
+    <p id="status"></p>
+    <section class="cards" id="cards"></section>
+    <h2>指数分组</h2>
+    <table>
+      <thead><tr><th>分组</th><th>覆盖</th><th>净流入</th><th>净流出</th><th>份额变化（亿份）</th><th>净申赎（亿元）</th></tr></thead>
+      <tbody id="groups"></tbody>
+    </table>
+    <h2>单只走势</h2>
+    <label>代码 <input id="code" value="159915" maxlength="6"></label>
+    <button id="load" type="button">查看</button>
+    <table>
+      <thead><tr><th>日期</th><th>份额（亿份）</th><th>变化（亿份）</th><th>净申赎（亿元）</th><th>收盘价</th><th>状态</th></tr></thead>
+      <tbody id="series"></tbody>
+    </table>
+    <h2>来源与对账</h2>
+    <pre id="meta"></pre>
+  </main>
+  <script src="/etf-whale.js"></script>
+</body>
+</html>

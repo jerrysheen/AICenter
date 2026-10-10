@@ -45,6 +45,7 @@ export function projectTagCatalog(catalog) {
     name: tag.name,
     parent_id: tag.parent_id ?? null,
     keywords: tag.keywords || [],
+    ...(tag.description ? { description: tag.description } : {}),
   }));
 }
 

@@ -29,6 +29,7 @@ export const TagCatalogProjectionSchema = z.object({
   name: z.string().trim().min(1).max(40),
   parent_id: TagIdSchema.nullable(),
   keywords: z.array(z.string().trim().min(1).max(64)).max(24),
+  description: z.string().max(300).optional(),
 }).strict();
 
 export const TagTextItemSchema = z.object({

@@ -58,6 +58,10 @@ export function createStaticFileHandler(publicDirectory) {
     '/icons.js': ['icons.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/mock.js': ['mock.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/quant-lab.js': ['quant-lab.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
+    '/etf-whale': ['etf-whale.html', 'text/html; charset=utf-8', HTML_CACHE_CONTROL],
+    '/etf-whale.html': ['etf-whale.html', 'text/html; charset=utf-8', HTML_CACHE_CONTROL],
+    '/etf-whale.js': ['etf-whale.js', 'text/javascript; charset=utf-8', HTML_CACHE_CONTROL],
+    '/etf-whale.css': ['etf-whale.css', 'text/css; charset=utf-8', HTML_CACHE_CONTROL],
     '/styles.css': ['styles.css', 'text/css; charset=utf-8', ASSET_CACHE_CONTROL],
   };
   const uniqueNames = [...new Set(Object.values(files).map(([name]) => name))].sort();

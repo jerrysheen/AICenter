@@ -25,6 +25,16 @@
 
 ## 当前
 
+- `progress/2026-10-09-yt-tools.md`：YouTube / B 站音轨下载和本地转写，用来补平台没有 AI 字幕的情况。
+
+- `progress/2026-10-09-audio-transcription.md`：长音频按每分钟额度切成等长 WAV 段，分密钥转写后按时间拼回正文。
+
+- `progress/2026-10-09-etf-whale-parity.md`：ETF 鲸鱼资金的交易所份额回填与参考站对账。页面只读计算结果，不替代发布门槛。
+
+- `progress/2026-10-08-research-recall-v1.md`：问题驱动的研究 Tag 与日报材料召回。隔离运行，生产日报和栏目 Tag 不变。
+
+- `progress/2026-10-08-hourly-reading-actions.md`：小时报和日报点开单条后，返回与原文跟信息流阅读页一样；手机放在底部并隐藏底部页签。
+
 - `progress/2026-10-08-daily-editorial-v1.md`：日报研究报告隔离稿。生产 `generateDaily()` 仍是小时模块浓缩；新稿未写入生产库，也未改接 Elucid。
 
 - `progress/2026-10-07-analysis-skill-selection.md`：问答 `@` 选择本轮分析方法，第一份技能为美股涨跌原因探索；同一 Ask 执行器，不新增 Agent。

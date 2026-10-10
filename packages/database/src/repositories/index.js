@@ -8,7 +8,9 @@ import { createKnowledgeRepository } from './knowledge-repository.js';
 import { createReportRepository } from './report-repository.js';
 import { createStrategyRepository } from './strategy-repository.js';
 import { createTaggingRepository } from './tagging-repository.js';
+import { createResearchRecallRepository } from './research-recall-repository.js';
 import { createTradingRepository } from './trading-repository.js';
+import { createEtfWhaleRepository } from './etf-whale-repository.js';
 
 export function createDomainRepositories(database, emitEvent) {
   return Object.freeze({
@@ -19,8 +21,10 @@ export function createDomainRepositories(database, emitEvent) {
     media: createMediaRepository(database, emitEvent),
     hardwarePrices: createHardwarePriceRepository(database, emitEvent),
     trading: createTradingRepository(database, emitEvent),
+    etfWhale: createEtfWhaleRepository(database, emitEvent),
     knowledge: createKnowledgeRepository(database, emitEvent),
     tagging: createTaggingRepository(database, emitEvent),
+    research: createResearchRecallRepository(database, emitEvent),
     report: createReportRepository(database, emitEvent),
     strategy: createStrategyRepository(database, emitEvent),
   });

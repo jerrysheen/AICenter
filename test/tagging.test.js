@@ -5,7 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { parseContract, TagAnalyzeJobInputSchema, ValidationError } from '../packages/contracts/src/index.js';
 import { createStore } from '../packages/database/src/index.js';
-import { loadTagCatalog } from '../packages/domain/src/tag-catalog.js';
+import { loadTagCatalog, projectTagCatalog } from '../packages/domain/src/tag-catalog.js';
+import { buildTagSystemPrompt } from '../packages/domain/src/tag-prompt.js';
+import { treeCatalog } from '../packages/domain/src/information-tree-policy.js';
 import { parseTagBatchOutput } from '../packages/domain/src/tag-parser.js';
 import { createTaggingService } from '../packages/domain/src/tagging-service.js';
 import { createTaggingJobHandlers } from '../packages/runtime/src/tagging-module.js';
@@ -199,6 +201,25 @@ test('instance tag catalog includes the missed crypto and commodity tags', () =>
   const loaded = loadTagCatalog(readFileSync(path.join('config', 'tags.json'), 'utf8'));
   assert.equal(loaded.ids.has('crypto'), true);
   assert.equal(loaded.tags.find((tag) => tag.id === 'macro_commodity').parent_id, 'macro');
+});
+
+test('instance tag catalog keeps the original 24 ids and adds eight content tags', () => {
+  const loaded = loadTagCatalog(readFileSync(path.join('config', 'tags.json'), 'utf8'));
+  const original = ['ai', 'ai_compute', 'ai_model', 'ai_application', 'semiconductor', 'semiconductor_memory', 'semiconductor_optical', 'semiconductor_equipment', 'semiconductor_packaging', 'internet', 'software', 'gaming', 'graphics', 'auto', 'energy', 'macro', 'macro_commodity', 'crypto', 'market_us', 'market_cn', 'market_hk', 'geopolitics', 'communications', 'datacenter'];
+  assert.equal(loaded.tags.length, 32);
+  for (const id of original) assert.equal(loaded.ids.has(id), true, id);
+  assert.equal(loaded.tags.find((tag) => tag.id === 'macro_rates').parent_id, 'macro');
+  assert.equal(loaded.tags.find((tag) => tag.id === 'macro_credit').parent_id, 'macro');
+  assert.equal(loaded.tags.find((tag) => tag.id === 'geopolitics_trade').parent_id, 'geopolitics');
+  assert.equal(loaded.tags.find((tag) => tag.id === 'fx').parent_id, null);
+  assert.equal(loaded.reading.groupByTag.macro_rates, 'macro');
+  assert.equal(loaded.reading.groupByTag.geopolitics_conflict, 'geopolitics');
+  assert.equal(loaded.reading.directionByTag.fx, 'finance');
+  assert.equal(loaded.reading.directionByTag.geopolitics_diplomacy, 'policy');
+  const projected = projectTagCatalog(loaded).find((tag) => tag.id === 'corporate_results');
+  assert.match(projected.description, /经营指引/);
+  assert.match(buildTagSystemPrompt('multi'), /不因为公司在某个市场上市/);
+  assert.equal(treeCatalog(loaded).ids.size, 32);
 });
 
 test('keyword supplement fills missed tags without matching short tokens inside words', () => {

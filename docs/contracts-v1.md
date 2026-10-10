@@ -8,6 +8,8 @@
 
 三层浓缩树见`information-tree-v3.md`和`packages/contracts/src/information-tree.js`：统一协议在Contract的treeResponseProtocol定义，模型完成返回单篇title/text/tagId或模块及inputIds，缺内容只返回status:needs_content。宿主先识别状态，再校验完成响应；无害额外字段丢弃并记录，非法归属仍拒绝。宿主生成不可变节点ID、版本、children和去重文章篇数；小时只连信息、日报只连小时，同一期每个可用输入恰好一个父模块。主Tag以人工锁定或信息主旨为准，旧多标签仅提示；版本化阅读映射只改变上层分组。待补保存原因、可重试性和冷却时间；发布与最近尝试分开，页面不暴露供应商字段。
 
+研究召回见 `packages/contracts/src/research-recall.js`。研究 Tag 必须带定义、命中边界和排除边界；研究问题引用这些 Tag，并带 query、回看范围和证据要求。内容哈希识别定义变化，版本字符串本身不构成新发布。判断结果是直接相关、背景线索、不相关或材料不足；待处理和失败不是不相关。已发布研究报告按 id 冻结。页面不增加供应商字段。生产开关默认关闭。
+
 模型用量见 `model-usage-v1.md`：`ModelUsageRecord` 严格校验 Runtime 内部索引，区分 request 与官方 turn 汇总；所有缺失桶/供应商金额用 null。`ModelUsageView` 移除供应商路由与私有日志格式/路径，返回中立执行身份、业务阶段和独立版本费率估算。`ModelUsageQuery` 校验按 Job 分页，本机读取不得执行模型调用、导入或修复任务。
 
 硬件报价以独立结构化 Contract 保存完整规格、类型、Decimal 数值、币种/单位/报价期、来源更新时间与采集时间；未知字段为 null。报告简介是内容种类，summary_only 是完整度，两者独立。报价高低不表示股票 OHLC。兼容与去重规则见 `hardware-prices-v1.md`。

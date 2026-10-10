@@ -1,3 +1,4 @@
+import { audioTranscriptionManifest, createAudioTranscriptionJobHandlers } from '../../../packages/runtime/src/audio-transcription-job.js';
 import {createGeminiArticleAdmission} from '../../../packages/runtime/src/gemini-article-admission.js';
 import {resolveGoogleHourlyModelPool} from '../../../packages/harness/src/llm-route.js';
 import { createFeedTranslationJobHandlers, feedTranslationManifest } from '../../../packages/runtime/src/feed-translation-module.js';
@@ -56,11 +57,16 @@ import {createInformationTreeService} from '../../../packages/domain/src/informa
 import {loadInformationTreeSkills,loadArticleNormalizeSkills} from '../../../packages/runtime/src/information-tree/skills.js';
 import {createTreeMaterialPort} from '../../../packages/domain/src/information-tree-materials.js';
 import {informationTreeManifest,createInformationTreeJobHandlers,enqueueTreePreparation,prioritizeRecentTreePreparation} from '../../../packages/runtime/src/information-tree-module.js';
+import {createReadingHourService} from '../../../packages/domain/src/reading-hour-service.js';
 import {createModelUsageService} from '../../../packages/domain/src/model-usage-service.js';
 import { createReportJobHandlers, ensureDailyReportSchedule, ensureHourlyDigestSchedule, reportDailyManifest } from '../../../packages/runtime/src/report-module.js';
+import { createResearchRecallJobHandlers, researchRecallManifest } from '../../../packages/runtime/src/research-recall-module.js';
+import { createResearchRelevanceJudge, createResearchTagJudge } from '../../../packages/runtime/src/research-judges.js';
+import { createResearchRecallService } from '../../../packages/domain/src/research-recall-service.js';
 import { createFeedAutomationJobHandlers, ensureDefaultContentSubscriptions, ensureFeedSubscriptionSyncSchedule, FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE, FEED_SYNC_MAX_RUNTIME_MS, feedAutomationManifest, prepareFeedSyncEnqueue } from '../../../packages/runtime/src/feed-automation-module.js';
 import { createStrategyJobHandlers, ensureDividendStrategySchedule, strategySnapshotManifest } from '../../../packages/runtime/src/strategy-module.js';
 import { createQuantJobHandlers, quantLabManifest } from '../../../packages/runtime/src/quant-module.js';
+import { createEtfWhaleJobHandlers, etfWhaleManifest } from '../../../packages/runtime/src/etf-whale-sync.js';
 import { QUANT_PREPARE_JOB_TYPE, QUANT_RUN_JOB_TYPE } from '../../../packages/contracts/src/index.js';
 import { createLocalToolRegistry } from '../../../packages/runtime/src/local-tools.js';
 import { createAgentTraceLog } from '../../../packages/runtime/src/agent-trace-log.js';
@@ -216,6 +222,14 @@ export function createAiCenterWorker(options = {}) {
     translationPort: options.translateService || createTranslateService({ env, quotaRepository: store.repositories.modelQuota }),
   });
   registry.register({ manifest: feedTranslationManifest, jobHandlers: createFeedTranslationJobHandlers({ feedService }) });
+  registry.register({
+    manifest: audioTranscriptionManifest,
+    jobHandlers: options.audioTranscriptionJobHandlers || createAudioTranscriptionJobHandlers({
+      dataDirectory,
+      env,
+      quotaRepository: store.repositories.modelQuota,
+    }),
+  });
   const workPackageTracePort = options.workPackageTracePort || createWorkPackageTracePort({
     logDirectory: path.join(instance.runtimeDirectory, 'logs'),
     repositoryRoot,
@@ -416,6 +430,14 @@ export function createAiCenterWorker(options = {}) {
       reportService,
       informationService,
       treeService,dailyConfig,
+      readingHour: createReadingHourService({
+        repository: store.repositories.informationTree,
+        reportRepository: store.repositories.report,
+        agentRuntime,
+        enabled: env.AI_CENTER_READING_HOUR === '1',
+        client: typesafeClient,
+        catalogIds: new Set((treeCatalog?.tags || []).map((tag) => tag.id)),
+      }),
       beforeHourly:treeService ? (input)=>prioritizeRecentTreePreparation(store,treeMaterials.candidates,input.workspaceId || 'local') : null,
       briefService: options.briefService || createDailyBriefService({
         reportRepository: store.repositories.report,
@@ -424,6 +446,22 @@ export function createAiCenterWorker(options = {}) {
       }),
     }),
   });
+  if (env.AI_CENTER_RESEARCH_RECALL === 'on') {
+    const liveJudges = typesafeClient.available()
+      ? { tagJudge: createResearchTagJudge(typesafeClient), relevanceJudge: createResearchRelevanceJudge(typesafeClient) }
+      : { tagJudge: null, relevanceJudge: null };
+    registry.register({
+      manifest: researchRecallManifest,
+      jobHandlers: createResearchRecallJobHandlers(createResearchRecallService({
+        repository: store.repositories.research,
+        feedRepository: store.repositories.feed,
+        mediaRepository: store.repositories.media,
+        informationRepository: store.repositories.informationTree,
+        modelId: typesafeClient.modelId,
+        ...liveJudges,
+      })),
+    });
+  }
   registry.register({
     manifest: strategySnapshotManifest,
     jobHandlers: options.strategyJobHandlers || createStrategyJobHandlers({ strategyService: dividendStrategy }),
@@ -434,6 +472,13 @@ export function createAiCenterWorker(options = {}) {
       repositoryRoot,
       quantRoot: options.quantRoot || path.join(dataDirectory, 'quant'),
       env,
+    }),
+  });
+  registry.register({
+    manifest: etfWhaleManifest,
+    jobHandlers: options.etfWhaleJobHandlers || createEtfWhaleJobHandlers({
+      repository: store.repositories.etfWhale,
+      dataDirectory,
     }),
   });
   registry.register({

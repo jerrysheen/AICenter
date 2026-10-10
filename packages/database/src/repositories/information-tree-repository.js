@@ -91,6 +91,16 @@ export function createInformationTreeRepository(db,emit) {
       return db.prepare('SELECT published_id,attempt_id FROM information_tree_heads WHERE workspace_id=? AND layer=? AND start_at>=? AND start_at<? ORDER BY start_at DESC').all(workspace,layer,startAt,endAt)
         .map(row=>({edition:row.published_id ? this.getEdition(workspace,row.published_id) : null,attempt:this.getEdition(workspace,row.attempt_id)}));
     },
+    listInformationInWindow(workspace, window, {limit=200, cursor=null}={}) {
+      const safe=Math.max(1, Math.min(Number(limit)||200, 200));
+      return db.prepare(`SELECT n.value_json, h.event_at, h.source_id, h.source_version
+        FROM information_tree_information_heads h
+        JOIN information_tree_nodes n ON n.workspace_id=h.workspace_id AND n.id=h.node_id
+        WHERE h.workspace_id=? AND h.event_at>=? AND h.event_at<?
+          AND (? IS NULL OR (h.event_at, h.source_id) > (?, ?))
+        ORDER BY h.event_at, h.source_id LIMIT ?`).all(workspace, window.startAt, window.endAt, cursor?.eventAt ?? null, cursor?.eventAt ?? 0, cursor?.sourceId ?? '', safe)
+        .map(row=>{const node=JSON.parse(row.value_json);return {...node,eventAt:row.event_at,sourceId:node.sourceId || row.source_id,headSourceVersion:row.source_version};});
+    },
     saveEditorial(workspace,value) {
       const editorial=DailyEditorialSchema.parse(value);
       return db.transaction(()=>{
@@ -107,6 +117,24 @@ export function createInformationTreeRepository(db,emit) {
     editorialForWindow(workspace,window) {
       const id=db.prepare('SELECT published_id FROM information_tree_editorial_heads WHERE workspace_id=? AND period_key=?').get(workspace,`${window.startAt}:${window.endAt}`)?.published_id;
       return id ? this.getEditorial(workspace,id) : null;
+    },
+    getReadingHour:(workspace,id)=>read('reading_hour_snapshots',workspace,id),
+    readingHourHead(workspace,window,scope) {
+      const id=db.prepare('SELECT published_id FROM reading_hour_heads WHERE workspace_id=? AND period_key=?').get(workspace,`${window.startAt}:${window.endAt}:${scope}`)?.published_id;
+      return id ? this.getReadingHour(workspace,id) : null;
+    },
+    publishReadingHour(workspace,snapshot) {
+      return db.transaction(()=>{
+        const key=`${snapshot.window.startAt}:${snapshot.window.endAt}:${snapshot.scope}`;
+        const head=db.prepare('SELECT published_id FROM reading_hour_heads WHERE workspace_id=? AND period_key=?').get(workspace,key);
+        const previous=head?.published_id ? this.getReadingHour(workspace,head.published_id) : null;
+        const newerRoute=previous && snapshot.routeVersion!==previous.routeVersion && snapshot.candidates>=previous.candidates && snapshot.selected>0;
+        const canPublish=!previous || snapshot.scored>previous.scored || (snapshot.status==='ready' && previous.status!=='ready') || newerRoute;
+        db.prepare('INSERT OR IGNORE INTO reading_hour_snapshots (workspace_id,id,start_at,value_json) VALUES (?,?,?,?)').run(workspace,snapshot.id,snapshot.window.startAt,JSON.stringify(snapshot));
+        db.prepare('INSERT OR REPLACE INTO reading_hour_heads (workspace_id,period_key,published_id,attempt_id) VALUES (?,?,?,?)').run(workspace,key,canPublish ? snapshot.id : previous.id,snapshot.id);
+        emit('report.reading.hour.saved.v1','reading-hour',snapshot.id,{status:snapshot.status,published:canPublish,scored:snapshot.scored,candidates:snapshot.candidates},workspace);
+        return {published:canPublish,snapshot:this.getReadingHour(workspace,canPublish ? snapshot.id : previous.id)};
+      })();
     },
   };
 }

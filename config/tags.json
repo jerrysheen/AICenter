@@ -166,7 +166,8 @@
         "GPU Driven",
         "Unity",
         "Unreal"
-      ]
+      ],
+      "description": "渲染引擎、游戏引擎或图形管线本身。普通三维看房、装修预览和建模软件界面不算。"
     },
     {
       "id": "auto",
@@ -226,6 +227,22 @@
       ]
     },
     {
+      "id": "macro_rates",
+      "name": "央行与利率",
+      "level": 2,
+      "parent_id": "macro",
+      "keywords": ["央行", "加息", "降息", "货币政策", "公开市场操作"],
+      "description": "货币政策决定、加息或降息、央行操作和流动性安排。只出现利率二字、没有政策或央行动作的，不要归入。"
+    },
+    {
+      "id": "macro_credit",
+      "name": "债券与信用",
+      "level": 2,
+      "parent_id": "macro",
+      "keywords": ["国债", "企业债", "信用利差", "债券收益率", "违约"],
+      "description": "国债、企业债的发行、收益率、信用利差或违约。股价涨跌本身不是债券事实。"
+    },
+    {
       "id": "crypto",
       "name": "加密资产",
       "level": 1,
@@ -255,7 +272,8 @@
         "纳斯达克",
         "标普",
         "NYSE"
-      ]
+      ],
+      "description": "美国股市的指数、价格、涨跌、成交或板块行情。日本、韩国、越南、欧洲等其他市场不要归入。"
     },
     {
       "id": "market_cn",
@@ -267,7 +285,8 @@
         "沪深",
         "创业板",
         "科创板"
-      ]
+      ],
+      "description": "沪深、创业板、科创板的行情或交易制度。其他海外市场不要归入。"
     },
     {
       "id": "market_hk",
@@ -278,7 +297,32 @@
         "港股",
         "恒生",
         "港股通"
-      ]
+      ],
+      "description": "香港股市的指数、价格或板块行情。越南或其他市场的交易规则不要归入。"
+    },
+    {
+      "id": "fx",
+      "name": "外汇",
+      "level": 1,
+      "parent_id": null,
+      "keywords": ["汇率", "外汇", "美元指数", "人民币汇率"],
+      "description": "汇率水平、外汇市场波动或外汇政策。只出现某种货币的金额、没有汇率变化的，不要归入。"
+    },
+    {
+      "id": "corporate_results",
+      "name": "企业经营与财报",
+      "level": 1,
+      "parent_id": null,
+      "keywords": ["财报", "营收", "净利润", "业绩指引", "订单"],
+      "description": "收入、利润、订单、经营指引或主营业务变化。开源项目热度、星标、技术教程和普通产品发布不是财报或经营结果。不要单凭公司名归入。"
+    },
+    {
+      "id": "corporate_financing",
+      "name": "企业融资与股权变动",
+      "level": 1,
+      "parent_id": null,
+      "keywords": ["融资", "并购", "回购", "增减持", "股权"],
+      "description": "融资、并购、回购、股东增减持或股权结构变化。只评价公司值不值得买的，不要归入。"
     },
     {
       "id": "geopolitics",
@@ -291,6 +335,30 @@
         "制裁",
         "供应链安全"
       ]
+    },
+    {
+      "id": "geopolitics_conflict",
+      "name": "战争与安全",
+      "level": 2,
+      "parent_id": "geopolitics",
+      "keywords": ["战争", "停火", "军事冲突", "武装袭击"],
+      "description": "军事冲突、武装袭击、停火或安全事件的具体进展。"
+    },
+    {
+      "id": "geopolitics_diplomacy",
+      "name": "外交与国际关系",
+      "level": 2,
+      "parent_id": "geopolitics",
+      "keywords": ["外交", "谈判", "条约", "峰会"],
+      "description": "国家间关系、外交谈判、访问或国际协议的具体进展。"
+    },
+    {
+      "id": "geopolitics_trade",
+      "name": "贸易制裁与出口限制",
+      "level": 2,
+      "parent_id": "geopolitics",
+      "keywords": ["关税", "制裁", "出口管制", "出口限制"],
+      "description": "关税、经济制裁、出口管制或贸易准入的具体措施和变化。只出现国家名、没有这些措施的，不要归入。"
     },
     {
       "id": "communications",
@@ -342,11 +410,19 @@
       "energy": "energy",
       "macro": "macro",
       "macro_commodity": "macro",
+      "macro_rates": "macro",
+      "macro_credit": "macro",
       "crypto": "crypto",
       "market_us": "market_us",
       "market_cn": "market_cn",
       "market_hk": "market_hk",
+      "fx": "fx",
+      "corporate_results": "corporate_results",
+      "corporate_financing": "corporate_financing",
       "geopolitics": "geopolitics",
+      "geopolitics_conflict": "geopolitics",
+      "geopolitics_diplomacy": "geopolitics",
+      "geopolitics_trade": "geopolitics",
       "communications": "communications",
       "datacenter": "datacenter"
     },
@@ -369,11 +445,19 @@
       "energy": "tech",
       "macro": "finance",
       "macro_commodity": "finance",
+      "macro_rates": "finance",
+      "macro_credit": "finance",
       "crypto": "finance",
       "market_us": "finance",
       "market_cn": "finance",
       "market_hk": "finance",
+      "fx": "finance",
+      "corporate_results": "finance",
+      "corporate_financing": "finance",
       "geopolitics": "policy",
+      "geopolitics_conflict": "policy",
+      "geopolitics_diplomacy": "policy",
+      "geopolitics_trade": "policy",
       "communications": "tech",
       "datacenter": "tech"
     },

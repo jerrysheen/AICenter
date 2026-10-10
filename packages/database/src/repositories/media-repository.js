@@ -56,6 +56,9 @@ function mapEntry(row) {
 export function createMediaRepository(database, emitEvent = () => {}) {
   return {
     saveArticleKind(workspaceId,externalId,kind) { database.prepare('UPDATE media_index_entries SET article_kind=? WHERE workspace_id=? AND external_id=?').run(kind,workspaceId,externalId); },
+    getEntry(workspaceId, externalId) {
+      return mapEntry(database.prepare(`SELECT ${ENTRY_INDEX_COLUMNS} FROM media_index_entries WHERE workspace_id=? AND external_id=?`).get(workspaceId, externalId));
+    },
     linkLegacy(workspaceId,externalId,contentItemId,legacyProvider,legacyExternalId) {
       database.prepare('INSERT OR IGNORE INTO media_entry_legacy_links VALUES (?,?,?,?,?)').run(workspaceId,externalId,contentItemId,legacyProvider,legacyExternalId);
     },
@@ -76,6 +79,21 @@ export function createMediaRepository(database, emitEvent = () => {}) {
         AND (? IS NULL OR (COALESCE(published_at,observed_at),external_id) > (?,?))
         ORDER BY COALESCE(published_at,observed_at),external_id LIMIT ?`)
         .all(workspaceId,sourceId,startAt,endAt,...hiddenExternalIds,cursor?.eventAt ?? null,cursor?.eventAt ?? 0,cursor?.id ?? '',Math.min(200,limit)).map(mapEntry);
+    },
+    listEntriesAcrossWindow(workspaceId, {startAt,endAt,cursor=null,limit=200}={}) {
+      const safe=Math.max(1, Math.min(Number(limit)||200, 200));
+      return database.prepare(`SELECT e.*, (
+          SELECT p.brief_status FROM media_article_processing p
+          WHERE p.workspace_id=e.workspace_id AND p.external_id=e.external_id AND p.body_hash=e.body_hash
+          LIMIT 1) AS brief_status
+        FROM media_index_entries e
+        WHERE e.workspace_id=?
+          AND COALESCE(e.published_at,e.observed_at)>=?
+          AND COALESCE(e.published_at,e.observed_at)<?
+          AND (? IS NULL OR (COALESCE(e.published_at,e.observed_at), e.external_id) > (?, ?))
+        ORDER BY COALESCE(e.published_at,e.observed_at), e.external_id
+        LIMIT ?`).all(workspaceId, startAt, endAt, cursor?.eventAt ?? null, cursor?.eventAt ?? 0, cursor?.id ?? '', safe)
+        .map(row=>({...mapEntry(row), briefStatus:row.brief_status || '', eventAt:row.published_at || row.observed_at}));
     },
     findByUrl(workspaceId, url) {
       // Preserve the oldest existing identity, including its Capture and reading state.

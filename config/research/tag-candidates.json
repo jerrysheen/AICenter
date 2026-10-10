@@ -1,0 +1,22 @@
+{
+  "kind": "tag-candidates",
+  "version": "2026-10-08.1",
+  "activated": false,
+  "note": "实验候选。未写入 config/tags.json，不参与生产分类。",
+  "candidates": [
+    {
+      "id": "trading_method",
+      "name": "投资策略与交易方法",
+      "recommendation": "建议新增，本轮不激活",
+      "definition": "备兑、均线、仓位、止损、交易系统和市场结构方法。只讲方法，不因为提到美股或宏观就改打市场标签。",
+      "why": "这类内容在样本里反复出现，现有美股、宏观和空标签都接不住，也容易被旧栏目误当成行情。"
+    },
+    {
+      "id": "market_other",
+      "name": "其他海外股票市场",
+      "recommendation": "暂缓",
+      "definition": "日本、韩国、越南、欧洲及其他未单列市场的指数、价格和交易制度。",
+      "why": "新版分类多半留空，没有把它们打进美股。旧信息树栏目有错标。先观察留空是否够用，本轮不激活。"
+    }
+  ]
+}

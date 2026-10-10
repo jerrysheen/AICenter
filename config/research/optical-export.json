@@ -1,0 +1,47 @@
+{
+  "kind": "research-addition",
+  "version": "2026-10-08.2",
+  "tags": [
+    {
+      "id": "overseas_orders",
+      "name": "海外订单与客户导入",
+      "definition": "材料写明国产光通信产品的海外订单、海外客户导入或海外供应商名录发生变化。",
+      "include": "获得或失去海外订单、进入或退出海外供应商名录、海外客户开始导入。",
+      "exclude": "只出现海外、出口或公司名称，没有订单、名录或导入事实的，不要打这个标签。",
+      "keywords": ["海外订单", "供应商名录", "海外客户"],
+      "aliases": ["海外导入"],
+      "enabled": true
+    }
+  ],
+  "questions": [
+    {
+      "id": "optical_export_conditions",
+      "version": "2026-10-08.2",
+      "objective": "核对国产光通信进入海外市场的条件是否出现可追溯的变化。不预设能否进入，材料不足时结论为尚不能判断。",
+      "subquestions": [
+        {
+          "id": "qualification",
+          "text": "认证、供应商资格和设备认证是否发生变化？",
+          "tagIds": ["qualification_cert"],
+          "queries": [
+            { "phrase": "设备认证", "aliases": ["客户认证"], "entities": [] }
+          ]
+        },
+        {
+          "id": "market_access",
+          "text": "采购限制、出口准入或海外订单条件是否发生变化？",
+          "tagIds": ["export_access", "overseas_orders"],
+          "queries": [
+            { "phrase": "海外订单", "aliases": ["供应商名录"], "entities": [] },
+            { "phrase": "采购限制", "aliases": ["出口许可"], "entities": [] }
+          ]
+        }
+      ],
+      "queries": [
+        { "phrase": "光模块", "aliases": ["光芯片"], "entities": ["中际旭创", "天孚通信"] }
+      ],
+      "historyLookbackMs": 604800000,
+      "evidence": "资格、许可和订单要有具体事实。只有公司名称不能当成已经进入海外市场。材料不足时结论为尚不能判断。"
+    }
+  ]
+}

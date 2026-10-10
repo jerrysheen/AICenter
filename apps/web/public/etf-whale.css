@@ -1,0 +1,16 @@
+body { margin: 0; font: 16px/1.5 "Segoe UI", sans-serif; color: #17211b; background: #f6f4ef; }
+main { max-width: 980px; margin: 0 auto; padding: 28px 20px 64px; }
+.eyebrow { letter-spacing: .08em; color: #5d6b62; }
+h1 { margin: 0 0 8px; font-size: 32px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 20px 0; }
+.card { background: white; border-radius: 12px; padding: 14px 16px; }
+.card span { display: block; color: #5d6b62; font-size: 13px; }
+.card strong { font-size: 24px; }
+table { width: 100%; border-collapse: collapse; background: white; }
+th, td { padding: 8px 10px; border-bottom: 1px solid #e6e1d8; text-align: left; }
+td:nth-child(n+3) { text-align: right; }
+input { font: inherit; padding: 6px 8px; }
+button { font: inherit; padding: 6px 12px; }
+pre { white-space: pre-wrap; }
+.down { color: #9b1c1c; }
+.up { color: #176b3a; }

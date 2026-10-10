@@ -1,6 +1,7 @@
 import { createFeedService } from './feed-service.js';
 import { createFeedInteractionService } from './feed-interaction-service.js';
 import { createInformationTreeReader } from './information-tree-service.js';
+import { createReadingHourService } from './reading-hour-service.js';
 import { createModelUsageService } from './model-usage-service.js';
 import { createMediaIngestionService } from './media-ingestion-service.js';
 import { createIdentityService } from './identity-service.js';
@@ -14,6 +15,7 @@ import { createDividendStrategyService } from './trading-strategies/strategy-ser
 import { createContextService } from './context-service.js';
 import { createTaggingService } from './tagging-service.js';
 import { createQuantLabService } from './quant-lab-service.js';
+import { createEtfWhaleReadService } from './etf-whale-service.js';
 
 export { createContextService, createDailyBriefService, createFeedService, createIdentityService, createKnowledgeService, createMarketStatisticsService, createMediaIngestionService, createReportService, createRuntimeService, createTradingService, createTaggingService };
 export { buildDailyBriefCandidates } from './daily-brief-candidates.js';
@@ -27,6 +29,9 @@ export { computeFeedIdentityHash, feedItemIdentityHash } from './feed-identity.j
 export { packFeedAiBatches } from './feed-ai-batch.js';
 export { collectLocalizationUnits, localizationItemId, needsZhLocalization } from './localize-texts.js';
 export { loadTagCatalog, projectTagCatalog, selectionModeFor } from './tag-catalog.js';
+export { applyResearchAddition, loadResearchCatalog, projectResearchTags, RESEARCH_TAG_PROMPT_VERSION, RESEARCH_RELEVANCE_PROMPT_VERSION } from './research-catalog.js';
+export { createResearchRecallService } from './research-recall-service.js';
+export { compareRecallMethods, scoreRecall, scoreRecallByStratum, splitLabeledSet } from './research-eval.js';
 export { parseTagBatchOutput, extractTagBatchObject, tagBatchOutputComplete } from './tag-parser.js';
 export { TAG_PROMPT_VERSION } from './tag-prompt.js';
 export { classifyProcessRestart } from './process-restart.js';
@@ -53,6 +58,7 @@ export {
 
 export function createDomainServices({
   store, sourcePort, personalAssetPort, workspaceId = 'local', translationPort,
+  dataDirectory = null, env = process.env,
   agentProgressPort, fileKnowledgePort = null, tagCatalog = null, taggingPort = null,
   restartPort = null,
   workPackageTracePort = null,
@@ -69,6 +75,7 @@ export function createDomainServices({
   informationPipeline = 'legacy',
   onContentReady = null,
   analysisSkillCatalog = null,
+  parityDirectory = '',
 }) {
   if (!store?.repositories) throw new Error('store repositories are required');
   const media = mediaService || (store.repositories.media
@@ -129,6 +136,23 @@ export function createDomainServices({
   });
   return Object.freeze({
     informationTree: createInformationTreeReader({repository:store.repositories.informationTree,timezone:resolvedDailyConfig.timezone,pipeline:informationPipeline,catalog:tagCatalog || {}}),
+    readingHour: createReadingHourService({
+      repository:store.repositories.informationTree,
+      enabled: env.AI_CENTER_READING_HOUR === '1',
+      publishedAtFor(workspace, refs) {
+        for (const ref of refs || []) {
+          if (ref?.type === 'content-item') {
+            const at = store.repositories.feed?.getContentItem?.(workspace, ref.id)?.publishedAt;
+            if (Number.isFinite(at)) return at;
+          }
+          if (ref?.type === 'media-body') {
+            const at = store.repositories.media?.getEntry?.(workspace, ref.id)?.publishedAt;
+            if (Number.isFinite(at)) return at;
+          }
+        }
+        return null;
+      },
+    }),
     modelUsage: createModelUsageService({ repository: store.repositories.modelUsage, workspaceId, rates: modelUsageRates, getJob: id => store.getJob(id) }),
     identity: createIdentityService({ identityRepository: store, loginCredential }),
     feed,
@@ -146,6 +170,8 @@ export function createDomainServices({
       feedFilterConfig:feedFilter?.config || null,
       dailyConfig: resolvedDailyConfig,
       analysisSkillCatalog,
+      dataDirectory,
+      env,
     }),
     report,
     marketStatistics,
@@ -154,6 +180,10 @@ export function createDomainServices({
     quant: createQuantLabService({
       quantRoot,
       listJobs: () => store.listJobs?.(100) || [],
+    }),
+    etfWhale: createEtfWhaleReadService({
+      repository: store.repositories.etfWhale,
+      parityDirectory,
     }),
   });
 }

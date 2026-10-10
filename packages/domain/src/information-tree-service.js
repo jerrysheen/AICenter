@@ -208,7 +208,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
     const node=repository.saveNode(s.workspaceId,{...output,id,version,layer:'information',children:[],articleIds:[m.id],sourceId:m.id,
       sourceRefs:m.sourceRefs || [],window,eventAt:m.eventAt ?? m.publishedAt ?? window.startAt,sourceUpdatedAt:m.updatedAt ?? m.obtainedAt ?? m.publishedAt ?? window.startAt,generatedAt:now(),
       draftKey:version,sourceVersion,effectivePromptHash:skills.information.version,validatorVersion,catalogVersion:classification.classificationVersion,...(articleStrategy ? {formatVersion:ARTICLE_VALIDATOR_VERSION} : {}),inputScope:source.inputScope,
-      classification:{source:'model',ruleVersion:classification.classificationVersion},safePassthrough:Array.from(output.text).length<=80 && !/你身边|附近的停车场|敬请|点击|不容错过/u.test(output.text)});
+      classification:{source:'model',ruleVersion:classification.classificationVersion},...(output.readingClassification ? {readingClassification:output.readingClassification} : {}),safePassthrough:Array.from(output.text).length<=80 && !/你身边|附近的停车场|敬请|点击|不容错过/u.test(output.text)});
     return classified(node,m,s);
   }
   async function condense(layer,inputs,window,s) {

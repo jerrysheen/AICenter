@@ -1,9 +1,14 @@
+import { open } from 'node:fs/promises';
 import {
   ActiveAgentRunSchema,
   AgentRunStatusViewSchema,
   AgentRunProgressStepSchema,
   ARTICLE_ANALYSIS_JOB_TYPE,
   ArticleAnalysisRunViewSchema,
+  AUDIO_TRANSCRIBE_JOB_TYPE,
+  AudioTranscriptionCreateSchema,
+  AudioTranscriptionJobInputSchema,
+  AudioTranscriptionViewSchema,
   QUANT_PREPARE_JOB_TYPE,
   QUANT_RUN_JOB_TYPE,
   QuantRunOptionsSchema,
@@ -13,6 +18,7 @@ import {
   GenerateHourlyDigestInputSchema,
   FeedTranslationJobInputSchema,
 } from '../../contracts/src/index.js';
+import { describeAudioTranscription, readWavInfo, resolveAudioFile } from './audio-transcription.js';
 import { randomUUID } from 'node:crypto';
 import { resolveResearchProfile } from './research-profile.js';
 
@@ -65,7 +71,13 @@ function acceptedAnalysisSkills(selectedSkills, analysisSkillCatalog) {
   return analysisSkillCatalog.activate(selectedSkills).map(({ id, version }) => ({ id, version }));
 }
 
-export function createRuntimeService({ runtimeRepository, agentProgressPort, restartPort, dailyConfig = null, feedFilterConfig=null, analysisSkillCatalog = null }) {
+function publicAudioError(error) {
+  const message = error?.message || error?.name || '';
+  const text = String(message).replace(/AQ\.[A-Za-z0-9_-]+/g, '[redacted]').replace(/\s+/g, ' ').trim();
+  return text.slice(0, 500) || '转写失败';
+}
+
+export function createRuntimeService({ runtimeRepository, agentProgressPort, restartPort, dailyConfig = null, feedFilterConfig=null, analysisSkillCatalog = null, dataDirectory = null, env = process.env }) {
   if (!runtimeRepository) throw new Error('runtimeRepository is required');
 
   return Object.freeze({
@@ -199,6 +211,54 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort, res
         input,
         workspaceId: input.workspaceId,
         maxAttempts: 3,
+      });
+    },
+    async requestAudioTranscription(input) {
+      if (!dataDirectory) throw new Error('audio transcription requires a data directory');
+      const parsed = parseContract(AudioTranscriptionCreateSchema, input);
+      const absolute = resolveAudioFile(dataDirectory, parsed.path);
+      const file = await open(absolute, 'r');
+      let durationMs = 0;
+      try {
+        const size = (await file.stat()).size;
+        const length = Math.min(size, 1024 * 1024);
+        const header = Buffer.alloc(length);
+        const { bytesRead } = await file.read(header, 0, length, 0);
+        durationMs = readWavInfo(header.subarray(0, bytesRead), size).durationMs;
+      } finally {
+        await file.close();
+      }
+      if (durationMs <= 0) throw new ValidationError('音频时长无效', ['path']);
+      const plan = await describeAudioTranscription(env, durationMs);
+      const value = parseContract(AudioTranscriptionJobInputSchema, {
+        ...parsed,
+        workspaceId: input.workspaceId || 'local',
+        plan,
+      });
+      const openJob = runtimeRepository.listOpenJobs?.(AUDIO_TRANSCRIBE_JOB_TYPE)?.find((job) => (
+        job.workspaceId === value.workspaceId && job.input?.path === value.path
+      ));
+      return openJob || runtimeRepository.createJob({
+        type: AUDIO_TRANSCRIBE_JOB_TYPE,
+        workspaceId: value.workspaceId,
+        input: value,
+        maxAttempts: 1,
+      });
+    },
+    getAudioTranscription(id, workspaceId) {
+      const job = runtimeRepository.getJob(id);
+      if (!job || job.type !== AUDIO_TRANSCRIBE_JOB_TYPE || job.workspaceId !== workspaceId) return null;
+      const output = job.output || {};
+      return parseContract(AudioTranscriptionViewSchema, {
+        runId: job.id,
+        workspaceId: job.workspaceId,
+        status: job.status,
+        path: job.input?.path || '',
+        updatedAt: job.updatedAt,
+        plan: output.plan || job.input?.plan,
+        text: output.text || '',
+        segments: output.segments || [],
+        ...(job.status === 'failed' ? { error: publicAudioError(job.error) } : {}),
       });
     },
     requestArticleAnalysis(input) {

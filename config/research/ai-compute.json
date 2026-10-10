@@ -1,0 +1,129 @@
+{
+  "kind": "research-catalog",
+  "id": "ai_compute_industry",
+  "version": "2026-10-08.1",
+  "tags": [
+    {
+      "id": "order_adoption",
+      "name": "订单与采用",
+      "definition": "材料写明某类算力或器件的订单、客户采用、部署或导入发生了可核对的变化。",
+      "include": "新增订单、订单上调或下调、客户开始采用、部署规模变化、导入窗口变化。",
+      "exclude": "只出现公司或产品名称，没有订单、采用或部署事实的，不要打这个标签。",
+      "keywords": ["订单", "采用", "部署", "导入"],
+      "aliases": ["客户订单"],
+      "enabled": true
+    },
+    {
+      "id": "capex_buildout",
+      "name": "资本开支与机房建设",
+      "definition": "材料写明资本开支、数据中心或机房建设计划、开工或投产进度。",
+      "include": "资本开支上调或削减、数据中心新开工、机房交付、建设延期。",
+      "exclude": "只把资本开支当作股价理由、没有开支或建设项目事实的，不要打这个标签。",
+      "keywords": ["资本开支", "数据中心", "机房"],
+      "aliases": ["capex"],
+      "enabled": true
+    },
+    {
+      "id": "capacity_delivery",
+      "name": "产能与交付",
+      "definition": "材料写明产能、产量、良率、交付或供货能力的变化。",
+      "include": "扩产、减产、交付延迟、良率变化、产能爬坡。",
+      "exclude": "只说需求很好或行业景气、没有产能或交付事实的，不要打这个标签。",
+      "keywords": ["产能", "交付", "扩产", "良率"],
+      "aliases": ["出货"],
+      "enabled": true
+    },
+    {
+      "id": "price_cost_guidance",
+      "name": "价格成本与指引",
+      "definition": "材料写明产品价格、成本或公司业绩指引的变化，并保留口径。",
+      "include": "现货价格、合约价格、成本上升或下降、业绩指引上调或下调。",
+      "exclude": "没有价格、成本或指引事实的传闻标题，不要打这个标签。",
+      "keywords": ["价格", "报价", "成本", "指引"],
+      "aliases": ["现货", "合约价"],
+      "enabled": true
+    },
+    {
+      "id": "financing_terms",
+      "name": "融资条件",
+      "definition": "材料写明融资、信贷或资本工具是计划、拟议还是已经完成。",
+      "include": "融资计划、贷款额度、发行完成、融资延期或终止。",
+      "exclude": "只说资金充裕或看好融资环境、没有具体融资事实的，不要打这个标签。",
+      "keywords": ["融资", "贷款", "发行"],
+      "aliases": ["信贷"],
+      "enabled": true
+    },
+    {
+      "id": "export_access",
+      "name": "出口准入",
+      "definition": "材料写明出口许可、采购限制或准入名单发生了变化。",
+      "include": "出口许可、实体清单、采购限制、准入放宽或收紧。",
+      "exclude": "只出现出口这两个字、没有许可、限制或名单事实的，不要打这个标签。",
+      "keywords": ["出口许可", "采购限制", "准入"],
+      "aliases": ["出口管制"],
+      "enabled": true
+    },
+    {
+      "id": "qualification_cert",
+      "name": "认证与供应商资格",
+      "definition": "材料写明设备认证、客户认证或供应商资格的进展或结果。",
+      "include": "通过认证、认证失败、进入供应商资格、资格被暂停。",
+      "exclude": "只说质量好或技术领先、没有认证或资格事实的，不要打这个标签。",
+      "keywords": ["认证", "供应商资格", "资格审核"],
+      "aliases": ["客户认证"],
+      "enabled": true
+    },
+    {
+      "id": "supply_route",
+      "name": "供应链与技术路线",
+      "definition": "材料写明供应链来源或技术路线的事实变化，例如硅光、先进封装或替代供应。",
+      "include": "新增或失去供应商、技术路线切换、封装或硅光方案被采用或搁置。",
+      "exclude": "只罗列技术名词、没有路线或供应链事实变化的，不要打这个标签。",
+      "keywords": ["硅光", "供应链", "技术路线", "先进封装"],
+      "aliases": ["光芯片"],
+      "enabled": true
+    }
+  ],
+  "questions": [
+    {
+      "id": "ai_compute_changes",
+      "version": "2026-10-08.1",
+      "objective": "组织AI算力与科技产业已经出现的变化和它们之间能核对的关联。不预设涨跌，材料不足时结论为尚不能判断。",
+      "subquestions": [
+        {
+          "id": "demand",
+          "text": "需求端：订单、资本开支、数据中心建设、客户采用情况发生了什么变化？",
+          "tagIds": ["order_adoption", "capex_buildout"],
+          "queries": [
+            { "phrase": "数据中心", "aliases": ["智算中心"], "entities": [] },
+            { "phrase": "资本开支", "aliases": ["capex"], "entities": [] }
+          ]
+        },
+        {
+          "id": "supply",
+          "text": "供给与盈利端：产能、交付、产品价格、成本、业绩指引发生了什么变化？",
+          "tagIds": ["capacity_delivery", "price_cost_guidance"],
+          "queries": [
+            { "phrase": "HBM", "aliases": ["高带宽内存"], "entities": [] },
+            { "phrase": "DRAM", "aliases": ["内存"], "entities": [] },
+            { "phrase": "光模块", "aliases": ["光芯片", "硅光"], "entities": [] }
+          ]
+        },
+        {
+          "id": "constraints",
+          "text": "约束条件：融资、出口准入、认证、供应链和技术路线出现了什么变化？",
+          "tagIds": ["financing_terms", "export_access", "qualification_cert", "supply_route"],
+          "queries": [
+            { "phrase": "出口许可", "aliases": ["采购限制"], "entities": [] },
+            { "phrase": "设备认证", "aliases": ["供应商资格"], "entities": [] }
+          ]
+        }
+      ],
+      "queries": [
+        { "phrase": "英伟达", "aliases": ["NVIDIA"], "entities": ["英伟达", "NVIDIA", "博通", "台积电", "SK海力士", "三星", "美光"] }
+      ],
+      "historyLookbackMs": 604800000,
+      "evidence": "材料不足时结论为尚不能判断。计划不要写成完成，现货、合约和传闻要分开。同时出现不能写成因果关系。"
+    }
+  ]
+}

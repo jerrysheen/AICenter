@@ -25,8 +25,30 @@ class El {
   removeAttribute(key) { delete this.attrs[key]; }
   getAttribute(key) { return this.attrs[key] ?? null; }
   addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
-  append(...nodes) { this.children.push(...nodes.flat()); }
-  replaceChildren(...nodes) { this.children = nodes.flat(); }
+  append(...nodes) {
+    for (const node of nodes.flat()) {
+      if (node && typeof node === 'object') node.parentNode = this;
+      this.children.push(node);
+    }
+  }
+  replaceChildren(...nodes) {
+    for (const child of this.children) if (child) child.parentNode = null;
+    this.children = [];
+    if (nodes.length) this.append(...nodes);
+  }
+  remove() {
+    const list = this.parentNode?.children;
+    if (!list) return;
+    const index = list.indexOf(this);
+    if (index >= 0) list.splice(index, 1);
+    this.parentNode = null;
+  }
+  insertBefore(node, before) {
+    if (node && typeof node === 'object') node.parentNode = this;
+    const index = before ? this.children.indexOf(before) : -1;
+    if (index < 0) this.children.push(node);
+    else this.children.splice(index, 0, node);
+  }
   add(option) { this.children.push(option); }
   scrollIntoView() {}
   querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
@@ -162,5 +184,82 @@ test('a failed hour stays unread and clears after a successful retry', async () 
   await retry.listeners.click[0]();
   assert.equal(chip(root, start).classList.contains('is-unread'), false);
   assert.deepEqual(JSON.parse(localStorage.getItem(seenKey('hourly-dot-fail'))), ['edition:failehour0001']);
+  page.stop();
+});
+
+test('hourly titles fold open in place and keep the hour list', async () => {
+  const start = Date.parse('2026-10-08T04:00:00Z');
+  const info = { id: 'info-1', layer: 'information', title: '芯片出口', text: '摘要', body: '这是较长的中文正文', tagId: 'semiconductor', sourceRefs: [{ type: 'media-body', id: 'media-1' }] };
+  const current = edition('edition:readerhour001', start, ['info-1']);
+  let read = '';
+  const root = new El('div'); root.isConnected = true;
+  const page = createInformationTreePage({
+    session: () => ({ role: 'desktop', device: { id: 'reader-bar' } }),
+    active: () => true,
+    readSavedSource: async (node) => { read = node.id; },
+    loadTreeManifest: async () => manifest([current]),
+    api(path) {
+      if (path.startsWith('/api/v1/tags')) return Promise.resolve({ catalog: { tags: [] } });
+      const id = new URL(path, 'http://tree.local').searchParams.get('id');
+      if (id === current.id) return Promise.resolve({ edition: current, nodes: [info] });
+      return Promise.reject(new Error('missing'));
+    },
+  });
+  await page.mount(root, { mode: 'hourly' });
+  assert.equal(root.classList.contains('is-reading'), false);
+  assert.equal(root.querySelector('.reader-mobile-bar'), null);
+  const fold = root.querySelector('details');
+  assert.equal(fold.open, false);
+  assert.equal(root.querySelector('.tree-hour-wheel').hidden, false);
+  fold.open = true;
+  await fold.listeners.toggle[0]();
+  assert.equal(root.classList.contains('is-reading'), false);
+  assert.equal(root.querySelector('.tree-hour-wheel').hidden, false);
+  assert.equal(root.querySelector('.reading-toolbar'), null);
+  const paragraph = root.querySelector('.reading-fold-body').children.find(node => node.tagName === 'P');
+  assert.match(paragraph.textContent, /这是较长的中文正文/);
+  assert.ok(root.querySelector('.feed-content'));
+  await root.querySelectorAll('button').find(node => node.textContent === '原文').listeners.click[0]();
+  assert.equal(read, 'info-1');
+  fold.open = false;
+  await fold.listeners.toggle[0]();
+  assert.equal(root.querySelector('h3').textContent, '芯片出口');
+  page.stop();
+});
+
+test('hourly reading shows hits and misses together and marks stale items', async () => {
+  const start = Date.parse('2026-10-08T04:00:00Z');
+  const current = edition('edition:readerhour002', start, ['info-1']);
+  const snapshot = {
+    id: 'rh:view', status: 'ready', scored: 2, candidates: 2, selected: 1,
+    sections: [], items: [
+      {nodeId: 'hit-1', title: '命中标题', disposition: 'hit', readingDirectionName: '产业个股', readingThemeName: '其他', timely: true},
+      {nodeId: 'miss-1', title: '未命中旧闻', disposition: 'miss', readingDirectionName: '产业个股', readingThemeName: '其他', timely: false},
+      {nodeId: 'out-1', title: '范围外讣告', disposition: 'out-of-scope', readingDirectionName: '待分类', readingThemeName: '', timely: false},
+    ],
+  };
+  const root = new El('div'); root.isConnected = true;
+  const page = createInformationTreePage({
+    session: () => ({ role: 'desktop', device: { id: 'reader-parts' } }),
+    active: () => true,
+    loadTreeManifest: async () => manifest([current]),
+    api(path) {
+      if (path.startsWith('/api/v1/tags')) return Promise.resolve({ catalog: { tags: [] } });
+      if (path.startsWith('/api/v1/reports/reading-hour')) return Promise.resolve({ snapshot });
+      return Promise.reject(new Error('missing'));
+    },
+  });
+  await page.mount(root, { mode: 'hourly' });
+  const headings = root.querySelectorAll('h2').map(node => node.textContent);
+  assert.equal(headings.includes('精确标题'), false);
+  assert.equal(headings.includes('待分类'), false);
+  assert.equal(headings.includes('产业个股'), true);
+  assert.equal(headings.includes('其他'), true);
+  assert.equal(root.querySelectorAll('button').some(node => node.textContent === '关注精选'), false);
+  assert.equal(root.querySelectorAll('h3').some(node => node.textContent.includes('范围外讣告')), false);
+  assert.equal(root.querySelector('.reading-stale').textContent, '时效不足');
+  const titles = root.querySelectorAll('h3').map(node => node.textContent);
+  assert.ok(titles.includes('命中标题'));
+  assert.ok(titles.includes('未命中旧闻'));
   page.stop();
 });

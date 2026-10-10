@@ -11,6 +11,7 @@ const nodeById = db.prepare('SELECT value_json FROM information_tree_nodes WHERE
 const files = {
   '/styles.css': ['apps/web/public/styles.css', 'text/css; charset=utf-8'],
   '/information-tree.js': ['apps/web/public/information-tree.js', 'text/javascript; charset=utf-8'],
+  '/icons.js': ['apps/web/public/icons.js', 'text/javascript; charset=utf-8'],
 };
 const page = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>日报研究稿预览</title><link rel="stylesheet" href="/styles.css"></head><body><div id="app"></div><script type="module">
 import {createInformationTreePage} from '/information-tree.js';

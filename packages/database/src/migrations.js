@@ -1504,6 +1504,149 @@ migrations.push({version:46,name:'daily_editorial',up(database) {
     CREATE TABLE information_tree_editorial_heads (workspace_id TEXT NOT NULL,period_key TEXT NOT NULL,published_id TEXT,PRIMARY KEY(workspace_id,period_key));`);
 }});
 
+migrations.push({version:47,name:'research_recall',up(database) {
+  database.exec(`CREATE TABLE research_releases (
+      workspace_id TEXT NOT NULL, release_id TEXT NOT NULL, catalog_id TEXT NOT NULL, label_version TEXT NOT NULL,
+      content_hash TEXT NOT NULL, value_json TEXT NOT NULL, activated_at INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (workspace_id, release_id));
+    CREATE UNIQUE INDEX research_releases_one_active ON research_releases(workspace_id) WHERE active=1;
+    CREATE TABLE research_pools (
+      workspace_id TEXT NOT NULL, pool_id TEXT NOT NULL, start_at INTEGER NOT NULL, end_at INTEGER NOT NULL,
+      member_count INTEGER NOT NULL, frozen_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, pool_id));
+    CREATE TABLE research_pool_members (
+      workspace_id TEXT NOT NULL, pool_id TEXT NOT NULL, ordinal INTEGER NOT NULL, lane TEXT NOT NULL,
+      resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, source_version TEXT NOT NULL, event_at INTEGER NOT NULL,
+      title TEXT NOT NULL, text TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', origin_type TEXT NOT NULL, origin_id TEXT NOT NULL,
+      node_id TEXT, column_tag_id TEXT, history INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (workspace_id, pool_id, ordinal));
+    CREATE TABLE research_tag_judgments (
+      workspace_id TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, source_version TEXT NOT NULL,
+      tag_id TEXT NOT NULL, definition_hash TEXT NOT NULL, prompt_version TEXT NOT NULL, model_id TEXT NOT NULL, input_hash TEXT NOT NULL,
+      status TEXT NOT NULL, matched INTEGER, claim_token TEXT NOT NULL DEFAULT '', lease_until INTEGER NOT NULL DEFAULT 0,
+      error_code TEXT NOT NULL DEFAULT '', request_count INTEGER NOT NULL DEFAULT 0, pass TEXT NOT NULL, updated_at INTEGER NOT NULL,
+      PRIMARY KEY (workspace_id, resource_type, resource_id, source_version, tag_id, definition_hash, prompt_version, model_id, input_hash));
+    CREATE TABLE research_relevance_judgments (
+      workspace_id TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, source_version TEXT NOT NULL,
+      question_id TEXT NOT NULL, question_hash TEXT NOT NULL, prompt_version TEXT NOT NULL, model_id TEXT NOT NULL, input_hash TEXT NOT NULL,
+      status TEXT NOT NULL, verdict TEXT NOT NULL DEFAULT '', claim_token TEXT NOT NULL DEFAULT '', lease_until INTEGER NOT NULL DEFAULT 0,
+      error_code TEXT NOT NULL DEFAULT '', request_count INTEGER NOT NULL DEFAULT 0, pass TEXT NOT NULL, updated_at INTEGER NOT NULL,
+      PRIMARY KEY (workspace_id, resource_type, resource_id, source_version, question_id, question_hash, prompt_version, model_id, input_hash));
+    CREATE TABLE research_runs (
+      workspace_id TEXT NOT NULL, id TEXT NOT NULL, release_id TEXT NOT NULL, content_hash TEXT NOT NULL, question_hash TEXT NOT NULL,
+      status TEXT NOT NULL, report_id TEXT NOT NULL DEFAULT '', value_json TEXT NOT NULL, created_at INTEGER NOT NULL,
+      PRIMARY KEY (workspace_id, id));
+    CREATE TABLE research_reports (
+      workspace_id TEXT NOT NULL, id TEXT NOT NULL, question_id TEXT NOT NULL, start_at INTEGER NOT NULL, value_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, id));
+    CREATE TABLE research_report_heads (
+      workspace_id TEXT NOT NULL, period_key TEXT NOT NULL, report_id TEXT NOT NULL, PRIMARY KEY (workspace_id, period_key));`);
+}});
+
+migrations.push({ version: 48, name: 'etf_whale_tracking', up(database) {
+  database.exec(`
+    CREATE TABLE etf_whale_instruments (
+      code TEXT PRIMARY KEY,
+      exchange TEXT NOT NULL,
+      name TEXT NOT NULL,
+      group_key TEXT NOT NULL,
+      reference_pool INTEGER NOT NULL,
+      source TEXT NOT NULL,
+      verified_on TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE etf_whale_fetches (
+      source TEXT NOT NULL,
+      date_start TEXT NOT NULL,
+      date_end TEXT NOT NULL,
+      status TEXT NOT NULL,
+      row_count INTEGER NOT NULL,
+      error TEXT NOT NULL DEFAULT '',
+      blob_path TEXT NOT NULL DEFAULT '',
+      content_hash TEXT NOT NULL DEFAULT '',
+      captured_at INTEGER NOT NULL,
+      PRIMARY KEY (source, date_start, date_end)
+    );
+    CREATE TABLE etf_whale_shares (
+      source TEXT NOT NULL,
+      trade_date TEXT NOT NULL,
+      code TEXT NOT NULL,
+      name TEXT NOT NULL,
+      shares REAL NOT NULL,
+      raw_value REAL NOT NULL,
+      raw_unit TEXT NOT NULL,
+      blob_path TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      captured_at INTEGER NOT NULL,
+      PRIMARY KEY (source, trade_date, code)
+    );
+    CREATE INDEX etf_whale_shares_code_date ON etf_whale_shares(code, trade_date);
+    CREATE TABLE etf_whale_quotes (
+      source TEXT NOT NULL,
+      code TEXT NOT NULL,
+      trade_date TEXT NOT NULL,
+      open REAL NOT NULL,
+      high REAL NOT NULL,
+      low REAL NOT NULL,
+      close REAL NOT NULL,
+      volume_lots REAL NOT NULL,
+      volume_shares REAL NOT NULL,
+      typical_price REAL NOT NULL,
+      turnover_cny REAL NOT NULL,
+      adjust TEXT NOT NULL,
+      captured_at INTEGER NOT NULL,
+      PRIMARY KEY (source, code, trade_date, adjust)
+    );
+    CREATE TABLE etf_whale_adjustments (
+      code TEXT NOT NULL,
+      trade_date TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      share_ratio REAL,
+      price_ratio REAL,
+      comparable INTEGER NOT NULL,
+      note TEXT NOT NULL,
+      PRIMARY KEY (code, trade_date, event_type)
+    );
+    CREATE TABLE etf_whale_daily (
+      code TEXT NOT NULL,
+      trade_date TEXT NOT NULL,
+      algorithm TEXT NOT NULL,
+      raw_shares REAL,
+      delta_shares REAL,
+      share_change_pct REAL,
+      close_price REAL,
+      typical_price REAL,
+      turnover_cny REAL,
+      volume_shares REAL,
+      flow_cny REAL,
+      comparable INTEGER NOT NULL,
+      reason TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      computed_at INTEGER NOT NULL,
+      PRIMARY KEY (code, trade_date, algorithm)
+    );
+    CREATE INDEX etf_whale_daily_date ON etf_whale_daily(trade_date, algorithm);
+    CREATE TABLE etf_whale_disclosures (
+      code TEXT NOT NULL,
+      source TEXT NOT NULL,
+      report_end TEXT NOT NULL,
+      announced_on TEXT,
+      captured_on TEXT NOT NULL,
+      ratio_pct REAL,
+      value_cny REAL,
+      total_shares REAL,
+      PRIMARY KEY (code, source, report_end)
+    );
+  `);
+}});
+
+migrations.push({ version: 49, name: 'reading_hour_snapshots', up(database) {
+  database.exec(`CREATE TABLE reading_hour_snapshots (
+      workspace_id TEXT NOT NULL, id TEXT NOT NULL, start_at INTEGER NOT NULL, value_json TEXT NOT NULL,
+      PRIMARY KEY (workspace_id, id));
+    CREATE TABLE reading_hour_heads (
+      workspace_id TEXT NOT NULL, period_key TEXT NOT NULL, published_id TEXT, attempt_id TEXT NOT NULL,
+      PRIMARY KEY (workspace_id, period_key));`);
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions
