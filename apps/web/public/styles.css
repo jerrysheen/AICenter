@@ -1776,6 +1776,8 @@ body[data-view="report"] .overview-subnav.is-on {
     position: sticky;
     top: calc(var(--title-bar) + env(safe-area-inset-top));
     z-index: 11;
+    width: calc(100% + 2 * var(--page-gutter));
+    max-width: none;
     background: var(--background-primary);
     box-shadow: 0 -2px 0 var(--background-primary);
   }

@@ -92,6 +92,7 @@ test('sidebar and bottom overview tabs always open the overview home', () => {
   assert.equal(assets.fromPrimaryNav, true);
   const css = readFileSync(new URL('../apps/web/public/styles.css', import.meta.url), 'utf8');
   assert.match(css, /@media \(max-width: 1199px\) \{\s*\.title-bar \{\s*z-index: 12;\s*background: var\(--background-primary\);\s*backdrop-filter: none;\s*\}\s*\.overview-subnav\.is-on \{\s*position: sticky;/);
+  assert.match(css, /@media \(max-width: 1199px\) \{[\s\S]*?\.overview-subnav\.is-on \{[^}]*width: calc\(100% \+ 2 \* var\(--page-gutter\)\);\s*max-width: none;/);
   assert.match(css, /body\[data-view="feed"\] #view-feed \.channel-bar \{[^}]*position: sticky;/);
   assert.match(css, /\.overview-subnav\.market-tabs\[data-more-right="true"\] \{[^}]*mask-image: none;/);
   assert.match(css, /#view-tools > \.section-kicker \{[^}]*padding-top: 12px;/);
