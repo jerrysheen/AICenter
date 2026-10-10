@@ -130,6 +130,10 @@ button[disabled] { opacity: 0.55; cursor: default; }
 .connection-gate-card.has-login .connection-gate-actions { margin-top: var(--space-4); }
 body.is-unpaired .app-shell,
 body:not(.is-ready) .app-shell { display: none; }
+html.has-known-session body.is-unpaired .app-shell,
+html.has-known-session body:not(.is-ready) .app-shell { display: block; }
+html.has-known-session body.is-unpaired .connection-gate,
+html.has-known-session body:not(.is-ready) .connection-gate { display: none; }
 
 .app-shell { min-width: 0; max-width: 100%; min-height: 100vh; min-height: 100dvh; overflow-x: clip; }
 .app-frame { min-width: 0; max-width: 100%; background: var(--background-primary); }

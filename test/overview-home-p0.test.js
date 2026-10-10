@@ -167,8 +167,10 @@ test('official groups follow capture time when the effective date is in the futu
 });
 
 test('overview and the source catalog count unavailable sources with one function', () => {
-  assert.match(app, /function renderStaticSourceCatalog\(\)[\s\S]*?officialSourceHealth\(\)/);
-  assert.match(app, /unavailableOfficialCount\(officialSourceHealth\(\)\)/);
+  const catalog = app.slice(app.indexOf('function renderStaticSourceCatalog()'), app.indexOf('const staticScheduleWindows'));
+  const home = app.slice(app.indexOf('function renderHomeSourceLine()'), app.indexOf('async function loadHomeTree'));
+  assert.match(catalog, /unavailableOfficialCount\(health\)/);
+  assert.match(home, /unavailableOfficialCount\(officialSourceHealth\(\)\)/);
   assert.match(app, /prioritizeReadableFeedRows\(items\.map\(feedToNewsRow\)\)/);
   const renderStart = app.indexOf('function renderPosts()');
   const prioritizeAt = app.indexOf('prioritizeReadableFeedRows', renderStart);

@@ -9,7 +9,7 @@ export { createWebSearchSourceDefinition } from './search/definitions.js';
 export {
   createStaticSignalSourceDefinitions, createOfficialSourceDetailDefinition, OfficialDetailInputSchema,
 } from './static/definitions.js';
-export { readStaticSignalBoard, StaticSignalBoardInputSchema } from './static/board.js';
+export { readStaticSignalBoard, StaticSignalBoardInputSchema, createFailureStreakStore, installFailureStreakStore } from './static/board.js';
 export {
   createMarketNativeSourceDefinitions,
   PredictionMarketInputSchema,

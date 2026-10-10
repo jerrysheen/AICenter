@@ -22,7 +22,7 @@ import { resolveInstanceConfig } from '../../../packages/instance/src/index.js';
 import { createAgentTraceLog } from '../../../packages/runtime/src/agent-trace-log.js';
 import { createWorkPackageTracePort } from '../../../packages/runtime/src/work-package-trace.js';
 import { readTagCatalogFile } from '../../../packages/runtime/src/tagging-module.js';
-import { createSourceHub, createSourceModuleRegistry, readStaticSignalBoard } from '../../../packages/source/src/index.js';
+import { createFailureStreakStore, createSourceHub, createSourceModuleRegistry, installFailureStreakStore, readStaticSignalBoard } from '../../../packages/source/src/index.js';
 import { createEventStreamHub } from './http/event-stream.js';
 import { publicHttpsLocation } from './http/device-auth.js';
 import { parseCookies, json } from './http/response.js';
@@ -171,6 +171,9 @@ export function createAiCenterServer(options = {}) {
   const configuredPort = Number(options.port ?? instance.port);
   const publicBaseUrl = parsePublicBaseUrl(options.publicUrl ?? process.env.AI_CENTER_PUBLIC_URL ?? '');
   const dataDirectory = instance.dataDirectory;
+  installFailureStreakStore(createFailureStreakStore({
+    filePath: path.join(dataDirectory, 'static-source-failure-streaks.json'),
+  }));
   const store = options.store || createStore(instance.databasePath);
   const webSearchPort = createOptionalSearchPort(options.webSearchPort, options.env || process.env);
   const browserRuntime = options.browserRuntime || createConfiguredBrowserRuntime({

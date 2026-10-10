@@ -88,7 +88,8 @@ SourceAccount -> Subscription -> Capture -> ContentItem -> UserItemState
 - `official-detail` 是仅供内部 AI Tool 使用的按需详情视图，输出 `OfficialSourceDetail`：是否可用、最终官方链接、官网标题、官方摘要、清洗后的限长正文、发布时间、观测时间、是否截断和客观读取说明。它不包含生成式摘要、影响判断、重要性或多空含义。
 - `official.source.get` 只接受 `static.signals.list` 等可信记录携带的 HTTP(S) 官方链接；Connector 必须执行官方域名白名单、SCIO HTTP 单点例外、跳转后域名复核、原始页面与 Tool 结果大小上限。Federal Register 优先使用官方 JSON API 与 raw text，避免把访问拦截页当正文。
 - `StaticSignalBoard` 只组合 `upcoming: ScheduledEvent[]`、`releases: OfficialRelease[]` 与 `sourceHealth[]`；
-  `sourceHealth` 只含 Source ID、标题、类别、Snapshot 状态、观测时间和客观读取说明。首页关注范围由静态目录投影，
+  `sourceHealth` 含 Source ID、标题、类别、Snapshot 状态、观测时间、客观读取说明，以及 `failingSince`。
+  `failingSince` 是这次连续不可用开始的毫秒时间；可用或部分可用时为 null。首页和信源目录的「暂不可用」计数只计入开始未超过 24 小时的条目。首页关注范围由静态目录投影，
   不向事件添加 `importance` 字段。
 - 静态信号契约不接受 `importance`、`forecast`、`consensus`、`surprise`、`impact`、`bullish` 或 `bearish`。这些属于市场预期或解释层，不得塞入来源 metadata 绕过建模。
 - `prediction-market` 只保存场所原始报价事实：venue、问题、outcome、mid / bid / ask / spread、成交量、流动性、OI、到期时间和观测时间。Polymarket 与 Kalshi 的行保持分离，不生成跨场所加权或“真实概率”。
