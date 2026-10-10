@@ -23,6 +23,13 @@ export function newsDayLabel(at) {
   }).format(new Date(value));
 }
 
+export function newsEffectiveLabel(at) {
+  const value = Number(at);
+  if (!Number.isFinite(value) || value <= 0) return '';
+  const current = parts(value, { month: 'numeric', day: 'numeric' });
+  return `生效：${Number(part(current, 'month'))}月${Number(part(current, 'day'))}日`;
+}
+
 export function newsTimeLabel(at, { ingested = false, now = Date.now() } = {}) {
   const value = Number(at);
   if (!Number.isFinite(value) || value <= 0) return { text: '', ingested: false };
@@ -40,10 +47,11 @@ export function newsRow(row) {
   const item = document.createElement('li');
   item.className = `news-row official-event${row.muted ? ' is-muted' : ''}${row.focused ? ' is-focus' : ''}`;
   if (row.id) item.dataset.nodeId = String(row.id);
-  const front = row.swipe ? document.createElement('div') : null;
-  if (front) {
-    front.className = 'swipe-front';
-    if (row.id) front.dataset.postId = String(row.id);
+  let host = item;
+  let front = null;
+  if (row.swipe) {
+    const clip = document.createElement('div');
+    clip.className = 'news-swipe swipe-item feed-swipe-item';
     const actions = document.createElement('div');
     actions.className = 'swipe-actions swipe-actions-single';
     const remove = document.createElement('button');
@@ -56,10 +64,13 @@ export function newsRow(row) {
       row.onDelete?.(event);
     });
     actions.append(remove);
-    item.classList.add('swipe-item', 'feed-swipe-item');
-    item.append(actions);
+    front = document.createElement('div');
+    front.className = 'swipe-front';
+    if (row.id) front.dataset.postId = String(row.id);
+    clip.append(actions, front);
+    item.append(clip);
+    host = front;
   }
-  const host = front || item;
   const copy = document.createElement('div');
   copy.className = 'news-row-copy';
   const open = document.createElement('button');
@@ -84,10 +95,17 @@ export function newsRow(row) {
   const titleText = decodeHtmlEntities(row.title || '');
   title.textContent = titleText;
   title.title = titleText;
+  const effectiveLabel = String(row.effectiveLabel || '').trim();
+  if (effectiveLabel) {
+    const chip = document.createElement('span');
+    chip.className = 'news-tag news-effective';
+    chip.textContent = effectiveLabel;
+    title.append(chip);
+  }
   open.append(title);
   const sourceText = String(row.source || '').trim();
   const tags = (Array.isArray(row.tags) ? row.tags : []).map((tag) => String(tag || '').trim()).filter(Boolean);
-    if (sourceText || tags.length) {
+  if (sourceText || tags.length) {
     const source = document.createElement('small');
     source.className = 'news-row-source';
     if (sourceText) source.textContent = sourceText;
@@ -99,12 +117,21 @@ export function newsRow(row) {
     }
     open.append(source);
   }
+  const tail = [open];
+  const summaryText = String(row.summary || '').trim();
+  if (summaryText) {
+    const summary = document.createElement('p');
+    summary.className = 'news-row-summary';
+    summary.textContent = decodeHtmlEntities(summaryText);
+    tail.push(summary);
+  }
   if (row.commentCount > 0) {
     const comments = document.createElement('p');
     comments.className = 'news-comment feed-comment-preview';
     comments.textContent = `评论 · ${row.commentCount} 条 · 展开查看`;
-    copy.append(open, comments);
-  } else copy.append(open);
+    tail.push(comments);
+  }
+  copy.append(...tail);
   host.append(copy);
   if (typeof row.onStar === 'function') {
     const star = document.createElement('button');
@@ -121,17 +148,49 @@ export function newsRow(row) {
     });
     host.append(star);
   }
-  if (front) item.append(front);
   if (row.extra) item.append(row.extra);
   if (typeof row.attachOpen === 'function') row.attachOpen(open);
   else if (typeof row.onOpen === 'function') open.addEventListener('click', (event) => row.onOpen(event));
-  if (typeof row.attachSwipe === 'function') row.attachSwipe(front || open);
+  if (front && typeof row.attachSwipe === 'function') row.attachSwipe(front);
   return item;
 }
 
-export function renderNewsList(root, rows, { groupByDay = false, limit, emptyText = '这个筛选下还没有信息。' } = {}) {
+function appendNewsRows(list, groupRows) {
+  for (const row of groupRows) list.append(newsRow(row));
+}
+
+function appendDayGroups(wrap, rows) {
+  const groups = [];
+  const index = new Map();
+  for (const row of rows) {
+    const key = row.day || newsDayLabel(row.at) || '时间待公布';
+    if (!index.has(key)) {
+      const group = { key, rows: [] };
+      index.set(key, group);
+      groups.push(group);
+    }
+    index.get(key).rows.push(row);
+  }
+  for (const group of groups) {
+    const day = document.createElement('section');
+    day.className = 'news-day official-day';
+    const label = document.createElement('p');
+    label.className = 'news-day-label official-day-label';
+    label.textContent = group.key;
+    const list = document.createElement('ol');
+    list.className = 'news-rows news-day-list official-day-list';
+    appendNewsRows(list, group.rows);
+    day.append(label, list);
+    wrap.append(day);
+  }
+}
+
+export function renderNewsList(root, rows, { groupByDay = false, limit, emptyText = '这个筛选下还没有信息。', sinkMuted = false } = {}) {
   const source = Array.isArray(rows) ? rows : [];
-  const shown = Number.isFinite(limit) ? source.slice(0, limit) : source;
+  const limited = Number.isFinite(limit) ? source.slice(0, limit) : source;
+  const shown = sinkMuted
+    ? [...limited.filter((row) => !row.muted), ...limited.filter((row) => row.muted)]
+    : limited;
   root.replaceChildren();
   if (!shown.length) {
     const empty = document.createElement('p');
@@ -142,37 +201,20 @@ export function renderNewsList(root, rows, { groupByDay = false, limit, emptyTex
   }
   const wrap = document.createElement('div');
   wrap.className = 'news-list official-timeline';
-  const paint = (list, groupRows) => {
-    for (const row of groupRows) list.append(newsRow(row));
-  };
+  const main = sinkMuted ? shown.filter((row) => !row.muted) : shown;
+  const tail = sinkMuted ? shown.filter((row) => row.muted) : [];
   if (!groupByDay) {
     const list = document.createElement('ol');
     list.className = 'news-rows official-day-list';
-    paint(list, shown);
+    appendNewsRows(list, shown);
     wrap.append(list);
   } else {
-    const groups = [];
-    const index = new Map();
-    for (const row of shown) {
-      const key = row.day || newsDayLabel(row.at) || '时间待公布';
-      if (!index.has(key)) {
-        const group = { key, rows: [] };
-        index.set(key, group);
-        groups.push(group);
-      }
-      index.get(key).rows.push(row);
-    }
-    for (const group of groups) {
-      const day = document.createElement('section');
-      day.className = 'news-day official-day';
-      const label = document.createElement('p');
-      label.className = 'news-day-label official-day-label';
-      label.textContent = group.key;
+    if (main.length) appendDayGroups(wrap, main);
+    if (tail.length) {
       const list = document.createElement('ol');
-      list.className = 'news-rows news-day-list official-day-list';
-      paint(list, group.rows);
-      day.append(label, list);
-      wrap.append(day);
+      list.className = 'news-rows news-muted-tail official-day-list';
+      appendNewsRows(list, tail);
+      wrap.append(list);
     }
   }
   root.append(wrap);
