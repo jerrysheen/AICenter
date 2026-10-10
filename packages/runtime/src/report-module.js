@@ -8,6 +8,33 @@ export const REPORT_DAILY_BRIEF_JOB_TYPE = 'report.daily.brief.generate';
 export const REPORT_HOURLY_JOB_TYPE = 'report.hourly.extract';
 export const DAILY_REPORT_SCHEDULE_KEY = 'report.daily.default';
 export const DAILY_BRIEF_CATCHUP_DELAY_MS = 30 * 60 * 1000;
+export const DAILY_REPORT_CATCHUP_LIMIT = 3;
+export const DAILY_REPORT_CATCHUP_GRACE_MS = 60 * 1000;
+
+export function scheduleDailyReportCatchup(store, input, job, edition, now = Date.now()) {
+  const failures = (edition?.groupFailures || []).filter((item) => item?.retryable && Number.isFinite(item.retryAt) && item.retryAt > 0);
+  if (!failures.length) return null;
+  if (!job || job.attemptCount < job.maxAttempts) return null;
+  if (!store?.createJob || !store?.listOpenJobs) return null;
+  const reportDate = String(input?.reportDate || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(reportDate)) return null;
+  const done = Number.isInteger(input?.catchup) && input.catchup > 0 ? input.catchup : 0;
+  if (done >= DAILY_REPORT_CATCHUP_LIMIT) return null;
+  const open = store.listOpenJobs(REPORT_DAILY_JOB_TYPE) || [];
+  if (open.some((item) => item.id !== job.id && item.input?.reportDate === reportDate)) return null;
+  const retryAt = Math.max(...failures.map((item) => item.retryAt));
+  return store.createJob({
+    type: REPORT_DAILY_JOB_TYPE,
+    workspaceId: input.workspaceId || job.workspaceId || 'local',
+    maxAttempts: 2,
+    availableAt: retryAt + DAILY_REPORT_CATCHUP_GRACE_MS,
+    input: {
+      workspaceId: input.workspaceId || job.workspaceId || 'local',
+      reportDate,
+      catchup: done + 1,
+    },
+  });
+}
 
 export function scheduleDailyBriefCatchup(store, input, job, now = Date.now()) {
   if (input?.catchup === true) return null;
@@ -81,7 +108,13 @@ export function createReportJobHandlers({ reportService, briefService = null, in
         const reportDate=input.reportDate || resolveReportDate(Date.now(),dailyConfig);
         const window=resolveDailyWindow({reportDate,...dailyConfig});
         const edition=await treeService.generateDaily({workspaceId:input.workspaceId || 'local',window:{startAt:window.startAt,endAt:window.endAt}});
-        if(edition.status==='failed') throw new Error('日报浓缩树生成失败，旧刊期继续可读');
+        if(edition.status==='failed') {
+          const failures=edition.groupFailures || [];
+          const missing=(edition.missingHours || []).join(',') || '-';
+          console.error(`[worker] 日报浓缩失败 reportDate=${reportDate} groups=${failures.length} missingHours=${missing} ${failures.map(p=>`tag=${p.tagId ?? 'null'} reason=${p.reason} retryAt=${p.retryAt ?? '-'}`).join('; ')}`);
+          scheduleDailyReportCatchup(context?.store, {...input, reportDate, workspaceId: input.workspaceId || context?.job?.workspaceId || 'local'}, context?.job, edition);
+          throw new Error('日报浓缩树生成失败，旧刊期继续可读');
+        }
         return {editionId:edition.id,reportDate,status:edition.status};
       }
       if(!input.requestKey && context?.job?.id) input.requestKey=context.job.id;

@@ -415,7 +415,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
   async function generateDaily({workspaceId='local',window,hours}={}) {
     ensurePolicy(workspaceId);
     hours ||= repository.list(workspaceId,Math.floor(window.startAt/HOUR)*HOUR,window.endAt,'hourly').map(r=>r.edition).filter(Boolean);
-    const s={...session(),workspaceId};
+    const s={...session(0, config.dailyMs ?? 45*60000),workspaceId};
     // Non-integral cutoffs reuse saved information through an explicit boundary hourly module.
     // The daily model itself continues to see hourly modules only.
     for(const at of [...new Set([Math.floor(window.startAt/HOUR)*HOUR,Math.floor((window.endAt-1)/HOUR)*HOUR])]) {
