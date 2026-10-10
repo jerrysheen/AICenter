@@ -53,36 +53,65 @@ export function resolveGoogleHourlyModelPool(env = process.env) {
     .map(model=>resolveGoogleHourlyModel(env,model));
 }
 
+// Unset daily provider/model follow the hourly closed task. Production hourly is
+// google / gemini-3.1-flash-lite, so daily analysis uses that path without a
+// second required switch. An explicit daily env overrides the hourly one.
+export function resolveDailyHarnessProvider(env = process.env) {
+  const id=text(env.AI_CENTER_HARNESS_DAILY_PROVIDER).toLowerCase() || text(env.AI_CENTER_HARNESS_HOURLY_PROVIDER).toLowerCase();
+  if(id && !['google','elucid-grok'].includes(id))throw new Error('invalid daily provider');
+  return id;
+}
+
+export function resolveGoogleDailyModel(env = process.env, requestedModel) {
+  return resolveGoogleArticleModel({...env,
+    AI_CENTER_HARNESS_ARTICLE_MODEL:text(env.AI_CENTER_HARNESS_DAILY_MODEL) || text(env.AI_CENTER_HARNESS_HOURLY_MODEL) || 'gemini-3.1-flash-lite',
+    AI_CENTER_GEMINI_ARTICLE_MODELS:env.AI_CENTER_GEMINI_DAILY_MODELS || env.AI_CENTER_GEMINI_HOURLY_MODELS || '',
+  },requestedModel);
+}
+
+export function resolveGoogleDailyModelPool(env = process.env) {
+  const raw=env.AI_CENTER_GEMINI_DAILY_MODEL_POOL || env.AI_CENTER_GEMINI_HOURLY_MODEL_POOL || '';
+  return [...new Set(String(raw).split(',').map(text).filter(Boolean))]
+    .map(model=>resolveGoogleDailyModel(env,model));
+}
+
 export function resolveHarnessLlm(env = process.env, { researchProfile, closedTask, googleModel } = {}) {
   const article=closedTask==='article-normalize';
   const articleMaxTokens=Number(env.AI_CENTER_HARNESS_ARTICLE_MAX_TOKENS || 6144);
   if(article && ![4096,6144].includes(articleMaxTokens))throw new Error('article max tokens must be 4096 or 6144');
   const hourly = closedTask === 'hourly-brief';
+  const daily = closedTask === 'daily-analysis';
   const configuredProvider = resolveHarnessLlmProvider(env);
-  const google=(article && text(env.AI_CENTER_HARNESS_ARTICLE_PROVIDER)==='google') || (hourly && text(env.AI_CENTER_HARNESS_HOURLY_PROVIDER)==='google');
-  const hourlyMaxTokens=Number(env.AI_CENTER_HARNESS_HOURLY_MAX_TOKENS || (google ? 4096 : 8192));
+  const dailyProvider = daily ? resolveDailyHarnessProvider(env) : '';
+  const google=(article && text(env.AI_CENTER_HARNESS_ARTICLE_PROVIDER)==='google') || (hourly && text(env.AI_CENTER_HARNESS_HOURLY_PROVIDER)==='google') || dailyProvider==='google';
+  const hourlyMaxTokens=Number(env.AI_CENTER_HARNESS_HOURLY_MAX_TOKENS || ((hourly && google) || (article && text(env.AI_CENTER_HARNESS_ARTICLE_PROVIDER)==='google') ? 4096 : 8192));
   if(hourly && ![4096,6144,8192].includes(hourlyMaxTokens))throw new Error('hourly max tokens must be 4096, 6144 or 8192');
+  const dailyMaxTokens=Number(env.AI_CENTER_HARNESS_DAILY_MAX_TOKENS || (google ? env.AI_CENTER_HARNESS_HOURLY_MAX_TOKENS : '') || 4096);
+  if(daily && ![4096,6144,8192].includes(dailyMaxTokens))throw new Error('daily max tokens must be 4096, 6144 or 8192');
   if(hourly && text(env.AI_CENTER_HARNESS_HOURLY_PROVIDER) && !['google','elucid-grok'].includes(text(env.AI_CENTER_HARNESS_HOURLY_PROVIDER)))throw new Error('invalid hourly provider');
   if(googleModel!==undefined && !google)throw new Error('Google model selector requires a closed Google task');
   if(article && text(env.AI_CENTER_HARNESS_ARTICLE_PROVIDER) && !['google','elucid-grok'].includes(text(env.AI_CENTER_HARNESS_ARTICLE_PROVIDER)))throw new Error('invalid article provider');
-  const provider = google ? 'google' : hourly || article ? HARNESS_ELUCID_PROVIDER : configuredProvider;
+  const provider = google ? 'google' : hourly || article || dailyProvider==='elucid-grok' ? HARNESS_ELUCID_PROVIDER : configuredProvider;
   const elucidKeyEnv = text(env.ELUCID_GROK_API_KEY)
     ? 'ELUCID_GROK_API_KEY'
     : (text(env.AI_CENTER_GROK_API_KEY) ? 'AI_CENTER_GROK_API_KEY' : 'ELUCID_GROK_API_KEY');
   const elucidBaseURL = (text(env.AI_CENTER_ELUCID_GROK_API_ROOT) || HARNESS_ELUCID_DEFAULT_BASE_URL)
     .replace(/\/+$/, '');
   const deepseekBaseURL = text(env.DEEPSEEK_BASE_URL).replace(/\/+$/, '');
-  const elucidDefaultModel = ((hourly || article) ? (text(env.AI_CENTER_HARNESS_HOURLY_PROVIDER)!=='google' ? text(env.AI_CENTER_HARNESS_HOURLY_MODEL) : '') || (configuredProvider===HARNESS_ELUCID_PROVIDER ? text(env.AI_CENTER_HARNESS_MODEL) : '') : text(env.AI_CENTER_HARNESS_MODEL)) || HARNESS_ELUCID_DEFAULT_MODEL;
+  const hourlyElucidModel=(text(env.AI_CENTER_HARNESS_HOURLY_PROVIDER)!=='google' ? text(env.AI_CENTER_HARNESS_HOURLY_MODEL) : '') || (configuredProvider===HARNESS_ELUCID_PROVIDER ? text(env.AI_CENTER_HARNESS_MODEL) : '');
+  const elucidDefaultModel = (hourly || article ? hourlyElucidModel : dailyProvider==='elucid-grok' ? text(env.AI_CENTER_HARNESS_DAILY_MODEL) || text(env.AI_CENTER_HARNESS_HOURLY_MODEL) || (configuredProvider===HARNESS_ELUCID_PROVIDER ? text(env.AI_CENTER_HARNESS_MODEL) : '') : text(env.AI_CENTER_HARNESS_MODEL)) || HARNESS_ELUCID_DEFAULT_MODEL;
   const deepseekDefaultModel = text(env.AI_CENTER_HARNESS_MODEL) || HARNESS_DEFAULT_MODEL;
   const researchModel = text(env.AI_CENTER_HARNESS_RESEARCH_MODEL);
   const defaultModel = provider === HARNESS_ELUCID_PROVIDER ? elucidDefaultModel : deepseekDefaultModel;
-  const model = google ? (hourly ? resolveGoogleHourlyModel(env,googleModel) : resolveGoogleArticleModel(env,googleModel)) : article ? text(env.AI_CENTER_HARNESS_ARTICLE_MODEL) || elucidDefaultModel : hourly ? defaultModel : modelIdForProfile(defaultModel, researchModel, researchProfile);
-  const googleKeyEnv=text(env[hourly ? 'AI_CENTER_HARNESS_HOURLY_KEY_ENV' : 'AI_CENTER_HARNESS_ARTICLE_KEY_ENV']) || String(env.AI_CENTER_GEMINI_KEY_ENVS || 'GEMINI_API_KEY,GEMINI_API_KEY2,GEMINI_API_KEY3,GEMINI_API_KEY4,GEMINI_API_KEY5').split(',').map(k=>k.trim()).find(k=>text(env[k])) || 'GEMINI_API_KEY';
+  const model = google ? (daily ? resolveGoogleDailyModel(env,googleModel) : hourly ? resolveGoogleHourlyModel(env,googleModel) : resolveGoogleArticleModel(env,googleModel)) : article ? text(env.AI_CENTER_HARNESS_ARTICLE_MODEL) || elucidDefaultModel : hourly || dailyProvider==='elucid-grok' ? defaultModel : modelIdForProfile(defaultModel, researchModel, researchProfile);
+  const googleKeyName=daily ? 'AI_CENTER_HARNESS_DAILY_KEY_ENV' : hourly ? 'AI_CENTER_HARNESS_HOURLY_KEY_ENV' : 'AI_CENTER_HARNESS_ARTICLE_KEY_ENV';
+  const googleKeyEnv=text(env[googleKeyName]) || (daily ? text(env.AI_CENTER_HARNESS_HOURLY_KEY_ENV) : '') || String(env.AI_CENTER_GEMINI_KEY_ENVS || 'GEMINI_API_KEY,GEMINI_API_KEY2,GEMINI_API_KEY3,GEMINI_API_KEY4,GEMINI_API_KEY5').split(',').map(k=>k.trim()).find(k=>text(env[k])) || 'GEMINI_API_KEY';
   const apiKeyEnv = google ? googleKeyEnv : provider === HARNESS_ELUCID_PROVIDER ? elucidKeyEnv : 'DEEPSEEK_API_KEY';
   return {
     provider,
     model,
     ...(hourly ? {execution:{version:'hourly-execution-v1',fallback:'none',maxTokens:hourlyMaxTokens,reasoning:google ? 'off' : 'low',retryPolicy:'none',...(google ? {wireThinking:'MINIMAL',modelPool:resolveGoogleHourlyModelPool(env)} : {})}} : {}),
+    ...(daily && (google || dailyProvider==='elucid-grok') ? {execution:{version:'daily-execution-v1',fallback:'none',maxTokens:dailyMaxTokens,reasoning:google ? 'off' : 'low',retryPolicy:'none',...(google ? {wireThinking:'MINIMAL',modelPool:resolveGoogleDailyModelPool(env)} : {})}} : {}),
     ...(article ? {execution:{version:'article-execution-v2',fallback:env.AI_CENTER_HARNESS_ARTICLE_FALLBACK || 'none',fallbackModel:env.AI_CENTER_HARNESS_ARTICLE_FALLBACK_MODEL || 'grok-4.7',maxTokens:articleMaxTokens,reasoning:google ? 'off' : 'low',...(google ? {wireThinking:'MINIMAL',...(resolveGoogleArticleModelPool(env).length ? {modelPool:resolveGoogleArticleModelPool(env)} : {})} : {}),retryPolicy:'none'}} : {}),
     defaultModel,
     researchModel,
@@ -91,9 +120,9 @@ export function resolveHarnessLlm(env = process.env, { researchProfile, closedTa
     baseURL: google ? 'https://generativelanguage.googleapis.com/v1beta' : provider === HARNESS_ELUCID_PROVIDER ? elucidBaseURL : deepseekBaseURL,
     protocol: google ? 'google-generative-ai' : provider === HARNESS_ELUCID_PROVIDER ? 'openai-responses' : '',
     settingsYaml: materializeHarnessSettings({
-      google:google ? {keyEnv:googleKeyEnv,model,maxTokens:hourly ? hourlyMaxTokens : articleMaxTokens} : null,
+      google:google ? {keyEnv:googleKeyEnv,model,maxTokens:daily ? dailyMaxTokens : hourly ? hourlyMaxTokens : articleMaxTokens} : null,
       briefModel: ['media-brief','daily-analysis','hourly-brief','article-normalize'].includes(closedTask) && provider === HARNESS_ELUCID_PROVIDER ? model : '',
-      briefMaxTokens:article ? articleMaxTokens : hourly ? hourlyMaxTokens : 4096,
+      briefMaxTokens:article ? articleMaxTokens : hourly ? hourlyMaxTokens : daily ? dailyMaxTokens : 4096,
       noRetries:article,
       elucidKeyEnv,
       elucidBaseURL,

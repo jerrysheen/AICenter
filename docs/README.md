@@ -25,7 +25,7 @@
 
 ## 当前
 
-- `progress/2026-10-10-daily-brief-tree-catchup.md`：tree-v3 的日报 brief 改读已发布树刊期。首页时间轴用起始小时和同一份 reading-hour 缓存；简报页标签栏、小时地址和手机上的几处排版一并收紧。
+- `progress/2026-10-10-daily-brief-tree-catchup.md`：tree-v3 的日报 brief 只读已发布树刊期。日报浓缩默认沿用小时报的 Gemini，单次超时 300 秒，部分 Tag 成功即可出刊。首页和简报去掉处理状态计数。
 
 - `progress/2026-10-10-overview-redesign-v2.md`：总览首页改成左栏今天时间轴、右栏四张行情卡和今日日报。事件报价挪到全球行情。行情卡用时段小字，不再单列更新时间。
 

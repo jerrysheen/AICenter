@@ -13,7 +13,7 @@ test('consecutive missing hours collapse into one gap', () => {
   assert.equal(gap.startAt, at11 + HOUR);
   assert.equal(gap.endAt, at17 - HOUR);
   assert.deepEqual(merged.map(item => item.kind), ['hour', 'gap', 'hour']);
-  assert.deepEqual(formatHourGap(12, 16, 5), { label: '12–16点', detail: '12:00–16:00 · 5 期未生成' });
+  assert.deepEqual(formatHourGap(12, 16, 5), { label: '12–16点', detail: '12:00–16:00' });
 });
 
 test('delay is the whole hours after the latest edition ended, and only once it passes two hours', () => {

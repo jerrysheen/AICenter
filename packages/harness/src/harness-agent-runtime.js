@@ -474,11 +474,11 @@ export function createHarnessAgentRuntime({
       : '';
 
     let slot, articleTicket, executionEnv=runEnv;
-    const googleAdmission=task==='hourly-brief' ? hourlyAdmission : articleAdmission;
-    if(['article-normalize','hourly-brief'].includes(task) && llm.provider==='google') {
+    const googleAdmission=task==='hourly-brief' || task==='daily-analysis' ? hourlyAdmission : articleAdmission;
+    if(['article-normalize','hourly-brief','daily-analysis'].includes(task) && llm.provider==='google') {
       if(!googleAdmission)throw new Error('Google article task requires persistent traffic admission');
       articleTicket=googleAdmission.reserve({model:llm.model,keyEnv:googleKeyEnv,useModelPool:googleModel===undefined,inputBytes:Buffer.byteLength(buildHarnessPrompt({closedContext:true,taskInstruction,message})),maxTokens:llm.execution.maxTokens});
-      const prefix=task==='hourly-brief' ? 'AI_CENTER_HARNESS_HOURLY' : 'AI_CENTER_HARNESS_ARTICLE';
+      const prefix=task==='daily-analysis' ? 'AI_CENTER_HARNESS_DAILY' : task==='hourly-brief' ? 'AI_CENTER_HARNESS_HOURLY' : 'AI_CENTER_HARNESS_ARTICLE';
       executionEnv={...runEnv,[prefix+'_KEY_ENV']:articleTicket.keyEnv,[prefix+'_MODEL']:articleTicket.model};
       llm=resolveHarnessLlm(executionEnv,{researchProfile:profile,closedTask:task});
     }

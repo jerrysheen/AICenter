@@ -348,7 +348,7 @@ export function buildHomeTimelineModel({
     latestText: latest ? `最新小时报 ${shanghaiHourLabel(latest.window.startAt).hourText}` : '',
     briefHref: latest ? reportHourHref(latest.window.startAt) : '#report',
     nowText: `现在 ${shanghaiHourLabel(nowMs).hhmm}`,
-    statusText: verified ? [coverage.delay?.text, ...gaps.map((gap) => gap.text)].filter(Boolean).join(' · ') : '',
+    statusText: '',
     events: nextEvents(upcoming, nowMs, 2),
     delay: coverage.delay,
     gaps,
@@ -440,7 +440,6 @@ export function renderHomeTimeline(root, model, handlers = {}) {
       link.href = hour.href;
       copy.append(link);
     }
-    if (hour.hitCount > 0) copy.append(el('p', 'home-meta', `命中 ${hour.hitCount}`));
     if (hour.official?.text) copy.append(el('p', 'home-official', hour.official.text));
     row.append(copy);
     rail.append(row);

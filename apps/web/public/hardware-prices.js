@@ -74,8 +74,7 @@ export function createHardwarePricesPage({api,openPage,setView,renderRows,isCurr
         const ranges=[['1m','1月',31],['3m','3月',93],['1y','1年',366],['all','全部',Infinity]];
         const draw=()=>{for(const b of periods.children){b.classList.toggle('is-active',b.dataset.range===selected);b.setAttribute('aria-selected',String(b.dataset.range===selected));}host.replaceChildren();const points=dated(d.observations),end=points.at(-1)?.periodStart ?? 0,days=ranges.find(r=>r[0]===selected)[2];chart(host,points.filter(p=>p.periodStart>=end-days*86400000));};
         periods.setAttribute('role','tablist');periods.setAttribute('aria-label','报价走势范围');
-        for(const [key,label] of ranges){const b=button(label,()=>{selected=key;draw();});b.className='chip-tab';b.dataset.range=key;b.setAttribute('role','tab');periods.append(b);}draw();shell.append(periods,host,metrics(row));
-        shell.append(node('p',`来源更新 ${time(row.sourceUpdatedAt)} · 采集 ${time(row.capturedAt)}`,'detail-meta'));
+        for(const [key,label] of ranges){const b=button(label,()=>{selected=key;draw();});b.className='chip-tab';b.dataset.range=key;b.setAttribute('role','tab');periods.append(b);}draw();        shell.append(periods,host,metrics(row));
         const history=node('details');history.append(node('summary',`历史报价 (${d.observations.length})`));const table=node('table','','hardware-history-table');
         const header=node('tr');for(const label of ['报价期','均价','高价','低价'])header.append(node('th',label));table.append(header);
         for(const r of d.observations){const tr=node('tr');for(const text of [r.period || '待核验',number(r.average),number(r.high),number(r.low)])tr.append(node('td',text));table.append(tr);}history.append(table);shell.append(history);

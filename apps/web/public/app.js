@@ -4687,12 +4687,6 @@ function formatSignedAmount(value) {
   return text;
 }
 
-function formatHoldingsClock(value) {
-  const ms = Number(value);
-  if (!Number.isFinite(ms) || ms <= 0) return '';
-  return new Date(ms).toLocaleTimeString('zh-CN', { hour12: false });
-}
-
 const holdingFilters = [
   { id: 'all', label: '全部' },
   { id: 'a_share', label: 'A股' },
@@ -4847,9 +4841,7 @@ function renderHoldings() {
     if (state.holdingsLoading) note.textContent = state.holdingsRefreshing ? '正在向行情源拉取最新报价，并跳过本地缓存…' : '正在读取持仓和实时汇率…';
     else if (state.holdingsError) note.textContent = state.holdingsError;
     else {
-      const base = state.holdingsBoard?.note || '持仓批次落在本地账本，价格和汇率实时刷新。';
-      const updated = formatHoldingsClock(state.holdingsBoard?.updatedAt);
-      note.textContent = updated ? `${base} 获取 ${updated}` : base;
+      note.textContent = state.holdingsBoard?.note || '持仓批次落在本地账本，价格和汇率实时刷新。';
     }
   }
   const rows = sortHoldingRows((state.holdingsBoard?.positions || []).filter((item) => (
@@ -4860,7 +4852,7 @@ function renderHoldings() {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'quote-row holdings-row';
-    button.title = `报价时间：${formatQuoteTime(item.quoteAsOf)}`;
+    button.title = item.name || '';
     const name = document.createElement('span');
     name.className = 'quote-identity holdings-name';
     const valueText = item.marketValueCny == null ? '--' : `¥${formatMoneyAmount(item.marketValueCny, 0)}`;
@@ -6035,7 +6027,7 @@ function renderStaticSignalBoard() {
   fill(elements['static-schedule-list'], upcoming, 'calendar', '这个时间范围内暂无默认关注日程。');
   if (elements['static-board-note']) {
     elements['static-board-note'].textContent = state.staticBoardError
-      || (state.staticBoardLoading ? '正在同步官方来源…' : board ? `生成于 ${formatTime(board.generatedAt)} · 仅陈列公开事实` : '等待同步官方来源');
+      || (state.staticBoardLoading ? '正在同步官方来源…' : board ? '仅陈列公开事实' : '等待同步官方来源');
   }
 }
 
@@ -6383,7 +6375,7 @@ function renderMarketNativeBoard() {
 
   const noteText = state.marketNativeError
     || (state.marketNativeLoading ? '正在同步市场原生来源…' : board
-      ? `生成于 ${formatTime(board.generatedAt)} · 场所报价，不是综合概率${(board.sourceHealth || []).some((item) => item.status === 'unavailable') ? ' · 部分来源暂不可用' : ''}`
+      ? `场所报价，不是综合概率${(board.sourceHealth || []).some((item) => item.status === 'unavailable') ? ' · 部分来源暂不可用' : ''}`
       : '等待同步市场原生来源');
   if (elements['market-native-note']) elements['market-native-note'].textContent = noteText;
   if (elements['global-native-note']) elements['global-native-note'].textContent = noteText;
@@ -7979,7 +7971,7 @@ function renderQuotePage() {
       <div class="quote-chart-host" id="quote-chart-host"></div>
     </div>`;
   wrap.querySelector('.detail-title').textContent = quote.name || symbol;
-  wrap.querySelector('.detail-meta').textContent = `${symbol}${quote.group ? ` · ${quote.group}` : ''}${quote.assetClass ? ` · ${quote.assetClass}` : ''} · ${sessionLabel(quote.session)} · 报价时间 ${formatQuoteTime(quote.asOf)}`;
+  wrap.querySelector('.detail-meta').textContent = `${symbol}${quote.group ? ` · ${quote.group}` : ''}${quote.assetClass ? ` · ${quote.assetClass}` : ''} · ${sessionLabel(quote.session)}`;
   wrap.querySelector('.last').textContent = quote.lastPrice == null ? '—' : formatPrice(quote.lastPrice);
   wrap.querySelector('.last').classList.add(up ? 'up' : 'down');
   wrap.querySelector('.change').textContent = quote.changePct == null ? '—' : formatPct(up, quote.changePct);
@@ -8216,7 +8208,6 @@ function renderHoldingPage() {
   for (const [dt, dd] of [
     ['持仓数量', privacyText(formatMoneyAmount(item.quantity, 0))],
     ['现价 / 成本', `${item.lastPrice == null ? '无行情' : formatPrice(item.lastPrice)} / ${formatPrice(item.costPrice)}`],
-    ['报价时间（北京时间）', formatQuoteTime(item.quoteAsOf)],
     ['市值 CNY', privacyText(formatMoneyAmount(item.marketValueCny, 2))],
     [state.holdingsBoard?.calendar?.tradingDay === false && item.board !== 'hk_connect' ? '最近交易日盈亏' : '当日盈亏', privacyText(formatSignedAmount(item.dayPnlCny))],
     ['持仓浮动盈亏', privacyText(formatSignedAmount(item.positionPnlCny))],
@@ -10187,7 +10178,7 @@ function createDailyEvidenceDetail(brief,e,index) {
 }
 
 function renderAnalysisBrief(root,brief,{compact=false,showIntro=true}={}) {
-  if(!compact) root.append(Object.assign(document.createElement('p'),{className:'section-kicker',textContent:`${briefDateLabel(brief.reportDate)} · 材料冻结 ${new Date(brief.frozenAt).toLocaleString()} · 成稿 ${new Date(brief.generatedAt).toLocaleString()}`}));
+  if(!compact) root.append(Object.assign(document.createElement('p'),{className:'section-kicker',textContent:briefDateLabel(brief.reportDate)}));
   if(showIntro) root.append(Object.assign(document.createElement('p'),{className:compact ? 'brief-overview' : '',textContent:brief.overview}));
   if(brief.informationItems) renderInformationItems(root,brief.informationItems,brief,true);
   for(const section of brief.sections || []) {
@@ -10214,10 +10205,7 @@ function renderAnalysisBrief(root,brief,{compact=false,showIntro=true}={}) {
   const table=document.createElement('table');table.className='daily-coverage';
   const header=document.createElement('tr');for(const label of ['来源','窗口可用','快照收录','全文','仅摘要等','完整读取','未完整读取','失败/状态']) header.append(Object.assign(document.createElement('th'),{textContent:label}));table.append(header);
   for(const c of brief.coverage || []) {const tr=document.createElement('tr');tr.title=c.note;for(const value of [c.sourceName || c.sourceId,c.available,c.included,c.full,c.summaryOnly,c.read ?? 0,c.unread ?? c.omitted,`${c.failed}/${c.status}`]) tr.append(Object.assign(document.createElement('td'),{textContent:String(value)}));table.append(tr);}
-  if(compact) {
-    coverage.append(Object.assign(document.createElement('p'),{textContent:`材料冻结 ${new Date(brief.frozenAt).toLocaleString()} · 成稿 ${new Date(brief.generatedAt).toLocaleString()}`}));
-    if(brief.nextWatch)coverage.append(Object.assign(document.createElement('p'),{textContent:`下一步观察：${brief.nextWatch}`}));
-  }
+  if(compact && brief.nextWatch) coverage.append(Object.assign(document.createElement('p'),{textContent:`下一步观察：${brief.nextWatch}`}));
   coverage.append(table,Object.assign(document.createElement('p'),{textContent:brief.limitations || ''}));root.append(coverage);
 }
 
@@ -10259,7 +10247,7 @@ function renderHourlyDigestBrowser(root) {
         else {
           const format=at=>new Date(at).toLocaleString('zh-CN',{timeZone:digest.timezone});
           output.append(Object.assign(document.createElement('p'),{textContent:`${format(digest.window.startAt)} — ${format(digest.window.endAt)} · ${digest.timezone} · ${digest.items.length} 条`}));
-          output.append(Object.assign(document.createElement('small'),{textContent:'按来源发布/入库时间归属；生成于 '+format(digest.generatedAt)}));
+          output.append(Object.assign(document.createElement('small'),{textContent:'按来源发布/入库时间归属。'}));
           if(digest.items.length) renderInformationItems(output,digest.items,{},false);
           else output.append(Object.assign(document.createElement('p'),{textContent:'已读材料未提炼出值得保留的信息。'}));
           const coverage=document.createElement('details');coverage.append(Object.assign(document.createElement('summary'),{textContent:'读取范围与限制'}));

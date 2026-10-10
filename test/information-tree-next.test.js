@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createStore} from '../packages/database/src/index.js';
+import {resolveDailyExecutionTimeoutMs} from '../packages/domain/src/daily-window.js';
 import {createInformationTreeService} from '../packages/domain/src/information-tree-service.js';
 import {loadInformationTreeSkills} from '../packages/runtime/src/information-tree/skills.js';
 import {createInformationTreeJobHandlers,enqueueTreePreparation,TREE_PREPARE_JOB_TYPE,informationTreeManifest,enqueuePreparedHourRefreshes,prioritizeRecentTreePreparation} from '../packages/runtime/src/information-tree-module.js';
@@ -82,6 +83,41 @@ test('old in-flight policy cannot install information or publish over newer poli
     const fresh=await newer.generateHour({hourStart:start,materials:[material('new')]});assert.equal(fresh.published,true);
     const old=await f.service.generateHour({hourStart:start,materials:[material('old')]});assert.equal(old.published,false);assert.equal(f.service.list('local',{startAt:start,endAt:start+H}).hours[0].edition.id,fresh.id);
   }finally{f.store.close();}
+});
+test('daily publishes successful tags when another tag fails and does not replace that issue with a total failure',async()=>{
+  const catalog={tags:[{id:'A',name:'一'},{id:'B',name:'二'}]};
+  const text='正文长一些。'.repeat(25);
+  const f=fixture({catalog,primaryTag:(_w,m)=>({locked:true,tagId:m.id==='b' ? 'B' : 'A'})});
+  try {
+    const hour=await f.service.generateHour({hourStart:start,materials:[material('a',text),material('b',text)]});
+    assert.equal(hour.status,'ready');assert.equal(hour.roots.length,2);
+    assert.ok(f.calls.filter(c=>c.usageStage==='tree-hourly').every(c=>c.timeoutMs===180000));
+    const run=f.runtime.run;
+    f.runtime.run=async input=>{
+      if(input.usageStage==='tree-daily' && JSON.parse(input.message).tagId==='B'){f.calls.push(input);throw new Error('temporary upstream failure');}
+      return run(input);
+    };
+    const daily=await f.service.generateDaily({window:{startAt:start,endAt:start+H},hours:[hour]});
+    assert.equal(daily.status,'partial');assert.equal(daily.published,true);assert.equal(daily.roots.length,1);
+    assert.equal(daily.groupFailures[0].tagId,'B');assert.equal(daily.groupFailures[0].reason,'retryable-model-error');
+    assert.equal(daily.inputIds.length,1);
+    assert.deepEqual(f.service.children('local',daily.roots[0]).map(n=>n.id),daily.inputIds);
+    assert.ok(f.calls.filter(c=>c.usageStage==='tree-daily').every(c=>c.timeoutMs===300000 && c.closedTask==='daily-analysis'));
+    const listed=f.service.list('local',{startAt:start,endAt:start+H}).days[0];
+    assert.equal(listed.edition.id,daily.id);assert.equal(listed.edition.status,'partial');
+  }finally{f.store.close();}
+  const none=fixture({catalog,primaryTag:(_w,m)=>({locked:true,tagId:m.id==='b' ? 'B' : 'A'}),budget:{dailyTimeoutMs:250000}});
+  try {
+    const hour=await none.service.generateHour({hourStart:start,materials:[material('a',text),material('b',text)]});
+    none.runtime.run=async input=>{if(input.usageStage==='tree-daily'){none.calls.push(input);throw new Error('temporary upstream failure');}return {answer:'{}'};};
+    const failed=await none.service.generateDaily({window:{startAt:start,endAt:start+H},hours:[hour]});
+    assert.equal(failed.status,'failed');assert.equal(failed.published,false);assert.equal(failed.roots.length,0);
+    assert.equal(none.service.list('local',{startAt:start,endAt:start+H}).days[0].edition,null);
+    assert.ok(none.calls.filter(c=>c.usageStage==='tree-daily').every(c=>c.timeoutMs===250000));
+    assert.equal(resolveDailyExecutionTimeoutMs({}),300000);
+    assert.equal(resolveDailyExecutionTimeoutMs({AI_CENTER_DAILY_EXECUTION_TIMEOUT_MS:'300000'}),300000);
+    assert.throws(()=>resolveDailyExecutionTimeoutMs({AI_CENTER_DAILY_EXECUTION_TIMEOUT_MS:'180'}));
+  }finally{none.store.close();}
 });
 test('successful groups remain visible when another group fails; failed group cooling prevents repeat model fee',async()=>{
   const catalog={tags:[{id:'A',name:'一'},{id:'B',name:'二'}]},f=fixture({catalog,primaryTag:(_w,m)=>({locked:true,tagId:m.id==='b' ? 'B' : 'A'})});try{

@@ -27,8 +27,8 @@ export function formatHourGap(startHour, endHour, count) {
   const pad=value=>String(value).padStart(2,'0');
   const label=startHour===endHour ? `${startHour}点` : `${startHour}\u2013${endHour}点`;
   const detail=startHour===endHour
-    ? `${pad(startHour)}:00 · ${count} 期未生成`
-    : `${pad(startHour)}:00\u2013${pad(endHour)}:00 · ${count} 期未生成`;
+    ? `${pad(startHour)}:00`
+    : `${pad(startHour)}:00\u2013${pad(endHour)}:00`;
   return {label, detail};
 }
 export function hourlyDelayHours(latestEndAt, now, step=HOUR_MS) {
@@ -184,7 +184,7 @@ export function createInformationTreePage(host) {
     }
     return article;
   }
-  const choice=r=>r?.edition || r?.attempt;
+  const choice=r=>mode==='daily' ? r?.edition || null : r?.edition || r?.attempt;
   function editionRows(data=manifest) {
     if(!data)return [];
     const rows=mode==='daily' ? data.days : data.hours;
@@ -451,14 +451,8 @@ export function createInformationTreePage(host) {
     box.append(el('span','','tree-hour-skeleton-line'),el('span','','tree-hour-skeleton-line'),el('span','','tree-hour-skeleton-line'));
     return box;
   }
-  function chipText(edition, index){
-    const time=clock(edition.window.startAt);
-    const row=index instanceof Map ? index.get(edition.window.startAt) : null;
-    if(!row) return time;
-    const newest=hourRows()[0]?.window.startAt===edition.window.startAt;
-    if(newest && row.status==='partial' && Number.isFinite(Number(row.scored)) && Number.isFinite(Number(row.candidates))) return `${time}  整理中 ${row.scored}/${row.candidates}`;
-    if(Number.isFinite(Number(row.selected))) return `${time}  命中 ${row.selected}`;
-    return time;
+  function chipText(edition){
+    return clock(edition.window.startAt);
   }
   function paintRail(rows){
     const focus=rows[0];
@@ -471,15 +465,10 @@ export function createInformationTreePage(host) {
       hourYesterday.textContent=prev===yesterday ? '昨天 ›' : `${monthDay(focus.window.startAt-86400000)} ›`;
     }
   }
-  function paintDelay(rows){
+  function paintDelay(){
     if(!delayEl) return;
-    const latest=rows[0];
-    if(!latest || mode!=='hourly' || showMaterials){delayEl.hidden=true;return;}
-    const hours=hourlyDelayHours(latest.window.endAt, Date.now());
-    if(!hours){delayEl.hidden=true;delayEl.replaceChildren();return;}
-    const hh=String(hourClock(latest.window.startAt)).padStart(2,'0');
-    delayEl.hidden=false;
-    delayEl.replaceChildren(el('strong',`最新一期 ${hh}:00 · 已延迟 ${hours} 小时`), el('p','小时报暂未生成，官方信息照常更新','tree-hour-delay-note'));
+    delayEl.hidden=true;
+    delayEl.replaceChildren();
   }
   function paintHourStrip(rows, index=readingIndex instanceof Map ? readingIndex : null) {
     const focused=focusedHourRows(rows);
@@ -751,15 +740,13 @@ export function createInformationTreePage(host) {
     }
     details.append(summary,body);return details;
   }
-  function syncHourMeta(snapshot) {
-    const scored=Number(snapshot?.scored), candidates=Number(snapshot?.candidates), selectedCount=Number(snapshot?.selected);
-    const text=Number.isFinite(scored) && Number.isFinite(candidates) && Number.isFinite(selectedCount) && selectedCount>0 ? `已处理 ${scored}/${candidates} · 命中 ${selectedCount}` : '';
-    setPeriodMeta(mode==='hourly' ? text : '');
+  function syncHourMeta() {
+    setPeriodMeta('');
   }
   function showEmptyHour(rest) {
     const line=el('div','','tree-hour-empty');
-    if(!rest.length) line.textContent='这一小时没有命中条目';
-    else {line.append(el('span','这一小时没有命中条目 · ','tree-hour-empty-lead'), otherBlock(rest, new Set()));}
+    if(!rest.length) line.textContent='这一小时没有条目';
+    else {line.append(el('span','这一小时没有条目 · ','tree-hour-empty-lead'), otherBlock(rest, new Set()));}
     return line;
   }
   async function loadReadingIndex() {
@@ -905,21 +892,10 @@ export function createInformationTreePage(host) {
         list.textContent='这一栏还没有已发布简报。可以打开往期，或查看旧版存档。';return;
       }
       titleEl.textContent=issueTitle(selected);coverageEl.textContent=issueCoverage(selected);
-      const attemptId=row?.attempt?.id && row.attempt.id!==selected.id && !row.attempt.pending ? row.attempt.id : '';
-      const attemptTask=attemptId ? loadEditionDocument(attemptId) : null;
       const publishedTask=!selected.pendingIds && selected.id && !copyCount(selected) && !fullEditions.has(selected.id) ? loadEditionDocument(selected.id) : null;
       const nodes=await editionNodes(selected);if(token!==epoch)return;
       if(publishedTask){await publishedTask;if(token!==epoch)return;}
-      const published=fullEditions.get(selected.id) || selected;
-      let attempt=row?.attempt;
-      if(attempt?.id===published.id)attempt=published;
-      else if(attemptTask){const loaded=await attemptTask;if(token!==epoch)return;if(loaded)attempt=loaded;}
-      const missingSources=(published.pendingIds || []).filter(id=>id.startsWith('source:')).length;
-      const partial=published.status!=='ready';
-      statusToggle.hidden=false;statusToggle.textContent=`${partial ? '部分结果 · ' : ''}更新于 ${stamp(published.generatedAt)}`;
-      const pending=[...(attempt?.pending || []),...(attempt?.groupFailures || [])];
-      const replay=mode==='daily' && published.window.endAt-published.window.startAt<20*3600000 ? '链路回放（非全天）。' : '';
-      statusDetail.textContent=[replay,`版本 ${published.id.slice(-12)}`,partial ? `待补 ${(published.pendingIds || []).length-missingSources} 篇／${(published.missingHours || []).length} 小时` : '',attempt?.id && attempt.id!==published.id ? '最近尝试未替换已发布版本' : '',...new Set(pending.map(p=>reasons[p.reason] || p.reason))].filter(Boolean).join(' · ');
+      statusToggle.hidden=true;statusDetail.hidden=true;
       if(!directionExplicit){const available=directionOrder.find(value=>nodes.some(n=>group(n)===value));direction=available || 'finance';}
       for(const tab of directionNav.children) tab.setAttribute('aria-selected',String(tab.dataset.direction===direction));
       const source=showMaterials ? await Promise.all((await materialIndex(selected)).map(n=>node(n.id))) : nodes;

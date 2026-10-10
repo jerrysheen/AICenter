@@ -128,8 +128,8 @@ test('home hours list reading titles and omit nodes without one', () => {
   assert.equal(sixteen.hours[0].label, '16:00');
   assert.equal(sixteen.hours[0].href, '#report?hour=16');
   assert.equal(sixteen.hours[0].endAt, at(17));
-  assert.match(model.statusText, /最新一期 14:00/);
-  assert.match(model.statusText, /未生成/);
+  assert.equal(model.statusText, '');
+  assert.equal(sixteen.statusText, '');
 });
 
 test('loading timeline does not claim missing hours before the index arrives', () => {
@@ -208,6 +208,7 @@ test('home requests are the overview set and not the old feed fan-out', () => {
   const tree = readFileSync(new URL('../apps/web/public/information-tree.js', import.meta.url), 'utf8');
   assert.match(tree, /function clearHourQuery\(/);
   assert.match(tree, /if\(mode==='daily'\) clearHourQuery\(\)/);
+  assert.match(tree, /mode==='daily' \? r\?\.edition \|\| null : r\?\.edition \|\| r\?\.attempt/);
   const css = readFileSync(new URL('../apps/web/public/styles.css', import.meta.url), 'utf8');
   assert.match(css, /\.home-title \{[^}]*white-space: normal/s);
   assert.match(css, /\.tree-primary \{[^}]*position:sticky/s);

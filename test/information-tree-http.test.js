@@ -128,3 +128,48 @@ test('tree-v3 daily brief routes read the latest published tree edition', () => 
   const empty = callBrief('/api/v1/reports/daily/latest/brief', services);
   assert.equal(empty.body.brief, null);
 });
+
+test('daily brief reads a published partial edition and skips an unpublished attempt', () => {
+  const endAt = Date.parse('2026-10-10T02:00:00Z');
+  const date = formatYmd(zonedParts(endAt, 'Asia/Shanghai'));
+  const partial = dailyEdition('edition:partial', endAt, [{ id: 'd:ai', title: '模型', text: '调用量上升。' }]);
+  partial.status = 'partial';
+  let loaded = [];
+  const services = {
+    report: {
+      getLatestDailyBrief: () => null,
+      getDailyBrief: () => ({ id: 'legacy', reportDate: date, overview: '不该用未发布尝试', itemCount: 1, items: [{}] }),
+      listDailyBriefs: () => [],
+    },
+    informationTree: {
+      list() {
+        return {
+          pipeline: 'tree-v3',
+          days: [
+            { edition: null, attempt: { id: 'edition:attempt', status: 'failed', window: { startAt: endAt - 86_400_000, endAt }, roots: ['d:one'] } },
+            { edition: partial },
+          ],
+        };
+      },
+      edition(_workspace, id) {
+        loaded.push(id);
+        if (id === partial.id) return { edition: partial, nodes: [{ id: 'd:ai', title: '模型', text: '调用量上升。' }] };
+        return null;
+      },
+    },
+  };
+  const latest = callBrief('/api/v1/reports/daily/latest/brief', services);
+  assert.equal(latest.body.brief.reportDate, date);
+  assert.equal(latest.body.brief.itemCount, 1);
+  assert.equal(latest.body.brief.informationItems[0].sentence, '模型：调用量上升。');
+  assert.deepEqual(loaded, [partial.id]);
+  const onlyAttempt = {
+    ...services,
+    informationTree: {
+      list: () => ({ pipeline: 'tree-v3', days: [{ edition: null, attempt: { id: 'edition:attempt', status: 'failed', window: partial.window, roots: ['d:one'] } }] }),
+      edition() { throw new Error('unpublished attempt must not be loaded'); },
+    },
+  };
+  assert.equal(callBrief('/api/v1/reports/daily/latest/brief', onlyAttempt).body.brief, null);
+  assert.equal(callBrief(`/api/v1/reports/daily/brief?date=${date}`, onlyAttempt).body.brief.overview, '不该用未发布尝试');
+});
