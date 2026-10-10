@@ -257,7 +257,7 @@ export function hourCoverage({ editions = [], nowMs }) {
       startAt: first,
       endAt: last + HOUR,
       count: group.length,
-      text: `${shanghaiHourLabel(first).hourText}–${shanghaiHourLabel(last + HOUR).hourText} · ${group.length} 期未生成`,
+      text: `${shanghaiHourLabel(first).hourText}–${shanghaiHourLabel(last + HOUR).hourText}`,
     });
     group = [];
   };
@@ -271,7 +271,6 @@ export function hourCoverage({ editions = [], nowMs }) {
     ? {
       latest,
       hours: Math.round((expectedStart - latest) / HOUR),
-      text: `最新一期 ${shanghaiHourLabel(latest).hourText} · 已延迟 ${Math.round((expectedStart - latest) / HOUR)} 小时`,
     }
     : null;
   return { delay, gaps, expectedStart };
@@ -290,7 +289,7 @@ export function visibleHourGaps(coverage, shown) {
         startAt,
         endAt: gap.endAt,
         count,
-        text: `${shanghaiHourLabel(startAt).hourText}–${shanghaiHourLabel(gap.endAt).hourText} · ${count} 期未生成`,
+        text: `${shanghaiHourLabel(startAt).hourText}–${shanghaiHourLabel(gap.endAt).hourText}`,
       };
     })
     .filter(Boolean);
@@ -327,11 +326,14 @@ export function buildHomeTimelineModel({
   const official = foldOfficialByHour(releases);
   const officialByStart = new Map(official.map((group) => [group.startAt, group]));
   const latest = sorted[0] || null;
+  const readingsPending = shown.some((edition) => !Array.isArray(readings[edition.window.startAt]?.items));
   const hours = shown.map((edition, index) => {
     const startAt = edition.window.startAt;
     const clock = shanghaiHourLabel(startAt);
-    const summary = readingSummary(readings[startAt]);
-    const titles = readingTitles(readings[startAt], index === 0 ? 5 : 2);
+    const snapshot = readings[startAt];
+    const ready = Array.isArray(snapshot?.items);
+    const summary = ready ? readingSummary(snapshot) : null;
+    const titles = ready ? readingTitles(snapshot, index === 0 ? 5 : 2) : [];
     return {
       startAt,
       endAt: edition.window.endAt,
@@ -355,6 +357,7 @@ export function buildHomeTimelineModel({
     earlierCount: earlier ? 0 : Math.max(sorted.length - limit, 0),
     treeStatus,
     boardStatus,
+    readingsPending,
     hours,
   };
 }
@@ -422,7 +425,7 @@ export function renderHomeTimeline(root, model, handlers = {}) {
   now.append(rule);
   root.append(now);
 
-  if (model.treeStatus === 'loading' && !model.hours.length) {
+  if ((model.treeStatus === 'loading' || model.readingsPending) && !model.hours.length) {
     const skeleton = el('div', 'home-timeline-skeleton');
     skeleton.setAttribute('aria-busy', 'true');
     skeleton.append(el('span', ''), el('span', ''), el('span', ''));

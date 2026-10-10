@@ -8,6 +8,7 @@ import {
   foldOfficialByHour,
   nextEvents,
   hourCoverage,
+  visibleHourGaps,
   homeRequestPlan,
   shanghaiMidnight,
   readingTitles,
@@ -80,15 +81,58 @@ test('upcoming home rows keep at most two events inside the next 24 hours', () =
   assert.deepEqual(nextEvents(events, now).map((event) => event.title), ['soon', 'later']);
 });
 
-test('missing hours collapse and the latest hour reports its delay', () => {
+test('missing hours collapse to a time range without a delay status line', () => {
   const midnight = shanghaiMidnight(saturdayMorning);
   const at = (hour) => midnight + hour * 3_600_000;
   const now = at(14) + 30 * 60 * 1000;
   const editions = [8, 9, 11].map((hour) => ({ window: { startAt: at(hour), endAt: at(hour + 1) } }));
   const coverage = hourCoverage({ editions, nowMs: now });
-  assert.equal(coverage.delay.text, '最新一期 11:00 · 已延迟 2 小时');
-  assert.equal(coverage.gaps.some((gap) => gap.count === 2 && gap.text === '12:00–14:00 · 2 期未生成'), true);
+  assert.equal(coverage.delay.hours, 2);
+  assert.equal(Object.hasOwn(coverage.delay, 'text'), false);
+  assert.equal(coverage.gaps.some((gap) => gap.count === 2 && gap.text === '12:00–14:00'), true);
   assert.equal(coverage.gaps.filter((gap) => gap.count === 2).length, 1);
+  assert.equal(coverage.gaps.every((gap) => !gap.text.includes('未生成')), true);
+  const visible = visibleHourGaps(coverage, editions.filter((edition) => edition.window.startAt >= at(11)));
+  assert.equal(visible.some((gap) => gap.count === 2 && gap.text === '12:00–14:00'), true);
+  assert.equal(visible.every((gap) => !gap.text.includes('未生成')), true);
+});
+
+test('index headlines stay hidden until reading snapshots arrive', () => {
+  const midnight = shanghaiMidnight(saturdayMorning);
+  const at = (hour) => midnight + hour * 3_600_000;
+  const edition = (hour) => ({ window: { startAt: at(hour), endAt: at(hour + 1) } });
+  const pending = buildHomeTimelineModel({
+    nowMs: at(16),
+    editions: [14, 13, 12].map(edition),
+    readings: {
+      [at(14)]: { selected: 1, headline: { title: '索引甲' } },
+      [at(13)]: { selected: 1, headline: { title: '索引乙' } },
+      [at(12)]: { selected: 1, headline: { title: '索引丙' } },
+    },
+    earlier: true,
+    treeStatus: 'ready',
+    boardStatus: 'ready',
+  });
+  assert.equal(pending.readingsPending, true);
+  assert.deepEqual(pending.hours, []);
+  const ready = buildHomeTimelineModel({
+    nowMs: at(16),
+    editions: [14, 13, 12].map(edition),
+    readings: {
+      [at(14)]: { items: ['甲', '乙', '丙', '丁', '戊', '己'].map((title) => ({ title, disposition: 'hit' })) },
+      [at(13)]: { items: ['一', '二', '三'].map((title) => ({ title, disposition: 'hit' })) },
+      [at(12)]: { items: ['子', '丑'].map((title) => ({ title, disposition: 'hit' })) },
+    },
+    earlier: true,
+    treeStatus: 'ready',
+    boardStatus: 'ready',
+  });
+  assert.equal(ready.readingsPending, false);
+  assert.deepEqual(ready.hours.map((hour) => hour.titles), [
+    ['甲', '乙', '丙', '丁', '戊'],
+    ['一', '二'],
+    ['子', '丑'],
+  ]);
 });
 
 test('home hours list reading titles and omit nodes without one', () => {
@@ -99,7 +143,7 @@ test('home hours list reading titles and omit nodes without one', () => {
   const readings = {
     [at(14)]: { selected: 6, items: ['甲', '乙', '丙', '丁', '戊', '己'].map(hit) },
     [at(13)]: { selected: 3, items: ['一', '二', '三'].map(hit) },
-    [at(12)]: { selected: 1, headline: { title: '只有一条' } },
+    [at(12)]: { selected: 1, headline: { title: '只有一条' }, items: [{ title: '只有一条', disposition: 'hit' }] },
     [at(11)]: { selected: 0 },
   };
   assert.deepEqual(readingTitles(readings[at(14)], 5), ['甲', '乙', '丙', '丁', '戊']);
@@ -204,7 +248,7 @@ test('home requests are the overview set and not the old feed fan-out', () => {
   assert.doesNotMatch(sourcesPage, /loadGlobalAssets|loadMarketNativeBoard|scheduleOverviewManualPosts|loadXFeed|loadXueqiuFeed|loadPosts\(/);
   assert.match(app, /mergeReadingHours\(state\.homeReadingHours, absorbReadingIndex\(payload\)\)/);
   assert.match(app, /view === 'report' \? '搜索简报'/);
-  assert.match(app, /navId === 'sources'\) return view === 'sources' \|\| view === 'feed' \|\| view === 'market'/);
+  assert.match(app, /navId === 'sources'\) return view === 'sources' \|\| view === 'feed' \|\| view === 'market' \|\| view === 'report'/);
   const tree = readFileSync(new URL('../apps/web/public/information-tree.js', import.meta.url), 'utf8');
   assert.match(tree, /function clearHourQuery\(/);
   assert.match(tree, /if\(mode==='daily'\) clearHourQuery\(\)/);

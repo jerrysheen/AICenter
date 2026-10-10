@@ -782,7 +782,7 @@ function isPrimaryNavActive(navId, view) {
     if (navId === 'tools') return mapped === 'tools';
     return navId === mapped;
   }
-  if (navId === 'sources') return view === 'sources' || view === 'feed' || view === 'market';
+  if (navId === 'sources') return view === 'sources' || view === 'feed' || view === 'market' || view === 'report';
   if (navId === 'tools') return view === 'tools' || view === 'knowledge' || view === 'settings' || view === 'quant';
   return navId === view;
 }
@@ -2589,12 +2589,6 @@ function appendAskSourceFooter(card, footer) {
     }
     block.append(list);
     section.append(block);
-  }
-  if (footer.extraCount) {
-    section.append(Object.assign(document.createElement('p'), {
-      className: 'ask-source-more',
-      textContent: `另有 ${footer.extraCount} 条检索命中未展开`,
-    }));
   }
   if (footer.evidence) {
     const bits = [];
