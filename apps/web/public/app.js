@@ -24,7 +24,7 @@ function normalizeRoute(value = '') {
 }
 
 function routeLabel(value) {
-  const route = normalizeRoute(value);
+  const route = normalizeRoute(String(value || '').split('?')[0]);
   if (route === 'sources/catalog') return '信源目录';
   if (route === 'sources/schedule') return '完整日历';
   if (route.startsWith('market/global')) return '全球行情';
@@ -767,7 +767,8 @@ function resolveView(name) {
 }
 
 function parseLocation(name = (location.hash || '#sources').slice(1)) {
-  const raw = normalizeRoute(name);
+  const [pathPart, queryPart = ''] = String(name).split('?');
+  const raw = normalizeRoute(pathPart);
   const [head, ...rest] = raw.split('/');
   const view = resolveView(head);
   const marketPane = view === 'market' && rest[0] === 'global' ? 'assets' : (view === 'market' ? 'stocks' : '');
@@ -785,9 +786,12 @@ function parseLocation(name = (location.hash || '#sources').slice(1)) {
   const reportPane = view === 'report'
     ? (reportDate ? 'day' : (rest[0] === 'archive' ? 'archive' : rest[0] === 'history' ? 'history' : 'today'))
     : 'today';
+  const hourText = new URLSearchParams(queryPart).get('hour');
+  const hourNumber = hourText != null && /^\d{1,2}$/.test(hourText) ? Number(hourText) : NaN;
+  const reportHour = Number.isInteger(hourNumber) && hourNumber >= 0 && hourNumber <= 23 ? hourNumber : null;
   return {
     view, askSessionId, marketPane, assetPane, sourcesPane, settingsPane, inspirePane,
-    selectedWorkPackageId, pageKind, pageId, reportPane, reportDate,
+    selectedWorkPackageId, pageKind, pageId, reportPane, reportDate, reportHour,
   };
 }
 
@@ -806,9 +810,12 @@ function rememberOverviewTarget(view, pane = state.tradePane) {
   if (!overviewViews.includes(view)) return;
   let target = view;
   if (view === 'market') target = pane === 'assets' ? 'market/global' : 'market';
-  if (view === 'report' && reportDate) target = `report/${reportDate}`;
-  else if (view === 'report' && reportPane === 'history') target = 'report/history';
+  if (view === 'report' && reportPane === 'history') target = 'report/history';
   else if (view === 'report' && reportPane === 'archive') target = 'report/archive';
+  else if (view === 'report') {
+    target = reportDate ? `report/${reportDate}` : 'report';
+    if (reportHour != null) target += `?hour=${String(reportHour).padStart(2, '0')}`;
+  }
   state.lastOverviewTarget = target;
   try { sessionStorage.setItem(OVERVIEW_LANE_KEY, target); } catch {}
 }
@@ -970,6 +977,7 @@ function setView(name, options = {}) {
   if (view === 'report') {
     reportPane = parsed.reportPane;
     reportDate = parsed.reportDate;
+    reportHour = parsed.reportHour;
   }
   state.hubLane = overviewLane(view, state.tradePane);
   rememberOverviewTarget(view, state.tradePane);
@@ -1072,12 +1080,8 @@ function setView(name, options = {}) {
             ? pageHash()
             : view === 'inspire' && state.inspirePane === 'tasks'
               ? (state.selectedWorkPackageId ? `#inspire/tasks/${state.selectedWorkPackageId}` : '#inspire/tasks')
-              : view === 'report' && reportDate
-                ? `#report/${reportDate}`
-                : view === 'report' && reportPane === 'history'
-                  ? '#report/history'
-                  : view === 'report' && reportPane === 'archive'
-                    ? '#report/archive'
+              : view === 'report'
+                ? reportHash()
                   : `#${view}`;
   if (location.hash !== nextHash) {
     const entry = { ...(options.fromHistory ? history.state : {}), aiCenter: true, hash: nextHash,
@@ -9474,6 +9478,15 @@ const BRIEF_TYPE_LABELS = {
 let dailyBriefSnapshot = { brief: null, loaded: false, error: '' };
 let reportPane = 'today';
 let reportDate = '';
+let reportHour = null;
+
+function reportHash() {
+  if (reportPane === 'history') return '#report/history';
+  if (reportPane === 'archive') return '#report/archive';
+  const base = reportDate ? `#report/${reportDate}` : '#report';
+  if (reportHour == null) return base;
+  return `${base}?hour=${String(reportHour).padStart(2, '0')}`;
+}
 let reportHistory = { items: [], loaded: false, error: '' };
 let reportDay = { date: '', brief: null, loaded: false, error: '' };
 
@@ -9919,7 +9932,12 @@ function renderReportHistory(root) {
 function renderReport() {
   const root = elements['report-list'];
   if (!root) return;
-  return briefPage.mount(root,{date:reportPane==='day' ? reportDate : '',history:reportPane==='history',archive:reportPane==='archive'});
+  return briefPage.mount(root,{
+    date:reportPane==='day' ? reportDate : '',
+    history:reportPane==='history',
+    archive:reportPane==='archive',
+    hour:reportPane==='history' || reportPane==='archive' ? null : reportHour,
+  });
 }
 
 function createBriefRetry(date=reportPane==='day' ? reportDate : expectedBriefDate(new Date()),mode='refresh') {

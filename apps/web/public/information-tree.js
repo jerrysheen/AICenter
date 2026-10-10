@@ -8,8 +8,55 @@ const directionOrder=['finance','policy','tech','other'];
 const previousDirections={macro:'finance',macro_commodity:'finance',crypto:'finance',market_us:'finance',market_cn:'finance',market_hk:'finance',geopolitics:'policy',
   ai:'tech',ai_compute:'tech',ai_model:'tech',ai_application:'tech',semiconductor:'tech',semiconductor_memory:'tech',semiconductor_optical:'tech',semiconductor_equipment:'tech',semiconductor_packaging:'tech',internet:'tech',software:'tech',gaming:'tech',graphics:'tech',auto:'tech',energy:'tech',communications:'tech',datacenter:'tech'};
 const reasons={'needs-content':'正文待补','information-not-ready':'信息加工待完成','retryable-model-error':'模型暂时故障','queue-timeout':'排队超时','execution-timeout':'执行超时','budget-deferred':'预算延期','lease-conflict':'同版本加工中','invalid-output':'输出不合法','stale-policy':'规则已更新'};
+const HOUR_MS=3600000;
+export function mergeHourGaps(startAts, step=HOUR_MS) {
+  const starts=[...new Set((startAts||[]).filter(value=>Number.isFinite(value)))].sort((a,b)=>a-b);
+  if(!starts.length) return [];
+  const present=new Set(starts);
+  const items=[];
+  let gap=[];
+  const flush=()=>{if(!gap.length)return;items.push({kind:'gap',startAt:gap[0],endAt:gap[gap.length-1],count:gap.length});gap=[];};
+  for(let at=starts[0]; at<=starts[starts.length-1]; at+=step){
+    if(present.has(at)){flush();items.push({kind:'hour',startAt:at});}
+    else gap.push(at);
+  }
+  flush();
+  return items.reverse();
+}
+export function formatHourGap(startHour, endHour, count) {
+  const pad=value=>String(value).padStart(2,'0');
+  const label=startHour===endHour ? `${startHour}点` : `${startHour}\u2013${endHour}点`;
+  const detail=startHour===endHour
+    ? `${pad(startHour)}:00 · ${count} 期未生成`
+    : `${pad(startHour)}:00\u2013${pad(endHour)}:00 · ${count} 期未生成`;
+  return {label, detail};
+}
+export function hourlyDelayHours(latestEndAt, now, step=HOUR_MS) {
+  if(!Number.isFinite(latestEndAt) || !Number.isFinite(now)) return 0;
+  const lag=now-latestEndAt;
+  if(!(lag>2*step)) return 0;
+  return Math.floor(lag/step);
+}
+export function resolveHourChoice(rows, requestedHour) {
+  const list=Array.isArray(rows) ? rows.filter(row=>row && Number.isFinite(row.startAt)) : [];
+  if(!list.length) return {startAt:null, shownHour:null, fallback:false, requestedHour:requestedHour??null};
+  if(requestedHour==null) return {startAt:list[0].startAt, shownHour:list[0].hour??null, fallback:false, requestedHour:null};
+  const match=list.find(row=>row.hour===requestedHour);
+  if(match) return {startAt:match.startAt, shownHour:match.hour, fallback:false, requestedHour};
+  let best=list[0], bestDist=Math.abs((best.hour??0)-requestedHour);
+  for(const row of list){
+    const dist=Math.abs((row.hour??0)-requestedHour);
+    if(dist<bestDist || (dist===bestDist && row.startAt<best.startAt)){best=row;bestDist=dist;}
+  }
+  return {startAt:best.startAt, shownHour:best.hour??null, fallback:true, requestedHour};
+}
+export function hourStepSense(input, mobile) {
+  const phone={'swipe-left':'earlier','swipe-right':'later',ArrowLeft:'later',ArrowRight:'earlier','wheel-left':'later','wheel-right':'earlier'};
+  const desk={'swipe-left':'earlier','swipe-right':'later',ArrowLeft:'earlier',ArrowRight:'later','wheel-left':'earlier','wheel-right':'later'};
+  return (mobile ? phone : desk)[input] || null;
+}
 export function createInformationTreePage(host) {
-  let root,list,titleEl,coverageEl,statusRow,statusToggle,statusDetail,pastBtn,directionNav,hourChips,dayChips,tools,materialsBtn,tagPanel,tag,period,backIssues,notice,mode='daily',direction=null,directionExplicit=false,showMaterials=false,selectedHourStart=0,dailyStart=0,openedId='',openedDirection='',manifest,selected=null,epoch=0,flight=0,settled=false,timer=0,dateFilter='',checking=null,pinnedReadingId='';
+  let root,list,titleEl,coverageEl,statusRow,statusToggle,statusDetail,pastBtn,directionNav,hourChips,dayChips,tools,materialsBtn,tagPanel,tag,period,backIssues,notice,delayEl,hourRail,hourDay,hourNow,hourEarlier,hourYesterday,hourMore,mode='daily',direction=null,directionExplicit=false,showMaterials=false,selectedHourStart=0,dailyStart=0,openedId='',openedDirection='',manifest,selected=null,epoch=0,flight=0,settled=false,timer=0,dateFilter='',checking=null,pinnedReadingId='';
   let requests=new AbortController();
   let rendering=0;
   function api(path, options){
@@ -180,14 +227,9 @@ export function createInformationTreePage(host) {
   function hourRows() {
     return (manifest?.hours || []).map(choice).filter(Boolean).sort((a,b)=>b.window.startAt-a.window.startAt);
   }
-  function hourLabel(edition, index) {
-    if(index===0) return '这个小时';
-    if(index===1) return '上个小时';
-    if(index===2) return '上上个小时';
-    const newest=hourRows()[0];
-    return newest && day(edition.window.startAt)===day(newest.window.startAt) ? clock(edition.window.startAt) : `${monthDay(edition.window.startAt)} ${clock(edition.window.startAt)}`;
-  }
   let hourStripKey='',seenIds=[],seen=new Set(),opening={id:'',ticket:0},openTicket=0;
+  const readingCache=new Map(), readingLoads=new Map(), openGaps=new Set();
+  let readingIndex, pendingClockHour=null, hourFallbackText='', hourRevealEarlier=false, slowTimer=0;
   const storage=()=>{try{return localStorage;}catch{return null;}};
   const seenKey=()=>{const session=host.session?.();const identity=session?`${session.role||'user'}:${session.device?.id||'desktop'}`:'local';return `ai-center.hourly-seen.${encodeURIComponent(identity)}`;};
   const editionIdOk=id=>typeof id==='string' && /^edition:[A-Za-z0-9:_-]{8,180}$/.test(id);
@@ -217,21 +259,64 @@ export function createInformationTreePage(host) {
     for(const chip of hourChips?.children || []){
       const on=unread.has(chip.dataset.start);
       chip.classList.toggle('is-unread',on);
-      if(on)chip.setAttribute('aria-label',`${chip.textContent}，未读`);else chip.removeAttribute('aria-label');
+      if(on)chip.setAttribute('aria-label',`${chip.dataset.label || chip.textContent}，未读`);else if(chip.dataset.start) chip.removeAttribute('aria-label');
     }
     const tab=root?.querySelector?.('[data-mode="hourly"]');
     if(!tab)return;
     tab.classList.toggle('is-unread',unread.size>0);
     if(unread.size)tab.setAttribute('aria-label','小时报，未读');else tab.removeAttribute('aria-label');
   }
-  function selectHour(startAt){selectedHourStart=startAt;openedId='';pinnedReadingId='';readingOpen.clear();return render();}
+  function hourClock(at){return Number(parts(at).hour);}
+  function hourStripMobile(){
+    try{const media=globalThis.window?.matchMedia;if(typeof media!=='function')return false;return media('(max-width: 700px)').matches===true;}catch{return false;}
+  }
+  function writeHourHash(startAt){
+    if(!startAt || mode!=='hourly')return;
+    const hist=globalThis.history, loc=globalThis.location;
+    if(!hist || typeof hist.replaceState!=='function' || !loc)return;
+    const hh=String(hourClock(startAt)).padStart(2,'0');
+    const date=day(startAt), today=day(Date.now());
+    const hash=date===today ? `#report?hour=${hh}` : `#report/${date}?hour=${hh}`;
+    if(loc.hash===hash)return;
+    try{hist.replaceState({aiCenter:true,hash},'',`${loc.pathname||''}${loc.search||''}${hash}`);}catch{}
+  }
+  function selectHour(startOrHour){
+    const clockPick=Number.isInteger(startOrHour) && startOrHour>=0 && startOrHour<=23;
+    if(mode!=='hourly'){mode='hourly';showMaterials=false;}
+    openedId='';pinnedReadingId='';readingOpen.clear();
+    if(clockPick) pendingClockHour=startOrHour;
+    else {pendingClockHour=null;hourFallbackText='';selectedHourStart=startOrHour;writeHourHash(startOrHour);}
+    return render();
+  }
   function hourNavOpen(){return active() && mode==='hourly' && !showMaterials && !openedId;}
-  // Chips run newest → oldest, left → right. Positive steps move toward the right (older).
-  function stepHour(direction){
-    if(!hourNavOpen())return;
-    const rows=hourRows(),index=rows.findIndex(item=>item.window.startAt===selectedHourStart),next=index<0?null:rows[index+direction];
+  function focusedHourRows(rows){
+    if(dateFilter) return rows.filter(item=>day(item.window.startAt)===dateFilter);
+    if(!rows.length) return [];
+    const selectedRow=rows.find(item=>item.window.startAt===selectedHourStart) || rows[0];
+    const focusDay=day(selectedRow.window.startAt);
+    return rows.filter(item=>day(item.window.startAt)===focusDay);
+  }
+  function applyClockRequest(rows){
+    if(pendingClockHour==null) return;
+    const requested=pendingClockHour;
+    pendingClockHour=null;
+    const choice=resolveHourChoice(rows.map(item=>({startAt:item.window.startAt,hour:hourClock(item.window.startAt)})), requested);
+    if(choice.startAt) selectedHourStart=choice.startAt;
+    hourFallbackText=choice.fallback ? `${String(requested).padStart(2,'0')}:00 那期还没生成，已显示 ${String(choice.shownHour).padStart(2,'0')}:00` : '';
+  }
+  // earlier/later are time order. Rows are newest first, so earlier is the next index.
+  function stepHour(which){
+    if(!hourNavOpen() || (which!=='earlier' && which!=='later'))return;
+    const rows=focusedHourRows(hourRows());
+    const index=rows.findIndex(item=>item.window.startAt===selectedHourStart);
+    if(index<0)return;
+    const next=which==='earlier' ? rows[index+1] : rows[index-1];
     if(!next)return;
     return selectHour(next.window.startAt);
+  }
+  function stepFromInput(input){
+    const sense=hourStepSense(input, hourStripMobile());
+    if(sense) return stepHour(sense);
   }
   const hourSwipeMin=48,hourSwipeRatio=1.5;
   const hourSwipeIntent=(dx,dy)=>Math.abs(dx)>=hourSwipeMin && Math.abs(dx)>Math.abs(dy)*hourSwipeRatio;
@@ -241,7 +326,7 @@ export function createInformationTreePage(host) {
     if(event.altKey || event.ctrlKey || event.metaKey || event.shiftKey)return;
     if(!hourNavOpen() || typingTarget(event))return;
     if(event.cancelable!==false)event.preventDefault();
-    return stepHour(event.key==='ArrowRight'?1:-1);
+    return stepFromInput(event.key);
   }
   function bindHourSwipe(surface){
     if(surface.style)surface.style.touchAction='pan-y';
@@ -261,7 +346,7 @@ export function createInformationTreePage(host) {
     surface.addEventListener('touchend',event=>{
       const current=gesture;gesture=null;const touch=event.changedTouches?.[0];if(!current || !touch)return;
       const dx=touch.clientX-current.x,dy=touch.clientY-current.y;if(!hourSwipeIntent(dx,dy))return;
-      return stepHour(dx<0?1:-1);
+      return stepFromInput(dx<0?'swipe-left':'swipe-right');
     },{passive:true});
     surface.addEventListener('touchcancel',()=>{gesture=null;},{passive:true});
     surface.addEventListener('wheel',event=>{
@@ -272,30 +357,98 @@ export function createInformationTreePage(host) {
       const now=Date.now();if(now<wheelLock)return;
       if(now-wheelMoved>450)wheelAcc=0;
       wheelMoved=now;wheelAcc+=dx;if(Math.abs(wheelAcc)<hourSwipeMin)return;
-      const direction=wheelAcc>0?1:-1;wheelAcc=0;wheelLock=now+450;return stepHour(direction);
+      const sense=hourStepSense(wheelAcc>0?'wheel-right':'wheel-left', hourStripMobile());
+      wheelAcc=0;wheelLock=now+450;return sense ? stepHour(sense) : undefined;
     },{passive:false});
   }
-  function paintHourStrip(rows) {
-    const key=rows.map(item=>item.window.startAt).join(',');
-    if(key!==hourStripKey){
-      hourStripKey=key;hourChips.replaceChildren();
-      rows.forEach((edition,index)=>{
-        const chip=button(hourLabel(edition,index),()=>selectHour(edition.window.startAt));
-        chip.className='chip-tab';chip.dataset.start=String(edition.window.startAt);hourChips.append(chip);
-      });
+  function clearHourSlow(){if(slowTimer){clearTimeout(slowTimer);slowTimer=0;}}
+  function armHourSlow(token){
+    clearHourSlow();
+    slowTimer=setTimeout(()=>{
+      if(token!==epoch || !list?.querySelector?.('.tree-hour-skeleton'))return;
+      list.replaceChildren(button('读取较慢 · 重试',()=>render()));
+    },10000);
+  }
+  function hourSkeleton(){
+    const box=el('div','','tree-hour-skeleton');box.setAttribute('aria-busy','true');
+    box.append(el('span','','tree-hour-skeleton-line'),el('span','','tree-hour-skeleton-line'),el('span','','tree-hour-skeleton-line'));
+    return box;
+  }
+  function chipText(edition, index){
+    const time=clock(edition.window.startAt);
+    const row=index instanceof Map ? index.get(edition.window.startAt) : null;
+    if(!row) return time;
+    const newest=hourRows()[0]?.window.startAt===edition.window.startAt;
+    if(newest && row.status==='partial' && Number.isFinite(Number(row.scored)) && Number.isFinite(Number(row.candidates))) return `${time}  整理中 ${row.scored}/${row.candidates}`;
+    if(Number.isFinite(Number(row.selected))) return `${time}  命中 ${row.selected}`;
+    return time;
+  }
+  function paintRail(rows){
+    const focus=rows[0];
+    if(!hourDay || !focus) return;
+    const focusDay=day(focus.window.startAt), today=day(Date.now()), yesterday=day(Date.now()-86400000);
+    hourDay.textContent=focusDay===today ? '今天' : focusDay===yesterday ? '昨天' : monthDay(focus.window.startAt);
+    if(hourNow) hourNow.hidden=focusDay!==today;
+    if(hourYesterday){
+      const prev=day(focus.window.startAt-86400000);
+      hourYesterday.textContent=prev===yesterday ? '昨天 ›' : `${monthDay(focus.window.startAt-86400000)} ›`;
     }
-    ensureSelectedHour(rows);
-    for(const chip of hourChips.children){
+  }
+  function paintDelay(rows){
+    if(!delayEl) return;
+    const latest=rows[0];
+    if(!latest || mode!=='hourly' || showMaterials){delayEl.hidden=true;return;}
+    const hours=hourlyDelayHours(latest.window.endAt, Date.now());
+    if(!hours){delayEl.hidden=true;delayEl.replaceChildren();return;}
+    const hh=String(hourClock(latest.window.startAt)).padStart(2,'0');
+    delayEl.hidden=false;
+    delayEl.replaceChildren(el('strong',`最新一期 ${hh}:00 · 已延迟 ${hours} 小时`), el('p','小时报暂未生成，官方信息照常更新','tree-hour-delay-note'));
+  }
+  function paintHourStrip(rows, index=readingIndex instanceof Map ? readingIndex : null) {
+    const focused=focusedHourRows(rows);
+    ensureSelectedHour(focused.length ? focused : rows);
+    const chosen=focused.length ? focused : rows;
+    const merged=mergeHourGaps(chosen.map(item=>item.window.startAt));
+    const byStart=new Map(chosen.map(item=>[item.window.startAt,item]));
+    const display=merged.map(item=>item.kind==='hour' ? {kind:'hour',edition:byStart.get(item.startAt)} : item).filter(item=>item.kind!=='hour' || item.edition);
+    const selectedIndex=display.findIndex(item=>item.kind==='hour' && item.edition.window.startAt===selectedHourStart);
+    if(selectedIndex>=8) hourRevealEarlier=true;
+    const visible=hourRevealEarlier || display.length<=8 ? display : display.slice(0,8);
+    const indexKey=index instanceof Map ? [...index.keys()].sort((a,b)=>a-b).join(',') : '';
+    const key=`${visible.map(item=>item.kind==='hour'?item.edition.window.startAt:`g${item.startAt}`).join(',')}|${[...openGaps].join(',')}|${indexKey}|${hourRevealEarlier}`;
+    if(key!==hourStripKey && hourChips){
+      hourStripKey=key;hourChips.replaceChildren();
+      for(const item of visible){
+        if(item.kind==='gap'){
+          const view=formatHourGap(hourClock(item.startAt), hourClock(item.endAt), item.count);
+          const gapKey=`${item.startAt}:${item.endAt}`;
+          const open=openGaps.has(gapKey);
+          const control=button(open?view.detail:view.label,()=>{if(openGaps.has(gapKey))openGaps.delete(gapKey);else openGaps.add(gapKey);hourStripKey='';paintHourStrip(hourRows(), readingIndex instanceof Map ? readingIndex : null);});
+          control.className='tree-hour-gap';control.dataset.gap=gapKey;hourChips.append(control);continue;
+        }
+        const edition=item.edition;
+        const chip=button(chipText(edition, index),()=>selectHour(edition.window.startAt));
+        chip.className='chip-tab';chip.dataset.start=String(edition.window.startAt);chip.dataset.label=clock(edition.window.startAt);hourChips.append(chip);
+      }
+    }
+    const mobile=hourStripMobile();
+    for(const chip of hourChips?.children || []){
+      if(!chip.dataset.start) continue;
       const on=chip.dataset.start===String(selectedHourStart);
       chip.classList.toggle('is-active',on);
-      if(on) chip.scrollIntoView({inline:'center',block:'nearest'});
+      if(on) chip.scrollIntoView(mobile?{inline:'center',block:'nearest'}:{block:'nearest',inline:'nearest'});
     }
+    if(hourEarlier) hourEarlier.hidden=display.length<=8;
+    paintRail(chosen);
     paintHourUnread(rows);
   }
   function syncHourChrome() {
     const hourly=mode==='hourly' && !showMaterials;
     const daily=mode==='daily' && !showMaterials;
+    root?.classList.toggle('is-hourly', hourly);
     if(hourChips) hourChips.hidden=!hourly || Boolean(openedId);
+    if(hourRail) hourRail.hidden=!hourly || Boolean(openedId);
+    if(delayEl && !hourly) delayEl.hidden=true;
     if(dayChips) dayChips.hidden=!daily;
     if(directionNav) directionNav.hidden=hourly || daily;
     if(coverageEl) coverageEl.hidden=hourly || daily;
@@ -445,18 +598,25 @@ export function createInformationTreePage(host) {
   }
   function readingFold(id, title, {note, seed, stale} = {}) {
     const details=document.createElement('details');details.className='reading-fold';details.open=readingOpen.has(id);
-    const summary=document.createElement('summary');summary.className='feed-content';
-    const heading=el('h3',title);
-    if(stale) heading.append(el('span','时效不足','reading-stale'));
-    summary.append(heading);
+    const summary=document.createElement('summary');summary.className='feed-content';summary.setAttribute('title',title);
+    const line=el('div','','reading-line');
+    const heading=el('h3',title);heading.setAttribute('title',title);
+    line.append(heading);
+    if(stale) line.append(el('span','时效不足','reading-stale'));
+    summary.append(line);
     if(note)summary.append(el('p',note,'post-excerpt'));
     const panel=el('div','','reading-fold-body');details.append(summary,panel);
-    let loaded=false;
+    let loaded=false,slow=0;
     async function load() {
-      if(!details.open){readingOpen.delete(id);return;}
-      readingOpen.add(id);if(loaded)return;loaded=true;panel.textContent='读取中…';
+      if(!details.open){readingOpen.delete(id);clearTimeout(slow);return;}
+      readingOpen.add(id);if(loaded)return;loaded=true;panel.replaceChildren(hourSkeleton());
+      slow=setTimeout(()=>{
+        if(!panel.querySelector('.tree-hour-skeleton'))return;
+        loaded=false;panel.replaceChildren(button('读取较慢 · 重试',()=>{panel.replaceChildren();loaded=false;void load();}));
+      },10000);
       let saved;
-      try{saved=await node(id);}catch(error){if(aborted(error)){loaded=false;panel.textContent='';return;}saved=null;}
+      try{saved=await node(id);}catch(error){clearTimeout(slow);if(aborted(error)){loaded=false;panel.textContent='';return;}saved=null;}
+      clearTimeout(slow);if(!details.open)return;
       const view=(saved?.body || saved?.text) ? saved : (seed || saved);
       panel.replaceChildren(el('p',view?.body || view?.text || '这篇的正文暂时读不到。','tree-text'));
       if(canReadSource(view))panel.append(button('原文',()=>host.readSavedSource(view)));
@@ -472,80 +632,185 @@ export function createInformationTreePage(host) {
   }
   const readingDirectionOrder=['金融','产业个股','科技与AI','地缘政治','待分类'];
   const readingSliceOrder=['中国','美国','欧洲','日本','韩国','中国台湾','多地','其他','模型与技术','应用与工作流','安全与外交','贸易与限制'];
-  function renderReadingDirections(rows, className = '') {
+  function renderReadingDirections(rows, parent=list) {
     if(!rows.length) return;
     const rank=(order,value)=> {const index=order.indexOf(value);return index<0 ? order.length : index;};
-    const directions=[...new Set(rows.map(item=>item.readingDirectionName).filter(Boolean))].sort((a,b)=>rank(readingDirectionOrder,a)-rank(readingDirectionOrder,b));
-    for(const directionName of directions){
+    const directionNames=[...new Set(rows.map(item=>item.readingDirectionName).filter(Boolean))].sort((a,b)=>rank(readingDirectionOrder,a)-rank(readingDirectionOrder,b));
+    for(const directionName of directionNames){
       const matched=rows.filter(item=>item.readingDirectionName===directionName);
-      const block=el('section','',className ? `reading-block ${className}` : 'reading-block');
+      const block=el('section','','reading-block');
       block.append(el('h2',directionName,'reading-direction'));
       const themes=[...new Set(matched.map(item=>item.readingThemeName).filter(Boolean))].sort((a,b)=>rank(readingSliceOrder,a)-rank(readingSliceOrder,b));
       for(const themeName of themes){
         const themeRows=matched.filter(item=>item.readingThemeName===themeName);
         const themeBlock=el('div','','reading-slice');
+        const items=el('div','','reading-slice-items');
         themeBlock.append(el('div',themeName,'reading-group'));
-        for(const item of themeRows) themeBlock.append(readingFold(item.nodeId,item.title,{stale:item.timely===false}));
-        block.append(themeBlock);
+        for(const item of themeRows) items.append(readingFold(item.nodeId,item.title,{stale:item.timely===false,seed:item}));
+        themeBlock.append(items);block.append(themeBlock);
       }
-      for(const item of matched.filter(item=>!item.readingThemeName)) block.append(readingFold(item.nodeId,item.title,{stale:item.timely===false}));
-      list.append(block);
+      for(const item of matched.filter(item=>!item.readingThemeName)) block.append(readingFold(item.nodeId,item.title,{stale:item.timely===false,seed:item}));
+      parent.append(block);
     }
+  }
+  function otherBlock(rows, shownDirections) {
+    const details=document.createElement('details');details.className='reading-other';
+    const summary=document.createElement('summary');summary.textContent=`其他 ${rows.length} 条 ›`;
+    const body=el('div','','reading-other-body');
+    const rank=(order,value)=>{const index=order.indexOf(value);return index<0?order.length:index;};
+    const sorted=[...rows].sort((a,b)=>rank(readingDirectionOrder,a.readingDirectionName||'')-rank(readingDirectionOrder,b.readingDirectionName||''));
+    let last='';
+    for(const item of sorted){
+      const name=item.readingDirectionName||'';
+      if(name && name!==last && !shownDirections.has(name)) body.append(el('div',name,'reading-other-label'));
+      last=name;
+      body.append(readingFold(item.nodeId,item.title,{stale:item.timely===false,seed:item}));
+    }
+    details.append(summary,body);return details;
+  }
+  function hourHead(edition, snapshot) {
+    const head=el('div','','reading-hour-head');
+    head.append(el('h2',`${clock(edition.window.startAt)} – ${clock(edition.window.endAt)}`,'reading-hour-title'));
+    const scored=Number(snapshot?.scored), candidates=Number(snapshot?.candidates), selectedCount=Number(snapshot?.selected);
+    if(Number.isFinite(scored) && Number.isFinite(candidates) && Number.isFinite(selectedCount) && selectedCount>0) head.append(el('p',`已处理 ${scored}/${candidates} · 命中 ${selectedCount}`,'reading-hour-meta'));
+    const nav=el('div','','reading-hour-nav');
+    const prev=button('‹ 上一期',()=>stepHour('earlier')), next=button('下一期 ›',()=>stepHour('later'));
+    prev.className='reading-hour-step';next.className='reading-hour-step';nav.append(prev,next);head.append(nav);return head;
+  }
+  function showEmptyHour(rest) {
+    const line=el('div','','tree-hour-empty');
+    if(!rest.length) line.textContent='这一小时没有命中条目';
+    else {line.append(el('span','这一小时没有命中条目 · ','tree-hour-empty-lead'), otherBlock(rest, new Set()));}
+    return line;
+  }
+  async function loadReadingIndex() {
+    if(readingIndex!==undefined) return readingIndex;
+    try{
+      const data=await api('/api/v1/reports/reading-hour/index');
+      const map=new Map();
+      for(const row of data?.hours || []) if(row && Number.isFinite(Number(row.startAt))) map.set(Number(row.startAt), row);
+      readingIndex=map;
+    }catch(error){if(aborted(error))throw error;readingIndex=null;}
+    return readingIndex;
+  }
+  async function fetchReadingSnapshot(edition) {
+    const path=pinnedReadingId && openedId ? `/api/v1/reports/reading-hour/snapshot?id=${encodeURIComponent(pinnedReadingId)}` : `/api/v1/reports/reading-hour?startAt=${edition.window.startAt}&endAt=${edition.window.endAt}&scope=hour`;
+    try{
+      const data=await api(path);const snapshot=data?.snapshot || null;
+      readingCache.set(edition.window.startAt, snapshot);return snapshot;
+    }catch(error){
+      if(aborted(error)) throw error;
+      if(error?.status===404){readingCache.set(edition.window.startAt, null);return null;}
+      throw error;
+    }
+  }
+  function readingHourPromise(edition, {refresh=false}={}) {
+    const key=edition.window.startAt;
+    if(!refresh && readingCache.has(key)) return Promise.resolve(readingCache.get(key));
+    if(!refresh && readingLoads.has(key)) return readingLoads.get(key);
+    const pending=fetchReadingSnapshot(edition).finally(()=>{if(readingLoads.get(key)===pending) readingLoads.delete(key);});
+    if(!refresh) readingLoads.set(key, pending);
+    return pending;
+  }
+  function prefetchAround(edition) {
+    if(!edition) return;
+    const rows=focusedHourRows(hourRows());
+    const index=rows.findIndex(item=>item.window.startAt===edition.window.startAt);
+    const neighbors=[rows[index-1],rows[index+1]].filter(Boolean);
+    const run=()=>{
+      if(!active()) return;
+      for(const next of neighbors){
+        if(readingCache.has(next.window.startAt) || readingLoads.has(next.window.startAt)) continue;
+        void readingHourPromise(next).catch(()=>{});
+      }
+    };
+    const idle=globalThis.requestIdleCallback;
+    if(typeof idle==='function') idle(()=>run(),{timeout:1500});
+    else setTimeout(run,0);
+  }
+  function refreshPartial(edition, token, claim) {
+    void readingHourPromise(edition,{refresh:true}).then(snapshot=>{
+      if(token!==epoch || selectedHourStart!==edition.window.startAt || !snapshot) return;
+      return renderReadingHour(token, claim, edition, snapshot);
+    }).catch(()=>{});
   }
   async function renderReadingHour(token,claim,edition,snapshot) {
+    if(token!==epoch || !snapshot) return;
     if(openedId) pinnedReadingId=snapshot.id; else pinnedReadingId='';
     finishOpening(claim,true);paintHourUnread();
-    list.replaceChildren();
-    list.append(el('p',`已处理 ${snapshot.scored}/${snapshot.candidates}，命中 ${snapshot.selected}。`,'tree-coverage'));
+    const page=el('div','','reading-hour');
+    if(hourFallbackText) page.append(el('p',hourFallbackText,'tree-hour-fallback'));
+    page.append(hourHead(edition,snapshot));
     syncReadingChrome(null);
-    const shown=snapshot.items.filter(item=>item.readingDirectionName && item.readingDirectionName!=='待分类' && item.disposition!=='out-of-scope');
-    renderReadingDirections(shown.filter(item=>item.disposition==='hit'));
+    const shown=(snapshot.items||[]).filter(item=>item.readingDirectionName && item.readingDirectionName!=='待分类' && item.disposition!=='out-of-scope');
+    const hits=shown.filter(item=>item.disposition==='hit');
     const rest=shown.filter(item=>item.disposition!=='hit');
-    if(rest.length){list.append(el('h2','其他','reading-rest'));renderReadingDirections(rest,'is-rest');}
-    root.dataset.readingSnapshot=snapshot.id;
-    viewKey=`hourly-reading:${edition.window.startAt}:${snapshot.id}`;
+    if(!hits.length) page.append(showEmptyHour(rest));
+    else {
+      renderReadingDirections(hits, page);
+      if(rest.length) page.append(otherBlock(rest, new Set(hits.map(item=>item.readingDirectionName).filter(Boolean))));
+    }
+    list.replaceChildren(page);
+    root.dataset.readingSnapshot=snapshot.id||'';
+    viewKey=`hourly-reading:${edition.window.startAt}:${snapshot.id||''}`;
     restoreScroll(false);
+    prefetchAround(edition);
+  }
+  function paintEmptyHour(edition, claim) {
+    clearHourSlow();finishOpening(claim,true);paintHourUnread();
+    const page=el('div','','reading-hour');
+    if(hourFallbackText) page.append(el('p',hourFallbackText,'tree-hour-fallback'));
+    if(edition) page.append(hourHead(edition, null));
+    page.append(showEmptyHour([]));
+    list.replaceChildren(page);
+    prefetchAround(edition);
   }
   async function renderHourFeed(token,claim) {
-    syncHourChrome();
     const rows=hourRows();
-    paintHourStrip(rows);
-    const edition=rows.find(item=>item.window.startAt===selectedHourStart) || null;
+    const focused=focusedHourRows(rows);
+    const pool=focused.length ? focused : rows;
+    if(pendingClockHour!=null) applyClockRequest(pool);
+    else ensureSelectedHour(pool);
+    writeHourHash(selectedHourStart);
+    syncHourChrome();
+    paintDelay(rows);
+    void loadReadingIndex().then(index=>{if(token===epoch) paintHourStrip(hourRows(), index instanceof Map ? index : null);}).catch(()=>{});
+    paintHourStrip(rows, readingIndex instanceof Map ? readingIndex : null);
+    const edition=pool.find(item=>item.window.startAt===selectedHourStart) || rows.find(item=>item.window.startAt===selectedHourStart) || null;
     selected=edition;root.dataset.editionId=edition?.id || '';root.dataset.windowStart=String(edition?.window.startAt ?? '');root.dataset.briefMode='hourly';
-    const snapshot=await readingSnapshot(edition);
-    if(token!==epoch){const current=claim?.ticket===opening.ticket;finishOpening(claim,false);if(current && root?.isConnected)paintHourUnread();return;}
-    if(snapshot) return renderReadingHour(token,claim,edition,snapshot);
-    const nodes=edition ? await editionNodes(edition) : [];
-    if(token!==epoch){const current=claim?.ticket===opening.ticket;finishOpening(claim,false);if(current && root?.isConnected)paintHourUnread();return;}
-    const articles=[];
-    for(const module of (nodes || []).filter(Boolean)) {
-      if(module.layer==='information' || !module.children?.length) {articles.push(module);continue;}
-      try {
-        const data=await api(`/api/v1/reports/tree/children?id=${encodeURIComponent(module.id)}`);
-        const children=(data.children || []).filter(Boolean);
-        if(token!==epoch)return;
-        if(children.length){children.forEach(remember);articles.push(...children);} else articles.push(module);
-      } catch(error) {if(aborted(error))throw error;articles.push(module);}
+    if(!edition){clearHourSlow();finishOpening(claim,false);list.replaceChildren(el('p','这个小时还没有小时报。','tree-hour-empty'));return;}
+    const key=edition.window.startAt;
+    if(readingCache.has(key)){
+      const snapshot=readingCache.get(key);
+      if(!snapshot) return paintEmptyHour(edition, claim);
+      await renderReadingHour(token,claim,edition,snapshot);
+      if(snapshot.status==='partial') refreshPartial(edition, token, claim);
+      return;
     }
+    if(!list.querySelector('.tree-hour-skeleton')){list.replaceChildren(hourSkeleton());armHourSlow(token);}
+    const snapshot=await readingHourPromise(edition);
     if(token!==epoch){const current=claim?.ticket===opening.ticket;finishOpening(claim,false);if(current && root?.isConnected)paintHourUnread();return;}
-    finishOpening(claim,true);paintHourUnread(rows);
-    list.replaceChildren();
-    syncReadingChrome(null);
-    if(!articles.length) list.textContent='这个小时还没有小时报。';
-    else for(const name of directionOrder) {
-      const grouped=articles.filter(item=>group(item)===name);
-      if(grouped.length) appendTitleGroup(directions[name],grouped);
-    }
-    viewKey=`hourly-feed:${selectedHourStart}`;
-    restoreScroll(false);
+    clearHourSlow();
+    if(!snapshot) return paintEmptyHour(edition, claim);
+    await renderReadingHour(token,claim,edition,snapshot);
+    if(snapshot.status==='partial') refreshPartial(edition, token, claim);
   }
   async function render() {
     if(viewKey)positions.set(viewKey,window.scrollY);const token=++epoch;const flightToken=flight;
     rendering++;
     const hourlyFeed=mode==='hourly' && !showMaterials;
     const dailyFeed=mode==='daily' && !showMaterials;
-    const openingClaim=hourlyFeed?beginOpening(ensureSelectedHour(hourRows())):null;
-    list.textContent='读取中…';setPrimary();syncHourChrome();
+    if(hourlyFeed){
+      const pool=focusedHourRows(hourRows());
+      const rows=pool.length ? pool : hourRows();
+      if(pendingClockHour!=null) applyClockRequest(rows);
+      else ensureSelectedHour(rows);
+    }
+    const openingClaim=hourlyFeed?beginOpening(hourRows().find(item=>item.window.startAt===selectedHourStart)||null):null;
+    const cachedHour=hourlyFeed && readingCache.has(selectedHourStart);
+    if(hourlyFeed && !cachedHour){list.replaceChildren(hourSkeleton());armHourSlow(token);}
+    else if(!hourlyFeed){clearHourSlow();list.textContent='读取中…';}
+    setPrimary();syncHourChrome();
     if(hourlyFeed && openedId) syncReadingChrome({node:null,label:'返回小时报',onBack:closeHour});
     else if(dailyFeed && (openedId || openedDirection)) syncReadingChrome({node:null,label:'返回日报',onBack:closeDaily});
     try {
@@ -587,7 +852,9 @@ export function createInformationTreePage(host) {
       rememberIssue();
       viewKey=`${mode}:${selected.window.startAt}:${direction}:${tag.value}:${showMaterials?'materials':'brief'}`;
       restoreScroll(false);
-    }catch(error){if(aborted(error) || token!==epoch || flightToken!==flight)return;finishOpening(openingClaim,false);paintHourUnread();list.replaceChildren(el('p','读取失败，请重试。'),button('重试读取',render));
+    }catch(error){if(aborted(error) || token!==epoch || flightToken!==flight)return;clearHourSlow();finishOpening(openingClaim,false);paintHourUnread();
+      if(hourlyFeed) list.replaceChildren(button('这一期读取失败 · 重试',()=>render()));
+      else list.replaceChildren(el('p','读取失败，请重试。'),button('重试读取',render));
       if((hourlyFeed || dailyFeed) && (openedId || openedDirection)) syncReadingChrome({node:null,label:hourlyFeed?'返回小时报':'返回日报',onBack:hourlyFeed?closeHour:closeDaily});
       else syncReadingChrome(null);}
     finally{rendering=Math.max(0,rendering-1);}
@@ -600,7 +867,7 @@ export function createInformationTreePage(host) {
   }
   async function acceptUpdate(){if(!nextManifest)return;editorialCache.clear();invalidateInformationIndex();manifest=nextManifest;nextManifest=null;notice.hidden=true;periods();await render();}
   // Pausing a retained page must not invalidate the ref handlers still mounted in it.
-  function stop(){clearInterval(timer);timer=0;checking=null;}
+  function stop(){clearInterval(timer);timer=0;checking=null;clearHourSlow();}
   function suspend(){
     stop();
     flight++;
@@ -613,7 +880,7 @@ export function createInformationTreePage(host) {
   document.addEventListener('visibilitychange',()=>{if(document.hidden)stop();else if(active())resume();});
   document.addEventListener('keydown',onHourKey);
   return {async mount(target,options={}){
-    stop();flight++;requests.abort();requests=new AbortController();epoch++;settled=false;loadSeen();const flightToken=flight;root=target;mode=options.mode==='hourly' ? 'hourly' : 'daily';dateFilter=options.date || '';showMaterials=false;root.replaceChildren();root.classList.add('tree-page','brief-page');
+    stop();flight++;requests.abort();requests=new AbortController();epoch++;settled=false;loadSeen();const flightToken=flight;root=target;mode=options.mode==='hourly' ? 'hourly' : 'daily';dateFilter=options.date || '';pendingClockHour=Number.isInteger(options.hour) && options.hour>=0 && options.hour<=23 ? options.hour : null;hourFallbackText='';hourRevealEarlier=false;showMaterials=false;root.replaceChildren();root.classList.add('tree-page','brief-page');
     if(options.resetSelection){selected=null;viewKey='';}
     const primary=el('div','','tree-primary');primary.setAttribute('role','tablist');primary.setAttribute('aria-label','简报');
     for(const [value,label] of [['daily','日报'],['hourly','小时报']]){const tab=button(label,()=>switchMode(value));tab.dataset.mode=value;tab.setAttribute('role','tab');primary.append(tab);}
@@ -636,8 +903,24 @@ export function createInformationTreePage(host) {
     backIssues.append(date,period);if(host.archive)backIssues.append(button('旧版存档',host.archive));
     directionNav=el('div','','brief-direction-tabs');directionNav.setAttribute('role','tablist');directionNav.setAttribute('aria-label','阅读方向');
     for(const [value,label] of Object.entries(directions)){const tab=button(label,()=>{direction=value;directionExplicit=true;render();});tab.className='brief-direction-tab';tab.dataset.direction=value;tab.setAttribute('role','tab');directionNav.append(tab);}
+    delayEl=el('div','','tree-hour-delay');delayEl.hidden=true;
+    hourRail=el('div','','tree-hour-rail');
+    hourDay=el('div','今天','tree-hour-day');
+    hourNow=el('div','现在','tree-hour-now');
     hourChips=el('div','','chip-tabs tree-hour-chips tree-hour-wheel');hourChips.setAttribute('aria-label','选择小时');
-    hourChips.addEventListener('wheel',event=>{if(Math.abs(event.deltaY)<=Math.abs(event.deltaX))return;hourChips.scrollLeft+=event.deltaY;event.preventDefault();},{passive:false});
+    hourChips.addEventListener('wheel',event=>{if(!hourStripMobile() || Math.abs(event.deltaY)<=Math.abs(event.deltaX))return;hourChips.scrollLeft+=event.deltaY;event.preventDefault();},{passive:false});
+    hourEarlier=button('更早 ›',()=>{hourRevealEarlier=true;hourStripKey='';paintHourStrip(hourRows(), readingIndex instanceof Map ? readingIndex : null);});
+    hourEarlier.className='tree-hour-earlier';
+    hourYesterday=button('昨天 ›',()=>{
+      const focus=selectedHourStart || Date.now();
+      const prev=day(focus-86400000);
+      const hour=selectedHourStart ? hourClock(selectedHourStart) : null;
+      host.navigate?.(hour==null ? `report/${prev}` : `report/${prev}?hour=${String(hour).padStart(2,'0')}`);
+    });
+    hourYesterday.className='tree-hour-yesterday';
+    hourMore=button('›',()=>{if(typeof hourChips.scrollBy==='function')hourChips.scrollBy({left:160});else hourChips.scrollLeft=(hourChips.scrollLeft||0)+160;});
+    hourMore.className='tree-hour-more';hourMore.setAttribute('aria-label','更早的小时');
+    hourRail.append(hourDay,hourNow,hourChips,hourMore,hourEarlier,hourYesterday);
     dayChips=el('div','','chip-tabs tree-hour-chips');dayChips.setAttribute('aria-label','日报日期');
     tools=el('div','','tree-tools');
     materialsBtn=button('本期材料',()=>{showMaterials=!showMaterials;render();});
@@ -645,7 +928,8 @@ export function createInformationTreePage(host) {
     tagPanel=el('div','','tree-tag-panel');tagPanel.hidden=true;
     tag=el('select');tag.setAttribute('aria-label','主Tag筛选');tag.add(new Option('全部Tag','*'));tag.addEventListener('change',()=>{memory[mode]={...(memory[mode]||{}),tag:tag.value};render();});tagPanel.append(tag);
     notice=el('div','','tree-update');notice.hidden=true;notice.setAttribute('role','status');list=el('div','','tree-list');bindHourSwipe(list);
-    root.append(primary,issue,dayChips,hourChips,backIssues,directionNav,tools,tagPanel,notice,list);
+    const hourLayout=el('div','','tree-hour-layout');hourLayout.append(hourRail,list);
+    root.append(primary,issue,delayEl,dayChips,backIssues,directionNav,tools,tagPanel,notice,hourLayout);
     const token=epoch;
     if(!names.size)api('/api/v1/tags').then(({catalog})=>{if(token!==epoch)return;for(const t of catalog?.tags || [])names.set(t.id,t.name);for(const option of tag.options)if(names.has(option.value))option.textContent=names.get(option.value);}).catch(()=>{});
     try{
@@ -654,5 +938,5 @@ export function createInformationTreePage(host) {
       const saved=memory[mode] || {};direction=saved.direction ?? null;directionExplicit=Boolean(saved.directionExplicit);if(saved.tag)tag.value=saved.tag;
       periods();await render();if(flightToken!==flight)return;settled=true;resume(false);
     }catch(error){if(aborted(error) || token!==epoch || flightToken!==flight)return;list.replaceChildren(el('p','暂时无法读取简报。'),button('重试读取',()=>this.mount(target,options)));}
-  },check,acceptUpdate,resume,stop,suspend,isSettled(){return settled;},selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());root?.classList.remove('is-reading');stop();flight++;requests.abort();requests=new AbortController();epoch++;session++;settled=false;rendering=0;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();fullEditions.clear();editionLoads.clear();invalidateInformationIndex();expanded.clear();positions.clear();viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
+  },check,acceptUpdate,resume,stop,suspend,isSettled(){return settled;},selectHour,selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());root?.classList.remove('is-reading','is-hourly');clearHourSlow();readingCache.clear();readingLoads.clear();readingIndex=undefined;pendingClockHour=null;hourFallbackText='';hourRevealEarlier=false;openGaps.clear();stop();flight++;requests.abort();requests=new AbortController();epoch++;session++;settled=false;rendering=0;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();fullEditions.clear();editionLoads.clear();invalidateInformationIndex();expanded.clear();positions.clear();viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
 }

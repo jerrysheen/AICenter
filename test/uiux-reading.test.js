@@ -20,7 +20,7 @@ function deferred() {
 }
 
 test('canonical and slash-prefixed deep links resolve to the same target and return label', () => {
-  const context = vm.createContext({ normalizeRoute,
+  const context = vm.createContext({ normalizeRoute, URLSearchParams,
     location: { hash: '#sources' }, viewCopy: { sources: {}, market: {}, assets: {}, report: {}, ask: {}, settings: {}, inspire: {} },
     pageKinds: { article: {} },
   });
@@ -34,6 +34,17 @@ test('canonical and slash-prefixed deep links resolve to the same target and ret
   assert.equal(routeLabel('tools'), '工具');
   assert.equal(context.parseLocation('assets').assetPane, 'holdings');
   assert.equal(context.parseLocation('assets/analysis').assetPane, 'analysis');
+  assert.equal(context.parseLocation('report').reportHour, null);
+  assert.equal(context.parseLocation('report?hour=15').reportHour, 15);
+  assert.equal(context.parseLocation('report?hour=15').reportPane, 'today');
+  assert.equal(context.parseLocation('#report/2026-10-09?hour=15').reportHour, 15);
+  assert.equal(context.parseLocation('#report/2026-10-09?hour=15').reportDate, '2026-10-09');
+  assert.equal(context.parseLocation('report/2026-10-09?hour=15').reportPane, 'day');
+  assert.equal(context.parseLocation('report?hour=00').reportHour, 0);
+  assert.equal(context.parseLocation('report?hour=24').reportHour, null);
+  assert.equal(context.parseLocation('report?hour=3a').reportHour, null);
+  assert.equal(routeLabel('#report?hour=15'), '简报');
+  assert.equal(routeLabel('#report/2026-10-09?hour=8'), '简报');
 });
 
 test('overview primary navigation enters feed and then cycles from the selected submenu', () => {
