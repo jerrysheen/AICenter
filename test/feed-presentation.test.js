@@ -118,7 +118,7 @@ test('focus and recent feed projections omit Bilibili without deleting saved his
     socialFeedItems: () => [], officialFeedItems: () => [], focusedFeedItems: () => history, recentFeedItems: () => history,
     hasDisplayTags: () => true, matchesFeedQuery: () => true, matchesFeedRange: () => true, sortFeedItems: rows => rows,
   });
-  vm.runInContext(functionSource('visibleFeedItems'), context);
+  vm.runInContext(`${functionSource('sinkLowValue')}\n${functionSource('visibleFeedItems')}`, context);
   for (const channel of ['focus', 'recent']) {
     context.state.channel = channel;
     assert.deepEqual(Array.from(context.visibleFeedItems(), row => row.platform), ['x', 'xueqiu']);
@@ -157,7 +157,7 @@ test('recent feed reads browse history and does not project social or official l
     sortFeedItems: rows => rows,
     mediaAsItem: item => item,
   });
-  vm.runInContext(functionSource('visibleFeedItems'), context);
+  vm.runInContext(`${functionSource('sinkLowValue')}\n${functionSource('visibleFeedItems')}`, context);
   assert.deepEqual(Array.from(context.visibleFeedItems(), row => row.id), ['r-new', 'r-old']);
   assert.equal(socialCalls, 0);
   assert.equal(officialCalls, 0);
@@ -182,7 +182,7 @@ test('recent rows stay ordered by viewed time', () => {
       },
     },
   });
-  vm.runInContext(`${functionSource('isFeedFocusItem')}\n${functionSource('recentFeedItems')}\n${functionSource('sortFeedItems')}\n${functionSource('visibleFeedItems')}`, context);
+  vm.runInContext(`${functionSource('isFeedFocusItem')}\n${functionSource('recentFeedItems')}\n${functionSource('sortFeedItems')}\n${functionSource('sinkLowValue')}\n${functionSource('visibleFeedItems')}`, context);
   context.matchesFeedQuery = () => true;
   context.matchesFeedRange = () => true;
   assert.deepEqual(Array.from(context.recentFeedItems(), row => row.id), ['c', 'b', 'a']);

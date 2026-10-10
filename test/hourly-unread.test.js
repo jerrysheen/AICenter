@@ -280,14 +280,18 @@ test('hourly reading shows hits and misses together and marks stale items', asyn
   assert.equal(headings.includes('产业个股'), true);
   assert.equal(headings.includes('其他'), false);
   assert.equal(root.querySelectorAll('h2').filter(node => node.className.split(/\s+/).includes('reading-direction') && node.textContent === '产业个股').length, 1);
-  assert.equal(root.querySelectorAll('summary').some(node => node.textContent === '其他 1 条 ›'), true);
-  assert.equal(root.querySelector('.reading-other').querySelectorAll('h2').some(node => node.className.split(/\s+/).includes('reading-direction')), false);
+  assert.equal(root.querySelectorAll('summary').some(node => node.textContent === '其他 1 条 ›'), false);
+  assert.equal(root.querySelector('.reading-other'), null);
+  const muted = root.querySelector('.is-muted');
+  assert.equal(muted.querySelector('h3').textContent, '未命中旧闻');
+  assert.match(muted.querySelector('.news-row-source').textContent, /产业个股/);
+  assert.match(muted.querySelector('.news-row-source').textContent, /综合/);
+  assert.doesNotMatch(muted.querySelector('.news-row-source').textContent, /其他/);
   assert.equal(root.querySelectorAll('button').some(node => node.textContent === '关注精选'), false);
   assert.equal(root.querySelectorAll('h3').some(node => node.textContent.includes('范围外讣告')), false);
   assert.equal(root.querySelector('.reading-stale').textContent, '时效不足');
   const titles = root.querySelectorAll('h3').map(node => node.textContent);
-  assert.ok(titles.includes('命中标题'));
-  assert.ok(titles.includes('未命中旧闻'));
+  assert.deepEqual(titles, ['命中标题', '未命中旧闻']);
   page.stop();
 });
 

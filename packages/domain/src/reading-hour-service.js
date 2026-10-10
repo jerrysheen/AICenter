@@ -94,6 +94,8 @@ export function createReadingHourService({repository, reportRepository = null, a
         subjectKind: item.subjectKind || '', classificationStatus: item.classificationStatus || '',
         classificationSource: item.classificationSource || '', inputScope: item.inputScope || '',
         publisher: item.publisher || '',
+        publishedAt: item.publishedAt ?? null,
+        firstIngestedAt: item.firstIngestedAt ?? null,
       })),
     };
   }
@@ -102,10 +104,16 @@ export function createReadingHourService({repository, reportRepository = null, a
     if (!shown) return null;
     shown.items = shown.items.map((item) => {
       const node = repository.getNode?.(workspace, item.nodeId);
-      const publishedAt = publishedAtFor?.(workspace, node?.sourceRefs || []) ?? null;
+      const computed = publishedAtFor?.(workspace, node?.sourceRefs || []) ?? null;
+      const storedPublished = item.publishedAt == null ? null : Number(item.publishedAt);
+      const publishedAt = Number.isFinite(computed) ? computed : (Number.isFinite(storedPublished) ? storedPublished : null);
+      const storedIngested = item.firstIngestedAt == null ? null : Number(item.firstIngestedAt);
+      const eventAt = node?.eventAt == null ? null : Number(node.eventAt);
+      const firstIngestedAt = Number.isFinite(storedIngested) ? storedIngested : (Number.isFinite(eventAt) ? eventAt : null);
       const anchor = snapshot.window?.endAt;
       const timely = !(Number.isFinite(publishedAt) && Number.isFinite(anchor) && anchor - publishedAt > READING_TIMELINESS_MS);
-      return {...item, timely};
+      const publisher = item.publisher || node?.publisher || '';
+      return {...item, publisher, publishedAt, firstIngestedAt, timely};
     });
     return shown;
   }

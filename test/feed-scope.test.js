@@ -140,6 +140,7 @@ test('overview startup does not request X or Xueqiu', () => {
   const sourcesPage = functionSource('loadSourcesPage');
   const schedule = functionSource('scheduleOverviewManualPosts');
   assert.match(sourcesPage, /homeRequestPlan\(/);
+  assert.match(sourcesPage, /ensureHomeMessages\(/);
   assert.doesNotMatch(sourcesPage, /scheduleOverviewManualPosts\(\)|loadGlobalAssets|loadMarketNativeBoard|loadXFeed|loadXueqiuFeed|loadPosts\(/);
   assert.match(schedule, /loadPosts\(\)/);
   assert.doesNotMatch(schedule, /loadXFeed|loadXueqiuFeed/);

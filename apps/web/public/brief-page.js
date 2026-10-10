@@ -1,4 +1,5 @@
 import {createInformationTreePage} from './information-tree.js?v=dev';
+import {decodeHtmlEntities} from './html-text.js?v=dev';
 const HOUR = 3600000;
 const ARTICLE_VERSION='brief-editorial-v3';
 const DIRECTION_LABELS={finance:'金融与市场',policy:'时事与政策',tech:'科技与产业',other:'其他'};
@@ -138,13 +139,14 @@ export function createBriefPage(host) {
     if (active() && !document.hidden) timer=setInterval(()=>check().catch(()=>{}),60000);
   }
 
-  async function mount(target, {date='',history=false,archive=false,hour=null}={}) {
+  async function mount(target, {date='',history=false,archive=false,hour=null,node:focusNodeId=''}={}) {
     setIdentity();
     const clockHour=Number.isInteger(hour) && hour>=0 && hour<=23 ? hour : null;
+    const focusId=String(focusNodeId || '');
     const nextRoute=archive ? 'archive' : date || (history ? 'history' : 'current');
     if (treeReady && root===target && routeKey===nextRoute && root.childElementCount && (treeActive || dateInput?.isConnected)) {
       if(treeActive){
-        if(clockHour!=null && !history && !archive) return tree.selectHour(clockHour);
+        if(clockHour!=null && !history && !archive) {tree.focusNode(focusId);return tree.selectHour(clockHour);}
         return tree.resume();
       }
       start();return check();
@@ -161,20 +163,20 @@ export function createBriefPage(host) {
           root.replaceChildren(box);
           slow=setTimeout(()=>{
             if(token!==generation) return;
-            root.replaceChildren(button('读取较慢 · 重试',()=>{clearTimeout(slow);routeKey='';treeReady=false;return mount(target,{date,history,archive,hour});}));
+            root.replaceChildren(button('读取较慢 · 重试',()=>{clearTimeout(slow);routeKey='';treeReady=false;return mount(target,{date,history,archive,hour,node:focusId});}));
           },10000);
         } else root.replaceChildren(node('p','brief-empty','正在读取简报…'));
       }
       const manifest=await loadTreeManifest().catch(()=>null);
       clearTimeout(slow);
       if(token!==generation)return;
-      if(!manifest){root.replaceChildren(node('p','brief-empty','暂时无法读取简报刊期。'),button('重试读取',()=>{routeKey='';treeReady=false;return mount(target,{date,history,archive,hour});}));return;}
+      if(!manifest){root.replaceChildren(node('p','brief-empty','暂时无法读取简报刊期。'),button('重试读取',()=>{routeKey='';treeReady=false;return mount(target,{date,history,archive,hour,node:focusId});}));return;}
       // During a rolling upgrade the older reader lacks pipeline; independently prepared
       // v3.1 heads prove the tree preparation path is active. Explicit legacy always wins.
       const treeEnabled=manifest.pipeline==='tree-v3' || (manifest.pipeline===undefined && manifest.information?.some(n=>n.validatorVersion==='tree-response-v3.1.0'));
       if(treeEnabled) {
         pause();treeActive=true;treeReady=false;
-        await tree.mount(root,{manifest,date,history,mode:clockHour!=null && !history && !archive ? 'hourly' : 'daily',hour:clockHour,resetSelection:true});
+        await tree.mount(root,{manifest,date,history,mode:clockHour!=null && !history && !archive ? 'hourly' : 'daily',hour:clockHour,node:focusId,resetSelection:true});
         if(token!==generation)return;
         treeReady=true;
         return;
@@ -603,7 +605,7 @@ export function createBriefPage(host) {
     const registry=new Map();let sourceNumber=0;
     const prose=(p,lead=false)=>{
       const paragraph=node('div',lead ? 'brief-article-lead' : 'brief-prose');paragraph.dataset.paragraphId=p.id;
-      const text=node('p','',p.text),sources=[...new Map(p.evidence.map(e=>[JSON.stringify([e.materialId,e.materialHash,e.materialVersion]),e])).values()];
+      const text=node('p','',decodeHtmlEntities(p.text)),sources=[...new Map(p.evidence.map(e=>[JSON.stringify([e.materialId,e.materialHash,e.materialVersion]),e])).values()];
       const links=node('span','brief-paragraph-sources');
       for(const e of sources) {
         const identity=JSON.stringify([e.materialId,e.materialHash,e.materialVersion]);if(!registry.has(identity))registry.set(identity,++sourceNumber);
@@ -645,8 +647,8 @@ export function createBriefPage(host) {
     const row=node('article','brief-item'); row.id=`brief-item-${item.id}`; row.dataset.itemId=item.id;
     if (context.brief) row.dataset.reportReferenceId=`${context.brief.reportDate}/${item.id}`;
     const signature=informationSignature(item); row.classList.toggle('is-read',s.read.has(signature));
-    const sentence=node('p','brief-sentence',item.sentence); const mark=node('span','brief-item-mark',context.index ? String(context.index).padStart(2,'0') : '');
-    const copy=node('div','brief-item-copy'); if(item.headline)copy.append(node('h3','brief-headline',item.headline));copy.append(sentence);
+    const sentence=node('p','brief-sentence',decodeHtmlEntities(item.sentence)); const mark=node('span','brief-item-mark',context.index ? String(context.index).padStart(2,'0') : '');
+    const copy=node('div','brief-item-copy'); if(item.headline)copy.append(node('h3','brief-headline',decodeHtmlEntities(item.headline)));copy.append(sentence);
     const ops=node('div','brief-item-actions');
     const sources=[...new Map((item.evidence || []).map(e=>[JSON.stringify([e.materialId,e.materialHash,e.materialVersion]),e])).values()];
     const sourceList=node('div','brief-source-links');
@@ -715,7 +717,7 @@ export function createBriefPage(host) {
     dialog.replaceChildren();
     const top=node('header','brief-evidence-head'), title=node('h2','','信息来源'); title.id='brief-evidence-title';
     const close=button('关闭',()=>dialog.close(),'brief-close'); top.append(title,close);
-    dialog.append(top,node('p','brief-evidence-claim',item.sentence));
+    dialog.append(top,node('p','brief-evidence-claim',decodeHtmlEntities(item.sentence)));
     const materials=node('div','brief-evidence-materials'); dialog.append(materials);
     if (!dialog.open) host.openDialog(dialog); close.focus();
     s.read.add(informationSignature(item.signatureItem || item)); persist();

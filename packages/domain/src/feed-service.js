@@ -70,6 +70,7 @@ function projectListItem(item) {
       generatedAt: item.normalizedArticle.generatedAt,
     } : null,
     tags: item.tags || [],
+    lowValue: Boolean(item.lowValue),
   };
 }
 
@@ -98,6 +99,7 @@ function toFeedItem(providerId, row) {
     captureId: row.captureId || '',
     isRead: Boolean(row.isRead),
     isSaved: Boolean(row.isSaved),
+    lowValue: Boolean(row.lowValue),
     translation: null,
   };
 }
@@ -512,6 +514,7 @@ function readStoredFeed(feedRepository, workspaceId, persistence, query, extra =
     sourceExternalId: persistence.sourceAccount.externalId,
     taggedOnly: false,
     qualityRule: extra.qualityRule || '',
+    includeLowValue: Boolean(extra.includeLowValue),
     before: query.before || null,
     savedOnly: Boolean(query.saved),
   };
@@ -691,7 +694,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       const shape = query?.fields === 'list' ? 'list' : 'full';
       const pageQuery = { ...sourceInput, before: before || null, saved: Boolean(saved) };
       if (!query?.refresh) {
-        const stored = readStoredFeed(feedRepository, workspaceId, persistence, pageQuery,{qualityRule});
+        const stored = readStoredFeed(feedRepository, workspaceId, persistence, pageQuery,{qualityRule, includeLowValue:true});
         stored.items = rankFeedItems(await localizeForReading(workspaceId,stored.items,{wait:false}));
         return presentFeed(stored, shape, workspaceId);
       }
@@ -712,6 +715,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       if(contentRoutingPort && providerId==='trendforce')return {...mediaPort.readFeed({channel:'tech',sourceKey:'trendforce',view:'all'},{workspaceId}),added:stats.added,mediaExternalIds:stats.mediaExternalIds || []};
       const stored = readStoredFeed(feedRepository, workspaceId, persistence, pageQuery, {
         qualityRule,
+        includeLowValue: true,
         fetchedAt: snapshot.fetchedAt,
         added: stats.added,
         skipped: stats.skipped,

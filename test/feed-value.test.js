@@ -176,6 +176,9 @@ test('production replay preserves history, excludes applied DROP, and rejects sc
     const rows=[{id:`feed:${item.id}`,input,scores,model:'jev-1.13.0',errorReason:''}];
     const result=service.apply(rows);assert.equal(result.DROP,1);
     assert.equal(repo.listContentItemsByProvider('local','x').length,0);
+    const keptLow = repo.listContentItemsByProvider('local','x',{includeLowValue:true});
+    assert.equal(keptLow.length,1);
+    assert.equal(keptLow[0].lowValue,true);
     assert.equal(repo.getContentItem('local',item.id).body,input.body);
     assert.equal(repo.getCapture('local','x','saved').metadata.originalText,input.body);
     const latest=repo.getCapture('local','x','saved');

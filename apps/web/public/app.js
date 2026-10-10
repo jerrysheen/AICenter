@@ -20,10 +20,11 @@ import {
   hourlyEditions,
   absorbReadingIndex,
   mergeReadingHours,
+  reportHourHref,
   unavailableOfficialCount,
-  buildHomeTimelineModel,
-  renderHomeTimeline as paintHomeTimeline,
 } from './home-timeline.js?v=dev';
+import { decodeHtmlEntities } from './html-text.js?v=dev';
+import { newsDayLabel, renderNewsList } from './news-list.js?v=dev';
 
 const feedLikeButton = createFeedLikeAction({ api: (...args) => api(...args), showToast: text => showToast(text), createAction: options => createDetailAction(options), session: () => state.session });
 
@@ -350,7 +351,7 @@ const elements = Object.fromEntries([
   'overview-home', 'overview-schedule', 'overview-catalog', 'overview-timeline', 'overview-timeline-tabs', 'overview-timeline-day',
   'open-source-catalog', 'open-full-schedule', 'schedule-back', 'catalog-back', 'source-catalog-filter', 'source-catalog-tabs',
   'overview-brief', 'overview-brief-body', 'open-daily-brief',
-  'home-timeline', 'home-daily', 'home-source-line', 'hub-market-caption', 'open-event-odds',
+  'home-timeline', 'home-latest', 'home-daily', 'home-official', 'home-focus', 'home-source-line', 'hub-market-caption', 'open-event-odds',
   'inspire-subnav', 'inspire-notes-pane', 'inspire-tasks-pane',
   'note-filters', 'note-focus-entry', 'note-focus-hint',
   'task-filters', 'task-list', 'task-list-pane', 'task-detail-pane',
@@ -450,6 +451,8 @@ function isFeedFocusItem(item) {
     || item.resourceType === 'content-item'
     || item.resourceType === 'official-release'
     || item.resourceType === 'post'
+    || item.kind === 'reading'
+    || item.resourceType === 'reading-node'
   ));
 }
 
@@ -477,6 +480,10 @@ function snapshotFocusItem(item) {
     isSaved:Boolean(item.isSaved),legacyContentItemId:item.legacyContentItemId || null,legacyFeedItemId:item.legacyFeedItemId || null,
     articleKind:item.articleKind || 'article',contentLevel:item.contentLevel || null,complete:item.complete,bodyScope:item.bodyScope || '',hardwareSnapshot:item.hardwareSnapshot || null,
     release: item.release || null,
+    reportHref: item.reportHref || '',
+    hourStart: item.hourStart || 0,
+    focusedAt: item.focusedAt || 0,
+    lowValue: Boolean(item.lowValue),
   };
 }
 
@@ -486,7 +493,7 @@ function persistFocusItems() {
 
 function rememberFocusItem(item) {
   if (!isFeedFocusItem(item) || !item.id) return;
-  state.focusItems[String(item.id)] = snapshotFocusItem(item);
+  state.focusItems[String(item.id)] = { ...snapshotFocusItem(item), focusedAt: item.focusedAt || Date.now() };
   persistFocusItems();
 }
 
@@ -837,12 +844,13 @@ function parseLocation(name = (location.hash || '#sources').slice(1)) {
   const hourText = new URLSearchParams(queryPart).get('hour');
   const hourNumber = hourText != null && /^\d{1,2}$/.test(hourText) ? Number(hourText) : NaN;
   const reportHour = Number.isInteger(hourNumber) && hourNumber >= 0 && hourNumber <= 23 ? hourNumber : null;
+  const reportNode = view === 'report' ? (new URLSearchParams(queryPart).get('node') || '') : '';
   const marketTab = view === 'market' && marketPane === 'assets' && new URLSearchParams(queryPart).get('tab') === 'events'
     ? 'events'
     : '';
   return {
     view, askSessionId, marketPane, assetPane, sourcesPane, settingsPane, inspirePane,
-    selectedWorkPackageId, pageKind, pageId, reportPane, reportDate, reportHour, marketTab,
+    selectedWorkPackageId, pageKind, pageId, reportPane, reportDate, reportHour, reportNode, marketTab,
   };
 }
 
@@ -866,6 +874,7 @@ function rememberOverviewTarget(view, pane = state.tradePane) {
   else if (view === 'report') {
     target = reportDate ? `report/${reportDate}` : 'report';
     if (reportHour != null) target += `?hour=${String(reportHour).padStart(2, '0')}`;
+    if (reportNode) target += `${target.includes('?') ? '&' : '?'}node=${encodeURIComponent(reportNode)}`;
   }
   state.lastOverviewTarget = target;
   try { sessionStorage.setItem(OVERVIEW_LANE_KEY, target); } catch {}
@@ -1054,6 +1063,7 @@ function setView(name, options = {}) {
     reportPane = parsed.reportPane;
     reportDate = parsed.reportDate;
     reportHour = parsed.reportHour;
+    reportNode = parsed.reportNode || '';
   }
   state.hubLane = overviewLane(view, state.tradePane);
   rememberOverviewTarget(view, state.tradePane);
@@ -3158,6 +3168,8 @@ function postViewBody(post) {
 
 function fillMediaParagraphs(element, paragraphs, comparison = []) {
   element.classList.add('media-article-content');
+  paragraphs = (paragraphs || []).map((paragraph) => ({ ...paragraph, text: decodeHtmlEntities(paragraph.text) }));
+  comparison = (comparison || []).map((paragraph) => ({ ...paragraph, text: decodeHtmlEntities(paragraph.text) }));
   const originals = new Map(comparison.map(p=>[p.id,p]));
   let list;
   for (const paragraph of paragraphs) {
@@ -3189,7 +3201,7 @@ function fillMediaParagraphs(element, paragraphs, comparison = []) {
 }
 
 function fillPostBody(element, value, post = null) {
-  const text = String(value || '无正文');
+  const text = decodeHtmlEntities(String(value || '无正文'));
   element.classList.remove('feed-readable');
   if (post?.platform === 'x' || post?.platform === 'xueqiu') {
     element.classList.add('feed-readable');
@@ -3238,6 +3250,7 @@ function feedAsItem(item, platform) {
     legacyFeedItemId: item.legacyFeedItemId || null,
     translation: item.translation || null,
     normalizedArticle: item.normalizedArticle || null,
+    lowValue: Boolean(item.lowValue),
   };
 }
 
@@ -3409,6 +3422,13 @@ function matchesFeedRange(item) {
   return true;
 }
 
+function sinkLowValue(items) {
+  const main = [];
+  const tail = [];
+  for (const item of items) (item.lowValue ? tail : main).push(item);
+  return tail.length ? main.concat(tail) : items;
+}
+
 function sortFeedItems(items) {
   if (state.channel === 'recent') {
     return [...items].sort((left, right) => (Number(right.viewedAt) || 0) - (Number(left.viewedAt) || 0));
@@ -3447,8 +3467,8 @@ function visibleFeedItems() {
   let items;
   if (state.feedPlatform === 'media') {
     const query = String(state.feedQuery || '').trim().toLowerCase();
-    items = sortFeedItems(state.mediaItems.map(mediaAsItem)
-      .filter((item) => matchesFeedQuery(item, query) && matchesFeedRange(item)));
+    items = sinkLowValue(sortFeedItems(state.mediaItems.map(mediaAsItem)
+      .filter((item) => matchesFeedQuery(item, query) && matchesFeedRange(item))));
   } else if (state.channel === 'recent') {
     items = recentFeedItems();
   } else if (state.channel === 'focus') {
@@ -3463,7 +3483,7 @@ function visibleFeedItems() {
   if (state.feedPlatform !== 'media') {
     const query = String(state.feedQuery || '').trim().toLowerCase();
     items = items.filter((item) => item.platform !== 'bilibili' && matchesFeedQuery(item, query) && matchesFeedRange(item));
-    items = sortFeedItems(items);
+    items = sinkLowValue(sortFeedItems(items));
   }
   state.feedViewCache = { key, items };
   return items;
@@ -4227,6 +4247,90 @@ function observeFeedSentinel(node, canLoad) {
 
 let recentFeedPainted = '';
 
+function readyZhTitle(post) {
+  const candidates = [
+    post?.normalizedArticle?.title,
+    post?.platform === 'media' ? post?.articleTranslation?.title : '',
+    post?.platform === 'media' ? post?.translationTitle : '',
+    post?.translation?.title,
+  ];
+  for (const value of candidates) {
+    const title = String(value || '').trim();
+    if (!title || title === '正在翻译…' || title === '无标题' || title === '暂未翻译') continue;
+    if (textNeedsZhView(title) || !/\p{Script=Han}/u.test(title)) continue;
+    return title;
+  }
+  const displayed = postDisplayTitle(post);
+  if (!displayed || displayed === '正在翻译…' || displayed === '无标题') return '';
+  if (textNeedsZhView(displayed) || !/\p{Script=Han}/u.test(displayed)) return '';
+  return displayed;
+}
+
+function feedListTitle(post) {
+  const ready = readyZhTitle(post);
+  if (ready) return { title: ready, tag: '' };
+  const original = String(post?.title || '').trim();
+  const title = original && original !== '正在翻译…' ? original : '无标题';
+  const needs = post?.translationStatus === 'failed' || postIsTranslating(post) || textNeedsZhView(post?.title || post?.body || post?.summary || '');
+  return { title, tag: needs ? '暂未翻译' : '' };
+}
+
+function feedSourceLine(post) {
+  const name = String(post?.author || '').trim();
+  if (name && name !== '未知') return name;
+  if (post?.kind === 'official' || post?.platform === 'official') return '官方';
+  const platform = platformLabels[post?.platform] || '';
+  return platform && platform !== '未知' ? platform : '';
+}
+
+function feedCommentCount(post) {
+  if (post?.platform !== 'x' && post?.platform !== 'xueqiu') return 0;
+  const text = post.body || translationFor(post)?.text || '';
+  if (text) {
+    const count = splitFeedText(text).comments?.length || 0;
+    if (count) return count;
+  }
+  return Number(post.commentCount) || 0;
+}
+
+function feedToNewsRow(post) {
+  const titled = feedListTitle(post);
+  const tags = [];
+  if (titled.tag) tags.push(titled.tag);
+  if (postTagNames(post).includes('观点')) tags.push('观点');
+  const at = Number(post.publishedAt || post.createdAt || 0);
+  return {
+    id: post.id,
+    title: titled.title,
+    at,
+    ingested: !post.publishedAt && Boolean(post.createdAt),
+    source: feedSourceLine(post),
+    tags,
+    muted: Boolean(post.lowValue),
+    focused: itemIsFocused(post),
+    commentCount: feedCommentCount(post),
+    swipe: true,
+    attachOpen: (open) => attachGuardedOpen(open, () => openArticle(post)),
+    attachSwipe: (front) => attachSwipe(front, FEED_SWIPE_WIDTH, () => openArticle(post)),
+    onStar: () => toggleFocus(post.id, () => { renderPosts(); renderHub(); }, post),
+    onDelete: () => {
+      if (state.channel === 'focus') {
+        removeFocusItem(post);
+        renderPosts();
+        renderHub();
+        return;
+      }
+      if (state.channel === 'recent') {
+        removeRecentItem(post);
+        renderPosts();
+        renderHub();
+        return;
+      }
+      hideFeedItem(post).catch((error) => showToast(error.message));
+    },
+  };
+}
+
 function recentFeedPaintSignature(shown, total) {
   return [
     state.feedShown,
@@ -4236,13 +4340,10 @@ function recentFeedPaintSignature(shown, total) {
     shown.map((post) => [
       post.id,
       post.viewedAt || 0,
-      postDisplayTitle(post),
-      feedCardExcerpt(post),
-      post.author || '',
-      post.time || '',
-      postTagNames(post).join(','),
+      feedListTitle(post).title,
+      feedSourceLine(post),
+      post.lowValue ? 1 : 0,
       itemIsFocused(post) ? 1 : 0,
-      state.expandedFeedIds.has(post.id) ? 1 : 0,
       post.isRead ? 1 : 0,
     ].join('\u001f')).join('\u001e'),
   ].join('\u001d');
@@ -4285,26 +4386,23 @@ function renderPosts() {
       feedSourcesForScope(state.channel, state.feedPlatform),
       feedLoadFlags({ count: 0 }),
     );
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
+    const empty = document.createElement('p');
+    empty.className = 'feed-empty';
     empty.textContent = state.feedQuery
       ? '没有匹配的已收录内容。清除搜索后再看。'
       : presentation === 'loading'
         ? '正在读取内容…'
         : presentation === 'error'
-          ? '内容暂时未能读取。'
+          ? '读取失败 · 重试'
           : state.channel === 'recent'
             ? '打开一条就会出现在这里，方便找回看过的内容。'
-            : '这个筛选下还没有信息。';
+            : state.channel === 'focus'
+              ? '在任意条目右侧点 ☆ 标为重点'
+              : '这个筛选下还没有信息。';
     if (presentation === 'error' && !state.feedQuery) {
-      const retry = document.createElement('button');
-      retry.type = 'button';
-      retry.className = 'text-button';
-      retry.textContent = '重试';
-      retry.addEventListener('click', () => {
+      empty.addEventListener('click', () => {
         ensureFeedSources(feedSourcesForScope(state.channel, state.feedPlatform)).catch((error) => showToast(error.message));
       });
-      empty.append(retry);
     }
     elements.feed.append(empty);
     if (state.feedPlatform === 'media' && state.mediaNextOffset != null || socialFeedCanPage() && (state.xNextCursor || state.xueqiuNextCursor)) {
@@ -4316,163 +4414,9 @@ function renderPosts() {
     } else observeFeedSentinel(null, false);
     return;
   }
-  if (state.channel === 'official') {
-    renderOfficialTimeline(elements.feed, shown, {
-      emptyText: state.staticBoardLoading ? '正在读取官方信息…' : '这个筛选下还没有官方信息。',
-    });
-    const more = document.createElement('div');
-    more.className = 'feed-more';
-    more.id = 'feed-sentinel';
-    const canLoad = shown.length < items.length;
-    more.dataset.done = canLoad ? '0' : '1';
-    more.textContent = canLoad ? '下滑显示更多' : '已经到底了';
-    elements.feed.append(more);
-    observeFeedSentinel(more, canLoad);
-    if (keepY !== null) window.scrollTo(0, keepY);
-    renderXToolbar();
-    renderBilibiliToolbar();
-    if (document.body.dataset.view === 'sources') renderHub();
-    return;
-  }
-  for (const post of shown) {
-    const row = document.createElement('div');
-    row.className = 'swipe-item feed-swipe-item';
-    const actionsRow = document.createElement('div');
-    actionsRow.className = 'swipe-actions swipe-actions-single';
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.className = 'swipe-delete';
-    remove.textContent = '删除';
-    remove.addEventListener('pointerdown', (event) => event.stopPropagation());
-    remove.addEventListener('click', (event) => {
-      event.stopPropagation();
-      if (state.channel === 'focus') {
-        removeFocusItem(post);
-        renderPosts();
-        renderOverviewTimeline();
-        return;
-      }
-      if (state.channel === 'recent') {
-        removeRecentItem(post);
-        renderPosts();
-        renderOverviewTimeline();
-        return;
-      }
-      hideFeedItem(post).catch((error) => showToast(error.message));
-    });
-    actionsRow.append(remove);
-
-    if (isOfficialItem(post)) {
-      const card = document.createElement('article');
-      card.className = `official-event swipe-front${itemIsFocused(post) ? ' is-focus' : ''}`;
-      card.dataset.postId = post.id;
-      const open = document.createElement('button');
-      open.type = 'button';
-      open.className = 'official-event-body';
-      open.append(Object.assign(document.createElement('time'), {
-        dateTime: post.publishedAt ? new Date(post.publishedAt).toISOString() : '',
-        textContent: officialDayKey(post),
-      }));
-      open.append(Object.assign(document.createElement('strong'), { textContent: postDisplayTitle(post) }));
-      const meta = officialEventMeta(post);
-      if (meta) open.append(Object.assign(document.createElement('small'), { textContent: meta }));
-      card.append(open);
-      appendOfficialStar(card, post, () => {
-        renderPosts();
-        renderOverviewTimeline();
-      });
-      attachSwipe(card, FEED_SWIPE_WIDTH, () => openArticle(post));
-      row.append(actionsRow, card);
-      elements.feed.append(row);
-      continue;
-    }
-
-    const card = document.createElement('article');
-    const readFade = state.channel === 'focus' && post.isRead;
-    card.className = `post-card is-compact swipe-front${readFade ? ' is-read' : ''}${itemIsFocused(post) ? ' is-focus' : ''}`;
-    card.dataset.postId = post.id;
-    const meta = document.createElement('div');
-    meta.className = 'post-meta';
-    const kind = document.createElement('span');
-    kind.className = `kind-tag${post.kind === 'official' ? ' official' : ''}`;
-    kind.textContent = feedKindLabel(post);
-    const author = document.createElement('span');
-    author.className = 'post-identity';
-    author.textContent = post.author;
-    const time = document.createElement('span');
-    time.className = 'post-time';
-    time.textContent = post.time || overviewClock(post.publishedAt || post.createdAt);
-    meta.append(kind, author, time);
-    const content = document.createElement('div');
-    content.className = 'feed-content';
-    const title = document.createElement('h3');
-    title.textContent = postDisplayTitle(post);
-    content.append(title);
-    const excerpt = feedCardExcerpt(post);
-    const expanded = state.expandedFeedIds.has(post.id);
-    if (expanded) {
-      const full = document.createElement('div');
-      full.className = 'post-body';
-      if (post.platform==='media' && post.paragraphs?.length) {
-        fillMediaParagraphs(full,mediaReaderParagraphs(post,'translation'));
-      } else fillPostBody(full, postViewBody(post), post);
-      content.append(full);
-    } else if (excerpt) {
-      const preview = document.createElement('p');
-      preview.className = translationFor(post) ? 'post-excerpt is-translated' : 'post-excerpt';
-      preview.textContent = excerpt;
-      content.append(preview);
-    }
-    if (!expanded && (post.platform === 'x' || post.platform === 'xueqiu')) {
-      const count = (post.body || translationFor(post)?.text)
-        ? splitFeedText(postViewBody(post)).comments.length
-        : Number(post.commentCount) || 0;
-      if (count) content.append(Object.assign(document.createElement('p'), {
-        className: 'feed-comment-preview', textContent: `评论 · ${count} 条 · 展开查看`,
-      }));
-    }
-    const feedTags = createTagRow(postTagNames(post));
-    if (feedTags) content.append(feedTags);
-    const star = document.createElement('button');
-    star.type = 'button';
-    star.className = `icon-button ghost focus-btn${itemIsFocused(post) ? ' on' : ''}`;
-    star.setAttribute('aria-label', itemIsFocused(post) ? '取消重点' : '标为重点');
-    star.innerHTML = icon('star');
-    star.addEventListener('click', (event) => {
-      event.stopPropagation();
-      toggleFocus(post.id, () => {
-        renderPosts();
-        renderOverviewTimeline();
-      }, post);
-    });
-    const expand = document.createElement('button');
-    expand.type = 'button';
-    expand.className = 'feed-expand';
-    expand.textContent = expanded ? '收起' : post.articleKind==='report-intro' ? '展开报告简介' : post.platform==='media' && !post.complete ? '展开线索' : '原地展开全文';
-    expand.addEventListener('click', (event) => {
-      event.stopPropagation();
-      if (state.expandedFeedIds.has(post.id)) {
-        state.expandedFeedIds.delete(post.id);
-        renderPosts();
-        return;
-      }
-      state.expandedFeedIds.add(post.id);
-      if (post.platform === 'media' && !post.paragraphs?.length) {
-        const mediaId = String(post.id || '').startsWith('media:') ? post.id : `media:${post.externalId}`;
-        restoreSavedArticle(mediaId).finally(() => renderPosts());
-        return;
-      }
-      if ((post.platform === 'x' || post.platform === 'xueqiu') && !post.body && post.resourceId) {
-        restoreSocialArticle(post.id, post).finally(() => renderPosts());
-        return;
-      }
-      renderPosts();
-    });
-    card.append(meta, content, star, expand);
-    attachSwipe(card, FEED_SWIPE_WIDTH, () => openArticle(post));
-    row.append(actionsRow, card);
-    elements.feed.append(row);
-  }
+  const listHost = document.createElement('div');
+  renderNewsList(listHost, shown.map(feedToNewsRow), { groupByDay: true, emptyText: '这个筛选下还没有信息。' });
+  elements.feed.append(listHost);
   const more = document.createElement('div');
   more.className = 'feed-more';
   more.id = 'feed-sentinel';
@@ -4505,6 +4449,10 @@ function syncDialogTranslation(post) {
 
 function openArticle(post) {
   if (!post) return;
+  if (post.kind === 'reading' || post.resourceType === 'reading-node') {
+    setView(String(post.reportHref || 'report').replace(/^#/, ''));
+    return;
+  }
   rememberRecentItem(post);
   mediaReaderSession.clear();
   state.readerLang = 'translation';
@@ -5904,8 +5852,11 @@ function renderHubExcerpts() {
 
 function renderHub() {
   renderHubTicker();
-  renderHomeTimelineView();
+  renderHomeHourlyModule();
+  renderHomeLatestModule();
   renderHomeDaily();
+  renderHomeOfficialModule();
+  renderHomeFocusModule();
   renderHomeSourceLine();
   renderOverviewTimeline();
 }
@@ -5974,6 +5925,7 @@ function renderStaticSourceCatalog() {
     { id: 'x', title: 'X', category: 'content', viewKind: 'content-feed', letter: 'X', note: '首页时间线' },
     { id: 'xueqiu', title: '雪球', category: 'content', viewKind: 'content-feed', letter: '雪', note: '关注、精选和 7x24' },
     { id: 'trendforce', title: 'TrendForce', category: 'content', viewKind: 'content-feed', letter: 'T', note: '公开洞察与价表' },
+    { id: 'bilibili', title: 'B站', category: 'content', viewKind: 'content-feed', letter: 'B', note: '字幕' },
     { id: 'manual', title: '手工发布', category: 'content', viewKind: 'content-feed', letter: '手', note: '自己保存的资料' },
   ];
   const official = state.sourceCatalog.filter((source) => ['calendar', 'policy'].includes(source.category));
@@ -6619,49 +6571,261 @@ function armHomeSlowWatch() {
   }, 10_000);
 }
 
-function renderHomeTimelineView() {
+const HOME_DIRECTION_ORDER = ['金融', '产业个股', '科技与AI', '地缘政治', '待分类'];
+const HOME_THEME_ORDER = ['中国', '美国', '欧洲', '日本', '韩国', '中国台湾', '多地', '其他', '模型与技术', '应用与工作流', '安全与外交', '贸易与限制'];
+
+function orderedHomeReading(rows) {
+  const rank = (order, value) => {
+    const index = order.indexOf(value);
+    return index < 0 ? order.length : index;
+  };
+  return [...rows].sort((left, right) => {
+    const direction = rank(HOME_DIRECTION_ORDER, left.readingDirectionName) - rank(HOME_DIRECTION_ORDER, right.readingDirectionName);
+    if (direction) return direction;
+    return rank(HOME_THEME_ORDER, left.readingThemeName) - rank(HOME_THEME_ORDER, right.readingThemeName);
+  });
+}
+
+function homeHourHits(snapshot) {
+  const items = Array.isArray(snapshot?.items) ? snapshot.items : [];
+  const shown = items.filter((item) => item?.readingDirectionName && item.readingDirectionName !== '待分类' && item.disposition !== 'out-of-scope');
+  return orderedHomeReading(shown.filter((item) => item.disposition === 'hit' && item.timely !== false));
+}
+
+function homeHourSource(item) {
+  const publisher = String(item?.publisher || '').trim();
+  const direction = String(item?.readingDirectionName || '').trim();
+  return [publisher, direction].filter((part) => part && part !== '未知').join(' · ');
+}
+
+function homeHourWhen(item) {
+  const published = Number(item?.publishedAt);
+  if (Number.isFinite(published) && published > 0) return { at: published, ingested: false };
+  const ingestedAt = Number(item?.firstIngestedAt);
+  if (Number.isFinite(ingestedAt) && ingestedAt > 0) return { at: ingestedAt, ingested: true };
+  return { at: 0, ingested: false };
+}
+
+function homeHourHref(startAt, nodeId = '') {
+  const base = reportHourHref(startAt).replace(/^#/, '');
+  return nodeId ? `${base}&node=${encodeURIComponent(nodeId)}` : base;
+}
+
+function homeHourNote(startAt, endAt) {
+  const clock = (at) => new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Shanghai',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(at);
+  return `${newsDayLabel(startAt)} · ${clock(startAt)}–${clock(endAt)}`;
+}
+
+function homeReadingSnapshot(item, edition) {
+  const when = homeHourWhen(item);
+  return {
+    id: item.nodeId,
+    resourceId: item.nodeId,
+    resourceType: 'reading-node',
+    kind: 'reading',
+    title: item.title || '',
+    author: homeHourSource(item),
+    publishedAt: when.at || edition?.window?.startAt || 0,
+    createdAt: Number(item.firstIngestedAt) || edition?.window?.startAt || 0,
+    hourStart: edition?.window?.startAt || 0,
+    reportHref: homeHourHref(edition?.window?.startAt, item.nodeId),
+  };
+}
+
+function homeModuleFrame(root, { title, note = '', onMore, status = 'ready', onRetry }) {
+  root.replaceChildren();
+  const head = document.createElement('div');
+  head.className = 'home-module-head';
+  head.append(Object.assign(document.createElement('h2'), { textContent: title }));
+  if (note) head.append(Object.assign(document.createElement('span'), { className: 'home-module-note', textContent: note }));
+  if (typeof onMore === 'function') {
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'text-button home-module-more';
+    more.textContent = '更多 ›';
+    more.addEventListener('click', onMore);
+    head.append(more);
+  }
+  root.append(head);
+  if (status === 'loading' || status === 'slow') {
+    const skeleton = document.createElement('div');
+    skeleton.className = 'home-module-skeleton';
+    skeleton.setAttribute('aria-hidden', 'true');
+    for (let index = 0; index < 3; index += 1) skeleton.append(document.createElement('span'));
+    root.append(skeleton);
+    if (status === 'slow' && onRetry) {
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'text-button';
+      retry.textContent = '读取较慢 · 重试';
+      retry.addEventListener('click', onRetry);
+      root.append(retry);
+    }
+    return null;
+  }
+  if (status === 'error') {
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'text-button';
+    retry.textContent = '读取失败 · 重试';
+    if (onRetry) retry.addEventListener('click', onRetry);
+    root.append(retry);
+    return null;
+  }
+  const host = document.createElement('div');
+  root.append(host);
+  return host;
+}
+
+function homePlainRow(post) {
+  const titled = feedListTitle(post);
+  const tags = titled.tag ? [titled.tag] : [];
+  return {
+    id: post.id,
+    title: titled.title,
+    at: Number(post.publishedAt || post.createdAt || 0),
+    ingested: !post.publishedAt && Boolean(post.createdAt),
+    source: feedSourceLine(post),
+    tags,
+    muted: Boolean(post.lowValue),
+    focused: itemIsFocused(post),
+    onOpen: () => openArticle(post),
+    onStar: () => toggleFocus(post.id, () => { renderPosts(); renderHub(); }, post),
+  };
+}
+
+function homeMessageItems() {
+  return [...socialFeedItems({ ignorePlatform: true }), ...officialFeedItems()]
+    .filter((item) => item.platform !== 'bilibili' && !item.lowValue && readyZhTitle(item))
+    .sort((left, right) => Number(right.publishedAt || right.createdAt || 0) - Number(left.publishedAt || left.createdAt || 0));
+}
+
+function homeMessagesStatus() {
+  if (homeMessageItems().length) return 'ready';
+  const presentation = feedScopePresentation(FEED_SCOPE_SOURCES.all, feedLoadFlags());
+  if (presentation === 'error') return 'error';
+  if (presentation === 'loading') return state.homeSlow ? 'slow' : 'loading';
+  return 'ready';
+}
+
+function renderHomeHourlyModule() {
   const root = elements['home-timeline'];
   if (!root) return;
-  const pendingTree = !state.homeTreeLoaded && !state.homeTreeError;
-  const treeStatus = state.homeTreeError ? 'error' : (state.homeSlow && pendingTree ? 'slow' : (state.homeTreeLoaded ? 'ready' : 'loading'));
-  const boardPending = Boolean(state.homeBoardStartedAt) && !state.homeBoard && !state.homeBoardError;
-  const boardStatus = state.homeBoardError ? 'error' : (state.homeSlow && boardPending ? 'slow' : (state.homeBoard ? 'ready' : 'loading'));
-  const model = buildHomeTimelineModel({
-    nowMs: Date.now(),
-    editions: hourlyEditions(state.homeTree),
-    readings: state.homeReadingHours,
-    releases: state.homeBoard?.releases || [],
-    upcoming: state.homeBoard?.upcoming || [],
-    earlier: state.homeEarlier,
-    narrow: window.matchMedia('(max-width: 699px)').matches,
-    treeStatus,
-    boardStatus,
-  });
-  paintHomeTimeline(root, model, {
+  const edition = hourlyEditions(state.homeTree)[0] || null;
+  const snapshot = edition ? state.homeReadingHours[edition.window.startAt] : null;
+  const itemsReady = Array.isArray(snapshot?.items);
+  let status = 'ready';
+  if (!state.homeTreeLoaded) status = state.homeSlow ? 'slow' : 'loading';
+  else if (state.homeTreeError && !edition) status = 'error';
+  else if (edition && !itemsReady) status = state.homeReadingError ? 'error' : (state.homeSlow ? 'slow' : 'loading');
+  const host = homeModuleFrame(root, {
+    title: '小时报',
+    note: status === 'ready' && edition && itemsReady ? homeHourNote(edition.window.startAt, edition.window.endAt) : '',
+    status,
+    onMore: () => setView(edition ? homeHourHref(edition.window.startAt) : 'report'),
     onRetry: () => loadSourcesPage({ refresh: true }).catch(() => {}),
-    onRetryBoard: () => loadHomeBoard(homeRequestPlan(Date.now()).board, { refresh: true, token: state.homeLoadToken }).catch(() => {}),
-    onEarlier: () => {
-      state.homeEarlier = true;
-      renderHomeTimelineView();
-      ensureHomeReadingSnapshots(state.homeLoadToken).catch(() => {});
-    },
-    onEvent: (event) => openPage('event', event.eventId || event.id),
   });
-  if (state.homeReadingError && model.treeStatus !== 'error') {
-    const retry = document.createElement('button');
-    retry.type = 'button';
-    retry.className = 'text-button home-reading-retry';
-    retry.textContent = '小时报读取失败 · 重试';
-    retry.addEventListener('click', () => loadSourcesPage({ refresh: true }).catch(() => {}));
-    root.append(retry);
-  } else if (state.homeSlow && state.homeReadingIndexMissing && !model.hours.length && model.treeStatus !== 'slow') {
-    const retry = document.createElement('button');
-    retry.type = 'button';
-    retry.className = 'text-button home-reading-retry';
-    retry.textContent = '读取较慢 · 重试';
-    retry.addEventListener('click', () => loadSourcesPage({ refresh: true }).catch(() => {}));
-    root.append(retry);
+  if (!host) return;
+  if (!edition || !itemsReady) {
+    renderNewsList(host, [], { groupByDay: false, emptyText: '今天还没有小时报' });
+    return;
   }
+  const rows = homeHourHits(snapshot).slice(0, 6).map((item) => {
+    const when = homeHourWhen(item);
+    const snap = homeReadingSnapshot(item, edition);
+    return {
+      id: item.nodeId,
+      title: item.title || '',
+      at: when.at,
+      ingested: when.ingested,
+      source: homeHourSource(item),
+      focused: itemIsFocused(snap) || isFocused(item.nodeId),
+      onOpen: () => setView(homeHourHref(edition.window.startAt, item.nodeId)),
+      onStar: () => toggleFocus(item.nodeId, () => { renderPosts(); renderHub(); }, snap),
+    };
+  });
+  renderNewsList(host, rows, { groupByDay: false, emptyText: '这一小时没有条目' });
+}
+
+function renderHomeLatestModule() {
+  const root = elements['home-latest'];
+  if (!root) return;
+  const status = homeMessagesStatus();
+  const host = homeModuleFrame(root, {
+    title: '最新消息',
+    status,
+    onMore: () => { selectFeedScope('all'); setView('feed'); },
+    onRetry: () => retryHomeMessages(),
+  });
+  if (!host) return;
+  renderNewsList(host, homeMessageItems().slice(0, 6).map(homePlainRow), {
+    groupByDay: false,
+    emptyText: '还没有中文标题',
+  });
+}
+
+function homeOfficialItems() {
+  return (state.homeBoard?.releases || [])
+    .filter((item) => !state.hiddenSourceIds.has(`policy.${item.authority}`))
+    .map(officialAsItem)
+    .filter((item) => readyZhTitle(item))
+    .sort((left, right) => Number(right.publishedAt || 0) - Number(left.publishedAt || 0));
+}
+
+function renderHomeOfficialModule() {
+  const root = elements['home-official'];
+  if (!root) return;
+  const status = !state.homeBoard && state.homeBoardError
+    ? 'error'
+    : (!state.homeBoard ? (state.homeSlow ? 'slow' : 'loading') : 'ready');
+  const host = homeModuleFrame(root, {
+    title: '官方',
+    status,
+    onMore: () => { selectFeedScope('official'); setView('feed'); },
+    onRetry: () => {
+      state.homeSlow = false;
+      armHomeSlowWatch();
+      loadHomeBoard(homeRequestPlan(Date.now()).board, { refresh: true, token: state.homeLoadToken }).catch(() => {});
+    },
+  });
+  if (!host) return;
+  renderNewsList(host, homeOfficialItems().slice(0, 4).map(homePlainRow), {
+    groupByDay: false,
+    emptyText: '还没有中文官方发布',
+  });
+}
+
+function focusStamp(item) {
+  const snap = state.focusItems[String(item?.id || '')] || (item?.resourceId ? state.focusItems[String(item.resourceId)] : null);
+  return Number(snap?.focusedAt || item?.focusedAt || 0);
+}
+
+function renderHomeFocusModule() {
+  const root = elements['home-focus'];
+  if (!root) return;
+  const items = focusedFeedItems()
+    .slice()
+    .sort((left, right) => focusStamp(right) - focusStamp(left) || Number(right.publishedAt || right.createdAt || 0) - Number(left.publishedAt || left.createdAt || 0))
+    .slice(0, 3);
+  const host = homeModuleFrame(root, {
+    title: '我的重点',
+    status: 'ready',
+    onMore: () => { selectFeedScope('focus'); setView('feed'); },
+  });
+  if (!host) return;
+  if (!items.length) {
+    host.append(Object.assign(document.createElement('p'), {
+      className: 'feed-empty news-empty',
+      textContent: '在任意条目右侧点 ☆ 标为重点',
+    }));
+    return;
+  }
+  renderNewsList(host, items.map(homePlainRow), { groupByDay: false, emptyText: '在任意条目右侧点 ☆ 标为重点' });
 }
 
 function renderHomeSourceLine() {
@@ -6772,6 +6936,7 @@ async function loadSourcesPage({ refresh = false } = {}) {
   armHomeSlowWatch();
   const plan = homeRequestPlan(Date.now());
   const treePromise = loadHomeTree(plan.tree, token);
+  ensureHomeMessages().catch(() => {});
   await Promise.all([
     treePromise,
     loadHomeReadingIndex(plan.readingIndex, token),
@@ -6783,6 +6948,25 @@ async function loadSourcesPage({ refresh = false } = {}) {
   ensureHomeReadingSnapshots(token).catch(() => {});
   loadHomeBoard(plan.board, { refresh, token }).catch(() => {});
   scheduleOverviewFocusWatch();
+}
+
+async function ensureHomeMessages() {
+  const tasks = [];
+  if (!state.postsLoaded && !state.postsLoading) tasks.push(loadPosts().catch(() => {}));
+  if (!state.xLoaded && !state.xLoading) tasks.push(loadXFeed({ refresh: false, autoTranslate: false }).catch(() => {}));
+  if (!state.xueqiuLoaded && !state.xueqiuLoading) tasks.push(loadXueqiuFeed({ refresh: false }).catch(() => {}));
+  if (!state.staticBoard && !state.staticBoardLoading) tasks.push(loadStaticSignalBoard({ refresh: false }).catch(() => {}));
+  await Promise.all(tasks);
+  if (document.body.dataset.view === 'sources') renderHub();
+}
+
+function retryHomeMessages() {
+  state.homeSlow = false;
+  armHomeSlowWatch();
+  if (state.postsError) state.postsLoaded = false;
+  if (state.xError) state.xLoaded = false;
+  if (state.xueqiuError) state.xueqiuLoaded = false;
+  ensureHomeMessages().catch(() => {});
 }
 
 function scheduleOverviewManualPosts() {
@@ -9924,22 +10108,31 @@ let dailyBriefSnapshot = { brief: null, loaded: false, error: '' };
 let reportPane = 'today';
 let reportDate = '';
 let reportHour = null;
+let reportNode = '';
 
 function reportHash() {
   if (reportPane === 'history') return '#report/history';
   if (reportPane === 'archive') return '#report/archive';
   const base = reportDate ? `#report/${reportDate}` : '#report';
-  if (reportHour == null) return base;
-  return `${base}?hour=${String(reportHour).padStart(2, '0')}`;
+  if (reportHour == null) return reportNode ? `${base}?node=${encodeURIComponent(reportNode)}` : base;
+  const hash = `${base}?hour=${String(reportHour).padStart(2, '0')}`;
+  return reportNode ? `${hash}&node=${encodeURIComponent(reportNode)}` : hash;
 }
 let reportHistory = { items: [], loaded: false, error: '' };
 let reportDay = { date: '', brief: null, loaded: false, error: '' };
 
 const briefPage = createBriefPage ? createBriefPage({
   api, navigate: setView, session: () => state.session, active: () => document.body.dataset.view === 'report',
-  syncHour(hour) {
+  syncHour(hour, extra = {}) {
     reportHour = Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : null;
+    if (extra && Object.hasOwn(extra, 'node')) reportNode = extra.node || '';
     if (document.body.dataset.view === 'report') rememberOverviewTarget('report');
+  },
+  focusReading(item) {
+    toggleFocus(item?.id, () => { renderPosts(); renderHub(); }, item);
+  },
+  readingFocused(id) {
+    return isFocused(id);
   },
   toast: showToast, openDialog, releaseDialogScroll,
   adjustScroll: delta => {
@@ -10070,7 +10263,7 @@ function renderBriefPeekBody(root, brief) {
   for (const item of items) {
     if (list.childElementCount >= 5) break;
     if (!item?.sentence) continue;
-    list.append(Object.assign(document.createElement('li'), { textContent: item.sentence }));
+    list.append(Object.assign(document.createElement('li'), { textContent: decodeHtmlEntities(item.sentence) }));
   }
   if (list.childElementCount) root.append(list);
   if (items.length && brief?.reportDate) {
@@ -10085,47 +10278,31 @@ function renderBriefPeekBody(root, brief) {
 function renderHomeDaily() {
   const root = elements['home-daily'];
   if (!root) return;
-  root.replaceChildren();
   const brief = dailyBriefSnapshot.brief;
-  const current = Boolean(brief) && briefIsCurrent(brief);
-  const head = document.createElement('div');
-  head.className = 'compact-label';
-  head.append(Object.assign(document.createElement('h2'), { textContent: current ? homeDailyHeading(brief) : '今日日报' }));
-  const retry = (label) => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'text-button';
-    button.textContent = label;
-    button.addEventListener('click', () => {
+  const status = !dailyBriefSnapshot.loaded
+    ? (state.homeSlow ? 'slow' : 'loading')
+    : (dailyBriefSnapshot.error && !brief ? 'error' : 'ready');
+  const host = homeModuleFrame(root, {
+    title: '日报',
+    note: status === 'ready' && brief?.reportDate ? briefDateLabel(brief.reportDate) : '',
+    status,
+    onMore: () => setView('report'),
+    onRetry: () => {
       state.homeSlow = false;
       armHomeSlowWatch();
       loadDailyBrief().catch(() => {});
-    });
-    return button;
-  };
-  if (dailyBriefSnapshot.error) {
-    head.append(retry('日报读取失败 · 重试'));
-    root.append(head);
-    return;
-  }
-  if (!dailyBriefSnapshot.loaded) {
-    if (state.homeSlow) head.append(retry('读取较慢 · 重试'));
-    root.append(head);
-    return;
-  }
-  if (!current) {
-    const line = document.createElement('p');
-    line.append(document.createTextNode('今天的日报还没生成（每天 08:00）· '));
-    const yesterday = document.createElement('a');
-    yesterday.className = 'text-button';
-    yesterday.href = `#report/${shiftDateKey(expectedBriefDate(new Date()), -1)}`;
-    yesterday.textContent = '看昨天 ›';
-    line.append(yesterday);
-    root.append(head, line);
-    return;
-  }
-  root.append(head);
-  renderBriefPeekBody(root, brief);
+    },
+  });
+  if (!host) return;
+  const items = Array.isArray(brief?.informationItems) ? brief.informationItems : [];
+  const at = Number(brief?.generatedAt) || 0;
+  const rows = items.filter((item) => item?.sentence).slice(0, 3).map((item) => ({
+    id: item.id,
+    title: decodeHtmlEntities(item.sentence),
+    at,
+    onOpen: () => setView('report'),
+  }));
+  renderNewsList(host, rows, { groupByDay: false, emptyText: '还没有日报' });
 }
 
 async function loadDailyBrief() {
@@ -10326,7 +10503,7 @@ function renderAnalysisBrief(root,brief,{compact=false,showIntro=true}={}) {
 function renderInformationItems(root,items,brief,allowReference=false) {
   const list=document.createElement('ol');list.className='information-items';
   for(const item of items) {
-    const row=document.createElement('li');row.append(Object.assign(document.createElement('p'),{textContent:item.sentence}));
+    const row=document.createElement('li');row.append(Object.assign(document.createElement('p'),{textContent:decodeHtmlEntities(item.sentence)}));
     if(allowReference) row.dataset.reportReferenceId=`${brief.reportDate}/${item.id}`;
     for(const [index,e] of item.evidence.entries()) row.append(createDailyEvidenceDetail(brief,e,index));
     if(allowReference) {
@@ -10453,6 +10630,7 @@ function renderReport() {
     history:reportPane==='history',
     archive:reportPane==='archive',
     hour:reportPane==='history' || reportPane==='archive' ? null : reportHour,
+    node:reportPane==='history' || reportPane==='archive' ? '' : reportNode,
   });
 }
 
