@@ -103,3 +103,50 @@ test('empty ai-run questions are restored from the original job input', () => {
   database.close();
   rmSync(directory, { recursive: true, force: true });
 });
+
+function flushImmediate() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+test('authorizeToken does not block on last_seen_at while a writer holds the lock', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-auth-lock-'));
+  const databasePath = path.join(directory, 'test.db');
+  const store = createStore(databasePath);
+  const holder = new Database(databasePath);
+  try {
+    const pairing = store.createPairingCode(10);
+    const redeemed = store.redeemPairingCode(pairing.code, '测试手机');
+    holder.prepare('UPDATE devices SET last_seen_at = ? WHERE id = ?').run(111, redeemed.device.id);
+    holder.pragma('busy_timeout = 0');
+    holder.exec('BEGIN IMMEDIATE');
+
+    const started = performance.now();
+    const seen = store.authorizeToken(redeemed.token);
+    await flushImmediate();
+    const elapsed = performance.now() - started;
+
+    assert.equal(seen?.name, '测试手机');
+    assert.equal(seen.lastSeenAt, 111);
+    assert.ok(elapsed < 200, `authorizeToken blocked for ${Math.round(elapsed)}ms`);
+    assert.equal(store.listDevices().find((item) => item.id === redeemed.device.id).lastSeenAt, 111);
+
+    holder.exec('ROLLBACK');
+    const refreshed = store.authorizeToken(redeemed.token);
+    await flushImmediate();
+    const written = store.listDevices().find((item) => item.id === refreshed.id).lastSeenAt;
+    assert.ok(written > 111);
+
+    holder.prepare('UPDATE devices SET last_seen_at = ? WHERE id = ?').run(222, redeemed.device.id);
+    assert.equal(store.authorizeToken(redeemed.token).lastSeenAt, 222);
+    await flushImmediate();
+    assert.equal(store.listDevices().find((item) => item.id === redeemed.device.id).lastSeenAt, 222);
+
+    assert.equal(store.revokeDevice(redeemed.device.id), true);
+    assert.equal(store.authorizeToken(redeemed.token), null);
+  } finally {
+    try { holder.exec('ROLLBACK'); } catch { /* lock already released */ }
+    holder.close();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
