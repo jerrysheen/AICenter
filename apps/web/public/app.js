@@ -1,7 +1,3 @@
-const { createHardwarePricesPage, hardwareMarketItem } = await import('./hardware-prices.js?v=dev').catch(() => ({
-  createHardwarePricesPage: () => ({render(root) {root.textContent='硬件报价界面等待服务重载。';}}),
-  hardwareMarketItem: () => null,
-}));
 import {
   askPrompts, assetClasses, bookTabs, channels, globalAssets, holdings, marketTabs,
   platformFilters, portfolioSummary, stockBoards as fallbackStockBoards,
@@ -10,13 +6,13 @@ import {
 import { icon } from './icons.js?v=dev';
 import { renderMarkdownInto, renderFeedTextInto, splitFeedText } from './markdown.js?v=dev';
 import { renderQuantLab } from './quant-lab.js?v=dev';
-const { openModelUsageDialog } = await import('./model-usage.js?v=dev').catch(() => ({ openModelUsageDialog: null }));
-const { createFeedLikeAction } = await import('./feed-interaction.js?v=dev').catch(() => ({ createFeedLikeAction: () => () => null }));
-const feedLikeButton = createFeedLikeAction({ api: (...args) => api(...args), showToast: text => showToast(text), createAction: options => createDetailAction(options), session: () => state.session });
+import { createHardwarePricesPage, hardwareMarketItem } from './hardware-prices.js?v=dev';
+import { openModelUsageDialog } from './model-usage.js?v=dev';
+import { createFeedLikeAction } from './feed-interaction.js?v=dev';
 import { createMediaFeedCache, createMediaFeedLoader, createMediaReaderSession, mediaIndexBody, mediaReaderParagraphs } from './media-feed.js?v=dev';
-// An older running Web process may not have registered the new module yet.
-// Keep the existing reader available until the normal service reload.
-const { createBriefPage, briefReadingItems = () => [] } = await import('./brief-page.js?v=dev').catch(() => ({createBriefPage:null}));
+import { createBriefPage, briefReadingItems } from './brief-page.js?v=dev';
+
+const feedLikeButton = createFeedLikeAction({ api: (...args) => api(...args), showToast: text => showToast(text), createAction: options => createDetailAction(options), session: () => state.session });
 
 const platformLabels = { manual: '手工', bilibili: 'B站', x: 'X', xueqiu: '雪球', trendforce: 'TrendForce', media: '媒体' };
 const processingLabels = { subtitle: '字幕处理中', ai: 'AI 加工中' };
@@ -1168,9 +1164,14 @@ async function reloadShellWhenStable(revision) {
 }
 
 async function maybeReloadStaleShell() {
+  if (window.aiCenterUiReloading) return true;
+  // The HTML boot already asked once. Reusing that result keeps startup to a
+  // single /ui/revision; SSE ready still reloads a shell that changes later.
   if (window.aiCenterUiBoot) {
     const boot = await window.aiCenterUiBoot.catch(() => null);
     if (boot?.reloading || window.aiCenterUiReloading) return true;
+    if (boot?.remote && boot.local && boot.remote !== boot.local) return reloadShellWhenStable(boot.remote);
+    return false;
   }
   const remote = await fetchUiRevision().catch(() => '');
   const local = bootUiRevision();
@@ -11884,10 +11885,32 @@ function paintAuthorizedChrome() {
   setView(restoreLastLocationHash().slice(1), { replace: true });
 }
 
-async function readAuthorizedSession() {
-  const { ok, ...session } = await api('/api/v1/session');
-  if (!session.role) throw new Error('此设备尚未配对');
+function sessionFromPayload(payload) {
+  const { ok, ...session } = payload || {};
+  if (!session.role) {
+    const error = new Error('此设备尚未配对');
+    error.payload = payload || {};
+    throw error;
+  }
   return session;
+}
+
+async function readAuthorizedSession() {
+  const early = window.aiCenterSessionBoot;
+  if (early && !early.used) {
+    early.used = true;
+    const result = await early;
+    if (result && result.status !== 0) {
+      if (!result.ok) {
+        const error = new Error(result.payload?.error || `请求失败 (${result.status})`);
+        error.status = result.status;
+        error.payload = result.payload;
+        throw error;
+      }
+      return sessionFromPayload(result.payload);
+    }
+  }
+  return sessionFromPayload(await api('/api/v1/session'));
 }
 
 async function waitForAuthorizedSession(attempts = 6) {
@@ -11978,9 +12001,12 @@ async function completeAuthorizedStart(session) {
 async function initialize() {
   forgetLegacyDeviceGrant();
   try {
-    await pairFromUrl();
-    if (await maybeReloadStaleShell()) return;
-    await completeAuthorizedStart(await readAuthorizedSession());
+    const paired = await pairFromUrl();
+    if (paired && window.aiCenterSessionBoot) window.aiCenterSessionBoot.used = true;
+    const shellCheck = maybeReloadStaleShell();
+    const sessionPromise = readAuthorizedSession();
+    if (await shellCheck) return;
+    await completeAuthorizedStart(await sessionPromise);
   } catch (error) {
     setConnection('offline', '尚未连接');
     elements['session-description'].textContent = error.message;

@@ -1,4 +1,4 @@
-import {createInformationTreePage} from './information-tree.js?v=11';
+import {createInformationTreePage} from './information-tree.js?v=dev';
 const HOUR = 3600000;
 const ARTICLE_VERSION='brief-editorial-v3';
 const DIRECTION_LABELS={finance:'金融与市场',policy:'时事与政策',tech:'科技与产业',other:'其他'};
