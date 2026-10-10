@@ -284,15 +284,18 @@
             <div class="overview-columns dashboard">
               <section class="dashboard-timeline" id="home-timeline" aria-label="今天"></section>
               <section class="dashboard-market">
+                <div class="home-market-head">
+                  <h2>行情</h2>
+                  <div class="home-market-links">
+                    <button class="text-button" id="open-all-quotes" type="button">全部行情 ›</button>
+                    <button class="text-button" id="open-event-odds" type="button">事件概率 ›</button>
+                  </div>
+                </div>
                 <p class="hub-market-caption" id="hub-market-caption"></p>
                 <div class="ticker-strip" id="hub-ticker"></div>
                 <div class="mini-status" id="hub-market-status">
                   <span id="hub-market-note"></span>
-                  <button class="text-button" id="open-all-quotes" type="button">全部行情 ›</button>
                 </div>
-                <p class="mini-status">
-                  <button class="text-button" id="open-event-odds" type="button">事件概率 ›</button>
-                </p>
                 <section class="daily-brief-peek" id="home-daily" aria-live="polite"></section>
                 <p class="mini-status hidden" id="home-source-line"></p>
               </section>

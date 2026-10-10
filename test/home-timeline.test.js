@@ -10,6 +10,8 @@ import {
   hourCoverage,
   homeRequestPlan,
   shanghaiMidnight,
+  readingTitles,
+  buildHomeTimelineModel,
 } from '../apps/web/public/home-timeline.js';
 
 const saturdayMorning = Date.parse('2026-10-10T02:00:00Z');
@@ -86,6 +88,36 @@ test('missing hours collapse and the latest hour reports its delay', () => {
   assert.equal(coverage.delay.text, '最新一期 11:00 · 已延迟 2 小时');
   assert.equal(coverage.gaps.some((gap) => gap.count === 2 && gap.text === '12:00–14:00 · 2 期未生成'), true);
   assert.equal(coverage.gaps.filter((gap) => gap.count === 2).length, 1);
+});
+
+test('home hours list reading titles and omit nodes without one', () => {
+  const midnight = shanghaiMidnight(saturdayMorning);
+  const at = (hour) => midnight + hour * 3_600_000;
+  const edition = (hour) => ({ window: { startAt: at(hour), endAt: at(hour + 1) } });
+  const hit = (title) => ({ title, disposition: 'hit' });
+  const readings = {
+    [at(14)]: { selected: 6, items: ['甲', '乙', '丙', '丁', '戊', '己'].map(hit) },
+    [at(13)]: { selected: 3, items: ['一', '二', '三'].map(hit) },
+    [at(12)]: { selected: 1, headline: { title: '只有一条' } },
+    [at(11)]: { selected: 0 },
+  };
+  assert.deepEqual(readingTitles(readings[at(14)], 5), ['甲', '乙', '丙', '丁', '戊']);
+  const model = buildHomeTimelineModel({
+    nowMs: at(16),
+    editions: [14, 13, 12, 11].map(edition),
+    readings,
+    earlier: true,
+    treeStatus: 'ready',
+    boardStatus: 'ready',
+  });
+  assert.equal(model.header, '今天');
+  assert.deepEqual(model.hours.map((hour) => hour.label), ['14:00', '13:00', '12:00']);
+  assert.deepEqual(model.hours[0].titles, ['甲', '乙', '丙', '丁', '戊']);
+  assert.deepEqual(model.hours[1].titles, ['一', '二']);
+  assert.deepEqual(model.hours[2].titles, ['只有一条']);
+  assert.equal(model.hours.every((hour) => hour.href === `#report?hour=${hour.label.slice(0, 2)}`), true);
+  assert.match(model.statusText, /最新一期 14:00/);
+  assert.match(model.statusText, /未生成/);
 });
 
 test('home requests are the overview set and not the old feed fan-out', () => {
