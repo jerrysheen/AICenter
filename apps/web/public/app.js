@@ -1,6 +1,6 @@
 import {
-  askPrompts, assetClasses, bookTabs, channels, globalAssets, holdings, marketTabs,
-  platformFilters, portfolioSummary, stockBoards as fallbackStockBoards,
+  askPrompts, assetClasses, bookTabs, channels, holdings, LOADING_QUOTE, marketTabs,
+  overviewLoadingIndices, platformFilters, portfolioSummary, stockBoards as fallbackStockBoards,
   subscriptions, tools, tradeLedger,
 } from './mock.js?v=dev';
 import { icon } from './icons.js?v=dev';
@@ -4339,6 +4339,21 @@ function setTradeHint(text) {
   el.classList.toggle('hidden', !text);
 }
 
+function marketBoardHint(market) {
+  if (state.marketError && !state.marketLoading) return state.marketError;
+  if (market?.fetchedAt) return `更新 ${formatTime(market.fetchedAt)}`;
+  if (state.marketLoading) return '正在读取行情…';
+  return '';
+}
+
+function assetBoardHint(onHardware) {
+  if (onHardware) return state.hardwareError || '';
+  if (state.assetError && !state.assetLoading) return state.assetError;
+  if (state.assetBoard?.fetchedAt) return `更新 ${formatTime(state.assetBoard.fetchedAt)}`;
+  if (state.assetLoading) return '正在读取行情…';
+  return '';
+}
+
 function isQuotesView(view = document.body.dataset.view) {
   return view === 'market' || view === 'assets';
 }
@@ -4818,7 +4833,7 @@ function renderAssets() {
     hardwareFilters.replaceChildren(kinds,review);
   }
   if (state.tradePane === 'assets') {
-    setTradeHint(onHardware ? state.hardwareError : state.assetError && !state.assetLoading ? state.assetError : '');
+    setTradeHint(assetBoardHint(onHardware));
     updateChangeSortControl();
   }
   const rows = visibleAssets();
@@ -5519,20 +5534,16 @@ function overviewFocusIsStale(board = state.markets.overview, nowMs = Date.now()
   return !board || board.focus !== preferredOverviewFocus(nowMs);
 }
 
-function overviewIndices() {
-  const live = (state.markets.overview?.sections || [])
+function overviewLiveIndices() {
+  return (state.markets.overview?.sections || [])
     .flatMap((section) => section.indices || [])
     .filter((item) => item?.symbol);
+}
+
+function overviewIndices() {
+  const live = overviewLiveIndices();
   if (live.length) return live;
-  const focus = preferredOverviewFocus();
-  return globalAssets
-    .filter((item) => item.assetClass === 'index' && (focus === 'cn' ? item.market === 'cn' || item.market === 'hk' : item.market === 'us'))
-    .map((item) => ({
-      name: item.name,
-      symbol: item.symbol,
-      lastPrice: Number(String(item.price).replace(/,/g, '')),
-      changePct: item.changePct,
-    }));
+  return overviewLoadingIndices(preferredOverviewFocus());
 }
 
 function hubQuotes() {
@@ -5551,7 +5562,7 @@ function hubMovers() {
       return true;
     }).slice(0, 10);
   }
-  return hubQuotes().slice(5, 12);
+  return [];
 }
 
 function hubStreamItems() {
@@ -5566,25 +5577,24 @@ function renderHubTicker() {
   if (!ticker) return;
   const quotesForTick = hubQuotes().slice(0, 8);
   ticker.replaceChildren(...quotesForTick.map((item) => {
-    const up = (item.changePct ?? 0) >= 0;
+    const known = item.changePct !== null && item.changePct !== undefined;
+    const up = known && item.changePct >= 0;
+    const tone = known ? (up ? 'up' : 'down') : '';
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'hub-tick';
     button.innerHTML = `<small>${item.name}</small>
-      <strong class="num ${up ? 'up' : 'down'}">${formatPrice(item.lastPrice)}</strong>
-      <b class="${up ? 'up' : 'down'}">${item.changePct === null || item.changePct === undefined ? '—' : formatPct(up, item.changePct)}</b>`;
+      <strong class="num ${tone}">${item.lastPrice == null ? LOADING_QUOTE : formatPrice(item.lastPrice)}</strong>
+      <b class="${tone}">${known ? formatPct(up, item.changePct) : LOADING_QUOTE}</b>`;
     button.addEventListener('click', () => openPage('quote', item.symbol));
     return button;
   }));
   if (elements['hub-market-note']) {
-    const board = state.assetBoard || state.markets.overview;
-    const updated = board?.fetchedAt || board?.updatedAt;
-    const live = Boolean(board && !state.marketError && !state.assetError);
-    elements['hub-market-note'].textContent = state.marketLoading || state.assetLoading
-      ? '正在读取行情…'
-      : (state.marketError || state.assetError || (live
-        ? `行情已连接 · 更新 ${updated ? formatTime(updated) : '刚刚'}`
-        : '行情连接后显示更新时间'));
+    const live = overviewLiveIndices();
+    const updated = state.markets.overview?.fetchedAt;
+    elements['hub-market-note'].textContent = live.length
+      ? `行情已连接 · 更新 ${updated ? formatTime(updated) : '刚刚'}`
+      : (state.marketError || '正在读取行情…');
   }
 }
 
@@ -6408,8 +6418,12 @@ function renderOverview(market) {
     const heading = document.createElement('div');
     heading.className = 'market-section-title';
     heading.append(Object.assign(document.createElement('h2'), { textContent: section.title }));
-    if (section.session) {
-      heading.append(Object.assign(document.createElement('small'), { className: 'muted', textContent: sessionLabel(section.session) }));
+    const sectionMeta = [
+      section.session ? sessionLabel(section.session) : '',
+      market?.fetchedAt ? `更新 ${formatTime(market.fetchedAt)}` : '',
+    ].filter(Boolean).join(' · ');
+    if (sectionMeta) {
+      heading.append(Object.assign(document.createElement('small'), { className: 'muted', textContent: sectionMeta }));
     }
     const brief = document.createElement('div');
     brief.className = 'market-brief';
@@ -6641,6 +6655,9 @@ function renderMarket() {
   elements['market-filter-wrap'].classList.toggle('hidden', isOverview);
   elements['market-table-scroll'].classList.toggle('hidden', isOverview);
   updateChangeSortControl();
+  if (document.body.dataset.view === 'market' && state.tradePane === 'stocks') {
+    setTradeHint(isOverview ? '' : marketBoardHint(market));
+  }
   if (!market) {
     paintMarketPlaceholder(isOverview);
     if (document.body.dataset.view === 'sources') renderHub();
