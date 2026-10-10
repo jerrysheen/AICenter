@@ -1661,6 +1661,16 @@ migrations.push({ version: 50, name: 'feed_translation_failures', up(database) {
     );`);
 }});
 
+migrations.push({ version: 51, name: 'event_quote_snapshots', up(database) {
+  database.exec(`CREATE TABLE event_quote_snapshots (
+      symbol TEXT NOT NULL,
+      probability TEXT NOT NULL,
+      observed_at INTEGER NOT NULL,
+      PRIMARY KEY (symbol, observed_at)
+    );
+    CREATE INDEX idx_event_quote_snapshots_observed ON event_quote_snapshots(observed_at);`);
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

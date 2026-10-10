@@ -2094,6 +2094,8 @@ button.source-card:active { transform: scale(0.985); background: var(--backgroun
 }
 .prediction-side { display: grid; gap: 2px; }
 .prediction-side span { color: var(--font-tertiary); font-size: 11px; }
+.prediction-side .prediction-day-change.up { color: var(--data-up); }
+.prediction-side .prediction-day-change.down { color: var(--data-down); }
 .prediction-side strong { font-size: 22px; font-variant-numeric: tabular-nums; line-height: 26px; }
 .prediction-side.is-yes strong { color: var(--brand); }
 .prediction-side.is-no { text-align: right; }
