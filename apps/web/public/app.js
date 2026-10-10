@@ -615,10 +615,40 @@ function postIsTranslating(post) {
   return Boolean(post?.platform === 'x' && state.xTranslating);
 }
 
+const TRANSLATION_LABEL_MS = 30_000;
+const translationLabels = {
+  source: { startedAt: 0, timer: 0 },
+  post: { startedAt: 0, timer: 0 },
+};
+
+function refreshTranslationLabels() {
+  renderPosts();
+  renderOverviewTimeline();
+  renderStaticSignalBoard();
+  if (document.body.dataset.view === 'page' && state.pageKind === 'source') renderSourcePage();
+}
+
+function translationStatusLabel(bucket, active) {
+  const label = translationLabels[bucket];
+  if (!label) return '';
+  const expired = Boolean(label.startedAt) && Date.now() - label.startedAt >= TRANSLATION_LABEL_MS;
+  if (expired || (!active && label.startedAt)) return '暂未翻译';
+  if (active) {
+    if (!label.startedAt) {
+      label.startedAt = Date.now();
+      label.timer = window.setTimeout(refreshTranslationLabels, TRANSLATION_LABEL_MS);
+    }
+    return '正在翻译…';
+  }
+  return '';
+}
+
 function localizedCopy(id, fallback = '') {
   const row = state.sourceLocalizations[id];
   if (row?.text) return row.text;
-  if (row?.pending && state.sourceLocalizing) return '正在翻译…';
+  if (row?.pending && (state.sourceLocalizing || translationLabels.source.startedAt)) {
+    return translationStatusLabel('source', state.sourceLocalizing);
+  }
   return fallback || '';
 }
 
@@ -2923,7 +2953,7 @@ function postDisplayTitle(post) {
     const body = socialBodyText(post, translated);
     return clipFeedText(firstFeedSentence(body) || plainFeedText(body), FEED_TITLE_MAX) || '无标题';
   }
-  if (postIsTranslating(post)) return '正在翻译…';
+  if (postNeedsPendingTranslationLabel(post)) return translationStatusLabel('post', postIsTranslating(post));
   const title = String(post?.title || '').trim();
   if (title) return title;
   return clipFeedText(plainFeedText(socialBodyText(post, post?.body)), FEED_TITLE_MAX) || '无标题';
@@ -2941,10 +2971,16 @@ function postListExcerpt(post) {
   return clipFeedText(textAfterLead(socialBodyText(post, post?.body), post?.title), FEED_EXCERPT_MAX);
 }
 
+function postNeedsPendingTranslationLabel(post) {
+  if (post?.platform !== 'x') return false;
+  if (!postNeedsChineseTranslation(post) || translationFor(post)) return false;
+  return postIsTranslating(post) || Boolean(translationLabels.post.startedAt);
+}
+
 function postViewBody(post) {
   const translated = translationFor(post)?.text;
   if (translated) return translated;
-  if (postIsTranslating(post)) return '正在翻译…';
+  if (postNeedsPendingTranslationLabel(post)) return translationStatusLabel('post', postIsTranslating(post));
   return post?.body || post?.summary || '无正文';
 }
 
@@ -5558,6 +5594,15 @@ function renderStaticSignalBoard() {
       const unavailable = board?.sourceHealth?.filter(item => item.category === 'calendar').some(item => item.status === 'unavailable');
       const loading = state.staticBoardLoading || !board && !state.staticBoardError;
       const error = state.staticBoardError || unavailable;
+      if (root === elements['static-upcoming'] && !loading && !error) {
+        root.dataset.loadState = 'empty';
+        root.setAttribute('aria-busy', 'false');
+        root.replaceChildren(Object.assign(document.createElement('p'), {
+          className: 'section-kicker',
+          textContent: '近期没有日程',
+        }));
+        return;
+      }
       renderViewState(root, { kind: loading ? 'loading' : error ? 'error' : 'empty',
         title: loading ? '正在读取官方日程…' : error ? '日程暂未完整读取' : '暂无日程',
         message: loading ? '正在核对所选时间范围。' : state.staticBoardError || (unavailable ? '部分官方来源暂不可用，不能确认没有日程。' : emptyText),
@@ -7032,6 +7077,18 @@ async function saveEventAsInspiration(event) {
   loadNotes().catch(() => {});
 }
 
+function sourceFeedReady(id) {
+  if (id === 'bilibili') return !state.bilibiliLoading && (state.bilibiliLoaded || Boolean(state.bilibiliNote));
+  if (id === 'x') return !state.xLoading && (state.xLoaded || Boolean(state.xNote));
+  if (id === 'xueqiu') return !state.xueqiuLoading && (state.xueqiuLoaded || Boolean(state.xueqiuNote));
+  if (id === 'trendforce') return !state.trendforceLoading && (state.trendforceLoaded || Boolean(state.trendforceNote));
+  return true;
+}
+
+function settleSourcePage(id) {
+  if (document.body.dataset.view === 'page' && state.pageKind === 'source' && state.pageId === id) renderSourcePage();
+}
+
 function renderSourcePage() {
   const root = pageRoot();
   const id = state.pageId;
@@ -7055,7 +7112,12 @@ function renderSourcePage() {
     list.className = 'source-feed';
     const rows = socialFeedItems({ platform: id, includeTools: id === 'bilibili' }).filter((item) => item.platform === id
       && (id !== 'x' || !item.mode || item.mode === state.xFeed));
-    if (!rows.length) list.append(Object.assign(document.createElement('p'), { className: 'empty-state', textContent: '当前信源尚无已存内容。' }));
+    if (!rows.length) {
+      list.append(Object.assign(document.createElement('p'), {
+        className: 'empty-state',
+        textContent: sourceFeedReady(id) ? '当前信源尚无已存内容。' : '正在读取已保存内容…',
+      }));
+    }
     else rows.slice(0, 40).forEach((post) => {
       const card = document.createElement('article');
       card.className = 'post-card is-compact';
@@ -8135,7 +8197,7 @@ function renderAskRecords() {
   if (state.askSessionsError || !state.askSessionsLoaded) {
     renderViewState(list, { kind: state.askSessionsError ? 'error' : 'loading',
       title: state.askSessionsError ? '问答历史读取失败' : '正在读取问答历史…',
-      message: state.askSessionsError, action: '重试', onAction: () => loadAskSessions().catch(() => {}) });
+      message: state.askSessionsError, action: state.askSessionsError ? '重试' : '', onAction: () => loadAskSessions().catch(() => {}) });
     return;
   }
   renderViewState(list, { kind: 'success' });
@@ -9113,11 +9175,70 @@ function briefIsCurrent(brief, now = new Date()) {
   return Boolean(brief?.reportDate) && brief.reportDate >= expectedBriefDate(now);
 }
 
+function briefFallbackLink(brief, previous) {
+  const dated = brief?.reportDate ? brief : previous;
+  if (dated?.reportDate) {
+    return {
+      text: `看上一份（${briefDateLabel(dated.reportDate)}）`,
+      href: `#report/${dated.reportDate}`,
+      view: `report/${dated.reportDate}`,
+      lookup: false,
+    };
+  }
+  return { text: '去简报历史', href: '#report/history', view: 'report/history', lookup: true };
+}
+
+function appendBriefFallback(root, brief) {
+  const link = briefFallbackLink(brief, dailyBriefSnapshot.previous);
+  const anchor = document.createElement('a');
+  anchor.className = 'text-button';
+  anchor.href = link.href;
+  anchor.textContent = link.text;
+  anchor.addEventListener('click', (event) => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button) return;
+    event.preventDefault();
+    setView(link.view);
+  });
+  root.append(anchor);
+  if (link.lookup && !dailyBriefSnapshot.previousLookup) lookupPreviousBrief();
+}
+
+async function lookupPreviousBrief() {
+  if (dailyBriefSnapshot.previousLookup) return;
+  dailyBriefSnapshot.previousLookup = 'pending';
+  const session = state.session;
+  try {
+    const payload = await api('/api/v1/reports/daily/briefs');
+    if (session !== state.session) return;
+    const items = Array.isArray(payload.briefs) ? payload.briefs : [];
+    dailyBriefSnapshot.previous = items.find((item) => item?.reportDate) || null;
+  } catch {
+    if (session !== state.session) return;
+  }
+  dailyBriefSnapshot.previousLookup = 'done';
+  renderDailyBriefPeek();
+}
+
 async function loadDailyBrief() {
-  const session=state.session;
-  const payload = await api('/api/v1/reports/daily/latest/brief');
-  if (session!==state.session) return;
-  dailyBriefSnapshot = { brief: payload.brief || null, loaded: true, error: '' };
+  const session = state.session;
+  const previous = dailyBriefSnapshot.previous || null;
+  const previousLookup = dailyBriefSnapshot.previousLookup || '';
+  try {
+    const payload = await api('/api/v1/reports/daily/latest/brief');
+    if (session !== state.session) return;
+    dailyBriefSnapshot = { brief: payload.brief || null, loaded: true, error: '', previous, previousLookup };
+  } catch (error) {
+    if (session !== state.session) return;
+    dailyBriefSnapshot = {
+      brief: null,
+      loaded: true,
+      error: error instanceof Error ? error.message : '今日关注没有读出来',
+      previous,
+      previousLookup,
+    };
+    renderDailyBriefPeek();
+    throw error;
+  }
   renderDailyBriefPeek();
 }
 
@@ -9161,6 +9282,7 @@ function renderDailyBriefPeek() {
   }
   if (dailyBriefSnapshot.error) {
     root.append(Object.assign(document.createElement('p'), { className: 'is-missing', textContent: dailyBriefSnapshot.error }));
+    appendBriefFallback(root, brief);
     return;
   }
   if (!brief || !briefIsCurrent(brief)) {
@@ -9170,6 +9292,7 @@ function renderDailyBriefPeek() {
       ? `今天的筛选还没生成，上一份是 ${briefDateLabel(brief.reportDate)}。立刻重试失败后，大约 30 分钟会再试一次。`
       : '今天的筛选还没生成。立刻重试失败后，大约 30 分钟会再试一次。';
     root.append(missing);
+    appendBriefFallback(root, brief);
     return;
   }
   const summary = document.createElement('p');
@@ -10988,7 +11111,7 @@ function renderKnowledge() {
   if (state.knowledgeError || !state.knowledgeLoaded) {
     renderViewState(elements['knowledge-list'], { kind: state.knowledgeError ? 'error' : 'loading',
       title: state.knowledgeError ? '知识库读取失败' : '正在读取知识库…', message: state.knowledgeError,
-      action: '重试', onAction: () => loadKnowledge().catch(() => {}) });
+      action: state.knowledgeError ? '重试' : '', onAction: () => loadKnowledge().catch(() => {}) });
     return;
   }
   renderViewState(elements['knowledge-list'], { kind: 'success' });
@@ -11262,6 +11385,7 @@ async function translateXBatch({ silent = false } = {}) {
   } finally {
     state.xTranslating = false;
     renderXToolbar();
+    renderPosts();
   }
 }
 
@@ -11308,6 +11432,9 @@ async function autoLocalizeSources() {
     // Keep pending placeholders; a later refresh retries Gemini.
   } finally {
     state.sourceLocalizing = false;
+    renderStaticSignalBoard();
+    renderOverviewTimeline();
+    renderPosts();
   }
 }
 
@@ -11451,6 +11578,7 @@ async function loadXFeed({ refresh = false, autoTranslate = true } = {}) {
     state.xRefreshing = false;
     renderXToolbar();
     renderPosts();
+    settleSourcePage('x');
   }
 }
 
@@ -11534,6 +11662,7 @@ async function loadXueqiuFeed({ refresh = false } = {}) {
     state.xueqiuRefreshing = false;
     renderXueqiuToolbar();
     renderPosts();
+    settleSourcePage('xueqiu');
   }
 }
 
@@ -11633,6 +11762,7 @@ async function loadTrendForceFeed({ refresh = false } = {}) {
     state.trendforceLoading = false;
     state.trendforceRefreshing = false;
     renderTrendForceToolbar();
+    settleSourcePage('trendforce');
   }
 }
 
@@ -11675,6 +11805,7 @@ async function loadBilibiliFeed({ url = '', refresh = false } = {}) {
   } finally {
     state.bilibiliLoading = false;
     renderBilibiliToolbar();
+    settleSourcePage('bilibili');
   }
 }
 
@@ -11926,6 +12057,7 @@ async function waitForAuthorizedSession(attempts = 6) {
 
 async function completeAuthorizedStart(session) {
   state.session = session;
+  setConnection('waiting', '同步中');
   elements['server-name'].textContent = session.serverName;
   elements['session-description'].textContent = session.role === 'desktop'
     ? '本机管理端 · 可生成手机二维码'
