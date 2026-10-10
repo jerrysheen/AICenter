@@ -118,6 +118,21 @@ test('desktop hints match the pointer, and the stock board shows a clock', () =>
   assert.match(functionSource('renderSourcePage'), /id === 'bilibili'[\s\S]{0,180}查看已保存字幕/);
 });
 
+test('ask previews drop markdown marks and duplicate inspiration lines stay hidden', () => {
+  const context = vm.createContext({});
+  vm.runInContext([
+    functionSource('plainFeedText'),
+    functionSource('plainAskPreview'),
+    functionSource('escapeRegExp'),
+    functionSource('noteBodyWithoutTitle'),
+  ].join('\n'), context);
+  assert.equal(context.plainAskPreview('## 结论\n| 项目 | 数值 |\n| --- | --- |\n| 铜 | 1 |'), '结论 项目 数值 --- --- 铜 1');
+  assert.equal(context.noteBodyWithoutTitle('和标题一样', '和标题一样'), '');
+  assert.equal(context.noteBodyWithoutTitle('# 和标题一样\n\n后面还有一句。', '和标题一样'), '后面还有一句。');
+  assert.match(functionSource('renderTasks'), /plainFeedText\(preview\) !== plainFeedText\(taskTitle\)/);
+  assert.match(functionSource('renderNotes'), /fillNoteBody\(detail, note\.body, inspirationCardTitle\(note\)\)/);
+});
+
 test('the bilibili source page highlights tools, and the logo opens the overview home', () => {
   const pageKinds = app.match(/const pageKinds = \{[^]*?\n\};/)[0];
   const overviewViews = app.match(/const overviewViews = \[[^]*?\];/)[0];

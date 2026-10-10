@@ -2928,6 +2928,10 @@ function plainFeedText(value) {
     .trim();
 }
 
+function plainAskPreview(value) {
+  return plainFeedText(String(value || '').replace(/\|/g, ' '));
+}
+
 function clipFeedText(value, max) {
   const text = String(value || '').trim();
   if (!text) return '';
@@ -8311,7 +8315,7 @@ function renderAskRecords() {
         textContent: liveHead
           ? `${askStatusLabel(liveHead.status)}：${liveHead.question}`
           : String(session.preview || '').trim()
-            ? `回答预览：${session.preview}`
+            ? `回答预览：${plainAskPreview(session.preview)}`
             : '还没有保存的回答预览。',
       }),
     );
@@ -9914,13 +9918,25 @@ function appendResourceTags(card, { typeLabel, taxonomy = [] }) {
   if (tags.childElementCount) card.append(tags);
 }
 
+function noteBodyWithoutTitle(text, title = '') {
+  let markdown = String(text || '').trim();
+  const shown = String(title || '').trim();
+  if (shown) {
+    markdown = markdown.replace(new RegExp(`^#{1,6}\\s+${escapeRegExp(shown)}\\s*(?:\\n+|$)`), '');
+    const lines = markdown.split(/\n/);
+    if (plainFeedText(lines[0]) && plainFeedText(lines[0]) === plainFeedText(shown)) {
+      markdown = lines.slice(1).join('\n').trim();
+    }
+  }
+  if (!plainFeedText(markdown) || (shown && plainFeedText(markdown) === plainFeedText(shown))) return '';
+  return markdown;
+}
+
 function fillNoteBody(card, text, title = '') {
+  const markdown = noteBodyWithoutTitle(text, title);
+  if (!markdown) return;
   const body = document.createElement('div');
   body.className = 'note-body post-markdown';
-  let markdown = String(text || '').trim();
-  if (title) {
-    markdown = markdown.replace(new RegExp(`^#{1,3}\\s+${escapeRegExp(title)}\\s*(?:\\n+|$)`), '');
-  }
   renderMarkdownInto(body, markdown);
   body.addEventListener('click', (event) => {
     const link = event.target instanceof Element ? event.target.closest('a') : null;
@@ -10218,7 +10234,8 @@ function renderTasks() {
       textContent: workPackageCardTitle(pack, note),
     }));
     const preview = workPackageCardPreview(pack, note);
-    if (preview) {
+    const taskTitle = workPackageCardTitle(pack, note);
+    if (preview && plainFeedText(preview) !== plainFeedText(taskTitle)) {
       card.append(Object.assign(document.createElement('p'), {
         className: 'task-card-preview',
         textContent: preview,
@@ -11133,7 +11150,7 @@ function renderNotes() {
     bodyButton.append(Object.assign(document.createElement('h3'), { textContent: inspirationCardTitle(note) }));
     const detail = document.createElement('div');
     detail.className = 'note-card-detail';
-    fillNoteBody(detail, note.body, note.title);
+    fillNoteBody(detail, note.body, inspirationCardTitle(note));
     if (note.sourceTitle || note.sourceUrl) {
       const source = document.createElement('div');
       source.className = 'note-source';
