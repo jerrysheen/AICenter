@@ -118,7 +118,7 @@ export function homeRequestPlan(nowMs = Date.now()) {
   const dayEnd = from + DAY;
   const boardTo = nowMs + DAY;
   const tree = `/api/v1/reports/tree?view=index&startAt=${from}&endAt=${dayEnd}`;
-  const readingIndex = '/api/v1/reports/reading-hour/index';
+  const readingIndex = `/api/v1/reports/reading-hour/index?startAt=${from}&endAt=${dayEnd}&scope=hour`;
   const market = '/api/v1/markets?board=overview';
   const daily = '/api/v1/reports/daily/latest/brief';
   const board = `/api/v1/static-signals/board?from=${from}&to=${boardTo}&focus=1&limit=40&releaseLimit=60`;

@@ -10,7 +10,7 @@ import {createInformationTreeRepository} from '../packages/database/src/reposito
 import {createReadingHourService} from '../packages/domain/src/reading-hour-service.js';
 import {createReportJobHandlers} from '../packages/runtime/src/report-module.js';
 import {normalizeReadingSemantics, readingPlacement, routeReadingFocus} from '../packages/domain/src/reading-focus-route.js';
-import {ReadingHourIndexSchema} from '../packages/contracts/src/information-tree.js';
+import {ReadingHourIndexQuerySchema, ReadingHourIndexSchema, readingHourIndexDefaultWindow} from '../packages/contracts/src/information-tree.js';
 import {ValidationError} from '../packages/contracts/src/errors.js';
 import {createReportRoutes} from '../apps/web/src/routes/report-routes.js';
 
@@ -143,6 +143,11 @@ test('reading hour index returns published hours, headline order, and rejects a 
   route.handler({response, services, identity: {}, url: new URL(`http://localhost/api/v1/reports/reading-hour/index?startAt=${start}&endAt=${start + hour}`)});
   assert.equal(seen[1].workspace, 'local');
   assert.equal(seen[1].scope, 'hour');
+  const fallback = readingHourIndexDefaultWindow();
+  assert.deepEqual(ReadingHourIndexQuerySchema.parse({}), {...fallback, scope: 'hour'});
+  route.handler({response, services, identity: {}, url: new URL('http://localhost/api/v1/reports/reading-hour/index')});
+  assert.equal(status, 200);
+  assert.deepEqual(seen[2], {workspace: 'local', value: fallback, scope: 'hour'});
   const reject = (query) => assert.throws(() => route.handler({response, services, identity: {}, url: new URL(`http://localhost/api/v1/reports/reading-hour/index?${query}`)}), ValidationError);
   reject('startAt=no&endAt=10');
   reject(`startAt=${start}&endAt=${start}`);

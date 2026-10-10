@@ -92,7 +92,8 @@ test('home requests are the overview set and not the old feed fan-out', () => {
   const plan = homeRequestPlan(saturdayMorning);
   assert.equal(plan.parallel.length, 4);
   assert.match(plan.tree, /^\/api\/v1\/reports\/tree\?view=index&startAt=\d+&endAt=\d+$/);
-  assert.equal(plan.readingIndex, '/api/v1/reports/reading-hour/index');
+  const todayStart = shanghaiMidnight(saturdayMorning);
+  assert.equal(plan.readingIndex, `/api/v1/reports/reading-hour/index?startAt=${todayStart}&endAt=${todayStart + 86_400_000}&scope=hour`);
   assert.equal(plan.market, '/api/v1/markets?board=overview');
   assert.equal(plan.daily, '/api/v1/reports/daily/latest/brief');
   assert.match(plan.board, /^\/api\/v1\/static-signals\/board\?from=\d+&to=\d+&focus=1&limit=40&releaseLimit=60$/);
