@@ -757,7 +757,9 @@ function renderNav() {
 
 function isPrimaryNavActive(navId, view) {
   if (view === 'page') {
-    const mapped = pageKinds[state.pageKind]?.nav || 'sources';
+    const mapped = state.pageKind === 'source' && state.pageId === 'bilibili'
+      ? 'tools'
+      : (pageKinds[state.pageKind]?.nav || 'sources');
     if (navId === 'sources') return mapped === 'sources';
     if (navId === 'tools') return mapped === 'tools';
     return navId === mapped;
@@ -12304,6 +12306,11 @@ elements['request-process-restart']?.addEventListener('click', async () => {
   }
 });
 elements['retry-session'].addEventListener('click', () => window.location.reload());
+document.querySelector('.brand')?.addEventListener('click', (event) => {
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button) return;
+  event.preventDefault();
+  setView('sources');
+});
 elements['open-compose'].addEventListener('click', openHeaderAction);
 let reloadHoldTimer = 0;
 let reloadForcedByHold = false;

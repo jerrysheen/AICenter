@@ -118,6 +118,21 @@ test('desktop hints match the pointer, and the stock board shows a clock', () =>
   assert.match(functionSource('renderSourcePage'), /id === 'bilibili'[\s\S]{0,180}查看已保存字幕/);
 });
 
+test('the bilibili source page highlights tools, and the logo opens the overview home', () => {
+  const pageKinds = app.match(/const pageKinds = \{[^]*?\n\};/)[0];
+  const overviewViews = app.match(/const overviewViews = \[[^]*?\];/)[0];
+  const context = vm.createContext({ state: { pageKind: 'source', pageId: 'bilibili' } });
+  vm.runInContext(`${pageKinds}\n${overviewViews}\n${functionSource('isPrimaryNavActive')}`, context);
+  assert.equal(context.isPrimaryNavActive('tools', 'page'), true);
+  assert.equal(context.isPrimaryNavActive('sources', 'page'), false);
+  context.state.pageId = 'x';
+  assert.equal(context.isPrimaryNavActive('sources', 'page'), true);
+  assert.equal(context.isPrimaryNavActive('tools', 'page'), false);
+  assert.match(html, /<a class="brand" href="#sources"/);
+  assert.match(app, /querySelector\('\.brand'\)\?\.addEventListener\('click'/);
+  assert.match(app, /setView\('sources'\)/);
+});
+
 test('a pending translation label expires to 暂未翻译 without changing the request', () => {
   const timers = [];
   const context = vm.createContext({
