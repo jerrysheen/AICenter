@@ -67,6 +67,24 @@ export const TreeIndexManifestSchema=z.object({
   days:z.array(z.object({edition:TreeIndexEditionSchema.nullable(),attempt:TreeIndexEditionSchema.nullable()}).strict()),
 }).strict();
 export const TreeManifestQuerySchema=TreeWindowQuerySchema.safeExtend({view:z.enum(['reading','index']).optional(),information:z.literal('1').optional()});
+export const ReadingHourIndexQuerySchema=z.object({
+  startAt:z.number().int().nonnegative(),
+  endAt:z.number().int().positive(),
+  scope:z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/).default('hour'),
+}).strict().refine(v=>v.endAt>v.startAt && v.endAt-v.startAt<=7*86400000,'时间窗口必须大于0且不超过7天');
+export const ReadingHourIndexSchema=z.object({
+  hours:z.array(z.object({
+    startAt:z.number().int().nonnegative(),
+    endAt:z.number().int().positive(),
+    id:z.string().min(1).max(128),
+    status:z.string().min(1).max(64),
+    scored:z.number().int().nonnegative(),
+    candidates:z.number().int().nonnegative(),
+    selected:z.number().int().nonnegative(),
+    headline:z.object({nodeId:z.string().min(1).max(2048),title:z.string().max(500)}).strict().nullable(),
+    generatedAt:z.number().int().nonnegative(),
+  }).strict()),
+}).strict();
 
 // Only whole direct children participate in coverage; never repair omissions by appending source text.
 export function validateTreeModules(value,inputs,tags) {

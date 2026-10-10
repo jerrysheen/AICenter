@@ -31,16 +31,26 @@ test('mock market module no longer ships sample quote prices', () => {
   assert.equal(source.includes('export const marketIndex'), false);
 });
 
+function functionSource(source, name) {
+  const match = source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`));
+  assert.ok(match, name);
+  return match[0];
+}
+
 test('overview ticker renders the loading mark and keeps an update time', () => {
   const app = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
   assert.match(app, /overviewLoadingIndices\(preferredOverviewFocus\(\)\)/);
   assert.equal(app.includes('globalAssets'), false);
   assert.match(app, /lastPrice == null \? LOADING_QUOTE/);
-  assert.match(app, /quoteStatusText\(/);
+  assert.match(functionSource(app, 'renderOverview'), /更新 \$\{formatTime\(market\.fetchedAt\)\}/);
+  assert.doesNotMatch(functionSource(app, 'renderOverview'), /market\.note/);
+  assert.doesNotMatch(functionSource(app, 'marketBoardHint'), /formatTime/);
+  assert.doesNotMatch(functionSource(app, 'assetBoardHint'), /formatTime/);
+  const ticker = functionSource(app, 'renderHubTicker');
+  assert.match(ticker, /HOME_QUOTE_CAPTION/);
+  assert.doesNotMatch(ticker, /行情已连接 · 更新|更新于 /);
   const timeline = readFileSync(new URL('../apps/web/public/home-timeline.js', import.meta.url), 'utf8');
-  assert.match(timeline, /更新于 /);
   assert.match(timeline, /行情暂不可用 · 重试/);
   assert.match(timeline, /读取较慢 · 重试/);
-  assert.match(app, /更新 \$\{formatTime\(market\.fetchedAt\)\}/);
-  assert.match(app, /更新 \$\{formatTime\(state\.assetBoard\.fetchedAt\)\}/);
+  assert.doesNotMatch(functionSource(timeline, 'quoteStatusText'), /更新于 /);
 });

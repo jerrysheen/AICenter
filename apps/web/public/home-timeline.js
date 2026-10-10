@@ -104,19 +104,12 @@ export function pickHomeQuoteCards({ focus, indices = [], sectionIndices = [] } 
   return picked.slice(0, 4);
 }
 
-export function quoteUpdatedLabel(cards, fetchedAt) {
-  const times = (cards || []).map((item) => Number(item?.asOf)).filter((value) => Number.isFinite(value) && value > 0);
-  const at = times.length ? Math.max(...times) : Number(fetchedAt);
-  if (!Number.isFinite(at) || at <= 0) return '';
-  return `更新于 ${shanghaiHourLabel(at).hhmm}`;
-}
-
 export function quoteStatusText({ cards = [], fetchedAt, error = false, pending = false, slow = false } = {}) {
   const live = cards.some((item) => item?.lastPrice != null);
   if (error && !live) return { kind: 'error', text: '行情暂不可用 · 重试' };
   if (!live && (slow || (pending && slow))) return { kind: 'slow', text: '读取较慢 · 重试' };
   if (!live && pending) return { kind: 'loading', text: '' };
-  if (live || fetchedAt) return { kind: 'ready', text: quoteUpdatedLabel(cards, fetchedAt) };
+  if (live || fetchedAt) return { kind: 'ready', text: '' };
   return { kind: 'loading', text: '' };
 }
 

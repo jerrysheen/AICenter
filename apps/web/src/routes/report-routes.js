@@ -10,7 +10,7 @@ import {
   DailyBriefWindowQuerySchema,
 } from '../../../../packages/contracts/src/index.js';
 import { json, readJson } from '../http/response.js';
-import {TreeManifestQuerySchema,TreeNodeQuerySchema,TreeWindowQuerySchema} from '../../../../packages/contracts/src/information-tree.js';
+import {TreeManifestQuerySchema,TreeNodeQuerySchema,TreeWindowQuerySchema,ReadingHourIndexQuerySchema} from '../../../../packages/contracts/src/information-tree.js';
 
 function briefView(brief) {
   if(!brief) return null;
@@ -44,6 +44,16 @@ export function createReportRoutes() {
       const workspace=identity?.device?.workspaceId || 'local';
       const snapshot=services.readingHour.forWindow(workspace,window,scope);
       json(response,snapshot ? 200 : 404,{ok:Boolean(snapshot),snapshot});
+    }},
+    {method:'GET',path:'/api/v1/reports/reading-hour/index',handler({response,services,url,identity}) {
+      if(!services.readingHour) return json(response,404,{ok:false});
+      const input=parseContract(ReadingHourIndexQuerySchema,{
+        startAt:Number(url.searchParams.get('startAt') ?? NaN),
+        endAt:Number(url.searchParams.get('endAt') ?? NaN),
+        scope:url.searchParams.get('scope') || 'hour',
+      });
+      const workspace=identity?.device?.workspaceId || 'local';
+      json(response,200,{ok:true,...services.readingHour.indexForRange(workspace,{startAt:input.startAt,endAt:input.endAt},input.scope)});
     }},
     {method:'GET',path:'/api/v1/reports/reading-hour/snapshot',handler({response,services,url,identity}) {
       if(!services.readingHour) return json(response,404,{ok:false});

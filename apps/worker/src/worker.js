@@ -67,6 +67,7 @@ import { createFeedAutomationJobHandlers, ensureDefaultContentSubscriptions, ens
 import { createStrategyJobHandlers, ensureDividendStrategySchedule, strategySnapshotManifest } from '../../../packages/runtime/src/strategy-module.js';
 import { createQuantJobHandlers, quantLabManifest } from '../../../packages/runtime/src/quant-module.js';
 import { createEtfWhaleJobHandlers, etfWhaleManifest } from '../../../packages/runtime/src/etf-whale-sync.js';
+import { createEventQuoteSnapshotJobHandlers, ensureEventQuoteSnapshotSchedule, eventQuoteSnapshotManifest } from '../../../packages/runtime/src/event-quote-snapshot-job.js';
 import { QUANT_PREPARE_JOB_TYPE, QUANT_RUN_JOB_TYPE } from '../../../packages/contracts/src/index.js';
 import { createLocalToolRegistry } from '../../../packages/runtime/src/local-tools.js';
 import { createAgentTraceLog } from '../../../packages/runtime/src/agent-trace-log.js';
@@ -482,6 +483,13 @@ export function createAiCenterWorker(options = {}) {
     }),
   });
   registry.register({
+    manifest: eventQuoteSnapshotManifest,
+    jobHandlers: options.eventQuoteSnapshotJobHandlers || createEventQuoteSnapshotJobHandlers({
+      repository: store.repositories.eventQuotes,
+      sourcePort,
+    }),
+  });
+  registry.register({
     manifest: feedAutomationManifest,
     jobHandlers: options.feedAutomationJobHandlers || createFeedAutomationJobHandlers({
       treeEnabled,articleNormalizePort,
@@ -520,6 +528,7 @@ export function createAiCenterWorker(options = {}) {
     ensureDividendStrategySchedule(store);
     ensureFeedSubscriptionSyncSchedule(store);
     ensureMediaIndexSyncSchedule(store);
+    ensureEventQuoteSnapshotSchedule(store);
     ensureDefaultContentSubscriptions(store.repositories.feed);
   }
   const scheduler = options.scheduler || createScheduler({
