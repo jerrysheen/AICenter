@@ -159,20 +159,75 @@ function appendNewsRows(list, groupRows) {
   for (const row of groupRows) list.append(newsRow(row));
 }
 
+const BULK_NOTICE_WINDOW_MS = 120_000;
+const BULK_NOTICE_MIN = 8;
+
+export function bulkOfficialSourceKey(item) {
+  const url = String(item?.sourceUrl || item?.release?.sourceUrl || '').trim();
+  if (url) {
+    try { return new URL(url).hostname.replace(/^www\./i, ''); } catch { /* keep the authority fallback */ }
+  }
+  return String(item?.author || item?.release?.authority || '').trim();
+}
+
+export function markBulkOfficialNotices(items) {
+  const groups = new Map();
+  for (const item of items || []) {
+    const official = item?.kind === 'official' || item?.platform === 'official';
+    if (!official) continue;
+    const captured = Number(item?.createdAt || item?.observedAt || item?.release?.observedAt) || 0;
+    if (!captured) continue;
+    const source = bulkOfficialSourceKey(item);
+    if (!source) continue;
+    const key = `${source}|${Math.floor(captured / BULK_NOTICE_WINDOW_MS)}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+  const bulk = new Set();
+  for (const group of groups.values()) {
+    if (group.length >= BULK_NOTICE_MIN) for (const item of group) bulk.add(item);
+  }
+  if (!bulk.size) return items || [];
+  return (items || []).map((item) => (bulk.has(item) ? { ...item, bulkNotice: true } : item));
+}
+
+function dayKey(row) {
+  return row.day || newsDayLabel(row.at) || '时间待公布';
+}
+
 export function newsDayGroups(rows) {
   const ordered = [...(rows || [])].sort((left, right) => (Number(right.at) || 0) - (Number(left.at) || 0));
+  const primary = [];
+  const tails = [];
+  for (const row of ordered) {
+    if (row?.muted && row?.stayInDay) tails.push(row);
+    else primary.push(row);
+  }
   const groups = [];
   const index = new Map();
-  for (const row of ordered) {
-    const key = row.day || newsDayLabel(row.at) || '时间待公布';
+  const ensure = (key) => {
     if (!index.has(key)) {
       const group = { key, rows: [] };
       index.set(key, group);
       groups.push(group);
     }
-    index.get(key).rows.push(row);
-  }
+    return index.get(key);
+  };
+  for (const row of primary) ensure(dayKey(row)).rows.push(row);
+  for (const row of tails) ensure(dayKey(row)).rows.push(row);
   return groups;
+}
+
+export function splitSinkMuted(rows, sinkMuted) {
+  const source = Array.isArray(rows) ? rows : [];
+  if (!sinkMuted) return { main: source, tail: [] };
+  const main = [];
+  const tail = [];
+  for (const row of source) {
+    if (row?.muted && !row?.stayInDay) tail.push(row);
+    else main.push(row);
+  }
+  return { main, tail };
 }
 
 function appendDayGroups(wrap, rows) {
@@ -193,9 +248,8 @@ function appendDayGroups(wrap, rows) {
 export function renderNewsList(root, rows, { groupByDay = false, limit, emptyText = '这个筛选下还没有信息。', sinkMuted = false } = {}) {
   const source = Array.isArray(rows) ? rows : [];
   const limited = Number.isFinite(limit) ? source.slice(0, limit) : source;
-  const shown = sinkMuted
-    ? [...limited.filter((row) => !row.muted), ...limited.filter((row) => row.muted)]
-    : limited;
+  const { main, tail } = splitSinkMuted(limited, sinkMuted);
+  const shown = sinkMuted ? [...main, ...tail] : limited;
   root.replaceChildren();
   if (!shown.length) {
     const empty = document.createElement('p');
@@ -206,8 +260,6 @@ export function renderNewsList(root, rows, { groupByDay = false, limit, emptyTex
   }
   const wrap = document.createElement('div');
   wrap.className = 'news-list official-timeline';
-  const main = sinkMuted ? shown.filter((row) => !row.muted) : shown;
-  const tail = sinkMuted ? shown.filter((row) => row.muted) : [];
   if (!groupByDay) {
     const list = document.createElement('ol');
     list.className = 'news-rows official-day-list';

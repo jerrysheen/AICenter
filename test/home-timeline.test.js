@@ -17,6 +17,10 @@ import {
   readingTitles,
   buildHomeTimelineModel,
   mergeReadingHours,
+  homeHourSections,
+  unavailableOfficialCount,
+  acceptMarketPayload,
+  marketPayloadHasQuotes,
 } from '../apps/web/public/home-timeline.js';
 
 const saturdayMorning = Date.parse('2026-10-10T02:00:00Z');
@@ -240,6 +244,76 @@ test('home hourly window keeps the latest editions across midnight', () => {
   assert.ok(from <= yesterdayEvening && yesterdayEvening < end);
   assert.equal(homeEditionNote(yesterdayEvening, yesterdayEvening + 3_600_000, now), '10月10日 · 23:00–00:00');
   assert.equal(homeEditionNote(shanghaiHourStart(now), end, now), '01:00–02:00');
+});
+
+test('home hour sections keep several periods and sort each one newest first', () => {
+  const now = Date.parse('2026-10-10T17:13:00Z');
+  const hour = 3_600_000;
+  const end = shanghaiHourStart(now);
+  const starts = [0, 1, 2, 3, 4].map((index) => end - (index + 1) * hour);
+  const edition = (startAt) => ({ window: { startAt, endAt: startAt + hour } });
+  const item = (title, publishedAt, extra = {}) => ({
+    title,
+    nodeId: title,
+    readingDirectionName: '金融',
+    disposition: 'hit',
+    publishedAt,
+    ...extra,
+  });
+  const readings = {
+    [starts[0]]: {
+      items: [
+        item('早', starts[0] + 30 * 60_000),
+        item('晚', starts[0] + 50 * 60_000),
+        item('中', starts[0] + 40 * 60_000),
+        item('四', starts[0] + 10 * 60_000),
+        item('五', starts[0] + 20 * 60_000),
+        item('六', starts[0] + 5 * 60_000),
+        item('未分类', starts[0] + 55 * 60_000, { readingDirectionName: '待分类' }),
+      ],
+    },
+    [starts[1]]: {
+      items: [
+        item('甲', starts[1] + 10 * 60_000),
+        item('乙', starts[1] + 20 * 60_000),
+        item('丙', starts[1] + 30 * 60_000),
+      ],
+    },
+    [starts[2]]: { items: [] },
+    [starts[3]]: { items: [item('子', starts[3] + 1_000)] },
+    [starts[4]]: { items: [item('丑', starts[4] + 1_000)] },
+  };
+  const sections = homeHourSections({
+    editions: starts.map(edition),
+    readings,
+    sectionLimit: 4,
+    nowMs: now,
+  });
+  assert.equal(sections.length, 4);
+  assert.deepEqual(sections[0].items.map((row) => row.title), ['晚', '中', '早', '五', '四']);
+  assert.equal(sections[1].items.length, 2);
+  assert.deepEqual(sections[1].items.map((row) => row.title), ['丙', '乙']);
+  assert.equal(sections[0].label, '00:00–01:00');
+  assert.equal(sections[1].label, '10月10日 · 23:00–00:00');
+  assert.equal(homeHourSections({ editions: starts.map(edition), readings, sectionLimit: 3, nowMs: now }).length, 3);
+});
+
+test('homepage source alert skips the chronic customs failure and an empty Fed window', () => {
+  assert.equal(unavailableOfficialCount([
+    { sourceId: 'calendar.cn.customs', status: 'unavailable', note: '官方来源暂不可读取：SELF_SIGNED_CERT_IN_CHAIN' },
+    { sourceId: 'calendar.us.fed', status: 'unavailable', note: '所选时间范围未读取到 Fed 日程。' },
+    { sourceId: 'calendar.us.bls', status: 'unavailable', note: '官方来源暂不可读取：超时' },
+    { sourceId: 'calendar.us.ism', status: 'partial', note: '年度表暂不可读取' },
+  ]), 1);
+});
+
+test('a quoted overview board is kept when the next payload has no prices', () => {
+  const previous = { sections: [{ indices: [{ symbol: '^GSPC', lastPrice: 5800 }] }] };
+  const empty = { sections: [{ indices: [{ symbol: '^GSPC', lastPrice: null }] }] };
+  assert.equal(marketPayloadHasQuotes(previous), true);
+  assert.equal(marketPayloadHasQuotes(empty), false);
+  assert.equal(acceptMarketPayload(previous, empty), previous);
+  assert.equal(acceptMarketPayload(null, empty), empty);
 });
 
 test('home requests are the overview set and not the old feed fan-out', () => {

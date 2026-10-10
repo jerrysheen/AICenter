@@ -105,6 +105,26 @@ export function pickHomeQuoteCards({ focus, indices = [], sectionIndices = [] } 
   return picked.slice(0, 4);
 }
 
+export function marketPayloadHasQuotes(payload) {
+  if (Array.isArray(payload)) return payload.some((item) => item && item.lastPrice != null);
+  if (!payload || typeof payload !== 'object') return false;
+  const rows = [
+    ...(payload.indices || []),
+    ...(payload.watchlist || []),
+    ...((payload.sections || []).flatMap((section) => [
+      ...(section?.indices || []),
+      ...(section?.gainers || []),
+      ...(section?.losers || []),
+    ])),
+  ];
+  return rows.some((item) => item && item.lastPrice != null);
+}
+
+export function acceptMarketPayload(previous, incoming) {
+  if (marketPayloadHasQuotes(previous) && !marketPayloadHasQuotes(incoming)) return previous;
+  return incoming;
+}
+
 export function quoteStatusText({ cards = [], fetchedAt, error = false, pending = false, slow = false } = {}) {
   const live = cards.some((item) => item?.lastPrice != null);
   if (error && !live) return { kind: 'error', text: '行情暂不可用 · 重试' };
@@ -121,9 +141,48 @@ export function homeEditionNote(startAt, endAt, nowMs = Date.now()) {
   };
   const range = `${clock(startAt)}–${clock(endAt)}`;
   const start = shanghaiParts(startAt);
+  const end = shanghaiParts(endAt);
   const today = shanghaiParts(nowMs);
-  if (start.year === today.year && start.month === today.month && start.day === today.day) return range;
+  const sameDay = (left, right) => left.year === right.year && left.month === right.month && left.day === right.day;
+  if (sameDay(start, today) && sameDay(start, end)) return range;
   return `${start.month}月${start.day}日 · ${range}`;
+}
+
+export function homeHourItemTime(item) {
+  const published = Number(item?.publishedAt);
+  if (Number.isFinite(published) && published > 0) return published;
+  const ingested = Number(item?.firstIngestedAt);
+  return Number.isFinite(ingested) && ingested > 0 ? ingested : 0;
+}
+
+export function selectHomeHourHits(snapshot) {
+  const items = Array.isArray(snapshot?.items) ? snapshot.items : [];
+  return items
+    .filter((item) => item?.readingDirectionName && item.readingDirectionName !== '待分类' && item.disposition === 'hit' && item.timely !== false)
+    .sort((left, right) => homeHourItemTime(right) - homeHourItemTime(left)
+      || String(left?.nodeId || left?.title || '').localeCompare(String(right?.nodeId || right?.title || '')));
+}
+
+export function homeHourSections({ editions = [], readings = {}, sectionLimit = 4, nowMs = Date.now() } = {}) {
+  const sections = [];
+  const cap = Math.max(1, Number(sectionLimit) || 4);
+  for (const edition of editions) {
+    const startAt = Number(edition?.window?.startAt);
+    const endAt = Number(edition?.window?.endAt);
+    if (!Number.isFinite(startAt)) continue;
+    const snapshot = readings[startAt];
+    if (!Array.isArray(snapshot?.items)) continue;
+    const items = selectHomeHourHits(snapshot).slice(0, sections.length === 0 ? 5 : 2);
+    if (!items.length) continue;
+    sections.push({
+      startAt,
+      endAt,
+      label: homeEditionNote(startAt, endAt, nowMs),
+      items,
+    });
+    if (sections.length >= cap) break;
+  }
+  return sections;
 }
 
 export function homeRequestPlan(nowMs = Date.now()) {
@@ -309,8 +368,18 @@ export function visibleHourGaps(coverage, shown) {
     .filter(Boolean);
 }
 
+const QUIET_HOME_SOURCE_IDS = new Set([
+  'calendar.cn.customs',
+]);
+
+function quietHomeUnavailable(item) {
+  if (QUIET_HOME_SOURCE_IDS.has(item?.sourceId)) return true;
+  const note = String(item?.note || '');
+  return /未读取到 Fed 日程|尚未提供 \d{4} 年|未解析到日程条目/.test(note);
+}
+
 export function unavailableOfficialCount(health) {
-  return (health || []).filter((item) => item?.status === 'unavailable').length;
+  return (health || []).filter((item) => item?.status === 'unavailable' && !quietHomeUnavailable(item)).length;
 }
 
 export function buildHomeTimelineModel({

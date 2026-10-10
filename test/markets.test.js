@@ -210,6 +210,48 @@ test('market service returns a partial board when yahoo fails', async () => {
   assert.equal(board.watchlist[0].lastPrice, null);
 });
 
+test('market service keeps the last quoted board when a later read fails or times out', async () => {
+  let now = Date.parse('2026-10-10T02:00:00Z');
+  let mode = 'ok';
+  const service = createMarketService({
+    ttlMs: 10,
+    inflightTimeoutMs: 40,
+    now: () => now,
+    xueqiuQuotes: { async fetchQuotes() { return []; } },
+    cnQuotes: { async fetchQuotes() { return []; } },
+    sinaFutures: null,
+    tushare: null,
+    yahoo: {
+      async fetchQuotes(symbols) {
+        if (mode === 'hang') return new Promise(() => {});
+        if (mode === 'fail') throw new Error('Yahoo 行情请求超时。');
+        return {
+          session: 'closed',
+          quotes: symbols.slice(0, 2).map((symbol) => ({
+            symbol, name: symbol, lastPrice: 12, changePct: 1, change: 0.1, high: 12, low: 11,
+            prevClose: 11, volume: 1, sparkline: [12], currency: 'USD', exchange: 'TEST',
+            marketTime: 1, session: 'closed',
+          })),
+        };
+      },
+      async searchSymbols() { return []; },
+    },
+  });
+  const priced = (board) => (board.sections || [])
+    .flatMap((section) => [...(section.indices || []), ...(section.gainers || []), ...(section.losers || [])])
+    .find((item) => item?.lastPrice != null);
+  const first = await service.getBoard({ board: 'overview' });
+  assert.ok(priced(first));
+  mode = 'fail';
+  now += 1_000;
+  const second = await service.getBoard({ board: 'overview' });
+  assert.equal(priced(second).lastPrice, priced(first).lastPrice);
+  mode = 'hang';
+  now += 1_000;
+  const third = await service.getBoard({ board: 'overview' });
+  assert.equal(priced(third).lastPrice, priced(first).lastPrice);
+});
+
 test('market query allows overview, us, asia, cn, and global', () => {
   assert.equal(parseMarketQuery({ board: 'us' }).board, 'us');
   assert.equal(parseMarketQuery({ board: 'global' }).board, 'global');
