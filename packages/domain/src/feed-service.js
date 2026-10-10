@@ -226,10 +226,13 @@ function adoptReusableTranslations(feedRepository, workspaceId, units, targetLan
   if (rest.length && feedRepository.listTranslationsByHash) {
     const rows = feedRepository.listTranslationsByHash(workspaceId, rest.map((unit) => contentHash(unit.text)), targetLang) || [];
     const byHash = new Map();
-    for (const row of rows) if (row.translatedText && !byHash.has(row.sourceHash)) byHash.set(row.sourceHash, row);
+    for (const row of rows) {
+      if (!row.translatedText || row.engine !== 'hourly-report' || byHash.has(row.sourceHash)) continue;
+      byHash.set(row.sourceHash, row);
+    }
     for (const unit of rest) {
       const row = byHash.get(contentHash(unit.text));
-      if (!row?.translatedText || row.engine !== 'hourly-report') continue;
+      if (!row?.translatedText) continue;
       adopted.push({
         id: unit.localizationId,
         sourceText: unit.text,
