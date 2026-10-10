@@ -1,10 +1,31 @@
 import {createHash} from 'node:crypto';
+import {ReadingHourIndexSchema} from '../../contracts/src/information-tree.js';
 import {buildFocusQuestions, parseFocusAnswer} from './us-equity-focus.js';
 import {FOCUS_GROUP_NAMES, FOCUS_GROUP_ORDER, FOCUS_QUESTIONS, READING_CLASS_VERSION, READING_DIRECTIONS, READING_ROUTE_VERSION, normalizeReadingSemantics, readingPlacement, routeReadingFocus} from './reading-focus-route.js';
 
 const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const READING_TIMELINESS_MS = 24 * 60 * 60 * 1000;
 const SLICE_ORDER = ['中国','美国','欧洲','日本','韩国','中国台湾','多地','其他','模型与技术','应用与工作流','安全与外交','贸易与限制'];
+const READING_DIRECTION_ORDER = ['金融','产业个股','科技与AI','地缘政治','待分类'];
+const readingRank = (order, value) => { const index = order.indexOf(value); return index < 0 ? order.length : index; };
+
+function headlineFromItems(items) {
+  const shown = (items || []).filter((item) => item?.disposition === 'hit' && item.readingDirectionName && item.readingDirectionName !== '待分类' && item.disposition !== 'out-of-scope');
+  const ranked = shown.map((item, index) => ({item, index}));
+  ranked.sort((a, b) => {
+    const direction = readingRank(READING_DIRECTION_ORDER, a.item.readingDirectionName) - readingRank(READING_DIRECTION_ORDER, b.item.readingDirectionName);
+    if (direction) return direction;
+    const themePresence = (a.item.readingThemeName ? 0 : 1) - (b.item.readingThemeName ? 0 : 1);
+    if (themePresence) return themePresence;
+    if (a.item.readingThemeName) {
+      const theme = readingRank(SLICE_ORDER, a.item.readingThemeName) - readingRank(SLICE_ORDER, b.item.readingThemeName);
+      if (theme) return theme;
+    }
+    return a.index - b.index;
+  });
+  const best = ranked[0]?.item;
+  return best ? {nodeId: String(best.nodeId), title: String(best.title || '')} : null;
+}
 
 function sectionsFor(rows) {
   return READING_DIRECTIONS.map((direction) => {
@@ -59,6 +80,7 @@ function parseClassification(answer, input) {
 }
 
 export function createReadingHourService({repository, reportRepository = null, agentRuntime = null, enabled = false, client = null, catalogIds = new Set(), publishedAtFor = null, now = () => Date.now()} = {}) {
+  const indexCache = new Map();
   function view(snapshot) {
     if (!snapshot) return null;
     return {
@@ -92,6 +114,24 @@ export function createReadingHourService({repository, reportRepository = null, a
     view,
     get(workspace, id) { return present(workspace, repository.getReadingHour(workspace, id)); },
     forWindow(workspace, window, scope) { return present(workspace, repository.readingHourHead(workspace, window, scope)); },
+    indexForRange(workspace, window, scope = 'hour') {
+      const rows = repository.listReadingHourHeads(workspace, window, scope);
+      const key = `${workspace}\0${rows.map((row) => row.id).join('\0')}`;
+      const cached = indexCache.get(key);
+      if (cached) return cached;
+      const hours = rows.map((row) => {
+        const snapshot = JSON.parse(row.valueJson);
+        return {
+          startAt: snapshot.window.startAt, endAt: snapshot.window.endAt, id: snapshot.id, status: snapshot.status,
+          scored: snapshot.scored, candidates: snapshot.candidates, selected: snapshot.selected,
+          headline: headlineFromItems(snapshot.items), generatedAt: snapshot.generatedAt,
+        };
+      });
+      const result = ReadingHourIndexSchema.parse({hours});
+      if (indexCache.size >= 32) indexCache.delete(indexCache.keys().next().value);
+      indexCache.set(key, result);
+      return result;
+    },
     async classifyNode(workspace, node) {
       const saved = node.readingClassification?.primaryDirection ? node.readingClassification : null;
       const sourceVersion = String(node.headSourceVersion || node.sourceVersion || node.version || '');

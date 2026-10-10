@@ -179,6 +179,14 @@ export function createInformationTreeRepository(db,emit) {
       const id=db.prepare('SELECT published_id FROM reading_hour_heads WHERE workspace_id=? AND period_key=?').get(workspace,`${window.startAt}:${window.endAt}:${scope}`)?.published_id;
       return id ? this.getReadingHour(workspace,id) : null;
     },
+    listReadingHourHeads(workspace,window,scope='hour') {
+      return db.prepare(`SELECT h.published_id AS id, s.value_json AS valueJson
+        FROM reading_hour_heads h
+        JOIN reading_hour_snapshots s ON s.workspace_id=h.workspace_id AND s.id=h.published_id
+        WHERE h.workspace_id=? AND h.published_id IS NOT NULL AND s.start_at>=? AND s.start_at<?
+          AND substr(h.period_key, length(h.period_key) - length(?)) = ':' || ?
+        ORDER BY s.start_at DESC`).all(workspace,window.startAt,window.endAt,scope,scope);
+    },
     publishReadingHour(workspace,snapshot) {
       return db.transaction(()=>{
         const key=`${snapshot.window.startAt}:${snapshot.window.endAt}:${snapshot.scope}`;
