@@ -181,6 +181,32 @@ export function parseHoldingsQuery(value) {
   return { refresh };
 }
 
+export function parseFeedBefore(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const text = String(value).trim();
+  if (!text) return null;
+  if (text.length > 512) throw new ValidationError('分页游标无效', ['before']);
+  const parts = text.split(',');
+  if (parts.length < 3) throw new ValidationError('分页游标无效', ['before']);
+  const isRead = Number(parts[0]);
+  const at = Number(parts[1]);
+  const id = parts.slice(2).join(',');
+  if ((isRead !== 0 && isRead !== 1) || !Number.isSafeInteger(at) || at < 0 || !id || id.length > 256) {
+    throw new ValidationError('分页游标无效', ['before']);
+  }
+  return { isRead, at, id };
+}
+
+export function formatFeedBefore(isRead, at, id) {
+  return `${isRead ? 1 : 0},${Number(at) || 0},${id}`;
+}
+
+function parseListFields(query) {
+  const fields = query.fields === undefined || query.fields === '' ? 'list' : String(query.fields);
+  if (fields !== 'list' && fields !== 'full') throw new ValidationError('未知列表字段', ['fields']);
+  return fields;
+}
+
 export function parseBilibiliFeedQuery(value) {
   const query = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const platform = cleanText(query.platform || 'bilibili', { field: '平台', max: 16 }) || 'bilibili';
@@ -207,7 +233,7 @@ export function parseXFeedQuery(value) {
     throw new ValidationError('条数必须是 1 到 50', ['limit']);
   }
   const refresh = query.refresh === true || query.refresh === '1' || query.refresh === 'true';
-  return { platform: 'x', feed, limit: rawLimit, refresh };
+  return { platform: 'x', feed, limit: rawLimit, refresh, before: parseFeedBefore(query.before), fields: parseListFields(query) };
 }
 
 export function parseXueqiuFeedQuery(value) {
@@ -225,7 +251,7 @@ export function parseXueqiuFeedQuery(value) {
     throw new ValidationError('条数必须是 1 到 50', ['limit']);
   }
   const refresh = query.refresh === true || query.refresh === '1' || query.refresh === 'true';
-  return { platform: 'xueqiu', feed, limit: rawLimit, refresh };
+  return { platform: 'xueqiu', feed, limit: rawLimit, refresh, before: parseFeedBefore(query.before), fields: parseListFields(query) };
 }
 
 export * from './hardware-prices.js';
@@ -251,6 +277,8 @@ export function parseMediaFeedQuery(value) {
     if (!Number.isInteger(number) || number < (key === 'limit' ? 1 : 0) || number > (key === 'limit' ? 100 : 10000)) throw new ValidationError('分页范围不合法',[key]);
     options[key] = number;
   }
+  if (query.before !== undefined && query.before !== '') options.before = parseFeedBefore(query.before);
+  options.fields = parseListFields(query);
   return { platform: 'media', feed: channel, channel, refresh, ...options };
 }
 

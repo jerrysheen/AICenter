@@ -72,6 +72,23 @@ export function createInformationTreeReader({repository,timezone='Asia/Shanghai'
       const result=FeedNormalizedArticleSchema.safeParse({nodeId:node.id,title:node.title,summary:node.text,body:node.body,generatedAt:node.generatedAt});
       return result.success ? result.data : null;
     },
+    normalizedArticles(workspace,specs) {
+      const out=new Map();
+      if(pipeline!=='tree-v3') return out;
+      const wanted=(specs || []).filter(spec=>spec?.sourceId && spec.sourceVersion);
+      if(!wanted.length) return out;
+      const rows=typeof repository.informationHeads==='function'
+        ? repository.informationHeads(workspace,wanted.map(spec=>spec.sourceId))
+        : wanted.map(spec=>{const head=repository.informationHead?.(workspace,spec.sourceId);return head?{sourceId:spec.sourceId,...head}:null;}).filter(Boolean);
+      const bySource=new Map(rows.map(row=>[row.sourceId,row]));
+      for(const spec of wanted) {
+        const head=bySource.get(spec.sourceId),node=head?.node,version=String(spec.sourceVersion);
+        const match=head?.sourceVersion===version && node?.sourceId===spec.sourceId && node.sourceVersion===version && node.layer==='information' && node.formatVersion===ARTICLE_VALIDATOR_VERSION;
+        const result=match ? FeedNormalizedArticleSchema.safeParse({nodeId:node.id,title:node.title,summary:node.text,body:node.body,generatedAt:node.generatedAt}) : null;
+        out.set(spec.sourceId,result?.success ? result.data : null);
+      }
+      return out;
+    },
     list(workspace,window) {
       if(window.view==='index') return {timezone,pipeline,directions:catalog.reading?.directionByTag || {},information:window.information==='1' ? acceptIndexInformation(repository.listInformationIndex(workspace,window)) : [],hours:acceptIndexSlots(repository.listEditionIndex(workspace,window.startAt,window.endAt,'hourly')),days:acceptIndexSlots(repository.listEditionIndex(workspace,window.startAt,window.endAt,'daily'))};
       return {timezone,pipeline,directions:catalog.reading?.directionByTag || {},information:repository.listInformation(workspace,window).map(({body,...summary})=>window.view==='reading' ? {id:summary.id,eventAt:summary.eventAt,window:summary.window,validatorVersion:summary.validatorVersion} : summary),hours:repository.list(workspace,window.startAt,window.endAt,'hourly'),days:repository.list(workspace,window.startAt,window.endAt,'daily')};

@@ -20,6 +20,16 @@ export function createInformationTreeRepository(db,emit) {
       const row=db.prepare('SELECT node_id,source_version FROM information_tree_information_heads WHERE workspace_id=? AND source_id=?').get(workspace,sourceId);
       return row ? {node:this.getNode(workspace,row.node_id),sourceVersion:row.source_version} : null;
     },
+    informationHeads(workspace,sourceIds) {
+      const ids=[...new Set((sourceIds || []).map(id=>String(id || '').trim()).filter(Boolean))];
+      if(!ids.length) return [];
+      return db.prepare(`SELECT h.source_id AS sourceId,h.source_version AS sourceVersion,n.value_json AS valueJson
+        FROM information_tree_information_heads h
+        JOIN information_tree_nodes n ON n.workspace_id=h.workspace_id AND n.id=h.node_id
+        WHERE h.workspace_id=? AND h.source_id IN (${ids.map(()=>'?').join(',')})`)
+        .all(workspace,...ids)
+        .map(row=>({sourceId:row.sourceId,sourceVersion:row.sourceVersion,node:JSON.parse(row.valueJson)}));
+    },
     listInformation(workspace,window) {
       return db.prepare('SELECT node_id FROM information_tree_information_heads WHERE workspace_id=? AND event_at>=? AND event_at<? ORDER BY event_at,source_id').all(workspace,window.startAt,window.endAt).map(r=>this.getNode(workspace,r.node_id));
     },

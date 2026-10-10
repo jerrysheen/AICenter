@@ -103,6 +103,7 @@ const state = {
   xFeed: 'following',
   xNote: '',
   xError: '',
+  xNextCursor: '',
   xLoading: false,
   xRefreshing: false,
   xTranslating: false,
@@ -136,6 +137,7 @@ const state = {
   xueqiuFeed: 'following',
   xueqiuNote: '',
   xueqiuError: '',
+  xueqiuNextCursor: '',
   xueqiuLoading: false,
   xueqiuRefreshing: false,
   translations: {},
@@ -561,7 +563,8 @@ function translationFor(post) {
   if (!post?.id) return null;
   if (post.platform === 'media' && post.complete) {
     const article = post.articleTranslation;
-    return article?.status === 'ready' ? {text:[article.title,...article.paragraphs.map(p=>p.text)].filter(Boolean).join('\n\n'),cached:true} : null;
+    if (article?.status !== 'ready' || !Array.isArray(article.paragraphs)) return null;
+    return {text:[article.title,...article.paragraphs.map(p=>p.text)].filter(Boolean).join('\n\n'),cached:true};
   }
   if(post.normalizedArticle?.body && (!post.translation?.text || !post.translation.engine && post.translation.text===post.normalizedArticle.body))return {text:post.normalizedArticle.body,kind:'normalized',cached:true};
   if (state.translations[post.id]) return state.translations[post.id];
@@ -1534,6 +1537,36 @@ function formatAskClock(timestamp) {
 }
 
 const FEED_PAGE_SIZE = 12;
+let mediaHeadMerge = false;
+
+function mergeLoadedFeedItem(prior, item) {
+  if (!prior) return item;
+  if (prior.detail !== 'full') return { ...prior, ...item, body: prior.body || item.body || '' };
+  return {
+    ...prior,
+    ...item,
+    body: prior.body || '',
+    paragraphs: prior.paragraphs?.length ? prior.paragraphs : (item.paragraphs || []),
+    articleTranslation: Array.isArray(prior.articleTranslation?.paragraphs) ? prior.articleTranslation : (item.articleTranslation ?? prior.articleTranslation),
+    translation: prior.translation?.text ? prior.translation : (item.translation || prior.translation),
+    normalizedArticle: prior.normalizedArticle?.body ? prior.normalizedArticle : (item.normalizedArticle || prior.normalizedArticle),
+    summary: prior.summary || item.summary || '',
+    detail: 'full',
+  };
+}
+
+function mergeLoadedFeed(existing, incoming) {
+  const previous = new Map((existing || []).filter((item) => item?.id).map((item) => [item.id, item]));
+  const seen = new Set();
+  const head = [];
+  for (const item of incoming || []) {
+    if (!item?.id || seen.has(item.id)) continue;
+    seen.add(item.id);
+    head.push(mergeLoadedFeedItem(previous.get(item.id), item));
+  }
+  const tail = (existing || []).filter((item) => item?.id && !seen.has(item.id));
+  return [...head, ...tail];
+}
 const mediaReaderSession = createMediaReaderSession();
 const mediaFeedCache = createMediaFeedCache({ storage: (() => {
   try { return window.localStorage; } catch { return null; }
@@ -1549,9 +1582,18 @@ const mediaFeedLoader = createMediaFeedLoader({
     return api(`/api/v1/feed/media?${params}`, { timeoutMs: refresh ? 180_000 : 15_000 });
   },
   onFeed: (feed, { cached, jobId, append }) => {
-    state.mediaItems = feed.items || [];
+    const incoming = feed.items || [];
+    if (append || (mediaHeadMerge && !cached)) {
+      const paged = !append && (state.mediaItems || []).length > incoming.length;
+      const nextOffset = state.mediaNextOffset;
+      state.mediaItems = mergeLoadedFeed(state.mediaItems, incoming);
+      state.mediaNextOffset = paged ? nextOffset : (feed.nextOffset ?? null);
+    } else {
+      state.mediaItems = incoming;
+      state.mediaNextOffset = feed.nextOffset ?? null;
+    }
+    mediaHeadMerge = false;
     state.mediaCounts = feed.counts || {};
-    state.mediaNextOffset = feed.nextOffset ?? null;
     state.mediaSources = feed.sources || [];
     state.mediaNote = feed.note || '';
     state.mediaBudget = feed.budget || null;
@@ -2969,6 +3011,7 @@ function postDisplayTitle(post) {
     const body = socialBodyText(post, translated);
     return clipFeedText(firstFeedSentence(body) || plainFeedText(body), FEED_TITLE_MAX) || '无标题';
   }
+  if (post.translation?.title) return post.translation.title;
   if (postIsTranslating(post)) return '正在翻译…';
   const title = String(post?.title || '').trim();
   if (title) return title;
@@ -2979,12 +3022,37 @@ function socialBodyText(post, value) {
   return post?.platform === 'x' || post?.platform === 'xueqiu' ? splitFeedText(value).body : value;
 }
 
+function socialListPlaceholder(item, platform) {
+  const status = item?.translation?.status;
+  if (status === 'pending' || status === 'running' || ((platform || item?.platform) === 'x' && state.xTranslating)) return '正在翻译…';
+  return '暂未翻译';
+}
+
+function listCardExcerpt(item, platform) {
+  if (item?.normalizedArticle?.summary) return item.normalizedArticle.summary;
+  if (item?.translation?.title) return item.translation.title;
+  if (item?.translation?.text) return '';
+  const summary = item?.summary || '';
+  const foreign = textNeedsZhView(summary || item?.excerpt || '');
+  if ((platform === 'x' || platform === 'xueqiu') && !item?.body && foreign) return socialListPlaceholder(item, platform);
+  if (summary && !textNeedsZhView(summary)) return summary;
+  if ((platform === 'x' || platform === 'xueqiu') && !item?.body) return socialListPlaceholder(item, platform);
+  return item?.excerpt || summary;
+}
+
 function postListExcerpt(post) {
   if(post.normalizedArticle?.summary)return clipFeedText(post.normalizedArticle.summary,FEED_EXCERPT_MAX);
   const translated = translationFor(post)?.text;
   if (translated) return clipFeedText(textAfterLead(socialBodyText(post, translated), postDisplayTitle(post)), FEED_EXCERPT_MAX);
-  if (postIsTranslating(post)) return '';
+  if (post.translation?.title) return clipFeedText(post.translation.title, FEED_EXCERPT_MAX);
+  if (post.summary && !textNeedsZhView(post.summary)) return clipFeedText(post.summary, FEED_EXCERPT_MAX);
+  if (postIsTranslating(post)) return '正在翻译…';
+  if ((post.platform === 'x' || post.platform === 'xueqiu') && !post.body) return socialListPlaceholder(post, post.platform);
   return clipFeedText(textAfterLead(socialBodyText(post, post?.body), post?.title), FEED_EXCERPT_MAX);
+}
+
+function feedCardExcerpt(post) {
+  return translationFor(post) ? postListExcerpt(post) : (post.excerpt || postListExcerpt(post));
 }
 
 function postViewBody(post) {
@@ -3059,7 +3127,10 @@ function feedAsItem(item, platform) {
     handle: item.authorHandle || '',
     time: item.publishedAt ? formatTime(item.publishedAt) : '',
     title: item.title,
-    body: item.body || item.summary || '无正文',
+    body: item.body || '',
+    summary: item.summary || '',
+    excerpt: listCardExcerpt(item, platform),
+    commentCount: Number(item.commentCount) || 0,
     tags: postTagNames(item),
     sourceUrl: item.sourceUrl,
     processing: item.processing || '',
@@ -3723,7 +3794,7 @@ const MEDIA_HEALTH_LABELS = {
 function mediaAsItem(item) {
   const level = item.articleKind==='report-intro' ? '报告简介' : ({ full: '已验证正文', partial: item.truncated ? '部分正文 · 尾部未读' : '部分正文', discovery: '发现', summary_only: '仅摘要', title_only: '仅标题' })[item.contentLevel] || '索引';
   const reason = ({blocked:'站点拒绝访问',paywall:'付费内容',needs_license:'待确认正文用途',unsupported_template:'正文模板待适配',coverage_unverified:'正文范围待核实',byte_limit:'正文超过保存上限',success_budget:'今日正文配额已用完',request_budget:'今日请求配额已用完',network:'网络失败',http_error:'来源响应失败',preview:'仅公开预览',disallowed_host:'原文域名未接入',rss_summary_match:'仅源站摘要'})[item.fetchState?.extractionReason] || '';
-  const body = item.body || [item.title, item.summary].filter(Boolean).join('\n\n');
+  const body = Object.hasOwn(item, 'body') ? (item.body || '') : [item.title, item.summary].filter(Boolean).join('\n\n');
   return {
     id: item.id || `media:${item.externalId}`,
     resourceId: item.resourceId || item.id || item.externalId,
@@ -3751,14 +3822,15 @@ function mediaAsItem(item) {
     briefState: item.briefState || {status:'pending'},
     bodyScope: level,
     bodyReason: [reason,item.fetchState?.visualEvidenceRequired ? '图表内容需另行核对' : ''].filter(Boolean).join(' · '),
-    excerpt: [level, item.generatedBrief?.text || (item.articleTranslation?.status==='ready' ? item.articleTranslation.paragraphs.find(p=>p.kind==='paragraph')?.text : '') || item.summary].filter(Boolean).join(' · '),
+    excerpt: [level, item.excerpt || item.generatedBrief?.text || (item.articleTranslation?.status==='ready' ? item.articleTranslation.paragraphs?.find(p=>p.kind==='paragraph')?.text : '') || item.summary].filter(Boolean).join(' · '),
     tags: Array.isArray(item.tags) ? item.tags : [],
     sourceUrl: item.readingVia ? item.sourceUrl || '' : item.originUrl || item.sourceUrl || '',
     processing: reason,
     following: false,
     createdAt: item.createdAt || item.publishedAt || 0,
     publishedAt: item.publishedAt || 0,
-    complete: item.contentLevel === 'full' && !item.truncated,
+    detail: item.detail || '',
+    complete: item.detail !== 'list' && item.contentLevel === 'full' && !item.truncated && (Array.isArray(item.paragraphs) || !Object.hasOwn(item, 'body') || Boolean(String(item.body || '').trim())),
     translation: item.translation || null,
   };
 }
@@ -3913,10 +3985,22 @@ function resetFeedWindow() {
   }
 }
 
+function socialFeedCanPage(platform = '') {
+  if (state.feedPlatform === 'media' || state.channel === 'official' || state.channel === 'focus' || state.channel === 'recent') return false;
+  const shows = (name) => {
+    if (state.feedPlatform === 'x' || state.feedPlatform === 'xueqiu') return state.feedPlatform === name;
+    return state.feedPlatform === 'social' || state.feedPlatform === 'all' || state.channel === 'social' || state.channel === 'all';
+  };
+  if (platform === 'x' || platform === 'xueqiu') return shows(platform);
+  return shows('x') || shows('xueqiu');
+}
+
 function revealMoreFeed() {
   const total = visibleFeedItems().length;
   if (state.feedShown >= total) {
     if (state.feedPlatform === 'media' && state.mediaNextOffset != null && !state.mediaLoading) loadMediaFeed({ append: true }).catch(error => showToast(error.message));
+    if (socialFeedCanPage('x') && state.xNextCursor && !state.xLoading) loadXFeed({ refresh: false, append: true }).catch(error => showToast(error.message));
+    if (socialFeedCanPage('xueqiu') && state.xueqiuNextCursor && !state.xueqiuLoading) loadXueqiuFeed({ append: true }).catch(error => showToast(error.message));
     return;
   }
   state.feedShown = Math.min(total, state.feedShown + FEED_PAGE_SIZE);
@@ -3981,7 +4065,7 @@ function renderPosts() {
       empty.append(retry);
     }
     elements.feed.append(empty);
-    if (state.feedPlatform === 'media' && state.mediaNextOffset != null) {
+    if (state.feedPlatform === 'media' && state.mediaNextOffset != null || socialFeedCanPage() && (state.xNextCursor || state.xueqiuNextCursor)) {
       const more = document.createElement('div');
       more.className = 'feed-more';
       more.textContent = '继续读取文章…';
@@ -4082,7 +4166,7 @@ function renderPosts() {
     const title = document.createElement('h3');
     title.textContent = postDisplayTitle(post);
     content.append(title);
-    const excerpt = post.excerpt || postListExcerpt(post);
+    const excerpt = feedCardExcerpt(post);
     const expanded = state.expandedFeedIds.has(post.id);
     if (expanded) {
       const full = document.createElement('div');
@@ -4098,7 +4182,9 @@ function renderPosts() {
       content.append(preview);
     }
     if (!expanded && (post.platform === 'x' || post.platform === 'xueqiu')) {
-      const count = splitFeedText(postViewBody(post)).comments.length;
+      const count = (post.body || translationFor(post)?.text)
+        ? splitFeedText(postViewBody(post)).comments.length
+        : Number(post.commentCount) || 0;
       if (count) content.append(Object.assign(document.createElement('p'), {
         className: 'feed-comment-preview', textContent: `评论 · ${count} 条 · 展开查看`,
       }));
@@ -4123,8 +4209,21 @@ function renderPosts() {
     expand.textContent = expanded ? '收起' : post.articleKind==='report-intro' ? '展开报告简介' : post.platform==='media' && !post.complete ? '展开线索' : '原地展开全文';
     expand.addEventListener('click', (event) => {
       event.stopPropagation();
-      if (state.expandedFeedIds.has(post.id)) state.expandedFeedIds.delete(post.id);
-      else state.expandedFeedIds.add(post.id);
+      if (state.expandedFeedIds.has(post.id)) {
+        state.expandedFeedIds.delete(post.id);
+        renderPosts();
+        return;
+      }
+      state.expandedFeedIds.add(post.id);
+      if (post.platform === 'media' && !post.paragraphs?.length) {
+        const mediaId = String(post.id || '').startsWith('media:') ? post.id : `media:${post.externalId}`;
+        restoreSavedArticle(mediaId).finally(() => renderPosts());
+        return;
+      }
+      if ((post.platform === 'x' || post.platform === 'xueqiu') && !post.body && post.resourceId) {
+        restoreSocialArticle(post.id, post).finally(() => renderPosts());
+        return;
+      }
       renderPosts();
     });
     card.append(meta, content, star, expand);
@@ -4135,7 +4234,9 @@ function renderPosts() {
   const more = document.createElement('div');
   more.className = 'feed-more';
   more.id = 'feed-sentinel';
-  const canLoad = shown.length < items.length || (state.feedPlatform === 'media' && state.mediaNextOffset != null);
+  const canLoad = shown.length < items.length
+    || (state.feedPlatform === 'media' && state.mediaNextOffset != null)
+    || (socialFeedCanPage() && Boolean(state.xNextCursor || state.xueqiuNextCursor));
   more.dataset.done = canLoad ? '0' : '1';
   more.textContent = canLoad ? '下滑显示更多' : '已经到底了';
   elements.feed.append(more);
@@ -5817,7 +5918,7 @@ function renderOverviewTimeline() {
     open.type = 'button';
     open.className = 'feed-content';
     open.append(Object.assign(document.createElement('h3'), { textContent: postDisplayTitle(post) }));
-    const excerpt = post.excerpt || postListExcerpt(post);
+    const excerpt = feedCardExcerpt(post);
     if (excerpt) open.append(Object.assign(document.createElement('p'), { className: 'post-excerpt', textContent: excerpt }));
     const timelineTags = createTagRow(postTagNames(post));
     if (timelineTags) open.append(timelineTags);
@@ -6774,7 +6875,9 @@ async function restoreSavedArticle(id) {
   const scope=state.session;
   if(id.startsWith('media:')) {
     try {const {item}=await api(`/api/v1/feed/media/article?externalId=${encodeURIComponent(id.slice(6))}`);if(state.session!==scope)return;
-      state.restoredArticles[id]=mediaAsItem(item);if(state.pageKind==='article' && state.pageId===id)renderArticlePage();
+      state.restoredArticles[id]=mediaAsItem(item);
+      state.mediaItems=(state.mediaItems||[]).map(row=>row.id===item.id||row.externalId===item.externalId||row.id===id?{...row,...item,detail:'full'}:row);
+      if(state.pageKind==='article' && state.pageId===id)renderArticlePage();
     } catch(error) {if(state.session!==scope)return;restoredArticleErrors.set(id,error.message);if(state.pageKind==='article' && state.pageId===id)renderArticlePage();}
     return;
   }
@@ -6782,6 +6885,50 @@ async function restoreSavedArticle(id) {
     state.restoredArticles[id]={id,resourceId:o.id,resourceType:'content-item',contentItemId:o.id,platform:o.provider || 'trendforce',kind:'article',author:'TrendForce',title:o.title,body:o.body,sourceUrl:o.sourceUrl,complete:o.contentLevel==='full',contentLevel:o.contentLevel,bodyScope:o.contentLevel==='partial'?'部分正文':'仅摘要',articleKind:o.externalId?.startsWith('research:')?'report-intro':'article',hardwareSnapshot:o.hardwareSnapshot};
     if(state.pageKind==='article' && state.pageId===id)renderArticlePage();
   } catch(error) {if(state.session!==scope)return;restoredArticleErrors.set(id,error.message);if(state.pageKind==='article' && state.pageId===id)renderArticlePage();}
+}
+async function restoreSocialArticle(id, post) {
+  const resourceId = post?.resourceId;
+  if (!state.session || !resourceId || restoredArticleRequests.has(id)) return;
+  restoredArticleRequests.add(id);
+  const scope = state.session;
+  try {
+    const { item } = await api(`/api/v1/content-items/${encodeURIComponent(resourceId)}`);
+    if (state.session !== scope || !item) return;
+    const patch = (row) => (row.id === id || row.resourceId === resourceId ? {
+      ...row,
+      body: item.body || '',
+      summary: item.summary || row.summary || '',
+      title: item.title || row.title || '',
+      translation: item.translation || row.translation || null,
+      normalizedArticle: item.normalizedArticle || row.normalizedArticle || null,
+      detail: 'full',
+    } : row);
+    state.xItems = (state.xItems || []).map(patch);
+    state.xueqiuItems = (state.xueqiuItems || []).map(patch);
+    state.restoredArticles[id] = feedAsItem({
+      id,
+      resourceId: item.id || resourceId,
+      externalId: item.externalId || post.externalId || '',
+      authorName: item.authorName || post.author || '',
+      authorHandle: post.handle || '',
+      title: item.title || post.title || '',
+      body: item.body || '',
+      summary: item.summary || post.summary || '',
+      sourceUrl: item.sourceUrl || post.sourceUrl || '',
+      publishedAt: item.publishedAt || post.publishedAt || 0,
+      capturedAt: item.capturedAt || post.createdAt || 0,
+      isRead: Boolean(post.isRead),
+      translation: item.translation || null,
+      normalizedArticle: item.normalizedArticle || null,
+      commentCount: post.commentCount || 0,
+    }, post.platform);
+    if (state.pageKind === 'article' && state.pageId === id) renderArticlePage();
+    } catch (error) {
+    if (state.session !== scope) return;
+    restoredArticleRequests.delete(id);
+    restoredArticleErrors.set(id, error.message);
+    if (state.pageKind === 'article' && state.pageId === id) renderArticlePage();
+  }
 }
 function renderArticlePage() {
   const root = pageRoot();
@@ -6797,8 +6944,17 @@ function renderArticlePage() {
     ? mediaReaderSession.resolve(post?.platform === 'media' ? post : null, { id:itemId, scope:state.session ? `${state.session.role}:${state.session.device?.id || 'desktop'}` : '' })
     : null;
   if (mediaReading) post = mediaReading.post;
-  if (post?.platform === 'media' && !post.paragraphs?.length && itemId.startsWith('media:') && !state.restoredArticles[itemId]) {
+  if (post?.platform === 'media' && !post.paragraphs?.length && itemId.startsWith('media:') && !state.restoredArticles[itemId] && !restoredArticleErrors.has(itemId)) {
     restoreSavedArticle(itemId);
+    if (!String(post.body || '').trim()) {
+      renderViewState(root, { kind: 'loading', title: '正在读取文章…', message: '正在加载正文。' });
+      return;
+    }
+  }
+  if ((post?.platform === 'x' || post?.platform === 'xueqiu') && !String(post.body || '').trim() && post.resourceId && !state.restoredArticles[itemId] && !restoredArticleErrors.has(itemId)) {
+    restoreSocialArticle(itemId, post);
+    renderViewState(root, { kind: 'loading', title: '正在读取文章…', message: '正在加载正文。' });
+    return;
   }
   if (!post) {
     if(state.bootstrapped && !official) restoreSavedArticle(itemId);
@@ -11495,6 +11651,10 @@ async function translatePost(post) {
     setView('settings');
     return;
   }
+  if (!post.body && post.resourceId && (post.platform === 'x' || post.platform === 'xueqiu')) {
+    await restoreSocialArticle(post.id, post);
+    post = state.restoredArticles[post.id] || findUnifiedItem(post.id) || post;
+  }
   if (!post.body) {
     showToast('这条没有可翻译的正文');
     return;
@@ -11598,7 +11758,7 @@ async function tagXBatch({ silent = false } = {}) {
   }
 }
 
-async function loadXFeed({ refresh = false, autoTranslate = true } = {}) {
+async function loadXFeed({ refresh = false, autoTranslate = true, append = false } = {}) {
   if (!state.session) return null;
   state.xLoading = true;
   state.xError = '';
@@ -11606,11 +11766,31 @@ async function loadXFeed({ refresh = false, autoTranslate = true } = {}) {
   renderXToolbar();
   renderPosts();
   try {
-    const params = new URLSearchParams({ platform: 'x', feed: state.xFeed, limit: '50' });
+    const params = new URLSearchParams({
+      platform: 'x',
+      feed: state.xFeed,
+      limit: refresh ? '50' : String(FEED_PAGE_SIZE),
+    });
+    if (append && state.xNextCursor) params.set('before', state.xNextCursor);
     if (refresh) params.set('refresh', '1');
     const payload = await api(`/api/v1/feed/x?${params}`, { timeoutMs: refresh ? 180_000 : 15_000 });
     const feed = payload.feed || {};
-    state.xItems = (feed.items || []).filter((item) => !isHiddenFeedItem(item));
+    const incoming = (feed.items || []).filter((item) => !isHiddenFeedItem(item));
+    if (append) {
+      const seen = new Set((state.xItems || []).map((item) => item.id));
+      const added = incoming.filter((item) => item.id && !seen.has(item.id));
+      state.xItems = [...(state.xItems || []), ...added];
+      if (added.length) state.feedShown += added.length;
+      state.xNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
+    } else if (refresh || !(state.xItems || []).length) {
+      state.xItems = incoming;
+      state.xNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
+    } else {
+      const paged = state.xItems.length > incoming.length;
+      const cursor = state.xNextCursor;
+      state.xItems = mergeLoadedFeed(state.xItems, incoming);
+      state.xNextCursor = paged ? cursor : (incoming.length && feed.nextCursor ? feed.nextCursor : '');
+    }
     state.xFeed = feed.feed || state.xFeed;
     state.xNote = feed.note || '';
     state.xError = '';
@@ -11677,7 +11857,7 @@ async function runXCapturePipeline() {
   }
 }
 
-async function loadXueqiuFeed({ refresh = false } = {}) {
+async function loadXueqiuFeed({ refresh = false, append = false } = {}) {
   if (!state.session) {
     if (refresh) {
       showToast('请先在设置中完成设备连接');
@@ -11691,11 +11871,31 @@ async function loadXueqiuFeed({ refresh = false } = {}) {
   renderXueqiuToolbar();
   renderPosts();
   try {
-    const params = new URLSearchParams({ platform: 'xueqiu', feed: state.xueqiuFeed, limit: '50' });
+    const params = new URLSearchParams({
+      platform: 'xueqiu',
+      feed: state.xueqiuFeed,
+      limit: refresh ? '50' : String(FEED_PAGE_SIZE),
+    });
+    if (append && state.xueqiuNextCursor) params.set('before', state.xueqiuNextCursor);
     if (refresh) params.set('refresh', '1');
     const payload = await api(`/api/v1/feed/xueqiu?${params}`, { timeoutMs: refresh ? 180_000 : 15_000 });
     const feed = payload.feed || {};
-    state.xueqiuItems = (feed.items || []).filter((item) => !isHiddenFeedItem(item));
+    const incoming = (feed.items || []).filter((item) => !isHiddenFeedItem(item));
+    if (append) {
+      const seen = new Set((state.xueqiuItems || []).map((item) => item.id));
+      const added = incoming.filter((item) => item.id && !seen.has(item.id));
+      state.xueqiuItems = [...(state.xueqiuItems || []), ...added];
+      if (added.length) state.feedShown += added.length;
+      state.xueqiuNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
+    } else if (refresh || !(state.xueqiuItems || []).length) {
+      state.xueqiuItems = incoming;
+      state.xueqiuNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
+    } else {
+      const paged = state.xueqiuItems.length > incoming.length;
+      const cursor = state.xueqiuNextCursor;
+      state.xueqiuItems = mergeLoadedFeed(state.xueqiuItems, incoming);
+      state.xueqiuNextCursor = paged ? cursor : (incoming.length && feed.nextCursor ? feed.nextCursor : '');
+    }
     state.xueqiuFeed = feed.feed || state.xueqiuFeed;
     state.xueqiuNote = feed.note || '';
     state.xueqiuError = '';
@@ -11723,21 +11923,23 @@ async function loadXueqiuFeed({ refresh = false } = {}) {
   }
 }
 
-async function loadMediaFeed({ refresh = false, append = false } = {}) {
+async function loadMediaFeed({ refresh = false, append = false, merge = false } = {}) {
   if (!state.session) {
     showToast('请先在设置中完成设备连接');
     return;
   }
+  mediaHeadMerge = Boolean(merge) && !append && !refresh;
   const channel = state.mediaChannel;
   const view = state.mediaView;
   try {
-    const request = mediaFeedLoader.load({ refresh, append });
+    const request = mediaFeedLoader.load({ refresh, append, merge: mediaHeadMerge });
     ensureTagCatalog().then(() => {
       renderPosts();
       if (state.pageKind === 'article') renderArticlePage();
     }).catch(() => {});
     return await request;
   } catch (error) {
+    mediaHeadMerge = false;
     if (error.status === 401 || error.status === 403) {
       showUnpairedPage('设备授权已失效，请重新连接');
       throw error;
@@ -11988,7 +12190,7 @@ function connectStream() {
       if (state.mediaLoading) return;
       const onMediaFeed = (document.body.dataset.view === 'feed' || state.pageKind === 'article') && state.feedPlatform === 'media';
       if (!state.mediaLoaded && !onMediaFeed) return;
-      loadMediaFeed({ refresh: false }).catch(() => {});
+      loadMediaFeed({ refresh: false, merge: true }).catch(() => {});
     },1000);
   };
   state.stream.addEventListener('feed.media-body.observed.v1',refreshMedia);
