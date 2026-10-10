@@ -29,6 +29,8 @@
 
 - `progress/2026-10-10-translation-reliability.md`：翻译失败落库并退避重试，信息流失败态显示原文和「暂未翻译」，复用小时报译文，入库摘录清洗。
 
+- `progress/2026-10-10-hourly-swipe.md`：小时报内容区按顶部小时栏的左右方向切换相邻小时，点选与滑动共用 `selectHour`。
+
 - `progress/2026-10-10-public-auth-write-stall.md`：公网鉴权不再同步写最后在线，避免和 Worker 写锁一起堵住 Web 事件循环。
 
 - `progress/2026-10-10-tree-index.md`：简报目录改为`view=index`，刊期索引在Repository投影，正文仍按刊期和文章按需读取；`view=reading`保留一个版本。

@@ -263,3 +263,75 @@ test('hourly reading shows hits and misses together and marks stale items', asyn
   assert.ok(titles.includes('未命中旧闻'));
   page.stop();
 });
+
+test('hourly content follows the hour strip: left is newer, right is older', async () => {
+  const start = Date.parse('2026-10-08T06:00:00Z');
+  const newest = edition('edition:swipehour0001', start, ['n1']);
+  const middle = edition('edition:swipehour0002', start - HOUR, ['n2']);
+  const oldest = edition('edition:swipehour0003', start - 2 * HOUR, ['n3']);
+  const root = new El('div'); root.isConnected = true;
+  const keys = [];
+  const previousListen = document.addEventListener;
+  document.addEventListener = (type, fn) => { keys.push({ type, fn }); previousListen.call(document, type, fn); };
+  const page = createInformationTreePage(hostFor('hourly-swipe', () => manifest([newest, middle, oldest])));
+  document.addEventListener = previousListen;
+  await page.mount(root, { mode: 'hourly' });
+  assert.deepEqual(chips(root).map(item => item.textContent), ['这个小时', '上个小时', '上上个小时']);
+  const activeStart = () => chips(root).find(item => item.classList.contains('is-active')).dataset.start;
+  const scrolled = [];
+  for (const item of chips(root)) item.scrollIntoView = () => scrolled.push(item.dataset.start);
+  const list = root.querySelector('.tree-list');
+  async function swipe(dx, dy) {
+    const x = 180, y = 220;
+    let prevented = false;
+    list.listeners.touchstart[0]({ touches: [{ clientX: x, clientY: y }] });
+    list.listeners.touchmove[0]({
+      touches: [{ clientX: x + dx, clientY: y + dy }],
+      preventDefault() { prevented = true; },
+    });
+    await list.listeners.touchend[0]({ changedTouches: [{ clientX: x + dx, clientY: y + dy }] });
+    return prevented;
+  }
+  assert.equal(await swipe(-80, 8), true);
+  assert.equal(activeStart(), String(middle.window.startAt));
+  assert.equal(scrolled.at(-1), String(middle.window.startAt));
+  assert.equal(await swipe(-72, 6), true);
+  assert.equal(activeStart(), String(oldest.window.startAt));
+  assert.equal(await swipe(-90, 4), true);
+  assert.equal(activeStart(), String(oldest.window.startAt));
+  assert.equal(await swipe(80, 10), true);
+  assert.equal(activeStart(), String(middle.window.startAt));
+  assert.equal(await swipe(16, 90), false);
+  assert.equal(activeStart(), String(middle.window.startAt));
+  assert.equal(await swipe(55, 40), false);
+  assert.equal(activeStart(), String(middle.window.startAt));
+
+  const onKey = keys.find(item => item.type === 'keydown').fn;
+  const key = (name, target, extra = {}) => onKey({ key: name, target, preventDefault() {}, ...extra });
+  await key('ArrowLeft');
+  assert.equal(activeStart(), String(newest.window.startAt));
+  await key('ArrowLeft');
+  assert.equal(activeStart(), String(newest.window.startAt));
+  await key('ArrowRight', null, { ctrlKey: true });
+  assert.equal(activeStart(), String(newest.window.startAt));
+  await key('ArrowRight', root.querySelector('input'));
+  assert.equal(activeStart(), String(newest.window.startAt));
+  await key('ArrowRight');
+  assert.equal(activeStart(), String(middle.window.startAt));
+
+  let wheeled = false;
+  const wheel = (deltaX, deltaY) => list.listeners.wheel[0]({
+    deltaX, deltaY, preventDefault() { wheeled = true; },
+  });
+  wheeled = false;
+  await wheel(10, 80);
+  assert.equal(wheeled, false);
+  assert.equal(activeStart(), String(middle.window.startAt));
+  wheeled = false;
+  await wheel(60, 8);
+  assert.equal(wheeled, true);
+  assert.equal(activeStart(), String(oldest.window.startAt));
+  await wheel(80, 4);
+  assert.equal(activeStart(), String(oldest.window.startAt));
+  page.stop();
+});
