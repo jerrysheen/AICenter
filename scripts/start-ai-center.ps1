@@ -271,7 +271,7 @@ function Start-AiCenterWebAndWorker {
   return $started
 }
 
-function Wait-AiCenterWebHealth($Web, $Worker, [int]$Seconds = 15) {
+function Wait-AiCenterWebHealth($Web, $Worker, [int]$Seconds = 90, [int]$IntervalSeconds = 4) {
   $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
   $health = $null
   do {
@@ -286,13 +286,20 @@ function Wait-AiCenterWebHealth($Web, $Worker, [int]$Seconds = 15) {
     try {
       $health = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/v1/health" -TimeoutSec 2
     } catch {
-      Start-Sleep -Milliseconds 350
+      $health = $null
     }
-  } while (-not $health -and [DateTime]::UtcNow -lt $deadline)
-  if (-not $health -or -not $health.ok) {
-    throw "Web did not pass health check within ${Seconds}s. See $WebErrorLog"
-  }
-  return $health
+    if ($health -and $health.ok) {
+      return $health
+    }
+    if ([DateTime]::UtcNow -ge $deadline) {
+      break
+    }
+    $remainingMs = [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds
+    if ($remainingMs -le 0) { break }
+    $pauseMs = [Math]::Min($IntervalSeconds * 1000, $remainingMs)
+    Start-Sleep -Milliseconds $pauseMs
+  } while ($true)
+  throw "Web did not pass health check within ${Seconds}s. See $WebErrorLog"
 }
 
 function Wait-ForCtrlCOrCrash {
@@ -606,8 +613,35 @@ while ($true) {
       $webProcess = $started.web
       $workerProcess = $started.worker
       Write-InstanceProcessState
-      [void](Wait-AiCenterWebHealth -Web $webProcess -Worker $workerProcess)
-      Write-Host "[OK] Web/Worker restarted. Web PID $($webProcess.Id); Worker PID $($workerProcess.Id)" -ForegroundColor Green
+      $restartHealthy = $false
+      foreach ($healthAttempt in 1, 2) {
+        try {
+          [void](Wait-AiCenterWebHealth -Web $webProcess -Worker $workerProcess)
+          $restartHealthy = $true
+          break
+        } catch {
+          Write-Host "[!] $($_.Exception.Message)" -ForegroundColor Yellow
+          if ($healthAttempt -ge 2) { break }
+          $webProcess.Refresh()
+          $workerProcess.Refresh()
+          if ($webProcess.HasExited -or $workerProcess.HasExited) {
+            Write-Host 'Web or Worker exited during restart. Starting them once more. Tunnel stays up.' -ForegroundColor Yellow
+            Stop-StartedAiCenterProcesses
+            Start-Sleep -Milliseconds 500
+            $started = Start-AiCenterWebAndWorker
+            $webProcess = $started.web
+            $workerProcess = $started.worker
+            Write-InstanceProcessState
+          } else {
+            Write-Host 'Health check failed. Retrying without stopping Web/Worker.' -ForegroundColor Yellow
+          }
+        }
+      }
+      if ($restartHealthy) {
+        Write-Host "[OK] Web/Worker restarted. Web PID $($webProcess.Id); Worker PID $($workerProcess.Id)" -ForegroundColor Green
+      } else {
+        Write-Host '[!] Health check did not pass. Leaving the current Web/Worker processes in place.' -ForegroundColor Yellow
+      }
     }
     Write-Host ''
     Write-Host 'Stopping AI Center...' -ForegroundColor Yellow

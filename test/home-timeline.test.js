@@ -8,6 +8,7 @@ import {
   foldOfficialByHour,
   nextEvents,
   hourCoverage,
+  visibleHourGaps,
   homeRequestPlan,
   shanghaiMidnight,
   readingTitles,
@@ -80,15 +81,20 @@ test('upcoming home rows keep at most two events inside the next 24 hours', () =
   assert.deepEqual(nextEvents(events, now).map((event) => event.title), ['soon', 'later']);
 });
 
-test('missing hours collapse and the latest hour reports its delay', () => {
+test('missing hours collapse to a time range without a delay status line', () => {
   const midnight = shanghaiMidnight(saturdayMorning);
   const at = (hour) => midnight + hour * 3_600_000;
   const now = at(14) + 30 * 60 * 1000;
   const editions = [8, 9, 11].map((hour) => ({ window: { startAt: at(hour), endAt: at(hour + 1) } }));
   const coverage = hourCoverage({ editions, nowMs: now });
-  assert.equal(coverage.delay.text, '最新一期 11:00 · 已延迟 2 小时');
-  assert.equal(coverage.gaps.some((gap) => gap.count === 2 && gap.text === '12:00–14:00 · 2 期未生成'), true);
+  assert.equal(coverage.delay.hours, 2);
+  assert.equal(Object.hasOwn(coverage.delay, 'text'), false);
+  assert.equal(coverage.gaps.some((gap) => gap.count === 2 && gap.text === '12:00–14:00'), true);
   assert.equal(coverage.gaps.filter((gap) => gap.count === 2).length, 1);
+  assert.equal(coverage.gaps.every((gap) => !gap.text.includes('未生成')), true);
+  const visible = visibleHourGaps(coverage, editions.filter((edition) => edition.window.startAt >= at(11)));
+  assert.equal(visible.some((gap) => gap.count === 2 && gap.text === '12:00–14:00'), true);
+  assert.equal(visible.every((gap) => !gap.text.includes('未生成')), true);
 });
 
 test('home hours list reading titles and omit nodes without one', () => {

@@ -257,7 +257,7 @@ export function hourCoverage({ editions = [], nowMs }) {
       startAt: first,
       endAt: last + HOUR,
       count: group.length,
-      text: `${shanghaiHourLabel(first).hourText}–${shanghaiHourLabel(last + HOUR).hourText} · ${group.length} 期未生成`,
+      text: `${shanghaiHourLabel(first).hourText}–${shanghaiHourLabel(last + HOUR).hourText}`,
     });
     group = [];
   };
@@ -271,7 +271,6 @@ export function hourCoverage({ editions = [], nowMs }) {
     ? {
       latest,
       hours: Math.round((expectedStart - latest) / HOUR),
-      text: `最新一期 ${shanghaiHourLabel(latest).hourText} · 已延迟 ${Math.round((expectedStart - latest) / HOUR)} 小时`,
     }
     : null;
   return { delay, gaps, expectedStart };
@@ -290,7 +289,7 @@ export function visibleHourGaps(coverage, shown) {
         startAt,
         endAt: gap.endAt,
         count,
-        text: `${shanghaiHourLabel(startAt).hourText}–${shanghaiHourLabel(gap.endAt).hourText} · ${count} 期未生成`,
+        text: `${shanghaiHourLabel(startAt).hourText}–${shanghaiHourLabel(gap.endAt).hourText}`,
       };
     })
     .filter(Boolean);

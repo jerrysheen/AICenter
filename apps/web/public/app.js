@@ -2590,12 +2590,6 @@ function appendAskSourceFooter(card, footer) {
     block.append(list);
     section.append(block);
   }
-  if (footer.extraCount) {
-    section.append(Object.assign(document.createElement('p'), {
-      className: 'ask-source-more',
-      textContent: `另有 ${footer.extraCount} 条检索命中未展开`,
-    }));
-  }
   if (footer.evidence) {
     const bits = [];
     if (Number.isFinite(Number(footer.evidence.confidence))) {
