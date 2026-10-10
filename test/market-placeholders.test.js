@@ -36,7 +36,11 @@ test('overview ticker renders the loading mark and keeps an update time', () => 
   assert.match(app, /overviewLoadingIndices\(preferredOverviewFocus\(\)\)/);
   assert.equal(app.includes('globalAssets'), false);
   assert.match(app, /lastPrice == null \? LOADING_QUOTE/);
-  assert.match(app, /行情已连接 · 更新 /);
+  assert.match(app, /quoteStatusText\(/);
+  const timeline = readFileSync(new URL('../apps/web/public/home-timeline.js', import.meta.url), 'utf8');
+  assert.match(timeline, /更新于 /);
+  assert.match(timeline, /行情暂不可用 · 重试/);
+  assert.match(timeline, /读取较慢 · 重试/);
   assert.match(app, /更新 \$\{formatTime\(market\.fetchedAt\)\}/);
   assert.match(app, /更新 \$\{formatTime\(state\.assetBoard\.fetchedAt\)\}/);
 });
