@@ -79,6 +79,13 @@ test('full translation reaches the end beyond 5000 chars, keeps structure, cache
     assert.deepEqual(f.service.getSavedArticle({externalId:'decoder:one'}).paragraphs,item.paragraphs);
     assert.equal(f.service.getSavedArticle({externalId:'decoder:one'}).body,item.body);
     assert.equal(item.articleTranslation.status,'ready');
+    assert.equal(item.title,'API price');
+    assert.match(item.articleTranslation.title,/API price/);
+    const listed=f.service.readFeed({channel:'tech',fields:'list'}).items[0];
+    assert.equal(listed.detail,'list');
+    assert.equal(listed.title,item.articleTranslation.title);
+    assert.equal(listed.translation.title,item.articleTranslation.title);
+    assert.notEqual(listed.title,'API price');
     assert.deepEqual(item.articleTranslation.paragraphs.map(p=>[p.id,p.kind]),item.paragraphs.map(p=>[p.id,p.kind]));
     assert.match(item.articleTranslation.paragraphs.at(-1).text,/FINAL_SENTENCE price is 2/);
     assert.ok(sent.every(i=>i.text.length<=2400));

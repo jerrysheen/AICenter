@@ -3007,6 +3007,8 @@ function textAfterLead(source, lead) {
 function postDisplayTitle(post) {
   if(post.normalizedArticle?.title)return post.normalizedArticle.title;
   if (post.platform === 'media' && post.articleTranslation?.title) return post.articleTranslation.title;
+  if (post.platform === 'media' && post.translationTitle) return post.translationTitle;
+  if (post.platform === 'media' && post.translation?.title) return post.translation.title;
   const translated = translationFor(post)?.text;
   if (translated) {
     const body = socialBodyText(post, translated);
@@ -3819,6 +3821,7 @@ function mediaAsItem(item) {
     body,
     paragraphs: item.paragraphs || [],
     articleTranslation: item.articleTranslation || null,
+    translationTitle: item.translationTitle || '',
     bodyHash: item.bodyHash || '',
     snapshotRevision: item.snapshotRevision || null,
     generatedBrief: item.generatedBrief || null,
