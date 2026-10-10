@@ -166,5 +166,8 @@ test('a source older than one day is marked untimely', () => {
   const unknown = createReadingHourService({repository, enabled: true, publishedAtFor: () => null});
   assert.equal(stale.get('local', 'rh:time').items[0].timely, false);
   assert.equal(fresh.get('local', 'rh:time').items[0].timely, true);
+  assert.equal(fresh.get('local', 'rh:time').items[0].publishedAt, endAt - 60 * 60 * 1000);
   assert.equal(unknown.get('local', 'rh:time').items[0].timely, true);
+  assert.equal(unknown.get('local', 'rh:time').items[0].publishedAt, null);
+  assert.equal(unknown.get('local', 'rh:time').items[0].firstIngestedAt, null);
 });

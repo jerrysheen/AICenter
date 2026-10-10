@@ -245,6 +245,7 @@ test('home requests are the overview set and not the old feed fan-out', () => {
   assert.match(sourcesPage, /plan\.readingIndex/);
   assert.match(sourcesPage, /plan\.board/);
   assert.match(sourcesPage, /loadDailyBrief\(/);
+  assert.match(sourcesPage, /ensureHomeMessages\(/);
   assert.doesNotMatch(sourcesPage, /loadGlobalAssets|loadMarketNativeBoard|scheduleOverviewManualPosts|loadXFeed|loadXueqiuFeed|loadPosts\(/);
   assert.match(app, /mergeReadingHours\(state\.homeReadingHours, absorbReadingIndex\(payload\)\)/);
   assert.match(app, /view === 'report' \? '搜索简报'/);
