@@ -77,6 +77,7 @@ button[disabled] { opacity: 0.55; cursor: default; }
 }
 .up { color: var(--data-up); }
 .down { color: var(--data-down); }
+.flat { color: var(--font-tertiary); }
 .hidden, .vh, .hidden-visual { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 .hidden { display: none !important; clip: auto; }
 
@@ -379,6 +380,11 @@ main {
   font-weight: 500;
 }
 .section-kicker { margin-bottom: var(--space-4); }
+.knowledge-hint-desktop { display: none; }
+@media (hover: hover) and (pointer: fine) {
+  .knowledge-hint-touch { display: none; }
+  .knowledge-hint-desktop { display: inline; }
+}
 .feed-count { color: var(--font-tertiary); font-size: 12px; font-weight: 500; white-space: nowrap; }
 .feed { display: flex; flex-direction: column; }
 .feed-more {
@@ -1077,6 +1083,7 @@ main {
 }
 .quote-change.up { color: #ffffff; background: var(--data-up); }
 .quote-change.down { color: #ffffff; background: var(--data-down); }
+.quote-change.flat { color: var(--font-tertiary); background: transparent; }
 .holdings-table {
   min-width: 760px;
   width: 100%;
@@ -1325,6 +1332,7 @@ main {
 }
 .market-row .quote-change.up { color: var(--data-up); background: none; }
 .market-row .quote-change.down { color: var(--data-down); background: none; }
+.market-row .quote-change.flat { color: var(--font-tertiary); background: none; }
 .market-meta {
   color: var(--font-tertiary);
   font-size: 11px;

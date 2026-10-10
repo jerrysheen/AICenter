@@ -186,7 +186,15 @@ export function createInformationTreePage(host) {
     const tab=root?.querySelector?.('[data-mode="hourly"]');
     if(!tab)return;
     tab.classList.toggle('is-unread',unread.size>0);
-    if(unread.size)tab.setAttribute('aria-label','小时报，未读');else tab.removeAttribute('aria-label');
+    if(unread.size){
+      tab.setAttribute('aria-label','小时报，未读');
+      tab.setAttribute('title','有新的小时报');
+      tab.title='有新的小时报';
+    }else{
+      tab.removeAttribute('aria-label');
+      tab.removeAttribute('title');
+      tab.title='';
+    }
   }
   function paintHourStrip(rows) {
     const key=rows.map(item=>item.window.startAt).join(',');

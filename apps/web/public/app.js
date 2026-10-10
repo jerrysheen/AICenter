@@ -327,6 +327,7 @@ const elements = Object.fromEntries([
   'report-list', 'open-subscriptions', 'subscriptions-dialog', 'subscription-list',
   'holding-dialog', 'holding-title', 'holding-meta', 'holding-metrics',
   'stock-boards', 'market-status', 'market-overview', 'market-head', 'market-table-scroll', 'market-sort', 'market-filter', 'market-filter-wrap',
+  'stock-generated-note',
   'asset-sort', 'asset-filter', 'asset-filter-wrap', 'asset-table-scroll',
   'market-sync-hint', 'book-sync-hint',   'analysis-period', 'analysis-kpis', 'analysis-ledger', 'analysis-trend', 'analysis-pie',
   'analysis-diagnosis-1', 'analysis-diagnosis-2',
@@ -1113,18 +1114,27 @@ function updateHeaderAction(view) {
   if (view === 'market' || view === 'assets') {
     button.dataset.action = 'search';
     button.setAttribute('aria-label', '搜索标的');
-    setIconButton(button, 'search');
-    return;
-  }
-  if (view === 'ask') {
+  } else if (view === 'ask') {
     button.dataset.action = 'ask-new';
     button.setAttribute('aria-label', '新提问');
-    setIconButton(button, 'plus');
-    return;
+  } else {
+    button.dataset.action = 'compose';
+    button.setAttribute('aria-label', '快速发布');
   }
-  button.dataset.action = 'compose';
-  button.setAttribute('aria-label', '快速发布');
-  setIconButton(button, 'plus');
+  button.title = button.getAttribute('aria-label') || '';
+  setIconButton(button, button.dataset.action === 'search' ? 'search' : 'plus');
+}
+
+function prefersFinePointer() {
+  return window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+}
+
+function syncReloadHint() {
+  const button = elements['reload-view'];
+  if (!button) return;
+  const label = prefersFinePointer() ? '刷新' : '刷新当前页，长按强制更新界面';
+  button.setAttribute('aria-label', label);
+  button.title = label;
 }
 
 function bootUiRevision() {
@@ -3732,11 +3742,35 @@ function officialDayKey(item) {
   });
 }
 
+const DOCUMENT_TYPE_LABELS = {
+  'executive-order': '行政命令',
+  memorandum: '备忘录',
+  proclamation: '宣言',
+  rule: '规章',
+  'proposed-rule': '拟定规章',
+  notice: '公告',
+  'presidential-document': '总统文件',
+  'press-release': '新闻稿',
+  speech: '讲话',
+  testimony: '证词',
+  'board-meeting': '委员会会议',
+  'policy-document': '政策文件',
+  announcement: '公告',
+  'statistical-release': '统计发布',
+  other: '其他',
+};
+
+function documentTypeLabel(value) {
+  const key = String(value || '').trim();
+  if (!key) return '';
+  return DOCUMENT_TYPE_LABELS[key] || '其他';
+}
+
 function officialEventMeta(post) {
   return [
     post.author,
     post.release?.documentNumber,
-    post.release?.documentType,
+    documentTypeLabel(post.release?.documentType),
     post.release?.authority && post.release.authority !== post.author ? post.release.authority : '',
   ].filter(Boolean).join(' · ');
 }
@@ -4297,6 +4331,14 @@ function renderQuoteRows(target, items, { subtitle, changeText, selectedSymbol, 
 
 function formatPct(up, value) {
   return `${up ? '+' : ''}${Number(value).toFixed(2)}%`;
+}
+
+function quoteMove(value) {
+  if (value == null || !Number.isFinite(Number(value))) return { tone: '', text: '—' };
+  const rounded = Number(value).toFixed(2);
+  if (Number(rounded) === 0) return { tone: 'flat', text: '0.00%' };
+  const up = Number(value) > 0;
+  return { tone: up ? 'up' : 'down', text: `${up ? '+' : ''}${rounded}%` };
 }
 
 function formatSignedAmount(value) {
@@ -5074,11 +5116,20 @@ function formatAssetPrice(item) {
   return formatQuoteNumber(item, item.lastPrice);
 }
 
+function quoteUsesYuanPerTon(item) {
+  const symbol = String(item?.symbol || '').toUpperCase();
+  if (symbol === 'LC' || symbol === 'CU') return true;
+  return /碳酸锂|沪铜/.test(String(item?.name || ''));
+}
+
 function formatQuoteNumber(item, value) {
   if (value === null || value === undefined) return '—';
-  if (item.assetClass === 'fx' || item.assetClass === 'rate') return formatPrice(value, 4);
-  if (item.assetClass === 'crypto' && Number(value) >= 1000) return formatPrice(value, 0);
-  return formatPrice(value);
+  let price = formatPrice(value);
+  if (item.assetClass === 'fx' || item.assetClass === 'rate') price = formatPrice(value, 4);
+  else if (item.assetClass === 'crypto' && Number(value) >= 1000) price = formatPrice(value, 0);
+  if (item.assetClass === 'rate') return `${price}%`;
+  if (quoteUsesYuanPerTon(item)) return `${price} 元/吨`;
+  return price;
 }
 
 function formatVolume(value) {
@@ -5724,7 +5775,7 @@ function openOfficialRelease(item) {
   elements['dialog-title'].textContent = localizedCopy(item.releaseId, item.title);
   fillPostBody(elements['dialog-body'], [
     `机构：${item.authority}`,
-    item.documentType ? `类型：${item.documentType}` : '',
+    item.documentType ? `类型：${documentTypeLabel(item.documentType)}` : '',
     item.documentNumber ? `文号：${item.documentNumber}` : '',
     `发布：${staticSignalTime(item, 'official-release')}`,
     `观测：${formatTime(item.observedAt)}`,
@@ -5856,20 +5907,20 @@ function appendDerivativeQuote(root, quote) {
   const mark = Number(quote.markPrice);
   const prev = Number(quote.previousDayPrice);
   const change = Number.isFinite(mark) && Number.isFinite(prev) && prev !== 0 ? ((mark - prev) / prev) * 100 : null;
-  const up = (change ?? 0) >= 0;
+  const move = quoteMove(change);
   const symbol = Object.assign(document.createElement('strong'), { className: 'market-native-symbol', textContent: quote.symbol });
   const body = document.createElement('div');
   const title = Object.assign(document.createElement('b'), {
-    textContent: `Mark ${formatPrice(quote.markPrice, Number(quote.markPrice) >= 1000 ? 0 : 2)}`,
+    textContent: `标记价 ${formatPrice(quote.markPrice, Number(quote.markPrice) >= 1000 ? 0 : 2)}`,
   });
   const funding = quote.fundingRate == null ? '—' : `${(Number(quote.fundingRate) * 100).toFixed(4)}%`;
   const detail = Object.assign(document.createElement('small'), {
-    textContent: `Funding ${funding} · OI ${marketNativeAmount(quote.openInterest, { currency: false })} ${quote.symbol} · 24h ${marketNativeAmount(quote.volume24h)}`,
+    textContent: `资金费率 ${funding} · 持仓量 ${marketNativeAmount(quote.openInterest, { currency: false })} ${quote.symbol} · 24h ${marketNativeAmount(quote.volume24h)}`,
   });
   body.append(title, detail);
   const changeEl = Object.assign(document.createElement('strong'), {
-    className: `quote-change ${change == null ? '' : (up ? 'up' : 'down')}`.trim(),
-    textContent: change == null ? '—' : formatPct(up, change),
+    className: `quote-change ${move.tone}`.trim(),
+    textContent: move.text,
   });
   article.append(symbol, body, changeEl);
   attachGuardedOpen(article, () => openExternalHttpUrl(quote.sourceUrl));
@@ -5880,7 +5931,9 @@ function appendLiquidityMetric(root, metric, primary = false) {
   const article = document.createElement('article');
   article.className = `market-native-row liquidity-row${primary ? ' is-primary' : ''}`;
   const body = document.createElement('div');
-  const title = Object.assign(document.createElement('b'), { textContent: metric.label });
+  const title = Object.assign(document.createElement('b'), {
+    textContent: metric.label === 'Total stablecoin supply' ? '稳定币总量' : metric.label,
+  });
   const detail = Object.assign(document.createElement('small'), {
     textContent: `1d ${marketNativeAmount(metric.change1dUsd)} · 7d ${marketNativeAmount(metric.change7dUsd)} · 30d ${marketNativeAmount(metric.change30dUsd)}`,
   });
@@ -5925,12 +5978,17 @@ function renderMarketNativeBoard() {
     } else marketNativeEmpty(liquidity, loadingText);
   }
 
-  const noteText = state.marketNativeError
-    || (state.marketNativeLoading ? '正在同步市场原生来源…' : board
-      ? `生成于 ${formatTime(board.generatedAt)} · 场所报价，不是综合概率${(board.sourceHealth || []).some((item) => item.status === 'unavailable') ? ' · 部分来源暂不可用' : ''}`
-      : '等待同步市场原生来源');
-  if (elements['market-native-note']) elements['market-native-note'].textContent = noteText;
-  if (elements['global-native-note']) elements['global-native-note'].textContent = noteText;
+  const unavailable = (board?.sourceHealth || []).some((item) => item.status === 'unavailable') ? ' · 部分来源暂不可用' : '';
+  const waiting = state.marketNativeError
+    || (state.marketNativeLoading ? '正在同步市场原生来源…' : board ? '' : '等待同步市场原生来源');
+  if (elements['market-native-note']) {
+    elements['market-native-note'].textContent = waiting
+      || `生成于 ${formatTime(board.generatedAt)} · 场所报价，不是综合概率${unavailable}`;
+  }
+  if (elements['global-native-note']) {
+    elements['global-native-note'].textContent = waiting
+      || `生成于 ${formatTime(board.generatedAt)} · 永续为场所报价，稳定币为供给统计${unavailable}`;
+  }
   syncGlobalNativeSection();
 }
 
@@ -5990,7 +6048,7 @@ function appendStaticSignalItem(root, item, viewKind) {
   const meta = document.createElement('small');
   const facts = viewKind === 'calendar'
     ? [item.country, item.authority, item.referencePeriod, item.scheduleBasis === 'official-rule' ? '规则生成 · 待官网逐日确认' : '官方日历']
-    : [item.country, item.authority, item.documentType, item.documentNumber];
+    : [item.country, item.authority, documentTypeLabel(item.documentType), item.documentNumber];
   meta.textContent = facts.filter(Boolean).join(' · ');
   const source = document.createElement('button');
   source.type = 'button';
@@ -6232,7 +6290,7 @@ function renderWatchRows(target, rows, { formatValue } = {}) {
     return;
   }
   target.replaceChildren(...rows.map((item) => {
-    const up = (item.changePct ?? 0) >= 0;
+    const move = quoteMove(item.changePct);
     const row = document.createElement('div');
     row.className = 'market-row';
     const code = item.expiry ? `${item.symbol} · ${item.group} · ${item.expiry}` : `${item.symbol} · ${item.group}`;
@@ -6242,16 +6300,16 @@ function renderWatchRows(target, rows, { formatValue } = {}) {
       </span>
       <span class="market-spark">${sparkSvg(item.sparkline, item.changePct)}</span>
       <span class="q-price">
-        <strong class="quote-price ${up ? 'up' : 'down'}">${format(item, item.lastPrice)}</strong>
-        <b class="quote-change ${up ? 'up' : 'down'}">${item.changePct === null ? '—' : formatPct(up, item.changePct)}</b>
+        <strong class="quote-price ${move.tone}">${format(item, item.lastPrice)}</strong>
+        <b class="quote-change ${move.tone}">${move.text}</b>
       </span>`;
     row.querySelector('.quote-name').textContent=item.name;
     row.querySelector('.quote-code').textContent=code;
     if(item.hardware) {
       row.dataset.hardwareSeries=item.hardware.seriesKey;row.tabIndex=0;row.setAttribute('role','button');row.setAttribute('aria-label',`${item.name} ${item.lastPrice}，查看报价走势`);
       row.querySelector('.quote-code').textContent=item.group;
-      row.querySelector('.quote-price').classList.toggle('up',item.changePct!==null && up);
-      row.querySelector('.quote-change').classList.toggle('up',item.changePct!==null && up);
+      row.querySelector('.quote-price').classList.toggle('up', move.tone === 'up');
+      row.querySelector('.quote-change').classList.toggle('up', move.tone === 'up');
       if(!item.sparkline || item.sparkline.length<2)row.querySelector('.market-spark').textContent='暂无历史';
       row.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openPage('hardware',`series/${item.hardware.seriesKey}`);}});
     }
@@ -6274,8 +6332,20 @@ function renderWatchRows(target, rows, { formatValue } = {}) {
   }));
 }
 
+function renderStockGeneratedNote() {
+  const note = elements['stock-generated-note'];
+  if (!note) return;
+  const fetchedAt = Number(currentMarket()?.fetchedAt);
+  const clock = Number.isFinite(fetchedAt) && fetchedAt > 0
+    ? new Date(fetchedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
+    : '';
+  note.textContent = clock ? `生成于 ${clock}` : '';
+  note.classList.toggle('hidden', !clock);
+}
+
 function renderMarket() {
   renderStockBoards();
+  renderStockGeneratedNote();
   const market = currentMarket();
   const isOverview = state.stockBoard === 'overview';
   renderMarketStatus();
@@ -7105,7 +7175,9 @@ function renderSourcePage() {
   wrap.innerHTML = `<div class="health-line mini-status"><span></span><button class="text-button" type="button">自动任务 ›</button></div>`;
   wrap.querySelector('span').textContent = health
     ? `${health.status === 'ready' ? '最近检查成功' : health.note || health.status} · ${health.observedAt ? formatTime(health.observedAt) : ''}`
-    : '只读已保存结果，新采集在右上角任务里发起';
+    : (id === 'bilibili'
+      ? '查看已保存字幕，从「采集与处理」粘贴链接采集'
+      : '只读已保存结果，新采集在右上角任务里发起');
   wrap.querySelector('button').addEventListener('click', () => openPage('automation', id));
   if (id === 'x' || id === 'xueqiu' || id === 'bilibili' || id === 'trendforce' || id === 'manual') {
     const list = document.createElement('div');
@@ -7199,7 +7271,9 @@ function renderQuotePage() {
   const root = pageRoot();
   const quote = findQuote(state.pageId);
   const symbol = quote.symbol || state.pageId;
-  const up = (quote.changePct ?? 0) >= 0;
+  const move = quote.changePct == null
+    ? { tone: (quote.changePct ?? 0) >= 0 ? 'up' : 'down', text: '—' }
+    : quoteMove(quote.changePct);
   destroyQuoteChart();
   const wrap = document.createElement('article');
   wrap.className = 'detail-shell quote-detail';
@@ -7217,10 +7291,10 @@ function renderQuotePage() {
     </div>`;
   wrap.querySelector('.detail-title').textContent = quote.name || symbol;
   wrap.querySelector('.detail-meta').textContent = `${symbol}${quote.group ? ` · ${quote.group}` : ''}${quote.assetClass ? ` · ${quote.assetClass}` : ''} · ${sessionLabel(quote.session)} · 报价时间 ${formatQuoteTime(quote.asOf)}`;
-  wrap.querySelector('.last').textContent = quote.lastPrice == null ? '—' : formatPrice(quote.lastPrice);
-  wrap.querySelector('.last').classList.add(up ? 'up' : 'down');
-  wrap.querySelector('.change').textContent = quote.changePct == null ? '—' : formatPct(up, quote.changePct);
-  wrap.querySelector('.change').classList.add(up ? 'up' : 'down');
+  wrap.querySelector('.last').textContent = quote.lastPrice == null ? '—' : formatQuoteNumber(quote, quote.lastPrice);
+  if (move.tone) wrap.querySelector('.last').classList.add(move.tone);
+  wrap.querySelector('.change').textContent = move.text;
+  if (move.tone) wrap.querySelector('.change').classList.add(move.tone);
   const tabs = wrap.querySelector('.quote-period-tabs');
   quotePeriods.forEach((item) => {
     const button = document.createElement('button');
@@ -7775,7 +7849,12 @@ function renderTools() {
     button.className = 'tool-item';
     button.disabled = !tool.ready;
     const mark = (tool.icon && icon(tool.icon)) || tool.title.slice(0, 1);
-    button.innerHTML = `<span class="tool-icon">${mark}</span><strong>${tool.title}</strong><small>${tool.ready ? tool.desc : '暂未开放'}</small>`;
+    const desc = !tool.ready
+      ? '暂未开放'
+      : tool.id === 'bilibili'
+        ? '查看已保存字幕，从「采集与处理」粘贴链接采集'
+        : tool.desc;
+    button.innerHTML = `<span class="tool-icon">${mark}</span><strong>${tool.title}</strong><small>${desc}</small>`;
     button.addEventListener('click', () => {
       if (!tool.ready) return;
       if (tool.action === 'compose') return openPage('publish');
@@ -11971,6 +12050,7 @@ function paintAuthorizedChrome() {
   bindHorizontalTabScroll();
   setIconButton(elements['open-settings'], 'settings');
   setIconButton(elements['reload-view'], 'refresh-cw');
+  syncReloadHint();
   setIconButton(elements['ask-send'], 'send-horizontal');
   setIconButton(elements['dispatch-plus'], 'plus');
   setIconButton(elements['dispatch-send'], 'send-horizontal');

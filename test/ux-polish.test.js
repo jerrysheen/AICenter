@@ -67,6 +67,57 @@ test('a failed brief links to the real previous date and only looks up after tha
   assert.doesNotMatch(functionSource('completeAuthorizedStart'), /lookupPreviousBrief/);
 });
 
+test('official document types render in Chinese and unknown values fall back', () => {
+  const labels = app.match(/const DOCUMENT_TYPE_LABELS = \{[^]*?\n\};/);
+  assert.ok(labels);
+  const context = vm.createContext({});
+  vm.runInContext(`${labels[0]}\n${functionSource('documentTypeLabel')}`, context);
+  assert.equal(context.documentTypeLabel('press-release'), '新闻稿');
+  assert.equal(context.documentTypeLabel('presidential-document'), '总统文件');
+  assert.equal(context.documentTypeLabel('notice'), '公告');
+  assert.equal(context.documentTypeLabel('other'), '其他');
+  assert.equal(context.documentTypeLabel('not-a-real-type'), '其他');
+  assert.equal(context.documentTypeLabel(''), '');
+  assert.match(functionSource('officialEventMeta'), /documentTypeLabel\(post\.release\?\.documentType\)/);
+});
+
+test('flat quote moves are neutral and bond or metal prices keep their units', () => {
+  const context = vm.createContext({ formatPrice: (value, digits) => Number(value).toFixed(digits ?? 2) });
+  vm.runInContext(`${functionSource('quoteMove')}\n${functionSource('quoteUsesYuanPerTon')}\n${functionSource('formatQuoteNumber')}`, context);
+  const flat = context.quoteMove(-0.004);
+  const up = context.quoteMove(1.2);
+  const down = context.quoteMove(-1.2);
+  assert.equal(flat.tone, 'flat');
+  assert.equal(flat.text, '0.00%');
+  assert.equal(up.tone, 'up');
+  assert.equal(up.text, '+1.20%');
+  assert.equal(down.tone, 'down');
+  assert.equal(down.text, '-1.20%');
+  assert.equal(context.formatQuoteNumber({ assetClass: 'rate', symbol: 'US10Y' }, 4.25), '4.2500%');
+  assert.equal(context.formatQuoteNumber({ assetClass: 'future', symbol: 'LC', name: '碳酸锂' }, 2807.46), '2807.46 元/吨');
+  assert.equal(context.formatQuoteNumber({ assetClass: 'future', symbol: 'CU', name: '沪铜主连' }, 70000), '70000.00 元/吨');
+  assert.equal(context.formatQuoteNumber({ assetClass: 'future', symbol: 'M', name: '豆粕' }, 3000), '3000.00');
+  assert.match(functionSource('appendDerivativeQuote'), /标记价/);
+  assert.match(functionSource('appendDerivativeQuote'), /资金费率/);
+  assert.match(functionSource('appendDerivativeQuote'), /持仓量/);
+  assert.match(functionSource('appendLiquidityMetric'), /稳定币总量/);
+  assert.match(functionSource('renderMarketNativeBoard'), /永续为场所报价，稳定币为供给统计/);
+  assert.match(functionSource('renderMarketNativeBoard'), /场所报价，不是综合概率/);
+});
+
+test('desktop hints match the pointer, and the stock board shows a clock', () => {
+  assert.match(html, /title="快速发布"/);
+  assert.match(functionSource('updateHeaderAction'), /button\.title = button\.getAttribute\('aria-label'\)/);
+  assert.match(functionSource('syncReloadHint'), /prefersFinePointer\(\) \? '刷新'/);
+  assert.match(functionSource('renderStockGeneratedNote'), /生成于 \$\{clock\}/);
+  assert.match(html, /id="stock-generated-note"/);
+  assert.match(html, /knowledge-hint-desktop">知识库是可长期复用内容的规范层。向左拖动一条可从库中删除。/);
+  assert.match(readFileSync(new URL('../apps/web/public/information-tree.js', import.meta.url), 'utf8'), /有新的小时报/);
+  const bili = '查看已保存字幕，从「采集与处理」粘贴链接采集';
+  assert.equal(app.split(bili).length - 1, 2);
+  assert.match(functionSource('renderSourcePage'), /id === 'bilibili'[\s\S]{0,180}查看已保存字幕/);
+});
+
 test('a pending translation label expires to 暂未翻译 without changing the request', () => {
   const timers = [];
   const context = vm.createContext({

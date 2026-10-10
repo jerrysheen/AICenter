@@ -72,7 +72,7 @@
         <div class="title-actions">
           <button class="icon-button ghost" id="toggle-search" type="button" aria-label="搜索"></button>
           <button class="icon-button ghost" id="reload-view" type="button" aria-label="刷新当前页，长按强制更新界面"></button>
-          <button class="icon-button ghost" id="open-compose" type="button" aria-label="快速发布" data-action="compose"></button>
+          <button class="icon-button ghost" id="open-compose" type="button" aria-label="快速发布" title="快速发布" data-action="compose"></button>
           <button class="icon-button ghost" id="open-settings" type="button" aria-label="设置"></button>
           <div class="connection-state" id="connection-state"><i></i><span>正在连接</span></div>
         </div>
@@ -158,9 +158,10 @@
                   <span class="spark-head">走势</span>
                   <button class="market-sort" id="market-sort" type="button" aria-label="按涨跌幅排序">现价 / 涨跌</button>
                 </div>
-                <div class="quote-list" id="quote-list"></div>
-              </div>
+              <div class="quote-list" id="quote-list"></div>
             </div>
+            <p class="static-board-note hidden" id="stock-generated-note" aria-live="polite"></p>
+          </div>
           </div>
 
           <div class="trade-pane" data-trade-pane="assets">
@@ -405,7 +406,7 @@
 
         <section class="view" id="view-knowledge" data-view-panel="knowledge">
           <label class="market-filter"><span class="vh">搜索知识库</span><input id="knowledge-filter" type="search" placeholder="搜索知识库标题 / 正文" autocomplete="off"></label>
-          <p class="section-kicker">知识库是可长期复用内容的规范层。左滑一条可从库中删除。</p>
+          <p class="section-kicker knowledge-hint"><span class="knowledge-hint-touch">知识库是可长期复用内容的规范层。左滑一条可从库中删除。</span><span class="knowledge-hint-desktop">知识库是可长期复用内容的规范层。向左拖动一条可从库中删除。</span></p>
           <div id="knowledge-list"></div>
         </section>
 
