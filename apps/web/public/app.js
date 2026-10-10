@@ -24,7 +24,7 @@ import {
   unavailableOfficialCount,
 } from './home-timeline.js?v=dev';
 import { decodeHtmlEntities } from './html-text.js?v=dev';
-import { newsDayLabel, renderNewsList } from './news-list.js?v=dev';
+import { newsDayLabel, newsEffectiveLabel, renderNewsList } from './news-list.js?v=dev';
 
 const feedLikeButton = createFeedLikeAction({ api: (...args) => api(...args), showToast: text => showToast(text), createAction: options => createDetailAction(options), session: () => state.session });
 
@@ -223,6 +223,7 @@ const state = {
   homeBoardStartedAt: 0,
   homeTree: null,
   homeTreeLoaded: false,
+  homeHourlySettled: false,
   homeTreeError: '',
   homeReadingHours: {},
   homeReadingIndexMissing: false,
@@ -3339,6 +3340,7 @@ function officialAsItem(release) {
     following: false,
     createdAt: release.observedAt || publishedAt,
     publishedAt,
+    effectiveAt: release.effectiveAt || null,
     complete: false,
     release,
   };
@@ -3433,9 +3435,16 @@ function sortFeedItems(items) {
   if (state.channel === 'recent') {
     return [...items].sort((left, right) => (Number(right.viewedAt) || 0) - (Number(left.viewedAt) || 0));
   }
-  const key = state.feedSort === 'published' ? 'publishedAt' : 'createdAt';
+  const now = Date.now();
+  const stamp = (item) => {
+    const published = Number(item?.publishedAt) || 0;
+    const created = Number(item?.createdAt) || 0;
+    const chosen = state.feedSort === 'published' ? published : created;
+    if (chosen > now) return created > 0 && created <= now ? created : now;
+    return chosen;
+  };
   return [...items].sort((left, right) => Number(Boolean(left.isRead)) - Number(Boolean(right.isRead))
-    || (Number(right[key]) || 0) - (Number(left[key]) || 0));
+    || stamp(right) - stamp(left));
 }
 
 function visibleFeedItems() {
@@ -3467,8 +3476,8 @@ function visibleFeedItems() {
   let items;
   if (state.feedPlatform === 'media') {
     const query = String(state.feedQuery || '').trim().toLowerCase();
-    items = sinkLowValue(sortFeedItems(state.mediaItems.map(mediaAsItem)
-      .filter((item) => matchesFeedQuery(item, query) && matchesFeedRange(item))));
+    items = sortFeedItems(state.mediaItems.map(mediaAsItem)
+      .filter((item) => matchesFeedQuery(item, query) && matchesFeedRange(item)));
   } else if (state.channel === 'recent') {
     items = recentFeedItems();
   } else if (state.channel === 'focus') {
@@ -3483,7 +3492,7 @@ function visibleFeedItems() {
   if (state.feedPlatform !== 'media') {
     const query = String(state.feedQuery || '').trim().toLowerCase();
     items = items.filter((item) => item.platform !== 'bilibili' && matchesFeedQuery(item, query) && matchesFeedRange(item));
-    items = sinkLowValue(sortFeedItems(items));
+    items = sortFeedItems(items);
   }
   state.feedViewCache = { key, items };
   return items;
@@ -4053,6 +4062,7 @@ function mediaAsItem(item) {
     following: false,
     createdAt: item.createdAt || item.publishedAt || 0,
     publishedAt: item.publishedAt || 0,
+    lowValue: Boolean(item.lowValue),
     detail: item.detail || '',
     complete: item.detail !== 'list' && item.contentLevel === 'full' && !item.truncated && (Array.isArray(item.paragraphs) || !Object.hasOwn(item, 'body') || Boolean(String(item.body || '').trim())),
     translation: item.translation || null,
@@ -4267,6 +4277,10 @@ function readyZhTitle(post) {
 }
 
 function feedListTitle(post) {
+  if (post?.platform === 'media' || post?.kind === 'media') {
+    const headline = String(post?.title || '').trim();
+    return { title: headline && headline !== '正在翻译…' ? headline : '无标题', tag: '' };
+  }
   const ready = readyZhTitle(post);
   if (ready) return { title: ready, tag: '' };
   const original = String(post?.title || '').trim();
@@ -4293,25 +4307,38 @@ function feedCommentCount(post) {
   return Number(post.commentCount) || 0;
 }
 
+function feedListMoment(post, now = Date.now()) {
+  const published = Number(post?.publishedAt) || 0;
+  const effective = Number(post?.effectiveAt || post?.release?.effectiveAt) || 0;
+  const created = Number(post?.createdAt || post?.observedAt || post?.release?.observedAt) || 0;
+  const futureAt = [published, effective].filter((value) => value > now);
+  if (!futureAt.length) return { at: published || created, ingested: !published && created > 0, effectiveLabel: '' };
+  const at = created > 0 && created <= now ? created : now;
+  const labelAt = effective > now ? effective : Math.min(...futureAt);
+  return { at, ingested: false, effectiveLabel: newsEffectiveLabel(labelAt) };
+}
+
 function feedToNewsRow(post) {
   const titled = feedListTitle(post);
   const tags = [];
   if (titled.tag) tags.push(titled.tag);
   if (postTagNames(post).includes('观点')) tags.push('观点');
-  const at = Number(post.publishedAt || post.createdAt || 0);
+  const moment = feedListMoment(post);
+  const canSwipe = state.channel !== 'official';
   return {
     id: post.id,
     title: titled.title,
-    at,
-    ingested: !post.publishedAt && Boolean(post.createdAt),
+    at: moment.at,
+    ingested: moment.ingested,
+    effectiveLabel: moment.effectiveLabel,
     source: feedSourceLine(post),
     tags,
     muted: Boolean(post.lowValue),
     focused: itemIsFocused(post),
     commentCount: feedCommentCount(post),
-    swipe: true,
+    swipe: canSwipe,
     attachOpen: (open) => attachGuardedOpen(open, () => openArticle(post)),
-    attachSwipe: (front) => attachSwipe(front, FEED_SWIPE_WIDTH, () => openArticle(post)),
+    attachSwipe: canSwipe ? (front) => attachSwipe(front, FEED_SWIPE_WIDTH, () => openArticle(post)) : undefined,
     onStar: () => toggleFocus(post.id, () => { renderPosts(); renderHub(); }, post),
     onDelete: () => {
       if (state.channel === 'focus') {
@@ -4415,7 +4442,7 @@ function renderPosts() {
     return;
   }
   const listHost = document.createElement('div');
-  renderNewsList(listHost, shown.map(feedToNewsRow), { groupByDay: true, emptyText: '这个筛选下还没有信息。' });
+  renderNewsList(listHost, shown.map(feedToNewsRow), { groupByDay: true, sinkMuted: true, emptyText: '这个筛选下还没有信息。' });
   elements.feed.append(listHost);
   const more = document.createElement('div');
   more.className = 'feed-more';
@@ -6592,10 +6619,15 @@ function homeHourHits(snapshot) {
   return orderedHomeReading(shown.filter((item) => item.disposition === 'hit' && item.timely !== false));
 }
 
+function homeHourTheme(name) {
+  const text = String(name || '').trim();
+  return text === '其他' ? '综合' : text;
+}
+
 function homeHourSource(item) {
   const publisher = String(item?.publisher || '').trim();
-  const direction = String(item?.readingDirectionName || '').trim();
-  return [publisher, direction].filter((part) => part && part !== '未知').join(' · ');
+  const theme = homeHourTheme(item?.readingThemeName);
+  return [publisher, theme].filter((part) => part && part !== '未知').join(' · ');
 }
 
 function homeHourWhen(item) {
@@ -6685,11 +6717,13 @@ function homeModuleFrame(root, { title, note = '', onMore, status = 'ready', onR
 function homePlainRow(post) {
   const titled = feedListTitle(post);
   const tags = titled.tag ? [titled.tag] : [];
+  const moment = feedListMoment(post);
   return {
     id: post.id,
     title: titled.title,
-    at: Number(post.publishedAt || post.createdAt || 0),
-    ingested: !post.publishedAt && Boolean(post.createdAt),
+    at: moment.at,
+    ingested: moment.ingested,
+    effectiveLabel: moment.effectiveLabel,
     source: feedSourceLine(post),
     tags,
     muted: Boolean(post.lowValue),
@@ -6702,7 +6736,7 @@ function homePlainRow(post) {
 function homeMessageItems() {
   return [...socialFeedItems({ ignorePlatform: true }), ...officialFeedItems()]
     .filter((item) => item.platform !== 'bilibili' && !item.lowValue && readyZhTitle(item))
-    .sort((left, right) => Number(right.publishedAt || right.createdAt || 0) - Number(left.publishedAt || left.createdAt || 0));
+    .sort((left, right) => feedListMoment(right).at - feedListMoment(left).at);
 }
 
 function homeMessagesStatus() {
@@ -6720,7 +6754,7 @@ function renderHomeHourlyModule() {
   const snapshot = edition ? state.homeReadingHours[edition.window.startAt] : null;
   const itemsReady = Array.isArray(snapshot?.items);
   let status = 'ready';
-  if (!state.homeTreeLoaded) status = state.homeSlow ? 'slow' : 'loading';
+  if (!state.homeHourlySettled || !state.homeTreeLoaded) status = state.homeSlow ? 'slow' : 'loading';
   else if (state.homeTreeError && !edition) status = 'error';
   else if (edition && !itemsReady) status = state.homeReadingError ? 'error' : (state.homeSlow ? 'slow' : 'loading');
   const host = homeModuleFrame(root, {
@@ -6774,7 +6808,7 @@ function homeOfficialItems() {
     .filter((item) => !state.hiddenSourceIds.has(`policy.${item.authority}`))
     .map(officialAsItem)
     .filter((item) => readyZhTitle(item))
-    .sort((left, right) => Number(right.publishedAt || 0) - Number(left.publishedAt || 0));
+    .sort((left, right) => feedListMoment(right).at - feedListMoment(left).at);
 }
 
 function renderHomeOfficialModule() {
@@ -6810,21 +6844,20 @@ function renderHomeFocusModule() {
   if (!root) return;
   const items = focusedFeedItems()
     .slice()
-    .sort((left, right) => focusStamp(right) - focusStamp(left) || Number(right.publishedAt || right.createdAt || 0) - Number(left.publishedAt || left.createdAt || 0))
+    .sort((left, right) => focusStamp(right) - focusStamp(left) || feedListMoment(right).at - feedListMoment(left).at)
     .slice(0, 3);
+  if (!items.length) {
+    root.hidden = true;
+    root.replaceChildren();
+    return;
+  }
+  root.hidden = false;
   const host = homeModuleFrame(root, {
     title: '我的重点',
     status: 'ready',
     onMore: () => { selectFeedScope('focus'); setView('feed'); },
   });
   if (!host) return;
-  if (!items.length) {
-    host.append(Object.assign(document.createElement('p'), {
-      className: 'feed-empty news-empty',
-      textContent: '在任意条目右侧点 ☆ 标为重点',
-    }));
-    return;
-  }
   renderNewsList(host, items.map(homePlainRow), { groupByDay: false, emptyText: '在任意条目右侧点 ☆ 标为重点' });
 }
 
@@ -6878,7 +6911,10 @@ async function ensureHomeReadingSnapshots(token) {
       state.homeReadingError = '小时报读取失败';
     }
   }));
-  if (token === state.homeLoadToken && document.body.dataset.view === 'sources') renderHub();
+  if (token === state.homeLoadToken) {
+    state.homeHourlySettled = true;
+    if (document.body.dataset.view === 'sources') renderHub();
+  }
 }
 
 async function loadHomeReadingIndex(path, token) {
@@ -6925,7 +6961,14 @@ async function loadHomeBoard(path, { refresh = false, token = state.homeLoadToke
   }
 }
 
+function homeHourlySnapshotReady() {
+  const edition = hourlyEditions(state.homeTree)[0];
+  if (!edition) return false;
+  return Array.isArray(state.homeReadingHours[edition.window.startAt]?.items);
+}
+
 async function loadSourcesPage({ refresh = false } = {}) {
+  if ((state.overviewPane || 'home') === 'home' && (refresh || !homeHourlySnapshotReady())) state.homeHourlySettled = false;
   renderHub();
   if ((state.overviewPane || 'home') !== 'home') return;
   if (!state.session) return;
@@ -13549,7 +13592,6 @@ elements['x-more']?.addEventListener('click', () => openSourceTasks('x'));
 elements['bilibili-more']?.addEventListener('click', () => openSourceTasks('bilibili'));
 elements['open-source-catalog']?.addEventListener('click', () => setOverviewPane('catalog'));
 elements['open-full-schedule']?.addEventListener('click', () => setOverviewPane('schedule'));
-elements['catalog-back']?.addEventListener('click', () => setOverviewPane('home'));
 elements['schedule-back']?.addEventListener('click', () => setOverviewPane('home'));
 elements['source-catalog-filter']?.addEventListener('input', (event) => {
   state.sourceCatalogQuery = event.currentTarget.value;

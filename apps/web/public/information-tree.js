@@ -579,7 +579,15 @@ export function createInformationTreePage(host) {
       syncReadingChrome({node:opened.n,label:'返回日报',onBack:closeDaily});
       list.append(await card(opened.n,token,{actions:false}));
       titleEl.hidden=false;titleEl.textContent=opened.n.title;
-    } else {syncReadingChrome(null);if(!items.length) list.textContent='这一天还没有日报。';else for(const item of items) list.append(compactCard(item));}
+    } else {
+      syncReadingChrome(null);
+      if(!items.length) list.textContent='这一天还没有日报。';
+      else {
+        const rows=el('ol','','news-rows');
+        for(const item of items) rows.append(compactCard(item));
+        list.append(rows);
+      }
+    }
     viewKey=`daily-feed:${dailyStart}:${openedId}`;
     restoreScroll(Boolean(opened));
   }
@@ -665,17 +673,17 @@ export function createInformationTreePage(host) {
     restoreScroll(Boolean(openedDirection));
   }
   function compactCard(item) {
-    const card=el('article','','post-card is-compact');card.dataset.nodeId=item.n.id;
-    const open=document.createElement('button');open.type='button';open.className='feed-content';
-    open.addEventListener('click',()=>{openedId=item.n.id;return render();});
-    const meta=el('div','','post-meta');
-    const when=item.edition.layer==='hourly' ? `${clock(item.edition.window.startAt)}–${clock(item.edition.window.endAt)}` : '';
-    meta.append(el('span',directions[group(item.n)] || '其他','kind-tag'));
-    if(when) meta.append(el('span',when,'post-time'));
-    const excerpt=decodeHtmlEntities(String(item.n.text || '').replace(/\s+/g,' ').trim());
-    open.append(meta,el('h3',decodeHtmlEntities(item.n.title)));
-    if(excerpt) open.append(el('p',excerpt,'post-excerpt'));
-    card.append(open);return card;
+    const at=Number(item.n.eventAt || item.edition?.window?.startAt || 0);
+    const source=[item.n.publisher, directions[group(item.n)] || ''].map(part=>String(part || '').trim()).filter(part=>part && part!=='未知').join(' · ');
+    const excerpt=String(item.n.text || '').replace(/\s+/g,' ').trim();
+    return newsRow({
+      id:item.n.id,
+      title:item.n.title || '',
+      at,
+      source,
+      summary:excerpt,
+      onOpen:()=>{openedId=item.n.id;return render();},
+    });
   }
   async function readingSnapshot(edition) {
     if(!edition?.window) return null;

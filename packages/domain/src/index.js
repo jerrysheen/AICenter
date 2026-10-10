@@ -154,6 +154,26 @@ export function createDomainServices({
         }
         return null;
       },
+      publisherFor(workspace, refs) {
+        const labels = { x: 'X', twitter: 'X', xueqiu: '雪球', bilibili: 'B站', trendforce: 'TrendForce' };
+        const clean = (value) => {
+          const text = String(value || '').trim();
+          return text && text !== '未知' ? text : '';
+        };
+        for (const ref of refs || []) {
+          if (ref?.type === 'content-item') {
+            const names = store.repositories.feed?.contentSourceNames?.(workspace, ref.id);
+            const name = clean(names?.displayName) || clean(names?.authorName) || labels[names?.provider] || '';
+            if (name) return name;
+          }
+          if (ref?.type === 'media-body') {
+            const entry = store.repositories.media?.getEntry?.(workspace, ref.id);
+            const name = clean(entry?.publisherName) || clean(entry?.publisherKey);
+            if (name) return name;
+          }
+        }
+        return '';
+      },
     }),
     modelUsage: createModelUsageService({ repository: store.repositories.modelUsage, workspaceId, rates: modelUsageRates, getJob: id => store.getJob(id) }),
     identity: createIdentityService({ identityRepository: store, loginCredential }),

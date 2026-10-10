@@ -79,7 +79,7 @@ function parseClassification(answer, input) {
   }
 }
 
-export function createReadingHourService({repository, reportRepository = null, agentRuntime = null, enabled = false, client = null, catalogIds = new Set(), publishedAtFor = null, now = () => Date.now()} = {}) {
+export function createReadingHourService({repository, reportRepository = null, agentRuntime = null, enabled = false, client = null, catalogIds = new Set(), publishedAtFor = null, publisherFor = null, now = () => Date.now()} = {}) {
   const indexCache = new Map();
   function view(snapshot) {
     if (!snapshot) return null;
@@ -112,7 +112,9 @@ export function createReadingHourService({repository, reportRepository = null, a
       const firstIngestedAt = Number.isFinite(storedIngested) ? storedIngested : (Number.isFinite(eventAt) ? eventAt : null);
       const anchor = snapshot.window?.endAt;
       const timely = !(Number.isFinite(publishedAt) && Number.isFinite(anchor) && anchor - publishedAt > READING_TIMELINESS_MS);
-      const publisher = item.publisher || node?.publisher || '';
+      const storedPublisher = String(item.publisher || node?.publisher || '').trim();
+      const lookedUp = storedPublisher && storedPublisher !== '未知' ? '' : String(publisherFor?.(workspace, node?.sourceRefs || []) || '').trim();
+      const publisher = storedPublisher && storedPublisher !== '未知' ? storedPublisher : (lookedUp && lookedUp !== '未知' ? lookedUp : '');
       return {...item, publisher, publishedAt, firstIngestedAt, timely};
     });
     return shown;

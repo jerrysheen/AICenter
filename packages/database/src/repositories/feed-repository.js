@@ -671,6 +671,20 @@ export function createFeedRepository(database, emitEvent) {
         .filter(Boolean);
     },
 
+    contentSourceNames(workspaceId, id) {
+      const row = database.prepare(`SELECT ci.author_name AS author_name, c.provider AS provider, sa.display_name AS display_name
+        FROM content_items ci
+        LEFT JOIN captures c ON c.id = ci.capture_id
+        LEFT JOIN source_accounts sa ON sa.id = c.source_account_id
+        WHERE ci.workspace_id = ? AND ci.id = ?`).get(workspaceId, id);
+      if (!row) return null;
+      return {
+        displayName: String(row.display_name || '').trim(),
+        authorName: String(row.author_name || '').trim(),
+        provider: String(row.provider || '').trim(),
+      };
+    },
+
     getContentItem(workspaceId, id) {
       const row = database.prepare(`SELECT ci.*, c.provider, c.external_id, c.captured_at, c.metadata_json AS capture_metadata_json
         FROM content_items ci

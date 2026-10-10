@@ -171,3 +171,16 @@ test('a source older than one day is marked untimely', () => {
   assert.equal(unknown.get('local', 'rh:time').items[0].publishedAt, null);
   assert.equal(unknown.get('local', 'rh:time').items[0].firstIngestedAt, null);
 });
+
+test('present fills an empty publisher from the source ref', () => {
+  const endAt = 1000 + 60 * 60 * 1000;
+  const snapshot = {id: 'rh:pub', status: 'partial', scope: 'hour', routeVersion: 'reading-route-2026-10-10.4', window: {startAt: 1000, endAt}, timezone: 'Asia/Shanghai', generatedAt: endAt, scored: 1, candidates: 1, selected: 1, groups: [], sections: [], items: [{sourceId: 's', sourceVersion: '1', nodeId: 'n1', title: '来源待补', disposition: 'hit', hits: [], publisher: '', readingDirectionName: '金融', readingThemeName: '美国'}]};
+  const repository = {getReadingHour: () => snapshot, getNode: () => ({publisher: '', sourceRefs: [{type: 'content-item', id: 'c1'}]})};
+  const service = createReadingHourService({repository, enabled: true, publisherFor: (_workspace, refs) => refs?.[0]?.id === 'c1' ? 'The Decoder' : ''});
+  assert.equal(service.view(snapshot).items[0].publisher, '');
+  assert.equal(service.get('local', 'rh:pub').items[0].publisher, 'The Decoder');
+  const stored = {...snapshot, items: [{...snapshot.items[0], publisher: '已保存来源'}]};
+  const kept = createReadingHourService({repository: {getReadingHour: () => stored, getNode: () => ({publisher: '', sourceRefs: [{type: 'content-item', id: 'c1'}]})}, enabled: true, publisherFor: () => 'The Decoder'});
+  assert.equal(kept.view(stored).items[0].publisher, '已保存来源');
+  assert.equal(kept.get('local', 'rh:pub').items[0].publisher, '已保存来源');
+});
