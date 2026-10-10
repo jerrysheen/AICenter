@@ -150,6 +150,13 @@ const state = {
   expandedInspirationIds: new Set(),
   knowledge: [],
   knowledgeLoaded: false,
+  postsLoaded: false,
+  xLoaded: false,
+  xueqiuLoaded: false,
+  bilibiliLoaded: false,
+  trendforceLoaded: false,
+  notesLoaded: false,
+  mediaLoaded: false,
   knowledgeError: '',
   knowledgeQuery: '',
   wantAi: false,
@@ -1007,8 +1014,8 @@ function setView(name, options = {}) {
   updateHeaderAction(view);
   renderOverviewLanes();
   syncHeaderSearch();
-  if (view === 'inspire') loadNotes().catch((error) => showToast(error.message));
-  if (view === 'knowledge') loadKnowledge().catch((error) => showToast(error.message));
+  if (view === 'inspire') ensureNotes().catch((error) => showToast(error.message));
+  if (view === 'knowledge') ensureKnowledge().catch((error) => showToast(error.message));
   if (view === 'market' || view === 'assets') {
     alignTradePane(view);
     renderTradeTabs();
@@ -1021,11 +1028,11 @@ function setView(name, options = {}) {
     if (state.overviewPane === 'catalog' && state.session) loadSourceCatalog().catch(() => {});
   }
   if (view === 'sources' && state.bootstrapped) loadSourcesPage().catch((error) => showToast(error.message));
-  if (view === 'feed' && state.bootstrapped && state.feedPlatform === 'media' && !state.mediaLoading) {
-    loadMediaFeed().catch(error => showToast(error.message));
+  if (view === 'feed' && state.bootstrapped) {
+    ensureVisibleFeedLoaded().catch((error) => showToast(error.message));
   }
-  if (view === 'feed' && state.bootstrapped && state.feedPlatform !== 'media' && !state.staticBoard) {
-    loadStaticSignalBoard().catch((error) => showToast(error.message));
+  if (view === 'page' && state.pageKind === 'source' && state.bootstrapped) {
+    Promise.resolve(ensureSourceFeed(state.pageId)).catch((error) => showToast(error.message));
   }
   if (view === 'ask') syncAskView().catch((error) => showToast(error.message));
   if (view === 'tools' && state.bootstrapped) loadDividendInspection().catch((error) => showToast(error.message));
@@ -1192,12 +1199,9 @@ async function reloadCurrentView({ forceShell = false } = {}) {
     if (!state.session) throw new Error('尚未连接，无法刷新');
     const view = document.body.dataset.view;
     const tasks = [];
-    if (view === 'feed' || view === 'sources') {
-      tasks.push(loadPosts());
-      tasks.push(loadXFeed({ refresh: false }));
-      tasks.push(loadXueqiuFeed({ refresh: false }));
-      tasks.push(loadBilibiliFeed({ refresh: false }));
-    }
+    if (view === 'feed') tasks.push(reloadVisibleFeed());
+    if (view === 'page' && state.pageKind === 'source') tasks.push(ensureSourceFeed(state.pageId));
+    if (view === 'page' && state.pageKind === 'article' && state.feedPlatform === 'media') tasks.push(loadMediaFeed());
     if (view === 'sources') tasks.push(loadSourcesPage({ refresh: true }));
     if (view === 'inspire') tasks.push(loadNotes());
     if (view === 'ask') tasks.push(syncAskView());
@@ -1240,13 +1244,20 @@ function forgetLegacyDeviceGrant() {
 
 async function api(path, options = {}) {
   const { timeoutMs = 20_000, ...fetchOptions } = options;
-  const controller = timeoutMs ? new AbortController() : null;
-  const timer = timeoutMs ? window.setTimeout(() => controller.abort(), timeoutMs) : 0;
+  const external = fetchOptions.signal || null;
+  const timed = Boolean(timeoutMs);
+  const controller = (timed || external) ? new AbortController() : null;
+  const timer = timed ? window.setTimeout(() => controller.abort(), timeoutMs) : 0;
+  const onExternalAbort = () => controller?.abort();
+  if (external && controller) {
+    if (external.aborted) controller.abort();
+    else external.addEventListener('abort', onExternalAbort, { once: true });
+  }
   try {
     const response = await fetch(path, {
       credentials: 'include',
       ...fetchOptions,
-      signal: fetchOptions.signal || controller?.signal,
+      signal: controller ? controller.signal : undefined,
       headers: { 'Content-Type': 'application/json', ...(fetchOptions.headers || {}) },
     });
     const payload = await response.json().catch(() => ({}));
@@ -1258,10 +1269,14 @@ async function api(path, options = {}) {
     }
     return payload;
   } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') throw new Error('请求超时，请稍后重试');
+    if (error instanceof Error && error.name === 'AbortError') {
+      if (external?.aborted) throw error;
+      throw new Error('请求超时，请稍后重试');
+    }
     throw error;
   } finally {
     if (timer) window.clearTimeout(timer);
+    external?.removeEventListener?.('abort', onExternalAbort);
   }
 }
 
@@ -1532,6 +1547,7 @@ const mediaFeedLoader = createMediaFeedLoader({
     state.mediaNote = feed.note || '';
     state.mediaBudget = feed.budget || null;
     state.mediaCached = cached;
+    state.mediaLoaded = true;
     if (append) state.feedShown += FEED_PAGE_SIZE;
     for (const item of state.mediaItems) {
       if (item.resourceId) state.feedTaggings[item.resourceId] = { tags: item.tags || [] };
@@ -3306,13 +3322,13 @@ function applyFeedPlatform(id) {
   renderTrendForceToolbar();
   renderMediaToolbar();
   renderPosts();
-  if (next === 'social' && !state.xItems.length && !state.xLoading) {
+  if (next === 'social' && !state.xLoaded && !state.xLoading) {
     loadXFeed({ refresh: false }).catch((error) => showToast(error.message));
   }
-  if (next === 'social' && !state.xueqiuItems.length && !state.xueqiuLoading) {
+  if (next === 'social' && !state.xueqiuLoaded && !state.xueqiuLoading) {
     loadXueqiuFeed({ refresh: false }).catch((error) => showToast(error.message));
   }
-  if (next === 'trendforce' && !state.trendforceItems.length && !state.trendforceLoading) {
+  if (next === 'trendforce' && !state.trendforceLoaded && !state.trendforceLoading) {
     loadTrendForceFeed({ refresh: false }).catch((error) => showToast(error.message));
   }
   if (next === 'media' && !state.mediaLoading) {
@@ -11042,36 +11058,86 @@ async function runKnowledgeAction(item, action) {
 
 async function loadNotes() {
   if (!state.session) return;
-  persistTaskDraftsFromDom();
-  const payload = await api('/api/v1/notes?status=inbox');
-  state.notes = payload.notes;
-  try {
-    const packs = await api('/api/v1/work-packages?status=all');
-    state.workPackages = packs.workPackages || [];
-    const traces = {};
-    const claimed = (state.workPackages || []).filter((item) => item.status === 'claimed');
-    const others = (state.workPackages || []).filter((item) => item.status !== 'claimed').slice(0, 8);
-    const selected = (state.workPackages || []).filter((item) => item.id === state.selectedWorkPackageId);
-    const unique = new Map([...claimed, ...others, ...selected].map((item) => [item.id, item]));
-    await Promise.all([...unique.values()].map(async (item) => {
-      try {
-        const payload = await api(`/api/v1/work-packages/${item.id}/trace`);
-        traces[item.id] = payload.trace;
-      } catch {
-        traces[item.id] = { hashId: item.hashId, steps: [] };
-      }
-    }));
-    state.workPackageTraces = traces;
-  } catch {
-    state.workPackages = [];
-    state.workPackageTraces = {};
+  if (loadNotes.pending) return loadNotes.pending;
+  loadNotes.pending = (async () => {
+    persistTaskDraftsFromDom();
+    const payload = await api('/api/v1/notes?status=inbox');
+    state.notes = payload.notes;
+    try {
+      const packs = await api('/api/v1/work-packages?status=all');
+      state.workPackages = packs.workPackages || [];
+    } catch {
+      state.workPackages = [];
+    }
+    state.notesLoaded = true;
+    refreshSavedMarks();
+    renderNotes();
+    renderTasks();
+    if (state.selectedWorkPackageId) renderTaskDetail();
+    renderPosts();
+    syncWorkPackageProgressWatch();
+  })().finally(() => {
+    loadNotes.pending = null;
+  });
+  return loadNotes.pending;
+}
+
+function ensureNotes() {
+  if (state.notesLoaded) return Promise.resolve();
+  return loadNotes();
+}
+
+function ensureKnowledge() {
+  if (state.knowledgeLoaded) return Promise.resolve();
+  return loadKnowledge();
+}
+
+function socialFeedVisible() {
+  if (state.feedPlatform === 'media') return false;
+  if (state.channel === 'official' || state.channel === 'recent') return false;
+  return true;
+}
+
+function ensureSourceFeed(id) {
+  if (!state.session || !id) return Promise.resolve();
+  if (id === 'x' && !state.xLoaded && !state.xLoading) return loadXFeed({ refresh: false }).catch((error) => showToast(error.message));
+  if (id === 'xueqiu' && !state.xueqiuLoaded && !state.xueqiuLoading) return loadXueqiuFeed({ refresh: false }).catch((error) => showToast(error.message));
+  if (id === 'bilibili' && !state.bilibiliLoaded && !state.bilibiliLoading) return loadBilibiliFeed().catch((error) => showToast(error.message));
+  if (id === 'trendforce' && !state.trendforceLoaded && !state.trendforceLoading) return loadTrendForceFeed({ refresh: false }).catch((error) => showToast(error.message));
+  return Promise.resolve();
+}
+
+function ensureVisibleFeedLoaded() {
+  const tasks = [];
+  const article = document.body.dataset.view === 'page' && state.pageKind === 'article';
+  if (state.feedPlatform === 'media' || (article && state.feedPlatform === 'media')) {
+    if (!state.mediaLoading) tasks.push(loadMediaFeed().catch((error) => showToast(error.message)));
+    return Promise.all(tasks);
   }
-  refreshSavedMarks();
-  renderNotes();
-  renderTasks();
-  if (state.selectedWorkPackageId) renderTaskDetail();
-  renderPosts();
-  syncWorkPackageProgressWatch();
+  if (article) return Promise.all(tasks);
+  if (!state.postsLoaded) tasks.push(loadPosts().catch((error) => showToast(error.message)));
+  if (socialFeedVisible()) {
+    if (!state.xLoaded && !state.xLoading) tasks.push(loadXFeed({ refresh: false }).catch((error) => showToast(error.message)));
+    if (!state.xueqiuLoaded && !state.xueqiuLoading) tasks.push(loadXueqiuFeed({ refresh: false }).catch((error) => showToast(error.message)));
+  }
+  if (!state.staticBoard && !state.staticBoardLoading) {
+    tasks.push(loadStaticSignalBoard().catch((error) => showToast(error.message)));
+  }
+  return Promise.all(tasks);
+}
+
+function reloadVisibleFeed() {
+  const tasks = [loadPosts()];
+  if (state.feedPlatform === 'media') {
+    tasks.push(loadMediaFeed());
+    return Promise.all(tasks);
+  }
+  if (socialFeedVisible()) {
+    tasks.push(loadXFeed({ refresh: false }));
+    tasks.push(loadXueqiuFeed({ refresh: false }));
+  }
+  if (!state.staticBoard) tasks.push(loadStaticSignalBoard());
+  return Promise.all(tasks);
 }
 
 async function loadKnowledge() {
@@ -11367,6 +11433,7 @@ async function loadXFeed({ refresh = false, autoTranslate = true } = {}) {
     state.xItems = (feed.items || []).filter((item) => !isHiddenFeedItem(item));
     state.xFeed = feed.feed || state.xFeed;
     state.xNote = feed.note || '';
+    state.xLoaded = true;
     hydrateFeedTranslations(state.xItems);
     renderPosts();
     renderXToolbar();
@@ -11447,6 +11514,7 @@ async function loadXueqiuFeed({ refresh = false } = {}) {
     state.xueqiuItems = (feed.items || []).filter((item) => !isHiddenFeedItem(item));
     state.xueqiuFeed = feed.feed || state.xueqiuFeed;
     state.xueqiuNote = feed.note || '';
+    state.xueqiuLoaded = true;
     hydrateFeedTranslations(state.xueqiuItems);
     renderPosts();
     renderXueqiuToolbar();
@@ -11546,6 +11614,7 @@ async function loadTrendForceFeed({ refresh = false } = {}) {
     state.trendforceItems = [];
     if(state.feedPlatform==='media')await loadMediaFeed();
     state.trendforceNote = payload.feed?.note || '';
+    state.trendforceLoaded = true;
     hydrateFeedTranslations(state.trendforceItems);
     await loadFeedTaggings(state.trendforceItems);
     renderPosts();
@@ -11583,6 +11652,7 @@ async function loadBilibiliFeed({ url = '', refresh = false } = {}) {
     }
     state.bilibiliItems = (payload.feed?.items || []).filter((item) => !isHiddenFeedItem(item));
     state.bilibiliNote = payload.feed?.note || '';
+    state.bilibiliLoaded = true;
     hydrateFeedTranslations(state.bilibiliItems);
     await loadFeedTaggings(state.bilibiliItems);
     renderPosts();
@@ -11610,6 +11680,7 @@ async function loadBilibiliFeed({ url = '', refresh = false } = {}) {
 async function loadPosts() {
   const payload = await api('/api/v1/posts');
   state.posts = (payload.posts || []).filter((item) => !isHiddenFeedItem(item));
+  state.postsLoaded = true;
   renderPosts();
   logBehavior('feed.loaded', { count: state.posts.length });
 }
@@ -11661,13 +11732,13 @@ async function loadMetrics() {
 }
 
 function refreshAfterStreamGap() {
-  if (state.feedPlatform === 'media') loadMediaFeed().catch(() => {});
-  loadPosts().catch(() => {});
-  loadXFeed({ refresh: false }).catch(() => {});
-  loadXueqiuFeed({ refresh: false }).catch(() => {});
-  loadBilibiliFeed({ refresh: false }).catch(() => {});
-  loadNotes().catch(() => {});
-  loadKnowledge().catch(() => {});
+  if (state.mediaLoaded || (state.feedPlatform === 'media' && state.mediaItems.length)) loadMediaFeed().catch(() => {});
+  if (state.postsLoaded) loadPosts().catch(() => {});
+  if (state.xLoaded) loadXFeed({ refresh: false }).catch(() => {});
+  if (state.xueqiuLoaded) loadXueqiuFeed({ refresh: false }).catch(() => {});
+  if (state.bilibiliLoaded) loadBilibiliFeed({ refresh: false }).catch(() => {});
+  if (state.notesLoaded || document.body.dataset.view === 'inspire') loadNotes().catch(() => {});
+  if (state.knowledgeLoaded || document.body.dataset.view === 'knowledge') loadKnowledge().catch(() => {});
   if (document.body.dataset.view === 'ask') syncAskView().catch(() => {});
   if (state.session?.role === 'desktop') loadMetrics().catch(() => {});
   if (isQuotesView()) syncTradePaneData().catch(() => {});
@@ -11708,7 +11779,10 @@ function connectStream() {
   const refreshMedia = () => {
     clearTimeout(mediaRefreshTimer);
     mediaRefreshTimer = setTimeout(() => {
-      if (state.feedPlatform === 'media' && !state.mediaLoading) loadMediaFeed({ refresh: false }).catch(() => {});
+      if (state.mediaLoading) return;
+      const onMediaFeed = (document.body.dataset.view === 'feed' || state.pageKind === 'article') && state.feedPlatform === 'media';
+      if (!state.mediaLoaded && !onMediaFeed) return;
+      loadMediaFeed({ refresh: false }).catch(() => {});
     },1000);
   };
   state.stream.addEventListener('feed.media-body.observed.v1',refreshMedia);
@@ -11723,12 +11797,10 @@ function connectStream() {
   const refreshAdmittedFeed=()=>{
     clearTimeout(admissionRefreshTimer);
     admissionRefreshTimer=setTimeout(()=>{
-      const view=document.body.dataset.view;
-      if(view!=='feed' && view!=='sources')return;
-      if(state.xItems.length || state.feedPlatform==='x')loadXFeed({autoTranslate:false}).catch(()=>{});
-      if(state.xueqiuItems.length || state.feedPlatform==='xueqiu')loadXueqiuFeed().catch(()=>{});
-      if(state.trendforceItems.length || state.feedPlatform==='trendforce')loadTrendforceFeed().catch(()=>{});
-      if(state.bilibiliItems.length || state.feedPlatform==='bilibili')loadBilibiliFeed().catch(()=>{});
+      if(state.xLoaded)loadXFeed({autoTranslate:false}).catch(()=>{});
+      if(state.xueqiuLoaded)loadXueqiuFeed().catch(()=>{});
+      if(state.trendforceLoaded)loadTrendForceFeed().catch(()=>{});
+      if(state.bilibiliLoaded)loadBilibiliFeed().catch(()=>{});
       refreshMedia();
     },1200);
   };
@@ -11736,16 +11808,17 @@ function connectStream() {
   state.stream.addEventListener('report.tree.information.ready.v1',refreshAdmittedFeed);
   state.stream.addEventListener('feed.item-translation.removed.v1',refreshAdmittedFeed);
   state.stream.addEventListener('knowledge.ai-run.completed.v1', onAgentJobEvent);
-  state.stream.addEventListener('knowledge.work-package.created.v1', () => {
-    loadNotes().catch(() => {});
-  });
+  const refreshNotes = () => {
+    if (state.notesLoaded || document.body.dataset.view === 'inspire') loadNotes().catch(() => {});
+  };
+  state.stream.addEventListener('knowledge.work-package.created.v1', refreshNotes);
   state.stream.addEventListener('knowledge.work-package.notified.v1', () => {
-    loadNotes().catch(() => {});
+    refreshNotes();
     showToast('已通知：有任务了');
   });
-  state.stream.addEventListener('knowledge.work-package.claimed.v1', () => loadNotes().catch(() => {}));
-  state.stream.addEventListener('knowledge.work-package.completed.v1', () => loadNotes().catch(() => {}));
-  state.stream.addEventListener('knowledge.work-package.failed.v1', () => loadNotes().catch(() => {}));
+  state.stream.addEventListener('knowledge.work-package.claimed.v1', refreshNotes);
+  state.stream.addEventListener('knowledge.work-package.completed.v1', refreshNotes);
+  state.stream.addEventListener('knowledge.work-package.failed.v1', refreshNotes);
   state.stream.onerror = () => setConnection('waiting', '正在重连');
 }
 
@@ -11799,7 +11872,7 @@ function paintAuthorizedChrome() {
   renderTools();
   renderSources();
   renderAsk();
-  renderReport();
+  if (document.body.dataset.view === 'report') renderReport();
   renderSubscriptions();
   renderPosts();
   renderReferenceUi();
@@ -11860,23 +11933,18 @@ async function completeAuthorizedStart(session) {
       }
     }, 30_000);
   }
-  const mediaFirst = state.feedPlatform === 'media' && (document.body.dataset.view === 'feed' || state.pageKind === 'article');
-  const loadSecondaryFeeds = () => Promise.all([
-    loadXFeed({ refresh: false }).catch(() => {}),
-    loadXueqiuFeed({ refresh: false }).catch(() => {}),
-    loadBilibiliFeed().catch(() => {}),
-    loadNotes().catch(() => {}),
-    loadKnowledge().catch(() => {}),
-  ]);
-  const primaryFeed = mediaFirst ? loadMediaFeed().catch(error => showToast(error.message)) : null;
+  const view = document.body.dataset.view;
   const startupLoads = [
     syncHarmonyLocalInspirations().catch(() => {}),
     loadSourceCatalog().catch(() => {}),
-    loadPosts().catch((error) => showToast(error.message)),
-    mediaFirst ? primaryFeed : loadSecondaryFeeds(),
   ];
-  if (mediaFirst) primaryFeed.then(() => { if (state.session) loadSecondaryFeeds(); });
-  if (document.body.dataset.view === 'ask') {
+  if (view === 'feed' || (view === 'page' && state.pageKind === 'article' && state.feedPlatform === 'media')) {
+    startupLoads.push(ensureVisibleFeedLoaded().catch((error) => showToast(error.message)));
+  }
+  if (view === 'page' && state.pageKind === 'source') {
+    startupLoads.push(Promise.resolve(ensureSourceFeed(state.pageId)));
+  }
+  if (view === 'ask') {
     startupLoads.push(syncAskView().catch((error) => showToast(error.message)));
   }
   startupLoads.push(loadActiveAskRuns().catch(() => {}));
@@ -11887,13 +11955,15 @@ async function completeAuthorizedStart(session) {
   if (isQuotesView()) {
     startupLoads.push(syncTradePaneData().catch((error) => showToast(error.message)));
   }
-  if (document.body.dataset.view === 'sources' || (document.body.dataset.view === 'feed' && !mediaFirst)) {
+  if (view === 'sources') {
     startupLoads.push(loadSourcesPage().catch(() => {}));
   }
-  if (document.body.dataset.view === 'report') {
+  if (view === 'report') {
     startupLoads.push(ensureReportPane().catch((error) => showToast(error.message)));
   }
-  if (document.body.dataset.view === 'tools') {
+  if (view === 'inspire') startupLoads.push(ensureNotes().catch((error) => showToast(error.message)));
+  if (view === 'knowledge') startupLoads.push(ensureKnowledge().catch((error) => showToast(error.message)));
+  if (view === 'tools') {
     startupLoads.push(loadDividendInspection().catch((error) => showToast(error.message)));
   }
   scheduleOverviewFocusWatch();
