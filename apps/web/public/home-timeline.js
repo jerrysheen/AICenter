@@ -149,10 +149,10 @@ export function homeEditionNote(startAt, endAt, nowMs = Date.now()) {
 }
 
 export function homeHourItemTime(item) {
-  const published = Number(item?.publishedAt);
-  if (Number.isFinite(published) && published > 0) return published;
   const ingested = Number(item?.firstIngestedAt);
-  return Number.isFinite(ingested) && ingested > 0 ? ingested : 0;
+  if (Number.isFinite(ingested) && ingested > 0) return ingested;
+  const published = Number(item?.publishedAt);
+  return Number.isFinite(published) && published > 0 ? published : 0;
 }
 
 export function selectHomeHourHits(snapshot) {
@@ -368,18 +368,8 @@ export function visibleHourGaps(coverage, shown) {
     .filter(Boolean);
 }
 
-const QUIET_HOME_SOURCE_IDS = new Set([
-  'calendar.cn.customs',
-]);
-
-function quietHomeUnavailable(item) {
-  if (QUIET_HOME_SOURCE_IDS.has(item?.sourceId)) return true;
-  const note = String(item?.note || '');
-  return /未读取到 Fed 日程|尚未提供 \d{4} 年|未解析到日程条目/.test(note);
-}
-
 export function unavailableOfficialCount(health) {
-  return (health || []).filter((item) => item?.status === 'unavailable' && !quietHomeUnavailable(item)).length;
+  return (health || []).filter((item) => item?.status === 'unavailable').length;
 }
 
 export function buildHomeTimelineModel({

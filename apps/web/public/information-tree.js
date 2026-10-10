@@ -1,6 +1,6 @@
 import { icon } from './icons.js?v=dev';
 import { decodeHtmlEntities } from './html-text.js?v=dev';
-import { newsDayLabel, newsRow } from './news-list.js?v=dev';
+import { newsDayLabel, newsIngestAt, newsPublishedHint, newsRow } from './news-list.js?v=dev';
 const el=(tag,text='',className='')=>{const n=document.createElement(tag);n.textContent=text;n.className=className;return n;};
 const button=(text,action)=>{const n=el('button',text);n.type='button';n.addEventListener('click',action);return n;};
 const directions={finance:'金融与市场',policy:'时事与政策',tech:'科技与产业',other:'其他'};
@@ -718,14 +718,14 @@ export function createInformationTreePage(host) {
     const publisher=String(item.publisher || '').trim();
     const direction=keepDirection ? String(item.readingDirectionName || '').trim() : '';
     const theme=themeLabel(item.readingThemeName);
-    return [publisher, direction, theme].filter(part=>part && part!=='未知').join(' · ');
+    const hint=newsPublishedHint(item.publishedAt, item.firstIngestedAt);
+    return [publisher, direction, theme, hint].filter(part=>part && part!=='未知').join(' · ');
   }
   function readingWhen(item){
-    const published=Number(item.publishedAt);
-    if(Number.isFinite(published) && published>0) return {at:published, ingested:false};
-    const ingestedAt=Number(item.firstIngestedAt);
-    if(Number.isFinite(ingestedAt) && ingestedAt>0) return {at:ingestedAt, ingested:true};
-    return {at:0, ingested:false};
+    return {at:newsIngestAt(item), ingested:false};
+  }
+  function byIngest(rows){
+    return [...rows].sort((a,b)=>newsIngestAt(b)-newsIngestAt(a) || String(a.nodeId||a.title||'').localeCompare(String(b.nodeId||b.title||'')));
   }
   function hourItemHref(edition, nodeId){
     const start=edition?.window?.startAt;
@@ -740,7 +740,7 @@ export function createInformationTreePage(host) {
     return {
       id:item.nodeId, resourceId:item.nodeId, resourceType:'reading-node', kind:'reading',
       title:item.title || '', author:readingSourceLine(item, {keepDirection:true}),
-      publishedAt:when.at || edition?.window?.startAt || 0,
+      publishedAt:newsIngestAt(item) || edition?.window?.startAt || 0,
       createdAt:Number(item.firstIngestedAt) || edition?.window?.startAt || 0,
       hourStart:edition?.window?.startAt || 0, reportHref:hourItemHref(edition, item.nodeId), focusedAt:Date.now(),
     };
@@ -765,21 +765,12 @@ export function createInformationTreePage(host) {
     list.append(section);
   }
   const readingDirectionOrder=['金融','产业个股','科技与AI','地缘政治','待分类'];
-  const readingSliceOrder=['中国','美国','欧洲','日本','韩国','中国台湾','多地','其他','模型与技术','应用与工作流','安全与外交','贸易与限制'];
-  function orderedReading(rows){
-    const rank=(order,value)=>{const index=order.indexOf(value);return index<0 ? order.length : index;};
-    return [...rows].sort((a,b)=>{
-      const direction=rank(readingDirectionOrder,a.readingDirectionName)-rank(readingDirectionOrder,b.readingDirectionName);
-      if(direction) return direction;
-      return rank(readingSliceOrder,a.readingThemeName)-rank(readingSliceOrder,b.readingThemeName);
-    });
-  }
   function renderReadingDirections(rows, parent, edition) {
     if(!rows.length) return;
     const rank=(order,value)=> {const index=order.indexOf(value);return index<0 ? order.length : index;};
     const directionNames=[...new Set(rows.map(item=>item.readingDirectionName).filter(Boolean))].sort((a,b)=>rank(readingDirectionOrder,a)-rank(readingDirectionOrder,b));
     for(const directionName of directionNames){
-      const matched=orderedReading(rows.filter(item=>item.readingDirectionName===directionName));
+      const matched=byIngest(rows.filter(item=>item.readingDirectionName===directionName));
       const block=el('section','','reading-block');
       const heading=el('h2',directionName,'reading-direction news-section-title');
       heading.append(el('span',`${matched.length} 条`,'news-section-count'));
@@ -859,7 +850,7 @@ export function createInformationTreePage(host) {
     page.append(el('p',`${newsDayLabel(edition.window.startAt)} · ${clock(edition.window.startAt)}\u2013${clock(edition.window.endAt)}`,'news-day-label'));
     const shown=(snapshot.items||[]).filter(item=>item.readingDirectionName && item.readingDirectionName!=='待分类' && item.disposition!=='out-of-scope');
     const hits=shown.filter(item=>item.disposition==='hit' && item.timely!==false);
-    const tail=orderedReading(shown.filter(item=>item.disposition!=='hit' || item.timely===false));
+    const tail=byIngest(shown.filter(item=>item.disposition!=='hit' || item.timely===false));
     if(!hits.length && !tail.length) page.append(showEmptyHour());
     else {
       renderReadingDirections(hits, page, edition);

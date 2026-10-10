@@ -88,7 +88,7 @@ test('same-source bulk notices are grayed and sink to the end of that day', () =
     { title: '公告', at: captured, muted: true, stayInDay: true },
     { title: '昨夜', at: yesterday },
   ]);
-  assert.equal(onlyBatch.map((group) => group.rows[0].title).join('|'), '昨夜|公告');
+  assert.equal(onlyBatch.map((group) => group.rows[0].title).join('|'), '公告|昨夜');
   const split = context.splitSinkMuted([
     { title: '正文', muted: false },
     { title: '公告', muted: true, stayInDay: true },
@@ -96,4 +96,82 @@ test('same-source bulk notices are grayed and sink to the end of that day', () =
   ], true);
   assert.equal(split.main.map((row) => row.title).join('|'), '正文|公告');
   assert.equal(split.tail.map((row) => row.title).join('|'), '低价值');
+});
+
+test('hour rows show ingest time and add a publish hint only when the gap exceeds one hour', () => {
+  const context = vm.createContext({});
+  vm.runInContext(newsList, context);
+  const ingested = Date.parse('2026-10-10T15:40:00Z');
+  const near = Date.parse('2026-10-10T15:10:00Z');
+  const far = Date.parse('2026-10-10T13:00:00Z');
+  const previousDay = Date.parse('2026-10-09T13:24:00Z');
+  assert.equal(context.newsIngestAt({ publishedAt: far, firstIngestedAt: ingested }), ingested);
+  assert.equal(context.newsIngestAt({ publishedAt: far }), far);
+  assert.equal(context.newsPublishedHint(near, ingested), '');
+  assert.equal(context.newsPublishedHint(far, ingested), '发布 21:00');
+  assert.equal(context.newsPublishedHint(previousDay, ingested), '发布 10月9日 21:24');
+});
+
+test('a page slice keeps normal rows ahead of bulk notices from the same day', () => {
+  const context = vm.createContext({ URL });
+  vm.runInContext(newsList, context);
+  const captured = Date.parse('2026-10-10T17:53:00Z');
+  const notices = Array.from({ length: 12 }, (_, index) => ({
+    id: `fr-${index}`,
+    title: `公告 ${index}`,
+    at: captured - index * 1_000,
+    muted: true,
+    stayInDay: true,
+  }));
+  const normal = { id: 'real', title: '正常消息', at: captured - 30 * 60_000, muted: false };
+  const ordered = context.prioritizeReadableFeedRows([...notices, normal]);
+  const page = ordered.slice(0, 4);
+  assert.equal(page[0].title, '正常消息');
+  assert.equal(page.slice(1).every((row) => row.muted), true);
+  assert.equal(ordered.at(-1).muted, true);
+});
+
+test('official groups follow capture time when the effective date is in the future', () => {
+  const context = vm.createContext({});
+  vm.runInContext(`${newsList}\n${functionSource('feedSortAt')}`, context);
+  const now = Date.parse('2026-10-11T02:00:00Z');
+  const futureOfficial = {
+    kind: 'official',
+    platform: 'official',
+    publishedAt: Date.parse('2026-10-10T14:00:00Z'),
+    effectiveAt: Date.parse('2026-10-13T04:00:00Z'),
+    createdAt: Date.parse('2026-10-11T01:30:00Z'),
+    title: '未来生效',
+  };
+  const today = {
+    platform: 'x',
+    publishedAt: Date.parse('2026-10-11T01:00:00Z'),
+    createdAt: now,
+    title: '今天',
+  };
+  const yesterday = {
+    platform: 'x',
+    publishedAt: Date.parse('2026-10-10T12:00:00Z'),
+    createdAt: now,
+    title: '昨天',
+  };
+  assert.equal(context.feedSortAt(futureOfficial, now), futureOfficial.createdAt);
+  const rows = [futureOfficial, today, yesterday].map((item) => ({
+    title: item.title,
+    at: context.feedSortAt(item, now),
+  }));
+  const groups = context.newsDayGroups(rows);
+  assert.equal(groups.map((group) => group.rows.map((row) => row.title).join(',')).join('|'), '未来生效,今天|昨天');
+  assert.match(functionSource('officialDayKey'), /feedSortAt\(item\)/);
+  assert.doesNotMatch(functionSource('officialDayKey'), /publishedAt/);
+});
+
+test('overview and the source catalog count unavailable sources with one function', () => {
+  assert.match(app, /function renderStaticSourceCatalog\(\)[\s\S]*?officialSourceHealth\(\)/);
+  assert.match(app, /unavailableOfficialCount\(officialSourceHealth\(\)\)/);
+  assert.match(app, /prioritizeReadableFeedRows\(items\.map\(feedToNewsRow\)\)/);
+  const renderStart = app.indexOf('function renderPosts()');
+  const prioritizeAt = app.indexOf('prioritizeReadableFeedRows', renderStart);
+  const sliceAt = app.indexOf('.slice(0, state.feedShown)', renderStart);
+  assert.ok(prioritizeAt > renderStart && prioritizeAt < sliceAt);
 });

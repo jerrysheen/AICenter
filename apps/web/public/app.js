@@ -27,7 +27,7 @@ import {
   unavailableOfficialCount,
 } from './home-timeline.js?v=dev';
 import { decodeHtmlEntities } from './html-text.js?v=dev';
-import { markBulkOfficialNotices, newsEffectiveLabel, renderNewsList } from './news-list.js?v=dev';
+import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, newsIngestAt, newsPublishedHint, prioritizeReadableFeedRows, renderNewsList } from './news-list.js?v=dev';
 
 const feedLikeButton = createFeedLikeAction({ api: (...args) => api(...args), showToast: text => showToast(text), createAction: options => createDetailAction(options), session: () => state.session });
 
@@ -4133,11 +4133,8 @@ function isOfficialItem(item) {
 }
 
 function officialDayKey(item) {
-  const value = item?.publishedAt || item?.createdAt;
-  if (value == null) return '时间待公布';
-  return new Date(value).toLocaleDateString('zh-CN', {
-    year: 'numeric', month: 'long', day: 'numeric', weekday: 'short',
-  });
+  const at = feedSortAt(item);
+  return newsDayLabel(at) || '时间待公布';
 }
 
 function officialEventMeta(post) {
@@ -4393,7 +4390,10 @@ function renderPosts() {
   const restoreSwipeId = document.querySelector('#feed .swipe-front.is-open')?.dataset.postId || '';
   const items = visibleFeedItems();
   if (state.feedShown > items.length) state.feedShown = Math.max(FEED_PAGE_SIZE, items.length);
-  const shown = items.slice(0, state.feedShown);
+  const orderedRows = state.channel === 'recent' || typeof prioritizeReadableFeedRows !== 'function'
+    ? null
+    : prioritizeReadableFeedRows(items.map(feedToNewsRow));
+  const shown = orderedRows ? orderedRows.slice(0, state.feedShown) : items.slice(0, state.feedShown);
   if (state.channel === 'recent' && state.feedPlatform !== 'media') {
     const signature = recentFeedPaintSignature(shown, items.length);
     if (signature === recentFeedPainted && elements.feed.childElementCount) {
@@ -4455,7 +4455,7 @@ function renderPosts() {
     return;
   }
   const listHost = document.createElement('div');
-  renderNewsList(listHost, shown.map(feedToNewsRow), { groupByDay: true, sinkMuted: true, emptyText: '这个筛选下还没有信息。' });
+  renderNewsList(listHost, orderedRows ? shown : shown.map(feedToNewsRow), { groupByDay: true, sinkMuted: true, emptyText: '这个筛选下还没有信息。' });
   elements.feed.append(listHost);
   const more = document.createElement('div');
   more.className = 'feed-more';
@@ -5990,7 +5990,7 @@ function renderStaticSourceCatalog() {
     }));
     return;
   }
-  const healthById = new Map((state.staticBoard?.sourceHealth || []).map((item) => [item.sourceId, item]));
+  const healthById = new Map(officialSourceHealth().map((item) => [item.sourceId, item]));
   const groups = ['content', 'calendar', 'release', 'market'];
   const nodes = [];
   for (const group of groups) {
@@ -6095,6 +6095,7 @@ async function loadStaticSignalBoard({ refresh = false } = {}) {
     state.staticBoardLoading = false;
     renderStaticSignalBoard();
     renderStaticSourceCatalog();
+    renderHomeSourceLine();
     renderOverviewTimeline();
     renderPosts();
   }
@@ -6627,15 +6628,12 @@ function homeHourTheme(name) {
 function homeHourSource(item) {
   const publisher = String(item?.publisher || '').trim();
   const theme = homeHourTheme(item?.readingThemeName);
-  return [publisher, theme].filter((part) => part && part !== '未知').join(' · ');
+  const hint = newsPublishedHint(item?.publishedAt, item?.firstIngestedAt);
+  return [publisher, theme, hint].filter((part) => part && part !== '未知').join(' · ');
 }
 
 function homeHourWhen(item) {
-  const published = Number(item?.publishedAt);
-  if (Number.isFinite(published) && published > 0) return { at: published, ingested: false };
-  const ingestedAt = Number(item?.firstIngestedAt);
-  if (Number.isFinite(ingestedAt) && ingestedAt > 0) return { at: ingestedAt, ingested: true };
-  return { at: 0, ingested: false };
+  return { at: newsIngestAt(item), ingested: false };
 }
 
 function homeHourHref(startAt, nodeId = '') {
@@ -6881,10 +6879,17 @@ function renderHomeFocusModule() {
   renderNewsList(host, items.map(homePlainRow), { groupByDay: false, emptyText: '在任意条目右侧点 ☆ 标为重点' });
 }
 
+function officialSourceHealth() {
+  const catalog = state.staticBoard?.sourceHealth;
+  if (Array.isArray(catalog) && catalog.length) return catalog;
+  const home = state.homeBoard?.sourceHealth;
+  return Array.isArray(home) ? home : [];
+}
+
 function renderHomeSourceLine() {
   const root = elements['home-source-line'];
   if (!root) return;
-  const count = unavailableOfficialCount(state.homeBoard?.sourceHealth);
+  const count = unavailableOfficialCount(officialSourceHealth());
   root.classList.toggle('hidden', count < 1);
   root.replaceChildren();
   if (!count) return;

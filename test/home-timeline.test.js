@@ -18,6 +18,7 @@ import {
   buildHomeTimelineModel,
   mergeReadingHours,
   homeHourSections,
+  selectHomeHourHits,
   unavailableOfficialCount,
   acceptMarketPayload,
   marketPayloadHasQuotes,
@@ -298,13 +299,35 @@ test('home hour sections keep several periods and sort each one newest first', (
   assert.equal(homeHourSections({ editions: starts.map(edition), readings, sectionLimit: 3, nowMs: now }).length, 3);
 });
 
-test('homepage source alert skips the chronic customs failure and an empty Fed window', () => {
+test('home hour hits follow firstIngestedAt when publish time falls outside the hour', () => {
+  const start = Date.parse('2026-10-10T15:00:00Z');
+  const item = (title, publishedAt, firstIngestedAt) => ({
+    title,
+    nodeId: title,
+    readingDirectionName: '金融',
+    disposition: 'hit',
+    publishedAt,
+    firstIngestedAt,
+  });
+  const hits = selectHomeHourHits({
+    items: [
+      item('发布更晚', start + 2 * 3_600_000, start + 10 * 60_000),
+      item('收录更晚', start - 3_600_000, start + 40 * 60_000),
+    ],
+  });
+  assert.deepEqual(hits.map((row) => row.title), ['收录更晚', '发布更晚']);
+});
+
+test('unavailable official count is every status=unavailable and skips partial', () => {
   assert.equal(unavailableOfficialCount([
     { sourceId: 'calendar.cn.customs', status: 'unavailable', note: '官方来源暂不可读取：SELF_SIGNED_CERT_IN_CHAIN' },
     { sourceId: 'calendar.us.fed', status: 'unavailable', note: '所选时间范围未读取到 Fed 日程。' },
-    { sourceId: 'calendar.us.bls', status: 'unavailable', note: '官方来源暂不可读取：超时' },
+    { sourceId: 'calendar.us.bls', status: 'unavailable', note: 'HTTP 403' },
+    { sourceId: 'calendar.us.census', status: 'unavailable', note: 'HTTP 403' },
     { sourceId: 'calendar.us.ism', status: 'partial', note: '年度表暂不可读取' },
-  ]), 1);
+    { sourceId: 'calendar.us.bea', status: 'partial', note: '部分页面失败' },
+    { sourceId: 'calendar.us.dol-claims', status: 'partial', note: '官方页面暂不可读取' },
+  ]), 4);
 });
 
 test('a quoted overview board is kept when the next payload has no prices', () => {
