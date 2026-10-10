@@ -3,7 +3,7 @@ import {validateTreeModules,normalizeInformationResponse,treeResponseProtocol,TR
 import {materialHash,prepareDailyMaterials} from './daily-materials.js';
 import {needsZhLocalization} from './localize-texts.js';
 import {runBounded} from './daily-analysis.js';
-import {treeCatalog,treeSource,treeFailure} from './information-tree-policy.js';
+import {treeCatalog,treeSource,treeFailure,formatCondenseFailureLog} from './information-tree-policy.js';
 
 const HOUR=3600000;
 const stable=rows=>[...rows].sort((a,b)=>a.id.localeCompare(b.id));
@@ -289,7 +289,10 @@ export function createInformationTreeService({repository,reportRepository,feedSe
       const stageKey=`tree-${layer}:${version}`,cached=reportRepository.getAnalysisStage(s.workspaceId,'tree-cache',stageKey,version);
       try {
       const manualTransientRetry=s.retryTransient===true && cached?.input?.failure?.reason==='retryable-model-error';
-      if(cached?.status==='failed' && cached.input?.failure?.retryAt>now() && !manualTransientRetry)throw Object.assign(new Error(cached.input.failure.reason),{code:cached.input.failure.reason,cachedPending:cached.input.failure});
+      if(cached?.status==='failed' && cached.input?.failure?.retryAt>now() && !manualTransientRetry) {
+        const pending=cached.input.failure;
+        throw Object.assign(new Error(pending.reason),{code:pending.reason,cachedPending:pending,priorError:cached.error || '',...(Number.isFinite(pending.queueMs) || Number.isFinite(pending.executionMs) ? {timing:{queueMs:pending.queueMs,executionMs:pending.executionMs}} : {})});
+      }
       if(cached?.status==='completed') {
         try {const nodes=cached.output.ids.map(id=>TreeNodeSchema.parse(repository.getNode(s.workspaceId,id)));validateTreeModules({modules:nodes.map(n=>({...n,inputIds:n.children}))},rows,modelTags);s.cacheHits=(s.cacheHits || 0)+1;result.push(...nodes);continue;}catch{/* Locally rebuild the invalid group; other completed caches remain. */}
       }
@@ -328,6 +331,13 @@ export function createInformationTreeService({repository,reportRepository,feedSe
       });
       reportRepository.saveAnalysisStage(s.workspaceId,'tree-cache',stageKey,version,{stage:layer},{ids:nodes.map(n=>n.id)},'completed');result.push(...nodes);
       } catch(error) {
+        try {
+          const projection=rows.map((row,index)=>({...projectTreeInput(row,`n${index+1}`),tagId,...(layer==='daily' ? {window:row.window} : {})}));
+          const selected=route(layer) || {};
+          console.error(formatCondenseFailureLog(error,{layer,task:layer==='daily' ? 'daily-analysis' : 'hourly-brief',tagId,windowStart:window?.startAt,
+            inputCount:rows.length,inputBytes:Buffer.byteLength(JSON.stringify(projection)),skillBytes:Buffer.byteLength(String(skills[layer]?.instruction || '')),
+            calls:s.calls,elapsedMs:Date.now()-s.started,provider:selected.provider,model:selected.model}));
+        } catch { /* 诊断日志失败不能挡住失败分组落库 */ }
         const failure={...(error.cachedPending || treeFailure(error,stageKey,'',now())),tagId};result.failures.push(failure);
         reportRepository.saveAnalysisStage(s.workspaceId,'tree-cache',stageKey,version,{stage:layer,failure,inputs:rows.map(n=>n.id)},null,'failed',String(error.message).slice(0,1200));
       }

@@ -58,7 +58,11 @@ export function createReportJobHandlers({ reportService, briefService = null, in
         }
       }
       if(treeService) {
-        if(digests[0]?.status==='failed' && digests[0].groupFailures?.some(p=>p.retryable)) throw new Error('小时浓缩临时失败；成功分类及检查点已保留');
+        if(digests[0]?.status==='failed' && digests[0].groupFailures?.some(p=>p.retryable)) {
+          const failures=digests[0].groupFailures;
+          console.error(`[worker] 小时浓缩临时失败 groups=${failures.length} retryable=${failures.filter(p=>p.retryable).length} ${failures.map(p=>`tag=${p.tagId ?? 'null'} reason=${p.reason} queueMs=${p.queueMs ?? '-'} executionMs=${p.executionMs ?? '-'}`).join('; ')}`);
+          throw new Error('小时浓缩临时失败；成功分类及检查点已保留');
+        }
         const main=digests[0];
         return {snapshotIds:digests.map(d=>d.id),editionId:main?.id,status:main?.status,published:main?.published===true,
           window:main?.window,pendingCount:main?.pendingIds.length || 0,groupFailureCount:main?.groupFailures?.length || 0,
