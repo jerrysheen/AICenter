@@ -819,6 +819,11 @@ function primaryNavTarget(navId, view = document.body.dataset.view) {
   return navId;
 }
 
+function primaryNavActivation(navId, bottomTab) {
+  if (bottomTab && navId === 'sources') return { route: 'sources', fromPrimaryNav: false };
+  return { route: navId, fromPrimaryNav: true };
+}
+
 function resolveView(name) {
   if (name === 'trade') return 'market';
   if (name === 'account') return 'settings';
@@ -14099,7 +14104,9 @@ window.addEventListener('scroll', () => {
 }, { passive: true });
 document.addEventListener('click', (event) => {
   const trigger = event.target.closest('[data-nav]');
-  if (trigger) setView(trigger.dataset.nav, { fromPrimaryNav: true });
+  if (!trigger) return;
+  const activation = primaryNavActivation(trigger.dataset.nav, trigger.classList.contains('tab-item'));
+  setView(activation.route, activation.fromPrimaryNav ? { fromPrimaryNav: true } : {});
 });
 
 initialize();

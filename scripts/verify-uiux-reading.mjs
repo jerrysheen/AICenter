@@ -79,14 +79,19 @@ try {
   await page.reload();await page.waitForFunction(()=>window.uiProbe?.state.sourceCatalogLoaded);
   assert.equal(await page.locator('#page-title').textContent(),'信源目录');
   await page.evaluate(()=>{uiProbe.state.bootstrapped=false;uiProbe.setView('tools');document.querySelector('#bottom-tab [data-nav="sources"]').click();});
-  assert.equal(await page.locator('#page-title').textContent(),'信息流');
+  assert.equal(await page.locator('#page-title').textContent(),'总览');
+  assert.equal(await page.evaluate(()=>location.hash),'#sources');
+  await page.evaluate(()=>{uiProbe.setView('feed');document.querySelector('#bottom-tab [data-nav="sources"]').click();});
+  assert.equal(await page.evaluate(()=>location.hash),'#sources');
+  await page.evaluate(()=>document.querySelector('#side-nav-list [data-nav="sources"]').click());
+  assert.equal(await page.evaluate(()=>location.hash),'#feed');
   for (const route of ['market','market/global','report','sources','feed']) {
     await page.evaluate(()=>document.querySelector('#side-nav-list [data-nav="sources"]').click());
     assert.equal(await page.evaluate(()=>location.hash),`#${route}`);
     assert.equal(await page.locator('#overview-subnav [aria-current="page"]').count(),1);
   }
   await page.evaluate(()=>{uiProbe.setView('market/global');document.querySelector('#bottom-tab [data-nav="sources"]').click();});
-  assert.equal(await page.evaluate(()=>location.hash),'#report');
+  assert.equal(await page.evaluate(()=>location.hash),'#sources');
   await page.evaluate(()=>{uiProbe.setView('tools');document.querySelector('#bottom-tab [data-nav="assets"]').click();});
   assert.equal(await page.evaluate(()=>uiProbe.state.tradePane),'holdings');
   await page.evaluate(()=>document.querySelector('#bottom-tab [data-nav="assets"]').click());
