@@ -2374,6 +2374,8 @@ function contentItemAsPost(item) {
     tags: postTagNames({ ...item, resourceId: item.id }),
     sourceUrl: item.sourceUrl || '',
     createdAt: item.publishedAt || item.createdAt || Date.now(),
+    publishedAt: item.publishedAt || item.capturedAt || item.createdAt || 0,
+    time: item.publishedAt ? formatTime(item.publishedAt) : '',
   };
 }
 
@@ -7223,7 +7225,7 @@ function renderArticlePage() {
   const meta = head.querySelector('.reader-meta');
   meta.append(
     Object.assign(document.createElement('button'), { className: 'text-button', textContent: `${post.author} ›` }),
-    Object.assign(document.createElement('span'), { textContent: `${post.time || formatTime(post.publishedAt)} 发布` }),
+    Object.assign(document.createElement('span'), { textContent: `${post.time || (post.publishedAt ? formatTime(post.publishedAt) : '时间未知')} 发布` }),
     Object.assign(document.createElement('span'), { className: 'kind-tag', textContent: feedKindLabel(post) }),
   );
   const completeLabel = post.articleKind==='report-intro' ? '报告简介' : post.complete === false ? (post.bodyScope || '仅索引') : '正文完整';
