@@ -37,12 +37,12 @@ function functionSource(source, name) {
   return match[0];
 }
 
-test('overview ticker renders the loading mark and keeps an update time', () => {
+test('overview ticker renders the loading mark without a fetched-at footnote', () => {
   const app = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
   assert.match(app, /overviewLoadingIndices\(preferredOverviewFocus\(\)\)/);
   assert.equal(app.includes('globalAssets'), false);
   assert.match(app, /lastPrice == null \? LOADING_QUOTE/);
-  assert.match(functionSource(app, 'renderOverview'), /更新 \$\{formatTime\(market\.fetchedAt\)\}/);
+  assert.doesNotMatch(functionSource(app, 'renderOverview'), /更新 \$\{formatTime\(market\.fetchedAt\)\}/);
   assert.doesNotMatch(functionSource(app, 'renderOverview'), /market\.note/);
   assert.doesNotMatch(functionSource(app, 'marketBoardHint'), /formatTime/);
   assert.doesNotMatch(functionSource(app, 'assetBoardHint'), /formatTime/);

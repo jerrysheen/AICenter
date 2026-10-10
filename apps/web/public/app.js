@@ -6764,10 +6764,7 @@ function renderOverview(market) {
     const heading = document.createElement('div');
     heading.className = 'market-section-title';
     heading.append(Object.assign(document.createElement('h2'), { textContent: section.title }));
-    const sectionMeta = [
-      section.session ? sessionLabel(section.session) : '',
-      market?.fetchedAt ? `更新 ${formatTime(market.fetchedAt)}` : '',
-    ].filter(Boolean).join(' · ');
+    const sectionMeta = section.session ? sessionLabel(section.session) : '';
     if (sectionMeta) {
       heading.append(Object.assign(document.createElement('small'), { className: 'muted', textContent: sectionMeta }));
     }
