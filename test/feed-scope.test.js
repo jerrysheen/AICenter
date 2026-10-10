@@ -70,6 +70,53 @@ test('saving to inspiration checks notes before creating another one', () => {
   assert.equal(context.inspirationSavePlan({ notesLoaded: true, existing: null, saved: false }), 'create');
 });
 
+test('TrendForce reloads media when the filter changes and nothing is loading', async () => {
+  const calls = [];
+  const state = {
+    mediaChannel: 'tech', mediaView: 'all', mediaSourceKey: '',
+    mediaLoaded: true, mediaLoading: false, bootstrapped: true,
+    channel: 'all', feedPlatform: 'media', platform: 'media',
+    trendforceLoaded: false, trendforceLoading: false,
+  };
+  const noop = () => {};
+  const box = vm.createContext({
+    state,
+    document: { body: { dataset: { view: 'feed' } } },
+    showToast: noop,
+    resetFeedWindow: noop,
+    renderChannels: noop,
+    renderPlatformFilters: noop,
+    renderXToolbar: noop,
+    renderXueqiuToolbar: noop,
+    renderBilibiliToolbar: noop,
+    renderTrendForceToolbar: noop,
+    renderMediaToolbar: noop,
+    renderPosts: noop,
+    loadTrendForceFeed: () => Promise.resolve(),
+    loadMediaFeed: () => { calls.push('media'); return Promise.resolve(); },
+    ensureFeedSources: () => { calls.push('ensure'); return Promise.resolve(); },
+  });
+  vm.runInContext([
+    table[0],
+    functionSource('isSourceFeedScope'),
+    functionSource('feedSourcesForScope'),
+    functionSource('mediaSelectionKey'),
+    functionSource('mediaFeedNeedsReload'),
+    functionSource('applyFeedPlatform'),
+  ].join('\n'), box);
+  await box.applyFeedPlatform('trendforce');
+  assert.deepEqual(calls, ['media', 'ensure']);
+  assert.equal(state.mediaSourceKey, 'trendforce');
+  calls.length = 0;
+  await box.applyFeedPlatform('trendforce');
+  assert.deepEqual(calls, ['ensure']);
+  calls.length = 0;
+  state.mediaSourceKey = '';
+  state.mediaLoading = true;
+  await box.applyFeedPlatform('trendforce');
+  assert.deepEqual(calls, ['ensure']);
+});
+
 test('overview startup does not request X or Xueqiu', () => {
   const sourcesPage = functionSource('loadSourcesPage');
   const schedule = functionSource('scheduleOverviewManualPosts');

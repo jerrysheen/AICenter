@@ -3430,7 +3430,16 @@ function feedLoadFlags(extra = {}) {
   };
 }
 
+function mediaSelectionKey(channel, view, sourceKey) {
+  return `${channel || ''}:${view || ''}:${sourceKey || ''}`;
+}
+
+function mediaFeedNeedsReload(previousKey, nextKey, loading) {
+  return previousKey !== nextKey && !loading;
+}
+
 function applyFeedPlatform(id) {
+  const previousMedia = mediaSelectionKey(state.mediaChannel, state.mediaView, state.mediaSourceKey);
   if(id==='trendforce'){id='media';state.mediaChannel='tech';state.mediaSourceKey='trendforce';state.mediaView='all';}
   const next = ['x', 'xueqiu'].includes(id) ? 'social' : id === 'bilibili' ? 'all' : id || 'all';
   state.feedPlatform = next;
@@ -3447,6 +3456,9 @@ function applyFeedPlatform(id) {
   renderPosts();
   if (next === 'trendforce' && !state.trendforceLoaded && !state.trendforceLoading) {
     loadTrendForceFeed({ refresh: false }).catch((error) => showToast(error.message));
+  }
+  if (next === 'media' && mediaFeedNeedsReload(previousMedia, mediaSelectionKey(state.mediaChannel, state.mediaView, state.mediaSourceKey), state.mediaLoading)) {
+    loadMediaFeed({ refresh: false }).catch((error) => showToast(error.message));
   }
   if (state.bootstrapped && document.body.dataset.view === 'feed') {
     ensureFeedSources(feedSourcesForScope(state.channel, state.feedPlatform)).catch((error) => showToast(error.message));
@@ -5759,6 +5771,7 @@ function renderOverviewTimeline() {
     });
     return;
   }
+  renderViewState(root, { kind: 'success' });
   if (state.overviewTimeline === 'official') {
     renderOfficialTimeline(root, rows, {
       emptyText: state.staticBoardLoading ? '正在读取官方信息…' : '这个筛选下还没有官方信息。',
