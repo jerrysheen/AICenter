@@ -16,6 +16,7 @@ export function createMarketService(options = {}) {
   const xueqiuQuotes = options.xueqiuQuotes === undefined ? createXueqiuQuoteClient(options) : options.xueqiuQuotes;
   const ttlMs = options.ttlMs ?? 20_000;
   const xueqiuTtlMs = options.xueqiuTtlMs ?? 3_000;
+  const inflightTimeoutMs = options.inflightTimeoutMs ?? 20_000;
   const now = options.now || (() => Date.now());
   const cache = new Map();
   const pending = new Map();
@@ -27,10 +28,18 @@ export function createMarketService(options = {}) {
       if (hit && timestamp - hit.at < ttl) return hit.payload;
       if (pending.has(key)) return pending.get(key);
     }
-    const task = Promise.resolve().then(loader).then((payload) => {
+    let timer;
+    const loaderPromise = Promise.resolve().then(loader);
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('行情请求超时')), inflightTimeoutMs);
+    });
+    const task = Promise.race([loaderPromise, timeout]).then((payload) => {
       cache.set(key, { at: now(), payload });
       return payload;
-    }).finally(() => pending.delete(key));
+    }).finally(() => {
+      clearTimeout(timer);
+      if (pending.get(key) === task) pending.delete(key);
+    });
     pending.set(key, task);
     return task;
   }

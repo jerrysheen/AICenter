@@ -1,4 +1,5 @@
 import { open } from 'node:fs/promises';
+import { TRANSLATION_MAX_ATTEMPTS } from '../../database/src/translation-retry.js';
 import {
   ActiveAgentRunSchema,
   AgentRunStatusViewSchema,
@@ -84,7 +85,7 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort, res
     requestTranslation(input) {
       const value = FeedTranslationJobInputSchema.parse(input);
       const open = runtimeRepository.listOpenJobs?.('feed.translation.run')?.find(job => job.workspaceId === value.workspaceId && JSON.stringify(job.input) === JSON.stringify(value));
-      return open || runtimeRepository.createJob({ type: 'feed.translation.run', workspaceId: value.workspaceId, input: value, maxAttempts: 2 });
+      return open || runtimeRepository.createJob({ type: 'feed.translation.run', workspaceId: value.workspaceId, input: value, maxAttempts: TRANSLATION_MAX_ATTEMPTS });
     },
     requestHourlyDigest(input={}) {
       const value=GenerateHourlyDigestInputSchema.parse(input),workspaceId=value.workspaceId || 'local';

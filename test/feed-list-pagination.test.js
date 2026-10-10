@@ -301,6 +301,47 @@ test('verified translated media list item renders as a summary and does not thro
   }), null);
 });
 
+test('media list cards prefer the translated title segment', () => {
+  const source = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
+  const context = vm.createContext({
+    formatTime: () => '',
+    FEED_TITLE_MAX: 72,
+    FEED_EXCERPT_MAX: 96,
+    state: { translations: {}, xTranslating: false },
+    translationStoreKey: () => 'media-key',
+    loadTranslationStore: () => ({}),
+    splitFeedText: (value) => ({ body: String(value || ''), comments: [] }),
+  });
+  vm.runInContext(`${extractFunctions(source, [
+    'textNeedsZhView', 'postNeedsChineseTranslation', 'postIsTranslating',
+    'translationFor', 'plainFeedText', 'clipFeedText', 'firstFeedSentence', 'textAfterLead',
+    'postDisplayTitle', 'socialBodyText', 'mediaAsItem',
+  ])}\nthis.title=postDisplayTitle;this.mediaAsItem=mediaAsItem;`, context);
+  const translated = context.mediaAsItem({
+    id: 'media:bbc:1', externalId: 'bbc:1', detail: 'list', contentLevel: 'full',
+    title: 'Oil prices rise after the supply cut',
+    summary: '供应收紧，油价在亚洲交易时段走高。',
+    excerpt: '供应收紧，油价在亚洲交易时段走高。',
+    articleTranslation: { status: 'ready', title: '供应削减后油价上涨', bodyHash: 'abc' },
+    translation: { status: 'ready', title: '供应削减后油价上涨' },
+    translationTitle: '供应削减后油价上涨',
+    publisherName: 'BBC',
+  });
+  assert.equal(context.title(translated), '供应削减后油价上涨');
+  const titled = context.mediaAsItem({
+    id: 'media:bbc:2', externalId: 'bbc:2', detail: 'list', contentLevel: 'full',
+    title: 'Oil prices rise after the supply cut',
+    translationTitle: '供应削减后油价上涨',
+    summary: '供应收紧。', publisherName: 'BBC',
+  });
+  assert.equal(context.title(titled), '供应削减后油价上涨');
+  const original = context.mediaAsItem({
+    id: 'media:bbc:3', externalId: 'bbc:3', detail: 'list', title: 'Oil prices rise after the supply cut',
+    summary: 'English summary', publisherName: 'BBC',
+  });
+  assert.equal(context.title(original), 'Oil prices rise after the supply cut');
+});
+
 test('a background reload keeps later pages and already opened text', async () => {
   const source = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
   const calls = [];

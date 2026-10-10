@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { formatFeedBefore, ValidationError } from '../../contracts/src/index.js';
 import { packFeedAiBatches } from './feed-ai-batch.js';
 import { feedItemIdentityHash } from './feed-identity.js';
+import { cleanIngestExcerpt } from '../../connectors/src/excerpt-text.js';
 import { collectLocalizationUnits, localizationItemId, needsZhLocalization } from './localize-texts.js';
 
 const DEFAULT_WORKSPACE_ID = 'local';
@@ -54,6 +55,7 @@ function projectListItem(item) {
     capturedAt: item.capturedAt || 0,
     processing: item.processing || '',
     isRead: Boolean(item.isRead),
+    isSaved: Boolean(item.isSaved),
     commentCount: commentCount(item.body),
     translation: item.translation ? {
       status: translated ? 'ready' : 'stale',
@@ -95,6 +97,7 @@ function toFeedItem(providerId, row) {
     subscriptionId: '',
     captureId: row.captureId || '',
     isRead: Boolean(row.isRead),
+    isSaved: Boolean(row.isSaved),
     translation: null,
   };
 }
@@ -156,21 +159,94 @@ function translationMap(rows = []) {
   return new Map((rows || []).map((row) => [row.itemId, row]));
 }
 
-function projectLocalizations(units, byItemId) {
+function failureMap(rows = []) {
+  return new Map((rows || []).map((row) => [row.itemId, row]));
+}
+
+function hourlySourceIds(unit) {
+  const ids = [unit.id, unit.localizationId];
+  const raw = String(unit.id || '');
+  if (raw && !raw.includes(':')) ids.push(`official:${raw}`, `media:${raw}`, `feed:${raw}`);
+  return [...new Set(ids.filter(Boolean))];
+}
+
+function projectLocalizations(units, byItemId, failures = new Map(), now = Date.now()) {
   const localizations = {};
   for (const unit of units) {
     const row = byItemId.get(unit.localizationId);
     const hash = contentHash(unit.text);
     const ready = Boolean(row && row.sourceHash === hash && row.translatedText);
+    const failure = failures.get(unit.localizationId);
+    const failed = !ready && failure && failure.sourceHash === hash
+      && (failure.nextRetryAt == null || failure.nextRetryAt > now);
+    const pending = needsZhLocalization(unit.text) && !ready && !failed;
     localizations[unit.id] = {
       id: unit.localizationId,
       text: ready ? row.translatedText : '',
-      pending: needsZhLocalization(unit.text) && !ready,
+      pending,
+      status: ready || !needsZhLocalization(unit.text) ? 'ready' : failed ? 'failed' : 'pending',
+      retryAt: failed ? (failure.nextRetryAt ?? null) : null,
       engine: ready ? (row.engine || '') : '',
       sourceText: unit.text,
     };
   }
   return localizations;
+}
+
+function projectionFor(feedRepository, workspaceId, units, targetLang, now = Date.now()) {
+  const ids = units.map((unit) => unit.localizationId);
+  const existing = translationMap(feedRepository?.listTranslations?.(workspaceId, ids, targetLang));
+  const failures = failureMap(feedRepository?.listTranslationFailures?.(workspaceId, ids, targetLang));
+  const localizations = projectLocalizations(units, existing, failures, now);
+  return {
+    localizations,
+    pendingIds: units.filter((unit) => localizations[unit.id]?.pending).map((unit) => unit.id),
+  };
+}
+
+function adoptReusableTranslations(feedRepository, workspaceId, units, targetLang, hourlyTitles) {
+  if (!units?.length || !feedRepository?.saveTranslations) return false;
+  const adopted = [];
+  const taken = new Set();
+  if (typeof hourlyTitles === 'function') {
+    let titles = new Map();
+    try { titles = hourlyTitles([...new Set(units.flatMap(hourlySourceIds))]) || new Map(); } catch { titles = new Map(); }
+    for (const unit of units) {
+      const title = hourlySourceIds(unit).map((id) => titles.get?.(id)).find(Boolean);
+      if (!title) continue;
+      adopted.push({
+        id: unit.localizationId,
+        sourceText: unit.text,
+        translatedText: String(title),
+        targetLang,
+        engine: 'hourly-report',
+      });
+      taken.add(unit.localizationId);
+    }
+  }
+  const rest = units.filter((unit) => !taken.has(unit.localizationId));
+  if (rest.length && feedRepository.listTranslationsByHash) {
+    const rows = feedRepository.listTranslationsByHash(workspaceId, rest.map((unit) => contentHash(unit.text)), targetLang) || [];
+    const byHash = new Map();
+    for (const row of rows) {
+      if (!row.translatedText || row.engine !== 'hourly-report' || byHash.has(row.sourceHash)) continue;
+      byHash.set(row.sourceHash, row);
+    }
+    for (const unit of rest) {
+      const row = byHash.get(contentHash(unit.text));
+      if (!row?.translatedText) continue;
+      adopted.push({
+        id: unit.localizationId,
+        sourceText: unit.text,
+        translatedText: row.translatedText,
+        targetLang,
+        engine: String(row.engine || 'reused').slice(0, 32),
+      });
+    }
+  }
+  if (!adopted.length) return false;
+  persistTranslations(feedRepository, workspaceId, adopted);
+  return true;
 }
 
 async function translatePendingUnits(translationPort, pending, targetLang, checkpoint=()=>{}) {
@@ -229,36 +305,25 @@ async function localizeCollected(feedRepository, translationPort, workspaceId, u
     seen.add(unit.id);
     unique.push(unit);
   }
-  const existing = translationMap(feedRepository?.listTranslations?.(
-    workspaceId,
-    unique.map((unit) => unit.localizationId),
-    targetLang,
-  ));
-  const localizations = projectLocalizations(unique, existing);
-  const pending = unique.filter((unit) => localizations[unit.id]?.pending);
-  if (!pending.length || !translationPort) return { localizations, pendingIds: pending.map((unit) => unit.id) };
+  const preview = projectionFor(feedRepository, workspaceId, unique, targetLang);
+  const reusable = unique.filter((unit) => preview.localizations[unit.id]?.pending);
+  if (reusable.length) adoptReusableTranslations(feedRepository, workspaceId, reusable, targetLang, options.hourlyTitles);
+  const current = projectionFor(feedRepository, workspaceId, unique, targetLang);
+  const pending = unique.filter((unit) => current.localizations[unit.id]?.pending);
+  if (!pending.length || !translationPort || options.wait === false) {
+    return { localizations: current.localizations, pendingIds: pending.map((unit) => unit.id) };
+  }
 
   const lockKey = `${workspaceId}:${targetLang}:${pending.map((unit) => unit.localizationId).sort().join(',')}`;
   const run = async () => {
     try {
       await translatePendingUnits(translationPort, pending, targetLang, rows=>persistTranslations(feedRepository,workspaceId,rows));
     } catch {
-      // Keep cached/empty localizations; the view can retry.
+      // 已成功的批次留在库里，没译完的仍是 pending，下次调用接着补。
+      // 任务级失败由 Job Runner 写入 feed_translation_failures，这里不把整批打成退避失败。
     }
-    const latest = translationMap(feedRepository?.listTranslations?.(
-      workspaceId,
-      unique.map((unit) => unit.localizationId),
-      targetLang,
-    ));
-    return {
-      localizations: projectLocalizations(unique, latest),
-      pendingIds: unique.filter((unit) => projectLocalizations(unique, latest)[unit.id]?.pending).map((unit) => unit.id),
-    };
+    return projectionFor(feedRepository, workspaceId, unique, targetLang);
   };
-
-  if (options.wait === false) {
-    return { localizations, pendingIds: pending.map((unit) => unit.id) };
-  }
 
   const existingLock = localizeLocks.get(lockKey);
   const task = existingLock || run().finally(() => localizeLocks.delete(lockKey));
@@ -401,7 +466,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
       externalId: String(item.externalId),
       sourceAccountId: source.id,
       sourceUrl: item.sourceUrl,
-      title: item.title || '',
+      title: cleanIngestExcerpt(item.title || ''),
       contentHash: hash,
       rawArtifactPath: null,
       status: verdict.status || 'ready',
@@ -424,9 +489,9 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
       captureId: capture.id,
       originType: item.originType || 'subscription',
       contentType: item.contentType || 'post',
-      title: item.title || '',
+      title: cleanIngestExcerpt(item.title || ''),
       body: item.body || '',
-      summary: item.summary || '',
+      summary: cleanIngestExcerpt(item.summary || ''),
       sourceUrl: item.sourceUrl,
       authorName: item.authorName || '',
       publishedAt: item.publishedAt || null,
@@ -794,12 +859,20 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
     },
     async translateMany(input, actor = {}) {
       const workspaceId = actor.workspaceId || DEFAULT_WORKSPACE_ID;
-      const stored = translationMap(feedRepository.listTranslations?.(workspaceId, input.items.map(item => item.id), input.targetLang || 'zh'));
+      const targetLang = input.targetLang || 'zh';
+      adoptReusableTranslations(feedRepository, workspaceId, (input.items || []).map((item) => ({
+        id: item.id,
+        localizationId: item.id,
+        text: item.text,
+      })), targetLang, normalizedArticlePort?.hourlyTitles
+        ? (ids) => normalizedArticlePort.hourlyTitles(workspaceId, ids)
+        : null);
+      const stored = translationMap(feedRepository.listTranslations?.(workspaceId, input.items.map(item => item.id), targetLang));
       const translations = [];
       const pending = input.items.filter(item => {
         const row = stored.get(item.id);
         if (row?.sourceHash !== contentHash(item.text) || !row.translatedText) return true;
-        translations.push({ id: item.id, sourceText: item.text, translatedText: row.translatedText, targetLang: input.targetLang || 'zh', engine: row.engine, cached: true });
+        translations.push({ id: item.id, sourceText: item.text, translatedText: row.translatedText, targetLang, engine: row.engine, cached: true });
         return false;
       });
       const packed = packFeedAiBatches(pending, {
@@ -880,6 +953,9 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
         : collectLocalizationUnits(units);
       return localizeCollected(feedRepository, translationPort, workspaceId, collected, targetLang, {
         wait: options.wait !== false,
+        hourlyTitles: normalizedArticlePort?.hourlyTitles
+          ? (ids) => normalizedArticlePort.hourlyTitles(workspaceId, ids)
+          : null,
       });
     },
     hideContentItem(workspaceId, contentItemId) {

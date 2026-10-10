@@ -85,38 +85,33 @@ export const assetClasses = [
   { id: 'crypto', label: '加密' },
 ];
 
-export const quotes = [
-  { name: '宁德时代', symbol: '300750.SZ', market: 'cn', assetClass: 'equity', price: '252.18', changePct: -0.68, currency: 'CNY' },
-  { name: '贵州茅台', symbol: '600519.SH', market: 'cn', assetClass: 'equity', price: '1428.00', changePct: -0.41, currency: 'CNY' },
-  { name: '招商银行', symbol: '600036.SH', market: 'cn', assetClass: 'equity', price: '38.12', changePct: 0.29, currency: 'CNY' },
-  { name: '生益科技', symbol: '600183.SH', market: 'cn', assetClass: 'equity', price: '150.25', changePct: 2.91, currency: 'CNY' },
-  { name: '长江电力', symbol: '600900.SH', market: 'cn', assetClass: 'equity', price: '27.86', changePct: 0.54, currency: 'CNY' },
-  { name: 'Apple', symbol: 'AAPL', market: 'us', assetClass: 'equity', price: '227.48', changePct: 0.86, currency: 'USD' },
-  { name: 'Tesla', symbol: 'TSLA', market: 'us', assetClass: 'equity', price: '241.05', changePct: -1.12, currency: 'USD' },
-  { name: 'Microsoft', symbol: 'MSFT', market: 'us', assetClass: 'equity', price: '428.16', changePct: 0.34, currency: 'USD' },
-];
+export const LOADING_QUOTE = '--';
 
-export const globalAssets = [
-  { name: '上证50', symbol: '000016.SH', market: 'cn', assetClass: 'index', price: '3864.28', changePct: -0.54, currency: 'CNY' },
-  { name: '恒生指数', symbol: '^HSI', market: 'hk', assetClass: 'index', price: '24407.96', changePct: -0.64, currency: 'HKD' },
-  { name: '标普500', symbol: '^GSPC', market: 'us', assetClass: 'index', price: '5628.40', changePct: 0.21, currency: 'USD' },
-  { name: '美元指数', symbol: 'DXY', market: 'global', assetClass: 'fx', price: '101.38', changePct: 0.21, currency: 'USD' },
-  { name: '美元兑人民币', symbol: 'USDCNY', market: 'global', assetClass: 'fx', price: '7.18', changePct: -0.08, currency: 'CNY' },
-  { name: '十年期美债', symbol: 'US10Y', market: 'us', assetClass: 'rate', price: '4.12', changePct: 0.03, currency: 'USD' },
-  { name: '黄金', symbol: 'XAUUSD', market: 'global', assetClass: 'metal', price: '3642.8', changePct: 0.42, currency: 'USD' },
-  { name: '白银', symbol: 'XAGUSD', market: 'global', assetClass: 'metal', price: '42.18', changePct: 0.86, currency: 'USD' },
-  { name: 'WTI 原油', symbol: 'CL', market: 'us', assetClass: 'energy', price: '71.26', changePct: -1.02, currency: 'USD' },
-  { name: 'COMEX 黄金主连', symbol: 'GC', market: 'us', assetClass: 'future', price: '3648.2', changePct: 0.38, currency: 'USD', expiry: '2026-12' },
-  { name: '碳酸锂', symbol: 'LC', market: 'cn', assetClass: 'future', price: '72800', changePct: -1.22, currency: 'CNY' },
-  { name: '豆粕', symbol: 'M', market: 'cn', assetClass: 'future', price: '3052', changePct: 0.46, currency: 'CNY' },
-  { name: '比特币', symbol: 'BTC-USD', market: 'global', assetClass: 'crypto', price: '111250', changePct: 1.18, currency: 'USD' },
-  { name: '以太坊', symbol: 'ETH-USD', market: 'global', assetClass: 'crypto', price: '4286.4', changePct: -0.56, currency: 'USD' },
-];
-
-export const marketIndex = {
-  cn: { name: '上证50', value: '3864.28', change: '-21.05', percent: '-0.54%' },
-  us: { name: '标普500', value: '5628.40', change: '+11.82', percent: '+0.21%' },
+const loadingIndexNames = {
+  us: [
+    { name: '标普 500', symbol: '^GSPC' },
+    { name: '道琼斯工业指数', symbol: '^DJI' },
+    { name: '纳斯达克综合指数', symbol: '^IXIC' },
+  ],
+  cn: [
+    { name: '上证50', symbol: '000016.SS' },
+    { name: '创业板50', symbol: '399673.SZ' },
+    { name: '科创50', symbol: '000688.SS' },
+    { name: '恒生指数', symbol: '^HSI' },
+    { name: '恒生科技', symbol: '^HSTECH' },
+    { name: '韩国综指', symbol: '^KS11' },
+    { name: '台湾加权', symbol: '^TWII' },
+  ],
 };
+
+export function overviewLoadingIndices(focus) {
+  return (loadingIndexNames[focus] || loadingIndexNames.us).map((item) => ({
+    name: item.name,
+    symbol: item.symbol,
+    lastPrice: null,
+    changePct: null,
+  }));
+}
 
 export const marketTabs = [
   { id: 'stocks', label: '股票' },

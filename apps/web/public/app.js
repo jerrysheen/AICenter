@@ -1,6 +1,6 @@
 import {
-  askPrompts, assetClasses, bookTabs, channels, globalAssets, holdings, marketTabs,
-  platformFilters, portfolioSummary, stockBoards as fallbackStockBoards,
+  askPrompts, assetClasses, bookTabs, channels, holdings, LOADING_QUOTE, marketTabs,
+  overviewLoadingIndices, platformFilters, portfolioSummary, stockBoards as fallbackStockBoards,
   subscriptions, tools, tradeLedger,
 } from './mock.js?v=dev';
 import { icon } from './icons.js?v=dev';
@@ -80,6 +80,7 @@ const state = {
   markets: { overview: null, us: null, asia: null, cn: null },
   marketLoading: false,
   marketError: '',
+  marketBoardErrors: {},
   marketRequestId: 0,
   assetBoard: null,
   assetLoading: false,
@@ -154,7 +155,11 @@ const state = {
   postsLoading: false,
   postsError: '',
   xLoaded: false,
+  xFocusLoaded: false,
+  xFocusLoading: false,
   xueqiuLoaded: false,
+  xueqiuFocusLoaded: false,
+  xueqiuFocusLoading: false,
   bilibiliLoaded: false,
   trendforceLoaded: false,
   notesLoaded: false,
@@ -625,6 +630,7 @@ function postIsTranslating(post) {
 function localizedCopy(id, fallback = '') {
   const row = state.sourceLocalizations[id];
   if (row?.text) return row.text;
+  if (row?.status === 'failed') return fallback || '';
   if (row?.pending && state.sourceLocalizing) return '正在翻译…';
   return fallback || '';
 }
@@ -1022,6 +1028,7 @@ function setView(name, options = {}) {
   if (view === 'market' || view === 'assets') {
     alignTradePane(view);
     renderTradeTabs();
+    if (view === 'market' && state.tradePane === 'stocks') renderMarket();
     if (state.bootstrapped) syncTradePaneData().catch((error) => showToast(error.message));
   }
   if (view === 'sources') {
@@ -1029,9 +1036,12 @@ function setView(name, options = {}) {
     renderStaticSourceCatalog();
     renderStaticSignalBoard();
     if (state.overviewPane === 'catalog' && state.session) loadSourceCatalog().catch(() => {});
+    if ((state.overviewPane === 'home' || state.overviewPane === 'schedule') && !state.staticBoard) {
+      loadStaticSignalBoard().catch((error) => showToast(error.message));
+    }
   }
   if (view === 'sources' && state.bootstrapped) loadSourcesPage().catch((error) => showToast(error.message));
-  if (view === 'feed' && state.bootstrapped) {
+  if (view === 'feed' && (state.bootstrapped || state.session)) {
     ensureVisibleFeedLoaded().catch((error) => showToast(error.message));
   }
   if (view === 'page' && state.pageKind === 'source' && state.bootstrapped) {
@@ -1537,6 +1547,7 @@ function formatAskClock(timestamp) {
 }
 
 const FEED_PAGE_SIZE = 12;
+const FOCUS_FEED_WINDOW = 200;
 let mediaHeadMerge = false;
 
 function mergeLoadedFeedItem(prior, item) {
@@ -3006,6 +3017,8 @@ function textAfterLead(source, lead) {
 function postDisplayTitle(post) {
   if(post.normalizedArticle?.title)return post.normalizedArticle.title;
   if (post.platform === 'media' && post.articleTranslation?.title) return post.articleTranslation.title;
+  if (post.platform === 'media' && post.translationTitle) return post.translationTitle;
+  if (post.platform === 'media' && post.translation?.title) return post.translation.title;
   const translated = translationFor(post)?.text;
   if (translated) {
     const body = socialBodyText(post, translated);
@@ -3138,6 +3151,10 @@ function feedAsItem(item, platform) {
     createdAt,
     publishedAt,
     isRead: Boolean(item.isRead),
+    isSaved: Boolean(item.isSaved),
+    contentItemId: item.contentItemId || item.resourceId || '',
+    legacyContentItemId: item.legacyContentItemId || null,
+    legacyFeedItemId: item.legacyFeedItemId || null,
     translation: item.translation || null,
     normalizedArticle: item.normalizedArticle || null,
   };
@@ -3207,6 +3224,7 @@ function matchesPlatform(item) {
 
 function officialAsItem(release) {
   const publishedAt = release.publishedAt || release.observedAt || Date.now();
+  const row = state.sourceLocalizations[release.releaseId];
   return {
     id: release.releaseId,
     resourceId: release.releaseId,
@@ -3218,6 +3236,7 @@ function officialAsItem(release) {
     handle: '',
     time: release.publishedAt ? formatTime(release.publishedAt) : '',
     title: localizedCopy(release.releaseId, release.title),
+    translationStatus: row?.status || (row?.pending ? 'pending' : ''),
     body: '',
     excerpt: [release.authority, release.documentNumber].filter(Boolean).join(' · '),
     tags: [],
@@ -3816,6 +3835,7 @@ function mediaAsItem(item) {
     body,
     paragraphs: item.paragraphs || [],
     articleTranslation: item.articleTranslation || null,
+    translationTitle: item.translationTitle || '',
     bodyHash: item.bodyHash || '',
     snapshotRevision: item.snapshotRevision || null,
     generatedBrief: item.generatedBrief || null,
@@ -3898,6 +3918,7 @@ function officialDayKey(item) {
 
 function officialEventMeta(post) {
   return [
+    post.translationStatus === 'failed' ? '暂未翻译' : '',
     post.author,
     post.release?.documentNumber,
     post.release?.documentType,
@@ -4316,6 +4337,21 @@ function setTradeHint(text) {
   if (!el) return;
   el.textContent = text || '';
   el.classList.toggle('hidden', !text);
+}
+
+function marketBoardHint(market) {
+  if (state.marketError && !state.marketLoading) return state.marketError;
+  if (market?.fetchedAt) return `更新 ${formatTime(market.fetchedAt)}`;
+  if (state.marketLoading) return '正在读取行情…';
+  return '';
+}
+
+function assetBoardHint(onHardware) {
+  if (onHardware) return state.hardwareError || '';
+  if (state.assetError && !state.assetLoading) return state.assetError;
+  if (state.assetBoard?.fetchedAt) return `更新 ${formatTime(state.assetBoard.fetchedAt)}`;
+  if (state.assetLoading) return '正在读取行情…';
+  return '';
 }
 
 function isQuotesView(view = document.body.dataset.view) {
@@ -4797,7 +4833,7 @@ function renderAssets() {
     hardwareFilters.replaceChildren(kinds,review);
   }
   if (state.tradePane === 'assets') {
-    setTradeHint(onHardware ? state.hardwareError : state.assetError && !state.assetLoading ? state.assetError : '');
+    setTradeHint(assetBoardHint(onHardware));
     updateChangeSortControl();
   }
   const rows = visibleAssets();
@@ -5346,6 +5382,7 @@ async function loadMarket({ board = state.stockBoard } = {}) {
     state.marketRequestId = requestId;
     state.marketLoading = true;
     state.marketError = '';
+    renderMarket();
     renderMarketStatus();
   }
   try {
@@ -5353,6 +5390,7 @@ async function loadMarket({ board = state.stockBoard } = {}) {
     const payload = await api(extraQuery(board), { timeoutMs: 40_000 });
     if (isActiveBoard && requestId !== state.marketRequestId) return;
     state.markets[payload.market.board] = payload.market;
+    state.marketBoardErrors[board] = '';
     if (isActiveBoard) renderMarket();
     else if (document.body.dataset.view === 'sources' || state.stockBoard === 'overview') {
       if (state.stockBoard === 'overview') renderMarket();
@@ -5360,16 +5398,20 @@ async function loadMarket({ board = state.stockBoard } = {}) {
     }
     scheduleOverviewFocusWatch();
   } catch (error) {
-    if (isActiveBoard) {
-      if (requestId !== state.marketRequestId) return;
-      state.marketError = error instanceof Error ? error.message : '行情加载失败';
-      renderMarket();
+    const message = error instanceof Error ? error.message : '行情加载失败';
+    if (!isActiveBoard || requestId === state.marketRequestId) {
+      state.marketBoardErrors[board] = message;
+      if (isActiveBoard) {
+        state.marketError = message;
+        renderMarket();
+      }
     }
     throw error;
   } finally {
     if (isActiveBoard && requestId === state.marketRequestId) {
       state.marketLoading = false;
       renderMarketStatus();
+      renderMarket();
     }
   }
 }
@@ -5492,20 +5534,16 @@ function overviewFocusIsStale(board = state.markets.overview, nowMs = Date.now()
   return !board || board.focus !== preferredOverviewFocus(nowMs);
 }
 
-function overviewIndices() {
-  const live = (state.markets.overview?.sections || [])
+function overviewLiveIndices() {
+  return (state.markets.overview?.sections || [])
     .flatMap((section) => section.indices || [])
     .filter((item) => item?.symbol);
+}
+
+function overviewIndices() {
+  const live = overviewLiveIndices();
   if (live.length) return live;
-  const focus = preferredOverviewFocus();
-  return globalAssets
-    .filter((item) => item.assetClass === 'index' && (focus === 'cn' ? item.market === 'cn' || item.market === 'hk' : item.market === 'us'))
-    .map((item) => ({
-      name: item.name,
-      symbol: item.symbol,
-      lastPrice: Number(String(item.price).replace(/,/g, '')),
-      changePct: item.changePct,
-    }));
+  return overviewLoadingIndices(preferredOverviewFocus());
 }
 
 function hubQuotes() {
@@ -5524,7 +5562,7 @@ function hubMovers() {
       return true;
     }).slice(0, 10);
   }
-  return hubQuotes().slice(5, 12);
+  return [];
 }
 
 function hubStreamItems() {
@@ -5539,25 +5577,24 @@ function renderHubTicker() {
   if (!ticker) return;
   const quotesForTick = hubQuotes().slice(0, 8);
   ticker.replaceChildren(...quotesForTick.map((item) => {
-    const up = (item.changePct ?? 0) >= 0;
+    const known = item.changePct !== null && item.changePct !== undefined;
+    const up = known && item.changePct >= 0;
+    const tone = known ? (up ? 'up' : 'down') : '';
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'hub-tick';
     button.innerHTML = `<small>${item.name}</small>
-      <strong class="num ${up ? 'up' : 'down'}">${formatPrice(item.lastPrice)}</strong>
-      <b class="${up ? 'up' : 'down'}">${item.changePct === null || item.changePct === undefined ? '—' : formatPct(up, item.changePct)}</b>`;
+      <strong class="num ${tone}">${item.lastPrice == null ? LOADING_QUOTE : formatPrice(item.lastPrice)}</strong>
+      <b class="${tone}">${known ? formatPct(up, item.changePct) : LOADING_QUOTE}</b>`;
     button.addEventListener('click', () => openPage('quote', item.symbol));
     return button;
   }));
   if (elements['hub-market-note']) {
-    const board = state.assetBoard || state.markets.overview;
-    const updated = board?.fetchedAt || board?.updatedAt;
-    const live = Boolean(board && !state.marketError && !state.assetError);
-    elements['hub-market-note'].textContent = state.marketLoading || state.assetLoading
-      ? '正在读取行情…'
-      : (state.marketError || state.assetError || (live
-        ? `行情已连接 · 更新 ${updated ? formatTime(updated) : '刚刚'}`
-        : '行情连接后显示更新时间'));
+    const live = overviewLiveIndices();
+    const updated = state.markets.overview?.fetchedAt;
+    elements['hub-market-note'].textContent = live.length
+      ? `行情已连接 · 更新 ${updated ? formatTime(updated) : '刚刚'}`
+      : (state.marketError || '正在读取行情…');
   }
 }
 
@@ -5803,6 +5840,15 @@ function renderStaticSignalBoard() {
       const unavailable = board?.sourceHealth?.filter(item => item.category === 'calendar').some(item => item.status === 'unavailable');
       const loading = state.staticBoardLoading || !board && !state.staticBoardError;
       const error = state.staticBoardError || unavailable;
+      if (root === elements['static-upcoming'] && !loading && !error) {
+        root.replaceChildren(Object.assign(document.createElement('p'), {
+          className: 'section-desc',
+          textContent: '近期没有日程',
+        }));
+        root.dataset.loadState = 'empty';
+        root.setAttribute('aria-busy', 'false');
+        return;
+      }
       renderViewState(root, { kind: loading ? 'loading' : error ? 'error' : 'empty',
         title: loading ? '正在读取官方日程…' : error ? '日程暂未完整读取' : '暂无日程',
         message: loading ? '正在核对所选时间范围。' : state.staticBoardError || (unavailable ? '部分官方来源暂不可用，不能确认没有日程。' : emptyText),
@@ -6214,11 +6260,19 @@ function appendStaticSignalItem(root, item, viewKind) {
   source.type = 'button';
   source.className = 'text-button static-source-link';
   source.textContent = staticSignalLinkLabel(item, viewKind);
-  source.addEventListener('click', () => openExternalHttpUrl(item.sourceUrl));
+  source.addEventListener('click', (event) => {
+    event.stopPropagation();
+    openExternalHttpUrl(item.sourceUrl);
+  });
   article.addEventListener('click', () => {
     if (viewKind === 'calendar') openPage('event', item.eventId);
     else openArticle(officialAsItem(item));
   });
+  if (viewKind === 'calendar') {
+    const copy = document.createElement('div');
+    copy.append(title, meta);
+    article.append(time, copy);
+  } else article.append(time, title, meta, source);
   root.append(article);
 }
 
@@ -6319,9 +6373,21 @@ function scheduleOverviewFocusWatch() {
 function renderMarketStatus() {
   const el = elements['market-status'];
   if (!el) return;
-  const error = !state.marketLoading && state.marketError ? state.marketError : '';
-  el.textContent = error;
+  const error = !state.marketLoading && (state.marketBoardErrors[state.stockBoard] || state.marketError)
+    ? (state.marketBoardErrors[state.stockBoard] || state.marketError)
+    : '';
+  el.replaceChildren();
   el.classList.toggle('hidden', !error);
+  if (!error) return;
+  el.append(document.createTextNode(error));
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.className = 'text-button';
+  retry.textContent = '重试';
+  retry.addEventListener('click', () => {
+    loadMarket({ board: state.stockBoard }).catch((failure) => showToast(failure.message));
+  });
+  el.append(retry);
 }
 
 function renderIndexScroller(indices) {
@@ -6352,8 +6418,12 @@ function renderOverview(market) {
     const heading = document.createElement('div');
     heading.className = 'market-section-title';
     heading.append(Object.assign(document.createElement('h2'), { textContent: section.title }));
-    if (section.session) {
-      heading.append(Object.assign(document.createElement('small'), { className: 'muted', textContent: sessionLabel(section.session) }));
+    const sectionMeta = [
+      section.session ? sessionLabel(section.session) : '',
+      market?.fetchedAt ? `更新 ${formatTime(market.fetchedAt)}` : '',
+    ].filter(Boolean).join(' · ');
+    if (sectionMeta) {
+      heading.append(Object.assign(document.createElement('small'), { className: 'muted', textContent: sectionMeta }));
     }
     const brief = document.createElement('div');
     brief.className = 'market-brief';
@@ -6517,6 +6587,66 @@ function renderWatchRows(target, rows, { formatValue } = {}) {
   }));
 }
 
+function marketRetryBlock(message) {
+  const box = document.createElement('div');
+  box.className = 'empty-state';
+  box.append(Object.assign(document.createElement('p'), { textContent: message || '这块行情没有读出来。' }));
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.className = 'text-button';
+  retry.textContent = '重试';
+  retry.addEventListener('click', () => {
+    loadMarket({ board: state.stockBoard }).catch((error) => showToast(error.message));
+  });
+  box.append(retry);
+  return box;
+}
+
+function marketIndexSkeleton() {
+  const wrap = document.createElement('section');
+  wrap.className = 'market-section';
+  const heading = document.createElement('div');
+  heading.className = 'market-section-title';
+  heading.append(Object.assign(document.createElement('h2'), { textContent: '行情' }));
+  wrap.append(heading);
+  const scroller = document.createElement('div');
+  scroller.className = 'index-scroller';
+  for (let index = 0; index < 4; index += 1) {
+    const card = document.createElement('article');
+    card.className = 'index-card';
+    card.innerHTML = '<header><span>—</span><small>--</small></header><strong>--</strong><b>--</b>';
+    scroller.append(card);
+  }
+  wrap.append(scroller);
+  return wrap;
+}
+
+function marketRowSkeleton() {
+  return Array.from({ length: 6 }, () => {
+    const row = document.createElement('div');
+    row.className = 'market-row';
+    row.innerHTML = '<span class="quote-identity identity"><strong class="quote-name">—</strong><small class="quote-code">--</small></span><span class="market-spark">—</span><span class="q-price"><strong class="quote-price">--</strong><b class="quote-change">--</b></span>';
+    return row;
+  });
+}
+
+function paintMarketPlaceholder(isOverview) {
+  const error = state.marketBoardErrors[state.stockBoard] || '';
+  const showError = Boolean(error) && !state.marketLoading;
+  if (isOverview) {
+    elements['quote-filters'].replaceChildren();
+    elements['quote-list'].replaceChildren();
+    const root = elements['market-overview'];
+    root.replaceChildren(showError ? marketRetryBlock(error) : marketIndexSkeleton());
+    return;
+  }
+  elements['market-overview'].replaceChildren();
+  elements['market-table-scroll'].classList.remove('hidden');
+  renderChipTabs(elements['quote-filters'], [{ id: '全部', label: '全部' }], '全部', () => {});
+  if (showError) elements['quote-list'].replaceChildren(marketRetryBlock(error));
+  else elements['quote-list'].replaceChildren(...marketRowSkeleton());
+}
+
 function renderMarket() {
   renderStockBoards();
   const market = currentMarket();
@@ -6525,6 +6655,14 @@ function renderMarket() {
   elements['market-filter-wrap'].classList.toggle('hidden', isOverview);
   elements['market-table-scroll'].classList.toggle('hidden', isOverview);
   updateChangeSortControl();
+  if (document.body.dataset.view === 'market' && state.tradePane === 'stocks') {
+    setTradeHint(isOverview ? '' : marketBoardHint(market));
+  }
+  if (!market) {
+    paintMarketPlaceholder(isOverview);
+    if (document.body.dataset.view === 'sources') renderHub();
+    return;
+  }
   if (isOverview) {
     elements['quote-filters'].replaceChildren();
     renderOverview(market);
@@ -11445,15 +11583,47 @@ function ensureSourceFeed(id) {
   return Promise.resolve();
 }
 
+async function loadFocusFeedWindow(kind) {
+  const isX = kind === 'x';
+  const loadedKey = isX ? 'xFocusLoaded' : 'xueqiuFocusLoaded';
+  const loadingKey = isX ? 'xFocusLoading' : 'xueqiuFocusLoading';
+  const cursorKey = isX ? 'xNextCursor' : 'xueqiuNextCursor';
+  const itemsKey = isX ? 'xItems' : 'xueqiuItems';
+  const load = isX ? loadXFeed : loadXueqiuFeed;
+  if (state[loadedKey] || state[loadingKey]) return null;
+  state[loadingKey] = true;
+  try {
+    await load({ refresh: false, focusWindow: true });
+    let pages = 1;
+    while (state.channel === 'focus' && state[cursorKey] && (state[itemsKey] || []).length < FOCUS_FEED_WINDOW && pages < 4) {
+      const before = (state[itemsKey] || []).length;
+      await load({ refresh: false, append: true, focusWindow: true });
+      pages += 1;
+      if ((state[itemsKey] || []).length <= before) break;
+    }
+    if (state.channel === 'focus') state[loadedKey] = true;
+    return true;
+  } finally {
+    state[loadingKey] = false;
+  }
+}
+
 function ensureFeedSources(sources) {
   const missing = missingFeedSources(sources, feedLoadFlags());
+  const focusWindow = state.channel === 'focus';
   const tasks = [];
   for (const source of missing) {
     if (source === 'posts') tasks.push(loadPosts().catch((error) => showToast(error.message)));
-    if (source === 'x') tasks.push(loadXFeed({ refresh: false }).catch((error) => showToast(error.message)));
-    if (source === 'xueqiu') tasks.push(loadXueqiuFeed({ refresh: false }).catch((error) => showToast(error.message)));
+    if (source === 'x') tasks.push((focusWindow ? loadFocusFeedWindow('x') : loadXFeed({ refresh: false })).catch((error) => showToast(error.message)));
+    if (source === 'xueqiu') tasks.push((focusWindow ? loadFocusFeedWindow('xueqiu') : loadXueqiuFeed({ refresh: false })).catch((error) => showToast(error.message)));
     if (source === 'official') tasks.push(loadStaticSignalBoard().catch((error) => showToast(error.message)));
     if (source === 'media') tasks.push(loadMediaFeed({ refresh: false }).catch((error) => showToast(error.message)));
+  }
+  if (focusWindow && sources.includes('x') && !missing.includes('x') && !state.xFocusLoaded && !state.xFocusLoading && !state.xLoading) {
+    tasks.push(loadFocusFeedWindow('x').catch((error) => showToast(error.message)));
+  }
+  if (focusWindow && sources.includes('xueqiu') && !missing.includes('xueqiu') && !state.xueqiuFocusLoaded && !state.xueqiuFocusLoading && !state.xueqiuLoading) {
+    tasks.push(loadFocusFeedWindow('xueqiu').catch((error) => showToast(error.message)));
   }
   return Promise.all(tasks);
 }
@@ -11532,19 +11702,29 @@ async function requestTranslate(post) {
   await translatePost(post);
 }
 
+function translationFailed(message) {
+  const error = new Error(message || '翻译未完成，请稍后重试');
+  error.translationStatus = 'failed';
+  return error;
+}
+
 async function requestTranslation(path, options) {
   const submitted = await api(path, options);
   if (!submitted.jobId) return submitted;
-  for (let attempt = 0; attempt < 900; attempt++) {
+  let sawRunning = false;
+  for (let attempt = 0; attempt < 150; attempt++) {
     await wait(1000);
     const payload = await api(`/api/v1/translate/jobs/${submitted.jobId}`);
     if (payload.status === 'completed') {
       const result = payload.result || {};
       return path.endsWith('/batch') ? result : { translation: result.translations?.[0] || {} };
     }
-    if (['failed', 'cancelled'].includes(payload.status)) throw new Error(payload.error || '翻译未完成，请稍后重试');
+    if (payload.status === 'running') sawRunning = true;
+    if (['failed', 'cancelled'].includes(payload.status) || (payload.status === 'queued' && (sawRunning || attempt >= 20))) {
+      throw translationFailed(payload.error || '翻译未完成，请稍后重试');
+    }
   }
-  throw new Error('翻译仍在后台进行，完成后可重新打开查看');
+  throw translationFailed('翻译仍在后台进行，完成后可重新打开查看');
 }
 
 async function translateXBatch({ silent = false } = {}) {
@@ -11605,7 +11785,8 @@ async function autoLocalizeSources() {
     .filter((row) => row?.pending && row.id && row.sourceText)
     .filter((row, index, rows) => rows.findIndex((item) => item.id === row.id) === index)
     .slice(0, TRANSLATE_BATCH_SIZE);
-  if (!pending.length) return;
+  const waiting = pending.filter((row) => row.status !== 'failed');
+  if (!waiting.length) return;
   state.sourceLocalizing = true;
   try {
     const payload = await requestTranslation('/api/v1/translate/batch', {
@@ -11613,18 +11794,15 @@ async function autoLocalizeSources() {
       timeoutMs: 120_000,
       body: JSON.stringify({
         targetLang: 'zh',
-        items: pending.map((row) => ({ id: row.id, text: row.sourceText })),
+        items: waiting.map((row) => ({ id: row.id, text: row.sourceText })),
       }),
     });
     const byId = new Map((payload.translations || []).map((row) => [row.id, row.translatedText]));
     for (const [sourceId, row] of Object.entries(state.sourceLocalizations)) {
       const text = byId.get(row.id);
       if (!text) continue;
-      state.sourceLocalizations[sourceId] = { ...row, text, pending: false };
+      state.sourceLocalizations[sourceId] = { ...row, text, pending: false, status: 'ready' };
     }
-    renderStaticSignalBoard();
-    renderMarketNativeBoard();
-    renderOverviewTimeline();
     const dialogItems = elements['source-dialog-items'];
     if (dialogItems && elements['source-dialog']?.open) {
       const sourceTitle = elements['source-dialog-title']?.textContent;
@@ -11639,9 +11817,17 @@ async function autoLocalizeSources() {
       }
     }
   } catch {
-    // Keep pending placeholders; a later refresh retries Gemini.
+    const failedIds = new Set(waiting.map((row) => row.id));
+    for (const [sourceId, row] of Object.entries(state.sourceLocalizations)) {
+      if (!failedIds.has(row?.id) || row.text) continue;
+      state.sourceLocalizations[sourceId] = { ...row, pending: false, status: 'failed' };
+    }
   } finally {
     state.sourceLocalizing = false;
+    renderStaticSignalBoard();
+    renderMarketNativeBoard();
+    renderOverviewTimeline();
+    renderPosts();
   }
 }
 
@@ -11758,7 +11944,7 @@ async function tagXBatch({ silent = false } = {}) {
   }
 }
 
-async function loadXFeed({ refresh = false, autoTranslate = true, append = false } = {}) {
+async function loadXFeed({ refresh = false, autoTranslate = true, append = false, focusWindow = false } = {}) {
   if (!state.session) return null;
   state.xLoading = true;
   state.xError = '';
@@ -11769,8 +11955,8 @@ async function loadXFeed({ refresh = false, autoTranslate = true, append = false
     const params = new URLSearchParams({
       platform: 'x',
       feed: state.xFeed,
-      limit: refresh ? '50' : String(FEED_PAGE_SIZE),
     });
+    params.set('limit', focusWindow || refresh ? '50' : String(FEED_PAGE_SIZE));
     if (append && state.xNextCursor) params.set('before', state.xNextCursor);
     if (refresh) params.set('refresh', '1');
     const payload = await api(`/api/v1/feed/x?${params}`, { timeoutMs: refresh ? 180_000 : 15_000 });
@@ -11782,7 +11968,7 @@ async function loadXFeed({ refresh = false, autoTranslate = true, append = false
       state.xItems = [...(state.xItems || []), ...added];
       if (added.length) state.feedShown += added.length;
       state.xNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
-    } else if (refresh || !(state.xItems || []).length) {
+    } else if (refresh || focusWindow || !(state.xItems || []).length) {
       state.xItems = incoming;
       state.xNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
     } else {
@@ -11813,6 +11999,9 @@ async function loadXFeed({ refresh = false, autoTranslate = true, append = false
     renderXToolbar();
     renderPosts();
     if (typeof document !== 'undefined' && document.body?.dataset?.view === 'sources' && state.overviewTimeline === 'social') renderOverviewTimeline();
+    if (!focusWindow && state.channel === 'focus' && !state.xFocusLoaded && !state.xFocusLoading) {
+      loadFocusFeedWindow('x').catch((error) => showToast(error.message));
+    }
   }
 }
 
@@ -11857,7 +12046,7 @@ async function runXCapturePipeline() {
   }
 }
 
-async function loadXueqiuFeed({ refresh = false, append = false } = {}) {
+async function loadXueqiuFeed({ refresh = false, append = false, focusWindow = false } = {}) {
   if (!state.session) {
     if (refresh) {
       showToast('请先在设置中完成设备连接');
@@ -11874,8 +12063,8 @@ async function loadXueqiuFeed({ refresh = false, append = false } = {}) {
     const params = new URLSearchParams({
       platform: 'xueqiu',
       feed: state.xueqiuFeed,
-      limit: refresh ? '50' : String(FEED_PAGE_SIZE),
     });
+    params.set('limit', focusWindow || refresh ? '50' : String(FEED_PAGE_SIZE));
     if (append && state.xueqiuNextCursor) params.set('before', state.xueqiuNextCursor);
     if (refresh) params.set('refresh', '1');
     const payload = await api(`/api/v1/feed/xueqiu?${params}`, { timeoutMs: refresh ? 180_000 : 15_000 });
@@ -11887,7 +12076,7 @@ async function loadXueqiuFeed({ refresh = false, append = false } = {}) {
       state.xueqiuItems = [...(state.xueqiuItems || []), ...added];
       if (added.length) state.feedShown += added.length;
       state.xueqiuNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
-    } else if (refresh || !(state.xueqiuItems || []).length) {
+    } else if (refresh || focusWindow || !(state.xueqiuItems || []).length) {
       state.xueqiuItems = incoming;
       state.xueqiuNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
     } else {
@@ -11920,6 +12109,9 @@ async function loadXueqiuFeed({ refresh = false, append = false } = {}) {
     renderXueqiuToolbar();
     renderPosts();
     if (typeof document !== 'undefined' && document.body?.dataset?.view === 'sources' && state.overviewTimeline === 'social') renderOverviewTimeline();
+    if (!focusWindow && state.channel === 'focus' && !state.xueqiuFocusLoaded && !state.xueqiuFocusLoading) {
+      loadFocusFeedWindow('xueqiu').catch((error) => showToast(error.message));
+    }
   }
 }
 

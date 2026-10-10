@@ -1,4 +1,5 @@
 import { FeedTranslationJobInputSchema } from '../../contracts/src/index.js';
+import { TRANSLATION_MAX_ATTEMPTS } from '../../database/src/translation-retry.js';
 
 export const feedTranslationManifest = Object.freeze({
   id: 'feed.translation', version: '1.0.0',
@@ -22,7 +23,7 @@ export async function enqueueOriginalTranslations({ store, feedService, workspac
   for (const unit of units.filter(unit => pending.has(unit.id) && unit.text.length <= 20000)) {
     const input = FeedTranslationJobInputSchema.parse({ workspaceId, items: [{ id: unit.localizationId || unit.id, text: unit.text }] });
     const open = store.listOpenJobs?.('feed.translation.run')?.find(job => job.workspaceId === workspaceId && JSON.stringify(job.input) === JSON.stringify(input));
-    jobs.push(open || store.createJob({ type: 'feed.translation.run', workspaceId, input, maxAttempts: 2 }));
+    jobs.push(open || store.createJob({ type: 'feed.translation.run', workspaceId, input, maxAttempts: TRANSLATION_MAX_ATTEMPTS }));
   }
   return jobs;
 }

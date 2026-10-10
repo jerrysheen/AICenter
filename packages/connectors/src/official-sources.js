@@ -1,3 +1,5 @@
+import { stripVideoPlayerResidue } from './excerpt-text.js';
+
 const URLS = Object.freeze({
   bls: 'https://www.bls.gov/schedule/news_release/bls.ics',
   bea: 'https://www.bea.gov/news/schedule',
@@ -46,7 +48,7 @@ function decodeHtml(value = '') {
 }
 
 function text(value = '') {
-  return decodeHtml(String(value).replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1').replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, ' '))
+  return stripVideoPlayerResidue(decodeHtml(String(value).replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1').replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, ' ')))
     .replace(/\s+/g, ' ').trim();
 }
 

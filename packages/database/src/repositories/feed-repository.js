@@ -1,4 +1,5 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { TRANSLATION_MAX_ATTEMPTS, translationRetryDelayMs } from '../translation-retry.js';
 import {
   parseContract,
   SaveCaptureInputSchema,
@@ -12,6 +13,20 @@ import {
 
 function parseJson(value, fallback = {}) {
   try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
+}
+
+function sourceHash(value) {
+  return createHash('sha256').update(String(value ?? '')).digest('hex');
+}
+
+function publicTranslationError(error) {
+  const text = String(error?.message || error || '翻译失败')
+    .replace(/AIza[0-9A-Za-z\-_]{8,}/g, '[redacted]')
+    .replace(/(api[_-]?key|x-goog-api-key|authorization|bearer)\s*[:=]\s*\S+/gi, '$1=[redacted]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 300);
+  return text || '翻译失败';
 }
 
 const USER_VISIBLE_CONTENT_SQL = `NOT EXISTS (
@@ -463,7 +478,8 @@ export function createFeedRepository(database, emitEvent) {
       const rows = sourceExternalId
         ? database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id,
             c.captured_at AS captured_at, c.metadata_json AS capture_metadata_json,
-            COALESCE(item_state.is_read, 0) AS is_read
+            COALESCE(item_state.is_read, 0) AS is_read,
+            COALESCE(item_state.is_saved, 0) AS is_saved
             FROM content_items ci
             INNER JOIN captures c ON c.id = ci.capture_id
             INNER JOIN source_accounts sa ON sa.id = c.source_account_id
@@ -477,7 +493,8 @@ export function createFeedRepository(database, emitEvent) {
             LIMIT ?`).all(workspaceId, provider, sourceExternalId, ...cursorParams, safeLimit)
         : database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id,
             c.captured_at AS captured_at, c.metadata_json AS capture_metadata_json,
-            COALESCE(item_state.is_read, 0) AS is_read
+            COALESCE(item_state.is_read, 0) AS is_read,
+            COALESCE(item_state.is_saved, 0) AS is_saved
             FROM content_items ci
             INNER JOIN captures c ON c.id = ci.capture_id
             LEFT JOIN user_item_states item_state
@@ -495,6 +512,7 @@ export function createFeedRepository(database, emitEvent) {
         capturedAt: row.captured_at,
         captureMetadata: parseJson(row.capture_metadata_json),
         isRead: Boolean(row.is_read),
+        isSaved: Boolean(row.is_saved),
       }));
     },
 
@@ -779,6 +797,9 @@ export function createFeedRepository(database, emitEvent) {
             now,
             now,
           );
+          database.prepare(`DELETE FROM feed_translation_failures
+            WHERE workspace_id = ? AND item_id = ? AND target_lang = ?`)
+            .run(input.workspaceId, input.itemId, input.targetLang);
           emitEvent('feed.item-translation.saved.v1', 'item-translation', input.itemId, {
             itemId: input.itemId,
             targetLang: input.targetLang,
@@ -823,6 +844,80 @@ export function createFeedRepository(database, emitEvent) {
         engine: row.engine || '',
         updatedAt: row.updated_at,
       }));
+    },
+
+    listTranslationsByHash(workspaceId, hashes = [], targetLang = 'zh') {
+      const keys = [...new Set((hashes || []).map((hash) => String(hash || '').trim()).filter(Boolean))];
+      if (!keys.length) return [];
+      const placeholders = keys.map(() => '?').join(', ');
+      const rows = database.prepare(`SELECT item_id, target_lang, source_hash, translated_text, engine, updated_at
+        FROM feed_item_translations
+        WHERE workspace_id = ? AND target_lang = ? AND source_hash IN (${placeholders})
+        ORDER BY updated_at DESC`).all(workspaceId, targetLang, ...keys);
+      return rows.map((row) => ({
+        itemId: row.item_id,
+        targetLang: row.target_lang,
+        sourceHash: row.source_hash,
+        translatedText: row.translated_text,
+        engine: row.engine || '',
+        updatedAt: row.updated_at,
+      }));
+    },
+
+    listTranslationFailures(workspaceId, itemIds = [], targetLang = 'zh') {
+      const ids = [...new Set((itemIds || []).map((id) => String(id || '').trim()).filter(Boolean))];
+      if (!ids.length) return [];
+      const placeholders = ids.map(() => '?').join(', ');
+      const rows = database.prepare(`SELECT item_id, target_lang, source_hash, attempt_count, next_retry_at, last_error, updated_at
+        FROM feed_translation_failures
+        WHERE workspace_id = ? AND target_lang = ? AND item_id IN (${placeholders})`)
+        .all(workspaceId, targetLang, ...ids);
+      return rows.map((row) => ({
+        itemId: row.item_id,
+        targetLang: row.target_lang,
+        sourceHash: row.source_hash,
+        attemptCount: row.attempt_count,
+        nextRetryAt: row.next_retry_at ?? null,
+        lastError: row.last_error || '',
+        updatedAt: row.updated_at,
+      }));
+    },
+
+    noteTranslationFailure({ workspaceId, items = [], targetLang = 'zh', error, attemptCount, terminal, nextRetryAt } = {}) {
+      const lang = targetLang === 'en' ? 'en' : 'zh';
+      const message = publicTranslationError(error);
+      const now = Date.now();
+      const rows = [];
+      database.transaction(() => {
+        const readFailure = database.prepare(`SELECT attempt_count FROM feed_translation_failures
+          WHERE workspace_id = ? AND item_id = ? AND target_lang = ?`);
+        const readReady = database.prepare(`SELECT source_hash, translated_text FROM feed_item_translations
+          WHERE workspace_id = ? AND item_id = ? AND target_lang = ?`);
+        const write = database.prepare(`INSERT INTO feed_translation_failures
+          (workspace_id, item_id, target_lang, source_hash, attempt_count, next_retry_at, last_error, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(workspace_id, item_id, target_lang) DO UPDATE SET
+            source_hash = excluded.source_hash,
+            attempt_count = excluded.attempt_count,
+            next_retry_at = excluded.next_retry_at,
+            last_error = excluded.last_error,
+            updated_at = excluded.updated_at`);
+        for (const item of items) {
+          const id = String(item?.id || '').trim();
+          const text = String(item?.text || '');
+          if (!id || !text) continue;
+          const hash = sourceHash(text);
+          const saved = readReady.get(workspaceId, id, lang);
+          if (saved?.translated_text && saved.source_hash === hash) continue;
+          const previous = readFailure.get(workspaceId, id, lang);
+          const attempts = Number.isInteger(attemptCount) ? attemptCount : (Number(previous?.attempt_count) || 0) + 1;
+          const done = terminal === true || attempts >= TRANSLATION_MAX_ATTEMPTS;
+          const retryAt = done ? null : (Number.isInteger(nextRetryAt) ? nextRetryAt : now + translationRetryDelayMs(attempts));
+          write.run(workspaceId, id, lang, hash, attempts, retryAt, message, now);
+          rows.push({ itemId: id, attemptCount: attempts, nextRetryAt: retryAt, lastError: message });
+        }
+      })();
+      return rows;
     },
 
     upsertUserItemState(value) {
