@@ -129,7 +129,7 @@ test('feed and schedule entry load before bootstrap finishes', () => {
   assert.match(functionSource('ensureFeedSources'), /state\.channel === 'focus'/);
   assert.match(functionSource('ensureFeedSources'), /loadFocusFeedWindow\('x'\)/);
   assert.match(functionSource('loadFocusFeedWindow'), /FOCUS_FEED_WINDOW/);
-  assert.match(functionSource('loadXFeed'), /focusWindow \|\| refresh \? String\(FOCUS_FEED_PAGE\)/);
+  assert.match(functionSource('loadXFeed'), /focusWindow \|\| refresh \? '50'/);
   assert.match(functionSource('renderMarket'), /paintMarketPlaceholder\(isOverview\)/);
 });
 

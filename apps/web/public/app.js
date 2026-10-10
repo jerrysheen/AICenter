@@ -1546,7 +1546,6 @@ function formatAskClock(timestamp) {
 }
 
 const FEED_PAGE_SIZE = 12;
-const FOCUS_FEED_PAGE = 50;
 const FOCUS_FEED_WINDOW = 200;
 let mediaHeadMerge = false;
 
@@ -11917,7 +11916,7 @@ async function loadXFeed({ refresh = false, autoTranslate = true, append = false
       platform: 'x',
       feed: state.xFeed,
     });
-    params.set('limit', focusWindow || refresh ? String(FOCUS_FEED_PAGE) : String(FEED_PAGE_SIZE));
+    params.set('limit', focusWindow || refresh ? '50' : String(FEED_PAGE_SIZE));
     if (append && state.xNextCursor) params.set('before', state.xNextCursor);
     if (refresh) params.set('refresh', '1');
     const payload = await api(`/api/v1/feed/x?${params}`, { timeoutMs: refresh ? 180_000 : 15_000 });
@@ -12025,7 +12024,7 @@ async function loadXueqiuFeed({ refresh = false, append = false, focusWindow = f
       platform: 'xueqiu',
       feed: state.xueqiuFeed,
     });
-    params.set('limit', focusWindow || refresh ? String(FOCUS_FEED_PAGE) : String(FEED_PAGE_SIZE));
+    params.set('limit', focusWindow || refresh ? '50' : String(FEED_PAGE_SIZE));
     if (append && state.xueqiuNextCursor) params.set('before', state.xueqiuNextCursor);
     if (refresh) params.set('refresh', '1');
     const payload = await api(`/api/v1/feed/xueqiu?${params}`, { timeoutMs: refresh ? 180_000 : 15_000 });
