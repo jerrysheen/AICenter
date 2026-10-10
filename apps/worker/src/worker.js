@@ -1,6 +1,6 @@
 import { audioTranscriptionManifest, createAudioTranscriptionJobHandlers } from '../../../packages/runtime/src/audio-transcription-job.js';
 import {createGeminiArticleAdmission} from '../../../packages/runtime/src/gemini-article-admission.js';
-import {resolveDailyHarnessProvider, resolveGoogleDailyModelPool, resolveGoogleHourlyModelPool} from '../../../packages/harness/src/llm-route.js';
+import {resolveGoogleHourlyModelPool} from '../../../packages/harness/src/llm-route.js';
 import { createFeedTranslationJobHandlers, feedTranslationManifest } from '../../../packages/runtime/src/feed-translation-module.js';
 import { createHardwareArtifactStore } from '../../../packages/connectors/src/hardware-artifacts.js';
 import { legacyPriceSnapshot } from '../../../packages/connectors/src/trendforce-prices.js';
@@ -21,7 +21,7 @@ import { createAgentQualityLayerFromEnv } from '../../../packages/runtime/src/ag
 import { articleAnalysisManifest, createArticleAnalysisJobHandlers } from '../../../packages/runtime/src/article-analysis/article-analysis-module.js';
 import { createAttachmentStore, createStore } from '../../../packages/database/src/index.js';
 import { createFeedFilterFromEnv } from '../../../packages/domain/src/feed-filter.js';
-import { resolveDailyConfig, resolveDailyExecutionTimeoutMs } from '../../../packages/domain/src/daily-window.js';
+import { resolveDailyConfig } from '../../../packages/domain/src/daily-window.js';
 import { createFeedService } from '../../../packages/domain/src/feed-service.js';
 import { createFeedInteractionService } from '../../../packages/domain/src/feed-interaction-service.js';
 import { createXLikeBrowserPort } from '../../../packages/connectors/src/x/like-browser.js';
@@ -330,10 +330,7 @@ export function createAiCenterWorker(options = {}) {
     console.log('[worker] agent runtime=local');
   }
   const articleAdmission=env.AI_CENTER_ARTICLE_NORMALIZE==='1' && env.AI_CENTER_HARNESS_ARTICLE_PROVIDER==='google' ? createGeminiArticleAdmission({repository:store.repositories.modelQuota,env}) : null;
-  const hourlyGoogle=String(env.AI_CENTER_HARNESS_HOURLY_PROVIDER || '').trim()==='google';
-  const dailyGoogle=resolveDailyHarnessProvider(env)==='google';
-  const briefModels=[...new Set([...(hourlyGoogle ? resolveGoogleHourlyModelPool(env) : []),...(dailyGoogle ? resolveGoogleDailyModelPool(env) : [])])];
-  const hourlyAdmission=hourlyGoogle || dailyGoogle ? createGeminiArticleAdmission({repository:store.repositories.modelQuota,env,models:briefModels,allowFallback:false}) : null;
+  const hourlyAdmission=env.AI_CENTER_HARNESS_HOURLY_PROVIDER==='google' ? createGeminiArticleAdmission({repository:store.repositories.modelQuota,env,models:resolveGoogleHourlyModelPool(env),allowFallback:false}) : null;
   const agentRuntime = runtimeMode === 'harness'
     ? createHarnessExecutionRuntime({
       articleAdmission,
@@ -411,7 +408,7 @@ export function createAiCenterWorker(options = {}) {
   const articleNormalizePort=articleStrategy ? {async prepareInformation(input) {return {queued:enqueueTreePreparation(store,input.workspaceId || 'local',input.sourceIds || []).length};}} : null;
   const treeCatalog=treeEnabled ? options.tagCatalog || readTagCatalogFile(existsSync(instance.tagCatalogPath) ? instance.tagCatalogPath : path.join(repositoryRoot,'config/tags.default.json')) : null;
   const treeMaterials=treeEnabled ? createTreeMaterialPort({feedService,mediaService}) : null;
-  const treeService=treeEnabled ? createInformationTreeService({repository:store.repositories.informationTree,reportRepository:store.repositories.report,budget:{dailyTimeoutMs:resolveDailyExecutionTimeoutMs(env)},
+  const treeService=treeEnabled ? createInformationTreeService({repository:store.repositories.informationTree,reportRepository:store.repositories.report,
     feedService,mediaPort:mediaService,agentRuntime,articleStrategy,budgetReady:articleAdmission?.policy.accountMode ? ()=>articleAdmission.nextReadyAt(env.AI_CENTER_HARNESS_ARTICLE_MODEL || 'gemini-3.1-flash-lite')<=Date.now() : null,skills:articleStrategy ? loadArticleNormalizeSkills() : loadInformationTreeSkills(),timezone:dailyConfig.timezone,
     catalog:treeCatalog,
     candidatePort:treeMaterials?.candidates,materialPort:treeMaterials?.materials,

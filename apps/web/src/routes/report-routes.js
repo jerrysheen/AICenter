@@ -11,65 +11,11 @@ import {
 } from '../../../../packages/contracts/src/index.js';
 import { json, readJson } from '../http/response.js';
 import {TreeManifestQuerySchema,TreeNodeQuerySchema,TreeWindowQuerySchema,ReadingHourIndexQuerySchema} from '../../../../packages/contracts/src/information-tree.js';
-import { formatYmd, zonedParts } from '../../../../packages/domain/src/zoned-time.js';
-
-const TREE_BRIEF_LOOKBACK_MS = 7 * 86_400_000;
 
 function briefView(brief) {
   if(!brief) return null;
   const {providerId,modelId,...view}=brief;
   return view;
-}
-
-function reportDateInZone(at, timeZone = 'Asia/Shanghai') {
-  const instant = Number(at);
-  if (!Number.isFinite(instant)) return '';
-  const zone = timeZone || 'Asia/Shanghai';
-  try { return formatYmd(zonedParts(instant, zone)); }
-  catch { return formatYmd(zonedParts(instant, 'Asia/Shanghai')); }
-}
-
-function treeEditionBrief(edition, nodes) {
-  const roots = (nodes || []).filter((node) => node?.id);
-  return {
-    reportDate: reportDateInZone(edition.window?.endAt, edition.timezone),
-    overview: '',
-    generatedAt: edition.generatedAt,
-    itemCount: roots.length,
-    informationItems: roots.map((node) => ({
-      id: node.id,
-      sentence: `${node.title}：${node.text}`,
-    })),
-  };
-}
-
-function publishedTreeDailyBriefs(services, now = Date.now()) {
-  const tree = services?.informationTree;
-  if (typeof tree?.list !== 'function' || typeof tree?.edition !== 'function') return null;
-  const listed = tree.list('local', { startAt: now - TREE_BRIEF_LOOKBACK_MS, endAt: now }) || {};
-  const editions = (listed.days || [])
-    .map((row) => row?.edition)
-    .filter((edition) => edition?.id && edition.status !== 'failed' && Number.isFinite(edition.window?.endAt))
-    .sort((left, right) => right.window.endAt - left.window.endAt || right.window.startAt - left.window.startAt);
-  const briefs = [];
-  const seen = new Set();
-  for (const published of editions) {
-    const detail = tree.edition('local', published.id);
-    const edition = detail?.edition || published;
-    if (!edition?.window || edition.status === 'failed') continue;
-    const brief = treeEditionBrief(edition, detail?.nodes);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(brief.reportDate) || seen.has(brief.reportDate)) continue;
-    seen.add(brief.reportDate);
-    briefs.push(brief);
-  }
-  return { pipeline: listed.pipeline, briefs };
-}
-
-function treeBriefsPreferred(snapshot, legacyLatest) {
-  if (!snapshot) return false;
-  if (snapshot.pipeline === 'tree-v3') return true;
-  const newest = snapshot.briefs[0]?.reportDate || '';
-  return Boolean(newest) && newest > String(legacyLatest?.reportDate || '');
 }
 
 export function createReportRoutes() {
@@ -189,10 +135,7 @@ export function createReportRoutes() {
       method: 'GET',
       path: '/api/v1/reports/daily/latest/brief',
       handler({ response, services }) {
-        const legacy = services.report.getLatestDailyBrief('local');
-        const snapshot = publishedTreeDailyBriefs(services);
-        const brief = treeBriefsPreferred(snapshot, legacy) ? (snapshot.briefs[0] || null) : legacy;
-        json(response, 200, { ok: true, brief: briefView(brief) });
+        json(response, 200, { ok: true, brief: briefView(services.report.getLatestDailyBrief('local')) });
       },
     },
     {
@@ -200,20 +143,7 @@ export function createReportRoutes() {
       path: '/api/v1/reports/daily/briefs',
       handler({ response, services, url }) {
         const limit = Number(url.searchParams.get('limit') || 60);
-        const legacy = services.report.listDailyBriefs('local', limit);
-        const snapshot = publishedTreeDailyBriefs(services);
-        if (!treeBriefsPreferred(snapshot, services.report.getLatestDailyBrief('local'))) {
-          json(response, 200, { ok: true, briefs: legacy.map(briefView) });
-          return;
-        }
-        const safeLimit = Math.max(1, Math.min(Number.isFinite(limit) ? Math.trunc(limit) : 60, 200));
-        const byDate = new Map();
-        for (const item of legacy) if (item?.reportDate) byDate.set(item.reportDate, item);
-        for (const item of snapshot.briefs) byDate.set(item.reportDate, item);
-        const briefs = [...byDate.values()]
-          .sort((left, right) => String(right.reportDate).localeCompare(String(left.reportDate)))
-          .slice(0, safeLimit);
-        json(response, 200, { ok: true, briefs: briefs.map(briefView) });
+        json(response, 200, { ok: true, briefs: services.report.listDailyBriefs('local', limit).map(briefView) });
       },
     },
     {
@@ -223,16 +153,7 @@ export function createReportRoutes() {
         const query = parseContract(DailyReportDateQuerySchema, {
           date: url.searchParams.get('date') || '',
         });
-        const legacy = services.report.getDailyBrief('local', query.date);
-        const snapshot = publishedTreeDailyBriefs(services);
-        if (treeBriefsPreferred(snapshot, services.report.getLatestDailyBrief('local'))) {
-          const match = snapshot.briefs.find((item) => item.reportDate === query.date);
-          if (match) {
-            json(response, 200, { ok: true, brief: briefView(match) });
-            return;
-          }
-        }
-        json(response, 200, { ok: true, brief: briefView(legacy) });
+        json(response, 200, { ok: true, brief: briefView(services.report.getDailyBrief('local', query.date)) });
       },
     },
     {

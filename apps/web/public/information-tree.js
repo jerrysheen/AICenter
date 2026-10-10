@@ -184,7 +184,7 @@ export function createInformationTreePage(host) {
     }
     return article;
   }
-  const choice=r=>mode==='daily' ? r?.edition || null : r?.edition || r?.attempt;
+  const choice=r=>r?.edition || r?.attempt;
   function editionRows(data=manifest) {
     if(!data)return [];
     const rows=mode==='daily' ? data.days : data.hours;

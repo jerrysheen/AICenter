@@ -208,7 +208,7 @@ test('home requests are the overview set and not the old feed fan-out', () => {
   const tree = readFileSync(new URL('../apps/web/public/information-tree.js', import.meta.url), 'utf8');
   assert.match(tree, /function clearHourQuery\(/);
   assert.match(tree, /if\(mode==='daily'\) clearHourQuery\(\)/);
-  assert.match(tree, /mode==='daily' \? r\?\.edition \|\| null : r\?\.edition \|\| r\?\.attempt/);
+  assert.match(tree, /const choice=r=>r\?\.edition \|\| r\?\.attempt/);
   const css = readFileSync(new URL('../apps/web/public/styles.css', import.meta.url), 'utf8');
   assert.match(css, /\.home-title \{[^}]*white-space: normal/s);
   assert.match(css, /\.tree-primary \{[^}]*position:sticky/s);

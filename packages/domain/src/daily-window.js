@@ -1,16 +1,6 @@
 import { ValidationError } from '../../contracts/src/index.js';
 import { addCalendarDays, assertTimeZone, formatYmd, zonedLocalToUtc, zonedParts } from './zoned-time.js';
 
-export function resolveDailyExecutionTimeoutMs(env = {}) {
-  const raw = env.AI_CENTER_DAILY_EXECUTION_TIMEOUT_MS;
-  if (raw === undefined || String(raw).trim() === '') return 300000;
-  const value = Number(raw);
-  if (!Number.isInteger(value) || value < 1000 || value > 900000) {
-    throw new ValidationError('日报单次执行超时须为 1000 到 900000 毫秒', ['AI_CENTER_DAILY_EXECUTION_TIMEOUT_MS']);
-  }
-  return value;
-}
-
 export function resolveDailyConfig(env = {}) {
   const timezone = String(env.AI_CENTER_DAILY_TIMEZONE || 'Asia/Shanghai').trim() || 'Asia/Shanghai';
   const cutoff = String(env.AI_CENTER_DAILY_CUTOFF || '08:00').trim();

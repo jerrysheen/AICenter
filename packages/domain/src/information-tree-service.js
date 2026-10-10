@@ -129,7 +129,7 @@ export function createInformationTreeReader({repository,timezone='Asia/Shanghai'
 export function createInformationTreeService({repository,reportRepository,feedService,mediaPort,agentRuntime,skills,
   cacheNamespace='',articleStrategy=false,budgetReady=null,catalog={tags:[]},primaryTag=null,tagHints=null,classificationOverrideForReplay=null,candidatePort=null,materialPort=null,generationConfig={},timezone='Asia/Shanghai',now=()=>Date.now(),budget={}}) {
   const validatorVersion=articleStrategy ? ARTICLE_VALIDATOR_VERSION : TREE_VALIDATOR_VERSION;
-  const config={articleRequestBytes:100000,batchBytes:12000,maxCalls:80,totalMs:20*60000,timeoutMs:180000,dailyTimeoutMs:300000,queueTimeoutMs:120000,...budget};
+  const config={articleRequestBytes:100000,batchBytes:12000,maxCalls:80,totalMs:20*60000,timeoutMs:180000,queueTimeoutMs:120000,...budget};
   const tagNames=new Map(catalog.tags.map(t=>[t.id,t.name]));
   const classification=treeCatalog(catalog),modelTags=classification.ids;
   const route=stage=>generationConfig[stage] || generationConfig[stage==='daily' ? 'daily-analysis' : 'hourly-brief'] || {};
@@ -185,12 +185,11 @@ export function createInformationTreeService({repository,reportRepository,feedSe
         if(remaining<=0 || s.calls>=config.maxCalls) throw Object.assign(new Error('浓缩树预算耗尽'),{code:'budget-deferred'});
         s.calls++;
         reportRepository.saveAnalysisStage(s.workspaceId,period,key,key,stageInput(),null,'running');
-        const stageTimeout=stage==='daily' ? config.dailyTimeoutMs : config.timeoutMs;
         const result=await runBounded(agentRuntime,{workspaceId:s.workspaceId,usageStage:`tree-${stage}`,closedContext:true,
           closedTask:stage==='information' && articleStrategy ? 'article-normalize' : stage==='daily' ? 'daily-analysis' : 'hourly-brief',allowedToolIds:[],webMode:'off',enableAuxiliarySearch:false,executionPriority:s.priority,
           taskInstruction:instruction,
           message:JSON.stringify(articleStrategy && stage==='information' ? articleMessage() : {...payload,...(attempt ? {correction:`上一响应未通过校验：${correction}。${shape}不增加事实。`} : {})})},
-          Math.min(stageTimeout,remaining),heartbeat,30000,{queueTimeoutMs:config.queueTimeoutMs,totalTimeoutMs:remaining,onTiming:value=>{timing=value;reportRepository.saveAnalysisStage(s.workspaceId,period,key,key,stageInput(),null,'running');}});
+          Math.min(config.timeoutMs,remaining),heartbeat,30000,{queueTimeoutMs:config.queueTimeoutMs,totalTimeoutMs:remaining,onTiming:value=>{timing=value;reportRepository.saveAnalysisStage(s.workspaceId,period,key,key,stageInput(),null,'running');}});
         // Transport errors and aborted turns propagate; only completed malformed output gets one format repair.
         try {
           lastAnswer=result.answer;
@@ -347,16 +346,9 @@ export function createInformationTreeService({repository,reportRepository,feedSe
   }
   async function edition(layer,inputs,window,s,{pendingIds=[],pending=[],missingHours=[]}={}) {
     const expectedHead=repository.head(s.workspaceId,layer,window);
-    const modules=await condense(layer,inputs,window,s);
-    const tagFailed=modules.failures.length>0;
-    const covered=new Set(modules.flatMap(node=>node.children));
-    // Daily keeps a readable issue when some tags succeed. Hourly still fails the
-    // whole window so a later resume can replace it without publishing a subset.
-    const dailyPartial=layer==='daily' && modules.length>0 && tagFailed;
-    const failed=tagFailed && !dailyPartial;
-    const status=failed ? 'failed' : pendingIds.length || missingHours.length || dailyPartial ? 'partial' : 'ready';
-    const publishedInputs=dailyPartial ? inputs.filter(node=>covered.has(node.id)) : inputs;
-    const value={layer,window,timezone,status,roots:modules.map(n=>n.id),inputIds:publishedInputs.map(n=>n.id).sort(),pendingIds,pending,groupFailures:modules.failures,policyHash,missingHours,generatedAt:now()};
+    const modules=await condense(layer,inputs,window,s),failed=modules.failures.length>0;
+    const status=failed ? 'failed' : pendingIds.length || missingHours.length ? 'partial' : 'ready';
+    const value={layer,window,timezone,status,roots:modules.map(n=>n.id),inputIds:inputs.map(n=>n.id).sort(),pendingIds,pending,groupFailures:modules.failures,policyHash,missingHours,generatedAt:now()};
     return repository.publish(s.workspaceId,{...value,id:`edition:${materialHash({...value,generatedAt:undefined})}`},{expectedHead});
   }
   async function prepareInformation({workspaceId='local',materials,sourceIds,force=false,priority=0,totalMs}={}) {
