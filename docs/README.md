@@ -27,6 +27,12 @@
 
 - `progress/2026-10-10-hourly-layout-v1.md`：小时报改成电脑竖列加正文，支持 `#report?hour=HH`，相邻小时预取，「其他」不再重复方向大标题。
 
+- `progress/2026-10-10-feed-all-progressive.md`：`#feed`「全部」到来源齐之前不报最终条数；「重点」改拉已保存星标；股票页和全球行情去掉独立更新时间行与概览说明。
+
+- `progress/2026-10-10-reading-hour-index.md`：小时报索引一次返回窗口内已发布小时的摘要和头条。
+
+- `progress/2026-10-10-event-quote-24h.md`：事件报价每小时快照，以及面板上的「较昨日」点数差。没有约 24 小时前的快照就不显示。
+
 - `progress/2026-10-10-deeplink-feed-schedule.md`：行情单飞 20 秒超时；`#feed` 与近期日程首屏取数；重点按合并前窗口补拉；股票页先出骨架。
 
 - `progress/2026-10-10-translation-reliability.md`：翻译失败落库并退避重试，信息流失败态显示原文和「暂未翻译」，复用小时报译文，入库摘录清洗。

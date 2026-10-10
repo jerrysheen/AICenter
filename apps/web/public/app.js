@@ -490,7 +490,17 @@ function toggleFocus(id, render, item) {
     forgetFocusItem(item || key);
   } else {
     state.focusIds.add(key);
-    if (item) rememberFocusItem(item);
+    if (item) {
+      rememberFocusItem(item);
+      const contentItemId = item.contentItemId || (item.resourceType === 'content-item' ? item.resourceId : '');
+      if (contentItemId) {
+        item.isSaved = true;
+        api(`/api/v1/content-items/${encodeURIComponent(contentItemId)}/state`, {
+          method: 'PATCH',
+          body: JSON.stringify({ isSaved: true }),
+        }).catch((error) => showToast(error.message));
+      }
+    }
   }
   writeJsonSet(FOCUS_KEY, state.focusIds);
   if (typeof render === 'function') render();
@@ -3520,8 +3530,78 @@ function feedLoadFlags(extra = {}) {
     mediaLoaded: state.mediaLoaded,
     mediaLoading: state.mediaLoading,
     mediaError: state.mediaError,
+    xFocusLoaded: Boolean(state.xFocusLoaded),
+    xFocusLoading: Boolean(state.xFocusLoading),
+    xueqiuFocusLoaded: Boolean(state.xueqiuFocusLoaded),
+    xueqiuFocusLoading: Boolean(state.xueqiuFocusLoading),
     ...extra,
   };
+}
+
+const FEED_SOURCE_READING_LABEL = {
+  posts: '手工',
+  x: 'X',
+  xueqiu: '雪球',
+  official: '官方',
+  media: '媒体',
+};
+
+function feedSourceSettled(source, flags) {
+  const row = feedSourceFlags(source, flags);
+  return Boolean(row.loaded || row.error);
+}
+
+function pendingFeedSourceLabels(sources, flags) {
+  const labels = [];
+  for (const source of sources) {
+    if (feedSourceSettled(source, flags)) continue;
+    const name = FEED_SOURCE_READING_LABEL[source];
+    if (name) labels.push(`${name}读取中…`);
+  }
+  return labels;
+}
+
+function feedAllCountText(shownCount, total, sources, flags, sortText, rangeText) {
+  const pending = pendingFeedSourceLabels(sources, flags);
+  const prefix = [sortText, rangeText].filter(Boolean).join(' · ');
+  if (pending.length) return [prefix, pending.join(' · ')].filter(Boolean).join(' · ');
+  return [prefix, `共 ${total} 条`].filter(Boolean).join(' · ');
+}
+
+function focusFeedPending(sources, flags) {
+  if (flags.xFocusLoading || flags.xueqiuFocusLoading) return true;
+  for (const source of sources) {
+    if (source === 'x') {
+      if (!flags.xFocusLoaded && !flags.xError) return true;
+      continue;
+    }
+    if (source === 'xueqiu') {
+      if (!flags.xueqiuFocusLoaded && !flags.xueqiuError) return true;
+      continue;
+    }
+    if (!feedSourceSettled(source, flags)) return true;
+  }
+  return false;
+}
+
+function feedCountLabel(shown, items) {
+  if (state.channel === 'recent') {
+    return items.length > shown.length
+      ? `按浏览时间 · 已显示 ${shown.length} / ${items.length} 条`
+      : `按浏览时间 · ${items.length} 条`;
+  }
+  if (state.feedPlatform !== 'media' && (state.channel === 'all' || state.channel === 'focus')) {
+    const sources = feedSourcesForScope(state.channel, state.feedPlatform);
+    const flags = feedLoadFlags();
+    if (state.channel === 'focus') {
+      if (focusFeedPending(sources, flags)) return '正在读取重点…';
+      return `共 ${items.length} 条`;
+    }
+    return feedAllCountText(shown.length, items.length, sources, flags, sortLabel(), rangeLabel());
+  }
+  return items.length > shown.length
+    ? `${sortLabel()} · ${rangeLabel()} · 已显示 ${shown.length} / ${items.length} 条`
+    : `${sortLabel()} · ${rangeLabel()} · ${items.length} 条`;
 }
 
 function mediaSelectionKey(channel, view, sourceKey) {
@@ -3554,7 +3634,7 @@ function applyFeedPlatform(id) {
   if (next === 'media' && mediaFeedNeedsReload(previousMedia, mediaSelectionKey(state.mediaChannel, state.mediaView, state.mediaSourceKey), state.mediaLoading)) {
     loadMediaFeed({ refresh: false }).catch((error) => showToast(error.message));
   }
-  if (state.bootstrapped && document.body.dataset.view === 'feed') {
+  if ((state.bootstrapped || state.session) && document.body.dataset.view === 'feed') {
     ensureFeedSources(feedSourcesForScope(state.channel, state.feedPlatform)).catch((error) => showToast(error.message));
   }
 }
@@ -4056,14 +4136,19 @@ function renderPosts() {
     ? window.scrollY
     : null;
   elements.feed.replaceChildren();
-  elements['feed-count'].textContent = state.channel === 'recent'
-    ? (items.length > shown.length
-      ? `按浏览时间 · 已显示 ${shown.length} / ${items.length} 条`
-      : `按浏览时间 · ${items.length} 条`)
-    : (items.length > shown.length
-      ? `${sortLabel()} · ${rangeLabel()} · 已显示 ${shown.length} / ${items.length} 条`
-      : `${sortLabel()} · ${rangeLabel()} · ${items.length} 条`);
+  elements['feed-count'].textContent = feedCountLabel(shown, items);
   if (!items.length) {
+    const focusPending = state.channel === 'focus' && state.feedPlatform !== 'media' && !state.feedQuery
+      && focusFeedPending(feedSourcesForScope('focus', state.feedPlatform), feedLoadFlags());
+    if (focusPending) {
+      renderViewState(elements.feed, {
+        kind: 'loading',
+        title: '正在读取重点…',
+        message: '已标记的内容还在读取。',
+      });
+      observeFeedSentinel(null, false);
+      return;
+    }
     const presentation = state.feedQuery ? 'empty' : feedScopePresentation(
       feedSourcesForScope(state.channel, state.feedPlatform),
       feedLoadFlags({ count: 0 }),
@@ -4345,15 +4430,13 @@ function setTradeHint(text) {
 
 function marketBoardHint(market) {
   if (state.marketError && !state.marketLoading) return state.marketError;
-  if (market?.fetchedAt) return `更新 ${formatTime(market.fetchedAt)}`;
-  if (state.marketLoading) return '正在读取行情…';
+  if (state.marketLoading && !market) return '正在读取行情…';
   return '';
 }
 
 function assetBoardHint(onHardware) {
   if (onHardware) return state.hardwareError || '';
   if (state.assetError && !state.assetLoading) return state.assetError;
-  if (state.assetBoard?.fetchedAt) return `更新 ${formatTime(state.assetBoard.fetchedAt)}`;
   if (state.assetLoading) return '正在读取行情…';
   return '';
 }
@@ -6069,6 +6152,17 @@ function formatPredictionShare(value) {
   return share == null ? '—' : `${(share * 100).toFixed(1)}%`;
 }
 
+function predictionDayChange(current, prior) {
+  if (current == null || current === '' || prior == null || prior === '') return null;
+  const yes = predictionShare(current);
+  const before = predictionShare(prior);
+  if (yes == null || before == null) return null;
+  const points = Math.round((yes - before) * 1000) / 10;
+  const direction = points > 0 ? 'up' : points < 0 ? 'down' : '';
+  const sign = points > 0 ? '+' : '';
+  return { text: `较昨日 ${sign}${points.toFixed(1)}`, direction };
+}
+
 function predictionPrice(value) {
   return formatPredictionShare(value);
 }
@@ -6090,10 +6184,19 @@ function appendPredictionQuote(root, quote) {
   sides.className = 'prediction-sides';
   const yesCol = document.createElement('div');
   yesCol.className = 'prediction-side is-yes';
-  yesCol.append(
+  const yesValue = Object.assign(document.createElement('strong'), { textContent: formatPredictionShare(yes) });
+  const dayChange = predictionDayChange(quote.midPrice, quote.midPrice24hAgo);
+  const yesNodes = [
     Object.assign(document.createElement('span'), { textContent: outcome }),
-    Object.assign(document.createElement('strong'), { textContent: formatPredictionShare(yes) }),
-  );
+    yesValue,
+  ];
+  if (dayChange) {
+    yesNodes.push(Object.assign(document.createElement('span'), {
+      className: ['prediction-day-change', dayChange.direction].filter(Boolean).join(' '),
+      textContent: dayChange.text,
+    }));
+  }
+  yesCol.append(...yesNodes);
   const noCol = document.createElement('div');
   noCol.className = 'prediction-side is-no';
   noCol.append(
@@ -6413,9 +6516,6 @@ function renderIndexScroller(indices) {
 function renderOverview(market) {
   const root = elements['market-overview'];
   root.replaceChildren();
-  if (market?.note) {
-    root.append(Object.assign(document.createElement('p'), { className: 'muted small', textContent: market.note }));
-  }
   for (const section of market?.sections || []) {
     const wrap = document.createElement('section');
     wrap.className = 'market-section';
@@ -11605,24 +11705,30 @@ async function loadFocusFeedWindow(kind) {
   const isX = kind === 'x';
   const loadedKey = isX ? 'xFocusLoaded' : 'xueqiuFocusLoaded';
   const loadingKey = isX ? 'xFocusLoading' : 'xueqiuFocusLoading';
-  const cursorKey = isX ? 'xNextCursor' : 'xueqiuNextCursor';
-  const itemsKey = isX ? 'xItems' : 'xueqiuItems';
+  const sourceLoaded = isX ? 'xLoaded' : 'xueqiuLoaded';
+  const sourceLoading = isX ? 'xLoading' : 'xueqiuLoading';
   const load = isX ? loadXFeed : loadXueqiuFeed;
   if (state[loadedKey] || state[loadingKey]) return null;
   state[loadingKey] = true;
+  renderPosts();
   try {
-    await load({ refresh: false, focusWindow: true });
-    let pages = 1;
-    while (state.channel === 'focus' && state[cursorKey] && (state[itemsKey] || []).length < FOCUS_FEED_WINDOW && pages < 4) {
-      const before = (state[itemsKey] || []).length;
-      await load({ refresh: false, append: true, focusWindow: true });
+    if (!state[sourceLoaded] && !state[sourceLoading]) await load({ refresh: false });
+    let before = '';
+    let pages = 0;
+    let kept = 0;
+    while (pages < 4 && kept < FOCUS_FEED_WINDOW) {
+      const feed = await load({ refresh: false, saved: true, before, autoTranslate: false });
       pages += 1;
-      if ((state[itemsKey] || []).length <= before) break;
+      const incoming = feed?.items || [];
+      kept += incoming.length;
+      before = incoming.length && feed?.nextCursor ? feed.nextCursor : '';
+      if (!before) break;
     }
     if (state.channel === 'focus') state[loadedKey] = true;
     return true;
   } finally {
     state[loadingKey] = false;
+    renderPosts();
   }
 }
 
@@ -11962,7 +12068,7 @@ async function tagXBatch({ silent = false } = {}) {
   }
 }
 
-async function loadXFeed({ refresh = false, autoTranslate = true, append = false, focusWindow = false } = {}) {
+async function loadXFeed({ refresh = false, autoTranslate = true, append = false, focusWindow = false, saved = false, before = '' } = {}) {
   if (!state.session) return null;
   state.xLoading = true;
   state.xError = '';
@@ -11974,13 +12080,17 @@ async function loadXFeed({ refresh = false, autoTranslate = true, append = false
       platform: 'x',
       feed: state.xFeed,
     });
-    params.set('limit', focusWindow || refresh ? '50' : String(FEED_PAGE_SIZE));
-    if (append && state.xNextCursor) params.set('before', state.xNextCursor);
+    params.set('limit', focusWindow || refresh || saved ? '50' : String(FEED_PAGE_SIZE));
+    if (saved && before) params.set('before', before);
+    else if (append && state.xNextCursor) params.set('before', state.xNextCursor);
+    if (saved) params.set('saved', '1');
     if (refresh) params.set('refresh', '1');
     const payload = await api(`/api/v1/feed/x?${params}`, { timeoutMs: refresh ? 180_000 : 15_000 });
     const feed = payload.feed || {};
     const incoming = (feed.items || []).filter((item) => !isHiddenFeedItem(item));
-    if (append) {
+    if (saved) {
+      state.xItems = mergeLoadedFeed(state.xItems, incoming);
+    } else if (append) {
       const seen = new Set((state.xItems || []).map((item) => item.id));
       const added = incoming.filter((item) => item.id && !seen.has(item.id));
       state.xItems = [...(state.xItems || []), ...added];
@@ -12017,7 +12127,7 @@ async function loadXFeed({ refresh = false, autoTranslate = true, append = false
     renderXToolbar();
     renderPosts();
     if (typeof document !== 'undefined' && document.body?.dataset?.view === 'sources' && state.overviewTimeline === 'social') renderOverviewTimeline();
-    if (!focusWindow && state.channel === 'focus' && !state.xFocusLoaded && !state.xFocusLoading) {
+    if (!focusWindow && !saved && state.channel === 'focus' && !state.xFocusLoaded && !state.xFocusLoading) {
       loadFocusFeedWindow('x').catch((error) => showToast(error.message));
     }
   }
@@ -12064,7 +12174,7 @@ async function runXCapturePipeline() {
   }
 }
 
-async function loadXueqiuFeed({ refresh = false, append = false, focusWindow = false } = {}) {
+async function loadXueqiuFeed({ refresh = false, append = false, focusWindow = false, saved = false, before = '' } = {}) {
   if (!state.session) {
     if (refresh) {
       showToast('请先在设置中完成设备连接');
@@ -12082,13 +12192,17 @@ async function loadXueqiuFeed({ refresh = false, append = false, focusWindow = f
       platform: 'xueqiu',
       feed: state.xueqiuFeed,
     });
-    params.set('limit', focusWindow || refresh ? '50' : String(FEED_PAGE_SIZE));
-    if (append && state.xueqiuNextCursor) params.set('before', state.xueqiuNextCursor);
+    params.set('limit', focusWindow || refresh || saved ? '50' : String(FEED_PAGE_SIZE));
+    if (saved && before) params.set('before', before);
+    else if (append && state.xueqiuNextCursor) params.set('before', state.xueqiuNextCursor);
+    if (saved) params.set('saved', '1');
     if (refresh) params.set('refresh', '1');
     const payload = await api(`/api/v1/feed/xueqiu?${params}`, { timeoutMs: refresh ? 180_000 : 15_000 });
     const feed = payload.feed || {};
     const incoming = (feed.items || []).filter((item) => !isHiddenFeedItem(item));
-    if (append) {
+    if (saved) {
+      state.xueqiuItems = mergeLoadedFeed(state.xueqiuItems, incoming);
+    } else if (append) {
       const seen = new Set((state.xueqiuItems || []).map((item) => item.id));
       const added = incoming.filter((item) => item.id && !seen.has(item.id));
       state.xueqiuItems = [...(state.xueqiuItems || []), ...added];
@@ -12127,7 +12241,7 @@ async function loadXueqiuFeed({ refresh = false, append = false, focusWindow = f
     renderXueqiuToolbar();
     renderPosts();
     if (typeof document !== 'undefined' && document.body?.dataset?.view === 'sources' && state.overviewTimeline === 'social') renderOverviewTimeline();
-    if (!focusWindow && state.channel === 'focus' && !state.xueqiuFocusLoaded && !state.xueqiuFocusLoading) {
+    if (!focusWindow && !saved && state.channel === 'focus' && !state.xueqiuFocusLoaded && !state.xueqiuFocusLoading) {
       loadFocusFeedWindow('xueqiu').catch((error) => showToast(error.message));
     }
   }

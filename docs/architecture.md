@@ -232,6 +232,7 @@ DeepSeek Search Connector 通过 `search.web` Source Definition 接入，只留�
 合成为“真实概率”，也不推导开盘方向。事件报价保留 venue，Hyperliquid OI 明确以 base asset 为单位，
 稳定币只做当前供给及 1d/7d/30d 的确定性差额。Market-native Board 与官方 Calendar / Release Board
 使用不同 Contract 和 API，单源失败只降级自己的 health，不影响原有官方事实。
+事件报价另有一条按小时的快照：Worker 注册 `market.event-quote.snapshot`，把当次读到的 quoteId 与 midPrice 写入 `event_quote_snapshots`。Board 读取时不写库；接口只在已有约 24 小时前的快照时追加 `midPrice24hAgo`。
 
 模块通过 capability manifest、显式 job handler 和领域端口接入。跨领域协作使用带版本事件或独立关系表，
 禁止由一个模块直接修改另一个模块拥有的数据表。

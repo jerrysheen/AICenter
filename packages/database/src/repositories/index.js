@@ -11,6 +11,7 @@ import { createTaggingRepository } from './tagging-repository.js';
 import { createResearchRecallRepository } from './research-recall-repository.js';
 import { createTradingRepository } from './trading-repository.js';
 import { createEtfWhaleRepository } from './etf-whale-repository.js';
+import { createEventQuoteRepository } from './event-quote-repository.js';
 
 export function createDomainRepositories(database, emitEvent) {
   return Object.freeze({
@@ -22,6 +23,7 @@ export function createDomainRepositories(database, emitEvent) {
     hardwarePrices: createHardwarePriceRepository(database, emitEvent),
     trading: createTradingRepository(database, emitEvent),
     etfWhale: createEtfWhaleRepository(database, emitEvent),
+    eventQuotes: createEventQuoteRepository(database, emitEvent),
     knowledge: createKnowledgeRepository(database, emitEvent),
     tagging: createTaggingRepository(database, emitEvent),
     research: createResearchRecallRepository(database, emitEvent),

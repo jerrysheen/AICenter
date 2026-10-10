@@ -40,6 +40,13 @@ export const PredictionMarketQuoteSchema = z.object({
   endAt: EpochMillisSchema.nullable(),
   sourceUrl: RequiredHttpUrlSchema,
   observedAt: EpochMillisSchema,
+  midPrice24hAgo: z.string().trim()
+    .regex(/^(?:0|[1-9]\d*)(?:\.\d+)?$/, '必须使用十进制定点字符串')
+    .refine((value) => {
+      const number = Number(value);
+      return number >= 0 && number <= 1;
+    }, '概率必须在 0 到 1 之间')
+    .optional(),
 }).strict();
 
 export const PredictionMarketSourceViewSchema = z.object({

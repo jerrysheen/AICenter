@@ -36,7 +36,14 @@ export function createSourceRoutes() {
         const input = Object.fromEntries(url.searchParams.entries());
         const refresh = input.refresh === '1' || input.refresh === 'true';
         delete input.refresh;
-        const board = await readMarketNativeBoard(services.sources, input, { refresh });
+        let board = await readMarketNativeBoard(services.sources, input, { refresh });
+        if (services.eventQuotes?.attachPriorPrices) {
+          try {
+            board = services.eventQuotes.attachPriorPrices(board);
+          } catch (error) {
+            console.error('[market-native] 24h snapshot lookup skipped:', error instanceof Error ? error.message : error);
+          }
+        }
         const { localizations } = await withLocalizations(services, identity, board);
         json(response, 200, { ok: true, board, localizations });
       },
