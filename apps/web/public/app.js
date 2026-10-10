@@ -6065,6 +6065,17 @@ function formatPredictionShare(value) {
   return share == null ? '—' : `${(share * 100).toFixed(1)}%`;
 }
 
+function predictionDayChange(current, prior) {
+  if (current == null || current === '' || prior == null || prior === '') return null;
+  const yes = predictionShare(current);
+  const before = predictionShare(prior);
+  if (yes == null || before == null) return null;
+  const points = Math.round((yes - before) * 1000) / 10;
+  const direction = points > 0 ? 'up' : points < 0 ? 'down' : '';
+  const sign = points > 0 ? '+' : '';
+  return { text: `较昨日 ${sign}${points.toFixed(1)}`, direction };
+}
+
 function predictionPrice(value) {
   return formatPredictionShare(value);
 }
@@ -6086,10 +6097,19 @@ function appendPredictionQuote(root, quote) {
   sides.className = 'prediction-sides';
   const yesCol = document.createElement('div');
   yesCol.className = 'prediction-side is-yes';
-  yesCol.append(
+  const yesValue = Object.assign(document.createElement('strong'), { textContent: formatPredictionShare(yes) });
+  const dayChange = predictionDayChange(quote.midPrice, quote.midPrice24hAgo);
+  const yesNodes = [
     Object.assign(document.createElement('span'), { textContent: outcome }),
-    Object.assign(document.createElement('strong'), { textContent: formatPredictionShare(yes) }),
-  );
+    yesValue,
+  ];
+  if (dayChange) {
+    yesNodes.push(Object.assign(document.createElement('span'), {
+      className: ['prediction-day-change', dayChange.direction].filter(Boolean).join(' '),
+      textContent: dayChange.text,
+    }));
+  }
+  yesCol.append(...yesNodes);
   const noCol = document.createElement('div');
   noCol.className = 'prediction-side is-no';
   noCol.append(

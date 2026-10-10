@@ -16,6 +16,7 @@ import { createContextService } from './context-service.js';
 import { createTaggingService } from './tagging-service.js';
 import { createQuantLabService } from './quant-lab-service.js';
 import { createEtfWhaleReadService } from './etf-whale-service.js';
+import { createEventQuoteSnapshotService } from './event-quote-snapshots.js';
 
 export { createContextService, createDailyBriefService, createFeedService, createIdentityService, createKnowledgeService, createMarketStatisticsService, createMediaIngestionService, createReportService, createRuntimeService, createTradingService, createTaggingService };
 export { buildDailyBriefCandidates } from './daily-brief-candidates.js';
@@ -186,5 +187,8 @@ export function createDomainServices({
       repository: store.repositories.etfWhale,
       parityDirectory,
     }),
+    eventQuotes: store.repositories.eventQuotes
+      ? createEventQuoteSnapshotService({ repository: store.repositories.eventQuotes })
+      : null,
   });
 }
