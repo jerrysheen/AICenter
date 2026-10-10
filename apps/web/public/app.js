@@ -3502,7 +3502,7 @@ function visibleFeedItems() {
     const query = String(state.feedQuery || '').trim().toLowerCase();
     items = items.filter((item) => item.platform !== 'bilibili' && matchesFeedQuery(item, query) && matchesFeedRange(item));
     items = sortFeedItems(items);
-    items = markBulkOfficialNotices(items);
+    if (typeof markBulkOfficialNotices === 'function') items = markBulkOfficialNotices(items);
   }
   state.feedViewCache = { key, items };
   return items;
