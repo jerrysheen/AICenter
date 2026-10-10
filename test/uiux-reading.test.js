@@ -53,21 +53,29 @@ test('canonical and slash-prefixed deep links resolve to the same target and ret
   assert.equal(routeLabel('#report/2026-10-09?hour=8'), '简报');
 });
 
-test('overview primary navigation enters feed and then cycles from the selected submenu', () => {
+test('overview primary navigation always opens the overview home', () => {
   const state = { tradePane: 'stocks', overviewPane: 'home' };
   const context = vm.createContext({ state, document: { body: { dataset: { view: 'tools' } } } });
-  vm.runInContext(`${app.match(/const hubLanes = \[[^]*?\];/)[0]}\n${app.match(/const overviewViews = \[[^]*?\];/)[0]}\n${functionSource('overviewLane')}\n${functionSource('primaryNavTarget')}`, context);
-  for (const view of ['tools', 'assets', 'ask', 'inspire', 'page']) assert.equal(context.primaryNavTarget('sources', view), 'feed');
-  assert.equal(context.primaryNavTarget('sources', 'sources'), 'feed');
-  assert.equal(context.primaryNavTarget('sources', 'feed'), 'market');
-  assert.equal(context.primaryNavTarget('sources', 'market'), 'market/global');
-  state.tradePane = 'assets';assert.equal(context.primaryNavTarget('sources', 'market'), 'report');
-  assert.equal(context.primaryNavTarget('sources', 'report'), 'sources');
-  state.overviewPane = 'catalog';assert.equal(context.primaryNavTarget('sources', 'sources'), 'feed');
+  vm.runInContext(`${app.match(/const hubLanes = \[[^]*?\];/)[0]}\n${app.match(/const overviewViews = \[[^]*?\];/)[0]}\n${functionSource('overviewLane')}\n${functionSource('primaryNavTarget')}\n${functionSource('primaryNavActivation')}`, context);
+  for (const view of ['tools', 'assets', 'ask', 'inspire', 'page', 'sources', 'feed', 'market', 'report']) {
+    assert.equal(context.primaryNavTarget('sources', view), 'sources');
+    for (const bottomTab of [false, true]) {
+      const activation = context.primaryNavActivation('sources', bottomTab);
+      assert.equal(activation.route, 'sources');
+      assert.equal(activation.fromPrimaryNav, false);
+    }
+  }
+  state.tradePane = 'assets';
+  state.overviewPane = 'catalog';
+  assert.equal(context.primaryNavTarget('sources', 'market'), 'sources');
+  assert.equal(context.primaryNavTarget('sources', 'sources'), 'sources');
   assert.equal(context.primaryNavTarget('ask', 'ask'), 'ask');
+  const sideAsk = context.primaryNavActivation('ask', false);
+  assert.equal(sideAsk.route, 'ask');
+  assert.equal(sideAsk.fromPrimaryNav, true);
 });
 
-test('bottom overview tab always opens the overview home', () => {
+test('sidebar and bottom overview tabs always open the overview home', () => {
   const context = vm.createContext({});
   vm.runInContext(functionSource('primaryNavActivation'), context);
   const home = context.primaryNavActivation('sources', true);
@@ -77,13 +85,16 @@ test('bottom overview tab always opens the overview home', () => {
   assert.equal(home.route, 'sources');
   assert.equal(home.fromPrimaryNav, false);
   assert.equal(side.route, 'sources');
-  assert.equal(side.fromPrimaryNav, true);
+  assert.equal(side.fromPrimaryNav, false);
   assert.equal(inspire.route, 'inspire');
   assert.equal(inspire.fromPrimaryNav, true);
   assert.equal(assets.route, 'assets');
   assert.equal(assets.fromPrimaryNav, true);
   const css = readFileSync(new URL('../apps/web/public/styles.css', import.meta.url), 'utf8');
   assert.match(css, /@media \(max-width: 1199px\) \{\s*\.title-bar \{\s*z-index: 12;\s*background: var\(--background-primary\);\s*backdrop-filter: none;\s*\}\s*\.overview-subnav\.is-on \{\s*position: sticky;/);
+  assert.match(css, /body\[data-view="feed"\] #view-feed \.channel-bar \{[^}]*position: sticky;/);
+  assert.match(css, /\.overview-subnav\.market-tabs\[data-more-right="true"\] \{[^}]*mask-image: none;/);
+  assert.match(css, /#view-tools > \.section-kicker \{[^}]*padding-top: 12px;/);
 });
 
 test('assets primary navigation starts at holdings and alternates both panes', () => {
