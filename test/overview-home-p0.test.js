@@ -94,6 +94,6 @@ test('same-source bulk notices are grayed and sink to the end of that day', () =
     { title: '公告', muted: true, stayInDay: true },
     { title: '低价值', muted: true },
   ], true);
-  assert.deepEqual(split.main.map((row) => row.title), ['正文', '公告']);
-  assert.deepEqual(split.tail.map((row) => row.title), ['低价值']);
+  assert.equal(split.main.map((row) => row.title).join('|'), '正文|公告');
+  assert.equal(split.tail.map((row) => row.title).join('|'), '低价值');
 });
