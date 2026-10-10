@@ -28,4 +28,4 @@ Harness 轮次错误额外带上 `upstreamCode` 和 `upstreamStatus`（能看成
 
 ## 验证
 
-`npm run syntax` 与 `npm test`。失败数不超过基线 10；本机 zstd 缺失不计入。
+`npm run syntax` 通过。`npm test` 1020 项里 1009 通过、10 失败、1 跳过。失败项与 main 基线相同：分析技能 7、信息树策略状态 1、model-usage 的 zstd（本机 Node 22.14 缺少 `node:zlib` 导出，不计入）、本机没有 Cursor CLI 1。新增测试覆盖错误分类、密钥脱敏，以及小时任务仍抛原来的固定文案。
