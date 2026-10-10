@@ -34,7 +34,7 @@ test('home feed and contextual reading reuse one normalized article without AI o
 
 test('home card and reader preserve normalized content without uploading it as a full translation',async()=>{
   const js=readFileSync('apps/web/public/app.js','utf8');
-  const functions=['textNeedsZhView','listCardExcerpt','feedAsItem','translationFor','postDisplayTitle','postListExcerpt','postViewBody'].map(name=>{const result=js.match(new RegExp('function '+name+'\\([^]*?\\n\\}'));assert.ok(result,name);return result[0];}).join('\n');
+  const functions=['textNeedsZhView','socialListPlaceholder','listCardExcerpt','feedAsItem','translationFor','postDisplayTitle','postListExcerpt','postViewBody'].map(name=>{const result=js.match(new RegExp('function '+name+'\\([^]*?\\n\\}'));assert.ok(result,name);return result[0];}).join('\n');
   const context=vm.createContext({Date,state:{translations:{'x:1':{text:'stale cached text'}}},formatTime:()=>'',postTagNames:()=>[],clipFeedText:value=>value,FEED_EXCERPT_MAX:200});
   vm.runInContext(functions+'\nthis.mapPost=feedAsItem;this.title=postDisplayTitle;this.excerpt=postListExcerpt;this.body=postViewBody;this.translation=translationFor;',context);
   const post=context.mapPost({id:'x:1',resourceId:'a',title:'English',body:'Original English',normalizedArticle:reader().normalizedArticle('local','feed:a',100)},'x');

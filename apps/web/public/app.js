@@ -2959,15 +2959,21 @@ function socialBodyText(post, value) {
   return post?.platform === 'x' || post?.platform === 'xueqiu' ? splitFeedText(value).body : value;
 }
 
+function socialListPlaceholder(item, platform) {
+  const status = item?.translation?.status;
+  if (status === 'pending' || status === 'running' || ((platform || item?.platform) === 'x' && state.xTranslating)) return '正在翻译…';
+  return '暂未翻译';
+}
+
 function listCardExcerpt(item, platform) {
   if (item?.normalizedArticle?.summary) return item.normalizedArticle.summary;
   if (item?.translation?.title) return item.translation.title;
   if (item?.translation?.text) return '';
   const summary = item?.summary || '';
   const foreign = textNeedsZhView(summary || item?.excerpt || '');
-  if ((platform === 'x' || platform === 'xueqiu') && !item?.body && foreign) return '暂未翻译';
+  if ((platform === 'x' || platform === 'xueqiu') && !item?.body && foreign) return socialListPlaceholder(item, platform);
   if (summary && !textNeedsZhView(summary)) return summary;
-  if ((platform === 'x' || platform === 'xueqiu') && !item?.body) return '暂未翻译';
+  if ((platform === 'x' || platform === 'xueqiu') && !item?.body) return socialListPlaceholder(item, platform);
   return item?.excerpt || summary;
 }
 
@@ -2977,9 +2983,13 @@ function postListExcerpt(post) {
   if (translated) return clipFeedText(textAfterLead(socialBodyText(post, translated), postDisplayTitle(post)), FEED_EXCERPT_MAX);
   if (post.translation?.title) return clipFeedText(post.translation.title, FEED_EXCERPT_MAX);
   if (post.summary && !textNeedsZhView(post.summary)) return clipFeedText(post.summary, FEED_EXCERPT_MAX);
-  if (postIsTranslating(post)) return '';
-  if ((post.platform === 'x' || post.platform === 'xueqiu') && !post.body) return '暂未翻译';
+  if (postIsTranslating(post)) return '正在翻译…';
+  if ((post.platform === 'x' || post.platform === 'xueqiu') && !post.body) return socialListPlaceholder(post, post.platform);
   return clipFeedText(textAfterLead(socialBodyText(post, post?.body), post?.title), FEED_EXCERPT_MAX);
+}
+
+function feedCardExcerpt(post) {
+  return translationFor(post) ? postListExcerpt(post) : (post.excerpt || postListExcerpt(post));
 }
 
 function postViewBody(post) {
@@ -3995,7 +4005,7 @@ function renderPosts() {
     const title = document.createElement('h3');
     title.textContent = postDisplayTitle(post);
     content.append(title);
-    const excerpt = post.excerpt || postListExcerpt(post);
+    const excerpt = feedCardExcerpt(post);
     const expanded = state.expandedFeedIds.has(post.id);
     if (expanded) {
       const full = document.createElement('div');
@@ -5729,7 +5739,7 @@ function renderOverviewTimeline() {
     open.type = 'button';
     open.className = 'feed-content';
     open.append(Object.assign(document.createElement('h3'), { textContent: postDisplayTitle(post) }));
-    const excerpt = post.excerpt || postListExcerpt(post);
+    const excerpt = feedCardExcerpt(post);
     if (excerpt) open.append(Object.assign(document.createElement('p'), { className: 'post-excerpt', textContent: excerpt }));
     const timelineTags = createTagRow(postTagNames(post));
     if (timelineTags) open.append(timelineTags);

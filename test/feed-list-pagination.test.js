@@ -362,7 +362,7 @@ test('social cards show translation state instead of the foreign summary, and tr
       context.state.restoredArticles[id] = { ...post, body: 'Verified students get 50% off. Select markets only.' };
     },
   });
-  vm.runInContext(`${extractFunctions(source, ['textNeedsZhView', 'listCardExcerpt', 'feedAsItem', 'translatePost'])}\nthis.feedAsItem=feedAsItem;this.translate=translatePost;`, context);
+  vm.runInContext(`${extractFunctions(source, ['textNeedsZhView', 'socialListPlaceholder', 'listCardExcerpt', 'feedAsItem', 'translatePost'])}\nthis.feedAsItem=feedAsItem;this.translate=translatePost;`, context);
   const translated = context.feedAsItem({
     id: 'x:1', title: 'CapCut for students', summary: 'Verified students get 50% off in selected markets.',
     excerpt: 'Verified students get 50% off in selected markets.', body: '',
@@ -381,4 +381,44 @@ test('social cards show translation state instead of the foreign summary, and tr
   assert.equal(context.restored, 'x:2');
   assert.equal(context.remembered, true);
   assert.notEqual(context.toast, '这条没有可翻译的正文');
+});
+
+test('a client translation replaces the english card excerpt, and an in-flight server translation says it is translating', () => {
+  const source = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
+  const context = vm.createContext({
+    formatTime: () => '',
+    postTagNames: () => [],
+    FEED_TITLE_MAX: 72,
+    FEED_EXCERPT_MAX: 96,
+    splitFeedText: (value) => ({ body: String(value || ''), comments: [] }),
+    translationStoreKey: () => 'key',
+    loadTranslationStore: () => ({}),
+    state: { translations: {}, xTranslating: false },
+  });
+  vm.runInContext(`${extractFunctions(source, [
+    'textNeedsZhView', 'postNeedsChineseTranslation', 'postIsTranslating', 'socialListPlaceholder',
+    'translationFor', 'plainFeedText', 'clipFeedText', 'firstFeedSentence', 'textAfterLead',
+    'postDisplayTitle', 'socialBodyText', 'listCardExcerpt', 'postListExcerpt', 'feedCardExcerpt', 'feedAsItem',
+  ])}\nthis.feedAsItem=feedAsItem;this.card=feedCardExcerpt;`, context);
+  const post = context.feedAsItem({
+    id: 'x:3', title: 'CapCut for students',
+    summary: 'Verified students get 50% off in selected markets.',
+    excerpt: 'Verified students get 50% off in selected markets.',
+    body: 'Verified students get 50% off in selected markets. Terms apply.',
+  }, 'x');
+  assert.match(post.excerpt, /Verified students/);
+  context.state.translations['x:3'] = { text: '认证学生可享五折优惠。仅限部分市场，条款适用。', engine: 'test' };
+  const shown = context.card(post);
+  assert.match(shown, /仅限部分市场/);
+  assert.equal(/[A-Za-z]/.test(shown), false);
+  const waiting = context.feedAsItem({
+    id: 'x:4', title: 'Market note', summary: 'Another English sentence about markets today.', body: '',
+    translation: { status: 'pending', title: '' },
+  }, 'x');
+  assert.equal(waiting.excerpt, '正在翻译…');
+  context.state.xTranslating = true;
+  const batch = context.feedAsItem({
+    id: 'x:5', title: 'Market note', summary: 'Another English sentence about markets today.', body: '',
+  }, 'x');
+  assert.equal(batch.excerpt, '正在翻译…');
 });
