@@ -782,7 +782,7 @@ function isPrimaryNavActive(navId, view) {
     if (navId === 'tools') return mapped === 'tools';
     return navId === mapped;
   }
-  if (navId === 'sources') return view === 'sources' || view === 'feed' || view === 'market';
+  if (navId === 'sources') return view === 'sources' || view === 'feed' || view === 'market' || view === 'report';
   if (navId === 'tools') return view === 'tools' || view === 'knowledge' || view === 'settings' || view === 'quant';
   return navId === view;
 }
