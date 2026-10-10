@@ -138,24 +138,43 @@ export function createBriefPage(host) {
     if (active() && !document.hidden) timer=setInterval(()=>check().catch(()=>{}),60000);
   }
 
-  async function mount(target, {date='',history=false,archive=false}={}) {
+  async function mount(target, {date='',history=false,archive=false,hour=null}={}) {
     setIdentity();
+    const clockHour=Number.isInteger(hour) && hour>=0 && hour<=23 ? hour : null;
     const nextRoute=archive ? 'archive' : date || (history ? 'history' : 'current');
-    if (treeReady && root===target && routeKey===nextRoute && root.childElementCount && (treeActive || dateInput?.isConnected)) {if(treeActive)return tree.resume();start();return check();}
+    if (treeReady && root===target && routeKey===nextRoute && root.childElementCount && (treeActive || dateInput?.isConnected)) {
+      if(treeActive){
+        if(clockHour!=null && !history && !archive) return tree.selectHour(clockHour);
+        return tree.resume();
+      }
+      start();return check();
+    }
     treeReady=false;
     routeKey=nextRoute; root=target; generation++; request++; busy=null;
     if(!archive) {
       const token=generation;
-      if(!treeManifest)root.replaceChildren(node('p','brief-empty','正在读取简报…'));
+      let slow=0;
+      if(!treeManifest){
+        if(clockHour!=null){
+          const box=node('div','tree-hour-skeleton');
+          box.append(node('span','tree-hour-skeleton-line'),node('span','tree-hour-skeleton-line'),node('span','tree-hour-skeleton-line'));
+          root.replaceChildren(box);
+          slow=setTimeout(()=>{
+            if(token!==generation) return;
+            root.replaceChildren(button('读取较慢 · 重试',()=>{clearTimeout(slow);routeKey='';treeReady=false;return mount(target,{date,history,archive,hour});}));
+          },10000);
+        } else root.replaceChildren(node('p','brief-empty','正在读取简报…'));
+      }
       const manifest=await loadTreeManifest().catch(()=>null);
+      clearTimeout(slow);
       if(token!==generation)return;
-      if(!manifest){root.replaceChildren(node('p','brief-empty','暂时无法读取简报刊期。'),button('重试读取',()=>{routeKey='';treeReady=false;return mount(target,{date,history,archive});}));return;}
+      if(!manifest){root.replaceChildren(node('p','brief-empty','暂时无法读取简报刊期。'),button('重试读取',()=>{routeKey='';treeReady=false;return mount(target,{date,history,archive,hour});}));return;}
       // During a rolling upgrade the older reader lacks pipeline; independently prepared
       // v3.1 heads prove the tree preparation path is active. Explicit legacy always wins.
       const treeEnabled=manifest.pipeline==='tree-v3' || (manifest.pipeline===undefined && manifest.information?.some(n=>n.validatorVersion==='tree-response-v3.1.0'));
       if(treeEnabled) {
         pause();treeActive=true;treeReady=false;
-        await tree.mount(root,{manifest,date,history,mode:'daily',resetSelection:true});
+        await tree.mount(root,{manifest,date,history,mode:clockHour!=null && !history && !archive ? 'hourly' : 'daily',hour:clockHour,resetSelection:true});
         if(token!==generation)return;
         treeReady=true;
         return;
