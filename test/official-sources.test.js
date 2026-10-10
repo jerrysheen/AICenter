@@ -125,6 +125,39 @@ test('Customs client reports current-year calendar absence instead of extrapolat
   assert.match(view.note, /尚未提供 2026 年/);
 });
 
+test('Fed calendar stays available when pages load but the window has no events', async () => {
+  const client = createOfficialSourcesClient({
+    now: () => Date.parse('2026-10-10T17:13:00Z'),
+    async fetch() {
+      return new Response('<html></html>', { status: 200, headers: { 'content-type': 'text/html' } });
+    },
+  });
+  const view = await client.fedCalendar({
+    from: Date.parse('2026-10-10T16:00:00Z'),
+    to: Date.parse('2026-10-11T16:00:00Z'),
+    limit: 20,
+  });
+  assert.equal(view.available, true);
+  assert.equal(view.events.length, 0);
+  assert.equal(view.note, '');
+});
+
+test('Fed calendar is unavailable when every month page fails', async () => {
+  const client = createOfficialSourcesClient({
+    now: () => Date.parse('2026-10-10T17:13:00Z'),
+    async fetch() {
+      throw new Error('SELF_SIGNED_CERT_IN_CHAIN');
+    },
+  });
+  const view = await client.fedCalendar({
+    from: Date.parse('2026-10-10T16:00:00Z'),
+    to: Date.parse('2026-10-11T16:00:00Z'),
+  });
+  assert.equal(view.available, false);
+  assert.equal(view.events.length, 0);
+  assert.match(view.note, /暂不可读取/);
+});
+
 test('rule-generated schedules stay explicitly tentative', () => {
   const input = { from: Date.parse('2026-09-01T00:00:00Z'), to: Date.parse('2026-10-31T23:59:59Z') };
   const claims = generateDolClaimsEvents(input, OBSERVED_AT);

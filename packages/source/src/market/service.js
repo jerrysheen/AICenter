@@ -21,6 +21,21 @@ export function createMarketService(options = {}) {
   const cache = new Map();
   const pending = new Map();
 
+  function payloadHasQuotes(payload) {
+    if (Array.isArray(payload)) return payload.some((item) => item && item.lastPrice != null);
+    if (!payload || typeof payload !== 'object') return false;
+    const rows = [
+      ...(payload.indices || []),
+      ...(payload.watchlist || []),
+      ...((payload.sections || []).flatMap((section) => [
+        ...(section?.indices || []),
+        ...(section?.gainers || []),
+        ...(section?.losers || []),
+      ])),
+    ];
+    return rows.some((item) => item && item.lastPrice != null);
+  }
+
   async function cached(key, loader, { refresh = false, ttl = ttlMs } = {}) {
     const timestamp = now();
     if (!refresh) {
@@ -34,8 +49,14 @@ export function createMarketService(options = {}) {
       timer = setTimeout(() => reject(new Error('行情请求超时')), inflightTimeoutMs);
     });
     const task = Promise.race([loaderPromise, timeout]).then((payload) => {
+      const previous = cache.get(key)?.payload;
+      if (payloadHasQuotes(previous) && !payloadHasQuotes(payload)) return previous;
       cache.set(key, { at: now(), payload });
       return payload;
+    }).catch((error) => {
+      const previous = cache.get(key)?.payload;
+      if (payloadHasQuotes(previous)) return previous;
+      throw error;
     }).finally(() => {
       clearTimeout(timer);
       if (pending.get(key) === task) pending.delete(key);

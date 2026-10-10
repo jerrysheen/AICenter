@@ -917,10 +917,11 @@ export function createOfficialSourcesClient(options = {}) {
         };
       }
       const html = await responseText(await request(link.href));
-      const events = selectEvents(parseCustomsCalendar(html, observedAt, link.href), input, observedAt);
+      const parsed = parseCustomsCalendar(html, observedAt, link.href);
+      const events = selectEvents(parsed, input, observedAt);
       return {
-        available: events.length > 0, observedAt, sourceUrl: link.href, events,
-        note: events.length ? '' : `${year} 年官方日历页未解析到日程条目。`,
+        available: true, observedAt, sourceUrl: link.href, events,
+        note: parsed.length ? '' : `${year} 年官方日历页未解析到日程条目。`,
       };
     },
     scio(input) { return calendar(URLS.scio, input, async (at) => parseScioCalendar(await responseText(await request(URLS.scio)), at)); },
@@ -934,12 +935,17 @@ export function createOfficialSourcesClient(options = {}) {
         pages.push({ year: cursor.getUTCFullYear(), month: cursor.getUTCMonth() + 1 });
         cursor.setUTCMonth(cursor.getUTCMonth() + 1);
       }
+      let failed = 0;
       const batches = await Promise.all(pages.map(async ({ year, month }) => {
         const url = monthPageUrl(year, month);
-        try { return parseFedMonthCalendar(await responseText(await request(url)), year, month, observedAt, url); } catch { return []; }
+        try { return parseFedMonthCalendar(await responseText(await request(url)), year, month, observedAt, url); }
+        catch { failed += 1; return []; }
       }));
       const events = selectEvents(batches.flat(), input, observedAt);
-      return { available: events.length > 0, observedAt, sourceUrl: URLS.fedCalendar, events, note: events.length ? '' : '所选时间范围未读取到 Fed 日程。' };
+      if (!pages.length || failed === pages.length) {
+        return { available: false, observedAt, sourceUrl: URLS.fedCalendar, events: [], note: '美联储日程页面暂不可读取。' };
+      }
+      return { available: true, observedAt, sourceUrl: URLS.fedCalendar, events, note: '' };
     },
     fomc(input) { return calendar(URLS.fomc, input, async (at) => parseFomcCalendar(await responseText(await request(URLS.fomc)), at)); },
     lpr(input) {

@@ -17,15 +17,17 @@ import {
   pickHomeQuoteCards,
   quoteStatusText,
   homeRequestPlan,
-  homeEditionNote,
   hourlyEditions,
+  homeHourSections,
+  acceptMarketPayload,
+  marketPayloadHasQuotes,
   absorbReadingIndex,
   mergeReadingHours,
   reportHourHref,
   unavailableOfficialCount,
 } from './home-timeline.js?v=dev';
 import { decodeHtmlEntities } from './html-text.js?v=dev';
-import { newsEffectiveLabel, renderNewsList } from './news-list.js?v=dev';
+import { markBulkOfficialNotices, newsEffectiveLabel, renderNewsList } from './news-list.js?v=dev';
 
 const feedLikeButton = createFeedLikeAction({ api: (...args) => api(...args), showToast: text => showToast(text), createAction: options => createDetailAction(options), session: () => state.session });
 
@@ -3500,6 +3502,7 @@ function visibleFeedItems() {
     const query = String(state.feedQuery || '').trim().toLowerCase();
     items = items.filter((item) => item.platform !== 'bilibili' && matchesFeedQuery(item, query) && matchesFeedRange(item));
     items = sortFeedItems(items);
+    if (typeof markBulkOfficialNotices === 'function') items = markBulkOfficialNotices(items);
   }
   state.feedViewCache = { key, items };
   return items;
@@ -4342,7 +4345,8 @@ function feedToNewsRow(post) {
     effectiveLabel: moment.effectiveLabel,
     source: feedSourceLine(post),
     tags,
-    muted: Boolean(post.lowValue),
+    muted: Boolean(post.lowValue || post.bulkNotice),
+    stayInDay: Boolean(post.bulkNotice),
     focused: itemIsFocused(post),
     commentCount: feedCommentCount(post),
     swipe: canSwipe,
@@ -5613,8 +5617,11 @@ async function loadMarket({ board = state.stockBoard } = {}) {
     if (!state.session) throw new Error('此设备尚未配对，无法加载行情');
     const payload = await api(extraQuery(board), { timeoutMs: 40_000 });
     if (isActiveBoard && requestId !== state.marketRequestId) return;
-    state.markets[payload.market.board] = payload.market;
+    const previous = state.markets[board];
+    const accepted = acceptMarketPayload(previous, payload.market);
+    state.markets[payload.market?.board || board] = accepted;
     state.marketBoardErrors[board] = '';
+    if (isActiveBoard) state.marketError = '';
     if (isActiveBoard) renderMarket();
     else if (document.body.dataset.view === 'sources' || state.stockBoard === 'overview') {
       if (state.stockBoard === 'overview') renderMarket();
@@ -5622,6 +5629,11 @@ async function loadMarket({ board = state.stockBoard } = {}) {
     }
     scheduleOverviewFocusWatch();
   } catch (error) {
+    if (marketPayloadHasQuotes(state.markets[board]) && (!isActiveBoard || requestId === state.marketRequestId)) {
+      state.marketBoardErrors[board] = '';
+      if (isActiveBoard) state.marketError = '';
+      return;
+    }
     const message = error instanceof Error ? error.message : '行情加载失败';
     if (!isActiveBoard || requestId === state.marketRequestId) {
       state.marketBoardErrors[board] = message;
@@ -6607,27 +6619,6 @@ function armHomeSlowWatch() {
   }, 10_000);
 }
 
-const HOME_DIRECTION_ORDER = ['金融', '产业个股', '科技与AI', '地缘政治', '待分类'];
-const HOME_THEME_ORDER = ['中国', '美国', '欧洲', '日本', '韩国', '中国台湾', '多地', '其他', '模型与技术', '应用与工作流', '安全与外交', '贸易与限制'];
-
-function orderedHomeReading(rows) {
-  const rank = (order, value) => {
-    const index = order.indexOf(value);
-    return index < 0 ? order.length : index;
-  };
-  return [...rows].sort((left, right) => {
-    const direction = rank(HOME_DIRECTION_ORDER, left.readingDirectionName) - rank(HOME_DIRECTION_ORDER, right.readingDirectionName);
-    if (direction) return direction;
-    return rank(HOME_THEME_ORDER, left.readingThemeName) - rank(HOME_THEME_ORDER, right.readingThemeName);
-  });
-}
-
-function homeHourHits(snapshot) {
-  const items = Array.isArray(snapshot?.items) ? snapshot.items : [];
-  const shown = items.filter((item) => item?.readingDirectionName && item.readingDirectionName !== '待分类' && item.disposition !== 'out-of-scope');
-  return orderedHomeReading(shown.filter((item) => item.disposition === 'hit' && item.timely !== false));
-}
-
 function homeHourTheme(name) {
   const text = String(name || '').trim();
   return text === '其他' ? '综合' : text;
@@ -6650,10 +6641,6 @@ function homeHourWhen(item) {
 function homeHourHref(startAt, nodeId = '') {
   const base = reportHourHref(startAt).replace(/^#/, '');
   return nodeId ? `${base}&node=${encodeURIComponent(nodeId)}` : base;
-}
-
-function homeHourNote(startAt, endAt) {
-  return homeEditionNote(startAt, endAt, Date.now());
 }
 
 function homeReadingSnapshot(item, edition) {
@@ -6756,43 +6743,65 @@ function homeMessagesStatus() {
   return 'ready';
 }
 
+function homeHourRow(item, edition) {
+  const when = homeHourWhen(item);
+  const snap = homeReadingSnapshot(item, edition);
+  return {
+    id: item.nodeId,
+    title: item.title || '',
+    at: when.at,
+    ingested: when.ingested,
+    source: homeHourSource(item),
+    focused: itemIsFocused(snap) || isFocused(item.nodeId),
+    onOpen: () => setView(homeHourHref(edition.window.startAt, item.nodeId)),
+    onStar: () => toggleFocus(item.nodeId, () => { renderPosts(); renderHub(); }, snap),
+  };
+}
+
 function renderHomeHourlyModule() {
   const root = elements['home-timeline'];
   if (!root) return;
-  const edition = hourlyEditions(state.homeTree)[0] || null;
-  const snapshot = edition ? state.homeReadingHours[edition.window.startAt] : null;
-  const itemsReady = Array.isArray(snapshot?.items);
+  const editions = hourlyEditions(state.homeTree);
+  const narrow = window.matchMedia('(max-width: 700px)').matches;
+  const sections = homeHourSections({
+    editions,
+    readings: state.homeReadingHours,
+    sectionLimit: narrow ? 3 : 4,
+    nowMs: Date.now(),
+  });
+  const edition = editions[0] || null;
   let status = 'ready';
   if (!state.homeHourlySettled || !state.homeTreeLoaded) status = state.homeSlow ? 'slow' : 'loading';
   else if (state.homeTreeError && !edition) status = 'error';
-  else if (edition && !itemsReady) status = state.homeReadingError ? 'error' : (state.homeSlow ? 'slow' : 'loading');
+  else if (edition && !sections.length && editions.slice(0, 8).some((item) => !Array.isArray(state.homeReadingHours[item.window.startAt]?.items))) {
+    status = state.homeReadingError ? 'error' : (state.homeSlow ? 'slow' : 'loading');
+  }
   const host = homeModuleFrame(root, {
     title: '小时报',
-    note: status === 'ready' && edition && itemsReady ? homeHourNote(edition.window.startAt, edition.window.endAt) : '',
     status,
     onMore: () => setView(edition ? homeHourHref(edition.window.startAt) : 'report'),
     onRetry: () => loadSourcesPage({ refresh: true }).catch(() => {}),
   });
   if (!host) return;
-  if (!edition || !itemsReady) {
-    renderNewsList(host, [], { groupByDay: false, emptyText: '还没有小时报' });
+  if (!sections.length) {
+    renderNewsList(host, [], { groupByDay: false, emptyText: edition ? '这一小时没有条目' : '还没有小时报' });
     return;
   }
-  const rows = homeHourHits(snapshot).slice(0, 6).map((item) => {
-    const when = homeHourWhen(item);
-    const snap = homeReadingSnapshot(item, edition);
-    return {
-      id: item.nodeId,
-      title: item.title || '',
-      at: when.at,
-      ingested: when.ingested,
-      source: homeHourSource(item),
-      focused: itemIsFocused(snap) || isFocused(item.nodeId),
-      onOpen: () => setView(homeHourHref(edition.window.startAt, item.nodeId)),
-      onStar: () => toggleFocus(item.nodeId, () => { renderPosts(); renderHub(); }, snap),
+  host.replaceChildren();
+  for (const section of sections) {
+    const current = editions.find((item) => item.window.startAt === section.startAt) || {
+      window: { startAt: section.startAt, endAt: section.endAt },
     };
-  });
-  renderNewsList(host, rows, { groupByDay: false, emptyText: '这一小时没有条目' });
+    const label = document.createElement('p');
+    label.className = 'home-hour-label';
+    label.textContent = section.label;
+    const list = document.createElement('div');
+    renderNewsList(list, section.items.map((item) => homeHourRow(item, current)), {
+      groupByDay: false,
+      emptyText: '这一小时没有条目',
+    });
+    host.append(label, list);
+  }
 }
 
 function renderHomeLatestModule() {
@@ -6903,7 +6912,7 @@ async function loadHomeTree(path, token) {
 
 async function ensureHomeReadingSnapshots(token) {
   const editions = hourlyEditions(state.homeTree);
-  const count = state.homeEarlier ? editions.length : 4;
+  const count = state.homeEarlier ? editions.length : 8;
   await Promise.all(editions.slice(0, count).map(async (edition) => {
     const startAt = edition.window.startAt;
     const current = state.homeReadingHours[startAt];
