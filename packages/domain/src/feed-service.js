@@ -229,7 +229,7 @@ function adoptReusableTranslations(feedRepository, workspaceId, units, targetLan
     for (const row of rows) if (row.translatedText && !byHash.has(row.sourceHash)) byHash.set(row.sourceHash, row);
     for (const unit of rest) {
       const row = byHash.get(contentHash(unit.text));
-      if (!row?.translatedText) continue;
+      if (!row?.translatedText || row.engine !== 'hourly-report') continue;
       adopted.push({
         id: unit.localizationId,
         sourceText: unit.text,
@@ -313,13 +313,9 @@ async function localizeCollected(feedRepository, translationPort, workspaceId, u
   const run = async () => {
     try {
       await translatePendingUnits(translationPort, pending, targetLang, rows=>persistTranslations(feedRepository,workspaceId,rows));
-    } catch (error) {
-      feedRepository?.noteTranslationFailure?.({
-        workspaceId,
-        items: pending.map((unit) => ({ id: unit.localizationId, text: unit.text })),
-        targetLang,
-        error,
-      });
+    } catch {
+      // 已成功的批次留在库里，没译完的仍是 pending，下次调用接着补。
+      // 任务级失败由 Job Runner 写入 feed_translation_failures，这里不把整批打成退避失败。
     }
     return projectionFor(feedRepository, workspaceId, unique, targetLang);
   };

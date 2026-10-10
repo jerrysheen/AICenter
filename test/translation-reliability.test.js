@@ -102,15 +102,15 @@ test('a saved translation clears the failure, and an hourly title is reused with
   } finally { temporary.remove(); }
 });
 
-test('same source hash is reused for another feed id', async () => {
+test('same source hash reuses an hourly-report translation only', async () => {
   const temporary = temporaryStore();
   try {
     const store = temporary.store;
     const text = 'Federal Communications Commission notice.';
-    const hash = store.repositories.feed.noteTranslationFailure({
+    const noted = store.repositories.feed.noteTranslationFailure({
       workspaceId: 'local', items: [{ id: 'unused', text: 'x' }], error: new Error('x'), attemptCount: 4, terminal: true,
     });
-    assert.equal(hash[0].nextRetryAt, null);
+    assert.equal(noted[0].nextRetryAt, null);
     const { createHash } = await import('node:crypto');
     const sourceHash = createHash('sha256').update(text).digest('hex');
     store.repositories.feed.saveTranslations([{
@@ -119,12 +119,23 @@ test('same source hash is reused for another feed id', async () => {
     let calls = 0;
     const service = createFeedService({
       legacyRepository: store, feedRepository: store.repositories.feed, sourcePort: {},
-      translationPort: { translateMany: async () => { calls += 1; return { translations: [] }; } },
+      translationPort: {
+        translateMany: async ({ items }) => {
+          calls += 1;
+          return { translations: items.map((item) => ({ id: item.id, translatedText: '新译文', engine: 'fixture' })) };
+        },
+      },
     });
-    const result = await service.localizeTexts([{ id: 'rel-notice', text }], { workspaceId: 'local' });
-    assert.equal(calls, 0);
-    assert.equal(result.localizations['rel-notice'].text, '联邦通信委员会通知');
-    assert.equal(result.localizations['rel-notice'].engine, 'gemma-4-26b-a4b-it');
+    const fresh = await service.localizeTexts([{ id: 'rel-notice', text }], { workspaceId: 'local' });
+    assert.equal(calls, 1);
+    assert.equal(fresh.localizations['rel-notice'].text, '新译文');
+    store.repositories.feed.saveTranslations([{
+      workspaceId: 'local', itemId: 'hourly:notice', targetLang: 'zh', sourceHash, translatedText: '小时报通知', engine: 'hourly-report',
+    }]);
+    const reused = await service.localizeTexts([{ id: 'rel-hourly', text }], { workspaceId: 'local' });
+    assert.equal(calls, 1);
+    assert.equal(reused.localizations['rel-hourly'].text, '小时报通知');
+    assert.equal(reused.localizations['rel-hourly'].engine, 'hourly-report');
   } finally { temporary.remove(); }
 });
 
