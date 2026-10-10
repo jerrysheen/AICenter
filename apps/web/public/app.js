@@ -18,7 +18,6 @@ import {
   quoteStatusText,
   homeRequestPlan,
   hourlyEditions,
-  readingSummary,
   absorbReadingIndex,
   unavailableOfficialCount,
   buildHomeTimelineModel,
@@ -226,8 +225,6 @@ const state = {
   homeReadingHours: {},
   homeReadingIndexMissing: false,
   homeReadingError: '',
-  homeExpandedHours: {},
-  homeExpandedOfficial: {},
   homeEarlier: false,
   homeLoadToken: 0,
   homeLoadStartedAt: 0,
@@ -945,18 +942,30 @@ function navigateBack() {
   else setView(returnTarget());
 }
 
+function headerSearchKind() {
+  const view = document.body.dataset.view;
+  if (view === 'market' || view === 'assets') return 'dialog';
+  if (['feed', 'sources', 'inspire'].includes(view) && !(view === 'sources' && state.overviewPane === 'schedule')) return 'field';
+  return 'off';
+}
+
 function syncHeaderSearch() {
   const view = document.body.dataset.view;
-  const searchLabel = view === 'feed' ? '搜索信息流' : view === 'sources' ? (state.overviewPane === 'catalog' ? '搜索信源目录' : '搜索总览资讯') : '搜索灵感';
-  const searchable = ['feed', 'sources', 'inspire'].includes(view) && !(view === 'sources' && state.overviewPane === 'schedule');
-  if (!searchable) state.showHeaderSearch = false;
+  const kind = headerSearchKind();
+  const searchLabel = kind === 'dialog'
+    ? '搜索标的'
+    : view === 'feed' ? '搜索信息流' : view === 'sources' ? (state.overviewPane === 'catalog' ? '搜索信源目录' : '搜索总览资讯') : '搜索灵感';
+  if (kind !== 'field') state.showHeaderSearch = false;
   document.body.classList.toggle('search-open', Boolean(state.showHeaderSearch));
   if (elements['toggle-search']) {
-    elements['toggle-search'].hidden = !searchable;
-    setIconButton(elements['toggle-search'], state.showHeaderSearch ? 'x' : 'search');
-    elements['toggle-search'].setAttribute('aria-label', state.showHeaderSearch ? '关闭搜索' : searchLabel);
-    elements['toggle-search'].title = searchLabel;
-    elements['toggle-search'].setAttribute('aria-expanded', String(state.showHeaderSearch));
+    const searchButton = elements['toggle-search'];
+    searchButton.hidden = false;
+    searchButton.disabled = kind === 'off';
+    searchButton.classList.toggle('is-disabled', kind === 'off');
+    setIconButton(searchButton, state.showHeaderSearch ? 'x' : 'search');
+    searchButton.setAttribute('aria-label', state.showHeaderSearch ? '关闭搜索' : searchLabel);
+    searchButton.title = searchLabel;
+    searchButton.setAttribute('aria-expanded', String(kind === 'field' && state.showHeaderSearch));
   }
   if (elements['global-search']) {
     elements['global-search'].placeholder = searchLabel;
@@ -1140,23 +1149,21 @@ function setView(name, options = {}) {
 
 function updateHeaderAction(view) {
   const button = elements['open-compose'];
-  button.hidden = view === 'inspire';
-  if (view === 'inspire') return;
-  if (view === 'market' || view === 'assets') {
-    button.dataset.action = 'search';
-    button.setAttribute('aria-label', '搜索标的');
-    setIconButton(button, 'search');
-    return;
-  }
+  if (!button) return;
+  button.hidden = false;
+  setIconButton(button, 'plus');
   if (view === 'ask') {
+    button.disabled = false;
+    button.classList.remove('is-disabled');
     button.dataset.action = 'ask-new';
     button.setAttribute('aria-label', '新提问');
-    setIconButton(button, 'plus');
     return;
   }
+  const unused = view === 'inspire' || view === 'market' || view === 'assets';
   button.dataset.action = 'compose';
   button.setAttribute('aria-label', '快速发布');
-  setIconButton(button, 'plus');
+  button.disabled = unused;
+  button.classList.toggle('is-disabled', unused);
 }
 
 function bootUiRevision() {
@@ -5549,14 +5556,25 @@ function renderStockBoards() {
     .filter((source) => source.category === 'market' && source.viewKind === 'market-board' && source.id !== 'market.global')
     .map((source) => ({ id: source.id.replace(/^market\./, ''), label: source.title }));
   const boards = sourceBoards.length ? sourceBoards : fallbackStockBoards;
-  renderChipTabs(elements['stock-boards'], boards, state.stockBoard, (id) => {
-    state.stockBoard = id;
-    state.stockGroup = '全部';
-    state.marketFilter = '';
-    if (elements['market-filter']) elements['market-filter'].value = '';
-    renderStockBoards();
-    loadMarket().catch((error) => showToast(error.message));
-  });
+  const target = elements['stock-boards'];
+  if (!target) return;
+  target.replaceChildren(...boards.map((item) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `channel-tab${item.id === state.stockBoard ? ' is-active' : ''}`;
+    button.setAttribute('aria-pressed', String(item.id === state.stockBoard));
+    button.textContent = item.label;
+    button.addEventListener('click', () => {
+      state.stockBoard = item.id;
+      state.stockGroup = '全部';
+      state.marketFilter = '';
+      if (elements['market-filter']) elements['market-filter'].value = '';
+      renderStockBoards();
+      loadMarket().catch((error) => showToast(error.message));
+    });
+    return button;
+  }));
+  bindHorizontalTabScroll();
 }
 
 async function loadSourceCatalog() {
@@ -6504,8 +6522,6 @@ function renderHomeTimelineView() {
     readings: state.homeReadingHours,
     releases: state.homeBoard?.releases || [],
     upcoming: state.homeBoard?.upcoming || [],
-    expandedHours: state.homeExpandedHours,
-    expandedOfficial: state.homeExpandedOfficial,
     earlier: state.homeEarlier,
     narrow: window.matchMedia('(max-width: 699px)').matches,
     treeStatus,
@@ -6514,50 +6530,28 @@ function renderHomeTimelineView() {
   paintHomeTimeline(root, model, {
     onRetry: () => loadSourcesPage({ refresh: true }).catch(() => {}),
     onRetryBoard: () => loadHomeBoard(homeRequestPlan(Date.now()).board, { refresh: true, token: state.homeLoadToken }).catch(() => {}),
-    onToggleHour: (hour) => toggleHomeHour(hour),
-    onToggleOfficial: (hour) => {
-      state.homeExpandedOfficial[hour.startAt] = !state.homeExpandedOfficial[hour.startAt];
-      renderHomeTimelineView();
-    },
     onEarlier: () => {
       state.homeEarlier = true;
       renderHomeTimelineView();
+      ensureHomeReadingSnapshots(state.homeLoadToken).catch(() => {});
     },
     onEvent: (event) => openPage('event', event.eventId || event.id),
   });
-  const waitingTitles = model.hours.length > 0 && model.hours.every((hour) => !hour.lead && hour.hitCount == null);
-  if (state.homeReadingError && waitingTitles) {
+  if (state.homeReadingError && model.treeStatus !== 'error') {
     const retry = document.createElement('button');
     retry.type = 'button';
-    retry.className = 'text-button';
+    retry.className = 'text-button home-reading-retry';
     retry.textContent = '小时报读取失败 · 重试';
     retry.addEventListener('click', () => loadSourcesPage({ refresh: true }).catch(() => {}));
     root.append(retry);
-  } else if (state.homeSlow && waitingTitles && state.homeReadingIndexMissing) {
+  } else if (state.homeSlow && state.homeReadingIndexMissing && !model.hours.length && model.treeStatus !== 'slow') {
     const retry = document.createElement('button');
     retry.type = 'button';
-    retry.className = 'text-button';
+    retry.className = 'text-button home-reading-retry';
     retry.textContent = '读取较慢 · 重试';
     retry.addEventListener('click', () => loadSourcesPage({ refresh: true }).catch(() => {}));
     root.append(retry);
   }
-}
-
-function toggleHomeHour(hour) {
-  const open = !state.homeExpandedHours[hour.startAt];
-  state.homeExpandedHours[hour.startAt] = open;
-  renderHomeTimelineView();
-  if (!open || readingSummary(state.homeReadingHours[hour.startAt])?.preview?.length) return;
-  const token = state.homeLoadToken;
-  api(homeRequestPlan(Date.now()).readingHour(hour.startAt, hour.endAt)).then((payload) => {
-    if (token !== state.homeLoadToken) return;
-    if (payload?.snapshot) state.homeReadingHours[hour.startAt] = payload.snapshot;
-    renderHomeTimelineView();
-  }).catch((error) => {
-    if (token !== state.homeLoadToken) return;
-    if (error?.status !== 404) state.homeReadingError = '小时报读取失败';
-    renderHomeTimelineView();
-  });
 }
 
 function renderHomeSourceLine() {
@@ -6589,24 +6583,31 @@ async function loadHomeTree(path, token) {
   }
 }
 
-async function fillRecentReadingHours(token) {
-  const editions = hourlyEditions(state.homeTree).slice(0, 3);
-  await Promise.all(editions.map(async (edition) => {
+async function ensureHomeReadingSnapshots(token) {
+  const editions = hourlyEditions(state.homeTree);
+  const count = state.homeEarlier ? editions.length : 4;
+  await Promise.all(editions.slice(0, count).map(async (edition) => {
     const startAt = edition.window.startAt;
-    if (readingSummary(state.homeReadingHours[startAt])) return;
+    const current = state.homeReadingHours[startAt];
+    if (Array.isArray(current?.items)) return;
     try {
       const payload = await api(homeRequestPlan(Date.now()).readingHour(startAt, edition.window.endAt));
-      if (token !== state.homeLoadToken || !payload?.snapshot) return;
-      state.homeReadingHours[startAt] = payload.snapshot;
+      if (token !== state.homeLoadToken) return;
+      if (payload?.snapshot) state.homeReadingHours[startAt] = payload.snapshot;
     } catch (error) {
       if (token !== state.homeLoadToken) return;
-      if (error?.status !== 404) state.homeReadingError = '小时报读取失败';
+      if (error?.status === 404) {
+        const prior = state.homeReadingHours[startAt];
+        state.homeReadingHours[startAt] = prior ? { ...prior, items: [] } : { items: [] };
+        return;
+      }
+      state.homeReadingError = '小时报读取失败';
     }
   }));
   if (token === state.homeLoadToken && document.body.dataset.view === 'sources') renderHub();
 }
 
-async function loadHomeReadingIndex(path, token, treePromise) {
+async function loadHomeReadingIndex(path, token) {
   try {
     const payload = await api(path);
     if (token !== state.homeLoadToken) return;
@@ -6614,13 +6615,8 @@ async function loadHomeReadingIndex(path, token, treePromise) {
     state.homeReadingHours = { ...state.homeReadingHours, ...absorbReadingIndex(payload) };
   } catch (error) {
     if (token !== state.homeLoadToken) return;
-    if (error?.status === 404) {
-      state.homeReadingIndexMissing = true;
-      renderHub();
-      treePromise.then(() => fillRecentReadingHours(token)).catch(() => {});
-      return;
-    }
-    state.homeReadingError = '小时报读取失败';
+    if (error?.status === 404) state.homeReadingIndexMissing = true;
+    else state.homeReadingError = '小时报读取失败';
   }
 }
 
@@ -6668,12 +6664,13 @@ async function loadSourcesPage({ refresh = false } = {}) {
   const treePromise = loadHomeTree(plan.tree, token);
   await Promise.all([
     treePromise,
-    loadHomeReadingIndex(plan.readingIndex, token, treePromise),
+    loadHomeReadingIndex(plan.readingIndex, token),
     loadHomeOverviewMarket(refresh),
     loadDailyBrief().catch(() => {}),
   ]);
   if (token !== state.homeLoadToken) return;
   renderHub();
+  ensureHomeReadingSnapshots(token).catch(() => {});
   loadHomeBoard(plan.board, { refresh, token }).catch(() => {});
   scheduleOverviewFocusWatch();
 }
@@ -6764,10 +6761,7 @@ function renderOverview(market) {
     const heading = document.createElement('div');
     heading.className = 'market-section-title';
     heading.append(Object.assign(document.createElement('h2'), { textContent: section.title }));
-    const sectionMeta = [
-      section.session ? sessionLabel(section.session) : '',
-      market?.fetchedAt ? `更新 ${formatTime(market.fetchedAt)}` : '',
-    ].filter(Boolean).join(' · ');
+    const sectionMeta = section.session ? sessionLabel(section.session) : '';
     if (sectionMeta) {
       heading.append(Object.assign(document.createElement('small'), { className: 'muted', textContent: sectionMeta }));
     }
@@ -9949,24 +9943,41 @@ function briefIsCurrent(brief, now = new Date()) {
   return Boolean(brief?.reportDate) && brief.reportDate >= expectedBriefDate(now);
 }
 
-function homeDailyTitle(brief) {
-  if (brief?.editorial?.status === 'ready') {
-    const items = briefReadingItems(brief.editorial);
-    if (items[0]?.title) return items[0].title;
+function homeDailyHeading(brief) {
+  if (brief?.reportDate && brief.reportDate === shanghaiDateKey(new Date())) return '今日日报';
+  const label = briefDateLabel(brief?.reportDate);
+  return label ? `日报 · ${label}` : '日报';
+}
+
+function renderBriefPeekBody(root, brief) {
+  if (brief?.overview) root.append(Object.assign(document.createElement('p'), { textContent: brief.overview }));
+  const items = Array.isArray(brief?.informationItems) ? brief.informationItems : [];
+  const list = document.createElement('ul');
+  list.className = 'home-brief-list';
+  for (const item of items) {
+    if (list.childElementCount >= 5) break;
+    if (!item?.sentence) continue;
+    list.append(Object.assign(document.createElement('li'), { textContent: item.sentence }));
   }
-  if (brief?.items?.[0]?.headline) return brief.items[0].headline;
-  if (brief?.informationItems?.[0]?.sentence) return brief.informationItems[0].sentence;
-  return brief?.overview || '';
+  if (list.childElementCount) root.append(list);
+  if (items.length && brief?.reportDate) {
+    const more = document.createElement('a');
+    more.className = 'text-button';
+    more.href = `#report/${brief.reportDate}`;
+    more.textContent = `查看全部 ${items.length} 条 ›`;
+    root.append(more);
+  }
 }
 
 function renderHomeDaily() {
   const root = elements['home-daily'];
   if (!root) return;
   root.replaceChildren();
+  const brief = dailyBriefSnapshot.brief;
+  const current = Boolean(brief) && briefIsCurrent(brief);
   const head = document.createElement('div');
   head.className = 'compact-label';
-  head.append(Object.assign(document.createElement('h2'), { textContent: '今日日报' }));
-  const brief = dailyBriefSnapshot.brief;
+  head.append(Object.assign(document.createElement('h2'), { textContent: current ? homeDailyHeading(brief) : '今日日报' }));
   const retry = (label) => {
     const button = document.createElement('button');
     button.type = 'button';
@@ -9989,25 +10000,19 @@ function renderHomeDaily() {
     root.append(head);
     return;
   }
-  if (!brief || !briefIsCurrent(brief)) {
+  if (!current) {
     const line = document.createElement('p');
     line.append(document.createTextNode('今天的日报还没生成（每天 08:00）· '));
     const yesterday = document.createElement('a');
     yesterday.className = 'text-button';
-    yesterday.href = `#report/${shiftDateKey(shanghaiDateKey(new Date()), -1)}`;
+    yesterday.href = `#report/${shiftDateKey(expectedBriefDate(new Date()), -1)}`;
     yesterday.textContent = '看昨天 ›';
     line.append(yesterday);
     root.append(head, line);
     return;
   }
-  const open = document.createElement('a');
-  open.className = 'text-button';
-  open.href = `#report/${brief.reportDate}`;
-  open.textContent = '打开日报 ›';
-  head.append(open);
-  const title = homeDailyTitle(brief);
   root.append(head);
-  if (title) root.append(Object.assign(document.createElement('p'), { textContent: title }));
+  renderBriefPeekBody(root, brief);
 }
 
 async function loadDailyBrief() {
@@ -10079,19 +10084,7 @@ function renderDailyBriefPeek() {
     root.append(missing);
     return;
   }
-  const summary = document.createElement('p');
-  summary.textContent = brief.overview;
-  root.append(summary);
-  if(brief.informationItems) {
-    const list=document.createElement('ul');let characters=0;
-    for(const item of brief.informationItems) {
-      if(characters+item.sentence.length>1000) break;
-      characters+=item.sentence.length;list.append(Object.assign(document.createElement('li'),{textContent:item.sentence}));
-    }
-    root.append(list);
-    const more=document.createElement('button');more.type='button';more.className='text-button';more.textContent=`查看全部 ${brief.informationItems.length} 条及来源`;
-    more.addEventListener('click',()=>setView(`report/${brief.reportDate}`));root.append(more);
-  }
+  renderBriefPeekBody(root, brief);
 }
 
 function renderReportTabs() {
@@ -12111,6 +12104,7 @@ function openSearch() {
 }
 
 function openHeaderAction() {
+  if (elements['open-compose'].disabled) return;
   if (elements['open-compose'].dataset.action === 'search') {
     openSearch();
     return;
@@ -13172,6 +13166,11 @@ elements['reload-view']?.addEventListener('click', (event) => {
 elements['open-settings'].addEventListener('click', () => setView('settings'));
 elements['nav-back']?.addEventListener('click', navigateBack);
 elements['toggle-search']?.addEventListener('click', () => {
+  if (headerSearchKind() === 'dialog') {
+    openSearch();
+    return;
+  }
+  if (headerSearchKind() !== 'field') return;
   state.showHeaderSearch = !state.showHeaderSearch;
   syncHeaderSearch();
   if (state.showHeaderSearch) elements['global-search']?.focus();

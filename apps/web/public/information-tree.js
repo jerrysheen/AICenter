@@ -56,8 +56,9 @@ export function hourStepSense(input, mobile) {
   return (mobile ? phone : desk)[input] || null;
 }
 export function createInformationTreePage(host) {
-  let root,list,titleEl,coverageEl,statusRow,statusToggle,statusDetail,pastBtn,directionNav,hourChips,dayChips,tools,materialsBtn,tagPanel,tag,period,backIssues,notice,delayEl,hourRail,hourDay,hourNow,hourEarlier,hourYesterday,hourMore,mode='daily',direction=null,directionExplicit=false,showMaterials=false,selectedHourStart=0,dailyStart=0,openedId='',openedDirection='',manifest,selected=null,epoch=0,flight=0,settled=false,timer=0,dateFilter='',checking=null,pinnedReadingId='';
+  let root,list,titleEl,coverageEl,statusRow,statusToggle,statusDetail,pastBtn,directionNav,hourChips,dayChips,tools,materialsBtn,tagPanel,tag,period,backIssues,notice,delayEl,hourRail,hourDay,hourNow,hourEarlier,hourYesterday,hourMore,issueEl,periodBar,periodMeta,periodLabel,periodPop,periodPrev,periodNext,mode='daily',direction=null,directionExplicit=false,showMaterials=false,selectedHourStart=0,dailyStart=0,openedId='',openedDirection='',manifest,selected=null,epoch=0,flight=0,settled=false,timer=0,dateFilter='',checking=null,pinnedReadingId='';
   let requests=new AbortController();
+  let periodDocBound=false;
   let rendering=0;
   function api(path, options){
     const ticket=flight;
@@ -212,10 +213,11 @@ export function createInformationTreePage(host) {
     else {const usable=rows.find(r=>copyCount(r));if(usable)period.value=String(usable.window.startAt);}
   }
   function setPrimary() {
-    for(const tab of root.querySelectorAll('[data-mode]')){const on=tab.dataset.mode===mode;tab.setAttribute('aria-pressed',String(on));tab.setAttribute('aria-selected',String(on));}
+    for(const tab of root.querySelectorAll('[data-mode]')){const on=tab.dataset.mode===mode;tab.setAttribute('aria-pressed',String(on));tab.setAttribute('aria-selected',String(on));tab.classList.toggle('is-active',on);}
     materialsBtn.setAttribute('aria-pressed',String(showMaterials));
   }
   function switchMode(next) {
+    closePeriodPop();
     if(next===mode && !showMaterials) return;
     if(next!==mode) rememberIssue();
     mode=next;showMaterials=false;openedId='';
@@ -280,7 +282,67 @@ export function createInformationTreePage(host) {
     if(loc.hash===hash)return;
     try{hist.replaceState({aiCenter:true,hash},'',`${loc.pathname||''}${loc.search||''}${hash}`);}catch{}
   }
+  function closePeriodPop(){
+    if(!periodPop) return;
+    periodPop.hidden=true;
+    periodLabel?.setAttribute('aria-expanded','false');
+  }
+  function setPeriodMeta(text){
+    if(!periodMeta) return;
+    const value=text || '';
+    periodMeta.textContent=value;
+    periodMeta.hidden=!value;
+  }
+  function periodCaption(){
+    if(mode==='hourly'){
+      const edition=hourRows().find(item=>item.window.startAt===selectedHourStart);
+      if(!edition) return '选择小时';
+      return `${clock(edition.window.startAt)}\u2013${clock(edition.window.endAt)}`;
+    }
+    const editions=recentDailies();
+    const edition=editions.find(item=>item.window.startAt===dailyStart) || editions[0];
+    if(!edition) return '选择日期';
+    return monthDay(edition.window.endAt);
+  }
+  function periodEnds(){
+    if(mode==='hourly' && !showMaterials && !openedId){
+      const rows=focusedHourRows(hourRows());
+      const index=rows.findIndex(item=>item.window.startAt===selectedHourStart);
+      return {earlier:index>=0 && index<rows.length-1, later:index>0};
+    }
+    if(mode==='daily' && !showMaterials && !openedId){
+      const editions=recentDailies();
+      const index=editions.findIndex(item=>item.window.startAt===dailyStart);
+      return {earlier:index>=0 && index<editions.length-1, later:index>0};
+    }
+    return {earlier:false, later:false};
+  }
+  function syncPeriodChrome(){
+    if(!periodBar) return;
+    const feed=(mode==='hourly' || mode==='daily') && !showMaterials && !openedId;
+    periodBar.hidden=!feed;
+    if(periodLabel) periodLabel.textContent=periodCaption();
+    const ends=periodEnds();
+    if(periodPrev) periodPrev.disabled=!ends.earlier;
+    if(periodNext) periodNext.disabled=!ends.later;
+  }
+  function stepDaily(which){
+    if(mode!=='daily' || showMaterials || openedId || (which!=='earlier' && which!=='later')) return;
+    const editions=recentDailies();
+    const index=editions.findIndex(item=>item.window.startAt===dailyStart);
+    if(index<0) return;
+    const next=which==='earlier' ? editions[index+1] : editions[index-1];
+    if(!next) return;
+    dailyStart=next.window.startAt;openedId='';openedDirection='';
+    return render();
+  }
+  function stepPeriod(which){
+    closePeriodPop();
+    if(mode==='hourly') return stepHour(which);
+    return stepDaily(which);
+  }
   function selectHour(startOrHour){
+    closePeriodPop();
     const clockPick=Number.isInteger(startOrHour) && startOrHour>=0 && startOrHour<=23;
     if(mode!=='hourly'){mode='hourly';showMaterials=false;}
     openedId='';pinnedReadingId='';readingOpen.clear();
@@ -322,6 +384,7 @@ export function createInformationTreePage(host) {
   const hourSwipeIntent=(dx,dy)=>Math.abs(dx)>=hourSwipeMin && Math.abs(dx)>Math.abs(dy)*hourSwipeRatio;
   function typingTarget(event){const node=event.target;if(!node?.tagName)return false;return node.tagName==='INPUT' || node.tagName==='TEXTAREA' || node.tagName==='SELECT' || node.isContentEditable;}
   function onHourKey(event){
+    if(event.key==='Escape'){closePeriodPop();return;}
     if(event.key!=='ArrowLeft' && event.key!=='ArrowRight')return;
     if(event.altKey || event.ctrlKey || event.metaKey || event.shiftKey)return;
     if(!hourNavOpen() || typingTarget(event))return;
@@ -431,16 +494,16 @@ export function createInformationTreePage(host) {
         chip.className='chip-tab';chip.dataset.start=String(edition.window.startAt);chip.dataset.label=clock(edition.window.startAt);hourChips.append(chip);
       }
     }
-    const mobile=hourStripMobile();
     for(const chip of hourChips?.children || []){
       if(!chip.dataset.start) continue;
       const on=chip.dataset.start===String(selectedHourStart);
       chip.classList.toggle('is-active',on);
-      if(on) chip.scrollIntoView(mobile?{inline:'center',block:'nearest'}:{block:'nearest',inline:'nearest'});
+      if(on && typeof chip.scrollIntoView==='function') chip.scrollIntoView({block:'nearest',inline:'nearest'});
     }
     if(hourEarlier) hourEarlier.hidden=display.length<=8;
     paintRail(chosen);
     paintHourUnread(rows);
+    syncPeriodChrome();
   }
   function syncHourChrome() {
     const hourly=mode==='hourly' && !showMaterials;
@@ -450,6 +513,9 @@ export function createInformationTreePage(host) {
     if(hourRail) hourRail.hidden=!hourly || Boolean(openedId);
     if(delayEl && !hourly) delayEl.hidden=true;
     if(dayChips) dayChips.hidden=!daily;
+    if(issueEl) issueEl.hidden=hourly || (daily && !openedId);
+    if(!hourly) setPeriodMeta('');
+    syncPeriodChrome();
     if(directionNav) directionNav.hidden=hourly || daily;
     if(coverageEl) coverageEl.hidden=hourly || daily;
     if(statusRow) statusRow.hidden=hourly || daily;
@@ -480,6 +546,8 @@ export function createInformationTreePage(host) {
       if(edition.window.startAt===dailyStart) chip.classList.add('is-active');
       dayChips.append(chip);
     }
+    setPeriodMeta('');
+    syncPeriodChrome();
     const edition=editions.find(item=>item.window.startAt===dailyStart) || null;
     selected=edition;root.dataset.editionId=edition?.id || '';root.dataset.windowStart=String(edition?.window.startAt ?? '');root.dataset.briefMode='daily';
     const editorial=edition ? await loadEditorial(edition) : null;
@@ -527,6 +595,7 @@ export function createInformationTreePage(host) {
   }
   function renderResearchDaily(editorial, edition, token) {
     root.dataset.editorialId=editorial.id;root.dataset.editorialStatus=editorial.status;
+    if(issueEl) issueEl.hidden=false;
     titleEl.hidden=false;titleEl.textContent=`${monthDay(edition.window.endAt)}研究日报`;
     coverageEl.hidden=false;
     const coverage=editorial.coverage;
@@ -668,14 +737,10 @@ export function createInformationTreePage(host) {
     }
     details.append(summary,body);return details;
   }
-  function hourHead(edition, snapshot) {
-    const head=el('div','','reading-hour-head');
-    head.append(el('h2',`${clock(edition.window.startAt)} – ${clock(edition.window.endAt)}`,'reading-hour-title'));
+  function syncHourMeta(snapshot) {
     const scored=Number(snapshot?.scored), candidates=Number(snapshot?.candidates), selectedCount=Number(snapshot?.selected);
-    if(Number.isFinite(scored) && Number.isFinite(candidates) && Number.isFinite(selectedCount) && selectedCount>0) head.append(el('p',`已处理 ${scored}/${candidates} · 命中 ${selectedCount}`,'reading-hour-meta'));
-    const nav=el('div','','reading-hour-nav');
-    const prev=button('‹ 上一期',()=>stepHour('earlier')), next=button('下一期 ›',()=>stepHour('later'));
-    prev.className='reading-hour-step';next.className='reading-hour-step';nav.append(prev,next);head.append(nav);return head;
+    const text=Number.isFinite(scored) && Number.isFinite(candidates) && Number.isFinite(selectedCount) && selectedCount>0 ? `已处理 ${scored}/${candidates} · 命中 ${selectedCount}` : '';
+    setPeriodMeta(mode==='hourly' ? text : '');
   }
   function showEmptyHour(rest) {
     const line=el('div','','tree-hour-empty');
@@ -741,7 +806,7 @@ export function createInformationTreePage(host) {
     finishOpening(claim,true);paintHourUnread();
     const page=el('div','','reading-hour');
     if(hourFallbackText) page.append(el('p',hourFallbackText,'tree-hour-fallback'));
-    page.append(hourHead(edition,snapshot));
+    syncHourMeta(snapshot);
     syncReadingChrome(null);
     const shown=(snapshot.items||[]).filter(item=>item.readingDirectionName && item.readingDirectionName!=='待分类' && item.disposition!=='out-of-scope');
     const hits=shown.filter(item=>item.disposition==='hit');
@@ -761,7 +826,7 @@ export function createInformationTreePage(host) {
     clearHourSlow();finishOpening(claim,true);paintHourUnread();
     const page=el('div','','reading-hour');
     if(hourFallbackText) page.append(el('p',hourFallbackText,'tree-hour-fallback'));
-    if(edition) page.append(hourHead(edition, null));
+    syncHourMeta(null);
     page.append(showEmptyHour([]));
     list.replaceChildren(page);
     prefetchAround(edition);
@@ -788,6 +853,7 @@ export function createInformationTreePage(host) {
       if(snapshot.status==='partial') refreshPartial(edition, token, claim);
       return;
     }
+    setPeriodMeta('');
     if(!list.querySelector('.tree-hour-skeleton')){list.replaceChildren(hourSkeleton());armHourSlow(token);}
     const snapshot=await readingHourPromise(edition);
     if(token!==epoch){const current=claim?.ticket===opening.ticket;finishOpening(claim,false);if(current && root?.isConnected)paintHourUnread();return;}
@@ -883,9 +949,22 @@ export function createInformationTreePage(host) {
   return {async mount(target,options={}){
     stop();flight++;requests.abort();requests=new AbortController();epoch++;settled=false;loadSeen();const flightToken=flight;root=target;mode=options.mode==='hourly' ? 'hourly' : 'daily';dateFilter=options.date || '';pendingClockHour=Number.isInteger(options.hour) && options.hour>=0 && options.hour<=23 ? options.hour : null;hourFallbackText='';hourRevealEarlier=false;showMaterials=false;root.replaceChildren();root.classList.add('tree-page','brief-page');
     if(options.resetSelection){selected=null;viewKey='';}
-    const primary=el('div','','tree-primary');primary.setAttribute('role','tablist');primary.setAttribute('aria-label','简报');
-    for(const [value,label] of [['daily','日报'],['hourly','小时报']]){const tab=button(label,()=>switchMode(value));tab.dataset.mode=value;tab.setAttribute('role','tab');primary.append(tab);}
+    const primary=el('div','','tree-primary source-control');primary.setAttribute('aria-label','简报');
+    const modeTabs=el('div','','tree-mode-tabs channel-tabs');modeTabs.setAttribute('role','tablist');modeTabs.setAttribute('aria-label','简报');
+    for(const [value,label] of [['daily','日报'],['hourly','小时报']]){const tab=button(label,()=>switchMode(value));tab.className='channel-tab';tab.dataset.mode=value;tab.setAttribute('role','tab');modeTabs.append(tab);}
+    periodBar=el('div','','tree-period-bar');
+    periodMeta=el('p','','tree-period-meta');periodMeta.hidden=true;
+    const periodSwitch=el('div','','tree-period-switch');
+    periodPrev=button('‹',()=>stepPeriod('earlier'));periodPrev.className='tree-period-step';periodPrev.setAttribute('aria-label','上一期');
+    periodNext=button('›',()=>stepPeriod('later'));periodNext.className='tree-period-step';periodNext.setAttribute('aria-label','下一期');
+    const picker=el('div','','tree-period-picker');
+    periodPop=el('div','','tree-period-pop');periodPop.hidden=true;periodPop.setAttribute('role','listbox');
+    periodLabel=button('选择期数',()=>{const open=periodPop.hidden;periodPop.hidden=!open;periodLabel.setAttribute('aria-expanded',String(open));});
+    periodLabel.className='tree-period-label';periodLabel.setAttribute('aria-haspopup','listbox');periodLabel.setAttribute('aria-expanded','false');periodLabel.setAttribute('aria-label','选择期数');
+    picker.append(periodLabel,periodPop);periodSwitch.append(periodPrev,picker,periodNext);periodBar.append(periodMeta,periodSwitch);primary.append(modeTabs,periodBar);
+    if(!periodDocBound){periodDocBound=true;document.addEventListener('click',event=>{if(!periodPop || periodPop.hidden || periodPop.parentElement?.contains(event.target))return;closePeriodPop();});}
     const issue=el('header','','tree-issue');
+    issueEl=issue;
     const heading=el('div','','tree-issue-heading');
     titleEl=el('h2','','tree-issue-title');
     pastBtn=button('往期',()=>{backIssues.hidden=!backIssues.hidden;pastBtn.setAttribute('aria-expanded',String(!backIssues.hidden));});
@@ -921,16 +1000,17 @@ export function createInformationTreePage(host) {
     hourYesterday.className='tree-hour-yesterday';
     hourMore=button('›',()=>{if(typeof hourChips.scrollBy==='function')hourChips.scrollBy({left:160});else hourChips.scrollLeft=(hourChips.scrollLeft||0)+160;});
     hourMore.className='tree-hour-more';hourMore.setAttribute('aria-label','更早的小时');
-    hourRail.append(hourDay,hourNow,hourChips,hourMore,hourEarlier,hourYesterday);
+    hourRail.append(hourDay,hourNow,hourChips,hourEarlier,hourYesterday);
     dayChips=el('div','','chip-tabs tree-hour-chips');dayChips.setAttribute('aria-label','日报日期');
+    periodPop.append(hourRail,dayChips);
     tools=el('div','','tree-tools');
     materialsBtn=button('本期材料',()=>{showMaterials=!showMaterials;render();});
     tools.append(materialsBtn);
     tagPanel=el('div','','tree-tag-panel');tagPanel.hidden=true;
     tag=el('select');tag.setAttribute('aria-label','主Tag筛选');tag.add(new Option('全部Tag','*'));tag.addEventListener('change',()=>{memory[mode]={...(memory[mode]||{}),tag:tag.value};render();});tagPanel.append(tag);
     notice=el('div','','tree-update');notice.hidden=true;notice.setAttribute('role','status');list=el('div','','tree-list');bindHourSwipe(list);
-    const hourLayout=el('div','','tree-hour-layout');hourLayout.append(hourRail,list);
-    root.append(primary,issue,delayEl,dayChips,backIssues,directionNav,tools,tagPanel,notice,hourLayout);
+    const hourLayout=el('div','','tree-hour-layout');hourLayout.append(list);
+    root.append(primary,issue,delayEl,backIssues,directionNav,tools,tagPanel,notice,hourLayout);
     const token=epoch;
     if(!names.size)api('/api/v1/tags').then(({catalog})=>{if(token!==epoch)return;for(const t of catalog?.tags || [])names.set(t.id,t.name);for(const option of tag.options)if(names.has(option.value))option.textContent=names.get(option.value);}).catch(()=>{});
     try{

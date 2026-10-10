@@ -118,7 +118,7 @@ export function homeRequestPlan(nowMs = Date.now()) {
   const dayEnd = from + DAY;
   const boardTo = nowMs + DAY;
   const tree = `/api/v1/reports/tree?view=index&startAt=${from}&endAt=${dayEnd}`;
-  const readingIndex = '/api/v1/reports/reading-hour/index';
+  const readingIndex = `/api/v1/reports/reading-hour/index?startAt=${from}&endAt=${dayEnd}&scope=hour`;
   const market = '/api/v1/markets?board=overview';
   const daily = '/api/v1/reports/daily/latest/brief';
   const board = `/api/v1/static-signals/board?from=${from}&to=${boardTo}&focus=1&limit=40&releaseLimit=60`;
@@ -145,8 +145,26 @@ export function hourlyEditions(tree) {
   return editions.sort((left, right) => right.window.startAt - left.window.startAt);
 }
 
+export function readingTitles(snapshot, limit = 5) {
+  if (!snapshot || typeof snapshot !== 'object') return [];
+  const items = Array.isArray(snapshot.items) ? snapshot.items : [];
+  const hits = items.filter((item) => item?.disposition === 'hit' || (Array.isArray(item?.hits) && item.hits.length));
+  const pool = (hits.length ? hits : items).map((item) => String(item?.title || '').trim()).filter(Boolean);
+  const headline = String(snapshot.headline?.title || snapshot.title || snapshot.firstTitle || '').trim();
+  const titles = [];
+  const seen = new Set();
+  for (const text of [...pool, headline]) {
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    titles.push(text);
+    if (titles.length >= limit) break;
+  }
+  return titles;
+}
+
 export function readingSummary(snapshot) {
-  if (!snapshot || typeof snapshot !== 'object') return null;
+  const titles = readingTitles(snapshot, 5);
+  if (!titles.length) return null;
   const items = Array.isArray(snapshot.items) ? snapshot.items : [];
   const hits = items.filter((item) => item?.disposition === 'hit' || (Array.isArray(item?.hits) && item.hits.length));
   const count = Number.isFinite(Number(snapshot.selected))
@@ -154,10 +172,7 @@ export function readingSummary(snapshot) {
     : Number.isFinite(Number(snapshot.hitCount))
       ? Number(snapshot.hitCount)
       : (items.length ? hits.length : null);
-  const lead = snapshot.title || snapshot.firstTitle || hits[0]?.title || items[0]?.title || '';
-  const preview = (hits.length ? hits : items).map((item) => item?.title).filter(Boolean).slice(0, 3);
-  if (count == null && !lead && !preview.length) return null;
-  return { count, lead, preview };
+  return { count, lead: titles[0], preview: titles.slice(0, 3), titles };
 }
 
 export function absorbReadingIndex(payload) {
@@ -275,8 +290,6 @@ export function buildHomeTimelineModel({
   readings = {},
   releases = [],
   upcoming = [],
-  expandedHours = {},
-  expandedOfficial = {},
   earlier = false,
   narrow = false,
   treeStatus = 'loading',
@@ -290,32 +303,34 @@ export function buildHomeTimelineModel({
   const official = foldOfficialByHour(releases);
   const officialByStart = new Map(official.map((group) => [group.startAt, group]));
   const latest = sorted[0] || null;
+  const hours = shown.map((edition, index) => {
+    const startAt = edition.window.startAt;
+    const summary = readingSummary(readings[startAt]);
+    const titles = readingTitles(readings[startAt], index === 0 ? 5 : 2);
+    return {
+      startAt,
+      endAt: edition.window.endAt,
+      label: shanghaiHourLabel(startAt).hourText,
+      href: reportHourHref(startAt),
+      lead: titles[0] || '',
+      titles,
+      hitCount: summary && Number.isFinite(summary.count) ? summary.count : null,
+      official: officialByStart.get(startAt) || null,
+    };
+  }).filter((hour) => hour.titles.length > 0);
   return {
-    header: latest ? `今天 · 最新小时报 ${shanghaiHourLabel(latest.window.startAt).hourText}` : '今天',
+    header: '今天',
+    latestText: latest ? `最新小时报 ${shanghaiHourLabel(latest.window.startAt).hourText}` : '',
     briefHref: latest ? reportHourHref(latest.window.startAt) : '#report',
     nowText: `现在 ${shanghaiHourLabel(nowMs).hhmm}`,
+    statusText: [coverage.delay?.text, ...gaps.map((gap) => gap.text)].filter(Boolean).join(' · '),
     events: nextEvents(upcoming, nowMs, 2),
     delay: coverage.delay,
     gaps,
     earlierCount: earlier ? 0 : Math.max(sorted.length - limit, 0),
     treeStatus,
     boardStatus,
-    hours: shown.map((edition) => {
-      const startAt = edition.window.startAt;
-      const summary = readingSummary(readings[startAt]);
-      return {
-        startAt,
-        endAt: edition.window.endAt,
-        label: shanghaiHourLabel(startAt).hourText,
-        href: reportHourHref(startAt),
-        lead: summary?.lead || '',
-        hitCount: summary ? summary.count : null,
-        expanded: Boolean(expandedHours[startAt]),
-        preview: summary?.preview || [],
-        official: officialByStart.get(startAt) || null,
-        officialOpen: Boolean(expandedOfficial[startAt]),
-      };
-    }),
+    hours,
   };
 }
 
@@ -337,16 +352,22 @@ export function renderHomeTimeline(root, model, handlers = {}) {
   if (!root || !model) return;
   root.replaceChildren();
   const head = el('div', 'home-timeline-head');
-  head.append(el('h2', '', model.header));
+  head.append(el('h2', '', model.header || '今天'));
+  if (model.latestText) head.append(el('span', 'home-latest', model.latestText));
   const brief = el('a', 'text-button', '完整简报 ›');
   brief.href = model.briefHref;
   head.append(brief);
   root.append(head);
+  if (model.statusText) root.append(el('p', 'home-status-line', model.statusText));
 
   if (model.treeStatus === 'error') {
-    root.append(retryButton('小时报读取失败 · 重试', handlers.onRetry));
+    const retry = retryButton('小时报读取失败 · 重试', handlers.onRetry);
+    retry.classList.add('home-reading-retry');
+    root.append(retry);
   } else if (model.treeStatus === 'slow' && !model.hours.length) {
-    root.append(retryButton('读取较慢 · 重试', handlers.onRetry));
+    const retry = retryButton('读取较慢 · 重试', handlers.onRetry);
+    retry.classList.add('home-reading-retry');
+    root.append(retry);
   }
 
   if (model.events.length || model.boardStatus === 'error' || model.boardStatus === 'slow') {
@@ -369,75 +390,33 @@ export function renderHomeTimeline(root, model, handlers = {}) {
     root.append(row);
   }
 
-  root.append(el('p', 'home-now', model.nowText));
-  if (model.delay?.text) root.append(el('p', 'home-delay', model.delay.text));
+  const now = el('div', 'home-now');
+  now.append(el('span', 'home-now-label', model.nowText));
+  const rule = el('i', 'home-now-rule');
+  rule.setAttribute('aria-hidden', 'true');
+  now.append(rule);
+  root.append(now);
 
-  const blocks = [];
-  const newest = model.hours[0]?.startAt ?? null;
-  for (const gap of model.gaps) {
-    if (newest == null || gap.startAt >= newest) blocks.push({ kind: 'gap', at: gap.startAt, gap });
-  }
-  model.hours.forEach((hour, index) => {
-    blocks.push({ kind: 'hour', at: hour.startAt, hour });
-    const older = model.hours[index + 1]?.startAt ?? -1;
-    for (const gap of model.gaps) {
-      if (gap.startAt < hour.startAt && gap.startAt >= older) blocks.push({ kind: 'gap', at: gap.startAt, gap });
-    }
-  });
-  const seenGaps = new Set();
-  for (const block of blocks.sort((left, right) => right.at - left.at)) {
-    if (block.kind === 'gap') {
-      if (seenGaps.has(block.gap.startAt)) continue;
-      seenGaps.add(block.gap.startAt);
-      root.append(el('p', 'home-gap', block.gap.text));
-      continue;
-    }
-    const hour = block.hour;
+  const rail = el('div', 'home-rail');
+  for (const hour of model.hours) {
     const row = el('div', 'home-row');
     row.append(el('i', 'home-dot is-hour'));
     const copy = el('div', 'home-copy');
-    const title = el('a', 'home-title', hour.lead || hour.label);
-    title.href = hour.href;
-    copy.append(title);
-    const meta = el('button', 'text-button home-meta', hour.hitCount == null ? '展开' : `命中 ${hour.hitCount} · 展开`);
-    meta.type = 'button';
-    meta.addEventListener('click', () => handlers.onToggleHour?.(hour));
-    copy.append(meta);
-    if (hour.expanded) {
-      const list = el('div', 'home-expand');
-      const titles = hour.preview.slice(0, 3);
-      if (!titles.length && hour.hitCount == null && model.treeStatus === 'slow') list.append(retryButton('读取较慢 · 重试', handlers.onRetry));
-      else if (!titles.length && hour.hitCount != null) list.append(el('p', 'home-meta', '这一期没有可显示的标题'));
-      for (const text of titles) {
-        const link = el('a', 'home-title', text);
-        link.href = hour.href;
-        list.append(link);
-      }
-      const more = el('a', 'text-button', '完整列表 ›');
-      more.href = hour.href;
-      list.append(more);
-      copy.append(list);
+    copy.append(el('time', 'home-meta', hour.label));
+    for (const text of hour.titles) {
+      const link = el('a', 'home-title', text);
+      link.href = hour.href;
+      copy.append(link);
     }
-    if (hour.official) {
-      const official = el('button', 'text-button home-official', `${hour.official.text} ›`);
-      official.type = 'button';
-      official.addEventListener('click', () => handlers.onToggleOfficial?.(hour));
-      copy.append(official);
-      if (hour.officialOpen) {
-        const list = el('div', 'home-expand');
-        for (const item of hour.official.items.slice(0, 5)) list.append(el('p', 'home-meta', item.title || '官方发布'));
-        const feed = el('a', 'text-button', '在信息流中查看全部 ›');
-        feed.href = '#feed';
-        list.append(feed);
-        copy.append(list);
-      }
-    }
+    if (hour.hitCount > 0) copy.append(el('p', 'home-meta', `命中 ${hour.hitCount}`));
+    if (hour.official?.text) copy.append(el('p', 'home-official', hour.official.text));
     row.append(copy);
-    root.append(row);
+    rail.append(row);
   }
+  if (rail.childElementCount) root.append(rail);
 
   if (model.earlierCount > 0) {
-    const earlier = el('button', 'text-button', `更早 ${model.earlierCount} 期 ›`);
+    const earlier = el('button', 'text-button home-earlier', `更早 ${model.earlierCount} 期 ›`);
     earlier.type = 'button';
     earlier.addEventListener('click', () => handlers.onEarlier?.());
     root.append(earlier);

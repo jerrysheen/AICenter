@@ -47,9 +47,11 @@ export function createReportRoutes() {
     }},
     {method:'GET',path:'/api/v1/reports/reading-hour/index',handler({response,services,url,identity}) {
       if(!services.readingHour) return json(response,404,{ok:false});
+      const startRaw=url.searchParams.get('startAt');
+      const endRaw=url.searchParams.get('endAt');
       const input=parseContract(ReadingHourIndexQuerySchema,{
-        startAt:Number(url.searchParams.get('startAt') ?? NaN),
-        endAt:Number(url.searchParams.get('endAt') ?? NaN),
+        ...(startRaw===null ? {} : {startAt:Number(startRaw)}),
+        ...(endRaw===null ? {} : {endAt:Number(endRaw)}),
         scope:url.searchParams.get('scope') || 'hour',
       });
       const workspace=identity?.device?.workspaceId || 'local';

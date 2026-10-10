@@ -67,11 +67,21 @@ export const TreeIndexManifestSchema=z.object({
   days:z.array(z.object({edition:TreeIndexEditionSchema.nullable(),attempt:TreeIndexEditionSchema.nullable()}).strict()),
 }).strict();
 export const TreeManifestQuerySchema=TreeWindowQuerySchema.safeExtend({view:z.enum(['reading','index']).optional(),information:z.literal('1').optional()});
+export function readingHourIndexDefaultWindow(nowMs=Date.now()) {
+  const parts=new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hourCycle:'h23'}).formatToParts(new Date(nowMs));
+  const read=type=>Number(parts.find(part=>part.type===type)?.value);
+  const startAt=Date.UTC(read('year'),read('month')-1,read('day'))-8*3_600_000;
+  return {startAt,endAt:startAt+86_400_000};
+}
 export const ReadingHourIndexQuerySchema=z.object({
-  startAt:z.number().int().nonnegative(),
-  endAt:z.number().int().positive(),
+  startAt:z.number().int().nonnegative().optional(),
+  endAt:z.number().int().positive().optional(),
   scope:z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/).default('hour'),
-}).strict().refine(v=>v.endAt>v.startAt && v.endAt-v.startAt<=7*86400000,'时间窗口必须大于0且不超过7天');
+}).strict().superRefine((value,ctx)=>{
+  const hasStart=value.startAt!==undefined, hasEnd=value.endAt!==undefined;
+  if(!hasStart && !hasEnd) return;
+  if(!hasStart || !hasEnd || !(value.endAt>value.startAt) || value.endAt-value.startAt>7*86400000) ctx.addIssue({code:'custom',message:'时间窗口必须大于0且不超过7天'});
+}).transform(value=>value.startAt===undefined && value.endAt===undefined ? {...value,...readingHourIndexDefaultWindow()} : value);
 export const ReadingHourIndexSchema=z.object({
   hours:z.array(z.object({
     startAt:z.number().int().nonnegative(),
