@@ -14,4 +14,4 @@
 
 ## 验证
 
-新增：tree-v3 下三个 brief 接口读最新已发布树刊期；legacy 比树旧时也改读树，树不更新时仍读 legacy；日报补跑排程、三次封顶、不可重试分组不补跑。
+`npm run syntax` 通过。`npm test` 1047 项：通过 1036，失败 10，跳过 1。失败数没有超过 main 基线 10：分析技能 7、信息树策略 1、model-usage 的 zstd（本机 Node 22.14 没有 `node:zlib` 的 zstd）、本机没有 Cursor CLI 1。新增测试覆盖 tree-v3 brief 读最新已发布树刊期、树更新而 legacy 更旧时改读树、树不更新时仍读 legacy，以及日报补跑排程、三次封顶和不可重试分组不补跑。
