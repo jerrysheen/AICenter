@@ -1,11 +1,75 @@
 import { createHash } from 'node:crypto';
-import { ValidationError } from '../../contracts/src/index.js';
+import { formatFeedBefore, ValidationError } from '../../contracts/src/index.js';
 import { packFeedAiBatches } from './feed-ai-batch.js';
 import { feedItemIdentityHash } from './feed-identity.js';
 import { collectLocalizationUnits, localizationItemId, needsZhLocalization } from './localize-texts.js';
 
 const DEFAULT_WORKSPACE_ID = 'local';
 const STORED_FEED_LIMIT = 200;
+const LIST_SUMMARY_MAX = 200;
+
+function clipText(value, max = LIST_SUMMARY_MAX) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text || text.length <= max) return text;
+  return `${text.slice(0, max).trim()}…`;
+}
+
+function firstSentence(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return (text.match(/^.+?(?:[。！？]|[.!?](?:\s|$)|…)/)?.[0] || text).trim();
+}
+
+function commentCount(body) {
+  const lines = String(body || '').replace(/\r\n?/g, '\n').trim().split('\n');
+  const heading = /^\s*(?:#{1,6}\s*)?(?:\*\*)?(?:评论(?:区|预览)?|Comments?|Replies)(?:\*\*)?\s*[：:]?\s*$/iu;
+  const marker = /^\s*(?:[·•*−-]|\d+[.)、])\s+/u;
+  const index = lines.findIndex((line, offset) => heading.test(line)
+    && lines.slice(offset + 1).find((next) => next.trim())?.match(marker));
+  if (index < 0) return 0;
+  let count = 0;
+  for (const line of lines.slice(index + 1)) {
+    if (/^\s*\[未抓取\]/u.test(line)) break;
+    if (marker.test(line)) count += 1;
+  }
+  return count;
+}
+
+function projectListItem(item) {
+  const summary = clipText(item.normalizedArticle?.summary || item.summary || item.body);
+  const translated = item.translation?.text || '';
+  return {
+    id: item.id,
+    resourceId: item.resourceId,
+    workspaceId: item.workspaceId,
+    platform: item.platform,
+    externalId: item.externalId,
+    authorName: item.authorName || '',
+    authorHandle: item.authorHandle || '',
+    title: item.title || '',
+    summary,
+    excerpt: summary,
+    sourceUrl: item.sourceUrl || '',
+    publishedAt: item.publishedAt || 0,
+    capturedAt: item.capturedAt || 0,
+    processing: item.processing || '',
+    isRead: Boolean(item.isRead),
+    commentCount: commentCount(item.body),
+    translation: item.translation ? {
+      status: translated ? 'ready' : 'stale',
+      title: clipText(firstSentence(translated), 80),
+      engine: item.translation.engine || '',
+      targetLang: item.translation.targetLang || 'zh',
+    } : null,
+    normalizedArticle: item.normalizedArticle ? {
+      nodeId: item.normalizedArticle.nodeId,
+      title: item.normalizedArticle.title || '',
+      summary: clipText(item.normalizedArticle.summary || ''),
+      generatedAt: item.normalizedArticle.generatedAt,
+    } : null,
+    tags: item.tags || [],
+  };
+}
 
 function contentHash(value) {
   return createHash('sha256').update(String(value)).digest('hex');
@@ -26,6 +90,7 @@ function toFeedItem(providerId, row) {
     sourceUrl: row.sourceUrl || '',
     publishedAt: row.publishedAt || 0,
     capturedAt: row.capturedAt || row.createdAt || 0,
+    updatedAt: row.updatedAt || 0,
     processing: '',
     subscriptionId: '',
     captureId: row.captureId || '',
@@ -376,17 +441,24 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
 function readStoredFeed(feedRepository, workspaceId, persistence, query, extra = {}) {
   const providerId = persistence.providerId;
   const feed = query.feed || 'for-you';
-  const rows = feedRepository.listContentItemsByProvider?.(workspaceId, providerId, {
+  const requested = Number(query.limit);
+  const pageLimit = Number.isInteger(requested) && requested > 0 ? Math.min(50, requested) : STORED_FEED_LIMIT;
+  const pageQuery = {
     sourceExternalId: persistence.sourceAccount.externalId,
-    limit: STORED_FEED_LIMIT,
     taggedOnly: false,
-    qualityRule:extra.qualityRule || '',
+    qualityRule: extra.qualityRule || '',
+    before: query.before || null,
+  };
+  const rows = feedRepository.listContentItemsByProvider?.(workspaceId, providerId, {
+    ...pageQuery,
+    limit: pageLimit + 1,
   }) || [];
-  const items = rankFeedItems(attachTranslations(
-    feedRepository,
-    workspaceId,
-    rows.map((row) => toFeedItem(providerId, row)),
-  ));
+  const hasMore = rows.length > pageLimit;
+  const pageRows = hasMore ? rows.slice(0, pageLimit) : rows;
+  const items = rankFeedItems(pageRows.map((row) => toFeedItem(providerId, row)));
+  const counted = feedRepository.countContentItemsByProvider?.(workspaceId, providerId, pageQuery);
+  const total = Number.isInteger(counted) ? counted : pageRows.length;
+  const last = pageRows[pageRows.length - 1];
   return {
     platform: providerId,
     workspaceId,
@@ -394,10 +466,12 @@ function readStoredFeed(feedRepository, workspaceId, persistence, query, extra =
     handle: '',
     source: 'source-account',
     mode: items.length ? 'cached' : (extra.mode || 'empty'),
-    tweetCount: items.length,
+    tweetCount: total,
+    total,
+    nextCursor: hasMore && last?.id ? formatFeedBefore(last.isRead, last.capturedAt, last.id) : null,
     fetchedAt: extra.fetchedAt || Date.now(),
-    note: extra.note || (items.length
-      ? `已缓存 ${items.length} 条，来自 SourceAccount`
+    note: extra.note || (total
+      ? `已缓存 ${total} 条，来自 SourceAccount`
       : (persistence.emptyNote || '还没有缓存。刷新后会写入来源并去重保留。')),
     added: extra.added || 0,
     skipped: extra.skipped || 0,
@@ -468,7 +542,7 @@ function wrapFeedProviders(feedProviders) {
   };
 }
 
-export function createFeedService({ legacyRepository, feedRepository, sourcePort, feedProviders, translationPort, feedFilter = null, mediaPort = null, contentRoutingPort = null,onContentReady=null,normalizedArticlePort=null }) {
+export function createFeedService({ legacyRepository, feedRepository, sourcePort, feedProviders, translationPort, feedFilter = null, mediaPort = null, contentRoutingPort = null,onContentReady=null,normalizedArticlePort=null,taggingRepository=null }) {
   const resolvedSourcePort = sourcePort || wrapFeedProviders(feedProviders);
   if (!legacyRepository || !feedRepository || !resolvedSourcePort) throw new Error('feed repositories and source port are required');
   sourcePort = resolvedSourcePort;
@@ -481,8 +555,46 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
     const article=original && normalizedArticlePort.normalizedArticle(workspaceId,`feed:${id}`,original.updatedAt);
     return {...item,normalizedArticle:article || null,processing:!article && needsZhLocalization(item.body || '') ? 'ai' : item.processing || ''};
   };
+  const contentOriginals=(workspaceId,items)=>{
+    const ids=[...new Set(items.map(item=>item.resourceId || item.id).filter(Boolean))];
+    if(!ids.length) return new Map();
+    if(feedRepository.listContentItemsWithSource) {
+      const rows=feedRepository.listContentItemsWithSource(workspaceId,{ids,limit:ids.length,qualityRule}) || [];
+      return new Map(rows.map(row=>[row.id,row]));
+    }
+    return new Map(ids.map(id=>[id,feedRepository.getContentItem(workspaceId,id)]).filter(([,row])=>row));
+  };
+  const attachNormalizedArticles=(workspaceId,items)=>{
+    if(!normalizedArticlePort || !items.length) return items;
+    if(typeof normalizedArticlePort.normalizedArticles==='function') {
+      const originals=contentOriginals(workspaceId,items);
+      const specs=items.map(item=>{
+        const id=item.resourceId || item.id;
+        const sourceVersion=originals.get(id)?.updatedAt;
+        return sourceVersion ? {sourceId:`feed:${id}`,sourceVersion} : null;
+      }).filter(Boolean);
+      const found=normalizedArticlePort.normalizedArticles(workspaceId,specs);
+      return items.map(item=>{
+        const id=item.resourceId || item.id;
+        const article=found.get(`feed:${id}`) || null;
+        return {...item,normalizedArticle:article,processing:!article && needsZhLocalization(item.body || '') ? 'ai' : item.processing || ''};
+      });
+    }
+    return items.map(item=>attachNormalizedArticle(workspaceId,item));
+  };
+  const presentFeed=(feed,shape,workspaceId)=>{
+    if(shape!=='list') return feed;
+    const items=(feed.items || []).map(projectListItem);
+    if(taggingRepository?.listTaggings && items.length) {
+      const ids=items.map(item=>item.resourceId).filter(Boolean);
+      const rows=taggingRepository.listTaggings(workspaceId,'content-item',ids) || [];
+      const tags=new Map(rows.map(row=>[row.resourceId,row.tags]));
+      for(const item of items) item.tags=tags.get(item.resourceId) || [];
+    }
+    return {...feed,items};
+  };
   const localizeForReading=async(workspaceId,items,options={})=>normalizedArticlePort
-    ? attachTranslations(feedRepository,workspaceId,items).map(item=>attachNormalizedArticle(workspaceId,item))
+    ? attachNormalizedArticles(workspaceId,attachTranslations(feedRepository,workspaceId,items))
     : localizeFeedItems(feedRepository,translationPort,workspaceId,items,'zh',options);
   return Object.freeze({
     listLegacyPosts(limit) {
@@ -506,14 +618,16 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       }
       const source = sourcePort.findByProvider(providerId, 'content-feed');
       if (!source) throw new ValidationError(`尚未启用 ${providerId} 信息源`, ['platform']);
-      const { platform: _platform, refresh: _refresh, ...sourceInput } = query || {};
+      const { platform: _platform, refresh: _refresh, before, fields: _fields, ...sourceInput } = query || {};
       const persistence = sourcePort.persistence(source.id, sourceInput);
       if (!persistence?.sourceAccount) throw new ValidationError(`${source.id} 未声明 Feed 持久化投影`, ['sourceId']);
       const workspaceId = actor.workspaceId || DEFAULT_WORKSPACE_ID;
+      const shape = query?.fields === 'list' ? 'list' : 'full';
+      const pageQuery = { ...sourceInput, before: before || null };
       if (!query?.refresh) {
-        const stored = readStoredFeed(feedRepository, workspaceId, persistence, sourceInput,{qualityRule});
+        const stored = readStoredFeed(feedRepository, workspaceId, persistence, pageQuery,{qualityRule});
         stored.items = rankFeedItems(await localizeForReading(workspaceId,stored.items,{wait:false}));
-        return stored;
+        return presentFeed(stored, shape, workspaceId);
       }
       const sourceSnapshot = await sourcePort.read(contentRoutingPort && providerId==='trendforce' ? 'content.trendforce.collection' : source.id, sourceInput, {
         refresh: true,
@@ -530,7 +644,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       }
       if(stats.addedItemIds?.length)await onContentReady?.({workspaceId,sourceIds:stats.addedItemIds.map(id=>`feed:${id}`)});
       if(contentRoutingPort && providerId==='trendforce')return {...mediaPort.readFeed({channel:'tech',sourceKey:'trendforce',view:'all'},{workspaceId}),added:stats.added,mediaExternalIds:stats.mediaExternalIds || []};
-      const stored = readStoredFeed(feedRepository, workspaceId, persistence, sourceInput, {
+      const stored = readStoredFeed(feedRepository, workspaceId, persistence, pageQuery, {
         qualityRule,
         fetchedAt: snapshot.fetchedAt,
         added: stats.added,
@@ -539,7 +653,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       stored.items = rankFeedItems(await localizeForReading(workspaceId,stored.items));
       const hiddenExternalIds = new Set(feedRepository.listHiddenExternalIds?.(workspaceId, providerId) || []);
       stored.items = stored.items.filter((item) => !hiddenExternalIds.has(String(item.externalId || '')));
-      const total = stored.items.length;
+      const total = Number.isInteger(stored.total) ? stored.total : stored.items.length;
       const visibleSnapshotItems = (snapshot.items || []).filter((item) => {
         const externalId = String(item.externalId || '');
         if (hiddenExternalIds.has(externalId)) return false;
@@ -551,7 +665,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       if ((snapshot.mode === 'error' || snapshot.mode === 'unavailable') && !total) {
         return { ...snapshot, source: snapshot.source, items: [] };
       }
-      return {
+      return presentFeed({
         ...stored,
         mode: snapshot.mode === 'error' && total ? 'cached' : (snapshot.mode === 'live' ? 'live' : stored.mode),
         loggedIn: snapshot.loggedIn,
@@ -561,7 +675,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
             ? `${snapshot.note} · 仍显示已缓存 ${total} 条`
             : `${snapshot.note || '已拉取'} · 新增 ${stats.added} · 去重 ${stats.skipped} · 共 ${total} 条`,
         items: stored.items.length || qualityRule ? stored.items : visibleSnapshotItems,
-      };
+      }, shape, workspaceId);
     },
     async refreshPersistedSource({ workspaceId = DEFAULT_WORKSPACE_ID, sourceId, sourceInput } = {}) {
       if (!sourceId || !sourceInput || typeof sourceInput !== 'object' || Array.isArray(sourceInput)) {

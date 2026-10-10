@@ -60,7 +60,7 @@ test('social lists render and finish loading while supplementary tag reads remai
   const source=readFileSync('apps/web/public/app.js','utf8');
   for(const name of ['loadXFeed','loadXueqiuFeed']) {
     let rendered=0;
-    const context=vm.createContext({URLSearchParams,state:{session:{},xFeed:'for-you',xueqiuFeed:'home'},api:async()=>({feed:{items:[{id:'saved'}]}}),isHiddenFeedItem:()=>false,hydrateFeedTranslations:()=>{},renderPosts:()=>{rendered++;},renderXToolbar:()=>{},renderXueqiuToolbar:()=>{},syncLocalTranslationsToServer:()=>new Promise(()=>{}),loadFeedTaggings:()=>new Promise(()=>{}),translateXBatch:async()=>{}});
+    const context=vm.createContext({URLSearchParams,FEED_PAGE_SIZE:12,state:{session:{},xFeed:'for-you',xueqiuFeed:'home',xItems:[],xueqiuItems:[],feedShown:12},api:async()=>({feed:{items:[{id:'saved'}]}}),isHiddenFeedItem:()=>false,hydrateFeedTranslations:()=>{},renderPosts:()=>{rendered++;},renderXToolbar:()=>{},renderXueqiuToolbar:()=>{},syncLocalTranslationsToServer:()=>new Promise(()=>{}),loadFeedTaggings:()=>new Promise(()=>{}),translateXBatch:async()=>{}});
     const fn=source.match(new RegExp('async function '+name+'\\([^]*?\\n\\}'))[0];
     vm.runInContext(fn+`;this.load=${name}`,context);
     await context.load({autoTranslate:false});

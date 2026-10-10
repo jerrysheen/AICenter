@@ -206,9 +206,9 @@ test('media API reads stored body, paginates counts and queues all network work'
     f.seed();f.seed('decoder:2',{title:'Second price change'});await f.service.fetchBodies({externalIds:['decoder:1']});
     const address=await app.listen();
     const before=calls;
-    const read=await fetch(`${address.localUrl}/api/v1/feed?platform=media&channel=tech&view=full&limit=1`).then(r=>r.json());
+    const read=await fetch(`${address.localUrl}/api/v1/feed?platform=media&channel=tech&view=full&limit=1&fields=full`).then(r=>r.json());
     assert.equal(read.feed.counts.full,1);assert.equal(read.feed.total,1);assert.match(read.feed.items[0].body,/2 dollars/);
-    const compressed = await fetch(`${address.localUrl}/api/v1/feed/media?channel=tech&view=full&limit=1`,{headers:{'Accept-Encoding':'gzip'}});
+    const compressed = await fetch(`${address.localUrl}/api/v1/feed/media?channel=tech&view=full&limit=1&fields=full`,{headers:{'Accept-Encoding':'gzip'}});
     assert.equal(compressed.headers.get('content-encoding'),'gzip');
     assert.equal(compressed.headers.get('cache-control'),'no-store');
     assert.equal(compressed.headers.get('vary'),'Accept-Encoding');

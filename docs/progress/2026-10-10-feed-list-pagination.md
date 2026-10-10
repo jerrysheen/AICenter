@@ -1,0 +1,12 @@
+# 信息流列表分页与精简载荷
+
+X / 雪球列表原先忽略 `limit`，`readStoredFeed` 固定最多返回 200 条全文。媒体列表先取出最多 10,000 行，再在内存里切片。关联状态、译文和中文整理按行查询。列表响应同时带上 `body`、`normalizedArticle`、`paragraphs` 和 `articleTranslation`。经 Cloudflare 隧道时，这些响应会顶到前端 15 秒超时。
+
+现在 HTTP 列表默认 `fields=list`。社交单页最多 50 条，媒体最多 100 条，都在 SQL 里按未读优先做键集分页，游标是 `before=<isRead>,<sortAt>,<id>`。媒体仍保留 `offset` / `nextOffset`。列表只留下标识、标题、约 200 字摘要、来源、时间、标签，以及译文状态和标题。打开文章才取全文：媒体走已有的 `GET /api/v1/feed/media/article`，社交走 `GET /api/v1/content-items/:id`。`fields=full` 保留一个版本的旧全文形状。Domain 直接调用不传 `fields` 时仍返回全文，小时阅读和日报不走这条精简列表。鸿蒙源码没有调用 `/api/v1/feed`。
+
+同一批种子数据上的 JSON 体积：
+
+- 社交 12 条：全文 175,142 字节，列表 6,758 字节，约为全文的 3.9%。按同样的单条全文估算，旧的 200 条大约 2.9 MB。
+- 媒体 2 条长段落：全文 21,529 字节，列表 2,337 字节，约为全文的 10.9%。
+
+非严格媒体列表不再调用 `listEntries`。社交列表不再按条调用 `getContentItem`；一页一次批量译文和一次批量整理稿查询。新闻过滤、JEV、翻译生成和小时/日报业务逻辑未改。

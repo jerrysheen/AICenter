@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { formatFeedBefore } from '../../contracts/src/index.js';
 import { ValidationError } from '../../contracts/src/errors.js';
 import { ImportedMediaArticleSchema } from '../../contracts/src/hardware-prices.js';
 import { MediaBriefSchema, MediaConfigSchema, MediaSavedArticleQuerySchema } from '../../contracts/src/media.js';
@@ -50,6 +51,73 @@ export function mediaDisplayText({ title = '', summary = '', body = '' } = {}) {
   const rest = String(body || summary || '').trim();
   if (head && rest && rest !== head) return `${head}\n\n${rest}`;
   return head || rest;
+}
+
+function clipListText(value, max = 200) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text || text.length <= max) return text;
+  return `${text.slice(0, max).trim()}…`;
+}
+
+function presentMediaListItem(item) {
+  const lead = item.generatedBrief?.text
+    || item.articleTranslation?.paragraphs?.find((paragraph) => paragraph.kind === 'paragraph')?.text
+    || item.summary
+    || '';
+  const summary = clipListText(lead);
+  const translated = item.translation?.text || '';
+  return {
+    id: item.id,
+    resourceId: item.resourceId,
+    externalId: item.externalId,
+    title: item.title || '',
+    summary,
+    excerpt: summary,
+    body: '',
+    publishedAt: item.publishedAt,
+    createdAt: item.createdAt,
+    sourceUrl: item.sourceUrl,
+    originUrl: item.originUrl || '',
+    authorName: item.authorName || '',
+    publisherKey: item.publisherKey,
+    publisherName: item.publisherName,
+    sourceKey: item.sourceKey,
+    channel: item.channel,
+    readingVia: item.readingVia || '',
+    isRead: Boolean(item.isRead),
+    isSaved: Boolean(item.isSaved),
+    contentItemId: item.contentItemId,
+    legacyContentItemId: item.legacyContentItemId,
+    legacyFeedItemId: item.legacyFeedItemId,
+    articleKind: item.articleKind || 'article',
+    contentLevel: item.contentLevel,
+    truncated: Boolean(item.truncated),
+    tags: item.tags || [],
+    translationStatus: item.articleTranslation?.status || item.translationStatus || 'pending',
+    translationTitle: item.articleTranslation?.title || clipListText(translated, 80),
+    articleTranslation: item.articleTranslation ? {
+      status: item.articleTranslation.status,
+      title: item.articleTranslation.title || '',
+      bodyHash: item.articleTranslation.bodyHash,
+    } : null,
+    translation: translated ? {
+      status: 'ready',
+      title: clipListText(translated, 80),
+      engine: item.translation.engine || '',
+      targetLang: item.translation.targetLang || 'zh',
+    } : (item.translationStatus === 'stale' ? { status: 'stale', title: '', engine: '', targetLang: 'zh' } : null),
+    briefState: { status: item.briefState?.status || 'pending' },
+    bodyHash: item.bodyHash || '',
+    snapshotRevision: item.snapshotRevision,
+    fetchState: {
+      extractionReason: item.fetchState?.extractionReason || '',
+      visualEvidenceRequired: Boolean(item.fetchState?.visualEvidenceRequired),
+      fetchStatus: item.fetchState?.fetchStatus || '',
+    },
+    discoveryChannels: item.discoveryChannels || [],
+    status: item.status,
+    detail: 'list',
+  };
 }
 
 function textHash(value) {
@@ -156,43 +224,101 @@ export function createMediaIngestionService({
     });
   }
 
-  function readFeed(workspaceId, { channel = 'tech', view = 'all', sourceKey = '', offset = 0, limit = 50, externalId = '' } = {}) {
-    const wanted = channel === 'macro' || channel === 'tech' ? channel : 'tech';
-    const entries = (externalId ? mediaRepository.getEntries(workspaceId,[externalId]) : mediaRepository.listEntries(workspaceId, { channel: wanted, limit: 10_000 })).filter(row=>!sourceKey || row.sourceKey===sourceKey || row.publisherKey===sourceKey);
-    const itemStates = new Map((feedRepository?.listContentItemStatesByExternalIds?.(
-      workspaceId, 'media', entries.map(item => item.externalId),
-    ) || []).map(row => [row.externalId, row]));
-    for(const link of mediaRepository.legacyLinks?.(workspaceId) || []) {
-      const legacy=feedRepository?.listContentItemStatesByExternalIds?.(workspaceId,link.legacyProvider,[link.legacyExternalId])?.[0];
-      if(legacy) itemStates.set(link.externalId,legacy);
+  function loadLegacyStates(workspaceId, itemStates) {
+    const links = mediaRepository.legacyLinks?.(workspaceId) || [];
+    const byProvider = new Map();
+    for (const link of links) {
+      const group = byProvider.get(link.legacyProvider) || [];
+      group.push(link);
+      byProvider.set(link.legacyProvider, group);
     }
-    const excluded=new Set(qualityExcluded(workspaceId));
-    const allItems = entries.filter(item => externalId || (!itemStates.get(item.externalId)?.isHidden && !excluded.has(item.externalId)))
-      .sort((a, b) => Number(Boolean(itemStates.get(a.externalId)?.isRead)) - Number(Boolean(itemStates.get(b.externalId)?.isRead)));
-    const category = row => row.articleKind==='report-intro' ? 'index' : row.fetchState?.fetchStatus === 'ready' && row.contentLevel === 'full' && row.fetchState?.extractorVersion === extractorVersion && row.fetchState?.fetchedRevision === row.revision ? 'full' : ['failed','policy_skipped'].includes(row.fetchState?.fetchStatus) ? 'failed' : ['full','partial'].includes(row.contentLevel) ? 'partial' : row.fetchState?.fetchStatus === 'pending' || row.fetchState?.fetchStatus === 'deferred' ? 'pending' : 'index';
-    const counts = { all: allItems.length, full: 0, partial: 0, index: 0, pending: 0, failed: 0 };
-    for (const item of allItems) counts[category(item)] += 1;
-    const filtered = allItems.filter(row => view === 'all' || category(row) === view);
-    const items = filtered.slice(offset, offset + Math.min(100,limit));
+    for (const [provider, group] of byProvider) {
+      const states = feedRepository?.listContentItemStatesByExternalIds?.(workspaceId, provider, group.map((link) => link.legacyExternalId)) || [];
+      const byExternal = new Map(states.map((row) => [row.externalId, row]));
+      for (const link of group) {
+        const legacy = byExternal.get(link.legacyExternalId);
+        if (legacy) itemStates.set(link.externalId, legacy);
+      }
+    }
+    return new Map(links.map((link) => [link.externalId, link]));
+  }
+
+  function readFeed(workspaceId, { channel = 'tech', view = 'all', sourceKey = '', offset = 0, limit = 50, externalId = '', before = null, fields = 'full' } = {}) {
+    const wanted = channel === 'macro' || channel === 'tech' ? channel : 'tech';
+    const pageLimit = Math.min(100, Math.max(1, Number(limit) || 50));
+    const shape = externalId ? 'full' : (fields === 'list' ? 'list' : 'full');
+    let entries;
+    let counts;
+    let matched;
+    let linksByExternal;
+    let itemStates;
+    let nextCursor = null;
+    if (!externalId && mediaRepository.listFeedPage) {
+      const page = mediaRepository.listFeedPage(workspaceId, {
+        channel: wanted, sourceKey, view, offset, before,
+        limit: before ? pageLimit + 1 : pageLimit,
+        excludedExternalIds: qualityExcluded(workspaceId),
+        extractorVersion,
+      });
+      const hasMore = Boolean(before) && page.rows.length > pageLimit;
+      entries = hasMore ? page.rows.slice(0, pageLimit) : page.rows;
+      counts = page.counts;
+      matched = page.matched;
+      itemStates = new Map(entries.map((item) => [item.externalId, item]));
+      linksByExternal = new Map(entries.filter((item) => item.legacyContentItemId).map((item) => [item.externalId, {
+        externalId: item.externalId, contentItemId: item.legacyContentItemId,
+        legacyProvider: item.legacyProvider, legacyExternalId: item.legacyExternalId,
+      }]));
+      const last = entries[entries.length - 1];
+      if (last && (hasMore || (!before && offset + entries.length < matched))) {
+        nextCursor = formatFeedBefore(last.isRead, last.sortAt || last.publishedAt || last.observedAt || 0, last.externalId);
+      }
+    } else {
+      entries = (externalId ? mediaRepository.getEntries(workspaceId,[externalId]) : mediaRepository.listEntries(workspaceId, { channel: wanted, limit: 10_000 })).filter(row=>!sourceKey || row.sourceKey===sourceKey || row.publisherKey===sourceKey);
+      itemStates = new Map((feedRepository?.listContentItemStatesByExternalIds?.(
+        workspaceId, 'media', entries.map(item => item.externalId),
+      ) || []).map(row => [row.externalId, row]));
+      linksByExternal = loadLegacyStates(workspaceId, itemStates);
+      const excluded=new Set(qualityExcluded(workspaceId));
+      const allItems = entries.filter(item => externalId || (!itemStates.get(item.externalId)?.isHidden && !excluded.has(item.externalId)))
+        .sort((a, b) => Number(Boolean(itemStates.get(a.externalId)?.isRead)) - Number(Boolean(itemStates.get(b.externalId)?.isRead)));
+      const category = row => row.articleKind==='report-intro' ? 'index' : row.fetchState?.fetchStatus === 'ready' && row.contentLevel === 'full' && row.fetchState?.extractorVersion === extractorVersion && row.fetchState?.fetchedRevision === row.revision ? 'full' : ['failed','policy_skipped'].includes(row.fetchState?.fetchStatus) ? 'failed' : ['full','partial'].includes(row.contentLevel) ? 'partial' : row.fetchState?.fetchStatus === 'pending' || row.fetchState?.fetchStatus === 'deferred' ? 'pending' : 'index';
+      counts = { all: allItems.length, full: 0, partial: 0, index: 0, pending: 0, failed: 0 };
+      for (const item of allItems) counts[category(item)] += 1;
+      const filtered = allItems.filter(row => view === 'all' || category(row) === view);
+      matched = filtered.length;
+      entries = externalId ? filtered : filtered.slice(offset, offset + pageLimit);
+    }
+    const items = entries;
     const discoveries = mediaRepository.listDiscoveries?.(workspaceId,items.map(item=>item.externalId)) || [];
     const visibleSources = catalogView(workspaceId).filter((item) => item.channel === wanted);
     const bodies = new Map((mediaRepository.latestBodies?.(workspaceId, items.map((item) => item.externalId)) || [])
       .map((row) => [row.externalId, row]));
-    const projected = items.map((item) => {
+    const verified = items.map((item) => {
       const snapshot = bodies.get(item.externalId);
       const article = ['full','partial'].includes(item.contentLevel) ? (snapshot?.bodyText || '') : '';
-      const verifiedFull = article && snapshot.contentLevel === 'full' && !snapshot.truncated && snapshot.article?.extractorVersion === extractorVersion && item.fetchState?.extractorVersion === extractorVersion && item.fetchState?.fetchStatus === 'ready' && item.fetchState?.fetchedRevision === item.revision;
+      const verifiedFull = Boolean(article && snapshot.contentLevel === 'full' && !snapshot.truncated && snapshot.article?.extractorVersion === extractorVersion && item.fetchState?.extractorVersion === extractorVersion && item.fetchState?.fetchStatus === 'ready' && item.fetchState?.fetchedRevision === item.revision);
+      return { item, snapshot, article, verifiedFull };
+    });
+    const articleTranslations = articleTranslationsFor(workspaceId, verified);
+    const briefRows = mediaRepository.listBriefProcessing
+      ? mediaRepository.listBriefProcessing(workspaceId, items.map((item) => ({ externalId: item.externalId, bodyHash: item.bodyHash })))
+      : [];
+    const briefs = new Map(briefRows.map((row) => [`${row.externalId}:${row.bodyHash}`, { status: row.status, reason: row.reason, lastAttemptAt: row.lastAttemptAt }]));
+    const projected = verified.map(({ item, snapshot, article, verifiedFull }) => {
       const body = mediaDisplayText({ title: item.title, summary: item.summary, body: article });
       const id = mediaResourceId(item.externalId);
+      const link = linksByExternal.get(item.externalId);
+      const state = itemStates.get(item.externalId);
       return {
         id,
         resourceId: id,
-        contentItemId: itemStates.get(item.externalId)?.contentItemId || null,
-        legacyContentItemId: (mediaRepository.legacyLinks?.(workspaceId) || []).find(l=>l.externalId===item.externalId)?.contentItemId || null,
-        legacyFeedItemId: (()=>{const l=(mediaRepository.legacyLinks?.(workspaceId) || []).find(l=>l.externalId===item.externalId);return l?`${l.legacyProvider}:${l.legacyExternalId}`:null;})(),
+        contentItemId: state?.contentItemId || null,
+        legacyContentItemId: link?.contentItemId || null,
+        legacyFeedItemId: link ? `${link.legacyProvider}:${link.legacyExternalId}` : null,
         articleKind: item.articleKind || 'article',
-        isRead: Boolean(itemStates.get(item.externalId)?.isRead),
-        isSaved: Boolean(itemStates.get(item.externalId)?.isSaved),
+        isRead: Boolean(state?.isRead),
+        isSaved: Boolean(state?.isSaved),
         createdAt: item.createdAt,
         externalId: item.externalId,
         title: item.title,
@@ -205,9 +331,9 @@ export function createMediaIngestionService({
         truncated: Boolean(snapshot?.truncated),
         fetchState: item.fetchState || {},
         paragraphs: snapshot?.article?.paragraphs || [],
-        articleTranslation: verifiedFull ? articleTranslation(workspaceId,item,snapshot) : null,
+        articleTranslation: verifiedFull ? (articleTranslations.get(item.externalId) || null) : null,
         generatedBrief: verifiedFull && snapshot?.brief?.bodyHash === item.bodyHash ? snapshot.brief : null,
-        briefState: mediaRepository.getBriefProcessing(workspaceId,item.externalId,item.bodyHash),
+        briefState: briefs.get(`${item.externalId}:${item.bodyHash}`) || (mediaRepository.listBriefProcessing ? { status: 'pending', reason: '', lastAttemptAt: null } : mediaRepository.getBriefProcessing(workspaceId,item.externalId,item.bodyHash)),
         bodyHash: item.bodyHash,
         snapshotRevision: snapshot?.revision || null,
         publisherKey: item.publisherKey,
@@ -232,22 +358,23 @@ export function createMediaIngestionService({
       projected.map((item) => item.resourceId),
     ) || [];
     const tagsById = new Map(tagRows.map((row) => [row.resourceId, row.tags]));
-    const fullCount = projected.filter((item) => item.contentLevel === 'full').length;
+    const legacyTagIds = projected.map((item) => item.legacyContentItemId).filter(Boolean);
+    const legacyTags = new Map((taggingRepository?.listTaggings?.(workspaceId, 'content-item', legacyTagIds) || []).map((row) => [row.resourceId, row.tags]));
     return {
       platform: 'media',
       feed: wanted,
       source: 'media-index',
       mode: projected.length ? 'cached' : 'empty',
       fetchedAt: now(),
-      note: projected.length
-        ? `媒体索引 ${projected.length} 条 · 正文 ${fullCount} 篇 · ${wanted === 'tech' ? '产业科技' : '宏观与国际'}`
+      note: matched
+        ? `媒体索引 ${matched} 条 · 正文 ${counts?.full || 0} 篇 · ${wanted === 'tech' ? '产业科技' : '宏观与国际'}`
         : '来源默认关闭。主机探针确认 RSS 后，才能显式启用第一批。',
       items: projected.map((item) => {
         const saved = translationById.get(item.id);
         const ready = Boolean(saved && saved.sourceHash === textHash(item.body) && saved.translatedText);
-        return {
+        const full = {
           ...item,
-          tags: tagsById.get(item.resourceId) || (item.legacyContentItemId ? taggingRepository?.listTaggings?.(workspaceId,'content-item',[item.legacyContentItemId])?.[0]?.tags : null) || [],
+          tags: tagsById.get(item.resourceId) || legacyTags.get(item.legacyContentItemId) || [],
           translation: ready ? {
             text: saved.translatedText,
             engine: saved.engine || '',
@@ -255,12 +382,14 @@ export function createMediaIngestionService({
           } : null,
           translationStatus: ready ? 'ready' : saved ? 'stale' : 'pending',
         };
+        return shape === 'list' ? presentMediaListItem(full) : full;
       }),
       sources: visibleSources,
       budget: mediaRepository.budgetDay(workspaceId, dayKey(now())),
       counts,
-      total: filtered.length,
-      nextOffset: offset + items.length < filtered.length ? offset + items.length : null,
+      total: matched,
+      nextCursor,
+      nextOffset: before ? null : (offset + items.length < matched ? offset + items.length : null),
     };
   }
 
@@ -825,6 +954,27 @@ export function createMediaIngestionService({
     }
     for (const entry of mediaPort?.publishers || []) added += acceptDeferred(workspaceId,entry,at);
     return {added};
+  }
+
+  function articleTranslationsFor(workspaceId, pairs) {
+    const ready = (pairs || []).filter((pair) => pair.verifiedFull && pair.snapshot).map((pair) => ({
+      externalId: pair.item.externalId,
+      article: {
+        externalId: pair.item.externalId,
+        bodyHash: pair.snapshot.bodyHash,
+        snapshotRevision: pair.snapshot.revision,
+        title: pair.item.title,
+        paragraphs: pair.snapshot.article?.paragraphs || [],
+      },
+    }));
+    const units = ready.flatMap((row) => mediaTranslationUnits(row.article));
+    const saved = units.length ? (feedRepository?.listTranslations?.(workspaceId, units.flatMap((unit) => [unit.id, unit.legacyId]), 'zh') || []) : [];
+    const out = new Map();
+    for (const row of ready) {
+      const ids = new Set(mediaTranslationUnits(row.article).flatMap((unit) => [unit.id, unit.legacyId]));
+      out.set(row.externalId, projectMediaTranslation(row.article, saved.filter((entry) => ids.has(entry.itemId))));
+    }
+    return out;
   }
 
   function articleTranslation(workspaceId,row,snapshot) {

@@ -95,6 +95,7 @@ export function createDomainServices({
     mediaPort: media,
     contentRoutingPort,
     onContentReady,
+    taggingRepository: store.repositories.tagging,
     normalizedArticlePort:informationPipeline==='tree-v3' ? createInformationTreeReader({repository:store.repositories.informationTree,pipeline:informationPipeline}) : null,
   });
   const trading = createTradingService({
