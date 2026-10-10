@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {validateTreeModules,normalizeInformationResponse,treeResponseProtocol,TREE_VALIDATOR_VERSION,TreeNodeSchema,normalizeArticleResponse,ArticleOutputSchema,ARTICLE_VALIDATOR_VERSION,projectTreeInput,FeedNormalizedArticleSchema,TreeIndexEditionSchema,TreeIndexInformationSchema} from '../../contracts/src/information-tree.js';
 import {materialHash,prepareDailyMaterials} from './daily-materials.js';
+import {needsZhLocalization} from './localize-texts.js';
 import {runBounded} from './daily-analysis.js';
 import {treeCatalog,treeSource,treeFailure} from './information-tree-policy.js';
 
@@ -65,6 +66,22 @@ function acceptIndexInformation(rows) {
 }
 export function createInformationTreeReader({repository,timezone='Asia/Shanghai',pipeline='legacy',catalog={}}) {
   return {
+    hourlyTitles(workspace, sourceIds) {
+      const ids = [...new Set((sourceIds || []).map((id) => String(id || '').trim()).filter(Boolean))];
+      const out = new Map();
+      if (!ids.length) return out;
+      const rows = typeof repository.informationHeads === 'function'
+        ? repository.informationHeads(workspace, ids)
+        : ids.map((id) => {
+          const head = repository.informationHead?.(workspace, id);
+          return head ? { sourceId: id, ...head } : null;
+        }).filter(Boolean);
+      for (const row of rows || []) {
+        const title = String(row.node?.title || '').trim();
+        if (title && !needsZhLocalization(title)) out.set(row.sourceId, title);
+      }
+      return out;
+    },
     normalizedArticle(workspace,sourceId,sourceVersion) {
       if(pipeline!=='tree-v3' || !sourceVersion)return null;
       const head=repository.informationHead(workspace,sourceId),node=head?.node;

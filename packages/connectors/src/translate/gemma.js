@@ -18,6 +18,17 @@ export function resolveGemmaTranslationSlots(env=process.env,apiKey) {
   });
 }
 
+export function redactGemmaLog(value) {
+  return String(value ?? '')
+    .replace(/AIza[0-9A-Za-z\-_]{8,}/g, '[redacted]')
+    .replace(/(api[_-]?key|x-goog-api-key|authorization|bearer)(["']?\s*[:=]\s*["']?)[^\s"',}]+/gi, '$1$2[redacted]')
+    .slice(0, 2000);
+}
+
+export function logGemmaUpstreamFailure(status, body) {
+  console.error(`[worker] Gemma 翻译上游失败 status=${status} body=${redactGemmaLog(body)}`);
+}
+
 // Only final visible text is retained. SSE errors and truncated output are failures.
 export async function readGemmaStream(response) {
   let buffer = '', bytes = 0, answer = '', finishReason = '', usageMetadata;
@@ -26,7 +37,10 @@ export async function readGemmaStream(response) {
     const data = block.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
     if (!data || data === '[DONE]') return;
     const event = JSON.parse(data);
-    if (event.error) throw Object.assign(new Error('Gemma 流内错误'), { code: 'gemma-stream-error', upstreamStatus: event.error.code, upstreamError: event.error });
+    if (event.error) {
+      logGemmaUpstreamFailure(event.error.code || 0, JSON.stringify(event.error));
+      throw Object.assign(new Error('Gemma 流内错误'), { code: 'gemma-stream-error', upstreamStatus: event.error.code, upstreamError: event.error });
+    }
     const candidate = event.candidates?.find(row => row.index === 0) || event.candidates?.[0];
     answer += (candidate?.content?.parts || []).filter(part => !part.thought && typeof part.text === 'string').map(part => part.text).join('');
     finishReason = candidate?.finishReason || finishReason;
@@ -98,11 +112,17 @@ export function createGemmaTranslationRouter(options = {}) {
           body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: input }] }],
             generationConfig: { maxOutputTokens: 2048, thinkingConfig: { thinkingLevel: 'minimal' } } }),
         });
-        const payload = await response.json();
+        const raw = await response.text();
+        let payload = {};
+        try { payload = raw ? JSON.parse(raw) : {}; } catch { payload = {}; }
         if (!response.ok || payload.error) {
+          logGemmaUpstreamFailure(response.status, raw || JSON.stringify(payload.error || ''));
           const cooldown = geminiQuotaCooldown(response, payload, now());
           if (cooldown) repository.cooldown(ticket.project, ticket.model, cooldown.blockedUntil);
-          throw new Error(`Gemma 翻译失败（${response.status}）`);
+          throw Object.assign(new Error(`Gemma 翻译失败（${response.status}）`), {
+            upstreamStatus: response.status,
+            upstreamBody: redactGemmaLog(raw),
+          });
         }
         const candidate = payload.candidates?.[0];
         if (candidate?.finishReason !== 'STOP' || !candidate.content?.parts?.[0]?.text) throw new Error('Gemma 翻译未完整结束，未保存译文');

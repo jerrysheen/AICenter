@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { DEFAULT_WORKSPACE_ID, runMigrations } from './migrations.js';
+import { translationRetryDelayMs } from './translation-retry.js';
 import { createDomainRepositories } from './repositories/index.js';
 import { createRuntimeRepository } from './repositories/runtime-repository.js';
 import {PrepareTreeInformationInputSchema} from '../../contracts/src/information-tree.js';
@@ -656,6 +657,7 @@ export function createStore(databasePath) {
       const errorPayload = error instanceof Error
         ? { name: error.name, message: error.message }
         : { name: 'Error', message: String(error) };
+      let changed = false;
       database.transaction(() => {
         const result = database.prepare(`UPDATE jobs SET status = ?, error_json = ?, available_at = ?,
           completed_at = ?, locked_by = NULL, locked_at = NULL, updated_at = ?
@@ -663,12 +665,25 @@ export function createStore(databasePath) {
           .run(status, JSON.stringify(errorPayload), availableAt, retry ? null : now, now, id,
             claim.workerId, claim.attemptCount);
         if (!result.changes) return;
+        changed = true;
         database.prepare(`UPDATE job_attempts SET status = 'failed', error_json = ?, completed_at = ?
           WHERE job_id = ? AND attempt_number = ? AND worker_id = ? AND status = 'running'`)
           .run(JSON.stringify(errorPayload), now, id, claim.attemptCount, claim.workerId);
         insertEvent(retry ? 'job.retry_scheduled' : 'job.failed', 'job', id,
           { jobId: id, error: errorPayload, availableAt: retry ? availableAt : null }, current.workspace_id);
       })();
+      if (changed && current.type === 'feed.translation.run') {
+        const input = parseJson(current.input_json);
+        repositories.feed.noteTranslationFailure?.({
+          workspaceId: current.workspace_id,
+          items: input.items || [],
+          targetLang: input.targetLang,
+          error,
+          attemptCount: current.attempt_count,
+          terminal: !retry,
+          nextRetryAt: retry ? availableAt : null,
+        });
+      }
       return mapJob(database.prepare('SELECT * FROM jobs WHERE id = ?').get(id));
     },
 
@@ -690,14 +705,28 @@ export function createStore(databasePath) {
           const retry = row.attempt_count < row.max_attempts;
           const status = retry ? 'queued' : 'failed';
           const error = { name: 'WorkerLeaseExpired', message: '后台进程中断，任务租约已过期' };
+          const delay = row.type === 'feed.translation.run' ? translationRetryDelayMs(row.attempt_count) : 0;
+          const availableAt = retry ? observedAt + delay : row.available_at;
           database.prepare(`UPDATE jobs SET status = ?, error_json = ?, available_at = ?, completed_at = ?,
             locked_by = NULL, locked_at = NULL, updated_at = ? WHERE id = ?`)
-            .run(status, JSON.stringify(error), observedAt, retry ? null : observedAt, observedAt, row.id);
+            .run(status, JSON.stringify(error), availableAt, retry ? null : observedAt, observedAt, row.id);
           database.prepare(`UPDATE job_attempts SET status = 'abandoned', error_json = ?, completed_at = ?
             WHERE job_id = ? AND attempt_number = ? AND status = 'running'`)
             .run(JSON.stringify(error), observedAt, row.id, row.attempt_count);
           insertEvent(retry ? 'job.recovered' : 'job.failed', 'job', row.id,
             { jobId: row.id, error }, row.workspace_id);
+          if (row.type === 'feed.translation.run') {
+            const input = parseJson(row.input_json);
+            repositories.feed.noteTranslationFailure?.({
+              workspaceId: row.workspace_id,
+              items: input.items || [],
+              targetLang: input.targetLang,
+              error,
+              attemptCount: row.attempt_count,
+              terminal: !retry,
+              nextRetryAt: retry ? availableAt : null,
+            });
+          }
         }
       })();
       return rows.length;

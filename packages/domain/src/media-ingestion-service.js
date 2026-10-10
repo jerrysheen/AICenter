@@ -3,6 +3,7 @@ import { formatFeedBefore } from '../../contracts/src/index.js';
 import { ValidationError } from '../../contracts/src/errors.js';
 import { ImportedMediaArticleSchema } from '../../contracts/src/hardware-prices.js';
 import { MediaBriefSchema, MediaConfigSchema, MediaSavedArticleQuerySchema } from '../../contracts/src/media.js';
+import { cleanIngestExcerpt } from '../../connectors/src/excerpt-text.js';
 import { localizationItemId } from './localize-texts.js';
 import { mediaTranslationUnits, projectMediaTranslation } from './media-translation.js';
 import { formatYmd, zonedParts } from './zoned-time.js';
@@ -134,8 +135,8 @@ function entryRow(workspaceId, entry, item, { at, previous, status }) {
     authorName: item.authorName || previous?.authorName || '',
     channel: entry.channel,
     canonicalUrl: item.sourceUrl || item.canonicalUrl,
-    title: item.title,
-    summary: item.summary,
+    title: cleanIngestExcerpt(item.title),
+    summary: cleanIngestExcerpt(item.summary),
     publishedAt: item.publishedAt ?? previous?.publishedAt ?? null,
     publishedAtRaw: item.publishedAtRaw || previous?.publishedAtRaw || '',
     contentLevel: previous?.contentLevel === 'full' ? 'full' : contentLevelFor(entry),

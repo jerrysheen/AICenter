@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { translationRetryDelayMs } from '../../database/src/translation-retry.js';
 import { withModelUsageContext } from './model-usage-context.js';
 import {
   parseWorkerJobConcurrency,
@@ -105,7 +106,9 @@ export function createJobRunner(options) {
     } catch (error) {
       const retryDelayMs = job.type === 'feed.translation.run' && error.code === 'budget-deferred' && Number.isFinite(error.retryAt)
         ? Math.max(1000, error.retryAt - Date.now())
-        : Math.min(60_000, 1_000 * (2 ** Math.max(0, job.attemptCount - 1)));
+        : job.type === 'feed.translation.run'
+          ? translationRetryDelayMs(job.attemptCount)
+          : Math.min(60_000, 1_000 * (2 ** Math.max(0, job.attemptCount - 1)));
       options.onError?.(error, job);
       return store.failJob(job.id, error, retryDelayMs, executor);
     } finally {
