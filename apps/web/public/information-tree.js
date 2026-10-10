@@ -686,7 +686,8 @@ export function createInformationTreePage(host) {
   async function loadReadingIndex() {
     if(readingIndex!==undefined) return readingIndex;
     try{
-      const data=await api('/api/v1/reports/reading-hour/index');
+      const endAt=Date.now()+1;
+      const data=await api(`/api/v1/reports/reading-hour/index?startAt=${endAt-7*86400000}&endAt=${endAt}&scope=hour`);
       const map=new Map();
       for(const row of data?.hours || []) if(row && Number.isFinite(Number(row.startAt))) map.set(Number(row.startAt), row);
       readingIndex=map;

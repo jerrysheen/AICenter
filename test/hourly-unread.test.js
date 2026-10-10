@@ -439,6 +439,25 @@ test('selecting an hour writes hour into the address', async () => {
   }
 });
 
+test('reading hour index is requested inside the seven day window', async () => {
+  const start = Date.parse('2026-10-08T03:00:00Z');
+  const current = edition('edition:indexwindow01', start, ['n1']);
+  const host = hostFor('hourly-index-window', () => manifest([current]));
+  const calls = [];
+  const api = host.api;
+  host.api = path => { calls.push(path); return api(path); };
+  const root = new El('div'); root.isConnected = true;
+  const page = createInformationTreePage(host);
+  await page.mount(root, { mode: 'hourly' });
+  const path = calls.find(item => item.startsWith('/api/v1/reports/reading-hour/index'));
+  const url = new URL(path, 'http://tree.local');
+  const startAt = Number(url.searchParams.get('startAt'));
+  const endAt = Number(url.searchParams.get('endAt'));
+  assert.equal(url.searchParams.get('scope'), 'hour');
+  assert.equal(Number.isInteger(startAt) && Number.isInteger(endAt) && endAt > startAt && endAt - startAt <= 7 * 86400000, true);
+  page.stop();
+});
+
 test('a missing hour falls back to the nearest edition and says so', async () => {
   const start = Date.parse('2026-10-08T06:00:00Z');
   const current = edition('edition:fallbackhour01', start, ['n1']);
