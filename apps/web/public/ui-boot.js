@@ -9,6 +9,20 @@
     return;
   }
 
+  // Start the credential check during HTML parse. app.js reuses this promise
+  // instead of waiting until the module graph has evaluated.
+  window.aiCenterSessionBoot = fetch('/api/v1/session', {
+    credentials: 'include',
+    cache: 'no-store',
+    headers: { Accept: 'application/json' },
+  }).then(function (response) {
+    return response.json().catch(function () { return {}; }).then(function (payload) {
+      return { ok: response.ok, status: response.status, payload: payload || {} };
+    });
+  }).catch(function () {
+    return { ok: false, status: 0, payload: {} };
+  });
+
   var meta = document.querySelector('meta[name="ai-center-ui-revision"]');
   var local = meta ? String(meta.getAttribute('content') || '') : '';
   window.aiCenterUiReloading = false;

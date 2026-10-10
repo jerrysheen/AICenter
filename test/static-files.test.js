@@ -5,6 +5,7 @@ import { gunzipSync } from 'node:zlib';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { createAiCenterServer } from '../apps/web/src/server.js';
 import { createStaticFileHandler } from '../apps/web/src/http/static-files.js';
 
@@ -67,13 +68,21 @@ test('static assets are gzipped on request and versioned JS/CSS are cacheable', 
     assert.equal(html.headers['content-encoding'], undefined);
     const htmlText = html.body.toString('utf8');
     assert.match(htmlText, /app\.js\?v=/);
-    assert.match(htmlText, /src="\/ui-boot\.js"/);
+    assert.doesNotMatch(htmlText, /src="\/ui-boot\.js"/);
+    assert.match(htmlText, /aiCenterUiBoot/);
+    assert.match(htmlText, /aiCenterSessionBoot/);
     assert.match(htmlText, /name="ai-center-ui-revision"/);
+    const inlineBoot = htmlText.match(/<script>([\s\S]*?)<\/script>/);
+    assert.ok(inlineBoot, 'boot script is inlined into the no-store HTML');
+    const bootHash = createHash('sha256').update(inlineBoot[1]).digest('base64');
+    assert.ok(html.headers['content-security-policy'].includes(`sha256-${bootHash}`));
     const boot = await getRaw(`${address.localUrl}/ui-boot.js`, { 'Accept-Encoding': 'identity' });
     assert.equal(boot.status, 200);
     assert.equal(boot.headers['cache-control'], 'no-store');
     assert.match(boot.body.toString('utf8'), /\/api\/v1\/ui\/revision/);
+    assert.match(boot.body.toString('utf8'), /\/api\/v1\/session/);
     assert.match(boot.body.toString('utf8'), /aiCenterUiBoot/);
+    assert.match(boot.body.toString('utf8'), /aiCenterSessionBoot/);
     assert.match(boot.body.toString('utf8'), /settleRevision/);
     const health = await getRaw(`${address.localUrl}/api/v1/health`);
     const healthBody = JSON.parse(health.body.toString('utf8'));
@@ -99,7 +108,12 @@ test('static assets are gzipped on request and versioned JS/CSS are cacheable', 
     assert.equal(gzipped.headers['content-encoding'], 'gzip');
     const decoded = gunzipSync(gzipped.body).toString('utf8');
     assert.match(decoded, /createMediaReaderSession.*from '\.\/media-feed\.js\?v=/);
-    assert.match(decoded, /import\('\.\/brief-page\.js\?v=/);
+    assert.match(decoded, /from '\.\/brief-page\.js\?v=/);
+    assert.match(decoded, /from '\.\/hardware-prices\.js\?v=/);
+    assert.doesNotMatch(decoded, /await import\('\.\/brief-page\.js/);
+    assert.doesNotMatch(decoded, /await import\('\.\/hardware-prices\.js/);
+    assert.match(decoded, /aiCenterSessionBoot/);
+    assert.match(decoded, /boot\?\.remote && boot\.local && boot\.remote !== boot\.local/);
     const briefModule = await getRaw(`${address.localUrl}/brief-page.js`, { 'Accept-Encoding': 'identity' });
     assert.equal(briefModule.status,200);
     assert.match(briefModule.body.toString('utf8'),/export function createBriefPage/);
@@ -132,8 +146,43 @@ test('static assets are gzipped on request and versioned JS/CSS are cacheable', 
     assert.match(markdown.body.toString('utf8'), /export function markdownToHtml/);
     const appJs = await getRaw(`${address.localUrl}/app.js`, { 'Accept-Encoding': 'identity' });
     assert.match(appJs.body.toString('utf8'), new RegExp(`icons\\.js\\?v=${healthBody.uiRevision}`));
+    const tree = await getRaw(`${address.localUrl}/information-tree.js`, { 'Accept-Encoding': 'identity' });
+    assert.match(tree.body.toString('utf8'), new RegExp(`icons\\.js\\?v=${healthBody.uiRevision}`));
+    assert.match(htmlText, new RegExp(`rel="modulepreload" href="/app\\.js\\?v=${healthBody.uiRevision}"`));
+    assert.match(htmlText, new RegExp(`rel="modulepreload" href="/icons\\.js\\?v=${healthBody.uiRevision}"`));
+    assert.match(htmlText, new RegExp(`rel="modulepreload" href="/information-tree\\.js\\?v=${healthBody.uiRevision}"`));
+    assert.match(htmlText, new RegExp(`rel="modulepreload" href="/brief-page\\.js\\?v=${healthBody.uiRevision}"`));
   } finally {
     await app.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('inline boot hash is the LF script even when the files are CRLF', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-crlf-'));
+  try {
+    const boot = 'window.aiCenterUiBoot=1;\r\nwindow.aiCenterSessionBoot=2;\r\n';
+    const html = '<!doctype html>\r\n<html><head></head><body>\r\n<script src="/ui-boot.js"></script>\r\n</body></html>\r\n';
+    writeFileSync(path.join(directory, 'ui-boot.js'), boot);
+    writeFileSync(path.join(directory, 'index.html'), html);
+    const handler = createStaticFileHandler(directory);
+    const first = await readStatic(handler, '/');
+    const body = first.body.toString('utf8');
+    assert.equal(body.includes('\r'), false);
+    const inline = body.match(/<script>([\s\S]*?)<\/script>/);
+    assert.ok(inline);
+    const lfBoot = boot.replace(/\r\n?/g, '\n');
+    assert.equal(inline[1], lfBoot);
+    const lfHash = createHash('sha256').update(lfBoot).digest('base64');
+    const crlfHash = createHash('sha256').update(boot).digest('base64');
+    assert.notEqual(lfHash, crlfHash);
+    const policy = first.headers['Content-Security-Policy'];
+    assert.equal(policy.includes(`sha256-${lfHash}`), true);
+    assert.equal(policy.includes(`sha256-${crlfHash}`), false);
+    const second = await readStatic(handler, '/');
+    assert.equal(second.headers['Content-Security-Policy'], policy);
+    assert.equal(second.body.toString('utf8'), body);
+  } finally {
     rmSync(directory, { recursive: true, force: true });
   }
 });
