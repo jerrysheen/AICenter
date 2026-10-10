@@ -11619,7 +11619,7 @@ async function loadXFeed({ refresh = false, autoTranslate = true } = {}) {
     state.xRefreshing = false;
     renderXToolbar();
     renderPosts();
-    if (document.body.dataset.view === 'sources' && state.overviewTimeline === 'social') renderOverviewTimeline();
+    if (typeof document !== 'undefined' && document.body?.dataset?.view === 'sources' && state.overviewTimeline === 'social') renderOverviewTimeline();
   }
 }
 
@@ -11706,7 +11706,7 @@ async function loadXueqiuFeed({ refresh = false } = {}) {
     state.xueqiuRefreshing = false;
     renderXueqiuToolbar();
     renderPosts();
-    if (document.body.dataset.view === 'sources' && state.overviewTimeline === 'social') renderOverviewTimeline();
+    if (typeof document !== 'undefined' && document.body?.dataset?.view === 'sources' && state.overviewTimeline === 'social') renderOverviewTimeline();
   }
 }
 
@@ -11868,7 +11868,7 @@ async function loadPosts() {
       throw error;
     } finally {
       state.postsLoading = false;
-      if (document.body.dataset.view === 'sources' && (state.overviewTimeline === 'latest' || state.overviewTimeline === 'focus')) {
+      if (typeof document !== 'undefined' && document.body?.dataset?.view === 'sources' && (state.overviewTimeline === 'latest' || state.overviewTimeline === 'focus')) {
         renderOverviewTimeline();
       }
     }
