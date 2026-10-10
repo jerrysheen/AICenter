@@ -12,6 +12,7 @@ import {
   shanghaiMidnight,
   readingTitles,
   buildHomeTimelineModel,
+  mergeReadingHours,
 } from '../apps/web/public/home-timeline.js';
 
 const saturdayMorning = Date.parse('2026-10-10T02:00:00Z');
@@ -116,8 +117,69 @@ test('home hours list reading titles and omit nodes without one', () => {
   assert.deepEqual(model.hours[1].titles, ['一', '二']);
   assert.deepEqual(model.hours[2].titles, ['只有一条']);
   assert.equal(model.hours.every((hour) => hour.href === `#report?hour=${hour.label.slice(0, 2)}`), true);
-  assert.match(model.statusText, /最新一期 14:00/);
-  assert.match(model.statusText, /未生成/);
+  const sixteen = buildHomeTimelineModel({
+    nowMs: at(18),
+    editions: [edition(16)],
+    readings: { [at(16)]: { selected: 1, items: [{ title: '十六点标题', disposition: 'hit' }] } },
+    earlier: true,
+    treeStatus: 'ready',
+    boardStatus: 'ready',
+  });
+  assert.equal(sixteen.hours[0].label, '16:00');
+  assert.equal(sixteen.hours[0].href, '#report?hour=16');
+  assert.equal(sixteen.hours[0].endAt, at(17));
+  assert.equal(model.statusText, '');
+  assert.equal(sixteen.statusText, '');
+});
+
+test('loading timeline does not claim missing hours before the index arrives', () => {
+  const midnight = shanghaiMidnight(saturdayMorning);
+  const at = (hour) => midnight + hour * 3_600_000;
+  const loading = buildHomeTimelineModel({ nowMs: at(18), editions: [], treeStatus: 'loading', boardStatus: 'loading' });
+  assert.equal(loading.statusText, '');
+  assert.deepEqual(loading.gaps, []);
+  assert.equal(loading.hours.length, 0);
+});
+
+test('reading-hour snapshots stay ahead of a later index refresh', () => {
+  const midnight = shanghaiMidnight(saturdayMorning);
+  const at = (hour) => midnight + hour * 3_600_000;
+  const edition = (hour) => ({ window: { startAt: at(hour), endAt: at(hour + 1) } });
+  const hit = (title) => ({ title, disposition: 'hit' });
+  const full = {
+    [at(16)]: { selected: 6, items: ['甲', '乙', '丙', '丁', '戊', '己'].map(hit) },
+    [at(15)]: { selected: 3, items: ['一', '二', '三'].map(hit) },
+    [at(14)]: { selected: 2, items: ['子', '丑'].map(hit) },
+    [at(13)]: { selected: 1, headline: { title: '寅' }, items: [{ title: '寅', disposition: 'hit' }] },
+  };
+  const index = {
+    hours: [16, 15, 14, 13].map((hour) => ({
+      startAt: at(hour),
+      endAt: at(hour + 1),
+      headline: { title: '只剩索引' },
+      selected: 1,
+    })),
+  };
+  const merged = mergeReadingHours(full, index.hours.reduce((map, row) => {
+    map[row.startAt] = row;
+    return map;
+  }, {}));
+  const input = {
+    nowMs: at(18),
+    editions: [16, 15, 14, 13, 12].map(edition),
+    readings: merged,
+    treeStatus: 'ready',
+    boardStatus: 'ready',
+  };
+  const first = buildHomeTimelineModel(input);
+  const second = buildHomeTimelineModel({ ...input, readings: mergeReadingHours(merged, { [at(16)]: { headline: { title: '只剩索引' }, selected: 1 } }) });
+  assert.deepEqual(first.hours[0].titles, ['甲', '乙', '丙', '丁', '戊']);
+  assert.deepEqual(first.hours[1].titles, ['一', '二']);
+  assert.equal(first.hours.length, 4);
+  assert.equal(first.earlierCount, 1);
+  assert.deepEqual(second.hours.map((hour) => hour.titles), first.hours.map((hour) => hour.titles));
+  assert.equal(second.hours.length, first.hours.length);
+  assert.equal(second.earlierCount, first.earlierCount);
 });
 
 test('home requests are the overview set and not the old feed fan-out', () => {
@@ -140,6 +202,19 @@ test('home requests are the overview set and not the old feed fan-out', () => {
   assert.match(sourcesPage, /plan\.board/);
   assert.match(sourcesPage, /loadDailyBrief\(/);
   assert.doesNotMatch(sourcesPage, /loadGlobalAssets|loadMarketNativeBoard|scheduleOverviewManualPosts|loadXFeed|loadXueqiuFeed|loadPosts\(/);
+  assert.match(app, /mergeReadingHours\(state\.homeReadingHours, absorbReadingIndex\(payload\)\)/);
+  assert.match(app, /view === 'report' \? '搜索简报'/);
+  assert.match(app, /navId === 'sources'\) return view === 'sources' \|\| view === 'feed' \|\| view === 'market'/);
+  const tree = readFileSync(new URL('../apps/web/public/information-tree.js', import.meta.url), 'utf8');
+  assert.match(tree, /function clearHourQuery\(/);
+  assert.match(tree, /if\(mode==='daily'\) clearHourQuery\(\)/);
+  assert.match(tree, /const choice=r=>r\?\.edition \|\| r\?\.attempt/);
+  const css = readFileSync(new URL('../apps/web/public/styles.css', import.meta.url), 'utf8');
+  assert.match(css, /\.home-title \{[^}]*white-space: normal/s);
+  assert.match(css, /\.tree-primary \{[^}]*position:sticky/s);
+  assert.doesNotMatch(css, /\.tree-list \.reading-item h3 \{[^}]*ellipsis/s);
+  assert.match(css, /\.tree-page \.post-card\.is-compact h3,[\s\S]*-webkit-line-clamp: unset/);
+  assert.match(css, /\.home-brief-list li \{[\s\S]*?-webkit-line-clamp: unset/);
   const html = readFileSync(new URL('../apps/web/public/index.html', import.meta.url), 'utf8');
   assert.match(html, /id="home-timeline"/);
   assert.match(html, /id="global-events"/);

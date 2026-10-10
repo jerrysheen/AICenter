@@ -261,14 +261,12 @@ export function createBriefPage(host) {
       tab.classList.toggle('is-active',selected); tab.setAttribute('aria-selected',String(selected)); tab.tabIndex=selected ? 0 : -1;
     }
     content?.setAttribute('aria-labelledby',directionTabs.hidden ? `brief-tab-${s.mode}` : `brief-direction-${s.direction}`);
-    const failed=s.mode==='hourly' ? s.manifest.filter(h=>h.status==='failed' || h.failed).length : 0;
-    status.textContent=s.error ? '简报暂时未能更新，已载入内容仍可阅读。' : failed ? `${failed} 个时段处理失败，已完成内容仍可阅读。` : '';
+    status.textContent=s.error ? '简报暂时未能读取，已载入内容仍可阅读。' : '';
     status.hidden=!status.textContent;status.classList.toggle('is-error',Boolean(status.textContent));
     content?.setAttribute('aria-busy',String(s.loading));
     renderPeriodOptions();
-    const latest=hourSlots().find(h=>h.readable);
-    publication.hidden=s.mode!=='hourly' || s.loading;
-    publication.textContent=latest ? `最新发布到 ${time(latest.hourStart+HOUR)}` : '暂无已发布的小时文章';
+    publication.hidden=true;
+    publication.textContent='';
     const details=tools.querySelector('.brief-processing-summary');
     if(details) details.textContent=processingSummary();
     banner.replaceChildren(); banner.hidden=!s.pending;
@@ -492,7 +490,7 @@ export function createBriefPage(host) {
   function renderPeriodOptions() {
     periodSelect.replaceChildren();periodSelect.hidden=s.mode!=='hourly';
     for(const h of hourSlots()) {
-      const option=node('option','',`${time(h.hourStart)}—${time(h.hourStart+HOUR)} · ${hourPhaseLabel(h)}`);
+      const option=node('option','',`${time(h.hourStart)}—${time(h.hourStart+HOUR)}`);
       option.value=h.hourStart;periodSelect.append(option);
     }
     if(!periodSelect.children.length) {periodSelect.append(node('option','','暂无时段'));periodSelect.disabled=true;}
@@ -540,7 +538,7 @@ export function createBriefPage(host) {
       content.append(section);
     } else {
       const selected=hourSlots().find(h=>h.hourStart===s.hourStart);
-      empty(s.loading ? '正在读取小时更新' : s.error ? '小时更新暂时未能读取' : selected ? `${time(selected.hourStart)}—${time(selected.hourStart+HOUR)} · ${hourPhaseLabel(selected)}` : '暂无已完成的小时更新','');
+      empty(s.loading ? '正在读取小时更新' : s.error ? '小时更新暂时未能读取' : selected ? `${time(selected.hourStart)}—${time(selected.hourStart+HOUR)}` : '暂无已完成的小时更新','');
       if(!s.loading) {
         const draftItems=selected?.draftItemCount ?? s.hours.find(h=>h.window.startAt===s.hourStart)?.items.length ?? 0;
         if(draftItems) content.querySelector('.brief-empty').append(node('p','brief-muted',`主题整理未完成；本时段 ${draftItems} 条提炼底稿已保留。`));
@@ -758,12 +756,10 @@ export function createBriefPage(host) {
 
   function renderManagement() {
     tools.querySelector('.brief-management')?.remove();
-    const panel=node('details','brief-management'); panel.append(node('summary','','处理情况 / 简报说明'));
-    panel.append(node('p','brief-processing-summary',processingSummary()));
+    const panel=node('details','brief-management'); panel.append(node('summary','','简报说明'));
     panel.append(node('p','brief-muted','已读与收藏仅保存在这台设备。小时归属按来源发布 / 入库时间，不代表事件发生时间。'));
     if(s.brief) {
       if(s.brief.informationItems) panel.append(node('p','brief-muted',`日报保存 ${s.brief.informationItems.length} 条提炼底稿${s.brief.editorial?.status==='ready' ? `，正文 ${briefReadingItems(s.brief.editorial).length} 篇文章 / 主题` : ''}。`));
-      panel.append(node('p','brief-muted',`日报成稿：${stamp(s.brief.generatedAt)}${s.brief.frozenAt ? `\n材料冻结：${stamp(s.brief.frozenAt)}` : ''}`));
       if(s.window?.window) panel.append(node('p','brief-muted',`统计窗口：${stamp(s.window.window.startAt)} — ${stamp(s.window.window.endAt)}（左闭右开）`));
       if(s.brief.limitations) panel.append(node('p','brief-muted',s.brief.limitations));
     }
@@ -791,7 +787,7 @@ export function createBriefPage(host) {
       content.append(node('h2','brief-history-title',routeKey==='archive' ? '旧版日报存档' : '往期日报'));
       if(routeKey!=='archive')content.append(button('返回当前简报',()=>renderContent()));
       if (!briefs.length) empty('还没有已发布日报','小时更新可独立阅读。');
-      for (const b of briefs) content.append(button(`${b.reportDate} · ${b.itemCount} 条 · ${stamp(b.generatedAt)} 发布`,()=>{s.mode='daily';persist();selectDate(b.reportDate) || loadInitial();},'brief-history-row'));
+      for (const b of briefs) content.append(button(`${b.reportDate} · ${b.itemCount} 条`,()=>{s.mode='daily';persist();selectDate(b.reportDate) || loadInitial();},'brief-history-row'));
     } catch (error) {if (token===request && epoch===generation) {s.error=error.message; empty('往期日报未能读取','请重试。');}}
     finally {if (token===request && epoch===generation) {s.loading=false;sync();}}
   }
