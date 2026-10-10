@@ -556,7 +556,8 @@ function translationFor(post) {
   if (!post?.id) return null;
   if (post.platform === 'media' && post.complete) {
     const article = post.articleTranslation;
-    return article?.status === 'ready' ? {text:[article.title,...article.paragraphs.map(p=>p.text)].filter(Boolean).join('\n\n'),cached:true} : null;
+    if (article?.status !== 'ready' || !Array.isArray(article.paragraphs)) return null;
+    return {text:[article.title,...article.paragraphs.map(p=>p.text)].filter(Boolean).join('\n\n'),cached:true};
   }
   if(post.normalizedArticle?.body && (!post.translation?.text || !post.translation.engine && post.translation.text===post.normalizedArticle.body))return {text:post.normalizedArticle.body,kind:'normalized',cached:true};
   if (state.translations[post.id]) return state.translations[post.id];
@@ -1512,6 +1513,36 @@ function formatAskClock(timestamp) {
 }
 
 const FEED_PAGE_SIZE = 12;
+let mediaHeadMerge = false;
+
+function mergeLoadedFeedItem(prior, item) {
+  if (!prior) return item;
+  if (prior.detail !== 'full') return { ...prior, ...item, body: prior.body || item.body || '' };
+  return {
+    ...prior,
+    ...item,
+    body: prior.body || '',
+    paragraphs: prior.paragraphs?.length ? prior.paragraphs : (item.paragraphs || []),
+    articleTranslation: Array.isArray(prior.articleTranslation?.paragraphs) ? prior.articleTranslation : (item.articleTranslation ?? prior.articleTranslation),
+    translation: prior.translation?.text ? prior.translation : (item.translation || prior.translation),
+    normalizedArticle: prior.normalizedArticle?.body ? prior.normalizedArticle : (item.normalizedArticle || prior.normalizedArticle),
+    summary: prior.summary || item.summary || '',
+    detail: 'full',
+  };
+}
+
+function mergeLoadedFeed(existing, incoming) {
+  const previous = new Map((existing || []).filter((item) => item?.id).map((item) => [item.id, item]));
+  const seen = new Set();
+  const head = [];
+  for (const item of incoming || []) {
+    if (!item?.id || seen.has(item.id)) continue;
+    seen.add(item.id);
+    head.push(mergeLoadedFeedItem(previous.get(item.id), item));
+  }
+  const tail = (existing || []).filter((item) => item?.id && !seen.has(item.id));
+  return [...head, ...tail];
+}
 const mediaReaderSession = createMediaReaderSession();
 const mediaFeedCache = createMediaFeedCache({ storage: (() => {
   try { return window.localStorage; } catch { return null; }
@@ -1527,9 +1558,18 @@ const mediaFeedLoader = createMediaFeedLoader({
     return api(`/api/v1/feed/media?${params}`, { timeoutMs: refresh ? 180_000 : 15_000 });
   },
   onFeed: (feed, { cached, jobId, append }) => {
-    state.mediaItems = feed.items || [];
+    const incoming = feed.items || [];
+    if (append || (mediaHeadMerge && !cached)) {
+      const paged = !append && (state.mediaItems || []).length > incoming.length;
+      const nextOffset = state.mediaNextOffset;
+      state.mediaItems = mergeLoadedFeed(state.mediaItems, incoming);
+      state.mediaNextOffset = paged ? nextOffset : (feed.nextOffset ?? null);
+    } else {
+      state.mediaItems = incoming;
+      state.mediaNextOffset = feed.nextOffset ?? null;
+    }
+    mediaHeadMerge = false;
     state.mediaCounts = feed.counts || {};
-    state.mediaNextOffset = feed.nextOffset ?? null;
     state.mediaSources = feed.sources || [];
     state.mediaNote = feed.note || '';
     state.mediaBudget = feed.budget || null;
@@ -2919,12 +2959,26 @@ function socialBodyText(post, value) {
   return post?.platform === 'x' || post?.platform === 'xueqiu' ? splitFeedText(value).body : value;
 }
 
+function listCardExcerpt(item, platform) {
+  if (item?.normalizedArticle?.summary) return item.normalizedArticle.summary;
+  if (item?.translation?.title) return item.translation.title;
+  if (item?.translation?.text) return '';
+  const summary = item?.summary || '';
+  const foreign = textNeedsZhView(summary || item?.excerpt || '');
+  if ((platform === 'x' || platform === 'xueqiu') && !item?.body && foreign) return '暂未翻译';
+  if (summary && !textNeedsZhView(summary)) return summary;
+  if ((platform === 'x' || platform === 'xueqiu') && !item?.body) return '暂未翻译';
+  return item?.excerpt || summary;
+}
+
 function postListExcerpt(post) {
   if(post.normalizedArticle?.summary)return clipFeedText(post.normalizedArticle.summary,FEED_EXCERPT_MAX);
   const translated = translationFor(post)?.text;
   if (translated) return clipFeedText(textAfterLead(socialBodyText(post, translated), postDisplayTitle(post)), FEED_EXCERPT_MAX);
-  if (post.summary) return clipFeedText(post.summary, FEED_EXCERPT_MAX);
+  if (post.translation?.title) return clipFeedText(post.translation.title, FEED_EXCERPT_MAX);
+  if (post.summary && !textNeedsZhView(post.summary)) return clipFeedText(post.summary, FEED_EXCERPT_MAX);
   if (postIsTranslating(post)) return '';
+  if ((post.platform === 'x' || post.platform === 'xueqiu') && !post.body) return '暂未翻译';
   return clipFeedText(textAfterLead(socialBodyText(post, post?.body), post?.title), FEED_EXCERPT_MAX);
 }
 
@@ -3002,7 +3056,7 @@ function feedAsItem(item, platform) {
     title: item.title,
     body: item.body || '',
     summary: item.summary || '',
-    excerpt: item.excerpt || '',
+    excerpt: listCardExcerpt(item, platform),
     commentCount: Number(item.commentCount) || 0,
     tags: postTagNames(item),
     sourceUrl: item.sourceUrl,
@@ -3620,7 +3674,8 @@ function mediaAsItem(item) {
     following: false,
     createdAt: item.createdAt || item.publishedAt || 0,
     publishedAt: item.publishedAt || 0,
-    complete: item.contentLevel === 'full' && !item.truncated,
+    detail: item.detail || '',
+    complete: item.detail !== 'list' && item.contentLevel === 'full' && !item.truncated && (Array.isArray(item.paragraphs) || !Object.hasOwn(item, 'body') || Boolean(String(item.body || '').trim())),
     translation: item.translation || null,
   };
 }
@@ -6654,8 +6709,9 @@ async function restoreSocialArticle(id, post) {
       commentCount: post.commentCount || 0,
     }, post.platform);
     if (state.pageKind === 'article' && state.pageId === id) renderArticlePage();
-  } catch (error) {
+    } catch (error) {
     if (state.session !== scope) return;
+    restoredArticleRequests.delete(id);
     restoredArticleErrors.set(id, error.message);
     if (state.pageKind === 'article' && state.pageId === id) renderArticlePage();
   }
@@ -11340,6 +11396,10 @@ async function translatePost(post) {
     setView('settings');
     return;
   }
+  if (!post.body && post.resourceId && (post.platform === 'x' || post.platform === 'xueqiu')) {
+    await restoreSocialArticle(post.id, post);
+    post = state.restoredArticles[post.id] || findUnifiedItem(post.id) || post;
+  }
   if (!post.body) {
     showToast('这条没有可翻译的正文');
     return;
@@ -11465,10 +11525,16 @@ async function loadXFeed({ refresh = false, autoTranslate = true, append = false
       const added = incoming.filter((item) => item.id && !seen.has(item.id));
       state.xItems = [...(state.xItems || []), ...added];
       if (added.length) state.feedShown += added.length;
-    } else {
+      state.xNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
+    } else if (refresh || !(state.xItems || []).length) {
       state.xItems = incoming;
+      state.xNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
+    } else {
+      const paged = state.xItems.length > incoming.length;
+      const cursor = state.xNextCursor;
+      state.xItems = mergeLoadedFeed(state.xItems, incoming);
+      state.xNextCursor = paged ? cursor : (incoming.length && feed.nextCursor ? feed.nextCursor : '');
     }
-    state.xNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
     state.xFeed = feed.feed || state.xFeed;
     state.xNote = feed.note || '';
     hydrateFeedTranslations(state.xItems);
@@ -11559,10 +11625,16 @@ async function loadXueqiuFeed({ refresh = false, append = false } = {}) {
       const added = incoming.filter((item) => item.id && !seen.has(item.id));
       state.xueqiuItems = [...(state.xueqiuItems || []), ...added];
       if (added.length) state.feedShown += added.length;
-    } else {
+      state.xueqiuNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
+    } else if (refresh || !(state.xueqiuItems || []).length) {
       state.xueqiuItems = incoming;
+      state.xueqiuNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
+    } else {
+      const paged = state.xueqiuItems.length > incoming.length;
+      const cursor = state.xueqiuNextCursor;
+      state.xueqiuItems = mergeLoadedFeed(state.xueqiuItems, incoming);
+      state.xueqiuNextCursor = paged ? cursor : (incoming.length && feed.nextCursor ? feed.nextCursor : '');
     }
-    state.xueqiuNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
     state.xueqiuFeed = feed.feed || state.xueqiuFeed;
     state.xueqiuNote = feed.note || '';
     hydrateFeedTranslations(state.xueqiuItems);
@@ -11586,21 +11658,23 @@ async function loadXueqiuFeed({ refresh = false, append = false } = {}) {
   }
 }
 
-async function loadMediaFeed({ refresh = false, append = false } = {}) {
+async function loadMediaFeed({ refresh = false, append = false, merge = false } = {}) {
   if (!state.session) {
     showToast('请先在设置中完成设备连接');
     return;
   }
+  mediaHeadMerge = Boolean(merge) && !append && !refresh;
   const channel = state.mediaChannel;
   const view = state.mediaView;
   try {
-    const request = mediaFeedLoader.load({ refresh, append });
+    const request = mediaFeedLoader.load({ refresh, append, merge: mediaHeadMerge });
     ensureTagCatalog().then(() => {
       renderPosts();
       if (state.pageKind === 'article') renderArticlePage();
     }).catch(() => {});
     return await request;
   } catch (error) {
+    mediaHeadMerge = false;
     if (error.status === 401 || error.status === 403) {
       showUnpairedPage('设备授权已失效，请重新连接');
       throw error;
@@ -11826,7 +11900,7 @@ function connectStream() {
   const refreshMedia = () => {
     clearTimeout(mediaRefreshTimer);
     mediaRefreshTimer = setTimeout(() => {
-      if (state.feedPlatform === 'media' && !state.mediaLoading) loadMediaFeed({ refresh: false }).catch(() => {});
+      if (state.feedPlatform === 'media' && !state.mediaLoading) loadMediaFeed({ refresh: false, merge: true }).catch(() => {});
     },1000);
   };
   state.stream.addEventListener('feed.media-body.observed.v1',refreshMedia);

@@ -250,3 +250,135 @@ test('home feed asks for one page and opens the stored social article on demand'
   assert.match(source, /\/api\/v1\/content-items\/\$\{encodeURIComponent\(resourceId\)\}/);
   assert.match(source, /restoreSocialArticle\(itemId, post\)/);
 });
+
+function extractFunctions(source, names) {
+  return names.map((name) => {
+    const result = source.match(new RegExp(`(?:async )?function ${name}\\([^]*?\\n\\}`));
+    assert.ok(result, name);
+    return result[0];
+  }).join('\n');
+}
+
+test('verified translated media list item renders as a summary and does not throw', () => {
+  const source = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
+  const context = vm.createContext({
+    formatTime: () => 'time',
+    state: { translations: {} },
+    translationStoreKey: () => 'media-key',
+    loadTranslationStore: () => ({}),
+  });
+  vm.runInContext(`${extractFunctions(source, ['translationFor', 'mediaAsItem'])}\nthis.translationFor=translationFor;this.mediaAsItem=mediaAsItem;`, context);
+  const item = {
+    id: 'media:decoder:ready',
+    externalId: 'decoder:ready',
+    detail: 'list',
+    contentLevel: 'full',
+    truncated: false,
+    title: 'API price',
+    summary: '索引摘要',
+    body: '',
+    articleTranslation: { status: 'ready', title: '接口价格', bodyHash: 'abc' },
+    publisherName: 'The Decoder',
+  };
+  const post = context.mediaAsItem(item);
+  assert.equal(post.complete, false);
+  assert.equal(post.paragraphs.length, 0);
+  assert.match(post.excerpt, /索引摘要/);
+  assert.doesNotThrow(() => {
+    const excerpt = post.excerpt || '';
+    const className = context.translationFor(post) ? 'post-excerpt is-translated' : 'post-excerpt';
+    assert.match(excerpt, /索引摘要/);
+    assert.equal(className, 'post-excerpt');
+  });
+  assert.equal(context.translationFor({
+    ...post,
+    complete: true,
+    paragraphs: undefined,
+    articleTranslation: { status: 'ready', title: '接口价格', bodyHash: 'abc' },
+  }), null);
+});
+
+test('a background reload keeps later pages and already opened text', async () => {
+  const source = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
+  const calls = [];
+  let reads = 0;
+  const context = vm.createContext({
+    URLSearchParams,
+    FEED_PAGE_SIZE: 12,
+    state: { session: {}, xFeed: 'for-you', xItems: [], xNextCursor: '', feedShown: 12 },
+    api: async (url) => {
+      calls.push(url);
+      reads += 1;
+      if (url.includes('before=')) {
+        return { feed: { items: [{ id: 'x:2', summary: 'second page' }], nextCursor: '0,2,x:2' } };
+      }
+      if (reads === 1) return { feed: { items: [{ id: 'x:1', summary: 'first page' }], nextCursor: '0,1,x:1' } };
+      return { feed: { items: [{ id: 'x:1', summary: 'English summary again', body: '' }], nextCursor: '0,9,reset' } };
+    },
+    isHiddenFeedItem: () => false,
+    hydrateFeedTranslations: () => {},
+    renderPosts: () => {},
+    renderXToolbar: () => {},
+    syncLocalTranslationsToServer: () => Promise.resolve(),
+    loadFeedTaggings: () => Promise.resolve(),
+    translateXBatch: async () => {},
+  });
+  vm.runInContext(`${extractFunctions(source, ['mergeLoadedFeedItem', 'mergeLoadedFeed', 'loadXFeed'])}\nthis.load=loadXFeed`, context);
+  await context.load({ autoTranslate: false });
+  await context.load({ append: true, autoTranslate: false });
+  const opened = Array.from(context.state.xItems).find((item) => item.id === 'x:1');
+  opened.detail = 'full';
+  opened.body = '已展开的全文';
+  opened.translation = { text: '中文全文', engine: 'test' };
+  const cursor = context.state.xNextCursor;
+  await context.load({ autoTranslate: false });
+  const items = Array.from(context.state.xItems);
+  assert.deepEqual(items.map((item) => item.id), ['x:1', 'x:2']);
+  assert.equal(items[0].body, '已展开的全文');
+  assert.equal(items[0].translation.text, '中文全文');
+  assert.equal(items[0].detail, 'full');
+  assert.equal(context.state.xNextCursor, cursor);
+  assert.equal(calls.at(-1).includes('before='), false);
+  assert.match(calls.at(-1), /limit=12/);
+});
+
+test('social cards show translation state instead of the foreign summary, and translate loads the body first', async () => {
+  const source = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
+  const context = vm.createContext({
+    formatTime: () => '',
+    postTagNames: () => [],
+    state: { translations: {}, restoredArticles: {}, session: {}, dialogPost: null },
+    elements: {},
+    showToast(message) { context.toast = message; },
+    setView() {},
+    translationFor: () => null,
+    postNeedsChineseTranslation: () => true,
+    requestTranslation: async () => ({ translation: { translatedText: '中文全文', engine: 'test' } }),
+    rememberTranslation() { context.remembered = true; },
+    renderPosts() {},
+    findUnifiedItem: (id) => context.state.restoredArticles[id],
+    restoreSocialArticle: async (id, post) => {
+      context.restored = id;
+      context.state.restoredArticles[id] = { ...post, body: 'Verified students get 50% off. Select markets only.' };
+    },
+  });
+  vm.runInContext(`${extractFunctions(source, ['textNeedsZhView', 'listCardExcerpt', 'feedAsItem', 'translatePost'])}\nthis.feedAsItem=feedAsItem;this.translate=translatePost;`, context);
+  const translated = context.feedAsItem({
+    id: 'x:1', title: 'CapCut for students', summary: 'Verified students get 50% off in selected markets.',
+    excerpt: 'Verified students get 50% off in selected markets.', body: '',
+    translation: { status: 'ready', title: '认证学生可享优惠' },
+  }, 'x');
+  const pending = context.feedAsItem({
+    id: 'x:2', title: 'Market note', summary: 'Another English sentence about markets today.', body: '',
+  }, 'x');
+  const chinese = context.feedAsItem({
+    id: 'xq:1', title: '季度数据', summary: '公司发布季度经营数据，维持原有指引。', body: '',
+  }, 'xueqiu');
+  assert.equal(translated.excerpt, '认证学生可享优惠');
+  assert.equal(pending.excerpt, '暂未翻译');
+  assert.equal(chinese.excerpt, '公司发布季度经营数据，维持原有指引。');
+  await context.translate({ id: 'x:2', platform: 'x', resourceId: 'item-2', body: '' });
+  assert.equal(context.restored, 'x:2');
+  assert.equal(context.remembered, true);
+  assert.notEqual(context.toast, '这条没有可翻译的正文');
+});

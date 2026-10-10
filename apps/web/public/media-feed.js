@@ -44,6 +44,38 @@ export function createMediaFeedCache({ storage, now = Date.now, pageSize = 12 } 
   };
 }
 
+function feedItemKey(item) {
+  return item?.id || item?.externalId || '';
+}
+
+function mergeFeedItem(prior, item) {
+  if (!prior) return item;
+  const keepText = prior.detail === 'full' || Boolean(prior.body && !item.body) || Boolean(prior.paragraphs?.length);
+  if (!keepText) return { ...prior, ...item, body: prior.body || item.body || '' };
+  return {
+    ...prior,
+    ...item,
+    body: prior.body || item.body || '',
+    paragraphs: prior.paragraphs?.length ? prior.paragraphs : (item.paragraphs || []),
+    articleTranslation: Array.isArray(prior.articleTranslation?.paragraphs) ? prior.articleTranslation : (item.articleTranslation ?? prior.articleTranslation),
+    detail: prior.detail === 'full' ? 'full' : (item.detail || prior.detail || ''),
+  };
+}
+
+function mergeFeedHead(existing, incoming) {
+  const previous = new Map((existing || []).filter((item) => feedItemKey(item)).map((item) => [feedItemKey(item), item]));
+  const seen = new Set();
+  const head = [];
+  for (const item of incoming || []) {
+    const key = feedItemKey(item);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    head.push(mergeFeedItem(previous.get(key), item));
+  }
+  const tail = (existing || []).filter((item) => feedItemKey(item) && !seen.has(feedItemKey(item)));
+  return [...head, ...tail];
+}
+
 export function createMediaFeedLoader({ cache, getScope, getSelection, readFeed, onFeed, onLoading, pageSize = 12 }) {
   let version = 0;
   let selectionKey = '';
@@ -60,7 +92,7 @@ export function createMediaFeedLoader({ cache, getScope, getSelection, readFeed,
     cache.clear();
   }
 
-  function load({ refresh = false, append = false } = {}) {
+  function load({ refresh = false, append = false, merge = false } = {}) {
     const scope = getScope();
     if (!scope) return Promise.resolve(null);
     const selection = { ...getSelection() };
@@ -72,9 +104,10 @@ export function createMediaFeedLoader({ cache, getScope, getSelection, readFeed,
       onFeed(feed || { items: [], counts: {}, sources: [], nextOffset: null }, { cached: Boolean(feed) });
     }
     if (append && feed?.nextOffset == null) return Promise.resolve(feed);
+    const headOnly = Boolean(merge) && !append && !refresh;
     const query = { ...selection, refresh, offset: append ? feed.nextOffset : 0,
-      limit: append ? pageSize : Math.min(100, Math.max(pageSize, feed?.items.length || 0)) };
-    const requestKey = `${key}:${query.offset}:${query.limit}:${refresh}`;
+      limit: append || headOnly ? pageSize : Math.min(100, Math.max(pageSize, feed?.items.length || 0)) };
+    const requestKey = `${key}:${query.offset}:${query.limit}:${refresh}:${headOnly ? 'head' : ''}`;
     if (active?.key === requestKey) return active.promise;
     const requestVersion = ++version;
     onLoading(true, { refresh, cached: Boolean(feed?.items.length) });
@@ -89,9 +122,14 @@ export function createMediaFeedLoader({ cache, getScope, getSelection, readFeed,
     const promise = pending.get(requestKey).then(payload => {
       if (!isCurrent()) return null;
       const incoming = payload.feed || { items: [] };
-      const items = append ? [...new Map([...(feed?.items || []), ...incoming.items]
-        .map(item => [item.id || item.externalId, item])).values()] : incoming.items;
-      feed = { ...incoming, items };
+      const priorItems = feed?.items || [];
+      const priorOffset = feed?.nextOffset;
+      const items = append ? [...new Map([...priorItems, ...incoming.items]
+        .map(item => [item.id || item.externalId, item])).values()]
+        : headOnly ? mergeFeedHead(priorItems, incoming.items || [])
+        : incoming.items;
+      const nextOffset = headOnly && priorItems.length > (incoming.items || []).length ? priorOffset : incoming.nextOffset;
+      feed = { ...incoming, items, nextOffset };
       cache.set(scope, viewKey, feed);
       onFeed(feed, { cached: false, jobId: payload.jobId, append });
       return feed;

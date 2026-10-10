@@ -76,6 +76,29 @@ test('pagination appends, deduplicates, keeps the server offset and refreshes th
   f.calls[2].resolve({ feed: page('updated', 23, 23) }); await refresh;
 });
 
+test('a head merge reloads only the first page and keeps later pages and opened text', async () => {
+  const f = fixture();
+  const first = f.loader.load(); await Promise.resolve();
+  f.calls[0].resolve({ feed: page('first', 12, 12) }); await first;
+  const next = f.loader.load({ append: true }); await Promise.resolve();
+  f.calls[1].resolve({ feed: page('second', 12, 24) }); await next;
+  const opened = f.shown.at(-1).feed.items[0];
+  opened.body = '已展开的全文';
+  opened.detail = 'full';
+  const merge = f.loader.load({ merge: true }); await Promise.resolve();
+  assert.equal(f.calls[2].query.offset, 0);
+  assert.equal(f.calls[2].query.limit, 12);
+  const head = page('first', 12, 12);
+  head.items[0] = { id: 'first-0', body: '', detail: 'list' };
+  f.calls[2].resolve({ feed: head }); await merge;
+  const items = f.shown.at(-1).feed.items;
+  assert.equal(items.length, 24);
+  assert.equal(items[0].body, '已展开的全文');
+  assert.equal(items[0].detail, 'full');
+  assert.equal(items[12].id, 'second-0');
+  assert.equal(f.shown.at(-1).feed.nextOffset, 24);
+});
+
 test('failed background updates keep cached content and release the loading state', async () => {
   const f = fixture(); f.cache.set('device:a', 'tech:full', page('old'));
   const pending = f.loader.load(); await Promise.resolve();
