@@ -942,18 +942,30 @@ function navigateBack() {
   else setView(returnTarget());
 }
 
+function headerSearchKind() {
+  const view = document.body.dataset.view;
+  if (view === 'market' || view === 'assets') return 'dialog';
+  if (['feed', 'sources', 'inspire'].includes(view) && !(view === 'sources' && state.overviewPane === 'schedule')) return 'field';
+  return 'off';
+}
+
 function syncHeaderSearch() {
   const view = document.body.dataset.view;
-  const searchLabel = view === 'feed' ? '搜索信息流' : view === 'sources' ? (state.overviewPane === 'catalog' ? '搜索信源目录' : '搜索总览资讯') : '搜索灵感';
-  const searchable = ['feed', 'sources', 'inspire'].includes(view) && !(view === 'sources' && state.overviewPane === 'schedule');
-  if (!searchable) state.showHeaderSearch = false;
+  const kind = headerSearchKind();
+  const searchLabel = kind === 'dialog'
+    ? '搜索标的'
+    : view === 'feed' ? '搜索信息流' : view === 'sources' ? (state.overviewPane === 'catalog' ? '搜索信源目录' : '搜索总览资讯') : '搜索灵感';
+  if (kind !== 'field') state.showHeaderSearch = false;
   document.body.classList.toggle('search-open', Boolean(state.showHeaderSearch));
   if (elements['toggle-search']) {
-    elements['toggle-search'].hidden = !searchable;
-    setIconButton(elements['toggle-search'], state.showHeaderSearch ? 'x' : 'search');
-    elements['toggle-search'].setAttribute('aria-label', state.showHeaderSearch ? '关闭搜索' : searchLabel);
-    elements['toggle-search'].title = searchLabel;
-    elements['toggle-search'].setAttribute('aria-expanded', String(state.showHeaderSearch));
+    const searchButton = elements['toggle-search'];
+    searchButton.hidden = false;
+    searchButton.disabled = kind === 'off';
+    searchButton.classList.toggle('is-disabled', kind === 'off');
+    setIconButton(searchButton, state.showHeaderSearch ? 'x' : 'search');
+    searchButton.setAttribute('aria-label', state.showHeaderSearch ? '关闭搜索' : searchLabel);
+    searchButton.title = searchLabel;
+    searchButton.setAttribute('aria-expanded', String(kind === 'field' && state.showHeaderSearch));
   }
   if (elements['global-search']) {
     elements['global-search'].placeholder = searchLabel;
@@ -1137,23 +1149,21 @@ function setView(name, options = {}) {
 
 function updateHeaderAction(view) {
   const button = elements['open-compose'];
-  button.hidden = view === 'inspire';
-  if (view === 'inspire') return;
-  if (view === 'market' || view === 'assets') {
-    button.dataset.action = 'search';
-    button.setAttribute('aria-label', '搜索标的');
-    setIconButton(button, 'search');
-    return;
-  }
+  if (!button) return;
+  button.hidden = false;
+  setIconButton(button, 'plus');
   if (view === 'ask') {
+    button.disabled = false;
+    button.classList.remove('is-disabled');
     button.dataset.action = 'ask-new';
     button.setAttribute('aria-label', '新提问');
-    setIconButton(button, 'plus');
     return;
   }
+  const unused = view === 'inspire' || view === 'market' || view === 'assets';
   button.dataset.action = 'compose';
   button.setAttribute('aria-label', '快速发布');
-  setIconButton(button, 'plus');
+  button.disabled = unused;
+  button.classList.toggle('is-disabled', unused);
 }
 
 function bootUiRevision() {
@@ -5546,14 +5556,25 @@ function renderStockBoards() {
     .filter((source) => source.category === 'market' && source.viewKind === 'market-board' && source.id !== 'market.global')
     .map((source) => ({ id: source.id.replace(/^market\./, ''), label: source.title }));
   const boards = sourceBoards.length ? sourceBoards : fallbackStockBoards;
-  renderChipTabs(elements['stock-boards'], boards, state.stockBoard, (id) => {
-    state.stockBoard = id;
-    state.stockGroup = '全部';
-    state.marketFilter = '';
-    if (elements['market-filter']) elements['market-filter'].value = '';
-    renderStockBoards();
-    loadMarket().catch((error) => showToast(error.message));
-  });
+  const target = elements['stock-boards'];
+  if (!target) return;
+  target.replaceChildren(...boards.map((item) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `channel-tab${item.id === state.stockBoard ? ' is-active' : ''}`;
+    button.setAttribute('aria-pressed', String(item.id === state.stockBoard));
+    button.textContent = item.label;
+    button.addEventListener('click', () => {
+      state.stockBoard = item.id;
+      state.stockGroup = '全部';
+      state.marketFilter = '';
+      if (elements['market-filter']) elements['market-filter'].value = '';
+      renderStockBoards();
+      loadMarket().catch((error) => showToast(error.message));
+    });
+    return button;
+  }));
+  bindHorizontalTabScroll();
 }
 
 async function loadSourceCatalog() {
@@ -12083,6 +12104,7 @@ function openSearch() {
 }
 
 function openHeaderAction() {
+  if (elements['open-compose'].disabled) return;
   if (elements['open-compose'].dataset.action === 'search') {
     openSearch();
     return;
@@ -13144,6 +13166,11 @@ elements['reload-view']?.addEventListener('click', (event) => {
 elements['open-settings'].addEventListener('click', () => setView('settings'));
 elements['nav-back']?.addEventListener('click', navigateBack);
 elements['toggle-search']?.addEventListener('click', () => {
+  if (headerSearchKind() === 'dialog') {
+    openSearch();
+    return;
+  }
+  if (headerSearchKind() !== 'field') return;
   state.showHeaderSearch = !state.showHeaderSearch;
   syncHeaderSearch();
   if (state.showHeaderSearch) elements['global-search']?.focus();
