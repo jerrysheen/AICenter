@@ -58,6 +58,7 @@ export function hourStepSense(input, mobile) {
 export function createInformationTreePage(host) {
   let root,list,titleEl,coverageEl,statusRow,statusToggle,statusDetail,pastBtn,directionNav,hourChips,dayChips,tools,materialsBtn,tagPanel,tag,period,backIssues,notice,delayEl,hourRail,hourDay,hourNow,hourEarlier,hourYesterday,hourMore,issueEl,periodBar,periodMeta,periodLabel,periodPop,periodPrev,periodNext,mode='daily',direction=null,directionExplicit=false,showMaterials=false,selectedHourStart=0,dailyStart=0,openedId='',openedDirection='',manifest,selected=null,epoch=0,flight=0,settled=false,timer=0,dateFilter='',checking=null,pinnedReadingId='';
   let requests=new AbortController();
+  let periodDocBound=false;
   let rendering=0;
   function api(path, options){
     const ticket=flight;
@@ -497,7 +498,7 @@ export function createInformationTreePage(host) {
       if(!chip.dataset.start) continue;
       const on=chip.dataset.start===String(selectedHourStart);
       chip.classList.toggle('is-active',on);
-      if(on && periodPop && !periodPop.hidden) chip.scrollIntoView({block:'nearest',inline:'nearest'});
+      if(on && typeof chip.scrollIntoView==='function') chip.scrollIntoView({block:'nearest',inline:'nearest'});
     }
     if(hourEarlier) hourEarlier.hidden=display.length<=8;
     paintRail(chosen);
@@ -961,7 +962,7 @@ export function createInformationTreePage(host) {
     periodLabel=button('选择期数',()=>{const open=periodPop.hidden;periodPop.hidden=!open;periodLabel.setAttribute('aria-expanded',String(open));});
     periodLabel.className='tree-period-label';periodLabel.setAttribute('aria-haspopup','listbox');periodLabel.setAttribute('aria-expanded','false');periodLabel.setAttribute('aria-label','选择期数');
     picker.append(periodLabel,periodPop);periodSwitch.append(periodPrev,picker,periodNext);periodBar.append(periodMeta,periodSwitch);primary.append(modeTabs,periodBar);
-    if(!mount.periodDoc){mount.periodDoc=true;document.addEventListener('click',event=>{if(!periodPop || periodPop.hidden || periodPop.parentElement?.contains(event.target))return;closePeriodPop();});}
+    if(!periodDocBound){periodDocBound=true;document.addEventListener('click',event=>{if(!periodPop || periodPop.hidden || periodPop.parentElement?.contains(event.target))return;closePeriodPop();});}
     const issue=el('header','','tree-issue');
     issueEl=issue;
     const heading=el('div','','tree-issue-heading');
