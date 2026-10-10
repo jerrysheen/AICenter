@@ -1,6 +1,12 @@
 import {TreeNodeSchema,TreeEditionSchema,isUnavailableTreeText} from '../../../contracts/src/information-tree.js';
 import {DailyEditorialSchema} from '../../../contracts/src/daily-editorial.js';
 
+function indexEdition(row,prefix,hasEditorial) {
+  const id=row[`${prefix}_id`];
+  if(!id) return null;
+  return {id,layer:row.layer,window:{startAt:Number(row[`${prefix}_start`]),endAt:Number(row[`${prefix}_end`])},status:row[`${prefix}_status`],generatedAt:Number(row[`${prefix}_generated`]),rootCount:Number(row[`${prefix}_roots`] || 0),hasEditorial};
+}
+
 export function createInformationTreeRepository(db,emit) {
   const read=(table,workspace,id)=>{
     const row=db.prepare(`SELECT value_json FROM ${table} WHERE workspace_id=? AND id=?`).get(workspace,id);
@@ -13,6 +19,16 @@ export function createInformationTreeRepository(db,emit) {
     informationHead(workspace,sourceId) {
       const row=db.prepare('SELECT node_id,source_version FROM information_tree_information_heads WHERE workspace_id=? AND source_id=?').get(workspace,sourceId);
       return row ? {node:this.getNode(workspace,row.node_id),sourceVersion:row.source_version} : null;
+    },
+    informationHeads(workspace,sourceIds) {
+      const ids=[...new Set((sourceIds || []).map(id=>String(id || '').trim()).filter(Boolean))];
+      if(!ids.length) return [];
+      return db.prepare(`SELECT h.source_id AS sourceId,h.source_version AS sourceVersion,n.value_json AS valueJson
+        FROM information_tree_information_heads h
+        JOIN information_tree_nodes n ON n.workspace_id=h.workspace_id AND n.id=h.node_id
+        WHERE h.workspace_id=? AND h.source_id IN (${ids.map(()=>'?').join(',')})`)
+        .all(workspace,...ids)
+        .map(row=>({sourceId:row.sourceId,sourceVersion:row.sourceVersion,node:JSON.parse(row.valueJson)}));
     },
     listInformation(workspace,window) {
       return db.prepare('SELECT node_id FROM information_tree_information_heads WHERE workspace_id=? AND event_at>=? AND event_at<? ORDER BY event_at,source_id').all(workspace,window.startAt,window.endAt).map(r=>this.getNode(workspace,r.node_id));
@@ -90,6 +106,46 @@ export function createInformationTreeRepository(db,emit) {
     list(workspace,startAt,endAt,layer='hourly') {
       return db.prepare('SELECT published_id,attempt_id FROM information_tree_heads WHERE workspace_id=? AND layer=? AND start_at>=? AND start_at<? ORDER BY start_at DESC').all(workspace,layer,startAt,endAt)
         .map(row=>({edition:row.published_id ? this.getEdition(workspace,row.published_id) : null,attempt:this.getEdition(workspace,row.attempt_id)}));
+    },
+    listInformationIndex(workspace,window) {
+      return db.prepare(`SELECT h.node_id AS id,
+        COALESCE(json_extract(n.value_json, '$.eventAt'), h.event_at) AS eventAt,
+        json_extract(n.value_json, '$.window.startAt') AS windowStart,
+        json_extract(n.value_json, '$.window.endAt') AS windowEnd,
+        json_extract(n.value_json, '$.validatorVersion') AS validatorVersion
+        FROM information_tree_information_heads h
+        JOIN information_tree_nodes n ON n.workspace_id=h.workspace_id AND n.id=h.node_id
+        WHERE h.workspace_id=? AND h.event_at>=? AND h.event_at<?
+        ORDER BY h.event_at, h.source_id`).all(workspace,window.startAt,window.endAt).map(row=>({
+        id:row.id,eventAt:Number(row.eventAt),window:{startAt:Number(row.windowStart),endAt:Number(row.windowEnd)},
+        ...(row.validatorVersion ? {validatorVersion:row.validatorVersion} : {}),
+      }));
+    },
+    listEditionIndex(workspace,startAt,endAt,layer='hourly') {
+      return db.prepare(`SELECT h.layer AS layer,
+        json_extract(p.value_json, '$.id') AS published_id,
+        json_extract(p.value_json, '$.status') AS published_status,
+        json_extract(p.value_json, '$.generatedAt') AS published_generated,
+        json_extract(p.value_json, '$.window.startAt') AS published_start,
+        json_extract(p.value_json, '$.window.endAt') AS published_end,
+        COALESCE(json_array_length(p.value_json, '$.roots'), 0) AS published_roots,
+        json_extract(a.value_json, '$.id') AS attempt_id,
+        json_extract(a.value_json, '$.status') AS attempt_status,
+        json_extract(a.value_json, '$.generatedAt') AS attempt_generated,
+        json_extract(a.value_json, '$.window.startAt') AS attempt_start,
+        json_extract(a.value_json, '$.window.endAt') AS attempt_end,
+        COALESCE(json_array_length(a.value_json, '$.roots'), 0) AS attempt_roots,
+        CASE WHEN e.published_id IS NOT NULL THEN 1 ELSE 0 END AS has_editorial
+        FROM information_tree_heads h
+        LEFT JOIN information_tree_editions p ON p.workspace_id=h.workspace_id AND p.id=h.published_id
+        LEFT JOIN information_tree_editions a ON a.workspace_id=h.workspace_id AND a.id=h.attempt_id
+        LEFT JOIN information_tree_editorial_heads e ON e.workspace_id=h.workspace_id AND e.published_id IS NOT NULL
+          AND e.period_key = (CAST(json_extract(COALESCE(p.value_json, a.value_json), '$.window.startAt') AS TEXT) || ':' || CAST(json_extract(COALESCE(p.value_json, a.value_json), '$.window.endAt') AS TEXT))
+        WHERE h.workspace_id=? AND h.layer=? AND h.start_at>=? AND h.start_at<?
+        ORDER BY h.start_at DESC`).all(workspace,layer,startAt,endAt).map(row=>{
+        const hasEditorial=row.has_editorial===1;
+        return {edition:indexEdition(row,'published',hasEditorial),attempt:indexEdition(row,'attempt',hasEditorial)};
+      });
     },
     listInformationInWindow(workspace, window, {limit=200, cursor=null}={}) {
       const safe=Math.max(1, Math.min(Number(limit)||200, 200));

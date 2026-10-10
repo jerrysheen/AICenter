@@ -52,7 +52,21 @@ export const TreeEditionSchema=z.object({id,layer:z.enum(['hourly','daily']),win
 export const PrepareTreeInformationInputSchema=z.object({workspaceId:z.string().default('local'),sourceIds:z.array(id).min(1).max(100),force:z.boolean().default(false),catchup:z.boolean().default(false)}).strict();
 export const TreeWindowQuerySchema=z.object({startAt:z.coerce.number().int().nonnegative(),endAt:z.coerce.number().int().positive()}).refine(v=>v.endAt>v.startAt && v.endAt-v.startAt<=7*86400000,'树查询窗口最多七日');
 export const TreeNodeQuerySchema=z.object({id}).strict();
-export const TreeManifestQuerySchema=TreeWindowQuerySchema.safeExtend({view:z.enum(['reading']).optional()});
+const TreeIndexWindowSchema=z.object({startAt:z.number().int(),endAt:z.number().int()}).strict();
+export const TreeIndexEditionSchema=z.object({
+  id,layer:z.enum(['hourly','daily']),window:TreeIndexWindowSchema,status:z.enum(['ready','partial','failed']),
+  generatedAt:z.number().int(),rootCount:z.number().int().nonnegative(),hasEditorial:z.boolean(),
+}).strict();
+export const TreeIndexInformationSchema=z.object({
+  id,eventAt:z.number().int(),window:TreeIndexWindowSchema,validatorVersion:z.string().min(1).max(128).optional(),
+}).strict();
+export const TreeIndexManifestSchema=z.object({
+  timezone:z.string().min(1).max(64),pipeline:z.string().min(1).max(64),directions:z.record(z.string(),z.string()),
+  information:z.array(TreeIndexInformationSchema),
+  hours:z.array(z.object({edition:TreeIndexEditionSchema.nullable(),attempt:TreeIndexEditionSchema.nullable()}).strict()),
+  days:z.array(z.object({edition:TreeIndexEditionSchema.nullable(),attempt:TreeIndexEditionSchema.nullable()}).strict()),
+}).strict();
+export const TreeManifestQuerySchema=TreeWindowQuerySchema.safeExtend({view:z.enum(['reading','index']).optional(),information:z.literal('1').optional()});
 
 // Only whole direct children participate in coverage; never repair omissions by appending source text.
 export function validateTreeModules(value,inputs,tags) {

@@ -22,7 +22,7 @@ import { createConnectorRegistry } from '../packages/connectors/src/index.js';
 
 test('xueqiu feed query maps 关注 / 精选 / 7x24', () => {
   assert.deepEqual(parseXueqiuFeedQuery({}), {
-    platform: 'xueqiu', feed: 'following', limit: 50, refresh: false,
+    platform: 'xueqiu', feed: 'following', limit: 50, refresh: false, before: null, fields: 'list',
   });
   assert.equal(parseXueqiuFeedQuery({ feed: '精选'.replace('精选', 'featured'), refresh: '1' }).refresh, true);
   assert.equal(parseXueqiuFeedQuery({ feed: 'featured' }).feed, 'featured');

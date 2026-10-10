@@ -8,6 +8,7 @@ import { createMediaConnector } from '../../../packages/connectors/src/media/por
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
+import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 import { hostname as systemHostname, networkInterfaces } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -103,6 +104,39 @@ export function createInstanceCookieNames(instance) {
     cookieName: `ai_center_device${suffix}`,
     secureCookieName: `__Host-ai_center_device${suffix}`,
   });
+}
+
+function attachApiTiming(response, request, url, timings, eventLoopDelay, loopLog) {
+  const originalWriteHead = response.writeHead;
+  response.writeHead = function writeHead(statusCode, statusMessage, headers) {
+    let phrase = statusMessage;
+    let headerObject = headers;
+    if (typeof statusMessage === 'object' && statusMessage !== null) {
+      headerObject = statusMessage;
+      phrase = undefined;
+    }
+    const now = performance.now();
+    const total = now - timings.started;
+    const handler = Math.max(0, now - timings.handlerStarted);
+    const timing = `auth;dur=${timings.authMs.toFixed(1)}, handler;dur=${handler.toFixed(1)}, total;dur=${total.toFixed(1)}`;
+    const cacheEdition = url.pathname === '/api/v1/reports/tree/edition' && statusCode === 200;
+    if (headerObject && typeof headerObject === 'object' && !Array.isArray(headerObject)) {
+      headerObject['Server-Timing'] = timing;
+      if (cacheEdition) headerObject['Cache-Control'] = 'private, max-age=86400, immutable';
+    } else {
+      response.setHeader('Server-Timing', timing);
+      if (cacheEdition) response.setHeader('Cache-Control', 'private, max-age=86400, immutable');
+    }
+    const loopP99 = eventLoopDelay.percentile(99) / 1e6;
+    const stalled = loopP99 >= 200;
+    if (total >= 500 || (stalled && Date.now() - loopLog.at >= 10_000)) {
+      if (stalled) loopLog.at = Date.now();
+      console.warn(`[web] ${request.method} ${url.pathname} total=${Math.round(total)}ms auth=${Math.round(timings.authMs)}ms loop_p99=${Math.round(loopP99)}ms`);
+    }
+    return phrase === undefined
+      ? originalWriteHead.call(response, statusCode, headerObject)
+      : originalWriteHead.call(response, statusCode, phrase, headerObject);
+  };
 }
 
 function createOptionalSearchPort(explicit, env = process.env) {
@@ -249,6 +283,11 @@ export function createAiCenterServer(options = {}) {
   let actualPort = configuredPort;
   let eventTimer = null;
   const pairingAttempts = new Map();
+  const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
+  eventLoopDelay.enable();
+  const eventLoopTimer = setInterval(() => eventLoopDelay.reset(), 10_000);
+  eventLoopTimer.unref?.();
+  const loopLog = { at: 0 };
 
   function isPublicRequest(request, url) {
     const forwarded = Boolean(request.headers['cf-connecting-ip'] || request.headers['cf-ray']);
@@ -314,6 +353,7 @@ export function createAiCenterServer(options = {}) {
   });
 
   const server = createServer(async (request, response) => {
+    const timings = { started: performance.now(), authMs: 0, handlerStarted: 0 };
     const url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
     try {
       const httpsLocation = publicHttpsLocation(request, url, publicBaseUrl);
@@ -329,11 +369,16 @@ export function createAiCenterServer(options = {}) {
       }
 
       const publicRequest = isPublicRequest(request, url);
+      const authStarted = performance.now();
+      const identity = resolveIdentity(request, publicRequest);
+      timings.authMs = performance.now() - authStarted;
+      timings.handlerStarted = performance.now();
+      attachApiTiming(response, request, url, timings, eventLoopDelay, loopLog);
       const handled = await router.dispatch({
         request,
         response,
         url,
-        identity: resolveIdentity(request, publicRequest),
+        identity,
         publicRequest,
         services,
         events,
@@ -378,6 +423,8 @@ export function createAiCenterServer(options = {}) {
     },
     async close() {
       if (eventTimer) clearInterval(eventTimer);
+      clearInterval(eventLoopTimer);
+      eventLoopDelay.disable();
       events.closeAll();
       await new Promise((resolve) => server.close(resolve));
       store.close();

@@ -448,9 +448,18 @@ export function createFeedRepository(database, emitEvent) {
         .map(r=>({...mapContentItem(r),provider:r.provider,externalId:r.external_id,captureMetadata:parseJson(r.capture_metadata_json)}));
     },
 
-    listContentItemsByProvider(workspaceId, provider, { limit = 200, sourceExternalId = '', taggedOnly = false, qualityRule='' } = {}) {
+    listContentItemsByProvider(workspaceId, provider, { limit = 200, sourceExternalId = '', taggedOnly = false, qualityRule='', before = null } = {}) {
       const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
       const taggedSql = `${taggedOnly ? `AND ${TAGGED_CONTENT_SQL}` : ''} AND ${approvedQualitySql(qualityRule)}`;
+      const cursorSql = before
+        ? `AND (
+            COALESCE(item_state.is_read, 0) > ?
+            OR (COALESCE(item_state.is_read, 0) = ? AND c.captured_at < ?)
+            OR (COALESCE(item_state.is_read, 0) = ? AND c.captured_at = ? AND ci.id < ?)
+          )`
+        : '';
+      const cursorParams = before ? [before.isRead, before.isRead, before.at, before.isRead, before.at, before.id] : [];
+      const order = 'ORDER BY COALESCE(item_state.is_read, 0) ASC, c.captured_at DESC, ci.id DESC';
       const rows = sourceExternalId
         ? database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id,
             c.captured_at AS captured_at, c.metadata_json AS capture_metadata_json,
@@ -463,8 +472,9 @@ export function createFeedRepository(database, emitEvent) {
             WHERE ci.workspace_id = ? AND c.provider = ? AND sa.external_id = ?
               AND ${VISIBLE_CONTENT_SQL}
               ${taggedSql}
-            ORDER BY c.captured_at DESC, ci.created_at DESC, ci.id DESC
-            LIMIT ?`).all(workspaceId, provider, sourceExternalId, safeLimit)
+              ${cursorSql}
+            ${order}
+            LIMIT ?`).all(workspaceId, provider, sourceExternalId, ...cursorParams, safeLimit)
         : database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id,
             c.captured_at AS captured_at, c.metadata_json AS capture_metadata_json,
             COALESCE(item_state.is_read, 0) AS is_read
@@ -475,8 +485,9 @@ export function createFeedRepository(database, emitEvent) {
             WHERE ci.workspace_id = ? AND c.provider = ?
               AND ${VISIBLE_CONTENT_SQL}
               ${taggedSql}
-            ORDER BY c.captured_at DESC, ci.created_at DESC, ci.id DESC
-            LIMIT ?`).all(workspaceId, provider, safeLimit);
+              ${cursorSql}
+            ${order}
+            LIMIT ?`).all(workspaceId, provider, ...cursorParams, safeLimit);
       return rows.map((row) => ({
         ...mapContentItem(row),
         provider: row.provider,
@@ -485,6 +496,25 @@ export function createFeedRepository(database, emitEvent) {
         captureMetadata: parseJson(row.capture_metadata_json),
         isRead: Boolean(row.is_read),
       }));
+    },
+
+    countContentItemsByProvider(workspaceId, provider, { sourceExternalId = '', taggedOnly = false, qualityRule = '' } = {}) {
+      const taggedSql = `${taggedOnly ? `AND ${TAGGED_CONTENT_SQL}` : ''} AND ${approvedQualitySql(qualityRule)}`;
+      const row = sourceExternalId
+        ? database.prepare(`SELECT COUNT(*) AS n
+            FROM content_items ci
+            INNER JOIN captures c ON c.id = ci.capture_id
+            INNER JOIN source_accounts sa ON sa.id = c.source_account_id
+            WHERE ci.workspace_id = ? AND c.provider = ? AND sa.external_id = ?
+              AND ${VISIBLE_CONTENT_SQL}
+              ${taggedSql}`).get(workspaceId, provider, sourceExternalId)
+        : database.prepare(`SELECT COUNT(*) AS n
+            FROM content_items ci
+            INNER JOIN captures c ON c.id = ci.capture_id
+            WHERE ci.workspace_id = ? AND c.provider = ?
+              AND ${VISIBLE_CONTENT_SQL}
+              ${taggedSql}`).get(workspaceId, provider);
+      return Number(row?.n) || 0;
     },
 
     getContentItemByCapture(workspaceId, captureId) {

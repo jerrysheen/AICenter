@@ -1,4 +1,4 @@
-import {createInformationTreePage} from './information-tree.js?v=11';
+import {createInformationTreePage} from './information-tree.js?v=dev';
 const HOUR = 3600000;
 const ARTICLE_VERSION='brief-editorial-v3';
 const DIRECTION_LABELS={finance:'金融与市场',policy:'时事与政策',tech:'科技与产业',other:'其他'};
@@ -61,15 +61,19 @@ function button(text, action, className='brief-button') {
 }
 
 export function createBriefPage(host) {
-  let treeActive=false;
+  let treeActive=false, treeReady=false;
   let treeManifest=null,treeManifestAt=0,treeManifestRequest=null,treeCacheEpoch=0;
+  let inflight=new AbortController();
+  function freshRequests(){inflight.abort();inflight=new AbortController();}
+  function callApi(path, options){return host.api(path,{...(options||{}),signal:inflight.signal});}
   const loadTreeManifest=({force=false}={})=>{
     if(!force && treeManifest && Date.now()-treeManifestAt<30000)return Promise.resolve(treeManifest);
     if(treeManifestRequest)return treeManifestRequest;
-    const identity=s.identity,cacheEpoch=treeCacheEpoch,endAt=Date.now()+1;
-    treeManifestRequest=host.api(`/api/v1/reports/tree?view=reading&startAt=${endAt-7*86400000}&endAt=${endAt}`).then(data=>{
-      if(identity===s.identity && cacheEpoch===treeCacheEpoch){treeManifest=data;treeManifestAt=Date.now();}return data;
-    }).finally(()=>{if(cacheEpoch===treeCacheEpoch)treeManifestRequest=null;});return treeManifestRequest;
+    const identity=s.identity,cacheEpoch=treeCacheEpoch,endAt=Date.now()+1,signal=inflight.signal;
+    const pending=callApi(`/api/v1/reports/tree?view=index&startAt=${endAt-7*86400000}&endAt=${endAt}`).then(data=>{
+      if(!signal.aborted && identity===s.identity && cacheEpoch===treeCacheEpoch){treeManifest=data;treeManifestAt=Date.now();}return data;
+    }).finally(()=>{if(treeManifestRequest===pending)treeManifestRequest=null;});
+    treeManifestRequest=pending;return pending;
   };
   const navigate=(page)=>host.navigate ? host.navigate(`report${page ? '/'+page : ''}`) : mount(root,{history:page==='history',archive:page==='archive'});
   const tree=createInformationTreePage({...host,loadTreeManifest,history:()=>navigate('history'),latest:()=>navigate(''),archive:()=>navigate('archive')});
@@ -106,7 +110,7 @@ export function createBriefPage(host) {
   }
 
   function reset(clearStorage=false) {
-    tree.reset();treeActive=false;
+    tree.reset();treeActive=false;treeReady=false;
     treeCacheEpoch++;treeManifest=null;treeManifestAt=0;treeManifestRequest=null;
     stop(); generation++; request++; evidenceRequest++;
     if (clearStorage && s.identity) {try {storage()?.removeItem(key());} catch {}}
@@ -117,33 +121,50 @@ export function createBriefPage(host) {
     root?.replaceChildren(); root=null; busy=null; routeKey='';
   }
 
-  function stop() {clearInterval(timer); timer=0;tree.stop();}
+  function pause() {clearInterval(timer); timer=0;tree.stop();}
+
+  // Leaving the report view must drop in-flight reads. A retained, already settled
+  // tree keeps its handlers; an unfinished mount is discarded and started again later.
+  function stop() {
+    clearInterval(timer); timer=0;
+    generation++; request++; evidenceRequest++;
+    freshRequests();
+    const still=tree.suspend();
+    if(!(treeActive && still)) treeReady=false;
+  }
 
   function start() {
-    stop();
+    pause();
     if (active() && !document.hidden) timer=setInterval(()=>check().catch(()=>{}),60000);
   }
 
   async function mount(target, {date='',history=false,archive=false}={}) {
     setIdentity();
     const nextRoute=archive ? 'archive' : date || (history ? 'history' : 'current');
-    if (root===target && routeKey===nextRoute && root.childElementCount && (treeActive || dateInput?.isConnected)) {if(treeActive)return tree.resume();start();return check();}
+    if (treeReady && root===target && routeKey===nextRoute && root.childElementCount && (treeActive || dateInput?.isConnected)) {if(treeActive)return tree.resume();start();return check();}
+    treeReady=false;
     routeKey=nextRoute; root=target; generation++; request++; busy=null;
     if(!archive) {
       const token=generation;
       if(!treeManifest)root.replaceChildren(node('p','brief-empty','正在读取简报…'));
       const manifest=await loadTreeManifest().catch(()=>null);
       if(token!==generation)return;
-      if(!manifest){root.replaceChildren(node('p','brief-empty','暂时无法读取简报刊期。'),button('重试读取',()=>{routeKey='';return mount(target,{date,history,archive});}));return;}
+      if(!manifest){root.replaceChildren(node('p','brief-empty','暂时无法读取简报刊期。'),button('重试读取',()=>{routeKey='';treeReady=false;return mount(target,{date,history,archive});}));return;}
       // During a rolling upgrade the older reader lacks pipeline; independently prepared
       // v3.1 heads prove the tree preparation path is active. Explicit legacy always wins.
       const treeEnabled=manifest.pipeline==='tree-v3' || (manifest.pipeline===undefined && manifest.information?.some(n=>n.validatorVersion==='tree-response-v3.1.0'));
-      if(treeEnabled) {stop();treeActive=true;return tree.mount(root,{manifest,date,history,mode:'daily',resetSelection:true});}
+      if(treeEnabled) {
+        pause();treeActive=true;treeReady=false;
+        await tree.mount(root,{manifest,date,history,mode:'daily',resetSelection:true});
+        if(token!==generation)return;
+        treeReady=true;
+        return;
+      }
     }
     treeActive=false;tree.stop();root.classList.remove('tree-page');
     if (date) {s.date=date; s.mode='daily'; s.brief=null; s.window=null; s.pending=null;}
-    if(archive){s.timezone=treeManifest?.timezone || s.timezone || 'Asia/Shanghai';s.date ||= briefDate(Date.now(),s.timezone);s.loading=false;build();return showHistoryPanel();}
-    s.loading=true; build(history); start();
+    if(archive){s.timezone=treeManifest?.timezone || s.timezone || 'Asia/Shanghai';s.date ||= briefDate(Date.now(),s.timezone);s.loading=false;build();treeReady=true;return showHistoryPanel();}
+    s.loading=true; build(history); treeReady=true; start();
     return loadInitial(history || archive);
   }
 
@@ -170,10 +191,13 @@ export function createBriefPage(host) {
     datePicker.addEventListener('toggle',async()=>{
       if (!datePicker.open || past.childElementCount) return;
       const epoch=generation;
-      try {const {briefs=[]}=await host.api('/api/v1/reports/daily/briefs?limit=60');
+      try {const {briefs=[]}=await callApi('/api/v1/reports/daily/briefs?limit=60');
         if (epoch!==generation) return;
         for (const b of briefs) past.append(button(`${b.reportDate} · 日报`,()=>{datePicker.open=false;s.mode='daily';persist();selectDate(b.reportDate) || loadInitial();},'brief-date-entry'));
-      } catch {past.append(node('p','brief-muted','往期日期暂时未能读取，可直接选择日期。'));}
+      } catch (error) {
+        if (error?.name === 'AbortError' || epoch !== generation || past.childElementCount) return;
+        past.append(node('p','brief-muted','往期日期暂时未能读取，可直接选择日期。'));
+      }
     });
     tools=node('details','brief-tools'); tools.append(node('summary','','更多'));
     const toolBody=node('div','brief-tools-body'); tools.append(toolBody);
@@ -235,7 +259,7 @@ export function createBriefPage(host) {
 
   async function indexForDate(date=s.date) {
     const window=briefDayWindow(date,s.timezone);
-    return host.api(`/api/v1/reports/hourly/index?${new URLSearchParams({startAt:window.startAt,endAt:window.endAt})}`);
+    return callApi(`/api/v1/reports/hourly/index?${new URLSearchParams({startAt:window.startAt,endAt:window.endAt})}`);
   }
 
   async function loadInitial(history=false) {
@@ -245,7 +269,7 @@ export function createBriefPage(host) {
     try {
       if (!s.timezone) {
         const endAt=Math.floor(Date.now()/HOUR)*HOUR;
-        const index=await host.api(`/api/v1/reports/hourly/index?startAt=${endAt-24*HOUR}&endAt=${endAt}`);
+        const index=await callApi(`/api/v1/reports/hourly/index?startAt=${endAt-24*HOUR}&endAt=${endAt}`);
         if (token!==request || epoch!==generation) return;
         s.timezone=index.timezone;
         if (!s.date && s.mode==='hourly') {
@@ -261,7 +285,7 @@ export function createBriefPage(host) {
         if (!hours || token!==request || epoch!==generation) return;
         s.manifest=index.hours; s.hours=hours;
         if (chooseAvailable && !hours.some(h=>h.editorial?.status==='ready' && h.editorial.directions.length)) {
-          const {brief}=await host.api('/api/v1/reports/daily/latest/brief');
+          const {brief}=await callApi('/api/v1/reports/daily/latest/brief');
           if (token!==request || epoch!==generation) return;
           if (brief) {
             const selected=await readDaily(brief.reportDate);
@@ -291,7 +315,7 @@ export function createBriefPage(host) {
     await Promise.all(Array.from({length:Math.min(3,queue.length)},async()=>{
       while (queue.length && token===request && epoch===generation) {
         const h=queue.shift(); let digest=existing.get(h.id);
-        if (!digest) ({digest}=await host.api(`/api/v1/reports/hourly/snapshot?snapshotId=${encodeURIComponent(h.id)}`));
+        if (!digest) ({digest}=await callApi(`/api/v1/reports/hourly/snapshot?snapshotId=${encodeURIComponent(h.id)}`));
         if (!digest || digest.id!==h.id) throw new Error('小时版本未能读取，请重试');
         result.push(digest);
       }
@@ -300,9 +324,9 @@ export function createBriefPage(host) {
   }
 
   async function readDaily(date) {
-    const {brief}=await host.api(`/api/v1/reports/daily/brief?date=${encodeURIComponent(date)}`);
+    const {brief}=await callApi(`/api/v1/reports/daily/brief?date=${encodeURIComponent(date)}`);
     let window=null;
-    if (brief) window=await host.api(`/api/v1/reports/daily/brief/window?date=${encodeURIComponent(date)}&revision=${brief.generatedAt}`);
+    if (brief) window=await callApi(`/api/v1/reports/daily/brief/window?date=${encodeURIComponent(date)}&revision=${brief.generatedAt}`);
     return {brief:brief || null,window};
   }
 
@@ -344,7 +368,7 @@ export function createBriefPage(host) {
             if (canInsert() && !s.hours.length) await acceptUpdate(false);
           } else {renderHourlyStatus();}
         } else {
-          const {briefs=[]}=await host.api('/api/v1/reports/daily/briefs?limit=60');
+          const {briefs=[]}=await callApi('/api/v1/reports/daily/briefs?limit=60');
           if (epoch!==generation || token!==request || !active()) return;
           s.history=briefs;
           const revision=briefs.find(b=>b.reportDate===date);
@@ -648,7 +672,7 @@ export function createBriefPage(host) {
     const epoch=generation,token=++evidenceRequest;
     control.disabled=true;
     try {
-      const {evidence}=await host.api(evidenceUrl(e,context));
+      const {evidence}=await callApi(evidenceUrl(e,context));
       if(epoch!==generation || token!==evidenceRequest || !active()) return;
       if(!host.canReadSavedSource?.(evidence.material)) throw new Error('这份材料暂无站内文章，可在“查看提炼依据”中查看来源。');
       s.read.add(informationSignature(item));persist();
@@ -687,7 +711,7 @@ export function createBriefPage(host) {
       const load=async()=>{
         card.replaceChildren(node('p','brief-muted','正在读取支持段落…'));
         try {
-          const results=await Promise.all(refs.map(e=>host.api(evidenceUrl(e,context))));
+          const results=await Promise.all(refs.map(e=>callApi(evidenceUrl(e,context))));
           if (token!==evidenceRequest || epoch!==generation || !dialog?.open) return;
           card.replaceChildren(); const m=results[0].evidence.material;
           card.append(node('h3','',m.publisher || m.author || '来源未提供'),node('p','brief-muted',m.title));
@@ -742,7 +766,7 @@ export function createBriefPage(host) {
     s.viewingHistory=true;
     const epoch=generation,token=++request; s.loading=true; sync();
     try {
-      const {briefs=[]}=await host.api('/api/v1/reports/daily/briefs?limit=60');
+      const {briefs=[]}=await callApi('/api/v1/reports/daily/briefs?limit=60');
       if (token!==request || epoch!==generation) return;
       s.history=briefs; content.replaceChildren(); nav.replaceChildren();
       content.append(node('h2','brief-history-title',routeKey==='archive' ? '旧版日报存档' : '往期日报'));
@@ -754,7 +778,10 @@ export function createBriefPage(host) {
   }
 
   document.addEventListener('visibilitychange',()=>{
-    if (document.hidden) stop(); else if (active()) {if(treeActive)tree.resume();else {start();check().catch(()=>{});}}
+    // Lock screen and app switch only pause timers. Aborting here drops the
+    // in-flight read and the page stays on “正在读取简报…”. Leaving #report
+    // still calls stop().
+    if (document.hidden) pause(); else if (active()) {if(treeActive)tree.resume();else {start();check().catch(()=>{});}}
   });
   window.addEventListener('online',()=>{if (active()) check().catch(()=>{});});
   document.addEventListener('click',event=>{

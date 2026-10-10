@@ -89,7 +89,7 @@ test('media catalog stays disabled and outside social auto refresh', () => {
   assert.deepEqual(initialBatchSourceKeys(), ['nextplatform', 'dcd', 'techmeme', 'thelec', 'decoder', 'ft', 'bbc', 'guardian', 'bbcworld', 'guardianworld', 'ftav', 'yahooeconomy', 'bbctech', 'bbcscience', 'guardianai', 'guardianenergy', 'guardianmanufacturing', 'guardiantrade', 'eia', 'utilitydive', 'zaobaoworld']);
   assert.equal(defaultAutoRefreshProjections().some((item) => item.providerId === 'media'), false);
   assert.deepEqual(parseMediaFeedQuery({ channel: 'macro', refresh: '1' }), {
-    platform: 'media', feed: 'macro', channel: 'macro', refresh: true,
+    platform: 'media', feed: 'macro', channel: 'macro', refresh: true, fields: 'list',
   });
 });
 

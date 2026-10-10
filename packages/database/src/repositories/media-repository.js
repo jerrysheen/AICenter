@@ -132,6 +132,15 @@ export function createMediaRepository(database, emitEvent = () => {}) {
       const row = database.prepare('SELECT brief_status,brief_reason,last_attempt_at FROM media_article_processing WHERE workspace_id=? AND external_id=? AND body_hash=?').get(workspaceId,externalId,bodyHash);
       return row ? { status: row.brief_status, reason: row.brief_reason, lastAttemptAt: row.last_attempt_at } : { status: 'pending',reason: '',lastAttemptAt: null };
     },
+    listBriefProcessing(workspaceId, keys = []) {
+      const pairs = (keys || []).filter((key) => key?.externalId);
+      if (!pairs.length) return [];
+      const marks = pairs.map(() => '(?,?)').join(',');
+      const params = pairs.flatMap((key) => [key.externalId, key.bodyHash || '']);
+      return database.prepare(`SELECT external_id AS externalId, body_hash AS bodyHash, brief_status AS status, brief_reason AS reason, last_attempt_at AS lastAttemptAt
+        FROM media_article_processing
+        WHERE workspace_id=? AND (external_id, body_hash) IN (${marks})`).all(workspaceId, ...params);
+    },
     atomic(operation) { return database.transaction(operation)(); },
     nextSnapshotRevision(workspaceId,externalId) {
       return database.prepare('SELECT COALESCE(MAX(revision),0)+1 value FROM media_body_snapshots WHERE workspace_id=? AND external_id=?').get(workspaceId,externalId).value;
@@ -212,6 +221,108 @@ export function createMediaRepository(database, emitEvent = () => {}) {
             WHERE workspace_id = ?
             ORDER BY COALESCE(published_at, observed_at) DESC LIMIT ?`).all(workspaceId, limit);
       return rows.map(mapEntry);
+    },
+    listFeedPage(workspaceId, {
+      channel = '',
+      sourceKey = '',
+      view = 'all',
+      offset = 0,
+      limit = 50,
+      before = null,
+      excludedExternalIds = [],
+      extractorVersion = '',
+    } = {}) {
+      const safeLimit = Math.max(1, Math.min(Number(limit) || 50, 101));
+      const safeOffset = before ? 0 : Math.max(0, Number(offset) || 0);
+      const categorySql = `CASE
+        WHEN COALESCE(e.article_kind,'article')='report-intro' THEN 'index'
+        WHEN json_extract(e.fetch_state_json,'$.fetchStatus')='ready'
+          AND e.content_level='full'
+          AND json_extract(e.fetch_state_json,'$.extractorVersion')=?
+          AND json_extract(e.fetch_state_json,'$.fetchedRevision')=e.revision THEN 'full'
+        WHEN json_extract(e.fetch_state_json,'$.fetchStatus') IN ('failed','policy_skipped') THEN 'failed'
+        WHEN e.content_level IN ('full','partial') THEN 'partial'
+        WHEN json_extract(e.fetch_state_json,'$.fetchStatus') IN ('pending','deferred') THEN 'pending'
+        ELSE 'index' END`;
+      const readSql = `CASE WHEN link.external_id IS NOT NULL AND lci.id IS NOT NULL THEN COALESCE(ls.is_read,0) ELSE COALESCE(s.is_read,0) END`;
+      const hiddenSql = `CASE WHEN link.external_id IS NOT NULL AND lci.id IS NOT NULL THEN COALESCE(ls.is_hidden,0) ELSE COALESCE(s.is_hidden,0) END`;
+      const savedSql = `CASE WHEN link.external_id IS NOT NULL AND lci.id IS NOT NULL THEN COALESCE(ls.is_saved,0) ELSE COALESCE(s.is_saved,0) END`;
+      const contentIdSql = `CASE WHEN link.external_id IS NOT NULL AND lci.id IS NOT NULL THEN lci.id ELSE ci.id END`;
+      const joins = `
+        LEFT JOIN content_items ci ON ci.id = (
+          SELECT ci2.id FROM content_items ci2
+          INNER JOIN captures c2 ON c2.id=ci2.capture_id AND c2.workspace_id=ci2.workspace_id
+          WHERE c2.workspace_id=e.workspace_id AND c2.provider='media' AND c2.external_id=e.external_id
+          ORDER BY ci2.created_at DESC, ci2.id DESC LIMIT 1)
+        LEFT JOIN user_item_states s ON s.workspace_id=ci.workspace_id AND s.content_item_id=ci.id
+        LEFT JOIN media_entry_legacy_links link ON link.workspace_id=e.workspace_id AND link.external_id=e.external_id
+        LEFT JOIN content_items lci ON lci.id = (
+          SELECT ci3.id FROM content_items ci3
+          INNER JOIN captures c3 ON c3.id=ci3.capture_id AND c3.workspace_id=ci3.workspace_id
+          WHERE link.external_id IS NOT NULL AND c3.workspace_id=link.workspace_id AND c3.provider=link.legacy_provider AND c3.external_id=link.legacy_external_id
+          ORDER BY ci3.created_at DESC, ci3.id DESC LIMIT 1)
+        LEFT JOIN user_item_states ls ON ls.workspace_id=lci.workspace_id AND ls.content_item_id=lci.id`;
+      const where = `e.workspace_id=?
+        AND (?='' OR e.channel=?)
+        AND (?='' OR e.source_key=? OR e.publisher_key=?)
+        AND ${hiddenSql}=0
+        AND e.external_id NOT IN (SELECT value FROM json_each(?))`;
+      const filterParams = [workspaceId, channel, channel, sourceKey, sourceKey, sourceKey, JSON.stringify(excludedExternalIds || [])];
+      const columns = ENTRY_INDEX_COLUMNS.split(',').map((name) => `e.${name.trim()} AS ${name.trim()}`).join(',');
+      const counted = database.prepare(`SELECT category, COUNT(*) AS n FROM (
+          SELECT ${categorySql} AS category
+          FROM media_index_entries e
+          ${joins}
+          WHERE ${where}
+        ) GROUP BY category`).all(extractorVersion, ...filterParams);
+      const counts = { all: 0, full: 0, partial: 0, index: 0, pending: 0, failed: 0 };
+      for (const row of counted) {
+        if (Object.hasOwn(counts, row.category)) counts[row.category] = Number(row.n) || 0;
+        counts.all += Number(row.n) || 0;
+      }
+      const matched = view && view !== 'all' ? (counts[view] || 0) : counts.all;
+      const viewSql = view && view !== 'all' ? 'AND category = ?' : '';
+      const cursorSql = before
+        ? `AND (is_read > ? OR (is_read = ? AND sort_at < ?) OR (is_read = ? AND sort_at = ? AND external_id < ?))`
+        : '';
+      const pageParams = [
+        extractorVersion,
+        ...filterParams,
+        ...(view && view !== 'all' ? [view] : []),
+        ...(before ? [before.isRead, before.isRead, before.at, before.isRead, before.at, before.id] : []),
+        safeLimit,
+        ...(before ? [] : [safeOffset]),
+      ];
+      const rows = database.prepare(`SELECT * FROM (
+          SELECT ${columns},
+            ${readSql} AS is_read,
+            ${hiddenSql} AS is_hidden,
+            ${savedSql} AS is_saved,
+            ${contentIdSql} AS content_item_id,
+            link.content_item_id AS legacy_content_item_id,
+            link.legacy_provider AS legacy_provider,
+            link.legacy_external_id AS legacy_external_id,
+            COALESCE(e.published_at, e.observed_at) AS sort_at,
+            ${categorySql} AS category
+          FROM media_index_entries e
+          ${joins}
+          WHERE ${where}
+        ) page
+        WHERE 1=1 ${viewSql} ${cursorSql}
+        ORDER BY is_read ASC, sort_at DESC, external_id DESC
+        LIMIT ? ${before ? '' : 'OFFSET ?'}`).all(...pageParams).map((row) => ({
+        ...mapEntry(row),
+        paged: true,
+        isRead: Boolean(row.is_read),
+        isHidden: Boolean(row.is_hidden),
+        isSaved: Boolean(row.is_saved),
+        contentItemId: row.content_item_id || null,
+        legacyContentItemId: row.legacy_content_item_id || null,
+        legacyProvider: row.legacy_provider || '',
+        legacyExternalId: row.legacy_external_id || '',
+        sortAt: row.sort_at || 0,
+      }));
+      return { rows, counts, matched };
     },
     latestBodies(workspaceId, externalIds) {
       const ids = [...new Set((externalIds || []).filter(Boolean))];

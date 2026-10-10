@@ -1,4 +1,4 @@
-import { icon } from './icons.js';
+import { icon } from './icons.js?v=dev';
 const el=(tag,text='',className='')=>{const n=document.createElement(tag);n.textContent=text;n.className=className;return n;};
 const button=(text,action)=>{const n=el('button',text);n.type='button';n.addEventListener('click',action);return n;};
 const directions={finance:'金融与市场',policy:'时事与政策',tech:'科技与产业',other:'其他'};
@@ -9,9 +9,20 @@ const previousDirections={macro:'finance',macro_commodity:'finance',crypto:'fina
   ai:'tech',ai_compute:'tech',ai_model:'tech',ai_application:'tech',semiconductor:'tech',semiconductor_memory:'tech',semiconductor_optical:'tech',semiconductor_equipment:'tech',semiconductor_packaging:'tech',internet:'tech',software:'tech',gaming:'tech',graphics:'tech',auto:'tech',energy:'tech',communications:'tech',datacenter:'tech'};
 const reasons={'needs-content':'正文待补','information-not-ready':'信息加工待完成','retryable-model-error':'模型暂时故障','queue-timeout':'排队超时','execution-timeout':'执行超时','budget-deferred':'预算延期','lease-conflict':'同版本加工中','invalid-output':'输出不合法','stale-policy':'规则已更新'};
 export function createInformationTreePage(host) {
-  let root,list,titleEl,coverageEl,statusRow,statusToggle,statusDetail,pastBtn,directionNav,hourChips,dayChips,tools,materialsBtn,tagPanel,tag,period,backIssues,notice,mode='daily',direction=null,directionExplicit=false,showMaterials=false,selectedHourStart=0,dailyStart=0,openedId='',openedDirection='',manifest,selected=null,epoch=0,timer=0,dateFilter='',checking=null,pinnedReadingId='';
+  let root,list,titleEl,coverageEl,statusRow,statusToggle,statusDetail,pastBtn,directionNav,hourChips,dayChips,tools,materialsBtn,tagPanel,tag,period,backIssues,notice,mode='daily',direction=null,directionExplicit=false,showMaterials=false,selectedHourStart=0,dailyStart=0,openedId='',openedDirection='',manifest,selected=null,epoch=0,flight=0,settled=false,timer=0,dateFilter='',checking=null,pinnedReadingId='';
+  let requests=new AbortController();
+  let rendering=0;
+  function api(path, options){
+    const ticket=flight;
+    const signal=requests.signal;
+    return host.api(path,{...(options||{}),signal}).then(data=>{
+      if(ticket!==flight || signal.aborted) throw new DOMException('The operation was aborted.','AbortError');
+      return data;
+    });
+  }
+  const aborted=error=>error?.name==='AbortError';
   const readingOpen=new Set();
-  const names=new Map(),cache=new Map(),nodeRequests=new Map(),editionCache=new Map(),editorialCache=new Map(),expanded=new Set(),positions=new Map(),memory={hourly:{},daily:{}};let viewKey='',nextManifest=null;
+  const names=new Map(),cache=new Map(),nodeRequests=new Map(),editionCache=new Map(),editorialCache=new Map(),fullEditions=new Map(),editionLoads=new Map(),expanded=new Set(),positions=new Map(),memory={hourly:{},daily:{}};let viewKey='',nextManifest=null,informationRows=null,informationRequest=null,informationEpoch=0,session=0;
   const relationLabels={'same-event':'同一事件的后续进展','shared-theme':'共同主题','complementary':'相互补充','contradictory':'不同说法','supported-impact':'有依据的影响','unverified-link':'尚待验证的潜在联系'};
   const remember=n=>{if(!n)return;cache.delete(n.id);cache.set(n.id,n);while(cache.size>400)cache.delete(cache.keys().next().value);};
   const active=()=>root?.isConnected && root.classList.contains('tree-page') && (host.active?.() ?? true) && (host.session?.() ?? true);
@@ -23,19 +34,55 @@ export function createInformationTreePage(host) {
   const day=at=>{const parts=new Intl.DateTimeFormat('en-US',{timeZone:timeZone(),year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(at);return ['year','month','day'].map(k=>parts.find(p=>p.type===k).value).join('-');};
   const group=n=>manifest?.directions?.[n.tagId] || previousDirections[n.tagId] || 'other';
   const expansionKey=n=>`${n.layer}:${[...n.articleIds].sort().join('|')}`;
-  const fetchManifest=(force=false)=>{if(host.loadTreeManifest)return host.loadTreeManifest({force});const endAt=Date.now()+1;return host.api(`/api/v1/reports/tree?view=reading&startAt=${endAt-7*86400000}&endAt=${endAt}`);};
+  const fetchManifest=(force=false)=>{if(host.loadTreeManifest)return host.loadTreeManifest({force});const endAt=Date.now()+1;return api(`/api/v1/reports/tree?view=index&startAt=${endAt-7*86400000}&endAt=${endAt}`);};
+  function invalidateInformationIndex(){informationEpoch++;informationRows=null;informationRequest=null;}
+  async function loadInformationIndex(){
+    if(informationRows)return informationRows;
+    if(!informationRequest){
+      const endAt=Date.now()+1,cacheToken=informationEpoch;
+      const pending=api(`/api/v1/reports/tree?view=index&information=1&startAt=${endAt-7*86400000}&endAt=${endAt}`).then(data=>{
+        if(cacheToken===informationEpoch)informationRows=data.information || [];
+        return cacheToken===informationEpoch ? (informationRows || []) : (data.information || []);
+      }).finally(()=>{if(cacheToken===informationEpoch && informationRequest===pending)informationRequest=null;});
+      informationRequest=pending;
+    }
+    return informationRequest;
+  }
+  function loadEditionDocument(id){
+    if(fullEditions.has(id))return Promise.resolve(fullEditions.get(id));
+    if(!editionLoads.has(id)){
+      const seen=session;
+      const pending=api(`/api/v1/reports/tree/edition?id=${encodeURIComponent(id)}`).then(data=>{
+        if(seen!==session || !data?.edition?.id)return null;
+        fullEditions.set(data.edition.id,data.edition);
+        return data.edition;
+      }).catch(error=>{if(aborted(error))return;return null;}).finally(()=>{if(editionLoads.get(id)===pending)editionLoads.delete(id);});
+      editionLoads.set(id,pending);
+    }
+    return editionLoads.get(id);
+  }
+  async function materialIndex(selected){
+    const rows=manifest?.information?.length ? manifest.information : await loadInformationIndex();
+    return rows.filter(n=>{const at=n.eventAt ?? n.window?.startAt;return at>=selected.window.startAt && at<selected.window.endAt;});
+  }
   const node=async id=>{
     if(cache.has(id))return cache.get(id);
-    if(!nodeRequests.has(id)){const token=epoch;nodeRequests.set(id,host.api(`/api/v1/reports/tree/node?id=${encodeURIComponent(id)}`).then(data=>{if(token===epoch)remember(data.node);return data.node;}).finally(()=>nodeRequests.delete(id)));}
+    if(!nodeRequests.has(id)){const token=epoch;nodeRequests.set(id,api(`/api/v1/reports/tree/node?id=${encodeURIComponent(id)}`).then(data=>{if(token===epoch)remember(data.node);return data.node;}).finally(()=>nodeRequests.delete(id)));}
     return nodeRequests.get(id);
   };
+  const copyCount=edition=>Array.isArray(edition?.roots) ? edition.roots.length : Number(edition?.rootCount)||0;
   async function editionNodes(edition) {
-    if(edition.roots.every(id=>cache.has(id)))return edition.roots.map(id=>cache.get(id));
+    if(!edition?.id || !copyCount(edition))return [];
+    if(Array.isArray(edition.roots) && edition.roots.every(id=>cache.has(id)))return edition.roots.map(id=>cache.get(id));
     if(!editionCache.has(edition.id)) {
-      const token=epoch;
-      const pending=host.api(`/api/v1/reports/tree/edition?id=${encodeURIComponent(edition.id)}`).catch(()=>Promise.all(edition.roots.map(node)).then(nodes=>({edition,nodes}))).then(data=>{
-        if(data.edition?.id!==edition.id || data.nodes?.length!==edition.roots.length)throw new Error('刊期版本未能读取');
-        if(token===epoch)data.nodes.forEach(remember);return data.nodes;
+      const token=epoch,expected=copyCount(edition);
+      const pending=api(`/api/v1/reports/tree/edition?id=${encodeURIComponent(edition.id)}`).catch(error=>{
+        if(aborted(error))throw error;
+        return Array.isArray(edition.roots) ? Promise.all(edition.roots.map(node)).then(nodes=>({edition,nodes})) : Promise.reject(new Error('刊期版本未能读取'));
+      }).then(data=>{
+        if(data.edition?.id!==edition.id || data.nodes?.length!==expected)throw new Error('刊期版本未能读取');
+        if(token===epoch){data.nodes.forEach(remember);if(data.edition)fullEditions.set(data.edition.id,data.edition);}
+        return data.nodes;
       }).catch(error=>{editionCache.delete(edition.id);throw error;});
       editionCache.set(edition.id,pending);while(editionCache.size>200)editionCache.delete(editionCache.keys().next().value);
     }
@@ -82,8 +129,8 @@ export function createInformationTreePage(host) {
       details.append(el('summary',`${n.articleCount} 篇 · ref`),children);article.append(details);let loaded=false;
       details.addEventListener('toggle',async()=>{
         if(!details.open){expanded.delete(key);return;}expanded.add(key);if(loaded)return;children.textContent='读取中…';
-        try{const data=n.children.every(id=>cache.has(id)) ? {children:n.children.map(id=>cache.get(id))} : await host.api(`/api/v1/reports/tree/children?id=${encodeURIComponent(n.id)}`);if(token!==epoch)return;children.replaceChildren();for(const child of data.children){remember(child);children.append(await card(child,token));}loaded=true;}
-        catch{if(token===epoch)children.replaceChildren(button('读取失败，重试',()=>{details.open=false;details.open=true;}));}
+        try{const data=n.children.every(id=>cache.has(id)) ? {children:n.children.map(id=>cache.get(id))} : await api(`/api/v1/reports/tree/children?id=${encodeURIComponent(n.id)}`);if(token!==epoch)return;children.replaceChildren();for(const child of data.children){remember(child);children.append(await card(child,token));}loaded=true;}
+        catch(error){if(!aborted(error) && token===epoch)children.replaceChildren(button('读取失败，重试',()=>{details.open=false;details.open=true;}));}
       });
       if(expanded.has(key))details.open=true;
     }
@@ -115,7 +162,7 @@ export function createInformationTreePage(host) {
     const wanted=memory[mode]?.startAt;
     if(wanted && rows.some(r=>r.window.startAt===wanted)) period.value=String(wanted);
     else if(rows.some(r=>r.window.startAt===selected?.window.startAt)) period.value=String(selected.window.startAt);
-    else {const usable=rows.find(r=>r.roots?.length);if(usable)period.value=String(usable.window.startAt);}
+    else {const usable=rows.find(r=>copyCount(r));if(usable)period.value=String(usable.window.startAt);}
   }
   function setPrimary() {
     for(const tab of root.querySelectorAll('[data-mode]')){const on=tab.dataset.mode===mode;tab.setAttribute('aria-pressed',String(on));tab.setAttribute('aria-selected',String(on));}
@@ -144,7 +191,7 @@ export function createInformationTreePage(host) {
   const storage=()=>{try{return localStorage;}catch{return null;}};
   const seenKey=()=>{const session=host.session?.();const identity=session?`${session.role||'user'}:${session.device?.id||'desktop'}`:'local';return `ai-center.hourly-seen.${encodeURIComponent(identity)}`;};
   const editionIdOk=id=>typeof id==='string' && /^edition:[A-Za-z0-9:_-]{8,180}$/.test(id);
-  const hourHasCopy=edition=>Array.isArray(edition?.roots) && edition.roots.length>0;
+  const hourHasCopy=edition=>copyCount(edition)>0;
   function loadSeen(){
     seen=new Set();seenIds=[];
     try{const raw=JSON.parse(storage()?.getItem(seenKey())||'[]');if(Array.isArray(raw))for(const id of raw)if(editionIdOk(id)&&!seen.has(id)){seen.add(id);seenIds.push(id);}}catch{}
@@ -248,8 +295,9 @@ export function createInformationTreePage(host) {
     restoreScroll(Boolean(opened));
   }
   function loadEditorial(edition) {
+    if(edition?.hasEditorial===false)return Promise.resolve(null);
     const key=`${edition.window.startAt}:${edition.window.endAt}`;
-    if(!editorialCache.has(key)) editorialCache.set(key, host.api(`/api/v1/reports/tree/editorial?startAt=${edition.window.startAt}&endAt=${edition.window.endAt}`).then(data=>data.editorial || null).catch(()=>null));
+    if(!editorialCache.has(key)) editorialCache.set(key, api(`/api/v1/reports/tree/editorial?startAt=${edition.window.startAt}&endAt=${edition.window.endAt}`).then(data=>data.editorial || null).catch(error=>{if(aborted(error)){editorialCache.delete(key);throw error;}return null;}));
     return editorialCache.get(key);
   }
   function researchEvent(editorial, eventId) {return editorial.events.find(event=>event.eventId===eventId);}
@@ -265,8 +313,8 @@ export function createInformationTreePage(host) {
       for(const nodeId of event.sourceNodeIds) {
         links.append(button('查看信息',async()=>{
           links.append(el('p','读取中…','daily-note'));
-          try{const data=await host.api(`/api/v1/reports/tree/node?id=${encodeURIComponent(nodeId)}`);if(token!==epoch)return;remember(data.node);links.append(await card(data.node,token));}
-          catch{if(token===epoch) links.append(el('p','信息节点暂时读不到。','daily-note'));}
+          try{const data=await api(`/api/v1/reports/tree/node?id=${encodeURIComponent(nodeId)}`);if(token!==epoch)return;remember(data.node);links.append(await card(data.node,token));}
+          catch(error){if(!aborted(error) && token===epoch) links.append(el('p','信息节点暂时读不到。','daily-note'));}
         }));
       }
       item.append(links);box.append(item);
@@ -342,7 +390,7 @@ export function createInformationTreePage(host) {
   async function readingSnapshot(edition) {
     if(!edition?.window) return null;
     const path=pinnedReadingId && openedId ? `/api/v1/reports/reading-hour/snapshot?id=${encodeURIComponent(pinnedReadingId)}` : `/api/v1/reports/reading-hour?startAt=${edition.window.startAt}&endAt=${edition.window.endAt}&scope=hour`;
-    try{const data=await host.api(path);return data?.snapshot || null;}catch{return null;}
+    try{const data=await api(path);return data?.snapshot || null;}catch(error){if(aborted(error))throw error;return null;}
   }
   function readingFold(id, title, {note, seed, stale} = {}) {
     const details=document.createElement('details');details.className='reading-fold';details.open=readingOpen.has(id);
@@ -356,7 +404,8 @@ export function createInformationTreePage(host) {
     async function load() {
       if(!details.open){readingOpen.delete(id);return;}
       readingOpen.add(id);if(loaded)return;loaded=true;panel.textContent='读取中…';
-      const saved=await node(id).catch(()=>null);
+      let saved;
+      try{saved=await node(id);}catch(error){if(aborted(error)){loaded=false;panel.textContent='';return;}saved=null;}
       const view=(saved?.body || saved?.text) ? saved : (seed || saved);
       panel.replaceChildren(el('p',view?.body || view?.text || '这篇的正文暂时读不到。','tree-text'));
       if(canReadSource(view))panel.append(button('原文',()=>host.readSavedSource(view)));
@@ -421,11 +470,11 @@ export function createInformationTreePage(host) {
     for(const module of (nodes || []).filter(Boolean)) {
       if(module.layer==='information' || !module.children?.length) {articles.push(module);continue;}
       try {
-        const data=await host.api(`/api/v1/reports/tree/children?id=${encodeURIComponent(module.id)}`);
+        const data=await api(`/api/v1/reports/tree/children?id=${encodeURIComponent(module.id)}`);
         const children=(data.children || []).filter(Boolean);
         if(token!==epoch)return;
         if(children.length){children.forEach(remember);articles.push(...children);} else articles.push(module);
-      } catch {articles.push(module);}
+      } catch(error) {if(aborted(error))throw error;articles.push(module);}
     }
     if(token!==epoch){const current=claim?.ticket===opening.ticket;finishOpening(claim,false);if(current && root?.isConnected)paintHourUnread();return;}
     finishOpening(claim,true);paintHourUnread(rows);
@@ -440,7 +489,8 @@ export function createInformationTreePage(host) {
     restoreScroll(false);
   }
   async function render() {
-    if(viewKey)positions.set(viewKey,window.scrollY);const token=++epoch;
+    if(viewKey)positions.set(viewKey,window.scrollY);const token=++epoch;const flightToken=flight;
+    rendering++;
     const hourlyFeed=mode==='hourly' && !showMaterials;
     const dailyFeed=mode==='daily' && !showMaterials;
     const openingClaim=hourlyFeed?beginOpening(ensureSelectedHour(hourRows())):null;
@@ -458,16 +508,24 @@ export function createInformationTreePage(host) {
         list.textContent='这一栏还没有已发布简报。可以打开往期，或查看旧版存档。';return;
       }
       titleEl.textContent=issueTitle(selected);coverageEl.textContent=issueCoverage(selected);
-      const missingSources=(selected.pendingIds || []).filter(id=>id.startsWith('source:')).length;
-      const partial=selected.status!=='ready';
-      statusToggle.hidden=false;statusToggle.textContent=`${partial ? '部分结果 · ' : ''}更新于 ${stamp(selected.generatedAt)}`;
-      const pending=[...(row?.attempt?.pending || []),...(row?.attempt?.groupFailures || [])];
-      const replay=mode==='daily' && selected.window.endAt-selected.window.startAt<20*3600000 ? '链路回放（非全天）。' : '';
-      statusDetail.textContent=[replay,`版本 ${selected.id.slice(-12)}`,partial ? `待补 ${selected.pendingIds.length-missingSources} 篇／${selected.missingHours.length} 小时` : '',row?.attempt?.id && row.attempt.id!==selected.id ? '最近尝试未替换已发布版本' : '',...new Set(pending.map(p=>reasons[p.reason] || p.reason))].filter(Boolean).join(' · ');
+      const attemptId=row?.attempt?.id && row.attempt.id!==selected.id && !row.attempt.pending ? row.attempt.id : '';
+      const attemptTask=attemptId ? loadEditionDocument(attemptId) : null;
+      const publishedTask=!selected.pendingIds && selected.id && !copyCount(selected) && !fullEditions.has(selected.id) ? loadEditionDocument(selected.id) : null;
       const nodes=await editionNodes(selected);if(token!==epoch)return;
+      if(publishedTask){await publishedTask;if(token!==epoch)return;}
+      const published=fullEditions.get(selected.id) || selected;
+      let attempt=row?.attempt;
+      if(attempt?.id===published.id)attempt=published;
+      else if(attemptTask){const loaded=await attemptTask;if(token!==epoch)return;if(loaded)attempt=loaded;}
+      const missingSources=(published.pendingIds || []).filter(id=>id.startsWith('source:')).length;
+      const partial=published.status!=='ready';
+      statusToggle.hidden=false;statusToggle.textContent=`${partial ? '部分结果 · ' : ''}更新于 ${stamp(published.generatedAt)}`;
+      const pending=[...(attempt?.pending || []),...(attempt?.groupFailures || [])];
+      const replay=mode==='daily' && published.window.endAt-published.window.startAt<20*3600000 ? '链路回放（非全天）。' : '';
+      statusDetail.textContent=[replay,`版本 ${published.id.slice(-12)}`,partial ? `待补 ${(published.pendingIds || []).length-missingSources} 篇／${(published.missingHours || []).length} 小时` : '',attempt?.id && attempt.id!==published.id ? '最近尝试未替换已发布版本' : '',...new Set(pending.map(p=>reasons[p.reason] || p.reason))].filter(Boolean).join(' · ');
       if(!directionExplicit){const available=directionOrder.find(value=>nodes.some(n=>group(n)===value));direction=available || 'finance';}
       for(const tab of directionNav.children) tab.setAttribute('aria-selected',String(tab.dataset.direction===direction));
-      const source=showMaterials ? await Promise.all((manifest.information || []).filter(n=>{const at=n.eventAt ?? n.window?.startAt;return at>=selected.window.startAt && at<selected.window.endAt;}).map(n=>node(n.id))) : nodes;
+      const source=showMaterials ? await Promise.all((await materialIndex(selected)).map(n=>node(n.id))) : nodes;
       if(token!==epoch)return;
       const inDirection=source.filter(n=>n && group(n)===direction),tags=[...new Set(inDirection.map(n=>n.tagId))],chosen=tag.value;
       tag.replaceChildren(new Option('全部Tag','*'),...tags.map(t=>new Option(names.get(t) || t || '未分类',t || '')));tag.value=tags.some(t=>(t || '')===chosen) ? chosen : '*';
@@ -478,9 +536,10 @@ export function createInformationTreePage(host) {
       rememberIssue();
       viewKey=`${mode}:${selected.window.startAt}:${direction}:${tag.value}:${showMaterials?'materials':'brief'}`;
       restoreScroll(false);
-    }catch{if(token===epoch){finishOpening(openingClaim,false);paintHourUnread();list.replaceChildren(el('p','读取失败，请重试。'),button('重试读取',render));
+    }catch(error){if(aborted(error) || token!==epoch || flightToken!==flight)return;finishOpening(openingClaim,false);paintHourUnread();list.replaceChildren(el('p','读取失败，请重试。'),button('重试读取',render));
       if((hourlyFeed || dailyFeed) && (openedId || openedDirection)) syncReadingChrome({node:null,label:hourlyFeed?'返回小时报':'返回日报',onBack:hourlyFeed?closeHour:closeDaily});
-      else syncReadingChrome(null);}}
+      else syncReadingChrome(null);}
+    finally{rendering=Math.max(0,rendering-1);}
   }
   async function check(force=false){
     if(!active() || document.hidden)return;if(checking)return checking;const token=epoch;
@@ -488,13 +547,21 @@ export function createInformationTreePage(host) {
       if(JSON.stringify(editionRows(latest).map(choice))!==JSON.stringify(editionRows().map(choice))){nextManifest=latest;notice.replaceChildren(el('span',next && next.id!==selected?.id ? '所选时段有新版本。' : '刊期或处理进度已更新。'),button('接受更新',acceptUpdate));notice.hidden=false;}
     })().catch(()=>{}).finally(()=>{checking=null;});return checking;
   }
-  async function acceptUpdate(){if(!nextManifest)return;editorialCache.clear();manifest=nextManifest;nextManifest=null;notice.hidden=true;periods();await render();}
+  async function acceptUpdate(){if(!nextManifest)return;editorialCache.clear();invalidateInformationIndex();manifest=nextManifest;nextManifest=null;notice.hidden=true;periods();await render();}
   // Pausing a retained page must not invalidate the ref handlers still mounted in it.
   function stop(){clearInterval(timer);timer=0;checking=null;}
+  function suspend(){
+    stop();
+    flight++;
+    requests.abort();
+    requests=new AbortController();
+    if(!settled || rendering){epoch++;settled=false;}
+    return settled;
+  }
   function resume(checkNow=true){clearInterval(timer);if(active() && !document.hidden)timer=setInterval(check,30000);if(checkNow)return check();}
   document.addEventListener('visibilitychange',()=>{if(document.hidden)stop();else if(active())resume();});
   return {async mount(target,options={}){
-    stop();epoch++;loadSeen();root=target;mode=options.mode==='hourly' ? 'hourly' : 'daily';dateFilter=options.date || '';showMaterials=false;root.replaceChildren();root.classList.add('tree-page','brief-page');
+    stop();flight++;requests.abort();requests=new AbortController();epoch++;settled=false;loadSeen();const flightToken=flight;root=target;mode=options.mode==='hourly' ? 'hourly' : 'daily';dateFilter=options.date || '';showMaterials=false;root.replaceChildren();root.classList.add('tree-page','brief-page');
     if(options.resetSelection){selected=null;viewKey='';}
     const primary=el('div','','tree-primary');primary.setAttribute('role','tablist');primary.setAttribute('aria-label','简报');
     for(const [value,label] of [['daily','日报'],['hourly','小时报']]){const tab=button(label,()=>switchMode(value));tab.dataset.mode=value;tab.setAttribute('role','tab');primary.append(tab);}
@@ -528,12 +595,12 @@ export function createInformationTreePage(host) {
     notice=el('div','','tree-update');notice.hidden=true;notice.setAttribute('role','status');list=el('div','','tree-list');
     root.append(primary,issue,dayChips,hourChips,backIssues,directionNav,tools,tagPanel,notice,list);
     const token=epoch;
-    if(!names.size)host.api('/api/v1/tags').then(({catalog})=>{if(token!==epoch)return;for(const t of catalog?.tags || [])names.set(t.id,t.name);for(const option of tag.options)if(names.has(option.value))option.textContent=names.get(option.value);}).catch(()=>{});
+    if(!names.size)api('/api/v1/tags').then(({catalog})=>{if(token!==epoch)return;for(const t of catalog?.tags || [])names.set(t.id,t.name);for(const option of tag.options)if(names.has(option.value))option.textContent=names.get(option.value);}).catch(()=>{});
     try{
-      manifest=options.manifest || await fetchManifest();if(token!==epoch)return;
+      manifest=options.manifest || await fetchManifest();if(token!==epoch || flightToken!==flight)return;
       if(mode==='daily' && !editionRows().length) mode='hourly';
       const saved=memory[mode] || {};direction=saved.direction ?? null;directionExplicit=Boolean(saved.directionExplicit);if(saved.tag)tag.value=saved.tag;
-      periods();await render();resume(false);
-    }catch{if(token===epoch)list.replaceChildren(el('p','暂时无法读取简报。'),button('重试读取',()=>this.mount(target,options)));}
-  },check,acceptUpdate,resume,stop,selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());root?.classList.remove('is-reading');stop();epoch++;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();expanded.clear();positions.clear();viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
+      periods();await render();if(flightToken!==flight)return;settled=true;resume(false);
+    }catch(error){if(aborted(error) || token!==epoch || flightToken!==flight)return;list.replaceChildren(el('p','暂时无法读取简报。'),button('重试读取',()=>this.mount(target,options)));}
+  },check,acceptUpdate,resume,stop,suspend,isSettled(){return settled;},selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());root?.classList.remove('is-reading');stop();flight++;requests.abort();requests=new AbortController();epoch++;session++;settled=false;rendering=0;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();fullEditions.clear();editionLoads.clear();invalidateInformationIndex();expanded.clear();positions.clear();viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
 }

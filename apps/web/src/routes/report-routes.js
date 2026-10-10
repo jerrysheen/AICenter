@@ -21,7 +21,7 @@ function briefView(brief) {
 export function createReportRoutes() {
   return [
     {method:'GET',path:'/api/v1/reports/tree',handler({response,services,url,identity}) {
-      const window=parseContract(TreeManifestQuerySchema,{startAt:url.searchParams.get('startAt'),endAt:url.searchParams.get('endAt'),view:url.searchParams.get('view') || undefined});
+      const window=parseContract(TreeManifestQuerySchema,{startAt:url.searchParams.get('startAt'),endAt:url.searchParams.get('endAt'),view:url.searchParams.get('view') || undefined,information:url.searchParams.get('information') || undefined});
       json(response,200,{ok:true,...services.informationTree.list(identity?.device?.workspaceId || 'local',window)},{},{compress:true});
     }},
     {method:'GET',path:'/api/v1/reports/tree/edition',handler({response,services,url,identity}) {
