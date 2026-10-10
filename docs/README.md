@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-10-hourly-layout-v1.md`：小时报改成电脑竖列加正文，支持 `#report?hour=HH`，相邻小时预取，「其他」不再重复方向大标题。
+
 - `progress/2026-10-10-feed-all-progressive.md`：`#feed`「全部」到来源齐之前不报最终条数；「重点」改拉已保存星标；股票页和全球行情去掉独立更新时间行与概览说明。
 
 - `progress/2026-10-10-reading-hour-index.md`：小时报索引一次返回窗口内已发布小时的摘要和头条。

@@ -113,6 +113,25 @@ function hostFor(device, source, state = {}) {
     loadTreeManifest: async () => structuredClone(source()),
     api(path) {
       if (path.startsWith('/api/v1/tags')) return Promise.resolve({ catalog: { tags: [] } });
+      if (path.startsWith('/api/v1/reports/reading-hour/index')) {
+        const error = new Error('not found');
+        error.status = 404;
+        return Promise.reject(error);
+      }
+      if (path.startsWith('/api/v1/reports/reading-hour')) {
+        if (state.fail) return Promise.reject(new Error('读取失败'));
+        const startAt = Number(new URL(path, 'http://tree.local').searchParams.get('startAt'));
+        const item = source().hours.map(row => row.edition).find(row => row.window.startAt === startAt);
+        if (!item?.roots?.length) {
+          const error = new Error('missing');
+          error.status = 404;
+          return Promise.reject(error);
+        }
+        return Promise.resolve({ snapshot: {
+          id: `rh:${item.id}`, status: 'ready', scored: item.roots.length, candidates: item.roots.length, selected: item.roots.length,
+          items: item.roots.map(nodeId => ({ nodeId, title: '标题', disposition: 'hit', readingDirectionName: '产业个股', readingThemeName: '中国', timely: true })),
+        } });
+      }
       if (state.fail) return Promise.reject(new Error('读取失败'));
       const id = new URL(path, 'http://tree.local').searchParams.get('id');
       const item = source().hours.map(row => row.edition).find(row => row.id === id);
@@ -135,7 +154,7 @@ test('unread hours keep a red dot until that edition is opened', async () => {
   assert.equal(chip(root, current.window.startAt).classList.contains('is-active'), true);
   assert.equal(chip(root, current.window.startAt).classList.contains('is-unread'), false);
   assert.equal(chip(root, previous.window.startAt).classList.contains('is-unread'), true);
-  assert.equal(chip(root, previous.window.startAt).getAttribute('aria-label'), '上个小时，未读');
+  assert.equal(chip(root, previous.window.startAt).getAttribute('aria-label'), '10:00，未读');
   assert.equal(chip(root, empty.window.startAt).classList.contains('is-unread'), false);
   assert.equal(root.querySelector('[data-mode="hourly"]').classList.contains('is-unread'), true);
   assert.deepEqual(JSON.parse(localStorage.getItem(seenKey('hourly-dot'))), ['edition:currenthour01']);
@@ -150,7 +169,7 @@ test('unread hours keep a red dot until that edition is opened', async () => {
   await page.check(true);
   document.hidden = true;
   await page.acceptUpdate();
-  assert.equal(chip(root, start + HOUR).textContent, '这个小时');
+  assert.equal(chip(root, start + HOUR).textContent, '12:00');
   assert.equal(chip(root, start + HOUR).classList.contains('is-unread'), true);
   assert.equal(chip(root, current.window.startAt).classList.contains('is-unread'), true);
   assert.equal(chip(root, previous.window.startAt).classList.contains('is-active'), true);
@@ -177,10 +196,10 @@ test('a failed hour stays unread and clears after a successful retry', async () 
   assert.equal(chip(root, start).classList.contains('is-active'), true);
   assert.equal(chip(root, start).classList.contains('is-unread'), true);
   assert.equal(localStorage.getItem(seenKey('hourly-dot-fail')), null);
-  assert.equal(root.querySelectorAll('p').some(item => item.textContent === '读取失败，请重试。'), true);
+  assert.equal(root.querySelectorAll('button').some(item => item.textContent === '这一期读取失败 · 重试'), true);
 
   state.fail = false;
-  const retry = root.querySelectorAll('button').find(item => item.textContent === '重试读取');
+  const retry = root.querySelectorAll('button').find(item => item.textContent === '这一期读取失败 · 重试');
   await retry.listeners.click[0]();
   assert.equal(chip(root, start).classList.contains('is-unread'), false);
   assert.deepEqual(JSON.parse(localStorage.getItem(seenKey('hourly-dot-fail'))), ['edition:failehour0001']);
@@ -200,8 +219,13 @@ test('hourly titles fold open in place and keep the hour list', async () => {
     loadTreeManifest: async () => manifest([current]),
     api(path) {
       if (path.startsWith('/api/v1/tags')) return Promise.resolve({ catalog: { tags: [] } });
-      const id = new URL(path, 'http://tree.local').searchParams.get('id');
-      if (id === current.id) return Promise.resolve({ edition: current, nodes: [info] });
+      if (path.startsWith('/api/v1/reports/reading-hour/index')) {
+        const error = new Error('not found'); error.status = 404; return Promise.reject(error);
+      }
+      if (path.startsWith('/api/v1/reports/reading-hour')) return Promise.resolve({ snapshot: {
+        id: 'rh:reader', status: 'ready', scored: 1, candidates: 1, selected: 1,
+        items: [{ nodeId: 'info-1', title: '芯片出口', disposition: 'hit', readingDirectionName: '科技与AI', readingThemeName: '中国', timely: true, id: 'info-1', layer: 'information', body: '这是较长的中文正文', text: '摘要', sourceRefs: [{ type: 'media-body', id: 'media-1' }] }],
+      } });
       return Promise.reject(new Error('missing'));
     },
   });
@@ -254,7 +278,10 @@ test('hourly reading shows hits and misses together and marks stale items', asyn
   assert.equal(headings.includes('精确标题'), false);
   assert.equal(headings.includes('待分类'), false);
   assert.equal(headings.includes('产业个股'), true);
-  assert.equal(headings.includes('其他'), true);
+  assert.equal(headings.includes('其他'), false);
+  assert.equal(root.querySelectorAll('h2').filter(node => node.className.split(/\s+/).includes('reading-direction') && node.textContent === '产业个股').length, 1);
+  assert.equal(root.querySelectorAll('summary').some(node => node.textContent === '其他 1 条 ›'), true);
+  assert.equal(root.querySelector('.reading-other').querySelectorAll('h2').some(node => node.className.split(/\s+/).includes('reading-direction')), false);
   assert.equal(root.querySelectorAll('button').some(node => node.textContent === '关注精选'), false);
   assert.equal(root.querySelectorAll('h3').some(node => node.textContent.includes('范围外讣告')), false);
   assert.equal(root.querySelector('.reading-stale').textContent, '时效不足');
@@ -264,7 +291,14 @@ test('hourly reading shows hits and misses together and marks stale items', asyn
   page.stop();
 });
 
+function setHourMedia(mobile) {
+  const fn = query => ({ matches: Boolean(mobile) && String(query).includes('max-width'), media: query, addEventListener() {}, removeEventListener() {} });
+  window.matchMedia = fn;
+  globalThis.matchMedia = fn;
+}
+
 test('hourly content follows the hour strip: left is newer, right is older', async () => {
+  setHourMedia(true);
   const start = Date.parse('2026-10-08T06:00:00Z');
   const newest = edition('edition:swipehour0001', start, ['n1']);
   const middle = edition('edition:swipehour0002', start - HOUR, ['n2']);
@@ -276,7 +310,7 @@ test('hourly content follows the hour strip: left is newer, right is older', asy
   const page = createInformationTreePage(hostFor('hourly-swipe', () => manifest([newest, middle, oldest])));
   document.addEventListener = previousListen;
   await page.mount(root, { mode: 'hourly' });
-  assert.deepEqual(chips(root).map(item => item.textContent), ['这个小时', '上个小时', '上上个小时']);
+  assert.deepEqual(chips(root).map(item => item.textContent), ['14:00', '13:00', '12:00']);
   const activeStart = () => chips(root).find(item => item.classList.contains('is-active')).dataset.start;
   const scrolled = [];
   for (const item of chips(root)) item.scrollIntoView = () => scrolled.push(item.dataset.start);
@@ -333,5 +367,151 @@ test('hourly content follows the hour strip: left is newer, right is older', asy
   assert.equal(activeStart(), String(oldest.window.startAt));
   await wheel(80, 4);
   assert.equal(activeStart(), String(oldest.window.startAt));
+  page.stop();
+});
+
+test('desktop right arrow moves to the next later hour', async () => {
+  setHourMedia(false);
+  const start = Date.parse('2026-10-08T06:00:00Z');
+  const newest = edition('edition:deskhour000001', start, ['n1']);
+  const middle = edition('edition:deskhour000002', start - HOUR, ['n2']);
+  const oldest = edition('edition:deskhour000003', start - 2 * HOUR, ['n3']);
+  const keys = [];
+  const previousListen = document.addEventListener;
+  document.addEventListener = (type, fn) => { keys.push({ type, fn }); previousListen.call(document, type, fn); };
+  const root = new El('div'); root.isConnected = true;
+  const page = createInformationTreePage(hostFor('hourly-desk', () => manifest([newest, middle, oldest])));
+  document.addEventListener = previousListen;
+  await page.mount(root, { mode: 'hourly' });
+  await chip(root, middle.window.startAt).listeners.click[0]();
+  await keys.find(item => item.type === 'keydown').fn({ key: 'ArrowRight', target: null, preventDefault() {} });
+  assert.equal(chip(root, newest.window.startAt).classList.contains('is-active'), true);
+  page.stop();
+});
+
+test('hour steps skip a run of missing editions', async () => {
+  setHourMedia(false);
+  const start = Date.parse('2026-10-08T08:00:00Z');
+  const newest = edition('edition:gaphour0000001', start, ['n1']);
+  const middle = edition('edition:gaphour0000002', start - HOUR, ['n2']);
+  const oldest = edition('edition:gaphour0000003', start - 4 * HOUR, ['n3']);
+  const keys = [];
+  const previousListen = document.addEventListener;
+  document.addEventListener = (type, fn) => { keys.push({ type, fn }); previousListen.call(document, type, fn); };
+  const root = new El('div'); root.isConnected = true;
+  const page = createInformationTreePage(hostFor('hourly-gap', () => manifest([newest, middle, oldest])));
+  document.addEventListener = previousListen;
+  await page.mount(root, { mode: 'hourly' });
+  await chip(root, middle.window.startAt).listeners.click[0]();
+  await keys.find(item => item.type === 'keydown').fn({ key: 'ArrowLeft', target: null, preventDefault() {} });
+  assert.equal(chips(root).find(item => item.classList.contains('is-active')).dataset.start, String(oldest.window.startAt));
+  const starts = chips(root).map(item => Number(item.dataset.start));
+  assert.equal(starts.includes(start - 2 * HOUR), false);
+  assert.equal(starts.includes(start - 3 * HOUR), false);
+  assert.equal(root.querySelector('.tree-hour-gap').textContent, '13–14点');
+  page.stop();
+});
+
+test('selecting an hour writes hour into the address', async () => {
+  const start = Date.parse('2026-10-08T06:00:00Z');
+  const current = edition('edition:hashhour000001', start, ['n1']);
+  const urls = [];
+  const previousLocation = globalThis.location;
+  const previousHistory = globalThis.history;
+  globalThis.location = { pathname: '/app', search: '', hash: '#report' };
+  globalThis.history = {
+    replaceState(_state, _title, url) {
+      urls.push(String(url));
+      globalThis.location.hash = String(url).slice(String(url).indexOf('#'));
+    },
+  };
+  try {
+    const root = new El('div'); root.isConnected = true;
+    const page = createInformationTreePage(hostFor('hourly-hash', () => manifest([current])));
+    await page.mount(root, { mode: 'hourly' });
+    assert.match(urls.at(-1) || '', /#report\/2026-10-08\?hour=14$/);
+    page.stop();
+  } finally {
+    if (previousLocation === undefined) delete globalThis.location;
+    else globalThis.location = previousLocation;
+    if (previousHistory === undefined) delete globalThis.history;
+    else globalThis.history = previousHistory;
+  }
+});
+
+test('reading hour index is requested inside the seven day window', async () => {
+  const start = Date.parse('2026-10-08T03:00:00Z');
+  const current = edition('edition:indexwindow01', start, ['n1']);
+  const host = hostFor('hourly-index-window', () => manifest([current]));
+  const calls = [];
+  const api = host.api;
+  host.api = path => { calls.push(path); return api(path); };
+  const root = new El('div'); root.isConnected = true;
+  const page = createInformationTreePage(host);
+  await page.mount(root, { mode: 'hourly' });
+  const path = calls.find(item => item.startsWith('/api/v1/reports/reading-hour/index'));
+  const url = new URL(path, 'http://tree.local');
+  const startAt = Number(url.searchParams.get('startAt'));
+  const endAt = Number(url.searchParams.get('endAt'));
+  assert.equal(url.searchParams.get('scope'), 'hour');
+  assert.equal(Number.isInteger(startAt) && Number.isInteger(endAt) && endAt > startAt && endAt - startAt <= 7 * 86400000, true);
+  page.stop();
+});
+
+test('a missing hour falls back to the nearest edition and says so', async () => {
+  const start = Date.parse('2026-10-08T06:00:00Z');
+  const current = edition('edition:fallbackhour01', start, ['n1']);
+  const root = new El('div'); root.isConnected = true;
+  const page = createInformationTreePage(hostFor('hourly-fallback', () => manifest([current])));
+  await page.mount(root, { mode: 'hourly', hour: 15 });
+  assert.equal(chip(root, start).classList.contains('is-active'), true);
+  assert.equal(root.querySelector('.tree-hour-fallback').textContent, '15:00 那期还没生成，已显示 14:00');
+  page.stop();
+});
+
+test('switching to a prefetched hour does not refetch or blank the list', async () => {
+  const start = Date.parse('2026-10-08T06:00:00Z');
+  const newest = edition('edition:prefetchhour01', start, ['n1']);
+  const middle = edition('edition:prefetchhour02', start - HOUR, ['n2']);
+  const calls = [];
+  const root = new El('div'); root.isConnected = true;
+  const page = createInformationTreePage({
+    session: () => ({ role: 'desktop', device: { id: 'prefetch-hour' } }),
+    active: () => true,
+    loadTreeManifest: async () => manifest([newest, middle]),
+    api(path) {
+      if (path.startsWith('/api/v1/tags')) return Promise.resolve({ catalog: { tags: [] } });
+      if (path.startsWith('/api/v1/reports/reading-hour/index')) {
+        const error = new Error('not found'); error.status = 404; return Promise.reject(error);
+      }
+      if (path.startsWith('/api/v1/reports/reading-hour')) {
+        calls.push(path);
+        const startAt = Number(new URL(path, 'http://tree.local').searchParams.get('startAt'));
+        const item = [newest, middle].find(row => row.window.startAt === startAt);
+        return Promise.resolve({ snapshot: {
+          id: `rh:${item.id}`, status: 'ready', scored: 1, candidates: 1, selected: 1,
+          items: [{ nodeId: 'a', title: `标题${item.id}`, disposition: 'hit', readingDirectionName: '产业个股', readingThemeName: '中国', timely: true }],
+        } });
+      }
+      return Promise.reject(new Error('missing'));
+    },
+  });
+  await page.mount(root, { mode: 'hourly' });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  const hits = path => calls.filter(item => item.includes(String(middle.window.startAt))).length;
+  const before = hits();
+  assert.equal(before, 1);
+  const list = root.querySelector('.tree-list');
+  let blanked = false;
+  const original = list.replaceChildren.bind(list);
+  list.replaceChildren = (...nodes) => {
+    const mark = nodes.map(node => node?.className || '').join(' ');
+    if (!nodes.length || mark.includes('tree-hour-skeleton')) blanked = true;
+    return original(...nodes);
+  };
+  await page.selectHour(middle.window.startAt);
+  assert.equal(hits(), before);
+  assert.equal(blanked, false);
+  assert.equal(root.querySelectorAll('h3').some(node => node.textContent.includes(middle.id)), true);
   page.stop();
 });
