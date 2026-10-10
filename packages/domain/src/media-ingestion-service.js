@@ -3,6 +3,7 @@ import { formatFeedBefore } from '../../contracts/src/index.js';
 import { ValidationError } from '../../contracts/src/errors.js';
 import { ImportedMediaArticleSchema } from '../../contracts/src/hardware-prices.js';
 import { MediaBriefSchema, MediaConfigSchema, MediaSavedArticleQuerySchema } from '../../contracts/src/media.js';
+import { cleanIngestExcerpt } from '../../connectors/src/excerpt-text.js';
 import { localizationItemId } from './localize-texts.js';
 import { mediaTranslationUnits, projectMediaTranslation } from './media-translation.js';
 import { formatYmd, zonedParts } from './zoned-time.js';
@@ -60,17 +61,21 @@ function clipListText(value, max = 200) {
 }
 
 function presentMediaListItem(item) {
+  const originalTitle = item.title || '';
+  const articleTitle = String(item.articleTranslation?.title || '').trim();
+  const titleTranslated = Boolean(articleTitle) && articleTitle !== originalTitle;
   const lead = item.generatedBrief?.text
     || item.articleTranslation?.paragraphs?.find((paragraph) => paragraph.kind === 'paragraph')?.text
     || item.summary
     || '';
   const summary = clipListText(lead);
   const translated = item.translation?.text || '';
+  const translationTitle = titleTranslated ? articleTitle : clipListText(translated, 80);
   return {
     id: item.id,
     resourceId: item.resourceId,
     externalId: item.externalId,
-    title: item.title || '',
+    title: titleTranslated ? articleTitle : originalTitle,
     summary,
     excerpt: summary,
     body: '',
@@ -94,17 +99,17 @@ function presentMediaListItem(item) {
     truncated: Boolean(item.truncated),
     tags: item.tags || [],
     translationStatus: item.articleTranslation?.status || item.translationStatus || 'pending',
-    translationTitle: item.articleTranslation?.title || clipListText(translated, 80),
+    translationTitle,
     articleTranslation: item.articleTranslation ? {
       status: item.articleTranslation.status,
       title: item.articleTranslation.title || '',
       bodyHash: item.articleTranslation.bodyHash,
     } : null,
-    translation: translated ? {
+    translation: titleTranslated || translated ? {
       status: 'ready',
-      title: clipListText(translated, 80),
-      engine: item.translation.engine || '',
-      targetLang: item.translation.targetLang || 'zh',
+      title: translationTitle,
+      engine: item.translation?.engine || '',
+      targetLang: item.translation?.targetLang || 'zh',
     } : (item.translationStatus === 'stale' ? { status: 'stale', title: '', engine: '', targetLang: 'zh' } : null),
     briefState: { status: item.briefState?.status || 'pending' },
     bodyHash: item.bodyHash || '',
@@ -134,8 +139,8 @@ function entryRow(workspaceId, entry, item, { at, previous, status }) {
     authorName: item.authorName || previous?.authorName || '',
     channel: entry.channel,
     canonicalUrl: item.sourceUrl || item.canonicalUrl,
-    title: item.title,
-    summary: item.summary,
+    title: cleanIngestExcerpt(item.title),
+    summary: cleanIngestExcerpt(item.summary),
     publishedAt: item.publishedAt ?? previous?.publishedAt ?? null,
     publishedAtRaw: item.publishedAtRaw || previous?.publishedAtRaw || '',
     contentLevel: previous?.contentLevel === 'full' ? 'full' : contentLevelFor(entry),

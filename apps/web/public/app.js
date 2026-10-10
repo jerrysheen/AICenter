@@ -630,6 +630,7 @@ function postIsTranslating(post) {
 function localizedCopy(id, fallback = '') {
   const row = state.sourceLocalizations[id];
   if (row?.text) return row.text;
+  if (row?.status === 'failed') return fallback || '';
   if (row?.pending && state.sourceLocalizing) return '正在翻译…';
   return fallback || '';
 }
@@ -3016,6 +3017,8 @@ function textAfterLead(source, lead) {
 function postDisplayTitle(post) {
   if(post.normalizedArticle?.title)return post.normalizedArticle.title;
   if (post.platform === 'media' && post.articleTranslation?.title) return post.articleTranslation.title;
+  if (post.platform === 'media' && post.translationTitle) return post.translationTitle;
+  if (post.platform === 'media' && post.translation?.title) return post.translation.title;
   const translated = translationFor(post)?.text;
   if (translated) {
     const body = socialBodyText(post, translated);
@@ -3221,6 +3224,7 @@ function matchesPlatform(item) {
 
 function officialAsItem(release) {
   const publishedAt = release.publishedAt || release.observedAt || Date.now();
+  const row = state.sourceLocalizations[release.releaseId];
   return {
     id: release.releaseId,
     resourceId: release.releaseId,
@@ -3232,6 +3236,7 @@ function officialAsItem(release) {
     handle: '',
     time: release.publishedAt ? formatTime(release.publishedAt) : '',
     title: localizedCopy(release.releaseId, release.title),
+    translationStatus: row?.status || (row?.pending ? 'pending' : ''),
     body: '',
     excerpt: [release.authority, release.documentNumber].filter(Boolean).join(' · '),
     tags: [],
@@ -3830,6 +3835,7 @@ function mediaAsItem(item) {
     body,
     paragraphs: item.paragraphs || [],
     articleTranslation: item.articleTranslation || null,
+    translationTitle: item.translationTitle || '',
     bodyHash: item.bodyHash || '',
     snapshotRevision: item.snapshotRevision || null,
     generatedBrief: item.generatedBrief || null,
@@ -3912,6 +3918,7 @@ function officialDayKey(item) {
 
 function officialEventMeta(post) {
   return [
+    post.translationStatus === 'failed' ? '暂未翻译' : '',
     post.author,
     post.release?.documentNumber,
     post.release?.documentType,
@@ -11678,19 +11685,29 @@ async function requestTranslate(post) {
   await translatePost(post);
 }
 
+function translationFailed(message) {
+  const error = new Error(message || '翻译未完成，请稍后重试');
+  error.translationStatus = 'failed';
+  return error;
+}
+
 async function requestTranslation(path, options) {
   const submitted = await api(path, options);
   if (!submitted.jobId) return submitted;
-  for (let attempt = 0; attempt < 900; attempt++) {
+  let sawRunning = false;
+  for (let attempt = 0; attempt < 150; attempt++) {
     await wait(1000);
     const payload = await api(`/api/v1/translate/jobs/${submitted.jobId}`);
     if (payload.status === 'completed') {
       const result = payload.result || {};
       return path.endsWith('/batch') ? result : { translation: result.translations?.[0] || {} };
     }
-    if (['failed', 'cancelled'].includes(payload.status)) throw new Error(payload.error || '翻译未完成，请稍后重试');
+    if (payload.status === 'running') sawRunning = true;
+    if (['failed', 'cancelled'].includes(payload.status) || (payload.status === 'queued' && (sawRunning || attempt >= 20))) {
+      throw translationFailed(payload.error || '翻译未完成，请稍后重试');
+    }
   }
-  throw new Error('翻译仍在后台进行，完成后可重新打开查看');
+  throw translationFailed('翻译仍在后台进行，完成后可重新打开查看');
 }
 
 async function translateXBatch({ silent = false } = {}) {
@@ -11751,7 +11768,8 @@ async function autoLocalizeSources() {
     .filter((row) => row?.pending && row.id && row.sourceText)
     .filter((row, index, rows) => rows.findIndex((item) => item.id === row.id) === index)
     .slice(0, TRANSLATE_BATCH_SIZE);
-  if (!pending.length) return;
+  const waiting = pending.filter((row) => row.status !== 'failed');
+  if (!waiting.length) return;
   state.sourceLocalizing = true;
   try {
     const payload = await requestTranslation('/api/v1/translate/batch', {
@@ -11759,18 +11777,15 @@ async function autoLocalizeSources() {
       timeoutMs: 120_000,
       body: JSON.stringify({
         targetLang: 'zh',
-        items: pending.map((row) => ({ id: row.id, text: row.sourceText })),
+        items: waiting.map((row) => ({ id: row.id, text: row.sourceText })),
       }),
     });
     const byId = new Map((payload.translations || []).map((row) => [row.id, row.translatedText]));
     for (const [sourceId, row] of Object.entries(state.sourceLocalizations)) {
       const text = byId.get(row.id);
       if (!text) continue;
-      state.sourceLocalizations[sourceId] = { ...row, text, pending: false };
+      state.sourceLocalizations[sourceId] = { ...row, text, pending: false, status: 'ready' };
     }
-    renderStaticSignalBoard();
-    renderMarketNativeBoard();
-    renderOverviewTimeline();
     const dialogItems = elements['source-dialog-items'];
     if (dialogItems && elements['source-dialog']?.open) {
       const sourceTitle = elements['source-dialog-title']?.textContent;
@@ -11785,9 +11800,17 @@ async function autoLocalizeSources() {
       }
     }
   } catch {
-    // Keep pending placeholders; a later refresh retries Gemini.
+    const failedIds = new Set(waiting.map((row) => row.id));
+    for (const [sourceId, row] of Object.entries(state.sourceLocalizations)) {
+      if (!failedIds.has(row?.id) || row.text) continue;
+      state.sourceLocalizations[sourceId] = { ...row, pending: false, status: 'failed' };
+    }
   } finally {
     state.sourceLocalizing = false;
+    renderStaticSignalBoard();
+    renderMarketNativeBoard();
+    renderOverviewTimeline();
+    renderPosts();
   }
 }
 

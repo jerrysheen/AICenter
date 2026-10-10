@@ -1647,6 +1647,20 @@ migrations.push({ version: 49, name: 'reading_hour_snapshots', up(database) {
       PRIMARY KEY (workspace_id, period_key));`);
 }});
 
+migrations.push({ version: 50, name: 'feed_translation_failures', up(database) {
+  database.exec(`CREATE TABLE feed_translation_failures (
+      workspace_id TEXT NOT NULL,
+      item_id TEXT NOT NULL,
+      target_lang TEXT NOT NULL,
+      source_hash TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL,
+      next_retry_at INTEGER,
+      last_error TEXT NOT NULL DEFAULT '',
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (workspace_id, item_id, target_lang)
+    );`);
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

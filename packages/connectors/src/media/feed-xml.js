@@ -1,6 +1,7 @@
 import { XMLParser } from 'fast-xml-parser';
 import { MediaConfigSchema } from '../../../contracts/src/media.js';
 import { normalizeArticleUrl, originLinksFromHtml, stableArticleId } from './article-url.js';
+import { cleanIngestExcerpt } from '../excerpt-text.js';
 import { parseFeedDate } from './dates.js';
 
 const parser = new XMLParser({
@@ -112,9 +113,9 @@ export function parseFeedXml(xml, source) {
       link = rawLink;
     }
     const guid = decodeXmlText(node.guid || node.id);
-    const title = decodeXmlText(node.title).slice(0, 1000);
+    const title = cleanIngestExcerpt(decodeXmlText(node.title)).slice(0, 1000);
     const summarySource = node.description ?? node.summary ?? '';
-    const summary = decodeXmlText(summarySource).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 2000);
+    const summary = cleanIngestExcerpt(decodeXmlText(summarySource)).slice(0, 2000);
     const when = parseFeedDate(textOf(node.pubDate || node.published || node.updated));
     const externalId = stableArticleId(source.sourceKey, {
       guid,

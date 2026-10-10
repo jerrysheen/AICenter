@@ -35,9 +35,20 @@ export function createMediaEnrichJobHandlers({ mediaService, feedService, taggin
       if(treeEnabled && !articleNormalizePort)enqueueTreePreparation(context?.store,workspaceId,[...new Set([...candidates,...bodies.fetched.map(row=>row.externalId)])].map(id=>`media:${id}`));
       const items = mediaService.listEnrichmentItems(workspaceId, 120, candidates).filter(item => !explicit || explicit.has(item.externalId));
       if(articleNormalizePort) {
-        const units = context?.store?.createJob && feedService?.localizeTexts
-          ? mediaService.listArticleTranslationUnits?.(workspaceId, items.map(item => item.externalId)) || [] : [];
-        await enqueueOriginalTranslations({ store: context?.store, feedService, workspaceId, units });
+        const canQueue = Boolean(context?.store?.createJob && feedService?.localizeTexts);
+        const articleUnits = canQueue
+          ? mediaService.listArticleTranslationUnits?.(workspaceId, items.map(item => item.externalId)) || []
+          : [];
+        const summaryUnits = canQueue
+          ? items.filter(item => item.contentLevel !== 'full').map((item) => ({
+            id: item.resourceId,
+            localizationId: item.resourceId,
+            text: item.text,
+          })).filter(unit => unit.id && unit.text)
+          : [];
+        await enqueueOriginalTranslations({
+          store: context?.store, feedService, workspaceId, units: [...articleUnits, ...summaryUnits],
+        });
         return articleNormalizePort.prepareInformation({workspaceId,sourceIds:items.map(item=>`media:${item.externalId}`)});
       }
       const briefIds = explicit ? [...explicit] : [...new Set([...candidates, ...items.map(i => i.externalId)])];
