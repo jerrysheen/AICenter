@@ -3,10 +3,16 @@ import assert from 'node:assert/strict';
 import {mkdtempSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import {createStore} from '../packages/database/src/index.js';
+import {runMigrations} from '../packages/database/src/migrations.js';
+import {createInformationTreeRepository} from '../packages/database/src/repositories/information-tree-repository.js';
 import {createReadingHourService} from '../packages/domain/src/reading-hour-service.js';
 import {createReportJobHandlers} from '../packages/runtime/src/report-module.js';
 import {normalizeReadingSemantics, readingPlacement, routeReadingFocus} from '../packages/domain/src/reading-focus-route.js';
+import {ReadingHourIndexSchema} from '../packages/contracts/src/information-tree.js';
+import {ValidationError} from '../packages/contracts/src/errors.js';
+import {createReportRoutes} from '../apps/web/src/routes/report-routes.js';
 
 const catalogIds = new Set(['ai','market_cn','market_us','corporate_results','communications','software','ai_model']);
 const window = {startAt: 10, endAt: 20};
@@ -66,6 +72,84 @@ test('reading snapshot survives reopen and a failed attempt cannot replace it', 
   assert.equal(again.forWindow('local', window, 'hour').id, replaced.snapshot.id);
   assert.equal(again.get('local', published.snapshot.id).items[0].title, '招联营收');
   second.close();
+});
+
+test('reading hour index returns published hours, headline order, and rejects a bad window', () => {
+  const db = new Database(':memory:');
+  runMigrations(db);
+  const repository = createInformationTreeRepository(db, () => {});
+  repository.getNode = () => { throw new Error('index must not load nodes'); };
+  repository.readingHourHead = () => { throw new Error('index must not load one head'); };
+  const service = createReadingHourService({repository, enabled: true});
+  const hour = 3600000;
+  const start = 1_700_000_000_000;
+  const insertSnapshot = (workspace, id, startAt, items, status = 'ready') => {
+    const value = {
+      id, status, scope: 'hour', routeVersion: 'reading-route-test', window: {startAt, endAt: startAt + hour},
+      timezone: 'Asia/Shanghai', generatedAt: startAt + 90, scored: items.length, candidates: items.length + 1,
+      selected: items.filter((item) => item.disposition === 'hit').length, groups: [], sections: [], items,
+    };
+    db.prepare('INSERT INTO reading_hour_snapshots (workspace_id,id,start_at,value_json) VALUES (?,?,?,?)').run(workspace, id, startAt, JSON.stringify(value));
+    return value;
+  };
+  const items = [
+    {nodeId: 'geo', title: '地缘在后', disposition: 'hit', readingDirectionName: '地缘政治', readingThemeName: '贸易与限制'},
+    {nodeId: 'us', title: '美国金融', disposition: 'hit', readingDirectionName: '金融', readingThemeName: '美国'},
+    {nodeId: 'pending', title: '待分类不算', disposition: 'hit', readingDirectionName: '待分类', readingThemeName: '其他'},
+    {nodeId: 'oos', title: '越界不算', disposition: 'out-of-scope', readingDirectionName: '金融', readingThemeName: '中国'},
+    {nodeId: 'cn-later', title: '中国金融后写', disposition: 'hit', readingDirectionName: '金融', readingThemeName: '中国'},
+    {nodeId: 'cn-earlier', title: '中国金融先写', disposition: 'hit', readingDirectionName: '金融', readingThemeName: '中国'},
+    {nodeId: 'industry', title: '产业', disposition: 'hit', readingDirectionName: '产业个股', readingThemeName: '韩国'},
+    {nodeId: 'miss', title: '未命中', disposition: 'miss', readingDirectionName: '金融', readingThemeName: '中国'},
+    {nodeId: 'plain', title: '金融无子类', disposition: 'hit', readingDirectionName: '金融', readingThemeName: ''},
+    {nodeId: 'ai', title: '模型', disposition: 'hit', readingDirectionName: '科技与AI', readingThemeName: '模型与技术'},
+  ];
+  insertSnapshot('local', 'rh:published', start + hour, items, 'partial');
+  insertSnapshot('local', 'rh:attempt-body', start + hour, [{nodeId: 'attempt', title: '失败尝试', disposition: 'hit', readingDirectionName: '金融', readingThemeName: '中国'}]);
+  db.prepare('INSERT INTO reading_hour_heads (workspace_id,period_key,published_id,attempt_id) VALUES (?,?,?,?)').run('local', `${start + hour}:${start + 2 * hour}:hour`, 'rh:published', 'rh:attempt-body');
+  insertSnapshot('local', 'rh:only-attempt', start + 2 * hour, [{nodeId: 'only', title: '只有尝试', disposition: 'hit', readingDirectionName: '金融', readingThemeName: '中国'}]);
+  db.prepare('INSERT INTO reading_hour_heads (workspace_id,period_key,published_id,attempt_id) VALUES (?,?,?,?)').run('local', `${start + 2 * hour}:${start + 3 * hour}:hour`, null, 'rh:only-attempt');
+  insertSnapshot('local', 'rh:empty-hits', start, [{nodeId: 'miss-only', title: '没有标题', disposition: 'miss', readingDirectionName: '金融', readingThemeName: '中国'}]);
+  db.prepare('INSERT INTO reading_hour_heads (workspace_id,period_key,published_id,attempt_id) VALUES (?,?,?,?)').run('local', `${start}:${start + hour}:hour`, 'rh:empty-hits', 'rh:empty-hits');
+  insertSnapshot('other', 'rh:other', start + hour, [{nodeId: 'other', title: '别的工作区', disposition: 'hit', readingDirectionName: '金融', readingThemeName: '中国'}]);
+  db.prepare('INSERT INTO reading_hour_heads (workspace_id,period_key,published_id,attempt_id) VALUES (?,?,?,?)').run('other', `${start + hour}:${start + 2 * hour}:hour`, 'rh:other', 'rh:other');
+  insertSnapshot('local', 'rh:day', start + hour, [{nodeId: 'day', title: '日范围', disposition: 'hit', readingDirectionName: '金融', readingThemeName: '中国'}]);
+  db.prepare('INSERT INTO reading_hour_heads (workspace_id,period_key,published_id,attempt_id) VALUES (?,?,?,?)').run('local', `${start + hour}:${start + 2 * hour}:day`, 'rh:day', 'rh:day');
+
+  const window = {startAt: start, endAt: start + 4 * hour};
+  const index = service.indexForRange('local', window, 'hour');
+  assert.equal(ReadingHourIndexSchema.safeParse(index).success, true);
+  assert.deepEqual(index.hours.map((row) => row.id), ['rh:published', 'rh:empty-hits']);
+  assert.deepEqual(index.hours[0], {
+    startAt: start + hour, endAt: start + 2 * hour, id: 'rh:published', status: 'partial',
+    scored: items.length, candidates: items.length + 1, selected: 8, headline: {nodeId: 'cn-later', title: '中国金融后写'}, generatedAt: start + hour + 90,
+  });
+  assert.equal(index.hours[1].headline, null);
+  db.prepare('UPDATE reading_hour_snapshots SET value_json=? WHERE workspace_id=? AND id=?').run(JSON.stringify({id:'rh:published',status:'ready',window:{startAt:start+hour,endAt:start+2*hour},generatedAt:1,scored:1,candidates:1,selected:1,items:[{nodeId:'replaced',title:'不该出现',disposition:'hit',readingDirectionName:'金融',readingThemeName:'中国'}]}), 'local', 'rh:published');
+  assert.equal(service.indexForRange('local', window, 'hour').hours[0].headline.nodeId, 'cn-later');
+  assert.deepEqual(service.indexForRange('local', {startAt: start + 5 * hour, endAt: start + 6 * hour}, 'hour'), {hours: []});
+  assert.equal(JSON.stringify(index).includes('失败尝试') || JSON.stringify(index).includes('只有尝试') || JSON.stringify(index).includes('别的工作区'), false);
+
+  const route = createReportRoutes().find((item) => item.path === '/api/v1/reports/reading-hour/index');
+  const seen = [];
+  let status, body;
+  const response = {writeHead(code) { status = code; }, end(value) { body = value; }};
+  const services = {readingHour: {indexForRange(workspace, value, scope) { seen.push({workspace, value, scope}); return index; }}};
+  route.handler({response, services, identity: {device: {workspaceId: 'phone'}}, url: new URL(`http://localhost/api/v1/reports/reading-hour/index?startAt=${start}&endAt=${start + 7 * 86400000}&scope=hour`)});
+  assert.equal(status, 200);
+  assert.deepEqual(seen[0], {workspace: 'phone', value: {startAt: start, endAt: start + 7 * 86400000}, scope: 'hour'});
+  assert.equal(JSON.parse(body).ok, true);
+  assert.equal(JSON.parse(body).hours[0].headline.nodeId, 'cn-later');
+  route.handler({response, services, identity: {}, url: new URL(`http://localhost/api/v1/reports/reading-hour/index?startAt=${start}&endAt=${start + hour}`)});
+  assert.equal(seen[1].workspace, 'local');
+  assert.equal(seen[1].scope, 'hour');
+  const reject = (query) => assert.throws(() => route.handler({response, services, identity: {}, url: new URL(`http://localhost/api/v1/reports/reading-hour/index?${query}`)}), ValidationError);
+  reject('startAt=no&endAt=10');
+  reject(`startAt=${start}&endAt=${start}`);
+  reject(`startAt=${start}`);
+  reject(`startAt=${start}&endAt=${start + 7 * 86400000 + 1}`);
+  reject(`startAt=-1&endAt=${start}`);
+  db.close();
 });
 
 test('a source older than one day is marked untimely', () => {
