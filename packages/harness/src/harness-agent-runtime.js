@@ -104,8 +104,13 @@ function assertSuccessfulTurn(result) {
   const end=(result?.events || []).findLast(event=>event.type==='turn/end');
   const reason=end?.data?.reason;
   if(reason?.kind==='error') {
-    const code=reason.error?.code ? `${String(reason.error.code)}: ` : '';
-    throw Object.assign(new Error(`模型调用失败：${code}${String(reason.error?.message || '模型执行未完成').slice(0,2000)}`),{name:'HarnessModelError'});
+    const raw=reason.error?.code;
+    const code=raw ? `${String(raw)}: ` : '';
+    const error=Object.assign(new Error(`模型调用失败：${code}${String(reason.error?.message || '模型执行未完成').slice(0,2000)}`),{name:'HarnessModelError'});
+    if(raw!=null && String(raw).trim()) error.upstreamCode=String(raw).slice(0,80);
+    const status=Number(reason.error?.status ?? reason.error?.statusCode ?? raw);
+    if(Number.isInteger(status) && status>=400 && status<=599) error.upstreamStatus=status;
+    throw error;
   }
   if(reason?.kind==='aborted') throw Object.assign(new Error('模型调用已中止，未产生完成稿'),{name:'AbortError'});
 }

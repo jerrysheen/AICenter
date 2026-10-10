@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-10-hourly-condense-error-log.md`：小时浓缩失败时把脱敏后的错误类型、上游状态和输入尺寸写入 Worker 日志。任务对外仍是「小时浓缩临时失败」。
+
 - `progress/2026-10-10-reading-hour-index.md`：小时报索引一次返回窗口内已发布小时的摘要和头条。
 
 - `progress/2026-10-10-event-quote-24h.md`：事件报价每小时快照，以及面板上的「较昨日」点数差。没有约 24 小时前的快照就不显示。
