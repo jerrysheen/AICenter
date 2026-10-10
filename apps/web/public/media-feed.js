@@ -114,7 +114,9 @@ export function createMediaFeedLoader({ cache, getScope, getSelection, readFeed,
     const isCurrent = () => requestVersion === version && getScope() === scope
       && getSelection().channel === selection.channel && getSelection().view === selection.view && (getSelection().sourceKey || '') === (selection.sourceKey || '');
     if (!pending.has(requestKey)) {
-      const request = Promise.resolve().then(() => readFeed(query));
+      let request;
+      try { request = Promise.resolve(readFeed(query)); }
+      catch (error) { request = Promise.reject(error); }
       pending.set(requestKey, request);
       const forget = () => { if (pending.get(requestKey) === request) pending.delete(requestKey); };
       request.then(forget, forget);

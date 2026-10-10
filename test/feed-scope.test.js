@@ -117,6 +117,22 @@ test('TrendForce reloads media when the filter changes and nothing is loading', 
   assert.deepEqual(calls, ['ensure']);
 });
 
+test('feed and schedule entry load before bootstrap finishes', () => {
+  const view = functionSource('setView');
+  assert.match(view, /view === 'feed' && \(state\.bootstrapped \|\| state\.session\)/);
+  assert.match(view, /ensureVisibleFeedLoaded\(\)/);
+  assert.match(view, /state\.overviewPane === 'home' \|\| state\.overviewPane === 'schedule'/);
+  assert.match(view, /!state\.staticBoard/);
+  assert.match(view, /loadStaticSignalBoard\(\)/);
+  assert.match(functionSource('renderStaticSignalBoard'), /近期没有日程/);
+  assert.match(functionSource('appendStaticSignalItem'), /article\.append\(time, copy\)/);
+  assert.match(functionSource('ensureFeedSources'), /state\.channel === 'focus'/);
+  assert.match(functionSource('ensureFeedSources'), /loadFocusFeedWindow\('x'\)/);
+  assert.match(functionSource('loadFocusFeedWindow'), /FOCUS_FEED_WINDOW/);
+  assert.match(functionSource('loadXFeed'), /focusWindow \|\| refresh \? '50'/);
+  assert.match(functionSource('renderMarket'), /paintMarketPlaceholder\(isOverview\)/);
+});
+
 test('overview startup does not request X or Xueqiu', () => {
   const sourcesPage = functionSource('loadSourcesPage');
   const schedule = functionSource('scheduleOverviewManualPosts');

@@ -54,6 +54,7 @@ function projectListItem(item) {
     capturedAt: item.capturedAt || 0,
     processing: item.processing || '',
     isRead: Boolean(item.isRead),
+    isSaved: Boolean(item.isSaved),
     commentCount: commentCount(item.body),
     translation: item.translation ? {
       status: translated ? 'ready' : 'stale',
@@ -95,6 +96,7 @@ function toFeedItem(providerId, row) {
     subscriptionId: '',
     captureId: row.captureId || '',
     isRead: Boolean(row.isRead),
+    isSaved: Boolean(row.isSaved),
     translation: null,
   };
 }
