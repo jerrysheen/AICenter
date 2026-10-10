@@ -5363,9 +5363,8 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
   .tree-hour-rail { display: flex; align-items: center; gap: 4px; }
   .tree-hour-wheel { flex: 1; min-width: 0; -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
   .tree-hour-more { flex: none; }
-  .tree-list .reading-slice { display: block; }
-  .tree-list .reading-group { display: block; width: auto; margin: 8px 0 0; font-size: 12px; }
-  .tree-list .reading-slice-items { display: block; }
+  .tree-list .reading-slice { grid-template-columns: 64px minmax(0, 1fr); }
+  .tree-list .reading-group { min-width: 0; overflow-wrap: anywhere; }
   .reading-hour-nav { margin-left: 0; width: 100%; justify-content: space-between; }
 }
 .tree-hour-chips .chip-tab.is-unread::after { top: 10px; right: 0; }
