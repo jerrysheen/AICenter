@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-10-feed-all-progressive.md`：`#feed`「全部」到来源齐之前不报最终条数；「重点」改拉已保存星标；股票页和全球行情去掉独立更新时间行与概览说明。
+
 - `progress/2026-10-10-deeplink-feed-schedule.md`：行情单飞 20 秒超时；`#feed` 与近期日程首屏取数；重点按合并前窗口补拉；股票页先出骨架。
 
 - `progress/2026-10-10-translation-reliability.md`：翻译失败落库并退避重试，信息流失败态显示原文和「暂未翻译」，复用小时报译文，入库摘录清洗。

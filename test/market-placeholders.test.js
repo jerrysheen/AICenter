@@ -31,12 +31,21 @@ test('mock market module no longer ships sample quote prices', () => {
   assert.equal(source.includes('export const marketIndex'), false);
 });
 
+function functionSource(source, name) {
+  const match = source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`));
+  assert.ok(match, name);
+  return match[0];
+}
+
 test('overview ticker renders the loading mark and keeps an update time', () => {
   const app = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
   assert.match(app, /overviewLoadingIndices\(preferredOverviewFocus\(\)\)/);
   assert.equal(app.includes('globalAssets'), false);
   assert.match(app, /lastPrice == null \? LOADING_QUOTE/);
   assert.match(app, /行情已连接 · 更新 /);
-  assert.match(app, /更新 \$\{formatTime\(market\.fetchedAt\)\}/);
-  assert.match(app, /更新 \$\{formatTime\(state\.assetBoard\.fetchedAt\)\}/);
+  assert.match(functionSource(app, 'renderOverview'), /更新 \$\{formatTime\(market\.fetchedAt\)\}/);
+  assert.doesNotMatch(functionSource(app, 'renderOverview'), /market\.note/);
+  assert.doesNotMatch(functionSource(app, 'marketBoardHint'), /formatTime/);
+  assert.doesNotMatch(functionSource(app, 'assetBoardHint'), /formatTime/);
+  assert.match(functionSource(app, 'renderHubTicker'), /行情已连接 · 更新 /);
 });

@@ -49,7 +49,7 @@ test('market query accepts us asia cn overview and global', () => {
 
 test('x feed query defaults to 50 home timeline items', () => {
   assert.deepEqual(parseXFeedQuery({}), {
-    platform: 'x', feed: 'for-you', limit: 50, refresh: false, before: null, fields: 'list',
+    platform: 'x', feed: 'for-you', limit: 50, refresh: false, saved: false, before: null, fields: 'list',
   });
   assert.equal(parseXFeedQuery({ refresh: '1' }).refresh, true);
   assert.equal(parseXFeedQuery({ feed: 'following', limit: '50' }).feed, 'following');
@@ -58,7 +58,7 @@ test('x feed query defaults to 50 home timeline items', () => {
 
 test('xueqiu feed query maps following featured and livenews', () => {
   assert.deepEqual(parseXueqiuFeedQuery({}), {
-    platform: 'xueqiu', feed: 'following', limit: 50, refresh: false, before: null, fields: 'list',
+    platform: 'xueqiu', feed: 'following', limit: 50, refresh: false, saved: false, before: null, fields: 'list',
   });
   assert.equal(parseXueqiuFeedQuery({ feed: '7x24', refresh: '1' }).feed, 'livenews');
   assert.equal(parseXueqiuFeedQuery({ feed: 'featured' }).feed, 'featured');
