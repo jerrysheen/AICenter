@@ -224,12 +224,63 @@ export function createInformationTreePage(host) {
     tab.classList.toggle('is-unread',unread.size>0);
     if(unread.size)tab.setAttribute('aria-label','小时报，未读');else tab.removeAttribute('aria-label');
   }
+  function selectHour(startAt){selectedHourStart=startAt;openedId='';pinnedReadingId='';readingOpen.clear();return render();}
+  function hourNavOpen(){return active() && mode==='hourly' && !showMaterials && !openedId;}
+  // Chips run newest → oldest, left → right. Positive steps move toward the right (older).
+  function stepHour(direction){
+    if(!hourNavOpen())return;
+    const rows=hourRows(),index=rows.findIndex(item=>item.window.startAt===selectedHourStart),next=index<0?null:rows[index+direction];
+    if(!next)return;
+    return selectHour(next.window.startAt);
+  }
+  const hourSwipeMin=48,hourSwipeRatio=1.5;
+  const hourSwipeIntent=(dx,dy)=>Math.abs(dx)>=hourSwipeMin && Math.abs(dx)>Math.abs(dy)*hourSwipeRatio;
+  function typingTarget(event){const node=event.target;if(!node?.tagName)return false;return node.tagName==='INPUT' || node.tagName==='TEXTAREA' || node.tagName==='SELECT' || node.isContentEditable;}
+  function onHourKey(event){
+    if(event.key!=='ArrowLeft' && event.key!=='ArrowRight')return;
+    if(event.altKey || event.ctrlKey || event.metaKey || event.shiftKey)return;
+    if(!hourNavOpen() || typingTarget(event))return;
+    if(event.cancelable!==false)event.preventDefault();
+    return stepHour(event.key==='ArrowRight'?1:-1);
+  }
+  function bindHourSwipe(surface){
+    if(surface.style)surface.style.touchAction='pan-y';
+    let gesture=null,wheelAcc=0,wheelMoved=0,wheelLock=0;
+    surface.addEventListener('touchstart',event=>{
+      if(!hourNavOpen() || event.touches?.length!==1){gesture=null;return;}
+      const touch=event.touches[0];gesture={x:touch.clientX,y:touch.clientY,locked:false};
+    },{passive:true});
+    surface.addEventListener('touchmove',event=>{
+      if(!gesture || event.touches?.length!==1)return;
+      const dx=event.touches[0].clientX-gesture.x,dy=event.touches[0].clientY-gesture.y;
+      if(gesture.locked){if(event.cancelable!==false)event.preventDefault();return;}
+      if(Math.abs(dx)<12 && Math.abs(dy)<12)return;
+      if(Math.abs(dx)>Math.abs(dy)*hourSwipeRatio){gesture.locked=true;if(event.cancelable!==false)event.preventDefault();}
+      else if(Math.abs(dy)>=Math.abs(dx))gesture=null;
+    },{passive:false});
+    surface.addEventListener('touchend',event=>{
+      const current=gesture;gesture=null;const touch=event.changedTouches?.[0];if(!current || !touch)return;
+      const dx=touch.clientX-current.x,dy=touch.clientY-current.y;if(!hourSwipeIntent(dx,dy))return;
+      return stepHour(dx<0?1:-1);
+    },{passive:true});
+    surface.addEventListener('touchcancel',()=>{gesture=null;},{passive:true});
+    surface.addEventListener('wheel',event=>{
+      if(!hourNavOpen())return;
+      const dx=event.deltaX||0,dy=event.deltaY||0;
+      if(!(Math.abs(dx)>Math.abs(dy)*hourSwipeRatio)){wheelAcc=0;return;}
+      if(event.cancelable!==false)event.preventDefault();
+      const now=Date.now();if(now<wheelLock)return;
+      if(now-wheelMoved>450)wheelAcc=0;
+      wheelMoved=now;wheelAcc+=dx;if(Math.abs(wheelAcc)<hourSwipeMin)return;
+      const direction=wheelAcc>0?1:-1;wheelAcc=0;wheelLock=now+450;return stepHour(direction);
+    },{passive:false});
+  }
   function paintHourStrip(rows) {
     const key=rows.map(item=>item.window.startAt).join(',');
     if(key!==hourStripKey){
       hourStripKey=key;hourChips.replaceChildren();
       rows.forEach((edition,index)=>{
-        const chip=button(hourLabel(edition,index),()=>{selectedHourStart=edition.window.startAt;openedId='';pinnedReadingId='';readingOpen.clear();return render();});
+        const chip=button(hourLabel(edition,index),()=>selectHour(edition.window.startAt));
         chip.className='chip-tab';chip.dataset.start=String(edition.window.startAt);hourChips.append(chip);
       });
     }
@@ -560,6 +611,7 @@ export function createInformationTreePage(host) {
   }
   function resume(checkNow=true){clearInterval(timer);if(active() && !document.hidden)timer=setInterval(check,30000);if(checkNow)return check();}
   document.addEventListener('visibilitychange',()=>{if(document.hidden)stop();else if(active())resume();});
+  document.addEventListener('keydown',onHourKey);
   return {async mount(target,options={}){
     stop();flight++;requests.abort();requests=new AbortController();epoch++;settled=false;loadSeen();const flightToken=flight;root=target;mode=options.mode==='hourly' ? 'hourly' : 'daily';dateFilter=options.date || '';showMaterials=false;root.replaceChildren();root.classList.add('tree-page','brief-page');
     if(options.resetSelection){selected=null;viewKey='';}
@@ -592,7 +644,7 @@ export function createInformationTreePage(host) {
     tools.append(materialsBtn);
     tagPanel=el('div','','tree-tag-panel');tagPanel.hidden=true;
     tag=el('select');tag.setAttribute('aria-label','主Tag筛选');tag.add(new Option('全部Tag','*'));tag.addEventListener('change',()=>{memory[mode]={...(memory[mode]||{}),tag:tag.value};render();});tagPanel.append(tag);
-    notice=el('div','','tree-update');notice.hidden=true;notice.setAttribute('role','status');list=el('div','','tree-list');
+    notice=el('div','','tree-update');notice.hidden=true;notice.setAttribute('role','status');list=el('div','','tree-list');bindHourSwipe(list);
     root.append(primary,issue,dayChips,hourChips,backIssues,directionNav,tools,tagPanel,notice,list);
     const token=epoch;
     if(!names.size)api('/api/v1/tags').then(({catalog})=>{if(token!==epoch)return;for(const t of catalog?.tags || [])names.set(t.id,t.name);for(const option of tag.options)if(names.has(option.value))option.textContent=names.get(option.value);}).catch(()=>{});
