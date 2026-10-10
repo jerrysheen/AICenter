@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {validateTreeModules,normalizeInformationResponse,treeResponseProtocol,TREE_VALIDATOR_VERSION,TreeNodeSchema,normalizeArticleResponse,ArticleOutputSchema,ARTICLE_VALIDATOR_VERSION,projectTreeInput,FeedNormalizedArticleSchema,TreeIndexManifestSchema} from '../../contracts/src/information-tree.js';
+import {validateTreeModules,normalizeInformationResponse,treeResponseProtocol,TREE_VALIDATOR_VERSION,TreeNodeSchema,normalizeArticleResponse,ArticleOutputSchema,ARTICLE_VALIDATOR_VERSION,projectTreeInput,FeedNormalizedArticleSchema,TreeIndexEditionSchema,TreeIndexInformationSchema} from '../../contracts/src/information-tree.js';
 import {materialHash,prepareDailyMaterials} from './daily-materials.js';
 import {runBounded} from './daily-analysis.js';
 import {treeCatalog,treeSource,treeFailure} from './information-tree-policy.js';
@@ -34,6 +34,35 @@ export function packTreeInputs(rows,maxBytes) {
   if(batch.length) batches.push(batch);return batches;
 }
 
+function indexIssue(error) {
+  const issue=error.issues?.[0];
+  return issue ? `${issue.path.join('.') || 'value'}: ${issue.message}` : 'invalid';
+}
+function acceptIndexEdition(value,kind) {
+  if(!value) return null;
+  const parsed=TreeIndexEditionSchema.safeParse(value);
+  if(parsed.success) return parsed.data;
+  console.warn(`[information-tree] view=index dropped ${kind} ${value.id || 'unknown'}: ${indexIssue(parsed.error)}`);
+  return null;
+}
+function acceptIndexSlots(slots) {
+  const kept=[];
+  for(const slot of slots || []) {
+    const edition=acceptIndexEdition(slot?.edition,'edition');
+    const attempt=acceptIndexEdition(slot?.attempt,'attempt');
+    if(edition || attempt) kept.push({edition,attempt});
+  }
+  return kept;
+}
+function acceptIndexInformation(rows) {
+  const kept=[];
+  for(const row of rows || []) {
+    const parsed=TreeIndexInformationSchema.safeParse(row);
+    if(parsed.success) kept.push(parsed.data);
+    else console.warn(`[information-tree] view=index dropped information ${row?.id || 'unknown'}: ${indexIssue(parsed.error)}`);
+  }
+  return kept;
+}
 export function createInformationTreeReader({repository,timezone='Asia/Shanghai',pipeline='legacy',catalog={}}) {
   return {
     normalizedArticle(workspace,sourceId,sourceVersion) {
@@ -44,7 +73,7 @@ export function createInformationTreeReader({repository,timezone='Asia/Shanghai'
       return result.success ? result.data : null;
     },
     list(workspace,window) {
-      if(window.view==='index') return TreeIndexManifestSchema.parse({timezone,pipeline,directions:catalog.reading?.directionByTag || {},information:window.information==='1' ? repository.listInformationIndex(workspace,window) : [],hours:repository.listEditionIndex(workspace,window.startAt,window.endAt,'hourly'),days:repository.listEditionIndex(workspace,window.startAt,window.endAt,'daily')});
+      if(window.view==='index') return {timezone,pipeline,directions:catalog.reading?.directionByTag || {},information:window.information==='1' ? acceptIndexInformation(repository.listInformationIndex(workspace,window)) : [],hours:acceptIndexSlots(repository.listEditionIndex(workspace,window.startAt,window.endAt,'hourly')),days:acceptIndexSlots(repository.listEditionIndex(workspace,window.startAt,window.endAt,'daily'))};
       return {timezone,pipeline,directions:catalog.reading?.directionByTag || {},information:repository.listInformation(workspace,window).map(({body,...summary})=>window.view==='reading' ? {id:summary.id,eventAt:summary.eventAt,window:summary.window,validatorVersion:summary.validatorVersion} : summary),hours:repository.list(workspace,window.startAt,window.endAt,'hourly'),days:repository.list(workspace,window.startAt,window.endAt,'daily')};
     },
     edition(workspace,id) {

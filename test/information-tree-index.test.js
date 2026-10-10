@@ -31,6 +31,47 @@ test('index contract keeps edition internals and article prose out of the manife
   assert.equal(TreeManifestQuerySchema.safeParse({startAt:1, endAt:2, view:'index', information:'0'}).success, false);
 });
 
+test('one nonconforming stored row is dropped from the index and does not fail the manifest', () => {
+  const warnings = [];
+  const original = console.warn;
+  console.warn = (...args) => warnings.push(args.map(String).join(' '));
+  const db = new Database(':memory:');
+  try {
+    runMigrations(db);
+    const insertEdition = db.prepare('INSERT INTO information_tree_editions (workspace_id,id,value_json) VALUES (?,?,?)');
+    const insertPeriod = db.prepare('INSERT INTO information_tree_heads (workspace_id,period_key,layer,start_at,published_id,attempt_id) VALUES (?,?,?,?,?,?)');
+    const insertNode = db.prepare('INSERT INTO information_tree_nodes (workspace_id,id,value_json) VALUES (?,?,?)');
+    const insertInfo = db.prepare('INSERT INTO information_tree_information_heads (workspace_id,source_id,node_id,source_version,event_at,source_at) VALUES (?,?,?,?,?,?)');
+    const edition = (id, status, window) => ({id, layer:'hourly', window, timezone:'Asia/Shanghai', status, roots:['module:1'], inputIds:['i:good'], pendingIds:[], missingHours:[], generatedAt:window.endAt});
+    insertEdition.run('local', 'edition:good', JSON.stringify(edition('edition:good', 'ready', {startAt:START, endAt:START + HOUR})));
+    insertEdition.run('local', 'edition:stale-attempt', JSON.stringify(edition('edition:stale-attempt', 'archived', {startAt:START, endAt:START + HOUR})));
+    insertPeriod.run('local', `hourly:${START}:${START + HOUR}`, 'hourly', START, 'edition:good', 'edition:stale-attempt');
+    insertEdition.run('local', 'edition:bad', JSON.stringify(edition('edition:bad', 'archived', {startAt:START + HOUR, endAt:START + 2 * HOUR})));
+    insertPeriod.run('local', `hourly:${START + HOUR}:${START + 2 * HOUR}`, 'hourly', START + HOUR, 'edition:bad', 'edition:bad');
+    const goodNode = {id:'i:good', layer:'information', version:'a'.repeat(64), title:'标题', text:'摘要', tagId:null, children:[], articleIds:['source:good'], sourceId:'source:good', window:{startAt:START, endAt:START + HOUR}, generatedAt:START, eventAt:START + 1, validatorVersion:'tree-response-v3.1.0'};
+    const badNode = {...goodNode, id:'i:bad', sourceId:'source:bad', articleIds:['source:bad'], eventAt:START + 2, window:{startAt:'unknown', endAt:START + HOUR}};
+    insertNode.run('local', 'i:good', JSON.stringify(goodNode));
+    insertNode.run('local', 'i:bad', JSON.stringify(badNode));
+    insertInfo.run('local', 'source:good', 'i:good', '1', START + 1, START);
+    insertInfo.run('local', 'source:bad', 'i:bad', '1', START + 2, START);
+    const reader = createInformationTreeReader({repository:createInformationTreeRepository(db, () => {}), timezone:'Asia/Shanghai', pipeline:'tree-v3'});
+    const window = {startAt:START, endAt:START + 3 * HOUR};
+    const index = reader.list('local', {...window, view:'index', information:'1'});
+    assert.equal(TreeIndexManifestSchema.safeParse(index).success, true);
+    assert.deepEqual(index.hours.map(row => [row.edition?.id || null, row.attempt?.id || null]), [['edition:good', null]]);
+    assert.deepEqual(index.information.map(row => row.id), ['i:good']);
+    assert.ok(warnings.some(line => line.includes('edition:stale-attempt')));
+    assert.ok(warnings.some(line => line.includes('edition:bad')));
+    assert.ok(warnings.some(line => line.includes('i:bad')));
+    const reading = reader.list('local', {...window, view:'reading'});
+    assert.equal(reading.hours.find(row => row.edition?.id === 'edition:bad').edition.status, 'archived');
+    assert.ok(reading.information.some(row => row.id === 'i:bad'));
+  } finally {
+    console.warn = original;
+    db.close();
+  }
+});
+
 test('published tree index matches edition metadata and leaves the full list untouched', async () => {
   const store = createStore(':memory:');
   const calls = [];

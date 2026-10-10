@@ -11,7 +11,7 @@ const reasons={'needs-content':'正文待补','information-not-ready':'信息加
 export function createInformationTreePage(host) {
   let root,list,titleEl,coverageEl,statusRow,statusToggle,statusDetail,pastBtn,directionNav,hourChips,dayChips,tools,materialsBtn,tagPanel,tag,period,backIssues,notice,mode='daily',direction=null,directionExplicit=false,showMaterials=false,selectedHourStart=0,dailyStart=0,openedId='',openedDirection='',manifest,selected=null,epoch=0,timer=0,dateFilter='',checking=null,pinnedReadingId='';
   const readingOpen=new Set();
-  const names=new Map(),cache=new Map(),nodeRequests=new Map(),editionCache=new Map(),editorialCache=new Map(),fullEditions=new Map(),expanded=new Set(),positions=new Map(),memory={hourly:{},daily:{}};let viewKey='',nextManifest=null,informationRows=null,informationRequest=null;
+  const names=new Map(),cache=new Map(),nodeRequests=new Map(),editionCache=new Map(),editorialCache=new Map(),fullEditions=new Map(),editionLoads=new Map(),expanded=new Set(),positions=new Map(),memory={hourly:{},daily:{}};let viewKey='',nextManifest=null,informationRows=null,informationRequest=null,informationEpoch=0,session=0;
   const relationLabels={'same-event':'同一事件的后续进展','shared-theme':'共同主题','complementary':'相互补充','contradictory':'不同说法','supported-impact':'有依据的影响','unverified-link':'尚待验证的潜在联系'};
   const remember=n=>{if(!n)return;cache.delete(n.id);cache.set(n.id,n);while(cache.size>400)cache.delete(cache.keys().next().value);};
   const active=()=>root?.isConnected && root.classList.contains('tree-page') && (host.active?.() ?? true) && (host.session?.() ?? true);
@@ -24,16 +24,31 @@ export function createInformationTreePage(host) {
   const group=n=>manifest?.directions?.[n.tagId] || previousDirections[n.tagId] || 'other';
   const expansionKey=n=>`${n.layer}:${[...n.articleIds].sort().join('|')}`;
   const fetchManifest=(force=false)=>{if(host.loadTreeManifest)return host.loadTreeManifest({force});const endAt=Date.now()+1;return host.api(`/api/v1/reports/tree?view=index&startAt=${endAt-7*86400000}&endAt=${endAt}`);};
+  function invalidateInformationIndex(){informationEpoch++;informationRows=null;informationRequest=null;}
   async function loadInformationIndex(){
     if(informationRows)return informationRows;
     if(!informationRequest){
-      const endAt=Date.now()+1,token=epoch;
-      informationRequest=host.api(`/api/v1/reports/tree?view=index&information=1&startAt=${endAt-7*86400000}&endAt=${endAt}`).then(data=>{
-        if(token===epoch)informationRows=data.information || [];
-        return informationRows || data.information || [];
-      }).finally(()=>{informationRequest=null;});
+      const endAt=Date.now()+1,cacheToken=informationEpoch;
+      const pending=host.api(`/api/v1/reports/tree?view=index&information=1&startAt=${endAt-7*86400000}&endAt=${endAt}`).then(data=>{
+        if(cacheToken===informationEpoch)informationRows=data.information || [];
+        return cacheToken===informationEpoch ? (informationRows || []) : (data.information || []);
+      }).finally(()=>{if(cacheToken===informationEpoch && informationRequest===pending)informationRequest=null;});
+      informationRequest=pending;
     }
     return informationRequest;
+  }
+  function loadEditionDocument(id){
+    if(fullEditions.has(id))return Promise.resolve(fullEditions.get(id));
+    if(!editionLoads.has(id)){
+      const seen=session;
+      const pending=host.api(`/api/v1/reports/tree/edition?id=${encodeURIComponent(id)}`).then(data=>{
+        if(seen!==session || !data?.edition?.id)return null;
+        fullEditions.set(data.edition.id,data.edition);
+        return data.edition;
+      }).catch(()=>null).finally(()=>{if(editionLoads.get(id)===pending)editionLoads.delete(id);});
+      editionLoads.set(id,pending);
+    }
+    return editionLoads.get(id);
   }
   async function materialIndex(selected){
     const rows=manifest?.information?.length ? manifest.information : await loadInformationIndex();
@@ -49,10 +64,11 @@ export function createInformationTreePage(host) {
     if(!edition?.id || !copyCount(edition))return [];
     if(Array.isArray(edition.roots) && edition.roots.every(id=>cache.has(id)))return edition.roots.map(id=>cache.get(id));
     if(!editionCache.has(edition.id)) {
-      const token=epoch,expected=copyCount(edition);
+      const token=epoch,seen=session,expected=copyCount(edition);
       const pending=host.api(`/api/v1/reports/tree/edition?id=${encodeURIComponent(edition.id)}`).catch(()=>Array.isArray(edition.roots) ? Promise.all(edition.roots.map(node)).then(nodes=>({edition,nodes})) : Promise.reject(new Error('刊期版本未能读取'))).then(data=>{
         if(data.edition?.id!==edition.id || data.nodes?.length!==expected)throw new Error('刊期版本未能读取');
-        if(token===epoch){data.nodes.forEach(remember);if(data.edition)fullEditions.set(data.edition.id,data.edition);}
+        if(seen===session && data.edition)fullEditions.set(data.edition.id,data.edition);
+        if(token===epoch)data.nodes.forEach(remember);
         return data.nodes;
       }).catch(error=>{editionCache.delete(edition.id);throw error;});
       editionCache.set(edition.id,pending);while(editionCache.size>200)editionCache.delete(editionCache.keys().next().value);
@@ -477,16 +493,15 @@ export function createInformationTreePage(host) {
         list.textContent='这一栏还没有已发布简报。可以打开往期，或查看旧版存档。';return;
       }
       titleEl.textContent=issueTitle(selected);coverageEl.textContent=issueCoverage(selected);
+      const attemptId=row?.attempt?.id && row.attempt.id!==selected.id && !row.attempt.pending ? row.attempt.id : '';
+      const attemptTask=attemptId ? loadEditionDocument(attemptId) : null;
+      const publishedTask=!selected.pendingIds && selected.id && !copyCount(selected) && !fullEditions.has(selected.id) ? loadEditionDocument(selected.id) : null;
       const nodes=await editionNodes(selected);if(token!==epoch)return;
-      if(!fullEditions.has(selected.id) && selected.id && !selected.pendingIds){
-        try{const data=await host.api(`/api/v1/reports/tree/edition?id=${encodeURIComponent(selected.id)}`);if(token!==epoch)return;if(data.edition)fullEditions.set(data.edition.id,data.edition);}catch{}
-      }
+      if(publishedTask){await publishedTask;if(token!==epoch)return;}
       const published=fullEditions.get(selected.id) || selected;
       let attempt=row?.attempt;
       if(attempt?.id===published.id)attempt=published;
-      else if(attempt?.id && attempt.id!==published.id && !attempt.pending){
-        try{const data=await host.api(`/api/v1/reports/tree/edition?id=${encodeURIComponent(attempt.id)}`);if(token!==epoch)return;if(data.edition)attempt=data.edition;}catch{}
-      }
+      else if(attemptTask){const loaded=await attemptTask;if(token!==epoch)return;if(loaded)attempt=loaded;}
       const missingSources=(published.pendingIds || []).filter(id=>id.startsWith('source:')).length;
       const partial=published.status!=='ready';
       statusToggle.hidden=false;statusToggle.textContent=`${partial ? '部分结果 · ' : ''}更新于 ${stamp(published.generatedAt)}`;
@@ -516,7 +531,7 @@ export function createInformationTreePage(host) {
       if(JSON.stringify(editionRows(latest).map(choice))!==JSON.stringify(editionRows().map(choice))){nextManifest=latest;notice.replaceChildren(el('span',next && next.id!==selected?.id ? '所选时段有新版本。' : '刊期或处理进度已更新。'),button('接受更新',acceptUpdate));notice.hidden=false;}
     })().catch(()=>{}).finally(()=>{checking=null;});return checking;
   }
-  async function acceptUpdate(){if(!nextManifest)return;editorialCache.clear();manifest=nextManifest;nextManifest=null;notice.hidden=true;periods();await render();}
+  async function acceptUpdate(){if(!nextManifest)return;editorialCache.clear();invalidateInformationIndex();manifest=nextManifest;nextManifest=null;notice.hidden=true;periods();await render();}
   // Pausing a retained page must not invalidate the ref handlers still mounted in it.
   function stop(){clearInterval(timer);timer=0;checking=null;}
   function resume(checkNow=true){clearInterval(timer);if(active() && !document.hidden)timer=setInterval(check,30000);if(checkNow)return check();}
@@ -563,5 +578,5 @@ export function createInformationTreePage(host) {
       const saved=memory[mode] || {};direction=saved.direction ?? null;directionExplicit=Boolean(saved.directionExplicit);if(saved.tag)tag.value=saved.tag;
       periods();await render();resume(false);
     }catch{if(token===epoch)list.replaceChildren(el('p','暂时无法读取简报。'),button('重试读取',()=>this.mount(target,options)));}
-  },check,acceptUpdate,resume,stop,selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());root?.classList.remove('is-reading');stop();epoch++;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();fullEditions.clear();informationRows=null;informationRequest=null;expanded.clear();positions.clear();viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
+  },check,acceptUpdate,resume,stop,selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());root?.classList.remove('is-reading');stop();epoch++;session++;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();fullEditions.clear();editionLoads.clear();invalidateInformationIndex();expanded.clear();positions.clear();viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
 }
