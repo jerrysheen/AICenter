@@ -233,7 +233,8 @@ export function parseXFeedQuery(value) {
     throw new ValidationError('条数必须是 1 到 50', ['limit']);
   }
   const refresh = query.refresh === true || query.refresh === '1' || query.refresh === 'true';
-  return { platform: 'x', feed, limit: rawLimit, refresh, before: parseFeedBefore(query.before), fields: parseListFields(query) };
+  const saved = query.saved === true || query.saved === '1' || query.saved === 'true';
+  return { platform: 'x', feed, limit: rawLimit, refresh, saved, before: parseFeedBefore(query.before), fields: parseListFields(query) };
 }
 
 export function parseXueqiuFeedQuery(value) {
@@ -251,7 +252,8 @@ export function parseXueqiuFeedQuery(value) {
     throw new ValidationError('条数必须是 1 到 50', ['limit']);
   }
   const refresh = query.refresh === true || query.refresh === '1' || query.refresh === 'true';
-  return { platform: 'xueqiu', feed, limit: rawLimit, refresh, before: parseFeedBefore(query.before), fields: parseListFields(query) };
+  const saved = query.saved === true || query.saved === '1' || query.saved === 'true';
+  return { platform: 'xueqiu', feed, limit: rawLimit, refresh, saved, before: parseFeedBefore(query.before), fields: parseListFields(query) };
 }
 
 export * from './hardware-prices.js';

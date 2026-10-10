@@ -513,6 +513,7 @@ function readStoredFeed(feedRepository, workspaceId, persistence, query, extra =
     taggedOnly: false,
     qualityRule: extra.qualityRule || '',
     before: query.before || null,
+    savedOnly: Boolean(query.saved),
   };
   const rows = feedRepository.listContentItemsByProvider?.(workspaceId, providerId, {
     ...pageQuery,
@@ -683,12 +684,12 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       }
       const source = sourcePort.findByProvider(providerId, 'content-feed');
       if (!source) throw new ValidationError(`尚未启用 ${providerId} 信息源`, ['platform']);
-      const { platform: _platform, refresh: _refresh, before, fields: _fields, ...sourceInput } = query || {};
+      const { platform: _platform, refresh: _refresh, before, fields: _fields, saved, ...sourceInput } = query || {};
       const persistence = sourcePort.persistence(source.id, sourceInput);
       if (!persistence?.sourceAccount) throw new ValidationError(`${source.id} 未声明 Feed 持久化投影`, ['sourceId']);
       const workspaceId = actor.workspaceId || DEFAULT_WORKSPACE_ID;
       const shape = query?.fields === 'list' ? 'list' : 'full';
-      const pageQuery = { ...sourceInput, before: before || null };
+      const pageQuery = { ...sourceInput, before: before || null, saved: Boolean(saved) };
       if (!query?.refresh) {
         const stored = readStoredFeed(feedRepository, workspaceId, persistence, pageQuery,{qualityRule});
         stored.items = rankFeedItems(await localizeForReading(workspaceId,stored.items,{wait:false}));

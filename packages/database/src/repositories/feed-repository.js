@@ -463,9 +463,10 @@ export function createFeedRepository(database, emitEvent) {
         .map(r=>({...mapContentItem(r),provider:r.provider,externalId:r.external_id,captureMetadata:parseJson(r.capture_metadata_json)}));
     },
 
-    listContentItemsByProvider(workspaceId, provider, { limit = 200, sourceExternalId = '', taggedOnly = false, qualityRule='', before = null } = {}) {
+    listContentItemsByProvider(workspaceId, provider, { limit = 200, sourceExternalId = '', taggedOnly = false, qualityRule='', before = null, savedOnly = false } = {}) {
       const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
       const taggedSql = `${taggedOnly ? `AND ${TAGGED_CONTENT_SQL}` : ''} AND ${approvedQualitySql(qualityRule)}`;
+      const savedSql = savedOnly ? 'AND COALESCE(item_state.is_saved, 0) = 1' : '';
       const cursorSql = before
         ? `AND (
             COALESCE(item_state.is_read, 0) > ?
@@ -488,6 +489,7 @@ export function createFeedRepository(database, emitEvent) {
             WHERE ci.workspace_id = ? AND c.provider = ? AND sa.external_id = ?
               AND ${VISIBLE_CONTENT_SQL}
               ${taggedSql}
+              ${savedSql}
               ${cursorSql}
             ${order}
             LIMIT ?`).all(workspaceId, provider, sourceExternalId, ...cursorParams, safeLimit)
@@ -502,6 +504,7 @@ export function createFeedRepository(database, emitEvent) {
             WHERE ci.workspace_id = ? AND c.provider = ?
               AND ${VISIBLE_CONTENT_SQL}
               ${taggedSql}
+              ${savedSql}
               ${cursorSql}
             ${order}
             LIMIT ?`).all(workspaceId, provider, ...cursorParams, safeLimit);
