@@ -16,7 +16,10 @@ test('reading manifest negotiates gzip without allowing public response caching'
   const route=createReportRoutes().find(r=>r.path==='/api/v1/reports/tree');let headers,body,input;
   const response={req:{headers:{'accept-encoding':'gzip'}},writeHead(status,value){assert.equal(status,200);headers=value;},end(value){body=value;}};
   route.handler({response,identity:{device:{workspaceId:'phone'}},url:new URL('http://localhost/api/v1/reports/tree?startAt=1&endAt=3600001&view=reading'),services:{informationTree:{list(workspace,value){assert.equal(workspace,'phone');input=value;return {hours:[],information:Array.from({length:200},(_,i)=>({id:`node:${i}`}))};}}}});
-  assert.equal(input.view,'reading');assert.equal(headers['Content-Encoding'],'gzip');assert.equal(headers['Cache-Control'],'no-store');
+  assert.equal(input.view,'reading');assert.equal(input.information,undefined);assert.equal(headers['Content-Encoding'],'gzip');assert.equal(headers['Cache-Control'],'no-store');
   assert.equal(JSON.parse(gunzipSync(body)).information.length,200);
   assert.throws(()=>route.handler({response,url:new URL('http://localhost/api/v1/reports/tree?startAt=1&endAt=3600001&view=unknown')}));
+  assert.throws(()=>route.handler({response,url:new URL('http://localhost/api/v1/reports/tree?startAt=1&endAt=3600001&view=index&information=2')}));
+  route.handler({response,identity:{device:{workspaceId:'phone'}},url:new URL('http://localhost/api/v1/reports/tree?startAt=1&endAt=3600001&view=index&information=1'),services:{informationTree:{list(workspace,value){assert.equal(workspace,'phone');input=value;return {hours:[],days:[],information:[]};}}}});
+  assert.equal(input.view,'index');assert.equal(input.information,'1');
 });

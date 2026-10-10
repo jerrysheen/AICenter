@@ -34,7 +34,7 @@
 
 启用tree-v3时，`#report`、`#report/history`、`#report/YYYY-MM-DD`统一使用树阅读器。当前页默认最新可读刊期，历史页提供日期/刊期选择及返回最新入口；只有明确的`#report/archive`进入停止更新的旧版存档，存档保留原稿和引用并提供返回历史简报入口。不再将「历史简报」隐式等同于旧版界面。
 
-`GET /api/v1/reports/tree`保留原完整响应；可选`view=reading`只返回信息节点身份/时间/校验版本及现有刊期，省去信息层正文与标题。`GET /api/v1/reports/tree/edition?id=...`通过同一Report Service/Repository读取指定不可变刊期及其全部根模块，沿用workspace鉴权、未知版本404；不按当前head替换请求版本。两个接口协商gzip并保持`no-store`，不让CDN缓存个人数据。
+`GET /api/v1/reports/tree`保留原完整响应；可选`view=reading`仍只在内存里裁掉信息节点正文与标题，并原样返回刊期，旧客户端继续用它一个版本。简报页改请求`view=index`：Repository用一条SQL投影刊期编号、层级、窗口、状态、生成时间、根模块数量，以及该窗口是否已有研究稿，不解析节点或刊期全文。默认不带信息节点；`information=1`才按身份列返回信息节点，供「本期材料」打开时使用。点开某一刊期或文章仍走`GET /api/v1/reports/tree/edition?id=...`和节点接口。`GET /api/v1/reports/tree/edition?id=...`通过同一Report Service/Repository读取指定不可变刊期及其全部根模块，沿用workspace鉴权、未知版本404；不按当前head替换请求版本。这些接口协商gzip并保持`no-store`，不让CDN缓存个人数据。无`view`的`list()`仍是生成链路用的完整刊期，不走索引投影。
 
 客户端按设备会话复用30秒目录缓存，合并同一在途目录请求；不可变节点最多400个、刊期批量最多8份，仅保存在内存，身份切换/退出清除。主阅读不再逐个请求根模块，标签后台加载，不阻塞正文；首次挂载不立即重复检查七日目录。手动检查绕过目录时效，版本变化仍提示接受更新并保留所读刊期。滚动升级暂未加载批量接口时可用原节点接口读取相同不可变ID。该缓存只加速显示，不改变生产模型、任务或发布指针。
 

@@ -4,7 +4,7 @@
 
 原文翻译异步化：`FeedTranslationJobInputSchema` 校验 workspace、目标语言、1—30 个唯一 ID/正文项目；拒绝额外命令字段。`POST /api/v1/translate` 与 `/translate/batch` 返回 202/jobId，`GET /api/v1/translate/jobs/:id` 返回同 workspace/type 的状态和完成结果，页面已适配；其他旧客户端需要适配。详见 `gemma-original-translation.md`。
 
-简报读取使用`TreeManifestQuerySchema`校验七日窗口及可选`view=reading`，原完整响应兼容；轻量信息条目只含身份/时间/校验版本。`/reports/tree/edition`使用`TreeNodeQuerySchema`校验不可变刊期ID，返回该刊期与全部根模块，未知或跨workspace版本404，不触发生成。读取与客户端缓存边界见`information-tree-v3.md`。
+简报读取使用`TreeManifestQuerySchema`校验七日窗口。不带`view`仍是完整响应；`view=reading`保持上一版的信息身份投影加完整刊期，供旧客户端使用一个版本。`view=index`是简报首屏目录：刊期只有编号、层级、窗口、状态、生成时间、根模块数量和是否已有研究稿，默认不含信息节点；`information=1`才附带信息节点的身份、时间与校验版本。`TreeIndexManifestSchema`校验这份目录，不接受正文、`inputIds`、`pendingIds`或`roots`。`/reports/tree/edition`使用`TreeNodeQuerySchema`校验不可变刊期ID，返回该刊期与全部根模块，未知或跨workspace版本404，不触发生成。读取与客户端缓存边界见`information-tree-v3.md`。
 
 三层浓缩树见`information-tree-v3.md`和`packages/contracts/src/information-tree.js`：统一协议在Contract的treeResponseProtocol定义，模型完成返回单篇title/text/tagId或模块及inputIds，缺内容只返回status:needs_content。宿主先识别状态，再校验完成响应；无害额外字段丢弃并记录，非法归属仍拒绝。宿主生成不可变节点ID、版本、children和去重文章篇数；小时只连信息、日报只连小时，同一期每个可用输入恰好一个父模块。主Tag以人工锁定或信息主旨为准，旧多标签仅提示；版本化阅读映射只改变上层分组。待补保存原因、可重试性和冷却时间；发布与最近尝试分开，页面不暴露供应商字段。
 

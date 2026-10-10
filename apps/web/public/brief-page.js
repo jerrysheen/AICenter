@@ -67,7 +67,7 @@ export function createBriefPage(host) {
     if(!force && treeManifest && Date.now()-treeManifestAt<30000)return Promise.resolve(treeManifest);
     if(treeManifestRequest)return treeManifestRequest;
     const identity=s.identity,cacheEpoch=treeCacheEpoch,endAt=Date.now()+1;
-    treeManifestRequest=host.api(`/api/v1/reports/tree?view=reading&startAt=${endAt-7*86400000}&endAt=${endAt}`).then(data=>{
+    treeManifestRequest=host.api(`/api/v1/reports/tree?view=index&startAt=${endAt-7*86400000}&endAt=${endAt}`).then(data=>{
       if(identity===s.identity && cacheEpoch===treeCacheEpoch){treeManifest=data;treeManifestAt=Date.now();}return data;
     }).finally(()=>{if(cacheEpoch===treeCacheEpoch)treeManifestRequest=null;});return treeManifestRequest;
   };
