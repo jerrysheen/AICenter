@@ -11,6 +11,7 @@ const messages = {
 export function createFeedLikeAction({ api, showToast, createAction, session = () => null, wait = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
   const pending = new Map();
   return function likeButton(post) {
+    if (session()?.role !== 'desktop') return null;
     if (post?.platform !== 'x' || !/^[0-9a-f-]{36}$/i.test(post.resourceId || '')) return null;
     const scope = `${session()?.role || ''}:${session()?.device?.id || 'desktop'}`;
     const key = `${scope}:${post.resourceId}`;

@@ -1647,6 +1647,20 @@ migrations.push({ version: 49, name: 'reading_hour_snapshots', up(database) {
       PRIMARY KEY (workspace_id, period_key));`);
 }});
 
+migrations.push({ version: 50, name: 'revoke_perf_audit_box_curl_device', up(database) {
+  const now = Date.now();
+  const rows = database.prepare(`SELECT id FROM devices WHERE name = ? AND revoked_at IS NULL`)
+    .all('perf-audit (box curl)');
+  const revoke = database.prepare(`UPDATE devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`);
+  const event = database.prepare(`INSERT INTO outbox_events
+    (workspace_id, event_name, aggregate_type, aggregate_id, payload_json, schema_version, occurred_at, created_at)
+    VALUES (?, 'device.revoked', 'device', ?, ?, 1, ?, ?)`);
+  for (const row of rows) {
+    if (!revoke.run(now, row.id).changes) continue;
+    event.run(DEFAULT_WORKSPACE_ID, row.id, JSON.stringify({ deviceId: row.id, reason: 'perf-audit-probe' }), now, now);
+  }
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

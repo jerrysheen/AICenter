@@ -4,7 +4,8 @@ import { json, readJson } from '../http/response.js';
 
 export function createFeedInteractionRoutes() {
   return [
-    { method: 'POST', path: /^\/api\/v1\/content-items\/([0-9a-f-]{36})\/x-like$/i,
+    { method: 'POST', path: /^\/api\/v1\/content-items\/([0-9a-f-]{36})\/x-like$/i, access: 'desktop',
+      forbidden: '在 X 点赞仅允许在本机发起',
       async handler({ request, response, services, identity, params, events }) {
         parseContract(LikeRequestSchema, await readJson(request));
         const input = parseContract(LikeContentInputSchema, { contentItemId: params.values[0] });

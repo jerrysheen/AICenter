@@ -225,9 +225,15 @@ test('HTTP allows paired phones to submit work packages and only desktop can cla
     }).then((response) => response.json());
     assert.equal(inbox.notes.some((note) => note.id === created.workPackage.inspirationId), false);
 
-    const notified = await fetch(`${address.localUrl}/api/v1/work-packages/notify`, {
+    const phoneNotify = await fetch(`${address.localUrl}/api/v1/work-packages/notify`, {
       method: 'POST',
       headers: { ...publicHeaders, 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ id: created.workPackage.id }),
+    });
+    assert.equal(phoneNotify.status, 403);
+    const notified = await fetch(`${address.localUrl}/api/v1/work-packages/notify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: created.workPackage.id }),
     }).then((response) => response.json());
     assert.equal(notified.ok, true);
@@ -265,16 +271,30 @@ test('HTTP allows paired phones to submit work packages and only desktop can cla
 
     const phoneRestart = await fetch(`${address.localUrl}/api/v1/runtime/restart`, {
       method: 'POST',
-      headers: { ...publicHeaders, Cookie: cookie },
+      headers: { ...publicHeaders, 'Content-Type': 'application/json', Cookie: cookie },
+      body: '{}',
     });
-    assert.equal(phoneRestart.status, 202);
-    const phoneRestartBody = await phoneRestart.json();
-    assert.equal(phoneRestartBody.restart.requested, true);
+    assert.equal(phoneRestart.status, 403);
+    assert.equal(existsSync(restartRequestPath(directory)), false);
+    const desktopRestart = await fetch(`${address.localUrl}/api/v1/runtime/restart`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(desktopRestart.status, 202);
+    const desktopRestartBody = await desktopRestart.json();
+    assert.equal(desktopRestartBody.restart.requested, true);
     assert.equal(existsSync(restartRequestPath(directory)), true);
 
-    const retried = await fetch(`${address.localUrl}/api/v1/work-packages/${created.workPackage.id}/retry`, {
+    const phoneRetry = await fetch(`${address.localUrl}/api/v1/work-packages/${created.workPackage.id}/retry`, {
       method: 'POST',
       headers: { ...publicHeaders, 'Content-Type': 'application/json', Cookie: cookie },
+      body: '{}',
+    });
+    assert.equal(phoneRetry.status, 403);
+    const retried = await fetch(`${address.localUrl}/api/v1/work-packages/${created.workPackage.id}/retry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: '{}',
     }).then((response) => response.json());
     assert.equal(retried.ok, true);
@@ -288,13 +308,14 @@ test('HTTP allows paired phones to submit work packages and only desktop can cla
       body: JSON.stringify({ body: '安全区还要再让一点' }),
     }).then((response) => response.json());
     assert.equal(continued.ok, true);
+    assert.deepEqual(continued.jobs, []);
+    assert.match(continued.dispatchNote, /本机派发/);
     assert.equal(continued.workPackage.parentWorkPackageId, created.workPackage.id);
     assert.match(continued.workPackage.body, /上一任务：/);
     assert.match(continued.workPackage.body, /上一目标：/);
     assert.match(continued.workPackage.body, /上一进展：/);
     assert.match(continued.workPackage.body, /上一步骤：/);
     assert.match(continued.workPackage.body, /继续指令：\n安全区还要再让一点/);
-    assert.equal(continued.jobs?.[0]?.type, 'work-package.dispatch');
     const continuedTrace = await fetch(`${address.localUrl}/api/v1/work-packages/${continued.workPackage.id}/trace`, {
       headers: { ...publicHeaders, Cookie: cookie },
     }).then((response) => response.json());
@@ -306,7 +327,8 @@ test('HTTP allows paired phones to submit work packages and only desktop can cla
 
     const anonymous = await fetch(`${address.localUrl}/api/v1/runtime/restart`, {
       method: 'POST',
-      headers: publicHeaders,
+      headers: { ...publicHeaders, 'Content-Type': 'application/json' },
+      body: '{}',
     });
     assert.equal(anonymous.status, 401);
   } finally {
@@ -677,6 +699,9 @@ test('task detail reuses the Ask run progress list', () => {
   const app = readFileSync(path.join(process.cwd(), 'apps/web/public/app.js'), 'utf8');
   const css = readFileSync(path.join(process.cwd(), 'apps/web/public/styles.css'), 'utf8');
   const contracts = readFileSync(path.join(process.cwd(), 'docs/contracts-v1.md'), 'utf8');
+  assert.match(app, /function workPackageAwaitingDispatch/);
+  assert.match(app, /label: '派发'/);
+  assert.match(app, /派发全部 \(\$\{pending\.length\}\)/);
   assert.match(app, /function workPackageIsLive/);
   assert.match(app, /function renderRunProgress/);
   assert.match(app, /function createRunProgressList/);

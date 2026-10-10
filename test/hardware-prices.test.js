@@ -211,7 +211,7 @@ test('hardware HTTP endpoints are read-only, scoped and explicit legacy migratio
     const json=await read.json();assert.equal(json.items.length,1);assert.equal(JSON.stringify(json).includes('artifactPath'),false);
     assert.equal((await fetch(`${address.localUrl}/api/v1/hardware-prices?category=invalid`)).status,400);
     assert.equal((await fetch(`${address.localUrl}/api/v1/sources/content.trendforce.collection`)).status,404);
-    const migrate=await fetch(`${address.localUrl}/api/v1/feed/trendforce/migrate`,{method:'POST'});assert.equal(migrate.status,202);
+    const migrate=await fetch(`${address.localUrl}/api/v1/feed/trendforce/migrate`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});assert.equal(migrate.status,202);
     const {jobId}=await migrate.json();assert.equal(f.store.getJob(jobId).type,'feed.trendforce.migrate');
   }finally{await app.close();rmSync(f.directory,{recursive:true,force:true});}
 });

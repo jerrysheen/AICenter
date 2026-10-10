@@ -28,6 +28,11 @@ export function json(response, status, payload, headers = {}, { compress = false
   response.end(body);
 }
 
+export function isJsonContentType(value) {
+  const media = String(value || '').split(',')[0].split(';')[0].trim().toLowerCase();
+  return media === 'application/json';
+}
+
 export async function readJson(request, { maxBytes = 128 * 1024 } = {}) {
   const limit = Math.max(1024, Number(maxBytes) || 128 * 1024);
   const chunks = [];

@@ -36,6 +36,10 @@ export function createFeedRoutes() {
         const sourceKeys = Array.isArray(body.sourceKeys)
           ? body.sourceKeys
           : String(body.sourceKeys || '').split(',').map((item) => item.trim()).filter(Boolean);
+        if (body.run === true && identity?.kind !== 'desktop') {
+          json(response, 403, { ok: false, error: '媒体探针运行仅允许在本机发起' });
+          return;
+        }
         if (body.run === true) {
           const job = services.runtime.requestMediaProbe({workspaceId:workspaceIdFrom(identity),sourceKeys,policyReviewed:body.policyReviewed === true});
           json(response,202,{ok:true,jobId:job.id});return;
@@ -51,6 +55,8 @@ export function createFeedRoutes() {
     },
     {
       method: 'POST', path: /^\/api\/v1\/feed\/media\/sources\/([a-z0-9]+)\/(enable|disable)$/,
+      access: 'desktop',
+      forbidden: '媒体源启停仅允许在本机操作',
       handler({ response, services, identity, params }) {
         if (!services.media) throw new ValidationError('尚未启用 media 信息源', ['platform']);
         const workspaceId = workspaceIdFrom(identity);

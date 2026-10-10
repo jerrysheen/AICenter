@@ -57,6 +57,7 @@ export function buildCursorSessionPrompt(pack, {
     '{"at":毫秒时间戳,"step":"plan|read|edit|test|report","status":"started|done|failed","summary":"一句话","paths":["改过的路径"]}',
     '第一步先写 plan。卡住或失败也要追加一行。',
     `完成：POST ${apiBase}/api/v1/work-packages/${id}/complete`,
+    '请求头必须是 Content-Type: application/json。Host 用 127.0.0.1，不要加代理头。',
     `{"claimedBy":"${SESSION_ACTOR}","resultSummary":"一句话结果","changedPaths":["改过的路径"]}`,
     `失败：POST ${apiBase}/api/v1/work-packages/${id}/fail`,
     `{"claimedBy":"${SESSION_ACTOR}","resultSummary":"原因"}`,

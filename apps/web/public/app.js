@@ -294,7 +294,7 @@ const elements = Object.fromEntries([
   'connection-state', 'server-name', 'session-description', 'pairing-panel', 'pairing-qr',
   'network-address', 'pairing-code', 'refresh-pairing', 'unpaired-panel', 'unpaired-title',
   'unpaired-message', 'unpaired-hint', 'unpaired-actions', 'login-form', 'login-username', 'login-password', 'login-message', 'login-submit',
-  'exit-to-pairing', 'retry-session', 'device-repair-panel', 'restart-pairing', 'request-process-restart', 'authorized-content',
+  'exit-to-pairing', 'retry-session', 'device-repair-panel', 'restart-pairing', 'process-restart-panel', 'request-process-restart', 'authorized-content',
   'authorized-feed', 'page-title', 'page-subtitle', 'post-form', 'post-title', 'post-body',
   'form-message', 'feed', 'feed-count', 'metrics-panel', 'metric-devices', 'metric-opens',
   'metric-published', 'metric-details', 'device-list', 'post-dialog', 'dialog-title',
@@ -9948,6 +9948,20 @@ function renderTasks() {
   const list = elements['task-list'];
   if (!list) return;
   list.replaceChildren();
+  if (state.session?.role === 'desktop') {
+    const pending = state.workPackages.filter(workPackageAwaitingDispatch);
+    if (pending.length) {
+      const dispatchAll = document.createElement('div');
+      dispatchAll.className = 'detail-actions is-inline task-dispatch-all';
+      dispatchAll.append(createDetailAction({
+        iconName: 'send-horizontal',
+        label: `派发全部 (${pending.length})`,
+        primary: true,
+        onClick: (event) => { void notifyWorkPackages('', event.currentTarget); },
+      }));
+      list.append(dispatchAll);
+    }
+  }
   const packs = visibleWorkPackages();
   if (!packs.length) {
     const empty = document.createElement('div');
@@ -10014,6 +10028,10 @@ function openWorkPackage(id) {
   const packId = String(id || '').trim();
   if (!packId) return;
   setView(`inspire/tasks/${packId}`);
+}
+
+function workPackageAwaitingDispatch(pack) {
+  return pack?.status === 'open' && !pack.dispatchJobId && !pack.cursorAgentId;
 }
 
 function workPackageIsLive(pack) {
@@ -10322,9 +10340,14 @@ function toggleDispatchMenu(menu, button) {
 
 function syncDispatchComposer() {
   const target = DISPATCH_TARGETS[state.composeTarget] || DISPATCH_TARGETS.inspiration;
+  const localDesktop = state.session?.role === 'desktop';
   if (elements['dispatch-target-label']) elements['dispatch-target-label'].textContent = target.label;
-  if (elements['note-body']) elements['note-body'].placeholder = target.placeholder;
-  elements['dispatch-send']?.setAttribute('aria-label', target.send);
+  if (elements['note-body']) {
+    elements['note-body'].placeholder = state.composeTarget === 'task' && !localDesktop
+      ? '记下不足或 bug。派发只在本机进行。'
+      : target.placeholder;
+  }
+  elements['dispatch-send']?.setAttribute('aria-label', state.composeTarget === 'task' && !localDesktop ? '记下' : target.send);
   elements['note-ai-toggle']?.classList.toggle('hidden', state.composeTarget !== 'inspiration');
   elements['note-ai-toggle']?.classList.toggle('is-on', state.wantAi);
   elements['note-ai-toggle']?.setAttribute('aria-pressed', String(state.wantAi));
@@ -10626,7 +10649,18 @@ function renderTaskDetail() {
     result.append(resultSurface);
     wrap.append(result);
   }
-  if (pack.status === 'completed' || pack.status === 'failed' || pack.status === 'cancelled') {
+  if (state.session?.role === 'desktop' && workPackageAwaitingDispatch(pack)) {
+    const actions = document.createElement('div');
+    actions.className = 'detail-actions is-inline task-detail-actions';
+    const dispatch = createDetailAction({
+      iconName: 'send-horizontal',
+      label: '派发',
+      primary: true,
+      onClick: (event) => { void notifyWorkPackages(pack.id, event.currentTarget); },
+    });
+    actions.append(dispatch);
+    wrap.append(actions);
+  } else if (state.session?.role === 'desktop' && (pack.status === 'completed' || pack.status === 'failed' || pack.status === 'cancelled')) {
     const actions = document.createElement('div');
     actions.className = 'detail-actions is-inline task-detail-actions';
     const retry = createDetailAction({
@@ -10801,7 +10835,7 @@ async function continueWorkPackageSession(parentId, rawBody, attachmentIds = [])
       }),
     });
     const fallbackId = created.workPackage?.id;
-    if (fallbackId) {
+    if (fallbackId && state.session?.role === 'desktop') {
       await api('/api/v1/work-packages/notify', {
         method: 'POST',
         body: JSON.stringify({ id: fallbackId }),
@@ -10812,9 +10846,28 @@ async function continueWorkPackageSession(parentId, rawBody, attachmentIds = [])
   persistTaskContinueDraft(parentId, '');
   state.taskContinuePackId = '';
   state.taskContinueAttachments = [];
-  showToast('已开新 session。本机 Cursor CLI 会带上上一轮全过程继续做。');
+  showToast(created.jobs?.length
+    ? '已开新 session。本机 Cursor CLI 会带上上一轮全过程继续做。'
+    : (created.dispatchNote || '已记下继续指令，需在本机派发'));
   await loadNotes();
   if (nextId) openWorkPackage(nextId);
+}
+
+async function notifyWorkPackages(id, button) {
+  if (button?.disabled) return;
+  if (button) button.disabled = true;
+  try {
+    const result = await api('/api/v1/work-packages/notify', {
+      method: 'POST',
+      body: JSON.stringify(id ? { id } : {}),
+    });
+    const count = Array.isArray(result.jobs) ? result.jobs.length : 0;
+    showToast(count ? `已派发 ${count} 个。本机 Cursor CLI 会做完退出。` : '没有待派发的任务。');
+    await loadNotes();
+  } catch (error) {
+    showToast(error.message);
+    if (button) button.disabled = false;
+  }
 }
 
 async function retryWorkPackage(parentId, button) {
@@ -11496,7 +11549,7 @@ async function loadMediaFeed({ refresh = false, append = false } = {}) {
 }
 
 async function probeMediaSources() {
-  if (!state.session) return;
+  if (state.session?.role !== 'desktop') return;
   state.mediaLoading = true;
   state.mediaProbing = true;
   renderMediaToolbar();
@@ -11526,6 +11579,7 @@ async function probeMediaSources() {
 }
 
 async function enableMediaSource(sourceKey) {
+  if (state.session?.role !== 'desktop') return;
   await api(`/api/v1/feed/media/sources/${sourceKey}/enable`, { method: 'POST', body: '{}' });
   showToast('已启用，开始同步索引');
   await loadMediaFeed({ refresh: true });
@@ -11837,6 +11891,7 @@ async function completeAuthorizedStart(session) {
   paintAuthorizedChrome();
   hideUnpairedPage();
   elements['device-repair-panel'].classList.toggle('hidden', session.role === 'desktop');
+  elements['process-restart-panel']?.classList.toggle('hidden', session.role !== 'desktop');
   if (session.role === 'desktop') {
     elements['pairing-panel'].classList.remove('hidden');
     elements['metrics-panel'].classList.remove('hidden');
@@ -12350,19 +12405,23 @@ elements['note-form'].addEventListener('submit', async (event) => {
         body: JSON.stringify({ body, attachmentIds }),
       });
       const workPackageId = created.workPackage?.id;
-      try {
-        await api('/api/v1/work-packages/notify', {
-          method: 'POST',
-          body: JSON.stringify(workPackageId ? { id: workPackageId } : {}),
-        });
-      } catch {
-        /* 旧服务端没有 notify 时，任务本身已经落库 */
+      if (state.session?.role === 'desktop') {
+        try {
+          await api('/api/v1/work-packages/notify', {
+            method: 'POST',
+            body: JSON.stringify(workPackageId ? { id: workPackageId } : {}),
+          });
+        } catch {
+          /* 旧服务端没有 notify 时，任务本身已经落库 */
+        }
       }
       elements['note-body'].value = '';
       elements['note-form'].reset();
       clearDispatchAttachments();
       persistTaskComposerDraft('');
-      showToast('已投递。本机 Cursor CLI 会做完退出，状态写回这里。');
+      showToast(state.session?.role === 'desktop'
+        ? '已投递。本机 Cursor CLI 会做完退出，状态写回这里。'
+        : '已记下。需在本机派发。');
       await loadNotes();
       syncDispatchComposer();
       return;
