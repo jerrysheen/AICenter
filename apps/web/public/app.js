@@ -17,6 +17,7 @@ import {
   pickHomeQuoteCards,
   quoteStatusText,
   homeRequestPlan,
+  homeEditionNote,
   hourlyEditions,
   absorbReadingIndex,
   mergeReadingHours,
@@ -24,7 +25,7 @@ import {
   unavailableOfficialCount,
 } from './home-timeline.js?v=dev';
 import { decodeHtmlEntities } from './html-text.js?v=dev';
-import { newsDayLabel, newsEffectiveLabel, renderNewsList } from './news-list.js?v=dev';
+import { newsEffectiveLabel, renderNewsList } from './news-list.js?v=dev';
 
 const feedLikeButton = createFeedLikeAction({ api: (...args) => api(...args), showToast: text => showToast(text), createAction: options => createDetailAction(options), session: () => state.session });
 
@@ -224,6 +225,7 @@ const state = {
   homeTree: null,
   homeTreeLoaded: false,
   homeHourlySettled: false,
+  homeOfficialSettled: false,
   homeTreeError: '',
   homeReadingHours: {},
   homeReadingIndexMissing: false,
@@ -3431,20 +3433,25 @@ function sinkLowValue(items) {
   return tail.length ? main.concat(tail) : items;
 }
 
+function feedSortAt(post, now = Date.now()) {
+  const published = Number(post?.publishedAt) || 0;
+  const effective = Number(post?.effectiveAt || post?.release?.effectiveAt) || 0;
+  const created = Number(post?.createdAt || post?.observedAt || post?.release?.observedAt) || 0;
+  const official = post?.kind === 'official' || post?.platform === 'official';
+  const future = published > now || effective > now;
+  const capture = created > 0 && created <= now ? created : (future ? now : created);
+  if (official && (!published || future)) return capture;
+  if (future) return capture;
+  return published || created;
+}
+
 function sortFeedItems(items) {
   if (state.channel === 'recent') {
     return [...items].sort((left, right) => (Number(right.viewedAt) || 0) - (Number(left.viewedAt) || 0));
   }
   const now = Date.now();
-  const stamp = (item) => {
-    const published = Number(item?.publishedAt) || 0;
-    const created = Number(item?.createdAt) || 0;
-    const chosen = state.feedSort === 'published' ? published : created;
-    if (chosen > now) return created > 0 && created <= now ? created : now;
-    return chosen;
-  };
-  return [...items].sort((left, right) => Number(Boolean(left.isRead)) - Number(Boolean(right.isRead))
-    || stamp(right) - stamp(left));
+  return [...items].sort((left, right) => feedSortAt(right, now) - feedSortAt(left, now)
+    || Number(Boolean(left.isRead)) - Number(Boolean(right.isRead)));
 }
 
 function visibleFeedItems() {
@@ -4311,11 +4318,13 @@ function feedListMoment(post, now = Date.now()) {
   const published = Number(post?.publishedAt) || 0;
   const effective = Number(post?.effectiveAt || post?.release?.effectiveAt) || 0;
   const created = Number(post?.createdAt || post?.observedAt || post?.release?.observedAt) || 0;
-  const futureAt = [published, effective].filter((value) => value > now);
-  if (!futureAt.length) return { at: published || created, ingested: !published && created > 0, effectiveLabel: '' };
-  const at = created > 0 && created <= now ? created : now;
-  const labelAt = effective > now ? effective : Math.min(...futureAt);
-  return { at, ingested: false, effectiveLabel: newsEffectiveLabel(labelAt) };
+  const future = published > now || effective > now;
+  const labelAt = effective > now ? effective : (published > now ? published : 0);
+  return {
+    at: feedSortAt(post, now),
+    ingested: !future && !published && created > 0,
+    effectiveLabel: labelAt ? newsEffectiveLabel(labelAt) : '',
+  };
 }
 
 function feedToNewsRow(post) {
@@ -6644,13 +6653,7 @@ function homeHourHref(startAt, nodeId = '') {
 }
 
 function homeHourNote(startAt, endAt) {
-  const clock = (at) => new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Asia/Shanghai',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  }).format(at);
-  return `${newsDayLabel(startAt)} · ${clock(startAt)}–${clock(endAt)}`;
+  return homeEditionNote(startAt, endAt, Date.now());
 }
 
 function homeReadingSnapshot(item, edition) {
@@ -6669,7 +6672,7 @@ function homeReadingSnapshot(item, edition) {
   };
 }
 
-function homeModuleFrame(root, { title, note = '', onMore, status = 'ready', onRetry }) {
+function homeModuleFrame(root, { title, note = '', onMore, status = 'ready', onRetry, detail = '' }) {
   root.replaceChildren();
   const head = document.createElement('div');
   head.className = 'home-module-head';
@@ -6701,6 +6704,12 @@ function homeModuleFrame(root, { title, note = '', onMore, status = 'ready', onR
     return null;
   }
   if (status === 'error') {
+    if (detail) {
+      root.append(Object.assign(document.createElement('p'), {
+        className: 'feed-empty news-empty',
+        textContent: detail,
+      }));
+    }
     const retry = document.createElement('button');
     retry.type = 'button';
     retry.className = 'text-button';
@@ -6734,9 +6743,9 @@ function homePlainRow(post) {
 }
 
 function homeMessageItems() {
-  return [...socialFeedItems({ ignorePlatform: true }), ...officialFeedItems()]
-    .filter((item) => item.platform !== 'bilibili' && !item.lowValue && readyZhTitle(item))
-    .sort((left, right) => feedListMoment(right).at - feedListMoment(left).at);
+  return socialFeedItems({ ignorePlatform: true })
+    .filter((item) => item.platform !== 'bilibili' && item.platform !== 'official' && item.kind !== 'official' && !item.lowValue && readyZhTitle(item))
+    .sort((left, right) => feedSortAt(right) - feedSortAt(left));
 }
 
 function homeMessagesStatus() {
@@ -6766,7 +6775,7 @@ function renderHomeHourlyModule() {
   });
   if (!host) return;
   if (!edition || !itemsReady) {
-    renderNewsList(host, [], { groupByDay: false, emptyText: '今天还没有小时报' });
+    renderNewsList(host, [], { groupByDay: false, emptyText: '还没有小时报' });
     return;
   }
   const rows = homeHourHits(snapshot).slice(0, 6).map((item) => {
@@ -6814,23 +6823,25 @@ function homeOfficialItems() {
 function renderHomeOfficialModule() {
   const root = elements['home-official'];
   if (!root) return;
-  const status = !state.homeBoard && state.homeBoardError
+  const hasBoard = Boolean(state.homeBoard);
+  const status = !hasBoard && state.homeBoardError
     ? 'error'
-    : (!state.homeBoard ? (state.homeSlow ? 'slow' : 'loading') : 'ready');
+    : (!hasBoard && !state.homeOfficialSettled ? 'loading' : 'ready');
   const host = homeModuleFrame(root, {
     title: '官方',
     status,
+    detail: status === 'error' ? state.homeBoardError : '',
     onMore: () => { selectFeedScope('official'); setView('feed'); },
     onRetry: () => {
-      state.homeSlow = false;
-      armHomeSlowWatch();
+      state.homeOfficialSettled = false;
+      state.homeBoardError = '';
       loadHomeBoard(homeRequestPlan(Date.now()).board, { refresh: true, token: state.homeLoadToken }).catch(() => {});
     },
   });
   if (!host) return;
   renderNewsList(host, homeOfficialItems().slice(0, 4).map(homePlainRow), {
     groupByDay: false,
-    emptyText: '还没有中文官方发布',
+    emptyText: state.homeBoardLoading ? '官方来源读取较慢' : '还没有中文官方发布',
   });
 }
 
@@ -6939,23 +6950,45 @@ async function loadHomeOverviewMarket(refresh) {
   }
 }
 
+const HOME_OFFICIAL_SETTLE_MS = 8_000;
+
+function settleHomeOfficial(token) {
+  if (token !== state.homeLoadToken || state.homeOfficialSettled) return;
+  state.homeOfficialSettled = true;
+  if (document.body.dataset.view === 'sources') renderHub();
+}
+
 async function loadHomeBoard(path, { refresh = false, token = state.homeLoadToken } = {}) {
-  if (!state.session) return;
+  if (!state.session) {
+    state.homeOfficialSettled = true;
+    state.homeBoardError = 'GET /api/v1/static-signals/board · 未登录';
+    return;
+  }
   state.homeBoardLoading = true;
   state.homeBoardError = '';
   state.homeBoardStartedAt = Date.now();
-  if (state.homeLoadStartedAt && Date.now() - state.homeLoadStartedAt >= 10_000) state.homeSlow = true;
-  if (state.homeSlow && document.body.dataset.view === 'sources') renderHub();
+  if (!state.homeBoard) state.homeOfficialSettled = false;
+  window.clearTimeout(loadHomeBoard.settleTimer);
+  const timer = window.setTimeout(() => settleHomeOfficial(token), HOME_OFFICIAL_SETTLE_MS);
+  loadHomeBoard.settleTimer = timer;
   try {
-    const payload = await api(refresh ? `${path}&refresh=1` : path, { timeoutMs: 45_000 });
+    const payload = await api(refresh ? `${path}&refresh=1` : path, { timeoutMs: 20_000 });
     if (token !== state.homeLoadToken) return;
-    state.homeBoard = payload.board;
+    if (!payload?.board) {
+      state.homeBoardError = 'GET /api/v1/static-signals/board · 响应没有 board';
+    } else {
+      state.homeBoard = payload.board;
+      state.homeBoardError = '';
+    }
   } catch (error) {
     if (token !== state.homeLoadToken) return;
-    state.homeBoardError = error instanceof Error ? error.message : '日程读取失败';
+    const message = error instanceof Error ? error.message : '官方来源读取失败';
+    state.homeBoardError = `GET /api/v1/static-signals/board · ${message}`;
   } finally {
+    if (loadHomeBoard.settleTimer === timer) window.clearTimeout(timer);
     if (token === state.homeLoadToken) {
       state.homeBoardLoading = false;
+      state.homeOfficialSettled = true;
       if (document.body.dataset.view === 'sources') renderHub();
     }
   }
@@ -6979,6 +7012,7 @@ async function loadSourcesPage({ refresh = false } = {}) {
   armHomeSlowWatch();
   const plan = homeRequestPlan(Date.now());
   const treePromise = loadHomeTree(plan.tree, token);
+  loadHomeBoard(plan.board, { refresh, token }).catch(() => {});
   ensureHomeMessages().catch(() => {});
   await Promise.all([
     treePromise,
@@ -6989,7 +7023,6 @@ async function loadSourcesPage({ refresh = false } = {}) {
   if (token !== state.homeLoadToken) return;
   renderHub();
   ensureHomeReadingSnapshots(token).catch(() => {});
-  loadHomeBoard(plan.board, { refresh, token }).catch(() => {});
   scheduleOverviewFocusWatch();
 }
 

@@ -174,7 +174,7 @@ test('media read state uses the real ContentItem, survives reopening and sorts b
 
 test('media UI marks the stored list item and writes the ContentItem state without changing tag identity',()=>{
   const js=readFileSync('apps/web/public/app.js','utf8');
-  const names=['mediaAsItem','markFeedItemRead','sortFeedItems'];
+  const names=['mediaAsItem','markFeedItemRead','feedSortAt','sortFeedItems'];
   const calls=[];
   const row={id:'media-id',resourceId:'media-id',externalId:'fed:one',contentItemId:'content-id',contentLevel:'full',createdAt:123};
   const state={mediaItems:[row],xItems:[],bilibiliItems:[],trendforceItems:[],xueqiuItems:[],posts:[],focusItems:{},session:{role:'device',device:{id:'reader'}},channel:'social',feedSort:'created'};
@@ -188,7 +188,7 @@ test('media UI marks the stored list item and writes the ContentItem state witho
   assert.equal(calls[0].url,'/api/v1/content-items/content-id/state');
   assert.deepEqual(JSON.parse(calls[0].input.body),{isRead:true});
   assert.equal(vm.runInContext('post.resourceId',context),'media-id');
-  assert.equal(vm.runInContext('sortFeedItems([post,{id:"unread",createdAt:1}])[0].id',context),'unread');
+  assert.equal(vm.runInContext('sortFeedItems([post,{id:"unread",createdAt:1}])[0].id',context),'media-id');
 });
 
 test('official release lookback admits a week-old policy while RSS retains the 48-hour window',async()=>{
