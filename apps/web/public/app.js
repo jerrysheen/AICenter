@@ -810,17 +810,13 @@ function isPrimaryNavActive(navId, view) {
 }
 
 function primaryNavTarget(navId, view = document.body.dataset.view) {
-  if (navId === 'sources') {
-    if (!overviewViews.includes(view) || view === 'sources' && state.overviewPane !== 'home') return 'feed';
-    const index = hubLanes.findIndex(item => item.id === overviewLane(view));
-    return hubLanes[(index + 1) % hubLanes.length].view;
-  }
+  if (navId === 'sources') return 'sources';
   if (navId === 'assets') return view === 'assets' && state.tradePane === 'holdings' ? 'assets/analysis' : 'assets';
   return navId;
 }
 
-function primaryNavActivation(navId, bottomTab) {
-  if (bottomTab && navId === 'sources') return { route: 'sources', fromPrimaryNav: false };
+function primaryNavActivation(navId) {
+  if (navId === 'sources') return { route: 'sources', fromPrimaryNav: false };
   return { route: navId, fromPrimaryNav: true };
 }
 
@@ -14105,7 +14101,7 @@ window.addEventListener('scroll', () => {
 document.addEventListener('click', (event) => {
   const trigger = event.target.closest('[data-nav]');
   if (!trigger) return;
-  const activation = primaryNavActivation(trigger.dataset.nav, trigger.classList.contains('tab-item'));
+  const activation = primaryNavActivation(trigger.dataset.nav);
   setView(activation.route, activation.fromPrimaryNav ? { fromPrimaryNav: true } : {});
 });
 
