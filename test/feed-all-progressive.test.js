@@ -23,7 +23,7 @@ vm.runInContext([
   app.match(/const FEED_SOURCE_READING_LABEL = \{[^]*?\n\};/)[0],
   extract([
     'feedSourceFlags', 'feedSourceSettled', 'pendingFeedSourceLabels',
-    'feedAllCountText', 'focusFeedPending', 'mergeLoadedFeedItem', 'mergeLoadedFeed', 'sortFeedItems',
+    'feedAllCountText', 'focusFeedPending', 'mergeLoadedFeedItem', 'mergeLoadedFeed', 'feedSortAt', 'sortFeedItems',
   ]),
 ].join('\n'), countContext);
 

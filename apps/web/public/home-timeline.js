@@ -24,6 +24,7 @@ export const HOME_QUOTE_CAPTION = {
 };
 
 export const HOME_VISIBLE_HOURS = { wide: 4, narrow: 3 };
+export const HOME_RECENT_EDITION_HOURS = 48;
 
 export function shanghaiParts(nowMs) {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -113,15 +114,28 @@ export function quoteStatusText({ cards = [], fetchedAt, error = false, pending 
   return { kind: 'loading', text: '' };
 }
 
+export function homeEditionNote(startAt, endAt, nowMs = Date.now()) {
+  const clock = (at) => {
+    const parts = shanghaiParts(at);
+    return `${parts.hour}:${parts.minute}`;
+  };
+  const range = `${clock(startAt)}–${clock(endAt)}`;
+  const start = shanghaiParts(startAt);
+  const today = shanghaiParts(nowMs);
+  if (start.year === today.year && start.month === today.month && start.day === today.day) return range;
+  return `${start.month}月${start.day}日 · ${range}`;
+}
+
 export function homeRequestPlan(nowMs = Date.now()) {
-  const from = shanghaiMidnight(nowMs);
-  const dayEnd = from + DAY;
+  const end = shanghaiHourStart(nowMs) + HOUR;
+  const from = end - HOME_RECENT_EDITION_HOURS * HOUR;
+  const boardFrom = shanghaiMidnight(nowMs);
   const boardTo = nowMs + DAY;
-  const tree = `/api/v1/reports/tree?view=index&startAt=${from}&endAt=${dayEnd}`;
-  const readingIndex = `/api/v1/reports/reading-hour/index?startAt=${from}&endAt=${dayEnd}&scope=hour`;
+  const tree = `/api/v1/reports/tree?view=index&startAt=${from}&endAt=${end}`;
+  const readingIndex = `/api/v1/reports/reading-hour/index?startAt=${from}&endAt=${end}&scope=hour`;
   const market = '/api/v1/markets?board=overview';
   const daily = '/api/v1/reports/daily/latest/brief';
-  const board = `/api/v1/static-signals/board?from=${from}&to=${boardTo}&focus=1&limit=40&releaseLimit=60`;
+  const board = `/api/v1/static-signals/board?from=${boardFrom}&to=${boardTo}&focus=1&limit=40&releaseLimit=60`;
   return {
     tree,
     readingIndex,

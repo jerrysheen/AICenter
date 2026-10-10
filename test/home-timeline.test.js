@@ -10,7 +10,10 @@ import {
   hourCoverage,
   visibleHourGaps,
   homeRequestPlan,
+  homeEditionNote,
+  HOME_RECENT_EDITION_HOURS,
   shanghaiMidnight,
+  shanghaiHourStart,
   readingTitles,
   buildHomeTimelineModel,
   mergeReadingHours,
@@ -226,12 +229,23 @@ test('reading-hour snapshots stay ahead of a later index refresh', () => {
   assert.equal(second.earlierCount, first.earlierCount);
 });
 
+test('home hourly window keeps the latest editions across midnight', () => {
+  const now = Date.parse('2026-10-10T17:13:00Z');
+  const plan = homeRequestPlan(now);
+  const end = shanghaiHourStart(now) + 3_600_000;
+  const from = end - HOME_RECENT_EDITION_HOURS * 3_600_000;
+  const yesterdayEvening = Date.parse('2026-10-10T15:00:00Z');
+  assert.equal(plan.tree, `/api/v1/reports/tree?view=index&startAt=${from}&endAt=${end}`);
+  assert.equal(plan.readingIndex, `/api/v1/reports/reading-hour/index?startAt=${from}&endAt=${end}&scope=hour`);
+  assert.ok(from <= yesterdayEvening && yesterdayEvening < end);
+  assert.equal(homeEditionNote(yesterdayEvening, yesterdayEvening + 3_600_000, now), '10月10日 · 23:00–00:00');
+  assert.equal(homeEditionNote(shanghaiHourStart(now), end, now), '01:00–02:00');
+});
+
 test('home requests are the overview set and not the old feed fan-out', () => {
   const plan = homeRequestPlan(saturdayMorning);
   assert.equal(plan.parallel.length, 4);
   assert.match(plan.tree, /^\/api\/v1\/reports\/tree\?view=index&startAt=\d+&endAt=\d+$/);
-  const todayStart = shanghaiMidnight(saturdayMorning);
-  assert.equal(plan.readingIndex, `/api/v1/reports/reading-hour/index?startAt=${todayStart}&endAt=${todayStart + 86_400_000}&scope=hour`);
   assert.equal(plan.market, '/api/v1/markets?board=overview');
   assert.equal(plan.daily, '/api/v1/reports/daily/latest/brief');
   assert.match(plan.board, /^\/api\/v1\/static-signals\/board\?from=\d+&to=\d+&focus=1&limit=40&releaseLimit=60$/);
@@ -246,6 +260,13 @@ test('home requests are the overview set and not the old feed fan-out', () => {
   assert.match(sourcesPage, /plan\.board/);
   assert.match(sourcesPage, /loadDailyBrief\(/);
   assert.match(sourcesPage, /ensureHomeMessages\(/);
+  assert.ok(sourcesPage.indexOf('loadHomeBoard(') >= 0 && sourcesPage.indexOf('loadHomeBoard(') < sourcesPage.indexOf('await Promise.all'));
+  assert.match(app, /homeOfficialSettled/);
+  assert.match(app, /HOME_OFFICIAL_SETTLE_MS = 8_000/);
+  assert.match(app, /GET \/api\/v1\/static-signals\/board/);
+  const messages = app.match(/function homeMessageItems\(\) \{[^]*?\n\}/)[0];
+  assert.doesNotMatch(messages, /officialFeedItems/);
+  assert.match(messages, /feedSortAt/);
   assert.doesNotMatch(sourcesPage, /loadGlobalAssets|loadMarketNativeBoard|scheduleOverviewManualPosts|loadXFeed|loadXueqiuFeed|loadPosts\(/);
   assert.match(app, /mergeReadingHours\(state\.homeReadingHours, absorbReadingIndex\(payload\)\)/);
   assert.match(app, /view === 'report' \? '搜索简报'/);

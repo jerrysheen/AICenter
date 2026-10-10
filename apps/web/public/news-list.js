@@ -159,10 +159,11 @@ function appendNewsRows(list, groupRows) {
   for (const row of groupRows) list.append(newsRow(row));
 }
 
-function appendDayGroups(wrap, rows) {
+export function newsDayGroups(rows) {
+  const ordered = [...(rows || [])].sort((left, right) => (Number(right.at) || 0) - (Number(left.at) || 0));
   const groups = [];
   const index = new Map();
-  for (const row of rows) {
+  for (const row of ordered) {
     const key = row.day || newsDayLabel(row.at) || '时间待公布';
     if (!index.has(key)) {
       const group = { key, rows: [] };
@@ -171,7 +172,11 @@ function appendDayGroups(wrap, rows) {
     }
     index.get(key).rows.push(row);
   }
-  for (const group of groups) {
+  return groups;
+}
+
+function appendDayGroups(wrap, rows) {
+  for (const group of newsDayGroups(rows)) {
     const day = document.createElement('section');
     day.className = 'news-day official-day';
     const label = document.createElement('p');
