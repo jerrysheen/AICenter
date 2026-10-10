@@ -66,7 +66,7 @@ Connector → Domain Service → Repository → Outbox Event
 ```text
 apps/
   web/src/server.js          进程启动、依赖组装
-  web/src/http/              Router、响应、SSE、静态文件等 HTTP 基础设施。public 文件按指纹改写 `?v=`；`ui-boot.js` 在送出 HTML 时内联，不单独占一次往返。打开页面时指纹检查和 `/session` 并行，初始化复用这次指纹，不再请求第二次。指纹变化要等稳定后再整页重载，boot / SSE / 刷新不要各刷一次。不要手改版本号。
+  web/src/http/              Router、响应、SSE、静态文件等 HTTP 基础设施。public 文件按指纹改写 `?v=`；`ui-boot.js` 在送出 HTML 时内联，内联前换行收成 LF，再按这份正文计算 CSP 哈希，不单独占一次往返。打开页面时指纹检查和 `/session` 并行，初始化复用这次指纹，不再请求第二次。指纹变化要等稳定后再整页重载，boot / SSE / 刷新不要各刷一次。不要手改版本号。
   web/src/routes/            分域 API 路由
   web/public/                Web/Harmony 共用 UI
   worker/                    后台任务执行进程

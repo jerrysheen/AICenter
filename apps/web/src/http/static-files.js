@@ -7,26 +7,33 @@ const ASSET_CACHE_CONTROL = 'public, max-age=31536000, immutable';
 const HTML_CACHE_CONTROL = 'no-store';
 const VERSION_QUERY = /\?v=[A-Za-z0-9._-]+/g;
 
+function normalizeNewlines(value) {
+  const text = Buffer.isBuffer(value) ? value.toString('utf8') : String(value);
+  return text.replace(/\r\n?/g, '\n');
+}
+
 function inlineScriptHashes(html) {
   const hashes = [];
-  for (const match of html.matchAll(/<script\b(?![^>]*\bsrc\b)[^>]*>([\s\S]*?)<\/script>/gi)) {
+  const text = normalizeNewlines(html);
+  for (const match of text.matchAll(/<script\b(?![^>]*\bsrc\b)[^>]*>([\s\S]*?)<\/script>/gi)) {
     if (!match[1].trim()) continue;
-    hashes.push(`'sha256-${createHash('sha256').update(match[1]).digest('base64')}'`);
+    hashes.push(`'sha256-${createHash('sha256').update(normalizeNewlines(match[1])).digest('base64')}'`);
   }
   return hashes;
 }
 
-function securityHeaders(contentType, cacheControl, body = null) {
-  let scriptSrc = "'self'";
-  if (String(contentType).includes('html') && body) {
-    const hashes = inlineScriptHashes(body.toString('utf8'));
-    if (hashes.length) scriptSrc = `${scriptSrc} ${hashes.join(' ')}`;
-  }
+function scriptSrcFor(contentType, html) {
+  if (!String(contentType).includes('html') || !html) return "'self'";
+  const hashes = inlineScriptHashes(html);
+  return hashes.length ? `'self' ${hashes.join(' ')}` : "'self'";
+}
+
+function securityHeaders(contentType, cacheControl, scriptSrc = "'self'") {
   return {
     'Content-Type': contentType,
     'Cache-Control': cacheControl,
     'Vary': 'Accept-Encoding',
-    'Content-Security-Policy': `default-src 'self'; img-src 'self' data:; style-src 'self'; script-src ${scriptSrc}; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
+    'Content-Security-Policy': `default-src 'self'; img-src 'self' data:; style-src 'self'; script-src ${scriptSrc || "'self'"}; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
@@ -104,12 +111,16 @@ export function createStaticFileHandler(publicDirectory) {
     const hit = cache.get(pathname);
     if (hit?.fingerprint === fingerprint) return hit;
     let raw = await readFile(filePath);
-    if (target[1].includes('html') && raw.includes('<script src="/ui-boot.js"></script>')) {
-      const boot = await readFile(path.join(publicDirectory, 'ui-boot.js'));
-      raw = Buffer.from(raw.toString('utf8').replace(
-        '<script src="/ui-boot.js"></script>',
-        `<script>${boot.toString('utf8')}</script>`,
-      ));
+    if (target[1].includes('html')) {
+      let text = normalizeNewlines(raw);
+      if (text.includes('<script src="/ui-boot.js"></script>')) {
+        const boot = normalizeNewlines(await readFile(path.join(publicDirectory, 'ui-boot.js')));
+        text = text.replace(
+          '<script src="/ui-boot.js"></script>',
+          `<script>${boot}</script>`,
+        );
+      }
+      raw = Buffer.from(text);
     }
     raw = applyUiRevision(raw, target[1], revision);
     const gzipped = gzipSync(raw);
@@ -119,6 +130,7 @@ export function createStaticFileHandler(publicDirectory) {
       cacheControl: target[2],
       raw,
       gzipped: gzipped.length < raw.length ? gzipped : null,
+      scriptSrc: scriptSrcFor(target[1], raw.toString('utf8')),
     };
     cache.set(pathname, entry);
     return entry;
@@ -130,7 +142,7 @@ export function createStaticFileHandler(publicDirectory) {
     const useGzip = Boolean(entry.gzipped && wantsGzip(request));
     const body = useGzip ? entry.gzipped : entry.raw;
     response.writeHead(200, {
-      ...securityHeaders(entry.contentType, entry.cacheControl, entry.raw),
+      ...securityHeaders(entry.contentType, entry.cacheControl, entry.scriptSrc),
       'Content-Length': body.length,
       ...(useGzip ? { 'Content-Encoding': 'gzip' } : {}),
     });

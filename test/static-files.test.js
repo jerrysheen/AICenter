@@ -158,6 +158,35 @@ test('static assets are gzipped on request and versioned JS/CSS are cacheable', 
   }
 });
 
+test('inline boot hash is the LF script even when the files are CRLF', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-crlf-'));
+  try {
+    const boot = 'window.aiCenterUiBoot=1;\r\nwindow.aiCenterSessionBoot=2;\r\n';
+    const html = '<!doctype html>\r\n<html><head></head><body>\r\n<script src="/ui-boot.js"></script>\r\n</body></html>\r\n';
+    writeFileSync(path.join(directory, 'ui-boot.js'), boot);
+    writeFileSync(path.join(directory, 'index.html'), html);
+    const handler = createStaticFileHandler(directory);
+    const first = await readStatic(handler, '/');
+    const body = first.body.toString('utf8');
+    assert.equal(body.includes('\r'), false);
+    const inline = body.match(/<script>([\s\S]*?)<\/script>/);
+    assert.ok(inline);
+    const lfBoot = boot.replace(/\r\n?/g, '\n');
+    assert.equal(inline[1], lfBoot);
+    const lfHash = createHash('sha256').update(lfBoot).digest('base64');
+    const crlfHash = createHash('sha256').update(boot).digest('base64');
+    assert.notEqual(lfHash, crlfHash);
+    const policy = first.headers['Content-Security-Policy'];
+    assert.equal(policy.includes(`sha256-${lfHash}`), true);
+    assert.equal(policy.includes(`sha256-${crlfHash}`), false);
+    const second = await readStatic(handler, '/');
+    assert.equal(second.headers['Content-Security-Policy'], policy);
+    assert.equal(second.body.toString('utf8'), body);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('ui revision changes after a public file is edited', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-ui-revision-'));
   try {

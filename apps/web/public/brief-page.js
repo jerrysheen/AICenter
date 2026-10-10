@@ -194,7 +194,10 @@ export function createBriefPage(host) {
       try {const {briefs=[]}=await callApi('/api/v1/reports/daily/briefs?limit=60');
         if (epoch!==generation) return;
         for (const b of briefs) past.append(button(`${b.reportDate} · 日报`,()=>{datePicker.open=false;s.mode='daily';persist();selectDate(b.reportDate) || loadInitial();},'brief-date-entry'));
-      } catch {past.append(node('p','brief-muted','往期日期暂时未能读取，可直接选择日期。'));}
+      } catch (error) {
+        if (error?.name === 'AbortError' || epoch !== generation || past.childElementCount) return;
+        past.append(node('p','brief-muted','往期日期暂时未能读取，可直接选择日期。'));
+      }
     });
     tools=node('details','brief-tools'); tools.append(node('summary','','更多'));
     const toolBody=node('div','brief-tools-body'); tools.append(toolBody);
@@ -775,7 +778,10 @@ export function createBriefPage(host) {
   }
 
   document.addEventListener('visibilitychange',()=>{
-    if (document.hidden) stop(); else if (active()) {if(treeActive)tree.resume();else {start();check().catch(()=>{});}}
+    // Lock screen and app switch only pause timers. Aborting here drops the
+    // in-flight read and the page stays on “正在读取简报…”. Leaving #report
+    // still calls stop().
+    if (document.hidden) pause(); else if (active()) {if(treeActive)tree.resume();else {start();check().catch(()=>{});}}
   });
   window.addEventListener('online',()=>{if (active()) check().catch(()=>{});});
   document.addEventListener('click',event=>{

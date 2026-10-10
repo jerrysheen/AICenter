@@ -102,6 +102,7 @@ const state = {
   xItems: [],
   xFeed: 'following',
   xNote: '',
+  xError: '',
   xLoading: false,
   xRefreshing: false,
   xTranslating: false,
@@ -134,6 +135,7 @@ const state = {
   xueqiuItems: [],
   xueqiuFeed: 'following',
   xueqiuNote: '',
+  xueqiuError: '',
   xueqiuLoading: false,
   xueqiuRefreshing: false,
   translations: {},
@@ -147,6 +149,8 @@ const state = {
   knowledge: [],
   knowledgeLoaded: false,
   postsLoaded: false,
+  postsLoading: false,
+  postsError: '',
   xLoaded: false,
   xueqiuLoaded: false,
   bilibiliLoaded: false,
@@ -1173,6 +1177,8 @@ async function maybeReloadStaleShell() {
     if (boot?.remote && boot.local && boot.remote !== boot.local) return reloadShellWhenStable(boot.remote);
     return false;
   }
+  console.debug('ai-center: ui revision check fell back to /api/v1/ui/revision');
+  performance.mark?.('ai-center.startup-fallback.ui-revision');
   const remote = await fetchUiRevision().catch(() => '');
   const local = bootUiRevision();
   if (!remote || !local || remote === local) return false;
@@ -1244,6 +1250,8 @@ function forgetLegacyDeviceGrant() {
 }
 
 async function api(path, options = {}) {
+  // A caller-supplied signal still shares this timeout. AbortError from that
+  // signal is rethrown; a timeout that fires first becomes “请求超时”.
   const { timeoutMs = 20_000, ...fetchOptions } = options;
   const external = fetchOptions.signal || null;
   const timed = Boolean(timeoutMs);
@@ -1951,48 +1959,86 @@ async function syncHarmonyLocalInspirations() {
 
 window.AICenterSyncLocalInspirations = syncHarmonyLocalInspirations;
 
-async function savePostToInspiration(post) {
+function inspirationSavePlan({ notesLoaded, existing, saved }) {
+  if (!notesLoaded) return 'load-notes';
+  if (existing) return 'open';
+  if (saved) return 'already';
+  return 'create';
+}
+
+function setInspirationSaveBusy(button, busy) {
+  if (!button) return;
+  button.disabled = Boolean(busy);
+  if (busy) button.setAttribute('aria-busy', 'true');
+  else button.removeAttribute('aria-busy');
+}
+
+let inspirationSavePending = false;
+
+async function savePostToInspiration(post, button) {
+  if (inspirationSavePending) return;
   if (!state.session) {
     showToast('请先在设置中完成设备连接');
     setView('settings');
     return;
   }
-  let existing = inspirationForPost(post);
-  if (!existing && isPostSaved(post)) {
-    await loadNotes().catch(() => {});
-    existing = inspirationForPost(post);
-  }
-  if (existing || isPostSaved(post)) {
-    if (existing) {
+  inspirationSavePending = true;
+  setInspirationSaveBusy(button, true);
+  try {
+    if (!state.notesLoaded) {
+      try {
+        await ensureNotes();
+      } catch (error) {
+        showToast(error.message || '暂时未能读取已保存的灵感');
+        return;
+      }
+    }
+    const existing = inspirationForPost(post);
+    const plan = inspirationSavePlan({
+      notesLoaded: state.notesLoaded,
+      existing,
+      saved: isPostSaved(post),
+    });
+    if (plan === 'open') {
       showToast('已保存为灵感，打开查看。取消收藏不会删除原文。');
       setView('inspire');
       setInspirationExpanded(existing.id, true);
       return;
     }
-    showToast('已保存过这条内容。删除请进入灵感后单独确认。');
-    setView('inspire');
-    return;
+    if (plan === 'already') {
+      showToast('已保存过这条内容。删除请进入灵感后单独确认。');
+      setView('inspire');
+      return;
+    }
+    if (plan !== 'create') {
+      showToast('暂时未能核对是否已保存');
+      return;
+    }
+    const clipped = clipInspirationBody(inspirationBodyFromPost(post));
+    const payload = await api('/api/v1/notes', {
+      method: 'POST',
+      body: JSON.stringify({
+        body: clipped.body,
+        wantAi: false,
+        sourceType: 'content-item',
+        sourceId: post.resourceId || post.id,
+        sourceUrl: post.sourceUrl || '',
+        sourceTitle: post.title || post.author || '',
+        captureChannel: 'feed',
+      }),
+    });
+    if (payload.note) {
+      state.notes = [payload.note, ...state.notes.filter((note) => note.id !== payload.note.id)];
+    }
+    if (post.sourceUrl) state.xSavedUrls.add(post.sourceUrl);
+    showToast(clipped.clipped ? '已加入灵感。正文超过存储上限，已保存前 10 万字；完整内容看来源链接。' : '已加入灵感');
+    renderPosts();
+    if (document.body.dataset.view === 'page' && state.pageKind === 'article') renderArticlePage();
+    loadNotes().catch(() => {});
+  } finally {
+    inspirationSavePending = false;
+    setInspirationSaveBusy(button, false);
   }
-  const clipped = clipInspirationBody(inspirationBodyFromPost(post));
-  const payload = await api('/api/v1/notes', {
-    method: 'POST',
-    body: JSON.stringify({
-      body: clipped.body,
-      wantAi: false,
-      sourceType: 'content-item',
-      sourceId: post.resourceId || post.id,
-      sourceUrl: post.sourceUrl || '',
-      sourceTitle: post.title || post.author || '',
-      captureChannel: 'feed',
-    }),
-  });
-  if (payload.note) {
-    state.notes = [payload.note, ...state.notes.filter((note) => note.id !== payload.note.id)];
-  }
-  if (post.sourceUrl) state.xSavedUrls.add(post.sourceUrl);
-  showToast(clipped.clipped ? '已加入灵感。正文超过存储上限，已保存前 10 万字；完整内容看来源链接。' : '已加入灵感');
-  renderPosts();
-  loadNotes().catch(() => {});
 }
 
 function insertFeedListItem(list, item, index) {
@@ -3308,6 +3354,82 @@ function currentFeedScopeId() {
   return isSourceFeedScope(state.feedPlatform) ? state.feedPlatform : state.channel;
 }
 
+const FEED_SCOPE_SOURCES = {
+  all: ['posts', 'x', 'xueqiu', 'official'],
+  focus: ['posts', 'x', 'xueqiu', 'official'],
+  recent: [],
+  social: ['x', 'xueqiu'],
+  official: ['official'],
+  media: ['media'],
+};
+
+function feedSourcesForScope(channel, platform) {
+  if (platform === 'media') return [...FEED_SCOPE_SOURCES.media];
+  const listed = FEED_SCOPE_SOURCES[channel];
+  return listed ? [...listed] : [...FEED_SCOPE_SOURCES.all];
+}
+
+function overviewTimelineSources(tab) {
+  if (tab === 'social') return [...FEED_SCOPE_SOURCES.social];
+  if (tab === 'official') return [...FEED_SCOPE_SOURCES.official];
+  if (tab === 'recent') return [...FEED_SCOPE_SOURCES.recent];
+  return ['posts', 'official'];
+}
+
+function feedSourceFlags(source, flags) {
+  if (source === 'posts') return { loaded: flags.postsLoaded, loading: flags.postsLoading, error: flags.postsError };
+  if (source === 'x') return { loaded: flags.xLoaded, loading: flags.xLoading, error: flags.xError };
+  if (source === 'xueqiu') return { loaded: flags.xueqiuLoaded, loading: flags.xueqiuLoading, error: flags.xueqiuError };
+  if (source === 'official') return { loaded: flags.officialLoaded, loading: flags.officialLoading, error: flags.officialError };
+  if (source === 'media') return { loaded: flags.mediaLoaded, loading: flags.mediaLoading, error: flags.mediaError };
+  return { loaded: true, loading: false, error: '' };
+}
+
+function missingFeedSources(sources, flags) {
+  const missing = [];
+  for (const source of sources) {
+    const row = feedSourceFlags(source, flags);
+    if (!row.loaded && !row.loading) missing.push(source);
+  }
+  return missing;
+}
+
+function feedScopePresentation(sources, flags) {
+  const count = Number(flags.count) || 0;
+  if (count > 0) return 'ready';
+  let pending = false;
+  let failed = false;
+  for (const source of sources) {
+    const row = feedSourceFlags(source, flags);
+    if (row.loading || (!row.loaded && !row.error)) pending = true;
+    if (row.error && !row.loaded) failed = true;
+  }
+  if (pending) return 'loading';
+  if (failed) return 'error';
+  return 'empty';
+}
+
+function feedLoadFlags(extra = {}) {
+  return {
+    postsLoaded: state.postsLoaded,
+    postsLoading: state.postsLoading,
+    postsError: state.postsError,
+    xLoaded: state.xLoaded,
+    xLoading: state.xLoading,
+    xError: state.xError,
+    xueqiuLoaded: state.xueqiuLoaded,
+    xueqiuLoading: state.xueqiuLoading,
+    xueqiuError: state.xueqiuError,
+    officialLoaded: Boolean(state.staticBoard),
+    officialLoading: state.staticBoardLoading,
+    officialError: state.staticBoardError,
+    mediaLoaded: state.mediaLoaded,
+    mediaLoading: state.mediaLoading,
+    mediaError: state.mediaError,
+    ...extra,
+  };
+}
+
 function applyFeedPlatform(id) {
   if(id==='trendforce'){id='media';state.mediaChannel='tech';state.mediaSourceKey='trendforce';state.mediaView='all';}
   const next = ['x', 'xueqiu'].includes(id) ? 'social' : id === 'bilibili' ? 'all' : id || 'all';
@@ -3323,17 +3445,11 @@ function applyFeedPlatform(id) {
   renderTrendForceToolbar();
   renderMediaToolbar();
   renderPosts();
-  if (next === 'social' && !state.xLoaded && !state.xLoading) {
-    loadXFeed({ refresh: false }).catch((error) => showToast(error.message));
-  }
-  if (next === 'social' && !state.xueqiuLoaded && !state.xueqiuLoading) {
-    loadXueqiuFeed({ refresh: false }).catch((error) => showToast(error.message));
-  }
   if (next === 'trendforce' && !state.trendforceLoaded && !state.trendforceLoading) {
     loadTrendForceFeed({ refresh: false }).catch((error) => showToast(error.message));
   }
-  if (next === 'media' && !state.mediaLoading) {
-    loadMediaFeed({ refresh: false }).catch((error) => showToast(error.message));
+  if (state.bootstrapped && document.body.dataset.view === 'feed') {
+    ensureFeedSources(feedSourcesForScope(state.channel, state.feedPlatform)).catch((error) => showToast(error.message));
   }
 }
 
@@ -3827,15 +3943,31 @@ function renderPosts() {
       ? `${sortLabel()} · ${rangeLabel()} · 已显示 ${shown.length} / ${items.length} 条`
       : `${sortLabel()} · ${rangeLabel()} · ${items.length} 条`);
   if (!items.length) {
+    const presentation = state.feedQuery ? 'empty' : feedScopePresentation(
+      feedSourcesForScope(state.channel, state.feedPlatform),
+      feedLoadFlags({ count: 0 }),
+    );
     const empty = document.createElement('div');
     empty.className = 'empty-state';
     empty.textContent = state.feedQuery
       ? '没有匹配的已收录内容。清除搜索后再看。'
-      : state.channel === 'recent'
-        ? '打开一条就会出现在这里，方便找回看过的内容。'
-        : (state.channel === 'social' || state.channel === 'all') && (state.xLoading || state.xueqiuLoading)
-          ? '正在读取已收录的社媒内容…'
-          : '这个筛选下还没有信息。';
+      : presentation === 'loading'
+        ? '正在读取内容…'
+        : presentation === 'error'
+          ? '内容暂时未能读取。'
+          : state.channel === 'recent'
+            ? '打开一条就会出现在这里，方便找回看过的内容。'
+            : '这个筛选下还没有信息。';
+    if (presentation === 'error' && !state.feedQuery) {
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'text-button';
+      retry.textContent = '重试';
+      retry.addEventListener('click', () => {
+        ensureFeedSources(feedSourcesForScope(state.channel, state.feedPlatform)).catch((error) => showToast(error.message));
+      });
+      empty.append(retry);
+    }
     elements.feed.append(empty);
     if (state.feedPlatform === 'media' && state.mediaNextOffset != null) {
       const more = document.createElement('div');
@@ -5593,21 +5725,38 @@ function renderOverviewTimeline() {
       { id: 'official', label: '官方' },
     ], state.overviewTimeline === 'latest' ? 'latest' : state.overviewTimeline, (id) => {
       state.overviewTimeline = id;
+      if (id === 'social') reloadOverviewTimelineSources();
       renderOverviewTimeline();
     });
   }
   const previousChannel = state.channel;
   state.channel = state.overviewTimeline === 'latest' ? 'all' : state.overviewTimeline;
-  const rows = visibleFeedItems().slice(0, 7);
+  let rows = visibleFeedItems();
   state.channel = previousChannel;
+  if (state.overviewTimeline === 'latest') {
+    rows = rows.filter((item) => item.platform === 'manual' || item.platform === 'official' || isOfficialItem(item));
+  }
+  rows = rows.slice(0, 7);
   if (elements['overview-timeline-day']) {
     elements['overview-timeline-day'].textContent = '';
   }
-  if (!rows.length) {
-    root.replaceChildren(Object.assign(document.createElement('div'), {
-      className: 'empty-state',
-      textContent: state.staticBoardLoading ? '正在读取内容…' : '这个筛选下还没有已发布内容。',
-    }));
+  const presentation = feedScopePresentation(
+    overviewTimelineSources(state.overviewTimeline),
+    feedLoadFlags({ count: rows.length }),
+  );
+  if (presentation !== 'ready') {
+    const officialEmpty = state.overviewTimeline === 'official';
+    renderViewState(root, {
+      kind: presentation,
+      title: presentation === 'loading'
+        ? '正在读取内容…'
+        : presentation === 'error'
+          ? '内容暂时未能读取'
+          : officialEmpty ? '这个筛选下还没有官方信息。' : '这个筛选下还没有已发布内容。',
+      message: presentation === 'error' ? '请重试。' : '',
+      action: presentation === 'error' ? '重试' : '',
+      onAction: () => reloadOverviewTimelineSources(),
+    });
     return;
   }
   if (state.overviewTimeline === 'official') {
@@ -6009,6 +6158,31 @@ async function loadSourcesPage({ refresh = false } = {}) {
   if (tasks.length) await Promise.all(tasks);
   renderSources();
   scheduleOverviewFocusWatch();
+  scheduleOverviewManualPosts();
+}
+
+function scheduleOverviewManualPosts() {
+  if (scheduleOverviewManualPosts.queued || state.postsLoaded || state.postsLoading || loadPosts.pending) return;
+  scheduleOverviewManualPosts.queued = true;
+  const run = () => {
+    scheduleOverviewManualPosts.queued = false;
+    if (!state.session || state.postsLoaded || state.postsLoading) return;
+    loadPosts().catch((error) => showToast(error.message));
+  };
+  if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(run, { timeout: 1500 });
+  else window.setTimeout(run, 0);
+}
+
+function reloadOverviewTimelineSources() {
+  const sources = overviewTimelineSources(state.overviewTimeline);
+  const tasks = [];
+  if (sources.includes('posts') && !state.postsLoaded && !state.postsLoading) tasks.push(loadPosts().catch(() => {}));
+  if (sources.includes('x') && !state.xLoaded && !state.xLoading) tasks.push(loadXFeed({ refresh: false }).catch(() => {}));
+  if (sources.includes('xueqiu') && !state.xueqiuLoaded && !state.xueqiuLoading) tasks.push(loadXueqiuFeed({ refresh: false }).catch(() => {}));
+  if (sources.includes('official') && !state.staticBoard && !state.staticBoardLoading) {
+    tasks.push(loadStaticSignalBoard({ refresh: true }).catch(() => {}));
+  }
+  return Promise.all(tasks);
 }
 
 let overviewFocusTimer = 0;
@@ -6770,9 +6944,9 @@ function renderArticlePage() {
   const save = createDetailAction({
     iconName: 'bookmark',
     label: isPostSaved(post) ? '查看灵感' : '存入灵感',
-    onClick: () => {
+    onClick: (event) => {
       if (post.release) saveOfficialAsInspiration(post.release);
-      else savePostToInspiration(post).catch((error) => showToast(error.message));
+      else savePostToInspiration(post, event.currentTarget).catch((error) => showToast(error.message));
     },
   });
   const cite = createDetailAction({
@@ -11093,12 +11267,6 @@ function ensureKnowledge() {
   return loadKnowledge();
 }
 
-function socialFeedVisible() {
-  if (state.feedPlatform === 'media') return false;
-  if (state.channel === 'official' || state.channel === 'recent') return false;
-  return true;
-}
-
 function ensureSourceFeed(id) {
   if (!state.session || !id) return Promise.resolve();
   if (id === 'x' && !state.xLoaded && !state.xLoading) return loadXFeed({ refresh: false }).catch((error) => showToast(error.message));
@@ -11108,36 +11276,33 @@ function ensureSourceFeed(id) {
   return Promise.resolve();
 }
 
-function ensureVisibleFeedLoaded() {
+function ensureFeedSources(sources) {
+  const missing = missingFeedSources(sources, feedLoadFlags());
   const tasks = [];
-  const article = document.body.dataset.view === 'page' && state.pageKind === 'article';
-  if (state.feedPlatform === 'media' || (article && state.feedPlatform === 'media')) {
-    if (!state.mediaLoading) tasks.push(loadMediaFeed().catch((error) => showToast(error.message)));
-    return Promise.all(tasks);
-  }
-  if (article) return Promise.all(tasks);
-  if (!state.postsLoaded) tasks.push(loadPosts().catch((error) => showToast(error.message)));
-  if (socialFeedVisible()) {
-    if (!state.xLoaded && !state.xLoading) tasks.push(loadXFeed({ refresh: false }).catch((error) => showToast(error.message)));
-    if (!state.xueqiuLoaded && !state.xueqiuLoading) tasks.push(loadXueqiuFeed({ refresh: false }).catch((error) => showToast(error.message)));
-  }
-  if (!state.staticBoard && !state.staticBoardLoading) {
-    tasks.push(loadStaticSignalBoard().catch((error) => showToast(error.message)));
+  for (const source of missing) {
+    if (source === 'posts') tasks.push(loadPosts().catch((error) => showToast(error.message)));
+    if (source === 'x') tasks.push(loadXFeed({ refresh: false }).catch((error) => showToast(error.message)));
+    if (source === 'xueqiu') tasks.push(loadXueqiuFeed({ refresh: false }).catch((error) => showToast(error.message)));
+    if (source === 'official') tasks.push(loadStaticSignalBoard().catch((error) => showToast(error.message)));
+    if (source === 'media') tasks.push(loadMediaFeed({ refresh: false }).catch((error) => showToast(error.message)));
   }
   return Promise.all(tasks);
 }
 
+function ensureVisibleFeedLoaded() {
+  const article = document.body.dataset.view === 'page' && state.pageKind === 'article';
+  if (article && state.feedPlatform !== 'media') return Promise.resolve();
+  return ensureFeedSources(feedSourcesForScope(state.channel, state.feedPlatform));
+}
+
 function reloadVisibleFeed() {
-  const tasks = [loadPosts()];
-  if (state.feedPlatform === 'media') {
-    tasks.push(loadMediaFeed());
-    return Promise.all(tasks);
-  }
-  if (socialFeedVisible()) {
-    tasks.push(loadXFeed({ refresh: false }));
-    tasks.push(loadXueqiuFeed({ refresh: false }));
-  }
-  if (!state.staticBoard) tasks.push(loadStaticSignalBoard());
+  const sources = feedSourcesForScope(state.channel, state.feedPlatform);
+  const tasks = [];
+  if (sources.includes('posts')) tasks.push(loadPosts());
+  if (sources.includes('media')) tasks.push(loadMediaFeed());
+  if (sources.includes('x')) tasks.push(loadXFeed({ refresh: false }));
+  if (sources.includes('xueqiu')) tasks.push(loadXueqiuFeed({ refresh: false }));
+  if (sources.includes('official') && !state.staticBoard) tasks.push(loadStaticSignalBoard());
   return Promise.all(tasks);
 }
 
@@ -11423,6 +11588,7 @@ async function tagXBatch({ silent = false } = {}) {
 async function loadXFeed({ refresh = false, autoTranslate = true } = {}) {
   if (!state.session) return null;
   state.xLoading = true;
+  state.xError = '';
   state.xRefreshing = refresh;
   renderXToolbar();
   renderPosts();
@@ -11434,6 +11600,7 @@ async function loadXFeed({ refresh = false, autoTranslate = true } = {}) {
     state.xItems = (feed.items || []).filter((item) => !isHiddenFeedItem(item));
     state.xFeed = feed.feed || state.xFeed;
     state.xNote = feed.note || '';
+    state.xError = '';
     state.xLoaded = true;
     hydrateFeedTranslations(state.xItems);
     renderPosts();
@@ -11444,6 +11611,7 @@ async function loadXFeed({ refresh = false, autoTranslate = true } = {}) {
     return feed;
   } catch (error) {
     state.xNote = error instanceof Error ? error.message : 'X 时间线加载失败';
+    state.xError = state.xNote;
     renderXToolbar();
     throw error;
   } finally {
@@ -11451,6 +11619,7 @@ async function loadXFeed({ refresh = false, autoTranslate = true } = {}) {
     state.xRefreshing = false;
     renderXToolbar();
     renderPosts();
+    if (document.body.dataset.view === 'sources' && state.overviewTimeline === 'social') renderOverviewTimeline();
   }
 }
 
@@ -11504,6 +11673,7 @@ async function loadXueqiuFeed({ refresh = false } = {}) {
     return null;
   }
   state.xueqiuLoading = true;
+  state.xueqiuError = '';
   state.xueqiuRefreshing = Boolean(refresh);
   renderXueqiuToolbar();
   renderPosts();
@@ -11515,6 +11685,7 @@ async function loadXueqiuFeed({ refresh = false } = {}) {
     state.xueqiuItems = (feed.items || []).filter((item) => !isHiddenFeedItem(item));
     state.xueqiuFeed = feed.feed || state.xueqiuFeed;
     state.xueqiuNote = feed.note || '';
+    state.xueqiuError = '';
     state.xueqiuLoaded = true;
     hydrateFeedTranslations(state.xueqiuItems);
     renderPosts();
@@ -11527,6 +11698,7 @@ async function loadXueqiuFeed({ refresh = false } = {}) {
     return feed;
   } catch (error) {
     state.xueqiuNote = error instanceof Error ? error.message : '雪球时间线加载失败';
+    state.xueqiuError = state.xueqiuNote;
     renderXueqiuToolbar();
     throw error;
   } finally {
@@ -11534,6 +11706,7 @@ async function loadXueqiuFeed({ refresh = false } = {}) {
     state.xueqiuRefreshing = false;
     renderXueqiuToolbar();
     renderPosts();
+    if (document.body.dataset.view === 'sources' && state.overviewTimeline === 'social') renderOverviewTimeline();
   }
 }
 
@@ -11679,11 +11852,30 @@ async function loadBilibiliFeed({ url = '', refresh = false } = {}) {
 }
 
 async function loadPosts() {
-  const payload = await api('/api/v1/posts');
-  state.posts = (payload.posts || []).filter((item) => !isHiddenFeedItem(item));
-  state.postsLoaded = true;
-  renderPosts();
-  logBehavior('feed.loaded', { count: state.posts.length });
+  if (loadPosts.pending) return loadPosts.pending;
+  loadPosts.pending = (async () => {
+    state.postsLoading = true;
+    state.postsError = '';
+    try {
+      const payload = await api('/api/v1/posts');
+      state.posts = (payload.posts || []).filter((item) => !isHiddenFeedItem(item));
+      state.postsLoaded = true;
+      state.postsError = '';
+      renderPosts();
+      logBehavior('feed.loaded', { count: state.posts.length });
+    } catch (error) {
+      state.postsError = error instanceof Error ? error.message : '手工信息加载失败';
+      throw error;
+    } finally {
+      state.postsLoading = false;
+      if (document.body.dataset.view === 'sources' && (state.overviewTimeline === 'latest' || state.overviewTimeline === 'focus')) {
+        renderOverviewTimeline();
+      }
+    }
+  })().finally(() => {
+    loadPosts.pending = null;
+  });
+  return loadPosts.pending;
 }
 
 async function loadPairing() {
@@ -11899,7 +12091,10 @@ async function readAuthorizedSession() {
   const early = window.aiCenterSessionBoot;
   if (early && !early.used) {
     early.used = true;
-    const result = await early;
+    const result = await Promise.race([
+      early,
+      sleep(20_000).then(() => null),
+    ]);
     if (result && result.status !== 0) {
       if (!result.ok) {
         const error = new Error(result.payload?.error || `请求失败 (${result.status})`);
@@ -11910,6 +12105,8 @@ async function readAuthorizedSession() {
       return sessionFromPayload(result.payload);
     }
   }
+  console.debug('ai-center: session request fell back to /api/v1/session');
+  performance.mark?.('ai-center.startup-fallback.session');
   return sessionFromPayload(await api('/api/v1/session'));
 }
 
@@ -12005,6 +12202,7 @@ async function initialize() {
     if (paired && window.aiCenterSessionBoot) window.aiCenterSessionBoot.used = true;
     const shellCheck = maybeReloadStaleShell();
     const sessionPromise = readAuthorizedSession();
+    sessionPromise.catch(() => {});
     if (await shellCheck) return;
     await completeAuthorizedStart(await sessionPromise);
   } catch (error) {
@@ -12278,8 +12476,8 @@ bindPostLink(elements['dialog-translate'], () => {
   requestTranslate(state.dialogPost).catch((error) => showToast(error.message));
 });
 bindPostLink(elements['dialog-save'], () => {
-  if (!state.dialogPost) return;
-  savePostToInspiration(state.dialogPost).catch((error) => showToast(error.message));
+  if (!state.dialogPost || inspirationSavePending) return;
+  savePostToInspiration(state.dialogPost, elements['dialog-save']).catch((error) => showToast(error.message));
 });
 bindPostLink(elements['dialog-cite'], () => {
   if (!state.dialogPost) return;

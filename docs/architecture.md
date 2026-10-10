@@ -189,7 +189,7 @@ packages/
 
 ## 鸿蒙端策略
 
-Stage + ArkWeb 薄壳已经位于 `apps/harmony`：加载同一套网页，Preferences 保存服务器地址，ArkWeb 保存 HttpOnly 授权 Cookie，并提供 Scan Kit 原生扫码、启动时对 `/api/v1/health` 短超时探活、失败后保留已保存地址、失效地址仅在用户主动退出时清除，以及网页返回栈。不重写信息流 UI。健康检查带当前 `uiRevision`；薄壳把该指纹写进页面 URL，避免 ArkWeb 继续吃旧的 JS/CSS。`GET /api/v1/ui/revision` 对未配对设备公开，只返回指纹，不含主机名。每次打开页面都把 `ui-boot.js` 内联进不缓存的 HTML：解析时同时发起 `/session` 和指纹检查，不再单独挡住后面的模块。指纹一致时初始化复用这次结果；不一致时先等指纹连续几次相同，再整页换成新 HTML/CSS/JS，避免一次改多个 public 文件连刷三四次。SSE `ready`、初始化与刷新按钮共用同一条「稳定后再重载」路径；长按仍立即强制重载。本机重启后客户端重连即可热更新。
+Stage + ArkWeb 薄壳已经位于 `apps/harmony`：加载同一套网页，Preferences 保存服务器地址，ArkWeb 保存 HttpOnly 授权 Cookie，并提供 Scan Kit 原生扫码、启动时对 `/api/v1/health` 短超时探活、失败后保留已保存地址、失效地址仅在用户主动退出时清除，以及网页返回栈。不重写信息流 UI。健康检查带当前 `uiRevision`；薄壳把该指纹写进页面 URL，避免 ArkWeb 继续吃旧的 JS/CSS。`GET /api/v1/ui/revision` 对未配对设备公开，只返回指纹，不含主机名。每次打开页面都把 `ui-boot.js` 内联进不缓存的 HTML：内联前把换行收成 LF，CSP 哈希按这份正文计算并随文件缓存。解析时同时发起 `/session` 和指纹检查，不再单独挡住后面的模块。指纹一致时初始化复用这次结果；不一致时先等指纹连续几次相同，再整页换成新 HTML/CSS/JS，避免一次改多个 public 文件连刷三四次。SSE `ready`、初始化与刷新按钮共用同一条「稳定后再重载」路径；长按仍立即强制重载。本机重启后客户端重连即可热更新。
 
 系统文本/链接分享使用 `ShareExtensionAbility` 的原生详情页：`systemShare.getSharedData()` 读取 `SharedRecord.content`，用户确认后先写入有界的本地灵感 RDB Outbox。主应用也提供原生本地灵感页，未配对或离线时仍可直接输入、查看和删除。ShareExtension 与主应用每次进入都重新查询同一 RDB，不使用不支持多进程一致性的 XML Preferences 保存业务记录。ArkWeb 恢复已授权连接后，通过 `AICenterShell` 桥接读取待办项并调用现有 `POST /api/v1/notes`；原生层不读取或复制 HttpOnly Cookie。同步是手机到服务端的单向投递：服务端用 `clientMutationId` 幂等去重，手机删除不调用服务端 DELETE，服务端列表也不回写本地。详细字段和真机验收见 `docs/harmony-share-to-inspiration.md`。
 

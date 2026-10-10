@@ -368,7 +368,7 @@ export function createInformationTreePage(host) {
       if(!details.open){readingOpen.delete(id);return;}
       readingOpen.add(id);if(loaded)return;loaded=true;panel.textContent='读取中…';
       let saved;
-      try{saved=await node(id);}catch(error){if(aborted(error))return;saved=null;}
+      try{saved=await node(id);}catch(error){if(aborted(error)){loaded=false;panel.textContent='';return;}saved=null;}
       const view=(saved?.body || saved?.text) ? saved : (seed || saved);
       panel.replaceChildren(el('p',view?.body || view?.text || '这篇的正文暂时读不到。','tree-text'));
       if(canReadSource(view))panel.append(button('原文',()=>host.readSavedSource(view)));
