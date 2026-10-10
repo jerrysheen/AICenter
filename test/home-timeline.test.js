@@ -262,5 +262,8 @@ test('home requests are the overview set and not the old feed fan-out', () => {
   const html = readFileSync(new URL('../apps/web/public/index.html', import.meta.url), 'utf8');
   assert.match(html, /id="home-timeline"/);
   assert.match(html, /id="global-events"/);
+  assert.match(html, /class="market-native-section hidden" id="global-events"/);
+  assert.match(app, /setView\('market\/global\?tab=events'\)/);
+  assert.match(app, /\{id:'events',label:'事件概率'\}/);
   assert.doesNotMatch(html, /id="overview-brief"|今日关注|近期日程|查看信源|仅陈列公开事实/);
 });

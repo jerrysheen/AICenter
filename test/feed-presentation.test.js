@@ -53,7 +53,7 @@ test('untrusted body and comment HTML is escaped', () => {
 
 const app = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
 function functionSource(name) {
-  const match = app.match(new RegExp(`function ${name}\\([^]*?\\n\\}`));
+  const match = app.match(new RegExp(`(?:async )?function ${name}\\([^]*?\\n\\}`));
   assert.ok(match, name);
   return match[0];
 }
@@ -138,4 +138,84 @@ test('Bilibili tool opens its subtitle reader independently of the main feed sel
   assert.equal(context.findUnifiedItem(subtitle.id), subtitle);
   assert.equal(context.socialFeedItems().length, 0);
   assert.equal(context.state.feedPlatform, 'social');
+});
+
+test('recent feed reads browse history and does not project social or official lists', () => {
+  let socialCalls = 0;
+  let officialCalls = 0;
+  const context = vm.createContext({
+    state: {
+      channel: 'recent', feedPlatform: 'all', feedSort: 'published', feedRange: 'all', feedQuery: '',
+      recentItems: {}, xItems: [{ id: 'x:1' }], xueqiuItems: [{ id: 'xq:1' }],
+    },
+    socialFeedItems() { socialCalls += 1; return [{ id: 'x:1', platform: 'x', createdAt: 9 }]; },
+    officialFeedItems() { officialCalls += 1; return [{ id: 'off', platform: 'official', createdAt: 8 }]; },
+    recentFeedItems() { return [{ id: 'r-new', platform: 'x', viewedAt: 5 }, { id: 'r-old', platform: 'xueqiu', viewedAt: 1 }]; },
+    focusedFeedItems() { throw new Error('focus projection'); },
+    matchesFeedQuery: () => true,
+    matchesFeedRange: () => true,
+    sortFeedItems: rows => rows,
+    mediaAsItem: item => item,
+  });
+  vm.runInContext(functionSource('visibleFeedItems'), context);
+  assert.deepEqual(Array.from(context.visibleFeedItems(), row => row.id), ['r-new', 'r-old']);
+  assert.equal(socialCalls, 0);
+  assert.equal(officialCalls, 0);
+  context.visibleFeedItems();
+  assert.equal(socialCalls, 0);
+  context.state.channel = 'all';
+  context.state.feedViewEpoch = 1;
+  assert.deepEqual(Array.from(context.visibleFeedItems(), row => row.id), ['x:1', 'off']);
+  assert.equal(socialCalls, 1);
+  assert.equal(officialCalls, 1);
+});
+
+test('recent rows stay ordered by viewed time', () => {
+  const context = vm.createContext({
+    state: {
+      channel: 'recent',
+      feedSort: 'published',
+      recentItems: {
+        a: { id: 'a', platform: 'x', kind: 'social', viewedAt: 1 },
+        b: { id: 'b', platform: 'xueqiu', kind: 'social', viewedAt: 3 },
+        c: { id: 'c', platform: 'bilibili', kind: 'social', viewedAt: 9 },
+      },
+    },
+  });
+  vm.runInContext(`${functionSource('isFeedFocusItem')}\n${functionSource('recentFeedItems')}\n${functionSource('sortFeedItems')}\n${functionSource('visibleFeedItems')}`, context);
+  context.matchesFeedQuery = () => true;
+  context.matchesFeedRange = () => true;
+  assert.deepEqual(Array.from(context.recentFeedItems(), row => row.id), ['c', 'b', 'a']);
+  assert.deepEqual(Array.from(context.sortFeedItems(context.recentFeedItems()), row => row.id), ['c', 'b', 'a']);
+  assert.deepEqual(Array.from(context.visibleFeedItems(), row => row.id), ['b', 'a']);
+});
+
+test('a social reload does not repaint the recent feed', async () => {
+  let rendered = 0;
+  const context = vm.createContext({
+    URLSearchParams,
+    FEED_PAGE_SIZE: 12,
+    state: {
+      session: {}, channel: 'recent', feedPlatform: 'all', xFeed: 'for-you',
+      xItems: [], xNextCursor: '', feedShown: 12,
+    },
+    api: async () => ({ feed: { items: [{ id: 'x:new', title: '新' }], nextCursor: '0,1,x:new' } }),
+    isHiddenFeedItem: () => false,
+    hydrateFeedTranslations: () => {},
+    renderPosts() { rendered += 1; },
+    renderXToolbar: () => {},
+    syncLocalTranslationsToServer: () => Promise.resolve(),
+    loadFeedTaggings: () => Promise.resolve(),
+    translateXBatch: async () => {},
+    document: { body: { dataset: { view: 'feed' } } },
+    renderOverviewTimeline: () => {},
+  });
+  vm.runInContext(`${functionSource('paintLoadedSocialFeed')}\n${functionSource('loadXFeed')}\nthis.load=loadXFeed`, context);
+  await context.load({ autoTranslate: false });
+  assert.equal(rendered, 0);
+  assert.deepEqual(Array.from(context.state.xItems, row => row.id), ['x:new']);
+  context.state.channel = 'all';
+  context.state.xItems = [];
+  await context.load({ autoTranslate: false });
+  assert.ok(rendered >= 2);
 });

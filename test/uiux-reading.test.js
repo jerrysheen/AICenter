@@ -43,6 +43,12 @@ test('canonical and slash-prefixed deep links resolve to the same target and ret
   assert.equal(context.parseLocation('report?hour=00').reportHour, 0);
   assert.equal(context.parseLocation('report?hour=24').reportHour, null);
   assert.equal(context.parseLocation('report?hour=3a').reportHour, null);
+  assert.equal(context.parseLocation('market/global').marketTab, '');
+  assert.equal(context.parseLocation('market/global?tab=events').marketTab, 'events');
+  assert.equal(context.parseLocation('market/global?tab=events').marketPane, 'assets');
+  assert.equal(context.parseLocation('#market/global?tab=events').view, 'market');
+  assert.equal(context.parseLocation('market/global?tab=other').marketTab, '');
+  assert.equal(context.parseLocation('#/market/global?tab=events').marketTab, 'events');
   assert.equal(routeLabel('#report?hour=15'), '简报');
   assert.equal(routeLabel('#report/2026-10-09?hour=8'), '简报');
 });

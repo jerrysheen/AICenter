@@ -61,8 +61,9 @@ test('social lists render and finish loading while supplementary tag reads remai
   for(const name of ['loadXFeed','loadXueqiuFeed']) {
     let rendered=0;
     const context=vm.createContext({URLSearchParams,FEED_PAGE_SIZE:12,document:{body:{dataset:{}}},renderOverviewTimeline:()=>{},settleSourcePage:()=>{},state:{session:{},xFeed:'for-you',xueqiuFeed:'home',xItems:[],xueqiuItems:[],feedShown:12},api:async()=>({feed:{items:[{id:'saved'}]}}),isHiddenFeedItem:()=>false,hydrateFeedTranslations:()=>{},renderPosts:()=>{rendered++;},renderXToolbar:()=>{},renderXueqiuToolbar:()=>{},syncLocalTranslationsToServer:()=>new Promise(()=>{}),loadFeedTaggings:()=>new Promise(()=>{}),translateXBatch:async()=>{}});
+    const paint=source.match(/function paintLoadedSocialFeed\([^]*?\n\}/)[0];
     const fn=source.match(new RegExp('async function '+name+'\\([^]*?\\n\\}'))[0];
-    vm.runInContext(fn+`;this.load=${name}`,context);
+    vm.runInContext(`${paint}\n${fn};this.load=${name}`,context);
     await context.load({autoTranslate:false});
     assert.ok(rendered>=2);assert.equal(context.state[name==='loadXFeed'?'xLoading':'xueqiuLoading'],false);
     assert.equal(context.state[name==='loadXFeed'?'xItems':'xueqiuItems'].length,1);

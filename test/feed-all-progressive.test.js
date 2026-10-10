@@ -138,7 +138,7 @@ test('a saved page merges into the open list and does not replace the normal cur
     showToast() {},
     loadFocusFeedWindow: () => Promise.resolve(),
   });
-  vm.runInContext(`${extract(['mergeLoadedFeedItem', 'mergeLoadedFeed', 'loadXFeed'])}\nthis.load=loadXFeed`, context);
+  vm.runInContext(`${extract(['paintLoadedSocialFeed', 'mergeLoadedFeedItem', 'mergeLoadedFeed', 'loadXFeed'])}\nthis.load=loadXFeed`, context);
   const feed = await context.load({ saved: true, before: '', autoTranslate: false });
   assert.match(calls[0], /saved=1/);
   assert.match(calls[0], /limit=50/);

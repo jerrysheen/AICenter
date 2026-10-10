@@ -240,8 +240,9 @@ test('home feed asks for one page and opens the stored social article on demand'
     renderOverviewTimeline: () => {},
     settleSourcePage: () => {},
   });
+  const paint = source.match(/function paintLoadedSocialFeed\([^]*?\n\}/)[0];
   const loadX = source.match(/async function loadXFeed\([^]*?\n\}/)[0];
-  vm.runInContext(`${loadX}\nthis.load=loadXFeed`, context);
+  vm.runInContext(`${paint}\n${loadX}\nthis.load=loadXFeed`, context);
   await context.load({ append: true, autoTranslate: false });
   assert.match(calls[0], /limit=12/);
   assert.match(calls[0], /before=0%2C10%2Cabc/);
@@ -372,7 +373,7 @@ test('a background reload keeps later pages and already opened text', async () =
     renderOverviewTimeline: () => {},
     settleSourcePage: () => {},
   });
-  vm.runInContext(`${extractFunctions(source, ['mergeLoadedFeedItem', 'mergeLoadedFeed', 'loadXFeed'])}\nthis.load=loadXFeed`, context);
+  vm.runInContext(`${extractFunctions(source, ['paintLoadedSocialFeed', 'mergeLoadedFeedItem', 'mergeLoadedFeed', 'loadXFeed'])}\nthis.load=loadXFeed`, context);
   await context.load({ autoTranslate: false });
   await context.load({ append: true, autoTranslate: false });
   const opened = Array.from(context.state.xItems).find((item) => item.id === 'x:1');

@@ -357,7 +357,7 @@ const elements = Object.fromEntries([
   'dispatch-plus', 'dispatch-plus-menu', 'dispatch-image', 'dispatch-target', 'dispatch-target-label',
   'dispatch-target-menu', 'dispatch-send',
   'source-tasks-dialog', 'source-tasks-title', 'source-tasks-meta', 'source-tasks-body',
-  'market-native-predictions', 'market-native-derivatives', 'market-native-liquidity', 'market-native-note',
+  'market-native-predictions', 'market-native-derivatives', 'market-native-liquidity', 'market-native-note', 'global-events',
   'global-native-note',
   'note-form', 'note-body', 'note-title', 'note-source-url', 'note-source-title', 'note-source-type',
   'note-capture-channel', 'note-source-app', 'note-share-source', 'note-ai-toggle', 'note-list',
@@ -531,6 +531,7 @@ function toggleFocus(id, render, item) {
     }
   }
   writeJsonSet(FOCUS_KEY, state.focusIds);
+  bumpFeedView();
   if (typeof render === 'function') render();
 }
 
@@ -540,6 +541,11 @@ function removeFocusItem(post) {
   }
   forgetFocusItem(post);
   writeJsonSet(FOCUS_KEY, state.focusIds);
+  bumpFeedView();
+}
+
+function bumpFeedView() {
+  state.feedViewEpoch = (Number(state.feedViewEpoch) || 0) + 1;
 }
 
 function persistRecentItems() {
@@ -562,6 +568,7 @@ function rememberRecentItem(item) {
   };
   pruneRecentItems();
   persistRecentItems();
+  bumpFeedView();
 }
 
 function removeRecentItem(post) {
@@ -571,6 +578,7 @@ function removeRecentItem(post) {
     }
   }
   persistRecentItems();
+  bumpFeedView();
 }
 
 function hashText(value) {
@@ -626,6 +634,7 @@ function translationFor(post) {
 }
 
 function rememberTranslation(post, translation) {
+  bumpFeedView();
   state.translations[post.id] = translation;
   const store = loadTranslationStore();
   store[translationStoreKey(post)] = {
@@ -658,6 +667,7 @@ function mergeLocalizations(payload) {
   const incoming = payload?.localizations;
   if (!incoming || typeof incoming !== 'object') return;
   state.sourceLocalizations = { ...state.sourceLocalizations, ...incoming };
+  bumpFeedView();
 }
 
 function postIsTranslating(post) {
@@ -827,9 +837,12 @@ function parseLocation(name = (location.hash || '#sources').slice(1)) {
   const hourText = new URLSearchParams(queryPart).get('hour');
   const hourNumber = hourText != null && /^\d{1,2}$/.test(hourText) ? Number(hourText) : NaN;
   const reportHour = Number.isInteger(hourNumber) && hourNumber >= 0 && hourNumber <= 23 ? hourNumber : null;
+  const marketTab = view === 'market' && marketPane === 'assets' && new URLSearchParams(queryPart).get('tab') === 'events'
+    ? 'events'
+    : '';
   return {
     view, askSessionId, marketPane, assetPane, sourcesPane, settingsPane, inspirePane,
-    selectedWorkPackageId, pageKind, pageId, reportPane, reportDate, reportHour,
+    selectedWorkPackageId, pageKind, pageId, reportPane, reportDate, reportHour, marketTab,
   };
 }
 
@@ -868,9 +881,15 @@ function overviewLane(view = document.body.dataset.view, pane = state.tradePane)
 function overviewHash(lane = overviewLane()) {
   if (lane === 'feed') return '#feed';
   if (lane === 'stocks') return '#market';
-  if (lane === 'global') return '#market/global';
+  if (lane === 'global') return marketLocationHash('assets');
   if (lane === 'report') return '#report';
   return '#sources';
+}
+
+function marketLocationHash(pane = state.tradePane) {
+  if (pane !== 'assets') return '#market';
+  if (state.assetClass === 'events') return '#market/global?tab=events';
+  return '#market/global';
 }
 
 function renderOverviewLanes() {
@@ -1007,7 +1026,11 @@ function setView(name, options = {}) {
   if (leaving) captureViewScroll(previous);
   state.askSessionId = view === 'ask' ? parsed.askSessionId : '';
   if (view === 'market' && parsed.marketPane) state.tradePane = parsed.marketPane;
-  if (view === 'market' && parsed.marketPane === 'assets' && requested.startsWith('market/global/hardware')) state.assetClass = 'hardware';
+  if (view === 'market' && parsed.marketPane === 'assets') {
+    if (requested.startsWith('market/global/hardware')) state.assetClass = 'hardware';
+    else if (parsed.marketTab === 'events') state.assetClass = 'events';
+    else if (state.assetClass === 'events') state.assetClass = 'all';
+  }
   if (view === 'assets') {
     state.tradePane = parsed.assetPane;
     if (state.tradePane !== 'holdings') state.holdingsMoveGroup = null;
@@ -1091,6 +1114,7 @@ function setView(name, options = {}) {
     renderTradeTabs();
     if (!state.sourceCatalogLoaded && state.session) loadSourceCatalog().catch(() => {});
     if (view === 'market' && state.tradePane === 'stocks') renderMarket();
+    if (view === 'market' && state.tradePane === 'assets') renderAssets();
     if (state.bootstrapped) syncTradePaneData().catch((error) => showToast(error.message));
   }
   if (view === 'sources') {
@@ -1580,9 +1604,12 @@ function logBehavior(name, metadata = {}) {
 }
 
 function formatTime(timestamp) {
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-  }).format(timestamp);
+  if (!formatTime.formatter) {
+    formatTime.formatter = new Intl.DateTimeFormat('zh-CN', {
+      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+    });
+  }
+  return formatTime.formatter.format(timestamp);
 }
 
 function formatAskDay(timestamp) {
@@ -2195,6 +2222,7 @@ function isHiddenFeedItem(item) {
 
 function persistHiddenFeedIds() {
   writeJsonSet(HIDDEN_FEED_KEY, state.hiddenFeedIds);
+  bumpFeedView();
 }
 
 function restoreStashedFeedItem(stash) {
@@ -2229,6 +2257,7 @@ function markFeedItemRead(post) {
     const hit = list.find((item) => item.id === post.id || (post.resourceId && item.resourceId === post.resourceId));
     if (hit) hit.isRead = true;
   }
+  state.feedViewEpoch = (Number(state.feedViewEpoch) || 0) + 1;
   const snap = state.focusItems[post.id] || (post.resourceId && state.focusItems[post.resourceId]);
   if (snap) {
     snap.isRead = true;
@@ -3390,21 +3419,54 @@ function sortFeedItems(items) {
 }
 
 function visibleFeedItems() {
+  const key = [
+    state.feedViewEpoch,
+    state.channel,
+    state.feedPlatform,
+    state.feedSort,
+    state.feedRange,
+    state.feedQuery,
+    state.posts,
+    state.xItems,
+    state.xueqiuItems,
+    state.trendforceItems,
+    state.bilibiliItems,
+    state.mediaItems,
+    state.staticBoard,
+    state.recentItems,
+    state.focusItems,
+    state.focusIds,
+    state.hiddenFeedIds,
+    state.hiddenSourceIds,
+    state.feedTaggings,
+    state.translations,
+    state.feedRange === 'all' ? '' : new Date().toDateString(),
+  ];
+  const cached = state.feedViewCache;
+  if (cached && cached.key.length === key.length && cached.key.every((part, index) => part === key[index])) return cached.items;
+  let items;
   if (state.feedPlatform === 'media') {
     const query = String(state.feedQuery || '').trim().toLowerCase();
-    return sortFeedItems(state.mediaItems.map(mediaAsItem)
+    items = sortFeedItems(state.mediaItems.map(mediaAsItem)
       .filter((item) => matchesFeedQuery(item, query) && matchesFeedRange(item)));
+  } else if (state.channel === 'recent') {
+    items = recentFeedItems();
+  } else if (state.channel === 'focus') {
+    items = focusedFeedItems();
+  } else if (state.channel === 'official') {
+    items = officialFeedItems();
+  } else if (state.channel === 'social') {
+    items = socialFeedItems();
+  } else {
+    items = [...socialFeedItems(), ...officialFeedItems()];
   }
-  const social = socialFeedItems();
-  const official = officialFeedItems();
-  let items = state.channel === 'focus' ? focusedFeedItems()
-    : state.channel === 'recent' ? recentFeedItems()
-    : state.channel === 'official' ? official
-      : state.channel === 'social' ? social
-        : [...social, ...official];
-  const query = String(state.feedQuery || '').trim().toLowerCase();
-  items = items.filter((item) => item.platform !== 'bilibili' && matchesFeedQuery(item, query) && matchesFeedRange(item));
-  return sortFeedItems(items);
+  if (state.feedPlatform !== 'media') {
+    const query = String(state.feedQuery || '').trim().toLowerCase();
+    items = items.filter((item) => item.platform !== 'bilibili' && matchesFeedQuery(item, query) && matchesFeedRange(item));
+    items = sortFeedItems(items);
+  }
+  state.feedViewCache = { key, items };
+  return items;
 }
 
 function bindHorizontalTabScroll(root = document) {
@@ -4163,11 +4225,43 @@ function observeFeedSentinel(node, canLoad) {
   feedObserver.observe(node);
 }
 
+let recentFeedPainted = '';
+
+function recentFeedPaintSignature(shown, total) {
+  return [
+    state.feedShown,
+    total,
+    state.xTranslating ? 1 : 0,
+    state.feedQuery || '',
+    shown.map((post) => [
+      post.id,
+      post.viewedAt || 0,
+      postDisplayTitle(post),
+      feedCardExcerpt(post),
+      post.author || '',
+      post.time || '',
+      postTagNames(post).join(','),
+      itemIsFocused(post) ? 1 : 0,
+      state.expandedFeedIds.has(post.id) ? 1 : 0,
+      post.isRead ? 1 : 0,
+    ].join('\u001f')).join('\u001e'),
+  ].join('\u001d');
+}
+
 function renderPosts() {
   const restoreSwipeId = document.querySelector('#feed .swipe-front.is-open')?.dataset.postId || '';
   const items = visibleFeedItems();
   if (state.feedShown > items.length) state.feedShown = Math.max(FEED_PAGE_SIZE, items.length);
   const shown = items.slice(0, state.feedShown);
+  if (state.channel === 'recent' && state.feedPlatform !== 'media') {
+    const signature = recentFeedPaintSignature(shown, items.length);
+    if (signature === recentFeedPainted && elements.feed.childElementCount) {
+      const label = feedCountLabel(shown, items);
+      if (elements['feed-count'] && elements['feed-count'].textContent !== label) elements['feed-count'].textContent = label;
+      return;
+    }
+    recentFeedPainted = signature;
+  } else recentFeedPainted = '';
   const keepY = document.body.dataset.view === 'feed'
     && !document.body.classList.contains('is-dialog-open')
     && !restoringViewScroll
@@ -4932,16 +5026,34 @@ elements['holdings-group-back']?.addEventListener('click', () => {
   renderHoldings();
 });
 
+function syncGlobalEventsSection() {
+  const onEvents = state.assetClass === 'events' && state.tradePane === 'assets'
+    && (document.body?.dataset?.view === 'market' || document.body?.dataset?.view === 'assets');
+  elements['global-events']?.classList.toggle('hidden', !onEvents);
+  elements['asset-filter-wrap']?.classList.toggle('hidden', onEvents);
+  elements['asset-table-scroll']?.classList.toggle('hidden', onEvents);
+  return onEvents;
+}
+
 function renderAssets() {
-  renderChipTabs(elements['asset-filters'], [assetClasses[0],{id:'hardware',label:'AI硬件'},...assetClasses.slice(1)], state.assetClass, (id) => {
+  renderChipTabs(elements['asset-filters'], [assetClasses[0],{id:'hardware',label:'AI硬件'},...assetClasses.slice(1),{id:'events',label:'事件概率'}], state.assetClass, (id) => {
+    const previous = state.assetClass;
+    if (id === previous && id !== 'hardware') return;
     state.assetClass = id;
-    if(id==='hardware' && state.hardwareLoaded && !state.hardwareItems.some(r=>r.verification==='verified'))state.hardwareReview=true;
-    if(id==='hardware'){setView('market/global/hardware');return;}
-    if(normalizeRoute(location.hash)==='market/global/hardware'){setView('market/global');return;}
+    if (id === 'hardware') {
+      if (state.hardwareLoaded && !state.hardwareItems.some((row) => row.verification === 'verified')) state.hardwareReview = true;
+      setView('market/global/hardware');
+      return;
+    }
+    if (id === 'events' || previous === 'events' || previous === 'hardware' || normalizeRoute(location.hash).startsWith('market/global/hardware')) {
+      setView(id === 'events' ? 'market/global?tab=events' : 'market/global');
+      return;
+    }
     renderAssets();
   });
   const hardwareFilters=document.getElementById('hardware-market-filters');
   const onHardware=state.assetClass==='hardware';
+  const onEvents = syncGlobalEventsSection();
   elements['asset-filter'].placeholder=onHardware?'完整规格 / 报价类型':'名称 / 代码 / 介绍';
   hardwareFilters.classList.toggle('hidden',!onHardware);
   if(onHardware) {
@@ -4954,8 +5066,15 @@ function renderAssets() {
     hardwareFilters.replaceChildren(kinds,review);
   }
   if (state.tradePane === 'assets') {
-    setTradeHint(assetBoardHint(onHardware));
+    setTradeHint(onEvents
+      ? (state.marketNativeError || (state.marketNativeLoading && !state.marketNativeBoard ? '正在读取事件报价…' : ''))
+      : assetBoardHint(onHardware));
     updateChangeSortControl();
+  }
+  if (onEvents) {
+    renderMarketNativeBoard();
+    if (document.body.dataset.view === 'sources') renderHub();
+    return;
   }
   const rows = visibleAssets();
   if (!rows.length) {
@@ -6374,6 +6493,7 @@ function renderMarketNativeBoard() {
   if (elements['market-native-note']) elements['market-native-note'].textContent = noteText;
   if (elements['global-native-note']) elements['global-native-note'].textContent = noteText;
   syncGlobalNativeSection();
+  syncGlobalEventsSection();
 }
 
 async function loadMarketNativeBoard({ refresh = false } = {}) {
@@ -12365,13 +12485,27 @@ async function tagXBatch({ silent = false } = {}) {
   }
 }
 
+function paintLoadedSocialFeed(source) {
+  const view = typeof document === 'undefined' ? '' : (document.body?.dataset?.view || '');
+  if (view === 'feed') {
+    const channel = state.channel || 'all';
+    const platform = state.feedPlatform || state.platform || 'all';
+    const shows = platform === 'media' ? false
+      : channel === 'recent' || channel === 'official' ? false
+      : channel === 'social' ? source === 'x' || source === 'xueqiu'
+      : true;
+    if (!shows) return;
+  }
+  renderPosts();
+}
+
 async function loadXFeed({ refresh = false, autoTranslate = true, append = false, focusWindow = false, saved = false, before = '' } = {}) {
   if (!state.session) return null;
   state.xLoading = true;
   state.xError = '';
   state.xRefreshing = refresh;
   renderXToolbar();
-  renderPosts();
+  if (!(state.xItems || []).length) paintLoadedSocialFeed('x');
   try {
     const params = new URLSearchParams({
       platform: 'x',
@@ -12407,10 +12541,10 @@ async function loadXFeed({ refresh = false, autoTranslate = true, append = false
     state.xError = '';
     state.xLoaded = true;
     hydrateFeedTranslations(state.xItems);
-    renderPosts();
+    paintLoadedSocialFeed('x');
     renderXToolbar();
     syncLocalTranslationsToServer(state.xItems).catch(() => {});
-    loadFeedTaggings(state.xItems).then(() => renderPosts()).catch(() => {});
+    loadFeedTaggings(state.xItems).then(() => paintLoadedSocialFeed('x')).catch(() => {});
     if (autoTranslate) translateXBatch({ silent: true }).catch(() => {});
     return feed;
   } catch (error) {
@@ -12422,7 +12556,7 @@ async function loadXFeed({ refresh = false, autoTranslate = true, append = false
     state.xLoading = false;
     state.xRefreshing = false;
     renderXToolbar();
-    renderPosts();
+    paintLoadedSocialFeed('x');
     if (typeof document !== 'undefined' && document.body?.dataset?.view === 'sources' && state.overviewTimeline === 'social') renderOverviewTimeline();
     if (!focusWindow && !saved && state.channel === 'focus' && !state.xFocusLoaded && !state.xFocusLoading) {
       loadFocusFeedWindow('x').catch((error) => showToast(error.message));
@@ -12483,7 +12617,7 @@ async function loadXueqiuFeed({ refresh = false, append = false, focusWindow = f
   state.xueqiuError = '';
   state.xueqiuRefreshing = Boolean(refresh);
   renderXueqiuToolbar();
-  renderPosts();
+  if (!(state.xueqiuItems || []).length) paintLoadedSocialFeed('xueqiu');
   try {
     const params = new URLSearchParams({
       platform: 'xueqiu',
@@ -12519,9 +12653,9 @@ async function loadXueqiuFeed({ refresh = false, append = false, focusWindow = f
     state.xueqiuError = '';
     state.xueqiuLoaded = true;
     hydrateFeedTranslations(state.xueqiuItems);
-    renderPosts();
+    paintLoadedSocialFeed('xueqiu');
     renderXueqiuToolbar();
-    loadFeedTaggings(state.xueqiuItems).then(() => renderPosts()).catch(() => {});
+    loadFeedTaggings(state.xueqiuItems).then(() => paintLoadedSocialFeed('xueqiu')).catch(() => {});
     if (refresh) {
       if (feed.mode === 'error' || feed.mode === 'unavailable') showToast(feed.note || '雪球抓取失败');
       else showToast(feed.note || `已写入 ${state.xueqiuItems.length} 条`);
@@ -12536,7 +12670,7 @@ async function loadXueqiuFeed({ refresh = false, append = false, focusWindow = f
     state.xueqiuLoading = false;
     state.xueqiuRefreshing = false;
     renderXueqiuToolbar();
-    renderPosts();
+    paintLoadedSocialFeed('xueqiu');
     if (typeof document !== 'undefined' && document.body?.dataset?.view === 'sources' && state.overviewTimeline === 'social') renderOverviewTimeline();
     if (!focusWindow && !saved && state.channel === 'focus' && !state.xueqiuFocusLoaded && !state.xueqiuFocusLoading) {
       loadFocusFeedWindow('xueqiu').catch((error) => showToast(error.message));
@@ -13179,8 +13313,7 @@ elements['feed-open-calendar']?.addEventListener('click', () => {
 });
 elements['open-all-quotes']?.addEventListener('click', () => setView('market'));
 elements['open-event-odds']?.addEventListener('click', () => {
-  setView('market/global');
-  document.getElementById('global-events')?.scrollIntoView({ block: 'start' });
+  setView('market/global?tab=events');
 });
 elements['open-full-feed']?.addEventListener('click', () => setView('feed'));
 elements['open-daily-brief']?.addEventListener('click', () => setView('report'));
