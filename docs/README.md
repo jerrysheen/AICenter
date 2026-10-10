@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-10-local-trust.md`：本机 desktop 判定收紧，危险接口只留本机，写请求要求 JSON。
+
 - `progress/2026-10-09-yt-tools.md`：YouTube / B 站音轨下载和本地转写，用来补平台没有 AI 字幕的情况。
 
 - `progress/2026-10-09-audio-transcription.md`：长音频按每分钟额度切成等长 WAV 段，分密钥转写后按时间拼回正文。

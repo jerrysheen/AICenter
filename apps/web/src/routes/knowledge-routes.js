@@ -28,6 +28,19 @@ function enqueueStructureJob({ services, identity, events, target, runId, instru
 }
 
 const ATTACHMENT_JSON_MAX_BYTES = 12 * 1024 * 1024;
+const LOCAL_DISPATCH_NOTE = '已记下继续指令，需在本机派发';
+
+function enqueueWorkPackageDispatch(services, workspaceId, workPackage) {
+  if (!workPackage) return null;
+  if (workPackage.status === 'completed' || workPackage.status === 'failed' || workPackage.status === 'cancelled') return null;
+  if (workPackage.cursorAgentId || workPackage.dispatchJobId) return null;
+  const job = services.runtime.requestWorkPackageDispatch({
+    workspaceId,
+    workPackageId: workPackage.id,
+  });
+  services.knowledge.attachCursorSession(workspaceId, workPackage.id, { dispatchJobId: job.id });
+  return { id: job.id, type: job.type };
+}
 
 export function createKnowledgeRoutes() {
   return [
@@ -146,7 +159,8 @@ export function createKnowledgeRoutes() {
       },
     },
     {
-      method: 'POST', path: '/api/v1/work-packages/notify',
+      method: 'POST', path: '/api/v1/work-packages/notify', access: 'desktop',
+      forbidden: '派发工作包仅允许在本机发起',
       async handler({ request, response, services, identity, events }) {
         const workspaceId = identity?.device?.workspaceId || 'local';
         const notified = services.knowledge.notifyWorkPackages(
@@ -155,14 +169,8 @@ export function createKnowledgeRoutes() {
         );
         const jobs = [];
         for (const pack of notified.workPackages || []) {
-          if (pack.status === 'completed' || pack.status === 'failed' || pack.status === 'cancelled') continue;
-          if (pack.cursorAgentId || pack.dispatchJobId) continue;
-          const job = services.runtime.requestWorkPackageDispatch({
-            workspaceId,
-            workPackageId: pack.id,
-          });
-          services.knowledge.attachCursorSession(workspaceId, pack.id, { dispatchJobId: job.id });
-          jobs.push({ id: job.id, type: job.type });
+          const job = enqueueWorkPackageDispatch(services, workspaceId, pack);
+          if (job) jobs.push(job);
         }
         events.flush();
         json(response, 200, { ok: true, ...notified, jobs });
@@ -196,21 +204,18 @@ export function createKnowledgeRoutes() {
       },
     },
     {
-      method: 'POST', path: /^\/api\/v1\/work-packages\/([0-9a-f-]{36})\/retry$/i,
+      method: 'POST', path: /^\/api\/v1\/work-packages\/([0-9a-f-]{36})\/retry$/i, access: 'desktop',
+      forbidden: '重新派发工作包仅允许在本机发起',
       async handler({ response, services, identity, events, params }) {
         const workspaceId = identity?.device?.workspaceId || 'local';
         const workPackage = services.knowledge.retryWorkPackage(workspaceId, params.values[0]);
-        const job = services.runtime.requestWorkPackageDispatch({
-          workspaceId,
-          workPackageId: workPackage.id,
-        });
-        services.knowledge.attachCursorSession(workspaceId, workPackage.id, { dispatchJobId: job.id });
+        const job = enqueueWorkPackageDispatch(services, workspaceId, workPackage);
         events.flush();
         json(response, 201, {
           ok: true,
           workPackage,
           note: workPackage.note,
-          jobs: [{ id: job.id, type: job.type }],
+          jobs: job ? [job] : [],
         });
       },
     },
@@ -220,17 +225,17 @@ export function createKnowledgeRoutes() {
         const workspaceId = identity?.device?.workspaceId || 'local';
         const input = parseContinueWorkPackageInput(await readJson(request));
         const workPackage = services.knowledge.continueWorkPackage(workspaceId, params.values[0], input);
-        const jobs = [];
-        if (workPackage.status !== 'completed' && workPackage.status !== 'failed' && workPackage.status !== 'cancelled') {
-          const job = services.runtime.requestWorkPackageDispatch({
-            workspaceId,
-            workPackageId: workPackage.id,
-          });
-          services.knowledge.attachCursorSession(workspaceId, workPackage.id, { dispatchJobId: job.id });
-          jobs.push({ id: job.id, type: job.type });
-        }
+        const job = identity?.kind === 'desktop'
+          ? enqueueWorkPackageDispatch(services, workspaceId, workPackage)
+          : null;
         events.flush();
-        json(response, 201, { ok: true, workPackage, note: workPackage.note, jobs });
+        json(response, 201, {
+          ok: true,
+          workPackage,
+          note: workPackage.note,
+          jobs: job ? [job] : [],
+          ...(identity?.kind === 'desktop' ? {} : { dispatchNote: LOCAL_DISPATCH_NOTE }),
+        });
       },
     },
     {

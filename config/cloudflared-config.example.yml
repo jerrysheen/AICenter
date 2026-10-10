@@ -9,4 +9,7 @@
 ingress:
   - hostname: center.example.com
     service: http://127.0.0.1:8787
+    # 可选加固：Web 设置 AI_CENTER_TUNNEL_PORT=8788 后，把上一行改成
+    # service: http://127.0.0.1:8788
+    # 8788 只听 127.0.0.1，上面的请求一律按公网处理。8787 仍留给本机浏览器和 Cursor CLI。
   - service: http_status:404

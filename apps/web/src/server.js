@@ -24,7 +24,8 @@ import { readTagCatalogFile } from '../../../packages/runtime/src/tagging-module
 import { createSourceHub, createSourceModuleRegistry, readStaticSignalBoard } from '../../../packages/source/src/index.js';
 import { createEventStreamHub } from './http/event-stream.js';
 import { publicHttpsLocation } from './http/device-auth.js';
-import { parseCookies, json } from './http/response.js';
+import { hasProxyHeaders, isTrustedLocal } from './http/local-trust.js';
+import { isJsonContentType, parseCookies, json } from './http/response.js';
 import { createRouter } from './http/router.js';
 import { createStaticFileHandler } from './http/static-files.js';
 import { createApiRoutes } from './routes/index.js';
@@ -34,10 +35,6 @@ const repositoryRoot = path.resolve(currentDirectory, '../../..');
 const publicDirectory = path.resolve(currentDirectory, '../public');
 resolveInstanceConfig({ repositoryRoot });
 const version = '0.2.0';
-
-function isLoopback(address = '') {
-  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
-}
 
 function localNetworkUrls(port) {
   const urls = [];
@@ -105,6 +102,18 @@ export function createInstanceCookieNames(instance) {
   });
 }
 
+function parseTunnelPort(value) {
+  const text = String(value ?? '').trim();
+  if (!text || text === '0') return 0;
+  const port = Number(text);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('AI_CENTER_TUNNEL_PORT 必须是 1 到 65535 的端口，留空表示不启用');
+  }
+  return port;
+}
+
+const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
 function createOptionalSearchPort(explicit, env = process.env) {
   if (explicit !== undefined) return explicit;
   if (String(env.AI_CENTER_AGENT_RUNTIME || '').trim().toLowerCase() !== 'local') return null;
@@ -133,9 +142,14 @@ export function createAiCenterServer(options = {}) {
       browserId: options.browserId,
     },
   });
-  const host = options.host || process.env.AI_CENTER_HOST || '0.0.0.0';
+  const env = options.env || process.env;
+  const host = options.host || env.AI_CENTER_HOST || '0.0.0.0';
   const configuredPort = Number(options.port ?? instance.port);
-  const publicBaseUrl = parsePublicBaseUrl(options.publicUrl ?? process.env.AI_CENTER_PUBLIC_URL ?? '');
+  const tunnelPort = parseTunnelPort(options.tunnelPort ?? env.AI_CENTER_TUNNEL_PORT);
+  if (tunnelPort && configuredPort && tunnelPort === configuredPort) {
+    throw new Error('AI_CENTER_TUNNEL_PORT 不能与 Web 端口相同');
+  }
+  const publicBaseUrl = parsePublicBaseUrl(options.publicUrl ?? env.AI_CENTER_PUBLIC_URL ?? '');
   const dataDirectory = instance.dataDirectory;
   const store = options.store || createStore(instance.databasePath);
   const webSearchPort = createOptionalSearchPort(options.webSearchPort, options.env || process.env);
@@ -144,7 +158,6 @@ export function createAiCenterServer(options = {}) {
     defaultBrowserId: instance.browserId,
   });
   let services;
-  const env = options.env || process.env;
   const typesafeClient = options.typesafeClient || createTypeSafeSystemOneClient({ env });
   const feedFilter=options.feedFilter !== undefined ? options.feedFilter
     : createFeedFilterFromEnv({client:typesafeClient,env,calibration:loadFeedValueCalibration(instance)});
@@ -250,14 +263,25 @@ export function createAiCenterServer(options = {}) {
   let eventTimer = null;
   const pairingAttempts = new Map();
 
-  function isPublicRequest(request, url) {
-    const forwarded = Boolean(request.headers['cf-connecting-ip'] || request.headers['cf-ray']);
-    const publicHost = publicBaseUrl && url.host.toLowerCase() === new URL(publicBaseUrl).host.toLowerCase();
-    return Boolean(forwarded || publicHost);
+  function requestLocalPort(request) {
+    const port = Number(request.socket?.localPort);
+    return Number.isInteger(port) && port > 0 ? port : actualPort;
   }
 
-  function resolveIdentity(request, publicRequest) {
-    if (isLoopback(request.socket.remoteAddress) && !publicRequest) return { kind: 'desktop', device: null };
+  function arrivedViaTunnel(request) {
+    return tunnelPort > 0 && request.socket?.localPort === tunnelPort;
+  }
+
+  function isPublicRequest(request, url) {
+    if (arrivedViaTunnel(request)) return true;
+    const publicHost = publicBaseUrl && url.host.toLowerCase() === new URL(publicBaseUrl).host.toLowerCase();
+    return Boolean(hasProxyHeaders(request.headers) || publicHost);
+  }
+
+  function resolveIdentity(request) {
+    if (!arrivedViaTunnel(request) && isTrustedLocal(request, requestLocalPort(request))) {
+      return { kind: 'desktop', device: null };
+    }
     const parsed = parseCookies(request.headers.cookie || '');
     const token = parsed[secureCookieName] || parsed[cookieName];
     const device = services.identity.authorizeDevice(token);
@@ -292,8 +316,10 @@ export function createAiCenterServer(options = {}) {
         };
       }));
     },
-    allowAttempt(request, publicRequest) {
-      if (!publicRequest && isLoopback(request.socket.remoteAddress)) return { allowed: true, retryAfterSeconds: 0 };
+    allowAttempt(request) {
+      if (!arrivedViaTunnel(request) && isTrustedLocal(request, requestLocalPort(request))) {
+        return { allowed: true, retryAfterSeconds: 0 };
+      }
       const now = Date.now();
       const windowMs = 5 * 60_000;
       const key = String(request.headers['cf-connecting-ip'] || request.socket.remoteAddress || 'unknown');
@@ -313,7 +339,7 @@ export function createAiCenterServer(options = {}) {
     },
   });
 
-  const server = createServer(async (request, response) => {
+  const handleHttp = async (request, response) => {
     const url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
     try {
       const httpsLocation = publicHttpsLocation(request, url, publicBaseUrl);
@@ -327,13 +353,18 @@ export function createAiCenterServer(options = {}) {
         json(response, 404, { ok: false, error: 'Not found' });
         return;
       }
+      if (WRITE_METHODS.has(request.method || '') && !isJsonContentType(request.headers['content-type'])) {
+        request.resume();
+        json(response, 415, { ok: false, error: '写请求必须使用 Content-Type: application/json' });
+        return;
+      }
 
       const publicRequest = isPublicRequest(request, url);
       const handled = await router.dispatch({
         request,
         response,
         url,
-        identity: resolveIdentity(request, publicRequest),
+        identity: resolveIdentity(request),
         publicRequest,
         services,
         events,
@@ -353,7 +384,10 @@ export function createAiCenterServer(options = {}) {
         issues: error instanceof ValidationError ? error.issues : undefined,
       });
     }
-  });
+  };
+
+  const server = createServer(handleHttp);
+  const tunnelServer = tunnelPort ? createServer(handleHttp) : null;
 
   return {
     server,
@@ -366,6 +400,18 @@ export function createAiCenterServer(options = {}) {
       });
       const address = server.address();
       actualPort = typeof address === 'object' && address ? address.port : configuredPort;
+      let tunnelActualPort = 0;
+      if (tunnelServer) {
+        await new Promise((resolve, reject) => {
+          tunnelServer.once('error', reject);
+          tunnelServer.listen(tunnelPort, '127.0.0.1', resolve);
+        });
+        const tunnelAddress = tunnelServer.address();
+        tunnelActualPort = typeof tunnelAddress === 'object' && tunnelAddress ? tunnelAddress.port : tunnelPort;
+        if (tunnelActualPort === actualPort) {
+          throw new Error('AI_CENTER_TUNNEL_PORT 不能与 Web 端口相同');
+        }
+      }
       eventTimer = setInterval(events.flush, 250);
       eventTimer.unref?.();
       return {
@@ -374,12 +420,15 @@ export function createAiCenterServer(options = {}) {
         localUrl: `http://127.0.0.1:${actualPort}`,
         networkUrls: localNetworkUrls(actualPort),
         publicUrl: publicBaseUrl,
+        tunnelPort: tunnelActualPort || null,
+        tunnelUrl: tunnelActualPort ? `http://127.0.0.1:${tunnelActualPort}` : null,
       };
     },
     async close() {
       if (eventTimer) clearInterval(eventTimer);
       events.closeAll();
       await new Promise((resolve) => server.close(resolve));
+      if (tunnelServer) await new Promise((resolve) => tunnelServer.close(resolve));
       store.close();
     },
   };
@@ -392,6 +441,7 @@ async function main() {
   console.log(`Desktop: ${address.localUrl}`);
   for (const url of address.networkUrls) console.log(`Phone:   ${url}`);
   if (!address.networkUrls.length) console.log('Phone:   未发现局域网 IPv4 地址，请检查网络连接。');
+  if (address.tunnelUrl) console.log(`Tunnel:  ${address.tunnelUrl}（此端口一律按公网处理）`);
 
   const shutdown = async () => {
     await app.close();

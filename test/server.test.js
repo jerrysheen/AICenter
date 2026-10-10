@@ -108,7 +108,7 @@ test('HTTP flow supports health, pairing, publishing, and persistence', async ()
 
     const logoutResponse = await fetch(`${address.localUrl}/api/v1/session/logout`, {
       method: 'POST',
-      headers: { Cookie: cookie },
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
     });
     assert.equal(logoutResponse.status, 200);
     assert.match(logoutResponse.headers.get('set-cookie'), /Max-Age=0/);

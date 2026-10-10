@@ -101,7 +101,7 @@ enrich明确报告partial。新闻API仍未申请，FT主站/WSJ/Economist未宣
 
 - **隐私与迁移**：当前私有仓库提交可移植的 Instance 文件内容（Knowledge 文件、个人 Catalog、必要导入资料与附件）；运行 SQLite 数据库只在本地保存和更新，通过独立的一致备份恢复，不再提交 Git，也不启用 LFS。不提交 `.env`、API Key、Token、Cookie、浏览器 Profile、WAL/SHM、PID、运行日志或真实公网 Hostname。设备凭证服务端只存哈希。停止数据库跟踪与未发布超限提交修正见 `docs/progress/2026-10-02-local-database-git.md`。
 - **Instance 边界**：进程启动不灌入个人持仓；Market / Tag / Taxonomy / Knowledge / imports 通过统一 Instance 路径；V16 Taxonomy 只作 Legacy Bootstrap；Browser / Search 仍是 Host 服务。
-- **安全**：对手机只开放 Web/API；Worker、SQLite、浏览器调试口、Search Worker、旧仓服务只听本机。公网模式遵守 `docs/public-access-security.md`。二维码只带一次性配对码。已配对不等于 Host 编码权限：公网 Ask 不得使用 bash / 写盘 / subagent，也不得派发 Cursor CLI。调用方能力平面已写入设计；实现收口另做，不在本轮扩功能。
+- **安全**：对手机只开放 Web/API；Worker、SQLite、浏览器调试口、Search Worker、旧仓服务只听本机。公网模式遵守 `docs/public-access-security.md`。二维码只带一次性配对码。已配对不等于 Host 编码权限：公网 Ask 不得使用 bash / 写盘 / subagent，也不得派发 Cursor CLI。工作包派发、进程重启、X 点赞和媒体源启停只允许本机 desktop。`web_fetch` 由冻结 Harness 包拒绝私网和回环地址。
 - **稳定性**：`npm run check`；重启后数据与授权仍在；SSE 可按 `Last-Event-ID` 补发；换 Adapter 不改页面字段。
 - **Harness 运行状态**：Ask / 文章阅读的 Job 状态继续以 SQLite 为真源；Harness `session.event` / `session.status` 只进入脱敏的 Agent Run 进度投影。`GET /api/v1/agent/runs/:id` 和 SSE 不读取 DSH 私有 JSONL、Session Query 数据库或 Host 路径。真实 Harness 事件结构必须有端到端测试，不能只用扁平假事件证明进度可用。
 - **静态信号源**：BEA TBA、Census Suspended、NBS 单月双日期与 GACC 年度缺失/日期精度已有确定性测试；官方固定规则生成项必须显示为 tentative；来源不可达时降级为 unavailable/partial，不能回填第三方预测数据。SCIO 的 HTTP 例外必须保持 URL 级隔离；GACC 的真实网络可用性仍需在官网证书恢复或另一受信网络环境复核。

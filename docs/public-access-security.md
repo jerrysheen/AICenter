@@ -20,9 +20,10 @@ cloudflared（本机）
 AI Center Public Gateway
 ```
 
-Cloudflare Tunnel 由本机主动向外建立连接，不要求公网 IP 或开放入站端口。公网 Hostname 只映射 AI Center Web 端口，
-不能映射 Worker、SQLite、浏览器调试口、旧 AI/AI-Hub 服务、本机管理端口、只做重启的第二端口，或 Local Files MCP 的本机监听口。
-远端需要弹 Web/Worker 时走已配对的 `POST /api/v1/runtime/restart`（仍是 8787）；进程挂了由本机启动器弹回，隧道不关。
+Cloudflare Tunnel 由本机主动向外建立连接，不要求公网 IP 或开放入站端口。公网 Hostname 只映射 AI Center Web，
+不能映射 Worker、SQLite、浏览器调试口、旧 AI/AI-Hub 服务、本机管理端口，或 Local Files MCP 的本机监听口。
+可选 `AI_CENTER_TUNNEL_PORT`（例如 8788）只在 `127.0.0.1` 上多听一个端口，这个端口上的请求一律按公网处理。它不是第二套公网入口，也不监听局域网。cloudflared 可以把 ingress 改到这个端口，这样本机判定不再依赖 Cloudflare 头是否还在。
+`POST /api/v1/runtime/restart` 只允许本机 desktop。进程挂了由本机启动器弹回，隧道不关。
 
 ChatGPT 访问本机文件走另一条可选链路：Tailscale Funnel → `local-files-mcp`。怎么配见 `docs/ops/local-files-mcp-tailscale.md`。那条 Funnel 不要指到 AI Center Web，也不列入 0.2.0 发布验收。仓库说明里不得写入真实 Hostname 或 Origin。
 
@@ -91,7 +92,7 @@ Cursor CLI --force --trust
 | `device-operate` | 已配对设备（公网或局域网手机） | Ask、文章阅读、信息流、灵感/知识、`memory.save` | Host 作用：改代码、Shell、写盘、subagent、派发工作包、手动重启进程 |
 | `desktop-host` | 本机 loopback，且请求不是公网代理 | 上面全部，外加 Host 作用 | 仍禁止 `destructive` Domain Tool；默认不要 `danger-full-access` |
 
-`desktop-host` 只来自身份平面的 `desktop-admin`（loopback 且 `isPublicRequest=false`）。局域网已配对手机仍是 `device-operate`：人在家里不等于本机管理员。公网账号登录与扫码一样，只签发设备授权，不能升级成 `desktop-host`。
+`desktop-host` 只来自身份平面的 `desktop-admin`。本机判定必须同时满足：TCP 对端是 loopback、没有任何代理头（`cf-*`、`cdn-loop`、`x-forwarded-*`、`x-real-ip`、`forwarded`、`true-client-ip`）、Host 是本机名加端口、写操作不是跨站来源。拿不准就不是 desktop。可选隧道端口上的请求永远不是 desktop。局域网已配对手机仍是 `device-operate`：人在家里不等于本机管理员。公网账号登录与扫码一样，只签发设备授权，不能升级成 `desktop-host`。
 
 Host 作用（必须 `desktop-host`）：
 
@@ -133,7 +134,13 @@ Harness 自己的预设是 sandbox 模式 × 审批策略，例如 `workspace-wr
 
 ### 现状与兼容
 
-当前实现仍允许已配对公网设备 `POST /notify` 派发工作包，以及 `POST /api/v1/runtime/restart`。Ask overlay 已经关掉 Harness Host 工具，但工作包这条 Host 路径还开着。本文是冻结目标；落地时只收 Host 作用，不收回公网问答、信息流和知识。
+已配对设备不能 `POST /work-packages/notify`、`POST /work-packages/:id/retry` 或 `POST /api/v1/runtime/restart`。`continue` 仍可追加记录，派发只在 desktop 执行，其他身份返回 `jobs: []`。X 点赞、媒体源启停、`media/probe` 的 `run: true`、`media/bodies` 的 `repair: true` 同样只在本机。Ask overlay 继续关掉 Harness Host 工具。公网问答、信息流和知识保持设备可用。
+
+写请求必须带 `Content-Type: application/json`，否则 415。网页 `api()` 一直这样发。鸿蒙薄壳原生层只对 `/api/v1/health` 做 GET；业务写入走主 ArkWeb 里的同一套网页。本机 Cursor CLI 回调 `complete` / `fail` 时 Host 为 `127.0.0.1`，且不能带代理头。
+
+`web_fetch` 由冻结包 `@deepseek-ai/dsh-web-fetch-http` 0.1.6-alpha.2 执行。它在连接前解析地址，只接受公网 unicast，拒绝回环、私网、链路本地、运营商级 NAT，以及 NAT64 落到私网的地址，并把连接钉在已校验的地址上。跨源重定向直接拒绝，同源重定向会重新解析。因此问答 Agent 读 `http://127.0.0.1:8787` 不会打到本机 API。不要给 Harness 进程设置 `HTTP_PROXY` / `HTTPS_PROXY`：走代理时，非字面量主机名会跳过这次本地 DNS 校验（IP 字面量仍然拒绝）。
+
+设备撤销：`DELETE /api/v1/devices/:id` 仍只在本机开放。`authorizeToken` 每次用 `revoked_at IS NULL` 查询，下一次网页请求立即 401；路由调用 `events.closeDevice`，已打开的 SSE 立即结束。设备可以 `POST /api/v1/session/logout` 撤销自己。已经入队或正在运行的 Job 不会取消。手机端还没有撤销其他设备的入口。建议后续在这个单用户实例上，允许已配对设备列出并撤销其他设备，配对码和运行指标仍只留本机。本轮不扩大这条，避免把设备管理从 `desktop-host` 收成普通设备权限。启动迁移会把名称恰好为 `perf-audit (box curl)` 的测试设备标成已撤销，不删除其他设备。
 
 ## 公网配对
 

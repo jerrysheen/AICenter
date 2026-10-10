@@ -36,7 +36,8 @@ export function createRuntimeRoutes() {
       },
     },
     {
-      method: 'POST', path: '/api/v1/runtime/restart',
+      method: 'POST', path: '/api/v1/runtime/restart', access: 'desktop',
+      forbidden: '重启进程仅允许在本机发起',
       handler({ response, services }) {
         const restart = services.runtime.requestProcessRestart({ reason: 'manual' });
         json(response, 202, { ok: true, restart });
