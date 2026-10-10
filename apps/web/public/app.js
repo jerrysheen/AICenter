@@ -1184,7 +1184,8 @@ function setView(name, options = {}) {
   }
   state.navigationFrom = '';
   syncHeaderSearch();
-  if (leaving) restoreViewScroll(view);
+  if (view === 'feed' && (leaving || options.replace)) scrollFeedToTop();
+  else if (leaving) restoreViewScroll(view);
   else if (newArticle) window.scrollTo(0, 0);
   persistFeedBrowseState();
   syncAskKeyboard();
@@ -1502,7 +1503,21 @@ function guessDeviceName() {
   return /Mobile|HarmonyOS|Android|iPhone/i.test(navigator.userAgent) ? '我的鸿蒙手机' : '浏览器设备';
 }
 
+function rememberKnownSession(known) {
+  try {
+    window.localStorage.setItem('ai-center.known-session', known ? '1' : '0');
+  } catch {}
+  document.documentElement.classList.toggle('has-known-session', Boolean(known));
+}
+
+function sessionAuthorizationDenied(error) {
+  const status = Number(error?.status);
+  if (status === 401 || status === 403) return true;
+  return Boolean(error?.payload && error.payload.paired === false);
+}
+
 function showUnpairedPage(message, pairingFailed = false, options = {}) {
+  rememberKnownSession(false);
   briefPage.reset(true);
   dailyBriefSnapshot = { brief: null, loaded: false, error: '' };
   reportDay = { date: '', brief: null, loaded: false, error: '' };
@@ -1783,8 +1798,6 @@ function restorePersistedFeedBrowseState() {
       || window.sessionStorage.getItem(FEED_BROWSE_KEY)
       || 'null');
     if (!saved) return null;
-    if (Number.isFinite(saved.y)) viewScrollY.feed = saved.y;
-    if (saved.anchorId) state.feedAnchorId = saved.anchorId;
     if (saved.restoreId) state.feedRestoreId = saved.restoreId;
     if (Number.isFinite(saved.shown) && saved.shown > state.feedShown) {
       state.feedShown = saved.shown;
@@ -1833,6 +1846,19 @@ function captureViewScroll(view) {
   const visible = cards.find((card) => card.getBoundingClientRect().bottom > 96);
   state.feedAnchorId = visible?.dataset.postId || '';
   persistFeedBrowseState();
+}
+
+function scrollFeedToTop() {
+  state.feedAnchorId = '';
+  viewScrollY.feed = 0;
+  if (document.body.dataset.view !== 'feed' || document.body.classList.contains('is-dialog-open')) return;
+  try { history.scrollRestoration = 'manual'; } catch {}
+  const apply = () => window.scrollTo(0, 0);
+  apply();
+  requestAnimationFrame(() => {
+    apply();
+    requestAnimationFrame(apply);
+  });
 }
 
 function restoreViewScroll(view) {
@@ -4220,11 +4246,7 @@ function renderOfficialTimeline(root, items, { emptyText = '这个筛选下还�
 
 function resetFeedWindow() {
   state.feedShown = FEED_PAGE_SIZE;
-  state.feedAnchorId = '';
-  viewScrollY.feed = 0;
-  if (document.body.dataset.view === 'feed' && !document.body.classList.contains('is-dialog-open')) {
-    window.scrollTo(0, 0);
-  }
+  scrollFeedToTop();
 }
 
 function socialFeedCanPage(platform = '') {
@@ -5990,9 +6012,17 @@ function renderStaticSourceCatalog() {
     }));
     return;
   }
-  const healthById = new Map(officialSourceHealth().map((item) => [item.sourceId, item]));
+  const health = officialSourceHealth();
+  const healthById = new Map(health.map((item) => [item.sourceId, item]));
+  const unavailableCount = unavailableOfficialCount(health);
   const groups = ['content', 'calendar', 'release', 'market'];
   const nodes = [];
+  if (unavailableCount > 0) {
+    nodes.push(Object.assign(document.createElement('p'), {
+      className: 'source-group-name',
+      textContent: `${unavailableCount} 个官方来源暂不可用`,
+    }));
+  }
   for (const group of groups) {
     const rows = sources.filter((source) => sourceKind(source) === group);
     if (!rows.length) continue;
@@ -6917,11 +6947,13 @@ async function loadHomeTree(path, token) {
 
 async function ensureHomeReadingSnapshots(token) {
   const editions = hourlyEditions(state.homeTree);
+  const latestStart = Number(editions[0]?.window?.startAt);
   const count = state.homeEarlier ? editions.length : 8;
   await Promise.all(editions.slice(0, count).map(async (edition) => {
     const startAt = edition.window.startAt;
     const current = state.homeReadingHours[startAt];
-    if (Array.isArray(current?.items)) return;
+    const loaded = Array.isArray(current?.items) && current.items.length > 0;
+    if (loaded && startAt !== latestStart) return;
     try {
       const payload = await api(homeRequestPlan(Date.now()).readingHour(startAt, edition.window.endAt));
       if (token !== state.homeLoadToken) return;
@@ -13361,6 +13393,7 @@ async function waitForAuthorizedSession(attempts = 6) {
 
 async function completeAuthorizedStart(session) {
   state.session = session;
+  rememberKnownSession(true);
   elements['server-name'].textContent = session.serverName;
   elements['session-description'].textContent = session.role === 'desktop'
     ? '本机管理端 · 可生成手机二维码'
@@ -13428,7 +13461,7 @@ async function completeAuthorizedStart(session) {
   await Promise.all(startupLoads);
   if (document.body.dataset.view === 'page' && state.pageKind === 'article') renderArticlePage();
   if (document.body.dataset.view === 'feed') {
-    restoreViewScroll('feed');
+    scrollFeedToTop();
     restoreOpenFeedItem();
   }
 }
@@ -13449,7 +13482,10 @@ async function initialize() {
     const url = new URL(window.location.href);
     const pairingFailed = url.searchParams.has('pair');
     if (pairingFailed) removePairingCodeFromAddress();
-    showUnpairedPage(error.message, pairingFailed, { loginAvailable: Boolean(error.payload?.loginAvailable) });
+    const known = document.documentElement.classList.contains('has-known-session');
+    if (pairingFailed || !known || sessionAuthorizationDenied(error)) {
+      showUnpairedPage(error.message, pairingFailed, { loginAvailable: Boolean(error.payload?.loginAvailable) });
+    }
   }
 }
 

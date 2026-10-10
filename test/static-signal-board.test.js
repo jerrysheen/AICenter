@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readStaticSignalBoard } from '../packages/source/src/static/board.js';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { createFailureStreakStore, readStaticSignalBoard } from '../packages/source/src/static/board.js';
 
 const NOW = Date.parse('2026-09-17T04:00:00Z');
 const FROM = Date.parse('2026-09-17T00:00:00Z');
@@ -78,7 +81,68 @@ test('static signal board merges, focuses, dedupes and preserves distinct public
   assert.equal(board.releases.length, 2);
   assert.deepEqual(new Set(board.releases.map((item) => item.authority)), new Set(['The White House', 'Federal Register']));
   assert.equal(board.sourceHealth.length, 6);
-  assert.equal(board.sourceHealth.every((item) => item.status === 'ready'), true);
+  assert.equal(board.sourceHealth.every((item) => item.status === 'ready' && item.failingSince === null), true);
+});
+
+function streakPort(down) {
+  return {
+    list() {
+      return [
+        { id: 'calendar.cn.customs', title: '海关', category: 'calendar', viewKind: 'calendar' },
+        { id: 'calendar.us.bea', title: 'BEA', category: 'calendar', viewKind: 'calendar' },
+      ];
+    },
+    async read(sourceId) {
+      if (down.has(sourceId)) throw new Error('down');
+      return {
+        sourceId, providerId: 'provider', observedAt: NOW, status: 'ready', warnings: [],
+        data: { available: true, observedAt: NOW, sourceUrl: 'https://example.gov', events: [], note: '' },
+      };
+    },
+  };
+}
+
+const streakInput = { from: FROM, to: TO, focus: false, includeUndated: true, limit: 10, releaseLimit: 10 };
+
+test('known long-down sources start older than 24h and a success starts a new streak', async () => {
+  const store = createFailureStreakStore();
+  const first = await readStaticSignalBoard(streakPort(new Set(['calendar.cn.customs', 'calendar.us.bea'])), streakInput, {
+    now: () => NOW, failureStreaks: store,
+  });
+  const customs = first.sourceHealth.find((item) => item.sourceId === 'calendar.cn.customs');
+  const bea = first.sourceHealth.find((item) => item.sourceId === 'calendar.us.bea');
+  assert.ok(customs.failingSince < NOW - 24 * 60 * 60 * 1000);
+  assert.equal(bea.failingSince, NOW);
+  const second = await readStaticSignalBoard(streakPort(new Set(['calendar.cn.customs', 'calendar.us.bea'])), streakInput, {
+    now: () => NOW + 1000, failureStreaks: store,
+  });
+  assert.equal(second.sourceHealth.find((item) => item.sourceId === 'calendar.cn.customs').failingSince, customs.failingSince);
+  const recovered = await readStaticSignalBoard(streakPort(new Set()), streakInput, {
+    now: () => NOW + 2000, failureStreaks: store,
+  });
+  assert.equal(recovered.sourceHealth.find((item) => item.sourceId === 'calendar.cn.customs').failingSince, null);
+  const again = await readStaticSignalBoard(streakPort(new Set(['calendar.cn.customs'])), streakInput, {
+    now: () => NOW + 3000, failureStreaks: store,
+  });
+  assert.equal(again.sourceHealth.find((item) => item.sourceId === 'calendar.cn.customs').failingSince, NOW + 3000);
+});
+
+test('failure streaks reload from the data file', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'ai-center-streaks-'));
+  const filePath = path.join(dir, 'static-source-failure-streaks.json');
+  await readStaticSignalBoard(streakPort(new Set(['calendar.us.bea'])), streakInput, {
+    now: () => NOW, failureStreaks: createFailureStreakStore({ filePath }),
+  });
+  const board = await readStaticSignalBoard(streakPort(new Set(['calendar.us.bea'])), streakInput, {
+    now: () => NOW + 5000, failureStreaks: createFailureStreakStore({ filePath }),
+  });
+  assert.equal(board.sourceHealth.find((item) => item.sourceId === 'calendar.us.bea').failingSince, NOW);
+});
+
+test('the web server installs the failure streak file', () => {
+  const server = readFileSync(new URL('../apps/web/src/server.js', import.meta.url), 'utf8');
+  assert.match(server, /installFailureStreakStore\(createFailureStreakStore\(\{/);
+  assert.match(server, /static-source-failure-streaks\.json/);
 });
 
 test('static signal board returns the complete calendar when focus is disabled', async () => {

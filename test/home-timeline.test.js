@@ -18,8 +18,10 @@ import {
   buildHomeTimelineModel,
   mergeReadingHours,
   homeHourSections,
+  hourlyEditions,
   selectHomeHourHits,
   unavailableOfficialCount,
+  CHRONIC_UNAVAILABLE_MS,
   acceptMarketPayload,
   marketPayloadHasQuotes,
 } from '../apps/web/public/home-timeline.js';
@@ -318,16 +320,58 @@ test('home hour hits follow firstIngestedAt when publish time falls outside the 
   assert.deepEqual(hits.map((row) => row.title), ['收录更晚', '发布更晚']);
 });
 
-test('unavailable official count is every status=unavailable and skips partial', () => {
+test('unavailable official count skips failures older than 24h', () => {
+  const now = Date.parse('2026-10-11T19:40:00Z');
+  const chronic = now - CHRONIC_UNAVAILABLE_MS - 1;
+  const recent = now - 60_000;
   assert.equal(unavailableOfficialCount([
-    { sourceId: 'calendar.cn.customs', status: 'unavailable', note: '官方来源暂不可读取：SELF_SIGNED_CERT_IN_CHAIN' },
-    { sourceId: 'calendar.us.fed', status: 'unavailable', note: '所选时间范围未读取到 Fed 日程。' },
-    { sourceId: 'calendar.us.bls', status: 'unavailable', note: 'HTTP 403' },
-    { sourceId: 'calendar.us.census', status: 'unavailable', note: 'HTTP 403' },
-    { sourceId: 'calendar.us.ism', status: 'partial', note: '年度表暂不可读取' },
-    { sourceId: 'calendar.us.bea', status: 'partial', note: '部分页面失败' },
-    { sourceId: 'calendar.us.dol-claims', status: 'partial', note: '官方页面暂不可读取' },
-  ]), 4);
+    { sourceId: 'calendar.cn.customs', status: 'unavailable', failingSince: chronic },
+    { sourceId: 'calendar.us.bls', status: 'unavailable', failingSince: chronic },
+    { sourceId: 'calendar.us.census', status: 'unavailable', failingSince: chronic },
+    { sourceId: 'calendar.us.bea', status: 'unavailable', failingSince: chronic },
+    { sourceId: 'calendar.cn.customs', status: 'unavailable', failingSince: recent },
+    { sourceId: 'calendar.us.fed', status: 'unavailable', failingSince: now - CHRONIC_UNAVAILABLE_MS },
+    { sourceId: 'calendar.us.bls', status: 'unavailable' },
+    { sourceId: 'calendar.us.bea', status: 'unavailable' },
+    { sourceId: 'calendar.us.ism', status: 'partial', failingSince: recent },
+  ], now), 3);
+});
+
+test('hourly editions use the same edition-or-attempt choice as the brief', () => {
+  const hour = 3_600_000;
+  const published = { id: 'published', window: { startAt: hour, endAt: hour * 2 } };
+  const attempt = { id: 'attempt', window: { startAt: hour * 2, endAt: hour * 3 } };
+  const editions = hourlyEditions({
+    hours: [
+      { edition: published, attempt: { id: 'older-attempt', window: { startAt: hour, endAt: hour * 2 } } },
+      { edition: null, attempt },
+    ],
+  });
+  assert.deepEqual(editions.map((item) => item.id), ['attempt', 'published']);
+});
+
+test('the newest loaded hour stays visible even when it has no hits', () => {
+  const now = Date.parse('2026-10-11T19:40:00Z');
+  const hour = 3_600_000;
+  const start = shanghaiHourStart(now) - hour;
+  const older = start - hour;
+  const edition = (startAt) => ({ window: { startAt, endAt: startAt + hour } });
+  const hit = {
+    title: '旧', nodeId: '旧', readingDirectionName: '金融', disposition: 'hit', publishedAt: older + 1000,
+  };
+  const sections = homeHourSections({
+    editions: [edition(start), edition(older)],
+    readings: { [start]: { items: [] }, [older]: { items: [hit] } },
+    nowMs: now,
+  });
+  assert.equal(sections[0].label, '02:00–03:00');
+  assert.equal(sections[0].items.length, 0);
+  assert.equal(sections[1].items[0].title, '旧');
+  assert.equal(homeHourSections({
+    editions: [edition(start), edition(older)],
+    readings: { [older]: { items: [hit] } },
+    nowMs: now,
+  }).length, 0);
 });
 
 test('a quoted overview board is kept when the next payload has no prices', () => {
@@ -366,6 +410,11 @@ test('home requests are the overview set and not the old feed fan-out', () => {
   assert.match(messages, /feedSortAt/);
   assert.doesNotMatch(sourcesPage, /loadGlobalAssets|loadMarketNativeBoard|scheduleOverviewManualPosts|loadXFeed|loadXueqiuFeed|loadPosts\(/);
   assert.match(app, /mergeReadingHours\(state\.homeReadingHours, absorbReadingIndex\(payload\)\)/);
+  const snapshots = app.slice(app.indexOf('async function ensureHomeReadingSnapshots'), app.indexOf('async function loadHomeReadingIndex'));
+  assert.match(snapshots, /if \(loaded && startAt !== latestStart\) return/);
+  const catalog = app.slice(app.indexOf('function renderStaticSourceCatalog()'), app.indexOf('const staticScheduleWindows'));
+  assert.match(catalog, /unavailableOfficialCount\(health\)/);
+  assert.match(app.slice(app.indexOf('function renderHomeSourceLine()'), app.indexOf('async function loadHomeTree')), /unavailableOfficialCount\(officialSourceHealth\(\)\)/);
   assert.match(app, /view === 'report' \? '搜索简报'/);
   assert.match(app, /navId === 'sources'\) return view === 'sources' \|\| view === 'feed' \|\| view === 'market' \|\| view === 'report'/);
   const tree = readFileSync(new URL('../apps/web/public/information-tree.js', import.meta.url), 'utf8');

@@ -166,14 +166,17 @@ export function selectHomeHourHits(snapshot) {
 export function homeHourSections({ editions = [], readings = {}, sectionLimit = 4, nowMs = Date.now() } = {}) {
   const sections = [];
   const cap = Math.max(1, Number(sectionLimit) || 4);
-  for (const edition of editions) {
-    const startAt = Number(edition?.window?.startAt);
-    const endAt = Number(edition?.window?.endAt);
-    if (!Number.isFinite(startAt)) continue;
+  const list = (editions || []).filter((edition) => Number.isFinite(Number(edition?.window?.startAt)));
+  if (!list.length) return sections;
+  const newestStart = Number(list[0].window.startAt);
+  if (!Array.isArray(readings[newestStart]?.items)) return sections;
+  for (const edition of list) {
+    const startAt = Number(edition.window.startAt);
+    const endAt = Number(edition.window.endAt);
     const snapshot = readings[startAt];
     if (!Array.isArray(snapshot?.items)) continue;
     const items = selectHomeHourHits(snapshot).slice(0, sections.length === 0 ? 5 : 2);
-    if (!items.length) continue;
+    if (!items.length && startAt !== newestStart) continue;
     sections.push({
       startAt,
       endAt,
@@ -212,7 +215,7 @@ export function hourlyEditions(tree) {
   const editions = [];
   const seen = new Set();
   for (const row of tree?.hours || []) {
-    const edition = row?.edition || (row?.window ? row : null);
+    const edition = row?.edition || row?.attempt || (row?.window ? row : null);
     const startAt = Number(edition?.window?.startAt);
     if (!edition?.window || !Number.isFinite(startAt) || seen.has(startAt)) continue;
     seen.add(startAt);
@@ -368,8 +371,18 @@ export function visibleHourGaps(coverage, shown) {
     .filter(Boolean);
 }
 
-export function unavailableOfficialCount(health) {
-  return (health || []).filter((item) => item?.status === 'unavailable').length;
+export const CHRONIC_UNAVAILABLE_MS = 24 * 60 * 60 * 1000;
+const CHRONIC_SOURCE_FALLBACK = new Set(['calendar.cn.customs', 'calendar.us.bls', 'calendar.us.census']);
+
+function freshOfficialUnavailable(item, nowMs) {
+  if (item?.status !== 'unavailable') return false;
+  const since = Number(item?.failingSince);
+  if (Number.isFinite(since) && since > 0) return nowMs - since <= CHRONIC_UNAVAILABLE_MS;
+  return !CHRONIC_SOURCE_FALLBACK.has(item?.sourceId);
+}
+
+export function unavailableOfficialCount(health, nowMs = Date.now()) {
+  return (health || []).filter((item) => freshOfficialUnavailable(item, nowMs)).length;
 }
 
 export function buildHomeTimelineModel({

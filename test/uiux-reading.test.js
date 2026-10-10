@@ -95,15 +95,19 @@ test('article return uses the local browser history; direct links have a determi
   assert.equal(context.returnTarget(), 'tools');
 });
 
-test('browse persistence restores query, sort, date, platform, list size and position together', () => {
+test('browse persistence restores filters and list size without the old scroll position', () => {
   const saved = { platform: 'media', channel: 'all', query: '混排', sort: 'published', range: '7d', y: 912, shown: 48, anchorId: 'item-20' };
   const context = vm.createContext({ state: { feedShown: 12 }, viewScrollY: {}, pendingFeedDialogId: '', FEED_BROWSE_KEY: 'browse',
     window: { localStorage: { getItem: () => JSON.stringify(saved) } },
   });
   vm.runInContext(functionSource('restorePersistedFeedBrowseState'), context);
   context.restorePersistedFeedBrowseState();
-  for (const [key, value] of Object.entries({ feedQuery: '混排', feedSort: 'published', feedRange: '7d', feedPlatform: 'media', feedShown: 48, feedAnchorId: 'item-20' })) assert.equal(context.state[key], value);
-  assert.equal(context.viewScrollY.feed, 912);
+  for (const [key, value] of Object.entries({ feedQuery: '混排', feedSort: 'published', feedRange: '7d', feedPlatform: 'media', feedShown: 48 })) assert.equal(context.state[key], value);
+  assert.equal(context.state.feedAnchorId, undefined);
+  assert.equal(context.viewScrollY.feed, undefined);
+  assert.match(functionSource('setView'), /view === 'feed' && \(leaving \|\| options\.replace\)\) scrollFeedToTop\(\)/);
+  assert.match(functionSource('resetFeedWindow'), /scrollFeedToTop\(\)/);
+  assert.match(functionSource('completeAuthorizedStart'), /scrollFeedToTop\(\)/);
 });
 
 test('legacy TrendForce browse selection becomes tech media with an isolated source cache',()=>{

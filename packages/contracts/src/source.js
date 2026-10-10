@@ -198,6 +198,7 @@ export const StaticSignalSourceHealthSchema = z.object({
   category: z.enum(['calendar', 'policy']),
   status: z.enum(['ready', 'partial', 'unavailable']),
   observedAt: EpochMillisSchema.nullable(),
+  failingSince: EpochMillisSchema.nullable().default(null),
   note: z.string().trim().max(1_000).default(''),
 }).strict();
 

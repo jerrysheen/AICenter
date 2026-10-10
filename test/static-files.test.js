@@ -84,6 +84,8 @@ test('static assets are gzipped on request and versioned JS/CSS are cacheable', 
     assert.match(boot.body.toString('utf8'), /aiCenterUiBoot/);
     assert.match(boot.body.toString('utf8'), /aiCenterSessionBoot/);
     assert.match(boot.body.toString('utf8'), /settleRevision/);
+    assert.match(boot.body.toString('utf8'), /has-known-session/);
+    assert.match(boot.body.toString('utf8'), /ai-center\.known-session/);
     const health = await getRaw(`${address.localUrl}/api/v1/health`);
     const healthBody = JSON.parse(health.body.toString('utf8'));
     assert.match(healthBody.uiRevision, /^[0-9a-f]{12}$/);
@@ -96,6 +98,8 @@ test('static assets are gzipped on request and versioned JS/CSS are cacheable', 
     assert.doesNotMatch(htmlText, /id="unpaired-panel"[^>]*\bhidden\b/);
     const css = await getRaw(`${address.localUrl}/styles.css`, { 'Accept-Encoding': 'identity' });
     assert.match(css.body.toString('utf8'), /body:not\(\.is-ready\) \.app-shell/);
+    assert.match(css.body.toString('utf8'), /html\.has-known-session body\.is-unpaired \.app-shell/);
+    assert.match(css.body.toString('utf8'), /html\.has-known-session body:not\(\.is-ready\) \.connection-gate/);
     assert.match(htmlText, /id="view-sources"/);
     assert.match(htmlText, /id="overview-subnav"/);
     assert.match(htmlText, /id="view-market"/);

@@ -1,8 +1,76 @@
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import { z } from 'zod';
 import { parseContract, StaticSignalBoardSchema } from '../../../contracts/src/index.js';
 
 const focusCatalog = JSON.parse(readFileSync(new URL('./focus-events.json', import.meta.url), 'utf8'));
+const CHRONIC_UNAVAILABLE_MS = 24 * 60 * 60 * 1000;
+const CHRONIC_SEED_IDS = new Set(['calendar.cn.customs', 'calendar.us.bls', 'calendar.us.census']);
+
+function readStreakFile(filePath) {
+  const records = new Map();
+  if (!filePath) return records;
+  try {
+    const parsed = JSON.parse(readFileSync(filePath, 'utf8'));
+    if (!parsed || typeof parsed !== 'object') return records;
+    for (const [sourceId, row] of Object.entries(parsed)) {
+      if (!row || typeof row !== 'object') continue;
+      const failingSince = Number(row.failingSince);
+      const lastSuccessAt = Number(row.lastSuccessAt);
+      records.set(sourceId, {
+        failingSince: Number.isFinite(failingSince) && failingSince > 0 ? failingSince : null,
+        lastSuccessAt: Number.isFinite(lastSuccessAt) && lastSuccessAt > 0 ? lastSuccessAt : null,
+      });
+    }
+  } catch {
+    // 没有记录时从这一轮开始记。
+  }
+  return records;
+}
+
+export function createFailureStreakStore({ filePath } = {}) {
+  const records = readStreakFile(filePath);
+  let dirty = false;
+  return {
+    failingSince(sourceId, status, now) {
+      const prior = records.get(sourceId) || null;
+      if (status === 'ready' || status === 'partial') {
+        if (!prior || prior.failingSince != null) {
+          records.set(sourceId, { failingSince: null, lastSuccessAt: now });
+          dirty = true;
+        }
+        return null;
+      }
+      if (prior?.failingSince) return prior.failingSince;
+      const since = !prior && CHRONIC_SEED_IDS.has(sourceId) ? now - CHRONIC_UNAVAILABLE_MS - 1 : now;
+      records.set(sourceId, { failingSince: since, lastSuccessAt: prior?.lastSuccessAt ?? null });
+      dirty = true;
+      return since;
+    },
+    flush() {
+      if (!filePath || !dirty) return;
+      try {
+        mkdirSync(path.dirname(filePath), { recursive: true });
+        const payload = Object.fromEntries(records);
+        writeFileSync(filePath, `${JSON.stringify(payload)}\n`);
+        dirty = false;
+      } catch {
+        // 记不住连续失败时仍返回本轮看板。
+      }
+    },
+  };
+}
+
+const defaultFailureStreaks = createFailureStreakStore();
+let installedFailureStreaks = null;
+
+export function installFailureStreakStore(store) {
+  installedFailureStreaks = store || null;
+}
+
+function activeFailureStreaks(override) {
+  return override || installedFailureStreaks || defaultFailureStreaks;
+}
 
 const BooleanQuerySchema = z.preprocess((value) => {
   if (value === true || value === '1' || value === 'true') return true;
@@ -85,6 +153,8 @@ export async function readStaticSignalBoard(sourcePort, rawInput, options = {}) 
   if (!sourcePort?.list || !sourcePort?.read) throw new TypeError('static signal board requires a Source port');
   const input = parseContract(StaticSignalBoardInputSchema, rawInput);
   const now = options.now || (() => Date.now());
+  const observedNow = now();
+  const streaks = activeFailureStreaks(options.failureStreaks);
   const manifests = sourcePort.list().filter((source) => ['calendar', 'official-release'].includes(source.viewKind));
   const settled = await Promise.all(manifests.map(async (manifest) => {
     try {
@@ -105,6 +175,7 @@ export async function readStaticSignalBoard(sourcePort, rawInput, options = {}) 
       return {
         sourceId: manifest.id, title: manifest.title, category: manifest.category,
         status: 'unavailable', observedAt: null,
+        failingSince: streaks.failingSince(manifest.id, 'unavailable', observedNow),
         note: String(error?.message || error || '读取失败').replace(/\s+/g, ' ').slice(0, 1_000),
       };
     }
@@ -120,12 +191,14 @@ export async function readStaticSignalBoard(sourcePort, rawInput, options = {}) 
     return {
       sourceId: manifest.id, title: manifest.title, category: manifest.category,
       status: snapshot.status, observedAt: snapshot.observedAt,
+      failingSince: streaks.failingSince(manifest.id, snapshot.status, observedNow),
       note: String(snapshot.data.note || snapshot.warnings?.[0] || '').slice(0, 1_000),
     };
   });
+  streaks.flush();
 
   return parseContract(StaticSignalBoardSchema, {
-    generatedAt: now(),
+    generatedAt: observedNow,
     upcoming: dedupeEvents(calendarRows).slice(0, input.limit),
     releases: dedupeReleases(releaseRows).slice(0, input.releaseLimit),
     sourceHealth,

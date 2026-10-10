@@ -9,6 +9,23 @@
     return;
   }
 
+  function hasKnownSessionRecord() {
+    try {
+      var flag = localStorage.getItem('ai-center.known-session');
+      if (flag === '0') return false;
+      if (flag === '1') return true;
+      return Boolean(localStorage.getItem('ai-center.last-location'));
+    } catch (_error) {
+      return false;
+    }
+  }
+  if (hasKnownSessionRecord()) document.documentElement.classList.add('has-known-session');
+  try {
+    if (String(location.hash || '').split('?')[0] === '#feed') history.scrollRestoration = 'manual';
+  } catch (_error) {
+    // 浏览器不支持时仍由页面脚本把信息流拉回顶部。
+  }
+
   // Start the credential check during HTML parse. app.js reuses this promise
   // instead of waiting until the module graph has evaluated.
   window.aiCenterSessionBoot = fetch('/api/v1/session', {
