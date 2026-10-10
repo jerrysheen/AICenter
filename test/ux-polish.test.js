@@ -110,7 +110,11 @@ test('desktop hints match the pointer, and the stock board shows a clock', () =>
   assert.match(functionSource('updateHeaderAction'), /button\.title = button\.getAttribute\('aria-label'\)/);
   assert.match(functionSource('syncReloadHint'), /prefersFinePointer\(\) \? '刷新'/);
   assert.match(functionSource('renderStockGeneratedNote'), /生成于 \$\{clock\}/);
-  assert.match(html, /id="stock-generated-note"/);
+  const scrollAt = html.indexOf('id="market-table-scroll"');
+  const noteAt = html.indexOf('id="stock-generated-note"');
+  const between = html.slice(scrollAt, noteAt);
+  assert.ok(scrollAt > 0 && noteAt > scrollAt);
+  assert.equal((between.match(/<div\b/g) || []).length + 1, (between.match(/<\/div>/g) || []).length);
   assert.match(html, /knowledge-hint-desktop">知识库是可长期复用内容的规范层。向左拖动一条可从库中删除。/);
   assert.match(readFileSync(new URL('../apps/web/public/information-tree.js', import.meta.url), 'utf8'), /有新的小时报/);
   const bili = '查看已保存字幕，从「采集与处理」粘贴链接采集';
@@ -148,12 +152,18 @@ test('the bilibili source page highlights tools, and the logo opens the overview
   assert.match(app, /setView\('sources'\)/);
 });
 
-test('a pending translation label expires to 暂未翻译 without changing the request', () => {
+test('a pending translation keeps the original text and only marks the attempted item', () => {
   const timers = [];
   const context = vm.createContext({
     Date,
-    window: { setTimeout: (fn, ms) => { timers.push(ms); return 1; } },
-    state: { sourceLocalizations: {}, sourceLocalizing: false },
+    window: {
+      setTimeout: (fn, ms) => { timers.push(ms); return timers.length; },
+      clearTimeout() {},
+    },
+    state: { sourceLocalizations: {}, sourceLocalizing: false, xTranslating: false },
+    translationFor: () => null,
+    postNeedsChineseTranslation: (post) => /[A-Za-z]/.test(String(post?.body || '')),
+    postIsTranslating: (post) => Boolean(post?.platform === 'x' && context.state.xTranslating && !context.translationFor(post)),
     renderPosts() {},
     renderOverviewTimeline() {},
     renderStaticSignalBoard() {},
@@ -162,23 +172,59 @@ test('a pending translation label expires to 暂未翻译 without changing the r
   });
   vm.runInContext([
     'const TRANSLATION_LABEL_MS = 30_000;',
-    'const translationLabels = { source: { startedAt: 0, timer: 0 }, post: { startedAt: 0, timer: 0 } };',
+    'const translationRounds = { source: 0, post: 0 };',
+    'const translationLabelState = new Map();',
     functionSource('refreshTranslationLabels'),
-    functionSource('translationStatusLabel'),
+    functionSource('beginTranslationRound'),
+    functionSource('translationMark'),
     functionSource('localizedCopy'),
-    'this.translationLabels = translationLabels;',
+    functionSource('sourceTranslationMark'),
+    functionSource('postTranslationMark'),
+    functionSource('postDisplayTitle'),
+    functionSource('postViewBody'),
+    'this.beginTranslationRound = beginTranslationRound;',
+    'this.translationLabelState = translationLabelState;',
+    'this.translationRounds = translationRounds;',
     'this.localizedCopy = localizedCopy;',
+    'this.sourceTranslationMark = sourceTranslationMark;',
+    'this.postTranslationMark = postTranslationMark;',
+    'this.postDisplayTitle = postDisplayTitle;',
+    'this.postViewBody = postViewBody;',
   ].join('\n'), context);
   context.state.sourceLocalizations.a = { pending: true, text: '' };
+  context.state.sourceLocalizations.b = { pending: true, text: '' };
   assert.equal(context.localizedCopy('a', 'English title'), 'English title');
+  assert.equal(context.sourceTranslationMark('a'), '');
   context.state.sourceLocalizing = true;
-  assert.equal(context.localizedCopy('a', 'English title'), '正在翻译…');
+  context.beginTranslationRound('source', ['a']);
   assert.equal(timers[0], 30_000);
-  context.translationLabels.source.startedAt = Date.now() - 31_000;
-  assert.equal(context.localizedCopy('a', 'English title'), '暂未翻译');
+  assert.equal(context.localizedCopy('a', 'English title'), 'English title');
+  assert.equal(context.sourceTranslationMark('a'), '正在翻译…');
+  assert.equal(context.localizedCopy('b', 'Other English'), 'Other English');
+  assert.equal(context.sourceTranslationMark('b'), '');
+  context.translationLabelState.get('source:a').startedAt = Date.now() - 31_000;
+  assert.equal(context.sourceTranslationMark('a'), '暂未翻译');
+  assert.equal(context.localizedCopy('a', 'English title'), 'English title');
   context.state.sourceLocalizing = false;
-  assert.equal(context.localizedCopy('a', 'English title'), '暂未翻译');
+  assert.equal(context.sourceTranslationMark('a'), '暂未翻译');
+  context.state.sourceLocalizing = true;
+  context.beginTranslationRound('source', ['a']);
+  assert.equal(context.sourceTranslationMark('a'), '正在翻译…');
   context.state.sourceLocalizations.a.text = '中文标题';
   assert.equal(context.localizedCopy('a', 'English title'), '中文标题');
+  assert.equal(context.sourceTranslationMark('a'), '');
+  const post = { id: 'x1', platform: 'x', title: 'English headline', body: 'English body' };
+  context.state.xTranslating = true;
+  context.beginTranslationRound('post', ['x1']);
+  assert.equal(context.postDisplayTitle(post), 'English headline');
+  assert.equal(context.postViewBody(post), 'English body');
+  assert.equal(context.postTranslationMark(post), '正在翻译…');
+  context.translationLabelState.get('post:x1').startedAt = Date.now() - 31_000;
+  assert.equal(context.postDisplayTitle(post), 'English headline');
+  assert.equal(context.postViewBody(post), 'English body');
+  assert.equal(context.postTranslationMark(post), '暂未翻译');
+  assert.equal(context.postTranslationMark({ id: 'x2', platform: 'x', title: 'Other', body: 'Other English' }), '');
   assert.match(functionSource('requestTranslation'), /for \(let attempt = 0; attempt < 900; attempt\+\+\)/);
+  assert.match(functionSource('translateXBatch'), /beginTranslationRound\('post'/);
+  assert.match(functionSource('autoLocalizeSources'), /beginTranslationRound\('source'/);
 });

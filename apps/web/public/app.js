@@ -617,10 +617,8 @@ function postIsTranslating(post) {
 }
 
 const TRANSLATION_LABEL_MS = 30_000;
-const translationLabels = {
-  source: { startedAt: 0, timer: 0 },
-  post: { startedAt: 0, timer: 0 },
-};
+const translationRounds = { source: 0, post: 0 };
+const translationLabelState = new Map();
 
 function refreshTranslationLabels() {
   renderPosts();
@@ -629,28 +627,55 @@ function refreshTranslationLabels() {
   if (document.body.dataset.view === 'page' && state.pageKind === 'source') renderSourcePage();
 }
 
-function translationStatusLabel(bucket, active) {
-  const label = translationLabels[bucket];
-  if (!label) return '';
-  const expired = Boolean(label.startedAt) && Date.now() - label.startedAt >= TRANSLATION_LABEL_MS;
-  if (expired || (!active && label.startedAt)) return '暂未翻译';
-  if (active) {
-    if (!label.startedAt) {
-      label.startedAt = Date.now();
-      label.timer = window.setTimeout(refreshTranslationLabels, TRANSLATION_LABEL_MS);
-    }
-    return '正在翻译…';
+function beginTranslationRound(kind, ids) {
+  translationRounds[kind] += 1;
+  const round = translationRounds[kind];
+  const now = Date.now();
+  const list = [...new Set((ids || []).filter(Boolean).map((id) => String(id)))];
+  for (const id of list) {
+    const key = `${kind}:${id}`;
+    const previous = translationLabelState.get(key);
+    if (previous?.timer) window.clearTimeout(previous.timer);
+    translationLabelState.set(key, { startedAt: now, round, timer: 0 });
   }
-  return '';
+  if (!list.length) return;
+  const timer = window.setTimeout(refreshTranslationLabels, TRANSLATION_LABEL_MS);
+  for (const id of list) {
+    const row = translationLabelState.get(`${kind}:${id}`);
+    if (row && row.round === round) row.timer = timer;
+  }
+}
+
+function translationMark(kind, id, active) {
+  const row = translationLabelState.get(`${kind}:${String(id || '')}`);
+  if (!row) return '';
+  const expired = Date.now() - row.startedAt >= TRANSLATION_LABEL_MS;
+  if (active && row.round === translationRounds[kind] && !expired) return '正在翻译…';
+  return '暂未翻译';
 }
 
 function localizedCopy(id, fallback = '') {
   const row = state.sourceLocalizations[id];
   if (row?.text) return row.text;
-  if (row?.pending && (state.sourceLocalizing || translationLabels.source.startedAt)) {
-    return translationStatusLabel('source', state.sourceLocalizing);
-  }
   return fallback || '';
+}
+
+function sourceTranslationMark(id) {
+  const row = state.sourceLocalizations[id];
+  if (!row?.pending || row.text) return '';
+  return translationMark('source', id, Boolean(state.sourceLocalizing));
+}
+
+function postTranslationMark(post) {
+  if (!post || post.platform !== 'x') return '';
+  if (post.normalizedArticle?.title || translationFor(post)?.text) return '';
+  if (!postNeedsChineseTranslation(post)) return '';
+  return translationMark('post', post.id, postIsTranslating(post));
+}
+
+function appendTranslationMark(parent, mark) {
+  if (!parent || !mark) return;
+  parent.append(Object.assign(document.createElement('span'), { className: 'kind-tag', textContent: mark }));
 }
 
 function pendingXTranslations(limit = TRANSLATE_BATCH_SIZE) {
@@ -2969,7 +2994,6 @@ function postDisplayTitle(post) {
     const body = socialBodyText(post, translated);
     return clipFeedText(firstFeedSentence(body) || plainFeedText(body), FEED_TITLE_MAX) || '无标题';
   }
-  if (postNeedsPendingTranslationLabel(post)) return translationStatusLabel('post', postIsTranslating(post));
   const title = String(post?.title || '').trim();
   if (title) return title;
   return clipFeedText(plainFeedText(socialBodyText(post, post?.body)), FEED_TITLE_MAX) || '无标题';
@@ -2983,20 +3007,12 @@ function postListExcerpt(post) {
   if(post.normalizedArticle?.summary)return clipFeedText(post.normalizedArticle.summary,FEED_EXCERPT_MAX);
   const translated = translationFor(post)?.text;
   if (translated) return clipFeedText(textAfterLead(socialBodyText(post, translated), postDisplayTitle(post)), FEED_EXCERPT_MAX);
-  if (postIsTranslating(post)) return '';
   return clipFeedText(textAfterLead(socialBodyText(post, post?.body), post?.title), FEED_EXCERPT_MAX);
-}
-
-function postNeedsPendingTranslationLabel(post) {
-  if (post?.platform !== 'x') return false;
-  if (!postNeedsChineseTranslation(post) || translationFor(post)) return false;
-  return postIsTranslating(post) || Boolean(translationLabels.post.startedAt);
 }
 
 function postViewBody(post) {
   const translated = translationFor(post)?.text;
   if (translated) return translated;
-  if (postNeedsPendingTranslationLabel(post)) return translationStatusLabel('post', postIsTranslating(post));
   return post?.body || post?.summary || '无正文';
 }
 
@@ -3805,7 +3821,7 @@ function appendOfficialEvent(list, post, onToggle) {
     textContent: overviewClock(post.publishedAt || post.createdAt),
   }));
   open.append(Object.assign(document.createElement('strong'), { textContent: postDisplayTitle(post) }));
-  const meta = officialEventMeta(post);
+  const meta = [sourceTranslationMark(post.release?.releaseId || post.id), officialEventMeta(post)].filter(Boolean).join(' · ');
   if (meta) open.append(Object.assign(document.createElement('small'), { textContent: meta }));
   attachGuardedOpen(open, () => openArticle(post));
   item.append(open);
@@ -3980,8 +3996,8 @@ function renderPosts() {
         textContent: officialDayKey(post),
       }));
       open.append(Object.assign(document.createElement('strong'), { textContent: postDisplayTitle(post) }));
-      const meta = officialEventMeta(post);
-      if (meta) open.append(Object.assign(document.createElement('small'), { textContent: meta }));
+      const metaText = [sourceTranslationMark(post.release?.releaseId || post.id), officialEventMeta(post)].filter(Boolean).join(' · ');
+      if (metaText) open.append(Object.assign(document.createElement('small'), { textContent: metaText }));
       card.append(open);
       appendOfficialStar(card, post, () => {
         renderPosts();
@@ -4009,6 +4025,7 @@ function renderPosts() {
     time.className = 'post-time';
     time.textContent = post.time || overviewClock(post.publishedAt || post.createdAt);
     meta.append(kind, author, time);
+    appendTranslationMark(meta, postTranslationMark(post));
     const content = document.createElement('div');
     content.className = 'feed-content';
     const title = document.createElement('h3');
@@ -5729,7 +5746,7 @@ function renderOverviewTimeline() {
         textContent: officialDayKey(post),
       }));
       open.append(Object.assign(document.createElement('strong'), { textContent: postDisplayTitle(post) }));
-      const officialMeta = officialEventMeta(post);
+      const officialMeta = [sourceTranslationMark(post.release?.releaseId || post.id), officialEventMeta(post)].filter(Boolean).join(' · ');
       if (officialMeta) open.append(Object.assign(document.createElement('small'), { textContent: officialMeta }));
       attachGuardedOpen(open, () => openArticle(post));
       row.append(open);
@@ -5753,6 +5770,7 @@ function renderOverviewTimeline() {
       textContent: post.time || overviewClock(post.publishedAt || post.createdAt),
     });
     meta.append(kind, author, time);
+    appendTranslationMark(meta, postTranslationMark(post));
     const open = document.createElement('button');
     open.type = 'button';
     open.className = 'feed-content';
@@ -5779,6 +5797,7 @@ function renderOverviewTimeline() {
 function openOfficialRelease(item) {
   state.dialogPost = null;
   elements['dialog-title'].textContent = localizedCopy(item.releaseId, item.title);
+  const releaseMark = sourceTranslationMark(item.releaseId);
   fillPostBody(elements['dialog-body'], [
     `机构：${item.authority}`,
     item.documentType ? `类型：${documentTypeLabel(item.documentType)}` : '',
@@ -5803,7 +5822,7 @@ function openOfficialRelease(item) {
   if (elements['dialog-cite']) {
     elements['dialog-cite'].classList.add('hidden');
   }
-  elements['dialog-time'].textContent = '官方文件 · 元数据';
+  elements['dialog-time'].textContent = releaseMark ? `官方文件 · 元数据 · ${releaseMark}` : '官方文件 · 元数据';
   openDialog(elements['post-dialog']);
 }
 
@@ -5875,6 +5894,7 @@ function appendPredictionQuote(root, quote) {
   const no = yes == null ? null : 1 - yes;
   const outcome = String(quote.outcome || 'Yes');
   const title = Object.assign(document.createElement('b'), { textContent: localizedCopy(quote.quoteId, quote.marketQuestion) });
+  const predictionMark = sourceTranslationMark(quote.quoteId);
   const sides = document.createElement('div');
   sides.className = 'prediction-sides';
   const yesCol = document.createElement('div');
@@ -5902,7 +5922,9 @@ function appendPredictionQuote(root, quote) {
     quote.endAt ? `截止 ${formatTime(quote.endAt)}` : '',
     quote.volume24h ? `24h ${marketNativeAmount(quote.volume24h)}` : '',
   ].filter(Boolean).join(' · ');
-  article.append(title, sides, bar, Object.assign(document.createElement('small'), { textContent: detail }));
+  article.append(title, sides, bar, Object.assign(document.createElement('small'), {
+    textContent: [predictionMark, detail].filter(Boolean).join(' · '),
+  }));
   attachGuardedOpen(article, () => openExternalHttpUrl(quote.sourceUrl));
   root.append(article);
 }
@@ -6053,8 +6075,8 @@ function appendStaticSignalItem(root, item, viewKind) {
   title.textContent = localizedCopy(viewKind === 'calendar' ? item.eventId : item.releaseId, item.title);
   const meta = document.createElement('small');
   const facts = viewKind === 'calendar'
-    ? [item.country, item.authority, item.referencePeriod, item.scheduleBasis === 'official-rule' ? '规则生成 · 待官网逐日确认' : '官方日历']
-    : [item.country, item.authority, documentTypeLabel(item.documentType), item.documentNumber];
+    ? [sourceTranslationMark(item.eventId), item.country, item.authority, item.referencePeriod, item.scheduleBasis === 'official-rule' ? '规则生成 · 待官网逐日确认' : '官方日历']
+    : [sourceTranslationMark(item.releaseId), item.country, item.authority, documentTypeLabel(item.documentType), item.documentNumber];
   meta.textContent = facts.filter(Boolean).join(' · ');
   const source = document.createElement('button');
   source.type = 'button';
@@ -6761,6 +6783,10 @@ function renderArticlePage() {
   head.innerHTML = `<h2 class="detail-title"></h2><div class="detail-meta reader-meta"></div>`;
   head.querySelector('h2').textContent = state.readerLang==='original' ? post.title : postDisplayTitle(post);
   const meta = head.querySelector('.reader-meta');
+  const readerMark = post.platform === 'official'
+    ? sourceTranslationMark(post.release?.releaseId || post.id)
+    : postTranslationMark(post);
+  if (readerMark) meta.append(Object.assign(document.createElement('span'), { className: 'kind-tag', textContent: readerMark }));
   meta.append(
     Object.assign(document.createElement('button'), { className: 'text-button', textContent: `${post.author} ›` }),
     Object.assign(document.createElement('span'), { textContent: `${post.time || formatTime(post.publishedAt)} 发布` }),
@@ -7103,7 +7129,8 @@ function renderEventPage() {
   wrap.innerHTML = `<div class="event-label"></div><h2 class="event-card-title"></h2><div class="event-time"></div>
     <dl class="metadata-grid"></dl><p class="page-note"></p><div class="content-tools"></div>`;
   wrap.querySelector('.event-card-title').textContent = localizedCopy(event.eventId, event.title);
-  wrap.querySelector('.event-time').textContent = `${staticSignalTime(event, 'calendar')}`;
+  const eventMark = sourceTranslationMark(event.eventId);
+  wrap.querySelector('.event-time').textContent = [staticSignalTime(event, 'calendar'), eventMark].filter(Boolean).join(' · ');
   const grid = wrap.querySelector('.metadata-grid');
   const rows = [
     ['发布机构', event.authority || event.sourceId],
@@ -7203,6 +7230,7 @@ function renderSourcePage() {
       card.querySelector('.post-identity').textContent = post.author;
       card.querySelector('.post-time').textContent = post.time;
       card.querySelector('h3').textContent = postDisplayTitle(post);
+      appendTranslationMark(card.querySelector('.post-meta'), postTranslationMark(post) || sourceTranslationMark(post.release?.releaseId || post.id));
       attachGuardedOpen(card.querySelector('.feed-content'), () => openArticle(post));
       list.append(card);
     });
@@ -7246,7 +7274,7 @@ function scheduleRow(event) {
   button.innerHTML = `<time></time><div><strong></strong><small></small></div>`;
   button.querySelector('time').textContent = staticSignalTime(event, 'calendar');
   button.querySelector('strong').textContent = localizedCopy(event.eventId, event.title);
-  button.querySelector('small').textContent = event.authority || event.sourceId;
+  button.querySelector('small').textContent = [sourceTranslationMark(event.eventId), event.authority || event.sourceId].filter(Boolean).join(' · ');
   button.addEventListener('click', () => openPage('event', event.eventId || event.id));
   return button;
 }
@@ -11446,6 +11474,7 @@ async function translateXBatch({ silent = false } = {}) {
   const pending = pendingXTranslations();
   if (!pending.length) return;
   state.xTranslating = true;
+  beginTranslationRound('post', pending.map((post) => post.id));
   renderXToolbar();
   try {
     const payload = await requestTranslation('/api/v1/translate/batch', {
@@ -11494,7 +11523,11 @@ async function autoLocalizeSources() {
     .filter((row, index, rows) => rows.findIndex((item) => item.id === row.id) === index)
     .slice(0, TRANSLATE_BATCH_SIZE);
   if (!pending.length) return;
+  const sourceIds = Object.entries(state.sourceLocalizations)
+    .filter(([, row]) => pending.some((item) => item.id === row.id))
+    .map(([sourceId]) => sourceId);
   state.sourceLocalizing = true;
+  beginTranslationRound('source', sourceIds);
   try {
     const payload = await requestTranslation('/api/v1/translate/batch', {
       method: 'POST',
