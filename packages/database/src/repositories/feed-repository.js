@@ -463,7 +463,8 @@ export function createFeedRepository(database, emitEvent) {
       const rows = sourceExternalId
         ? database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id,
             c.captured_at AS captured_at, c.metadata_json AS capture_metadata_json,
-            COALESCE(item_state.is_read, 0) AS is_read
+            COALESCE(item_state.is_read, 0) AS is_read,
+            COALESCE(item_state.is_saved, 0) AS is_saved
             FROM content_items ci
             INNER JOIN captures c ON c.id = ci.capture_id
             INNER JOIN source_accounts sa ON sa.id = c.source_account_id
@@ -477,7 +478,8 @@ export function createFeedRepository(database, emitEvent) {
             LIMIT ?`).all(workspaceId, provider, sourceExternalId, ...cursorParams, safeLimit)
         : database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id,
             c.captured_at AS captured_at, c.metadata_json AS capture_metadata_json,
-            COALESCE(item_state.is_read, 0) AS is_read
+            COALESCE(item_state.is_read, 0) AS is_read,
+            COALESCE(item_state.is_saved, 0) AS is_saved
             FROM content_items ci
             INNER JOIN captures c ON c.id = ci.capture_id
             LEFT JOIN user_item_states item_state
@@ -495,6 +497,7 @@ export function createFeedRepository(database, emitEvent) {
         capturedAt: row.captured_at,
         captureMetadata: parseJson(row.capture_metadata_json),
         isRead: Boolean(row.is_read),
+        isSaved: Boolean(row.is_saved),
       }));
     },
 
