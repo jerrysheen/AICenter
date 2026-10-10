@@ -20,4 +20,6 @@
 
 ## 验证
 
-`npm run syntax` 与 `npm test`。失败数不超过 main 基线。
+`npm run syntax` 通过。`npm test`：1048 项，通过 1037，失败 10，跳过 1。失败在 analysis-skill（7）、information-tree-next（1）、model-usage（1）、work-package 的 Cursor CLI（1）。本环境 Node 22.14，与既有基线一致，这次改动的测试没有新增失败。
+
+本机临时服务里用浏览器看过：点「最近」按浏览时间排出两条记录；`#market/global?tab=events` 只留事件报价区，报价表隐藏；「全部」隐藏事件区；首页「事件概率 ›」落到同一地址。临时库没有行情快照，事件区显示「当前没有可用数据」。快照和「较昨日」逻辑没改。
