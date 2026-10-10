@@ -31,7 +31,9 @@ test('HTTP flow supports health, pairing, publishing, and persistence', async ()
   const app = createAiCenterServer({ host: '127.0.0.1', port: 0, dataDirectory: directory });
   const address = await app.listen();
   try {
-    const health = await fetch(`${address.localUrl}/api/v1/health`).then((response) => response.json());
+    const healthResponse = await fetch(`${address.localUrl}/api/v1/health`);
+    assert.match(healthResponse.headers.get('server-timing') || '', /auth;dur=[\d.]+, handler;dur=[\d.]+, total;dur=[\d.]+/);
+    const health = await healthResponse.json();
     assert.equal(health.ok, true);
 
     const pairing = await fetch(`${address.localUrl}/api/v1/pairing`).then((response) => response.json());

@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-10-public-auth-write-stall.md`：公网鉴权不再同步写最后在线，避免和 Worker 写锁一起堵住 Web 事件循环。
+
 - `progress/2026-10-10-tree-index.md`：简报目录改为`view=index`，刊期索引在Repository投影，正文仍按刊期和文章按需读取；`view=reading`保留一个版本。
 
 - `progress/2026-10-09-yt-tools.md`：YouTube / B 站音轨下载和本地转写，用来补平台没有 AI 字幕的情况。

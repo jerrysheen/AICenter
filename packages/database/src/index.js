@@ -155,6 +155,29 @@ function sketchReply(body) {
   ].join('\n');
 }
 
+const LAST_SEEN_INTERVAL_MS = 60_000;
+
+function instrumentWriteTransactions(database) {
+  const logSlow = /[/\\]apps[/\\]worker[/\\]/.test(process.argv[1] || '');
+  const original = database.transaction.bind(database);
+  database.transaction = (fn) => original(function timedWrite(...args) {
+    const started = performance.now();
+    try {
+      return fn.apply(this, args);
+    } finally {
+      const elapsed = performance.now() - started;
+      if (logSlow && elapsed >= 200) {
+        const at = (new Error().stack || '').split('\n').slice(1, 8)
+          .map((line) => line.trim())
+          .filter((line) => line && !line.includes('node_modules') && !line.includes('timedWrite'))
+          .slice(0, 2)
+          .join(' ');
+        console.warn(`[worker] sqlite write ${Math.round(elapsed)}ms ${at}`);
+      }
+    }
+  });
+}
+
 export function createStore(databasePath) {
   mkdirSync(path.dirname(databasePath), { recursive: true });
   const database = new Database(databasePath);
@@ -162,6 +185,36 @@ export function createStore(databasePath) {
   database.pragma('foreign_keys = ON');
   database.pragma('busy_timeout = 5000');
   const schemaVersion = runMigrations(database);
+  instrumentWriteTransactions(database);
+  const lastSeenWrittenAt = new Map();
+  const updateLastSeen = database.prepare(
+    'UPDATE devices SET last_seen_at = ? WHERE id = ? AND revoked_at IS NULL',
+  );
+
+  function scheduleLastSeen(deviceId, seenAt) {
+    const previous = lastSeenWrittenAt.get(deviceId) || 0;
+    if (seenAt - previous < LAST_SEEN_INTERVAL_MS) return;
+    lastSeenWrittenAt.set(deviceId, seenAt);
+    setImmediate(() => {
+      let narrowed = false;
+      try {
+        database.pragma('busy_timeout = 0');
+        narrowed = true;
+        updateLastSeen.run(seenAt, deviceId);
+      } catch (error) {
+        lastSeenWrittenAt.delete(deviceId);
+        const code = error?.code || '';
+        const closed = code === 'SQLITE_MISUSE' || /not open/i.test(String(error?.message || ''));
+        if (code !== 'SQLITE_BUSY' && code !== 'SQLITE_BUSY_TIMEOUT' && !closed) {
+          console.error('[sqlite] last_seen_at skipped', code || error?.message || error);
+        }
+      } finally {
+        if (narrowed) {
+          try { database.pragma('busy_timeout = 5000'); } catch { /* connection already closed */ }
+        }
+      }
+    });
+  }
 
   function insertEvent(name, aggregateType, aggregateId, payload = {}, workspaceId = DEFAULT_WORKSPACE_ID) {
     const now = Date.now();
@@ -264,9 +317,8 @@ export function createStore(databasePath) {
       const row = database.prepare(`SELECT id, workspace_id, name, paired_at, last_seen_at, revoked_at
         FROM devices WHERE token_hash = ? AND revoked_at IS NULL`).get(sha256(token));
       if (!row) return null;
-      const now = Date.now();
-      database.prepare('UPDATE devices SET last_seen_at = ? WHERE id = ?').run(now, row.id);
-      return { ...mapDevice(row), lastSeenAt: now };
+      scheduleLastSeen(row.id, Date.now());
+      return mapDevice(row);
     },
 
     listDevices() {
