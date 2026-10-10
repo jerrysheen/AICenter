@@ -42,10 +42,15 @@ test('overview ticker renders the loading mark and keeps an update time', () => 
   assert.match(app, /overviewLoadingIndices\(preferredOverviewFocus\(\)\)/);
   assert.equal(app.includes('globalAssets'), false);
   assert.match(app, /lastPrice == null \? LOADING_QUOTE/);
-  assert.match(app, /行情已连接 · 更新 /);
   assert.match(functionSource(app, 'renderOverview'), /更新 \$\{formatTime\(market\.fetchedAt\)\}/);
   assert.doesNotMatch(functionSource(app, 'renderOverview'), /market\.note/);
   assert.doesNotMatch(functionSource(app, 'marketBoardHint'), /formatTime/);
   assert.doesNotMatch(functionSource(app, 'assetBoardHint'), /formatTime/);
-  assert.match(functionSource(app, 'renderHubTicker'), /行情已连接 · 更新 /);
+  const ticker = functionSource(app, 'renderHubTicker');
+  assert.match(ticker, /HOME_QUOTE_CAPTION/);
+  assert.doesNotMatch(ticker, /行情已连接 · 更新|更新于 /);
+  const timeline = readFileSync(new URL('../apps/web/public/home-timeline.js', import.meta.url), 'utf8');
+  assert.match(timeline, /行情暂不可用 · 重试/);
+  assert.match(timeline, /读取较慢 · 重试/);
+  assert.doesNotMatch(functionSource(timeline, 'quoteStatusText'), /更新于 /);
 });

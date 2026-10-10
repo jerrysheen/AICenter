@@ -11,6 +11,19 @@ import { openModelUsageDialog } from './model-usage.js?v=dev';
 import { createFeedLikeAction } from './feed-interaction.js?v=dev';
 import { createMediaFeedCache, createMediaFeedLoader, createMediaReaderSession, mediaIndexBody, mediaReaderParagraphs } from './media-feed.js?v=dev';
 import { createBriefPage, briefReadingItems } from './brief-page.js?v=dev';
+import {
+  preferredOverviewFocus as overviewFocusClock,
+  HOME_QUOTE_CAPTION,
+  pickHomeQuoteCards,
+  quoteStatusText,
+  homeRequestPlan,
+  hourlyEditions,
+  readingSummary,
+  absorbReadingIndex,
+  unavailableOfficialCount,
+  buildHomeTimelineModel,
+  renderHomeTimeline as paintHomeTimeline,
+} from './home-timeline.js?v=dev';
 
 const feedLikeButton = createFeedLikeAction({ api: (...args) => api(...args), showToast: text => showToast(text), createAction: options => createDetailAction(options), session: () => state.session });
 
@@ -203,6 +216,22 @@ const state = {
   staticReleaseCountry: 'all',
   staticBoardLoading: false,
   staticBoardError: '',
+  homeBoard: null,
+  homeBoardLoading: false,
+  homeBoardError: '',
+  homeBoardStartedAt: 0,
+  homeTree: null,
+  homeTreeLoaded: false,
+  homeTreeError: '',
+  homeReadingHours: {},
+  homeReadingIndexMissing: false,
+  homeReadingError: '',
+  homeExpandedHours: {},
+  homeExpandedOfficial: {},
+  homeEarlier: false,
+  homeLoadToken: 0,
+  homeLoadStartedAt: 0,
+  homeSlow: false,
   sourceLocalizations: {},
   sourceLocalizing: false,
   marketNativeBoard: null,
@@ -323,6 +352,7 @@ const elements = Object.fromEntries([
   'overview-home', 'overview-schedule', 'overview-catalog', 'overview-timeline', 'overview-timeline-tabs', 'overview-timeline-day',
   'open-source-catalog', 'open-full-schedule', 'schedule-back', 'catalog-back', 'source-catalog-filter', 'source-catalog-tabs',
   'overview-brief', 'overview-brief-body', 'open-daily-brief',
+  'home-timeline', 'home-daily', 'home-source-line', 'hub-market-caption', 'open-event-odds',
   'inspire-subnav', 'inspire-notes-pane', 'inspire-tasks-pane',
   'note-filters', 'note-focus-entry', 'note-focus-hint',
   'task-filters', 'task-list', 'task-list-pane', 'task-detail-pane',
@@ -1046,6 +1076,7 @@ function setView(name, options = {}) {
   if (view === 'market' || view === 'assets') {
     alignTradePane(view);
     renderTradeTabs();
+    if (!state.sourceCatalogLoaded && state.session) loadSourceCatalog().catch(() => {});
     if (view === 'market' && state.tradePane === 'stocks') renderMarket();
     if (state.bootstrapped) syncTradePaneData().catch((error) => showToast(error.message));
   }
@@ -1054,7 +1085,7 @@ function setView(name, options = {}) {
     renderStaticSourceCatalog();
     renderStaticSignalBoard();
     if (state.overviewPane === 'catalog' && state.session) loadSourceCatalog().catch(() => {});
-    if ((state.overviewPane === 'home' || state.overviewPane === 'schedule') && !state.staticBoard) {
+    if (state.overviewPane === 'schedule' && !state.staticBoard) {
       loadStaticSignalBoard().catch((error) => showToast(error.message));
     }
   }
@@ -4474,13 +4505,17 @@ async function syncTradePaneData({ refresh = false } = {}) {
     return;
   }
   if (state.tradePane === 'assets') {
-    if(state.assetClass==='hardware'){await loadHardwarePrices();return;}
+    const native = loadMarketNativeBoard({ refresh }).catch((error) => {
+      state.marketNativeError = error instanceof Error ? error.message : '市场原生数据读取失败';
+    });
+    if (state.assetClass === 'hardware') {
+      await Promise.all([loadHardwarePrices(), native]);
+      return;
+    }
     await Promise.all([
       loadGlobalAssets(),
       loadHardwarePrices(),
-      loadMarketNativeBoard({ refresh }).catch((error) => {
-        state.marketNativeError = error instanceof Error ? error.message : '市场原生数据读取失败';
-      }),
+      native,
     ]);
     return;
   }
@@ -5593,21 +5628,8 @@ function hubFeedPicks(limit = 12) {
     .slice(0, limit);
 }
 
-function shanghaiClock(nowMs = Date.now()) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Asia/Shanghai', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-  }).formatToParts(new Date(nowMs));
-  return {
-    weekday: parts.find((part) => part.type === 'weekday')?.value || '',
-    minutes: Number(parts.find((part) => part.type === 'hour')?.value || 0) * 60
-      + Number(parts.find((part) => part.type === 'minute')?.value || 0),
-  };
-}
-
 function preferredOverviewFocus(nowMs = Date.now()) {
-  const { weekday, minutes } = shanghaiClock(nowMs);
-  if (weekday !== 'Sat' && weekday !== 'Sun' && minutes >= 5 * 60 && minutes < 17 * 60) return 'cn';
-  return 'us';
+  return overviewFocusClock(nowMs);
 }
 
 function nextOverviewFocusChangeMs(nowMs = Date.now()) {
@@ -5635,8 +5657,19 @@ function overviewIndices() {
   return overviewLoadingIndices(preferredOverviewFocus());
 }
 
+function homeQuoteCards() {
+  const focus = preferredOverviewFocus();
+  const section = (state.markets.overview?.sections || []).find((item) => item.id === focus)
+    || (state.markets.overview?.sections || [])[0];
+  return pickHomeQuoteCards({
+    focus,
+    indices: overviewLiveIndices(),
+    sectionIndices: section?.indices || [],
+  });
+}
+
 function hubQuotes() {
-  return overviewIndices();
+  return homeQuoteCards();
 }
 
 function hubMovers() {
@@ -5664,7 +5697,9 @@ function hubStreamItems() {
 function renderHubTicker() {
   const ticker = elements['hub-ticker'];
   if (!ticker) return;
-  const quotesForTick = hubQuotes().slice(0, 8);
+  const focus = preferredOverviewFocus();
+  if (elements['hub-market-caption']) elements['hub-market-caption'].textContent = HOME_QUOTE_CAPTION[focus] || HOME_QUOTE_CAPTION.us;
+  const quotesForTick = homeQuoteCards().slice(0, 4);
   ticker.replaceChildren(...quotesForTick.map((item) => {
     const known = item.changePct !== null && item.changePct !== undefined;
     const up = known && item.changePct >= 0;
@@ -5672,18 +5707,41 @@ function renderHubTicker() {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'hub-tick';
-    button.innerHTML = `<small>${item.name}</small>
-      <strong class="num ${tone}">${item.lastPrice == null ? LOADING_QUOTE : formatPrice(item.lastPrice)}</strong>
-      <b class="${tone}">${known ? formatPct(up, item.changePct) : LOADING_QUOTE}</b>`;
+    const name = document.createElement('small');
+    name.textContent = item.name || item.symbol || '';
+    const price = document.createElement('strong');
+    price.className = `num ${tone}`.trim();
+    price.textContent = item.lastPrice == null ? LOADING_QUOTE : formatPrice(item.lastPrice);
+    const change = document.createElement('b');
+    change.className = tone;
+    change.textContent = known ? formatPct(up, item.changePct) : LOADING_QUOTE;
+    button.append(name, price, change);
     button.addEventListener('click', () => openPage('quote', item.symbol));
     return button;
   }));
   if (elements['hub-market-note']) {
-    const live = overviewLiveIndices();
-    const updated = state.markets.overview?.fetchedAt;
-    elements['hub-market-note'].textContent = live.length
-      ? `行情已连接 · 更新 ${updated ? formatTime(updated) : '刚刚'}`
-      : (state.marketError || '正在读取行情…');
+    const pending = !overviewLiveIndices().length && !state.marketBoardErrors.overview;
+    const status = quoteStatusText({
+      cards: quotesForTick,
+      fetchedAt: state.markets.overview?.fetchedAt,
+      error: Boolean(state.marketBoardErrors.overview),
+      pending,
+      slow: Boolean(state.homeSlow && pending),
+    });
+    elements['hub-market-note'].replaceChildren();
+    if (status.kind === 'error' || status.kind === 'slow') {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'text-button';
+      button.textContent = status.text;
+      button.addEventListener('click', () => {
+        state.homeSlow = false;
+        state.marketBoardErrors.overview = '';
+        armHomeSlowWatch();
+        loadMarket({ board: 'overview' }).then(() => renderHub()).catch(() => renderHub());
+      });
+      elements['hub-market-note'].append(button);
+    } else elements['hub-market-note'].textContent = status.text;
   }
 }
 
@@ -5719,6 +5777,9 @@ function renderHubExcerpts() {
 
 function renderHub() {
   renderHubTicker();
+  renderHomeTimelineView();
+  renderHomeDaily();
+  renderHomeSourceLine();
   renderOverviewTimeline();
 }
 
@@ -6422,20 +6483,199 @@ async function openStaticSource(source) {
   }
 }
 
+function armHomeSlowWatch() {
+  window.clearTimeout(armHomeSlowWatch.timer);
+  armHomeSlowWatch.timer = window.setTimeout(() => {
+    state.homeSlow = true;
+    if (document.body.dataset.view === 'sources') renderHub();
+  }, 10_000);
+}
+
+function renderHomeTimelineView() {
+  const root = elements['home-timeline'];
+  if (!root) return;
+  const pendingTree = !state.homeTreeLoaded && !state.homeTreeError;
+  const treeStatus = state.homeTreeError ? 'error' : (state.homeSlow && pendingTree ? 'slow' : (state.homeTreeLoaded ? 'ready' : 'loading'));
+  const boardPending = Boolean(state.homeBoardStartedAt) && !state.homeBoard && !state.homeBoardError;
+  const boardStatus = state.homeBoardError ? 'error' : (state.homeSlow && boardPending ? 'slow' : (state.homeBoard ? 'ready' : 'loading'));
+  const model = buildHomeTimelineModel({
+    nowMs: Date.now(),
+    editions: hourlyEditions(state.homeTree),
+    readings: state.homeReadingHours,
+    releases: state.homeBoard?.releases || [],
+    upcoming: state.homeBoard?.upcoming || [],
+    expandedHours: state.homeExpandedHours,
+    expandedOfficial: state.homeExpandedOfficial,
+    earlier: state.homeEarlier,
+    narrow: window.matchMedia('(max-width: 699px)').matches,
+    treeStatus,
+    boardStatus,
+  });
+  paintHomeTimeline(root, model, {
+    onRetry: () => loadSourcesPage({ refresh: true }).catch(() => {}),
+    onRetryBoard: () => loadHomeBoard(homeRequestPlan(Date.now()).board, { refresh: true, token: state.homeLoadToken }).catch(() => {}),
+    onToggleHour: (hour) => toggleHomeHour(hour),
+    onToggleOfficial: (hour) => {
+      state.homeExpandedOfficial[hour.startAt] = !state.homeExpandedOfficial[hour.startAt];
+      renderHomeTimelineView();
+    },
+    onEarlier: () => {
+      state.homeEarlier = true;
+      renderHomeTimelineView();
+    },
+    onEvent: (event) => openPage('event', event.eventId || event.id),
+  });
+  const waitingTitles = model.hours.length > 0 && model.hours.every((hour) => !hour.lead && hour.hitCount == null);
+  if (state.homeReadingError && waitingTitles) {
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'text-button';
+    retry.textContent = '小时报读取失败 · 重试';
+    retry.addEventListener('click', () => loadSourcesPage({ refresh: true }).catch(() => {}));
+    root.append(retry);
+  } else if (state.homeSlow && waitingTitles && state.homeReadingIndexMissing) {
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'text-button';
+    retry.textContent = '读取较慢 · 重试';
+    retry.addEventListener('click', () => loadSourcesPage({ refresh: true }).catch(() => {}));
+    root.append(retry);
+  }
+}
+
+function toggleHomeHour(hour) {
+  const open = !state.homeExpandedHours[hour.startAt];
+  state.homeExpandedHours[hour.startAt] = open;
+  renderHomeTimelineView();
+  if (!open || readingSummary(state.homeReadingHours[hour.startAt])?.preview?.length) return;
+  const token = state.homeLoadToken;
+  api(homeRequestPlan(Date.now()).readingHour(hour.startAt, hour.endAt)).then((payload) => {
+    if (token !== state.homeLoadToken) return;
+    if (payload?.snapshot) state.homeReadingHours[hour.startAt] = payload.snapshot;
+    renderHomeTimelineView();
+  }).catch((error) => {
+    if (token !== state.homeLoadToken) return;
+    if (error?.status !== 404) state.homeReadingError = '小时报读取失败';
+    renderHomeTimelineView();
+  });
+}
+
+function renderHomeSourceLine() {
+  const root = elements['home-source-line'];
+  if (!root) return;
+  const count = unavailableOfficialCount(state.homeBoard?.sourceHealth);
+  root.classList.toggle('hidden', count < 1);
+  root.replaceChildren();
+  if (!count) return;
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'text-button';
+  button.textContent = `${count} 个官方来源暂不可用 · 信源目录 ›`;
+  button.addEventListener('click', () => setOverviewPane('catalog'));
+  root.append(button);
+}
+
+async function loadHomeTree(path, token) {
+  try {
+    const payload = await api(path);
+    if (token !== state.homeLoadToken) return;
+    state.homeTree = payload;
+    state.homeTreeError = '';
+  } catch (error) {
+    if (token !== state.homeLoadToken) return;
+    state.homeTreeError = error instanceof Error ? error.message : '小时报读取失败';
+  } finally {
+    if (token === state.homeLoadToken) state.homeTreeLoaded = true;
+  }
+}
+
+async function fillRecentReadingHours(token) {
+  const editions = hourlyEditions(state.homeTree).slice(0, 3);
+  await Promise.all(editions.map(async (edition) => {
+    const startAt = edition.window.startAt;
+    if (readingSummary(state.homeReadingHours[startAt])) return;
+    try {
+      const payload = await api(homeRequestPlan(Date.now()).readingHour(startAt, edition.window.endAt));
+      if (token !== state.homeLoadToken || !payload?.snapshot) return;
+      state.homeReadingHours[startAt] = payload.snapshot;
+    } catch (error) {
+      if (token !== state.homeLoadToken) return;
+      if (error?.status !== 404) state.homeReadingError = '小时报读取失败';
+    }
+  }));
+  if (token === state.homeLoadToken && document.body.dataset.view === 'sources') renderHub();
+}
+
+async function loadHomeReadingIndex(path, token, treePromise) {
+  try {
+    const payload = await api(path);
+    if (token !== state.homeLoadToken) return;
+    state.homeReadingIndexMissing = false;
+    state.homeReadingHours = { ...state.homeReadingHours, ...absorbReadingIndex(payload) };
+  } catch (error) {
+    if (token !== state.homeLoadToken) return;
+    if (error?.status === 404) {
+      state.homeReadingIndexMissing = true;
+      renderHub();
+      treePromise.then(() => fillRecentReadingHours(token)).catch(() => {});
+      return;
+    }
+    state.homeReadingError = '小时报读取失败';
+  }
+}
+
+async function loadHomeOverviewMarket(refresh) {
+  if (!refresh && !overviewFocusIsStale()) return;
+  try {
+    await loadMarket({ board: 'overview' });
+  } catch {
+    /* 行情失败写在 marketBoardErrors，卡片上给出重试。 */
+  }
+}
+
+async function loadHomeBoard(path, { refresh = false, token = state.homeLoadToken } = {}) {
+  if (!state.session) return;
+  state.homeBoardLoading = true;
+  state.homeBoardError = '';
+  state.homeBoardStartedAt = Date.now();
+  if (state.homeLoadStartedAt && Date.now() - state.homeLoadStartedAt >= 10_000) state.homeSlow = true;
+  if (state.homeSlow && document.body.dataset.view === 'sources') renderHub();
+  try {
+    const payload = await api(refresh ? `${path}&refresh=1` : path, { timeoutMs: 45_000 });
+    if (token !== state.homeLoadToken) return;
+    state.homeBoard = payload.board;
+  } catch (error) {
+    if (token !== state.homeLoadToken) return;
+    state.homeBoardError = error instanceof Error ? error.message : '日程读取失败';
+  } finally {
+    if (token === state.homeLoadToken) {
+      state.homeBoardLoading = false;
+      if (document.body.dataset.view === 'sources') renderHub();
+    }
+  }
+}
+
 async function loadSourcesPage({ refresh = false } = {}) {
   renderHub();
-  const tasks = [];
-  if (state.session) {
-    if (refresh || overviewFocusIsStale()) tasks.push(loadMarket({ board: 'overview' }).catch(() => {}));
-    if (!state.assetBoard) tasks.push(loadGlobalAssets().catch(() => {}));
-    if (!state.staticBoard || refresh) tasks.push(loadStaticSignalBoard({ refresh }));
-    if (!state.marketNativeBoard || refresh) tasks.push(loadMarketNativeBoard({ refresh }));
-  }
-  if (state.session) tasks.push(loadDailyBrief().catch(() => {}));
-  if (tasks.length) await Promise.all(tasks);
-  renderSources();
+  if ((state.overviewPane || 'home') !== 'home') return;
+  if (!state.session) return;
+  const token = ++state.homeLoadToken;
+  state.homeSlow = false;
+  state.homeLoadStartedAt = Date.now();
+  if (refresh) state.homeTreeLoaded = false;
+  armHomeSlowWatch();
+  const plan = homeRequestPlan(Date.now());
+  const treePromise = loadHomeTree(plan.tree, token);
+  await Promise.all([
+    treePromise,
+    loadHomeReadingIndex(plan.readingIndex, token, treePromise),
+    loadHomeOverviewMarket(refresh),
+    loadDailyBrief().catch(() => {}),
+  ]);
+  if (token !== state.homeLoadToken) return;
+  renderHub();
+  loadHomeBoard(plan.board, { refresh, token }).catch(() => {});
   scheduleOverviewFocusWatch();
-  scheduleOverviewManualPosts();
 }
 
 function scheduleOverviewManualPosts() {
@@ -9709,12 +9949,83 @@ function briefIsCurrent(brief, now = new Date()) {
   return Boolean(brief?.reportDate) && brief.reportDate >= expectedBriefDate(now);
 }
 
+function homeDailyTitle(brief) {
+  if (brief?.editorial?.status === 'ready') {
+    const items = briefReadingItems(brief.editorial);
+    if (items[0]?.title) return items[0].title;
+  }
+  if (brief?.items?.[0]?.headline) return brief.items[0].headline;
+  if (brief?.informationItems?.[0]?.sentence) return brief.informationItems[0].sentence;
+  return brief?.overview || '';
+}
+
+function renderHomeDaily() {
+  const root = elements['home-daily'];
+  if (!root) return;
+  root.replaceChildren();
+  const head = document.createElement('div');
+  head.className = 'compact-label';
+  head.append(Object.assign(document.createElement('h2'), { textContent: '今日日报' }));
+  const brief = dailyBriefSnapshot.brief;
+  const retry = (label) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'text-button';
+    button.textContent = label;
+    button.addEventListener('click', () => {
+      state.homeSlow = false;
+      armHomeSlowWatch();
+      loadDailyBrief().catch(() => {});
+    });
+    return button;
+  };
+  if (dailyBriefSnapshot.error) {
+    head.append(retry('日报读取失败 · 重试'));
+    root.append(head);
+    return;
+  }
+  if (!dailyBriefSnapshot.loaded) {
+    if (state.homeSlow) head.append(retry('读取较慢 · 重试'));
+    root.append(head);
+    return;
+  }
+  if (!brief || !briefIsCurrent(brief)) {
+    const line = document.createElement('p');
+    line.append(document.createTextNode('今天的日报还没生成（每天 08:00）· '));
+    const yesterday = document.createElement('a');
+    yesterday.className = 'text-button';
+    yesterday.href = `#report/${shiftDateKey(shanghaiDateKey(new Date()), -1)}`;
+    yesterday.textContent = '看昨天 ›';
+    line.append(yesterday);
+    root.append(head, line);
+    return;
+  }
+  const open = document.createElement('a');
+  open.className = 'text-button';
+  open.href = `#report/${brief.reportDate}`;
+  open.textContent = '打开日报 ›';
+  head.append(open);
+  const title = homeDailyTitle(brief);
+  root.append(head);
+  if (title) root.append(Object.assign(document.createElement('p'), { textContent: title }));
+}
+
 async function loadDailyBrief() {
-  const session=state.session;
-  const payload = await api('/api/v1/reports/daily/latest/brief');
-  if (session!==state.session) return;
-  dailyBriefSnapshot = { brief: payload.brief || null, loaded: true, error: '' };
+  const session = state.session;
+  try {
+    const payload = await api('/api/v1/reports/daily/latest/brief');
+    if (session !== state.session) return;
+    dailyBriefSnapshot = { brief: payload.brief || null, loaded: true, error: '' };
+  } catch (error) {
+    if (session !== state.session) return;
+    dailyBriefSnapshot = {
+      brief: dailyBriefSnapshot.brief,
+      loaded: true,
+      error: error instanceof Error ? error.message : '日报读取失败',
+    };
+  }
   renderDailyBriefPeek();
+  renderHomeDaily();
 }
 
 async function loadReportHistory() {
@@ -12697,8 +13008,8 @@ async function completeAuthorizedStart(session) {
   const view = document.body.dataset.view;
   const startupLoads = [
     syncHarmonyLocalInspirations().catch(() => {}),
-    loadSourceCatalog().catch(() => {}),
   ];
+  if (view !== 'sources') startupLoads.push(loadSourceCatalog().catch(() => {}));
   if (view === 'feed' || (view === 'page' && state.pageKind === 'article' && state.feedPlatform === 'media')) {
     startupLoads.push(ensureVisibleFeedLoaded().catch((error) => showToast(error.message)));
   }
@@ -12708,7 +13019,7 @@ async function completeAuthorizedStart(session) {
   if (view === 'ask') {
     startupLoads.push(syncAskView().catch((error) => showToast(error.message)));
   }
-  startupLoads.push(loadActiveAskRuns().catch(() => {}));
+  if (view !== 'sources') startupLoads.push(loadActiveAskRuns().catch(() => {}));
   if (session.role === 'desktop') {
     startupLoads.push(loadPairing().catch((error) => showToast(error.message)));
     startupLoads.push(loadMetrics().catch(() => {}));
@@ -12877,7 +13188,11 @@ elements['feed-open-calendar']?.addEventListener('click', () => {
   setView('sources/schedule');
   setOverviewPane('schedule');
 });
-elements['open-all-quotes']?.addEventListener('click', () => setView('market/global'));
+elements['open-all-quotes']?.addEventListener('click', () => setView('market'));
+elements['open-event-odds']?.addEventListener('click', () => {
+  setView('market/global');
+  document.getElementById('global-events')?.scrollIntoView({ block: 'start' });
+});
 elements['open-full-feed']?.addEventListener('click', () => setView('feed'));
 elements['open-daily-brief']?.addEventListener('click', () => setView('report'));
 document.getElementById('report-tab-today')?.addEventListener('click', () => setView('report'));

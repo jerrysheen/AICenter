@@ -18,6 +18,7 @@
   <link rel="modulepreload" href="/feed-interaction.js?v=dev">
   <link rel="modulepreload" href="/brief-page.js?v=dev">
   <link rel="modulepreload" href="/information-tree.js?v=dev">
+  <link rel="modulepreload" href="/home-timeline.js?v=dev">
   <link rel="stylesheet" href="/styles.css?v=dev">
 </head>
 <body class="is-unpaired" data-view="sources">
@@ -185,6 +186,18 @@
               </div>
               <p class="static-board-note" id="global-native-note" aria-live="polite"></p>
             </section>
+            <section class="market-native-section" id="global-events" aria-labelledby="market-native-title">
+              <div class="market-native-board">
+                <article class="market-native-panel market-native-prediction-panel">
+                  <header>
+                    <div><small>关注中</small><h3 id="market-native-title">事件报价</h3></div>
+                    <span>Polymarket · Kalshi · 单场所报价</span>
+                  </header>
+                  <div class="market-native-list" id="market-native-predictions"></div>
+                </article>
+              </div>
+              <p class="static-board-note" id="market-native-note" aria-live="polite"></p>
+            </section>
             <label class="market-filter" id="asset-filter-wrap">
               <span class="vh">筛选全球行情</span>
               <input id="asset-filter" type="search" placeholder="名称 / 代码 / 介绍" autocomplete="off">
@@ -268,60 +281,22 @@
 
         <section class="view is-active" id="view-sources" data-view-panel="sources">
           <div id="overview-home">
-            <section class="daily-brief-peek" id="overview-brief">
-              <div class="compact-label">
-                <h2>今日关注</h2>
-                <button class="text-button" id="open-daily-brief" type="button">打开日报 ›</button>
-              </div>
-              <div id="overview-brief-body"></div>
-            </section>
             <div class="overview-columns dashboard">
+              <section class="dashboard-timeline" id="home-timeline" aria-label="今天"></section>
               <section class="dashboard-market">
+                <p class="hub-market-caption" id="hub-market-caption"></p>
                 <div class="ticker-strip" id="hub-ticker"></div>
                 <div class="mini-status" id="hub-market-status">
-                  <span id="hub-market-note">行情连接后显示更新时间</span>
+                  <span id="hub-market-note"></span>
                   <button class="text-button" id="open-all-quotes" type="button">全部行情 ›</button>
                 </div>
-              </section>
-              <section class="dashboard-upcoming agenda-peek">
-                <div class="compact-label">
-                  <h2>近期日程</h2>
-                  <button class="text-button" id="open-full-schedule" type="button">完整日历 ›</button>
-                </div>
-                <div id="static-upcoming"></div>
-              </section>
-              <section class="dashboard-feed">
-                <div class="timeline-controls latest-head">
-                  <h2>最新内容</h2>
-                  <div class="dense-tabs" id="overview-timeline-tabs" role="tablist" aria-label="内容筛选"></div>
-                </div>
-                <div class="timeline-day hidden" id="overview-timeline-day"></div>
-                <div id="overview-timeline"></div>
-                <div class="section-links">
-                  <button class="text-button" id="open-full-feed" type="button">进入完整信息流 ›</button>
-                  <button class="text-button" id="open-source-catalog" type="button">查看信源 ›</button>
-                </div>
+                <p class="mini-status">
+                  <button class="text-button" id="open-event-odds" type="button">事件概率 ›</button>
+                </p>
+                <section class="daily-brief-peek" id="home-daily" aria-live="polite"></section>
+                <p class="mini-status hidden" id="home-source-line"></p>
               </section>
             </div>
-            <p class="static-board-note" id="static-board-note" aria-live="polite"></p>
-            <section class="market-native-section" aria-labelledby="market-native-title">
-              <div class="source-group-heading">
-                <div>
-                  <p class="section-kicker">事件市场</p>
-                  <h2 id="market-native-title">现在市场怎么看这些事</h2>
-                </div>
-              </div>
-              <div class="market-native-board">
-                <article class="market-native-panel market-native-prediction-panel">
-                  <header>
-                    <div><small>关注中</small><h3>事件报价</h3></div>
-                    <span>Polymarket · Kalshi · 单场所报价</span>
-                  </header>
-                  <div class="market-native-list" id="market-native-predictions"></div>
-                </article>
-              </div>
-              <p class="static-board-note" id="market-native-note" aria-live="polite"></p>
-            </section>
           </div>
 
           <div class="hidden" id="overview-schedule">

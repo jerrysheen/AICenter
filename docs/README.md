@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-10-overview-redesign-v2.md`：总览首页改成左栏今天时间轴、右栏四张行情卡和今日日报。事件报价挪到全球行情。行情卡用时段小字，不再单列更新时间。
+
 - `progress/2026-10-10-hourly-condense-error-log.md`：小时浓缩失败时把脱敏后的错误类型、上游状态和输入尺寸写入 Worker 日志。任务对外仍是「小时浓缩临时失败」。
 
 - `progress/2026-10-10-hourly-layout-v1.md`：小时报改成电脑竖列加正文，支持 `#report?hour=HH`，相邻小时预取，「其他」不再重复方向大标题。

@@ -1772,11 +1772,7 @@ main {
   padding-bottom: 2px;
   scrollbar-width: none;
 }
-.hub-ticker:empty::after {
-  content: '图表位：后续放指数走势或宽度图。';
-  color: var(--font-tertiary);
-  font-size: 13px;
-}
+.hub-ticker:empty::after { content: none; }
 .hub-ticker::-webkit-scrollbar { display: none; }
 .hub-tick {
   display: grid;
@@ -3259,10 +3255,33 @@ dialog p { margin: 9px 0 0; white-space: pre-wrap; color: var(--font-secondary);
 .muted { color: var(--font-tertiary); }
 .ticker-strip {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 9px;
   padding: 8px 0 10px;
   border-bottom: 1px solid var(--comp-tertiary);
+}
+.hub-market-caption {
+  margin: 0;
+  color: var(--font-tertiary);
+  font-size: 12px;
+}
+#hub-ticker .hub-tick {
+  min-width: 0;
+  padding: 4px 6px;
+}
+#hub-ticker .hub-tick:nth-child(n) {
+  border-left: 1px solid var(--comp-tertiary);
+  padding-left: 8px;
+}
+#hub-ticker .hub-tick:first-child {
+  border-left: 0;
+  padding-left: 0;
+}
+#open-event-odds {
+  color: var(--font-tertiary);
+  font-size: 12px;
+  min-height: 28px;
+  padding: 0;
 }
 .hub-tick, .ticker-cell {
   min-width: 0;
@@ -3315,6 +3334,65 @@ dialog p { margin: 9px 0 0; white-space: pre-wrap; color: var(--font-secondary);
   overflow: hidden;
 }
 .daily-brief-peek .is-missing { color: var(--font-tertiary); }
+.home-timeline-head, .home-kicker {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+  margin: 0;
+}
+.home-timeline-head h2, .home-kicker { margin: 0; font-size: 14px; }
+.home-kicker { color: var(--font-tertiary); font-size: 12px; min-height: 24px; }
+.home-now {
+  margin: 4px 0;
+  color: var(--brand);
+  background: var(--comp-emphasize-tertiary);
+  font-size: 12px;
+  line-height: 28px;
+  text-align: center;
+}
+.home-row {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 4px 0;
+}
+.home-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--background-tertiary);
+}
+.home-dot.is-hour { background: var(--brand); }
+.home-title {
+  display: block;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1.45;
+  text-decoration: none;
+}
+button.home-title {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+.home-meta, .home-official, .home-gap, .home-delay {
+  margin: 0;
+  color: var(--font-tertiary);
+  font-size: 12px;
+}
+.home-gap, .home-delay { margin: 2px 0 2px 22px; }
+.home-expand { display: grid; gap: 2px; margin-top: 2px; }
+.home-expand .text-button, .home-meta.text-button, .home-official.text-button {
+  min-height: 28px;
+  padding: 0;
+  justify-content: flex-start;
+}
 .report-history-row {
   display: flex;
   align-items: center;
@@ -4037,13 +4115,12 @@ body[data-view="inspire"] .dispatch-composer.hidden { display: none; }
 @media (min-width: 700px) {
   .overview-columns {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
+    grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr);
     column-gap: 24px;
     align-items: start;
   }
-  .dashboard-market { grid-column: 1; grid-row: 1; }
-  .dashboard-upcoming { grid-column: 1; grid-row: 2; }
-  .dashboard-feed { grid-column: 2; grid-row: 1 / span 2; }
+  .dashboard-timeline { grid-column: 1; grid-row: 1; }
+  .dashboard-market { grid-column: 2; grid-row: 1; }
   .latest-head { margin-top: 0; border-top: 0; }
   .overview-subnav.is-on { margin: 0 calc(var(--page-gutter) * -1); padding: 0 var(--page-gutter); }
 }
@@ -4061,7 +4138,7 @@ body[data-view="inspire"] .dispatch-composer.hidden { display: none; }
   .holdings-line-metric strong { white-space: normal; overflow-wrap: anywhere; }
 }
 @container (max-width: 19rem) {
-  .ticker-strip { grid-template-columns: 1fr 1fr; }
+  .ticker-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .hub-tick { border: 0; padding: 5px; }
 }
 
@@ -4798,7 +4875,7 @@ body[data-reader="1"] #nav-back { display: none; }
 .chip-tabs, .dense-tabs { scrollbar-width: thin; }
 
 @media (min-width: 700px) {
-  .overview-columns { grid-template-rows: auto 1fr; row-gap: 12px; }
+  .overview-columns { grid-template-rows: auto; row-gap: 0; }
 }
 @media (max-width: 699px) {
   body[data-reader="1"] .bottom-tab, body[data-reader="1"] .ask-live-chip, body[data-reader="1"] #nav-back { display: none; }

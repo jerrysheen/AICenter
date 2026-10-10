@@ -121,7 +121,8 @@ test('feed and schedule entry load before bootstrap finishes', () => {
   const view = functionSource('setView');
   assert.match(view, /view === 'feed' && \(state\.bootstrapped \|\| state\.session\)/);
   assert.match(view, /ensureVisibleFeedLoaded\(\)/);
-  assert.match(view, /state\.overviewPane === 'home' \|\| state\.overviewPane === 'schedule'/);
+  assert.match(view, /state\.overviewPane === 'schedule'/);
+  assert.doesNotMatch(view, /state\.overviewPane === 'home' \|\| state\.overviewPane === 'schedule'/);
   assert.match(view, /!state\.staticBoard/);
   assert.match(view, /loadStaticSignalBoard\(\)/);
   assert.match(functionSource('renderStaticSignalBoard'), /近期没有日程/);
@@ -138,8 +139,8 @@ test('feed and schedule entry load before bootstrap finishes', () => {
 test('overview startup does not request X or Xueqiu', () => {
   const sourcesPage = functionSource('loadSourcesPage');
   const schedule = functionSource('scheduleOverviewManualPosts');
-  assert.match(sourcesPage, /scheduleOverviewManualPosts\(\)/);
-  assert.doesNotMatch(sourcesPage, /loadXFeed|loadXueqiuFeed/);
+  assert.match(sourcesPage, /homeRequestPlan\(/);
+  assert.doesNotMatch(sourcesPage, /scheduleOverviewManualPosts\(\)|loadGlobalAssets|loadMarketNativeBoard|loadXFeed|loadXueqiuFeed|loadPosts\(/);
   assert.match(schedule, /loadPosts\(\)/);
   assert.doesNotMatch(schedule, /loadXFeed|loadXueqiuFeed/);
   assert.match(app, /ai-center\.startup-fallback\.session/);
