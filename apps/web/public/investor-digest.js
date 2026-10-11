@@ -26,6 +26,7 @@ const STATUS = {
   partial: '部分完成',
   failed: '生成失败',
   login_required: '雪球未登录',
+  verification_required: '雪球验证页',
   running: '正在生成',
 };
 
