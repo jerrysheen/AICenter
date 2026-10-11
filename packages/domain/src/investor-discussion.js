@@ -346,16 +346,22 @@ export function createInvestorDiscussionService({
       try {
         collected = await client.collectAll(built.targets, window);
       } catch (error) {
-        if (error?.code === 'login_required') {
-          const message = String(error.message || '采集浏览器尚未登录雪球。');
+        if (error?.code === 'login_required' || error?.code === 'verification_required') {
+          const verification = error.code === 'verification_required';
+          const message = String(error.message || (verification ? '雪球返回验证页。' : '采集浏览器尚未登录雪球。'));
           return repository.save({
             workspaceId,
             digestDate: date,
-            status: 'login_required',
+            status: verification ? 'verification_required' : 'login_required',
             generatedAt: now(),
             model,
             coverage: {
-              ...presentCoverage([], { loginRequired: true, targets: built.targets.length, failed: built.targets.length }),
+              ...presentCoverage([], {
+                loginRequired: !verification,
+                verificationRequired: verification,
+                targets: built.targets.length,
+                failed: built.targets.length,
+              }),
               missing: built.targets.map((item) => ({ key: item.key, name: item.name, reason: message })),
             },
             sections: [],

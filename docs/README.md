@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-11-investor-digest-fetch.md`：股民讨论日摘生产 partial 修复。日期窗口改认 `startAt/endAt`，浏览器会话串行，验证页单独停住。
+
 - `progress/2026-10-11-investor-discussion-digest.md`：股民讨论日摘。按持仓和可配置主题从雪球讨论区拉取当天帖子与评论，用 Gemini Flash Lite 总结；独立存储和定时任务，不进日报生产链路。简报页新增「股民讨论」标签。
 
 - `progress/2026-10-10-unified-news-list.md`：总览、信息流、小时报共用同一条新闻列表。小时报末尾直接列出未进主列表和时效不足的条目，日报句子不再截成一行，摘要渲染前解码 HTML 实体。信源目录可以进入 B 站。

@@ -82,6 +82,14 @@ export function createBrowserRuntime(options = {}) {
   if (!provider) throw new Error('BrowserRuntime 需要 provider');
   const logger = options.logger || console;
   const defaultBrowserId = String(options.defaultBrowserId || '').trim();
+  // bsk sessions share one browser. A second task can navigate the page out
+  // from under an in-flight fetch, so the whole callback stays exclusive.
+  let tail = Promise.resolve();
+  function exclusive(task) {
+    const run = tail.then(task, task);
+    tail = run.then(() => undefined, () => undefined);
+    return run;
+  }
 
   return {
     get providerId() {
@@ -94,22 +102,24 @@ export function createBrowserRuntime(options = {}) {
 
     async withSession(sessionOptions, callback) {
       if (typeof callback !== 'function') throw new Error('withSession 需要 callback');
-      const resolvedSessionOptions = { ...(sessionOptions || {}) };
-      if (!String(resolvedSessionOptions.browserId || '').trim() && defaultBrowserId) {
-        resolvedSessionOptions.browserId = defaultBrowserId;
-      }
-      const started = await provider.startSession(resolvedSessionOptions);
-      const session = createBrowserSession(provider, started);
-      try {
-        return await callback(session);
-      } finally {
-        try {
-          await session.close();
-        } catch (stopError) {
-          const message = stopError instanceof Error ? stopError.message : String(stopError);
-          logger.warn?.(`[browser-runtime] session stop failed: ${message}`);
+      return exclusive(async () => {
+        const resolvedSessionOptions = { ...(sessionOptions || {}) };
+        if (!String(resolvedSessionOptions.browserId || '').trim() && defaultBrowserId) {
+          resolvedSessionOptions.browserId = defaultBrowserId;
         }
-      }
+        const started = await provider.startSession(resolvedSessionOptions);
+        const session = createBrowserSession(provider, started);
+        try {
+          return await callback(session);
+        } finally {
+          try {
+            await session.close();
+          } catch (stopError) {
+            const message = stopError instanceof Error ? stopError.message : String(stopError);
+            logger.warn?.(`[browser-runtime] session stop failed: ${message}`);
+          }
+        }
+      });
     },
   };
 }

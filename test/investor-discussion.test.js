@@ -6,9 +6,13 @@ import { createTradingService } from '../packages/domain/src/trading-service.js'
 import { yahooToXueqiuSymbol } from '../packages/connectors/src/xueqiu-quotes.js';
 import {
   XueqiuLoginRequiredError,
+  XueqiuVerificationError,
+  classifyDiscussionBody,
   collectDiscussionTargets,
   createXueqiuStockDiscussionClient,
+  discussionBodyPreview,
   discussionCommentsV3Url,
+  discussionTimestamp,
   stockDiscussionUrl,
 } from '../packages/connectors/src/xueqiu/stock-discussion.js';
 import { createGeminiInvestorSummarizer } from '../packages/connectors/src/investor-discussion-model.js';
@@ -16,6 +20,7 @@ import {
   INVESTOR_DISCUSSION_SYSTEM,
   buildDiscussionTargets,
   createInvestorDiscussionService,
+  discussionDayWindow,
   discussionSymbolFromHolding,
   markUnverified,
   presentInvestorDigest,
@@ -227,6 +232,118 @@ test('hitting the post page cap marks the discussion as incomplete', async () =>
   assert.equal(results[0].comments.length, 0);
 });
 
+test('millisecond created_at stays inside the Shanghai day when the window is startAt/endAt', async () => {
+  const window = discussionDayWindow('2026-10-11', 'Asia/Shanghai');
+  assert.equal(window.startAt, zonedLocalToUtc(2026, 10, 11, 0, 0, 'Asia/Shanghai'));
+  assert.equal(window.endAt, zonedLocalToUtc(2026, 10, 12, 0, 0, 'Asia/Shanghai'));
+  const todayMs = window.startAt + 15 * 3600 * 1000;
+  const sample = {
+    id: 300346001,
+    user_id: 1001,
+    created_at: todayMs,
+    text: '南大光电今天的讨论',
+    reply_count: 2,
+    user: { id: 1001, screen_name: '股民甲' },
+    target: '/1001/300346001',
+  };
+  const urls = [];
+  const results = await collectDiscussionTargets([{
+    kind: 'holding', key: 'SZ300346', name: '南大光电', symbols: ['SZ300346'], keywords: [],
+  }], {
+    ...window,
+    maxPages: 3,
+    commentPosts: 0,
+    intervalMs: 0,
+    retries: 0,
+    wait: async () => {},
+    fetchJson: async (url) => {
+      urls.push(url);
+      const page = Number(new URL(url).searchParams.get('page'));
+      if (page === 1) {
+        return { list: [
+          sample,
+          { ...sample, id: 300346000, created_at: window.startAt - 60_000, text: '昨天的帖' },
+          { ...sample, id: 300346002, created_at: Math.floor((todayMs + 1000) / 1000), text: '秒级时间戳' },
+        ] };
+      }
+      return { list: [{ ...sample, id: 300346009, created_at: todayMs, text: '不该再请求' }] };
+    },
+  });
+  assert.equal(discussionTimestamp(sample.created_at), todayMs);
+  assert.equal(discussionTimestamp(Math.floor(todayMs / 1000)), todayMs);
+  assert.deepEqual(results[0].posts.map((item) => item.id).sort(), ['300346001', '300346002']);
+  assert.equal(urls.length, 1);
+  assert.ok(results[0].posts.every((item) => item.createdAt >= window.startAt && item.createdAt < window.endAt));
+});
+
+test('non-json xueqiu bodies are classified and a verification page stops the run', async () => {
+  assert.equal(classifyDiscussionBody(''), 'empty');
+  assert.equal(classifyDiscussionBody('<html><body>讨论</body></html>'), 'html');
+  assert.equal(classifyDiscussionBody('<html>请完成滑动验证</html>'), 'verify');
+  assert.equal(classifyDiscussionBody('{"list":['), 'truncated');
+  assert.equal(discussionBodyPreview('第一行\n第二行 cookie=secret'), '第一行 第二行 cookie=secret'.slice(0, 120));
+  const logs = [];
+  const urls = [];
+  const client = createXueqiuStockDiscussionClient({
+    delay: async () => {},
+    intervalMs: 0,
+    retries: 2,
+    maxPages: 1,
+    logger: { warn(line) { logs.push(line); } },
+    browserRuntime: {
+      async withSession(_options, fn) {
+        return fn({
+          navigate: async () => {},
+          evaluate: async () => ({ logged_in: true }),
+          fetchJson: async (url) => {
+            urls.push(url);
+            return {
+              status: 200,
+              url,
+              text: '<html>\n请完成滑动验证\n</html>',
+            };
+          },
+        });
+      },
+    },
+  });
+  await assert.rejects(
+    () => client.collectAll([
+      { symbols: ['SZ300346'], keywords: [] },
+      { symbols: ['SH600519'], keywords: [] },
+    ], discussionDayWindow('2026-10-11', 'Asia/Shanghai')),
+    (error) => error instanceof XueqiuVerificationError && error.code === 'verification_required',
+  );
+  assert.equal(urls.length, 1);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /status=200/);
+  assert.match(logs[0], /length=/);
+  assert.match(logs[0], /kind=verify/);
+  assert.match(logs[0], /head=请完成滑动验证|<html> 请完成滑动验证/);
+  assert.doesNotMatch(logs[0], /Cookie:|xq_a_token/);
+  const html = createXueqiuStockDiscussionClient({
+    delay: async () => {},
+    intervalMs: 0,
+    retries: 2,
+    maxPages: 1,
+    logger: { warn() {} },
+    browserRuntime: {
+      async withSession(_options, fn) {
+        return fn({
+          navigate: async () => {},
+          evaluate: async () => ({ logged_in: true }),
+          fetchJson: async (url) => ({ status: 200, url, text: '<html>oops</html>' }),
+        });
+      },
+    },
+  });
+  const htmlResults = await html.collectAll(
+    [{ symbols: ['SZ000858'], keywords: [] }],
+    discussionDayWindow('2026-10-11', 'Asia/Shanghai'),
+  );
+  assert.match(htmlResults[0].reason, /HTML/);
+});
+
 test('xueqiu login failure is explicit and does not look like an empty day', async () => {
   await assert.rejects(
     () => collectDiscussionTargets([{ symbols: ['SH600000'], keywords: [] }], {
@@ -418,6 +535,25 @@ test('digest stores coverage, drops invented links, and keeps login failures vis
     const shown = service.latest('local', '2026-10-11');
     assert.equal(shown.digest.status, 'login_required');
     assert.equal(shown.digest.model, undefined);
+
+    let summarizedAfterVerify = 0;
+    const verified = await service.generate({
+      digestDate: '2026-10-12',
+      holdings: [{ yahoo: '600000.SS', name: '浦发银行', symbol: '600000', exchangeCode: 'XSHG' }],
+      themes: [],
+      client: {
+        async collectAll() {
+          const error = new Error('雪球返回验证页。请在采集浏览器里完成验证后再生成，本次已停止，不会继续重试。');
+          error.code = 'verification_required';
+          throw error;
+        },
+      },
+      summarize: async () => { summarizedAfterVerify += 1; return { text: '{}' }; },
+    });
+    assert.equal(summarizedAfterVerify, 0);
+    assert.equal(verified.status, 'verification_required');
+    assert.equal(verified.coverage.verificationRequired, true);
+    assert.match(verified.error, /验证页/);
   } finally {
     store.close();
   }

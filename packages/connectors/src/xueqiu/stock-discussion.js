@@ -18,6 +18,64 @@ export class XueqiuLoginRequiredError extends Error {
   }
 }
 
+export class XueqiuVerificationError extends Error {
+  constructor(message = '雪球返回验证页。请在采集浏览器里完成验证后再生成，本次已停止，不会继续重试。') {
+    super(message);
+    this.name = 'XueqiuVerificationError';
+    this.code = 'verification_required';
+  }
+}
+
+const BODY_KIND_LABEL = {
+  html: 'HTML',
+  verify: '验证页',
+  empty: '空体',
+  truncated: '截断',
+};
+
+export function discussionBodyPreview(text, limit = 120) {
+  return String(text || '').replace(/\s+/g, ' ').trim().slice(0, limit);
+}
+
+export function classifyDiscussionBody(text) {
+  const body = String(text || '').trim();
+  if (!body) return 'empty';
+  const flat = body.replace(/\s+/g, ' ');
+  if (/验证码|滑动验证|安全验证|访问验证|请完成验证|captcha|nocaptcha|滑块/i.test(flat)) return 'verify';
+  if (body.startsWith('{') || body.startsWith('[')) {
+    try {
+      JSON.parse(body);
+      return 'json';
+    } catch {
+      return 'truncated';
+    }
+  }
+  if (/^</.test(body) || /<!doctype|<html|<\/html>/i.test(body)) return 'html';
+  return 'truncated';
+}
+
+export function discussionBodyKindLabel(kind) {
+  return BODY_KIND_LABEL[kind] || '不是 JSON';
+}
+
+export function discussionTimestamp(value) {
+  const stamp = Number(value);
+  if (!Number.isFinite(stamp) || stamp <= 0) return 0;
+  // Xueqiu status created_at is epoch milliseconds (~1.7e12).
+  // Values in the unix-seconds range are scaled; tiny fixtures stay as given.
+  if (stamp >= 1e9 && stamp < 1e12) return Math.round(stamp * 1000);
+  return stamp;
+}
+
+function resolveDiscussionWindow(options = {}) {
+  const since = Number(options.since ?? options.startAt);
+  const until = Number(options.until ?? options.endAt);
+  if (!Number.isFinite(since) || !Number.isFinite(until) || until <= since) {
+    throw new Error('讨论日期窗口无效');
+  }
+  return { since, until };
+}
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -110,7 +168,7 @@ export function mapDiscussionStatus(item) {
     title: stripXueqiuHtml(item?.title || '') || text.slice(0, 48),
     author: String(user.screen_name || user.name || '').trim(),
     url,
-    createdAt: Number(item?.created_at) || 0,
+    createdAt: discussionTimestamp(item?.created_at),
     replyCount: Number(item?.reply_count) || 0,
   };
 }
@@ -125,7 +183,7 @@ export function mapDiscussionComment(row, post) {
     postId: post?.id || '',
     text,
     author: String(row?.user?.screen_name || row?.user?.name || '').trim(),
-    createdAt: Number(row?.created_at) || 0,
+    createdAt: discussionTimestamp(row?.created_at),
     url: post?.url || '',
   };
 }
@@ -139,7 +197,7 @@ export function assertDiscussionPayload(data) {
 }
 
 function retryable(error) {
-  if (error?.code === 'login_required') return false;
+  if (error?.code === 'login_required' || error?.code === 'verification_required') return false;
   const status = Number(error?.status);
   if (status === 429 || status >= 500) return true;
   return /超时|429|502|503|504|ECONN|网络|fetch failed|HTTP 5/i.test(String(error?.message || ''));
@@ -151,7 +209,7 @@ async function withRetry(fn, { retries, wait, intervalMs }) {
     try {
       return assertDiscussionPayload(await fn());
     } catch (error) {
-      if (error?.code === 'login_required') throw error;
+      if (error?.code === 'login_required' || error?.code === 'verification_required') throw error;
       last = error;
       if (attempt >= retries || !retryable(error)) throw error;
       const backoff = Math.min(30_000, (intervalMs || 500) * (2 ** attempt));
@@ -223,7 +281,7 @@ async function pullPostComments({ request, post, since, until, maxRounds }) {
     try {
       data = await request(discussionCommentsV3Url(post.id, maxId));
     } catch (error) {
-      if (error?.code === 'login_required') throw error;
+      if (error?.code === 'login_required' || error?.code === 'verification_required') throw error;
       if (round !== 0) throw error;
       absorb(await request(discussionCommentsUrl(post.id)));
       break;
@@ -264,8 +322,7 @@ function commentTargets(posts, commentPosts) {
 
 export async function collectDiscussionTarget(options) {
   const target = options.target;
-  const since = Number(options.since);
-  const until = Number(options.until);
+  const { since, until } = resolveDiscussionWindow(options);
   const maxPages = Math.max(1, Number(options.maxPages) || 8);
   const maxCommentPages = Math.max(1, Number(options.maxCommentPages) || 5);
   const commentPosts = options.commentPosts === undefined ? 15 : Math.max(0, Number(options.commentPosts) || 0);
@@ -299,7 +356,7 @@ export async function collectDiscussionTarget(options) {
         if (!posts.has(post.id)) posts.set(post.id, { ...post, symbol: query.kind === 'symbol' ? query.symbol : '' });
       }
     } catch (error) {
-      if (error?.code === 'login_required') throw error;
+      if (error?.code === 'login_required' || error?.code === 'verification_required') throw error;
       failures.push({ label: query.label, reason: String(error?.message || error) });
     }
   }
@@ -312,7 +369,7 @@ export async function collectDiscussionTarget(options) {
         if (!comments.has(comment.id)) comments.set(comment.id, comment);
       }
     } catch (error) {
-      if (error?.code === 'login_required') throw error;
+      if (error?.code === 'login_required' || error?.code === 'verification_required') throw error;
       failures.push({ label: `${post.id} 评论`, reason: String(error?.message || error) });
     }
   }
@@ -345,9 +402,27 @@ export async function collectDiscussionTargets(targets, options) {
   return results;
 }
 
-async function fetchDiscussionJson(session, url) {
+function rejectUnparsedBody(payload, url, logger) {
+  const text = String(payload?.text || '');
+  const kind = classifyDiscussionBody(text);
+  const status = Number(payload?.status) || 0;
+  logger?.warn?.(`[investor-discussion] 雪球响应无法解析 status=${status} url=${url} length=${text.length} kind=${kind} head=${discussionBodyPreview(text)}`);
+  if (kind === 'verify') throw new XueqiuVerificationError();
+  const error = new Error(`雪球响应是${discussionBodyKindLabel(kind)}`);
+  error.code = 'invalid_body';
+  error.kind = kind;
+  error.status = status;
+  throw error;
+}
+
+async function fetchDiscussionJson(session, url, logger) {
   const payload = await session.fetchJson(url, { headers: jsonHeaders(), timeoutMs: 30_000 });
-  const data = parseBrowserJson(payload);
+  let data;
+  try {
+    data = parseBrowserJson(payload);
+  } catch {
+    rejectUnparsedBody(payload, url, logger);
+  }
   if (payload.status && payload.status >= 400) {
     if (isXueqiuLoginError(data)) throw new XueqiuLoginRequiredError();
     const error = new Error(explainXueqiuApiError(data, `雪球 HTTP ${payload.status}`));
@@ -359,6 +434,7 @@ async function fetchDiscussionJson(session, url) {
 
 export function createXueqiuStockDiscussionClient(options = {}) {
   const wait = options.delay || delay;
+  const logger = options.logger || console;
   if (typeof options.fetchJson === 'function') {
     return {
       async collectAll(targets, range) {
@@ -383,7 +459,7 @@ export function createXueqiuStockDiscussionClient(options = {}) {
         if (!inspect?.logged_in) throw new XueqiuLoginRequiredError();
         return collectDiscussionTargets(targets, {
           ...range,
-          fetchJson: (url) => fetchDiscussionJson(session, url),
+          fetchJson: (url) => fetchDiscussionJson(session, url, logger),
           wait,
           intervalMs: options.intervalMs ?? 1200,
           retries: options.retries ?? 2,

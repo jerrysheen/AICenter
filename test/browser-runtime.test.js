@@ -164,6 +164,23 @@ test('BrowserSkillClient normalizes non-JSON and command failures', async () => 
   await assert.rejects(() => failed.startSession(), BrowserUnavailableError);
 });
 
+test('withSession runs one browser callback at a time', async () => {
+  const provider = createRecordingProvider();
+  const runtime = createBrowserRuntime({ provider });
+  let active = 0;
+  let peak = 0;
+  const hold = () => runtime.withSession({ purpose: 'shared-page' }, async () => {
+    active += 1;
+    peak = Math.max(peak, active);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    active -= 1;
+    return peak;
+  });
+  const peaks = await Promise.all([hold(), hold(), hold()]);
+  assert.equal(Math.max(...peaks), 1);
+  assert.equal(provider.calls.filter((item) => item[0] === 'start').length, 3);
+});
+
 test('withSession stops after success', async () => {
   const provider = createRecordingProvider();
   const runtime = createBrowserRuntime({ provider });
