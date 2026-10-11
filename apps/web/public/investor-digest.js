@@ -36,7 +36,14 @@ function coverageText(coverage) {
   const posts = Number(coverage.postCount) || 0;
   const comments = Number(coverage.commentCount) || 0;
   const parts = [`覆盖率 ${succeeded}/${targets}`, `帖子 ${posts}`, `评论 ${comments}`];
-  if (coverage.truncated) parts.push('讨论区页数达到上限');
+  if (coverage.commentNote) {
+    const fetched = Number(coverage.commentFetched ?? coverage.commentCount) || 0;
+    const claimed = Number(coverage.commentClaimed) || 0;
+    parts.push(`评论拿到 ${fetched} / 帖子标称 reply_count ${claimed}`);
+    parts.push(coverage.commentNote);
+  }
+  if (coverage.postsTruncatedNote) parts.push(coverage.postsTruncatedNote);
+  else if (coverage.truncated) parts.push('帖子可能未抓全（到达页数上限）');
   return parts.join(' · ');
 }
 
@@ -85,6 +92,9 @@ function paint(target, data, { date, onDate, onGenerate, busy }) {
     card.append(el('p', section.summary || section.reason || '没有总结'));
     const heat = section.heat || {};
     card.append(el('p', `热度 ${heat.posts || 0} 帖 · ${heat.comments || 0} 评论`, 'investor-digest-meta'));
+    if (section.commentNote) {
+      card.append(el('p', `评论拿到 ${heat.comments || 0} / 帖子标称 reply_count ${heat.replyCount || 0} · ${section.commentNote}`, 'investor-digest-meta'));
+    }
     if (section.repeatedTopics?.length) {
       card.append(el('p', `反复提到：${section.repeatedTopics.join('、')}`));
     }

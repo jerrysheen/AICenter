@@ -8,6 +8,7 @@ import {
   XueqiuLoginRequiredError,
   collectDiscussionTargets,
   createXueqiuStockDiscussionClient,
+  discussionCommentsV3Url,
   stockDiscussionUrl,
 } from '../packages/connectors/src/xueqiu/stock-discussion.js';
 import { createGeminiInvestorSummarizer } from '../packages/connectors/src/investor-discussion-model.js';
@@ -23,6 +24,7 @@ import {
 import {
   createInvestorDiscussionJobHandlers,
   ensureInvestorDiscussionSchedule,
+  investorDigestRuntimeConfig,
   parseInvestorDigestClock,
 } from '../packages/runtime/src/investor-discussion-job.js';
 import { zonedLocalToUtc } from '../packages/domain/src/zoned-time.js';
@@ -40,6 +42,22 @@ function post(id, createdAt, extra = {}) {
     ...extra.raw,
   };
 }
+
+test('stock discussion url uses type 11, time sort and 20 per page', () => {
+  const url = new URL(stockDiscussionUrl('SZ300346', 2));
+  assert.equal(url.pathname, '/query/v1/symbol/search/status.json');
+  assert.equal(url.searchParams.get('symbol'), 'SZ300346');
+  assert.equal(url.searchParams.get('type'), '11');
+  assert.equal(url.searchParams.get('count'), '20');
+  assert.equal(url.searchParams.get('sort'), 'time');
+  assert.equal(url.searchParams.get('page'), '2');
+  assert.equal(url.searchParams.get('comment'), null);
+  assert.equal(url.searchParams.get('source'), null);
+  assert.equal(url.searchParams.get('hl'), null);
+  assert.equal(url.searchParams.get('q'), null);
+  assert.equal(new URL(stockDiscussionUrl('SH688268')).searchParams.get('symbol'), 'SH688268');
+  assert.equal(new URL(stockDiscussionUrl('00981')).searchParams.get('symbol'), '00981');
+});
 
 test('discussion symbols cover A-share ETF, HK connect and B shares', () => {
   assert.equal(discussionSymbolFromHolding({ yahoo: '510300.SS' }), 'SH510300');
@@ -78,12 +96,15 @@ test('xueqiu discussion fetch dedups posts and comments and stops before the day
     wait: async () => {},
     fetchJson: async (url) => {
       urls.push(url);
-      if (url.includes('/statuses/comments.json')) {
-        return { comments: [
-          { id: 3, text: '同一条评论', created_at: 1500, user: { screen_name: '乙' } },
-          { id: 3, text: '同一条评论', created_at: 1500, user: { screen_name: '乙' } },
-          { id: 4, text: '昨天的评论', created_at: 100, user: { screen_name: '丙' } },
-        ] };
+      if (url.includes('/statuses/v3/comments.json')) {
+        return {
+          next_max_id: -1,
+          comments: [
+            { id: 3, text: '同一条评论', created_at: 1500, user: { screen_name: '乙' } },
+            { id: 3, text: '同一条评论', created_at: 1500, user: { screen_name: '乙' } },
+            { id: 4, text: '昨天的评论', created_at: 100, user: { screen_name: '丙' } },
+          ],
+        };
       }
       if (url.includes('/query/v1/search/status.json')) return { list: [] };
       postPage += 1;
@@ -96,7 +117,114 @@ test('xueqiu discussion fetch dedups posts and comments and stops before the day
   assert.equal(results[0].comments.length, 1);
   assert.equal(results[0].comments[0].id, '3');
   assert.ok(urls.some((url) => url === stockDiscussionUrl('SH600000', 1)));
+  assert.equal(urls.filter((url) => url.includes('/statuses/v3/comments.json')).length, 1);
+  assert.equal(urls.some((url) => url.includes('/statuses/comments.json')), false);
   assert.ok(urls.some((url) => url.includes('q=%E5%9B%9E%E8%B4%AD') || url.includes('q=回购')));
+  assert.equal(results[0].commentClaimed, 1);
+  assert.equal(results[0].commentsPartial, true);
+});
+
+test('comments page by max_id, stop at -1, and only cover the hottest posts per symbol', async () => {
+  const urls = [];
+  const results = await collectDiscussionTargets([{
+    kind: 'holding', key: 'SH600519', name: '五粮液', symbols: ['SH600519', 'SZ000858'], keywords: [],
+  }], {
+    ...DAY,
+    maxPages: 1,
+    maxCommentPages: 5,
+    commentPosts: 1,
+    intervalMs: 0,
+    retries: 0,
+    wait: async () => {},
+    fetchJson: async (url) => {
+      urls.push(url);
+      if (url.includes('/statuses/v3/comments.json')) {
+        const parsed = new URL(url);
+        const maxId = parsed.searchParams.get('max_id');
+        if (parsed.searchParams.get('id') === '23') {
+          if (maxId === '-1') {
+            return {
+              next_max_id: 88,
+              comments: Array.from({ length: 13 }, (_, index) => ({
+                id: 100 + index, text: `一级${index}`, created_at: 2000, user: { screen_name: '乙' },
+              })),
+            };
+          }
+          return { next_max_id: -1, comments: [] };
+        }
+        return { next_max_id: -1, comments: [{ id: 7, text: '另一只', created_at: 2000, user: { screen_name: '丙' } }] };
+      }
+      if (url.includes('symbol=SH600519')) {
+        return { list: [
+          post(1, 2000, { replyCount: 2, text: '普通帖' }),
+          post(23, 2100, { replyCount: 23, text: '热帖' }),
+          post(5, 2200, { replyCount: 5, text: '次热' }),
+        ] };
+      }
+      return { list: [
+        post(9, 2000, { replyCount: 1, text: '另一只冷帖' }),
+        post(8, 2100, { replyCount: 9, text: '另一只热帖' }),
+      ] };
+    },
+  });
+  const commentUrls = urls.filter((url) => url.includes('/statuses/v3/comments.json'));
+  assert.deepEqual(commentUrls.map((url) => new URL(url).searchParams.get('id')), ['23', '23', '8']);
+  assert.equal(commentUrls.some((url) => url.includes('page=')), false);
+  assert.equal(new URL(commentUrls[0]).searchParams.get('max_id'), '-1');
+  assert.equal(new URL(commentUrls[1]).searchParams.get('max_id'), '88');
+  assert.equal(results[0].comments.length, 14);
+  assert.equal(results[0].commentClaimed, 32);
+  assert.equal(results[0].commentsPartial, true);
+  assert.equal(urls.filter((url) => url === discussionCommentsV3Url('23', -1)).length, 1);
+});
+
+test('v3 comment failure falls back to the legacy endpoint once', async () => {
+  const urls = [];
+  const results = await collectDiscussionTargets([{ symbols: ['SH600000'], keywords: [] }], {
+    ...DAY, intervalMs: 0, retries: 0, maxPages: 1, commentPosts: 15, wait: async () => {},
+    fetchJson: async (url) => {
+      urls.push(url);
+      if (url.includes('/statuses/v3/comments.json')) throw new Error('雪球 HTTP 502');
+      if (url.includes('/statuses/comments.json')) {
+        return { comments: [{ id: 3, text: '兜底评论', created_at: 1500, user: { screen_name: '乙' } }] };
+      }
+      return { list: [post(9, 2000, { replyCount: 4, text: '正文' })] };
+    },
+  });
+  assert.equal(urls.filter((url) => url.includes('/statuses/v3/comments.json')).length, 1);
+  assert.equal(urls.filter((url) => url.includes('/statuses/comments.json')).length, 1);
+  assert.equal(results[0].comments.length, 1);
+  assert.equal(results[0].comments[0].text, '兜底评论');
+});
+
+test('retweets and reply chains stay out of heat and comment fetches', async () => {
+  const urls = [];
+  const results = await collectDiscussionTargets([{ symbols: ['SZ300346'], keywords: [] }], {
+    ...DAY, intervalMs: 0, retries: 0, maxPages: 1, commentPosts: 15, wait: async () => {},
+    fetchJson: async (url) => {
+      urls.push(url);
+      if (url.includes('/comments')) return { next_max_id: -1, comments: [] };
+      return { list: [
+        post(1, 2000, { replyCount: 30, text: '转发长文', raw: { retweeted_status: { id: 99, text: '很长的原文' } } }),
+        post(2, 2000, { replyCount: 12, text: '回复@乙：跟着说' }),
+        post(3, 2000, { replyCount: 8, text: '//@乙：原帖' }),
+        post(4, 2000, { replyCount: 3, raw: { text: '   ' } }),
+        post(5, 2000, { replyCount: 0, text: '自己的看法 //@乙：引用' }),
+      ] };
+    },
+  });
+  assert.deepEqual(results[0].posts.map((item) => item.id), ['5']);
+  assert.equal(urls.some((url) => url.includes('/comments')), false);
+});
+
+test('hitting the post page cap marks the discussion as incomplete', async () => {
+  const results = await collectDiscussionTargets([{ symbols: ['SH600519'], keywords: [] }], {
+    ...DAY, intervalMs: 0, retries: 0, maxPages: 1, commentPosts: 0, wait: async () => {},
+    fetchJson: async () => ({ list: [post(1, 2000, { text: '当天帖' }), post(2, 2200, { text: '还是当天' })] }),
+  });
+  assert.equal(results[0].truncated, true);
+  assert.equal(results[0].posts.length, 2);
+  assert.equal(results[0].comments.length, 0);
 });
 
 test('xueqiu login failure is explicit and does not look like an empty day', async () => {
@@ -223,8 +351,11 @@ test('digest stores coverage, drops invented links, and keeps login failures vis
             if (target.key !== 'SH600000') return { ok: true, posts: [], comments: [], failures: [] };
             return {
               ok: true,
-              posts: [{ id: '9', text: '回购传闻', title: '回购', author: '甲', url: 'https://xueqiu.com/7/9', replyCount: 1, createdAt: 1 }],
+              posts: [{ id: '9', text: '回购传闻', title: '回购', author: '甲', url: 'https://xueqiu.com/7/9', replyCount: 23, createdAt: 1 }],
               comments: [{ id: '3', postId: '9', text: '看着办', author: '乙', createdAt: 1, url: 'https://xueqiu.com/7/9' }],
+              commentClaimed: 23,
+              commentsPartial: true,
+              truncated: true,
               failures: [],
             };
           });
@@ -257,6 +388,18 @@ test('digest stores coverage, drops invented links, and keeps login failures vis
     assert.deepEqual(main.links, [{ title: '回购', url: 'https://xueqiu.com/7/9' }]);
     assert.equal(main.heat.posts, 1);
     assert.equal(main.heat.comments, 1);
+    assert.equal(main.heat.replyCount, 23);
+    assert.equal(main.commentNote, '评论只含一级、不全');
+    assert.equal(view.sections[0].key, 'SH600000');
+    const quiet = view.sections.filter((item) => item.fetchStatus === 'empty');
+    assert.ok(quiet.length >= 1);
+    assert.ok(quiet.every((item) => item.summary === '今天没人讨论'));
+    assert.ok(view.sections.findIndex((item) => item.key === 'SH600000') < view.sections.findIndex((item) => item.fetchStatus === 'empty'));
+    assert.equal(view.sections.at(-1).fetchStatus, 'empty');
+    assert.equal(view.coverage.commentFetched, 1);
+    assert.equal(view.coverage.commentClaimed, 23);
+    assert.equal(view.coverage.commentNote, '评论只含一级、不全');
+    assert.equal(view.coverage.postsTruncatedNote, '帖子可能未抓全（到达页数上限）');
     assert.ok(view.coverage.missing.some((item) => item.name === '长和' && /429/.test(item.reason)));
     assert.ok(view.coverage.missing.some((item) => item.name === '无法识别'));
     assert.equal(store.listEvents(0, 20).some((event) => event.name === 'investor.discussion.digest.saved.v1'), true);
@@ -294,6 +437,9 @@ test('daily schedule defaults to 21:30 Asia/Shanghai and can be turned off', () 
     assert.equal(schedule.jobType, 'investor.discussion.digest');
     assert.equal(schedule.nextRunAt, at);
     assert.deepEqual(schedule.schedule, { kind: 'daily', timezone: 'Asia/Shanghai', hour: 21, minute: 30 });
+    assert.equal(investorDigestRuntimeConfig({}).commentPosts, 15);
+    assert.equal(investorDigestRuntimeConfig({ AI_CENTER_INVESTOR_DIGEST_MAX_PAGES: '50' }).maxPages, 50);
+    assert.equal(investorDigestRuntimeConfig({ AI_CENTER_INVESTOR_DIGEST_COMMENT_POSTS: '3' }).commentPosts, 3);
     const disabled = ensureInvestorDiscussionSchedule(store, { AI_CENTER_INVESTOR_DIGEST: '0' }, at);
     assert.equal(disabled.enabled, false);
   } finally {

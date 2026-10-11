@@ -32,14 +32,11 @@ function jsonHeaders() {
 
 export function stockDiscussionUrl(symbol, page = 1, count = PAGE_SIZE) {
   const url = new URL('/query/v1/symbol/search/status.json', PAGE_ORIGIN);
-  url.searchParams.set('count', String(count));
-  url.searchParams.set('comment', '0');
   url.searchParams.set('symbol', String(symbol || '').trim());
-  url.searchParams.set('hl', '0');
-  url.searchParams.set('source', 'all');
-  url.searchParams.set('sort', 'time');
+  url.searchParams.set('count', String(count));
   url.searchParams.set('page', String(page));
-  url.searchParams.set('q', '');
+  url.searchParams.set('sort', 'time');
+  url.searchParams.set('type', '11');
   return url.toString();
 }
 
@@ -53,13 +50,37 @@ export function discussionSearchUrl(query, page = 1, count = PAGE_SIZE) {
   return url.toString();
 }
 
-export function discussionCommentsUrl(statusId, page = 1, count = PAGE_SIZE) {
+export function discussionCommentsV3Url(statusId, maxId = -1, size = PAGE_SIZE) {
+  const url = new URL('/statuses/v3/comments.json', PAGE_ORIGIN);
+  url.searchParams.set('id', String(statusId));
+  url.searchParams.set('type', '4');
+  url.searchParams.set('size', String(size));
+  const cursor = Number(maxId);
+  url.searchParams.set('max_id', String(Number.isFinite(cursor) && cursor > 0 ? cursor : -1));
+  return url.toString();
+}
+
+export function discussionCommentsUrl(statusId, count = PAGE_SIZE) {
   const url = new URL('/statuses/comments.json', PAGE_ORIGIN);
   url.searchParams.set('id', String(statusId));
   url.searchParams.set('count', String(count));
-  url.searchParams.set('page', String(page));
+  url.searchParams.set('page', '1');
   url.searchParams.set('asc', 'false');
   return url.toString();
+}
+
+export function discardDiscussionStatus(item) {
+  if (!item || typeof item !== 'object') return true;
+  if (item.retweeted_status) return true;
+  const retweetId = Number(item.retweet_status_id || item.retweeted_status_id || 0);
+  if (Number.isFinite(retweetId) && retweetId > 0) return true;
+  if (/转发/.test(String(item.mark || item.flags || ''))) return true;
+  const text = stripXueqiuHtml(item.text || item.description || item.title || '').replace(/\s+/g, ' ').trim();
+  if (!text) return true;
+  if (/^(?:回复\s*@|\/\/@)/.test(text)) return true;
+  if (/^转发(?:\s|$|@|：|:)/.test(text)) return true;
+  const own = text.replace(/\s*\/\/@[\s\S]*$/, '').trim();
+  return !own;
 }
 
 function statusRows(payload) {
@@ -76,6 +97,7 @@ function commentRows(payload) {
 }
 
 export function mapDiscussionStatus(item) {
+  if (discardDiscussionStatus(item)) return null;
   const id = String(item?.id || '').trim();
   if (!/^\d+$/.test(id)) return null;
   const user = item?.user || {};
@@ -179,12 +201,74 @@ export function createRequestPacer({ wait, intervalMs }) {
   };
 }
 
+function nextCommentCursor(payload, current) {
+  const next = Number(payload?.next_max_id);
+  if (!Number.isFinite(next) || next <= 0 || next === current) return 0;
+  return next;
+}
+
+async function pullPostComments({ request, post, since, until, maxRounds }) {
+  const items = new Map();
+  const absorb = (data) => {
+    const batch = commentRows(data).map((row) => mapDiscussionComment(row, post)).filter(Boolean);
+    for (const row of batch) {
+      if (row.createdAt && !inWindow(row.createdAt, since, until)) continue;
+      if (!items.has(row.id)) items.set(row.id, row);
+    }
+    return batch;
+  };
+  let maxId = -1;
+  for (let round = 0; round < maxRounds; round += 1) {
+    let data;
+    try {
+      data = await request(discussionCommentsV3Url(post.id, maxId));
+    } catch (error) {
+      if (error?.code === 'login_required') throw error;
+      if (round !== 0) throw error;
+      absorb(await request(discussionCommentsUrl(post.id)));
+      break;
+    }
+    const batch = absorb(data);
+    if (!batch.length) break;
+    const next = nextCommentCursor(data, maxId);
+    if (!next) break;
+    maxId = next;
+  }
+  return items;
+}
+
+function commentTargets(posts, commentPosts) {
+  const limit = Math.max(0, Number(commentPosts) || 0);
+  if (!limit) return [];
+  const groups = new Map();
+  for (const post of posts.values()) {
+    const key = post.symbol || '__search__';
+    const list = groups.get(key) || [];
+    list.push(post);
+    groups.set(key, list);
+  }
+  const selected = [];
+  const seen = new Set();
+  for (const group of groups.values()) {
+    const ranked = group
+      .filter((post) => post.replyCount > 0)
+      .sort((left, right) => (right.replyCount - left.replyCount) || left.id.localeCompare(right.id));
+    for (const post of ranked.slice(0, limit)) {
+      if (seen.has(post.id)) continue;
+      seen.add(post.id);
+      selected.push(post);
+    }
+  }
+  return selected;
+}
+
 export async function collectDiscussionTarget(options) {
   const target = options.target;
   const since = Number(options.since);
   const until = Number(options.until);
   const maxPages = Math.max(1, Number(options.maxPages) || 8);
   const maxCommentPages = Math.max(1, Number(options.maxCommentPages) || 5);
+  const commentPosts = options.commentPosts === undefined ? 15 : Math.max(0, Number(options.commentPosts) || 0);
   const request = options.request;
   const queries = [
     ...(target.symbols || []).map((symbol) => ({ kind: 'symbol', label: symbol, symbol })),
@@ -212,28 +296,19 @@ export async function collectDiscussionTarget(options) {
           const blob = `${post.title}\n${post.text}`;
           if (query.keyword && !blob.includes(query.keyword)) continue;
         }
-        if (!posts.has(post.id)) posts.set(post.id, post);
+        if (!posts.has(post.id)) posts.set(post.id, { ...post, symbol: query.kind === 'symbol' ? query.symbol : '' });
       }
     } catch (error) {
       if (error?.code === 'login_required') throw error;
       failures.push({ label: query.label, reason: String(error?.message || error) });
     }
   }
+  const selected = commentTargets(posts, commentPosts);
   const comments = new Map();
-  for (const post of posts.values()) {
-    if (!post.replyCount) continue;
+  for (const post of selected) {
     try {
-      const pulled = await pullPages({
-        request,
-        since,
-        until,
-        maxPages: maxCommentPages,
-        urlFor: (page) => discussionCommentsUrl(post.id, page),
-        mapRow: (row) => mapDiscussionComment(row, post),
-        rowsOf: commentRows,
-      });
-      if (pulled.truncated) truncated = true;
-      for (const comment of pulled.items.values()) {
+      const pulled = await pullPostComments({ request, post, since, until, maxRounds: maxCommentPages });
+      for (const comment of pulled.values()) {
         if (!comments.has(comment.id)) comments.set(comment.id, comment);
       }
     } catch (error) {
@@ -241,6 +316,7 @@ export async function collectDiscussionTarget(options) {
       failures.push({ label: `${post.id} 评论`, reason: String(error?.message || error) });
     }
   }
+  const commentClaimed = selected.reduce((sum, post) => sum + (post.replyCount || 0), 0);
   const allFailed = queries.length > 0 && failures.length >= queries.length && posts.size === 0;
   return {
     ok: !allFailed && failures.length === 0,
@@ -250,6 +326,8 @@ export async function collectDiscussionTarget(options) {
     posts: [...posts.values()],
     comments: [...comments.values()],
     truncated,
+    commentClaimed,
+    commentsPartial: selected.length > 0,
     failures,
   };
 }
@@ -311,6 +389,7 @@ export function createXueqiuStockDiscussionClient(options = {}) {
           retries: options.retries ?? 2,
           maxPages: options.maxPages,
           maxCommentPages: options.maxCommentPages,
+          commentPosts: options.commentPosts,
         });
       });
     },

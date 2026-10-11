@@ -12,6 +12,9 @@ export const INVESTOR_DISCUSSION_SYSTEM = [
 ].join('');
 
 const SENTIMENTS = new Set(['偏多', '偏空', '分歧', '平淡']);
+const COMMENT_COVERAGE_NOTE = '评论只含一级、不全';
+const POST_PAGE_CAP_NOTE = '帖子可能未抓全（到达页数上限）';
+const EMPTY_DISCUSSION_SUMMARY = '今天没人讨论';
 const ADVICE = /[^。！？\n]*(?:建议买入|建议卖出|可以买入|应该卖出|加仓|减仓|止损|目标价)[^。！？\n]*[。！？]?/g;
 
 export const DEFAULT_INVESTOR_THEMES = Object.freeze([
@@ -239,6 +242,10 @@ function presentCoverage(sections, extra = {}) {
     failed: failed.length,
     postCount: sections.reduce((sum, item) => sum + (item.heat?.posts || 0), 0),
     commentCount: sections.reduce((sum, item) => sum + (item.heat?.comments || 0), 0),
+    commentFetched: sections.reduce((sum, item) => sum + (item.heat?.comments || 0), 0),
+    commentClaimed: sections.reduce((sum, item) => sum + (item.heat?.replyCount || 0), 0),
+    commentNote: sections.some((item) => item.commentNote) ? COMMENT_COVERAGE_NOTE : '',
+    postsTruncatedNote: sections.some((item) => item.truncated) ? POST_PAGE_CAP_NOTE : '',
     missing: failed.map((item) => ({ key: item.key, name: item.name, reason: item.reason || item.fetchStatus })),
     warnings: sections.filter((item) => item.fetchStatus === 'ok' && item.reason).map((item) => ({
       key: item.key, name: item.name, reason: item.reason,
@@ -247,6 +254,12 @@ function presentCoverage(sections, extra = {}) {
     truncated: sections.some((item) => item.truncated),
     ...extra,
   };
+}
+
+function sectionRank(section) {
+  if ((section.heat?.posts || 0) > 0) return 0;
+  if (section.fetchStatus === 'empty') return 2;
+  return 1;
 }
 
 function overallStatus(sections) {
@@ -357,7 +370,12 @@ export function createInvestorDiscussionService({
       for (let index = 0; index < built.targets.length; index += 1) {
         const target = built.targets[index];
         const result = collected[index] || { failed: true, reason: '没有返回', posts: [], comments: [] };
-        const heat = { posts: result.posts?.length || 0, comments: result.comments?.length || 0 };
+        const heat = {
+          posts: result.posts?.length || 0,
+          comments: result.comments?.length || 0,
+          replyCount: Number(result.commentClaimed) || 0,
+        };
+        const commentNote = result.commentsPartial ? COMMENT_COVERAGE_NOTE : '';
         if (result.failed || (!result.posts?.length && result.failures?.length)) {
           sections.push(emptySection(target, { reason: result.reason || '拉取失败', truncated: Boolean(result.truncated) }));
           continue;
@@ -365,7 +383,7 @@ export function createInvestorDiscussionService({
         if (!result.posts?.length) {
           sections.push({
             ...emptySection(target, { fetchStatus: 'empty', reason: result.reason || '' }),
-            summary: '当天没有拉到相关讨论。',
+            summary: EMPTY_DISCUSSION_SUMMARY,
             sentiment: '平淡',
             truncated: Boolean(result.truncated),
           });
@@ -396,6 +414,7 @@ export function createInvestorDiscussionService({
             heat,
             fetchStatus: 'ok',
             reason: result.reason || '',
+            commentNote,
             truncated: Boolean(result.truncated),
           });
         } catch (error) {
@@ -403,10 +422,12 @@ export function createInvestorDiscussionService({
             fetchStatus: 'summary_failed',
             reason: String(error?.message || error),
             heat,
+            commentNote,
             truncated: Boolean(result.truncated),
           }));
         }
       }
+      sections.sort((left, right) => sectionRank(left) - sectionRank(right));
       const status = overallStatus(sections);
       const error = status === 'failed'
         ? (sections.find((item) => item.reason)?.reason || '股民讨论日摘生成失败')

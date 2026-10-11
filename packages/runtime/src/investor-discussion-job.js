@@ -41,8 +41,9 @@ export function investorDigestRuntimeConfig(env = process.env) {
     minute: clock.minute,
     intervalMs: envInt(env, 'AI_CENTER_INVESTOR_DIGEST_INTERVAL_MS', 1200, 0, 60_000),
     retries: envInt(env, 'AI_CENTER_INVESTOR_DIGEST_RETRIES', 2, 0, 5),
-    maxPages: envInt(env, 'AI_CENTER_INVESTOR_DIGEST_MAX_PAGES', 8, 1, 20),
+    maxPages: envInt(env, 'AI_CENTER_INVESTOR_DIGEST_MAX_PAGES', 8, 1, 50),
     maxCommentPages: envInt(env, 'AI_CENTER_INVESTOR_DIGEST_MAX_COMMENT_PAGES', 5, 1, 10),
+    commentPosts: envInt(env, 'AI_CENTER_INVESTOR_DIGEST_COMMENT_POSTS', 15, 0, 50),
     model: investorDiscussionModelId(env),
   };
 }
@@ -82,6 +83,7 @@ export function createInvestorDiscussionJobHandlers({
     retries: config.retries,
     maxPages: config.maxPages,
     maxCommentPages: config.maxCommentPages,
+    commentPosts: config.commentPosts,
   });
   const model = summarize || createGeminiInvestorSummarizer({ env, model: config.model });
   return {
