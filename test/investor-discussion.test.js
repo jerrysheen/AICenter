@@ -9,6 +9,7 @@ import {
   XueqiuVerificationError,
   classifyDiscussionBody,
   collectDiscussionTargets,
+  createRequestPacer,
   createXueqiuStockDiscussionClient,
   discussionBodyPreview,
   discussionCommentsV3Url,
@@ -266,14 +267,103 @@ test('millisecond created_at stays inside the Shanghai day when the window is st
           { ...sample, id: 300346002, created_at: Math.floor((todayMs + 1000) / 1000), text: '秒级时间戳' },
         ] };
       }
+      if (page === 2) {
+        return { list: [{ ...sample, id: 300346008, created_at: window.startAt - 120_000, text: '整页都是昨天' }] };
+      }
       return { list: [{ ...sample, id: 300346009, created_at: todayMs, text: '不该再请求' }] };
     },
   });
   assert.equal(discussionTimestamp(sample.created_at), todayMs);
   assert.equal(discussionTimestamp(Math.floor(todayMs / 1000)), todayMs);
   assert.deepEqual(results[0].posts.map((item) => item.id).sort(), ['300346001', '300346002']);
-  assert.equal(urls.length, 1);
+  assert.equal(urls.length, 2);
   assert.ok(results[0].posts.every((item) => item.createdAt >= window.startAt && item.createdAt < window.endAt));
+});
+
+test('pinned or leading old posts do not drop later posts from the same day', async () => {
+  const window = discussionDayWindow('2026-10-11', 'Asia/Shanghai');
+  const today = window.startAt + 15 * 3600 * 1000;
+  const old = window.startAt - 86_400_000;
+  const urls = [];
+  const results = await collectDiscussionTargets([{
+    kind: 'holding', key: 'SZ300346', name: '南大光电', symbols: ['SZ300346'], keywords: [],
+  }], {
+    ...window,
+    maxPages: 4,
+    commentPosts: 0,
+    intervalMs: 0,
+    retries: 0,
+    wait: async () => {},
+    fetchJson: async (url) => {
+      urls.push(url);
+      const page = Number(new URL(url).searchParams.get('page'));
+      const row = (id, createdAt, text, extra = {}) => ({
+        id, text, created_at: createdAt, reply_count: 0,
+        user: { id: 7, screen_name: '甲' }, target: `/7/${id}`, ...extra,
+      });
+      if (page === 1) return { list: [row(1, old, '置顶公告', { mark: 1 })] };
+      if (page === 2) return { list: [row(2, old, '昨天的普通帖'), row(3, today, '今天的讨论'), row(4, today + 1000, '今天的另一条')] };
+      if (page === 3) return { list: [row(5, old, '更早的一页'), row(6, old - 1000, '再早')] };
+      return { list: [row(99, today, '不该请求')] };
+    },
+  });
+  assert.deepEqual(results[0].posts.map((item) => item.id), ['3', '4']);
+  assert.equal(urls.length, 3);
+});
+
+test('request interval is 2.5s with half-second jitter', async () => {
+  const waits = [];
+  const pacer = createRequestPacer({
+    wait: async (ms) => { waits.push(Math.round(ms)); },
+    intervalMs: 2500,
+    jitterMs: 500,
+    random: () => 0,
+  });
+  await pacer(async () => {});
+  await pacer(async () => {});
+  assert.equal(waits.length, 1);
+  assert.ok(Math.abs(waits[0] - 2000) < 30);
+});
+
+test('waf challenge reopens the quote page twice, then stops the run', async () => {
+  const waf = '<html><script>var arg1=\'ABC\';document.cookie="acw_sc__v2="+arg1</script></html>';
+  const waits = [];
+  const urls = [];
+  const navigated = [];
+  let sessions = 0;
+  const client = createXueqiuStockDiscussionClient({
+    delay: async (ms) => { waits.push(ms); },
+    intervalMs: 0,
+    intervalJitterMs: 0,
+    retries: 2,
+    maxPages: 1,
+    random: () => 0.5,
+    logger: { warn() {} },
+    browserRuntime: {
+      async withSession(_options, fn) {
+        sessions += 1;
+        return fn({
+          navigate: async (url) => { navigated.push(url); },
+          evaluate: async () => ({ logged_in: true }),
+          fetchJson: async (url) => {
+            urls.push(url);
+            return { status: 200, url, text: waf };
+          },
+        });
+      },
+    },
+  });
+  await assert.rejects(
+    () => client.collectAll([
+      { symbols: ['SH900923'], keywords: [] },
+      { symbols: ['SZ300346'], keywords: [] },
+    ], discussionDayWindow('2026-10-11', 'Asia/Shanghai')),
+    (error) => error instanceof XueqiuVerificationError && /WAF 挑战/.test(error.message),
+  );
+  assert.equal(sessions, 1);
+  assert.equal(urls.length, 3);
+  assert.equal(waits.filter((ms) => ms === 30_000).length, 2);
+  assert.equal(navigated.filter((url) => url === 'https://www.xueqiu.com/hq').length, 3);
 });
 
 test('non-json xueqiu bodies are classified and a verification page stops the run', async () => {
@@ -281,6 +371,7 @@ test('non-json xueqiu bodies are classified and a verification page stops the ru
   assert.equal(classifyDiscussionBody('<html><body>讨论</body></html>'), 'html');
   assert.equal(classifyDiscussionBody('<html>请完成滑动验证</html>'), 'verify');
   assert.equal(classifyDiscussionBody('{"list":['), 'truncated');
+  assert.equal(classifyDiscussionBody('<html><script>var arg1=\'ABC\';document.cookie="acw_sc__v2="+arg1</script></html>'), 'waf');
   assert.equal(discussionBodyPreview('第一行\n第二行 cookie=secret'), '第一行 第二行 cookie=secret'.slice(0, 120));
   const logs = [];
   const urls = [];
@@ -574,6 +665,8 @@ test('daily schedule defaults to 21:30 Asia/Shanghai and can be turned off', () 
     assert.equal(schedule.nextRunAt, at);
     assert.deepEqual(schedule.schedule, { kind: 'daily', timezone: 'Asia/Shanghai', hour: 21, minute: 30 });
     assert.equal(investorDigestRuntimeConfig({}).commentPosts, 15);
+    assert.equal(investorDigestRuntimeConfig({}).intervalMs, 2500);
+    assert.equal(investorDigestRuntimeConfig({}).intervalJitterMs, 500);
     assert.equal(investorDigestRuntimeConfig({ AI_CENTER_INVESTOR_DIGEST_MAX_PAGES: '50' }).maxPages, 50);
     assert.equal(investorDigestRuntimeConfig({ AI_CENTER_INVESTOR_DIGEST_COMMENT_POSTS: '3' }).commentPosts, 3);
     const disabled = ensureInvestorDiscussionSchedule(store, { AI_CENTER_INVESTOR_DIGEST: '0' }, at);

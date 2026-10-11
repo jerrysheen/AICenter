@@ -16,14 +16,22 @@ export function resolveBrowserProviderName(env = process.env) {
   throw new Error(`未知 AI_BROWSER_PROVIDER: ${value}。当前只支持 bsk`);
 }
 
+function browserLockMs(env = process.env) {
+  const raw = Number(env.AI_CENTER_BROWSER_LOCK_MS);
+  if (Number.isFinite(raw) && raw >= 1000) return Math.trunc(raw);
+  return 15 * 60 * 1000;
+}
+
 export function createConfiguredBrowserRuntime(options = {}) {
   const env = options.env || process.env;
   const defaultBrowserId = options.defaultBrowserId ?? env.AI_CENTER_BROWSER_ID;
+  const maxHoldMs = options.maxHoldMs ?? browserLockMs(env);
   if (options.runtime) return options.runtime;
   if (options.provider) return createBrowserRuntime({
     provider: options.provider,
     logger: options.logger,
     defaultBrowserId,
+    maxHoldMs,
   });
   const providerName = options.providerName || resolveBrowserProviderName(env);
   const providers = options.providers || {
@@ -34,5 +42,5 @@ export function createConfiguredBrowserRuntime(options = {}) {
   };
   const provider = providers[providerName];
   if (!provider) throw new Error(`BrowserRuntime 没有 ${providerName} provider`);
-  return createBrowserRuntime({ provider, logger: options.logger, defaultBrowserId });
+  return createBrowserRuntime({ provider, logger: options.logger, defaultBrowserId, maxHoldMs });
 }
