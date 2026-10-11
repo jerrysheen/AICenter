@@ -1,5 +1,6 @@
 import { createAudioTranscriptionRoutes } from './audio-transcription-routes.js';
 import { createEventRoutes } from './event-routes.js';
+import { createInvestorDiscussionRoutes } from './investor-discussion-routes.js';
 import { createAgentRoutes } from './agent-routes.js';
 import { createArticleAnalysisRoutes } from './article-analysis-routes.js';
 import { createContextRoutes } from './context-routes.js';
@@ -39,5 +40,6 @@ export function createApiRoutes() {
     ...createEtfWhaleRoutes(),
     ...createAudioTranscriptionRoutes(),
     ...createEventRoutes(),
+    ...createInvestorDiscussionRoutes(),
   ];
 }

@@ -1671,6 +1671,23 @@ migrations.push({ version: 51, name: 'event_quote_snapshots', up(database) {
     CREATE INDEX idx_event_quote_snapshots_observed ON event_quote_snapshots(observed_at);`);
 }});
 
+migrations.push({ version: 52, name: 'investor_discussion_digests', up(database) {
+  database.exec(`CREATE TABLE investor_discussion_digests (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      digest_date TEXT NOT NULL,
+      status TEXT NOT NULL,
+      generated_at INTEGER,
+      model TEXT NOT NULL DEFAULT '',
+      coverage_json TEXT NOT NULL DEFAULT '{}',
+      sections_json TEXT NOT NULL DEFAULT '[]',
+      error_text TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(workspace_id, digest_date)
+    );`);
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

@@ -595,3 +595,4 @@ export function parseHideFlag(value) {
   return { isHidden: true };
 }
 export * from './feed-interaction.js';
+export * from './investor-discussion.js';

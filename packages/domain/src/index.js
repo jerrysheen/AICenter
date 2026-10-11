@@ -17,6 +17,7 @@ import { createTaggingService } from './tagging-service.js';
 import { createQuantLabService } from './quant-lab-service.js';
 import { createEtfWhaleReadService } from './etf-whale-service.js';
 import { createEventQuoteSnapshotService } from './event-quote-snapshots.js';
+import { createInvestorDiscussionService } from './investor-discussion.js';
 
 export { createContextService, createDailyBriefService, createFeedService, createIdentityService, createKnowledgeService, createMarketStatisticsService, createMediaIngestionService, createReportService, createRuntimeService, createTradingService, createTaggingService };
 export { buildDailyBriefCandidates } from './daily-brief-candidates.js';
@@ -209,6 +210,13 @@ export function createDomainServices({
     }),
     eventQuotes: store.repositories.eventQuotes
       ? createEventQuoteSnapshotService({ repository: store.repositories.eventQuotes })
+      : null,
+    investorDiscussion: store.repositories.investorDiscussion
+      ? createInvestorDiscussionService({
+        repository: store.repositories.investorDiscussion,
+        listOpenJobs: (type) => store.listOpenJobs?.(type) || [],
+        timeZone: env.AI_CENTER_INVESTOR_DIGEST_TIMEZONE || 'Asia/Shanghai',
+      })
       : null,
   });
 }

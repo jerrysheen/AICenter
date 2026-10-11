@@ -1,5 +1,6 @@
 import {createInformationTreePage} from './information-tree.js?v=dev';
 import {decodeHtmlEntities} from './html-text.js?v=dev';
+import {mountInvestorDigest} from './investor-digest.js?v=dev';
 const HOUR = 3600000;
 const ARTICLE_VERSION='brief-editorial-v3';
 const DIRECTION_LABELS={finance:'金融与市场',policy:'时事与政策',tech:'科技与产业',other:'其他'};
@@ -81,7 +82,7 @@ export function createBriefPage(host) {
   const s = {identity:'', mode:'hourly', date:'', timezone:'', hours:[], manifest:[], brief:null, window:null,
     direction:'finance', directionInitialized:false, hourStart:null, positions:new Map(), history:[], pending:null, read:new Set(), saved:new Set(), expanded:new Set(), query:'', unread:false,
     savedOnly:false, loading:false, error:'', checkedAt:0, viewingHistory:false};
-  let root, content, rail, nav, banner, status, publication, dateInput, dateLabel, datePicker, tools, tabs, directionTabs, periodSelect, generation=0, request=0, timer=0;
+  let root, content, rail, nav, banner, status, publication, dateInput, dateLabel, datePicker, tools, tabs, directionTabs, periodSelect, generation=0, request=0, timer=0, digestStop=()=>{};
   let busy=null, dialog=null, evidenceRequest=0, focusReturn=null, routeKey='';
   const storage = () => {try {return localStorage;} catch {return null;}};
   const active = () => Boolean(root?.isConnected && host.active() && host.session() && s.identity);
@@ -110,7 +111,10 @@ export function createBriefPage(host) {
     } catch {}
   }
 
+  function haltDigest() {digestStop(); digestStop=()=>{};}
+
   function reset(clearStorage=false) {
+    haltDigest();
     tree.reset();treeActive=false;treeReady=false;
     treeCacheEpoch++;treeManifest=null;treeManifestAt=0;treeManifestRequest=null;
     stop(); generation++; request++; evidenceRequest++;
@@ -127,6 +131,7 @@ export function createBriefPage(host) {
   // Leaving the report view must drop in-flight reads. A retained, already settled
   // tree keeps its handlers; an unfinished mount is discarded and started again later.
   function stop() {
+    haltDigest();
     clearInterval(timer); timer=0;
     generation++; request++; evidenceRequest++;
     freshRequests();
@@ -149,6 +154,7 @@ export function createBriefPage(host) {
         if(clockHour!=null && !history && !archive) {tree.focusNode(focusId);return tree.selectHour(clockHour);}
         return tree.resume();
       }
+      if (s.mode==='discussion') {start(); renderContent(); return;}
       start();return check();
     }
     treeReady=false;
@@ -194,10 +200,18 @@ export function createBriefPage(host) {
     directionTabs=node('div','brief-direction-tabs');directionTabs.setAttribute('role','tablist');directionTabs.setAttribute('aria-label','阅读方向');
     const top=node('div','brief-top');
     tabs=node('div','brief-tabs'); tabs.setAttribute('role','tablist'); tabs.setAttribute('aria-label','简报视图');
-    for (const [mode,label] of [['hourly','小时更新'],['daily','日报精选']]) {
+    const modes=[['hourly','小时更新'],['daily','日报精选'],['discussion','股民讨论']];
+    for (const [mode,label] of modes) {
       const tab=button(label,()=>switchMode(mode),'brief-tab'); tab.dataset.mode=mode;
       tab.setAttribute('role','tab'); tab.id=`brief-tab-${mode}`; tab.setAttribute('aria-controls','brief-content');
-      tab.addEventListener('keydown',e=>{if (['ArrowLeft','ArrowRight'].includes(e.key)) {e.preventDefault(); switchMode(mode==='hourly'?'daily':'hourly'); tabs.querySelector(`[data-mode="${s.mode}"]`).focus();}});
+      tab.addEventListener('keydown',e=>{
+        if (!['ArrowLeft','ArrowRight'].includes(e.key)) return;
+        e.preventDefault();
+        const index=modes.findIndex(([value])=>value===mode);
+        const next=modes[(index+(e.key==='ArrowRight'?1:-1)+modes.length)%modes.length][0];
+        switchMode(next);
+        tabs.querySelector(`[data-mode="${s.mode}"]`)?.focus();
+      });
       tabs.append(tab);
     }
     const controls=node('div','brief-controls');
@@ -351,8 +365,9 @@ export function createBriefPage(host) {
 
   async function switchMode(mode) {
     if (s.mode===mode) return;
-    rememberPosition();s.mode=mode; s.query=''; s.pending=null; s.loading=true; persist();
-    build(); await loadInitial();restorePosition();
+    rememberPosition();s.mode=mode; s.query=''; s.pending=null;
+    if (mode==='discussion') {s.loading=false; s.error=''; build(); return;}
+    s.loading=true; persist(); build(); await loadInitial();restorePosition();
   }
 
   function selectDate(date) {
@@ -367,6 +382,7 @@ export function createBriefPage(host) {
 
   async function check(manual=false) {
     if(treeActive)return tree.check();
+    if (s.mode==='discussion') return;
     if (!active() || document.hidden) return;
     if (!dateInput?.isConnected) return;
     if (!s.timezone || !s.date) return loadInitial();
@@ -435,6 +451,22 @@ export function createBriefPage(host) {
 
   function renderContent() {
     if (!content) return;
+    if (s.mode==='discussion') {
+      s.viewingHistory=false;
+      directionTabs.hidden=true;
+      if (datePicker) datePicker.hidden=true;
+      if (tools) tools.hidden=true;
+      content.replaceChildren(); nav.replaceChildren(); rail.replaceChildren();
+      if (rail) rail.hidden=true;
+      haltDigest();
+      digestStop=mountInvestorDigest(content, {api:callApi, active:()=>s.mode==='discussion' && content.isConnected}) || (()=>{});
+      sync();
+      return;
+    }
+    haltDigest();
+    if (datePicker) datePicker.hidden=false;
+    if (tools) tools.hidden=false;
+    if (rail) rail.hidden=false;
     s.viewingHistory=false;
     renderDirectionNavigation();
     content.replaceChildren(); nav.replaceChildren(); rail.replaceChildren();

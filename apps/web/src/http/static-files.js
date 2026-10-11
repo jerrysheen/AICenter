@@ -69,6 +69,7 @@ export function createStaticFileHandler(publicDirectory) {
     '/media-feed.js': ['media-feed.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/brief-page.js': ['brief-page.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/information-tree.js': ['information-tree.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
+    '/investor-digest.js': ['investor-digest.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/home-timeline.js': ['home-timeline.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/html-text.js': ['html-text.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/news-list.js': ['news-list.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
