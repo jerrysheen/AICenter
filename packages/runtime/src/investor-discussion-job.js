@@ -39,7 +39,8 @@ export function investorDigestRuntimeConfig(env = process.env) {
     timeZone,
     hour: clock.hour,
     minute: clock.minute,
-    intervalMs: envInt(env, 'AI_CENTER_INVESTOR_DIGEST_INTERVAL_MS', 1200, 0, 60_000),
+    intervalMs: envInt(env, 'AI_CENTER_INVESTOR_DIGEST_INTERVAL_MS', 2500, 0, 60_000),
+    intervalJitterMs: envInt(env, 'AI_CENTER_INVESTOR_DIGEST_INTERVAL_JITTER_MS', 500, 0, 10_000),
     retries: envInt(env, 'AI_CENTER_INVESTOR_DIGEST_RETRIES', 2, 0, 5),
     maxPages: envInt(env, 'AI_CENTER_INVESTOR_DIGEST_MAX_PAGES', 8, 1, 50),
     maxCommentPages: envInt(env, 'AI_CENTER_INVESTOR_DIGEST_MAX_COMMENT_PAGES', 5, 1, 10),
@@ -80,6 +81,7 @@ export function createInvestorDiscussionJobHandlers({
   const discussion = client || createXueqiuStockDiscussionClient({
     browserRuntime,
     intervalMs: config.intervalMs,
+    intervalJitterMs: config.intervalJitterMs,
     retries: config.retries,
     maxPages: config.maxPages,
     maxCommentPages: config.maxCommentPages,

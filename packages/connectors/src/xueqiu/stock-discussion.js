@@ -29,6 +29,7 @@ export class XueqiuVerificationError extends Error {
 const BODY_KIND_LABEL = {
   html: 'HTML',
   verify: '验证页',
+  waf: 'WAF 挑战',
   empty: '空体',
   truncated: '截断',
 };
@@ -41,6 +42,7 @@ export function classifyDiscussionBody(text) {
   const body = String(text || '').trim();
   if (!body) return 'empty';
   const flat = body.replace(/\s+/g, ' ');
+  if (/acw_sc__v2|acw_sc__v3|arg1\s*=|aliyun_waf/i.test(flat)) return 'waf';
   if (/验证码|滑动验证|安全验证|访问验证|请完成验证|captcha|nocaptcha|滑块/i.test(flat)) return 'verify';
   if (body.startsWith('{') || body.startsWith('[')) {
     try {
@@ -56,6 +58,19 @@ export function classifyDiscussionBody(text) {
 
 export function discussionBodyKindLabel(kind) {
   return BODY_KIND_LABEL[kind] || '不是 JSON';
+}
+
+export function isPinnedDiscussionStatus(item) {
+  if (!item || typeof item !== 'object') return false;
+  if (item.pinned === true || item.is_top === true || item.isTop === true || item.sticky === true) return true;
+  if (item.top === true || item.top === 1 || item.top === '1') return true;
+  if (item.mark === 1 || item.mark === '1' || item.mark === 'top' || item.mark === 'pinned') return true;
+  return /置顶/.test(String(item.mark_desc || item.title || ''));
+}
+
+export function wafBackoffMs(random = Math.random) {
+  const roll = Math.min(1, Math.max(0, Number(random()) || 0));
+  return Math.round(20_000 + roll * 20_000);
 }
 
 export function discussionTimestamp(value) {
@@ -155,7 +170,7 @@ function commentRows(payload) {
 }
 
 export function mapDiscussionStatus(item) {
-  if (discardDiscussionStatus(item)) return null;
+  if (isPinnedDiscussionStatus(item) || discardDiscussionStatus(item)) return null;
   const id = String(item?.id || '').trim();
   if (!/^\d+$/.test(id)) return null;
   const user = item?.user || {};
@@ -223,33 +238,33 @@ function inWindow(at, since, until) {
   return Number(at) >= since && Number(at) < until;
 }
 
-function oldestAt(rows) {
-  const stamps = rows.map((row) => Number(row.createdAt) || 0).filter((value) => value > 0);
-  return stamps.length ? Math.min(...stamps) : 0;
-}
-
 async function pullPages({ request, urlFor, mapRow, rowsOf, since, until, maxPages }) {
   const items = new Map();
   let truncated = false;
   for (let page = 1; page <= maxPages; page += 1) {
     const data = await request(urlFor(page));
-    const batch = rowsOf(data).map(mapRow).filter(Boolean);
-    if (!batch.length) break;
+    const raw = rowsOf(data);
+    if (!raw.length) break;
+    const usable = raw.filter((item) => !isPinnedDiscussionStatus(item));
+    if (!usable.length) continue;
+    const batch = usable.map(mapRow).filter(Boolean);
     for (const row of batch) {
       if (row.createdAt && !inWindow(row.createdAt, since, until)) continue;
       if (!items.has(row.id)) items.set(row.id, row);
     }
-    const oldest = oldestAt(batch);
-    if (oldest && oldest < since) break;
-    if (page === maxPages && (!oldest || oldest >= since)) truncated = true;
+    const dated = batch.filter((row) => row.createdAt > 0);
+    const pageBeforeWindow = dated.length > 0 && dated.every((row) => row.createdAt < since);
+    if (pageBeforeWindow) break;
+    if (page === maxPages) truncated = true;
   }
   return { items, truncated };
 }
 
-export function createRequestPacer({ wait, intervalMs }) {
+export function createRequestPacer({ wait, intervalMs, jitterMs = 0, random = Math.random }) {
   let last = 0;
   return async function paced(fn) {
-    const gap = last ? intervalMs - (Date.now() - last) : 0;
+    const swing = jitterMs ? (random() * 2 - 1) * jitterMs : 0;
+    const gap = last ? intervalMs + swing - (Date.now() - last) : 0;
     if (gap > 0) await wait(gap);
     try {
       return await fn();
@@ -392,8 +407,11 @@ export async function collectDiscussionTarget(options) {
 export async function collectDiscussionTargets(targets, options) {
   const wait = options.wait || delay;
   const intervalMs = Math.max(0, Number(options.intervalMs) || 0);
+  const jitterMs = Math.max(0, Number(options.intervalJitterMs) || 0);
   const retries = Math.max(0, Number(options.retries) || 0);
-  const paced = options.request || createRequestPacer({ wait, intervalMs });
+  const paced = options.request || createRequestPacer({
+    wait, intervalMs, jitterMs, random: options.random,
+  });
   const request = (url) => paced(() => withRetry(() => options.fetchJson(url), { retries, wait, intervalMs }));
   const results = [];
   for (const target of targets) {
@@ -407,7 +425,11 @@ function rejectUnparsedBody(payload, url, logger) {
   const kind = classifyDiscussionBody(text);
   const status = Number(payload?.status) || 0;
   logger?.warn?.(`[investor-discussion] 雪球响应无法解析 status=${status} url=${url} length=${text.length} kind=${kind} head=${discussionBodyPreview(text)}`);
-  if (kind === 'verify') throw new XueqiuVerificationError();
+  if (kind === 'verify' || kind === 'waf') {
+    throw new XueqiuVerificationError(kind === 'waf'
+      ? '雪球返回 WAF 挑战。请在采集浏览器里打开雪球后再生成，本次已停止。'
+      : undefined);
+  }
   const error = new Error(`雪球响应是${discussionBodyKindLabel(kind)}`);
   error.code = 'invalid_body';
   error.kind = kind;
@@ -415,21 +437,34 @@ function rejectUnparsedBody(payload, url, logger) {
   throw error;
 }
 
-async function fetchDiscussionJson(session, url, logger) {
-  const payload = await session.fetchJson(url, { headers: jsonHeaders(), timeoutMs: 30_000 });
-  let data;
-  try {
-    data = parseBrowserJson(payload);
-  } catch {
-    rejectUnparsedBody(payload, url, logger);
+async function fetchDiscussionJson(session, url, logger, pace = {}) {
+  const wait = pace.wait || delay;
+  const random = pace.random || Math.random;
+  for (let attempt = 0; attempt <= 2; attempt += 1) {
+    const payload = await session.fetchJson(url, { headers: jsonHeaders(), timeoutMs: 30_000 });
+    let data;
+    try {
+      data = parseBrowserJson(payload);
+    } catch {
+      const kind = classifyDiscussionBody(payload?.text);
+      if (kind === 'waf' && attempt < 2) {
+        const text = String(payload?.text || '');
+        logger?.warn?.(`[investor-discussion] 雪球 WAF 挑战，重新打开行情页后重试 status=${Number(payload?.status) || 0} url=${url} length=${text.length} kind=waf head=${discussionBodyPreview(text)}`);
+        await wait(wafBackoffMs(random));
+        await session.navigate(`${PAGE_ORIGIN}/hq`, { timeoutMs: 90_000 });
+        continue;
+      }
+      rejectUnparsedBody(payload, url, logger);
+    }
+    if (payload.status && payload.status >= 400) {
+      if (isXueqiuLoginError(data)) throw new XueqiuLoginRequiredError();
+      const error = new Error(explainXueqiuApiError(data, `雪球 HTTP ${payload.status}`));
+      error.status = payload.status;
+      throw error;
+    }
+    return data;
   }
-  if (payload.status && payload.status >= 400) {
-    if (isXueqiuLoginError(data)) throw new XueqiuLoginRequiredError();
-    const error = new Error(explainXueqiuApiError(data, `雪球 HTTP ${payload.status}`));
-    error.status = payload.status;
-    throw error;
-  }
-  return data;
+  throw new XueqiuVerificationError('雪球返回 WAF 挑战。请在采集浏览器里打开雪球后再生成，本次已停止。');
 }
 
 export function createXueqiuStockDiscussionClient(options = {}) {
@@ -452,22 +487,36 @@ export function createXueqiuStockDiscussionClient(options = {}) {
   }
   return {
     async collectAll(targets, range) {
-      return runtime.withSession({ purpose: 'xueqiu-discussion', focused: false }, async (session) => {
-        await session.navigate(`${PAGE_ORIGIN}/hq`, { timeoutMs: 90_000 });
-        await wait(Math.max(300, Number(options.intervalMs) || 1200));
-        const inspect = await session.evaluate(buildLoginInspectExpression());
-        if (!inspect?.logged_in) throw new XueqiuLoginRequiredError();
-        return collectDiscussionTargets(targets, {
-          ...range,
-          fetchJson: (url) => fetchDiscussionJson(session, url, logger),
-          wait,
-          intervalMs: options.intervalMs ?? 1200,
-          retries: options.retries ?? 2,
-          maxPages: options.maxPages,
-          maxCommentPages: options.maxCommentPages,
-          commentPosts: options.commentPosts,
+      const results = [];
+      const pace = {
+        wait,
+        random: options.random,
+        intervalMs: options.intervalMs ?? 2500,
+        intervalJitterMs: options.intervalJitterMs ?? 500,
+      };
+      for (const target of targets) {
+        const one = await runtime.withSession({ purpose: 'xueqiu-discussion', focused: false }, async (session) => {
+          await session.navigate(`${PAGE_ORIGIN}/hq`, { timeoutMs: 90_000 });
+          await wait(Math.max(300, Number(pace.intervalMs) || 2500));
+          const inspect = await session.evaluate(buildLoginInspectExpression());
+          if (!inspect?.logged_in) throw new XueqiuLoginRequiredError();
+          const rows = await collectDiscussionTargets([target], {
+            ...range,
+            fetchJson: (url) => fetchDiscussionJson(session, url, logger, pace),
+            wait,
+            random: options.random,
+            intervalMs: pace.intervalMs,
+            intervalJitterMs: pace.intervalJitterMs,
+            retries: options.retries ?? 2,
+            maxPages: options.maxPages,
+            maxCommentPages: options.maxCommentPages,
+            commentPosts: options.commentPosts,
+          });
+          return rows[0];
         });
-      });
+        results.push(one);
+      }
+      return results;
     },
   };
 }

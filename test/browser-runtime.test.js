@@ -164,6 +164,28 @@ test('BrowserSkillClient normalizes non-JSON and command failures', async () => 
   await assert.rejects(() => failed.startSession(), BrowserUnavailableError);
 });
 
+test('session lock releases queued work after the hold limit', async () => {
+  const warnings = [];
+  const provider = createRecordingProvider();
+  const runtime = createBrowserRuntime({
+    provider,
+    maxHoldMs: 40,
+    logger: { warn(line) { warnings.push(line); } },
+  });
+  const first = runtime.withSession({ purpose: 'stuck' }, async () => {
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    return 'first';
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const secondDone = await Promise.race([
+    runtime.withSession({ purpose: 'next' }, async () => 'second'),
+    new Promise((resolve) => setTimeout(() => resolve('stuck'), 90)),
+  ]);
+  assert.equal(secondDone, 'second');
+  assert.match(warnings.join('\n'), /已放行排队任务/);
+  assert.equal(await first, 'first');
+});
+
 test('withSession runs one browser callback at a time', async () => {
   const provider = createRecordingProvider();
   const runtime = createBrowserRuntime({ provider });

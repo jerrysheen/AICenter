@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-11-investor-digest-waf.md`：股民讨论日摘遇到阿里云 WAF 挑战页时退避并重开行情页；请求间隔改为 2.5 秒；置顶或单条旧帖不再让当天讨论停页。浏览器锁最长持有 15 分钟。
+
 - `progress/2026-10-11-investor-digest-fetch.md`：股民讨论日摘生产 partial 修复。日期窗口改认 `startAt/endAt`，浏览器会话串行，验证页单独停住。
 
 - `progress/2026-10-11-investor-discussion-digest.md`：股民讨论日摘。按持仓和可配置主题从雪球讨论区拉取当天帖子与评论，用 Gemini Flash Lite 总结；独立存储和定时任务，不进日报生产链路。简报页新增「股民讨论」标签。

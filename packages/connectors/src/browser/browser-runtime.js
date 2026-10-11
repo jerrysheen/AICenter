@@ -82,13 +82,34 @@ export function createBrowserRuntime(options = {}) {
   if (!provider) throw new Error('BrowserRuntime 需要 provider');
   const logger = options.logger || console;
   const defaultBrowserId = String(options.defaultBrowserId || '').trim();
+  const requestedHold = Number(options.maxHoldMs);
+  const maxHoldMs = Number.isFinite(requestedHold) && requestedHold >= 1
+    ? requestedHold
+    : 15 * 60 * 1000;
   // bsk sessions share one browser. A second task can navigate the page out
   // from under an in-flight fetch, so the whole callback stays exclusive.
+  // A stuck callback must not pin every later browser task.
   let tail = Promise.resolve();
   function exclusive(task) {
-    const run = tail.then(task, task);
-    tail = run.then(() => undefined, () => undefined);
-    return run;
+    const previous = tail;
+    let releaseTail = () => {};
+    tail = new Promise((resolve) => { releaseTail = resolve; });
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      releaseTail();
+    };
+    return previous.then(() => {
+      const timer = setTimeout(() => {
+        logger.warn?.(`[browser-runtime] 浏览器会话锁超过 ${maxHoldMs}ms，已放行排队任务`);
+        release();
+      }, maxHoldMs);
+      return Promise.resolve().then(task).finally(() => {
+        clearTimeout(timer);
+        release();
+      });
+    });
   }
 
   return {
