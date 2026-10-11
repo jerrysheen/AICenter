@@ -12,6 +12,7 @@ import {
   AudioTranscriptionViewSchema,
   QUANT_PREPARE_JOB_TYPE,
   QUANT_RUN_JOB_TYPE,
+  INVESTOR_DISCUSSION_JOB_TYPE,
   QuantRunOptionsSchema,
   ValidationError,
   parseContract,
@@ -371,6 +372,20 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort, res
     },
     listJobs(limit) {
       return runtimeRepository.listJobs(limit);
+    },
+    requestInvestorDiscussion(input = {}) {
+      const digestDate = String(input.digestDate || '').trim();
+      const open = (runtimeRepository.listOpenJobs?.(INVESTOR_DISCUSSION_JOB_TYPE) || []).find((job) => {
+        const jobDate = String(job.input?.digestDate || '');
+        return !digestDate || !jobDate || jobDate === digestDate;
+      });
+      if (open) return open;
+      return runtimeRepository.createJob({
+        type: INVESTOR_DISCUSSION_JOB_TYPE,
+        workspaceId: 'local',
+        maxAttempts: 2,
+        input: digestDate ? { digestDate } : {},
+      });
     },
     requestQuantPrepare() {
       return runtimeRepository.createJob({

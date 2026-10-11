@@ -1,6 +1,7 @@
 import { icon } from './icons.js?v=dev';
 import { decodeHtmlEntities } from './html-text.js?v=dev';
 import { newsDayLabel, newsIngestAt, newsPublishedHint, newsRow } from './news-list.js?v=dev';
+import { mountInvestorDigest } from './investor-digest.js?v=dev';
 const el=(tag,text='',className='')=>{const n=document.createElement(tag);n.textContent=text;n.className=className;return n;};
 const button=(text,action)=>{const n=el('button',text);n.type='button';n.addEventListener('click',action);return n;};
 const directions={finance:'金融与市场',policy:'时事与政策',tech:'科技与产业',other:'其他'};
@@ -60,6 +61,7 @@ export function hourStepSense(input, mobile) {
 export function createInformationTreePage(host) {
   let root,list,titleEl,coverageEl,statusRow,statusToggle,statusDetail,pastBtn,directionNav,hourChips,dayChips,tools,materialsBtn,tagPanel,tag,period,backIssues,notice,delayEl,hourRail,hourDay,hourNow,hourEarlier,hourYesterday,hourMore,issueEl,periodBar,periodMeta,periodLabel,periodPop,periodPrev,periodNext,mode='daily',direction=null,directionExplicit=false,showMaterials=false,selectedHourStart=0,dailyStart=0,openedId='',openedDirection='',manifest,selected=null,epoch=0,flight=0,settled=false,timer=0,dateFilter='',checking=null,pinnedReadingId='';
   let requests=new AbortController();
+  let digestStop=()=>{};
   let periodDocBound=false;
   let rendering=0;
   function api(path, options){
@@ -525,20 +527,23 @@ export function createInformationTreePage(host) {
   function syncHourChrome() {
     const hourly=mode==='hourly' && !showMaterials;
     const daily=mode==='daily' && !showMaterials;
+    const discussion=mode==='discussion';
     root?.classList.toggle('is-hourly', hourly);
+    root?.classList.toggle('is-discussion', discussion);
     if(hourChips) hourChips.hidden=!hourly || Boolean(openedId);
     if(hourRail) hourRail.hidden=!hourly || Boolean(openedId);
     if(delayEl && !hourly) delayEl.hidden=true;
     if(dayChips) dayChips.hidden=!daily;
-    if(issueEl) issueEl.hidden=hourly || (daily && !openedId);
+    if(issueEl) issueEl.hidden=hourly || discussion || (daily && !openedId);
     if(!hourly) setPeriodMeta('');
     syncPeriodChrome();
-    if(directionNav) directionNav.hidden=hourly || daily;
-    if(coverageEl) coverageEl.hidden=hourly || daily;
-    if(statusRow) statusRow.hidden=hourly || daily;
-    if(pastBtn) pastBtn.hidden=hourly || daily;
-    if(tools) tools.hidden=hourly || daily;
-    if(titleEl) titleEl.hidden=hourly || (daily && !openedId);
+    if(directionNav) directionNav.hidden=hourly || daily || discussion;
+    if(coverageEl) coverageEl.hidden=hourly || daily || discussion;
+    if(statusRow) statusRow.hidden=hourly || daily || discussion;
+    if(pastBtn) pastBtn.hidden=hourly || daily || discussion;
+    if(tools) tools.hidden=hourly || daily || discussion;
+    if(backIssues && discussion) backIssues.hidden=true;
+    if(titleEl) titleEl.hidden=hourly || discussion || (daily && !openedId);
     if(statusDetail && (hourly || daily)) statusDetail.hidden=true;
     for(const chip of hourChips?.children || []) chip.classList.toggle('is-active',chip.dataset.start===String(selectedHourStart));
     paintHourUnread();
@@ -910,6 +915,7 @@ export function createInformationTreePage(host) {
     if(snapshot.status==='partial') refreshPartial(edition, token, claim);
   }
   async function render() {
+    haltDigest();
     if(viewKey)positions.set(viewKey,window.scrollY);const token=++epoch;const flightToken=flight;
     rendering++;
     const hourlyFeed=mode==='hourly' && !showMaterials;
@@ -928,6 +934,14 @@ export function createInformationTreePage(host) {
     if(hourlyFeed && openedId) syncReadingChrome({node:null,label:'返回小时报',onBack:closeHour});
     else if(dailyFeed && (openedId || openedDirection)) syncReadingChrome({node:null,label:'返回日报',onBack:closeDaily});
     try {
+      if(mode==='discussion'){
+        syncReadingChrome(null);
+        root.dataset.briefMode='discussion';root.dataset.editionId='';
+        list.replaceChildren();
+        digestStop=mountInvestorDigest(list,{api,active:()=>mode==='discussion' && token===epoch && list.isConnected}) || (()=>{});
+        viewKey='discussion';
+        return;
+      }
       if(hourlyFeed) return await renderHourFeed(token,openingClaim);
       if(dailyFeed) return await renderDailyFeed(token);
       syncReadingChrome(null);
@@ -970,8 +984,10 @@ export function createInformationTreePage(host) {
   }
   async function acceptUpdate(){if(!nextManifest)return;editorialCache.clear();invalidateInformationIndex();manifest=nextManifest;nextManifest=null;notice.hidden=true;periods();await render();}
   // Pausing a retained page must not invalidate the ref handlers still mounted in it.
+  function haltDigest(){digestStop();digestStop=()=>{};}
   function stop(){clearInterval(timer);timer=0;checking=null;clearHourSlow();}
   function suspend(){
+    haltDigest();
     stop();
     flight++;
     requests.abort();
@@ -987,7 +1003,7 @@ export function createInformationTreePage(host) {
     if(options.resetSelection){selected=null;viewKey='';}
     const primary=el('div','','tree-primary source-control');primary.setAttribute('aria-label','简报');
     const modeTabs=el('div','','tree-mode-tabs channel-tabs');modeTabs.setAttribute('role','tablist');modeTabs.setAttribute('aria-label','简报');
-    for(const [value,label] of [['daily','日报'],['hourly','小时报']]){const tab=button(label,()=>switchMode(value));tab.className='channel-tab';tab.dataset.mode=value;tab.setAttribute('role','tab');modeTabs.append(tab);}
+    for(const [value,label] of [['daily','日报'],['hourly','小时报'],['discussion','股民讨论']]){const tab=button(label,()=>switchMode(value));tab.className='channel-tab';tab.dataset.mode=value;tab.setAttribute('role','tab');modeTabs.append(tab);}
     periodBar=el('div','','tree-period-bar');
     periodMeta=el('p','','tree-period-meta');periodMeta.hidden=true;
     const periodSwitch=el('div','','tree-period-switch');
@@ -1055,5 +1071,5 @@ export function createInformationTreePage(host) {
       const saved=memory[mode] || {};direction=saved.direction ?? null;directionExplicit=Boolean(saved.directionExplicit);if(saved.tag)tag.value=saved.tag;
       periods();await render();if(flightToken!==flight)return;settled=true;resume(false);
     }catch(error){if(aborted(error) || token!==epoch || flightToken!==flight)return;list.replaceChildren(el('p','暂时无法读取简报。'),button('重试读取',()=>this.mount(target,options)));}
-  },check,acceptUpdate,resume,stop,suspend,isSettled(){return settled;},selectHour,focusNode,selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());root?.classList.remove('is-reading','is-hourly');clearHourSlow();readingCache.clear();readingLoads.clear();readingIndex=undefined;pendingClockHour=null;hourFallbackText='';hourRevealEarlier=false;openGaps.clear();stop();flight++;requests.abort();requests=new AbortController();epoch++;session++;settled=false;rendering=0;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();fullEditions.clear();editionLoads.clear();invalidateInformationIndex();expanded.clear();positions.clear();viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
+  },check,acceptUpdate,resume,stop,suspend,isSettled(){return settled;},selectHour,focusNode,selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){haltDigest();root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());root?.classList.remove('is-reading','is-hourly','is-discussion');clearHourSlow();readingCache.clear();readingLoads.clear();readingIndex=undefined;pendingClockHour=null;hourFallbackText='';hourRevealEarlier=false;openGaps.clear();stop();flight++;requests.abort();requests=new AbortController();epoch++;session++;settled=false;rendering=0;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();fullEditions.clear();editionLoads.clear();invalidateInformationIndex();expanded.clear();positions.clear();viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
 }
