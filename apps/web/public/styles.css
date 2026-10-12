@@ -5416,13 +5416,35 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
 @media (min-width:1440px) { .brief-page .brief-layout { grid-template-columns:minmax(0,1fr) minmax(180px,236px);gap:32px; } }
 .tree-page { max-width: none; margin-inline: 0; padding: 0; }
 .tree-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.tree-controls button, .tree-controls select, .tree-card button, .tree-ref>summary { min-height: 44px; max-width: 100%; padding: 8px 12px; cursor: pointer; }
+.tree-controls button, .tree-controls select, .tree-card button, .tree-ref>summary, .tree-body>summary { min-height: 44px; max-width: 100%; padding: 8px 12px; cursor: pointer; }
 .tree-controls select { min-width: 0; }
 .tree-card { padding: 18px 0; border-bottom: 1px solid var(--border, #ddd); overflow-wrap: anywhere; }
 .tree-card h3 { font-size: 15px; margin: 0 0 10px; line-height: 1.6; }
 .tree-text { white-space: pre-wrap; line-height: 1.85; margin: 0; }
-.tree-ref { margin-top: 8px; }
-.tree-ref>summary { width: fit-content; color: var(--muted, #666); }
+.tree-ref, .tree-body { margin-top: 8px; }
+.tree-ref>summary, .tree-body>summary { width: fit-content; color: var(--muted, #666); }
+.reading-refs { display: inline-flex; flex-wrap: wrap; align-items: center; max-width: 100%; }
+.reading-ref {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 44px; min-height: 44px; margin: 0; padding: 0 4px;
+  border: 0; background: transparent; color: var(--font-tertiary);
+  font: inherit; font-size: 12px; line-height: 1; cursor: pointer;
+  touch-action: manipulation;
+}
+.reading-source-list { display: flex; flex-direction: column; margin: 2px 0 8px; }
+.reading-source-row {
+  display: block; width: 100%; min-height: 44px; margin: 0; padding: 10px 0;
+  border: 0; background: transparent; color: var(--font-tertiary);
+  font: inherit; font-size: 12px; font-weight: 400; line-height: 1.5; text-align: left;
+  white-space: normal; overflow-wrap: anywhere; cursor: pointer;
+  touch-action: manipulation;
+}
+.reading-source-row.is-source-hit, .reading-source-list.is-source-hit { background: color-mix(in srgb, var(--brand) 12%, transparent); }
+.is-direct-source { cursor: pointer; }
+.news-row > .reading-source-list { grid-column: 1 / -1; }
+.tree-card .reading-ref, .tree-card .reading-source-row,
+.tree-list .reading-ref, .tree-list .reading-source-row,
+.daily-research .reading-ref, .daily-research .reading-source-row { color: var(--font-tertiary); font-size: 12px; }
 .tree-children { margin-left: 12px; padding-left: 12px; border-left: 2px solid var(--border, #ddd); }
 .tree-status { font-size: 13px; color: var(--muted, #666); overflow-wrap: anywhere; }
 #report-list.tree-page { max-width: none; margin-inline: 0; }

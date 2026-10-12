@@ -85,7 +85,6 @@ export function createInformationTreePage(host) {
   const monthDay=at=>{const p=parts(at);return `${p.month}月${p.day}日`;};
   const day=at=>{const parts=new Intl.DateTimeFormat('en-US',{timeZone:timeZone(),year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(at);return ['year','month','day'].map(k=>parts.find(p=>p.type===k).value).join('-');};
   const group=n=>manifest?.directions?.[n.tagId] || previousDirections[n.tagId] || 'other';
-  const expansionKey=n=>`${n.layer}:${[...n.articleIds].sort().join('|')}`;
   const fetchManifest=(force=false)=>{if(host.loadTreeManifest)return host.loadTreeManifest({force});const endAt=Date.now()+1;return api(`/api/v1/reports/tree?view=index&startAt=${endAt-7*86400000}&endAt=${endAt}`);};
   function invalidateInformationIndex(){informationEpoch++;informationRows=null;informationRequest=null;}
   async function loadInformationIndex(){
@@ -146,6 +145,102 @@ export function createInformationTreePage(host) {
     n.append(glyph,el('span',label));n.addEventListener('click',onClick);return n;
   }
   function canReadSource(n) {return Boolean(n?.layer==='information' && n.sourceRefs?.length && host.readSavedSource);}
+  function sourceCaption(item) {
+    const name=String(item?.publisher || item?.author || '').trim() || '来源';
+    const title=String(item?.title || '').trim() || '未命名';
+    return `${name} · ${title}`;
+  }
+  function guardTap(node) {
+    const stop=event=>event?.stopPropagation?.();
+    node.addEventListener('touchstart', stop);
+    node.addEventListener('pointerdown', stop);
+  }
+  function placeAfter(anchor, mark) {
+    const parent=anchor?.parentNode;
+    if(parent && anchor.nextSibling) parent.insertBefore(mark, anchor.nextSibling);
+    else if(parent?.append) parent.append(mark);
+    else anchor?.append?.(mark);
+  }
+  function highlightSource(row) {
+    if(!row) return;
+    row.classList.add('is-source-hit');
+    if(typeof row.scrollIntoView==='function') row.scrollIntoView({block:'nearest'});
+    setTimeout(()=>row.classList.remove('is-source-hit'),1600);
+  }
+  function findSourceRow(list, id) {
+    return [...(list?.children || [])].find(row=>row?.dataset?.sourceId===id) || null;
+  }
+  function openExternal(url) {
+    const anchor=document.createElement('a');
+    anchor.href=url;anchor.target='_blank';anchor.rel='noopener';
+    if(typeof anchor.click==='function') anchor.click();
+  }
+  async function openTreeSource(view) {
+    try {
+      if(canReadSource(view)) return await host.readSavedSource(view);
+      const url=String(view?.sourceUrl || '').trim();
+      if(/^https?:\/\//.test(url)) return openExternal(url);
+      host.toast?.('这份材料暂无站内文章');
+    } catch(error) {if(!aborted(error)) host.toast?.(error?.message || '站内原文未能读取');}
+  }
+  async function openNodeSource(id) {
+    try {const saved=await node(id);if(saved) return openTreeSource(saved);}
+    catch(error) {if(aborted(error)) return;}
+    host.toast?.('来源暂时读不到');
+  }
+  async function openReadingSource(item) {
+    let view=item;
+    if(item?.nodeId) {try {view=await node(item.nodeId) || item;} catch(error) {if(aborted(error)) return;}}
+    return openTreeSource(view);
+  }
+  function bindDirectSource(article, leaf) {
+    article.classList.add('is-direct');
+    const open=event=>{event?.stopPropagation?.();return openTreeSource(leaf);};
+    const title=article.querySelector('h3');
+    const text=article.querySelector('.tree-text');
+    for(const part of [title, text]) {
+      if(!part) continue;
+      part.classList.add('is-direct-source');
+      guardTap(part);
+      part.addEventListener('click', open);
+    }
+    const mark=button('〔1〕', open);mark.className='reading-ref';guardTap(mark);
+    (text || title || article).append(mark);
+  }
+  function bindSourceList(article, leaves) {
+    const list=el('div','','reading-source-list');
+    const rows=leaves.map(leaf=>{
+      const row=button(sourceCaption(leaf), ()=>openTreeSource(leaf));
+      row.className='reading-source-row';row.dataset.sourceId=leaf.id;guardTap(row);list.append(row);return row;
+    });
+    article.append(list);
+    const host=article.querySelector('.tree-text') || article.querySelector('h3') || article;
+    leaves.forEach((leaf, index)=>{
+      const mark=button(`〔${index+1}〕`, event=>{event?.stopPropagation?.();highlightSource(rows[index]);});
+      mark.className='reading-ref';guardTap(mark);host.append(mark);
+    });
+  }
+  async function loadLeaves(n, token, depth=0) {
+    if(!n || token!==epoch || depth>4) return [];
+    if(n.layer==='information') return [n];
+    let children=null;
+    try {
+      if(Array.isArray(n.children) && n.children.length && n.children.every(id=>cache.has(id))) children=n.children.map(id=>cache.get(id));
+      else {
+        const data=await api(`/api/v1/reports/tree/children?id=${encodeURIComponent(n.id)}`);
+        if(token!==epoch) return [];
+        children=Array.isArray(data?.children) ? data.children : [];
+        children.forEach(remember);
+      }
+    } catch(error) {if(aborted(error)) return [];return null;}
+    const leaves=[];
+    for(const child of children) {
+      const nested=await loadLeaves(child, token, depth+1);
+      if(nested===null) return null;
+      leaves.push(...nested);
+    }
+    return leaves;
+  }
   function syncReadingChrome(spec) {
     root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());
     if(!root)return;
@@ -174,17 +269,18 @@ export function createInformationTreePage(host) {
   async function card(n,token,options={}) {
     const article=el('article','','tree-card');article.dataset.nodeId=n.id;article.dataset.layer=n.layer;
     article.append(el('h3',decodeHtmlEntities(n.title)),el('p',decodeHtmlEntities(n.text),'tree-text'));
-    if(n.layer==='information' && n.body && n.body!==n.text) {const body=el('details','','tree-ref');body.append(el('summary','中文正文'),el('p',decodeHtmlEntities(n.body),'tree-text'));article.append(body);}
-    if(n.layer==='information') {if(options.actions!==false && n.sourceRefs?.length && host.readSavedSource)article.append(button('原文',()=>host.readSavedSource(n)));}
+    if(n.layer==='information' && n.body && n.body!==n.text) {const body=el('details','','tree-body');body.append(el('summary','中文正文'),el('p',decodeHtmlEntities(n.body),'tree-text'));article.append(body);}
+    if(n.layer==='information') {if(canReadSource(n)) bindDirectSource(article, n);else if(options.actions!==false && /^https?:\/\//.test(n.sourceUrl || '')) bindDirectSource(article, n);}
     else {
-      const details=el('details','','tree-ref'),children=el('div','','tree-children'),key=expansionKey(n);
-      details.append(el('summary',`${n.articleCount} 篇 · ref`),children);article.append(details);let loaded=false;
-      details.addEventListener('toggle',async()=>{
-        if(!details.open){expanded.delete(key);return;}expanded.add(key);if(loaded)return;children.textContent='读取中…';
-        try{const data=n.children.every(id=>cache.has(id)) ? {children:n.children.map(id=>cache.get(id))} : await api(`/api/v1/reports/tree/children?id=${encodeURIComponent(n.id)}`);if(token!==epoch)return;children.replaceChildren();for(const child of data.children){remember(child);children.append(await card(child,token));}loaded=true;}
-        catch(error){if(!aborted(error) && token===epoch)children.replaceChildren(button('读取失败，重试',()=>{details.open=false;details.open=true;}));}
-      });
-      if(expanded.has(key))details.open=true;
+      const paint=leaves=>{
+        if(leaves===null) {
+          const retry=button('来源读取失败，重试', async()=>{retry.disabled=true;const again=await loadLeaves(n, token);if(token!==epoch)return;retry.remove();paint(again);});
+          article.append(retry);return;
+        }
+        if(leaves.length===1) bindDirectSource(article, leaves[0]);
+        else if(leaves.length>1) bindSourceList(article, leaves);
+      };
+      paint(await loadLeaves(n, token));
     }
     return article;
   }
@@ -603,25 +699,37 @@ export function createInformationTreePage(host) {
     return editorialCache.get(key);
   }
   function researchEvent(editorial, eventId) {return editorial.events.find(event=>event.eventId===eventId);}
-  function evidenceList(editorial, eventIds, token) {
-    const box=el('div','','daily-evidence');
-    for(const eventId of eventIds) {
+  function sectionSourceIds(editorial, eventIds) {
+    const ids=[], seen=new Set();
+    for(const eventId of eventIds || []) {
       const event=researchEvent(editorial, eventId);
-      if(!event) continue;
-      const item=el('details','','daily-event');
-      item.append(el('summary',event.title));
-      for(const fact of event.facts) item.append(el('p',fact));
-      const links=el('div','','daily-node-links');
-      for(const nodeId of event.sourceNodeIds) {
-        links.append(button('查看信息',async()=>{
-          links.append(el('p','读取中…','daily-note'));
-          try{const data=await api(`/api/v1/reports/tree/node?id=${encodeURIComponent(nodeId)}`);if(token!==epoch)return;remember(data.node);links.append(await card(data.node,token));}
-          catch(error){if(!aborted(error) && token===epoch) links.append(el('p','信息节点暂时读不到。','daily-note'));}
-        }));
-      }
-      item.append(links);box.append(item);
+      for(const nodeId of event?.sourceNodeIds || []) {if(seen.has(nodeId)) continue;seen.add(nodeId);ids.push(nodeId);}
     }
-    return box;
+    return ids;
+  }
+  function attachSectionSources(block, editorial, eventIds, paragraphs) {
+    const ids=sectionSourceIds(editorial, eventIds);
+    if(!ids.length || !paragraphs?.length) return;
+    if(ids.length===1) {
+      const open=()=>openNodeSource(ids[0]);
+      for(const p of paragraphs) {
+        p.classList.add('is-direct-source');guardTap(p);p.addEventListener('click', open);
+        p.append(el('span','〔1〕','reading-ref'));
+      }
+      return;
+    }
+    const list=el('div','','reading-source-list');
+    const rows=ids.map(nodeId=>{
+      const row=button('来源 · …', ()=>openNodeSource(nodeId));
+      row.className='reading-source-row';row.dataset.sourceId=nodeId;guardTap(row);list.append(row);return row;
+    });
+    block.append(list);
+    const host=paragraphs[paragraphs.length-1];
+    ids.forEach((nodeId, index)=>{
+      const mark=button(`〔${index+1}〕`, event=>{event?.stopPropagation?.();highlightSource(rows[index]);});
+      mark.className='reading-ref';guardTap(mark);host.append(mark);
+      node(nodeId).then(saved=>{if(rows[index].parentNode) rows[index].textContent=sourceCaption(saved || {});}).catch(error=>{if(!aborted(error) && rows[index].parentNode) rows[index].textContent='来源暂时读不到';});
+    });
   }
   function renderResearchDaily(editorial, edition, token) {
     root.dataset.editorialId=editorial.id;root.dataset.editorialStatus=editorial.status;
@@ -640,34 +748,34 @@ export function createInformationTreePage(host) {
         const open=document.createElement('button');
         open.type='button';open.className='daily-direction-card';
         open.append(el('span',directions[article.direction] || '其他','daily-kicker'),el('h3',article.title),el('p',article.lead));
-        open.addEventListener('click',()=>{openedDirection=article.direction;render();});
+        open.addEventListener('click',()=>{openedDirection=article.direction;return render();});
         page.append(open);
       }
     } else {
       const article=editorial.articles.find(item=>item.direction===openedDirection);
       if(!article) page.append(el('p','这个方向没有成稿。'));
       else {
-        page.append(el('h3',article.title),el('p',article.lead,'daily-overview'));
+        const lead=el('p',article.lead,'daily-overview');
+        page.append(el('h3',article.title),lead);
+        attachSectionSources(page, editorial, article.leadEventIds, [lead]);
         const themes=article.sections.filter(section=>section.kind!=='other');
         const extras=article.sections.filter(section=>section.kind==='other');
         for(const section of themes) {
           const block=el('section','','daily-section');
           block.append(el('h4',section.heading));
-          for(const text of section.paragraphs) block.append(el('p',text));
+          const paragraphs=section.paragraphs.map(text=>{const p=el('p',text);block.append(p);return p;});
+          attachSectionSources(block, editorial, section.eventIds, paragraphs);
           const related=editorial.relations.filter(relation=>section.eventIds.includes(relation.eventIds[0]));
           for(const relation of related) block.append(el('p',`${relationLabels[relation.type] || relation.type}：${relation.reason}`,'daily-note'));
-          const proof=el('details','','daily-proof');
-          proof.append(el('summary','相关事件与信息节点'));
-          proof.append(evidenceList(editorial, section.eventIds, token));
-          block.append(proof);page.append(block);
+          page.append(block);
         }
         if(extras.length) {
           const extra=el('details','','daily-extra');
           const count=extras.reduce((sum,section)=>sum+section.eventIds.length,0);
           extra.append(el('summary',`其他动态（${count}）`));
           for(const section of extras) {
-            section.paragraphs.forEach((text,index)=>extra.append(el('p',text,'daily-note')));
-            extra.append(evidenceList(editorial, section.eventIds, token));
+            const paragraphs=section.paragraphs.map(text=>{const p=el('p',text,'daily-note');extra.append(p);return p;});
+            attachSectionSources(extra, editorial, section.eventIds, paragraphs);
           }
           page.append(extra);
         }
@@ -750,18 +858,50 @@ export function createInformationTreePage(host) {
       hourStart:edition?.window?.startAt || 0, reportHref:hourItemHref(edition, item.nodeId), focusedAt:Date.now(),
     };
   }
+  function readingMarks(sources) {
+    const cluster=document.createElement('span');cluster.className='reading-refs';guardTap(cluster);
+    const items=sources?.length ? sources : [null];
+    items.forEach((source, index)=>{
+      const mark=document.createElement('span');mark.className='reading-ref';guardTap(mark);
+      if(source) mark.dataset.sourceId=String(source.nodeId || source.id || index);
+      mark.textContent=sources?.length ? `〔${index+1}〕` : '〔1〕';
+      cluster.append(mark);
+    });
+    return cluster;
+  }
+  function renderReadingSources(sources) {
+    const list=el('div','','reading-source-list');
+    sources.forEach((source, index)=>{
+      const id=String(source.nodeId || source.id || index);
+      const row=button(sourceCaption(source), ()=>openTreeSource({...source, layer:'information'}));
+      row.className='reading-source-row';row.dataset.sourceId=id;guardTap(row);list.append(row);
+    });
+    return list;
+  }
   function readingNewsItem(item, edition, {muted=false, keepDirection=false}={}){
     const when=readingWhen(item);
     const tags=item.timely===false ? ['时效不足'] : [];
-    const fold=readingFold(item.nodeId, item.title, {seed:item});
+    const sources=Array.isArray(item.sources) && item.sources.length>1 ? item.sources : null;
+    const list=sources ? renderReadingSources(sources) : null;
+    const fold=sources ? null : readingFold(item.nodeId, item.title, {seed:item});
     const row=newsRow({
       id:item.nodeId, title:item.title || '', at:when.at, ingested:when.ingested,
       source:readingSourceLine(item, {keepDirection}), tags, muted,
       focused:Boolean(host.readingFocused?.(item.nodeId)),
       onStar:()=>host.focusReading?.(readingFocusSnapshot(item, edition)),
-      onOpen:()=>{fold.open=!fold.open;},
+      attachOpen(open){
+        open.addEventListener('click', event=>{
+          const mark=event?.target?.classList?.contains('reading-ref') ? event.target : null;
+          if(mark && list) return highlightSource(findSourceRow(list, mark.dataset.sourceId));
+          if(list) return highlightSource(list);
+          return openReadingSource(item);
+        });
+      },
     });
-    row.append(fold);
+    const title=row.querySelector('h3');
+    if(title) placeAfter(title, readingMarks(sources));
+    if(list) row.append(list);
+    if(fold) row.append(fold);
     return row;
   }
   function appendTitleGroup(name, rows) {
@@ -1056,7 +1196,7 @@ export function createInformationTreePage(host) {
     dayChips=el('div','','chip-tabs tree-hour-chips');dayChips.setAttribute('aria-label','日报日期');
     periodPop.append(hourRail,dayChips);
     tools=el('div','','tree-tools');
-    materialsBtn=button('本期材料',()=>{showMaterials=!showMaterials;render();});
+    materialsBtn=button('本期材料',()=>{showMaterials=!showMaterials;return render();});
     tools.append(materialsBtn);
     tagPanel=el('div','','tree-tag-panel');tagPanel.hidden=true;
     tag=el('select');tag.setAttribute('aria-label','主Tag筛选');tag.add(new Option('全部Tag','*'));tag.addEventListener('change',()=>{memory[mode]={...(memory[mode]||{}),tag:tag.value};render();});tagPanel.append(tag);

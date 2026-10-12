@@ -637,14 +637,10 @@ export function createBriefPage(host) {
     const registry=new Map();let sourceNumber=0;
     const prose=(p,lead=false)=>{
       const paragraph=node('div',lead ? 'brief-article-lead' : 'brief-prose');paragraph.dataset.paragraphId=p.id;
-      const text=node('p','',decodeHtmlEntities(p.text)),sources=[...new Map(p.evidence.map(e=>[JSON.stringify([e.materialId,e.materialHash,e.materialVersion]),e])).values()];
-      const links=node('span','brief-paragraph-sources');
-      for(const e of sources) {
-        const identity=JSON.stringify([e.materialId,e.materialHash,e.materialVersion]);if(!registry.has(identity))registry.set(identity,++sourceNumber);
-        const control=button(`〔${registry.get(identity)}〕`,event=>{rememberPosition();return openSource(item,context,e,event.currentTarget);},'brief-source brief-paragraph-source');
-        control.setAttribute('aria-label',`阅读本段来源 ${registry.get(identity)}`);control.title='阅读站内原文';links.append(control);
-      }
-      text.append(links);paragraph.append(text);
+      const text=node('p','',decodeHtmlEntities(p.text)),sources=[...new Map(p.evidence.map(e=>[sourceIdentity(e),e])).values()];
+      const entries=sources.map(e=>{const identity=sourceIdentity(e);if(!registry.has(identity))registry.set(identity,++sourceNumber);return {evidence:e,number:registry.get(identity)};});
+      paragraph.append(text);
+      attachPointSources(text, paragraph, entries, item, context);
       const details=node('details','brief-paragraph-tools');const label=node('summary','','···');label.setAttribute('aria-label','本段提炼依据');
       details.append(label,button('查看本段提炼依据',()=>{details.open=false;return openEvidence({id:item.id,sentence:p.text,evidence:p.evidence,signatureItem:item},context);},'brief-evidence-link'));
       paragraph.append(details);return paragraph;
@@ -660,7 +656,7 @@ export function createBriefPage(host) {
       section.paragraphs.forEach(p=>block.append(prose(p)));article.append(block);
     });
     // Reuse the existing read/save/reference behavior once per article, without its paragraph-row layout.
-    const controls=itemRow(item,{...context,articleId:item.id}).querySelector('.brief-item-actions');controls.querySelector('.brief-source-links')?.remove();
+    const controls=itemRow(item,{...context,articleId:item.id,inlineSources:false}).querySelector('.brief-item-actions');controls.querySelector('.brief-source-links')?.remove();
     controls.querySelector('.brief-item-tools > summary')?.setAttribute('aria-label','这篇文章的更多操作');
     const operations=node('div','brief-article-operations');operations.append(node('span','brief-muted','文章操作'),controls);article.append(operations);
     rail.prepend(node('strong','','本文脉络'));target.append(article);
@@ -681,15 +677,9 @@ export function createBriefPage(host) {
     const signature=informationSignature(item); row.classList.toggle('is-read',s.read.has(signature));
     const sentence=node('p','brief-sentence',decodeHtmlEntities(item.sentence)); const mark=node('span','brief-item-mark',context.index ? String(context.index).padStart(2,'0') : '');
     const copy=node('div','brief-item-copy'); if(item.headline)copy.append(node('h3','brief-headline',decodeHtmlEntities(item.headline)));copy.append(sentence);
+    const sources=[...new Map((item.evidence || []).map(e=>[sourceIdentity(e),e])).values()];
+    if(context.inlineSources!==false) attachPointSources(sentence, copy, sources.map((e,n)=>({evidence:e,number:n+1})), item, context);
     const ops=node('div','brief-item-actions');
-    const sources=[...new Map((item.evidence || []).map(e=>[JSON.stringify([e.materialId,e.materialHash,e.materialVersion]),e])).values()];
-    const sourceList=node('div','brief-source-links');
-    sources.slice(0,3).forEach((e,n)=>sourceList.append(button(`来源 ${n+1} ↗`,event=>openSource(item,context,e,event.currentTarget),'brief-source')));
-    if(sources.length>3) {
-      const more=node('details','brief-source-directory');more.append(node('summary','',`其余 ${sources.length-3} 份来源`));
-      sources.slice(3).forEach((e,n)=>more.append(button(`来源 ${n+4} ↗`,event=>openSource(item,context,e,event.currentTarget),'brief-source')));sourceList.append(more);
-    }
-    ops.append(sourceList);
     if (item.supersedes?.length) ops.append(node('span','brief-badge','补充 / 更正'));
     const read=button(s.read.has(signature) ? '已读' : '标为已读',()=>{
       s.read.has(signature) ? s.read.delete(signature) : s.read.add(signature); persist();
@@ -719,19 +709,85 @@ export function createBriefPage(host) {
     return `/api/v1/reports/${e.snapshotId ? 'hourly' : 'daily'}/evidence?${params}`;
   }
 
+  function sourceIdentity(e) {return JSON.stringify([e.materialId,e.materialHash,e.materialVersion]);}
+  function sourceCaption(material) {
+    const name=String(material?.publisher || material?.author || '').trim() || '来源';
+    const title=String(material?.title || '').trim() || '未命名';
+    return `${name} · ${title}`;
+  }
+  function guardTap(el) {
+    const stop=event=>event?.stopPropagation?.();
+    el.addEventListener('touchstart', stop);
+    el.addEventListener('pointerdown', stop);
+  }
+  function highlightSource(row) {
+    if(!row) return;
+    row.classList.add('is-source-hit');
+    if(typeof row.scrollIntoView==='function') row.scrollIntoView({block:'nearest'});
+    setTimeout(()=>row.classList.remove('is-source-hit'),1600);
+  }
+  function openExternal(url) {
+    const anchor=document.createElement('a');
+    anchor.href=url;anchor.target='_blank';anchor.rel='noopener';
+    if(typeof anchor.click==='function') anchor.click();
+  }
+  function attachPointSources(textEl, container, entries, item, context) {
+    if(!entries?.length) return;
+    const open=entry=>event=>{
+      event?.stopPropagation?.();
+      rememberPosition();
+      return openSource(item, context, entry.evidence, event?.currentTarget || textEl);
+    };
+    if(entries.length===1) {
+      textEl.classList.add('is-direct-source');
+      guardTap(textEl);
+      textEl.addEventListener('click', open(entries[0]));
+      const mark=node('span','reading-ref brief-paragraph-source',`〔${entries[0].number}〕`);
+      mark.setAttribute('aria-label',`阅读来源 ${entries[0].number}`);
+      textEl.append(mark);
+      return;
+    }
+    const list=node('div','reading-source-list');
+    const rows=entries.map(entry=>{
+      const row=button('来源 · …', open(entry), 'reading-source-row');
+      row.dataset.sourceId=sourceIdentity(entry.evidence);
+      guardTap(row);
+      list.append(row);
+      paintSourceCaption(entry.evidence, context, row);
+      return row;
+    });
+    container.append(list);
+    entries.forEach((entry, index)=>{
+      const mark=button(`〔${entry.number}〕`, event=>{event.stopPropagation();highlightSource(rows[index]);}, 'reading-ref brief-paragraph-source');
+      mark.setAttribute('aria-label',`查看来源 ${entry.number}`);
+      guardTap(mark);
+      textEl.append(mark);
+    });
+  }
+  async function paintSourceCaption(e, context, row) {
+    const epoch=generation;
+    try {
+      const {evidence}=await callApi(evidenceUrl(e, context));
+      if(epoch!==generation || !row.parentNode) return;
+      row.textContent=sourceCaption(evidence?.material);
+    } catch {if(epoch===generation && row.parentNode) row.textContent='来源暂时读不到';}
+  }
   async function openSource(item,context,e,control) {
     const epoch=generation,token=++evidenceRequest;
-    control.disabled=true;
+    if(control) control.disabled=true;
     try {
       const {evidence}=await callApi(evidenceUrl(e,context));
       if(epoch!==generation || token!==evidenceRequest || !active()) return;
-      if(!host.canReadSavedSource?.(evidence.material)) throw new Error('这份材料暂无站内文章，可在“查看提炼依据”中查看来源。');
+      const material=evidence?.material;
       s.read.add(informationSignature(item));persist();
       const row=document.getElementById(`brief-item-${item.id}`);row?.classList.add('is-read');
       const read=row?.querySelector('.brief-read');if(read){read.textContent='已读';read.setAttribute('aria-pressed','true');}
-      await host.readSavedSource(evidence.material);
+      if(host.canReadSavedSource?.(material)) return await host.readSavedSource(material);
+      const url=String(material?.sourceUrl || '').trim();
+      if(/^https?:\/\//.test(url)) return openExternal(url);
+      host.toast('这份材料暂无站内文章');
     } catch(error) {if(epoch===generation && token===evidenceRequest) host.toast(error.message || '站内原文未能读取');}
-    finally {control.disabled=false;}
+    finally {if(control) control.disabled=false;}
   }
 
   async function openEvidence(item,context) {
