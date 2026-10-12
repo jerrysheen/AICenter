@@ -244,6 +244,53 @@ test('latest preparation promotion uses metadata and preserves unrelated, runnin
   }finally{f.store.close();}
 });
 
+test('failed preparation becomes terminal after the attempt cap and is not counted as still pending',async()=>{
+  let nowAt=start+2*H;
+  const m=material('a');
+  const f=fixture({now:()=>nowAt,prepAttemptCap:2,candidatePort:async()=>[{id:m.id,version:m.version,eventAt:start+1}]});
+  try{
+    let calls=0;
+    f.runtime.run=async()=>{calls+=1;throw Object.assign(new Error('upstream'),{code:'retryable-model-error'});};
+    const first=await f.service.prepareInformation({materials:[m]});
+    assert.equal(first.pending[0].reason,'retryable-model-error');
+    assert.equal(first.pending[0].attempts,1);
+    assert.equal(first.pending[0].retryable,true);
+    nowAt+=31*60*1000;
+    const second=await f.service.prepareInformation({materials:[m]});
+    assert.equal(second.pending[0].reason,'prep-exhausted');
+    assert.equal(second.pending[0].retryable,false);
+    assert.equal(second.pending[0].attempts,2);
+    assert.equal(calls,2);
+    nowAt+=31*60*1000;
+    const cached=await f.service.prepareInformation({materials:[m]});
+    assert.equal(cached.pending[0].reason,'prep-exhausted');
+    assert.equal(calls,2);
+    const hour=await f.service.generateHour({hourStart:start});
+    assert.equal(hour.pending[0].reason,'prep-exhausted');
+    assert.deepEqual(hour.pendingIds,[]);
+    assert.equal(hour.status,'partial');
+  }finally{f.store.close();}
+});
+
+test('a missing preparation stage stays information-not-ready and an article stage is not dropped',async()=>{
+  const waiting=material('waiting'),failed=material('failed');
+  const f=fixture({candidatePort:async()=>[waiting,failed].map(item=>({id:item.id,version:item.version,eventAt:start+1}))});
+  try{
+    f.store.repositories.report.saveAnalysisStage('local','tree-preparation',`article:${failed.id}`,'hash',{sourceId:failed.id,sourceVersion:failed.version},{pending:{id:failed.id,reason:'budget-deferred',retryable:true,retryAt:start+H,sourceVersion:failed.version,attempts:1}},'failed','budget-deferred');
+    const hour=await f.service.generateHour({hourStart:start});
+    assert.equal(hour.pending.find(item=>item.id===waiting.id).reason,'information-not-ready');
+    assert.equal(hour.pending.find(item=>item.id===waiting.id).attempts,undefined);
+    assert.equal(hour.pending.find(item=>item.id===failed.id).reason,'budget-deferred');
+    assert.deepEqual(hour.pendingIds.slice().sort(),[failed.id,waiting.id].sort());
+    f.runtime.run=async()=>({answer:'{"status":"needs_content"}'});
+    await f.service.prepareInformation({materials:[waiting]});
+    const settled=await f.service.generateHour({hourStart:start});
+    assert.equal(settled.pending.find(item=>item.id===waiting.id).reason,'needs-content');
+    assert.equal(settled.pendingIds.includes(waiting.id),false);
+    assert.equal(settled.pendingIds.includes(failed.id),true);
+  }finally{f.store.close();}
+});
+
 test('preparation queue keeps materials independently claimable without increasing concurrency',()=>{
   const f=fixture();try{
     const jobs=enqueueTreePreparation(f.store,'local',['older','latest','older']);assert.equal(jobs.length,2);

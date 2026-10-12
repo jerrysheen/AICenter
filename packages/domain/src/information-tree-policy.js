@@ -241,11 +241,17 @@ export function formatCondenseFailureLog(error, meta = {}) {
   ].join(' ');
 }
 
+export const TERMINAL_PENDING_REASONS = Object.freeze(['needs-content', 'stale-policy', 'prep-exhausted']);
+
+export function isTerminalPendingReason(reason) {
+  return TERMINAL_PENDING_REASONS.includes(reason);
+}
+
 export function treeFailure(error,id,sourceVersion='',at=Date.now()) {
   let reason=error.code;
   if(!reason)reason=error.name==='ModelQueueTimeout' ? 'queue-timeout' : error.name==='ModelExecutionTimeout' ? 'execution-timeout' : error.name==='StageBudgetTimeout' ? 'budget-deferred' : error.name==='ZodError' || error instanceof SyntaxError ? 'invalid-output' : 'retryable-model-error';
-  if(!['needs-content','retryable-model-error','queue-timeout','execution-timeout','budget-deferred','lease-conflict','invalid-output','information-not-ready','stale-policy'].includes(reason))reason='retryable-model-error';
-  const retryable=!['needs-content','information-not-ready','stale-policy'].includes(reason);
+  if(!['needs-content','retryable-model-error','queue-timeout','execution-timeout','budget-deferred','lease-conflict','invalid-output','information-not-ready','stale-policy','prep-exhausted'].includes(reason))reason='retryable-model-error';
+  const retryable=!isTerminalPendingReason(reason) && reason!=='information-not-ready';
   return {id,reason,retryable,retryAt:retryable ? Number.isFinite(error.retryAt) ? Math.max(at+1000,error.retryAt) : at+30*60000 : null,sourceVersion,...(error.timing ? {queueMs:error.timing.queueMs,executionMs:error.timing.executionMs} : {})};
 }
 

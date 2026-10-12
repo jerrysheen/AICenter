@@ -66,6 +66,7 @@ test('reading class batch size defaults to 10 and rejects a non-positive value',
   assert.equal(hourlyReadingFlushRemainder({pendingIds: ['later'], pending: [{id: 'later', reason: 'information-not-ready', retryable: false}]}), false);
   assert.equal(hourlyReadingFlushRemainder({pendingIds: ['again'], pending: [{id: 'again', reason: 'budget-deferred', retryable: true}]}), false);
   assert.equal(hourlyReadingFlushRemainder({pendingIds: ['gone'], pending: [{id: 'gone', reason: 'needs-content', retryable: false}]}), true);
+  assert.equal(hourlyReadingFlushRemainder({pendingIds: [], pending: [{id: 'stopped', reason: 'prep-exhausted', retryable: false}]}), true);
   assert.equal(hourlyReadingFlushRemainder({pendingIds: ['unknown']}), false);
 });
 

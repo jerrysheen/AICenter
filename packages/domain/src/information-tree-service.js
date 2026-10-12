@@ -3,7 +3,7 @@ import {validateTreeModules,repairTreeModuleAttribution,normalizeInformationResp
 import {materialHash,prepareDailyMaterials} from './daily-materials.js';
 import {needsZhLocalization} from './localize-texts.js';
 import {runBounded} from './daily-analysis.js';
-import {treeCatalog,treeSource,treeFailure,formatCondenseFailureLog,formatTreeHourlyCallLog,describeCondenseFailure} from './information-tree-policy.js';
+import {treeCatalog,treeSource,treeFailure,formatCondenseFailureLog,formatTreeHourlyCallLog,describeCondenseFailure,isTerminalPendingReason} from './information-tree-policy.js';
 import {readingClassKeyEnvs} from './reading-hour-service.js';
 import {boundedInt,isAttributionValidationError,isRetryableUpstreamStatus,modelRetryDelayMs,nextHourlyAttempt,sameIdSet,upstreamHttpStatus} from './report-reliability.js';
 
@@ -134,7 +134,7 @@ export function createInformationTreeReader({repository,timezone='Asia/Shanghai'
 
 export function createInformationTreeService({repository,reportRepository,feedService,mediaPort,agentRuntime,skills,
   cacheNamespace='',articleStrategy=false,budgetReady=null,catalog={tags:[]},primaryTag=null,tagHints=null,classificationOverrideForReplay=null,candidatePort=null,materialPort=null,generationConfig={},timezone='Asia/Shanghai',now=()=>Date.now(),budget={},
-  hourlyModels:configuredHourlyModels=[],upstreamRetries:configuredUpstreamRetries,upstreamRetryBaseMs,upstreamRetryMaxMs,sleep:configuredSleep,hourlyAttemptCap:configuredHourlyAttemptCap,env=process.env,log=console.log}={}) {
+  hourlyModels:configuredHourlyModels=[],upstreamRetries:configuredUpstreamRetries,upstreamRetryBaseMs,upstreamRetryMaxMs,sleep:configuredSleep,hourlyAttemptCap:configuredHourlyAttemptCap,prepAttemptCap:configuredPrepAttemptCap,env=process.env,log=console.log}={}) {
   const validatorVersion=articleStrategy ? ARTICLE_VALIDATOR_VERSION : TREE_VALIDATOR_VERSION;
   const config={articleRequestBytes:100000,batchBytes:12000,maxCalls:80,totalMs:20*60000,timeoutMs:180000,dailyTimeoutMs:360000,dailyTotalMs:60*60000,queueTimeoutMs:120000,...budget};
   const hourlyModels=Array.isArray(configuredHourlyModels) ? configuredHourlyModels.map(model=>String(model || '').trim()).filter(Boolean) : [];
@@ -143,6 +143,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
   const retryMaxMs=boundedInt(upstreamRetryMaxMs, 8000, retryBaseMs || 0, 120_000);
   const sleep=configuredSleep || (ms=>new Promise(resolve=>{setTimeout(resolve, ms);}));
   const hourlyAttemptCap=boundedInt(configuredHourlyAttemptCap, 4, 1, 20);
+  const prepAttemptCap=boundedInt(configuredPrepAttemptCap ?? env?.AI_CENTER_INFORMATION_PREP_ATTEMPTS, 3, 1, 10);
   const hourlyKeyEnvs=readingClassKeyEnvs(env);
   let hourlyKeyCursor=0;
   const tagNames=new Map(catalog.tags.map(t=>[t.id,t.name]));
@@ -452,7 +453,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
   async function edition(layer,inputs,window,s,{pendingIds=[],pending=[],missingHours=[]}={}) {
     const expectedHead=repository.head(s.workspaceId,layer,window);
     const modules=await condense(layer,inputs,window,s),failed=modules.failures.length>0;
-    let status=failed ? 'failed' : pendingIds.length || missingHours.length ? 'partial' : 'ready';
+    let status=failed ? 'failed' : pendingIds.length || pending.length || missingHours.length ? 'partial' : 'ready';
     let inputRows=inputs;
     if(layer==='daily' && failed && modules.length) {
       const covered=new Set(modules.flatMap(node=>node.children));
@@ -487,7 +488,19 @@ export function createInformationTreeService({repository,reportRepository,feedSe
         if(!repository.setInformationHead(workspaceId,node,policyHash))throw Object.assign(new Error('已过期生成策略'),{code:'stale-policy'});
         nodes.push(node);reportRepository.saveAnalysisStage(workspaceId,'tree-preparation',stageKey,sourceHash,{sourceId:m.id,sourceVersion,effectivePromptHash:skills.information.version,...(articleStrategy ? {generationVersion:generationVersion('information')} : {})},{nodeId:node.id},'completed');
       } catch(error) {
-        const failure=error.cachedPending || treeFailure(error,m.id,sourceVersion,now());pending.push(failure);
+        const failure=error.cachedPending ? {...error.cachedPending} : treeFailure(error,m.id,sourceVersion,now());
+        if(!error.cachedPending) {
+          const previous=reportRepository.getAnalysisStage(workspaceId,'tree-preparation',stageKey,sourceHash);
+          const prior=Number(previous?.output?.pending?.attempts);
+          const attempts=Number.isInteger(prior) && prior>0 ? prior+1 : 1;
+          failure.attempts=attempts;
+          if(attempts>=prepAttemptCap && failure.retryable && failure.reason!=='information-not-ready') {
+            failure.reason='prep-exhausted';
+            failure.retryable=false;
+            failure.retryAt=null;
+          }
+        }
+        pending.push(failure);
         reportRepository.saveAnalysisStage(workspaceId,'tree-preparation',stageKey,sourceHash,{sourceId:m.id,sourceVersion,effectivePromptHash:skills.information.version,...(articleStrategy ? {generationVersion:generationVersion('information')} : {})},{pending:failure},'failed',failure.reason);
       }
     }
@@ -527,12 +540,22 @@ export function createInformationTreeService({repository,reportRepository,feedSe
     const states=reportRepository.listTreePreparationStates?.(workspaceId,[...wanted.keys()]) || [];
     for(const [id,sourceVersion] of wanted)if(!nodes.some(n=>n.sourceId===id) && !pending.some(p=>p.id===id)) {
       const state=states.find(row=>row.input?.sourceId===id && row.input.sourceVersion===sourceVersion);
-      pending.push(state?.output?.pending || {id,reason:'information-not-ready',retryable:false,retryAt:null,sourceVersion});
+      pending.push(settlePreparationPending(id,sourceVersion,state));
     }
     for(const c of coverage)if(c.omitted || c.failed)pending.push({id:`source:${c.sourceId}:incomplete`,reason:'budget-deferred',retryable:true,retryAt:now()+30*60000});
     const prior=priorEdition('hourly',window,workspaceId);
     if(prior?.terminal && sameIdSet(prior.inputIds, nodes.map(node=>node.id))) return prior;
-    return edition('hourly',nodes,window,s,{pendingIds:pending.map(p=>p.id),pending});
+    const pendingIds=pending.filter(item=>!isTerminalPendingReason(item.reason)).map(item=>item.id);
+    return edition('hourly',nodes,window,s,{pendingIds,pending});
+  }
+  function settlePreparationPending(id,sourceVersion,state) {
+    const recorded=state?.output?.pending;
+    if(!recorded || state?.input?.sourceId!==id || state?.input?.sourceVersion!==sourceVersion) return {id,reason:'information-not-ready',retryable:false,retryAt:null,sourceVersion};
+    const attempts=Number(recorded.attempts);
+    if(Number.isInteger(attempts) && attempts>=prepAttemptCap && recorded.retryable===true && recorded.reason!=='information-not-ready') {
+      return {...recorded,id,reason:'prep-exhausted',retryable:false,retryAt:null,attempts};
+    }
+    return {...recorded,id};
   }
   async function generateDaily({workspaceId='local',window,hours}={}) {
     ensurePolicy(workspaceId);
