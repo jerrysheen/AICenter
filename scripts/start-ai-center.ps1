@@ -221,6 +221,11 @@ public static class AiCenterAppendLog {
       psi.CreateNoWindow = true;
       psi.StandardOutputEncoding = utf8;
       psi.StandardErrorEncoding = utf8;
+      // Node appends the same daily files itself. These variables tell it the directory and the worker/web prefix.
+      string logDir = Path.GetDirectoryName(outLog);
+      string logName = LogName(outLog);
+      if (!string.IsNullOrEmpty(logDir)) psi.EnvironmentVariables["AI_CENTER_LOG_DIR"] = logDir;
+      if (!string.IsNullOrEmpty(logName)) psi.EnvironmentVariables["AI_CENTER_LOG_NAME"] = logName;
       var process = new Process();
       process.StartInfo = psi;
       process.EnableRaisingEvents = true;
@@ -246,6 +251,12 @@ public static class AiCenterAppendLog {
       pump.Complete();
       throw;
     }
+  }
+
+  static string LogName(string path) {
+    string name = Path.GetFileName(path ?? "");
+    int dot = name.IndexOf('.');
+    return dot > 0 ? name.Substring(0, dot) : "";
   }
 
   sealed class LogLine {

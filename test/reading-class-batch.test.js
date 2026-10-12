@@ -284,11 +284,12 @@ test('items from separate arrivals pool into full batches and a closed hour flus
   assert.equal(pooled.calls.length, 1);
   assert.deepEqual(JSON.parse(pooled.calls[0].message).map((item) => item.title), ['甲', '乙', '丙', '丁']);
   assert.equal(partial.snapshot.items[4].disposition, 'classification-missing');
-  assert.equal(lines[0], '[worker] reading-class batch=4 fallback=0 key=KEY');
+  assert.match(lines[0], /^\[worker\] reading-class batch=4 fallback=0 key=KEY outcome=ok status=- name=- model=- latencyMs=\d+ inputBytes=\d+$/);
   const flushed = await pooled.service.scoreWindow({workspace: 'local', window, flushRemainder: true});
   assert.equal(pooled.calls.length, 2);
   assert.deepEqual(JSON.parse(pooled.calls[1].message).map((item) => item.title), ['戊']);
-  assert.equal(lines[1], '[worker] reading-class batch=1 fallback=0 key=KEY2');
+  assert.match(lines[1], /^\[worker\] reading-class batch=1 fallback=0 key=KEY2 outcome=ok status=- name=- model=- latencyMs=\d+ inputBytes=\d+$/);
+  assert.equal(lines.length, pooled.calls.length);
   assert.deepEqual(flushed.snapshot.items.map((item) => item.evidenceQuote), ['甲', '乙', '丙', '丁', '戊']);
 });
 
@@ -321,11 +322,10 @@ test('classification logs record per-item fallback reason and quota does not log
     },
   });
   await parsed.service.scoreWindow({workspace: 'local', window});
-  assert.equal(lines[0], '[worker] reading-class batch=2 fallback=0 key=KEY');
-  assert.deepEqual(lines.slice(1), [
-    '[worker] reading-class batch=1 fallback=1 reason=parse-failure key=-',
-    '[worker] reading-class batch=1 fallback=1 reason=parse-failure key=-',
-  ]);
+  assert.match(lines[0], /^\[worker\] reading-class batch=2 fallback=0 key=KEY outcome=ok status=- name=- model=- latencyMs=\d+ inputBytes=\d+$/);
+  assert.match(lines[1], /^\[worker\] reading-class batch=1 fallback=1 reason=parse-failure key=- outcome=ok status=- name=- model=- latencyMs=\d+ inputBytes=\d+$/);
+  assert.match(lines[2], /^\[worker\] reading-class batch=1 fallback=1 reason=parse-failure key=- outcome=ok status=- name=- model=- latencyMs=\d+ inputBytes=\d+$/);
+  assert.equal(lines.length, parsed.calls.length);
 
   const quotaLines = [];
   const quota = open({
@@ -341,12 +341,88 @@ test('classification logs record per-item fallback reason and quota does not log
   });
   await quota.service.scoreWindow({workspace: 'local', window});
   assert.equal(quota.calls.length, 3);
-  assert.deepEqual(quotaLines, [
-    '[worker] reading-class batch=4 fallback=0 key=KEY outcome=budget-deferred',
-    '[worker] reading-class batch=4 fallback=0 key=KEY2 outcome=budget-deferred',
-    '[worker] reading-class batch=4 fallback=0 key=KEY3 outcome=budget-deferred',
-  ]);
+  assert.equal(quotaLines.length, quota.calls.length);
+  assert.match(quotaLines[0], /^\[worker\] reading-class batch=4 fallback=0 key=KEY outcome=budget-deferred status=- name=Error model=- latencyMs=\d+ inputBytes=\d+ body=- message=quota=daily key=KEY cooldownUntil=1$/);
+  assert.match(quotaLines[1], /key=KEY2 outcome=budget-deferred /);
+  assert.match(quotaLines[2], /key=KEY3 outcome=budget-deferred /);
   assert.equal(quotaLines.some((line) => line.includes('fallback=1')), false);
+});
+
+test('a non-quota batch error is logged once per call, retried on the next key, then deferred', async () => {
+  const lines = [];
+  const failed = open({
+    env: {...googleKeys, AI_CENTER_READING_CLASS_BATCH: '10'},
+    nodes: [node('a', '甲'), node('b', '乙')],
+    log: (line) => lines.push(line),
+    run(input) {
+      const error = new Error('upstream 500 body');
+      error.name = 'HarnessModelError';
+      error.upstreamStatus = 500;
+      error.upstreamBody = 'internal error token=sk-secretvalue';
+      error.admittedModel = 'gemini-3.1-flash-lite';
+      error.googleKeyEnv = input.googleKeyEnv;
+      throw error;
+    },
+  });
+  const result = await failed.service.scoreWindow({workspace: 'local', window});
+  assert.equal(failed.calls.length, 2);
+  assert.deepEqual(failed.calls.map((call) => call.googleKeyEnv), ['GEMINI_API_KEY', 'GEMINI_API_KEY2']);
+  assert.equal(failed.calls[0].timeoutMs, 180000);
+  assert.equal(lines.length, failed.calls.length);
+  assert.match(lines[0], /batch=2 fallback=0 key=KEY outcome=error status=500 name=HarnessModelError model=gemini-3\.1-flash-lite latencyMs=\d+ inputBytes=\d+ body=internal error token=\[redacted\] message=upstream 500 body/);
+  assert.match(lines[1], /key=KEY2 outcome=error status=500 /);
+  assert.equal(lines[0].includes('\n'), false);
+  assert.equal(result.snapshot.items.every((item) => item.disposition === 'classification-failed'), true);
+
+  const onlyKey = open({
+    env: {...googleKeys, AI_CENTER_GEMINI_KEY_ENVS: 'GEMINI_API_KEY', GEMINI_API_KEY2: '', GEMINI_API_KEY3: '', AI_CENTER_READING_CLASS_BATCH: '10'},
+    nodes: [node('a', '甲')],
+    run() { throw new Error('upstream 500'); },
+  });
+  await onlyKey.service.scoreWindow({workspace: 'local', window});
+  assert.equal(onlyKey.calls.length, 1);
+});
+
+test('a timeout retries one other key and a quota rejection between errors does not use that retry', async () => {
+  const recoveredLines = [];
+  const recovered = open({
+    env: {...googleKeys, AI_CENTER_READING_CLASS_BATCH: '2'},
+    nodes: [node('a', '甲'), node('b', '乙')],
+    log: (line) => recoveredLines.push(line),
+    run(input) {
+      if (input.googleKeyEnv === 'GEMINI_API_KEY') {
+        const error = new Error('The operation was aborted');
+        error.name = 'AbortError';
+        throw error;
+      }
+      const message = JSON.parse(input.message);
+      return {answer: JSON.stringify(message.map((item) => classified('finance', 'market_asset', item.title, item.idx))), modelId: 'gemini-3.1-flash-lite'};
+    },
+  });
+  const saved = await recovered.service.scoreWindow({workspace: 'local', window});
+  assert.deepEqual(recovered.calls.map((call) => call.googleKeyEnv), ['GEMINI_API_KEY', 'GEMINI_API_KEY2']);
+  assert.equal(recoveredLines.length, 2);
+  assert.match(recoveredLines[0], /key=KEY outcome=timeout status=- name=AbortError /);
+  assert.match(recoveredLines[1], /key=KEY2 outcome=ok status=- name=- model=gemini-3\.1-flash-lite /);
+  assert.deepEqual(saved.snapshot.items.map((item) => item.evidenceQuote), ['甲', '乙']);
+
+  const mixed = open({
+    env: {...googleKeys, AI_CENTER_READING_CLASS_BATCH: '2'},
+    nodes: [node('a', '甲'), node('b', '乙')],
+    run(input) {
+      if (input.googleKeyEnv === 'GEMINI_API_KEY2') {
+        const error = new Error('quota=daily');
+        error.code = 'budget-deferred';
+        error.quotaExhausted = true;
+        throw error;
+      }
+      const error = new Error('upstream 500');
+      error.upstreamStatus = 500;
+      throw error;
+    },
+  });
+  await mixed.service.scoreWindow({workspace: 'local', window});
+  assert.deepEqual(mixed.calls.map((call) => call.googleKeyEnv), ['GEMINI_API_KEY', 'GEMINI_API_KEY2', 'GEMINI_API_KEY3']);
 });
 
 test('a one-item object is accepted and a multi-item object still falls back', async () => {

@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-12-hourly-error-logs.md`：阅读分类失败会写下状态、错误名、响应片段、模型和耗时，每次调用正好一行。非配额失败换一把 key 再试一次。过了整点槽之后，未完成的小时在一分钟内补跑。Web / Worker 自己追加按日日志。需要重启 `start-ai-center.ps1`。
+
 - `progress/2026-10-12-hourly-batch-pool.md`：小时阅读分类把同一小时里未分类的材料攒满 `AI_CENTER_READING_CLASS_BATCH` 再调用。信息还在到达时不送出短批。每次分类调用和浓缩失败都写明批次、回退原因、状态、响应片段、模型和 key 后缀。启动脚本的日志泵改为队列写入，进程还在时日志不再停。需要重启启动脚本。
 
 - `progress/2026-10-12-reading-class-batch.md`：小时报阅读分类按 `AI_CENTER_READING_CLASS_BATCH` 分批，默认 10。解析缺口只回退缺的条目；配额不拆批。信息树浓缩和小时报停用开关不变。需重启 Worker。

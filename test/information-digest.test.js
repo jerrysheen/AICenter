@@ -197,6 +197,8 @@ test('contracts require per-information evidence, valid time bounds and fixed jo
   assert.equal(DailyAnalysisOutputSchema.safeParse({analysis:'旧分析',evidence:[],questions:[]}).success,false);
   assert.equal(InformationSearchInputSchema.safeParse({startAt:hour,endAt:hour}).success,false);
   assert.equal(GenerateHourlyDigestInputSchema.safeParse({hourStart:hour+1}).success,false);
+  assert.equal(GenerateHourlyDigestInputSchema.safeParse({hourStart:hour,followUp:'classification-deferred'}).success,true);
+  assert.equal(GenerateHourlyDigestInputSchema.safeParse({hourStart:hour,followUp:'other'}).success,false);
   assert.equal(GenerateHourlyDigestInputSchema.safeParse({command:'pwsh'}).success,false);
 });
 
