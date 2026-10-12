@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import {
+  SHARE_CARD_MAX_WIDTH,
+  SHARE_CARD_MIN_WIDTH,
+  SHARE_CARD_WIDTH,
   clampShareScale,
-  planSharePages,
   resolveShareScale,
   sharePngFilename,
 } from '../apps/web/public/share-card.js';
@@ -29,13 +31,30 @@ function fingerprint(matrix) {
   return hash >>> 0;
 }
 
+function bitmapFits(scale, cssWidth, cssHeight, maxEdge = 16384, maxArea = 16_777_216) {
+  const pixelWidth = Math.round(cssWidth * scale);
+  const pixelHeight = Math.round(cssHeight * scale);
+  assert.ok(pixelWidth <= maxEdge, `width ${pixelWidth}`);
+  assert.ok(pixelHeight <= maxEdge, `height ${pixelHeight}`);
+  assert.ok(pixelWidth * pixelHeight <= maxArea, `area ${pixelWidth * pixelHeight}`);
+}
+
 test('share filename keeps a date stamp and strips path characters', () => {
   const name = sharePngFilename('台积电 / 3nm? 展望', new Date('2026-09-21T04:00:00.000Z'));
   assert.equal(name, 'aicenter-台积电 3nm 展望-2026-09-21.png');
-  assert.equal(sharePngFilename('问答', new Date('2026-09-21T04:00:00.000Z'), 1, 3), 'aicenter-问答-2026-09-21-2.png');
+  assert.equal(sharePngFilename('问答', new Date('2026-09-21T04:00:00.000Z')), 'aicenter-问答-2026-09-21.png');
 });
 
-test('share scale stays inside 2..3 and pages long cards instead of shrinking them', () => {
+test('share card width stays in 375..540 so 2x output is 750..1080', () => {
+  assert.equal(SHARE_CARD_MIN_WIDTH, 375);
+  assert.equal(SHARE_CARD_MAX_WIDTH, 540);
+  assert.ok(SHARE_CARD_WIDTH >= SHARE_CARD_MIN_WIDTH);
+  assert.ok(SHARE_CARD_WIDTH <= SHARE_CARD_MAX_WIDTH);
+  assert.ok(SHARE_CARD_WIDTH * 2 >= 750);
+  assert.ok(SHARE_CARD_WIDTH * 2 <= 1080);
+});
+
+test('share scale stays in 2..3 on one image when the bitmap fits', () => {
   assert.equal(clampShareScale(1), 2);
   assert.equal(clampShareScale(2), 2);
   assert.equal(clampShareScale(2.75), 2.75);
@@ -43,50 +62,32 @@ test('share scale stays inside 2..3 and pages long cards instead of shrinking th
   assert.equal(clampShareScale(4), 3);
   assert.equal(clampShareScale(Number.NaN), 2);
 
-  const plan = planSharePages({
-    cssWidth: 720,
-    chromeHeight: 220,
-    blockHeights: Array.from({ length: 40 }, () => 200),
-    devicePixelRatio: 3,
-  });
-  assert.equal(plan.scale, 3);
-  assert.ok(plan.pageCount > 1);
-  for (const page of plan.pages) {
-    const edge = page.cssHeight * plan.scale;
-    const area = 720 * plan.scale * edge;
-    assert.ok(edge <= 4096, `edge ${edge}`);
-    assert.ok(area <= 16_777_216, `area ${area}`);
-  }
-  const covered = plan.pages.reduce((sum, page) => sum + page.bodyHeight, 0);
-  assert.equal(covered, 8000);
+  const sharp = resolveShareScale(3, SHARE_CARD_WIDTH, 800);
+  assert.equal(sharp, 3);
+  bitmapFits(sharp, SHARE_CARD_WIDTH, 800);
+
+  const phone = resolveShareScale(1, SHARE_CARD_WIDTH, 1200);
+  assert.equal(phone, 2);
+  bitmapFits(phone, SHARE_CARD_WIDTH, 1200);
 });
 
-test('share scale drops only when one page cannot fit the canvas limits', () => {
-  const wide = planSharePages({
-    cssWidth: 3000,
-    chromeHeight: 400,
-    blockHeights: [100],
-    devicePixelRatio: 3,
-  });
-  assert.ok(wide.scale < 2);
-  assert.ok(3000 * wide.scale <= 4096);
-  assert.ok(wide.pages[0].cssHeight * wide.scale <= 4096);
+test('long share image stays one PNG and lowers scale instead of splitting', () => {
+  const mid = resolveShareScale(3, SHARE_CARD_WIDTH, 10000);
+  assert.ok(mid >= 1.5 && mid < 2, `mid ${mid}`);
+  bitmapFits(mid, SHARE_CARD_WIDTH, 10000);
 
-  const tall = planSharePages({
-    cssWidth: 720,
-    chromeHeight: 200,
-    blockHeights: [5000],
-    devicePixelRatio: 2,
-  });
-  assert.equal(tall.scale, 2);
-  assert.ok(tall.pageCount > 1);
-  assert.equal(tall.pages.reduce((sum, page) => sum + page.bodyHeight, 0), 5000);
+  const huge = resolveShareScale(3, SHARE_CARD_WIDTH, 20000);
+  assert.ok(huge < 1.5, `huge ${huge}`);
+  assert.ok(huge > 0);
+  bitmapFits(huge, SHARE_CARD_WIDTH, 20000);
 
-  const fitted = resolveShareScale(3, 720, 2000);
-  assert.ok(fitted < 3);
-  assert.ok(fitted >= 2);
-  assert.ok(720 * fitted <= 4096);
-  assert.ok(2000 * fitted <= 4096);
+  const device = resolveShareScale(3, SHARE_CARD_WIDTH, 4000, {
+    maxEdge: 16384,
+    deviceMaxEdge: 8000,
+    maxArea: 16_777_216,
+  });
+  assert.equal(device, 2);
+  bitmapFits(device, SHARE_CARD_WIDTH, 4000, 8000);
 });
 
 test('offline qr for tradingplus.cn is a version-2 matrix', () => {
@@ -118,8 +119,8 @@ test('feed, reader, brief bullets and ask share one card', () => {
   assert.match(html, /id="share-image-save">保存</);
   assert.doesNotMatch(html, /id="share-image-hint"/);
   assert.match(css, /#share-image-dialog\.share-image-dialog/);
-  assert.match(css, /\.share-sheet-host \{/);
-  assert.match(css, /width:\s*720px/);
+  assert.match(css, /\.share-sheet-host \{[^}]*width:\s*540px/);
+  assert.match(css, /\.share-sheet \{[^}]*width:\s*540px/);
   assert.match(staticFiles, /'\/share-card\.js':/);
   assert.match(staticFiles, /'\/qr-code\.js':/);
   assert.match(share, /share-sheet-question/);
@@ -127,6 +128,8 @@ test('feed, reader, brief bullets and ask share one card', () => {
   assert.match(share, /function textLineBoxes/);
   assert.match(share, /function paintListMarker/);
   assert.match(share, /function exportShareCard/);
+  assert.match(share, /function resolveShareScale/);
+  assert.doesNotMatch(share, /planSharePages|paginateBlocks|share-sheet-page|share-sheet-slice/);
   assert.match(share, /tradingplus\.cn/);
   assert.match(share, /from '\.\/qr-code\.js'/);
   assert.doesNotMatch(share, /const maxWidth = Math\.max/);
