@@ -190,7 +190,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
       if(lastAnswer)return {response:lastAnswer,correction:'只修复JSON语法，保留原有内容。'+shape};
       return payload;
     };
-    let timing;const stageInput=()=>({stage,effectivePromptHash,validatorVersion,executionTiming:timing,...(checkpoint ? {checkpoint} : {}),...(lastAnswer ? {lastAnswer} : {})});
+    let timing,sentMessage='';const stageInput=()=>({stage,effectivePromptHash,validatorVersion,executionTiming:timing,...(checkpoint ? {checkpoint} : {}),...(lastAnswer ? {lastAnswer} : {})});
     const acceptOutput=(result)=>{
       lastAnswer=result.answer;
       const parsed=parse(result.answer);
@@ -223,11 +223,13 @@ export function createInformationTreeService({repository,reportRepository,feedSe
             reportRepository.saveAnalysisStage(s.workspaceId,period,key,key,stageInput(),null,'running');
             let result;
             try {
+              const message=JSON.stringify(articleStrategy && stage==='information' ? articleMessage() : {...payload,...(attempt ? {correction:`上一响应未通过校验：${correction}。${shape}不增加事实。`} : {})});
+              sentMessage=message;
               result=await runBounded(agentRuntime,{workspaceId:s.workspaceId,usageStage:`tree-${stage}`,closedContext:true,
                 closedTask:stage==='information' && articleStrategy ? 'article-normalize' : stage==='daily' ? 'daily-analysis' : 'hourly-brief',allowedToolIds:[],webMode:'off',enableAuxiliarySearch:false,executionPriority:s.priority,
                 taskInstruction:instruction,
                 ...(typeof googleModel==='string' ? {googleModel} : {}),
-                message:JSON.stringify(articleStrategy && stage==='information' ? articleMessage() : {...payload,...(attempt ? {correction:`上一响应未通过校验：${correction}。${shape}不增加事实。`} : {})})},
+                message},
                 Math.min(callTimeout,remaining),heartbeat,30000,{queueTimeoutMs:config.queueTimeoutMs,totalTimeoutMs:remaining,onTiming:value=>{timing=value;reportRepository.saveAnalysisStage(s.workspaceId,period,key,key,stageInput(),null,'running');}});
             } catch(error) {
               const status=upstreamHttpStatus(error);
@@ -247,6 +249,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
               if(articleStrategy && !/[}\]]\s*$/.test(String(result.answer).trim().replace(/```$/, '').trim()))throw Object.assign(new Error('响应中止或截断；不当作完整JSON修复'),{code:'invalid-output'});
               if(attempt) {
                 lastError=Object.assign(error,{code:error.code || 'invalid-output'});
+                if(!lastError.upstreamBody && lastAnswer) lastError.upstreamBody=String(lastAnswer).slice(0,400);
                 if(stage==='hourly' && modelIndex<models.length-1) continue modelLoop;
                 throw lastError;
               }
@@ -258,6 +261,10 @@ export function createInformationTreeService({repository,reportRepository,feedSe
       }
       if(lastError) throw lastError;
     } catch(error) {
+      if(error && typeof error==='object') {
+        if(!Number.isFinite(error.inputChars)) error.inputChars=sentMessage.length;
+        if(!Number.isFinite(error.inputBytes)) error.inputBytes=Buffer.byteLength(sentMessage);
+      }
       error.timing=timing;reportRepository.saveAnalysisStage(s.workspaceId,period,key,key,{...stageInput(),failure:treeFailure(error,key,'',now())},null,'failed',error.message);throw error;
     } finally {repository.release(s.workspaceId,key,owner);}
   }

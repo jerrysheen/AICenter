@@ -206,6 +206,15 @@ test('launcher keeps daily logs, worker-only restart, and deploy guards', () => 
   assert.doesNotMatch(deploy, /git\s+stash/);
   assert.doesNotMatch(deploy, /Get-Content[^\n]*\.env/);
   assert.match(launcher, /Web exited\. Restarting Web and Worker; tunnel stays up\./);
+  assert.match(launcher, /Queue<LogLine>/);
+  assert.match(launcher, /Monitor\.Pulse/);
+  assert.match(launcher, /queue\.Count >= Capacity/);
+  assert.match(launcher, /FileShare\.ReadWrite \| FileShare\.Delete/);
+  assert.match(launcher, /DatedPath/);
+  const received = launcher.indexOf('process.OutputDataReceived');
+  const writeLine = launcher.indexOf('writer.WriteLine', received);
+  assert.ok(received > 0 && writeLine > received);
+  assert.equal(launcher.slice(received, received + 220).includes('WriteLine'), false);
 });
 
 test('instance config exposes deploy backup paths and not dotenv values', () => {

@@ -100,6 +100,13 @@ function sameInput(left, right) {
   return JSON.stringify(stableValue(left || {})) === JSON.stringify(stableValue(right || {}));
 }
 
+function upstreamBodySnippet(error) {
+  const source=error?.body ?? error?.responseBody ?? error?.response ?? error?.data ?? error?.details;
+  if(source==null || source==='') return '';
+  const text=typeof source==='string' ? source : JSON.stringify(source);
+  return text.slice(0, 2000);
+}
+
 function assertSuccessfulTurn(result) {
   const end=(result?.events || []).findLast(event=>event.type==='turn/end');
   const reason=end?.data?.reason;
@@ -110,6 +117,10 @@ function assertSuccessfulTurn(result) {
     if(raw!=null && String(raw).trim()) error.upstreamCode=String(raw).slice(0,80);
     const status=Number(reason.error?.status ?? reason.error?.statusCode ?? raw);
     if(Number.isInteger(status) && status>=400 && status<=599) error.upstreamStatus=status;
+    const body=upstreamBodySnippet(reason.error);
+    if(body) error.upstreamBody=body;
+    const finish=reason.error?.finishReason || reason.finishReason;
+    if(finish) error.finishReason=String(finish).slice(0, 40);
     throw error;
   }
   if(reason?.kind==='aborted') throw Object.assign(new Error('模型调用已中止，未产生完成稿'),{name:'AbortError'});
@@ -652,6 +663,10 @@ export function createHarnessAgentRuntime({
         visibleTools,
       };
     } catch (error) {
+      if(articleTicket && error && typeof error==='object') {
+        if(!error.googleKeyEnv && articleTicket.keyEnv) error.googleKeyEnv=articleTicket.keyEnv;
+        if(!error.admittedModel && articleTicket.model) error.admittedModel=articleTicket.model;
+      }
       if(articleTicket)googleAdmission.failed(articleTicket,error);
       await record('run.failed', {
         runtime: 'harness',

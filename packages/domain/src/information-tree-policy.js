@@ -148,10 +148,26 @@ export function classifyCondenseError(error) {
   return {kind, name, code, status, upstream: condenseUpstreamCode(error, message), message: redactCondenseLog(message) || '-'};
 }
 
+function condenseKeySuffix(keyEnv) {
+  const name = String(keyEnv || '').trim();
+  if (!/^[A-Z][A-Z0-9_]*$/.test(name)) return '-';
+  const digits = name.match(/(\d+)$/);
+  if (digits) return `KEY${digits[1]}`;
+  if (/GEMINI_API_KEY$/.test(name)) return 'KEY';
+  return name.slice(-12);
+}
+
+function condenseBodySnippet(error) {
+  const raw = error?.upstreamBody ?? error?.responseBody ?? '';
+  return redactCondenseLog(raw) || '-';
+}
+
 export function formatCondenseFailureLog(error, meta = {}) {
   const described = classifyCondenseError(error);
   const timing = error?.timing || {};
   const numberOrDash = value => Number.isFinite(value) ? value : '-';
+  const inputBytes = Number.isFinite(Number(error?.inputBytes)) ? Number(error.inputBytes) : meta.inputBytes;
+  const inputChars = Number.isFinite(Number(error?.inputChars)) ? Number(error.inputChars) : meta.inputChars;
   return [
     '[worker] 浓缩失败',
     `layer=${meta.layer || '-'}`,
@@ -162,17 +178,21 @@ export function formatCondenseFailureLog(error, meta = {}) {
     `upstream=${described.upstream || '-'}`,
     `status=${described.status ?? '-'}`,
     `provider=${safeCondenseRouteId(meta.provider)}`,
-    `model=${safeCondenseRouteId(meta.model)}`,
+    `model=${safeCondenseRouteId(error?.admittedModel || meta.model)}`,
+    `key=${condenseKeySuffix(error?.googleKeyEnv || meta.keyEnv)}`,
     `tag=${meta.tagId ?? 'null'}`,
     `windowStart=${numberOrDash(meta.windowStart)}`,
     `inputs=${numberOrDash(meta.inputCount)}`,
-    `inputBytes=${numberOrDash(meta.inputBytes)}`,
+    `inputBytes=${numberOrDash(inputBytes)}`,
+    `inputChars=${numberOrDash(inputChars)}`,
     `skillBytes=${numberOrDash(meta.skillBytes)}`,
     `calls=${numberOrDash(meta.calls)}`,
     `queueMs=${numberOrDash(Number.isFinite(timing.queueMs) ? timing.queueMs : meta.queueMs)}`,
     `executionMs=${numberOrDash(Number.isFinite(timing.executionMs) ? timing.executionMs : meta.executionMs)}`,
     `elapsedMs=${numberOrDash(meta.elapsedMs)}`,
+    `finish=${safeCondenseRouteId(error?.finishReason)}`,
     `cached=${error?.cachedPending ? 1 : 0}`,
+    `body=${condenseBodySnippet(error)}`,
     `message=${described.message}`,
   ].join(' ');
 }

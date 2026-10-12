@@ -70,6 +70,24 @@ export function hourlyReportDisabled(env = process.env) {
   return String(env?.AI_CENTER_HOURLY_DISABLED ?? '') === '1';
 }
 
+// Hold a short reading-classification remainder while this hour can still gain information nodes.
+// Terminal content failures do not keep the last items unclassified.
+export function hourlyReadingFlushRemainder(digest) {
+  if (!digest || typeof digest !== 'object') return true;
+  const pending = Array.isArray(digest.pending) ? digest.pending : null;
+  const ids = Array.isArray(digest.pendingIds) ? digest.pendingIds : null;
+  if (!pending && !ids) return true;
+  if ((pending?.length || 0) === 0 && (ids?.length || 0) === 0) return true;
+  if (pending?.length) {
+    const stillComing = pending.some((item) => {
+      const reason = item?.reason;
+      return item?.retryable === true || reason === 'information-not-ready' || reason == null || reason === '';
+    });
+    return !stillComing;
+  }
+  return false;
+}
+
 export function allowHourlyScheduleEnqueue(schedule, env = process.env) {
   return !(schedule?.jobType === REPORT_HOURLY_JOB_TYPE && hourlyReportDisabled(env));
 }
@@ -93,7 +111,8 @@ export function createReportJobHandlers({ reportService, briefService = null, in
       const readingErrors=[];
       if(readingHour?.enabled) {
         for(const window of windows) {
-          try {const saved=await readingHour.scoreWindow({workspace: input.workspaceId || 'local', window}); if(saved?.readingErrors?.length) readingErrors.push(...saved.readingErrors.map(error=>({...error,window})));}
+          const digest=(digests || []).find(item=>item?.window?.startAt===window.startAt) || null;
+          try {const saved=await readingHour.scoreWindow({workspace: input.workspaceId || 'local', window, flushRemainder: hourlyReadingFlushRemainder(digest)}); if(saved?.readingErrors?.length) readingErrors.push(...saved.readingErrors.map(error=>({...error,window})));}
           catch(error) {readingErrors.push({window,reason:String(error?.message || error).slice(0,180)});}
         }
       }
