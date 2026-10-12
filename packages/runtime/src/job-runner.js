@@ -42,6 +42,10 @@ export function createJobRunner(options) {
   const staleAfterMs = Number.isFinite(Number(options.staleAfterMs)) && Number(options.staleAfterMs) > 0
     ? Number(options.staleAfterMs)
     : 10 * 60_000;
+  const maxRunningMs = Number(options.maxRunningMs);
+  const maxRunningMsByType = options.maxRunningMsByType && typeof options.maxRunningMsByType === 'object'
+    ? options.maxRunningMsByType
+    : {};
   const recoverEveryMs = Math.max(100, Number(options.recoverEveryMs) || 30_000);
   const concurrency = parseWorkerJobConcurrency(options.concurrency || {});
   const supersedeAfterMs = options.supersedeAfterMs && typeof options.supersedeAfterMs === 'object'
@@ -52,7 +56,14 @@ export function createJobRunner(options) {
   const inFlight = new Map();
 
   function recoverStale() {
-    store.recoverStaleJobs?.(staleAfterMs);
+    store.recoverStaleJobs?.(staleAfterMs, Date.now(), {
+      ...(Number.isFinite(maxRunningMs) && maxRunningMs > 0 ? { maxRunningMs } : {}),
+      maxRunningMsByType,
+    });
+    for (const [id] of inFlight) {
+      const current = store.getJob?.(id);
+      if (current && current.status !== 'running') inFlight.delete(id);
+    }
   }
 
   function releaseSuperseded(now = Date.now()) {

@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-12 小时报与日报可靠性：Gemini 小时调用遇到 500/503 先退避再换 `AI_CENTER_GEMINI_HOURLY_MODELS` 中的下一个模型；未知或重复输入归属先修正，修不好再换模型。同一小时失败达到上限后记终态，不再反复入队。运行超过时限的任务标失败并放开队列，Worker 启动时也会回收。日报单标签超时改为部分发布，当天没有刊期会稍后重试。补 2026-10-12：`node --env-file=.env scripts/backfill-daily-report.mjs --date 2026-10-12`。需要重启 Worker。见 `progress/2026-10-12-report-reliability.md`。
+
 2026-10-12 TrendForce NAND 公开页本身停在 2026-09-28；解析把日高／日低折进规格，且标题去掉 `US$/chip` 后新行待核验。`trendforce-tables-3` 修正规格与盘列，DRAM／NAND 未税现货和合约记 USD/chip。migration 54 记录每次抓取与内容是否变化。Worker 默认每天 10:30、17:30（Asia/Shanghai）跑 `feed.trendforce.prices`，可用 `AI_CENTER_TRENDFORCE_PRICE_SYNC`、`AI_CENTER_TRENDFORCE_PRICE_AT`、`AI_CENTER_TRENDFORCE_PRICE_TIMEZONE` 调整。B 站订阅是贴链接，不是时间线；无自动刷新时记一次 `bilibili-link-only` 心跳，不拉新视频。需重启 Worker，Web 重载后才显示币种和抓取提示。未在生产重抓，不宣称 NAND 已有 09-28 之后的公开报价。见 `hardware-prices-v1.md` 与 `progress/2026-10-12-trendforce-nand-fetch.md`。
 
 2026-10-10 窄屏吸顶二级标签条的背景改成整行宽度，股票横滚指数卡和全球行情表下滚时不再从「简报」右侧露出。纯前端，不需要重启。见 `progress/2026-10-10-overview-sticky-nav.md`。

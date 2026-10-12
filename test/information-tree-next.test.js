@@ -134,7 +134,7 @@ test('real SQLite metadata port matches saved feed material version without body
 test('changed information policy leaves explicit pending instead of silently using old draft or rereading originals',async()=>{
   const m=material('a'),f=fixture({candidatePort:async()=>[{id:m.id,version:m.version}]});try{
     await f.service.prepareInformation({materials:[m]});
-    const skills={...f.skills,information:{...f.skills.information,version:'f'.repeat(64)}};
+    const skills={...f.skills,information:{...f.skills.information,version:'f'.repeat(64),compatiblePromptHashes:[]}};
     const changed=createInformationTreeService({...f.options,skills,materialPort:async()=>{throw new Error('no original fallback');}});
     const before=f.calls.length,h=await changed.generateHour({hourStart:start});assert.equal(h.status,'partial');assert.equal(h.pending[0].reason,'information-not-ready');assert.equal(h.inputIds.length,0);assert.equal(f.calls.length,before);
   }finally{f.store.close();}

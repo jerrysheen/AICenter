@@ -1,5 +1,5 @@
 import { parseContract, GenerateDailyBriefInputSchema, GenerateDailyReportInputSchema } from '../../contracts/src/index.js';
-import { dailySlotOnInstant } from '../../domain/src/zoned-time.js';
+import { dailySlotOnInstant, zonedLocalToUtc } from '../../domain/src/zoned-time.js';
 import {GenerateHourlyDigestInputSchema} from '../../contracts/src/report.js';
 import {resolveDailyConfig,resolveDailyWindow,resolveReportDate} from '../../domain/src/daily-window.js';
 import {condenseJobFailure, describeCondenseFailure} from '../../domain/src/information-tree-policy.js';
@@ -8,7 +8,21 @@ export const REPORT_DAILY_JOB_TYPE = 'report.daily.generate';
 export const REPORT_DAILY_BRIEF_JOB_TYPE = 'report.daily.brief.generate';
 export const REPORT_HOURLY_JOB_TYPE = 'report.hourly.extract';
 export const DAILY_REPORT_SCHEDULE_KEY = 'report.daily.default';
+export const DAILY_REPORT_CATCHUP_KEY = 'report.daily.catchup';
 export const DAILY_BRIEF_CATCHUP_DELAY_MS = 30 * 60 * 1000;
+
+export function dailyRunAt(reportDate, config) {
+  const match = String(reportDate || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match || !config?.timezone) return null;
+  const runMinute = config.runMinute ?? config.cutoffMinute;
+  return zonedLocalToUtc(Number(match[1]), Number(match[2]), Number(match[3]), config.cutoffHour, runMinute, config.timezone);
+}
+
+export function dailyCatchupAllowed(now, config) {
+  const reportDate = resolveReportDate(now, config);
+  const runAt = dailyRunAt(reportDate, config);
+  return Number.isFinite(runAt) && now >= runAt;
+}
 
 export function scheduleDailyBriefCatchup(store, input, job, now = Date.now()) {
   if (input?.catchup === true) return null;
@@ -70,7 +84,7 @@ export function createReportJobHandlers({ reportService, briefService = null, in
         }
       }
       if(treeService) {
-        if(digests[0]?.status==='failed' && digests[0].groupFailures?.some(p=>p.retryable)) {
+        if(digests[0]?.status==='failed' && !digests[0].terminal && digests[0].groupFailures?.some(p=>p.retryable)) {
           const failures=digests[0].groupFailures;
           console.error(`[worker] 小时浓缩临时失败 groups=${failures.length} retryable=${failures.filter(p=>p.retryable).length} ${failures.map(p=>`tag=${p.tagId ?? 'null'} reason=${p.reason} queueMs=${p.queueMs ?? '-'} executionMs=${p.executionMs ?? '-'}`).join('; ')}`);
           throw rememberReportFailure(new Error('小时浓缩临时失败；成功分类及检查点已保留'), digests[0]);
@@ -93,6 +107,11 @@ export function createReportJobHandlers({ reportService, briefService = null, in
         try {
           const reportDate=input.reportDate || resolveReportDate(Date.now(),dailyConfig);
           const window=resolveDailyWindow({reportDate,...dailyConfig});
+          if(input.scheduleKey===DAILY_REPORT_CATCHUP_KEY) {
+            if(!dailyCatchupAllowed(Date.now(), dailyConfig)) return {status:'skipped', reason:'before-run', reportDate};
+            const published=treeService.published?.(input.workspaceId || 'local', 'daily', window);
+            if(published && published.status!=='failed') return {status:'skipped', reason:'published', reportDate, editionId:published.id};
+          }
           const edition=await treeService.generateDaily({workspaceId:input.workspaceId || 'local',window:{startAt:window.startAt,endAt:window.endAt}});
           if(edition.status==='failed') throw rememberReportFailure(new Error('日报浓缩树生成失败，旧刊期继续可读'), edition);
           return {editionId:edition.id,reportDate,status:edition.status};
@@ -156,6 +175,26 @@ export function ensureDailyReportSchedule(store, config, now = Date.now()) {
     priority: 0,
     maxAttempts: 2,
     nextRunAt,
+  });
+}
+
+export function ensureDailyReportCatchupSchedule(store, config, now = Date.now()) {
+  const minutes = Number.isInteger(config.catchupIntervalMinutes) ? config.catchupIntervalMinutes : 120;
+  const prior = store.getJobSchedule?.('local', DAILY_REPORT_CATCHUP_KEY);
+  return store.upsertJobSchedule({
+    workspaceId: 'local',
+    key: DAILY_REPORT_CATCHUP_KEY,
+    jobType: REPORT_DAILY_JOB_TYPE,
+    enabled: true,
+    schedule: { kind: 'interval', intervalMinutes: minutes },
+    input: {
+      timezone: config.timezone,
+      cutoffHour: config.cutoffHour,
+      cutoffMinute: config.cutoffMinute,
+    },
+    priority: 0,
+    maxAttempts: 1,
+    nextRunAt: !prior && dailyCatchupAllowed(now, config) ? now : now + minutes * 60_000,
   });
 }
 
