@@ -1718,6 +1718,65 @@ migrations.push({ version: 54, name: 'hardware_price_fetch_checks', up(database)
   `);
 }});
 
+migrations.push({ version: 55, name: 'compute_price_snapshots', up(database) {
+  database.exec(`
+    CREATE TABLE compute_price_snapshots (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      source_key TEXT NOT NULL,
+      quote_date TEXT NOT NULL,
+      captured_at INTEGER NOT NULL,
+      content_hash TEXT NOT NULL,
+      parser_version TEXT NOT NULL,
+      warnings_json TEXT NOT NULL,
+      last_checked_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX compute_price_snapshot_identity
+      ON compute_price_snapshots(workspace_id, source_key, quote_date, content_hash, parser_version);
+    CREATE TABLE compute_price_checks (
+      workspace_id TEXT NOT NULL,
+      source_key TEXT NOT NULL,
+      last_checked_at INTEGER NOT NULL,
+      last_changed_at INTEGER NOT NULL,
+      content_hash TEXT NOT NULL,
+      parser_version TEXT NOT NULL,
+      quote_date TEXT NOT NULL,
+      snapshot_id TEXT NOT NULL,
+      PRIMARY KEY (workspace_id, source_key)
+    );
+    CREATE TABLE token_price_observations (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      snapshot_id TEXT NOT NULL,
+      sort_index INTEGER NOT NULL,
+      model_key TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      quote_date TEXT NOT NULL,
+      prompt_per_million TEXT NOT NULL,
+      completion_per_million TEXT NOT NULL,
+      context_length INTEGER,
+      captured_at INTEGER NOT NULL
+    );
+    CREATE INDEX token_price_lookup ON token_price_observations(workspace_id, model_key, quote_date, captured_at);
+    CREATE TABLE gpu_rent_observations (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      snapshot_id TEXT NOT NULL,
+      sort_index INTEGER NOT NULL,
+      source_key TEXT NOT NULL,
+      gpu_key TEXT NOT NULL,
+      label TEXT NOT NULL,
+      lane TEXT NOT NULL,
+      quote_date TEXT NOT NULL,
+      usd_per_hour TEXT NOT NULL,
+      sample_count INTEGER,
+      captured_at INTEGER NOT NULL
+    );
+    CREATE INDEX gpu_rent_lookup ON gpu_rent_observations(workspace_id, source_key, gpu_key, lane, quote_date, captured_at);
+  `);
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

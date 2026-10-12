@@ -18,6 +18,7 @@ import { createQuantLabService } from './quant-lab-service.js';
 import { createEtfWhaleReadService } from './etf-whale-service.js';
 import { createEventQuoteSnapshotService } from './event-quote-snapshots.js';
 import { createInvestorDiscussionService } from './investor-discussion.js';
+import { createComputePriceService } from './compute-price-service.js';
 
 export { createContextService, createDailyBriefService, createFeedService, createIdentityService, createKnowledgeService, createMarketStatisticsService, createMediaIngestionService, createReportService, createRuntimeService, createTradingService, createTaggingService };
 export { buildDailyBriefCandidates } from './daily-brief-candidates.js';
@@ -217,6 +218,9 @@ export function createDomainServices({
         listOpenJobs: (type) => store.listOpenJobs?.(type) || [],
         timeZone: env.AI_CENTER_INVESTOR_DIGEST_TIMEZONE || 'Asia/Shanghai',
       })
+      : null,
+    computePrices: store.repositories.computePrices
+      ? createComputePriceService({ repository: store.repositories.computePrices })
       : null,
   });
 }

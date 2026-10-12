@@ -250,8 +250,8 @@ test('worker price schedules run twice each Shanghai day and can be turned off',
 test('forward migration upgrades V39 with existing content and states intact',()=>{
   const f=fixture();try {
     f.store.close();const db=new Database(path.join(f.directory,'test.db'));
-    db.exec(`DROP TABLE IF EXISTS hardware_price_page_checks;DROP TABLE hardware_price_legacy_links;DROP TABLE hardware_price_snapshot_rows;DROP TABLE hardware_price_observations;DROP TABLE hardware_price_snapshots;
-      DROP TABLE media_entry_legacy_links;ALTER TABLE media_index_entries DROP COLUMN article_kind;DELETE FROM schema_migrations WHERE version IN (40,54);PRAGMA user_version=39;`);
+    db.exec(`DROP TABLE IF EXISTS gpu_rent_observations;DROP TABLE IF EXISTS token_price_observations;DROP TABLE IF EXISTS compute_price_checks;DROP TABLE IF EXISTS compute_price_snapshots;DROP TABLE IF EXISTS hardware_price_page_checks;DROP TABLE hardware_price_legacy_links;DROP TABLE hardware_price_snapshot_rows;DROP TABLE hardware_price_observations;DROP TABLE hardware_price_snapshots;
+      DROP TABLE media_entry_legacy_links;ALTER TABLE media_index_entries DROP COLUMN article_kind;DELETE FROM schema_migrations WHERE version IN (40,54,55);PRAGMA user_version=39;`);
     const before=db.prepare('SELECT count(*) n FROM content_items').get().n;runMigrations(db);runMigrations(db);
     assert.equal(db.pragma('user_version',{simple:true}),latestSchemaVersion());assert.equal(db.prepare('SELECT count(*) n FROM content_items').get().n,before);
     assert.equal(db.prepare(`SELECT COUNT(*) n FROM pragma_table_info('hardware_price_snapshots') WHERE name='last_checked_at'`).get().n,1);db.close();

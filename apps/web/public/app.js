@@ -7,6 +7,7 @@ import { icon } from './icons.js?v=dev';
 import { renderMarkdownInto, renderFeedTextInto, splitFeedText } from './markdown.js?v=dev';
 import { renderQuantLab } from './quant-lab.js?v=dev';
 import { createHardwarePricesPage, hardwareMarketItem } from './hardware-prices.js?v=dev';
+import { computeMarketItems } from './compute-prices.js?v=dev';
 import { openModelUsageDialog } from './model-usage.js?v=dev';
 import { createFeedLikeAction } from './feed-interaction.js?v=dev';
 import { createMediaFeedCache, createMediaFeedLoader, createMediaReaderSession, mediaIndexBody, mediaReaderParagraphs } from './media-feed.js?v=dev';
@@ -111,6 +112,13 @@ const state = {
   hardwareRequestId: 0,
   hardwareKind: 'all',
   hardwareReview: false,
+  computeItems: [],
+  computeChecks: [],
+  computeKind: 'all',
+  computeLoading: false,
+  computeLoaded: false,
+  computeError: '',
+  computeRequestId: 0,
   assetFilter: '',
   assetDashboard: null,
   assetDashboardError: '',
@@ -1044,6 +1052,7 @@ function setView(name, options = {}) {
   if (view === 'market' && parsed.marketPane) state.tradePane = parsed.marketPane;
   if (view === 'market' && parsed.marketPane === 'assets') {
     if (requested.startsWith('market/global/hardware')) state.assetClass = 'hardware';
+    else if (requested.startsWith('market/global/compute')) state.assetClass = 'compute';
     else if (parsed.marketTab === 'events') state.assetClass = 'events';
     else if (state.assetClass === 'events') state.assetClass = 'all';
   }
@@ -4603,7 +4612,19 @@ function hardwareFetchHint() {
   }).join(' · ');
 }
 
+function computeFetchHint() {
+  const names = { openrouter: 'AI Token', runpod: 'RunPod', vast: 'Vast' };
+  const pages = state.computeChecks || [];
+  if (!pages.length) return state.computeLoading ? '正在读取 AI Token 与 GPU 租金…' : '';
+  return pages.map((page) => {
+    const name = names[page.sourceKey] || page.sourceKey;
+    const checked = new Date(page.lastCheckedAt).toLocaleString('zh-CN', { hour12: false });
+    return page.unchanged ? `${name} ${checked} 已抓取，报价未变` : `${name} ${checked} 抓到新报价`;
+  }).join(' · ');
+}
+
 function assetBoardHint(onHardware) {
+  if (state.assetClass === 'compute') return state.computeError || computeFetchHint();
   if (onHardware) return state.hardwareError || hardwareFetchHint();
   if (state.assetError && !state.assetLoading) return state.assetError;
   if (state.assetLoading) return '正在读取行情…';
@@ -4646,6 +4667,10 @@ async function syncTradePaneData({ refresh = false } = {}) {
     });
     if (state.assetClass === 'hardware') {
       await Promise.all([loadHardwarePrices(), native]);
+      return;
+    }
+    if (state.assetClass === 'compute') {
+      await Promise.all([loadComputePrices(), native]);
       return;
     }
     await Promise.all([
@@ -5073,16 +5098,20 @@ function syncGlobalEventsSection() {
 }
 
 function renderAssets() {
-  renderChipTabs(elements['asset-filters'], [assetClasses[0],{id:'hardware',label:'AI硬件'},...assetClasses.slice(1),{id:'events',label:'事件概率'}], state.assetClass, (id) => {
+  renderChipTabs(elements['asset-filters'], [assetClasses[0],{id:'hardware',label:'AI硬件'},{id:'compute',label:'AI Token'},...assetClasses.slice(1),{id:'events',label:'事件概率'}], state.assetClass, (id) => {
     const previous = state.assetClass;
-    if (id === previous && id !== 'hardware') return;
+    if (id === previous && id !== 'hardware' && id !== 'compute') return;
     state.assetClass = id;
     if (id === 'hardware') {
       if (state.hardwareLoaded && !state.hardwareItems.some((row) => row.verification === 'verified')) state.hardwareReview = true;
       setView('market/global/hardware');
       return;
     }
-    if (id === 'events' || previous === 'events' || previous === 'hardware' || normalizeRoute(location.hash).startsWith('market/global/hardware')) {
+    if (id === 'compute') {
+      setView('market/global/compute');
+      return;
+    }
+    if (id === 'events' || previous === 'events' || previous === 'hardware' || previous === 'compute' || normalizeRoute(location.hash).startsWith('market/global/hardware') || normalizeRoute(location.hash).startsWith('market/global/compute')) {
       setView(id === 'events' ? 'market/global?tab=events' : 'market/global');
       return;
     }
@@ -5090,9 +5119,10 @@ function renderAssets() {
   });
   const hardwareFilters=document.getElementById('hardware-market-filters');
   const onHardware=state.assetClass==='hardware';
+  const onCompute=state.assetClass==='compute';
   const onEvents = syncGlobalEventsSection();
-  elements['asset-filter'].placeholder=onHardware?'完整规格 / 报价类型':'名称 / 代码 / 介绍';
-  hardwareFilters.classList.toggle('hidden',!onHardware);
+  elements['asset-filter'].placeholder=onHardware?'完整规格 / 报价类型':onCompute?'模型 / GPU':'名称 / 代码 / 介绍';
+  hardwareFilters.classList.toggle('hidden',!onHardware && !onCompute);
   if(onHardware) {
     const kinds=document.createElement('div');kinds.className='chip-tabs';
     renderChipTabs(kinds,[{id:'all',label:'全部报价'},{id:'spot',label:'现货'},{id:'contract',label:'合约'},{id:'retail',label:'零售价'},{id:'other-storage',label:'其他存储参考'}],state.hardwareKind,id=>{state.hardwareKind=id;renderAssets();});
@@ -5101,6 +5131,11 @@ function renderAssets() {
     review.textContent=state.hardwareReview?'包含待核验':'查看待核验'+(pending?` (${pending})`:'');review.setAttribute('aria-pressed',String(state.hardwareReview));
     review.addEventListener('click',()=>{state.hardwareReview=!state.hardwareReview;renderAssets();});
     hardwareFilters.replaceChildren(kinds,review);
+  }
+  if(onCompute) {
+    const kinds=document.createElement('div');kinds.className='chip-tabs';
+    renderChipTabs(kinds,[{id:'all',label:'全部'},{id:'token',label:'Token'},{id:'gpu',label:'GPU 租金'}],state.computeKind,id=>{state.computeKind=id;renderAssets();});
+    hardwareFilters.replaceChildren(kinds);
   }
   if (state.tradePane === 'assets') {
     setTradeHint(onEvents
@@ -5117,7 +5152,7 @@ function renderAssets() {
   if (!rows.length) {
     elements['asset-list'].replaceChildren(Object.assign(document.createElement('div'), {
       className: 'empty-state',
-      textContent: onHardware ? (state.hardwareLoading?'正在读取硬件报价…':state.hardwareError || '没有符合筛选的报价。') : state.assetLoading ? '正在加载全球行情…' : (state.assetError || '没有符合筛选的标的。'),
+      textContent: onCompute ? (state.computeLoading ? '正在读取 AI Token 与 GPU 租金…' : state.computeError || '还没有 AI Token 或 GPU 租金快照。') : onHardware ? (state.hardwareLoading?'正在读取硬件报价…':state.hardwareError || '没有符合筛选的报价。') : state.assetLoading ? '正在加载全球行情…' : (state.assetError || '没有符合筛选的标的。'),
     }));
     renderMarketNativeBoard();
     if (document.body.dataset.view === 'sources') renderHub();
@@ -5129,8 +5164,16 @@ function renderAssets() {
 }
 
 function visibleAssets() {
-  const board = state.assetBoard;
   const needle = state.assetFilter.trim().toLowerCase();
+  if (state.assetClass === 'compute') {
+    return sortByChange(state.computeItems.filter((item) => {
+      if (state.computeKind === 'token' && item.compute?.kind !== 'token') return false;
+      if (state.computeKind === 'gpu' && item.compute?.kind !== 'gpu') return false;
+      const text = `${item.name} ${item.symbol} ${item.summary || ''} ${item.group || ''}`.toLowerCase();
+      return !needle || text.includes(needle);
+    }));
+  }
+  const board = state.assetBoard;
   const hardware=state.hardwareItems.filter(r=>r.average!==null && (state.assetClass==='hardware' ? (state.hardwareReview || r.verification==='verified') && (state.hardwareKind==='other-storage'?r.category==='other-storage':r.category!=='other-storage' && (state.hardwareKind==='all' || r.quoteType===state.hardwareKind)) : r.verification==='verified' && r.category!=='other-storage'))
     .sort((a,b)=>['dram','nand','ssd','other-storage'].indexOf(a.category)-['dram','nand','ssd','other-storage'].indexOf(b.category) || ['spot','contract','retail','unknown'].indexOf(a.quoteType)-['spot','contract','retail','unknown'].indexOf(b.quoteType) || (b.periodStart ?? -1)-(a.periodStart ?? -1) || a.specification.localeCompare(b.specification,undefined,{numeric:true})).map(hardwareMarketItem).filter(Boolean);
   const filtered = [...(board?.watchlist || []),...hardware].filter((item) => {
@@ -5139,6 +5182,28 @@ function visibleAssets() {
     return classOk && (!needle || text.includes(needle));
   });
   return sortByChange(filtered);
+}
+
+async function loadComputePrices() {
+  if (!state.bootstrapped || !state.session) return;
+  const requestId = ++state.computeRequestId;
+  state.computeLoading = true;
+  state.computeError = '';
+  renderAssets();
+  try {
+    const payload = await api('/api/v1/compute-prices');
+    if (requestId !== state.computeRequestId) return;
+    state.computeItems = computeMarketItems(payload, { kind: 'all' });
+    state.computeChecks = payload.checks || [];
+    state.computeLoaded = true;
+  } catch (error) {
+    if (requestId === state.computeRequestId) state.computeError = error.message;
+  } finally {
+    if (requestId === state.computeRequestId) {
+      state.computeLoading = false;
+      renderAssets();
+    }
+  }
 }
 
 async function loadHardwarePrices() {
@@ -7353,6 +7418,13 @@ function renderWatchRows(target, rows, { formatValue } = {}) {
       if(!item.sparkline || item.sparkline.length<2)row.querySelector('.market-spark').textContent='暂无历史';
       row.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openPage('hardware',`series/${item.hardware.seriesKey}`);}});
     }
+    if(item.compute) {
+      row.querySelector('.quote-code').textContent=item.group;
+      if(item.priceSuffix) row.querySelector('.quote-price').textContent=`${format(item, item.lastPrice)} ${item.priceSuffix}`;
+      row.querySelector('.quote-price').classList.toggle('up',item.changePct!==null && up);
+      row.querySelector('.quote-change').classList.toggle('up',item.changePct!==null && up);
+      if(!item.sparkline || item.sparkline.length<2)row.querySelector('.market-spark').textContent='暂无历史';
+    }
     if (item.group === '自选') {
       const identity = row.querySelector('.quote-identity');
       const remove = document.createElement('button');
@@ -7367,7 +7439,11 @@ function renderWatchRows(target, rows, { formatValue } = {}) {
       });
       identity.append(remove);
     }
-    row.addEventListener('click', () => item.hardware ? openPage('hardware',`series/${item.hardware.seriesKey}`) : openPage('quote', item.symbol));
+    row.addEventListener('click', () => {
+      if (item.compute) return;
+      if (item.hardware) openPage('hardware', `series/${item.hardware.seriesKey}`);
+      else openPage('quote', item.symbol);
+    });
     return row;
   }));
 }

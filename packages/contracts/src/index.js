@@ -257,6 +257,7 @@ export function parseXueqiuFeedQuery(value) {
 }
 
 export * from './hardware-prices.js';
+export * from './compute-prices.js';
 
 export function parseMediaFeedQuery(value) {
   const query = value && typeof value === 'object' && !Array.isArray(value) ? value : {};

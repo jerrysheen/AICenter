@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-12 全球行情新增「AI Token」：OpenRouter 公开型号价换算为每百万 token 美元，RunPod 保存 H100/H200/B200 安全云和社区云小时价，Vast 公开挂牌有整卡 H100 时保存最低和中位。migration 55。`market.token-prices.snapshot` 默认每天 08:20（Asia/Shanghai），`market.gpu-rent.snapshot` 默认每 360 分钟。开关是 `AI_CENTER_TOKEN_PRICE_SYNC`、`AI_CENTER_TOKEN_PRICE_AT`、`AI_CENTER_TOKEN_PRICE_TIMEZONE`、`AI_CENTER_GPU_RENT_SYNC`、`AI_CENTER_GPU_RENT_INTERVAL_MINUTES`。需重启 Worker，并重载 Web 后 `#market/global/compute` 才显示。未在生产抓取，不宣称租金覆盖全市场。见 `compute-prices-v1.md` 与 `progress/2026-10-12-compute-prices.md`。
+
 2026-10-12 TrendForce NAND 公开页本身停在 2026-09-28；解析把日高／日低折进规格，且标题去掉 `US$/chip` 后新行待核验。`trendforce-tables-3` 修正规格与盘列，DRAM／NAND 未税现货和合约记 USD/chip。migration 54 记录每次抓取与内容是否变化。Worker 默认每天 10:30、17:30（Asia/Shanghai）跑 `feed.trendforce.prices`，可用 `AI_CENTER_TRENDFORCE_PRICE_SYNC`、`AI_CENTER_TRENDFORCE_PRICE_AT`、`AI_CENTER_TRENDFORCE_PRICE_TIMEZONE` 调整。B 站订阅是贴链接，不是时间线；无自动刷新时记一次 `bilibili-link-only` 心跳，不拉新视频。需重启 Worker，Web 重载后才显示币种和抓取提示。未在生产重抓，不宣称 NAND 已有 09-28 之后的公开报价。见 `hardware-prices-v1.md` 与 `progress/2026-10-12-trendforce-nand-fetch.md`。
 
 2026-10-10 窄屏吸顶二级标签条的背景改成整行宽度，股票横滚指数卡和全球行情表下滚时不再从「简报」右侧露出。纯前端，不需要重启。见 `progress/2026-10-10-overview-sticky-nav.md`。

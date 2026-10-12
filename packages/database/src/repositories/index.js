@@ -3,6 +3,7 @@ import { createFeedRepository } from './feed-repository.js';
 import { createInformationTreeRepository } from './information-tree-repository.js';
 import { createModelUsageRepository } from './model-usage-repository.js';
 import { createMediaRepository } from './media-repository.js';
+import { createComputePriceRepository } from './compute-price-repository.js';
 import { createHardwarePriceRepository } from './hardware-price-repository.js';
 import { createKnowledgeRepository } from './knowledge-repository.js';
 import { createReportRepository } from './report-repository.js';
@@ -22,6 +23,7 @@ export function createDomainRepositories(database, emitEvent) {
     feed: createFeedRepository(database, emitEvent),
     media: createMediaRepository(database, emitEvent),
     hardwarePrices: createHardwarePriceRepository(database, emitEvent),
+    computePrices: createComputePriceRepository(database),
     trading: createTradingRepository(database, emitEvent),
     etfWhale: createEtfWhaleRepository(database, emitEvent),
     eventQuotes: createEventQuoteRepository(database, emitEvent),
