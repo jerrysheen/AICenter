@@ -391,7 +391,7 @@ const elements = Object.fromEntries([
   'reference-dock', 'reference-preview', 'reference-preview-title', 'reference-preview-meta', 'reference-preview-body',
   'reference-pack', 'reference-pack-meta', 'reference-pack-chips', 'reference-pack-ask', 'reference-pack-task',
   'reference-pack-export', 'reference-pack-clear',
-  'share-image-dialog', 'share-image-preview', 'share-image-save',
+  'share-image-dialog', 'share-image-pages', 'share-image-preview', 'share-image-save',
   'hub-ticker', 'overview-subnav', 'nav-back', 'toggle-search', 'feed-filter', 'feed-open-calendar',
   'feed-filter-dialog', 'feed-filter-body', 'open-all-quotes', 'open-full-feed', 'hub-market-note',
   'page-root', 'settings-hub', 'settings-connections',
@@ -4398,6 +4398,7 @@ function feedToNewsRow(post) {
     attachOpen: (open) => attachGuardedOpen(open, () => openArticle(post)),
     attachSwipe: canSwipe ? (front) => attachSwipe(front, FEED_SWIPE_WIDTH, () => openArticle(post)) : undefined,
     onStar: () => toggleFocus(post.id, () => { renderPosts(); renderHub(); }, post),
+    onShare: () => presentShareCard(postShareInput(post)),
     onDelete: () => {
       if (state.channel === 'focus') {
         removeFocusItem(post);
@@ -8145,7 +8146,12 @@ function renderArticlePage() {
     onClick: () => startArticleAnalysis(post).catch((error) => showToast(error.message)),
   });
   if (analysisBusy) analyze.disabled = true;
-  bar.append(save, cite, analyze, star);
+  const share = createDetailAction({
+    iconName: 'image',
+    label: '分享',
+    onClick: () => presentShareCard(postShareInput(post)),
+  });
+  bar.append(save, cite, analyze, star, share);
   if (isHttpUrl(post.sourceUrl)) bar.append(createDetailAction({ iconName: 'newspaper', label: '打开原文', onClick: () => openExternalHttpUrl(post.sourceUrl) }));
   const fontControls = document.createElement('div');
   fontControls.className = 'reader-font-controls';
@@ -8164,9 +8170,11 @@ function renderArticlePage() {
   fontControls.append(smaller, size, larger);
   elements['reader-menu-body'].replaceChildren(fontControls, bar);
   const mobile = document.createElement('div');
-  mobile.className = 'reader-mobile-bar';
+  mobile.className = 'reader-mobile-bar is-quad';
   mobile.setAttribute('aria-label', '阅读操作');
-  mobile.append(createDetailAction({ iconName: 'bookmark', label: isPostSaved(post) ? '查看灵感' : '存入灵感', onClick: () => save.click() }),
+  mobile.append(
+    createDetailAction({ iconName: 'image', label: '分享', onClick: () => presentShareCard(postShareInput(post)) }),
+    createDetailAction({ iconName: 'bookmark', label: isPostSaved(post) ? '查看灵感' : '存入灵感', onClick: () => save.click() }),
     createDetailAction({ iconName: 'list', label: '更多', onClick: event => openReaderMenu(event.currentTarget) }),
     createDetailAction({ iconName: 'chevron-left', label: `返回${routeLabel(returnTarget())}`, onClick: leaveArticle }));
   const analysis = renderArticleAnalysisPanel(post);
@@ -10044,34 +10052,82 @@ function showStructuredSaveToast(output, view) {
   });
 }
 
+function shareTextBlocks(value) {
+  return String(value || '').split(/\n+/).map((line) => line.replace(/[ \t]+/g, ' ').trim()).filter(Boolean);
+}
+
+function postShareInput(post) {
+  let paragraphs = [];
+  if (post?.platform === 'media' && Array.isArray(post.paragraphs) && post.paragraphs.length) {
+    const source = post.complete === false && !post.articleTranslation
+      ? post.paragraphs
+      : mediaReaderParagraphs(post, state.readerLang);
+    paragraphs = (source || []).map((paragraph) => String(paragraph?.text || '').trim()).filter(Boolean);
+  }
+  if (!paragraphs.length) paragraphs = shareTextBlocks(postViewBody(post));
+  return {
+    title: postDisplayTitle(post),
+    source: feedSourceLine(post),
+    time: post.time || (post.publishedAt ? formatTime(post.publishedAt) : ''),
+    paragraphs,
+  };
+}
+
 function closeShareImagePreview() {
   const preview = state.shareImagePreview;
   state.shareImagePreview = null;
   if (preview?.url?.startsWith('blob:')) URL.revokeObjectURL(preview.url);
-  const image = elements['share-image-preview'];
-  if (image) image.removeAttribute('src');
+  const pages = elements['share-image-pages'];
+  pages?.querySelectorAll('img.share-image-preview').forEach((image, index) => {
+    if (index === 0) image.removeAttribute('src');
+    else image.remove();
+  });
 }
 
-async function openShareImagePreview({ blob, filename, title, previewUrl }) {
+async function openShareImagePreview(result) {
   closeShareImagePreview();
-  const url = previewUrl || '';
-  if (!url) throw new Error('图片预览失败');
-  state.shareImagePreview = { blob, filename, title, url };
-  const image = elements['share-image-preview'];
-  if (image) {
-    image.src = url;
-    image.alt = title || '问答分享图';
-  }
+  const pages = result?.pages?.length ? result.pages : [result];
+  const ready = pages.filter((page) => page?.previewUrl && page?.blob);
+  if (!ready.length) throw new Error('图片预览失败');
+  state.shareImagePreview = { pages: ready, title: result.title || '' };
+  const host = elements['share-image-pages'];
+  const first = elements['share-image-preview'];
+  ready.forEach((page, index) => {
+    const image = index === 0 && first ? first : document.createElement('img');
+    image.className = 'share-image-preview';
+    if (index === 0) image.id = 'share-image-preview';
+    image.src = page.previewUrl;
+    image.alt = ready.length > 1 ? `${result.title || '分享图'} ${index + 1}/${ready.length}` : (result.title || '分享图');
+    if (image !== first) host?.append(image);
+  });
   const dialog = elements['share-image-dialog'];
   if (!dialog) throw new Error('找不到分享预览');
   openDialog(dialog);
 }
 
 async function saveShareImagePreview() {
-  const preview = state.shareImagePreview;
-  if (!preview?.blob) return;
+  const pages = state.shareImagePreview?.pages || [];
+  if (!pages.length) return;
   const { downloadBlob } = await import('./share-card.js?v=dev');
-  downloadBlob(preview.filename, preview.blob);
+  pages.forEach((page, index) => {
+    window.setTimeout(() => downloadBlob(page.filename, page.blob), index * 250);
+  });
+}
+
+async function presentShareCard(input, button) {
+  if (button?.disabled) return;
+  if (button) button.disabled = true;
+  try {
+    const { exportShareCard } = await import('./share-card.js?v=dev');
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    const result = await exportShareCard(input, { deliver: 'auto' });
+    if (result.delivery === 'shared' || result.delivery === 'aborted') return;
+    await openShareImagePreview(result);
+  } catch (error) {
+    showToast(error.message || '分享失败');
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 async function shareAskExchange(card, button) {
@@ -10080,7 +10136,8 @@ async function shareAskExchange(card, button) {
   try {
     const { exportAskSharePng } = await import('./share-card.js?v=dev');
     await new Promise((resolve) => window.setTimeout(resolve, 0));
-    const result = await exportAskSharePng(card, { deliver: false });
+    const result = await exportAskSharePng(card, { deliver: 'auto' });
+    if (result.delivery === 'shared' || result.delivery === 'aborted') return;
     await openShareImagePreview(result);
   } catch (error) {
     showToast(error.message || '分享失败');
@@ -10510,6 +10567,7 @@ const briefPage = createBriefPage ? createBriefPage({
     } else window.scrollBy(0,delta);
   },
   dailyReference: dailyBriefItemReference, isReferenced, toggleReference,
+  shareCard: (input) => presentShareCard(input),
   canReadSavedSource: material => (material.sourceRefs || []).some(ref=>ref.type==='content-item' || ref.type==='media-body'),
   async readSavedSource(material) {
     const session=state.session;

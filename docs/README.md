@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-12-share-image.md`：信息流、阅读页、小时报和日报单条，以及问答卡，共用一张分享图。长文分页出 PNG。Web 重载一次以提供 `/qr-code.js`，Worker 不用重启。
+
 - `progress/2026-10-12-readonly-api-tokens.md`：外部机器人用只读 Bearer 令牌访问白名单 GET。设置页生成和撤销，库里只存哈希。migration 57。见 `api.md`。
 
 - `progress/2026-10-12-investor-digest-jev.md`：股民讨论日摘用 `config/jev-questions.v2.json` 逐条打是非题，代码计算加权多空占比。总结不再写情绪标签。旧日摘仍可读原来的情绪。migration 56 只增加题集版本列。

@@ -155,6 +155,18 @@ export function newsRow(row) {
     tail.push(comments);
   }
   copy.append(...tail);
+  if (typeof row.onShare === 'function') {
+    const share = document.createElement('button');
+    share.type = 'button';
+    share.className = 'text-button news-share';
+    share.textContent = '分享';
+    share.addEventListener('click', (event) => {
+      event.stopPropagation();
+      event.preventDefault();
+      row.onShare(event);
+    });
+    copy.append(share);
+  }
   host.append(copy);
   if (typeof row.onStar === 'function') {
     const star = document.createElement('button');
