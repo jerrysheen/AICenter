@@ -14,18 +14,23 @@ export function computeMarketItems(board, { kind = 'all' } = {}) {
     changePct: row.promptChangePct,
     sparkline: (row.history || []).map((point) => Number(point.promptPerMillion)),
   }));
-  const gpus = (board?.gpus || []).map((row) => ({
-    assetClass: 'compute',
-    compute: { kind: 'gpu' },
-    name: row.label,
-    symbol: venues[row.venue] || row.venue,
-    group: `${venues[row.venue] || row.venue} · ${lanes[row.lane] || row.lane} · ${row.quoteDate}`,
-    summary: `${venues[row.venue] || row.venue} ${row.label}`,
-    lastPrice: row.usdPerHour,
-    priceSuffix: 'USD/时',
-    changePct: row.changePct,
-    sparkline: (row.history || []).map((point) => Number(point.amount)),
-  }));
+  const gpus = (board?.gpus || []).filter((row) => row.venue !== 'vast' || Number(row.sampleCount) >= 3).map((row) => {
+    const venue = venues[row.venue] || row.venue;
+    const lane = lanes[row.lane] || row.lane;
+    const count = Number(row.sampleCount) >= 3 ? ` · ${row.sampleCount} 条` : '';
+    return {
+      assetClass: 'compute',
+      compute: { kind: 'gpu' },
+      name: row.label,
+      symbol: venue,
+      group: `${venue} · ${lane}${count} · ${row.quoteDate}`,
+      summary: `${venue} ${row.label}`,
+      lastPrice: row.usdPerHour,
+      priceSuffix: 'USD/时',
+      changePct: row.changePct,
+      sparkline: (row.history || []).map((point) => Number(point.amount)),
+    };
+  });
   if (kind === 'token') return tokens;
   if (kind === 'gpu') return gpus;
   return [...tokens, ...gpus];

@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-12 生产首次抓取后的过滤：Gemini Pro 不再选到出图型号，只保留 `output_modalities` 全为 text 的文本模型。RunPod 跳过无库存档，并丢掉低于同型号中位 40% 或下限的小时价，原因写入 Worker 日志。Vast 按 H100 SXM / NVL / PCIE 分开查询，计入 verified 与 unverified，样本少于 3 条不展示，页面写出条数。解析版本 `compute-prices-2`，不新增 migration。需重启 Worker，并重载 Web。见 `compute-prices-v1.md` 与 `progress/2026-10-12-compute-price-filters.md`。
+
 2026-10-12 全球行情新增「AI Token」：OpenRouter 公开型号价换算为每百万 token 美元，RunPod 保存 H100/H200/B200 安全云和社区云小时价，Vast 公开挂牌有整卡 H100 时保存最低和中位。migration 55。`market.token-prices.snapshot` 默认每天 08:20（Asia/Shanghai），`market.gpu-rent.snapshot` 默认每 360 分钟。开关是 `AI_CENTER_TOKEN_PRICE_SYNC`、`AI_CENTER_TOKEN_PRICE_AT`、`AI_CENTER_TOKEN_PRICE_TIMEZONE`、`AI_CENTER_GPU_RENT_SYNC`、`AI_CENTER_GPU_RENT_INTERVAL_MINUTES`。需重启 Worker，并重载 Web 后 `#market/global/compute` 才显示。未在生产抓取，不宣称租金覆盖全市场。见 `compute-prices-v1.md` 与 `progress/2026-10-12-compute-prices.md`。
 
 2026-10-12 小时报与日报可靠性：Gemini 小时调用遇到 500/503 先退避再换 `AI_CENTER_GEMINI_HOURLY_MODELS` 中的下一个模型；未知或重复输入归属先修正，修不好再换模型。同一小时失败达到上限后记终态，不再反复入队。运行超过时限的任务标失败并放开队列，Worker 启动时也会回收。日报单标签超时改为部分发布，当天没有刊期会稍后重试。补 2026-10-12：`node --env-file=.env scripts/backfill-daily-report.mjs --date 2026-10-12`。需要重启 Worker。见 `progress/2026-10-12-report-reliability.md`。

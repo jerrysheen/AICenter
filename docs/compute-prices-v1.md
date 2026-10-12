@@ -6,15 +6,15 @@
 
 ## Token
 
-每天抓一次 `https://openrouter.ai/api/v1/models`，不使用密钥。`pricing.prompt` 与 `pricing.completion` 是每 token 美元，乘 1,000,000 后保存为每百万 token。每个族只留 `created` 最新、且输入和输出都能计价的一条，跳过带 `:` 的别名。族是 GPT、GPT mini、Claude Opus / Sonnet / Haiku、Gemini Pro / Flash、DeepSeek、Grok、Llama。某一族当天没有公开价时记警告，其余照常保存。一个都没有则任务失败。
+每天抓一次 `https://openrouter.ai/api/v1/models`，不使用密钥。`pricing.prompt` 与 `pricing.completion` 是每 token 美元，乘 1,000,000 后保存为每百万 token。每个族只留 `created` 最新、且输入和输出都能计价的一条文本模型，跳过带 `:` 的别名。`architecture.output_modalities` 必须是非空且每一项都是 `text`。id 中带 `-image`、`-audio`、`-tts`、`-video`、`preview-image`、`image-preview` 的型号，以及名称里带 image、audio、video、tts、speech 的型号，都不进入族。族是 GPT、GPT mini、Claude Opus / Sonnet / Haiku、Gemini Pro / Flash、DeepSeek、Grok、Llama。某一族当天没有公开价时记警告，其余照常保存。一个都没有则任务失败。
 
 报价日是 Asia/Shanghai 的日历日。同一天、同一价格只更新检查时间。下一天即使价格相同也记一条新观测，这样日环比是 0 而不是缺一天。日环比相对该型号上一个报价日；上一日价格为 0 时不计算涨跌。
 
 ## GPU
 
-RunPod 用公开 GraphQL `gpuTypes { id displayName securePrice communityPrice }`，不使用密钥。保留名称里的 H100、H200、B200，去掉 MIG。安全云和社区云分开；价格为 0 的档不保存。
+RunPod 用公开 GraphQL `gpuTypes`，不使用密钥。查询带上安全云、社区云和未分档 `lowestPrice` 的 `stockStatus` 与 `uninterruptablePrice`。保留名称里的 H100、H200、B200，去掉 MIG。安全云和社区云分开。价格为 0 的档不保存。响应里没有这些库存对象时，仍保留非零价。有库存对象时，`stockStatus` 为空、`none`、`unavailable` 或 `out` 的档记为无库存并跳过。社区云查询经常不返回库存；若未分档 `lowestPrice` 为 High、Medium 或 Low，且 `uninterruptablePrice` 等于该档目录价，仍保留。留下的价格再按型号（H100、H200、B200）取中位，低于中位 40% 或低于下限的丢掉。下限是 H100 1、H200 1.5、B200 2 美元/时。跳过原因写入 Worker 日志，不编造价格。
 
-Vast.ai 读公开 `https://console.vast.ai/api/v0/bundles/`。只统计整卡 H100，小时价用 `dph_total / num_gpus`。有挂牌时保存最低和中位；没有 H100 时记警告并保存这次检查，不编造价格。这个接口只返回有限挂牌，不能当成全市场。
+Vast.ai 对 `https://console.vast.ai/api/v0/bundles/` 按 H100 SXM、H100 NVL、H100 PCIE 分别查询，`num_gpus` 至少 1，`limit` 500，按 `dph_total` 升序。计入 verified、unverified 和未标验证的整卡，跳过 deverified。同一 `id` 或 `ask_contract_id` 只计一次。单卡小时价是 `dph_total / num_gpus`。样本至少 3 条才保存最低和中位，并带上样本数；少于 3 条只记警告。页面上 Vast 行写出条数，样本少于 3 的不显示。三次查询都失败且没有挂牌时，任务失败。这仍不是全市场。
 
 ## 日程与环境变量
 
@@ -28,4 +28,4 @@ Vast.ai 读公开 `https://console.vast.ai/api/v0/bundles/`。只统计整卡 H1
 | `AI_CENTER_GPU_RENT_SYNC` | 开启 | `0` 关闭 GPU 租金 |
 | `AI_CENTER_GPU_RENT_INTERVAL_MINUTES` | `360` | 60 到 1440 |
 
-migration 55 只新增快照、检查和观测表。重启 Worker 后才会建表、注册任务并写入日程。重载 Web 后 `#market/global/compute` 才出现「AI Token」。
+migration 55 只新增快照、检查和观测表，本轮不新增 migration。解析版本是 `compute-prices-2`，下一次抓取会另记一条快照。重启 Worker 后才会按新查询写入。重载 Web 后 `#market/global/compute` 才按样本数隐藏过薄的 Vast 行。
