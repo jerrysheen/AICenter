@@ -196,17 +196,101 @@ function clip(value, max) {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
-export function buildInvestorDiscussionPrompt({ name, kind, posts, comments, heat, repair = false }) {
+const SPLIT_PHRASES = [/多空分歧明显/g, /明显分歧/g, /分歧明显/g, /分歧较大/g, /分歧很大/g];
+
+export function crowdDirectionalCount(crowd) {
+  if (!crowd || typeof crowd !== 'object') return null;
+  const direct = Number(crowd.directionalCount);
+  if (Number.isFinite(direct)) return direct;
+  const counts = crowd.counts;
+  if (counts && (counts.bull != null || counts.bear != null)) {
+    return (Number(counts.bull) || 0) + (Number(counts.bear) || 0);
+  }
+  return null;
+}
+
+export function crowdSampleInsufficient(crowd) {
+  if (!crowd || typeof crowd !== 'object') return false;
+  if (crowd.label === '数据不足') return true;
+  const threshold = Number.isInteger(crowd.minDirectional) ? crowd.minDirectional : 5;
+  const directional = crowdDirectionalCount(crowd);
+  return directional != null && directional < threshold;
+}
+
+function sharePercent(value) {
+  return `${Math.round((Number(value) || 0) * 1000) / 10}%`;
+}
+
+export function summaryShareGuidance(crowd) {
+  if (!crowd || typeof crowd !== 'object') return '';
+  if (crowdSampleInsufficient(crowd)) {
+    const count = crowdDirectionalCount(crowd);
+    const n = count == null ? 0 : count;
+    return `方向样本不足（${n} 条）。不要写百分比，不要判断哪边占优，不要写「分歧明显」。`;
+  }
+  const shares = crowd.shares || {};
+  const labels = crowd.labels || {};
+  const bull = labels.bull || '看多';
+  const neutral = labels.neutral || '中性';
+  const bear = labels.bear || '看空';
+  const lines = [
+    `已计算占比：${bull} ${sharePercent(shares.bull)}，${neutral} ${sharePercent(shares.neutral)}，${bear} ${sharePercent(shares.bear)}。总结必须与这个占比一致，不要另写一套百分比。`,
+  ];
+  if ((Number(shares.bull) || 0) > 0.6 || (Number(shares.bear) || 0) > 0.6) {
+    lines.push('任一侧已超过 60%，禁止写「分歧明显」。');
+  }
+  return lines.join('\n');
+}
+
+export function alignSummaryWithShares(summary, crowd) {
+  let text = String(summary || '');
+  if (!crowd || typeof crowd !== 'object') return text;
+  const replaceSplit = (replacement) => {
+    for (const pattern of SPLIT_PHRASES) {
+      pattern.lastIndex = 0;
+      text = text.replace(pattern, replacement);
+    }
+  };
+  if (crowdSampleInsufficient(crowd)) {
+    replaceSplit('样本不足');
+    const kept = text.split(/(?<=[。！？\n])/).filter((sentence) => !/\d+(?:\.\d+)?%/.test(sentence)).join('').trim();
+    return kept || '方向样本不足，不判断多空。';
+  }
+  const bull = Number(crowd.shares?.bull) || 0;
+  const bear = Number(crowd.shares?.bear) || 0;
+  if (bull > 0.6 || bear > 0.6) replaceSplit(bull >= bear ? '看多占多数' : '看空占多数');
+  return text;
+}
+
+export function failedDigestKeys(row) {
+  const keys = [];
+  const seen = new Set();
+  const push = (key) => {
+    const id = String(key || '').trim();
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    keys.push(id);
+  };
+  for (const section of row?.sections || []) {
+    if (section?.fetchStatus === 'failed' || section?.fetchStatus === 'summary_failed') push(section.key);
+  }
+  for (const item of row?.coverage?.missing || []) push(item?.key);
+  return keys;
+}
+
+export function buildInvestorDiscussionPrompt({ name, kind, posts, comments, heat, crowd, repair = false }) {
   const commentsByPost = new Map();
   for (const comment of comments || []) {
     const list = commentsByPost.get(comment.postId) || [];
     list.push(comment);
     commentsByPost.set(comment.postId, list);
   }
+  const guidance = summaryShareGuidance(crowd);
   const lines = [
     repair ? '上次输出无法解析。只返回 JSON 对象。' : '',
     `对象：${name}（${kind === 'theme' ? '主题' : '持仓'}）`,
     `讨论热度：帖子 ${heat.posts}，评论 ${heat.comments}。摘要里的热度必须使用这两个数字。`,
+    guidance,
     '材料：',
   ].filter(Boolean);
   const shown = (posts || []).slice(0, 24);
@@ -336,6 +420,7 @@ export function createInvestorDiscussionService({
       jevMaxCalls = null,
       jevSingleAttempts = null,
       jevBackoffMs = null,
+      retryFailed = false,
     }) {
       const questionSet = givenQuestionSet || loadJevQuestionSet({ env, repositoryRoot });
       const date = digestDate || investorDigestDate(now(), timeZone);
@@ -346,6 +431,13 @@ export function createInvestorDiscussionService({
         themes: resolvedThemes,
       });
       const previous = repository.get(workspaceId, date);
+      const retryKeys = retryFailed ? new Set(failedDigestKeys(previous)) : null;
+      if (retryFailed) {
+        if (!previous) throw new Error('没有这一天的日摘，不能只重试失败标的');
+        if (!retryKeys.size) throw new Error('这一天没有失败的标的');
+      }
+      const targets = retryKeys ? built.targets.filter((target) => retryKeys.has(target.key)) : built.targets;
+      const unmapped = retryKeys ? built.unmapped.filter((item) => retryKeys.has(item.key)) : built.unmapped;
       const persist = (fields) => repository.save({
         workspaceId,
         digestDate: date,
@@ -364,11 +456,21 @@ export function createInvestorDiscussionService({
       if (!client?.collectAll) throw new Error('雪球讨论采集未配置');
       let collected;
       try {
-        collected = await client.collectAll(built.targets, window);
+        collected = await client.collectAll(targets, window);
       } catch (error) {
         if (error?.code === 'login_required' || error?.code === 'verification_required') {
           const verification = error.code === 'verification_required';
           const message = String(error.message || (verification ? '雪球返回验证页。' : '采集浏览器尚未登录雪球。'));
+          if (retryFailed) {
+            return persist({
+              status: previous.status === 'running' ? 'partial' : previous.status,
+              generatedAt: previous.generatedAt ?? now(),
+              model: previous.model || model,
+              coverage: previous.coverage || {},
+              sections: previous.sections || [],
+              error: message,
+            });
+          }
           return persist({
             status: verification ? 'verification_required' : 'login_required',
             generatedAt: now(),
@@ -376,10 +478,10 @@ export function createInvestorDiscussionService({
               ...presentCoverage([], {
                 loginRequired: !verification,
                 verificationRequired: verification,
-                targets: built.targets.length,
-                failed: built.targets.length,
+                targets: targets.length,
+                failed: targets.length,
               }),
-              missing: built.targets.map((item) => ({ key: item.key, name: item.name, reason: message })),
+              missing: targets.map((item) => ({ key: item.key, name: item.name, reason: message })),
             },
             sections: [],
             error: message,
@@ -387,7 +489,7 @@ export function createInvestorDiscussionService({
         }
         throw error;
       }
-      const prepared = built.targets.map((target, index) => {
+      const prepared = targets.map((target, index) => {
         const result = collected[index] || { failed: true, reason: '没有返回', posts: [], comments: [] };
         return {
           target,
@@ -417,7 +519,7 @@ export function createInvestorDiscussionService({
         labelsById = labeled.labelsById;
       }
       const unlabeled = allItems.filter((item) => !labelsById.get(item.id)?.labeled).length;
-      const sections = built.unmapped.map((item) => emptySection({
+      const sections = unmapped.map((item) => emptySection({
         kind: 'holding', key: item.key, name: item.name,
       }, { reason: item.reason }));
       for (const row of prepared) {
@@ -439,7 +541,9 @@ export function createInvestorDiscussionService({
         try {
           const draft = await summarize({
             system: INVESTOR_DISCUSSION_SYSTEM,
-            prompt: buildInvestorDiscussionPrompt({ name: target.name, kind: target.kind, posts: result.posts, comments: result.comments, heat }),
+            prompt: buildInvestorDiscussionPrompt({
+              name: target.name, kind: target.kind, posts: result.posts, comments: result.comments, heat, crowd,
+            }),
           });
           let read;
           try {
@@ -448,11 +552,12 @@ export function createInvestorDiscussionService({
             const repair = await summarize({
               system: INVESTOR_DISCUSSION_SYSTEM,
               prompt: buildInvestorDiscussionPrompt({
-                name: target.name, kind: target.kind, posts: result.posts, comments: result.comments, heat, repair: true,
+                name: target.name, kind: target.kind, posts: result.posts, comments: result.comments, heat, crowd, repair: true,
               }),
             });
             read = readInvestorSummary(repair.text, { posts: result.posts, heat });
           }
+          read.summary = alignSummaryWithShares(read.summary, crowd);
           sections.push({
             kind: target.kind,
             key: target.key,
@@ -467,6 +572,7 @@ export function createInvestorDiscussionService({
             truncated: Boolean(result.truncated),
           });
         } catch (error) {
+          if (error?.code === 'config') throw error;
           sections.push(emptySection(target, {
             fetchStatus: 'summary_failed',
             reason: String(error?.message || error),
@@ -476,6 +582,9 @@ export function createInvestorDiscussionService({
             truncated: Boolean(result.truncated),
           }));
         }
+      }
+      if (retryKeys) {
+        sections.push(...(previous.sections || []).filter((section) => !retryKeys.has(section.key)));
       }
       sections.sort((left, right) => sectionRank(left) - sectionRank(right));
       const status = overallStatus(sections);

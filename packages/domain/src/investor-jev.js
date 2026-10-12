@@ -496,6 +496,7 @@ export function presentCrowd(aggregate, questionSet) {
     sampleSize: aggregate.sampleSize,
     total: aggregate.total,
     directionalCount: aggregate.directionalCount,
+    minDirectional: questionSet.aggregation.minDirectional,
     label: aggregate.label,
     labels: { bull: names.bull, bear: names.bear, neutral: names.neutral },
   };

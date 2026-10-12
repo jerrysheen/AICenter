@@ -26,7 +26,10 @@ export function createInvestorDiscussionRoutes() {
       forbidden: '生成股民讨论日摘只在本机开放',
       async handler({ request, response, services }) {
         const body = parseContract(InvestorDiscussionGenerateRequestSchema, await readJson(request));
-        const job = services.runtime.requestInvestorDiscussion({ digestDate: body.date });
+        const job = services.runtime.requestInvestorDiscussion({
+          digestDate: body.date,
+          retryFailed: body.retryFailed === true,
+        });
         json(response, 202, { ok: true, jobId: job.id, status: job.status, date: body.date || null });
       },
     },

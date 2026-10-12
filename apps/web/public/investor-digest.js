@@ -53,10 +53,32 @@ function percent(value) {
   return `${Math.round((Number(value) || 0) * 1000) / 10}%`;
 }
 
+function crowdDirectionalCount(crowd) {
+  const direct = Number(crowd?.directionalCount);
+  if (Number.isFinite(direct)) return direct;
+  const counts = crowd?.counts;
+  if (counts && (counts.bull != null || counts.bear != null)) {
+    return (Number(counts.bull) || 0) + (Number(counts.bear) || 0);
+  }
+  return null;
+}
+
+export function crowdSampleInsufficient(crowd) {
+  if (!crowd || typeof crowd !== 'object') return false;
+  if (crowd.label === '数据不足') return true;
+  const threshold = Number.isInteger(crowd.minDirectional) ? crowd.minDirectional : 5;
+  const directional = crowdDirectionalCount(crowd);
+  return directional != null && directional < threshold;
+}
+
 export function formatInvestorCrowd(section) {
   const crowd = section?.crowd;
   if (!crowd || typeof crowd !== 'object') return '';
-  if (crowd.label === '数据不足') return '数据不足';
+  if (crowdSampleInsufficient(crowd)) {
+    const count = crowdDirectionalCount(crowd);
+    const n = count == null ? (Number(crowd.sampleSize) || 0) : count;
+    return `数据不足（${n} 条）`;
+  }
   const shares = crowd.shares || {};
   const labels = crowd.labels || {};
   const bull = labels.bull || '看多';
@@ -67,7 +89,7 @@ export function formatInvestorCrowd(section) {
 
 export function formatInvestorCrowdCounts(section) {
   const crowd = section?.crowd;
-  if (!crowd || typeof crowd !== 'object') return '';
+  if (!crowd || typeof crowd !== 'object' || crowdSampleInsufficient(crowd)) return '';
   const counts = crowd.counts || {};
   const labels = crowd.labels || {};
   const bull = labels.bull || '看多';
@@ -80,7 +102,7 @@ export function formatInvestorQuestionSet(digest) {
   return digest?.questionSet ? `题集 ${digest.questionSet}` : '';
 }
 
-function renderInvestorDigest(target, data, { date, onDate, onGenerate, busy }) {
+function renderInvestorDigest(target, data, { date, onDate, onGenerate, onRetry, busy }) {
   target.replaceChildren();
   const page = el('div', '', 'investor-digest');
   const bar = el('div', '', 'investor-digest-bar');
@@ -94,10 +116,18 @@ function renderInvestorDigest(target, data, { date, onDate, onGenerate, busy }) 
   button.disabled = busy;
   button.addEventListener('click', onGenerate);
   bar.append(dateInput, button);
-  page.append(bar);
-
   const digest = data?.digest;
   const pending = Boolean(data?.pending || digest?.status === 'running');
+  const failed = (digest?.sections || []).some((section) => section.fetchStatus === 'failed' || section.fetchStatus === 'summary_failed')
+    || (digest?.coverage?.missing || []).length > 0;
+  if (failed && !busy && !pending) {
+    const retry = el('button', '重试失败的标的', 'tree-refresh');
+    retry.type = 'button';
+    retry.addEventListener('click', () => onRetry?.());
+    bar.append(retry);
+  }
+  page.append(bar);
+
   if (!digest && !pending) {
     page.append(el('p', '这一天还没有股民讨论日摘。', 'investor-digest-meta'));
     target.append(page);
@@ -192,14 +222,16 @@ export function mountInvestorDigest(target, { api, active = () => true } = {}) {
         date = next;
         load();
       },
-      onGenerate() { generate(); },
+      onGenerate() { generate(false); },
+      onRetry() { generate(true); },
     });
     if (busy) timer = window.setTimeout(() => load({ quiet: true }), 4000);
   }
-  async function generate() {
+  async function generate(retryFailed) {
     const ticket = generation;
     try {
-      await api('/api/v1/investor-discussion', { method: 'POST', body: JSON.stringify({ date }) });
+      const body = retryFailed ? { date, retryFailed: true } : { date };
+      await api('/api/v1/investor-discussion', { method: 'POST', body: JSON.stringify(body) });
     } catch (caught) {
       if (caught?.name === 'AbortError' || !active()) return;
       if (ticket !== generation || !target.isConnected) return;
