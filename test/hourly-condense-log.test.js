@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createStore} from '../packages/database/src/index.js';
 import {createInformationTreeService} from '../packages/domain/src/information-tree-service.js';
 import {loadInformationTreeSkills} from '../packages/runtime/src/information-tree/skills.js';
-import {classifyCondenseError, formatCondenseFailureLog, redactCondenseLog} from '../packages/domain/src/information-tree-policy.js';
+import {classifyCondenseError, formatCondenseFailureLog, formatTreeHourlyCallLog, redactCondenseLog, treeHourlyFinishReason} from '../packages/domain/src/information-tree-policy.js';
 import {createReportJobHandlers} from '../packages/runtime/src/report-module.js';
 
 const H = 3600000;
@@ -183,4 +183,26 @@ test('hourly job still throws the generic message and logs group reasons', async
   } finally {
     console.error = original;
   }
+});
+
+test('tree-hourly finishReason keeps the full enum and only body and message are shortened', () => {
+  const full = `MAX_TOKENS_${'H'.repeat(80)}`;
+  assert.equal(treeHourlyFinishReason({kind: 'max-tokens'}), 'max-tokens');
+  assert.equal(treeHourlyFinishReason({kind: 'error', finishReason: 'SAFETY'}), 'SAFETY');
+  assert.equal(treeHourlyFinishReason('HarnessModelError'), 'HarnessModelError');
+  const line = formatTreeHourlyCallLog({
+    error: Object.assign(new Error('m'.repeat(400)), {
+      name: 'HarnessModelError', upstreamStatus: 500, upstreamBody: 'b'.repeat(400), finishReason: 'HarnessModelError',
+    }),
+    finishReason: {kind: 'max-tokens', finishReason: full},
+  });
+  assert.match(line, new RegExp(`finishReason=${full}( |$)`));
+  assert.equal(line.includes('Ha…'), false);
+  assert.equal(line.includes('HarnessModelError'), false);
+  const body = line.split(' ').find((part) => part.startsWith('body='));
+  const message = line.split(' ').find((part) => part.startsWith('message='));
+  assert.equal(body.slice('body='.length).length, 300);
+  assert.equal(message.slice('message='.length).length, 300);
+  const named = formatTreeHourlyCallLog({finishReason: 'HarnessModelError'});
+  assert.match(named, /finishReason=HarnessModelError /);
 });

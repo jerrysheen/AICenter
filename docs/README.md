@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-12-hourly-pending-sweep.md`：定时小时任务在主小时补跑之后，再为最近 6 小时里仍有未处理或分类延后、且没有排队或运行中任务的刊期最多补 2 张 `edition-pending-sweep`。更早的小时不排，补跑不连环。`[worker] tree-hourly` 的 `finishReason` 写完整枚举。需要重启 Worker。
+
 - `progress/2026-10-12-hourly-followup-hour.md`：小时补跑只排这次主小时。回补小时上的旧分类失败不再抢走补跑。刊期仍有未就绪来源时也会补一次。每次小时浓缩调用写一行 `[worker] tree-hourly` 到 Worker 标准输出日志，非配额失败换一把 key 再试一次。需要重启 Worker。
 
 - `progress/2026-10-12-hourly-error-logs.md`：阅读分类失败会写下状态、错误名、响应片段、模型和耗时，每次调用正好一行。非配额失败换一把 key 再试一次。过了整点槽之后，未完成的小时在一分钟内补跑。Web / Worker 自己追加按日日志。需要重启 `start-ai-center.ps1`。

@@ -91,8 +91,10 @@ export function classificationDeferredCount(saved) {
 // The scheduled run condenses the latest hour and then one older backfill hour.
 // The 60s follow-up belongs to the hour this run was for: an explicit hourStart, otherwise the first digest.
 // A backfill hour that still has old classification failures must not replace that target.
+const HOURLY_FOLLOW_UP_REASONS = new Set(['classification-deferred', 'edition-pending', 'edition-pending-sweep']);
+
 export function hourlyFollowUpPlan({requestedHour, digests, deferredByStart = new Map(), followUp} = {}) {
-  if (followUp === 'classification-deferred' || followUp === 'edition-pending') return null;
+  if (HOURLY_FOLLOW_UP_REASONS.has(followUp)) return null;
   const primary = Number.isFinite(requestedHour) ? requestedHour : digests?.[0]?.window?.startAt;
   if (!Number.isFinite(primary)) return null;
   const digest = (digests || []).find((item) => item?.window?.startAt === primary) || null;
@@ -103,14 +105,114 @@ export function hourlyFollowUpPlan({requestedHour, digests, deferredByStart = ne
   return null;
 }
 
-export function enqueueHourlyExtractFollowUp(store, {workspaceId = 'local', hourStart, availableAt, reason = 'classification-deferred', env = process.env} = {}) {
+function boundedHourlyInt(value, fallback, min, max) {
+  const text = String(value ?? '').trim();
+  if (!text) return fallback;
+  const raw = Number(text);
+  if (!Number.isInteger(raw) || raw < min || raw > max) return fallback;
+  return raw;
+}
+
+export function hourlySweepHours(env = process.env) {
+  return boundedHourlyInt(env?.AI_CENTER_HOURLY_SWEEP_HOURS, 6, 0, 24);
+}
+
+export function hourlySweepLimit(env = process.env) {
+  return boundedHourlyInt(env?.AI_CENTER_HOURLY_SWEEP_LIMIT, 2, 0, 6);
+}
+
+export function hourlyOpenHourStarts(store, workspaceId = 'local') {
+  const open = store?.listOpenJobs?.(REPORT_HOURLY_JOB_TYPE) || [];
+  const hours = new Set();
+  for (const job of open) {
+    if (job?.workspaceId !== workspaceId) continue;
+    if (job.status !== 'queued' && job.status !== 'running') continue;
+    const hourStart = job.input?.hourStart;
+    if (!Number.isFinite(hourStart) || job.input?.snapshotId || job.input?.mode === 'rewrite') continue;
+    hours.add(hourStart);
+  }
+  return hours;
+}
+
+// Scheduled runs only. The primary hour keeps its own follow-up. This adds at most `limit`
+// older hours inside the last `windowHours`, newest first, and never chains from a follow-up.
+export function hourlyPendingSweepPlan({scheduled = false, followUp, primaryHour, rows = [], openHourStarts = new Set(), windowHours = 6, limit = 2} = {}) {
+  if (!scheduled || HOURLY_FOLLOW_UP_REASONS.has(followUp)) return [];
+  if (!Number.isFinite(primaryHour)) return [];
+  const span = boundedHourlyInt(windowHours, 6, 0, 24);
+  const cap = boundedHourlyInt(limit, 2, 0, 6);
+  if (!span || !cap) return [];
+  const oldest = primaryHour - (span - 1) * HOUR_MS;
+  const byStart = new Map();
+  for (const row of rows) {
+    const hourStart = row?.hourStart;
+    if (Number.isFinite(hourStart)) byStart.set(hourStart, row);
+  }
+  const plans = [];
+  for (let at = primaryHour - HOUR_MS; at >= oldest; at -= HOUR_MS) {
+    if (openHourStarts.has(at)) continue;
+    const row = byStart.get(at);
+    if (!row) continue;
+    const pendingCount = Math.max(0, Number(row.pendingCount) || 0);
+    const deferred = Math.max(0, Number(row.deferred) || 0);
+    if (pendingCount <= 0 && deferred <= 0) continue;
+    plans.push({hourStart: at, reason: 'edition-pending-sweep', pendingCount, deferred});
+    if (plans.length >= cap) break;
+  }
+  return plans;
+}
+
+function hourlySweepRows({informationService, readingHour, workspaceId, primary, windowHours}) {
+  const oldest = primary - (windowHours - 1) * HOUR_MS;
+  const endAt = primary + HOUR_MS;
+  const listed = typeof informationService?.list === 'function' ? informationService.list(workspaceId, {startAt: oldest, endAt}) : null;
+  const slots = Array.isArray(listed?.hours) ? listed.hours : [];
+  const rows = [];
+  const seen = new Set();
+  const deferredFor = (startAt) => {
+    if (!readingHour?.enabled || typeof readingHour.forWindow !== 'function') return 0;
+    return classificationDeferredCount(readingHour.forWindow(workspaceId, {startAt, endAt: startAt + HOUR_MS}, 'hour'));
+  };
+  for (const slot of slots) {
+    const edition = slot?.edition;
+    const startAt = edition?.window?.startAt;
+    if (!Number.isFinite(startAt) || startAt < oldest || startAt > primary) continue;
+    seen.add(startAt);
+    rows.push({
+      hourStart: startAt,
+      pendingCount: Array.isArray(edition.pendingIds) ? edition.pendingIds.length : 0,
+      deferred: deferredFor(startAt),
+    });
+  }
+  if (!slots.length && typeof informationService?.published === 'function') {
+    for (let at = oldest; at <= primary; at += HOUR_MS) {
+      const edition = informationService.published(workspaceId, 'hourly', {startAt: at, endAt: at + HOUR_MS});
+      if (!edition) continue;
+      seen.add(at);
+      rows.push({
+        hourStart: at,
+        pendingCount: Array.isArray(edition.pendingIds) ? edition.pendingIds.length : 0,
+        deferred: deferredFor(at),
+      });
+    }
+  }
+  if (readingHour?.enabled && typeof readingHour.forWindow === 'function') {
+    for (let at = oldest; at <= primary; at += HOUR_MS) {
+      if (seen.has(at)) continue;
+      const deferred = deferredFor(at);
+      if (deferred > 0) rows.push({hourStart: at, pendingCount: 0, deferred});
+    }
+  }
+  return rows;
+}
+
+export function enqueueHourlyExtractFollowUp(store, {workspaceId = 'local', hourStart, availableAt, reason = 'classification-deferred', priority = 10, env = process.env} = {}) {
   if (hourlyReportDisabled(env) || !store?.createJob || !store?.listOpenJobs || !Number.isFinite(hourStart)) return null;
-  const queued = (store.listOpenJobs(REPORT_HOURLY_JOB_TYPE) || []).filter((job) => job.workspaceId === workspaceId && job.status === 'queued');
-  if (queued.some((job) => job.input?.hourStart === hourStart && !job.input?.snapshotId && job.input?.mode !== 'rewrite')) return null;
+  if (hourlyOpenHourStarts(store, workspaceId).has(hourStart)) return null;
   const job = store.createJob({
     type: REPORT_HOURLY_JOB_TYPE,
     workspaceId,
-    priority: 10,
+    priority,
     maxAttempts: 2,
     availableAt,
     input: {workspaceId, hourStart, followUp: reason},
@@ -173,8 +275,25 @@ export function createReportJobHandlers({ reportService, briefService = null, in
           catch(error) {readingErrors.push({window,reason:String(error?.message || error).slice(0,180)});}
         }
       }
+      const workspaceId=input.workspaceId || 'local';
       const followUpPlan=hourlyFollowUpPlan({requestedHour:input.hourStart,digests,deferredByStart,followUp:input.followUp});
-      if(followUpPlan) enqueueHourlyExtractFollowUp(context?.store,{workspaceId:input.workspaceId || 'local',hourStart:followUpPlan.hourStart,availableAt:Date.now()+HOURLY_FOLLOW_UP_DELAY_MS,reason:followUpPlan.reason,env});
+      if(followUpPlan) enqueueHourlyExtractFollowUp(context?.store,{workspaceId,hourStart:followUpPlan.hourStart,availableAt:Date.now()+HOURLY_FOLLOW_UP_DELAY_MS,reason:followUpPlan.reason,env});
+      const primaryHour=Number.isFinite(input.hourStart) ? input.hourStart : digests?.[0]?.window?.startAt;
+      const windowHours=hourlySweepHours(env);
+      const sweepLimit=hourlySweepLimit(env);
+      const scheduled=input.hourStart===undefined && !input.followUp && Number.isFinite(primaryHour) && windowHours>0 && sweepLimit>0;
+      if(scheduled) {
+        try {
+          const openHourStarts=hourlyOpenHourStarts(context?.store, workspaceId);
+          if(followUpPlan) openHourStarts.add(followUpPlan.hourStart);
+          const sweeps=hourlyPendingSweepPlan({
+            scheduled:true, followUp:input.followUp, primaryHour, windowHours, openHourStarts,
+            rows:hourlySweepRows({informationService, readingHour, workspaceId, primary:primaryHour, windowHours}),
+            limit:sweepLimit,
+          });
+          for(const plan of sweeps) enqueueHourlyExtractFollowUp(context?.store,{workspaceId,hourStart:plan.hourStart,availableAt:Date.now()+HOURLY_FOLLOW_UP_DELAY_MS,reason:plan.reason,priority:-5,env});
+        } catch { /* a sweep lookup must not delay or fail the current hour */ }
+      }
       if(treeService) {
         if(digests[0]?.status==='failed' && !digests[0].terminal && digests[0].groupFailures?.some(p=>p.retryable)) {
           const failures=digests[0].groupFailures;

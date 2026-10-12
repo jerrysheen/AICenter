@@ -171,12 +171,25 @@ function treeHourlyOutcome(error) {
   return 'error';
 }
 
+// Provider and harness finish enums stay whole. Only body and message are shortened.
+export function treeHourlyFinishReason(value) {
+  let raw = value;
+  if (raw && typeof raw === 'object') {
+    const nested = typeof raw.finishReason === 'string' ? raw.finishReason : '';
+    const kind = typeof raw.kind === 'string' ? raw.kind : '';
+    raw = nested.trim() || kind.trim();
+  }
+  const text = String(raw ?? '').replace(/\s+/g, ' ').trim();
+  if (!text || /AIza[0-9A-Za-z_-]{8,}|sk-[A-Za-z0-9_-]{8,}|\bbearer\s+\S+/i.test(text)) return '-';
+  return text;
+}
+
 // One physical line per hourly condense call. stdout (console.log) is what the Node daily logger writes to worker.out.*.log.
 export function formatTreeHourlyCallLog({error = null, result = null, keyEnv = '', model = '', inputBytes = 0, latencyMs = 0, finishReason = ''} = {}) {
   const described = error ? classifyCondenseError(error) : null;
   const body = error ? (redactCondenseLog(error.upstreamBody ?? error.responseBody ?? '').slice(0, 300) || '-') : '-';
   const message = error ? (redactCondenseLog(described?.message || error.message || error).slice(0, 300) || '-') : '-';
-  const finish = String(finishReason || error?.finishReason || result?.finishReason || '').trim().slice(0, 40);
+  const finish = treeHourlyFinishReason(finishReason || error?.finishReason || result?.finishReason || '');
   const chosenModel = error?.admittedModel || result?.modelId || model || '';
   return [
     '[worker] tree-hourly',
@@ -187,7 +200,7 @@ export function formatTreeHourlyCallLog({error = null, result = null, keyEnv = '
     `model=${safeCondenseRouteId(chosenModel)}`,
     `key=${condenseKeySuffix(keyEnv || error?.googleKeyEnv)}`,
     `inputBytes=${Number.isFinite(inputBytes) ? Math.max(0, Math.round(inputBytes)) : 0}`,
-    `finishReason=${safeCondenseRouteId(finish)}`,
+    `finishReason=${finish}`,
     `latencyMs=${Number.isFinite(latencyMs) ? Math.max(0, Math.round(latencyMs)) : 0}`,
     `outcome=${treeHourlyOutcome(error)}`,
   ].join(' ');
