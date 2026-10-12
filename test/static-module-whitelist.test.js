@@ -58,6 +58,66 @@ function getRaw(url) {
   });
 }
 
+const JS_SPECIFIER = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)['"]([^'"]+)['"]/g;
+
+function publicFiles(extension) {
+  return readdirSync(publicDirectory, { recursive: true })
+    .map(name => name.split(path.sep).join('/'))
+    .filter(name => name.endsWith(extension));
+}
+
+function attribute(attrs, name) {
+  const match = attrs.match(new RegExp(`\\b${name}\\s*=\\s*(['"])(.*?)\\1`, 'i'));
+  return match ? match[2] : '';
+}
+
+function isLocalJsReference(specifier) {
+  const value = String(specifier || '').trim();
+  if (!value || /^[a-z][a-z0-9+.-]*:/i.test(value) || value.startsWith('//')) return false;
+  const filePath = value.split(/[?#]/)[0];
+  return filePath.endsWith('.js') && (filePath.startsWith('.') || filePath.startsWith('/') || !filePath.includes('/'));
+}
+
+function versionQuery(specifier) {
+  const query = String(specifier).split('#')[0].split('?')[1] || '';
+  return new URLSearchParams(query).get('v') || '';
+}
+
+function htmlScriptRefs(source) {
+  const refs = [];
+  for (const match of source.matchAll(/<(script|link)\b([^>]*)>/gi)) {
+    const tag = match[1].toLowerCase();
+    const attrs = match[2];
+    if (tag === 'script') {
+      const src = attribute(attrs, 'src');
+      if (src) refs.push(src);
+    } else if (/\b(?:modulepreload|module)\b/i.test(attribute(attrs, 'rel'))) {
+      const href = attribute(attrs, 'href');
+      if (href) refs.push(href);
+    }
+  }
+  return refs;
+}
+
+test('public local JS references carry a version query', () => {
+  const missing = [];
+  for (const file of publicFiles('.js')) {
+    const source = readFileSync(path.join(publicDirectory, file), 'utf8');
+    for (const match of source.matchAll(JS_SPECIFIER)) {
+      if (!isLocalJsReference(match[1]) || versionQuery(match[1])) continue;
+      missing.push(`${file} ${match[1]}`);
+    }
+  }
+  for (const file of publicFiles('.html')) {
+    const source = readFileSync(path.join(publicDirectory, file), 'utf8');
+    for (const specifier of htmlScriptRefs(source)) {
+      if (!isLocalJsReference(specifier) || versionQuery(specifier)) continue;
+      missing.push(`${file} ${specifier}`);
+    }
+  }
+  assert.deepEqual(missing, []);
+});
+
 test('public JS imports are listed in the static file whitelist', () => {
   const whitelist = whitelistScriptNames(readFileSync(staticFilesSource, 'utf8'));
   const imported = new Map();

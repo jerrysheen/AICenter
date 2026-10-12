@@ -188,7 +188,8 @@ test('feed, reader, brief bullets and ask share one card', () => {
   assert.match(share, /function resolveShareScale/);
   assert.doesNotMatch(share, /planSharePages|paginateBlocks|share-sheet-page|share-sheet-slice/);
   assert.match(share, /tradingplus\.cn/);
-  assert.match(share, /from '\.\/qr-code\.js'/);
+  assert.match(share, /from '\.\/markdown\.js\?v=dev'/);
+  assert.match(share, /from '\.\/qr-code\.js\?v=dev'/);
   assert.doesNotMatch(share, /const maxWidth = Math\.max/);
   assert.match(share, /function makePreviewDataUrl/);
   assert.match(share, /image\/png/);
