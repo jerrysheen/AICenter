@@ -5606,3 +5606,14 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
   .daily-direction-card h3 { font-size:15px; }
 }
 .tree-tools button[aria-pressed="true"], .tree-issue-heading > button[aria-expanded="true"] { color:var(--font-primary); font-weight:700; }
+.api-token-card { margin-top: 16px; }
+.api-token-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+.api-token-form input { flex: 1 1 180px; min-width: 0; }
+.api-token-secret { margin-top: 12px; padding: 12px; border-radius: 12px; background: var(--comp-tertiary); }
+.api-token-secret p { margin: 0 0 8px; }
+.api-token-secret code { display: block; overflow-wrap: anywhere; font-size: 13px; line-height: 1.5; }
+.api-token-actions { display: flex; gap: 8px; margin-top: 8px; }
+.api-token-row { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--comp-tertiary); }
+.api-token-row strong, .api-token-row small { display: block; }
+.api-token-row small { margin-top: 3px; color: var(--font-tertiary); font-size: 12px; line-height: 1.5; }
+.api-token-revoke { color: var(--warning); }
