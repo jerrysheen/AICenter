@@ -79,7 +79,7 @@ scripts/
   setup-cloudflared.ps1      一次安装本机 cloudflared，并准备 `.ai-data/cloudflare/`
   start-cloudflared.ps1      单独启动 Named Tunnel；本机已配置时 start-ai-center 也会拉起
   cloudflared-process.ps1    识别 cloudflared 可执行文件、token 与服务状态
-  start-ai-center.ps1        启动 Web、Worker 与可选 Search
+  start-ai-center.ps1        启动 Web、Worker 与可选 Search；守护循环可按 deploy 引用自动更新，见 `docs/ops/auto-deploy.md`
 
 config/
   searxng-settings.yml       SearXNG 极简配置模板；运行时副本在 `.ai-data/searxng/`
