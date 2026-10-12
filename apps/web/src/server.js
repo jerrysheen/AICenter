@@ -1,3 +1,4 @@
+import {attachDailyProcessLog} from '../../../packages/runtime/src/process-log.js';
 import { createHardwareArtifactStore } from '../../../packages/connectors/src/hardware-artifacts.js';
 import { legacyPriceSnapshot } from '../../../packages/connectors/src/trendforce-prices.js';
 import { createHardwarePriceService } from '../../../packages/domain/src/hardware-price-service.js';
@@ -503,6 +504,7 @@ export function createAiCenterServer(options = {}) {
 }
 
 async function main() {
+  attachDailyProcessLog({directory: process.env.AI_CENTER_LOG_DIR, name: process.env.AI_CENTER_LOG_NAME});
   const app = createAiCenterServer();
   const address = await app.listen();
   console.log(`AI Center ${version}`);

@@ -1,10 +1,13 @@
 import {createHash} from 'node:crypto';
 import {ReadingHourIndexSchema} from '../../contracts/src/information-tree.js';
+import {redactCondenseLog} from './information-tree-policy.js';
 import {buildFocusQuestions, parseFocusAnswer} from './us-equity-focus.js';
 import {FOCUS_GROUP_NAMES, FOCUS_GROUP_ORDER, FOCUS_QUESTIONS, READING_CLASS_VERSION, READING_DIRECTIONS, READING_ROUTE_VERSION, normalizeReadingSemantics, readingPlacement, routeReadingFocus} from './reading-focus-route.js';
 
 const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const READING_TIMELINESS_MS = 24 * 60 * 60 * 1000;
+// A batch of ten article prefixes needs longer than the old 90s call budget. 180s matches the condense call timeout.
+const READING_CLASS_TIMEOUT_MS = 180_000;
 const SLICE_ORDER = ['中国','美国','欧洲','日本','韩国','中国台湾','多地','其他','模型与技术','应用与工作流','安全与外交','贸易与限制'];
 const READING_DIRECTION_ORDER = ['金融','产业个股','科技与AI','地缘政治','待分类'];
 const readingRank = (order, value) => { const index = order.indexOf(value); return index < 0 ? order.length : index; };
@@ -191,16 +194,58 @@ export function createReadingHourService({repository, reportRepository = null, a
   const batchSize = readingClassBatchSize(env);
   const keyEnvs = readingClassKeyEnvs(env);
   let keyCursor = 0;
-  function logCall({count, fallback = false, reason = '', keyEnv = '', outcome = 'ok'}) {
+  function logToken(value) {
+    const text = String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    if (!text || /AIza|sk-|api[_-]?key|bearer|secret/i.test(text)) return '-';
+    return text;
+  }
+  function httpStatus(error) {
+    const direct = Number(error?.upstreamStatus ?? error?.status ?? error?.statusCode);
+    return Number.isInteger(direct) && direct >= 100 && direct <= 599 ? String(direct) : '-';
+  }
+  function logCall({count, fallback = false, reason = '', keyEnv = '', outcome = 'ok', error = null, result = null, latencyMs = 0, inputBytes = 0}) {
     const parts = ['[worker] reading-class', `batch=${count}`, `fallback=${fallback ? 1 : 0}`];
     if (fallback && reason) parts.push(`reason=${reason}`);
-    parts.push(`key=${readingClassKeySuffix(keyEnv)}`);
-    if (outcome && outcome !== 'ok') parts.push(`outcome=${outcome}`);
+    const model = error?.admittedModel || result?.modelId || '';
+    parts.push(
+      `key=${readingClassKeySuffix(keyEnv || error?.googleKeyEnv)}`,
+      `outcome=${outcome || 'ok'}`,
+      `status=${error ? httpStatus(error) : '-'}`,
+      `name=${error ? logToken(error.name || 'Error') : '-'}`,
+      `model=${logToken(model)}`,
+      `latencyMs=${Math.max(0, Math.round(latencyMs))}`,
+      `inputBytes=${Math.max(0, Math.round(inputBytes))}`,
+    );
+    if (error) {
+      const body = redactCondenseLog(error.upstreamBody ?? error.responseBody ?? '') || '-';
+      const message = redactCondenseLog(error.message || error) || '-';
+      parts.push(`body=${body}`, `message=${message}`);
+    }
     try { log(parts.join(' ')); } catch { /* a log failure must not change classification */ }
   }
   function callOutcome(error) {
     if (isQuotaExhausted(error)) return 'budget-deferred';
+    const name = String(error?.name || '');
+    const message = String(error?.message || error || '');
+    if (name === 'AbortError' || name === 'TimeoutError' || /超时|timed out|\btimeout\b/i.test(message)) return 'timeout';
     return 'error';
+  }
+  async function runLogged({count, fallback = false, reason = '', keyEnv = '', message, request}) {
+    const started = Date.now();
+    const inputBytes = Buffer.byteLength(String(message ?? ''));
+    let outcome = 'ok';
+    let error = null;
+    let result = null;
+    try {
+      result = await request();
+      return result;
+    } catch (caught) {
+      error = caught;
+      outcome = callOutcome(caught);
+      throw caught;
+    } finally {
+      logCall({count, fallback, reason, keyEnv, outcome, error, result, latencyMs: Date.now() - started, inputBytes});
+    }
   }
   function view(snapshot) {
     if (!snapshot) return null;
@@ -265,35 +310,32 @@ export function createReadingHourService({repository, reportRepository = null, a
     return {status: 'failed', reason: 'classifier-not-configured', source: 'missing-runtime'};
   }
   const classificationRequest = (workspace, taskInstruction, message, keyEnv) => agentRuntime.run({
-    closedContext: true, closedTask: 'hourly-brief', webMode: 'off', workspaceId: workspace, allowedToolIds: [], timeoutMs: 90000,
+    closedContext: true, closedTask: 'hourly-brief', webMode: 'off', workspaceId: workspace, allowedToolIds: [], timeoutMs: READING_CLASS_TIMEOUT_MS,
     usageStage: 'reading-classification', taskInstruction, message, ...(keyEnv ? {googleKeyEnv: keyEnv} : {}),
   });
-  // One pass over configured keys. A quota or cooldown rejection tries the next key with the same batch and never splits it.
+  // Quota walks every configured key and does not count as the non-quota retry.
+  // Any other error is tried once more on the next key, then the batch is deferred. It is not split per item.
   async function runBatchRequest(workspace, message, count) {
     const payload = {taskInstruction: readingClassBatchInstruction(), message};
-    if (!keyEnvs.length) {
-      try {
-        const result = await classificationRequest(workspace, payload.taskInstruction, payload.message);
-        logCall({count, keyEnv: ''});
-        return result;
-      } catch (error) {
-        logCall({count, keyEnv: '', outcome: callOutcome(error)});
-        throw error;
-      }
-    }
+    const attempt = (keyEnv) => runLogged({
+      count, keyEnv, message,
+      request: () => classificationRequest(workspace, payload.taskInstruction, payload.message, keyEnv),
+    });
+    if (!keyEnvs.length) return attempt('');
     const start = keyCursor % keyEnvs.length;
-    let lastError;
-    for (let attempt = 0; attempt < keyEnvs.length; attempt += 1) {
-      const index = (start + attempt) % keyEnvs.length;
+    let lastError = null;
+    let nonQuotaErrors = 0;
+    for (let step = 0; step < keyEnvs.length; step += 1) {
+      const index = (start + step) % keyEnvs.length;
       try {
-        const result = await classificationRequest(workspace, payload.taskInstruction, payload.message, keyEnvs[index]);
+        const result = await attempt(keyEnvs[index]);
         keyCursor = index + 1;
-        logCall({count, keyEnv: keyEnvs[index]});
         return result;
       } catch (error) {
         lastError = error;
-        logCall({count, keyEnv: keyEnvs[index], outcome: callOutcome(error)});
-        if (!isQuotaExhausted(error)) {
+        if (isQuotaExhausted(error)) continue;
+        nonQuotaErrors += 1;
+        if (nonQuotaErrors >= 2) {
           keyCursor = index + 1;
           throw error;
         }
@@ -304,15 +346,16 @@ export function createReadingHourService({repository, reportRepository = null, a
   }
   async function requestOne(workspace, node, fallback = null) {
     const input = classificationInput(node);
-    const logged = {count: 1, fallback: Boolean(fallback), reason: fallback?.reason || '', keyEnv: ''};
+    const message = JSON.stringify(input);
     try {
-      const result = await classificationRequest(workspace, READING_CLASS_INSTRUCTION, JSON.stringify(input));
-      logCall(logged);
+      const result = await runLogged({
+        count: 1, fallback: Boolean(fallback), reason: fallback?.reason || '', keyEnv: '', message,
+        request: () => classificationRequest(workspace, READING_CLASS_INSTRUCTION, message),
+      });
       const parsed = parseClassification(result.answer || result.text || '', input);
       persistClassification(workspace, node, input, parsed);
       return {...parsed, source: 'classification-request'};
     } catch (error) {
-      logCall({...logged, outcome: callOutcome(error)});
       return persistThrown(workspace, node, input, error);
     }
   }

@@ -1,3 +1,4 @@
+import {attachDailyProcessLog} from '../../../packages/runtime/src/process-log.js';
 import { audioTranscriptionManifest, createAudioTranscriptionJobHandlers } from '../../../packages/runtime/src/audio-transcription-job.js';
 import {createGeminiArticleAdmission,startGeminiQuotaProbe} from '../../../packages/runtime/src/gemini-article-admission.js';
 import {resolveGoogleHourlyAdmissionModels} from '../../../packages/harness/src/llm-route.js';
@@ -647,6 +648,7 @@ export function createAiCenterWorker(options = {}) {
 }
 
 async function main() {
+  attachDailyProcessLog({directory: process.env.AI_CENTER_LOG_DIR, name: process.env.AI_CENTER_LOG_NAME});
   const worker = createAiCenterWorker();
   console.log(`AI Center worker ${worker.runner.workerId}`);
   try {

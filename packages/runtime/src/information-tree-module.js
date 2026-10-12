@@ -1,5 +1,5 @@
 import {PrepareTreeInformationInputSchema} from '../../contracts/src/information-tree.js';
-import {hourlyReportDisabled} from './report-module.js';
+import {hourlyRefreshAvailableAt,hourlyReportDisabled} from './report-module.js';
 export const TREE_PREPARE_JOB_TYPE='report.information.prepare';
 export const informationTreeManifest={id:'report.information',version:'3.1.0',capabilities:['report.information.prepare'],jobTypes:[TREE_PREPARE_JOB_TYPE]};
 const HOUR=3600000;
@@ -28,7 +28,7 @@ export function enqueuePreparedHourRefreshes(store,service,workspaceId,nodes,at=
     if(attempt?.terminal && nodes.filter(n=>n.window.startAt===hourStart).every(n=>attempt.inputIds.includes(n.id)))continue;
     // A running hour may already have frozen its inputs; retain one queued follow-up.
     if(queued.some(j=>j.input.hourStart===hourStart && !j.input.snapshotId && j.input.mode!=='rewrite'))continue;
-    jobs.push(store.createJob({type:'report.hourly.extract',workspaceId,priority:hourStart===latest ? 10 : -5,maxAttempts:2,availableAt:minute===null ? at+60000 : Math.floor(at/HOUR)*HOUR+minute*60000+(at>=Math.floor(at/HOUR)*HOUR+minute*60000 ? HOUR : 0),input:{workspaceId,hourStart}}));
+    jobs.push(store.createJob({type:'report.hourly.extract',workspaceId,priority:hourStart===latest ? 10 : -5,maxAttempts:2,availableAt:hourlyRefreshAvailableAt(at,minute),input:{workspaceId,hourStart}}));
     // One historical catch-up per preparation batch; other saved nodes remain available
     // to the existing hourly rotation instead of flooding the single report lane.
     break;

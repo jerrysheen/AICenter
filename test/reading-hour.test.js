@@ -8,7 +8,7 @@ import {createStore} from '../packages/database/src/index.js';
 import {runMigrations} from '../packages/database/src/migrations.js';
 import {createInformationTreeRepository} from '../packages/database/src/repositories/information-tree-repository.js';
 import {createReadingHourService} from '../packages/domain/src/reading-hour-service.js';
-import {createReportJobHandlers} from '../packages/runtime/src/report-module.js';
+import {classificationDeferredCount, createReportJobHandlers, enqueueHourlyExtractFollowUp, hourlyRefreshAvailableAt} from '../packages/runtime/src/report-module.js';
 import {normalizeReadingSemantics, readingPlacement, routeReadingFocus} from '../packages/domain/src/reading-focus-route.js';
 import {ReadingHourIndexQuerySchema, ReadingHourIndexSchema, readingHourIndexDefaultWindow} from '../packages/contracts/src/information-tree.js';
 import {ValidationError} from '../packages/contracts/src/errors.js';
@@ -59,6 +59,47 @@ test('hourly classification waits while sources are still arriving and flushes a
   assert.equal(calls.at(-1).flushRemainder, false);
   await handlersFor([{id: 'gone', reason: 'needs-content', retryable: false}])['report.hourly.extract']({});
   assert.equal(calls.at(-1).flushRemainder, true);
+});
+
+test('a partial hour refreshes inside the hour after its slot, and deferred classification gets one later pass', async () => {
+  const hour = 22 * 3600000;
+  const pastSlot = hour + 30 * 60000 + 5000;
+  assert.equal(hourlyRefreshAvailableAt(pastSlot, 30), pastSlot + 60000);
+  assert.equal(hourlyRefreshAvailableAt(hour + 10 * 60000, 30), hour + 30 * 60000);
+  assert.equal(hourlyRefreshAvailableAt(pastSlot, null), pastSlot + 60000);
+  assert.equal(classificationDeferredCount({snapshot: {items: [{disposition: 'classification-failed'}, {disposition: 'classification-missing'}, {disposition: 'budget-deferred'}]}}), 2);
+  assert.equal(classificationDeferredCount({snapshot: {items: [{disposition: 'hit'}]}}), 0);
+
+  const jobs = [];
+  const store = {
+    listOpenJobs() { return jobs.filter((job) => job.status === 'queued'); },
+    createJob(input) {
+      const job = {id: `job-${jobs.length}`, status: 'queued', workspaceId: input.workspaceId, type: input.type, availableAt: input.availableAt, input: input.input};
+      jobs.push(job);
+      return job;
+    },
+  };
+  const handlers = createReportJobHandlers({
+    reportService: {generateDailyReport() {}},
+    informationService: {async generateHourlyDigests() {
+      return [{id: 'edition:1', status: 'partial', published: true, window: {startAt: hour, endAt: hour + 3600000}, pendingIds: [], groupFailures: []}];
+    }},
+    treeService: {},
+    readingHour: {enabled: true, async scoreWindow() {
+      return {readingErrors: [], snapshot: {items: [{disposition: 'classification-failed'}, {disposition: 'classification-missing'}, {disposition: 'hit'}]}};
+    }},
+  });
+  const before = Date.now();
+  const result = await handlers['report.hourly.extract']({hourStart: hour}, {store});
+  assert.equal(result.classificationDeferred, 1);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].input.hourStart, hour);
+  assert.equal(jobs[0].input.followUp, 'classification-deferred');
+  assert.ok(jobs[0].availableAt >= before + 60000 && jobs[0].availableAt <= Date.now() + 60000);
+  const again = await handlers['report.hourly.extract']({hourStart: hour, followUp: 'classification-deferred'}, {store});
+  assert.equal(again.classificationDeferred, 1);
+  assert.equal(jobs.length, 1);
+  assert.equal(enqueueHourlyExtractFollowUp(store, {workspaceId: 'local', hourStart: hour, availableAt: before + 60000}), null);
 });
 
 test('reading snapshot survives reopen and a failed attempt cannot replace it', () => {

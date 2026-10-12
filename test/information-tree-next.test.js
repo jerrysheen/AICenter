@@ -279,10 +279,26 @@ test('mixed preparation schedules only the nearest affected ended hour',async()=
   const f=fixture();try{
     const prepared=await f.service.prepareInformation({materials:[material('a'),{...material('b'),publishedAt:start-H+1}]});
     const jobs=enqueuePreparedHourRefreshes(f.store,f.service,'local',prepared.nodes,start+H+1);
-    assert.equal(jobs.length,1);assert.equal(jobs[0].input.hourStart,start);assert.equal(jobs[0].priority,10);
+    assert.equal(jobs.length,1);assert.equal(jobs[0].input.hourStart,start);assert.equal(jobs[0].priority,10);assert.equal(jobs[0].availableAt,start+H+1+60000);
     const historical=enqueuePreparedHourRefreshes(f.store,f.service,'local',prepared.nodes.filter(n=>n.window.startAt===start-H),start+2*H+1);
     assert.equal(historical.length,1);assert.equal(historical[0].priority,-5); // regular scheduled priority 0 wins
   }finally{f.store.close();}
+});
+
+test('a prepare refresh after the hourly slot is available within a minute',async()=>{
+  const late=fixture();try{
+    const prepared=await late.service.prepareInformation({materials:[material('a')]});
+    const at=start+H+30*60000+5000;
+    const jobs=enqueuePreparedHourRefreshes(late.store,late.service,'local',prepared.nodes,at,{minute:30});
+    assert.equal(jobs.length,1);
+    assert.equal(jobs[0].availableAt,at+60000);
+  }finally{late.store.close();}
+  const early=fixture();try{
+    const prepared=await early.service.prepareInformation({materials:[material('a')]});
+    const jobs=enqueuePreparedHourRefreshes(early.store,early.service,'local',prepared.nodes,start+H+10*60000,{minute:30});
+    assert.equal(jobs.length,1);
+    assert.equal(jobs[0].availableAt,start+H+30*60000);
+  }finally{early.store.close();}
 });
 
 test('explicit historical refresh uses low Harness priority while latest ended hour keeps foreground priority',async()=>{

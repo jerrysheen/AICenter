@@ -70,6 +70,40 @@ export function hourlyReportDisabled(env = process.env) {
   return String(env?.AI_CENTER_HOURLY_DISABLED ?? '') === '1';
 }
 
+const HOUR_MS = 3600000;
+const HOURLY_FOLLOW_UP_DELAY_MS = 60_000;
+const DEFERRED_CLASSIFICATION = new Set(['classification-failed', 'budget-deferred']);
+
+// Before this hour's slot, wait for the slot. Once the slot has passed, the next prepare
+// refresh is one minute out so a partial hour is picked up inside the hour.
+export function hourlyRefreshAvailableAt(at, minute) {
+  if (minute === null || minute === undefined) return at + HOURLY_FOLLOW_UP_DELAY_MS;
+  const slot = Math.floor(at / HOUR_MS) * HOUR_MS + minute * 60_000;
+  return at >= slot ? at + HOURLY_FOLLOW_UP_DELAY_MS : slot;
+}
+
+export function classificationDeferredCount(saved) {
+  const items = saved?.snapshot?.items;
+  if (!Array.isArray(items)) return 0;
+  return items.reduce((sum, item) => sum + (DEFERRED_CLASSIFICATION.has(item?.disposition) ? 1 : 0), 0);
+}
+
+export function enqueueHourlyExtractFollowUp(store, {workspaceId = 'local', hourStart, availableAt, reason = 'classification-deferred', env = process.env} = {}) {
+  if (hourlyReportDisabled(env) || !store?.createJob || !store?.listOpenJobs || !Number.isFinite(hourStart)) return null;
+  const queued = (store.listOpenJobs(REPORT_HOURLY_JOB_TYPE) || []).filter((job) => job.workspaceId === workspaceId && job.status === 'queued');
+  if (queued.some((job) => job.input?.hourStart === hourStart && !job.input?.snapshotId && job.input?.mode !== 'rewrite')) return null;
+  const job = store.createJob({
+    type: REPORT_HOURLY_JOB_TYPE,
+    workspaceId,
+    priority: 10,
+    maxAttempts: 2,
+    availableAt,
+    input: {workspaceId, hourStart, followUp: reason},
+  });
+  console.log(`[worker] reading-class follow-up hourStart=${hourStart} reason=${reason} availableAt=${availableAt}`);
+  return job;
+}
+
 // Hold a short reading-classification remainder while this hour can still gain information nodes.
 // Terminal content failures do not keep the last items unclassified.
 export function hourlyReadingFlushRemainder(digest) {
@@ -109,10 +143,19 @@ export function createReportJobHandlers({ reportService, briefService = null, in
       const hourMs=3600000;
       const windows=input.hourStart!==undefined ? [{startAt:input.hourStart,endAt:input.hourStart+hourMs}] : digests.map(item=>item?.window).filter(item=>Number.isFinite(item?.startAt) && Number.isFinite(item?.endAt));
       const readingErrors=[];
+      let classificationDeferred=0;
       if(readingHour?.enabled) {
         for(const window of windows) {
           const digest=(digests || []).find(item=>item?.window?.startAt===window.startAt) || null;
-          try {const saved=await readingHour.scoreWindow({workspace: input.workspaceId || 'local', window, flushRemainder: hourlyReadingFlushRemainder(digest)}); if(saved?.readingErrors?.length) readingErrors.push(...saved.readingErrors.map(error=>({...error,window})));}
+          try {
+            const saved=await readingHour.scoreWindow({workspace: input.workspaceId || 'local', window, flushRemainder: hourlyReadingFlushRemainder(digest)});
+            if(saved?.readingErrors?.length) readingErrors.push(...saved.readingErrors.map(error=>({...error,window})));
+            const deferred=classificationDeferredCount(saved);
+            classificationDeferred+=deferred;
+            if(deferred>0 && input.followUp!=='classification-deferred') {
+              enqueueHourlyExtractFollowUp(context?.store,{workspaceId:input.workspaceId || 'local',hourStart:window.startAt,availableAt:Date.now()+HOURLY_FOLLOW_UP_DELAY_MS,env});
+            }
+          }
           catch(error) {readingErrors.push({window,reason:String(error?.message || error).slice(0,180)});}
         }
       }
@@ -125,13 +168,13 @@ export function createReportJobHandlers({ reportService, briefService = null, in
         const main=digests[0];
         return {snapshotIds:digests.map(d=>d.id),editionId:main?.id,status:main?.status,published:main?.published===true,
           window:main?.window,pendingCount:main?.pendingIds.length || 0,groupFailureCount:main?.groupFailures?.length || 0,
-          readingFailed:readingErrors.length>0,readingErrors,
+          readingFailed:readingErrors.length>0,readingErrors,classificationDeferred,
           backgroundIncomplete:digests.slice(1).filter(d=>d.status!=='ready').map(d=>d.window.startAt)};
       }
       const failed=(rawInput?.hourStart!==undefined ? digests : digests.slice(0,1)).filter(d=>d.editorial?.status==='failed');
       if(failed.length) throw new Error(`${failed.length} 个小时主题整理未完成；提炼底稿已保存，可继续重试。`);
       return {snapshotIds:digests.map(d=>d.id),itemCount:digests.reduce((s,d)=>s+d.items.length,0),
-        readingFailed:readingErrors.length>0,readingErrors,
+        readingFailed:readingErrors.length>0,readingErrors,classificationDeferred,
         backgroundIncomplete:rawInput?.hourStart===undefined ? digests.slice(1).filter(d=>d.editorial?.status==='failed').map(d=>d.window.startAt) : []};
     },
     [REPORT_DAILY_JOB_TYPE]: async (rawInput, context) => {

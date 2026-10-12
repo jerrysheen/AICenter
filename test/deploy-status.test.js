@@ -215,6 +215,15 @@ test('launcher keeps daily logs, worker-only restart, and deploy guards', () => 
   const writeLine = launcher.indexOf('writer.WriteLine', received);
   assert.ok(received > 0 && writeLine > received);
   assert.equal(launcher.slice(received, received + 220).includes('WriteLine'), false);
+  assert.match(launcher, /AI_CENTER_LOG_DIR/);
+  assert.match(launcher, /AI_CENTER_LOG_NAME/);
+  assert.match(launcher, /static string LogName/);
+  const worker = readFileSync(path.join(root, 'apps/worker/src/worker.js'), 'utf8');
+  const server = readFileSync(path.join(root, 'apps/web/src/server.js'), 'utf8');
+  assert.match(worker, /attachDailyProcessLog\(\{directory: process\.env\.AI_CENTER_LOG_DIR/);
+  assert.match(server, /attachDailyProcessLog\(\{directory: process\.env\.AI_CENTER_LOG_DIR/);
+  assert.equal(worker.startsWith("import {attachDailyProcessLog}"), true);
+  assert.equal(server.startsWith("import {attachDailyProcessLog}"), true);
 });
 
 test('instance config exposes deploy backup paths and not dotenv values', () => {
