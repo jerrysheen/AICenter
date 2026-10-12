@@ -28,6 +28,18 @@
 
 迁移命令：`node scripts/migrate-trendforce-content.mjs` 默认只读；`--run` 先在线备份，再用注册的 `feed.trendforce.migrate` handler 执行，只领取该任务，不恢复/终止其他 Worker Job。迁移复制原有准入决定和标签到媒体身份，不重新调用模型、不放宽现行入选规则。旧未记录提取证据的文章标部分正文；报告简介始终 summary_only。已验证全文后续不降级，普通媒体补全文任务跳过 TrendForce 抓取，翻译和 Tag 仍由既有 media.index.enrich 执行。
 
-新增未验证洞察可以由原采集任务补正文，已经验证的洞察沿用排除 ID；采集频率仍为原 120 分钟。并发的同一请求合并，Worker 内的分流写入串行。公开 Source 只读存储，内部 collection Source 不在 HTTP 目录和详情暴露。
+新增未验证洞察可以由原采集任务补正文，已经验证的洞察沿用排除 ID；文章订阅频率仍为原 120 分钟。并发的同一请求合并，Worker 内的分流写入串行。公开 Source 只读存储，内部 collection Source 不在 HTTP 目录和详情暴露。
+
+### 2026-10-12 现货解析、抓取时刻与币种
+
+生产订阅约每 30 分钟抓一次公开价表。NAND 公开页 `flash_spot` 的 Last Update 与 schema.org `dateModified` 停在 2026-09-28 14:40（GMT+8）；同日 DRAM `dram_spot` 已到 2026-10-12。公开 HTML 里没有更晚的 NAND 报价日。`/pricedetail/` 与 DRAMeXchange 价格页会转到登录，不能从会员通知补数字。
+
+表头已变成「日高点、日低点、盘高点、盘低点、盘平均、盘涨跌幅」，标题只剩「(未税)」。旧解析把日高／日低算进规格，序列身份跟着价格分叉，最后一条干净序列停在 09-28。盘均价又和日高点混在同一行。解析器 `trendforce-tables-3` 把全部价格列排除出规格，均价／高低优先盘列。
+
+币种规则收窄：DRAM／NAND 的现货与合约标题含「未税」，且不是 Wafer、Module、eMMC、Card、SSD、Street 时，记 `USD` / `chip`。SSD、晶圆、eMMC、存储卡、街价仍只在页面写明币种时填写。已有序列若规格、分类、报价类型相同，且币种或单位有一侧为空，沿用观测最多的那条，避免表头改名后另开历史。
+
+每次抓取都写 `last_checked_at`。页面级 `hardware_price_page_checks.last_changed_at` 只在内容哈希变化时前移；同一哈希且同一解析版本只更新检查时间，不新增观测。仅解析版本变化会新快照，但不把页面标成内容已变。migration 54 只加列和检查表，并按已有快照回填。
+
+报价另有注册任务 `feed.trendforce.prices`。Worker 用两条 `daily` 日程，默认 Asia/Shanghai 10:30 与 17:30，最多四档。`AI_CENTER_TRENDFORCE_PRICE_SYNC=0` 关闭；`AI_CENTER_TRENDFORCE_PRICE_AT` 为逗号分隔的 `HH:MM`；`AI_CENTER_TRENDFORCE_PRICE_TIMEZONE` 默认 `Asia/Shanghai`。原订阅同步仍走同一解析与仓储。`config/media.json` 的 TrendForce 文章源保持关闭。行情行显示币种／单位，以及「已抓取、页面未变」或「抓到新内容」。生效需要重启 Worker；行情提示需要重载 Web 静态资源。已存 HTML 要用显式 `feed.trendforce.reparse` 重读，启动时不隐式重抓。
 
 UI 合成检查：`scripts/verify-trendforce-routing.mjs` 使用 Host 注入的无头浏览器，检查桌面/手机宽度、来源切换晚返回、完整旧链接、简介阅读、真实表格安全文本呈现、单观测无图表；不控制用户桌面。

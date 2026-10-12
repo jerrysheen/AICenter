@@ -31,7 +31,7 @@ export function createHardwarePriceService({repository,artifactStore}) {
       }
       const items=rows.filter(r=>!q.category || r.category===q.category).slice(0,q.limit)
         .map(r=>project(r,repository.history(workspaceId,r.seriesKey)));
-      return HardwarePriceListViewSchema.parse({items,snapshot:q.snapshotId?publicSnapshot(repository.getSnapshot(workspaceId,q.snapshotId)):null});
+      return HardwarePriceListViewSchema.parse({items,snapshot:q.snapshotId?publicSnapshot(repository.getSnapshot(workspaceId,q.snapshotId)):null,pages:repository.pageChecks?.(workspaceId) || []});
     },
     detail(workspaceId,seriesKey) {
       const revisions=repository.history(workspaceId,seriesKey);if(!revisions.length)return null;
@@ -44,6 +44,7 @@ export function createHardwarePriceService({repository,artifactStore}) {
       const s=repository.getSnapshot(workspaceId,id);if(!s)return null;
       return HardwarePriceSnapshotViewSchema.parse({...publicSnapshot(s),raw:artifactStore.read(s.artifactPath),items:this.list(workspaceId,{snapshotId:id}).items});
     },
+    pageChecks: workspaceId => repository.pageChecks?.(workspaceId) || [],
     legacyItemIds: workspaceId=>repository.legacyItemIds(workspaceId),
     savedSnapshots: workspaceId=>repository.savedSnapshots(workspaceId).map(publicSnapshot),
     linkLegacy: (...args)=>repository.linkLegacy(...args),

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { createStore } from '../packages/database/src/index.js';
-import { runMigrations } from '../packages/database/src/migrations.js';
+import { latestSchemaVersion, runMigrations } from '../packages/database/src/migrations.js';
 import { createHardwareArtifactStore } from '../packages/connectors/src/hardware-artifacts.js';
 import { parseStructuredPricePage,legacyPriceSnapshot } from '../packages/connectors/src/trendforce-prices.js';
 import { createHardwarePriceService } from '../packages/domain/src/hardware-price-service.js';
@@ -19,6 +19,7 @@ import { HardwarePriceSnapshotInputSchema,ImportedMediaArticleSchema } from '../
 import mediaConfig from '../config/media.json' with {type:'json'};
 import { createAiCenterServer } from '../apps/web/src/server.js';
 import {createTrendForceJobHandlers,createTrendForceService} from '../packages/connectors/src/trendforce.js';
+import {ensureTrendForcePriceSchedules} from '../packages/runtime/src/trendforce-price-schedule.js';
 const at=Date.parse('2026-10-05T04:00:00Z');
 const html=(average='10.00',date='2026-10-05',extra='')=>`<div class="price-title">DRAM Spot Price (US$/chip, 未稅)</div>
 <div class="price-last-update">Last Update ${date} 18:10 (GMT+8)</div>
@@ -195,13 +196,65 @@ test('source filtering isolates display caches and discards late responses from 
   pending[1]({feed:{items:[{id:'bbc'}]}});await second;pending[0]({feed:{items:[{id:'trendforce'}]}});await first;
   assert.equal(shown.at(-1).items[0].id,'bbc');assert.equal(cache.get('device:test','tech:all:trendforce'),null);assert.equal(cache.get('device:test','tech:all:bbc').items[0].id,'bbc');
 });
+const liveNand=`<div id="flash_spot" class="price-content">
+  <div class="price-title">NAND Flash Spot Price <small>(未稅)</small></div>
+  <div class="price-last-update"><p>Last Update 2026-09-28 14:40 (GMT+8)</p></div>
+  <table class="price-table"><tr><th>項目</th><th>日高點</th><th>日低點</th><th>盤高點</th><th>盤低點</th><th>盤平均</th><th>盤漲跌幅</th></tr>
+  <tr><td><span title="Samsung">SLC 2Gb 256MBx8</span></td><td>4.55</td><td>4.20</td><td>4.80</td><td>4.10</td><td>4.348</td><td>0.07 %</td></tr></table></div>
+  <div class="price-title">NAND Flash Contract Price in Memory Card/UFD (2H Aug)</div>
+  <ul class="price-notice"><li>Sep. NAND Flash contract price updated on 9/30/2026.</li></ul>
+  <div class="price-last-update"><p>Last Update 2026-08-31 18:00 (GMT+8)</p></div>
+  <table class="price-table"><tr><th>項目</th><th>高點</th><th>低點</th><th>均價</th></tr><tr><td>NAND 128Gb 16Gx8 MLC</td><td>30.60</td><td>30.25</td><td>30.475</td></tr></table>`;
+test('NAND spot uses the session quote, keeps its own update date, and restores USD per chip',()=>{
+  const value=parseStructuredPricePage(liveNand,{pageKey:'flash',sourceUrl:'https://www.trendforce.com.tw/price/flash/flash_spot',title:'NAND'});
+  const spot=value.rows.find(row=>row.specification==='SLC 2Gb 256MBx8');
+  assert.equal(spot.average,'4.348');assert.equal(spot.high,'4.80');assert.equal(spot.low,'4.10');
+  assert.equal(spot.highBasis,'盤高點');assert.equal(spot.averageBasis,'盤平均');
+  assert.equal(spot.period,'2026-09-28');assert.equal(spot.currency,'USD');assert.equal(spot.unit,'chip');assert.equal(spot.taxBasis,'excluding-tax');
+  assert.equal(value.rows.find(row=>row.specification.startsWith('NAND 128Gb')).period,'2026-08 2H');
+  assert.match(value.warnings.join('\n'),/2026-09-30/);
+});
+test('an unchanged page records a new check without a new quote revision',()=>{
+  const f=fixture();try {
+    const first=f.hardware.ingest('local',parsed());
+    const second=f.hardware.ingest('local',parsed(html(),at+60000));
+    assert.equal(second.id,first.id);
+    const page=f.hardware.pageChecks('local').find(item=>item.pageKey==='dram');
+    assert.equal(page.lastChangedAt,at);assert.equal(page.lastCheckedAt,at+60000);assert.equal(page.unchanged,true);
+    assert.equal(f.hardware.detail('local',f.hardware.list('local').items[0].seriesKey).revisions.length,1);
+    assert.equal(f.hardware.list('local').pages[0].unchanged,true);
+  }finally{f.close();}
+});
+test('a renamed average column stays on the existing series when currency was already known',()=>{
+  const f=fixture();try {
+    f.hardware.ingest('local',parsed());
+    const renamed=liveNand.replace('SLC 2Gb 256MBx8','DDR5 16Gb (2Gx8) 4800/5600').replace('2026-09-28','2026-10-12').replace('id="flash_spot"','id="dram_spot"');
+    const next=parseStructuredPricePage(renamed,{pageKey:'dram',sourceUrl:'https://www.trendforce.com.tw/price/dram/dram_spot',title:'DRAM',capturedAt:at+86400000});
+    const spot=next.rows.find(row=>row.specification.includes('DDR5'));
+    spot.category='dram';
+    f.hardware.ingest('local',{...next,pageKey:'dram',rows:next.rows.map(row=>row.specification.includes('DDR5')?{...row,category:'dram'}:row)});
+    const items=f.hardware.list('local').items.filter(row=>row.specification.includes('DDR5'));
+    assert.equal(items.length,1);assert.equal(items[0].history.length,2);assert.equal(items[0].currency,'USD');assert.equal(items[0].unit,'chip');
+  }finally{f.close();}
+});
+test('worker price schedules run twice each Shanghai day and can be turned off',()=>{
+  const f=fixture();try {
+    const now=Date.parse('2026-10-12T02:00:00Z');
+    const saved=ensureTrendForcePriceSchedules(f.store,{AI_CENTER_TRENDFORCE_PRICE_AT:'10:30,17:30',AI_CENTER_TRENDFORCE_PRICE_TIMEZONE:'Asia/Shanghai'},now);
+    assert.deepEqual(saved.filter(item=>item.enabled).map(item=>`${item.schedule.hour}:${String(item.schedule.minute).padStart(2,'0')}`),['10:30','17:30']);
+    assert.ok(saved[0].nextRunAt>now);assert.ok(saved[1].nextRunAt>now);
+    const off=ensureTrendForcePriceSchedules(f.store,{AI_CENTER_TRENDFORCE_PRICE_SYNC:'0'},now+1);
+    assert.equal(off.every(item=>item.enabled===false),true);
+  }finally{f.close();}
+});
 test('forward migration upgrades V39 with existing content and states intact',()=>{
   const f=fixture();try {
     f.store.close();const db=new Database(path.join(f.directory,'test.db'));
-    db.exec(`DROP TABLE hardware_price_legacy_links;DROP TABLE hardware_price_snapshot_rows;DROP TABLE hardware_price_observations;DROP TABLE hardware_price_snapshots;
-      DROP TABLE media_entry_legacy_links;ALTER TABLE media_index_entries DROP COLUMN article_kind;DELETE FROM schema_migrations WHERE version=40;PRAGMA user_version=39;`);
+    db.exec(`DROP TABLE IF EXISTS hardware_price_page_checks;DROP TABLE hardware_price_legacy_links;DROP TABLE hardware_price_snapshot_rows;DROP TABLE hardware_price_observations;DROP TABLE hardware_price_snapshots;
+      DROP TABLE media_entry_legacy_links;ALTER TABLE media_index_entries DROP COLUMN article_kind;DELETE FROM schema_migrations WHERE version IN (40,54);PRAGMA user_version=39;`);
     const before=db.prepare('SELECT count(*) n FROM content_items').get().n;runMigrations(db);runMigrations(db);
-    assert.equal(db.pragma('user_version',{simple:true}),40);assert.equal(db.prepare('SELECT count(*) n FROM content_items').get().n,before);db.close();
+    assert.equal(db.pragma('user_version',{simple:true}),latestSchemaVersion());assert.equal(db.prepare('SELECT count(*) n FROM content_items').get().n,before);
+    assert.equal(db.prepare(`SELECT COUNT(*) n FROM pragma_table_info('hardware_price_snapshots') WHERE name='last_checked_at'`).get().n,1);db.close();
   }finally{rmSync(f.directory,{recursive:true,force:true});}
 });
 test('hardware HTTP endpoints are read-only, scoped and explicit legacy migration queues a registered job',async()=>{

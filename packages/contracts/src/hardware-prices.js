@@ -36,9 +36,21 @@ export const HardwareQuoteViewSchema = HardwareQuoteRowSchema.safeExtend({
 });
 export const HardwareSnapshotViewSchema = z.object({
   id: z.uuid(), sourceKey: z.string(), pageKey: z.string(), sourceUrl: z.url(), title: z.string(),
-  capturedAt: z.number().int().nonnegative(), format: z.enum(['html','legacy-text']), parserVersion: z.string(), warnings: z.array(z.string()),
+  capturedAt: z.number().int().nonnegative(),
+  lastCheckedAt: z.number().int().nonnegative(),
+  lastChangedAt: z.number().int().nonnegative(),
+  format: z.enum(['html','legacy-text']), parserVersion: z.string(), warnings: z.array(z.string()),
 }).strict();
-export const HardwarePriceListViewSchema = z.object({items:z.array(HardwareQuoteViewSchema),snapshot:HardwareSnapshotViewSchema.nullable()}).strict();
+export const HardwarePricePageCheckSchema = z.object({
+  sourceKey: z.string(), pageKey: z.string(),
+  lastCheckedAt: z.number().int().nonnegative(), lastChangedAt: z.number().int().nonnegative(),
+  unchanged: z.boolean(),
+}).strict();
+export const HardwarePriceListViewSchema = z.object({
+  items:z.array(HardwareQuoteViewSchema),
+  snapshot:HardwareSnapshotViewSchema.nullable(),
+  pages:z.array(HardwarePricePageCheckSchema).max(20).default([]),
+}).strict();
 export const HardwarePriceDetailViewSchema = z.object({current:HardwareQuoteViewSchema,observations:z.array(HardwareQuoteViewSchema),revisions:z.array(HardwareQuoteViewSchema),
   hasHistory:z.boolean(),snapshots:z.array(HardwareSnapshotViewSchema)}).strict();
 export const HardwarePriceSnapshotViewSchema = HardwareSnapshotViewSchema.extend({raw:z.string(),items:z.array(HardwareQuoteViewSchema)});
