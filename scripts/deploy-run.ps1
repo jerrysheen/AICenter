@@ -49,6 +49,10 @@ function Invoke-AiCenterGit {
   $env:GIT_TERMINAL_PROMPT = '0'
   $env:GCM_INTERACTIVE = 'Never'
   if ($hadNative) { $PSNativeCommandUseErrorActionPreference = $false }
+  # Windows PowerShell 5.1 turns native stderr into a terminating error when
+  # ErrorActionPreference is Stop. git fetch writes progress there on success.
+  # Continue keeps the exit code. Stderr goes to a file so progress is not
+  # parsed as porcelain, and a failed command still returns the original text.
   $ErrorActionPreference = 'Continue'
   $stderrPath = Join-Path ([IO.Path]::GetTempPath()) ('ai-center-git-' + [guid]::NewGuid().ToString('n') + '.err')
   $code = 1

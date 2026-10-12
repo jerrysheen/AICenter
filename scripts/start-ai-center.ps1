@@ -439,7 +439,16 @@ public static class AiCenterConsoleCtrl {
           } catch {
             if (-not $detail) { $detail = 'Auto-deploy failed.' }
           }
-          Write-Host "[!] Auto-deploy error.`n$detail" -ForegroundColor Yellow
+          $consoleDetail = $message.Replace("`r", ' ').Replace("`n", ' ').Trim()
+          if ($consoleDetail.Length -gt 240) { $consoleDetail = $consoleDetail.Substring(0, 240) }
+          if ($consoleDetail) {
+            Write-Host "[!] Auto-deploy error: $consoleDetail" -ForegroundColor Yellow
+          } else {
+            Write-Host '[!] Auto-deploy error.' -ForegroundColor Yellow
+          }
+          if ($position -or $stack) {
+            Write-Host $detail -ForegroundColor Yellow
+          }
           try {
             Write-AiCenterDeployErrorStatus -ErrorText $detail
           } catch {
