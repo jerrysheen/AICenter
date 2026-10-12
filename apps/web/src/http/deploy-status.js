@@ -23,6 +23,18 @@ function reasonText(value) {
   return raw;
 }
 
+function errorText(value) {
+  if (typeof value !== 'string') return '';
+  let raw = value.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+  if (!raw) return '';
+  raw = raw
+    .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1redacted@')
+    .replace(/\b(password|api[_-]?key|secret|token)\s*[=:]\s*\S+/gi, '$1=<redacted>')
+    .replace(/\bBearer\s+\S+/gi, 'Bearer <redacted>');
+  if (raw.length > 4000) raw = raw.slice(0, 4000);
+  return raw;
+}
+
 export function projectDeployRecord(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const commit = text(value.commit, COMMIT).toLowerCase();
@@ -42,6 +54,9 @@ export function projectDeployRecord(value) {
     rolledBack: value.rolledBack === true,
     reason: reasonText(value.reason),
     npmCi: value.npmCi === true,
+    state: value.state === 'error' ? 'error' : '',
+    error: errorText(value.error),
+    at: text(value.at, STAMP),
   };
 }
 

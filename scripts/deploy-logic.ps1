@@ -151,6 +151,15 @@ function Get-AiCenterDeployBackupKeep([string]$Value) {
   return $keep
 }
 
+function Get-AiCenterDeployLockMinutes([string]$Value) {
+  $minutes = 30
+  $text = ([string]$Value).Trim()
+  if ($text -match '^\d+$') { $minutes = [int]$text }
+  if ($minutes -lt 5) { return 5 }
+  if ($minutes -gt 240) { return 240 }
+  return $minutes
+}
+
 function Get-AiCenterDeploySettings {
   param($Environment)
   $read = {
@@ -172,7 +181,87 @@ function Get-AiCenterDeploySettings {
     RemoteBranch = [string]$plan.RemoteBranch
     LocalRef = [string]$plan.LocalRef
     BackupKeep = (Get-AiCenterDeployBackupKeep (& $read 'AI_CENTER_DEPLOY_BACKUP_KEEP'))
+    LockMinutes = (Get-AiCenterDeployLockMinutes (& $read 'AI_CENTER_DEPLOY_LOCK_MINUTES'))
   }
+}
+
+function ConvertTo-AiCenterLockUtcTicks([string]$Text) {
+  $value = ([string]$Text).Trim()
+  if (-not $value) { return 0L }
+  $parsed = [datetime]::MinValue
+  $styles = [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
+  $ok = [datetime]::TryParse($value, [cultureinfo]::InvariantCulture, $styles, [ref]$parsed)
+  if (-not $ok) { return 0L }
+  return [long]$parsed.ToUniversalTime().Ticks
+}
+
+function Get-AiCenterDeployLockDecision {
+  param(
+    [int]$LockPid,
+    [int]$CurrentPid,
+    [bool]$HasLock,
+    [bool]$Readable,
+    [bool]$ProcessExists,
+    [string]$ProcessName,
+    [long]$LockUtcTicks,
+    [long]$NowUtcTicks,
+    [int]$MaxAgeMinutes
+  )
+  if (-not $HasLock) { return 'free' }
+  if ($Readable -and $LockPid -le 0) { return 'stale-missing' }
+  if ($LockPid -gt 0 -and $LockPid -eq $CurrentPid) { return 'own' }
+  if ($LockPid -gt 0 -and -not $ProcessExists) { return 'stale-missing' }
+  if ($LockPid -gt 0) {
+    $name = ([string]$ProcessName).Trim().ToLowerInvariant()
+    if ($name.EndsWith('.exe')) { $name = $name.Substring(0, $name.Length - 4) }
+    if ($name -ne 'powershell' -and $name -ne 'pwsh') { return 'stale-process' }
+  }
+  $limitMinutes = $MaxAgeMinutes
+  if ($limitMinutes -lt 1) { $limitMinutes = 30 }
+  if ($LockUtcTicks -gt 0 -and $NowUtcTicks -gt $LockUtcTicks) {
+    $limit = [long]$limitMinutes * 600000000L
+    if (($NowUtcTicks - $LockUtcTicks) -gt $limit) { return 'stale-age' }
+  }
+  return 'busy'
+}
+
+function Remove-AiCenterDeploySecretText([string]$Value) {
+  $text = [string]$Value
+  if (-not $text) { return '' }
+  $text = [regex]::Replace($text, '(?i)(https?://)[^\s/@]+:[^\s/@]+@', '$1redacted@')
+  $text = [regex]::Replace($text, '(?i)\b(password|api[_-]?key|secret|token)\s*[=:]\s*\S+', '$1=<redacted>')
+  $text = [regex]::Replace($text, '(?i)\bBearer\s+\S+', 'Bearer <redacted>')
+  return $text
+}
+
+function Format-AiCenterDeployErrorText {
+  param(
+    [string]$Message,
+    [string]$PositionMessage,
+    [string]$ScriptStackTrace
+  )
+  $parts = New-Object System.Collections.Generic.List[string]
+  foreach ($piece in @($Message, $PositionMessage, $ScriptStackTrace)) {
+    $clean = (Remove-AiCenterDeploySecretText ([string]$piece)).Trim()
+    if ($clean.Length -gt 1500) { $clean = $clean.Substring(0, 1500) }
+    if ($clean.Length -gt 0) { $parts.Add($clean) | Out-Null }
+  }
+  if ($parts.Count -eq 0) { return 'Auto-deploy failed.' }
+  $text = ''
+  for ($i = 0; $i -lt $parts.Count; $i++) {
+    if ($i -gt 0) { $text += "`n" }
+    $text += [string]$parts[$i]
+  }
+  return $text
+}
+
+function ConvertTo-AiCenterTagRow([string]$Line) {
+  $parts = @(([string]$Line) -split "`t", 2)
+  if ($parts.Length -lt 2) { return $null }
+  $name = ([string]$parts[0]).Trim()
+  $createdAt = ([string]$parts[1]).Trim()
+  if (-not $name -or -not $createdAt) { return $null }
+  return [pscustomobject]@{ name = $name; createdAt = $createdAt }
 }
 
 function Select-AiCenterLatestDeployTag {
@@ -257,12 +346,19 @@ function New-AiCenterDeployRecord {
     [bool]$Restarted,
     [bool]$RolledBack,
     [string]$Reason,
-    [bool]$NpmCi
+    [bool]$NpmCi,
+    [string]$State = '',
+    [string]$ErrorText = '',
+    [string]$At = ''
   )
   $safeReason = [string]$Reason
   if ($safeReason -match '[\r\n]' -or $safeReason -match '[\\/]' -or $safeReason -match '://' -or $safeReason.Length -gt 200) {
     $safeReason = Get-AiCenterDeployReason 'path'
   }
+  $safeState = ''
+  if ($State -eq 'error') { $safeState = 'error' }
+  $safeError = Remove-AiCenterDeploySecretText $ErrorText
+  if ($safeError.Length -gt 4500) { $safeError = $safeError.Substring(0, 4500) }
   $record = [ordered]@{
     commit = [string]$Commit
     previousCommit = [string]$PreviousCommit
@@ -274,6 +370,9 @@ function New-AiCenterDeployRecord {
     rolledBack = [bool]$RolledBack
     reason = $safeReason
     npmCi = [bool]$NpmCi
+    state = $safeState
+    error = $safeError
+    at = [string]$At
   }
   return ,$record
 }
@@ -289,7 +388,10 @@ function ConvertTo-AiCenterDeployRecordJson($Record) {
     ('"restarted":' + (ConvertTo-AiCenterJsonBool ([bool]$Record.restarted))),
     ('"rolledBack":' + (ConvertTo-AiCenterJsonBool ([bool]$Record.rolledBack))),
     ('"reason":' + (ConvertTo-AiCenterJsonString ([string]$Record.reason))),
-    ('"npmCi":' + (ConvertTo-AiCenterJsonBool ([bool]$Record.npmCi)))
+    ('"npmCi":' + (ConvertTo-AiCenterJsonBool ([bool]$Record.npmCi))),
+    ('"state":' + (ConvertTo-AiCenterJsonString ([string]$Record.state))),
+    ('"error":' + (ConvertTo-AiCenterJsonString ([string]$Record.error))),
+    ('"at":' + (ConvertTo-AiCenterJsonString ([string]$Record.at)))
   )
   return '{' + ($parts -join ',') + '}'
 }
@@ -320,7 +422,9 @@ function Test-AiCenterSameDeployResult($Previous, $Next) {
     [bool]$Previous.ok -eq [bool]$Next.ok -and
     [string]$Previous.reason -eq [string]$Next.reason -and
     [bool]$Previous.rolledBack -eq [bool]$Next.rolledBack -and
-    [bool]$Previous.npmCi -eq [bool]$Next.npmCi
+    [bool]$Previous.npmCi -eq [bool]$Next.npmCi -and
+    [string]$Previous.state -eq [string]$Next.state -and
+    [string]$Previous.error -eq [string]$Next.error
 }
 
 function Limit-AiCenterDeployHistory {

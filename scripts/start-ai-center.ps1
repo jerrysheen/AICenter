@@ -427,12 +427,32 @@ public static class AiCenterConsoleCtrl {
         try {
           Invoke-AiCenterAutoDeploy
         } catch {
-          $detail = ([string]$_.Exception.Message).Replace("`r", ' ').Replace("`n", ' ').Trim()
-          if ($detail.Length -gt 240) { $detail = $detail.Substring(0, 240) }
-          if ($detail) {
-            Write-Host "[!] Auto-deploy error: $detail" -ForegroundColor Yellow
+          $message = ''
+          $position = ''
+          $stack = ''
+          if ($null -ne $_.Exception) { $message = [string]$_.Exception.Message }
+          if ($null -ne $_.InvocationInfo) { $position = [string]$_.InvocationInfo.PositionMessage }
+          $stack = [string]$_.ScriptStackTrace
+          $detail = $message
+          try {
+            $detail = Format-AiCenterDeployErrorText -Message $message -PositionMessage $position -ScriptStackTrace $stack
+          } catch {
+            if (-not $detail) { $detail = 'Auto-deploy failed.' }
+          }
+          $consoleDetail = $message.Replace("`r", ' ').Replace("`n", ' ').Trim()
+          if ($consoleDetail.Length -gt 240) { $consoleDetail = $consoleDetail.Substring(0, 240) }
+          if ($consoleDetail) {
+            Write-Host "[!] Auto-deploy error: $consoleDetail" -ForegroundColor Yellow
           } else {
             Write-Host '[!] Auto-deploy error.' -ForegroundColor Yellow
+          }
+          if ($position -or $stack) {
+            Write-Host $detail -ForegroundColor Yellow
+          }
+          try {
+            Write-AiCenterDeployErrorStatus -ErrorText $detail
+          } catch {
+            Write-Host "[!] Auto-deploy: could not write deploy status. $($_.Exception.Message)" -ForegroundColor Yellow
           }
         }
         if ([AiCenterConsoleCtrl]::StopRequested) { return 'stop' }
@@ -772,6 +792,7 @@ while ($true) {
       AI_CENTER_DEPLOY_INTERVAL_SECONDS = [string]$env:AI_CENTER_DEPLOY_INTERVAL_SECONDS
       AI_CENTER_DEPLOY_REF = [string]$env:AI_CENTER_DEPLOY_REF
       AI_CENTER_DEPLOY_BACKUP_KEEP = [string]$env:AI_CENTER_DEPLOY_BACKUP_KEEP
+      AI_CENTER_DEPLOY_LOCK_MINUTES = [string]$env:AI_CENTER_DEPLOY_LOCK_MINUTES
     }
     $script:nextDeployCheckUtc = [DateTime]::UtcNow
     $script:deployMissingRefLogged = $false

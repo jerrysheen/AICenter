@@ -12,6 +12,7 @@
 | `AI_CENTER_DEPLOY_INTERVAL_SECONDS` | `90` | 两次 `git fetch` 的间隔，限制在 60–120 秒 |
 | `AI_CENTER_DEPLOY_REF` | `origin/deploy` | 要跟上的引用。`origin/<分支>` 跟踪远端分支；`deploy-*` 这种带 `*` 的值改取最新匹配标签；`deploy-2026-10-12` 这种没有 `*` 的名字跟踪这一枚标签 |
 | `AI_CENTER_DEPLOY_BACKUP_KEEP` | `7` | 保留最近几份备份目录，范围 1–50 |
+| `AI_CENTER_DEPLOY_LOCK_MINUTES` | `30` | 锁超过这个分钟数就视为过期并接管，范围 5–240 |
 
 ## 一次部署会做什么
 
@@ -25,9 +26,9 @@
 8. 用启动器已有的健康检查轮询，最长 90 秒。失败就 `git reset --hard` 回到上一个提交，需要的话再 `npm ci`，重启后再检查一次。
 9. 把结果写入 Instance `data/deploy-status.json`。相同的失败不重复追加。历史最多 20 条。
 
-部署用 `runtime/deploy.lock` 保证同一时间只有一个。守护循环在部署期间看到进程退出，不会把它当成崩溃再拉起一轮。
+部署用当前 Instance 的 `runtime/deploy.lock`（旧布局是 `.ai-data/deploy.lock`）保证同一时间只有一个。锁文件里是 PID 和 UTC 时间。PID 对应的进程不存在、进程不是 `powershell` / `pwsh`，或锁超过 `AI_CENTER_DEPLOY_LOCK_MINUTES`，这次检查会接管。守护进程自己的 PID 可以重入。部署结束时在 `finally` 里释放。守护循环在部署期间看到进程退出，不会把它当成崩溃再拉起一轮。
 
-状态字段：`commit`、`previousCommit`、`ref`、`startedAt`、`finishedAt`、`ok`、`restarted`、`rolledBack`、`reason`、`npmCi`。没有路径、密钥或 `.env` 内容。
+状态字段：`commit`、`previousCommit`、`ref`、`startedAt`、`finishedAt`、`ok`、`restarted`、`rolledBack`、`reason`、`npmCi`。`reason` 不含路径或密钥。自动部署抛出的异常另记 `state`（`error`）、`error` 和 `at`。`error` 保留异常消息、脚本行和调用栈，并去掉 URL 里的账号密码和 `password` / `token` / `Bearer`。
 
 `GET /api/v1/runtime/deploy-status` 返回这份文件。要有登录或配对得到的设备会话。本机回环地址、`X-Forwarded-For` 和 `CF-Connecting-IP` 都不能代替登录。文件不存在或读不出来时返回 `{ "ok": true, "current": null, "history": [] }`。
 
