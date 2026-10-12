@@ -457,6 +457,7 @@ export function createAiCenterWorker(options = {}) {
         enabled: env.AI_CENTER_READING_HOUR === '1',
         client: typesafeClient,
         catalogIds: new Set((treeCatalog?.tags || []).map((tag) => tag.id)),
+        env,
       }),
       beforeHourly:treeService ? (input)=>prioritizeRecentTreePreparation(store,treeMaterials.candidates,input.workspaceId || 'local') : null,
       briefService: options.briefService || createDailyBriefService({
