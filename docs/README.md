@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-12-compute-prices.md`：全球行情「AI Token」保存 OpenRouter 每百万 token 价，以及 RunPod / Vast 的 GPU 小时租金。migration 55。Worker 默认每天 08:20 抓 token，每 6 小时抓 GPU。见 `compute-prices-v1.md`。
+
 - `progress/2026-10-12-report-reliability.md`：小时报对 500/503 做有限退避并换 `AI_CENTER_GEMINI_HOURLY_MODELS` 的下一个模型；坏归属先修再换模型；同一小时失败到上限后停手。运行过久的任务释放队列。日报单组超时不再整期失败，当天缺刊会再试，并可用脚本补指定日期。
 
 - `progress/2026-10-12-auto-deploy.md`：Windows 守护脚本按 `origin/deploy` 或最新 `deploy-*` 标签快进部署。只改 `apps/web/public` 不重启；失败回滚。`GET /api/v1/runtime/deploy-status` 要设备登录。日志按天轮转和只重启 Worker 保持不变。
@@ -114,6 +116,7 @@
 - `model-usage-v1.md`：用户授权的 Harness 原生用量复用、请求归因索引、直连补记与本机查询；费用未知不补零。
 
 - `hardware-prices-v1.md`：用户授权的内容分流、结构化硬件报价与旧身份兼容规则。
+- `compute-prices-v1.md`：AI Token 与 GPU 小时租金的公开快照、报价日和日程。
 
 - `content-and-commit-guide.md`：Core / Instance / Host 内容归属、默认模板和 Git 提交规则。
 - `release-readiness.md`：0.2.0 基线候选、发布门槛、容易写错的现状对照。

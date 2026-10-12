@@ -71,6 +71,7 @@ import { createEtfWhaleJobHandlers, etfWhaleManifest } from '../../../packages/r
 import { createEventQuoteSnapshotJobHandlers, ensureEventQuoteSnapshotSchedule, eventQuoteSnapshotManifest } from '../../../packages/runtime/src/event-quote-snapshot-job.js';
 import { createInvestorDiscussionJobHandlers, ensureInvestorDiscussionSchedule, investorDiscussionManifest } from '../../../packages/runtime/src/investor-discussion-job.js';
 import { ensureTrendForcePriceSchedules } from '../../../packages/runtime/src/trendforce-price-schedule.js';
+import { computePriceManifest, createComputePriceJobHandlers, ensureComputePriceSchedules } from '../../../packages/runtime/src/compute-price-job.js';
 import { QUANT_PREPARE_JOB_TYPE, QUANT_RUN_JOB_TYPE } from '../../../packages/contracts/src/index.js';
 import { createLocalToolRegistry } from '../../../packages/runtime/src/local-tools.js';
 import { createAgentTraceLog } from '../../../packages/runtime/src/agent-trace-log.js';
@@ -503,6 +504,16 @@ export function createAiCenterWorker(options = {}) {
       sourcePort,
     }),
   });
+  if (store.repositories.computePrices) {
+    registry.register({
+      manifest: computePriceManifest,
+      jobHandlers: options.computePriceJobHandlers || createComputePriceJobHandlers({
+        repository: store.repositories.computePrices,
+        fetch: options.fetch,
+        now: options.now,
+      }),
+    });
+  }
   if (store.repositories.investorDiscussion) {
     registry.register({
       manifest: investorDiscussionManifest,
@@ -558,6 +569,7 @@ export function createAiCenterWorker(options = {}) {
     ensureEventQuoteSnapshotSchedule(store);
     ensureInvestorDiscussionSchedule(store, env);
     ensureTrendForcePriceSchedules(store, env);
+    ensureComputePriceSchedules(store, env);
     ensureDefaultContentSubscriptions(store.repositories.feed);
   }
   const scheduler = options.scheduler || createScheduler({
