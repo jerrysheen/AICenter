@@ -1,16 +1,17 @@
 import { paintQr, qrMatrix } from './qr-code.js';
 
-export const SHARE_CARD_WIDTH = 720;
-export const SHARE_CARD_MAX_HEIGHT = 4000;
-export const SHARE_CARD_BODY_MAX_HEIGHT = 3680;
+export const SHARE_CARD_MIN_WIDTH = 375;
+export const SHARE_CARD_MAX_WIDTH = 540;
+export const SHARE_CARD_WIDTH = 540;
 export const SHARE_SITE_URL = 'https://tradingplus.cn';
 export const SHARE_SITE_LABEL = 'tradingplus.cn';
-// iOS Safari fails or silently downscales past ~4096px on an edge and ~16.7M px of area.
-// Chrome's edge limit is 32767. Stay inside the smaller of the two.
+export const SHARE_SCALE_FLOOR = 1.5;
+// One long PNG. Total pixels stay under iOS ~16.7M. Each side stays under 16384,
+// or a smaller edge when the device rejects that size.
 export const SHARE_CANVAS_LIMITS = {
-  maxEdge: 4096,
+  maxEdge: 16384,
   maxArea: 16_777_216,
-  chromeMaxEdge: 32767,
+  deviceMaxEdge: 16384,
 };
 
 function positive(value, fallback) {
@@ -19,8 +20,9 @@ function positive(value, fallback) {
 }
 
 export function canvasLimitBox(limits = SHARE_CANVAS_LIMITS) {
-  const maxEdge = Math.min(positive(limits.maxEdge, 4096), positive(limits.chromeMaxEdge, 32767));
-  return { maxEdge, maxArea: positive(limits.maxArea, 16_777_216) };
+  const cap = positive(limits.maxEdge, 16384);
+  const device = positive(limits.deviceMaxEdge, cap);
+  return { maxEdge: Math.min(cap, device), maxArea: positive(limits.maxArea, 16_777_216) };
 }
 
 export function clampShareScale(devicePixelRatio) {
@@ -29,114 +31,60 @@ export function clampShareScale(devicePixelRatio) {
   return Math.min(3, Math.max(2, ratio));
 }
 
-export function maxCssHeightForScale(cssWidth, scale, limits = SHARE_CANVAS_LIMITS) {
-  const { maxEdge, maxArea } = canvasLimitBox(limits);
-  const safeScale = scale > 0 ? scale : 1;
-  const width = Math.max(1, Number(cssWidth) || 1);
-  if (width * safeScale > maxEdge) return 0;
-  const byEdge = Math.floor(maxEdge / safeScale);
-  const byArea = Math.floor(maxArea / (width * safeScale * safeScale));
-  return Math.max(0, Math.min(byEdge, byArea));
+function floorScale(value) {
+  return Math.floor((value + 1e-9) * 100) / 100;
 }
 
-export function fitShareScale(desiredScale, cssWidth, cssHeight, limits = SHARE_CANVAS_LIMITS) {
-  const desired = Math.min(3, Math.max(0.5, Number(desiredScale) || 1));
+function scaleFits(scale, cssWidth, cssHeight, maxEdge, maxArea) {
+  if (!(scale > 0)) return false;
+  const pixelWidth = Math.round(cssWidth * scale);
+  const pixelHeight = Math.round(cssHeight * scale);
+  return pixelWidth <= maxEdge && pixelHeight <= maxEdge && pixelWidth * pixelHeight <= maxArea;
+}
+
+export function resolveShareScale(devicePixelRatio, cssWidth, cssHeight, limits = SHARE_CANVAS_LIMITS) {
   const width = Math.max(1, Number(cssWidth) || 1);
   const height = Math.max(1, Number(cssHeight) || 1);
   const { maxEdge, maxArea } = canvasLimitBox(limits);
-  const fitted = Math.min(
-    desired,
+  const limit = Math.min(
+    3,
     maxEdge / width,
     maxEdge / height,
     Math.sqrt(maxArea / (width * height)),
   );
-  const scale = Math.floor(Math.max(0, fitted) * 100) / 100;
-  return Math.min(desired, Math.max(0.5, scale));
-}
-
-export function resolveShareScale(devicePixelRatio, cssWidth, cssHeight, limits = SHARE_CANVAS_LIMITS) {
-  return fitShareScale(clampShareScale(devicePixelRatio), cssWidth, cssHeight, limits);
-}
-
-function paginateBlocks(heights, budget) {
-  const pages = [];
-  let current = [];
-  let used = 0;
-  const push = () => {
-    if (!current.length) return;
-    pages.push(current);
-    current = [];
-    used = 0;
-  };
-  heights.forEach((raw, index) => {
-    const height = Math.max(0, Number(raw) || 0);
-    if (height > budget) {
-      push();
-      let offset = 0;
-      while (offset < height - 0.01) {
-        const slice = Math.min(budget, height - offset);
-        pages.push([{ index, offset, height: slice, sliced: true }]);
-        offset += slice;
-      }
-      return;
-    }
-    if (current.length && used + height > budget + 0.01) push();
-    current.push({ index, offset: 0, height, sliced: false });
-    used += height;
-  });
-  push();
-  return pages;
-}
-
-export function planSharePages({
-  cssWidth = SHARE_CARD_WIDTH,
-  chromeHeight = 0,
-  blockHeights = [],
-  devicePixelRatio = 2,
-  limits = SHARE_CANVAS_LIMITS,
-  minSlice = 120,
-} = {}) {
-  const width = Math.max(1, Number(cssWidth) || SHARE_CARD_WIDTH);
-  const chrome = Math.max(0, Number(chromeHeight) || 0);
-  const heights = (Array.isArray(blockHeights) ? blockHeights : []).map((height) => Math.max(0, Number(height) || 0));
-  let scale = clampShareScale(devicePixelRatio);
-  let maxCss = maxCssHeightForScale(width, scale, limits);
-  let guard = 0;
-  while (chrome + minSlice > maxCss && scale > 1 && guard < 80) {
-    scale = Math.max(1, Math.floor((scale - 0.05) * 100) / 100);
-    maxCss = maxCssHeightForScale(width, scale, limits);
-    guard += 1;
+  const preferred = Math.min(clampShareScale(devicePixelRatio), limit);
+  const target = preferred >= 2 || limit < SHARE_SCALE_FLOOR
+    ? preferred
+    : Math.min(limit, Math.max(SHARE_SCALE_FLOOR, preferred));
+  let scale = floorScale(target);
+  while (scale > 0 && !scaleFits(scale, width, height, maxEdge, maxArea)) {
+    scale = floorScale(scale - 0.01);
   }
-  while (chrome + Math.min(minSlice, 80) > maxCss && scale > 0.5 && guard < 140) {
-    scale = Math.max(0.5, Math.floor((scale - 0.05) * 100) / 100);
-    maxCss = maxCssHeightForScale(width, scale, limits);
-    guard += 1;
-  }
-  const budget = Math.max(1, Math.floor(maxCss - chrome));
-  const packed = heights.length ? paginateBlocks(heights, budget) : [[]];
-  const pages = packed.map((blocks, index) => {
-    const bodyHeight = blocks.reduce((sum, block) => sum + block.height, 0);
-    return {
-      index,
-      count: packed.length,
-      blocks,
-      bodyHeight,
-      cssHeight: chrome + bodyHeight,
-    };
-  });
-  return { scale, maxCssHeight: maxCss, bodyBudget: budget, pageCount: pages.length, pages };
+  return scale > 0 ? scale : target;
 }
 
-export function sharePngFilename(title, now = new Date(), pageIndex = 0, pageCount = 1) {
+export function detectMaxCanvasEdge() {
+  const cap = SHARE_CANVAS_LIMITS.maxEdge;
+  if (typeof document === 'undefined') return cap;
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = cap;
+    canvas.height = 1;
+    const accepted = canvas.width > 0 ? canvas.width : cap;
+    return Math.min(cap, accepted);
+  } catch {
+    return cap;
+  }
+}
+
+export function sharePngFilename(title, now = new Date()) {
   const stamp = now.toISOString().slice(0, 10);
   const slug = String(title || '问答')
     .replace(/[\\/:*?"<>|\n\r]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 36) || '问答';
-  const name = `aicenter-${slug}-${stamp}`;
-  if (pageCount > 1) return `${name}-${pageIndex + 1}.png`;
-  return `${name}.png`;
+  return `aicenter-${slug}-${stamp}.png`;
 }
 
 export function formatShareTime(now = new Date()) {
@@ -552,10 +500,11 @@ function paintTree(context, node, origin) {
 export async function rasterizeElement(element, {
   pixelRatio = 2,
   backgroundColor = '#ffffff',
+  limits = SHARE_CANVAS_LIMITS,
 } = {}) {
   const width = Math.max(1, Math.ceil(element.offsetWidth || SHARE_CARD_WIDTH));
   const height = Math.max(1, Math.ceil(element.offsetHeight || element.scrollHeight));
-  const scale = fitShareScale(pixelRatio, width, height);
+  const scale = resolveShareScale(pixelRatio, width, height, limits);
   const origin = element.getBoundingClientRect();
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.round(width * scale));
@@ -641,7 +590,7 @@ function mountQr(canvas, url) {
   paintQr(context, qrMatrix(url || SHARE_SITE_URL), 0, 0, canvas.width, 4);
 }
 
-function buildShareSheet(input, blockNodes, page = { index: 0, count: 1 }) {
+function buildShareSheet(input, blockNodes) {
   const sheet = document.createElement('article');
   sheet.className = 'share-sheet';
   const head = document.createElement('header');
@@ -671,32 +620,8 @@ function buildShareSheet(input, blockNodes, page = { index: 0, count: 1 }) {
   const qr = document.createElement('canvas');
   mountQr(qr, input.url || SHARE_SITE_URL);
   foot.append(brand, qr);
-  if (page.count > 1) {
-    foot.append(Object.assign(document.createElement('span'), {
-      className: 'share-sheet-page',
-      textContent: `${page.index + 1}/${page.count}`,
-    }));
-  }
   sheet.append(head, body, foot);
   return sheet;
-}
-
-function blocksForPage(blocks, page) {
-  return page.blocks.map((spec) => {
-    const source = blocks[spec.index];
-    if (!source) return null;
-    const node = source.cloneNode(true);
-    if (!spec.sliced) return node;
-    const frame = document.createElement('div');
-    frame.className = 'share-sheet-slice';
-    frame.style.height = `${spec.height}px`;
-    frame.style.overflow = 'hidden';
-    const shift = document.createElement('div');
-    shift.style.marginTop = `-${spec.offset}px`;
-    shift.append(node);
-    frame.append(shift);
-    return frame;
-  }).filter(Boolean);
 }
 
 function mountHost(node) {
@@ -713,30 +638,6 @@ async function settleLayout() {
     await Promise.race([document.fonts.ready, new Promise((resolve) => setTimeout(resolve, 80))]);
   }
   await nextFrame();
-}
-
-function blockHeight(node) {
-  return Math.ceil(node.getBoundingClientRect().height);
-}
-
-async function measureShare(input, { paged }) {
-  const blocks = shareBlocks(input);
-  const probe = buildShareSheet(input, [], { index: 0, count: paged ? 2 : 1 });
-  const column = document.createElement('div');
-  column.className = 'share-sheet-body share-sheet-measure';
-  for (const block of blocks) column.append(block);
-  const host = mountHost(probe);
-  host.append(column);
-  try {
-    await settleLayout();
-    return {
-      blocks,
-      chromeHeight: Math.ceil(probe.getBoundingClientRect().height),
-      blockHeights: blocks.map(blockHeight),
-    };
-  } finally {
-    host.remove();
-  }
 }
 
 export function askExchangeShareInput(card, now = new Date()) {
@@ -776,54 +677,39 @@ export async function exportShareCard(input, options = {}) {
     url: input?.url || SHARE_SITE_URL,
   };
   if (!card.title && !card.paragraphs.length && !card.points.length) throw new Error('没有可分享的内容');
-  const ratio = Number(options.pixelRatio) || globalThis.devicePixelRatio || 2;
-  let measured = await measureShare(card, { paged: false });
-  let plan = planSharePages({
-    cssWidth: SHARE_CARD_WIDTH,
-    chromeHeight: measured.chromeHeight,
-    blockHeights: measured.blockHeights,
-    devicePixelRatio: ratio,
-  });
-  if (plan.pageCount > 1) {
-    measured = await measureShare(card, { paged: true });
-    plan = planSharePages({
-      cssWidth: SHARE_CARD_WIDTH,
-      chromeHeight: measured.chromeHeight,
-      blockHeights: measured.blockHeights,
-      devicePixelRatio: ratio,
-    });
-  }
-  const pages = [];
-  for (const page of plan.pages) {
-    const sheet = buildShareSheet(card, blocksForPage(measured.blocks, page), page);
-    const host = mountHost(sheet);
-    try {
-      await settleLayout();
-      const rendered = await rasterizeElement(sheet, { pixelRatio: plan.scale, backgroundColor: '#ffffff' });
-      pages.push({
-        ...rendered,
-        filename: sharePngFilename(card.title, options.now, page.index, page.count),
-        index: page.index,
-        count: page.count,
-      });
-    } finally {
-      host.remove();
+  const sheet = buildShareSheet(card, shareBlocks(card));
+  const host = mountHost(sheet);
+  try {
+    await settleLayout();
+    const limits = { ...SHARE_CANVAS_LIMITS, ...(options.limits || {}) };
+    if (!options.limits || options.limits.deviceMaxEdge == null) {
+      limits.deviceMaxEdge = options.maxEdge || detectMaxCanvasEdge();
     }
+    const ratio = Number(options.pixelRatio) || globalThis.devicePixelRatio || 2;
+    const rendered = await rasterizeElement(sheet, {
+      pixelRatio: ratio,
+      backgroundColor: '#ffffff',
+      limits,
+    });
+    const file = {
+      ...rendered,
+      filename: sharePngFilename(card.title, options.now),
+    };
+    const delivery = options.deliver === false
+      ? 'preview'
+      : await deliverShareFiles([file], { title: card.title });
+    return {
+      title: card.title,
+      blob: file.blob,
+      previewUrl: file.previewUrl,
+      filename: file.filename,
+      pages: [file],
+      scale: file.scale,
+      delivery,
+    };
+  } finally {
+    host.remove();
   }
-  if (!pages.length) throw new Error('无法生成 PNG');
-  const delivery = options.deliver === false
-    ? 'preview'
-    : await deliverShareFiles(pages, { title: card.title });
-  const first = pages[0];
-  return {
-    title: card.title,
-    blob: first.blob,
-    previewUrl: first.previewUrl,
-    filename: first.filename,
-    pages,
-    scale: plan.scale,
-    delivery,
-  };
 }
 
 export async function exportAskSharePng(card, options = {}) {

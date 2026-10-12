@@ -10112,32 +10112,24 @@ function closeShareImagePreview() {
 
 async function openShareImagePreview(result) {
   closeShareImagePreview();
-  const pages = result?.pages?.length ? result.pages : [result];
-  const ready = pages.filter((page) => page?.previewUrl && page?.blob);
-  if (!ready.length) throw new Error('图片预览失败');
-  state.shareImagePreview = { pages: ready, title: result.title || '' };
-  const host = elements['share-image-pages'];
-  const first = elements['share-image-preview'];
-  ready.forEach((page, index) => {
-    const image = index === 0 && first ? first : document.createElement('img');
-    image.className = 'share-image-preview';
-    if (index === 0) image.id = 'share-image-preview';
+  const page = result?.previewUrl ? result : result?.pages?.[0];
+  if (!page?.previewUrl || !page?.blob) throw new Error('图片预览失败');
+  state.shareImagePreview = { pages: [page], title: result.title || '' };
+  const image = elements['share-image-preview'];
+  if (image) {
     image.src = page.previewUrl;
-    image.alt = ready.length > 1 ? `${result.title || '分享图'} ${index + 1}/${ready.length}` : (result.title || '分享图');
-    if (image !== first) host?.append(image);
-  });
+    image.alt = result.title || '分享图';
+  }
   const dialog = elements['share-image-dialog'];
   if (!dialog) throw new Error('找不到分享预览');
   openDialog(dialog);
 }
 
 async function saveShareImagePreview() {
-  const pages = state.shareImagePreview?.pages || [];
-  if (!pages.length) return;
+  const page = state.shareImagePreview?.pages?.[0];
+  if (!page) return;
   const { downloadBlob } = await import('./share-card.js?v=dev');
-  pages.forEach((page, index) => {
-    window.setTimeout(() => downloadBlob(page.filename, page.blob), index * 250);
-  });
+  downloadBlob(page.filename, page.blob);
 }
 
 async function presentShareCard(input, button) {
