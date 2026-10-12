@@ -5,33 +5,67 @@ function Get-AiCenterTimestamp {
   return ([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fff') + 'Z')
 }
 
+function Add-AiCenterCapturedLines($Lines, $Output) {
+  $rows = Get-AiCenterListItems $Output
+  for ($i = 0; $i -lt $rows.Length; $i++) {
+    $item = $rows[$i]
+    if ($null -eq $item) { continue }
+    $text = ''
+    if ($item -is [System.Management.Automation.ErrorRecord]) {
+      if ($null -ne $item.Exception) { $text = [string]$item.Exception.Message }
+    } else {
+      $text = [string]$item
+    }
+    $text = $text.TrimEnd("`r")
+    if ($text.Length -gt 0) { [void]$Lines.Add($text) }
+  }
+}
+
+function Format-AiCenterGitStderr([string]$Text) {
+  $clean = Remove-AiCenterDeploySecretText $Text
+  if (-not $clean) { return '' }
+  $flat = ([regex]::Replace($clean, '\s+', ' ')).Trim()
+  if ($flat.Length -gt 500) { return $flat.Substring(0, 500) }
+  return $flat
+}
+
 function Invoke-AiCenterGit {
   param([Parameter(ValueFromRemainingArguments = $true)][string[]]$GitArgs)
+  # Windows PowerShell 5.1 turns native stderr into ErrorRecords when stderr
+  # is merged into the success stream. The daemon sets ErrorActionPreference
+  # to Stop, so the first fetch progress line becomes a terminating error
+  # before LASTEXITCODE is read. Send stderr to a file instead. Do not use
+  # Start-Process: Windows PowerShell 5.1 mis-quotes ArgumentList.
+  $lines = New-Object System.Collections.Generic.List[string]
+  if ($null -eq $GitArgs -or $GitArgs.Length -eq 0) {
+    return [pscustomobject]@{ Code = 1; Lines = $lines.ToArray(); Stderr = 'git arguments were empty' }
+  }
   $previousPrompt = $env:GIT_TERMINAL_PROMPT
   $previousGcm = $env:GCM_INTERACTIVE
   $hadNative = Test-Path variable:PSNativeCommandUseErrorActionPreference
   $previousNative = $null
   if ($hadNative) { $previousNative = $PSNativeCommandUseErrorActionPreference }
+  $previousErrorAction = $ErrorActionPreference
   $env:GIT_TERMINAL_PROMPT = '0'
   $env:GCM_INTERACTIVE = 'Never'
-  $PSNativeCommandUseErrorActionPreference = $false
+  if ($hadNative) { $PSNativeCommandUseErrorActionPreference = $false }
+  $ErrorActionPreference = 'Continue'
+  $stderrPath = Join-Path ([IO.Path]::GetTempPath()) ('ai-center-git-' + [guid]::NewGuid().ToString('n') + '.err')
+  $code = 1
   try {
-    $output = & git -C $RepositoryRoot @GitArgs 2>&1
-    $code = $LASTEXITCODE
-    $lines = New-Object System.Collections.Generic.List[string]
-    if ($null -ne $output) {
-      if ($output -is [System.Array]) {
-        for ($i = 0; $i -lt $output.Length; $i++) {
-          $text = [string]$output[$i]
-          if ($text.Length -gt 0) { $lines.Add($text) | Out-Null }
-        }
-      } else {
-        $text = [string]$output
-        if ($text.Length -gt 0) { $lines.Add($text) | Out-Null }
-      }
+    $output = & git -C $RepositoryRoot @GitArgs 2> $stderrPath
+    if ($null -ne $LASTEXITCODE) { $code = [int]$LASTEXITCODE }
+    Add-AiCenterCapturedLines $lines $output
+    $stderrText = ''
+    if ($code -ne 0 -and (Test-Path -LiteralPath $stderrPath -PathType Leaf)) {
+      try { $stderrText = [IO.File]::ReadAllText($stderrPath) } catch { $stderrText = '' }
     }
-    return [pscustomobject]@{ Code = [int]$code; Lines = $lines.ToArray() }
+    return [pscustomobject]@{ Code = $code; Lines = $lines.ToArray(); Stderr = (Format-AiCenterGitStderr $stderrText) }
   } finally {
+    $ErrorActionPreference = $previousErrorAction
+    if (Test-Path -LiteralPath $stderrPath) {
+      Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+    }
     if ($null -eq $previousPrompt) { Remove-Item Env:GIT_TERMINAL_PROMPT -ErrorAction SilentlyContinue }
     else { $env:GIT_TERMINAL_PROMPT = $previousPrompt }
     if ($null -eq $previousGcm) { Remove-Item Env:GCM_INTERACTIVE -ErrorAction SilentlyContinue }
@@ -60,14 +94,11 @@ function Resolve-AiCenterDeployTarget($Plan) {
     $listed = Invoke-AiCenterGit for-each-ref --sort=-creatordate --format='%(refname:short)%09%(creatordate:unix)' 'refs/tags'
     if ($listed.Code -ne 0) { return '' }
     $tags = New-Object System.Collections.Generic.List[object]
-    $tagLines = $listed.Lines
-    if ($tagLines -is [System.Array]) {
-      for ($i = 0; $i -lt $tagLines.Length; $i++) {
-        $text = [string]$tagLines[$i]
-        $parts = $text -split "`t", 2
-        if ($parts.Count -lt 2) { continue }
-        $tags.Add(@{ name = $parts[0].Trim(); createdAt = $parts[1].Trim() }) | Out-Null
-      }
+    $tagLines = Get-AiCenterListItems $listed.Lines
+    for ($i = 0; $i -lt $tagLines.Length; $i++) {
+      $row = ConvertTo-AiCenterTagRow $tagLines[$i]
+      if ($null -eq $row) { continue }
+      $tags.Add(@{ name = [string]$row.name; createdAt = [string]$row.createdAt }) | Out-Null
     }
     $tagArray = $tags.ToArray()
     $name = Select-AiCenterLatestDeployTag -Tags $tagArray -Pattern $Plan.Pattern
@@ -87,29 +118,139 @@ function Get-AiCenterHeadCommit {
   return (Select-AiCenterCommitLine -Lines $parsed.Lines)
 }
 
+$script:deployLockStream = $null
+$script:deployLockDepth = 0
+$script:deployLockSkipReason = ''
+
+function Get-AiCenterDeployLockShare {
+  return ([IO.FileShare]::Read -bor [IO.FileShare]::Delete)
+}
+
+function Get-AiCenterLockProcessSnapshot([int]$ProcessId) {
+  $info = [pscustomobject]@{ Exists = $false; Name = '' }
+  if ($ProcessId -le 0) { return $info }
+  $proc = $null
+  try { $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue } catch { $proc = $null }
+  if ($null -eq $proc) { return $info }
+  $info.Exists = $true
+  $info.Name = [string]$proc.ProcessName
+  return $info
+}
+
+function Read-AiCenterDeployLockState([string]$Path) {
+  $state = [pscustomobject]@{ Exists = $false; Pid = 0; Ticks = 0L; Readable = $false }
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $state }
+  $state.Exists = $true
+  $ticks = 0L
+  try { $ticks = ([IO.File]::GetLastWriteTimeUtc($Path)).Ticks } catch { $ticks = 0L }
+  $stream = $null
+  try {
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, (Get-AiCenterDeployLockShare))
+    $buffer = New-Object byte[] 256
+    $count = $stream.Read($buffer, 0, $buffer.Length)
+    if ($count -lt 0) { $count = 0 }
+    $text = [Text.Encoding]::ASCII.GetString($buffer, 0, $count)
+    $parts = @($text -split '\r?\n', 3)
+    $first = ''
+    $second = ''
+    if ($parts.Length -ge 1) { $first = [string]$parts[0] }
+    if ($parts.Length -ge 2) { $second = [string]$parts[1] }
+    $parsedPid = 0
+    [void][int]::TryParse($first.Trim(), [ref]$parsedPid)
+    $state.Pid = $parsedPid
+    $state.Readable = $true
+    $parsedTicks = ConvertTo-AiCenterLockUtcTicks $second
+    if ($parsedTicks -gt 0) { $ticks = $parsedTicks }
+  } catch {
+    $state.Pid = 0
+    $state.Readable = $false
+  } finally {
+    if ($null -ne $stream) {
+      try { $stream.Dispose() } catch {}
+    }
+  }
+  $state.Ticks = $ticks
+  return $state
+}
+
+function Write-AiCenterDeployLockContent($Stream) {
+  $stamp = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fff') + 'Z'
+  $payload = [string]$PID + "`n" + $stamp + "`n"
+  $bytes = [Text.Encoding]::ASCII.GetBytes($payload)
+  $Stream.SetLength(0)
+  $Stream.Position = 0
+  $Stream.Write($bytes, 0, $bytes.Length)
+  $Stream.Flush()
+}
+
+function Open-AiCenterDeployLockHandle([string]$Path, [string]$Decision) {
+  $share = Get-AiCenterDeployLockShare
+  for ($attempt = 1; $attempt -le 2; $attempt++) {
+    $stream = $null
+    try {
+      if ($attempt -eq 2) {
+        if ($null -ne $script:deployLockStream) {
+          try { $script:deployLockStream.Dispose() } catch {}
+          $script:deployLockStream = $null
+        }
+        [GC]::Collect()
+        [GC]::WaitForPendingFinalizers()
+        if ($Decision -ne 'own' -and (Test-Path -LiteralPath $Path -PathType Leaf)) {
+          Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+        }
+      }
+      $stream = [IO.File]::Open($Path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, $share)
+      Write-AiCenterDeployLockContent $stream
+      $script:deployLockStream = $stream
+      return $true
+    } catch {
+      if ($null -ne $stream) {
+        try { $stream.Dispose() } catch {}
+      }
+      $script:deployLockStream = $null
+    }
+  }
+  return $false
+}
+
 function Enter-AiCenterDeployLock {
+  if (-not (Test-Path variable:script:deployLockDepth)) { $script:deployLockDepth = 0 }
+  if (-not (Test-Path variable:script:deployLockStream)) { $script:deployLockStream = $null }
+  $script:deployLockSkipReason = ''
+  if ($script:deployLockDepth -gt 0 -and $null -ne $script:deployLockStream) {
+    $script:deployLockDepth = $script:deployLockDepth + 1
+    return $true
+  }
   New-Item -ItemType Directory -Path $RuntimeDirectory -Force | Out-Null
   $path = Join-Path $RuntimeDirectory 'deploy.lock'
-  try {
-    $stream = [System.IO.File]::Open(
-      $path,
-      [System.IO.FileMode]::OpenOrCreate,
-      [System.IO.FileAccess]::ReadWrite,
-      [System.IO.FileShare]::None)
-    $bytes = [Text.Encoding]::ASCII.GetBytes([string]$PID)
-    $stream.SetLength(0)
-    $stream.Write($bytes, 0, $bytes.Length)
-    $stream.Flush()
-    $script:deployLockStream = $stream
-    return $true
-  } catch {
+  $maxAge = 30
+  if ($null -ne $script:deploySettings -and $script:deploySettings.LockMinutes) {
+    $maxAge = [int]$script:deploySettings.LockMinutes
+  }
+  $state = Read-AiCenterDeployLockState $path
+  $proc = Get-AiCenterLockProcessSnapshot -ProcessId $state.Pid
+  $decision = Get-AiCenterDeployLockDecision -LockPid $state.Pid -CurrentPid ([int]$PID) -HasLock ([bool]$state.Exists) -Readable ([bool]$state.Readable) -ProcessExists ([bool]$proc.Exists) -ProcessName ([string]$proc.Name) -LockUtcTicks ([long]$state.Ticks) -NowUtcTicks ([DateTime]::UtcNow.Ticks) -MaxAgeMinutes $maxAge
+  if ($decision -eq 'busy') {
+    $script:deployLockSkipReason = 'busy pid ' + [string]$state.Pid
     return $false
   }
+  if (Open-AiCenterDeployLockHandle -Path $path -Decision $decision) {
+    $script:deployLockDepth = 1
+    return $true
+  }
+  $script:deployLockSkipReason = $decision + ' pid ' + [string]$state.Pid
+  return $false
 }
 
 function Exit-AiCenterDeployLock {
-  if ($script:deployLockStream) {
-    $script:deployLockStream.Dispose()
+  if (-not (Test-Path variable:script:deployLockDepth)) { $script:deployLockDepth = 0 }
+  if ($script:deployLockDepth -gt 1) {
+    $script:deployLockDepth = $script:deployLockDepth - 1
+    return
+  }
+  $script:deployLockDepth = 0
+  if ($null -ne $script:deployLockStream) {
+    try { $script:deployLockStream.Dispose() } catch {}
     $script:deployLockStream = $null
   }
 }
@@ -198,7 +339,7 @@ function Read-AiCenterDeployHistory {
       for ($i = 0; $i -lt $rows.Length; $i++) {
         $item = $rows[$i]
         if ($null -eq $item) { continue }
-        $items.Add((New-AiCenterDeployRecord -Commit ([string]$item.commit) -PreviousCommit ([string]$item.previousCommit) -Ref ([string]$item.ref) -StartedAt ([string]$item.startedAt) -FinishedAt ([string]$item.finishedAt) -Ok ([bool]$item.ok) -Restarted ([bool]$item.restarted) -RolledBack ([bool]$item.rolledBack) -Reason ([string]$item.reason) -NpmCi ([bool]$item.npmCi))) | Out-Null
+        $items.Add((New-AiCenterDeployRecord -Commit ([string]$item.commit) -PreviousCommit ([string]$item.previousCommit) -Ref ([string]$item.ref) -StartedAt ([string]$item.startedAt) -FinishedAt ([string]$item.finishedAt) -Ok ([bool]$item.ok) -Restarted ([bool]$item.restarted) -RolledBack ([bool]$item.rolledBack) -Reason ([string]$item.reason) -NpmCi ([bool]$item.npmCi) -State ([string]$item.state) -ErrorText ([string]$item.error) -At ([string]$item.at))) | Out-Null
       }
     } catch {
       $items.Clear()
@@ -228,8 +369,15 @@ function Write-AiCenterDeployStatusRecord($Record) {
     [System.IO.File]::Copy($temp, $DeployStatusFile, $true)
     Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
   } catch {
-    Write-Host '[!] Auto-deploy: could not write deploy status.' -ForegroundColor Yellow
+    Write-Host "[!] Auto-deploy: could not write deploy status. $($_.Exception.Message)" -ForegroundColor Yellow
   }
+}
+
+function Write-AiCenterDeployErrorStatus {
+  param([string]$ErrorText)
+  $at = Get-AiCenterTimestamp
+  $record = New-AiCenterDeployRecord -Commit '' -PreviousCommit '' -Ref '' -StartedAt $at -FinishedAt $at -Ok $false -Restarted $false -RolledBack $false -Reason '' -NpmCi $false -State 'error' -ErrorText $ErrorText -At $at
+  Write-AiCenterDeployStatusRecord $record
 }
 
 function Write-AiCenterDeployOutcome {
@@ -256,8 +404,21 @@ function Invoke-AiCenterNpmCi {
     return $false
   }
   Write-Host 'Auto-deploy: running npm ci.' -ForegroundColor Cyan
-  & $npmCommand.Source 'ci'
-  return ($LASTEXITCODE -eq 0)
+  $hadNative = Test-Path variable:PSNativeCommandUseErrorActionPreference
+  $previousNative = $null
+  if ($hadNative) { $previousNative = $PSNativeCommandUseErrorActionPreference }
+  $previousErrorAction = $ErrorActionPreference
+  if ($hadNative) { $PSNativeCommandUseErrorActionPreference = $false }
+  $ErrorActionPreference = 'Continue'
+  $code = 1
+  try {
+    & $npmCommand.Source 'ci'
+    if ($null -ne $LASTEXITCODE) { $code = [int]$LASTEXITCODE }
+  } finally {
+    $ErrorActionPreference = $previousErrorAction
+    if ($hadNative) { $PSNativeCommandUseErrorActionPreference = $previousNative }
+  }
+  return ($code -eq 0)
 }
 
 function Restart-AiCenterForDeploy {
@@ -314,20 +475,32 @@ function Invoke-AiCenterAutoDeploy {
   if (-not $script:deploySettings -or -not $script:deploySettings.Enabled) { return }
   if ($script:deployInProgress) { return }
   if (-not (Enter-AiCenterDeployLock)) {
-    Write-Host 'Auto-deploy: skipped because another deploy holds the lock.' -ForegroundColor DarkGray
+    $held = [string]$script:deployLockSkipReason
+    if ($held) {
+      Write-Host "Auto-deploy: skipped because another deploy holds the lock ($held)." -ForegroundColor DarkGray
+    } else {
+      Write-Host 'Auto-deploy: skipped because another deploy holds the lock.' -ForegroundColor DarkGray
+    }
     return
   }
-  $script:deployInProgress = $true
-  $startedAt = Get-AiCenterTimestamp
   try {
+    $script:deployInProgress = $true
+    $startedAt = Get-AiCenterTimestamp
     $plan = $script:deploySettings
     if ($plan.Mode -eq 'invalid') {
       Write-AiCenterDeployOutcome -Commit '' -PreviousCommit '' -Ref '' -StartedAt $startedAt -Ok $false -Restarted $false -RolledBack $false -Reason (Get-AiCenterDeployReason 'ref-invalid') -NpmCi $false
       return
     }
     $fetched = Update-AiCenterDeployRef $plan
-    if ($fetched.Code -ne 0) {
-      Write-Host 'Auto-deploy: git fetch failed.' -ForegroundColor Yellow
+    if ($null -eq $fetched -or $fetched.Code -ne 0) {
+      $fetchCode = 1
+      $fetchErr = ''
+      if ($null -ne $fetched) {
+        $fetchCode = [int]$fetched.Code
+        $fetchErr = [string]$fetched.Stderr
+      }
+      Write-Host "Auto-deploy: git fetch failed ($fetchCode). $fetchErr" -ForegroundColor Yellow
+      Write-AiCenterDeployErrorStatus -ErrorText ("git fetch failed ($fetchCode). $fetchErr")
       return
     }
     $target = Resolve-AiCenterDeployTarget $plan

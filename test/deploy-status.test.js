@@ -54,6 +54,9 @@ test('deploy status projection drops paths, secrets, and extra history', () => {
       databasePath: 'C:\\secret\\ai-center.db',
       env: 'GEMINI_API_KEY=secret',
       reason: 'failed at C:\\secret\\.env',
+      state: 'error',
+      error: 'NativeCommandError at scripts\\deploy-run.ps1:19\npassword=secret-pass Bearer secret-token',
+      at: '2026-10-12T00:02:00.000Z',
     },
     history: Array.from({ length: 21 }, (_, index) => ({
       ...record(index + 2),
@@ -62,6 +65,10 @@ test('deploy status projection drops paths, secrets, and extra history', () => {
   });
   assert.equal(projected.ok, true);
   assert.equal(projected.current.reason, '');
+  assert.equal(projected.current.state, 'error');
+  assert.match(projected.current.error, /deploy-run\.ps1:19/);
+  assert.equal(projected.current.error.includes('secret'), false);
+  assert.equal(projected.current.at, '2026-10-12T00:02:00.000Z');
   assert.equal(projected.current.npmCi, false);
   assert.equal(projected.current.ref, 'origin/deploy');
   assert.equal(Object.hasOwn(projected.current, 'databasePath'), false);
@@ -185,6 +192,12 @@ test('launcher keeps daily logs, worker-only restart, and deploy guards', () => 
   assert.ok(guard > waitStart && guard < exited);
   assert.match(deploy, /merge --ff-only/);
   assert.match(deploy, /Enter-AiCenterDeployLock/);
+  assert.match(deploy, /deployLockDepth/);
+  assert.match(deploy, /stale-missing|Get-AiCenterDeployLockDecision/);
+  assert.doesNotMatch(deploy, /2>&1/);
+  assert.match(launcher, /InvocationInfo\.PositionMessage/);
+  assert.match(launcher, /ScriptStackTrace/);
+  assert.match(launcher, /Write-AiCenterDeployErrorStatus/);
   assert.match(deploy, /Wait-AiCenterWebHealth/);
   assert.match(deploy, /Test-AiCenterRestartRequired/);
   assert.match(deploy, /Test-AiCenterEnvChange/);
