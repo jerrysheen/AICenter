@@ -45,10 +45,42 @@ function coverageText(coverage) {
   }
   if (coverage.postsTruncatedNote) parts.push(coverage.postsTruncatedNote);
   else if (coverage.truncated) parts.push('帖子可能未抓全（到达页数上限）');
+  if (coverage.labelNote) parts.push(coverage.labelNote);
   return parts.join(' · ');
 }
 
-function paint(target, data, { date, onDate, onGenerate, busy }) {
+function percent(value) {
+  return `${Math.round((Number(value) || 0) * 1000) / 10}%`;
+}
+
+export function formatInvestorCrowd(section) {
+  const crowd = section?.crowd;
+  if (!crowd || typeof crowd !== 'object') return '';
+  if (crowd.label === '数据不足') return '数据不足';
+  const shares = crowd.shares || {};
+  const labels = crowd.labels || {};
+  const bull = labels.bull || '看多';
+  const neutral = labels.neutral || '中性';
+  const bear = labels.bear || '看空';
+  return `多空占比 ${bull} ${percent(shares.bull)} · ${neutral} ${percent(shares.neutral)} · ${bear} ${percent(shares.bear)}`;
+}
+
+export function formatInvestorCrowdCounts(section) {
+  const crowd = section?.crowd;
+  if (!crowd || typeof crowd !== 'object') return '';
+  const counts = crowd.counts || {};
+  const labels = crowd.labels || {};
+  const bull = labels.bull || '看多';
+  const neutral = labels.neutral || '中性';
+  const bear = labels.bear || '看空';
+  return `样本 ${Number(crowd.sampleSize) || 0} · ${bull} ${Number(counts.bull) || 0} · ${neutral} ${Number(counts.neutral) || 0} · ${bear} ${Number(counts.bear) || 0}`;
+}
+
+export function formatInvestorQuestionSet(digest) {
+  return digest?.questionSet ? `题集 ${digest.questionSet}` : '';
+}
+
+function renderInvestorDigest(target, data, { date, onDate, onGenerate, busy }) {
   target.replaceChildren();
   const page = el('div', '', 'investor-digest');
   const bar = el('div', '', 'investor-digest-bar');
@@ -80,6 +112,8 @@ function paint(target, data, { date, onDate, onGenerate, busy }) {
   }
   if (digest?.error) page.append(el('p', digest.error, 'investor-digest-meta'));
   if (digest?.coverage) page.append(el('p', coverageText(digest.coverage), 'investor-digest-meta'));
+  const questionSet = formatInvestorQuestionSet(digest);
+  if (questionSet) page.append(el('p', questionSet, 'investor-digest-meta'));
   const missing = digest?.coverage?.missing || [];
   if (missing.length) {
     page.append(el('p', `缺失：${missing.map((item) => `${item.name}（${item.reason}）`).join('、')}`, 'investor-digest-meta'));
@@ -88,9 +122,13 @@ function paint(target, data, { date, onDate, onGenerate, busy }) {
     const card = el('article', '', 'source-card');
     const head = el('div', '', 'source-card-head');
     head.append(el('strong', section.name || section.key));
-    if (section.sentiment) head.append(el('span', section.sentiment));
+    const crowdText = formatInvestorCrowd(section);
+    if (crowdText) head.append(el('span', crowdText));
+    else if (section.sentiment) head.append(el('span', section.sentiment));
     card.append(head);
     card.append(el('p', section.summary || section.reason || '没有总结'));
+    const countsText = formatInvestorCrowdCounts(section);
+    if (countsText) card.append(el('p', countsText, 'investor-digest-meta'));
     const heat = section.heat || {};
     card.append(el('p', `热度 ${heat.posts || 0} 帖 · ${heat.comments || 0} 评论`, 'investor-digest-meta'));
     if (section.commentNote) {
@@ -118,6 +156,7 @@ function paint(target, data, { date, onDate, onGenerate, busy }) {
   target.append(page);
 }
 
+export { renderInvestorDigest };
 export function mountInvestorDigest(target, { api, active = () => true } = {}) {
   let generation = 0;
   let timer = 0;
@@ -145,7 +184,7 @@ export function mountInvestorDigest(target, { api, active = () => true } = {}) {
       return;
     }
     const busy = Boolean(data?.pending || data?.digest?.status === 'running');
-    paint(target, data, {
+    renderInvestorDigest(target, data, {
       date,
       busy,
       onDate(next) {

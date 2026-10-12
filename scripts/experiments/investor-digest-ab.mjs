@@ -4,7 +4,6 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { createInvestorAbModel } from '../../packages/connectors/src/investor-digest-ab-model.js';
 import {
-  DEFAULT_BATCH_SIZE,
   DEFAULT_BATCH_SIZE_B,
   DEFAULT_MAX_CALLS,
   DEFAULT_MAX_CALLS_B,
@@ -18,6 +17,7 @@ import {
   resolveSchemeSelection,
   runInvestorDigestAb,
 } from '../../packages/domain/src/investor-digest-ab.js';
+import { loadJevQuestionSet } from '../../packages/domain/src/investor-jev.js';
 import { loadInstanceEnvironment, resolveInstanceConfig } from '../../packages/instance/src/index.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -85,9 +85,10 @@ export async function main(argvEnv = process.env) {
     materials = loaded.materials;
   }
   const selection = resolveSchemeSelection(arg('only'));
+  const questionSet = loadJevQuestionSet({ env: argvEnv, repositoryRoot: root });
   const batchSizeA = resolveBatchSize(
     argvEnv.AI_CENTER_INVESTOR_DIGEST_AB_BATCH_A || argvEnv.AI_CENTER_INVESTOR_DIGEST_AB_BATCH,
-    DEFAULT_BATCH_SIZE,
+    questionSet.batch.size,
   );
   const batchSizeB = resolveBatchSize(argvEnv.AI_CENTER_INVESTOR_DIGEST_AB_BATCH_B, DEFAULT_BATCH_SIZE_B);
   const maxCallsA = resolvePositiveInt(argvEnv.AI_CENTER_INVESTOR_DIGEST_AB_MAX_CALLS_A, DEFAULT_MAX_CALLS, 500);
@@ -118,6 +119,12 @@ export async function main(argvEnv = process.env) {
     includeComments,
     only: arg('only'),
     model: model.model,
+    questionSet,
+    jevSingleAttempts: resolvePositiveInt(
+      argvEnv.AI_CENTER_INVESTOR_DIGEST_JEV_ATTEMPTS,
+      questionSet.batch.singleAttempts,
+      6,
+    ),
   });
   const paths = experimentPaths(materials.date || date, root);
   const reportPath = arg('output') ? path.resolve(arg('output')) : paths.report;

@@ -1,8 +1,12 @@
 import { InvestorDiscussionGenerateInputSchema, INVESTOR_DISCUSSION_JOB_TYPE, parseContract } from '../../contracts/src/index.js';
 import { createGeminiInvestorSummarizer, investorDiscussionModelId } from '../../connectors/src/investor-discussion-model.js';
+import { createInvestorJevCompleter } from '../../connectors/src/investor-jev-model.js';
 import { createXueqiuStockDiscussionClient } from '../../connectors/src/xueqiu/stock-discussion.js';
 import { createInvestorDiscussionService, investorDigestDate, resolveInvestorThemes } from '../../domain/src/investor-discussion.js';
-import { dailySlotOnInstant } from '../../domain/src/zoned-time.js';
+import { loadJevQuestionSet } from '../../domain/src/investor-jev.js';
+import { dailySlotOnInstant, nextDailyInstant, previousDailyInstant } from '../../domain/src/zoned-time.js';
+
+const PACIFIC_DAY = Object.freeze({ timeZone: 'America/Los_Angeles', hour: 0, minute: 0 });
 
 export { INVESTOR_DISCUSSION_JOB_TYPE };
 export const INVESTOR_DISCUSSION_SCHEDULE_KEY = 'investor.discussion.daily';
@@ -29,6 +33,25 @@ function envInt(env, key, fallback, min, max) {
   const value = Number(raw);
   if (!Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, Math.trunc(value)));
+}
+
+function envOverride(env, key, min, max) {
+  const raw = env[key];
+  if (raw === undefined || String(raw).trim() === '') return null;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < min || value > max) {
+    const error = new Error(`${key} 需要 ${min} 到 ${max} 的整数`);
+    error.code = 'config';
+    throw error;
+  }
+  return value;
+}
+
+function pacificDayWindow(at) {
+  return {
+    dayStart: previousDailyInstant(at, PACIFIC_DAY),
+    dayEnd: nextDailyInstant(at, PACIFIC_DAY),
+  };
 }
 
 export function investorDigestRuntimeConfig(env = process.env) {
@@ -73,11 +96,20 @@ export function createInvestorDiscussionJobHandlers({
   env = process.env,
   client,
   summarize,
+  label,
+  quotaRepository,
+  repositoryRoot,
   now = () => Date.now(),
 } = {}) {
   if (!repository) throw new Error('股民讨论日摘需要存储');
   const config = investorDigestRuntimeConfig(env);
-  const service = createInvestorDiscussionService({ repository, now, timeZone: config.timeZone });
+  const service = createInvestorDiscussionService({
+    repository,
+    now,
+    timeZone: config.timeZone,
+    env,
+    repositoryRoot,
+  });
   const discussion = client || createXueqiuStockDiscussionClient({
     browserRuntime,
     intervalMs: config.intervalMs,
@@ -93,13 +125,32 @@ export function createInvestorDiscussionJobHandlers({
       const input = parseContract(InvestorDiscussionGenerateInputSchema, rawInput || {});
       const digestDate = input.digestDate || investorDigestDate(input.scheduledFor || now(), config.timeZone);
       const themes = resolveInvestorThemes(env);
+      const questionSet = loadJevQuestionSet({ env, repositoryRoot });
+      let completer = null;
+      const labelPosts = label || (async (request) => {
+        if (!completer) {
+          completer = createInvestorJevCompleter({
+            env,
+            model: config.model,
+            quotaRepository,
+            dayWindow: pacificDayWindow,
+            now,
+          });
+        }
+        return completer.complete(request);
+      });
       const saved = await service.generate({
         workspaceId: input.workspaceId || 'local',
         digestDate,
         themes,
         client: discussion,
         summarize: model,
+        label: labelPosts,
         model: config.model,
+        questionSet,
+        jevBatchSize: envOverride(env, 'AI_CENTER_INVESTOR_DIGEST_JEV_BATCH', 1, 40),
+        jevMaxCalls: envOverride(env, 'AI_CENTER_INVESTOR_DIGEST_JEV_MAX_CALLS', 1, 5000) ?? 200,
+        jevSingleAttempts: envOverride(env, 'AI_CENTER_INVESTOR_DIGEST_JEV_ATTEMPTS', 1, 6),
       });
       return { digestDate: saved.digestDate, status: saved.status };
     },

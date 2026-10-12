@@ -34,8 +34,17 @@ const STRUCTURED = (id, stance = '看多', extra = {}) => ({
   claim: extra.claim || '业绩增长',
 });
 
-const JEV = (id, { bullish = true, bearish = false, hasEvidence = true, rumor = false, venting = false, traded = false } = {}) => ({
-  id, bullish, bearish, hasEvidence, rumor, venting, traded,
+const JEV = (id, extra = {}) => ({
+  id,
+  aboutTarget: extra.aboutTarget ?? true,
+  bullish: extra.bullish ?? true,
+  bearish: extra.bearish ?? false,
+  explicit: extra.explicit ?? true,
+  questionOnly: extra.questionOnly ?? false,
+  reportOnly: extra.reportOnly ?? false,
+  hasEvidence: extra.hasEvidence ?? true,
+  rumor: extra.rumor ?? false,
+  traded: extra.traded ?? false,
 });
 
 test('structured batch keeps valid rows when JSON is broken, an id is missing, or a row is illegal', () => {
@@ -74,8 +83,10 @@ test('yes-no batch treats a non-boolean answer as unlabeled and maps the rest lo
   assert.equal(parsed[2].labeled, false);
   assert.equal(parsed[2].reason, '非法');
   assert.equal(parsed[3].reason, '缺失');
-  assert.equal(stanceFromJev({ bullish: true, bearish: true, hasEvidence: false, venting: false }), '中性');
-  assert.equal(stanceFromJev({ bullish: false, bearish: false, hasEvidence: false, venting: true }), '无关');
+  assert.equal(stanceFromJev({ bullish: true, bearish: true, hasEvidence: false }), '中性');
+  assert.equal(stanceFromJev({ aboutTarget: false, bullish: true, bearish: false, explicit: true }, '会涨'), '无关');
+  assert.equal(stanceFromJev({ aboutTarget: true, bullish: true, bearish: false, explicit: false }, '会涨'), '中性');
+  assert.equal(stanceFromJev({ aboutTarget: true, bullish: true, bearish: false, explicit: false }, '这是一句超过八个字的看多'), '看多');
 });
 
 test('log1p weight keeps one busy post from outweighing the rest', () => {

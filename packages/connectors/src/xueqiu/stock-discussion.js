@@ -185,6 +185,7 @@ export function mapDiscussionStatus(item) {
     url,
     createdAt: discussionTimestamp(item?.created_at),
     replyCount: Number(item?.reply_count) || 0,
+    likeCount: discussionLikeCount(item),
   };
 }
 
@@ -200,7 +201,16 @@ export function mapDiscussionComment(row, post) {
     author: String(row?.user?.screen_name || row?.user?.name || '').trim(),
     createdAt: discussionTimestamp(row?.created_at),
     url: post?.url || '',
+    likeCount: discussionLikeCount(row),
   };
+}
+
+function discussionLikeCount(item) {
+  const like = Number(item?.like_count);
+  const fav = Number(item?.fav_count);
+  if (Number.isFinite(like) && like > 0) return like;
+  if (Number.isFinite(fav) && fav > 0) return fav;
+  return 0;
 }
 
 export function assertDiscussionPayload(data) {

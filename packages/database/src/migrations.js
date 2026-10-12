@@ -1777,6 +1777,10 @@ migrations.push({ version: 55, name: 'compute_price_snapshots', up(database) {
   `);
 }});
 
+migrations.push({ version: 56, name: 'investor_discussion_question_set', up(database) {
+  database.exec(`ALTER TABLE investor_discussion_digests ADD COLUMN question_set TEXT NOT NULL DEFAULT '';`);
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

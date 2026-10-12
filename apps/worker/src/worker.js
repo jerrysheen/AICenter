@@ -523,6 +523,9 @@ export function createAiCenterWorker(options = {}) {
         env,
         client: options.investorDiscussionClient,
         summarize: options.investorDiscussionSummarize,
+        label: options.investorDiscussionLabel,
+        quotaRepository: store.repositories.modelQuota,
+        repositoryRoot,
       }),
     });
   }
