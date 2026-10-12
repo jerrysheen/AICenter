@@ -59,7 +59,8 @@ import {createTreeMaterialPort} from '../../../packages/domain/src/information-t
 import {informationTreeManifest,createInformationTreeJobHandlers,enqueueTreePreparation,prioritizeRecentTreePreparation} from '../../../packages/runtime/src/information-tree-module.js';
 import {createReadingHourService} from '../../../packages/domain/src/reading-hour-service.js';
 import {createModelUsageService} from '../../../packages/domain/src/model-usage-service.js';
-import { createReportJobHandlers, ensureDailyReportSchedule, ensureHourlyDigestSchedule, reportDailyManifest } from '../../../packages/runtime/src/report-module.js';
+import { createReportJobHandlers, ensureDailyReportCatchupSchedule, ensureDailyReportSchedule, ensureHourlyDigestSchedule, reportDailyManifest } from '../../../packages/runtime/src/report-module.js';
+import { boundedInt } from '../../../packages/domain/src/report-reliability.js';
 import { createResearchRecallJobHandlers, researchRecallManifest } from '../../../packages/runtime/src/research-recall-module.js';
 import { createResearchRelevanceJudge, createResearchTagJudge } from '../../../packages/runtime/src/research-judges.js';
 import { createResearchRecallService } from '../../../packages/domain/src/research-recall-service.js';
@@ -153,7 +154,13 @@ export function createAiCenterWorker(options = {}) {
   });
   const store = options.store || createStore(instance.databasePath);
   const staleAfterMs = Number(options.staleAfterMs || process.env.AI_CENTER_WORKER_LEASE_MS) || 10 * 60_000;
-  store.recoverStaleJobs(staleAfterMs);
+  const jobMaxRunningMs = boundedInt(env.AI_CENTER_JOB_MAX_RUNNING_MS, 45 * 60_000, 60_000, 6 * 60 * 60_000);
+  const maxRunningMsByType = {
+    'report.information.prepare': boundedInt(env.AI_CENTER_PREPARE_MAX_RUNNING_MS, 30 * 60_000, 60_000, 6 * 60 * 60_000),
+    'report.hourly.extract': boundedInt(env.AI_CENTER_HOURLY_MAX_RUNNING_MS, 45 * 60_000, 60_000, 6 * 60 * 60_000),
+    'report.daily.generate': boundedInt(env.AI_CENTER_DAILY_MAX_RUNNING_MS, 90 * 60_000, 60_000, 6 * 60 * 60_000),
+  };
+  store.recoverStaleJobs(staleAfterMs, Date.now(), { maxRunningMs: jobMaxRunningMs, maxRunningMsByType });
   store.abandonRunningJobs?.([MEDIA_ENRICH_JOB_TYPE], 'Worker 已重启，未完成的正文任务需按保存状态继续');
   store.repositories?.media?.recoverBriefProcessing?.();
   store.abandonRunningJobs?.(
@@ -422,6 +429,10 @@ export function createAiCenterWorker(options = {}) {
       return row?.tags || [];
     },
     generationConfig:Object.fromEntries([...(articleStrategy ? ['article-normalize'] : []),'hourly-brief','daily-analysis'].map(task=>{const route=resolveHarnessLlm(env,{closedTask:task});return [task==='article-normalize' ? 'information' : task,{provider:route.provider,model:route.model,protocol:route.protocol,...(route.execution ? {execution:route.execution} : {})}];})),
+    hourlyModels:env.AI_CENTER_HARNESS_HOURLY_PROVIDER==='google' ? resolveGoogleHourlyAdmissionModels(env) : [],
+    hourlyAttemptCap:boundedInt(env.AI_CENTER_HOURLY_MAX_ATTEMPTS, 4, 1, 12),
+    upstreamRetries:boundedInt(env.AI_CENTER_HOURLY_UPSTREAM_RETRIES, 3, 0, 6),
+    budget:{dailyTimeoutMs:boundedInt(env.AI_CENTER_DAILY_MODEL_TIMEOUT_MS, 360_000, 30_000, 900_000), dailyTotalMs:boundedInt(env.AI_CENTER_DAILY_TOTAL_MS, 60 * 60_000, 60_000, 3 * 60 * 60_000)},
   }) : null;
   const informationService=options.informationService || treeService || createInformationDigestService({
     reportRepository:store.repositories.report,feedService,mediaPort:mediaService,agentRuntime,timezone:dailyConfig.timezone,
@@ -538,6 +549,7 @@ export function createAiCenterWorker(options = {}) {
   const handlers = options.handlers || registry.createJobHandlers();
   if (options.enableDefaultSchedules !== false) {
     ensureDailyReportSchedule(store, dailyConfig);
+    ensureDailyReportCatchupSchedule(store, dailyConfig);
     ensureHourlyDigestSchedule(store,Date.now(),{minute:articleStrategy ? 30 : 0});
     ensureDividendStrategySchedule(store);
     ensureFeedSubscriptionSyncSchedule(store);
@@ -561,6 +573,8 @@ export function createAiCenterWorker(options = {}) {
     workerId: options.workerId || `${hostname()}-${process.pid}`,
     pollIntervalMs: options.pollIntervalMs || process.env.AI_CENTER_WORKER_POLL_MS,
     staleAfterMs,
+    maxRunningMs: jobMaxRunningMs,
+    maxRunningMsByType,
     recoverEveryMs: options.recoverEveryMs || process.env.AI_CENTER_WORKER_RECOVER_MS,
     readyAt:articleAdmission?.policy.accountMode ? {'report.information.prepare':()=>articleAdmission.nextReadyAt(env.AI_CENTER_HARNESS_ARTICLE_MODEL || 'gemini-3.1-flash-lite')} : {},
     supersedeAfterMs: {

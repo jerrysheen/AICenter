@@ -67,6 +67,7 @@ test('hourly condense failure log keeps the cause and omits prompt text', async 
     agentRuntime: runtime,
     skills,
     generationConfig: {'hourly-brief': {provider: 'elucid-grok', model: 'grok-4.7', apiKey: 'must-not-log'}},
+    sleep: async () => {},
   });
   const lines = [];
   const original = console.error;

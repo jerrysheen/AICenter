@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-12-report-reliability.md`：小时报对 500/503 做有限退避并换 `AI_CENTER_GEMINI_HOURLY_MODELS` 的下一个模型；坏归属先修再换模型；同一小时失败到上限后停手。运行过久的任务释放队列。日报单组超时不再整期失败，当天缺刊会再试，并可用脚本补指定日期。
+
 - `progress/2026-10-12-investor-digest-ab-retry.md`：日摘离线 A/B 补拆批重试。B 默认每批 12，解析失败或条数不齐时对半再打；输入 token 改读 `promptTokenCount`；方向不足 5 条显示「数据不足」。仍不进线上日摘。
 
 - `progress/2026-10-12-investor-digest-ab.md`：股民讨论日摘离线 A/B。方案 A 用固定是非题，方案 B 用逐条结构化标签，都不进线上日摘、任务和页面。10/12 原始帖子未入库，试跑要先重抓成 JSON。

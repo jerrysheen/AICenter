@@ -20,8 +20,11 @@ export function enqueuePreparedHourRefreshes(store,service,workspaceId,nodes,at=
   const queued=store.listOpenJobs('report.hourly.extract').filter(j=>j.workspaceId===workspaceId && j.status==='queued');
   const jobs=[];
   for(const hourStart of hours) {
-    const published=service.list(workspaceId,{startAt:hourStart,endAt:hourStart+HOUR}).hours[0]?.edition;
+    const slot=service.list(workspaceId,{startAt:hourStart,endAt:hourStart+HOUR}).hours[0];
+    const published=slot?.edition;
+    const attempt=slot?.attempt;
     if(nodes.filter(n=>n.window.startAt===hourStart).every(n=>published?.inputIds.includes(n.id)))continue;
+    if(attempt?.terminal && nodes.filter(n=>n.window.startAt===hourStart).every(n=>attempt.inputIds.includes(n.id)))continue;
     // A running hour may already have frozen its inputs; retain one queued follow-up.
     if(queued.some(j=>j.input.hourStart===hourStart && !j.input.snapshotId && j.input.mode!=='rewrite'))continue;
     jobs.push(store.createJob({type:'report.hourly.extract',workspaceId,priority:hourStart===latest ? 10 : -5,maxAttempts:2,availableAt:minute===null ? at+60000 : Math.floor(at/HOUR)*HOUR+minute*60000+(at>=Math.floor(at/HOUR)*HOUR+minute*60000 ? HOUR : 0),input:{workspaceId,hourStart}}));

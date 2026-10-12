@@ -15,7 +15,7 @@ function fixture(budget={}) {
     if(input.usageStage==='tree-information')return {answer:JSON.stringify({title:p.source.title,text:p.source.paragraphs.map(p=>p.text).join('').slice(0,160),tagId:null})};
     return {answer:JSON.stringify({modules:[{title:'未分类进展',text:'厂商计划交付，目前仍在测试。',tagId:null,inputIds:p.inputs.map(n=>n.id)}]})};
   }};
-  return {store,calls,runtime,service:createInformationTreeService({repository:store.repositories.informationTree,reportRepository:store.repositories.report,agentRuntime:runtime,skills:loadInformationTreeSkills(),budget})};
+  return {store,calls,runtime,service:createInformationTreeService({repository:store.repositories.informationTree,reportRepository:store.repositories.report,agentRuntime:runtime,skills:loadInformationTreeSkills(),budget,sleep:async()=>{}})};
 }
 test('whole-input ownership rejects omissions, duplicate parents and invented IDs',()=>{
   const inputs=[{id:'a'},{id:'b'}],module={title:'类',text:'主体计划交付。',tagId:null,inputIds:['a','b']};
@@ -30,14 +30,18 @@ test('explicit hourly resume retries transient failures only; automatic and quot
   try {
    const original=f.runtime.run;
    f.runtime.run=async input=>{
-    if(input.usageStage==='tree-hourly' && ++attempts===1)throw Object.assign(new Error(quota?'429 quota':'503 unavailable'),quota?{code:'budget-deferred',retryAt:Date.now()+60000}:{});
+    if(input.usageStage==='tree-hourly') {
+      attempts++;
+      if(quota && attempts===1) throw Object.assign(new Error('429 quota'),{code:'budget-deferred',retryAt:Date.now()+60000});
+      if(!quota && attempts<=4) throw Object.assign(new Error('503 unavailable'),{upstreamStatus:503});
+    }
     return original(input);
    };
    const first=await f.service.generateHour({hourStart:start,materials:[material('a'),material('b')]});
-   assert.equal(first.status,'failed');assert.equal(attempts,1);
-   await f.service.generateHour({hourStart:start});assert.equal(attempts,1);
+   assert.equal(first.status,'failed');assert.equal(attempts,quota?1:4);
+   await f.service.generateHour({hourStart:start});assert.equal(attempts,quota?1:4);
    const resumed=(await f.service.generateHourlyDigests({hourStart:start,mode:'resume'}))[0];
-   assert.equal(attempts,quota?1:2);assert.equal(resumed.status,quota?'failed':'ready');
+   assert.equal(attempts,quota?1:5);assert.equal(resumed.status,quota?'failed':'ready');
   }finally{f.store.close();}
  }
 });

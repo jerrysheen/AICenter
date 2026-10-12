@@ -48,7 +48,8 @@ export const TreeNodeSchema=InformationOutputSchema.extend({body:z.string().trim
   draftKey:z.string().optional(),sourceVersion:z.string().optional(),effectivePromptHash:z.string().optional(),validatorVersion:z.string().optional(),catalogVersion:z.string().optional(),inputScope:z.enum(['full','excerpt']).optional(),
   classification:z.object({source:z.enum(['model','manual-lock','reclassified','legacy-control']),ruleVersion:z.string()}).optional(),readingClassification:ReadingClassificationSchema.optional(),safePassthrough:z.boolean().optional()}).strict().superRefine((n,ctx)=>{if(n.formatVersion && (n.layer!=='information' || !n.body))ctx.addIssue({code:'custom',message:'新版文章必须有正文，且只属于信息层'});if(n.body && !n.formatVersion)ctx.addIssue({code:'custom',message:'正文必须带明确文章协议版本'});if(n.body && n.layer!=='information')ctx.addIssue({code:'custom',message:'上层不能保存文章正文'});});
 export const TreeEditionSchema=z.object({id,layer:z.enum(['hourly','daily']),window:z.object({startAt:z.number().int(),endAt:z.number().int()}),
-  timezone:z.string(),status:z.enum(['ready','partial','failed']),roots:z.array(id),inputIds:z.array(id),pendingIds:z.array(id),pending:z.array(PendingSchema).optional(),groupFailures:z.array(PendingSchema.extend({tagId})).optional(),policyHash:z.string().optional(),missingHours:z.array(z.number().int()),generatedAt:z.number().int()}).strict();
+  timezone:z.string(),status:z.enum(['ready','partial','failed']),roots:z.array(id),inputIds:z.array(id),pendingIds:z.array(id),pending:z.array(PendingSchema).optional(),groupFailures:z.array(PendingSchema.extend({tagId})).optional(),policyHash:z.string().optional(),missingHours:z.array(z.number().int()),generatedAt:z.number().int(),
+  attemptCount:z.number().int().positive().optional(),terminal:z.boolean().optional()}).strict();
 export const PrepareTreeInformationInputSchema=z.object({workspaceId:z.string().default('local'),sourceIds:z.array(id).min(1).max(100),force:z.boolean().default(false),catchup:z.boolean().default(false)}).strict();
 export const TreeWindowQuerySchema=z.object({startAt:z.coerce.number().int().nonnegative(),endAt:z.coerce.number().int().positive()}).refine(v=>v.endAt>v.startAt && v.endAt-v.startAt<=7*86400000,'树查询窗口最多七日');
 export const TreeNodeQuerySchema=z.object({id}).strict();
@@ -108,4 +109,41 @@ export function validateTreeModules(value,inputs,tags) {
   }
   if(seen.size!==allowed.size) throw new Error('输入归属不完整');
   return output;
+}
+
+// Drop unknown ids and later duplicates, then attach any still-missing ids to the
+// last surviving module. Module prose stays as the model wrote it.
+export function repairTreeModuleAttribution(value, inputs, tags, options = {}) {
+  const parsed = TreeModulesOutputSchema.safeParse(value);
+  if (!parsed.success) return null;
+  const allowed = new Set((inputs || []).map((item) => item.id));
+  const seen = new Set();
+  const forced = Object.hasOwn(options, 'tagId');
+  const modules = [];
+  for (const module of parsed.data.modules) {
+    let tag = forced ? options.tagId : module.tagId;
+    if (tag !== null && tags && !tags.has(tag)) tag = forced ? tag : null;
+    if (tag !== null && tags && !tags.has(tag)) continue;
+    const inputIds = [];
+    for (const input of module.inputIds) {
+      if (!allowed.has(input) || seen.has(input)) continue;
+      seen.add(input);
+      inputIds.push(input);
+    }
+    if (inputIds.length) modules.push({ title: module.title, text: module.text, tagId: tag, inputIds });
+  }
+  if (!modules.length) {
+    const shell = parsed.data.modules[0];
+    if (!shell) return null;
+    let tag = forced ? options.tagId : shell.tagId;
+    if (tag !== null && tags && !tags.has(tag)) tag = null;
+    if (tag !== null && tags && !tags.has(tag)) return null;
+    modules.push({ title: shell.title, text: shell.text, tagId: tag, inputIds: [] });
+  }
+  for (const input of inputs || []) {
+    if (seen.has(input.id)) continue;
+    modules[modules.length - 1].inputIds.push(input.id);
+    seen.add(input.id);
+  }
+  return validateTreeModules({ modules }, inputs, tags || new Set());
 }
