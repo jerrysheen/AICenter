@@ -76,6 +76,57 @@ test('bad module attribution keeps the first owner and attaches omitted inputs',
   assert.equal(repairTreeModuleAttribution({modules: []}, inputs, tags), null);
 });
 
+test('hourly non-quota failure retries once on another key and logs every call', async () => {
+  const lines = [];
+  const seen = [];
+  const google = {
+    AI_CENTER_HARNESS_HOURLY_PROVIDER: 'google',
+    AI_CENTER_GEMINI_KEY_ENVS: 'GEMINI_API_KEY,GEMINI_API_KEY2',
+    GEMINI_API_KEY: 'key-a',
+    GEMINI_API_KEY2: 'key-b',
+  };
+  const f = fixture({env: google, upstreamRetries: 3, log: (line) => lines.push(String(line))});
+  const original = f.runtime.run;
+  f.runtime.run = async (input) => {
+    if (input.usageStage !== 'tree-hourly') return original(input);
+    seen.push(input.googleKeyEnv);
+    if (input.googleKeyEnv === 'GEMINI_API_KEY') {
+      throw Object.assign(new Error('模型调用失败：500: INTERNAL'), {
+        name: 'HarnessModelError', upstreamStatus: 500, upstreamBody: `INTERNAL ${'x'.repeat(400)}`,
+        admittedModel: 'gemini-3.1-flash-lite', finishReason: 'OTHER',
+      });
+    }
+    return original(input);
+  };
+  const stdout = [];
+  const previous = console.log;
+  console.log = (line) => { stdout.push(String(line)); };
+  const logged = fixture({env: google, upstreamRetries: 3});
+  const loggedOriginal = logged.runtime.run;
+  logged.runtime.run = async (input) => {
+    if (input.usageStage !== 'tree-hourly') return loggedOriginal(input);
+    throw Object.assign(new Error('模型调用失败：500: INTERNAL'), {name: 'HarnessModelError', upstreamStatus: 500, upstreamBody: 'INTERNAL', admittedModel: 'gemini-3.1-flash-lite'});
+  };
+  try {
+    const hour = await f.service.generateHour({hourStart: start, materials: [material('a'), material('b')]});
+    assert.equal(hour.status, 'ready');
+    assert.deepEqual(seen, ['GEMINI_API_KEY', 'GEMINI_API_KEY2']);
+    assert.equal(lines.length, 2);
+    assert.match(lines[0], /^\[worker\] tree-hourly kind=model-5xx status=500 message=.*INTERNAL body=INTERNAL /);
+    assert.equal(lines[0].includes('\n'), false);
+    assert.match(lines[0], /model=gemini-3\.1-flash-lite key=KEY inputBytes=\d+ finishReason=OTHER latencyMs=\d+ outcome=error$/);
+    assert.ok(lines[0].split('body=')[1].split(' model=')[0].length <= 300);
+    assert.match(lines[1], /key=KEY2 .*outcome=ok$/);
+    const failed = await logged.service.generateHour({hourStart: start, materials: [material('c'), material('d')]});
+    assert.equal(failed.status, 'failed');
+    assert.equal(stdout.filter((line) => line.startsWith('[worker] tree-hourly')).length, 2);
+  } finally {
+    console.log = previous;
+    f.store.close();
+    logged.store.close();
+  }
+});
+
 test('hourly 503 retries on the same model, then uses the next hourly model', async () => {
   const seen = [];
   const f = fixture({upstreamRetries: 2, hourlyModels: ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite']});

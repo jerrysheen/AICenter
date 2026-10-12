@@ -8,7 +8,7 @@ import {createStore} from '../packages/database/src/index.js';
 import {runMigrations} from '../packages/database/src/migrations.js';
 import {createInformationTreeRepository} from '../packages/database/src/repositories/information-tree-repository.js';
 import {createReadingHourService} from '../packages/domain/src/reading-hour-service.js';
-import {classificationDeferredCount, createReportJobHandlers, enqueueHourlyExtractFollowUp, hourlyRefreshAvailableAt} from '../packages/runtime/src/report-module.js';
+import {classificationDeferredCount, createReportJobHandlers, enqueueHourlyExtractFollowUp, hourlyFollowUpPlan, hourlyRefreshAvailableAt} from '../packages/runtime/src/report-module.js';
 import {normalizeReadingSemantics, readingPlacement, routeReadingFocus} from '../packages/domain/src/reading-focus-route.js';
 import {ReadingHourIndexQuerySchema, ReadingHourIndexSchema, readingHourIndexDefaultWindow} from '../packages/contracts/src/information-tree.js';
 import {ValidationError} from '../packages/contracts/src/errors.js';
@@ -100,6 +100,49 @@ test('a partial hour refreshes inside the hour after its slot, and deferred clas
   assert.equal(again.classificationDeferred, 1);
   assert.equal(jobs.length, 1);
   assert.equal(enqueueHourlyExtractFollowUp(store, {workspaceId: 'local', hourStart: hour, availableAt: before + 60000}), null);
+});
+
+test('a scheduled follow-up stays on the primary hour when a backfill hour still has classification failures', async () => {
+  const primary = 1791817200000;
+  const backfill = 1791806400000;
+  const hourMs = 3600000;
+  const jobs = [];
+  const store = {
+    listOpenJobs() { return jobs.filter((job) => job.status === 'queued'); },
+    createJob(input) {
+      const job = {id: `job-${jobs.length}`, status: 'queued', workspaceId: input.workspaceId, input: input.input, availableAt: input.availableAt};
+      jobs.push(job);
+      return job;
+    },
+  };
+  const edition = (startAt, pendingIds) => ({
+    id: `edition:${startAt}`, status: pendingIds.length ? 'partial' : 'ready', published: true,
+    window: {startAt, endAt: startAt + hourMs}, pendingIds, pending: pendingIds.map((id) => ({id, reason: 'information-not-ready', retryable: false})), groupFailures: [],
+  });
+  const handlers = createReportJobHandlers({
+    reportService: {generateDailyReport() {}},
+    informationService: {async generateHourlyDigests() {
+      return [edition(primary, Array.from({length: 10}, (_, index) => `pending-${index}`)), edition(backfill, [])];
+    }},
+    treeService: {},
+    readingHour: {enabled: true, async scoreWindow(input) {
+      if (input.window.startAt === backfill) return {readingErrors: [], snapshot: {items: [{disposition: 'classification-failed'}]}};
+      return {readingErrors: [], snapshot: {items: [{disposition: 'hit'}]}};
+    }},
+  });
+  assert.deepEqual(hourlyFollowUpPlan({
+    digests: [edition(primary, ['a']), edition(backfill, [])],
+    deferredByStart: new Map([[backfill, 4]]),
+  }), {hourStart: primary, reason: 'edition-pending', pendingCount: 1, deferred: 0});
+  const result = await handlers['report.hourly.extract']({}, {store});
+  assert.equal(result.pendingCount, 10);
+  assert.equal(result.window.startAt, primary);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].input.hourStart, primary);
+  assert.equal(jobs[0].input.followUp, 'edition-pending');
+  assert.equal(jobs[0].input.hourStart === backfill, false);
+  await handlers['report.hourly.extract']({hourStart: primary, followUp: 'edition-pending'}, {store});
+  assert.equal(jobs.length, 1);
 });
 
 test('reading snapshot survives reopen and a failed attempt cannot replace it', () => {

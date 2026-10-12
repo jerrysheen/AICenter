@@ -162,6 +162,37 @@ function condenseBodySnippet(error) {
   return redactCondenseLog(raw) || '-';
 }
 
+function treeHourlyOutcome(error) {
+  if (!error) return 'ok';
+  if (error.code === 'budget-deferred' || error.quotaExhausted === true || Number(error.status) === 429) return 'budget-deferred';
+  const name = String(error.name || '');
+  const message = String(error.message || error || '');
+  if (name === 'AbortError' || name === 'TimeoutError' || name === 'ModelExecutionTimeout' || name === 'ModelQueueTimeout' || /超时|timed out|\btimeout\b/i.test(message)) return 'timeout';
+  return 'error';
+}
+
+// One physical line per hourly condense call. stdout (console.log) is what the Node daily logger writes to worker.out.*.log.
+export function formatTreeHourlyCallLog({error = null, result = null, keyEnv = '', model = '', inputBytes = 0, latencyMs = 0, finishReason = ''} = {}) {
+  const described = error ? classifyCondenseError(error) : null;
+  const body = error ? (redactCondenseLog(error.upstreamBody ?? error.responseBody ?? '').slice(0, 300) || '-') : '-';
+  const message = error ? (redactCondenseLog(described?.message || error.message || error).slice(0, 300) || '-') : '-';
+  const finish = String(finishReason || error?.finishReason || result?.finishReason || '').trim().slice(0, 40);
+  const chosenModel = error?.admittedModel || result?.modelId || model || '';
+  return [
+    '[worker] tree-hourly',
+    `kind=${described?.kind || 'ok'}`,
+    `status=${described?.status ?? '-'}`,
+    `message=${message}`,
+    `body=${body}`,
+    `model=${safeCondenseRouteId(chosenModel)}`,
+    `key=${condenseKeySuffix(keyEnv || error?.googleKeyEnv)}`,
+    `inputBytes=${Number.isFinite(inputBytes) ? Math.max(0, Math.round(inputBytes)) : 0}`,
+    `finishReason=${safeCondenseRouteId(finish)}`,
+    `latencyMs=${Number.isFinite(latencyMs) ? Math.max(0, Math.round(latencyMs)) : 0}`,
+    `outcome=${treeHourlyOutcome(error)}`,
+  ].join(' ');
+}
+
 export function formatCondenseFailureLog(error, meta = {}) {
   const described = classifyCondenseError(error);
   const timing = error?.timing || {};
