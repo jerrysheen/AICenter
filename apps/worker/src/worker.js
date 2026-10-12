@@ -59,7 +59,7 @@ import {createTreeMaterialPort} from '../../../packages/domain/src/information-t
 import {informationTreeManifest,createInformationTreeJobHandlers,enqueueTreePreparation,prioritizeRecentTreePreparation} from '../../../packages/runtime/src/information-tree-module.js';
 import {createReadingHourService} from '../../../packages/domain/src/reading-hour-service.js';
 import {createModelUsageService} from '../../../packages/domain/src/model-usage-service.js';
-import { createReportJobHandlers, ensureDailyReportCatchupSchedule, ensureDailyReportSchedule, ensureHourlyDigestSchedule, reportDailyManifest } from '../../../packages/runtime/src/report-module.js';
+import { allowHourlyScheduleEnqueue, createReportJobHandlers, ensureDailyReportCatchupSchedule, ensureDailyReportSchedule, ensureHourlyDigestSchedule, hourlyReportDisabled, releaseOpenHourlyJobs, reportDailyManifest } from '../../../packages/runtime/src/report-module.js';
 import { boundedInt } from '../../../packages/domain/src/report-reliability.js';
 import { createResearchRecallJobHandlers, researchRecallManifest } from '../../../packages/runtime/src/research-recall-module.js';
 import { createResearchRelevanceJudge, createResearchTagJudge } from '../../../packages/runtime/src/research-judges.js';
@@ -163,6 +163,10 @@ export function createAiCenterWorker(options = {}) {
     'report.daily.generate': boundedInt(env.AI_CENTER_DAILY_MAX_RUNNING_MS, 90 * 60_000, 60_000, 6 * 60 * 60_000),
   };
   store.recoverStaleJobs(staleAfterMs, Date.now(), { maxRunningMs: jobMaxRunningMs, maxRunningMsByType });
+  if (hourlyReportDisabled(env)) {
+    const cancelled = releaseOpenHourlyJobs(store, env);
+    console.log(`[worker] 小时报已停用（AI_CENTER_HOURLY_DISABLED=1），已取消 ${cancelled} 个未完成任务`);
+  }
   store.abandonRunningJobs?.([MEDIA_ENRICH_JOB_TYPE], 'Worker 已重启，未完成的正文任务需按保存状态继续');
   store.repositories?.media?.recoverBriefProcessing?.();
   store.abandonRunningJobs?.(
@@ -439,13 +443,13 @@ export function createAiCenterWorker(options = {}) {
   const informationService=options.informationService || treeService || createInformationDigestService({
     reportRepository:store.repositories.report,feedService,mediaPort:mediaService,agentRuntime,timezone:dailyConfig.timezone,
   });
-  if(treeService)registry.register({manifest:informationTreeManifest,jobHandlers:createInformationTreeJobHandlers(treeService,{candidates:treeMaterials.candidates,refreshMinute:articleStrategy ? 30 : null})});
+  if(treeService)registry.register({manifest:informationTreeManifest,jobHandlers:createInformationTreeJobHandlers(treeService,{candidates:treeMaterials.candidates,refreshMinute:articleStrategy ? 30 : null,env})});
   registry.register({
     manifest: reportDailyManifest,
     jobHandlers: options.reportJobHandlers || createReportJobHandlers({
       reportService,
       informationService,
-      treeService,dailyConfig,
+      treeService,dailyConfig,env,
       readingHour: createReadingHourService({
         repository: store.repositories.informationTree,
         reportRepository: store.repositories.report,
@@ -565,7 +569,7 @@ export function createAiCenterWorker(options = {}) {
   if (options.enableDefaultSchedules !== false) {
     ensureDailyReportSchedule(store, dailyConfig);
     ensureDailyReportCatchupSchedule(store, dailyConfig);
-    ensureHourlyDigestSchedule(store,Date.now(),{minute:articleStrategy ? 30 : 0});
+    ensureHourlyDigestSchedule(store,Date.now(),{minute:articleStrategy ? 30 : 0,env});
     ensureDividendStrategySchedule(store);
     ensureFeedSubscriptionSyncSchedule(store);
     ensureMediaIndexSyncSchedule(store);
@@ -580,6 +584,7 @@ export function createAiCenterWorker(options = {}) {
     allowedJobTypes: Object.keys(handlers),
     pollIntervalMs: options.schedulePollIntervalMs || env.AI_CENTER_SCHEDULER_POLL_MS || 20_000,
     beforeEnqueue(schedule, at) {
+      if (!allowHourlyScheduleEnqueue(schedule, env)) return false;
       if (schedule.jobType !== FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE) return true;
       return prepareFeedSyncEnqueue(store, at);
     },

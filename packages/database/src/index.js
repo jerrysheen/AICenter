@@ -810,6 +810,26 @@ export function createStore(databasePath) {
         ORDER BY created_at ASC`).all(jobType).map(mapJob);
     },
 
+    cancelOpenJobs(type, output = {}, now = Date.now()) {
+      const jobType = String(type || '').trim();
+      if (!jobType) return 0;
+      const rows = database.prepare(`SELECT * FROM jobs WHERE type = ? AND status IN ('queued', 'running')`).all(jobType);
+      const payload = JSON.stringify(output && typeof output === 'object' ? output : {status: 'skipped'});
+      database.transaction(() => {
+        for (const row of rows) {
+          database.prepare(`UPDATE jobs SET status = 'cancelled', output_json = ?, error_json = NULL,
+            completed_at = ?, locked_by = NULL, locked_at = NULL, updated_at = ?
+            WHERE id = ? AND status IN ('queued', 'running')`)
+            .run(payload, now, now, row.id);
+          database.prepare(`UPDATE job_attempts SET status = 'abandoned', completed_at = ?
+            WHERE job_id = ? AND status = 'running'`)
+            .run(now, row.id);
+          insertEvent('job.cancelled', 'job', row.id, { jobId: row.id, ...output }, row.workspace_id);
+        }
+      })();
+      return rows.length;
+    },
+
     discardQueuedJobs(type, message, now = Date.now()) {
       const jobType = String(type || '').trim();
       if (!jobType) return 0;
