@@ -1379,7 +1379,20 @@ async function api(path, options = {}) {
       signal: controller ? controller.signal : undefined,
       headers: { 'Content-Type': 'application/json', ...(fetchOptions.headers || {}) },
     });
-    const payload = await response.json().catch(() => ({}));
+    // A truncated gzip body can still arrive as HTTP 200. Treating that as {}
+    // makes callers, including the brief manifest, look successful.
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (parseError) {
+      if (response.ok) {
+        const error = new Error('响应不完整，请稍后重试');
+        error.status = response.status;
+        error.cause = parseError;
+        throw error;
+      }
+      payload = {};
+    }
     if (!response.ok) {
       const error = new Error(payload.error || `请求失败 (${response.status})`);
       error.status = response.status;

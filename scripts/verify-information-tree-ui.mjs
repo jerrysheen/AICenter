@@ -12,9 +12,9 @@ const checks=[],errors=[],requests=[];
 try {
   const page=await browser.newPage();page.on('pageerror',e=>errors.push(e.message));page.on('request',r=>{if(r.url().includes('/api/v1/'))requests.push({method:r.method(),path:new URL(r.url()).pathname});});
   await page.goto(`${url}/#report`);
-  await page.waitForFunction(()=>document.querySelector('.tree-page') || [...document.querySelectorAll('button')].some(n=>n.textContent==='三层浓缩树'));
+  await page.waitForFunction(()=>document.querySelector('.tree-page') || [...document.querySelectorAll('button')].some(n=>n.textContent==='旧版简报'));
   // Legacy hosts retain the explicit button; enabled instances enter the tree directly.
-  if(!await page.locator('.tree-page').count())await page.getByRole('button',{name:'三层浓缩树',exact:true}).evaluate(n=>n.click());
+  if(!await page.locator('.tree-page').count())await page.getByRole('button',{name:'旧版简报',exact:true}).evaluate(n=>n.click());
   await page.waitForFunction(()=>document.querySelector('.tree-card'));
   for(const width of [320,375,390,502,699,700,768,1024,1199,1200,1366,1440,1920]) {
     await page.setViewportSize({width,height:900});

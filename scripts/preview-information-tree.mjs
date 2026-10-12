@@ -30,5 +30,5 @@ try {
   })();
 } finally {target.close();source.close();}
 const app=createAiCenterServer({host:'127.0.0.1',port:Number(arg('--port') || 8791),dataDirectory:directory});
-const address=await app.listen();console.log(`隔离真实数据预览：${address.localUrl}/#report → 三层浓缩树`);
+const address=await app.listen();console.log(`隔离真实数据预览：${address.localUrl}/#report → 旧版简报`);
 for(const signal of ['SIGINT','SIGTERM'])process.on(signal,async()=>{await app.close();process.exit(0);});
