@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-12-gpu-price-sources.md`：AI Token 的 GPU 租金增加 CCIR、GPU Economy、Bargo。沿用异常价过滤，不新增 migration。见 `compute-prices-v1.md`。
+
 - `progress/2026-10-12-share-image.md`：信息流、阅读页、小时报和日报单条，以及问答卡，共用一张分享图。长文分页出 PNG。Web 重载一次以提供 `/qr-code.js`，Worker 不用重启。
 
 - `progress/2026-10-12-readonly-api-tokens.md`：外部机器人用只读 Bearer 令牌访问白名单 GET。设置页生成和撤销，库里只存哈希。migration 57。见 `api.md`。

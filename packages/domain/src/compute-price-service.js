@@ -39,7 +39,10 @@ export function quoteDateFor(capturedAt, timeZone = COMPUTE_PRICE_TIME_ZONE) {
 export function createComputePriceService({ repository, timeZone = COMPUTE_PRICE_TIME_ZONE }) {
   return {
     save(workspaceId, input) {
-      const quoteDate = quoteDateFor(input.capturedAt, timeZone);
+      const explicit = typeof input?.quoteDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(input.quoteDate)
+        ? input.quoteDate
+        : '';
+      const quoteDate = explicit || quoteDateFor(input.capturedAt, timeZone);
       return repository.save(workspaceId, input, quoteDate);
     },
 

@@ -16,11 +16,30 @@ export const CURATED_TOKEN_SELECTORS = [
   { key: 'llama', label: 'Llama', pattern: /^meta-llama\/llama-(?!guard)[^:~]+$/ },
 ];
 
+export const GPU_PRICE_FLOORS = Object.freeze({
+  h100: '1',
+  h200: '1.5',
+  b200: '2',
+  b300: '2.5',
+  a100: '0.4',
+});
+
 const GPU_FAMILY = [
-  { family: 'h100', pattern: /H100/i, floor: '1' },
-  { family: 'h200', pattern: /H200/i, floor: '1.5' },
-  { family: 'b200', pattern: /\bB200\b/i, floor: '2' },
+  { family: 'h100', pattern: /H100/i },
+  { family: 'h200', pattern: /H200/i },
+  { family: 'b200', pattern: /\bB200\b/i },
 ];
+
+export function gpuPriceFamily(text) {
+  const value = String(text || '');
+  if (/MIG/i.test(value)) return null;
+  if (/\bB300\b/i.test(value)) return 'b300';
+  if (/\bB200\b/i.test(value)) return 'b200';
+  if (/H200/i.test(value)) return 'h200';
+  if (/H100/i.test(value)) return 'h100';
+  if (/A100/i.test(value)) return 'a100';
+  return null;
+}
 
 const NON_TEXT_ID = /(?:-image|-audio|-tts|-video|preview-image|image-preview|(?:^|[/:])(?:image|audio|tts)(?:$|[/:]))/i;
 const NON_TEXT_NAME = /\b(?:image|audio|video|tts|speech)\b/i;
@@ -172,6 +191,27 @@ function belowFamilyCutoff(price, median, floor) {
   return scaleDecimal(price, scale) * 10n < scaleDecimal(median, scale) * 4n;
 }
 
+export function filterAnomalousGpuPrices(entries) {
+  const grouped = new Map();
+  for (const row of entries) {
+    const list = grouped.get(row.family) || [];
+    list.push(row.usdPerHour);
+    grouped.set(row.family, list);
+  }
+  const kept = [];
+  const filtered = [];
+  for (const row of entries) {
+    const median = medianDecimal(grouped.get(row.family));
+    const floor = row.floor || GPU_PRICE_FLOORS[row.family];
+    if (!median || !floor || belowFamilyCutoff(row.usdPerHour, median, floor)) {
+      filtered.push({ label: row.label, lane: row.lane, usdPerHour: row.usdPerHour, reason: '低于同型号中位的 40% 或下限' });
+      continue;
+    }
+    kept.push(row);
+  }
+  return { kept, filtered };
+}
+
 export function selectRunPodGpuRates(payload) {
   const types = Array.isArray(payload?.data?.gpuTypes) ? payload.data.gpuTypes : [];
   const chosen = types.map((row) => ({ row, family: gpuFamily(row) })).filter((item) => item.family);
@@ -197,31 +237,19 @@ export function selectRunPodGpuRates(payload) {
         filtered.push({ label, lane, usdPerHour, reason });
         continue;
       }
-      pending.push({ family: item.family.family, floor: item.family.floor, gpuKey, label, lane, usdPerHour });
+      pending.push({ family: item.family.family, floor: GPU_PRICE_FLOORS[item.family.family], gpuKey, label, lane, usdPerHour });
     }
   }
-  const pricesByFamily = new Map();
-  for (const row of pending) {
-    const list = pricesByFamily.get(row.family) || [];
-    list.push(row.usdPerHour);
-    pricesByFamily.set(row.family, list);
-  }
-  const rows = [];
-  for (const row of pending) {
-    const median = medianDecimal(pricesByFamily.get(row.family));
-    if (belowFamilyCutoff(row.usdPerHour, median, row.floor)) {
-      filtered.push({ label: row.label, lane: row.lane, usdPerHour: row.usdPerHour, reason: '低于同型号中位的 40% 或下限' });
-      continue;
-    }
-    rows.push({
-      sortIndex: rows.length,
-      gpuKey: row.gpuKey,
-      label: row.label,
-      lane: row.lane,
-      usdPerHour: row.usdPerHour,
-      sampleCount: null,
-    });
-  }
+  const priced = filterAnomalousGpuPrices(pending);
+  filtered.push(...priced.filtered);
+  const rows = priced.kept.map((row, sortIndex) => ({
+    sortIndex,
+    gpuKey: row.gpuKey,
+    label: row.label,
+    lane: row.lane,
+    usdPerHour: row.usdPerHour,
+    sampleCount: null,
+  }));
   return { rows, warnings: rows.length ? [] : ['公开目录里没有 H100、H200 或 B200 小时价'], filtered };
 }
 

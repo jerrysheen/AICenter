@@ -78,7 +78,7 @@ export function createComputePriceRepository(database) {
 
     latestGpus(workspaceId) {
       const snapshots = database.prepare(`SELECT id FROM compute_price_snapshots s
-        WHERE workspace_id=? AND source_key IN ('runpod','vast')
+        WHERE workspace_id=? AND source_key IN ('runpod','vast','ccir','gpueconomy','bargo')
           AND id=(SELECT id FROM compute_price_snapshots
             WHERE workspace_id=s.workspace_id AND source_key=s.source_key
             ORDER BY captured_at DESC, id DESC LIMIT 1)`).all(workspaceId);
@@ -87,7 +87,7 @@ export function createComputePriceRepository(database) {
       return database.prepare(`SELECT source_key venue, gpu_key gpuKey, label, lane, quote_date quoteDate,
         usd_per_hour usdPerHour, sample_count sampleCount, captured_at capturedAt, sort_index sortIndex
         FROM gpu_rent_observations WHERE workspace_id=? AND snapshot_id IN (${ids.map(() => '?').join(',')})
-        ORDER BY CASE source_key WHEN 'runpod' THEN 0 ELSE 1 END, sort_index`).all(workspaceId, ...ids);
+        ORDER BY CASE source_key WHEN 'runpod' THEN 0 WHEN 'vast' THEN 1 WHEN 'ccir' THEN 2 WHEN 'gpueconomy' THEN 3 WHEN 'bargo' THEN 4 ELSE 9 END, sort_index`).all(workspaceId, ...ids);
     },
 
     gpuHistory(workspaceId, venue, gpuKey, lane) {
