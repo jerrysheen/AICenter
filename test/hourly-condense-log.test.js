@@ -93,8 +93,36 @@ test('hourly condense failure log keeps the cause and omits prompt text', async 
     assert.equal(logged[0].includes('AIzaSyDUMMYKEY1234567890'), false);
     assert.equal(logged[0].includes('must-not-log'), false);
     assert.equal(logged[0].includes('UNIQUE_BODY_MARKER_9f3a'), false);
+    const diagnostic = hour.condenseDiagnostics[0];
+    assert.equal(diagnostic.kind, 'model-5xx');
+    assert.equal(diagnostic.code, '500');
+    assert.equal(diagnostic.httpStatus, 500);
+    assert.equal(diagnostic.model, 'grok-4.7');
+    assert.equal(diagnostic.group, '未分类');
+    assert.equal(Number.isFinite(diagnostic.durationMs), true);
+    assert.equal(diagnostic.message.includes('AIzaSyDUMMYKEY1234567890'), false);
+    assert.equal(diagnostic.message.includes('must-not-log'), false);
+    assert.equal(diagnostic.message.includes('UNIQUE_BODY_MARKER_9f3a'), false);
+    assert.equal(JSON.stringify(hour).includes('condenseDiagnostics'), false);
+    const stored = store.repositories.informationTree.getEdition('local', hour.id);
+    assert.equal(stored.condenseDiagnostics, undefined);
+    assert.equal(JSON.stringify(stored).includes('AIzaSyDUMMYKEY1234567890'), false);
+    const bridge = createReportJobHandlers({
+      reportService: {generateDailyReport() {}},
+      treeService: {},
+      informationService: {async generateHourlyDigests() { return [hour]; }},
+    });
+    await assert.rejects(bridge['report.hourly.extract']({hourStart: start}), (error) => {
+      assert.equal(error.message, '小时浓缩临时失败；成功分类及检查点已保留');
+      assert.equal(error.reportFailure.kind, 'model-5xx');
+      assert.equal(error.reportFailure.code, '500');
+      assert.equal(error.reportFailure.httpStatus, 500);
+      assert.equal(error.reportFailure.model, 'grok-4.7');
+      assert.equal(error.reportFailure.message.includes('AIzaSyDUMMYKEY1234567890'), false);
+      return true;
+    });
     const before = calls.length;
-    await service.generateHour({hourStart: start, materials: [material]});
+    const cooledHour = await service.generateHour({hourStart: start, materials: [material]});
     assert.equal(calls.length, before);
     const cooled = lines.filter(line => line.includes('浓缩失败'));
     assert.equal(cooled.length, 2);
@@ -102,6 +130,8 @@ test('hourly condense failure log keeps the cause and omits prompt text', async 
     assert.match(cooled[1], /kind=model-5xx/);
     assert.equal(cooled[1].includes('AIzaSyDUMMYKEY1234567890'), false);
     assert.equal(cooled[1].includes('UNIQUE_BODY_MARKER_9f3a'), false);
+    assert.equal(cooledHour.condenseDiagnostics[0].kind, 'model-5xx');
+    assert.equal(cooledHour.condenseDiagnostics[0].message.includes('AIzaSyDUMMYKEY1234567890'), false);
   } finally {
     console.error = original;
     store.close();

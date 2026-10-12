@@ -1,7 +1,8 @@
 param(
   [string]$InstanceId = '',
   [string]$InstanceRoot = '',
-  [Nullable[int]]$Port = $null
+  [Nullable[int]]$Port = $null,
+  [switch]$WorkerOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,18 +18,24 @@ if (-not $InstanceConfig) { throw 'Instance configuration could not be resolved.
 $Port = [int]$InstanceConfig.port
 $RuntimeDirectory = [IO.Path]::GetFullPath([string]$InstanceConfig.runtimeDirectory)
 $RestartRequestFile = Join-Path $RuntimeDirectory 'restart.request'
+$WorkerRestartRequestFile = Join-Path $RuntimeDirectory 'restart.worker.request'
 $StateFile = Join-Path $RuntimeDirectory 'processes.json'
 $HealthUrl = "http://127.0.0.1:$Port/api/v1/health"
 
-function Read-WebPid {
+function Read-ProcessPid([string]$Name) {
   if (-not (Test-Path -LiteralPath $StateFile -PathType Leaf)) { return 0 }
   try {
     $state = Get-Content -LiteralPath $StateFile -Raw | ConvertFrom-Json
-    return [int]($state.processes.web.pid)
+    $record = $state.processes.PSObject.Properties[$Name].Value
+    if (-not $record -or -not $record.pid) { return 0 }
+    return [int]$record.pid
   } catch {
     return 0
   }
 }
+
+function Read-WebPid { return Read-ProcessPid 'web' }
+function Read-WorkerPid { return Read-ProcessPid 'worker' }
 
 function Test-Health {
   try {
@@ -40,6 +47,30 @@ function Test-Health {
 }
 
 New-Item -ItemType Directory -Path $RuntimeDirectory -Force | Out-Null
+if ($WorkerOnly) {
+  $beforeWeb = Read-WebPid
+  $beforeWorker = Read-WorkerPid
+  if ($beforeWeb -le 0 -or $beforeWorker -le 0 -or -not (Test-Health)) {
+    throw 'Web is not healthy, so a worker-only restart was not requested. Run scripts/restart-ai-center.ps1 without -WorkerOnly.'
+  }
+  [System.IO.File]::WriteAllText($WorkerRestartRequestFile, [DateTimeOffset]::Now.ToString('o'), [System.Text.UTF8Encoding]::new($false))
+  Write-Host "Wrote worker restart request for instance $($InstanceConfig.instanceId). Waiting for the launcher to restart Worker only..."
+  $deadline = [DateTime]::UtcNow.AddSeconds(60)
+  while ([DateTime]::UtcNow -lt $deadline) {
+    $web = Read-WebPid
+    $worker = Read-WorkerPid
+    if ($web -gt 0 -and $web -ne $beforeWeb) {
+      throw "Worker-only restart changed the Web PID from $beforeWeb to $web. Check the launcher window."
+    }
+    if ((Test-Health) -and $web -eq $beforeWeb -and $worker -gt 0 -and $worker -ne $beforeWorker) {
+      Write-Host "Worker restarted. Web PID $web stayed up. Worker PID $worker"
+      exit 0
+    }
+    Start-Sleep -Milliseconds 400
+  }
+  throw 'Launcher did not apply restart.worker.request within 60s. The current start-ai-center window needs one manual restart to pick up worker-only restarts; after that, this switch leaves Web running.'
+}
+
 $beforePid = Read-WebPid
 [System.IO.File]::WriteAllText($RestartRequestFile, [DateTimeOffset]::Now.ToString('o'), [System.Text.UTF8Encoding]::new($false))
 Write-Host "Wrote restart request for instance $($InstanceConfig.instanceId). Waiting for launcher to bounce Web/Worker..."

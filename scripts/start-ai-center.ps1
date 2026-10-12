@@ -29,6 +29,7 @@ $LogDirectory = Join-Path $RuntimeDirectory 'logs'
 $HostLogDirectory = Join-Path $HostRuntimeDirectory 'logs'
 $StateFile = Join-Path $RuntimeDirectory 'processes.json'
 $RestartRequestFile = Join-Path $RuntimeDirectory 'restart.request'
+$WorkerRestartRequestFile = Join-Path $RuntimeDirectory 'restart.worker.request'
 $WebOutLog = Join-Path $LogDirectory 'web.out.log'
 $WebErrorLog = Join-Path $LogDirectory 'web.error.log'
 $WorkerOutLog = Join-Path $LogDirectory 'worker.out.log'
@@ -153,6 +154,28 @@ function Assert-PortAvailable {
   throw "Port $Port is in use by another program; it was not stopped:`n$($ownerDescriptions -join "`n")"
 }
 
+function Update-AiCenterProcessLogs {
+  param([switch]$WorkerOnly)
+  $day = [DateTime]::Now.ToString('yyyy-MM-dd')
+  if (-not $WorkerOnly) {
+    $script:WebOutLog = Join-Path $LogDirectory "web.out.$day.log"
+    $script:WebErrorLog = Join-Path $LogDirectory "web.error.$day.log"
+  }
+  $script:WorkerOutLog = Join-Path $LogDirectory "worker.out.$day.log"
+  $script:WorkerErrorLog = Join-Path $LogDirectory "worker.error.$day.log"
+  $keepFrom = [DateTime]::Today.AddDays(-6)
+  Get-ChildItem -LiteralPath $LogDirectory -File -ErrorAction SilentlyContinue | ForEach-Object {
+    if ($_.Name -match '^(web|worker)\.(out|error)\.(\d{4}-\d{2}-\d{2})\.log$') {
+      try {
+        $loggedDay = [DateTime]::ParseExact($Matches[3], 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
+        if ($loggedDay.Date -lt $keepFrom.Date) {
+          Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+        }
+      } catch {}
+    }
+  }
+}
+
 function Start-HiddenLoggedProcess {
   param(
     [string]$FilePath,
@@ -161,16 +184,72 @@ function Start-HiddenLoggedProcess {
     [string]$OutLog,
     [string]$ErrorLog
   )
+  if (-not ('AiCenterAppendLog' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+
+public static class AiCenterAppendLog {
+  public static Process Start(string fileName, string arguments, string workingDirectory, string outLog, string errorLog) {
+    var utf8 = new UTF8Encoding(false);
+    var stdout = new StreamWriter(new FileStream(outLog, FileMode.Append, FileAccess.Write, FileShare.ReadWrite), utf8);
+    stdout.AutoFlush = true;
+    var stderr = new StreamWriter(new FileStream(errorLog, FileMode.Append, FileAccess.Write, FileShare.ReadWrite), utf8);
+    stderr.AutoFlush = true;
+    try {
+      var psi = new ProcessStartInfo();
+      psi.FileName = fileName;
+      psi.Arguments = arguments;
+      psi.WorkingDirectory = workingDirectory;
+      psi.UseShellExecute = false;
+      psi.RedirectStandardOutput = true;
+      psi.RedirectStandardError = true;
+      psi.CreateNoWindow = true;
+      psi.StandardOutputEncoding = utf8;
+      psi.StandardErrorEncoding = utf8;
+      var process = new Process();
+      process.StartInfo = psi;
+      process.EnableRaisingEvents = true;
+      var gate = new object();
+      var stamp = "----- " + DateTimeOffset.Now.ToString("o") + " start -----";
+      stdout.WriteLine(stamp);
+      stderr.WriteLine(stamp);
+      process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e) {
+        if (e.Data == null) return;
+        lock (gate) { if (stdout != null) stdout.WriteLine(e.Data); }
+      };
+      process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e) {
+        if (e.Data == null) return;
+        lock (gate) { if (stderr != null) stderr.WriteLine(e.Data); }
+      };
+      process.Exited += delegate(object sender, EventArgs e) {
+        lock (gate) {
+          try { if (stdout != null) stdout.Dispose(); } catch (Exception) {}
+          stdout = null;
+          try { if (stderr != null) stderr.Dispose(); } catch (Exception) {}
+          stderr = null;
+        }
+      };
+      if (!process.Start()) throw new InvalidOperationException("process did not start");
+      process.BeginOutputReadLine();
+      process.BeginErrorReadLine();
+      return process;
+    } catch {
+      try { stdout.Dispose(); } catch (Exception) {}
+      try { stderr.Dispose(); } catch (Exception) {}
+      throw;
+    }
+  }
+}
+'@
+  }
+  $arguments = $ArgumentList -join ' '
   $lastError = $null
   foreach ($attempt in 1..6) {
     try {
-      return Start-Process -FilePath $FilePath `
-        -ArgumentList $ArgumentList `
-        -WorkingDirectory $WorkingDirectory `
-        -WindowStyle Hidden `
-        -RedirectStandardOutput $OutLog `
-        -RedirectStandardError $ErrorLog `
-        -PassThru
+      return [AiCenterAppendLog]::Start($FilePath, $arguments, $WorkingDirectory, $OutLog, $ErrorLog)
     } catch {
       $lastError = $_
       Start-Sleep -Milliseconds 400
@@ -227,6 +306,7 @@ function Write-InstanceProcessState {
 }
 
 function Start-AiCenterWebAndWorker {
+  param([switch]$WorkerOnly)
   $previousPort = $env:AI_CENTER_PORT
   $previousBrowserProvider = $env:AI_BROWSER_PROVIDER
   $previousBskAutoStart = $env:BSK_AUTO_START
@@ -248,12 +328,14 @@ function Start-AiCenterWebAndWorker {
   $env:BSK_AUTO_START = '0'
   $started = @{ web = $null; worker = $null }
   try {
-    $started.web = Start-HiddenLoggedProcess `
-      -FilePath $NodeCommand.Source `
-      -ArgumentList @("`"$WebEntry`"", "`"--ai-center-instance-root=$InstanceRoot`"", "`"--ai-center-instance-id=$InstanceId`"") `
-      -WorkingDirectory $RepositoryRoot `
-      -OutLog $WebOutLog `
-      -ErrorLog $WebErrorLog
+    if (-not $WorkerOnly) {
+      $started.web = Start-HiddenLoggedProcess `
+        -FilePath $NodeCommand.Source `
+        -ArgumentList @("`"$WebEntry`"", "`"--ai-center-instance-root=$InstanceRoot`"", "`"--ai-center-instance-id=$InstanceId`"") `
+        -WorkingDirectory $RepositoryRoot `
+        -OutLog $WebOutLog `
+        -ErrorLog $WebErrorLog
+    }
     $started.worker = Start-HiddenLoggedProcess `
       -FilePath $NodeCommand.Source `
       -ArgumentList @("`"$WorkerEntry`"", "`"--ai-center-instance-root=$InstanceRoot`"", "`"--ai-center-instance-id=$InstanceId`"") `
@@ -327,15 +409,25 @@ public static class AiCenterConsoleCtrl {
     while (-not [AiCenterConsoleCtrl]::StopRequested) {
       $webProcess.Refresh()
       $workerProcess.Refresh()
-      if ($webProcess.HasExited -or $workerProcess.HasExited) {
+      $fullRestartRequested = Test-Path -LiteralPath $RestartRequestFile -PathType Leaf
+      if ($webProcess.HasExited -or $fullRestartRequested) {
         if ($webProcess.HasExited) {
           Write-Host (Get-ExitedProcessHint -Name 'Web' -LogPath $WebErrorLog) -ForegroundColor Yellow
         }
         if ($workerProcess.HasExited) {
           Write-Host "Worker exited unexpectedly. See $WorkerErrorLog" -ForegroundColor Yellow
         }
-        Write-Host 'Web or Worker exited. Restarting them; tunnel stays up.' -ForegroundColor Cyan
+        if (-not $fullRestartRequested) {
+          Write-Host 'Web exited. Restarting Web and Worker; tunnel stays up.' -ForegroundColor Cyan
+        }
         return 'restart'
+      }
+      if ($workerProcess.HasExited -or (Test-Path -LiteralPath $WorkerRestartRequestFile -PathType Leaf)) {
+        if ($workerProcess.HasExited) {
+          Write-Host "Worker exited unexpectedly. See $WorkerErrorLog" -ForegroundColor Yellow
+          Write-Host 'Restarting Worker only. Web stays up.' -ForegroundColor Cyan
+        }
+        return 'restart-worker'
       }
       if ($searchProcess) {
         $searchProcess.Refresh()
@@ -355,9 +447,6 @@ public static class AiCenterConsoleCtrl {
           $cloudflareStatus = 'failed'
         }
       }
-      if (Test-Path -LiteralPath $RestartRequestFile -PathType Leaf) {
-        return 'restart'
-      }
       Start-Sleep -Milliseconds 800
     }
     return 'stop'
@@ -366,6 +455,53 @@ public static class AiCenterConsoleCtrl {
       [void][AiCenterConsoleCtrl]::SetConsoleCtrlHandler([AiCenterConsoleCtrl]::Handler, $false)
     }
   }
+}
+
+function Restart-AiCenterWorkerOnly {
+  Write-Host ''
+  Write-Host 'Restarting Worker only. Web stays up.' -ForegroundColor Cyan
+  Remove-Item -LiteralPath $WorkerRestartRequestFile -Force -ErrorAction SilentlyContinue
+  Update-AiCenterProcessLogs -WorkerOnly
+  Stop-StartedProcess $script:workerProcess
+  Start-Sleep -Milliseconds 500
+  $healthy = $false
+  $needsStart = $true
+  foreach ($healthAttempt in 1, 2) {
+    try {
+      if ($needsStart -or -not $script:workerProcess -or $script:workerProcess.HasExited) {
+        $started = Start-AiCenterWebAndWorker -WorkerOnly
+        $script:workerProcess = $started.worker
+        Write-InstanceProcessState
+        $needsStart = $false
+      }
+      [void](Wait-AiCenterWebHealth -Web $script:webProcess -Worker $script:workerProcess)
+      $healthy = $true
+      break
+    } catch {
+      Write-Host "[!] $($_.Exception.Message)" -ForegroundColor Yellow
+      $script:webProcess.Refresh()
+      if ($script:webProcess.HasExited) {
+        return 'web-down'
+      }
+      if ($healthAttempt -ge 2) { break }
+      if ($script:workerProcess) { $script:workerProcess.Refresh() }
+      if (-not $script:workerProcess -or $script:workerProcess.HasExited) {
+        Write-Host 'Worker exited during restart. Starting it once more. Web stays up.' -ForegroundColor Yellow
+        Stop-StartedProcess $script:workerProcess
+        $needsStart = $true
+        Start-Sleep -Milliseconds 500
+      } else {
+        Write-Host 'Health check failed. Retrying without stopping Web.' -ForegroundColor Yellow
+      }
+    }
+  }
+  if ($healthy) {
+    Write-Host "[OK] Worker restarted. Web PID $($script:webProcess.Id); Worker PID $($script:workerProcess.Id)" -ForegroundColor Green
+    return 'ok'
+  }
+  Write-Host '[!] Worker restart did not pass health check. Web is still running.' -ForegroundColor Yellow
+  Start-Sleep -Seconds 5
+  return 'left-web-up'
 }
 
 Set-Location -LiteralPath $RepositoryRoot
@@ -393,6 +529,7 @@ while ($true) {
 
     New-Item -ItemType Directory -Path $LogDirectory -Force | Out-Null
     New-Item -ItemType Directory -Path $HostLogDirectory -Force | Out-Null
+    Update-AiCenterProcessLogs
     Write-Host "Checking recorded processes for instance $InstanceId..." -ForegroundColor Cyan
     Stop-RecordedInstanceProcesses
     Stop-PreviousInstanceNodes
@@ -601,12 +738,19 @@ while ($true) {
     Write-Host "Web PID: $($webProcess.Id); Worker PID: $($workerProcess.Id)$(if ($searchProcess -and $searchStatus -eq 'ok') { "; Search PID: $($searchProcess.Id)" } else { '' })$(if ($browserProcess -and $browserOwned) { "; Browser PID: $($browserProcess.Id)" } else { '' })$(if ($cloudflareProcess -and $cloudflareStatus -eq 'ok') { "; Tunnel PID: $($cloudflareProcess.Id)" } else { '' })"
     Write-Host "Logs: $LogDirectory"
     $waitResult = 'restart'
-    while ($waitResult -eq 'restart') {
+    while ($waitResult -eq 'restart' -or $waitResult -eq 'restart-worker') {
       $waitResult = Wait-ForCtrlCOrCrash
-      if ($waitResult -ne 'restart') { break }
+      if ($waitResult -eq 'stop') { break }
+      if ($waitResult -eq 'restart-worker' -and -not $webProcess.HasExited) {
+        $workerRestart = Restart-AiCenterWorkerOnly
+        if ($workerRestart -ne 'web-down') { continue }
+        Write-Host 'Web exited during worker restart. Restarting Web and Worker. Tunnel stays up.' -ForegroundColor Cyan
+      }
       Write-Host ''
       Write-Host 'Restarting Web/Worker. Tunnel stays up.' -ForegroundColor Cyan
       Remove-Item -LiteralPath $RestartRequestFile -Force -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath $WorkerRestartRequestFile -Force -ErrorAction SilentlyContinue
+      Update-AiCenterProcessLogs
       Stop-StartedAiCenterProcesses
       Start-Sleep -Milliseconds 500
       $started = Start-AiCenterWebAndWorker

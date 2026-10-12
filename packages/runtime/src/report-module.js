@@ -2,6 +2,7 @@ import { parseContract, GenerateDailyBriefInputSchema, GenerateDailyReportInputS
 import { dailySlotOnInstant } from '../../domain/src/zoned-time.js';
 import {GenerateHourlyDigestInputSchema} from '../../contracts/src/report.js';
 import {resolveDailyConfig,resolveDailyWindow,resolveReportDate} from '../../domain/src/daily-window.js';
+import {condenseJobFailure, describeCondenseFailure} from '../../domain/src/information-tree-policy.js';
 
 export const REPORT_DAILY_JOB_TYPE = 'report.daily.generate';
 export const REPORT_DAILY_BRIEF_JOB_TYPE = 'report.daily.brief.generate';
@@ -40,6 +41,17 @@ export const reportDailyManifest = Object.freeze({
   jobTypes: [REPORT_DAILY_JOB_TYPE, REPORT_DAILY_BRIEF_JOB_TYPE, REPORT_HOURLY_JOB_TYPE],
 });
 
+function rememberReportFailure(error, source) {
+  if (!(error instanceof Error) || error.reportFailure) return error;
+  const diagnostics = source?.condenseDiagnostics || [];
+  const failures = source?.groupFailures || [];
+  error.reportFailure = condenseJobFailure(error.message, {
+    diagnostics: diagnostics.length || failures.length ? diagnostics : [describeCondenseFailure(error)],
+    failures,
+  });
+  return error;
+}
+
 export function createReportJobHandlers({ reportService, briefService = null, informationService=null, treeService=null, readingHour=null, beforeHourly=null, dailyConfig=resolveDailyConfig() }) {
   if (!reportService?.generateDailyReport) throw new Error('daily report jobs require reportService');
   return {
@@ -61,7 +73,7 @@ export function createReportJobHandlers({ reportService, briefService = null, in
         if(digests[0]?.status==='failed' && digests[0].groupFailures?.some(p=>p.retryable)) {
           const failures=digests[0].groupFailures;
           console.error(`[worker] 小时浓缩临时失败 groups=${failures.length} retryable=${failures.filter(p=>p.retryable).length} ${failures.map(p=>`tag=${p.tagId ?? 'null'} reason=${p.reason} queueMs=${p.queueMs ?? '-'} executionMs=${p.executionMs ?? '-'}`).join('; ')}`);
-          throw new Error('小时浓缩临时失败；成功分类及检查点已保留');
+          throw rememberReportFailure(new Error('小时浓缩临时失败；成功分类及检查点已保留'), digests[0]);
         }
         const main=digests[0];
         return {snapshotIds:digests.map(d=>d.id),editionId:main?.id,status:main?.status,published:main?.published===true,
@@ -78,14 +90,23 @@ export function createReportJobHandlers({ reportService, briefService = null, in
     [REPORT_DAILY_JOB_TYPE]: async (rawInput, context) => {
       const input = parseContract(GenerateDailyReportInputSchema, rawInput || {});
       if(treeService) {
-        const reportDate=input.reportDate || resolveReportDate(Date.now(),dailyConfig);
-        const window=resolveDailyWindow({reportDate,...dailyConfig});
-        const edition=await treeService.generateDaily({workspaceId:input.workspaceId || 'local',window:{startAt:window.startAt,endAt:window.endAt}});
-        if(edition.status==='failed') throw new Error('日报浓缩树生成失败，旧刊期继续可读');
-        return {editionId:edition.id,reportDate,status:edition.status};
+        try {
+          const reportDate=input.reportDate || resolveReportDate(Date.now(),dailyConfig);
+          const window=resolveDailyWindow({reportDate,...dailyConfig});
+          const edition=await treeService.generateDaily({workspaceId:input.workspaceId || 'local',window:{startAt:window.startAt,endAt:window.endAt}});
+          if(edition.status==='failed') throw rememberReportFailure(new Error('日报浓缩树生成失败，旧刊期继续可读'), edition);
+          return {editionId:edition.id,reportDate,status:edition.status};
+        } catch (error) {
+          throw rememberReportFailure(error);
+        }
       }
       if(!input.requestKey && context?.job?.id) input.requestKey=context.job.id;
-      const report = await reportService.generateDailyReport(input);
+      let report;
+      try {
+        report = await reportService.generateDailyReport(input);
+      } catch (error) {
+        throw rememberReportFailure(error);
+      }
       context?.store?.createJob?.({
         type: REPORT_DAILY_BRIEF_JOB_TYPE,
         workspaceId: report.workspaceId,

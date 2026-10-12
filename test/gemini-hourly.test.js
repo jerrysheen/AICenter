@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {resolveHarnessLlm,resolveGoogleHourlyModelPool} from '../packages/harness/src/llm-route.js';
+import {resolveHarnessLlm,resolveGoogleHourlyModelPool,resolveGoogleHourlyAdmissionModels} from '../packages/harness/src/llm-route.js';
 import {createGeminiArticleAdmission} from '../packages/runtime/src/gemini-article-admission.js';
 import {createStore} from '../packages/database/src/index.js';
 import {createRuntimeService} from '../packages/domain/src/runtime-service.js';
@@ -19,6 +19,8 @@ test('hourly Google route is independent, bounded and has no paid fallback',()=>
  assert.equal(resolveHarnessLlm(env,{closedTask:'article-normalize'}).model,'gemini-other');
  assert.notEqual(resolveHarnessLlm(env,{closedTask:'daily-analysis'}).provider,'google');
  assert.throws(()=>resolveGoogleHourlyModelPool({...env,AI_CENTER_GEMINI_HOURLY_MODEL_POOL:'unlisted'}));
+ assert.deepEqual(resolveGoogleHourlyAdmissionModels({...env,AI_CENTER_HARNESS_HOURLY_MODEL:'gemini-3.1-flash-lite',AI_CENTER_GEMINI_HOURLY_MODELS:'gemini-3.5-flash-lite'}),['gemini-3.1-flash-lite','gemini-3.5-flash-lite']);
+ assert.throws(()=>resolveGoogleHourlyAdmissionModels({...env,AI_CENTER_GEMINI_HOURLY_MODEL_POOL:'unlisted'}));
  assert.throws(()=>resolveHarnessLlm({...env,AI_CENTER_HARNESS_HOURLY_MAX_TOKENS:'1'},{closedTask:'hourly-brief'}));
 });
 

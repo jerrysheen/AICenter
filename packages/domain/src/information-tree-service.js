@@ -3,7 +3,7 @@ import {validateTreeModules,normalizeInformationResponse,treeResponseProtocol,TR
 import {materialHash,prepareDailyMaterials} from './daily-materials.js';
 import {needsZhLocalization} from './localize-texts.js';
 import {runBounded} from './daily-analysis.js';
-import {treeCatalog,treeSource,treeFailure,formatCondenseFailureLog} from './information-tree-policy.js';
+import {treeCatalog,treeSource,treeFailure,formatCondenseFailureLog,describeCondenseFailure} from './information-tree-policy.js';
 
 const HOUR=3600000;
 const stable=rows=>[...rows].sort((a,b)=>a.id.localeCompare(b.id));
@@ -283,7 +283,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
       const tag=classification.group(input.tagId);
       const rows=groups.get(tag) || [];rows.push(input);groups.set(tag,rows);
     }
-    const result=[];result.failures=[];
+    const result=[];result.failures=[];result.diagnostics=[];
     for(const [tagId,rows] of groups) {
       const version=materialHash({layer,inputs:rows.map(i=>({id:i.id,version:i.version})),tagId,window,skill:skills[layer].version,generationVersion:generationVersion(layer),groups:classification.groupVersion});
       const stageKey=`tree-${layer}:${version}`,cached=reportRepository.getAnalysisStage(s.workspaceId,'tree-cache',stageKey,version);
@@ -331,13 +331,15 @@ export function createInformationTreeService({repository,reportRepository,feedSe
       });
       reportRepository.saveAnalysisStage(s.workspaceId,'tree-cache',stageKey,version,{stage:layer},{ids:nodes.map(n=>n.id)},'completed');result.push(...nodes);
       } catch(error) {
+        const selected=route(layer) || {};
+        const meta={layer,task:layer==='daily' ? 'daily-analysis' : 'hourly-brief',tagId,tagName:tagNames.get(tagId) || '未分类',windowStart:window?.startAt,
+          elapsedMs:Date.now()-s.started,provider:selected.provider,model:selected.model};
         try {
           const projection=rows.map((row,index)=>({...projectTreeInput(row,`n${index+1}`),tagId,...(layer==='daily' ? {window:row.window} : {})}));
-          const selected=route(layer) || {};
-          console.error(formatCondenseFailureLog(error,{layer,task:layer==='daily' ? 'daily-analysis' : 'hourly-brief',tagId,windowStart:window?.startAt,
-            inputCount:rows.length,inputBytes:Buffer.byteLength(JSON.stringify(projection)),skillBytes:Buffer.byteLength(String(skills[layer]?.instruction || '')),
-            calls:s.calls,elapsedMs:Date.now()-s.started,provider:selected.provider,model:selected.model}));
+          console.error(formatCondenseFailureLog(error,{...meta,inputCount:rows.length,inputBytes:Buffer.byteLength(JSON.stringify(projection)),
+            skillBytes:Buffer.byteLength(String(skills[layer]?.instruction || '')),calls:s.calls}));
         } catch { /* 诊断日志失败不能挡住失败分组落库 */ }
+        try { result.diagnostics.push(describeCondenseFailure(error,meta)); } catch { /* 诊断字段失败不能挡住失败分组落库 */ }
         const failure={...(error.cachedPending || treeFailure(error,stageKey,'',now())),tagId};result.failures.push(failure);
         reportRepository.saveAnalysisStage(s.workspaceId,'tree-cache',stageKey,version,{stage:layer,failure,inputs:rows.map(n=>n.id)},null,'failed',String(error.message).slice(0,1200));
       }
@@ -349,7 +351,9 @@ export function createInformationTreeService({repository,reportRepository,feedSe
     const modules=await condense(layer,inputs,window,s),failed=modules.failures.length>0;
     const status=failed ? 'failed' : pendingIds.length || missingHours.length ? 'partial' : 'ready';
     const value={layer,window,timezone,status,roots:modules.map(n=>n.id),inputIds:inputs.map(n=>n.id).sort(),pendingIds,pending,groupFailures:modules.failures,policyHash,missingHours,generatedAt:now()};
-    return repository.publish(s.workspaceId,{...value,id:`edition:${materialHash({...value,generatedAt:undefined})}`},{expectedHead});
+    const saved=repository.publish(s.workspaceId,{...value,id:`edition:${materialHash({...value,generatedAt:undefined})}`},{expectedHead});
+    if(modules.diagnostics.length) Object.defineProperty(saved,'condenseDiagnostics',{value:modules.diagnostics,enumerable:false});
+    return saved;
   }
   async function prepareInformation({workspaceId='local',materials,sourceIds,force=false,priority=0,totalMs}={}) {
     ensurePolicy(workspaceId);

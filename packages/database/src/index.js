@@ -94,6 +94,44 @@ function parseJobExecutor(executor = {}) {
   return { workerId, attemptCount };
 }
 
+function jobFailureText(value, max) {
+  return typeof value === 'string' && value ? value.slice(0, max) : null;
+}
+
+function jobFailureGroup(item) {
+  if (!item || typeof item !== 'object') return null;
+  return {
+    kind: jobFailureText(item.kind, 40),
+    code: jobFailureText(item.code, 80),
+    message: jobFailureText(item.message, 500),
+    group: jobFailureText(item.group, 80),
+    model: jobFailureText(item.model, 80),
+    durationMs: Number.isFinite(item.durationMs) ? Math.round(item.durationMs) : null,
+    httpStatus: Number.isInteger(item.httpStatus) ? item.httpStatus : null,
+  };
+}
+
+function jobErrorPayload(error) {
+  if (!(error instanceof Error)) return { name: 'Error', message: String(error).slice(0, 500) };
+  const payload = { name: error.name || 'Error', message: String(error.message || '').slice(0, 500) };
+  const extra = error.reportFailure;
+  if (!extra || typeof extra !== 'object') return payload;
+  const kind = jobFailureText(extra.kind, 40);
+  const code = jobFailureText(extra.code, 80);
+  const message = jobFailureText(extra.message, 500);
+  const summary = jobFailureText(extra.summary, 200);
+  if (kind) payload.kind = kind;
+  if (code) payload.code = code;
+  if (message) payload.message = message;
+  if (summary) payload.summary = summary;
+  payload.group = jobFailureText(extra.group, 80);
+  payload.model = jobFailureText(extra.model, 80);
+  payload.durationMs = Number.isFinite(extra.durationMs) ? Math.round(extra.durationMs) : null;
+  payload.httpStatus = Number.isInteger(extra.httpStatus) ? extra.httpStatus : null;
+  payload.groups = Array.isArray(extra.groups) ? extra.groups.slice(0, 12).map(jobFailureGroup).filter(Boolean) : [];
+  return payload;
+}
+
 function mapJob(row) {
   return {
     id: row.id,
@@ -654,9 +692,7 @@ export function createStore(databasePath) {
       const retry = current.attempt_count < current.max_attempts;
       const status = retry ? 'queued' : 'failed';
       const availableAt = retry ? now + Math.max(0, Number(retryDelayMs) || 0) : current.available_at;
-      const errorPayload = error instanceof Error
-        ? { name: error.name, message: error.message }
-        : { name: 'Error', message: String(error) };
+      const errorPayload = jobErrorPayload(error);
       let changed = false;
       database.transaction(() => {
         const result = database.prepare(`UPDATE jobs SET status = ?, error_json = ?, available_at = ?,

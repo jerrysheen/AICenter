@@ -1688,6 +1688,11 @@ migrations.push({ version: 52, name: 'investor_discussion_digests', up(database)
     );`);
 }});
 
+migrations.push({ version: 53, name: 'gemini_quota_key_identity', up(database) {
+  database.exec(`ALTER TABLE model_quota_reservations ADD COLUMN key_env TEXT NOT NULL DEFAULT '';
+    CREATE INDEX model_quota_key_time ON model_quota_reservations(key_env, model, at);`);
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

@@ -41,6 +41,92 @@ function safeCondenseRouteId(value) {
   return text;
 }
 
+const CONDENSE_FAILURE_KINDS = new Set([
+  'model-4xx', 'model-5xx', 'model-empty', 'model-error', 'parse', 'input-too-long',
+  'timeout-queue', 'timeout-execution', 'timeout-budget',
+]);
+
+function finiteDuration(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0 || number > 24 * 60 * 60 * 1000) return null;
+  return Math.round(number);
+}
+
+function httpStatusOrNull(value) {
+  const status = Number(value);
+  return Number.isInteger(status) && status >= 400 && status <= 599 ? status : null;
+}
+
+export function describeCondenseFailure(error, meta = {}) {
+  const described = classifyCondenseError(error);
+  const timing = error?.timing || {};
+  const durationMs = finiteDuration(timing.executionMs) ?? finiteDuration(meta.executionMs)
+    ?? finiteDuration(timing.queueMs) ?? finiteDuration(meta.queueMs) ?? finiteDuration(meta.elapsedMs);
+  const group = safeCondenseRouteId(meta.tagName || meta.group || meta.tagId || '未分类');
+  const model = safeCondenseRouteId(meta.model);
+  return {
+    kind: described.kind,
+    code: described.code || described.upstream || described.kind,
+    message: described.message,
+    group: group === '-' ? '未分类' : group,
+    model: model === '-' ? null : model,
+    durationMs,
+    httpStatus: described.status,
+  };
+}
+
+function groupFailureDiagnostic(item) {
+  const reason = String(item?.reason || '').trim();
+  const kind = reason === 'queue-timeout' ? 'timeout-queue'
+    : reason === 'execution-timeout' ? 'timeout-execution'
+    : reason === 'budget-deferred' ? 'timeout-budget'
+    : reason === 'invalid-output' ? 'parse'
+    : 'model-error';
+  return {
+    kind,
+    code: reason || kind,
+    message: reason || '小时浓缩临时失败',
+    group: item?.tagName || item?.tagId || '未分类',
+    model: item?.model || null,
+    durationMs: finiteDuration(item?.executionMs) ?? finiteDuration(item?.queueMs),
+    httpStatus: item?.httpStatus ?? item?.status ?? null,
+  };
+}
+
+function sanitizeCondenseDiagnostic(item) {
+  const kind = CONDENSE_FAILURE_KINDS.has(item?.kind) ? item.kind : 'model-error';
+  const code = redactCondenseLog(item?.code || '').slice(0, 80) || kind;
+  const message = redactCondenseLog(item?.message || '') || '-';
+  const group = safeCondenseRouteId(item?.group || '未分类');
+  const model = safeCondenseRouteId(item?.model);
+  return {
+    kind,
+    code,
+    message,
+    group: group === '-' ? '未分类' : group,
+    model: model === '-' ? null : model,
+    durationMs: finiteDuration(item?.durationMs),
+    httpStatus: httpStatusOrNull(item?.httpStatus),
+  };
+}
+
+export function condenseJobFailure(summary, { diagnostics = [], failures = [] } = {}) {
+  const source = (Array.isArray(diagnostics) && diagnostics.length ? diagnostics : (failures || []).map(groupFailureDiagnostic)).slice(0, 12);
+  const groups = source.map(sanitizeCondenseDiagnostic);
+  const primary = groups[0] || sanitizeCondenseDiagnostic({ kind: 'model-error', code: 'unknown', message: summary });
+  return {
+    kind: primary.kind,
+    code: primary.code,
+    message: primary.message,
+    summary: redactCondenseLog(summary).slice(0, 200) || primary.message,
+    group: primary.group,
+    model: primary.model,
+    durationMs: primary.durationMs,
+    httpStatus: primary.httpStatus,
+    groups,
+  };
+}
+
 export function classifyCondenseError(error) {
   const name = error?.name || 'Error';
   const code = typeof error?.code === 'string' ? error.code : '';

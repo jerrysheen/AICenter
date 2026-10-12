@@ -13,6 +13,14 @@ export function createModelUsageRepository(database, emitEvent) {
         emitEvent('runtime.model-usage.updated.v1', 'model-usage', row.id, { kind: row.kind }, row.workspaceId);
       })();
     },
+    latestMatching(workspaceId, { stage, applicationSessionId, model } = {}) {
+      const row = database.prepare(`SELECT occurred_at AS at FROM model_usage_index
+        WHERE workspace_id=? AND json_extract(record_json,'$.stage')=?
+          AND json_extract(record_json,'$.applicationSessionId')=?
+          AND json_extract(record_json,'$.model')=?
+        ORDER BY occurred_at DESC LIMIT 1`).get(workspaceId, stage, applicationSessionId, model);
+      return row?.at || 0;
+    },
     list(workspaceId, { limit = 50, offset = 0, jobId } = {}) {
       const where = jobId === undefined ? 'workspace_id=?' : 'workspace_id=? AND job_id=?';
       const args = jobId === undefined ? [workspaceId] : [workspaceId, jobId];
