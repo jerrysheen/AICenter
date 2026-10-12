@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-12-hourly-followup-hour.md`：小时补跑只排这次主小时。回补小时上的旧分类失败不再抢走补跑。刊期仍有未就绪来源时也会补一次。每次小时浓缩调用写一行 `[worker] tree-hourly` 到 Worker 标准输出日志，非配额失败换一把 key 再试一次。需要重启 Worker。
+
 - `progress/2026-10-12-hourly-error-logs.md`：阅读分类失败会写下状态、错误名、响应片段、模型和耗时，每次调用正好一行。非配额失败换一把 key 再试一次。过了整点槽之后，未完成的小时在一分钟内补跑。Web / Worker 自己追加按日日志。需要重启 `start-ai-center.ps1`。
 
 - `progress/2026-10-12-static-js-cache.md`：分享卡对 `markdown.js`、`qr-code.js` 的引用补上 `?v=`，静态服务只对带 `v` 的 JS 使用一年 immutable 缓存，没有 `v` 的 JS 改为 `no-cache`。需要重启 Web。Worker 不用重启。

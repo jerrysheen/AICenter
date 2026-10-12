@@ -88,6 +88,21 @@ export function classificationDeferredCount(saved) {
   return items.reduce((sum, item) => sum + (DEFERRED_CLASSIFICATION.has(item?.disposition) ? 1 : 0), 0);
 }
 
+// The scheduled run condenses the latest hour and then one older backfill hour.
+// The 60s follow-up belongs to the hour this run was for: an explicit hourStart, otherwise the first digest.
+// A backfill hour that still has old classification failures must not replace that target.
+export function hourlyFollowUpPlan({requestedHour, digests, deferredByStart = new Map(), followUp} = {}) {
+  if (followUp === 'classification-deferred' || followUp === 'edition-pending') return null;
+  const primary = Number.isFinite(requestedHour) ? requestedHour : digests?.[0]?.window?.startAt;
+  if (!Number.isFinite(primary)) return null;
+  const digest = (digests || []).find((item) => item?.window?.startAt === primary) || null;
+  const deferred = Number(deferredByStart.get(primary) || 0);
+  const pendingCount = Array.isArray(digest?.pendingIds) ? digest.pendingIds.length : 0;
+  if (deferred > 0) return {hourStart: primary, reason: 'classification-deferred', pendingCount, deferred};
+  if (pendingCount > 0) return {hourStart: primary, reason: 'edition-pending', pendingCount, deferred: 0};
+  return null;
+}
+
 export function enqueueHourlyExtractFollowUp(store, {workspaceId = 'local', hourStart, availableAt, reason = 'classification-deferred', env = process.env} = {}) {
   if (hourlyReportDisabled(env) || !store?.createJob || !store?.listOpenJobs || !Number.isFinite(hourStart)) return null;
   const queued = (store.listOpenJobs(REPORT_HOURLY_JOB_TYPE) || []).filter((job) => job.workspaceId === workspaceId && job.status === 'queued');
@@ -144,6 +159,7 @@ export function createReportJobHandlers({ reportService, briefService = null, in
       const windows=input.hourStart!==undefined ? [{startAt:input.hourStart,endAt:input.hourStart+hourMs}] : digests.map(item=>item?.window).filter(item=>Number.isFinite(item?.startAt) && Number.isFinite(item?.endAt));
       const readingErrors=[];
       let classificationDeferred=0;
+      const deferredByStart=new Map();
       if(readingHour?.enabled) {
         for(const window of windows) {
           const digest=(digests || []).find(item=>item?.window?.startAt===window.startAt) || null;
@@ -152,13 +168,13 @@ export function createReportJobHandlers({ reportService, briefService = null, in
             if(saved?.readingErrors?.length) readingErrors.push(...saved.readingErrors.map(error=>({...error,window})));
             const deferred=classificationDeferredCount(saved);
             classificationDeferred+=deferred;
-            if(deferred>0 && input.followUp!=='classification-deferred') {
-              enqueueHourlyExtractFollowUp(context?.store,{workspaceId:input.workspaceId || 'local',hourStart:window.startAt,availableAt:Date.now()+HOURLY_FOLLOW_UP_DELAY_MS,env});
-            }
+            deferredByStart.set(window.startAt, deferred);
           }
           catch(error) {readingErrors.push({window,reason:String(error?.message || error).slice(0,180)});}
         }
       }
+      const followUpPlan=hourlyFollowUpPlan({requestedHour:input.hourStart,digests,deferredByStart,followUp:input.followUp});
+      if(followUpPlan) enqueueHourlyExtractFollowUp(context?.store,{workspaceId:input.workspaceId || 'local',hourStart:followUpPlan.hourStart,availableAt:Date.now()+HOURLY_FOLLOW_UP_DELAY_MS,reason:followUpPlan.reason,env});
       if(treeService) {
         if(digests[0]?.status==='failed' && !digests[0].terminal && digests[0].groupFailures?.some(p=>p.retryable)) {
           const failures=digests[0].groupFailures;

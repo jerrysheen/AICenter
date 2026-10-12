@@ -3,7 +3,8 @@ import {validateTreeModules,repairTreeModuleAttribution,normalizeInformationResp
 import {materialHash,prepareDailyMaterials} from './daily-materials.js';
 import {needsZhLocalization} from './localize-texts.js';
 import {runBounded} from './daily-analysis.js';
-import {treeCatalog,treeSource,treeFailure,formatCondenseFailureLog,describeCondenseFailure} from './information-tree-policy.js';
+import {treeCatalog,treeSource,treeFailure,formatCondenseFailureLog,formatTreeHourlyCallLog,describeCondenseFailure} from './information-tree-policy.js';
+import {readingClassKeyEnvs} from './reading-hour-service.js';
 import {boundedInt,isAttributionValidationError,isRetryableUpstreamStatus,modelRetryDelayMs,nextHourlyAttempt,sameIdSet,upstreamHttpStatus} from './report-reliability.js';
 
 const HOUR=3600000;
@@ -133,7 +134,7 @@ export function createInformationTreeReader({repository,timezone='Asia/Shanghai'
 
 export function createInformationTreeService({repository,reportRepository,feedService,mediaPort,agentRuntime,skills,
   cacheNamespace='',articleStrategy=false,budgetReady=null,catalog={tags:[]},primaryTag=null,tagHints=null,classificationOverrideForReplay=null,candidatePort=null,materialPort=null,generationConfig={},timezone='Asia/Shanghai',now=()=>Date.now(),budget={},
-  hourlyModels:configuredHourlyModels=[],upstreamRetries:configuredUpstreamRetries,upstreamRetryBaseMs,upstreamRetryMaxMs,sleep:configuredSleep,hourlyAttemptCap:configuredHourlyAttemptCap}={}) {
+  hourlyModels:configuredHourlyModels=[],upstreamRetries:configuredUpstreamRetries,upstreamRetryBaseMs,upstreamRetryMaxMs,sleep:configuredSleep,hourlyAttemptCap:configuredHourlyAttemptCap,env=process.env,log=console.log}={}) {
   const validatorVersion=articleStrategy ? ARTICLE_VALIDATOR_VERSION : TREE_VALIDATOR_VERSION;
   const config={articleRequestBytes:100000,batchBytes:12000,maxCalls:80,totalMs:20*60000,timeoutMs:180000,dailyTimeoutMs:360000,dailyTotalMs:60*60000,queueTimeoutMs:120000,...budget};
   const hourlyModels=Array.isArray(configuredHourlyModels) ? configuredHourlyModels.map(model=>String(model || '').trim()).filter(Boolean) : [];
@@ -142,6 +143,8 @@ export function createInformationTreeService({repository,reportRepository,feedSe
   const retryMaxMs=boundedInt(upstreamRetryMaxMs, 8000, retryBaseMs || 0, 120_000);
   const sleep=configuredSleep || (ms=>new Promise(resolve=>{setTimeout(resolve, ms);}));
   const hourlyAttemptCap=boundedInt(configuredHourlyAttemptCap, 4, 1, 20);
+  const hourlyKeyEnvs=readingClassKeyEnvs(env);
+  let hourlyKeyCursor=0;
   const tagNames=new Map(catalog.tags.map(t=>[t.id,t.name]));
   const classification=treeCatalog(catalog),modelTags=classification.ids;
   const route=stage=>generationConfig[stage] || generationConfig[stage==='daily' ? 'daily-analysis' : 'hourly-brief'] || {};
@@ -215,6 +218,8 @@ export function createInformationTreeService({repository,reportRepository,feedSe
         if(modelIndex) correction='';
         for(let attempt=0;attempt<2;attempt++) {
           let transport=0;
+          let keySwitch=0;
+          let keysTried=0;
           while(true) {
             const remaining=s.totalMs-(Date.now()-s.started);
             if(remaining<=0 || s.calls>=config.maxCalls) throw Object.assign(new Error('浓缩树预算耗尽'),{code:'budget-deferred'});
@@ -222,24 +227,52 @@ export function createInformationTreeService({repository,reportRepository,feedSe
             s.allowAttributionRepair=stage==='hourly' && attempt===1;
             reportRepository.saveAnalysisStage(s.workspaceId,period,key,key,stageInput(),null,'running');
             let result;
+            const keyEnv=stage==='hourly' && hourlyKeyEnvs.length ? hourlyKeyEnvs[hourlyKeyCursor++ % hourlyKeyEnvs.length] : '';
+            if(keyEnv) keysTried++;
+            const startedAt=Date.now();
+            let callError=null;
+            let callResult=null;
             try {
               const message=JSON.stringify(articleStrategy && stage==='information' ? articleMessage() : {...payload,...(attempt ? {correction:`上一响应未通过校验：${correction}。${shape}不增加事实。`} : {})});
               sentMessage=message;
-              result=await runBounded(agentRuntime,{workspaceId:s.workspaceId,usageStage:`tree-${stage}`,closedContext:true,
-                closedTask:stage==='information' && articleStrategy ? 'article-normalize' : stage==='daily' ? 'daily-analysis' : 'hourly-brief',allowedToolIds:[],webMode:'off',enableAuxiliarySearch:false,executionPriority:s.priority,
-                taskInstruction:instruction,
-                ...(typeof googleModel==='string' ? {googleModel} : {}),
-                message},
-                Math.min(callTimeout,remaining),heartbeat,30000,{queueTimeoutMs:config.queueTimeoutMs,totalTimeoutMs:remaining,onTiming:value=>{timing=value;reportRepository.saveAnalysisStage(s.workspaceId,period,key,key,stageInput(),null,'running');}});
+              try {
+                result=await runBounded(agentRuntime,{workspaceId:s.workspaceId,usageStage:`tree-${stage}`,closedContext:true,
+                  closedTask:stage==='information' && articleStrategy ? 'article-normalize' : stage==='daily' ? 'daily-analysis' : 'hourly-brief',allowedToolIds:[],webMode:'off',enableAuxiliarySearch:false,executionPriority:s.priority,
+                  taskInstruction:instruction,
+                  ...(typeof googleModel==='string' ? {googleModel} : {}),
+                  ...(keyEnv ? {googleKeyEnv: keyEnv} : {}),
+                  message},
+                  Math.min(callTimeout,remaining),heartbeat,30000,{queueTimeoutMs:config.queueTimeoutMs,totalTimeoutMs:remaining,onTiming:value=>{timing=value;reportRepository.saveAnalysisStage(s.workspaceId,period,key,key,stageInput(),null,'running');}});
+                callResult=result;
+              } catch(error) {
+                callError=error;
+                throw error;
+              } finally {
+                if(stage==='hourly') {
+                  try {
+                    log(formatTreeHourlyCallLog({
+                      error:callError,result:callResult,keyEnv:keyEnv || callError?.googleKeyEnv || '',
+                      model:googleModel || route('hourly').model,inputBytes:Buffer.byteLength(sentMessage || ''),
+                      latencyMs:Date.now()-startedAt,finishReason:callError?.finishReason || callResult?.finishReason || timing?.finishReason,
+                    }));
+                  } catch { /* a log failure must not change the condense call */ }
+                }
+              }
             } catch(error) {
               const status=upstreamHttpStatus(error);
-              if(stage==='hourly' && isRetryableUpstreamStatus(status) && transport<upstreamRetries) {
+              const quota=error?.code==='budget-deferred' || error?.quotaExhausted===true || Number(error?.status)===429 || Number(error?.upstreamStatus)===429;
+              // Configured Google keys: one different key for a non-quota failure, including upstream 5xx. Quota may walk the remaining keys.
+              if(stage==='hourly' && hourlyKeyEnvs.length>1 && !quota && keySwitch<1) {
+                keySwitch++;
+                continue;
+              }
+              if(stage==='hourly' && hourlyKeyEnvs.length>1 && quota && keysTried<hourlyKeyEnvs.length) continue;
+              if(stage==='hourly' && !(hourlyKeyEnvs.length>1 && !quota) && isRetryableUpstreamStatus(status) && transport<upstreamRetries) {
                 transport++;
                 await sleep(modelRetryDelayMs(transport-1,{baseMs:retryBaseMs,maxMs:retryMaxMs}));
                 continue;
               }
               lastError=error;
-              const quota=error?.code==='budget-deferred' || error?.quotaExhausted===true;
               if(stage==='hourly' && modelIndex<models.length-1 && (isRetryableUpstreamStatus(status) || (quota && typeof googleModel==='string'))) continue modelLoop;
               throw error;
             }
