@@ -31,13 +31,13 @@ function getRaw(url, headers = {}) {
   });
 }
 
-function readStatic(handler, pathname) {
+function readStatic(handler, pathname, requestUrl = pathname) {
   return new Promise((resolve, reject) => {
     const response = {
       writeHead(status, headers) { this.status = status; this.headers = headers; },
       end(body) { resolve({ status: this.status, headers: this.headers, body }); },
     };
-    handler(pathname, { headers: { 'accept-encoding': 'identity' } }, response).catch(reject);
+    handler(pathname, { url: requestUrl, headers: { 'accept-encoding': 'identity' } }, response).catch(reject);
   });
 }
 
@@ -107,7 +107,11 @@ test('static assets are gzipped on request and versioned JS/CSS are cacheable', 
 
     const gzipped = await getRaw(`${address.localUrl}/app.js`, { 'Accept-Encoding': 'gzip' });
     assert.equal(gzipped.status, 200);
-    assert.equal(gzipped.headers['cache-control'], 'public, max-age=31536000, immutable');
+    assert.equal(gzipped.headers['cache-control'], 'no-cache');
+    const versionedApp = await getRaw(`${address.localUrl}/app.js?v=${healthBody.uiRevision}`, { 'Accept-Encoding': 'gzip' });
+    assert.equal(versionedApp.status, 200);
+    assert.equal(versionedApp.headers['cache-control'], 'public, max-age=31536000, immutable');
+    assert.equal(versionedApp.headers['content-encoding'], 'gzip');
     assert.equal(gzipped.headers['vary'], 'Accept-Encoding');
     assert.equal(gzipped.headers['content-encoding'], 'gzip');
     const decoded = gunzipSync(gzipped.body).toString('utf8');
@@ -142,6 +146,14 @@ test('static assets are gzipped on request and versioned JS/CSS are cacheable', 
     assert.match(decoded, /async function loadStaticSignalBoard/);
 
     const markdown = await getRaw(`${address.localUrl}/markdown.js`, { 'Accept-Encoding': 'identity' });
+    assert.equal(markdown.headers['cache-control'], 'no-cache');
+    const versionedMarkdown = await getRaw(`${address.localUrl}/markdown.js?v=${healthBody.uiRevision}`, { 'Accept-Encoding': 'identity' });
+    assert.equal(versionedMarkdown.headers['cache-control'], 'public, max-age=31536000, immutable');
+    const shareCard = await getRaw(`${address.localUrl}/share-card.js?v=${healthBody.uiRevision}`, { 'Accept-Encoding': 'identity' });
+    assert.match(shareCard.body.toString('utf8'), new RegExp(`markdown\\.js\\?v=${healthBody.uiRevision}`));
+    assert.match(shareCard.body.toString('utf8'), new RegExp(`qr-code\\.js\\?v=${healthBody.uiRevision}`));
+    assert.doesNotMatch(shareCard.body.toString('utf8'), /markdown\.js['"]/);
+    assert.equal(shareCard.headers['cache-control'], 'public, max-age=31536000, immutable');
     const mediaLoader = await getRaw(`${address.localUrl}/media-feed.js?v=${healthBody.uiRevision}`, { 'Accept-Encoding': 'gzip' });
     assert.equal(mediaLoader.status, 200);
     assert.equal(mediaLoader.headers['content-encoding'], 'gzip');
@@ -186,6 +198,31 @@ test('inline boot hash is the LF script even when the files are CRLF', async () 
     const second = await readStatic(handler, '/');
     assert.equal(second.headers['Content-Security-Policy'], policy);
     assert.equal(second.body.toString('utf8'), body);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('javascript without a version query is not cached as immutable', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-js-cache-'));
+  try {
+    writeFileSync(path.join(directory, 'app.js'), 'import "./markdown.js?v=dev";\n');
+    writeFileSync(path.join(directory, 'markdown.js'), 'export const markdownShareBlocks = 1;\n');
+    writeFileSync(path.join(directory, 'styles.css'), 'body{}\n');
+    writeFileSync(path.join(directory, 'ui-boot.js'), 'window.aiCenterUiBoot=1;\n');
+    const handler = createStaticFileHandler(directory);
+    const bare = await readStatic(handler, '/app.js', '/app.js');
+    assert.equal(bare.headers['Cache-Control'], 'no-cache');
+    assert.match(bare.body.toString('utf8'), /markdown\.js\?v=[0-9a-f]{12}/);
+    assert.doesNotMatch(bare.body.toString('utf8'), /markdown\.js\?v=dev/);
+    const versioned = await readStatic(handler, '/markdown.js', '/markdown.js?v=abc123');
+    assert.equal(versioned.headers['Cache-Control'], 'public, max-age=31536000, immutable');
+    const emptyVersion = await readStatic(handler, '/app.js', '/app.js?v=');
+    assert.equal(emptyVersion.headers['Cache-Control'], 'no-cache');
+    const css = await readStatic(handler, '/styles.css', '/styles.css');
+    assert.equal(css.headers['Cache-Control'], 'public, max-age=31536000, immutable');
+    const boot = await readStatic(handler, '/ui-boot.js', '/ui-boot.js');
+    assert.equal(boot.headers['Cache-Control'], 'no-store');
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

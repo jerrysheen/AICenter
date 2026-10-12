@@ -4,6 +4,7 @@ import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 const ASSET_CACHE_CONTROL = 'public, max-age=31536000, immutable';
+const UNVERSIONED_JS_CACHE_CONTROL = 'no-cache';
 const HTML_CACHE_CONTROL = 'no-store';
 const VERSION_QUERY = /\?v=[A-Za-z0-9._-]+/g;
 
@@ -42,6 +43,20 @@ function securityHeaders(contentType, cacheControl, scriptSrc = "'self'") {
 
 function wantsGzip(request) {
   return /\bgzip\b/i.test(String(request?.headers?.['accept-encoding'] || ''));
+}
+
+function requestHasVersion(request) {
+  const raw = String(request?.url || '');
+  const queryIndex = raw.indexOf('?');
+  if (queryIndex < 0) return false;
+  const value = new URLSearchParams(raw.slice(queryIndex + 1).split('#')[0]).get('v');
+  return Boolean(value);
+}
+
+function cacheControlFor(entry, request) {
+  if (entry.cacheControl !== ASSET_CACHE_CONTROL) return entry.cacheControl;
+  if (!String(entry.contentType).includes('javascript')) return entry.cacheControl;
+  return requestHasVersion(request) ? ASSET_CACHE_CONTROL : UNVERSIONED_JS_CACHE_CONTROL;
 }
 
 function applyUiRevision(raw, contentType, revision) {
@@ -120,12 +135,10 @@ export function createStaticFileHandler(publicDirectory) {
     let raw = await readFile(filePath);
     if (target[1].includes('html')) {
       let text = normalizeNewlines(raw);
-      if (text.includes('<script src="/ui-boot.js"></script>')) {
+      const bootTag = text.match(/<script src="\/ui-boot\.js(?:\?v=[A-Za-z0-9._-]+)?"><\/script>/);
+      if (bootTag) {
         const boot = normalizeNewlines(await readFile(path.join(publicDirectory, 'ui-boot.js')));
-        text = text.replace(
-          '<script src="/ui-boot.js"></script>',
-          `<script>${boot}</script>`,
-        );
+        text = text.replace(bootTag[0], `<script>${boot}</script>`);
       }
       raw = Buffer.from(text);
     }
@@ -149,7 +162,7 @@ export function createStaticFileHandler(publicDirectory) {
     const useGzip = Boolean(entry.gzipped && wantsGzip(request));
     const body = useGzip ? entry.gzipped : entry.raw;
     response.writeHead(200, {
-      ...securityHeaders(entry.contentType, entry.cacheControl, entry.scriptSrc),
+      ...securityHeaders(entry.contentType, cacheControlFor(entry, request), entry.scriptSrc),
       'Content-Length': body.length,
       ...(useGzip ? { 'Content-Encoding': 'gzip' } : {}),
     });

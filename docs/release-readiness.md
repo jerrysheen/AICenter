@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-12 总览白屏：`share-card.js` 引用 `markdown.js`、`qr-code.js` 时没有 `?v=`，边缘把无版本 JS 缓存一年，旧模块缺少 `markdownShareBlocks` / `stripSharePlaceholders`，`app.js` 加载失败。本地 JS 引用改为 `?v=dev`，由静态服务按指纹改写。没有 `v` 的 JS 响应改为 `Cache-Control: no-cache`；带 `v` 的 JS 仍是一年 immutable。需要重启 Web。Worker 不用重启。见 `progress/2026-10-12-static-js-cache.md`。
+
 2026-10-12 小时阅读分类按整小时攒批：同小时未分类材料凑满 `AI_CENTER_READING_CLASS_BATCH`（默认 10）才调用；来源还在准备时留下的短批不打模型。小时不再等待新的信息节点时才送出剩余短批。`AI_CENTER_READING_CLASS_BATCH=1` 仍是一条一次。每次分类调用写 `[worker] reading-class`（条数、是否逐条回退及原因、key 后缀）。浓缩失败日志补上状态、响应片段、模型、key 后缀和输入长度；模块输出契约不变。Web / Worker 日志改由队列写入并在失败后重开文件，进程活着时不再停写。`AI_CENTER_HOURLY_DISABLED=1` 时小时报仍然整段停用。需要重启 `start-ai-center.ps1`。见 `progress/2026-10-12-hourly-batch-pool.md`。
 
 2026-10-12 小时报阅读分类可按批调用：`AI_CENTER_READING_CLASS_BATCH` 默认 10，设为 1 时仍是一条一次。提示词保留原来的阅读分类说明，并要求按 `idx` 逐项独立判断、返回 JSON 数组。解析失败或缺失、非法的条目只回退那些条；配额或冷却不拆成逐条再打，同一批在已配置的 key 上轮询并仍走原有准入。信息树浓缩不改。`AI_CENTER_HOURLY_DISABLED=1` 时小时报仍然整段停用。需要重启 Worker。见 `progress/2026-10-12-reading-class-batch.md`。
