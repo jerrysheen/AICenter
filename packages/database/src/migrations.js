@@ -1693,6 +1693,31 @@ migrations.push({ version: 53, name: 'gemini_quota_key_identity', up(database) {
     CREATE INDEX model_quota_key_time ON model_quota_reservations(key_env, model, at);`);
 }});
 
+migrations.push({ version: 54, name: 'hardware_price_fetch_checks', up(database) {
+  database.exec(`
+    ALTER TABLE hardware_price_snapshots ADD COLUMN last_checked_at INTEGER NOT NULL DEFAULT 0;
+    UPDATE hardware_price_snapshots SET last_checked_at=captured_at WHERE last_checked_at=0;
+    CREATE TABLE hardware_price_page_checks (
+      workspace_id TEXT NOT NULL,
+      source_key TEXT NOT NULL,
+      page_key TEXT NOT NULL,
+      last_checked_at INTEGER NOT NULL,
+      last_changed_at INTEGER NOT NULL,
+      content_hash TEXT NOT NULL,
+      parser_version TEXT NOT NULL,
+      snapshot_id TEXT NOT NULL,
+      PRIMARY KEY (workspace_id, source_key, page_key)
+    );
+    INSERT INTO hardware_price_page_checks
+      (workspace_id, source_key, page_key, last_checked_at, last_changed_at, content_hash, parser_version, snapshot_id)
+    SELECT workspace_id, source_key, page_key, captured_at, captured_at, content_hash, parser_version, id
+    FROM (
+      SELECT *, ROW_NUMBER() OVER (PARTITION BY workspace_id, source_key, page_key ORDER BY captured_at DESC, id DESC) AS n
+      FROM hardware_price_snapshots
+    ) WHERE n=1;
+  `);
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

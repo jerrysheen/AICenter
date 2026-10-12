@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-12 TrendForce NAND 公开页本身停在 2026-09-28；解析把日高／日低折进规格，且标题去掉 `US$/chip` 后新行待核验。`trendforce-tables-3` 修正规格与盘列，DRAM／NAND 未税现货和合约记 USD/chip。migration 54 记录每次抓取与内容是否变化。Worker 默认每天 10:30、17:30（Asia/Shanghai）跑 `feed.trendforce.prices`，可用 `AI_CENTER_TRENDFORCE_PRICE_SYNC`、`AI_CENTER_TRENDFORCE_PRICE_AT`、`AI_CENTER_TRENDFORCE_PRICE_TIMEZONE` 调整。B 站订阅是贴链接，不是时间线；无自动刷新时记一次 `bilibili-link-only` 心跳，不拉新视频。需重启 Worker，Web 重载后才显示币种和抓取提示。未在生产重抓，不宣称 NAND 已有 09-28 之后的公开报价。见 `hardware-prices-v1.md` 与 `progress/2026-10-12-trendforce-nand-fetch.md`。
+
 2026-10-10 窄屏吸顶二级标签条的背景改成整行宽度，股票横滚指数卡和全球行情表下滚时不再从「简报」右侧露出。纯前端，不需要重启。见 `progress/2026-10-10-overview-sticky-nav.md`。
 
 2026-10-10 侧栏与手机底栏的「总览」都一律打开 `#sources`，不再按二级菜单轮换。宽度小于 1200px 时，信息流筛选行吸在总览二级标签条下面；标题栏和二级标签条用不透明底盖住股票/全球行情的横滚卡片。工具页说明文字留出上边距。纯前端，不需要重启。见 `progress/2026-10-10-overview-sticky-nav.md`。此前底栏落点见 `progress/2026-10-10-mobile-nav-chrome.md`。

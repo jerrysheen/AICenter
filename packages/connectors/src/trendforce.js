@@ -348,11 +348,33 @@ export function createTrendForceService(options = {}) {
   return { getFeed };
 }
 
+export const TRENDFORCE_PRICE_JOB_TYPE = 'feed.trendforce.prices';
+
+export async function fetchTrendForcePriceSnapshots({ fetch: fetchImpl = fetch, now = () => Date.now() } = {}) {
+  const snapshots = [];
+  const errors = [];
+  for (const page of PRICE_PAGES) {
+    const sourceUrl = `${ROOT}${page.path}`;
+    const result = await readText(fetchImpl, sourceUrl);
+    if (!result.ok) {
+      errors.push({ pageKey: page.id, status: result.status });
+      continue;
+    }
+    snapshots.push(parseStructuredPricePage(result.body, {
+      pageKey: page.id,
+      sourceUrl,
+      title: page.title,
+      capturedAt: now(),
+    }));
+  }
+  return { snapshots, errors };
+}
+
 export const trendforceConnectorManifest = {
   id: 'connector.trendforce',
   version: '1.0.0',
   capabilities: ['feed.capture'],
-  jobTypes: ['feed.trendforce.sync','feed.trendforce.migrate','feed.trendforce.reparse'],
+  jobTypes: ['feed.trendforce.sync','feed.trendforce.migrate','feed.trendforce.reparse', TRENDFORCE_PRICE_JOB_TYPE],
   sourceIds: ['content.trendforce.public', 'content.trendforce.collection'],
 };
 
@@ -373,6 +395,32 @@ export function createTrendForceJobHandlers(options = {}) {
       const value=z.object({workspaceId:z.string().min(1).default('local')}).strict().parse(input || {});
       if(!options.migrateTrendforce)throw new Error('缺少内容迁移端口');
       return options.migrateTrendforce(context.job?.workspaceId || value.workspaceId);
+    },
+    async [TRENDFORCE_PRICE_JOB_TYPE](input, context) {
+      const value = z.object({
+        workspaceId: z.string().min(1).default('local'),
+        scheduleKey: z.string().max(128).optional(),
+        scheduledFor: z.number().optional(),
+      }).strict().parse(input || {});
+      const service = options.hardwarePriceService;
+      if (!service) throw new Error('缺少硬件报价端口');
+      const workspaceId = context.job?.workspaceId || value.workspaceId;
+      const fetched = await fetchTrendForcePriceSnapshots({ fetch: options.fetch, now: options.now });
+      if (!fetched.snapshots.length) throw new Error(fetched.errors.map((item) => `${item.pageKey} ${item.status}`).join('；') || 'TrendForce 价表读取失败');
+      const pages = fetched.snapshots.map((snapshot) => {
+        const saved = service.ingest(workspaceId, snapshot);
+        const after = service.pageChecks?.(workspaceId)?.find((page) => page.pageKey === snapshot.pageKey);
+        return {
+          pageKey: snapshot.pageKey,
+          rows: snapshot.rows.length,
+          warnings: snapshot.warnings,
+          snapshotId: saved.id,
+          lastCheckedAt: after?.lastCheckedAt || saved.lastCheckedAt,
+          lastChangedAt: after?.lastChangedAt || saved.lastChangedAt,
+          unchanged: Boolean(after?.unchanged),
+        };
+      });
+      return { ok: true, pages, errors: fetched.errors };
     },
     async 'feed.trendforce.sync'(input, context) {
       if (typeof options.syncFeed !== 'function') {
