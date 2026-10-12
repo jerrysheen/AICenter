@@ -6,13 +6,17 @@ import { createInvestorAbModel } from '../packages/connectors/src/investor-diges
 import {
   aggregateLabels,
   compareStances,
+  DEFAULT_BATCH_SIZE_B,
+  DEFAULT_MAX_CALLS_B,
   engagementWeight,
   estimateAbCalls,
   extractStoredMaterials,
   loadDigestMaterials,
+  MIN_DIRECTIONAL_LABELS,
   parseJevBatch,
   parseStructuredBatch,
   renderAbReport,
+  resolveSchemeSelection,
   runInvestorDigestAb,
   runLabelScheme,
   samplePosts,
@@ -49,6 +53,11 @@ test('structured batch keeps valid rows when JSON is broken, an id is missing, o
   assert.equal(parsed.find((row) => row.id === 'b').labeled, false);
   assert.equal(parsed.find((row) => row.id === 'b').reason, '缺失');
   assert.equal(parsed.some((row) => row.id === 'c'), false);
+  const aligned = parseStructuredBatch(JSON.stringify({ items: [STRUCTURED('9')] }), ['post:SH600000:9', 'post:SH600000:8']);
+  assert.equal(aligned[0].labeled, true);
+  assert.equal(aligned[0].id, 'post:SH600000:9');
+  const ambiguous = parseStructuredBatch(JSON.stringify({ items: [STRUCTURED('9')] }), ['post:A:9', 'comment:A:9']);
+  assert.equal(ambiguous.every((row) => row.labeled), false);
 });
 
 test('yes-no batch treats a non-boolean answer as unlabeled and maps the rest locally', () => {
@@ -95,7 +104,53 @@ test('sentiment rules use the share thresholds', () => {
   assert.equal(sentimentFromShares({ bull: 0.5, bear: 0.5, neutral: 0 }), '分歧');
 });
 
-test('failed batch retries, then a missing id stays unlabeled without failing the run', async () => {
+test('bad JSON is split in half down to one item, and those calls count toward the cap', async () => {
+  const result = await runLabelScheme({
+    items: ['a', 'b', 'c', 'd'].map((id) => ({ id, kind: 'post', text: id })),
+    scheme: 'structured',
+    batchSize: 4,
+    maxCalls: 20,
+    retries: 2,
+    sleep: async () => { throw new Error('JSON 失败不应按原批退避'); },
+    now: (() => { let at = 0; return () => { at += 25; return at; }; })(),
+    complete: async ({ batch }) => {
+      if (batch.length > 1) return { text: '{"items":', usage: { inputTokens: 2, outputTokens: 0, totalTokens: 2 } };
+      return {
+        text: JSON.stringify({ items: [STRUCTURED(batch[0].id)] }),
+        usage: { inputTokens: 8, outputTokens: 1, totalTokens: 9 },
+      };
+    },
+  });
+  assert.equal(result.usage.calls, 7);
+  assert.equal(result.usage.splitRetries, 6);
+  assert.equal(result.usage.inputTokens, 38);
+  assert.equal(result.labelsById.get('a').labeled, true);
+  assert.equal(result.labelsById.get('d').labeled, true);
+  assert.equal(result.durationMs, 25);
+});
+
+test('a short batch retries only the missing ids', async () => {
+  const result = await runLabelScheme({
+    items: [{ id: 'a', kind: 'post', text: '甲' }, { id: 'b', kind: 'post', text: '乙' }],
+    scheme: 'structured',
+    batchSize: 2,
+    maxCalls: 5,
+    retries: 0,
+    complete: async ({ batch }) => {
+      if (batch.length > 1) {
+        return { text: JSON.stringify({ items: [STRUCTURED('a')] }), usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 } };
+      }
+      return { text: JSON.stringify({ items: [STRUCTURED(batch[0].id)] }), usage: { inputTokens: 4, outputTokens: 1, totalTokens: 5 } };
+    },
+  });
+  assert.equal(result.usage.calls, 2);
+  assert.equal(result.usage.splitRetries, 1);
+  assert.equal(result.labelsById.get('a').labeled, true);
+  assert.equal(result.labelsById.get('b').labeled, true);
+  assert.equal(result.usage.inputTokens, 9);
+});
+
+test('transport errors retry the same batch before splitting', async () => {
   const sleeps = [];
   let calls = 0;
   const result = await runLabelScheme({
@@ -105,24 +160,20 @@ test('failed batch retries, then a missing id stays unlabeled without failing th
     maxCalls: 5,
     retries: 2,
     sleep: async (ms) => { sleeps.push(ms); },
-    now: (() => { let at = 0; return () => { at += 25; return at; }; })(),
     complete: async () => {
       calls += 1;
-      if (calls === 1) return { text: '坏 JSON', usage: { inputTokens: 3, outputTokens: 0, totalTokens: 3 } };
+      if (calls === 1) throw Object.assign(new Error('Gemini 请求失败（503）'), { code: 'transport' });
       return {
-        text: JSON.stringify({ items: [STRUCTURED('a')] }),
+        text: JSON.stringify({ items: [STRUCTURED('a'), STRUCTURED('b')] }),
         usage: { inputTokens: 11, outputTokens: 4, totalTokens: 15 },
       };
     },
   });
   assert.deepEqual(sleeps, [1000]);
-  assert.equal(result.usage.calls, 2);
-  assert.equal(result.usage.totalTokens, 18);
-  assert.equal(result.labelsById.get('a').labeled, true);
-  assert.equal(result.labelsById.get('b').labeled, false);
-  assert.equal(result.labelsById.get('b').reason, '缺失');
-  assert.equal(result.durationMs, 25);
-  assert.ok(result.gaps.some((gap) => gap.ids.includes('b')));
+  assert.equal(calls, 2);
+  assert.equal(result.usage.splitRetries, 0);
+  assert.equal(result.labelsById.get('b').labeled, true);
+  assert.equal(result.usage.inputTokens, 11);
 });
 
 test('call cap stops later batches and records the coverage gap', async () => {
@@ -158,6 +209,7 @@ test('synthetic sample runs both schemes and writes the comparison without a con
           { id: '1', text: '业绩预增，继续看多', url: 'https://xueqiu.com/7/1', replyCount: 3 },
           { id: '2', text: '估值太高了', url: 'https://xueqiu.com/7/2', replyCount: 8 },
           { id: '3', text: '订单传闻还没证实', url: 'https://xueqiu.com/7/3', replyCount: 1 },
+          { id: '4', text: '继续看多', url: 'https://xueqiu.com/7/4', replyCount: 0 },
         ],
         comments: [{ id: '9', postId: '1', text: '我也觉得业绩好', url: 'https://xueqiu.com/7/1' }],
       },
@@ -191,11 +243,11 @@ test('synthetic sample runs both schemes and writes the comparison without a con
       return { text: JSON.stringify({ items }), usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 } };
     },
   });
-  assert.equal(calls, 4);
-  assert.equal(result.schemeA.usage.calls, 2);
-  assert.equal(result.schemeB.usage.calls, 2);
-  assert.equal(result.schemeA.usage.totalTokens, 56);
-  assert.equal(result.postCount, 3);
+  assert.equal(calls, 6);
+  assert.equal(result.schemeA.usage.calls, 3);
+  assert.equal(result.schemeB.usage.calls, 3);
+  assert.equal(result.schemeA.usage.totalTokens, 84);
+  assert.equal(result.postCount, 4);
   assert.equal(result.commentCount, 1);
   const bank = result.targets.find((target) => target.key === 'SH600000');
   assert.equal(bank.a.sentiment, '偏多');
@@ -208,6 +260,9 @@ test('synthetic sample runs both schemes and writes the comparison without a con
   assert.match(report, /不一致/);
   assert.match(report, /## 调用/);
   assert.match(report, /## 一致率/);
+  assert.match(report, /按方向/);
+  assert.match(report, /覆盖率/);
+  assert.match(report, /拆批重试：A 0 次，B 0 次/);
   assert.equal(result.agreement.different >= 1, true);
   assert.doesNotMatch(report, /^## 结论/m);
   assert.doesNotMatch(report, /交易建议/);
@@ -240,6 +295,11 @@ test('stance agreement ignores unlabeled rows', () => {
   assert.equal(compared.different, 1);
   assert.equal(compared.missing, 1);
   assert.equal(compared.rate, 0.5);
+  const neutral = new Map([['a', { labeled: true, stance: '中性' }]]);
+  const aside = new Map([['a', { labeled: true, stance: '无关' }]]);
+  assert.equal(compareStances(neutral, aside, ['a']).same, 0);
+  assert.equal(compareStances(neutral, aside, ['a'], { direction: true }).same, 1);
+  assert.equal(compareStances(neutral, aside, ['a'], { direction: true }).rate, 1);
 });
 
 test('stored summaries are not raw posts, and a materials payload can be read back', () => {
@@ -268,13 +328,71 @@ test('stored summaries are not raw posts, and a materials payload can be read ba
   database.close();
 });
 
-test('October 12 volume stays inside the per-scheme call cap', () => {
-  const posts = 207;
-  const comments = 175;
-  const estimate = estimateAbCalls(posts + comments, 25);
-  assert.equal(estimate.perScheme, 16);
-  assert.equal(estimate.total, 32);
-  assert.ok(estimate.total < 80);
+test('fewer than five directional labels is 数据不足, not a flat or full reading', async () => {
+  assert.equal(MIN_DIRECTIONAL_LABELS, 5);
+  const materials = {
+    date: '2026-10-12',
+    targets: [{
+      key: 'SH1', name: '小标的',
+      posts: [
+        { id: '1', text: '看多', url: 'https://xueqiu.com/1/1' },
+        { id: '2', text: '看多', url: 'https://xueqiu.com/1/2' },
+      ],
+      comments: [],
+    }],
+  };
+  const { report, result } = await runInvestorDigestAb({
+    materials, batchSize: 12, batchSizeB: 12, maxCallsA: 5, maxCallsB: 5, retries: 0,
+    complete: async ({ scheme, batch }) => ({
+      text: JSON.stringify({
+        items: batch.map((item) => (scheme === 'jev' ? JEV(item.id) : STRUCTURED(item.id, '看多'))),
+      }),
+      usage: { inputTokens: 9, outputTokens: 1, totalTokens: 10 },
+    }),
+  });
+  assert.equal(result.targets[0].a.directionalCount, 2);
+  assert.equal(result.targets[0].a.sentiment, '数据不足');
+  assert.equal(result.targets[0].b.sentiment, '数据不足');
+  const targetRow = report.split('\n').find((line) => line.startsWith('| 小标的 |'));
+  assert.match(targetRow, /数据不足/);
+  assert.doesNotMatch(targetRow, /100%/);
+  assert.doesNotMatch(targetRow, /平淡/);
+  assert.doesNotMatch(report, /平淡/);
+});
+
+test('only B does not call scheme A', async () => {
+  const schemes = [];
+  const materials = {
+    date: '2026-10-12',
+    targets: [{ key: 'SH1', name: '甲', posts: [{ id: '1', text: '看多', url: 'https://xueqiu.com/1' }], comments: [] }],
+  };
+  const { report, result } = await runInvestorDigestAb({
+    materials, only: 'B', batchSize: 25, batchSizeB: 12, retries: 0,
+    complete: async ({ scheme, batch }) => {
+      schemes.push(scheme);
+      return {
+        text: JSON.stringify({ items: batch.map((item) => STRUCTURED(item.id)) }),
+        usage: { inputTokens: 4, outputTokens: 1, totalTokens: 5 },
+      };
+    },
+  });
+  assert.deepEqual(schemes, ['structured']);
+  assert.equal(result.schemeA.skipped, true);
+  assert.equal(result.schemeB.usage.calls, 1);
+  assert.match(report, /只跑了方案 B/);
+  assert.match(report, /A 覆盖率：未运行/);
+  assert.deepEqual(resolveSchemeSelection('b'), { a: false, b: true });
+  assert.throws(() => resolveSchemeSelection('C'), /--only 只能是 A 或 B/);
+});
+
+test('522 items at batch 12 stay inside the scheme B call cap', () => {
+  assert.equal(DEFAULT_BATCH_SIZE_B, 12);
+  const estimate = estimateAbCalls(295 + 227, 25, 12);
+  assert.equal(estimate.perA, 21);
+  assert.equal(estimate.perB, 44);
+  assert.equal(estimate.total, 65);
+  assert.ok(estimate.perB <= DEFAULT_MAX_CALLS_B);
+  assert.ok(estimate.total < 500);
 });
 
 test('model env selects Gemini JSON or Gemma streaming without a quota ledger', async () => {
@@ -285,7 +403,7 @@ test('model env selects Gemini JSON or Gemma streaming without a quota ledger', 
       geminiCalls.push({ url: String(url), body: JSON.parse(init.body), key: init.headers['x-goog-api-key'] });
       return new Response(JSON.stringify({
         candidates: [{ content: { parts: [{ text: '{"items":[]}' }] } }],
-        usageMetadata: { promptTokenCount: 11, cachedContentTokenCount: 0, candidatesTokenCount: 4, totalTokenCount: 15 },
+        usageMetadata: { promptTokenCount: 11, candidatesTokenCount: 4, totalTokenCount: 15 },
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     },
   });
@@ -293,6 +411,9 @@ test('model env selects Gemini JSON or Gemma streaming without a quota ledger', 
   assert.match(geminiCalls[0].url, /models\/gemini-3\.1-flash-lite:generateContent$/);
   assert.equal(geminiCalls[0].body.systemInstruction.parts[0].text, '系统');
   assert.equal(geminiCalls[0].key, 'test-key');
+  assert.equal(geminiCalls[0].body.generationConfig.responseMimeType, 'application/json');
+  assert.equal(geminiCalls[0].body.generationConfig.maxOutputTokens, 16384);
+  assert.equal(geminiResult.usage.inputTokens, 11);
   assert.equal(geminiResult.usage.totalTokens, 15);
 
   const gemmaCalls = [];
@@ -315,8 +436,11 @@ test('model env selects Gemini JSON or Gemma streaming without a quota ledger', 
   const gemmaResult = await gemma.complete({ system: '系统', prompt: '材料' });
   assert.match(gemmaCalls[0].url, /gemma-4-26b-a4b-it:streamGenerateContent\?alt=sse$/);
   assert.equal(gemmaCalls[0].body.generationConfig.thinkingConfig.thinkingLevel, 'minimal');
+  assert.equal(gemmaCalls[0].body.generationConfig.responseMimeType, 'application/json');
+  assert.equal(gemmaCalls[0].body.generationConfig.maxOutputTokens, 16384);
   assert.match(gemmaCalls[0].body.contents[0].parts[0].text, /系统/);
   assert.equal(gemmaCalls[0].key, 'gemma-key');
+  assert.equal(gemmaResult.usage.inputTokens, 6);
   assert.equal(gemmaResult.usage.totalTokens, 8);
 });
 

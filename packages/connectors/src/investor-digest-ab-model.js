@@ -1,11 +1,10 @@
-import { providerTokenUsage } from './model-usage-fetch.js';
 import { parseGeminiGenerateContent } from './gemini-grok-task.js';
 import { readGemmaStream, resolveGemmaTranslationSlots } from './translate/gemma.js';
 
 const DEFAULT_MODEL = 'gemini-3.1-flash-lite';
 const DEFAULT_ROOT = 'https://generativelanguage.googleapis.com/v1beta';
 const DEFAULT_TIMEOUT_MS = 120_000;
-const LABEL_OUTPUT_TOKENS = 8192;
+const LABEL_OUTPUT_TOKENS = 16384;
 
 function text(value) {
   return typeof value === 'string' ? value.trim() : '';
@@ -39,13 +38,20 @@ export function resolveInvestorAbApiKey(env, model) {
   return { apiKey: text(env[keyEnv]), keyEnv };
 }
 
-function usageOf(payload) {
-  const usage = providerTokenUsage(payload, 'gemini');
-  return {
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    totalTokens: usage.totalTokens,
-  };
+function integer(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+// Gemini often omits cachedContentTokenCount. The shared ledger helper then drops
+// promptTokenCount, which made this experiment record 0 input tokens.
+export function investorAbUsage(payload) {
+  const usage = payload?.usageMetadata || {};
+  const inputTokens = integer(usage.promptTokenCount);
+  const outputTokens = integer(usage.candidatesTokenCount);
+  const totalTokens = integer(usage.totalTokenCount) ?? (
+    inputTokens != null && outputTokens != null ? inputTokens + outputTokens : null
+  );
+  return { inputTokens, outputTokens, totalTokens };
 }
 
 export function createInvestorAbModel(options = {}) {
@@ -70,7 +76,11 @@ export function createInvestorAbModel(options = {}) {
       const body = gemma
         ? {
           contents: [{ role: 'user', parts: [{ text: `${system}\n\n${prompt}` }] }],
-          generationConfig: { maxOutputTokens: LABEL_OUTPUT_TOKENS, thinkingConfig: { thinkingLevel: 'minimal' } },
+          generationConfig: {
+            maxOutputTokens: LABEL_OUTPUT_TOKENS,
+            responseMimeType: 'application/json',
+            thinkingConfig: { thinkingLevel: 'minimal' },
+          },
         }
         : {
           systemInstruction: { parts: [{ text: system }] },
@@ -84,18 +94,47 @@ export function createInvestorAbModel(options = {}) {
         body: JSON.stringify(body),
       });
       if (gemma) {
-        if (!response.ok) throw new Error(`Gemma 请求失败（${response.status}）`);
+        if (!response.ok) {
+          const error = new Error(`Gemma 请求失败（${response.status}）`);
+          error.code = 'transport';
+          throw error;
+        }
         const payload = await readGemmaStream(response);
         const candidate = payload.candidates?.[0];
         const reply = candidate?.content?.parts?.map((part) => part.text || '').join('').trim();
-        if (candidate?.finishReason !== 'STOP' || !reply) throw new Error('Gemma 打标签未完整结束');
-        return { text: reply, model, usage: usageOf(payload) };
+        const finishReason = candidate?.finishReason || '';
+        if (finishReason === 'MAX_TOKENS') {
+          if (!reply) {
+            const error = new Error('输出被截断');
+            error.code = 'truncated';
+            throw error;
+          }
+          return { text: reply, model, usage: investorAbUsage(payload), finishReason, truncated: true };
+        }
+        if (finishReason !== 'STOP' || !reply) throw new Error('Gemma 打标签未完整结束');
+        return { text: reply, model, usage: investorAbUsage(payload), finishReason, truncated: false };
       }
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok || payload.error) throw new Error(`Gemini 请求失败（${response.status}）`);
+      if (!response.ok || payload.error) {
+        const error = new Error(`Gemini 请求失败（${response.status}）`);
+        error.code = 'transport';
+        throw error;
+      }
       const reply = parseGeminiGenerateContent(payload);
+      const finishReason = payload?.candidates?.[0]?.finishReason || '';
+      if (!reply && finishReason === 'MAX_TOKENS') {
+        const error = new Error('输出被截断');
+        error.code = 'truncated';
+        throw error;
+      }
       if (!reply) throw new Error('Gemini 没有返回结果');
-      return { text: reply, model, usage: usageOf(payload) };
+      return {
+        text: reply,
+        model,
+        usage: investorAbUsage(payload),
+        finishReason,
+        truncated: finishReason === 'MAX_TOKENS',
+      };
     },
   };
 }
