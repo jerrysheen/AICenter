@@ -52,12 +52,43 @@ function autolinkHtml(value) {
   });
 }
 
+function takeMarkdownLinks(value) {
+  const links = [];
+  const marked = String(value || '').replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_match, label, href) => {
+    const token = `\u0000L${links.length}\u0000`;
+    links.push({ label, href });
+    return token;
+  });
+  return { marked, links };
+}
+
+function restoreMarkdownLinks(value, links) {
+  return String(value || '').replace(/\u0000L(\d+)\u0000/g, (_match, index) => {
+    const link = links[Number(index)];
+    if (!link) return '';
+    return `<a href="${escapeHtml(link.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(link.label)}</a>`;
+  });
+}
+
 function inlineHtml(value) {
-  let text = escapeHtml(value);
+  const { marked, links } = takeMarkdownLinks(value);
+  let text = escapeHtml(marked);
   text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
   text = text.replace(/(^|[^*`])\*([^*`\n]+)\*(?!\*)/g, '$1<em>$2</em>');
-  return autolinkHtml(text);
+  return restoreMarkdownLinks(autolinkHtml(text), links);
+}
+
+function plainInline(value) {
+  const { marked, links } = takeMarkdownLinks(value);
+  const text = marked
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/(^|[^*`])\*([^*`\n]+)\*(?!\*)/g, '$1$2')
+    .replace(/\u0000L(\d+)\u0000/g, (_match, index) => links[Number(index)]?.label || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text;
 }
 
 function renderListHtml(node) {
@@ -157,6 +188,60 @@ export function markdownToHtml(value) {
 
 export function renderMarkdownInto(element, value) {
   element.innerHTML = markdownToHtml(value);
+}
+
+function flattenShareList(node, blocks) {
+  for (const item of node.items || []) {
+    const extra = (item.extra || []).map(plainInline).filter(Boolean).join(' ');
+    const text = [plainInline(item.text), extra].filter(Boolean).join(' ');
+    if (text) blocks.push({ kind: 'text', text });
+    for (const child of item.children || []) flattenShareList(child, blocks);
+  }
+}
+
+export function markdownShareBlocks(value) {
+  const lines = String(value || '').replace(/\r/g, '').split('\n');
+  const blocks = [];
+  for (let index = 0; index < lines.length;) {
+    const line = lines[index];
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      const text = plainInline(heading[2]);
+      if (text) blocks.push({ kind: 'text', text });
+      index += 1;
+      continue;
+    }
+    if (isTableStart(lines, index)) {
+      const headers = splitCells(line).map(plainInline);
+      index += 2;
+      const rows = [];
+      while (index < lines.length && lines[index].includes('|') && !isDividerRow(lines[index])) {
+        rows.push(splitCells(lines[index]).map(plainInline));
+        index += 1;
+      }
+      blocks.push({ kind: 'table', headers, rows });
+      continue;
+    }
+    if (listMarker(line)) {
+      const parsed = parseList(lines, index);
+      flattenShareList(parsed.list, blocks);
+      index = parsed.next;
+      continue;
+    }
+    const paragraph = [line];
+    index += 1;
+    while (index < lines.length && !isBlockStart(lines, index)) {
+      paragraph.push(lines[index]);
+      index += 1;
+    }
+    const text = plainInline(paragraph.join(' '));
+    if (text) blocks.push({ kind: 'text', text });
+  }
+  return blocks;
 }
 
 // Read-only presentation of the existing connector comment marker. No stored

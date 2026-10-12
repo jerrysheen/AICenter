@@ -152,7 +152,20 @@ export function createMediaFeedLoader({ cache, getScope, getSelection, readFeed,
   return { load, reset };
 }
 
+function paragraphText(post) {
+  const groups = [post?.paragraphs, post?.articleTranslation?.paragraphs];
+  return groups.some((paragraphs) => (paragraphs || []).some((paragraph) => String(paragraph?.text || '').trim()));
+}
+
+// A feed card is a list shell: translated title and body hash, with the article text left out.
+export function hasReadableBody(post) {
+  if (!post || post.detail === 'list') return false;
+  if (String(post.body || '').trim()) return true;
+  return paragraphText(post);
+}
+
 function translated(post) {
+  if (!hasReadableBody(post)) return false;
   const article = post?.articleTranslation;
   return article?.status === 'ready' && Boolean(article.bodyHash) && article.bodyHash === post.bodyHash;
 }
@@ -175,6 +188,7 @@ export function createMediaReaderSession() {
       if (!current || !translated(current)) current = latest;
       if (!current) return { post:null, notice:'' };
       if (latest && translated(current)) {
+        if (!hasReadableBody(latest)) return { post:current, notice:'' };
         if (revision(latest) !== revision(current)) return { post:current, notice:'正文有更新，当前保留正在阅读的版本。', canUpdate:translated(latest) };
         if (!translated(latest)) return { post:current, notice:'后台正在更新，当前保留已载入的中文全文。' };
         current = latest;

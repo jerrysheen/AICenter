@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
-import {createMediaReaderSession,mediaIndexBody,mediaReaderParagraphs} from '../apps/web/public/media-feed.js';
+import {createMediaReaderSession,hasReadableBody,mediaIndexBody,mediaReaderParagraphs} from '../apps/web/public/media-feed.js';
 
 const scope={scope:'desktop:local',id:'one'};
 function article(hash='a',status='ready') {
@@ -37,6 +37,24 @@ test('article switch, logout and a different device discard the previous reading
     const reader=createMediaReaderSession();reader.resolve(article(),scope);
     assert.equal(reader.resolve(null,next).post,null);
   }
+});
+test('a verified list shell cannot lock the reader ahead of the saved article',()=>{
+  const reader=createMediaReaderSession();
+  const list={id:'one',detail:'list',body:'',bodyHash:'a',snapshotRevision:1,title:'中文标题',contentLevel:'full',
+    articleTranslation:{status:'ready',title:'中文标题',bodyHash:'a'}};
+  assert.equal(hasReadableBody(list),false);
+  assert.equal(reader.resolve(list,scope).post.detail,'list');
+  const full={id:'one',detail:'full',bodyHash:'a',snapshotRevision:1,title:'English title',body:'The full article text.',
+    paragraphs:[{id:'p1',kind:'paragraph',text:'The full article text.'}],
+    articleTranslation:{status:'ready',bodyHash:'a',title:'中文标题',paragraphs:[{id:'p1',kind:'paragraph',text:'完整正文'}]}};
+  const opened=reader.resolve(full,scope);
+  assert.equal(opened.post.paragraphs[0].text,'The full article text.');
+  assert.equal(mediaReaderParagraphs(opened.post,'translation')[0].text,'完整正文');
+  assert.equal(opened.notice,'');
+  const refresh=reader.resolve(list,scope);
+  assert.equal(refresh.post.paragraphs[0].text,'The full article text.');
+  assert.equal(refresh.notice,'');
+  assert.equal(refresh.canUpdate,undefined);
 });
 test('a saved article without paragraphs shows its text instead of a translation notice',()=>{
   const post={platform:'media',complete:true,body:'Samsung expects a nine-fold surge in quarterly profit.',paragraphs:[]};

@@ -2,6 +2,7 @@ import { icon } from './icons.js?v=dev';
 import { decodeHtmlEntities } from './html-text.js?v=dev';
 import { newsDayLabel, newsIngestAt, newsPublishedHint, newsRow } from './news-list.js?v=dev';
 import { mountInvestorDigest } from './investor-digest.js?v=dev';
+import { shareTextBlocks, stripSharePlaceholders } from './share-card.js?v=dev';
 const el=(tag,text='',className='')=>{const n=document.createElement(tag);n.textContent=text;n.className=className;return n;};
 function cleanSourceName(value) {
   const text=String(value ?? '').replace(/\s+/g,' ').trim();
@@ -269,6 +270,70 @@ export function createInformationTreePage(host) {
     let view=item;
     if(item?.nodeId) {try {view=await node(item.nodeId) || item;} catch(error) {if(aborted(error)) return;}}
     return openTreeSource(view);
+  }
+  function shareLines(value) {
+    return shareTextBlocks(stripSharePlaceholders(value));
+  }
+  function shareReadingItem(item, edition) {
+    if(typeof host.shareCard!=='function') return;
+    const run=async()=>{
+      let saved=null;
+      if(item?.nodeId) {try {saved=await node(item.nodeId);} catch(error) {if(aborted(error)) return;}}
+      const view=saved || item;
+      const summary=String(view.text || view.summary || item.text || item.summary || '').trim();
+      const body=summary ? '' : String(view.body || item.body || '').trim();
+      const start=edition?.window?.startAt;
+      const end=edition?.window?.endAt;
+      const time=start ? `${monthDay(start)} ${clock(start)}${end ? `–${clock(end)}` : ''}` : '';
+      return host.shareCard({
+        title:stripSharePlaceholders(view.title || item.title || ''),
+        source:'小时报',
+        time,
+        paragraphs:shareLines(summary || body),
+      });
+    };
+    return run();
+  }
+  function shareTreeNode(n, edition, sourceLabel) {
+    if(typeof host.shareCard!=='function' || !n) return;
+    const summary=String(n.text || n.summary || '').trim();
+    const body=String(n.body || '').trim();
+    const paragraphs=shareLines(summary);
+    if(body && stripSharePlaceholders(body)!==stripSharePlaceholders(summary)) paragraphs.push(...shareLines(body));
+    const at=Number(n.eventAt || edition?.window?.endAt || edition?.window?.startAt || 0);
+    return host.shareCard({
+      title:stripSharePlaceholders(n.title || ''),
+      source:sourceLabel,
+      time:at ? stamp(at) : '',
+      paragraphs,
+    });
+  }
+  function shareDailyArticle(article, edition) {
+    if(typeof host.shareCard!=='function' || !article) return;
+    const paragraphs=[];
+    if(article.lead) paragraphs.push(...shareLines(article.lead));
+    for(const section of article.sections || []) {
+      if(section.heading && section.kind!=='other') paragraphs.push(stripSharePlaceholders(section.heading));
+      for(const text of section.paragraphs || []) paragraphs.push(...shareLines(text));
+    }
+    const at=edition?.window?.endAt || edition?.window?.startAt;
+    return host.shareCard({
+      title:stripSharePlaceholders(article.title || ''),
+      source:'日报',
+      time:at ? `${monthDay(at)}日报` : '',
+      paragraphs:paragraphs.filter(Boolean),
+    });
+  }
+  function shareAction(onClick) {
+    const share=button('分享', event=>{event?.stopPropagation?.();return onClick();});
+    share.className='text-button news-share';
+    return share;
+  }
+  function toggleReadingFold(fold) {
+    if(!fold) return;
+    fold.open=!fold.open;
+    if(typeof fold.dispatchEvent==='function') return;
+    return fold.listeners?.toggle?.[0]?.();
   }
   function bindDirectSource(article, leaf) {
     article.classList.add('is-direct');
@@ -753,7 +818,12 @@ export function createInformationTreePage(host) {
     list.replaceChildren();
     if(opened){
       syncReadingChrome({node:opened.n,label:'返回日报',onBack:closeDaily});
-      list.append(await card(opened.n,token,{actions:false}));
+      const article=await card(opened.n,token,{actions:false});
+      const share=shareAction(()=>shareTreeNode(opened.n, edition, '日报'));
+      const first=article.children?.[0];
+      if(first) article.insertBefore(share, first);
+      else article.append(share);
+      list.append(article);
       titleEl.hidden=false;titleEl.textContent=opened.n.title;
     } else {
       syncReadingChrome(null);
@@ -818,18 +888,22 @@ export function createInformationTreePage(host) {
     if(!openedDirection) {
       page.append(el('p',editorial.overview,'daily-overview'));
       for(const article of editorial.articles) {
+        const row=el('div','','daily-direction-row');
         const open=document.createElement('button');
         open.type='button';open.className='daily-direction-card';
         open.append(el('span',directions[article.direction] || '其他','daily-kicker'),el('h3',article.title),el('p',article.lead));
         open.addEventListener('click',()=>{openedDirection=article.direction;return render();});
-        page.append(open);
+        row.append(open, shareAction(()=>shareDailyArticle(article, edition)));
+        page.append(row);
       }
     } else {
       const article=editorial.articles.find(item=>item.direction===openedDirection);
       if(!article) page.append(el('p','这个方向没有成稿。'));
       else {
+        const head=el('div','','daily-detail-head');
+        head.append(el('h3',article.title), shareAction(()=>shareDailyArticle(article, edition)));
         const lead=el('p',article.lead,'daily-overview');
-        page.append(el('h3',article.title),lead);
+        page.append(head,lead);
         attachSectionSources(page, editorial, article.leadEventIds, [lead]);
         const themes=article.sections.filter(section=>section.kind!=='other');
         const extras=article.sections.filter(section=>section.kind==='other');
@@ -869,6 +943,7 @@ export function createInformationTreePage(host) {
       source,
       summary:excerpt,
       onOpen:()=>{openedId=item.n.id;return render();},
+      onShare:()=>shareTreeNode(item.n, item.edition, '日报'),
     });
   }
   async function readingSnapshot(edition) {
@@ -958,12 +1033,13 @@ export function createInformationTreePage(host) {
       source:readingSourceLine(item, {keepDirection}), tags, muted,
       focused:Boolean(host.readingFocused?.(item.nodeId)),
       onStar:()=>host.focusReading?.(readingFocusSnapshot(item, edition)),
+      onShare:()=>shareReadingItem(item, edition),
       attachOpen(open){
         open.addEventListener('click', event=>{
           const mark=event?.target?.classList?.contains('reading-ref') ? event.target : null;
           if(mark && list) return highlightSource((mark.dataset.sourceId && findSourceRow(list, mark.dataset.sourceId)) || list);
           if(list) return highlightSource(list);
-          return openReadingSource(item);
+          if(fold) return toggleReadingFold(fold);
         });
       },
     });

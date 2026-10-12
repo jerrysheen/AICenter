@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { markdownToHtml } from '../apps/web/public/markdown.js';
+import { markdownShareBlocks, markdownToHtml } from '../apps/web/public/markdown.js';
 
 test('markdown renders headings tables lists and bold without raw html', () => {
   const html = markdownToHtml(`
@@ -39,4 +39,25 @@ test('markdown keeps ordered list continuation text', () => {
 test('markdown turns plain http urls into links', () => {
   const html = markdownToHtml('课程 https://example.com/cme-295 已公开');
   assert.match(html, /<a href="https:\/\/example.com\/cme-295" target="_blank" rel="noopener noreferrer">https:\/\/example.com\/cme-295<\/a>/);
+});
+
+test('markdown links render the label instead of the raw syntax', () => {
+  const html = markdownToHtml('见 [课程](https://example.com/cme-295) 与 https://example.com/plain');
+  assert.match(html, /<a href="https:\/\/example.com\/cme-295" target="_blank" rel="noopener noreferrer">课程<\/a>/);
+  assert.doesNotMatch(html, /\[课程\]/);
+  assert.match(html, />https:\/\/example.com\/plain</);
+});
+
+test('share blocks keep a table grid and link labels', () => {
+  const blocks = markdownShareBlocks(`
+| 项目 | 说明 |
+|---|---|
+| 链接 | [课程](https://example.com/a) |
+
+正文 [另一](https://example.com/b)
+`);
+  assert.equal(blocks[0].kind, 'table');
+  assert.deepEqual(blocks[0].headers, ['项目', '说明']);
+  assert.deepEqual(blocks[0].rows, [['链接', '课程']]);
+  assert.equal(blocks[1].text, '正文 另一');
 });
