@@ -19,6 +19,7 @@ import { createEtfWhaleReadService } from './etf-whale-service.js';
 import { createEventQuoteSnapshotService } from './event-quote-snapshots.js';
 import { createInvestorDiscussionService } from './investor-discussion.js';
 import { createComputePriceService } from './compute-price-service.js';
+import { createApiTokenService } from './api-token-service.js';
 
 export { createContextService, createDailyBriefService, createFeedService, createIdentityService, createKnowledgeService, createMarketStatisticsService, createMediaIngestionService, createReportService, createRuntimeService, createTradingService, createTaggingService };
 export { buildDailyBriefCandidates } from './daily-brief-candidates.js';
@@ -222,5 +223,10 @@ export function createDomainServices({
     computePrices: store.repositories.computePrices
       ? createComputePriceService({ repository: store.repositories.computePrices })
       : null,
+    apiTokens: createApiTokenService({
+      repository: store.repositories.apiTokens,
+      ratePerMinute: env.AI_CENTER_API_TOKEN_RATE_PER_MINUTE,
+      logRetentionDays: env.AI_CENTER_API_TOKEN_LOG_RETENTION_DAYS,
+    }),
   });
 }

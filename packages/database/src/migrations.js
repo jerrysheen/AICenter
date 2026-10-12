@@ -1781,6 +1781,35 @@ migrations.push({ version: 56, name: 'investor_discussion_question_set', up(data
   database.exec(`ALTER TABLE investor_discussion_digests ADD COLUMN question_set TEXT NOT NULL DEFAULT '';`);
 }});
 
+migrations.push({ version: 57, name: 'api_access_tokens', up(database) {
+  database.exec(`
+    CREATE TABLE api_access_tokens (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      token_hash TEXT NOT NULL,
+      token_prefix TEXT NOT NULL,
+      created_by_device_id TEXT,
+      created_at INTEGER NOT NULL,
+      last_used_at INTEGER,
+      revoked_at INTEGER
+    );
+    CREATE UNIQUE INDEX api_access_tokens_hash ON api_access_tokens(token_hash);
+    CREATE INDEX api_access_tokens_workspace ON api_access_tokens(workspace_id, created_at);
+    CREATE TABLE api_token_access_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      token_id TEXT NOT NULL,
+      method TEXT NOT NULL,
+      path TEXT NOT NULL,
+      status INTEGER NOT NULL,
+      latency_ms INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX api_token_access_log_created ON api_token_access_log(created_at);
+    CREATE INDEX api_token_access_log_token ON api_token_access_log(token_id, created_at);
+  `);
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

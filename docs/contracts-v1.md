@@ -41,8 +41,9 @@
 
 ## Identity
 
-- 当前没有 User / Tenant。设备授权是手机和远端浏览器进入业务 API 的唯一会话。
+- 当前没有 User / Tenant。设备授权是手机和远端浏览器进入业务 API 的会话。外部机器人另有只读 API 令牌，不是设备会话，也不能变成桌面管理员。
 - `POST /api/v1/pair` 用一次性配对码换设备 token；`POST /api/v1/session/login` 用 Instance 共享账号换同一类设备 token。两者都写入 `devices`，服务端只存 token 哈希。长期 token 只经 HttpOnly Cookie 下发，不进入页面 JSON。
+- 只读 API 令牌由已登录的本机桌面或已配对设备在 `POST /api/v1/api-tokens` 生成。明文只在这次响应里出现。库表 `api_access_tokens` 只保存 `token_hash`（完整令牌的 sha256）和用于辨认的 `token_prefix`。`DELETE /api/v1/api-tokens/:id` 撤销。Bearer 不能调用这三个接口。允许的 GET 与示例见 `docs/api.md`。
 - 未配对的 `GET /api/v1/session` 返回 401，并带 `loginAvailable`。该字段只表示 Instance 是否配置了账号登录，不返回账号名。
 - 账号密码只从 Instance 环境读取，不进入页面 Contract，也不写入 SQLite。
 

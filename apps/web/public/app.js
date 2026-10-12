@@ -289,6 +289,8 @@ const state = {
   quoteChart: null,
   quoteHistoryRequestId: 0,
   settingsPane: 'hub',
+  apiTokenReveal: null,
+  apiTokenLoad: 0,
   pageKind: '',
   pageId: '',
   trail: [],
@@ -390,7 +392,7 @@ const elements = Object.fromEntries([
   'reference-dock', 'reference-preview', 'reference-preview-title', 'reference-preview-meta', 'reference-preview-body',
   'reference-pack', 'reference-pack-meta', 'reference-pack-chips', 'reference-pack-ask', 'reference-pack-task',
   'reference-pack-export', 'reference-pack-clear',
-  'share-image-dialog', 'share-image-preview', 'share-image-save',
+  'share-image-dialog', 'share-image-pages', 'share-image-preview', 'share-image-save',
   'hub-ticker', 'overview-subnav', 'nav-back', 'toggle-search', 'feed-filter', 'feed-open-calendar',
   'feed-filter-dialog', 'feed-filter-body', 'open-all-quotes', 'open-full-feed', 'hub-market-note',
   'page-root', 'settings-hub', 'settings-connections',
@@ -4397,6 +4399,7 @@ function feedToNewsRow(post) {
     attachOpen: (open) => attachGuardedOpen(open, () => openArticle(post)),
     attachSwipe: canSwipe ? (front) => attachSwipe(front, FEED_SWIPE_WIDTH, () => openArticle(post)) : undefined,
     onStar: () => toggleFocus(post.id, () => { renderPosts(); renderHub(); }, post),
+    onShare: () => presentShareCard(postShareInput(post)),
     onDelete: () => {
       if (state.channel === 'focus') {
         removeFocusItem(post);
@@ -8169,7 +8172,12 @@ function renderArticlePage() {
     onClick: () => startArticleAnalysis(post).catch((error) => showToast(error.message)),
   });
   if (analysisBusy) analyze.disabled = true;
-  bar.append(save, cite, analyze, star);
+  const share = createDetailAction({
+    iconName: 'image',
+    label: '分享',
+    onClick: () => presentShareCard(postShareInput(post)),
+  });
+  bar.append(save, cite, analyze, star, share);
   if (isHttpUrl(post.sourceUrl)) bar.append(createDetailAction({ iconName: 'newspaper', label: '打开原文', onClick: () => openExternalHttpUrl(post.sourceUrl) }));
   const fontControls = document.createElement('div');
   fontControls.className = 'reader-font-controls';
@@ -8188,9 +8196,11 @@ function renderArticlePage() {
   fontControls.append(smaller, size, larger);
   elements['reader-menu-body'].replaceChildren(fontControls, bar);
   const mobile = document.createElement('div');
-  mobile.className = 'reader-mobile-bar';
+  mobile.className = 'reader-mobile-bar is-quad';
   mobile.setAttribute('aria-label', '阅读操作');
-  mobile.append(createDetailAction({ iconName: 'bookmark', label: isPostSaved(post) ? '查看灵感' : '存入灵感', onClick: () => save.click() }),
+  mobile.append(
+    createDetailAction({ iconName: 'image', label: '分享', onClick: () => presentShareCard(postShareInput(post)) }),
+    createDetailAction({ iconName: 'bookmark', label: isPostSaved(post) ? '查看灵感' : '存入灵感', onClick: () => save.click() }),
     createDetailAction({ iconName: 'list', label: '更多', onClick: event => openReaderMenu(event.currentTarget) }),
     createDetailAction({ iconName: 'chevron-left', label: `返回${routeLabel(returnTarget())}`, onClick: leaveArticle }));
   const analysis = renderArticleAnalysisPanel(post);
@@ -8813,6 +8823,146 @@ function renderPublishPage() {
   goBack();
 }
 
+function formatTokenStamp(value, empty) {
+  if (!value) return empty;
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(value);
+}
+
+function paintApiTokenList(host, tokens) {
+  host.replaceChildren();
+  if (!tokens.length) {
+    host.append(Object.assign(document.createElement('p'), {
+      className: 'section-desc',
+      textContent: '还没有令牌。',
+    }));
+    return;
+  }
+  for (const token of tokens) {
+    const row = document.createElement('div');
+    row.className = 'api-token-row';
+    const text = document.createElement('span');
+    const title = document.createElement('strong');
+    title.textContent = token.name;
+    const meta = document.createElement('small');
+    meta.textContent = `${token.prefix}… · 创建 ${formatTokenStamp(token.createdAt, '—')} · 最近使用 ${formatTokenStamp(token.lastUsedAt, '尚未使用')}`;
+    text.append(title, meta);
+    const revoke = document.createElement('button');
+    revoke.type = 'button';
+    revoke.className = 'text-button api-token-revoke';
+    revoke.textContent = '撤销';
+    revoke.addEventListener('click', () => {
+      revoke.disabled = true;
+      api(`/api/v1/api-tokens/${token.id}`, { method: 'DELETE' })
+        .then(() => {
+          if (state.apiTokenReveal?.id === token.id) state.apiTokenReveal = null;
+          renderSettingsHub();
+        })
+        .catch((error) => {
+          revoke.disabled = false;
+          showToast(error.message);
+        });
+    });
+    row.append(text, revoke);
+    host.append(row);
+  }
+}
+
+function renderApiTokenCard() {
+  const card = document.createElement('article');
+  card.className = 'status-card api-token-card';
+  const title = document.createElement('h2');
+  title.textContent = '只读令牌';
+  const note = document.createElement('p');
+  note.textContent = '给外部机器人读取简报、小时报、信息流、股民讨论和行情。明文只在生成时出现一次，服务端只保存哈希。写入、设置、令牌管理和部署状态不能使用这个令牌。';
+  const form = document.createElement('form');
+  form.className = 'api-token-form';
+  const input = document.createElement('input');
+  input.maxLength = 40;
+  input.required = true;
+  input.placeholder = '名称，例如 行情机器人';
+  input.setAttribute('aria-label', '令牌名称');
+  const submit = document.createElement('button');
+  submit.type = 'submit';
+  submit.className = 'text-button';
+  submit.textContent = '生成';
+  form.append(input, submit);
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const name = input.value.trim();
+    if (!name) return;
+    submit.disabled = true;
+    api('/api/v1/api-tokens', { method: 'POST', body: JSON.stringify({ name }) })
+      .then((payload) => {
+        state.apiTokenReveal = { id: payload.token.id, name: payload.token.name, secret: payload.secret };
+        renderSettingsHub();
+      })
+      .catch((error) => {
+        submit.disabled = false;
+        showToast(error.message);
+      });
+  });
+  card.append(title, note, form);
+  if (state.apiTokenReveal?.secret) {
+    const reveal = document.createElement('div');
+    reveal.className = 'api-token-secret';
+    const hint = document.createElement('p');
+    hint.textContent = `「${state.apiTokenReveal.name}」的令牌只显示这一次。点已保存后无法再查看。`;
+    const code = document.createElement('code');
+    code.textContent = state.apiTokenReveal.secret;
+    const actions = document.createElement('div');
+    actions.className = 'api-token-actions';
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'text-button';
+    copy.textContent = '复制';
+    copy.addEventListener('click', () => {
+      const secret = state.apiTokenReveal?.secret || '';
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(secret).then(() => showToast('已复制')).catch(() => showToast('复制失败，请手动选择令牌'));
+        return;
+      }
+      showToast('复制失败，请手动选择令牌');
+    });
+    const done = document.createElement('button');
+    done.type = 'button';
+    done.className = 'text-button';
+    done.textContent = '我已保存';
+    done.addEventListener('click', () => {
+      state.apiTokenReveal = null;
+      renderSettingsHub();
+    });
+    actions.append(copy, done);
+    reveal.append(hint, code, actions);
+    card.append(reveal);
+  }
+  const list = document.createElement('div');
+  list.className = 'api-token-list';
+  list.append(Object.assign(document.createElement('p'), {
+    className: 'section-desc',
+    textContent: '正在读取令牌…',
+  }));
+  card.append(list);
+  state.apiTokenLoad += 1;
+  const generation = state.apiTokenLoad;
+  api('/api/v1/api-tokens').then((payload) => {
+    if (generation !== state.apiTokenLoad) return;
+    paintApiTokenList(list, payload.tokens || []);
+  }).catch((error) => {
+    if (generation !== state.apiTokenLoad) return;
+    list.replaceChildren(Object.assign(document.createElement('p'), {
+      className: 'section-desc',
+      textContent: error.message,
+    }));
+  });
+  return card;
+}
+
 function renderSettingsHub() {
   const hub = elements['settings-hub'];
   const connections = elements['settings-connections'];
@@ -8838,6 +8988,7 @@ function renderSettingsHub() {
     button.addEventListener('click', onClick);
     hub.append(button);
   }
+  hub.append(renderApiTokenCard());
 }
 
 function openSourceMenu(source) {
@@ -9927,34 +10078,82 @@ function showStructuredSaveToast(output, view) {
   });
 }
 
+function shareTextBlocks(value) {
+  return String(value || '').split(/\n+/).map((line) => line.replace(/[ \t]+/g, ' ').trim()).filter(Boolean);
+}
+
+function postShareInput(post) {
+  let paragraphs = [];
+  if (post?.platform === 'media' && Array.isArray(post.paragraphs) && post.paragraphs.length) {
+    const source = post.complete === false && !post.articleTranslation
+      ? post.paragraphs
+      : mediaReaderParagraphs(post, state.readerLang);
+    paragraphs = (source || []).map((paragraph) => String(paragraph?.text || '').trim()).filter(Boolean);
+  }
+  if (!paragraphs.length) paragraphs = shareTextBlocks(postViewBody(post));
+  return {
+    title: postDisplayTitle(post),
+    source: feedSourceLine(post),
+    time: post.time || (post.publishedAt ? formatTime(post.publishedAt) : ''),
+    paragraphs,
+  };
+}
+
 function closeShareImagePreview() {
   const preview = state.shareImagePreview;
   state.shareImagePreview = null;
   if (preview?.url?.startsWith('blob:')) URL.revokeObjectURL(preview.url);
-  const image = elements['share-image-preview'];
-  if (image) image.removeAttribute('src');
+  const pages = elements['share-image-pages'];
+  pages?.querySelectorAll('img.share-image-preview').forEach((image, index) => {
+    if (index === 0) image.removeAttribute('src');
+    else image.remove();
+  });
 }
 
-async function openShareImagePreview({ blob, filename, title, previewUrl }) {
+async function openShareImagePreview(result) {
   closeShareImagePreview();
-  const url = previewUrl || '';
-  if (!url) throw new Error('图片预览失败');
-  state.shareImagePreview = { blob, filename, title, url };
-  const image = elements['share-image-preview'];
-  if (image) {
-    image.src = url;
-    image.alt = title || '问答分享图';
-  }
+  const pages = result?.pages?.length ? result.pages : [result];
+  const ready = pages.filter((page) => page?.previewUrl && page?.blob);
+  if (!ready.length) throw new Error('图片预览失败');
+  state.shareImagePreview = { pages: ready, title: result.title || '' };
+  const host = elements['share-image-pages'];
+  const first = elements['share-image-preview'];
+  ready.forEach((page, index) => {
+    const image = index === 0 && first ? first : document.createElement('img');
+    image.className = 'share-image-preview';
+    if (index === 0) image.id = 'share-image-preview';
+    image.src = page.previewUrl;
+    image.alt = ready.length > 1 ? `${result.title || '分享图'} ${index + 1}/${ready.length}` : (result.title || '分享图');
+    if (image !== first) host?.append(image);
+  });
   const dialog = elements['share-image-dialog'];
   if (!dialog) throw new Error('找不到分享预览');
   openDialog(dialog);
 }
 
 async function saveShareImagePreview() {
-  const preview = state.shareImagePreview;
-  if (!preview?.blob) return;
+  const pages = state.shareImagePreview?.pages || [];
+  if (!pages.length) return;
   const { downloadBlob } = await import('./share-card.js?v=dev');
-  downloadBlob(preview.filename, preview.blob);
+  pages.forEach((page, index) => {
+    window.setTimeout(() => downloadBlob(page.filename, page.blob), index * 250);
+  });
+}
+
+async function presentShareCard(input, button) {
+  if (button?.disabled) return;
+  if (button) button.disabled = true;
+  try {
+    const { exportShareCard } = await import('./share-card.js?v=dev');
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    const result = await exportShareCard(input, { deliver: 'auto' });
+    if (result.delivery === 'shared' || result.delivery === 'aborted') return;
+    await openShareImagePreview(result);
+  } catch (error) {
+    showToast(error.message || '分享失败');
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 async function shareAskExchange(card, button) {
@@ -9963,7 +10162,8 @@ async function shareAskExchange(card, button) {
   try {
     const { exportAskSharePng } = await import('./share-card.js?v=dev');
     await new Promise((resolve) => window.setTimeout(resolve, 0));
-    const result = await exportAskSharePng(card, { deliver: false });
+    const result = await exportAskSharePng(card, { deliver: 'auto' });
+    if (result.delivery === 'shared' || result.delivery === 'aborted') return;
     await openShareImagePreview(result);
   } catch (error) {
     showToast(error.message || '分享失败');
@@ -10393,6 +10593,7 @@ const briefPage = createBriefPage ? createBriefPage({
     } else window.scrollBy(0,delta);
   },
   dailyReference: dailyBriefItemReference, isReferenced, toggleReference,
+  shareCard: (input) => presentShareCard(input),
   canReadSavedSource: material => (material.sourceRefs || []).some(ref=>ref.type==='content-item' || ref.type==='media-body'),
   async readSavedSource(material) {
     const session=state.session;

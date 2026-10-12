@@ -95,7 +95,7 @@ test('news-list.js and html-text.js are served as javascript', async () => {
   const server = await listen(createStaticFileHandler(publicDirectory));
   const { port } = server.address();
   try {
-    for (const pathname of ['/news-list.js', '/html-text.js']) {
+    for (const pathname of ['/news-list.js', '/html-text.js', '/qr-code.js', '/share-card.js']) {
       const response = await getRaw(`http://127.0.0.1:${port}${pathname}`);
       assert.equal(response.status, 200, pathname);
       assert.equal(response.headers['content-type'], 'text/javascript; charset=utf-8', pathname);
