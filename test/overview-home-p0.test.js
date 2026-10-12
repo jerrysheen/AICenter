@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import { zonedCalendarParts, zonedClockParts } from '../apps/web/public/shanghai-time.js';
 
 const app = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
 const newsList = readFileSync(new URL('../apps/web/public/news-list.js', import.meta.url), 'utf8')
@@ -34,7 +35,7 @@ test('feed rows sort by publish time and fall back to capture time', () => {
 });
 
 test('day groups follow newest publish time even when the input is reversed', () => {
-  const context = vm.createContext({});
+  const context = vm.createContext({ zonedCalendarParts, zonedClockParts });
   vm.runInContext(newsList, context);
   const oct11 = Date.parse('2026-10-10T17:13:00Z');
   const oct10 = Date.parse('2026-10-10T14:00:00Z');
@@ -47,7 +48,7 @@ test('day groups follow newest publish time even when the input is reversed', ()
 });
 
 test('same-source bulk notices are grayed and sink to the end of that day', () => {
-  const context = vm.createContext({ URL });
+  const context = vm.createContext({ URL, zonedCalendarParts, zonedClockParts });
   vm.runInContext(newsList, context);
   const captured = Date.parse('2026-10-10T17:53:00Z');
   const notices = Array.from({ length: 10 }, (_, index) => ({
@@ -99,7 +100,7 @@ test('same-source bulk notices are grayed and sink to the end of that day', () =
 });
 
 test('hour rows show ingest time and add a publish hint only when the gap exceeds one hour', () => {
-  const context = vm.createContext({});
+  const context = vm.createContext({ zonedCalendarParts, zonedClockParts });
   vm.runInContext(newsList, context);
   const ingested = Date.parse('2026-10-10T15:40:00Z');
   const near = Date.parse('2026-10-10T15:10:00Z');
@@ -113,7 +114,7 @@ test('hour rows show ingest time and add a publish hint only when the gap exceed
 });
 
 test('a page slice keeps normal rows ahead of bulk notices from the same day', () => {
-  const context = vm.createContext({ URL });
+  const context = vm.createContext({ URL, zonedCalendarParts, zonedClockParts });
   vm.runInContext(newsList, context);
   const captured = Date.parse('2026-10-10T17:53:00Z');
   const notices = Array.from({ length: 12 }, (_, index) => ({
@@ -132,7 +133,7 @@ test('a page slice keeps normal rows ahead of bulk notices from the same day', (
 });
 
 test('official groups follow capture time when the effective date is in the future', () => {
-  const context = vm.createContext({});
+  const context = vm.createContext({ zonedCalendarParts, zonedClockParts });
   vm.runInContext(`${newsList}\n${functionSource('feedSortAt')}`, context);
   const now = Date.parse('2026-10-11T02:00:00Z');
   const futureOfficial = {

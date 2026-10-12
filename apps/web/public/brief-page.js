@@ -1,6 +1,7 @@
 import {createInformationTreePage, sourceCaption} from './information-tree.js?v=dev';
 import {decodeHtmlEntities} from './html-text.js?v=dev';
 import {mountInvestorDigest} from './investor-digest.js?v=dev';
+import {zonedCalendarParts, zonedClockParts} from './shanghai-time.js?v=dev';
 const HOUR = 3600000;
 const ARTICLE_VERSION='brief-editorial-v3';
 const DIRECTION_LABELS={finance:'金融与市场',policy:'时事与政策',tech:'科技与产业',other:'其他'};
@@ -26,9 +27,9 @@ export function briefDayWindow(date, timezone) {
     const target = Date.parse(`${value}T00:00:00Z`);
     let at = target;
     for (let i=0; i<4; i++) {
-      const p = new Intl.DateTimeFormat('en-US', {timeZone:timezone, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hourCycle:'h23'}).formatToParts(at);
-      const get = key => Number(p.find(v => v.type === key).value);
-      const represented = Date.UTC(get('year'), get('month')-1, get('day'), get('hour'), get('minute'), get('second'));
+      const day = zonedCalendarParts(at, timezone);
+      const clock = zonedClockParts(at, timezone);
+      const represented = Date.UTC(day.year, day.month-1, day.day, clock.hour, clock.minute, clock.second);
       at += target-represented;
     }
     return at;
@@ -98,7 +99,15 @@ export function createBriefPage(host) {
   const storage = () => {try {return localStorage;} catch {return null;}};
   const active = () => Boolean(root?.isConnected && host.active() && host.session() && s.identity);
   const key = () => `ai-center.brief.${encodeURIComponent(s.identity)}`;
-  const time = (at, options={hour:'2-digit',minute:'2-digit'}) => new Intl.DateTimeFormat('zh-CN', {timeZone:s.timezone || 'Asia/Shanghai',hourCycle:'h23',...options}).format(at);
+  const time = (at, options={hour:'2-digit',minute:'2-digit'}) => {
+    const zone = s.timezone || 'Asia/Shanghai';
+    const date = zonedCalendarParts(at, zone);
+    const clock = zonedClockParts(at, zone);
+    const pad = value => String(value).padStart(2, '0');
+    const hm = options.hour ? `${pad(clock.hour)}:${pad(clock.minute)}` : '';
+    if (options.month || options.day) return `${date.month}月${date.day}日${hm ? ` ${hm}` : ''}`;
+    return hm;
+  };
   const stamp = at => time(at,{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
   const visibleItems = items => items.filter(i => (!s.unread || !s.read.has(informationSignature(i)))
     && (!s.savedOnly || s.saved.has(informationSignature(i))) && (!s.query || i.sentence.toLocaleLowerCase().includes(s.query.toLocaleLowerCase())));

@@ -1,6 +1,8 @@
 # 0.2.0 发布门槛
 
-2026-10-12 小时报可整段停用：`AI_CENTER_HOURLY_DISABLED=1` 后，Worker 启动不再把 `report.hourly.default` 写成 `enabled:true`，定时、准备后的补编和手动入队都不再创建小时任务，已经排队或正在跑的 `report.hourly.extract` 会被取消。启动只打一行日志。需要重启 Worker。见 `progress/2026-10-12-hourly-disabled.md`。
+2026-10-12 阅读页与日期：分享预览打开时备好 PNG，「保存」当次点击即可下载，iPhone / iPad 改为系统分享。问答分享按钮收在回答右上角，正文留出上边距。阅读页、媒体段落和小时报展开正文去掉 `[未抓取]`、`图片 ×N`、`[图片]`。小时报展开条目在有来源地址时提供「原文」链接。日报日期不再把日历日和 `hourCycle: h23` 放在同一次格式化里；窗口正好结束于上海时间 0 点时，标签用结束前一瞬间。08:00 截止的日报日期不变。重载 Web。Worker 不用重启。见 `progress/2026-10-12-share-image.md`。
+
+2026-10-12 小时报可整段停用：`AI_CENTER_HOURLY_DISABLED=1` 后，Worker 启动不再把 `report.hourly.default` 写成 `enabled:true`，定时、准备后的补编和手动入队都不再创建小时任务，已经排队或仍标为运行中的 `report.hourly.extract` 会被取消。启动只打一行日志。需要重启 Worker。见 `progress/2026-10-12-hourly-disabled.md`。
 
 2026-10-12 分享图验收：日报单条在列表和详情都有分享。小时报每条直接分享本条标题和摘要，标题展开本条正文，不再打开第一条引用；`[未抓取]`、`图片 ×N`、`[图片]` 不进分享卡。问答分享用回答完成时间（没有则用记录创建时间），Markdown 表格画成网格，链接只留文字，分享按钮在回答顶部。媒体列表上的「已验证正文」不再把空列表壳留在阅读器里；快照只有段落、`bodyText` 为空时读取会拼回正文。`#ask` 历史卡片在窄屏上折行，不再超出右缘。重载 Web。正文回退随 Web 进程重启生效。Worker 不用重启。见 `progress/2026-10-12-share-image.md`。
 

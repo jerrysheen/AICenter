@@ -20,8 +20,9 @@ test('translated comment headings and wrapped comments preserve authors and medi
   const result = splitFeedText('Body\r\n\r\n## **Comments**:\r\n- Alice: line one\r\nline two\r\n- Bob: reply\r\n\r\n[未抓取] 图片 ×2');
   assert.deepEqual(result, { body: 'Body', comments: ['Alice: line one\nline two', 'Bob: reply'], notes: '[未抓取] 图片 ×2' });
   const html = feedTextToHtml('正文\n\n评论\n· 作者：回复\n\n[未抓取] 视频');
-  assert.match(html, /<\/section><div class="feed-media-notes">/);
-  assert.doesNotMatch(html, /<li>[^<]*未抓取/);
+  assert.match(html, /作者：回复/);
+  assert.doesNotMatch(html, /未抓取|feed-media-notes/);
+  assert.doesNotMatch(feedTextToHtml('韩指已经两个月新低 [未抓取] 图片 ×2'), /未抓取|图片/);
 });
 
 test('mentions of comments in prose and non-comment headings stay in the body', () => {
