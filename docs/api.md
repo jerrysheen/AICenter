@@ -173,6 +173,32 @@ curl -sS "https://center.example.com/api/v1/investor-discussion?date=2026-10-12"
 
 当天没有日摘时 `digest` 为 `null`。
 
+`sections[].crowd` 是外部机器人要读的多空结果。方向发言达到阈值时，`shares` 是加权占比，`insufficient` 为 `false`：
+
+```json
+{
+  "shares": { "bull": 0.62, "neutral": 0.2, "bear": 0.18 },
+  "counts": { "bull": 5, "bear": 2, "neutral": 1 },
+  "sampleSize": 8,
+  "directionalCount": 7,
+  "minDirectional": 5,
+  "insufficient": false
+}
+```
+
+方向发言少于阈值时，`shares` 为 `null`，`insufficient` 为 `true`。`counts` 和 `sampleSize` 仍保留。阈值默认 5，已落库的行若带有 `minDirectional` 则用那个数。标签仍是「偏多」也一样：例如只有 2 条看多时不要把 `shares.bull` 读成 100%。这个接口在读出时改写，不用重新生成。
+
+```json
+{
+  "shares": null,
+  "counts": { "bull": 2, "bear": 0, "neutral": 0 },
+  "sampleSize": 2,
+  "directionalCount": 2,
+  "minDirectional": 5,
+  "insufficient": true
+}
+```
+
 ## 行情
 
 | 方法 | 路径 | 参数 |
