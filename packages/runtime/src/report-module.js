@@ -2,7 +2,7 @@ import { parseContract, GenerateDailyBriefInputSchema, GenerateDailyReportInputS
 import { dailySlotOnInstant, zonedLocalToUtc } from '../../domain/src/zoned-time.js';
 import {GenerateHourlyDigestInputSchema} from '../../contracts/src/report.js';
 import {resolveDailyConfig,resolveDailyWindow,resolveReportDate} from '../../domain/src/daily-window.js';
-import {condenseJobFailure, describeCondenseFailure} from '../../domain/src/information-tree-policy.js';
+import {condenseJobFailure, describeCondenseFailure, isTerminalPendingReason} from '../../domain/src/information-tree-policy.js';
 
 export const REPORT_DAILY_JOB_TYPE = 'report.daily.generate';
 export const REPORT_DAILY_BRIEF_JOB_TYPE = 'report.daily.brief.generate';
@@ -93,13 +93,18 @@ export function classificationDeferredCount(saved) {
 // A backfill hour that still has old classification failures must not replace that target.
 const HOURLY_FOLLOW_UP_REASONS = new Set(['classification-deferred', 'edition-pending', 'edition-pending-sweep']);
 
+export function actionablePendingCount(digest) {
+  if (Array.isArray(digest?.pending)) return digest.pending.filter((item) => !isTerminalPendingReason(item?.reason)).length;
+  return Array.isArray(digest?.pendingIds) ? digest.pendingIds.length : 0;
+}
+
 export function hourlyFollowUpPlan({requestedHour, digests, deferredByStart = new Map(), followUp} = {}) {
   if (HOURLY_FOLLOW_UP_REASONS.has(followUp)) return null;
   const primary = Number.isFinite(requestedHour) ? requestedHour : digests?.[0]?.window?.startAt;
   if (!Number.isFinite(primary)) return null;
   const digest = (digests || []).find((item) => item?.window?.startAt === primary) || null;
   const deferred = Number(deferredByStart.get(primary) || 0);
-  const pendingCount = Array.isArray(digest?.pendingIds) ? digest.pendingIds.length : 0;
+  const pendingCount = actionablePendingCount(digest);
   if (deferred > 0) return {hourStart: primary, reason: 'classification-deferred', pendingCount, deferred};
   if (pendingCount > 0) return {hourStart: primary, reason: 'edition-pending', pendingCount, deferred: 0};
   return null;
@@ -134,8 +139,9 @@ export function hourlyOpenHourStarts(store, workspaceId = 'local') {
   return hours;
 }
 
-// Scheduled runs only. The primary hour keeps its own follow-up. This adds at most `limit`
-// older hours inside the last `windowHours`, newest first, and never chains from a follow-up.
+// Scheduled runs only. The primary hour keeps its own follow-up. Eligible older hours inside
+// the window rotate with the primary hour, so a limit of 2 does not always take the two newest.
+// Hours older than the window are never selected. Follow-ups do not chain.
 export function hourlyPendingSweepPlan({scheduled = false, followUp, primaryHour, rows = [], openHourStarts = new Set(), windowHours = 6, limit = 2} = {}) {
   if (!scheduled || HOURLY_FOLLOW_UP_REASONS.has(followUp)) return [];
   if (!Number.isFinite(primaryHour)) return [];
@@ -148,7 +154,7 @@ export function hourlyPendingSweepPlan({scheduled = false, followUp, primaryHour
     const hourStart = row?.hourStart;
     if (Number.isFinite(hourStart)) byStart.set(hourStart, row);
   }
-  const plans = [];
+  const eligible = [];
   for (let at = primaryHour - HOUR_MS; at >= oldest; at -= HOUR_MS) {
     if (openHourStarts.has(at)) continue;
     const row = byStart.get(at);
@@ -156,10 +162,11 @@ export function hourlyPendingSweepPlan({scheduled = false, followUp, primaryHour
     const pendingCount = Math.max(0, Number(row.pendingCount) || 0);
     const deferred = Math.max(0, Number(row.deferred) || 0);
     if (pendingCount <= 0 && deferred <= 0) continue;
-    plans.push({hourStart: at, reason: 'edition-pending-sweep', pendingCount, deferred});
-    if (plans.length >= cap) break;
+    eligible.push({hourStart: at, reason: 'edition-pending-sweep', pendingCount, deferred});
   }
-  return plans;
+  if (!eligible.length) return [];
+  const offset = Math.floor(primaryHour / HOUR_MS) % eligible.length;
+  return eligible.slice(offset).concat(eligible.slice(0, offset)).slice(0, cap);
 }
 
 function hourlySweepRows({informationService, readingHour, workspaceId, primary, windowHours}) {
@@ -180,7 +187,7 @@ function hourlySweepRows({informationService, readingHour, workspaceId, primary,
     seen.add(startAt);
     rows.push({
       hourStart: startAt,
-      pendingCount: Array.isArray(edition.pendingIds) ? edition.pendingIds.length : 0,
+      pendingCount: actionablePendingCount(edition),
       deferred: deferredFor(startAt),
     });
   }
@@ -191,7 +198,7 @@ function hourlySweepRows({informationService, readingHour, workspaceId, primary,
       seen.add(at);
       rows.push({
         hourStart: at,
-        pendingCount: Array.isArray(edition.pendingIds) ? edition.pendingIds.length : 0,
+        pendingCount: actionablePendingCount(edition),
         deferred: deferredFor(at),
       });
     }
@@ -204,6 +211,84 @@ function hourlySweepRows({informationService, readingHour, workspaceId, primary,
     }
   }
   return rows;
+}
+
+const INFORMATION_PREPARE_JOB_TYPE = 'report.information.prepare';
+const FOLLOW_UP_PREP_PRIORITY = 10;
+const CURRENT_HOUR_PREP_PRIORITY = 30;
+
+export function formatHourlyPendingBreakdown({hourStart, followUp, pending = [], prep = {}} = {}) {
+  const counts = new Map();
+  for (const item of pending) {
+    const reason = String(item?.reason || 'unknown');
+    counts.set(reason, (counts.get(reason) || 0) + 1);
+  }
+  const reasons = [...counts.entries()].sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0).map(([reason, count]) => `${reason}=${count}`).join(' ');
+  return `[worker] hourly-pending hourStart=${hourStart} followUp=${followUp} pending=${pending.length}${reasons ? ` ${reasons}` : ''} queued=${prep.queued || 0} running=${prep.running || 0} missing=${prep.missing || 0} enqueued=${prep.enqueued || 0} prioritized=${prep.prioritized || 0}`;
+}
+
+function preparationItems(digest) {
+  if (Array.isArray(digest?.pending)) return digest.pending;
+  return (Array.isArray(digest?.pendingIds) ? digest.pendingIds : []).map((id) => ({id, reason: 'information-not-ready', retryable: false}));
+}
+
+// Admit one preparation job per source that is still actionable. Follow-ups stay at priority 10,
+// below the current hour's 20/30, so they cannot delay it. Already queued work is only raised
+// up to that same ceiling. The worker's informationPreparationLimit still bounds how many run.
+export function enqueueHourlyPendingPreparation(store, {workspaceId = 'local', digests = [], followUp} = {}) {
+  const stats = {enqueued: 0, prioritized: 0, queued: 0, running: 0, missing: 0};
+  if (!store?.createJob || !store?.listOpenJobs) return stats;
+  const open = (store.listOpenJobs(INFORMATION_PREPARE_JOB_TYPE) || []).filter((job) => job?.workspaceId === workspaceId && (job.status === 'queued' || job.status === 'running'));
+  const running = new Set();
+  const queued = new Map();
+  for (const job of open) {
+    for (const id of job.input?.sourceIds || []) {
+      if (job.status === 'running') running.add(id);
+      else if (!queued.has(id)) queued.set(id, job);
+    }
+  }
+  const bumps = new Map();
+  const seen = new Set();
+  digests.forEach((digest, index) => {
+    const priority = followUp ? FOLLOW_UP_PREP_PRIORITY : (index === 0 ? CURRENT_HOUR_PREP_PRIORITY : FOLLOW_UP_PREP_PRIORITY);
+    for (const item of preparationItems(digest)) {
+      if (!item?.id || seen.has(item.id) || isTerminalPendingReason(item.reason)) continue;
+      const needsPrep = item.reason === 'information-not-ready' || item.retryable === true || item.reason == null || item.reason === '';
+      if (!needsPrep) continue;
+      seen.add(item.id);
+      if (running.has(item.id)) { stats.running += 1; continue; }
+      const queuedJob = queued.get(item.id);
+      if (queuedJob) {
+        stats.queued += 1;
+        if (Number(queuedJob.priority) < priority) {
+          const next = Math.max(bumps.get(queuedJob.id) || 0, priority);
+          bumps.set(queuedJob.id, next);
+        }
+        continue;
+      }
+      stats.missing += 1;
+      const availableAt = item.retryable === true && Number(item.retryAt) > Date.now() ? item.retryAt : Date.now();
+      store.createJob({
+        type: INFORMATION_PREPARE_JOB_TYPE,
+        workspaceId,
+        priority,
+        maxAttempts: 1,
+        availableAt,
+        input: {workspaceId, sourceIds: [item.id]},
+      });
+      stats.enqueued += 1;
+    }
+  });
+  if (store.prioritizeQueuedJobs && bumps.size) {
+    const byPriority = new Map();
+    for (const [id, priority] of bumps) {
+      const ids = byPriority.get(priority) || [];
+      ids.push(id);
+      byPriority.set(priority, ids);
+    }
+    for (const [priority, ids] of byPriority) stats.prioritized += store.prioritizeQueuedJobs(workspaceId, ids, priority).length;
+  }
+  return stats;
 }
 
 export function enqueueHourlyExtractFollowUp(store, {workspaceId = 'local', hourStart, availableAt, reason = 'classification-deferred', priority = 10, env = process.env} = {}) {
@@ -278,6 +363,16 @@ export function createReportJobHandlers({ reportService, briefService = null, in
       const workspaceId=input.workspaceId || 'local';
       const followUpPlan=hourlyFollowUpPlan({requestedHour:input.hourStart,digests,deferredByStart,followUp:input.followUp});
       if(followUpPlan) enqueueHourlyExtractFollowUp(context?.store,{workspaceId,hourStart:followUpPlan.hourStart,availableAt:Date.now()+HOURLY_FOLLOW_UP_DELAY_MS,reason:followUpPlan.reason,env});
+      let prepStats={enqueued:0,prioritized:0,queued:0,running:0,missing:0};
+      try {
+        prepStats=enqueueHourlyPendingPreparation(context?.store,{workspaceId,digests,followUp:input.followUp});
+      } catch { /* admitting preparation must not fail or delay the hour */ }
+      if(input.followUp) {
+        const hourStart=Number.isFinite(input.hourStart) ? input.hourStart : digests?.[0]?.window?.startAt;
+        const digest=(digests || []).find(item=>item?.window?.startAt===hourStart) || digests?.[0] || {};
+        const pending=Array.isArray(digest.pending) ? digest.pending : (Array.isArray(digest.pendingIds) ? digest.pendingIds.map(id=>({id,reason:'information-not-ready'})) : []);
+        console.log(formatHourlyPendingBreakdown({hourStart,followUp:input.followUp,pending,prep:prepStats}));
+      }
       const primaryHour=Number.isFinite(input.hourStart) ? input.hourStart : digests?.[0]?.window?.startAt;
       const windowHours=hourlySweepHours(env);
       const sweepLimit=hourlySweepLimit(env);

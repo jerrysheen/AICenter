@@ -212,8 +212,9 @@ export function createReportRepository(database, emitEvent) {
     },
     listTreePreparationStates(workspaceId,sourceIds) {
       if(!sourceIds.length)return [];
-      return database.prepare(`SELECT input_json,output_json,status FROM daily_analysis_stages WHERE workspace_id=? AND report_date='tree-preparation' AND stage_key IN (SELECT 'information:' || value FROM json_each(?)) ORDER BY updated_at DESC`)
-        .all(workspaceId,JSON.stringify(sourceIds)).map(r=>({input:JSON.parse(r.input_json),output:r.output_json ? JSON.parse(r.output_json) : null,status:r.status}));
+      const payload=JSON.stringify(sourceIds);
+      return database.prepare(`SELECT input_json,output_json,status FROM daily_analysis_stages WHERE workspace_id=? AND report_date='tree-preparation' AND stage_key IN (SELECT 'information:' || value FROM json_each(?) UNION ALL SELECT 'article:' || value FROM json_each(?)) ORDER BY updated_at DESC`)
+        .all(workspaceId,payload,payload).map(r=>({input:JSON.parse(r.input_json),output:r.output_json ? JSON.parse(r.output_json) : null,status:r.status}));
     },
     getAnalysisStage(workspaceId,reportDate,stageKey,inputHash) {
       const row=database.prepare('SELECT * FROM daily_analysis_stages WHERE workspace_id=? AND report_date=? AND stage_key=? AND input_hash=?').get(workspaceId,reportDate,stageKey,inputHash);

@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-12 小时补跑推进未准备来源：`pendingCount` 以前把还没变成信息节点的来源都算进去，其中大部分是 `information-not-ready`。补跑只重发已有节点，不排信息准备，所以条数不变。现在补跑和定时任务会为这些来源各入队一张准备任务，本小时优先级 30，补跑优先级 10，不压过当前小时已有的 20/30。连续失败达到 `AI_CENTER_INFORMATION_PREP_ATTEMPTS`（默认 3）后记为 `prep-exhausted`；`needs-content` 和 `stale-policy` 同样保留原因，但不再触发下一张补跑。没有失败记录的未就绪来源不会被直接记成终态。带 `followUp` 的任务写一行 `[worker] hourly-pending`，按原因计数，并写上准备队列状态。20:00 有 1 条未处理却没被回扫，是因为 `AI_CENTER_HOURLY_SWEEP_LIMIT` 默认 2 而且总是取窗口里最新的两小时，不是因为它超出默认 6 小时窗口。现在窗口内按主小时轮转。需要重启 Worker。见 `progress/2026-10-12-hourly-pending-prep.md`。
+
 2026-10-12 旧刊期待处理回扫：主小时补跑只覆盖当次小时，所以 23:00 的 10 条和 20:00 的 1 条在下一轮定时任务里不再有任务。现在每次定时小时任务先排本小时的补跑，再为最近 `AI_CENTER_HOURLY_SWEEP_HOURS`（默认 6）小时里刊期 `pendingCount>0` 或分类延后、且没有排队或运行中任务的小时，最多再排 `AI_CENTER_HOURLY_SWEEP_LIMIT`（默认 2）张，原因是 `edition-pending-sweep`。比这个窗口更早的小时不排。这张补跑不再连环排，优先级低于本小时。`[worker] tree-hourly` 的 `finishReason` 写完整枚举（`max-tokens`、`SAFETY`、`stop` 等），只有 `body` 和 `message` 截到前 300 字。需要重启 Worker。见 `progress/2026-10-12-hourly-pending-sweep.md`。
 
 2026-10-12 小时补跑对准主小时：00:30 的定时任务会先做最新结束的小时，再顺手回补一个更早的小时。60 秒补跑以前挂在任何一个仍有分类失败的窗口上，所以 23:00 有 10 条未就绪来源时，补跑却排到了回补的 20:00。现在补跑小时只取这次任务的主小时（显式 `hourStart`，否则是返回的第一份刊期）。该小时有分类失败、配额延后，或刊期 `pendingCount>0`，才排一次；`followUp` 已设置的补跑不再连环排。小时浓缩每次调用用 `console.log` 写一行 `[worker] tree-hourly`（种类、状态、错误信息、响应前 300 字、模型、key 后缀、输入字节、finishReason、耗时、结果），进 Node 追加的 `worker.out.*.log`。已配置多把 Google key 时，非配额失败（含 5xx）换下一把 key 再试一次，不再把同一次失败在同一模型上连打三次。需要重启 Worker。见 `progress/2026-10-12-hourly-followup-hour.md`。
