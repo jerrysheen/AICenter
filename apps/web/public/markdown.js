@@ -1,3 +1,14 @@
+const SHARE_PLACEHOLDER = /\[未抓取\](?:\s*(?:图片(?:\s*[×xX]\s*\d+)?|视频|链接卡片(?:[：:][^\n]*)?|X\s*长文))?|\[图片\]|图片\s*[×xX]\s*\d+/g;
+
+export function stripSharePlaceholders(value) {
+  return String(value || '')
+    .replace(SHARE_PLACEHOLDER, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/[ \t]*\n[ \t]*/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 function escapeHtml(value) {
   return String(value || '')
     .replace(/&/g, '&amp;')
@@ -287,7 +298,10 @@ function readableParagraphs(value) {
 }
 
 export function feedTextToHtml(value) {
-  const { body, comments, notes } = splitFeedText(value);
+  const split = splitFeedText(value);
+  const body = stripSharePlaceholders(split.body);
+  const comments = split.comments.map((comment) => stripSharePlaceholders(comment)).filter(Boolean);
+  const notes = stripSharePlaceholders(split.notes);
   const html = body ? markdownToHtml(readableParagraphs(body)) : '';
   const commentHtml = comments.length
     ? `<section class="feed-comments" aria-label="评论"><h4>评论 · ${comments.length}</h4><ul>${comments.map(comment => `<li>${inlineHtml(comment).replace(/\n/g, '<br>')}</li>`).join('')}</ul></section>`

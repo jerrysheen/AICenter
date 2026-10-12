@@ -1,10 +1,20 @@
 import { icon } from './icons.js?v=dev';
 import { decodeHtmlEntities } from './html-text.js?v=dev';
+import { zonedCalendarParts, zonedClockParts } from './shanghai-time.js?v=dev';
 
 const SHANGHAI = 'Asia/Shanghai';
 
-function parts(at, options) {
-  return new Intl.DateTimeFormat('en-US', { timeZone: SHANGHAI, hourCycle: 'h23', ...options }).formatToParts(new Date(at));
+function parts(at, options = {}) {
+  const date = zonedCalendarParts(at, SHANGHAI);
+  const clock = zonedClockParts(at, SHANGHAI);
+  const list = [];
+  const push = (type, value) => list.push({ type, value: String(value) });
+  if (options.year) push('year', date.year);
+  if (options.month) push('month', date.month);
+  if (options.day) push('day', date.day);
+  if (options.hour) push('hour', String(clock.hour).padStart(2, '0'));
+  if (options.minute) push('minute', String(clock.minute).padStart(2, '0'));
+  return list;
 }
 
 function part(list, type) {
