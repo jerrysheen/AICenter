@@ -23,6 +23,7 @@ externaltools/bsk.exe
 ```text
 .env / Instance .env
 data/ai-center.db / 其他运行 SQLite 数据库及备份
+data/deploy-status.json / data/deploy-backups/
 API Key / Token / Cookie
 Browser Profile
 *.db-wal / *.db-shm

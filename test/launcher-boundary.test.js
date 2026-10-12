@@ -25,7 +25,7 @@ test('launcher state and logs belong to the selected instance runtime', () => {
 test('launcher applies work-package restart without stopping the public tunnel', () => {
   assert.match(launcher, /restart\.request/);
   assert.match(launcher, /Restarting Web\/Worker\. Tunnel stays up\./);
-  assert.match(launcher, /Web or Worker exited\. Restarting them; tunnel stays up\./);
+  assert.match(launcher, /Web exited\. Restarting Web and Worker; tunnel stays up\./);
   assert.match(launcher, /Start-AiCenterWebAndWorker/);
   const restartBlock = launcher.match(/Restarting Web\/Worker[\s\S]*?Web\/Worker restarted/)?.[0] || '';
   assert.match(restartBlock, /Stop-StartedAiCenterProcesses/);

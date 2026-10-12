@@ -25,6 +25,15 @@ if ($InstanceId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') {
 }
 $HostRuntimeDirectory = Join-Path $RepositoryRoot '.ai-data'
 $RuntimeDirectory = [IO.Path]::GetFullPath([string]$InstanceConfig.runtimeDirectory)
+$DataDirectory = [IO.Path]::GetFullPath([string]$InstanceConfig.dataDirectory)
+$DatabasePath = [IO.Path]::GetFullPath([string]$InstanceConfig.databasePath)
+$RepositoryEnvPath = [string]$InstanceConfig.repositoryEnvPath
+$InstanceEnvPath = [string]$InstanceConfig.instanceEnvPath
+$DeployStatusFile = Join-Path $DataDirectory 'deploy-status.json'
+$DeployBackupRoot = Join-Path $DataDirectory 'deploy-backups'
+$script:deployInProgress = $false
+$script:deploySettings = $null
+$script:nextDeployCheckUtc = [DateTime]::UtcNow.AddDays(1)
 $LogDirectory = Join-Path $RuntimeDirectory 'logs'
 $HostLogDirectory = Join-Path $HostRuntimeDirectory 'logs'
 $StateFile = Join-Path $RuntimeDirectory 'processes.json'
@@ -45,6 +54,8 @@ $CloudflareErrorLog = Join-Path $HostLogDirectory 'cloudflared.error.log'
 . (Join-Path $PSScriptRoot 'searxng-process.ps1')
 . (Join-Path $PSScriptRoot 'bsk-process.ps1')
 . (Join-Path $PSScriptRoot 'cloudflared-process.ps1')
+. (Join-Path $PSScriptRoot 'deploy-logic.ps1')
+. (Join-Path $PSScriptRoot 'deploy-run.ps1')
 
 function Get-ProcessByIdSafe([int]$ProcessId) {
   if ($ProcessId -le 0) { return $null }
@@ -407,6 +418,19 @@ public static class AiCenterConsoleCtrl {
     Write-Host ''
     Write-Host 'Keep this window open. Ctrl+C stops services; Enter starts them again in this folder.' -ForegroundColor DarkGray
     while (-not [AiCenterConsoleCtrl]::StopRequested) {
+      if ($script:deployInProgress) {
+        Start-Sleep -Milliseconds 800
+        continue
+      }
+      if ($script:deploySettings -and $script:deploySettings.Enabled -and [DateTime]::UtcNow -ge $script:nextDeployCheckUtc) {
+        $script:nextDeployCheckUtc = [DateTime]::UtcNow.AddSeconds([int]$script:deploySettings.IntervalSeconds)
+        try {
+          Invoke-AiCenterAutoDeploy
+        } catch {
+          Write-Host '[!] Auto-deploy error.' -ForegroundColor Yellow
+        }
+        if ([AiCenterConsoleCtrl]::StopRequested) { return 'stop' }
+      }
       $webProcess.Refresh()
       $workerProcess.Refresh()
       $fullRestartRequested = Test-Path -LiteralPath $RestartRequestFile -PathType Leaf
@@ -737,6 +761,18 @@ while ($true) {
     }
     Write-Host "Web PID: $($webProcess.Id); Worker PID: $($workerProcess.Id)$(if ($searchProcess -and $searchStatus -eq 'ok') { "; Search PID: $($searchProcess.Id)" } else { '' })$(if ($browserProcess -and $browserOwned) { "; Browser PID: $($browserProcess.Id)" } else { '' })$(if ($cloudflareProcess -and $cloudflareStatus -eq 'ok') { "; Tunnel PID: $($cloudflareProcess.Id)" } else { '' })"
     Write-Host "Logs: $LogDirectory"
+    $script:deploySettings = Get-AiCenterDeploySettings -Environment @{
+      AI_CENTER_AUTO_DEPLOY = [string]$env:AI_CENTER_AUTO_DEPLOY
+      AI_CENTER_DEPLOY_INTERVAL_SECONDS = [string]$env:AI_CENTER_DEPLOY_INTERVAL_SECONDS
+      AI_CENTER_DEPLOY_REF = [string]$env:AI_CENTER_DEPLOY_REF
+      AI_CENTER_DEPLOY_BACKUP_KEEP = [string]$env:AI_CENTER_DEPLOY_BACKUP_KEEP
+    }
+    $script:nextDeployCheckUtc = [DateTime]::UtcNow
+    $script:deployMissingRefLogged = $false
+    $script:lastDeployedSha = ''
+    if ($script:deploySettings.Enabled) {
+      Write-Host "Auto-deploy: every $($script:deploySettings.IntervalSeconds)s, ref $($script:deploySettings.Ref). .env is backed up and not applied." -ForegroundColor DarkGray
+    }
     $waitResult = 'restart'
     while ($waitResult -eq 'restart' -or $waitResult -eq 'restart-worker') {
       $waitResult = Wait-ForCtrlCOrCrash

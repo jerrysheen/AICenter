@@ -1,7 +1,19 @@
+import { readDeployStatus } from '../http/deploy-status.js';
 import { json } from '../http/response.js';
 
 export function createRuntimeRoutes() {
   return [
+    {
+      method: 'GET', path: '/api/v1/runtime/deploy-status',
+      handler({ request, response, authorizeDeviceCookie, deployStatusPath }) {
+        const device = authorizeDeviceCookie?.(request);
+        if (!device) {
+          json(response, 401, { ok: false, error: '此设备尚未配对' });
+          return;
+        }
+        json(response, 200, readDeployStatus(deployStatusPath));
+      },
+    },
     {
       method: 'GET', path: '/api/v1/runtime/model-usage', access: 'desktop',
       forbidden: '模型用量仅在本机显示',

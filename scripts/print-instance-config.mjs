@@ -25,5 +25,9 @@ console.log(JSON.stringify({
   instanceRoot: instance.instanceRoot,
   legacyLayout: instance.legacyLayout,
   runtimeDirectory: instance.runtimeDirectory,
+  dataDirectory: instance.dataDirectory,
+  databasePath: instance.databasePath,
+  repositoryEnvPath: instance.repositoryEnvPath,
+  instanceEnvPath: instance.instanceEnvPath,
   port: instance.port,
 }));
