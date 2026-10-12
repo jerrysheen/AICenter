@@ -119,7 +119,13 @@ export function createInvestorDiscussionJobHandlers({
     maxCommentPages: config.maxCommentPages,
     commentPosts: config.commentPosts,
   });
-  const model = summarize || createGeminiInvestorSummarizer({ env, model: config.model });
+  const model = summarize || createGeminiInvestorSummarizer({
+    env,
+    model: config.model,
+    quotaRepository,
+    dayWindow: pacificDayWindow,
+    now,
+  });
   return {
     [INVESTOR_DISCUSSION_JOB_TYPE]: async (rawInput) => {
       const input = parseContract(InvestorDiscussionGenerateInputSchema, rawInput || {});
@@ -151,6 +157,7 @@ export function createInvestorDiscussionJobHandlers({
         jevBatchSize: envOverride(env, 'AI_CENTER_INVESTOR_DIGEST_JEV_BATCH', 1, 40),
         jevMaxCalls: envOverride(env, 'AI_CENTER_INVESTOR_DIGEST_JEV_MAX_CALLS', 1, 5000) ?? 200,
         jevSingleAttempts: envOverride(env, 'AI_CENTER_INVESTOR_DIGEST_JEV_ATTEMPTS', 1, 6),
+        retryFailed: input.retryFailed === true,
       });
       return { digestDate: saved.digestDate, status: saved.status };
     },

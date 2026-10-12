@@ -375,6 +375,7 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort, res
     },
     requestInvestorDiscussion(input = {}) {
       const digestDate = String(input.digestDate || '').trim();
+      const retryFailed = input.retryFailed === true;
       const open = (runtimeRepository.listOpenJobs?.(INVESTOR_DISCUSSION_JOB_TYPE) || []).find((job) => {
         const jobDate = String(job.input?.digestDate || '');
         return !digestDate || !jobDate || jobDate === digestDate;
@@ -384,7 +385,10 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort, res
         type: INVESTOR_DISCUSSION_JOB_TYPE,
         workspaceId: 'local',
         maxAttempts: 2,
-        input: digestDate ? { digestDate } : {},
+        input: {
+          ...(digestDate ? { digestDate } : {}),
+          ...(retryFailed ? { retryFailed: true } : {}),
+        },
       });
     },
     requestQuantPrepare() {

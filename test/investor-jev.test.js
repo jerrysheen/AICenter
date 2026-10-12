@@ -269,12 +269,14 @@ test('digest page shows the share line, keeps an old sentiment, and names the qu
         questionSet: 'v2',
         coverage: { targets: 1, succeeded: 1, postCount: 2, commentCount: 0, labelNote: '发言未标注 1 条' },
         sections: [{
-          name: '浦发银行',
+          name: '南大光电',
           summary: '多头还在。',
           sentiment: '偏多',
+          fetchStatus: 'summary_failed',
           heat: { posts: 2, comments: 0 },
           crowd: {
-            label: '数据不足',
+            label: '偏多',
+            directionalCount: 2,
             sampleSize: 2,
             shares: { bull: 1, bear: 0, neutral: 0 },
             counts: { bull: 2, bear: 0, neutral: 0 },
@@ -284,12 +286,22 @@ test('digest page shows the share line, keeps an old sentiment, and names the qu
       },
     }, { date: '2026-10-12', busy: false, onDate() {}, onGenerate() {} });
     const thinText = texts(thin).join('\n');
-    assert.match(thinText, /数据不足/);
-    assert.match(thinText, /样本 2 · 看多 2 · 中性 0 · 看空 0/);
+    assert.match(thinText, /数据不足（2 条）/);
+    assert.match(thinText, /重试失败的标的/);
     assert.match(thinText, /题集 v2/);
     assert.match(thinText, /发言未标注 1 条/);
     assert.doesNotMatch(thinText, /多空占比/);
+    assert.doesNotMatch(thinText, /100%/);
     assert.doesNotMatch(thinText, /偏多/);
+    assert.doesNotMatch(thinText, /样本 2/);
+    assert.equal(formatInvestorCrowdCounts({
+      crowd: {
+        label: '偏多',
+        directionalCount: 2,
+        shares: { bull: 1, bear: 0, neutral: 0 },
+        counts: { bull: 2, bear: 0, neutral: 0 },
+      },
+    }), '');
 
     const full = element('div');
     renderInvestorDigest(full, {

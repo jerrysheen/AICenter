@@ -16,9 +16,9 @@ import {
   discussionTimestamp,
   stockDiscussionUrl,
 } from '../packages/connectors/src/xueqiu/stock-discussion.js';
-import { createGeminiInvestorSummarizer } from '../packages/connectors/src/investor-discussion-model.js';
 import {
   INVESTOR_DISCUSSION_SYSTEM,
+  alignSummaryWithShares,
   buildDiscussionTargets,
   createInvestorDiscussionService,
   discussionDayWindow,
@@ -26,7 +26,9 @@ import {
   markUnverified,
   presentInvestorDigest,
   stripTradingAdvice,
+  summaryShareGuidance,
 } from '../packages/domain/src/investor-discussion.js';
+import { createGeminiInvestorSummarizer, investorSummaryModelList } from '../packages/connectors/src/investor-discussion-model.js';
 import {
   createInvestorDiscussionJobHandlers,
   ensureInvestorDiscussionSchedule,
@@ -576,6 +578,8 @@ test('digest stores coverage, drops invented links, and keeps login failures vis
         assert.match(system, /传闻必须标「未证实」/);
         assert.match(prompt, /热度必须使用这两个数字/);
         assert.match(prompt, /帖子 1，评论 1/);
+        assert.match(prompt, /方向样本不足（2 条）/);
+        assert.match(prompt, /不要写「分歧明显」/);
         return { text: JSON.stringify({
           summary: '多头认为回购。传闻已落地。建议买入。',
           sentiment: '偏多',
@@ -766,3 +770,190 @@ test('missing Gemini key fails labeling instead of storing unlabeled shares', as
     store.close();
   }
 });
+
+test('summary wording follows the computed share and drops a false split', () => {
+  const majority = {
+    label: '偏多',
+    directionalCount: 8,
+    minDirectional: 5,
+    shares: { bull: 0.7, bear: 0.2, neutral: 0.1 },
+    labels: { bull: '看多', bear: '看空', neutral: '中性' },
+  };
+  assert.match(summaryShareGuidance(majority), /已计算占比：看多 70%/);
+  assert.match(summaryShareGuidance(majority), /禁止写「分歧明显」/);
+  assert.equal(alignSummaryWithShares('市场分歧明显，等待消息。', majority), '市场看多占多数，等待消息。');
+  const thin = {
+    label: '偏多',
+    directionalCount: 2,
+    minDirectional: 5,
+    shares: { bull: 1, bear: 0, neutral: 0 },
+  };
+  assert.match(summaryShareGuidance(thin), /方向样本不足（2 条）/);
+  const corrected = alignSummaryWithShares('看多占100%。分歧明显。', thin);
+  assert.equal(corrected, '样本不足。');
+  assert.doesNotMatch(corrected, /100%/);
+  const split = {
+    label: '分歧',
+    directionalCount: 10,
+    shares: { bull: 0.4, bear: 0.4, neutral: 0.2 },
+  };
+  assert.equal(alignSummaryWithShares('分歧明显。', split), '分歧明显。');
+  assert.equal(investorSummaryModelList({
+    AI_CENTER_INVESTOR_DIGEST_MODEL: 'gemini-3.1-flash-lite',
+    AI_CENTER_INVESTOR_DIGEST_SUMMARY_MODELS: 'gemini-3.5-flash,gemini-3.1-flash-lite',
+  }).join(','), 'gemini-3.1-flash-lite,gemini-3.5-flash');
+});
+
+test('summary retries 503 across keys, then falls back to the next model', async () => {
+  const sleeps = [];
+  const calls = [];
+  let step = 0;
+  const summarize = createGeminiInvestorSummarizer({
+    env: {
+      AI_CENTER_GEMINI_KEY_ENVS: 'GEMINI_API_KEY,GEMINI_API_KEY2',
+      GEMINI_API_KEY: 'key-a',
+      GEMINI_API_KEY2: 'key-b',
+      AI_CENTER_INVESTOR_DIGEST_MODEL: 'gemini-3.1-flash-lite',
+      AI_CENTER_INVESTOR_DIGEST_SUMMARY_MODELS: 'gemini-3.5-flash',
+      AI_CENTER_INVESTOR_DIGEST_SUMMARY_RETRIES: '1',
+    },
+    sleep: async (ms) => { sleeps.push(ms); },
+    fetch: async (url, init) => {
+      calls.push({ url: String(url), key: init.headers['x-goog-api-key'] });
+      step += 1;
+      if (step < 5) {
+        return new Response(JSON.stringify({ error: { code: 503, message: 'unavailable' } }), { status: 503 });
+      }
+      return new Response(JSON.stringify({
+        candidates: [{ content: { parts: [{ text: '{"summary":"成了。","repeatedTopics":[],"links":[]}' }] } }],
+        usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  const result = await summarize({ system: '系统', prompt: '材料' });
+  assert.match(result.text, /成了/);
+  assert.equal(result.model, 'gemini-3.5-flash');
+  assert.deepEqual(sleeps, [1000]);
+  assert.equal(calls.filter((call) => call.url.includes('gemini-3.1-flash-lite')).length, 4);
+  assert.equal(calls.filter((call) => call.url.includes('gemini-3.5-flash')).length, 1);
+  assert.deepEqual(calls.slice(0, 2).map((call) => call.key), ['key-a', 'key-b']);
+
+  const rotated = [];
+  const quick = createGeminiInvestorSummarizer({
+    env: {
+      AI_CENTER_GEMINI_KEY_ENVS: 'GEMINI_API_KEY,GEMINI_API_KEY2',
+      GEMINI_API_KEY: 'key-a',
+      GEMINI_API_KEY2: 'key-b',
+      AI_CENTER_INVESTOR_DIGEST_SUMMARY_RETRIES: '2',
+    },
+    sleep: async () => { throw new Error('换 key 成功时不应退避'); },
+    fetch: async (_url, init) => {
+      const key = init.headers['x-goog-api-key'];
+      rotated.push(key);
+      if (key === 'key-a') {
+        return new Response(JSON.stringify({
+          error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: 'generate_content_free_tier_requests per day' },
+        }), { status: 429, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({
+        candidates: [{ content: { parts: [{ text: '{"summary":"换过。","repeatedTopics":[],"links":[]}' }] } }],
+        usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  const second = await quick({ system: '系统', prompt: '材料' });
+  assert.match(second.text, /换过/);
+  assert.deepEqual(rotated, ['key-a', 'key-b']);
+});
+
+test('retryFailed regenerates only the failed stock', async () => {
+  const store = createStore(':memory:');
+  try {
+    const service = createInvestorDiscussionService({
+      repository: store.repositories.investorDiscussion,
+      now: () => Date.parse('2026-10-12T13:30:00.000Z'),
+      timeZone: 'Asia/Shanghai',
+    });
+    store.repositories.investorDiscussion.save({
+      workspaceId: 'local',
+      digestDate: '2026-10-12',
+      status: 'partial',
+      generatedAt: 1,
+      model: 'gemini-3.1-flash-lite',
+      questionSet: 'v2',
+      coverage: { missing: [{ key: 'SZ000001', name: '平安银行', reason: 'Gemini 请求失败（503）' }] },
+      sections: [
+        {
+          kind: 'holding', key: 'SH600000', name: '浦发银行', summary: '保持原总结', sentiment: '',
+          fetchStatus: 'ok', heat: { posts: 1, comments: 0 }, repeatedTopics: [], links: [],
+        },
+        {
+          kind: 'holding', key: 'SZ000001', name: '平安银行', summary: '', sentiment: '',
+          fetchStatus: 'summary_failed', reason: 'Gemini 请求失败（503）', heat: { posts: 1, comments: 0 },
+          repeatedTopics: [], links: [],
+        },
+      ],
+      error: '',
+    });
+    const seen = [];
+    const saved = await service.generate({
+      digestDate: '2026-10-12',
+      retryFailed: true,
+      holdings: [
+        { yahoo: '600000.SS', name: '浦发银行', symbol: '600000', exchangeCode: 'XSHG' },
+        { yahoo: '000001.SZ', name: '平安银行', symbol: '000001', exchangeCode: 'XSHE' },
+      ],
+      themes: [],
+      model: 'gemini-3.1-flash-lite',
+      client: {
+        async collectAll(targets) {
+          seen.push(...targets.map((item) => item.key));
+          return targets.map(() => ({
+            ok: true,
+            posts: [{ id: '9', text: '订单增加', title: '订单', author: '甲', url: 'https://xueqiu.com/8/9', replyCount: 1, createdAt: 1 }],
+            comments: [],
+            failures: [],
+          }));
+        },
+      },
+      label: async ({ batch }) => ({
+        text: JSON.stringify({
+          items: batch.map((item) => ({
+            id: item.id,
+            aboutTarget: true,
+            bullish: true,
+            bearish: false,
+            explicit: true,
+            questionOnly: false,
+            reportOnly: false,
+            hasEvidence: false,
+            rumor: false,
+            traded: false,
+          })),
+        }),
+      }),
+      summarize: async () => ({ text: JSON.stringify({ summary: '订单被反复提到。', repeatedTopics: [], links: [] }) }),
+    });
+    assert.deepEqual(seen, ['SZ000001']);
+    const kept = saved.sections.find((item) => item.key === 'SH600000');
+    const repaired = saved.sections.find((item) => item.key === 'SZ000001');
+    assert.equal(kept.summary, '保持原总结');
+    assert.match(repaired.summary, /订单/);
+    assert.equal(repaired.fetchStatus, 'ok');
+    assert.equal(saved.status, 'ready');
+    await assert.rejects(
+      () => service.generate({
+        digestDate: '2026-10-12',
+        retryFailed: true,
+        holdings: [],
+        themes: [],
+        client: { async collectAll() { throw new Error('不应再抓取'); } },
+        summarize: async () => ({ text: '{}' }),
+      }),
+      /没有失败的标的/,
+    );
+  } finally {
+    store.close();
+  }
+});
+

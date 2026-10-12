@@ -10,8 +10,10 @@ export const InvestorDiscussionGenerateInputSchema = z.object({
   digestDate: InvestorDiscussionDateSchema.optional(),
   scheduledFor: EpochMillisSchema.optional(),
   scheduleKey: z.string().trim().min(1).max(128).optional(),
+  retryFailed: z.boolean().optional(),
 }).strict();
 
 export const InvestorDiscussionGenerateRequestSchema = z.object({
   date: InvestorDiscussionDateSchema.optional(),
+  retryFailed: z.boolean().optional(),
 }).strict();
