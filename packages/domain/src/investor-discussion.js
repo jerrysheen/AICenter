@@ -360,6 +360,21 @@ function overallStatus(sections) {
   return 'ready';
 }
 
+export function presentInvestorCrowd(crowd) {
+  if (!crowd || typeof crowd !== 'object') return crowd ?? null;
+  if (!crowdSampleInsufficient(crowd)) return { ...crowd, insufficient: false };
+  return {
+    ...crowd,
+    shares: null,
+    insufficient: true,
+  };
+}
+
+function presentSection(section) {
+  if (!section || typeof section !== 'object' || !section.crowd || typeof section.crowd !== 'object') return section;
+  return { ...section, crowd: presentInvestorCrowd(section.crowd) };
+}
+
 export function presentInvestorDigest(row, { pending = false } = {}) {
   if (!row) return null;
   let status = row.status;
@@ -368,6 +383,7 @@ export function presentInvestorDigest(row, { pending = false } = {}) {
     status = 'failed';
     error = error || '生成中断，可以重新生成。';
   }
+  const sections = Array.isArray(row.sections) ? row.sections : [];
   return {
     date: row.digestDate,
     status,
@@ -376,7 +392,7 @@ export function presentInvestorDigest(row, { pending = false } = {}) {
     pending,
     questionSet: row.questionSet || '',
     coverage: row.coverage || {},
-    sections: Array.isArray(row.sections) ? row.sections : [],
+    sections: sections.map(presentSection),
   };
 }
 

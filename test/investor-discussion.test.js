@@ -625,6 +625,8 @@ test('digest stores coverage, drops invented links, and keeps login failures vis
     assert.equal(main.crowd.label, '数据不足');
     assert.equal(main.crowd.sampleSize, 2);
     assert.equal(main.crowd.counts.bull, 2);
+    assert.equal(main.crowd.shares, null);
+    assert.equal(main.crowd.insufficient, true);
     assert.equal(main.crowd.questionSet, 'v2');
     assert.equal(main.heat.posts, 1);
     assert.equal(main.heat.comments, 1);
@@ -769,6 +771,77 @@ test('missing Gemini key fails labeling instead of storing unlabeled shares', as
   } finally {
     store.close();
   }
+});
+
+test('digest API nulls shares when the directional sample is below the threshold', () => {
+  const stored = {
+    label: '偏多',
+    directionalCount: 2,
+    sampleSize: 2,
+    minDirectional: 5,
+    shares: { bull: 1, bear: 0, neutral: 0 },
+    counts: { bull: 2, bear: 0, neutral: 0 },
+  };
+  const view = presentInvestorDigest({
+    digestDate: '2026-10-12',
+    status: 'partial',
+    questionSet: 'v2',
+    sections: [
+      { key: 'SZ300346', name: '南大光电', crowd: stored },
+      {
+        key: 'SH600000',
+        name: '浦发银行',
+        crowd: {
+          label: '偏多',
+          directionalCount: 7,
+          sampleSize: 8,
+          shares: { bull: 0.6, bear: 0.2, neutral: 0.2 },
+          counts: { bull: 5, bear: 2, neutral: 1 },
+        },
+      },
+      {
+        key: 'SZ000001',
+        name: '只看条数',
+        crowd: {
+          label: '偏多',
+          sampleSize: 3,
+          shares: { bull: 1, bear: 0, neutral: 0 },
+          counts: { bull: 2, bear: 0, neutral: 1 },
+        },
+      },
+    ],
+  });
+  const thin = view.sections[0].crowd;
+  assert.equal(thin.shares, null);
+  assert.equal(thin.insufficient, true);
+  assert.equal(thin.sampleSize, 2);
+  assert.deepEqual(thin.counts, stored.counts);
+  assert.deepEqual(stored.shares, { bull: 1, bear: 0, neutral: 0 });
+  const enough = view.sections[1].crowd;
+  assert.deepEqual(enough.shares, { bull: 0.6, bear: 0.2, neutral: 0.2 });
+  assert.equal(enough.insufficient, false);
+  assert.equal(enough.sampleSize, 8);
+  assert.equal(enough.counts.bull, 5);
+  const fromCounts = view.sections[2].crowd;
+  assert.equal(fromCounts.shares, null);
+  assert.equal(fromCounts.insufficient, true);
+  assert.equal(fromCounts.sampleSize, 3);
+  const atThreshold = presentInvestorDigest({
+    digestDate: '2026-10-12',
+    status: 'ready',
+    sections: [{
+      crowd: {
+        label: '偏多',
+        directionalCount: 2,
+        minDirectional: 2,
+        sampleSize: 2,
+        shares: { bull: 1, bear: 0, neutral: 0 },
+        counts: { bull: 2, bear: 0, neutral: 0 },
+      },
+    }],
+  });
+  assert.deepEqual(atThreshold.sections[0].crowd.shares, { bull: 1, bear: 0, neutral: 0 });
+  assert.equal(atThreshold.sections[0].crowd.insufficient, false);
 });
 
 test('summary wording follows the computed share and drops a false split', () => {
