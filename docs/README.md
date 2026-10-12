@@ -27,6 +27,8 @@
 
 - `progress/2026-10-12-share-image.md`：信息流、阅读页、小时报和日报单条，以及问答卡，共用一张分享图。长文分页出 PNG。Web 重载一次以提供 `/qr-code.js`，Worker 不用重启。
 
+- `progress/2026-10-12-readonly-api-tokens.md`：外部机器人用只读 Bearer 令牌访问白名单 GET。设置页生成和撤销，库里只存哈希。migration 57。见 `api.md`。
+
 - `progress/2026-10-12-investor-digest-jev.md`：股民讨论日摘用 `config/jev-questions.v2.json` 逐条打是非题，代码计算加权多空占比。总结不再写情绪标签。旧日摘仍可读原来的情绪。migration 56 只增加题集版本列。
 
 - `progress/2026-10-12-compute-price-filters.md`：AI Token 族只映射文本模型；RunPod 去掉无库存和过低占位价；Vast 按型号扩大查询，少于 3 条不展示并写出样本数。解析版本 `compute-prices-2`，不新增 migration。见 `compute-prices-v1.md`。

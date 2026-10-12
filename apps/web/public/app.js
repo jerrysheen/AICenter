@@ -288,6 +288,8 @@ const state = {
   quoteChart: null,
   quoteHistoryRequestId: 0,
   settingsPane: 'hub',
+  apiTokenReveal: null,
+  apiTokenLoad: 0,
   pageKind: '',
   pageId: '',
   trail: [],
@@ -8795,6 +8797,146 @@ function renderPublishPage() {
   goBack();
 }
 
+function formatTokenStamp(value, empty) {
+  if (!value) return empty;
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(value);
+}
+
+function paintApiTokenList(host, tokens) {
+  host.replaceChildren();
+  if (!tokens.length) {
+    host.append(Object.assign(document.createElement('p'), {
+      className: 'section-desc',
+      textContent: '还没有令牌。',
+    }));
+    return;
+  }
+  for (const token of tokens) {
+    const row = document.createElement('div');
+    row.className = 'api-token-row';
+    const text = document.createElement('span');
+    const title = document.createElement('strong');
+    title.textContent = token.name;
+    const meta = document.createElement('small');
+    meta.textContent = `${token.prefix}… · 创建 ${formatTokenStamp(token.createdAt, '—')} · 最近使用 ${formatTokenStamp(token.lastUsedAt, '尚未使用')}`;
+    text.append(title, meta);
+    const revoke = document.createElement('button');
+    revoke.type = 'button';
+    revoke.className = 'text-button api-token-revoke';
+    revoke.textContent = '撤销';
+    revoke.addEventListener('click', () => {
+      revoke.disabled = true;
+      api(`/api/v1/api-tokens/${token.id}`, { method: 'DELETE' })
+        .then(() => {
+          if (state.apiTokenReveal?.id === token.id) state.apiTokenReveal = null;
+          renderSettingsHub();
+        })
+        .catch((error) => {
+          revoke.disabled = false;
+          showToast(error.message);
+        });
+    });
+    row.append(text, revoke);
+    host.append(row);
+  }
+}
+
+function renderApiTokenCard() {
+  const card = document.createElement('article');
+  card.className = 'status-card api-token-card';
+  const title = document.createElement('h2');
+  title.textContent = '只读令牌';
+  const note = document.createElement('p');
+  note.textContent = '给外部机器人读取简报、小时报、信息流、股民讨论和行情。明文只在生成时出现一次，服务端只保存哈希。写入、设置、令牌管理和部署状态不能使用这个令牌。';
+  const form = document.createElement('form');
+  form.className = 'api-token-form';
+  const input = document.createElement('input');
+  input.maxLength = 40;
+  input.required = true;
+  input.placeholder = '名称，例如 行情机器人';
+  input.setAttribute('aria-label', '令牌名称');
+  const submit = document.createElement('button');
+  submit.type = 'submit';
+  submit.className = 'text-button';
+  submit.textContent = '生成';
+  form.append(input, submit);
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const name = input.value.trim();
+    if (!name) return;
+    submit.disabled = true;
+    api('/api/v1/api-tokens', { method: 'POST', body: JSON.stringify({ name }) })
+      .then((payload) => {
+        state.apiTokenReveal = { id: payload.token.id, name: payload.token.name, secret: payload.secret };
+        renderSettingsHub();
+      })
+      .catch((error) => {
+        submit.disabled = false;
+        showToast(error.message);
+      });
+  });
+  card.append(title, note, form);
+  if (state.apiTokenReveal?.secret) {
+    const reveal = document.createElement('div');
+    reveal.className = 'api-token-secret';
+    const hint = document.createElement('p');
+    hint.textContent = `「${state.apiTokenReveal.name}」的令牌只显示这一次。点已保存后无法再查看。`;
+    const code = document.createElement('code');
+    code.textContent = state.apiTokenReveal.secret;
+    const actions = document.createElement('div');
+    actions.className = 'api-token-actions';
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'text-button';
+    copy.textContent = '复制';
+    copy.addEventListener('click', () => {
+      const secret = state.apiTokenReveal?.secret || '';
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(secret).then(() => showToast('已复制')).catch(() => showToast('复制失败，请手动选择令牌'));
+        return;
+      }
+      showToast('复制失败，请手动选择令牌');
+    });
+    const done = document.createElement('button');
+    done.type = 'button';
+    done.className = 'text-button';
+    done.textContent = '我已保存';
+    done.addEventListener('click', () => {
+      state.apiTokenReveal = null;
+      renderSettingsHub();
+    });
+    actions.append(copy, done);
+    reveal.append(hint, code, actions);
+    card.append(reveal);
+  }
+  const list = document.createElement('div');
+  list.className = 'api-token-list';
+  list.append(Object.assign(document.createElement('p'), {
+    className: 'section-desc',
+    textContent: '正在读取令牌…',
+  }));
+  card.append(list);
+  state.apiTokenLoad += 1;
+  const generation = state.apiTokenLoad;
+  api('/api/v1/api-tokens').then((payload) => {
+    if (generation !== state.apiTokenLoad) return;
+    paintApiTokenList(list, payload.tokens || []);
+  }).catch((error) => {
+    if (generation !== state.apiTokenLoad) return;
+    list.replaceChildren(Object.assign(document.createElement('p'), {
+      className: 'section-desc',
+      textContent: error.message,
+    }));
+  });
+  return card;
+}
+
 function renderSettingsHub() {
   const hub = elements['settings-hub'];
   const connections = elements['settings-connections'];
@@ -8820,6 +8962,7 @@ function renderSettingsHub() {
     button.addEventListener('click', onClick);
     hub.append(button);
   }
+  hub.append(renderApiTokenCard());
 }
 
 function openSourceMenu(source) {

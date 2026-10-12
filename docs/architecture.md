@@ -160,6 +160,7 @@ packages/
 - API Key、Cookie 和本机路径不得返回给手机。
 - 公网代理请求不得根据 Origin TCP 回环地址获得桌面管理员权限。
 - 已配对只表示可以使用这个 Instance。改仓库、Shell、写盘、subagent、派发工作包和手动重启进程属于 Host 作用，只允许本机 `desktop-host`。公网 Ask 不得复用带这些工具的 Harness Session。
+- 外部机器人使用只读 API 令牌：`Authorization: Bearer aic_…`。服务端只存 sha256。令牌只能读取明确列出的 GET 接口（日报与简报、小时报、信息流与搜索、股民讨论日摘、行情含硬件价和算力价）。写入、设置、令牌管理、Runtime 和部署状态仍拒绝 Bearer。本机桌面会话和已配对设备才能生成或撤销。见 `docs/api.md`。
 
 公网模式、一次性高熵配对、Cloudflare Access，以及 Agent / Host 能力平面见 `docs/public-access-security.md`。
 

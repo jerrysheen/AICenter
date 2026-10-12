@@ -24,6 +24,8 @@ import { createWorkPackageTracePort } from '../../../packages/runtime/src/work-p
 import { readTagCatalogFile } from '../../../packages/runtime/src/tagging-module.js';
 import { createFailureStreakStore, createSourceHub, createSourceModuleRegistry, installFailureStreakStore, readStaticSignalBoard } from '../../../packages/source/src/index.js';
 import { createEventStreamHub } from './http/event-stream.js';
+import { isApiTokenAllowlisted, readBearerToken, requestWantsRefresh } from './http/api-token-access.js';
+import { redactApiTokenText } from '../../../packages/domain/src/api-token-service.js';
 import { publicHttpsLocation } from './http/device-auth.js';
 import { parseCookies, json } from './http/response.js';
 import { createRouter } from './http/router.js';
@@ -131,7 +133,8 @@ function attachApiTiming(response, request, url, timings, eventLoopDelay, loopLo
     const stalled = loopP99 >= 200;
     if (total >= 500 || (stalled && Date.now() - loopLog.at >= 10_000)) {
       if (stalled) loopLog.at = Date.now();
-      console.warn(`[web] ${request.method} ${url.pathname} total=${Math.round(total)}ms auth=${Math.round(timings.authMs)}ms loop_p99=${Math.round(loopP99)}ms`);
+      const safePath = redactApiTokenText(url.pathname);
+      console.warn(`[web] ${request.method} ${safePath} total=${Math.round(total)}ms auth=${Math.round(timings.authMs)}ms loop_p99=${Math.round(loopP99)}ms`);
     }
     return phrase === undefined
       ? originalWriteHead.call(response, statusCode, headerObject)
@@ -358,6 +361,24 @@ export function createAiCenterServer(options = {}) {
   const server = createServer(async (request, response) => {
     const timings = { started: performance.now(), authMs: 0, handlerStarted: 0 };
     const url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
+    let apiTokenId = '';
+    let apiTokenLogged = false;
+    const logApiToken = (tokenId, status) => {
+      if (!tokenId || apiTokenLogged || !services.apiTokens) return;
+      apiTokenLogged = true;
+      try {
+        services.apiTokens.recordAccess({
+          tokenId,
+          method: request.method,
+          path: url.pathname,
+          status,
+          latencyMs: performance.now() - timings.started,
+          touch: status !== 401,
+        });
+      } catch {
+        console.error('[web] api token access log failed');
+      }
+    };
     try {
       const httpsLocation = publicHttpsLocation(request, url, publicBaseUrl);
       if (httpsLocation) {
@@ -373,7 +394,43 @@ export function createAiCenterServer(options = {}) {
 
       const publicRequest = isPublicRequest(request, url);
       const authStarted = performance.now();
-      const identity = resolveIdentity(request, publicRequest);
+      let identity = resolveIdentity(request, publicRequest);
+      const bearer = readBearerToken(request.headers.authorization);
+      if (bearer.present && isApiTokenAllowlisted(request.method, url.pathname) && services.apiTokens) {
+        const auth = services.apiTokens.authorize(bearer.token);
+        if (!auth.token) {
+          timings.authMs = performance.now() - authStarted;
+          timings.handlerStarted = performance.now();
+          attachApiTiming(response, request, url, timings, eventLoopDelay, loopLog);
+          json(response, 401, { ok: false, error: '令牌无效或已撤销' });
+          logApiToken(auth.matchedId, 401);
+          return;
+        }
+        const limit = services.apiTokens.consume(auth.token.id);
+        if (!limit.allowed) {
+          timings.authMs = performance.now() - authStarted;
+          timings.handlerStarted = performance.now();
+          attachApiTiming(response, request, url, timings, eventLoopDelay, loopLog);
+          json(response, 429, { ok: false, error: '请求过于频繁，请稍后重试' }, {
+            'Retry-After': String(limit.retryAfterSeconds),
+          });
+          logApiToken(auth.token.id, 429);
+          return;
+        }
+        if (requestWantsRefresh(url)) {
+          timings.authMs = performance.now() - authStarted;
+          timings.handlerStarted = performance.now();
+          attachApiTiming(response, request, url, timings, eventLoopDelay, loopLog);
+          json(response, 403, { ok: false, error: '只读令牌不能触发刷新' });
+          logApiToken(auth.token.id, 403);
+          return;
+        }
+        identity = {
+          kind: 'api-token',
+          token: { id: auth.token.id, name: auth.token.name, prefix: auth.token.prefix },
+        };
+        apiTokenId = auth.token.id;
+      }
       timings.authMs = performance.now() - authStarted;
       timings.handlerStarted = performance.now();
       attachApiTiming(response, request, url, timings, eventLoopDelay, loopLog);
@@ -398,14 +455,18 @@ export function createAiCenterServer(options = {}) {
         },
       });
       if (!handled) json(response, 404, { ok: false, error: 'Not found' });
+      logApiToken(apiTokenId, response.statusCode || 500);
     } catch (error) {
       const status = error instanceof ValidationError ? 400 : 500;
       if (status === 500) console.error(error);
-      json(response, status, {
-        ok: false,
-        error: error instanceof Error ? error.message : 'Internal server error',
-        issues: error instanceof ValidationError ? error.issues : undefined,
-      });
+      if (!response.headersSent) {
+        json(response, status, {
+          ok: false,
+          error: error instanceof Error ? error.message : 'Internal server error',
+          issues: error instanceof ValidationError ? error.issues : undefined,
+        });
+      }
+      logApiToken(apiTokenId, response.statusCode || status);
     }
   });
 
