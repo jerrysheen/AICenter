@@ -414,9 +414,12 @@ export function createHarnessAgentRuntime({
   } = {}, articleFallback=false) {
     let runEnv=articleFallback ? {...env,AI_CENTER_HARNESS_ARTICLE_PROVIDER:'elucid-grok',AI_CENTER_HARNESS_ARTICLE_MODEL:env.AI_CENTER_HARNESS_ARTICLE_FALLBACK_MODEL || 'grok-4.7'} : env;
     if(!articleFallback && (googleModel!==undefined || googleKeyEnv!==undefined)) {
-      if(closedContext!==true || closedTask!=='article-normalize' || env.AI_CENTER_HARNESS_ARTICLE_PROVIDER!=='google')throw new Error('Google selectors require a closed Google article task');
+      const hourlyGoogle=closedTask==='hourly-brief' && String(env.AI_CENTER_HARNESS_HOURLY_PROVIDER || '').trim()==='google';
+      const articleGoogle=closedTask==='article-normalize' && String(env.AI_CENTER_HARNESS_ARTICLE_PROVIDER || '').trim()==='google';
+      if(closedContext!==true || (!hourlyGoogle && !articleGoogle))throw new Error('Google selectors require a closed Google task');
       const selected=resolveHarnessLlm(env,{closedTask,googleModel});
-      runEnv={...env,AI_CENTER_HARNESS_ARTICLE_MODEL:selected.model};
+      const prefix=hourlyGoogle ? 'AI_CENTER_HARNESS_HOURLY' : 'AI_CENTER_HARNESS_ARTICLE';
+      runEnv={...env,[`${prefix}_MODEL`]:selected.model};
     }
     const runStartedAt = Date.now();
     const runtimeContext = buildRuntimeContext(now ?? clock(), timeZone);

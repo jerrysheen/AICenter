@@ -9,3 +9,5 @@ Windows 上的 `scripts/start-ai-center.ps1` 在原守护循环里增加自动�
 `GET /api/v1/runtime/deploy-status` 返回 `data/deploy-status.json`。必须有设备登录会话，本机回环和转发头不算登录。文件不存在时是空状态。响应不含路径或密钥。
 
 启用步骤和变量表在 `docs/ops/auto-deploy.md`。当前已经打开的守护窗口要先手动更新并重新打开，才会开始自动部署。之后发布用 `git push origin <commit>:deploy`。
+
+`scripts/deploy-logic.ps1` 和 `scripts/test-deploy-logic.ps1` 含中文原因，必须以 UTF-8 BOM 保存。Windows PowerShell 5.1 遇到无 BOM 文件会按系统 GBK 分词，引号被吃掉后守护脚本无法启动。

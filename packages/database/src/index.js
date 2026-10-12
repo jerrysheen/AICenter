@@ -730,17 +730,29 @@ export function createStore(databasePath) {
       return result.changes > 0;
     },
 
-    recoverStaleJobs(staleAfterMs = 10 * 60_000, now = Date.now()) {
+    recoverStaleJobs(staleAfterMs = 10 * 60_000, now = Date.now(), options = {}) {
       const leaseMs = Number(staleAfterMs);
       const duration = Number.isFinite(leaseMs) && leaseMs > 0 ? leaseMs : 10 * 60_000;
       const cutoff = Number(now) - duration;
       const observedAt = Date.now();
-      const rows = database.prepare(`SELECT * FROM jobs WHERE status = 'running' AND locked_at < ?`).all(cutoff);
+      const globalMax = Number(options.maxRunningMs);
+      const byType = options.maxRunningMsByType && typeof options.maxRunningMsByType === 'object' ? options.maxRunningMsByType : {};
+      const attemptStart = database.prepare(`SELECT started_at FROM job_attempts WHERE job_id = ? AND status = 'running' ORDER BY started_at ASC LIMIT 1`);
+      const rows = database.prepare(`SELECT * FROM jobs WHERE status = 'running'`).all().flatMap((row) => {
+        const leaseStale = row.locked_at < cutoff;
+        const limit = Number(byType[row.type] ?? globalMax);
+        const started = attemptStart.get(row.id)?.started_at || row.started_at || row.locked_at;
+        const runtimeStale = Number.isFinite(limit) && limit > 0 && Number(started) < Number(now) - limit;
+        return leaseStale || runtimeStale ? [{ ...row, leaseStale, runtimeStale }] : [];
+      });
       database.transaction(() => {
         for (const row of rows) {
-          const retry = row.attempt_count < row.max_attempts;
+          const expiredRuntime = row.runtimeStale === true;
+          const retry = !expiredRuntime && row.attempt_count < row.max_attempts;
           const status = retry ? 'queued' : 'failed';
-          const error = { name: 'WorkerLeaseExpired', message: '后台进程中断，任务租约已过期' };
+          const error = expiredRuntime
+            ? { name: 'WorkerRunTimeout', message: '任务运行超过时限，已释放以便队列继续' }
+            : { name: 'WorkerLeaseExpired', message: '后台进程中断，任务租约已过期' };
           const delay = row.type === 'feed.translation.run' ? translationRetryDelayMs(row.attempt_count) : 0;
           const availableAt = retry ? observedAt + delay : row.available_at;
           database.prepare(`UPDATE jobs SET status = ?, error_json = ?, available_at = ?, completed_at = ?,
