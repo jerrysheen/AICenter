@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-12-auto-deploy.md`：Windows 守护脚本按 `origin/deploy` 或最新 `deploy-*` 标签快进部署。只改 `apps/web/public` 不重启；失败回滚。`GET /api/v1/runtime/deploy-status` 要设备登录。日志按天轮转和只重启 Worker 保持不变。
+
 - `progress/2026-10-12-brief-truncated-manifest.md`：弱网截断的 gzip 不再被当成简报成功。200 的无效 JSON 会失败；没有 `pipeline` 的清单不进 30 秒缓存。失败时保留上一份有效清单，否则显示骨架和重试。只有服务端明确返回旧版 `pipeline` 才进入旧版简报。入口按钮改为「旧版简报」。
 
 - `progress/2026-10-12-investor-digest-ab-retry.md`：日摘离线 A/B 补拆批重试。B 默认每批 12，解析失败或条数不齐时对半再打；输入 token 改读 `promptTokenCount`；方向不足 5 条显示「数据不足」。仍不进线上日摘。
