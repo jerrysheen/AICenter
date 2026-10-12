@@ -69,7 +69,7 @@ export const TreeIndexManifestSchema=z.object({
 }).strict();
 export const TreeManifestQuerySchema=TreeWindowQuerySchema.safeExtend({view:z.enum(['reading','index']).optional(),information:z.literal('1').optional()});
 export function readingHourIndexDefaultWindow(nowMs=Date.now()) {
-  const parts=new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hourCycle:'h23'}).formatToParts(new Date(nowMs));
+  const parts=new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(nowMs));
   const read=type=>Number(parts.find(part=>part.type===type)?.value);
   const startAt=Date.UTC(read('year'),read('month')-1,read('day'))-8*3_600_000;
   return {startAt,endAt:startAt+86_400_000};

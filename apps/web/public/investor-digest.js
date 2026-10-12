@@ -1,3 +1,5 @@
+import { clockLabel, dateKey, monthDayLabel } from './shanghai-time.js?v=dev';
+
 const SHANGHAI = 'Asia/Shanghai';
 
 function el(tag, text = '', className = '') {
@@ -8,17 +10,13 @@ function el(tag, text = '', className = '') {
 }
 
 function shanghaiDate(now = Date.now()) {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: SHANGHAI, year: 'numeric', month: '2-digit', day: '2-digit',
-  }).format(new Date(now));
+  return dateKey(now, SHANGHAI);
 }
 
 function clock(at) {
   const value = Number(at);
   if (!Number.isFinite(value) || value <= 0) return '';
-  return new Intl.DateTimeFormat('zh-CN', {
-    timeZone: SHANGHAI, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-  }).format(new Date(value));
+  return `${monthDayLabel(value, SHANGHAI)} ${clockLabel(value, SHANGHAI)}`;
 }
 
 const STATUS = {

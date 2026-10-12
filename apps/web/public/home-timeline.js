@@ -1,3 +1,5 @@
+import { zonedCalendarParts, zonedClockParts } from './shanghai-time.js?v=dev';
+
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 const ZONE = 'Asia/Shanghai';
@@ -27,24 +29,15 @@ export const HOME_VISIBLE_HOURS = { wide: 4, narrow: 3 };
 export const HOME_RECENT_EDITION_HOURS = 48;
 
 export function shanghaiParts(nowMs) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: ZONE,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    weekday: 'short',
-    hourCycle: 'h23',
-  }).formatToParts(new Date(nowMs));
-  const read = (type) => parts.find((part) => part.type === type)?.value || '';
+  const date = zonedCalendarParts(nowMs, ZONE);
+  const clock = zonedClockParts(nowMs, ZONE);
   return {
-    year: Number(read('year')),
-    month: Number(read('month')),
-    day: Number(read('day')),
-    hour: read('hour').padStart(2, '0'),
-    minute: read('minute').padStart(2, '0'),
-    weekday: read('weekday'),
+    year: date.year,
+    month: date.month,
+    day: date.day,
+    hour: String(clock.hour).padStart(2, '0'),
+    minute: String(clock.minute).padStart(2, '0'),
+    weekday: date.weekday,
   };
 }
 

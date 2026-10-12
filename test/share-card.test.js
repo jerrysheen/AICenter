@@ -11,6 +11,8 @@ import {
   formatShareTime,
   resolveShareScale,
   sharePngFilename,
+  prefersShareSheet,
+  startShareDownload,
   stripSharePlaceholders,
 } from '../apps/web/public/share-card.js';
 import { qrMatrix } from '../apps/web/public/qr-code.js';
@@ -146,11 +148,20 @@ test('feed, reader, brief bullets and ask share one card', () => {
   assert.match(css, /min-width:\s*0/);
   assert.match(css, /word-break:\s*break-word/);
   assert.match(css, /\.share-sheet-table/);
-  assert.match(css, /\.ask-answer-share/);
+  assert.match(css, /\.ask-answer-share\s*\{[^}]*position:\s*absolute/);
+  assert.match(css, /\.ask-turn-a:has\(\.ask-answer-share\) \.ask-answer/);
+  assert.doesNotMatch(css, /\.ask-answer-share\s*\{[^}]*position:\s*sticky/);
   assert.match(js, /async function shareAskExchange/);
   assert.match(js, /exportAskSharePng\(card, \{ deliver: 'auto' \}\)/);
   assert.match(js, /async function presentShareCard/);
   assert.match(js, /async function openShareImagePreview/);
+  assert.match(js, /function saveShareImagePreview\(\)/);
+  assert.doesNotMatch(js, /async function saveShareImagePreview/);
+  assert.match(js, /prepareShareDownload\(page\)/);
+  assert.match(js, /startShareDownload/);
+  assert.match(js, /preferShare: prefersShareSheet\(\)/);
+  assert.doesNotMatch(js, /saveShareImagePreview\(\)\.catch/);
+  assert.match(js, /stripSharePlaceholders\(decodeHtmlEntities/);
   assert.match(js, /await openShareImagePreview\(result\)/);
   assert.match(js, /onShare: \(\) => presentShareCard\(postShareInput\(post\)\)/);
   assert.match(js, /label: '分享'/);
@@ -184,4 +195,44 @@ test('feed, reader, brief bullets and ask share one card', () => {
   assert.doesNotMatch(share, /image\/jpeg/);
   assert.doesNotMatch(share, /foreignObject/);
   assert.doesNotMatch(share, /html2canvas|dom-to-image/);
+});
+
+test('prepared save downloads in the click turn and shares on iOS', async () => {
+  const blob = new Blob(['png'], { type: 'image/png' });
+  const clicks = [];
+  const link = { href: '', download: '', isConnected: true, click() { clicks.push('download'); } };
+  const desktop = startShareDownload({
+    blob, filename: 'card.png', downloadLink: link, preferShare: false,
+  }, { document: { body: { append() {} } }, navigator: {} });
+  assert.equal(desktop, 'download');
+  assert.deepEqual(clicks, ['download']);
+  assert.equal(prefersShareSheet({ navigator: { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)', platform: 'iPhone', maxTouchPoints: 5 } }), true);
+  assert.equal(prefersShareSheet({ navigator: { userAgent: 'Mozilla/5.0 (Macintosh)', platform: 'MacIntel', maxTouchPoints: 0 } }), false);
+  const shared = [];
+  const ios = startShareDownload({
+    blob, filename: 'card.png', title: '日报', downloadLink: link, preferShare: true,
+  }, {
+    File: class { constructor(parts, name, options) { this.parts = parts; this.name = name; this.options = options; } },
+    document: { body: { append() {} } },
+    navigator: {
+      canShare(data) { return Array.isArray(data.files) && data.files.length === 1; },
+      share(data) { shared.push(data.files[0].name); return Promise.resolve(); },
+    },
+  });
+  assert.equal(ios, 'share');
+  assert.deepEqual(shared, ['card.png']);
+  assert.deepEqual(clicks, ['download']);
+  const cancelled = startShareDownload({
+    blob, filename: 'card.png', downloadLink: link, preferShare: true,
+  }, {
+    File: class { constructor() {} },
+    document: { body: { append() {} } },
+    navigator: {
+      canShare() { return true; },
+      share() { return Promise.reject(Object.assign(new Error('cancel'), { name: 'AbortError' })); },
+    },
+  });
+  assert.equal(cancelled, 'share');
+  await Promise.resolve();
+  assert.deepEqual(clicks, ['download']);
 });

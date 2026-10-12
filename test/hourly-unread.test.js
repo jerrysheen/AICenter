@@ -224,7 +224,7 @@ test('hourly titles fold open in place and keep the hour list', async () => {
       }
       if (path.startsWith('/api/v1/reports/reading-hour')) return Promise.resolve({ snapshot: {
         id: 'rh:reader', status: 'ready', scored: 1, candidates: 1, selected: 1,
-        items: [{ nodeId: 'info-1', title: '芯片出口', disposition: 'hit', readingDirectionName: '科技与AI', readingThemeName: '中国', timely: true, id: 'info-1', layer: 'information', body: '这是较长的中文正文', text: '摘要', sourceRefs: [{ type: 'media-body', id: 'media-1' }] }],
+        items: [{ nodeId: 'info-1', title: '芯片出口', disposition: 'hit', readingDirectionName: '科技与AI', readingThemeName: '中国', timely: true, id: 'info-1', layer: 'information', body: '这是较长的中文正文 [未抓取] 图片 ×2', text: '摘要', sourceUrl: 'https://example.com/chip', sourceRefs: [{ type: 'media-body', id: 'media-1' }] }],
       } });
       return Promise.reject(new Error('missing'));
     },
@@ -242,6 +242,11 @@ test('hourly titles fold open in place and keep the hour list', async () => {
   assert.equal(root.querySelector('.reading-toolbar'), null);
   const paragraph = root.querySelector('.reading-fold-body').children.find(node => node.tagName === 'P');
   assert.match(paragraph.textContent, /这是较长的中文正文/);
+  assert.doesNotMatch(paragraph.textContent, /未抓取|图片/);
+  const sourceLink = root.querySelector('.reading-source-link');
+  assert.equal(sourceLink.textContent, '原文');
+  assert.equal(sourceLink.href, 'https://example.com/chip');
+  assert.equal(sourceLink.attrs.target, '_blank');
   assert.ok(root.querySelector('.feed-content'));
   await root.querySelectorAll('button').find(node => node.textContent === '原文').listeners.click[0]();
   assert.equal(read, 'info-1');

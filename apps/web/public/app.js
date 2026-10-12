@@ -4,7 +4,7 @@ import {
   subscriptions, tools, tradeLedger,
 } from './mock.js?v=dev';
 import { icon } from './icons.js?v=dev';
-import { renderMarkdownInto, renderFeedTextInto, splitFeedText } from './markdown.js?v=dev';
+import { renderMarkdownInto, renderFeedTextInto, splitFeedText, stripSharePlaceholders } from './markdown.js?v=dev';
 import { renderQuantLab } from './quant-lab.js?v=dev';
 import { createHardwarePricesPage, hardwareMarketItem } from './hardware-prices.js?v=dev';
 import { computeMarketItems, gpuMatchesSource } from './compute-prices.js?v=dev';
@@ -3226,8 +3226,8 @@ function postViewBody(post) {
 
 function fillMediaParagraphs(element, paragraphs, comparison = []) {
   element.classList.add('media-article-content');
-  paragraphs = (paragraphs || []).map((paragraph) => ({ ...paragraph, text: decodeHtmlEntities(paragraph.text) }));
-  comparison = (comparison || []).map((paragraph) => ({ ...paragraph, text: decodeHtmlEntities(paragraph.text) }));
+  paragraphs = (paragraphs || []).map((paragraph) => ({ ...paragraph, text: stripSharePlaceholders(decodeHtmlEntities(paragraph.text)) }));
+  comparison = (comparison || []).map((paragraph) => ({ ...paragraph, text: stripSharePlaceholders(decodeHtmlEntities(paragraph.text)) }));
   const originals = new Map(comparison.map(p=>[p.id,p]));
   let list;
   for (const paragraph of paragraphs) {
@@ -3259,7 +3259,7 @@ function fillMediaParagraphs(element, paragraphs, comparison = []) {
 }
 
 function fillPostBody(element, value, post = null) {
-  const text = decodeHtmlEntities(String(value || '无正文'));
+  const text = stripSharePlaceholders(decodeHtmlEntities(String(value || '无正文'))) || '无正文';
   element.classList.remove('feed-readable');
   if (post?.platform === 'x' || post?.platform === 'xueqiu') {
     element.classList.add('feed-readable');
@@ -10111,6 +10111,7 @@ function postShareInput(post) {
 function closeShareImagePreview() {
   const preview = state.shareImagePreview;
   state.shareImagePreview = null;
+  if (preview?.downloadUrl) window.setTimeout(() => URL.revokeObjectURL(preview.downloadUrl), 1500);
   if (preview?.url?.startsWith('blob:')) URL.revokeObjectURL(preview.url);
   const pages = elements['share-image-pages'];
   pages?.querySelectorAll('img.share-image-preview').forEach((image, index) => {
@@ -10123,7 +10124,16 @@ async function openShareImagePreview(result) {
   closeShareImagePreview();
   const page = result?.previewUrl ? result : result?.pages?.[0];
   if (!page?.previewUrl || !page?.blob) throw new Error('图片预览失败');
-  state.shareImagePreview = { pages: [page], title: result.title || '' };
+  const { prepareShareDownload, prefersShareSheet, startShareDownload } = await import('./share-card.js?v=dev');
+  const prepared = prepareShareDownload(page);
+  state.shareImagePreview = {
+    pages: [page],
+    title: result.title || '',
+    downloadLink: prepared?.link || null,
+    downloadUrl: prepared?.url || '',
+    preferShare: prefersShareSheet(),
+    save: startShareDownload,
+  };
   const image = elements['share-image-preview'];
   if (image) {
     image.src = page.previewUrl;
@@ -10134,11 +10144,17 @@ async function openShareImagePreview(result) {
   openDialog(dialog);
 }
 
-async function saveShareImagePreview() {
-  const page = state.shareImagePreview?.pages?.[0];
-  if (!page) return;
-  const { downloadBlob } = await import('./share-card.js?v=dev');
-  downloadBlob(page.filename, page.blob);
+function saveShareImagePreview() {
+  const preview = state.shareImagePreview;
+  const page = preview?.pages?.[0];
+  if (!page?.blob || typeof preview.save !== 'function') return;
+  preview.save({
+    blob: page.blob,
+    filename: page.filename,
+    title: preview.title,
+    downloadLink: preview.downloadLink,
+    preferShare: preview.preferShare,
+  });
 }
 
 async function presentShareCard(input, button) {
@@ -10685,11 +10701,12 @@ function shiftDateKey(iso, days) {
 }
 
 function expectedBriefDate(now = new Date()) {
-  const hour = Number(new Intl.DateTimeFormat('en-US', {
+  let hour = Number(new Intl.DateTimeFormat('en-US', {
     timeZone: 'Asia/Shanghai',
     hour: '2-digit',
     hourCycle: 'h23',
   }).format(now));
+  if (hour === 24) hour = 0;
   const today = shanghaiDateKey(now);
   return hour >= 8 ? today : shiftDateKey(today, -1);
 }
@@ -14326,7 +14343,8 @@ elements['reference-pack-clear']?.addEventListener('click', () => {
   showToast('已清空材料');
 });
 elements['share-image-save']?.addEventListener('click', () => {
-  saveShareImagePreview().catch((error) => showToast(error.message));
+  try { saveShareImagePreview(); }
+  catch (error) { showToast(error.message); }
 });
 elements['ask-ref-export']?.addEventListener('click', () => {
   exportReferencePack().catch((error) => showToast(error.message));

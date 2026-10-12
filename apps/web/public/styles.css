@@ -2528,6 +2528,7 @@ button.source-health-row:hover { background: var(--background-secondary); }
   letter-spacing: 0.06em;
 }
 .ask-turn-a {
+  position: relative;
   padding: 12px 14px;
   border: 0;
   border-radius: 12px;
@@ -2929,17 +2930,20 @@ body[data-agent-mode="article-analysis"] .ask-research-mode {
   margin-top: var(--space-3);
 }
 .ask-answer-share {
-  position: sticky;
+  position: absolute;
   top: 8px;
-  z-index: 2;
-  display: flex;
-  justify-content: flex-end;
-  margin: 0 0 8px;
+  right: 10px;
+  z-index: 1;
+  margin: 0;
+}
+.ask-turn-a:has(.ask-answer-share) .ask-answer {
+  padding-top: 32px;
 }
 .ask-answer-share .text-button {
-  min-height: 36px;
-  padding: 4px 12px;
+  min-height: 28px;
+  padding: 2px 10px;
   border-radius: 999px;
+  font-size: 12px;
   background: var(--background-primary);
 }
 .share-sheet-host {
@@ -5574,6 +5578,7 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
 .tree-list .reading-fold > summary::-webkit-details-marker { display: none; }
 .tree-list .reading-fold-body { padding: 0 0 16px; }
 .tree-list .reading-fold-body .tree-text { font-size: 16px; line-height: 1.75; }
+.reading-source-link { display: inline-block; margin-top: 8px; color: var(--brand); font-size: 14px; }
 .tree-page :is(button,summary,select):focus-visible { outline: 2px solid var(--brand); outline-offset: 3px; }
 .tree-update { position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:30;display:flex;align-items:center;gap:12px;width:max-content;max-width:calc(100vw - 32px);padding:12px 16px;background:var(--background-primary,#fff);border:1px solid var(--comp-tertiary,#ddd);box-shadow:0 4px 16px #0002; }
 .tree-update[hidden] { display:none; }

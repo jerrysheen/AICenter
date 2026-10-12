@@ -1,4 +1,5 @@
-import { markdownShareBlocks } from './markdown.js';
+import { markdownShareBlocks, stripSharePlaceholders } from './markdown.js';
+export { stripSharePlaceholders };
 import { paintQr, qrMatrix } from './qr-code.js';
 
 export const SHARE_CARD_MIN_WIDTH = 375;
@@ -94,17 +95,6 @@ export function formatShareTime(now = new Date()) {
   if (Number.isNaN(date.getTime())) return '';
   const pad = (value) => String(value).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-const SHARE_PLACEHOLDER = /\[未抓取\](?:\s*(?:图片(?:\s*[×xX]\s*\d+)?|视频|链接卡片(?:[：:][^\n]*)?|X\s*长文))?|\[图片\]|图片\s*[×xX]\s*\d+/g;
-
-export function stripSharePlaceholders(value) {
-  return String(value || '')
-    .replace(SHARE_PLACEHOLDER, ' ')
-    .replace(/[ \t]{2,}/g, ' ')
-    .replace(/[ \t]*\n[ \t]*/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
 }
 
 export function shareTextBlocks(value) {
@@ -550,6 +540,68 @@ export function downloadBlob(filename, blob) {
   link.click();
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export function prefersShareSheet(env = globalThis) {
+  const nav = env.navigator;
+  if (!nav) return false;
+  const ua = String(nav.userAgent || '');
+  const platform = String(nav.platform || '');
+  return /iPad|iPhone|iPod/i.test(ua) || (platform === 'MacIntel' && Number(nav.maxTouchPoints) > 1);
+}
+
+export function prepareShareDownload(page, env = globalThis) {
+  const blob = page?.blob;
+  if (!blob || typeof env.document?.createElement !== 'function' || typeof env.URL?.createObjectURL !== 'function') return null;
+  const url = env.URL.createObjectURL(blob);
+  const link = env.document.createElement('a');
+  link.href = url;
+  link.download = page.filename || 'share.png';
+  return { url, link };
+}
+
+function clickPreparedLink(page, env) {
+  const link = page?.downloadLink;
+  const doc = env.document;
+  if (link && typeof link.click === 'function') {
+    if (doc?.body && !link.isConnected) doc.body.append(link);
+    link.click();
+    return true;
+  }
+  if (page?.blob) {
+    downloadBlob(page.filename || 'share.png', page.blob);
+    return true;
+  }
+  return false;
+}
+
+// Share and download must start in the click turn. Awaiting an import first
+// drops the user gesture, so the first tap does nothing.
+export function startShareDownload(page, env = globalThis) {
+  const blob = page?.blob;
+  if (!blob) return 'missing';
+  const filename = page.filename || 'share.png';
+  const nav = env.navigator;
+  if (page.preferShare && nav && typeof nav.canShare === 'function') {
+    try {
+      const FileCtor = env.File;
+      const file = new FileCtor([blob], filename, { type: blob.type || 'image/png' });
+      if (nav.canShare({ files: [file] })) {
+        const pending = nav.share({ files: [file], title: page.title || 'TradingPlus' });
+        if (pending && typeof pending.catch === 'function') {
+          pending.catch((error) => {
+            if (error?.name === 'AbortError') return;
+            clickPreparedLink(page, env);
+          });
+        }
+        return 'share';
+      }
+    } catch (error) {
+      if (error?.name === 'AbortError') return 'aborted';
+    }
+  }
+  clickPreparedLink(page, env);
+  return 'download';
 }
 
 export async function deliverShareFiles(pages, { title } = {}) {
