@@ -7,7 +7,7 @@ import { icon } from './icons.js?v=dev';
 import { renderMarkdownInto, renderFeedTextInto, splitFeedText } from './markdown.js?v=dev';
 import { renderQuantLab } from './quant-lab.js?v=dev';
 import { createHardwarePricesPage, hardwareMarketItem } from './hardware-prices.js?v=dev';
-import { computeMarketItems } from './compute-prices.js?v=dev';
+import { computeMarketItems, gpuMatchesSource } from './compute-prices.js?v=dev';
 import { openModelUsageDialog } from './model-usage.js?v=dev';
 import { createFeedLikeAction } from './feed-interaction.js?v=dev';
 import { createMediaFeedCache, createMediaFeedLoader, createMediaReaderSession, mediaIndexBody, mediaReaderParagraphs } from './media-feed.js?v=dev';
@@ -115,6 +115,7 @@ const state = {
   computeItems: [],
   computeChecks: [],
   computeKind: 'all',
+  computeGpuSource: 'all',
   computeLoading: false,
   computeLoaded: false,
   computeError: '',
@@ -4613,7 +4614,7 @@ function hardwareFetchHint() {
 }
 
 function computeFetchHint() {
-  const names = { openrouter: 'AI Token', runpod: 'RunPod', vast: 'Vast' };
+  const names = { openrouter: 'AI Token', runpod: 'RunPod', vast: 'Vast', ccir: 'CCIR', gpueconomy: 'GPU Economy', bargo: 'Bargo' };
   const pages = state.computeChecks || [];
   if (!pages.length) return state.computeLoading ? '正在读取 AI Token 与 GPU 租金…' : '';
   return pages.map((page) => {
@@ -5135,7 +5136,20 @@ function renderAssets() {
   if(onCompute) {
     const kinds=document.createElement('div');kinds.className='chip-tabs';
     renderChipTabs(kinds,[{id:'all',label:'全部'},{id:'token',label:'Token'},{id:'gpu',label:'GPU 租金'}],state.computeKind,id=>{state.computeKind=id;renderAssets();});
-    hardwareFilters.replaceChildren(kinds);
+    const children=[kinds];
+    if(state.computeKind!=='token') {
+      const sources=document.createElement('div');sources.className='chip-tabs';
+      renderChipTabs(sources,[
+        {id:'all',label:'全部来源'},
+        {id:'runpod',label:'RunPod'},
+        {id:'vast',label:'Vast'},
+        {id:'ccir',label:'CCIR'},
+        {id:'gpueconomy',label:'GPU Economy'},
+        {id:'bargo',label:'Bargo'},
+      ],state.computeGpuSource,id=>{state.computeGpuSource=id;renderAssets();});
+      children.push(sources);
+    }
+    hardwareFilters.replaceChildren(...children);
   }
   if (state.tradePane === 'assets') {
     setTradeHint(onEvents
@@ -5169,6 +5183,7 @@ function visibleAssets() {
     return sortByChange(state.computeItems.filter((item) => {
       if (state.computeKind === 'token' && item.compute?.kind !== 'token') return false;
       if (state.computeKind === 'gpu' && item.compute?.kind !== 'gpu') return false;
+      if (!gpuMatchesSource(item, state.computeGpuSource)) return false;
       const text = `${item.name} ${item.symbol} ${item.summary || ''} ${item.group || ''}`.toLowerCase();
       return !needle || text.includes(needle);
     }));
@@ -7419,7 +7434,18 @@ function renderWatchRows(target, rows, { formatValue } = {}) {
       row.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openPage('hardware',`series/${item.hardware.seriesKey}`);}});
     }
     if(item.compute) {
-      row.querySelector('.quote-code').textContent=item.group;
+      const code=row.querySelector('.quote-code');
+      code.textContent=item.group;
+      if(item.compute.sourceUrl && String(item.compute.sourceUrl).startsWith('https://')) {
+        code.append(document.createTextNode(' · '));
+        const link=document.createElement('a');
+        link.href=item.compute.sourceUrl;
+        link.target='_blank';
+        link.rel='noreferrer noopener';
+        link.textContent='出处';
+        link.addEventListener('click',event=>event.stopPropagation());
+        code.append(link);
+      }
       if(item.priceSuffix) row.querySelector('.quote-price').textContent=`${format(item, item.lastPrice)} ${item.priceSuffix}`;
       row.querySelector('.quote-price').classList.toggle('up',item.changePct!==null && up);
       row.querySelector('.quote-change').classList.toggle('up',item.changePct!==null && up);

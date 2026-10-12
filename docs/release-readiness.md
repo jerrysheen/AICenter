@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-12 GPU 租金增加三个公开来源：CCIR 阶梯表（超大规模 / 新云 / 市场，保障与可中断，含 B300 与 A100）默认 20:30 与 21:30；GPU Economy 多供应商中位默认每 120 分钟；Bargo 按需 / 竞价 / 预留均价默认 09:00。报价日优先用页面上的日期。异常低价沿用同型号中位 40% 和下限。页面可按来源筛选，并链到出处。不新增 migration，不接入 Ornn 或 Silicon Data。需重启 Worker，并重载 Web。见 `compute-prices-v1.md` 与 `progress/2026-10-12-gpu-price-sources.md`。
+
 2026-10-12 生产首次抓取后的过滤：Gemini Pro 不再选到出图型号，只保留 `output_modalities` 全为 text 的文本模型。RunPod 跳过无库存档，并丢掉低于同型号中位 40% 或下限的小时价，原因写入 Worker 日志。Vast 按 H100 SXM / NVL / PCIE 分开查询，计入 verified 与 unverified，样本少于 3 条不展示，页面写出条数。解析版本 `compute-prices-2`，不新增 migration。需重启 Worker，并重载 Web。见 `compute-prices-v1.md` 与 `progress/2026-10-12-compute-price-filters.md`。
 
 2026-10-12 全球行情新增「AI Token」：OpenRouter 公开型号价换算为每百万 token 美元，RunPod 保存 H100/H200/B200 安全云和社区云小时价，Vast 公开挂牌有整卡 H100 时保存最低和中位。migration 55。`market.token-prices.snapshot` 默认每天 08:20（Asia/Shanghai），`market.gpu-rent.snapshot` 默认每 360 分钟。开关是 `AI_CENTER_TOKEN_PRICE_SYNC`、`AI_CENTER_TOKEN_PRICE_AT`、`AI_CENTER_TOKEN_PRICE_TIMEZONE`、`AI_CENTER_GPU_RENT_SYNC`、`AI_CENTER_GPU_RENT_INTERVAL_MINUTES`。需重启 Worker，并重载 Web 后 `#market/global/compute` 才显示。未在生产抓取，不宣称租金覆盖全市场。见 `compute-prices-v1.md` 与 `progress/2026-10-12-compute-prices.md`。

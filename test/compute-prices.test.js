@@ -417,7 +417,7 @@ test('registered jobs save fixture catalogs and the market route is read only', 
     const gpus = await handlers['market.gpu-rent.snapshot']({ scheduleKey: 'market.gpu-rent.snapshot', scheduledFor: dayTwo }, { job: { workspaceId: 'local' } });
     assert.equal(tokens.models, 1);
     assert.equal(gpus.saved.length, 2);
-    assert.ok(logs.some((line) => line.includes('[compute-prices] 跳过 H200 NVL community 0.5：无库存')));
+    assert.ok(logs.some((line) => line.includes('[compute-prices] 跳过 RunPod H200 NVL community 0.5：无库存')));
     const read = await fetch(`${address.localUrl}/api/v1/compute-prices`);
     assert.equal(read.status, 200);
     const body = await read.json();
