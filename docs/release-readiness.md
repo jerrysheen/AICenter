@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-12 外部机器人只读 API 令牌：设置页由本机桌面或已配对设备生成、列出和撤销。明文只出现一次，库表只存 sha256 与前缀。`Authorization: Bearer` 只能读取日报与简报、小时报、信息流与搜索、股民讨论日摘、行情（含硬件价格和算力价格）。写入、令牌管理、Runtime 和部署状态拒绝 Bearer。默认每令牌每分钟 60 次，429 带 `Retry-After`。访问日志保留 14 天，不记明文。migration 57，只新增表。需要重启 Web 才会建表并加载鉴权；不必为这项重启 Worker，也不要重建数据库。见 `api.md` 与 `progress/2026-10-12-readonly-api-tokens.md`。
+
 2026-10-12 生产首次抓取后的过滤：Gemini Pro 不再选到出图型号，只保留 `output_modalities` 全为 text 的文本模型。RunPod 跳过无库存档，并丢掉低于同型号中位 40% 或下限的小时价，原因写入 Worker 日志。Vast 按 H100 SXM / NVL / PCIE 分开查询，计入 verified 与 unverified，样本少于 3 条不展示，页面写出条数。解析版本 `compute-prices-2`，不新增 migration。需重启 Worker，并重载 Web。见 `compute-prices-v1.md` 与 `progress/2026-10-12-compute-price-filters.md`。
 
 2026-10-12 全球行情新增「AI Token」：OpenRouter 公开型号价换算为每百万 token 美元，RunPod 保存 H100/H200/B200 安全云和社区云小时价，Vast 公开挂牌有整卡 H100 时保存最低和中位。migration 55。`market.token-prices.snapshot` 默认每天 08:20（Asia/Shanghai），`market.gpu-rent.snapshot` 默认每 360 分钟。开关是 `AI_CENTER_TOKEN_PRICE_SYNC`、`AI_CENTER_TOKEN_PRICE_AT`、`AI_CENTER_TOKEN_PRICE_TIMEZONE`、`AI_CENTER_GPU_RENT_SYNC`、`AI_CENTER_GPU_RENT_INTERVAL_MINUTES`。需重启 Worker，并重载 Web 后 `#market/global/compute` 才显示。未在生产抓取，不宣称租金覆盖全市场。见 `compute-prices-v1.md` 与 `progress/2026-10-12-compute-prices.md`。

@@ -158,6 +158,14 @@ https://center.example.com/?pair=<一次性随机凭证>
 公网一次性凭证会短暂出现在二维码 URL 中，因此 Cloudflare 和 Origin 日志不得记录完整 Query String；凭证使用后应视为失效，
 但仍不应把它复制到聊天、Issue 或 Git。
 
+## 只读 API 令牌
+
+外部机器人不使用设备 Cookie。本机桌面或已配对设备在设置页生成 `aic_` 前缀的高熵令牌，明文只显示一次。服务端保存 sha256，并用固定长度哈希做常数时间比较。
+
+`Authorization: Bearer <token>` 只放行一份明确的 GET 白名单：日报与简报、小时报、信息流与搜索、股民讨论日摘、行情（含硬件价格和算力价格）。带 `refresh=1` 的刷新会拒绝。写入、设置、令牌管理、Runtime、部署状态、持仓和个人资产仍按原身份判断；只有 Bearer、没有设备 Cookie 时这些接口返回 401。Bearer 不能把请求变成桌面管理员，也不能绕过 `authorizeDeviceCookie`。
+
+每个令牌默认每分钟 60 次，超过返回 429 和 `Retry-After`。环境变量是 `AI_CENTER_API_TOKEN_RATE_PER_MINUTE`。访问日志只记令牌 id、方法、路径、状态、时间和耗时，不记令牌明文，默认保留 14 天（`AI_CENTER_API_TOKEN_LOG_RETENTION_DAYS`）。接口说明见 `docs/api.md`。
+
 ## 两种防护等级
 
 ### 推荐：Cloudflare Access + AI Center 设备授权

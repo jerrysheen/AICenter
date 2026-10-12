@@ -9,6 +9,7 @@ import { createComputePriceRoutes } from './compute-price-routes.js';
 import { createFeedRoutes } from './feed-routes.js';
 import { createFeedInteractionRoutes } from './feed-interaction-routes.js';
 import { createIdentityRoutes } from './identity-routes.js';
+import { createApiTokenRoutes } from './api-token-routes.js';
 import { createKnowledgeRoutes } from './knowledge-routes.js';
 import { createRuntimeRoutes } from './runtime-routes.js';
 import { createReportRoutes } from './report-routes.js';
@@ -24,6 +25,7 @@ export function createApiRoutes() {
   return [
     ...createSystemRoutes(),
     ...createIdentityRoutes(),
+    ...createApiTokenRoutes(),
     ...createRuntimeRoutes(),
     ...createSourceRoutes(),
     ...createFeedRoutes(),
