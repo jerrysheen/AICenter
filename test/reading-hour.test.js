@@ -8,7 +8,7 @@ import {createStore} from '../packages/database/src/index.js';
 import {runMigrations} from '../packages/database/src/migrations.js';
 import {createInformationTreeRepository} from '../packages/database/src/repositories/information-tree-repository.js';
 import {createReadingHourService} from '../packages/domain/src/reading-hour-service.js';
-import {classificationDeferredCount, createReportJobHandlers, enqueueHourlyExtractFollowUp, hourlyFollowUpPlan, hourlyRefreshAvailableAt} from '../packages/runtime/src/report-module.js';
+import {classificationDeferredCount, createReportJobHandlers, enqueueHourlyExtractFollowUp, hourlyFollowUpPlan, hourlyPendingSweepPlan, hourlyRefreshAvailableAt, hourlySweepHours} from '../packages/runtime/src/report-module.js';
 import {normalizeReadingSemantics, readingPlacement, routeReadingFocus} from '../packages/domain/src/reading-focus-route.js';
 import {ReadingHourIndexQuerySchema, ReadingHourIndexSchema, readingHourIndexDefaultWindow} from '../packages/contracts/src/information-tree.js';
 import {ValidationError} from '../packages/contracts/src/errors.js';
@@ -143,6 +143,84 @@ test('a scheduled follow-up stays on the primary hour when a backfill hour still
   assert.equal(jobs[0].input.hourStart === backfill, false);
   await handlers['report.hourly.extract']({hourStart: primary, followUp: 'edition-pending'}, {store});
   assert.equal(jobs.length, 1);
+});
+
+test('a scheduled run sweeps the newest leftover hours inside the window and does not chain', async () => {
+  const hourMs = 3600000;
+  const primary = 1791820800000;
+  const recent = primary - hourMs;
+  const deferredHour = primary - 2 * hourMs;
+  const older = primary - 4 * hourMs;
+  const tooOld = primary - 6 * hourMs;
+  assert.equal(hourlySweepHours({}), 6);
+  assert.equal(hourlySweepHours({AI_CENTER_HOURLY_SWEEP_HOURS: ''}), 6);
+  assert.equal(hourlySweepHours({AI_CENTER_HOURLY_SWEEP_HOURS: '0'}), 0);
+  assert.equal(hourlySweepHours({AI_CENTER_HOURLY_SWEEP_HOURS: '99'}), 6);
+  const rows = [
+    {hourStart: primary, pendingCount: 3, deferred: 0},
+    {hourStart: recent, pendingCount: 10, deferred: 0},
+    {hourStart: deferredHour, pendingCount: 0, deferred: 1},
+    {hourStart: older, pendingCount: 1, deferred: 0},
+    {hourStart: tooOld, pendingCount: 4, deferred: 0},
+  ];
+  assert.deepEqual(hourlyPendingSweepPlan({
+    scheduled: true, primaryHour: primary, rows, windowHours: 6, limit: 2,
+  }).map((item) => item.hourStart), [recent, deferredHour]);
+  assert.deepEqual(hourlyPendingSweepPlan({
+    scheduled: true, primaryHour: primary, rows, windowHours: 6, limit: 2, openHourStarts: new Set([recent]),
+  }).map((item) => item.hourStart), [deferredHour, older]);
+  assert.deepEqual(hourlyPendingSweepPlan({
+    scheduled: true, primaryHour: primary, rows, windowHours: 6, limit: 4,
+  }).map((item) => item.hourStart), [recent, deferredHour, older]);
+  assert.deepEqual(hourlyPendingSweepPlan({scheduled: false, primaryHour: primary, rows}), []);
+  assert.deepEqual(hourlyPendingSweepPlan({scheduled: true, followUp: 'edition-pending-sweep', primaryHour: primary, rows}), []);
+
+  const jobs = [];
+  const store = {
+    listOpenJobs() { return jobs.filter((job) => job.status === 'queued' || job.status === 'running'); },
+    createJob(input) {
+      const job = {id: `job-${jobs.length}`, status: 'queued', workspaceId: input.workspaceId, priority: input.priority, input: input.input, availableAt: input.availableAt};
+      jobs.push(job);
+      return job;
+    },
+  };
+  const pending = (startAt, count) => ({
+    edition: {window: {startAt, endAt: startAt + hourMs}, pendingIds: Array.from({length: count}, (_, index) => `p-${startAt}-${index}`)},
+  });
+  const handlers = createReportJobHandlers({
+    reportService: {generateDailyReport() {}},
+    informationService: {
+      async generateHourlyDigests() {
+        return [{id: 'edition:primary', status: 'partial', published: true, window: {startAt: primary, endAt: primary + hourMs}, pendingIds: ['now-1', 'now-2'], groupFailures: []}];
+      },
+      list(_workspace, window) {
+        return {hours: [pending(primary, 2), pending(recent, 10), pending(older, 1), pending(tooOld, 4)].filter((slot) => slot.edition.window.startAt >= window.startAt && slot.edition.window.startAt < window.endAt)};
+      },
+    },
+    treeService: {},
+    readingHour: {
+      enabled: true,
+      async scoreWindow() { return {readingErrors: [], snapshot: {items: [{disposition: 'hit'}]}}; },
+      forWindow(_workspace, window) {
+        if (window.startAt === deferredHour) return {snapshot: {items: [{disposition: 'classification-failed'}]}};
+        return {snapshot: {items: [{disposition: 'hit'}]}};
+      },
+    },
+    env: {AI_CENTER_HOURLY_SWEEP_HOURS: '6', AI_CENTER_HOURLY_SWEEP_LIMIT: '2'},
+  });
+  const result = await handlers['report.hourly.extract']({}, {store});
+  assert.equal(result.pendingCount, 2);
+  assert.equal(result.window.startAt, primary);
+  assert.deepEqual(jobs.map((job) => [job.input.hourStart, job.input.followUp, job.priority]), [
+    [primary, 'edition-pending', 10],
+    [recent, 'edition-pending-sweep', -5],
+    [deferredHour, 'edition-pending-sweep', -5],
+  ]);
+  assert.equal(jobs.some((job) => job.input.hourStart === tooOld || job.input.hourStart === older), false);
+  assert.ok(jobs[1].availableAt >= jobs[0].availableAt);
+  const before = jobs.length;
+  await handlers['report.hourly.extract']({hourStart: recent, followUp: 'edition-pending-sweep'}, {store});
+  assert.equal(jobs.length, before);
 });
 
 test('reading snapshot survives reopen and a failed attempt cannot replace it', () => {

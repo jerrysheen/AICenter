@@ -107,6 +107,13 @@ function upstreamBodySnippet(error) {
   return text.slice(0, 2000);
 }
 
+function turnFinishLabel(reason) {
+  const provider=reason?.error?.finishReason ?? reason?.finishReason;
+  if(typeof provider==='string' && provider.trim()) return provider.trim();
+  if(provider && typeof provider==='object' && typeof provider.kind==='string' && provider.kind.trim()) return provider.kind.trim();
+  return typeof reason?.kind==='string' ? reason.kind.trim() : '';
+}
+
 function assertSuccessfulTurn(result) {
   const end=(result?.events || []).findLast(event=>event.type==='turn/end');
   const reason=end?.data?.reason;
@@ -119,11 +126,11 @@ function assertSuccessfulTurn(result) {
     if(Number.isInteger(status) && status>=400 && status<=599) error.upstreamStatus=status;
     const body=upstreamBodySnippet(reason.error);
     if(body) error.upstreamBody=body;
-    const finish=reason.error?.finishReason || reason.finishReason;
-    if(finish) error.finishReason=String(finish).slice(0, 40);
+    const finish=turnFinishLabel(reason);
+    if(finish) error.finishReason=finish;
     throw error;
   }
-  if(reason?.kind==='aborted') throw Object.assign(new Error('模型调用已中止，未产生完成稿'),{name:'AbortError'});
+  if(reason?.kind==='aborted') throw Object.assign(new Error('模型调用已中止，未产生完成稿'),{name:'AbortError', finishReason:turnFinishLabel(reason) || 'aborted'});
 }
 
 function followUpPrompt({ message, selectedContext, priorHint, taskInstruction, priorTurns }) {
@@ -648,10 +655,12 @@ export function createHarnessAgentRuntime({
         evidenceGate,
         reusedProcess: warm,
       });
+      const finishReason=turnFinishLabel((result?.events || []).findLast(event=>event.type==='turn/end')?.data?.reason);
       return {
         answer,
         providerId: slot.launch.provider,
         modelId: slot.launch.model,
+        ...(finishReason ? {finishReason} : {}),
         toolCalls,
         toolAudits,
         refs,

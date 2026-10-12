@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-12 旧刊期待处理回扫：主小时补跑只覆盖当次小时，所以 23:00 的 10 条和 20:00 的 1 条在下一轮定时任务里不再有任务。现在每次定时小时任务先排本小时的补跑，再为最近 `AI_CENTER_HOURLY_SWEEP_HOURS`（默认 6）小时里刊期 `pendingCount>0` 或分类延后、且没有排队或运行中任务的小时，最多再排 `AI_CENTER_HOURLY_SWEEP_LIMIT`（默认 2）张，原因是 `edition-pending-sweep`。比这个窗口更早的小时不排。这张补跑不再连环排，优先级低于本小时。`[worker] tree-hourly` 的 `finishReason` 写完整枚举（`max-tokens`、`SAFETY`、`stop` 等），只有 `body` 和 `message` 截到前 300 字。需要重启 Worker。见 `progress/2026-10-12-hourly-pending-sweep.md`。
+
 2026-10-12 小时补跑对准主小时：00:30 的定时任务会先做最新结束的小时，再顺手回补一个更早的小时。60 秒补跑以前挂在任何一个仍有分类失败的窗口上，所以 23:00 有 10 条未就绪来源时，补跑却排到了回补的 20:00。现在补跑小时只取这次任务的主小时（显式 `hourStart`，否则是返回的第一份刊期）。该小时有分类失败、配额延后，或刊期 `pendingCount>0`，才排一次；`followUp` 已设置的补跑不再连环排。小时浓缩每次调用用 `console.log` 写一行 `[worker] tree-hourly`（种类、状态、错误信息、响应前 300 字、模型、key 后缀、输入字节、finishReason、耗时、结果），进 Node 追加的 `worker.out.*.log`。已配置多把 Google key 时，非配额失败（含 5xx）换下一把 key 再试一次，不再把同一次失败在同一模型上连打三次。需要重启 Worker。见 `progress/2026-10-12-hourly-followup-hour.md`。
 
 2026-10-12 阅读分类和 Worker 日志：分类失败日志带上状态、错误名、响应片段、key 后缀、模型、耗时和输入大小，每次模型调用正好一行。单次调用从 90 秒改为 180 秒。非配额失败换下一把 key 再试一次，仍失败就整批延后，不拆成逐条。延后的分类会在约一分钟后再排一次小时任务；这次补跑不再连环补。过了本小时的准备槽之后，新准备好的材料也在一分钟内补进小时报，不再等到下一小时的槽。浓缩失败原因仍写在原来的失败行里，并跟 Worker 错误日志一起落盘。Web / Worker 由 Node 追加 `worker.out.yyyy-MM-dd.log` 与 `worker.error.yyyy-MM-dd.log`（Web 同理）；终端里仍打印，被重定向时不再写管道。需要重启 `start-ai-center.ps1`。见 `progress/2026-10-12-hourly-error-logs.md`。

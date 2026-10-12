@@ -136,7 +136,7 @@ export const GenerateHourlyDigestInputSchema = z.object({
   workspaceId: WorkspaceIdSchema.optional(), hourStart: HourStartSchema.optional(),
   mode:z.enum(['resume','rewrite']).optional(),snapshotId:EntityIdSchema.optional(),
   scheduledFor: EpochMillisSchema.optional(), scheduleKey: z.string().max(128).optional(),
-  followUp: z.enum(['classification-deferred', 'edition-pending']).optional(),
+  followUp: z.enum(['classification-deferred', 'edition-pending', 'edition-pending-sweep']).optional(),
 }).strict().refine(v=>(v.mode!=='rewrite' || v.hourStart!==undefined) && (!v.snapshotId || v.mode==='rewrite'),'重编须指定小时，快照仅用于rewrite模式');
 export const GenerateHourlyDigestRequestSchema = z.object({hourStart: HourStartSchema.optional(),mode:z.enum(['resume','rewrite']).optional(),snapshotId:EntityIdSchema.optional()}).strict()
   .refine(v=>(v.mode!=='rewrite' || v.hourStart!==undefined) && (!v.snapshotId || v.mode==='rewrite'),'重编须指定小时，快照仅用于rewrite模式');
