@@ -6,6 +6,7 @@ import path from 'node:path';
 import {createStore} from '../packages/database/src/index.js';
 import {resolveHarnessLlm} from '../packages/harness/src/llm-route.js';
 import {createGeminiArticleAdmission,resolveGeminiArticlePolicy} from '../packages/runtime/src/gemini-article-admission.js';
+import {nextGeminiDailyReset} from '../packages/connectors/src/gemini-grok-task.js';
 import {ensureHourlyDigestSchedule,ensureDailyReportSchedule} from '../packages/runtime/src/report-module.js';
 import {resolveDailyConfig} from '../packages/domain/src/daily-window.js';
 import {treeFailure} from '../packages/domain/src/information-tree-policy.js';
@@ -74,8 +75,10 @@ test('escaped Google daily quota delay persists and defers future calls without 
     const admission=createGeminiArticleAdmission({repository:store.repositories.modelQuota,env:{GEMINI_API_KEY:'x'},now:()=>at});
     const input={model:'g',inputBytes:100,maxTokens:4096},ticket=admission.reserve(input);
     const error=new Error('429 GenerateRequestsPerDayPerProjectPerModel-FreeTier retryDelay\\\": \\\"64908s');
-    admission.failed(ticket,error);assert.equal(error.retryAt,65908000);
-    assert.equal(treeFailure(error,'x','v',at).retryAt,65908000);
+    admission.failed(ticket,error);assert.equal(error.retryAt,nextGeminiDailyReset(at));
+    assert.equal(treeFailure(error,'x','v',at).retryAt,nextGeminiDailyReset(at));
+    assert.match(error.message,/quota=daily key=KEY model=g cooldownUntil=/);
+    assert.match(error.message,/GenerateRequestsPerDayPerProjectPerModel-FreeTier/);
     at+=120000;assert.throws(()=>admission.reserve(input),e=>e.code==='budget-deferred');
   }finally{store.close();}
 });
@@ -117,7 +120,7 @@ test('one unknown-project key exhaustion preserves the other two; only all cold 
       at+=10000;admission=make();
     }
     assert.throws(()=>admission.reserve(input),e=>e.quotaExhausted===true);
-    at+=3600000;assert.equal(admission.reserve(input).keyEnv,'GEMINI_API_KEY');
+    at=nextGeminiDailyReset(at);assert.equal(admission.reserve(input).keyEnv,'GEMINI_API_KEY');
   }finally{store.close();}
 });
 

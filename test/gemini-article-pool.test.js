@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {createStore} from '../packages/database/src/index.js';
 import {createGeminiArticleAdmission} from '../packages/runtime/src/gemini-article-admission.js';
+import {nextGeminiDailyReset} from '../packages/connectors/src/gemini-grok-task.js';
 import {createHarnessExecutionRuntime} from '../packages/harness/src/article-execution-pool.js';
 import {createToolRegistry} from '../packages/runtime/src/tool-registry.js';
 import {createJobRunner,resolveJobTypeConcurrency} from '../packages/runtime/src/job-runner.js';
@@ -130,7 +131,7 @@ test('main pool uses a second model after first-model quota and only all models 
   assert.throws(()=>a.reserve({...input,model:'gemini-a',useModelPool:true}),e=>!e.quotaExhausted);
   a.failed(second,new Error('429 PerDay retryDelay: 3600s'));a.release(second);
   assert.throws(()=>a.reserve({...input,model:'gemini-a',useModelPool:true}),e=>e.quotaExhausted);
-  assert.equal(a.nextReadyAt('gemini-a'),at+3600000);
+  assert.equal(a.nextReadyAt('gemini-a'),nextGeminiDailyReset(at));
  }finally{store.close();}
  assert.throws(()=>createGeminiArticleAdmission({repository:{reserve(){}},env:{...config,AI_CENTER_GEMINI_ARTICLE_MODEL_POOL:'not-allowed'}}),/not configured/);
 });

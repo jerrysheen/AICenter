@@ -1,6 +1,6 @@
 import { audioTranscriptionManifest, createAudioTranscriptionJobHandlers } from '../../../packages/runtime/src/audio-transcription-job.js';
-import {createGeminiArticleAdmission} from '../../../packages/runtime/src/gemini-article-admission.js';
-import {resolveGoogleHourlyModelPool} from '../../../packages/harness/src/llm-route.js';
+import {createGeminiArticleAdmission,startGeminiQuotaProbe} from '../../../packages/runtime/src/gemini-article-admission.js';
+import {resolveGoogleHourlyAdmissionModels} from '../../../packages/harness/src/llm-route.js';
 import { createFeedTranslationJobHandlers, feedTranslationManifest } from '../../../packages/runtime/src/feed-translation-module.js';
 import { createHardwareArtifactStore } from '../../../packages/connectors/src/hardware-artifacts.js';
 import { legacyPriceSnapshot } from '../../../packages/connectors/src/trendforce-prices.js';
@@ -330,8 +330,9 @@ export function createAiCenterWorker(options = {}) {
   } else if (runtimeMode === 'local') {
     console.log('[worker] agent runtime=local');
   }
-  const articleAdmission=env.AI_CENTER_ARTICLE_NORMALIZE==='1' && env.AI_CENTER_HARNESS_ARTICLE_PROVIDER==='google' ? createGeminiArticleAdmission({repository:store.repositories.modelQuota,env}) : null;
-  const hourlyAdmission=env.AI_CENTER_HARNESS_HOURLY_PROVIDER==='google' ? createGeminiArticleAdmission({repository:store.repositories.modelQuota,env,models:resolveGoogleHourlyModelPool(env),allowFallback:false}) : null;
+  const quotaUsage=store.repositories.modelUsage;
+  const articleAdmission=env.AI_CENTER_ARTICLE_NORMALIZE==='1' && env.AI_CENTER_HARNESS_ARTICLE_PROVIDER==='google' ? createGeminiArticleAdmission({repository:store.repositories.modelQuota,usage:quotaUsage,env}) : null;
+  const hourlyAdmission=env.AI_CENTER_HARNESS_HOURLY_PROVIDER==='google' ? createGeminiArticleAdmission({repository:store.repositories.modelQuota,usage:quotaUsage,env,models:resolveGoogleHourlyAdmissionModels(env),allowFallback:false,modelOrder:'ordered'}) : null;
   const agentRuntime = runtimeMode === 'harness'
     ? createHarnessExecutionRuntime({
       articleAdmission,
@@ -581,6 +582,7 @@ export function createAiCenterWorker(options = {}) {
   });
   let runPromise = null;
   let schedulePromise = null;
+  let quotaProbe = null;
 
   return {
     store,
@@ -588,11 +590,13 @@ export function createAiCenterWorker(options = {}) {
     scheduler,
     browserRuntime,
     start() {
+      quotaProbe ||= startGeminiQuotaProbe([articleAdmission, hourlyAdmission].filter(Boolean), { env });
       schedulePromise ||= scheduler.start();
       runPromise ||= runner.start();
       return runPromise;
     },
     async close() {
+      quotaProbe?.stop();
       scheduler.stop();
       runner.stop();
       try {

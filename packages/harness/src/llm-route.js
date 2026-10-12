@@ -53,6 +53,15 @@ export function resolveGoogleHourlyModelPool(env = process.env) {
     .map(model=>resolveGoogleHourlyModel(env,model));
 }
 
+// Ordered fallback: the hourly default, then AI_CENTER_GEMINI_HOURLY_MODELS, then any pool ids not already listed.
+// The next model is used only after the previous one cannot be admitted.
+export function resolveGoogleHourlyAdmissionModels(env = process.env) {
+  const listed=[text(env.AI_CENTER_HARNESS_HOURLY_MODEL) || 'gemini-3.1-flash-lite',
+    ...String(env.AI_CENTER_GEMINI_HOURLY_MODELS || '').split(',').map(text).filter(Boolean),
+    ...String(env.AI_CENTER_GEMINI_HOURLY_MODEL_POOL || '').split(',').map(text).filter(Boolean)];
+  return [...new Set(listed)].map(model=>resolveGoogleHourlyModel(env,model));
+}
+
 export function resolveHarnessLlm(env = process.env, { researchProfile, closedTask, googleModel } = {}) {
   const article=closedTask==='article-normalize';
   const articleMaxTokens=Number(env.AI_CENTER_HARNESS_ARTICLE_MAX_TOKENS || 6144);

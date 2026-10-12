@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 export function createModelQuotaRepository(database, emitEvent) {
   return Object.freeze({
-    reserve({ slots, model, at, requestsPerHour, requestsPerMinute, minIntervalMs, estimatedTokensPerMinute, estimatedTokens, accountMode=false, requestsPerDay=Infinity, requestsPerKeyPerDay=Infinity, dayStart=at, dayEnd=at+86400000, legacyProject='', dryRun=false, pacingModels=[] }) {
+    reserve({ slots, model, at, requestsPerHour, requestsPerMinute, minIntervalMs, estimatedTokensPerMinute, estimatedTokens, accountMode=false, requestsPerDay=Infinity, requestsPerKeyPerDay=Infinity, dayStart=at, dayEnd=at+86400000, legacyProject='', dryRun=false, pacingModels=[], balance='', idleAfterMs=0 }) {
       return database.transaction(() => {
         const global = accountMode
           ? database.prepare('SELECT at FROM model_quota_reservations WHERE model=? AND at>? ORDER BY at').all(model,at-3600000)
@@ -13,7 +13,7 @@ export function createModelQuotaRepository(database, emitEvent) {
         const latest=global.at(-1)?.at;
         if(!accountMode && latest!==undefined && at<latest+minIntervalMs)return {admitted:false,retryAt:latest+minIntervalMs};
         let retryAt=Infinity,cooldownCount=0;
-        const ordered=accountMode ? [...slots].sort((a,b)=>{
+        const ordered=balance==='least-used' ? leastUsed(database,slots,model,at,dayStart,dayEnd,idleAfterMs) : accountMode ? [...slots].sort((a,b)=>{
           const rows=p=>day.filter(r=>r.project===p);
           return rows(a.project).length-rows(b.project).length || (rows(a.project).at(-1)?.at || 0)-(rows(b.project).at(-1)?.at || 0);
         }) : slots;
@@ -37,7 +37,7 @@ export function createModelQuotaRepository(database, emitEvent) {
           }
           if(dryRun)return {admitted:true,project:slot.project,model,keyEnv:slot.keyEnv};
           const id=randomUUID();
-          database.prepare('INSERT INTO model_quota_reservations(id,project,model,at,estimated_tokens) VALUES(?,?,?,?,?)').run(id,slot.project,model,at,estimatedTokens);
+          database.prepare('INSERT INTO model_quota_reservations(id,project,model,at,estimated_tokens,key_env) VALUES(?,?,?,?,?,?)').run(id,slot.project,model,at,estimatedTokens,slot.keyEnv || '');
           if(accountMode)database.prepare('INSERT INTO model_quota_leases(project,model,owner,until_at) VALUES(?,?,?,?) ON CONFLICT(project,model) DO UPDATE SET owner=excluded.owner,until_at=excluded.until_at').run(slot.project,model,id,at+240000);
           emitEvent('runtime.model-quota.reserved.v1','model-quota',id,{model,at},'local');
           return {admitted:true,id,project:slot.project,cooldownKey,model,keyEnv:slot.keyEnv};
@@ -57,5 +57,56 @@ export function createModelQuotaRepository(database, emitEvent) {
         emitEvent('runtime.model-quota.cooldown.v1','model-quota',model,{untilAt},'local');
       }).immediate();
     },
+    setCooldown(project,model,untilAt) {
+      database.prepare('INSERT INTO model_quota_cooldowns(project,model,until_at) VALUES(?,?,?) ON CONFLICT(project,model) DO UPDATE SET until_at=excluded.until_at').run(project,model,untilAt);
+    },
+    clearCooldown(project,model) {
+      database.prepare('DELETE FROM model_quota_cooldowns WHERE project=? AND model=?').run(project,model);
+    },
+    listCooldowns(at) {
+      return database.prepare('SELECT project,model,until_at FROM model_quota_cooldowns WHERE until_at>?').all(at)
+        .map(row => ({project:row.project, model:row.model, untilAt:row.until_at}));
+    },
+    // A +24h daily block can still be in the future after Pacific midnight. Cap anything past
+    // the next reset, and drop a long block whose implied start is already a previous quota day.
+    repairDailyCooldowns({at, nextReset, dayStart}) {
+      const slack=2*3600000, long=12*3600000;
+      return database.transaction(()=>{
+        let changed=0;
+        for(const row of database.prepare('SELECT project,model,until_at FROM model_quota_cooldowns').all()){
+          if(row.until_at<=at || (row.until_at-at>=long && row.until_at-86400000<dayStart-slack)){
+            database.prepare('DELETE FROM model_quota_cooldowns WHERE project=? AND model=?').run(row.project,row.model);
+            changed++;
+          }else if(row.until_at>nextReset){
+            database.prepare('UPDATE model_quota_cooldowns SET until_at=? WHERE project=? AND model=?').run(nextReset,row.project,row.model);
+            changed++;
+          }
+        }
+        return changed;
+      }).immediate();
+    },
+    recordProbeUse({project,keyEnv,model,at}) {
+      database.prepare('INSERT INTO model_quota_reservations(id,project,model,at,estimated_tokens,key_env) VALUES(?,?,?,?,?,?)')
+        .run(randomUUID(),project,model,at,1,keyEnv || '');
+    },
   });
+}
+
+function leastUsed(database, slots, model, at, dayStart, dayEnd, idleAfterMs) {
+  const usage=database.prepare(`SELECT key_env,COUNT(*) n,MAX(at) last FROM model_quota_reservations
+    WHERE model=? AND at>=? AND at<? AND key_env!='' GROUP BY key_env`).all(model,dayStart,dayEnd);
+  const seen=database.prepare(`SELECT key_env,MAX(at) last FROM model_quota_reservations WHERE key_env!='' GROUP BY key_env`).all();
+  const count=new Map(usage.map(row=>[row.key_env,row.n]));
+  const todayLast=new Map(usage.map(row=>[row.key_env,row.last]));
+  const last=new Map(seen.map(row=>[row.key_env,row.last]));
+  return slots.map((slot,index)=>({slot,index})).sort((a,b)=>{
+    const idle=item=>{
+      const used=last.get(item.slot.keyEnv)||0;
+      return idleAfterMs>0 && (used===0 || at-used>=idleAfterMs);
+    };
+    if(idle(a)!==idle(b))return idle(a)?-1:1;
+    return (count.get(a.slot.keyEnv)||0)-(count.get(b.slot.keyEnv)||0)
+      || (todayLast.get(a.slot.keyEnv)||0)-(todayLast.get(b.slot.keyEnv)||0)
+      || a.index-b.index;
+  }).map(item=>item.slot);
 }

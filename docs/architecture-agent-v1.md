@@ -222,7 +222,7 @@ AI Center **不是** Agent Framework。通用循环、Session 压缩、Retry、P
 补充：用户重新授权上述并发上线，准入和在途租约的最小单位为账号/已知项目＋模型。同账号不同模型可同时执行，分钟/日/滚动小时预算与冷却独立；总封闭任务并发仍最多5。Host模型选择参数不进入HTTP/Page契约，正式运行状态见progress/2026-10-07-gemini-account-model-pool.md。
 ## 小时报封闭任务的 Google 路由
 
-小时报通过 `AI_CENTER_HARNESS_HOURLY_PROVIDER=google` 独立选择冻结 Harness 的 Google 原生协议；默认仍兼容 Elucid Grok。模型由 `AI_CENTER_HARNESS_HOURLY_MODEL` 指定，白名单与轮换池分别为 `AI_CENTER_GEMINI_HOURLY_MODELS`、`AI_CENTER_GEMINI_HOURLY_MODEL_POOL`。不改变 Ask、文章阅读、日报路由。Google 默认输出上限 4096，可配置 4096/6144/8192；关闭 reasoning 和供应商自动重试。
+小时报通过 `AI_CENTER_HARNESS_HOURLY_PROVIDER=google` 独立选择冻结 Harness 的 Google 原生协议；默认仍兼容 Elucid Grok。模型由 `AI_CENTER_HARNESS_HOURLY_MODEL` 指定，白名单与轮换池分别为 `AI_CENTER_GEMINI_HOURLY_MODELS`、`AI_CENTER_GEMINI_HOURLY_MODEL_POOL`。`AI_CENTER_GEMINI_HOURLY_MODELS` 按书写顺序回退：前一个模型在全部 key 上都冷却或没有剩余额度时，才使用下一个。配额和冷却仍按 key＋模型分开。不改变 Ask、文章阅读、日报路由。Google 默认输出上限 4096，可配置 4096/6144/8192；关闭 reasoning 和供应商自动重试。每日配额冷却到太平洋午夜，而不是固定 24 小时。冷却中的 key＋模型由 Worker 用一次极小生成请求探测，成功才提前解除。
 
 小时报与文章整理通过同一持久化 quota Repository 对账号/模型限流、租约和冷却记账；模型池可独立设置，额度不足走现有延后重试，不回退付费模型。仍由注册 Worker handler 调用 InformationTree Service，使用已保存的信息摘要，不读取原文、不搜索。供应商、模型、协议与执行配置进入 generation fingerprint，防止换模型后错误复用旧合并缓存；版本和引用完整性校验及事务发布规则不变。
 
