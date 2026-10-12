@@ -14,11 +14,11 @@
 
 - `apps/web/public/share-card.js`、`index.html`、`etf-whale.html`
 - `apps/web/src/http/static-files.js`
-- `test/static-module-whitelist.test.js`、`test/static-files.test.js`
+- `test/static-module-whitelist.test.js`、`test/static-files.test.js`、`test/share-card.test.js`
 
 ## 验证
 
-- `node --test test/static-module-whitelist.test.js test/static-files.test.js`
+- `node --test test/static-module-whitelist.test.js test/static-files.test.js test/share-card.test.js`
 
 ## 遗留
 
