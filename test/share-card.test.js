@@ -6,9 +6,12 @@ import {
   SHARE_CARD_MAX_WIDTH,
   SHARE_CARD_MIN_WIDTH,
   SHARE_CARD_WIDTH,
+  askExchangeShareInput,
   clampShareScale,
+  formatShareTime,
   resolveShareScale,
   sharePngFilename,
+  stripSharePlaceholders,
 } from '../apps/web/public/share-card.js';
 import { qrMatrix } from '../apps/web/public/qr-code.js';
 
@@ -17,6 +20,7 @@ const js = readFileSync(path.join('apps', 'web', 'public', 'app.js'), 'utf8');
 const css = readFileSync(path.join('apps', 'web', 'public', 'styles.css'), 'utf8');
 const news = readFileSync(path.join('apps', 'web', 'public', 'news-list.js'), 'utf8');
 const brief = readFileSync(path.join('apps', 'web', 'public', 'brief-page.js'), 'utf8');
+const tree = readFileSync(path.join('apps', 'web', 'public', 'information-tree.js'), 'utf8');
 const staticFiles = readFileSync(path.join('apps', 'web', 'src', 'http', 'static-files.js'), 'utf8');
 const share = readFileSync(path.join('apps', 'web', 'public', 'share-card.js'), 'utf8');
 
@@ -90,6 +94,38 @@ test('long share image stays one PNG and lowers scale instead of splitting', () 
   bitmapFits(device, SHARE_CARD_WIDTH, 4000, 8000);
 });
 
+test('share text drops unscraped and image placeholders', () => {
+  assert.equal(stripSharePlaceholders('韩指已经两个月新低 [未抓取] 图片 ×2'), '韩指已经两个月新低');
+  assert.equal(stripSharePlaceholders('说明 [图片] 和 图片 ×3 以及 [未抓取]'), '说明 和 以及');
+  assert.equal(stripSharePlaceholders('[未抓取] 视频'), '');
+  assert.equal(stripSharePlaceholders('[未抓取] 链接卡片：标题'), '');
+  assert.equal(stripSharePlaceholders('小时摘要 [未抓取] 图片'), '小时摘要');
+});
+
+test('ask share uses the answer time and keeps a markdown table', () => {
+  const card = {
+    dataset: { answeredAt: '1735689600000' },
+    querySelector(selector) {
+      if (selector === '.ask-question') return { textContent: '仓位怎么看' };
+      if (selector === '.ask-answer') {
+        return {
+          shareMarkdown: '见 [课程](https://example.com/a)\n\n| 项目 | 金额 |\n|---|---|\n| 净资产 | 1 |\n',
+        };
+      }
+      if (selector === '.ask-source-footer') return { textContent: 'AI 问答' };
+      return null;
+    },
+  };
+  const input = askExchangeShareInput(card);
+  assert.equal(input.time, formatShareTime(1735689600000));
+  assert.notEqual(input.time, formatShareTime(new Date('2026-10-12T09:00:00Z')));
+  assert.equal(input.blocks[0].text, '见 课程');
+  assert.equal(input.blocks[1].kind, 'table');
+  assert.deepEqual(input.blocks[1].headers, ['项目', '金额']);
+  assert.deepEqual(input.blocks[1].rows, [['净资产', '1']]);
+  assert.equal(input.paragraphs.join(''), '见 课程');
+});
+
 test('offline qr for tradingplus.cn is a version-2 matrix', () => {
   const matrix = qrMatrix('https://tradingplus.cn');
   assert.equal(matrix.length, 25);
@@ -101,6 +137,16 @@ test('offline qr for tradingplus.cn is a version-2 matrix', () => {
 test('feed, reader, brief bullets and ask share one card', () => {
   assert.match(js, /import\('\.\/share-card\.js\?v=dev'\)/);
   assert.match(js, /shareImage\.textContent = '分享'/);
+  assert.match(js, /ask-answer-share/);
+  assert.match(js, /answeredAt: exchange\.completedAt \|\| exchange\.createdAt/);
+  assert.match(js, /answerNode\.shareMarkdown/);
+  assert.match(tree, /onShare:\(\)=>shareReadingItem\(item, edition\)/);
+  assert.match(tree, /shareDailyArticle\(article, edition\)/);
+  assert.match(tree, /onShare:\(\)=>shareTreeNode\(item\.n, item\.edition, '日报'\)/);
+  assert.match(css, /min-width:\s*0/);
+  assert.match(css, /word-break:\s*break-word/);
+  assert.match(css, /\.share-sheet-table/);
+  assert.match(css, /\.ask-answer-share/);
   assert.match(js, /async function shareAskExchange/);
   assert.match(js, /exportAskSharePng\(card, \{ deliver: 'auto' \}\)/);
   assert.match(js, /async function presentShareCard/);

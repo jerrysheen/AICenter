@@ -2928,6 +2928,20 @@ body[data-agent-mode="article-analysis"] .ask-research-mode {
   gap: var(--space-2);
   margin-top: var(--space-3);
 }
+.ask-answer-share {
+  position: sticky;
+  top: 8px;
+  z-index: 2;
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 0 8px;
+}
+.ask-answer-share .text-button {
+  min-height: 36px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--background-primary);
+}
 .share-sheet-host {
   position: fixed;
   left: 0;
@@ -2970,6 +2984,27 @@ body[data-agent-mode="article-analysis"] .ask-research-mode {
 }
 .share-sheet-points { padding-left: 1.3em; }
 .share-sheet-points li { margin: 0 0 8px; }
+.share-sheet-table {
+  display: grid;
+  grid-template-columns: repeat(var(--share-cols, 2), minmax(0, 1fr));
+  margin: 0 0 12px;
+  border-top: 1px solid #d8d8d8;
+  border-left: 1px solid #d8d8d8;
+}
+.share-sheet-cell {
+  min-width: 0;
+  padding: 6px 8px;
+  border-right: 1px solid #d8d8d8;
+  border-bottom: 1px solid #d8d8d8;
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.share-sheet-cell.is-head {
+  font-weight: 700;
+  background: #f4f6f8;
+}
 .share-sheet-foot {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 88px;
@@ -4167,6 +4202,18 @@ body[data-view="inspire"] .dispatch-composer.hidden { display: none; }
   font-size: 12px;
   line-height: 1.65;
 }
+.ask-records,
+.ask-history,
+#ask-session-list,
+.ask-session-item,
+.ask-session-item strong,
+.ask-session-item p,
+.ask-session-item .session-preview,
+.ask-session-item .session-bottom,
+.ask-session-item .session-bottom span {
+  min-width: 0;
+  max-width: 100%;
+}
 .ask-session-item {
   display: block;
   width: 100%;
@@ -4176,6 +4223,16 @@ body[data-view="inspire"] .dispatch-composer.hidden { display: none; }
   border-radius: 14px;
   background: #fff;
   text-align: left;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.ask-session-item strong,
+.ask-session-item p,
+.ask-session-item .session-preview,
+.ask-session-item .session-bottom,
+.ask-session-item .session-bottom span {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .ask-session-item .session-preview {
   display: -webkit-box;
@@ -4189,6 +4246,7 @@ body[data-view="inspire"] .dispatch-composer.hidden { display: none; }
 }
 .ask-session-item .session-bottom {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 8px;
   margin-top: 10px;
@@ -5607,7 +5665,13 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
 .tree-page .brief-direction-tab[aria-selected="true"] { box-shadow:none; }
 .daily-research { display:flex; flex-direction:column; gap:12px; max-width:none; }
 .daily-research p, .daily-overview { margin:0; font-size:15px; line-height:1.6; overflow-wrap:anywhere; }
-.daily-direction-card { display:block; width:100%; padding:14px 0; border:0; border-top:1px solid var(--comp-tertiary); background:transparent; text-align:left; font:inherit; color:inherit; cursor:pointer; }
+.daily-direction-row { display:flex; align-items:flex-start; gap:8px; border-top:1px solid var(--comp-tertiary); }
+.daily-direction-row .daily-share,
+.daily-direction-row .news-share,
+.daily-detail-head .news-share { flex:none; margin-top:14px; }
+.daily-detail-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+.daily-detail-head h3 { flex:1; min-width:0; margin:0; }
+.daily-direction-card { display:block; width:100%; min-width:0; padding:14px 0; border:0; background:transparent; text-align:left; font:inherit; color:inherit; cursor:pointer; }
 .daily-direction-card h3 { margin:4px 0; font-size:15px; line-height:1.6; }
 .daily-kicker, .daily-note { color:var(--font-tertiary); font-size:12px; line-height:1.6; }
 .daily-section h4 { margin:8px 0; font-size:16px; }

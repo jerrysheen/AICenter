@@ -1,3 +1,4 @@
+import { markdownShareBlocks } from './markdown.js';
 import { paintQr, qrMatrix } from './qr-code.js';
 
 export const SHARE_CARD_MIN_WIDTH = 375;
@@ -88,14 +89,26 @@ export function sharePngFilename(title, now = new Date()) {
 }
 
 export function formatShareTime(now = new Date()) {
-  const date = now instanceof Date ? now : new Date(now);
+  const numeric = typeof now === 'string' && /^\d+$/.test(now.trim()) ? Number(now) : now;
+  const date = numeric instanceof Date ? numeric : new Date(numeric);
   if (Number.isNaN(date.getTime())) return '';
   const pad = (value) => String(value).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+const SHARE_PLACEHOLDER = /\[未抓取\](?:\s*(?:图片(?:\s*[×xX]\s*\d+)?|视频|链接卡片(?:[：:][^\n]*)?|X\s*长文))?|\[图片\]|图片\s*[×xX]\s*\d+/g;
+
+export function stripSharePlaceholders(value) {
+  return String(value || '')
+    .replace(SHARE_PLACEHOLDER, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/[ \t]*\n[ \t]*/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 export function shareTextBlocks(value) {
-  return String(value || '').split(/\n+/).map((line) => line.replace(/[ \t]+/g, ' ').trim()).filter(Boolean);
+  return stripSharePlaceholders(value).split(/\n+/).map((line) => line.replace(/[ \t]+/g, ' ').trim()).filter(Boolean);
 }
 
 function nextFrame() {
@@ -557,17 +570,52 @@ export async function deliverPng(blob, filename, { title } = {}) {
   return deliverShareFiles([{ blob, filename }], { title });
 }
 
+function paragraphNode(text) {
+  const node = document.createElement('p');
+  node.className = 'share-sheet-paragraph';
+  node.textContent = text;
+  return node;
+}
+
+function tableNode(block) {
+  const headers = (block.headers || []).map((cell) => stripSharePlaceholders(cell));
+  const rows = (block.rows || []).map((row) => (row || []).map((cell) => stripSharePlaceholders(cell)));
+  const columns = Math.max(headers.length, ...rows.map((row) => row.length), 1);
+  const table = document.createElement('div');
+  table.className = 'share-sheet-table';
+  table.style.setProperty('--share-cols', String(columns));
+  const appendCell = (text, head) => {
+    const cell = document.createElement('div');
+    cell.className = head ? 'share-sheet-cell is-head' : 'share-sheet-cell';
+    cell.textContent = text;
+    table.append(cell);
+  };
+  for (const text of headers) appendCell(text, true);
+  for (const row of rows) {
+    for (let index = 0; index < columns; index += 1) appendCell(row[index] || '', false);
+  }
+  return table;
+}
+
 function shareBlocks(input) {
   const blocks = [];
-  for (const paragraph of input.paragraphs || []) {
-    const text = String(paragraph || '').trim();
-    if (!text) continue;
-    const node = document.createElement('p');
-    node.className = 'share-sheet-paragraph';
-    node.textContent = text;
-    blocks.push(node);
+  const structured = Array.isArray(input.blocks) ? input.blocks : null;
+  if (structured) {
+    for (const block of structured) {
+      if (block?.kind === 'table') {
+        blocks.push(tableNode(block));
+        continue;
+      }
+      const text = stripSharePlaceholders(block?.text || '');
+      if (text) blocks.push(paragraphNode(text));
+    }
+  } else {
+    for (const paragraph of input.paragraphs || []) {
+      const text = stripSharePlaceholders(paragraph);
+      if (text) blocks.push(paragraphNode(text));
+    }
   }
-  const points = (input.points || []).map((point) => String(point || '').trim()).filter(Boolean);
+  const points = (input.points || []).map((point) => stripSharePlaceholders(point)).filter(Boolean);
   if (points.length) {
     const list = document.createElement('ul');
     list.className = 'share-sheet-points';
@@ -640,43 +688,66 @@ async function settleLayout() {
   await nextFrame();
 }
 
-export function askExchangeShareInput(card, now = new Date()) {
-  let title = card?.querySelector?.('.ask-question')?.textContent?.replace(/\s+/g, ' ').trim() || '问答';
-  const answer = card?.querySelector?.('.ask-answer');
-  const paragraphs = [];
-  if (answer) {
-    const blocks = [...answer.querySelectorAll('p, li, h1, h2, h3, h4, pre, blockquote')];
-    for (const block of blocks) {
-      if (blocks.some((other) => other !== block && other.contains(block))) continue;
-      const text = block.textContent.replace(/\s+/g, ' ').trim();
-      if (text) paragraphs.push(text);
+function cleanShareBlocks(blocks) {
+  const cleaned = [];
+  for (const block of blocks || []) {
+    if (block?.kind === 'table') {
+      cleaned.push({
+        kind: 'table',
+        headers: (block.headers || []).map((cell) => stripSharePlaceholders(cell)),
+        rows: (block.rows || []).map((row) => (row || []).map((cell) => stripSharePlaceholders(cell))),
+      });
+      continue;
     }
-    if (!paragraphs.length) paragraphs.push(...shareTextBlocks(answer.textContent));
+    const text = stripSharePlaceholders(block?.text || block || '');
+    if (text) cleaned.push({ kind: 'text', text });
+  }
+  return cleaned;
+}
+
+export function askExchangeShareInput(card) {
+  let title = stripSharePlaceholders(card?.querySelector?.('.ask-question')?.textContent?.replace(/\s+/g, ' ') || '') || '问答';
+  const answer = card?.querySelector?.('.ask-answer');
+  const raw = String(answer?.shareMarkdown || '');
+  let blocks = raw ? cleanShareBlocks(markdownShareBlocks(raw)) : [];
+  if (!blocks.length && answer) {
+    const nodes = [...answer.querySelectorAll('p, li, h1, h2, h3, h4, pre, blockquote')];
+    for (const block of nodes) {
+      if (nodes.some((other) => other !== block && other.contains(block))) continue;
+      const text = stripSharePlaceholders(block.textContent.replace(/\s+/g, ' '));
+      if (text) blocks.push({ kind: 'text', text });
+    }
+    if (!blocks.length) blocks = shareTextBlocks(answer.textContent).map((text) => ({ kind: 'text', text }));
   }
   if (title.length > 120) {
-    paragraphs.unshift(title);
+    blocks.unshift({ kind: 'text', text: title });
     title = `${title.slice(0, 80)}…`;
   }
-  const source = card?.querySelector?.('.ask-source-footer')?.textContent?.replace(/\s+/g, ' ').trim();
+  const source = stripSharePlaceholders(card?.querySelector?.('.ask-source-footer')?.textContent?.replace(/\s+/g, ' ') || '');
+  const answeredAt = card?.dataset?.answeredAt || '';
   return {
     title,
     source: source || 'AI 问答',
-    time: formatShareTime(now),
-    paragraphs,
+    time: answeredAt ? formatShareTime(answeredAt) : '',
+    blocks,
+    paragraphs: blocks.filter((block) => block.kind === 'text').map((block) => block.text),
     url: SHARE_SITE_URL,
   };
 }
 
 export async function exportShareCard(input, options = {}) {
+  const blocks = Array.isArray(input?.blocks) ? cleanShareBlocks(input.blocks) : null;
   const card = {
-    title: String(input?.title || '分享').trim() || '分享',
-    source: String(input?.source || '').trim(),
+    title: stripSharePlaceholders(input?.title || '分享') || '分享',
+    source: stripSharePlaceholders(input?.source || ''),
     time: String(input?.time || '').trim(),
-    paragraphs: input?.paragraphs || [],
-    points: input?.points || [],
+    paragraphs: blocks ? [] : (input?.paragraphs || []).map((paragraph) => stripSharePlaceholders(paragraph)).filter(Boolean),
+    points: (input?.points || []).map((point) => stripSharePlaceholders(point)).filter(Boolean),
+    blocks,
     url: input?.url || SHARE_SITE_URL,
   };
-  if (!card.title && !card.paragraphs.length && !card.points.length) throw new Error('没有可分享的内容');
+  const hasBlocks = (card.blocks || []).length > 0;
+  if (!card.title && !card.paragraphs.length && !card.points.length && !hasBlocks) throw new Error('没有可分享的内容');
   const sheet = buildShareSheet(card, shareBlocks(card));
   const host = mountHost(sheet);
   try {
@@ -714,5 +785,5 @@ export async function exportShareCard(input, options = {}) {
 
 export async function exportAskSharePng(card, options = {}) {
   if (!card) throw new Error('没有可分享的问答');
-  return exportShareCard(askExchangeShareInput(card, options.now), options);
+  return exportShareCard(askExchangeShareInput(card), options);
 }

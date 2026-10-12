@@ -9925,10 +9925,12 @@ function appendAnalysisSkillChips(card, skills) {
 function appendAskExchange(question, answerText, {
   pending = false, error = false, refs = [], runId = '', jobId = '', answer = '',
   sourceFooter = null, progress = [], scroll = false, container = null, activatedSkills = [],
+  answeredAt = '',
 } = {}) {
   const card = document.createElement('article');
   card.className = 'ask-exchange';
   if (runId) card.dataset.runId = runId;
+  if (answeredAt) card.dataset.answeredAt = String(answeredAt);
   const questionBlock = document.createElement('div');
   questionBlock.className = 'ask-turn ask-turn-q';
   questionBlock.append(
@@ -9953,6 +9955,17 @@ function appendAskExchange(question, answerText, {
   const answerBlock = document.createElement('div');
   answerBlock.className = 'ask-turn ask-turn-a detail-surface';
   answerBlock.append(Object.assign(document.createElement('span'), { className: 'ask-turn-label', textContent: '回答' }));
+  if (!pending && !error && runId) {
+    const shareBar = document.createElement('div');
+    shareBar.className = 'ask-answer-share';
+    const shareImage = document.createElement('button');
+    shareImage.type = 'button';
+    shareImage.className = 'text-button';
+    shareImage.textContent = '分享';
+    shareImage.addEventListener('click', () => shareAskExchange(card, shareImage));
+    shareBar.append(shareImage);
+    answerBlock.append(shareBar);
+  }
   const answerNode = document.createElement('div');
   answerNode.className = 'ask-answer';
   setAskAnswer(answerNode, answerText, {
@@ -9961,6 +9974,7 @@ function appendAskExchange(question, answerText, {
     progress,
     progressKey: jobId || runId,
   });
+  if (!pending && !error) answerNode.shareMarkdown = String(answer || answerText || '');
   answerBlock.append(answerNode);
   card.append(answerBlock);
   if (!pending && progress.length) {
@@ -9996,12 +10010,7 @@ function appendAskExchange(question, answerText, {
     saveKnowledge.className = 'text-button';
     saveKnowledge.textContent = '沉淀为知识';
     saveKnowledge.addEventListener('click', () => saveAnswerAsKnowledge(runId, saveKnowledge));
-    const shareImage = document.createElement('button');
-    shareImage.type = 'button';
-    shareImage.className = 'text-button';
-    shareImage.textContent = '分享';
-    shareImage.addEventListener('click', () => shareAskExchange(card, shareImage));
-    actions.append(cite, saveNote, saveKnowledge, shareImage);
+    actions.append(cite, saveNote, saveKnowledge);
     if (jobId) {
       const retry = document.createElement('button');
       retry.type = 'button';
@@ -10235,6 +10244,7 @@ function renderAskSession() {
       runId: exchange.id,
       jobId: exchange.jobId || '',
       answer: exchange.answer || '',
+      answeredAt: exchange.completedAt || exchange.createdAt || '',
       container: conversation,
       activatedSkills: exchange.activatedSkills?.length
         ? exchange.activatedSkills

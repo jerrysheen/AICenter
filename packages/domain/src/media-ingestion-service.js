@@ -54,6 +54,13 @@ export function mediaDisplayText({ title = '', summary = '', body = '' } = {}) {
   return head || rest;
 }
 
+function snapshotArticleText(snapshot) {
+  const stored = String(snapshot?.bodyText || '').trim();
+  if (stored) return snapshot.bodyText;
+  const paragraphs = Array.isArray(snapshot?.article?.paragraphs) ? snapshot.article.paragraphs : [];
+  return paragraphs.map((paragraph) => String(paragraph?.text || '').trim()).filter(Boolean).join('\n\n');
+}
+
 function clipListText(value, max = 200) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   if (!text || text.length <= max) return text;
@@ -301,16 +308,17 @@ export function createMediaIngestionService({
       .map((row) => [row.externalId, row]));
     const verified = items.map((item) => {
       const snapshot = bodies.get(item.externalId);
-      const article = ['full','partial'].includes(item.contentLevel) ? (snapshot?.bodyText || '') : '';
-      const verifiedFull = Boolean(article && snapshot.contentLevel === 'full' && !snapshot.truncated && snapshot.article?.extractorVersion === extractorVersion && item.fetchState?.extractorVersion === extractorVersion && item.fetchState?.fetchStatus === 'ready' && item.fetchState?.fetchedRevision === item.revision);
-      return { item, snapshot, article, verifiedFull };
+      const storedBody = ['full','partial'].includes(item.contentLevel) ? (snapshot?.bodyText || '') : '';
+      const article = String(storedBody).trim() ? storedBody : (['full','partial'].includes(item.contentLevel) ? snapshotArticleText(snapshot) : '');
+      const verifiedFull = Boolean(String(storedBody).trim() && snapshot.contentLevel === 'full' && !snapshot.truncated && snapshot.article?.extractorVersion === extractorVersion && item.fetchState?.extractorVersion === extractorVersion && item.fetchState?.fetchStatus === 'ready' && item.fetchState?.fetchedRevision === item.revision);
+      return { item, snapshot, article, verifiedFull, storedBody };
     });
     const articleTranslations = articleTranslationsFor(workspaceId, verified);
     const briefRows = mediaRepository.listBriefProcessing
       ? mediaRepository.listBriefProcessing(workspaceId, items.map((item) => ({ externalId: item.externalId, bodyHash: item.bodyHash })))
       : [];
     const briefs = new Map(briefRows.map((row) => [`${row.externalId}:${row.bodyHash}`, { status: row.status, reason: row.reason, lastAttemptAt: row.lastAttemptAt }]));
-    const projected = verified.map(({ item, snapshot, article, verifiedFull }) => {
+    const projected = verified.map(({ item, snapshot, article, verifiedFull, storedBody }) => {
       const body = mediaDisplayText({ title: item.title, summary: item.summary, body: article });
       const id = mediaResourceId(item.externalId);
       const link = linksByExternal.get(item.externalId);
@@ -332,7 +340,7 @@ export function createMediaIngestionService({
         sourceUrl: item.canonicalUrl,
         authorName: snapshot?.article?.author || item.fetchState?.author || item.authorName || item.publisherName || item.publisherKey,
         publishedAt: item.publishedAt,
-        contentLevel: article ? verifiedFull ? 'full' : 'partial' : item.contentLevel,
+        contentLevel: String(storedBody).trim() ? verifiedFull ? 'full' : 'partial' : item.contentLevel,
         truncated: Boolean(snapshot?.truncated),
         fetchState: item.fetchState || {},
         paragraphs: snapshot?.article?.paragraphs || [],
@@ -1062,7 +1070,7 @@ export function createMediaIngestionService({
     const bodies = new Map((mediaRepository.latestBodies?.(workspaceId, rows.map((row) => row.externalId)) || [])
       .map((row) => [row.externalId, row]));
     return rows.map((row) => {
-      const article = ['full','partial'].includes(row.contentLevel) ? (bodies.get(row.externalId)?.bodyText || '') : '';
+      const article = ['full','partial'].includes(row.contentLevel) ? snapshotArticleText(bodies.get(row.externalId)) : '';
       const text = mediaDisplayText({ title: row.title, summary: row.summary, body: article });
       const id = mediaResourceId(row.externalId);
       return {

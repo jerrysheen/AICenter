@@ -591,8 +591,11 @@ test('hourly points open one source directly and lay out several sources', async
   assert.equal(single.querySelector('.reading-ref'), null);
   assert.equal(single.querySelector('details').open, false);
   await single.querySelector('.news-row-body').listeners.click[0]({ target: single.querySelector('h3') });
+  assert.equal(single.querySelector('details').open, true);
+  assert.deepEqual(reads, []);
+  const own = single.querySelector('.reading-fold-body').children.find(node => node.tagName === 'P');
+  assert.match(own.textContent, /暂时读不到/);
   await single.querySelector('.news-row-body').listeners.click[0]({ target: single.querySelector('h3') });
-  assert.deepEqual(reads, ['info-one', 'info-one']);
   assert.equal(single.querySelector('details').open, false);
   const sourceRows = many.querySelectorAll('.reading-source-row');
   assert.deepEqual(sourceRows.map(row => row.textContent), ['彭博 · 出口限制', '财新 · 另一则很长的原文标题']);
@@ -603,7 +606,7 @@ test('hourly points open one source directly and lay out several sources', async
   many.querySelector('.news-row-body').listeners.click[0]({ target: jump });
   assert.equal(many.querySelector('.reading-source-list').classList.contains('is-source-hit'), true);
   await sourceRows[0].listeners.click[0]();
-  assert.deepEqual(reads, ['info-one', 'info-one', 'src-a']);
+  assert.deepEqual(reads, ['src-a']);
   await sourceRows[1].listeners.click[0]();
   assert.deepEqual(opened, [{ href: 'https://example.com/original', target: '_blank', rel: 'noopener' }]);
   const list = root.querySelector('.tree-list');
@@ -740,5 +743,92 @@ test('a daily module lists its sources instead of a ref menu', async () => {
   await card.querySelector('.reading-ref').listeners.click[0]({ stopPropagation() {} });
   assert.deepEqual(reads, ['only', 'only']);
   assert.equal(root.querySelectorAll('summary').some(node => node.textContent.includes('篇 · ref')), false);
+  const detailShare = card.querySelector('.news-share');
+  assert.equal(detailShare.textContent, '分享');
+  page.stop();
+});
+
+test('hourly share uses the item title and summary, not the first source', async () => {
+  const start = Date.parse('2026-10-08T06:00:00Z');
+  const current = edition('edition:shareshour001', start, ['kospi']);
+  const shared = [];
+  const reads = [];
+  const root = new El('div'); root.isConnected = true;
+  const page = createInformationTreePage({
+    session: () => ({ role: 'desktop', device: { id: 'hourly-share' } }),
+    active: () => true,
+    shareCard: (input) => { shared.push(input); },
+    readSavedSource: async (node) => { reads.push(node.id); },
+    loadTreeManifest: async () => manifest([current]),
+    api(path) {
+      if (path.startsWith('/api/v1/tags')) return Promise.resolve({ catalog: { tags: [] } });
+      if (path.startsWith('/api/v1/reports/reading-hour')) return Promise.resolve({ snapshot: {
+        id: 'rh:share', status: 'ready', scored: 1, candidates: 1, selected: 1,
+        items: [{ nodeId: 'kospi', title: 'KOSPI 触及两个月新低', disposition: 'hit', readingDirectionName: '金融', readingThemeName: '韩国', timely: true }],
+      } });
+      if (path.startsWith('/api/v1/reports/tree/node')) return Promise.resolve({ node: {
+        id: 'kospi', layer: 'information', title: 'KOSPI 触及两个月新低',
+        text: '小时摘要 [未抓取] 图片 ×2',
+        body: '韩指已经两个月新低 [未抓取] 图片 ×2',
+        sourceRefs: [{ type: 'content-item', id: 'raw-post' }],
+      } });
+      return Promise.reject(new Error(`missing ${path}`));
+    },
+  });
+  await page.mount(root, { mode: 'hourly' });
+  const row = root.querySelector('.news-row');
+  assert.equal(row.querySelector('h3').textContent, 'KOSPI 触及两个月新低');
+  const share = row.querySelector('.news-share');
+  assert.equal(share.textContent, '分享');
+  await share.listeners.click[0]({ stopPropagation() {}, preventDefault() {} });
+  for (let i = 0; i < 8 && !shared.length; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(shared.length, 1);
+  assert.equal(shared[0].title, 'KOSPI 触及两个月新低');
+  assert.equal(shared[0].source, '小时报');
+  assert.deepEqual(shared[0].paragraphs, ['小时摘要']);
+  assert.equal(reads.length, 0);
+  page.stop();
+});
+
+test('daily bullets have a share entry on the list and the detail', async () => {
+  const start = Date.parse('2026-10-08T16:00:00Z');
+  const issue = { id: 'edition:daily-share', layer: 'daily', window: { startAt: start, endAt: start + 24 * HOUR }, timezone: 'Asia/Shanghai', status: 'ready', roots: ['mod'], hasEditorial: true, generatedAt: start };
+  const shared = [];
+  const editorial = {
+    id: 'ed-share', status: 'ready', statusNote: '已覆盖', overview: '总览',
+    coverage: { hourlyModuleCount: 1, informationNodeCount: 1, eventCount: 1, inBodyEventCount: 1, indexOnlyEventCount: 0 },
+    relations: [],
+    events: [{ eventId: 'e1', sourceNodeIds: [] }],
+    articles: [{
+      direction: 'tech', title: '芯片单条', lead: '导语 [未抓取]', leadEventIds: [],
+      sections: [{ heading: '主题', paragraphs: ['这一段。'], eventIds: [], kind: 'theme' }],
+    }],
+  };
+  const root = new El('div'); root.isConnected = true;
+  const page = createInformationTreePage({
+    session: () => ({ role: 'desktop', device: { id: 'daily-share' } }),
+    active: () => true,
+    shareCard: (input) => { shared.push(input); },
+    toast() {},
+    loadTreeManifest: async () => ({ timezone: 'Asia/Shanghai', directions: {}, hours: [], days: [{ edition: issue }], information: [] }),
+    api(path) {
+      if (path.startsWith('/api/v1/tags')) return Promise.resolve({ catalog: { tags: [] } });
+      if (path.startsWith('/api/v1/reports/tree/editorial')) return Promise.resolve({ editorial });
+      return Promise.reject(new Error(`missing ${path}`));
+    },
+  });
+  await page.mount(root);
+  const listShare = root.querySelector('.news-share');
+  assert.equal(listShare.textContent, '分享');
+  await listShare.listeners.click[0]({ stopPropagation() {} });
+  assert.equal(shared[0].title, '芯片单条');
+  assert.equal(shared[0].source, '日报');
+  assert.deepEqual(shared[0].paragraphs, ['导语', '主题', '这一段。']);
+  await root.querySelector('.daily-direction-card').listeners.click[0]();
+  const detailShare = root.querySelector('.daily-detail-head').querySelector('.news-share');
+  assert.equal(detailShare.textContent, '分享');
+  await detailShare.listeners.click[0]({ stopPropagation() {} });
+  assert.equal(shared.length, 2);
+  assert.equal(shared[1].title, '芯片单条');
   page.stop();
 });

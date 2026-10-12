@@ -39,6 +39,16 @@ Chrome 单边可以到 32767。这里单边不超过 16384，设备若更小就�
 
 - `node --test test/share-card.test.js test/static-module-whitelist.test.js test/static-files.test.js`
 
+## 2026-10-12 验收回补
+
+- 日报单条在列表和详情都有「分享」。研究日报的方向卡旁、打开后的标题旁，以及没有成稿时的模块列表和详情，都走同一张卡。
+- 小时报每一条直接有「分享」，不用先打开阅读器。卡片用这条自己的标题和摘要。标题点击展开本条正文，不再打开第一条引用的原帖。`[未抓取]`、`图片 ×N`、`[图片]` 这类占位会从分享文案里去掉。
+- 问答分享的时间用回答的 `completedAt`，没有则用这条记录的 `createdAt`。Markdown 表格画成网格，链接只保留链接文字。分享按钮在回答顶部，阅读长回答时粘在上面。
+- The Next Platform 列表写着「已验证正文」、阅读器却是「无正文」：列表项带翻译状态和 `bodyHash`，但 `body` 为空、也没有段落。阅读会话把这层列表壳当成已译全文留住，随后的全文因为标题不同被当成另一版。现在没有可读正文的列表壳不能占住会话。快照若只把段落放在 `article.paragraphs`、`bodyText` 为空，读取时用段落拼回正文。
+- 手机上 `#ask` 历史卡片超出右缘：卡片和标题、预览、底栏使用 `min-width: 0`、`max-width: 100%`、`word-break: break-word`。
+
+页面脚本改动重载 Web 即可。`media-ingestion-service.js` 的正文回退要重启 Web 进程后，下一次打开文章才走新的读取。Worker 不用重启。
+
 ## 遗留
 
 - 二维码只做 byte 模式、纠错 M、版本 1–6。`https://tradingplus.cn` 用版本 2，已与 `qrcode@1.5.4` 的矩阵对照。纯大写字母会走 byte 而不是 alphanumeric，矩阵不必和自动选模式的库一致。
