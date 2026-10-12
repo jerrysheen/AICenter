@@ -5,7 +5,9 @@ import Database from 'better-sqlite3';
 import { createInvestorAbModel } from '../../packages/connectors/src/investor-digest-ab-model.js';
 import {
   DEFAULT_BATCH_SIZE,
+  DEFAULT_BATCH_SIZE_B,
   DEFAULT_MAX_CALLS,
+  DEFAULT_MAX_CALLS_B,
   DEFAULT_RETRIES,
   estimateAbCalls,
   flattenMaterials,
@@ -13,6 +15,7 @@ import {
   normalizeMaterials,
   resolveBatchSize,
   resolvePositiveInt,
+  resolveSchemeSelection,
   runInvestorDigestAb,
 } from '../../packages/domain/src/investor-digest-ab.js';
 import { loadInstanceEnvironment, resolveInstanceConfig } from '../../packages/instance/src/index.js';
@@ -26,10 +29,6 @@ function arg(name) {
   const index = process.argv.indexOf(`--${name}`);
   if (index >= 0) return process.argv[index + 1] || '';
   return '';
-}
-
-function flag(name) {
-  return process.argv.includes(`--${name}`);
 }
 
 export function experimentPaths(date, repositoryRoot = root) {
@@ -85,26 +84,39 @@ export async function main(argvEnv = process.env) {
     }
     materials = loaded.materials;
   }
-  const batchSize = resolveBatchSize(argvEnv.AI_CENTER_INVESTOR_DIGEST_AB_BATCH, DEFAULT_BATCH_SIZE);
+  const selection = resolveSchemeSelection(arg('only'));
+  const batchSizeA = resolveBatchSize(
+    argvEnv.AI_CENTER_INVESTOR_DIGEST_AB_BATCH_A || argvEnv.AI_CENTER_INVESTOR_DIGEST_AB_BATCH,
+    DEFAULT_BATCH_SIZE,
+  );
+  const batchSizeB = resolveBatchSize(argvEnv.AI_CENTER_INVESTOR_DIGEST_AB_BATCH_B, DEFAULT_BATCH_SIZE_B);
   const maxCallsA = resolvePositiveInt(argvEnv.AI_CENTER_INVESTOR_DIGEST_AB_MAX_CALLS_A, DEFAULT_MAX_CALLS, 500);
-  const maxCallsB = resolvePositiveInt(argvEnv.AI_CENTER_INVESTOR_DIGEST_AB_MAX_CALLS_B, DEFAULT_MAX_CALLS, 500);
+  const maxCallsB = resolvePositiveInt(argvEnv.AI_CENTER_INVESTOR_DIGEST_AB_MAX_CALLS_B, DEFAULT_MAX_CALLS_B, 500);
   const retries = resolvePositiveInt(argvEnv.AI_CENTER_INVESTOR_DIGEST_AB_RETRIES, DEFAULT_RETRIES, 5);
   const includeComments = String(argvEnv.AI_CENTER_INVESTOR_DIGEST_AB_INCLUDE_COMMENTS ?? '1') !== '0';
   const items = flattenMaterials(materials, { includeComments });
-  const estimate = estimateAbCalls(items.length, batchSize);
-  console.log(`预计调用：A ${estimate.perScheme} 次，B ${estimate.perScheme} 次，合计 ${estimate.total} 次。每批 ${batchSize} 条，上限 A ${maxCallsA} / B ${maxCallsB}。`);
-  if (estimate.perScheme > maxCallsA || estimate.perScheme > maxCallsB) {
+  const estimate = estimateAbCalls(items.length, batchSizeA, batchSizeB);
+  if (selection.a && selection.b) {
+    console.log(`预计调用：A ${estimate.perA} 次（每批 ${batchSizeA}，上限 ${maxCallsA}），B ${estimate.perB} 次（每批 ${batchSizeB}，上限 ${maxCallsB}），合计 ${estimate.total} 次。`);
+  } else if (selection.b) {
+    console.log(`只跑方案 B。预计调用 ${estimate.perB} 次。每批 ${batchSizeB} 条，上限 ${maxCallsB}。`);
+  } else {
+    console.log(`只跑方案 A。预计调用 ${estimate.perA} 次。每批 ${batchSizeA} 条，上限 ${maxCallsA}。`);
+  }
+  if ((selection.a && estimate.perA > maxCallsA) || (selection.b && estimate.perB > maxCallsB)) {
     console.log('预计调用超过本次上限。超出的条目会记入覆盖缺口，不再继续打标签。');
   }
   const model = createInvestorAbModel({ env: argvEnv });
   const { report, result } = await runInvestorDigestAb({
     materials,
     complete: (request) => model.complete(request),
-    batchSize,
+    batchSize: batchSizeA,
+    batchSizeB,
     maxCallsA,
     maxCallsB,
     retries,
     includeComments,
+    only: arg('only'),
     model: model.model,
   });
   const paths = experimentPaths(materials.date || date, root);

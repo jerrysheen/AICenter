@@ -3,14 +3,18 @@
 export const AB_SAMPLE_SEED = 20261012;
 export const AB_SAMPLE_SIZE = 40;
 export const DEFAULT_BATCH_SIZE = 25;
+export const DEFAULT_BATCH_SIZE_B = 12;
 export const DEFAULT_MAX_CALLS = 40;
+export const DEFAULT_MAX_CALLS_B = 80;
 export const DEFAULT_RETRIES = 2;
+export const MIN_DIRECTIONAL_LABELS = 5;
 
 export const SENTIMENT_RULES = Object.freeze({
   bullShare: 0.5,
   bearShare: 0.5,
   gap: 0.15,
   splitMin: 0.25,
+  minDirectional: MIN_DIRECTIONAL_LABELS,
 });
 
 const STANCES = new Set(['看多', '看空', '中性', '无关']);
@@ -63,7 +67,7 @@ export const JEV_SYSTEM = [
   ...JEV_QUESTIONS.map((question) => `${question.id}：${question.ask} 是：${question.true} 否：${question.false}`),
   '只输出 JSON 对象，不要 Markdown。',
   '格式：{"items":[{"id":"","bullish":false,"bearish":false,"hasEvidence":false,"rumor":false,"venting":false,"traded":false}]}',
-  'id 必须来自材料。不要编造没有给出的 id。',
+  'id 必须与材料里的 id 完全一致，不要改成序号。',
 ].join('\n');
 
 export const STRUCTURED_SYSTEM = [
@@ -78,7 +82,7 @@ export const STRUCTURED_SYSTEM = [
   'hasEvidence 表示是否有业绩、估值、订单、政策这类具体依据。',
   'unverifiedRumor 表示是否属于未证实传闻。',
   'claim 是可选的一句话论点；没有就用空字符串。',
-  'id 必须来自材料。不要编造没有给出的 id。',
+  'id 必须与材料里的 id 完全一致，不要改成序号。',
 ].join('\n');
 
 function clip(value, max) {
@@ -164,11 +168,20 @@ function rowsOf(value) {
   return rows;
 }
 
-function indexRows(rows) {
+export function resolveReturnedId(rawId, expectedIds, taken = new Map()) {
+  const id = String(rawId || '').trim();
+  if (!id) return '';
+  const available = expectedIds.filter((item) => !taken.has(item));
+  if (available.includes(id)) return id;
+  const hits = available.filter((item) => item.endsWith(`:${id}`) || id.endsWith(`:${item}`));
+  return hits.length === 1 ? hits[0] : '';
+}
+
+function indexRows(rows, expectedIds) {
   const byId = new Map();
   for (const row of rows) {
     if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
-    const id = String(row.id || '').trim();
+    const id = resolveReturnedId(row.id, expectedIds, byId);
     if (!id || byId.has(id)) continue;
     byId.set(id, row);
   }
@@ -208,7 +221,7 @@ function readJev(row) {
 }
 
 export function parseStructuredBatch(text, expectedIds) {
-  const byId = indexRows(rowsOf(parseModelJsonValue(text)));
+  const byId = indexRows(rowsOf(parseModelJsonValue(text)), expectedIds);
   return expectedIds.map((id) => {
     const row = byId.get(id);
     if (!row) return unlabeled(id, 'structured', '缺失');
@@ -219,7 +232,7 @@ export function parseStructuredBatch(text, expectedIds) {
 }
 
 export function parseJevBatch(text, expectedIds) {
-  const byId = indexRows(rowsOf(parseModelJsonValue(text)));
+  const byId = indexRows(rowsOf(parseModelJsonValue(text)), expectedIds);
   return expectedIds.map((id) => {
     const row = byId.get(id);
     if (!row) return unlabeled(id, 'jev', '缺失');
@@ -250,9 +263,11 @@ export function chunkItems(items, size) {
   return out;
 }
 
-export function estimateAbCalls(itemCount, batchSize) {
-  const batches = itemCount > 0 ? Math.ceil(itemCount / Math.max(1, batchSize)) : 0;
-  return { batches, perScheme: batches, total: batches * 2 };
+export function estimateAbCalls(itemCount, batchSize, batchSizeB = batchSize) {
+  const batchesFor = (size) => (itemCount > 0 ? Math.ceil(itemCount / Math.max(1, size)) : 0);
+  const perA = batchesFor(batchSize);
+  const perB = batchesFor(batchSizeB);
+  return { batches: perA, perScheme: perA, perA, perB, total: perA + perB };
 }
 
 function promptFor(items) {
@@ -281,6 +296,31 @@ function addTokens(total, usage = {}) {
   }
 }
 
+function isTransportError(error) {
+  if (error?.code === 'bad_json' || error?.code === 'truncated') return false;
+  return error?.code === 'transport' || /请求失败|超时|ECONN|429|5\d\d/.test(String(error?.message || ''));
+}
+
+function failureReason(error) {
+  if (error?.code === 'truncated' || /截断/.test(String(error?.message || ''))) return '输出被截断';
+  if (error?.code === 'bad_json' || /JSON/.test(String(error?.message || ''))) return 'JSON 非法';
+  return String(error?.message || error || '批次失败');
+}
+
+function incompleteReason(labels, truncated) {
+  if (truncated) return '输出被截断';
+  if (labels.length && labels.every((label) => label.reason === '非法')) return '字段非法';
+  return 'id 对不上';
+}
+
+export function resolveSchemeSelection(value) {
+  const text = String(value || '').trim().toUpperCase();
+  if (!text) return { a: true, b: true };
+  if (text === 'A' || text === 'JEV') return { a: true, b: false };
+  if (text === 'B' || text === 'STRUCTURED') return { a: false, b: true };
+  throw new Error('--only 只能是 A 或 B');
+}
+
 export async function runLabelScheme({
   items,
   scheme,
@@ -295,23 +335,48 @@ export async function runLabelScheme({
   if (typeof complete !== 'function') throw new Error('打标签需要模型调用');
   const labelsById = new Map();
   const gaps = [];
-  const usage = { calls: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, failures: 0 };
+  const usage = { calls: 0, splitRetries: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, failures: 0 };
   const started = now();
   let stopped = false;
   const parse = scheme === 'jev' ? parseJevBatch : parseStructuredBatch;
   const system = scheme === 'jev' ? JEV_SYSTEM : STRUCTURED_SYSTEM;
   const build = scheme === 'jev' ? buildJevPrompt : buildStructuredPrompt;
-  for (const batch of chunkItems(items, batchSize)) {
+
+  function markGap(batch, reason) {
     const ids = batch.map((item) => item.id);
+    gaps.push({ ids, reason });
+    for (const id of ids) labelsById.set(id, unlabeled(id, scheme, reason));
+  }
+
+  async function retryMissing(batch) {
+    if (!batch.length) return;
     if (usage.calls >= maxCalls) {
       stopped = true;
-      gaps.push({ ids, reason: '调用次数达到上限' });
-      for (const id of ids) labelsById.set(id, unlabeled(id, scheme, '调用次数达到上限'));
-      continue;
+      markGap(batch, '调用次数达到上限');
+      return;
+    }
+    if (batch.length === 1) {
+      await labelItems(batch, { split: true, singleton: true });
+      return;
+    }
+    const mid = Math.ceil(batch.length / 2);
+    await labelItems(batch.slice(0, mid), { split: true });
+    await labelItems(batch.slice(mid), { split: true });
+  }
+
+  async function labelItems(batch, { split = false, singleton = false } = {}) {
+    if (!batch.length) return;
+    if (usage.calls >= maxCalls) {
+      stopped = true;
+      markGap(batch, '调用次数达到上限');
+      return;
     }
     let parsed = null;
     let lastError = '';
-    for (let attempt = 0; attempt <= retries; attempt += 1) {
+    let truncated = false;
+    const transportLimit = Math.max(0, retries);
+    if (split) usage.splitRetries += 1;
+    for (let attempt = 0; attempt <= transportLimit; attempt += 1) {
       if (usage.calls >= maxCalls) {
         stopped = true;
         lastError = '调用次数达到上限';
@@ -321,24 +386,45 @@ export async function runLabelScheme({
       try {
         const result = await complete({ system, prompt: build(batch), scheme, batch });
         addTokens(usage, result?.usage);
-        parsed = parse(result?.text, ids);
+        truncated = Boolean(result?.truncated) || result?.finishReason === 'MAX_TOKENS';
+        parsed = parse(result?.text, batch.map((item) => item.id));
         break;
       } catch (error) {
         usage.failures += 1;
-        lastError = String(error?.message || error);
-        if (attempt < retries && usage.calls < maxCalls) await sleep(backoffMs(attempt));
+        lastError = failureReason(error);
+        const retrySame = isTransportError(error) && attempt < transportLimit && usage.calls < maxCalls;
+        if (!retrySame) break;
+        await sleep(backoffMs(attempt));
       }
     }
     if (!parsed) {
-      const reason = lastError || '批次失败';
-      gaps.push({ ids, reason });
-      for (const id of ids) labelsById.set(id, unlabeled(id, scheme, reason));
-      continue;
+      if (!singleton && batch.length > 1 && usage.calls < maxCalls) {
+        await retryMissing(batch);
+        return;
+      }
+      const reason = lastError === '调用次数达到上限' || usage.calls >= maxCalls
+        ? (lastError && lastError !== '调用次数达到上限' ? `${lastError}；调用次数达到上限` : '调用次数达到上限')
+        : (lastError || '批次失败');
+      if (reason.includes('调用次数达到上限')) stopped = true;
+      markGap(batch, reason);
+      return;
     }
-    for (const label of parsed) labelsById.set(label.id, label);
-    const missing = parsed.filter((label) => !label.labeled).map((label) => label.id);
-    if (missing.length) gaps.push({ ids: missing, reason: '部分条目缺失或非法，已按未标注处理' });
+    const missing = [];
+    for (const label of parsed) {
+      labelsById.set(label.id, label);
+      if (!label.labeled) missing.push(batch.find((item) => item.id === label.id));
+    }
+    const pending = missing.filter(Boolean);
+    if (!pending.length) return;
+    const reason = incompleteReason(pending.map((item) => labelsById.get(item.id)), truncated);
+    if (!singleton && usage.calls < maxCalls && (batch.length > 1 || pending.length < batch.length)) {
+      await retryMissing(pending);
+      return;
+    }
+    markGap(pending, reason);
   }
+
+  for (const batch of chunkItems(items, batchSize)) await labelItems(batch);
   const labels = [...labelsById.values()];
   return {
     scheme,
@@ -357,6 +443,7 @@ export function aggregateLabels(items, labelsById) {
   const weights = { 看多: 0, 看空: 0, 中性: 0, 无关: 0 };
   let labeled = 0;
   let unlabeled = 0;
+  let directionalCount = 0;
   let signed = 0;
   for (const item of items) {
     const label = labelsById?.get?.(item.id);
@@ -367,6 +454,7 @@ export function aggregateLabels(items, labelsById) {
     labeled += 1;
     const weight = engagementWeight(item);
     weights[label.stance] += weight;
+    if (label.stance === '看多' || label.stance === '看空') directionalCount += 1;
     if (label.stance === '无关') continue;
     const sign = label.stance === '看多' ? 1 : label.stance === '看空' ? -1 : 0;
     signed += weight * sign * (Number(label.strength) || 1);
@@ -381,10 +469,11 @@ export function aggregateLabels(items, labelsById) {
     empty: items.length === 0,
     labeled,
     unlabeled,
+    directionalCount,
     weights,
     shares,
     net: directional > 0 ? signed / directional : null,
-    sentiment: items.length === 0 ? '' : sentimentFromShares(shares),
+    sentiment: items.length === 0 ? '' : (directionalCount < MIN_DIRECTIONAL_LABELS ? '数据不足' : sentimentFromShares(shares)),
   };
 }
 
@@ -408,11 +497,18 @@ export function samplePosts(posts, { seed = AB_SAMPLE_SEED, size = AB_SAMPLE_SIZ
   return copy.slice(0, Math.min(size, copy.length));
 }
 
-export function compareStances(left, right, ids) {
+export function directionOf(stance) {
+  if (stance === '看多' || stance === '看空') return stance;
+  if (stance === '中性' || stance === '无关') return '无方向';
+  return '';
+}
+
+export function compareStances(left, right, ids, { direction = false } = {}) {
   let both = 0;
   let same = 0;
   let different = 0;
   let missing = 0;
+  const valueOf = (label) => (direction ? directionOf(label.stance) : label.stance);
   for (const id of ids) {
     const a = left.get(id);
     const b = right.get(id);
@@ -421,7 +517,7 @@ export function compareStances(left, right, ids) {
       continue;
     }
     both += 1;
-    if (a.stance === b.stance) same += 1;
+    if (valueOf(a) === valueOf(b)) same += 1;
     else different += 1;
   }
   return { both, same, different, missing, rate: both ? same / both : null };
@@ -555,25 +651,47 @@ export function loadDigestMaterials(database, workspaceId, digestDate) {
   return extractStoredMaterials(row, digestDate);
 }
 
+function skippedScheme(scheme, maxCalls) {
+  return {
+    scheme,
+    maxCalls,
+    skipped: true,
+    labelsById: new Map(),
+    usage: { calls: 0, splitRetries: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, failures: 0 },
+    gaps: [],
+    stopped: false,
+    durationMs: 0,
+    labeled: 0,
+    unlabeled: 0,
+  };
+}
+
 export async function runInvestorDigestAb({
   materials,
   complete,
   batchSize = DEFAULT_BATCH_SIZE,
+  batchSizeB = batchSize,
   maxCallsA = DEFAULT_MAX_CALLS,
-  maxCallsB = DEFAULT_MAX_CALLS,
+  maxCallsB = DEFAULT_MAX_CALLS_B,
   retries = DEFAULT_RETRIES,
   includeComments = true,
+  only = '',
   sampleSeed = AB_SAMPLE_SEED,
   sampleSize = AB_SAMPLE_SIZE,
   model = '',
   sleep,
   now,
 }) {
+  const selection = resolveSchemeSelection(only);
   const normalized = normalizeMaterials(materials);
   const items = flattenMaterials(normalized, { includeComments });
-  const shared = { batchSize, retries, complete, sleep, now };
-  const schemeA = await runLabelScheme({ ...shared, items, scheme: 'jev', maxCalls: maxCallsA });
-  const schemeB = await runLabelScheme({ ...shared, items, scheme: 'structured', maxCalls: maxCallsB });
+  const shared = { retries, complete, sleep, now };
+  const schemeA = selection.a
+    ? await runLabelScheme({ ...shared, items, scheme: 'jev', batchSize, maxCalls: maxCallsA })
+    : skippedScheme('jev', maxCallsA);
+  const schemeB = selection.b
+    ? await runLabelScheme({ ...shared, items, scheme: 'structured', batchSize: batchSizeB, maxCalls: maxCallsB })
+    : skippedScheme('structured', maxCallsB);
   const posts = items.filter((item) => item.kind === 'post');
   const targets = normalized.targets.map((target) => {
     const group = targetItems(items, target);
@@ -581,8 +699,8 @@ export async function runInvestorDigestAb({
       ...target,
       posts: group.filter((item) => item.kind === 'post').length,
       comments: group.filter((item) => item.kind === 'comment').length,
-      a: aggregateLabels(group, schemeA.labelsById),
-      b: aggregateLabels(group, schemeB.labelsById),
+      a: schemeA.skipped ? { skipped: true } : aggregateLabels(group, schemeA.labelsById),
+      b: schemeB.skipped ? { skipped: true } : aggregateLabels(group, schemeB.labelsById),
     };
   });
   const sample = samplePosts(posts, { seed: sampleSeed, size: sampleSize }).map((item) => ({
@@ -590,11 +708,15 @@ export async function runInvestorDigestAb({
     a: schemeA.labelsById.get(item.id) || null,
     b: schemeB.labelsById.get(item.id) || null,
   }));
-  const agreement = compareStances(schemeA.labelsById, schemeB.labelsById, items.map((item) => item.id));
-  const postAgreement = compareStances(schemeA.labelsById, schemeB.labelsById, posts.map((item) => item.id));
+  const ids = items.map((item) => item.id);
+  const postIds = posts.map((item) => item.id);
+  const agreement = compareStances(schemeA.labelsById, schemeB.labelsById, ids);
+  const directionAgreement = compareStances(schemeA.labelsById, schemeB.labelsById, ids, { direction: true });
+  const postAgreement = compareStances(schemeA.labelsById, schemeB.labelsById, postIds);
   const result = {
     date: normalized.date,
     model,
+    only: selection.a && selection.b ? '' : (selection.b ? 'B' : 'A'),
     itemCount: items.length,
     postCount: posts.length,
     commentCount: items.length - posts.length,
@@ -604,6 +726,7 @@ export async function runInvestorDigestAb({
     schemeA,
     schemeB,
     agreement,
+    directionAgreement,
     postAgreement,
   };
   return { result, report: renderAbReport(result) };
@@ -664,24 +787,39 @@ function gapLines(name, gaps) {
   return gaps.map((gap) => `- ${name}：${gap.ids.length} 条，${cell(gap.reason)}`).join('\n');
 }
 
-function targetRow(target) {
-  if ((target.posts || 0) + (target.comments || 0) === 0) {
-    const note = target.failed ? (target.reason || '拉取失败') : '今天没人讨论';
-    return `| ${cell(target.name)} | ${cell(note)} | — | — | — | — | ${cell(note)} | — | — | — | — |`;
-  }
-  const side = (aggregate) => [
+function sideCells(aggregate) {
+  if (aggregate?.skipped) return ['未运行', '—', '—', '—', '—'];
+  if (aggregate?.sentiment === '数据不足') return ['—', '—', '—', '数据不足', '—'];
+  return [
     percent(aggregate.shares.bull),
     percent(aggregate.shares.neutral),
     percent(aggregate.shares.bear),
     aggregate.sentiment || '平淡',
     number(aggregate.net),
   ];
-  return `| ${cell(target.name)} | ${[...side(target.a), ...side(target.b)].join(' | ')} |`;
+}
+
+function targetRow(target) {
+  if ((target.posts || 0) + (target.comments || 0) === 0) {
+    const note = target.failed ? (target.reason || '拉取失败') : '今天没人讨论';
+    const left = target.a?.skipped ? ['未运行', '—', '—', '—', '—'] : [cell(note), '—', '—', '—', '—'];
+    const right = target.b?.skipped ? ['未运行', '—', '—', '—', '—'] : [cell(note), '—', '—', '—', '—'];
+    return `| ${cell(target.name)} | ${[...left, ...right].join(' | ')} |`;
+  }
+  return `| ${cell(target.name)} | ${[...sideCells(target.a), ...sideCells(target.b)].join(' | ')} |`;
+}
+
+function coverageText(name, scheme, total) {
+  if (scheme.skipped) return `${name} 覆盖率：未运行`;
+  const labeled = scheme.labeled || 0;
+  const rate = total ? labeled / total : 0;
+  return `${name} 覆盖率：${labeled}/${total}（${percent(rate)}）`;
 }
 
 export function renderAbReport(result) {
   const sampleDifferent = result.sample.filter((row) => pairMark(row.a, row.b) === '不一致').length;
   const rate = result.agreement.rate == null ? '—' : percent(result.agreement.rate);
+  const directionRate = result.directionAgreement?.rate == null ? '—' : percent(result.directionAgreement.rate);
   const lines = [
     '# 股民讨论日摘 A/B',
     '',
@@ -724,15 +862,24 @@ export function renderAbReport(result) {
   lines.push(usageRow('A', result.schemeA, result.schemeA.maxCalls ?? DEFAULT_MAX_CALLS));
   lines.push(usageRow('B', result.schemeB, result.schemeB.maxCalls ?? DEFAULT_MAX_CALLS));
   lines.push('');
+  lines.push(coverageText('A', result.schemeA, result.itemCount));
+  lines.push(coverageText('B', result.schemeB, result.itemCount));
+  lines.push(`拆批重试：A ${result.schemeA.usage.splitRetries || 0} 次，B ${result.schemeB.usage.splitRetries || 0} 次。`);
+  lines.push('');
   const gaps = [gapLines('A', result.schemeA.gaps), gapLines('B', result.schemeB.gaps)].filter(Boolean).join('\n');
   lines.push(gaps ? `覆盖缺口：\n\n${gaps}` : '覆盖缺口：无');
   lines.push('');
   lines.push('## 一致率');
   lines.push('');
-  lines.push(`全部 ${result.itemCount} 条里，两边都标上 ${result.agreement.both} 条，立场一致 ${result.agreement.same} 条，不一致 ${result.agreement.different} 条，一致率 ${rate}。`);
-  lines.push(`帖子 ${result.postCount} 条里，两边都标上 ${result.postAgreement.both} 条，立场一致 ${result.postAgreement.same} 条。`);
-  lines.push(`抽样 ${result.sample.length} 条里，立场不一致 ${sampleDifferent} 条。`);
-  lines.push('缺标注的条目不进入一致率分母。');
+  if (result.only) {
+    lines.push(`这次只跑了方案 ${result.only}，没有两边对照。`);
+  } else {
+    lines.push(`全部 ${result.itemCount} 条里，两边都标上 ${result.agreement.both} 条，立场一致 ${result.agreement.same} 条，不一致 ${result.agreement.different} 条，一致率 ${rate}。`);
+    lines.push(`按方向：两边都标上 ${result.directionAgreement.both} 条，方向一致 ${result.directionAgreement.same} 条，不一致 ${result.directionAgreement.different} 条，一致率 ${directionRate}。中性和无关都算无方向。`);
+    lines.push(`帖子 ${result.postCount} 条里，两边都标上 ${result.postAgreement.both} 条，立场一致 ${result.postAgreement.same} 条。`);
+    lines.push(`抽样 ${result.sample.length} 条里，立场不一致 ${sampleDifferent} 条。`);
+    lines.push('缺标注的条目不进入一致率分母。');
+  }
   lines.push('');
   return `${lines.join('\n')}\n`;
 }
