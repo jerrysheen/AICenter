@@ -113,4 +113,11 @@ try {
   Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+$RepositoryRoot = Split-Path -Parent $PSScriptRoot
+$gitStderr = Invoke-AiCenterGit not-a-real-command
+Assert-True ($gitStderr.Code -ne 0) "git stderr stays a result $($gitStderr.Code)"
+$gitText = $gitStderr.Lines -join "`n"
+Assert-True ($gitText -match 'not-a-real-command') 'git stderr line kept'
+Assert-True ($gitText -notmatch 'CategoryInfo') 'git stderr is not an error record dump'
+
 Write-Output 'deploy-logic-ok'

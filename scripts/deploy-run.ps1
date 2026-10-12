@@ -12,26 +12,27 @@ function Invoke-AiCenterGit {
   $hadNative = Test-Path variable:PSNativeCommandUseErrorActionPreference
   $previousNative = $null
   if ($hadNative) { $previousNative = $PSNativeCommandUseErrorActionPreference }
+  $previousErrorAction = $ErrorActionPreference
   $env:GIT_TERMINAL_PROMPT = '0'
   $env:GCM_INTERACTIVE = 'Never'
   $PSNativeCommandUseErrorActionPreference = $false
+  # Windows PowerShell 5.1 turns native stderr into a terminating error when
+  # ErrorActionPreference is Stop. git fetch writes progress there on success.
+  $ErrorActionPreference = 'Continue'
   try {
     $output = & git -C $RepositoryRoot @GitArgs 2>&1
     $code = $LASTEXITCODE
     $lines = New-Object System.Collections.Generic.List[string]
     if ($null -ne $output) {
-      if ($output -is [System.Array]) {
-        for ($i = 0; $i -lt $output.Length; $i++) {
-          $text = [string]$output[$i]
-          if ($text.Length -gt 0) { $lines.Add($text) | Out-Null }
-        }
-      } else {
-        $text = [string]$output
+      foreach ($item in @($output)) {
+        if ($null -eq $item) { continue }
+        $text = if ($item -is [System.Management.Automation.ErrorRecord]) { [string]$item.Exception.Message } else { [string]$item }
         if ($text.Length -gt 0) { $lines.Add($text) | Out-Null }
       }
     }
     return [pscustomobject]@{ Code = [int]$code; Lines = $lines.ToArray() }
   } finally {
+    $ErrorActionPreference = $previousErrorAction
     if ($null -eq $previousPrompt) { Remove-Item Env:GIT_TERMINAL_PROMPT -ErrorAction SilentlyContinue }
     else { $env:GIT_TERMINAL_PROMPT = $previousPrompt }
     if ($null -eq $previousGcm) { Remove-Item Env:GCM_INTERACTIVE -ErrorAction SilentlyContinue }

@@ -427,7 +427,13 @@ public static class AiCenterConsoleCtrl {
         try {
           Invoke-AiCenterAutoDeploy
         } catch {
-          Write-Host '[!] Auto-deploy error.' -ForegroundColor Yellow
+          $detail = ([string]$_.Exception.Message).Replace("`r", ' ').Replace("`n", ' ').Trim()
+          if ($detail.Length -gt 240) { $detail = $detail.Substring(0, 240) }
+          if ($detail) {
+            Write-Host "[!] Auto-deploy error: $detail" -ForegroundColor Yellow
+          } else {
+            Write-Host '[!] Auto-deploy error.' -ForegroundColor Yellow
+          }
         }
         if ([AiCenterConsoleCtrl]::StopRequested) { return 'stop' }
       }
