@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-12-brief-truncated-manifest.md`：弱网截断的 gzip 不再被当成简报成功。200 的无效 JSON 会失败；没有 `pipeline` 的清单不进 30 秒缓存。失败时保留上一份有效清单，否则显示骨架和重试。只有服务端明确返回旧版 `pipeline` 才进入旧版简报。入口按钮改为「旧版简报」。
+
 - `progress/2026-10-12-investor-digest-ab-retry.md`：日摘离线 A/B 补拆批重试。B 默认每批 12，解析失败或条数不齐时对半再打；输入 token 改读 `promptTokenCount`；方向不足 5 条显示「数据不足」。仍不进线上日摘。
 
 - `progress/2026-10-12-investor-digest-ab.md`：股民讨论日摘离线 A/B。方案 A 用固定是非题，方案 B 用逐条结构化标签，都不进线上日摘、任务和页面。10/12 原始帖子未入库，试跑要先重抓成 JSON。
