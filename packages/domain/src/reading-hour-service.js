@@ -58,6 +58,52 @@ other：明确四类都不覆盖。pending：读完仍无法判断。
 subjectKind 只能是 macro_policy、market_asset、company_event、company_security、ai_model_method、ai_application、geopolitics_event、geopolitics_rules、other、unknown。细类型不清楚时用 unknown，不要因此改主类。
 仅返回 JSON：{"primaryDirection":"pending","subjectKind":"unknown","domainTagIds":[],"classificationStatus":"pending","evidenceQuote":"输入中的短句"}。`;
 
+export const READING_CLASS_BATCH_APPENDIX = '输入是一个数组，每一项都有 idx。逐项独立判断。输出一个 JSON 数组，每个 idx 一个对象，字段与单条输出相同，并带上对应的 idx。';
+
+export function readingClassBatchInstruction() {
+  return `${READING_CLASS_INSTRUCTION}\n${READING_CLASS_BATCH_APPENDIX}`;
+}
+
+export function readingClassBatchSize(env = process.env) {
+  const raw = env?.AI_CENTER_READING_CLASS_BATCH;
+  if (raw === undefined || raw === null || String(raw).trim() === '') return 10;
+  const value = Number(String(raw).trim());
+  if (!Number.isSafeInteger(value) || value < 1) throw new Error('AI_CENTER_READING_CLASS_BATCH must be an integer >= 1');
+  return value;
+}
+
+export function readingClassKeyEnvs(env = process.env) {
+  if (String(env?.AI_CENTER_HARNESS_HOURLY_PROVIDER || '').trim() !== 'google') return [];
+  const names = String(env.AI_CENTER_GEMINI_KEY_ENVS || 'GEMINI_API_KEY,GEMINI_API_KEY2,GEMINI_API_KEY3,GEMINI_API_KEY4,GEMINI_API_KEY5')
+    .split(',').map((item) => item.trim()).filter(Boolean);
+  if (names.length > 5 || names.some((name) => !/^[A-Z][A-Z0-9_]*$/.test(name))) throw new Error('invalid Gemini key environment names');
+  const seen = new Set();
+  const keys = [];
+  for (const name of names) {
+    const key = String(env[name] || '').trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    keys.push(name);
+  }
+  return keys;
+}
+
+function isQuotaExhausted(error) {
+  if (!error || typeof error !== 'object') return false;
+  if (error.code === 'budget-deferred' || error.quotaExhausted === true || error.providerQuota === true) return true;
+  if (Number(error.status) === 429) return true;
+  return /RESOURCE_EXHAUSTED|\bquota\b|配额/i.test(String(error.message || ''));
+}
+
+function batchIndex(value) {
+  if (Number.isInteger(value) && value >= 0) return value;
+  if (typeof value === 'string' && /^[0-9]+$/.test(value)) {
+    const parsed = Number(value);
+    if (Number.isSafeInteger(parsed)) return parsed;
+  }
+  return null;
+}
+
 function classificationInput(node) {
   const body = String(node.body || '');
   const limit = 8000;
@@ -79,8 +125,43 @@ function parseClassification(answer, input) {
   }
 }
 
-export function createReadingHourService({repository, reportRepository = null, agentRuntime = null, enabled = false, client = null, catalogIds = new Set(), publishedAtFor = null, publisherFor = null, now = () => Date.now()} = {}) {
+function alignClassificationBatch(answer, inputs) {
+  let rows;
+  try {
+    const text = String(answer || '').trim();
+    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const source = fenced ? fenced[1].trim() : text;
+    const start = source.indexOf('[');
+    const end = source.lastIndexOf(']');
+    if (start < 0 || end <= start) return null;
+    const parsed = JSON.parse(source.slice(start, end + 1));
+    if (!Array.isArray(parsed)) return null;
+    rows = parsed;
+  } catch {
+    return null;
+  }
+  const aligned = new Map();
+  const seen = new Set();
+  for (const raw of rows) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const idx = batchIndex(raw.idx);
+    if (idx === null || idx >= inputs.length) continue;
+    if (seen.has(idx)) {
+      const input = inputs[idx];
+      aligned.set(idx, {status: 'invalid-output', inputScope: input.inputScope, includedChars: input.includedChars, bodyChars: input.bodyChars});
+      continue;
+    }
+    seen.add(idx);
+    aligned.set(idx, parseClassification(JSON.stringify(raw), inputs[idx]));
+  }
+  return aligned;
+}
+
+export function createReadingHourService({repository, reportRepository = null, agentRuntime = null, enabled = false, client = null, catalogIds = new Set(), publishedAtFor = null, publisherFor = null, now = () => Date.now(), env = process.env} = {}) {
   const indexCache = new Map();
+  const batchSize = readingClassBatchSize(env);
+  const keyEnvs = readingClassKeyEnvs(env);
+  let keyCursor = 0;
   function view(snapshot) {
     if (!snapshot) return null;
     return {
@@ -119,6 +200,122 @@ export function createReadingHourService({repository, reportRepository = null, a
     });
     return shown;
   }
+  function stageKeyFor(node) {
+    const sourceVersion = String(node.headSourceVersion || node.sourceVersion || node.version || '');
+    return `reading-class:${node.sourceId || node.id}:${sourceVersion}`;
+  }
+  function readCachedClassification(workspace, node) {
+    const saved = node.readingClassification?.primaryDirection ? node.readingClassification : null;
+    if (saved?.status === 'classified' || saved?.status === 'out-of-scope') return {...saved, source: 'article-cache'};
+    const cached = reportRepository?.getAnalysisStage?.(workspace, 'reading-class', stageKeyFor(node), READING_CLASS_VERSION);
+    if (cached?.status === 'completed' && (cached.output?.status === 'classified' || cached.output?.status === 'out-of-scope')) return {...cached.output, source: 'classification-cache'};
+    return null;
+  }
+  function persistClassification(workspace, node, input, parsed) {
+    const stageKey = stageKeyFor(node);
+    if (parsed.status === 'classified' || parsed.status === 'out-of-scope') reportRepository?.saveAnalysisStage?.(workspace, 'reading-class', stageKey, READING_CLASS_VERSION, {inputScope: input.inputScope, includedChars: input.includedChars, bodyChars: input.bodyChars}, parsed, 'completed');
+    else reportRepository?.saveAnalysisStage?.(workspace, 'reading-class', stageKey, READING_CLASS_VERSION, {inputScope: input.inputScope}, parsed, 'failed', parsed.status);
+  }
+  function persistThrown(workspace, node, input, error) {
+    const failed = {status: String(error?.code) === 'budget-deferred' ? 'budget-deferred' : 'failed', reason: String(error?.message || error).slice(0, 240), source: 'classification-request', inputScope: input.inputScope};
+    reportRepository?.saveAnalysisStage?.(workspace, 'reading-class', stageKeyFor(node), READING_CLASS_VERSION, {inputScope: input.inputScope}, failed, 'failed', failed.reason);
+    return failed;
+  }
+  function missingRuntime() {
+    return {status: 'failed', reason: 'classifier-not-configured', source: 'missing-runtime'};
+  }
+  const classificationRequest = (workspace, taskInstruction, message, keyEnv) => agentRuntime.run({
+    closedContext: true, closedTask: 'hourly-brief', webMode: 'off', workspaceId: workspace, allowedToolIds: [], timeoutMs: 90000,
+    usageStage: 'reading-classification', taskInstruction, message, ...(keyEnv ? {googleKeyEnv: keyEnv} : {}),
+  });
+  // One pass over configured keys. A quota or cooldown rejection tries the next key with the same batch and never splits it.
+  async function runBatchRequest(workspace, message) {
+    const payload = {taskInstruction: readingClassBatchInstruction(), message};
+    if (!keyEnvs.length) return classificationRequest(workspace, payload.taskInstruction, payload.message);
+    const start = keyCursor % keyEnvs.length;
+    let lastError;
+    for (let attempt = 0; attempt < keyEnvs.length; attempt += 1) {
+      const index = (start + attempt) % keyEnvs.length;
+      try {
+        const result = await classificationRequest(workspace, payload.taskInstruction, payload.message, keyEnvs[index]);
+        keyCursor = index + 1;
+        return result;
+      } catch (error) {
+        lastError = error;
+        if (!isQuotaExhausted(error)) {
+          keyCursor = index + 1;
+          throw error;
+        }
+      }
+    }
+    keyCursor = start + 1;
+    throw lastError;
+  }
+  async function requestOne(workspace, node) {
+    const input = classificationInput(node);
+    try {
+      const result = await classificationRequest(workspace, READING_CLASS_INSTRUCTION, JSON.stringify(input));
+      const parsed = parseClassification(result.answer || result.text || '', input);
+      persistClassification(workspace, node, input, parsed);
+      return {...parsed, source: 'classification-request'};
+    } catch (error) {
+      return persistThrown(workspace, node, input, error);
+    }
+  }
+  async function classifyNode(workspace, node) {
+    const cached = readCachedClassification(workspace, node);
+    if (cached) return cached;
+    if (!agentRuntime?.run) return missingRuntime();
+    return requestOne(workspace, node);
+  }
+  async function classifyBatch(workspace, nodes) {
+    if (!agentRuntime?.run) return nodes.map(() => missingRuntime());
+    const specs = nodes.map((node, idx) => {
+      const input = classificationInput(node);
+      return {node, input, message: {idx, ...input}};
+    });
+    try {
+      const result = await runBatchRequest(workspace, JSON.stringify(specs.map((spec) => spec.message)));
+      const aligned = alignClassificationBatch(result.answer || result.text || '', specs.map((spec) => spec.input));
+      if (!aligned) {
+        const fallback = [];
+        for (const spec of specs) fallback.push(await classifyNode(workspace, spec.node));
+        return fallback;
+      }
+      const out = [];
+      for (let idx = 0; idx < specs.length; idx += 1) {
+        const parsed = aligned.get(idx);
+        if (!parsed || parsed.status === 'invalid-output') out.push(await classifyNode(workspace, specs[idx].node));
+        else {
+          persistClassification(workspace, specs[idx].node, specs[idx].input, parsed);
+          out.push({...parsed, source: 'classification-request'});
+        }
+      }
+      return out;
+    } catch (error) {
+      return specs.map((spec) => persistThrown(workspace, spec.node, spec.input, error));
+    }
+  }
+  async function classifyAll(workspace, nodes) {
+    if (batchSize === 1) {
+      const single = [];
+      for (const node of nodes) single.push(await classifyNode(workspace, node));
+      return single;
+    }
+    const out = new Array(nodes.length);
+    const pending = [];
+    for (let index = 0; index < nodes.length; index += 1) {
+      const cached = readCachedClassification(workspace, nodes[index]);
+      if (cached) out[index] = cached;
+      else pending.push(index);
+    }
+    for (let offset = 0; offset < pending.length; offset += batchSize) {
+      const indexes = pending.slice(offset, offset + batchSize);
+      const batch = await classifyBatch(workspace, indexes.map((index) => nodes[index]));
+      indexes.forEach((index, position) => { out[index] = batch[position]; });
+    }
+    return out;
+  }
   return {
     enabled,
     view,
@@ -142,34 +339,16 @@ export function createReadingHourService({repository, reportRepository = null, a
       indexCache.set(key, result);
       return result;
     },
-    async classifyNode(workspace, node) {
-      const saved = node.readingClassification?.primaryDirection ? node.readingClassification : null;
-      const sourceVersion = String(node.headSourceVersion || node.sourceVersion || node.version || '');
-      const stageKey = `reading-class:${node.sourceId || node.id}:${sourceVersion}`;
-      const cached = reportRepository?.getAnalysisStage?.(workspace, 'reading-class', stageKey, READING_CLASS_VERSION);
-      if (saved?.status === 'classified' || saved?.status === 'out-of-scope') return {...saved, source: 'article-cache'};
-      if (cached?.status === 'completed' && (cached.output?.status === 'classified' || cached.output?.status === 'out-of-scope')) return {...cached.output, source: 'classification-cache'};
-      if (!agentRuntime?.run) return {status: 'failed', reason: 'classifier-not-configured', source: 'missing-runtime'};
-      const input = classificationInput(node);
-      try {
-        const result = await agentRuntime.run({closedContext: true, closedTask: 'hourly-brief', webMode: 'off', workspaceId: workspace, allowedToolIds: [], timeoutMs: 90000, usageStage: 'reading-classification', taskInstruction: READING_CLASS_INSTRUCTION, message: JSON.stringify(input)});
-        const parsed = parseClassification(result.answer || result.text || '', input);
-        if (parsed.status === 'classified' || parsed.status === 'out-of-scope') reportRepository?.saveAnalysisStage?.(workspace, 'reading-class', stageKey, READING_CLASS_VERSION, {inputScope: input.inputScope, includedChars: input.includedChars, bodyChars: input.bodyChars}, parsed, 'completed');
-        else reportRepository?.saveAnalysisStage?.(workspace, 'reading-class', stageKey, READING_CLASS_VERSION, {inputScope: input.inputScope}, parsed, 'failed', parsed.status);
-        return {...parsed, source: 'classification-request'};
-      } catch (error) {
-        const failed = {status: String(error?.code) === 'budget-deferred' ? 'budget-deferred' : 'failed', reason: String(error?.message || error).slice(0, 240), source: 'classification-request', inputScope: input.inputScope};
-        reportRepository?.saveAnalysisStage?.(workspace, 'reading-class', stageKey, READING_CLASS_VERSION, {inputScope: input.inputScope}, failed, 'failed', failed.reason);
-        return failed;
-      }
-    },
+    classifyNode,
     async scoreWindow({workspace = 'local', window} = {}) {
       if (!enabled) return {published: false, reason: 'disabled'};
       const nodes = repository.listInformationInWindow?.(workspace, window, {limit: 200}) || [];
       const items = [];
       const readingErrors = [];
-      for (const node of nodes) {
-        const classification = await this.classifyNode(workspace, node);
+      const classifications = await classifyAll(workspace, nodes);
+      for (let index = 0; index < nodes.length; index += 1) {
+        const node = nodes[index];
+        const classification = classifications[index];
         const semantic = {primaryDirection: classification.primaryDirection, subjectKind: classification.subjectKind, classificationStatus: classification.status, domainTagIds: classification.domainTagIds || [], informationTypes: [], facts: []};
         const route = routeReadingFocus(semantic);
         const scores = {};

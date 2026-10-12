@@ -144,6 +144,7 @@ export function createDomainServices({
     readingHour: createReadingHourService({
       repository:store.repositories.informationTree,
       enabled: env.AI_CENTER_READING_HOUR === '1',
+      env,
       publishedAtFor(workspace, refs) {
         for (const ref of refs || []) {
           if (ref?.type === 'content-item') {

@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-12 小时报阅读分类可按批调用：`AI_CENTER_READING_CLASS_BATCH` 默认 10，设为 1 时仍是一条一次。提示词保留原来的阅读分类说明，并要求按 `idx` 逐项独立判断、返回 JSON 数组。解析失败或缺失、非法的条目只回退那些条；配额或冷却不拆成逐条再打，同一批在已配置的 key 上轮询并仍走原有准入。信息树浓缩不改。`AI_CENTER_HOURLY_DISABLED=1` 时小时报仍然整段停用。需要重启 Worker。见 `progress/2026-10-12-reading-class-batch.md`。
+
 2026-10-12 阅读页与日期：分享预览打开时备好 PNG，「保存」当次点击即可下载，iPhone / iPad 改为系统分享。问答分享按钮收在回答右上角，正文留出上边距。阅读页、媒体段落和小时报展开正文去掉 `[未抓取]`、`图片 ×N`、`[图片]`。小时报展开条目在有来源地址时提供「原文」链接。日报日期不再把日历日和 `hourCycle: h23` 放在同一次格式化里；窗口正好结束于上海时间 0 点时，标签用结束前一瞬间。08:00 截止的日报日期不变。重载 Web。Worker 不用重启。见 `progress/2026-10-12-share-image.md`。
 
 2026-10-12 小时报可整段停用：`AI_CENTER_HOURLY_DISABLED=1` 后，Worker 启动不再把 `report.hourly.default` 写成 `enabled:true`，定时、准备后的补编和手动入队都不再创建小时任务，已经排队或仍标为运行中的 `report.hourly.extract` 会被取消。启动只打一行日志。需要重启 Worker。见 `progress/2026-10-12-hourly-disabled.md`。
