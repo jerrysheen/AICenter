@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-12-compute-price-filters.md`：AI Token 族只映射文本模型；RunPod 去掉无库存和过低占位价；Vast 按型号扩大查询，少于 3 条不展示并写出样本数。解析版本 `compute-prices-2`，不新增 migration。见 `compute-prices-v1.md`。
+
 - `progress/2026-10-12-compute-prices.md`：全球行情「AI Token」保存 OpenRouter 每百万 token 价，以及 RunPod / Vast 的 GPU 小时租金。migration 55。Worker 默认每天 08:20 抓 token，每 6 小时抓 GPU。见 `compute-prices-v1.md`。
 
 - `progress/2026-10-12-report-reliability.md`：小时报对 500/503 做有限退避并换 `AI_CENTER_GEMINI_HOURLY_MODELS` 的下一个模型；坏归属先修再换模型；同一小时失败到上限后停手。运行过久的任务释放队列。日报单组超时不再整期失败，当天缺刊会再试，并可用脚本补指定日期。

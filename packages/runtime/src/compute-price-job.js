@@ -114,6 +114,11 @@ export function createComputePriceJobHandlers({ repository, fetch: fetchImpl = f
         fetchRunPodGpuRates({ fetch: fetchImpl }),
         fetchVastH100Rates({ fetch: fetchImpl }),
       ]);
+      if (runpod.status === 'fulfilled') {
+        for (const item of runpod.value.filtered || []) {
+          console.log(`[compute-prices] 跳过 ${item.label} ${item.lane} ${item.usdPerHour || ''}：${item.reason}`);
+        }
+      }
       const saved = [];
       const errors = [];
       if (runpod.status === 'fulfilled' && runpod.value.rows.length) {

@@ -1,4 +1,4 @@
-export const COMPUTE_PRICE_PARSER_VERSION = 'compute-prices-1';
+export const COMPUTE_PRICE_PARSER_VERSION = 'compute-prices-2';
 export const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
 export const RUNPOD_GPU_URL = 'https://api.runpod.io/graphql';
 export const VAST_BUNDLES_URL = 'https://console.vast.ai/api/v0/bundles/';
@@ -17,10 +17,25 @@ export const CURATED_TOKEN_SELECTORS = [
 ];
 
 const GPU_FAMILY = [
-  { family: 'h100', pattern: /H100/i },
-  { family: 'h200', pattern: /H200/i },
-  { family: 'b200', pattern: /\bB200\b/i },
+  { family: 'h100', pattern: /H100/i, floor: '1' },
+  { family: 'h200', pattern: /H200/i, floor: '1.5' },
+  { family: 'b200', pattern: /\bB200\b/i, floor: '2' },
 ];
+
+const NON_TEXT_ID = /(?:-image|-audio|-tts|-video|preview-image|image-preview|(?:^|[/:])(?:image|audio|tts)(?:$|[/:]))/i;
+const NON_TEXT_NAME = /\b(?:image|audio|video|tts|speech)\b/i;
+const VAST_H100_NAMES = ['H100 SXM', 'H100 NVL', 'H100 PCIE'];
+const RUNPOD_GPU_QUERY = `query {
+  gpuTypes {
+    id
+    displayName
+    securePrice
+    communityPrice
+    lowestPrice(input: { gpuCount: 1 }) { stockStatus uninterruptablePrice }
+    secure: lowestPrice(input: { gpuCount: 1, secureCloud: true }) { stockStatus uninterruptablePrice }
+    community: lowestPrice(input: { gpuCount: 1, secureCloud: false }) { stockStatus uninterruptablePrice }
+  }
+}`;
 
 export function usdPerMillionTokens(raw) {
   const text = String(raw ?? '').trim();
@@ -85,12 +100,21 @@ function positiveContext(value) {
   return Number.isInteger(number) && number > 0 ? number : null;
 }
 
+function isTextChatModel(model) {
+  const id = String(model?.id || '');
+  const name = String(model?.name || '');
+  if (NON_TEXT_ID.test(id) || NON_TEXT_NAME.test(name)) return false;
+  const modalities = model?.architecture?.output_modalities;
+  if (!Array.isArray(modalities) || !modalities.length) return false;
+  return modalities.every((item) => String(item).toLowerCase() === 'text');
+}
+
 export function selectCuratedTokenModels(payload) {
   const models = Array.isArray(payload?.data) ? payload.data : [];
   const warnings = [];
   const rows = [];
   CURATED_TOKEN_SELECTORS.forEach((selector, sortIndex) => {
-    const matches = models.filter((model) => selector.pattern.test(String(model?.id || '')));
+    const matches = models.filter((model) => selector.pattern.test(String(model?.id || '')) && isTextChatModel(model));
     matches.sort((left, right) => (Number(right?.created) || 0) - (Number(left?.created) || 0) || String(left.id).localeCompare(String(right.id)));
     const chosen = matches.find((model) => {
       const prompt = usdPerMillionTokens(model?.pricing?.prompt);
@@ -118,38 +142,87 @@ export function selectCuratedTokenModels(payload) {
 function gpuFamily(row) {
   const text = `${row?.id || ''} ${row?.displayName || ''}`;
   if (/MIG/i.test(text)) return null;
-  return GPU_FAMILY.find((item) => item.pattern.test(text))?.family || null;
+  return GPU_FAMILY.find((item) => item.pattern.test(text)) || null;
+}
+
+function stockQuotesPresent(row) {
+  return [row?.lowestPrice, row?.secure, row?.community].some((item) => item && typeof item === 'object');
+}
+
+function inStockStatus(value) {
+  const text = value == null ? '' : String(value).trim().toLowerCase();
+  return text === 'high' || text === 'medium' || text === 'low';
+}
+
+function laneStockReason(row, lane, price) {
+  if (!stockQuotesPresent(row)) return null;
+  const tier = lane === 'secure' ? row?.secure : row?.community;
+  if (tier && typeof tier === 'object' && inStockStatus(tier.stockStatus)) return null;
+  const unscoped = row?.lowestPrice;
+  if (unscoped && typeof unscoped === 'object' && inStockStatus(unscoped.stockStatus)) {
+    const listed = decimalFromNumber(unscoped.uninterruptablePrice);
+    if (listed && listed === price) return null;
+  }
+  return '无库存';
+}
+
+function belowFamilyCutoff(price, median, floor) {
+  if (compareDecimal(price, floor) < 0) return true;
+  const scale = Math.max(fractionLength(price), fractionLength(median));
+  return scaleDecimal(price, scale) * 10n < scaleDecimal(median, scale) * 4n;
 }
 
 export function selectRunPodGpuRates(payload) {
   const types = Array.isArray(payload?.data?.gpuTypes) ? payload.data.gpuTypes : [];
   const chosen = types.map((row) => ({ row, family: gpuFamily(row) })).filter((item) => item.family);
-  chosen.sort((left, right) => GPU_FAMILY.findIndex((item) => item.family === left.family) - GPU_FAMILY.findIndex((item) => item.family === right.family)
+  chosen.sort((left, right) => GPU_FAMILY.findIndex((item) => item.family === left.family.family) - GPU_FAMILY.findIndex((item) => item.family === right.family.family)
     || String(left.row.displayName || '').localeCompare(String(right.row.displayName || '')));
-  const rows = [];
+  const pending = [];
+  const filtered = [];
   const seen = new Set();
   for (const item of chosen) {
     const label = String(item.row.displayName || item.row.id || '').replace(/\s+/g, ' ').trim().slice(0, 120);
     const gpuKey = slug(label);
     if (!label || !gpuKey || seen.has(gpuKey)) continue;
     seen.add(gpuKey);
-    const lanes = [
-      ['secure', decimalFromNumber(item.row.securePrice)],
-      ['community', decimalFromNumber(item.row.communityPrice)],
-    ];
-    for (const [lane, usdPerHour] of lanes) {
-      if (!usdPerHour || usdPerHour === '0') continue;
-      rows.push({
-        sortIndex: rows.length,
-        gpuKey,
-        label,
-        lane,
-        usdPerHour,
-        sampleCount: null,
-      });
+    for (const [lane, raw] of [['secure', item.row.securePrice], ['community', item.row.communityPrice]]) {
+      const usdPerHour = decimalFromNumber(raw);
+      if (!usdPerHour) continue;
+      if (usdPerHour === '0') {
+        filtered.push({ label, lane, usdPerHour, reason: '价格为 0' });
+        continue;
+      }
+      const reason = laneStockReason(item.row, lane, usdPerHour);
+      if (reason) {
+        filtered.push({ label, lane, usdPerHour, reason });
+        continue;
+      }
+      pending.push({ family: item.family.family, floor: item.family.floor, gpuKey, label, lane, usdPerHour });
     }
   }
-  return { rows, warnings: rows.length ? [] : ['公开目录里没有 H100、H200 或 B200 小时价'] };
+  const pricesByFamily = new Map();
+  for (const row of pending) {
+    const list = pricesByFamily.get(row.family) || [];
+    list.push(row.usdPerHour);
+    pricesByFamily.set(row.family, list);
+  }
+  const rows = [];
+  for (const row of pending) {
+    const median = medianDecimal(pricesByFamily.get(row.family));
+    if (belowFamilyCutoff(row.usdPerHour, median, row.floor)) {
+      filtered.push({ label: row.label, lane: row.lane, usdPerHour: row.usdPerHour, reason: '低于同型号中位的 40% 或下限' });
+      continue;
+    }
+    rows.push({
+      sortIndex: rows.length,
+      gpuKey: row.gpuKey,
+      label: row.label,
+      lane: row.lane,
+      usdPerHour: row.usdPerHour,
+      sampleCount: null,
+    });
+  }
+  return { rows, warnings: rows.length ? [] : ['公开目录里没有 H100、H200 或 B200 小时价'], filtered };
 }
 
 function perGpuHour(offer) {
@@ -170,13 +243,25 @@ function perGpuHour(offer) {
   return fracOut ? `${wholeOut}.${fracOut}` : String(wholeOut);
 }
 
+function acceptedVastOffer(offer) {
+  const verification = offer?.verification;
+  if (verification == null || String(verification).trim() === '') return true;
+  const text = String(verification).trim().toLowerCase();
+  return text === 'verified' || text === 'unverified';
+}
+
 export function selectVastH100Rates(payload) {
   const offers = Array.isArray(payload?.offers) ? payload.offers : [];
   const hours = offers
-    .filter((offer) => /H100/i.test(String(offer?.gpu_name || '')) && !/H200|B200/i.test(String(offer?.gpu_name || '')))
+    .filter((offer) => acceptedVastOffer(offer) && /H100/i.test(String(offer?.gpu_name || '')) && !/H200|B200/i.test(String(offer?.gpu_name || '')))
     .map(perGpuHour)
     .filter(Boolean);
-  if (!hours.length) return { rows: [], warnings: ['公开挂牌里没有 H100'] };
+  if (hours.length < 3) {
+    const warning = hours.length
+      ? `H100 公开挂牌只有 ${hours.length} 条，少于 3 条，不展示`
+      : '公开挂牌里没有 H100';
+    return { rows: [], warnings: [warning] };
+  }
   const low = [...hours].sort(compareDecimal)[0];
   const mid = medianDecimal(hours);
   return {
@@ -206,12 +291,46 @@ export async function fetchRunPodGpuRates({ fetch: fetchImpl = fetch } = {}) {
   const payload = await readJson(fetchImpl, RUNPOD_GPU_URL, {
     method: 'POST',
     headers: { accept: 'application/json', 'content-type': 'application/json' },
-    body: JSON.stringify({ query: 'query { gpuTypes { id displayName securePrice communityPrice } }' }),
+    body: JSON.stringify({ query: RUNPOD_GPU_QUERY }),
   });
   return selectRunPodGpuRates(payload);
 }
 
+function vastOfferKey(offer) {
+  if (offer?.id != null && offer.id !== '') return `id:${offer.id}`;
+  if (offer?.ask_contract_id != null && offer.ask_contract_id !== '') return `ask:${offer.ask_contract_id}`;
+  return null;
+}
+
 export async function fetchVastH100Rates({ fetch: fetchImpl = fetch } = {}) {
-  const payload = await readJson(fetchImpl, VAST_BUNDLES_URL, { headers: { accept: 'application/json' } });
-  return selectVastH100Rates(payload);
+  const offers = [];
+  const seen = new Set();
+  const errors = [];
+  for (const name of VAST_H100_NAMES) {
+    try {
+      const payload = await readJson(fetchImpl, VAST_BUNDLES_URL, {
+        method: 'POST',
+        headers: { accept: 'application/json', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          gpu_name: { eq: name },
+          num_gpus: { gte: 1 },
+          limit: 500,
+          order: [['dph_total', 'asc']],
+          type: 'ondemand',
+        }),
+      });
+      for (const offer of Array.isArray(payload?.offers) ? payload.offers : []) {
+        const key = vastOfferKey(offer);
+        if (key) {
+          if (seen.has(key)) continue;
+          seen.add(key);
+        }
+        offers.push(offer);
+      }
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (!offers.length && errors.length) throw errors[0];
+  return selectVastH100Rates({ offers });
 }
