@@ -1,4 +1,4 @@
-import {createInformationTreePage} from './information-tree.js?v=dev';
+import {createInformationTreePage, sourceCaption} from './information-tree.js?v=dev';
 import {decodeHtmlEntities} from './html-text.js?v=dev';
 import {mountInvestorDigest} from './investor-digest.js?v=dev';
 const HOUR = 3600000;
@@ -710,11 +710,6 @@ export function createBriefPage(host) {
   }
 
   function sourceIdentity(e) {return JSON.stringify([e.materialId,e.materialHash,e.materialVersion]);}
-  function sourceCaption(material) {
-    const name=String(material?.publisher || material?.author || '').trim() || '来源';
-    const title=String(material?.title || '').trim() || '未命名';
-    return `${name} · ${title}`;
-  }
   function guardTap(el) {
     const stop=event=>event?.stopPropagation?.();
     el.addEventListener('touchstart', stop);
@@ -748,21 +743,18 @@ export function createBriefPage(host) {
       return;
     }
     const list=node('div','reading-source-list');
-    const rows=entries.map(entry=>{
-      const row=button('来源 · …', open(entry), 'reading-source-row');
+    entries.forEach(entry=>{
+      const row=button('…', open(entry), 'reading-source-row');
       row.dataset.sourceId=sourceIdentity(entry.evidence);
       guardTap(row);
       list.append(row);
       paintSourceCaption(entry.evidence, context, row);
-      return row;
     });
     container.append(list);
-    entries.forEach((entry, index)=>{
-      const mark=button(`〔${entry.number}〕`, event=>{event.stopPropagation();highlightSource(rows[index]);}, 'reading-ref brief-paragraph-source');
-      mark.setAttribute('aria-label',`查看来源 ${entry.number}`);
-      guardTap(mark);
-      textEl.append(mark);
-    });
+    const jump=button(`${entries.length} 个来源 ↓`, event=>{event.stopPropagation();highlightSource(list);}, 'reading-ref reading-source-jump');
+    jump.setAttribute('aria-label',`${entries.length} 个来源`);
+    guardTap(jump);
+    textEl.append(jump);
   }
   async function paintSourceCaption(e, context, row) {
     const epoch=generation;
