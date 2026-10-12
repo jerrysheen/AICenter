@@ -486,6 +486,7 @@ test('discussion fetch retries rate limits then records the symbol failure', asy
 test('summary prompt forbids advice and marks rumors, and usage is recorded', async () => {
   assert.match(INVESTOR_DISCUSSION_SYSTEM, /只做总结，不写交易建议/);
   assert.match(INVESTOR_DISCUSSION_SYSTEM, /传闻必须标「未证实」/);
+  assert.doesNotMatch(INVESTOR_DISCUSSION_SYSTEM, /sentiment/);
   assert.equal(stripTradingAdvice('多头仍在。建议买入。'), '多头仍在。');
   assert.match(markUnverified('据说要回购。'), /未证实/);
   const seen = [];
@@ -582,11 +583,33 @@ test('digest stores coverage, drops invented links, and keeps login failures vis
           links: [{ title: '回购', url: 'https://xueqiu.com/7/9' }, { title: '假链接', url: 'https://evil.example/x' }],
         }) };
       },
+      label: async ({ prompt, batch }) => {
+        assert.match(prompt, /本组标的: 浦发银行/);
+        assert.match(prompt, /原帖:/);
+        return {
+          text: JSON.stringify({
+            items: batch.map((item) => ({
+              id: item.id,
+              aboutTarget: true,
+              bullish: true,
+              bearish: false,
+              explicit: true,
+              questionOnly: false,
+              reportOnly: false,
+              hasEvidence: false,
+              rumor: false,
+              traded: false,
+            })),
+          }),
+        };
+      },
     });
     assert.equal(summarized, 1);
     assert.equal(saved.status, 'partial');
+    assert.equal(saved.questionSet, 'v2');
     const view = presentInvestorDigest(saved);
     assert.equal(view.model, undefined);
+    assert.equal(view.questionSet, 'v2');
     assert.equal(saved.model, 'gemini-3.1-flash-lite');
     const main = view.sections.find((item) => item.key === 'SH600000');
     assert.match(main.summary, /回购/);
@@ -594,6 +617,11 @@ test('digest stores coverage, drops invented links, and keeps login failures vis
     assert.match(main.summary, /未证实/);
     assert.match(main.repeatedTopics[0], /未证实/);
     assert.deepEqual(main.links, [{ title: '回购', url: 'https://xueqiu.com/7/9' }]);
+    assert.equal(main.sentiment, '');
+    assert.equal(main.crowd.label, '数据不足');
+    assert.equal(main.crowd.sampleSize, 2);
+    assert.equal(main.crowd.counts.bull, 2);
+    assert.equal(main.crowd.questionSet, 'v2');
     assert.equal(main.heat.posts, 1);
     assert.equal(main.heat.comments, 1);
     assert.equal(main.heat.replyCount, 23);
@@ -602,6 +630,7 @@ test('digest stores coverage, drops invented links, and keeps login failures vis
     const quiet = view.sections.filter((item) => item.fetchStatus === 'empty');
     assert.ok(quiet.length >= 1);
     assert.ok(quiet.every((item) => item.summary === '今天没人讨论'));
+    assert.ok(quiet.every((item) => item.sentiment === '平淡' && !item.crowd));
     assert.ok(view.sections.findIndex((item) => item.key === 'SH600000') < view.sections.findIndex((item) => item.fetchStatus === 'empty'));
     assert.equal(view.sections.at(-1).fetchStatus, 'empty');
     assert.equal(view.coverage.commentFetched, 1);
@@ -620,6 +649,7 @@ test('digest stores coverage, drops invented links, and keeps login failures vis
       summarize: async () => { throw new Error('不应调用模型'); },
     });
     assert.equal(blocked.status, 'login_required');
+    assert.equal(blocked.questionSet, 'v2');
     assert.equal(blocked.sections.length, 0);
     assert.equal(blocked.coverage.loginRequired, true);
     assert.match(blocked.error, /尚未登录雪球/);
@@ -689,9 +719,49 @@ test('manual job uses the requested date and a scheduled run uses Shanghai date'
     const manual = await handlers['investor.discussion.digest']({ digestDate: '2026-10-10' });
     assert.equal(manual.digestDate, '2026-10-10');
     assert.equal(store.repositories.investorDiscussion.get('local', '2026-10-10').status, 'ready');
+    assert.equal(store.repositories.investorDiscussion.get('local', '2026-10-10').questionSet, 'v2');
     const scheduledFor = zonedLocalToUtc(2026, 10, 11, 21, 30, 'Asia/Shanghai');
     const scheduled = await handlers['investor.discussion.digest']({ scheduledFor, scheduleKey: 'investor.discussion.daily' });
     assert.equal(scheduled.digestDate, '2026-10-11');
+  } finally {
+    store.close();
+  }
+});
+
+test('missing Gemini key fails labeling instead of storing unlabeled shares', async () => {
+  const store = createStore(':memory:');
+  try {
+    const trading = createTradingService({
+      tradingRepository: store.repositories.trading,
+      sourcePort: { async read() { return { data: [] }; } },
+      workspaceId: 'local',
+    });
+    trading.importPortfolio(legacyHoldingsBookToPortfolioImport({
+      accounts: [{ id: 'broker-cn', name: '合成账户', marketScope: 'mixed', baseCurrency: 'CNY', cash: [] }],
+      lots: [
+        { id: 'lot-a', portfolioId: 'broker-cn', board: 'a_share', symbol: '600000', name: '浦发银行', quantity: '1', costPrice: '1', listingCurrency: 'CNY', exchangeCode: 'XSHG', market: 'cn', yahoo: '600000.SS' },
+      ],
+    }));
+    const handlers = createInvestorDiscussionJobHandlers({
+      repository: store.repositories.investorDiscussion,
+      env: { AI_CENTER_INVESTOR_DIGEST_THEMES: '[]' },
+      now: () => Date.parse('2026-10-11T14:00:00.000Z'),
+      client: {
+        async collectAll(targets) {
+          assert.equal(targets.length, 1);
+          return [{
+            ok: true,
+            posts: [{ id: '1', text: '继续看多', url: 'https://xueqiu.com/1/1', replyCount: 1 }],
+            comments: [],
+          }];
+        },
+      },
+      summarize: async () => { throw new Error('不应在打标签失败后继续总结'); },
+    });
+    await assert.rejects(
+      () => handlers['investor.discussion.digest']({ digestDate: '2026-10-11' }),
+      (error) => error?.code === 'config' && /GEMINI_API_KEY/.test(String(error.message)),
+    );
   } finally {
     store.close();
   }

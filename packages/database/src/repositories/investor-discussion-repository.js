@@ -15,6 +15,7 @@ function mapDigest(row) {
     model: row.model || '',
     coverage: parseJson(row.coverage_json, {}),
     sections: parseJson(row.sections_json, []),
+    questionSet: row.question_set || '',
     error: row.error_text || '',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -49,8 +50,8 @@ export function createInvestorDiscussionRepository(database, emitEvent) {
       database.transaction(() => {
         database.prepare(`INSERT INTO investor_discussion_digests
           (id, workspace_id, digest_date, status, generated_at, model, coverage_json, sections_json,
-           error_text, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           error_text, question_set, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(workspace_id, digest_date) DO UPDATE SET
             status = excluded.status,
             generated_at = excluded.generated_at,
@@ -58,10 +59,11 @@ export function createInvestorDiscussionRepository(database, emitEvent) {
             coverage_json = excluded.coverage_json,
             sections_json = excluded.sections_json,
             error_text = excluded.error_text,
+            question_set = excluded.question_set,
             updated_at = excluded.updated_at`).run(
           id, workspaceId, digestDate, value.status, generatedAt, value.model || '',
           JSON.stringify(value.coverage || {}), JSON.stringify(value.sections || []),
-          value.error || '', existing?.createdAt || now, now,
+          value.error || '', value.questionSet || '', existing?.createdAt || now, now,
         );
         emitEvent('investor.discussion.digest.saved.v1', 'investor-discussion', id, {
           digestDate,

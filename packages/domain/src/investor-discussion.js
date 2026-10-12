@@ -1,4 +1,12 @@
 import { INVESTOR_DISCUSSION_JOB_TYPE } from '../../contracts/src/investor-discussion.js';
+import {
+  aggregateJev,
+  DEFAULT_JEV_MAX_CALLS,
+  loadJevQuestionSet,
+  materialsFromTarget,
+  presentCrowd,
+  runJevLabeling,
+} from './investor-jev.js';
 import { addCalendarDays, formatYmd, zonedLocalToUtc, zonedParts } from './zoned-time.js';
 
 export const INVESTOR_DISCUSSION_SYSTEM = [
@@ -6,12 +14,10 @@ export const INVESTOR_DISCUSSION_SYSTEM = [
   '只做总结，不写交易建议。',
   '传闻必须标「未证实」。',
   '不要预测涨跌，不要给出买卖、仓位或目标价。',
-  '用 3 到 5 句中文概括：多空主要观点、情绪偏向、讨论热度、被反复提到的消息或传闻。',
+  '用 3 到 5 句中文概括：多空主要观点、讨论热度、被反复提到的消息或传闻。',
   '只输出 JSON 对象，不要 Markdown。',
-  '字段：summary 字符串；sentiment 只能是偏多、偏空、分歧、平淡之一；repeatedTopics 字符串数组；links 数组，每项含 title 和 url，url 必须来自材料里的原帖链接。',
+  '字段：summary 字符串；repeatedTopics 字符串数组；links 数组，每项含 title 和 url，url 必须来自材料里的原帖链接。',
 ].join('');
-
-const SENTIMENTS = new Set(['偏多', '偏空', '分歧', '平淡']);
 const COMMENT_COVERAGE_NOTE = '评论只含一级、不全';
 const POST_PAGE_CAP_NOTE = '帖子可能未抓全（到达页数上限）';
 const EMPTY_DISCUSSION_SUMMARY = '今天没人讨论';
@@ -172,7 +178,6 @@ export function readInvestorSummary(text, { posts, heat }) {
   if (!summary) {
     summary = `当天讨论已收集。模型草稿含交易建议，已省略。热度 ${heat.posts} 帖、${heat.comments} 评论。`;
   }
-  const sentiment = SENTIMENTS.has(parsed.sentiment) ? parsed.sentiment : '平淡';
   const repeatedTopics = (Array.isArray(parsed.repeatedTopics) ? parsed.repeatedTopics : [])
     .map((item) => markUnverified(stripTradingAdvice(item)))
     .map((item) => String(item || '').replace(/\s+/g, ' ').trim())
@@ -180,7 +185,7 @@ export function readInvestorSummary(text, { posts, heat }) {
     .slice(0, 6);
   return {
     summary,
-    sentiment,
+    sentiment: '',
     repeatedTopics,
     links: pickDiscussionLinks(parsed.links, posts),
   };
@@ -285,6 +290,7 @@ export function presentInvestorDigest(row, { pending = false } = {}) {
     generatedAt: row.generatedAt ?? null,
     error,
     pending,
+    questionSet: row.questionSet || '',
     coverage: row.coverage || {},
     sections: Array.isArray(row.sections) ? row.sections : [],
   };
@@ -303,6 +309,8 @@ export function createInvestorDiscussionService({
   listOpenJobs,
   now = () => Date.now(),
   timeZone = 'Asia/Shanghai',
+  env = process.env,
+  repositoryRoot,
 }) {
   if (!repository?.get || !repository?.save) throw new Error('股民讨论日摘需要存储');
   return {
@@ -321,19 +329,31 @@ export function createInvestorDiscussionService({
       themes,
       client,
       summarize,
+      label,
       model = '',
+      questionSet: givenQuestionSet,
+      jevBatchSize = null,
+      jevMaxCalls = null,
+      jevSingleAttempts = null,
+      jevBackoffMs = null,
     }) {
+      const questionSet = givenQuestionSet || loadJevQuestionSet({ env, repositoryRoot });
       const date = digestDate || investorDigestDate(now(), timeZone);
       const window = discussionDayWindow(date, timeZone);
-      const resolvedThemes = themes || resolveInvestorThemes(process.env);
+      const resolvedThemes = themes || resolveInvestorThemes(env);
       const built = buildDiscussionTargets({
         holdings: holdings || repository.listHoldings?.(workspaceId) || [],
         themes: resolvedThemes,
       });
       const previous = repository.get(workspaceId, date);
-      repository.save({
+      const persist = (fields) => repository.save({
         workspaceId,
         digestDate: date,
+        model,
+        questionSet: questionSet.version,
+        ...fields,
+      });
+      persist({
         status: 'running',
         generatedAt: previous?.generatedAt ?? null,
         model: previous?.model || model,
@@ -349,12 +369,9 @@ export function createInvestorDiscussionService({
         if (error?.code === 'login_required' || error?.code === 'verification_required') {
           const verification = error.code === 'verification_required';
           const message = String(error.message || (verification ? '雪球返回验证页。' : '采集浏览器尚未登录雪球。'));
-          return repository.save({
-            workspaceId,
-            digestDate: date,
+          return persist({
             status: verification ? 'verification_required' : 'login_required',
             generatedAt: now(),
-            model,
             coverage: {
               ...presentCoverage([], {
                 loginRequired: !verification,
@@ -370,18 +387,42 @@ export function createInvestorDiscussionService({
         }
         throw error;
       }
+      const prepared = built.targets.map((target, index) => {
+        const result = collected[index] || { failed: true, reason: '没有返回', posts: [], comments: [] };
+        return {
+          target,
+          result,
+          heat: {
+            posts: result.posts?.length || 0,
+            comments: result.comments?.length || 0,
+            replyCount: Number(result.commentClaimed) || 0,
+          },
+          commentNote: result.commentsPartial ? COMMENT_COVERAGE_NOTE : '',
+          items: result.posts?.length ? materialsFromTarget(target, result.posts, result.comments) : [],
+        };
+      });
+      const allItems = prepared.flatMap((row) => row.items);
+      let labelsById = new Map();
+      if (allItems.length) {
+        if (typeof label !== 'function') throw new Error('股民讨论打标签未配置');
+        const labeled = await runJevLabeling({
+          items: allItems,
+          questionSet,
+          batchSize: jevBatchSize ?? questionSet.batch.size,
+          maxCalls: jevMaxCalls ?? DEFAULT_JEV_MAX_CALLS,
+          singleAttempts: jevSingleAttempts ?? questionSet.batch.singleAttempts,
+          backoffMs: jevBackoffMs ?? questionSet.batch.backoffMs,
+          complete: label,
+        });
+        labelsById = labeled.labelsById;
+      }
+      const unlabeled = allItems.filter((item) => !labelsById.get(item.id)?.labeled).length;
       const sections = built.unmapped.map((item) => emptySection({
         kind: 'holding', key: item.key, name: item.name,
       }, { reason: item.reason }));
-      for (let index = 0; index < built.targets.length; index += 1) {
-        const target = built.targets[index];
-        const result = collected[index] || { failed: true, reason: '没有返回', posts: [], comments: [] };
-        const heat = {
-          posts: result.posts?.length || 0,
-          comments: result.comments?.length || 0,
-          replyCount: Number(result.commentClaimed) || 0,
-        };
-        const commentNote = result.commentsPartial ? COMMENT_COVERAGE_NOTE : '';
+      for (const row of prepared) {
+        const { target, result, heat, commentNote, items } = row;
+        const crowd = items.length ? presentCrowd(aggregateJev(items, labelsById, questionSet), questionSet) : null;
         if (result.failed || (!result.posts?.length && result.failures?.length)) {
           sections.push(emptySection(target, { reason: result.reason || '拉取失败', truncated: Boolean(result.truncated) }));
           continue;
@@ -417,6 +458,8 @@ export function createInvestorDiscussionService({
             key: target.key,
             name: target.name,
             ...read,
+            sentiment: '',
+            crowd,
             heat,
             fetchStatus: 'ok',
             reason: result.reason || '',
@@ -429,6 +472,7 @@ export function createInvestorDiscussionService({
             reason: String(error?.message || error),
             heat,
             commentNote,
+            crowd,
             truncated: Boolean(result.truncated),
           }));
         }
@@ -438,13 +482,12 @@ export function createInvestorDiscussionService({
       const error = status === 'failed'
         ? (sections.find((item) => item.reason)?.reason || '股民讨论日摘生成失败')
         : '';
-      return repository.save({
-        workspaceId,
-        digestDate: date,
+      return persist({
         status,
         generatedAt: now(),
-        model,
-        coverage: presentCoverage(sections),
+        coverage: presentCoverage(sections, {
+          labelNote: unlabeled > 0 ? `发言未标注 ${unlabeled} 条` : '',
+        }),
         sections,
         error,
       });
