@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-12-hourly-batch-pool.md`：小时阅读分类把同一小时里未分类的材料攒满 `AI_CENTER_READING_CLASS_BATCH` 再调用。信息还在到达时不送出短批。每次分类调用和浓缩失败都写明批次、回退原因、状态、响应片段、模型和 key 后缀。启动脚本的日志泵改为队列写入，进程还在时日志不再停。需要重启启动脚本。
+
 - `progress/2026-10-12-reading-class-batch.md`：小时报阅读分类按 `AI_CENTER_READING_CLASS_BATCH` 分批，默认 10。解析缺口只回退缺的条目；配额不拆批。信息树浓缩和小时报停用开关不变。需重启 Worker。
 
 - `progress/2026-10-12-classify-batching-eval.md`：小时阅读分类的离线批量对照。脚本只读最近样本，用 Gemini 按 10/20/30 条一批分类，对照已有单条分类。不写库，不改小时报。

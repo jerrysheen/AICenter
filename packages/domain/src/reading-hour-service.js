@@ -125,18 +125,38 @@ function parseClassification(answer, input) {
   }
 }
 
+function parseJsonCandidate(text) {
+  const source = String(text || '').trim();
+  if (!source) return undefined;
+  try { return JSON.parse(source); } catch { /* fall through to a braced slice */ }
+  const objectAt = source.indexOf('{');
+  const arrayAt = source.indexOf('[');
+  const objectEnd = source.lastIndexOf('}');
+  const arrayEnd = source.lastIndexOf(']');
+  // A top-level object contains "domainTagIds":[]. Slicing the first [ to the last ] would parse that empty array.
+  if (objectAt >= 0 && objectEnd > objectAt && (arrayAt < 0 || objectAt < arrayAt)) {
+    try { return JSON.parse(source.slice(objectAt, objectEnd + 1)); } catch { /* try the array slice */ }
+  }
+  if (arrayAt >= 0 && arrayEnd > arrayAt) {
+    try { return JSON.parse(source.slice(arrayAt, arrayEnd + 1)); } catch { return undefined; }
+  }
+  return undefined;
+}
+
 function alignClassificationBatch(answer, inputs) {
   let rows;
   try {
     const text = String(answer || '').trim();
     const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
     const source = fenced ? fenced[1].trim() : text;
-    const start = source.indexOf('[');
-    const end = source.lastIndexOf(']');
-    if (start < 0 || end <= start) return null;
-    const parsed = JSON.parse(source.slice(start, end + 1));
-    if (!Array.isArray(parsed)) return null;
-    rows = parsed;
+    let value = parseJsonCandidate(source);
+    if (value && typeof value === 'object' && !Array.isArray(value) && Array.isArray(value.items)) value = value.items;
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      if (inputs.length !== 1) return null;
+      value = [value.idx === undefined ? {...value, idx: 0} : value];
+    }
+    if (!Array.isArray(value)) return null;
+    rows = value;
   } catch {
     return null;
   }
@@ -148,7 +168,7 @@ function alignClassificationBatch(answer, inputs) {
     if (idx === null || idx >= inputs.length) continue;
     if (seen.has(idx)) {
       const input = inputs[idx];
-      aligned.set(idx, {status: 'invalid-output', inputScope: input.inputScope, includedChars: input.includedChars, bodyChars: input.bodyChars});
+      aligned.set(idx, {status: 'invalid-output', fallbackReason: 'duplicate-idx', inputScope: input.inputScope, includedChars: input.includedChars, bodyChars: input.bodyChars});
       continue;
     }
     seen.add(idx);
@@ -157,11 +177,31 @@ function alignClassificationBatch(answer, inputs) {
   return aligned;
 }
 
-export function createReadingHourService({repository, reportRepository = null, agentRuntime = null, enabled = false, client = null, catalogIds = new Set(), publishedAtFor = null, publisherFor = null, now = () => Date.now(), env = process.env} = {}) {
+export function readingClassKeySuffix(keyEnv) {
+  const name = String(keyEnv || '');
+  if (!name) return '-';
+  const digits = name.match(/(\d+)$/);
+  if (digits) return `KEY${digits[1]}`;
+  if (/GEMINI_API_KEY$/.test(name)) return 'KEY';
+  return name.slice(-12);
+}
+
+export function createReadingHourService({repository, reportRepository = null, agentRuntime = null, enabled = false, client = null, catalogIds = new Set(), publishedAtFor = null, publisherFor = null, now = () => Date.now(), env = process.env, log = console.log} = {}) {
   const indexCache = new Map();
   const batchSize = readingClassBatchSize(env);
   const keyEnvs = readingClassKeyEnvs(env);
   let keyCursor = 0;
+  function logCall({count, fallback = false, reason = '', keyEnv = '', outcome = 'ok'}) {
+    const parts = ['[worker] reading-class', `batch=${count}`, `fallback=${fallback ? 1 : 0}`];
+    if (fallback && reason) parts.push(`reason=${reason}`);
+    parts.push(`key=${readingClassKeySuffix(keyEnv)}`);
+    if (outcome && outcome !== 'ok') parts.push(`outcome=${outcome}`);
+    try { log(parts.join(' ')); } catch { /* a log failure must not change classification */ }
+  }
+  function callOutcome(error) {
+    if (isQuotaExhausted(error)) return 'budget-deferred';
+    return 'error';
+  }
   function view(snapshot) {
     if (!snapshot) return null;
     return {
@@ -229,9 +269,18 @@ export function createReadingHourService({repository, reportRepository = null, a
     usageStage: 'reading-classification', taskInstruction, message, ...(keyEnv ? {googleKeyEnv: keyEnv} : {}),
   });
   // One pass over configured keys. A quota or cooldown rejection tries the next key with the same batch and never splits it.
-  async function runBatchRequest(workspace, message) {
+  async function runBatchRequest(workspace, message, count) {
     const payload = {taskInstruction: readingClassBatchInstruction(), message};
-    if (!keyEnvs.length) return classificationRequest(workspace, payload.taskInstruction, payload.message);
+    if (!keyEnvs.length) {
+      try {
+        const result = await classificationRequest(workspace, payload.taskInstruction, payload.message);
+        logCall({count, keyEnv: ''});
+        return result;
+      } catch (error) {
+        logCall({count, keyEnv: '', outcome: callOutcome(error)});
+        throw error;
+      }
+    }
     const start = keyCursor % keyEnvs.length;
     let lastError;
     for (let attempt = 0; attempt < keyEnvs.length; attempt += 1) {
@@ -239,9 +288,11 @@ export function createReadingHourService({repository, reportRepository = null, a
       try {
         const result = await classificationRequest(workspace, payload.taskInstruction, payload.message, keyEnvs[index]);
         keyCursor = index + 1;
+        logCall({count, keyEnv: keyEnvs[index]});
         return result;
       } catch (error) {
         lastError = error;
+        logCall({count, keyEnv: keyEnvs[index], outcome: callOutcome(error)});
         if (!isQuotaExhausted(error)) {
           keyCursor = index + 1;
           throw error;
@@ -251,22 +302,25 @@ export function createReadingHourService({repository, reportRepository = null, a
     keyCursor = start + 1;
     throw lastError;
   }
-  async function requestOne(workspace, node) {
+  async function requestOne(workspace, node, fallback = null) {
     const input = classificationInput(node);
+    const logged = {count: 1, fallback: Boolean(fallback), reason: fallback?.reason || '', keyEnv: ''};
     try {
       const result = await classificationRequest(workspace, READING_CLASS_INSTRUCTION, JSON.stringify(input));
+      logCall(logged);
       const parsed = parseClassification(result.answer || result.text || '', input);
       persistClassification(workspace, node, input, parsed);
       return {...parsed, source: 'classification-request'};
     } catch (error) {
+      logCall({...logged, outcome: callOutcome(error)});
       return persistThrown(workspace, node, input, error);
     }
   }
-  async function classifyNode(workspace, node) {
+  async function classifyNode(workspace, node, fallback = null) {
     const cached = readCachedClassification(workspace, node);
     if (cached) return cached;
     if (!agentRuntime?.run) return missingRuntime();
-    return requestOne(workspace, node);
+    return requestOne(workspace, node, fallback);
   }
   async function classifyBatch(workspace, nodes) {
     if (!agentRuntime?.run) return nodes.map(() => missingRuntime());
@@ -275,17 +329,18 @@ export function createReadingHourService({repository, reportRepository = null, a
       return {node, input, message: {idx, ...input}};
     });
     try {
-      const result = await runBatchRequest(workspace, JSON.stringify(specs.map((spec) => spec.message)));
+      const result = await runBatchRequest(workspace, JSON.stringify(specs.map((spec) => spec.message)), specs.length);
       const aligned = alignClassificationBatch(result.answer || result.text || '', specs.map((spec) => spec.input));
       if (!aligned) {
         const fallback = [];
-        for (const spec of specs) fallback.push(await classifyNode(workspace, spec.node));
+        for (const spec of specs) fallback.push(await classifyNode(workspace, spec.node, {reason: 'parse-failure'}));
         return fallback;
       }
       const out = [];
       for (let idx = 0; idx < specs.length; idx += 1) {
         const parsed = aligned.get(idx);
-        if (!parsed || parsed.status === 'invalid-output') out.push(await classifyNode(workspace, specs[idx].node));
+        if (!parsed) out.push(await classifyNode(workspace, specs[idx].node, {reason: 'missing-idx'}));
+        else if (parsed.status === 'invalid-output') out.push(await classifyNode(workspace, specs[idx].node, {reason: parsed.fallbackReason || 'invalid-output'}));
         else {
           persistClassification(workspace, specs[idx].node, specs[idx].input, parsed);
           out.push({...parsed, source: 'classification-request'});
@@ -296,7 +351,11 @@ export function createReadingHourService({repository, reportRepository = null, a
       return specs.map((spec) => persistThrown(workspace, spec.node, spec.input, error));
     }
   }
-  async function classifyAll(workspace, nodes) {
+  function pooledClassification() {
+    return {status: 'missing', source: 'classification-pooled'};
+  }
+  // Incremental prepares each refresh the hour. Hold a short remainder so those arrivals join one batch.
+  async function classifyAll(workspace, nodes, {flushRemainder = true} = {}) {
     if (batchSize === 1) {
       const single = [];
       for (const node of nodes) single.push(await classifyNode(workspace, node));
@@ -309,11 +368,13 @@ export function createReadingHourService({repository, reportRepository = null, a
       if (cached) out[index] = cached;
       else pending.push(index);
     }
-    for (let offset = 0; offset < pending.length; offset += batchSize) {
+    const runnable = flushRemainder ? pending.length : pending.length - (pending.length % batchSize);
+    for (let offset = 0; offset < runnable; offset += batchSize) {
       const indexes = pending.slice(offset, offset + batchSize);
       const batch = await classifyBatch(workspace, indexes.map((index) => nodes[index]));
       indexes.forEach((index, position) => { out[index] = batch[position]; });
     }
+    for (let offset = runnable; offset < pending.length; offset += 1) out[pending[offset]] = pooledClassification();
     return out;
   }
   return {
@@ -340,12 +401,12 @@ export function createReadingHourService({repository, reportRepository = null, a
       return result;
     },
     classifyNode,
-    async scoreWindow({workspace = 'local', window} = {}) {
+    async scoreWindow({workspace = 'local', window, flushRemainder = true} = {}) {
       if (!enabled) return {published: false, reason: 'disabled'};
       const nodes = repository.listInformationInWindow?.(workspace, window, {limit: 200}) || [];
       const items = [];
       const readingErrors = [];
-      const classifications = await classifyAll(workspace, nodes);
+      const classifications = await classifyAll(workspace, nodes, {flushRemainder: flushRemainder !== false});
       for (let index = 0; index < nodes.length; index += 1) {
         const node = nodes[index];
         const classification = classifications[index];

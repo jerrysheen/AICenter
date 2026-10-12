@@ -45,8 +45,25 @@ test('condense error kinds stay distinct and logs redact secrets', () => {
   assert.match(line, /executionMs=3400/);
   assert.match(line, /provider=elucid-grok/);
   assert.match(line, /model=-/);
+  assert.match(line, /key=-/);
+  assert.match(line, /body=-/);
+  assert.match(line, /inputChars=-/);
+  assert.match(line, /finish=-/);
   assert.equal(line.includes('AIzaSyDUMMYKEY1234567890'), false);
   assert.equal(line.includes(body), false);
+  const detailed = formatCondenseFailureLog(Object.assign(new Error('模型调用失败：429: slow'), {
+    name: 'HarnessModelError', upstreamStatus: 429, upstreamCode: '429', googleKeyEnv: 'GEMINI_API_KEY2', admittedModel: 'gemini-3.1-flash-lite',
+    finishReason: 'MAX_TOKENS', inputBytes: 8000, inputChars: 4200,
+    upstreamBody: '{"error":{"message":"truncated AIzaSyDUMMYKEY1234567890"}}',
+  }), {layer: 'hourly', task: 'hourly-brief', provider: 'google', model: 'gemini-3.1-flash-lite', inputCount: 6, inputBytes: 12000, inputChars: 9000});
+  assert.match(detailed, /status=429/);
+  assert.match(detailed, /model=gemini-3\.1-flash-lite/);
+  assert.match(detailed, /key=KEY2/);
+  assert.match(detailed, /inputBytes=8000/);
+  assert.match(detailed, /inputChars=4200/);
+  assert.match(detailed, /finish=MAX_TOKENS/);
+  assert.match(detailed, /body=.*\[redacted\]/);
+  assert.equal(detailed.includes('AIzaSyDUMMYKEY1234567890'), false);
 });
 
 test('hourly condense failure log keeps the cause and omits prompt text', async () => {
@@ -57,7 +74,10 @@ test('hourly condense failure log keeps the cause and omits prompt text', async 
     calls.push(input);
     const payload = JSON.parse(input.message);
     if (input.usageStage === 'tree-hourly') {
-      throw Object.assign(new Error('模型调用失败：500: upstream AIzaSyDUMMYKEY1234567890'), {name: 'HarnessModelError', upstreamStatus: 500, upstreamCode: '500'});
+      throw Object.assign(new Error('模型调用失败：500: upstream AIzaSyDUMMYKEY1234567890'), {
+        name: 'HarnessModelError', upstreamStatus: 500, upstreamCode: '500', googleKeyEnv: 'GEMINI_API_KEY3',
+        upstreamBody: '{"error":{"message":"upstream AIzaSyDUMMYKEY1234567890"}}', finishReason: 'OTHER',
+      });
     }
     return {answer: JSON.stringify({title: payload.source.title, text: payload.source.paragraphs.map(item => item.text).join(''), tagId: null})};
   }};
@@ -87,6 +107,11 @@ test('hourly condense failure log keeps the cause and omits prompt text', async 
     assert.match(logged[0], /model=grok-4\.7/);
     assert.match(logged[0], /inputs=1/);
     assert.match(logged[0], /inputBytes=\d+/);
+    assert.match(logged[0], /inputChars=\d+/);
+    assert.match(logged[0], /key=KEY3/);
+    assert.match(logged[0], /status=500/);
+    assert.match(logged[0], /finish=OTHER/);
+    assert.match(logged[0], /body=.*\[redacted\]/);
     assert.match(logged[0], /skillBytes=\d+/);
     assert.match(logged[0], /queueMs=\d+/);
     assert.match(logged[0], /executionMs=\d+/);

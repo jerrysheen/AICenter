@@ -196,19 +196,20 @@ function Start-HiddenLoggedProcess {
     [string]$ErrorLog
   )
   if (-not ('AiCenterAppendLog' -as [type])) {
+    # The pipe reader must not write the file itself. An exception in OutputDataReceived
+    # stops BeginOutputReadLine; the child then blocks on a full pipe while its PID stays up.
     Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
+using System.Threading;
 
 public static class AiCenterAppendLog {
   public static Process Start(string fileName, string arguments, string workingDirectory, string outLog, string errorLog) {
     var utf8 = new UTF8Encoding(false);
-    var stdout = new StreamWriter(new FileStream(outLog, FileMode.Append, FileAccess.Write, FileShare.ReadWrite), utf8);
-    stdout.AutoFlush = true;
-    var stderr = new StreamWriter(new FileStream(errorLog, FileMode.Append, FileAccess.Write, FileShare.ReadWrite), utf8);
-    stderr.AutoFlush = true;
+    var pump = new LogPump(outLog, errorLog);
     try {
       var psi = new ProcessStartInfo();
       psi.FileName = fileName;
@@ -223,34 +224,175 @@ public static class AiCenterAppendLog {
       var process = new Process();
       process.StartInfo = psi;
       process.EnableRaisingEvents = true;
-      var gate = new object();
       var stamp = "----- " + DateTimeOffset.Now.ToString("o") + " start -----";
-      stdout.WriteLine(stamp);
-      stderr.WriteLine(stamp);
+      pump.Enqueue(false, stamp);
+      pump.Enqueue(true, stamp);
       process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e) {
         if (e.Data == null) return;
-        lock (gate) { if (stdout != null) stdout.WriteLine(e.Data); }
+        pump.Enqueue(false, e.Data);
       };
       process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e) {
         if (e.Data == null) return;
-        lock (gate) { if (stderr != null) stderr.WriteLine(e.Data); }
+        pump.Enqueue(true, e.Data);
       };
       process.Exited += delegate(object sender, EventArgs e) {
-        lock (gate) {
-          try { if (stdout != null) stdout.Dispose(); } catch (Exception) {}
-          stdout = null;
-          try { if (stderr != null) stderr.Dispose(); } catch (Exception) {}
-          stderr = null;
-        }
+        pump.Complete();
       };
       if (!process.Start()) throw new InvalidOperationException("process did not start");
       process.BeginOutputReadLine();
       process.BeginErrorReadLine();
       return process;
     } catch {
-      try { stdout.Dispose(); } catch (Exception) {}
-      try { stderr.Dispose(); } catch (Exception) {}
+      pump.Complete();
       throw;
+    }
+  }
+
+  sealed class LogLine {
+    public bool Error;
+    public string Line;
+    public LogLine(bool error, string line) {
+      Error = error;
+      Line = line;
+    }
+  }
+
+  sealed class LogPump {
+    const int Capacity = 4000;
+    readonly Queue<LogLine> queue = new Queue<LogLine>();
+    readonly string outPath;
+    readonly string errorPath;
+    readonly object gate = new object();
+    bool completed;
+    StreamWriter stdout;
+    StreamWriter stderr;
+    string stdoutPath;
+    string stderrPath;
+    readonly Thread thread;
+
+    public LogPump(string outLog, string errorLog) {
+      outPath = outLog;
+      errorPath = errorLog;
+      stdout = Open(outLog);
+      stdoutPath = outLog;
+      try {
+        stderr = Open(errorLog);
+        stderrPath = errorLog;
+      } catch {
+        try { stdout.Dispose(); } catch (Exception) {}
+        stdout = null;
+        throw;
+      }
+      thread = new Thread(WriteLoop);
+      thread.IsBackground = true;
+      thread.Name = "AiCenterAppendLog";
+      thread.Start();
+    }
+
+    public void Enqueue(bool error, string line) {
+      try {
+        lock (gate) {
+          if (completed) return;
+          if (queue.Count >= Capacity) queue.Dequeue();
+          queue.Enqueue(new LogLine(error, line));
+          Monitor.Pulse(gate);
+        }
+      } catch (Exception) {}
+    }
+
+    public void Complete() {
+      lock (gate) {
+        completed = true;
+        Monitor.PulseAll(gate);
+      }
+    }
+
+    void WriteLoop() {
+      try {
+        while (true) {
+          LogLine item;
+          lock (gate) {
+            while (queue.Count == 0 && !completed) Monitor.Wait(gate);
+            if (queue.Count == 0) break;
+            item = queue.Dequeue();
+          }
+          try { Write(item); }
+          catch (Exception) {
+            try { Reopen(item.Error); Write(item); }
+            catch (Exception) {}
+          }
+        }
+      } catch (Exception) {}
+      finally { Close(); }
+    }
+
+    void Write(LogLine item) {
+      var today = DateTime.Now.ToString("yyyy-MM-dd");
+      var wanted = DatedPath(item.Error ? errorPath : outPath, today);
+      var current = item.Error ? stderrPath : stdoutPath;
+      var writer = item.Error ? stderr : stdout;
+      if (writer == null || current != wanted) {
+        Reopen(item.Error);
+        writer = item.Error ? stderr : stdout;
+      }
+      if (writer == null) return;
+      writer.WriteLine(item.Line);
+    }
+
+    void Reopen(bool error) {
+      var today = DateTime.Now.ToString("yyyy-MM-dd");
+      var path = DatedPath(error ? errorPath : outPath, today);
+      var next = Open(path);
+      lock (gate) {
+        if (error) {
+          try { if (stderr != null) stderr.Dispose(); } catch (Exception) {}
+          stderr = next;
+          stderrPath = path;
+        } else {
+          try { if (stdout != null) stdout.Dispose(); } catch (Exception) {}
+          stdout = next;
+          stdoutPath = path;
+        }
+      }
+    }
+
+    static StreamWriter Open(string path) {
+      var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+      var writer = new StreamWriter(stream, new UTF8Encoding(false));
+      writer.AutoFlush = true;
+      return writer;
+    }
+
+    static bool IsDateAt(string value, int index) {
+      if (index < 0 || index + 10 > value.Length) return false;
+      for (int i = 0; i < 10; i++) {
+        char c = value[index + i];
+        if (i == 4 || i == 7) { if (c != '-') return false; }
+        else if (c < '0' || c > '9') return false;
+      }
+      return true;
+    }
+
+    static string DatedPath(string path, string day) {
+      string name = Path.GetFileName(path);
+      string directory = Path.GetDirectoryName(path);
+      for (int i = 0; i + 10 <= name.Length; i++) {
+        if (!IsDateAt(name, i)) continue;
+        bool boundary = (i == 0 || name[i - 1] == '.') && (i + 10 == name.Length || name[i + 10] == '.');
+        if (!boundary) continue;
+        string renamed = name.Substring(0, i) + day + name.Substring(i + 10);
+        return string.IsNullOrEmpty(directory) ? renamed : Path.Combine(directory, renamed);
+      }
+      return path;
+    }
+
+    void Close() {
+      lock (gate) {
+        try { if (stdout != null) stdout.Dispose(); } catch (Exception) {}
+        stdout = null;
+        try { if (stderr != null) stderr.Dispose(); } catch (Exception) {}
+        stderr = null;
+      }
     }
   }
 }

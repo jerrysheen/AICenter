@@ -41,8 +41,24 @@ test('scheduled hourly job scores the windows it generated', async () => {
     readingHour: {enabled: true, async scoreWindow(input) { calls.push(input); return {readingErrors: []}; }},
   });
   const result = await handlers['report.hourly.extract']({});
-  assert.deepEqual(calls, [{workspace: 'local', window: {startAt: 10, endAt: 20}}]);
+  assert.deepEqual(calls, [{workspace: 'local', window: {startAt: 10, endAt: 20}, flushRemainder: true}]);
   assert.equal(result.readingFailed, false);
+});
+
+test('hourly classification waits while sources are still arriving and flushes after terminal content failures', async () => {
+  const calls = [];
+  const handlersFor = (pending) => createReportJobHandlers({
+    reportService: {generateDailyReport() {}},
+    informationService: {async generateHourlyDigests() {
+      return [{id: 'edition:1', status: 'partial', published: true, window: {startAt: 10, endAt: 20}, pendingIds: pending.map((item) => item.id), pending, groupFailures: []}];
+    }},
+    treeService: {},
+    readingHour: {enabled: true, async scoreWindow(input) { calls.push(input); return {readingErrors: []}; }},
+  });
+  await handlersFor([{id: 'later', reason: 'information-not-ready', retryable: false}])['report.hourly.extract']({});
+  assert.equal(calls.at(-1).flushRemainder, false);
+  await handlersFor([{id: 'gone', reason: 'needs-content', retryable: false}])['report.hourly.extract']({});
+  assert.equal(calls.at(-1).flushRemainder, true);
 });
 
 test('reading snapshot survives reopen and a failed attempt cannot replace it', () => {

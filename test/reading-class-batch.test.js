@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {READING_CLASS_VERSION} from '../packages/domain/src/reading-focus-route.js';
-import {READING_CLASS_BATCH_APPENDIX, READING_CLASS_INSTRUCTION, createReadingHourService, readingClassBatchInstruction, readingClassBatchSize, readingClassKeyEnvs} from '../packages/domain/src/reading-hour-service.js';
+import {READING_CLASS_BATCH_APPENDIX, READING_CLASS_INSTRUCTION, createReadingHourService, readingClassBatchInstruction, readingClassBatchSize, readingClassKeyEnvs, readingClassKeySuffix} from '../packages/domain/src/reading-hour-service.js';
+import {hourlyReadingFlushRemainder} from '../packages/runtime/src/report-module.js';
 
 const window = {startAt: 10, endAt: 20};
 
@@ -17,7 +18,7 @@ function singleAnswer(message) {
   return JSON.stringify({primaryDirection: 'industry', subjectKind: 'company_event', domainTagIds: [], classificationStatus: 'classified', evidenceQuote: message.title});
 }
 
-function open({env = {}, nodes, stages = new Map(), run}) {
+function open({env = {}, nodes, stages = new Map(), run, log = () => {}}) {
   const calls = [];
   const saves = [];
   const repository = {
@@ -28,10 +29,13 @@ function open({env = {}, nodes, stages = new Map(), run}) {
     getAnalysisStage(workspace, kind, key, version) {
       return stages.get(`${workspace}:${kind}:${key}:${version}`) || null;
     },
-    saveAnalysisStage(...args) { saves.push(args); },
+    saveAnalysisStage(workspace, kind, key, version, input, output, status, error) {
+      saves.push([workspace, kind, key, version, input, output, status, error]);
+      stages.set(`${workspace}:${kind}:${key}:${version}`, {status, input, output, error});
+    },
   };
   const agentRuntime = {async run(input) { calls.push(input); return run(input, calls.length - 1); }};
-  const service = createReadingHourService({repository, reportRepository, agentRuntime, enabled: true, env, now: () => 5});
+  const service = createReadingHourService({repository, reportRepository, agentRuntime, enabled: true, env, now: () => 5, log});
   return {service, calls, saves};
 }
 
@@ -54,6 +58,15 @@ test('reading class batch size defaults to 10 and rejects a non-positive value',
   assert.deepEqual(readingClassKeyEnvs({...googleKeys, GEMINI_API_KEY2: 'key-a'}), ['GEMINI_API_KEY', 'GEMINI_API_KEY3']);
   assert.equal(readingClassBatchInstruction(), `${READING_CLASS_INSTRUCTION}\n${READING_CLASS_BATCH_APPENDIX}`);
   assert.equal(READING_CLASS_INSTRUCTION.includes('idx'), false);
+  assert.equal(readingClassKeySuffix('GEMINI_API_KEY'), 'KEY');
+  assert.equal(readingClassKeySuffix('GEMINI_API_KEY2'), 'KEY2');
+  assert.equal(readingClassKeySuffix(''), '-');
+  assert.equal(hourlyReadingFlushRemainder(null), true);
+  assert.equal(hourlyReadingFlushRemainder({pendingIds: [], pending: []}), true);
+  assert.equal(hourlyReadingFlushRemainder({pendingIds: ['later'], pending: [{id: 'later', reason: 'information-not-ready', retryable: false}]}), false);
+  assert.equal(hourlyReadingFlushRemainder({pendingIds: ['again'], pending: [{id: 'again', reason: 'budget-deferred', retryable: true}]}), false);
+  assert.equal(hourlyReadingFlushRemainder({pendingIds: ['gone'], pending: [{id: 'gone', reason: 'needs-content', retryable: false}]}), true);
+  assert.equal(hourlyReadingFlushRemainder({pendingIds: ['unknown']}), false);
 });
 
 test('batch classification aligns shuffled idx values and skips a cached item', async () => {
@@ -247,4 +260,120 @@ test('the default batch size sends ten items and does not split a non-quota requ
   const result = await failed.service.scoreWindow({workspace: 'local', window});
   assert.equal(failed.calls.length, 1);
   assert.equal(result.snapshot.items.every((item) => item.disposition === 'classification-failed'), true);
+});
+
+test('items from separate arrivals pool into full batches and a closed hour flushes the remainder', async () => {
+  const nodes = [];
+  const lines = [];
+  const pooled = open({
+    env: {...googleKeys, AI_CENTER_READING_CLASS_BATCH: '4'},
+    nodes,
+    log: (line) => lines.push(line),
+    run(input) {
+      const message = JSON.parse(input.message);
+      return {answer: JSON.stringify(message.map((item) => classified('finance', 'market_asset', item.title, item.idx)))};
+    },
+  });
+  nodes.push(node('a', '甲'), node('b', '乙'));
+  const held = await pooled.service.scoreWindow({workspace: 'local', window, flushRemainder: false});
+  assert.equal(pooled.calls.length, 0);
+  assert.equal(pooled.saves.length, 0);
+  assert.equal(held.snapshot.items.every((item) => item.disposition === 'classification-missing'), true);
+  nodes.push(node('c', '丙'), node('d', '丁'), node('e', '戊'));
+  const partial = await pooled.service.scoreWindow({workspace: 'local', window, flushRemainder: false});
+  assert.equal(pooled.calls.length, 1);
+  assert.deepEqual(JSON.parse(pooled.calls[0].message).map((item) => item.title), ['甲', '乙', '丙', '丁']);
+  assert.equal(partial.snapshot.items[4].disposition, 'classification-missing');
+  assert.equal(lines[0], '[worker] reading-class batch=4 fallback=0 key=KEY');
+  const flushed = await pooled.service.scoreWindow({workspace: 'local', window, flushRemainder: true});
+  assert.equal(pooled.calls.length, 2);
+  assert.deepEqual(JSON.parse(pooled.calls[1].message).map((item) => item.title), ['戊']);
+  assert.equal(lines[1], '[worker] reading-class batch=1 fallback=0 key=KEY2');
+  assert.deepEqual(flushed.snapshot.items.map((item) => item.evidenceQuote), ['甲', '乙', '丙', '丁', '戊']);
+});
+
+test('a short remainder is not sent while the hour is still admitting items', async () => {
+  const nodes = Array.from({length: 25}, (_item, index) => node(`n${index}`, `标题${index}`));
+  const {service, calls} = open({
+    env: {AI_CENTER_READING_CLASS_BATCH: '10'},
+    nodes,
+    run(input) {
+      const message = JSON.parse(input.message);
+      return {answer: JSON.stringify(message.map((item) => classified('industry', 'company_event', item.title, item.idx)))};
+    },
+  });
+  const held = await service.scoreWindow({workspace: 'local', window, flushRemainder: false});
+  assert.deepEqual(calls.map((call) => JSON.parse(call.message).length), [10, 10]);
+  assert.equal(held.snapshot.items.filter((item) => item.disposition === 'classification-missing').length, 5);
+  assert.equal(held.snapshot.items.filter((item) => item.evidenceQuote).length, 20);
+});
+
+test('classification logs record per-item fallback reason and quota does not log a fallback', async () => {
+  const lines = [];
+  const parsed = open({
+    env: {...googleKeys, AI_CENTER_READING_CLASS_BATCH: '3'},
+    nodes: [node('a', '甲'), node('b', '乙')],
+    log: (line) => lines.push(line),
+    run(input) {
+      const message = JSON.parse(input.message);
+      if (Array.isArray(message)) return {answer: '不是 JSON'};
+      return {answer: singleAnswer(message)};
+    },
+  });
+  await parsed.service.scoreWindow({workspace: 'local', window});
+  assert.equal(lines[0], '[worker] reading-class batch=2 fallback=0 key=KEY');
+  assert.deepEqual(lines.slice(1), [
+    '[worker] reading-class batch=1 fallback=1 reason=parse-failure key=-',
+    '[worker] reading-class batch=1 fallback=1 reason=parse-failure key=-',
+  ]);
+
+  const quotaLines = [];
+  const quota = open({
+    env: {...googleKeys, AI_CENTER_READING_CLASS_BATCH: '10'},
+    nodes: [node('a', '甲'), node('b', '乙'), node('c', '丙'), node('d', '丁')],
+    log: (line) => quotaLines.push(line),
+    run() {
+      const error = new Error('quota=daily key=KEY cooldownUntil=1');
+      error.code = 'budget-deferred';
+      error.quotaExhausted = true;
+      throw error;
+    },
+  });
+  await quota.service.scoreWindow({workspace: 'local', window});
+  assert.equal(quota.calls.length, 3);
+  assert.deepEqual(quotaLines, [
+    '[worker] reading-class batch=4 fallback=0 key=KEY outcome=budget-deferred',
+    '[worker] reading-class batch=4 fallback=0 key=KEY2 outcome=budget-deferred',
+    '[worker] reading-class batch=4 fallback=0 key=KEY3 outcome=budget-deferred',
+  ]);
+  assert.equal(quotaLines.some((line) => line.includes('fallback=1')), false);
+});
+
+test('a one-item object is accepted and a multi-item object still falls back', async () => {
+  const single = open({
+    env: {AI_CENTER_READING_CLASS_BATCH: '10'},
+    nodes: [node('a', '甲')],
+    run() {
+      return {answer: JSON.stringify({primaryDirection: 'finance', subjectKind: 'market_asset', domainTagIds: [], classificationStatus: 'classified', evidenceQuote: '甲句'})};
+    },
+  });
+  const saved = await single.service.scoreWindow({workspace: 'local', window});
+  assert.equal(single.calls.length, 1);
+  assert.equal(saved.snapshot.items[0].evidenceQuote, '甲句');
+
+  const many = open({
+    env: {AI_CENTER_READING_CLASS_BATCH: '10'},
+    nodes: [node('a', '甲'), node('b', '乙'), node('c', '丙')],
+    run(input) {
+      const message = JSON.parse(input.message);
+      if (Array.isArray(message)) {
+        return {answer: JSON.stringify({primaryDirection: 'finance', subjectKind: 'market_asset', domainTagIds: [], classificationStatus: 'classified', evidenceQuote: '只一条'})};
+      }
+      return {answer: singleAnswer(message)};
+    },
+  });
+  await many.service.scoreWindow({workspace: 'local', window});
+  assert.equal(many.calls.length, 4);
+  assert.equal(many.calls[0].taskInstruction, readingClassBatchInstruction());
+  assert.deepEqual(many.calls.slice(1).map((call) => call.taskInstruction), [READING_CLASS_INSTRUCTION, READING_CLASS_INSTRUCTION, READING_CLASS_INSTRUCTION]);
 });
