@@ -1,6 +1,6 @@
-import { markdownShareBlocks, stripSharePlaceholders } from './markdown.js';
+import { markdownShareBlocks, stripSharePlaceholders } from './markdown.js?v=dev';
 export { stripSharePlaceholders };
-import { paintQr, qrMatrix } from './qr-code.js';
+import { paintQr, qrMatrix } from './qr-code.js?v=dev';
 
 export const SHARE_CARD_MIN_WIDTH = 375;
 export const SHARE_CARD_MAX_WIDTH = 540;
