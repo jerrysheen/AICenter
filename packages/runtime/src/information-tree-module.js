@@ -1,4 +1,5 @@
 import {PrepareTreeInformationInputSchema} from '../../contracts/src/information-tree.js';
+import {hourlyReportDisabled} from './report-module.js';
 export const TREE_PREPARE_JOB_TYPE='report.information.prepare';
 export const informationTreeManifest={id:'report.information',version:'3.1.0',capabilities:['report.information.prepare'],jobTypes:[TREE_PREPARE_JOB_TYPE]};
 const HOUR=3600000;
@@ -13,8 +14,8 @@ export async function prioritizeRecentTreePreparation(store,candidates,workspace
   });
   return store.reprioritizeQueuedJobs(workspaceId,changes);
 }
-export function enqueuePreparedHourRefreshes(store,service,workspaceId,nodes,at=Date.now(),{minute=null}={}) {
-  if(!store?.createJob || !nodes.length)return [];
+export function enqueuePreparedHourRefreshes(store,service,workspaceId,nodes,at=Date.now(),{minute=null,env=process.env}={}) {
+  if(hourlyReportDisabled(env) || !store?.createJob || !nodes.length)return [];
   const latest=Math.floor(at/HOUR)*HOUR-HOUR;
   const hours=[...new Set(nodes.map(n=>n.window.startAt))].filter(h=>h<=latest && h>=latest-23*HOUR).sort((a,b)=>b-a);
   const queued=store.listOpenJobs('report.hourly.extract').filter(j=>j.workspaceId===workspaceId && j.status==='queued');
@@ -43,10 +44,10 @@ export function enqueueTreePreparation(store,workspaceId,sourceIds) {
   for(const id of wanted)jobs.push(store.createJob({type:TREE_PREPARE_JOB_TYPE,workspaceId,maxAttempts:1,input:{workspaceId,sourceIds:[id]}}));
   return jobs;
 }
-export function createInformationTreeJobHandlers(service,{candidates,refreshMinute=null}={}) {
+export function createInformationTreeJobHandlers(service,{candidates,refreshMinute=null,env=process.env}={}) {
   return {[TREE_PREPARE_JOB_TYPE]:async(raw,context)=>{
     const input=PrepareTreeInformationInputSchema.parse(raw),result=await service.prepareInformation(input);
-    enqueuePreparedHourRefreshes(context?.store,service,input.workspaceId,result.nodes,Date.now(),{minute:refreshMinute});
+    enqueuePreparedHourRefreshes(context?.store,service,input.workspaceId,result.nodes,Date.now(),{minute:refreshMinute,env});
     await prioritizeRecentTreePreparation(context?.store,candidates,input.workspaceId);
     const retry=result.pending.filter(p=>p.retryable);
     if(retry.length && (!input.catchup || retry.some(p=>p.reason==='budget-deferred')) && context?.store?.createJob)context.store.createJob({type:TREE_PREPARE_JOB_TYPE,workspaceId:input.workspaceId,maxAttempts:1,availableAt:Math.min(...retry.map(p=>p.retryAt || Date.now()+30*60000)),input:{workspaceId:input.workspaceId,sourceIds:retry.map(p=>p.id),catchup:true}});

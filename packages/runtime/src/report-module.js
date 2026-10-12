@@ -66,10 +66,24 @@ function rememberReportFailure(error, source) {
   return error;
 }
 
-export function createReportJobHandlers({ reportService, briefService = null, informationService=null, treeService=null, readingHour=null, beforeHourly=null, dailyConfig=resolveDailyConfig() }) {
+export function hourlyReportDisabled(env = process.env) {
+  return String(env?.AI_CENTER_HOURLY_DISABLED ?? '') === '1';
+}
+
+export function allowHourlyScheduleEnqueue(schedule, env = process.env) {
+  return !(schedule?.jobType === REPORT_HOURLY_JOB_TYPE && hourlyReportDisabled(env));
+}
+
+export function releaseOpenHourlyJobs(store, env = process.env, now = Date.now()) {
+  if (!hourlyReportDisabled(env) || !store?.cancelOpenJobs) return 0;
+  return store.cancelOpenJobs(REPORT_HOURLY_JOB_TYPE, {status: 'skipped', reason: 'hourly-disabled'}, now);
+}
+
+export function createReportJobHandlers({ reportService, briefService = null, informationService=null, treeService=null, readingHour=null, beforeHourly=null, dailyConfig=resolveDailyConfig(), env=process.env }) {
   if (!reportService?.generateDailyReport) throw new Error('daily report jobs require reportService');
   return {
     [REPORT_HOURLY_JOB_TYPE]: async (rawInput,context) => {
+      if (hourlyReportDisabled(env)) return {status:'skipped', reason:'hourly-disabled'};
       if(!informationService) throw new Error('小时摘选服务未配置');
       const input=parseContract(GenerateHourlyDigestInputSchema,rawInput || {});
       await beforeHourly?.(input,context);
@@ -198,7 +212,8 @@ export function ensureDailyReportCatchupSchedule(store, config, now = Date.now()
   });
 }
 
-export function ensureHourlyDigestSchedule(store,now=Date.now(),{minute=0}={}) {
+export function ensureHourlyDigestSchedule(store,now=Date.now(),{minute=0,env=process.env}={}) {
+  if (hourlyReportDisabled(env)) return store.getJobSchedule?.('local', 'report.hourly.default') || null;
   if(!Number.isInteger(minute) || minute<0 || minute>59)throw new Error("invalid hourly schedule minute");
   const prior=store.getJobSchedule?.('local','report.hourly.default');
   const resetNextRunAt=Boolean(prior && prior.nextRunAt%3600000!==minute*60000);

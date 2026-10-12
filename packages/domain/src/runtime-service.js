@@ -89,6 +89,7 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort, res
       return open || runtimeRepository.createJob({ type: 'feed.translation.run', workspaceId: value.workspaceId, input: value, maxAttempts: TRANSLATION_MAX_ATTEMPTS });
     },
     requestHourlyDigest(input={}) {
+      if (String(env?.AI_CENTER_HOURLY_DISABLED ?? '') === '1') return {status:'skipped', reason:'hourly-disabled'};
       const value=GenerateHourlyDigestInputSchema.parse(input),workspaceId=value.workspaceId || 'local';
       const open=runtimeRepository.listOpenJobs?.('report.hourly.extract')?.find(j=>j.workspaceId===workspaceId && j.input?.hourStart===value.hourStart
         && j.input?.mode===value.mode && j.input?.snapshotId===value.snapshotId);

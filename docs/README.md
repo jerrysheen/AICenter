@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-12-hourly-disabled.md`：`AI_CENTER_HOURLY_DISABLED=1` 停用小时报。启动不把小时调度写成启用，不再自动入队，已排队的小时任务取消。需重启 Worker。
+
 - `progress/2026-10-12-investor-digest-api-shares.md`：股民讨论日摘接口在方向样本不足时返回 `shares: null` 和 `insufficient: true`，仍保留 `counts` 与 `sampleSize`。见 `api.md`。
 
 - `progress/2026-10-12-share-image.md`：日报和小时报单条可直接分享；小时报用本条标题和摘要，并去掉 `[未抓取]`、`图片 ×N`。问答分享用回答时间，表格画成网格，链接只留文字，按钮在回答顶部。媒体列表壳不再挡住已验证正文。问答历史卡片在手机上不再超出右缘。重载 Web；正文回退要重启 Web 进程。Worker 不用重启。

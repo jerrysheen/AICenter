@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-12 小时报可整段停用：`AI_CENTER_HOURLY_DISABLED=1` 后，Worker 启动不再把 `report.hourly.default` 写成 `enabled:true`，定时、准备后的补编和手动入队都不再创建小时任务，已经排队或正在跑的 `report.hourly.extract` 会被取消。启动只打一行日志。需要重启 Worker。见 `progress/2026-10-12-hourly-disabled.md`。
+
 2026-10-12 分享图验收：日报单条在列表和详情都有分享。小时报每条直接分享本条标题和摘要，标题展开本条正文，不再打开第一条引用；`[未抓取]`、`图片 ×N`、`[图片]` 不进分享卡。问答分享用回答完成时间（没有则用记录创建时间），Markdown 表格画成网格，链接只留文字，分享按钮在回答顶部。媒体列表上的「已验证正文」不再把空列表壳留在阅读器里；快照只有段落、`bodyText` 为空时读取会拼回正文。`#ask` 历史卡片在窄屏上折行，不再超出右缘。重载 Web。正文回退随 Web 进程重启生效。Worker 不用重启。见 `progress/2026-10-12-share-image.md`。
 
 2026-10-12 GPU 租金增加三个公开来源：CCIR 阶梯表（超大规模 / 新云 / 市场，保障与可中断，含 B300 与 A100）默认 20:30 与 21:30；GPU Economy 多供应商中位默认每 120 分钟；Bargo 按需 / 竞价 / 预留均价默认 09:00。报价日优先用页面上的日期。异常低价沿用同型号中位 40% 和下限。页面可按来源筛选，并链到出处。不新增 migration，不接入 Ornn 或 Silicon Data。需重启 Worker，并重载 Web。见 `compute-prices-v1.md` 与 `progress/2026-10-12-gpu-price-sources.md`。
