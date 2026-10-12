@@ -519,3 +519,207 @@ test('switching to a prefetched hour does not refetch or blank the list', async 
   assert.equal(root.querySelectorAll('h3').some(node => node.textContent.includes(middle.id)), true);
   page.stop();
 });
+
+test('hourly points open one source directly and lay out several sources', async () => {
+  const start = Date.parse('2026-10-08T06:00:00Z');
+  const current = edition('edition:sourcehour001', start, ['one', 'many']);
+  const previous = edition('edition:sourcehour002', start - HOUR, ['older']);
+  const nodes = {
+    'info-one': { id: 'info-one', layer: 'information', title: '单来源标题', publisher: '路透', sourceRefs: [{ type: 'content-item', id: 'c1' }] },
+    'src-a': { id: 'src-a', layer: 'information', title: '出口限制', publisher: '彭博', sourceRefs: [{ type: 'media-body', id: 'm2' }] },
+    'src-b': { id: 'src-b', layer: 'information', title: '另一则很长的原文标题', publisher: '财新', sourceUrl: 'https://example.com/original' },
+  };
+  const reads = [];
+  const opened = [];
+  const create = document.createElement.bind(document);
+  document.createElement = tag => {
+    const node = create(tag);
+    if (String(tag).toLowerCase() === 'a') node.click = () => opened.push({ href: node.href, target: node.target, rel: node.rel });
+    return node;
+  };
+  const root = new El('div'); root.isConnected = true;
+  const page = createInformationTreePage({
+    session: () => ({ role: 'desktop', device: { id: 'source-open' } }),
+    active: () => true,
+    readSavedSource: async node => { reads.push(node.id); },
+    toast() {},
+    loadTreeManifest: async () => manifest([current, previous]),
+    api(path) {
+      if (path.startsWith('/api/v1/tags')) return Promise.resolve({ catalog: { tags: [] } });
+      if (path.startsWith('/api/v1/reports/reading-hour/index')) {
+        const error = new Error('not found'); error.status = 404; return Promise.reject(error);
+      }
+      if (path.startsWith('/api/v1/reports/reading-hour')) {
+        const startAt = Number(new URL(path, 'http://tree.local').searchParams.get('startAt'));
+        if (startAt === previous.window.startAt) return Promise.resolve({ snapshot: { id: 'rh:old', status: 'ready', scored: 1, candidates: 1, selected: 1, items: [{ nodeId: 'older', title: '上一小时', disposition: 'hit', readingDirectionName: '产业个股', readingThemeName: '中国', timely: true }] } });
+        return Promise.resolve({ snapshot: {
+          id: 'rh:now', status: 'ready', scored: 2, candidates: 2, selected: 2,
+          items: [
+            { nodeId: 'info-one', title: '单来源要点', disposition: 'hit', readingDirectionName: '科技与AI', readingThemeName: '中国', timely: true },
+            { nodeId: 'info-many', title: '多来源要点', disposition: 'hit', readingDirectionName: '科技与AI', readingThemeName: '中国', timely: true, sources: [
+              { id: 'src-a', nodeId: 'src-a', publisher: '彭博', title: '出口限制', sourceRefs: [{ type: 'media-body', id: 'm2' }] },
+              { id: 'src-b', nodeId: 'src-b', publisher: '财新', title: '另一则很长的原文标题', sourceUrl: 'https://example.com/original' },
+            ] },
+          ],
+        } });
+      }
+      if (path.startsWith('/api/v1/reports/tree/node')) {
+        const id = new URL(path, 'http://tree.local').searchParams.get('id');
+        return Promise.resolve({ node: nodes[id] });
+      }
+      return Promise.reject(new Error(`missing ${path}`));
+    },
+  });
+  await page.mount(root, { mode: 'hourly' });
+  assert.equal(root.querySelectorAll('summary').some(node => node.textContent.includes('篇 · ref')), false);
+  const single = root.querySelectorAll('.news-row').find(row => row.querySelector('h3').textContent === '单来源要点');
+  const many = root.querySelectorAll('.news-row').find(row => row.querySelector('h3').textContent === '多来源要点');
+  assert.equal(single.querySelector('.reading-ref').textContent, '〔1〕');
+  assert.equal(single.querySelector('details').open, false);
+  await single.querySelector('.news-row-body').listeners.click[0]({ target: single.querySelector('h3') });
+  await single.querySelector('.news-row-body').listeners.click[0]({ target: single.querySelector('.reading-ref') });
+  assert.deepEqual(reads, ['info-one', 'info-one']);
+  assert.equal(single.querySelector('details').open, false);
+  const sourceRows = many.querySelectorAll('.reading-source-row');
+  assert.deepEqual(sourceRows.map(row => row.textContent), ['彭博 · 出口限制', '财新 · 另一则很长的原文标题']);
+  assert.equal(many.querySelector('details'), null);
+  const badges = many.querySelectorAll('.reading-ref');
+  badges[1].parentNode = many;
+  many.querySelector('.news-row-body').listeners.click[0]({ target: badges[1] });
+  assert.equal(sourceRows[1].classList.contains('is-source-hit'), true);
+  assert.equal(sourceRows[0].classList.contains('is-source-hit'), false);
+  await sourceRows[0].listeners.click[0]();
+  assert.deepEqual(reads, ['info-one', 'info-one', 'src-a']);
+  await sourceRows[1].listeners.click[0]();
+  assert.deepEqual(opened, [{ href: 'https://example.com/original', target: '_blank', rel: 'noopener' }]);
+  const list = root.querySelector('.tree-list');
+  const swipe = { touches: [{ clientX: 180, clientY: 220 }], stopped: false, stopPropagation() { this.stopped = true; } };
+  sourceRows[0].listeners.touchstart[0](swipe);
+  if (!swipe.stopped) list.listeners.touchstart[0](swipe);
+  list.listeners.touchmove[0]({ touches: [{ clientX: 40, clientY: 222 }], cancelable: true, preventDefault() {} });
+  await list.listeners.touchend[0]({ changedTouches: [{ clientX: 40, clientY: 222 }] });
+  assert.equal(swipe.stopped, true);
+  assert.equal(chip(root, current.window.startAt).classList.contains('is-active'), true);
+  document.createElement = create;
+  page.stop();
+});
+
+test('daily points open one source directly and lay out several sources', async () => {
+  const start = Date.parse('2026-10-08T16:00:00Z');
+  const issue = { id: 'edition:daily-source', layer: 'daily', window: { startAt: start, endAt: start + 24 * HOUR }, timezone: 'Asia/Shanghai', status: 'ready', roots: ['mod'], hasEditorial: true, generatedAt: start };
+  const nodes = {
+    n1: { id: 'n1', layer: 'information', title: '单来源标题', publisher: '路透', sourceRefs: [{ type: 'content-item', id: 'c1' }] },
+    n2: { id: 'n2', layer: 'information', title: '甲事件', publisher: '彭博', sourceRefs: [{ type: 'media-body', id: 'm2' }] },
+    n3: { id: 'n3', layer: 'information', title: '乙事件原文标题很长', publisher: '财新', sourceUrl: 'https://example.com/daily' },
+  };
+  const reads = [];
+  const opened = [];
+  const create = document.createElement.bind(document);
+  document.createElement = tag => {
+    const node = create(tag);
+    if (String(tag).toLowerCase() === 'a') node.click = () => opened.push({ href: node.href, target: node.target, rel: node.rel });
+    return node;
+  };
+  const editorial = {
+    id: 'ed-1', status: 'ready', statusNote: '已覆盖', overview: '总览',
+    coverage: { hourlyModuleCount: 1, informationNodeCount: 3, eventCount: 2, inBodyEventCount: 2, indexOnlyEventCount: 0 },
+    relations: [],
+    events: [
+      { eventId: 'e1', sourceNodeIds: ['n1'] },
+      { eventId: 'e2', sourceNodeIds: ['n2', 'n3'] },
+    ],
+    articles: [{
+      direction: 'tech', title: '芯片', lead: '导语只有一个来源。', leadEventIds: ['e1'],
+      sections: [{ heading: '主题', paragraphs: ['这一段有两个来源。'], eventIds: ['e2'], kind: 'theme' }],
+    }],
+  };
+  const root = new El('div'); root.isConnected = true;
+  const page = createInformationTreePage({
+    session: () => ({ role: 'desktop', device: { id: 'daily-source' } }),
+    active: () => true,
+    readSavedSource: async node => { reads.push(node.id); },
+    toast() {},
+    loadTreeManifest: async () => ({ timezone: 'Asia/Shanghai', directions: {}, hours: [], days: [{ edition: issue }], information: [] }),
+    api(path) {
+      if (path.startsWith('/api/v1/tags')) return Promise.resolve({ catalog: { tags: [] } });
+      if (path.startsWith('/api/v1/reports/tree/editorial')) return Promise.resolve({ editorial });
+      if (path.startsWith('/api/v1/reports/tree/node')) {
+        const id = new URL(path, 'http://tree.local').searchParams.get('id');
+        return Promise.resolve({ node: nodes[id] });
+      }
+      return Promise.reject(new Error(`missing ${path}`));
+    },
+  });
+  await page.mount(root);
+  const card = root.querySelector('.daily-direction-card');
+  assert.ok(card);
+  await card.listeners.click[0]();
+  assert.equal(root.querySelector('.daily-proof'), null);
+  assert.equal(root.querySelectorAll('summary').some(node => node.textContent.includes('篇 · ref')), false);
+  const lead = root.querySelector('.is-direct-source');
+  assert.equal(lead.querySelector('.reading-ref').textContent, '〔1〕');
+  await lead.listeners.click[0]();
+  assert.deepEqual(reads, ['n1']);
+  const section = root.querySelector('.daily-section');
+  const sourceRows = section.querySelectorAll('.reading-source-row');
+  assert.deepEqual(sourceRows.map(row => row.textContent), ['彭博 · 甲事件', '财新 · 乙事件原文标题很长']);
+  section.querySelectorAll('.reading-ref')[1].listeners.click[0]({ stopPropagation() {} });
+  assert.equal(sourceRows[1].classList.contains('is-source-hit'), true);
+  await sourceRows[0].listeners.click[0]();
+  assert.deepEqual(reads, ['n1', 'n2']);
+  await sourceRows[1].listeners.click[0]();
+  assert.deepEqual(opened, [{ href: 'https://example.com/daily', target: '_blank', rel: 'noopener' }]);
+  document.createElement = create;
+  page.stop();
+});
+
+test('a daily module lists its sources instead of a ref menu', async () => {
+  const start = Date.parse('2026-10-08T16:00:00Z');
+  const issue = { id: 'edition:daily-module', layer: 'daily', window: { startAt: start, endAt: start + 24 * HOUR }, timezone: 'Asia/Shanghai', status: 'ready', roots: ['mod-one', 'mod-many'], hasEditorial: false, generatedAt: start };
+  const leaves = {
+    only: { id: 'only', layer: 'information', title: '唯一原文', publisher: '路透', text: '一点', sourceRefs: [{ type: 'content-item', id: 'c1' }] },
+    'leaf-a': { id: 'leaf-a', layer: 'information', title: '甲稿', publisher: '路透', sourceRefs: [{ type: 'content-item', id: 'c2' }] },
+    'leaf-b': { id: 'leaf-b', layer: 'information', title: '乙稿', publisher: '财新', sourceRefs: [{ type: 'content-item', id: 'c3' }] },
+  };
+  const modules = {
+    'mod-one': { id: 'mod-one', layer: 'daily', title: '单模块', text: '只有一篇', tagId: 'ai', children: ['only'] },
+    'mod-many': { id: 'mod-many', layer: 'daily', title: '多模块', text: '有两篇', tagId: 'ai', children: ['leaf-a', 'leaf-b'] },
+  };
+  const reads = [];
+  const root = new El('div'); root.isConnected = true;
+  const page = createInformationTreePage({
+    session: () => ({ role: 'desktop', device: { id: 'daily-module' } }),
+    active: () => true,
+    readSavedSource: async node => { reads.push(node.id); },
+    toast() {},
+    loadTreeManifest: async () => ({ timezone: 'Asia/Shanghai', directions: {}, hours: [], days: [{ edition: issue }], information: [] }),
+    api(path) {
+      if (path.startsWith('/api/v1/tags')) return Promise.resolve({ catalog: { tags: [] } });
+      if (path.startsWith('/api/v1/reports/tree/edition')) return Promise.resolve({ edition: issue, nodes: [modules['mod-one'], modules['mod-many']] });
+      if (path.startsWith('/api/v1/reports/tree/children')) {
+        const id = new URL(path, 'http://tree.local').searchParams.get('id');
+        const kids = { 'mod-one': [leaves.only], 'mod-many': [leaves['leaf-a'], leaves['leaf-b']] };
+        return Promise.resolve({ children: kids[id] || [] });
+      }
+      if (path.startsWith('/api/v1/reports/tree/node')) {
+        const id = new URL(path, 'http://tree.local').searchParams.get('id');
+        return Promise.resolve({ node: leaves[id] || modules[id] });
+      }
+      return Promise.reject(new Error(`missing ${path}`));
+    },
+  });
+  await page.mount(root);
+  const openRow = title => root.querySelectorAll('.news-row').find(row => row.querySelector('h3').textContent === title).querySelector('.news-row-body');
+  await openRow('多模块').listeners.click[0]();
+  assert.equal(root.querySelectorAll('summary').some(node => node.textContent.includes('篇 · ref')), false);
+  assert.deepEqual(root.querySelectorAll('.reading-source-row').map(row => row.textContent), ['路透 · 甲稿', '财新 · 乙稿']);
+  const back = root.querySelectorAll('button').find(node => node.querySelectorAll('span').some(span => span.textContent === '返回日报'));
+  await back.listeners.click[0]();
+  await openRow('单模块').listeners.click[0]();
+  const card = root.querySelector('.tree-card');
+  await card.querySelector('h3').listeners.click[0]();
+  await card.querySelector('.reading-ref').listeners.click[0]({ stopPropagation() {} });
+  assert.deepEqual(reads, ['only', 'only']);
+  assert.equal(root.querySelectorAll('summary').some(node => node.textContent.includes('篇 · ref')), false);
+  page.stop();
+});
