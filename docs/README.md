@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-12-investor-digest-ab.md`：股民讨论日摘离线 A/B。方案 A 用固定是非题，方案 B 用逐条结构化标签，都不进线上日摘、任务和页面。10/12 原始帖子未入库，试跑要先重抓成 JSON。
+
 - `progress/2026-10-11-investor-digest-waf.md`：股民讨论日摘遇到阿里云 WAF 挑战页时退避并重开行情页；请求间隔改为 2.5 秒；置顶或单条旧帖不再让当天讨论停页。浏览器锁最长持有 15 分钟。
 
 - `progress/2026-10-11-investor-digest-fetch.md`：股民讨论日摘生产 partial 修复。日期窗口改认 `startAt/endAt`，浏览器会话串行，验证页单独停住。
