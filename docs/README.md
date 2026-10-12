@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-12-classify-batching-eval.md`：小时阅读分类的离线批量对照。脚本只读最近样本，用 Gemini 按 10/20/30 条一批分类，对照已有单条分类。不写库，不改小时报。
+
 - `progress/2026-10-12-share-image.md`：分享「保存」在预览打开后即可下载，iPhone / iPad 走系统分享。问答分享是回答右上角小按钮，不再盖住正文。阅读页和小时报展开正文去掉 `[未抓取]`、`图片 ×N`。日报日期按上海日历日分开格式化，窗口结束于 0 点时标在窗口内的那一天。小时报展开有来源地址时给出「原文」。重载 Web。Worker 不用重启。
 
 - `progress/2026-10-12-investor-digest-api-shares.md`：股民讨论日摘接口在方向样本不足时返回 `shares: null` 和 `insufficient: true`，仍保留 `counts` 与 `sampleSize`。见 `api.md`。
