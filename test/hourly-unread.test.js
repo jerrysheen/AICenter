@@ -93,7 +93,7 @@ globalThis.localStorage = {
   removeItem: key => memory.delete(key),
 };
 
-const { createInformationTreePage } = await import('../apps/web/public/information-tree.js');
+const { createInformationTreePage, sourceCaption } = await import('../apps/web/public/information-tree.js');
 
 const HOUR = 3600000;
 function edition(id, start, roots) {
@@ -520,6 +520,20 @@ test('switching to a prefetched hour does not refetch or blank the list', async 
   page.stop();
 });
 
+test('source captions use publisher, account, or domain and skip an empty name', () => {
+  assert.equal(sourceCaption({ publisher: '路透', title: '油价' }), '路透 · 油价');
+  assert.equal(sourceCaption({ publisherName: '彭博', title: '油价' }), '彭博 · 油价');
+  assert.equal(sourceCaption({ author: '张三', title: '油价' }), '张三 · 油价');
+  assert.equal(sourceCaption({ provider: 'x', authorName: '油价观察', authorHandle: 'oilwatch', title: '油价' }), '@oilwatch · 油价');
+  assert.equal(sourceCaption({ provider: 'twitter', handle: '@energy', title: '油价' }), '@energy · 油价');
+  assert.equal(sourceCaption({ sourceUrl: 'https://www.reuters.com/world/oil', title: '油价' }), 'reuters.com · 油价');
+  assert.equal(sourceCaption({ sourceUrl: 'https://x.com/oilwatch/status/1', title: '油价' }), '@oilwatch · 油价');
+  assert.equal(sourceCaption({ provider: 'x', title: '油价' }), '油价');
+  assert.equal(sourceCaption({ publisher: '未知', title: '油价' }), '油价');
+  assert.equal(sourceCaption({ publisher: '来源', title: '油价' }), '油价');
+  assert.equal(sourceCaption({ title: '油价' }), '油价');
+});
+
 test('hourly points open one source directly and lay out several sources', async () => {
   const start = Date.parse('2026-10-08T06:00:00Z');
   const current = edition('edition:sourcehour001', start, ['one', 'many']);
@@ -574,20 +588,20 @@ test('hourly points open one source directly and lay out several sources', async
   assert.equal(root.querySelectorAll('summary').some(node => node.textContent.includes('篇 · ref')), false);
   const single = root.querySelectorAll('.news-row').find(row => row.querySelector('h3').textContent === '单来源要点');
   const many = root.querySelectorAll('.news-row').find(row => row.querySelector('h3').textContent === '多来源要点');
-  assert.equal(single.querySelector('.reading-ref').textContent, '〔1〕');
+  assert.equal(single.querySelector('.reading-ref'), null);
   assert.equal(single.querySelector('details').open, false);
   await single.querySelector('.news-row-body').listeners.click[0]({ target: single.querySelector('h3') });
-  await single.querySelector('.news-row-body').listeners.click[0]({ target: single.querySelector('.reading-ref') });
+  await single.querySelector('.news-row-body').listeners.click[0]({ target: single.querySelector('h3') });
   assert.deepEqual(reads, ['info-one', 'info-one']);
   assert.equal(single.querySelector('details').open, false);
   const sourceRows = many.querySelectorAll('.reading-source-row');
   assert.deepEqual(sourceRows.map(row => row.textContent), ['彭博 · 出口限制', '财新 · 另一则很长的原文标题']);
   assert.equal(many.querySelector('details'), null);
-  const badges = many.querySelectorAll('.reading-ref');
-  badges[1].parentNode = many;
-  many.querySelector('.news-row-body').listeners.click[0]({ target: badges[1] });
-  assert.equal(sourceRows[1].classList.contains('is-source-hit'), true);
-  assert.equal(sourceRows[0].classList.contains('is-source-hit'), false);
+  const jump = many.querySelector('.reading-source-jump');
+  assert.equal(jump.textContent, '2 个来源 ↓');
+  assert.equal(many.querySelectorAll('.reading-ref').length, 1);
+  many.querySelector('.news-row-body').listeners.click[0]({ target: jump });
+  assert.equal(many.querySelector('.reading-source-list').classList.contains('is-source-hit'), true);
   await sourceRows[0].listeners.click[0]();
   assert.deepEqual(reads, ['info-one', 'info-one', 'src-a']);
   await sourceRows[1].listeners.click[0]();
@@ -609,8 +623,8 @@ test('daily points open one source directly and lay out several sources', async 
   const issue = { id: 'edition:daily-source', layer: 'daily', window: { startAt: start, endAt: start + 24 * HOUR }, timezone: 'Asia/Shanghai', status: 'ready', roots: ['mod'], hasEditorial: true, generatedAt: start };
   const nodes = {
     n1: { id: 'n1', layer: 'information', title: '单来源标题', publisher: '路透', sourceRefs: [{ type: 'content-item', id: 'c1' }] },
-    n2: { id: 'n2', layer: 'information', title: '甲事件', publisher: '彭博', sourceRefs: [{ type: 'media-body', id: 'm2' }] },
-    n3: { id: 'n3', layer: 'information', title: '乙事件原文标题很长', publisher: '财新', sourceUrl: 'https://example.com/daily' },
+    n2: { id: 'n2', layer: 'information', title: '甲事件', sourceRefs: [{ type: 'content-item', id: 'x-post' }] },
+    n3: { id: 'n3', layer: 'information', title: '乙事件原文标题很长', sourceUrl: 'https://www.example.com/daily' },
   };
   const reads = [];
   const opened = [];
@@ -647,6 +661,7 @@ test('daily points open one source directly and lay out several sources', async 
         const id = new URL(path, 'http://tree.local').searchParams.get('id');
         return Promise.resolve({ node: nodes[id] });
       }
+      if (path.startsWith('/api/v1/content-items/')) return Promise.resolve({ item: { provider: 'x', authorName: '油价观察', captureMetadata: { authorHandle: 'oilwatch' }, sourceUrl: 'https://x.com/oilwatch/status/1', title: '原帖' } });
       return Promise.reject(new Error(`missing ${path}`));
     },
   });
@@ -662,13 +677,17 @@ test('daily points open one source directly and lay out several sources', async 
   assert.deepEqual(reads, ['n1']);
   const section = root.querySelector('.daily-section');
   const sourceRows = section.querySelectorAll('.reading-source-row');
-  assert.deepEqual(sourceRows.map(row => row.textContent), ['彭博 · 甲事件', '财新 · 乙事件原文标题很长']);
-  section.querySelectorAll('.reading-ref')[1].listeners.click[0]({ stopPropagation() {} });
-  assert.equal(sourceRows[1].classList.contains('is-source-hit'), true);
+  for (let i = 0; i < 8 && sourceRows[0].textContent !== '@oilwatch · 甲事件'; i++) await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(sourceRows.map(row => row.textContent), ['@oilwatch · 甲事件', 'example.com · 乙事件原文标题很长']);
+  const jump = section.querySelector('.reading-source-jump');
+  assert.equal(jump.textContent, '2 个来源 ↓');
+  assert.equal(section.querySelectorAll('.reading-ref').filter(node => node.textContent.startsWith('〔')).length, 0);
+  jump.listeners.click[0]({ stopPropagation() {} });
+  assert.equal(section.querySelector('.reading-source-list').classList.contains('is-source-hit'), true);
   await sourceRows[0].listeners.click[0]();
   assert.deepEqual(reads, ['n1', 'n2']);
   await sourceRows[1].listeners.click[0]();
-  assert.deepEqual(opened, [{ href: 'https://example.com/daily', target: '_blank', rel: 'noopener' }]);
+  assert.deepEqual(opened, [{ href: 'https://www.example.com/daily', target: '_blank', rel: 'noopener' }]);
   document.createElement = create;
   page.stop();
 });

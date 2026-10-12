@@ -4509,6 +4509,10 @@ body[data-view="inspire"] .dispatch-composer.hidden { display: none; }
 .reader-meta a.kind-tag { text-decoration: none; }
 .detail-meta a.kind-tag:hover,
 .reader-meta a.kind-tag:hover { text-decoration: underline; }
+.reader-head .reader-original, .detail-head .reader-original {
+  display: inline-flex; align-items: center; min-height: 44px; margin-top: 4px;
+  color: var(--brand); font-size: 14px; font-weight: 650; text-decoration: underline; text-underline-offset: 3px;
+}
 .detail-body,
 .reader-content {
   max-width: 100%;
@@ -5434,17 +5438,19 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
 .reading-source-list { display: flex; flex-direction: column; margin: 2px 0 8px; }
 .reading-source-row {
   display: block; width: 100%; min-height: 44px; margin: 0; padding: 10px 0;
-  border: 0; background: transparent; color: var(--font-tertiary);
-  font: inherit; font-size: 12px; font-weight: 400; line-height: 1.5; text-align: left;
+  border: 0; background: transparent; color: var(--font-secondary);
+  font: inherit; font-size: 13px; font-weight: 400; line-height: 1.5; text-align: left;
   white-space: normal; overflow-wrap: anywhere; cursor: pointer;
   touch-action: manipulation;
 }
+.reading-source-jump { color: var(--font-secondary); font-size: 13px; white-space: nowrap; }
 .reading-source-row.is-source-hit, .reading-source-list.is-source-hit { background: color-mix(in srgb, var(--brand) 12%, transparent); }
 .is-direct-source { cursor: pointer; }
 .news-row > .reading-source-list { grid-column: 1 / -1; }
-.tree-card .reading-ref, .tree-card .reading-source-row,
-.tree-list .reading-ref, .tree-list .reading-source-row,
-.daily-research .reading-ref, .daily-research .reading-source-row { color: var(--font-tertiary); font-size: 12px; }
+.tree-card .reading-ref, .tree-list .reading-ref, .daily-research .reading-ref { color: var(--font-tertiary); font-size: 12px; }
+.tree-card .reading-source-row, .tree-list .reading-source-row, .daily-research .reading-source-row,
+.brief-page .reading-source-row, .tree-card .reading-source-jump, .tree-list .reading-source-jump,
+.daily-research .reading-source-jump, .brief-page .reading-source-jump { color: var(--font-secondary); font-size: 13px; }
 .tree-children { margin-left: 12px; padding-left: 12px; border-left: 2px solid var(--border, #ddd); }
 .tree-status { font-size: 13px; color: var(--muted, #666); overflow-wrap: anywhere; }
 #report-list.tree-page { max-width: none; margin-inline: 0; }

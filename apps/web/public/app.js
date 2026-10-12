@@ -7878,19 +7878,18 @@ function renderArticlePage() {
   head.innerHTML = `<h2 class="detail-title"></h2><div class="detail-meta reader-meta"></div>`;
   head.querySelector('h2').textContent = state.readerLang==='original' ? post.title : postDisplayTitle(post);
   const meta = head.querySelector('.reader-meta');
+  if (isHttpUrl(post.sourceUrl)) {
+    const original = appendExternalLink(head, post.sourceUrl, '打开原站');
+    original.className = 'reader-original';
+    head.insertBefore(original, meta);
+  }
   meta.append(
     Object.assign(document.createElement('button'), { className: 'text-button', textContent: `${post.author} ›` }),
     Object.assign(document.createElement('span'), { textContent: `${post.time || (post.publishedAt ? formatTime(post.publishedAt) : '时间未知')} 发布` }),
     Object.assign(document.createElement('span'), { className: 'kind-tag', textContent: feedKindLabel(post) }),
   );
   const completeLabel = post.articleKind==='report-intro' ? '报告简介' : post.complete === false ? (post.bodyScope || '仅索引') : '正文完整';
-  if (isHttpUrl(post.sourceUrl)) {
-    const source = appendExternalLink(meta, post.sourceUrl, completeLabel);
-    source.className = 'kind-tag official';
-    source.setAttribute('aria-label', `打开原文（${completeLabel}）`);
-  } else {
-    meta.append(Object.assign(document.createElement('span'), { className: 'kind-tag official', textContent: completeLabel }));
-  }
+  meta.append(Object.assign(document.createElement('span'), { className: 'kind-tag official', textContent: completeLabel }));
   meta.querySelector('button').addEventListener('click', () => {
     if (post.platform === 'official') openPage('source', `policy.${post.author}`);
     else openPage('source', post.platform === 'manual' ? 'manual' : post.platform);

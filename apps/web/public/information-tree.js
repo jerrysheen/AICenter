@@ -3,6 +3,54 @@ import { decodeHtmlEntities } from './html-text.js?v=dev';
 import { newsDayLabel, newsIngestAt, newsPublishedHint, newsRow } from './news-list.js?v=dev';
 import { mountInvestorDigest } from './investor-digest.js?v=dev';
 const el=(tag,text='',className='')=>{const n=document.createElement(tag);n.textContent=text;n.className=className;return n;};
+function cleanSourceName(value) {
+  const text=String(value ?? '').replace(/\s+/g,' ').trim();
+  if(!text || text==='未知' || text==='来源' || text==='未提供') return '';
+  return text;
+}
+function atHandle(value) {
+  const name=cleanSourceName(value).replace(/^@+/,'');
+  return name ? `@${name}` : '';
+}
+function httpUrl(item) {
+  return [item?.sourceUrl, item?.originUrl, item?.url].map(cleanSourceName).find(value=>/^https?:\/\//i.test(value)) || '';
+}
+function accountFromUrl(url) {
+  try {
+    const parsed=new URL(url);
+    const host=parsed.hostname.replace(/^www\./i,'').toLowerCase();
+    if(host!=='x.com' && host!=='twitter.com') return '';
+    const segment=decodeURIComponent(parsed.pathname.split('/').filter(Boolean)[0] || '');
+    if(!segment || ['i','intent','share','home','search'].includes(segment.toLowerCase())) return '';
+    return atHandle(segment);
+  } catch {return '';}
+}
+export function sourceName(item) {
+  const publisher=cleanSourceName(item?.publisher) || cleanSourceName(item?.publisherName);
+  const publisherKey=cleanSourceName(item?.publisherKey);
+  if(publisher) return publisher;
+  if(publisherKey && publisherKey.toLowerCase()!=='x' && publisherKey.toLowerCase()!=='twitter') return publisherKey;
+  const provider=String(item?.provider || item?.platform || '').toLowerCase();
+  const handle=cleanSourceName(item?.authorHandle) || cleanSourceName(item?.handle) || cleanSourceName(item?.account) || cleanSourceName(item?.captureMetadata?.authorHandle);
+  const url=httpUrl(item);
+  if(provider==='x' || provider==='twitter') {
+    if(handle) return atHandle(handle);
+    const account=accountFromUrl(url);
+    if(account) return account;
+  }
+  const author=cleanSourceName(item?.author) || cleanSourceName(item?.authorName) || cleanSourceName(item?.displayName);
+  if(author) return author;
+  if(handle) return atHandle(handle);
+  const account=accountFromUrl(url);
+  if(account) return account;
+  if(!url) return '';
+  try {return new URL(url).hostname.replace(/^www\./i,'');} catch {return '';}
+}
+export function sourceCaption(item) {
+  const title=String(item?.title || '').trim() || '未命名';
+  const name=sourceName(item);
+  return name ? `${name} · ${title}` : title;
+}
 const button=(text,action)=>{const n=el('button',text);n.type='button';n.addEventListener('click',action);return n;};
 const directions={finance:'金融与市场',policy:'时事与政策',tech:'科技与产业',other:'其他'};
 const directionOrder=['finance','policy','tech','other'];
@@ -145,10 +193,39 @@ export function createInformationTreePage(host) {
     n.append(glyph,el('span',label));n.addEventListener('click',onClick);return n;
   }
   function canReadSource(n) {return Boolean(n?.layer==='information' && n.sourceRefs?.length && host.readSavedSource);}
-  function sourceCaption(item) {
-    const name=String(item?.publisher || item?.author || '').trim() || '来源';
-    const title=String(item?.title || '').trim() || '未命名';
-    return `${name} · ${title}`;
+  const sourceFactCache=new Map();
+  function sourceFields(item, type) {
+    if(type==='media-body') return {publisher:item?.publisherName || item?.publisher || '', publisherName:item?.publisherName || '', publisherKey:item?.publisherKey || '', sourceUrl:item?.originUrl || item?.sourceUrl || ''};
+    return {provider:item?.provider || '', author:item?.authorName || item?.author || '', authorName:item?.authorName || '', authorHandle:item?.authorHandle || item?.captureMetadata?.authorHandle || item?.handle || '', sourceUrl:item?.sourceUrl || '', displayName:item?.displayName || ''};
+  }
+  function sourceFacts(view) {
+    if(!view || sourceName(view)) return Promise.resolve(view);
+    const ref=(view.sourceRefs || []).find(item=>item?.type==='media-body' && item.id) || (view.sourceRefs || []).find(item=>item?.type==='content-item' && item.id);
+    if(!ref) return Promise.resolve(view);
+    const key=`${ref.type}:${ref.id}`;
+    if(!sourceFactCache.has(key)) {
+      const pending=(ref.type==='media-body'
+        ? api(`/api/v1/feed/media/article?externalId=${encodeURIComponent(ref.id)}`).then(data=>data?.item)
+        : api(`/api/v1/content-items/${encodeURIComponent(ref.id)}`).then(data=>data?.item)
+      ).then(item=>item ? sourceFields(item, ref.type) : {}).catch(()=>({}));
+      sourceFactCache.set(key, pending);
+    }
+    return sourceFactCache.get(key).then(extra=>{
+      const next={...view, title:view?.title || extra?.title};
+      for(const [key,value] of Object.entries(extra || {})) if(key!=='title' && cleanSourceName(value)) next[key]=value;
+      if(extra?.provider) next.provider=extra.provider;
+      return next;
+    });
+  }
+  function showSourceCaption(row, view) {
+    if(!row) return;
+    row.textContent=sourceCaption(view || {});
+    if(sourceName(view)) return;
+    sourceFacts(view).then(next=>{if(row.parentNode) row.textContent=sourceCaption(next);}).catch(()=>{});
+  }
+  function sourceJump(count, list) {
+    const mark=button(`${count} 个来源 ↓`, event=>{event?.stopPropagation?.();highlightSource(list);});
+    mark.className='reading-ref reading-source-jump';guardTap(mark);return mark;
   }
   function guardTap(node) {
     const stop=event=>event?.stopPropagation?.();
@@ -209,16 +286,14 @@ export function createInformationTreePage(host) {
   }
   function bindSourceList(article, leaves) {
     const list=el('div','','reading-source-list');
-    const rows=leaves.map(leaf=>{
+    leaves.forEach(leaf=>{
       const row=button(sourceCaption(leaf), ()=>openTreeSource(leaf));
-      row.className='reading-source-row';row.dataset.sourceId=leaf.id;guardTap(row);list.append(row);return row;
+      row.className='reading-source-row';row.dataset.sourceId=leaf.id;guardTap(row);list.append(row);
+      showSourceCaption(row, leaf);
     });
     article.append(list);
     const host=article.querySelector('.tree-text') || article.querySelector('h3') || article;
-    leaves.forEach((leaf, index)=>{
-      const mark=button(`〔${index+1}〕`, event=>{event?.stopPropagation?.();highlightSource(rows[index]);});
-      mark.className='reading-ref';guardTap(mark);host.append(mark);
-    });
+    host.append(sourceJump(leaves.length, list));
   }
   async function loadLeaves(n, token, depth=0) {
     if(!n || token!==epoch || depth>4) return [];
@@ -720,15 +795,13 @@ export function createInformationTreePage(host) {
     }
     const list=el('div','','reading-source-list');
     const rows=ids.map(nodeId=>{
-      const row=button('来源 · …', ()=>openNodeSource(nodeId));
+      const row=button('…', ()=>openNodeSource(nodeId));
       row.className='reading-source-row';row.dataset.sourceId=nodeId;guardTap(row);list.append(row);return row;
     });
     block.append(list);
-    const host=paragraphs[paragraphs.length-1];
+    paragraphs[paragraphs.length-1].append(sourceJump(ids.length, list));
     ids.forEach((nodeId, index)=>{
-      const mark=button(`〔${index+1}〕`, event=>{event?.stopPropagation?.();highlightSource(rows[index]);});
-      mark.className='reading-ref';guardTap(mark);host.append(mark);
-      node(nodeId).then(saved=>{if(rows[index].parentNode) rows[index].textContent=sourceCaption(saved || {});}).catch(error=>{if(!aborted(error) && rows[index].parentNode) rows[index].textContent='来源暂时读不到';});
+      node(nodeId).then(saved=>showSourceCaption(rows[index], saved || {})).catch(error=>{if(!aborted(error) && rows[index].parentNode) rows[index].textContent='来源暂时读不到';});
     });
   }
   function renderResearchDaily(editorial, edition, token) {
@@ -859,15 +932,10 @@ export function createInformationTreePage(host) {
     };
   }
   function readingMarks(sources) {
-    const cluster=document.createElement('span');cluster.className='reading-refs';guardTap(cluster);
-    const items=sources?.length ? sources : [null];
-    items.forEach((source, index)=>{
-      const mark=document.createElement('span');mark.className='reading-ref';guardTap(mark);
-      if(source) mark.dataset.sourceId=String(source.nodeId || source.id || index);
-      mark.textContent=sources?.length ? `〔${index+1}〕` : '〔1〕';
-      cluster.append(mark);
-    });
-    return cluster;
+    if(!sources?.length) return null;
+    const mark=document.createElement('span');mark.className='reading-ref reading-source-jump';guardTap(mark);
+    mark.textContent=`${sources.length} 个来源 ↓`;
+    return mark;
   }
   function renderReadingSources(sources) {
     const list=el('div','','reading-source-list');
@@ -875,6 +943,7 @@ export function createInformationTreePage(host) {
       const id=String(source.nodeId || source.id || index);
       const row=button(sourceCaption(source), ()=>openTreeSource({...source, layer:'information'}));
       row.className='reading-source-row';row.dataset.sourceId=id;guardTap(row);list.append(row);
+      showSourceCaption(row, {...source, layer:'information'});
     });
     return list;
   }
@@ -892,14 +961,15 @@ export function createInformationTreePage(host) {
       attachOpen(open){
         open.addEventListener('click', event=>{
           const mark=event?.target?.classList?.contains('reading-ref') ? event.target : null;
-          if(mark && list) return highlightSource(findSourceRow(list, mark.dataset.sourceId));
+          if(mark && list) return highlightSource((mark.dataset.sourceId && findSourceRow(list, mark.dataset.sourceId)) || list);
           if(list) return highlightSource(list);
           return openReadingSource(item);
         });
       },
     });
     const title=row.querySelector('h3');
-    if(title) placeAfter(title, readingMarks(sources));
+    const marks=readingMarks(sources);
+    if(title && marks) placeAfter(title, marks);
     if(list) row.append(list);
     if(fold) row.append(fold);
     return row;
