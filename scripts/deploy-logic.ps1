@@ -1,4 +1,5 @@
-# Pure deploy decisions for the Windows daemon. No git, process, or .env reads.
+﻿# Pure deploy decisions for the Windows daemon. No git, process, or .env reads.
+# UTF-8 with BOM: Windows PowerShell 5.1 otherwise reads this file as GBK and breaks the quotes.
 
 function Get-AiCenterDeployReason([string]$Name) {
   switch ($Name) {

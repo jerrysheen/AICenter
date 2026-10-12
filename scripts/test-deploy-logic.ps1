@@ -1,3 +1,4 @@
+﻿# UTF-8 with BOM so Windows PowerShell 5.1 can parse the Chinese assertions below.
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'deploy-logic.ps1')
 
