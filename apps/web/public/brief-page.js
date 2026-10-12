@@ -688,6 +688,26 @@ export function createBriefPage(host) {
     }
   }
 
+  function briefShareInput(item, context) {
+    const headline = decodeHtmlEntities(item.headline || item.title || '').trim();
+    const sentence = decodeHtmlEntities(item.sentence || item.body || '').trim();
+    const body = sentence.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+    const lead = headline || body[0] || '简报';
+    const title = lead.length > 80 ? `${lead.slice(0, 80)}…` : lead;
+    const paragraphs = headline
+      ? body
+      : (sentence.length > 80 ? [sentence] : body.slice(1));
+    const when = context.brief
+      ? String(context.brief.reportDate || '')
+      : (context.digest ? `${time(context.digest.window.startAt)}–${time(context.digest.window.endAt)}` : '');
+    return {
+      title,
+      source: context.brief ? '日报' : '小时报',
+      time: when,
+      paragraphs,
+    };
+  }
+
   function itemRow(item,context) {
     const row=node('article','brief-item'); row.id=`brief-item-${item.id}`; row.dataset.itemId=item.id;
     if (context.brief) row.dataset.reportReferenceId=`${context.brief.reportDate}/${item.id}`;
@@ -716,7 +736,9 @@ export function createBriefPage(host) {
     if (context.digest) cite.title=context.articleId ? '引用这篇冻结方向文章；完整底稿可按需查询' : '引用这份冻结小时简报；完整底稿可按需查询';
     const actions=node('details','brief-item-tools');const actionMenu=node('div','brief-item-menu');
     const actionLabel=node('summary','','···');actionLabel.setAttribute('aria-label','这条信息的更多操作');
-    actionMenu.append(read,save,cite,button('查看提炼依据',()=>openEvidence(item,context),'brief-evidence-link'));actions.append(actionLabel,actionMenu);
+    actionMenu.append(read,save,cite,button('查看提炼依据',()=>openEvidence(item,context),'brief-evidence-link'));
+    if (typeof host.shareCard === 'function') actionMenu.append(button('分享', () => host.shareCard(briefShareInput(item, context)), 'brief-share'));
+    actions.append(actionLabel,actionMenu);
     actionMenu.addEventListener('click',event=>{if(event.target.closest('button')) actions.open=false;});
     ops.append(actions); copy.append(ops); row.append(mark,copy); return row;
   }

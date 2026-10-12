@@ -79,6 +79,7 @@ export function createStaticFileHandler(publicDirectory) {
     '/compute-prices.js': ['compute-prices.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/markdown.js': ['markdown.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/share-card.js': ['share-card.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
+    '/qr-code.js': ['qr-code.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/quote-chart.js': ['quote-chart.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/klinecharts.js': ['klinecharts.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/icons.js': ['icons.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
