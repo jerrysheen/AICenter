@@ -104,6 +104,7 @@ const state = {
   assetError: '',
   assetRequestId: 0,
   hardwareItems: [],
+  hardwarePages: [],
   hardwareLoading: false,
   hardwareLoaded: false,
   hardwareError: '',
@@ -1379,7 +1380,20 @@ async function api(path, options = {}) {
       signal: controller ? controller.signal : undefined,
       headers: { 'Content-Type': 'application/json', ...(fetchOptions.headers || {}) },
     });
-    const payload = await response.json().catch(() => ({}));
+    // A truncated gzip body can still arrive as HTTP 200. Treating that as {}
+    // makes callers, including the brief manifest, look successful.
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (parseError) {
+      if (response.ok) {
+        const error = new Error('响应不完整，请稍后重试');
+        error.status = response.status;
+        error.cause = parseError;
+        throw error;
+      }
+      payload = {};
+    }
     if (!response.ok) {
       const error = new Error(payload.error || `请求失败 (${response.status})`);
       error.status = response.status;
@@ -4577,8 +4591,20 @@ function marketBoardHint(market) {
   return '';
 }
 
+function hardwareFetchHint() {
+  const pages = state.hardwarePages || [];
+  if (!pages.length) return '';
+  const label = { dram: 'DRAM', flash: 'NAND' };
+  return pages.map((page) => {
+    const name = label[page.pageKey] || page.pageKey;
+    const checked = new Date(page.lastCheckedAt).toLocaleString('zh-CN', { hour12: false });
+    const changed = new Date(page.lastChangedAt).toLocaleString('zh-CN', { hour12: false });
+    return page.unchanged ? `${name} ${checked} 已抓取，页面自 ${changed} 未变` : `${name} ${checked} 抓到新内容`;
+  }).join(' · ');
+}
+
 function assetBoardHint(onHardware) {
-  if (onHardware) return state.hardwareError || '';
+  if (onHardware) return state.hardwareError || hardwareFetchHint();
   if (state.assetError && !state.assetLoading) return state.assetError;
   if (state.assetLoading) return '正在读取行情…';
   return '';
@@ -5120,7 +5146,7 @@ async function loadHardwarePrices() {
   const requestId=++state.hardwareRequestId;state.hardwareLoading=true;state.hardwareError='';renderAssets();
   try {
     const payload=await api('/api/v1/hardware-prices?limit=500');if(requestId!==state.hardwareRequestId)return;
-    state.hardwareItems=payload.items || [];state.hardwareLoaded=true;
+    state.hardwareItems=payload.items || [];state.hardwarePages=payload.pages || [];state.hardwareLoaded=true;
     if(!state.hardwareItems.some(r=>r.verification==='verified'))state.hardwareReview=true;
   }catch(error){if(requestId===state.hardwareRequestId)state.hardwareError=error.message;}
   finally{if(requestId===state.hardwareRequestId){state.hardwareLoading=false;renderAssets();}}
@@ -7320,6 +7346,8 @@ function renderWatchRows(target, rows, { formatValue } = {}) {
     if(item.hardware) {
       row.dataset.hardwareSeries=item.hardware.seriesKey;row.tabIndex=0;row.setAttribute('role','button');row.setAttribute('aria-label',`${item.name} ${item.lastPrice}，查看报价走势`);
       row.querySelector('.quote-code').textContent=item.group;
+      const priceLabel=[item.hardware.currency,item.hardware.unit].filter(Boolean).join('/');
+      if(priceLabel) row.querySelector('.quote-price').textContent=`${format(item, item.lastPrice)} ${priceLabel}`;
       row.querySelector('.quote-price').classList.toggle('up',item.changePct!==null && up);
       row.querySelector('.quote-change').classList.toggle('up',item.changePct!==null && up);
       if(!item.sparkline || item.sparkline.length<2)row.querySelector('.market-spark').textContent='暂无历史';

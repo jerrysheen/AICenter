@@ -2,6 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { HardwarePriceSnapshotInputSchema, HardwareQuoteRowSchema } from '../../../contracts/src/hardware-prices.js';
 const hash = v => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const snapshot = r => r ? ({id:r.id,sourceKey:r.source_key,pageKey:r.page_key,sourceUrl:r.source_url,title:r.title,capturedAt:r.captured_at,
+  lastCheckedAt:r.last_checked_at || r.captured_at,lastChangedAt:r.captured_at,
   format:r.format,parserVersion:r.parser_version,artifactPath:r.artifact_path,warnings:JSON.parse(r.warnings_json)}) : null;
 const observation = r => r ? ({...JSON.parse(r.row_json),id:r.id,seriesKey:r.series_key,revision:r.revision,previousId:r.previous_id,
   snapshotId:r.snapshot_id,capturedAt:r.captured_at,isCurrent:Boolean(r.is_current)}) : null;
@@ -10,15 +11,39 @@ export function createHardwarePriceRepository(database,emitEvent=()=>{}) {
     save(workspaceId,input,artifact) {
       const value=HardwarePriceSnapshotInputSchema.parse(input);
       for(const row of value.rows) HardwareQuoteRowSchema.parse(row);
+      const touchPage=(snapshotId)=>{
+        const existing=database.prepare('SELECT * FROM hardware_price_page_checks WHERE workspace_id=? AND source_key=? AND page_key=?').get(workspaceId,value.sourceKey,value.pageKey);
+        const changed=!existing || existing.content_hash!==artifact.hash;
+        const lastChangedAt=changed ? value.capturedAt : existing.last_changed_at;
+        database.prepare(`INSERT INTO hardware_price_page_checks
+          (workspace_id,source_key,page_key,last_checked_at,last_changed_at,content_hash,parser_version,snapshot_id)
+          VALUES (?,?,?,?,?,?,?,?)
+          ON CONFLICT(workspace_id,source_key,page_key) DO UPDATE SET
+            last_checked_at=excluded.last_checked_at,last_changed_at=excluded.last_changed_at,
+            content_hash=excluded.content_hash,parser_version=excluded.parser_version,snapshot_id=excluded.snapshot_id`)
+          .run(workspaceId,value.sourceKey,value.pageKey,value.capturedAt,lastChangedAt,artifact.hash,value.parserVersion,snapshotId);
+      };
       return database.transaction(()=>{
         let saved=database.prepare('SELECT * FROM hardware_price_snapshots WHERE workspace_id=? AND source_key=? AND page_key=? AND content_hash=? AND parser_version=?')
           .get(workspaceId,value.sourceKey,value.pageKey,artifact.hash,value.parserVersion);
-        if(saved)return snapshot(saved);
+        if(saved){
+          database.prepare('UPDATE hardware_price_snapshots SET last_checked_at=? WHERE id=?').run(value.capturedAt,saved.id);
+          touchPage(saved.id);
+          return snapshot(database.prepare('SELECT * FROM hardware_price_snapshots WHERE id=?').get(saved.id));
+        }
         const id=randomUUID();
-        database.prepare('INSERT INTO hardware_price_snapshots VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(id,workspaceId,value.sourceKey,value.pageKey,value.sourceUrl,value.title,value.capturedAt,
-          artifact.hash,artifact.relativePath,value.format,value.parserVersion,JSON.stringify(value.warnings));
+        database.prepare(`INSERT INTO hardware_price_snapshots
+          (id,workspace_id,source_key,page_key,source_url,title,captured_at,content_hash,artifact_path,format,parser_version,warnings_json,last_checked_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,workspaceId,value.sourceKey,value.pageKey,value.sourceUrl,value.title,value.capturedAt,
+          artifact.hash,artifact.relativePath,value.format,value.parserVersion,JSON.stringify(value.warnings),value.capturedAt);
         for(const row of value.rows) {
-          const seriesKey=hash([value.sourceKey,row.specification,row.category,row.quoteType,row.currency,row.unit,row.taxBasis,row.averageBasis]);
+          const canonical=hash([value.sourceKey,row.specification,row.category,row.quoteType,row.currency,row.unit,row.taxBasis,row.averageBasis]);
+          const found=database.prepare(`SELECT series_key seriesKey,json_extract(row_json,'$.currency') currency,json_extract(row_json,'$.unit') unit,COUNT(*) n
+            FROM hardware_price_observations WHERE workspace_id=? AND json_extract(row_json,'$.specification')=?
+              AND json_extract(row_json,'$.category')=? AND json_extract(row_json,'$.quoteType')=? GROUP BY series_key`).all(workspaceId,row.specification,row.category,row.quoteType);
+          const compatible=found.filter(item=>(item.currency==null || row.currency==null || item.currency===row.currency) && (item.unit==null || row.unit==null || item.unit===row.unit))
+            .sort((a,b)=>b.n-a.n || String(a.seriesKey).localeCompare(String(b.seriesKey)));
+          const seriesKey=compatible[0]?.seriesKey || canonical;
           // Unknown periods belong to this snapshot, never to an invented collection day.
           const periodKey=row.period ? JSON.stringify([row.period,row.periodStart,row.periodEnd]) : `unverified:${id}`;
           const valueHash=hash([row.average,row.high,row.low,row.reportedChange,row.changeBasis,row.highBasis,row.lowBasis]);
@@ -32,9 +57,16 @@ export function createHardwarePriceRepository(database,emitEvent=()=>{}) {
           }
           database.prepare('INSERT INTO hardware_price_snapshot_rows VALUES (?,?,?,?,?,?)').run(workspaceId,id,row.tableIndex,row.rowIndex,obsId,JSON.stringify(row));
         }
+        touchPage(id);
         emitEvent('trading.hardware-prices.saved.v1','hardware-price-snapshot',id,{snapshotId:id},workspaceId);
         return snapshot(database.prepare('SELECT * FROM hardware_price_snapshots WHERE id=?').get(id));
       })();
+    },
+    pageChecks(workspaceId) {
+      return database.prepare('SELECT * FROM hardware_price_page_checks WHERE workspace_id=? ORDER BY page_key').all(workspaceId).map(row=>({
+        sourceKey:row.source_key,pageKey:row.page_key,lastCheckedAt:row.last_checked_at,lastChangedAt:row.last_changed_at,
+        unchanged:row.last_checked_at!==row.last_changed_at,
+      }));
     },
     list(workspaceId,{snapshotId=null,seriesKey=null,limit=200}={}) {
       if(snapshotId)return database.prepare(`SELECT o.*,r.row_json snapshot_row_json,s.captured_at snapshot_captured_at FROM hardware_price_snapshot_rows r JOIN hardware_price_observations o ON o.id=r.observation_id AND o.workspace_id=r.workspace_id

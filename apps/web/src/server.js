@@ -390,6 +390,12 @@ export function createAiCenterServer(options = {}) {
         appInfo,
         uiAssets,
         feedQueryParsers,
+        deployStatusPath: path.join(dataDirectory, 'deploy-status.json'),
+        authorizeDeviceCookie(request) {
+          const parsed = parseCookies(request.headers?.cookie || '');
+          const token = parsed[secureCookieName] || parsed[cookieName] || '';
+          return services.identity.authorizeDevice(token);
+        },
       });
       if (!handled) json(response, 404, { ok: false, error: 'Not found' });
     } catch (error) {

@@ -68,12 +68,23 @@ export function createBriefPage(host) {
   let inflight=new AbortController();
   function freshRequests(){inflight.abort();inflight=new AbortController();}
   function callApi(path, options){return host.api(path,{...(options||{}),signal:inflight.signal});}
+  const manifestPipeline=data=>typeof data?.pipeline==='string' && data.pipeline ? data.pipeline : '';
+  const manifestProvesTree=data=>data?.pipeline==='tree-v3' || (data?.pipeline===undefined && Array.isArray(data?.information) && data.information.some(n=>n?.validatorVersion==='tree-response-v3.1.0'));
   const loadTreeManifest=({force=false}={})=>{
     if(!force && treeManifest && Date.now()-treeManifestAt<30000)return Promise.resolve(treeManifest);
     if(treeManifestRequest)return treeManifestRequest;
     const identity=s.identity,cacheEpoch=treeCacheEpoch,endAt=Date.now()+1,signal=inflight.signal;
+    const same=()=>!signal.aborted && identity===s.identity && cacheEpoch===treeCacheEpoch;
     const pending=callApi(`/api/v1/reports/tree?view=index&startAt=${endAt-7*86400000}&endAt=${endAt}`).then(data=>{
-      if(!signal.aborted && identity===s.identity && cacheEpoch===treeCacheEpoch){treeManifest=data;treeManifestAt=Date.now();}return data;
+      const pipeline=manifestPipeline(data);
+      if(same() && pipeline){treeManifest=data;treeManifestAt=Date.now();}
+      if(pipeline || manifestProvesTree(data)) return data;
+      if(same() && treeManifest) return treeManifest;
+      throw Object.assign(new Error('简报刊期不完整'),{code:'incomplete-manifest'});
+    }, error=>{
+      if(signal.aborted || error?.name==='AbortError') throw error;
+      if(same() && treeManifest) return treeManifest;
+      throw error;
     }).finally(()=>{if(treeManifestRequest===pending)treeManifestRequest=null;});
     treeManifestRequest=pending;return pending;
   };
@@ -176,15 +187,21 @@ export function createBriefPage(host) {
       const manifest=await loadTreeManifest().catch(()=>null);
       clearTimeout(slow);
       if(token!==generation)return;
-      if(!manifest){root.replaceChildren(node('p','brief-empty','暂时无法读取简报刊期。'),button('重试读取',()=>{routeKey='';treeReady=false;return mount(target,{date,history,archive,hour,node:focusId});}));return;}
       // During a rolling upgrade the older reader lacks pipeline; independently prepared
-      // v3.1 heads prove the tree preparation path is active. Explicit legacy always wins.
-      const treeEnabled=manifest.pipeline==='tree-v3' || (manifest.pipeline===undefined && manifest.information?.some(n=>n.validatorVersion==='tree-response-v3.1.0'));
+      // v3.1 heads prove the tree preparation path is active. A missing pipeline from a
+      // failed or empty read is not a legacy report. Only an explicit other pipeline is.
+      const treeEnabled=Boolean(manifest) && manifestProvesTree(manifest);
       if(treeEnabled) {
         pause();treeActive=true;treeReady=false;
         await tree.mount(root,{manifest,date,history,mode:clockHour!=null && !history && !archive ? 'hourly' : 'daily',hour:clockHour,node:focusId,resetSelection:true});
         if(token!==generation)return;
         treeReady=true;
+        return;
+      }
+      if(!manifest || !manifestPipeline(manifest)){
+        const box=node('div','tree-hour-skeleton');
+        box.append(node('span','tree-hour-skeleton-line'),node('span','tree-hour-skeleton-line'),node('span','tree-hour-skeleton-line'));
+        root.replaceChildren(box,node('p','brief-empty','暂时无法读取简报刊期。'),button('重试读取',()=>{routeKey='';treeReady=false;return mount(target,{date,history,archive,hour,node:focusId});}));
         return;
       }
     }
@@ -216,7 +233,7 @@ export function createBriefPage(host) {
     }
     const controls=node('div','brief-controls');
     if(routeKey==='archive')controls.append(button('返回历史简报',()=>navigate('history')),node('span','brief-muted','旧版存档（停止更新）'));
-    if(routeKey!=='archive')controls.append(button('三层浓缩树',()=>{stop();treeActive=true;tree.mount(root);}));
+    if(routeKey!=='archive')controls.append(button('旧版简报',()=>{stop();treeActive=true;tree.mount(root);}));
     datePicker=node('details','brief-date-picker'); dateLabel=node('summary','brief-date-label','日期');
     const dates=node('div','brief-date-options');
     dateInput=node('input','brief-date'); dateInput.type='date'; dateInput.setAttribute('aria-label','选择简报日期');

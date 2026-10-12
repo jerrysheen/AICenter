@@ -1,6 +1,16 @@
 import { parseDocument, DomUtils } from 'htmlparser2';
 import { HardwarePriceSnapshotInputSchema } from '../../contracts/src/hardware-prices.js';
-export const PRICE_PARSER_VERSION = 'trendforce-tables-2';
+export const PRICE_PARSER_VERSION = 'trendforce-tables-3';
+function headerIndex(headers, patterns) {
+  for (const pattern of patterns) {
+    const index = headers.findIndex(header => pattern.test(header));
+    if (index >= 0) return index;
+  }
+  return -1;
+}
+function memoryChipLabel(heading) {
+  return /(?:DRAM|NAND Flash)\s+(?:Spot|Contract)\s+Price/i.test(heading) && !/Wafer|Module|eMMC|Card|SSD|Street/i.test(heading);
+}
 const clean = n => DomUtils.textContent(n).replace(/\s+/g,' ').trim();
 const hasClass = (n,c) => (n.attribs?.class || '').split(/\s+/).includes(c);
 const number = v => /^[-+]?\d[\d,]*(?:\.\d+)?$/.test(v.trim()) ? v.trim().replace(/,/g,'').replace(/^\+/,'') : null;
@@ -61,19 +71,31 @@ export function parseStructuredPricePage(raw,{pageKey='dram',sourceUrl,title='',
     const cells=matrix(p.table); const firstData=cells.findIndex(r=>r.slice(1).some(v=>number(v)!==null));
     if(firstData<0) { warnings.push(`表${tableIndex+1}没有可识别报价行`);continue; }
     const headers=Array.from({length:Math.max(...cells.map(r=>r.length))},(_,c)=>cells.slice(0,firstData).map(r=>r[c] || '').join(' '));
-    const find=re=>headers.findIndex(h=>re.test(h));
-    const avg=find(/Average|Avg|均價|均价|平均/i),high=find(/(?:日|盤|盘)?高[點点]|\bHigh\b|最高|高價|高价/i),low=find(/(?:日|盤|盘)?低[點点]|\bLow\b|最低|低價|低价/i),change=find(/Change|漲跌|涨跌/i);
+    const avg=headerIndex(headers,[/盤平均|盘平均|Session Average/i,/Average|Avg|均價|均价|平均/i]);
+    const high=headerIndex(headers,[/盤高|盘高|Session High/i,/(?:日|盤|盘)?高[點点]|\bHigh\b|最高|高價|高价/i]);
+    const low=headerIndex(headers,[/盤低|盘低|Session Low/i,/(?:日|盤|盘)?低[點点]|\bLow\b|最低|低價|低价/i]);
+    const change=headerIndex(headers,[/Change|漲跌|涨跌/i]);
+    const dailyHigh=headerIndex(headers,[/日高|Daily High/i]);
+    const dailyLow=headerIndex(headers,[/日低|Daily Low/i]);
     const sourceUpdatedAt=updated(p.updateRaw);
     const quoteType=/spot|現貨|现货/i.test(p.heading)?'spot':/contract|合約|合约/i.test(p.heading)?'contract':/retail|street price|零售/i.test(p.heading)?'retail':'unknown';
-    const currency=/(?:US\s*\$|USD|美元)/i.test(p.context)?'USD':/(?:NT\s*\$|TWD|新台幣|新台币)/i.test(p.context)?'TWD':/(?:RMB|CNY|人民幣|人民币)/i.test(p.context)?'CNY':null;
+    let currency=/(?:US\s*\$|USD|美元)/i.test(p.context)?'USD':/(?:NT\s*\$|TWD|新台幣|新台币)/i.test(p.context)?'TWD':/(?:RMB|CNY|人民幣|人民币)/i.test(p.context)?'CNY':null;
     const unitMatch=p.context.match(/(?:USD|US\s*\$|NT\s*\$|TWD|RMB|CNY|美元)\s*(?:\/|per\s+)\s*(piece|pcs?|unit|chip|GB|Gb|TB|顆|颗|個|个|片)/i);
-    const unit=unitMatch?unitMatch[1]:null;
+    let unit=unitMatch?unitMatch[1]:null;
     const taxBasis=/未稅|未税|excluding tax/i.test(p.context)?'excluding-tax':/含稅|含税|including tax/i.test(p.context)?'including-tax':null;
+    // The public title used to say US$/chip and now only says 未稅. DRAM/NAND spot and contract tables are still that board.
+    if(!currency && !unit && taxBasis==='excluding-tax' && memoryChipLabel(p.heading)) { currency='USD'; unit='chip'; }
+    const memberNotice=p.context.match(/updated on\s+(\d{1,2})\/(\d{1,2})\/(\d{4})/i);
+    if(memberNotice) {
+      const stamp=`${memberNotice[3]}-${memberNotice[1].padStart(2,'0')}-${memberNotice[2].padStart(2,'0')}`;
+      const tableDay=sourceUpdatedAt==null?'':new Date(sourceUpdatedAt+8*3600000).toISOString().slice(0,10);
+      if(!tableDay || stamp>tableDay) warnings.push(`${p.heading || '价表'} 公开数字停在 ${tableDay || '未知日期'}，页面通知 ${stamp} 的更新没有公开报价`);
+    }
     for(let rowIndex=firstData;rowIndex<cells.length;rowIndex++) {
       const r=cells[rowIndex];if(!r[0])continue;
       const average=avg>=0?number(r[avg] || ''):null,hi=high>=0?number(r[high] || ''):null,lo=low>=0?number(r[low] || ''):null;
       if([average,hi,lo].every(v=>v===null))continue;
-      const valueColumns=[avg,high,low,change].filter(i=>i>=0),specEnd=Math.min(...valueColumns);
+      const valueColumns=[avg,high,low,change,dailyHigh,dailyLow].filter(i=>i>=0),specEnd=Math.min(...valueColumns);
       const specification=r.slice(0,specEnd).map((v,i)=>`${headers[i]}: ${v}`).join(' · ');
       const singleSpec=specEnd===1?r[0]:specification;
       const category=/micro\s*sd|sd\s*card|memory card|存儲卡|存储卡/i.test(singleSpec) || /^(?:Memory Card|存储卡|存儲卡) /i.test(p.heading)?'other-storage':/SSD/i.test(p.heading+' '+singleSpec)?'ssd':pageKey==='dram'?'dram':'nand';

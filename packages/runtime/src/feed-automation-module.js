@@ -67,18 +67,22 @@ export function createFeedAutomationJobHandlers({ feedService, feedRepository, t
         const metadata = replayMetadata(account);
         try {
           if (metadata.autoRefresh !== true) {
-            feedRepository.deferSubscriptionSync(
-              subscription.id,
-              now,
-              subscription.refreshIntervalMinutes * 60_000,
-            );
+            const linkOnly = metadata.sourceId === 'content.bilibili.import';
+            const parked = linkOnly
+              ? feedRepository.completeSubscriptionSync(subscription.id, now)
+              : feedRepository.deferSubscriptionSync(
+                subscription.id,
+                now,
+                subscription.refreshIntervalMinutes * 60_000,
+              );
             deferred += 1;
             subscriptions.push({
               subscriptionId: subscription.id,
               sourceId: metadata.sourceId || '',
               status: 'skipped',
               added: 0,
-              reason: 'autoRefresh',
+              reason: linkOnly ? 'bilibili-link-only' : 'autoRefresh',
+              nextSyncAt: parked?.nextSyncAt || null,
             });
             continue;
           }

@@ -356,8 +356,9 @@ test('feed sync uses metadata replay, isolates source failures, and enriches onl
   assert.equal(afterSuccess.nextSyncAt, afterSuccess.lastSyncAt + 60 * 60_000);
 
   const biliRow = visible.find((item) => item.id === bili.subscription.id);
-  assert.equal(biliRow.lastSyncAt, null);
-  assert.ok(biliRow.nextSyncAt > Date.now());
+  assert.equal(biliRow.lastSyncAt > 0, true);
+  assert.equal(biliRow.nextSyncAt, biliRow.lastSyncAt + 30 * 60_000);
+  assert.equal(completed.output.subscriptions.find((item) => item.subscriptionId === bili.subscription.id).reason, 'bilibili-link-only');
 
   const trend = visible.find((item) => item.refreshIntervalMinutes === 120);
   assert.equal(trend.lastSyncAt, null);

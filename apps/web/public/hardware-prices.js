@@ -6,7 +6,7 @@ const number=value=>value==null?'—':Number(value).toLocaleString('zh-CN',{maxi
 const specification=row=>row.specification.replace(/^(?:項目|项目|Item)\s*:\s*/i,'').replace(/\s*·\s*(?:(?:日|盤|盘)?(?:高|低)(?:點|点)|High|Low)\s*:[\s\S]*$/i,'').trim();
 export function hardwareMarketItem(row) {
   return {assetClass:'hardware',hardware:row,name:specification(row),symbol:row.seriesKey,
-    group:[categories[row.category],types[row.quoteType],row.period || '报价期待核验',row.verification==='pending'?'待核验':''].filter(Boolean).join(' · '),
+    group:[categories[row.category],types[row.quoteType],row.currency && row.unit ? `${row.currency}/${row.unit}` : '',row.period || '报价期待核验',row.verification==='pending'?'待核验':''].filter(Boolean).join(' · '),
     summary:specification(row),lastPrice:row.average,changePct:row.changePct,
     sparkline:(row.history || []).map(p=>Number(p.average))};
 }
@@ -67,7 +67,8 @@ export function createHardwarePricesPage({api,openPage,setView,renderRows,isCurr
       if(kind==='series') {
         const d=data.detail,row=d.current,head=node('header','','detail-head');head.append(node('h2',specification(row),'detail-title'),node('div',[categories[row.category],types[row.quoteType],row.period || '报价期待核验'].join(' · '),'detail-meta'));shell.append(head);
         const price=node('div','','quote-last-row');const change=row.changePct==null?'—':`${row.changePct>0?'+':''}${row.changePct.toFixed(2)}%`;
-        price.append(node('strong',number(row.average),'last num'),node('b',change,row.changePct==null?'':row.changePct<0?'down':'up'));shell.append(price);
+        const quoteLabel=[number(row.average),row.currency,row.unit?`/ ${row.unit}`:''].filter(Boolean).join(' ');
+        price.append(node('strong',quoteLabel,'last num'),node('b',change,row.changePct==null?'':row.changePct<0?'down':'up'));shell.append(price);
         if(row.verification==='pending')shell.append(node('p',`待核验：${(row.missing || ['币种、单位或报价期']).join('、')}`,'hardware-verification'));
         const host=node('section','','quote-chart-host hardware-chart-host');
         const periods=node('div','','chip-tabs quote-period-tabs');let selected='all';
