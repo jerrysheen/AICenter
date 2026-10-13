@@ -81,8 +81,8 @@ import { createWorkPackageTracePort } from '../../../packages/runtime/src/work-p
 import { createFailureStreakStore, createSourceHub, createSourceModuleRegistry, installFailureStreakStore, readStaticSignalBoard } from '../../../packages/source/src/index.js';
 import { createMemorySnapshotCache } from '../../../packages/runtime/src/snapshot-cache.js';
 import {
-  createHomeBootstrapCompose, createWebSnapshotJobHandlers, ensureFeedListSchedule, ensureHardwarePriceSchedule, ensureHoldingsMarketSchedule, ensureHomeBootstrapSchedule, ensureMarketBoardsSchedule,
-  ensureMarketNativeBoardSchedule, ensureStaticSignalBoardSchedule,
+  createHomeBootstrapCompose, createReportViewCapture, createWebSnapshotJobHandlers, ensureFeedListSchedule, ensureHardwarePriceSchedule, ensureHoldingsMarketSchedule, ensureHomeBootstrapSchedule, ensureMarketBoardsSchedule,
+  ensureMarketNativeBoardSchedule, ensureReportViewSchedule, ensureStaticSignalBoardSchedule,
   HOLDINGS_MARKET_SNAPSHOT_KEY, webSnapshotManifest,
 } from '../../../packages/runtime/src/web-snapshot-jobs.js';
 
@@ -543,6 +543,12 @@ export function createAiCenterWorker(options = {}) {
         timezone: dailyConfig.timezone,
         pipeline: treeEnabled ? 'tree-v3' : 'legacy',
       }),
+      captureReportViews: createReportViewCapture({
+        store,
+        env,
+        timezone: dailyConfig.timezone,
+        pipeline: treeEnabled ? 'tree-v3' : 'legacy',
+      }),
     }),
   });
   registry.register({
@@ -625,6 +631,7 @@ export function createAiCenterWorker(options = {}) {
     ensureFeedListSchedule(store);
     ensureHardwarePriceSchedule(store);
     ensureHomeBootstrapSchedule(store);
+    ensureReportViewSchedule(store);
     ensureInvestorDiscussionSchedule(store, env);
     ensureTrendForcePriceSchedules(store, env);
     ensureComputePriceSchedules(store, env);

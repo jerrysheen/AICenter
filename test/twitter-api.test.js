@@ -59,19 +59,20 @@ test('x feed API caches source items and only refreshes on demand', async () => 
   try {
     const cached = await fetch(`${address.localUrl}/api/v1/feed/x?feed=for-you&limit=50`).then((response) => response.json());
     assert.equal(cached.ok, true);
+    assert.equal(cached.pending, true);
     assert.equal(calls, 0);
-    assert.equal(cached.feed.mode, 'empty');
     const live = await fetch(`${address.localUrl}/api/v1/feed/x?feed=for-you&limit=50&refresh=1`).then((response) => response.json());
     assert.equal(live.ok, true, JSON.stringify(live));
     assert.equal(calls, 1);
     assert.equal(live.feed.added, 1);
     assert.equal(live.feed.items.length, 1);
+    assert.equal(live.feed.items[0].sourceUrl, 'https://x.com/OpenAI/status/1');
     tagStoredItems(path.join(directory, 'ai-center.db'));
     const again = await fetch(`${address.localUrl}/api/v1/feed/x?feed=for-you&limit=50`).then((response) => response.json());
     assert.equal(calls, 1);
-    assert.equal(again.feed.mode, 'cached');
-    assert.equal(again.feed.items[0].id, 'x:1');
-    const alias = await fetch(`${address.localUrl}/api/v1/feed?platform=x&limit=50`).then((response) => response.json());
+    assert.equal(again.pending, true);
+    const alias = await fetch(`${address.localUrl}/api/v1/feed?platform=x&limit=50&refresh=1`).then((response) => response.json());
+    assert.equal(calls, 2);
     assert.equal(alias.feed.items[0].sourceUrl, 'https://x.com/OpenAI/status/1');
   } finally {
     await app.close();

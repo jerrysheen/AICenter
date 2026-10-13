@@ -9,7 +9,8 @@ import Database from 'better-sqlite3';
 import { createStore } from '../packages/database/src/index.js';
 import { latestSchemaVersion } from '../packages/database/src/migrations.js';
 import { createFeedService } from '../packages/domain/src/feed-service.js';
-import { captureFeedLists, feedListSnapshotKey } from '../packages/runtime/src/web-snapshot-jobs.js';
+import { captureFeedLists, feedListSnapshotKey, FEED_TRENDFORCE_SNAPSHOT_KEY } from '../packages/runtime/src/web-snapshot-jobs.js';
+import { packPreparedJson } from '../apps/web/src/http/prepared-slots.js';
 import { createMediaIngestionService } from '../packages/domain/src/media-ingestion-service.js';
 import { createAiCenterServer } from '../apps/web/src/server.js';
 
@@ -98,6 +99,8 @@ test('trendforce list omits article text and answers If-None-Match', async () =>
     article: { paragraphs: [{ id: 'p0001', kind: 'paragraph', text: BODY }] },
   });
   const app = createAiCenterServer({ store, host: '127.0.0.1', port: 0 });
+  const feed = await app.services.feed.getExternalFeed('trendforce', { platform: 'trendforce', feed: 'public', fields: 'list' });
+  app.preparedSlots.publish(FEED_TRENDFORCE_SNAPSHOT_KEY, packPreparedJson(JSON.stringify({ ok: true, feed })));
   const address = await app.listen();
   try {
     const first = await fetch(`${address.localUrl}/api/v1/feed/trendforce`);
@@ -154,15 +157,15 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
 
   const upgraded = createStore(file);
   try {
-    assert.equal(latestSchemaVersion(), 65);
-    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 65);
+    assert.equal(latestSchemaVersion(), 66);
+    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 66);
   } finally {
     upgraded.close();
   }
 
   const database = new Database(file, { readonly: true, fileMustExist: true });
   try {
-    assert.equal(database.pragma('user_version', { simple: true }), 65);
+    assert.equal(database.pragma('user_version', { simple: true }), 66);
     const rows = database.prepare(`
       SELECT version, name, applied_at FROM schema_migrations WHERE version >= 57 ORDER BY version
     `).all();
@@ -175,6 +178,7 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
       [62, 'model_usage_http_status'],
       [64, 'capture_feed_filter_columns'],
       [65, 'outbox_payload_bytes'],
+      [66, 'outbox_sse_data'],
     ]);
     assert.ok(database.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'gemini_model_cursors'`).get());
     assert.equal(database.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('model_usage_index') WHERE name = 'http_status'`).get().n, 1);

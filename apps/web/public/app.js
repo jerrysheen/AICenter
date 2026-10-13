@@ -14112,12 +14112,14 @@ async function loadTrendForceFeed({ refresh = false } = {}) {
     const params = new URLSearchParams({ platform: 'trendforce' });
     if (refresh) params.set('refresh', '1');
     const headers = !refresh && state.trendforceEtag ? { 'If-None-Match': state.trendforceEtag } : {};
+    let queuedJob = false;
     const payload = await api(`/api/v1/feed/trendforce?${params}`, {
       timeoutMs: refresh ? 180_000 : 15_000,
       headers,
       onResponse(response) {
         const etag = response.headers.get('etag');
         if (etag) state.trendforceEtag = etag;
+        queuedJob = Boolean(response.headers.get('x-job-id'));
       },
     });
     if (payload?.notModified) {
@@ -14134,7 +14136,7 @@ async function loadTrendForceFeed({ refresh = false } = {}) {
     renderTrendForceToolbar();
     if (refresh) {
       if (payload.feed?.mode === 'error') showToast(payload.feed.note || 'TrendForce 抓取失败');
-      else showToast(payload.jobId ? '采集已排入后台任务' : payload.feed?.note || '已读取保存内容');
+      else showToast(queuedJob || payload.jobId ? '采集已排入后台任务' : payload.feed?.note || '已读取保存内容');
     }
     return payload.feed;
   } catch (error) {

@@ -2,7 +2,7 @@ import { parseContract } from '../../../../packages/contracts/src/index.js';
 import { HardwarePriceListQuerySchema } from '../../../../packages/contracts/src/hardware-prices.js';
 import { json } from '../http/response.js';
 import { createPreparedSlotStore } from '../http/prepared-slots.js';
-import { HARDWARE_PRICE_SNAPSHOT_KEY } from '../../../../packages/runtime/src/web-snapshot-jobs.js';
+import { HARDWARE_PRICE_SNAPSHOT_KEY, hardwarePriceCategoryKey } from '../../../../packages/runtime/src/web-snapshot-jobs.js';
 const workspace = identity => identity?.device?.workspaceId || 'local';
 
 export function createHardwarePriceRoutes({ slots = createPreparedSlotStore() } = {}) {
@@ -12,8 +12,18 @@ export function createHardwarePriceRoutes({ slots = createPreparedSlotStore() } 
       const refresh=raw.refresh==='1' || raw.refresh==='true';
       delete raw.refresh;
       const query=parseContract(HardwarePriceListQuerySchema,raw);
-      if (query.category || query.snapshotId) {
-        json(response, 200, { ok: true, ...services.hardwarePrices.list(workspace(identity), query) });
+      if (query.snapshotId) {
+        slots.send(request, response, 'hardware-prices-snapshot', {
+          headers: { 'Cache-Control': 'no-store' },
+          allow304: false,
+        });
+        return;
+      }
+      if (query.category) {
+        slots.send(request, response, hardwarePriceCategoryKey(query.category), {
+          headers: { 'Cache-Control': 'no-store' },
+          allow304: !refresh,
+        });
         return;
       }
       slots.send(request, response, HARDWARE_PRICE_SNAPSHOT_KEY, {

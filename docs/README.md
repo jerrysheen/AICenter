@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-13-feed-x-flash-buffers.md`：X 的推荐、已读头和收藏第一页，以及快讯，只写出预备缓冲区；未命中的键会记下来。报价分类、TrendForce 列表、简报目录和小时阅读索引也不再在请求里序列化。事件推送改读 `sse_data`。migration 66。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-13-prebuilt-buffer-hit.md`：报价列表、雪球首页 / 7x24 和总览 bootstrap 的请求只写出已经预备好的缓冲区。没有缓冲区时返回 `pending`，不在请求里组包或序列化。大事件帧不再读出 payload。migration 65。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-13-usage-http-gemma-retry.md`：信息树和阅读分类的成功调用记下 HTTP 200，模型执行超时记下 408。Gemma 翻译的 5xx 和超时换另一把 Gemma 密钥重试，失败日志带上输入长度、密钥后缀、耗时、并发和响应体。不新增 migration。需要同时重启 Web 和 Worker。

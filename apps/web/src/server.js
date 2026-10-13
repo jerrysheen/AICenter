@@ -130,7 +130,8 @@ function attachApiTiming(response, request, url, timings, eventLoopDelay, loopLo
     const total = now - timings.started;
     const handler = Math.max(0, now - timings.handlerStarted);
     const timing = `auth;dur=${timings.authMs.toFixed(1)}, handler;dur=${handler.toFixed(1)}, total;dur=${total.toFixed(1)}`;
-    const cacheEdition = url.pathname === '/api/v1/reports/tree/edition' && statusCode === 200;
+    const pendingPrepared = headerObject?.['X-Prepared-Pending'] === '1';
+    const cacheEdition = url.pathname === '/api/v1/reports/tree/edition' && statusCode === 200 && !pendingPrepared;
     if (headerObject && typeof headerObject === 'object' && !Array.isArray(headerObject)) {
       headerObject['Server-Timing'] = timing;
       if (cacheEdition) headerObject['Cache-Control'] = 'private, max-age=86400, immutable';

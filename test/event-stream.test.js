@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { performance } from 'node:perf_hooks';
 import { createStore } from '../packages/database/src/index.js';
+import { createRuntimeService } from '../packages/domain/src/runtime-service.js';
 import { createEventStreamHub } from '../apps/web/src/http/event-stream.js';
 
 function createMemoryRuntime(count, workspaceId = 'local') {
@@ -152,6 +154,45 @@ test('flush skips a large payload instead of reading it on the caller tick', asy
   assert.match(body, /"truncated":true/);
   assert.equal(body.includes(pad), false);
   assert.equal(payloadReads, 0);
+  hub.closeAll();
+  store.close();
+});
+
+test('runtime flush emits stored sse text and does not read payload_json', async () => {
+  const store = createStore(':memory:');
+  let payloadReads = 0;
+  let fullReads = 0;
+  const runtime = createRuntimeService({ runtimeRepository: store });
+  const wrapped = {
+    ...runtime,
+    listEvents() { fullReads += 1; return store.listEvents(...arguments); },
+    readEventPayloadSlice() { payloadReads += 1; return ''; },
+    listEventFrameHeads: (...args) => store.listEventFrameHeads(...args),
+    listEventFrames: (...args) => store.listEventFrames(...args),
+    latestEventId: () => store.latestEventId(),
+  };
+  const chunks = [];
+  const hub = createEventStreamHub(wrapped);
+  await hub.open(
+    { on() {} },
+    { writeHead() {}, write(chunk) { chunks.push(String(chunk)); return true; }, end() {} },
+    { device: { workspaceId: 'local', id: 'device-1' } },
+    0,
+  );
+  store.createJob({ type: 'feed.sync', input: { n: 1 } });
+  store.createJob({ type: 'feed.sync', input: { pad: 'x'.repeat(20_000) } });
+  chunks.length = 0;
+  const started = performance.now();
+  hub.flush();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  const flushMs = performance.now() - started;
+  const body = chunks.join('');
+  assert.match(body, /"n":1/);
+  assert.match(body, /"truncated":true/);
+  assert.equal(body.includes('x'.repeat(100)), false);
+  assert.equal(payloadReads, 0);
+  assert.equal(fullReads, 0);
+  console.log(JSON.stringify({ flushMs: Number(flushMs.toFixed(2)), frames: body.split('\n\n').filter(Boolean).length }));
   hub.closeAll();
   store.close();
 });

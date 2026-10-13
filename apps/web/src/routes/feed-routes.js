@@ -1,24 +1,9 @@
-import { createHash } from 'node:crypto';
 import { parseBilibiliImportInput, parseFlashFeedQuery, parseHideFlag, parsePatchUserItemStateInput, parsePersistFeedTranslationsInput, parsePostInput, parseTranslateBatchInput, parseTranslateInput, ValidationError } from '../../../../packages/contracts/src/index.js';
 import { json, readJson } from '../http/response.js';
 import { labelEventLoop } from '../http/event-loop-blocks.js';
 import { createPreparedSlotStore } from '../http/prepared-slots.js';
 import { STORED_FEED_CACHE_PROVIDERS } from '../http/stale-read-cache.js';
-import { feedPrebuiltSlot } from '../../../../packages/runtime/src/web-snapshot-jobs.js';
-
-function listEtag(feed) {
-  const stable = feed && typeof feed === 'object' ? { ...feed } : {};
-  delete stable.fetchedAt;
-  return `W/"${createHash('sha1').update(JSON.stringify(stable)).digest('hex')}"`;
-}
-
-function ifNoneMatch(request, etag) {
-  const header = String(request?.headers?.['if-none-match'] || '').trim();
-  if (!header) return false;
-  if (header === '*') return true;
-  const wanted = etag.replace(/^W\//, '');
-  return header.split(',').some((part) => part.trim().replace(/^W\//, '') === wanted);
-}
+import { FEED_FLASH_LIMIT, FEED_FLASH_SNAPSHOT_KEY, FEED_TRENDFORCE_SNAPSHOT_KEY, feedPrebuiltSlot, logFeedSlotMiss } from '../../../../packages/runtime/src/web-snapshot-jobs.js';
 
 function workspaceIdFrom(identity) {
   return identity?.device?.workspaceId || 'local';
@@ -175,10 +160,12 @@ export function createFeedRoutes({ slots = createPreparedSlotStore() } = {}) {
     },
     {
       method: 'GET', path: '/api/v1/feed/flash',
-      handler({ response, services, identity, url }) {
+      handler({ request, response, url }) {
         const query = parseFlashFeedQuery(Object.fromEntries(url.searchParams.entries()));
-        const items = services.feed.listFlash?.(workspaceIdFrom(identity), query) || [];
-        json(response, 200, { ok: true, items });
+        if (query.limit !== FEED_FLASH_LIMIT) logFeedSlotMiss('flash', { feed: 'flash', limit: query.limit, fields: 'list' });
+        slots.send(request, response, FEED_FLASH_SNAPSHOT_KEY, {
+          headers: { 'Cache-Control': 'private, no-cache' },
+        });
       },
     },
     {
@@ -189,18 +176,33 @@ export function createFeedRoutes({ slots = createPreparedSlotStore() } = {}) {
         if (!parser) throw new ValidationError(`尚未启用 ${providerId} 信息源`, ['platform']);
         try {
           const query = parser(Object.fromEntries(url.searchParams.entries()));
-          const trendforceJob = providerId==='trendforce' && query.refresh ? services.runtime.requestTrendforceSync({workspaceId:workspaceIdFrom(identity)}) : null;
-          if(trendforceJob) query.refresh=false;
-          if (providerId === 'trendforce') query.fields = 'list';
-          const mediaJob = providerId === 'media' && query.refresh ? services.runtime.requestMediaSync({ workspaceId: workspaceIdFrom(identity), channel: query.channel }) : null;
           const workspaceId = workspaceIdFrom(identity);
-          const prebuilt = STORED_FEED_CACHE_PROVIDERS.has(providerId) && !mediaJob && !trendforceJob
+          if (providerId === 'trendforce') {
+            const trendforceJob = query.refresh ? services.runtime.requestTrendforceSync({ workspaceId }) : null;
+            slots.send(request, response, FEED_TRENDFORCE_SNAPSHOT_KEY, {
+              headers: {
+                'Cache-Control': 'private, no-cache',
+                ...(trendforceJob ? { 'X-Job-Id': trendforceJob.id } : {}),
+              },
+            });
+            return;
+          }
+          const mediaJob = providerId === 'media' && query.refresh ? services.runtime.requestMediaSync({ workspaceId, channel: query.channel }) : null;
+          const prebuilt = STORED_FEED_CACHE_PROVIDERS.has(providerId) && !mediaJob
             ? feedPrebuiltSlot(providerId, query)
             : '';
           if (prebuilt) {
             slots.send(request, response, prebuilt, {
               headers: { 'Cache-Control': 'private, no-cache' },
               allow304: !query.refresh,
+            });
+            return;
+          }
+          if (providerId === 'x' || providerId === 'xueqiu') logFeedSlotMiss(providerId, query);
+          if (providerId === 'x' && !query.refresh) {
+            slots.send(request, response, 'feed-slot-miss', {
+              headers: { 'Cache-Control': 'private, no-cache' },
+              allow304: false,
             });
             return;
           }
@@ -212,18 +214,7 @@ export function createFeedRoutes({ slots = createPreparedSlotStore() } = {}) {
             leave();
           }
           const feed = await pending;
-          const payload = { ok: true, feed, ...((mediaJob || trendforceJob) ? { jobId: (mediaJob || trendforceJob).id } : {}) };
-          if (providerId === 'trendforce') {
-            const etag = listEtag(feed);
-            const headers = { ETag: etag, 'Cache-Control': 'private, no-cache' };
-            if (!trendforceJob && ifNoneMatch(request, etag)) {
-              response.writeHead(304, headers);
-              response.end();
-              return;
-            }
-            json(response, 200, payload, headers);
-            return;
-          }
+          const payload = { ok: true, feed, ...(mediaJob ? { jobId: mediaJob.id } : {}) };
           json(response, 200, payload, {}, { compress: providerId === 'media' });
         } catch (error) {
           if (error instanceof ValidationError) throw error;

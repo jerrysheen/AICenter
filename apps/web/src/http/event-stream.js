@@ -3,7 +3,6 @@ import { labelEventLoop } from './event-loop-blocks.js';
 const REPLAY_PAGE_SIZE = 200;
 const REPLAY_MAX_EVENTS = 10_000;
 const FLUSH_PAGE_SIZE = 1;
-const FLUSH_SLICE_CHARS = 8_000;
 
 export const SSE_REPLAY_PAGE_SIZE = REPLAY_PAGE_SIZE;
 export const SSE_REPLAY_MAX_EVENTS = REPLAY_MAX_EVENTS;
@@ -40,8 +39,7 @@ export function createEventStreamHub(runtimeService, options = {}) {
       return;
     }
     flushing = true;
-    const sliced = typeof runtimeService.listEventFrameHeads === 'function'
-      && typeof runtimeService.readEventPayloadSlice === 'function';
+    const sliced = typeof runtimeService.listEventFrameHeads === 'function';
     setTimeout(sliced ? stepHeads : stepFrames, 0);
   }
 
@@ -74,18 +72,12 @@ export function createEventStreamHub(runtimeService, options = {}) {
       if (!heads.length) return;
       const head = heads[0];
       eventCursor = head.id;
-      const bytes = head.payloadBytes == null
-        ? (head.payloadChars == null ? null : Number(head.payloadChars))
-        : Number(head.payloadBytes);
-      if (bytes == null || bytes > FLUSH_SLICE_CHARS) {
-        const stub = `{"truncated":true,"bytes":${bytes == null ? 'null' : bytes}}`;
-        emitChunk(head.workspaceId, `id: ${head.id}\nevent: ${head.name}\ndata: ${stub}\n\n`);
-        next = 'event';
-      } else {
-        const payload = runtimeService.readEventPayloadSlice(head.id, 0, Math.max(bytes, 1));
-        emitChunk(head.workspaceId, `id: ${head.id}\nevent: ${head.name}\ndata: ${payload}\n\n`);
-        next = 'event';
-      }
+      const bytes = head.payloadBytes == null ? null : Number(head.payloadBytes);
+      const data = typeof head.sseData === 'string' && head.sseData
+        ? head.sseData
+        : `{"truncated":true,"bytes":${bytes == null ? 'null' : bytes}}`;
+      emitChunk(head.workspaceId, `id: ${head.id}\nevent: ${head.name}\ndata: ${data}\n\n`);
+      next = 'event';
     } finally {
       leave();
       if (!next) finishFlush();

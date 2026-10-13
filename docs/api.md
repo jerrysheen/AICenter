@@ -40,13 +40,13 @@ Retry-After: 17
 | GET | `/api/v1/reports/daily/evidence` | `date`，`revision`，`materialId`，`paragraphId` |
 | GET | `/api/v1/reports/daily/tracking` | 无 |
 | GET | `/api/v1/reports/daily/analysis/status` | `date` |
-| GET | `/api/v1/reports/tree` | `startAt`，`endAt`，可选 `view=index`，`information=1`。目录走 migration 60 的列，15 秒进程内序列化缓存，响应仍 `no-store` |
-| GET | `/api/v1/reports/tree/edition` | `id` |
+| GET | `/api/v1/reports/tree` | `startAt`，`endAt`，可选 `view=index`，`information=1`。当前七日和首页 48 小时的 `view=index` 只写出 Worker 预备的缓冲区，响应 `no-store`。其他窗口返回 `pending: true`，请求里不查询、不序列化 |
+| GET | `/api/v1/reports/tree/edition` | `id`。校验刊期 id 后返回 `pending: true`，请求里不读取刊期、不序列化 |
 | GET | `/api/v1/reports/tree/node` | `id` |
 | GET | `/api/v1/reports/tree/children` | `id` |
 | GET | `/api/v1/reports/tree/editorial` | `startAt`，`endAt` |
-| GET | `/api/v1/reports/reading-hour` | `startAt`，`endAt`，`scope=hour` |
-| GET | `/api/v1/reports/reading-hour/index` | `startAt`，`endAt`，`scope=hour` |
+| GET | `/api/v1/reports/reading-hour` | `startAt`，`endAt`，`scope=hour`。返回 `pending: true`，请求里不读取该小时、不序列化 |
+| GET | `/api/v1/reports/reading-hour/index` | `startAt`，`endAt`，`scope=hour`。当前七日和首页 48 小时只写出 Worker 预备的缓冲区。其他窗口返回 `pending: true` |
 | GET | `/api/v1/reports/reading-hour/snapshot` | `id` |
 
 ```bash
@@ -109,12 +109,12 @@ curl -sS "https://center.example.com/api/v1/reports/hourly/search?startAt=176026
 
 | 方法 | 路径 | 参数 |
 |---|---|---|
-| GET | `/api/v1/feed/flash` | `limit` 为 1–100，默认 50。按时间返回快讯：`id`、`title`、`summary`、`publishedAt`、`source`、`sourceUrl`。不含供应商或模型字段 |
-| GET | `/api/v1/feed/x` | `feed=for-you` 或 `following`，`limit`，`saved`，`before`。`following` 的首页和已读头只写出 Worker 预备的 12 条缓冲区。翻页、收藏、`refresh=1` 和 `for-you` 仍查询。没有缓冲区时 `pending: true` |
-| GET | `/api/v1/feed/xueqiu` | `feed=following`、`featured` 或 `livenews`（`7x24` 同 livenews），`limit`，`saved`，`before`。首页和已读头只写出 Worker 预备的 12 条缓冲区，不限请求里的 `limit`。翻页、收藏、`refresh=1` 仍查询。没有缓冲区时 `pending: true` |
+| GET | `/api/v1/feed/flash` | `limit` 为 1–100，默认 50。只写出 Worker 预备的 80 条缓冲区：`id`、`title`、`summary`、`publishedAt`、`source`、`sourceUrl`。不含供应商或模型字段。没有缓冲区时 `pending: true`。其他 `limit` 仍用这份 80 条，并记一次未命中键 |
+| GET | `/api/v1/feed/x` | `feed=for-you` 或 `following`，`limit`，`saved`，`before`。关注和推荐的首页、已读头，以及收藏第一页，只写出 Worker 预备的缓冲区。真实翻页游标返回 `pending: true` 并记一次未命中键。`refresh=1` 仍查询，并记一次未命中键。没有缓冲区时 `pending: true` |
+| GET | `/api/v1/feed/xueqiu` | `feed=following`、`featured` 或 `livenews`（`7x24` 同 livenews），`limit`，`saved`，`before`。首页和已读头只写出 Worker 预备的 12 条缓冲区，不限请求里的 `limit`。翻页、收藏、`refresh=1` 仍查询，并记一次未命中键。没有缓冲区时 `pending: true` |
 | GET | `/api/v1/feed/bilibili` | `limit`，`saved`，`before` |
 | GET | `/api/v1/feed/media` | `channel=tech` 或 `macro`，`view`，`sourceKey`，`limit`，`offset`，`before` |
-| GET | `/api/v1/feed/trendforce` | `limit`，`saved`。响应固定为摘要列表，并带 `ETag`；`If-None-Match` 命中且没有排队抓取时返回 304。全文用 `GET /api/v1/feed/media/article` |
+| GET | `/api/v1/feed/trendforce` | 只写出 Worker 预备的摘要列表缓冲区，弱 ETag 是这份缓冲区的 SHA1。`If-None-Match` 命中返回 304。`refresh=1` 只排队采集并返回当前缓冲区，响应头 `X-Job-Id`。请求里不再序列化列表。全文用 `GET /api/v1/feed/media/article` |
 | GET | `/api/v1/feed/media/article` | `externalId` |
 | GET | `/api/v1/content-items/:id` | 路径里的内容 id |
 | GET | `/api/v1/content-items/:id/original` | 同上 |
@@ -210,7 +210,7 @@ curl -sS "https://center.example.com/api/v1/investor-discussion?date=2026-10-12"
 | GET | `/api/v1/markets/history` | `symbol`，`range=6mo`，`interval=1d` |
 | GET | `/api/v1/markets/analysis` | `symbol`，`range=5y` |
 | GET | `/api/v1/markets/baskets` | `index`，`range=5y`，可选 `asOf` |
-| GET | `/api/v1/hardware-prices` | 可选 `category=dram`、`nand`、`ssd` 或 `other-storage`，`snapshotId`，`limit`。列表不带 `rawCells`。无分类且无 `snapshotId` 时只写出 Worker 预备的缓冲区；没有缓冲区时 `pending: true`。带分类或快照 id 时按查询读取 |
+| GET | `/api/v1/hardware-prices` | 可选 `category=dram`、`nand`、`ssd` 或 `other-storage`，`snapshotId`，`limit`。列表不带 `rawCells`。无分类、以及这四个分类，都只写出 Worker 预备的缓冲区；没有缓冲区时 `pending: true`。`snapshotId` 返回 `pending: true`，请求里不读取、不序列化 |
 | GET | `/api/v1/hardware-prices/series/:seriesKey` | 64 位十六进制系列键 |
 | GET | `/api/v1/hardware-prices/snapshots/:id` | 快照 id |
 | GET | `/api/v1/compute-prices` | 无 |

@@ -40,7 +40,7 @@ export function createApiRoutes({ slots } = {}) {
     ...createArticleAnalysisRoutes(),
     ...createTradingRoutes(),
     ...createHomeRoutes({ slots }),
-    ...createReportRoutes(),
+    ...createReportRoutes({ slots }),
     ...createStrategyRoutes(),
     ...createQuantRoutes(),
     ...createEtfWhaleRoutes(),
