@@ -132,15 +132,29 @@ export function parseBehaviorEvent(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new ValidationError('请求内容必须是对象');
   }
-  const allowed = new Set(['app.open', 'feed.loaded', 'composer.started', 'post.opened']);
+  const allowed = new Set([
+    'app.open', 'feed.loaded', 'composer.started', 'post.opened',
+    'nav.tab', 'article.open', 'share.start', 'report.hour',
+    'item.expand', 'source.original', 'ask.submit', 'view.slow',
+  ]);
   const name = cleanText(value.name, { field: '事件名称', max: 64, required: true });
   if (!allowed.has(name)) throw new ValidationError('不支持的行为事件', ['name']);
   const metadata = value.metadata && typeof value.metadata === 'object' && !Array.isArray(value.metadata)
     ? value.metadata
     : {};
   const encoded = JSON.stringify(metadata);
-  if (encoded.length > 2048) throw new ValidationError('行为事件信息过大', ['metadata']);
+  if (encoded.length > 512) throw new ValidationError('行为事件信息过大', ['metadata']);
   return { name, metadata };
+}
+
+export function parseBehaviorEvents(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value) && Array.isArray(value.events)) {
+    if (value.events.length < 1 || value.events.length > 20) {
+      throw new ValidationError('行为事件数量无效', ['events']);
+    }
+    return value.events.map((item) => parseBehaviorEvent(item));
+  }
+  return [parseBehaviorEvent(value)];
 }
 
 export function parseMarketQuery(value) {

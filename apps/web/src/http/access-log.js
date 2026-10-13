@@ -426,16 +426,25 @@ function safeResourceName(value, requestHost) {
   return safeRequestPath(raw);
 }
 
+function headerHost(value) {
+  return String(value || '').split(',')[0].trim().split(':')[0].toLowerCase();
+}
+
 export function clientTimingAllowed(request) {
   const site = String(request?.headers?.['sec-fetch-site'] || '').toLowerCase();
   if (site === 'cross-site' || site === 'same-site') return false;
   const origin = String(request?.headers?.origin || '');
   if (!origin) return true;
+  // 浏览器禁止页面伪造 Sec-Fetch-Site。隧道把 Host 改写成 127.0.0.1 时，same-origin 仍然是本站。
+  if (site === 'same-origin' || site === 'none') return true;
+  let originHost = '';
   try {
-    return new URL(origin).host.toLowerCase() === String(request?.headers?.host || '').toLowerCase();
+    originHost = new URL(origin).hostname.toLowerCase();
   } catch {
     return false;
   }
+  const hosts = [headerHost(request?.headers?.host), headerHost(request?.headers?.['x-forwarded-host'])];
+  return hosts.some((host) => host && host === originHost);
 }
 
 export function projectClientTiming(body, request, { salt = '', now = Date.now() } = {}) {

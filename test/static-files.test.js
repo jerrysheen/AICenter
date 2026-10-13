@@ -252,3 +252,24 @@ test('ui revision changes after a public file is edited', async () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('served html strips the cloudflare web analytics beacon', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-cf-beacon-'));
+  try {
+    writeFileSync(path.join(directory, 'index.html'), `<!doctype html><html><head></head><body>
+      <script defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token":"abc"}'></script>
+      <script src="/client-timing.js?v=dev"></script>
+    </body></html>`);
+    const handler = createStaticFileHandler(directory);
+    const served = await readStatic(handler, '/');
+    const text = served.body.toString('utf8');
+    assert.equal(text.includes('cloudflareinsights'), false);
+    assert.equal(text.includes('data-cf-beacon'), false);
+    assert.match(text, /\/client-timing\.js\?v=/);
+    const policy = served.headers['Content-Security-Policy'];
+    assert.match(policy, /script-src 'self'/);
+    assert.match(policy, /connect-src 'self'/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

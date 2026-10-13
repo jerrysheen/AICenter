@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-13-feed-query-perf.md`：X / 雪球列表走索引分页，TrendForce 列表只返回摘要并支持 ETag / 304，客户端计时改为 `text/plain` 上报，行为事件补上页签、文章、分享、小时、展开、原文、提问和慢页面。需要重启 Web。
+
 - `progress/2026-10-13-access-log.md`：Web 把每个请求写成一行 JSON 到 `data/logs/access.yyyy-MM-dd.log`，并提供只读汇总脚本和需设备登录的 `GET /api/v1/runtime/access-summary`。页面加载后抽样上报 Navigation Timing。需要重启 Web。Worker 不用重启。
 
 - `progress/2026-10-13-social-feed-read.md`：信息流「社媒」打开 X / 雪球即记已读并写回内容状态，已读行沉到该页签底部。其他页签排序不变。不需要重启 Web。

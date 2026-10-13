@@ -1810,6 +1810,29 @@ migrations.push({ version: 57, name: 'api_access_tokens', up(database) {
   `);
 }});
 
+migrations.push({ version: 58, name: 'feed_provider_page_indexes', up(database) {
+  database.exec(`
+    CREATE INDEX idx_captures_feed_sort
+      ON captures(workspace_id, provider, source_account_id, captured_at DESC, id);
+    CREATE INDEX idx_captures_provider_captured
+      ON captures(workspace_id, provider, captured_at DESC, id);
+    CREATE INDEX idx_captures_feed_filter
+      ON captures(
+        workspace_id,
+        provider,
+        source_account_id,
+        json_extract(metadata_json, '$.filterMode'),
+        json_extract(metadata_json, '$.filterDecision'),
+        json_extract(metadata_json, '$.filterApplied'),
+        captured_at DESC
+      );
+    CREATE INDEX idx_content_items_capture_cover
+      ON content_items(capture_id, workspace_id, id);
+    CREATE INDEX idx_user_item_states_feed_flags
+      ON user_item_states(workspace_id, content_item_id, is_hidden, is_read, is_saved);
+  `);
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

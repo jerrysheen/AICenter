@@ -62,6 +62,66 @@ function feedVisibilitySql({ qualityRule = '', includeLowValue = false } = {}) {
   return `${USER_VISIBLE_CONTENT_SQL} AND ((${approvedQualitySql(qualityRule)}) OR (${LOW_VALUE_SQL}))`;
 }
 
+function captureApprovedSql(rule = '') {
+  if (!rule) return '1=1';
+  if (rule !== 'all-three-0.60') throw new Error('Unsupported admission rule');
+  return `json_extract(c.metadata_json,'$.filterRule')='all-three-0.60'
+    AND json_extract(c.metadata_json,'$.filterDecision')='KEEP'
+    AND json_extract(c.metadata_json,'$.filterScores.reading_value')>=0.60
+    AND json_extract(c.metadata_json,'$.filterScores.specific_content')>=0.60
+    AND json_extract(c.metadata_json,'$.filterScores.sufficient_information')>=0.60`;
+}
+
+// 与 feedVisibilitySql 同义，但落在已经 JOIN 的 captures / user_item_states 上，避免再对每行做一次相关子查询。
+function joinedFeedVisibilitySql({ qualityRule = '', includeLowValue = false } = {}) {
+  const visible = 'COALESCE(item_state.is_hidden, 0) = 0';
+  if (!includeLowValue) return `${visible} AND NOT (${LOW_VALUE_SQL}) AND (${captureApprovedSql(qualityRule)})`;
+  if (!qualityRule) return visible;
+  return `${visible} AND ((${captureApprovedSql(qualityRule)}) OR (${LOW_VALUE_SQL}))`;
+}
+
+const PROVIDER_FEED_FROM = `
+  FROM captures c
+  INNER JOIN content_items ci ON ci.capture_id = c.id AND ci.workspace_id = c.workspace_id
+  LEFT JOIN user_item_states item_state
+    ON item_state.workspace_id = ci.workspace_id AND item_state.content_item_id = ci.id`;
+
+function providerFeedIndexedFrom(sourceAccountId = '') {
+  const captureIndex = sourceAccountId ? 'idx_captures_feed_sort' : 'idx_captures_provider_captured';
+  return `
+  FROM captures c INDEXED BY ${captureIndex}
+  INNER JOIN content_items ci INDEXED BY idx_content_items_capture_cover
+    ON ci.capture_id = c.id AND ci.workspace_id = c.workspace_id
+  LEFT JOIN user_item_states item_state
+    ON item_state.workspace_id = ci.workspace_id AND item_state.content_item_id = ci.id`;
+}
+
+function providerFeedFilter({
+  qualityRule = '',
+  includeLowValue = false,
+  taggedOnly = false,
+  savedOnly = false,
+  sourceAccountId = '',
+  readFlag = null,
+  before = null,
+} = {}) {
+  const params = [];
+  let sql = joinedFeedVisibilitySql({ qualityRule, includeLowValue });
+  if (taggedOnly) sql += ` AND ${TAGGED_CONTENT_SQL}`;
+  if (savedOnly) sql += ' AND COALESCE(item_state.is_saved, 0) = 1';
+  if (sourceAccountId) {
+    sql += ' AND c.source_account_id = ?';
+    params.push(sourceAccountId);
+  }
+  if (readFlag === 0) sql += ' AND COALESCE(item_state.is_read, 0) = 0';
+  if (readFlag === 1) sql += ' AND item_state.is_read = 1';
+  if (before && (readFlag === null || before.isRead === readFlag)) {
+    sql += ' AND (c.captured_at < ? OR (c.captured_at = ? AND ci.id < ?))';
+    params.push(before.at, before.at, before.id);
+  }
+  return { sql, params };
+}
+
 const TAGGED_CONTENT_SQL = `EXISTS (
   SELECT 1 FROM resource_taggings rt
   WHERE rt.workspace_id = ci.workspace_id
@@ -153,6 +213,42 @@ function mapIdentityFingerprint(row) {
 }
 
 export function createFeedRepository(database, emitEvent) {
+  function providerAccount(workspaceId, provider, externalId) {
+    const id = String(externalId || '');
+    if (!id) return { ok: true, id: '' };
+    const row = database.prepare(`SELECT id FROM source_accounts
+      WHERE workspace_id = ? AND provider = ? AND external_id = ?`).get(workspaceId, provider, id);
+    return row ? { ok: true, id: row.id } : { ok: false, id: '' };
+  }
+
+  function providerFeedIds(workspaceId, provider, options) {
+    const limit = options.limit;
+    const before = options.before || null;
+    const ids = [];
+    const take = (readFlag, cursor, remaining) => {
+      if (remaining <= 0) return;
+      const filter = providerFeedFilter({
+        qualityRule: options.qualityRule || '',
+        includeLowValue: Boolean(options.includeLowValue),
+        taggedOnly: Boolean(options.taggedOnly),
+        savedOnly: Boolean(options.savedOnly),
+        sourceAccountId: options.sourceAccountId || '',
+        readFlag,
+        before: cursor,
+      });
+      const rows = database.prepare(`SELECT ci.id AS id
+        ${providerFeedIndexedFrom(options.sourceAccountId)}
+        WHERE c.workspace_id = ? AND c.provider = ?
+          AND ${filter.sql}
+        ORDER BY c.captured_at DESC, ci.id DESC
+        LIMIT ?`).all(workspaceId, provider, ...filter.params, remaining);
+      for (const row of rows) ids.push(row.id);
+    };
+    if (!before || before.isRead === 0) take(0, before && before.isRead === 0 ? before : null, limit);
+    if (ids.length < limit) take(1, before && before.isRead === 1 ? before : null, limit - ids.length);
+    return ids;
+  }
+
   const repository = {
     upsertSourceAccount(value) {
       const input = parseContract(UpsertSourceAccountInputSchema, value);
@@ -473,55 +569,22 @@ export function createFeedRepository(database, emitEvent) {
         .map(r=>({...mapContentItem(r),provider:r.provider,externalId:r.external_id,captureMetadata:parseJson(r.capture_metadata_json)}));
     },
 
-    listContentItemsByProvider(workspaceId, provider, { limit = 200, sourceExternalId = '', taggedOnly = false, qualityRule='', before = null, savedOnly = false, includeLowValue = false } = {}) {
-      const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
-      const visibilitySql = feedVisibilitySql({ qualityRule, includeLowValue });
-      const taggedSql = taggedOnly ? `AND ${TAGGED_CONTENT_SQL}` : '';
-      const savedSql = savedOnly ? 'AND COALESCE(item_state.is_saved, 0) = 1' : '';
-      const cursorSql = before
-        ? `AND (
-            COALESCE(item_state.is_read, 0) > ?
-            OR (COALESCE(item_state.is_read, 0) = ? AND c.captured_at < ?)
-            OR (COALESCE(item_state.is_read, 0) = ? AND c.captured_at = ? AND ci.id < ?)
-          )`
-        : '';
-      const cursorParams = before ? [before.isRead, before.isRead, before.at, before.isRead, before.at, before.id] : [];
-      const order = 'ORDER BY COALESCE(item_state.is_read, 0) ASC, c.captured_at DESC, ci.id DESC';
-      const rows = sourceExternalId
-        ? database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id,
-            c.captured_at AS captured_at, c.metadata_json AS capture_metadata_json,
-            COALESCE(item_state.is_read, 0) AS is_read,
-            COALESCE(item_state.is_saved, 0) AS is_saved,
-            CASE WHEN ${LOW_VALUE_SQL} THEN 1 ELSE 0 END AS low_value
-            FROM content_items ci
-            INNER JOIN captures c ON c.id = ci.capture_id
-            INNER JOIN source_accounts sa ON sa.id = c.source_account_id
-            LEFT JOIN user_item_states item_state
-              ON item_state.workspace_id = ci.workspace_id AND item_state.content_item_id = ci.id
-            WHERE ci.workspace_id = ? AND c.provider = ? AND sa.external_id = ?
-              AND ${visibilitySql}
-              ${taggedSql}
-              ${savedSql}
-              ${cursorSql}
-            ${order}
-            LIMIT ?`).all(workspaceId, provider, sourceExternalId, ...cursorParams, safeLimit)
-        : database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id,
-            c.captured_at AS captured_at, c.metadata_json AS capture_metadata_json,
-            COALESCE(item_state.is_read, 0) AS is_read,
-            COALESCE(item_state.is_saved, 0) AS is_saved,
-            CASE WHEN ${LOW_VALUE_SQL} THEN 1 ELSE 0 END AS low_value
-            FROM content_items ci
-            INNER JOIN captures c ON c.id = ci.capture_id
-            LEFT JOIN user_item_states item_state
-              ON item_state.workspace_id = ci.workspace_id AND item_state.content_item_id = ci.id
-            WHERE ci.workspace_id = ? AND c.provider = ?
-              AND ${visibilitySql}
-              ${taggedSql}
-              ${savedSql}
-              ${cursorSql}
-            ${order}
-            LIMIT ?`).all(workspaceId, provider, ...cursorParams, safeLimit);
-      return rows.map((row) => ({
+    listContentItemsByProvider(workspaceId, provider, options = {}) {
+      const safeLimit = Math.max(1, Math.min(Number(options.limit) || 200, 500));
+      const account = providerAccount(workspaceId, provider, options.sourceExternalId || '');
+      if (!account.ok) return [];
+      const ids = providerFeedIds(workspaceId, provider, { ...options, sourceAccountId: account.id, limit: safeLimit });
+      if (!ids.length) return [];
+      const rows = database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id,
+          c.captured_at AS captured_at, c.metadata_json AS capture_metadata_json,
+          COALESCE(item_state.is_read, 0) AS is_read,
+          COALESCE(item_state.is_saved, 0) AS is_saved,
+          CASE WHEN ${LOW_VALUE_SQL} THEN 1 ELSE 0 END AS low_value
+          ${PROVIDER_FEED_FROM}
+          WHERE ci.workspace_id = ? AND ci.id IN (${ids.map(() => '?').join(',')})`)
+        .all(workspaceId, ...ids);
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      return ids.map((id) => byId.get(id)).filter(Boolean).map((row) => ({
         ...mapContentItem(row),
         provider: row.provider,
         externalId: row.external_id,
@@ -533,23 +596,38 @@ export function createFeedRepository(database, emitEvent) {
       }));
     },
 
+    explainProviderFeed(workspaceId, provider, options = {}) {
+      const account = providerAccount(workspaceId, provider, options.sourceExternalId || '');
+      if (!account.ok) return [];
+      const filter = providerFeedFilter({
+        ...options,
+        sourceAccountId: account.id,
+        readFlag: 0,
+        before: null,
+      });
+      return database.prepare(`EXPLAIN QUERY PLAN
+        SELECT ci.id
+        ${providerFeedIndexedFrom(account.id)}
+        WHERE c.workspace_id = ? AND c.provider = ?
+          AND ${filter.sql}
+        ORDER BY c.captured_at DESC, ci.id DESC
+        LIMIT ?`).all(workspaceId, provider, ...filter.params, Math.max(1, Math.min(Number(options.limit) || 20, 500)))
+        .map((row) => String(row.detail || ''));
+    },
+
     countContentItemsByProvider(workspaceId, provider, { sourceExternalId = '', taggedOnly = false, qualityRule = '', includeLowValue = false } = {}) {
-      const visibilitySql = feedVisibilitySql({ qualityRule, includeLowValue });
-      const taggedSql = taggedOnly ? `AND ${TAGGED_CONTENT_SQL}` : '';
-      const row = sourceExternalId
-        ? database.prepare(`SELECT COUNT(*) AS n
-            FROM content_items ci
-            INNER JOIN captures c ON c.id = ci.capture_id
-            INNER JOIN source_accounts sa ON sa.id = c.source_account_id
-            WHERE ci.workspace_id = ? AND c.provider = ? AND sa.external_id = ?
-              AND ${visibilitySql}
-              ${taggedSql}`).get(workspaceId, provider, sourceExternalId)
-        : database.prepare(`SELECT COUNT(*) AS n
-            FROM content_items ci
-            INNER JOIN captures c ON c.id = ci.capture_id
-            WHERE ci.workspace_id = ? AND c.provider = ?
-              AND ${visibilitySql}
-              ${taggedSql}`).get(workspaceId, provider);
+      const account = providerAccount(workspaceId, provider, sourceExternalId);
+      if (!account.ok) return 0;
+      const filter = providerFeedFilter({
+        qualityRule,
+        includeLowValue,
+        taggedOnly,
+        sourceAccountId: account.id,
+      });
+      const row = database.prepare(`SELECT COUNT(*) AS n
+        ${providerFeedIndexedFrom(account.id)}
+        WHERE c.workspace_id = ? AND c.provider = ?
+          AND ${filter.sql}`).get(workspaceId, provider, ...filter.params);
       return Number(row?.n) || 0;
     },
 

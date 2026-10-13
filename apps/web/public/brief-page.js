@@ -264,6 +264,7 @@ export function createBriefPage(host) {
     const toolBody=node('div','brief-tools-body'); tools.append(toolBody);
     periodSelect=node('select','brief-period');periodSelect.setAttribute('aria-label','选择小时时段');
     periodSelect.addEventListener('change',async()=>{
+      host.track?.('report.hour', { hour: Number(periodSelect.value) || 0 });
       rememberPosition();s.hourStart=Number(periodSelect.value);
       const selected=s.manifest.find(h=>h.hourStart===s.hourStart);
       if(s.pending?.kind==='hourly' && selected?.id && !s.hours.some(h=>h.id===selected.id)) await acceptUpdate(false);
