@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-13-feed-qa-fixes.md`：社媒刷新后已读仍留在列表底部，未读页翻完再翻已读。信息流「全部」合并手工、X、雪球和官方。「官方」切换立即清空旧列表，并丢掉过期的社媒响应。日报条目时间用条目自己的发布时间或入库时间。需要重启 Web。Worker 不用重启。
+
 - `progress/2026-10-13-web-main-thread.md`：官方看板和持仓行情改由 Worker 每分钟写入快照，Web 只读快照并做 45 秒内存缓存。访问日志每分钟记一次事件循环延迟。migration 58。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-13-access-log.md`：Web 把每个请求写成一行 JSON 到 `data/logs/access.yyyy-MM-dd.log`，并提供只读汇总脚本和需设备登录的 `GET /api/v1/runtime/access-summary`。页面加载后抽样上报 Navigation Timing。需要重启 Web。Worker 不用重启。
