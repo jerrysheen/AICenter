@@ -3,6 +3,7 @@ import {ReadingHourIndexSchema} from '../../contracts/src/information-tree.js';
 import {redactCondenseLog} from './information-tree-policy.js';
 import {buildFocusQuestions, parseFocusAnswer} from './us-equity-focus.js';
 import {FOCUS_GROUP_NAMES, FOCUS_GROUP_ORDER, FOCUS_QUESTIONS, READING_CLASS_VERSION, READING_DIRECTIONS, READING_ROUTE_VERSION, normalizeReadingSemantics, readingPlacement, routeReadingFocus} from './reading-focus-route.js';
+import {isFlashSource} from './flash-sources.js';
 
 const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const READING_TIMELINESS_MS = 24 * 60 * 60 * 1000;
@@ -189,7 +190,7 @@ export function readingClassKeySuffix(keyEnv) {
   return name.slice(-12);
 }
 
-export function createReadingHourService({repository, reportRepository = null, agentRuntime = null, enabled = false, client = null, catalogIds = new Set(), publishedAtFor = null, publisherFor = null, now = () => Date.now(), env = process.env, log = console.log} = {}) {
+export function createReadingHourService({repository, reportRepository = null, agentRuntime = null, enabled = false, client = null, catalogIds = new Set(), publishedAtFor = null, publisherFor = null, feedRepository = null, flashSources = null, now = () => Date.now(), env = process.env, log = console.log} = {}) {
   const indexCache = new Map();
   const batchSize = readingClassBatchSize(env);
   const keyEnvs = readingClassKeyEnvs(env);
@@ -446,7 +447,15 @@ export function createReadingHourService({repository, reportRepository = null, a
     classifyNode,
     async scoreWindow({workspace = 'local', window, flushRemainder = true} = {}) {
       if (!enabled) return {published: false, reason: 'disabled'};
-      const nodes = repository.listInformationInWindow?.(workspace, window, {limit: 200}) || [];
+      const listed = repository.listInformationInWindow?.(workspace, window, {limit: 200}) || [];
+      const contentIds = listed.flatMap((node) => (node.sourceRefs || []).filter((ref) => ref.type === 'content-item').map((ref) => ref.id));
+      const itemSources = new Map((feedRepository?.listItemSources?.(workspace, contentIds) || []).map((row) => [row.id, row]));
+      const nodes = listed.filter((node) => {
+        if (isFlashSource({publisher: node.publisher, sourceId: node.sourceId, id: node.sourceId}, flashSources)) return false;
+        const ref = (node.sourceRefs || []).find((item) => item.type === 'content-item');
+        const row = ref ? itemSources.get(ref.id) : null;
+        return !isFlashSource({externalId: row?.externalId, displayName: row?.displayName}, flashSources);
+      });
       const items = [];
       const readingErrors = [];
       const classifications = await classifyAll(workspace, nodes, {flushRemainder: flushRemainder !== false});

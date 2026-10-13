@@ -109,6 +109,7 @@ curl -sS "https://center.example.com/api/v1/reports/hourly/search?startAt=176026
 
 | 方法 | 路径 | 参数 |
 |---|---|---|
+| GET | `/api/v1/feed/flash` | `limit` 为 1–100，默认 50。按时间返回快讯：`id`、`title`、`summary`、`publishedAt`、`source`、`sourceUrl`。不含供应商或模型字段 |
 | GET | `/api/v1/feed/x` | `feed=for-you` 或 `following`，`limit`，`saved`，`before`。`following` 的首页和已读头只写出 Worker 预备的 12 条缓冲区。翻页、收藏、`refresh=1` 和 `for-you` 仍查询。没有缓冲区时 `pending: true` |
 | GET | `/api/v1/feed/xueqiu` | `feed=following`、`featured` 或 `livenews`（`7x24` 同 livenews），`limit`，`saved`，`before`。首页和已读头只写出 Worker 预备的 12 条缓冲区，不限请求里的 `limit`。翻页、收藏、`refresh=1` 仍查询。没有缓冲区时 `pending: true` |
 | GET | `/api/v1/feed/bilibili` | `limit`，`saved`，`before` |

@@ -19,11 +19,13 @@ function accountingEvent(event) {
     }
   }
   if (event.type === 'turn/end') {
-    const status = Number(event.data.reason?.error?.status ?? event.data.reason?.error?.statusCode);
-    const code = Number(event.data.reason?.error?.code);
-    const httpStatus = Number.isInteger(status) && status >= 400 && status <= 599 ? status
-      : Number.isInteger(code) && code >= 400 && code <= 599 ? code : null;
-    data.reason = { kind: event.data.reason?.kind, ...(httpStatus ? { httpStatus } : {}) };
+    const failure = event.data.reason?.error || event.data.reason?.failure;
+    const status = Number(failure?.status ?? failure?.statusCode);
+    const code = Number(failure?.code);
+    const httpStatus = Number.isInteger(status) && status >= 100 && status <= 599 ? status
+      : Number.isInteger(code) && code >= 100 && code <= 599 ? code : null;
+    const timeout = /ModelExecutionTimeout|TimeoutError|模型执行超时/.test(`${event.data.reason?.kind || ''} ${event.data.reason?.reason?.name || ''} ${event.data.reason?.reason?.message || ''} ${failure?.message || ''}`);
+    data.reason = { kind: event.data.reason?.kind, ...(httpStatus ? { httpStatus } : timeout ? { httpStatus: 408 } : {}) };
   }
   return { type: event.type, seq: event.seq, time: event.time, data };
 }
@@ -38,7 +40,7 @@ export function createHarnessUsageObserver({ record, attribution = {}, provider 
     supplierAmount: null, supplierCurrency: null,
   };
   const sessions = new Map();
-  const projected = new Map(), persisted = new Map();
+  const projected = new Map(), persisted = new Map(), carriedHttp = new Map();
   const save = value => projected.set(value.id, structuredClone(value));
   function flush() {
     for (const [id, row] of projected) {
@@ -72,7 +74,7 @@ export function createHarnessUsageObserver({ record, attribution = {}, provider 
             occurredAt: Number.isSafeInteger(event.time) && event.time >= 0 ? event.time : Date.now(),
             status: 'pending', completeness: 'missing', usage: emptyTokenUsage() };
         }
-        if (event.type === 'turn/end' && Number.isInteger(event.data.reason?.httpStatus) && lastRequest && lastRequest.status !== 'succeeded' && lastRequest.httpStatus == null) {
+        if (event.type === 'turn/end' && Number.isInteger(event.data.reason?.httpStatus) && lastRequest && lastRequest.httpStatus == null && (lastRequest.status !== 'succeeded' || event.data.reason.httpStatus < 300)) {
           lastRequest.httpStatus = event.data.reason.httpStatus;
           save(lastRequest);
         }
@@ -96,10 +98,15 @@ export function createHarnessUsageObserver({ record, attribution = {}, provider 
           if (event.data.message?.source?.provider) request.provider = event.data.message.source.provider;
           if (event.data.message?.source?.model) request.model = event.data.message.source.model;
           request.status = event.type === 'assistant/message' ? 'succeeded' : 'failed';
+          if (request.status === 'succeeded' && request.httpStatus == null) request.httpStatus = 200;
           save(request);
         }
         if (event.type === 'llm/retry') { request.status = 'failed'; save(request); }
-        if (event.type === 'turn/end' && request.status === 'pending') { request.status = 'interrupted'; save(request); }
+        if (event.type === 'turn/end' && request.status === 'pending') {
+          request.status = 'interrupted';
+          if (request.httpStatus == null && event.data.reason?.httpStatus === 408) request.httpStatus = 408;
+          save(request);
+        }
         if (request.kind === 'request') lastRequest = request;
         if (event.type === 'step/end') request = null;
       }
@@ -108,14 +115,21 @@ export function createHarnessUsageObserver({ record, attribution = {}, provider 
       let summary;
       if (completeLifecycle) { try { summary = deriveTurnTokenUsage(events); } catch {} }
       const requests = [...projected.values()].filter(row => row.kind === 'request' && row.harnessSessionId === sessionId && row.turn === turn);
+      for (const row of requests) {
+        if (row.httpStatus == null && carriedHttp.has(row.id)) { row.httpStatus = carriedHttp.get(row.id); save(row); }
+        else if (row.httpStatus != null) carriedHttp.set(row.id, row.httpStatus);
+      }
       const matchesNative = summary && requests.every(row => row.completeness === 'complete')
         && ['inputTokens', 'outputTokens', 'totalTokens'].every(key => requests.reduce((sum, row) => sum + row.usage[key], 0)
           === summary[key === 'inputTokens' ? 'uncachedInputTokens' : key]);
       const reason = events.at(-1)?.data.reason?.kind;
+      const turnStatus = !completeLifecycle ? 'pending' : reason === 'error' ? 'failed' : reason === 'aborted' ? 'interrupted' : 'succeeded';
+      const knownHttp = [...requests].reverse().find(row => Number.isInteger(row.httpStatus))?.httpStatus ?? null;
       save({ ...base, id: identity(`${base.workspaceId}:${sessionId}:${turn}:turn`), kind: 'turn',
         harnessSessionId: sessionId, turn, step: null, attempt: null,
         occurredAt: Number.isSafeInteger(events[0]?.time) && events[0].time >= 0 ? events[0].time : Date.now(),
-        status: !completeLifecycle ? 'pending' : reason === 'error' ? 'failed' : reason === 'aborted' ? 'interrupted' : 'succeeded',
+        status: turnStatus,
+        httpStatus: knownHttp ?? (turnStatus === 'succeeded' ? 200 : null),
         completeness: summary ? matchesNative ? 'complete' : 'partial' : 'missing',
         usage: summary ? normalizeTokenUsage({ ...summary, inputTokens: summary.uncachedInputTokens }) : emptyTokenUsage(),
       });
@@ -146,9 +160,13 @@ export function createHarnessUsageObserver({ record, attribution = {}, provider 
     noteHttpStatus(sessionId, status) {
       const code = Number(status);
       if (!Number.isInteger(code) || code < 100 || code > 599) return;
-      const target = [...projected.values()].reverse().find(row => row.kind === 'request' && row.harnessSessionId === sessionId && row.httpStatus == null && row.status !== 'succeeded');
+      const open = [...projected.values()].reverse().filter(row => row.kind === 'request' && row.harnessSessionId === sessionId && row.httpStatus == null);
+      const target = code < 300
+        ? open.find(row => row.status === 'succeeded') || open.find(row => row.status === 'pending')
+        : open.find(row => row.status !== 'succeeded');
       if (!target) return;
       target.httpStatus = code;
+      carriedHttp.set(target.id, code);
       flush();
     },
   });
