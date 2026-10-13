@@ -1,4 +1,4 @@
-import { parseBehaviorEvent, parseLoginInput, parsePairInput } from '../../../../packages/contracts/src/index.js';
+import { parseBehaviorEvents, parseLoginInput, parsePairInput } from '../../../../packages/contracts/src/index.js';
 import { json, readJson } from '../http/response.js';
 
 export function createIdentityRoutes() {
@@ -101,9 +101,9 @@ export function createIdentityRoutes() {
     {
       method: 'POST', path: '/api/v1/behavior',
       async handler({ request, response, identity, services }) {
-        const event = parseBehaviorEvent(await readJson(request));
-        services.identity.recordBehavior(event, identity.device?.id || null);
-        json(response, 202, { ok: true });
+        const events = parseBehaviorEvents(await readJson(request, { maxBytes: 8192 }));
+        for (const event of events) services.identity.recordBehavior(event, identity.device?.id || null);
+        json(response, 202, { ok: true, accepted: events.length });
       },
     },
     {

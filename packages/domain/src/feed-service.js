@@ -678,7 +678,17 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       return post;
     },
     async getExternalFeed(providerId, query, actor = {}) {
-      if(providerId==='trendforce' && contentRoutingPort && !query?.refresh) return mediaPort.readFeed({channel:'tech',sourceKey:'trendforce',view:'all'},{workspaceId:actor.workspaceId || DEFAULT_WORKSPACE_ID});
+      if(providerId==='trendforce' && contentRoutingPort && !query?.refresh) {
+        const listFields = query?.fields === 'list';
+        return mediaPort.readFeed({
+          channel:'tech',
+          sourceKey:'trendforce',
+          view:'all',
+          fields: listFields ? 'list' : 'full',
+          ...(Number(query?.limit) > 0 ? { limit: query.limit } : {}),
+          ...(query?.before ? { before: query.before } : {}),
+        },{workspaceId:actor.workspaceId || DEFAULT_WORKSPACE_ID});
+      }
       if (providerId === 'media') {
         if (!mediaPort?.readFeed) throw new ValidationError('尚未启用 media 信息源', ['platform']);
         const workspaceId = actor.workspaceId || DEFAULT_WORKSPACE_ID;

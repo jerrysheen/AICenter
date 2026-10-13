@@ -66,6 +66,40 @@ function acceptIndexInformation(rows) {
   }
   return kept;
 }
+export function pickNodeTime(node, childTimes = []) {
+  const start = Number(node?.window?.startAt);
+  const windowStamp = Number.isFinite(start) && start > 0 ? start : 0;
+  const ok = (at) => Number.isFinite(at) && at > 0 && at !== windowStamp;
+  for (const value of [node?.publishedAt, node?.firstIngestedAt, node?.eventAt]) {
+    const at = Number(value);
+    if (ok(at)) return at;
+  }
+  const refAt = (Array.isArray(node?.sourceRefs) ? node.sourceRefs : [])
+    .map((ref) => Number(ref?.at))
+    .find((at) => ok(at));
+  if (refAt) return refAt;
+  const times = (Array.isArray(childTimes) ? childTimes : []).map(Number).filter(ok);
+  return times.length ? Math.max(...times) : 0;
+}
+
+function projectNodeTime(repository, workspace, node, seen = new Set(), depth = 0) {
+  if (!node || depth > 4) return 0;
+  const id = node.id ? String(node.id) : '';
+  if (id && seen.has(id)) return 0;
+  if (id) seen.add(id);
+  const own = pickNodeTime(node, []);
+  if (own) return own;
+  const childTimes = [];
+  if (depth < 4 && Array.isArray(node.children) && typeof repository?.getNode === 'function') {
+    for (const childId of node.children) {
+      const child = repository.getNode(workspace, childId);
+      const at = projectNodeTime(repository, workspace, child, seen, depth + 1);
+      if (at) childTimes.push(at);
+    }
+  }
+  return pickNodeTime({ window: node.window }, childTimes);
+}
+
 export function createInformationTreeReader({repository,timezone='Asia/Shanghai',pipeline='legacy',catalog={}}) {
   return {
     hourlyTitles(workspace, sourceIds) {
@@ -119,7 +153,9 @@ export function createInformationTreeReader({repository,timezone='Asia/Shanghai'
     node(workspace,id) {
       const node=repository.getNode(workspace,id);
       if(!node) return null;
-      return {...node,articleCount:node.articleIds.length,ref:node.children.length ? node.id : null};
+      const eventAt=projectNodeTime(repository,workspace,node);
+      const timed=eventAt ? {...node,eventAt} : node;
+      return {...timed,articleCount:node.articleIds.length,ref:node.children.length ? node.id : null};
     },
     published(workspace,layer,window) {
       const id=repository.head?.(workspace,layer,window);

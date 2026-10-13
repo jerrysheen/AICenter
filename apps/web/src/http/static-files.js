@@ -62,6 +62,10 @@ function cacheControlFor(entry, request) {
   return requestHasVersion(request) ? ASSET_CACHE_CONTROL : UNVERSIONED_JS_CACHE_CONTROL;
 }
 
+function stripCloudflareAnalytics(html) {
+  return html.replace(/<script\b[^>]*(?:cloudflareinsights\.com|data-cf-beacon)[^>]*>\s*<\/script>/gi, '');
+}
+
 function applyUiRevision(raw, contentType, revision) {
   if (!contentType.includes('html') && !contentType.includes('javascript')) return raw;
   let text = raw.toString('utf8').replace(VERSION_QUERY, `?v=${revision}`);
@@ -144,6 +148,7 @@ export function createStaticFileHandler(publicDirectory) {
         const boot = normalizeNewlines(await readFile(path.join(publicDirectory, 'ui-boot.js')));
         text = text.replace(bootTag[0], `<script>${boot}</script>`);
       }
+      text = stripCloudflareAnalytics(text);
       raw = Buffer.from(text);
     }
     raw = applyUiRevision(raw, target[1], revision);

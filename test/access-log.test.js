@@ -280,7 +280,14 @@ test('client timing payload drops secrets and other hosts', async () => {
   assert.equal(projectClientTiming({ nav: { dns: 1 } }, { headers: {} }), null);
   assert.equal(clientTimingAllowed({ headers: { origin: 'https://evil.example', host: 'tradingplus.cn' } }), false);
   assert.equal(clientTimingAllowed({ headers: { 'sec-fetch-site': 'cross-site', host: 'tradingplus.cn' } }), false);
+  assert.equal(clientTimingAllowed({ headers: { 'sec-fetch-site': 'same-site', origin: 'https://tradingplus.cn', host: 'tradingplus.cn' } }), false);
   assert.equal(clientTimingAllowed({ headers: { origin: 'https://tradingplus.cn', host: 'tradingplus.cn' } }), true);
+  assert.equal(clientTimingAllowed({
+    headers: { 'sec-fetch-site': 'same-origin', origin: 'https://tradingplus.cn', host: '127.0.0.1:8787' },
+  }), true);
+  assert.equal(clientTimingAllowed({
+    headers: { origin: 'https://tradingplus.cn', host: '127.0.0.1:8787', 'x-forwarded-host': 'tradingplus.cn' },
+  }), true);
   const limitDirectory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-client-limit-'));
   try {
     const limited = createAccessLog({ directory: limitDirectory, salt: 's', env: {} });
@@ -300,8 +307,14 @@ test('client timing payload drops secrets and other hosts', async () => {
   assert.match(whale, /src="\/client-timing\.js\?v=dev"/);
   assert.match(source, /\/api\/v1\/runtime\/client-timing/);
   assert.match(source, /SAMPLE = 0\.2/);
+  assert.match(source, /text\/plain;charset=UTF-8/);
+  assert.match(source, /readyState === 'complete'/);
+  assert.match(source, /event\.persisted/);
+  assert.doesNotMatch(source, /application\/json/);
   assert.equal(/https?:\/\//.test(source), false);
   assert.match(whitelist, /\/client-timing\.js/);
+  assert.doesNotMatch(html, /cloudflareinsights|data-cf-beacon/);
+  assert.doesNotMatch(whale, /cloudflareinsights|data-cf-beacon/);
 });
 
 test('summary endpoint follows device login and the page can post timings', async () => {
@@ -348,6 +361,22 @@ test('summary endpoint follows device login and the page can post timings', asyn
       }),
     });
     assert.equal(timing.status, 204);
+    const rewritten = await fetch(`${address.localUrl}/api/v1/runtime/client-timing`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain;charset=UTF-8',
+        'Sec-Fetch-Site': 'same-origin',
+        Origin: 'https://tradingplus.cn',
+        'CF-Connecting-IP': '203.0.113.50',
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
+      },
+      body: JSON.stringify({
+        path: '/',
+        nav: { dns: 2, connect: 2, tls: 2, ttfb: 55, download: 2, domContentLoaded: 70, load: 80 },
+        resources: [{ name: '/app.js?v=dev', type: 'script', dur: 12, ttfb: 3, size: 20 }],
+      }),
+    });
+    assert.equal(rewritten.status, 204);
     const foreign = await fetch(`${address.localUrl}/api/v1/runtime/client-timing`, {
       method: 'POST',
       headers: {
@@ -379,8 +408,10 @@ test('summary endpoint follows device login and the page can post timings', asyn
     assert.equal(hits[1].cache.hit, true);
     assert.match(hits[1].cache.control, /immutable/);
     const clientLines = readJsonLines(path.join(logDirectory, `client-timing.${new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)}.log`));
-    assert.equal(clientLines.length, 1);
+    assert.equal(clientLines.length, 2);
     assert.equal(clientLines[0].path, '/?v=dev');
+    assert.equal(clientLines[1].nav.ttfb, 55);
+    assert.equal(clientLines[1].resources[0].name, '/app.js?v=dev');
     assert.equal(clientLines[0].nav.ttfb, 40);
     assert.equal(clientLines[0].resources.length, 1);
     assert.equal(clientLines[0].resources[0].name, '/app.js?v=abc');
