@@ -235,6 +235,7 @@ test('a renamed average column stays on the existing series when currency was al
     f.hardware.ingest('local',{...next,pageKey:'dram',rows:next.rows.map(row=>row.specification.includes('DDR5')?{...row,category:'dram'}:row)});
     const items=f.hardware.list('local').items.filter(row=>row.specification.includes('DDR5'));
     assert.equal(items.length,1);assert.equal(items[0].history.length,2);assert.equal(items[0].currency,'USD');assert.equal(items[0].unit,'chip');
+    assert.deepEqual(items[0].rawCells,[]);
   }finally{f.close();}
 });
 test('worker price schedules run twice each Shanghai day and can be turned off',()=>{
@@ -257,7 +258,7 @@ test('forward migration upgrades V39 with existing content and states intact',()
       DROP INDEX IF EXISTS idx_captures_feed_sort;DROP INDEX IF EXISTS idx_captures_provider_captured;DROP INDEX IF EXISTS idx_captures_feed_filter;
       DROP INDEX IF EXISTS idx_content_items_capture_cover;DROP INDEX IF EXISTS idx_user_item_states_feed_flags;
       DROP TABLE IF EXISTS gemini_model_cursors;
-      DELETE FROM schema_migrations WHERE version IN (40,54,55,56,57,58,59,60,61,62);PRAGMA user_version=39;`);
+      DELETE FROM schema_migrations WHERE version IN (40,54,55,56,57,58,59,60,61,62,64);PRAGMA user_version=39;`);
     const before=db.prepare('SELECT count(*) n FROM content_items').get().n;runMigrations(db);runMigrations(db);
     assert.equal(db.pragma('user_version',{simple:true}),latestSchemaVersion());assert.equal(db.prepare('SELECT count(*) n FROM content_items').get().n,before);
     assert.equal(db.prepare(`SELECT COUNT(*) n FROM pragma_table_info('hardware_price_snapshots') WHERE name='last_checked_at'`).get().n,1);db.close();
@@ -268,6 +269,7 @@ test('hardware HTTP endpoints are read-only, scoped and explicit legacy migratio
   const address=await app.listen();try {
     f.hardware.ingest('local',parsed());const read=await fetch(`${address.localUrl}/api/v1/hardware-prices`);assert.equal(read.status,200);
     const json=await read.json();assert.equal(json.items.length,1);assert.equal(JSON.stringify(json).includes('artifactPath'),false);
+    assert.deepEqual(json.items[0].rawCells,[]);
     assert.equal((await fetch(`${address.localUrl}/api/v1/hardware-prices?category=invalid`)).status,400);
     assert.equal((await fetch(`${address.localUrl}/api/v1/sources/content.trendforce.collection`)).status,404);
     const migrate=await fetch(`${address.localUrl}/api/v1/feed/trendforce/migrate`,{method:'POST'});assert.equal(migrate.status,202);

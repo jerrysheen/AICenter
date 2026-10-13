@@ -14,7 +14,7 @@
 
 模型用量见 `model-usage-v1.md`：`ModelUsageRecord` 严格校验 Runtime 内部索引，区分 request 与官方 turn 汇总；所有缺失桶/供应商金额用 null。`ModelUsageView` 移除供应商路由与私有日志格式/路径，返回中立执行身份、业务阶段和独立版本费率估算。`ModelUsageQuery` 校验按 Job 分页，本机读取不得执行模型调用、导入或修复任务。
 
-硬件报价以独立结构化 Contract 保存完整规格、类型、Decimal 数值、币种/单位/报价期、来源更新时间与采集时间；未知字段为 null。报告简介是内容种类，summary_only 是完整度，两者独立。报价高低不表示股票 OHLC。兼容与去重规则见 `hardware-prices-v1.md`。
+硬件报价以独立结构化 Contract 保存完整规格、类型、Decimal 数值、币种/单位/报价期、来源更新时间与采集时间；未知字段为 null。列表里的 `rawCells` 为空，原单元格仍在系列明细。`limit=500` 且不带分类的列表由 Worker 写入快照，Web 写出已经序列化的缓冲区。报告简介是内容种类，summary_only 是完整度，两者独立。报价高低不表示股票 OHLC。兼容与去重规则见 `hardware-prices-v1.md`。
 
 硬件行情行的 `history` 是真实报价期的最新修订均价序列（`at / period / average`），不包含同期旧修订或无日期记录。当前列表只读每个来源页面最新的价表及相应序列当前值；历史解析版本、退下来的规格与旧文本快照通过精确快照／序列链接保留，不在当前行情重复混排。前端在全球行情内呈现统一的行情行与价格折线，仍与证券 OHLC 契约分开。
 
@@ -60,7 +60,7 @@ SourceAccount -> Subscription -> Capture -> ContentItem -> UserItemState
 - `Capture` 是不可替代的来源证据，保存 provider、external ID、hash 和原始文件相对路径。`status=ignored` 的 Capture 不去建 ContentItem，只供去重与审计。
 - `ContentItem` 是页面和下游 Agent 使用的标准内容。
 - 信息流的阅读投影合并 X / 雪球，排除 B站；B站仍保存原 Capture / ContentItem，并通过原字幕接口供工具回看。B站工具读取允许未打 Tag 的已存字幕，隐藏状态仍生效，不增加页面字段或重写已有数据。评论仍保存在原 body，正文与评论分区只在 UI 渲染时解析。
-- 信息流按 `Capture.capturedAt`（写入来源的先后）排列，不按推文 `publishedAt`。已读条目（`UserItemState.isRead`）仍保留在列表中，但排在未读之后；左滑删除只写 `isHidden`，不物理删除 Capture / ContentItem，再拉取同一条也不会回来。卡片仍显示发帖时间；相同内容去重时不刷新 `capturedAt`。同一批抓取里，时间线越靠前的条目 `capturedAt` 越大。关注流 `fields=list` 且 `limit=12` 的首页和已读头由 Worker 每分钟写入 `runtime_snapshots`，90 秒内 Web 直接写出这份 JSON。列表译文只带前 240 字，打开单条仍按正文哈希核对。响应字段不变，`authorHandle` 仍在。
+- 信息流按 `Capture.capturedAt`（写入来源的先后）排列，不按推文 `publishedAt`。已读条目（`UserItemState.isRead`）仍保留在列表中，但排在未读之后；左滑删除只写 `isHidden`，不物理删除 Capture / ContentItem，再拉取同一条也不会回来。卡片仍显示发帖时间；相同内容去重时不刷新 `capturedAt`。同一批抓取里，时间线越靠前的条目 `capturedAt` 越大。关注流 `fields=list` 且 `limit=12` 的首页和已读头，以及雪球精选、7x24 的首页，由 Worker 每分钟写入 `runtime_snapshots`。写入时间算起 10 分钟内 Web 直接写出这份 JSON。列表译文只带前 240 字，打开单条仍按正文哈希核对。响应字段不变，`authorHandle` 仍在。migration 64 把筛选列写在 `captures` 上，新写入立刻使用；旧行由 Worker 按最近顺序回填，未回填的行仍读 metadata JSON。
 - X、雪球和媒体的 HTTP 列表默认 `fields=list`：只返回标识、标题、约 200 字摘要、来源、时间、标签，以及译文状态和标题。分页游标是 `before=<isRead>,<sortAt>,<id>`，未读仍排在前面；社交单页最多 50 条，媒体最多 100 条。`fields=full` 在一个版本内保留正文、译文、段落和中文整理稿。打开单篇才读全文：媒体用 `GET /api/v1/feed/media/article`，社交用 `GET /api/v1/content-items/:id`。Domain 直接调用未传 `fields` 时仍返回全文，小时阅读和日报材料不走这条精简列表。`GET /api/v1/feed/trendforce` 在 HTTP 上固定为这条摘要列表，并带忽略 `fetchedAt` 的弱 ETag。
 - `FeedIdentityFingerprint` 是作者 + 正文的稳定身份（SHA-256），与 tweet / 视频 ID 分开保存。正文可以按保留期清掉，fingerprint 继续留着：同一作者同一段文字再次投递时跳过，左滑删除后即使 Capture 已不在也不会再出现。无正文时退回 `external:{id}`，避免图文空帖互相撞车。表里只存 hash、externalId 和时间，不存推文正文。X 与雪球的入库正文会在帖子原文后附上抓取当时可见的前 5 条评论摘录，指纹按这份正文计算；已经记下的 external ID 不会为了刷新评论再打开。
 - `FeedItemTranslation` 是信息流与抓取文本的中文投影，按条目 ID + 正文哈希落在 SQLite，不覆盖 Capture / ContentItem 原文。电脑和手机读同一份。英文或韩文在抓取入库后统一走 Gemini 批量翻译并轻度清洗（去界面残渣、不总结、不扩写）。一次最多 30 条；`id` 必须对齐。Gemini返回429 / RESOURCE_EXHAUSTED时回退Elucid Grok；不再调用DeepL / Google翻译。翻译和打标在同一进程共享配额冷却，短限流按Retry-After / RetryInfo恢复，每日配额耗尽等到太平洋时间次日零点再尝试。缺Gemini Key时可使用已配置的Elucid；两者均不可用则保留待处理，不把原文或空结果当译文。用户 view 只消费译文；原文继续保存在 Capture / ContentItem，经 `GET /api/v1/content-items/:id/original` 或 `GET /api/v1/feed/items/:id/original` 读取。页面 Contract 不暴露供应商。官方日程、官媒标题和预测市场问题复用同一张译文表，Source Snapshot 字段保持原文事实。

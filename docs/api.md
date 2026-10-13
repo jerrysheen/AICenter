@@ -109,8 +109,8 @@ curl -sS "https://center.example.com/api/v1/reports/hourly/search?startAt=176026
 
 | 方法 | 路径 | 参数 |
 |---|---|---|
-| GET | `/api/v1/feed/x` | `feed=for-you` 或 `following`，`limit`，`saved`，`before`。`following` 且 `limit=12` 的首页和已读头可读 Worker 快照 |
-| GET | `/api/v1/feed/xueqiu` | `feed=following` 等，`limit`，`saved`，`before`。`following` 且 `limit=12` 的首页和已读头可读 Worker 快照 |
+| GET | `/api/v1/feed/x` | `feed=for-you` 或 `following`，`limit`，`saved`，`before`。`following` 且 `limit=12` 的首页和已读头可读 Worker 快照，10 分钟内直接写出 |
+| GET | `/api/v1/feed/xueqiu` | `feed=following`、`featured` 或 `livenews`，`limit`，`saved`，`before`。`limit=12` 的首页（关注含已读头）可读 Worker 快照，10 分钟内直接写出 |
 | GET | `/api/v1/feed/bilibili` | `limit`，`saved`，`before` |
 | GET | `/api/v1/feed/media` | `channel=tech` 或 `macro`，`view`，`sourceKey`，`limit`，`offset`，`before` |
 | GET | `/api/v1/feed/trendforce` | `limit`，`saved`。响应固定为摘要列表，并带 `ETag`；`If-None-Match` 命中且没有排队抓取时返回 304。全文用 `GET /api/v1/feed/media/article` |
@@ -209,7 +209,7 @@ curl -sS "https://center.example.com/api/v1/investor-discussion?date=2026-10-12"
 | GET | `/api/v1/markets/history` | `symbol`，`range=6mo`，`interval=1d` |
 | GET | `/api/v1/markets/analysis` | `symbol`，`range=5y` |
 | GET | `/api/v1/markets/baskets` | `index`，`range=5y`，可选 `asOf` |
-| GET | `/api/v1/hardware-prices` | 可选 `category=dram`、`nand`、`ssd` 或 `other-storage`，`snapshotId`，`limit` |
+| GET | `/api/v1/hardware-prices` | 可选 `category=dram`、`nand`、`ssd` 或 `other-storage`，`snapshotId`，`limit`。列表不带 `rawCells`。`limit=500` 且无分类时读 Worker 快照，响应是已序列化的缓冲区 |
 | GET | `/api/v1/hardware-prices/series/:seriesKey` | 64 位十六进制系列键 |
 | GET | `/api/v1/hardware-prices/snapshots/:id` | 快照 id |
 | GET | `/api/v1/compute-prices` | 无 |
