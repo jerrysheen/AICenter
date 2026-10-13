@@ -1,0 +1,6 @@
+{
+  "sources": [
+    { "id": "xueqiu:home:livenews", "label": "雪球7x24" },
+    { "id": "chinaiol:flash", "label": "产业在线快讯" }
+  ]
+}

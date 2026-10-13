@@ -252,6 +252,15 @@ export function parseXFeedQuery(value) {
   return { platform: 'x', feed, limit: rawLimit, refresh, saved, before: parseFeedBefore(query.before), fields: parseListFields(query) };
 }
 
+export function parseFlashFeedQuery(value) {
+  const query = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const rawLimit = query.limit === undefined || query.limit === '' ? 50 : Number(query.limit);
+  if (!Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > 100) {
+    throw new ValidationError('条数必须是 1 到 100', ['limit']);
+  }
+  return { limit: rawLimit };
+}
+
 export function parseXueqiuFeedQuery(value) {
   const query = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const platform = cleanText(query.platform || 'xueqiu', { field: '平台', max: 16 }) || 'xueqiu';

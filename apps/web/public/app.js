@@ -180,6 +180,9 @@ const state = {
   xueqiuReadCursor: '',
   xueqiuLoading: false,
   xueqiuRefreshing: false,
+  flashItems: [],
+  flashLoading: false,
+  flashError: '',
   translations: {},
   xSavedUrls: new Set(),
   dialogPost: null,
@@ -3924,6 +3927,7 @@ const FEED_SCOPE_SOURCES = {
   social: ['x', 'xueqiu'],
   official: ['official'],
   media: ['media'],
+  flash: [],
 };
 
 function feedSourcesForScope(channel, platform) {
@@ -4108,12 +4112,72 @@ function applyFeedPlatform(id) {
 }
 
 function selectFeedScope(id) {
+  if (id === 'flash') {
+    state.channel = 'flash';
+    state.feedPlatform = 'all';
+    state.platform = 'all';
+    renderChannels();
+    renderPlatformFilters();
+    renderXToolbar();
+    renderXueqiuToolbar();
+    renderBilibiliToolbar();
+    renderTrendForceToolbar();
+    renderMediaToolbar();
+    loadFlashFeed().catch((error) => showToast(error.message));
+    return;
+  }
   if (id === 'media' || isSourceFeedScope(id)) {
     applyFeedPlatform(id);
     return;
   }
   state.channel = id;
   applyFeedPlatform(id === 'social' ? 'social' : 'all');
+}
+
+async function loadFlashFeed() {
+  state.flashLoading = true;
+  state.flashError = '';
+  if (state.channel === 'flash') renderFlashPosts();
+  try {
+    const payload = await api('/api/v1/feed/flash?limit=80', { fresh: true });
+    state.flashItems = Array.isArray(payload?.items) ? payload.items : [];
+  } catch (error) {
+    state.flashError = error?.message || '快讯读取失败';
+    state.flashItems = [];
+  } finally {
+    state.flashLoading = false;
+    if (state.channel === 'flash') renderFlashPosts();
+  }
+}
+
+function renderFlashPosts() {
+  if (!elements.feed) return;
+  elements.feed.replaceChildren();
+  const items = [...(state.flashItems || [])].sort((a, b) => (Number(b.publishedAt) || 0) - (Number(a.publishedAt) || 0));
+  elements['feed-count'].textContent = state.flashLoading && !items.length
+    ? '正在读取快讯…'
+    : `${items.length} 条`;
+  if (!items.length) {
+    const empty = document.createElement('p');
+    empty.className = 'feed-empty';
+    empty.textContent = state.flashLoading ? '正在读取快讯…' : (state.flashError || '还没有快讯。雪球 7x24 抓取后会按时间排在这里，不再送去小时报。');
+    elements.feed.append(empty);
+    return;
+  }
+  const host = document.createElement('div');
+  renderNewsList(host, items.map((item) => ({
+    id: item.id,
+    title: item.title || item.summary || '',
+    summary: item.summary && item.summary !== item.title ? item.summary : '',
+    at: item.publishedAt,
+    source: item.source || '快讯',
+    swipe: false,
+    attachOpen: (open) => {
+      if (!item.sourceUrl) return;
+      open.addEventListener('click', () => window.open(item.sourceUrl, '_blank', 'noopener'));
+    },
+  })), { groupByDay: true, emptyText: '还没有快讯。' });
+  elements.feed.append(host);
 }
 
 function renderFeedActionButton() {
@@ -4764,6 +4828,10 @@ function socialShownRows(rows) {
 }
 
 function renderPosts() {
+  if (state.channel === 'flash') {
+    renderFlashPosts();
+    return;
+  }
   const restoreSwipeId = document.querySelector('#feed .swipe-front.is-open')?.dataset.postId || '';
   const items = visibleFeedItems();
   if (state.feedShown > items.length) state.feedShown = Math.max(FEED_PAGE_SIZE, items.length);
@@ -13357,6 +13425,7 @@ function ensureVisibleFeedLoaded() {
 }
 
 function reloadVisibleFeed() {
+  if (state.channel === 'flash') return loadFlashFeed();
   const sources = feedSourcesForScope(state.channel, state.feedPlatform);
   const tasks = [];
   if (sources.includes('posts')) tasks.push(loadPosts());

@@ -1,8 +1,9 @@
 import {FeedValueRefreshInputSchema,FeedValueScoresSchema} from '../../contracts/src/feed-value.js';
 import {createFeedValueEvaluator,normalizeFeedValueText,feedValuePolicyHash,FEED_VALUE_RULE} from './feed-value.js';
 import {createFeedValueReviewService} from './feed-value-review-service.js';
+import {isFlashSource} from './flash-sources.js';
 
-export function createFeedValueRefreshService({feedRepository,mediaRepository,client,model='jev-1.13.0',scoreCache=null}={}) {
+export function createFeedValueRefreshService({feedRepository,mediaRepository,client,model='jev-1.13.0',scoreCache=null,flashSources=null}={}) {
   const evaluator=createFeedValueEvaluator({client,model,rule:FEED_VALUE_RULE});
   const cache=new Map();
   if(scoreCache?.policyHash===feedValuePolicyHash() && scoreCache.model===model) for(const r of scoreCache.rows || []) {
@@ -11,10 +12,10 @@ export function createFeedValueRefreshService({feedRepository,mediaRepository,cl
   const review=createFeedValueReviewService({feedRepository,mediaRepository});
   return Object.freeze({async refresh(rawInput={}, {runId='',signal,onProgress=()=>{}}={}) {
     const input=FeedValueRefreshInputSchema.parse(rawInput),{workspaceId}=input;
-    const feed=feedRepository.listQualityRefreshItems(workspaceId,input).map(row=>({id:`feed:${row.id}`,
+    const feed=feedRepository.listQualityRefreshItems(workspaceId,input).filter(row=>!isFlashSource({externalId:row.sourceExternalId,displayName:row.sourceName,publisher:row.sourceName}, flashSources)).map(row=>({id:`feed:${row.id}`,
       input:normalizeFeedValueText(row.captureMetadata.originalText || row.body || row.summary || '',{title:row.title,authorName:row.authorName,capture:row.captureMetadata.captureContext || {}}),metadata:row.captureMetadata}));
     const hidden=new Set(feedRepository.listHiddenExternalIds?.(workspaceId,'media') || []);
-    const media=(mediaRepository?.listEntries(workspaceId,{limit:10000}) || []).filter(r=>!hidden.has(r.externalId));
+    const media=(mediaRepository?.listEntries(workspaceId,{limit:10000}) || []).filter(r=>!hidden.has(r.externalId) && !isFlashSource({sourceKey:r.sourceKey,publisher:r.publisherName,id:r.sourceKey}, flashSources));
     const bodies=new Map((mediaRepository?.latestBodies(workspaceId,media.map(r=>r.externalId)) || []).map(b=>[b.externalId,b]));
     const rows=[...feed,...media.map(r=>({id:`media:${r.externalId}`,
       input:normalizeFeedValueText(bodies.get(r.externalId)?.bodyText || r.summary || '',{title:r.title,capture:{truncated:Boolean(bodies.get(r.externalId)?.truncated)}}),

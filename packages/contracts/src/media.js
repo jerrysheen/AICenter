@@ -46,6 +46,7 @@ export const MediaConfigSchema = z.object({
     trackingParams: z.array(z.string()).default([]), identityParams: z.array(z.string()).default([]),
     contentAccess: z.enum(['body', 'index', 'discovery']), detailDailyCap: z.number().int().nonnegative().max(8).nullable().default(null),
     refreshMinutes: z.number().int().positive(), deployment: z.enum(['first', 'later', 'licensed', 'existing', 'recheck', 'candidate']), enabled: z.boolean().default(false),
+    flash: z.boolean().default(false),
     sourceId: z.string().regex(/^policy\.[a-z0-9.-]+$/).optional(),
     backfillHours: z.number().int().min(1).max(2160).optional(),
     publisherKey: z.string().regex(/^[a-z0-9]+$/).optional(),

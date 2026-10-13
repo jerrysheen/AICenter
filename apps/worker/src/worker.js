@@ -8,6 +8,7 @@ import { legacyPriceSnapshot } from '../../../packages/connectors/src/trendforce
 import { createHardwarePriceService } from '../../../packages/domain/src/hardware-price-service.js';
 import { createContentRoutingService } from '../../../packages/domain/src/content-routing-service.js';
 import { loadMediaConfig } from '../../../packages/instance/src/media-config.js';
+import { loadResolvedFlashSources } from '../../../packages/domain/src/flash-sources.js';
 import { loadFeedValueCalibration,loadFeedValueScoreCache } from '../../../packages/instance/src/feed-value-config.js';
 import {createFeedValueRefreshService} from '../../../packages/domain/src/feed-value-refresh-service.js';
 import {feedValueRefreshManifest,createFeedValueRefreshJobHandlers} from '../../../packages/runtime/src/feed-value-refresh-module.js';
@@ -204,13 +205,16 @@ export function createAiCenterWorker(options = {}) {
   const feedFilter = options.feedFilter !== undefined
     ? options.feedFilter
     : createFeedFilterFromEnv({ client: typesafeClient, env, calibration: loadFeedValueCalibration(instance) });
+  const mediaConfig = loadMediaConfig(instance.configDirectory);
+  const flashSources = options.flashSources || loadResolvedFlashSources({ configDirectory: instance.configDirectory, env, mediaSources: mediaConfig.sources });
   const mediaService = options.mediaService || (store.repositories?.media
     ? createMediaIngestionService({
       mediaRepository: store.repositories.media,
-      mediaPort: createMediaConnector({ ...loadMediaConfig(instance.configDirectory), browserRuntime, readSource: (...args) => sourcePort.read(...args) }),
+      mediaPort: createMediaConnector({ ...mediaConfig, browserRuntime, readSource: (...args) => sourcePort.read(...args) }),
       feedRepository: store.repositories.feed,
       feedFilter,
       taggingRepository: store.repositories.tagging,
+      flashSources,
     })
     : null);
   const hardwarePriceService = options.hardwarePriceService || createHardwarePriceService({repository:store.repositories.hardwarePrices,artifactStore:createHardwareArtifactStore({dataDirectory})});
@@ -244,6 +248,7 @@ export function createAiCenterWorker(options = {}) {
     mediaPort: mediaService,
     contentRoutingPort,
     onContentReady:env.AI_CENTER_INFORMATION_PIPELINE==='tree-v3' ? ({workspaceId,sourceIds})=>enqueueTreePreparation(store,workspaceId,sourceIds) : null,
+    flashSources,
     translationPort: options.translateService || createTranslateService({ env, quotaRepository: store.repositories.modelQuota }),
   });
   registry.register({ manifest: feedTranslationManifest, jobHandlers: createFeedTranslationJobHandlers({ feedService }) });
@@ -438,10 +443,10 @@ export function createAiCenterWorker(options = {}) {
   const articleStrategy=treeEnabled && env.AI_CENTER_ARTICLE_NORMALIZE==='1';
   const articleNormalizePort=articleStrategy ? {async prepareInformation(input) {return {queued:enqueueTreePreparation(store,input.workspaceId || 'local',input.sourceIds || []).length};}} : null;
   const treeCatalog=treeEnabled ? options.tagCatalog || readTagCatalogFile(existsSync(instance.tagCatalogPath) ? instance.tagCatalogPath : path.join(repositoryRoot,'config/tags.default.json')) : null;
-  const treeMaterials=treeEnabled ? createTreeMaterialPort({feedService,mediaService}) : null;
+  const treeMaterials=treeEnabled ? createTreeMaterialPort({feedService,mediaService,flashSources}) : null;
   const treeService=treeEnabled ? createInformationTreeService({repository:store.repositories.informationTree,reportRepository:store.repositories.report,
     feedService,mediaPort:mediaService,agentRuntime,articleStrategy,budgetReady:articleAdmission?.policy.accountMode ? ()=>articleAdmission.nextReadyAt(env.AI_CENTER_HARNESS_ARTICLE_MODEL || 'gemini-3.1-flash-lite')<=Date.now() : null,skills:articleStrategy ? loadArticleNormalizeSkills() : loadInformationTreeSkills(),timezone:dailyConfig.timezone,
-    catalog:treeCatalog,
+    catalog:treeCatalog,flashSources,
     candidatePort:treeMaterials?.candidates,materialPort:treeMaterials?.materials,
     primaryTag:(_workspaceId,m)=>Object.hasOwn(treeCatalog.reading?.primaryLocks || {},m.id) ? {locked:true,tagId:treeCatalog.reading.primaryLocks[m.id]} : undefined,
     tagHints:(workspaceId,m)=>{
@@ -475,6 +480,8 @@ export function createAiCenterWorker(options = {}) {
         enabled: env.AI_CENTER_READING_HOUR === '1',
         client: typesafeClient,
         catalogIds: new Set((treeCatalog?.tags || []).map((tag) => tag.id)),
+        feedRepository: store.repositories.feed,
+        flashSources,
         env,
       }),
       beforeHourly:treeService ? (input)=>prioritizeRecentTreePreparation(store,treeMaterials.candidates,input.workspaceId || 'local') : null,
@@ -592,7 +599,7 @@ export function createAiCenterWorker(options = {}) {
   }
   registry.register({manifest:feedValueRefreshManifest,jobHandlers:createFeedValueRefreshJobHandlers({
     service:createFeedValueRefreshService({feedRepository:store.repositories.feed,mediaRepository:store.repositories.media,
-      client:typesafeClient,model:loadFeedValueCalibration(instance)?.model || 'jev-1.13.0',scoreCache:loadFeedValueScoreCache(instance)}),
+      client:typesafeClient,model:loadFeedValueCalibration(instance)?.model || 'jev-1.13.0',scoreCache:loadFeedValueScoreCache(instance),flashSources}),
     onProgress:progress=>console.log('[feed.quality.refresh]',JSON.stringify(progress)),
   })});
   const handlers = options.handlers || registry.createJobHandlers();

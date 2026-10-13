@@ -8,6 +8,7 @@ import { localizationItemId } from './localize-texts.js';
 import { mediaTranslationUnits, projectMediaTranslation } from './media-translation.js';
 import { formatYmd, zonedParts } from './zoned-time.js';
 import { normalizeMediaUrl } from './media-url.js';
+import { isFlashSource } from './flash-sources.js';
 const MEDIA_BUDGET = MediaConfigSchema.parse({ version: 1, sources: [] }).budget;
 const MEDIA_TIMEZONE = 'Asia/Shanghai';
 export const MEDIA_INGESTION_POLICY = 'native-channels-v1';
@@ -170,6 +171,7 @@ export function createMediaIngestionService({
   feedRepository = null,
   taggingRepository = null,
   mediaPort = null,
+  flashSources = null,
   now = () => Date.now(),
   budget = {},
 } = {}) {
@@ -817,6 +819,7 @@ export function createMediaIngestionService({
   }
 
   async function evaluateMediaGate(workspaceId,row,article) {
+    if(isFlashSource({sourceKey: row.sourceKey, publisher: row.publisherName || row.publisherKey, id: row.sourceKey}, flashSources)) return null;
     if(!feedFilter?.evaluate) return null;
     return feedFilter.evaluate({workspaceId,provider:'media',existingCapture:null,existingByContentHash:null,hasIdentityFingerprint:false,
       item:{title:row.title,body:article.text || row.title,authorName:article.author || '',captureContext:{truncated:Boolean(article.truncated)}}});
@@ -1164,6 +1167,11 @@ export function createMediaIngestionService({
           effectiveLevel:valid ? 'full' : partial ? 'partial' : row.contentLevel==='discovery' ? 'discovery' : 'summary_only',
           bodyReason:valid ? '' : row.fetchState?.extractionReason || (body ? 'saved_body_not_current_verified_full' : 'body_not_saved')};
       });
+    },
+    flashExternalIds(workspaceId, externalIds = []) {
+      return mediaRepository.getEntries(workspaceId, externalIds)
+        .filter((row) => isFlashSource({ sourceKey: row.sourceKey, publisher: row.publisherName, id: row.sourceKey }, flashSources))
+        .map((row) => row.externalId);
     },
     informationCandidates(workspaceId,window) {
       const excluded=[...legacyHidden(workspaceId),...(feedRepository?.listHiddenExternalIds?.(workspaceId,'media') || []),...qualityExcluded(workspaceId)];

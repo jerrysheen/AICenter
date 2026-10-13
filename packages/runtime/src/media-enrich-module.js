@@ -16,23 +16,29 @@ export function createMediaEnrichJobHandlers({ mediaService, feedService, taggin
       const workspaceId = input.workspaceId || 'local';
       const discovery = mediaService.discoverOriginals?.(workspaceId) || {added:0};
       const selected = mediaService.selectBodyCandidates?.(workspaceId, 10_000) || [];
-      const candidates = input.externalIds?.length ? input.externalIds : selected.length ? selected.map(r => r.externalId) : mediaService.listBodyCandidates(workspaceId);
+      const requested = input.externalIds?.length ? input.externalIds : selected.length ? selected.map(r => r.externalId) : mediaService.listBodyCandidates(workspaceId);
+      const flashIds = new Set(mediaService.flashExternalIds?.(workspaceId, requested) || []);
+      const candidates = requested.filter((id) => !flashIds.has(id));
       // Forty is a request batch size, not a quota for the enrichment job.
+      // Flash rows are still fetched so the plain list can show them. Tree, translation and tagging stay on fuller articles.
       const bodies = { ok: true, fetched: [], stats: {} };
-      for (let offset = 0; offset < candidates.length; offset += 40) {
+      for (let offset = 0; offset < requested.length; offset += 40) {
+        const slice = requested.slice(offset, offset + 40);
         const batch = await mediaService.fetchBodies({
           workspaceId,
-          externalIds: candidates.slice(offset, offset + 40),
+          externalIds: slice,
           repair: input.repair === true,
           selectedReasons: Object.fromEntries(selected.map(r => [r.externalId,r.reason])),
         });
         bodies.fetched.push(...(batch.fetched || []));
-        if(treeEnabled && !articleNormalizePort)enqueueTreePreparation(context?.store,workspaceId,candidates.slice(offset,offset+40).map(id=>`media:${id}`));
+        const treeIds = slice.filter((id) => !flashIds.has(id));
+        if(treeEnabled && !articleNormalizePort && treeIds.length)enqueueTreePreparation(context?.store,workspaceId,treeIds.map(id=>`media:${id}`));
         if (batch.health) bodies.health = batch.health;
         for (const [key, value] of Object.entries(batch.stats || {})) bodies.stats[key] = (bodies.stats[key] || 0) + value;
       }
       const explicit = input.externalIds?.length ? new Set(input.externalIds) : null;
-      if(treeEnabled && !articleNormalizePort)enqueueTreePreparation(context?.store,workspaceId,[...new Set([...candidates,...bodies.fetched.map(row=>row.externalId)])].map(id=>`media:${id}`));
+      const fetchedForTree = bodies.fetched.map((row) => row.externalId).filter((id) => !flashIds.has(id));
+      if(treeEnabled && !articleNormalizePort)enqueueTreePreparation(context?.store,workspaceId,[...new Set([...candidates,...fetchedForTree])].map(id=>`media:${id}`));
       const items = mediaService.listEnrichmentItems(workspaceId, 120, candidates).filter(item => !explicit || explicit.has(item.externalId));
       if(articleNormalizePort) {
         const canQueue = Boolean(context?.store?.createJob && feedService?.localizeTexts);
@@ -51,7 +57,7 @@ export function createMediaEnrichJobHandlers({ mediaService, feedService, taggin
         });
         return articleNormalizePort.prepareInformation({workspaceId,sourceIds:items.map(item=>`media:${item.externalId}`)});
       }
-      const briefIds = explicit ? [...explicit] : [...new Set([...candidates, ...items.map(i => i.externalId)])];
+      const briefIds = (explicit ? [...explicit] : [...new Set([...candidates, ...items.map(i => i.externalId)])]).filter((id) => !flashIds.has(id));
       const units = items.filter(item => item.contentLevel !== 'full').map((item) => ({
         id: item.resourceId,
         localizationId: item.resourceId,
