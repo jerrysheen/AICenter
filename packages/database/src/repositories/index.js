@@ -15,6 +15,7 @@ import { createEtfWhaleRepository } from './etf-whale-repository.js';
 import { createEventQuoteRepository } from './event-quote-repository.js';
 import { createInvestorDiscussionRepository } from './investor-discussion-repository.js';
 import { createApiTokenRepository } from './api-token-repository.js';
+import { createRuntimeSnapshotRepository } from './runtime-snapshot-repository.js';
 
 export function createDomainRepositories(database, emitEvent) {
   return Object.freeze({
@@ -30,6 +31,7 @@ export function createDomainRepositories(database, emitEvent) {
     eventQuotes: createEventQuoteRepository(database, emitEvent),
     investorDiscussion: createInvestorDiscussionRepository(database, emitEvent),
     apiTokens: createApiTokenRepository(database),
+    runtimeSnapshots: createRuntimeSnapshotRepository(database),
     knowledge: createKnowledgeRepository(database, emitEvent),
     tagging: createTaggingRepository(database, emitEvent),
     research: createResearchRecallRepository(database, emitEvent),
