@@ -285,6 +285,18 @@ curl -sS "https://center.example.com/api/v1/hardware-prices?category=nand&limit=
 
 - 任何 POST、PUT、PATCH、DELETE
 - `/api/v1/api-tokens` 的生成、列表和撤销
-- `/api/v1/runtime/deploy-status` 以及其他 Runtime、设备、配对和指标接口
+- `/api/v1/runtime/deploy-status`、`/api/v1/runtime/access-summary` 以及其他 Runtime、设备、配对和指标接口
 - `/api/v1/holdings` 与 `/api/v1/assets/personal`
 - 信息流或行情上的 `refresh=1`
+
+## 站点变慢时看的访问日志
+
+这组接口不在 Bearer 白名单里。`GET /api/v1/runtime/access-summary` 要有设备登录会话，回环地址和 `CF-Connecting-IP` 都不能代替。参数是 `date`（上海日期，默认今天）、`since`（`30m`、`2h`、`1d` 或 ISO 时间）和 `top`（默认 20，最大 100）。返回按路径汇总的 `serverMs`、`transferMs`、`total` 的 p50/p95/max，以及 `count` 和 `bytes`。
+
+同一份汇总也可以在服务器上只读查看：
+
+```bash
+node scripts/access-log-summary.mjs --date 2026-10-13 --since 2h --top 20
+```
+
+日志在 Instance `data/logs/access.yyyy-MM-dd.log`。`POST /api/v1/runtime/client-timing` 只接收本站页面自己的计时，不需要登录，响应是 204。跨站 `Origin` 或 `Sec-Fetch-Site: cross-site` 会被丢掉。同一进程每分钟最多记 300 条。原始 IP、Cookie 和查询参数里的值不会写入这些日志。

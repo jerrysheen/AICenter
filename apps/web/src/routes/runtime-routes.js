@@ -1,8 +1,50 @@
+import { clientTimingAllowed, projectClientTiming, readAccessSummary } from '../http/access-log.js';
 import { readDeployStatus } from '../http/deploy-status.js';
-import { json } from '../http/response.js';
+import { json, readJson } from '../http/response.js';
 
 export function createRuntimeRoutes() {
   return [
+    {
+      method: 'GET', path: '/api/v1/runtime/access-summary',
+      async handler({ request, response, authorizeDeviceCookie, accessLogDirectory, url }) {
+        const device = authorizeDeviceCookie?.(request);
+        if (!device) {
+          json(response, 401, { ok: false, error: '此设备尚未配对' });
+          return;
+        }
+        const summary = await readAccessSummary(accessLogDirectory, {
+          date: url.searchParams.get('date') || '',
+          since: url.searchParams.get('since') || '',
+          top: url.searchParams.get('top') || '',
+        });
+        json(response, summary.ok ? 200 : 400, summary);
+      },
+    },
+    {
+      method: 'POST', path: '/api/v1/runtime/client-timing', access: 'public',
+      async handler({ request, response, accessLog }) {
+        if (!clientTimingAllowed(request)) {
+          response.writeHead(204);
+          response.end();
+          return;
+        }
+        let body;
+        try {
+          body = await readJson(request, { maxBytes: 4096 });
+        } catch {
+          json(response, 400, { ok: false, error: '计时内容无效' });
+          return;
+        }
+        const record = projectClientTiming(body, request, { salt: accessLog?.salt || '', now: Date.now() });
+        if (!record) {
+          json(response, 400, { ok: false, error: '计时内容无效' });
+          return;
+        }
+        if (accessLog?.acceptClientSample?.()) accessLog.writeClientTiming(record);
+        response.writeHead(204);
+        response.end();
+      },
+    },
     {
       method: 'GET', path: '/api/v1/runtime/deploy-status',
       handler({ request, response, authorizeDeviceCookie, deployStatusPath }) {

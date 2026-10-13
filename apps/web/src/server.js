@@ -30,6 +30,7 @@ import { redactApiTokenText } from '../../../packages/domain/src/api-token-servi
 import { publicHttpsLocation } from './http/device-auth.js';
 import { parseCookies, json } from './http/response.js';
 import { createRouter } from './http/router.js';
+import { createAccessLog } from './http/access-log.js';
 import { createStaticFileHandler } from './http/static-files.js';
 import { createApiRoutes } from './routes/index.js';
 
@@ -295,6 +296,10 @@ export function createAiCenterServer(options = {}) {
   const eventLoopTimer = setInterval(() => eventLoopDelay.reset(), 10_000);
   eventLoopTimer.unref?.();
   const loopLog = { at: 0 };
+  const accessLog = options.accessLog || createAccessLog({
+    directory: path.join(dataDirectory, 'logs'),
+    env,
+  });
 
   function isPublicRequest(request, url) {
     const forwarded = Boolean(request.headers['cf-connecting-ip'] || request.headers['cf-ray']);
@@ -360,8 +365,15 @@ export function createAiCenterServer(options = {}) {
   });
 
   const server = createServer(async (request, response) => {
+    let requestUrl = new URL('/', 'http://localhost');
+    try {
+      requestUrl = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
+    } catch {
+      // 非法 URL 仍记一条访问日志。
+    }
+    try { accessLog.observe(request, response, requestUrl); } catch { /* 日志不能挡住请求 */ }
     const timings = { started: performance.now(), authMs: 0, handlerStarted: 0 };
-    const url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
+    const url = requestUrl;
     let apiTokenId = '';
     let apiTokenLogged = false;
     const logApiToken = (tokenId, status) => {
@@ -449,6 +461,8 @@ export function createAiCenterServer(options = {}) {
         uiAssets,
         feedQueryParsers,
         deployStatusPath: path.join(dataDirectory, 'deploy-status.json'),
+        accessLog,
+        accessLogDirectory: accessLog.directory,
         authorizeDeviceCookie(request) {
           const parsed = parseCookies(request.headers?.cookie || '');
           const token = parsed[secureCookieName] || parsed[cookieName] || '';
@@ -475,6 +489,7 @@ export function createAiCenterServer(options = {}) {
     server,
     store,
     services,
+    accessLog,
     async listen() {
       await new Promise((resolve, reject) => {
         server.once('error', reject);
@@ -498,6 +513,7 @@ export function createAiCenterServer(options = {}) {
       eventLoopDelay.disable();
       events.closeAll();
       await new Promise((resolve) => server.close(resolve));
+      await accessLog.close();
       store.close();
     },
   };
