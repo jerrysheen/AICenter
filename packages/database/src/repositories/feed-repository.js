@@ -72,12 +72,17 @@ function captureApprovedSql(rule = '') {
     AND json_extract(c.metadata_json,'$.filterScores.sufficient_information')>=0.60`;
 }
 
+// json_extract 缺字段时是 NULL。直接 NOT (NULL) 也会把行滤掉，所以缺字段按「不是低价值」处理。
+const JOINED_LOW_VALUE_SQL = `IFNULL(json_extract(c.metadata_json,'$.filterMode'), '') = 'enforce'
+  AND IFNULL(json_extract(c.metadata_json,'$.filterDecision'), '') IN ('DROP','REVIEW')
+  AND IFNULL(json_extract(c.metadata_json,'$.filterApplied'), 0) = 1`;
+
 // 与 feedVisibilitySql 同义，但落在已经 JOIN 的 captures / user_item_states 上，避免再对每行做一次相关子查询。
 function joinedFeedVisibilitySql({ qualityRule = '', includeLowValue = false } = {}) {
   const visible = 'COALESCE(item_state.is_hidden, 0) = 0';
-  if (!includeLowValue) return `${visible} AND NOT (${LOW_VALUE_SQL}) AND (${captureApprovedSql(qualityRule)})`;
+  if (!includeLowValue) return `${visible} AND NOT (${JOINED_LOW_VALUE_SQL}) AND (${captureApprovedSql(qualityRule)})`;
   if (!qualityRule) return visible;
-  return `${visible} AND ((${captureApprovedSql(qualityRule)}) OR (${LOW_VALUE_SQL}))`;
+  return `${visible} AND ((${captureApprovedSql(qualityRule)}) OR (${JOINED_LOW_VALUE_SQL}))`;
 }
 
 const PROVIDER_FEED_FROM = `

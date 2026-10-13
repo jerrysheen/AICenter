@@ -13010,7 +13010,9 @@ function ensureFeedSources(sources) {
   }
   const pending = Promise.all(tasks);
   if (tasks.length) pending.then(() => noteFeedLoaded()).catch(() => {});
-  return pending.finally(() => finishViewTiming(viewTiming?.token));
+  return pending.finally(() => {
+    if (typeof finishViewTiming === 'function') finishViewTiming(typeof viewTiming === 'undefined' ? undefined : viewTiming?.token);
+  });
 }
 
 function ensureVisibleFeedLoaded() {
