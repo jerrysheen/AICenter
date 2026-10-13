@@ -18,7 +18,7 @@ Runtime 下的账本 Service/Repository 负责应用查询索引。原生 Sessio
 - 不完整记录在执行退出前，通过官方 `JsonlSessionPersistence.open(id, 'read')` 补读现有 `session.v3.jsonl` / `.zstd`。不取得写租约、不迁移或改写日志。只补当前调用已观察到的 turn，不把同 session 的旧轮次归给新 Job。缺文件、不支持/损坏日志、超过32MiB的物理日志保持不完整。压缩帧与断尾恢复由官方 backend 负责。
 - JobRunner 使用 AsyncLocalStorage 关联 workspace、Job、Worker attempt；Harness 入队时捕获提交方上下文，避免队列下一项继承前项。阶段额外区分小时提炼、小时编辑与日报 payload stage。业务 session、Harness session、turn、step、attempt 分别保存。
 - migration 41 仅新增 SQLite `model_usage_index` 及按任务/时间查询的索引。只存严格校验的归因、计数、状态与供应商路由；不复制 Prompt、答案、原始通知、Tool 参数、异常消息、URL、请求头、Key 或 Host 路径。更新与小型 Outbox 通知同事务。
-- migration 62 给同一张表增加可空的 `http_status`。账本里的 `httpStatus` 只保存 100–599 的整数，用来区分 429 和 503；没有收到响应时保持 null。旧行没有这个字段时读取为 null。页面明细可以显示这个状态码，仍然不返回 provider、model 或会话日志路径。
+- migration 62 给同一张表增加可空的 `http_status`。账本里的 `httpStatus` 只保存 100–599 的整数。成功的 Harness 轮次（含信息树和阅读分类）和直连 Gemini/Gemma 响应记下 200；供应商返回的 429、500、503 记下对应状态码。`ModelExecutionTimeout`、`TimeoutError` 或「模型执行超时」记 408。排队超时和阶段预算超时没有发出 HTTP，保持 null。用户取消的 `AbortError` 也保持 null。旧行没有这个字段时读取为 null。页面明细可以显示这个状态码，未知时仍显示「HTTP：未知」，不返回 provider、model 或会话日志路径。
 - 账本校验、数据库写入、历史读取和通知失败均不得改变模型请求的成功/失败。异步旁路通知有1.5秒等待上限。进程异常退出留下的 pending 记录保留；查询结合既有 Job 状态/attempt 投影中断，不写回 Job。
 
 ## 绕过主模型适配器的请求

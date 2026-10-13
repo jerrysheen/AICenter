@@ -1,3 +1,4 @@
+import { createUsageFetch } from '../model-usage-fetch.js';
 import { parseGeminiGenerateContent } from '../translate/index.js';
 
 const GEMINI_DEFAULT_ROOT = 'https://generativelanguage.googleapis.com/v1beta';
@@ -64,7 +65,7 @@ export function createTranscriptFormatService(options = {}) {
       const title = text(meta.title);
       const owner = text(meta.owner);
       const header = [title && `标题：${title}`, owner && `UP：${owner}`].filter(Boolean).join('\n');
-      const response = await fetchImpl(`${apiRoot}/models/${encodeURIComponent(model)}:generateContent`, {
+      const response = await createUsageFetch(fetchImpl, { provider: 'gemini', model, stage: 'transcript-format' })(`${apiRoot}/models/${encodeURIComponent(model)}:generateContent`, {
         method: 'POST',
         headers: {
           'x-goog-api-key': apiKey,

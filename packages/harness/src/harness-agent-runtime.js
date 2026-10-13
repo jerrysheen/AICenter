@@ -656,6 +656,7 @@ export function createHarnessAgentRuntime({
         reusedProcess: warm,
       });
       const finishReason=turnFinishLabel((result?.events || []).findLast(event=>event.type==='turn/end')?.data?.reason);
+      usageObserver.noteHttpStatus(harnessSessionId, 200);
       return {
         answer,
         providerId: slot.launch.provider,
@@ -677,8 +678,10 @@ export function createHarnessAgentRuntime({
         if(!error.admittedModel && articleTicket.model) error.admittedModel=articleTicket.model;
       }
       if(articleTicket)googleAdmission.failed(articleTicket,error);
-      const httpStatus=Number(error?.upstreamStatus ?? error?.status);
-      if(Number.isInteger(httpStatus) && httpStatus>=100 && httpStatus<=599) usageObserver.noteHttpStatus(harnessSessionId, httpStatus);
+      const directStatus=Number(error?.upstreamStatus ?? error?.status);
+      const httpStatus=Number.isInteger(directStatus) && directStatus>=100 && directStatus<=599 ? directStatus
+        : (error?.name==='TimeoutError' || error?.name==='ModelExecutionTimeout' || /模型执行超时/.test(String(error?.message || '')) ? 408 : null);
+      if(httpStatus) usageObserver.noteHttpStatus(harnessSessionId, httpStatus);
       await record('run.failed', {
         runtime: 'harness',
         name: error?.name || 'Error',

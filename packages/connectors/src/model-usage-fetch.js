@@ -46,7 +46,11 @@ export function createUsageFetch(fetchImpl, { provider, model, observer, stage =
       await observeModelUsage(row, observer);
       return response;
     } catch (error) {
-      row.status = 'interrupted'; await observeModelUsage(row, observer); throw error;
+      row.status = 'interrupted';
+      const status = Number(error?.status ?? error?.upstreamStatus ?? error?.statusCode);
+      if (Number.isInteger(status) && status >= 100 && status <= 599) row.httpStatus = status;
+      else if (error?.name === 'TimeoutError' || error?.name === 'ModelExecutionTimeout' || /模型执行超时|TimeoutError/.test(String(error?.message || ''))) row.httpStatus = 408;
+      await observeModelUsage(row, observer); throw error;
     }
   };
 }

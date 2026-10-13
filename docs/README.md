@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-13-usage-http-gemma-retry.md`：信息树和阅读分类的成功调用记下 HTTP 200，模型执行超时记下 408。Gemma 翻译的 5xx 和超时换另一把 Gemma 密钥重试，失败日志带上输入长度、密钥后缀、耗时、并发和响应体。不新增 migration。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-13-loop-wait-off-request.md`：硬件报价列表去掉原单元格并缓存已序列化的正文。雪球首页快照按写入时间保留 10 分钟，筛选列不再在请求里解析 metadata。事件推送把大 payload 分段写出。界面版本号并行读取文件时间。migration 64。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-13-gemini-model-balance.md`：小时报和阅读分类按（模型，key）用量最少的一对先发，不再把 Gemini 3.1 用满才碰 3.5。文章模型池的轮换游标写入数据库。用量账本记下 HTTP 状态码。migration 61、62。需要同时重启 Web 和 Worker。

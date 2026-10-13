@@ -240,6 +240,66 @@ test('model usage keeps the HTTP status that distinguishes 429 from 503', async 
   ]);
   open.noteHttpStatus('other', 429);
   assert.equal([...observed.values()].find(row => row.harnessSessionId === 'other').httpStatus, 429);
+  observer.noteHttpStatus('session', 200);
+  assert.equal(observed.get(failed.id).httpStatus, 503);
+
+  const succeeded = new Map();
+  const success = createHarnessUsageObserver({ record: row => succeeded.set(row.id, structuredClone(row)) });
+  success.events('ok', [
+    { type: 'turn/start', seq: 0, time: 0, data: { turn: 1 } },
+    { type: 'step/start', seq: 1, time: 1, data: { turn: 1, step: 1 } },
+    { type: 'assistant/message', seq: 2, time: 2, data: { turn: 1, step: 1, usage: { inputTokens: 2, outputTokens: 1, totalTokens: 3 }, stream: [], message: { source: { provider: 'google', model: 'gemini-3.1-flash-lite' } } } },
+    { type: 'step/end', seq: 3, time: 3, data: { turn: 1, step: 1 } },
+    { type: 'turn/end', seq: 4, time: 4, data: { turn: 1, reason: { kind: 'completed' } } },
+  ]);
+  const ok = [...succeeded.values()].find(row => row.kind === 'request');
+  assert.equal(ok.status, 'succeeded');
+  assert.equal(ok.httpStatus, 200);
+  success.events('ok', []);
+  assert.equal(succeeded.get(ok.id).httpStatus, 200);
+
+  const timed = new Map();
+  const timeout = createHarnessUsageObserver({ record: row => timed.set(row.id, structuredClone(row)) });
+  timeout.events('timeout', [
+    { type: 'turn/start', seq: 0, time: 0, data: { turn: 1 } },
+    { type: 'step/start', seq: 1, time: 1, data: { turn: 1, step: 1 } },
+    { type: 'turn/end', seq: 2, time: 2, data: { turn: 1, reason: { kind: 'aborted', reason: { name: 'ModelExecutionTimeout', message: '模型执行超时，已停止本轮调用' } } } },
+  ]);
+  const timedOut = [...timed.values()].find(row => row.kind === 'request');
+  assert.equal(timedOut.status, 'interrupted');
+  assert.equal(timedOut.httpStatus, 408);
+  timeout.events('timeout', []);
+  assert.equal(timed.get(timedOut.id).httpStatus, 408);
+
+  const pending = new Map();
+  const openSuccess = createHarnessUsageObserver({ record: row => pending.set(row.id, structuredClone(row)) });
+  openSuccess.events('pending-ok', [
+    { type: 'turn/start', seq: 0, time: 0, data: { turn: 1 } },
+    { type: 'step/start', seq: 1, time: 1, data: { turn: 1, step: 1 } },
+  ]);
+  openSuccess.noteHttpStatus('pending-ok', 200);
+  assert.equal([...pending.values()].find(row => row.kind === 'request').httpStatus, 200);
+  openSuccess.events('pending-ok', []);
+  assert.equal([...pending.values()].find(row => row.kind === 'request').httpStatus, 200);
+
+  const fetched = [];
+  const recordFetch = row => fetched.push(structuredClone(row));
+  await createUsageFetch(async () => Response.json({ usageMetadata: { promptTokenCount: 3, candidatesTokenCount: 1, totalTokenCount: 4 } }), {
+    provider: 'gemini', model: 'gemma-4-26b-a4b-it', observer: recordFetch,
+  })('https://example.test/generate', {});
+  assert.equal(fetched.at(-1).status, 'succeeded');
+  assert.equal(fetched.at(-1).httpStatus, 200);
+  const abort = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+  await assert.rejects(createUsageFetch(async () => { throw abort; }, {
+    provider: 'gemini', model: 'gemma-4-31b-it', observer: recordFetch,
+  })('https://example.test/generate', {}));
+  assert.equal(fetched.at(-1).status, 'interrupted');
+  assert.equal(fetched.at(-1).httpStatus, 408);
+  const streamError = Object.assign(new Error('Gemma 流内错误'), { code: 'gemma-stream-error', upstreamStatus: 500 });
+  await assert.rejects(createUsageFetch(async () => { throw streamError; }, {
+    provider: 'gemini', model: 'gemma-4-31b-it', observer: recordFetch,
+  })('https://example.test/generate', {}));
+  assert.equal(fetched.at(-1).httpStatus, 500);
 });
 
 test('explicit versioned rates estimate separately; absent buckets or rates never become free', () => {

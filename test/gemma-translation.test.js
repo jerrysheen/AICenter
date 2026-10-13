@@ -98,6 +98,7 @@ test('Gemma pool uses only official streaming endpoints, rotates models and pers
     assert.equal(JSON.parse(init.body).generationConfig.thinkingConfig.thinkingLevel, 'minimal');
   }
   assert.equal(usage.filter(row => row.status === 'succeeded').length, 2);
+  assert.equal(usage.filter(row => row.status === 'succeeded').every(row => row.httpStatus === 200), true);
   assert.equal(usage.at(-1).usage.totalTokens, 30);
   assert.doesNotMatch(JSON.stringify(usage), /fake-key|hidden|完整译文/);
 }));
@@ -181,4 +182,68 @@ test('failed 31B attempt backs off persistently and bounded worker retry uses on
   await runner.runOnce(); assert.equal(store.getJob(job.id).status,'completed');
   assert.equal(calls.length,2); assert.match(calls[0],/gemma-4-31b-it/);assert.match(calls[1],/gemma-4-26b-a4b-it/);
   assert.equal(store.repositories.feed.listTranslations('local',['fallback-one'])[0].engine,'gemma-4-26b-a4b-it');
+}));
+
+test('single-key HTTP 500 does not wait out same-key pacing for the other Gemma model', fixture(async store => {
+  const calls = [];
+  const router = createGemmaTranslationRouter({ ...settings(store), fetch: async url => {
+    calls.push(url);
+    return new Response('{"error":{"code":500,"status":"INTERNAL"}}', { status: 500 });
+  }});
+  await assert.rejects(router.generate({ system: '翻译', prompt: 'One' }), /500/);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /gemma-4-31b-it/);
+}));
+
+test('Gemma HTTP 500 retries another key and logs length, key, latency and concurrency', fixture(async store => {
+  let at = Date.now();
+  const calls = [], usage = [], lines = [];
+  const original = console.error;
+  console.error = (...args) => { lines.push(args.join(' ')); };
+  try {
+    const router = createGemmaTranslationRouter({
+      env: { GEMINI_API_KEY: 'key-one', GEMINI_API_KEY2: 'key-two' },
+      quotaRepository: store.repositories.modelQuota, now: () => at, sleep: async ms => { at += ms; },
+      usageObserver: row => usage.push(structuredClone(row)),
+      fetch: async (url, init) => {
+        calls.push({ url, key: init.headers['x-goog-api-key'] });
+        if (calls.length === 1) return new Response(JSON.stringify({ error: { code: 500, status: 'INTERNAL', message: 'Internal error encountered.' } }), { status: 500 });
+        return sse('译文');
+      },
+    });
+    const result = await router.generate({ system: '翻译', prompt: 'Sensor order is not confirmed.' });
+    assert.equal(result.engine, 'gemma-4-26b-a4b-it');
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls.map(call => call.key), ['key-one', 'key-two']);
+    assert.match(calls[0].url, /gemma-4-31b-it/);
+    assert.match(calls[1].url, /gemma-4-26b-a4b-it/);
+    const logged = lines.find(line => line.includes('inputBytes='));
+    assert.match(logged, /status=500/);
+    assert.match(logged, /model=gemma-4-31b-it/);
+    assert.match(logged, /key=KEY /);
+    assert.match(logged, /inputBytes=\d+/);
+    assert.match(logged, /latencyMs=\d+/);
+    assert.match(logged, /concurrency=1/);
+    assert.match(logged, /Internal error encountered/);
+    assert.doesNotMatch(logged, /key-one|key-two/);
+    assert.equal(usage.some(row => row.status === 'failed' && row.httpStatus === 500), true);
+    assert.equal(usage.some(row => row.status === 'succeeded' && row.httpStatus === 200), true);
+  } finally { console.error = original; }
+}));
+
+test('Gemma timeout retries another key without leaving the Gemma pool', fixture(async store => {
+  let at = Date.now();
+  const calls = [];
+  const router = createGemmaTranslationRouter({
+    env: { GEMINI_API_KEY: 'key-one', GEMINI_API_KEY2: 'key-two' },
+    quotaRepository: store.repositories.modelQuota, now: () => at, sleep: async ms => { at += ms; },
+    fetch: async (url, init) => {
+      calls.push({ url, key: init.headers['x-goog-api-key'] });
+      if (calls.length === 1) throw Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+      return sse('译文');
+    },
+  });
+  assert.equal((await router.generate({ system: '翻译', prompt: 'Timeout then another key.' })).engine, 'gemma-4-26b-a4b-it');
+  assert.deepEqual(calls.map(call => call.key), ['key-one', 'key-two']);
+  assert.match(calls[1].url, /gemma-4-26b-a4b-it/);
 }));
