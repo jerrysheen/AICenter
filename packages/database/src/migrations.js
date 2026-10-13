@@ -1810,7 +1810,18 @@ migrations.push({ version: 57, name: 'api_access_tokens', up(database) {
   `);
 }});
 
-migrations.push({ version: 58, name: 'feed_provider_page_indexes', up(database) {
+migrations.push({ version: 58, name: 'runtime_snapshots', up(database) {
+  database.exec(`CREATE TABLE runtime_snapshots (
+      workspace_id TEXT NOT NULL,
+      snapshot_key TEXT NOT NULL,
+      generated_at INTEGER NOT NULL,
+      payload_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (workspace_id, snapshot_key)
+    );`);
+}});
+
+migrations.push({ version: 59, name: 'feed_provider_page_indexes', up(database) {
   database.exec(`
     CREATE INDEX idx_captures_feed_sort
       ON captures(workspace_id, provider, source_account_id, captured_at DESC, id);

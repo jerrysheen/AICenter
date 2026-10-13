@@ -1,6 +1,6 @@
 import { json } from '../http/response.js';
 import { collectLocalizationUnits } from '../../../../packages/domain/src/localize-texts.js';
-import { readMarketNativeBoard, readStaticSignalBoard } from '../../../../packages/source/src/index.js';
+import { emptyStaticSignalBoard, readMarketNativeBoard } from '../../../../packages/source/src/index.js';
 
 async function withLocalizations(services, identity, payload) {
   const units = collectLocalizationUnits(payload);
@@ -25,9 +25,13 @@ export function createSourceRoutes() {
         const input = Object.fromEntries(url.searchParams.entries());
         const refresh = input.refresh === '1' || input.refresh === 'true';
         delete input.refresh;
-        const board = await readStaticSignalBoard(services.sources, input, { refresh });
-        const { localizations } = await withLocalizations(services, identity, board);
-        json(response, 200, { ok: true, board, localizations });
+        const loaded = services.staticSignalBoard?.read
+          ? await services.staticSignalBoard.read(input, { refresh })
+          : { board: emptyStaticSignalBoard(), pending: true };
+        const { localizations } = await withLocalizations(services, identity, loaded.board);
+        json(response, 200, loaded.pending
+          ? { ok: true, board: loaded.board, localizations, pending: true }
+          : { ok: true, board: loaded.board, localizations });
       },
     },
     {

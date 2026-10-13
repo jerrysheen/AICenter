@@ -74,6 +74,7 @@ export function createDomainServices({
   contentRoutingPort = null,
   dailyConfig = null,
   staticSignalPort = null,
+  holdingsQuotePort = null,
   quantRoot = null,
   modelUsageRates = [],
   informationPipeline = 'legacy',
@@ -106,6 +107,7 @@ export function createDomainServices({
     tradingRepository: store.repositories.trading,
     sourcePort,
     personalAssetPort,
+    holdingsQuotePort,
     workspaceId,
   });
   const knowledge = createKnowledgeService({

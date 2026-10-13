@@ -1,8 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { performance } from 'node:perf_hooks';
+import Database from 'better-sqlite3';
 import { createStore } from '../packages/database/src/index.js';
+import { latestSchemaVersion } from '../packages/database/src/migrations.js';
 import { createFeedService } from '../packages/domain/src/feed-service.js';
 import { createMediaIngestionService } from '../packages/domain/src/media-ingestion-service.js';
 import { createAiCenterServer } from '../apps/web/src/server.js';
@@ -115,5 +120,63 @@ test('trendforce list omits article text and answers If-None-Match', async () =>
   } finally {
     await app.close();
     store.close();
+  }
+});
+
+const FEED_INDEXES = [
+  'idx_captures_feed_sort',
+  'idx_captures_provider_captured',
+  'idx_captures_feed_filter',
+  'idx_content_items_capture_cover',
+  'idx_user_item_states_feed_flags',
+];
+
+test('a database stopped at schema 57 applies runtime snapshots then feed indexes', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-schema-57-'));
+  const file = path.join(directory, 'ai-center.db');
+  const seeded = createStore(file);
+  seeded.close();
+  const rewound = new Database(file);
+  rewound.exec(`
+    DROP TABLE IF EXISTS runtime_snapshots;
+    DROP INDEX IF EXISTS idx_captures_feed_sort;
+    DROP INDEX IF EXISTS idx_captures_provider_captured;
+    DROP INDEX IF EXISTS idx_captures_feed_filter;
+    DROP INDEX IF EXISTS idx_content_items_capture_cover;
+    DROP INDEX IF EXISTS idx_user_item_states_feed_flags;
+    DELETE FROM schema_migrations WHERE version > 57;
+    PRAGMA user_version = 57;
+  `);
+  assert.equal(rewound.pragma('user_version', { simple: true }), 57);
+  assert.equal(rewound.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'runtime_snapshots'`).get(), undefined);
+  rewound.close();
+
+  const upgraded = createStore(file);
+  try {
+    assert.equal(latestSchemaVersion(), 59);
+    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 59);
+  } finally {
+    upgraded.close();
+  }
+
+  const database = new Database(file, { readonly: true, fileMustExist: true });
+  try {
+    assert.equal(database.pragma('user_version', { simple: true }), 59);
+    const rows = database.prepare(`
+      SELECT version, name, applied_at FROM schema_migrations WHERE version >= 57 ORDER BY version
+    `).all();
+    assert.deepEqual(rows.map((row) => [row.version, row.name]), [
+      [57, 'api_access_tokens'],
+      [58, 'runtime_snapshots'],
+      [59, 'feed_provider_page_indexes'],
+    ]);
+    assert.ok(rows[1].applied_at <= rows[2].applied_at);
+    assert.ok(database.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'runtime_snapshots'`).get());
+    for (const name of FEED_INDEXES) {
+      assert.ok(database.prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`).get(name), name);
+    }
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
   }
 });

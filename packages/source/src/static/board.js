@@ -126,9 +126,15 @@ function dedupeEvents(rows) {
     const current = selected.get(key);
     if (!current || sourcePriority(row.sourceId) > sourcePriority(current.sourceId)) selected.set(key, row);
   }
-  return [...selected.values()].map((row) => row.event)
+  const chosen = [...selected.values()];
+  const events = chosen.map((row) => row.event)
     .sort((left, right) => (left.scheduledAt ?? Number.MAX_SAFE_INTEGER) - (right.scheduledAt ?? Number.MAX_SAFE_INTEGER)
       || left.title.localeCompare(right.title));
+  const eventSourceIds = {};
+  for (const row of chosen) {
+    if (row.event?.eventId) eventSourceIds[row.event.eventId] = row.sourceId;
+  }
+  return { events, eventSourceIds };
 }
 
 function dedupeReleases(rows) {
@@ -149,7 +155,7 @@ function isFocusEvent(event, sourceId) {
   return (focusCatalog[event.country] || []).some((keyword) => title.includes(normalized(keyword)));
 }
 
-export async function readStaticSignalBoard(sourcePort, rawInput, options = {}) {
+async function assembleStaticSignalBoard(sourcePort, rawInput, options = {}) {
   if (!sourcePort?.list || !sourcePort?.read) throw new TypeError('static signal board requires a Source port');
   const input = parseContract(StaticSignalBoardInputSchema, rawInput);
   const now = options.now || (() => Date.now());
@@ -197,10 +203,54 @@ export async function readStaticSignalBoard(sourcePort, rawInput, options = {}) 
   });
   streaks.flush();
 
-  return parseContract(StaticSignalBoardSchema, {
+  const deduped = dedupeEvents(calendarRows);
+  const board = parseContract(StaticSignalBoardSchema, {
     generatedAt: observedNow,
-    upcoming: dedupeEvents(calendarRows).slice(0, input.limit),
+    upcoming: deduped.events.slice(0, input.limit),
     releases: dedupeReleases(releaseRows).slice(0, input.releaseLimit),
     sourceHealth,
+  });
+  return { board, eventSourceIds: deduped.eventSourceIds };
+}
+
+export async function readStaticSignalBoard(sourcePort, rawInput, options = {}) {
+  const assembled = await assembleStaticSignalBoard(sourcePort, rawInput, options);
+  return assembled.board;
+}
+
+export async function readStaticSignalBoardSnapshot(sourcePort, rawInput, options = {}) {
+  const assembled = await assembleStaticSignalBoard(sourcePort, rawInput, options);
+  return { ...assembled.board, eventSourceIds: assembled.eventSourceIds };
+}
+
+export function emptyStaticSignalBoard(generatedAt = Date.now()) {
+  return parseContract(StaticSignalBoardSchema, {
+    generatedAt,
+    upcoming: [],
+    releases: [],
+    sourceHealth: [],
+  });
+}
+
+export function projectStaticSignalBoard(stored, rawInput) {
+  const input = parseContract(StaticSignalBoardInputSchema, rawInput);
+  const sources = stored?.eventSourceIds && typeof stored.eventSourceIds === 'object' ? stored.eventSourceIds : {};
+  const upcoming = [];
+  for (const event of Array.isArray(stored?.upcoming) ? stored.upcoming : []) {
+    if (event?.scheduledAt == null) {
+      if (!input.includeUndated) continue;
+    } else if (event.scheduledAt < input.from || event.scheduledAt > input.to) {
+      continue;
+    }
+    if (input.focus && !isFocusEvent(event, sources[event.eventId] || '')) continue;
+    upcoming.push(event);
+    if (upcoming.length >= input.limit) break;
+  }
+  const releases = (Array.isArray(stored?.releases) ? stored.releases : []).slice(0, input.releaseLimit);
+  return parseContract(StaticSignalBoardSchema, {
+    generatedAt: stored.generatedAt,
+    upcoming,
+    releases,
+    sourceHealth: stored.sourceHealth || [],
   });
 }

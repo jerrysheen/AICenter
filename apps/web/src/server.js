@@ -9,7 +9,7 @@ import { createMediaConnector } from '../../../packages/connectors/src/media/por
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
-import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
+import { performance } from 'node:perf_hooks';
 import { hostname as systemHostname, networkInterfaces } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,7 +23,10 @@ import { resolveInstanceConfig } from '../../../packages/instance/src/index.js';
 import { createAgentTraceLog } from '../../../packages/runtime/src/agent-trace-log.js';
 import { createWorkPackageTracePort } from '../../../packages/runtime/src/work-package-trace.js';
 import { readTagCatalogFile } from '../../../packages/runtime/src/tagging-module.js';
-import { createFailureStreakStore, createSourceHub, createSourceModuleRegistry, installFailureStreakStore, readStaticSignalBoard } from '../../../packages/source/src/index.js';
+import { createFailureStreakStore, createSourceHub, createSourceModuleRegistry, createStaticSignalBoardReader, installFailureStreakStore } from '../../../packages/source/src/index.js';
+import { HOLDINGS_MARKET_SNAPSHOT_KEY } from '../../../packages/runtime/src/web-snapshot-jobs.js';
+import { createMemorySnapshotCache } from '../../../packages/runtime/src/snapshot-cache.js';
+import { createEventLoopMonitor } from './http/event-loop-monitor.js';
 import { createEventStreamHub } from './http/event-stream.js';
 import { isApiTokenAllowlisted, readBearerToken, requestWantsRefresh } from './http/api-token-access.js';
 import { redactApiTokenText } from '../../../packages/domain/src/api-token-service.js';
@@ -222,6 +225,12 @@ export function createAiCenterServer(options = {}) {
     dataDirectory,
     workbookPath: instance.assetWorkbookPath,
   });
+  const staticSignalBoard = options.staticSignalBoard || createStaticSignalBoardReader({
+    repository: store.repositories.runtimeSnapshots,
+  });
+  const holdingsQuoteCache = createMemorySnapshotCache({
+    read: () => store.repositories.runtimeSnapshots.readSnapshot('local', HOLDINGS_MARKET_SNAPSHOT_KEY),
+  });
   services = options.services || createDomainServices({
     modelUsageRates: env.AI_CENTER_MODEL_USAGE_RATES_JSON || [],
     dataDirectory,
@@ -261,8 +270,11 @@ export function createAiCenterServer(options = {}) {
     dailyConfig: resolveDailyConfig(env),
     informationPipeline: env.AI_CENTER_INFORMATION_PIPELINE === 'tree-v3' ? 'tree-v3' : 'legacy',
     onContentReady:env.AI_CENTER_INFORMATION_PIPELINE==='tree-v3' ? ({workspaceId,sourceIds})=>enqueueTreePreparation(store,workspaceId,sourceIds) : null,
+    holdingsQuotePort: {
+      read: (readOptions) => holdingsQuoteCache.get(readOptions),
+    },
     staticSignalPort: {
-      readBoard: (input, readOptions) => readStaticSignalBoard(sourcePort, input, readOptions),
+      readBoard: (input, readOptions) => staticSignalBoard.read(input, readOptions).then((result) => result.board),
     },
     quantRoot: options.quantRoot || path.join(dataDirectory, 'quant'),
     parityDirectory: options.parityDirectory || path.join(repositoryRoot, '.ai-data', 'etf-whale-parity'),
@@ -270,6 +282,7 @@ export function createAiCenterServer(options = {}) {
       ? options.analysisSkillCatalog
       : createAnalysisSkillCatalog({ rootDirectory: path.join(repositoryRoot, 'config/analysis-skills') }),
   });
+  if (!options.services) services = Object.freeze({ ...services, staticSignalBoard });
   const feedQueryParsers = options.feedQueryParsers || new Map([
     ['x', parseXFeedQuery],
     ['xueqiu', parseXueqiuFeedQuery],
@@ -291,15 +304,17 @@ export function createAiCenterServer(options = {}) {
   let actualPort = configuredPort;
   let eventTimer = null;
   const pairingAttempts = new Map();
-  const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
-  eventLoopDelay.enable();
-  const eventLoopTimer = setInterval(() => eventLoopDelay.reset(), 10_000);
-  eventLoopTimer.unref?.();
   const loopLog = { at: 0 };
   const accessLog = options.accessLog || createAccessLog({
     directory: path.join(dataDirectory, 'logs'),
     env,
   });
+  const eventLoopMonitor = createEventLoopMonitor({
+    onSample(sample) {
+      accessLog.writeEventLoop?.(sample);
+    },
+  });
+  const eventLoopDelay = eventLoopMonitor.histogram;
 
   function isPublicRequest(request, url) {
     const forwarded = Boolean(request.headers['cf-connecting-ip'] || request.headers['cf-ray']);
@@ -509,8 +524,7 @@ export function createAiCenterServer(options = {}) {
     },
     async close() {
       if (eventTimer) clearInterval(eventTimer);
-      clearInterval(eventLoopTimer);
-      eventLoopDelay.disable();
+      eventLoopMonitor.stop();
       events.closeAll();
       await new Promise((resolve) => server.close(resolve));
       await accessLog.close();

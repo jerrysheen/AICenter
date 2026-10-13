@@ -101,7 +101,7 @@ test('tokens are stored as sha256, revoked tokens fail, and logs expire', () => 
     now: () => clock,
   });
   try {
-    assert.equal(latestSchemaVersion(), 57);
+    assert.equal(latestSchemaVersion(), 59);
     const issued = service.issue({ name: '行情机器人', deviceId: null });
     assert.match(issued.secret, /^aic_[A-Za-z0-9_-]{40,}$/);
     assert.equal(issued.token.prefix, issued.secret.slice(0, 12));
