@@ -10,7 +10,7 @@
 
 复用 `ModelQuotaRepository`，按密钥/显式项目和模型保存租约和冷却。用户后续授权移除本地每日/小时请求数上限，每账号两个 Gemma 模型共用最小 10 秒发起间隔、每分钟最多 10 次，理论每账号约 6 次/分钟；五账号理论约 30 次/分钟。16K 输入 TPM 仍按模型预留，UTF-8 字节数作为保守输入 Token 估算，不记为实际用量。同项目 Key 共用节流；跨模型节奏在同一 Repository 事务内检查并保存，重启不能绕过。分钟窗口本地最多等待约 61 秒，其他配额等待按 retryAt 延期。供应商 429 持久冷却，同一次请求不再换密钥。5xx、流内 5xx、`TimeoutError` 和 Google 连接超时把该密钥上的该模型冷却一分钟，然后在同一次 `generate` 里最多再试两次：先退避 0.5 秒、再 1 秒，上限 2 秒。只要配置里还有 26B，重试只换另一把密钥上的 26B，不再转到 31B。配置被显式收成只有 31B 时，重试才在 31B 上换密钥。下一席在约 1.5 秒内排不上（同一密钥还要等 10 秒间隔，或只剩冷却中的席位）就抛出原来的上游错误，交给任务级最多 4 次重试。不回退 Flash、Grok、DeepL 或其他 API。本地无每日上限不代表供应商承诺无限额度。
 
-直连 `generativelanguage.googleapis.com` 的 `fetch` 使用 undici `Agent` 的 `connect.timeout`，默认 8000 毫秒，由 `AI_CENTER_GOOGLE_CONNECT_TIMEOUT_MS` 配置（整数，1000–30000）。这是 TCP 连接预算，和响应的 `AbortSignal.timeout`（Gemma 默认 120 秒）分开。连接超时记用量 HTTP 408，并按上面的规则换密钥。不替换 undici 的全局 dispatcher。Harness / `dsh` 自己的 HTTP 客户端不走这个 Agent。
+直连 `generativelanguage.googleapis.com` 使用 npm `undici` 自己的 `fetch` 和同一份 `Agent` 的 `connect.timeout`，默认 8000 毫秒，由 `AI_CENTER_GOOGLE_CONNECT_TIMEOUT_MS` 配置（整数，1000–30000）。不把这份 Agent 交给 Node 内置 `fetch`。这是 TCP 连接预算，和响应的 `AbortSignal.timeout`（Gemma 默认 120 秒）分开。连接超时记用量 HTTP 408，并按上面的规则换密钥。不替换 undici 的全局 dispatcher。Harness / `dsh` 自己的 HTTP 客户端不走这个 Agent。
 
 `WorkerJobConcurrencySchema.translationLimit` 默认 1，最大 5；Worker composition root 默认通过 `AI_CENTER_WORKER_TRANSLATION_CONCURRENCY=5` 启用五个翻译执行位，仅影响 `feed.translation.run`，不增加 Ask、小时报等任务并发。使用同一 Connector 与现有注册 handler，不增加 Agent。失败状态另表保存，见 migration 50。
 

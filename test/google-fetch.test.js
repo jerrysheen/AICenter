@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { Agent } from 'undici';
 import {
   closeGoogleConnectDispatchers,
@@ -35,6 +36,32 @@ test('withGoogleConnect reuses one agent and keeps the response abort signal', a
     assert.equal(googleFetch(injected, env), injected);
   } finally {
     await closeGoogleConnectDispatchers();
+  }
+});
+
+test('googleFetch completes a real local request through its own undici fetch', async () => {
+  const server = createServer((request, response) => {
+    response.writeHead(200, { 'content-type': 'text/plain' });
+    if (request.url === '/slow') {
+      setTimeout(() => response.end('slow-body'), 1500);
+      return;
+    }
+    response.end('ok');
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  const env = { AI_CENTER_GOOGLE_CONNECT_TIMEOUT_MS: '1000' };
+  try {
+    const request = googleFetch(fetch, env);
+    const quick = await request(`http://127.0.0.1:${port}/`);
+    assert.equal(quick.status, 200);
+    assert.equal(await quick.text(), 'ok');
+    const slow = await request(`http://127.0.0.1:${port}/slow`, { signal: AbortSignal.timeout(10000) });
+    assert.equal(slow.status, 200);
+    assert.equal(await slow.text(), 'slow-body');
+  } finally {
+    await closeGoogleConnectDispatchers();
+    await new Promise((resolve) => server.close(resolve));
   }
 });
 

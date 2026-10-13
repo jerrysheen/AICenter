@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-13-google-fetch-dispatcher.md`：Google 直连改为使用 undici 自己的 `fetch` 和同一份 Agent。Node 内置 `fetch` 不再接收 npm undici 的 dispatcher。26B 默认和换密钥重试不变。不新增 migration。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-13-gemma-26b-connect-timeout.md`：Gemma 原文翻译默认只用 26B。5xx、响应超时和连接超时在 26B 上换另一把密钥，不转到 31B。Google 直连增加可配置的短连接超时，和长响应超时分开。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-13-prebuilt-buffer-hit.md`：报价列表、雪球首页 / 7x24 和总览 bootstrap 的请求只写出已经预备好的缓冲区。没有缓冲区时返回 `pending`，不在请求里组包或序列化。大事件帧不再读出 payload。migration 65。需要同时重启 Web 和 Worker。
