@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-13-client-timing-behavior.md`：每次文档加载都把页面计时 POST 到 `/api/v1/runtime/client-timing`。点原文 / 打开原站记 `source.original`，展开条目记 `item.expand`。需要重启 Web。浏览器再加载一次。
+
 - `progress/2026-10-13-frontend-load.md`：首屏改读 `GET /api/v1/home/bootstrap` 一份快照，浏览器按用户把页面响应放进本地缓存。事件循环阻塞按任务名写入 `data/logs/event-loop.*.log`。X / 雪球和硬件价表用短缓存，问答列表不再在别的页面上轮询。需要重启 Web。
 
 - `progress/2026-10-13-event-loop-markets.md`：访问日志为每个请求记下这段时间里的事件循环延迟。静态文件和压缩 JSON 改为异步 gzip。行情总览和市场原生看板改由 Worker 每分钟写入 `runtime_snapshots`，Web 只读快照。不新增 migration。需要同时重启 Web 和 Worker。

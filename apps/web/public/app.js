@@ -7,6 +7,7 @@ import { icon } from './icons.js?v=dev';
 import { renderMarkdownInto, renderFeedTextInto, splitFeedText, stripSharePlaceholders } from './markdown.js?v=dev';
 import { cacheTtlFor, createRequestLayer, planTranslationPoll, requestDedupeKey, TRANSLATION_POLL_DEADLINE_MS } from './client-request.js?v=dev';
 import { planAskRunsFetch } from './ask-runs.js?v=dev';
+import { behaviorClickName, behaviorControlLabel, behaviorDetailsExpand } from './behavior-clicks.js?v=dev';
 import { browserPagePersist, createPageCache, pageCacheKey } from './page-cache.js?v=dev';
 import { HOME_BOOTSTRAP_PATH, projectHomeBootstrap } from './home-bootstrap.js?v=dev';
 import {
@@ -1603,6 +1604,7 @@ function appendExternalLink(parent, url, label) {
   link.target = '_blank';
   link.rel = 'noopener noreferrer';
   link.textContent = label;
+  if (behaviorClickName(label) === 'source.original') link.dataset.behavior = 'source.original';
   link.addEventListener('click', (event) => openExternalHttpUrl(url, event));
   parent.append(link);
   return link;
@@ -1874,17 +1876,23 @@ function noteFeedLoaded() {
 }
 
 document.addEventListener('click', (event) => {
-  const node = event.target instanceof Element ? event.target.closest('button, a, summary') : null;
-  if (!node || !state.session) return;
-  const label = String(node.getAttribute('aria-label') || node.textContent || '').replace(/\s+/g, ' ').trim();
-  if (label === '原文' || label === '打开原文' || label.startsWith('阅读站内原文')) {
+  if (!state.session || !(event.target instanceof Element)) return;
+  const marked = event.target.closest('[data-behavior]');
+  if (marked?.dataset.behavior === 'source.original') {
     logBehavior('source.original', { view: document.body.dataset.view || '' });
     return;
   }
-  if (label === '展开' || label.startsWith('展开')) {
-    if (node.closest('details')?.open) return;
-    logBehavior('item.expand', { view: document.body.dataset.view || '' });
-  }
+  const node = event.target.closest('button, a, summary');
+  if (!node || node.closest('details')) return;
+  const name = behaviorClickName(behaviorControlLabel(node), {
+    detailsOpen: Boolean(node.closest('details')?.open),
+  });
+  if (name) logBehavior(name, { view: document.body.dataset.view || '' });
+}, true);
+document.addEventListener('toggle', (event) => {
+  const details = event.target;
+  if (!state.session || details?.dataset?.expandQuiet === '1' || !behaviorDetailsExpand(details)) return;
+  logBehavior('item.expand', { view: document.body.dataset.view || '' });
 }, true);
 window.addEventListener('pagehide', () => {
   if (behaviorTimer) window.clearTimeout(behaviorTimer);
@@ -8359,6 +8367,7 @@ function createDetailAction({ iconName, label, primary = false, pressed = false,
   if (primary) button.classList.add('is-primary');
   if (pressed) button.classList.add('is-focus-on');
   button.innerHTML = `${icon(iconName)}<span>${label}</span>`;
+  if (behaviorClickName(label) === 'source.original') button.dataset.behavior = 'source.original';
   if (onClick) bindIntentionalClick(button, onClick);
   return button;
 }

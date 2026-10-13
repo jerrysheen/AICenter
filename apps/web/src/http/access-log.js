@@ -522,6 +522,10 @@ function headerHost(value) {
   return String(value || '').split(',')[0].trim().split(':')[0].toLowerCase();
 }
 
+function loopbackHost(host) {
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+}
+
 export function clientTimingAllowed(request) {
   const site = String(request?.headers?.['sec-fetch-site'] || '').toLowerCase();
   if (site === 'cross-site' || site === 'same-site') return false;
@@ -536,7 +540,9 @@ export function clientTimingAllowed(request) {
     return false;
   }
   const hosts = [headerHost(request?.headers?.host), headerHost(request?.headers?.['x-forwarded-host'])];
-  return hosts.some((host) => host && host === originHost);
+  if (hosts.some((host) => host && host === originHost)) return true;
+  const tunnel = request?.headers?.['cf-ray'] || request?.headers?.['cf-connecting-ip'];
+  return Boolean(tunnel && loopbackHost(headerHost(request?.headers?.host)));
 }
 
 export function projectClientTiming(body, request, { salt = '', now = Date.now() } = {}) {

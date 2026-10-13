@@ -52,6 +52,15 @@ test('client records tab, article, share, hour, expand, original, ask and slow v
   assert.match(tree, /report\.hour/);
   assert.match(brief, /report\.hour/);
   assert.match(app, /text\/plain;charset=UTF-8/);
+  assert.match(app, /behaviorClickName/);
+  assert.match(app, /behaviorDetailsExpand/);
+  assert.match(app, /dataset\.behavior = 'source\.original'/);
+  assert.match(tree, /dataset\.behavior='item\.expand'/);
+  assert.match(tree, /expandQuiet/);
+  assert.match(app, /expandQuiet/);
+  assert.match(tree, /dataset\.behavior='source\.original'/);
+  assert.match(tree, /打开原站|原文/);
+  assert.match(brief, /dataset\.behavior='source\.original'/);
   assert.match(app, /If-None-Match/);
   assert.match(app, /notModified/);
   assert.match(brief, /information-tree\.js\?v=/);

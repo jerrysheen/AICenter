@@ -193,7 +193,9 @@ export function createInformationTreePage(host) {
   function detailAction(iconName, label, onClick) {
     const n=document.createElement('button');n.type='button';n.setAttribute('aria-label',label);
     const glyph=document.createElement('span');glyph.innerHTML=icon(iconName);glyph.setAttribute('aria-hidden','true');
-    n.append(glyph,el('span',label));n.addEventListener('click',onClick);return n;
+    n.append(glyph,el('span',label));
+    if(label==='原文' || label==='打开原文' || label==='打开原站') n.dataset.behavior='source.original';
+    n.addEventListener('click',onClick);return n;
   }
   function canReadSource(n) {return Boolean(n?.layer==='information' && n.sourceRefs?.length && host.readSavedSource);}
   const sourceFactCache=new Map();
@@ -955,7 +957,8 @@ export function createInformationTreePage(host) {
     try{const data=await api(path);return data?.snapshot || null;}catch(error){if(aborted(error))throw error;return null;}
   }
   function readingFold(id, title, {seed} = {}) {
-    const details=document.createElement('details');details.className='reading-fold';details.open=readingOpen.has(id);
+    const details=document.createElement('details');details.className='reading-fold';details.dataset.behavior='item.expand';
+    if(readingOpen.has(id)){details.dataset.expandQuiet='1';details.open=true;setTimeout(()=>{delete details.dataset.expandQuiet;},0);}
     const summary=document.createElement('summary');summary.className='news-fold-toggle';summary.textContent='展开';
     const panel=el('div','','reading-fold-body');details.append(summary,panel);
     let loaded=false,slow=0;
@@ -981,9 +984,10 @@ export function createInformationTreePage(host) {
         link.setAttribute('target', '_blank');
         link.setAttribute('rel', 'noopener noreferrer');
         link.textContent='原文';
+        link.dataset.behavior='source.original';
         panel.append(link);
       }
-      if(canReadSource(view))panel.append(button('原文',()=>host.readSavedSource(view)));
+      if(canReadSource(view)){const sourceButton=button('原文',()=>host.readSavedSource(view));sourceButton.dataset.behavior='source.original';panel.append(sourceButton);}
     }
     details.addEventListener('toggle',load);
     if(details.open)void load();
