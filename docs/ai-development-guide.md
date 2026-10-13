@@ -101,7 +101,7 @@ knowledge/
 
 Instance 配置后的个人目录为 `<instance>/{data,knowledge,config,imports,runtime}`。未配置时继续使用旧仓库内目录。新代码不得再自行 `path.join(repositoryRoot, 'data'|'knowledge'|'config')`；Web、Worker 和 CLI 统一从 `packages/instance` 取得路径。
 
-Web 把每个 HTTP 请求追加成一行 JSON，文件是 Instance `data/logs/access.yyyy-MM-dd.log`（Asia/Shanghai 日期）。`AI_CENTER_ACCESS_LOG` 默认开启，设为 `0` 关闭。`AI_CENTER_ACCESS_LOG_RETENTION_DAYS` 默认 14。页面在加载完成后按 20% 抽样，把 Navigation Timing 和最慢的约 20 条资源记到同目录的 `client-timing.yyyy-MM-dd.log`。汇总脚本是 `scripts/access-log-summary.mjs`。这些文件不进 Git。
+Web 把每个 HTTP 请求追加成一行 JSON，文件是 Instance `data/logs/access.yyyy-MM-dd.log`（Asia/Shanghai 日期）。`AI_CENTER_ACCESS_LOG` 默认开启，设为 `0` 关闭。`AI_CENTER_ACCESS_LOG_RETENTION_DAYS` 默认 14。页面在加载完成后按 20% 抽样，把 Navigation Timing 和最慢的约 20 条资源记到同目录的 `client-timing.yyyy-MM-dd.log`。同一进程每 60 秒用 `perf_hooks.monitorEventLoopDelay` 记一行 `kind=event-loop`（p50/p99/max，毫秒），汇总脚本和 `GET /api/v1/runtime/access-summary` 把它放在 `eventLoop`，不计入路径统计。这些文件不进 Git。
 
 docs/
   release-readiness.md       当前验收与停止线

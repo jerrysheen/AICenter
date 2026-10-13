@@ -222,12 +222,17 @@ SourceHub 在 reader 前后分别校验，并产生带 `sourceId`、`providerId`
 按公开固定规则生成而非逐日列在官网日历上的条目必须标记 `scheduleBasis=official-rule` 与
 `status=tentative`，不能伪装成已确认日程。旧 `/api/v1/markets`、
 `/api/v1/feed/*` 仍是兼容接口；统一读取接口是 `GET /api/v1/sources` 与
-`GET /api/v1/sources/:id`。总览通过 `packages/source/src/static/board.js` 并发读取这些低层 Source，
-确定性完成 merge、dedupe、sort 和静态关注目录投影，输出 `StaticSignalBoard`；该层不调用 AI、
-不新增 Domain，也不持久化 Snapshot。FOMC 专门日程优先于 Fed 综合日历；政策发布先按同 URL，
+`GET /api/v1/sources/:id`。总览的合并规则仍在 `packages/source/src/static/board.js`：并发读取这些低层 Source，
+确定性完成 merge、dedupe、sort 和静态关注目录投影，输出 `StaticSignalBoard`。该层不调用 AI，
+也不新增业务 Domain。聚合改由 Worker 定时任务 `source.static-signal-board.snapshot` 执行，
+结果写入 `runtime_snapshots`（键 `static-signal-board`）。`GET /api/v1/static-signals/board`
+只读最新快照，在内存里按请求的时间窗、focus 和条数投影，响应字段与 `StaticSignalBoard` 相同。
+没有快照时返回空看板，并在响应上标 `pending: true`；这份空结果只缓存 5 秒。Web 请求不再当场读取官方源。
+FOMC 专门日程优先于 Fed 综合日历；政策发布先按同 URL，
 再按同机构、同标题、同发布日去重，不合并 White House 公告与后续 Federal Register 正式刊登。
 对应只读接口是 `GET /api/v1/static-signals/board`。`SourceAccount` 仍只属于 Feed 的账号/频道持久化生命周期，不能用来保存行情来源。
 K 线是慢数据：`market_history_cache` 按标的、区间和周期留下最近一次成功的 OHLCV，六小时内再次打开直接读这份记录，不按定时器去打上游。用户显式刷新才绕过。最新价仍走原来的短缓存，不放进这份表。
+持仓页不走这条请求路径。Worker 的 `market.holdings.snapshot` 把报价和三个月收盘序列写入 `runtime_snapshots`（键 `holdings-market`）。`GET /api/v1/holdings` 用这份快照和当前账本组看板，`refresh=1` 只重读快照。没有快照时仍返回账本结构，说明中标明行情尚未就绪。
 DeepSeek Search Connector 通过 `search.web` Source Definition 接入，只留给本地循环回退；生产 Ask 不注册该 Source。本地 Agent Tool `web.search` 只消费 SourcePort。Connector 只映射结构化 `web_search_result`（title / url / snippet / publishedAt），不把 DeepSeek 生成的答案交给模型。
 
 静态 Signal Layer 的另一半是 `market-native.*` 只读来源，当前注册 Polymarket、Kalshi、Hyperliquid

@@ -36,7 +36,7 @@ function isPrecisePrice(value) {
   return typeof value === 'number' && Number.isFinite(value) && value > 0;
 }
 
-function retainPreciseQuotes(stored, symbols, freshQuotes) {
+export function retainPreciseQuotes(stored, symbols, freshQuotes) {
   const fresh = new Map();
   for (const quote of Array.isArray(freshQuotes) ? freshQuotes : []) {
     const symbol = String(quote?.symbol || '').trim().toUpperCase();
@@ -65,6 +65,20 @@ function exchangeFromYahoo(symbol, fallback) {
   if (upper.endsWith('.SS')) return 'XSHG';
   if (upper.endsWith('.HK')) return 'XHKG';
   return fallback;
+}
+
+export function listHoldingsQuoteSymbols(tradingRepository, workspaceId = 'local') {
+  const portfolios = tradingRepository.listPortfolios(workspaceId)
+    .filter((portfolio) => portfolio.archivedAt == null);
+  const portfolioIds = new Set(portfolios.map((portfolio) => portfolio.id));
+  const lots = tradingRepository.listHoldingLots(workspaceId)
+    .filter((lot) => portfolioIds.has(lot.portfolioId));
+  const instruments = lots.map((lot) => tradingRepository.getInstrument(lot.instrumentId)).filter(Boolean);
+  const aliases = tradingRepository.listInstrumentAliases(instruments.map((item) => item.id));
+  return [...new Set([
+    ...aliases.filter((item) => item.providerId === 'yahoo').map((item) => item.providerSymbol),
+    ...DEFAULT_FX_SYMBOLS,
+  ])];
 }
 
 function localSymbol(yahoo, fallback) {
@@ -97,6 +111,7 @@ export function createTradingService({
   sourcePort,
   marketDataPort,
   personalAssetPort,
+  holdingsQuotePort = null,
   workspaceId: configuredWorkspaceId = 'local',
   now = () => Date.now(),
 }) {
@@ -350,12 +365,23 @@ export function createTradingService({
         ...aliases.filter((item) => item.providerId === 'yahoo').map((item) => item.providerSymbol),
         ...DEFAULT_FX_SYMBOLS,
       ])];
-      const [quotesSnapshot, historySnapshot] = await Promise.all([
-        sourcePort.read('market.quotes', { symbols: yahooSymbols }, { refresh }),
-        sourcePort.read('market.history', { symbols: yahooSymbols, range: '3mo', interval: '1d' }, { refresh }),
-      ]);
-      const quotes = retainPreciseQuotes(preciseQuotes, yahooSymbols, quotesSnapshot.data);
-      const series = historySnapshot.data;
+      let quotes;
+      let series;
+      let quotesPending = false;
+      if (holdingsQuotePort?.read) {
+        const stored = await holdingsQuotePort.read({ refresh });
+        const payload = stored?.payload;
+        quotesPending = !payload;
+        quotes = Array.isArray(payload?.quotes) ? payload.quotes : [];
+        series = Array.isArray(payload?.series) ? payload.series : [];
+      } else {
+        const [quotesSnapshot, historySnapshot] = await Promise.all([
+          sourcePort.read('market.quotes', { symbols: yahooSymbols }, { refresh }),
+          sourcePort.read('market.history', { symbols: yahooSymbols, range: '3mo', interval: '1d' }, { refresh }),
+        ]);
+        quotes = retainPreciseQuotes(preciseQuotes, yahooSymbols, quotesSnapshot.data);
+        series = historySnapshot.data;
+      }
       const board = buildHoldingsBoard({
         accounts: portfolios.map((portfolio) => ({
           id: portfolio.id,
@@ -392,6 +418,7 @@ export function createTradingService({
       if (!board.fx.usdCny) board.missingQuotes.push('USDCNY=X');
       if (!board.fx.hkdCny) board.missingQuotes.push('HKDCNY=X');
       board.missingQuotes = [...new Set(board.missingQuotes)];
+      if (quotesPending) board.note = `行情快照尚未就绪。${board.note}`;
       if (board.missingQuotes.length) {
         board.note = `${board.note} 缺行情：${board.missingQuotes.join(', ')}`;
       }
