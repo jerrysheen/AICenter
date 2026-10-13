@@ -8,7 +8,7 @@ Gemma 原文翻译一段样本是 44 次成功、29 次 HTTP 500，大约四成�
 
 ## 决定
 
-- 成功的 Harness 请求和直连响应写 HTTP 200。供应商错误写响应状态码。`ModelExecutionTimeout`、`TimeoutError` 和「模型执行超时」写 408。排队超时、阶段预算超时、用户取消的 `AbortError` 保持 null。补读会话日志时保留已经记下的状态码，避免被重放冲掉。200 只补到成功或仍在等待的请求上，不把失败行改成 200。
+- 成功的 Harness 请求、成功的整轮汇总，以及直连响应写 HTTP 200。供应商错误写响应状态码。`ModelExecutionTimeout`、`TimeoutError` 和「模型执行超时」写 408。排队超时、阶段预算超时、用户取消的 `AbortError` 保持 null。补读会话日志时保留已经记下的状态码，避免被重放冲掉。200 只补到成功或仍在等待的请求上，不把失败行改成 200。信息树和阅读分类走真实 Harness `run`，成功后 `model_usage_index.http_status` 不是 null。
 - 字幕整理、音频转写的 `generateContent`，以及投资者对照实验的模型调用，改经 `createUsageFetch`。上传、轮询和删除文件不记成模型请求。没有用量观察者时仍然不写账本。
 - 不增加 Flash、Grok 或 DeepL 回退。Gemma 的 HTTP 5xx、流内 5xx 和超时：记下输入字节、密钥后缀、耗时、当前路由器并发和脱敏响应体，把该密钥上的该模型冷却 60 秒，然后换另一把 Gemma 密钥或另一个 Gemma 模型。同一次 `generate` 最多 3 次 HTTP。退避 0.5 秒起、封顶 2 秒。下一席若不能在约 1.5 秒内排上，抛出原来的上游错误，任务级最多 4 次重试照旧。429 和日配额不在同一次请求里重试。默认并发保持 5。
 

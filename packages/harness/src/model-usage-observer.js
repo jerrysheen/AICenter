@@ -123,10 +123,13 @@ export function createHarnessUsageObserver({ record, attribution = {}, provider 
         && ['inputTokens', 'outputTokens', 'totalTokens'].every(key => requests.reduce((sum, row) => sum + row.usage[key], 0)
           === summary[key === 'inputTokens' ? 'uncachedInputTokens' : key]);
       const reason = events.at(-1)?.data.reason?.kind;
+      const turnStatus = !completeLifecycle ? 'pending' : reason === 'error' ? 'failed' : reason === 'aborted' ? 'interrupted' : 'succeeded';
+      const knownHttp = [...requests].reverse().find(row => Number.isInteger(row.httpStatus))?.httpStatus ?? null;
       save({ ...base, id: identity(`${base.workspaceId}:${sessionId}:${turn}:turn`), kind: 'turn',
         harnessSessionId: sessionId, turn, step: null, attempt: null,
         occurredAt: Number.isSafeInteger(events[0]?.time) && events[0].time >= 0 ? events[0].time : Date.now(),
-        status: !completeLifecycle ? 'pending' : reason === 'error' ? 'failed' : reason === 'aborted' ? 'interrupted' : 'succeeded',
+        status: turnStatus,
+        httpStatus: knownHttp ?? (turnStatus === 'succeeded' ? 200 : null),
         completeness: summary ? matchesNative ? 'complete' : 'partial' : 'missing',
         usage: summary ? normalizeTokenUsage({ ...summary, inputTokens: summary.uncachedInputTokens }) : emptyTokenUsage(),
       });
