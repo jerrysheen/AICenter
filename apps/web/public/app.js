@@ -5,7 +5,7 @@ import {
 } from './mock.js?v=dev';
 import { icon } from './icons.js?v=dev';
 import { renderMarkdownInto, renderFeedTextInto, splitFeedText, stripSharePlaceholders } from './markdown.js?v=dev';
-import { cacheTtlFor, createRequestLayer, planTranslationPoll, requestDedupeKey, TRANSLATION_POLL_DEADLINE_MS } from './client-request.js?v=dev';
+import { cacheTtlFor, createRequestLayer, isPreparedPending, planTranslationPoll, requestDedupeKey, resolvePreparedPending, TRANSLATION_POLL_DEADLINE_MS } from './client-request.js?v=dev';
 import { planAskRunsFetch } from './ask-runs.js?v=dev';
 import { behaviorClickName, behaviorControlLabel, behaviorDetailsExpand } from './behavior-clicks.js?v=dev';
 import { browserPagePersist, createPageCache, pageCacheKey } from './page-cache.js?v=dev';
@@ -1477,7 +1477,7 @@ function pageCacheUser() {
 }
 
 function rememberPageResponse(method, path, payload) {
-  if (method !== 'GET' || !payload || payload.notModified || payload.ok === false) return;
+  if (method !== 'GET' || !payload || payload.notModified || payload.ok === false || isPreparedPending(payload)) return;
   const pathname = String(path || '').split('?')[0];
   if (pathname === HOME_BOOTSTRAP_PATH || pathname === '/api/v1/session' || pathname.startsWith('/api/v1/behavior') || pathname.startsWith('/api/v1/translate/jobs/')) return;
   const bodyText = JSON.stringify(payload);
@@ -1495,7 +1495,8 @@ function api(path, options = {}) {
   const key = requestDedupeKey(method, path);
   const ttl = bypass ? 0 : cacheTtlFor(method, path);
   const safetyMs = Math.max(Number(timeoutMs) || 0, 20_000);
-  const shared = requestLayer.run(key, () => performApi(path, fetchOptions, safetyMs, onResponse), {
+  const load = () => performApi(path, fetchOptions, safetyMs, onResponse);
+  const shared = requestLayer.run(key, () => (method === 'GET' ? resolvePreparedPending(load, { signal }) : load()), {
     ttl,
     bypass,
     priority: Number.isFinite(priority) ? priority : (method === 'GET' ? 4 : 7),
@@ -14112,12 +14113,14 @@ async function loadTrendForceFeed({ refresh = false } = {}) {
     const params = new URLSearchParams({ platform: 'trendforce' });
     if (refresh) params.set('refresh', '1');
     const headers = !refresh && state.trendforceEtag ? { 'If-None-Match': state.trendforceEtag } : {};
+    let queuedJob = false;
     const payload = await api(`/api/v1/feed/trendforce?${params}`, {
       timeoutMs: refresh ? 180_000 : 15_000,
       headers,
       onResponse(response) {
         const etag = response.headers.get('etag');
         if (etag) state.trendforceEtag = etag;
+        queuedJob = Boolean(response.headers.get('x-job-id'));
       },
     });
     if (payload?.notModified) {
@@ -14134,7 +14137,7 @@ async function loadTrendForceFeed({ refresh = false } = {}) {
     renderTrendForceToolbar();
     if (refresh) {
       if (payload.feed?.mode === 'error') showToast(payload.feed.note || 'TrendForce 抓取失败');
-      else showToast(payload.jobId ? '采集已排入后台任务' : payload.feed?.note || '已读取保存内容');
+      else showToast(queuedJob || payload.jobId ? '采集已排入后台任务' : payload.feed?.note || '已读取保存内容');
     }
     return payload.feed;
   } catch (error) {

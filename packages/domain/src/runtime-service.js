@@ -443,6 +443,12 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort, res
     listEvents(afterId, limit, workspaceId) {
       return runtimeRepository.listEvents(afterId, limit, workspaceId);
     },
+    listEventFrameHeads(afterId, limit, workspaceId) {
+      return runtimeRepository.listEventFrameHeads(afterId, limit, workspaceId);
+    },
+    listEventFrames(afterId, limit, workspaceId) {
+      return runtimeRepository.listEventFrames(afterId, limit, workspaceId);
+    },
     latestEventId() {
       return runtimeRepository.latestEventId();
     },

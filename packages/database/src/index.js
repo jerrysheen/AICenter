@@ -255,14 +255,20 @@ export function createStore(databasePath) {
     });
   }
 
+  const SSE_DATA_MAX_BYTES = 8_000;
+
   function insertEvent(name, aggregateType, aggregateId, payload = {}, workspaceId = DEFAULT_WORKSPACE_ID) {
     const now = Date.now();
     const payloadJson = JSON.stringify(payload);
+    const payloadBytes = Buffer.byteLength(payloadJson);
+    const sseData = payloadBytes <= SSE_DATA_MAX_BYTES
+      ? payloadJson
+      : `{"truncated":true,"bytes":${payloadBytes}}`;
     const result = database.prepare(`INSERT INTO outbox_events
-      (workspace_id, event_name, aggregate_type, aggregate_id, payload_json, payload_bytes, schema_version,
+      (workspace_id, event_name, aggregate_type, aggregate_id, payload_json, payload_bytes, sse_data, schema_version,
        occurred_at, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`)
-      .run(workspaceId, name, aggregateType, aggregateId, payloadJson, Buffer.byteLength(payloadJson), now, now);
+      VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`)
+      .run(workspaceId, name, aggregateType, aggregateId, payloadJson, payloadBytes, sseData, now, now);
     return Number(result.lastInsertRowid);
   }
 
@@ -935,10 +941,10 @@ export function createStore(databasePath) {
       const safeAfterId = Math.max(0, Number(afterId) || 0);
       const safeLimit = Math.max(1, Math.min(Number(limit) || 1, 100));
       const rows = workspaceId
-        ? database.prepare(`SELECT id, workspace_id, event_name, payload_bytes
+        ? database.prepare(`SELECT id, workspace_id, event_name, payload_bytes, sse_data
             FROM outbox_events WHERE workspace_id = ? AND id > ? ORDER BY id ASC LIMIT ?`)
           .all(workspaceId, safeAfterId, safeLimit)
-        : database.prepare(`SELECT id, workspace_id, event_name, payload_bytes
+        : database.prepare(`SELECT id, workspace_id, event_name, payload_bytes, sse_data
             FROM outbox_events WHERE id > ? ORDER BY id ASC LIMIT ?`)
           .all(safeAfterId, safeLimit);
       return rows.map((row) => ({
@@ -946,6 +952,7 @@ export function createStore(databasePath) {
         workspaceId: row.workspace_id,
         name: row.event_name,
         payloadBytes: row.payload_bytes == null ? null : Number(row.payload_bytes),
+        sseData: row.sse_data == null ? null : String(row.sse_data),
       }));
     },
 
@@ -961,17 +968,17 @@ export function createStore(databasePath) {
       const safeAfterId = Math.max(0, Number(afterId) || 0);
       const safeLimit = Math.max(1, Math.min(Number(limit) || 8, 1_000));
       const rows = workspaceId
-        ? database.prepare(`SELECT id, workspace_id, event_name, payload_json
+        ? database.prepare(`SELECT id, workspace_id, event_name, sse_data
             FROM outbox_events WHERE workspace_id = ? AND id > ? ORDER BY id ASC LIMIT ?`)
           .all(workspaceId, safeAfterId, safeLimit)
-        : database.prepare(`SELECT id, workspace_id, event_name, payload_json
+        : database.prepare(`SELECT id, workspace_id, event_name, sse_data
             FROM outbox_events WHERE id > ? ORDER BY id ASC LIMIT ?`)
           .all(safeAfterId, safeLimit);
       return rows.map((row) => ({
         id: row.id,
         workspaceId: row.workspace_id,
         name: row.event_name,
-        payloadJson: row.payload_json || '{}',
+        payloadJson: row.sse_data || '{"truncated":true,"bytes":null}',
       }));
     },
 

@@ -1908,6 +1908,10 @@ migrations.push({ version: 65, name: 'outbox_payload_bytes', up(database) {
   addColumn(database, 'outbox_events', 'payload_bytes', 'INTEGER');
 }});
 
+migrations.push({ version: 66, name: 'outbox_sse_data', up(database) {
+  addColumn(database, 'outbox_events', 'sse_data', 'TEXT');
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

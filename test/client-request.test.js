@@ -4,7 +4,9 @@ import {
   API_REQUEST_LIMIT,
   cacheTtlFor,
   createRequestLayer,
+  isPreparedPending,
   planTranslationPoll,
+  resolvePreparedPending,
   requestDedupeKey,
   TRANSLATION_POLL_DEADLINE_MS,
   TRANSLATION_QUEUED_GIVE_UP_MS,
@@ -73,6 +75,34 @@ test('at most six requests run, and visible work goes ahead of idle work', async
   await Promise.all(pending);
   assert.ok(peak <= API_REQUEST_LIMIT);
   assert.ok(order.indexOf('visible') < order.indexOf('idle-7'));
+});
+
+test('a prepared pending body is retried and is not stored in the request cache', async () => {
+  let calls = 0;
+  const payload = await resolvePreparedPending(() => {
+    calls += 1;
+    return Promise.resolve(calls < 3 ? { ok: true, pending: true } : { ok: true, feed: { items: [{ id: 'page-2' }] } });
+  }, { sleep: () => Promise.resolve() });
+  assert.equal(calls, 3);
+  assert.equal(isPreparedPending({ ok: true, pending: true }), true);
+  assert.equal(isPreparedPending(payload), false);
+  assert.equal(payload.feed.items[0].id, 'page-2');
+  let clock = 1_000;
+  let loads = 0;
+  const layer = createRequestLayer({ now: () => clock });
+  const factory = () => {
+    loads += 1;
+    return Promise.resolve({ ok: true, pending: true });
+  };
+  await layer.run('feed', factory, { ttl: 8_000 });
+  clock += 1_000;
+  await layer.run('feed', factory, { ttl: 8_000 });
+  assert.equal(loads, 2);
+  const settled = await layer.run('done', () => Promise.resolve({ ok: true, items: [1] }), { ttl: 8_000 });
+  clock += 1_000;
+  const again = await layer.run('done', () => Promise.resolve({ ok: true, items: [2] }), { ttl: 8_000 });
+  assert.equal(settled.items[0], 1);
+  assert.equal(again.items[0], 1);
 });
 
 test('translation polling backs off and stops when the job will not be claimed', () => {

@@ -403,24 +403,30 @@ test('reading hour index returns published hours, headline order, and rejects a 
   assert.deepEqual(service.indexForRange('local', {startAt: start + 5 * hour, endAt: start + 6 * hour}, 'hour'), {hours: []});
   assert.equal(JSON.stringify(index).includes('失败尝试') || JSON.stringify(index).includes('只有尝试') || JSON.stringify(index).includes('别的工作区'), false);
 
-  const route = createReportRoutes().find((item) => item.path === '/api/v1/reports/reading-hour/index');
+  const offthread = {async build(task) {
+    const payload = task.kind === 'reading-hour'
+      ? {ok: true, snapshot: {id: 'rh:published', items: [{title: '中国金融后写'}]}}
+      : {ok: true, hours: index.hours};
+    const raw = Buffer.from(JSON.stringify(payload));
+    return {status: 200, prepared: {json: raw, gzipped: null, etag: 'W/"hour"', bytes: raw.length}};
+  }};
+  const route = createReportRoutes({offthread}).find((item) => item.path === '/api/v1/reports/reading-hour/index');
   const seen = [];
   let status, body;
   const response = {writeHead(code) { status = code; }, end(value) { body = value; }};
   const services = {readingHour: {indexForRange(workspace, value, scope) { seen.push({workspace, value, scope}); return index; }}};
-  await route.handler({response, services, identity: {device: {workspaceId: 'phone'}}, url: new URL(`http://localhost/api/v1/reports/reading-hour/index?startAt=${start}&endAt=${start + 7 * 86400000}&scope=hour`)});
+  await route.handler({request: {headers: {}}, response, services, identity: {device: {workspaceId: 'phone'}}, url: new URL(`http://localhost/api/v1/reports/reading-hour/index?startAt=${start}&endAt=${start + 7 * 86400000}&scope=hour`)});
   assert.equal(status, 200);
-  assert.deepEqual(seen[0], {workspace: 'phone', value: {startAt: start, endAt: start + 7 * 86400000}, scope: 'hour'});
-  assert.equal(JSON.parse(body).ok, true);
-  assert.equal(JSON.parse(body).hours[0].headline.nodeId, 'cn-later');
-  await route.handler({response, services, identity: {}, url: new URL(`http://localhost/api/v1/reports/reading-hour/index?startAt=${start}&endAt=${start + hour}`)});
-  assert.equal(seen[1].workspace, 'local');
-  assert.equal(seen[1].scope, 'hour');
+  assert.equal(seen.length, 0);
+  assert.equal(JSON.parse(Buffer.from(body).toString('utf8')).hours[0].id, 'rh:published');
+  await route.handler({request: {headers: {}}, response, services, identity: {}, url: new URL(`http://localhost/api/v1/reports/reading-hour/index?startAt=${start}&endAt=${start + hour}`)});
+  assert.equal(seen.length, 0);
   const fallback = readingHourIndexDefaultWindow();
   assert.deepEqual(ReadingHourIndexQuerySchema.parse({}), {...fallback, scope: 'hour'});
-  await route.handler({response, services, identity: {}, url: new URL('http://localhost/api/v1/reports/reading-hour/index')});
+  await route.handler({request: {headers: {}}, response, services, identity: {}, url: new URL('http://localhost/api/v1/reports/reading-hour/index')});
   assert.equal(status, 200);
-  assert.deepEqual(seen[2], {workspace: 'local', value: fallback, scope: 'hour'});
+  assert.equal(seen.length, 0);
+  assert.equal(JSON.parse(Buffer.from(body).toString('utf8')).hours[0].id, 'rh:published');
   const reject = (query) => assert.throws(() => route.handler({response, services, identity: {}, url: new URL(`http://localhost/api/v1/reports/reading-hour/index?${query}`)}), ValidationError);
   reject('startAt=no&endAt=10');
   reject(`startAt=${start}&endAt=${start}`);

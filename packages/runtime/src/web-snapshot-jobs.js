@@ -28,7 +28,22 @@ export const HOME_BOOTSTRAP_SNAPSHOT_KEY = 'home-bootstrap';
 export const HOLDINGS_MARKET_SNAPSHOT_KEY = 'holdings-market';
 export const FEED_LIST_SNAPSHOT_TTL_MS = 10 * 60 * 1000;
 export const HARDWARE_PRICE_SNAPSHOT_TTL_MS = 5 * 60 * 1000;
+export const FEED_FLASH_SNAPSHOT_KEY = 'feed-list-flash';
+export const FEED_FLASH_LIMIT = 80;
+export const FEED_TRENDFORCE_SNAPSHOT_KEY = 'feed-list-trendforce';
+export const HARDWARE_PRICE_CATEGORIES = Object.freeze(['dram', 'nand', 'ssd', 'other-storage']);
+export const REPORT_VIEWS_JOB_TYPE = 'reports.views.snapshot';
+export const REPORT_VIEWS_SCHEDULE_KEY = 'reports.views.snapshot';
+export const REPORT_TREE_INDEX_KEY = 'report-tree-index';
+export const REPORT_TREE_INDEX_INFO_KEY = 'report-tree-index-info';
+export const REPORT_TREE_HOME_KEY = 'report-tree-home';
+export const REPORT_READING_INDEX_KEY = 'report-reading-index';
+export const REPORT_READING_HOME_KEY = 'report-reading-home';
 export { MARKET_NATIVE_BOARD_SNAPSHOT_KEY, marketBoardSnapshotKey };
+
+export function hardwarePriceCategoryKey(category) {
+  return `hardware-prices-${category}`;
+}
 
 const DAY_MS = 86_400_000;
 const HISTORY_REFRESH_MS = 15 * 60 * 1000;
@@ -45,6 +60,7 @@ export const webSnapshotManifest = Object.freeze({
     FEED_LIST_JOB_TYPE,
     HARDWARE_PRICE_JOB_TYPE,
     HOME_BOOTSTRAP_JOB_TYPE,
+    REPORT_VIEWS_JOB_TYPE,
   ],
   jobTypes: [
     STATIC_SIGNAL_BOARD_JOB_TYPE,
@@ -54,6 +70,7 @@ export const webSnapshotManifest = Object.freeze({
     FEED_LIST_JOB_TYPE,
     HARDWARE_PRICE_JOB_TYPE,
     HOME_BOOTSTRAP_JOB_TYPE,
+    REPORT_VIEWS_JOB_TYPE,
   ],
 });
 
@@ -202,9 +219,15 @@ export async function captureMarketNativeBoard({
 }
 
 const READ_HEAD = { isRead: 1, at: Number.MAX_SAFE_INTEGER, id: '~' };
+const HOUR_MS = 3_600_000;
+const HOME_RECENT_HOURS = 48;
 const FEED_LIST_PAGES = [
   ['feed-list-x', 'x', { feed: 'following', limit: 12, fields: 'list' }],
   ['feed-list-x-read', 'x', { feed: 'following', limit: 12, fields: 'list', before: READ_HEAD }],
+  ['feed-list-x-for-you', 'x', { feed: 'for-you', limit: 12, fields: 'list' }],
+  ['feed-list-x-for-you-read', 'x', { feed: 'for-you', limit: 12, fields: 'list', before: READ_HEAD }],
+  ['feed-list-x-saved', 'x', { feed: 'following', limit: 50, fields: 'list', saved: true }],
+  ['feed-list-x-for-you-saved', 'x', { feed: 'for-you', limit: 50, fields: 'list', saved: true }],
   ['feed-list-xueqiu', 'xueqiu', { feed: 'following', limit: 12, fields: 'list' }],
   ['feed-list-xueqiu-read', 'xueqiu', { feed: 'following', limit: 12, fields: 'list', before: READ_HEAD }],
   ['feed-list-xueqiu-featured', 'xueqiu', { feed: 'featured', limit: 12, fields: 'list' }],
@@ -212,21 +235,42 @@ const FEED_LIST_PAGES = [
   ['feed-list-xueqiu-livenews', 'xueqiu', { feed: 'livenews', limit: 12, fields: 'list' }],
   ['feed-list-xueqiu-livenews-read', 'xueqiu', { feed: 'livenews', limit: 12, fields: 'list', before: READ_HEAD }],
 ];
+const REPORT_SLOT_KEYS = [
+  REPORT_TREE_INDEX_KEY,
+  REPORT_TREE_INDEX_INFO_KEY,
+  REPORT_TREE_HOME_KEY,
+  REPORT_READING_INDEX_KEY,
+  REPORT_READING_HOME_KEY,
+];
+const loggedFeedMisses = new Set();
+
+function isReadHead(before) {
+  return before?.isRead === 1 && before?.id === '~' && before?.at === Number.MAX_SAFE_INTEGER;
+}
+
+function slotRef(slot) {
+  return { workspace: 'local', snapshotKey: slot, slot };
+}
 
 export function prebuiltSnapshotSlots() {
   return [
-    { workspace: 'local', snapshotKey: HARDWARE_PRICE_SNAPSHOT_KEY, slot: HARDWARE_PRICE_SNAPSHOT_KEY },
-    ...FEED_LIST_PAGES.map(([slot]) => ({ workspace: 'local', snapshotKey: slot, slot })),
-    { workspace: 'local', snapshotKey: HOME_BOOTSTRAP_SNAPSHOT_KEY, slot: HOME_BOOTSTRAP_SNAPSHOT_KEY },
+    slotRef(HARDWARE_PRICE_SNAPSHOT_KEY),
+    ...HARDWARE_PRICE_CATEGORIES.map((category) => slotRef(hardwarePriceCategoryKey(category))),
+    ...FEED_LIST_PAGES.map(([slot]) => slotRef(slot)),
+    slotRef(FEED_FLASH_SNAPSHOT_KEY),
+    slotRef(FEED_TRENDFORCE_SNAPSHOT_KEY),
+    slotRef(HOME_BOOTSTRAP_SNAPSHOT_KEY),
+    ...REPORT_SLOT_KEYS.map((slot) => slotRef(slot)),
   ];
 }
 
 export function feedListSnapshotKey(providerId, query = {}) {
   if (query.refresh || query.saved || query.fields !== 'list' || Number(query.limit) !== 12) return '';
-  const readHead = query.before?.isRead === 1 && query.before?.id === '~' && query.before?.at === Number.MAX_SAFE_INTEGER;
+  const readHead = isReadHead(query.before);
   if (query.before && !readHead) return '';
   const suffix = readHead ? '-read' : '';
   if (providerId === 'x' && query.feed === 'following') return `feed-list-x${suffix}`;
+  if (providerId === 'x' && query.feed === 'for-you') return `feed-list-x-for-you${suffix}`;
   if (providerId === 'xueqiu' && query.feed === 'following') return `feed-list-xueqiu${suffix}`;
   if (providerId === 'xueqiu' && query.feed === 'featured') return `feed-list-xueqiu-featured${suffix}`;
   if (providerId === 'xueqiu' && query.feed === 'livenews') return `feed-list-xueqiu-livenews${suffix}`;
@@ -234,11 +278,87 @@ export function feedListSnapshotKey(providerId, query = {}) {
 }
 
 export function feedPrebuiltSlot(providerId, query = {}) {
-  if (query.refresh || query.saved) return '';
-  const readHead = query.before?.isRead === 1 && query.before?.id === '~' && query.before?.at === Number.MAX_SAFE_INTEGER;
-  if (query.before && !readHead) return '';
+  if (query.refresh) return '';
   if (query.fields && query.fields !== 'list') return '';
+  const readHead = isReadHead(query.before);
+  if (query.before && !readHead) return '';
+  if (providerId === 'x' && (query.feed === 'following' || query.feed === 'for-you')) {
+    if (query.saved) {
+      if (query.before) return '';
+      return query.feed === 'following' ? 'feed-list-x-saved' : 'feed-list-x-for-you-saved';
+    }
+    return feedListSnapshotKey(providerId, { ...query, limit: 12, fields: 'list' });
+  }
+  if (query.saved) return '';
   return feedListSnapshotKey(providerId, { ...query, limit: 12, fields: 'list' });
+}
+
+export function describeFeedSlotMiss(providerId, query = {}) {
+  const before = !query.before ? '' : (isReadHead(query.before) ? 'read-head' : 'cursor');
+  return `provider=${providerId} feed=${query.feed || ''} limit=${query.limit ?? ''} saved=${query.saved ? 1 : 0} refresh=${query.refresh ? 1 : 0} before=${before} fields=${query.fields || ''}`;
+}
+
+export function logFeedSlotMiss(providerId, query = {}) {
+  const line = describeFeedSlotMiss(providerId, query);
+  if (loggedFeedMisses.has(line)) return line;
+  loggedFeedMisses.add(line);
+  console.log(`[web] feed-slot-miss ${line}`);
+  return line;
+}
+
+function shanghaiHourStart(nowMs) {
+  const date = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(nowMs));
+  const clock = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    hour: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date(nowMs));
+  const read = (parts, type) => Number(parts.find((part) => part.type === type)?.value);
+  let hour = read(clock, 'hour');
+  if (hour === 24) hour = 0;
+  const midnight = Date.UTC(read(date, 'year'), read(date, 'month') - 1, read(date, 'day')) - 8 * HOUR_MS;
+  return midnight + hour * HOUR_MS;
+}
+
+function hourBucket(value) {
+  return Math.floor(Number(value) / HOUR_MS);
+}
+
+function sameHourSpan(query, window) {
+  return hourBucket(query?.startAt) === hourBucket(window.startAt)
+    && hourBucket(query?.endAt) === hourBucket(window.endAt);
+}
+
+export function reportPreparedWindows(now = Date.now()) {
+  const weekEnd = now + 1;
+  const homeEnd = shanghaiHourStart(now) + HOUR_MS;
+  return {
+    week: { startAt: weekEnd - 7 * DAY_MS, endAt: weekEnd },
+    home: { startAt: homeEnd - HOME_RECENT_HOURS * HOUR_MS, endAt: homeEnd },
+  };
+}
+
+export function reportTreeSlot(query = {}, now = Date.now()) {
+  if (query.view !== 'index') return '';
+  const windows = reportPreparedWindows(now);
+  if (query.information === '1') return sameHourSpan(query, windows.week) ? REPORT_TREE_INDEX_INFO_KEY : '';
+  if (query.information) return '';
+  if (sameHourSpan(query, windows.week)) return REPORT_TREE_INDEX_KEY;
+  if (sameHourSpan(query, windows.home)) return REPORT_TREE_HOME_KEY;
+  return '';
+}
+
+export function reportReadingIndexSlot(query = {}, now = Date.now()) {
+  if (query.scope && query.scope !== 'hour') return '';
+  const windows = reportPreparedWindows(now);
+  if (sameHourSpan(query, windows.week)) return REPORT_READING_INDEX_KEY;
+  if (sameHourSpan(query, windows.home)) return REPORT_READING_HOME_KEY;
+  return '';
 }
 
 export async function captureFeedLists({
@@ -271,6 +391,27 @@ export async function captureFeedLists({
       /* 未启用的来源不写快照，请求仍走原来的读取。 */
     }
     await new Promise((resolve) => setImmediate(resolve));
+  }
+  try {
+    const items = feedService.listFlash?.(workspaceId, { limit: FEED_FLASH_LIMIT }) || [];
+    generatedAt = now();
+    repository.saveSnapshot(workspaceId, FEED_FLASH_SNAPSHOT_KEY, { ok: true, items }, generatedAt);
+    pages += 1;
+  } catch {
+    /* 快讯名单未就绪时不写快照。 */
+  }
+  try {
+    const feed = await feedService.getExternalFeed('trendforce', {
+      platform: 'trendforce',
+      feed: 'public',
+      fields: 'list',
+      refresh: false,
+    }, { workspaceId });
+    generatedAt = now();
+    repository.saveSnapshot(workspaceId, FEED_TRENDFORCE_SNAPSHOT_KEY, { ok: true, feed }, generatedAt);
+    pages += 1;
+  } catch {
+    /* TrendForce 未启用时不写快照。 */
   }
   return { generatedAt, pages };
 }
@@ -338,7 +479,87 @@ export async function captureHardwarePrices({
   const at = now();
   const view = hardwarePriceService.list(workspaceId, { limit: 500 });
   repository.saveSnapshot(workspaceId, HARDWARE_PRICE_SNAPSHOT_KEY, { ok: true, ...view }, at);
+  for (const category of HARDWARE_PRICE_CATEGORIES) {
+    repository.saveSnapshot(workspaceId, hardwarePriceCategoryKey(category), {
+      ok: true,
+      items: view.items.filter((item) => item.category === category),
+      snapshot: null,
+      pages: view.pages,
+    }, at);
+  }
   return { generatedAt: at, items: view.items.length };
+}
+
+export async function captureReportViews({
+  informationTree,
+  readingHour,
+  repository,
+  workspaceId = 'local',
+  now = () => Date.now(),
+}) {
+  if (!repository?.saveSnapshot) throw new Error('简报快照需要存储');
+  const at = now();
+  const windows = reportPreparedWindows(at);
+  let pages = 0;
+  const save = (key, body) => {
+    repository.saveSnapshot(workspaceId, key, body, at);
+    pages += 1;
+  };
+  if (informationTree?.list) {
+    try {
+      save(REPORT_TREE_INDEX_KEY, { ok: true, ...informationTree.list(workspaceId, { ...windows.week, view: 'index' }) });
+    } catch { /* 目录未就绪时不写。 */ }
+    try {
+      save(REPORT_TREE_INDEX_INFO_KEY, { ok: true, ...informationTree.list(workspaceId, { ...windows.week, view: 'index', information: '1' }) });
+    } catch { /* 材料目录未就绪时不写。 */ }
+    try {
+      save(REPORT_TREE_HOME_KEY, { ok: true, ...informationTree.list(workspaceId, { ...windows.home, view: 'index' }) });
+    } catch { /* 首页目录未就绪时不写。 */ }
+  }
+  if (readingHour?.indexForRange) {
+    try {
+      save(REPORT_READING_INDEX_KEY, { ok: true, ...readingHour.indexForRange(workspaceId, windows.week, 'hour') });
+    } catch { /* 七日阅读索引未就绪时不写。 */ }
+    try {
+      save(REPORT_READING_HOME_KEY, { ok: true, ...readingHour.indexForRange(workspaceId, windows.home, 'hour') });
+    } catch { /* 首页阅读索引未就绪时不写。 */ }
+  }
+  return { generatedAt: at, pages };
+}
+
+export function createReportViewCapture({
+  store,
+  env = process.env,
+  timezone = 'Asia/Shanghai',
+  pipeline = 'legacy',
+} = {}) {
+  let readers = null;
+  return async function capture(now = () => Date.now()) {
+    if (!readers) {
+      const { createInformationTreeReader } = await import('../../domain/src/information-tree-service.js');
+      const { createReadingHourService } = await import('../../domain/src/reading-hour-service.js');
+      readers = {
+        informationTree: createInformationTreeReader({
+          repository: store.repositories.informationTree,
+          timezone,
+          pipeline,
+          catalog: {},
+        }),
+        readingHour: createReadingHourService({
+          repository: store.repositories.informationTree,
+          reportRepository: store.repositories.report,
+          enabled: env.AI_CENTER_READING_HOUR === '1',
+          env,
+        }),
+      };
+    }
+    return captureReportViews({
+      informationTree: readers.informationTree,
+      readingHour: readers.readingHour,
+      repository: store.repositories.runtimeSnapshots,
+      now,
+    });
+  };
 }
 
 export function createWebSnapshotJobHandlers(options) {
@@ -349,6 +570,11 @@ export function createWebSnapshotJobHandlers(options) {
     [MARKET_NATIVE_BOARD_JOB_TYPE]: async () => captureMarketNativeBoard(options),
     [FEED_LIST_JOB_TYPE]: async () => captureFeedLists(options),
     [HARDWARE_PRICE_JOB_TYPE]: async () => captureHardwarePrices(options),
+    [REPORT_VIEWS_JOB_TYPE]: async () => (
+      options.captureReportViews
+        ? options.captureReportViews()
+        : { generatedAt: Date.now(), pages: 0 }
+    ),
     [HOME_BOOTSTRAP_JOB_TYPE]: async () => captureHomeBootstrap({
       compose: options.composeHomeBootstrap,
       repository: options.repository,
@@ -398,4 +624,8 @@ export function ensureHardwarePriceSchedule(store, now = Date.now()) {
 
 export function ensureHomeBootstrapSchedule(store, now = Date.now()) {
   return upsertInterval(store, HOME_BOOTSTRAP_SCHEDULE_KEY, HOME_BOOTSTRAP_JOB_TYPE, now);
+}
+
+export function ensureReportViewSchedule(store, now = Date.now()) {
+  return upsertInterval(store, REPORT_VIEWS_SCHEDULE_KEY, REPORT_VIEWS_JOB_TYPE, now);
 }

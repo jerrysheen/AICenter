@@ -66,6 +66,7 @@ export function createPreparedSlotStore() {
         ETag: prepared.etag,
         'Cache-Control': 'private, no-cache',
         ...headers,
+        ...(slot ? {} : { 'X-Prepared-Pending': '1' }),
       };
       if (allow304 && ifNoneMatch(request, prepared.etag)) {
         response.writeHead(304, outgoing);

@@ -42,6 +42,35 @@ export function cacheTtlFor(method, path) {
   return 4_000;
 }
 
+export const PREPARED_PENDING_DELAYS_MS = Object.freeze([250, 500, 1000, 1500, 2000, 2500, 3000]);
+
+export function isPreparedPending(payload) {
+  return Boolean(payload && payload.ok === true && payload.pending === true);
+}
+
+export async function resolvePreparedPending(load, {
+  sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
+  signal,
+  delays = PREPARED_PENDING_DELAYS_MS,
+} = {}) {
+  let payload = await load();
+  for (let attempt = 0; attempt < delays.length && isPreparedPending(payload); attempt += 1) {
+    if (signal?.aborted) {
+      const error = new Error('请求已取消');
+      error.name = 'AbortError';
+      throw error;
+    }
+    await sleep(delays[attempt]);
+    if (signal?.aborted) {
+      const error = new Error('请求已取消');
+      error.name = 'AbortError';
+      throw error;
+    }
+    payload = await load();
+  }
+  return payload;
+}
+
 export function createRequestLayer({ maxInflight = API_REQUEST_LIMIT, now = () => Date.now() } = {}) {
   let active = 0;
   let seq = 0;
@@ -77,7 +106,7 @@ export function createRequestLayer({ maxInflight = API_REQUEST_LIMIT, now = () =
       resolve = res;
       reject = rej;
     }).then((value) => {
-      if (!bypass && ttl > 0) cache.set(key, { value, expires: now() + ttl });
+      if (!bypass && ttl > 0 && !isPreparedPending(value)) cache.set(key, { value, expires: now() + ttl });
       return value;
     });
     if (share) {

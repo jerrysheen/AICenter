@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-13-feed-x-flash-buffers.md`：X 的推荐、已读头和收藏第一页，以及快讯，只写出预备缓冲区。`pending` 只出现在这些槽还没有第一份快照时。翻页、报价 `snapshotId`、刊期和单小时阅读在 Web 的工作线程里查询并返回。事件推送改读 `sse_data`。migration 66。需要同时重启 Web 和 Worker。浏览器再加载一次。
+
 - `progress/2026-10-13-google-fetch-dispatcher.md`：Google 直连改为使用 undici 自己的 `fetch` 和同一份 Agent。Node 内置 `fetch` 不再接收 npm undici 的 dispatcher。26B 默认和换密钥重试不变。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-13-gemma-26b-connect-timeout.md`：Gemma 原文翻译默认只用 26B。5xx、响应超时和连接超时在 26B 上换另一把密钥，不转到 31B。Google 直连增加可配置的短连接超时，和长响应超时分开。不新增 migration。需要同时重启 Web 和 Worker。

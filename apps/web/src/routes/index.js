@@ -22,16 +22,16 @@ import { createTradingRoutes } from './trading-routes.js';
 import { createSourceRoutes } from './source-routes.js';
 import { createTaggingRoutes } from './tagging-routes.js';
 
-export function createApiRoutes({ slots } = {}) {
+export function createApiRoutes({ slots, offthread = null } = {}) {
   return [
     ...createSystemRoutes(),
     ...createIdentityRoutes(),
     ...createApiTokenRoutes(),
     ...createRuntimeRoutes(),
     ...createSourceRoutes(),
-    ...createFeedRoutes({ slots }),
+    ...createFeedRoutes({ slots, offthread }),
     ...createFeedInteractionRoutes(),
-    ...createHardwarePriceRoutes({ slots }),
+    ...createHardwarePriceRoutes({ slots, offthread }),
     ...createComputePriceRoutes(),
     ...createKnowledgeRoutes(),
     ...createTaggingRoutes(),
@@ -40,7 +40,7 @@ export function createApiRoutes({ slots } = {}) {
     ...createArticleAnalysisRoutes(),
     ...createTradingRoutes(),
     ...createHomeRoutes({ slots }),
-    ...createReportRoutes(),
+    ...createReportRoutes({ slots, offthread }),
     ...createStrategyRoutes(),
     ...createQuantRoutes(),
     ...createEtfWhaleRoutes(),
