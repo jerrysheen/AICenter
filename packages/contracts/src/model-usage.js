@@ -16,6 +16,7 @@ export const ModelUsageRecordSchema = z.object({
   harnessSessionId: z.string().max(256), turn: count, step: count, attempt: count,
   provider: z.string().max(128), model: z.string().max(128),
   status: z.enum(['pending', 'succeeded', 'failed', 'interrupted']),
+  httpStatus: z.number().int().min(100).max(599).nullable().default(null),
   completeness: z.enum(['complete', 'partial', 'missing']),
   usage: ModelTokenUsageSchema, occurredAt: z.number().int().nonnegative(),
   supplierAmount: z.number().nonnegative().finite().nullable(),

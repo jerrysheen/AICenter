@@ -18,7 +18,13 @@ function accountingEvent(event) {
       data.message = { source: { provider: String(event.data.message?.source?.provider || ''), model: String(event.data.message?.source?.model || '') } };
     }
   }
-  if (event.type === 'turn/end') data.reason = { kind: event.data.reason?.kind };
+  if (event.type === 'turn/end') {
+    const status = Number(event.data.reason?.error?.status ?? event.data.reason?.error?.statusCode);
+    const code = Number(event.data.reason?.error?.code);
+    const httpStatus = Number.isInteger(status) && status >= 400 && status <= 599 ? status
+      : Number.isInteger(code) && code >= 400 && code <= 599 ? code : null;
+    data.reason = { kind: event.data.reason?.kind, ...(httpStatus ? { httpStatus } : {}) };
+  }
   return { type: event.type, seq: event.seq, time: event.time, data };
 }
 
@@ -46,6 +52,7 @@ export function createHarnessUsageObserver({ record, attribution = {}, provider 
     const turns = Map.groupBy(events, event => event.data.turn);
     for (const [turn, events] of turns) {
       let request = null;
+      let lastRequest = null;
       const attempts = new Map();
       const newAttempt = event => {
         const step = event.data.step;
@@ -64,6 +71,10 @@ export function createHarnessUsageObserver({ record, attribution = {}, provider 
             kind: 'request', harnessSessionId: sessionId, turn, step: event.data.step ?? null, attempt: null,
             occurredAt: Number.isSafeInteger(event.time) && event.time >= 0 ? event.time : Date.now(),
             status: 'pending', completeness: 'missing', usage: emptyTokenUsage() };
+        }
+        if (event.type === 'turn/end' && Number.isInteger(event.data.reason?.httpStatus) && lastRequest && lastRequest.status !== 'succeeded' && lastRequest.httpStatus == null) {
+          lastRequest.httpStatus = event.data.reason.httpStatus;
+          save(lastRequest);
         }
         if (!request) continue;
         if (event.type.startsWith('assistant/')) {
@@ -89,6 +100,7 @@ export function createHarnessUsageObserver({ record, attribution = {}, provider 
         }
         if (event.type === 'llm/retry') { request.status = 'failed'; save(request); }
         if (event.type === 'turn/end' && request.status === 'pending') { request.status = 'interrupted'; save(request); }
+        if (request.kind === 'request') lastRequest = request;
         if (event.type === 'step/end') request = null;
       }
       // Never call the native function with a synthetic or request-local turn.
@@ -129,6 +141,14 @@ export function createHarnessUsageObserver({ record, attribution = {}, provider 
     hasIncomplete() { return [...projected.values()].some(row => row.completeness !== 'complete'); },
     interrupt() {
       for (const row of projected.values()) if (row.status === 'pending') row.status = 'interrupted';
+      flush();
+    },
+    noteHttpStatus(sessionId, status) {
+      const code = Number(status);
+      if (!Number.isInteger(code) || code < 100 || code > 599) return;
+      const target = [...projected.values()].reverse().find(row => row.kind === 'request' && row.harnessSessionId === sessionId && row.httpStatus == null && row.status !== 'succeeded');
+      if (!target) return;
+      target.httpStatus = code;
       flush();
     },
   });

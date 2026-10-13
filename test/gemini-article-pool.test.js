@@ -120,6 +120,22 @@ test('main article model pool alternates actual Harness models and explicit sele
  }finally{await runtime.close();store.close();fs.rmSync(dir,{recursive:true,force:true});}
 });
 
+test('article model cursor continues after a new admission instead of restarting at the first model',()=>{
+ const store=createStore(':memory:');let at=Date.parse('2026-10-07T08:00:00Z');
+ const config={...env,AI_CENTER_GEMINI_KEY_ENVS:'GEMINI_API_KEY',AI_CENTER_HARNESS_ARTICLE_MODEL:'gemini-a',AI_CENTER_GEMINI_ARTICLE_MODELS:'gemini-a,gemini-b',AI_CENTER_GEMINI_ARTICLE_MODEL_POOL:'gemini-a,gemini-b',AI_CENTER_GEMINI_ARTICLE_MIN_INTERVAL_MS:'1'};
+ const open=()=>createGeminiArticleAdmission({repository:store.repositories.modelQuota,env:config,now:()=>at});
+ try {
+  const first=open();
+  const ticket=first.reserve({...input,model:'gemini-a',useModelPool:true});
+  assert.equal(ticket.model,'gemini-a');
+  first.release(ticket);
+  at+=3000;
+  assert.equal(open().reserve({...input,model:'gemini-a',useModelPool:true}).model,'gemini-b');
+  at+=3000;
+  assert.equal(open().reserve({...input,model:'gemini-a',useModelPool:true}).model,'gemini-a');
+ }finally{store.close();}
+});
+
 test('main pool uses a second model after first-model quota and only all models cold permit fallback',()=>{
  const store=createStore(':memory:');let at=Date.parse('2026-10-07T08:00:00Z');
  const config={...env,AI_CENTER_GEMINI_KEY_ENVS:'GEMINI_API_KEY',AI_CENTER_HARNESS_ARTICLE_MODEL:'gemini-a',AI_CENTER_GEMINI_ARTICLE_MODELS:'gemini-a,gemini-b',AI_CENTER_GEMINI_ARTICLE_MODEL_POOL:'gemini-a,gemini-b'};

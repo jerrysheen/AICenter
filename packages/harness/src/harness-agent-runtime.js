@@ -677,6 +677,8 @@ export function createHarnessAgentRuntime({
         if(!error.admittedModel && articleTicket.model) error.admittedModel=articleTicket.model;
       }
       if(articleTicket)googleAdmission.failed(articleTicket,error);
+      const httpStatus=Number(error?.upstreamStatus ?? error?.status);
+      if(Number.isInteger(httpStatus) && httpStatus>=100 && httpStatus<=599) usageObserver.noteHttpStatus(harnessSessionId, httpStatus);
       await record('run.failed', {
         runtime: 'harness',
         name: error?.name || 'Error',

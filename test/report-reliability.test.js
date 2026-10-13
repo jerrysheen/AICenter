@@ -127,6 +127,48 @@ test('hourly non-quota failure retries once on another key and logs every call',
   }
 });
 
+test('hourly model loop starts at the balanced model and falls back to the other', async () => {
+  const seen = [];
+  const models = ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite'];
+  const f = fixture({
+    upstreamRetries: 0,
+    hourlyModels: models,
+    rankHourlyModels: () => ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
+  });
+  const ignored = fixture({
+    upstreamRetries: 0,
+    hourlyModels: models,
+    rankHourlyModels: () => ['other-model'],
+  });
+  const original = f.runtime.run;
+  f.runtime.run = async (input) => {
+    if (input.usageStage !== 'tree-hourly') return original(input);
+    seen.push(input.googleModel);
+    if (input.googleModel === 'gemini-3.5-flash-lite') {
+      throw Object.assign(new Error('模型调用失败：503: unavailable'), {upstreamStatus: 503, name: 'HarnessModelError'});
+    }
+    return original(input);
+  };
+  const ignoredSeen = [];
+  const ignoredOriginal = ignored.runtime.run;
+  ignored.runtime.run = async (input) => {
+    if (input.usageStage !== 'tree-hourly') return ignoredOriginal(input);
+    ignoredSeen.push(input.googleModel);
+    return ignoredOriginal(input);
+  };
+  try {
+    const hour = await f.service.generateHour({hourStart: start, materials: [material('a'), material('b')]});
+    assert.equal(hour.status, 'ready');
+    assert.deepEqual(seen, ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite']);
+    const kept = await ignored.service.generateHour({hourStart: start, materials: [material('c'), material('d')]});
+    assert.equal(kept.status, 'ready');
+    assert.deepEqual(ignoredSeen, ['gemini-3.1-flash-lite']);
+  } finally {
+    f.store.close();
+    ignored.store.close();
+  }
+});
+
 test('hourly 503 retries on the same model, then uses the next hourly model', async () => {
   const seen = [];
   const f = fixture({upstreamRetries: 2, hourlyModels: ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite']});

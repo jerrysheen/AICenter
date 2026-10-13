@@ -361,7 +361,7 @@ export function createAiCenterWorker(options = {}) {
   }
   const quotaUsage=store.repositories.modelUsage;
   const articleAdmission=env.AI_CENTER_ARTICLE_NORMALIZE==='1' && env.AI_CENTER_HARNESS_ARTICLE_PROVIDER==='google' ? createGeminiArticleAdmission({repository:store.repositories.modelQuota,usage:quotaUsage,env}) : null;
-  const hourlyAdmission=env.AI_CENTER_HARNESS_HOURLY_PROVIDER==='google' ? createGeminiArticleAdmission({repository:store.repositories.modelQuota,usage:quotaUsage,env,models:resolveGoogleHourlyAdmissionModels(env),allowFallback:false,modelOrder:'ordered'}) : null;
+  const hourlyAdmission=env.AI_CENTER_HARNESS_HOURLY_PROVIDER==='google' ? createGeminiArticleAdmission({repository:store.repositories.modelQuota,usage:quotaUsage,env,models:resolveGoogleHourlyAdmissionModels(env),allowFallback:false,modelOrder:'least-used'}) : null;
   const agentRuntime = runtimeMode === 'harness'
     ? createHarnessExecutionRuntime({
       articleAdmission,
@@ -452,6 +452,7 @@ export function createAiCenterWorker(options = {}) {
     },
     generationConfig:Object.fromEntries([...(articleStrategy ? ['article-normalize'] : []),'hourly-brief','daily-analysis'].map(task=>{const route=resolveHarnessLlm(env,{closedTask:task});return [task==='article-normalize' ? 'information' : task,{provider:route.provider,model:route.model,protocol:route.protocol,...(route.execution ? {execution:route.execution} : {})}];})),
     hourlyModels:env.AI_CENTER_HARNESS_HOURLY_PROVIDER==='google' ? resolveGoogleHourlyAdmissionModels(env) : [],
+    rankHourlyModels:hourlyAdmission ? (models)=>hourlyAdmission.rankModels(models) : undefined,
     hourlyAttemptCap:boundedInt(env.AI_CENTER_HOURLY_MAX_ATTEMPTS, 4, 1, 12),
     prepAttemptCap:boundedInt(env.AI_CENTER_INFORMATION_PREP_ATTEMPTS, 3, 1, 10),
     upstreamRetries:boundedInt(env.AI_CENTER_HOURLY_UPSTREAM_RETRIES, 3, 0, 6),

@@ -88,7 +88,18 @@ export function createGeminiArticleAdmission({ repository, usage, env = process.
   if(!allowFallback)env={...env,AI_CENTER_HARNESS_ARTICLE_FALLBACK:'none'};
   const opened=now();
   repository.repairDailyCooldowns?.({at:opened,nextReset:nextGeminiDailyReset(opened),dayStart:previousDailyInstant(opened,PACIFIC)});
+  const cursorKey=modelOrder==='round-robin' && policy.models.length>1 ? `gemini-cursor:${policy.models.join(',')}` : '';
   let modelCursor=0;
+  if(cursorKey){
+    const saved=repository.readModelCursor?.(cursorKey);
+    if(saved && saved.models.join(',')===policy.models.join(',') && Number.isInteger(saved.cursor)){
+      modelCursor=((saved.cursor%policy.models.length)+policy.models.length)%policy.models.length;
+    }
+  }
+  function rememberCursor(next){
+    modelCursor=next;
+    if(cursorKey)repository.writeModelCursor?.(cursorKey,policy.models,modelCursor,now());
+  }
   const probeMemory=new Map();
   const request=(model,estimatedTokens,dryRun=false,keyEnv)=>{
     const at=now();
@@ -114,16 +125,43 @@ export function createGeminiArticleAdmission({ repository, usage, env = process.
     nextReadyAt(model) {const results=(policy.models.length ? policy.models : [model]).map(m=>request(m,6144+8192,true));if(results.some(r=>r.admitted))return now();if(results.every(r=>r.quotaExhausted) && env.AI_CENTER_HARNESS_ARTICLE_FALLBACK==='elucid-grok'){const f=repository.reserve({...policy,accountMode:false,requestsPerDay:Infinity,requestsPerKeyPerDay:Infinity,slots:[{project:'article-fallback-elucid',keyEnv:'ELUCID_GROK_API_KEY'}],model:env.AI_CENTER_HARNESS_ARTICLE_FALLBACK_MODEL || 'grok-4.7',at:now(),estimatedTokens:6144+8192,dryRun:true});return f.admitted ? now() : f.retryAt;}return Math.min(...results.map(r=>r.retryAt));},
     release(ticket){repository.release?.(ticket);},
     reserve({ model, keyEnv, inputBytes, maxTokens, useModelPool=false }) {
-      const pool=useModelPool && policy.models.length ? policy.models : [model],results=[];
+      const pool=useModelPool && policy.models.length ? policy.models : [model];
+      const estimated=inputBytes+maxTokens+8192;
+      if(modelOrder==='least-used' && pool.length>1){
+        const pairs=rankPairs({repository,policy,pool,keyEnv,at:now()});
+        if(!pairs.length){
+          const missed=request(pool[0],estimated,false,keyEnv);
+          if(missed.admitted)return missed;
+          throw Object.assign(new Error(waitMessage([{...missed,model:pool[0]}],missed.retryAt)), { code: 'budget-deferred', retryAt: missed.retryAt, quotaExhausted:missed.quotaExhausted===true });
+        }
+        const results=[];
+        for(const pair of pairs){
+          const result=request(pair.model,estimated,false,pair.keyEnv);
+          if(result.admitted)return result;
+          results.push({...result,model:pair.model});
+        }
+        const result={retryAt:Math.min(...results.map(item=>item.retryAt)),quotaExhausted:results.every(item=>item.quotaExhausted)};
+        throw Object.assign(new Error(waitMessage(results,result.retryAt)), { code: 'budget-deferred', retryAt: result.retryAt, quotaExhausted:result.quotaExhausted===true });
+      }
+      const results=[];
       const ordered=modelOrder==='ordered';
       for(let i=0;i<pool.length;i++){
-        const index=ordered?i:(modelCursor+i)%pool.length,chosen=pool[index],result=request(chosen,inputBytes+maxTokens+8192,false,keyEnv);
-        if(result.admitted){if(useModelPool && !ordered)modelCursor=(index+1)%pool.length;return result;}
+        const index=ordered?i:(modelCursor+i)%pool.length,chosen=pool[index],result=request(chosen,estimated,false,keyEnv);
+        if(result.admitted){if(useModelPool && !ordered)rememberCursor((index+1)%pool.length);return result;}
         results.push({...result,model:chosen});
       }
       const result={retryAt:Math.min(...results.map(r=>r.retryAt)),quotaExhausted:results.every(r=>r.quotaExhausted)};
       if (!result.admitted) throw Object.assign(new Error(waitMessage(results,result.retryAt)), { code: 'budget-deferred', retryAt: result.retryAt, quotaExhausted:result.quotaExhausted===true });
       return result;
+    },
+    rankModels(models){
+      const pool=(Array.isArray(models)?models:policy.models).map(item=>String(item||'').trim()).filter(Boolean);
+      if(pool.length<2)return pool;
+      const pairs=rankPairs({repository,policy,pool,at:now()});
+      for(const pair of pairs){
+        if(request(pair.model,6144+8192,true,pair.keyEnv).admitted)return [pair.model,...pool.filter(item=>item!==pair.model)];
+      }
+      return pool;
     },
     reserveFallback({model,inputBytes,maxTokens}) {
       const result=repository.reserve({...policy,accountMode:false,requestsPerDay:Infinity,requestsPerKeyPerDay:Infinity,slots:[{project:'article-fallback-elucid',keyEnv:'ELUCID_GROK_API_KEY'}],model,at:now(),estimatedTokens:inputBytes+maxTokens+8192});
@@ -194,7 +232,7 @@ async function executeProbe({repository,usage,now,memory,target,generate,env,log
   try{usage?.save?.({id:`quota-probe:${randomUUID()}`,workspaceId:'local',kind:'request',jobId:`probe:${status}:${lifted?'lifted':'kept'}`,jobAttempt:null,
     stage:'quota-probe',applicationSessionId:suffix,harnessSessionId:'',turn:null,step:null,attempt:null,provider:'google',model:target.model,
     status:ok?'succeeded':'failed',completeness:'complete',usage:{...emptyTokenUsage(),inputTokens:1,outputTokens:ok?1:0,totalTokens:ok?2:1},
-    occurredAt:at,supplierAmount:null,supplierCurrency:null});}catch{/* 用量写入失败仍保留探针日志 */}
+    occurredAt:at,supplierAmount:null,supplierCurrency:null,httpStatus:status>=100&&status<=599?status:null});}catch{/* 用量写入失败仍保留探针日志 */}
   log(`[worker] gemini quota probe key=${suffix} model=${target.model} ok=${ok?1:0} status=${status} lifted=${lifted?1:0}`);
   return {keySuffix:suffix,model:target.model,ok,status,lifted};
 }
@@ -210,6 +248,28 @@ export function probeGeminiQuota(admissions,{env=process.env,log=console.log,gen
     found.sort((a,b)=>a.target.lastProbeAt-b.target.lastProbeAt);
     return found[0].admission.runProbe(found[0].target,{generate,env,log});
   });
+}
+
+function rankPairs({repository,policy,pool,keyEnv,at}){
+  const dayStart=previousDailyInstant(at,PACIFIC);
+  const dayEnd=nextDailyInstant(at,PACIFIC);
+  const slots=keyEnv===undefined?policy.slots:policy.slots.filter(slot=>slot.keyEnv===keyEnv);
+  const usage=repository.pairUsage?.({models:pool,dayStart,dayEnd})||{rows:[],seen:[]};
+  const count=new Map((usage.rows||[]).map(row=>[`${row.model}\0${row.keyEnv}`,row]));
+  const seen=new Map((usage.seen||[]).map(row=>[row.keyEnv,row.last||0]));
+  const totals=new Map();
+  for(const row of usage.rows||[])totals.set(row.model,(totals.get(row.model)||0)+row.n);
+  const pairs=[];
+  pool.forEach((model,mi)=>{
+    slots.forEach((slot,si)=>{
+      const row=count.get(`${model}\0${slot.keyEnv}`);
+      const used=seen.get(slot.keyEnv)||0;
+      pairs.push({model,keyEnv:slot.keyEnv,n:row?.n||0,last:row?.last||0,total:totals.get(model)||0,
+        idle:policy.idleAfterMs>0&&(used===0||at-used>=policy.idleAfterMs),mi,si});
+    });
+  });
+  pairs.sort((a,b)=>a.n-b.n||a.total-b.total||(a.idle===b.idle?0:a.idle?-1:1)||a.last-b.last||a.si-b.si||a.mi-b.mi);
+  return pairs;
 }
 
 export function startGeminiQuotaProbe(admissions,{env=process.env,intervalMs=60_000,log=console.log}={}){

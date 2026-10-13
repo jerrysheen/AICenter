@@ -114,6 +114,58 @@ test('hourly models fall back in order only after every key is cooled for the ea
   } finally { store.close(); }
 });
 
+test('least-used reserve spreads a pool across models before filling the first model', () => {
+  const atRef = {at:Date.parse('2026-10-07T16:00:00Z')};
+  const env = {
+    GEMINI_API_KEY:'one', GEMINI_API_KEY2:'two',
+    AI_CENTER_GEMINI_KEY_ENVS:'GEMINI_API_KEY,GEMINI_API_KEY2',
+    AI_CENTER_HARNESS_HOURLY_MODEL:'gemini-3.1-flash-lite',
+    AI_CENTER_GEMINI_HOURLY_MODELS:'gemini-3.5-flash-lite',
+    AI_CENTER_GEMINI_ARTICLE_MIN_INTERVAL_MS:'1',
+    AI_CENTER_GEMINI_ARTICLE_REQUESTS_PER_MINUTE:'100',
+    AI_CENTER_GEMINI_ARTICLE_REQUESTS_PER_HOUR:'100',
+    AI_CENTER_GEMINI_KEY_IDLE_MS:'0',
+  };
+  const models = resolveGoogleHourlyAdmissionModels(env);
+  const {store} = open(env, atRef);
+  const balanced = createGeminiArticleAdmission({
+    repository:store.repositories.modelQuota, usage:store.repositories.modelUsage,
+    env, now:()=>atRef.at, models, modelOrder:'least-used', allowFallback:false,
+  });
+  try {
+    const seen = [];
+    for (let i = 0; i < 4; i++) {
+      const ticket = balanced.reserve({...input, useModelPool:true});
+      seen.push(`${ticket.model}:${ticket.keyEnv}`);
+      atRef.at += 10;
+    }
+    assert.deepEqual(seen, [
+      'gemini-3.1-flash-lite:GEMINI_API_KEY',
+      'gemini-3.5-flash-lite:GEMINI_API_KEY',
+      'gemini-3.1-flash-lite:GEMINI_API_KEY2',
+      'gemini-3.5-flash-lite:GEMINI_API_KEY2',
+    ]);
+    for (let i = 0; i < 4; i++) {
+      balanced.reserve({...input, model:'gemini-3.1-flash-lite'});
+      atRef.at += 10;
+    }
+    assert.equal(balanced.reserve({...input, useModelPool:true}).model, 'gemini-3.5-flash-lite');
+    atRef.at += 10;
+    assert.equal(balanced.reserve({...input, useModelPool:true, keyEnv:'GEMINI_API_KEY'}).model, 'gemini-3.5-flash-lite');
+    atRef.at += 10;
+    const ranked = balanced.rankModels(models);
+    assert.equal(ranked[0], 'gemini-3.5-flash-lite');
+    assert.deepEqual(ranked, ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite']);
+    for (const slot of balanced.policy.slots) balanced.failed(
+      {project:slot.project, cooldownKey:slot.cooldownKey, model:'gemini-3.5-flash-lite', keyEnv:slot.keyEnv},
+      new Error('429 PerDay'),
+    );
+    atRef.at += 10;
+    assert.equal(balanced.rankModels(models)[0], 'gemini-3.1-flash-lite');
+    assert.equal(balanced.reserve({...input, useModelPool:true}).model, 'gemini-3.1-flash-lite');
+  } finally { store.close(); }
+});
+
 test('least-used and idle keys are preferred while a full minute bucket is skipped', () => {
   const atRef = {at:Date.parse('2026-10-07T16:00:00Z')};
   const env = {

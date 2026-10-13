@@ -89,6 +89,29 @@ export function createModelQuotaRepository(database, emitEvent) {
       database.prepare('INSERT INTO model_quota_reservations(id,project,model,at,estimated_tokens,key_env) VALUES(?,?,?,?,?,?)')
         .run(randomUUID(),project,model,at,1,keyEnv || '');
     },
+    pairUsage({ models, dayStart, dayEnd }) {
+      const rows = database.prepare(`SELECT model, key_env AS keyEnv, COUNT(*) AS n, MAX(at) AS last
+        FROM model_quota_reservations
+        WHERE model IN (SELECT value FROM json_each(?)) AND at>=? AND at<? AND key_env!=''
+        GROUP BY model, key_env`).all(JSON.stringify(models), dayStart, dayEnd);
+      const seen = database.prepare(`SELECT key_env AS keyEnv, MAX(at) AS last
+        FROM model_quota_reservations WHERE key_env!='' GROUP BY key_env`).all();
+      return { rows, seen };
+    },
+    readModelCursor(poolKey) {
+      const row = database.prepare('SELECT models_json, cursor FROM gemini_model_cursors WHERE pool_key=?').get(poolKey);
+      if (!row || !Number.isInteger(row.cursor)) return null;
+      try {
+        const models = JSON.parse(row.models_json);
+        if (!Array.isArray(models) || models.some((model) => typeof model !== 'string')) return null;
+        return { models, cursor: row.cursor };
+      } catch { return null; }
+    },
+    writeModelCursor(poolKey, models, cursor, at) {
+      database.prepare(`INSERT INTO gemini_model_cursors(pool_key, models_json, cursor, updated_at) VALUES(?,?,?,?)
+        ON CONFLICT(pool_key) DO UPDATE SET models_json=excluded.models_json, cursor=excluded.cursor, updated_at=excluded.updated_at`)
+        .run(poolKey, JSON.stringify(models), cursor, at);
+    },
   });
 }
 

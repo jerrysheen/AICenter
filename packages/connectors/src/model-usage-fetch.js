@@ -32,7 +32,7 @@ export function createUsageFetch(fetchImpl, { provider, model, observer, stage =
       applicationSessionId: inherited.applicationSessionId || '', harnessSessionId: inherited.harnessSessionId || '',
       turn: inherited.turn ?? null, step: inherited.step ?? null, attempt: null,
       provider, model: usedModel, status: 'pending', completeness: 'missing', usage: emptyTokenUsage(),
-      occurredAt: Date.now(), supplierAmount: null, supplierCurrency: null };
+      httpStatus: null, occurredAt: Date.now(), supplierAmount: null, supplierCurrency: null };
     await observeModelUsage(row, observer);
     try {
       const response = await fetchImpl(url, init);
@@ -40,6 +40,7 @@ export function createUsageFetch(fetchImpl, { provider, model, observer, stage =
       try { payload = await response.clone().json(); } catch {}
       row.usage = providerTokenUsage(payload, provider);
       row.status = response.ok ? 'succeeded' : 'failed';
+      row.httpStatus = Number.isInteger(response.status) && response.status >= 100 && response.status <= 599 ? response.status : null;
       row.completeness = row.usage.inputTokens !== null && row.usage.outputTokens !== null && row.usage.totalTokens !== null ? 'complete'
         : Object.values(row.usage).some(value => value !== null) ? 'partial' : 'missing';
       await observeModelUsage(row, observer);
