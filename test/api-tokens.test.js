@@ -76,6 +76,8 @@ test('allowlist is GET-only and leaves admin paths closed', () => {
     ['GET', '/api/v1/api-tokens'],
     ['DELETE', `/api/v1/api-tokens/${randomUUID()}`],
     ['GET', '/api/v1/runtime/deploy-status'],
+    ['GET', '/api/v1/runtime/access-summary'],
+    ['POST', '/api/v1/runtime/client-timing'],
     ['GET', '/api/v1/runtime'],
     ['GET', '/api/v1/devices'],
     ['GET', '/api/v1/holdings'],
@@ -247,6 +249,7 @@ test('bearer tokens can read the allowlist and nothing else', async () => {
     const denied = [
       ['GET', '/api/v1/api-tokens'],
       ['GET', '/api/v1/runtime/deploy-status'],
+      ['GET', '/api/v1/runtime/access-summary'],
       ['GET', '/api/v1/runtime'],
       ['GET', '/api/v1/devices'],
       ['GET', '/api/v1/holdings'],

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { accessCacheHit } from './access-log.js';
 
 const ASSET_CACHE_CONTROL = 'public, max-age=31536000, immutable';
 const UNVERSIONED_JS_CACHE_CONTROL = 'no-cache';
@@ -81,6 +82,7 @@ export function createStaticFileHandler(publicDirectory) {
     '/index.html': ['index.html', 'text/html; charset=utf-8', HTML_CACHE_CONTROL],
     '/ui-boot.js': ['ui-boot.js', 'text/javascript; charset=utf-8', HTML_CACHE_CONTROL],
     '/app.js': ['app.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
+    '/client-timing.js': ['client-timing.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/media-feed.js': ['media-feed.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/brief-page.js': ['brief-page.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/information-tree.js': ['information-tree.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
@@ -131,7 +133,7 @@ export function createStaticFileHandler(publicDirectory) {
     const file = await stat(filePath);
     const fingerprint = `${file.mtimeMs}:${file.size}:${revision}`;
     const hit = cache.get(pathname);
-    if (hit?.fingerprint === fingerprint) return hit;
+    if (hit?.fingerprint === fingerprint) return { entry: hit, cacheHit: true };
     let raw = await readFile(filePath);
     if (target[1].includes('html')) {
       let text = normalizeNewlines(raw);
@@ -153,12 +155,14 @@ export function createStaticFileHandler(publicDirectory) {
       scriptSrc: scriptSrcFor(target[1], raw.toString('utf8')),
     };
     cache.set(pathname, entry);
-    return entry;
+    return { entry, cacheHit: false };
   }
 
   async function serveStatic(pathname, request, response) {
-    const entry = await load(pathname);
-    if (!entry) return false;
+    const loaded = await load(pathname);
+    if (!loaded) return false;
+    const { entry, cacheHit } = loaded;
+    response[accessCacheHit] = cacheHit;
     const useGzip = Boolean(entry.gzipped && wantsGzip(request));
     const body = useGzip ? entry.gzipped : entry.raw;
     response.writeHead(200, {
