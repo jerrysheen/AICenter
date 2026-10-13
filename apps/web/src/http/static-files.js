@@ -88,6 +88,10 @@ export function createStaticFileHandler(publicDirectory) {
     '/index.html': ['index.html', 'text/html; charset=utf-8', HTML_CACHE_CONTROL],
     '/ui-boot.js': ['ui-boot.js', 'text/javascript; charset=utf-8', HTML_CACHE_CONTROL],
     '/app.js': ['app.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
+    '/client-request.js': ['client-request.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
+    '/page-cache.js': ['page-cache.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
+    '/home-bootstrap.js': ['home-bootstrap.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
+    '/ask-runs.js': ['ask-runs.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/client-timing.js': ['client-timing.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/media-feed.js': ['media-feed.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/brief-page.js': ['brief-page.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
@@ -114,6 +118,8 @@ export function createStaticFileHandler(publicDirectory) {
     '/etf-whale.js': ['etf-whale.js', 'text/javascript; charset=utf-8', HTML_CACHE_CONTROL],
     '/etf-whale.css': ['etf-whale.css', 'text/css; charset=utf-8', HTML_CACHE_CONTROL],
     '/styles.css': ['styles.css', 'text/css; charset=utf-8', ASSET_CACHE_CONTROL],
+    '/favicon.svg': ['favicon.svg', 'image/svg+xml', HTML_CACHE_CONTROL],
+    '/favicon.ico': ['favicon.svg', 'image/svg+xml', HTML_CACHE_CONTROL],
   };
   const uniqueNames = [...new Set(Object.values(files).map(([name]) => name))].sort();
   const cache = new Map();

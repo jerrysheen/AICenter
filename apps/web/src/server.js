@@ -27,6 +27,7 @@ import { createFailureStreakStore, createMarketBoardReader, createMarketNativeBo
 import { HOLDINGS_MARKET_SNAPSHOT_KEY } from '../../../packages/runtime/src/web-snapshot-jobs.js';
 import { createMemorySnapshotCache } from '../../../packages/runtime/src/snapshot-cache.js';
 import { createEventLoopMonitor } from './http/event-loop-monitor.js';
+import { bindEventLoopProbe, createEventLoopProbe, labelEventLoop } from './http/event-loop-blocks.js';
 import { createEventStreamHub } from './http/event-stream.js';
 import { isApiTokenAllowlisted, readBearerToken, requestWantsRefresh } from './http/api-token-access.js';
 import { redactApiTokenText } from '../../../packages/domain/src/api-token-service.js';
@@ -325,6 +326,12 @@ export function createAiCenterServer(options = {}) {
     directory: path.join(dataDirectory, 'logs'),
     env,
   });
+  const eventLoopProbe = createEventLoopProbe({
+    onBlock(block) {
+      accessLog.writeEventLoopBlock?.(block);
+    },
+  });
+  bindEventLoopProbe(eventLoopProbe);
   const eventLoopMonitor = createEventLoopMonitor({
     onSample(sample) {
       accessLog.writeEventLoop?.(sample);
@@ -424,6 +431,7 @@ export function createAiCenterServer(options = {}) {
         console.error('[web] api token access log failed');
       }
     };
+    const leaveLoop = labelEventLoop(`${request.method || 'GET'} ${url.pathname}`);
     try {
       const httpsLocation = publicHttpsLocation(request, url, publicBaseUrl);
       if (httpsLocation) {
@@ -514,6 +522,8 @@ export function createAiCenterServer(options = {}) {
         });
       }
       logApiToken(apiTokenId, response.statusCode || status);
+    } finally {
+      leaveLoop();
     }
   });
 
@@ -529,7 +539,10 @@ export function createAiCenterServer(options = {}) {
       });
       const address = server.address();
       actualPort = typeof address === 'object' && address ? address.port : configuredPort;
-      eventTimer = setInterval(events.flush, 250);
+      eventTimer = setInterval(() => {
+        const leave = labelEventLoop('events.flush');
+        try { events.flush(); } finally { leave(); }
+      }, 250);
       eventTimer.unref?.();
       return {
         host,
@@ -542,6 +555,7 @@ export function createAiCenterServer(options = {}) {
     async close() {
       if (eventTimer) clearInterval(eventTimer);
       eventLoopMonitor.stop();
+      eventLoopProbe.stop();
       events.closeAll();
       await new Promise((resolve) => server.close(resolve));
       await accessLog.close();

@@ -9,6 +9,7 @@ import {createJobRunner} from '../packages/runtime/src/job-runner.js';
 async function finishTranslation(app, address, submitted) {
   const queued=await fetch(`${address.localUrl}/api/v1/translate/jobs/${submitted.jobId}`).then(r=>r.json());
   assert.equal(queued.status,'queued');
+  assert.equal(typeof queued.availableAt, 'number');
   await createJobRunner({store:app.store,handlers:createFeedTranslationJobHandlers({feedService:app.services.feed})}).runOnce();
   const done=await fetch(`${address.localUrl}/api/v1/translate/jobs/${submitted.jobId}`).then(r=>r.json());
   assert.equal(done.status,'completed');return done.result;

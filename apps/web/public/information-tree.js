@@ -1104,10 +1104,10 @@ export function createInformationTreePage(host) {
     }catch(error){if(aborted(error))throw error;readingIndex=null;}
     return readingIndex;
   }
-  async function fetchReadingSnapshot(edition) {
+  async function fetchReadingSnapshot(edition, {refresh=false}={}) {
     const path=pinnedReadingId && openedId ? `/api/v1/reports/reading-hour/snapshot?id=${encodeURIComponent(pinnedReadingId)}` : `/api/v1/reports/reading-hour?startAt=${edition.window.startAt}&endAt=${edition.window.endAt}&scope=hour`;
     try{
-      const data=await api(path);const snapshot=data?.snapshot || null;
+      const data=await api(path, refresh ? { cache: 'no-store', priority: 1 } : { priority: 2 });const snapshot=data?.snapshot || null;
       readingCache.set(edition.window.startAt, snapshot);return snapshot;
     }catch(error){
       if(aborted(error)) throw error;
@@ -1119,7 +1119,7 @@ export function createInformationTreePage(host) {
     const key=edition.window.startAt;
     if(!refresh && readingCache.has(key)) return Promise.resolve(readingCache.get(key));
     if(!refresh && readingLoads.has(key)) return readingLoads.get(key);
-    const pending=fetchReadingSnapshot(edition).finally(()=>{if(readingLoads.get(key)===pending) readingLoads.delete(key);});
+    const pending=fetchReadingSnapshot(edition, {refresh}).finally(()=>{if(readingLoads.get(key)===pending) readingLoads.delete(key);});
     if(!refresh) readingLoads.set(key, pending);
     return pending;
   }

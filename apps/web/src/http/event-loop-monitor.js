@@ -1,4 +1,5 @@
 import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { formatEventLoopLine } from './event-loop-blocks.js';
 
 export function sampleEventLoopDelay(histogram, now = Date.now()) {
   return {
@@ -25,7 +26,7 @@ export function createEventLoopMonitor({
     } catch {
       // 采样失败不影响请求。
     }
-    const line = `[web] event-loop p50=${Math.round(sample.p50Ms)}ms p99=${Math.round(sample.p99Ms)}ms max=${Math.round(sample.maxMs)}ms`;
+    const line = formatEventLoopLine(sample);
     if (sample.p99Ms >= 200) log.warn?.(line);
     else log.log?.(line);
   }, intervalMs);

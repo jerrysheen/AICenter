@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import { parseBilibiliImportInput, parseHideFlag, parsePatchUserItemStateInput, parsePersistFeedTranslationsInput, parsePostInput, parseTranslateBatchInput, parseTranslateInput, ValidationError } from '../../../../packages/contracts/src/index.js';
 import { json, readJson } from '../http/response.js';
+import { labelEventLoop } from '../http/event-loop-blocks.js';
+import { createStaleReadCache, STORED_FEED_CACHE_PROVIDERS, STORED_FEED_CACHE_TTL_MS, storedFeedCacheKey } from '../http/stale-read-cache.js';
 
 function listEtag(feed) {
   const stable = feed && typeof feed === 'object' ? { ...feed } : {};
@@ -21,6 +23,7 @@ function workspaceIdFrom(identity) {
 }
 
 export function createFeedRoutes() {
+  const feedCache = createStaleReadCache({ ttlMs: STORED_FEED_CACHE_TTL_MS });
   return [
     { method: 'GET', path: /^\/api\/v1\/translate\/jobs\/([0-9a-f-]+)$/i,
       handler({ response, services, identity, params }) {
@@ -29,6 +32,7 @@ export function createFeedRoutes() {
           json(response, 404, { ok: false, error: '翻译任务不存在' }); return;
         }
         json(response, 200, { ok: true, status: job.status,
+          availableAt: job.status === 'queued' ? job.availableAt : null,
           result: job.status === 'completed' ? job.output : null,
           error: job.status === 'failed' ? '翻译未完成，请稍后重试' : null });
       },
@@ -180,11 +184,21 @@ export function createFeedRoutes() {
           if(trendforceJob) query.refresh=false;
           if (providerId === 'trendforce') query.fields = 'list';
           const mediaJob = providerId === 'media' && query.refresh ? services.runtime.requestMediaSync({ workspaceId: workspaceIdFrom(identity), channel: query.channel }) : null;
-          const feed = await services.feed.getExternalFeed(
-            providerId,
-            query,
-            { workspaceId: identity?.device?.workspaceId || 'local' },
-          );
+          const workspaceId = workspaceIdFrom(identity);
+          const readStored = () => {
+            const leave = labelEventLoop(`feed.${providerId}`);
+            return Promise.resolve(services.feed.getExternalFeed(providerId, { ...query, refresh: false }, { workspaceId })).finally(leave);
+          };
+          const feed = STORED_FEED_CACHE_PROVIDERS.has(providerId) && !query.refresh
+            ? await feedCache.get(storedFeedCacheKey(workspaceId, providerId, query), readStored)
+            : await (async () => {
+              const leave = labelEventLoop(`feed.${providerId}`);
+              try {
+                return await services.feed.getExternalFeed(providerId, query, { workspaceId });
+              } finally {
+                leave();
+              }
+            })();
           const payload = { ok: true, feed, ...((mediaJob || trendforceJob) ? { jobId: (mediaJob || trendforceJob).id } : {}) };
           if (providerId === 'trendforce') {
             const etag = listEtag(feed);
