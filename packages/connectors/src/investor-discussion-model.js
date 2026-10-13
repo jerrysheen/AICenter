@@ -1,4 +1,5 @@
 import { createUsageFetch } from './model-usage-fetch.js';
+import { googleFetch, isGoogleConnectTimeout } from './google-fetch.js';
 import { geminiQuotaCooldown, parseGeminiGenerateContent } from './gemini-grok-task.js';
 import { resolveInvestorGeminiSlots } from './investor-jev-model.js';
 
@@ -43,7 +44,7 @@ function summaryRetryDelayMs(attempt) {
 }
 
 function retryableSummaryStatus(error) {
-  return error?.status === 500 || error?.status === 503 || error?.status === 429 || Boolean(error?.quota);
+  return error?.status === 500 || error?.status === 503 || error?.status === 429 || Boolean(error?.quota) || isGoogleConnectTimeout(error);
 }
 
 export function createGeminiInvestorSummarizer(options = {}) {
@@ -56,7 +57,7 @@ export function createGeminiInvestorSummarizer(options = {}) {
     : (options.slots || resolveInvestorGeminiSlots(env));
   const repository = options.quotaRepository || null;
   const apiRoot = (text(options.apiRoot) || envText(env, 'AI_CENTER_GEMINI_API_ROOT') || DEFAULT_ROOT).replace(/\/$/, '');
-  const fetchImpl = createUsageFetch(options.fetch || fetch, {
+  const fetchImpl = createUsageFetch(googleFetch(options.fetch || fetch, env), {
     provider: 'gemini',
     model: primary,
     observer: options.usageObserver,

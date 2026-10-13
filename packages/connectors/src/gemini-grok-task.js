@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createElucidGrokAgentClient } from './elucid-grok-agent.js';
+import { googleFetch } from './google-fetch.js';
 import { createUsageFetch } from './model-usage-fetch.js';
 
 // Translation and tagging share quota knowledge in each Web/Worker process.
@@ -44,7 +45,7 @@ export function geminiQuotaCooldown(response, payload, at) {
 }
 
 export function createGeminiGrokTaskRouter(options = {}) {
-  const fetchImpl = createUsageFetch(options.fetch || fetch, { provider: 'gemini', model: options.geminiModel || envText('AI_CENTER_GEMINI_MODEL') || 'gemini-3.1-flash-lite', observer: options.usageObserver, stage: options.usageStage || 'feed-enrichment' });
+  const fetchImpl = createUsageFetch(googleFetch(options.fetch || fetch), { provider: 'gemini', model: options.geminiModel || envText('AI_CENTER_GEMINI_MODEL') || 'gemini-3.1-flash-lite', observer: options.usageObserver, stage: options.usageStage || 'feed-enrichment' });
   const apiKey = options.geminiApiKey !== undefined ? text(options.geminiApiKey) : envText('GEMINI_API_KEY','GOOGLE_API_KEY','AI_CENTER_GEMINI_API_KEY');
   const apiRoot = (text(options.geminiApiRoot) || envText('AI_CENTER_GEMINI_API_ROOT') || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '');
   const model = text(options.geminiModel) || envText('AI_CENTER_GEMINI_MODEL') || 'gemini-3.1-flash-lite';

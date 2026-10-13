@@ -229,6 +229,36 @@ test('jev completer rotates a cooled Gemini key and does not call Grok', async (
   assert.throws(() => createInvestorJevCompleter({ env: { GEMINI_API_KEY: '' } }), (error) => error.code === 'config');
 });
 
+test('jev completer retries a Google connect timeout on the next key', async () => {
+  const keys = [];
+  const completer = createInvestorJevCompleter({
+    env: {
+      AI_CENTER_GEMINI_KEY_ENVS: 'GEMINI_API_KEY,GEMINI_API_KEY2',
+      GEMINI_API_KEY: 'key-a',
+      GEMINI_API_KEY2: 'key-b',
+    },
+    model: 'gemini-3.1-flash-lite',
+    quotaRepository: {
+      reserve(input) {
+        const slot = input.slots[0];
+        return { admitted: true, id: slot.keyEnv, ...slot };
+      },
+      release() {},
+      cooldown() {},
+    },
+    fetch: async (_url, init) => {
+      keys.push(init.headers['x-goog-api-key']);
+      if (keys.length === 1) throw Object.assign(new Error('Connect Timeout Error (UND_ERR_CONNECT_TIMEOUT)'), { code: 'UND_ERR_CONNECT_TIMEOUT', name: 'ConnectTimeoutError' });
+      return new Response(JSON.stringify({
+        candidates: [{ content: { parts: [{ text: '{"items":[]}' }] }, finishReason: 'STOP' }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  const result = await completer.complete({ system: '系统', prompt: '材料' });
+  assert.equal(result.text, '{"items":[]}');
+  assert.deepEqual(keys, ['key-a', 'key-b']);
+});
+
 function element(tag) {
   return {
     tag,

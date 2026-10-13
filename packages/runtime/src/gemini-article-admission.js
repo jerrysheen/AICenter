@@ -2,6 +2,7 @@ import {previousDailyInstant,nextDailyInstant} from '../../domain/src/zoned-time
 import { createHash, randomUUID } from 'node:crypto';
 import {resolveGoogleArticleModelPool} from '../../harness/src/llm-route.js';
 import {nextGeminiDailyReset} from '../../connectors/src/gemini-grok-task.js';
+import {isGoogleConnectTimeout,withGoogleConnect} from '../../connectors/src/google-fetch.js';
 import {emptyTokenUsage} from '../../contracts/src/model-usage.js';
 
 const PACIFIC={timeZone:'America/Los_Angeles',hour:0,minute:0};
@@ -29,11 +30,11 @@ export async function probeGeminiGenerate(env, {keyEnv, model, maxOutputTokens=1
   const key=String(env?.[keyEnv] || '').trim();
   if(!key)throw Object.assign(new Error('missing probe key'),{status:0});
   const root=String(env.AI_CENTER_GEMINI_API_ROOT || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/,'');
-  const response=await fetch(`${root}/models/${encodeURIComponent(model)}:generateContent`,{
+  const response=await fetch(`${root}/models/${encodeURIComponent(model)}:generateContent`,withGoogleConnect({
     method:'POST',headers:{'x-goog-api-key':key,'Content-Type':'application/json'},
     body:JSON.stringify({contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{maxOutputTokens}}),
     signal:AbortSignal.timeout(20000),
-  });
+  },env));
   await response.arrayBuffer().catch(()=>{});
   return {ok:response.ok,status:response.status};
 }
@@ -222,7 +223,7 @@ async function executeProbe({repository,usage,now,memory,target,generate,env,log
     status=Number.isInteger(result?.status)?result.status:(result?.ok===false?0:200);
     ok=result?.ok!==false && status>=200 && status<300;
   }catch(error){
-    status=Number.isInteger(error?.status)?error.status:(error?.name==='TimeoutError'?408:0);
+    status=Number.isInteger(error?.status)?error.status:(error?.name==='TimeoutError'||isGoogleConnectTimeout(error)?408:0);
     ok=false;
   }
   let lifted=false;

@@ -6,13 +6,15 @@
 
 `createTranslateService` 默认使用 `packages/connectors/src/translate/gemma.js`，仅允许 `gemma-4-31b-it` 和 `gemma-4-26b-a4b-it`。通过 Google 官方 `streamGenerateContent?alt=sse` 请求，`thinkingLevel: minimal`、输出上限 2048；逐项逐段翻译，不要求模型生成批量 JSON。思考正文省略，流内错误、缺少 STOP、空输出或截断不能成为成功译文。
 
-`AI_CENTER_GEMMA_TRANSLATION_MODELS` 默认依次包含两个模型、按请求轮换；用户后续授权五账号翻译池，`AI_CENTER_GEMMA_TRANSLATION_KEY_ENVS` 默认包含 `GEMINI_API_KEY` 至 `GEMINI_API_KEY5`，缺失和重复凭据跳过。显式旧 `AI_CENTER_GEMMA_TRANSLATION_KEY_ENV` 仍可固定一个账号，多账号配置优先。缺凭据或失败不回退 Flash、Grok、DeepL 或其他 API。Router 注入仅用于测试。
+`AI_CENTER_GEMMA_TRANSLATION_MODELS` 默认只有 `gemma-4-26b-a4b-it`。`gemma-4-31b-it` 仍是合法模型，显式写入环境变量或测试注入后可以参加第一次请求的轮换；未设置时不再调用 31B。用户后续授权五账号翻译池，`AI_CENTER_GEMMA_TRANSLATION_KEY_ENVS` 默认包含 `GEMINI_API_KEY` 至 `GEMINI_API_KEY5`，缺失和重复凭据跳过。显式旧 `AI_CENTER_GEMMA_TRANSLATION_KEY_ENV` 仍可固定一个账号，多账号配置优先。缺凭据或失败不回退 Flash、Grok、DeepL 或其他 API。Router 注入仅用于测试。
 
-复用 `ModelQuotaRepository`，按密钥/显式项目和模型保存租约和冷却。用户后续授权移除本地每日/小时请求数上限，每账号两个 Gemma 模型共用最小 10 秒发起间隔、每分钟最多 10 次，理论每账号约 6 次/分钟；五账号理论约 30 次/分钟。16K 输入 TPM 仍按模型预留，UTF-8 字节数作为保守输入 Token 估算，不记为实际用量。同项目 Key 共用节流；跨模型节奏在同一 Repository 事务内检查并保存，重启不能绕过。分钟窗口本地最多等待约 61 秒，其他配额等待按 retryAt 延期。供应商 429 持久冷却，同一次请求不再换密钥。5xx、流内 5xx 和 `TimeoutError` 把该密钥上的该模型冷却一分钟，然后在同一次 `generate` 里最多再试两次：先退避 0.5 秒、再 1 秒，上限 2 秒，只换另一把 Gemma 密钥或另一个 Gemma 模型。下一席在约 1.5 秒内排不上（同一密钥还要等 10 秒间隔，或只剩冷却中的席位）就抛出原来的上游错误，交给任务级最多 4 次重试。不回退 Flash、Grok、DeepL 或其他 API。本地无每日上限不代表供应商承诺无限额度。
+复用 `ModelQuotaRepository`，按密钥/显式项目和模型保存租约和冷却。用户后续授权移除本地每日/小时请求数上限，每账号两个 Gemma 模型共用最小 10 秒发起间隔、每分钟最多 10 次，理论每账号约 6 次/分钟；五账号理论约 30 次/分钟。16K 输入 TPM 仍按模型预留，UTF-8 字节数作为保守输入 Token 估算，不记为实际用量。同项目 Key 共用节流；跨模型节奏在同一 Repository 事务内检查并保存，重启不能绕过。分钟窗口本地最多等待约 61 秒，其他配额等待按 retryAt 延期。供应商 429 持久冷却，同一次请求不再换密钥。5xx、流内 5xx、`TimeoutError` 和 Google 连接超时把该密钥上的该模型冷却一分钟，然后在同一次 `generate` 里最多再试两次：先退避 0.5 秒、再 1 秒，上限 2 秒。只要配置里还有 26B，重试只换另一把密钥上的 26B，不再转到 31B。配置被显式收成只有 31B 时，重试才在 31B 上换密钥。下一席在约 1.5 秒内排不上（同一密钥还要等 10 秒间隔，或只剩冷却中的席位）就抛出原来的上游错误，交给任务级最多 4 次重试。不回退 Flash、Grok、DeepL 或其他 API。本地无每日上限不代表供应商承诺无限额度。
+
+直连 `generativelanguage.googleapis.com` 的 `fetch` 使用 undici `Agent` 的 `connect.timeout`，默认 8000 毫秒，由 `AI_CENTER_GOOGLE_CONNECT_TIMEOUT_MS` 配置（整数，1000–30000）。这是 TCP 连接预算，和响应的 `AbortSignal.timeout`（Gemma 默认 120 秒）分开。连接超时记用量 HTTP 408，并按上面的规则换密钥。不替换 undici 的全局 dispatcher。Harness / `dsh` 自己的 HTTP 客户端不走这个 Agent。
 
 `WorkerJobConcurrencySchema.translationLimit` 默认 1，最大 5；Worker composition root 默认通过 `AI_CENTER_WORKER_TRANSLATION_CONCURRENCY=5` 启用五个翻译执行位，仅影响 `feed.translation.run`，不增加 Ask、小时报等任务并发。使用同一 Connector 与现有注册 handler，不增加 Agent。失败状态另表保存，见 migration 50。
 
-每次实际 HTTP 尝试沿用用量账本，缺失用量保持未知。新的翻译任务最多 4 次尝试，退避从 1 秒起按指数增加，单次间隔不超过 5 分钟；次数用尽后停在失败，不再无限重试。31B 失败冷却后可用 26B 接续。任务租约过期同样记失败并退避，不把条目留在进行中。只有完整有效译文才通过现有 Feed Repository 落库，与 Outbox 同事务。上游失败在 Worker 日志写一行：`status`、`model`、密钥后缀（`KEY` / `KEY2`）、`inputBytes`、`latencyMs`、当前路由器上的 `concurrency`，以及脱敏后的 Google 响应体。不记录密钥本身。长文已经按至多 2400 字符分段，超过 16000 字节的预估输入在发请求前拒绝。2026-10-07 的 31B 诊断在短提示上也会返回 HTTP 500 `INTERNAL`，和分段上限、16000 字节预检对不上；默认五个翻译执行位没有证据需要下调。约四成 500 与 31B/26B 对半轮换、31B 经常 `INTERNAL` 相符。因此修复是换另一把 Gemma 密钥或另一个 Gemma 模型重试，而不是换模型家族，也不是把并发默认改成 1。
+每次实际 HTTP 尝试沿用用量账本，缺失用量保持未知。新的翻译任务最多 4 次尝试，退避从 1 秒起按指数增加，单次间隔不超过 5 分钟；次数用尽后停在失败，不再无限重试。任务租约过期同样记失败并退避，不把条目留在进行中。只有完整有效译文才通过现有 Feed Repository 落库，与 Outbox 同事务。上游失败在 Worker 日志写一行：`status`、`model`、密钥后缀（`KEY` / `KEY2`）、`inputBytes`、`latencyMs`、当前路由器上的 `concurrency`，以及脱敏后的 Google 响应体。不记录密钥本身。长文已经按至多 2400 字符分段，超过 16000 字节的预估输入在发请求前拒绝。2026-10-07 的 31B 诊断在短提示上也会返回 HTTP 500 `INTERNAL`。2026-10-13 16:00 之后 2054 次翻译里 877 次失败（43%），其中 860 次是 HTTP 500 `INTERNAL`，与 31B 留在默认轮换里相符。默认池因此只保留 26B。同一天到 `generativelanguage.googleapis.com` 有 201 次 `UND_ERR_CONNECT_TIMEOUT`，所以连接超时单独设短预算，并在 26B 上换密钥。默认五个翻译执行位没有证据需要下调。不回退到其他模型家族。
 
 ## 排版和缓存
 
