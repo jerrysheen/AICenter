@@ -2,6 +2,7 @@ import { labelEventLoop } from './event-loop-blocks.js';
 
 const REPLAY_PAGE_SIZE = 200;
 const REPLAY_MAX_EVENTS = 10_000;
+const FLUSH_PAGE_SIZE = 5;
 
 export const SSE_REPLAY_PAGE_SIZE = REPLAY_PAGE_SIZE;
 export const SSE_REPLAY_MAX_EVENTS = REPLAY_MAX_EVENTS;
@@ -14,16 +15,29 @@ export function createEventStreamHub(runtimeService, options = {}) {
   let flushing = false;
 
   function eventFrame(event) {
-    return `id: ${event.id}\nevent: ${event.name}\ndata: ${JSON.stringify(event.payload)}\n\n`;
+    const data = typeof event.payloadJson === 'string' ? event.payloadJson : JSON.stringify(event.payload ?? {});
+    return `id: ${event.id}\nevent: ${event.name}\ndata: ${data}\n\n`;
+  }
+
+  function readFrames(afterId, limit, workspaceId) {
+    if (typeof runtimeService.listEventFrames === 'function') {
+      return runtimeService.listEventFrames(afterId, limit, workspaceId);
+    }
+    return runtimeService.listEvents(afterId, limit, workspaceId);
   }
 
   function flush() {
     if (flushing) return;
+    if (clients.size === 0) {
+      try { eventCursor = runtimeService.latestEventId(); } catch { /* 没有订阅者时不读事件正文 */ }
+      return;
+    }
     flushing = true;
     const step = () => {
+      const leave = labelEventLoop('events.flush');
       let more = false;
       try {
-        const events = runtimeService.listEvents(eventCursor, 200);
+        const events = readFrames(eventCursor, FLUSH_PAGE_SIZE);
         for (const event of events) {
           eventCursor = event.id;
           const frame = eventFrame(event);
@@ -31,8 +45,9 @@ export function createEventStreamHub(runtimeService, options = {}) {
             if (client.workspaceId === event.workspaceId) client.response.write(frame);
           }
         }
-        more = events.length === 200;
+        more = events.length === FLUSH_PAGE_SIZE;
       } finally {
+        leave();
         if (!more) flushing = false;
       }
       if (more) setImmediate(step);
@@ -50,10 +65,10 @@ export function createEventStreamHub(runtimeService, options = {}) {
         let again = false;
         try {
           if (replayed >= replayMaxEvents) {
-            finish(runtimeService.listEvents(replayedThrough, 1, workspaceId).length > 0);
+            finish(readFrames(replayedThrough, 1, workspaceId).length > 0);
             return;
           }
-          const events = runtimeService.listEvents(replayedThrough, replayPageSize, workspaceId);
+          const events = readFrames(replayedThrough, replayPageSize, workspaceId);
           if (!events.length) {
             finish(false);
             return;
@@ -66,7 +81,7 @@ export function createEventStreamHub(runtimeService, options = {}) {
           }
           if (events.length < replayPageSize || replayed >= replayMaxEvents) {
             const snapshotRequired = replayed >= replayMaxEvents
-              && runtimeService.listEvents(replayedThrough, 1, workspaceId).length > 0;
+              && readFrames(replayedThrough, 1, workspaceId).length > 0;
             finish(snapshotRequired);
             return;
           }

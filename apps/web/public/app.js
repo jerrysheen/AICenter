@@ -11263,11 +11263,12 @@ function renderBriefPeekBody(root, brief) {
     list.append(Object.assign(document.createElement('li'), { textContent: decodeHtmlEntities(item.sentence) }));
   }
   if (list.childElementCount) root.append(list);
-  if (items.length && brief?.reportDate) {
+  const total = Number(brief?.informationItemCount) > 0 ? Number(brief.informationItemCount) : items.length;
+  if (total && brief?.reportDate) {
     const more = document.createElement('a');
     more.className = 'text-button';
     more.href = `#report/${brief.reportDate}`;
-    more.textContent = `查看全部 ${items.length} 条 ›`;
+    more.textContent = `查看全部 ${total} 条 ›`;
     root.append(more);
   }
 }

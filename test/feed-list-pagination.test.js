@@ -122,7 +122,8 @@ test('stored social feed honours limit, unread-first cursor pages, and keeps ass
     assert.ok(listBytes < fullBytes / 5, `list ${listBytes} should be under a fifth of full ${fullBytes}`);
     assert.equal(calls.getContentItem || 0, 0);
     assert.equal(calls.listTranslations, 4);
-    assert.equal(calls.listContentItemsWithSource, 4);
+    // 列表不再为规范化文章重读正文；两次 full 请求仍会读。
+    assert.equal(calls.listContentItemsWithSource, 2);
   } finally {
     store.close();
   }

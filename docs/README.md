@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-13-bootstrap-stringify.md`：总览 bootstrap 只留首屏，序列化和 gzip 在缓存填入时做完。X / 雪球列表不再为了列表去读正文。事件推送按几条一帧发送，没有订阅者时不读正文。favicon 从内存返回，缓存 7 天。需要重启 Web。
+
 - `progress/2026-10-13-client-timing-behavior.md`：每次文档加载都把页面计时 POST 到 `/api/v1/runtime/client-timing`。点原文 / 打开原站记 `source.original`，展开条目记 `item.expand`。需要重启 Web。浏览器再加载一次。
 
 - `progress/2026-10-13-frontend-load.md`：首屏改读 `GET /api/v1/home/bootstrap` 一份快照，浏览器按用户把页面响应放进本地缓存。事件循环阻塞按任务名写入 `data/logs/event-loop.*.log`。X / 雪球和硬件价表用短缓存，问答列表不再在别的页面上轮询。需要重启 Web。

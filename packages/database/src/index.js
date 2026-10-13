@@ -930,6 +930,24 @@ export function createStore(databasePath) {
         .map(mapOutboxEvent);
     },
 
+    listEventFrames(afterId = 0, limit = 8, workspaceId = null) {
+      const safeAfterId = Math.max(0, Number(afterId) || 0);
+      const safeLimit = Math.max(1, Math.min(Number(limit) || 8, 1_000));
+      const rows = workspaceId
+        ? database.prepare(`SELECT id, workspace_id, event_name, payload_json
+            FROM outbox_events WHERE workspace_id = ? AND id > ? ORDER BY id ASC LIMIT ?`)
+          .all(workspaceId, safeAfterId, safeLimit)
+        : database.prepare(`SELECT id, workspace_id, event_name, payload_json
+            FROM outbox_events WHERE id > ? ORDER BY id ASC LIMIT ?`)
+          .all(safeAfterId, safeLimit);
+      return rows.map((row) => ({
+        id: row.id,
+        workspaceId: row.workspace_id,
+        name: row.event_name,
+        payloadJson: row.payload_json || '{}',
+      }));
+    },
+
     latestEventId() {
       return database.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM outbox_events').get().id;
     },

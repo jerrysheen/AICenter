@@ -580,7 +580,11 @@ export function createFeedRepository(database, emitEvent) {
       if (!account.ok) return [];
       const ids = providerFeedIds(workspaceId, provider, { ...options, sourceAccountId: account.id, limit: safeLimit });
       if (!ids.length) return [];
-      const rows = database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id,
+      const itemColumns = options.omitBody
+        ? `ci.id, ci.workspace_id, ci.capture_id, ci.origin_type, ci.content_type, ci.title, '' AS body, ci.summary,
+          ci.source_url, ci.author_name, ci.published_at, ci.created_at, ci.updated_at`
+        : 'ci.*';
+      const rows = database.prepare(`SELECT ${itemColumns}, c.provider AS provider, c.external_id AS external_id,
           c.captured_at AS captured_at, c.metadata_json AS capture_metadata_json,
           COALESCE(item_state.is_read, 0) AS is_read,
           COALESCE(item_state.is_saved, 0) AS is_saved,

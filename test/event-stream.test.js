@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createStore } from '../packages/database/src/index.js';
 import { createEventStreamHub } from '../apps/web/src/http/event-stream.js';
 
 function createMemoryRuntime(count, workspaceId = 'local') {
@@ -55,6 +56,67 @@ test('SSE ready asks the client for a snapshot when replay hits the window', asy
   assert.match(body, /id: 5\n/);
   assert.doesNotMatch(body, /id: 8\n/);
   assert.match(body, /"snapshotRequired":true/);
+});
+
+test('flush skips payload reads when nobody is listening', () => {
+  let reads = 0;
+  const hub = createEventStreamHub({
+    latestEventId() { return 9; },
+    listEvents() { reads += 1; return []; },
+    listEventFrames() { reads += 1; return []; },
+  });
+  hub.flush();
+  assert.equal(reads, 0);
+});
+
+test('flush sends stored payload text a few events at a time', async () => {
+  const events = Array.from({ length: 12 }, (_, index) => ({
+    id: index + 1,
+    name: 'demo.saved.v1',
+    workspaceId: 'local',
+    payloadJson: JSON.stringify({ n: index + 1 }),
+  }));
+  let maxLimit = 0;
+  const chunks = [];
+  const hub = createEventStreamHub({
+    latestEventId() { return 0; },
+    listEventFrames(afterId, limit) {
+      maxLimit = Math.max(maxLimit, Number(limit) || 0);
+      return events.filter((event) => event.id > afterId).slice(0, limit);
+    },
+    listEvents() {
+      throw new Error('flush must not parse event payloads');
+    },
+  });
+  await hub.open(
+    { on() {} },
+    { writeHead() {}, write(chunk) { chunks.push(String(chunk)); return true; }, end() {} },
+    { device: { workspaceId: 'local', id: 'device-1' } },
+    0,
+  );
+  hub.flush();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const body = chunks.join('');
+  assert.equal(maxLimit, 5);
+  assert.match(body, /"n":1/);
+  assert.match(body, /"n":12/);
+  hub.closeAll();
+});
+
+test('event frames return a replay page of stored payload text', () => {
+  const store = createStore(':memory:');
+  try {
+    for (let index = 0; index < 60; index += 1) {
+      store.createJob({ type: 'feed.sync', input: { n: index } });
+    }
+    const frames = store.listEventFrames(0, 200);
+    assert.ok(frames.length > 50);
+    assert.equal(typeof frames.at(-1).payloadJson, 'string');
+    assert.equal(JSON.parse(frames.at(-1).payloadJson).job.input.n, 59);
+    assert.equal(Object.hasOwn(frames.at(-1), 'payload'), false);
+  } finally {
+    store.close();
+  }
 });
 
 test('SSE ready carries the current ui revision', async () => {
