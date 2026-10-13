@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto';
-import { gzipSync } from 'node:zlib';
+import { promisify } from 'node:util';
+import { gzip } from 'node:zlib';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { accessCacheHit } from './access-log.js';
 
+const gzipBuffer = promisify(gzip);
 const ASSET_CACHE_CONTROL = 'public, max-age=31536000, immutable';
 const UNVERSIONED_JS_CACHE_CONTROL = 'no-cache';
 const HTML_CACHE_CONTROL = 'no-store';
@@ -150,14 +152,20 @@ export function createStaticFileHandler(publicDirectory) {
       raw = Buffer.from(text);
     }
     raw = applyUiRevision(raw, target[1], revision);
-    const gzipped = gzipSync(raw);
+    let gzipped = null;
+    try {
+      const zipped = await gzipBuffer(raw);
+      gzipped = zipped.length < raw.length ? zipped : null;
+    } catch {
+      gzipped = null;
+    }
     const entry = {
       fingerprint,
       contentType: target[1],
       cacheControl: target[2],
       raw,
-      gzipped: gzipped.length < raw.length ? gzipped : null,
-      scriptSrc: scriptSrcFor(target[1], raw.toString('utf8')),
+      gzipped,
+      scriptSrc: target[1].includes('html') ? scriptSrcFor(target[1], raw) : "'self'",
     };
     cache.set(pathname, entry);
     return { entry, cacheHit: false };

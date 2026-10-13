@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createAiCenterServer } from '../apps/web/src/server.js';
+import { marketBoardSnapshotKey } from '../packages/source/src/market/board-read.js';
 
 test('markets API returns injected board payload', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-markets-'));
@@ -28,6 +29,23 @@ test('markets API returns injected board payload', async () => {
     },
   };
   const app = createAiCenterServer({ host: '127.0.0.1', port: 0, dataDirectory: directory, marketService });
+  for (const name of ['overview', 'us', 'asia', 'cn', 'global']) {
+    app.store.repositories.runtimeSnapshots.saveSnapshot('local', marketBoardSnapshotKey(name), {
+      board: name,
+      mode: 'live',
+      fetchedAt: 1,
+      session: 'closed',
+      note: 'test',
+      groups: ['全部'],
+      indices: [],
+      watchlist: name === 'us'
+        ? [{ symbol: 'AAPL', name: 'Apple', group: '科技巨头', lastPrice: 1, changePct: 0.1 }]
+        : [],
+      gainers: [],
+      losers: [],
+      breadth: { advancers: 1, decliners: 0, unchanged: 0 },
+    }, 1);
+  }
   const address = await app.listen();
   try {
     const payload = await fetch(`${address.localUrl}/api/v1/markets?board=us`).then((response) => response.json());

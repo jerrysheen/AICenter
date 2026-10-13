@@ -1,18 +1,15 @@
 import { ValidationError } from '../../../../packages/contracts/src/index.js';
-import { gzipSync } from 'node:zlib';
+import { gzip } from 'node:zlib';
 
-export function json(response, status, payload, headers = {}, { compress = false } = {}) {
-  let body = JSON.stringify(payload);
-  let encoding = '';
-  const acceptsGzip = String(response.req?.headers?.['accept-encoding'] || '').split(',').some(part => {
+function acceptsGzipEncoding(response) {
+  return String(response.req?.headers?.['accept-encoding'] || '').split(',').some((part) => {
     const [name, ...parameters] = part.trim().split(';');
-    const quality = parameters.find(value => /^\s*q\s*=/i.test(value));
+    const quality = parameters.find((value) => /^\s*q\s*=/i.test(value));
     return name.toLowerCase() === 'gzip' && (!quality || Number(quality.split('=')[1]) > 0);
   });
-  if (compress && acceptsGzip && Buffer.byteLength(body) >= 2048) {
-    const zipped = gzipSync(body);
-    if (zipped.length < Buffer.byteLength(body)) { body = zipped; encoding = 'gzip'; }
-  }
+}
+
+function writeJson(response, status, body, headers, { compress, encoding }) {
   const outgoing = {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
@@ -26,6 +23,22 @@ export function json(response, status, payload, headers = {}, { compress = false
   }
   response.writeHead(status, outgoing);
   response.end(body);
+}
+
+export function json(response, status, payload, headers = {}, { compress = false } = {}) {
+  const encoded = JSON.stringify(payload);
+  const bytes = Buffer.byteLength(encoded);
+  if (compress && acceptsGzipEncoding(response) && bytes >= 2048) {
+    return new Promise((resolve) => {
+      gzip(encoded, (error, zipped) => {
+        if (!error && zipped.length < bytes) writeJson(response, status, zipped, headers, { compress, encoding: 'gzip' });
+        else writeJson(response, status, encoded, headers, { compress, encoding: '' });
+        resolve();
+      });
+    });
+  }
+  writeJson(response, status, encoded, headers, { compress, encoding: '' });
+  return Promise.resolve();
 }
 
 export async function readJson(request, { maxBytes = 128 * 1024 } = {}) {

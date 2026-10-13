@@ -227,9 +227,20 @@ export function createDailyLogWriter({ directory, prefix, retentionDays = 14, no
   return { enqueue, close, flush, prune };
 }
 
-function attach(request, response, url, writer, { salt, now }) {
+export function requestLoopDelayMs(histogram, startMax) {
+  if (!histogram || startMax == null) return null;
+  const endMax = Number(histogram.max);
+  if (!Number.isFinite(endMax) || !Number.isFinite(Number(startMax))) return null;
+  const delta = endMax >= startMax ? endMax - startMax : endMax;
+  return Math.max(0, Math.round(delta / 1e6));
+}
+
+function attach(request, response, url, writer, { salt, now, loopDelay }) {
   const receivedPerf = performance.now();
   const receivedWall = now();
+  const loopHistogram = () => (typeof loopDelay === 'function' ? loopDelay() : loopDelay);
+  const loopStart = loopHistogram();
+  const loopStartMax = loopStart && Number.isFinite(Number(loopStart.max)) ? Number(loopStart.max) : null;
   let marked = false;
   let firstPerf = 0;
   let bytesSent = 0;
@@ -301,6 +312,7 @@ function attach(request, response, url, writer, { salt, now }) {
       const hit = response[accessCacheHit];
       const client = hashClientAddress(request.headers?.['cf-connecting-ip'], salt);
       const ray = cfRay(request.headers?.['cf-ray']);
+      const loopMs = requestLoopDelayMs(loopHistogram(), loopStartMax);
       const record = {
         receivedAt: formatShanghai(receivedWall),
         firstByteAt: firstWall == null ? null : formatShanghai(firstWall),
@@ -321,7 +333,11 @@ function attach(request, response, url, writer, { salt, now }) {
         serverMs: marked ? Math.round(firstPerf - receivedPerf) : null,
         transferMs: marked ? Math.round(finishedPerf - firstPerf) : null,
         totalMs: Math.round(finishedPerf - receivedPerf),
+        ...(loopMs == null ? {} : { loopMs }),
       };
+      if (loopMs != null && loopMs >= 200) {
+        console.warn(`[web] event-loop ${record.method} ${record.path} loopMs=${loopMs}`);
+      }
       writer.enqueue(`${JSON.stringify(record)}\n`);
     } catch {
       // 日志失败不能影响请求。
@@ -347,6 +363,7 @@ export function createAccessLog(options = {}) {
   const retentionDays = options.retentionDays ?? accessLogRetentionDays(env);
   const sampleRate = options.clientSampleRate ?? clientTimingSampleRate(env);
   const writersReady = Boolean(enabled && directory);
+  let loopDelay = null;
   let clientWindow = { start: 0, count: 0 };
   const accessWriter = writersReady
     ? createDailyLogWriter({ directory, prefix: 'access', retentionDays, now })
@@ -359,7 +376,7 @@ export function createAccessLog(options = {}) {
     if (!accessWriter || !request || !response || response[attachedFlag]) return;
     try {
       response[attachedFlag] = true;
-      attach(request, response, url, accessWriter, { salt, now });
+      attach(request, response, url, accessWriter, { salt, now, loopDelay: () => loopDelay });
     } catch {
       // 请求路径上不能抛出。
     }
@@ -372,6 +389,10 @@ export function createAccessLog(options = {}) {
     } catch {
       // 忽略。
     }
+  }
+
+  function bindLoopDelay(histogram) {
+    loopDelay = histogram || null;
   }
 
   function writeEventLoop(sample) {
@@ -419,6 +440,7 @@ export function createAccessLog(options = {}) {
     observe,
     writeClientTiming,
     writeEventLoop,
+    bindLoopDelay,
     acceptClientSample,
     flush,
     close,
@@ -597,6 +619,7 @@ function parseAccessLine(line) {
       serverMs: numberOrNull(value.serverMs),
       transferMs: numberOrNull(value.transferMs),
       totalMs: numberOrNull(value.totalMs),
+      loopMs: numberOrNull(value.loopMs),
       receivedMs,
     };
   } catch {
@@ -641,12 +664,14 @@ export async function readAccessSummary(directory, input = {}, now = () => Date.
         server: [],
         transfer: [],
         total: [],
+        loop: [],
       };
       bucket.count += 1;
       bucket.bytes += record.bytesSent;
       if (record.serverMs != null) bucket.server.push(record.serverMs);
       if (record.transferMs != null) bucket.transfer.push(record.transferMs);
       if (record.totalMs != null) bucket.total.push(record.totalMs);
+      if (record.loopMs != null) bucket.loop.push(record.loopMs);
       groups.set(record.path, bucket);
     }
   }
@@ -658,6 +683,7 @@ export async function readAccessSummary(directory, input = {}, now = () => Date.
       serverMs: timingStats(bucket.server),
       transferMs: timingStats(bucket.transfer),
       total: timingStats(bucket.total),
+      loopMs: timingStats(bucket.loop),
     }))
     .sort((left, right) => (right.total.p95 ?? -1) - (left.total.p95 ?? -1) || right.count - left.count)
     .slice(0, parsed.top);
@@ -710,6 +736,7 @@ export function formatSummaryText(summary) {
       `serverMs=${formatTiming(row.serverMs)}`,
       `transferMs=${formatTiming(row.transferMs)}`,
       `total=${formatTiming(row.total)}`,
+      `loopMs=${formatTiming(row.loopMs)}`,
     ].join(' '));
   }
   if (!summary.paths.length) lines.push('(empty)');

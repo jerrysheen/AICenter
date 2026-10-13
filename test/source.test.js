@@ -173,9 +173,10 @@ test('source API lists manifests and reads a source while legacy market API rema
 
     const marketNative = await fetch(`${address.localUrl}/api/v1/market-native/board?predictionLimit=10`).then((response) => response.json());
     assert.equal(marketNative.ok, true);
-    assert.equal(marketNative.board.predictionMarkets[0].venue, 'polymarket');
-    assert.equal(marketNative.board.cryptoDerivatives[0].symbol, 'BTC');
-    assert.equal(marketNative.board.stablecoinLiquidity.total.supplyUsd, '1');
+    assert.equal(marketNative.pending, true);
+    assert.deepEqual(marketNative.board.predictionMarkets, []);
+    assert.deepEqual(marketNative.board.cryptoDerivatives, []);
+    assert.equal(marketNative.board.stablecoinLiquidity, null);
 
     const staticBoard = await fetch(`${address.localUrl}/api/v1/static-signals/board?from=0&to=10000&focus=1&includeUndated=0`).then((response) => response.json());
     assert.equal(staticBoard.ok, true);
@@ -185,7 +186,9 @@ test('source API lists manifests and reads a source while legacy market API rema
 
     const legacy = await fetch(`${address.localUrl}/api/v1/markets?board=us`).then((response) => response.json());
     assert.equal(legacy.ok, true);
+    assert.equal(legacy.pending, true);
     assert.equal(legacy.market.board, 'us');
+    assert.match(legacy.market.note, /行情快照尚未就绪/);
   } finally {
     await app.close();
     rmSync(directory, { recursive: true, force: true });

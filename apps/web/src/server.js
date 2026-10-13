@@ -23,7 +23,7 @@ import { resolveInstanceConfig } from '../../../packages/instance/src/index.js';
 import { createAgentTraceLog } from '../../../packages/runtime/src/agent-trace-log.js';
 import { createWorkPackageTracePort } from '../../../packages/runtime/src/work-package-trace.js';
 import { readTagCatalogFile } from '../../../packages/runtime/src/tagging-module.js';
-import { createFailureStreakStore, createSourceHub, createSourceModuleRegistry, createStaticSignalBoardReader, installFailureStreakStore } from '../../../packages/source/src/index.js';
+import { createFailureStreakStore, createMarketBoardReader, createMarketNativeBoardReader, createSourceHub, createSourceModuleRegistry, createStaticSignalBoardReader, installFailureStreakStore } from '../../../packages/source/src/index.js';
 import { HOLDINGS_MARKET_SNAPSHOT_KEY } from '../../../packages/runtime/src/web-snapshot-jobs.js';
 import { createMemorySnapshotCache } from '../../../packages/runtime/src/snapshot-cache.js';
 import { createEventLoopMonitor } from './http/event-loop-monitor.js';
@@ -231,6 +231,19 @@ export function createAiCenterServer(options = {}) {
   const holdingsQuoteCache = createMemorySnapshotCache({
     read: () => store.repositories.runtimeSnapshots.readSnapshot('local', HOLDINGS_MARKET_SNAPSHOT_KEY),
   });
+  const marketBoard = options.marketBoard || createMarketBoardReader({
+    repository: store.repositories.runtimeSnapshots,
+    marketCatalog: options.marketCatalog,
+    quotePort: {
+      async fetchQuotes(symbols) {
+        const snapshot = await sourcePort.read('market.quotes', { symbols });
+        return Array.isArray(snapshot?.data) ? snapshot.data : [];
+      },
+    },
+  });
+  const marketNativeBoard = options.marketNativeBoard || createMarketNativeBoardReader({
+    repository: store.repositories.runtimeSnapshots,
+  });
   services = options.services || createDomainServices({
     modelUsageRates: env.AI_CENTER_MODEL_USAGE_RATES_JSON || [],
     dataDirectory,
@@ -273,6 +286,9 @@ export function createAiCenterServer(options = {}) {
     holdingsQuotePort: {
       read: (readOptions) => holdingsQuoteCache.get(readOptions),
     },
+    marketBoardPort: {
+      read: (query, readOptions) => marketBoard.read(query, readOptions),
+    },
     staticSignalPort: {
       readBoard: (input, readOptions) => staticSignalBoard.read(input, readOptions).then((result) => result.board),
     },
@@ -282,7 +298,7 @@ export function createAiCenterServer(options = {}) {
       ? options.analysisSkillCatalog
       : createAnalysisSkillCatalog({ rootDirectory: path.join(repositoryRoot, 'config/analysis-skills') }),
   });
-  if (!options.services) services = Object.freeze({ ...services, staticSignalBoard });
+  if (!options.services) services = Object.freeze({ ...services, staticSignalBoard, marketBoard, marketNativeBoard });
   const feedQueryParsers = options.feedQueryParsers || new Map([
     ['x', parseXFeedQuery],
     ['xueqiu', parseXueqiuFeedQuery],
@@ -315,6 +331,7 @@ export function createAiCenterServer(options = {}) {
     },
   });
   const eventLoopDelay = eventLoopMonitor.histogram;
+  accessLog.bindLoopDelay?.(eventLoopDelay);
 
   function isPublicRequest(request, url) {
     const forwarded = Boolean(request.headers['cf-connecting-ip'] || request.headers['cf-ray']);

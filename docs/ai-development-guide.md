@@ -101,7 +101,7 @@ knowledge/
 
 Instance 配置后的个人目录为 `<instance>/{data,knowledge,config,imports,runtime}`。未配置时继续使用旧仓库内目录。新代码不得再自行 `path.join(repositoryRoot, 'data'|'knowledge'|'config')`；Web、Worker 和 CLI 统一从 `packages/instance` 取得路径。
 
-Web 把每个 HTTP 请求追加成一行 JSON，文件是 Instance `data/logs/access.yyyy-MM-dd.log`（Asia/Shanghai 日期）。`AI_CENTER_ACCESS_LOG` 默认开启，设为 `0` 关闭。`AI_CENTER_ACCESS_LOG_RETENTION_DAYS` 默认 14。`/client-timing.js?v=` 在文档 `load` 之后，或 `load` 已经结束、以及从往返缓存恢复时，按 20% 抽样把 Navigation Timing 和最慢的约 20 条资源用 `text/plain` POST 到 `/api/v1/runtime/client-timing`，记到同目录的 `client-timing.yyyy-MM-dd.log`。同一进程每 60 秒用 `perf_hooks.monitorEventLoopDelay` 记一行 `kind=event-loop`（p50/p99/max，毫秒），汇总脚本和 `GET /api/v1/runtime/access-summary` 把它放在 `eventLoop`，不计入路径统计。汇总脚本是 `scripts/access-log-summary.mjs`。这些文件不进 Git。
+Web 把每个 HTTP 请求追加成一行 JSON，文件是 Instance `data/logs/access.yyyy-MM-dd.log`（Asia/Shanghai 日期）。`AI_CENTER_ACCESS_LOG` 默认开启，设为 `0` 关闭。`AI_CENTER_ACCESS_LOG_RETENTION_DAYS` 默认 14。`/client-timing.js?v=` 在文档 `load` 之后，或 `load` 已经结束、以及从往返缓存恢复时，按 20% 抽样把 Navigation Timing 和最慢的约 20 条资源用 `text/plain` POST 到 `/api/v1/runtime/client-timing`，记到同目录的 `client-timing.yyyy-MM-dd.log`。同一进程每 60 秒用 `perf_hooks.monitorEventLoopDelay` 记一行 `kind=event-loop`（p50/p99/max，毫秒），汇总脚本和 `GET /api/v1/runtime/access-summary` 把它放在 `eventLoop`，不计入路径统计。汇总脚本是 `scripts/access-log-summary.mjs`。每个请求再记 `loopMs`：这段请求里直方图 max 的增量（窗口中途被重置时用重置后的 max）。汇总按路径给出 `loopMs` 的 p50/p95/max。单次 `loopMs` 达到 200 毫秒时，Web 另打一行 `[web] event-loop METHOD PATH loopMs=…`。这些文件不进 Git。
 
 docs/
   release-readiness.md       当前验收与停止线

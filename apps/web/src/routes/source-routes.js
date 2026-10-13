@@ -40,7 +40,10 @@ export function createSourceRoutes() {
         const input = Object.fromEntries(url.searchParams.entries());
         const refresh = input.refresh === '1' || input.refresh === 'true';
         delete input.refresh;
-        let board = await readMarketNativeBoard(services.sources, input, { refresh });
+        const loaded = services.marketNativeBoard?.read
+          ? await services.marketNativeBoard.read(input, { refresh })
+          : { board: await readMarketNativeBoard(services.sources, input, { refresh }), pending: false };
+        let board = loaded.board;
         if (services.eventQuotes?.attachPriorPrices) {
           try {
             board = services.eventQuotes.attachPriorPrices(board);
@@ -49,7 +52,9 @@ export function createSourceRoutes() {
           }
         }
         const { localizations } = await withLocalizations(services, identity, board);
-        json(response, 200, { ok: true, board, localizations });
+        json(response, 200, loaded.pending
+          ? { ok: true, board, localizations, pending: true }
+          : { ok: true, board, localizations });
       },
     },
     {

@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-13-event-loop-markets.md`：访问日志为每个请求记下这段时间里的事件循环延迟。静态文件和压缩 JSON 改为异步 gzip。行情总览和市场原生看板改由 Worker 每分钟写入 `runtime_snapshots`，Web 只读快照。不新增 migration。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-13-feed-qa-fixes.md`：社媒刷新后已读仍留在列表底部，未读页翻完再翻已读。信息流「全部」合并手工、X、雪球和官方。「官方」切换立即清空旧列表，并丢掉过期的社媒响应。日报条目时间用条目自己的发布时间或入库时间。需要重启 Web。Worker 不用重启。
 
 - `progress/2026-10-13-feed-query-perf.md`：X / 雪球列表走索引分页，TrendForce 列表只返回摘要并支持 ETag / 304，客户端计时改为 `text/plain` 上报，行为事件补上页签、文章、分享、小时、展开、原文、提问和慢页面。migration 59。已读游标仍只返回已读。需要重启 Web。
