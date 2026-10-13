@@ -584,8 +584,12 @@ export function createFeedRepository(database, emitEvent) {
         ? `ci.id, ci.workspace_id, ci.capture_id, ci.origin_type, ci.content_type, ci.title, '' AS body, ci.summary,
           ci.source_url, ci.author_name, ci.published_at, ci.created_at, ci.updated_at`
         : 'ci.*';
-      const rows = database.prepare(`SELECT ${itemColumns}, c.provider AS provider, c.external_id AS external_id,
-          c.captured_at AS captured_at, c.metadata_json AS capture_metadata_json,
+      const captureColumns = options.omitBody
+        ? `c.provider AS provider, c.external_id AS external_id, c.captured_at AS captured_at,
+          COALESCE(json_extract(c.metadata_json, '$.authorHandle'), '') AS author_handle`
+        : `c.provider AS provider, c.external_id AS external_id, c.captured_at AS captured_at,
+          c.metadata_json AS capture_metadata_json`;
+      const rows = database.prepare(`SELECT ${itemColumns}, ${captureColumns},
           COALESCE(item_state.is_read, 0) AS is_read,
           COALESCE(item_state.is_saved, 0) AS is_saved,
           CASE WHEN ${LOW_VALUE_SQL} THEN 1 ELSE 0 END AS low_value
@@ -598,7 +602,9 @@ export function createFeedRepository(database, emitEvent) {
         provider: row.provider,
         externalId: row.external_id,
         capturedAt: row.captured_at,
-        captureMetadata: parseJson(row.capture_metadata_json),
+        captureMetadata: options.omitBody
+          ? { authorHandle: row.author_handle || '' }
+          : parseJson(row.capture_metadata_json),
         isRead: Boolean(row.is_read),
         isSaved: Boolean(row.is_saved),
         lowValue: Boolean(row.low_value),
@@ -945,6 +951,26 @@ export function createFeedRepository(database, emitEvent) {
         if(result.changes)emitEvent('feed.item-translation.removed.v1','item-translation',input.itemId,{itemId:input.itemId,targetLang:input.targetLang},input.workspaceId);
         return result.changes===1;
       })();
+    },
+
+    listTranslationPreviews(workspaceId, itemIds = [], targetLang = 'zh', limit = 240) {
+      const ids = [...new Set((itemIds || []).map((id) => String(id || '').trim()).filter(Boolean))];
+      if (!ids.length) return [];
+      const clip = Math.max(40, Math.min(Number(limit) || 240, 400));
+      const placeholders = ids.map(() => '?').join(', ');
+      const rows = database.prepare(`SELECT item_id, target_lang, source_hash,
+          substr(translated_text, 1, ${clip}) AS translated_text, engine, updated_at
+        FROM feed_item_translations
+        WHERE workspace_id = ? AND target_lang = ? AND item_id IN (${placeholders})`)
+        .all(workspaceId, targetLang, ...ids);
+      return rows.map((row) => ({
+        itemId: row.item_id,
+        targetLang: row.target_lang,
+        sourceHash: row.source_hash,
+        translatedText: row.translated_text,
+        engine: row.engine || '',
+        updatedAt: row.updated_at,
+      }));
     },
 
     listTranslations(workspaceId, itemIds = [], targetLang = 'zh') {

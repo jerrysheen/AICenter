@@ -112,14 +112,17 @@ function rankFeedItems(items) {
   ));
 }
 
-function attachTranslations(feedRepository, workspaceId, items, targetLang = 'zh', { verifyBody = true } = {}) {
+function attachTranslations(feedRepository, workspaceId, items, targetLang = 'zh', { verifyBody = true, preview = false } = {}) {
   if (!items.length || !feedRepository?.listTranslations) return items;
   const ids = [];
   for (const item of items) {
     if (item?.id) ids.push(item.id);
     if (item?.resourceId) ids.push(item.resourceId);
   }
-  const rows = feedRepository.listTranslations(workspaceId, ids, targetLang) || [];
+  const list = preview && feedRepository.listTranslationPreviews
+    ? feedRepository.listTranslationPreviews(workspaceId, ids, targetLang)
+    : feedRepository.listTranslations(workspaceId, ids, targetLang);
+  const rows = list || [];
   if (!rows.length) return items;
   const byId = new Map(rows.map((row) => [row.itemId, row]));
   return items.map((item) => {
@@ -512,6 +515,26 @@ function yieldEventLoop() {
   });
 }
 
+const feedCountCache = new Map();
+const FEED_COUNT_TTL_MS = 60_000;
+
+function feedTotal(feedRepository, workspaceId, providerId, pageQuery, now = Date.now()) {
+  const key = [
+    workspaceId,
+    providerId,
+    pageQuery.sourceExternalId || '',
+    pageQuery.qualityRule || '',
+    pageQuery.includeLowValue ? 1 : 0,
+    pageQuery.taggedOnly ? 1 : 0,
+  ].join('|');
+  const hit = feedCountCache.get(key);
+  if (hit && now - hit.at < FEED_COUNT_TTL_MS) return hit.total;
+  const counted = feedRepository.countContentItemsByProvider?.(workspaceId, providerId, pageQuery);
+  const total = Number.isInteger(counted) ? counted : 0;
+  feedCountCache.set(key, { at: now, total });
+  return total;
+}
+
 function readStoredFeed(feedRepository, workspaceId, persistence, query, extra = {}) {
   const providerId = persistence.providerId;
   const feed = query.feed || 'for-you';
@@ -533,8 +556,7 @@ function readStoredFeed(feedRepository, workspaceId, persistence, query, extra =
   const hasMore = rows.length > pageLimit;
   const pageRows = hasMore ? rows.slice(0, pageLimit) : rows;
   const items = rankFeedItems(pageRows.map((row) => toFeedItem(providerId, row)));
-  const counted = feedRepository.countContentItemsByProvider?.(workspaceId, providerId, pageQuery);
-  const total = Number.isInteger(counted) ? counted : pageRows.length;
+  const total = extra.skipCount ? pageRows.length : feedTotal(feedRepository, workspaceId, providerId, pageQuery, extra.now);
   const last = pageRows[pageRows.length - 1];
   return {
     platform: providerId,
@@ -547,9 +569,12 @@ function readStoredFeed(feedRepository, workspaceId, persistence, query, extra =
     total,
     nextCursor: hasMore && last?.id ? formatFeedBefore(last.isRead, last.capturedAt, last.id) : null,
     fetchedAt: extra.fetchedAt || Date.now(),
-    note: extra.note || (total
-      ? `已缓存 ${total} 条，来自 SourceAccount`
-      : (persistence.emptyNote || '还没有缓存。刷新后会写入来源并去重保留。')),
+    note: extra.note || (extra.skipCount
+      ? ''
+      : (total
+        ? `已缓存 ${total} 条，来自 SourceAccount`
+        : (persistence.emptyNote || '还没有缓存。刷新后会写入来源并去重保留。'))),
+    ...(extra.skipCount ? { countQuery: pageQuery } : {}),
     added: extra.added || 0,
     skipped: extra.skipped || 0,
     items,
@@ -673,12 +698,13 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
   const localizeForReading=async(workspaceId,items,options={})=>{
     const listShape=options.listShape===true;
     if(!normalizedArticlePort) {
-      if(listShape) return attachTranslations(feedRepository,workspaceId,items,'zh',{verifyBody:false});
+      if(listShape) return attachTranslations(feedRepository,workspaceId,items,'zh',{verifyBody:false,preview:true});
       return localizeFeedItems(feedRepository,translationPort,workspaceId,items,'zh',options);
     }
-    const translated=attachTranslations(feedRepository,workspaceId,items,'zh',{verifyBody:!listShape});
+    const translated=attachTranslations(feedRepository,workspaceId,items,'zh',{verifyBody:!listShape,preview:listShape});
     if(items.length>8) await yieldEventLoop();
-    return attachNormalizedArticles(workspaceId,translated,{listShape});
+    if(listShape) return translated;
+    return attachNormalizedArticles(workspaceId,translated,{listShape:false});
   };
   return Object.freeze({
     listLegacyPosts(limit) {
@@ -721,9 +747,17 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       if (!query?.refresh) {
         const listShape = shape === 'list';
         const stored = readStoredFeed(feedRepository, workspaceId, persistence, pageQuery, {
-          qualityRule, includeLowValue: true, omitBody: listShape,
+          qualityRule, includeLowValue: true, omitBody: listShape, skipCount: true,
         });
-        if (stored.items.length > 8) await yieldEventLoop();
+        if (stored.items.length > 4) await yieldEventLoop();
+        const total = feedTotal(feedRepository, workspaceId, providerId, stored.countQuery || pageQuery);
+        stored.total = total;
+        stored.tweetCount = total;
+        stored.note = total
+          ? `已缓存 ${total} 条，来自 SourceAccount`
+          : (persistence.emptyNote || '还没有缓存。刷新后会写入来源并去重保留。');
+        delete stored.countQuery;
+        if (stored.items.length > 4) await yieldEventLoop();
         stored.items = rankFeedItems(await localizeForReading(workspaceId, stored.items, { wait: false, listShape }));
         return presentFeed(stored, shape, workspaceId);
       }

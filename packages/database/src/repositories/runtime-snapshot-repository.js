@@ -32,6 +32,15 @@ export function createRuntimeSnapshotRepository(database) {
       const json = JSON.stringify(payload ?? null);
       upsert.run(workspaceId(workspace), snapshotKey(key), at, json, Date.now());
     },
+    readSnapshotBody(workspace, key) {
+      const row = select.get(workspaceId(workspace), snapshotKey(key));
+      if (!row?.payload_json) return null;
+      return {
+        generatedAt: Number(row.generated_at),
+        updatedAt: Number(row.updated_at),
+        body: row.payload_json,
+      };
+    },
     readSnapshot(workspace, key) {
       const row = select.get(workspaceId(workspace), snapshotKey(key));
       if (!row) return null;

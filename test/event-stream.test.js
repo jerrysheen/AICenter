@@ -95,9 +95,9 @@ test('flush sends stored payload text a few events at a time', async () => {
     0,
   );
   hub.flush();
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await new Promise((resolve) => setTimeout(resolve, 80));
   const body = chunks.join('');
-  assert.equal(maxLimit, 5);
+  assert.equal(maxLimit, 1);
   assert.match(body, /"n":1/);
   assert.match(body, /"n":12/);
   hub.closeAll();

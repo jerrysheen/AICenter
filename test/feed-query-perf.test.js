@@ -9,6 +9,7 @@ import Database from 'better-sqlite3';
 import { createStore } from '../packages/database/src/index.js';
 import { latestSchemaVersion } from '../packages/database/src/migrations.js';
 import { createFeedService } from '../packages/domain/src/feed-service.js';
+import { captureFeedLists, feedListSnapshotKey } from '../packages/runtime/src/web-snapshot-jobs.js';
 import { createMediaIngestionService } from '../packages/domain/src/media-ingestion-service.js';
 import { createAiCenterServer } from '../apps/web/src/server.js';
 
@@ -153,15 +154,15 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
 
   const upgraded = createStore(file);
   try {
-    assert.equal(latestSchemaVersion(), 59);
-    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 59);
+    assert.equal(latestSchemaVersion(), 60);
+    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 60);
   } finally {
     upgraded.close();
   }
 
   const database = new Database(file, { readonly: true, fileMustExist: true });
   try {
-    assert.equal(database.pragma('user_version', { simple: true }), 59);
+    assert.equal(database.pragma('user_version', { simple: true }), 60);
     const rows = database.prepare(`
       SELECT version, name, applied_at FROM schema_migrations WHERE version >= 57 ORDER BY version
     `).all();
@@ -169,6 +170,7 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
       [57, 'api_access_tokens'],
       [58, 'runtime_snapshots'],
       [59, 'feed_provider_page_indexes'],
+      [60, 'tree_index_columns'],
     ]);
     assert.ok(rows[1].applied_at <= rows[2].applied_at);
     assert.ok(database.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'runtime_snapshots'`).get());
@@ -178,5 +180,72 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('list page skips capture blobs and a second read reuses the cached count', async () => {
+  const store = createStore(':memory:');
+  try {
+    const feed = store.repositories.feed;
+    const source = feed.upsertSourceAccount({
+      workspaceId: 'local', provider: 'x', externalId: 'x:home', displayName: 'X',
+    });
+    const padding = 'M'.repeat(8_000);
+    const startedInsert = performance.now();
+    for (let index = 0; index < 400; index += 1) {
+      const externalId = `fat${index}`;
+      const capture = feed.saveCapture({
+        workspaceId: 'local', provider: 'x', externalId, sourceAccountId: source.id,
+        sourceUrl: `https://x.com/example/status/${index}`, contentHash: hash(externalId), capturedAt: 10_000 + index,
+        metadata: { authorHandle: 'ada', padding },
+      });
+      feed.saveContentItem({
+        workspaceId: 'local', captureId: capture.id, originType: 'subscription', contentType: 'post',
+        title: `标题 ${externalId}`, body: padding, summary: `摘要 ${externalId}`,
+        sourceUrl: `https://x.com/example/status/${index}`, authorName: 'Ada', publishedAt: 10_000 + index,
+      });
+    }
+    const service = createFeedService({
+      legacyRepository: {},
+      feedRepository: feed,
+      sourcePort: {
+        findByProvider: () => ({ id: 'content.x' }),
+        persistence: () => ({ providerId: 'x', sourceAccount: { externalId: 'x:home' }, emptyNote: '' }),
+        read: async () => { throw new Error('must not refresh'); },
+      },
+      normalizedArticlePort: {
+        normalizedArticles() { throw new Error('list must not load article nodes'); },
+      },
+    });
+    const insertMs = performance.now() - startedInsert;
+    const firstAt = performance.now();
+    const page = await service.getExternalFeed('x', { feed: 'following', limit: 12, fields: 'list' });
+    const firstMs = performance.now() - firstAt;
+    const secondAt = performance.now();
+    const again = await service.getExternalFeed('x', { feed: 'following', limit: 12, fields: 'list' });
+    const secondMs = performance.now() - secondAt;
+    assert.equal(page.items.length, 12);
+    assert.equal(page.items[0].authorHandle, 'ada');
+    assert.equal(JSON.stringify(page).includes(padding), false);
+    assert.equal(again.total, page.total);
+    assert.ok(secondMs <= firstMs + 30, `cached count page ${secondMs.toFixed(1)}ms slower than first ${firstMs.toFixed(1)}ms`);
+    const captured = await captureFeedLists({
+      feedService: service,
+      repository: store.repositories.runtimeSnapshots,
+    });
+    const body = store.repositories.runtimeSnapshots.readSnapshotBody('local', 'feed-list-x');
+    assert.equal(captured.pages >= 1, true);
+    assert.equal(feedListSnapshotKey('x', { feed: 'following', limit: 12, fields: 'list' }), 'feed-list-x');
+    assert.match(body.body, /^\{"ok":true,"feed":/);
+    console.log(JSON.stringify({
+      insertMs: Math.round(insertMs),
+      rows: 400,
+      metadataBytes: 8000,
+      firstListMs: Number(firstMs.toFixed(1)),
+      secondListMs: Number(secondMs.toFixed(1)),
+      snapshotBytes: Buffer.byteLength(body.body),
+    }));
+  } finally {
+    store.close();
   }
 });

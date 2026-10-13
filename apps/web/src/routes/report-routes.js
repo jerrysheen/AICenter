@@ -10,6 +10,7 @@ import {
   DailyBriefWindowQuerySchema,
 } from '../../../../packages/contracts/src/index.js';
 import { json, readJson } from '../http/response.js';
+import { createPreparedResponseCache } from '../http/prepared-json.js';
 import {TreeManifestQuerySchema,TreeNodeQuerySchema,TreeWindowQuerySchema,ReadingHourIndexQuerySchema} from '../../../../packages/contracts/src/information-tree.js';
 
 function briefView(brief) {
@@ -18,16 +19,32 @@ function briefView(brief) {
   return view;
 }
 
+const HOUR_MS = 3_600_000;
+
+function hourBucket(value) {
+  const at = Number(value);
+  if (!Number.isFinite(at)) return 0;
+  return Math.floor(at / HOUR_MS);
+}
+
 export function createReportRoutes() {
+  const treeCache = createPreparedResponseCache({ ttlMs: 15_000, refreshLeadMs: 5_000 });
   return [
-    {method:'GET',path:'/api/v1/reports/tree',handler({response,services,url,identity}) {
+    {method:'GET',path:'/api/v1/reports/tree',handler({request,response,services,url,identity}) {
       const window=parseContract(TreeManifestQuerySchema,{startAt:url.searchParams.get('startAt'),endAt:url.searchParams.get('endAt'),view:url.searchParams.get('view') || undefined,information:url.searchParams.get('information') || undefined});
-      return json(response,200,{ok:true,...services.informationTree.list(identity?.device?.workspaceId || 'local',window)},{},{compress:true});
+      const workspace=identity?.device?.workspaceId || 'local';
+      const key=`${workspace}|tree|${window.view || ''}|${window.information || ''}|${hourBucket(window.startAt)}|${hourBucket(window.endAt)}`;
+      return treeCache(request, response, key, () => ({ok:true,...services.informationTree.list(workspace,window)}));
     }},
-    {method:'GET',path:'/api/v1/reports/tree/edition',handler({response,services,url,identity}) {
+    {method:'GET',path:'/api/v1/reports/tree/edition',handler({request,response,services,url,identity}) {
       const {id}=parseContract(TreeNodeQuerySchema,{id:url.searchParams.get('id')});
-      const result=services.informationTree.edition(identity?.device?.workspaceId || 'local',id);
-      return json(response,result ? 200 : 404,{ok:Boolean(result),...result},{},{compress:true});
+      const workspace=identity?.device?.workspaceId || 'local';
+      return treeCache(request, response, `${workspace}|edition|${id}`, () => {
+        const result=services.informationTree.edition(workspace,id);
+        return result
+          ? {httpStatus:200, payload:{ok:true,...result}}
+          : {httpStatus:404, payload:{ok:false}};
+      });
     }},
     {method:'GET',path:'/api/v1/reports/tree/node',handler({response,services,url,identity}) {
       const {id}=parseContract(TreeNodeQuerySchema,{id:url.searchParams.get('id')});
@@ -37,15 +54,20 @@ export function createReportRoutes() {
       const {id}=parseContract(TreeNodeQuerySchema,{id:url.searchParams.get('id')});
       const children=services.informationTree.children(identity?.device?.workspaceId || 'local',id);json(response,children ? 200 : 404,{ok:Boolean(children),children});
     }},
-    {method:'GET',path:'/api/v1/reports/reading-hour',handler({response,services,url,identity}) {
+    {method:'GET',path:'/api/v1/reports/reading-hour',handler({request,response,services,url,identity}) {
       if(!services.readingHour) return json(response,404,{ok:false});
       const window={startAt:Number(url.searchParams.get('startAt')),endAt:Number(url.searchParams.get('endAt'))};
       const scope=url.searchParams.get('scope') || 'hour';
       const workspace=identity?.device?.workspaceId || 'local';
-      const snapshot=services.readingHour.forWindow(workspace,window,scope);
-      json(response,snapshot ? 200 : 404,{ok:Boolean(snapshot),snapshot});
+      const key=`${workspace}|hour|${scope}|${window.startAt}|${window.endAt}`;
+      return treeCache(request, response, key, () => {
+        const snapshot=services.readingHour.forWindow(workspace,window,scope);
+        return snapshot
+          ? {httpStatus:200, payload:{ok:true,snapshot}}
+          : {httpStatus:404, payload:{ok:false}};
+      });
     }},
-    {method:'GET',path:'/api/v1/reports/reading-hour/index',handler({response,services,url,identity}) {
+    {method:'GET',path:'/api/v1/reports/reading-hour/index',handler({request,response,services,url,identity}) {
       if(!services.readingHour) return json(response,404,{ok:false});
       const startRaw=url.searchParams.get('startAt');
       const endRaw=url.searchParams.get('endAt');
@@ -55,7 +77,8 @@ export function createReportRoutes() {
         scope:url.searchParams.get('scope') || 'hour',
       });
       const workspace=identity?.device?.workspaceId || 'local';
-      json(response,200,{ok:true,...services.readingHour.indexForRange(workspace,{startAt:input.startAt,endAt:input.endAt},input.scope)});
+      const key=`${workspace}|hour-index|${input.scope}|${hourBucket(input.startAt)}|${hourBucket(input.endAt)}`;
+      return treeCache(request, response, key, () => ({ok:true,...services.readingHour.indexForRange(workspace,{startAt:input.startAt,endAt:input.endAt},input.scope)}));
     }},
     {method:'GET',path:'/api/v1/reports/reading-hour/snapshot',handler({response,services,url,identity}) {
       if(!services.readingHour) return json(response,404,{ok:false});

@@ -184,19 +184,23 @@ export function homeBootstrapEtag(body) {
 
 export async function composeHomeBootstrap(services, { workspace = 'local', now = Date.now() } = {}) {
   const query = homeBootstrapQuery(now);
-  const leave = labelEventLoop('home.bootstrap');
-  let tree;
-  let readings;
-  let brief;
+  const leaveTree = labelEventLoop('home.bootstrap');
+  let treeBody;
   try {
-    const treeBody = services.informationTree.list(workspace, query.tree);
-    tree = slimTree(treeBody);
-    readings = {};
-    let filled = 0;
-    for (const edition of hourlyEditions(tree)) {
-      const startAt = Number(edition?.window?.startAt);
-      const endAt = Number(edition?.window?.endAt);
-      if (!Number.isFinite(startAt) || !Number.isFinite(endAt)) continue;
+    treeBody = services.informationTree.list(workspace, query.tree);
+  } finally {
+    leaveTree();
+  }
+  const tree = slimTree(treeBody);
+  await yieldEventLoop();
+  const readings = {};
+  let filled = 0;
+  for (const edition of hourlyEditions(tree)) {
+    const startAt = Number(edition?.window?.startAt);
+    const endAt = Number(edition?.window?.endAt);
+    if (!Number.isFinite(startAt) || !Number.isFinite(endAt)) continue;
+    const leaveHour = labelEventLoop('home.bootstrap');
+    try {
       const loadSnapshot = filled < HOME_BOOTSTRAP_VISIBLE_HOURS && services.readingHour?.forWindow;
       const snapshot = loadSnapshot
         ? services.readingHour.forWindow(workspace, { startAt, endAt }, 'hour')
@@ -204,10 +208,17 @@ export async function composeHomeBootstrap(services, { workspace = 'local', now 
       const limit = filled === 0 ? 5 : 2;
       readings[startAt] = slimReading(snapshot, loadSnapshot ? limit : 0);
       if (readings[startAt].items.length) filled += 1;
+    } finally {
+      leaveHour();
     }
+    await yieldEventLoop();
+  }
+  const leaveBrief = labelEventLoop('home.bootstrap');
+  let brief;
+  try {
     brief = { ok: true, brief: briefView(services.report?.getLatestDailyBrief?.(workspace) ?? null) };
   } finally {
-    leave();
+    leaveBrief();
   }
 
   let market = { ok: true, market: slimMarket(emptyMarketBoard('overview', now)), pending: true };
@@ -255,8 +266,16 @@ export async function composeHomeBootstrap(services, { workspace = 'local', now 
   };
 }
 
+function yieldEventLoop() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 export function createHomeBootstrapHandler({ ttlMs = HOME_BOOTSTRAP_TTL_MS, now = () => Date.now() } = {}) {
-  const cache = createStaleReadCache({ ttlMs, now });
+  const cache = createStaleReadCache({
+    ttlMs,
+    now,
+    refreshLeadMs: Math.min(5_000, Math.floor(ttlMs / 3)),
+  });
   return async function homeBootstrap({ request, response, services, identity, url, json }) {
     const refresh = url.searchParams.get('refresh') === '1' || url.searchParams.get('refresh') === 'true';
     const workspace = identity?.device?.workspaceId || 'local';

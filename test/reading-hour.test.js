@@ -347,7 +347,7 @@ test('reading snapshot survives reopen and a failed attempt cannot replace it', 
   second.close();
 });
 
-test('reading hour index returns published hours, headline order, and rejects a bad window', () => {
+test('reading hour index returns published hours, headline order, and rejects a bad window', async () => {
   const db = new Database(':memory:');
   runMigrations(db);
   const repository = createInformationTreeRepository(db, () => {});
@@ -408,17 +408,17 @@ test('reading hour index returns published hours, headline order, and rejects a 
   let status, body;
   const response = {writeHead(code) { status = code; }, end(value) { body = value; }};
   const services = {readingHour: {indexForRange(workspace, value, scope) { seen.push({workspace, value, scope}); return index; }}};
-  route.handler({response, services, identity: {device: {workspaceId: 'phone'}}, url: new URL(`http://localhost/api/v1/reports/reading-hour/index?startAt=${start}&endAt=${start + 7 * 86400000}&scope=hour`)});
+  await route.handler({response, services, identity: {device: {workspaceId: 'phone'}}, url: new URL(`http://localhost/api/v1/reports/reading-hour/index?startAt=${start}&endAt=${start + 7 * 86400000}&scope=hour`)});
   assert.equal(status, 200);
   assert.deepEqual(seen[0], {workspace: 'phone', value: {startAt: start, endAt: start + 7 * 86400000}, scope: 'hour'});
   assert.equal(JSON.parse(body).ok, true);
   assert.equal(JSON.parse(body).hours[0].headline.nodeId, 'cn-later');
-  route.handler({response, services, identity: {}, url: new URL(`http://localhost/api/v1/reports/reading-hour/index?startAt=${start}&endAt=${start + hour}`)});
+  await route.handler({response, services, identity: {}, url: new URL(`http://localhost/api/v1/reports/reading-hour/index?startAt=${start}&endAt=${start + hour}`)});
   assert.equal(seen[1].workspace, 'local');
   assert.equal(seen[1].scope, 'hour');
   const fallback = readingHourIndexDefaultWindow();
   assert.deepEqual(ReadingHourIndexQuerySchema.parse({}), {...fallback, scope: 'hour'});
-  route.handler({response, services, identity: {}, url: new URL('http://localhost/api/v1/reports/reading-hour/index')});
+  await route.handler({response, services, identity: {}, url: new URL('http://localhost/api/v1/reports/reading-hour/index')});
   assert.equal(status, 200);
   assert.deepEqual(seen[2], {workspace: 'local', value: fallback, scope: 'hour'});
   const reject = (query) => assert.throws(() => route.handler({response, services, identity: {}, url: new URL(`http://localhost/api/v1/reports/reading-hour/index?${query}`)}), ValidationError);

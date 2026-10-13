@@ -299,7 +299,13 @@ export function createAiCenterServer(options = {}) {
       ? options.analysisSkillCatalog
       : createAnalysisSkillCatalog({ rootDirectory: path.join(repositoryRoot, 'config/analysis-skills') }),
   });
-  if (!options.services) services = Object.freeze({ ...services, staticSignalBoard, marketBoard, marketNativeBoard });
+  if (!options.services) services = Object.freeze({
+    ...services,
+    staticSignalBoard,
+    marketBoard,
+    marketNativeBoard,
+    runtimeSnapshots: store.repositories.runtimeSnapshots,
+  });
   const feedQueryParsers = options.feedQueryParsers || new Map([
     ['x', parseXFeedQuery],
     ['xueqiu', parseXueqiuFeedQuery],

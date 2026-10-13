@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-13-feed-sync-off-request.md`：X / 雪球首页改由 Worker 每分钟写入快照，请求不再做全表计数和正文解析。简报目录用 migration 60 的列，并缓存已序列化的缓冲区。总览在缓存到期前后台重算。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-13-bootstrap-stringify.md`：总览 bootstrap 只留首屏，序列化和 gzip 在缓存填入时做完。X / 雪球列表不再为了列表去读正文。事件推送按几条一帧发送，没有订阅者时不读正文。favicon 从内存返回，缓存 7 天。需要重启 Web。
 
 - `progress/2026-10-13-client-timing-behavior.md`：每次文档加载都把页面计时 POST 到 `/api/v1/runtime/client-timing`。点原文 / 打开原站记 `source.original`，展开条目记 `item.expand`。需要重启 Web。浏览器再加载一次。
