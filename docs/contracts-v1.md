@@ -2,7 +2,7 @@
 
 用户授权五账号原文翻译：内部 `WorkerJobConcurrencySchema.translationLimit` 为 1—5、默认 1，Worker composition root 默认启用 5，仅影响已注册 `feed.translation.run`；HTTP 入参不能设置并发或凭据。详见 `gemma-original-translation.md`。
 
-原文翻译异步化：`FeedTranslationJobInputSchema` 校验 workspace、目标语言、1—30 个唯一 ID/正文项目；拒绝额外命令字段。`POST /api/v1/translate` 与 `/translate/batch` 返回 202/jobId，`GET /api/v1/translate/jobs/:id` 返回同 workspace/type 的状态和完成结果，页面已适配；其他旧客户端需要适配。详见 `gemma-original-translation.md`。
+原文翻译异步化：`FeedTranslationJobInputSchema` 校验 workspace、目标语言、1—30 个唯一 ID/正文项目；拒绝额外命令字段。`POST /api/v1/translate` 与 `/translate/batch` 返回 202/jobId，`GET /api/v1/translate/jobs/:id` 返回同 workspace/type 的状态和完成结果；排队中的任务带 `availableAt`，页面据此退避，不再把尚未到点的任务当成马上会开始。其他旧客户端需要适配。详见 `gemma-original-translation.md`。
 
 简报读取使用`TreeManifestQuerySchema`校验七日窗口。不带`view`仍是完整响应；`view=reading`保持上一版的信息身份投影加完整刊期，供旧客户端使用一个版本。`view=index`是简报首屏目录：刊期只有编号、层级、窗口、状态、生成时间、根模块数量和是否已有研究稿，默认不含信息节点；`information=1`才附带信息节点的身份、时间与校验版本。`TreeIndexEditionSchema`和`TreeIndexInformationSchema`逐行校验这份目录，不接受正文、`inputIds`、`pendingIds`或`roots`。不合规的旧行被丢掉并记一条警告，不让整份目录失败。`/reports/tree/edition`使用`TreeNodeQuerySchema`校验不可变刊期ID，返回该刊期与全部根模块，未知或跨workspace版本404，不触发生成。读取与客户端缓存边界见`information-tree-v3.md`。
 

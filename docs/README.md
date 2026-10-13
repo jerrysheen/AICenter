@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-13-frontend-load.md`：首屏只拉总览模块，API 最多 6 路且同一 GET 去重，小时报按小时键缓存约 30 秒。翻译轮询退避并在任务消失或久未领取时停止。需要重启 Web。
+
 - `progress/2026-10-13-event-loop-markets.md`：访问日志为每个请求记下这段时间里的事件循环延迟。静态文件和压缩 JSON 改为异步 gzip。行情总览和市场原生看板改由 Worker 每分钟写入 `runtime_snapshots`，Web 只读快照。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-13-feed-qa-fixes.md`：社媒刷新后已读仍留在列表底部，未读页翻完再翻已读。信息流「全部」合并手工、X、雪球和官方。「官方」切换立即清空旧列表，并丢掉过期的社媒响应。日报条目时间用条目自己的发布时间或入库时间。需要重启 Web。Worker 不用重启。

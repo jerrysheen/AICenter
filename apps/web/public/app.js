@@ -5,13 +5,7 @@ import {
 } from './mock.js?v=dev';
 import { icon } from './icons.js?v=dev';
 import { renderMarkdownInto, renderFeedTextInto, splitFeedText, stripSharePlaceholders } from './markdown.js?v=dev';
-import { renderQuantLab } from './quant-lab.js?v=dev';
-import { createHardwarePricesPage, hardwareMarketItem } from './hardware-prices.js?v=dev';
-import { computeMarketItems, gpuMatchesSource } from './compute-prices.js?v=dev';
-import { openModelUsageDialog } from './model-usage.js?v=dev';
-import { createFeedLikeAction } from './feed-interaction.js?v=dev';
-import { createMediaFeedCache, createMediaFeedLoader, createMediaReaderSession, mediaIndexBody, mediaReaderParagraphs } from './media-feed.js?v=dev';
-import { createBriefPage, briefReadingItems } from './brief-page.js?v=dev';
+import { cacheTtlFor, createRequestLayer, planTranslationPoll, requestDedupeKey, TRANSLATION_POLL_DEADLINE_MS } from './client-request.js?v=dev';
 import {
   preferredOverviewFocus as overviewFocusClock,
   HOME_QUOTE_CAPTION,
@@ -30,7 +24,16 @@ import {
 import { decodeHtmlEntities } from './html-text.js?v=dev';
 import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, newsIngestAt, newsPublishedHint, prioritizeReadableFeedRows, renderNewsList, reportItemTime } from './news-list.js?v=dev';
 
-const feedLikeButton = createFeedLikeAction({ api: (...args) => api(...args), showToast: text => showToast(text), createAction: options => createDetailAction(options), session: () => state.session });
+const requestLayer = createRequestLayer();
+let feedLikeButton = () => null;
+let feedLikeReady = false;
+let hardwareMarketItem = () => null;
+let hardwarePricesPage = null;
+let hardwareReady = false;
+let computeMarketItems = () => [];
+let gpuMatchesSource = () => true;
+let computeReady = false;
+let mediaModules = null;
 
 const platformLabels = { manual: '手工', bilibili: 'B站', x: 'X', xueqiu: '雪球', trendforce: 'TrendForce', media: '媒体' };
 const processingLabels = { subtitle: '字幕处理中', ai: 'AI 加工中' };
@@ -1385,30 +1388,51 @@ function forgetLegacyDeviceGrant() {
   }
 }
 
-async function api(path, options = {}) {
-  // A caller-supplied signal still shares this timeout. AbortError from that
-  // signal is rethrown; a timeout that fires first becomes “请求超时”.
-  const { timeoutMs = 20_000, onResponse, ...fetchOptions } = options;
-  const external = fetchOptions.signal || null;
-  const timed = Boolean(timeoutMs);
-  const controller = (timed || external) ? new AbortController() : null;
-  const timer = timed ? window.setTimeout(() => controller.abort(), timeoutMs) : 0;
-  const onExternalAbort = () => controller?.abort();
-  if (external && controller) {
-    if (external.aborted) controller.abort();
-    else external.addEventListener('abort', onExternalAbort, { once: true });
-  }
+function scheduleIdle(task, timeout = 1500) {
+  if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(() => task(), { timeout });
+  else window.setTimeout(task, timeout);
+}
+
+function callerGate(promise, { timeoutMs, signal }) {
+  if (!timeoutMs && !signal) return promise;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      if (timer) window.clearTimeout(timer);
+      signal?.removeEventListener?.('abort', onAbort);
+      fn(value);
+    };
+    const timer = timeoutMs ? window.setTimeout(() => finish(reject, new Error('请求超时，请稍后重试')), timeoutMs) : 0;
+    const onAbort = () => {
+      const error = new Error('The operation was aborted.');
+      error.name = 'AbortError';
+      finish(reject, error);
+    };
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+    promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
+  });
+}
+
+async function performApi(path, fetchOptions, timeoutMs, onResponse) {
+  const controller = new AbortController();
+  const timer = timeoutMs ? window.setTimeout(() => controller.abort(), timeoutMs) : 0;
   try {
     const response = await fetch(path, {
       credentials: 'include',
       ...fetchOptions,
-      signal: controller ? controller.signal : undefined,
+      signal: controller.signal,
       headers: { 'Content-Type': 'application/json', ...(fetchOptions.headers || {}) },
     });
     if (typeof onResponse === 'function') onResponse(response);
     if (response.status === 304) return { ok: true, notModified: true };
-    // A truncated gzip body can still arrive as HTTP 200. Treating that as {}
-    // makes callers, including the brief manifest, look successful.
     let payload;
     try {
       payload = await response.json();
@@ -1429,15 +1453,85 @@ async function api(path, options = {}) {
     }
     return payload;
   } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
-      if (external?.aborted) throw error;
-      throw new Error('请求超时，请稍后重试');
-    }
+    if (error instanceof Error && error.name === 'AbortError') throw new Error('请求超时，请稍后重试');
     throw error;
   } finally {
     if (timer) window.clearTimeout(timer);
-    external?.removeEventListener?.('abort', onExternalAbort);
   }
+}
+
+function api(path, options = {}) {
+  const { timeoutMs = 20_000, priority, fresh, cache, signal, onResponse, ...fetchOptions } = options;
+  const method = String(fetchOptions.method || 'GET').toUpperCase();
+  const bypass = fresh === true || cache === 'no-store' || method !== 'GET' || /(?:^|[?&])refresh=1(?:&|$)/.test(String(path));
+  const key = requestDedupeKey(method, path);
+  const ttl = bypass ? 0 : cacheTtlFor(method, path);
+  const safetyMs = Math.max(Number(timeoutMs) || 0, 20_000);
+  const shared = requestLayer.run(key, () => performApi(path, fetchOptions, safetyMs, onResponse), {
+    ttl,
+    bypass,
+    priority: Number.isFinite(priority) ? priority : (method === 'GET' ? 4 : 7),
+    share: method === 'GET',
+  });
+  return callerGate(shared, { timeoutMs, signal });
+}
+
+function ensureFeedLike() {
+  if (!ensureFeedLike.promise) {
+    ensureFeedLike.promise = import('./feed-interaction.js?v=dev').then((mod) => {
+      feedLikeButton = mod.createFeedLikeAction({
+        api: (...args) => api(...args),
+        showToast: text => showToast(text),
+        createAction: options => createDetailAction(options),
+        session: () => state.session,
+      });
+      feedLikeReady = true;
+      return feedLikeButton;
+    });
+  }
+  return ensureFeedLike.promise;
+}
+
+function ensureHardware() {
+  if (!ensureHardware.promise) {
+    ensureHardware.promise = import('./hardware-prices.js?v=dev').then((mod) => {
+      hardwareMarketItem = mod.hardwareMarketItem;
+      hardwarePricesPage = mod.createHardwarePricesPage({
+        api,
+        openPage,
+        setView,
+        renderRows: (root, rows) => renderWatchRows(root, rows.map(hardwareMarketItem)),
+        isCurrent: id => state.pageKind === 'hardware' && state.pageId === id && Boolean(state.session),
+      });
+      hardwareReady = true;
+      return mod;
+    });
+  }
+  return ensureHardware.promise;
+}
+
+function ensureCompute() {
+  if (!ensureCompute.promise) {
+    ensureCompute.promise = import('./compute-prices.js?v=dev').then((mod) => {
+      computeMarketItems = mod.computeMarketItems;
+      gpuMatchesSource = mod.gpuMatchesSource;
+      computeReady = true;
+      return mod;
+    });
+  }
+  return ensureCompute.promise;
+}
+
+function scheduleDeferredModules() {
+  scheduleIdle(() => {
+    ensureMediaFeed().catch(() => {});
+    ensureFeedLike().catch(() => {});
+    ensureBriefPage().catch(() => {});
+    ensureHardware().catch(() => {});
+    ensureCompute().catch(() => {});
+    import('./quant-lab.js?v=dev').catch(() => {});
+    import('./model-usage.js?v=dev').catch(() => {});
+  }, 2000);
 }
 
 function setConnection(kind, label) {
@@ -1487,13 +1581,14 @@ function appendExternalLink(parent, url, label) {
   return link;
 }
 
-function renderQuantPage() {
+async function renderQuantPage() {
   const root = document.getElementById('quant-lab');
-  if (!root) return Promise.resolve();
+  if (!root) return;
   if (renderQuantPage.timer) {
     window.clearInterval(renderQuantPage.timer);
     renderQuantPage.timer = 0;
   }
+  const { renderQuantLab } = await import('./quant-lab.js?v=dev');
   return renderQuantLab(root, {
     api,
     showToast,
@@ -1827,11 +1922,27 @@ function mergeLoadedFeed(existing, incoming) {
   const tail = (existing || []).filter((item) => item?.id && !seen.has(item.id));
   return [...head, ...tail];
 }
-const mediaReaderSession = createMediaReaderSession();
-const mediaFeedCache = createMediaFeedCache({ storage: (() => {
-  try { return window.localStorage; } catch { return null; }
-})() });
-const mediaFeedLoader = createMediaFeedLoader({
+let mediaReaderSession = { clear() {}, resolve() { return null; }, acceptUpdate() {} };
+let mediaFeedCache = { markRead() {} };
+let mediaFeedLoader = { reset() {}, load() { return Promise.reject(new Error('媒体模块还在加载')); } };
+
+function mediaReaderParagraphs(post, lang) {
+  return mediaModules ? mediaModules.mediaReaderParagraphs(post, lang) : (post?.paragraphs || []);
+}
+
+function mediaIndexBody(post, lang, translated) {
+  return mediaModules ? mediaModules.mediaIndexBody(post, lang, translated) : (post?.body || '');
+}
+
+function ensureMediaFeed() {
+  if (!ensureMediaFeed.promise) {
+    ensureMediaFeed.promise = import('./media-feed.js?v=dev').then((mod) => {
+      mediaModules = mod;
+      mediaReaderSession = mod.createMediaReaderSession();
+      mediaFeedCache = mod.createMediaFeedCache({ storage: (() => {
+        try { return window.localStorage; } catch { return null; }
+      })() });
+      mediaFeedLoader = mod.createMediaFeedLoader({
   cache: mediaFeedCache,
   getScope: () => state.session ? `${state.session.role}:${state.session.device?.id || 'desktop'}` : '',
   getSelection: () => ({ channel: state.mediaChannel, view: state.mediaView, sourceKey: state.mediaSourceKey }),
@@ -1877,7 +1988,13 @@ const mediaFeedLoader = createMediaFeedLoader({
     // Reattach the pagination observer after loading, including an empty filtered page.
     if (!loading) renderPosts();
   },
-});
+    });
+      return mod;
+    });
+  }
+  return ensureMediaFeed.promise;
+}
+
 const FEED_BROWSE_KEY = 'ai-center.feed-browse';
 const LAST_LOCATION_KEY = 'ai-center.last-location';
 let pageScrollY = 0;
@@ -2680,7 +2797,7 @@ async function openContextRef(ref) {
       const brief = reportDay.brief;
       if (!brief || brief.generatedAt !== ref.revision
         || !(brief.items.some((item) => item.candidateId === candidateId) || brief.informationItems?.some(item=>item.id===candidateId)
-          || briefReadingItems(brief.editorial).some(t=>t.id===candidateId))) {
+          || (await import('./brief-page.js?v=dev')).briefReadingItems(brief.editorial).some(t=>t.id===candidateId))) {
         showToast('这条日报观点已更新或不存在，请回到日报重新选择');
         return;
       }
@@ -2693,7 +2810,7 @@ async function openContextRef(ref) {
     if(type==='hourly-digest') {
       const [snapshotId,articleId]=id.split('/');
       const {digest}=await api(`/api/v1/reports/hourly/snapshot?snapshotId=${encodeURIComponent(snapshotId)}`);
-      const selected=briefReadingItems(digest.editorial).filter(item=>!articleId || item.id===articleId);
+      const selected=(await import('./brief-page.js?v=dev')).briefReadingItems(digest.editorial).filter(item=>!articleId || item.id===articleId);
       if(articleId && !selected.length) {showToast('这篇冻结文章不存在');return;}
       const dialog=elements['reference-preview'];
       elements['reference-preview-title'].textContent='小时简报';
@@ -5359,6 +5476,7 @@ function renderAssets() {
 
 function visibleAssets() {
   const needle = state.assetFilter.trim().toLowerCase();
+  if (state.assetClass === 'compute' && !computeReady) ensureCompute().then(() => renderAssets()).catch(() => {});
   if (state.assetClass === 'compute') {
     return sortByChange(state.computeItems.filter((item) => {
       if (state.computeKind === 'token' && item.compute?.kind !== 'token') return false;
@@ -5369,6 +5487,7 @@ function visibleAssets() {
     }));
   }
   const board = state.assetBoard;
+  if (!hardwareReady && state.hardwareItems.length) ensureHardware().then(() => renderAssets()).catch(() => {});
   const hardware=state.hardwareItems.filter(r=>r.average!==null && (state.assetClass==='hardware' ? (state.hardwareReview || r.verification==='verified') && (state.hardwareKind==='other-storage'?r.category==='other-storage':r.category!=='other-storage' && (state.hardwareKind==='all' || r.quoteType===state.hardwareKind)) : r.verification==='verified' && r.category!=='other-storage'))
     .sort((a,b)=>['dram','nand','ssd','other-storage'].indexOf(a.category)-['dram','nand','ssd','other-storage'].indexOf(b.category) || ['spot','contract','retail','unknown'].indexOf(a.quoteType)-['spot','contract','retail','unknown'].indexOf(b.quoteType) || (b.periodStart ?? -1)-(a.periodStart ?? -1) || a.specification.localeCompare(b.specification,undefined,{numeric:true})).map(hardwareMarketItem).filter(Boolean);
   const filtered = [...(board?.watchlist || []),...hardware].filter((item) => {
@@ -5381,6 +5500,7 @@ function visibleAssets() {
 
 async function loadComputePrices() {
   if (!state.bootstrapped || !state.session) return;
+  await ensureCompute();
   const requestId = ++state.computeRequestId;
   state.computeLoading = true;
   state.computeError = '';
@@ -5403,6 +5523,7 @@ async function loadComputePrices() {
 
 async function loadHardwarePrices() {
   if(!state.bootstrapped || !state.session)return;
+  await ensureHardware();
   const requestId=++state.hardwareRequestId;state.hardwareLoading=true;state.hardwareError='';renderAssets();
   try {
     const payload=await api('/api/v1/hardware-prices?limit=500');if(requestId!==state.hardwareRequestId)return;
@@ -5911,7 +6032,7 @@ function extraQuery(board = state.stockBoard) {
   return `/api/v1/markets?${params}`;
 }
 
-async function loadMarket({ board = state.stockBoard } = {}) {
+async function loadMarket({ board = state.stockBoard, priority = 4, fresh = false } = {}) {
   if (!state.bootstrapped) return;
   const isActiveBoard = board === state.stockBoard;
   const requestId = isActiveBoard ? state.marketRequestId + 1 : state.marketRequestId;
@@ -5924,7 +6045,7 @@ async function loadMarket({ board = state.stockBoard } = {}) {
   }
   try {
     if (!state.session) throw new Error('此设备尚未配对，无法加载行情');
-    const payload = await api(extraQuery(board), { timeoutMs: 40_000 });
+    const payload = await api(extraQuery(board), { timeoutMs: 40_000, priority, fresh, cache: fresh ? 'no-store' : undefined });
     if (isActiveBoard && requestId !== state.marketRequestId) return;
     const previous = state.markets[board];
     const accepted = acceptMarketPayload(previous, payload.market);
@@ -7218,9 +7339,9 @@ function renderHomeSourceLine() {
   root.append(button);
 }
 
-async function loadHomeTree(path, token) {
+async function loadHomeTree(path, token, { priority = 0, fresh = false } = {}) {
   try {
-    const payload = await api(path);
+    const payload = await api(path, { priority, fresh, cache: fresh ? 'no-store' : undefined });
     if (token !== state.homeLoadToken) return;
     state.homeTree = payload;
     state.homeTreeError = '';
@@ -7232,17 +7353,26 @@ async function loadHomeTree(path, token) {
   }
 }
 
-async function ensureHomeReadingSnapshots(token) {
+async function ensureHomeReadingSnapshots(token, { refresh = false, phase = 'visible' } = {}) {
   const editions = hourlyEditions(state.homeTree);
-  const latestStart = Number(editions[0]?.window?.startAt);
   const count = state.homeEarlier ? editions.length : 8;
-  await Promise.all(editions.slice(0, count).map(async (edition) => {
+  const narrow = window.matchMedia('(max-width: 700px)').matches;
+  const visibleCount = narrow ? 3 : 4;
+  const list = editions.slice(0, count);
+  const chosen = phase === 'rest' ? list.slice(visibleCount) : list.slice(0, visibleCount);
+  const priority = phase === 'rest' ? 9 : 1;
+  const latestStart = Number(list[0]?.window?.startAt);
+  await Promise.all(chosen.map(async (edition) => {
     const startAt = edition.window.startAt;
     const current = state.homeReadingHours[startAt];
     const loaded = Array.isArray(current?.items) && current.items.length > 0;
-    if (loaded && startAt !== latestStart) return;
+    if (!refresh && loaded && startAt !== latestStart) return;
     try {
-      const payload = await api(homeRequestPlan(Date.now()).readingHour(startAt, edition.window.endAt));
+      const payload = await api(homeRequestPlan(Date.now()).readingHour(startAt, edition.window.endAt), {
+        priority,
+        fresh: refresh,
+        cache: refresh ? 'no-store' : undefined,
+      });
       if (token !== state.homeLoadToken) return;
       if (payload?.snapshot) state.homeReadingHours[startAt] = payload.snapshot;
     } catch (error) {
@@ -7255,15 +7385,22 @@ async function ensureHomeReadingSnapshots(token) {
       state.homeReadingError = '小时报读取失败';
     }
   }));
-  if (token === state.homeLoadToken) {
+  if (token !== state.homeLoadToken) return;
+  if (phase === 'visible') {
     state.homeHourlySettled = true;
     if (document.body.dataset.view === 'sources') renderHub();
+    scheduleIdle(() => {
+      if (token !== state.homeLoadToken) return;
+      ensureHomeReadingSnapshots(token, { refresh, phase: 'rest' }).catch(() => {});
+    });
+    return;
   }
+  if (document.body.dataset.view === 'sources') renderHub();
 }
 
-async function loadHomeReadingIndex(path, token) {
+async function loadHomeReadingIndex(path, token, { priority = 0, fresh = false } = {}) {
   try {
-    const payload = await api(path);
+    const payload = await api(path, { priority, fresh, cache: fresh ? 'no-store' : undefined });
     if (token !== state.homeLoadToken) return;
     state.homeReadingIndexMissing = false;
     state.homeReadingHours = mergeReadingHours(state.homeReadingHours, absorbReadingIndex(payload));
@@ -7277,7 +7414,7 @@ async function loadHomeReadingIndex(path, token) {
 async function loadHomeOverviewMarket(refresh) {
   if (!refresh && !overviewFocusIsStale()) return;
   try {
-    await loadMarket({ board: 'overview' });
+    await loadMarket({ board: 'overview', priority: 0, fresh: refresh });
   } catch {
     /* 行情失败写在 marketBoardErrors，卡片上给出重试。 */
   }
@@ -7305,7 +7442,7 @@ async function loadHomeBoard(path, { refresh = false, token = state.homeLoadToke
   const timer = window.setTimeout(() => settleHomeOfficial(token), HOME_OFFICIAL_SETTLE_MS);
   loadHomeBoard.settleTimer = timer;
   try {
-    const payload = await api(refresh ? `${path}&refresh=1` : path, { timeoutMs: 20_000 });
+    const payload = await api(refresh ? `${path}&refresh=1` : path, { timeoutMs: 20_000, priority: 0, fresh: refresh });
     if (token !== state.homeLoadToken) return;
     if (!payload?.board) {
       state.homeBoardError = 'GET /api/v1/static-signals/board · 响应没有 board';
@@ -7333,6 +7470,8 @@ function homeHourlySnapshotReady() {
   return Array.isArray(state.homeReadingHours[edition.window.startAt]?.items);
 }
 
+let sourcesPageFlight = null;
+
 async function loadSourcesPage({ refresh = false } = {}) {
   const timingToken = viewTiming?.token || armViewTiming('sources');
   try {
@@ -7340,35 +7479,45 @@ async function loadSourcesPage({ refresh = false } = {}) {
   renderHub();
   if ((state.overviewPane || 'home') !== 'home') return;
   if (!state.session) return;
+  if (!refresh && sourcesPageFlight) return sourcesPageFlight;
+  const flight = loadSourcesPageNow({ refresh }).finally(() => {
+    if (sourcesPageFlight === flight) sourcesPageFlight = null;
+  });
+  if (!refresh) sourcesPageFlight = flight;
+  return flight;
+  } finally {
+    finishViewTiming(timingToken);
+  }
+}
+
+async function loadSourcesPageNow({ refresh = false } = {}) {
   const token = ++state.homeLoadToken;
   state.homeSlow = false;
   state.homeLoadStartedAt = Date.now();
   if (refresh) state.homeTreeLoaded = false;
   armHomeSlowWatch();
   const plan = homeRequestPlan(Date.now());
-  const treePromise = loadHomeTree(plan.tree, token);
-  loadHomeBoard(plan.board, { refresh, token }).catch(() => {});
-  ensureHomeMessages().catch(() => {});
-  await Promise.all([
-    treePromise,
-    loadHomeReadingIndex(plan.readingIndex, token),
-    loadHomeOverviewMarket(refresh),
-    loadDailyBrief().catch(() => {}),
-  ]);
+  const treePromise = loadHomeTree(plan.tree, token, { priority: 0, fresh: refresh });
+  const indexPromise = loadHomeReadingIndex(plan.readingIndex, token, { priority: 0, fresh: refresh });
+  const marketPromise = loadHomeOverviewMarket(refresh);
+  const briefPromise = loadDailyBrief({ priority: 0, fresh: refresh }).catch(() => {});
+  const boardPromise = loadHomeBoard(plan.board, { refresh, token }).catch(() => {});
+  await Promise.all([treePromise, indexPromise, marketPromise, briefPromise, boardPromise]);
   if (token !== state.homeLoadToken) return;
   renderHub();
-  ensureHomeReadingSnapshots(token).catch(() => {});
+  ensureHomeReadingSnapshots(token, { refresh }).catch(() => {});
+  scheduleIdle(() => {
+    if (token !== state.homeLoadToken) return;
+    ensureHomeMessages().catch(() => {});
+  });
   scheduleOverviewFocusWatch();
-  } finally {
-    finishViewTiming(timingToken);
-  }
 }
 
 async function ensureHomeMessages() {
   const tasks = [];
-  if (!state.postsLoaded && !state.postsLoading) tasks.push(loadPosts().catch(() => {}));
-  if (!state.xLoaded && !state.xLoading) tasks.push(loadXFeed({ refresh: false, autoTranslate: false }).catch(() => {}));
-  if (!state.xueqiuLoaded && !state.xueqiuLoading) tasks.push(loadXueqiuFeed({ refresh: false }).catch(() => {}));
+  if (!state.postsLoaded && !state.postsLoading) tasks.push(loadPosts({ priority: 6 }).catch(() => {}));
+  if (!state.xLoaded && !state.xLoading) tasks.push(loadXFeed({ refresh: false, autoTranslate: false, priority: 6 }).catch(() => {}));
+  if (!state.xueqiuLoaded && !state.xueqiuLoading) tasks.push(loadXueqiuFeed({ refresh: false, priority: 6 }).catch(() => {}));
   if (!state.staticBoard && !state.staticBoardLoading) tasks.push(loadStaticSignalBoard({ refresh: false }).catch(() => {}));
   await Promise.all(tasks);
   if (tasks.length) noteFeedLoaded();
@@ -8001,7 +8150,6 @@ function htmlToNode(html) {
   return wrap;
 }
 
-const hardwarePricesPage=createHardwarePricesPage({api,openPage,setView,renderRows:(root,rows)=>renderWatchRows(root,rows.map(hardwareMarketItem)),isCurrent:id=>state.pageKind==='hardware' && state.pageId===id && Boolean(state.session)});
 function renderPage() {
   const root = pageRoot();
   if (!root) return;
@@ -8011,7 +8159,12 @@ function renderPage() {
   else if (kind === 'event') renderEventPage();
   else if (kind === 'source') renderSourcePage();
   else if (kind === 'quote') renderQuotePage();
-  else if (kind === 'hardware') {if(state.session)hardwarePricesPage.render(root,state.pageId);else renderViewState(root,{kind:'loading',title:'正在读取硬件报价…'});}
+  else if (kind === 'hardware') {
+    if (!state.session || !hardwareReady) {
+      renderViewState(root, { kind: 'loading', title: '正在读取硬件报价…' });
+      if (state.session) ensureHardware().then(() => { if (state.pageKind === 'hardware') renderPage(); }).catch((error) => showToast(error.message));
+    } else hardwarePricesPage.render(root, state.pageId);
+  }
   else if (kind === 'tasks' || kind === 'task') renderTasksPage();
   else if (kind === 'note') renderNotePage();
   else if (kind === 'account') renderAccountPage();
@@ -8142,6 +8295,11 @@ async function restoreSocialArticle(id, post) {
   }
 }
 function renderArticlePage() {
+  if (!mediaModules || !feedLikeReady) {
+    Promise.all([ensureMediaFeed(), ensureFeedLike()]).then(() => {
+      if (document.body.dataset.view === 'page' && state.pageKind === 'article') renderArticlePage();
+    }).catch(() => {});
+  }
   const root = pageRoot();
   const menuFocus = elements['reader-menu']?.contains(document.activeElement) ? document.activeElement.dataset.detailAction : '';
   const id = state.pageId || '';
@@ -8845,11 +9003,12 @@ function renderTasksPage() {
   auto.innerHTML = '<span><strong>自动任务配置</strong><small>频率、翻译和标签规则；保存后仍是本机草案</small></span>';
   auto.addEventListener('click', () => openPage('automation', 'x'));
   wrap.append(auto);
-  if (openModelUsageDialog) {
-    const usage = document.createElement('button'); usage.type = 'button'; usage.className = 'setting-row';
-    usage.textContent = '模型用量账本（本机）';
-    usage.addEventListener('click', () => openModelUsageDialog({ api })); wrap.append(usage);
-  }
+  const usage = document.createElement('button'); usage.type = 'button'; usage.className = 'setting-row';
+  usage.textContent = '模型用量账本（本机）';
+  usage.addEventListener('click', () => {
+    import('./model-usage.js?v=dev').then((mod) => mod.openModelUsageDialog({ api })).catch((error) => showToast(error.message));
+  });
+  wrap.append(usage);
   root.replaceChildren(wrap);
   loadRuntimeJobs().catch(() => {});
 }
@@ -10781,7 +10940,20 @@ function reportHash() {
 let reportHistory = { items: [], loaded: false, error: '' };
 let reportDay = { date: '', brief: null, loaded: false, error: '' };
 
-const briefPage = createBriefPage ? createBriefPage({
+const briefPage = {
+  impl: null,
+  get state() { return this.impl?.state || { timezone: 'Asia/Shanghai', hourStart: null }; },
+  stop() { this.impl?.stop(); },
+  reset(flag) { this.impl?.reset?.(flag); },
+  selectDirection(key) { return this.impl?.selectDirection?.(key); },
+  mount(root, options) { return ensureBriefPage().then((page) => page.mount(root, options)); },
+};
+
+function ensureBriefPage() {
+  if (briefPage.impl) return Promise.resolve(briefPage.impl);
+  if (!ensureBriefPage.promise) {
+    ensureBriefPage.promise = import('./brief-page.js?v=dev').then((mod) => {
+      briefPage.impl = mod.createBriefPage ? mod.createBriefPage({
   api, navigate: setView, session: () => state.session, active: () => document.body.dataset.view === 'report',
   syncHour(hour, extra = {}) {
     reportHour = Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : null;
@@ -10838,6 +11010,11 @@ const briefPage = createBriefPage ? createBriefPage({
     renderHourlyDigestBrowser(root);
   },
 };
+      return briefPage.impl;
+    });
+  }
+  return ensureBriefPage.promise;
+}
 
 function renderBriefManagement(root,date,brief,mode,hours) {
   const status=document.createElement('p');status.textContent='正在读取处理状态…';root.append(status);
@@ -10967,10 +11144,10 @@ function renderHomeDaily() {
   renderNewsList(host, rows, { groupByDay: false, emptyText: '还没有日报' });
 }
 
-async function loadDailyBrief() {
+async function loadDailyBrief({ priority = 4, fresh = false } = {}) {
   const session = state.session;
   try {
-    const payload = await api('/api/v1/reports/daily/latest/brief');
+    const payload = await api('/api/v1/reports/daily/latest/brief', { priority, fresh, cache: fresh ? 'no-store' : undefined });
     if (session !== state.session) return;
     dailyBriefSnapshot = { brief: payload.brief || null, loaded: true, error: '' };
   } catch (error) {
@@ -13096,23 +13273,53 @@ function translationFailed(message) {
   return error;
 }
 
+function translationPollFailure(decision, errorText) {
+  if (decision.reason === 'missing') return translationFailed('翻译任务不存在或已结束');
+  if (decision.reason === 'failed' || decision.reason === 'cancelled' || decision.reason === 'requeued') {
+    return translationFailed(errorText || '翻译未完成，请稍后重试');
+  }
+  return translationFailed('翻译仍在后台排队，完成后可重新打开查看');
+}
+
 async function requestTranslation(path, options) {
   const submitted = await api(path, options);
   if (!submitted.jobId) return submitted;
+  const startedAt = Date.now();
+  const deadline = startedAt + TRANSLATION_POLL_DEADLINE_MS;
   let sawRunning = false;
-  for (let attempt = 0; attempt < 150; attempt++) {
-    await wait(1000);
-    const payload = await api(`/api/v1/translate/jobs/${submitted.jobId}`);
-    if (payload.status === 'completed') {
+  let attempt = 0;
+  let status = 'queued';
+  let availableAt = null;
+  let errorText = '';
+  while (true) {
+    const decision = planTranslationPoll({
+      status, availableAt, now: Date.now(), startedAt, deadline, sawRunning, attempt,
+    });
+    if (decision.stop) throw translationPollFailure(decision, errorText);
+    await wait(decision.delay);
+    let payload;
+    try {
+      payload = await api(`/api/v1/translate/jobs/${submitted.jobId}`, {
+        cache: 'no-store',
+        priority: 2,
+        timeoutMs: 15_000,
+      });
+    } catch (error) {
+      if (error?.status === 404) throw translationFailed('翻译任务不存在或已结束');
+      attempt += 1;
+      if (Date.now() >= deadline) throw translationFailed('翻译仍在后台排队，完成后可重新打开查看');
+      continue;
+    }
+    attempt += 1;
+    status = payload.status || '';
+    availableAt = payload.availableAt;
+    errorText = payload.error || '';
+    if (status === 'running') sawRunning = true;
+    if (status === 'completed') {
       const result = payload.result || {};
       return path.endsWith('/batch') ? result : { translation: result.translations?.[0] || {} };
     }
-    if (payload.status === 'running') sawRunning = true;
-    if (['failed', 'cancelled'].includes(payload.status) || (payload.status === 'queued' && (sawRunning || attempt >= 20))) {
-      throw translationFailed(payload.error || '翻译未完成，请稍后重试');
-    }
   }
-  throw translationFailed('翻译仍在后台进行，完成后可重新打开查看');
 }
 
 async function translateXBatch({ silent = false } = {}) {
@@ -13399,7 +13606,7 @@ async function mergeSocialReadHead(platform, { epoch = null } = {}) {
   }
 }
 
-async function loadXFeed({ refresh = false, autoTranslate = true, append = false, focusWindow = false, saved = false, before = '', readPage = false } = {}) {
+async function loadXFeed({ refresh = false, autoTranslate = true, append = false, focusWindow = false, saved = false, before = '', readPage = false, priority = 4 } = {}) {
   if (!state.session) return null;
   const epoch = state.feedEpoch;
   state.xLoading = true;
@@ -13418,7 +13625,7 @@ async function loadXFeed({ refresh = false, autoTranslate = true, append = false
     else if (append && state.xNextCursor) params.set('before', state.xNextCursor);
     if (saved) params.set('saved', '1');
     if (refresh) params.set('refresh', '1');
-    const payload = await api(`/api/v1/feed/x?${params}`, { timeoutMs: refresh ? 180_000 : 15_000 });
+const payload = await api(`/api/v1/feed/x?${params}`, { timeoutMs: refresh ? 180_000 : 15_000, priority });
     if (epoch != null && state.feedEpoch !== epoch) return payload.feed || null;
     const feed = payload.feed || {};
     const incoming = (feed.items || []).filter((item) => !isHiddenFeedItem(item));
@@ -13516,7 +13723,7 @@ async function runXCapturePipeline() {
   }
 }
 
-async function loadXueqiuFeed({ refresh = false, append = false, focusWindow = false, saved = false, before = '', readPage = false } = {}) {
+async function loadXueqiuFeed({ refresh = false, append = false, focusWindow = false, saved = false, before = '', readPage = false, priority = 4 } = {}) {
   if (!state.session) {
     if (refresh) {
       showToast('请先在设置中完成设备连接');
@@ -13541,7 +13748,7 @@ async function loadXueqiuFeed({ refresh = false, append = false, focusWindow = f
     else if (append && state.xueqiuNextCursor) params.set('before', state.xueqiuNextCursor);
     if (saved) params.set('saved', '1');
     if (refresh) params.set('refresh', '1');
-    const payload = await api(`/api/v1/feed/xueqiu?${params}`, { timeoutMs: refresh ? 180_000 : 15_000 });
+const payload = await api(`/api/v1/feed/xueqiu?${params}`, { timeoutMs: refresh ? 180_000 : 15_000, priority });
     if (epoch != null && state.feedEpoch !== epoch) return payload.feed || null;
     const feed = payload.feed || {};
     const incoming = (feed.items || []).filter((item) => !isHiddenFeedItem(item));
@@ -13605,6 +13812,7 @@ async function loadMediaFeed({ refresh = false, append = false, merge = false } 
     showToast('请先在设置中完成设备连接');
     return;
   }
+  await ensureMediaFeed();
   mediaHeadMerge = Boolean(merge) && !append && !refresh;
   const channel = state.mediaChannel;
   const view = state.mediaView;
@@ -13755,13 +13963,13 @@ async function loadBilibiliFeed({ url = '', refresh = false } = {}) {
   }
 }
 
-async function loadPosts() {
+async function loadPosts({ priority = 4 } = {}) {
   if (loadPosts.pending) return loadPosts.pending;
   loadPosts.pending = (async () => {
     state.postsLoading = true;
     state.postsError = '';
     try {
-      const payload = await api('/api/v1/posts');
+      const payload = await api('/api/v1/posts', { priority });
       state.posts = (payload.posts || []).filter((item) => !isHiddenFeedItem(item));
       state.postsLoaded = true;
       state.postsError = '';
@@ -14044,7 +14252,6 @@ async function completeAuthorizedStart(session) {
   state.bootstrapped = true;
   if(state.pageKind==='hardware')renderPage();
   connectStream();
-  logBehavior('app.open', { role: session.role });
   if (!completeAuthorizedStart.heartbeat) {
     completeAuthorizedStart.heartbeat = window.setInterval(() => {
       syncHarmonyLocalInspirations().catch(() => {});
@@ -14058,9 +14265,7 @@ async function completeAuthorizedStart(session) {
     }, 30_000);
   }
   const view = document.body.dataset.view;
-  const startupLoads = [
-    syncHarmonyLocalInspirations().catch(() => {}),
-  ];
+  const startupLoads = [];
   if (view !== 'sources') startupLoads.push(loadSourceCatalog().catch(() => {}));
   if (view === 'feed' || (view === 'page' && state.pageKind === 'article' && state.feedPlatform === 'media')) {
     startupLoads.push(ensureVisibleFeedLoaded().catch((error) => showToast(error.message)));
@@ -14072,7 +14277,7 @@ async function completeAuthorizedStart(session) {
     startupLoads.push(syncAskView().catch((error) => showToast(error.message)));
   }
   if (view !== 'sources') startupLoads.push(loadActiveAskRuns().catch(() => {}));
-  if (session.role === 'desktop') {
+  if (session.role === 'desktop' && view === 'settings') {
     startupLoads.push(loadPairing().catch((error) => showToast(error.message)));
     startupLoads.push(loadMetrics().catch(() => {}));
   }
@@ -14091,6 +14296,15 @@ async function completeAuthorizedStart(session) {
     startupLoads.push(loadDividendInspection().catch((error) => showToast(error.message)));
   }
   scheduleOverviewFocusWatch();
+  logBehavior('app.open', { role: session.role });
+  scheduleIdle(() => {
+    syncHarmonyLocalInspirations().catch(() => {});
+    if (session.role === 'desktop' && document.body.dataset.view !== 'settings') {
+      loadPairing().catch(() => {});
+      loadMetrics().catch(() => {});
+    }
+  });
+  scheduleDeferredModules();
   await Promise.all(startupLoads);
   if (document.body.dataset.view === 'page' && state.pageKind === 'article') renderArticlePage();
   if (document.body.dataset.view === 'feed') {

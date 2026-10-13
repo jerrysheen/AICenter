@@ -29,6 +29,7 @@ export function createFeedRoutes() {
           json(response, 404, { ok: false, error: '翻译任务不存在' }); return;
         }
         json(response, 200, { ok: true, status: job.status,
+          availableAt: job.status === 'queued' ? job.availableAt : null,
           result: job.status === 'completed' ? job.output : null,
           error: job.status === 'failed' ? '翻译未完成，请稍后重试' : null });
       },
