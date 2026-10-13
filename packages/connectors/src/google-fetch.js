@@ -1,4 +1,4 @@
-import { Agent } from 'undici';
+import { Agent, fetch as undiciFetch } from 'undici';
 
 const agents = new Map();
 
@@ -39,10 +39,13 @@ export function withGoogleConnect(init = {}, env = process.env) {
   return { ...init, dispatcher: googleConnectDispatcher(env) };
 }
 
-// Injected fetch stays untouched so tests and proxies do not inherit undici's dispatcher.
-// Production global fetch gets a short TCP connect budget, separate from AbortSignal response timeouts.
+// Injected fetch stays untouched so tests do not open an undici agent.
+// Node's built-in fetch rejects an Agent from npm undici
+// (InvalidArgumentError: invalid onRequestStart method). The Agent and the
+// fetch that receives it come from the same undici build. Connect timeout
+// stays on TCP setup; the caller's AbortSignal remains the response budget.
 export function googleFetch(fetchImpl = fetch, env = process.env) {
   const base = fetchImpl || fetch;
   if (base !== fetch) return base;
-  return (url, init) => base(url, withGoogleConnect(init || {}, env));
+  return (url, init) => undiciFetch(url, withGoogleConnect(init || {}, env));
 }
