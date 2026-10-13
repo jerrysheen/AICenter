@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-13 首屏不再在请求里序列化大包：`GET /api/v1/home/bootstrap` 只留最近小时的命中条、去掉走势线的行情、日报前几句和最多 8 条官方发布。手工、X、雪球改由页面随后请求。缓存里放的是已经 `JSON.stringify` 并 gzip 过的缓冲区，命中时请求路径只写出这组字节。`GET /api/v1/feed/x` 与 `/feed/xueqiu` 同样缓存这份缓冲区；列表查询不再读取正文大字段，也不为规范化文章再读一遍正文。`events.flush` 每次最多写 5 条，直接用库里的 JSON 文本，没有 SSE 订阅者时只把游标拨到最新 id。`/favicon.ico` 和 `/favicon.svg` 从内存返回，`Cache-Control: public, max-age=604800`。夹具里一份撑大的旧包 1781077 字节、序列化 4.42ms，收成首屏后 20607 字节、gzip 1153 字节、组包加序列化 10.81ms。需要重启 Web。Worker 不用为这项重启。没有 migration。见 `progress/2026-10-13-bootstrap-stringify.md`。
+
 2026-10-13 页面计时与展开 / 原文：`client-timing.js` 每次文档加载都 POST 一条，`Content-Type` 是 `text/plain`。没有 Navigation Timing 时七个阶段记 0。`load` 已结束、8 秒内还没 `load`，或从往返缓存恢复，都会发。页面开着时走 `fetch` `keepalive`，失败再用 `sendBeacon`。`?v=` 仍按内容改写。Host 被隧道改成回环地址且带 `cf-ray` 或 `cf-connecting-ip` 时仍写入 `client-timing.*.log`。`原文`、`打开原文`、`打开原站`、`前往原站` 和 `阅读站内原文` 记 `source.original`。展开阅读折页、中文正文或「展开…」记 `item.expand`。需要重启 Web。浏览器再加载一次。Worker 不用重启。没有 migration。见 `progress/2026-10-13-client-timing-behavior.md`。
 
 2026-10-13 首屏一份响应：`GET /api/v1/home/bootstrap` 在服务端拼好总览要的目录、小时索引、最近 4 个小时快照、行情总览、日报简报、官方看板，以及最多 12 条手工 / X / 雪球。窗口与页面上的 `homeRequestPlan` 相同。15 秒内存缓存，过期先返回上一份。`refresh=1` 重读，不抓行情上游。没有快照时行情和看板带 `pending`。弱 ETag，`If-None-Match` 命中返回 304。简报去掉 `providerId` / `modelId`。这个地址不在 Bearer 只读名单里。浏览器把成功的 GET 按「用户 + 方法 + 地址」放进本地缓存，小于约 48KB 的进 localStorage，更大的进 IndexedDB，合计约 4MB、最多 80 条，退出登录时清空。总览先画缓存，再带 ETag 复核，变了才改页面。冷打开的总览数据请求从 13 次收成这一次。SSE 回放每 200 条让出一次主线程。需要重启 Web。Worker 不用为这项重启。见 `progress/2026-10-13-frontend-load.md`。

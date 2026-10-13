@@ -9,6 +9,7 @@ const gzipBuffer = promisify(gzip);
 const ASSET_CACHE_CONTROL = 'public, max-age=31536000, immutable';
 const UNVERSIONED_JS_CACHE_CONTROL = 'no-cache';
 const HTML_CACHE_CONTROL = 'no-store';
+const FAVICON_CACHE_CONTROL = 'public, max-age=604800';
 const VERSION_QUERY = /\?v=[A-Za-z0-9._-]+/g;
 
 function normalizeNewlines(value) {
@@ -119,11 +120,18 @@ export function createStaticFileHandler(publicDirectory) {
     '/etf-whale.js': ['etf-whale.js', 'text/javascript; charset=utf-8', HTML_CACHE_CONTROL],
     '/etf-whale.css': ['etf-whale.css', 'text/css; charset=utf-8', HTML_CACHE_CONTROL],
     '/styles.css': ['styles.css', 'text/css; charset=utf-8', ASSET_CACHE_CONTROL],
-    '/favicon.svg': ['favicon.svg', 'image/svg+xml', HTML_CACHE_CONTROL],
-    '/favicon.ico': ['favicon.svg', 'image/svg+xml', HTML_CACHE_CONTROL],
+    '/favicon.svg': ['favicon.svg', 'image/svg+xml', FAVICON_CACHE_CONTROL],
+    '/favicon.ico': ['favicon.svg', 'image/svg+xml', FAVICON_CACHE_CONTROL],
   };
   const uniqueNames = [...new Set(Object.values(files).map(([name]) => name))].sort();
   const cache = new Map();
+  let faviconBytes = null;
+
+  async function faviconBuffer() {
+    if (faviconBytes) return faviconBytes;
+    faviconBytes = await readFile(path.join(publicDirectory, 'favicon.svg'));
+    return faviconBytes;
+  }
 
   async function getUiRevision() {
     const parts = [];
@@ -179,6 +187,17 @@ export function createStaticFileHandler(publicDirectory) {
   }
 
   async function serveStatic(pathname, request, response) {
+    if (pathname === '/favicon.ico' || pathname === '/favicon.svg') {
+      const hit = faviconBytes != null;
+      const body = await faviconBuffer();
+      response[accessCacheHit] = hit;
+      response.writeHead(200, {
+        ...securityHeaders('image/svg+xml', FAVICON_CACHE_CONTROL),
+        'Content-Length': body.length,
+      });
+      response.end(body);
+      return true;
+    }
     const loaded = await load(pathname);
     if (!loaded) return false;
     const { entry, cacheHit } = loaded;

@@ -8,7 +8,11 @@ export function storedFeedCacheKey(workspaceId, providerId, query = {}) {
   const parts = Object.keys(query)
     .filter((key) => key !== 'refresh')
     .sort()
-    .map((key) => `${key}=${query[key] ?? ''}`);
+    .map((key) => {
+      const value = query[key];
+      const text = value && typeof value === 'object' ? JSON.stringify(value) : (value ?? '');
+      return `${key}=${text}`;
+    });
   return `${workspaceId}|${providerId}|${parts.join('&')}`;
 }
 

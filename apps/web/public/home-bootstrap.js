@@ -19,7 +19,7 @@ export function projectHomeBootstrap(payload) {
     brief,
     board: payload.board?.board || null,
     boardPending: Boolean(payload.board?.pending),
-    posts: Array.isArray(payload.posts?.posts) ? payload.posts.posts : [],
+    posts: Array.isArray(payload.posts?.posts) ? payload.posts.posts : null,
     x: payload.feeds?.x || null,
     xueqiu: payload.feeds?.xueqiu || null,
   };

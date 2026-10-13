@@ -1,13 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { performance } from 'node:perf_hooks';
 import { homeRequestPlan } from '../apps/web/public/home-timeline.js';
 import { homeColdLoadRequests, projectHomeBootstrap } from '../apps/web/public/home-bootstrap.js';
 import {
   composeHomeBootstrap,
   createHomeBootstrapHandler,
+  HOME_BOOTSTRAP_RAW_BUDGET,
   homeBootstrapEtag,
   homeBootstrapQuery,
 } from '../apps/web/src/http/home-bootstrap.js';
+import { prepareJsonBody } from '../apps/web/src/http/prepared-json.js';
 import { isApiTokenAllowlisted } from '../apps/web/src/http/api-token-access.js';
 import { json } from '../apps/web/src/http/response.js';
 
@@ -33,7 +36,7 @@ function services() {
       },
       forWindow(workspace, window, scope) {
         calls.push(['hour', workspace, scope, window.startAt]);
-        return { id: 'hour-1', window, items: [{ title: '一条', disposition: 'hit' }] };
+        return { id: 'hour-1', window, items: [{ title: '一条', disposition: 'hit', readingDirectionName: '金融', nodeId: 'n1', timely: true }] };
       },
     },
     report: {
@@ -99,19 +102,21 @@ test('home bootstrap window matches the first-screen plan and strips provider fi
   assert.equal(query.tree.startAt, Number(new URL(plan.tree, 'http://local').searchParams.get('startAt')));
   assert.equal(query.tree.endAt, Number(new URL(plan.tree, 'http://local').searchParams.get('endAt')));
   assert.equal(query.board.from, new URL(plan.board, 'http://local').searchParams.get('from'));
-  const body = await composeHomeBootstrap(services(), { workspace: 'phone', now: NOW });
+  const fake = services();
+  const body = await composeHomeBootstrap(fake, { workspace: 'phone', now: NOW });
   assert.equal(body.window.startAt, query.tree.startAt);
   assert.equal(body.brief.brief.sentence, '日报');
   assert.equal(body.brief.brief.providerId, undefined);
   assert.equal(body.brief.brief.modelId, undefined);
-  assert.equal(body.posts.posts.length, 12);
-  assert.equal(body.feeds.x.items.length, 12);
-  assert.equal(body.feeds.xueqiu.items.length, 12);
+  assert.equal(body.posts, undefined);
+  assert.equal(body.feeds, undefined);
   assert.equal(body.readings[body.window.endAt - 3_600_000].items.length, 1);
+  assert.equal(body.readings[body.window.endAt - 3_600_000].items[0].title, '一条');
   assert.equal(body.market.pending, undefined);
   const projected = projectHomeBootstrap(body);
   assert.equal(projected.market.board, 'overview');
-  assert.equal(projected.posts.length, 12);
+  assert.equal(projected.posts, null);
+  assert.equal(fake.calls.some((row) => row[0] === 'posts' || row[0] === 'feed'), false);
   assert.equal(isApiTokenAllowlisted('GET', '/api/v1/home/bootstrap'), false);
 });
 
@@ -167,6 +172,101 @@ test('home bootstrap serves a short cache and 304 without calling trading', asyn
   assert.equal(fake.calls.filter((row) => row[0] === 'tree').length, 2);
   const bytes = Buffer.byteLength(first.body);
   assert.ok(bytes > 200 && bytes < 20_000, `bootstrap fixture bytes ${bytes}`);
+});
+
+test('first-screen bootstrap stays under 100KB without stringifying the fat snapshot', async () => {
+  const text = (count) => '行情与公告'.repeat(count);
+  const quote = (symbol) => ({
+    symbol, name: symbol, lastPrice: 1, changePct: 0.1, sparkline: Array.from({ length: 80 }, (_, index) => index),
+  });
+  const fatServices = services();
+  fatServices.informationTree.list = () => ({
+    hours: Array.from({ length: 48 }, (_, index) => ({
+      window: { startAt: NOW - (index + 1) * 3_600_000, endAt: NOW - index * 3_600_000 },
+      roots: Array.from({ length: 20 }, () => text(80)),
+    })),
+    information: Array.from({ length: 80 }, () => ({ text: text(40) })),
+    days: [{ editorial: text(200) }],
+  });
+  fatServices.readingHour.forWindow = (_workspace, window) => ({
+    id: `hour-${window.startAt}`,
+    window,
+    items: Array.from({ length: 60 }, (_, index) => ({
+      nodeId: `n${index}`,
+      title: text(30),
+      disposition: 'hit',
+      readingDirectionName: '金融',
+      timely: true,
+      hits: Array.from({ length: 8 }, () => text(20)),
+    })),
+  });
+  fatServices.report.getLatestDailyBrief = () => ({
+    reportDate: '2026-10-13',
+    providerId: 'secret-provider',
+    modelId: 'secret-model',
+    overview: text(80),
+    informationItems: Array.from({ length: 80 }, (_, index) => ({
+      id: `b${index}`,
+      sentence: text(40),
+      evidence: Array.from({ length: 4 }, () => text(30)),
+    })),
+  });
+  fatServices.staticSignalBoard.read = async () => ({
+    pending: false,
+    board: {
+      generatedAt: NOW,
+      releases: Array.from({ length: 60 }, (_, index) => ({
+        releaseId: `r${index}`,
+        title: text(40),
+        body: text(80),
+        authority: '来源',
+      })),
+      upcoming: Array.from({ length: 40 }, () => ({ title: text(20) })),
+      sourceHealth: [],
+    },
+  });
+  fatServices.marketBoard.read = async () => ({
+    pending: false,
+    market: {
+      board: 'overview',
+      focus: 'us',
+      sections: [{
+        id: 'us',
+        indices: Array.from({ length: 24 }, (_, index) => quote(`^${index}`)),
+        gainers: Array.from({ length: 20 }, (_, index) => quote(`G${index}`)),
+        losers: Array.from({ length: 20 }, (_, index) => quote(`L${index}`)),
+      }],
+    },
+  });
+  const full = {
+    tree: fatServices.informationTree.list(),
+    readings: { 1: fatServices.readingHour.forWindow('phone', { startAt: 1, endAt: 2 }) },
+    brief: fatServices.report.getLatestDailyBrief(),
+    board: (await fatServices.staticSignalBoard.read()).board,
+    market: (await fatServices.marketBoard.read()).market,
+    posts: Array.from({ length: 12 }, () => ({ body: text(80) })),
+    feeds: {
+      x: { items: Array.from({ length: 12 }, () => ({ body: text(80) })) },
+      xueqiu: { items: Array.from({ length: 12 }, () => ({ body: text(120) })) },
+    },
+  };
+  const beforeStarted = performance.now();
+  const beforeJson = JSON.stringify(full);
+  const beforeMs = performance.now() - beforeStarted;
+  const slimStarted = performance.now();
+  const slim = await composeHomeBootstrap(fatServices, { workspace: 'phone', now: NOW });
+  const prepared = await prepareJsonBody(slim);
+  const afterMs = performance.now() - slimStarted;
+  assert.ok(prepared.bytes < HOME_BOOTSTRAP_RAW_BUDGET, `slim bootstrap ${prepared.bytes} bytes`);
+  assert.equal(JSON.parse(prepared.json.toString('utf8')).brief.brief.providerId, undefined);
+  assert.equal(slim.feeds, undefined);
+  console.log(JSON.stringify({
+    beforeBytes: Buffer.byteLength(beforeJson),
+    beforeStringifyMs: Number(beforeMs.toFixed(2)),
+    afterBytes: prepared.bytes,
+    afterPrepareMs: Number(afterMs.toFixed(2)),
+    afterGzipBytes: prepared.gzipped?.length || 0,
+  }));
 });
 
 test('cold home data requests collapse to the bootstrap url', () => {

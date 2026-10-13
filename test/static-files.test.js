@@ -177,6 +177,7 @@ test('static assets are gzipped on request and versioned JS/CSS are cacheable', 
     const favicon = await getRaw(`${address.localUrl}/favicon.ico`);
     assert.equal(favicon.status, 200);
     assert.match(favicon.headers['content-type'], /image\/svg\+xml/);
+    assert.match(favicon.headers['cache-control'], /max-age=604800/);
     assert.match(favicon.body.toString('utf8'), /<svg/);
     const faviconSvg = await getRaw(`${address.localUrl}/favicon.svg?v=${healthBody.uiRevision}`);
     assert.equal(faviconSvg.status, 200);

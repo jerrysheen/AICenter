@@ -112,7 +112,7 @@ function rankFeedItems(items) {
   ));
 }
 
-function attachTranslations(feedRepository, workspaceId, items, targetLang = 'zh') {
+function attachTranslations(feedRepository, workspaceId, items, targetLang = 'zh', { verifyBody = true } = {}) {
   if (!items.length || !feedRepository?.listTranslations) return items;
   const ids = [];
   for (const item of items) {
@@ -124,7 +124,8 @@ function attachTranslations(feedRepository, workspaceId, items, targetLang = 'zh
   const byId = new Map(rows.map((row) => [row.itemId, row]));
   return items.map((item) => {
     const row = byId.get(item.id) || (item.resourceId ? byId.get(item.resourceId) : null);
-    if (!row || row.sourceHash !== contentHash(item.body || '')) {
+    if (!row?.translatedText) return { ...item, translation: null };
+    if (verifyBody && row.sourceHash !== contentHash(item.body || '')) {
       return { ...item, translation: null };
     }
     return {
@@ -505,6 +506,12 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
   return { added, skipped, addedItemIds: [...new Set(addedItemIds)] };
 }
 
+function yieldEventLoop() {
+  return new Promise((resolve) => {
+    setImmediate(resolve);
+  });
+}
+
 function readStoredFeed(feedRepository, workspaceId, persistence, query, extra = {}) {
   const providerId = persistence.providerId;
   const feed = query.feed || 'for-you';
@@ -521,6 +528,7 @@ function readStoredFeed(feedRepository, workspaceId, persistence, query, extra =
   const rows = feedRepository.listContentItemsByProvider?.(workspaceId, providerId, {
     ...pageQuery,
     limit: pageLimit + 1,
+    omitBody: Boolean(extra.omitBody),
   }) || [];
   const hasMore = rows.length > pageLimit;
   const pageRows = hasMore ? rows.slice(0, pageLimit) : rows;
@@ -633,13 +641,13 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
     }
     return new Map(ids.map(id=>[id,feedRepository.getContentItem(workspaceId,id)]).filter(([,row])=>row));
   };
-  const attachNormalizedArticles=(workspaceId,items)=>{
+  const attachNormalizedArticles=(workspaceId,items,{listShape=false}={})=>{
     if(!normalizedArticlePort || !items.length) return items;
     if(typeof normalizedArticlePort.normalizedArticles==='function') {
-      const originals=contentOriginals(workspaceId,items);
+      const originals=listShape ? null : contentOriginals(workspaceId,items);
       const specs=items.map(item=>{
         const id=item.resourceId || item.id;
-        const sourceVersion=originals.get(id)?.updatedAt;
+        const sourceVersion=listShape ? item.updatedAt : originals.get(id)?.updatedAt;
         return sourceVersion ? {sourceId:`feed:${id}`,sourceVersion} : null;
       }).filter(Boolean);
       const found=normalizedArticlePort.normalizedArticles(workspaceId,specs);
@@ -662,9 +670,16 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
     }
     return {...feed,items};
   };
-  const localizeForReading=async(workspaceId,items,options={})=>normalizedArticlePort
-    ? attachNormalizedArticles(workspaceId,attachTranslations(feedRepository,workspaceId,items))
-    : localizeFeedItems(feedRepository,translationPort,workspaceId,items,'zh',options);
+  const localizeForReading=async(workspaceId,items,options={})=>{
+    const listShape=options.listShape===true;
+    if(!normalizedArticlePort) {
+      if(listShape) return attachTranslations(feedRepository,workspaceId,items,'zh',{verifyBody:false});
+      return localizeFeedItems(feedRepository,translationPort,workspaceId,items,'zh',options);
+    }
+    const translated=attachTranslations(feedRepository,workspaceId,items,'zh',{verifyBody:!listShape});
+    if(items.length>8) await yieldEventLoop();
+    return attachNormalizedArticles(workspaceId,translated,{listShape});
+  };
   return Object.freeze({
     listLegacyPosts(limit) {
       return legacyRepository.listPosts(limit);
@@ -704,8 +719,12 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       const shape = query?.fields === 'list' ? 'list' : 'full';
       const pageQuery = { ...sourceInput, before: before || null, saved: Boolean(saved) };
       if (!query?.refresh) {
-        const stored = readStoredFeed(feedRepository, workspaceId, persistence, pageQuery,{qualityRule, includeLowValue:true});
-        stored.items = rankFeedItems(await localizeForReading(workspaceId,stored.items,{wait:false}));
+        const listShape = shape === 'list';
+        const stored = readStoredFeed(feedRepository, workspaceId, persistence, pageQuery, {
+          qualityRule, includeLowValue: true, omitBody: listShape,
+        });
+        if (stored.items.length > 8) await yieldEventLoop();
+        stored.items = rankFeedItems(await localizeForReading(workspaceId, stored.items, { wait: false, listShape }));
         return presentFeed(stored, shape, workspaceId);
       }
       const sourceSnapshot = await sourcePort.read(contentRoutingPort && providerId==='trendforce' ? 'content.trendforce.collection' : source.id, sourceInput, {

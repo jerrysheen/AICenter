@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { parseBilibiliImportInput, parseHideFlag, parsePatchUserItemStateInput, parsePersistFeedTranslationsInput, parsePostInput, parseTranslateBatchInput, parseTranslateInput, ValidationError } from '../../../../packages/contracts/src/index.js';
 import { json, readJson } from '../http/response.js';
 import { labelEventLoop } from '../http/event-loop-blocks.js';
+import { prepareJsonBody, sendPreparedJson } from '../http/prepared-json.js';
 import { createStaleReadCache, STORED_FEED_CACHE_PROVIDERS, STORED_FEED_CACHE_TTL_MS, storedFeedCacheKey } from '../http/stale-read-cache.js';
 
 function listEtag(feed) {
@@ -185,20 +186,35 @@ export function createFeedRoutes() {
           if (providerId === 'trendforce') query.fields = 'list';
           const mediaJob = providerId === 'media' && query.refresh ? services.runtime.requestMediaSync({ workspaceId: workspaceIdFrom(identity), channel: query.channel }) : null;
           const workspaceId = workspaceIdFrom(identity);
-          const readStored = () => {
-            const leave = labelEventLoop(`feed.${providerId}`);
-            return Promise.resolve(services.feed.getExternalFeed(providerId, { ...query, refresh: false }, { workspaceId })).finally(leave);
-          };
-          const feed = STORED_FEED_CACHE_PROVIDERS.has(providerId) && !query.refresh
-            ? await feedCache.get(storedFeedCacheKey(workspaceId, providerId, query), readStored)
-            : await (async () => {
-              const leave = labelEventLoop(`feed.${providerId}`);
-              try {
-                return await services.feed.getExternalFeed(providerId, query, { workspaceId });
-              } finally {
-                leave();
-              }
-            })();
+          if (STORED_FEED_CACHE_PROVIDERS.has(providerId) && !query.refresh && !mediaJob && !trendforceJob) {
+            const prepared = await feedCache.get(
+              storedFeedCacheKey(workspaceId, providerId, query),
+              async () => {
+                const leave = labelEventLoop(`feed.${providerId}`);
+                try {
+                  const feed = await services.feed.getExternalFeed(providerId, { ...query, refresh: false }, { workspaceId });
+                  return prepareJsonBody({ ok: true, feed });
+                } finally {
+                  leave();
+                }
+              },
+            );
+            const headers = { ETag: prepared.etag, 'Cache-Control': 'private, no-cache' };
+            if (ifNoneMatch(request, prepared.etag)) {
+              response.writeHead(304, headers);
+              response.end();
+              return;
+            }
+            sendPreparedJson(request, response, 200, prepared, headers);
+            return;
+          }
+          const leave = labelEventLoop(`feed.${providerId}`);
+          let feed;
+          try {
+            feed = await services.feed.getExternalFeed(providerId, query, { workspaceId });
+          } finally {
+            leave();
+          }
           const payload = { ok: true, feed, ...((mediaJob || trendforceJob) ? { jobId: (mediaJob || trendforceJob).id } : {}) };
           if (providerId === 'trendforce') {
             const etag = listEtag(feed);
