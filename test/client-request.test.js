@@ -20,6 +20,7 @@ test('reading-hour callers share one cache key per hour window', () => {
   assert.equal(cacheTtlFor('GET', '/api/v1/reports/reading-hour?startAt=100&endAt=200&scope=hour'), 30_000);
   assert.equal(cacheTtlFor('GET', '/api/v1/reports/daily/latest/brief'), 30_000);
   assert.equal(cacheTtlFor('GET', '/api/v1/static-signals/board?from=1'), 20_000);
+  assert.equal(cacheTtlFor('GET', '/api/v1/home/bootstrap'), 15_000);
   assert.equal(cacheTtlFor('GET', '/api/v1/translate/jobs/abc'), 0);
   assert.equal(cacheTtlFor('POST', '/api/v1/posts'), 0);
   assert.equal(cacheTtlFor('GET', '/api/v1/reports/tree?view=index&refresh=1'), 0);

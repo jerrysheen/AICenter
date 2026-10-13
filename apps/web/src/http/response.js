@@ -1,5 +1,6 @@
 import { ValidationError } from '../../../../packages/contracts/src/index.js';
 import { gzip } from 'node:zlib';
+import { labelEventLoop } from './event-loop-blocks.js';
 
 function acceptsGzipEncoding(response) {
   return String(response.req?.headers?.['accept-encoding'] || '').split(',').some((part) => {
@@ -26,7 +27,13 @@ function writeJson(response, status, body, headers, { compress, encoding }) {
 }
 
 export function json(response, status, payload, headers = {}, { compress = false } = {}) {
-  const encoded = JSON.stringify(payload);
+  const leave = labelEventLoop('json.stringify');
+  let encoded;
+  try {
+    encoded = JSON.stringify(payload);
+  } finally {
+    leave();
+  }
   const bytes = Buffer.byteLength(encoded);
   if (compress && acceptsGzipEncoding(response) && bytes >= 2048) {
     return new Promise((resolve) => {

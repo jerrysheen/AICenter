@@ -30,6 +30,7 @@ Retry-After: 17
 
 | 方法 | 路径 | 参数 |
 |---|---|---|
+| GET | `/api/v1/home/bootstrap` | 可选 `refresh=1`。设备登录，不接受 Bearer。15 秒缓存，带弱 ETag |
 | GET | `/api/v1/reports/daily/latest` | 无 |
 | GET | `/api/v1/reports/daily` | `date` |
 | GET | `/api/v1/reports/daily/latest/brief` | 无 |

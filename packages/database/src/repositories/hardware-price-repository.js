@@ -80,6 +80,13 @@ export function createHardwarePriceRepository(database,emitEvent=()=>{}) {
         WHERE o.n=1 ORDER BY o.period_start DESC,s.captured_at DESC LIMIT ?`).all(workspaceId,seriesKey,seriesKey,limit).map(r=>({...observation(r),...JSON.parse(r.snapshot_row_json),snapshotId:r.referenced_snapshot_id,capturedAt:r.snapshot_captured_at}));
     },
     history(workspaceId,seriesKey) { return database.prepare('SELECT * FROM hardware_price_observations WHERE workspace_id=? AND series_key=? ORDER BY period_start,captured_at,revision LIMIT 5000').all(workspaceId,seriesKey).map(observation); },
+    recentHistory(workspaceId,seriesKey,limit=30) {
+      const cap=Math.max(1,Math.min(Number(limit)||30,500));
+      return database.prepare(`SELECT * FROM (
+        SELECT * FROM hardware_price_observations WHERE workspace_id=? AND series_key=?
+        ORDER BY period_start DESC, captured_at DESC, revision DESC LIMIT ?
+      ) ORDER BY period_start, captured_at, revision`).all(workspaceId,seriesKey,cap).map(observation);
+    },
     seriesSnapshots(workspaceId,seriesKey) {return database.prepare(`SELECT DISTINCT s.* FROM hardware_price_snapshots s JOIN hardware_price_snapshot_rows r ON r.snapshot_id=s.id AND r.workspace_id=s.workspace_id
       JOIN hardware_price_observations o ON o.id=r.observation_id AND o.workspace_id=r.workspace_id WHERE s.workspace_id=? AND o.series_key=? ORDER BY s.captured_at DESC LIMIT 500`).all(workspaceId,seriesKey).map(snapshot);},
     getSnapshot(workspaceId,id) {return snapshot(database.prepare('SELECT * FROM hardware_price_snapshots WHERE workspace_id=? AND id=?').get(workspaceId,id));},

@@ -1,3 +1,5 @@
+import { labelEventLoop } from './event-loop-blocks.js';
+
 const REPLAY_PAGE_SIZE = 200;
 const REPLAY_MAX_EVENTS = 10_000;
 
@@ -18,10 +20,10 @@ export function createEventStreamHub(runtimeService, options = {}) {
   function flush() {
     if (flushing) return;
     flushing = true;
-    try {
-      while (true) {
+    const step = () => {
+      let more = false;
+      try {
         const events = runtimeService.listEvents(eventCursor, 200);
-        if (!events.length) break;
         for (const event of events) {
           eventCursor = event.id;
           const frame = eventFrame(event);
@@ -29,32 +31,53 @@ export function createEventStreamHub(runtimeService, options = {}) {
             if (client.workspaceId === event.workspaceId) client.response.write(frame);
           }
         }
-        if (events.length < 200) break;
+        more = events.length === 200;
+      } finally {
+        if (!more) flushing = false;
       }
-    } finally {
-      flushing = false;
-    }
+      if (more) setImmediate(step);
+    };
+    step();
   }
 
   function replaySince(lastEventId, workspaceId, write) {
-    let replayedThrough = lastEventId;
-    let replayed = 0;
-    while (replayed < replayMaxEvents) {
-      const events = runtimeService.listEvents(replayedThrough, replayPageSize, workspaceId);
-      if (!events.length) break;
-      for (const event of events) {
-        replayedThrough = event.id;
-        write(eventFrame(event));
-        replayed += 1;
-        if (replayed >= replayMaxEvents) break;
-      }
-      if (events.length < replayPageSize) break;
-    }
-    let snapshotRequired = false;
-    if (replayed >= replayMaxEvents) {
-      snapshotRequired = runtimeService.listEvents(replayedThrough, 1, workspaceId).length > 0;
-    }
-    return { replayedThrough, snapshotRequired, replayed };
+    return new Promise((resolve) => {
+      let replayedThrough = lastEventId;
+      let replayed = 0;
+      const finish = (snapshotRequired) => resolve({ replayedThrough, snapshotRequired, replayed });
+      const step = () => {
+        const leave = labelEventLoop('events.replay');
+        let again = false;
+        try {
+          if (replayed >= replayMaxEvents) {
+            finish(runtimeService.listEvents(replayedThrough, 1, workspaceId).length > 0);
+            return;
+          }
+          const events = runtimeService.listEvents(replayedThrough, replayPageSize, workspaceId);
+          if (!events.length) {
+            finish(false);
+            return;
+          }
+          for (const event of events) {
+            replayedThrough = event.id;
+            write(eventFrame(event));
+            replayed += 1;
+            if (replayed >= replayMaxEvents) break;
+          }
+          if (events.length < replayPageSize || replayed >= replayMaxEvents) {
+            const snapshotRequired = replayed >= replayMaxEvents
+              && runtimeService.listEvents(replayedThrough, 1, workspaceId).length > 0;
+            finish(snapshotRequired);
+            return;
+          }
+          again = true;
+        } finally {
+          leave();
+        }
+        if (again) setImmediate(step);
+      };
+      step();
+    });
   }
 
   async function open(request, response, identity, lastEventId) {
@@ -68,7 +91,7 @@ export function createEventStreamHub(runtimeService, options = {}) {
     let replayedThrough = 0;
     let snapshotRequired = false;
     if (Number.isSafeInteger(lastEventId) && lastEventId > 0) {
-      const replay = replaySince(lastEventId, workspaceId, (frame) => response.write(frame));
+      const replay = await replaySince(lastEventId, workspaceId, (frame) => response.write(frame));
       replayedThrough = replay.replayedThrough;
       snapshotRequired = replay.snapshotRequired;
     }

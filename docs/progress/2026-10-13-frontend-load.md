@@ -36,6 +36,28 @@ Cloudflare Web Analytics 信标不在当前 `main` 的页面里。PR #71 会从�
 
 `node --test test/client-request.test.js test/static-files.test.js test/static-module-whitelist.test.js test/translate-api.test.js`
 
+## 事件循环和慢接口
+
+b184ade 上线后的访问日志：每分钟事件循环 max 仍是 1.8–2.1 秒，p99 254–1116 毫秒。同一窗口里 285 条请求的 `loopMs` 全是 0。直方图在下一轮事件循环才记下上一轮的延迟，所以请求在 `end()` 里看到的 max 增量是 0；2 秒的阻塞发生在两次请求之间。
+
+现在 Web 每 50 毫秒看一次循环间隙。超过 50 毫秒就记一行 `[web] event-loop-block task=… blockedMs=…`，任务名是当时包住主线程的那段工作：整段 HTTP 处理、`json.stringify`、`events.flush`、`feed.x`、`feed.xueqiu`、`hardware-prices.list`。每分钟的 `[web] event-loop p50=… p99=… max=…` 写入 `data/logs/event-loop.yyyy-MM-dd.log`，访问日志的 `kind=event-loop` 行也带上同一句 `line`。请求上的 `loopMs` 改为直方图增量和这次请求期间记到的阻塞的较大值。SSE 刷新每轮最多 200 条，还有剩余就 `setImmediate` 再写。补发历史同样每 200 条让出一次，任务名是 `events.replay`，避免一次把上万条事件串完。
+
+`GET /api/v1/feed/x` 与 `/feed/xueqiu` 在 `refresh` 未设置时走 20 秒内存缓存，过期先返回上一份再后台重读库。`refresh=1` 仍走原来的抓取，不进这份缓存。`GET /api/v1/hardware-prices` 同样缓存 45 秒。列表里每个系列只取最近 30 条观察来算涨跌和火花线，详情页仍可读更长的历史。
+
+`GET /api/v1/agent/runs` 先前在每条任务事件、每次回到前台、以及非总览启动时都会打。不在问答页、没有进行中的问答、或页签隐藏时不再打。问答页上两次列表请求至少隔 15 秒。单条问答的 800 毫秒进度轮询在页签隐藏时暂停。
+
+部署前（b184ade）：事件循环 max 1.8–2.1 秒，p99 254–1116 毫秒；`loopMs` 285/285 为 0；`feed/x` p50 795 毫秒、p95 2039 毫秒；`hardware-prices` p95 1.4 秒；`feed/xueqiu` p95 716 毫秒；`agent/runs` 数分钟 128 次。
+
+这次测试能证明的变化：第二次相同的 X 列表读取不再进读取函数；80 毫秒的占线程会记到任务名上，并且该请求的 `loopMs` 至少 30。生产上的 p95 要等 Web 重启后再看访问日志。
+
+## 首屏一份响应和本地缓存
+
+总览冷打开原先要打 13 个数据请求：目录、小时索引、行情、日报、官方看板、看得见的 4 个小时快照、手工、X、雪球，以及消息区再打一次看板。现在先读 `GET /api/v1/home/bootstrap`。服务端用现有的树、小时报、行情快照、日报、官方看板和信息流读取拼成一份，15 秒内重复请求直接返回上一份。测试夹具整包 1285 字节；线上体积取决于快照，要等 Web 重启后看访问日志。
+
+浏览器按「用户 + 方法 + 地址」保存成功的 GET。小响应进 localStorage，大约 48KB 以上进 IndexedDB。缓存大约 4MB、80 条，满了丢掉最旧的。退出登录或授权失效时清空。总览打开时先画这份缓存，再带 `If-None-Match` 去复核；304 不改页面。bootstrap 失败时仍回退到原来的五路请求。
+
+会话、事件流和行为上报仍各走自己的请求。
+
 ## 重启
 
-需要重启 Web。静态白名单和翻译任务响应在 Web 进程里；只换 `public` 文件不会带上新的 `/favicon.ico` 和 `availableAt`。Worker 不用为这项重启。浏览器要重新打开页面，才会换上新的模块图。
+需要重启 Web。静态白名单、翻译任务响应、事件循环探针、X / 雪球短缓存、硬件价表列表和 `GET /api/v1/home/bootstrap` 都在 Web 进程里。只换 `public` 文件不会带上这些。没有新的 migration。Worker 不用为这项重启。浏览器要重新打开页面，才会换上新的模块图、停掉问答页以外的 `agent/runs` 列表轮询，并开始用本地缓存。

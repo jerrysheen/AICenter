@@ -12,6 +12,7 @@ import { createIdentityRoutes } from './identity-routes.js';
 import { createApiTokenRoutes } from './api-token-routes.js';
 import { createKnowledgeRoutes } from './knowledge-routes.js';
 import { createRuntimeRoutes } from './runtime-routes.js';
+import { createHomeRoutes } from './home-routes.js';
 import { createReportRoutes } from './report-routes.js';
 import { createStrategyRoutes } from './strategy-routes.js';
 import { createQuantRoutes } from './quant-routes.js';
@@ -38,6 +39,7 @@ export function createApiRoutes() {
     ...createAgentRoutes(),
     ...createArticleAnalysisRoutes(),
     ...createTradingRoutes(),
+    ...createHomeRoutes(),
     ...createReportRoutes(),
     ...createStrategyRoutes(),
     ...createQuantRoutes(),

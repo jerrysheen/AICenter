@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, unlinkSync } from 'node:fs';
+import { combineLoopDelayMs, formatEventLoopBlock, formatEventLoopLine, lastEventLoopBlock } from './event-loop-blocks.js';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -235,7 +236,7 @@ export function requestLoopDelayMs(histogram, startMax) {
   return Math.max(0, Math.round(delta / 1e6));
 }
 
-function attach(request, response, url, writer, { salt, now, loopDelay }) {
+function attach(request, response, url, writer, { salt, now, loopDelay, trackTurn }) {
   const receivedPerf = performance.now();
   const receivedWall = now();
   const loopHistogram = () => (typeof loopDelay === 'function' ? loopDelay() : loopDelay);
@@ -312,7 +313,12 @@ function attach(request, response, url, writer, { salt, now, loopDelay }) {
       const hit = response[accessCacheHit];
       const client = hashClientAddress(request.headers?.['cf-connecting-ip'], salt);
       const ray = cfRay(request.headers?.['cf-ray']);
-      const loopMs = requestLoopDelayMs(loopHistogram(), loopStartMax);
+      const histogramMs = requestLoopDelayMs(loopHistogram(), loopStartMax);
+      const block = lastEventLoopBlock();
+      const blockMs = block && block.at >= receivedWall - 1_000 && block.at <= Date.now() + 50
+        ? block.blockedMs
+        : null;
+      const loopMs = combineLoopDelayMs(histogramMs, blockMs);
       const record = {
         receivedAt: formatShanghai(receivedWall),
         firstByteAt: firstWall == null ? null : formatShanghai(firstWall),
@@ -344,13 +350,25 @@ function attach(request, response, url, writer, { salt, now, loopDelay }) {
     }
   };
 
+  let queued = false;
+  const scheduleEmit = () => {
+    if (queued) return;
+    queued = true;
+    const job = new Promise((resolve) => {
+      setTimeout(() => {
+        try { emit(); } finally { resolve(); }
+      }, 0);
+    });
+    if (typeof trackTurn === 'function') trackTurn(job);
+  };
+
   response.on?.('finish', () => {
     sawFinish = true;
-    emit();
+    scheduleEmit();
   });
   response.on?.('close', () => {
     if (!sawFinish) aborted = true;
-    emit();
+    scheduleEmit();
   });
 }
 
@@ -371,12 +389,20 @@ export function createAccessLog(options = {}) {
   const clientWriter = writersReady
     ? createDailyLogWriter({ directory, prefix: 'client-timing', retentionDays, now })
     : null;
+  const eventLoopWriter = writersReady
+    ? createDailyLogWriter({ directory, prefix: 'event-loop', retentionDays, now })
+    : null;
+  let turn = Promise.resolve();
+
+  function trackTurn(job) {
+    turn = turn.then(() => job).catch(() => {});
+  }
 
   function observe(request, response, url) {
     if (!accessWriter || !request || !response || response[attachedFlag]) return;
     try {
       response[attachedFlag] = true;
-      attach(request, response, url, accessWriter, { salt, now, loopDelay: () => loopDelay });
+      attach(request, response, url, accessWriter, { salt, now, loopDelay: () => loopDelay, trackTurn });
     } catch {
       // 请求路径上不能抛出。
     }
@@ -396,16 +422,40 @@ export function createAccessLog(options = {}) {
   }
 
   function writeEventLoop(sample) {
-    if (!accessWriter || !sample) return;
+    if (!sample) return;
     try {
       const at = Number(sample.at) || now();
-      accessWriter.enqueue(`${JSON.stringify({
-        kind: 'event-loop',
-        receivedAt: formatShanghai(at),
-        loopP50Ms: Math.round(Number(sample.p50Ms) || 0),
-        loopP99Ms: Math.round(Number(sample.p99Ms) || 0),
-        loopMaxMs: Math.round(Number(sample.maxMs) || 0),
-      })}\n`);
+      const line = formatEventLoopLine(sample);
+      if (accessWriter) {
+        accessWriter.enqueue(`${JSON.stringify({
+          kind: 'event-loop',
+          receivedAt: formatShanghai(at),
+          loopP50Ms: Math.round(Number(sample.p50Ms) || 0),
+          loopP99Ms: Math.round(Number(sample.p99Ms) || 0),
+          loopMaxMs: Math.round(Number(sample.maxMs) || 0),
+          line,
+        })}\n`);
+      }
+      eventLoopWriter?.enqueue(`${line}\n`);
+    } catch {
+      // 忽略。
+    }
+  }
+
+  function writeEventLoopBlock(block) {
+    if (!block) return;
+    try {
+      const line = formatEventLoopBlock(block);
+      if (accessWriter) {
+        accessWriter.enqueue(`${JSON.stringify({
+          kind: 'event-loop-block',
+          receivedAt: formatShanghai(Number(block.at) || now()),
+          task: String(block.task || 'idle'),
+          blockedMs: Math.round(Number(block.blockedMs) || 0),
+          line,
+        })}\n`);
+      }
+      eventLoopWriter?.enqueue(`${line}\n`);
     } catch {
       // 忽略。
     }
@@ -420,17 +470,19 @@ export function createAccessLog(options = {}) {
   }
 
   function flush() {
-    return Promise.all([
+    return turn.then(() => Promise.all([
       accessWriter ? accessWriter.flush() : Promise.resolve(),
       clientWriter ? clientWriter.flush() : Promise.resolve(),
-    ]).then(() => {});
+      eventLoopWriter ? eventLoopWriter.flush() : Promise.resolve(),
+    ])).then(() => {});
   }
 
   function close() {
-    return Promise.all([
+    return flush().then(() => Promise.all([
       accessWriter ? accessWriter.close() : Promise.resolve(),
       clientWriter ? clientWriter.close() : Promise.resolve(),
-    ]).then(() => {});
+      eventLoopWriter ? eventLoopWriter.close() : Promise.resolve(),
+    ])).then(() => {});
   }
 
   return {
@@ -440,6 +492,7 @@ export function createAccessLog(options = {}) {
     observe,
     writeClientTiming,
     writeEventLoop,
+    writeEventLoopBlock,
     bindLoopDelay,
     acceptClientSample,
     flush,

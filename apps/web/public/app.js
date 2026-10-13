@@ -6,6 +6,9 @@ import {
 import { icon } from './icons.js?v=dev';
 import { renderMarkdownInto, renderFeedTextInto, splitFeedText, stripSharePlaceholders } from './markdown.js?v=dev';
 import { cacheTtlFor, createRequestLayer, planTranslationPoll, requestDedupeKey, TRANSLATION_POLL_DEADLINE_MS } from './client-request.js?v=dev';
+import { planAskRunsFetch } from './ask-runs.js?v=dev';
+import { browserPagePersist, createPageCache, pageCacheKey } from './page-cache.js?v=dev';
+import { HOME_BOOTSTRAP_PATH, projectHomeBootstrap } from './home-bootstrap.js?v=dev';
 import {
   preferredOverviewFocus as overviewFocusClock,
   HOME_QUOTE_CAPTION,
@@ -25,6 +28,9 @@ import { decodeHtmlEntities } from './html-text.js?v=dev';
 import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, newsIngestAt, newsPublishedHint, prioritizeReadableFeedRows, renderNewsList, reportItemTime } from './news-list.js?v=dev';
 
 const requestLayer = createRequestLayer();
+const pageCache = createPageCache({
+  persist: typeof window === 'undefined' ? undefined : browserPagePersist(),
+});
 let feedLikeButton = () => null;
 let feedLikeReady = false;
 let hardwareMarketItem = () => null;
@@ -1460,6 +1466,24 @@ async function performApi(path, fetchOptions, timeoutMs, onResponse) {
   }
 }
 
+function pageCacheUser() {
+  const session = state.session;
+  if (!session) return 'anon';
+  return `${session.role || 'device'}:${session.device?.id || 'self'}`;
+}
+
+function rememberPageResponse(method, path, payload) {
+  if (method !== 'GET' || !payload || payload.notModified || payload.ok === false) return;
+  const pathname = String(path || '').split('?')[0];
+  if (pathname === HOME_BOOTSTRAP_PATH || pathname === '/api/v1/session' || pathname.startsWith('/api/v1/behavior') || pathname.startsWith('/api/v1/translate/jobs/')) return;
+  const bodyText = JSON.stringify(payload);
+  pageCache.write(pageCacheKey(pageCacheUser(), method, String(path || '').split('#')[0]), {
+    bodyText,
+    savedAt: Date.now(),
+    bytes: bodyText.length,
+  }).catch(() => {});
+}
+
 function api(path, options = {}) {
   const { timeoutMs = 20_000, priority, fresh, cache, signal, onResponse, ...fetchOptions } = options;
   const method = String(fetchOptions.method || 'GET').toUpperCase();
@@ -1472,6 +1496,9 @@ function api(path, options = {}) {
     bypass,
     priority: Number.isFinite(priority) ? priority : (method === 'GET' ? 4 : 7),
     share: method === 'GET',
+  }).then((payload) => {
+    rememberPageResponse(method, path, payload);
+    return payload;
   });
   return callerGate(shared, { timeoutMs, signal });
 }
@@ -1673,6 +1700,7 @@ function showUnpairedPage(message, pairingFailed = false, options = {}) {
   state.hardwareLoading=false;
   state.hardwareError='';
   state.session = null;
+  pageCache.clear().catch(() => {});
   state.stream?.close();
   const loginAvailable = Boolean(options.loginAvailable);
   state.loginAvailable = loginAvailable;
@@ -1739,6 +1767,7 @@ async function exitAndRePair() {
   } catch (_error) {
     // 即使电脑服务暂不可用，鸿蒙薄壳仍然需要能够清除旧地址。
   }
+  pageCache.clear().catch(() => {});
   forgetLegacyDeviceGrant();
 
   if (isHarmonyShell) {
@@ -7490,22 +7519,105 @@ async function loadSourcesPage({ refresh = false } = {}) {
   }
 }
 
-async function loadSourcesPageNow({ refresh = false } = {}) {
-  const token = ++state.homeLoadToken;
-  state.homeSlow = false;
-  state.homeLoadStartedAt = Date.now();
-  if (refresh) state.homeTreeLoaded = false;
-  armHomeSlowWatch();
+function applyProjectedHome(projected, token) {
+  if (!projected || token !== state.homeLoadToken) return;
+  if (projected.tree) {
+    state.homeTree = projected.tree;
+    state.homeTreeError = '';
+    state.homeTreeLoaded = true;
+  }
+  if (projected.readings && Object.keys(projected.readings).length) {
+    state.homeReadingIndexMissing = false;
+    state.homeReadingHours = mergeReadingHours(state.homeReadingHours, projected.readings);
+  }
+  if (homeHourlySnapshotReady()) state.homeHourlySettled = true;
+  if (projected.market) {
+    const board = projected.market.board || 'overview';
+    state.markets[board] = acceptMarketPayload(state.markets[board], projected.market);
+    if (marketPayloadHasQuotes(state.markets[board])) state.marketBoardErrors[board] = '';
+  }
+  dailyBriefSnapshot = { brief: projected.brief || null, loaded: true, error: '' };
+  renderDailyBriefPeek();
+  renderHomeDaily();
+  if (projected.board) {
+    state.homeBoard = projected.board;
+    state.homeBoardError = '';
+    state.homeBoardLoading = false;
+    state.homeOfficialSettled = true;
+  }
+  if (Array.isArray(projected.posts)) {
+    state.posts = projected.posts.filter((item) => !isHiddenFeedItem(item));
+    state.postsLoaded = true;
+    state.postsError = '';
+  }
+  if (projected.x) {
+    if (!(state.xItems || []).length) state.xItems = (projected.x.items || []).filter((item) => !isHiddenFeedItem(item));
+    state.xLoaded = true;
+    state.xError = '';
+  }
+  if (projected.xueqiu) {
+    if (!(state.xueqiuItems || []).length) state.xueqiuItems = (projected.xueqiu.items || []).filter((item) => !isHiddenFeedItem(item));
+    state.xueqiuLoaded = true;
+    state.xueqiuError = '';
+  }
+}
+
+async function paintHomeFromCache(token) {
+  const record = pageCache.peek(pageCacheKey(pageCacheUser(), 'GET', HOME_BOOTSTRAP_PATH))
+    || await pageCache.read(pageCacheKey(pageCacheUser(), 'GET', HOME_BOOTSTRAP_PATH));
+  if (!record?.bodyText || token !== state.homeLoadToken) return null;
+  let body;
+  try {
+    body = JSON.parse(record.bodyText);
+  } catch {
+    return null;
+  }
+  const projected = projectHomeBootstrap(body);
+  if (!projected || token !== state.homeLoadToken) return null;
+  applyProjectedHome(projected, token);
+  if (document.body.dataset.view === 'sources') renderHub();
+  return record;
+}
+
+async function fetchHomeBootstrap(token, { refresh = false, cached = null } = {}) {
+  let etag = '';
+  const payload = await api(`${HOME_BOOTSTRAP_PATH}${refresh ? '?refresh=1' : ''}`, {
+    priority: 0,
+    fresh: refresh,
+    cache: refresh ? 'no-store' : undefined,
+    headers: !refresh && cached?.etag ? { 'If-None-Match': cached.etag } : {},
+    onResponse(response) { etag = response.headers?.get?.('etag') || ''; },
+  });
+  if (token !== state.homeLoadToken || payload?.notModified) return null;
+  const bodyText = JSON.stringify(payload);
+  await pageCache.write(pageCacheKey(pageCacheUser(), 'GET', HOME_BOOTSTRAP_PATH), {
+    bodyText,
+    etag,
+    savedAt: Date.now(),
+  });
+  return projectHomeBootstrap(payload);
+}
+
+async function loadSourcesPageLegacy(token, { refresh = false } = {}) {
   const plan = homeRequestPlan(Date.now());
-  const treePromise = loadHomeTree(plan.tree, token, { priority: 0, fresh: refresh });
-  const indexPromise = loadHomeReadingIndex(plan.readingIndex, token, { priority: 0, fresh: refresh });
-  const marketPromise = loadHomeOverviewMarket(refresh);
-  const briefPromise = loadDailyBrief({ priority: 0, fresh: refresh }).catch(() => {});
-  const boardPromise = loadHomeBoard(plan.board, { refresh, token }).catch(() => {});
-  await Promise.all([treePromise, indexPromise, marketPromise, briefPromise, boardPromise]);
-  if (token !== state.homeLoadToken) return;
-  renderHub();
-  ensureHomeReadingSnapshots(token, { refresh }).catch(() => {});
+  await Promise.all([
+    loadHomeTree(plan.tree, token, { priority: 0, fresh: refresh }),
+    loadHomeReadingIndex(plan.readingIndex, token, { priority: 0, fresh: refresh }),
+    loadHomeOverviewMarket(refresh),
+    loadDailyBrief({ priority: 0, fresh: refresh }).catch(() => {}),
+    loadHomeBoard(plan.board, { refresh, token }).catch(() => {}),
+  ]);
+}
+
+function scheduleHomeTail(token, { refresh = false } = {}) {
+  if (!homeHourlySnapshotReady()) ensureHomeReadingSnapshots(token, { refresh }).catch(() => {});
+  else {
+    state.homeHourlySettled = true;
+    scheduleIdle(() => {
+      if (token !== state.homeLoadToken) return;
+      ensureHomeReadingSnapshots(token, { refresh, phase: 'rest' }).catch(() => {});
+    });
+  }
   scheduleIdle(() => {
     if (token !== state.homeLoadToken) return;
     ensureHomeMessages().catch(() => {});
@@ -7513,12 +7625,31 @@ async function loadSourcesPageNow({ refresh = false } = {}) {
   scheduleOverviewFocusWatch();
 }
 
+async function loadSourcesPageNow({ refresh = false } = {}) {
+  const token = ++state.homeLoadToken;
+  state.homeSlow = false;
+  state.homeLoadStartedAt = Date.now();
+  if (refresh) state.homeTreeLoaded = false;
+  armHomeSlowWatch();
+  const cached = refresh ? null : await paintHomeFromCache(token);
+  try {
+    const projected = await fetchHomeBootstrap(token, { refresh, cached });
+    if (token !== state.homeLoadToken) return;
+    if (projected) applyProjectedHome(projected, token);
+  } catch {
+    await loadSourcesPageLegacy(token, { refresh });
+  }
+  if (token !== state.homeLoadToken) return;
+  renderHub();
+  scheduleHomeTail(token, { refresh });
+}
+
 async function ensureHomeMessages() {
   const tasks = [];
   if (!state.postsLoaded && !state.postsLoading) tasks.push(loadPosts({ priority: 6 }).catch(() => {}));
   if (!state.xLoaded && !state.xLoading) tasks.push(loadXFeed({ refresh: false, autoTranslate: false, priority: 6 }).catch(() => {}));
   if (!state.xueqiuLoaded && !state.xueqiuLoading) tasks.push(loadXueqiuFeed({ refresh: false, priority: 6 }).catch(() => {}));
-  if (!state.staticBoard && !state.staticBoardLoading) tasks.push(loadStaticSignalBoard({ refresh: false }).catch(() => {}));
+  if (!state.staticBoard && !state.staticBoardLoading && !state.homeBoard) tasks.push(loadStaticSignalBoard({ refresh: false }).catch(() => {}));
   await Promise.all(tasks);
   if (tasks.length) noteFeedLoaded();
   if (document.body.dataset.view === 'sources') renderHub();
@@ -9679,11 +9810,27 @@ function adoptPendingRuns(runs = [], { replaceLive = false } = {}) {
 
 let askPollTimer = 0;
 let askPollInFlight = false;
+let askRunsFetchedAt = 0;
 function ensureAskPoller() {
   if (askPollTimer) return;
   askPollTimer = window.setInterval(() => {
+    if (document.visibilityState === 'hidden') return;
     void pollAskJobs();
   }, 800);
+}
+
+function maybeLoadActiveAskRuns(reason) {
+  const plan = planAskRunsFetch({
+    view: document.body?.dataset?.view || '',
+    visible: document.visibilityState !== 'hidden',
+    liveJobs: liveAskJobs().length,
+    lastFetchAt: askRunsFetchedAt,
+    now: Date.now(),
+    reason,
+  });
+  if (!plan.fetch) return;
+  askRunsFetchedAt = Date.now();
+  void loadActiveAskRuns();
 }
 
 function stopAskPollerIfIdle() {
@@ -9783,6 +9930,7 @@ async function pollAskJobs() {
 
 async function loadActiveAskRuns() {
   if (!state.session) return;
+  askRunsFetchedAt = Date.now();
   try {
     const payload = await api('/api/v1/agent/runs');
     adoptPendingRuns(payload.runs || [], { replaceLive: true });
@@ -9796,10 +9944,10 @@ function onAgentJobEvent(event) {
   try { payload = JSON.parse(event.data || '{}'); } catch { payload = {}; }
   const runId = payload.jobId || payload.runId || payload.job?.id;
   if (runId && liveAskJobs().some((job) => job.runId === runId)) {
-    void pollAskJobs();
+    if (document.visibilityState !== 'hidden') void pollAskJobs();
     return;
   }
-  void loadActiveAskRuns();
+  maybeLoadActiveAskRuns('event');
 }
 
 function askSessionTitle() {
@@ -14276,7 +14424,7 @@ async function completeAuthorizedStart(session) {
   if (view === 'ask') {
     startupLoads.push(syncAskView().catch((error) => showToast(error.message)));
   }
-  if (view !== 'sources') startupLoads.push(loadActiveAskRuns().catch(() => {}));
+  if (view === 'ask') startupLoads.push(loadActiveAskRuns().catch(() => {}));
   if (session.role === 'desktop' && view === 'settings') {
     startupLoads.push(loadPairing().catch((error) => showToast(error.message)));
     startupLoads.push(loadMetrics().catch(() => {}));
@@ -14921,7 +15069,7 @@ document.addEventListener('visibilitychange', () => {
     if (!state.session) return;
     syncHarmonyLocalInspirations().catch(() => {});
     if (liveAskJobs().length) void pollAskJobs();
-    else void loadActiveAskRuns();
+    maybeLoadActiveAskRuns('visible');
     if (state.selectedWorkPackageId) refreshSelectedWorkPackageProgress().catch(() => {});
   }
 });
