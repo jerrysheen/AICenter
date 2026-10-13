@@ -415,7 +415,7 @@ test('holdings read is side-effect free and accepts arbitrary data-owned portfol
   rmSync(directory, { recursive: true, force: true });
 });
 
-test('holdings API leaves a new sqlite instance empty and still honors quote refresh', async () => {
+test('holdings API leaves a new sqlite instance empty and does not fetch quotes on the request', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-holdings-api-'));
   let lastQuoteOptions = null;
   const app = createAiCenterServer({
@@ -442,9 +442,10 @@ test('holdings API leaves a new sqlite instance empty and still honors quote ref
     assert.equal(payload.holdings.moves.length, 3);
     assert.equal(payload.holdings.moveGroups.length, 2);
     assert.deepEqual(payload.holdings.moveGroups.map((item) => item.id), ['a_share', 'b_share']);
-    assert.equal(lastQuoteOptions.refresh, false);
+    assert.equal(payload.holdings.note.includes('行情快照尚未就绪'), true);
+    assert.equal(lastQuoteOptions, null);
     await fetch(`${address.localUrl}/api/v1/holdings?refresh=1`).then((response) => response.json());
-    assert.equal(lastQuoteOptions.refresh, true);
+    assert.equal(lastQuoteOptions, null);
   } finally {
     await app.close();
     rmSync(directory, { recursive: true, force: true });

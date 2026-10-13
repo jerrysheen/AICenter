@@ -9,7 +9,11 @@ export { createWebSearchSourceDefinition } from './search/definitions.js';
 export {
   createStaticSignalSourceDefinitions, createOfficialSourceDetailDefinition, OfficialDetailInputSchema,
 } from './static/definitions.js';
-export { readStaticSignalBoard, StaticSignalBoardInputSchema, createFailureStreakStore, installFailureStreakStore } from './static/board.js';
+export {
+  readStaticSignalBoard, readStaticSignalBoardSnapshot, projectStaticSignalBoard, emptyStaticSignalBoard,
+  StaticSignalBoardInputSchema, createFailureStreakStore, installFailureStreakStore,
+} from './static/board.js';
+export { createStaticSignalBoardReader, STATIC_SIGNAL_BOARD_SNAPSHOT_KEY, STATIC_SIGNAL_BOARD_CACHE_TTL_MS } from './static/board-read.js';
 export {
   createMarketNativeSourceDefinitions,
   PredictionMarketInputSchema,

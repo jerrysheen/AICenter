@@ -374,6 +374,22 @@ export function createAccessLog(options = {}) {
     }
   }
 
+  function writeEventLoop(sample) {
+    if (!accessWriter || !sample) return;
+    try {
+      const at = Number(sample.at) || now();
+      accessWriter.enqueue(`${JSON.stringify({
+        kind: 'event-loop',
+        receivedAt: formatShanghai(at),
+        loopP50Ms: Math.round(Number(sample.p50Ms) || 0),
+        loopP99Ms: Math.round(Number(sample.p99Ms) || 0),
+        loopMaxMs: Math.round(Number(sample.maxMs) || 0),
+      })}\n`);
+    } catch {
+      // 忽略。
+    }
+  }
+
   function acceptClientSample(random = Math.random(), at = Date.now()) {
     if (!writersReady || !(random < sampleRate)) return false;
     if (at - clientWindow.start >= 60_000) clientWindow = { start: at, count: 0 };
@@ -402,6 +418,7 @@ export function createAccessLog(options = {}) {
     salt,
     observe,
     writeClientTiming,
+    writeEventLoop,
     acceptClientSample,
     flush,
     close,
@@ -556,6 +573,15 @@ function parseAccessLine(line) {
     if (!value || typeof value !== 'object') return null;
     const receivedMs = Date.parse(value.receivedAt);
     if (!Number.isFinite(receivedMs)) return null;
+    if (value.kind === 'event-loop') {
+      return {
+        kind: 'event-loop',
+        receivedMs,
+        loopP99Ms: numberOrNull(value.loopP99Ms),
+        loopMaxMs: numberOrNull(value.loopMaxMs),
+      };
+    }
+    if (value.kind) return null;
     return {
       path: typeof value.path === 'string' && value.path ? value.path : '/',
       bytesSent: numberOrNull(value.bytesSent) ?? 0,
@@ -573,6 +599,7 @@ export async function readAccessSummary(directory, input = {}, now = () => Date.
   const parsed = parseSummaryOptions(input, now);
   if (parsed.error) return { ok: false, error: parsed.error };
   const groups = new Map();
+  const loopSamples = [];
   let count = 0;
   let scanned = 0;
   let truncated = false;
@@ -593,6 +620,10 @@ export async function readAccessSummary(directory, input = {}, now = () => Date.
       const record = parseAccessLine(line);
       if (!record) continue;
       if (parsed.sinceMs != null && record.receivedMs < parsed.sinceMs) continue;
+      if (record.kind === 'event-loop') {
+        loopSamples.push(record);
+        continue;
+      }
       count += 1;
       const bucket = groups.get(record.path) || {
         path: record.path,
@@ -628,7 +659,18 @@ export async function readAccessSummary(directory, input = {}, now = () => Date.
     top: parsed.top,
     count,
     truncated,
+    eventLoop: summarizeEventLoop(loopSamples),
     paths,
+  };
+}
+
+function summarizeEventLoop(samples) {
+  const p99 = samples.map((sample) => sample.loopP99Ms).filter((value) => value != null);
+  const maxes = samples.map((sample) => sample.loopMaxMs).filter((value) => value != null);
+  return {
+    count: samples.length,
+    p99: timingStats(p99),
+    max: maxes.length ? Math.max(...maxes) : null,
   };
 }
 
@@ -646,7 +688,11 @@ export function formatSummaryText(summary) {
     summary.since ? `since=${summary.since}` : '',
     summary.truncated ? 'truncated=1' : '',
   ].filter(Boolean).join(' ');
-  const lines = [header];
+  const loop = summary.eventLoop;
+  const loopText = loop
+    ? `eventLoop count=${loop.count} p99=${formatTiming(loop.p99)} max=${loop.max ?? '-'}`
+    : '';
+  const lines = [header, loopText].filter(Boolean);
   for (const row of summary.paths) {
     lines.push([
       row.path,

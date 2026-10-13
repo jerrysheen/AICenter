@@ -1810,6 +1810,17 @@ migrations.push({ version: 57, name: 'api_access_tokens', up(database) {
   `);
 }});
 
+migrations.push({ version: 58, name: 'runtime_snapshots', up(database) {
+  database.exec(`CREATE TABLE runtime_snapshots (
+      workspace_id TEXT NOT NULL,
+      snapshot_key TEXT NOT NULL,
+      generated_at INTEGER NOT NULL,
+      payload_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (workspace_id, snapshot_key)
+    );`);
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

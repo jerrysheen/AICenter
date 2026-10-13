@@ -77,7 +77,12 @@ import { QUANT_PREPARE_JOB_TYPE, QUANT_RUN_JOB_TYPE } from '../../../packages/co
 import { createLocalToolRegistry } from '../../../packages/runtime/src/local-tools.js';
 import { createAgentTraceLog } from '../../../packages/runtime/src/agent-trace-log.js';
 import { createWorkPackageTracePort } from '../../../packages/runtime/src/work-package-trace.js';
-import { createSourceHub, createSourceModuleRegistry, readStaticSignalBoard } from '../../../packages/source/src/index.js';
+import { createFailureStreakStore, createSourceHub, createSourceModuleRegistry, installFailureStreakStore, readStaticSignalBoard } from '../../../packages/source/src/index.js';
+import { createMemorySnapshotCache } from '../../../packages/runtime/src/snapshot-cache.js';
+import {
+  createWebSnapshotJobHandlers, ensureHoldingsMarketSchedule, ensureStaticSignalBoardSchedule,
+  HOLDINGS_MARKET_SNAPSHOT_KEY, webSnapshotManifest,
+} from '../../../packages/runtime/src/web-snapshot-jobs.js';
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(currentDirectory, '../../..');
@@ -150,6 +155,9 @@ export function createAiCenterWorker(options = {}) {
     },
   });
   const dataDirectory = instance.dataDirectory;
+  installFailureStreakStore(createFailureStreakStore({
+    filePath: path.join(dataDirectory, 'static-source-failure-streaks.json'),
+  }));
   const env = options.env || process.env;
   const runtimeMode = options.agentRuntime ? 'injected' : resolveAgentRuntimeMode(options, env);
   const restartPort = options.restartPort || createLauncherRestartPort({
@@ -261,9 +269,15 @@ export function createAiCenterWorker(options = {}) {
       dataDirectory,
     }),
   });
+  const holdingsQuoteCache = createMemorySnapshotCache({
+    read: () => store.repositories.runtimeSnapshots.readSnapshot('local', HOLDINGS_MARKET_SNAPSHOT_KEY),
+  });
   const tradingService = options.tradingService || createTradingService({
     tradingRepository: store.repositories.trading,
     sourcePort,
+    holdingsQuotePort: {
+      read: (readOptions) => holdingsQuoteCache.get(readOptions),
+    },
     personalAssetPort: options.personalAssetService || createPersonalAssetService({
       dataDirectory,
       workbookPath: instance.assetWorkbookPath,
@@ -505,6 +519,14 @@ export function createAiCenterWorker(options = {}) {
     }),
   });
   registry.register({
+    manifest: webSnapshotManifest,
+    jobHandlers: options.webSnapshotJobHandlers || createWebSnapshotJobHandlers({
+      sourcePort,
+      repository: store.repositories.runtimeSnapshots,
+      tradingRepository: store.repositories.trading,
+    }),
+  });
+  registry.register({
     manifest: eventQuoteSnapshotManifest,
     jobHandlers: options.eventQuoteSnapshotJobHandlers || createEventQuoteSnapshotJobHandlers({
       repository: store.repositories.eventQuotes,
@@ -577,6 +599,8 @@ export function createAiCenterWorker(options = {}) {
     ensureFeedSubscriptionSyncSchedule(store);
     ensureMediaIndexSyncSchedule(store);
     ensureEventQuoteSnapshotSchedule(store);
+    ensureStaticSignalBoardSchedule(store);
+    ensureHoldingsMarketSchedule(store);
     ensureInvestorDiscussionSchedule(store, env);
     ensureTrendForcePriceSchedules(store, env);
     ensureComputePriceSchedules(store, env);

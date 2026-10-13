@@ -179,7 +179,8 @@ test('source API lists manifests and reads a source while legacy market API rema
 
     const staticBoard = await fetch(`${address.localUrl}/api/v1/static-signals/board?from=0&to=10000&focus=1&includeUndated=0`).then((response) => response.json());
     assert.equal(staticBoard.ok, true);
-    assert.ok(staticBoard.board.sourceHealth.some((source) => source.sourceId === 'calendar.cn.scio'));
+    assert.equal(staticBoard.pending, true);
+    assert.deepEqual(staticBoard.board.sourceHealth, []);
     assert.equal(Array.isArray(staticBoard.board.upcoming), true);
 
     const legacy = await fetch(`${address.localUrl}/api/v1/markets?board=us`).then((response) => response.json());
