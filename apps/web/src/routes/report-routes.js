@@ -11,6 +11,7 @@ import {
 } from '../../../../packages/contracts/src/index.js';
 import { json, readJson } from '../http/response.js';
 import { createPreparedSlotStore } from '../http/prepared-slots.js';
+import { sendOffthreadJson } from '../http/offthread-json.js';
 import { reportReadingIndexSlot, reportTreeSlot } from '../../../../packages/runtime/src/web-snapshot-jobs.js';
 import {TreeManifestQuerySchema,TreeNodeQuerySchema,TreeWindowQuerySchema,ReadingHourIndexQuerySchema} from '../../../../packages/contracts/src/information-tree.js';
 
@@ -40,16 +41,24 @@ function sendReportBuffer(slots, request, response, key, miss) {
   slots.send(request, response, key, { headers: { 'Cache-Control': 'no-store' } });
 }
 
-export function createReportRoutes({ slots = createPreparedSlotStore() } = {}) {
+export function createReportRoutes({ slots = createPreparedSlotStore(), offthread = null } = {}) {
   return [
-    {method:'GET',path:'/api/v1/reports/tree',handler({request,response,url}) {
+    {method:'GET',path:'/api/v1/reports/tree',handler({request,response,url,identity}) {
       const window=parseContract(TreeManifestQuerySchema,{startAt:url.searchParams.get('startAt'),endAt:url.searchParams.get('endAt'),view:url.searchParams.get('view') || undefined,information:url.searchParams.get('information') || undefined});
       const key=reportTreeSlot(window);
-      sendReportBuffer(slots, request, response, key, `path=tree view=${window.view || ''} information=${window.information || ''} start=${window.startAt} end=${window.endAt}`);
+      if (key) {
+        sendReportBuffer(slots, request, response, key, '');
+        return;
+      }
+      const workspace=identity?.device?.workspaceId || 'local';
+      logReportSlotMiss(`path=tree view=${window.view || ''} information=${window.information || ''} start=${window.startAt} end=${window.endAt}`);
+      return sendOffthreadJson(offthread, request, response, { kind: 'tree-list', workspace, window }, { 'Cache-Control': 'no-store' });
     }},
-    {method:'GET',path:'/api/v1/reports/tree/edition',handler({request,response,url}) {
-      parseContract(TreeNodeQuerySchema,{id:url.searchParams.get('id')});
-      sendReportBuffer(slots, request, response, '', 'path=edition');
+    {method:'GET',path:'/api/v1/reports/tree/edition',handler({request,response,url,identity}) {
+      const {id}=parseContract(TreeNodeQuerySchema,{id:url.searchParams.get('id')});
+      const workspace=identity?.device?.workspaceId || 'local';
+      logReportSlotMiss('path=edition');
+      return sendOffthreadJson(offthread, request, response, { kind: 'tree-edition', workspace, id }, { 'Cache-Control': 'no-store' });
     }},
     {method:'GET',path:'/api/v1/reports/tree/node',handler({response,services,url,identity}) {
       const {id}=parseContract(TreeNodeQuerySchema,{id:url.searchParams.get('id')});
@@ -59,15 +68,17 @@ export function createReportRoutes({ slots = createPreparedSlotStore() } = {}) {
       const {id}=parseContract(TreeNodeQuerySchema,{id:url.searchParams.get('id')});
       const children=services.informationTree.children(identity?.device?.workspaceId || 'local',id);json(response,children ? 200 : 404,{ok:Boolean(children),children});
     }},
-    {method:'GET',path:'/api/v1/reports/reading-hour',handler({request,response,services,url}) {
+    {method:'GET',path:'/api/v1/reports/reading-hour',handler({request,response,services,url,identity}) {
       if(!services.readingHour) return json(response,404,{ok:false});
       const startAt=Number(url.searchParams.get('startAt'));
       const endAt=Number(url.searchParams.get('endAt'));
       const scope=url.searchParams.get('scope') || 'hour';
       if(!Number.isFinite(startAt) || !Number.isFinite(endAt)) return json(response,400,{ok:false});
-      sendReportBuffer(slots, request, response, '', `path=reading-hour scope=${scope}`);
+      const workspace=identity?.device?.workspaceId || 'local';
+      logReportSlotMiss(`path=reading-hour scope=${scope}`);
+      return sendOffthreadJson(offthread, request, response, { kind: 'reading-hour', workspace, startAt, endAt, scope }, { 'Cache-Control': 'no-store' });
     }},
-    {method:'GET',path:'/api/v1/reports/reading-hour/index',handler({request,response,services,url}) {
+    {method:'GET',path:'/api/v1/reports/reading-hour/index',handler({request,response,services,url,identity}) {
       if(!services.readingHour) return json(response,404,{ok:false});
       const startRaw=url.searchParams.get('startAt');
       const endRaw=url.searchParams.get('endAt');
@@ -77,7 +88,19 @@ export function createReportRoutes({ slots = createPreparedSlotStore() } = {}) {
         scope:url.searchParams.get('scope') || 'hour',
       });
       const key=reportReadingIndexSlot(input);
-      sendReportBuffer(slots, request, response, key, `path=reading-index scope=${input.scope} start=${input.startAt} end=${input.endAt}`);
+      if (key) {
+        sendReportBuffer(slots, request, response, key, '');
+        return;
+      }
+      const workspace=identity?.device?.workspaceId || 'local';
+      logReportSlotMiss(`path=reading-index scope=${input.scope} start=${input.startAt} end=${input.endAt}`);
+      return sendOffthreadJson(offthread, request, response, {
+        kind: 'reading-index',
+        workspace,
+        startAt: input.startAt,
+        endAt: input.endAt,
+        scope: input.scope,
+      }, { 'Cache-Control': 'no-store' });
     }},
     {method:'GET',path:'/api/v1/reports/reading-hour/snapshot',handler({response,services,url,identity}) {
       if(!services.readingHour) return json(response,404,{ok:false});

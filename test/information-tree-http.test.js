@@ -34,6 +34,10 @@ test('reading manifest serves a prepared gzip buffer and does not list on a miss
   assert.throws(()=>route.handler({response,url:new URL('http://localhost/api/v1/reports/tree?startAt=1&endAt=3600001&view=index&information=2')}));
   let missed;
   const missResponse={writeHead(_status,value){missed=value;},end(value){body=value;}};
-  await route.handler({request:{headers:{}},response:missResponse,services,url:new URL('http://localhost/api/v1/reports/tree?startAt=1&endAt=3600001&view=index&information=1')});
-  assert.equal(listed,0);assert.equal(missed['Cache-Control'],'no-store');assert.equal(JSON.parse(Buffer.from(body).toString('utf8')).pending,true);
+  const offthread={async build(){const payload={ok:true,hours:[{edition:{id:'edition:older'},attempt:null}],days:[],information:[{id:'node:older'}]};const raw=Buffer.from(JSON.stringify(payload));return {status:200,prepared:{json:raw,gzipped:null,etag:'W/"older"',bytes:raw.length}};}};
+  const missRoute=createReportRoutes({slots,offthread}).find(r=>r.path==='/api/v1/reports/tree');
+  await missRoute.handler({request:{headers:{}},response:missResponse,services,url:new URL('http://localhost/api/v1/reports/tree?startAt=1&endAt=3600001&view=index&information=1')});
+  assert.equal(listed,0);assert.equal(missed['Cache-Control'],'no-store');
+  const older=JSON.parse(Buffer.from(body).toString('utf8'));
+  assert.equal(older.pending,undefined);assert.equal(older.hours[0].edition.id,'edition:older');assert.equal(older.information[0].id,'node:older');
 });

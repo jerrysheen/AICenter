@@ -14,17 +14,17 @@
 
 ## 请求路径
 
-X 的关注和推荐：首页、已读头落到 12 条槽位；收藏且没有游标的第一页落到 50 条槽位。`limit` 不是 12 时，首页和已读头仍用 12 条那份。真实游标返回 `{"ok":true,"pending":true}`，不调用 `getExternalFeed`。`refresh=1` 仍查询，标签只包住调用返回前的同步段。对不上槽位的 X / 雪球请求各记一次 `[web] feed-slot-miss provider=… feed=… limit=… saved=… refresh=… before=… fields=…`。雪球的翻页、收藏和刷新仍查询。
+X 的关注和推荐：首页、已读头落到 12 条槽位；收藏且没有游标的第一页落到 50 条槽位。`limit` 不是 12 时，首页和已读头仍用 12 条那份。这些槽还没有第一份 Worker 快照时才返回 `{"ok":true,"pending":true}`。真实游标、以及雪球的翻页和收藏，记一次 `[web] feed-slot-miss provider=… feed=… limit=… saved=… refresh=… before=… fields=…`，然后在 Web 的 `worker_threads` 里读库、`JSON.stringify`、gzip。请求等待这块缓冲区，再 `res.end`。成功结果在内存里留 15 秒。`refresh=1` 仍在请求里抓取，标签只包住调用返回前的同步段。
 
 快讯槽位是 `feed-list-flash`，Worker 用界面请求的 `limit=80` 写入 `{ok:true,items}`。任何合法 `limit` 都写出这份缓冲区；不是 80 时记一次未命中键。请求里不调用 `listFlash`，不序列化。
 
 TrendForce 槽位是 `feed-list-trendforce`。弱 ETag 是缓冲区的 SHA1，不再对列表做 `JSON.stringify`。`refresh=1` 只排队原有采集任务，返回当前缓冲区，响应头带 `X-Job-Id`。
 
-报价四个分类各有一份缓冲区，和总表一起由同一次 `list` 在 Worker 里拆开。`snapshotId` 返回 `pending: true`，不读列表、不序列化。系列明细仍是小响应。
+报价四个分类各有一份缓冲区，和总表一起由同一次 `list` 在 Worker 里拆开。还没有缓冲区时 `pending: true`。`snapshotId` 在同一条工作线程里按快照过滤并序列化。系列明细仍是小响应。
 
-简报：Worker 每分钟写入当前七日 `view=index`、七日 `information=1`、首页 48 小时 `view=index`，以及同样两段的小时阅读索引。Web 只写出缓冲区，`Cache-Control` 仍是 `no-store`。刊期、单小时阅读和其他窗口返回 `pending: true`。`pending` 的刊期响应不会被标成 `immutable`。
+简报：Worker 每分钟写入当前七日 `view=index`、七日 `information=1`、首页 48 小时 `view=index`，以及同样两段的小时阅读索引。Web 只写出缓冲区，`Cache-Control` 仍是 `no-store`。还没有第一份时这些槽是 `pending`，并且不会被标成 `immutable`。刊期、单小时阅读和其他窗口走工作线程：有内容就返回，未知刊期或没有快照的小时是 404。
 
-未命中的简报键记 `[web] report-slot-miss …`。焦点收藏翻过第一页之后是 `pending`，循环会停，这一轮先看到第一页的 50 条。
+未命中的简报键记 `[web] report-slot-miss …`。焦点收藏翻过第一页之后由工作线程返回下一页，不再停在 `pending`。浏览器若仍收到 `pending`，从 250ms 起退避重试，最多约 10 秒，并且不把这份响应写入请求缓存或页面缓存。
 
 ## events.flush
 
@@ -36,10 +36,11 @@ migration 66 给 `outbox_events` 加 `sse_data`。插入时如果当时的 JSON 
 
 这台机器串 8 万字节大约 1–2ms，对不上线上的 910 / 1056 / 673ms。本机测到的是槽位写出和线程装入：
 
-- 槽位写出：雪球首页 0.77ms，X 推荐 0.13ms，快讯 0.09ms，报价列表 0.49ms。同一次里 hit 5、pending 4，服务调用 0。
-- 8 万字节快照在工作线程里压到 148 字节 gzip，装入 53ms，写出 0.17ms。
+- 槽位写出：雪球首页 0.77ms，X 推荐 0.13ms，快讯 0.08ms，报价列表 0.46ms。同一次里 hit 5、pending 2，服务调用 0。pending 只剩还没写入的预备槽。
+- 8 万字节快照在工作线程里压到 148 字节 gzip，装入 52ms，写出 0.08ms。
+- 工作线程在 `listen` 时已经打开数据库。之后 X 第二页 10.81ms、返回 8 条；更早一小时的阅读 3.2ms；该小时刊期 3.04ms；`snapshotId` 报价 6.65ms。查询、序列化和 gzip 都在这条线程里，请求线程只 `res.end`。
 - 一条小事件加一条 2 万字节事件的推送没有调用 `listEvents`，也没有 `substr(payload_json)`。
 
 ## 重启
 
-需要同时重启 Web 和 Worker。浏览器再加载一次。migration 66 只加 `sse_data`，不回填，不要重建数据库。
+需要同时重启 Web 和 Worker。浏览器再加载一次。工作线程在 Web 进程里，快照仍由 Worker 进程写入。migration 66 只加 `sse_data`，不回填，不要重建数据库。不新增 migration。

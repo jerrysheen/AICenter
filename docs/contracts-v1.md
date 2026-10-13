@@ -6,7 +6,7 @@
 
 `GET /api/v1/home/bootstrap` 只带总览首屏：最近 8 个小时的窗口、其中能填满首屏的小时命中（最新一小时最多 5 条，其余最多 2 条）、去掉走势线的行情总览、日报的日期和最多 5 句、官方发布最多 8 条。手工、X 和雪球不放在这份里，页面随后再拉。Web 只写出 Worker 已经写入的缓冲区；请求里不组包、不 `JSON.stringify`、不 gzip。还没有这份缓冲区时返回 `{"ok":true,"pending":true}`。`refresh=1` 仍返回当前缓冲区，不在这次请求里重读。响应带弱 ETag，`If-None-Match` 命中为 304。简报去掉 `providerId` 和 `modelId`。该路径不在 Bearer 只读名单中。
 
-简报读取使用`TreeManifestQuerySchema`校验七日窗口。不带`view`仍是完整响应；`view=reading`保持上一版的信息身份投影加完整刊期，供旧客户端使用一个版本。`view=index`是简报首屏目录：刊期只有编号、层级、窗口、状态、生成时间、根模块数量和是否已有研究稿，默认不含信息节点；`information=1`才附带信息节点的身份、时间与校验版本。`TreeIndexEditionSchema`和`TreeIndexInformationSchema`逐行校验这份目录，不接受正文、`inputIds`、`pendingIds`或`roots`。不合规的旧行被丢掉并记一条警告，不让整份目录失败。`/reports/tree/edition`使用`TreeNodeQuerySchema`校验不可变刊期ID，返回该刊期与全部根模块，未知或跨workspace版本404，不触发生成。目录列写在 migration 60。当前七日和首页 48 小时的 `view=index`（含 `information=1`）以及同样两段的小时阅读索引，只写出 Worker 每分钟写入的缓冲区，响应仍是 `Cache-Control: no-store`。刊期、单小时阅读和其他窗口返回 `{"ok":true,"pending":true}`，请求里不查询、不 `JSON.stringify`。读取与客户端缓存边界见`information-tree-v3.md`。
+简报读取使用`TreeManifestQuerySchema`校验七日窗口。不带`view`仍是完整响应；`view=reading`保持上一版的信息身份投影加完整刊期，供旧客户端使用一个版本。`view=index`是简报首屏目录：刊期只有编号、层级、窗口、状态、生成时间、根模块数量和是否已有研究稿，默认不含信息节点；`information=1`才附带信息节点的身份、时间与校验版本。`TreeIndexEditionSchema`和`TreeIndexInformationSchema`逐行校验这份目录，不接受正文、`inputIds`、`pendingIds`或`roots`。不合规的旧行被丢掉并记一条警告，不让整份目录失败。`/reports/tree/edition`使用`TreeNodeQuerySchema`校验不可变刊期ID，返回该刊期与全部根模块，未知或跨workspace版本404，不触发生成。目录列写在 migration 60。当前七日和首页 48 小时的 `view=index`（含 `information=1`）以及同样两段的小时阅读索引，只写出 Worker 每分钟写入的缓冲区，响应仍是 `Cache-Control: no-store`。还没有这份缓冲区时返回 `{"ok":true,"pending":true}`。刊期、单小时阅读和其他窗口在 Web 的 `worker_threads` 里查询、`JSON.stringify` 和 gzip，请求等待缓冲区后写出；未知刊期和没有快照的小时是 404。读取与客户端缓存边界见`information-tree-v3.md`。
 
 三层浓缩树见`information-tree-v3.md`和`packages/contracts/src/information-tree.js`：统一协议在Contract的treeResponseProtocol定义，模型完成返回单篇title/text/tagId或模块及inputIds，缺内容只返回status:needs_content。宿主先识别状态，再校验完成响应；无害额外字段丢弃并记录，非法归属仍拒绝。宿主生成不可变节点ID、版本、children和去重文章篇数；小时只连信息、日报只连小时，同一期每个可用输入恰好一个父模块。主Tag以人工锁定或信息主旨为准，旧多标签仅提示；版本化阅读映射只改变上层分组。待补保存原因、可重试性和冷却时间；发布与最近尝试分开，页面不暴露供应商字段。
 
@@ -14,7 +14,7 @@
 
 模型用量见 `model-usage-v1.md`：`ModelUsageRecord` 严格校验 Runtime 内部索引，区分 request 与官方 turn 汇总；所有缺失桶/供应商金额用 null。`ModelUsageView` 移除供应商路由与私有日志格式/路径，返回中立执行身份、业务阶段和独立版本费率估算。`ModelUsageQuery` 校验按 Job 分页，本机读取不得执行模型调用、导入或修复任务。
 
-硬件报价以独立结构化 Contract 保存完整规格、类型、Decimal 数值、币种/单位/报价期、来源更新时间与采集时间；未知字段为 null。列表里的 `rawCells` 为空，原单元格仍在系列明细。不带 `snapshotId` 的列表，以及 `category` 为 `dram`、`nand`、`ssd`、`other-storage` 的列表，只写出 Worker 快照里的缓冲区；还没有快照时返回 `{"ok":true,"pending":true}`。带 `snapshotId` 的列表也返回 `pending: true`，请求里不读取、不序列化。系列明细仍按键读取。报告简介是内容种类，summary_only 是完整度，两者独立。报价高低不表示股票 OHLC。兼容与去重规则见 `hardware-prices-v1.md`。
+硬件报价以独立结构化 Contract 保存完整规格、类型、Decimal 数值、币种/单位/报价期、来源更新时间与采集时间；未知字段为 null。列表里的 `rawCells` 为空，原单元格仍在系列明细。不带 `snapshotId` 的列表，以及 `category` 为 `dram`、`nand`、`ssd`、`other-storage` 的列表，只写出 Worker 快照里的缓冲区；还没有快照时返回 `{"ok":true,"pending":true}`。带 `snapshotId` 的列表在 Web 的 `worker_threads` 里读取、序列化并 gzip，请求等待后写出。系列明细仍按键读取。报告简介是内容种类，summary_only 是完整度，两者独立。报价高低不表示股票 OHLC。兼容与去重规则见 `hardware-prices-v1.md`。
 
 硬件行情行的 `history` 是真实报价期的最新修订均价序列（`at / period / average`），不包含同期旧修订或无日期记录。当前列表只读每个来源页面最新的价表及相应序列当前值；历史解析版本、退下来的规格与旧文本快照通过精确快照／序列链接保留，不在当前行情重复混排。前端在全球行情内呈现统一的行情行与价格折线，仍与证券 OHLC 契约分开。
 

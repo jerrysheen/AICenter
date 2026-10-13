@@ -39,6 +39,7 @@ import { createAccessLog } from './http/access-log.js';
 import { createStaticFileHandler } from './http/static-files.js';
 import { createPreparedSlotStore } from './http/prepared-slots.js';
 import { startSnapshotBufferLoader } from './http/snapshot-buffer-loader.js';
+import { startOffthreadJson } from './http/offthread-json.js';
 import { createApiRoutes } from './routes/index.js';
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -330,7 +331,11 @@ export function createAiCenterServer(options = {}) {
     getUiRevision: () => serveStatic.getUiRevision(),
   });
   const preparedSlots = createPreparedSlotStore();
-  const router = createRouter(createApiRoutes({ slots: preparedSlots }));
+  const offthread = startOffthreadJson({
+    databasePath: instance.databasePath,
+    pipeline: env.AI_CENTER_INFORMATION_PIPELINE === 'tree-v3' ? 'tree-v3' : 'legacy',
+  });
+  const router = createRouter(createApiRoutes({ slots: preparedSlots, offthread }));
   const { cookieName, secureCookieName } = createInstanceCookieNames(instance);
   const cookies = createCookieAdapter(cookieName, secureCookieName);
   const appInfo = Object.freeze({ version, serverName: systemHostname() });
@@ -564,7 +569,7 @@ export function createAiCenterServer(options = {}) {
         slots: preparedSlots,
         keys: prebuiltSnapshotSlots(),
       });
-      await snapshotLoader.refresh();
+      await Promise.all([snapshotLoader.refresh(), offthread.ready()]);
       eventTimer = setInterval(() => {
         events.flush();
       }, 250);
@@ -583,6 +588,7 @@ export function createAiCenterServer(options = {}) {
     async close() {
       if (eventTimer) clearInterval(eventTimer);
       await snapshotLoader?.stop();
+      await offthread.stop();
       eventLoopMonitor.stop();
       eventLoopProbe.stop();
       events.closeAll();

@@ -78,14 +78,23 @@ test('home and 7x24 resolve to a snapshot slot even when the limit is not 12', (
 test('xueqiu home and hardware list respond from the slot without calling the service', async () => {
   let feedCalls = 0;
   let priceCalls = 0;
+  const offthread = {
+    async build(task) {
+      const payload = task.kind === 'feed'
+        ? { ok: true, feed: { items: [{ id: 'page-2' }] } }
+        : { ok: true, items: [{ id: 'quoted' }], snapshot: { id: task.query.snapshotId }, pages: [] };
+      const body = Buffer.from(JSON.stringify(payload));
+      return { status: 200, prepared: { json: body, gzipped: null, etag: 'W/"miss"', bytes: body.length } };
+    },
+  };
   const slots = createPreparedSlotStore();
   const feedBody = '{"ok":true,"feed":{"items":[{"id":"xq-1"}]}}';
   const priceBody = '{"ok":true,"items":[{"id":"dram","rawCells":[]}]}';
   slots.publish('feed-list-xueqiu', packPreparedJson(feedBody, { generatedAt: 10 }));
   slots.publish('hardware-prices', packPreparedJson(priceBody, { generatedAt: 11 }));
   const router = createRouter([
-    ...createFeedRoutes({ slots }),
-    ...createHardwarePriceRoutes({ slots }),
+    ...createFeedRoutes({ slots, offthread }),
+    ...createHardwarePriceRoutes({ slots, offthread }),
   ]);
   const services = {
     feed: { async getExternalFeed() { feedCalls += 1; return { items: [] }; } },
@@ -166,7 +175,9 @@ test('xueqiu home and hardware list respond from the slot without calling the se
       params: { values: ['x'] },
       feedQueryParsers: xParsers,
     });
-    assert.equal(JSON.parse(cursor.body).pending, true);
+    const cursorBody = JSON.parse(cursor.body);
+    assert.equal(cursorBody.pending, undefined);
+    assert.equal(cursorBody.feed.items[0].id, 'page-2');
     assert.equal(feedCalls, 0);
     assert.ok(missed.some((line) => line.includes('[web] feed-slot-miss') && line.includes('before=cursor')));
   } finally {
@@ -207,7 +218,9 @@ test('xueqiu home and hardware list respond from the slot without calling the se
     url: new URL('http://local/api/v1/hardware-prices?snapshotId=11111111-1111-4111-8111-111111111111'),
     params: { values: [] },
   });
-  assert.equal(JSON.parse(snapshotQuote.body).pending, true);
+  const quoted = JSON.parse(snapshotQuote.body);
+  assert.equal(quoted.pending, undefined);
+  assert.equal(quoted.items[0].id, 'quoted');
   assert.equal(priceCalls, 0);
   let trendJobs = 0;
   const trend = mockResponse();

@@ -2,6 +2,7 @@ import { parseBilibiliImportInput, parseFlashFeedQuery, parseHideFlag, parsePatc
 import { json, readJson } from '../http/response.js';
 import { labelEventLoop } from '../http/event-loop-blocks.js';
 import { createPreparedSlotStore } from '../http/prepared-slots.js';
+import { sendOffthreadJson } from '../http/offthread-json.js';
 import { STORED_FEED_CACHE_PROVIDERS } from '../http/stale-read-cache.js';
 import { FEED_FLASH_LIMIT, FEED_FLASH_SNAPSHOT_KEY, FEED_TRENDFORCE_SNAPSHOT_KEY, feedPrebuiltSlot, logFeedSlotMiss } from '../../../../packages/runtime/src/web-snapshot-jobs.js';
 
@@ -9,7 +10,7 @@ function workspaceIdFrom(identity) {
   return identity?.device?.workspaceId || 'local';
 }
 
-export function createFeedRoutes({ slots = createPreparedSlotStore() } = {}) {
+export function createFeedRoutes({ slots = createPreparedSlotStore(), offthread = null } = {}) {
   return [
     { method: 'GET', path: /^\/api\/v1\/translate\/jobs\/([0-9a-f-]+)$/i,
       handler({ response, services, identity, params }) {
@@ -198,14 +199,17 @@ export function createFeedRoutes({ slots = createPreparedSlotStore() } = {}) {
             });
             return;
           }
-          if (providerId === 'x' || providerId === 'xueqiu') logFeedSlotMiss(providerId, query);
-          if (providerId === 'x' && !query.refresh) {
-            slots.send(request, response, 'feed-slot-miss', {
-              headers: { 'Cache-Control': 'private, no-cache' },
-              allow304: false,
-            });
+          if ((providerId === 'x' || providerId === 'xueqiu') && !query.refresh) {
+            logFeedSlotMiss(providerId, query);
+            await sendOffthreadJson(offthread, request, response, {
+              kind: 'feed',
+              workspace: workspaceId,
+              providerId,
+              query,
+            }, { 'Cache-Control': 'private, no-cache' });
             return;
           }
+          if (providerId === 'x' || providerId === 'xueqiu') logFeedSlotMiss(providerId, query);
           const leave = labelEventLoop(`feed.${providerId}`);
           let pending;
           try {
