@@ -8,6 +8,7 @@ import os from 'node:os';
 import { createStore } from '../packages/database/src/index.js';
 import { createHarnessUsageObserver } from '../packages/harness/src/model-usage-observer.js';
 import { createHarnessAgentRuntime } from '../packages/harness/src/harness-agent-runtime.js';
+import { createGeminiArticleAdmission } from '../packages/runtime/src/gemini-article-admission.js';
 import { createToolRegistry } from '../packages/runtime/src/tool-registry.js';
 import { withModelUsageContext } from '../packages/runtime/src/model-usage-context.js';
 import { createUsageFetch } from '../packages/connectors/src/model-usage-fetch.js';
@@ -240,6 +241,134 @@ test('model usage keeps the HTTP status that distinguishes 429 from 503', async 
   ]);
   open.noteHttpStatus('other', 429);
   assert.equal([...observed.values()].find(row => row.harnessSessionId === 'other').httpStatus, 429);
+  observer.noteHttpStatus('session', 200);
+  assert.equal(observed.get(failed.id).httpStatus, 503);
+
+  const succeeded = new Map();
+  const success = createHarnessUsageObserver({ record: row => succeeded.set(row.id, structuredClone(row)) });
+  success.events('ok', [
+    { type: 'turn/start', seq: 0, time: 0, data: { turn: 1 } },
+    { type: 'step/start', seq: 1, time: 1, data: { turn: 1, step: 1 } },
+    { type: 'assistant/message', seq: 2, time: 2, data: { turn: 1, step: 1, usage: { inputTokens: 2, outputTokens: 1, totalTokens: 3 }, stream: [], message: { source: { provider: 'google', model: 'gemini-3.1-flash-lite' } } } },
+    { type: 'step/end', seq: 3, time: 3, data: { turn: 1, step: 1 } },
+    { type: 'turn/end', seq: 4, time: 4, data: { turn: 1, reason: { kind: 'completed' } } },
+  ]);
+  const ok = [...succeeded.values()].find(row => row.kind === 'request');
+  assert.equal(ok.status, 'succeeded');
+  assert.equal(ok.httpStatus, 200);
+  success.events('ok', []);
+  assert.equal(succeeded.get(ok.id).httpStatus, 200);
+
+  const timed = new Map();
+  const timeout = createHarnessUsageObserver({ record: row => timed.set(row.id, structuredClone(row)) });
+  timeout.events('timeout', [
+    { type: 'turn/start', seq: 0, time: 0, data: { turn: 1 } },
+    { type: 'step/start', seq: 1, time: 1, data: { turn: 1, step: 1 } },
+    { type: 'turn/end', seq: 2, time: 2, data: { turn: 1, reason: { kind: 'aborted', reason: { name: 'ModelExecutionTimeout', message: '模型执行超时，已停止本轮调用' } } } },
+  ]);
+  const timedOut = [...timed.values()].find(row => row.kind === 'request');
+  assert.equal(timedOut.status, 'interrupted');
+  assert.equal(timedOut.httpStatus, 408);
+  timeout.events('timeout', []);
+  assert.equal(timed.get(timedOut.id).httpStatus, 408);
+
+  const pending = new Map();
+  const openSuccess = createHarnessUsageObserver({ record: row => pending.set(row.id, structuredClone(row)) });
+  openSuccess.events('pending-ok', [
+    { type: 'turn/start', seq: 0, time: 0, data: { turn: 1 } },
+    { type: 'step/start', seq: 1, time: 1, data: { turn: 1, step: 1 } },
+  ]);
+  openSuccess.noteHttpStatus('pending-ok', 200);
+  assert.equal([...pending.values()].find(row => row.kind === 'request').httpStatus, 200);
+  openSuccess.events('pending-ok', []);
+  assert.equal([...pending.values()].find(row => row.kind === 'request').httpStatus, 200);
+
+  const fetched = [];
+  const recordFetch = row => fetched.push(structuredClone(row));
+  await createUsageFetch(async () => Response.json({ usageMetadata: { promptTokenCount: 3, candidatesTokenCount: 1, totalTokenCount: 4 } }), {
+    provider: 'gemini', model: 'gemma-4-26b-a4b-it', observer: recordFetch,
+  })('https://example.test/generate', {});
+  assert.equal(fetched.at(-1).status, 'succeeded');
+  assert.equal(fetched.at(-1).httpStatus, 200);
+  const abort = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+  await assert.rejects(createUsageFetch(async () => { throw abort; }, {
+    provider: 'gemini', model: 'gemma-4-31b-it', observer: recordFetch,
+  })('https://example.test/generate', {}));
+  assert.equal(fetched.at(-1).status, 'interrupted');
+  assert.equal(fetched.at(-1).httpStatus, 408);
+  const streamError = Object.assign(new Error('Gemma 流内错误'), { code: 'gemma-stream-error', upstreamStatus: 500 });
+  await assert.rejects(createUsageFetch(async () => { throw streamError; }, {
+    provider: 'gemini', model: 'gemma-4-31b-it', observer: recordFetch,
+  })('https://example.test/generate', {}));
+  assert.equal(fetched.at(-1).httpStatus, 500);
+});
+
+test('successful tree-hourly and reading-classification calls store a non-null HTTP status', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'aicenter-usage-tree-'));
+  const file = path.join(directory, 'usage.db');
+  const store = createStore(file);
+  let at = Date.now();
+  const env = {
+    GEMINI_API_KEY: 'fake', AI_CENTER_GEMINI_KEY_ENVS: 'GEMINI_API_KEY',
+    AI_CENTER_HARNESS_HOURLY_PROVIDER: 'google', AI_CENTER_GEMINI_ARTICLE_MIN_INTERVAL_MS: '1',
+  };
+  const admission = createGeminiArticleAdmission({ repository: store.repositories.modelQuota, env, models: [], allowFallback: false, now: () => at });
+  const scripted = [];
+  const runtime = createHarnessAgentRuntime({
+    tools: createToolRegistry(), runtimeDirectory: directory, env, hourlyAdmission: admission,
+    usageLedger: { record: row => store.repositories.modelUsage.save(row) },
+    createClient: async () => ({ close: async () => {}, run: async (_prompt, options) => scripted.shift()(options) }),
+  });
+  const notify = async (options, events) => {
+    for (const event of events) await options.onNotification({ method: 'session.event', params: { sessionId: options.sessionId, event } });
+  };
+  const succeed = async (options) => {
+    const events = usageFixture();
+    await notify(options, events);
+    return { sessionId: options.sessionId, events, finalResponse: '{"modules":[]}' };
+  };
+  const fail = (status) => async (options) => {
+    const events = [
+      { type: 'turn/start', seq: 0, time: 0, data: { turn: 1 } },
+      { type: 'step/start', seq: 1, time: 1, data: { turn: 1, step: 1 } },
+      { type: 'assistant/attempt', seq: 2, time: 2, data: { turn: 1, step: 1, stream: [] } },
+      { type: 'turn/end', seq: 3, time: 3, data: { turn: 1, reason: { kind: 'error', error: { status, message: status === 429 ? '429 RESOURCE_EXHAUSTED' : 'unavailable' } } } },
+    ];
+    await notify(options, events);
+    return { sessionId: options.sessionId, events, finalResponse: '' };
+  };
+  try {
+    for (const stage of ['tree-hourly', 'reading-classification']) {
+      scripted.push(succeed);
+      await runtime.run({ workspaceId: 'local', message: 'saved summaries', closedContext: true, closedTask: 'hourly-brief', usageStage: stage });
+      at += 1000;
+    }
+    for (const status of [429, 503]) {
+      scripted.push(fail(status));
+      await assert.rejects(runtime.run({ workspaceId: 'local', message: 'saved summaries', closedContext: true, closedTask: 'hourly-brief', usageStage: 'tree-hourly' }), status === 429 ? /429/ : /unavailable/);
+      at += 120000;
+    }
+    scripted.push(async (options) => {
+      await notify(options, [
+        { type: 'turn/start', seq: 0, time: 0, data: { turn: 1 } },
+        { type: 'step/start', seq: 1, time: 1, data: { turn: 1, step: 1 } },
+      ]);
+      throw Object.assign(new Error('模型执行超时，已停止本轮调用'), { name: 'ModelExecutionTimeout' });
+    });
+    await assert.rejects(runtime.run({ workspaceId: 'local', message: 'saved summaries', closedContext: true, closedTask: 'hourly-brief', usageStage: 'reading-classification' }), /模型执行超时/);
+    const database = new Database(file);
+    const rows = database.prepare(`SELECT json_extract(record_json,'$.stage') AS stage, json_extract(record_json,'$.kind') AS kind, json_extract(record_json,'$.status') AS outcome, http_status AS httpStatus FROM model_usage_index ORDER BY occurred_at, id`).all();
+    database.close();
+    const requests = rows.filter(row => row.kind === 'request');
+    assert.ok(requests.length >= 5);
+    assert.ok(requests.filter(row => row.outcome === 'succeeded').every(row => row.httpStatus === 200));
+    assert.ok(requests.some(row => row.stage === 'tree-hourly' && row.outcome === 'succeeded' && row.httpStatus === 200));
+    assert.ok(requests.some(row => row.stage === 'reading-classification' && row.outcome === 'succeeded' && row.httpStatus === 200));
+    assert.ok(requests.some(row => row.httpStatus === 429));
+    assert.ok(requests.some(row => row.httpStatus === 503));
+    assert.ok(requests.some(row => row.stage === 'reading-classification' && row.httpStatus === 408));
+    assert.ok(rows.filter(row => row.kind === 'turn' && row.outcome === 'succeeded').every(row => row.httpStatus === 200));
+  } finally { await runtime.close(); store.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('explicit versioned rates estimate separately; absent buckets or rates never become free', () => {

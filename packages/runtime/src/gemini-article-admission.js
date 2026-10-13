@@ -222,7 +222,7 @@ async function executeProbe({repository,usage,now,memory,target,generate,env,log
     status=Number.isInteger(result?.status)?result.status:(result?.ok===false?0:200);
     ok=result?.ok!==false && status>=200 && status<300;
   }catch(error){
-    status=Number.isInteger(error?.status)?error.status:0;
+    status=Number.isInteger(error?.status)?error.status:(error?.name==='TimeoutError'?408:0);
     ok=false;
   }
   let lifted=false;

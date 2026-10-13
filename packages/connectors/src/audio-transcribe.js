@@ -1,3 +1,5 @@
+import { createUsageFetch } from './model-usage-fetch.js';
+
 const MODEL = 'gemini-3.5-transcribe';
 const API_ROOT = 'https://generativelanguage.googleapis.com';
 
@@ -74,7 +76,7 @@ export function createGeminiAudioTranscriber({ fetch: fetchImpl = fetch, sleep =
         state = body.state || body.file?.state || 'ACTIVE';
       }
       if (state !== 'ACTIVE') throw new Error('音频文件尚未就绪');
-      const response = await fetchImpl(`${API_ROOT}/v1beta/models/${MODEL}:generateContent`, {
+      const response = await createUsageFetch(fetchImpl, { provider: 'gemini', model: MODEL, stage: 'audio-transcribe' })(`${API_ROOT}/v1beta/models/${MODEL}:generateContent`, {
         method: 'POST',
         headers: { 'x-goog-api-key': secret, 'Content-Type': 'application/json' },
         body: JSON.stringify({

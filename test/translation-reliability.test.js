@@ -187,6 +187,11 @@ test('Gemma upstream failure logs status and body without the API key', async ()
     await assert.rejects(router.generate({ system: '翻译', prompt: 'One original sentence.' }), /500/);
     const logged = lines.find((line) => line.includes('Gemma 翻译上游失败'));
     assert.match(logged, /status=500/);
+    assert.match(logged, /model=gemma-4-26b-a4b-it/);
+    assert.match(logged, /key=KEY /);
+    assert.match(logged, /inputBytes=\d+/);
+    assert.match(logged, /latencyMs=\d+/);
+    assert.match(logged, /concurrency=1/);
     assert.match(logged, /INTERNAL/);
     assert.doesNotMatch(logged, /AIzaSySECRET/);
   } finally {

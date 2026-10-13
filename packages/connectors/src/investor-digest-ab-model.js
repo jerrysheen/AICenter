@@ -1,3 +1,4 @@
+import { createUsageFetch } from './model-usage-fetch.js';
 import { parseGeminiGenerateContent } from './gemini-grok-task.js';
 import { readGemmaStream, resolveGemmaTranslationSlots } from './translate/gemma.js';
 
@@ -62,7 +63,7 @@ export function createInvestorAbModel(options = {}) {
     ? { apiKey: text(options.apiKey) }
     : resolveInvestorAbApiKey(env, model);
   const apiRoot = (text(options.apiRoot) || text(env.AI_CENTER_GEMINI_API_ROOT) || DEFAULT_ROOT).replace(/\/$/, '');
-  const fetchImpl = options.fetch || fetch;
+  const fetchImpl = createUsageFetch(options.fetch || fetch, { provider: 'gemini', model, stage: 'investor-ab' });
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   if (!apiKey) throw new Error('未配置模型密钥');
 
