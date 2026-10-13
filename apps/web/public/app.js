@@ -1692,7 +1692,8 @@ let mediaHeadMerge = false;
 
 function mergeLoadedFeedItem(prior, item) {
   if (!prior) return item;
-  if (prior.detail !== 'full') return { ...prior, ...item, body: prior.body || item.body || '' };
+  const isRead = Boolean(prior.isRead || item.isRead);
+  if (prior.detail !== 'full') return { ...prior, ...item, body: prior.body || item.body || '', isRead };
   return {
     ...prior,
     ...item,
@@ -1703,6 +1704,7 @@ function mergeLoadedFeedItem(prior, item) {
     normalizedArticle: prior.normalizedArticle?.body ? prior.normalizedArticle : (item.normalizedArticle || prior.normalizedArticle),
     summary: prior.summary || item.summary || '',
     detail: 'full',
+    isRead,
   };
 }
 
@@ -2332,11 +2334,15 @@ function markFeedItemRead(post) {
     persistFocusItems();
   }
   const contentItemId = post.contentItemId || (post.resourceType === 'content-item' ? post.resourceId : '');
-  if (!contentItemId || !state.session) return;
-  api(`/api/v1/content-items/${contentItemId}/state`, {
-    method: 'PATCH',
-    body: JSON.stringify({ isRead: true }),
-  }).catch(() => {});
+  if (contentItemId && state.session) {
+    api(`/api/v1/content-items/${contentItemId}/state`, {
+      method: 'PATCH',
+      body: JSON.stringify({ isRead: true }),
+    }).catch(() => {});
+  }
+  if ((post.platform === 'x' || post.platform === 'xueqiu') && typeof renderPosts === 'function' && typeof elements !== 'undefined' && elements?.feed) {
+    renderPosts();
+  }
 }
 
 async function hideFeedItem(post) {
@@ -4394,6 +4400,7 @@ function feedToNewsRow(post) {
     muted: Boolean(post.lowValue || post.bulkNotice),
     stayInDay: Boolean(post.bulkNotice),
     focused: itemIsFocused(post),
+    isRead: Boolean(post.isRead),
     commentCount: feedCommentCount(post),
     swipe: canSwipe,
     attachOpen: (open) => attachGuardedOpen(open, () => openArticle(post)),
@@ -4436,13 +4443,24 @@ function recentFeedPaintSignature(shown, total) {
   ].join('\u001d');
 }
 
+function orderFeedRows(rows) {
+  if (state.channel !== 'social') return rows;
+  const main = [];
+  const tail = [];
+  for (const row of rows || []) {
+    if (row?.isRead) tail.push({ ...row, muted: true, stayInDay: false });
+    else main.push(row);
+  }
+  return tail.length ? [...main, ...tail] : rows;
+}
+
 function renderPosts() {
   const restoreSwipeId = document.querySelector('#feed .swipe-front.is-open')?.dataset.postId || '';
   const items = visibleFeedItems();
   if (state.feedShown > items.length) state.feedShown = Math.max(FEED_PAGE_SIZE, items.length);
   const orderedRows = state.channel === 'recent' || typeof prioritizeReadableFeedRows !== 'function'
     ? null
-    : prioritizeReadableFeedRows(items.map(feedToNewsRow));
+    : orderFeedRows(prioritizeReadableFeedRows(items.map(feedToNewsRow)));
   const shown = orderedRows ? orderedRows.slice(0, state.feedShown) : items.slice(0, state.feedShown);
   if (state.channel === 'recent' && state.feedPlatform !== 'media') {
     const signature = recentFeedPaintSignature(shown, items.length);
@@ -7980,6 +7998,7 @@ function renderArticlePage() {
     }
   }
   if ((post?.platform === 'x' || post?.platform === 'xueqiu') && !String(post.body || '').trim() && post.resourceId && !state.restoredArticles[itemId] && !restoredArticleErrors.has(itemId)) {
+    markFeedItemRead(post);
     restoreSocialArticle(itemId, post);
     renderViewState(root, { kind: 'loading', title: '正在读取文章…', message: '正在加载正文。' });
     return;

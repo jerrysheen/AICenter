@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-13-social-feed-read.md`：信息流「社媒」打开 X / 雪球即记已读并写回内容状态，已读行沉到该页签底部。其他页签排序不变。不需要重启 Web。
+
 - `progress/2026-10-12-hourly-pending-prep.md`：小时补跑会为本小时仍未准备好的来源入队信息准备，不再只重发刊期。连续准备失败记为 `prep-exhausted`，不再永远算进 pendingCount。窗口内的回扫按小时轮转，不总是补最新的两小时。需要重启 Worker。
 
 - `progress/2026-10-12-hourly-pending-sweep.md`：定时小时任务在主小时补跑之后，再为最近 6 小时里仍有未处理或分类延后、且没有排队或运行中任务的刊期最多补 2 张 `edition-pending-sweep`。更早的小时不排，补跑不连环。`[worker] tree-hourly` 的 `finishReason` 写完整枚举。需要重启 Worker。
