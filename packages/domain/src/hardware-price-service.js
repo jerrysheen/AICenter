@@ -30,7 +30,10 @@ export function createHardwarePriceService({repository,artifactStore}) {
         }
       }
       const items=rows.filter(r=>!q.category || r.category===q.category).slice(0,q.limit)
-        .map(r=>project(r,repository.recentHistory ? repository.recentHistory(workspaceId,r.seriesKey,30) : repository.history(workspaceId,r.seriesKey)));
+        .map(r=>{
+          const view=project(r,repository.recentHistory ? repository.recentHistory(workspaceId,r.seriesKey,30) : repository.history(workspaceId,r.seriesKey));
+          return {...view, rawCells: []};
+        });
       return HardwarePriceListViewSchema.parse({items,snapshot:q.snapshotId?publicSnapshot(repository.getSnapshot(workspaceId,q.snapshotId)):null,pages:repository.pageChecks?.(workspaceId) || []});
     },
     detail(workspaceId,seriesKey) {

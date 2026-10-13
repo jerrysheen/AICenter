@@ -81,7 +81,7 @@ import { createWorkPackageTracePort } from '../../../packages/runtime/src/work-p
 import { createFailureStreakStore, createSourceHub, createSourceModuleRegistry, installFailureStreakStore, readStaticSignalBoard } from '../../../packages/source/src/index.js';
 import { createMemorySnapshotCache } from '../../../packages/runtime/src/snapshot-cache.js';
 import {
-  createWebSnapshotJobHandlers, ensureFeedListSchedule, ensureHoldingsMarketSchedule, ensureMarketBoardsSchedule,
+  createWebSnapshotJobHandlers, ensureFeedListSchedule, ensureHardwarePriceSchedule, ensureHoldingsMarketSchedule, ensureMarketBoardsSchedule,
   ensureMarketNativeBoardSchedule, ensureStaticSignalBoardSchedule,
   HOLDINGS_MARKET_SNAPSHOT_KEY, webSnapshotManifest,
 } from '../../../packages/runtime/src/web-snapshot-jobs.js';
@@ -534,6 +534,8 @@ export function createAiCenterWorker(options = {}) {
       repository: store.repositories.runtimeSnapshots,
       tradingRepository: store.repositories.trading,
       feedService,
+      feedRepository: store.repositories.feed,
+      hardwarePriceService,
     }),
   });
   registry.register({
@@ -614,6 +616,7 @@ export function createAiCenterWorker(options = {}) {
     ensureMarketBoardsSchedule(store);
     ensureMarketNativeBoardSchedule(store);
     ensureFeedListSchedule(store);
+    ensureHardwarePriceSchedule(store);
     ensureInvestorDiscussionSchedule(store, env);
     ensureTrendForcePriceSchedules(store, env);
     ensureComputePriceSchedules(store, env);

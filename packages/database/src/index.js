@@ -930,6 +930,32 @@ export function createStore(databasePath) {
         .map(mapOutboxEvent);
     },
 
+    listEventFrameHeads(afterId = 0, limit = 1, workspaceId = null) {
+      const safeAfterId = Math.max(0, Number(afterId) || 0);
+      const safeLimit = Math.max(1, Math.min(Number(limit) || 1, 100));
+      const rows = workspaceId
+        ? database.prepare(`SELECT id, workspace_id, event_name, length(payload_json) AS payload_chars
+            FROM outbox_events WHERE workspace_id = ? AND id > ? ORDER BY id ASC LIMIT ?`)
+          .all(workspaceId, safeAfterId, safeLimit)
+        : database.prepare(`SELECT id, workspace_id, event_name, length(payload_json) AS payload_chars
+            FROM outbox_events WHERE id > ? ORDER BY id ASC LIMIT ?`)
+          .all(safeAfterId, safeLimit);
+      return rows.map((row) => ({
+        id: row.id,
+        workspaceId: row.workspace_id,
+        name: row.event_name,
+        payloadChars: Number(row.payload_chars) || 0,
+      }));
+    },
+
+    readEventPayloadSlice(id, offset = 0, length = 8000) {
+      const start = Math.max(0, Number(offset) || 0);
+      const size = Math.max(1, Math.min(Number(length) || 8000, 64_000));
+      const row = database.prepare(`SELECT substr(payload_json, ?, ?) AS slice FROM outbox_events WHERE id = ?`)
+        .get(start + 1, size, Number(id));
+      return row?.slice || '';
+    },
+
     listEventFrames(afterId = 0, limit = 8, workspaceId = null) {
       const safeAfterId = Math.max(0, Number(afterId) || 0);
       const safeLimit = Math.max(1, Math.min(Number(limit) || 8, 1_000));

@@ -37,6 +37,6 @@ MoneyDJ 是首页实时列表，没有正文样本，不标。雪球 7x24 公开
 
 ## 重启
 
-不新增 migration。已用到 62（`model_usage_http_status`），下一号仍是 63。不要重建数据库。
+不新增 migration。64 是 #79 的 `capture_feed_filter_columns`，下一号从 65 起。不要重建数据库。
 
 需要同时重启 Web 和 Worker。Web 提供「快讯」页签和 `GET /api/v1/feed/flash`。Worker 才停止把这些来源送进 JEV 和小时树。静态脚本仍是 `app.js`、`mock.js`、`news-list.js`，都已带 `?v=` 并在静态白名单里，没有新的公共 JS 文件。

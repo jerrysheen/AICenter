@@ -119,6 +119,30 @@ test('event frames return a replay page of stored payload text', () => {
   }
 });
 
+test('flush writes a large payload in slices instead of one string', async () => {
+  const store = createStore(':memory:');
+  const pad = 'x'.repeat(20_000);
+  const chunks = [];
+  const hub = createEventStreamHub(store);
+  await hub.open(
+    { on() {} },
+    { writeHead() {}, write(chunk) { chunks.push(String(chunk)); return true; }, end() {} },
+    { device: { workspaceId: 'local', id: 'device-1' } },
+    0,
+  );
+  store.createJob({ type: 'feed.sync', input: { pad } });
+  chunks.length = 0;
+  hub.flush();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  const body = chunks.join('');
+  assert.ok(chunks.length > 1, `expected sliced writes, got ${chunks.length}`);
+  assert.ok(chunks.every((chunk) => chunk.length <= 8_200), chunks.map((chunk) => chunk.length).join(','));
+  assert.match(body, /feed\.sync/);
+  assert.ok(body.includes(pad));
+  hub.closeAll();
+  store.close();
+});
+
 test('SSE ready carries the current ui revision', async () => {
   const body = await openToChunks(createMemoryRuntime(1), 0, {
     getUiRevision: async () => 'abc123def456',
