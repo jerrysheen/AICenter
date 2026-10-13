@@ -870,13 +870,13 @@ export function createBriefPage(host) {
           const contexts=[...new Map(results.flatMap(r=>r.evidence.context || []).map(p=>[p.id,p])).values()].filter(p=>!refs.some(e=>e.paragraphId===p.id));
           if (contexts.length) {const detail=node('details','brief-context'); detail.append(node('summary','','展开相邻上下文')); contexts.forEach(p=>detail.append(node('p','',p.text))); card.append(detail);}
           if (/^https?:\/\//.test(m.sourceUrl)) {
-            const original=node('a','brief-original','前往原站 ↗'); original.href=m.sourceUrl; original.target='_blank'; original.rel='noopener noreferrer'; card.append(original);
+            const original=node('a','brief-original','前往原站 ↗'); original.href=m.sourceUrl; original.target='_blank'; original.rel='noopener noreferrer'; original.dataset.behavior='source.original'; card.append(original);
           }
-          if (host.canReadSavedSource?.(m)) card.append(button('阅读站内原文',async()=>{
+          if (host.canReadSavedSource?.(m)) { const readSource=button('阅读站内原文',async()=>{
             dialog.close();host.releaseDialogScroll();
             await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
             try {await host.readSavedSource(m);} catch(error) {host.toast(error.message || '资料库文章未能读取');}
-          }));
+          }); readSource.dataset.behavior='source.original'; card.append(readSource); }
           const technical=node('details','brief-technical'); technical.append(node('summary','','查看时间与溯源信息'));
           technical.append(node('p','',`发布：${m.publishedAt ? stamp(m.publishedAt) : '未知'}\n获得：${stamp(m.obtainedAt)}\n正文等级：${m.contentLevel}${m.late ? ' · 截止后补充材料' : ''}\n材料：${m.id}\n版本：${m.version}\n哈希：${m.hash}\n快照：${refs[0].snapshotId || context.brief.generatedAt}\n段落：${refs.map(e=>e.paragraphId).join('、')}`)); card.append(technical);
         } catch (error) {if (token===evidenceRequest && epoch===generation && dialog?.open) card.replaceChildren(node('p','',error.message || '来源读取失败'),button('重试来源',load));}

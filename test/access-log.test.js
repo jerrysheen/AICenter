@@ -288,6 +288,12 @@ test('client timing payload drops secrets and other hosts', async () => {
   assert.equal(clientTimingAllowed({
     headers: { origin: 'https://tradingplus.cn', host: '127.0.0.1:8787', 'x-forwarded-host': 'tradingplus.cn' },
   }), true);
+  assert.equal(clientTimingAllowed({
+    headers: { origin: 'https://tradingplus.cn', host: '127.0.0.1:8787', 'cf-ray': 'abc123-SJC', 'cf-connecting-ip': '203.0.113.8' },
+  }), true);
+  assert.equal(clientTimingAllowed({
+    headers: { origin: 'https://evil.example', host: '127.0.0.1:8787', 'cf-ray': 'abc123-SJC', 'sec-fetch-site': 'cross-site' },
+  }), false);
   const limitDirectory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-client-limit-'));
   try {
     const limited = createAccessLog({ directory: limitDirectory, salt: 's', env: {} });
@@ -306,10 +312,12 @@ test('client timing payload drops secrets and other hosts', async () => {
   assert.match(html, /src="\/client-timing\.js\?v=dev"/);
   assert.match(whale, /src="\/client-timing\.js\?v=dev"/);
   assert.match(source, /\/api\/v1\/runtime\/client-timing/);
-  assert.match(source, /SAMPLE = 0\.2/);
-  assert.match(source, /text\/plain;charset=UTF-8/);
+  assert.match(source, /CLIENT_TIMING_SAMPLE = 1/);
+  assert.match(source, /'Content-Type': 'text\/plain'/);
+  assert.match(source, /type: 'text\/plain'/);
   assert.match(source, /readyState === 'complete'/);
   assert.match(source, /event\.persisted/);
+  assert.match(html, /type="module" src="\/client-timing\.js\?v=dev"/);
   assert.doesNotMatch(source, /application\/json/);
   assert.equal(/https?:\/\//.test(source), false);
   assert.match(whitelist, /\/client-timing\.js/);

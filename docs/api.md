@@ -300,4 +300,4 @@ curl -sS "https://center.example.com/api/v1/hardware-prices?category=nand&limit=
 node scripts/access-log-summary.mjs --date 2026-10-13 --since 2h --top 20
 ```
 
-日志在 Instance `data/logs/access.yyyy-MM-dd.log`。`POST /api/v1/runtime/client-timing` 只接收本站页面自己的计时，不需要登录，响应是 204。请求体是 JSON 文本，`Content-Type` 用 `text/plain`。跨站 `Origin` 或 `Sec-Fetch-Site: cross-site` / `same-site` 会被丢掉；`Sec-Fetch-Site: same-origin` 在 Host 被隧道改写时仍然记下。同一进程每分钟最多记 300 条。原始 IP、Cookie 和查询参数里的值不会写入这些日志。`POST /api/v1/behavior` 接受单条或最多 20 条 `{ events }`，需要已登录设备或本机桌面身份。
+日志在 Instance `data/logs/access.yyyy-MM-dd.log`。`POST /api/v1/runtime/client-timing` 只接收本站页面自己的计时，不需要登录，响应是 204。请求体是 JSON 文本，`Content-Type` 用 `text/plain`。每次文档加载发一条。跨站 `Origin` 或 `Sec-Fetch-Site: cross-site` / `same-site` 会被丢掉；`Sec-Fetch-Site: same-origin`，或 Host 被隧道改成回环地址且带 `cf-ray` / `cf-connecting-ip` 时仍然记下。同一进程每分钟最多记 300 条。原始 IP、Cookie 和查询参数里的值不会写入这些日志。`POST /api/v1/behavior` 接受单条或最多 20 条 `{ events }`，需要已登录设备或本机桌面身份。`source.original` 是点原文或打开原站，`item.expand` 是展开条目。
