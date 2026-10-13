@@ -241,7 +241,7 @@ export function formatCondenseFailureLog(error, meta = {}) {
   ].join(' ');
 }
 
-export const TERMINAL_PENDING_REASONS = Object.freeze(['needs-content', 'stale-policy', 'prep-exhausted']);
+export const TERMINAL_PENDING_REASONS = Object.freeze(['needs-content', 'stale-policy', 'prep-exhausted', 'flash-source']);
 
 export function isTerminalPendingReason(reason) {
   return TERMINAL_PENDING_REASONS.includes(reason);

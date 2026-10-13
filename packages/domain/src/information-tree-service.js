@@ -5,6 +5,7 @@ import {needsZhLocalization} from './localize-texts.js';
 import {runBounded} from './daily-analysis.js';
 import {treeCatalog,treeSource,treeFailure,formatCondenseFailureLog,formatTreeHourlyCallLog,describeCondenseFailure,isTerminalPendingReason} from './information-tree-policy.js';
 import {readingClassKeyEnvs} from './reading-hour-service.js';
+import {isFlashSource} from './flash-sources.js';
 import {boundedInt,isAttributionValidationError,isRetryableUpstreamStatus,modelRetryDelayMs,nextHourlyAttempt,sameIdSet,upstreamHttpStatus} from './report-reliability.js';
 
 const HOUR=3600000;
@@ -181,7 +182,7 @@ export function createInformationTreeReader({repository,timezone='Asia/Shanghai'
 
 export function createInformationTreeService({repository,reportRepository,feedService,mediaPort,agentRuntime,skills,
   cacheNamespace='',articleStrategy=false,budgetReady=null,catalog={tags:[]},primaryTag=null,tagHints=null,classificationOverrideForReplay=null,candidatePort=null,materialPort=null,generationConfig={},timezone='Asia/Shanghai',now=()=>Date.now(),budget={},
-  hourlyModels:configuredHourlyModels=[],rankHourlyModels,upstreamRetries:configuredUpstreamRetries,upstreamRetryBaseMs,upstreamRetryMaxMs,sleep:configuredSleep,hourlyAttemptCap:configuredHourlyAttemptCap,prepAttemptCap:configuredPrepAttemptCap,env=process.env,log=console.log}={}) {
+  hourlyModels:configuredHourlyModels=[],rankHourlyModels,upstreamRetries:configuredUpstreamRetries,upstreamRetryBaseMs,upstreamRetryMaxMs,sleep:configuredSleep,hourlyAttemptCap:configuredHourlyAttemptCap,prepAttemptCap:configuredPrepAttemptCap,flashSources=null,env=process.env,log=console.log}={}) {
   const validatorVersion=articleStrategy ? ARTICLE_VALIDATOR_VERSION : TREE_VALIDATOR_VERSION;
   const config={articleRequestBytes:100000,batchBytes:12000,maxCalls:80,totalMs:20*60000,timeoutMs:180000,dailyTimeoutMs:360000,dailyTotalMs:60*60000,queueTimeoutMs:120000,...budget};
   const hourlyModels=Array.isArray(configuredHourlyModels) ? configuredHourlyModels.map(model=>String(model || '').trim()).filter(Boolean) : [];
@@ -529,6 +530,10 @@ export function createInformationTreeService({repository,reportRepository,feedSe
     }
     for(const m of stable(materials)) {
       const at=m.eventAt ?? m.publishedAt ?? now(),window={startAt:Math.floor(at/HOUR)*HOUR,endAt:(Math.floor(at/HOUR)+1)*HOUR},sourceHash=materialHash(treeSource(m)),sourceVersion=String(m.version || m.updatedAt || sourceHash);
+      if(isFlashSource({id:m.id,sourceId:m.sourceId,publisher:m.publisher,displayName:m.publisher}, flashSources)) {
+        pending.push({id:m.id,reason:'flash-source',retryable:false,retryAt:null,sourceVersion});
+        continue;
+      }
       const stageKey=`${articleStrategy ? 'article' : 'information'}:${m.id}`;
       try {
         const node=await information(m,window,s);

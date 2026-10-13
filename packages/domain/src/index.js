@@ -80,6 +80,7 @@ export function createDomainServices({
   modelUsageRates = [],
   informationPipeline = 'legacy',
   onContentReady = null,
+  flashSources = null,
   analysisSkillCatalog = null,
   parityDirectory = '',
 }) {
@@ -90,6 +91,7 @@ export function createDomainServices({
       feedRepository: store.repositories.feed,
       taggingRepository: store.repositories.tagging,
       feedFilter,
+      flashSources,
     })
     : null);
   const feed = createFeedService({
@@ -101,6 +103,7 @@ export function createDomainServices({
     mediaPort: media,
     contentRoutingPort,
     onContentReady,
+    flashSources,
     taggingRepository: store.repositories.tagging,
     normalizedArticlePort:informationPipeline==='tree-v3' ? createInformationTreeReader({repository:store.repositories.informationTree,pipeline:informationPipeline}) : null,
   });

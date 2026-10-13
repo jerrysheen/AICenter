@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { parseBilibiliImportInput, parseHideFlag, parsePatchUserItemStateInput, parsePersistFeedTranslationsInput, parsePostInput, parseTranslateBatchInput, parseTranslateInput, ValidationError } from '../../../../packages/contracts/src/index.js';
+import { parseBilibiliImportInput, parseFlashFeedQuery, parseHideFlag, parsePatchUserItemStateInput, parsePersistFeedTranslationsInput, parsePostInput, parseTranslateBatchInput, parseTranslateInput, ValidationError } from '../../../../packages/contracts/src/index.js';
 import { json, readJson } from '../http/response.js';
 import { labelEventLoop } from '../http/event-loop-blocks.js';
 import { prepareJsonBody, prepareJsonText, sendPreparedJson } from '../http/prepared-json.js';
@@ -172,6 +172,14 @@ export function createFeedRoutes() {
           events.flush();
           json(response, 200, { ok: true, hidden: true });
         }
+      },
+    },
+    {
+      method: 'GET', path: '/api/v1/feed/flash',
+      handler({ response, services, identity, url }) {
+        const query = parseFlashFeedQuery(Object.fromEntries(url.searchParams.entries()));
+        const items = services.feed.listFlash?.(workspaceIdFrom(identity), query) || [];
+        json(response, 200, { ok: true, items });
       },
     },
     {

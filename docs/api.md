@@ -109,6 +109,7 @@ curl -sS "https://center.example.com/api/v1/reports/hourly/search?startAt=176026
 
 | 方法 | 路径 | 参数 |
 |---|---|---|
+| GET | `/api/v1/feed/flash` | `limit` 为 1–100，默认 50。按时间返回快讯：`id`、`title`、`summary`、`publishedAt`、`source`、`sourceUrl`。不含供应商或模型字段 |
 | GET | `/api/v1/feed/x` | `feed=for-you` 或 `following`，`limit`，`saved`，`before`。`following` 且 `limit=12` 的首页和已读头可读 Worker 快照 |
 | GET | `/api/v1/feed/xueqiu` | `feed=following` 等，`limit`，`saved`，`before`。`following` 且 `limit=12` 的首页和已读头可读 Worker 快照 |
 | GET | `/api/v1/feed/bilibili` | `limit`，`saved`，`before` |

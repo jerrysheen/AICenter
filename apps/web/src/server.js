@@ -4,6 +4,7 @@ import { legacyPriceSnapshot } from '../../../packages/connectors/src/trendforce
 import { createHardwarePriceService } from '../../../packages/domain/src/hardware-price-service.js';
 import { createContentRoutingService } from '../../../packages/domain/src/content-routing-service.js';
 import { loadMediaConfig } from '../../../packages/instance/src/media-config.js';
+import { loadResolvedFlashSources } from '../../../packages/domain/src/flash-sources.js';
 import { loadFeedValueCalibration } from '../../../packages/instance/src/feed-value-config.js';
 import { createMediaConnector } from '../../../packages/connectors/src/media/port.js';
 import { existsSync } from 'node:fs';
@@ -194,13 +195,16 @@ export function createAiCenterServer(options = {}) {
   const typesafeClient = options.typesafeClient || createTypeSafeSystemOneClient({ env });
   const feedFilter=options.feedFilter !== undefined ? options.feedFilter
     : createFeedFilterFromEnv({client:typesafeClient,env,calibration:loadFeedValueCalibration(instance)});
+  const mediaConfig = loadMediaConfig(instance.configDirectory);
+  const flashSources = options.flashSources || loadResolvedFlashSources({ configDirectory: instance.configDirectory, env, mediaSources: mediaConfig.sources });
   const mediaService = options.mediaService || (store.repositories?.media
     ? createMediaIngestionService({
       mediaRepository: store.repositories.media,
-      mediaPort: createMediaConnector({ ...loadMediaConfig(instance.configDirectory), readSource: (...args) => sourcePort.read(...args) }),
+      mediaPort: createMediaConnector({ ...mediaConfig, readSource: (...args) => sourcePort.read(...args) }),
       feedRepository: store.repositories.feed,
       feedFilter,
       taggingRepository: store.repositories.tagging,
+      flashSources,
     })
     : null);
   const hardwarePriceService = options.hardwarePriceService || createHardwarePriceService({repository:store.repositories.hardwarePrices,artifactStore:createHardwareArtifactStore({dataDirectory})});
@@ -284,6 +288,7 @@ export function createAiCenterServer(options = {}) {
     dailyConfig: resolveDailyConfig(env),
     informationPipeline: env.AI_CENTER_INFORMATION_PIPELINE === 'tree-v3' ? 'tree-v3' : 'legacy',
     onContentReady:env.AI_CENTER_INFORMATION_PIPELINE==='tree-v3' ? ({workspaceId,sourceIds})=>enqueueTreePreparation(store,workspaceId,sourceIds) : null,
+    flashSources,
     holdingsQuotePort: {
       read: (readOptions) => holdingsQuoteCache.get(readOptions),
     },

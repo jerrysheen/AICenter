@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-13-flash-sources.md`：雪球 7x24 和产业在线快讯不再进入小时阅读分类、JEV 和信息树。信息流增加「快讯」页签，按时间列出原文。名单在 `config/flash-sources.json`，可用 `AI_CENTER_FLASH_SOURCES` 整表替换。不新增 migration。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-13-gemini-model-balance.md`：小时报和阅读分类按（模型，key）用量最少的一对先发，不再把 Gemini 3.1 用满才碰 3.5。文章模型池的轮换游标写入数据库。用量账本记下 HTTP 状态码。migration 61、62。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-13-feed-sync-off-request.md`：X / 雪球首页改由 Worker 每分钟写入快照，请求不再做全表计数和正文解析。简报目录用 migration 60 的列，并缓存已序列化的缓冲区。总览在缓存到期前后台重算。需要同时重启 Web 和 Worker。

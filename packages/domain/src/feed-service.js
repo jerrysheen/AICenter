@@ -4,6 +4,7 @@ import { packFeedAiBatches } from './feed-ai-batch.js';
 import { feedItemIdentityHash } from './feed-identity.js';
 import { cleanIngestExcerpt } from '../../connectors/src/excerpt-text.js';
 import { collectLocalizationUnits, localizationItemId, needsZhLocalization } from './localize-texts.js';
+import { isFlashSource } from './flash-sources.js';
 
 const DEFAULT_WORKSPACE_ID = 'local';
 const STORED_FEED_LIMIT = 200;
@@ -359,7 +360,7 @@ async function resolveIngestFilter(feedFilter, input) {
   return feedFilter.evaluate(input);
 }
 
-async function ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter) {
+async function ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter, flashSources = null) {
   if (!feedRepository?.saveCapture || !Array.isArray(snapshot?.items) || !snapshot.items.length) {
     return { added: 0, skipped: 0, addedItemIds: [] };
   }
@@ -368,6 +369,12 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
   const replay = sourceMeta.metadata && typeof sourceMeta.metadata === 'object' && !Array.isArray(sourceMeta.metadata)
     ? sourceMeta.metadata
     : {};
+  const flashSource = isFlashSource({
+    externalId: sourceMeta.externalId,
+    feed: replay.sourceInput?.feed,
+    metadata: replay,
+    displayName: sourceMeta.displayName,
+  }, flashSources);
   const source = feedRepository.upsertSourceAccount({
     workspaceId,
     provider: providerId,
@@ -378,7 +385,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
     authMode: ['public', 'credential', 'browser-session'].includes(sourceMeta.authMode)
       ? sourceMeta.authMode
       : 'browser-session',
-    metadata: replay,
+    metadata: flashSource ? { ...replay, flash: true } : replay,
   });
   if (replay.autoRefresh === true && typeof feedRepository.ensureSubscription === 'function') {
     const interval = Number(persistence.refreshIntervalMinutes);
@@ -453,7 +460,9 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
       existingByContentHash: existingByContentHash || null,
       hasIdentityFingerprint: existing ? false : hasIdentityFingerprint,
     };
-    let verdict = await resolveIngestFilter(feedFilter, filterInput);
+    let verdict = flashSource
+      ? { action: 'keep', createContentItem: true, status: 'ready', metadata: { flash: true } }
+      : await resolveIngestFilter(feedFilter, filterInput);
     const linked = existing
       ? (feedRepository.getContentItemByCapture?.(workspaceId, existing.id)
         || feedRepository.getContentItemByCaptureId?.(workspaceId, existing.id))
@@ -506,7 +515,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
     rememberFingerprint();
     added += 1;
   }
-  return { added, skipped, addedItemIds: [...new Set(addedItemIds)] };
+  return { added, skipped, addedItemIds: flashSource ? [] : [...new Set(addedItemIds)], flash: flashSource };
 }
 
 function yieldEventLoop() {
@@ -644,7 +653,7 @@ function wrapFeedProviders(feedProviders) {
   };
 }
 
-export function createFeedService({ legacyRepository, feedRepository, sourcePort, feedProviders, translationPort, feedFilter = null, mediaPort = null, contentRoutingPort = null,onContentReady=null,normalizedArticlePort=null,taggingRepository=null }) {
+export function createFeedService({ legacyRepository, feedRepository, sourcePort, feedProviders, translationPort, feedFilter = null, mediaPort = null, contentRoutingPort = null,onContentReady=null,normalizedArticlePort=null,taggingRepository=null,flashSources=null }) {
   const resolvedSourcePort = sourcePort || wrapFeedProviders(feedProviders);
   if (!legacyRepository || !feedRepository || !resolvedSourcePort) throw new Error('feed repositories and source port are required');
   sourcePort = resolvedSourcePort;
@@ -769,7 +778,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       const snapshot = sourceSnapshot.data;
       let stats = { added: 0, skipped: 0 };
       try {
-        stats = contentRoutingPort && providerId==='trendforce' ? await contentRoutingPort.ingest(workspaceId,snapshot) : await ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter);
+        stats = contentRoutingPort && providerId==='trendforce' ? await contentRoutingPort.ingest(workspaceId,snapshot) : await ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter, flashSources);
       } catch (error) {
         if(contentRoutingPort && providerId==='trendforce') throw error;
         // Live snapshot still returns even if persistence fails.
@@ -826,9 +835,23 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       if (snapshot.mode === 'error' || snapshot.mode === 'unavailable') {
         throw new Error(snapshot.note || `${sourceId} 抓取失败`);
       }
-      const stats=await (contentRoutingPort && persistence.providerId==='trendforce' ? contentRoutingPort.ingest(workspaceId,snapshot) : ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter));
+      const stats=await (contentRoutingPort && persistence.providerId==='trendforce' ? contentRoutingPort.ingest(workspaceId,snapshot) : ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter, flashSources));
       if(stats.addedItemIds?.length)await onContentReady?.({workspaceId,sourceIds:stats.addedItemIds.map(id=>`feed:${id}`)});
       return stats;
+    },
+    listItemSources(workspaceId, ids) {
+      return feedRepository.listItemSources?.(workspaceId, ids) || [];
+    },
+    listFlash(workspaceId, { limit = 50 } = {}) {
+      const rows = feedRepository.listFlashItems?.(workspaceId, { externalIds: [...(flashSources?.ids || [])], limit }) || [];
+      return rows.map((row) => ({
+        id: row.id,
+        title: row.title || clipText(row.body || row.summary, 80),
+        summary: clipText(row.summary || row.body),
+        publishedAt: row.publishedAt ?? row.createdAt ?? null,
+        source: row.source || '',
+        sourceUrl: row.sourceUrl || '',
+      }));
     },
     listContentItems(workspaceId, page) {
       return feedRepository.listContentItems(workspaceId, {...page,qualityRule});

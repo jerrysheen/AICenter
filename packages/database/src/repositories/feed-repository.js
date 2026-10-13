@@ -567,11 +567,13 @@ export function createFeedRepository(database, emitEvent) {
     listQualityRefreshItems(workspaceId,{perSourceLimit=200}={}) {
       const limit=Math.max(1,Math.min(200,Number(perSourceLimit)||200));
       return database.prepare(`SELECT * FROM (SELECT ci.*,c.provider,c.external_id,c.captured_at,c.metadata_json AS capture_metadata_json,
+        COALESCE(sa.external_id,'') AS source_external_id, COALESCE(sa.display_name,'') AS source_name,
         ROW_NUMBER() OVER (PARTITION BY c.source_account_id ORDER BY c.captured_at DESC,ci.created_at DESC,ci.id DESC) AS pool_rank
         FROM content_items ci JOIN captures c ON c.id=ci.capture_id AND c.workspace_id=ci.workspace_id
+        LEFT JOIN source_accounts sa ON sa.id=c.source_account_id AND sa.workspace_id=ci.workspace_id
         WHERE ci.workspace_id=? AND c.provider IN ('x','xueqiu','trendforce','bilibili') AND ${USER_VISIBLE_CONTENT_SQL})
         WHERE pool_rank<=? ORDER BY provider,captured_at DESC`).all(workspaceId,limit)
-        .map(r=>({...mapContentItem(r),provider:r.provider,externalId:r.external_id,captureMetadata:parseJson(r.capture_metadata_json)}));
+        .map(r=>({...mapContentItem(r),provider:r.provider,externalId:r.external_id,sourceExternalId:r.source_external_id || '',sourceName:r.source_name || '',captureMetadata:parseJson(r.capture_metadata_json)}));
     },
 
     listContentItemsByProvider(workspaceId, provider, options = {}) {
@@ -778,6 +780,41 @@ export function createFeedRepository(database, emitEvent) {
       };
     },
 
+    listItemSources(workspaceId, ids = []) {
+      const wanted = [...new Set((ids || []).map((id) => String(id || '').trim()).filter(Boolean))];
+      if (!wanted.length) return [];
+      const marks = wanted.map(() => '?').join(',');
+      return database.prepare(`SELECT ci.id AS id, COALESCE(sa.external_id,'') AS externalId, COALESCE(sa.display_name,'') AS displayName
+        FROM content_items ci
+        LEFT JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
+        LEFT JOIN source_accounts sa ON sa.id = c.source_account_id AND sa.workspace_id = ci.workspace_id
+        WHERE ci.workspace_id = ? AND ci.id IN (${marks})`).all(workspaceId, ...wanted);
+    },
+
+    listFlashItems(workspaceId, { externalIds = [], limit = 50 } = {}) {
+      const ids = [...new Set((externalIds || []).map((id) => String(id || '').trim()).filter(Boolean))];
+      if (!ids.length) return [];
+      const safeLimit = Math.max(1, Math.min(Number(limit) || 50, 100));
+      const marks = ids.map(() => '?').join(',');
+      return database.prepare(`SELECT ci.id, ci.title, ci.summary, ci.body, ci.source_url, ci.published_at, ci.created_at,
+          COALESCE(sa.display_name,'') AS source_name
+        FROM content_items ci
+        JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
+        JOIN source_accounts sa ON sa.id = c.source_account_id AND sa.workspace_id = ci.workspace_id
+        WHERE ci.workspace_id = ? AND sa.external_id IN (${marks}) AND ${USER_VISIBLE_CONTENT_SQL}
+        ORDER BY COALESCE(ci.published_at, ci.created_at) DESC, ci.id DESC
+        LIMIT ?`).all(workspaceId, ...ids, safeLimit).map((row) => ({
+        id: row.id,
+        title: row.title || '',
+        summary: row.summary || '',
+        body: row.body || '',
+        sourceUrl: row.source_url || '',
+        publishedAt: row.published_at ?? null,
+        createdAt: row.created_at,
+        source: row.source_name || '',
+      }));
+    },
+
     getContentItem(workspaceId, id) {
       const row = database.prepare(`SELECT ci.*, c.provider, c.external_id, c.captured_at, c.metadata_json AS capture_metadata_json
         FROM content_items ci
@@ -866,7 +903,7 @@ export function createFeedRepository(database, emitEvent) {
       const timeSql=timeBasis==='ingested' ? 'ci.created_at' : 'COALESCE(ci.published_at, ci.created_at)';
       const rows = database.prepare(`SELECT ${metadataOnly ? 'ci.id,ci.title,ci.published_at,ci.created_at,ci.updated_at' : 'ci.*'}, c.captured_at AS captured_at,
         COALESCE(sa.provider,c.provider,'local') AS provider, COALESCE(c.source_account_id,'local') AS source_id,
-        COALESCE(sa.display_name,'') AS source_name, c.metadata_json AS capture_metadata
+        COALESCE(sa.display_name,'') AS source_name, COALESCE(sa.external_id,'') AS source_external_id, c.metadata_json AS capture_metadata
         FROM content_items ci
         LEFT JOIN captures c ON c.id = ci.capture_id
         LEFT JOIN source_accounts sa ON sa.id=c.source_account_id
@@ -880,12 +917,13 @@ export function createFeedRepository(database, emitEvent) {
         ORDER BY ${timeSql} ASC, ci.id ASC
         LIMIT ?`).all(workspaceId, Number(startAt), Number(endAt), sourceId, sourceId,
           cursor?.eventAt ?? null, cursor?.eventAt ?? 0, cursor?.id ?? '', JSON.stringify(excludedItemIds), safeLimit);
-      if(metadataOnly)return rows.map(row=>({id:`feed:${row.id}`,version:String(row.updated_at || row.created_at),eventAt:timeBasis==='ingested' ? row.created_at : row.published_at ?? row.created_at}));
+      if(metadataOnly)return rows.map(row=>({id:`feed:${row.id}`,version:String(row.updated_at || row.created_at),eventAt:timeBasis==='ingested' ? row.created_at : row.published_at ?? row.created_at,sourceExternalId:row.source_external_id || '',sourceName:row.source_name || ''}));
       return rows.map((row) => ({
         ...mapContentItem(row),
         capturedAt: row.captured_at ?? null,
         eventAt: timeBasis==='ingested' ? row.created_at : row.published_at ?? row.created_at,
         provider: row.provider, sourceId: row.source_id, sourceName: row.source_name,
+        sourceExternalId: row.source_external_id || '',
         captureMetadata: parseJson(row.capture_metadata),
       }));
     },
