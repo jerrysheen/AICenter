@@ -112,6 +112,7 @@ export function createTradingService({
   marketDataPort,
   personalAssetPort,
   holdingsQuotePort = null,
+  marketBoardPort = null,
   workspaceId: configuredWorkspaceId = 'local',
   now = () => Date.now(),
 }) {
@@ -145,6 +146,10 @@ export function createTradingService({
 
   return Object.freeze({
     async getBoard(query) {
+      if (marketBoardPort?.read) {
+        const loaded = await marketBoardPort.read(query || {});
+        return loaded?.market ?? loaded;
+      }
       const { board = 'overview', ...input } = query || {};
       return (await sourcePort.read(`market.${board}`, input)).data;
     },

@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-13-event-loop-markets.md`：访问日志为每个请求记下这段时间里的事件循环延迟。静态文件和压缩 JSON 改为异步 gzip。行情总览和市场原生看板改由 Worker 每分钟写入 `runtime_snapshots`，Web 只读快照。不新增 migration。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-13-web-main-thread.md`：官方看板和持仓行情改由 Worker 每分钟写入快照，Web 只读快照并做 45 秒内存缓存。访问日志每分钟记一次事件循环延迟。migration 58。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-13-access-log.md`：Web 把每个请求写成一行 JSON 到 `data/logs/access.yyyy-MM-dd.log`，并提供只读汇总脚本和需设备登录的 `GET /api/v1/runtime/access-summary`。页面加载后抽样上报 Navigation Timing。需要重启 Web。Worker 不用重启。

@@ -80,7 +80,8 @@ import { createWorkPackageTracePort } from '../../../packages/runtime/src/work-p
 import { createFailureStreakStore, createSourceHub, createSourceModuleRegistry, installFailureStreakStore, readStaticSignalBoard } from '../../../packages/source/src/index.js';
 import { createMemorySnapshotCache } from '../../../packages/runtime/src/snapshot-cache.js';
 import {
-  createWebSnapshotJobHandlers, ensureHoldingsMarketSchedule, ensureStaticSignalBoardSchedule,
+  createWebSnapshotJobHandlers, ensureHoldingsMarketSchedule, ensureMarketBoardsSchedule,
+  ensureMarketNativeBoardSchedule, ensureStaticSignalBoardSchedule,
   HOLDINGS_MARKET_SNAPSHOT_KEY, webSnapshotManifest,
 } from '../../../packages/runtime/src/web-snapshot-jobs.js';
 
@@ -601,6 +602,8 @@ export function createAiCenterWorker(options = {}) {
     ensureEventQuoteSnapshotSchedule(store);
     ensureStaticSignalBoardSchedule(store);
     ensureHoldingsMarketSchedule(store);
+    ensureMarketBoardsSchedule(store);
+    ensureMarketNativeBoardSchedule(store);
     ensureInvestorDiscussionSchedule(store, env);
     ensureTrendForcePriceSchedules(store, env);
     ensureComputePriceSchedules(store, env);

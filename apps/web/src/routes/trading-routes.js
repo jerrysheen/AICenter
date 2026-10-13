@@ -6,8 +6,17 @@ export function createTradingRoutes() {
     {
       method: 'GET', path: '/api/v1/markets',
       async handler({ response, services, url }) {
-        const query = parseMarketQuery(Object.fromEntries(url.searchParams.entries()));
+        const raw = Object.fromEntries(url.searchParams.entries());
+        const refresh = raw.refresh === '1' || raw.refresh === 'true';
+        const query = parseMarketQuery(raw);
         try {
+          if (services.marketBoard?.read) {
+            const loaded = await services.marketBoard.read(query, { refresh });
+            json(response, 200, loaded.pending
+              ? { ok: true, market: loaded.market, pending: true }
+              : { ok: true, market: loaded.market });
+            return;
+          }
           json(response, 200, { ok: true, market: await services.trading.getBoard(query) });
         } catch (error) {
           json(response, 502, { ok: false, error: error instanceof Error ? error.message : '行情加载失败' });

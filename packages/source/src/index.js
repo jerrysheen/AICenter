@@ -15,10 +15,18 @@ export {
 } from './static/board.js';
 export { createStaticSignalBoardReader, STATIC_SIGNAL_BOARD_SNAPSHOT_KEY, STATIC_SIGNAL_BOARD_CACHE_TTL_MS } from './static/board-read.js';
 export {
+  createMarketBoardReader, emptyMarketBoard, marketBoardSnapshotKey, withExtraWatchlist,
+  MARKET_BOARD_CACHE_TTL_MS, MARKET_BOARD_NAMES,
+} from './market/board-read.js';
+export {
   createMarketNativeSourceDefinitions,
   PredictionMarketInputSchema,
   CryptoDerivativesInputSchema,
   StablecoinLiquidityInputSchema,
 } from './static/market-native-definitions.js';
 export { readMarketNativeBoard, MarketNativeBoardInputSchema } from './static/market-native-board.js';
+export {
+  createMarketNativeBoardReader, emptyMarketNativeBoard, projectMarketNativeBoard,
+  MARKET_NATIVE_BOARD_SNAPSHOT_KEY, MARKET_NATIVE_BOARD_CACHE_TTL_MS, MARKET_NATIVE_BOARD_CAPTURE_LIMIT,
+} from './static/market-native-read.js';
 export { projectMarketBoardForAI, projectGlobalMarketBoardForAI, projectOverviewMarketBoardForAI, marketBoardAiWarnings } from './source-projections.js';
