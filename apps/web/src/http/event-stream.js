@@ -2,7 +2,7 @@ import { labelEventLoop } from './event-loop-blocks.js';
 
 const REPLAY_PAGE_SIZE = 200;
 const REPLAY_MAX_EVENTS = 10_000;
-const FLUSH_PAGE_SIZE = 5;
+const FLUSH_PAGE_SIZE = 1;
 
 export const SSE_REPLAY_PAGE_SIZE = REPLAY_PAGE_SIZE;
 export const SSE_REPLAY_MAX_EVENTS = REPLAY_MAX_EVENTS;

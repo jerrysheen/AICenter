@@ -25,7 +25,9 @@
 
 ## 当前
 
-- `progress/2026-10-13-gemini-model-balance.md`：小时报和阅读分类按（模型，key）用量最少的一对先发，不再把 Gemini 3.1 用满才碰 3.5。文章模型池的轮换游标写入数据库。用量账本记下 HTTP 状态码。migration 60、61。需要同时重启 Web 和 Worker。
+- `progress/2026-10-13-gemini-model-balance.md`：小时报和阅读分类按（模型，key）用量最少的一对先发，不再把 Gemini 3.1 用满才碰 3.5。文章模型池的轮换游标写入数据库。用量账本记下 HTTP 状态码。migration 61、62。需要同时重启 Web 和 Worker。
+
+- `progress/2026-10-13-feed-sync-off-request.md`：X / 雪球首页改由 Worker 每分钟写入快照，请求不再做全表计数和正文解析。简报目录用 migration 60 的列，并缓存已序列化的缓冲区。总览在缓存到期前后台重算。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-13-bootstrap-stringify.md`：总览 bootstrap 只留首屏，序列化和 gzip 在缓存填入时做完。X / 雪球列表不再为了列表去读正文。事件推送按几条一帧发送，没有订阅者时不读正文。favicon 从内存返回，缓存 7 天。需要重启 Web。
 

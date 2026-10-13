@@ -20,7 +20,7 @@
 - `packages/contracts/src/model-usage.js`、`packages/database/src/repositories/model-usage-repository.js`
 - `packages/harness/src/model-usage-observer.js`、`packages/harness/src/harness-agent-runtime.js`、`packages/connectors/src/model-usage-fetch.js`
 - `apps/web/public/model-usage.js`
-- migration 60 `gemini_model_pool_cursor`，migration 61 `model_usage_http_status`
+- migration 61 `gemini_model_pool_cursor`，migration 62 `model_usage_http_status`。主线上的 60 是目录列 `tree_index_columns`。
 
 ## 验证
 
@@ -31,4 +31,4 @@
 
 ## 重启
 
-需要同时重启 Web 和 Worker。先启动的进程执行 migration 60 和 61。不要重建数据库。只重启其中一个时，另一个进程仍按旧的「3.1 优先」或旧账本字段工作。
+需要同时重启 Web 和 Worker。先启动的进程执行 migration 61 和 62。不要重建数据库。只重启其中一个时，另一个进程仍按旧的「3.1 优先」或旧账本字段工作。

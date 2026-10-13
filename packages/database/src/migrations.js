@@ -1844,7 +1844,40 @@ migrations.push({ version: 59, name: 'feed_provider_page_indexes', up(database) 
   `);
 }});
 
-migrations.push({ version: 60, name: 'gemini_model_pool_cursor', up(database) {
+migrations.push({ version: 60, name: 'tree_index_columns', up(database) {
+  const names = (table) => new Set(database.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name));
+  if (!names('information_tree_editions').has('edition_status')) {
+    database.exec(`
+      ALTER TABLE information_tree_editions ADD COLUMN edition_status TEXT NOT NULL DEFAULT '';
+      ALTER TABLE information_tree_editions ADD COLUMN generated_at INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE information_tree_editions ADD COLUMN start_at INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE information_tree_editions ADD COLUMN end_at INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE information_tree_editions ADD COLUMN root_count INTEGER NOT NULL DEFAULT 0;
+      UPDATE information_tree_editions SET
+        edition_status = COALESCE(json_extract(value_json, '$.status'), ''),
+        generated_at = COALESCE(json_extract(value_json, '$.generatedAt'), 0),
+        start_at = COALESCE(json_extract(value_json, '$.window.startAt'), 0),
+        end_at = COALESCE(json_extract(value_json, '$.window.endAt'), 0),
+        root_count = COALESCE(json_array_length(value_json, '$.roots'), 0);
+    `);
+  }
+  if (!names('information_tree_information_heads').has('window_start')) {
+    database.exec(`
+      ALTER TABLE information_tree_information_heads ADD COLUMN window_start INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE information_tree_information_heads ADD COLUMN window_end INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE information_tree_information_heads ADD COLUMN validator_version TEXT NOT NULL DEFAULT '';
+      UPDATE information_tree_information_heads
+        SET window_start = COALESCE(json_extract(n.value_json, '$.window.startAt'), 0),
+            window_end = COALESCE(json_extract(n.value_json, '$.window.endAt'), 0),
+            validator_version = COALESCE(json_extract(n.value_json, '$.validatorVersion'), '')
+        FROM information_tree_nodes AS n
+        WHERE n.workspace_id = information_tree_information_heads.workspace_id
+          AND n.id = information_tree_information_heads.node_id;
+    `);
+  }
+}});
+
+migrations.push({ version: 61, name: 'gemini_model_pool_cursor', up(database) {
   database.exec(`CREATE TABLE IF NOT EXISTS gemini_model_cursors (
     pool_key TEXT PRIMARY KEY,
     models_json TEXT NOT NULL,
@@ -1853,7 +1886,7 @@ migrations.push({ version: 60, name: 'gemini_model_pool_cursor', up(database) {
   );`);
 }});
 
-migrations.push({ version: 61, name: 'model_usage_http_status', up(database) {
+migrations.push({ version: 62, name: 'model_usage_http_status', up(database) {
   addColumn(database, 'model_usage_index', 'http_status', 'INTEGER');
 }});
 

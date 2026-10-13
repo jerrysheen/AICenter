@@ -39,7 +39,12 @@ export function createInformationTreeRepository(db,emit) {
         const before=this.informationHead(workspace,node.sourceId)?.node;
         if(before && (before.sourceUpdatedAt || 0)>(node.sourceUpdatedAt || 0))return false;
         if(before?.id===node.id)return true;
-        db.prepare('INSERT OR REPLACE INTO information_tree_information_heads VALUES (?,?,?,?,?,?)').run(workspace,node.sourceId,node.id,node.sourceVersion || '',node.eventAt || node.window.startAt,node.sourceUpdatedAt || 0);
+        db.prepare(`INSERT OR REPLACE INTO information_tree_information_heads
+          (workspace_id,source_id,node_id,source_version,event_at,source_at,window_start,window_end,validator_version)
+          VALUES (?,?,?,?,?,?,?,?,?)`).run(
+          workspace, node.sourceId, node.id, node.sourceVersion || '', node.eventAt || node.window.startAt, node.sourceUpdatedAt || 0,
+          Number(node.window?.startAt) || 0, Number(node.window?.endAt) || 0, node.validatorVersion || '',
+        );
         emit('report.tree.information.ready.v1','information-tree',node.id,{sourceId:node.sourceId},workspace);return true;
       })();
     },
@@ -78,7 +83,12 @@ export function createInformationTreeRepository(db,emit) {
         if(new Set(inputs).size!==inputs.length || inputs.length!==edition.inputIds.length || edition.inputIds.some(id=>!inputs.includes(id))) throw new Error('刊期直接输入归属不完整');
       }
       return db.transaction(()=>{
-        db.prepare('INSERT OR IGNORE INTO information_tree_editions VALUES (?,?,?)').run(workspace,edition.id,JSON.stringify(edition));
+        db.prepare(`INSERT OR IGNORE INTO information_tree_editions
+          (workspace_id,id,value_json,edition_status,generated_at,start_at,end_at,root_count)
+          VALUES (?,?,?,?,?,?,?,?)`).run(
+          workspace, edition.id, JSON.stringify(edition), edition.status || '', Number(edition.generatedAt) || 0,
+          Number(edition.window?.startAt) || 0, Number(edition.window?.endAt) || 0, Array.isArray(edition.roots) ? edition.roots.length : 0,
+        );
         const key=`${edition.layer}:${edition.window.startAt}:${edition.window.endAt}`;
         const head=db.prepare('SELECT published_id FROM information_tree_heads WHERE workspace_id=? AND period_key=?').get(workspace,key);
         const previous=head?.published_id ? this.getEdition(workspace,head.published_id) : null;
@@ -108,13 +118,12 @@ export function createInformationTreeRepository(db,emit) {
         .map(row=>({edition:row.published_id ? this.getEdition(workspace,row.published_id) : null,attempt:this.getEdition(workspace,row.attempt_id)}));
     },
     listInformationIndex(workspace,window) {
-      return db.prepare(`SELECT h.node_id AS id,
-        COALESCE(json_extract(n.value_json, '$.eventAt'), h.event_at) AS eventAt,
-        json_extract(n.value_json, '$.window.startAt') AS windowStart,
-        json_extract(n.value_json, '$.window.endAt') AS windowEnd,
-        json_extract(n.value_json, '$.validatorVersion') AS validatorVersion
+      return db.prepare(`SELECT h.node_id AS id, h.event_at AS eventAt,
+        CASE WHEN h.window_end > 0 THEN h.window_start ELSE json_extract(n.value_json, '$.window.startAt') END AS windowStart,
+        CASE WHEN h.window_end > 0 THEN h.window_end ELSE json_extract(n.value_json, '$.window.endAt') END AS windowEnd,
+        CASE WHEN h.window_end > 0 THEN NULLIF(h.validator_version, '') ELSE json_extract(n.value_json, '$.validatorVersion') END AS validatorVersion
         FROM information_tree_information_heads h
-        JOIN information_tree_nodes n ON n.workspace_id=h.workspace_id AND n.id=h.node_id
+        LEFT JOIN information_tree_nodes n ON n.workspace_id=h.workspace_id AND n.id=h.node_id AND h.window_end = 0
         WHERE h.workspace_id=? AND h.event_at>=? AND h.event_at<?
         ORDER BY h.event_at, h.source_id`).all(workspace,window.startAt,window.endAt).map(row=>({
         id:row.id,eventAt:Number(row.eventAt),window:{startAt:Number(row.windowStart),endAt:Number(row.windowEnd)},
@@ -123,24 +132,28 @@ export function createInformationTreeRepository(db,emit) {
     },
     listEditionIndex(workspace,startAt,endAt,layer='hourly') {
       return db.prepare(`SELECT h.layer AS layer,
-        json_extract(p.value_json, '$.id') AS published_id,
-        json_extract(p.value_json, '$.status') AS published_status,
-        json_extract(p.value_json, '$.generatedAt') AS published_generated,
-        json_extract(p.value_json, '$.window.startAt') AS published_start,
-        json_extract(p.value_json, '$.window.endAt') AS published_end,
-        COALESCE(json_array_length(p.value_json, '$.roots'), 0) AS published_roots,
-        json_extract(a.value_json, '$.id') AS attempt_id,
-        json_extract(a.value_json, '$.status') AS attempt_status,
-        json_extract(a.value_json, '$.generatedAt') AS attempt_generated,
-        json_extract(a.value_json, '$.window.startAt') AS attempt_start,
-        json_extract(a.value_json, '$.window.endAt') AS attempt_end,
-        COALESCE(json_array_length(a.value_json, '$.roots'), 0) AS attempt_roots,
+        CASE WHEN p.edition_status != '' THEN p.id ELSE json_extract(p.value_json, '$.id') END AS published_id,
+        CASE WHEN p.edition_status != '' THEN p.edition_status ELSE json_extract(p.value_json, '$.status') END AS published_status,
+        CASE WHEN p.edition_status != '' THEN p.generated_at ELSE json_extract(p.value_json, '$.generatedAt') END AS published_generated,
+        CASE WHEN p.edition_status != '' THEN p.start_at ELSE json_extract(p.value_json, '$.window.startAt') END AS published_start,
+        CASE WHEN p.edition_status != '' THEN p.end_at ELSE json_extract(p.value_json, '$.window.endAt') END AS published_end,
+        CASE WHEN p.edition_status != '' THEN p.root_count ELSE COALESCE(json_array_length(p.value_json, '$.roots'), 0) END AS published_roots,
+        CASE WHEN a.edition_status != '' THEN a.id ELSE json_extract(a.value_json, '$.id') END AS attempt_id,
+        CASE WHEN a.edition_status != '' THEN a.edition_status ELSE json_extract(a.value_json, '$.status') END AS attempt_status,
+        CASE WHEN a.edition_status != '' THEN a.generated_at ELSE json_extract(a.value_json, '$.generatedAt') END AS attempt_generated,
+        CASE WHEN a.edition_status != '' THEN a.start_at ELSE json_extract(a.value_json, '$.window.startAt') END AS attempt_start,
+        CASE WHEN a.edition_status != '' THEN a.end_at ELSE json_extract(a.value_json, '$.window.endAt') END AS attempt_end,
+        CASE WHEN a.edition_status != '' THEN a.root_count ELSE COALESCE(json_array_length(a.value_json, '$.roots'), 0) END AS attempt_roots,
         CASE WHEN e.published_id IS NOT NULL THEN 1 ELSE 0 END AS has_editorial
         FROM information_tree_heads h
         LEFT JOIN information_tree_editions p ON p.workspace_id=h.workspace_id AND p.id=h.published_id
         LEFT JOIN information_tree_editions a ON a.workspace_id=h.workspace_id AND a.id=h.attempt_id
         LEFT JOIN information_tree_editorial_heads e ON e.workspace_id=h.workspace_id AND e.published_id IS NOT NULL
-          AND e.period_key = (CAST(json_extract(COALESCE(p.value_json, a.value_json), '$.window.startAt') AS TEXT) || ':' || CAST(json_extract(COALESCE(p.value_json, a.value_json), '$.window.endAt') AS TEXT))
+          AND e.period_key = (
+            CAST(CASE WHEN COALESCE(p.edition_status, a.edition_status, '') != '' THEN COALESCE(NULLIF(p.start_at, 0), a.start_at) ELSE json_extract(COALESCE(p.value_json, a.value_json), '$.window.startAt') END AS TEXT)
+            || ':' ||
+            CAST(CASE WHEN COALESCE(p.edition_status, a.edition_status, '') != '' THEN COALESCE(NULLIF(p.end_at, 0), a.end_at) ELSE json_extract(COALESCE(p.value_json, a.value_json), '$.window.endAt') END AS TEXT)
+          )
         WHERE h.workspace_id=? AND h.layer=? AND h.start_at>=? AND h.start_at<?
         ORDER BY h.start_at DESC`).all(workspace,layer,startAt,endAt).map(row=>{
         const hasEditorial=row.has_editorial===1;
