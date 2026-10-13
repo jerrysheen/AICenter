@@ -90,12 +90,14 @@ test('Gemma pool uses only official streaming endpoints, rotates models and pers
     fetch: async (url, init) => { calls.push([url, init]); return sse('完整译文'); } });
   const first = await router.generate({ system: '翻译', prompt: 'Report one' });
   const second = await router.generate({ system: '翻译', prompt: 'Report two' });
-  assert.equal(first.engine, 'gemma-4-31b-it'); assert.equal(second.engine, 'gemma-4-26b-a4b-it');
+  assert.equal(first.engine, 'gemma-4-26b-a4b-it'); assert.equal(second.engine, 'gemma-4-26b-a4b-it');
   for (const [url, init] of calls) {
     assert.equal(new URL(url).origin, 'https://generativelanguage.googleapis.com');
-    assert.match(url, /:streamGenerateContent\?alt=sse$/);
+    assert.match(url, /gemma-4-26b-a4b-it:streamGenerateContent\?alt=sse$/);
     assert.equal(init.headers['x-goog-api-key'], 'fake-key');
     assert.equal(JSON.parse(init.body).generationConfig.thinkingConfig.thinkingLevel, 'minimal');
+    assert.ok(init.signal instanceof AbortSignal);
+    assert.equal(init.dispatcher, undefined);
   }
   assert.equal(usage.filter(row => row.status === 'succeeded').length, 2);
   assert.equal(usage.filter(row => row.status === 'succeeded').every(row => row.httpStatus === 200), true);
@@ -105,10 +107,17 @@ test('Gemma pool uses only official streaming endpoints, rotates models and pers
 
 test('Gemma HTTP errors never fall back to other APIs, 429 cooldown persists across router instances', fixture(async store => {
   let calls = 0;
-  const options = { ...settings(store), fetch: async () => { calls++; return new Response(JSON.stringify({error:{code:429,status:'RESOURCE_EXHAUSTED',message:'daily quota exceeded'}}), { status:429 }); } };
+  const env = { GEMINI_API_KEY: 'key-one', GEMINI_API_KEY2: 'key-two' };
+  const options = { env, quotaRepository: store.repositories.modelQuota, fetch: async (url, init) => {
+    calls++;
+    assert.match(url, /gemma-4-26b-a4b-it/);
+    assert.doesNotMatch(url, /gemini-|deepseek|elucid|deepl/i);
+    if (init.headers['x-goog-api-key'] === 'key-one') return new Response(JSON.stringify({error:{code:429,status:'RESOURCE_EXHAUSTED',message:'daily quota exceeded'}}), { status:429 });
+    return sse('译文');
+  } };
   await assert.rejects(createGemmaTranslationRouter(options).generate({ system:'翻译',prompt:'One' }), /429/);
-  const router = createGemmaTranslationRouter({ ...options, fetch:async url => { calls++; assert.match(url,/gemma-4-26b-a4b-it/); return sse('译文'); } });
-  assert.equal((await router.generate({system:'翻译',prompt:'Two'})).engine,'gemma-4-26b-a4b-it');
+  assert.equal(calls, 1);
+  assert.equal((await createGemmaTranslationRouter(options).generate({system:'翻译',prompt:'Two'})).engine,'gemma-4-26b-a4b-it');
   assert.equal(calls,2);
 }));
 
@@ -148,7 +157,7 @@ test('translation worker persists full source hash and output, reuses stored ori
   assert.equal(store.getJob(jobs[0].id).status,'completed');
   const saved=store.repositories.feed.listTranslations('local',['media:test-block']);
   assert.equal(saved.length,1); assert.match(saved[0].translatedText,/\n\n- /);
-  assert.equal(saved[0].engine,'gemma-4-31b-it');
+  assert.equal(saved[0].engine,'gemma-4-26b-a4b-it');
   assert.deepEqual(await enqueueOriginalTranslations({store,feedService:service,workspaceId:'local',units}),[]);
   assert.equal(calls,1);
 }));
@@ -161,13 +170,19 @@ test('translation job contract refuses duplicate IDs, extra commands and oversiz
 });
 
 test('SSE daily quota errors preserve supplier cooldown and do not become complete output', fixture(async store => {
-  const router=createGemmaTranslationRouter({...settings(store),fetch:async()=>new Response('data: '+JSON.stringify({error:{code:429,status:'RESOURCE_EXHAUSTED',message:'daily quota exceeded',details:[{retryDelay:'1s'}]}})+'\n\n')});
+  const env = { GEMINI_API_KEY: 'key-one', GEMINI_API_KEY2: 'key-two' };
+  const quota = () => new Response('data: '+JSON.stringify({error:{code:429,status:'RESOURCE_EXHAUSTED',message:'daily quota exceeded',details:[{retryDelay:'1s'}]}})+'\n\n');
+  const router=createGemmaTranslationRouter({env,quotaRepository:store.repositories.modelQuota,fetch:async()=>quota()});
   await assert.rejects(router.generate({system:'翻译',prompt:'First'}),/流内错误/);
-  const next=createGemmaTranslationRouter({...settings(store),fetch:async url=>{assert.match(url,/gemma-4-26b-a4b-it/);return sse('译文');}});
+  const next=createGemmaTranslationRouter({env,quotaRepository:store.repositories.modelQuota,fetch:async (url, init)=>{
+    assert.match(url,/gemma-4-26b-a4b-it/);
+    assert.equal(init.headers['x-goog-api-key'], 'key-two');
+    return sse('译文');
+  }});
   assert.equal((await next.generate({system:'翻译',prompt:'Second'})).engine,'gemma-4-26b-a4b-it');
 }));
 
-test('failed 31B attempt backs off persistently and bounded worker retry uses only 26B', fixture(async store => {
+test('failed 26B attempt backs off persistently and the next worker attempt stays on 26B', fixture(async store => {
   const calls = [];
   const service = createFeedService({legacyRepository:store,feedRepository:store.repositories.feed,sourcePort:{},
     translationPort:createTranslateService({...settings(store),fetch:async url=>{
@@ -180,7 +195,7 @@ test('failed 31B attempt backs off persistently and bounded worker retry uses on
   assert.equal(store.repositories.feed.listTranslations('local',['fallback-one']).length,0);
   await new Promise(resolve=>setTimeout(resolve,1100));
   await runner.runOnce(); assert.equal(store.getJob(job.id).status,'completed');
-  assert.equal(calls.length,2); assert.match(calls[0],/gemma-4-31b-it/);assert.match(calls[1],/gemma-4-26b-a4b-it/);
+  assert.equal(calls.length,2); assert.match(calls[0],/gemma-4-26b-a4b-it/);assert.match(calls[1],/gemma-4-26b-a4b-it/);
   assert.equal(store.repositories.feed.listTranslations('local',['fallback-one'])[0].engine,'gemma-4-26b-a4b-it');
 }));
 
@@ -192,7 +207,7 @@ test('single-key HTTP 500 does not wait out same-key pacing for the other Gemma 
   }});
   await assert.rejects(router.generate({ system: '翻译', prompt: 'One' }), /500/);
   assert.equal(calls.length, 1);
-  assert.match(calls[0], /gemma-4-31b-it/);
+  assert.match(calls[0], /gemma-4-26b-a4b-it/);
 }));
 
 test('Gemma HTTP 500 retries another key and logs length, key, latency and concurrency', fixture(async store => {
@@ -215,11 +230,11 @@ test('Gemma HTTP 500 retries another key and logs length, key, latency and concu
     assert.equal(result.engine, 'gemma-4-26b-a4b-it');
     assert.equal(calls.length, 2);
     assert.deepEqual(calls.map(call => call.key), ['key-one', 'key-two']);
-    assert.match(calls[0].url, /gemma-4-31b-it/);
+    assert.match(calls[0].url, /gemma-4-26b-a4b-it/);
     assert.match(calls[1].url, /gemma-4-26b-a4b-it/);
     const logged = lines.find(line => line.includes('inputBytes='));
     assert.match(logged, /status=500/);
-    assert.match(logged, /model=gemma-4-31b-it/);
+    assert.match(logged, /model=gemma-4-26b-a4b-it/);
     assert.match(logged, /key=KEY /);
     assert.match(logged, /inputBytes=\d+/);
     assert.match(logged, /latencyMs=\d+/);
@@ -245,5 +260,73 @@ test('Gemma timeout retries another key without leaving the Gemma pool', fixture
   });
   assert.equal((await router.generate({ system: '翻译', prompt: 'Timeout then another key.' })).engine, 'gemma-4-26b-a4b-it');
   assert.deepEqual(calls.map(call => call.key), ['key-one', 'key-two']);
+  assert.match(calls[0].url, /gemma-4-26b-a4b-it/);
   assert.match(calls[1].url, /gemma-4-26b-a4b-it/);
+}));
+
+test('explicit 31B rotation still starts on 31B but a 5xx retry stays on 26B and another key', fixture(async store => {
+  let at = Date.now();
+  const calls = [];
+  const router = createGemmaTranslationRouter({
+    env: { GEMINI_API_KEY: 'key-one', GEMINI_API_KEY2: 'key-two', AI_CENTER_GEMMA_TRANSLATION_MODELS: 'gemma-4-31b-it,gemma-4-26b-a4b-it' },
+    quotaRepository: store.repositories.modelQuota, now: () => at, sleep: async ms => { at += ms; },
+    fetch: async (url, init) => {
+      calls.push({ url, key: init.headers['x-goog-api-key'], signal: init.signal });
+      if (calls.length === 1) return new Response('{"error":{"code":500,"status":"INTERNAL"}}', { status: 500 });
+      return sse('译文');
+    },
+  });
+  assert.equal((await router.generate({ system: '翻译', prompt: 'Override still retries 26B.' })).engine, 'gemma-4-26b-a4b-it');
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].url, /gemma-4-31b-it/);
+  assert.match(calls[1].url, /gemma-4-26b-a4b-it/);
+  assert.deepEqual(calls.map(call => call.key), ['key-one', 'key-two']);
+  assert.ok(calls[0].signal instanceof AbortSignal);
+}));
+
+test('31B-only override retries another key on 31B', fixture(async store => {
+  let at = Date.now();
+  const calls = [];
+  const router = createGemmaTranslationRouter({
+    env: { GEMINI_API_KEY: 'key-one', GEMINI_API_KEY2: 'key-two' },
+    models: ['gemma-4-31b-it'],
+    quotaRepository: store.repositories.modelQuota, now: () => at, sleep: async ms => { at += ms; },
+    fetch: async (url, init) => {
+      calls.push({ url, key: init.headers['x-goog-api-key'] });
+      if (calls.length === 1) return new Response('{"error":{"code":500,"status":"INTERNAL"}}', { status: 500 });
+      return sse('译文');
+    },
+  });
+  assert.equal((await router.generate({ system: '翻译', prompt: '31B only.' })).engine, 'gemma-4-31b-it');
+  assert.deepEqual(calls.map(call => call.key), ['key-one', 'key-two']);
+  assert.match(calls[0].url, /gemma-4-31b-it/);
+  assert.match(calls[1].url, /gemma-4-31b-it/);
+}));
+
+test('Gemma connect timeout retries another 26B key and records HTTP 408', fixture(async store => {
+  let at = Date.now();
+  const calls = [], usage = [], lines = [];
+  const original = console.error;
+  console.error = (...args) => { lines.push(args.join(' ')); };
+  try {
+    const router = createGemmaTranslationRouter({
+      env: { GEMINI_API_KEY: 'key-one', GEMINI_API_KEY2: 'key-two' },
+      quotaRepository: store.repositories.modelQuota, now: () => at, sleep: async ms => { at += ms; },
+      usageObserver: row => usage.push(structuredClone(row)),
+      timeoutMs: 120000,
+      fetch: async (url, init) => {
+        calls.push({ url, key: init.headers['x-goog-api-key'], signal: init.signal });
+        if (calls.length === 1) throw Object.assign(new Error('Connect Timeout Error (UND_ERR_CONNECT_TIMEOUT)'), { code: 'UND_ERR_CONNECT_TIMEOUT', name: 'ConnectTimeoutError' });
+        return sse('译文');
+      },
+    });
+    assert.equal((await router.generate({ system: '翻译', prompt: 'Connect timeout then another key.' })).engine, 'gemma-4-26b-a4b-it');
+    assert.deepEqual(calls.map(call => call.key), ['key-one', 'key-two']);
+    assert.match(calls[0].url, /gemma-4-26b-a4b-it/);
+    assert.match(calls[1].url, /gemma-4-26b-a4b-it/);
+    assert.ok(calls[0].signal instanceof AbortSignal);
+    assert.match(lines.find(line => line.includes('inputBytes=')), /status=408/);
+    assert.equal(usage.some(row => row.status === 'interrupted' && row.httpStatus === 408), true);
+    assert.equal(usage.some(row => row.status === 'succeeded' && row.httpStatus === 200), true);
+  } finally { console.error = original; }
 }));

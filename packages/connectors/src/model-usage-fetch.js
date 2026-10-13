@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { emptyTokenUsage, normalizeTokenUsage } from '../../contracts/src/model-usage.js';
 import { modelUsageContext, observeModelUsage } from '../../runtime/src/model-usage-context.js';
+import { isGoogleConnectTimeout } from './google-fetch.js';
 
 export function providerTokenUsage(payload, provider) {
   if (provider === 'gemini') {
@@ -49,7 +50,7 @@ export function createUsageFetch(fetchImpl, { provider, model, observer, stage =
       row.status = 'interrupted';
       const status = Number(error?.status ?? error?.upstreamStatus ?? error?.statusCode);
       if (Number.isInteger(status) && status >= 100 && status <= 599) row.httpStatus = status;
-      else if (error?.name === 'TimeoutError' || error?.name === 'ModelExecutionTimeout' || /模型执行超时|TimeoutError/.test(String(error?.message || ''))) row.httpStatus = 408;
+      else if (error?.name === 'TimeoutError' || error?.name === 'ModelExecutionTimeout' || isGoogleConnectTimeout(error) || /模型执行超时|TimeoutError/.test(String(error?.message || ''))) row.httpStatus = 408;
       await observeModelUsage(row, observer); throw error;
     }
   };

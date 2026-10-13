@@ -1,3 +1,4 @@
+import { googleFetch } from './google-fetch.js';
 import { createUsageFetch } from './model-usage-fetch.js';
 
 const MODEL = 'gemini-3.5-transcribe';
@@ -28,6 +29,7 @@ function header(response, name) {
 }
 
 export function createGeminiAudioTranscriber({ fetch: fetchImpl = fetch, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
+  fetchImpl = googleFetch(fetchImpl);
   return async function transcribeAudio({ apiKey, audio, mimeType = 'audio/wav', languageCodes = [], mode = 'SMART', signal }) {
     const secret = String(apiKey || '').trim();
     if (!secret) throw new Error('转写密钥不可用');

@@ -1,4 +1,5 @@
 import { modelIdForProfile } from './agent-model-profile.js';
+import { googleFetch } from './google-fetch.js';
 import { createUsageFetch } from './model-usage-fetch.js';
 
 const DEFAULT_ROOT = 'https://generativelanguage.googleapis.com/v1beta';
@@ -57,7 +58,7 @@ const INSTRUCTIONS = `你是 AI Center 的单一助手。准确、简洁地用�
 用户要求记录这次对话、总结进知识库、或把某段 hint 加入灵感时：先根据当前会话整理可独立阅读的内容，需要分类时先 taxonomy.list，再调用 memory.save。Inspiration 用 observation/hypothesis/question/idea；Knowledge 用 fact/mechanism/thesis/framework/case/procedure。推测不得写成 fact。bodyMarkdown 只写正文，禁止写入已落库、去向、分类路径或资源 ID。不要传入 sourceRefs。只有 memory.save 成功返回后，才能告诉用户已落库，并复述标题、类型和分类路径。`;
 
 export function createGeminiAgentClient(options = {}) {
-  const fetchImpl = createUsageFetch(options.fetch || fetch, { provider: 'gemini', observer: options.usageObserver });
+  const fetchImpl = createUsageFetch(googleFetch(options.fetch || fetch), { provider: 'gemini', observer: options.usageObserver });
   // A dedicated key can replace the shared test key without changing code.
   const apiKey = options.apiKey !== undefined
     ? text(options.apiKey)

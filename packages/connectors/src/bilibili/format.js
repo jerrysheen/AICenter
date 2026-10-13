@@ -1,3 +1,4 @@
+import { googleFetch } from '../google-fetch.js';
 import { createUsageFetch } from '../model-usage-fetch.js';
 import { parseGeminiGenerateContent } from '../translate/index.js';
 
@@ -40,7 +41,7 @@ export function looksLikeMarkdown(value) {
 }
 
 export function createTranscriptFormatService(options = {}) {
-  const fetchImpl = options.fetch || fetch;
+  const fetchImpl = googleFetch(options.fetch || fetch);
 
   function resolveConfig() {
     const apiKey = options.apiKey !== undefined

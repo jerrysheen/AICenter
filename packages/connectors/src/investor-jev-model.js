@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { parseGeminiGenerateContent, geminiQuotaCooldown } from './gemini-grok-task.js';
+import { googleFetch, isGoogleConnectTimeout } from './google-fetch.js';
 import { investorAbUsage } from './investor-digest-ab-model.js';
 import { investorDiscussionModelId } from './investor-discussion-model.js';
 import { createUsageFetch } from './model-usage-fetch.js';
@@ -48,7 +49,7 @@ export function createInvestorJevCompleter(options = {}) {
   const now = options.now || Date.now;
   const dayWindow = options.dayWindow || ((at) => ({ dayStart: at - 86_400_000, dayEnd: at }));
   const memory = options.quotaState || new Map();
-  const fetchImpl = createUsageFetch(options.fetch || fetch, {
+  const fetchImpl = createUsageFetch(googleFetch(options.fetch || fetch, env), {
     provider: 'gemini',
     model,
     observer: options.usageObserver,
@@ -164,7 +165,7 @@ export function createInvestorJevCompleter(options = {}) {
         } catch (error) {
           release(ticket);
           if (error?.code === 'config') throw error;
-          if (error?.quota || error?.status === 429) {
+          if (error?.quota || error?.status === 429 || isGoogleConnectTimeout(error)) {
             remember(ticket, error.quota || { reason: 'rate_limit', blockedUntil: now() + 60_000 });
             skipped.add(ticket.keyEnv);
             lastError = error;

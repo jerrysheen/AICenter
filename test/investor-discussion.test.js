@@ -939,6 +939,30 @@ test('summary retries 503 across keys, then falls back to the next model', async
   assert.deepEqual(rotated, ['key-a', 'key-b']);
 });
 
+test('summary connect timeout switches to the other Gemini key', async () => {
+  const calls = [];
+  const summarize = createGeminiInvestorSummarizer({
+    env: {
+      AI_CENTER_GEMINI_KEY_ENVS: 'GEMINI_API_KEY,GEMINI_API_KEY2',
+      GEMINI_API_KEY: 'key-a',
+      GEMINI_API_KEY2: 'key-b',
+      AI_CENTER_INVESTOR_DIGEST_MODEL: 'gemini-3.1-flash-lite',
+      AI_CENTER_INVESTOR_DIGEST_SUMMARY_RETRIES: '0',
+    },
+    sleep: async () => {},
+    fetch: async (_url, init) => {
+      calls.push(init.headers['x-goog-api-key']);
+      if (calls.length === 1) throw Object.assign(new Error('Connect Timeout Error (UND_ERR_CONNECT_TIMEOUT)'), { code: 'UND_ERR_CONNECT_TIMEOUT', name: 'ConnectTimeoutError' });
+      return new Response(JSON.stringify({
+        candidates: [{ content: { parts: [{ text: '{"summary":"换密钥。","repeatedTopics":[],"links":[]}' }] } }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  const result = await summarize({ system: '系统', prompt: '材料' });
+  assert.match(result.text, /换密钥/);
+  assert.deepEqual(calls, ['key-a', 'key-b']);
+});
+
 test('retryFailed regenerates only the failed stock', async () => {
   const store = createStore(':memory:');
   try {

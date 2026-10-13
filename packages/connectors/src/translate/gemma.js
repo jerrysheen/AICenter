@@ -2,8 +2,11 @@ import { createHash } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { createUsageFetch } from '../model-usage-fetch.js';
 import { geminiQuotaCooldown } from '../gemini-grok-task.js';
+import { googleFetch, isGoogleConnectTimeout } from '../google-fetch.js';
 
-export const GEMMA_TRANSLATION_MODELS = ['gemma-4-31b-it', 'gemma-4-26b-a4b-it'];
+const GEMMA_26B = 'gemma-4-26b-a4b-it';
+export const GEMMA_TRANSLATION_MODELS = ['gemma-4-31b-it', GEMMA_26B];
+export const GEMMA_TRANSLATION_DEFAULT_MODELS = [GEMMA_26B];
 
 export function resolveGemmaTranslationSlots(env=process.env,apiKey) {
   const names=String(env.AI_CENTER_GEMMA_TRANSLATION_KEY_ENVS || env.AI_CENTER_GEMMA_TRANSLATION_KEY_ENV || 'GEMINI_API_KEY,GEMINI_API_KEY2,GEMINI_API_KEY3,GEMINI_API_KEY4,GEMINI_API_KEY5').split(',').map(s=>s.trim());
@@ -76,13 +79,14 @@ export async function readGemmaStream(response) {
 
 export function createGemmaTranslationRouter(options = {}) {
   const env = options.env || process.env;
-  const models = String(options.models || env.AI_CENTER_GEMMA_TRANSLATION_MODELS || GEMMA_TRANSLATION_MODELS.join(',')).split(',').map(value => value.trim());
+  const models = String(options.models || env.AI_CENTER_GEMMA_TRANSLATION_MODELS || GEMMA_TRANSLATION_DEFAULT_MODELS.join(',')).split(',').map(value => value.trim()).filter(Boolean);
   if (!models.length || new Set(models).size !== models.length || models.some(model => !GEMMA_TRANSLATION_MODELS.includes(model))) throw new Error('无效的 Gemma 翻译模型池');
+  const retryModels = models.includes(GEMMA_26B) ? [GEMMA_26B] : models;
   const slots=resolveGemmaTranslationSlots(env,options.apiKey);
   const now = options.now || Date.now;
   const repository = options.quotaRepository;
   let cursor = 0;
-  const fetchImpl = options.fetch || fetch;
+  const fetchImpl = googleFetch(options.fetch || fetch, env);
   const pause = options.sleep || sleep;
   let inflight = 0;
   const metered = createUsageFetch(async (url, init) => {
@@ -91,20 +95,24 @@ export function createGemmaTranslationRouter(options = {}) {
     return new Response(JSON.stringify(await readGemmaStream(response)), { status: 200 });
   }, { provider: 'gemini', stage: 'translation', observer: options.usageObserver });
 
-  async function admit(waitMs, estimatedTokens) {
+  async function admit(waitMs, estimatedTokens, pool) {
     let at = now();
     let ticket, retryAt = Infinity;
     const deadline = at + waitMs;
     do {
       at = now();
       retryAt = Infinity;
-      for (let offset = 0; offset < models.length; offset++) {
-        const index = (cursor + offset) % models.length;
-        const result = repository.reserve({ slots, model: models[index], at,
+      for (let offset = 0; offset < pool.length; offset++) {
+        const index = (cursor + offset) % pool.length;
+        const result = repository.reserve({ slots, model: pool[index], at,
           accountMode: true, requestsPerDay: Infinity, requestsPerKeyPerDay: Infinity,
           requestsPerHour: Infinity, requestsPerMinute: 10, minIntervalMs: 10000,
           pacingModels:GEMMA_TRANSLATION_MODELS,estimatedTokensPerMinute: 16000, estimatedTokens });
-        if (result.admitted) { ticket = result; cursor = (index + 1) % models.length; break; }
+        if (result.admitted) {
+          ticket = result;
+          if (pool === models) cursor = (index + 1) % models.length;
+          break;
+        }
         retryAt = Math.min(retryAt, result.retryAt);
       }
       if (ticket || retryAt > deadline || !Number.isFinite(retryAt)) break;
@@ -126,7 +134,7 @@ export function createGemmaTranslationRouter(options = {}) {
       let lastError;
       for (let attempt = 0; attempt < 3; attempt++) {
         let ticket;
-        try { ticket = await admit(attempt === 0 ? 61000 : 1500, estimatedTokens); }
+        try { ticket = await admit(attempt === 0 ? 61000 : 1500, estimatedTokens, attempt === 0 ? models : retryModels); }
         catch (error) {
           if (error?.code === 'budget-deferred' && lastError) throw lastError;
           throw error;
@@ -150,10 +158,11 @@ export function createGemmaTranslationRouter(options = {}) {
             const hasStreamStatus = Number.isInteger(streamStatus) && streamStatus >= 100 && streamStatus <= 599;
             const streamQuota = error?.code === 'gemma-stream-error'
               ? geminiQuotaCooldown({ status: hasStreamStatus ? streamStatus : 0 }, { error: error.upstreamError }, now()) : null;
-            const retryable = error?.name === 'TimeoutError'
+            const connectTimeout = isGoogleConnectTimeout(error);
+            const retryable = error?.name === 'TimeoutError' || connectTimeout
               || (error?.code === 'gemma-stream-error' && !streamQuota && (!hasStreamStatus || streamStatus >= 500));
-            if (error?.code === 'gemma-stream-error' || error?.name === 'TimeoutError') {
-              logGemmaUpstreamFailure(hasStreamStatus ? streamStatus : (error?.name === 'TimeoutError' ? 408 : 0), error?.upstreamError ? JSON.stringify(error.upstreamError) : String(error?.message || ''), context());
+            if (error?.code === 'gemma-stream-error' || error?.name === 'TimeoutError' || connectTimeout) {
+              logGemmaUpstreamFailure(hasStreamStatus ? streamStatus : (error?.name === 'TimeoutError' || connectTimeout ? 408 : 0), error?.upstreamError ? JSON.stringify(error.upstreamError) : String(error?.message || ''), context());
             }
             if (streamQuota) repository.cooldown(ticket.project, ticket.model, streamQuota.blockedUntil);
             else if (retryable) repository.cooldown(ticket.project, ticket.model, now() + 60000);

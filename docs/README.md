@@ -6,7 +6,7 @@
 
 - `progress/2026-10-07-gemma-original-translation.md`：912项检查、安全重载和真实原文翻译落库验收。
 
-- `gemma-original-translation.md`：Gemma 31B/26B 专用原文翻译、Worker 排队、排版落库和无其他模型回退规则。
+- `gemma-original-translation.md`：Gemma 原文翻译（默认只用 26B）、Worker 排队、排版落库和无其他模型回退规则。
 
 - `feed-interaction-v1.md`：用户授权的 X 阅读页单条点赞试用；BrowserRuntime 精确定位、Worker 固定任务及重开原帖核验。
 
@@ -24,6 +24,8 @@
 `plan/` 与 `progress/` 保留历史，不重新驱动当前开发。旧计划与已执行迁移记录不要批量删除。
 
 ## 当前
+
+- `progress/2026-10-13-gemma-26b-connect-timeout.md`：Gemma 原文翻译默认只用 26B。5xx、响应超时和连接超时在 26B 上换另一把密钥，不转到 31B。Google 直连增加可配置的短连接超时，和长响应超时分开。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-13-prebuilt-buffer-hit.md`：报价列表、雪球首页 / 7x24 和总览 bootstrap 的请求只写出已经预备好的缓冲区。没有缓冲区时返回 `pending`，不在请求里组包或序列化。大事件帧不再读出 payload。migration 65。需要同时重启 Web 和 Worker。
 
