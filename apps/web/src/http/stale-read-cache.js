@@ -16,13 +16,13 @@ export function storedFeedCacheKey(workspaceId, providerId, query = {}) {
   return `${workspaceId}|${providerId}|${parts.join('&')}`;
 }
 
-export function createStaleReadCache({ ttlMs, now } = {}) {
+export function createStaleReadCache({ ttlMs, now, refreshLeadMs = 0 } = {}) {
   const caches = new Map();
   return {
     get(key, read, { refresh = false } = {}) {
       let cache = caches.get(key);
       if (!cache) {
-        cache = createMemorySnapshotCache({ ttlMs, now, read });
+        cache = createMemorySnapshotCache({ ttlMs, now, read, refreshLeadMs });
         caches.set(key, cache);
       }
       return cache.get({ refresh });

@@ -30,7 +30,7 @@ Retry-After: 17
 
 | 方法 | 路径 | 参数 |
 |---|---|---|
-| GET | `/api/v1/home/bootstrap` | 可选 `refresh=1`。设备登录，不接受 Bearer。首屏字段，15 秒缓存已序列化的正文和 gzip，带弱 ETag |
+| GET | `/api/v1/home/bootstrap` | 可选 `refresh=1`。设备登录，不接受 Bearer。首屏字段，15 秒缓存已序列化的正文和 gzip，到期前约 5 秒后台重算，带弱 ETag |
 | GET | `/api/v1/reports/daily/latest` | 无 |
 | GET | `/api/v1/reports/daily` | `date` |
 | GET | `/api/v1/reports/daily/latest/brief` | 无 |
@@ -40,7 +40,7 @@ Retry-After: 17
 | GET | `/api/v1/reports/daily/evidence` | `date`，`revision`，`materialId`，`paragraphId` |
 | GET | `/api/v1/reports/daily/tracking` | 无 |
 | GET | `/api/v1/reports/daily/analysis/status` | `date` |
-| GET | `/api/v1/reports/tree` | `startAt`，`endAt`，可选 `view=index`，`information=1` |
+| GET | `/api/v1/reports/tree` | `startAt`，`endAt`，可选 `view=index`，`information=1`。目录走 migration 60 的列，15 秒进程内序列化缓存，响应仍 `no-store` |
 | GET | `/api/v1/reports/tree/edition` | `id` |
 | GET | `/api/v1/reports/tree/node` | `id` |
 | GET | `/api/v1/reports/tree/children` | `id` |
@@ -109,8 +109,8 @@ curl -sS "https://center.example.com/api/v1/reports/hourly/search?startAt=176026
 
 | 方法 | 路径 | 参数 |
 |---|---|---|
-| GET | `/api/v1/feed/x` | `feed=for-you` 或 `following`，`limit`，`saved`，`before` |
-| GET | `/api/v1/feed/xueqiu` | `feed=following` 等，`limit`，`saved`，`before` |
+| GET | `/api/v1/feed/x` | `feed=for-you` 或 `following`，`limit`，`saved`，`before`。`following` 且 `limit=12` 的首页和已读头可读 Worker 快照 |
+| GET | `/api/v1/feed/xueqiu` | `feed=following` 等，`limit`，`saved`，`before`。`following` 且 `limit=12` 的首页和已读头可读 Worker 快照 |
 | GET | `/api/v1/feed/bilibili` | `limit`，`saved`，`before` |
 | GET | `/api/v1/feed/media` | `channel=tech` 或 `macro`，`view`，`sourceKey`，`limit`，`offset`，`before` |
 | GET | `/api/v1/feed/trendforce` | `limit`，`saved`。响应固定为摘要列表，并带 `ETag`；`If-None-Match` 命中且没有排队抓取时返回 304。全文用 `GET /api/v1/feed/media/article` |

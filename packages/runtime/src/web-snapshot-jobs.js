@@ -17,7 +17,10 @@ export const STATIC_SIGNAL_BOARD_SCHEDULE_KEY = 'source.static-signal-board.snap
 export const HOLDINGS_MARKET_SCHEDULE_KEY = 'market.holdings.snapshot';
 export const MARKET_BOARDS_SCHEDULE_KEY = 'market.boards.snapshot';
 export const MARKET_NATIVE_BOARD_SCHEDULE_KEY = 'market.native-board.snapshot';
+export const FEED_LIST_JOB_TYPE = 'feed.lists.snapshot';
+export const FEED_LIST_SCHEDULE_KEY = 'feed.lists.snapshot';
 export const HOLDINGS_MARKET_SNAPSHOT_KEY = 'holdings-market';
+export const FEED_LIST_SNAPSHOT_TTL_MS = 90_000;
 export { MARKET_NATIVE_BOARD_SNAPSHOT_KEY, marketBoardSnapshotKey };
 
 const DAY_MS = 86_400_000;
@@ -32,12 +35,14 @@ export const webSnapshotManifest = Object.freeze({
     HOLDINGS_MARKET_JOB_TYPE,
     MARKET_BOARDS_JOB_TYPE,
     MARKET_NATIVE_BOARD_JOB_TYPE,
+    FEED_LIST_JOB_TYPE,
   ],
   jobTypes: [
     STATIC_SIGNAL_BOARD_JOB_TYPE,
     HOLDINGS_MARKET_JOB_TYPE,
     MARKET_BOARDS_JOB_TYPE,
     MARKET_NATIVE_BOARD_JOB_TYPE,
+    FEED_LIST_JOB_TYPE,
   ],
 });
 
@@ -185,12 +190,53 @@ export async function captureMarketNativeBoard({
   };
 }
 
+const FEED_LIST_PAGES = [
+  ['feed-list-x', 'x', { feed: 'following', limit: 12, fields: 'list' }],
+  ['feed-list-x-read', 'x', { feed: 'following', limit: 12, fields: 'list', before: { isRead: 1, at: Number.MAX_SAFE_INTEGER, id: '~' } }],
+  ['feed-list-xueqiu', 'xueqiu', { feed: 'following', limit: 12, fields: 'list' }],
+  ['feed-list-xueqiu-read', 'xueqiu', { feed: 'following', limit: 12, fields: 'list', before: { isRead: 1, at: Number.MAX_SAFE_INTEGER, id: '~' } }],
+];
+
+export function feedListSnapshotKey(providerId, query = {}) {
+  if (query.refresh || query.saved || query.fields !== 'list' || Number(query.limit) !== 12) return '';
+  const readHead = query.before?.isRead === 1 && query.before?.id === '~' && query.before?.at === Number.MAX_SAFE_INTEGER;
+  if (query.before && !readHead) return '';
+  const suffix = readHead ? '-read' : '';
+  if (providerId === 'x' && query.feed === 'following') return `feed-list-x${suffix}`;
+  if (providerId === 'xueqiu' && query.feed === 'following') return `feed-list-xueqiu${suffix}`;
+  return '';
+}
+
+export async function captureFeedLists({
+  feedService,
+  repository,
+  workspaceId = 'local',
+  now = () => Date.now(),
+}) {
+  if (!feedService?.getExternalFeed) throw new Error('信息流快照需要 Feed');
+  if (!repository?.saveSnapshot) throw new Error('信息流快照需要存储');
+  const at = now();
+  let pages = 0;
+  for (const [key, providerId, query] of FEED_LIST_PAGES) {
+    try {
+      const feed = await feedService.getExternalFeed(providerId, query, { workspaceId });
+      repository.saveSnapshot(workspaceId, key, { ok: true, feed }, at);
+      pages += 1;
+    } catch {
+      /* 未启用的来源不写快照，请求仍走原来的读取。 */
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  return { generatedAt: at, pages };
+}
+
 export function createWebSnapshotJobHandlers(options) {
   return {
     [STATIC_SIGNAL_BOARD_JOB_TYPE]: async () => captureStaticSignalBoard(options),
     [HOLDINGS_MARKET_JOB_TYPE]: async () => captureHoldingsMarket(options),
     [MARKET_BOARDS_JOB_TYPE]: async () => captureMarketBoards(options),
     [MARKET_NATIVE_BOARD_JOB_TYPE]: async () => captureMarketNativeBoard(options),
+    [FEED_LIST_JOB_TYPE]: async () => captureFeedLists(options),
   };
 }
 
@@ -222,4 +268,8 @@ export function ensureMarketBoardsSchedule(store, now = Date.now()) {
 
 export function ensureMarketNativeBoardSchedule(store, now = Date.now()) {
   return upsertInterval(store, MARKET_NATIVE_BOARD_SCHEDULE_KEY, MARKET_NATIVE_BOARD_JOB_TYPE, now);
+}
+
+export function ensureFeedListSchedule(store, now = Date.now()) {
+  return upsertInterval(store, FEED_LIST_SCHEDULE_KEY, FEED_LIST_JOB_TYPE, now);
 }

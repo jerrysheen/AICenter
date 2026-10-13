@@ -2,8 +2,9 @@ import { createHash } from 'node:crypto';
 import { parseBilibiliImportInput, parseHideFlag, parsePatchUserItemStateInput, parsePersistFeedTranslationsInput, parsePostInput, parseTranslateBatchInput, parseTranslateInput, ValidationError } from '../../../../packages/contracts/src/index.js';
 import { json, readJson } from '../http/response.js';
 import { labelEventLoop } from '../http/event-loop-blocks.js';
-import { prepareJsonBody, sendPreparedJson } from '../http/prepared-json.js';
+import { prepareJsonBody, prepareJsonText, sendPreparedJson } from '../http/prepared-json.js';
 import { createStaleReadCache, STORED_FEED_CACHE_PROVIDERS, STORED_FEED_CACHE_TTL_MS, storedFeedCacheKey } from '../http/stale-read-cache.js';
+import { FEED_LIST_SNAPSHOT_TTL_MS, feedListSnapshotKey } from '../../../../packages/runtime/src/web-snapshot-jobs.js';
 
 function listEtag(feed) {
   const stable = feed && typeof feed === 'object' ? { ...feed } : {};
@@ -187,9 +188,13 @@ export function createFeedRoutes() {
           const mediaJob = providerId === 'media' && query.refresh ? services.runtime.requestMediaSync({ workspaceId: workspaceIdFrom(identity), channel: query.channel }) : null;
           const workspaceId = workspaceIdFrom(identity);
           if (STORED_FEED_CACHE_PROVIDERS.has(providerId) && !query.refresh && !mediaJob && !trendforceJob) {
+            const snapshotKey = feedListSnapshotKey(providerId, query);
+            const snapshot = snapshotKey ? services.runtimeSnapshots?.readSnapshotBody?.(workspaceId, snapshotKey) : null;
+            const snapshotFresh = snapshot && Date.now() - snapshot.generatedAt < FEED_LIST_SNAPSHOT_TTL_MS;
             const prepared = await feedCache.get(
-              storedFeedCacheKey(workspaceId, providerId, query),
+              snapshotFresh ? `snap|${workspaceId}|${snapshotKey}|${snapshot.generatedAt}` : storedFeedCacheKey(workspaceId, providerId, query),
               async () => {
+                if (snapshotFresh) return prepareJsonText(snapshot.body);
                 const leave = labelEventLoop(`feed.${providerId}`);
                 try {
                   const feed = await services.feed.getExternalFeed(providerId, { ...query, refresh: false }, { workspaceId });
