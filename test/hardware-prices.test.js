@@ -18,6 +18,7 @@ import { createFeedService } from '../packages/domain/src/feed-service.js';
 import { HardwarePriceSnapshotInputSchema,ImportedMediaArticleSchema } from '../packages/contracts/src/hardware-prices.js';
 import mediaConfig from '../config/media.json' with {type:'json'};
 import { createAiCenterServer } from '../apps/web/src/server.js';
+import { captureHardwarePrices } from '../packages/runtime/src/web-snapshot-jobs.js';
 import {createTrendForceJobHandlers,createTrendForceService} from '../packages/connectors/src/trendforce.js';
 import {ensureTrendForcePriceSchedules} from '../packages/runtime/src/trendforce-price-schedule.js';
 const at=Date.parse('2026-10-05T04:00:00Z');
@@ -258,16 +259,20 @@ test('forward migration upgrades V39 with existing content and states intact',()
       DROP INDEX IF EXISTS idx_captures_feed_sort;DROP INDEX IF EXISTS idx_captures_provider_captured;DROP INDEX IF EXISTS idx_captures_feed_filter;
       DROP INDEX IF EXISTS idx_content_items_capture_cover;DROP INDEX IF EXISTS idx_user_item_states_feed_flags;
       DROP TABLE IF EXISTS gemini_model_cursors;
-      DELETE FROM schema_migrations WHERE version IN (40,54,55,56,57,58,59,60,61,62,64);PRAGMA user_version=39;`);
+      DELETE FROM schema_migrations WHERE version IN (40,54,55,56,57,58,59,60,61,62,64,65);PRAGMA user_version=39;`);
     const before=db.prepare('SELECT count(*) n FROM content_items').get().n;runMigrations(db);runMigrations(db);
     assert.equal(db.pragma('user_version',{simple:true}),latestSchemaVersion());assert.equal(db.prepare('SELECT count(*) n FROM content_items').get().n,before);
     assert.equal(db.prepare(`SELECT COUNT(*) n FROM pragma_table_info('hardware_price_snapshots') WHERE name='last_checked_at'`).get().n,1);db.close();
   }finally{rmSync(f.directory,{recursive:true,force:true});}
 });
 test('hardware HTTP endpoints are read-only, scoped and explicit legacy migration queues a registered job',async()=>{
-  const f=fixture();const app=createAiCenterServer({host:'127.0.0.1',port:0,dataDirectory:f.directory,store:f.store,feedFilter:null,hardwarePriceService:f.hardware});
+  const f=fixture();const databasePath=path.join(f.directory,'test.db');
+  const app=createAiCenterServer({host:'127.0.0.1',port:0,dataDirectory:f.directory,databasePath,store:f.store,feedFilter:null,hardwarePriceService:f.hardware});
   const address=await app.listen();try {
-    f.hardware.ingest('local',parsed());const read=await fetch(`${address.localUrl}/api/v1/hardware-prices`);assert.equal(read.status,200);
+    f.hardware.ingest('local',parsed());
+    await captureHardwarePrices({hardwarePriceService:f.hardware,repository:f.store.repositories.runtimeSnapshots});
+    assert.equal(await app.refreshPreparedSlots(),true);
+    const read=await fetch(`${address.localUrl}/api/v1/hardware-prices`);assert.equal(read.status,200);
     const json=await read.json();assert.equal(json.items.length,1);assert.equal(JSON.stringify(json).includes('artifactPath'),false);
     assert.deepEqual(json.items[0].rawCells,[]);
     assert.equal((await fetch(`${address.localUrl}/api/v1/hardware-prices?category=invalid`)).status,400);

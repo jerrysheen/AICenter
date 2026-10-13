@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-13-prebuilt-buffer-hit.md`：报价列表、雪球首页 / 7x24 和总览 bootstrap 的请求只写出已经预备好的缓冲区。没有缓冲区时返回 `pending`，不在请求里组包或序列化。大事件帧不再读出 payload。migration 65。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-13-usage-http-gemma-retry.md`：信息树和阅读分类的成功调用记下 HTTP 200，模型执行超时记下 408。Gemma 翻译的 5xx 和超时换另一把 Gemma 密钥重试，失败日志带上输入长度、密钥后缀、耗时、并发和响应体。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-13-flash-sources.md`：雪球 7x24 和产业在线快讯不再进入小时阅读分类、JEV 和信息树。信息流增加「快讯」页签，按时间列出原文。名单在 `config/flash-sources.json`，可用 `AI_CENTER_FLASH_SOURCES` 整表替换。不新增 migration。需要同时重启 Web 和 Worker。

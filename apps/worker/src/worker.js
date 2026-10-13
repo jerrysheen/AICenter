@@ -81,7 +81,7 @@ import { createWorkPackageTracePort } from '../../../packages/runtime/src/work-p
 import { createFailureStreakStore, createSourceHub, createSourceModuleRegistry, installFailureStreakStore, readStaticSignalBoard } from '../../../packages/source/src/index.js';
 import { createMemorySnapshotCache } from '../../../packages/runtime/src/snapshot-cache.js';
 import {
-  createWebSnapshotJobHandlers, ensureFeedListSchedule, ensureHardwarePriceSchedule, ensureHoldingsMarketSchedule, ensureMarketBoardsSchedule,
+  createHomeBootstrapCompose, createWebSnapshotJobHandlers, ensureFeedListSchedule, ensureHardwarePriceSchedule, ensureHoldingsMarketSchedule, ensureHomeBootstrapSchedule, ensureMarketBoardsSchedule,
   ensureMarketNativeBoardSchedule, ensureStaticSignalBoardSchedule,
   HOLDINGS_MARKET_SNAPSHOT_KEY, webSnapshotManifest,
 } from '../../../packages/runtime/src/web-snapshot-jobs.js';
@@ -536,6 +536,13 @@ export function createAiCenterWorker(options = {}) {
       feedService,
       feedRepository: store.repositories.feed,
       hardwarePriceService,
+      composeHomeBootstrap: createHomeBootstrapCompose({
+        store,
+        report: reportService,
+        env,
+        timezone: dailyConfig.timezone,
+        pipeline: treeEnabled ? 'tree-v3' : 'legacy',
+      }),
     }),
   });
   registry.register({
@@ -617,6 +624,7 @@ export function createAiCenterWorker(options = {}) {
     ensureMarketNativeBoardSchedule(store);
     ensureFeedListSchedule(store);
     ensureHardwarePriceSchedule(store);
+    ensureHomeBootstrapSchedule(store);
     ensureInvestorDiscussionSchedule(store, env);
     ensureTrendForcePriceSchedules(store, env);
     ensureComputePriceSchedules(store, env);

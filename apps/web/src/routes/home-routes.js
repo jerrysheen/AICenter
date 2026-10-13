@@ -1,8 +1,8 @@
 import { json } from '../http/response.js';
 import { createHomeBootstrapHandler, HOME_BOOTSTRAP_PATH } from '../http/home-bootstrap.js';
 
-export function createHomeRoutes() {
-  const handler = createHomeBootstrapHandler();
+export function createHomeRoutes({ slots } = {}) {
+  const handler = createHomeBootstrapHandler({ slots });
   return [
     {
       method: 'GET',

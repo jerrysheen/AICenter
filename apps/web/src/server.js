@@ -25,7 +25,7 @@ import { createAgentTraceLog } from '../../../packages/runtime/src/agent-trace-l
 import { createWorkPackageTracePort } from '../../../packages/runtime/src/work-package-trace.js';
 import { readTagCatalogFile } from '../../../packages/runtime/src/tagging-module.js';
 import { createFailureStreakStore, createMarketBoardReader, createMarketNativeBoardReader, createSourceHub, createSourceModuleRegistry, createStaticSignalBoardReader, installFailureStreakStore } from '../../../packages/source/src/index.js';
-import { HOLDINGS_MARKET_SNAPSHOT_KEY } from '../../../packages/runtime/src/web-snapshot-jobs.js';
+import { HOLDINGS_MARKET_SNAPSHOT_KEY, prebuiltSnapshotSlots } from '../../../packages/runtime/src/web-snapshot-jobs.js';
 import { createMemorySnapshotCache } from '../../../packages/runtime/src/snapshot-cache.js';
 import { createEventLoopMonitor } from './http/event-loop-monitor.js';
 import { bindEventLoopProbe, createEventLoopProbe, labelEventLoop } from './http/event-loop-blocks.js';
@@ -37,6 +37,8 @@ import { parseCookies, json } from './http/response.js';
 import { createRouter } from './http/router.js';
 import { createAccessLog } from './http/access-log.js';
 import { createStaticFileHandler } from './http/static-files.js';
+import { createPreparedSlotStore } from './http/prepared-slots.js';
+import { startSnapshotBufferLoader } from './http/snapshot-buffer-loader.js';
 import { createApiRoutes } from './routes/index.js';
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -175,6 +177,7 @@ export function createAiCenterServer(options = {}) {
       runtimeDirectory: options.runtimeDirectory,
       assetWorkbookPath: options.assetWorkbookPath,
       browserId: options.browserId,
+      databasePath: options.databasePath,
     },
   });
   const host = options.host || process.env.AI_CENTER_HOST || '0.0.0.0';
@@ -325,12 +328,14 @@ export function createAiCenterServer(options = {}) {
   const events = createEventStreamHub(services.runtime, {
     getUiRevision: () => serveStatic.getUiRevision(),
   });
-  const router = createRouter(createApiRoutes());
+  const preparedSlots = createPreparedSlotStore();
+  const router = createRouter(createApiRoutes({ slots: preparedSlots }));
   const { cookieName, secureCookieName } = createInstanceCookieNames(instance);
   const cookies = createCookieAdapter(cookieName, secureCookieName);
   const appInfo = Object.freeze({ version, serverName: systemHostname() });
   let actualPort = configuredPort;
   let eventTimer = null;
+  let snapshotLoader = null;
   const pairingAttempts = new Map();
   const loopLog = { at: 0 };
   const accessLog = options.accessLog || createAccessLog({
@@ -346,6 +351,8 @@ export function createAiCenterServer(options = {}) {
   const eventLoopMonitor = createEventLoopMonitor({
     onSample(sample) {
       accessLog.writeEventLoop?.(sample);
+      const prepared = preparedSlots.stats();
+      console.log(`[web] prepared-slots hit=${prepared.hit} pending=${prepared.pending} size=${prepared.size}`);
     },
   });
   const eventLoopDelay = eventLoopMonitor.histogram;
@@ -543,6 +550,7 @@ export function createAiCenterServer(options = {}) {
     store,
     services,
     accessLog,
+    preparedSlots,
     async listen() {
       await new Promise((resolve, reject) => {
         server.once('error', reject);
@@ -550,9 +558,14 @@ export function createAiCenterServer(options = {}) {
       });
       const address = server.address();
       actualPort = typeof address === 'object' && address ? address.port : configuredPort;
+      snapshotLoader = startSnapshotBufferLoader({
+        databasePath: instance.databasePath,
+        slots: preparedSlots,
+        keys: prebuiltSnapshotSlots(),
+      });
+      await snapshotLoader.refresh();
       eventTimer = setInterval(() => {
-        const leave = labelEventLoop('events.flush');
-        try { events.flush(); } finally { leave(); }
+        events.flush();
       }, 250);
       eventTimer.unref?.();
       return {
@@ -563,8 +576,12 @@ export function createAiCenterServer(options = {}) {
         publicUrl: publicBaseUrl,
       };
     },
+    refreshPreparedSlots() {
+      return snapshotLoader?.refresh() || Promise.resolve(false);
+    },
     async close() {
       if (eventTimer) clearInterval(eventTimer);
+      await snapshotLoader?.stop();
       eventLoopMonitor.stop();
       eventLoopProbe.stop();
       events.closeAll();

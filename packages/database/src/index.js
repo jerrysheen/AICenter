@@ -257,11 +257,12 @@ export function createStore(databasePath) {
 
   function insertEvent(name, aggregateType, aggregateId, payload = {}, workspaceId = DEFAULT_WORKSPACE_ID) {
     const now = Date.now();
+    const payloadJson = JSON.stringify(payload);
     const result = database.prepare(`INSERT INTO outbox_events
-      (workspace_id, event_name, aggregate_type, aggregate_id, payload_json, schema_version,
+      (workspace_id, event_name, aggregate_type, aggregate_id, payload_json, payload_bytes, schema_version,
        occurred_at, created_at)
-      VALUES (?, ?, ?, ?, ?, 1, ?, ?)`)
-      .run(workspaceId, name, aggregateType, aggregateId, JSON.stringify(payload), now, now);
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`)
+      .run(workspaceId, name, aggregateType, aggregateId, payloadJson, Buffer.byteLength(payloadJson), now, now);
     return Number(result.lastInsertRowid);
   }
 
@@ -934,17 +935,17 @@ export function createStore(databasePath) {
       const safeAfterId = Math.max(0, Number(afterId) || 0);
       const safeLimit = Math.max(1, Math.min(Number(limit) || 1, 100));
       const rows = workspaceId
-        ? database.prepare(`SELECT id, workspace_id, event_name, length(payload_json) AS payload_chars
+        ? database.prepare(`SELECT id, workspace_id, event_name, payload_bytes
             FROM outbox_events WHERE workspace_id = ? AND id > ? ORDER BY id ASC LIMIT ?`)
           .all(workspaceId, safeAfterId, safeLimit)
-        : database.prepare(`SELECT id, workspace_id, event_name, length(payload_json) AS payload_chars
+        : database.prepare(`SELECT id, workspace_id, event_name, payload_bytes
             FROM outbox_events WHERE id > ? ORDER BY id ASC LIMIT ?`)
           .all(safeAfterId, safeLimit);
       return rows.map((row) => ({
         id: row.id,
         workspaceId: row.workspace_id,
         name: row.event_name,
-        payloadChars: Number(row.payload_chars) || 0,
+        payloadBytes: row.payload_bytes == null ? null : Number(row.payload_bytes),
       }));
     },
 
