@@ -1,6 +1,6 @@
 import { icon } from './icons.js?v=dev';
 import { decodeHtmlEntities } from './html-text.js?v=dev';
-import { newsDayLabel, newsIngestAt, newsPublishedHint, newsRow } from './news-list.js?v=dev';
+import { newsDayLabel, newsIngestAt, newsPublishedHint, newsRow, reportItemTime } from './news-list.js?v=dev';
 import { mountInvestorDigest } from './investor-digest.js?v=dev';
 import { shareTextBlocks, stripSharePlaceholders } from './share-card.js?v=dev';
 import { inclusiveWindowInstant, zonedCalendarParts, zonedClockParts } from './shanghai-time.js?v=dev';
@@ -302,7 +302,7 @@ export function createInformationTreePage(host) {
     const body=String(n.body || '').trim();
     const paragraphs=shareLines(summary);
     if(body && stripSharePlaceholders(body)!==stripSharePlaceholders(summary)) paragraphs.push(...shareLines(body));
-    const at=Number(n.eventAt || edition?.window?.endAt || edition?.window?.startAt || 0);
+    const at=reportItemTime(n, edition);
     return host.shareCard({
       title:stripSharePlaceholders(n.title || ''),
       source:sourceLabel,
@@ -936,7 +936,7 @@ export function createInformationTreePage(host) {
     restoreScroll(Boolean(openedDirection));
   }
   function compactCard(item) {
-    const at=Number(item.n.eventAt || item.edition?.window?.startAt || 0);
+    const at=reportItemTime(item.n, item.edition);
     const source=[item.n.publisher, directions[group(item.n)] || ''].map(part=>String(part || '').trim()).filter(part=>part && part!=='未知').join(' · ');
     const excerpt=String(item.n.text || '').replace(/\s+/g,' ').trim();
     return newsRow({
@@ -997,11 +997,12 @@ export function createInformationTreePage(host) {
     const hint=newsPublishedHint(item.publishedAt, item.firstIngestedAt);
     return [publisher, direction, theme, hint].filter(part=>part && part!=='未知').join(' · ');
   }
-  function readingWhen(item){
-    return {at:newsIngestAt(item), ingested:false};
+  function readingWhen(item, edition){
+    return {at:reportItemTime(item, edition), ingested:false};
   }
-  function byIngest(rows){
-    return [...rows].sort((a,b)=>newsIngestAt(b)-newsIngestAt(a) || String(a.nodeId||a.title||'').localeCompare(String(b.nodeId||b.title||'')));
+  function byIngest(rows, edition){
+    const at=item=>reportItemTime(item, edition) || newsIngestAt(item);
+    return [...rows].sort((a,b)=>at(b)-at(a) || String(a.nodeId||a.title||'').localeCompare(String(b.nodeId||b.title||'')));
   }
   function hourItemHref(edition, nodeId){
     const start=edition?.window?.startAt;
@@ -1012,12 +1013,11 @@ export function createInformationTreePage(host) {
     return nodeId ? `${base}&node=${encodeURIComponent(nodeId)}` : base;
   }
   function readingFocusSnapshot(item, edition){
-    const when=readingWhen(item);
     return {
       id:item.nodeId, resourceId:item.nodeId, resourceType:'reading-node', kind:'reading',
       title:item.title || '', author:readingSourceLine(item, {keepDirection:true}),
-      publishedAt:newsIngestAt(item) || edition?.window?.startAt || 0,
-      createdAt:Number(item.firstIngestedAt) || edition?.window?.startAt || 0,
+      publishedAt:reportItemTime(item, edition) || Number(item.publishedAt) || 0,
+      createdAt:Number(item.firstIngestedAt) || reportItemTime(item, edition) || 0,
       hourStart:edition?.window?.startAt || 0, reportHref:hourItemHref(edition, item.nodeId), focusedAt:Date.now(),
     };
   }
@@ -1038,7 +1038,7 @@ export function createInformationTreePage(host) {
     return list;
   }
   function readingNewsItem(item, edition, {muted=false, keepDirection=false}={}){
-    const when=readingWhen(item);
+    const when=readingWhen(item, edition);
     const tags=item.timely===false ? ['时效不足'] : [];
     const sources=Array.isArray(item.sources) && item.sources.length>1 ? item.sources : null;
     const list=sources ? renderReadingSources(sources) : null;
@@ -1076,7 +1076,7 @@ export function createInformationTreePage(host) {
     const rank=(order,value)=> {const index=order.indexOf(value);return index<0 ? order.length : index;};
     const directionNames=[...new Set(rows.map(item=>item.readingDirectionName).filter(Boolean))].sort((a,b)=>rank(readingDirectionOrder,a)-rank(readingDirectionOrder,b));
     for(const directionName of directionNames){
-      const matched=byIngest(rows.filter(item=>item.readingDirectionName===directionName));
+      const matched=byIngest(rows.filter(item=>item.readingDirectionName===directionName), edition);
       const block=el('section','','reading-block');
       const heading=el('h2',directionName,'reading-direction news-section-title');
       heading.append(el('span',`${matched.length} 条`,'news-section-count'));
@@ -1156,7 +1156,7 @@ export function createInformationTreePage(host) {
     page.append(el('p',`${newsDayLabel(edition.window.startAt)} · ${clock(edition.window.startAt)}\u2013${clock(edition.window.endAt)}`,'news-day-label'));
     const shown=(snapshot.items||[]).filter(item=>item.readingDirectionName && item.readingDirectionName!=='待分类' && item.disposition!=='out-of-scope');
     const hits=shown.filter(item=>item.disposition==='hit' && item.timely!==false);
-    const tail=byIngest(shown.filter(item=>item.disposition!=='hit' || item.timely===false));
+    const tail=byIngest(shown.filter(item=>item.disposition!=='hit' || item.timely===false), edition);
     if(!hits.length && !tail.length) page.append(showEmptyHour());
     else {
       renderReadingDirections(hits, page, edition);

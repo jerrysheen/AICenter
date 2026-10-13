@@ -28,7 +28,7 @@ import {
   unavailableOfficialCount,
 } from './home-timeline.js?v=dev';
 import { decodeHtmlEntities } from './html-text.js?v=dev';
-import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, newsIngestAt, newsPublishedHint, prioritizeReadableFeedRows, renderNewsList } from './news-list.js?v=dev';
+import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, newsIngestAt, newsPublishedHint, prioritizeReadableFeedRows, renderNewsList, reportItemTime } from './news-list.js?v=dev';
 
 const feedLikeButton = createFeedLikeAction({ api: (...args) => api(...args), showToast: text => showToast(text), createAction: options => createDetailAction(options), session: () => state.session });
 
@@ -132,6 +132,7 @@ const state = {
   xNote: '',
   xError: '',
   xNextCursor: '',
+  xReadCursor: '',
   xLoading: false,
   xRefreshing: false,
   xTranslating: false,
@@ -166,12 +167,14 @@ const state = {
   xueqiuNote: '',
   xueqiuError: '',
   xueqiuNextCursor: '',
+  xueqiuReadCursor: '',
   xueqiuLoading: false,
   xueqiuRefreshing: false,
   translations: {},
   xSavedUrls: new Set(),
   dialogPost: null,
   feedShown: 12,
+  feedEpoch: 0,
   feedRestoreId: '',
   feedAnchorId: '',
   notes: [],
@@ -3659,7 +3662,7 @@ function visibleFeedItems() {
   } else if (state.channel === 'social') {
     items = socialFeedItems();
   } else {
-    items = [...socialFeedItems(), ...officialFeedItems()];
+    items = [...socialFeedItems(state.channel === 'all' ? { ignorePlatform: true } : {}), ...officialFeedItems()];
   }
   if (state.feedPlatform !== 'media') {
     const query = String(state.feedQuery || '').trim().toLowerCase();
@@ -3922,6 +3925,11 @@ function applyFeedPlatform(id) {
   state.feedPlatform = next;
   state.platform = next;
   if (isSourceFeedScope(next) || next === 'social') state.channel = 'social';
+  state.feedEpoch = (Number(state.feedEpoch) || 0) + 1;
+  if (typeof elements !== 'undefined' && elements?.feed && typeof renderViewState === 'function') {
+    elements.feed.replaceChildren();
+    renderViewState(elements.feed, { kind: 'loading', title: '正在读取内容…', message: '' });
+  }
   resetFeedWindow();
   renderChannels();
   renderPlatformFilters();
@@ -4400,7 +4408,39 @@ function socialFeedCanPage(platform = '') {
   return shows('x') || shows('xueqiu');
 }
 
+function socialPartitionUnread(cursor) {
+  return String(cursor || '').startsWith('0,');
+}
+
+function socialFeedHasMore() {
+  if (!socialFeedCanPage()) return false;
+  const pending = (platform, next, read) => socialFeedCanPage(platform) && Boolean(next || read);
+  return pending('x', state.xNextCursor, state.xReadCursor) || pending('xueqiu', state.xueqiuNextCursor, state.xueqiuReadCursor);
+}
+
 function revealMoreFeed() {
+  if (state.channel === 'social') {
+    const unreadLoaded = visibleFeedItems().filter((item) => !item.isRead).length;
+    if (state.feedShown < unreadLoaded) {
+      state.feedShown = Math.min(unreadLoaded, state.feedShown + FEED_PAGE_SIZE);
+      renderPosts();
+      return;
+    }
+    const unreadX = socialFeedCanPage('x') && socialPartitionUnread(state.xNextCursor) && !state.xLoading;
+    const unreadQ = socialFeedCanPage('xueqiu') && socialPartitionUnread(state.xueqiuNextCursor) && !state.xueqiuLoading;
+    if (unreadX) loadXFeed({ refresh: false, append: true }).catch((error) => showToast(error.message));
+    if (unreadQ) loadXueqiuFeed({ append: true }).catch((error) => showToast(error.message));
+    if (
+      unreadX || unreadQ
+      || (socialFeedCanPage('x') && socialPartitionUnread(state.xNextCursor))
+      || (socialFeedCanPage('xueqiu') && socialPartitionUnread(state.xueqiuNextCursor))
+    ) return;
+    const readX = socialFeedCanPage('x') && state.xReadCursor && !state.xLoading;
+    const readQ = socialFeedCanPage('xueqiu') && state.xueqiuReadCursor && !state.xueqiuLoading;
+    if (readX) loadXFeed({ refresh: false, append: true, readPage: true }).catch((error) => showToast(error.message));
+    if (readQ) loadXueqiuFeed({ append: true, readPage: true }).catch((error) => showToast(error.message));
+    if (readX || readQ || state.xReadCursor || state.xueqiuReadCursor) return;
+  }
   const total = visibleFeedItems().length;
   if (state.feedShown >= total) {
     if (state.feedPlatform === 'media' && state.mediaNextOffset != null && !state.mediaLoading) loadMediaFeed({ append: true }).catch(error => showToast(error.message));
@@ -4562,6 +4602,13 @@ function orderFeedRows(rows) {
   return tail.length ? [...main, ...tail] : rows;
 }
 
+function socialShownRows(rows) {
+  const unread = [];
+  const read = [];
+  for (const row of rows || []) (row?.isRead ? read : unread).push(row);
+  return [...unread.slice(0, state.feedShown), ...read];
+}
+
 function renderPosts() {
   const restoreSwipeId = document.querySelector('#feed .swipe-front.is-open')?.dataset.postId || '';
   const items = visibleFeedItems();
@@ -4569,7 +4616,10 @@ function renderPosts() {
   const orderedRows = state.channel === 'recent' || typeof prioritizeReadableFeedRows !== 'function'
     ? null
     : orderFeedRows(prioritizeReadableFeedRows(items.map(feedToNewsRow)));
-  const shown = orderedRows ? orderedRows.slice(0, state.feedShown) : items.slice(0, state.feedShown);
+  const windowed = orderedRows ? orderedRows.slice(0, state.feedShown) : items.slice(0, state.feedShown);
+  const shown = state.channel === 'social' && orderedRows && typeof socialShownRows === 'function'
+    ? socialShownRows(orderedRows)
+    : windowed;
   if (state.channel === 'recent' && state.feedPlatform !== 'media') {
     const signature = recentFeedPaintSignature(shown, items.length);
     if (signature === recentFeedPainted && elements.feed.childElementCount) {
@@ -4621,7 +4671,7 @@ function renderPosts() {
       });
     }
     elements.feed.append(empty);
-    if (state.feedPlatform === 'media' && state.mediaNextOffset != null || socialFeedCanPage() && (state.xNextCursor || state.xueqiuNextCursor)) {
+    if (state.feedPlatform === 'media' && state.mediaNextOffset != null || socialFeedHasMore()) {
       const more = document.createElement('div');
       more.className = 'feed-more';
       more.textContent = '继续读取文章…';
@@ -4638,7 +4688,7 @@ function renderPosts() {
   more.id = 'feed-sentinel';
   const canLoad = shown.length < items.length
     || (state.feedPlatform === 'media' && state.mediaNextOffset != null)
-    || (socialFeedCanPage() && Boolean(state.xNextCursor || state.xueqiuNextCursor));
+    || socialFeedHasMore();
   more.dataset.done = canLoad ? '0' : '1';
   more.textContent = canLoad ? '下滑显示更多' : '已经到底了';
   elements.feed.append(more);
@@ -6899,8 +6949,8 @@ function homeHourSource(item) {
   return [publisher, theme, hint].filter((part) => part && part !== '未知').join(' · ');
 }
 
-function homeHourWhen(item) {
-  return { at: newsIngestAt(item), ingested: false };
+function homeHourWhen(item, edition) {
+  return { at: reportItemTime(item, edition), ingested: false };
 }
 
 function homeHourHref(startAt, nodeId = '') {
@@ -6909,7 +6959,7 @@ function homeHourHref(startAt, nodeId = '') {
 }
 
 function homeReadingSnapshot(item, edition) {
-  const when = homeHourWhen(item);
+  const when = homeHourWhen(item, edition);
   return {
     id: item.nodeId,
     resourceId: item.nodeId,
@@ -6917,8 +6967,8 @@ function homeReadingSnapshot(item, edition) {
     kind: 'reading',
     title: item.title || '',
     author: homeHourSource(item),
-    publishedAt: when.at || edition?.window?.startAt || 0,
-    createdAt: Number(item.firstIngestedAt) || edition?.window?.startAt || 0,
+    publishedAt: when.at || Number(item.publishedAt) || 0,
+    createdAt: Number(item.firstIngestedAt) || when.at || 0,
     hourStart: edition?.window?.startAt || 0,
     reportHref: homeHourHref(edition?.window?.startAt, item.nodeId),
   };
@@ -7009,7 +7059,7 @@ function homeMessagesStatus() {
 }
 
 function homeHourRow(item, edition) {
-  const when = homeHourWhen(item);
+  const when = homeHourWhen(item, edition);
   const snap = homeReadingSnapshot(item, edition);
   return {
     id: item.nodeId,
@@ -10908,11 +10958,10 @@ function renderHomeDaily() {
   });
   if (!host) return;
   const items = Array.isArray(brief?.informationItems) ? brief.informationItems : [];
-  const at = Number(brief?.generatedAt) || 0;
   const rows = items.filter((item) => item?.sentence).slice(0, 3).map((item) => ({
     id: item.id,
     title: decodeHtmlEntities(item.sentence),
-    at,
+    at: reportItemTime({ publishedAt: item.occurredAt, eventAt: item.occurredAt }),
     onOpen: () => setView('report'),
   }));
   renderNewsList(host, rows, { groupByDay: false, emptyText: '还没有日报' });
@@ -13281,7 +13330,8 @@ async function tagXBatch({ silent = false } = {}) {
   }
 }
 
-function paintLoadedSocialFeed(source) {
+function paintLoadedSocialFeed(source, epoch) {
+  if (epoch != null && state.feedEpoch !== epoch) return;
   const view = typeof document === 'undefined' ? '' : (document.body?.dataset?.view || '');
   if (view === 'feed') {
     const channel = state.channel || 'all';
@@ -13295,8 +13345,61 @@ function paintLoadedSocialFeed(source) {
   renderPosts();
 }
 
-async function loadXFeed({ refresh = false, autoTranslate = true, append = false, focusWindow = false, saved = false, before = '' } = {}) {
+function placeSocialItems(existing, incoming) {
+  const byId = new Map();
+  const order = [];
+  const take = (item) => {
+    if (!item?.id) return;
+    const prev = byId.get(item.id);
+    const merged = prev ? mergeLoadedFeedItem(prev, item) : item;
+    const row = merged?.isRead || item.isRead ? { ...merged, isRead: true } : merged;
+    if (!byId.has(item.id)) order.push(item.id);
+    byId.set(item.id, row);
+  };
+  for (const item of existing || []) take(item);
+  for (const item of incoming || []) take(item);
+  const unread = [];
+  const read = [];
+  for (const id of order) (byId.get(id).isRead ? read : unread).push(byId.get(id));
+  return [...unread, ...read];
+}
+
+async function mergeSocialReadHead(platform, { epoch = null } = {}) {
+  if (state.channel !== 'social' || (epoch != null && state.feedEpoch !== epoch)) return;
+  const isXueqiu = platform === 'xueqiu';
+  const unreadCursor = isXueqiu ? state.xueqiuNextCursor : state.xNextCursor;
+  const readCursor = isXueqiu ? state.xueqiuReadCursor : state.xReadCursor;
+  if (readCursor || !String(unreadCursor || '').startsWith('0,')) return;
+  try {
+    const params = new URLSearchParams({
+      platform,
+      feed: isXueqiu ? state.xueqiuFeed : state.xFeed,
+      limit: String(FEED_PAGE_SIZE),
+      before: `1,${Number.MAX_SAFE_INTEGER},~`,
+    });
+    const payload = await api(`/api/v1/feed/${platform}?${params}`, { timeoutMs: 15_000 });
+    if (epoch != null && state.feedEpoch !== epoch) return;
+    if (state.channel !== 'social') return;
+    const feed = payload.feed || {};
+    const incoming = (feed.items || []).filter((item) => item?.id && !isHiddenFeedItem(item)).map((item) => ({ ...item, isRead: true }));
+    const current = isXueqiu ? state.xueqiuItems : state.xItems;
+    const next = typeof placeSocialItems === 'function' ? placeSocialItems(current, incoming) : [...(current || []), ...incoming];
+    const cursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
+    if (isXueqiu) {
+      state.xueqiuItems = next;
+      state.xueqiuReadCursor = cursor;
+    } else {
+      state.xItems = next;
+      state.xReadCursor = cursor;
+    }
+  } catch {
+    /* 已读头失败时未读列表仍然保留 */
+  }
+}
+
+async function loadXFeed({ refresh = false, autoTranslate = true, append = false, focusWindow = false, saved = false, before = '', readPage = false } = {}) {
   if (!state.session) return null;
+  const epoch = state.feedEpoch;
   state.xLoading = true;
   state.xError = '';
   state.xRefreshing = refresh;
@@ -13309,14 +13412,21 @@ async function loadXFeed({ refresh = false, autoTranslate = true, append = false
     });
     params.set('limit', focusWindow || refresh || saved ? '50' : String(FEED_PAGE_SIZE));
     if (saved && before) params.set('before', before);
+    else if (append && readPage && state.xReadCursor) params.set('before', state.xReadCursor);
     else if (append && state.xNextCursor) params.set('before', state.xNextCursor);
     if (saved) params.set('saved', '1');
     if (refresh) params.set('refresh', '1');
     const payload = await api(`/api/v1/feed/x?${params}`, { timeoutMs: refresh ? 180_000 : 15_000 });
+    if (epoch != null && state.feedEpoch !== epoch) return payload.feed || null;
     const feed = payload.feed || {};
     const incoming = (feed.items || []).filter((item) => !isHiddenFeedItem(item));
     if (saved) {
       state.xItems = mergeLoadedFeed(state.xItems, incoming);
+    } else if (append && readPage) {
+      const seen = new Set((state.xItems || []).map((item) => item.id));
+      const added = incoming.filter((item) => item.id && !seen.has(item.id));
+      state.xItems = typeof placeSocialItems === 'function' ? placeSocialItems(state.xItems, added.map((item) => ({ ...item, isRead: true }))) : [...(state.xItems || []), ...added.map((item) => ({ ...item, isRead: true }))];
+      state.xReadCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
     } else if (append) {
       const seen = new Set((state.xItems || []).map((item) => item.id));
       const added = incoming.filter((item) => item.id && !seen.has(item.id));
@@ -13326,6 +13436,7 @@ async function loadXFeed({ refresh = false, autoTranslate = true, append = false
     } else if (refresh || focusWindow || !(state.xItems || []).length) {
       state.xItems = incoming;
       state.xNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
+      state.xReadCursor = '';
     } else {
       const paged = state.xItems.length > incoming.length;
       const cursor = state.xNextCursor;
@@ -13336,11 +13447,13 @@ async function loadXFeed({ refresh = false, autoTranslate = true, append = false
     state.xNote = feed.note || '';
     state.xError = '';
     state.xLoaded = true;
+    if (!saved && !focusWindow && !append && typeof mergeSocialReadHead === 'function') await mergeSocialReadHead('x', { epoch });
+    if (epoch != null && state.feedEpoch !== epoch) return feed;
     hydrateFeedTranslations(state.xItems);
-    paintLoadedSocialFeed('x');
+    paintLoadedSocialFeed('x', epoch);
     renderXToolbar();
     syncLocalTranslationsToServer(state.xItems).catch(() => {});
-    loadFeedTaggings(state.xItems).then(() => paintLoadedSocialFeed('x')).catch(() => {});
+    loadFeedTaggings(state.xItems).then(() => paintLoadedSocialFeed('x', epoch)).catch(() => {});
     if (autoTranslate) translateXBatch({ silent: true }).catch(() => {});
     return feed;
   } catch (error) {
@@ -13352,7 +13465,7 @@ async function loadXFeed({ refresh = false, autoTranslate = true, append = false
     state.xLoading = false;
     state.xRefreshing = false;
     renderXToolbar();
-    paintLoadedSocialFeed('x');
+    paintLoadedSocialFeed('x', epoch);
     if (typeof document !== 'undefined' && document.body?.dataset?.view === 'sources' && state.overviewTimeline === 'social') renderOverviewTimeline();
     if (!focusWindow && !saved && state.channel === 'focus' && !state.xFocusLoaded && !state.xFocusLoading) {
       loadFocusFeedWindow('x').catch((error) => showToast(error.message));
@@ -13401,7 +13514,7 @@ async function runXCapturePipeline() {
   }
 }
 
-async function loadXueqiuFeed({ refresh = false, append = false, focusWindow = false, saved = false, before = '' } = {}) {
+async function loadXueqiuFeed({ refresh = false, append = false, focusWindow = false, saved = false, before = '', readPage = false } = {}) {
   if (!state.session) {
     if (refresh) {
       showToast('请先在设置中完成设备连接');
@@ -13409,6 +13522,7 @@ async function loadXueqiuFeed({ refresh = false, append = false, focusWindow = f
     }
     return null;
   }
+  const epoch = state.feedEpoch;
   state.xueqiuLoading = true;
   state.xueqiuError = '';
   state.xueqiuRefreshing = Boolean(refresh);
@@ -13421,14 +13535,21 @@ async function loadXueqiuFeed({ refresh = false, append = false, focusWindow = f
     });
     params.set('limit', focusWindow || refresh || saved ? '50' : String(FEED_PAGE_SIZE));
     if (saved && before) params.set('before', before);
+    else if (append && readPage && state.xueqiuReadCursor) params.set('before', state.xueqiuReadCursor);
     else if (append && state.xueqiuNextCursor) params.set('before', state.xueqiuNextCursor);
     if (saved) params.set('saved', '1');
     if (refresh) params.set('refresh', '1');
     const payload = await api(`/api/v1/feed/xueqiu?${params}`, { timeoutMs: refresh ? 180_000 : 15_000 });
+    if (epoch != null && state.feedEpoch !== epoch) return payload.feed || null;
     const feed = payload.feed || {};
     const incoming = (feed.items || []).filter((item) => !isHiddenFeedItem(item));
     if (saved) {
       state.xueqiuItems = mergeLoadedFeed(state.xueqiuItems, incoming);
+    } else if (append && readPage) {
+      const seen = new Set((state.xueqiuItems || []).map((item) => item.id));
+      const added = incoming.filter((item) => item.id && !seen.has(item.id));
+      state.xueqiuItems = typeof placeSocialItems === 'function' ? placeSocialItems(state.xueqiuItems, added.map((item) => ({ ...item, isRead: true }))) : [...(state.xueqiuItems || []), ...added.map((item) => ({ ...item, isRead: true }))];
+      state.xueqiuReadCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
     } else if (append) {
       const seen = new Set((state.xueqiuItems || []).map((item) => item.id));
       const added = incoming.filter((item) => item.id && !seen.has(item.id));
@@ -13438,6 +13559,7 @@ async function loadXueqiuFeed({ refresh = false, append = false, focusWindow = f
     } else if (refresh || focusWindow || !(state.xueqiuItems || []).length) {
       state.xueqiuItems = incoming;
       state.xueqiuNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
+      state.xueqiuReadCursor = '';
     } else {
       const paged = state.xueqiuItems.length > incoming.length;
       const cursor = state.xueqiuNextCursor;
@@ -13448,10 +13570,12 @@ async function loadXueqiuFeed({ refresh = false, append = false, focusWindow = f
     state.xueqiuNote = feed.note || '';
     state.xueqiuError = '';
     state.xueqiuLoaded = true;
+    if (!saved && !focusWindow && !append && typeof mergeSocialReadHead === 'function') await mergeSocialReadHead('xueqiu', { epoch });
+    if (epoch != null && state.feedEpoch !== epoch) return feed;
     hydrateFeedTranslations(state.xueqiuItems);
-    paintLoadedSocialFeed('xueqiu');
+    paintLoadedSocialFeed('xueqiu', epoch);
     renderXueqiuToolbar();
-    loadFeedTaggings(state.xueqiuItems).then(() => paintLoadedSocialFeed('xueqiu')).catch(() => {});
+    loadFeedTaggings(state.xueqiuItems).then(() => paintLoadedSocialFeed('xueqiu', epoch)).catch(() => {});
     if (refresh) {
       if (feed.mode === 'error' || feed.mode === 'unavailable') showToast(feed.note || '雪球抓取失败');
       else showToast(feed.note || `已写入 ${state.xueqiuItems.length} 条`);
@@ -13466,7 +13590,7 @@ async function loadXueqiuFeed({ refresh = false, append = false, focusWindow = f
     state.xueqiuLoading = false;
     state.xueqiuRefreshing = false;
     renderXueqiuToolbar();
-    paintLoadedSocialFeed('xueqiu');
+    paintLoadedSocialFeed('xueqiu', epoch);
     if (typeof document !== 'undefined' && document.body?.dataset?.view === 'sources' && state.overviewTimeline === 'social') renderOverviewTimeline();
     if (!focusWindow && !saved && state.channel === 'focus' && !state.xueqiuFocusLoaded && !state.xueqiuFocusLoading) {
       loadFocusFeedWindow('xueqiu').catch((error) => showToast(error.message));

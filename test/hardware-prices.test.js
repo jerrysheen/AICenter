@@ -251,7 +251,12 @@ test('forward migration upgrades V39 with existing content and states intact',()
   const f=fixture();try {
     f.store.close();const db=new Database(path.join(f.directory,'test.db'));
     db.exec(`DROP TABLE IF EXISTS gpu_rent_observations;DROP TABLE IF EXISTS token_price_observations;DROP TABLE IF EXISTS compute_price_checks;DROP TABLE IF EXISTS compute_price_snapshots;DROP TABLE IF EXISTS hardware_price_page_checks;DROP TABLE hardware_price_legacy_links;DROP TABLE hardware_price_snapshot_rows;DROP TABLE hardware_price_observations;DROP TABLE hardware_price_snapshots;
-      DROP TABLE media_entry_legacy_links;ALTER TABLE media_index_entries DROP COLUMN article_kind;DELETE FROM schema_migrations WHERE version IN (40,54,55);PRAGMA user_version=39;`);
+      DROP TABLE media_entry_legacy_links;ALTER TABLE media_index_entries DROP COLUMN article_kind;
+      ALTER TABLE investor_discussion_digests DROP COLUMN question_set;
+      DROP TABLE IF EXISTS api_token_access_log;DROP TABLE IF EXISTS api_access_tokens;DROP TABLE IF EXISTS runtime_snapshots;
+      DROP INDEX IF EXISTS idx_captures_feed_sort;DROP INDEX IF EXISTS idx_captures_provider_captured;DROP INDEX IF EXISTS idx_captures_feed_filter;
+      DROP INDEX IF EXISTS idx_content_items_capture_cover;DROP INDEX IF EXISTS idx_user_item_states_feed_flags;
+      DELETE FROM schema_migrations WHERE version IN (40,54,55,56,57,58,59);PRAGMA user_version=39;`);
     const before=db.prepare('SELECT count(*) n FROM content_items').get().n;runMigrations(db);runMigrations(db);
     assert.equal(db.pragma('user_version',{simple:true}),latestSchemaVersion());assert.equal(db.prepare('SELECT count(*) n FROM content_items').get().n,before);
     assert.equal(db.prepare(`SELECT COUNT(*) n FROM pragma_table_info('hardware_price_snapshots') WHERE name='last_checked_at'`).get().n,1);db.close();

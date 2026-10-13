@@ -49,6 +49,21 @@ export function newsIngestAt(item) {
   return Number.isFinite(published) && published > 0 ? published : 0;
 }
 
+export function reportItemTime(item, edition) {
+  const start = Number(edition?.window?.startAt);
+  const windowStamp = Number.isFinite(start) && start > 0 ? start : 0;
+  const ok = (at) => Number.isFinite(at) && at > 0 && at !== windowStamp;
+  for (const value of [item?.publishedAt, item?.firstIngestedAt, item?.eventAt]) {
+    const at = Number(value);
+    if (ok(at)) return at;
+  }
+  const refAt = (Array.isArray(item?.sourceRefs) ? item.sourceRefs : [])
+    .map((ref) => Number(ref?.at))
+    .find((at) => ok(at));
+  if (refAt) return refAt;
+  return 0;
+}
+
 export function newsPublishedHint(publishedAt, ingestedAt) {
   const published = Number(publishedAt);
   const ingested = Number(ingestedAt);
