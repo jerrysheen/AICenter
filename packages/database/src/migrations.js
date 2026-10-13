@@ -1890,6 +1890,20 @@ migrations.push({ version: 62, name: 'model_usage_http_status', up(database) {
   addColumn(database, 'model_usage_index', 'http_status', 'INTEGER');
 }});
 
+migrations.push({ version: 64, name: 'capture_feed_filter_columns', up(database) {
+  addColumn(database, 'captures', 'author_handle', `TEXT NOT NULL DEFAULT ''`);
+  addColumn(database, 'captures', 'filter_mode', `TEXT NOT NULL DEFAULT ''`);
+  addColumn(database, 'captures', 'filter_decision', `TEXT NOT NULL DEFAULT ''`);
+  addColumn(database, 'captures', 'filter_applied', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn(database, 'captures', 'filter_rule', `TEXT NOT NULL DEFAULT ''`);
+  addColumn(database, 'captures', 'filter_reading', 'REAL');
+  addColumn(database, 'captures', 'filter_specific', 'REAL');
+  addColumn(database, 'captures', 'filter_sufficient', 'REAL');
+  addColumn(database, 'captures', 'feed_filter_ready', 'INTEGER NOT NULL DEFAULT 0');
+  database.exec(`CREATE INDEX IF NOT EXISTS idx_captures_filter_pending
+    ON captures(captured_at, id) WHERE feed_filter_ready = 0`);
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

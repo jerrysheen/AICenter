@@ -52,9 +52,18 @@ function approvedQualitySql(rule='') {
     AND json_extract(qa.metadata_json,'$.filterScores.sufficient_information')>=0.60)`;
 }
 
-const LOW_VALUE_SQL = `json_extract(c.metadata_json,'$.filterMode')='enforce'
+function whenFilterReady(columnSql, jsonSql) {
+  return `CASE WHEN c.feed_filter_ready = 1 THEN (${columnSql}) ELSE (${jsonSql}) END`;
+}
+
+const LOW_VALUE_SQL = whenFilterReady(
+  `c.filter_mode = 'enforce' AND c.filter_decision IN ('DROP','REVIEW') AND c.filter_applied = 1`,
+  `json_extract(c.metadata_json,'$.filterMode')='enforce'
   AND json_extract(c.metadata_json,'$.filterDecision') IN ('DROP','REVIEW')
-  AND json_extract(c.metadata_json,'$.filterApplied')=1`;
+  AND json_extract(c.metadata_json,'$.filterApplied')=1`,
+);
+
+const AUTHOR_HANDLE_SQL = `CASE WHEN c.feed_filter_ready = 1 THEN c.author_handle ELSE COALESCE(json_extract(c.metadata_json, '$.authorHandle'), '') END`;
 
 function feedVisibilitySql({ qualityRule = '', includeLowValue = false } = {}) {
   if (!includeLowValue) return `${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}`;
@@ -65,17 +74,27 @@ function feedVisibilitySql({ qualityRule = '', includeLowValue = false } = {}) {
 function captureApprovedSql(rule = '') {
   if (!rule) return '1=1';
   if (rule !== 'all-three-0.60') throw new Error('Unsupported admission rule');
-  return `json_extract(c.metadata_json,'$.filterRule')='all-three-0.60'
+  return whenFilterReady(
+    `c.filter_rule = 'all-three-0.60'
+    AND c.filter_decision = 'KEEP'
+    AND c.filter_reading >= 0.60
+    AND c.filter_specific >= 0.60
+    AND c.filter_sufficient >= 0.60`,
+    `json_extract(c.metadata_json,'$.filterRule')='all-three-0.60'
     AND json_extract(c.metadata_json,'$.filterDecision')='KEEP'
     AND json_extract(c.metadata_json,'$.filterScores.reading_value')>=0.60
     AND json_extract(c.metadata_json,'$.filterScores.specific_content')>=0.60
-    AND json_extract(c.metadata_json,'$.filterScores.sufficient_information')>=0.60`;
+    AND json_extract(c.metadata_json,'$.filterScores.sufficient_information')>=0.60`,
+  );
 }
 
 // json_extract 缺字段时是 NULL。直接 NOT (NULL) 也会把行滤掉，所以缺字段按「不是低价值」处理。
-const JOINED_LOW_VALUE_SQL = `IFNULL(json_extract(c.metadata_json,'$.filterMode'), '') = 'enforce'
+const JOINED_LOW_VALUE_SQL = whenFilterReady(
+  `c.filter_mode = 'enforce' AND c.filter_decision IN ('DROP','REVIEW') AND c.filter_applied = 1`,
+  `IFNULL(json_extract(c.metadata_json,'$.filterMode'), '') = 'enforce'
   AND IFNULL(json_extract(c.metadata_json,'$.filterDecision'), '') IN ('DROP','REVIEW')
-  AND IFNULL(json_extract(c.metadata_json,'$.filterApplied'), 0) = 1`;
+  AND IFNULL(json_extract(c.metadata_json,'$.filterApplied'), 0) = 1`,
+);
 
 // 与 feedVisibilitySql 同义，但落在已经 JOIN 的 captures / user_item_states 上，避免再对每行做一次相关子查询。
 function joinedFeedVisibilitySql({ qualityRule = '', includeLowValue = false } = {}) {
@@ -214,6 +233,25 @@ function mapIdentityFingerprint(row) {
     hiddenAt: row.hidden_at ?? null,
     firstSeenAt: row.first_seen_at,
     lastSeenAt: row.last_seen_at,
+  };
+}
+
+function feedFilterColumns(metadata) {
+  const meta = metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? metadata : {};
+  const scores = meta.filterScores && typeof meta.filterScores === 'object' ? meta.filterScores : {};
+  const score = (value) => {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  };
+  return {
+    authorHandle: String(meta.authorHandle || ''),
+    filterMode: String(meta.filterMode || ''),
+    filterDecision: String(meta.filterDecision || ''),
+    filterApplied: meta.filterApplied ? 1 : 0,
+    filterRule: String(meta.filterRule || ''),
+    filterReading: score(scores.reading_value),
+    filterSpecific: score(scores.specific_content),
+    filterSufficient: score(scores.sufficient_information),
   };
 }
 
@@ -439,10 +477,13 @@ export function createFeedRepository(database, emitEvent) {
       const capturedAt = input.capturedAt || Date.now();
       const id = input.id || randomUUID();
       database.transaction(() => {
+        const filter = feedFilterColumns(input.metadata);
         database.prepare(`INSERT INTO captures
           (id, workspace_id, provider, external_id, source_account_id, source_url, title, content_hash,
-           raw_artifact_path, status, published_at, captured_at, metadata_json)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           raw_artifact_path, status, published_at, captured_at, metadata_json,
+           author_handle, filter_mode, filter_decision, filter_applied, filter_rule,
+           filter_reading, filter_specific, filter_sufficient, feed_filter_ready)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
           ON CONFLICT(workspace_id, provider, external_id) DO UPDATE SET
             source_account_id = excluded.source_account_id,
             source_url = excluded.source_url,
@@ -452,10 +493,21 @@ export function createFeedRepository(database, emitEvent) {
             status = excluded.status,
             published_at = excluded.published_at,
             captured_at = excluded.captured_at,
-            metadata_json = excluded.metadata_json`)
+            metadata_json = excluded.metadata_json,
+            author_handle = excluded.author_handle,
+            filter_mode = excluded.filter_mode,
+            filter_decision = excluded.filter_decision,
+            filter_applied = excluded.filter_applied,
+            filter_rule = excluded.filter_rule,
+            filter_reading = excluded.filter_reading,
+            filter_specific = excluded.filter_specific,
+            filter_sufficient = excluded.filter_sufficient,
+            feed_filter_ready = 1`)
           .run(id, input.workspaceId, input.provider, input.externalId, input.sourceAccountId,
             input.sourceUrl, input.title, input.contentHash, input.rawArtifactPath, input.status,
-            input.publishedAt, capturedAt, JSON.stringify(input.metadata));
+            input.publishedAt, capturedAt, JSON.stringify(input.metadata),
+            filter.authorHandle, filter.filterMode, filter.filterDecision, filter.filterApplied, filter.filterRule,
+            filter.filterReading, filter.filterSpecific, filter.filterSufficient);
         const row = database.prepare(`SELECT * FROM captures
           WHERE workspace_id = ? AND provider = ? AND external_id = ?`)
           .get(input.workspaceId, input.provider, input.externalId);
@@ -586,7 +638,7 @@ export function createFeedRepository(database, emitEvent) {
         : 'ci.*';
       const captureColumns = options.omitBody
         ? `c.provider AS provider, c.external_id AS external_id, c.captured_at AS captured_at,
-          COALESCE(json_extract(c.metadata_json, '$.authorHandle'), '') AS author_handle`
+          ${AUTHOR_HANDLE_SQL} AS author_handle`
         : `c.provider AS provider, c.external_id AS external_id, c.captured_at AS captured_at,
           c.metadata_json AS capture_metadata_json`;
       const rows = database.prepare(`SELECT ${itemColumns}, ${captureColumns},
@@ -609,6 +661,39 @@ export function createFeedRepository(database, emitEvent) {
         isSaved: Boolean(row.is_saved),
         lowValue: Boolean(row.low_value),
       }));
+    },
+
+    backfillFeedFilterColumns(limit = 10, provider = '') {
+      const cap = Math.max(1, Math.min(Number(limit) || 10, 40));
+      const providerId = String(provider || '');
+      const rows = providerId
+        ? database.prepare(`SELECT id, metadata_json FROM captures
+          WHERE feed_filter_ready = 0 AND provider = ?
+          ORDER BY captured_at DESC, id DESC
+          LIMIT ?`).all(providerId, cap)
+        : database.prepare(`SELECT id, metadata_json FROM captures
+          WHERE feed_filter_ready = 0
+          ORDER BY captured_at DESC, id DESC
+          LIMIT ?`).all(cap);
+      const update = database.prepare(`UPDATE captures SET
+        author_handle = ?, filter_mode = ?, filter_decision = ?, filter_applied = ?, filter_rule = ?,
+        filter_reading = ?, filter_specific = ?, filter_sufficient = ?, feed_filter_ready = 1
+        WHERE id = ? AND feed_filter_ready = 0`);
+      const write = database.transaction((items) => {
+        for (const row of items) {
+          let meta = {};
+          try {
+            meta = JSON.parse(row.metadata_json || '{}') || {};
+          } catch {
+            meta = {};
+          }
+          const filter = feedFilterColumns(meta);
+          update.run(filter.authorHandle, filter.filterMode, filter.filterDecision, filter.filterApplied,
+            filter.filterRule, filter.filterReading, filter.filterSpecific, filter.filterSufficient, row.id);
+        }
+      });
+      write(rows);
+      return rows.length;
     },
 
     explainProviderFeed(workspaceId, provider, options = {}) {

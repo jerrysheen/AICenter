@@ -133,17 +133,27 @@ export function createStaticFileHandler(publicDirectory) {
     return faviconBytes;
   }
 
-  async function getUiRevision() {
-    const parts = [];
-    for (const name of uniqueNames) {
+  let revisionPending = null;
+
+  async function computeUiRevision() {
+    const parts = await Promise.all(uniqueNames.map(async (name) => {
       try {
         const file = await stat(path.join(publicDirectory, name));
-        parts.push(`${name}:${file.mtimeMs}:${file.size}`);
+        return `${name}:${file.mtimeMs}:${file.size}`;
       } catch {
-        parts.push(`${name}:missing`);
+        return `${name}:missing`;
       }
-    }
+    }));
     return createHash('sha1').update(parts.join('|')).digest('hex').slice(0, 12);
+  }
+
+  function getUiRevision() {
+    if (!revisionPending) {
+      revisionPending = computeUiRevision().finally(() => {
+        revisionPending = null;
+      });
+    }
+    return revisionPending;
   }
 
   async function load(pathname) {
@@ -214,5 +224,6 @@ export function createStaticFileHandler(publicDirectory) {
   }
 
   serveStatic.getUiRevision = getUiRevision;
+  getUiRevision().catch(() => {});
   return serveStatic;
 }
