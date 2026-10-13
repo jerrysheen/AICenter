@@ -22,6 +22,9 @@ export const FEED_LIST_SCHEDULE_KEY = 'feed.lists.snapshot';
 export const HARDWARE_PRICE_JOB_TYPE = 'hardware.prices.snapshot';
 export const HARDWARE_PRICE_SCHEDULE_KEY = 'hardware.prices.snapshot';
 export const HARDWARE_PRICE_SNAPSHOT_KEY = 'hardware-prices';
+export const HOME_BOOTSTRAP_JOB_TYPE = 'home.bootstrap.snapshot';
+export const HOME_BOOTSTRAP_SCHEDULE_KEY = 'home.bootstrap.snapshot';
+export const HOME_BOOTSTRAP_SNAPSHOT_KEY = 'home-bootstrap';
 export const HOLDINGS_MARKET_SNAPSHOT_KEY = 'holdings-market';
 export const FEED_LIST_SNAPSHOT_TTL_MS = 10 * 60 * 1000;
 export const HARDWARE_PRICE_SNAPSHOT_TTL_MS = 5 * 60 * 1000;
@@ -41,6 +44,7 @@ export const webSnapshotManifest = Object.freeze({
     MARKET_NATIVE_BOARD_JOB_TYPE,
     FEED_LIST_JOB_TYPE,
     HARDWARE_PRICE_JOB_TYPE,
+    HOME_BOOTSTRAP_JOB_TYPE,
   ],
   jobTypes: [
     STATIC_SIGNAL_BOARD_JOB_TYPE,
@@ -49,6 +53,7 @@ export const webSnapshotManifest = Object.freeze({
     MARKET_NATIVE_BOARD_JOB_TYPE,
     FEED_LIST_JOB_TYPE,
     HARDWARE_PRICE_JOB_TYPE,
+    HOME_BOOTSTRAP_JOB_TYPE,
   ],
 });
 
@@ -196,14 +201,25 @@ export async function captureMarketNativeBoard({
   };
 }
 
+const READ_HEAD = { isRead: 1, at: Number.MAX_SAFE_INTEGER, id: '~' };
 const FEED_LIST_PAGES = [
   ['feed-list-x', 'x', { feed: 'following', limit: 12, fields: 'list' }],
-  ['feed-list-x-read', 'x', { feed: 'following', limit: 12, fields: 'list', before: { isRead: 1, at: Number.MAX_SAFE_INTEGER, id: '~' } }],
+  ['feed-list-x-read', 'x', { feed: 'following', limit: 12, fields: 'list', before: READ_HEAD }],
   ['feed-list-xueqiu', 'xueqiu', { feed: 'following', limit: 12, fields: 'list' }],
-  ['feed-list-xueqiu-read', 'xueqiu', { feed: 'following', limit: 12, fields: 'list', before: { isRead: 1, at: Number.MAX_SAFE_INTEGER, id: '~' } }],
+  ['feed-list-xueqiu-read', 'xueqiu', { feed: 'following', limit: 12, fields: 'list', before: READ_HEAD }],
   ['feed-list-xueqiu-featured', 'xueqiu', { feed: 'featured', limit: 12, fields: 'list' }],
+  ['feed-list-xueqiu-featured-read', 'xueqiu', { feed: 'featured', limit: 12, fields: 'list', before: READ_HEAD }],
   ['feed-list-xueqiu-livenews', 'xueqiu', { feed: 'livenews', limit: 12, fields: 'list' }],
+  ['feed-list-xueqiu-livenews-read', 'xueqiu', { feed: 'livenews', limit: 12, fields: 'list', before: READ_HEAD }],
 ];
+
+export function prebuiltSnapshotSlots() {
+  return [
+    { workspace: 'local', snapshotKey: HARDWARE_PRICE_SNAPSHOT_KEY, slot: HARDWARE_PRICE_SNAPSHOT_KEY },
+    ...FEED_LIST_PAGES.map(([slot]) => ({ workspace: 'local', snapshotKey: slot, slot })),
+    { workspace: 'local', snapshotKey: HOME_BOOTSTRAP_SNAPSHOT_KEY, slot: HOME_BOOTSTRAP_SNAPSHOT_KEY },
+  ];
+}
 
 export function feedListSnapshotKey(providerId, query = {}) {
   if (query.refresh || query.saved || query.fields !== 'list' || Number(query.limit) !== 12) return '';
@@ -212,9 +228,17 @@ export function feedListSnapshotKey(providerId, query = {}) {
   const suffix = readHead ? '-read' : '';
   if (providerId === 'x' && query.feed === 'following') return `feed-list-x${suffix}`;
   if (providerId === 'xueqiu' && query.feed === 'following') return `feed-list-xueqiu${suffix}`;
-  if (providerId === 'xueqiu' && query.feed === 'featured' && !readHead) return 'feed-list-xueqiu-featured';
-  if (providerId === 'xueqiu' && query.feed === 'livenews' && !readHead) return 'feed-list-xueqiu-livenews';
+  if (providerId === 'xueqiu' && query.feed === 'featured') return `feed-list-xueqiu-featured${suffix}`;
+  if (providerId === 'xueqiu' && query.feed === 'livenews') return `feed-list-xueqiu-livenews${suffix}`;
   return '';
+}
+
+export function feedPrebuiltSlot(providerId, query = {}) {
+  if (query.refresh || query.saved) return '';
+  const readHead = query.before?.isRead === 1 && query.before?.id === '~' && query.before?.at === Number.MAX_SAFE_INTEGER;
+  if (query.before && !readHead) return '';
+  if (query.fields && query.fields !== 'list') return '';
+  return feedListSnapshotKey(providerId, { ...query, limit: 12, fields: 'list' });
 }
 
 export async function captureFeedLists({
@@ -251,6 +275,58 @@ export async function captureFeedLists({
   return { generatedAt, pages };
 }
 
+export async function captureHomeBootstrap({
+  compose,
+  repository,
+  workspaceId = 'local',
+  now = () => Date.now(),
+}) {
+  if (!compose) throw new Error('总览快照需要组装');
+  if (!repository?.saveSnapshot) throw new Error('总览快照需要存储');
+  const at = now();
+  const body = await compose({ workspace: workspaceId, now: at });
+  repository.saveSnapshot(workspaceId, HOME_BOOTSTRAP_SNAPSHOT_KEY, body, at);
+  return { generatedAt: at, pages: 1 };
+}
+
+export function createHomeBootstrapCompose({
+  store,
+  report,
+  env = process.env,
+  timezone = 'Asia/Shanghai',
+  pipeline = 'legacy',
+} = {}) {
+  let services = null;
+  return async function compose(options = {}) {
+    if (!services) {
+      const { composeHomeBootstrap } = await import('../../../apps/web/src/http/home-bootstrap.js');
+      const { createInformationTreeReader } = await import('../../domain/src/information-tree-service.js');
+      const { createReadingHourService } = await import('../../domain/src/reading-hour-service.js');
+      const { createMarketBoardReader } = await import('../../source/src/market/board-read.js');
+      const { createStaticSignalBoardReader } = await import('../../source/src/static/board-read.js');
+      services = {
+        composeHomeBootstrap,
+        informationTree: createInformationTreeReader({
+          repository: store.repositories.informationTree,
+          timezone,
+          pipeline,
+          catalog: {},
+        }),
+        readingHour: createReadingHourService({
+          repository: store.repositories.informationTree,
+          reportRepository: store.repositories.report,
+          enabled: env.AI_CENTER_READING_HOUR === '1',
+          env,
+        }),
+        report,
+        marketBoard: createMarketBoardReader({ repository: store.repositories.runtimeSnapshots }),
+        staticSignalBoard: createStaticSignalBoardReader({ repository: store.repositories.runtimeSnapshots }),
+      };
+    }
+    return services.composeHomeBootstrap(services, options);
+  };
+}
+
 export async function captureHardwarePrices({
   hardwarePriceService,
   repository,
@@ -273,6 +349,12 @@ export function createWebSnapshotJobHandlers(options) {
     [MARKET_NATIVE_BOARD_JOB_TYPE]: async () => captureMarketNativeBoard(options),
     [FEED_LIST_JOB_TYPE]: async () => captureFeedLists(options),
     [HARDWARE_PRICE_JOB_TYPE]: async () => captureHardwarePrices(options),
+    [HOME_BOOTSTRAP_JOB_TYPE]: async () => captureHomeBootstrap({
+      compose: options.composeHomeBootstrap,
+      repository: options.repository,
+      workspaceId: options.workspaceId,
+      now: options.now,
+    }),
   };
 }
 
@@ -312,4 +394,8 @@ export function ensureFeedListSchedule(store, now = Date.now()) {
 
 export function ensureHardwarePriceSchedule(store, now = Date.now()) {
   return upsertInterval(store, HARDWARE_PRICE_SCHEDULE_KEY, HARDWARE_PRICE_JOB_TYPE, now);
+}
+
+export function ensureHomeBootstrapSchedule(store, now = Date.now()) {
+  return upsertInterval(store, HOME_BOOTSTRAP_SCHEDULE_KEY, HOME_BOOTSTRAP_JOB_TYPE, now);
 }

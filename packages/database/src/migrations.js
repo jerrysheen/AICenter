@@ -1904,6 +1904,10 @@ migrations.push({ version: 64, name: 'capture_feed_filter_columns', up(database)
     ON captures(captured_at, id) WHERE feed_filter_ready = 0`);
 }});
 
+migrations.push({ version: 65, name: 'outbox_payload_bytes', up(database) {
+  addColumn(database, 'outbox_events', 'payload_bytes', 'INTEGER');
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

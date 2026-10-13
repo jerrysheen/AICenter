@@ -42,73 +42,55 @@ export function createEventStreamHub(runtimeService, options = {}) {
     flushing = true;
     const sliced = typeof runtimeService.listEventFrameHeads === 'function'
       && typeof runtimeService.readEventPayloadSlice === 'function';
+    setTimeout(sliced ? stepHeads : stepFrames, 0);
+  }
 
-    const finish = () => { flushing = false; };
+  function finishFlush() {
+    flushing = false;
+  }
 
-    const stepFrames = () => {
-      const leave = labelEventLoop('events.flush');
-      let more = false;
-      try {
-        const events = readFrames(eventCursor, FLUSH_PAGE_SIZE);
-        for (const event of events) {
-          eventCursor = event.id;
-          const frame = eventFrame(event);
-          emitChunk(event.workspaceId, frame);
-        }
-        more = events.length === FLUSH_PAGE_SIZE;
-      } finally {
-        leave();
-        if (!more) finish();
+  function stepFrames() {
+    const leave = labelEventLoop('events.flush');
+    let more = false;
+    try {
+      const events = readFrames(eventCursor, FLUSH_PAGE_SIZE);
+      for (const event of events) {
+        eventCursor = event.id;
+        emitChunk(event.workspaceId, eventFrame(event));
       }
-      if (more) setImmediate(stepFrames);
-    };
+      more = events.length === FLUSH_PAGE_SIZE;
+    } finally {
+      leave();
+      if (!more) finishFlush();
+    }
+    if (more) setTimeout(stepFrames, 0);
+  }
 
-    const stepHeads = () => {
-      const leave = labelEventLoop('events.flush');
-      let next = null;
-      try {
-        const heads = runtimeService.listEventFrameHeads(eventCursor, 1);
-        if (!heads.length) return;
-        const head = heads[0];
-        eventCursor = head.id;
-        const total = Number(head.payloadChars) || 0;
-        if (total <= FLUSH_SLICE_CHARS) {
-          const payload = runtimeService.readEventPayloadSlice(head.id, 0, Math.max(total, 1));
-          emitChunk(head.workspaceId, `id: ${head.id}\nevent: ${head.name}\ndata: ${payload}\n\n`);
-          next = 'event';
-        } else {
-          next = { head, offset: 0, total, prefix: true };
-        }
-      } finally {
-        leave();
-        if (!next) finish();
+  function stepHeads() {
+    const leave = labelEventLoop('events.flush');
+    let next = null;
+    try {
+      const heads = runtimeService.listEventFrameHeads(eventCursor, 1);
+      if (!heads.length) return;
+      const head = heads[0];
+      eventCursor = head.id;
+      const bytes = head.payloadBytes == null
+        ? (head.payloadChars == null ? null : Number(head.payloadChars))
+        : Number(head.payloadBytes);
+      if (bytes == null || bytes > FLUSH_SLICE_CHARS) {
+        const stub = `{"truncated":true,"bytes":${bytes == null ? 'null' : bytes}}`;
+        emitChunk(head.workspaceId, `id: ${head.id}\nevent: ${head.name}\ndata: ${stub}\n\n`);
+        next = 'event';
+      } else {
+        const payload = runtimeService.readEventPayloadSlice(head.id, 0, Math.max(bytes, 1));
+        emitChunk(head.workspaceId, `id: ${head.id}\nevent: ${head.name}\ndata: ${payload}\n\n`);
+        next = 'event';
       }
-      if (next === 'event') setImmediate(stepHeads);
-      else if (next) setImmediate(() => writeSlices(next));
-    };
-
-    const writeSlices = (state) => {
-      const leave = labelEventLoop('events.flush');
-      let again = false;
-      try {
-        if (state.prefix) {
-          emitChunk(state.head.workspaceId, `id: ${state.head.id}\nevent: ${state.head.name}\ndata: `);
-          state.prefix = false;
-        }
-        const slice = runtimeService.readEventPayloadSlice(state.head.id, state.offset, FLUSH_SLICE_CHARS) || '';
-        state.offset += slice.length;
-        const done = !slice.length || state.offset >= state.total;
-        emitChunk(state.head.workspaceId, done ? `${slice}\n\n` : slice);
-        again = !done;
-      } finally {
-        leave();
-      }
-      if (again) setImmediate(() => writeSlices(state));
-      else setImmediate(stepHeads);
-    };
-
-    if (sliced) stepHeads();
-    else stepFrames();
+    } finally {
+      leave();
+      if (!next) finishFlush();
+    }
+    if (next === 'event') setTimeout(stepHeads, 0);
   }
 
   function replaySince(lastEventId, workspaceId, write) {

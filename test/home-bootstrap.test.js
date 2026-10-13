@@ -11,6 +11,8 @@ import {
   homeBootstrapQuery,
 } from '../apps/web/src/http/home-bootstrap.js';
 import { prepareJsonBody } from '../apps/web/src/http/prepared-json.js';
+import { createPreparedSlotStore, packPreparedJson } from '../apps/web/src/http/prepared-slots.js';
+import { HOME_BOOTSTRAP_SNAPSHOT_KEY } from '../packages/runtime/src/web-snapshot-jobs.js';
 import { isApiTokenAllowlisted } from '../apps/web/src/http/api-token-access.js';
 import { json } from '../apps/web/src/http/response.js';
 
@@ -120,9 +122,28 @@ test('home bootstrap window matches the first-screen plan and strips provider fi
   assert.equal(isApiTokenAllowlisted('GET', '/api/v1/home/bootstrap'), false);
 });
 
-test('home bootstrap serves a short cache and 304 without calling trading', async () => {
+test('home bootstrap serves only a prebuilt buffer and does not compose on the request', async () => {
   const fake = services();
-  const handler = createHomeBootstrapHandler({ now: () => NOW });
+  const slots = createPreparedSlotStore();
+  const handler = createHomeBootstrapHandler({ slots });
+  const cold = mockResponse();
+  await handler({
+    request: { headers: {} },
+    response: cold,
+    services: fake,
+    identity: { device: { workspaceId: 'phone' } },
+    url: new URL('http://local/api/v1/home/bootstrap'),
+    json,
+  });
+  assert.equal(cold.status, 200);
+  assert.equal(JSON.parse(cold.body).pending, true);
+  assert.equal(fake.calls.length, 0);
+  const built = await composeHomeBootstrap(fake, { workspace: 'phone', now: NOW });
+  slots.publish(HOME_BOOTSTRAP_SNAPSHOT_KEY, packPreparedJson(JSON.stringify(built), {
+    etag: homeBootstrapEtag(built),
+    generatedAt: NOW,
+  }));
+  const treeCalls = fake.calls.filter((row) => row[0] === 'tree').length;
   const first = mockResponse();
   await handler({
     request: { headers: {} },
@@ -136,7 +157,7 @@ test('home bootstrap serves a short cache and 304 without calling trading', asyn
   assert.equal(first.status, 200);
   assert.equal(first.headers.ETag, homeBootstrapEtag(payload));
   assert.equal(first.headers['Cache-Control'], 'private, no-cache');
-  assert.equal(fake.calls.filter((row) => row[0] === 'tree').length, 1);
+  assert.equal(fake.calls.filter((row) => row[0] === 'tree').length, treeCalls);
   assert.equal(fake.calls.some((row) => row[0] === 'trading'), false);
   assert.deepEqual(fake.calls.find((row) => row[0] === 'market'), ['market', 'overview', false]);
   const second = mockResponse();
@@ -148,7 +169,7 @@ test('home bootstrap serves a short cache and 304 without calling trading', asyn
     url: new URL('http://local/api/v1/home/bootstrap'),
     json,
   });
-  assert.equal(fake.calls.filter((row) => row[0] === 'tree').length, 1);
+  assert.equal(fake.calls.filter((row) => row[0] === 'tree').length, treeCalls);
   const cached = mockResponse();
   await handler({
     request: { headers: { 'if-none-match': first.headers.ETag } },
@@ -169,7 +190,7 @@ test('home bootstrap serves a short cache and 304 without calling trading', asyn
     url: new URL('http://local/api/v1/home/bootstrap?refresh=1'),
     json,
   });
-  assert.equal(fake.calls.filter((row) => row[0] === 'tree').length, 2);
+  assert.equal(fake.calls.filter((row) => row[0] === 'tree').length, treeCalls);
   const bytes = Buffer.byteLength(first.body);
   assert.ok(bytes > 200 && bytes < 20_000, `bootstrap fixture bytes ${bytes}`);
 });

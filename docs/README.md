@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-13-prebuilt-buffer-hit.md`：报价列表、雪球首页 / 7x24 和总览 bootstrap 的请求只写出已经预备好的缓冲区。没有缓冲区时返回 `pending`，不在请求里组包或序列化。大事件帧不再读出 payload。migration 65。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-13-loop-wait-off-request.md`：硬件报价列表去掉原单元格并缓存已序列化的正文。雪球首页快照按写入时间保留 10 分钟，筛选列不再在请求里解析 metadata。事件推送把大 payload 分段写出。界面版本号并行读取文件时间。migration 64。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-13-gemini-model-balance.md`：小时报和阅读分类按（模型，key）用量最少的一对先发，不再把 Gemini 3.1 用满才碰 3.5。文章模型池的轮换游标写入数据库。用量账本记下 HTTP 状态码。migration 61、62。需要同时重启 Web 和 Worker。

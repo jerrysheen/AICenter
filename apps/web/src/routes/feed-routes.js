@@ -2,9 +2,9 @@ import { createHash } from 'node:crypto';
 import { parseBilibiliImportInput, parseHideFlag, parsePatchUserItemStateInput, parsePersistFeedTranslationsInput, parsePostInput, parseTranslateBatchInput, parseTranslateInput, ValidationError } from '../../../../packages/contracts/src/index.js';
 import { json, readJson } from '../http/response.js';
 import { labelEventLoop } from '../http/event-loop-blocks.js';
-import { prepareJsonBody, prepareJsonText, sendPreparedJson } from '../http/prepared-json.js';
-import { createStaleReadCache, STORED_FEED_CACHE_PROVIDERS, STORED_FEED_CACHE_TTL_MS, storedFeedCacheKey } from '../http/stale-read-cache.js';
-import { FEED_LIST_SNAPSHOT_TTL_MS, feedListSnapshotKey } from '../../../../packages/runtime/src/web-snapshot-jobs.js';
+import { createPreparedSlotStore } from '../http/prepared-slots.js';
+import { STORED_FEED_CACHE_PROVIDERS } from '../http/stale-read-cache.js';
+import { feedPrebuiltSlot } from '../../../../packages/runtime/src/web-snapshot-jobs.js';
 
 function listEtag(feed) {
   const stable = feed && typeof feed === 'object' ? { ...feed } : {};
@@ -24,8 +24,7 @@ function workspaceIdFrom(identity) {
   return identity?.device?.workspaceId || 'local';
 }
 
-export function createFeedRoutes() {
-  const feedCache = createStaleReadCache({ ttlMs: STORED_FEED_CACHE_TTL_MS });
+export function createFeedRoutes({ slots = createPreparedSlotStore() } = {}) {
   return [
     { method: 'GET', path: /^\/api\/v1\/translate\/jobs\/([0-9a-f-]+)$/i,
       handler({ response, services, identity, params }) {
@@ -187,39 +186,24 @@ export function createFeedRoutes() {
           if (providerId === 'trendforce') query.fields = 'list';
           const mediaJob = providerId === 'media' && query.refresh ? services.runtime.requestMediaSync({ workspaceId: workspaceIdFrom(identity), channel: query.channel }) : null;
           const workspaceId = workspaceIdFrom(identity);
-          if (STORED_FEED_CACHE_PROVIDERS.has(providerId) && !query.refresh && !mediaJob && !trendforceJob) {
-            const snapshotKey = feedListSnapshotKey(providerId, query);
-            const snapshot = snapshotKey ? services.runtimeSnapshots?.readSnapshotBody?.(workspaceId, snapshotKey) : null;
-            const snapshotFresh = snapshot && Date.now() - snapshot.generatedAt < FEED_LIST_SNAPSHOT_TTL_MS;
-            const prepared = await feedCache.get(
-              snapshotFresh ? `snap|${workspaceId}|${snapshotKey}|${snapshot.generatedAt}` : storedFeedCacheKey(workspaceId, providerId, query),
-              async () => {
-                if (snapshotFresh) return prepareJsonText(snapshot.body);
-                const leave = labelEventLoop(`feed.${providerId}`);
-                try {
-                  const feed = await services.feed.getExternalFeed(providerId, { ...query, refresh: false }, { workspaceId });
-                  return prepareJsonBody({ ok: true, feed });
-                } finally {
-                  leave();
-                }
-              },
-            );
-            const headers = { ETag: prepared.etag, 'Cache-Control': 'private, no-cache' };
-            if (ifNoneMatch(request, prepared.etag)) {
-              response.writeHead(304, headers);
-              response.end();
-              return;
-            }
-            sendPreparedJson(request, response, 200, prepared, headers);
+          const prebuilt = STORED_FEED_CACHE_PROVIDERS.has(providerId) && !mediaJob && !trendforceJob
+            ? feedPrebuiltSlot(providerId, query)
+            : '';
+          if (prebuilt) {
+            slots.send(request, response, prebuilt, {
+              headers: { 'Cache-Control': 'private, no-cache' },
+              allow304: !query.refresh,
+            });
             return;
           }
           const leave = labelEventLoop(`feed.${providerId}`);
-          let feed;
+          let pending;
           try {
-            feed = await services.feed.getExternalFeed(providerId, query, { workspaceId });
+            pending = services.feed.getExternalFeed(providerId, query, { workspaceId });
           } finally {
             leave();
           }
+          const feed = await pending;
           const payload = { ok: true, feed, ...((mediaJob || trendforceJob) ? { jobId: (mediaJob || trendforceJob).id } : {}) };
           if (providerId === 'trendforce') {
             const etag = listEtag(feed);

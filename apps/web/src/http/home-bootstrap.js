@@ -2,9 +2,9 @@ import { createHash } from 'node:crypto';
 import { homeRequestPlan, hourlyEditions, selectHomeHourHits } from '../../public/home-timeline.js';
 import { emptyMarketBoard } from '../../../../packages/source/src/market/board-read.js';
 import { emptyStaticSignalBoard } from '../../../../packages/source/src/static/board.js';
+import { HOME_BOOTSTRAP_SNAPSHOT_KEY } from '../../../../packages/runtime/src/web-snapshot-jobs.js';
 import { labelEventLoop } from './event-loop-blocks.js';
-import { prepareJsonBody, sendPreparedJson } from './prepared-json.js';
-import { createStaleReadCache } from './stale-read-cache.js';
+import { createPreparedSlotStore } from './prepared-slots.js';
 
 export const HOME_BOOTSTRAP_PATH = '/api/v1/home/bootstrap';
 export const HOME_BOOTSTRAP_TTL_MS = 15_000;
@@ -168,14 +168,6 @@ function slimReading(snapshot, limit) {
   };
 }
 
-function ifNoneMatch(request, etag) {
-  const header = String(request?.headers?.['if-none-match'] || '').trim();
-  if (!header) return false;
-  if (header === '*') return true;
-  const wanted = etag.replace(/^W\//, '');
-  return header.split(',').some((part) => part.trim().replace(/^W\//, '') === wanted);
-}
-
 export function homeBootstrapEtag(body) {
   const stable = { ...(body || {}) };
   delete stable.generatedAt;
@@ -270,33 +262,12 @@ function yieldEventLoop() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-export function createHomeBootstrapHandler({ ttlMs = HOME_BOOTSTRAP_TTL_MS, now = () => Date.now() } = {}) {
-  const cache = createStaleReadCache({
-    ttlMs,
-    now,
-    refreshLeadMs: Math.min(5_000, Math.floor(ttlMs / 3)),
-  });
-  return async function homeBootstrap({ request, response, services, identity, url, json }) {
+export function createHomeBootstrapHandler({ slots = createPreparedSlotStore() } = {}) {
+  return async function homeBootstrap({ request, response, url }) {
     const refresh = url.searchParams.get('refresh') === '1' || url.searchParams.get('refresh') === 'true';
-    const workspace = identity?.device?.workspaceId || 'local';
-    const bucket = homeBootstrapQuery(now());
-    const key = `${workspace}|${bucket.tree.startAt}|${bucket.tree.endAt}|${bucket.board.from}`;
-    const prepared = await cache.get(
-      key,
-      async () => {
-        const body = await composeHomeBootstrap(services, { workspace, now: now() });
-        const packed = await prepareJsonBody(body);
-        packed.etag = homeBootstrapEtag(body);
-        return packed;
-      },
-      { refresh },
-    );
-    const headers = { ETag: prepared.etag, 'Cache-Control': 'private, no-cache' };
-    if (!refresh && ifNoneMatch(request, prepared.etag)) {
-      response.writeHead(304, headers);
-      response.end();
-      return;
-    }
-    sendPreparedJson(request, response, 200, prepared, headers);
+    slots.send(request, response, HOME_BOOTSTRAP_SNAPSHOT_KEY, {
+      headers: { 'Cache-Control': 'private, no-cache' },
+      allow304: !refresh,
+    });
   };
 }

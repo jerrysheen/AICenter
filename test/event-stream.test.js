@@ -119,11 +119,23 @@ test('event frames return a replay page of stored payload text', () => {
   }
 });
 
-test('flush writes a large payload in slices instead of one string', async () => {
+test('flush skips a large payload instead of reading it on the caller tick', async () => {
   const store = createStore(':memory:');
   const pad = 'x'.repeat(20_000);
   const chunks = [];
-  const hub = createEventStreamHub(store);
+  let payloadReads = 0;
+  const runtime = {
+    latestEventId: () => store.latestEventId(),
+    listEventFrameHeads: (...args) => store.listEventFrameHeads(...args),
+    readEventPayloadSlice(...args) {
+      payloadReads += 1;
+      return store.readEventPayloadSlice(...args);
+    },
+    listEventFrames() {
+      throw new Error('flush must not read a full payload frame');
+    },
+  };
+  const hub = createEventStreamHub(runtime);
   await hub.open(
     { on() {} },
     { writeHead() {}, write(chunk) { chunks.push(String(chunk)); return true; }, end() {} },
@@ -133,12 +145,13 @@ test('flush writes a large payload in slices instead of one string', async () =>
   store.createJob({ type: 'feed.sync', input: { pad } });
   chunks.length = 0;
   hub.flush();
+  assert.equal(payloadReads, 0);
+  assert.equal(chunks.length, 0);
   await new Promise((resolve) => setTimeout(resolve, 80));
   const body = chunks.join('');
-  assert.ok(chunks.length > 1, `expected sliced writes, got ${chunks.length}`);
-  assert.ok(chunks.every((chunk) => chunk.length <= 8_200), chunks.map((chunk) => chunk.length).join(','));
-  assert.match(body, /feed\.sync/);
-  assert.ok(body.includes(pad));
+  assert.match(body, /"truncated":true/);
+  assert.equal(body.includes(pad), false);
+  assert.equal(payloadReads, 0);
   hub.closeAll();
   store.close();
 });
