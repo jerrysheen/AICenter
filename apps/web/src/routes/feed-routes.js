@@ -1,5 +1,20 @@
+import { createHash } from 'node:crypto';
 import { parseBilibiliImportInput, parseHideFlag, parsePatchUserItemStateInput, parsePersistFeedTranslationsInput, parsePostInput, parseTranslateBatchInput, parseTranslateInput, ValidationError } from '../../../../packages/contracts/src/index.js';
 import { json, readJson } from '../http/response.js';
+
+function listEtag(feed) {
+  const stable = feed && typeof feed === 'object' ? { ...feed } : {};
+  delete stable.fetchedAt;
+  return `W/"${createHash('sha1').update(JSON.stringify(stable)).digest('hex')}"`;
+}
+
+function ifNoneMatch(request, etag) {
+  const header = String(request?.headers?.['if-none-match'] || '').trim();
+  if (!header) return false;
+  if (header === '*') return true;
+  const wanted = etag.replace(/^W\//, '');
+  return header.split(',').some((part) => part.trim().replace(/^W\//, '') === wanted);
+}
 
 function workspaceIdFrom(identity) {
   return identity?.device?.workspaceId || 'local';
@@ -155,7 +170,7 @@ export function createFeedRoutes() {
     },
     {
       method: 'GET', path: /^\/api\/v1\/feed(?:\/([a-z0-9-]+))?$/i,
-      async handler({ response, services, url, params, feedQueryParsers, identity }) {
+      async handler({ request, response, services, url, params, feedQueryParsers, identity }) {
         const providerId = params.values[0] || url.searchParams.get('platform') || 'x';
         const parser = feedQueryParsers.get(providerId);
         if (!parser) throw new ValidationError(`尚未启用 ${providerId} 信息源`, ['platform']);
@@ -163,13 +178,26 @@ export function createFeedRoutes() {
           const query = parser(Object.fromEntries(url.searchParams.entries()));
           const trendforceJob = providerId==='trendforce' && query.refresh ? services.runtime.requestTrendforceSync({workspaceId:workspaceIdFrom(identity)}) : null;
           if(trendforceJob) query.refresh=false;
+          if (providerId === 'trendforce') query.fields = 'list';
           const mediaJob = providerId === 'media' && query.refresh ? services.runtime.requestMediaSync({ workspaceId: workspaceIdFrom(identity), channel: query.channel }) : null;
           const feed = await services.feed.getExternalFeed(
             providerId,
             query,
             { workspaceId: identity?.device?.workspaceId || 'local' },
           );
-          json(response, 200, { ok: true, feed, ...((mediaJob || trendforceJob) ? { jobId: (mediaJob || trendforceJob).id } : {}) }, {}, { compress: providerId === 'media' });
+          const payload = { ok: true, feed, ...((mediaJob || trendforceJob) ? { jobId: (mediaJob || trendforceJob).id } : {}) };
+          if (providerId === 'trendforce') {
+            const etag = listEtag(feed);
+            const headers = { ETag: etag, 'Cache-Control': 'private, no-cache' };
+            if (!trendforceJob && ifNoneMatch(request, etag)) {
+              response.writeHead(304, headers);
+              response.end();
+              return;
+            }
+            json(response, 200, payload, headers);
+            return;
+          }
+          json(response, 200, payload, {}, { compress: providerId === 'media' });
         } catch (error) {
           if (error instanceof ValidationError) throw error;
           json(response, 502, { ok: false, error: error instanceof Error ? error.message : '信息流加载失败' });

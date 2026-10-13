@@ -608,9 +608,10 @@ export function createInformationTreePage(host) {
     if(mode==='hourly') return stepHour(which);
     return stepDaily(which);
   }
-  function selectHour(startOrHour){
+  function selectHour(startOrHour, source){
     closePeriodPop();
     const clockPick=Number.isInteger(startOrHour) && startOrHour>=0 && startOrHour<=23;
+    if (source === 'user') host.track?.('report.hour', { hour: clockPick ? startOrHour : hourClock(startOrHour) });
     if(mode!=='hourly'){mode='hourly';showMaterials=false;}
     openedId='';pinnedReadingId='';readingOpen.clear();
     if(!clockPick) pendingNodeId='';
@@ -642,7 +643,7 @@ export function createInformationTreePage(host) {
     if(index<0)return;
     const next=which==='earlier' ? rows[index+1] : rows[index-1];
     if(!next)return;
-    return selectHour(next.window.startAt);
+    return selectHour(next.window.startAt, 'user');
   }
   function stepFromInput(input){
     const sense=hourStepSense(input, hourStripMobile());
@@ -747,7 +748,7 @@ export function createInformationTreePage(host) {
           control.className='tree-hour-gap';control.dataset.gap=gapKey;hourChips.append(control);continue;
         }
         const edition=item.edition;
-        const chip=button(chipText(edition, index),()=>selectHour(edition.window.startAt));
+        const chip=button(chipText(edition, index),()=>selectHour(edition.window.startAt, 'user'));
         chip.className='chip-tab';chip.dataset.start=String(edition.window.startAt);chip.dataset.label=clock(edition.window.startAt);hourChips.append(chip);
       }
     }

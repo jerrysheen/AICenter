@@ -55,19 +55,34 @@
     return rows.slice(0, 20);
   }
 
+  function payloadFor(navigation) {
+    var resources = slowResources();
+    var payload = '';
+    while (resources.length) {
+      payload = JSON.stringify({
+        path: safeName(location.href) || '/',
+        nav: navigationTiming(navigation),
+        resources: resources,
+      });
+      if (payload.length <= 3500) return payload;
+      resources.pop();
+    }
+    return JSON.stringify({
+      path: safeName(location.href) || '/',
+      nav: navigationTiming(navigation),
+      resources: [],
+    });
+  }
+
   function send() {
     if (Math.random() >= SAMPLE) return;
     var navigation = performance.getEntriesByType('navigation')[0];
     if (!navigation) return;
-    var payload = JSON.stringify({
-      path: safeName(location.href) || '/',
-      nav: navigationTiming(navigation),
-      resources: slowResources(),
-    });
-    if (payload.length > 3500) return;
+    var payload = payloadFor(navigation);
+    // text/plain 属于 sendBeacon 的简单请求类型。JSON 媒体类型会在返回 true 后被浏览器丢掉。
     try {
       if (navigator.sendBeacon) {
-        var blob = new Blob([payload], { type: 'application/json' });
+        var blob = new Blob([payload], { type: 'text/plain;charset=UTF-8' });
         if (navigator.sendBeacon(ENDPOINT, blob)) return;
       }
     } catch (_beaconError) {
@@ -78,7 +93,7 @@
         method: 'POST',
         credentials: 'same-origin',
         keepalive: true,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
         body: payload,
       }).catch(function () {});
     } catch (_fetchError) {
@@ -86,7 +101,18 @@
     }
   }
 
-  window.addEventListener('load', function () {
+  var sent = false;
+  function schedule() {
+    if (sent) return;
+    sent = true;
     window.setTimeout(send, 0);
+  }
+
+  if (document.readyState === 'complete') schedule();
+  else window.addEventListener('load', schedule);
+  window.addEventListener('pageshow', function (event) {
+    if (!event.persisted) return;
+    sent = false;
+    schedule();
   });
 })();

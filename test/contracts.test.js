@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { FeedIdentityFingerprintSchema, parseBehaviorEvent, parseBilibiliFeedQuery, parseBilibiliImportInput, parseBuildContextInput, parseContract, parseCreateAgentRunInput, parseCreateWorkPackageInput, parseHoldingsQuery, parseKnowledgeMentionQuery, parseLoginInput, parseMarketQuery, parseNoteInput, parsePackReferencesInput, parsePageRequest, parsePairInput, parsePersistFeedTranslationsInput, parsePostInput, parseTranslateBatchInput, parseTranslateInput, parseTrendForceFeedQuery, parseWorkerJobConcurrency, parseXFeedQuery, parseXueqiuFeedQuery, PortfolioImportSchema, UpsertFeedIdentityFingerprintInputSchema, ValidationError } from '../packages/contracts/src/index.js';
+import { FeedIdentityFingerprintSchema, parseBehaviorEvent, parseBehaviorEvents, parseBilibiliFeedQuery, parseBilibiliImportInput, parseBuildContextInput, parseContract, parseCreateAgentRunInput, parseCreateWorkPackageInput, parseHoldingsQuery, parseKnowledgeMentionQuery, parseLoginInput, parseMarketQuery, parseNoteInput, parsePackReferencesInput, parsePageRequest, parsePairInput, parsePersistFeedTranslationsInput, parsePostInput, parseTranslateBatchInput, parseTranslateInput, parseTrendForceFeedQuery, parseWorkerJobConcurrency, parseXFeedQuery, parseXueqiuFeedQuery, PortfolioImportSchema, UpsertFeedIdentityFingerprintInputSchema, ValidationError } from '../packages/contracts/src/index.js';
 
 test('post input normalizes title, url, and tags', () => {
   assert.deepEqual(parsePostInput({
@@ -25,6 +25,9 @@ test('pair and behavior inputs reject unsupported data', () => {
     code: '123456', deviceName: '鸿蒙手机',
   });
   assert.throws(() => parseBehaviorEvent({ name: 'unknown.event' }), ValidationError);
+  assert.equal(parseBehaviorEvents({ events: [{ name: 'nav.tab', metadata: { view: 'feed' } }, { name: 'view.slow', metadata: { ms: 1400 } }] }).length, 2);
+  assert.throws(() => parseBehaviorEvents({ events: [] }), ValidationError);
+  assert.throws(() => parseBehaviorEvent({ name: 'ask.submit', metadata: { question: 'x'.repeat(600) } }), ValidationError);
 });
 
 test('login input requires username, password, and device name', () => {

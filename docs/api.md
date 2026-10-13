@@ -112,7 +112,7 @@ curl -sS "https://center.example.com/api/v1/reports/hourly/search?startAt=176026
 | GET | `/api/v1/feed/xueqiu` | `feed=following` 等，`limit`，`saved`，`before` |
 | GET | `/api/v1/feed/bilibili` | `limit`，`saved`，`before` |
 | GET | `/api/v1/feed/media` | `channel=tech` 或 `macro`，`view`，`sourceKey`，`limit`，`offset`，`before` |
-| GET | `/api/v1/feed/trendforce` | `limit`，`saved` |
+| GET | `/api/v1/feed/trendforce` | `limit`，`saved`。响应固定为摘要列表，并带 `ETag`；`If-None-Match` 命中且没有排队抓取时返回 304。全文用 `GET /api/v1/feed/media/article` |
 | GET | `/api/v1/feed/media/article` | `externalId` |
 | GET | `/api/v1/content-items/:id` | 路径里的内容 id |
 | GET | `/api/v1/content-items/:id/original` | 同上 |
@@ -299,4 +299,4 @@ curl -sS "https://center.example.com/api/v1/hardware-prices?category=nand&limit=
 node scripts/access-log-summary.mjs --date 2026-10-13 --since 2h --top 20
 ```
 
-日志在 Instance `data/logs/access.yyyy-MM-dd.log`。`POST /api/v1/runtime/client-timing` 只接收本站页面自己的计时，不需要登录，响应是 204。跨站 `Origin` 或 `Sec-Fetch-Site: cross-site` 会被丢掉。同一进程每分钟最多记 300 条。原始 IP、Cookie 和查询参数里的值不会写入这些日志。
+日志在 Instance `data/logs/access.yyyy-MM-dd.log`。`POST /api/v1/runtime/client-timing` 只接收本站页面自己的计时，不需要登录，响应是 204。请求体是 JSON 文本，`Content-Type` 用 `text/plain`。跨站 `Origin` 或 `Sec-Fetch-Site: cross-site` / `same-site` 会被丢掉；`Sec-Fetch-Site: same-origin` 在 Host 被隧道改写时仍然记下。同一进程每分钟最多记 300 条。原始 IP、Cookie 和查询参数里的值不会写入这些日志。`POST /api/v1/behavior` 接受单条或最多 20 条 `{ events }`，需要已登录设备或本机桌面身份。

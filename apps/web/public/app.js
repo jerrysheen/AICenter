@@ -192,6 +192,7 @@ const state = {
   xueqiuFocusLoading: false,
   bilibiliLoaded: false,
   trendforceLoaded: false,
+  trendforceEtag: '',
   notesLoaded: false,
   mediaLoaded: false,
   knowledgeError: '',
@@ -1075,6 +1076,12 @@ function setView(name, options = {}) {
   }
   state.pageKind = view === 'page' ? parsed.pageKind : '';
   state.pageId = view === 'page' ? parsed.pageId : '';
+  if (state.bootstrapped && (previous !== view || previousPageKind !== state.pageKind)) {
+    logBehavior('nav.tab', { view, page: view === 'page' ? String(state.pageKind || '') : '' });
+  }
+  const timingToken = state.bootstrapped
+    ? armViewTiming(view === 'page' ? `page:${state.pageKind || 'detail'}` : view)
+    : 0;
   const newArticle = view === 'page' && state.pageKind === 'article'
     && (previousPageKind !== 'article' || previousPageId !== state.pageId) && !options.fromHistory;
   if (newArticle) viewScrollY.page = 0;
@@ -1201,6 +1208,9 @@ function setView(name, options = {}) {
   }
   state.navigationFrom = '';
   syncHeaderSearch();
+  if (timingToken && !['sources', 'feed', 'report', 'ask'].includes(view)) {
+    requestAnimationFrame(() => requestAnimationFrame(() => finishViewTiming(timingToken)));
+  }
   if (view === 'feed' && (leaving || options.replace)) scrollFeedToTop();
   else if (leaving) restoreViewScroll(view);
   else if (newArticle) window.scrollTo(0, 0);
@@ -1378,7 +1388,7 @@ function forgetLegacyDeviceGrant() {
 async function api(path, options = {}) {
   // A caller-supplied signal still shares this timeout. AbortError from that
   // signal is rethrown; a timeout that fires first becomes “请求超时”.
-  const { timeoutMs = 20_000, ...fetchOptions } = options;
+  const { timeoutMs = 20_000, onResponse, ...fetchOptions } = options;
   const external = fetchOptions.signal || null;
   const timed = Boolean(timeoutMs);
   const controller = (timed || external) ? new AbortController() : null;
@@ -1395,6 +1405,8 @@ async function api(path, options = {}) {
       signal: controller ? controller.signal : undefined,
       headers: { 'Content-Type': 'application/json', ...(fetchOptions.headers || {}) },
     });
+    if (typeof onResponse === 'function') onResponse(response);
+    if (response.status === 304) return { ok: true, notModified: true };
     // A truncated gzip body can still arrive as HTTP 200. Treating that as {}
     // makes callers, including the brief manifest, look successful.
     let payload;
@@ -1659,9 +1671,101 @@ async function exitAndRePair() {
   });
 }
 
-function logBehavior(name, metadata = {}) {
-  api('/api/v1/behavior', { method: 'POST', body: JSON.stringify({ name, metadata }) }).catch(() => {});
+const behaviorQueue = [];
+let behaviorTimer = 0;
+let viewTiming = null;
+
+function compactBehaviorMetadata(metadata) {
+  const out = {};
+  if (!metadata || typeof metadata !== 'object') return out;
+  for (const [key, value] of Object.entries(metadata)) {
+    if (Object.keys(out).length >= 6) break;
+    const name = String(key).slice(0, 24);
+    if (typeof value === 'number' && Number.isFinite(value)) out[name] = Math.max(0, Math.min(600000, Math.round(value)));
+    else if (typeof value === 'boolean') out[name] = value;
+    else if (typeof value === 'string') out[name] = value.slice(0, 80);
+  }
+  return out;
 }
+
+function flushBehavior() {
+  behaviorTimer = 0;
+  const events = behaviorQueue.splice(0, 20);
+  if (!events.length || !state.session) {
+    if (events.length && !state.session) behaviorQueue.unshift(...events);
+    return;
+  }
+  const payload = JSON.stringify({ events });
+  const endpoint = '/api/v1/behavior';
+  try {
+    if (navigator.sendBeacon) {
+      const blob = new Blob([payload], { type: 'text/plain;charset=UTF-8' });
+      if (navigator.sendBeacon(endpoint, blob)) {
+        if (behaviorQueue.length) behaviorTimer = window.setTimeout(flushBehavior, 800);
+        return;
+      }
+    }
+  } catch (_error) {
+    // 继续用 fetch，不挡住界面。
+  }
+  fetch(endpoint, {
+    method: 'POST',
+    credentials: 'include',
+    keepalive: true,
+    headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+    body: payload,
+  }).catch(() => {});
+  if (behaviorQueue.length) behaviorTimer = window.setTimeout(flushBehavior, 800);
+}
+
+function logBehavior(name, metadata = {}) {
+  behaviorQueue.push({ name, metadata: compactBehaviorMetadata(metadata) });
+  if (behaviorQueue.length >= 20) {
+    if (behaviorTimer) window.clearTimeout(behaviorTimer);
+    flushBehavior();
+    return;
+  }
+  if (!behaviorTimer) behaviorTimer = window.setTimeout(flushBehavior, 800);
+}
+
+function armViewTiming(label) {
+  const token = (armViewTiming.seq = (armViewTiming.seq || 0) + 1);
+  viewTiming = { token, label: String(label || 'view').slice(0, 40), started: performance.now() };
+  return token;
+}
+
+function finishViewTiming(token) {
+  if (!viewTiming || viewTiming.token !== token) return;
+  const sample = viewTiming;
+  viewTiming = null;
+  const ms = Math.round(performance.now() - sample.started);
+  if (ms >= 1000) logBehavior('view.slow', { view: sample.label, ms });
+}
+
+function noteFeedLoaded() {
+  logBehavior('feed.loaded', {
+    count: visibleFeedItems().length,
+    platform: String(state.feedPlatform || 'all'),
+  });
+}
+
+document.addEventListener('click', (event) => {
+  const node = event.target instanceof Element ? event.target.closest('button, a, summary') : null;
+  if (!node || !state.session) return;
+  const label = String(node.getAttribute('aria-label') || node.textContent || '').replace(/\s+/g, ' ').trim();
+  if (label === '原文' || label === '打开原文' || label.startsWith('阅读站内原文')) {
+    logBehavior('source.original', { view: document.body.dataset.view || '' });
+    return;
+  }
+  if (label === '展开' || label.startsWith('展开')) {
+    if (node.closest('details')?.open) return;
+    logBehavior('item.expand', { view: document.body.dataset.view || '' });
+  }
+}, true);
+window.addEventListener('pagehide', () => {
+  if (behaviorTimer) window.clearTimeout(behaviorTimer);
+  flushBehavior();
+});
 
 function formatTime(timestamp) {
   if (!formatTime.formatter) {
@@ -3814,6 +3918,7 @@ function mediaFeedNeedsReload(previousKey, nextKey, loading) {
 }
 
 function applyFeedPlatform(id) {
+  const previousPlatform = state.feedPlatform;
   const previousMedia = mediaSelectionKey(state.mediaChannel, state.mediaView, state.mediaSourceKey);
   if(id==='trendforce'){id='media';state.mediaChannel='tech';state.mediaSourceKey='trendforce';state.mediaView='all';}
   const next = ['x', 'xueqiu'].includes(id) ? 'social' : id === 'bilibili' ? 'all' : id || 'all';
@@ -3834,6 +3939,9 @@ function applyFeedPlatform(id) {
   renderTrendForceToolbar();
   renderMediaToolbar();
   renderPosts();
+  if (state.bootstrapped && previousPlatform !== state.feedPlatform) {
+    logBehavior('nav.tab', { view: 'feed', page: String(state.feedPlatform || '') });
+  }
   if (next === 'trendforce' && !state.trendforceLoaded && !state.trendforceLoading) {
     loadTrendForceFeed({ refresh: false }).catch((error) => showToast(error.message));
   }
@@ -4607,6 +4715,7 @@ function syncDialogTranslation(post) {
 
 function openArticle(post) {
   if (!post) return;
+  logBehavior('article.open', { id: String(post.id || post.resourceId || '') });
   if (post.kind === 'reading' || post.resourceType === 'reading-node') {
     setView(String(post.reportHref || 'report').replace(/^#/, ''));
     return;
@@ -7225,6 +7334,8 @@ function homeHourlySnapshotReady() {
 }
 
 async function loadSourcesPage({ refresh = false } = {}) {
+  const timingToken = viewTiming?.token || armViewTiming('sources');
+  try {
   if ((state.overviewPane || 'home') === 'home' && (refresh || !homeHourlySnapshotReady())) state.homeHourlySettled = false;
   renderHub();
   if ((state.overviewPane || 'home') !== 'home') return;
@@ -7248,6 +7359,9 @@ async function loadSourcesPage({ refresh = false } = {}) {
   renderHub();
   ensureHomeReadingSnapshots(token).catch(() => {});
   scheduleOverviewFocusWatch();
+  } finally {
+    finishViewTiming(timingToken);
+  }
 }
 
 async function ensureHomeMessages() {
@@ -7257,6 +7371,7 @@ async function ensureHomeMessages() {
   if (!state.xueqiuLoaded && !state.xueqiuLoading) tasks.push(loadXueqiuFeed({ refresh: false }).catch(() => {}));
   if (!state.staticBoard && !state.staticBoardLoading) tasks.push(loadStaticSignalBoard({ refresh: false }).catch(() => {}));
   await Promise.all(tasks);
+  if (tasks.length) noteFeedLoaded();
   if (document.body.dataset.view === 'sources') renderHub();
 }
 
@@ -9554,18 +9669,22 @@ function syncAskLayer() {
 }
 
 async function syncAskView() {
-  syncAskLayer();
-  if (!state.askSessionId) {
-    await loadAskSessions();
-    return;
+  try {
+    syncAskLayer();
+    if (!state.askSessionId) {
+      await loadAskSessions();
+      return;
+    }
+    if (state.askSessionId === 'new') {
+      state.askDetail = null;
+      renderAskSession();
+      focusAskComposer();
+      return;
+    }
+    await loadAskSession(state.askSessionId);
+  } finally {
+    finishViewTiming(viewTiming?.token);
   }
-  if (state.askSessionId === 'new') {
-    state.askDetail = null;
-    renderAskSession();
-    focusAskComposer();
-    return;
-  }
-  await loadAskSession(state.askSessionId);
 }
 
 async function loadAskSessions() {
@@ -10227,6 +10346,7 @@ function saveShareImagePreview() {
 }
 
 async function presentShareCard(input, button) {
+  logBehavior('share.start', { kind: 'card' });
   if (button?.disabled) return;
   if (button) button.disabled = true;
   try {
@@ -10243,6 +10363,7 @@ async function presentShareCard(input, button) {
 }
 
 async function shareAskExchange(card, button) {
+  logBehavior('share.start', { kind: 'ask' });
   if (button?.disabled) return;
   if (button) button.disabled = true;
   try {
@@ -10681,6 +10802,7 @@ const briefPage = createBriefPage ? createBriefPage({
   },
   dailyReference: dailyBriefItemReference, isReferenced, toggleReference,
   shareCard: (input) => presentShareCard(input),
+  track: (name, metadata) => logBehavior(name, metadata),
   canReadSavedSource: material => (material.sourceRefs || []).some(ref=>ref.type==='content-item' || ref.type==='media-body'),
   async readSavedSource(material) {
     const session=state.session;
@@ -10889,7 +11011,9 @@ async function loadReportDay(date) {
 }
 
 function ensureReportPane() {
-  return renderReport();
+  const result = renderReport();
+  Promise.resolve(result).finally(() => finishViewTiming(viewTiming?.token));
+  return result;
 }
 
 function renderDailyBriefPeek() {
@@ -11408,6 +11532,7 @@ function inspirationCardTitle(note) {
 }
 
 function setInspirationExpanded(noteId, open) {
+  if (open) logBehavior('item.expand', { kind: 'note' });
   if (open) {
     state.expandedInspirationIds.clear();
     state.expandedInspirationIds.add(noteId);
@@ -12883,7 +13008,11 @@ function ensureFeedSources(sources) {
   if (focusWindow && sources.includes('xueqiu') && !missing.includes('xueqiu') && !state.xueqiuFocusLoaded && !state.xueqiuFocusLoading && !state.xueqiuLoading) {
     tasks.push(loadFocusFeedWindow('xueqiu').catch((error) => showToast(error.message)));
   }
-  return Promise.all(tasks);
+  const pending = Promise.all(tasks);
+  if (tasks.length) pending.then(() => noteFeedLoaded()).catch(() => {});
+  return pending.finally(() => {
+    if (typeof finishViewTiming === 'function') finishViewTiming(typeof viewTiming === 'undefined' ? undefined : viewTiming?.token);
+  });
 }
 
 function ensureVisibleFeedLoaded() {
@@ -13547,7 +13676,19 @@ async function loadTrendForceFeed({ refresh = false } = {}) {
   try {
     const params = new URLSearchParams({ platform: 'trendforce' });
     if (refresh) params.set('refresh', '1');
-    const payload = await api(`/api/v1/feed/trendforce?${params}`, { timeoutMs: refresh ? 180_000 : 15_000 });
+    const headers = !refresh && state.trendforceEtag ? { 'If-None-Match': state.trendforceEtag } : {};
+    const payload = await api(`/api/v1/feed/trendforce?${params}`, {
+      timeoutMs: refresh ? 180_000 : 15_000,
+      headers,
+      onResponse(response) {
+        const etag = response.headers.get('etag');
+        if (etag) state.trendforceEtag = etag;
+      },
+    });
+    if (payload?.notModified) {
+      state.trendforceLoaded = true;
+      return;
+    }
     state.trendforceItems = [];
     if(state.feedPlatform==='media')await loadMediaFeed();
     state.trendforceNote = payload.feed?.note || '';
@@ -13625,7 +13766,6 @@ async function loadPosts() {
       state.postsLoaded = true;
       state.postsError = '';
       renderPosts();
-      logBehavior('feed.loaded', { count: state.posts.length });
     } catch (error) {
       state.postsError = error instanceof Error ? error.message : '手工信息加载失败';
       throw error;
@@ -14505,12 +14645,14 @@ elements['ask-form'].addEventListener('submit', (event) => {
       showToast('粘贴文章，或 @ 选择一条材料');
       return;
     }
+    logBehavior('ask.submit', { mode: 'article' });
     void askArticleAnalysis(question).then((ok) => {
       if (ok) form.elements.question.value = '';
     });
     return;
   }
   if (!question) return;
+  logBehavior('ask.submit', { mode: 'ask' });
   void askAgent(question).then((ok) => {
     if (ok) form.elements.question.value = '';
   });
