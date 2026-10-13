@@ -8,6 +8,17 @@ import {readingClassKeyEnvs} from './reading-hour-service.js';
 import {boundedInt,isAttributionValidationError,isRetryableUpstreamStatus,modelRetryDelayMs,nextHourlyAttempt,sameIdSet,upstreamHttpStatus} from './report-reliability.js';
 
 const HOUR=3600000;
+function orderHourlyModels(models, rank) {
+  if (models.length < 2 || typeof rank !== 'function') return models;
+  let ranked;
+  try { ranked = rank(models); } catch { return models; }
+  if (!Array.isArray(ranked) || ranked.length !== models.length) return models;
+  const seen = new Set();
+  for (const model of ranked) {
+    if (typeof model !== 'string' || !models.includes(model) || seen.has(model)) return models;
+  }
+  return ranked;
+}
 const stable=rows=>[...rows].sort((a,b)=>a.id.localeCompare(b.id));
 const parse=text=>JSON.parse(String(text || '').trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,''));
 function boundedParagraphs(paragraphs,maxBytes) {
@@ -170,7 +181,7 @@ export function createInformationTreeReader({repository,timezone='Asia/Shanghai'
 
 export function createInformationTreeService({repository,reportRepository,feedService,mediaPort,agentRuntime,skills,
   cacheNamespace='',articleStrategy=false,budgetReady=null,catalog={tags:[]},primaryTag=null,tagHints=null,classificationOverrideForReplay=null,candidatePort=null,materialPort=null,generationConfig={},timezone='Asia/Shanghai',now=()=>Date.now(),budget={},
-  hourlyModels:configuredHourlyModels=[],upstreamRetries:configuredUpstreamRetries,upstreamRetryBaseMs,upstreamRetryMaxMs,sleep:configuredSleep,hourlyAttemptCap:configuredHourlyAttemptCap,prepAttemptCap:configuredPrepAttemptCap,env=process.env,log=console.log}={}) {
+  hourlyModels:configuredHourlyModels=[],rankHourlyModels,upstreamRetries:configuredUpstreamRetries,upstreamRetryBaseMs,upstreamRetryMaxMs,sleep:configuredSleep,hourlyAttemptCap:configuredHourlyAttemptCap,prepAttemptCap:configuredPrepAttemptCap,env=process.env,log=console.log}={}) {
   const validatorVersion=articleStrategy ? ARTICLE_VALIDATOR_VERSION : TREE_VALIDATOR_VERSION;
   const config={articleRequestBytes:100000,batchBytes:12000,maxCalls:80,totalMs:20*60000,timeoutMs:180000,dailyTimeoutMs:360000,dailyTotalMs:60*60000,queueTimeoutMs:120000,...budget};
   const hourlyModels=Array.isArray(configuredHourlyModels) ? configuredHourlyModels.map(model=>String(model || '').trim()).filter(Boolean) : [];
@@ -247,7 +258,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
       return value;
     };
     try {
-      const models=stage==='hourly' && hourlyModels.length ? hourlyModels : [undefined];
+      const models=stage==='hourly' && hourlyModels.length ? orderHourlyModels(hourlyModels, rankHourlyModels) : [undefined];
       const callTimeout=stage==='daily' ? config.dailyTimeoutMs : config.timeoutMs;
       let lastError;
       modelLoop: for(let modelIndex=0;modelIndex<models.length;modelIndex++) {

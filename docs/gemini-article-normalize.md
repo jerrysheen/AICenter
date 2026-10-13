@@ -44,7 +44,7 @@ await runtime.run({
 正式并发上线决定：全池同时执行最多5个封闭任务，每账号/项目＋模型最多一个在途调用、20次/滚动分钟、500次/供应商自然日；各模型全池2500次/日及2500次/滚动小时分别记账。保留每账号/模型100000估算Token/分钟和至少3000ms发起间隔，20RPM是上限而非保证吞吐。同账号不同模型可同时在不同执行上下文运行，不互占租约或冷却。请求不自动切模型；默认仍为gemini-3.1-flash-lite，白名单可用模型以实际Google ListModels结果核验。Google供应商实际额度不足时遵守原始429冷却，不能把本地上限当作供应商余额。
 
 
-主文章双模型池：用户明确要求将3.1 Flash Lite和3.5 Flash Lite一并纳入正式主阅读/文章整理预算。`AI_CENTER_GEMINI_ARTICLE_MODEL_POOL`显式列出白名单中的确切模型ID；空值保持原单模型行为。未指定googleModel的封闭article-normalize请求，在持久化准入阶段轮换选择一个可用模型与账号；在HTTP发送前完成选择，一份原文正常只发送一次。显式googleModel继续固定该模型。账号＋模型各自500RPD/20RPM；两个模型五账号理论合计5000RPD，真实供应商限额/冷却另算，不保证每Key都有1000可用次数。Job领取前检查整个模型池，仅所有候选模型的所有Key均处于供应商冷却才允许原显式Grok fallback；本地分钟/Token/日预算不足不转付费供应商。选定的实际模型贯穿引擎、settings和用量账本，modelPool进入generationConfig/缓存策略指纹；旧版本与引用保留。
+主文章双模型池：用户明确要求将3.1 Flash Lite和3.5 Flash Lite一并纳入正式主阅读/文章整理预算。`AI_CENTER_GEMINI_ARTICLE_MODEL_POOL`显式列出白名单中的确切模型ID；空值保持原单模型行为。未指定googleModel的封闭article-normalize请求，在持久化准入阶段轮换选择一个可用模型与账号；在HTTP发送前完成选择，一份原文正常只发送一次。轮换位置写入 `gemini_model_cursors`，进程重启后从下一个模型继续，不再回到池里的第一个。显式googleModel继续固定该模型。账号＋模型各自500RPD/20RPM；两个模型五账号理论合计5000RPD，真实供应商限额/冷却另算，不保证每Key都有1000可用次数。Job领取前检查整个模型池，仅所有候选模型的所有Key均处于供应商冷却才允许原显式Grok fallback；本地分钟/Token/日预算不足不转付费供应商。选定的实际模型贯穿引擎、settings和用量账本，modelPool进入generationConfig/缓存策略指纹；旧版本与引用保留。
 
 Gemma纯翻译测试是独立有限benchmark，不进入这个文章整理模型池。用户提供30RPM、16K输入TPM、14400RPD供后续翻译调度参考，不能当作无限并发；本轮只测试，不将未通过质量/可用性检查的Gemma自动上线。
 

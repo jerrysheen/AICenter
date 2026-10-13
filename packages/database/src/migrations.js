@@ -1844,6 +1844,19 @@ migrations.push({ version: 59, name: 'feed_provider_page_indexes', up(database) 
   `);
 }});
 
+migrations.push({ version: 60, name: 'gemini_model_pool_cursor', up(database) {
+  database.exec(`CREATE TABLE IF NOT EXISTS gemini_model_cursors (
+    pool_key TEXT PRIMARY KEY,
+    models_json TEXT NOT NULL,
+    cursor INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );`);
+}});
+
+migrations.push({ version: 61, name: 'model_usage_http_status', up(database) {
+  addColumn(database, 'model_usage_index', 'http_status', 'INTEGER');
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

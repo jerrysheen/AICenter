@@ -153,15 +153,15 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
 
   const upgraded = createStore(file);
   try {
-    assert.equal(latestSchemaVersion(), 59);
-    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 59);
+    assert.equal(latestSchemaVersion(), 61);
+    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 61);
   } finally {
     upgraded.close();
   }
 
   const database = new Database(file, { readonly: true, fileMustExist: true });
   try {
-    assert.equal(database.pragma('user_version', { simple: true }), 59);
+    assert.equal(database.pragma('user_version', { simple: true }), 61);
     const rows = database.prepare(`
       SELECT version, name, applied_at FROM schema_migrations WHERE version >= 57 ORDER BY version
     `).all();
@@ -169,7 +169,11 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
       [57, 'api_access_tokens'],
       [58, 'runtime_snapshots'],
       [59, 'feed_provider_page_indexes'],
+      [60, 'gemini_model_pool_cursor'],
+      [61, 'model_usage_http_status'],
     ]);
+    assert.ok(database.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'gemini_model_cursors'`).get());
+    assert.equal(database.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('model_usage_index') WHERE name = 'http_status'`).get().n, 1);
     assert.ok(rows[1].applied_at <= rows[2].applied_at);
     assert.ok(database.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'runtime_snapshots'`).get());
     for (const name of FEED_INDEXES) {

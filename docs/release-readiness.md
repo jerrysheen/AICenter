@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-13 Gemini 小时调用在两个模型之间按用量均衡：小时准入不再按固定顺序先占满 `gemini-3.1-flash-lite`。`reserve` 在模型池里挑选当天用量最少的（模型，key），分钟、日额和冷却仍按原来的桶拒绝。信息树浓缩从这一对所在的模型开始，失败后再换另一个模型。阅读分类不指定模型，走同一套挑选。文章模型池的轮换游标写入 `gemini_model_cursors`（migration 60），重启后从下一个模型继续。`model_usage_index.http_status`（migration 61）记下 429 和 503；页面明细显示这个状态码，仍不返回供应商和模型名。配额冷却、探针和显式 `googleModel` 不变。需要同时重启 Web 和 Worker，由先启动的进程建表。不要重建数据库。见 `progress/2026-10-13-gemini-model-balance.md`。
+
 2026-10-13 首屏不再在请求里序列化大包：`GET /api/v1/home/bootstrap` 只留最近小时的命中条、去掉走势线的行情、日报前几句和最多 8 条官方发布。手工、X、雪球改由页面随后请求。缓存里放的是已经 `JSON.stringify` 并 gzip 过的缓冲区，命中时请求路径只写出这组字节。`GET /api/v1/feed/x` 与 `/feed/xueqiu` 同样缓存这份缓冲区；列表查询不再读取正文大字段，也不为规范化文章再读一遍正文。`events.flush` 每次最多写 5 条，直接用库里的 JSON 文本，没有 SSE 订阅者时只把游标拨到最新 id。`/favicon.ico` 和 `/favicon.svg` 从内存返回，`Cache-Control: public, max-age=604800`。夹具里一份撑大的旧包 1781077 字节、序列化 4.42ms，收成首屏后 20607 字节、gzip 1153 字节、组包加序列化 10.81ms。需要重启 Web。Worker 不用为这项重启。没有 migration。见 `progress/2026-10-13-bootstrap-stringify.md`。
 
 2026-10-13 页面计时与展开 / 原文：`client-timing.js` 每次文档加载都 POST 一条，`Content-Type` 是 `text/plain`。没有 Navigation Timing 时七个阶段记 0。`load` 已结束、8 秒内还没 `load`，或从往返缓存恢复，都会发。页面开着时走 `fetch` `keepalive`，失败再用 `sendBeacon`。`?v=` 仍按内容改写。Host 被隧道改成回环地址且带 `cf-ray` 或 `cf-connecting-ip` 时仍写入 `client-timing.*.log`。`原文`、`打开原文`、`打开原站`、`前往原站` 和 `阅读站内原文` 记 `source.original`。展开阅读折页、中文正文或「展开…」记 `item.expand`。需要重启 Web。浏览器再加载一次。Worker 不用重启。没有 migration。见 `progress/2026-10-13-client-timing-behavior.md`。

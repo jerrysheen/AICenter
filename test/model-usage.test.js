@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
+import Database from 'better-sqlite3';
 import { zstdCompressSync } from 'node:zlib';
 import path from 'node:path';
 import os from 'node:os';
@@ -181,6 +182,64 @@ test('gateway binds late usage settlement to its opening run and requires its pr
     await post({ id: 'unknown', status: 'succeeded' });
     assert.equal(rows.length, 2); assert.ok(rows.every(row => row.jobId === 'a'));
   } finally { await gateway.close(); }
+});
+
+test('model usage keeps the HTTP status that distinguishes 429 from 503', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'aicenter-usage-http-'));
+  const file = path.join(directory, 'usage.db');
+  const store = createStore(file);
+  try {
+    const save = row => store.repositories.modelUsage.save(row);
+    const call = (status, model) => createUsageFetch(async () => Response.json({ error: { code: status } }, { status }), {
+      provider: 'gemini', model, observer: save,
+    })('https://example.test/models', { body: JSON.stringify({ model }) });
+    await call(429, 'gemini-3.1-flash-lite');
+    await call(503, 'gemini-3.5-flash-lite');
+    const rows = store.repositories.modelUsage.list('local').filter(row => row.status === 'failed');
+    assert.deepEqual(rows.map(row => [row.model, row.httpStatus]).sort(), [
+      ['gemini-3.1-flash-lite', 429],
+      ['gemini-3.5-flash-lite', 503],
+    ]);
+    const view = createModelUsageService({ repository: store.repositories.modelUsage }).list();
+    assert.deepEqual(view.filter(row => row.status === 'failed').map(row => row.httpStatus).sort(), [429, 503]);
+    assert.equal(view.every(row => !('provider' in row) && !('model' in row)), true);
+    const database = new Database(file);
+    assert.deepEqual(database.prepare(`SELECT http_status AS status FROM model_usage_index WHERE json_extract(record_json,'$.status')='failed' ORDER BY http_status`).all(), [{ status: 429 }, { status: 503 }]);
+    const legacy = {
+      id: 'legacy', workspaceId: 'local', kind: 'request', jobId: 'legacy', jobAttempt: null,
+      stage: 'ask', applicationSessionId: '', harnessSessionId: '', turn: null, step: null, attempt: null,
+      provider: 'google', model: 'gemini-3.1-flash-lite', status: 'failed', completeness: 'missing',
+      usage: { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, totalTokens: null },
+      occurredAt: 1, supplierAmount: null, supplierCurrency: null,
+    };
+    database.prepare(`INSERT INTO model_usage_index(workspace_id,id,job_id,occurred_at,record_json,http_status) VALUES(?,?,?,?,?,NULL)`)
+      .run('local', 'legacy', 'legacy', 1, JSON.stringify(legacy));
+    database.close();
+    assert.equal(store.repositories.modelUsage.list('local').find(row => row.id === 'legacy').httpStatus, null);
+  } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
+
+  const observed = new Map();
+  const observer = createHarnessUsageObserver({ record: row => observed.set(row.id, structuredClone(row)) });
+  observer.events('session', [
+    { type: 'turn/start', seq: 0, time: 0, data: { turn: 1 } },
+    { type: 'step/start', seq: 1, time: 1, data: { turn: 1, step: 1 } },
+    { type: 'assistant/attempt', seq: 2, time: 2, data: { turn: 1, step: 1, stream: [] } },
+    { type: 'step/end', seq: 3, time: 3, data: { turn: 1, step: 1 } },
+    { type: 'turn/end', seq: 4, time: 4, data: { turn: 1, reason: { kind: 'error', error: { status: 503, message: 'unavailable' } } } },
+  ]);
+  const failed = [...observed.values()].find(row => row.kind === 'request');
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.httpStatus, 503);
+  observer.noteHttpStatus('session', 429);
+  assert.equal(observed.get(failed.id).httpStatus, 503);
+  const open = createHarnessUsageObserver({ record: row => observed.set(row.id, structuredClone(row)) });
+  open.events('other', [
+    { type: 'turn/start', seq: 0, time: 0, data: { turn: 1 } },
+    { type: 'step/start', seq: 1, time: 1, data: { turn: 1, step: 1 } },
+    { type: 'assistant/attempt', seq: 2, time: 2, data: { turn: 1, step: 1, stream: [] } },
+  ]);
+  open.noteHttpStatus('other', 429);
+  assert.equal([...observed.values()].find(row => row.harnessSessionId === 'other').httpStatus, 429);
 });
 
 test('explicit versioned rates estimate separately; absent buckets or rates never become free', () => {
