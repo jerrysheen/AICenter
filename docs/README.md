@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-14-feed-translation-list.md`：社媒列表带上中文标题和摘要，中文来源不再标「暂未翻译」。阅读页用接口全文译文。超过 2 万字的帖会入队。Worker 启动最多补 80 条，可用环境变量改小。不新增 migration。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-14-etf-whale-blobs-untrack.md`：`etf.whale.sync` 重写的 `data/blobs/etf-whale/` 不再进入 Git。页面只读 SQLite。拉取会删掉服务器上这些曾被跟踪的文件；要保留原始响应就先备份，等工作区干净并快进完成后再拷回。不新增 migration。不必为这项单独重启。
 
 - `progress/2026-10-14-overlay-crlf.md`：Windows `core.autocrlf=true` 把 overlay 检出成 CRLF，`web.searchProvider` 的匹配只认 LF，问答在 1 秒内失败。解析先把换行收成 LF，写出的 overlay 也是 LF。`.gitattributes` 让 `*.yml` / `*.yaml` 按 LF 检出。不新增 migration。需要重启 Worker。

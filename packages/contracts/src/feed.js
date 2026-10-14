@@ -144,11 +144,14 @@ export const SaveContentItemInputSchema = z.object({
   publishedAt: NullableEpochMillisSchema.default(null),
 }).strict();
 
+export const FEED_TRANSLATION_TEXT_MAX = 200_000;
+export const FEED_TRANSLATION_OUTPUT_MAX = 200_000;
+
 export const FeedItemTranslationSchema = z.object({
   itemId: EntityIdSchema,
   targetLang: z.enum(['zh', 'en']),
   sourceHash: z.string().trim().min(1).max(128),
-  translatedText: z.string().trim().min(1).max(8_000),
+  translatedText: z.string().trim().min(1).max(FEED_TRANSLATION_OUTPUT_MAX),
   engine: z.string().trim().max(32).default(''),
   updatedAt: EpochMillisSchema,
 }).strict();
@@ -158,13 +161,13 @@ export const SaveFeedItemTranslationInputSchema = z.object({
   itemId: EntityIdSchema,
   targetLang: z.enum(['zh', 'en']).default('zh'),
   sourceHash: z.string().trim().min(1).max(128),
-  translatedText: z.string().trim().min(1).max(8_000),
+  translatedText: z.string().trim().min(1).max(FEED_TRANSLATION_OUTPUT_MAX),
   engine: z.string().trim().max(32).default(''),
 }).strict();
 
 export const FeedAiPackedUnitSchema = z.object({
   itemId: EntityIdSchema,
-  text: z.string().trim().min(1).max(20_000),
+  text: z.string().trim().min(1).max(FEED_TRANSLATION_TEXT_MAX),
   charCount: z.number().int().min(0),
   packedChars: z.number().int().min(0),
   truncatedForModel: z.boolean(),
@@ -216,6 +219,6 @@ export const FeedTranslationJobInputSchema = z.object({
   targetLang: z.enum(['zh', 'en']).default('zh'),
   items: z.array(z.object({
     id: z.string().trim().min(1).max(256),
-    text: z.string().trim().min(1).max(20_000),
+    text: z.string().trim().min(1).max(FEED_TRANSLATION_TEXT_MAX),
   }).strict()).min(1).max(30),
 }).strict().refine(value => new Set(value.items.map(item => item.id)).size === value.items.length, '翻译项目 ID 重复');

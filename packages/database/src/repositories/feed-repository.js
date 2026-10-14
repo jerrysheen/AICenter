@@ -635,7 +635,8 @@ export function createFeedRepository(database, emitEvent) {
       const ids = providerFeedIds(workspaceId, provider, { ...options, sourceAccountId: account.id, limit: safeLimit });
       if (!ids.length) return [];
       const itemColumns = options.omitBody
-        ? `ci.id, ci.workspace_id, ci.capture_id, ci.origin_type, ci.content_type, ci.title, '' AS body, ci.summary,
+        ? `ci.id, ci.workspace_id, ci.capture_id, ci.origin_type, ci.content_type, ci.title, '' AS body,
+          substr(ci.body, 1, 480) AS body_lang, ci.summary,
           ci.source_url, ci.author_name, ci.published_at, ci.created_at, ci.updated_at`
         : 'ci.*';
       const captureColumns = options.omitBody
@@ -659,6 +660,7 @@ export function createFeedRepository(database, emitEvent) {
         captureMetadata: options.omitBody
           ? { authorHandle: row.author_handle || '' }
           : parseJson(row.capture_metadata_json),
+        ...(options.omitBody ? { bodyLang: String(row.body_lang || '') } : {}),
         isRead: Boolean(row.is_read),
         isSaved: Boolean(row.is_saved),
         lowValue: Boolean(row.low_value),
@@ -1129,6 +1131,44 @@ export function createFeedRepository(database, emitEvent) {
         translatedText: row.translated_text,
         engine: row.engine || '',
         updatedAt: row.updated_at,
+      }));
+    },
+
+    listUntranslatedFeedBodies(workspaceId, { limit = 80, scan = 400, excludeSourceIds = [] } = {}) {
+      const cap = Math.max(1, Math.min(Number(scan) || Number(limit) || 80, 500));
+      const excluded = [...new Set((excludeSourceIds || []).map((id) => String(id || '').trim()).filter(Boolean))].slice(0, 40);
+      const excludeSql = excluded.length
+        ? `AND COALESCE(sa.external_id, '') NOT IN (${excluded.map(() => '?').join(', ')})`
+        : '';
+      const rows = database.prepare(`SELECT ci.id AS id, ci.body AS body, ci.summary AS summary, ci.title AS title,
+          ci.created_at AS created_at, c.provider AS provider, c.external_id AS external_id,
+          COALESCE(sa.external_id, '') AS source_external_id
+        FROM content_items ci
+        JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
+        LEFT JOIN source_accounts sa ON sa.id = c.source_account_id AND sa.workspace_id = ci.workspace_id
+        WHERE ci.workspace_id = ?
+          AND c.provider IN ('x', 'xueqiu', 'trendforce', 'bilibili')
+          AND length(ci.body) > 0
+          AND ${USER_VISIBLE_CONTENT_SQL}
+          AND NOT EXISTS (
+            SELECT 1 FROM feed_item_translations t
+            WHERE t.workspace_id = ci.workspace_id
+              AND t.target_lang = 'zh'
+              AND t.translated_text != ''
+              AND (t.item_id = ci.id OR t.item_id = c.provider || ':' || c.external_id)
+          )
+          ${excludeSql}
+        ORDER BY CASE WHEN length(ci.body) > 20000 THEN 0 ELSE 1 END, ci.created_at DESC
+        LIMIT ?`).all(workspaceId, ...excluded, cap);
+      return rows.map((row) => ({
+        id: row.id,
+        body: row.body || '',
+        summary: row.summary || '',
+        title: row.title || '',
+        createdAt: row.created_at,
+        provider: row.provider || '',
+        externalId: row.external_id || '',
+        sourceExternalId: row.source_external_id || '',
       }));
     },
 
