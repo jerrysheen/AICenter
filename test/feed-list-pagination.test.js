@@ -276,7 +276,7 @@ test('verified translated media list item renders as a summary and does not thro
     translationStoreKey: () => 'media-key',
     loadTranslationStore: () => ({}),
   });
-  vm.runInContext(`${extractFunctions(source, ['textNeedsZhView', 'chineseReaderText', 'translationFor', 'mediaAsItem'])}\nthis.translationFor=translationFor;this.mediaAsItem=mediaAsItem;`, context);
+  vm.runInContext(`${extractFunctions(source, ['textNeedsZhView', 'chineseReaderText', 'readerTranslationCut', 'translationFor', 'mediaAsItem'])}\nthis.translationFor=translationFor;this.mediaAsItem=mediaAsItem;`, context);
   const item = {
     id: 'media:decoder:ready',
     externalId: 'decoder:ready',
@@ -319,7 +319,7 @@ test('media list cards prefer the translated title segment', () => {
     splitFeedText: (value) => ({ body: String(value || ''), comments: [] }),
   });
   vm.runInContext(`${extractFunctions(source, [
-    'textNeedsZhView', 'chineseReaderText', 'postNeedsChineseTranslation', 'postIsTranslating',
+    'textNeedsZhView', 'chineseReaderText', 'readerTranslationCut', 'postNeedsChineseTranslation', 'postIsTranslating',
     'translationFor', 'plainFeedText', 'clipFeedText', 'firstFeedSentence', 'textAfterLead',
     'postDisplayTitle', 'socialBodyText', 'mediaAsItem',
   ])}\nthis.title=postDisplayTitle;this.mediaAsItem=mediaAsItem;`, context);
@@ -455,7 +455,7 @@ test('a client translation replaces the english card excerpt, and an in-flight s
     state: { translations: {}, xTranslating: false },
   });
   vm.runInContext(`${extractFunctions(source, [
-    'textNeedsZhView', 'chineseReaderText', 'postNeedsChineseTranslation', 'postIsTranslating', 'socialListPlaceholder',
+    'textNeedsZhView', 'chineseReaderText', 'readerTranslationCut', 'postNeedsChineseTranslation', 'postIsTranslating', 'socialListPlaceholder',
     'translationFor', 'plainFeedText', 'clipFeedText', 'firstFeedSentence', 'textAfterLead',
     'postDisplayTitle', 'socialBodyText', 'listCardExcerpt', 'postListExcerpt', 'feedCardExcerpt', 'feedAsItem',
   ])}\nthis.feedAsItem=feedAsItem;this.card=feedCardExcerpt;`, context);

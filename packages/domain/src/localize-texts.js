@@ -20,13 +20,63 @@ export function needsZhLocalization(sourceText) {
   return latin >= 8 || hangul >= 2;
 }
 
-// A long source with only a short saved translation was cut off. Short posts stay as they are.
-export function translationLooksTruncated(source, translatedLength) {
+function scriptCounts(value) {
+  const text = String(value || '');
+  return {
+    han: countMatches(text, /\p{Script=Han}/gu),
+    latin: countMatches(text, /[A-Za-z]/g),
+  };
+}
+
+function unmatchedOpens(value) {
+  const pairs = [['（', '）'], ['(', ')'], ['[', ']'], ['【', '】'], ['「', '」'], ['『', '』']];
+  let extra = 0;
+  const text = String(value || '');
+  for (const [open, close] of pairs) {
+    const opens = text.split(open).length - 1;
+    const closes = text.split(close).length - 1;
+    if (opens > closes) extra += opens - closes;
+  }
+  return extra;
+}
+
+function stripTrailingClosers(value) {
+  return String(value || '').trim().replace(/[\s"'“”‘’」』）】\])]+$/u, '').trim();
+}
+
+// A saved translation that stops at an ellipsis, an unclosed bracket, or before the
+// source's final sentence was cut off. A source that itself ends in an ellipsis can
+// keep that ending when the length is otherwise healthy.
+export function translationEndingCut(source, translated) {
+  const src = String(source || '').trim();
+  const dst = String(translated || '').trim();
+  if (!src || !dst) return false;
+  const ellipsis = /(?:\.{3,}|…+)\s*$/u;
+  if (ellipsis.test(dst) && !ellipsis.test(src)) return true;
+  if (unmatchedOpens(dst) > 0 && unmatchedOpens(src) === 0) return true;
+  const srcEnd = stripTrailingClosers(src);
+  const dstEnd = stripTrailingClosers(dst);
+  const terminal = /[。！？.!?]$/u;
+  if (terminal.test(srcEnd) && !terminal.test(dstEnd) && !ellipsis.test(dst) && dst.length >= 20) return true;
+  return false;
+}
+
+// Long sources with a short saved translation were cut off. Bodies under 80
+// characters stay put. Latin compresses into Chinese; Han stays nearer one to one.
+// Pass the translated string (or its ending) to also catch a cut sentence.
+export function translationLooksTruncated(source, translatedLength, translatedText = '') {
   const body = String(source || '');
-  const length = Number(translatedLength) || 0;
-  if (body.length < 600 || length <= 0) return false;
+  const text = String(translatedText || '');
+  const length = Number(translatedLength) > 0 ? Number(translatedLength) : text.trim().length;
+  if (!body.trim() || length <= 0) return false;
+  if (text.trim() && translationEndingCut(body, text)) return true;
+  if (body.length < 80) return false;
   if (length >= 160 && length * 4 >= body.length) return false;
-  return length < 120 || length * 5 < body.length;
+  if (body.length >= 600) return length < 120 || length * 5 < body.length;
+  const { han, latin } = scriptCounts(body);
+  const foreign = han + latin;
+  const divisor = foreign && han / foreign >= 0.5 ? 1.6 : 4;
+  return length * divisor < body.length;
 }
 
 export function localizationItemId(id) {

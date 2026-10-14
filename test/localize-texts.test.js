@@ -4,6 +4,7 @@ import {
   collectLocalizationUnits,
   localizationItemId,
   needsZhLocalization,
+  translationLooksTruncated,
 } from '../packages/domain/src/localize-texts.js';
 
 test('needsZhLocalization matches the feed translation heuristic', () => {
@@ -20,6 +21,22 @@ test('needsZhLocalization keeps Chinese posts that only mix in English product n
   const longEnglish = `${'English report '.repeat(400)}长鑫存储扩产计划已经公开说明`;
   assert.equal(longEnglish.length > 280, true);
   assert.equal(needsZhLocalization(longEnglish), true);
+});
+
+test('translationLooksTruncated uses length ratio and a cut ending', () => {
+  const latin = 'Capacity plan remains uncertain. '.repeat(16);
+  assert.ok(latin.length >= 500);
+  assert.equal(translationLooksTruncated(latin, 40), true);
+  assert.equal(translationLooksTruncated(latin, 200), false);
+  assert.equal(translationLooksTruncated('A short post.', 4), false);
+  const jeff = latin.slice(0, 420);
+  assert.ok(jeff.length < 600);
+  assert.equal(translationLooksTruncated(jeff, 28, '…缺乏公开信息（我...'), true);
+  assert.equal(translationLooksTruncated('The source itself ends with an ellipsis…', 18, '原文自己就用了省略号…'), false);
+  const han = '这是一段中文原文，只是为了测量汉字密度。'.repeat(20);
+  assert.equal(translationLooksTruncated(han, 40), true);
+  assert.equal(translationLooksTruncated(han, 400), false);
+  assert.equal(translationLooksTruncated(jeff, jeff.length, `${'译文已经写完。'.repeat(40)}`), false);
 });
 
 test('localizationItemId hashes identifiers longer than 128 characters', () => {

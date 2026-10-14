@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { FEED_TRANSLATION_TEXT_MAX, FeedTranslationJobInputSchema } from '../../contracts/src/index.js';
 import { TRANSLATION_MAX_ATTEMPTS } from '../../database/src/translation-retry.js';
+import { stripLeadingPreview } from '../../connectors/src/x/home-browser.js';
 import { needsZhLocalization, translationLooksTruncated } from '../../domain/src/localize-texts.js';
 
 function bodyHash(value) {
@@ -56,10 +57,10 @@ function noteSkip(summary, key, id) {
   if (id && summary.ids[key] && summary.ids[key].length < 8) summary.ids[key].push(id);
 }
 
-function translationCovers(rowHash, engine, translatedLength, text, hash) {
+function translationCovers(rowHash, engine, translatedLength, text, hash, translatedText = '') {
   if (!rowHash || rowHash !== hash) return false;
   if (engine === 'hourly-report' && text.length > 400 && text.length > Number(translatedLength) * 3) return false;
-  if (translationLooksTruncated(text, translatedLength)) return false;
+  if (translationLooksTruncated(text, translatedLength, translatedText)) return false;
   return true;
 }
 
@@ -131,12 +132,15 @@ export async function backfillUntranslatedFeedTranslations({
   for (const row of rows) {
     if (row.hidden) { noteSkip(summary, 'hidden', row.id); continue; }
     if (flash.has(row.sourceExternalId)) { noteSkip(summary, 'flash', row.id); continue; }
-    const text = String(row.body || '').trim();
+    let text = stripLeadingPreview(row.body || '');
+    if (text && text !== String(row.body || '').trim() && repo.replaceContentBody?.(workspaceId, row.id, text)) {
+      row.body = text;
+    }
     if (!text) { noteSkip(summary, 'empty', row.id); continue; }
     if (text.length > FEED_TRANSLATION_TEXT_MAX) { noteSkip(summary, 'tooLong', row.id); continue; }
     const hash = bodyHash(text);
-    const covered = translationCovers(row.translationHash, row.translationEngine, row.translationLength, text, hash)
-      || translationCovers(row.externalTranslationHash, row.externalTranslationEngine, row.externalTranslationLength, text, hash);
+    const covered = translationCovers(row.translationHash, row.translationEngine, row.translationLength, text, hash, row.translationTail)
+      || translationCovers(row.externalTranslationHash, row.externalTranslationEngine, row.externalTranslationLength, text, hash, row.externalTranslationTail);
     if (covered) {
       noteSkip(summary, 'translated', row.id);
       continue;

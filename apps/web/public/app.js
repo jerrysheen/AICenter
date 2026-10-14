@@ -656,6 +656,29 @@ function saveTranslationStore(store) {
   window.localStorage.setItem(TRANSLATION_STORE_KEY, JSON.stringify(trimmed));
 }
 
+function readerTranslationCut(source, translated, endingOnly) {
+  const body = String(source || '').trim();
+  const text = String(translated || '').trim();
+  if (!text) return false;
+  const ellipsis = /(?:\.{3,}|…+)\s*$/u;
+  if (ellipsis.test(text) && !ellipsis.test(body)) return true;
+  const opens = (text.match(/[（(\[【「『]/g) || []).length;
+  const closes = (text.match(/[）)\]】」』]/g) || []).length;
+  const sourceOpens = (body.match(/[（(\[【「『]/g) || []).length;
+  const sourceCloses = (body.match(/[）)\]】」』]/g) || []).length;
+  if (opens > closes && sourceOpens <= sourceCloses) return true;
+  const end = (value) => String(value || '').replace(/[\s"'“”‘’」』）】\])]+$/u, '');
+  if (/[。！？.!?]$/u.test(end(body)) && !/[。！？.!?]$/u.test(end(text)) && !ellipsis.test(text) && text.length >= 20) return true;
+  if (endingOnly || body.length < 80) return false;
+  const han = (body.match(/\p{Script=Han}/gu) || []).length;
+  const latin = (body.match(/[A-Za-z]/g) || []).length;
+  const foreign = han + latin;
+  const divisor = foreign && han / foreign >= 0.5 ? 1.6 : 4;
+  if (text.length >= 160 && text.length * 4 >= body.length) return false;
+  if (body.length >= 600 && text.length < 120) return true;
+  return text.length * divisor < body.length;
+}
+
 function translationFor(post) {
   if (!post?.id) return null;
   if (post.platform === 'media' && post.complete) {
@@ -667,7 +690,10 @@ function translationFor(post) {
   const normalized = String(post.normalizedArticle?.body || '');
   const chineseApi = chineseReaderText(apiText);
   const chineseNormalized = chineseReaderText(normalized);
-  if (chineseApi) {
+  const source = String(post.body || post.summary || '');
+  const apiCut = chineseApi && readerTranslationCut(source, chineseApi, true);
+  const normalizedCut = chineseNormalized && readerTranslationCut(source, chineseNormalized, true);
+  if (chineseApi && !(apiCut && chineseNormalized && !normalizedCut)) {
     let text = chineseApi;
     const leadMatch = text.match(/^[\s\S]+?(?:[。！？]|[.!?](?:\s|$))/);
     const lead = leadMatch ? leadMatch[0].trim() : '';
@@ -3718,14 +3744,18 @@ async function syncLocalTranslationsToServer(items) {
     const post = xAsItem(item);
     const local = translationFor(post);
     if (!local?.text || local.kind==='normalized') continue;
+    const sourceText = String(post.body || '').trim();
+    const id = String(post.id || '').trim();
+    if (!sourceText || !id || id.length > 128) continue;
     translations.push({
-      id: post.id,
-      sourceText: post.body || '',
+      id,
+      sourceText,
       translatedText: local.text,
-      engine: local.engine || '',
+      engine: String(local.engine || '').slice(0, 32),
       targetLang: 'zh',
     });
   }
+  if (!translations.length) return;
   const chunkSize = 200;
   for (let offset = 0; offset < translations.length; offset += chunkSize) {
     try {

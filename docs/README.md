@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-14-translation-truncation.md`：截断译文按长度比和句末重新入队，阅读页先显示完整的中文整理。长文不再把预览接在全文前，也不再读到 400 字就停。列表空正文不再提交 `feed/translations`。不新增 migration。需要同时重启 Web 和 Worker。浏览器再加载一次。
+
 - `progress/2026-10-14-translation-feed-qa.md`：补译同时最多 2 条，配额等待也占着这份额，并给优先级不低于 0 的翻译留席。小时展开用译文，栏仍按入库。社媒按上海发布时间分组。列表刷新回到第一页，不再越刷越多。`x:` 形式的内容条目可以打开。不新增 migration。需要同时重启 Web 和 Worker。浏览器再加载一次。
 
 - `progress/2026-10-14-reader-and-queue.md`：列表上中文正文不再留着英文标题。直接打开 `#article` 和简报走同一份内容条目，已有译文不再入队。补译让出一席给手机发起的翻译。不新增 migration。需要同时重启 Web 和 Worker。

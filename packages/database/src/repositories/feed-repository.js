@@ -1152,6 +1152,21 @@ export function createFeedRepository(database, emitEvent) {
       }));
     },
 
+    replaceContentBody(workspaceId, id, body) {
+      const text = String(body || '');
+      if (!workspaceId || !id || !text) return false;
+      return database.transaction(() => {
+        const result = database.prepare(`UPDATE content_items SET body = ?, updated_at = ?
+          WHERE workspace_id = ? AND id = ? AND body != ?`).run(text, Date.now(), workspaceId, id, text);
+        if (!result.changes) return false;
+        const item = database.prepare('SELECT id, capture_id FROM content_items WHERE workspace_id = ? AND id = ?')
+          .get(workspaceId, id);
+        emitEvent('feed.content-item.saved.v1', 'content-item', id,
+          { contentItemId: id, captureId: item?.capture_id || null }, workspaceId);
+        return true;
+      })();
+    },
+
     listUntranslatedFeedBodies(workspaceId, { limit = 80, scan = 400, excludeSourceIds = [] } = {}) {
       const cap = Math.max(1, Math.min(Number(scan) || Number(limit) || 80, 500));
       const excluded = [...new Set((excludeSourceIds || []).map((id) => String(id || '').trim()).filter(Boolean))].slice(0, 40);
@@ -1171,6 +1186,9 @@ export function createFeedRepository(database, emitEvent) {
           (SELECT length(t.translated_text) FROM feed_item_translations t
             WHERE t.workspace_id = ci.workspace_id AND t.target_lang = 'zh' AND t.translated_text != ''
               AND t.item_id = ci.id LIMIT 1) AS translation_length,
+          (SELECT substr(t.translated_text, -240) FROM feed_item_translations t
+            WHERE t.workspace_id = ci.workspace_id AND t.target_lang = 'zh' AND t.translated_text != ''
+              AND t.item_id = ci.id LIMIT 1) AS translation_tail,
           (SELECT t.source_hash FROM feed_item_translations t
             WHERE t.workspace_id = ci.workspace_id AND t.target_lang = 'zh' AND t.translated_text != ''
               AND t.item_id = c.provider || ':' || c.external_id LIMIT 1) AS external_translation_hash,
@@ -1179,7 +1197,10 @@ export function createFeedRepository(database, emitEvent) {
               AND t.item_id = c.provider || ':' || c.external_id LIMIT 1) AS external_translation_engine,
           (SELECT length(t.translated_text) FROM feed_item_translations t
             WHERE t.workspace_id = ci.workspace_id AND t.target_lang = 'zh' AND t.translated_text != ''
-              AND t.item_id = c.provider || ':' || c.external_id LIMIT 1) AS external_translation_length
+              AND t.item_id = c.provider || ':' || c.external_id LIMIT 1) AS external_translation_length,
+          (SELECT substr(t.translated_text, -240) FROM feed_item_translations t
+            WHERE t.workspace_id = ci.workspace_id AND t.target_lang = 'zh' AND t.translated_text != ''
+              AND t.item_id = c.provider || ':' || c.external_id LIMIT 1) AS external_translation_tail
         FROM content_items ci
         JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
         LEFT JOIN source_accounts sa ON sa.id = c.source_account_id AND sa.workspace_id = ci.workspace_id
@@ -1210,9 +1231,11 @@ export function createFeedRepository(database, emitEvent) {
         translationHash: row.translation_hash || '',
         translationEngine: row.translation_engine || '',
         translationLength: Number(row.translation_length) || 0,
+        translationTail: row.translation_tail || '',
         externalTranslationHash: row.external_translation_hash || '',
         externalTranslationEngine: row.external_translation_engine || '',
         externalTranslationLength: Number(row.external_translation_length) || 0,
+        externalTranslationTail: row.external_translation_tail || '',
       }));
     },
 

@@ -1,6 +1,6 @@
-import { createXHomeBrowserClient, textBeforeCommentBlock } from './home-browser.js';
+import { createXHomeBrowserClient, stripLeadingPreview, textBeforeCommentBlock } from './home-browser.js';
 import { FeedCaptureContextSchema } from '../../../contracts/src/feed-value.js';
-export { appendCommentsToBody, appendUnscrapedMediaNotes, findXArticleUrl, mergeArticleIntoTweetText, normalizeXArticleUrl, textBeforeCommentBlock } from './home-browser.js';
+export { appendCommentsToBody, appendUnscrapedMediaNotes, articleBodyLooksComplete, findXArticleUrl, joinArticleTitle, mergeArticleIntoTweetText, normalizeXArticleUrl, stripLeadingPreview, textBeforeCommentBlock } from './home-browser.js';
 
 const DEFAULT_LIMIT = 50;
 const DEFAULT_TTL_MS = 60_000;
@@ -10,13 +10,14 @@ function text(value, fallback = '') {
 }
 
 export function normalizeTweetBody(value) {
-  return String(value || '')
+  const text = String(value || '')
     .replace(/\r\n/g, '\n')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .replace(/[ \t]+(https?:\/\/[^\s]+)/g, '\n$1')
     .replace(/([^\s\n])(https?:\/\/[^\s]+)/g, '$1\n$2')
     .trim();
+  return stripLeadingPreview(text);
 }
 
 export function parseTwitterHandle(value) {

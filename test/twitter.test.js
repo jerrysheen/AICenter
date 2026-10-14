@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { tweetToFeedItem, createTwitterService, normalizeXHomeFeed, explainXConnectorError, normalizeTweetBody, mergeArticleIntoTweetText, findXArticleUrl, appendCommentsToBody, appendUnscrapedMediaNotes } from '../packages/connectors/src/twitter.js';
+import { tweetToFeedItem, createTwitterService, normalizeXHomeFeed, explainXConnectorError, normalizeTweetBody, mergeArticleIntoTweetText, findXArticleUrl, appendCommentsToBody, appendUnscrapedMediaNotes, stripLeadingPreview, joinArticleTitle, articleBodyLooksComplete } from '../packages/connectors/src/twitter.js';
 import { createXHomeBrowserClient, inspectMatchesRequestedFeed, looksLikeArticleTweet, looksTruncatedTweet, mergeTweets, tabTextMatchesFeed } from '../packages/connectors/src/x/home-browser.js';
 import { createConnectorRegistry } from '../packages/connectors/src/index.js';
 
@@ -374,6 +374,18 @@ test('article text is merged into the existing tweet body without a new field', 
   assert.equal(item.body, merged);
   assert.equal('article_url' in item, false);
   assert.equal('articleUrl' in item, false);
+  const preview = 'XPENG showed a flying vehicle…';
+  const article = 'XPENG showed a flying vehicle at the event, and the note continues through the aircraft program.';
+  assert.equal(mergeArticleIntoTweetText(preview, article), article);
+  assert.equal(mergeArticleIntoTweetText(`${preview}\n\n${article}`, article), article);
+  assert.equal(stripLeadingPreview(`${preview}\n\n${article}`), article);
+  assert.equal(joinArticleTitle('XPENG showed a flying vehicle', article), article);
+  assert.equal(joinArticleTitle('A separate headline', article).startsWith('A separate headline'), true);
+  const cut = `${'飞行器'.repeat(80)}`;
+  assert.equal(articleBodyLooksComplete(cut, 0), false);
+  assert.equal(articleBodyLooksComplete(cut, 1), false);
+  assert.equal(articleBodyLooksComplete(`${cut}。`, 1), true);
+  assert.equal(normalizeTweetBody(`${preview}\n\n${article}`), article);
 });
 
 test('unscraped media notes stay in the tweet body without extra feed fields', () => {

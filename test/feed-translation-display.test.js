@@ -200,7 +200,7 @@ test('reader prefers API translation text over cache and English normalized body
     translationStoreKey: (post) => `${post.id}::body`,
     loadTranslationStore: () => ({ 'x:1::body': { text: '磁盘旧译文', engine: 'disk' } }),
   });
-  vm.runInContext(`${extractFunctions(source, ['textNeedsZhView', 'chineseReaderText', 'translationFor', 'postNeedsChineseTranslation', 'shouldQueueTranslation'])}\nthis.translationFor=translationFor;this.shouldQueue=shouldQueueTranslation;`, context);
+  vm.runInContext(`${extractFunctions(source, ['textNeedsZhView', 'chineseReaderText', 'readerTranslationCut', 'translationFor', 'postNeedsChineseTranslation', 'shouldQueueTranslation'])}\nthis.translationFor=translationFor;this.shouldQueue=shouldQueueTranslation;`, context);
   const api = context.translationFor({
     id: 'x:1', platform: 'x', body: 'English original about CXMT.',
     translation: { text: '接口返回的完整中文译文。', engine: 'gemma' },
@@ -230,6 +230,14 @@ test('reader prefers API translation text over cache and English normalized body
   });
   assert.equal(kept.kind, 'normalized');
   assert.match(kept.text, /杰夫/);
+  const truncated = context.translationFor({
+    id: 'x:2110120766247424458', platform: 'x',
+    body: 'Jeff wrote two paragraphs about the round. The second paragraph is still in the original and explains the public record.',
+    translation: { text: '杰夫谈到了这一轮。…缺乏公开信息（我...', engine: 'gemma' },
+    normalizedArticle: { body: '杰夫的两段中文整理都在。第二段说明了公开信息的范围。' },
+  });
+  assert.equal(truncated.kind, 'normalized');
+  assert.match(truncated.text, /第二段/);
   assert.equal(context.shouldQueue({
     platform: 'trendforce', body: 'English body that already has a stored translation.',
     translation: { text: '已经有全文译文，不要再次入队。' },
@@ -268,7 +276,7 @@ test('Chinese-source cards are not tagged untranslated, and the visible X list r
     setView() {},
   });
   vm.runInContext(`${extractFunctions(source, [
-    'textNeedsZhView', 'chineseReaderText', 'postNeedsChineseTranslation', 'shouldQueueTranslation', 'postIsTranslating', 'translationFor', 'readyZhTitle', 'postDisplayTitle', 'socialBodyText',
+    'textNeedsZhView', 'chineseReaderText', 'readerTranslationCut', 'postNeedsChineseTranslation', 'shouldQueueTranslation', 'postIsTranslating', 'translationFor', 'readyZhTitle', 'postDisplayTitle', 'socialBodyText',
     'plainFeedText', 'clipFeedText', 'firstFeedSentence', 'translationRequestText', 'xTextNeedsTranslation',
     'xFeedVisible', 'visibleXPosts', 'pendingXTranslations', 'feedListTitle', 'listCardExcerpt', 'feedAsItem',
     'socialListPlaceholder', 'scheduleVisibleXTranslations', 'translateXBatch',
@@ -468,6 +476,42 @@ test('backfill demotes an open priority-0 job and requeues a truncated translati
     assert.equal(store.listOpenJobs('feed.translation.run').find((job) => job.id === queued[0].id).priority, TRANSLATION_BACKFILL_PRIORITY);
     const again = await backfillUntranslatedFeedTranslations({ store, feedService: service, workspaceId: 'local', limit: 10 });
     assert.ok(again.jobs.some((job) => job.input.items[0].id === shortItem.id));
+  } finally {
+    store.close();
+  }
+});
+
+test('backfill requeues a cut translation under 600 characters and drops a prepended preview', async () => {
+  const store = createStore(':memory:');
+  try {
+    const feed = store.repositories.feed;
+    const source = feed.upsertSourceAccount({ workspaceId: 'local', provider: 'x', externalId: 'x:home', displayName: 'X' });
+    const jeff = 'Jeff wrote two paragraphs about the round. The second paragraph explains what is already public and why the earlier note stopped.';
+    assert.ok(jeff.length < 600);
+    assert.equal(translationLooksTruncated(jeff, 24, '…缺乏公开信息（我...'), true);
+    const jeffItem = saveXItem(feed, source.id, { externalId: '2110120766247424458', title: 'Jeff', body: jeff, publishedAt: 2_000 });
+    feed.saveTranslations([{
+      workspaceId: 'local', itemId: jeffItem.id, targetLang: 'zh', sourceHash: hash(jeff),
+      translatedText: '…缺乏公开信息（我...', engine: 'gemma',
+    }]);
+    const preview = 'XPENG showed a flying vehicle…';
+    const article = 'XPENG showed a flying vehicle at the event, and the note continues through the aircraft program.';
+    const duplicated = `${preview}\n\n${article}`;
+    const xpeng = saveXItem(feed, source.id, { externalId: 'xpeng', title: 'XPENG', body: duplicated, publishedAt: 1_000 });
+    feed.saveTranslations([{
+      workspaceId: 'local', itemId: xpeng.id, targetLang: 'zh', sourceHash: hash(duplicated),
+      translatedText: '小鹏展示了飞行器', engine: 'gemma',
+    }]);
+    const service = createFeedService({
+      legacyRepository: store, feedRepository: feed, sourcePort: sourcePort(),
+      translationPort: { translate: async () => { throw new Error('not in this test'); } },
+    });
+    const again = await backfillUntranslatedFeedTranslations({ store, feedService: service, workspaceId: 'local', limit: 10 });
+    const queued = new Set(again.jobs.map((job) => job.input.items[0].id));
+    assert.equal(queued.has(jeffItem.id), true);
+    assert.equal(queued.has(xpeng.id), true);
+    assert.equal(feed.getContentItem('local', xpeng.id).body, article);
+    assert.equal(again.jobs.find((job) => job.input.items[0].id === xpeng.id).input.items[0].text, article);
   } finally {
     store.close();
   }
