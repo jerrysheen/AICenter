@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, unlinkSync } from 'node:fs';
+import { isIP } from 'node:net';
 import { combineLoopDelayMs, formatEventLoopBlock, formatEventLoopLine, lastEventLoopBlock } from './event-loop-blocks.js';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
@@ -85,6 +86,41 @@ export function hashClientAddress(value, salt) {
   const raw = String(value || '').trim();
   if (!raw || !salt) return '';
   return createHash('sha256').update(`${salt}\0${raw}`).digest('hex').slice(0, 16);
+}
+
+function headerText(headers, name) {
+  const value = headers?.[name];
+  if (Array.isArray(value)) return String(value[0] ?? '');
+  return value == null ? '' : String(value);
+}
+
+export function normalizeClientIp(value) {
+  let text = String(value ?? '').trim();
+  if (text.startsWith('[') && text.endsWith(']') && text.length > 2) text = text.slice(1, -1).trim();
+  if (!text || text.length > 64) return '';
+  return isIP(text) ? text : '';
+}
+
+export function clientIp(request) {
+  const headers = request?.headers;
+  const cloudflare = normalizeClientIp(headerText(headers, 'cf-connecting-ip'));
+  if (cloudflare) return cloudflare;
+  const forwarded = normalizeClientIp(headerText(headers, 'x-forwarded-for').split(',')[0]);
+  if (forwarded) return forwarded;
+  const remote = request?.socket?.remoteAddress ?? request?.connection?.remoteAddress;
+  return normalizeClientIp(remote);
+}
+
+export function clientCountry(request) {
+  const raw = headerText(request?.headers, 'cf-ipcountry').trim().toUpperCase();
+  return /^[A-Z0-9]{2}$/.test(raw) ? raw : '';
+}
+
+const USER_AGENT_CONTROLS = /[\u0000-\u001F\u007F-\u009F\u2028\u2029]/g;
+
+export function plainUserAgent(value) {
+  const text = Array.isArray(value) ? String(value[0] ?? '') : String(value ?? '');
+  return text.replace(USER_AGENT_CONTROLS, '').slice(0, 300);
 }
 
 function cfRay(value) {
@@ -321,6 +357,7 @@ function attach(request, response, url, writer, { salt, now, loopDelay, trackTur
       const hit = response[accessCacheHit];
       const client = hashClientAddress(request.headers?.['cf-connecting-ip'], salt);
       const ray = cfRay(request.headers?.['cf-ray']);
+      const rawUserAgent = request.headers?.['user-agent'];
       const histogramMs = requestLoopDelayMs(loopHistogram(), loopStartMax);
       const block = lastEventLoopBlock();
       const blockMs = block && block.at >= receivedWall - 1_000 && block.at <= Date.now() + 50
@@ -343,7 +380,10 @@ function attach(request, response, url, writer, { salt, now, loopDelay, trackTur
         },
         ...(ray ? { cfRay: ray } : {}),
         ...(client ? { client } : {}),
-        ua: userAgentClass(request.headers?.['user-agent']),
+        ip: clientIp(request),
+        country: clientCountry(request),
+        userAgent: plainUserAgent(rawUserAgent),
+        ua: userAgentClass(rawUserAgent),
         serverMs: marked ? Math.round(firstPerf - receivedPerf) : null,
         transferMs: marked ? Math.round(finishedPerf - firstPerf) : null,
         totalMs: Math.round(finishedPerf - receivedPerf),
