@@ -36,18 +36,22 @@ export function harnessPluginSpecifier(pluginPath = harnessPluginPath()) {
   return pathToFileURL(pluginPath).href;
 }
 
+function normalizeOverlayNewlines(text) {
+  return String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
 function applyWebSearchProvider(text, env) {
   const provider = resolveHarnessWebSearchProvider(env);
   if (provider !== HARNESS_ELUCID_SEARCH_PROVIDER_ID) {
     throw new Error(`问答联网搜索只使用 ${HARNESS_ELUCID_SEARCH_PROVIDER_ID}，不会回退到 DeepSeek 搜索`);
   }
-  const block = /- id: web\n  name: '@deepseek-ai\/dsh-web'\n  config:\n    searchProvider: \S+\n    fetchProvider: http\n/;
+  const block = /- id: web\r?\n  name: '@deepseek-ai\/dsh-web'\r?\n  config:\r?\n    searchProvider: \S+\r?\n    fetchProvider: http\r?\n/;
   if (!block.test(text)) throw new Error('Harness overlay 缺少 web.searchProvider 覆盖');
   const next = text.replace(
-    /(- id: web\n  name: '@deepseek-ai\/dsh-web'\n  config:\n    searchProvider: )\S+/,
+    /(- id: web\r?\n  name: '@deepseek-ai\/dsh-web'\r?\n  config:\r?\n    searchProvider: )\S+/,
     `$1${provider}`,
   );
-  if (!/- id: web-search-deepseek\n  name: '@deepseek-ai\/dsh-web-search-deepseek'\n  disabled: true\n/.test(next)) {
+  if (!/- id: web-search-deepseek\r?\n  name: '@deepseek-ai\/dsh-web-search-deepseek'\r?\n  disabled: true\r?\n/.test(next)) {
     throw new Error('Harness overlay 未禁用 web-search-deepseek');
   }
   if (/searchProvider:\s*deepseek-official/.test(next)) {
@@ -61,7 +65,7 @@ export function materializeHarnessPatch(sourceText, pluginPath = harnessPluginPa
     [RELATIVE_PLUGINS[0], pluginPath],
     [RELATIVE_PLUGINS[1], harnessSearchPluginPath()],
   ]);
-  let text = String(sourceText || '');
+  let text = normalizeOverlayNewlines(sourceText);
   for (const relative of RELATIVE_PLUGINS) {
     if (!text.includes(`name: ${relative}`)) {
       throw new Error(`Harness overlay 缺少 ${relative} 插入项`);
