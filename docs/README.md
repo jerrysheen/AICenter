@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-14-translation-batch-persist.md`：一批翻译里每条成功就写入 `feed_item_translations`，任务只把失败条目重新入队。长文已完成的段仍写入 `feed_translation_chunks`，重试跳过这些段。单行标题每批最多 5 条。Worker 定时把 pending 或 partial、且没有排队或进行中任务的条目以 -10 补入。不新增 migration。需要同时重启 Web 和 Worker。浏览器再加载一次。
+
 - `progress/2026-10-14-gemma-upstream-backoff.md`：Gemma 仍只用 26B，`thinkingLevel` 保持 `minimal`。HTTP 500/502/503/408 立刻换下一把密钥；同一密钥连续失败才按 10 秒起翻倍退避，上限 40 秒，成功后清零。Token 只记 `usageMetadata`。每个密钥每分钟 25 次，同密钥间隔 2–3 秒随机。状态码、次数、间隔、退避和重试次数都可由环境变量改。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-14-access-log-plaintext.md`：访问日志每一行在原有 `client` 哈希、`ua` 分类和 `cfRay` 旁边写下明文 `ip`、`country` 和截到 300 字的 `userAgent`。`ip` 优先 `CF-Connecting-IP`，否则 `X-Forwarded-For` 第一段，否则套接字地址。国家来自 `CF-IPCountry`。User-Agent 去掉换行和控制字符。仍写 `data/logs/access.yyyy-MM-dd.log`，不新增接口。不新增 migration。需要重启 Web。Worker 不用为这项重启。

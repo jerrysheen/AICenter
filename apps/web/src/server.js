@@ -19,6 +19,7 @@ import { parseBilibiliFeedQuery, parseMediaFeedQuery, parseTrendForceFeedQuery, 
 import { createAnalysisSkillCatalog, createConfiguredBrowserRuntime, createDeepSeekSearchProvider, createLauncherRestartPort, createLocalKnowledgeFiles, createPersonalAssetService, createTranslateService, createTypeSafeSystemOneClient } from '../../../packages/connectors/src/index.js';
 import { createAttachmentStore, createStore } from '../../../packages/database/src/index.js';
 import { createDomainServices, createFeedFilterFromEnv, createMediaIngestionService, resolveDailyConfig, resolveLoginCredential } from '../../../packages/domain/src/index.js';
+import { createFeedTranslationChunkStore } from '../../../packages/runtime/src/feed-translation-module.js';
 import {enqueueTreePreparation} from '../../../packages/runtime/src/information-tree-module.js';
 import { resolveInstanceConfig } from '../../../packages/instance/src/index.js';
 import { createAgentTraceLog } from '../../../packages/runtime/src/agent-trace-log.js';
@@ -261,7 +262,12 @@ export function createAiCenterServer(options = {}) {
     store,
     sourcePort,
     personalAssetPort,
-    translationPort: options.translateService || createTranslateService({ env, quotaRepository: store.repositories.modelQuota, usageObserver: value => store.repositories?.modelUsage?.save({ ...value, stage: 'translation', workspaceId: 'local' }) }),
+    translationPort: options.translateService || createTranslateService({
+      env,
+      quotaRepository: store.repositories.modelQuota,
+      chunkStore: createFeedTranslationChunkStore(store.repositories.feed),
+      usageObserver: value => store.repositories?.modelUsage?.save({ ...value, stage: 'translation', workspaceId: 'local' }),
+    }),
     feedFilter,
     mediaService,
     hardwarePriceService,

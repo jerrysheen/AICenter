@@ -102,9 +102,9 @@ test('feed translateMany sends packed chunks and hashes the original full text',
       { id: 'x:2', text: long },
     ],
   }, { workspaceId: 'local' });
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].length, 2);
-  assert.equal(calls[0][1].chars, long.trim().length);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls.map((batch) => batch.length), [1, 1]);
+  assert.equal(calls[1][0].chars, long.length);
   assert.equal(result.translations.length, 2);
   assert.equal(saved[1].sourceHash.length, 64);
 });

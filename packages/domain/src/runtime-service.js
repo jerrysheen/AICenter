@@ -21,6 +21,7 @@ import {
   FeedTranslationJobInputSchema,
 } from '../../contracts/src/index.js';
 import { describeAudioTranscription, readWavInfo, resolveAudioFile } from './audio-transcription.js';
+import { translationTextIsTitle, translationTitleBatchLimit } from './feed-ai-batch.js';
 import { randomUUID } from 'node:crypto';
 import { resolveResearchProfile } from './research-profile.js';
 
@@ -85,18 +86,32 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort, res
   return Object.freeze({
     requestTranslation(input) {
       const value = FeedTranslationJobInputSchema.parse(input);
-      const open = runtimeRepository.listOpenJobs?.('feed.translation.run')?.find(job => job.workspaceId === value.workspaceId && JSON.stringify(job.input) === JSON.stringify(value));
-      if (open) {
-        if (open.status === 'queued' && open.priority < 10 && runtimeRepository.prioritizeQueuedJobs) {
-          runtimeRepository.prioritizeQueuedJobs(value.workspaceId, [open.id], 10);
-          return { ...open, priority: 10 };
+      const titleLike = value.items.every((item) => translationTextIsTitle(item.text));
+      const limit = titleLike
+        ? translationTitleBatchLimit(env?.AI_CENTER_TRANSLATION_TITLE_BATCH_LIMIT)
+        : value.items.length;
+      let first = null;
+      for (let offset = 0; offset < value.items.length; offset += limit) {
+        const slice = FeedTranslationJobInputSchema.parse({
+          ...value,
+          items: value.items.slice(offset, offset + limit),
+        });
+        const open = runtimeRepository.listOpenJobs?.('feed.translation.run')?.find(job => job.workspaceId === slice.workspaceId && JSON.stringify(job.input) === JSON.stringify(slice));
+        let job = open;
+        if (open) {
+          if (open.status === 'queued' && open.priority < 10 && runtimeRepository.prioritizeQueuedJobs) {
+            runtimeRepository.prioritizeQueuedJobs(slice.workspaceId, [open.id], 10);
+            job = { ...open, priority: 10 };
+          }
+        } else {
+          job = runtimeRepository.createJob({
+            type: 'feed.translation.run', workspaceId: slice.workspaceId, input: slice,
+            maxAttempts: TRANSLATION_MAX_ATTEMPTS, priority: 10,
+          });
         }
-        return open;
+        if (!first) first = job;
       }
-      return runtimeRepository.createJob({
-        type: 'feed.translation.run', workspaceId: value.workspaceId, input: value,
-        maxAttempts: TRANSLATION_MAX_ATTEMPTS, priority: 10,
-      });
+      return first;
     },
     requestHourlyDigest(input={}) {
       if (String(env?.AI_CENTER_HOURLY_DISABLED ?? '') === '1') return {status:'skipped', reason:'hourly-disabled'};

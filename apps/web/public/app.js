@@ -424,6 +424,7 @@ const elements = Object.fromEntries([
 const TRANSLATION_STORE_KEY = 'ai-center.translations.v1';
 const TRANSLATION_STORE_LIMIT = 400;
 const TRANSLATE_BATCH_SIZE = 30;
+const TITLE_TRANSLATE_BATCH_SIZE = 5;
 const TAG_BATCH_SIZE = 50;
 const HIDDEN_SOURCES_KEY = 'ai-center.hidden-sources.v1';
 const HIDDEN_FEED_KEY = 'ai-center.hidden-feed.v1';
@@ -13981,7 +13982,7 @@ async function autoLocalizeSources() {
   const pending = Object.values(state.sourceLocalizations)
     .filter((row) => row?.pending && row.id && row.sourceText)
     .filter((row, index, rows) => rows.findIndex((item) => item.id === row.id) === index)
-    .slice(0, TRANSLATE_BATCH_SIZE);
+    .slice(0, TITLE_TRANSLATE_BATCH_SIZE);
   const waiting = pending.filter((row) => row.status !== 'failed');
   if (!waiting.length) return;
   state.sourceLocalizing = true;
