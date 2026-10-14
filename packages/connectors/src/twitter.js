@@ -10,5 +10,7 @@ export {
   normalizeXArticleUrl,
   normalizeXHomeFeed,
   parseTwitterHandle,
+  tweetPublishedAt,
   tweetToFeedItem,
+  xSnowflakeMillis,
 } from './x/home-timeline.js';

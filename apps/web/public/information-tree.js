@@ -109,6 +109,11 @@ export function hourStepSense(input, mobile) {
   const desk={'swipe-left':'earlier','swipe-right':'later',ArrowLeft:'earlier',ArrowRight:'later','wheel-left':'earlier','wheel-right':'later'};
   return (mobile ? phone : desk)[input] || null;
 }
+export function readingExpandedText(node, translationText) {
+  const translated = String(translationText || '').trim();
+  if (translated) return translated;
+  return String(node?.body || node?.text || '').trim();
+}
 export function createInformationTreePage(host) {
   let root,list,titleEl,coverageEl,statusRow,statusToggle,statusDetail,pastBtn,directionNav,hourChips,dayChips,tools,materialsBtn,tagPanel,tag,period,backIssues,notice,delayEl,hourRail,hourDay,hourNow,hourEarlier,hourYesterday,hourMore,issueEl,periodBar,periodMeta,periodLabel,periodPop,periodPrev,periodNext,mode='daily',direction=null,directionExplicit=false,showMaterials=false,selectedHourStart=0,dailyStart=0,openedId='',openedDirection='',manifest,selected=null,epoch=0,flight=0,settled=false,timer=0,dateFilter='',checking=null,pinnedReadingId='';
   let requests=new AbortController();
@@ -979,7 +984,18 @@ export function createInformationTreePage(host) {
       try{saved=await node(id);}catch(error){clearTimeout(slow);if(aborted(error)){loaded=false;panel.textContent='';return;}saved=null;}
       clearTimeout(slow);if(!details.open)return;
       const view=(saved?.body || saved?.text) ? saved : (seed || saved);
-      const bodyText=stripSharePlaceholders(decodeHtmlEntities(view?.body || view?.text || '')) || '这篇的正文暂时读不到。';
+      let translated='';
+      const contentRef=(view?.sourceRefs || []).find(item=>item?.type==='content-item' && item.id);
+      if(contentRef){
+        try {
+          const loadedItem=await api(`/api/v1/content-items/${encodeURIComponent(contentRef.id)}`);
+          translated=String(loadedItem?.item?.translation?.text || '');
+        } catch(error) {
+          if(aborted(error)){loaded=false;panel.textContent='';return;}
+        }
+      }
+      if(!details.open)return;
+      const bodyText=stripSharePlaceholders(decodeHtmlEntities(readingExpandedText(view, translated))) || '这篇的正文暂时读不到。';
       panel.replaceChildren(el('p',bodyText,'tree-text'));
       const sourceUrl=httpUrl(view);
       if(sourceUrl){

@@ -18,7 +18,20 @@ test('home tweet maps to a feed item without chrome fields', () => {
   assert.equal(item.externalId, '123');
   assert.equal(item.body, 'hello from home timeline');
   assert.equal(item.sourceUrl, 'https://x.com/openai/status/123');
+  assert.equal(item.publishedAt, 1_000_000);
   assert.equal('text_source' in item, false);
+});
+
+test('status id time replaces a quote datetime more than 36 hours away', () => {
+  const ms = Date.parse('2026-10-13T21:29:00Z');
+  const id = ((BigInt(ms) - 1288834974657n) << 22n).toString();
+  const item = tweetToFeedItem({
+    tweet_id: id,
+    published_at: '2026-10-11T21:29:00.000Z',
+    text: 'the real post',
+    author_handle: 'jeff',
+  });
+  assert.equal(item.publishedAt, ms);
 });
 
 test('tweet body keeps line breaks and splits glued urls', () => {

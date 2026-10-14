@@ -25,9 +25,12 @@ export function wait(milliseconds, signal) {
   });
 }
 
-export function translationClaimMinPriority(runningTranslationJobs, translationLimit) {
+export function translationClaimMinPriority(runningTranslationJobs, translationLimit, backfillRunning = 0, backfillLimit = null) {
   const limit = Number(translationLimit) || 1;
   const running = Number(runningTranslationJobs) || 0;
+  const backfill = Number(backfillRunning) || 0;
+  const cap = backfillLimit == null ? null : Math.max(1, Number(backfillLimit) || 1);
+  if (cap != null && limit >= 2 && backfill >= Math.min(cap, limit - 1)) return 0;
   if (limit < 2 || running >= limit || running < limit - 1) return null;
   return 0;
 }
@@ -59,6 +62,9 @@ export function createJobRunner(options) {
     ? configuredWatchdog
     : 5 * 60_000;
   const concurrency = parseWorkerJobConcurrency(options.concurrency || {});
+  const translationBackfillCap = Number.isInteger(Number(options.translationBackfillCap)) && Number(options.translationBackfillCap) >= 1
+    ? Number(options.translationBackfillCap)
+    : null;
   const supersedeAfterMs = options.supersedeAfterMs && typeof options.supersedeAfterMs === 'object'
     ? options.supersedeAfterMs
     : {};
@@ -104,6 +110,14 @@ export function createJobRunner(options) {
     return count;
   }
 
+  function backfillRunning() {
+    let count = 0;
+    for (const item of inFlight.values()) {
+      if (item.type === 'feed.translation.run' && item.backfill) count += 1;
+    }
+    return count;
+  }
+
   function claimableTypes() {
     return [...handlers.keys()].filter((type) => (
       runningCount(type) < resolveJobTypeConcurrency(type, concurrency)
@@ -116,23 +130,36 @@ export function createJobRunner(options) {
     const heartbeat = setInterval(() => store.touchJob(job.id, workerId), 30_000);
     heartbeat.unref?.();
     const executor = { workerId, attemptCount: job.attemptCount };
+    const backfill = job.type === 'feed.translation.run' && Number(job.priority) < 0;
+    let quotaWaits = 0;
     try {
-      const output = await withModelUsageContext({ workspaceId: job.workspaceId || 'local', jobId: job.id,
-        jobAttempt: job.attemptCount, stage: job.type, observe: value => store.repositories?.modelUsage?.save(value) }, () => handler(job.input, {
-        job,
-        workerId,
-        signal: abortController.signal,
-        store,
-      }));
-      return store.completeJob(job.id, output ?? {}, executor);
-    } catch (error) {
-      const retryDelayMs = job.type === 'feed.translation.run' && error.code === 'budget-deferred' && Number.isFinite(error.retryAt)
-        ? Math.max(1000, error.retryAt - Date.now())
-        : job.type === 'feed.translation.run'
-          ? translationRetryDelayMs(job.attemptCount)
-          : Math.min(60_000, 1_000 * (2 ** Math.max(0, job.attemptCount - 1)));
-      options.onError?.(error, job);
-      return store.failJob(job.id, error, retryDelayMs, executor);
+      while (!abortController.signal.aborted) {
+        try {
+          const output = await withModelUsageContext({ workspaceId: job.workspaceId || 'local', jobId: job.id,
+            jobAttempt: job.attemptCount, stage: job.type, observe: value => store.repositories?.modelUsage?.save(value) }, () => handler(job.input, {
+            job,
+            workerId,
+            signal: abortController.signal,
+            store,
+          }));
+          return store.completeJob(job.id, output ?? {}, executor);
+        } catch (error) {
+          const retryAt = Number(error?.retryAt);
+          if (backfill && error?.code === 'budget-deferred' && Number.isFinite(retryAt) && quotaWaits < 4) {
+            quotaWaits += 1;
+            await wait(Math.min(70_000, Math.max(1_000, retryAt - Date.now())), abortController.signal);
+            if (!abortController.signal.aborted) continue;
+          }
+          const retryDelayMs = job.type === 'feed.translation.run' && error.code === 'budget-deferred' && Number.isFinite(error.retryAt)
+            ? Math.max(1000, error.retryAt - Date.now())
+            : job.type === 'feed.translation.run'
+              ? translationRetryDelayMs(job.attemptCount)
+              : Math.min(60_000, 1_000 * (2 ** Math.max(0, job.attemptCount - 1)));
+          options.onError?.(error, job);
+          return store.failJob(job.id, error, retryDelayMs, executor);
+        }
+      }
+      return null;
     } finally {
       clearInterval(heartbeat);
     }
@@ -141,6 +168,7 @@ export function createJobRunner(options) {
   function launch(job) {
     const tracked = {
       type: job.type,
+      backfill: job.type === 'feed.translation.run' && Number(job.priority) < 0,
       startedAt: Date.now(),
       promise: execute(job)
         .catch((error) => {
@@ -160,6 +188,8 @@ export function createJobRunner(options) {
     const minPriority = translationClaimMinPriority(
       runningCount('feed.translation.run'),
       resolveJobTypeConcurrency('feed.translation.run', concurrency),
+      backfillRunning(),
+      translationBackfillCap,
     );
     return minPriority == null ? {} : { minPriority };
   }

@@ -3,7 +3,7 @@ import { FEED_TRANSLATION_TEXT_MAX, formatFeedBefore, ValidationError } from '..
 import { packFeedAiBatches } from './feed-ai-batch.js';
 import { feedItemIdentityHash } from './feed-identity.js';
 import { cleanIngestExcerpt } from '../../connectors/src/excerpt-text.js';
-import { collectLocalizationUnits, localizationItemId, needsZhLocalization } from './localize-texts.js';
+import { collectLocalizationUnits, localizationItemId, needsZhLocalization, translationLooksTruncated } from './localize-texts.js';
 import { isFlashSource } from './flash-sources.js';
 
 const DEFAULT_WORKSPACE_ID = 'local';
@@ -246,7 +246,8 @@ function projectLocalizations(units, byItemId, failures = new Map(), now = Date.
     const shortHourlyTitle = row?.engine === 'hourly-report'
       && unit.text.length > 400
       && unit.text.length > String(row.translatedText || '').length * 3;
-    const ready = Boolean(row && row.sourceHash === hash && row.translatedText && !shortHourlyTitle);
+    const truncated = translationLooksTruncated(unit.text, String(row?.translatedText || '').length);
+    const ready = Boolean(row && row.sourceHash === hash && row.translatedText && !shortHourlyTitle && !truncated);
     const failure = failures.get(unit.localizationId);
     const failed = !ready && failure && failure.sourceHash === hash
       && (failure.nextRetryAt == null || failure.nextRetryAt > now);
@@ -507,6 +508,11 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
         continue;
       }
       if (existing.contentHash === hash) {
+        const nextPublished = Number(item.publishedAt) || 0;
+        const prevPublished = Number(existing.publishedAt) || 0;
+        if (nextPublished > 0 && Math.abs(nextPublished - prevPublished) > 36 * 60 * 60 * 1000) {
+          feedRepository.touchPublishedAt?.(workspaceId, providerId, String(item.externalId), nextPublished);
+        }
         rememberFingerprint();
         skipped += 1;
         continue;
@@ -583,6 +589,20 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
     added += 1;
   }
   return { added, skipped, addedItemIds: flashSource ? [] : [...new Set(addedItemIds)], flash: flashSource };
+}
+
+function resolveContentItem(feedRepository, workspaceId, id) {
+  const requested = String(id || '').trim();
+  if (!requested || !feedRepository?.getContentItem) return null;
+  const direct = feedRepository.getContentItem(workspaceId, requested);
+  if (direct) return direct;
+  const split = requested.indexOf(':');
+  if (split <= 0 || split >= requested.length - 1) return null;
+  const capture = feedRepository.getCapture?.(workspaceId, requested.slice(0, split), requested.slice(split + 1));
+  if (!capture?.id) return null;
+  return feedRepository.getContentItemByCaptureId?.(workspaceId, capture.id)
+    || feedRepository.getContentItemByCapture?.(workspaceId, capture.id)
+    || null;
 }
 
 function yieldEventLoop() {
@@ -946,7 +966,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       return feedRepository.getContentItem(workspaceId, id);
     },
     getLocalizedContentItem(workspaceId, id) {
-      const item = feedRepository.getContentItem(workspaceId, id);
+      const item = resolveContentItem(feedRepository, workspaceId, id);
       if (!item) return null;
       const ids = [item.id];
       if (item.provider && item.externalId) ids.push(`${item.provider}:${item.externalId}`);
@@ -1036,7 +1056,8 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
         const shortHourlyTitle = row?.engine === 'hourly-report'
           && String(item.text || '').length > 400
           && String(item.text || '').length > String(row.translatedText || '').length * 3;
-        if (shortHourlyTitle || row?.sourceHash !== contentHash(item.text) || !row.translatedText) return true;
+        const truncated = translationLooksTruncated(item.text, String(row?.translatedText || '').length);
+        if (shortHourlyTitle || truncated || row?.sourceHash !== contentHash(item.text) || !row.translatedText) return true;
         translations.push({ id: item.id, sourceText: item.text, translatedText: row.translatedText, targetLang, engine: row.engine, cached: true });
         return false;
       });

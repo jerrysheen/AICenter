@@ -6,7 +6,8 @@ import vm from 'node:vm';
 import { createStore } from '../packages/database/src/index.js';
 import { createFeedService, listNeedsTranslation, pickReaderTranslation } from '../packages/domain/src/feed-service.js';
 import { createRuntimeService } from '../packages/domain/src/runtime-service.js';
-import { backfillUntranslatedFeedTranslations, createFeedTranslationJobHandlers, enqueueOriginalTranslations, translationStartupBackfillLimit, TRANSLATION_BACKFILL_PRIORITY } from '../packages/runtime/src/feed-translation-module.js';
+import { translationLooksTruncated } from '../packages/domain/src/localize-texts.js';
+import { backfillUntranslatedFeedTranslations, createFeedTranslationJobHandlers, enqueueOriginalTranslations, translationBackfillConcurrency, translationStartupBackfillLimit, TRANSLATION_BACKFILL_PRIORITY } from '../packages/runtime/src/feed-translation-module.js';
 import { createJobRunner, translationClaimMinPriority } from '../packages/runtime/src/job-runner.js';
 
 test('worker startup backfill stays within the daily translation budget', () => {
@@ -206,6 +207,11 @@ test('reader prefers API translation text over cache and English normalized body
     normalizedArticle: { body: 'English normalized article body that must not replace the translation.' },
   });
   assert.equal(api.text, '接口返回的完整中文译文。');
+  const repeated = context.translationFor({
+    id: 'x:repeat', platform: 'x', body: 'English original.',
+    translation: { text: '第一句说明产品已经发布。\n\n第一句说明产品已经发布。后面还有内容。', engine: 'gemma' },
+  });
+  assert.equal(repeated.text, '第一句说明产品已经发布。\n\n后面还有内容。');
   assert.equal(context.state.translations['x:1'].text, '接口返回的完整中文译文。');
   const chineseNormalized = context.translationFor({
     id: 'x:2', platform: 'x', body: 'English original.',
@@ -371,6 +377,9 @@ test('direct content item keeps a stored translation and a usable clock', async 
     assert.equal(loaded.publishedAt, 1_700_000_000_000);
     assert.match(loaded.translation.text, /克里斯/);
     assert.match(loaded.normalizedArticle.body, /中文整理正文/);
+    const byExternal = service.getLocalizedContentItem('local', 'x:direct');
+    assert.equal(byExternal.id, item.id);
+    assert.match(byExternal.translation.text, /克里斯/);
   } finally {
     store.close();
   }
@@ -381,6 +390,11 @@ test('user translation keeps a slot when backfill jobs are queued', async () => 
   assert.equal(translationClaimMinPriority(4, 5), 0);
   assert.equal(translationClaimMinPriority(5, 5), null);
   assert.equal(translationClaimMinPriority(0, 1), null);
+  assert.equal(translationBackfillConcurrency(undefined, 5), 2);
+  assert.equal(translationBackfillConcurrency(9, 5), 2);
+  assert.equal(translationBackfillConcurrency(2, 2), 1);
+  assert.equal(translationClaimMinPriority(0, 5, 2, 2), 0);
+  assert.equal(translationClaimMinPriority(1, 5, 1, 2), null);
   const store = createStore(':memory:');
   try {
     const backfill = store.createJob({
@@ -405,6 +419,55 @@ test('user translation keeps a slot when backfill jobs are queued', async () => 
       workspaceId: 'local', targetLang: 'zh', items: [{ id: 'mobile', text: 'Please translate this short post.' }],
     });
     assert.equal(job.priority, 10);
+  } finally {
+    store.close();
+  }
+});
+
+test('backfill demotes an open priority-0 job and requeues a truncated translation', async () => {
+  const store = createStore(':memory:');
+  try {
+    const feed = store.repositories.feed;
+    const source = feed.upsertSourceAccount({ workspaceId: 'local', provider: 'x', externalId: 'x:home', displayName: 'X' });
+    const openText = 'English note that still needs a Chinese translation for the queue today.';
+    const openItem = saveXItem(feed, source.id, { externalId: 'open-job', title: 'Open', body: openText, publishedAt: 4_000 });
+    const longText = `Capacity plan remains uncertain. ${'detail '.repeat(140)}`;
+    assert.ok(longText.length >= 600);
+    assert.equal(translationLooksTruncated(longText, 40), true);
+    const shortItem = saveXItem(feed, source.id, { externalId: 'short-translation', title: 'Short', body: longText, publishedAt: 3_000 });
+    feed.saveTranslations([{
+      workspaceId: 'local', itemId: shortItem.id, targetLang: 'zh', sourceHash: hash(longText),
+      translatedText: '只有一句（我', engine: 'gemma',
+    }]);
+    const firstCapture = feed.saveCapture({
+      workspaceId: 'local', provider: 'x', externalId: 'clock', sourceAccountId: source.id,
+      sourceUrl: 'https://x.com/example/status/clock', contentHash: hash('clock-a'),
+      capturedAt: 1_700_000_000_000, publishedAt: 1_700_000_000_000,
+    });
+    feed.saveCapture({
+      workspaceId: 'local', provider: 'x', externalId: 'clock', sourceAccountId: source.id,
+      sourceUrl: 'https://x.com/example/status/clock', contentHash: hash('clock-b'),
+      capturedAt: 1_700_000_000_000 + 86_400_000, publishedAt: 1_700_000_000_000 + 40 * 60 * 60 * 1000,
+    });
+    const kept = feed.getCapture('local', 'x', 'clock');
+    assert.equal(kept.capturedAt, firstCapture.capturedAt);
+    assert.equal(kept.publishedAt, 1_700_000_000_000 + 40 * 60 * 60 * 1000);
+    assert.equal(feed.touchPublishedAt('local', 'x', 'clock', kept.publishedAt + 60 * 60 * 1000), false);
+    const service = createFeedService({
+      legacyRepository: store, feedRepository: feed, sourcePort: sourcePort(),
+      translationPort: { translate: async () => { throw new Error('not in this test'); } },
+    });
+    const queued = await enqueueOriginalTranslations({
+      store, feedService: service, workspaceId: 'local', units: [{ id: openItem.id, text: openText }], priority: 0,
+    });
+    assert.equal(queued[0].priority, 0);
+    const demoted = await enqueueOriginalTranslations({
+      store, feedService: service, workspaceId: 'local', units: [{ id: openItem.id, text: openText }], priority: TRANSLATION_BACKFILL_PRIORITY,
+    });
+    assert.equal(demoted[0].id, queued[0].id);
+    assert.equal(store.listOpenJobs('feed.translation.run').find((job) => job.id === queued[0].id).priority, TRANSLATION_BACKFILL_PRIORITY);
+    const again = await backfillUntranslatedFeedTranslations({ store, feedService: service, workspaceId: 'local', limit: 10 });
+    assert.ok(again.jobs.some((job) => job.input.items[0].id === shortItem.id));
   } finally {
     store.close();
   }

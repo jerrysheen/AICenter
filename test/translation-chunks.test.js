@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createStore } from '../packages/database/src/index.js';
 import { createFeedService } from '../packages/domain/src/feed-service.js';
-import { createTranslateService, splitTranslationText, translationChunkChars } from '../packages/connectors/src/translate/index.js';
+import { createTranslateService, joinTranslationChunks, splitTranslationText, translationChunkChars } from '../packages/connectors/src/translate/index.js';
 import { gemmaTranslationInput, gemmaTranslationTimeoutMs } from '../packages/connectors/src/translate/gemma.js';
 import { createFeedTranslationChunkStore, createFeedTranslationJobHandlers, enqueueOriginalTranslations, formatTranslationBackfillLog, backfillUntranslatedFeedTranslations } from '../packages/runtime/src/feed-translation-module.js';
 import { createJobRunner } from '../packages/runtime/src/job-runner.js';
@@ -26,6 +26,38 @@ function saveItem(feed, sourceId, { provider = 'x', externalId, title, body, pub
     title, body, summary: '', sourceUrl: `https://example.com/${externalId}`, authorName: 'Reporter', publishedAt,
   });
 }
+
+test('joined chunks drop a repeated opening sentence', () => {
+  const lead = '第一句说明产品已经发布。';
+  const joined = joinTranslationChunks([
+    `${lead}后面还有细节。`,
+    `${lead}后面是下一段。`,
+  ]);
+  assert.equal(joined, `${lead}后面还有细节。\n\n后面是下一段。`);
+  const source = `${'Capacity plan remains uncertain. '.repeat(20)}tail`;
+  assert.equal(splitTranslationText(source, 400).join(''), source);
+});
+
+test('a short chunk is retried before the translation is saved', async () => {
+  const source = `${'Capacity plan remains uncertain. '.repeat(20)}`;
+  assert.ok(source.length >= 400);
+  const calls = [];
+  const full = '这是一段足够长的中文译文，用来说明原文并没有在第一句就停住，后面继续把产品、时间和后续安排说完。'.repeat(8);
+  const service = createTranslateService({
+    chunkChars: 1500,
+    sleep: async () => {},
+    router: {
+      batch: false,
+      generate: async () => {
+        calls.push(1);
+        return { text: calls.length === 1 ? '短' : full, engine: 'gemma' };
+      },
+    },
+  });
+  const saved = await service.translate({ text: source, id: 'short-chunk' });
+  assert.equal(calls.length, 2);
+  assert.equal(saved.translatedText, full);
+});
 
 test('chunk size defaults to 1500 and the timeout can be raised without passing 300s', () => {
   assert.equal(translationChunkChars(undefined), 1500);
@@ -70,7 +102,7 @@ test('long feed.translation.run sends one chunk per request and resumes after a 
           assert.ok(prompt.length <= 400);
           assert.ok(prompt.length < source.length);
           if (failSecond && prompt === chunks[1]) throw Object.assign(new Error('Gemma 翻译失败（500）'), { upstreamStatus: 500 });
-          return { text: `译${prompt.length}`, engine: 'gemma-4-26b-a4b-it' };
+          return { text: `译${prompt.length}${'。'.repeat(160)}`, engine: 'gemma-4-26b-a4b-it' };
         },
       },
     });
@@ -96,7 +128,7 @@ test('long feed.translation.run sends one chunk per request and resumes after a 
         batch: false,
         generate: async ({ prompt }) => {
           resumedCalls.push(prompt);
-          return { text: `续${prompt.length}`, engine: 'gemma-4-26b-a4b-it' };
+          return { text: `续${prompt.length}${'。'.repeat(160)}`, engine: 'gemma-4-26b-a4b-it' };
         },
       },
     });

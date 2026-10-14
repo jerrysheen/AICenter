@@ -138,7 +138,7 @@ test('long input splits without dropping characters, batch cache preserves compl
   assert.ok(chunks.every(chunk=>chunk.length<=1500));
   const prompts = [];
   const service = createTranslateService({router:{generate:async({system,prompt})=>{
-    assert.match(system,/任一条件/); prompts.push(prompt); return {text:'译文\n\n- 列表',engine:'gemma-4-31b-it'};
+    assert.match(system,/任一条件/); prompts.push(prompt); return {text:`译文\n\n- 列表${'。'.repeat(520)}`,engine:'gemma-4-31b-it'};
   }}});
   const result = await service.translate({text:source});
   assert.ok(chunks.every((chunk) => prompts.includes(chunk)));

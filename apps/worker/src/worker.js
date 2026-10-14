@@ -2,7 +2,7 @@ import {attachDailyProcessLog} from '../../../packages/runtime/src/process-log.j
 import { audioTranscriptionManifest, createAudioTranscriptionJobHandlers } from '../../../packages/runtime/src/audio-transcription-job.js';
 import {createGeminiArticleAdmission,startGeminiQuotaProbe} from '../../../packages/runtime/src/gemini-article-admission.js';
 import {resolveGoogleHourlyAdmissionModels} from '../../../packages/harness/src/llm-route.js';
-import { backfillUntranslatedFeedTranslations, createFeedTranslationChunkStore, createFeedTranslationJobHandlers, feedTranslationManifest, formatTranslationBackfillLog, translationStartupBackfillLimit } from '../../../packages/runtime/src/feed-translation-module.js';
+import { backfillUntranslatedFeedTranslations, createFeedTranslationChunkStore, createFeedTranslationJobHandlers, feedTranslationManifest, formatTranslationBackfillLog, translationBackfillConcurrency, translationStartupBackfillLimit } from '../../../packages/runtime/src/feed-translation-module.js';
 import { createHardwareArtifactStore } from '../../../packages/connectors/src/hardware-artifacts.js';
 import { legacyPriceSnapshot } from '../../../packages/connectors/src/trendforce-prices.js';
 import { createHardwarePriceService } from '../../../packages/domain/src/hardware-price-service.js';
@@ -677,6 +677,10 @@ export function createAiCenterWorker(options = {}) {
       informationPreparationLimit: articleAdmission?.policy.concurrency || 1,
       translationLimit: Number(env.AI_CENTER_WORKER_TRANSLATION_CONCURRENCY || 5),
     },
+    translationBackfillCap: translationBackfillConcurrency(
+      env.AI_CENTER_TRANSLATION_BACKFILL_CONCURRENCY,
+      Number(env.AI_CENTER_WORKER_TRANSLATION_CONCURRENCY || 5),
+    ),
     onError(error, job) {
       console.error(`[worker] ${job.type} ${job.id}:`, error);
     },
@@ -700,6 +704,11 @@ export function createAiCenterWorker(options = {}) {
       schedulePromise ||= scheduler.start();
       runPromise ||= runner.start();
       const backfillLimit = translationStartupBackfillLimit(env.AI_CENTER_TRANSLATION_BACKFILL_LIMIT);
+      const backfillCap = translationBackfillConcurrency(
+        env.AI_CENTER_TRANSLATION_BACKFILL_CONCURRENCY,
+        Number(env.AI_CENTER_WORKER_TRANSLATION_CONCURRENCY || 5),
+      );
+      console.log(`[worker] translation-slots limit=${Number(env.AI_CENTER_WORKER_TRANSLATION_CONCURRENCY || 5)} backfillCap=${backfillCap}`);
       translationBackfill ||= backfillUntranslatedFeedTranslations({
         store,
         feedService,

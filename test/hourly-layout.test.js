@@ -1,8 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { formatHourGap, hourlyDelayHours, hourStepSense, mergeHourGaps, resolveHourChoice } from '../apps/web/public/information-tree.js';
+import { formatHourGap, hourlyDelayHours, hourStepSense, mergeHourGaps, readingExpandedText, resolveHourChoice } from '../apps/web/public/information-tree.js';
 
 const HOUR = 3600000;
+
+test('an expanded hour row prefers the content-item translation', () => {
+  const node = { body: 'English original body from the tree node.', text: 'English original body from the tree node.' };
+  assert.equal(readingExpandedText(node, '中文译文正文。'), '中文译文正文。');
+  assert.equal(readingExpandedText(node, '  '), node.body);
+});
 
 test('consecutive missing hours collapse into one gap', () => {
   const at11 = Date.parse('2026-10-08T03:00:00Z');

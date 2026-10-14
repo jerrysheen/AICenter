@@ -103,12 +103,14 @@ export function createFeedRoutes({ slots = createPreparedSlotStore(), offthread 
       },
     },
     {
-      method: 'GET', path: /^\/api\/v1\/content-items\/([0-9a-f-]{36})$/i,
+      method: 'GET', path: /^\/api\/v1\/content-items\/([^/]+)$/i,
       handler({ response, services, identity, params }) {
         const workspaceId = identity?.device?.workspaceId || 'local';
+        let requested = params.values[0];
+        try { requested = decodeURIComponent(requested); } catch { /* keep the raw segment */ }
         const item = services.feed.getLocalizedContentItem
-          ? services.feed.getLocalizedContentItem(workspaceId, params.values[0])
-          : services.feed.getContentItem(workspaceId, params.values[0]);
+          ? services.feed.getLocalizedContentItem(workspaceId, requested)
+          : services.feed.getContentItem(workspaceId, requested);
         if (!item) json(response, 404, { ok: false, error: '信息不存在' });
         else json(response, 200, { ok: true, item });
       },

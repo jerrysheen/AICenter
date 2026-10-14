@@ -20,6 +20,15 @@ export function needsZhLocalization(sourceText) {
   return latin >= 8 || hangul >= 2;
 }
 
+// A long source with only a short saved translation was cut off. Short posts stay as they are.
+export function translationLooksTruncated(source, translatedLength) {
+  const body = String(source || '');
+  const length = Number(translatedLength) || 0;
+  if (body.length < 600 || length <= 0) return false;
+  if (length >= 160 && length * 4 >= body.length) return false;
+  return length < 120 || length * 5 < body.length;
+}
+
 export function localizationItemId(id) {
   const value = String(id || '').trim();
   if (!value) return '';
