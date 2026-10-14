@@ -6,7 +6,7 @@ import { createStore } from '../../../../packages/database/src/index.js';
 import { createFeedService } from '../../../../packages/domain/src/feed-service.js';
 import { createHardwarePriceService } from '../../../../packages/domain/src/hardware-price-service.js';
 import { createInformationTreeReader } from '../../../../packages/domain/src/information-tree-service.js';
-import { createReadingHourService } from '../../../../packages/domain/src/reading-hour-service.js';
+import { createReadingHourService, readingHourSourceAccess } from '../../../../packages/domain/src/reading-hour-service.js';
 import { createXSourceDefinition, createXueqiuSourceDefinition } from '../../../../packages/source/src/content/definitions.js';
 
 function pack(text) {
@@ -65,6 +65,7 @@ function createReaders(databasePath) {
       repository: store.repositories.informationTree,
       reportRepository: store.repositories.report,
       enabled: true,
+      ...readingHourSourceAccess({ feed: store.repositories.feed, media: store.repositories.media }),
     }),
     hardwarePrices: createHardwarePriceService({
       repository: store.repositories.hardwarePrices,

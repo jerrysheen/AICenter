@@ -290,8 +290,13 @@ test('hourly reading shows hits and misses together and marks stale items', asyn
   const muted = root.querySelector('.is-muted');
   assert.equal(muted.querySelector('h3').textContent, '未命中旧闻');
   assert.match(muted.querySelector('.news-row-source').textContent, /产业个股/);
-  assert.match(muted.querySelector('.news-row-source').textContent, /综合/);
+  assert.doesNotMatch(muted.querySelector('.news-row-source').textContent, /综合/);
   assert.doesNotMatch(muted.querySelector('.news-row-source').textContent, /其他/);
+  assert.equal(muted.querySelector('.news-share'), null);
+  const mutedFold = muted.querySelector('details');
+  mutedFold.open = true;
+  await mutedFold.listeners.toggle[0]();
+  assert.equal(muted.querySelector('.reading-fold-body').querySelector('.news-tag').textContent, '综合');
   assert.equal(root.querySelectorAll('button').some(node => node.textContent === '关注精选'), false);
   assert.equal(root.querySelectorAll('h3').some(node => node.textContent.includes('范围外讣告')), false);
   assert.equal(root.querySelector('.reading-stale').textContent, '时效不足');
@@ -783,7 +788,13 @@ test('hourly share uses the item title and summary, not the first source', async
   await page.mount(root, { mode: 'hourly' });
   const row = root.querySelector('.news-row');
   assert.equal(row.querySelector('h3').textContent, 'KOSPI 触及两个月新低');
-  const share = row.querySelector('.news-share');
+  assert.equal(row.querySelector('.news-share'), null);
+  assert.equal(row.querySelector('.news-tag'), null);
+  const fold = row.querySelector('details');
+  fold.open = true;
+  await fold.listeners.toggle[0]();
+  assert.equal(row.querySelector('.reading-fold-body').querySelector('.news-tag').textContent, '韩国');
+  const share = row.querySelector('.reading-fold-body').querySelector('.news-share');
   assert.equal(share.textContent, '分享');
   await share.listeners.click[0]({ stopPropagation() {}, preventDefault() {} });
   for (let i = 0; i < 8 && !shared.length; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
@@ -792,6 +803,36 @@ test('hourly share uses the item title and summary, not the first source', async
   assert.equal(shared[0].source, '小时报');
   assert.deepEqual(shared[0].paragraphs, ['小时摘要']);
   assert.equal(reads.length, 0);
+  page.stop();
+});
+
+test('hourly section rows sort and label by the article publish time', async () => {
+  const start = Date.parse('2026-10-08T04:00:00Z');
+  const current = edition('edition:publishtime01', start, ['early']);
+  const root = new El('div'); root.isConnected = true;
+  const page = createInformationTreePage({
+    session: () => ({ role: 'desktop', device: { id: 'publish-time' } }),
+    active: () => true,
+    loadTreeManifest: async () => manifest([current]),
+    api(path) {
+      if (path.startsWith('/api/v1/tags')) return Promise.resolve({ catalog: { tags: [] } });
+      if (path.startsWith('/api/v1/reports/reading-hour')) return Promise.resolve({ snapshot: {
+        id: 'rh:time', status: 'ready', scored: 3, candidates: 3, selected: 3,
+        items: [
+          { nodeId: 'early', title: '先发布', disposition: 'hit', readingDirectionName: '金融', readingThemeName: '中国', publishedAt: start + 10 * 60_000, firstIngestedAt: start + 49 * 60_000, timely: true },
+          { nodeId: 'late', title: '后发布', disposition: 'hit', readingDirectionName: '金融', readingThemeName: '中国', publishedAt: start + 40 * 60_000, firstIngestedAt: start + 49 * 60_000, timely: true },
+          { nodeId: 'missing', title: '没有发布时间', disposition: 'hit', readingDirectionName: '金融', readingThemeName: '中国', publishedAt: null, firstIngestedAt: start + 50 * 60_000, timely: true },
+        ],
+      } });
+      return Promise.reject(new Error('missing'));
+    },
+  });
+  await page.mount(root, { mode: 'hourly' });
+  assert.deepEqual(root.querySelectorAll('h3').map((node) => node.textContent), ['没有发布时间', '后发布', '先发布']);
+  assert.deepEqual(root.querySelectorAll('time').map((node) => node.textContent), ['10月8日 12:50', '10月8日 12:40', '10月8日 12:10']);
+  assert.equal(root.querySelector('.news-share'), null);
+  assert.equal(root.querySelector('.news-tag'), null);
+  assert.equal(root.querySelector('.news-row-source'), null);
   page.stop();
 });
 

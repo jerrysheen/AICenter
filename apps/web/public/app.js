@@ -18,6 +18,7 @@ import {
   homeRequestPlan,
   hourlyEditions,
   homeHourSections,
+  homeHourItemTime,
   acceptMarketPayload,
   marketPayloadHasQuotes,
   absorbReadingIndex,
@@ -26,7 +27,7 @@ import {
   unavailableOfficialCount,
 } from './home-timeline.js?v=dev';
 import { decodeHtmlEntities } from './html-text.js?v=dev';
-import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, newsIngestAt, newsPublishedHint, prioritizeReadableFeedRows, renderNewsList, reportItemTime } from './news-list.js?v=dev';
+import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, prioritizeReadableFeedRows, renderNewsList, reportItemTime } from './news-list.js?v=dev';
 
 const requestLayer = createRequestLayer();
 const pageCache = createPageCache({
@@ -7164,20 +7165,13 @@ function armHomeSlowWatch() {
   }, 10_000);
 }
 
-function homeHourTheme(name) {
-  const text = String(name || '').trim();
-  return text === '其他' ? '综合' : text;
-}
-
 function homeHourSource(item) {
   const publisher = String(item?.publisher || '').trim();
-  const theme = homeHourTheme(item?.readingThemeName);
-  const hint = newsPublishedHint(item?.publishedAt, item?.firstIngestedAt);
-  return [publisher, theme, hint].filter((part) => part && part !== '未知').join(' · ');
+  return publisher && publisher !== '未知' ? publisher : '';
 }
 
-function homeHourWhen(item, edition) {
-  return { at: reportItemTime(item, edition), ingested: false };
+function homeHourWhen(item) {
+  return { at: homeHourItemTime(item), ingested: false };
 }
 
 function homeHourHref(startAt, nodeId = '') {

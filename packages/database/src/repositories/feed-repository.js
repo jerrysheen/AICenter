@@ -986,7 +986,7 @@ export function createFeedRepository(database, emitEvent) {
     listContentItemsInWindow(workspaceId, { startAt, endAt, limit = 200, sourceId = null, cursor = null,qualityRule='',excludedItemIds=[],metadataOnly=false,timeBasis='published' } = {}) {
       const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
       const timeSql=timeBasis==='ingested' ? 'ci.created_at' : 'COALESCE(ci.published_at, ci.created_at)';
-      const rows = database.prepare(`SELECT ${metadataOnly ? 'ci.id,ci.title,ci.published_at,ci.created_at,ci.updated_at' : 'ci.*'}, c.captured_at AS captured_at,
+      const rows = database.prepare(`SELECT ${metadataOnly ? 'ci.id,ci.title,ci.source_url,ci.published_at,ci.created_at,ci.updated_at' : 'ci.*'}, c.captured_at AS captured_at,
         COALESCE(sa.provider,c.provider,'local') AS provider, COALESCE(c.source_account_id,'local') AS source_id,
         COALESCE(sa.display_name,'') AS source_name, COALESCE(sa.external_id,'') AS source_external_id, c.metadata_json AS capture_metadata
         FROM content_items ci
@@ -1002,7 +1002,7 @@ export function createFeedRepository(database, emitEvent) {
         ORDER BY ${timeSql} ASC, ci.id ASC
         LIMIT ?`).all(workspaceId, Number(startAt), Number(endAt), sourceId, sourceId,
           cursor?.eventAt ?? null, cursor?.eventAt ?? 0, cursor?.id ?? '', JSON.stringify(excludedItemIds), safeLimit);
-      if(metadataOnly)return rows.map(row=>({id:`feed:${row.id}`,version:String(row.updated_at || row.created_at),eventAt:timeBasis==='ingested' ? row.created_at : row.published_at ?? row.created_at,sourceExternalId:row.source_external_id || '',sourceName:row.source_name || ''}));
+      if(metadataOnly)return rows.map(row=>({id:`feed:${row.id}`,title:row.title || '',sourceUrl:row.source_url || '',version:String(row.updated_at || row.created_at),eventAt:timeBasis==='ingested' ? row.created_at : row.published_at ?? row.created_at,sourceExternalId:row.source_external_id || '',sourceName:row.source_name || ''}));
       return rows.map((row) => ({
         ...mapContentItem(row),
         capturedAt: row.captured_at ?? null,

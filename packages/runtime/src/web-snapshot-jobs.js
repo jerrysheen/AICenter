@@ -442,7 +442,7 @@ export function createHomeBootstrapCompose({
     if (!services) {
       const { composeHomeBootstrap } = await import('../../../apps/web/src/http/home-bootstrap.js');
       const { createInformationTreeReader } = await import('../../domain/src/information-tree-service.js');
-      const { createReadingHourService } = await import('../../domain/src/reading-hour-service.js');
+      const { createReadingHourService, readingHourSourceAccess } = await import('../../domain/src/reading-hour-service.js');
       const { createMarketBoardReader } = await import('../../source/src/market/board-read.js');
       const { createStaticSignalBoardReader } = await import('../../source/src/static/board-read.js');
       services = {
@@ -458,6 +458,7 @@ export function createHomeBootstrapCompose({
           reportRepository: store.repositories.report,
           enabled: env.AI_CENTER_READING_HOUR === '1',
           env,
+          ...readingHourSourceAccess({ feed: store.repositories.feed, media: store.repositories.media }),
         }),
         report,
         marketBoard: createMarketBoardReader({ repository: store.repositories.runtimeSnapshots }),
@@ -537,7 +538,7 @@ export function createReportViewCapture({
   return async function capture(now = () => Date.now()) {
     if (!readers) {
       const { createInformationTreeReader } = await import('../../domain/src/information-tree-service.js');
-      const { createReadingHourService } = await import('../../domain/src/reading-hour-service.js');
+      const { createReadingHourService, readingHourSourceAccess } = await import('../../domain/src/reading-hour-service.js');
       readers = {
         informationTree: createInformationTreeReader({
           repository: store.repositories.informationTree,
@@ -550,6 +551,7 @@ export function createReportViewCapture({
           reportRepository: store.repositories.report,
           enabled: env.AI_CENTER_READING_HOUR === '1',
           env,
+          ...readingHourSourceAccess({ feed: store.repositories.feed, media: store.repositories.media }),
         }),
       };
     }
