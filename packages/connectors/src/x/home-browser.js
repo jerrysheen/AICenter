@@ -85,14 +85,21 @@ function textCoversLead(full, lead) {
 }
 
 export function stripLeadingPreview(value) {
-  const text = String(value || '').replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  let text = String(value || '').replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
   if (!text) return '';
-  const parts = text.split(/\n\n/);
-  if (parts.length >= 2 && textCoversLead(parts.slice(1).join('\n\n'), parts[0])) {
-    return parts.slice(1).join('\n\n').trim();
+  for (let pass = 0; pass < 3; pass += 1) {
+    const parts = text.split(/\n\n/);
+    if (parts.length >= 2 && textCoversLead(parts.slice(1).join('\n\n'), parts[0])) {
+      text = parts.slice(1).join('\n\n').trim();
+      continue;
+    }
+    const inline = text.match(/^([\s\S]{12,}?)(?:\.{3,}|…+)\s*([\s\S]+)$/u);
+    if (inline && textCoversLead(inline[2], inline[1])) {
+      text = inline[2].trim();
+      continue;
+    }
+    break;
   }
-  const inline = text.match(/^([\s\S]{12,}?)(?:\.{3}|…+)\s+([\s\S]+)$/u);
-  if (inline && textCoversLead(inline[2], inline[1])) return inline[2].trim();
   return text;
 }
 

@@ -9,7 +9,7 @@ import { createStore } from '../packages/database/src/index.js';
 import { isApiTokenAllowlisted } from '../apps/web/src/http/api-token-access.js';
 import { createRouter } from '../apps/web/src/http/router.js';
 import { createEtfWhaleRoutes } from '../apps/web/src/routes/etf-whale-routes.js';
-import { etfWhaleSyncWindow } from '../packages/runtime/src/etf-whale-sync.js';
+import { etfWhaleSyncWindow, syncEtfWhale } from '../packages/runtime/src/etf-whale-sync.js';
 import { ensureEtfWhaleSchedule } from '../packages/runtime/src/etf-whale-schedule.js';
 import {
   YI,
@@ -285,6 +285,59 @@ test('series route reads params.values and read-only tokens can GET both ETF rou
     services: { etfWhale: { overview() { throw new Error('must not run'); } } },
   });
   assert.equal(denied.status, 401);
+});
+
+test('an empty SSE day stays inside the lookback and is fetched again', async () => {
+  const tomorrow = etfWhaleSyncWindow({}, { AI_CENTER_ETF_WHALE_LOOKBACK_DAYS: '12' }, new Date('2026-10-15T18:30:00+08:00'));
+  assert.equal(tomorrow.endDate, '2026-10-15');
+  assert.equal(tomorrow.startDate, '2026-10-04');
+  const root = mkdtempSync(path.join(tmpdir(), 'etf-whale-empty-'));
+  const store = createStore(path.join(root, 'ai-center.db'));
+  try {
+    const seen = [];
+    const fetchImpl = async (url) => {
+      const text = String(url);
+      if (text.includes('szse.cn')) {
+        return { ok: false, status: 500, headers: { get: () => '' }, arrayBuffer: async () => new ArrayBuffer(0) };
+      }
+      const date = new URL(text).searchParams.get('STAT_DATE');
+      seen.push(date);
+      const result = date === '2026-10-06'
+        ? [{ SEC_CODE: '510300', SEC_NAME: '沪深300ETF', STAT_DATE: date, TOT_VOL: '100' }]
+        : [];
+      const body = Buffer.from(JSON.stringify({ result, pageHelp: { pageCount: 1, total: result.length } }));
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => 'application/json' },
+        arrayBuffer: async () => Uint8Array.from(body).buffer,
+      };
+    };
+    const options = {
+      repository: store.repositories.etfWhale,
+      dataDirectory: root,
+      startDate: '2026-10-06',
+      endDate: '2026-10-14',
+      quotes: false,
+      pauseMs: 0,
+      fetchImpl,
+      instruments: [{
+        code: '510300', exchange: 'SH', name: '沪深300ETF', groupKey: '宽基',
+        referencePool: true, source: 'test', verifiedOn: '2026-10-09',
+      }],
+    };
+    await syncEtfWhale(options);
+    assert.equal(store.repositories.etfWhale.getFetch('sse', '2026-10-14', '2026-10-14').status, 'empty');
+    assert.equal(store.repositories.etfWhale.getFetch('sse', '2026-10-07', '2026-10-07').status, 'empty');
+    assert.equal(store.repositories.etfWhale.getFetch('sse', '2026-10-06', '2026-10-06').status, 'ok');
+    seen.length = 0;
+    await syncEtfWhale(options);
+    assert.equal(seen.includes('2026-10-14'), true);
+    assert.equal(seen.includes('2026-10-07'), true);
+    assert.equal(seen.includes('2026-10-06'), false);
+  } finally {
+    store.close();
+  }
 });
 
 test('ETF whale sync is scheduled after the Shanghai close and backfills a short window', () => {

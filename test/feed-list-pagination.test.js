@@ -276,7 +276,7 @@ test('verified translated media list item renders as a summary and does not thro
     translationStoreKey: () => 'media-key',
     loadTranslationStore: () => ({}),
   });
-  vm.runInContext(`${extractFunctions(source, ['textNeedsZhView', 'chineseReaderText', 'readerTranslationCut', 'translationFor', 'mediaAsItem'])}\nthis.translationFor=translationFor;this.mediaAsItem=mediaAsItem;`, context);
+  vm.runInContext(`${extractFunctions(source, ['textNeedsZhView', 'chineseReaderText', 'readerTranslationCut', 'dropEllipsisLead', 'translationFor', 'mediaAsItem'])}\nthis.translationFor=translationFor;this.mediaAsItem=mediaAsItem;`, context);
   const item = {
     id: 'media:decoder:ready',
     externalId: 'decoder:ready',
@@ -320,7 +320,7 @@ test('media list cards prefer the translated title segment', () => {
   });
   vm.runInContext(`${extractFunctions(source, [
     'textNeedsZhView', 'chineseReaderText', 'readerTranslationCut', 'postNeedsChineseTranslation', 'postIsTranslating',
-    'translationFor', 'plainFeedText', 'clipFeedText', 'firstFeedSentence', 'textAfterLead',
+    'dropEllipsisLead', 'translationFor', 'plainFeedText', 'clipFeedText', 'firstFeedSentence', 'textAfterLead',
     'postDisplayTitle', 'socialBodyText', 'mediaAsItem',
   ])}\nthis.title=postDisplayTitle;this.mediaAsItem=mediaAsItem;`, context);
   const translated = context.mediaAsItem({
@@ -421,7 +421,7 @@ test('social cards show translation state instead of the foreign summary, and tr
       context.state.restoredArticles[id] = { ...post, body: 'Verified students get 50% off. Select markets only.' };
     },
   });
-  vm.runInContext(`${extractFunctions(source, ['textNeedsZhView', 'socialListPlaceholder', 'listCardExcerpt', 'feedAsItem', 'translatePost'])}\nthis.feedAsItem=feedAsItem;this.translate=translatePost;`, context);
+  vm.runInContext(`${extractFunctions(source, ['textNeedsZhView', 'dropEllipsisLead', 'socialListPlaceholder', 'listCardExcerpt', 'feedAsItem', 'translatePost'])}\nthis.feedAsItem=feedAsItem;this.translate=translatePost;`, context);
   const translated = context.feedAsItem({
     id: 'x:1', title: 'CapCut for students', summary: 'Verified students get 50% off in selected markets.',
     excerpt: 'Verified students get 50% off in selected markets.', body: '',
@@ -456,7 +456,7 @@ test('a client translation replaces the english card excerpt, and an in-flight s
   });
   vm.runInContext(`${extractFunctions(source, [
     'textNeedsZhView', 'chineseReaderText', 'readerTranslationCut', 'postNeedsChineseTranslation', 'postIsTranslating', 'socialListPlaceholder',
-    'translationFor', 'plainFeedText', 'clipFeedText', 'firstFeedSentence', 'textAfterLead',
+    'dropEllipsisLead', 'translationFor', 'plainFeedText', 'clipFeedText', 'firstFeedSentence', 'textAfterLead',
     'postDisplayTitle', 'socialBodyText', 'listCardExcerpt', 'postListExcerpt', 'feedCardExcerpt', 'feedAsItem',
   ])}\nthis.feedAsItem=feedAsItem;this.card=feedCardExcerpt;`, context);
   const post = context.feedAsItem({

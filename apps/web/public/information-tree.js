@@ -109,10 +109,23 @@ export function hourStepSense(input, mobile) {
   const desk={'swipe-left':'earlier','swipe-right':'later',ArrowLeft:'earlier',ArrowRight:'later','wheel-left':'earlier','wheel-right':'later'};
   return (mobile ? phone : desk)[input] || null;
 }
+function dropEllipsisLead(value) {
+  let text = String(value || '').replace(/\r\n/g, '\n').trim();
+  for (let pass = 0; pass < 3 && text; pass += 1) {
+    const match = text.match(/^([\s\S]{12,}?)(?:\.{3,}|…+)\s*/u);
+    if (!match) break;
+    const head = match[1].replace(/\s+/g, '');
+    if (head.length < 12) break;
+    const rest = text.slice(match[0].length).replace(/^\s+/, '');
+    if (!rest.replace(/\s+/g, '').startsWith(head)) break;
+    text = rest.trim();
+  }
+  return text;
+}
 export function readingExpandedText(node, translationText) {
-  const translated = String(translationText || '').trim();
+  const translated = dropEllipsisLead(translationText);
   if (translated) return translated;
-  return String(node?.body || node?.text || '').trim();
+  return dropEllipsisLead(node?.body || node?.text || '');
 }
 export function createInformationTreePage(host) {
   let root,list,titleEl,coverageEl,statusRow,statusToggle,statusDetail,pastBtn,directionNav,hourChips,dayChips,tools,materialsBtn,tagPanel,tag,period,backIssues,notice,delayEl,hourRail,hourDay,hourNow,hourEarlier,hourYesterday,hourMore,issueEl,periodBar,periodMeta,periodLabel,periodPop,periodPrev,periodNext,mode='daily',direction=null,directionExplicit=false,showMaterials=false,selectedHourStart=0,dailyStart=0,openedId='',openedDirection='',manifest,selected=null,epoch=0,flight=0,settled=false,timer=0,dateFilter='',checking=null,pinnedReadingId='';

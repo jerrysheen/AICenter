@@ -203,7 +203,7 @@ test('a retrieved body with an english excerpt still shows the client translatio
   });
   vm.runInContext(`${extract([
     'textNeedsZhView', 'chineseReaderText', 'readerTranslationCut', 'postNeedsChineseTranslation', 'postIsTranslating', 'socialListPlaceholder',
-    'translationFor', 'plainFeedText', 'clipFeedText', 'firstFeedSentence', 'textAfterLead',
+    'dropEllipsisLead', 'translationFor', 'plainFeedText', 'clipFeedText', 'firstFeedSentence', 'textAfterLead',
     'postDisplayTitle', 'socialBodyText', 'listCardExcerpt', 'postListExcerpt', 'feedCardExcerpt', 'feedAsItem',
   ])}\nthis.feedAsItem=feedAsItem;this.card=feedCardExcerpt;`, context);
   const post = context.feedAsItem({

@@ -8,6 +8,10 @@ test('an expanded hour row prefers the content-item translation', () => {
   const node = { body: 'English original body from the tree node.', text: 'English original body from the tree node.' };
   assert.equal(readingExpandedText(node, '中文译文正文。'), '中文译文正文。');
   assert.equal(readingExpandedText(node, '  '), node.body);
+  const lead = '来自世界各地的小鹏之友汇聚于此，共同开启';
+  const sentence = `${lead}飞行器的公开亮相。`;
+  assert.equal(readingExpandedText(node, `${lead}……${sentence}`), sentence);
+  assert.equal(readingExpandedText({ body: `${lead}...${sentence}` }, ''), sentence);
 });
 
 test('consecutive missing hours collapse into one gap', () => {

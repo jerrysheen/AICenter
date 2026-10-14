@@ -7,7 +7,7 @@ import { createStore } from '../packages/database/src/index.js';
 import { createFeedService, listNeedsTranslation, pickReaderTranslation } from '../packages/domain/src/feed-service.js';
 import { createRuntimeService } from '../packages/domain/src/runtime-service.js';
 import { translationLooksTruncated } from '../packages/domain/src/localize-texts.js';
-import { backfillUntranslatedFeedTranslations, createFeedTranslationJobHandlers, enqueueOriginalTranslations, translationBackfillConcurrency, translationStartupBackfillLimit, TRANSLATION_BACKFILL_PRIORITY } from '../packages/runtime/src/feed-translation-module.js';
+import { backfillUntranslatedFeedTranslations, createFeedTranslationJobHandlers, enqueueOriginalTranslations, repairEllipsisLeadTexts, translationBackfillConcurrency, translationStartupBackfillLimit, TRANSLATION_BACKFILL_PRIORITY } from '../packages/runtime/src/feed-translation-module.js';
 import { createJobRunner, translationClaimMinPriority } from '../packages/runtime/src/job-runner.js';
 
 test('worker startup backfill stays within the daily translation budget', () => {
@@ -200,7 +200,7 @@ test('reader prefers API translation text over cache and English normalized body
     translationStoreKey: (post) => `${post.id}::body`,
     loadTranslationStore: () => ({ 'x:1::body': { text: '磁盘旧译文', engine: 'disk' } }),
   });
-  vm.runInContext(`${extractFunctions(source, ['textNeedsZhView', 'chineseReaderText', 'readerTranslationCut', 'translationFor', 'postNeedsChineseTranslation', 'shouldQueueTranslation'])}\nthis.translationFor=translationFor;this.shouldQueue=shouldQueueTranslation;`, context);
+  vm.runInContext(`${extractFunctions(source, ['textNeedsZhView', 'chineseReaderText', 'readerTranslationCut', 'dropEllipsisLead', 'translationFor', 'postNeedsChineseTranslation', 'shouldQueueTranslation'])}\nthis.translationFor=translationFor;this.shouldQueue=shouldQueueTranslation;`, context);
   const api = context.translationFor({
     id: 'x:1', platform: 'x', body: 'English original about CXMT.',
     translation: { text: '接口返回的完整中文译文。', engine: 'gemma' },
@@ -238,6 +238,18 @@ test('reader prefers API translation text over cache and English normalized body
   });
   assert.equal(truncated.kind, 'normalized');
   assert.match(truncated.text, /第二段/);
+  const lead = '来自世界各地的小鹏之友汇聚于此，共同开启';
+  const sentence = `${lead}飞行器的公开亮相。`;
+  const xpeng = context.translationFor({
+    id: 'x:xpeng', platform: 'x', body: 'XPENG friends gathered and opened the flying vehicle program.',
+    translation: { text: `${lead}……${sentence}后面还有第二段。`, engine: 'gemma' },
+  });
+  assert.equal(xpeng.text, `${sentence}后面还有第二段。`);
+  const keptLead = context.translationFor({
+    id: 'x:keep-ellipsis', platform: 'x', body: 'A different second sentence follows the ellipsis.',
+    translation: { text: `${lead}……后续是另一句完全不同的话。`, engine: 'gemma' },
+  });
+  assert.equal(keptLead.text, `${lead}……后续是另一句完全不同的话。`);
   assert.equal(context.shouldQueue({
     platform: 'trendforce', body: 'English body that already has a stored translation.',
     translation: { text: '已经有全文译文，不要再次入队。' },
@@ -276,7 +288,7 @@ test('Chinese-source cards are not tagged untranslated, and the visible X list r
     setView() {},
   });
   vm.runInContext(`${extractFunctions(source, [
-    'textNeedsZhView', 'chineseReaderText', 'readerTranslationCut', 'postNeedsChineseTranslation', 'shouldQueueTranslation', 'postIsTranslating', 'translationFor', 'readyZhTitle', 'postDisplayTitle', 'socialBodyText',
+    'textNeedsZhView', 'chineseReaderText', 'readerTranslationCut', 'postNeedsChineseTranslation', 'shouldQueueTranslation', 'postIsTranslating', 'dropEllipsisLead', 'translationFor', 'readyZhTitle', 'postDisplayTitle', 'socialBodyText',
     'plainFeedText', 'clipFeedText', 'firstFeedSentence', 'translationRequestText', 'xTextNeedsTranslation',
     'xFeedVisible', 'visibleXPosts', 'pendingXTranslations', 'feedListTitle', 'listCardExcerpt', 'feedAsItem',
     'socialListPlaceholder', 'scheduleVisibleXTranslations', 'translateXBatch',
@@ -291,6 +303,13 @@ test('Chinese-source cards are not tagged untranslated, and the visible X list r
     needsTranslation: true,
   }, 'x');
   assert.equal(context.feedListTitle(pending).tag, '暂未翻译');
+  const lead = '来自世界各地的小鹏之友汇聚于此，共同开启';
+  const sentence = `${lead}飞行器的公开亮相。`;
+  const xpeng = context.feedAsItem({
+    id: 'x:xpeng', title: 'XPENG', body: 'English body about the flying vehicle.',
+    translation: { status: 'ready', title: `${lead}……`, summary: sentence },
+  }, 'x');
+  assert.equal(context.feedListTitle(xpeng).title, sentence);
   context.state.xItems = [pending];
   const queued = context.pending();
   assert.equal(queued.length, 1);
@@ -512,6 +531,58 @@ test('backfill requeues a cut translation under 600 characters and drops a prepe
     assert.equal(queued.has(xpeng.id), true);
     assert.equal(feed.getContentItem('local', xpeng.id).body, article);
     assert.equal(again.jobs.find((job) => job.input.items[0].id === xpeng.id).input.items[0].text, article);
+  } finally {
+    store.close();
+  }
+});
+
+test('ellipsis lead is removed from stored bodies and translations and from the list', async () => {
+  const store = createStore(':memory:');
+  try {
+    const feed = store.repositories.feed;
+    const source = feed.upsertSourceAccount({ workspaceId: 'local', provider: 'x', externalId: 'x:home', displayName: 'X' });
+    const lead = '来自世界各地的小鹏之友汇聚于此，共同开启';
+    const sentence = `${lead}飞行器的公开亮相。`;
+    const glued = `${lead}……${sentence}后面还有第二段。`;
+    const body = 'XPENG friends gathered. The note continues through the aircraft program.';
+    const item = saveXItem(feed, source.id, { externalId: 'xpeng-zh', title: 'XPENG', body, publishedAt: 4_000 });
+    feed.saveTranslations([{
+      workspaceId: 'local', itemId: item.id, targetLang: 'zh', sourceHash: hash(body),
+      translatedText: glued, engine: 'gemma',
+    }]);
+    const preview = 'XPENG showed a flying vehicle…';
+    const article = 'XPENG showed a flying vehicle at the event, and the note continues through the aircraft program.';
+    const duplicated = `${preview}\n\n${article}`;
+    const bodyItem = saveXItem(feed, source.id, { externalId: 'xpeng-body', title: 'XPENG body', body: duplicated, publishedAt: 3_000 });
+    feed.saveTranslations([{
+      workspaceId: 'local', itemId: bodyItem.id, targetLang: 'zh', sourceHash: hash(duplicated),
+      translatedText: glued, engine: 'gemma',
+    }]);
+    assert.deepEqual(repairEllipsisLeadTexts({ store, workspaceId: 'local', limit: 0 }), { bodies: 0, translations: 0 });
+    const repaired = repairEllipsisLeadTexts({ store, workspaceId: 'local', limit: 80 });
+    assert.equal(repaired.bodies, 1);
+    assert.equal(repaired.translations, 2);
+    assert.equal(feed.getContentItem('local', item.id).body, body);
+    const kept = feed.listTranslations('local', [item.id])[0];
+    assert.equal(kept.translatedText, `${sentence}后面还有第二段。`);
+    assert.equal(kept.sourceHash, hash(body));
+    assert.equal(feed.getContentItem('local', bodyItem.id).body, article);
+    const moved = feed.listTranslations('local', [bodyItem.id])[0];
+    assert.equal(moved.translatedText, `${sentence}后面还有第二段。`);
+    assert.equal(moved.sourceHash, hash(article));
+    assert.deepEqual(repairEllipsisLeadTexts({ store, workspaceId: 'local', limit: 80 }), { bodies: 0, translations: 0 });
+    const service = createFeedService({
+      legacyRepository: store, feedRepository: feed, sourcePort: sourcePort(),
+      translationPort: { translate: async () => { throw new Error('not in this test'); } },
+    });
+    const listed = await service.getExternalFeed('x', { feed: 'for-you', limit: 12, fields: 'list' });
+    const card = listed.items.find((row) => row.externalId === 'xpeng-zh');
+    assert.equal(card.translation.title, sentence);
+    assert.equal(card.translation.summary, '后面还有第二段。');
+    assert.equal(service.getLocalizedContentItem('local', item.id).translation.text, `${sentence}后面还有第二段。`);
+    const backfill = await backfillUntranslatedFeedTranslations({ store, feedService: service, workspaceId: 'local', limit: 10 });
+    assert.equal(backfill.jobs.some((job) => job.input.items[0].id === item.id), false);
+    assert.equal(backfill.jobs.some((job) => job.input.items[0].id === bodyItem.id), false);
   } finally {
     store.close();
   }
