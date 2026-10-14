@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-14-grok-web-search.md`：问答 `web_search` 只走 Grok。overlay 把 `web.searchProvider` 写成 `elucid-grok`，并禁用 `web-search-deepseek`。没有 Grok 密钥就报错，不回退 DeepSeek 搜索。`web.search` 事件记下实际 provider。不新增 migration。需要重启 Worker。
+
 - `progress/2026-10-14-etf-whale-history.md`：ETF 鲸鱼单只序列改读路径里的代码。总览和单只 GET 对只读令牌开放。`etf.whale.sync` 默认每天上海时间 18:30 跑，并回看 12 天。指数日线走 `index_daily`，ETF 日线走 `fund_daily`，日 K 带 `amount`。缺交易日会丢掉缓存重取；收盘前不把当天未完成的柱写成完整日 K；开高低收不自洽的柱不入库。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-14-home-hour-fallback.md`：总览 bootstrap 的缓存键没有上海日期，昨天的正文会在 200/304 之后继续留在手机上。现在按日期分钥匙，窗口已结束的正文不再当成今天；仍是上一天就无缓存重取。缺小时仍回退到已有刊期。本地缓存最多 2 小时。日期和小时按上海 UTC+8 计算。小时任务仍在第 30 分钟入队，这次不提前。不新增 migration。需要重启 Web。浏览器再加载一次。

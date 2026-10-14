@@ -270,7 +270,7 @@ knowledge.document.revised.v1
 
 ### 增加一个本机 Search Provider（仅本地循环回退）
 
-公开互联网不是 Domain。生产 Ask 使用 Harness 内置 `web_search` / `web_fetch`（`@deepseek-ai/dsh-tool-web`），不要再往 Domain Tool Table 加 `web.page.get`，也不要在默认 Worker/Web 启动路径创建 DeepSeek Search Provider。
+公开互联网不是 Domain。生产 Ask 使用 Harness 内置 `web_search` / `web_fetch`（`@deepseek-ai/dsh-tool-web`），不要再往 Domain Tool Table 加 `web.page.get`，也不要在默认 Worker/Web 启动路径创建 DeepSeek Search Provider。Harness 问答搜索只注册 `web-search-elucid`，overlay 固定 `web.searchProvider: elucid-grok`，并禁用 `web-search-deepseek`。
 
 本地循环回退（`AI_CENTER_AGENT_RUNTIME=local` 或测试注入 fake LLM）仍可走 `search.web` Source：
 
@@ -308,7 +308,7 @@ Ask 上层没有独立 AI API。只改 `AI_CENTER_HARNESS_PROVIDER`，`$DSH_HOME
 1. `deepseek-official`：`DEEPSEEK_API_KEY`，可选 `DEEPSEEK_BASE_URL`。
 2. `elucid-grok`：`ELUCID_GROK_API_KEY`，协议 `openai-responses`，默认 `grok-4.7`。
 3. 模型名只看 `AI_CENTER_HARNESS_MODEL` / `AI_CENTER_HARNESS_RESEARCH_MODEL`。不要继承 `DEEPSEEK_SEARCH_MODEL`，不要再用 `AI_CENTER_AGENT_PROVIDER`。
-4. 主循环、内置 web、本地回退和结构整理共用这一套。Gemini 只给翻译 / Tag。`elucid-grok` 时 `web_search` 走 Grok 原生搜索；不要另加 `web_read`。
+4. 主循环、内置 web、本地回退和结构整理共用这一套。Gemini 只给翻译 / Tag。问答 `web_search` 只走 Grok 原生搜索，不回退 DeepSeek；不要另加 `web_read`。
 5. 页面 Contract 不暴露供应商字段。
 
 ### 增加一条可复用 Knowledge 文件

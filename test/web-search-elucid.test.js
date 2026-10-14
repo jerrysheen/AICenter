@@ -6,7 +6,7 @@ import {
   resolveHarnessWebSearchProvider,
   searchElucidWeb,
 } from '../packages/harness/src/web-search-elucid.js';
-import { HARNESS_ELUCID_PROVIDER, HARNESS_PROVIDER } from '../packages/harness/src/constants.js';
+import { HARNESS_ELUCID_PROVIDER } from '../packages/harness/src/constants.js';
 
 function elucidPayload() {
   return {
@@ -55,23 +55,55 @@ test('Elucid search fails closed when the native tool did not run', () => {
   );
 });
 
-test('search provider follows the same Harness LLM switch', () => {
+test('search provider is Grok even when the chat model is DeepSeek', () => {
   assert.equal(resolveHarnessWebSearchProvider({
     AI_CENTER_HARNESS_PROVIDER: 'elucid-grok',
   }), HARNESS_ELUCID_PROVIDER);
   assert.equal(resolveHarnessWebSearchProvider({
     AI_CENTER_HARNESS_PROVIDER: 'deepseek-official',
     ELUCID_GROK_API_KEY: 'elucid-key',
-  }), HARNESS_PROVIDER);
+    DEEPSEEK_API_KEY: 'deepseek-key',
+    DSH_WEB_SEARCH_PROVIDER: 'deepseek-official',
+  }), HARNESS_ELUCID_PROVIDER);
   const elucid = createElucidWebSearchProvider({
     env: { AI_CENTER_HARNESS_PROVIDER: 'elucid-grok', ELUCID_GROK_API_KEY: 'elucid-key' },
   });
   assert.equal(elucid.id, HARNESS_ELUCID_PROVIDER);
   assert.equal(elucid.available(), true);
-  const parked = createElucidWebSearchProvider({
-    env: { AI_CENTER_HARNESS_PROVIDER: 'deepseek-official', ELUCID_GROK_API_KEY: 'elucid-key' },
+  const chatIsDeepSeek = createElucidWebSearchProvider({
+    env: {
+      AI_CENTER_HARNESS_PROVIDER: 'deepseek-official',
+      ELUCID_GROK_API_KEY: 'elucid-key',
+      DEEPSEEK_API_KEY: 'deepseek-key',
+    },
   });
-  assert.equal(parked.available(), false);
+  assert.equal(chatIsDeepSeek.available(), true);
+  const missing = createElucidWebSearchProvider({
+    env: { AI_CENTER_HARNESS_PROVIDER: 'deepseek-official', DEEPSEEK_API_KEY: 'deepseek-key' },
+  });
+  assert.equal(missing.available(), false);
+  assert.throws(() => missing.search({ query: 'FOMC' }), /ELUCID_GROK_API_KEY/);
+});
+
+test('search posts to Elucid even when chat credentials are DeepSeek', async () => {
+  const calls = [];
+  await searchElucidWeb({ query: 'FOMC' }, {
+    env: {
+      AI_CENTER_HARNESS_PROVIDER: 'deepseek-official',
+      AI_CENTER_HARNESS_MODEL: 'deepseek-v4-flash',
+      DEEPSEEK_API_KEY: 'deepseek-key',
+      ELUCID_GROK_API_KEY: 'elucid-key',
+    },
+    fetchImpl: async (url, init) => {
+      calls.push({ url, authorization: init.headers.Authorization, body: JSON.parse(init.body) });
+      return { ok: true, status: 200, async json() { return elucidPayload(); } };
+    },
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://hk.getelucid.com/v1/responses');
+  assert.equal(calls[0].authorization, 'Bearer elucid-key');
+  assert.equal(calls[0].body.model, 'grok-4.7');
+  assert.deepEqual(calls[0].body.tools, [{ type: 'web_search' }]);
 });
 
 test('Elucid search posts Responses web_search and retries without include on 400', async () => {

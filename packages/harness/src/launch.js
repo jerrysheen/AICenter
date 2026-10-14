@@ -5,7 +5,10 @@ import {
   HARNESS_PROFILE,
 } from './constants.js';
 import { resolveHarnessLlm } from './llm-route.js';
-import { resolveHarnessWebSearchProvider } from './web-search-elucid.js';
+import {
+  HARNESS_ELUCID_SEARCH_PROVIDER_ID,
+  resolveHarnessWebSearchProvider,
+} from './web-search-elucid.js';
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const RELATIVE_PLUGINS = Object.freeze([
@@ -33,7 +36,27 @@ export function harnessPluginSpecifier(pluginPath = harnessPluginPath()) {
   return pathToFileURL(pluginPath).href;
 }
 
-export function materializeHarnessPatch(sourceText, pluginPath = harnessPluginPath()) {
+function applyWebSearchProvider(text, env) {
+  const provider = resolveHarnessWebSearchProvider(env);
+  if (provider !== HARNESS_ELUCID_SEARCH_PROVIDER_ID) {
+    throw new Error(`问答联网搜索只使用 ${HARNESS_ELUCID_SEARCH_PROVIDER_ID}，不会回退到 DeepSeek 搜索`);
+  }
+  const block = /- id: web\n  name: '@deepseek-ai\/dsh-web'\n  config:\n    searchProvider: \S+\n    fetchProvider: http\n/;
+  if (!block.test(text)) throw new Error('Harness overlay 缺少 web.searchProvider 覆盖');
+  const next = text.replace(
+    /(- id: web\n  name: '@deepseek-ai\/dsh-web'\n  config:\n    searchProvider: )\S+/,
+    `$1${provider}`,
+  );
+  if (!/- id: web-search-deepseek\n  name: '@deepseek-ai\/dsh-web-search-deepseek'\n  disabled: true\n/.test(next)) {
+    throw new Error('Harness overlay 未禁用 web-search-deepseek');
+  }
+  if (/searchProvider:\s*deepseek-official/.test(next)) {
+    throw new Error('Harness overlay 仍把 web.searchProvider 写成 deepseek-official');
+  }
+  return next;
+}
+
+export function materializeHarnessPatch(sourceText, pluginPath = harnessPluginPath(), env = process.env) {
   const replacements = new Map([
     [RELATIVE_PLUGINS[0], pluginPath],
     [RELATIVE_PLUGINS[1], harnessSearchPluginPath()],
@@ -48,7 +71,7 @@ export function materializeHarnessPatch(sourceText, pluginPath = harnessPluginPa
       `name: ${JSON.stringify(harnessPluginSpecifier(replacements.get(relative)))}`,
     );
   }
-  return text;
+  return applyWebSearchProvider(text, env);
 }
 
 const CLOSED_CONTEXT_PERSONA = [
@@ -62,8 +85,26 @@ const CLOSED_CONTEXT_PERSONA = [
  * Closed-context engine overlay: Domain catalog may be empty, and the native
  * web tool package is disabled so the session never registers web search/fetch.
  */
-export function materializeClosedContextPatch(sourceText, pluginPath = harnessPluginPath()) {
-  let text = materializeHarnessPatch(sourceText, pluginPath).replaceAll('\r\n', '\n');
+function appendMissingDisabledPlugins(text) {
+  const rows = [
+    ['tool-web', "'@deepseek-ai/dsh-tool-web'"],
+    ['web-search-deepseek', "'@deepseek-ai/dsh-web-search-deepseek'"],
+    ['web-fetch-http', "'@deepseek-ai/dsh-web-fetch-http'"],
+  ].filter(([id]) => !new RegExp(`- id: ${id}\\n`).test(text));
+  if (!rows.length) return text;
+  return `${text}${[
+    '',
+    ...rows.flatMap(([id, name]) => [
+      `- id: ${id}`,
+      `  name: ${name}`,
+      '  disabled: true',
+      '',
+    ]),
+  ].join('\n')}`;
+}
+
+export function materializeClosedContextPatch(sourceText, pluginPath = harnessPluginPath(), env = process.env) {
+  let text = materializeHarnessPatch(sourceText, pluginPath, env).replaceAll('\r\n', '\n');
   text = text.replace(
     /personaPrefix: \|\n(?:[ \t]+.*\n)+/,
     `personaPrefix: |\n${CLOSED_CONTEXT_PERSONA.split('\n').map((line) => `      ${line}`).join('\n')}\n`,
@@ -73,21 +114,7 @@ export function materializeClosedContextPatch(sourceText, pluginPath = harnessPl
     /# Leave @deepseek-ai\/dsh-tool-web enabled\. Domain tools stay on the Tool Gateway\./,
     '# Closed context disables native web tools. Domain tools stay on the Tool Gateway.',
   );
-  text += [
-    '',
-    '- id: tool-web',
-    "  name: '@deepseek-ai/dsh-tool-web'",
-    '  disabled: true',
-    '',
-    '- id: web-search-deepseek',
-    "  name: '@deepseek-ai/dsh-web-search-deepseek'",
-    '  disabled: true',
-    '',
-    '- id: web-fetch-http',
-    "  name: '@deepseek-ai/dsh-web-fetch-http'",
-    '  disabled: true',
-    '',
-  ].join('\n');
+  text = appendMissingDisabledPlugins(text);
   text = text.split('\n').filter((line) => !/web_search|web_fetch/.test(line)).join('\n');
   if (!/id: tool-web[\s\S]*disabled: true/.test(text)) {
     throw new Error('closed-context overlay 未能禁用 tool-web');

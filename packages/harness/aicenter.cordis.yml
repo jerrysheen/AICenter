@@ -86,6 +86,22 @@
   name: '@deepseek-ai/dsh-tool-ralph'
   disabled: true
 
+# dsh-base hardcodes web.searchProvider to deepseek-official. dsh-web uses that
+# config ahead of DSH_WEB_SEARCH_PROVIDER, so the env var never selects Grok.
+# A patch row replaces the whole config: restate fetchProvider. Q&A search is
+# elucid-grok only. materializeHarnessPatch rewrites searchProvider from
+# resolveHarnessWebSearchProvider. DeepSeek search stays disabled.
+
+- id: web
+  name: '@deepseek-ai/dsh-web'
+  config:
+    searchProvider: elucid-grok
+    fetchProvider: http
+
+- id: web-search-deepseek
+  name: '@deepseek-ai/dsh-web-search-deepseek'
+  disabled: true
+
 # Public web is Harness infrastructure (web_search + web_fetch), not a Host tool.
 # Leave @deepseek-ai/dsh-tool-web enabled. Domain tools stay on the Tool Gateway.
 
