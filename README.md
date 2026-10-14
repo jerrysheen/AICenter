@@ -39,7 +39,7 @@ README
 
 需要 Node.js 22.13 或更高版本。
 
-Windows 推荐直接双击仓库根目录的 `start-ai-center.bat`。启动器会结束旧的 AI Center Web/Worker 实例、后台启动当前仓库的两个服务、执行健康检查，并显示电脑和手机访问地址。本机已配置 `cloudflared` 时也会探活或拉起公网隧道，但不会在 Ctrl+C 时拆掉。它不会结束其他 Node 服务；如果端口 `8787` 被无关程序占用，会提示后停止。BrowserSkill 扩展还没连上、且专用用户目录的 Chrome 没在运行时，启动器会用该目录拉起 Chrome（默认 `.ai-data\chrome-profile`，不打开调试端口）；这个窗口每约 60 秒再查一次，连续约 3 次仍没有浏览器就再拉起一次。
+Windows 推荐直接双击仓库根目录的 `start-ai-center.bat`。启动器会结束旧的 AI Center Web/Worker 实例、后台启动当前仓库的两个服务、执行健康检查，并显示电脑和手机访问地址。本机已配置 `cloudflared` 时也会探活或拉起公网隧道，但不会在 Ctrl+C 时拆掉。它不会结束其他 Node 服务；如果端口 `8787` 被无关程序占用，会提示后停止。BrowserSkill 扩展还没连上、且专用用户目录的 Chrome 没在运行时，启动器会用该目录拉起 Chrome（默认 `.ai-data\chrome-profile`，不打开调试端口）；可用 `AI_CENTER_SCRAPE_CHROME_PROFILE_DIRECTORY` 指定 `Default`、`Profile 1` 或 `Profile 2`。目录设成日常 Chrome 的 User Data 时，已经打开、且命令行没有 `--user-data-dir` 的那只 Chrome 算正在使用，不再另开。这个窗口每约 60 秒再查一次，连续约 3 次仍没有浏览器就再拉起一次。
 
 运行日志和进程记录保存在本机 `.ai-data/`，不会进入 Git；`data/ai-center.db` 同样只在本地保存，数据库结构和前向 migration 随代码版本化。
 

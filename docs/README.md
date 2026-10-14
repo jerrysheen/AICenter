@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-14-scrape-chrome-default-profile.md`：日常 Chrome 不带 `--user-data-dir`。配置的目录等于 `%LOCALAPPDATA%\Google\Chrome\User Data` 时，这种进程算该目录已在使用，`--type=` 子进程不算，因此不另开第二只。`AI_CENTER_SCRAPE_CHROME_PROFILE_DIRECTORY` 会连同 `--user-data-dir` 传 `--profile-directory`。不新增 migration。需要重新运行 `scripts/start-ai-center.ps1`。
+
 - `progress/2026-10-14-worker-claim-loop.md`：手动把 `jobs.attempt_count` 清回 0 后，领取按已有 `job_attempts` 的最大序号继续，避免唯一约束把领取循环打停。领取抛错时记下日志、只把仍在排队的那条标失败，循环继续。循环超过约 5 分钟没有往下走时打一行。空的订阅来源 id 改为跳过，不再每轮报错。不新增 migration。需要重启 Worker。
 
 - `progress/2026-10-14-scrape-browser-guard.md`：采集走 BrowserSkill 扩展，不走 CDP。启动器在扩展未连接且 `.ai-data\chrome-profile`（或 `AI_CENTER_SCRAPE_CHROME_USER_DATA`）没有对应 Chrome 进程时拉起该目录。守护循环连续约 3 次仍无浏览器再拉起一次，并在启动器窗口打一行。不改页面。不新增 migration。需要重新运行 `scripts/start-ai-center.ps1`。
