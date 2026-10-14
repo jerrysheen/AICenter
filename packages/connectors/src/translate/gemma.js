@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { createUsageFetch } from '../model-usage-fetch.js';
-import { geminiQuotaCooldown } from '../gemini-grok-task.js';
+import { geminiQuotaCooldown, nextGeminiDailyReset } from '../gemini-grok-task.js';
 import { googleFetch, isGoogleConnectTimeout } from '../google-fetch.js';
 
 export function gemmaTranslationInput(system, prompt) {
@@ -13,6 +13,78 @@ export function gemmaTranslationTimeoutMs(value) {
   const raw = Number(value);
   if (!Number.isInteger(raw)) return 180_000;
   return Math.min(300_000, Math.max(120_000, raw));
+}
+
+function boundedInteger(value, fallback, min, max) {
+  if (value === undefined || value === null || String(value).trim() === '') return fallback;
+  const raw = Number(value);
+  if (!Number.isInteger(raw)) return fallback;
+  return Math.min(max, Math.max(min, raw));
+}
+
+export const GEMMA_DEFAULT_RETRY_STATUSES = [500, 502, 503, 408];
+
+// Defaults sit inside the per-project Google limits: 30 RPM, 16K TPM, 14.4K RPD.
+// Interval, retry statuses, backoff and retry count are local knobs with wider clamps.
+export function gemmaTranslationPolicy(env = process.env) {
+  const intervalMinMs = boundedInteger(env.AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MIN_MS, 2000, 0, 120_000);
+  const intervalMaxMs = Math.max(intervalMinMs, boundedInteger(env.AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MAX_MS, 3000, 0, 120_000));
+  const backoffBaseMs = boundedInteger(env.AI_CENTER_GEMMA_TRANSLATION_BACKOFF_BASE_MS, 10_000, 0, 600_000);
+  const backoffCapMs = Math.max(backoffBaseMs, boundedInteger(env.AI_CENTER_GEMMA_TRANSLATION_BACKOFF_CAP_MS, 40_000, 0, 600_000));
+  return {
+    requestsPerMinute: boundedInteger(env.AI_CENTER_GEMMA_TRANSLATION_REQUESTS_PER_MINUTE, 25, 1, 60),
+    intervalMinMs,
+    intervalMaxMs,
+    tokensPerMinute: boundedInteger(env.AI_CENTER_GEMMA_TRANSLATION_TOKENS_PER_MINUTE, 16000, 1, 16000),
+    requestsPerKeyPerDay: boundedInteger(env.AI_CENTER_GEMMA_TRANSLATION_REQUESTS_PER_DAY, 14400, 1, 14400),
+    backoffBaseMs,
+    backoffCapMs,
+    maxRetries: boundedInteger(env.AI_CENTER_GEMMA_TRANSLATION_MAX_RETRIES, 2, 0, 8),
+    retryStatuses: gemmaRetryStatuses(env.AI_CENTER_GEMMA_TRANSLATION_RETRY_STATUSES),
+  };
+}
+
+export function gemmaRetryStatuses(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return [...GEMMA_DEFAULT_RETRY_STATUSES];
+  const parsed = [];
+  for (const part of String(value).split(',')) {
+    const raw = Number(part.trim());
+    if (Number.isInteger(raw) && raw >= 400 && raw <= 599 && !parsed.includes(raw)) parsed.push(raw);
+  }
+  return parsed.length ? parsed : [...GEMMA_DEFAULT_RETRY_STATUSES];
+}
+
+// Inclusive millisecond gap. random() in [0, 1) maps onto min..max; 0 stays at min.
+export function gemmaIntervalMs(min, max, random = Math.random) {
+  if (max <= min) return min;
+  const sample = Number(random());
+  const unit = Number.isFinite(sample) ? Math.min(1, Math.max(0, sample)) : 0;
+  if (unit >= 1) return max;
+  return min + Math.floor(unit * (max - min + 1));
+}
+
+// consecutive is 1-based. First failure uses the base; each further failure doubles until the cap.
+export function gemmaBackoffMs(consecutive, base, cap) {
+  if (consecutive < 1 || base <= 0) return 0;
+  const shift = Math.min(consecutive - 1, 20);
+  const raw = base * (2 ** shift);
+  if (!Number.isFinite(raw) || raw > cap) return cap;
+  return raw;
+}
+
+export function gemmaUsageTokens(usage) {
+  const total = Number(usage?.totalTokenCount);
+  if (Number.isInteger(total) && total > 0) return total;
+  const prompt = Number(usage?.promptTokenCount);
+  const output = Number(usage?.candidatesTokenCount);
+  if (Number.isInteger(prompt) && prompt >= 0 && Number.isInteger(output) && output >= 0 && prompt + output > 0) return prompt + output;
+  return 0;
+}
+
+// Google resets Gemma quota at Pacific midnight. dayEnd - 27h always lands on the previous Pacific date.
+export function gemmaQuotaDay(at) {
+  const dayEnd = nextGeminiDailyReset(at);
+  return { dayStart: nextGeminiDailyReset(dayEnd - 27 * 3600000), dayEnd };
 }
 
 const GEMMA_26B = 'gemma-4-26b-a4b-it';
@@ -99,6 +171,11 @@ export function createGemmaTranslationRouter(options = {}) {
   let cursor = 0;
   const fetchImpl = googleFetch(options.fetch || fetch, env);
   const pause = options.sleep || sleep;
+  const random = options.random || Math.random;
+  const policy = gemmaTranslationPolicy(env);
+  const retryStatuses = new Set(policy.retryStatuses);
+  const upstreamBackoff = new Map();
+  const nextRequestAt = new Map();
   let inflight = 0;
   const metered = createUsageFetch(async (url, init) => {
     const response = await fetchImpl(url, init);
@@ -106,30 +183,87 @@ export function createGemmaTranslationRouter(options = {}) {
     return new Response(JSON.stringify(await readGemmaStream(response)), { status: 200 });
   }, { provider: 'gemini', stage: 'translation', observer: options.usageObserver });
 
-  async function admit(waitMs, estimatedTokens, pool) {
-    let at = now();
-    let ticket, retryAt = Infinity;
-    const deadline = at + waitMs;
+  function markUpstreamFailure(project) {
+    const at = now();
+    const row = upstreamBackoff.get(project) || { consecutive: 0, until: 0 };
+    row.consecutive += 1;
+    const delay = gemmaBackoffMs(row.consecutive, policy.backoffBaseMs, policy.backoffCapMs);
+    row.until = at + delay;
+    upstreamBackoff.set(project, row);
+    return delay;
+  }
+
+  function noteUpstream(ticket) {
+    const delay = markUpstreamFailure(ticket.project);
+    console.error(`[worker] Gemma 翻译上游 500 退避 model=${ticket.model} key=${gemmaKeySuffix(ticket.keyEnv)} waitMs=${delay}`);
+    return true;
+  }
+
+  function armInterval(project, at) {
+    nextRequestAt.set(project, at + gemmaIntervalMs(policy.intervalMinMs, policy.intervalMaxMs, random));
+  }
+
+  async function admit(waitMs, pool) {
+    let ticket;
+    let quotaRetryAt = Infinity;
+    let upstreamRetryAt = Infinity;
+    const deadline = now() + waitMs;
     do {
-      at = now();
-      retryAt = Infinity;
-      for (let offset = 0; offset < pool.length; offset++) {
-        const index = (cursor + offset) % pool.length;
-        const result = repository.reserve({ slots, model: pool[index], at,
-          accountMode: true, requestsPerDay: Infinity, requestsPerKeyPerDay: Infinity,
-          requestsPerHour: Infinity, requestsPerMinute: 10, minIntervalMs: 10000,
-          pacingModels:GEMMA_TRANSLATION_MODELS,estimatedTokensPerMinute: 16000, estimatedTokens });
-        if (result.admitted) {
-          ticket = result;
-          if (pool === models) cursor = (index + 1) % models.length;
-          break;
-        }
-        retryAt = Math.min(retryAt, result.retryAt);
+      const at = now();
+      quotaRetryAt = Infinity;
+      upstreamRetryAt = Infinity;
+      const ready = [];
+      const intervalHeld = [];
+      for (const slot of slots) {
+        const block = upstreamBackoff.get(slot.project);
+        if (block?.until > at) upstreamRetryAt = Math.min(upstreamRetryAt, block.until);
+        else if ((nextRequestAt.get(slot.project) || 0) > at) intervalHeld.push(slot);
+        else ready.push(slot);
       }
-      if (ticket || retryAt > deadline || !Number.isFinite(retryAt)) break;
-      await pause(Math.max(1, retryAt - now()));
+      const day = gemmaQuotaDay(at);
+      const reserve = (candidates, model, dryRun = false) => repository.reserve({
+        slots: candidates, model, at, dryRun,
+        accountMode: true, requestsPerDay: Infinity, requestsPerKeyPerDay: policy.requestsPerKeyPerDay,
+        requestsPerHour: Infinity, requestsPerMinute: policy.requestsPerMinute, minIntervalMs: policy.intervalMinMs,
+        pacingModels: GEMMA_TRANSLATION_MODELS, estimatedTokensPerMinute: policy.tokensPerMinute, estimatedTokens: 0,
+        dayStart: day.dayStart, dayEnd: day.dayEnd,
+      });
+      if (ready.length) {
+        for (let offset = 0; offset < pool.length; offset++) {
+          const index = (cursor + offset) % pool.length;
+          const result = reserve(ready, pool[index]);
+          if (result.admitted) {
+            ticket = result;
+            if (pool === models) cursor = (index + 1) % models.length;
+            break;
+          }
+          quotaRetryAt = Math.min(quotaRetryAt, result.retryAt);
+        }
+      } else if (intervalHeld.length) {
+        let earliest = Infinity;
+        for (const slot of intervalHeld) earliest = Math.min(earliest, nextRequestAt.get(slot.project));
+        let probeRetry = Infinity;
+        let probeAdmitted = false;
+        for (const model of pool) {
+          const probe = reserve(intervalHeld, model, true);
+          if (probe.admitted) { probeAdmitted = true; break; }
+          probeRetry = Math.min(probeRetry, probe.retryAt);
+        }
+        quotaRetryAt = Math.min(quotaRetryAt, probeAdmitted ? earliest : probeRetry);
+      }
+      if (ticket) break;
+      const retryAt = Math.min(quotaRetryAt, upstreamRetryAt);
+      if (!Number.isFinite(retryAt) || retryAt > deadline) break;
+      const stamp = now();
+      await pause(Math.max(1, retryAt - stamp));
+      if (now() <= stamp) break;
     } while (now() < deadline);
-    if (!ticket) throw Object.assign(new Error('Gemma 翻译等待配额窗口'), { code: 'budget-deferred', retryAt });
+    if (!ticket) {
+      const retryAt = Math.min(quotaRetryAt, upstreamRetryAt);
+      const upstream = Number.isFinite(upstreamRetryAt) && upstreamRetryAt < quotaRetryAt;
+      throw Object.assign(new Error(upstream ? 'Gemma 翻译上游 500 退避' : 'Gemma 翻译等待配额窗口'), { code: 'budget-deferred', retryAt });
+    }
+    armInterval(ticket.project, now());
     return ticket;
   }
 
@@ -138,21 +272,19 @@ export function createGemmaTranslationRouter(options = {}) {
     async generate({ system, prompt }) {
       if (!slots.length) throw new Error('未配置 Gemma 翻译凭据');
       if (!repository?.reserve) throw new Error('Gemma 翻译需要持久化配额 Repository');
-      // UTF-8 byte count is a conservative input token reservation, including instructions.
       const input = gemmaTranslationInput(system, prompt);
-      const estimatedTokens = Buffer.byteLength(input, 'utf8');
-      if (estimatedTokens > 16000) throw new Error('Gemma 翻译输入过长，需要分段');
+      const inputBytes = Buffer.byteLength(input, 'utf8');
       let lastError;
-      for (let attempt = 0; attempt < 3; attempt++) {
+      for (let attempt = 0; attempt <= policy.maxRetries; attempt++) {
         let ticket;
-        try { ticket = await admit(attempt === 0 ? 61000 : 1500, estimatedTokens, attempt === 0 ? models : retryModels); }
+        try { ticket = await admit(attempt === 0 ? 61000 : 1500, attempt === 0 ? models : retryModels); }
         catch (error) {
           if (error?.code === 'budget-deferred' && lastError) throw lastError;
           throw error;
         }
         inflight += 1;
         const started = now();
-        const context = () => ({ model: ticket.model, keyEnv: ticket.keyEnv, inputBytes: estimatedTokens, latencyMs: Math.max(0, now() - started), concurrency: inflight });
+        const context = () => ({ model: ticket.model, keyEnv: ticket.keyEnv, inputBytes, latencyMs: Math.max(0, now() - started), concurrency: inflight });
         let retry = false;
         try {
           const apiKey=String(options.apiKey ?? env[ticket.keyEnv]).trim();
@@ -170,14 +302,15 @@ export function createGemmaTranslationRouter(options = {}) {
             const streamQuota = error?.code === 'gemma-stream-error'
               ? geminiQuotaCooldown({ status: hasStreamStatus ? streamStatus : 0 }, { error: error.upstreamError }, now()) : null;
             const connectTimeout = isGoogleConnectTimeout(error);
-            const retryable = error?.name === 'TimeoutError' || connectTimeout
-              || (error?.code === 'gemma-stream-error' && !streamQuota && (!hasStreamStatus || streamStatus >= 500));
-            if (error?.code === 'gemma-stream-error' || error?.name === 'TimeoutError' || connectTimeout) {
-              logGemmaUpstreamFailure(hasStreamStatus ? streamStatus : (error?.name === 'TimeoutError' || connectTimeout ? 408 : 0), error?.upstreamError ? JSON.stringify(error.upstreamError) : String(error?.message || ''), context());
+            const timedOut = error?.name === 'TimeoutError' || connectTimeout;
+            const status = timedOut ? 408 : (hasStreamStatus ? streamStatus : 0);
+            const retryable = !streamQuota && retryStatuses.has(status);
+            if (error?.code === 'gemma-stream-error' || timedOut) {
+              logGemmaUpstreamFailure(status || (timedOut ? 408 : 0), error?.upstreamError ? JSON.stringify(error.upstreamError) : String(error?.message || ''), context());
             }
             if (streamQuota) repository.cooldown(ticket.project, ticket.model, streamQuota.blockedUntil);
-            else if (retryable) repository.cooldown(ticket.project, ticket.model, now() + 60000);
-            if (retryable && attempt < 2) { lastError = error; retry = true; }
+            else if (retryable) noteUpstream(ticket);
+            if (retryable && attempt < policy.maxRetries) { lastError = error; retry = true; }
             else throw error;
           }
           if (!retry) {
@@ -186,24 +319,28 @@ export function createGemmaTranslationRouter(options = {}) {
             try { payload = raw ? JSON.parse(raw) : {}; } catch { payload = {}; }
             if (!response.ok || payload.error) {
               logGemmaUpstreamFailure(response.status, raw || JSON.stringify(payload.error || ''), context());
+              const failedUsage = gemmaUsageTokens(payload.usageMetadata);
+              if (failedUsage) repository.recordActualTokens?.(ticket.id, failedUsage);
               const cooldown = geminiQuotaCooldown(response, payload, now());
-              const retryable = !cooldown && response.status >= 500 && response.status <= 599;
+              const retryable = !cooldown && retryStatuses.has(response.status);
               if (cooldown) repository.cooldown(ticket.project, ticket.model, cooldown.blockedUntil);
-              else if (retryable) repository.cooldown(ticket.project, ticket.model, now() + 60000);
+              else if (retryable) noteUpstream(ticket);
               const error = Object.assign(new Error(`Gemma 翻译失败（${response.status}）`), {
                 upstreamStatus: response.status,
                 upstreamBody: redactGemmaLog(raw),
               });
-              if (retryable && attempt < 2) { lastError = error; retry = true; }
+              if (retryable && attempt < policy.maxRetries) { lastError = error; retry = true; }
               else throw error;
             } else {
               const candidate = payload.candidates?.[0];
               if (candidate?.finishReason !== 'STOP' || !candidate.content?.parts?.[0]?.text) throw new Error('Gemma 翻译未完整结束，未保存译文');
+              const actual = gemmaUsageTokens(payload.usageMetadata);
+              if (actual) repository.recordActualTokens?.(ticket.id, actual);
+              upstreamBackoff.delete(ticket.project);
               return { text: candidate.content.parts[0].text, engine: ticket.model };
             }
           }
         } finally { inflight -= 1; repository.release(ticket); }
-        if (retry) await pause(Math.min(2000, 500 * 2 ** attempt));
       }
       throw lastError;
     },

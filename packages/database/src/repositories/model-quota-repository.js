@@ -8,7 +8,8 @@ export function createModelQuotaRepository(database, emitEvent) {
           ? database.prepare('SELECT at FROM model_quota_reservations WHERE model=? AND at>? ORDER BY at').all(model,at-3600000)
           : database.prepare('SELECT at FROM model_quota_reservations WHERE at>? ORDER BY at').all(at-3600000);
         if(global.length>=requestsPerHour)return {admitted:false,retryAt:global[0].at+3600000};
-        const day=database.prepare('SELECT project,at FROM model_quota_reservations WHERE model=? AND at>=? AND at<? ORDER BY at').all(model,dayStart,dayEnd);
+        const dayModels=JSON.stringify(pacingModels.length?pacingModels:[model]);
+        const day=database.prepare('SELECT project,at FROM model_quota_reservations WHERE model IN (SELECT value FROM json_each(?)) AND at>=? AND at<? ORDER BY at').all(dayModels,dayStart,dayEnd);
         if(day.length>=requestsPerDay)return {admitted:false,retryAt:dayEnd};
         const latest=global.at(-1)?.at;
         if(!accountMode && latest!==undefined && at<latest+minIntervalMs)return {admitted:false,retryAt:latest+minIntervalMs};
@@ -29,11 +30,10 @@ export function createModelQuotaRepository(database, emitEvent) {
             const last=pacingModels.length ? database.prepare('SELECT MAX(at) at FROM model_quota_reservations WHERE project=? AND model IN (SELECT value FROM json_each(?))').get(slot.project,JSON.stringify(pacingModels)).at : keyDay.at(-1)?.at;
             if(last!==undefined && at<last+minIntervalMs){retryAt=Math.min(retryAt,last+minIntervalMs);continue;}
           }
-          const minute=database.prepare('SELECT at,estimated_tokens FROM model_quota_reservations WHERE project=? AND model=? AND at>? ORDER BY at').all(slot.project,model,at-60000);
-          const requestMinute=pacingModels.length ? database.prepare('SELECT at FROM model_quota_reservations WHERE project=? AND model IN (SELECT value FROM json_each(?)) AND at>? ORDER BY at').all(slot.project,JSON.stringify(pacingModels),at-60000) : minute;
-          if(requestMinute.length>=requestsPerMinute || minute.reduce((n,r)=>n+r.estimated_tokens,0)+estimatedTokens>estimatedTokensPerMinute){
-            const rows=requestMinute.length>=requestsPerMinute ? requestMinute : minute;
-            retryAt=Math.min(retryAt,rows.length ? rows[0].at+60000 : at+3600000);continue;
+          const pace=JSON.stringify(pacingModels.length?pacingModels:[model]);
+          const minute=database.prepare('SELECT at,estimated_tokens FROM model_quota_reservations WHERE project=? AND model IN (SELECT value FROM json_each(?)) AND at>? ORDER BY at').all(slot.project,pace,at-60000);
+          if(minute.length>=requestsPerMinute || minute.reduce((n,r)=>n+r.estimated_tokens,0)+estimatedTokens>estimatedTokensPerMinute){
+            retryAt=Math.min(retryAt,minute.length ? minute[0].at+60000 : at+3600000);continue;
           }
           if(dryRun)return {admitted:true,project:slot.project,model,keyEnv:slot.keyEnv};
           const id=randomUUID();
@@ -84,6 +84,10 @@ export function createModelQuotaRepository(database, emitEvent) {
         }
         return changed;
       }).immediate();
+    },
+    recordActualTokens(id, tokens) {
+      if (!id || !Number.isInteger(tokens) || tokens < 1) return 0;
+      return database.prepare('UPDATE model_quota_reservations SET estimated_tokens=? WHERE id=?').run(tokens, id).changes;
     },
     recordProbeUse({project,keyEnv,model,at}) {
       database.prepare('INSERT INTO model_quota_reservations(id,project,model,at,estimated_tokens,key_env) VALUES(?,?,?,?,?,?)')

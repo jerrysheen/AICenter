@@ -8,19 +8,37 @@
 
 `AI_CENTER_GEMMA_TRANSLATION_MODELS` 默认只有 `gemma-4-26b-a4b-it`。`gemma-4-31b-it` 仍是合法模型，显式写入环境变量或测试注入后可以参加第一次请求的轮换；未设置时不再调用 31B。用户后续授权五账号翻译池，`AI_CENTER_GEMMA_TRANSLATION_KEY_ENVS` 默认包含 `GEMINI_API_KEY` 至 `GEMINI_API_KEY5`，缺失和重复凭据跳过。显式旧 `AI_CENTER_GEMMA_TRANSLATION_KEY_ENV` 仍可固定一个账号，多账号配置优先。缺凭据或失败不回退 Flash、Grok、DeepL 或其他 API。Router 注入仅用于测试。
 
-复用 `ModelQuotaRepository`，按密钥/显式项目和模型保存租约和冷却。用户后续授权移除本地每日/小时请求数上限，每账号两个 Gemma 模型共用最小 10 秒发起间隔、每分钟最多 10 次，理论每账号约 6 次/分钟；五账号理论约 30 次/分钟。16K 输入 TPM 仍按模型预留，UTF-8 字节数作为保守输入 Token 估算，不记为实际用量。同项目 Key 共用节流；跨模型节奏在同一 Repository 事务内检查并保存，重启不能绕过。分钟窗口本地最多等待约 61 秒，其他配额等待按 retryAt 延期。供应商 429 持久冷却，同一次请求不再换密钥。5xx、流内 5xx、`TimeoutError` 和 Google 连接超时把该密钥上的该模型冷却一分钟，然后在同一次 `generate` 里最多再试两次：先退避 0.5 秒、再 1 秒，上限 2 秒。只要配置里还有 26B，重试只换另一把密钥上的 26B，不再转到 31B。配置被显式收成只有 31B 时，重试才在 31B 上换密钥。下一席在约 1.5 秒内排不上（同一密钥还要等 10 秒间隔，或只剩冷却中的席位）就抛出原来的上游错误，交给任务级最多 4 次重试。不回退 Flash、Grok、DeepL 或其他 API。本地无每日上限不代表供应商承诺无限额度。
+复用 `ModelQuotaRepository`。五把密钥在五个 Google 项目里，本地按密钥节流；同一个 `PROJECT` 仍共用一份节奏。账号之间按当日已用次数和上次请求时间均衡，五把密钥仍可以在同一次调度里同时发出。默认池只有 26B，`thinkingLevel` 保持 `minimal`。重试不加 31B：只要配置里还有 26B，重试只走 26B。配置被显式收成只有 31B 时，重试才留在 31B。每个密钥的本地限额：
+
+| 限额 | 默认 | 环境变量 | 允许范围 |
+| --- | --- | --- | --- |
+| 可重试状态码 | 500,502,503,408 | `AI_CENTER_GEMMA_TRANSLATION_RETRY_STATUSES` | 400–599 的整数，逗号分隔；空或无效时回到默认 |
+| 每分钟请求 | 25 | `AI_CENTER_GEMMA_TRANSLATION_REQUESTS_PER_MINUTE` | 1–60 |
+| 同密钥间隔下限 | 2000 毫秒 | `AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MIN_MS` | 0–120000 |
+| 同密钥间隔上限 | 3000 毫秒 | `AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MAX_MS` | 0–120000，小于下限时抬到下限 |
+| 退避基数 | 10000 毫秒 | `AI_CENTER_GEMMA_TRANSLATION_BACKOFF_BASE_MS` | 0–600000 |
+| 退避上限 | 40000 毫秒 | `AI_CENTER_GEMMA_TRANSLATION_BACKOFF_CAP_MS` | 0–600000，小于基数时抬到基数 |
+| 同一次生成的最大重试 | 2 | `AI_CENTER_GEMMA_TRANSLATION_MAX_RETRIES` | 0–8 |
+| 每分钟 Token | 16000 | `AI_CENTER_GEMMA_TRANSLATION_TOKENS_PER_MINUTE` | 1–16000 |
+| 每个太平洋日请求 | 14400 | `AI_CENTER_GEMMA_TRANSLATION_REQUESTS_PER_DAY` | 1–14400 |
+
+未填或不是整数时用默认值，超出范围的整数收进上表。同密钥两次请求的间隔在下限和上限之间随机取整毫秒，默认 2–3 秒。这个随机值记在进程内。配额表持久保住的是下限，所以重启后下一跳至少相隔下限。每分钟最多 25 次也按密钥计算。
+
+Token 只按响应里的 `usageMetadata` 记账。有 `totalTokenCount` 就用它；没有总数时用 `promptTokenCount` 加 `candidatesTokenCount`。没有用量就记 0，不按 UTF-8 字节估算。失败响应里若带 `usageMetadata`，同样记入这一次预留。每分钟 Token 上限只累计已经记下的实际用量。31B 只在显式加入模型池后参加第一次请求；间隔、每分钟请求、每分钟 Token 和每日次数仍按密钥把 31B 和 26B 算在一起。分钟窗口本地最多等待约 61 秒。跨模型节奏在同一 Repository 事务内检查并保存，重启不能绕过。
+
+供应商 429 或配额耗尽仍按 Google 给出的重试延迟冷却该密钥上的该模型，同一次请求不换密钥。每日配额冷却到下一个太平洋零点。HTTP 状态落在可重试列表里时不写冷却表，立刻换下一把密钥。默认列表是 500、502、503、408。响应超时和 Google 连接超时按 408 计入这个列表。列表外的状态不换密钥。同一次 `generate` 的重试次数默认 2。同一密钥连续出现可重试错误时，进程内退避从基数开始，之后每次翻倍，直到上限；默认是 10 秒、20 秒、40 秒。成功后清零。这不是配额冷却，重启后不保留。日志写 `[worker] Gemma 翻译上游 500 退避`。只有每分钟请求、每分钟 Token、每日上限、同密钥间隔或 429 冷却让席位排不上时，才抛出 `Gemma 翻译等待配额窗口`。上游退避超过本次准入时限时，抛出 `Gemma 翻译上游 500 退避`。下一席约 1.5 秒内排不上就抛出原来的上游错误，交给任务级最多 4 次重试。不回退 Flash、Grok、DeepL 或其他 API。
 
 直连 `generativelanguage.googleapis.com` 使用 npm `undici` 自己的 `fetch` 和同一份 `Agent` 的 `connect.timeout`，默认 8000 毫秒，由 `AI_CENTER_GOOGLE_CONNECT_TIMEOUT_MS` 配置（整数，1000–30000）。不把这份 Agent 交给 Node 内置 `fetch`。这是 TCP 连接预算，和响应的 `AbortSignal.timeout`（Gemma 默认 180 秒，`AI_CENTER_GEMMA_TRANSLATION_TIMEOUT_MS`）分开。连接超时记用量 HTTP 408，并按上面的规则换密钥。不替换 undici 的全局 dispatcher。Harness / `dsh` 自己的 HTTP 客户端不走这个 Agent。
 
 `WorkerJobConcurrencySchema.translationLimit` 默认 1，最大 5；Worker composition root 默认通过 `AI_CENTER_WORKER_TRANSLATION_CONCURRENCY=5` 启用五个翻译执行位，仅影响 `feed.translation.run`，不增加 Ask、小时报等任务并发。使用同一 Connector 与现有注册 handler，不增加 Agent。失败状态另表保存，见 migration 50。
 
-每次实际 HTTP 尝试沿用用量账本，缺失用量保持未知。新的翻译任务最多 4 次尝试，退避从 1 秒起按指数增加，单次间隔不超过 5 分钟；次数用尽后停在失败，不再无限重试。任务租约过期同样记失败并退避，不把条目留在进行中。只有完整有效译文才通过现有 Feed Repository 落库，与 Outbox 同事务。上游失败在 Worker 日志写一行：`status`、`model`、密钥后缀（`KEY` / `KEY2`）、`inputBytes`、`latencyMs`、当前路由器上的 `concurrency`，以及脱敏后的 Google 响应体。不记录密钥本身。长文按 `AI_CENTER_TRANSLATION_CHUNK_CHARS` 分段，默认 1500，允许 400–2400。每一段另加约 286 字的翻译说明（系统说明 263 字，加上「原文数据」包装 23 字），1500 字的段大约 1786 字、2300 字节，2400 字的段大约 2686 字、3200 字节，都低于 16000 字节的预检。整篇正文不会放进同一次请求。每一段写一行 `[worker] translation-chunk item=… chunk=i/n chars=… requestChars=… latencyMs=… status=ok|retry|error|cached`。`chars` 是这一段原文，`requestChars` 含说明。超过 16000 字节的预估输入仍在发请求前拒绝。单次响应超时默认 180 秒，由 `AI_CENTER_GEMMA_TRANSLATION_TIMEOUT_MS` 配置（120000–300000）。连接超时仍分开计算。2026-10-07 的 31B 诊断在短提示上也会返回 HTTP 500 `INTERNAL`。2026-10-13 16:00 之后 2054 次翻译里 877 次失败（43%），其中 860 次是 HTTP 500 `INTERNAL`，与 31B 留在默认轮换里相符。默认池因此只保留 26B。同一天到 `generativelanguage.googleapis.com` 有 201 次 `UND_ERR_CONNECT_TIMEOUT`，所以连接超时单独设短预算，并在 26B 上换密钥。默认五个翻译执行位没有证据需要下调。不回退到其他模型家族。
+每次实际 HTTP 尝试沿用用量账本，缺失用量保持未知。新的翻译任务最多 4 次尝试，退避从 1 秒起按指数增加，单次间隔不超过 5 分钟；次数用尽后停在失败，不再无限重试。任务租约过期同样记失败并退避，不把条目留在进行中。只有完整有效译文才通过现有 Feed Repository 落库，与 Outbox 同事务。上游失败在 Worker 日志写一行：`status`、`model`、密钥后缀（`KEY` / `KEY2`）、`inputBytes`、`latencyMs`、当前路由器上的 `concurrency`，以及脱敏后的 Google 响应体。不记录密钥本身。长文按 `AI_CENTER_TRANSLATION_CHUNK_CHARS` 分段，默认 1500，允许 400–2400。每一段另加约 286 字的翻译说明（系统说明 263 字，加上「原文数据」包装 23 字），1500 字的段大约 1786 字。整篇正文不会放进同一次请求。每一段写一行 `[worker] translation-chunk item=… chunk=i/n chars=… requestChars=… latencyMs=… status=ok|retry|error|cached`。`chars` 是这一段原文，`requestChars` 含说明。Token 在响应返回后按 `usageMetadata` 记账，不在发请求前按字节估算拒绝。单次响应超时默认 180 秒，由 `AI_CENTER_GEMMA_TRANSLATION_TIMEOUT_MS` 配置（120000–300000）。连接超时仍分开计算。2026-10-07 的 31B 诊断在短提示上也会返回 HTTP 500 `INTERNAL`。2026-10-13 16:00 之后 2054 次翻译里 877 次失败（43%），其中 860 次是 HTTP 500 `INTERNAL`，与 31B 留在默认轮换里相符。默认池因此只保留 26B。同一天到 `generativelanguage.googleapis.com` 有 201 次 `UND_ERR_CONNECT_TIMEOUT`，所以连接超时单独设短预算，并在 26B 上换密钥。默认五个翻译执行位没有证据需要下调。不回退到其他模型家族。
 
 ## 排版和缓存
 
 保留原文标题、段落、列表、表格和脚注关系，完整翻译，不生成摘要；提示明确要求保留金额、否定、且/或条件、比较基准和不确定性。长输入按上面的段长切开，优先落在换行或空格，不拆开半个 Unicode 字符。各段译文用一个空行接上，不会把后半篇再送进同一次请求。一段失败时，多段正文在这一段上再试两次（先等 12 秒，再等 30 秒），只针对 5xx、超时和未完整结束；429 不在这里重试。已完成的段写入 `feed_translation_chunks`（migration 67）。任务失败后下一次尝试仍读入整篇，但按原文哈希和段序号接上，不再请求已经完成的段。进程内相同文本也不重复请求。全文译文落库时删掉这些段。只有一段的短帖仍只走原来的换密钥重试，不额外等待 12 秒。媒体沿用现有逐段稳定 ID 与原文哈希。
 
-旧译文和原文保留，已保存的相同 workspace/ID/原文哈希直接复用。信息流在调用翻译前先读取小时报信息节点里已有的中文标题；同一原文哈希只复用引擎为 hourly-report 的译文，不拿别的条目的 Gemma 译文顶替。2026-10-14 起，Feed 原文和译文的契约上限从 20000 / 8000 改为 20 万字符，列类型本来就是 TEXT，不新增 migration。入队不再因为正文超过 2 万字而跳过；翻译按上面的段长分段后合并，保存的是全文译文和全文哈希。不能把原文前缀当全文保存。超过 20 万字的正文仍不入队。Worker 每次启动最多补入 80 条，由 `AI_CENTER_TRANSLATION_BACKFILL_LIMIT` 配置（0 关闭，大于 80 仍按 80）。日志写 `[worker] translation-backfill enqueued=N limit=M scanned=…`，并带上 `cjk`、`flash`、`hidden`、`too-long`、`translated`、`failure`、`hourly-title`、`stale`、`other-provider`。`stale` 和 `hourly-title` 仍会入队。有条数时最多带 8 个 id。手动命令 `node --env-file=.env scripts/backfill-feed-translations.mjs [--limit 80]` 同样只入队，并打印同样的计数。已有未完成的相同任务不重复创建，快讯来源跳过。五把密钥每天大约 5000 次，长文按 1500 字分段，所以启动上限不再提高。只有正文哈希对得上的译文才算译完。列表上的短标题，以及小时报标题被存成整篇译文的情况，都会重新入队。汉字满 12 个只在 280 字以内或汉字占主导时当作中文；长篇英文里夹几句中文仍要翻译。
+旧译文和原文保留，已保存的相同 workspace/ID/原文哈希直接复用。信息流在调用翻译前先读取小时报信息节点里已有的中文标题；同一原文哈希只复用引擎为 hourly-report 的译文，不拿别的条目的 Gemma 译文顶替。2026-10-14 起，Feed 原文和译文的契约上限从 20000 / 8000 改为 20 万字符，列类型本来就是 TEXT，不新增 migration。入队不再因为正文超过 2 万字而跳过；翻译按上面的段长分段后合并，保存的是全文译文和全文哈希。不能把原文前缀当全文保存。超过 20 万字的正文仍不入队。Worker 每次启动最多补入 80 条，由 `AI_CENTER_TRANSLATION_BACKFILL_LIMIT` 配置（0 关闭，大于 80 仍按 80）。日志写 `[worker] translation-backfill enqueued=N limit=M scanned=…`，并带上 `cjk`、`flash`、`hidden`、`too-long`、`translated`、`failure`、`hourly-title`、`stale`、`other-provider`。`stale` 和 `hourly-title` 仍会入队。有条数时最多带 8 个 id。手动命令 `node --env-file=.env scripts/backfill-feed-translations.mjs [--limit 80]` 同样只入队，并打印同样的计数。已有未完成的相同任务不重复创建，快讯来源跳过。每个密钥每个太平洋日最多 14400 次。长文按 1500 字分段，启动补译仍最多 80 条。只有正文哈希对得上的译文才算译完。列表上的短标题，以及小时报标题被存成整篇译文的情况，都会重新入队。汉字满 12 个只在 280 字以内或汉字占主导时当作中文；长篇英文里夹几句中文仍要翻译。
 
 新采集内容通过现有 enrich handler 独立排队 `feed.translation.run`；中文整理继续原路径，小时/日报继续消费原有投影。这些其他业务仍使用原模型预算。
 

@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { createStore } from '../packages/database/src/index.js';
-import { createGemmaTranslationRouter, readGemmaStream,resolveGemmaTranslationSlots } from '../packages/connectors/src/translate/gemma.js';
+import { createGemmaTranslationRouter, gemmaBackoffMs, gemmaIntervalMs, gemmaQuotaDay, gemmaRetryStatuses, gemmaTranslationPolicy, readGemmaStream, resolveGemmaTranslationSlots } from '../packages/connectors/src/translate/gemma.js';
+import { nextDailyInstant, previousDailyInstant } from '../packages/domain/src/zoned-time.js';
 import { createTranslateService, splitTranslationText } from '../packages/connectors/src/translate/index.js';
 import { createFeedService } from '../packages/domain/src/feed-service.js';
 import { createFeedTranslationJobHandlers, enqueueOriginalTranslations } from '../packages/runtime/src/feed-translation-module.js';
@@ -40,7 +41,7 @@ test('five translation accounts dispatch together, cross-model pacing survives r
  waiters.splice(0).forEach(r=>r());await Promise.all(jobs);
  const next=createGemmaTranslationRouter({...options,fetch:async(url,init)=>{calls.push({key:init.headers['x-goog-api-key'],at});return sse('译文');}});
  await next.generate({system:'翻译',prompt:'After restart'});
- assert.ok(calls.at(-1).at-calls[0].at>=10000);
+ assert.equal(calls.at(-1).at-calls[0].at,2000);
  assert.equal(resolveGemmaTranslationSlots({...env,GEMINI_API_KEY2:env.GEMINI_API_KEY}).length,4);
 }));
 
@@ -60,27 +61,32 @@ test('Worker executes five translations without increasing other job type concur
 
 test('same-project translation keys share pacing and no daily cap overrides supplier cooldown',fixture(async store=>{
  let at=Date.now();const times=[];
- const env={GEMINI_API_KEY:'one',GEMINI_API_KEY2:'two',GEMINI_API_KEY_PROJECT:'same',GEMINI_API_KEY2_PROJECT:'same'};
+ const env={GEMINI_API_KEY:'one',GEMINI_API_KEY2:'two',GEMINI_API_KEY_PROJECT:'same',GEMINI_API_KEY2_PROJECT:'same',AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MIN_MS:'2500',AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MAX_MS:'2500'};
  const options={env,quotaRepository:store.repositories.modelQuota,now:()=>at,sleep:async ms=>{at+=ms;},fetch:async()=>{times.push(at);return sse('译文');}};
  const router=createGemmaTranslationRouter(options);
  await router.generate({system:'翻译',prompt:'One'});await router.generate({system:'翻译',prompt:'Two'});
- assert.equal(times[1]-times[0],10000);
+ assert.equal(times[1]-times[0],2500);
  const slot=resolveGemmaTranslationSlots(env)[0];
  for(const model of ['gemma-4-31b-it','gemma-4-26b-a4b-it'])store.repositories.modelQuota.cooldown(slot.project,model,at+86400000);
  await assert.rejects(createGemmaTranslationRouter(options).generate({system:'翻译',prompt:'Blocked'}),e=>e.code==='budget-deferred'&&e.retryAt===at+86400000);
  assert.equal(times.length,2);
 }));
 
-test('translation continues beyond the former 14400-per-day local cap',fixture(async(store,dir)=>{
+test('each translation key stays within 14400 requests per Pacific day',fixture(async(store,dir)=>{
  const at=Date.parse('2026-10-07T15:00:00Z'),env={GEMINI_API_KEY:'fake'},slot=resolveGemmaTranslationSlots(env)[0];
+ const pacific={timeZone:'America/Los_Angeles',hour:0,minute:0};
+ assert.equal(gemmaQuotaDay(at).dayStart,previousDailyInstant(at,pacific));
+ assert.equal(gemmaQuotaDay(at).dayEnd,nextDailyInstant(at,pacific));
  const db=new Database(path.join(dir,'test.db'));
  try {
   const insert=db.prepare('INSERT INTO model_quota_reservations(id,project,model,at,estimated_tokens) VALUES(?,?,?,?,?)');
-  db.transaction(()=>{for(let n=0;n<14401;n++)insert.run('prior-'+n,slot.project,'gemma-4-31b-it',at-2*3600000,1);})();
+  db.transaction(()=>{for(let n=0;n<14399;n++)insert.run('prior-'+n,slot.project,'gemma-4-31b-it',at-2*3600000,1);})();
  }finally{db.close();}
  let requests=0;
  const router=createGemmaTranslationRouter({env,models:['gemma-4-31b-it'],quotaRepository:store.repositories.modelQuota,now:()=>at,fetch:async()=>{requests++;return sse('译文');}});
  assert.equal((await router.generate({system:'翻译',prompt:'A new original.'})).engine,'gemma-4-31b-it');
+ assert.equal(requests,1);
+ await assert.rejects(router.generate({system:'翻译',prompt:'Over the daily cap.'}),error=>error.code==='budget-deferred'&&/等待配额窗口/.test(error.message)&&!/上游 500/.test(error.message));
  assert.equal(requests,1);
 }));
 
@@ -118,6 +124,7 @@ test('Gemma HTTP errors never fall back to other APIs, 429 cooldown persists acr
   } };
   await assert.rejects(createGemmaTranslationRouter(options).generate({ system:'翻译',prompt:'One' }), /429/);
   assert.equal(calls, 1);
+  assert.ok(store.repositories.modelQuota.listCooldowns(Date.now()).some(row => row.model === 'gemma-4-26b-a4b-it'));
   assert.equal((await createGemmaTranslationRouter(options).generate({system:'翻译',prompt:'Two'})).engine,'gemma-4-26b-a4b-it');
   assert.equal(calls,2);
 }));
@@ -209,9 +216,10 @@ test('single-key HTTP 500 does not wait out same-key pacing for the other Gemma 
     calls.push(url);
     return new Response('{"error":{"code":500,"status":"INTERNAL"}}', { status: 500 });
   }});
-  await assert.rejects(router.generate({ system: '翻译', prompt: 'One' }), /500/);
+  await assert.rejects(router.generate({ system: '翻译', prompt: 'One' }), error => /500/.test(error.message) && !/等待配额窗口/.test(error.message));
   assert.equal(calls.length, 1);
   assert.match(calls[0], /gemma-4-26b-a4b-it/);
+  assert.equal(store.repositories.modelQuota.listCooldowns(0).length, 0);
 }));
 
 test('Gemma HTTP 500 retries another key and logs length, key, latency and concurrency', fixture(async store => {
@@ -225,7 +233,7 @@ test('Gemma HTTP 500 retries another key and logs length, key, latency and concu
       quotaRepository: store.repositories.modelQuota, now: () => at, sleep: async ms => { at += ms; },
       usageObserver: row => usage.push(structuredClone(row)),
       fetch: async (url, init) => {
-        calls.push({ url, key: init.headers['x-goog-api-key'] });
+        calls.push({ url, key: init.headers['x-goog-api-key'], at });
         if (calls.length === 1) return new Response(JSON.stringify({ error: { code: 500, status: 'INTERNAL', message: 'Internal error encountered.' } }), { status: 500 });
         return sse('译文');
       },
@@ -233,7 +241,11 @@ test('Gemma HTTP 500 retries another key and logs length, key, latency and concu
     const result = await router.generate({ system: '翻译', prompt: 'Sensor order is not confirmed.' });
     assert.equal(result.engine, 'gemma-4-26b-a4b-it');
     assert.equal(calls.length, 2);
+    assert.equal(calls[1].at, calls[0].at);
     assert.deepEqual(calls.map(call => call.key), ['key-one', 'key-two']);
+    assert.equal(store.repositories.modelQuota.listCooldowns(0).length, 0);
+    assert.equal(lines.some(line => line.includes('上游 500 退避')), true);
+    assert.equal(lines.some(line => line.includes('等待配额窗口')), false);
     assert.match(calls[0].url, /gemma-4-26b-a4b-it/);
     assert.match(calls[1].url, /gemma-4-26b-a4b-it/);
     const logged = lines.find(line => line.includes('inputBytes='));
@@ -332,5 +344,263 @@ test('Gemma connect timeout retries another 26B key and records HTTP 408', fixtu
     assert.match(lines.find(line => line.includes('inputBytes=')), /status=408/);
     assert.equal(usage.some(row => row.status === 'interrupted' && row.httpStatus === 408), true);
     assert.equal(usage.some(row => row.status === 'succeeded' && row.httpStatus === 200), true);
+    assert.equal(store.repositories.modelQuota.listCooldowns(0).length, 0);
   } finally { console.error = original; }
+}));
+
+test('Gemma quota day follows Pacific midnight across daylight-saving changes', () => {
+  const pacific = { timeZone: 'America/Los_Angeles', hour: 0, minute: 0 };
+  for (const stamp of ['2026-10-07T15:00:00Z', '2026-10-07T07:00:00Z', '2026-03-08T09:30:00Z', '2026-11-01T08:30:00Z']) {
+    const at = Date.parse(stamp);
+    assert.equal(gemmaQuotaDay(at).dayStart, previousDailyInstant(at, pacific));
+    assert.equal(gemmaQuotaDay(at).dayEnd, nextDailyInstant(at, pacific));
+  }
+});
+
+test('HTTP 502, 503 and 408 retry the next key and do not cool it', fixture(async store => {
+  for (const status of [502, 503, 408]) {
+    let at = Date.parse('2026-10-14T16:00:00Z');
+    const calls = [];
+    const router = createGemmaTranslationRouter({
+      env: { GEMINI_API_KEY: `key-a-${status}`, GEMINI_API_KEY2: `key-b-${status}` },
+      quotaRepository: store.repositories.modelQuota, now: () => at, sleep: async ms => { at += ms; },
+      fetch: async (url, init) => {
+        calls.push(init.headers['x-goog-api-key']);
+        if (calls.length === 1) return new Response('{"error":{"code":' + status + '}}', { status });
+        return sse('译文');
+      },
+    });
+    assert.equal((await router.generate({ system: '翻译', prompt: 'Gateway ' + status })).engine, 'gemma-4-26b-a4b-it');
+    assert.deepEqual(calls, [`key-a-${status}`, `key-b-${status}`]);
+  }
+  assert.equal(store.repositories.modelQuota.listCooldowns(0).length, 0);
+}));
+
+test('same-key upstream 500 backs off 10s, 20s, then 40s without a quota cooldown', fixture(async store => {
+  let at = Date.parse('2026-10-14T16:00:00Z');
+  const calls = [], lines = [];
+  const original = console.error;
+  console.error = (...args) => { lines.push(args.join(' ')); };
+  try {
+    const router = createGemmaTranslationRouter({
+      env: { GEMINI_API_KEY: 'only-key' },
+      quotaRepository: store.repositories.modelQuota, now: () => at, sleep: async ms => { at += ms; },
+      fetch: async () => {
+        calls.push(at);
+        return new Response('{"error":{"code":500,"status":"INTERNAL"}}', { status: 500 });
+      },
+    });
+    for (const gap of [0, 10_000, 20_000, 40_000, 40_000]) {
+      const before = calls.at(-1);
+      await assert.rejects(router.generate({ system: '翻译', prompt: 'Again' }), error => /500/.test(error.message) && !/等待配额窗口/.test(error.message));
+      assert.equal(calls.at(-1) - (before ?? calls.at(-1)), gap);
+    }
+    assert.equal(calls.length, 5);
+    assert.equal(store.repositories.modelQuota.listCooldowns(0).length, 0);
+    assert.equal(lines.some(line => line.includes('上游 500 退避') && line.includes('waitMs=10000')), true);
+    assert.equal(lines.some(line => line.includes('waitMs=20000')), true);
+    assert.equal(lines.some(line => line.includes('waitMs=40000')), true);
+    assert.equal(lines.some(line => line.includes('等待配额窗口')), false);
+  } finally { console.error = original; }
+}));
+
+test('a successful response clears same-key upstream backoff and records actual token usage', fixture(async (store, dir) => {
+  let at = Date.parse('2026-10-14T16:00:00Z');
+  let fail = true;
+  const calls = [];
+  const router = createGemmaTranslationRouter({
+    env: { GEMINI_API_KEY: 'usage-key' },
+    random: () => 0,
+    quotaRepository: store.repositories.modelQuota, now: () => at, sleep: async ms => { at += ms; },
+    fetch: async () => {
+      calls.push(at);
+      if (fail) return new Response('{"error":{"code":500,"status":"INTERNAL"}}', { status: 500 });
+      return sse('译文');
+    },
+  });
+  await assert.rejects(router.generate({ system: '翻译', prompt: 'Usage' }), /500/);
+  fail = false;
+  assert.equal((await router.generate({ system: '翻译', prompt: 'Usage' })).text, '译文');
+  assert.equal(calls[1] - calls[0], 10_000);
+  fail = true;
+  await assert.rejects(router.generate({ system: '翻译', prompt: 'Usage' }), /500/);
+  assert.equal(calls[2] - calls[1], 2000);
+  await assert.rejects(router.generate({ system: '翻译', prompt: 'Usage' }), /500/);
+  assert.equal(calls[3] - calls[2], 10_000);
+  const db = new Database(path.join(dir, 'test.db'), { readonly: true });
+  try {
+    const rows = db.prepare('SELECT estimated_tokens FROM model_quota_reservations ORDER BY at').all();
+    assert.deepEqual(rows.map(row => row.estimated_tokens), [0, 30, 0, 0]);
+  } finally { db.close(); }
+}));
+
+test('missing usageMetadata records zero tokens instead of a byte estimate', fixture(async (store, dir) => {
+  const router = createGemmaTranslationRouter({
+    ...settings(store),
+    fetch: async () => new Response(`data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: '译文' }] }, finishReason: 'STOP' }] })}\r\n\r\n`),
+  });
+  await router.generate({ system: '翻译', prompt: 'a'.repeat(60_000) });
+  const db = new Database(path.join(dir, 'test.db'), { readonly: true });
+  try {
+    const row = db.prepare('SELECT estimated_tokens FROM model_quota_reservations').get();
+    assert.equal(row.estimated_tokens, 0);
+  } finally { db.close(); }
+}));
+
+test('translation limits come from env and clamp into the documented range', fixture(async store => {
+  const run = async (envExtra, gap, random = () => 0) => {
+    let at = Date.parse('2026-10-14T18:00:00Z') + gap;
+    const times = [];
+    const router = createGemmaTranslationRouter({
+      env: { GEMINI_API_KEY: 'pace-' + gap + '-' + Math.random(), ...envExtra },
+      random,
+      quotaRepository: store.repositories.modelQuota, now: () => at, sleep: async ms => { at += ms; },
+      fetch: async () => { times.push(at); return sse('译文'); },
+    });
+    await router.generate({ system: '翻译', prompt: 'One' });
+    await router.generate({ system: '翻译', prompt: 'Two' });
+    assert.equal(times[1] - times[0], gap);
+  };
+  await run({}, 2000);
+  await run({ AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MIN_MS: 'nope', AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MAX_MS: 'nope' }, 2000);
+  await run({ AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MIN_MS: '2000', AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MAX_MS: '3000' }, 3000, () => 1);
+  await run({ AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MIN_MS: '4000', AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MAX_MS: '1000' }, 4000);
+  let at = Date.parse('2026-10-14T19:00:00Z');
+  let requests = 0;
+  const capped = createGemmaTranslationRouter({
+    env: { GEMINI_API_KEY: 'daily-cap', AI_CENTER_GEMMA_TRANSLATION_REQUESTS_PER_DAY: '2', AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MIN_MS: '0', AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MAX_MS: '0' },
+    quotaRepository: store.repositories.modelQuota, now: () => at, sleep: async ms => { at += ms; },
+    fetch: async () => { requests += 1; return sse('译文'); },
+  });
+  await capped.generate({ system: '翻译', prompt: 'One' });
+  await capped.generate({ system: '翻译', prompt: 'Two' });
+  await assert.rejects(capped.generate({ system: '翻译', prompt: 'Three' }), error => error.code === 'budget-deferred' && /等待配额窗口/.test(error.message));
+  assert.equal(requests, 2);
+}));
+
+test('same-key spacing is a random gap between the configured bounds', () => {
+  assert.equal(gemmaIntervalMs(2000, 3000, () => 0), 2000);
+  assert.equal(gemmaIntervalMs(2000, 3000, () => 0.5), 2500);
+  assert.equal(gemmaIntervalMs(2000, 3000, () => 1), 3000);
+  assert.equal(gemmaIntervalMs(3000, 2000, () => 0.2), 3000);
+  assert.equal(gemmaBackoffMs(1, 10_000, 40_000), 10_000);
+  assert.equal(gemmaBackoffMs(2, 10_000, 40_000), 20_000);
+  assert.equal(gemmaBackoffMs(3, 10_000, 40_000), 40_000);
+  assert.equal(gemmaBackoffMs(6, 10_000, 40_000), 40_000);
+  assert.equal(gemmaBackoffMs(1, 0, 40_000), 0);
+  assert.deepEqual(gemmaRetryStatuses(undefined), [500, 502, 503, 408]);
+  assert.deepEqual(gemmaRetryStatuses('504, 500, no, 504'), [504, 500]);
+  assert.deepEqual(gemmaRetryStatuses('nope'), [500, 502, 503, 408]);
+  const policy = gemmaTranslationPolicy({
+    AI_CENTER_GEMMA_TRANSLATION_REQUESTS_PER_MINUTE: '25',
+    AI_CENTER_GEMMA_TRANSLATION_MAX_RETRIES: '4',
+    AI_CENTER_GEMMA_TRANSLATION_BACKOFF_BASE_MS: '1000',
+    AI_CENTER_GEMMA_TRANSLATION_BACKOFF_CAP_MS: '100',
+    AI_CENTER_GEMMA_TRANSLATION_RETRY_STATUSES: '500,502',
+  });
+  assert.equal(policy.requestsPerMinute, 25);
+  assert.equal(policy.maxRetries, 4);
+  assert.equal(policy.backoffBaseMs, 1000);
+  assert.equal(policy.backoffCapMs, 1000);
+  assert.deepEqual(policy.retryStatuses, [500, 502]);
+});
+
+test('HTTP 504 does not switch keys unless it is configured as retryable', fixture(async store => {
+  let at = Date.parse('2026-10-14T20:00:00Z');
+  const blocked = [];
+  const router = createGemmaTranslationRouter({
+    env: { GEMINI_API_KEY: 'key-a', GEMINI_API_KEY2: 'key-b' },
+    quotaRepository: store.repositories.modelQuota, now: () => at, sleep: async ms => { at += ms; },
+    fetch: async (url, init) => { blocked.push(init.headers['x-goog-api-key']); return new Response('{"error":{"code":504}}', { status: 504 }); },
+  });
+  await assert.rejects(router.generate({ system: '翻译', prompt: 'Gateway 504' }), /504/);
+  assert.deepEqual(blocked, ['key-a']);
+  const calls = [];
+  const allowed = createGemmaTranslationRouter({
+    env: { GEMINI_API_KEY: 'key-c', GEMINI_API_KEY2: 'key-d', AI_CENTER_GEMMA_TRANSLATION_RETRY_STATUSES: '504' },
+    quotaRepository: store.repositories.modelQuota, now: () => at, sleep: async ms => { at += ms; },
+    fetch: async (url, init) => {
+      calls.push(init.headers['x-goog-api-key']);
+      if (calls.length === 1) return new Response('{"error":{"code":504}}', { status: 504 });
+      return sse('译文');
+    },
+  });
+  assert.equal((await allowed.generate({ system: '翻译', prompt: 'Gateway 504' })).text, '译文');
+  assert.deepEqual(calls, ['key-c', 'key-d']);
+  assert.equal(calls.length === 2 && at === Date.parse('2026-10-14T20:00:00Z'), true);
+}));
+
+test('max retries and per-key request rate come from env', fixture(async store => {
+  let at = Date.parse('2026-10-14T21:00:00Z');
+  const calls = [];
+  const router = createGemmaTranslationRouter({
+    env: {
+      GEMINI_API_KEY: 'rate-a', GEMINI_API_KEY2: 'rate-b', GEMINI_API_KEY3: 'rate-c',
+      AI_CENTER_GEMMA_TRANSLATION_MAX_RETRIES: '1',
+      AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MIN_MS: '0', AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MAX_MS: '0',
+    },
+    quotaRepository: store.repositories.modelQuota, now: () => at, sleep: async ms => { at += ms; },
+    fetch: async (url, init) => { calls.push(init.headers['x-goog-api-key']); return new Response('{"error":{"code":500}}', { status: 500 }); },
+  });
+  await assert.rejects(router.generate({ system: '翻译', prompt: 'Stop after one retry' }), /500/);
+  assert.deepEqual(calls, ['rate-a', 'rate-b']);
+  let pacedAt = Date.parse('2026-10-14T21:30:00Z');
+  const times = [];
+  const paced = createGemmaTranslationRouter({
+    env: {
+      GEMINI_API_KEY: 'rpm-key',
+      AI_CENTER_GEMMA_TRANSLATION_REQUESTS_PER_MINUTE: '2',
+      AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MIN_MS: '0', AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MAX_MS: '0',
+    },
+    quotaRepository: store.repositories.modelQuota, now: () => pacedAt, sleep: async ms => { pacedAt += ms; },
+    fetch: async () => { times.push(pacedAt); return sse('译文'); },
+  });
+  await paced.generate({ system: '翻译', prompt: 'One' });
+  await paced.generate({ system: '翻译', prompt: 'Two' });
+  await paced.generate({ system: '翻译', prompt: 'Three' });
+  assert.equal(times[1] - times[0], 0);
+  assert.equal(times[2] - times[0], 60_000);
+}));
+
+test('configured backoff base and cap replace the 10s 20s 40s ladder', fixture(async store => {
+  let at = Date.parse('2026-10-14T22:00:00Z');
+  const calls = [];
+  const router = createGemmaTranslationRouter({
+    env: {
+      GEMINI_API_KEY: 'backoff-key',
+      AI_CENTER_GEMMA_TRANSLATION_BACKOFF_BASE_MS: '1000',
+      AI_CENTER_GEMMA_TRANSLATION_BACKOFF_CAP_MS: '2000',
+      AI_CENTER_GEMMA_TRANSLATION_MAX_RETRIES: '0',
+      AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MIN_MS: '0',
+      AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MAX_MS: '0',
+    },
+    quotaRepository: store.repositories.modelQuota, now: () => at, sleep: async ms => { at += ms; },
+    fetch: async () => { calls.push(at); return new Response('{"error":{"code":500}}', { status: 500 }); },
+  });
+  for (const gap of [0, 1000, 2000, 2000]) {
+    const before = calls.at(-1);
+    await assert.rejects(router.generate({ system: '翻译', prompt: 'Ladder' }), /500/);
+    assert.equal(calls.at(-1) - (before ?? calls.at(-1)), gap);
+  }
+}));
+
+test('a failed response still records usageMetadata and ignores a missing one', fixture(async (store, dir) => {
+  let at = Date.parse('2026-10-14T23:00:00Z');
+  let mode = 'usage';
+  const router = createGemmaTranslationRouter({
+    env: { GEMINI_API_KEY: 'fail-usage', AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MIN_MS: '0', AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MAX_MS: '0' },
+    quotaRepository: store.repositories.modelQuota, now: () => at, sleep: async ms => { at += ms; },
+    fetch: async () => {
+      if (mode === 'usage') return new Response(JSON.stringify({ error: { code: 500 }, usageMetadata: { totalTokenCount: 17 } }), { status: 500 });
+      return new Response('{"error":{"code":500}}', { status: 500 });
+    },
+  });
+  await assert.rejects(router.generate({ system: '翻译', prompt: 'With usage' }), /500/);
+  mode = 'bare';
+  await assert.rejects(router.generate({ system: '翻译', prompt: 'Without usage' }), /500/);
+  const db = new Database(path.join(dir, 'test.db'), { readonly: true });
+  try {
+    const rows = db.prepare('SELECT estimated_tokens FROM model_quota_reservations ORDER BY at').all();
+    assert.deepEqual(rows.map(row => row.estimated_tokens), [17, 0]);
+  } finally { db.close(); }
 }));
