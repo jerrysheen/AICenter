@@ -2,7 +2,7 @@ import {attachDailyProcessLog} from '../../../packages/runtime/src/process-log.j
 import { audioTranscriptionManifest, createAudioTranscriptionJobHandlers } from '../../../packages/runtime/src/audio-transcription-job.js';
 import {createGeminiArticleAdmission,startGeminiQuotaProbe} from '../../../packages/runtime/src/gemini-article-admission.js';
 import {resolveGoogleHourlyAdmissionModels} from '../../../packages/harness/src/llm-route.js';
-import { backfillUntranslatedFeedTranslations, createFeedTranslationJobHandlers, feedTranslationManifest } from '../../../packages/runtime/src/feed-translation-module.js';
+import { backfillUntranslatedFeedTranslations, createFeedTranslationJobHandlers, feedTranslationManifest, translationStartupBackfillLimit } from '../../../packages/runtime/src/feed-translation-module.js';
 import { createHardwareArtifactStore } from '../../../packages/connectors/src/hardware-artifacts.js';
 import { legacyPriceSnapshot } from '../../../packages/connectors/src/trendforce-prices.js';
 import { createHardwarePriceService } from '../../../packages/domain/src/hardware-price-service.js';
@@ -695,13 +695,16 @@ export function createAiCenterWorker(options = {}) {
       quotaProbe ||= startGeminiQuotaProbe([articleAdmission, hourlyAdmission].filter(Boolean), { env });
       schedulePromise ||= scheduler.start();
       runPromise ||= runner.start();
+      const backfillLimit = translationStartupBackfillLimit(env.AI_CENTER_TRANSLATION_BACKFILL_LIMIT);
       translationBackfill ||= backfillUntranslatedFeedTranslations({
         store,
         feedService,
         workspaceId: 'local',
+        limit: backfillLimit,
         excludeSourceIds: [...(flashSources?.ids || [])],
       }).then((jobs) => {
-        console.log(`[worker] translation-backfill enqueued=${Array.isArray(jobs) ? jobs.length : 0}`);
+        const enqueued = Array.isArray(jobs) ? jobs.length : 0;
+        console.log(`[worker] translation-backfill enqueued=${enqueued} limit=${backfillLimit}`);
       }).catch((error) => {
         console.error('[worker] translation-backfill failed:', error instanceof Error ? error.message : error);
       });

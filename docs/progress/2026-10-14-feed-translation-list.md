@@ -10,7 +10,7 @@
 
 `feed.translation.run` 以前在正文超过 20000 字时直接不建任务；同步翻译路径还会跳过被截断的条目。Gemma 本来就按 2400 字分段。现在入队和保存上限改为 20 万字符，任务里带全文，保存全文译文和全文哈希。超过 20 万字的仍不入队。不把原文前缀当成全文译文。列是 TEXT，不新增 migration。
 
-Worker 启动时补入还没有中文译文、且需要翻译的社媒条目，最多 80 条，超过 2 万字的排在前面。已有未完成的相同任务不重复创建。快讯来源跳过。也可以手动运行：
+Worker 启动时补入还没有中文译文、且需要翻译的社媒条目。默认 80 条，`AI_CENTER_TRANSLATION_BACKFILL_LIMIT` 可以改小，或设为 0 关闭这次启动的补入；即使设得更大也停在 80。五把密钥每天大约 5000 次调用，长文还要按 2400 字分段，所以启动不能一次排进更多。日志是 `[worker] translation-backfill enqueued=N limit=M`。已有未完成的相同任务不重复创建。快讯来源跳过。超过 2 万字的排在前面。手动补入可以另给上限：
 
 ```text
 node --env-file=.env scripts/backfill-feed-translations.mjs [--limit 80]

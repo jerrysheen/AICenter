@@ -10,7 +10,7 @@
 
 ```text
 data/imports/
-data/blobs/
+data/blobs/（不含 hardware-prices 与 etf-whale）
 knowledge/
 config/markets.json
 config/tags.json
@@ -29,11 +29,15 @@ Browser Profile
 *.db-wal / *.db-shm
 .ai-data/ / runtime/ / logs/ / processes.json
 签名材料与本机缓存
+data/blobs/hardware-prices/
+data/blobs/etf-whale/
 ```
 
 SQLite 仍是业务真源，采集、译文、标签、笔记、持仓、设备授权及任务状态继续写入本地数据库。只停止 Git 跟踪，不删除、重建或冻结用户数据库；Schema 与 migration 仍进入 Git。不启用 LFS。数据库备份和换机恢复独立于 Git：使用 SQLite 在线 backup 生成一致备份，目标服务启动前恢复；不得仅复制运行中的 `.db` 而遗漏 WAL。
 
 在另一台已有部署的主机拉取停止跟踪数据库的提交前，应先备份它自己的数据库；Git 的删除条目可能移除该主机的旧受跟踪文件，拉取后需在服务停止时恢复本地数据库。已有远端历史中的旧数据库不在本轮重写范围内，禁止为此强推或清理已发布历史。
+
+`data/blobs/etf-whale/` 同样停止跟踪。拉取那次提交会从磁盘删掉这些曾经被跟踪的原始响应。页面和重算只读 SQLite，不打开这些文件，所以删掉不影响 `/etf-whale`。要留下原始响应时：先把目录复制到仓库外，再 `git restore --source=HEAD -- data/blobs/etf-whale`，等 `git status --porcelain` 为空并且快进完成之后，把备份拷回原路径。拷回的文件已被忽略。自动部署的备份只有数据库、WAL、SHM 和 `.env`，不含这个目录。增量同步在已有成功记录上会跳过，不会把历史区间重新下载回来。
 
 未来抽取“只包含工具和中立模板的 Core”是独立工作；不要为了那个未来目标删掉当前 Instance 的配置、资料或本地数据库。
 
@@ -493,7 +497,7 @@ git status --short
 
 当前私有仓库应确认 Schema / migration、Knowledge 文件、个人 Catalog 和必要导入资料已进入 Git；确认本地 SQLite 已备份且不受 Git 跟踪，同时没有把以下数据库、主机秘密或瞬时状态加入 Git：
 
-硬件报价的原页 HTML／legacy-text 冻结证据位于 `data/blobs/hardware-prices/`，与运行 SQLite 一起在本机备份和恢复，不通过 Git 分发原站完整页面；忽略规则仅排除这个子目录，不删除附件或改变数据库相对路径。其余允许版本化的 Instance 附件规则保持。
+硬件报价的原页 HTML／legacy-text 冻结证据位于 `data/blobs/hardware-prices/`，与运行 SQLite 一起在本机备份和恢复，不通过 Git 分发原站完整页面；忽略规则仅排除这个子目录，不删除附件或改变数据库相对路径。ETF 鲸鱼的原始响应位于 `data/blobs/etf-whale/`（上交所 JSON、深交所 XLSX、腾讯前复权日线、参考站样本）。`etf.whale.sync` 会重写这些文件；页面和重算只读 SQLite 里的份额、行情和日结果。忽略这个子目录，避免同步把工作区弄脏。库里的 `blob_path` 和 `content_hash` 仍是相对路径和哈希，不改表。其余允许版本化的 Instance 附件规则保持。
 
 ```text
 .env
@@ -543,7 +547,7 @@ config/*.default.json
 config/searxng-settings.yml
 
 data/imports/
-data/blobs/
+data/blobs/（不含 hardware-prices 与 etf-whale）
 knowledge/
 config/markets.json
 config/tags.json

@@ -20,7 +20,7 @@
 2. `git status --porcelain` 有输出就放弃。`package-lock.json` 被 `npm install` 改过也放弃，并且不会自动还原。
 3. 对比文件列表里出现 `.env` 就放弃。`.env.example` 可以部署。
 4. 当前 `HEAD` 必须是目标提交的祖先，然后 `git merge --ff-only`。不能快进就放弃，不用 `reset` 把工作区拨过去。
-5. 快进前，把数据库、`*-wal`、`*-shm` 和 `.env` 复制到 Instance `data/deploy-backups/<时间戳>/`。这是文件副本，服务当时还在跑。
+5. 快进前，把数据库、`*-wal`、`*-shm` 和 `.env` 复制到 Instance `data/deploy-backups/<时间戳>/`。这是文件副本，服务当时还在跑。不含 `data/blobs/etf-whale/`。这个目录已停止跟踪；拉取删除它之前要按 `progress/2026-10-14-etf-whale-blobs-untrack.md` 自行备份，快进完成后再拷回。
 6. `package-lock.json` 变了才运行 `npm ci`。
 7. 变更如果都在 `apps/web/public/` 下面，不重启。其他文件会重启 Web 和 Worker。
 8. 用启动器已有的健康检查轮询，最长 90 秒。失败就 `git reset --hard` 回到上一个提交，需要的话再 `npm ci`，重启后再检查一次。

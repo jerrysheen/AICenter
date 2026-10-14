@@ -3,6 +3,14 @@ import { TRANSLATION_MAX_ATTEMPTS } from '../../database/src/translation-retry.j
 import { needsZhLocalization } from '../../domain/src/localize-texts.js';
 
 export const TRANSLATION_BACKFILL_LIMIT = 80;
+export const TRANSLATION_BACKFILL_STARTUP_MAX = 80;
+
+export function translationStartupBackfillLimit(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return TRANSLATION_BACKFILL_LIMIT;
+  const raw = Number(value);
+  if (!Number.isInteger(raw) || raw < 0) return TRANSLATION_BACKFILL_LIMIT;
+  return Math.min(raw, TRANSLATION_BACKFILL_STARTUP_MAX);
+}
 
 export const feedTranslationManifest = Object.freeze({
   id: 'feed.translation', version: '1.0.0',
@@ -35,8 +43,11 @@ export async function backfillUntranslatedFeedTranslations({
   store, feedService, workspaceId = 'local', limit = TRANSLATION_BACKFILL_LIMIT, excludeSourceIds = [],
 } = {}) {
   const repo = store?.repositories?.feed;
-  const cap = Math.max(1, Math.min(Number(limit) || TRANSLATION_BACKFILL_LIMIT, 200));
-  if (!repo?.listUntranslatedFeedBodies || !feedService?.localizeTexts) return [];
+  const requested = Number(limit);
+  const cap = Number.isInteger(requested) && requested >= 0
+    ? Math.min(requested, 200)
+    : TRANSLATION_BACKFILL_LIMIT;
+  if (cap === 0 || !repo?.listUntranslatedFeedBodies || !feedService?.localizeTexts) return [];
   const rows = repo.listUntranslatedFeedBodies(workspaceId, {
     limit: cap,
     scan: Math.min(500, Math.max(cap * 5, cap)),

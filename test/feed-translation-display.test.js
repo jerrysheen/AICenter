@@ -5,8 +5,19 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { createStore } from '../packages/database/src/index.js';
 import { createFeedService } from '../packages/domain/src/feed-service.js';
-import { backfillUntranslatedFeedTranslations, createFeedTranslationJobHandlers, enqueueOriginalTranslations } from '../packages/runtime/src/feed-translation-module.js';
+import { backfillUntranslatedFeedTranslations, createFeedTranslationJobHandlers, enqueueOriginalTranslations, translationStartupBackfillLimit } from '../packages/runtime/src/feed-translation-module.js';
 import { createJobRunner } from '../packages/runtime/src/job-runner.js';
+
+test('worker startup backfill stays within the daily translation budget', () => {
+  assert.equal(translationStartupBackfillLimit(undefined), 80);
+  assert.equal(translationStartupBackfillLimit(''), 80);
+  assert.equal(translationStartupBackfillLimit('40'), 40);
+  assert.equal(translationStartupBackfillLimit('0'), 0);
+  assert.equal(translationStartupBackfillLimit('80'), 80);
+  assert.equal(translationStartupBackfillLimit('81'), 80);
+  assert.equal(translationStartupBackfillLimit('5000'), 80);
+  assert.equal(translationStartupBackfillLimit('nope'), 80);
+});
 
 function hash(value) {
   return createHash('sha256').update(String(value)).digest('hex');
@@ -158,6 +169,7 @@ test('long posts are queued in full and a backfill does not duplicate open jobs'
       workspaceId: 'local', itemId: longItem.id, targetLang: 'zh', sourceHash: saved.sourceHash,
       translatedText: saved.translatedText, engine: saved.engine,
     }, saved.updatedAt);
+    assert.deepEqual(await backfillUntranslatedFeedTranslations({ store, feedService: service, workspaceId: 'local', limit: 0 }), []);
     const backfill = await backfillUntranslatedFeedTranslations({ store, feedService: service, workspaceId: 'local', limit: 10 });
     assert.equal(backfill.length, 1);
     assert.equal(backfill[0].input.items[0].id, longItem.id);
