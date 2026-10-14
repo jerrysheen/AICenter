@@ -25,6 +25,8 @@ data/*
 !data/blobs/**
 # Raw price-page evidence is restored with the local database, not distributed as code.
 data/blobs/hardware-prices/
+# etf.whale.sync rewrites these raw responses. Parsed rows stay in SQLite.
+data/blobs/etf-whale/
 data/**/*.db
 data/**/*.sqlite
 data/**/*.sqlite3
