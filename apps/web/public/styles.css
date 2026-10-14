@@ -2338,11 +2338,16 @@ button.source-card:active { transform: scale(0.985); background: var(--backgroun
   font-weight: 400;
 }
 .tree-list .reading-fold > summary.news-fold-toggle {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
+  display: inline-flex;
+  align-items: center;
+  min-width: 44px;
+  min-height: 32px;
+  margin: 4px 0 0;
+  padding: 0;
+  color: var(--brand);
+  font-size: 13px;
+  line-height: 32px;
+  cursor: pointer;
 }
 .home-module-head {
   display: flex;

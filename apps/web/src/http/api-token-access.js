@@ -40,6 +40,7 @@ const PATH_PATTERNS = [
   /^\/api\/v1\/hardware-prices\/series\/[a-f0-9]{64}$/,
   /^\/api\/v1\/hardware-prices\/snapshots\/[0-9a-f-]{36}$/i,
   /^\/api\/v1\/content-items\/(?:[0-9a-f-]{36}|[A-Za-z0-9_-]+:[^/]+)$/i,
+  /^\/api\/v1\/content-items\/official\/[^/]+$/i,
   /^\/api\/v1\/(?:content-items|feed\/items)\/[^/]+\/original$/i,
   /^\/api\/v1\/posts\/[0-9a-f-]+$/i,
   /^\/api\/v1\/etf-whale\/etfs\/\d{6}$/,

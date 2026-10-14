@@ -784,7 +784,11 @@ function postNeedsChineseTranslation(post) {
 function mergeLocalizations(payload) {
   const incoming = payload?.localizations;
   if (!incoming || typeof incoming !== 'object') return;
-  state.sourceLocalizations = { ...state.sourceLocalizations, ...incoming };
+  const next = { ...incoming };
+  for (const row of Object.values(incoming)) {
+    if (row?.id && next[row.id] == null) next[row.id] = row;
+  }
+  state.sourceLocalizations = { ...state.sourceLocalizations, ...next };
   bumpFeedView();
 }
 
@@ -7714,6 +7718,7 @@ async function loadHomeBoard(path, { refresh = false, token = state.homeLoadToke
       state.homeBoardError = 'GET /api/v1/static-signals/board · 响应没有 board';
     } else {
       state.homeBoard = payload.board;
+      mergeLocalizations(payload);
       state.homeBoardError = '';
     }
   } catch (error) {
@@ -8904,7 +8909,16 @@ function renderArticlePage() {
     Object.assign(document.createElement('span'), { textContent: `${post.time || (post.publishedAt ? formatTime(post.publishedAt) : '时间未知')} 发布` }),
     Object.assign(document.createElement('span'), { className: 'kind-tag', textContent: feedKindLabel(post) }),
   );
-  const completeLabel = post.articleKind==='report-intro' ? '报告简介' : post.complete === false ? (post.bodyScope || '仅索引') : '正文完整';
+  if (official && post?.sourceUrl && !state.officialBodies[post.id] && state.session) {
+    state.officialBodies[post.id] = { status: 'loading' };
+    loadOfficialArticle(post);
+  }
+  const officialBody = post.kind === 'official' ? state.officialBodies[post.id] : null;
+  const completeLabel = post.articleKind === 'report-intro' ? '报告简介'
+    : officialBody?.status === 'ready' ? '正文完整'
+      : officialBody?.status === 'loading' ? '正在获取'
+        : post.complete === false ? (post.bodyScope || '仅索引')
+          : '正文完整';
   meta.append(Object.assign(document.createElement('span'), { className: 'kind-tag official', textContent: completeLabel }));
   meta.querySelector('button').addEventListener('click', () => {
     if (post.platform === 'official') openPage('source', `policy.${post.author}`);
@@ -9095,6 +9109,30 @@ function renderArticlePage() {
   if (shouldQueueTranslation(post)) {
     requestTranslate(post).catch((error) => showToast(error.message));
   }
+}
+
+async function loadOfficialArticle(post) {
+  const id = post?.release?.releaseId || post?.id;
+  if (!id) return;
+  try {
+    const payload = await api(`/api/v1/content-items/official/${encodeURIComponent(id)}`);
+    const item = payload.item || {};
+    if (item.translation?.text) {
+      state.sourceLocalizations[id] = {
+        ...(state.sourceLocalizations[id] || {}),
+        id,
+        text: item.translation.text,
+        pending: false,
+        status: 'ready',
+        sourceText: item.originalTitle || post.release?.title || '',
+      };
+    }
+    const text = String(item.body || '').trim();
+    state.officialBodies[id] = text ? { status: 'ready', text } : { status: 'index' };
+  } catch (error) {
+    state.officialBodies[id] = { status: 'failed', error: error instanceof Error ? error.message : '获取失败' };
+  }
+  renderArticlePage();
 }
 
 async function fetchOfficialBody(post) {
@@ -13975,7 +14013,8 @@ async function autoLocalizeSources() {
         }
       }
     }
-  } catch {
+  } catch (error) {
+    if (/仍在后台/.test(String(error?.message || ''))) return;
     const failedIds = new Set(waiting.map((row) => row.id));
     for (const [sourceId, row] of Object.entries(state.sourceLocalizations)) {
       if (!failedIds.has(row?.id) || row.text) continue;

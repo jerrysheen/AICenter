@@ -63,6 +63,7 @@ test('allowlist is GET-only and leaves admin paths closed', () => {
     ['GET', '/api/v1/feed/media'],
     ['GET', '/api/v1/feed/media/article'],
     ['GET', `/api/v1/content-items/${randomUUID()}`],
+    ['GET', '/api/v1/content-items/official/2026-20957'],
     ['GET', '/api/v1/investor-discussion'],
     ['GET', '/api/v1/markets'],
     ['GET', '/api/v1/markets/search'],

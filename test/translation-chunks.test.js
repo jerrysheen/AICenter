@@ -228,7 +228,7 @@ test('backfill records skip reasons and still queues a long post that only has a
       store, feedService: service, workspaceId: 'local', limit: 80,
       excludeSourceIds: ['xueqiu:home:livenews'],
     });
-    const queued = new Set(result.jobs.map((job) => job.input.items[0].id));
+    const queued = new Set(result.jobs.flatMap((job) => job.input.items.map((item) => item.id)));
     assert.equal(queued.has(fresh.id), true);
     assert.equal(queued.has(titled.id), true);
     assert.equal(queued.has(stale.id), true);

@@ -984,6 +984,7 @@ export function createInformationTreePage(host) {
     const details=document.createElement('details');details.className='reading-fold';details.dataset.behavior='item.expand';details.open=false;
     if(readingOpen.has(id)){details.dataset.expandQuiet='1';details.open=true;setTimeout(()=>{delete details.dataset.expandQuiet;},0);}
     const summary=document.createElement('summary');summary.className='news-fold-toggle';summary.textContent='展开';
+    summary.addEventListener('click', (event) => event.stopPropagation());
     const panel=el('div','','reading-fold-body');details.append(summary,panel);
     let loaded=false,slow=0;
     async function load() {
@@ -1025,7 +1026,9 @@ export function createInformationTreePage(host) {
       if(canReadSource(view)){const sourceButton=button('原文',()=>host.readSavedSource(view));sourceButton.dataset.behavior='source.original';panel.append(sourceButton);}
       appendReadingDetail(panel, seed, edition);
     }
-    details.addEventListener('toggle',load);
+    function syncFoldLabel(){summary.textContent=details.open?'收起':'展开';}
+    details.addEventListener('toggle',()=>{syncFoldLabel();return load();});
+    syncFoldLabel();
     if(details.open)void load();
     return details;
   }

@@ -2,7 +2,7 @@ import {attachDailyProcessLog} from '../../../packages/runtime/src/process-log.j
 import { audioTranscriptionManifest, createAudioTranscriptionJobHandlers } from '../../../packages/runtime/src/audio-transcription-job.js';
 import {createGeminiArticleAdmission,startGeminiQuotaProbe} from '../../../packages/runtime/src/gemini-article-admission.js';
 import {resolveGoogleHourlyAdmissionModels} from '../../../packages/harness/src/llm-route.js';
-import { backfillUntranslatedFeedTranslations, createFeedTranslationChunkStore, createFeedTranslationJobHandlers, feedTranslationManifest, formatTranslationBackfillLog, repairEllipsisLeadTexts, translationBackfillConcurrency, translationStartupBackfillLimit } from '../../../packages/runtime/src/feed-translation-module.js';
+import { backfillUntranslatedFeedTranslations, createFeedTranslationChunkStore, createFeedTranslationJobHandlers, demoteQueuedHashTranslationJobs, feedTranslationManifest, formatTranslationBackfillLog, repairEllipsisLeadTexts, translationBackfillConcurrency, translationStartupBackfillLimit } from '../../../packages/runtime/src/feed-translation-module.js';
 import { createHardwareArtifactStore } from '../../../packages/connectors/src/hardware-artifacts.js';
 import { legacyPriceSnapshot } from '../../../packages/connectors/src/trendforce-prices.js';
 import { createHardwarePriceService } from '../../../packages/domain/src/hardware-price-service.js';
@@ -709,6 +709,12 @@ export function createAiCenterWorker(options = {}) {
         Number(env.AI_CENTER_WORKER_TRANSLATION_CONCURRENCY || 5),
       );
       console.log(`[worker] translation-slots limit=${Number(env.AI_CENTER_WORKER_TRANSLATION_CONCURRENCY || 5)} backfillCap=${backfillCap}`);
+      try {
+        const demoted = demoteQueuedHashTranslationJobs(store, 'local');
+        console.log(`[worker] translation-flood demoted=${demoted}`);
+      } catch (error) {
+        console.error('[worker] translation-flood failed:', error instanceof Error ? error.message : error);
+      }
       translationBackfill ||= backfillUntranslatedFeedTranslations({
         store,
         feedService,

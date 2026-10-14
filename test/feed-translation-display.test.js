@@ -7,7 +7,7 @@ import { createStore } from '../packages/database/src/index.js';
 import { createFeedService, listNeedsTranslation, pickReaderTranslation } from '../packages/domain/src/feed-service.js';
 import { createRuntimeService } from '../packages/domain/src/runtime-service.js';
 import { translationLooksTruncated } from '../packages/domain/src/localize-texts.js';
-import { backfillUntranslatedFeedTranslations, createFeedTranslationJobHandlers, enqueueOriginalTranslations, repairEllipsisLeadTexts, translationBackfillConcurrency, translationStartupBackfillLimit, TRANSLATION_BACKFILL_PRIORITY } from '../packages/runtime/src/feed-translation-module.js';
+import { backfillUntranslatedFeedTranslations, createFeedTranslationJobHandlers, demoteQueuedHashTranslationJobs, enqueueOriginalTranslations, repairEllipsisLeadTexts, translationBackfillConcurrency, translationStartupBackfillLimit, TRANSLATION_BACKFILL_PRIORITY, TRANSLATION_INTERACTIVE_PRIORITY } from '../packages/runtime/src/feed-translation-module.js';
 import { createJobRunner, translationClaimMinPriority } from '../packages/runtime/src/job-runner.js';
 
 test('worker startup backfill stays within the daily translation budget', () => {
@@ -526,11 +526,12 @@ test('backfill requeues a cut translation under 600 characters and drops a prepe
       translationPort: { translate: async () => { throw new Error('not in this test'); } },
     });
     const again = await backfillUntranslatedFeedTranslations({ store, feedService: service, workspaceId: 'local', limit: 10 });
-    const queued = new Set(again.jobs.map((job) => job.input.items[0].id));
+    const queuedItems = again.jobs.flatMap((job) => job.input.items);
+    const queued = new Set(queuedItems.map((item) => item.id));
     assert.equal(queued.has(jeffItem.id), true);
     assert.equal(queued.has(xpeng.id), true);
     assert.equal(feed.getContentItem('local', xpeng.id).body, article);
-    assert.equal(again.jobs.find((job) => job.input.items[0].id === xpeng.id).input.items[0].text, article);
+    assert.equal(queuedItems.find((item) => item.id === xpeng.id).text, article);
   } finally {
     store.close();
   }
@@ -583,6 +584,46 @@ test('ellipsis lead is removed from stored bodies and translations and from the 
     const backfill = await backfillUntranslatedFeedTranslations({ store, feedService: service, workspaceId: 'local', limit: 10 });
     assert.equal(backfill.jobs.some((job) => job.input.items[0].id === item.id), false);
     assert.equal(backfill.jobs.some((job) => job.input.items[0].id === bodyItem.id), false);
+  } finally {
+    store.close();
+  }
+});
+
+test('media block translations share jobs, and a hashed one-unit job can be demoted then promoted', async () => {
+  const store = createStore(':memory:');
+  try {
+    const service = createFeedService({
+      legacyRepository: store, feedRepository: store.repositories.feed, sourcePort: sourcePort(),
+      translationPort: { translate: async () => { throw new Error('not in this test'); } },
+    });
+    const units = Array.from({ length: 31 }, (_, index) => ({
+      id: `media-block-${index}`,
+      text: `Capacity plan ${index} remains open for review today.`,
+    }));
+    const jobs = await enqueueOriginalTranslations({
+      store, feedService: service, workspaceId: 'local', units, priority: TRANSLATION_BACKFILL_PRIORITY,
+    });
+    assert.equal(jobs.length, 2);
+    assert.equal(jobs[0].priority, TRANSLATION_BACKFILL_PRIORITY);
+    assert.equal(jobs[0].input.items.length, 30);
+    assert.equal(jobs[1].input.items.length, 1);
+    const hashedId = `h:${'ab'.repeat(32)}`;
+    const hashedText = 'A hashed media block stays in its own flood job until restart.';
+    const hashed = await enqueueOriginalTranslations({
+      store, feedService: service, workspaceId: 'local', priority: 0,
+      units: [{ id: hashedId, text: hashedText }],
+    });
+    assert.equal(hashed.length, 1);
+    assert.equal(hashed[0].input.items.length, 1);
+    assert.equal(hashed[0].priority, 0);
+    assert.equal(demoteQueuedHashTranslationJobs(store, 'local'), 1);
+    assert.equal(store.listOpenJobs('feed.translation.run').find((job) => job.id === hashed[0].id).priority, TRANSLATION_BACKFILL_PRIORITY);
+    const promoted = await enqueueOriginalTranslations({
+      store, feedService: service, workspaceId: 'local', priority: TRANSLATION_INTERACTIVE_PRIORITY,
+      units: [{ id: hashedId, text: hashedText }],
+    });
+    assert.equal(promoted[0].id, hashed[0].id);
+    assert.equal(store.listOpenJobs('feed.translation.run').find((job) => job.id === hashed[0].id).priority, TRANSLATION_INTERACTIVE_PRIORITY);
   } finally {
     store.close();
   }

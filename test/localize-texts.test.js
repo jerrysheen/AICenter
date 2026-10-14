@@ -37,6 +37,15 @@ test('translationLooksTruncated uses length ratio and a cut ending', () => {
   assert.equal(translationLooksTruncated(han, 40), true);
   assert.equal(translationLooksTruncated(han, 400), false);
   assert.equal(translationLooksTruncated(jeff, jeff.length, `${'译文已经写完。'.repeat(40)}`), false);
+  const notice = 'SCIO holds a press conference on the economic situation.';
+  assert.ok(notice.length < 80);
+  assert.equal(translationLooksTruncated(notice, 16, '国新办就经济形势举行新闻发布会'), false);
+  const title = 'The State Council Information Office will hold a press conference on the current economic situation.';
+  const titled = '国务院新闻办公室将就当前经济形势举行新闻发布会并回答提问';
+  assert.ok(title.length > 80 && title.length < 160);
+  assert.ok(titled.length * 4 >= title.length);
+  assert.equal(translationLooksTruncated(title, titled.length, titled), false);
+  assert.equal(translationLooksTruncated(notice, 8, '国新办通知…'), true);
 });
 
 test('localizationItemId hashes identifiers longer than 128 characters', () => {

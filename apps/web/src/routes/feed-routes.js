@@ -5,6 +5,64 @@ import { createPreparedSlotStore } from '../http/prepared-slots.js';
 import { sendOffthreadJson } from '../http/offthread-json.js';
 import { STORED_FEED_CACHE_PROVIDERS } from '../http/stale-read-cache.js';
 import { FEED_FLASH_LIMIT, FEED_FLASH_SNAPSHOT_KEY, FEED_TRENDFORCE_SNAPSHOT_KEY, feedPrebuiltSlot, logFeedSlotMiss } from '../../../../packages/runtime/src/web-snapshot-jobs.js';
+import { collectLocalizationUnits } from '../../../../packages/domain/src/localize-texts.js';
+
+export function projectOfficialContentItem(row, localization = null, detail = null) {
+  const releaseId = String(row?.releaseId || row?.eventId || '').trim();
+  if (!releaseId) return null;
+  const translated = String(localization?.text || '').trim();
+  const body = String(detail?.bodyText || '').trim();
+  return {
+    id: `official/${releaseId}`,
+    provider: 'official',
+    externalId: releaseId,
+    title: translated || row.title || '',
+    originalTitle: row.title || '',
+    body,
+    summary: [row.authority, row.documentNumber].filter(Boolean).join(' · '),
+    sourceUrl: row.sourceUrl || '',
+    authorName: row.authority || '',
+    publishedAt: row.publishedAt || row.scheduledAt || null,
+    contentLevel: body ? 'full' : 'summary_only',
+    kind: 'official',
+    translation: translated ? { text: translated, engine: localization?.engine || '', targetLang: 'zh' } : null,
+    translationStatus: localization?.status || (translated ? 'ready' : 'pending'),
+  };
+}
+
+export async function readOfficialContentItem(services, workspaceId, releaseId) {
+  const wanted = String(releaseId || '').replace(/^official[:/]/, '').trim();
+  if (!wanted || !services?.staticSignalBoard?.read) return null;
+  const loaded = await services.staticSignalBoard.read({
+    from: 0,
+    to: Date.now() + 400 * 86_400_000,
+    limit: 300,
+    releaseLimit: 200,
+    focus: '0',
+    includeUndated: '1',
+  }, { refresh: false });
+  const board = loaded?.board || loaded;
+  const release = (board?.releases || []).find((row) => row.releaseId === wanted || row.documentNumber === wanted);
+  const event = release ? null : (board?.upcoming || []).find((row) => row.eventId === wanted);
+  const row = release || event;
+  if (!row) return null;
+  let localization = null;
+  if (services.feed?.localizeTexts) {
+    const units = collectLocalizationUnits(release ? { releases: [release] } : { upcoming: [event] });
+    const projected = await services.feed.localizeTexts(units, { workspaceId }, { wait: false });
+    localization = projected?.localizations?.[row.releaseId || row.eventId] || null;
+  }
+  let detail = null;
+  if (row.sourceUrl && services.sources?.read) {
+    try {
+      const snapshot = await services.sources.read('policy.official-detail', { sourceUrl: row.sourceUrl }, { refresh: false });
+      detail = snapshot?.data || null;
+    } catch {
+      detail = null;
+    }
+  }
+  return projectOfficialContentItem(row, localization, detail);
+}
 
 function workspaceIdFrom(identity) {
   return identity?.device?.workspaceId || 'local';
@@ -100,6 +158,16 @@ export function createFeedRoutes({ slots = createPreparedSlotStore(), offthread 
         });
         events.flush();
         json(response, 201, { ok: true, post });
+      },
+    },
+    {
+      method: 'GET', path: /^\/api\/v1\/content-items\/official\/([^/]+)$/i,
+      async handler({ response, services, identity, params }) {
+        let requested = params.values[0];
+        try { requested = decodeURIComponent(requested); } catch { /* keep the raw segment */ }
+        const item = await readOfficialContentItem(services, workspaceIdFrom(identity), requested);
+        if (!item) json(response, 404, { ok: false, error: '信息不存在' });
+        else json(response, 200, { ok: true, item });
       },
     },
     {

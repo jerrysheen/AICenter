@@ -281,7 +281,8 @@ test('served html strips the cloudflare web analytics beacon', async () => {
     assert.match(text, /\/client-timing\.js\?v=/);
     const policy = served.headers['Content-Security-Policy'];
     assert.match(policy, /script-src 'self'/);
-    assert.match(policy, /connect-src 'self'/);
+    assert.match(policy, /script-src [^;]*https:\/\/static\.cloudflareinsights\.com/);
+    assert.match(policy, /connect-src 'self' https:\/\/cloudflareinsights\.com/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
