@@ -275,7 +275,7 @@ test('verified translated media list item renders as a summary and does not thro
     translationStoreKey: () => 'media-key',
     loadTranslationStore: () => ({}),
   });
-  vm.runInContext(`${extractFunctions(source, ['translationFor', 'mediaAsItem'])}\nthis.translationFor=translationFor;this.mediaAsItem=mediaAsItem;`, context);
+  vm.runInContext(`${extractFunctions(source, ['textNeedsZhView', 'chineseReaderText', 'translationFor', 'mediaAsItem'])}\nthis.translationFor=translationFor;this.mediaAsItem=mediaAsItem;`, context);
   const item = {
     id: 'media:decoder:ready',
     externalId: 'decoder:ready',
@@ -318,7 +318,7 @@ test('media list cards prefer the translated title segment', () => {
     splitFeedText: (value) => ({ body: String(value || ''), comments: [] }),
   });
   vm.runInContext(`${extractFunctions(source, [
-    'textNeedsZhView', 'postNeedsChineseTranslation', 'postIsTranslating',
+    'textNeedsZhView', 'chineseReaderText', 'postNeedsChineseTranslation', 'postIsTranslating',
     'translationFor', 'plainFeedText', 'clipFeedText', 'firstFeedSentence', 'textAfterLead',
     'postDisplayTitle', 'socialBodyText', 'mediaAsItem',
   ])}\nthis.title=postDisplayTitle;this.mediaAsItem=mediaAsItem;`, context);
@@ -405,6 +405,11 @@ test('social cards show translation state instead of the foreign summary, and tr
     setView() {},
     translationFor: () => null,
     postNeedsChineseTranslation: () => true,
+    shouldQueueTranslation(post) {
+      if (String(post?.translation?.text || '').trim()) return false;
+      if (context.translationFor(post)) return false;
+      return context.postNeedsChineseTranslation(post);
+    },
     requestTranslation: async () => ({ translation: { translatedText: '中文全文', engine: 'test' } }),
     rememberTranslation() { context.remembered = true; },
     renderPosts() {},
@@ -448,7 +453,7 @@ test('a client translation replaces the english card excerpt, and an in-flight s
     state: { translations: {}, xTranslating: false },
   });
   vm.runInContext(`${extractFunctions(source, [
-    'textNeedsZhView', 'postNeedsChineseTranslation', 'postIsTranslating', 'socialListPlaceholder',
+    'textNeedsZhView', 'chineseReaderText', 'postNeedsChineseTranslation', 'postIsTranslating', 'socialListPlaceholder',
     'translationFor', 'plainFeedText', 'clipFeedText', 'firstFeedSentence', 'textAfterLead',
     'postDisplayTitle', 'socialBodyText', 'listCardExcerpt', 'postListExcerpt', 'feedCardExcerpt', 'feedAsItem',
   ])}\nthis.feedAsItem=feedAsItem;this.card=feedCardExcerpt;`, context);

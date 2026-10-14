@@ -7,6 +7,9 @@ function bodyHash(value) {
   return createHash('sha256').update(String(value)).digest('hex');
 }
 
+export const TRANSLATION_BACKFILL_PRIORITY = -10;
+export const TRANSLATION_INTERACTIVE_PRIORITY = 10;
+
 export const TRANSLATION_BACKFILL_LIMIT = 80;
 export const TRANSLATION_BACKFILL_STARTUP_MAX = 80;
 
@@ -77,15 +80,16 @@ export function createFeedTranslationJobHandlers({ feedService }) {
   };
 }
 
-export async function enqueueOriginalTranslations({ store, feedService, workspaceId, units }) {
+export async function enqueueOriginalTranslations({ store, feedService, workspaceId, units, priority = 0 }) {
   if (!store?.createJob || !feedService?.localizeTexts || !units.length) return [];
   const state = await feedService.localizeTexts(units, { workspaceId }, { wait: false });
   const pending = new Set(state.pendingIds || []);
   const jobs = [];
+  const rank = Number.isFinite(priority) ? Math.trunc(priority) : 0;
   for (const unit of units.filter(unit => pending.has(unit.id) && unit.text.length > 0 && unit.text.length <= FEED_TRANSLATION_TEXT_MAX)) {
     const input = FeedTranslationJobInputSchema.parse({ workspaceId, items: [{ id: unit.localizationId || unit.id, text: unit.text }] });
     const open = store.listOpenJobs?.('feed.translation.run')?.find(job => job.workspaceId === workspaceId && JSON.stringify(job.input) === JSON.stringify(input));
-    jobs.push(open || store.createJob({ type: 'feed.translation.run', workspaceId, input, maxAttempts: TRANSLATION_MAX_ATTEMPTS }));
+    jobs.push(open || store.createJob({ type: 'feed.translation.run', workspaceId, input, maxAttempts: TRANSLATION_MAX_ATTEMPTS, priority: rank }));
   }
   return jobs;
 }
@@ -142,7 +146,9 @@ export async function backfillUntranslatedFeedTranslations({
     else noteSkip(summary, 'translated', unit.id);
   }
   const jobs = queued.length
-    ? await enqueueOriginalTranslations({ store, feedService, workspaceId, units: queued })
+    ? await enqueueOriginalTranslations({
+      store, feedService, workspaceId, units: queued, priority: TRANSLATION_BACKFILL_PRIORITY,
+    })
     : [];
   summary.enqueued = jobs.length;
   return { jobs, summary };

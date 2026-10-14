@@ -35,6 +35,20 @@ function longerTranslation(left, right) {
   return right.translatedText.length > left.translatedText.length ? right : left;
 }
 
+function translationLooksChinese(text) {
+  const value = String(text || '').trim();
+  return Boolean(value) && !needsZhLocalization(value) && /\p{Script=Han}/u.test(value);
+}
+
+export function pickReaderTranslation(rows, sourceHash) {
+  const withText = (rows || []).filter((row) => row?.translatedText);
+  const matched = withText.find((row) => row.sourceHash === sourceHash);
+  if (matched && translationLooksChinese(matched.translatedText)) return matched;
+  const chinese = withText.find((row) => translationLooksChinese(row.translatedText));
+  if (chinese) return chinese;
+  return matched || null;
+}
+
 function commentCount(body) {
   const lines = String(body || '').replace(/\r\n?/g, '\n').trim().split('\n');
   const heading = /^\s*(?:#{1,6}\s*)?(?:\*\*)?(?:评论(?:区|预览)?|Comments?|Replies)(?:\*\*)?\s*[：:]?\s*$/iu;
@@ -53,6 +67,13 @@ function commentCount(body) {
 function projectListItem(item) {
   const summary = clipText(item.normalizedArticle?.summary || item.summary || item.body);
   const translated = item.translation?.text || '';
+  const storedTitle = String(item.title || '').trim();
+  const zhLead = hanLead(storedTitle) ? '' : (
+    chineseCardLead(item.normalizedArticle?.title)
+    || chineseCardLead(translated)
+    || chineseCardLead(item.bodyLang || item.body || '')
+    || chineseCardLead(item.summary || '')
+  );
   return {
     id: item.id,
     resourceId: item.resourceId,
@@ -62,6 +83,7 @@ function projectListItem(item) {
     authorName: item.authorName || '',
     authorHandle: item.authorHandle || '',
     title: item.title || '',
+    ...(zhLead ? { zhLead } : {}),
     summary,
     excerpt: summary,
     sourceUrl: item.sourceUrl || '',
@@ -94,6 +116,28 @@ function contentHash(value) {
   return createHash('sha256').update(String(value)).digest('hex');
 }
 
+function hanLead(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text || needsZhLocalization(text) || !/\p{Script=Han}/u.test(text)) return '';
+  return text;
+}
+
+function chineseCardLead(value) {
+  const text = String(value || '').trim();
+  const first = hanLead(firstSentence(text));
+  if (first) return clipText(first, 80);
+  return clipText(hanLead(firstSentence(remainderAfterSentence(text))), 80);
+}
+
+export function listNeedsTranslation(row) {
+  const body = String(row?.body || row?.bodyLang || '').trim();
+  if (body) return needsZhLocalization(body);
+  const summary = String(row?.summary || '').trim();
+  const title = String(row?.title || '').trim();
+  if (summary && !needsZhLocalization(summary) && !needsZhLocalization(title)) return false;
+  return needsZhLocalization(summary || title);
+}
+
 function toFeedItem(providerId, row) {
   return {
     id: `${providerId}:${row.externalId}`,
@@ -106,11 +150,12 @@ function toFeedItem(providerId, row) {
     title: row.title || '',
     summary: row.summary || '',
     body: row.body || '',
+    bodyLang: row.bodyLang || '',
     sourceUrl: row.sourceUrl || '',
     publishedAt: row.publishedAt || 0,
     capturedAt: row.capturedAt || row.createdAt || 0,
     updatedAt: row.updatedAt || 0,
-    needsTranslation: needsZhLocalization(row.body || row.bodyLang || row.summary || ''),
+    needsTranslation: listNeedsTranslation(row),
     processing: '',
     subscriptionId: '',
     captureId: row.captureId || '',
@@ -907,9 +952,13 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       if (item.provider && item.externalId) ids.push(`${item.provider}:${item.externalId}`);
       const rows = feedRepository.listTranslations?.(workspaceId, ids, 'zh') || [];
       const hash = contentHash(item.body || '');
-      const row = rows.find((entry) => entry.sourceHash === hash && entry.translatedText);
+      const row = pickReaderTranslation(rows, hash);
+      const publishedAt = item.publishedAt || item.capturedAt || item.createdAt || 0;
+      const authorName = String(item.authorName || item.captureMetadata?.authorHandle || '').trim();
       return attachNormalizedArticle(workspaceId,{
         ...item,
+        authorName,
+        publishedAt,
         translation: row?.translatedText
           ? { text: row.translatedText, engine: row.engine || '', targetLang: row.targetLang || 'zh' }
           : null,

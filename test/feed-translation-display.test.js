@@ -4,9 +4,10 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { createStore } from '../packages/database/src/index.js';
-import { createFeedService } from '../packages/domain/src/feed-service.js';
-import { backfillUntranslatedFeedTranslations, createFeedTranslationJobHandlers, enqueueOriginalTranslations, translationStartupBackfillLimit } from '../packages/runtime/src/feed-translation-module.js';
-import { createJobRunner } from '../packages/runtime/src/job-runner.js';
+import { createFeedService, listNeedsTranslation, pickReaderTranslation } from '../packages/domain/src/feed-service.js';
+import { createRuntimeService } from '../packages/domain/src/runtime-service.js';
+import { backfillUntranslatedFeedTranslations, createFeedTranslationJobHandlers, enqueueOriginalTranslations, translationStartupBackfillLimit, TRANSLATION_BACKFILL_PRIORITY } from '../packages/runtime/src/feed-translation-module.js';
+import { createJobRunner, translationClaimMinPriority } from '../packages/runtime/src/job-runner.js';
 
 test('worker startup backfill stays within the daily translation budget', () => {
   assert.equal(translationStartupBackfillLimit(undefined), 80);
@@ -198,7 +199,7 @@ test('reader prefers API translation text over cache and English normalized body
     translationStoreKey: (post) => `${post.id}::body`,
     loadTranslationStore: () => ({ 'x:1::body': { text: '磁盘旧译文', engine: 'disk' } }),
   });
-  vm.runInContext(`${extractFunctions(source, ['textNeedsZhView', 'translationFor'])}\nthis.translationFor=translationFor;`, context);
+  vm.runInContext(`${extractFunctions(source, ['textNeedsZhView', 'chineseReaderText', 'translationFor', 'postNeedsChineseTranslation', 'shouldQueueTranslation'])}\nthis.translationFor=translationFor;this.shouldQueue=shouldQueueTranslation;`, context);
   const api = context.translationFor({
     id: 'x:1', platform: 'x', body: 'English original about CXMT.',
     translation: { text: '接口返回的完整中文译文。', engine: 'gemma' },
@@ -216,6 +217,20 @@ test('reader prefers API translation text over cache and English normalized body
     normalizedArticle: { body: 'English normalized article body stays out of the reader.' },
   });
   assert.equal(englishNormalized, null);
+  const kept = context.translationFor({
+    id: 'x:jeff', platform: 'x', body: 'English original about the round.',
+    translation: { text: 'English only translation that must not hide the Chinese article.', engine: 'gemma' },
+    normalizedArticle: { body: '杰夫的投资记录已经整理成中文，保留在中文整理里。' },
+  });
+  assert.equal(kept.kind, 'normalized');
+  assert.match(kept.text, /杰夫/);
+  assert.equal(context.shouldQueue({
+    platform: 'trendforce', body: 'English body that already has a stored translation.',
+    translation: { text: '已经有全文译文，不要再次入队。' },
+  }), false);
+  assert.equal(context.shouldQueue({
+    platform: 'x', body: 'This English post still needs a Chinese translation today.',
+  }), true);
 });
 
 test('Chinese-source cards are not tagged untranslated, and the visible X list requests translation without a body', () => {
@@ -247,7 +262,7 @@ test('Chinese-source cards are not tagged untranslated, and the visible X list r
     setView() {},
   });
   vm.runInContext(`${extractFunctions(source, [
-    'textNeedsZhView', 'postNeedsChineseTranslation', 'postIsTranslating', 'translationFor', 'readyZhTitle', 'postDisplayTitle', 'socialBodyText',
+    'textNeedsZhView', 'chineseReaderText', 'postNeedsChineseTranslation', 'shouldQueueTranslation', 'postIsTranslating', 'translationFor', 'readyZhTitle', 'postDisplayTitle', 'socialBodyText',
     'plainFeedText', 'clipFeedText', 'firstFeedSentence', 'translationRequestText', 'xTextNeedsTranslation',
     'xFeedVisible', 'visibleXPosts', 'pendingXTranslations', 'feedListTitle', 'listCardExcerpt', 'feedAsItem',
     'socialListPlaceholder', 'scheduleVisibleXTranslations', 'translateXBatch',
@@ -270,4 +285,127 @@ test('Chinese-source cards are not tagged untranslated, and the visible X list r
   assert.equal(context.requested.items[0].id, 'x:en');
   assert.match(context.requested.items[0].text, /Capacity plans/);
   assert.equal(context.requested.items[0].text.includes('暂未翻译'), false);
+  const chineseBody = context.feedAsItem({
+    id: 'x:pix', title: 'PixVerse model update', summary: 'English title only',
+    zhLead: '像素蛋糕发布了新的视频模型。', needsTranslation: false,
+  }, 'x');
+  assert.equal(context.feedListTitle(chineseBody).title, '像素蛋糕发布了新的视频模型。');
+  assert.equal(context.feedListTitle(chineseBody).tag, '');
+  const translatedCard = context.feedAsItem({
+    id: 'x:asha', title: 'ASHA weekly', summary: 'English title',
+    translation: { title: 'ASHA', summary: '这是已经译好的中文摘要，不应再标暂未翻译。' },
+    needsTranslation: true,
+  }, 'x');
+  assert.equal(context.feedListTitle(translatedCard).tag, '');
+  assert.match(context.feedListTitle(translatedCard).title, /已经译好/);
+});
+
+test('an English title over a Chinese body is replaced on the list card', async () => {
+  const store = createStore(':memory:');
+  try {
+    const feed = store.repositories.feed;
+    const source = feed.upsertSourceAccount({ workspaceId: 'local', provider: 'x', externalId: 'x:home', displayName: 'X' });
+    saveXItem(feed, source.id, {
+      externalId: 'pix',
+      title: 'PixVerse model update',
+      body: '像素蛋糕发布了新的视频模型。正文后半继续说明使用范围。',
+      summary: 'English summary',
+    });
+    const service = createFeedService({ legacyRepository: {}, feedRepository: feed, sourcePort: sourcePort() });
+    const listed = await service.getExternalFeed('x', { feed: 'for-you', limit: 12, fields: 'list' });
+    const card = listed.items[0];
+    assert.equal(card.needsTranslation, false);
+    assert.equal(card.zhLead, '像素蛋糕发布了新的视频模型。');
+    assert.equal(Object.hasOwn(card, 'body'), false);
+  } finally {
+    store.close();
+  }
+});
+
+test('list flags follow the body, and a Chinese body still supplies a card title', () => {
+  assert.equal(listNeedsTranslation({ title: 'PixVerse ships a new video model today', body: '', summary: '' }), true);
+  assert.equal(listNeedsTranslation({
+    title: 'CXMT product name',
+    body: '这是中文来源的正文，标题碰巧是英文产品名 CXMT。后续仍是中文说明。',
+  }), false);
+  assert.equal(listNeedsTranslation({
+    title: 'Arena.ai weekly note',
+    body: 'English body about model releases and customers today.',
+  }), true);
+  const mismatched = pickReaderTranslation([
+    { sourceHash: 'old', translatedText: '库里已经有中文译文，哈希暂时对不上也不要丢掉。', engine: 'gemma' },
+  ], 'current');
+  assert.match(mismatched.translatedText, /中文译文/);
+});
+
+test('direct content item keeps a stored translation and a usable clock', async () => {
+  const store = createStore(':memory:');
+  try {
+    const feed = store.repositories.feed;
+    const source = feed.upsertSourceAccount({ workspaceId: 'local', provider: 'x', externalId: 'x:home', displayName: 'X' });
+    const body = 'TrendForce is only the old fallback. This English note already has a translation.';
+    const capture = feed.saveCapture({
+      workspaceId: 'local', provider: 'x', externalId: 'direct', sourceAccountId: source.id,
+      sourceUrl: 'https://x.com/example/status/direct', contentHash: hash('direct'), capturedAt: 1_700_000_000_000,
+    });
+    const item = feed.saveContentItem({
+      workspaceId: 'local', captureId: capture.id, originType: 'subscription', contentType: 'post',
+      title: 'English headline', body, summary: 'English summary', sourceUrl: capture.sourceUrl,
+      authorName: 'Chris Lee', publishedAt: 0,
+    });
+    feed.saveTranslations([{
+      workspaceId: 'local', itemId: item.id, targetLang: 'zh', sourceHash: hash('different-body'),
+      translatedText: '克里斯的全文译文已经在库里。', engine: 'gemma',
+    }]);
+    const service = createFeedService({
+      legacyRepository: {}, feedRepository: feed, sourcePort: sourcePort(),
+      normalizedArticlePort: {
+        normalizedArticle() {
+          return { nodeId: 'n', title: '中文整理标题', summary: '中文整理摘要', body: '中文整理正文仍可使用。', generatedAt: 1 };
+        },
+      },
+    });
+    const loaded = service.getLocalizedContentItem('local', item.id);
+    assert.equal(loaded.authorName, 'Chris Lee');
+    assert.equal(loaded.provider, 'x');
+    assert.equal(loaded.publishedAt, 1_700_000_000_000);
+    assert.match(loaded.translation.text, /克里斯/);
+    assert.match(loaded.normalizedArticle.body, /中文整理正文/);
+  } finally {
+    store.close();
+  }
+});
+
+test('user translation keeps a slot when backfill jobs are queued', async () => {
+  assert.equal(translationClaimMinPriority(0, 5), null);
+  assert.equal(translationClaimMinPriority(4, 5), 0);
+  assert.equal(translationClaimMinPriority(5, 5), null);
+  assert.equal(translationClaimMinPriority(0, 1), null);
+  const store = createStore(':memory:');
+  try {
+    const backfill = store.createJob({
+      type: 'feed.translation.run', workspaceId: 'local', priority: TRANSLATION_BACKFILL_PRIORITY,
+      input: { workspaceId: 'local', items: [{ id: 'backfill', text: 'long' }] },
+    });
+    store.createJob({
+      type: 'feed.translation.run', workspaceId: 'local', priority: 10,
+      input: { workspaceId: 'local', items: [{ id: 'interactive', text: 'short' }] },
+    });
+    const first = store.claimNextJob('worker', ['feed.translation.run'], { minPriority: 0 });
+    assert.equal(first.input.items[0].id, 'interactive');
+    assert.equal(store.claimNextJob('worker', ['feed.translation.run'], { minPriority: 0 }), null);
+    assert.equal(store.claimNextJob('worker', ['feed.translation.run']).id, backfill.id);
+    const runtime = createRuntimeService({
+      runtimeRepository: {
+        listOpenJobs: () => [],
+        createJob(input) { return { id: 'created', ...input }; },
+      },
+    });
+    const job = runtime.requestTranslation({
+      workspaceId: 'local', targetLang: 'zh', items: [{ id: 'mobile', text: 'Please translate this short post.' }],
+    });
+    assert.equal(job.priority, 10);
+  } finally {
+    store.close();
+  }
 });

@@ -635,17 +635,21 @@ export function createStore(databasePath) {
       })();
     },
 
-    claimNextJob(workerId, acceptedTypes = []) {
+    claimNextJob(workerId, acceptedTypes = [], options = {}) {
       const now = Date.now();
       let claimedId = null;
+      const minPriority = Number.isFinite(Number(options?.minPriority)) ? Math.trunc(Number(options.minPriority)) : null;
       database.exec('BEGIN IMMEDIATE');
       try {
         const typeFilter = acceptedTypes.length
           ? `AND type IN (${acceptedTypes.map(() => '?').join(', ')})`
           : '';
+        const priorityFilter = minPriority == null ? '' : 'AND priority >= ?';
+        const params = [now, ...acceptedTypes];
+        if (minPriority != null) params.push(minPriority);
         const row = database.prepare(`SELECT * FROM jobs
-          WHERE status = 'queued' AND available_at <= ? ${typeFilter}
-          ORDER BY priority DESC, created_at ASC LIMIT 1`).get(now, ...acceptedTypes);
+          WHERE status = 'queued' AND available_at <= ? ${typeFilter} ${priorityFilter}
+          ORDER BY priority DESC, created_at ASC LIMIT 1`).get(...params);
         if (!row) {
           database.exec('COMMIT');
           return null;
