@@ -27,6 +27,8 @@
 
 - `progress/2026-10-14-worker-claim-loop.md`：手动把 `jobs.attempt_count` 清回 0 后，领取按已有 `job_attempts` 的最大序号继续，避免唯一约束把领取循环打停。领取抛错时记下日志、只把仍在排队的那条标失败，循环继续。循环超过约 5 分钟没有往下走时打一行。空的订阅来源 id 改为跳过，不再每轮报错。不新增 migration。需要重启 Worker。
 
+- `progress/2026-10-14-scrape-browser-guard.md`：采集走 BrowserSkill 扩展，不走 CDP。启动器在扩展未连接且 `.ai-data\chrome-profile`（或 `AI_CENTER_SCRAPE_CHROME_USER_DATA`）没有对应 Chrome 进程时拉起该目录。守护循环连续约 3 次仍无浏览器再拉起一次，并在启动器窗口打一行。不改页面。不新增 migration。需要重新运行 `scripts/start-ai-center.ps1`。
+
 - `progress/2026-10-13-feed-x-flash-buffers.md`：X 的推荐、已读头和收藏第一页，以及快讯，只写出预备缓冲区。`pending` 只出现在这些槽还没有第一份快照时。翻页、报价 `snapshotId`、刊期和单小时阅读在 Web 的工作线程里查询并返回。事件推送改读 `sse_data`。migration 66。需要同时重启 Web 和 Worker。浏览器再加载一次。
 
 - `progress/2026-10-13-google-fetch-dispatcher.md`：Google 直连改为使用 undici 自己的 `fetch` 和同一份 Agent。Node 内置 `fetch` 不再接收 npm undici 的 dispatcher。26B 默认和换密钥重试不变。不新增 migration。需要同时重启 Web 和 Worker。

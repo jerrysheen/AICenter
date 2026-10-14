@@ -53,6 +53,7 @@ $CloudflareErrorLog = Join-Path $HostLogDirectory 'cloudflared.error.log'
 
 . (Join-Path $PSScriptRoot 'searxng-process.ps1')
 . (Join-Path $PSScriptRoot 'bsk-process.ps1')
+. (Join-Path $PSScriptRoot 'scrape-browser.ps1')
 . (Join-Path $PSScriptRoot 'cloudflared-process.ps1')
 . (Join-Path $PSScriptRoot 'deploy-logic.ps1')
 . (Join-Path $PSScriptRoot 'deploy-run.ps1')
@@ -650,6 +651,14 @@ public static class AiCenterConsoleCtrl {
           $cloudflareStatus = 'failed'
         }
       }
+      if ($script:scrapeBrowserConfig -and [DateTime]::UtcNow -ge $script:scrapeBrowserNextCheckUtc) {
+        $script:scrapeBrowserNextCheckUtc = [DateTime]::UtcNow.AddSeconds([int]$script:scrapeBrowserConfig.CheckSeconds)
+        try {
+          Update-AiCenterScrapeBrowser
+        } catch {
+          Write-Host "[!] Scrape browser check failed: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+      }
       Start-Sleep -Milliseconds 800
     }
     return 'stop'
@@ -657,6 +666,37 @@ public static class AiCenterConsoleCtrl {
     if ($registered) {
       [void][AiCenterConsoleCtrl]::SetConsoleCtrlHandler([AiCenterConsoleCtrl]::Handler, $false)
     }
+  }
+}
+
+function Update-AiCenterScrapeBrowser {
+  param([bool]$Startup = $false)
+  if (-not $script:scrapeBrowserConfig) { return }
+  $status = $null
+  try {
+    $status = Get-AiCenterBrowserStatus
+  } catch {
+    $status = $null
+  }
+  $profileRunning = $false
+  if (-not (Test-AiCenterScrapeBrowserConnected $status)) {
+    try {
+      $profileRunning = Test-AiCenterScrapeBrowserProfileRunning -UserDataDir $script:scrapeBrowserConfig.UserDataDir -Executable $script:scrapeBrowserConfig.Executable
+    } catch {
+      $profileRunning = $false
+    }
+  }
+  $result = Invoke-AiCenterScrapeBrowserGuard -Status $status -ProfileProcessRunning $profileRunning -MissStreak $script:scrapeBrowserMissStreak -Config $script:scrapeBrowserConfig -Startup:$Startup
+  $script:scrapeBrowserMissStreak = [int]$result.Decision.MissStreak
+  if ($result.MissingExecutable) {
+    if (-not $script:scrapeBrowserMissingExeWarned) {
+      $script:scrapeBrowserMissingExeWarned = $true
+      Write-Host '[!] Scrape Chrome was not found. Set AI_CENTER_SCRAPE_CHROME or install Chrome.' -ForegroundColor Yellow
+    }
+    return
+  }
+  if ($result.Line) {
+    Write-Host $result.Line
   }
 }
 
@@ -758,6 +798,17 @@ while ($true) {
       $env:AI_BSK_PATH = $bundledBsk
     }
     $env:BSK_AUTO_START = '0'
+    $script:scrapeBrowserMissStreak = 0
+    $script:scrapeBrowserMissingExeWarned = $false
+    $script:scrapeBrowserConfig = $null
+    $script:scrapeBrowserNextCheckUtc = [DateTime]::UtcNow.AddDays(1)
+    try {
+      $scrapeEnv = Get-AiCenterScrapeBrowserEnvironmentFromFiles -RepositoryEnvPath $RepositoryEnvPath -InstanceEnvPath $InstanceEnvPath
+      $script:scrapeBrowserConfig = Get-AiCenterScrapeBrowserConfig -RepositoryRoot $RepositoryRoot -Environment $scrapeEnv
+      $script:scrapeBrowserNextCheckUtc = [DateTime]::UtcNow.AddSeconds([int]$script:scrapeBrowserConfig.CheckSeconds)
+    } catch {
+      Write-Host "[!] Scrape browser config: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
     $existingBrowser = Get-AiCenterBrowserStatus
     if ($existingBrowser -and $existingBrowser.pid) {
       $browserStatus = 'reused'
@@ -777,6 +828,11 @@ while ($true) {
         $browserStatus = 'failed'
         Write-Host "[!] Browser daemon failed to start: $($_.Exception.Message)" -ForegroundColor Yellow
       }
+    }
+    try {
+      Update-AiCenterScrapeBrowser -Startup $true
+    } catch {
+      Write-Host "[!] Scrape browser launch failed: $($_.Exception.Message)" -ForegroundColor Yellow
     }
     try {
       $webProcess = Start-HiddenLoggedProcess `
