@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import { FEED_TRANSLATION_TEXT_MAX, formatFeedBefore, ValidationError } from '../../contracts/src/index.js';
-import { packFeedAiBatches } from './feed-ai-batch.js';
 import { feedItemIdentityHash } from './feed-identity.js';
 import { cleanIngestExcerpt } from '../../connectors/src/excerpt-text.js';
 import { stripLeadingPreview } from '../../connectors/src/x/home-browser.js';
@@ -330,52 +329,65 @@ function adoptReusableTranslations(feedRepository, workspaceId, units, targetLan
   return true;
 }
 
-async function translatePendingUnits(translationPort, pending, targetLang, checkpoint=()=>{}, workspaceId='local') {
-  if (!pending.length || !translationPort) return [];
-  const packed = packFeedAiBatches(pending.map((unit) => ({
-    id: unit.localizationId,
-    text: unit.text,
-  })), {
-    purpose: 'translate',
-    charBudget: 80_000,
-    itemClipChars: FEED_TRANSLATION_TEXT_MAX,
-    itemLimit: pending.length,
-  });
-  const originals = new Map(pending.map((unit) => [unit.localizationId, unit.text]));
-  const translations = [];
-  async function translateChunk(items) {
-    if (translationPort.translateMany) {
-      return translationPort.translateMany({ items, targetLang, workspaceId });
-    }
-    if (!translationPort.translate) return { translations: [] };
-    const rows = [];
-    for (const item of items) {
-      const translation = await translationPort.translate({
-        text: item.text,
-        targetLang,
-      });
-      rows.push({ id: item.id, ...translation });
-      checkpoint([{id:item.id,...translation,sourceText:originals.get(item.id)}]);
-    }
-    return { translations: rows, targetLang };
+async function translateOneItem(translationPort, item, targetLang, workspaceId) {
+  if (translationPort?.translateMany) {
+    return translationPort.translateMany({
+      items: [{ id: item.id, text: item.text }],
+      targetLang,
+      workspaceId,
+    });
   }
-  for (const batch of packed.batches) {
-    const chunk = batch.units.map((unit) => ({ id: unit.itemId, text: originals.get(unit.itemId) || unit.text }))
-      .filter((item) => item.text && item.text.length <= FEED_TRANSLATION_TEXT_MAX);
-    if(!chunk.length)continue;
-    const result = await translateChunk(chunk);
-    const completed=[];
-    for (const row of result.translations || []) {
-      if(!originals.has(row.id))continue;
-      completed.push({
-        ...row,
-        sourceText: originals.get(row.id) || row.sourceText,
-      });
+  if (!translationPort?.translate) throw new ValidationError('尚未配置翻译', ['items']);
+  const translation = await translationPort.translate({
+    text: item.text,
+    targetLang,
+    id: item.id,
+    workspaceId,
+  });
+  return { translations: [{ id: item.id, ...translation }], targetLang };
+}
+
+// Each item is stored before the next one starts. A later failure must not discard
+// translations that already came back, and must name only the items still missing.
+async function translateItemsDurably(translationPort, items, targetLang, persist, workspaceId) {
+  const translations = [];
+  const failures = [];
+  let firstError = null;
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    try {
+      const result = await translateOneItem(translationPort, item, targetLang, workspaceId);
+      const rows = (result?.translations || []).filter((row) => row?.id === item.id && (row.translatedText || row.engine === 'passthrough'));
+      if (!rows.length) {
+        const error = new Error('翻译未完整结束');
+        if (!firstError) firstError = error;
+        failures.push(item.id);
+        continue;
+      }
+      const completed = rows.map((row) => ({ ...row, sourceText: item.text || row.sourceText }));
+      persist(completed);
+      translations.push(...completed);
+    } catch (error) {
+      if (!firstError) firstError = error;
+      if (error?.code === 'budget-deferred') {
+        for (const rest of items.slice(index)) failures.push(rest.id);
+        break;
+      }
+      failures.push(item.id);
     }
-    translations.push(...completed);
-    if(translationPort.translateMany)checkpoint(completed);
+  }
+  if (firstError) {
+    if (firstError && typeof firstError === 'object') firstError.failedItemIds = failures;
+    throw firstError;
   }
   return translations;
+}
+
+async function translatePendingUnits(translationPort, pending, targetLang, checkpoint=()=>{}, workspaceId='local') {
+  if (!pending.length || !translationPort) return [];
+  const items = pending.map((unit) => ({ id: unit.localizationId, text: unit.text }))
+    .filter((item) => item.id && item.text && item.text.length <= FEED_TRANSLATION_TEXT_MAX);
+  return translateItemsDurably(translationPort, items, targetLang, checkpoint, workspaceId);
 }
 
 async function localizeCollected(feedRepository, translationPort, workspaceId, units, targetLang, options = {}) {
@@ -1069,41 +1081,17 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
         translations.push({ id: item.id, sourceText: item.text, translatedText: row.translatedText, targetLang, engine: row.engine, cached: true });
         return false;
       });
-      const packed = packFeedAiBatches(pending, {
-        purpose: 'translate',
-        charBudget: 80_000,
-        itemClipChars: FEED_TRANSLATION_TEXT_MAX,
-        itemLimit: 30,
-      });
-      const originals = new Map((input.items || []).map((item) => [item.id, item.text]));
-      async function translateChunk(items) {
-        if (translationPort?.translateMany) {
-          return translationPort.translateMany({ items, targetLang: input.targetLang, workspaceId });
-        }
-        if (!translationPort?.translate) throw new ValidationError('尚未配置翻译', ['items']);
-        const rows = [];
-        for (const item of items) {
-          const translation = await translationPort.translate({
-            text: item.text,
-            targetLang: input.targetLang,
-          });
-          rows.push({ id: item.id, ...translation });
-        }
-        return { translations: rows, targetLang: input.targetLang };
-      }
-      for (const batch of packed.batches) {
-        const chunk = batch.units.map((unit) => ({ id: unit.itemId, text: originals.get(unit.itemId) || unit.text }))
-          .filter((item) => item.text && item.text.length <= FEED_TRANSLATION_TEXT_MAX);
-        const result = await translateChunk(chunk);
-        const completed = [];
-        for (const row of result.translations || []) {
-          if (!originals.has(row.id)) continue;
-          completed.push({
-            ...row,
-            sourceText: originals.get(row.id) || row.sourceText,
-          });
-        }
-        persistTranslations(feedRepository, workspaceId, completed);
+      const items = pending
+        .map((item) => ({ id: item.id, text: String(item.text || '') }))
+        .filter((item) => item.id && item.text && item.text.length <= FEED_TRANSLATION_TEXT_MAX);
+      if (items.length) {
+        const completed = await translateItemsDurably(
+          translationPort,
+          items,
+          targetLang,
+          (rows) => persistTranslations(feedRepository, workspaceId, rows),
+          workspaceId,
+        );
         translations.push(...completed);
       }
       return { translations, targetLang: input.targetLang };

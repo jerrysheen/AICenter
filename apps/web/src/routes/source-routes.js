@@ -1,4 +1,5 @@
 import { json } from '../http/response.js';
+import { translationTitleBatchLimit } from '../../../../packages/domain/src/feed-ai-batch.js';
 import { collectLocalizationUnits } from '../../../../packages/domain/src/localize-texts.js';
 import { emptyStaticSignalBoard, readMarketNativeBoard } from '../../../../packages/source/src/index.js';
 
@@ -17,8 +18,9 @@ function enqueueVisibleLocalizations(services, identity, payload, units, result)
     ...units.filter((unit) => !releaseIds.has(unit.id)),
   ].filter((unit) => pending.has(unit.id) && unit.localizationId && unit.text);
   const workspaceId = identity?.device?.workspaceId || 'local';
-  for (let offset = 0; offset < ordered.length && offset < 60; offset += 30) {
-    const items = ordered.slice(offset, offset + 30).map((unit) => ({ id: unit.localizationId, text: unit.text }));
+  const batchLimit = translationTitleBatchLimit(process.env.AI_CENTER_TRANSLATION_TITLE_BATCH_LIMIT);
+  for (let offset = 0; offset < ordered.length && offset < 60; offset += batchLimit) {
+    const items = ordered.slice(offset, offset + batchLimit).map((unit) => ({ id: unit.localizationId, text: unit.text }));
     try {
       services.runtime.requestTranslation({ workspaceId, targetLang: 'zh', items });
     } catch (error) {

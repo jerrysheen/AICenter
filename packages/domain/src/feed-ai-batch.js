@@ -44,6 +44,21 @@ function clipForModel(value, options) {
   return clipHead(source, options.itemMaxChars);
 }
 
+export const TRANSLATION_TITLE_BATCH_LIMIT = 5;
+export const TRANSLATION_TITLE_MAX_CHARS = 240;
+
+export function translationTextIsTitle(text) {
+  const value = String(text || '').trim();
+  return Boolean(value) && value.length <= TRANSLATION_TITLE_MAX_CHARS && !value.includes('\n');
+}
+
+export function translationTitleBatchLimit(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return TRANSLATION_TITLE_BATCH_LIMIT;
+  const raw = Number(value);
+  if (!Number.isInteger(raw) || raw < 1) return TRANSLATION_TITLE_BATCH_LIMIT;
+  return Math.min(30, raw);
+}
+
 export function packFeedAiBatches(items, options = {}) {
   const purpose = options.purpose === 'analyze' ? 'analyze' : 'translate';
   const charBudget = Math.max(500, Number(options.charBudget)

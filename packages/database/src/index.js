@@ -6,6 +6,7 @@ import { DEFAULT_WORKSPACE_ID, runMigrations } from './migrations.js';
 import { translationRetryDelayMs } from './translation-retry.js';
 import { createDomainRepositories } from './repositories/index.js';
 import { createRuntimeRepository } from './repositories/runtime-repository.js';
+import { FeedTranslationJobInputSchema } from '../../contracts/src/feed.js';
 import {PrepareTreeInformationInputSchema} from '../../contracts/src/information-tree.js';
 export { createAttachmentStore } from './attachment-store.js';
 
@@ -697,6 +698,21 @@ export function createStore(databasePath) {
         }
       })();
       return mapJob(database.prepare('SELECT * FROM jobs WHERE id = ?').get(id));
+    },
+
+    replaceRunningJobInput(id, input, executor = {}) {
+      const claim = parseJobExecutor(executor);
+      const current = database.prepare('SELECT * FROM jobs WHERE id = ?').get(id);
+      if (!current || !claim || current.status !== 'running' || current.type !== 'feed.translation.run') return false;
+      const value = FeedTranslationJobInputSchema.parse({
+        ...(current.input_json ? parseJson(current.input_json) : {}),
+        ...input,
+        workspaceId: current.workspace_id,
+      });
+      const result = database.prepare(`UPDATE jobs SET input_json = ?, updated_at = ?
+        WHERE id = ? AND status = 'running' AND locked_by = ? AND attempt_count = ?`)
+        .run(JSON.stringify(value), Date.now(), id, claim.workerId, claim.attemptCount);
+      return result.changes === 1;
     },
 
     failJob(id, error, retryDelayMs = 1_000, executor = {}) {

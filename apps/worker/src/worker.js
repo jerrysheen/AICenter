@@ -2,7 +2,7 @@ import {attachDailyProcessLog} from '../../../packages/runtime/src/process-log.j
 import { audioTranscriptionManifest, createAudioTranscriptionJobHandlers } from '../../../packages/runtime/src/audio-transcription-job.js';
 import {createGeminiArticleAdmission,startGeminiQuotaProbe} from '../../../packages/runtime/src/gemini-article-admission.js';
 import {resolveGoogleHourlyAdmissionModels} from '../../../packages/harness/src/llm-route.js';
-import { backfillUntranslatedFeedTranslations, createFeedTranslationChunkStore, createFeedTranslationJobHandlers, demoteQueuedHashTranslationJobs, feedTranslationManifest, formatTranslationBackfillLog, repairEllipsisLeadTexts, translationBackfillConcurrency, translationStartupBackfillLimit } from '../../../packages/runtime/src/feed-translation-module.js';
+import { backfillUntranslatedFeedTranslations, createFeedTranslationChunkStore, createFeedTranslationJobHandlers, demoteQueuedHashTranslationJobs, feedTranslationManifest, fillUncoveredTranslations, formatTranslationBackfillLog, repairEllipsisLeadTexts, translationBackfillConcurrency, translationGapFillIntervalMs, translationGapFillLimit, translationStartupBackfillLimit } from '../../../packages/runtime/src/feed-translation-module.js';
 import { createHardwareArtifactStore } from '../../../packages/connectors/src/hardware-artifacts.js';
 import { legacyPriceSnapshot } from '../../../packages/connectors/src/trendforce-prices.js';
 import { createHardwarePriceService } from '../../../packages/domain/src/hardware-price-service.js';
@@ -693,6 +693,8 @@ export function createAiCenterWorker(options = {}) {
   let schedulePromise = null;
   let quotaProbe = null;
   let translationBackfill = null;
+  let translationGapTimer = null;
+  let translationGapRunning = false;
 
   return {
     store,
@@ -715,6 +717,27 @@ export function createAiCenterWorker(options = {}) {
       } catch (error) {
         console.error('[worker] translation-flood failed:', error instanceof Error ? error.message : error);
       }
+      const gapLimit = translationGapFillLimit(env.AI_CENTER_TRANSLATION_GAP_FILL_LIMIT);
+      const gapInterval = translationGapFillIntervalMs(env.AI_CENTER_TRANSLATION_GAP_FILL_INTERVAL_MS);
+      const runGapFill = async () => {
+        if (translationGapRunning || gapLimit === 0) return;
+        translationGapRunning = true;
+        try {
+          const result = await fillUncoveredTranslations({
+            store,
+            feedService,
+            mediaService,
+            workspaceId: 'local',
+            limit: gapLimit,
+            excludeSourceIds: [...(flashSources?.ids || [])],
+          });
+          console.log(`[worker] translation-gap-fill enqueued=${result.enqueued} limit=${gapLimit} scanned=${result.scanned} media=${result.media} feed=${result.feed}`);
+        } catch (error) {
+          console.error('[worker] translation-gap-fill failed:', error instanceof Error ? error.message : error);
+        } finally {
+          translationGapRunning = false;
+        }
+      };
       translationBackfill ||= backfillUntranslatedFeedTranslations({
         store,
         feedService,
@@ -726,7 +749,14 @@ export function createAiCenterWorker(options = {}) {
         console.log(formatTranslationBackfillLog(result?.summary, { enqueued, limit: backfillLimit }));
       }).catch((error) => {
         console.error('[worker] translation-backfill failed:', error instanceof Error ? error.message : error);
+      }).then(() => {
+        if (gapLimit > 0 && gapInterval > 0) return runGapFill();
+        return null;
       });
+      if (gapLimit > 0 && gapInterval > 0 && !translationGapTimer) {
+        translationGapTimer = setInterval(() => { runGapFill(); }, gapInterval);
+        translationGapTimer.unref?.();
+      }
       try {
         const repaired = repairEllipsisLeadTexts({ store, workspaceId: 'local', limit: backfillLimit });
         console.log(`[worker] ellipsis-lead bodies=${repaired.bodies} translations=${repaired.translations}`);
@@ -736,6 +766,8 @@ export function createAiCenterWorker(options = {}) {
       return runPromise;
     },
     async close() {
+      if (translationGapTimer) clearInterval(translationGapTimer);
+      translationGapTimer = null;
       quotaProbe?.stop();
       scheduler.stop();
       runner.stop();

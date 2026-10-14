@@ -2,6 +2,7 @@ import { MEDIA_ENRICH_JOB_TYPE } from '../../connectors/src/media/index.js';
 import { mediaResourceId } from '../../domain/src/media-ingestion-service.js';
 import { mediaTranslationBatches } from '../../domain/src/media-translation.js';
 import {enqueueTreePreparation} from './information-tree-module.js';
+import { translationTitleBatchLimit } from '../../domain/src/feed-ai-batch.js';
 import { TRANSLATION_BACKFILL_PRIORITY, TRANSLATION_INTERACTIVE_PRIORITY, enqueueOriginalTranslations } from './feed-translation-module.js';
 
 export function createMediaEnrichJobHandlers({ mediaService, feedService, taggingService, briefPort, articleNormalizePort=null, treeEnabled=false }) {
@@ -52,16 +53,17 @@ export function createMediaEnrichJobHandlers({ mediaService, feedService, taggin
             text: item.text,
           })).filter(unit => unit.id && unit.text)
           : [];
-        const visibleUnits = [
-          ...articleUnits.filter((unit) => unit.kind === 'heading' || unit.paragraphId === 'title'),
-          ...summaryUnits,
-        ];
+        const titleUnits = articleUnits.filter((unit) => unit.kind === 'heading' || unit.paragraphId === 'title');
         const bodyUnits = articleUnits.filter((unit) => unit.kind !== 'heading' && unit.paragraphId !== 'title');
         await enqueueOriginalTranslations({
           store: context?.store, feedService, workspaceId, units: bodyUnits, priority: TRANSLATION_BACKFILL_PRIORITY,
         });
         await enqueueOriginalTranslations({
-          store: context?.store, feedService, workspaceId, units: visibleUnits, priority: TRANSLATION_INTERACTIVE_PRIORITY,
+          store: context?.store, feedService, workspaceId, units: summaryUnits, priority: TRANSLATION_INTERACTIVE_PRIORITY,
+        });
+        await enqueueOriginalTranslations({
+          store: context?.store, feedService, workspaceId, units: titleUnits, priority: TRANSLATION_INTERACTIVE_PRIORITY,
+          unitLimit: translationTitleBatchLimit(process.env.AI_CENTER_TRANSLATION_TITLE_BATCH_LIMIT),
         });
         return articleNormalizePort.prepareInformation({workspaceId,sourceIds:items.map(item=>`media:${item.externalId}`)});
       }
