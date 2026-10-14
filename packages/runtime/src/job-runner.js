@@ -47,6 +47,10 @@ export function createJobRunner(options) {
     ? options.maxRunningMsByType
     : {};
   const recoverEveryMs = Math.max(100, Number(options.recoverEveryMs) || 30_000);
+  const configuredWatchdog = Number(options.watchdogMs ?? process.env.AI_CENTER_JOB_LOOP_WATCHDOG_MS);
+  const watchdogMs = Number.isFinite(configuredWatchdog) && configuredWatchdog > 0
+    ? configuredWatchdog
+    : 5 * 60_000;
   const concurrency = parseWorkerJobConcurrency(options.concurrency || {});
   const supersedeAfterMs = options.supersedeAfterMs && typeof options.supersedeAfterMs === 'object'
     ? options.supersedeAfterMs
@@ -159,27 +163,60 @@ export function createJobRunner(options) {
     recoverStale();
     const recoverTimer = setInterval(recoverStale, recoverEveryMs);
     recoverTimer.unref?.();
+    let lastTick = Date.now();
+    let watchdogLogged = false;
+    const watchdogTimer = setInterval(() => {
+      const idleMs = Date.now() - lastTick;
+      if (idleMs < watchdogMs) {
+        watchdogLogged = false;
+        return;
+      }
+      if (watchdogLogged) return;
+      watchdogLogged = true;
+      const line = `[worker] job loop has not ticked for ${Math.max(1, Math.round(idleMs / 1000))}s`;
+      console.error(line);
+      options.onWatchdog?.(line, idleMs);
+    }, Math.min(watchdogMs, 60_000));
+    watchdogTimer.unref?.();
     try {
       while (!abortController.signal.aborted) {
-        releaseSuperseded();
-        const types = claimableTypes();
-        const job = types.length ? store.claimNextJob(workerId, types) : null;
-        if (job) {
-          launch(job);
-          continue;
-        }
-        if (!inFlight.size) {
+        lastTick = Date.now();
+        watchdogLogged = false;
+        try {
+          releaseSuperseded();
+          const types = claimableTypes();
+          const job = types.length ? await store.claimNextJob(workerId, types) : null;
+          if (job) {
+            launch(job);
+            continue;
+          }
+          if (!inFlight.size) {
+            await wait(pollIntervalMs, abortController.signal);
+            continue;
+          }
+          await Promise.race([
+            wait(pollIntervalMs, abortController.signal),
+            ...[...inFlight.values()].map((item) => item.promise),
+          ]);
+        } catch (error) {
+          if (options.onClaimError) options.onClaimError(error);
+          else console.error('[worker] claim failed:', error);
+          const jobId = error && typeof error === 'object' ? error.jobId : '';
+          if (jobId && typeof store.failQueuedJob === 'function') {
+            try {
+              store.failQueuedJob(jobId, error);
+            } catch (failError) {
+              if (options.onClaimError) options.onClaimError(failError);
+              else console.error('[worker] claim failed:', failError);
+            }
+          }
           await wait(pollIntervalMs, abortController.signal);
-          continue;
         }
-        await Promise.race([
-          wait(pollIntervalMs, abortController.signal),
-          ...[...inFlight.values()].map((item) => item.promise),
-        ]);
       }
       await Promise.allSettled([...inFlight.values()].map((item) => item.promise));
     } finally {
       clearInterval(recoverTimer);
+      clearInterval(watchdogTimer);
       running = false;
     }
   }

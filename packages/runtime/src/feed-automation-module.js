@@ -86,7 +86,25 @@ export function createFeedAutomationJobHandlers({ feedService, feedRepository, t
             });
             continue;
           }
-          if (!metadata.sourceId || !metadata.sourceInput || typeof metadata.sourceInput !== 'object') {
+          const sourceId = typeof metadata.sourceId === 'string' ? metadata.sourceId.trim() : '';
+          if (!sourceId) {
+            const parked = feedRepository.deferSubscriptionSync(
+              subscription.id,
+              now,
+              subscription.refreshIntervalMinutes * 60_000,
+            );
+            deferred += 1;
+            subscriptions.push({
+              subscriptionId: subscription.id,
+              sourceId: '',
+              status: 'skipped',
+              added: 0,
+              reason: 'empty-source-id',
+              nextSyncAt: parked?.nextSyncAt || null,
+            });
+            continue;
+          }
+          if (!metadata.sourceInput || typeof metadata.sourceInput !== 'object') {
             throw new Error('source account metadata 缺少可重放参数');
           }
           const stats = await feedService.refreshPersistedSource({

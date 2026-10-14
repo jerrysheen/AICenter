@@ -637,6 +637,7 @@ export function createStore(databasePath) {
 
     claimNextJob(workerId, acceptedTypes = []) {
       const now = Date.now();
+      let claimedId = null;
       database.exec('BEGIN IMMEDIATE');
       try {
         const typeFilter = acceptedTypes.length
@@ -649,9 +650,12 @@ export function createStore(databasePath) {
           database.exec('COMMIT');
           return null;
         }
+        claimedId = row.id;
+        const maxRow = database.prepare('SELECT MAX(attempt_number) AS maxAttempt FROM job_attempts WHERE job_id = ?').get(row.id);
+        const attemptNumber = Math.max(Number(row.attempt_count) + 1, Number(maxRow?.maxAttempt || 0) + 1);
         const result = database.prepare(`UPDATE jobs SET status = 'running', locked_by = ?, locked_at = ?,
-          started_at = COALESCE(started_at, ?), attempt_count = attempt_count + 1, updated_at = ?
-          WHERE id = ? AND status = 'queued'`).run(workerId, now, now, now, row.id);
+          started_at = COALESCE(started_at, ?), attempt_count = ?, updated_at = ?
+          WHERE id = ? AND status = 'queued'`).run(workerId, now, now, attemptNumber, now, row.id);
         if (!result.changes) {
           database.exec('ROLLBACK');
           return null;
@@ -659,12 +663,13 @@ export function createStore(databasePath) {
         database.prepare(`INSERT INTO job_attempts
           (id, job_id, attempt_number, worker_id, status, error_json, started_at, completed_at)
           VALUES (?, ?, ?, ?, 'running', NULL, ?, NULL)`)
-          .run(randomUUID(), row.id, row.attempt_count + 1, workerId, now);
+          .run(randomUUID(), row.id, attemptNumber, workerId, now);
         insertEvent('job.started', 'job', row.id, { jobId: row.id, workerId }, row.workspace_id);
         database.exec('COMMIT');
         return mapJob(database.prepare('SELECT * FROM jobs WHERE id = ?').get(row.id));
       } catch (error) {
         try { database.exec('ROLLBACK'); } catch {}
+        if (claimedId && error && typeof error === 'object') error.jobId = claimedId;
         throw error;
       }
     },
@@ -835,6 +840,21 @@ export function createStore(databasePath) {
         }
       })();
       return rows.length;
+    },
+
+    failQueuedJob(id, error, now = Date.now()) {
+      const current = database.prepare('SELECT * FROM jobs WHERE id = ?').get(id);
+      if (!current || current.status !== 'queued') return current ? mapJob(current) : null;
+      const errorPayload = jobErrorPayload(error);
+      database.transaction(() => {
+        const result = database.prepare(`UPDATE jobs SET status = 'failed', error_json = ?, completed_at = ?,
+          locked_by = NULL, locked_at = NULL, updated_at = ?
+          WHERE id = ? AND status = 'queued'`)
+          .run(JSON.stringify(errorPayload), now, now, id);
+        if (!result.changes) return;
+        insertEvent('job.failed', 'job', id, { jobId: id, error: errorPayload }, current.workspace_id);
+      })();
+      return mapJob(database.prepare('SELECT * FROM jobs WHERE id = ?').get(id));
     },
 
     discardQueuedJobs(type, message, now = Date.now()) {

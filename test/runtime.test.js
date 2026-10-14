@@ -162,6 +162,78 @@ test('job runner recovers stale leases on an interval and does not reset fresh j
   assert.ok(recoveredAt.length >= 2, `expected periodic recover, got ${recoveredAt.length}`);
 });
 
+test('claim errors fail the queued job and the loop keeps claiming', async () => {
+  const errors = [];
+  const failed = [];
+  let calls = 0;
+  const store = {
+    recoverStaleJobs() {},
+    claimNextJob() {
+      calls += 1;
+      if (calls === 1) {
+        const error = new Error('UNIQUE constraint failed: job_attempts.job_id, attempt_number');
+        error.jobId = 'job-poison';
+        throw error;
+      }
+      return null;
+    },
+    failQueuedJob(id, error) {
+      failed.push({ id, message: error.message });
+      return { id, status: 'failed' };
+    },
+  };
+  const runner = createJobRunner({
+    store,
+    workerId: 'claim-worker',
+    handlers: { 'test.echo': async () => ({}) },
+    pollIntervalMs: 100,
+    watchdogMs: 60_000,
+    onClaimError(error) { errors.push(String(error?.message || error)); },
+  });
+  const running = runner.start();
+  await wait(280);
+  runner.stop();
+  await running;
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].id, 'job-poison');
+  assert.match(failed[0].message, /UNIQUE constraint failed/);
+  assert.ok(calls >= 2, `expected another claim after the error, got ${calls}`);
+  assert.ok(errors.length >= 1);
+});
+
+test('job loop watchdog logs once while claim has not returned', async () => {
+  const lines = [];
+  let release = () => {};
+  let hung = false;
+  const store = {
+    recoverStaleJobs() {},
+    claimNextJob() {
+      if (!hung) {
+        hung = true;
+        return new Promise((resolve) => { release = () => resolve(null); });
+      }
+      return null;
+    },
+  };
+  const runner = createJobRunner({
+    store,
+    workerId: 'watchdog-worker',
+    handlers: { 'test.echo': async () => ({}) },
+    pollIntervalMs: 20,
+    watchdogMs: 30,
+    onWatchdog(line) { lines.push(line); },
+  });
+  const running = runner.start();
+  await wait(140);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^\[worker\] job loop has not ticked for \d+s$/);
+  release();
+  await wait(50);
+  runner.stop();
+  await running;
+  assert.equal(lines.length, 1);
+});
+
 test('job runner lets a new run replace a subscription sync that exceeded its budget', async () => {
   const temporary = temporaryDatabase('ai-center-supersede-');
   const store = createStore(temporary.path);

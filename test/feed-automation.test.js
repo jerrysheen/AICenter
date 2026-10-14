@@ -445,6 +445,53 @@ test('sync calls the source with metadata instead of parsing externalId', async 
   temporary.remove();
 });
 
+test('blank source id is skipped instead of failing auto refresh', async () => {
+  const temporary = temporaryStore();
+  const feed = temporary.store.repositories.feed;
+  const calls = [];
+  for (const [externalId, sourceId] of [['x:blank:empty', ''], ['x:blank:space', '   ']]) {
+    const account = feed.upsertSourceAccount({
+      workspaceId: 'local',
+      provider: 'x',
+      externalId,
+      displayName: 'blank',
+      metadata: {
+        sourceId,
+        sourceInput: { feed: 'following' },
+        autoRefresh: true,
+      },
+    });
+    feed.upsertSubscription({
+      workspaceId: 'local',
+      sourceAccountId: account.id,
+      refreshIntervalMinutes: 30,
+      nextSyncAt: Date.now() - 1_000,
+    });
+  }
+  const handlers = createFeedAutomationJobHandlers({
+    feedRepository: feed,
+    feedService: {
+      async refreshPersistedSource(input) {
+        calls.push(input);
+        return { added: 0, skipped: 0, addedItemIds: [] };
+      },
+      async localizeContentItems() { return { pendingIds: [] }; },
+      listTaggableItems() { return []; },
+    },
+    taggingService: {
+      async analyzeItems() { return { saved: [], missingItemIds: [], skipped: 0 }; },
+    },
+  });
+  const output = await handlers[FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE]({}, { store: temporary.store });
+  assert.equal(output.failed, 0);
+  assert.equal(output.succeeded, 0);
+  assert.equal(output.deferred, 2);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(output.subscriptions.map((row) => row.reason), ['empty-source-id', 'empty-source-id']);
+  assert.ok(output.subscriptions.every((row) => row.status === 'skipped' && row.sourceId === ''));
+  temporary.remove();
+});
+
 test('x and xueqiu home feeds register at 30 minutes', () => {
   const temporary = temporaryStore();
   const feed = temporary.store.repositories.feed;
