@@ -311,7 +311,7 @@ BrowserSkill
 对应 Chrome
 ```
 
-X、Bilibili 等 Connector 只调用 BrowserRuntime。
+X、Bilibili 等 Connector 只调用 BrowserRuntime。启动器负责在扩展未连接时拉起专用用户目录的 Chrome；Connector 仍不读取该目录。
 
 它们不应该知道：
 
