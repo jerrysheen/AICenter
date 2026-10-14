@@ -379,6 +379,14 @@ test('article text is merged into the existing tweet body without a new field', 
   assert.equal(mergeArticleIntoTweetText(preview, article), article);
   assert.equal(mergeArticleIntoTweetText(`${preview}\n\n${article}`, article), article);
   assert.equal(stripLeadingPreview(`${preview}\n\n${article}`), article);
+  assert.equal(stripLeadingPreview(`${preview} ${article}`), article);
+  const xpengLead = '来自世界各地的小鹏之友汇聚于此，共同开启';
+  const xpengSentence = `${xpengLead}飞行器的公开亮相。`;
+  assert.equal(stripLeadingPreview(`${xpengLead}……${xpengSentence}`), xpengSentence);
+  assert.equal(stripLeadingPreview(`${xpengLead}…${xpengSentence}`), xpengSentence);
+  assert.equal(stripLeadingPreview(`${xpengLead}...${xpengSentence}`), xpengSentence);
+  assert.equal(stripLeadingPreview(`${xpengLead}……后续是另一句。`), `${xpengLead}……后续是另一句。`);
+  assert.equal(stripLeadingPreview(xpengSentence), xpengSentence);
   assert.equal(joinArticleTitle('XPENG showed a flying vehicle', article), article);
   assert.equal(joinArticleTitle('A separate headline', article).startsWith('A separate headline'), true);
   const cut = `${'飞行器'.repeat(80)}`;

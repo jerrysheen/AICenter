@@ -94,7 +94,7 @@ export async function syncEtfWhale(options) {
     let consecutiveErrors = 0;
     for (const tradeDate of weekdays(startDate, endDate)) {
       const existing = repository.getFetch('sse', tradeDate, tradeDate);
-      if (options.skipExisting !== false && existing && (existing.status === 'ok' || existing.status === 'empty') && tradeDate < refreshFrom) {
+      if (options.skipExisting !== false && existing?.status === 'ok' && tradeDate < refreshFrom) {
         continue;
       }
       const result = await fetchSseEtfShares(tradeDate, options);

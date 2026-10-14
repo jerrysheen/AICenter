@@ -65,15 +65,20 @@ function commentCount(body) {
   return count;
 }
 
+function shownText(value) {
+  return stripLeadingPreview(value);
+}
+
 function projectListItem(item) {
-  const summary = clipText(item.normalizedArticle?.summary || item.summary || item.body);
-  const translated = item.translation?.text || '';
+  const body = shownText(item.body || '');
+  const summary = clipText(shownText(item.normalizedArticle?.summary || item.summary || '') || body);
+  const translated = shownText(item.translation?.text || '');
   const storedTitle = String(item.title || '').trim();
   const zhLead = hanLead(storedTitle) ? '' : (
-    chineseCardLead(item.normalizedArticle?.title)
+    chineseCardLead(shownText(item.normalizedArticle?.title))
     || chineseCardLead(translated)
-    || chineseCardLead(item.bodyLang || item.body || '')
-    || chineseCardLead(item.summary || '')
+    || chineseCardLead(shownText(item.bodyLang || '') || body)
+    || chineseCardLead(shownText(item.summary || ''))
   );
   return {
     id: item.id,
@@ -104,8 +109,8 @@ function projectListItem(item) {
     } : null,
     normalizedArticle: item.normalizedArticle ? {
       nodeId: item.normalizedArticle.nodeId,
-      title: item.normalizedArticle.title || '',
-      summary: clipText(item.normalizedArticle.summary || ''),
+      title: shownText(item.normalizedArticle.title || ''),
+      summary: clipText(shownText(item.normalizedArticle.summary || '')),
       generatedAt: item.normalizedArticle.generatedAt,
     } : null,
     tags: item.tags || [],
@@ -197,7 +202,7 @@ function attachTranslations(feedRepository, workspaceId, items, targetLang = 'zh
     return {
       ...item,
       translation: {
-        text: row.translatedText,
+        text: shownText(row.translatedText) || row.translatedText,
         engine: row.engine || '',
         targetLang: row.targetLang,
       },
@@ -215,7 +220,7 @@ function persistTranslations(feedRepository, workspaceId, translations) {
       itemId: row.id,
       targetLang: row.targetLang === 'en' ? 'en' : 'zh',
       sourceHash: contentHash(row.sourceText || ''),
-      translatedText: row.translatedText,
+      translatedText: shownText(row.translatedText) || row.translatedText,
       engine: row.engine || '',
     });
   }
@@ -255,7 +260,7 @@ function projectLocalizations(units, byItemId, failures = new Map(), now = Date.
     const pending = needsZhLocalization(unit.text) && !ready && !failed;
     localizations[unit.id] = {
       id: unit.localizationId,
-      text: ready ? row.translatedText : '',
+      text: ready ? (shownText(row.translatedText) || row.translatedText) : '',
       pending,
       status: ready || !needsZhLocalization(unit.text) ? 'ready' : failed ? 'failed' : 'pending',
       retryAt: failed ? (failure.nextRetryAt ?? null) : null,
@@ -983,7 +988,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
         authorName,
         publishedAt,
         translation: row?.translatedText
-          ? { text: row.translatedText, engine: row.engine || '', targetLang: row.targetLang || 'zh' }
+          ? { text: shownText(row.translatedText) || row.translatedText, engine: row.engine || '', targetLang: row.targetLang || 'zh' }
           : null,
       });
     },

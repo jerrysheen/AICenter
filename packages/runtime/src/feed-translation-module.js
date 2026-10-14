@@ -172,3 +172,46 @@ export async function backfillUntranslatedFeedTranslations({
   summary.enqueued = jobs.length;
   return { jobs, summary };
 }
+
+export function repairEllipsisLeadTexts({
+  store, workspaceId = 'local', limit = TRANSLATION_BACKFILL_LIMIT,
+} = {}) {
+  const repo = store?.repositories?.feed;
+  const requested = Number(limit);
+  const cap = Number.isInteger(requested) && requested >= 0
+    ? Math.min(requested, TRANSLATION_BACKFILL_STARTUP_MAX)
+    : TRANSLATION_BACKFILL_LIMIT;
+  if (cap === 0 || !repo?.listEllipsisLeadBodies || !repo?.listEllipsisLeadTranslations || !repo?.saveTranslations) {
+    return { bodies: 0, translations: 0 };
+  }
+  const cleanedByItem = new Map();
+  let bodies = 0;
+  for (const row of repo.listEllipsisLeadBodies(workspaceId, { limit: 400 })) {
+    if (bodies >= cap) break;
+    const cleaned = stripLeadingPreview(row.body || '');
+    if (!cleaned || cleaned === String(row.body || '')) continue;
+    if (!repo.replaceContentBody?.(workspaceId, row.id, cleaned)) continue;
+    bodies += 1;
+    const fix = { previousHash: bodyHash(row.body || ''), nextHash: bodyHash(cleaned) };
+    cleanedByItem.set(row.id, fix);
+    if (row.provider && row.externalId) cleanedByItem.set(`${row.provider}:${row.externalId}`, fix);
+  }
+  let translations = 0;
+  for (const row of repo.listEllipsisLeadTranslations(workspaceId, { limit: 400 })) {
+    if (translations >= cap) break;
+    const cleaned = stripLeadingPreview(row.translatedText || '');
+    if (!cleaned || !row.itemId || !row.sourceHash || cleaned === String(row.translatedText || '')) continue;
+    const fix = cleanedByItem.get(row.itemId);
+    const sourceHash = fix && row.sourceHash === fix.previousHash ? fix.nextHash : row.sourceHash;
+    repo.saveTranslations([{
+      workspaceId,
+      itemId: row.itemId,
+      targetLang: row.targetLang === 'en' ? 'en' : 'zh',
+      sourceHash,
+      translatedText: cleaned,
+      engine: row.engine || '',
+    }]);
+    translations += 1;
+  }
+  return { bodies, translations };
+}

@@ -1359,6 +1359,40 @@ export function createFeedRepository(database, emitEvent) {
       return rows;
     },
 
+    listEllipsisLeadBodies(workspaceId, { limit = 400 } = {}) {
+      const cap = Math.max(1, Math.min(Number(limit) || 400, 400));
+      const rows = database.prepare(`SELECT ci.id AS id, ci.body AS body, c.provider AS provider, c.external_id AS external_id
+        FROM content_items ci
+        JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
+        WHERE ci.workspace_id = ?
+          AND (instr(ci.body, '…') > 0 OR instr(ci.body, '...') > 0)
+        ORDER BY ci.created_at DESC
+        LIMIT ?`).all(workspaceId, cap);
+      return rows.map((row) => ({
+        id: row.id,
+        body: row.body || '',
+        provider: row.provider || '',
+        externalId: row.external_id || '',
+      }));
+    },
+
+    listEllipsisLeadTranslations(workspaceId, { limit = 400 } = {}) {
+      const cap = Math.max(1, Math.min(Number(limit) || 400, 400));
+      const rows = database.prepare(`SELECT item_id, target_lang, source_hash, translated_text, engine
+        FROM feed_item_translations
+        WHERE workspace_id = ?
+          AND (instr(translated_text, '…') > 0 OR instr(translated_text, '...') > 0)
+        ORDER BY updated_at DESC
+        LIMIT ?`).all(workspaceId, cap);
+      return rows.map((row) => ({
+        itemId: row.item_id,
+        targetLang: row.target_lang === 'en' ? 'en' : 'zh',
+        sourceHash: row.source_hash || '',
+        translatedText: row.translated_text || '',
+        engine: row.engine || '',
+      }));
+    },
+
     upsertUserItemState(value) {
       const input = parseContract(PatchUserItemStateInputSchema, value);
       const now = Date.now();
