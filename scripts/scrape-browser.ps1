@@ -1,7 +1,10 @@
 # Scrape Chrome is the BrowserSkill extension host, not a CDP target.
-# Default user-data dir is the dedicated profile this product used to own:
-# <repo>\.ai-data\chrome-profile. Override with AI_CENTER_SCRAPE_CHROME_USER_DATA.
-# Connection stays the extension bridge (bsk daemon). Do not pass a debug port.
+# Default user-data dir is <repo>\.ai-data\chrome-profile unless
+# AI_CENTER_SCRAPE_CHROME_USER_DATA is set. The logged-in browser on this
+# machine is normal Chrome: %LOCALAPPDATA%\Google\Chrome\User Data, launched
+# without --user-data-dir. That process counts as the default directory.
+# AI_CENTER_SCRAPE_CHROME_PROFILE_DIRECTORY adds --profile-directory.
+# --type= child processes are ignored. Do not pass a debug port.
 
 function Get-AiCenterScrapeBrowserEnvValue {
   param(
@@ -80,14 +83,34 @@ function Get-AiCenterScrapeBrowserConfig {
   }
 }
 
+function ConvertTo-AiCenterScrapeBrowserDirectoryKey {
+  param([string]$Path)
+  if (-not $Path) { return '' }
+  return $Path.Replace('/', '\').Trim().TrimEnd('\').ToLowerInvariant()
+}
+
+function Get-AiCenterScrapeChromeDefaultUserDataDir {
+  param([string]$LocalAppData = $env:LOCALAPPDATA)
+  if (-not $LocalAppData) { return '' }
+  return $LocalAppData.TrimEnd('\', '/') + '\Google\Chrome\User Data'
+}
+
 function Test-AiCenterScrapeBrowserCommandLine {
   param(
     [string]$CommandLine,
-    [string]$UserDataDir
+    [string]$UserDataDir,
+    [string]$DefaultUserDataDir
   )
   if (-not $CommandLine -or -not $UserDataDir) { return $false }
   $normalized = $CommandLine.Replace('/', '\').ToLowerInvariant()
-  $dir = $UserDataDir.Replace('/', '\').TrimEnd('\').ToLowerInvariant()
+  if ($normalized.Contains('--type=')) { return $false }
+  if (-not $normalized.Contains('--user-data-dir')) {
+    $configured = ConvertTo-AiCenterScrapeBrowserDirectoryKey $UserDataDir
+    $defaultDir = ConvertTo-AiCenterScrapeBrowserDirectoryKey $DefaultUserDataDir
+    return [bool]($configured -and $defaultDir -and $configured -eq $defaultDir)
+  }
+  $dir = ConvertTo-AiCenterScrapeBrowserDirectoryKey $UserDataDir
+  if (-not $dir) { return $false }
   $index = $normalized.IndexOf($dir)
   if ($index -lt 0) { return $false }
   $after = $index + $dir.Length
@@ -193,8 +216,12 @@ function Test-AiCenterScrapeBrowserProfileRunning {
   param(
     [string]$UserDataDir,
     [string]$Executable,
+    [string]$DefaultUserDataDir,
     [scriptblock]$ListCommandLines
   )
+  if (-not $DefaultUserDataDir) {
+    $DefaultUserDataDir = Get-AiCenterScrapeChromeDefaultUserDataDir
+  }
   if (-not $ListCommandLines) {
     $ListCommandLines = {
       param([string]$ProcessName)
@@ -210,7 +237,7 @@ function Test-AiCenterScrapeBrowserProfileRunning {
   }
   foreach ($name in $names) {
     foreach ($command in @(& $ListCommandLines $name)) {
-      if (Test-AiCenterScrapeBrowserCommandLine -CommandLine ([string]$command) -UserDataDir $UserDataDir) {
+      if (Test-AiCenterScrapeBrowserCommandLine -CommandLine ([string]$command) -UserDataDir $UserDataDir -DefaultUserDataDir $DefaultUserDataDir) {
         return $true
       }
     }
