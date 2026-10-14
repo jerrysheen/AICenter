@@ -1,5 +1,9 @@
 import { fromHarnessToolName } from './tool-id.js';
 import { isHarnessWebToolId } from './web-infra.js';
+import {
+  HARNESS_DEEPSEEK_SEARCH_PROVIDER_ID,
+  resolveHarnessWebSearchProvider,
+} from './web-search-elucid.js';
 
 function eventType(event) {
   return String(event?.type || event?.event || event?.kind || '').trim();
@@ -89,10 +93,24 @@ function resultErrorMessage(event) {
 
 function summarizeWebSearch(toolResult) {
   const rows = Array.isArray(toolResult?.data?.results) ? toolResult.data.results : [];
+  const provider = typeof toolResult?.data?.searchProvider === 'string'
+    ? toolResult.data.searchProvider
+    : '';
   return {
     available: toolResult?.data?.available !== false && !toolResult?.error,
     resultCount: rows.length,
+    ...(provider ? { provider } : {}),
   };
+}
+
+function observedWebSearchProvider(event) {
+  if (resultFailed(event)) {
+    const errorText = resultErrorMessage(event);
+    if (/deepseek-official|api\.deepseek\.com\/anthropic|DeepSeek search|DeepSeek API error/.test(errorText)) {
+      return HARNESS_DEEPSEEK_SEARCH_PROVIDER_ID;
+    }
+  }
+  return resolveHarnessWebSearchProvider();
 }
 
 export function notificationToTraceEvents(notification, projector = null) {
@@ -140,6 +158,7 @@ export function createHarnessTraceProjector() {
               callId,
               id,
               input,
+              ...(id === 'web.search' ? { searchProvider: resolveHarnessWebSearchProvider() } : {}),
             },
           });
           continue;
@@ -147,13 +166,16 @@ export function createHarnessTraceProjector() {
         if (type === 'tool/result' && resultFailed(event)) {
           const callId = resultCallId(event);
           const call = callId ? calls.get(String(callId)) : null;
+          const failedId = call?.id || fromHarnessToolName(payload.name || payload.toolName || payload.tool);
+          const failedProvider = failedId === 'web.search' ? observedWebSearchProvider(event) : '';
           traces.push({
             event: 'tool.failed',
             detail: {
               round: call?.round ?? Math.max(0, round),
               callId,
-              id: call?.id || fromHarnessToolName(payload.name || payload.toolName || payload.tool),
+              id: failedId,
               input: call?.input || {},
+              ...(failedProvider ? { searchProvider: failedProvider } : {}),
               error: {
                 message: resultErrorMessage(event),
               },
@@ -167,6 +189,7 @@ export function createHarnessTraceProjector() {
           const call = callId ? calls.get(String(callId)) : null;
           const id = call?.id || fromHarnessToolName(payload.name || payload.toolName || payload.tool);
           if (isHarnessWebToolId(id)) {
+            const searchProvider = id === 'web.search' ? observedWebSearchProvider(event) : '';
             traces.push({
               event: 'tool.completed',
               detail: {
@@ -174,7 +197,8 @@ export function createHarnessTraceProjector() {
                 callId,
                 id,
                 input: call?.input || {},
-                data: {},
+                data: searchProvider ? { searchProvider } : {},
+                ...(searchProvider ? { searchProvider } : {}),
                 refs: [],
                 warnings: [],
               },

@@ -30,10 +30,28 @@ function isRecord(value) {
   return typeof value === 'object' && value !== null && Array.isArray(value) === false;
 }
 
+const MISSING_GROK_SEARCH_KEY = '问答联网搜索需要 ELUCID_GROK_API_KEY，不会回退到 DeepSeek 搜索';
+
+// Q&A search ignores DSH_WEB_SEARCH_PROVIDER. dsh-web prefers plugin config,
+// and the overlay writes this return value into web.searchProvider.
 export function resolveHarnessWebSearchProvider(env = process.env) {
-  return resolveHarnessLlmProvider(env) === HARNESS_ELUCID_PROVIDER
-    ? HARNESS_ELUCID_SEARCH_PROVIDER_ID
-    : HARNESS_DEEPSEEK_SEARCH_PROVIDER_ID;
+  void env;
+  return HARNESS_ELUCID_SEARCH_PROVIDER_ID;
+}
+
+export function resolveElucidSearchTarget(env = process.env) {
+  const keyEnv = text(env.ELUCID_GROK_API_KEY)
+    ? 'ELUCID_GROK_API_KEY'
+    : (text(env.AI_CENTER_GROK_API_KEY) ? 'AI_CENTER_GROK_API_KEY' : 'ELUCID_GROK_API_KEY');
+  const chat = resolveHarnessLlmProvider(env) === HARNESS_ELUCID_PROVIDER
+    ? resolveHarnessLlm(env)
+    : null;
+  return {
+    apiKeyEnv: keyEnv,
+    apiKey: text(env[keyEnv]),
+    baseURL: (text(env.AI_CENTER_ELUCID_GROK_API_ROOT) || chat?.baseURL || HARNESS_ELUCID_DEFAULT_BASE_URL).replace(/\/+$/, ''),
+    model: chat?.model || HARNESS_ELUCID_DEFAULT_MODEL,
+  };
 }
 
 export function extractElucidSearchSources(payload) {
@@ -107,11 +125,12 @@ export async function searchElucidWeb(request = {}, options = {}) {
   const query = text(request.query);
   if (!query) throw new Error('搜索词不能为空');
   const env = options.env || process.env;
-  const llm = options.llm || resolveHarnessLlm(env);
-  const apiKey = text(options.apiKey || llm.apiKey);
-  const baseURL = (text(options.baseURL || llm.baseURL) || HARNESS_ELUCID_DEFAULT_BASE_URL).replace(/\/+$/, '');
-  const model = text(options.model || llm.model) || HARNESS_ELUCID_DEFAULT_MODEL;
-  if (!apiKey) throw new Error('Harness 搜索需要 ELUCID_GROK_API_KEY');
+  const target = resolveElucidSearchTarget(env);
+  const llm = options.llm;
+  const apiKey = text(options.apiKey || llm?.apiKey || target.apiKey);
+  const baseURL = (text(options.baseURL || llm?.baseURL || target.baseURL) || HARNESS_ELUCID_DEFAULT_BASE_URL).replace(/\/+$/, '');
+  const model = text(options.model || llm?.model || target.model) || HARNESS_ELUCID_DEFAULT_MODEL;
+  if (!apiKey) throw new Error(MISSING_GROK_SEARCH_KEY);
   const fetchImpl = createUsageFetch(options.fetchImpl || fetch, { provider: 'elucid-grok', model, observer: options.usageObserver, stage: 'web-search' });
   const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 90_000;
   const controller = new AbortController();
@@ -167,11 +186,18 @@ export function createElucidWebSearchProvider(options = {}) {
   return Object.freeze({
     id: HARNESS_ELUCID_SEARCH_PROVIDER_ID,
     available() {
-      return resolveHarnessLlmProvider(env) === HARNESS_ELUCID_PROVIDER
-        && Boolean(text(resolveHarnessLlm(env).apiKey));
+      return Boolean(resolveElucidSearchTarget(env).apiKey);
     },
     search(request, signal) {
-      return searchElucidWeb({ ...request, signal }, options);
+      const target = resolveElucidSearchTarget(env);
+      if (!target.apiKey && !text(options.apiKey)) throw new Error(MISSING_GROK_SEARCH_KEY);
+      return searchElucidWeb({ ...request, signal }, {
+        ...options,
+        env,
+        apiKey: text(options.apiKey) || target.apiKey,
+        baseURL: target.baseURL,
+        model: target.model,
+      });
     },
   });
 }

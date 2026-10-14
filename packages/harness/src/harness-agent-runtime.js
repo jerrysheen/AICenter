@@ -332,8 +332,8 @@ export function createHarnessAgentRuntime({
     await writeFile(
       overlayPath,
       closedContext
-        ? materializeClosedContextPatch(patchSource, harnessPluginPath())
-        : materializeHarnessPatch(patchSource, harnessPluginPath()),
+        ? materializeClosedContextPatch(patchSource, harnessPluginPath(), executionEnv)
+        : materializeHarnessPatch(patchSource, harnessPluginPath(), executionEnv),
       'utf8',
     );
     const launch = resolveHarnessLaunch({

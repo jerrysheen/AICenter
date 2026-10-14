@@ -19,6 +19,7 @@ import {
   materializeClosedContextPatch,
   materializeHarnessPatch,
   parseAgentRuntimeMode,
+  collectToolCallsFromGateway,
   projectHarnessTraceEvents,
   projectToolCatalog,
   resolveAgentRuntimeMode,
@@ -160,6 +161,10 @@ test('overlay patch keeps built-in web and rewrites the plugin to a file URL', (
   assert.match(overlay, /web-search-elucid/);
   assert.match(overlay, /plugin\/src\/web-search-elucid\.js/);
   assert.doesNotMatch(overlay, /name: \.\/plugin\/src\/web-search-elucid\.js/);
+  assert.match(overlay, /id: web\n  name: '@deepseek-ai\/dsh-web'\n  config:\n    searchProvider: elucid-grok\n    fetchProvider: http/);
+  assert.match(overlay, /id: web-search-deepseek\n  name: '@deepseek-ai\/dsh-web-search-deepseek'\n  disabled: true/);
+  assert.doesNotMatch(overlay, /searchProvider:\s*deepseek-official/);
+  assert.doesNotMatch(overlay, /id: web-search-deepseek\n  name: '@deepseek-ai\/dsh-web-search-deepseek'\n  disabled: false/);
 });
 
 test('closed-context overlay disables native web tools', () => {
@@ -336,6 +341,27 @@ test('harness LLM route can use Elucid Grok through dsh-llm-pi-ai', () => {
     assert.equal(launch.model, 'grok-research');
     assert.equal(launch.env.DSH_WEB_SEARCH_PROVIDER, HARNESS_ELUCID_SEARCH_PROVIDER_ID);
     assert.match(launch.llm.settingsYaml, /grok-research/);
+    const deepseekChat = materializeHarnessPatch(readFileSync(harnessPatchPath(), 'utf8'), undefined, {
+      AI_CENTER_HARNESS_PROVIDER: 'deepseek-official',
+      DEEPSEEK_API_KEY: 'deepseek-key',
+      ELUCID_GROK_API_KEY: 'elucid-key',
+      DSH_WEB_SEARCH_PROVIDER: 'deepseek-official',
+    });
+    assert.match(deepseekChat, /searchProvider: elucid-grok/);
+    assert.match(deepseekChat, /id: web-search-deepseek\n  name: '@deepseek-ai\/dsh-web-search-deepseek'\n  disabled: true/);
+    assert.doesNotMatch(deepseekChat, /searchProvider:\s*deepseek-official/);
+    const deepseekLaunch = resolveHarnessLaunch({
+      env: {
+        AI_CENTER_HARNESS_PROVIDER: 'deepseek-official',
+        DEEPSEEK_API_KEY: 'deepseek-key',
+        DSH_WEB_SEARCH_PROVIDER: 'deepseek-official',
+      },
+      runtimeDirectory: directory,
+      gateway,
+      catalogPath,
+    });
+    assert.equal(deepseekLaunch.provider, HARNESS_PROVIDER);
+    assert.equal(deepseekLaunch.env.DSH_WEB_SEARCH_PROVIDER, HARNESS_ELUCID_SEARCH_PROVIDER_ID);
 
     const pinned = resolveHarnessLlm({
       AI_CENTER_HARNESS_PROVIDER: 'deepseek-official',
@@ -346,7 +372,7 @@ test('harness LLM route can use Elucid Grok through dsh-llm-pi-ai', () => {
     assert.equal(pinned.model, HARNESS_DEFAULT_MODEL);
     assert.equal(resolveHarnessWebSearchProvider({
       AI_CENTER_HARNESS_PROVIDER: 'deepseek-official',
-    }), HARNESS_PROVIDER);
+    }), HARNESS_ELUCID_SEARCH_PROVIDER_ID);
     assert.match(pinned.settingsYaml, /llm-deepseek:/);
     assert.match(pinned.settingsYaml, /elucid-grok:/);
   } finally {
@@ -524,6 +550,73 @@ test('harness prompt keeps the existing Agent instruction and names Domain tools
   assert.match(prompt, /web_search \/ web_fetch/);
   assert.match(prompt, /今天跌最多的是谁/);
   assert.match(prompt, /Current local time: 2026-09-20T12:00:00\+08:00/);
+});
+
+test('web.search events record the provider that actually ran', () => {
+  const traces = projectHarnessTraceEvents([
+    {
+      type: 'tool/call',
+      data: {
+        callId: 'search-1',
+        name: 'web_search',
+        arguments: JSON.stringify({ queries: ['FOMC'] }),
+      },
+    },
+    {
+      type: 'tool/result',
+      data: {
+        message: {
+          source: { kind: 'tool', callId: 'search-1' },
+          content: [{
+            type: 'tool-result',
+            toolCallId: 'search-1',
+            content: [{ type: 'text', text: 'Sources:\n- [FOMC](https://www.federalreserve.gov/)' }],
+          }],
+        },
+      },
+    },
+    {
+      type: 'tool/call',
+      data: {
+        callId: 'search-2',
+        name: 'web_search',
+        arguments: JSON.stringify({ queries: ['rate'] }),
+      },
+    },
+    {
+      type: 'tool/result',
+      data: {
+        message: {
+          source: { kind: 'tool', callId: 'search-2' },
+          content: [{
+            type: 'tool-result',
+            toolCallId: 'search-2',
+            isError: true,
+            content: [{
+              type: 'text',
+              text: 'DeepSeek API error (HTTP 401): Authentication Fails\nThe web search request used endpoint "https://api.deepseek.com/anthropic/v1/messages".',
+            }],
+          }],
+        },
+      },
+    },
+  ]);
+  const started = traces.find((item) => item.event === 'tool.started' && item.detail.callId === 'search-1');
+  const completed = traces.find((item) => item.event === 'tool.completed');
+  const failed = traces.find((item) => item.event === 'tool.failed');
+  assert.equal(started.detail.id, 'web.search');
+  assert.equal(started.detail.searchProvider, 'elucid-grok');
+  assert.equal(completed.detail.searchProvider, 'elucid-grok');
+  assert.equal(completed.detail.data.searchProvider, 'elucid-grok');
+  assert.equal(failed.detail.id, 'web.search');
+  assert.equal(failed.detail.searchProvider, 'deepseek-official');
+  const calls = collectToolCallsFromGateway([{
+    id: 'web.search',
+    input: { queries: ['FOMC'] },
+    result: { data: { searchProvider: 'elucid-grok', results: [{ url: 'https://www.federalreserve.gov/' }] } },
+  }]);
+  assert.equal(calls[0].webSearch.provider, 'elucid-grok');
+  assert.equal(calls[0].webSearch.resultCount, 1);
 });
 
 test('harness tool failures retain the official result reason', () => {
