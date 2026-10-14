@@ -28,13 +28,17 @@ test('normalize branch queues title and summary for link items', async () => {
       { externalId: 'bbc:full', resourceId: 'media:bbc:full', contentLevel: 'full', text: 'Full English body that must stay on the article units.' },
       { externalId: 'guardian:link', resourceId: 'media:guardian:link', contentLevel: 'discovery', text: linkText },
     ],
-    listArticleTranslationUnits: () => [{ id: 'block-title', localizationId: 'block-title', text: 'BBC English headline about energy prices today' }],
+    listArticleTranslationUnits: () => [
+      { id: 'block-title', localizationId: 'block-title', paragraphId: 'title', kind: 'heading', text: 'BBC English headline about energy prices today' },
+      { id: 'block-body', localizationId: 'block-body', paragraphId: 'p1', kind: 'paragraph', text: 'A longer English paragraph about energy prices that should wait behind the title.' },
+    ],
   };
   const feedService = { async localizeTexts(units) { return { pendingIds: units.map((unit) => unit.id), localizations: {} }; } };
   const handlers = createMediaEnrichJobHandlers({ mediaService: media, feedService, articleNormalizePort: port, treeEnabled: true });
   await handlers['media.index.enrich']({}, { store });
-  const texts = queued.map((job) => job.input.items[0].text);
-  assert.deepEqual(texts.sort(), ['BBC English headline about energy prices today', linkText].sort());
+  const byPriority = new Map(queued.map((job) => [job.priority, job.input.items.map((item) => item.text)]));
+  assert.deepEqual(byPriority.get(10).sort(), ['BBC English headline about energy prices today', linkText].sort());
+  assert.deepEqual(byPriority.get(-10), ['A longer English paragraph about energy prices that should wait behind the title.']);
 });
 test('media/feed injected strategy avoids translation, tag, brief, enqueue and old dependencies',async()=>{const calls=[],fail=()=>{throw new Error('old path invoked');},port={prepareInformation:async p=>{calls.push(p);return {nodes:[],pending:[],calls:1};}},store={createJob:fail};const media={fetchBodies:async()=>({fetched:[],stats:{}}),listBodyCandidates:()=>['a'],listEnrichmentItems:()=>[{externalId:'a',resourceId:'media:a'}],generateBodyBriefs:fail,listArticleTranslationUnits:fail};const mh=createMediaEnrichJobHandlers({mediaService:media,treeEnabled:true,articleNormalizePort:port});await mh['media.index.enrich']({externalIds:['a']},{store});const fh=createFeedAutomationJobHandlers({feedService:{refreshPersistedSource:fail},feedRepository:{claimDueSubscriptions:fail},treeEnabled:true,articleNormalizePort:port});await fh['feed.items.enrich']({resourceIds:['a']},{store});assert.deepEqual(calls.map(p=>p.sourceIds),[['media:a'],['feed:a']]);});
 test('article route uses independent real settings, low supported effort and no supplier retries',()=>{const env={AI_CENTER_HARNESS_PROVIDER:'deepseek-official',AI_CENTER_HARNESS_MODEL:'deepseek-v4-flash'};const article=resolveHarnessLlm(env,{closedTask:'article-normalize'}),hour=resolveHarnessLlm(env,{closedTask:'hourly-brief'});assert.notEqual(article.model,'deepseek-v4-flash');assert.equal(article.execution.maxTokens,6144);assert.match(article.settingsYaml,/maxTokens: 6144/);assert.match(article.settingsYaml,/maxRetries: 0/);assert.match(article.settingsYaml,/low: low/);assert.match(hour.settingsYaml,/maxTokens: 8192/);assert.notEqual(loadArticleNormalizeSkills().information.version,loadInformationTreeSkills().information.version);});

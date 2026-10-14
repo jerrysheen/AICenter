@@ -10,6 +10,9 @@ function bodyHash(value) {
 
 export const TRANSLATION_BACKFILL_PRIORITY = -10;
 export const TRANSLATION_INTERACTIVE_PRIORITY = 10;
+export const TRANSLATION_JOB_UNIT_LIMIT = 30;
+export const TRANSLATION_JOB_CHAR_BUDGET = 12_000;
+export const TRANSLATION_BULK_JOB_CAP = 8;
 
 export const TRANSLATION_BACKFILL_LIMIT = 80;
 export const TRANSLATION_BACKFILL_STARTUP_MAX = 80;
@@ -92,20 +95,92 @@ export function createFeedTranslationJobHandlers({ feedService }) {
   };
 }
 
+export function packTranslationJobBatches(units) {
+  const batches = [];
+  let batch = [];
+  let chars = 0;
+  for (const unit of units) {
+    const size = String(unit?.text || '').length;
+    if (batch.length && (batch.length >= TRANSLATION_JOB_UNIT_LIMIT || chars + size > TRANSLATION_JOB_CHAR_BUDGET)) {
+      batches.push(batch);
+      batch = [];
+      chars = 0;
+    }
+    batch.push(unit);
+    chars += size;
+  }
+  if (batch.length) batches.push(batch);
+  return batches;
+}
+
+function translationItemId(unit) {
+  return unit.localizationId || unit.id;
+}
+
+export function demoteQueuedHashTranslationJobs(store, workspaceId = 'local') {
+  if (!store?.listOpenJobs || !store?.reprioritizeQueuedJobs) return 0;
+  const changes = [];
+  for (const job of store.listOpenJobs('feed.translation.run') || []) {
+    if (job.workspaceId !== workspaceId || job.status !== 'queued') continue;
+    const priority = Number(job.priority) || 0;
+    if (priority < 0) continue;
+    const items = job.input?.items || [];
+    if (items.length !== 1 || !String(items[0]?.id || '').startsWith('h:')) continue;
+    changes.push({ id: job.id, priority: TRANSLATION_BACKFILL_PRIORITY, expectedPriority: priority });
+  }
+  if (!changes.length) return 0;
+  const changed = store.reprioritizeQueuedJobs(workspaceId, changes);
+  return Array.isArray(changed) ? changed.length : changes.length;
+}
+
 export async function enqueueOriginalTranslations({ store, feedService, workspaceId, units, priority = 0 }) {
-  if (!store?.createJob || !feedService?.localizeTexts || !units.length) return [];
+  if (!store?.createJob || !feedService?.localizeTexts || !units?.length) return [];
   const state = await feedService.localizeTexts(units, { workspaceId }, { wait: false });
   const pending = new Set(state.pendingIds || []);
-  const jobs = [];
   const rank = Number.isFinite(priority) ? Math.trunc(priority) : 0;
-  for (const unit of units.filter(unit => pending.has(unit.id) && unit.text.length > 0 && unit.text.length <= FEED_TRANSLATION_TEXT_MAX)) {
-    const input = FeedTranslationJobInputSchema.parse({ workspaceId, items: [{ id: unit.localizationId || unit.id, text: unit.text }] });
-    const open = store.listOpenJobs?.('feed.translation.run')?.find(job => job.workspaceId === workspaceId && JSON.stringify(job.input) === JSON.stringify(input));
-    if (open && rank < 0 && open.status === 'queued' && Number(open.priority) !== rank && store.reprioritizeQueuedJobs) {
-      store.reprioritizeQueuedJobs(workspaceId, [{ id: open.id, priority: rank, expectedPriority: Number(open.priority) || 0 }]);
-      open.priority = rank;
+  const eligible = units.filter((unit) => pending.has(unit.id) && unit.text.length > 0 && unit.text.length <= FEED_TRANSLATION_TEXT_MAX);
+  const openJobs = (store.listOpenJobs?.('feed.translation.run') || []).filter((job) => job.workspaceId === workspaceId);
+  const jobs = [];
+  const seen = new Set();
+  const fresh = [];
+  const requested = new Set(eligible.map((unit) => translationItemId(unit)));
+  const remember = (job) => {
+    if (!job || seen.has(job.id)) return;
+    seen.add(job.id);
+    jobs.push(job);
+  };
+  for (const unit of eligible) {
+    const open = openJobs.find((job) => (job.input?.items || []).some((item) => item?.id === translationItemId(unit)));
+    if (!open) {
+      fresh.push(unit);
+      continue;
     }
-    jobs.push(open || store.createJob({ type: 'feed.translation.run', workspaceId, input, maxAttempts: TRANSLATION_MAX_ATTEMPTS, priority: rank }));
+    if (open.status === 'queued' && Number(open.priority) !== rank) {
+      const current = Number(open.priority) || 0;
+      const coversRequest = (open.input?.items || []).every((item) => requested.has(item.id));
+      if (rank < 0 && current === 0 && coversRequest && store.reprioritizeQueuedJobs) {
+        store.reprioritizeQueuedJobs(workspaceId, [{ id: open.id, priority: rank, expectedPriority: current }]);
+        open.priority = rank;
+      } else if (rank > current && store.prioritizeQueuedJobs) {
+        store.prioritizeQueuedJobs(workspaceId, [open.id], rank);
+        open.priority = rank;
+      }
+    }
+    remember(open);
+  }
+  const batches = packTranslationJobBatches(fresh);
+  const cap = rank < 0 ? TRANSLATION_BULK_JOB_CAP : batches.length;
+  for (const batch of batches.slice(0, cap)) {
+    const input = FeedTranslationJobInputSchema.parse({
+      workspaceId,
+      items: batch.map((unit) => ({ id: translationItemId(unit), text: unit.text })),
+    });
+    const open = openJobs.find((job) => JSON.stringify(job.input) === JSON.stringify(input));
+    const job = open || store.createJob({
+      type: 'feed.translation.run', workspaceId, input, maxAttempts: TRANSLATION_MAX_ATTEMPTS, priority: rank,
+    });
+    if (!open) openJobs.push(job);
+    remember(job);
   }
   return jobs;
 }

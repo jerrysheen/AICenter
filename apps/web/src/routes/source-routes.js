@@ -2,12 +2,39 @@ import { json } from '../http/response.js';
 import { collectLocalizationUnits } from '../../../../packages/domain/src/localize-texts.js';
 import { emptyStaticSignalBoard, readMarketNativeBoard } from '../../../../packages/source/src/index.js';
 
+function boardPayload(payload) {
+  const data = payload?.data && typeof payload.data === 'object' ? payload.data : payload;
+  return data && typeof data === 'object' ? data : {};
+}
+
+function enqueueVisibleLocalizations(services, identity, payload, units, result) {
+  if (!services.runtime?.requestTranslation) return;
+  const data = boardPayload(payload);
+  const releaseIds = new Set((data.releases || []).map((row) => String(row?.releaseId || '').trim()).filter(Boolean));
+  const pending = new Set(result?.pendingIds || []);
+  const ordered = [
+    ...units.filter((unit) => releaseIds.has(unit.id)),
+    ...units.filter((unit) => !releaseIds.has(unit.id)),
+  ].filter((unit) => pending.has(unit.id) && unit.localizationId && unit.text);
+  const workspaceId = identity?.device?.workspaceId || 'local';
+  for (let offset = 0; offset < ordered.length && offset < 60; offset += 30) {
+    const items = ordered.slice(offset, offset + 30).map((unit) => ({ id: unit.localizationId, text: unit.text }));
+    try {
+      services.runtime.requestTranslation({ workspaceId, targetLang: 'zh', items });
+    } catch (error) {
+      console.error('[web] localization enqueue skipped:', error instanceof Error ? error.message : error);
+      break;
+    }
+  }
+}
+
 async function withLocalizations(services, identity, payload) {
   const units = collectLocalizationUnits(payload);
   if (!units.length || !services.feed?.localizeTexts) return { localizations: {} };
   const result = await services.feed.localizeTexts(units, {
     workspaceId: identity?.device?.workspaceId || 'local',
   }, { wait: false });
+  enqueueVisibleLocalizations(services, identity, payload, units, result);
   return result;
 }
 

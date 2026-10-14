@@ -44,9 +44,15 @@ function stripTrailingClosers(value) {
   return String(value || '').trim().replace(/[\s"'“”‘’」』）】\])]+$/u, '').trim();
 }
 
+function titleLikeSource(source) {
+  const src = String(source || '').trim();
+  return Boolean(src) && src.length < 160 && !src.includes('\n');
+}
+
 // A saved translation that stops at an ellipsis, an unclosed bracket, or before the
 // source's final sentence was cut off. A source that itself ends in an ellipsis can
-// keep that ending when the length is otherwise healthy.
+// keep that ending when the length is otherwise healthy. Titles and texts under 80
+// characters are not failed for a missing final period.
 export function translationEndingCut(source, translated) {
   const src = String(source || '').trim();
   const dst = String(translated || '').trim();
@@ -54,6 +60,7 @@ export function translationEndingCut(source, translated) {
   const ellipsis = /(?:\.{3,}|…+)\s*$/u;
   if (ellipsis.test(dst) && !ellipsis.test(src)) return true;
   if (unmatchedOpens(dst) > 0 && unmatchedOpens(src) === 0) return true;
+  if (src.length < 80 || titleLikeSource(src)) return false;
   const srcEnd = stripTrailingClosers(src);
   const dstEnd = stripTrailingClosers(dst);
   const terminal = /[。！？.!?]$/u;
@@ -69,8 +76,8 @@ export function translationLooksTruncated(source, translatedLength, translatedTe
   const text = String(translatedText || '');
   const length = Number(translatedLength) > 0 ? Number(translatedLength) : text.trim().length;
   if (!body.trim() || length <= 0) return false;
+  if (body.length < 80) return text.trim() ? translationEndingCut(body, text) : false;
   if (text.trim() && translationEndingCut(body, text)) return true;
-  if (body.length < 80) return false;
   if (length >= 160 && length * 4 >= body.length) return false;
   if (body.length >= 600) return length < 120 || length * 5 < body.length;
   const { han, latin } = scriptCounts(body);
