@@ -1,7 +1,7 @@
 import {createInformationTreePage, sourceCaption} from './information-tree.js?v=dev';
 import {decodeHtmlEntities} from './html-text.js?v=dev';
 import {mountInvestorDigest} from './investor-digest.js?v=dev';
-import {zonedCalendarParts, zonedClockParts} from './shanghai-time.js?v=dev';
+import {dateKey, zonedCalendarParts, zonedClockParts} from './shanghai-time.js?v=dev';
 const HOUR = 3600000;
 const ARTICLE_VERSION='brief-editorial-v3';
 const DIRECTION_LABELS={finance:'金融与市场',policy:'时事与政策',tech:'科技与产业',other:'其他'};
@@ -17,6 +17,7 @@ export function briefReadingItems(editorial) {
 
 
 export function briefDate(at, timezone) {
+  if (!timezone || timezone === 'Asia/Shanghai') return dateKey(at, 'Asia/Shanghai');
   const parts = new Intl.DateTimeFormat('en-US', {timeZone: timezone, year:'numeric', month:'2-digit', day:'2-digit'}).formatToParts(at);
   return ['year','month','day'].map(key => parts.find(p => p.type === key).value).join('-');
 }

@@ -1,7 +1,26 @@
 export const SHANGHAI = 'Asia/Shanghai';
+const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function partValue(parts, type) {
   return parts.find((part) => part.type === type)?.value || '';
+}
+
+// Asia/Shanghai has no daylight-saving time. A fixed +8 offset does not ask the
+// device timezone database, which some phone browsers ignore or shift by a day.
+function offsetWall(at, offsetMs) {
+  const value = at instanceof Date ? at.getTime() : Number(at);
+  if (!Number.isFinite(value)) return null;
+  const shifted = new Date(value + offsetMs);
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+    weekday: WEEKDAYS[shifted.getUTCDay()],
+    minute: shifted.getUTCMinutes(),
+    second: shifted.getUTCSeconds(),
+    clock: shifted.getUTCHours(),
+  };
 }
 
 export function normalizeHour(value) {
@@ -13,6 +32,10 @@ export function normalizeHour(value) {
 // Calendar fields stay in their own formatter. Mixing them with hourCycle h23
 // makes WebKit shift the day (often by one, and by another day at midnight).
 export function zonedCalendarParts(at, timeZone = SHANGHAI) {
+  if (!timeZone || timeZone === SHANGHAI) {
+    const wall = offsetWall(at, SHANGHAI_OFFSET_MS);
+    if (wall) return { year: wall.year, month: wall.month, day: wall.day, weekday: wall.weekday };
+  }
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone,
     year: 'numeric',
@@ -29,6 +52,10 @@ export function zonedCalendarParts(at, timeZone = SHANGHAI) {
 }
 
 export function zonedClockParts(at, timeZone = SHANGHAI) {
+  if (!timeZone || timeZone === SHANGHAI) {
+    const wall = offsetWall(at, SHANGHAI_OFFSET_MS);
+    if (wall) return { hour: wall.clock, minute: wall.minute, second: wall.second };
+  }
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone,
     hour: '2-digit',

@@ -1,6 +1,42 @@
-import { absorbReadingIndex, homeRequestPlan } from './home-timeline.js?v=dev';
+import { absorbReadingIndex, homeRequestPlan, hourlyEditions, shanghaiHourStart } from './home-timeline.js?v=dev';
+import { dateKey } from './shanghai-time.js?v=dev';
 
 export const HOME_BOOTSTRAP_PATH = '/api/v1/home/bootstrap';
+
+export function homeBootstrapCachePath(nowMs = Date.now()) {
+  return `${HOME_BOOTSTRAP_PATH}?day=${dateKey(nowMs)}`;
+}
+
+export function homeBootstrapNewestStart(payload) {
+  const start = Number(hourlyEditions(payload?.tree)[0]?.window?.startAt);
+  return Number.isFinite(start) ? start : null;
+}
+
+// The prepared snapshot's window ends at the next Shanghai hour. A body whose
+// window already closed is yesterday's representation of the same URL.
+export function homeBootstrapCoversNow(payload, nowMs = Date.now()) {
+  const end = Number(payload?.window?.endAt);
+  if (!Number.isFinite(end)) return false;
+  return end > shanghaiHourStart(nowMs);
+}
+
+export function chooseHomeBootstrap({ cached = null, fresh = null, nowMs = Date.now() } = {}) {
+  const network = fresh && fresh.notModified !== true && fresh.ok !== false && fresh.pending !== true
+    ? fresh
+    : null;
+  const networkStart = homeBootstrapNewestStart(network);
+  const cachedStart = homeBootstrapNewestStart(cached);
+  if (network && homeBootstrapCoversNow(network, nowMs)) return { source: 'fresh', body: network };
+  if (
+    cached
+    && homeBootstrapCoversNow(cached, nowMs)
+    && (networkStart == null || (cachedStart != null && cachedStart >= networkStart))
+  ) {
+    return { source: 'cache', body: cached };
+  }
+  if (network) return { source: 'stale', body: null };
+  return { source: 'none', body: null };
+}
 
 export function projectHomeBootstrap(payload) {
   if (!payload || payload.ok === false || payload.notModified) return null;

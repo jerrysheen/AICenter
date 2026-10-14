@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { homeRequestPlan } from '../apps/web/public/home-timeline.js';
-import { homeColdLoadRequests, projectHomeBootstrap } from '../apps/web/public/home-bootstrap.js';
+import { homeColdLoadRequests, projectHomeBootstrap, chooseHomeBootstrap, homeBootstrapCachePath } from '../apps/web/public/home-bootstrap.js';
+import { homeEditionNote, homeHourSections, shanghaiHourStart } from '../apps/web/public/home-timeline.js';
 import {
   composeHomeBootstrap,
   createHomeBootstrapHandler,
@@ -298,4 +300,49 @@ test('cold home data requests collapse to the bootstrap url', () => {
   assert.equal(after[0], '/api/v1/home/bootstrap');
   assert.ok(before.some((path) => path.includes('/api/v1/reports/tree')));
   assert.ok(before.filter((path) => path.includes('/api/v1/static-signals/board')).length, 2);
+});
+
+test('a fresh bootstrap for today replaces yesterday cached on the same url', () => {
+  const now = Date.parse('2026-10-14T03:40:00.000Z');
+  const hour = 3_600_000;
+  const todayStart = shanghaiHourStart(now) - hour;
+  const yesterdayStart = Date.parse('2026-10-13T15:00:00.000Z');
+  const edition = (start) => ({ window: { startAt: start, endAt: start + hour } });
+  const hit = (start, title) => ({
+    title,
+    nodeId: title,
+    disposition: 'hit',
+    readingDirectionName: '金融',
+    publishedAt: start + 1000,
+  });
+  const snapshot = (start, endAt, title) => ({
+    ok: true,
+    window: { startAt: endAt - 48 * hour, endAt },
+    tree: { hours: [{ edition: edition(start) }] },
+    readings: { [start]: { items: [hit(start, title)] } },
+  });
+  const yesterday = snapshot(yesterdayStart, Date.parse('2026-10-13T16:00:00.000Z'), '昨天');
+  const today = snapshot(todayStart, shanghaiHourStart(now) + hour, '今天');
+  const replaced = chooseHomeBootstrap({ cached: yesterday, fresh: today, nowMs: now });
+  assert.equal(replaced.source, 'fresh');
+  assert.equal(replaced.body, today);
+  const sections = homeHourSections({
+    editions: [{ window: today.tree.hours[0].edition.window }],
+    readings: today.readings,
+    nowMs: now,
+  });
+  assert.equal(sections[0].items[0].title, '今天');
+  assert.equal(sections[0].label.includes('13'), false);
+  assert.equal(homeEditionNote(Date.parse('2026-10-13T16:00:00.000Z'), Date.parse('2026-10-13T16:00:00.000Z') + hour, now), '00:00–01:00');
+  assert.equal(chooseHomeBootstrap({ cached: yesterday, fresh: { ok: true, notModified: true }, nowMs: now }).source, 'none');
+  assert.equal(chooseHomeBootstrap({ cached: yesterday, fresh: yesterday, nowMs: now }).source, 'stale');
+  assert.equal(chooseHomeBootstrap({ cached: today, fresh: yesterday, nowMs: now }).source, 'cache');
+  assert.equal(chooseHomeBootstrap({ cached: today, fresh: null, nowMs: now }).source, 'cache');
+  assert.equal(homeBootstrapCachePath(now), '/api/v1/home/bootstrap?day=2026-10-14');
+  const app = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
+  const fetchBootstrap = app.match(/async function fetchHomeBootstrap\([^]*?\n\}/)[0];
+  assert.match(fetchBootstrap, /chooseHomeBootstrap\(/);
+  assert.match(fetchBootstrap, /cache: 'no-store'/);
+  assert.match(fetchBootstrap, /homeBootstrapCachePath\(/);
+  assert.match(fetchBootstrap, /bootstrap 仍是上一天/);
 });

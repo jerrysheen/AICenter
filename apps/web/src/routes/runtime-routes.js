@@ -1,8 +1,9 @@
-import { clientTimingAllowed, projectClientTiming, readAccessSummary } from '../http/access-log.js';
+import { clientTimingAllowed, createClientErrorGate, formatClientErrorLine, projectClientError, projectClientTiming, readAccessSummary } from '../http/access-log.js';
 import { readDeployStatus } from '../http/deploy-status.js';
 import { json, readJson } from '../http/response.js';
 
 export function createRuntimeRoutes() {
+  const allowClientError = createClientErrorGate();
   return [
     {
       method: 'GET', path: '/api/v1/runtime/access-summary',
@@ -18,6 +19,32 @@ export function createRuntimeRoutes() {
           top: url.searchParams.get('top') || '',
         });
         json(response, summary.ok ? 200 : 400, summary);
+      },
+    },
+    {
+      method: 'POST', path: '/api/v1/runtime/client-error',
+      async handler({ request, response, identity }) {
+        const key = identity?.deviceId || identity?.device?.id || identity?.kind || 'device';
+        if (!allowClientError(key)) {
+          response.writeHead(429, { 'Retry-After': '60' });
+          response.end();
+          return;
+        }
+        let body;
+        try {
+          body = await readJson(request, { maxBytes: 2048 });
+        } catch {
+          json(response, 400, { ok: false, error: '内容无效' });
+          return;
+        }
+        const record = projectClientError(body);
+        if (!record) {
+          json(response, 400, { ok: false, error: '内容无效' });
+          return;
+        }
+        console.log(formatClientErrorLine(record));
+        response.writeHead(204);
+        response.end();
       },
     },
     {

@@ -53,13 +53,21 @@ function asUrl(input) {
   }
 }
 
+const SECRET_QUERY = /^(?:token|code|password|secret|authorization|access_token|refresh_token|cookie|session)$/i;
+
 export function safeRequestPath(input) {
   const url = asUrl(input);
   if (!url) return '/';
   const pathname = url.pathname || '/';
-  const version = url.searchParams?.get('v') || '';
-  if (/^[A-Za-z0-9._-]{1,64}$/.test(version)) return `${pathname}?v=${version}`.slice(0, 180);
-  return pathname.slice(0, 180);
+  const parts = [];
+  for (const [key, value] of url.searchParams) {
+    if (!/^[A-Za-z0-9._~-]{1,40}$/.test(key)) continue;
+    if (SECRET_QUERY.test(key)) continue;
+    if (!/^[A-Za-z0-9._~:@%+,=-]{0,120}$/.test(value)) continue;
+    parts.push(`${key}=${value}`);
+  }
+  const query = parts.join('&');
+  return (query ? `${pathname}?${query}` : pathname).slice(0, 300);
 }
 
 export function userAgentClass(userAgent) {
@@ -543,6 +551,43 @@ export function clientTimingAllowed(request) {
   if (hosts.some((host) => host && host === originHost)) return true;
   const tunnel = request?.headers?.['cf-ray'] || request?.headers?.['cf-connecting-ip'];
   return Boolean(tunnel && loopbackHost(headerHost(request?.headers?.host)));
+}
+
+export function projectClientError(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  const kind = String(body.kind || '').trim().slice(0, 40);
+  const path = String(body.path || '').trim().slice(0, 180);
+  if (!/^[a-z0-9._-]{1,40}$/i.test(kind)) return null;
+  if (!path.startsWith('/')) return null;
+  const status = Number(body.status);
+  const detail = String(body.detail || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 160);
+  return {
+    kind,
+    path,
+    status: Number.isInteger(status) && status >= 0 && status <= 599 ? status : 0,
+    detail,
+  };
+}
+
+export function formatClientErrorLine(record) {
+  const detail = record?.detail ? ` detail=${JSON.stringify(record.detail)}` : '';
+  return `[web] client-error kind=${record.kind} status=${record.status} path=${record.path}${detail}`;
+}
+
+export function createClientErrorGate({ limit = 30, windowMs = 60_000, now = () => Date.now() } = {}) {
+  const buckets = new Map();
+  return function allow(key) {
+    const at = now();
+    const id = String(key || 'anon');
+    const bucket = buckets.get(id);
+    if (!bucket || at - bucket.start >= windowMs) {
+      buckets.set(id, { start: at, count: 1 });
+      return true;
+    }
+    if (bucket.count >= limit) return false;
+    bucket.count += 1;
+    return true;
+  };
 }
 
 export function projectClientTiming(body, request, { salt = '', now = Date.now() } = {}) {

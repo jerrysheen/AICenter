@@ -171,20 +171,23 @@ export function selectHomeHourHits(snapshot) {
       || String(left?.nodeId || left?.title || '').localeCompare(String(right?.nodeId || right?.title || '')));
 }
 
+export function homeReadingReady(snapshot) {
+  return Array.isArray(snapshot?.items) && snapshot.missing !== true;
+}
+
 export function homeHourSections({ editions = [], readings = {}, sectionLimit = 4, nowMs = Date.now() } = {}) {
   const sections = [];
   const cap = Math.max(1, Number(sectionLimit) || 4);
   const list = (editions || []).filter((edition) => Number.isFinite(Number(edition?.window?.startAt)));
-  if (!list.length) return sections;
-  const newestStart = Number(list[0].window.startAt);
-  if (!Array.isArray(readings[newestStart]?.items)) return sections;
-  for (const edition of list) {
+  const usable = list.filter((edition) => homeReadingReady(readings[Number(edition.window.startAt)]));
+  if (!usable.length) return sections;
+  const anchor = Number(usable[0].window.startAt);
+  for (const edition of usable) {
     const startAt = Number(edition.window.startAt);
     const endAt = Number(edition.window.endAt);
     const snapshot = readings[startAt];
-    if (!Array.isArray(snapshot?.items)) continue;
     const items = selectHomeHourHits(snapshot).slice(0, sections.length === 0 ? 5 : 2);
-    if (!items.length && startAt !== newestStart) continue;
+    if (!items.length && startAt !== anchor) continue;
     sections.push({
       startAt,
       endAt,
