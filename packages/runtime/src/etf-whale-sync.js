@@ -5,6 +5,7 @@ import { fetchSseEtfShares, fetchSzseEtfShareJsonPage, fetchSzseEtfShares } from
 import { fetchTencentQfqDaily } from '../../connectors/src/etf-tencent-kline.js';
 import {
   ALGORITHM,
+  addDays,
   buildCodeSeries,
   dateChunks,
   lotToShares,
@@ -181,6 +182,24 @@ async function writeBlob(dataDirectory, relativePath, body) {
 }
 
 export const ETF_WHALE_SYNC_JOB = 'etf.whale.sync';
+const DEFAULT_LOOKBACK_DAYS = 12;
+
+function lookbackDays(value) {
+  const number = Number(value);
+  if (!Number.isInteger(number)) return DEFAULT_LOOKBACK_DAYS;
+  return Math.min(40, Math.max(1, number));
+}
+
+export function etfWhaleSyncWindow(input = {}, env = process.env, now = new Date()) {
+  const endDate = /^\d{4}-\d{2}-\d{2}$/.test(String(input.endDate || ''))
+    ? String(input.endDate)
+    : new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(now);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(input.startDate || ''))) {
+    return { startDate: String(input.startDate), endDate };
+  }
+  const days = lookbackDays(env.AI_CENTER_ETF_WHALE_LOOKBACK_DAYS);
+  return { startDate: addDays(endDate, 1 - days), endDate };
+}
 
 export const etfWhaleManifest = Object.freeze({
   id: 'etf.whale',
@@ -189,11 +208,10 @@ export const etfWhaleManifest = Object.freeze({
   jobTypes: [ETF_WHALE_SYNC_JOB],
 });
 
-export function createEtfWhaleJobHandlers({ repository, dataDirectory }) {
+export function createEtfWhaleJobHandlers({ repository, dataDirectory, env = process.env, now = () => new Date() } = {}) {
   return {
     [ETF_WHALE_SYNC_JOB]: async (input = {}) => {
-      const endDate = input.endDate || new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
-      const startDate = input.startDate || endDate;
+      const { startDate, endDate } = etfWhaleSyncWindow(input, env, now());
       const fetched = await syncEtfWhale({ repository, dataDirectory, startDate, endDate, skipExisting: input.skipExisting !== false });
       const computed = recomputeEtfWhale(repository);
       return { startDate, endDate, probeCount: fetched.probes.length, dailyRows: computed.rowCount, algorithm: fetched.algorithm };

@@ -15,6 +15,7 @@ import {
   ValidationError,
 } from '../../contracts/src/index.js';
 import { buildHoldingsBoard, buildHoldingsMoveGroups, buildHoldingsMoves, toDecimalNumber, toDecimalString } from './holdings-board.js';
+import { prepareMarketHistoryBars } from './market-history-bars.js';
 import {
   buildLedgerDashboard,
   currentAccountAmount,
@@ -162,34 +163,58 @@ export function createTradingService({
       const interval = query.interval;
       const refresh = Boolean(query.refresh);
       const timestamp = now();
+      const remember = (bars, updatedAt) => {
+        if (typeof tradingRepository.putMarketHistoryCache !== 'function') return;
+        if (!bars.length) {
+          tradingRepository.deleteMarketHistoryCache?.(symbol, range, interval);
+          return;
+        }
+        tradingRepository.putMarketHistoryCache({ symbol, range, interval, bars, updatedAt });
+      };
+      const forget = () => {
+        tradingRepository.deleteMarketHistoryCache?.(symbol, range, interval);
+      };
+      const load = async (forceRefresh) => {
+        const snapshot = await sourcePort.read('market.history', {
+          symbols: [symbol],
+          range,
+          interval,
+          ohlc: true,
+        }, { refresh: Boolean(forceRefresh) });
+        const series = Array.isArray(snapshot?.data) ? snapshot.data[0] : null;
+        const raw = Array.isArray(series?.bars) && series.bars.length
+          ? series.bars
+          : (series?.points || []).map((point) => ({
+            at: point.at,
+            open: point.close,
+            high: point.close,
+            low: point.close,
+            close: point.close,
+            volume: null,
+          }));
+        return {
+          prepared: prepareMarketHistoryBars(raw, { symbol, interval, now: timestamp }),
+          updatedAt: Number(snapshot?.observedAt) || timestamp,
+        };
+      };
+      let bypassCache = refresh;
       if (!refresh && typeof tradingRepository.getMarketHistoryCache === 'function') {
         const cached = tradingRepository.getMarketHistoryCache(symbol, range, interval);
         if (cached?.bars?.length && timestamp - Number(cached.updatedAt) < HISTORY_CACHE_TTL_MS) {
-          return { symbol, range, interval, bars: cached.bars, updatedAt: Number(cached.updatedAt) };
+          const prepared = prepareMarketHistoryBars(cached.bars, { symbol, interval, now: timestamp });
+          if (!prepared.gap) {
+            if (prepared.changed) remember(prepared.bars, Number(cached.updatedAt));
+            return { symbol, range, interval, bars: prepared.bars, updatedAt: Number(cached.updatedAt) };
+          }
+          forget();
+          bypassCache = true;
         }
       }
-      const snapshot = await sourcePort.read('market.history', {
-        symbols: [symbol],
-        range,
-        interval,
-        ohlc: true,
-      }, { refresh });
-      const series = Array.isArray(snapshot?.data) ? snapshot.data[0] : null;
-      const bars = Array.isArray(series?.bars) && series.bars.length
-        ? series.bars
-        : (series?.points || []).map((point) => ({
-          at: point.at,
-          open: point.close,
-          high: point.close,
-          low: point.close,
-          close: point.close,
-          volume: null,
-        }));
-      const updatedAt = Number(snapshot?.observedAt) || timestamp;
-      if (bars.length && typeof tradingRepository.putMarketHistoryCache === 'function') {
-        tradingRepository.putMarketHistoryCache({ symbol, range, interval, bars, updatedAt });
-      }
-      return { symbol, range, interval, bars, updatedAt };
+      const loaded = await load(bypassCache);
+      const { prepared } = loaded;
+      if (prepared.gap) forget();
+      else remember(prepared.bars, loaded.updatedAt);
+      return { symbol, range, interval, bars: prepared.bars, updatedAt: loaded.updatedAt };
     },
     supportsPersonalAssetLedger() {
       return typeof tradingRepository.listPersonalAssetAccounts === 'function'

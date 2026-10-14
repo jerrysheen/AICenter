@@ -622,6 +622,12 @@ export function createTradingRepository(database, emitEvent) {
       }
     },
 
+    deleteMarketHistoryCache(symbol, rangeKey, intervalKey) {
+      database.prepare(`DELETE FROM market_history_cache
+        WHERE symbol = ? AND range_key = ? AND interval_key = ?`)
+        .run(String(symbol || ''), String(rangeKey || ''), String(intervalKey || ''));
+    },
+
     putMarketHistoryCache({ symbol, range, interval, bars, updatedAt }) {
       if (!Array.isArray(bars) || !bars.length) return;
       const payload = JSON.stringify(bars);

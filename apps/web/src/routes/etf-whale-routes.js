@@ -5,7 +5,6 @@ export function createEtfWhaleRoutes() {
     {
       method: 'GET',
       path: '/api/v1/etf-whale/overview',
-      access: 'desktop',
       handler({ response, services }) {
         json(response, 200, { ok: true, overview: services.etfWhale.overview() });
       },
@@ -13,9 +12,8 @@ export function createEtfWhaleRoutes() {
     {
       method: 'GET',
       path: /^\/api\/v1\/etf-whale\/etfs\/(\d{6})$/,
-      access: 'desktop',
       handler({ response, services, params }) {
-        json(response, 200, { ok: true, series: services.etfWhale.series(params[0]) });
+        json(response, 200, { ok: true, series: services.etfWhale.series(params.values[0]) });
       },
     },
   ];

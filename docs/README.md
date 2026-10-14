@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-14-etf-whale-history.md`：ETF 鲸鱼单只序列改读路径里的代码。总览和单只 GET 对只读令牌开放。`etf.whale.sync` 默认每天上海时间 18:30 跑，并回看 12 天。指数日线走 `index_daily`，ETF 日线走 `fund_daily`，日 K 带 `amount`。缺交易日会丢掉缓存重取；收盘前不把当天未完成的柱写成完整日 K；开高低收不自洽的柱不入库。不新增 migration。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-14-home-hour-fallback.md`：总览 bootstrap 的缓存键没有上海日期，昨天的正文会在 200/304 之后继续留在手机上。现在按日期分钥匙，窗口已结束的正文不再当成今天；仍是上一天就无缓存重取。缺小时仍回退到已有刊期。本地缓存最多 2 小时。日期和小时按上海 UTC+8 计算。小时任务仍在第 30 分钟入队，这次不提前。不新增 migration。需要重启 Web。浏览器再加载一次。
 
 - `progress/2026-10-14-hourly-list-published-at.md`：小时报列表按原文 `publishedAt` 排序和显示，缺发布时间才用入库时间，过远的未来时间改用入库时间。去掉灰色「发布 HH:MM」。GitHub `awesome-*` 仓库更新不进小时列表。分类标签和「分享」只在展开后出现。不新增 migration。需要同时重启 Web 和 Worker。浏览器再加载一次。

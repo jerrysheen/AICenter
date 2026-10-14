@@ -6,6 +6,11 @@ import test from 'node:test';
 import { parseSseSharePayload, parseSzseShareJson, parseSzseShareSheet } from '../packages/connectors/src/etf-exchange-shares.js';
 import { parseTencentDayRows } from '../packages/connectors/src/etf-tencent-kline.js';
 import { createStore } from '../packages/database/src/index.js';
+import { isApiTokenAllowlisted } from '../apps/web/src/http/api-token-access.js';
+import { createRouter } from '../apps/web/src/http/router.js';
+import { createEtfWhaleRoutes } from '../apps/web/src/routes/etf-whale-routes.js';
+import { etfWhaleSyncWindow } from '../packages/runtime/src/etf-whale-sync.js';
+import { ensureEtfWhaleSchedule } from '../packages/runtime/src/etf-whale-schedule.js';
 import {
   YI,
   aggregatePool,
@@ -225,6 +230,89 @@ test('交易所解析保留单位，重复入库不增加份额行', () => {
   repo.saveShares([{ ...row, shares: 106000 }], { ...meta, contentHash: 'def', capturedAt: 2 });
   assert.equal(repo.listShares(['510300'], 'sse')[0].shares, 106000);
   assert.equal(repo.listShares(['510300'], 'sse').length, 1);
+});
+
+function responseRecorder() {
+  return {
+    status: 0,
+    body: '',
+    writeHead(status) { this.status = status; },
+    end(body = '') { this.body = body; },
+  };
+}
+
+test('series route reads params.values and read-only tokens can GET both ETF routes', async () => {
+  assert.equal(isApiTokenAllowlisted('GET', '/api/v1/etf-whale/overview'), true);
+  assert.equal(isApiTokenAllowlisted('GET', '/api/v1/etf-whale/etfs/159915'), true);
+  assert.equal(isApiTokenAllowlisted('POST', '/api/v1/etf-whale/overview'), false);
+  assert.equal(isApiTokenAllowlisted('GET', '/api/v1/etf-whale/etfs/159915/shares'), false);
+  assert.equal(isApiTokenAllowlisted('GET', '/api/v1/etf-whale/sync'), false);
+
+  const seen = [];
+  const router = createRouter(createEtfWhaleRoutes());
+  const response = responseRecorder();
+  const handled = await router.dispatch({
+    request: { method: 'GET' },
+    response,
+    url: { pathname: '/api/v1/etf-whale/etfs/159915' },
+    identity: { kind: 'api-token', token: { id: 'token-1' } },
+    services: {
+      etfWhale: {
+        series(code) {
+          seen.push(code);
+          return {
+            code,
+            inPool: code === '159915',
+            points: code === '159915' ? [{ tradeDate: '2026-10-08' }] : [],
+          };
+        },
+      },
+    },
+  });
+  assert.equal(handled, true);
+  assert.deepEqual(seen, ['159915']);
+  const body = JSON.parse(response.body);
+  assert.equal(response.status, 200);
+  assert.equal(body.series.inPool, true);
+  assert.equal(body.series.points[0].tradeDate, '2026-10-08');
+
+  const denied = responseRecorder();
+  await router.dispatch({
+    request: { method: 'GET' },
+    response: denied,
+    url: { pathname: '/api/v1/etf-whale/overview' },
+    identity: null,
+    services: { etfWhale: { overview() { throw new Error('must not run'); } } },
+  });
+  assert.equal(denied.status, 401);
+});
+
+test('ETF whale sync is scheduled after the Shanghai close and backfills a short window', () => {
+  const window = etfWhaleSyncWindow({}, { AI_CENTER_ETF_WHALE_LOOKBACK_DAYS: '12' }, new Date('2026-10-14T10:30:00+08:00'));
+  assert.equal(window.endDate, '2026-10-14');
+  assert.equal(window.startDate, '2026-10-03');
+  assert.deepEqual(etfWhaleSyncWindow({ startDate: '2026-10-08', endDate: '2026-10-09' }, {}, new Date('2026-10-14T10:30:00+08:00')), {
+    startDate: '2026-10-08',
+    endDate: '2026-10-09',
+  });
+
+  const store = createStore(path.join(mkdtempSync(path.join(tmpdir(), 'etf-whale-schedule-')), 'ai-center.db'));
+  try {
+    const now = Date.parse('2026-10-14T02:00:00Z');
+    const saved = ensureEtfWhaleSchedule(store, {}, now);
+    assert.equal(saved.enabled, true);
+    assert.equal(saved.jobType, 'etf.whale.sync');
+    assert.equal(saved.schedule.timezone, 'Asia/Shanghai');
+    assert.equal(saved.schedule.hour, 18);
+    assert.equal(saved.schedule.minute, 30);
+    assert.equal(saved.nextRunAt, Date.parse('2026-10-14T10:30:00Z'));
+    const moved = ensureEtfWhaleSchedule(store, { AI_CENTER_ETF_WHALE_AT: '19:05', AI_CENTER_ETF_WHALE_SYNC: '0' }, now);
+    assert.equal(moved.enabled, false);
+    assert.equal(moved.schedule.hour, 19);
+    assert.equal(moved.schedule.minute, 5);
+  } finally {
+    store.close();
+  }
 });
 
 function bar(close, volumeLots = 100) {
