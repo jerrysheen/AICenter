@@ -695,6 +695,7 @@ export function createAiCenterWorker(options = {}) {
   let translationBackfill = null;
   let translationGapTimer = null;
   let translationGapRunning = false;
+  let translationGapCursor = null;
 
   return {
     store,
@@ -730,7 +731,9 @@ export function createAiCenterWorker(options = {}) {
             workspaceId: 'local',
             limit: gapLimit,
             excludeSourceIds: [...(flashSources?.ids || [])],
+            cursor: translationGapCursor,
           });
+          translationGapCursor = result.cursor || null;
           console.log(`[worker] translation-gap-fill enqueued=${result.enqueued} limit=${gapLimit} scanned=${result.scanned} media=${result.media} feed=${result.feed}`);
         } catch (error) {
           console.error('[worker] translation-gap-fill failed:', error instanceof Error ? error.message : error);

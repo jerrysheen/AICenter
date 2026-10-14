@@ -212,6 +212,28 @@ export function createMediaRepository(database, emitEvent = () => {}) {
       return this.getState(state.workspaceId, state.sourceKey);
       })();
     },
+    listEntriesSince(workspaceId, { since = 0, beforeSortAt = null, beforeExternalId = '', limit = 200 } = {}) {
+      const cap = Math.max(1, Math.min(Number(limit) || 200, 500));
+      const sinceAt = Number(since) || 0;
+      const cursorAt = beforeSortAt == null || beforeSortAt === '' ? Number.NaN : Number(beforeSortAt);
+      const hasCursor = Number.isFinite(cursorAt);
+      const rows = hasCursor
+        ? database.prepare(`SELECT ${ENTRY_INDEX_COLUMNS} FROM media_index_entries
+            WHERE workspace_id = ?
+              AND COALESCE(published_at, observed_at, 0) >= ?
+              AND (
+                COALESCE(published_at, observed_at, 0) < ?
+                OR (COALESCE(published_at, observed_at, 0) = ? AND external_id > ?)
+              )
+            ORDER BY COALESCE(published_at, observed_at, 0) DESC, external_id ASC
+            LIMIT ?`).all(workspaceId, sinceAt, cursorAt, cursorAt, String(beforeExternalId || ''), cap)
+        : database.prepare(`SELECT ${ENTRY_INDEX_COLUMNS} FROM media_index_entries
+            WHERE workspace_id = ?
+              AND COALESCE(published_at, observed_at, 0) >= ?
+            ORDER BY COALESCE(published_at, observed_at, 0) DESC, external_id ASC
+            LIMIT ?`).all(workspaceId, sinceAt, cap);
+      return rows.map(mapEntry);
+    },
     listEntries(workspaceId, { channel = '', limit = 50 } = {}) {
       const rows = channel
         ? database.prepare(`SELECT ${ENTRY_INDEX_COLUMNS} FROM media_index_entries

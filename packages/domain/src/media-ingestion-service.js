@@ -137,6 +137,23 @@ function textHash(value) {
   return createHash('sha256').update(String(value)).digest('hex');
 }
 
+function translationMatches(row, source) {
+  const text = String(source || '').trim();
+  return Boolean(text && row?.translatedText && row.sourceHash === textHash(text));
+}
+
+function titleTranslationIds(item, snapshot) {
+  const units = mediaTranslationUnits({
+    externalId: item.externalId,
+    bodyHash: snapshot?.bodyHash || item.bodyHash || '',
+    title: item.title,
+    paragraphs: snapshot?.article?.paragraphs || [],
+  });
+  return units
+    .filter((unit) => unit.paragraphId === 'title' || unit.kind === 'heading')
+    .flatMap((unit) => [unit.id, unit.legacyId].filter(Boolean));
+}
+
 function entryRow(workspaceId, entry, item, { at, previous, status }) {
   return {
     workspaceId,
@@ -361,9 +378,14 @@ export function createMediaIngestionService({
         status: item.status,
       };
     });
+    const titleIdsByExternal = new Map();
+    for (const pair of verified) {
+      const ids = titleTranslationIds(pair.item, pair.snapshot);
+      if (ids.length) titleIdsByExternal.set(pair.item.externalId, ids);
+    }
     const translationRows = feedRepository?.listTranslations?.(
       workspaceId,
-      projected.map((item) => item.id),
+      [...projected.map((item) => item.id), ...[...titleIdsByExternal.values()].flat()],
       'zh',
     ) || [];
     const translationById = new Map(translationRows.map((row) => [row.itemId, row]));
@@ -386,16 +408,23 @@ export function createMediaIngestionService({
         : '来源默认关闭。主机探针确认 RSS 后，才能显式启用第一批。',
       items: projected.map((item) => {
         const saved = translationById.get(item.id);
-        const ready = Boolean(saved && saved.sourceHash === textHash(item.body) && saved.translatedText);
+        const titleSource = String(item.title || '').trim();
+        const displaySource = String(item.body || '').trim();
+        const blockRow = (titleIdsByExternal.get(item.externalId) || [])
+          .map((id) => translationById.get(id))
+          .find((row) => translationMatches(row, titleSource));
+        const bodyReady = translationMatches(saved, displaySource);
+        const titleRow = translationMatches(saved, titleSource) ? saved : blockRow;
+        const chosen = bodyReady ? saved : titleRow;
         const full = {
           ...item,
           tags: tagsById.get(item.resourceId) || legacyTags.get(item.legacyContentItemId) || [],
-          translation: ready ? {
-            text: saved.translatedText,
-            engine: saved.engine || '',
-            targetLang: saved.targetLang || 'zh',
+          translation: chosen ? {
+            text: chosen.translatedText,
+            engine: chosen.engine || '',
+            targetLang: chosen.targetLang || 'zh',
           } : null,
-          translationStatus: ready ? 'ready' : saved ? 'stale' : 'pending',
+          translationStatus: chosen ? 'ready' : saved ? 'stale' : 'pending',
         };
         return shape === 'list' ? presentMediaListItem(full) : full;
       }),
@@ -1010,7 +1039,7 @@ export function createMediaIngestionService({
         const old=byId.get(u.legacyId);return {workspaceId,itemId:u.id,targetLang:'zh',sourceHash:old.sourceHash,translatedText:old.translatedText,engine:old.engine};
       });
       if(reuse.length) feedRepository?.saveTranslations?.(reuse);
-      return units;
+      return units.map((unit) => ({ ...unit, externalId: row.externalId }));
     });
   }
 
