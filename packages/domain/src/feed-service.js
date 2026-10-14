@@ -198,7 +198,10 @@ function projectLocalizations(units, byItemId, failures = new Map(), now = Date.
   for (const unit of units) {
     const row = byItemId.get(unit.localizationId);
     const hash = contentHash(unit.text);
-    const ready = Boolean(row && row.sourceHash === hash && row.translatedText);
+    const shortHourlyTitle = row?.engine === 'hourly-report'
+      && unit.text.length > 400
+      && unit.text.length > String(row.translatedText || '').length * 3;
+    const ready = Boolean(row && row.sourceHash === hash && row.translatedText && !shortHourlyTitle);
     const failure = failures.get(unit.localizationId);
     const failed = !ready && failure && failure.sourceHash === hash
       && (failure.nextRetryAt == null || failure.nextRetryAt > now);
@@ -237,6 +240,8 @@ function adoptReusableTranslations(feedRepository, workspaceId, units, targetLan
     for (const unit of units) {
       const title = hourlySourceIds(unit).map((id) => titles.get?.(id)).find(Boolean);
       if (!title) continue;
+      // A hourly title is not the translation of a long body.
+      if (unit.text.length > 400 && unit.text.length > String(title).length * 3) continue;
       adopted.push({
         id: unit.localizationId,
         sourceText: unit.text,
@@ -258,6 +263,7 @@ function adoptReusableTranslations(feedRepository, workspaceId, units, targetLan
     for (const unit of rest) {
       const row = byHash.get(contentHash(unit.text));
       if (!row?.translatedText) continue;
+      if (unit.text.length > 400 && unit.text.length > String(row.translatedText).length * 3) continue;
       adopted.push({
         id: unit.localizationId,
         sourceText: unit.text,
@@ -272,7 +278,7 @@ function adoptReusableTranslations(feedRepository, workspaceId, units, targetLan
   return true;
 }
 
-async function translatePendingUnits(translationPort, pending, targetLang, checkpoint=()=>{}) {
+async function translatePendingUnits(translationPort, pending, targetLang, checkpoint=()=>{}, workspaceId='local') {
   if (!pending.length || !translationPort) return [];
   const packed = packFeedAiBatches(pending.map((unit) => ({
     id: unit.localizationId,
@@ -287,7 +293,7 @@ async function translatePendingUnits(translationPort, pending, targetLang, check
   const translations = [];
   async function translateChunk(items) {
     if (translationPort.translateMany) {
-      return translationPort.translateMany({ items, targetLang });
+      return translationPort.translateMany({ items, targetLang, workspaceId });
     }
     if (!translationPort.translate) return { translations: [] };
     const rows = [];
@@ -340,7 +346,7 @@ async function localizeCollected(feedRepository, translationPort, workspaceId, u
   const lockKey = `${workspaceId}:${targetLang}:${pending.map((unit) => unit.localizationId).sort().join(',')}`;
   const run = async () => {
     try {
-      await translatePendingUnits(translationPort, pending, targetLang, rows=>persistTranslations(feedRepository,workspaceId,rows));
+      await translatePendingUnits(translationPort, pending, targetLang, rows=>persistTranslations(feedRepository,workspaceId,rows), workspaceId);
     } catch {
       // 已成功的批次留在库里，没译完的仍是 pending，下次调用接着补。
       // 任务级失败由 Job Runner 写入 feed_translation_failures，这里不把整批打成退避失败。
@@ -978,7 +984,10 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       const translations = [];
       const pending = input.items.filter(item => {
         const row = stored.get(item.id);
-        if (row?.sourceHash !== contentHash(item.text) || !row.translatedText) return true;
+        const shortHourlyTitle = row?.engine === 'hourly-report'
+          && String(item.text || '').length > 400
+          && String(item.text || '').length > String(row.translatedText || '').length * 3;
+        if (shortHourlyTitle || row?.sourceHash !== contentHash(item.text) || !row.translatedText) return true;
         translations.push({ id: item.id, sourceText: item.text, translatedText: row.translatedText, targetLang, engine: row.engine, cached: true });
         return false;
       });
@@ -991,7 +1000,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       const originals = new Map((input.items || []).map((item) => [item.id, item.text]));
       async function translateChunk(items) {
         if (translationPort?.translateMany) {
-          return translationPort.translateMany({ items, targetLang: input.targetLang });
+          return translationPort.translateMany({ items, targetLang: input.targetLang, workspaceId });
         }
         if (!translationPort?.translate) throw new ValidationError('尚未配置翻译', ['items']);
         const rows = [];

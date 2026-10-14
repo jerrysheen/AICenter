@@ -23,17 +23,19 @@ try {
     feedRepository: store.repositories.feed,
     sourcePort: {},
   });
-  const jobs = await backfillUntranslatedFeedTranslations({
+  const result = await backfillUntranslatedFeedTranslations({
     store,
     feedService,
     workspaceId: 'local',
     limit,
     excludeSourceIds: [...flash.ids],
   });
+  const jobs = result.jobs || [];
   console.log(JSON.stringify({
     enqueued: jobs.length,
     jobIds: jobs.map((job) => job.id),
     limit,
+    ...result.summary,
   }));
 } finally {
   store.close();

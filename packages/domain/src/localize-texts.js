@@ -13,7 +13,9 @@ export function needsZhLocalization(sourceText) {
   if (hangul === 0 && latin === 0) return false;
   const foreign = hangul + latin;
   if (hangul >= 2 && hangul >= han && hangul >= latin) return true;
-  if (han >= 12) return false;
+  // Twelve Han characters mark a short post or a Han-dominant article as Chinese.
+  // A long Latin document that only quotes a few Han characters still needs translation.
+  if (han >= 12 && (source.length <= 280 || han * 8 >= foreign)) return false;
   if (han >= 8 && foreign < Math.max(8, Math.ceil(han * 0.25))) return false;
   return latin >= 8 || hangul >= 2;
 }

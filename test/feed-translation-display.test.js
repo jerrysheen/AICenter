@@ -164,19 +164,19 @@ test('long posts are queued in full and a backfill does not duplicate open jobs'
     assert.equal(saved.translatedText, translated);
     assert.equal(saved.sourceHash, hash(seen[0]));
     const queued = await backfillUntranslatedFeedTranslations({ store, feedService: service, workspaceId: 'local', limit: 10 });
-    assert.equal(queued.length, 0);
+    assert.equal(queued.jobs.length, 0);
     feed.removeTranslationIfUnchanged({
       workspaceId: 'local', itemId: longItem.id, targetLang: 'zh', sourceHash: saved.sourceHash,
       translatedText: saved.translatedText, engine: saved.engine,
     }, saved.updatedAt);
-    assert.deepEqual(await backfillUntranslatedFeedTranslations({ store, feedService: service, workspaceId: 'local', limit: 0 }), []);
+    assert.equal((await backfillUntranslatedFeedTranslations({ store, feedService: service, workspaceId: 'local', limit: 0 })).jobs.length, 0);
     const backfill = await backfillUntranslatedFeedTranslations({ store, feedService: service, workspaceId: 'local', limit: 10 });
-    assert.equal(backfill.length, 1);
-    assert.equal(backfill[0].input.items[0].id, longItem.id);
-    assert.equal(backfill[0].input.items[0].text, longText.trim());
-    assert.ok(backfill[0].input.items[0].text.length > 20_000);
+    assert.equal(backfill.jobs.length, 1);
+    assert.equal(backfill.jobs[0].input.items[0].id, longItem.id);
+    assert.equal(backfill.jobs[0].input.items[0].text, longText.trim());
+    assert.ok(backfill.jobs[0].input.items[0].text.length > 20_000);
     const second = await backfillUntranslatedFeedTranslations({ store, feedService: service, workspaceId: 'local', limit: 10 });
-    assert.equal(second[0].id, backfill[0].id);
+    assert.equal(second.jobs[0].id, backfill.jobs[0].id);
     assert.equal(chinese.id.length > 0, true);
   } finally {
     store.close();

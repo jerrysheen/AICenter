@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-14-translation-chunks.md`：长文翻译每次只送一段，默认 1500 字，并记下段序号、字数和结果。一段 500 在段内退避，已完成的段写进数据库，任务重试从失败的那段继续。启动补译写明跳过原因。migration 67。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-14-feed-translation-list.md`：社媒列表带上中文标题和摘要，中文来源不再标「暂未翻译」。阅读页用接口全文译文。超过 2 万字的帖会入队。Worker 启动最多补 80 条，可用环境变量改小。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-14-etf-whale-blobs-untrack.md`：`etf.whale.sync` 重写的 `data/blobs/etf-whale/` 不再进入 Git。页面只读 SQLite。拉取会删掉服务器上这些曾被跟踪的文件；要保留原始响应就先备份，等工作区干净并快进完成后再拷回。不新增 migration。不必为这项单独重启。
