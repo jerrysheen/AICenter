@@ -158,7 +158,19 @@ export function createIndexedDbPersist(factory) {
 export function createSplitPersist({ local, idb, maxLocalBytes = PAGE_CACHE_LOCAL_MAX_BYTES } = {}) {
   return {
     async read(key) {
-      return (await local?.read?.(key)) || (await idb?.read?.(key)) || null;
+      const localRecord = await local?.read?.(key);
+      const idbRecord = await idb?.read?.(key);
+      if (localRecord && idbRecord) {
+        const localAt = Number(localRecord.savedAt) || 0;
+        const idbAt = Number(idbRecord.savedAt) || 0;
+        if (idbAt >= localAt) {
+          await local?.remove?.(key);
+          return idbRecord;
+        }
+        await idb?.remove?.(key);
+        return localRecord;
+      }
+      return localRecord || idbRecord || null;
     },
     async write(key, record) {
       if (pageStoreFor(record?.bytes, maxLocalBytes) === 'local') {

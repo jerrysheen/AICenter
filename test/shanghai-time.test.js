@@ -32,4 +32,17 @@ test('Shanghai calendar day does not share a formatter with the clock', () => {
   assert.equal(dateKey(shanghaiMidnight), '2026-10-14');
   assert.equal(clockLabel(shanghaiMidnight), '00:00');
   assert.equal(zonedCalendarParts(shanghaiMidnight).weekday, 'Wed');
+  const Original = Intl.DateTimeFormat;
+  Intl.DateTimeFormat = class extends Original {
+    formatToParts(date) {
+      return new Original(this.resolvedOptions().locale, this.resolvedOptions()).formatToParts(new Date(date.getTime() - 86_400_000));
+    }
+  };
+  try {
+    assert.equal(dateKey(Date.parse('2026-10-14T03:00:00.000Z')), '2026-10-14');
+    assert.equal(clockLabel(Date.parse('2026-10-13T16:00:00.000Z')), '00:00');
+    assert.equal(monthDayLabel(Date.parse('2026-10-13T16:00:00.000Z')), '10月14日');
+  } finally {
+    Intl.DateTimeFormat = Original;
+  }
 });

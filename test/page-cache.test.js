@@ -66,6 +66,26 @@ test('small records stay in localStorage and large ones go to the other store', 
   assert.equal(await persist.read('large'), null);
 });
 
+test('a newer indexed record wins over an older localStorage body for the same key', async () => {
+  const storage = memoryStorage();
+  const idbRows = new Map();
+  const persist = createSplitPersist({
+    maxLocalBytes: 8,
+    local: createLocalStoragePersist(storage, { maxItemBytes: 8 }),
+    idb: createIndexedDbPersist(async () => ({
+      async read(key) { return idbRows.get(key) || null; },
+      async write(key, record) { idbRows.set(key, record); },
+      async remove(key) { idbRows.delete(key); },
+      async clear() { idbRows.clear(); },
+    })),
+  });
+  const key = 'phone:1|GET|/api/v1/home/bootstrap?day=2026-10-14';
+  storage.setItem(`ai-center.page:${key}`, JSON.stringify({ bodyText: 'yesterday', bytes: 9, savedAt: 1 }));
+  idbRows.set(key, { bodyText: 'today', bytes: 5, savedAt: 2 });
+  assert.equal((await persist.read(key)).bodyText, 'today');
+  assert.equal(storage.getItem(`ai-center.page:${key}`), null);
+});
+
 test('homepage cache stays usable for two hours and then expires', () => {
   const now = Date.parse('2026-10-14T03:00:00.000Z');
   assert.equal(HOME_CACHE_MAX_AGE_MS, 2 * 60 * 60 * 1000);

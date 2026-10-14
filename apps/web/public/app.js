@@ -10,7 +10,7 @@ import { planAskRunsFetch } from './ask-runs.js?v=dev';
 import { behaviorClickName, behaviorControlLabel, behaviorDetailsExpand } from './behavior-clicks.js?v=dev';
 import { browserPagePersist, createPageCache, pageCacheFresh, pageCacheKey } from './page-cache.js?v=dev';
 import { postClientError } from './client-report.js?v=dev';
-import { HOME_BOOTSTRAP_PATH, projectHomeBootstrap } from './home-bootstrap.js?v=dev';
+import { HOME_BOOTSTRAP_PATH, chooseHomeBootstrap, homeBootstrapCachePath, projectHomeBootstrap } from './home-bootstrap.js?v=dev';
 import { dateKey, zonedCalendarParts, zonedClockParts } from './shanghai-time.js?v=dev';
 import {
   preferredOverviewFocus as overviewFocusClock,
@@ -7676,41 +7676,82 @@ function applyProjectedHome(projected, token) {
   }
 }
 
-async function paintHomeFromCache(token) {
-  const record = pageCache.peek(pageCacheKey(pageCacheUser(), 'GET', HOME_BOOTSTRAP_PATH))
-    || await pageCache.read(pageCacheKey(pageCacheUser(), 'GET', HOME_BOOTSTRAP_PATH));
-  if (!record?.bodyText || token !== state.homeLoadToken || !pageCacheFresh(record)) return null;
+function homeCacheBody(record) {
+  if (!record?.bodyText || !pageCacheFresh(record)) return null;
   let body;
   try {
     body = JSON.parse(record.bodyText);
   } catch {
     return null;
   }
-  const projected = projectHomeBootstrap(body);
+  return body;
+}
+
+async function readHomeBootstrapCache() {
+  const user = pageCacheUser();
+  const keys = [
+    pageCacheKey(user, 'GET', homeBootstrapCachePath(Date.now())),
+    pageCacheKey(user, 'GET', HOME_BOOTSTRAP_PATH),
+  ];
+  for (const key of keys) {
+    const record = pageCache.peek(key) || await pageCache.read(key);
+    const body = homeCacheBody(record);
+    if (!body) continue;
+    const chosen = chooseHomeBootstrap({ cached: body, fresh: null, nowMs: Date.now() });
+    if (chosen.source === 'cache') return { record, body: chosen.body };
+  }
+  return null;
+}
+
+async function paintHomeFromCache(token) {
+  const cached = await readHomeBootstrapCache();
+  if (!cached || token !== state.homeLoadToken) return null;
+  const projected = projectHomeBootstrap(cached.body);
   if (!projected || token !== state.homeLoadToken) return null;
   applyProjectedHome(projected, token);
-  state.homeDataAt = Number(record.savedAt) || Date.now();
+  state.homeDataAt = Number(cached.record.savedAt) || Date.now();
   if (document.body.dataset.view === 'sources') renderHub();
-  return record;
+  return cached;
 }
 
 async function fetchHomeBootstrap(token, { refresh = false, cached = null } = {}) {
-  let etag = '';
-  const payload = await api(`${HOME_BOOTSTRAP_PATH}${refresh ? '?refresh=1' : ''}`, {
-    priority: 0,
-    fresh: refresh,
-    cache: refresh ? 'no-store' : undefined,
-    headers: !refresh && cached?.etag ? { 'If-None-Match': cached.etag } : {},
-    onResponse(response) { etag = response.headers?.get?.('etag') || ''; },
+  const dayPath = homeBootstrapCachePath(Date.now());
+  const load = async (path, { etag = '' } = {}) => {
+    let responseEtag = '';
+    const payload = await api(path, {
+      priority: 0,
+      fresh: true,
+      cache: 'no-store',
+      headers: etag ? { 'If-None-Match': etag } : {},
+      onResponse(response) { responseEtag = response.headers?.get?.('etag') || ''; },
+    });
+    return { payload, etag: responseEtag };
+  };
+  const accept = (result, cachedBody) => chooseHomeBootstrap({
+    cached: cachedBody,
+    fresh: result?.payload?.notModified ? null : result?.payload,
+    nowMs: Date.now(),
   });
-  if (token !== state.homeLoadToken || payload?.notModified) return null;
-  const bodyText = JSON.stringify(payload);
-  await pageCache.write(pageCacheKey(pageCacheUser(), 'GET', HOME_BOOTSTRAP_PATH), {
-    bodyText,
-    etag,
-    savedAt: Date.now(),
+  let result = await load(`${dayPath}${refresh ? '&refresh=1' : ''}`, {
+    etag: !refresh && cached?.record?.etag ? cached.record.etag : '',
   });
-  return projectHomeBootstrap(payload);
+  if (token !== state.homeLoadToken) return null;
+  let chosen = accept(result, cached?.body || null);
+  if (chosen.source === 'stale' || chosen.source === 'none') {
+    reportHomeClientError('home-fallback', dayPath, new Error('bootstrap 仍是上一天'));
+    result = await load(`${dayPath}&refresh=1`);
+    if (token !== state.homeLoadToken) return null;
+    chosen = accept(result, null);
+  }
+  if (chosen.source !== 'fresh') return { chosen };
+  const projected = projectHomeBootstrap(chosen.body);
+  const savedAt = Date.now();
+  void pageCache.write(pageCacheKey(pageCacheUser(), 'GET', dayPath), {
+    bodyText: JSON.stringify(chosen.body),
+    etag: result.etag,
+    savedAt,
+  }).catch(() => {});
+  return { chosen, projected };
 }
 
 async function loadSourcesPageLegacy(token, { refresh = false } = {}) {
@@ -7749,10 +7790,10 @@ async function loadSourcesPageNow({ refresh = false } = {}) {
   const cached = refresh ? null : await paintHomeFromCache(token);
   let bootstrapOk = false;
   try {
-    const projected = await fetchHomeBootstrap(token, { refresh, cached });
+    const loaded = await fetchHomeBootstrap(token, { refresh, cached });
     if (token !== state.homeLoadToken) return;
-    if (projected) applyProjectedHome(projected, token);
-    if (projected || cached) {
+    if (loaded?.projected) applyProjectedHome(loaded.projected, token);
+    if (loaded?.chosen?.source === 'fresh' || loaded?.chosen?.source === 'cache') {
       state.homeDataAt = Date.now();
       bootstrapOk = true;
       clearHomeRetry();

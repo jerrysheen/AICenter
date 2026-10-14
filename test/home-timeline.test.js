@@ -431,6 +431,8 @@ test('home requests are the overview set and not the old feed fan-out', () => {
   assert.match(snapshots, /if \(!refresh && loaded && startAt !== latestStart\) return/);
   assert.match(snapshots, /missing: true/);
   assert.match(app, /pageCacheFresh\(record\)/);
+  assert.match(app, /chooseHomeBootstrap\(/);
+  assert.match(app, /cache: 'no-store'/);
   assert.match(homeNow, /home-fallback/);
   assert.match(homeNow, /revealHomeLoadError/);
   assert.match(app, /postClientError/);
