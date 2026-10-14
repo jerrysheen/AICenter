@@ -8,11 +8,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAiCenterServer } from '../apps/web/src/server.js';
 import {
+  clientCountry,
+  clientIp,
   clientTimingAllowed,
   createAccessLog,
   createDailyLogWriter,
   formatSummaryText,
   hashClientAddress,
+  plainUserAgent,
   projectClientTiming,
   readAccessSummary,
   safeRequestPath,
@@ -120,6 +123,7 @@ test('access lines record timing, cache, and a hashed client without blocking a 
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
         'CF-Connecting-IP': '203.0.113.10',
+        'CF-IPCountry': 'JP',
         'CF-Ray': 'abcd1234-SJC',
       },
     });
@@ -145,7 +149,7 @@ test('access lines record timing, cache, and a hashed client without blocking a 
 
     const day = readFileSync(path.join(logDirectory, `access.${new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)}.log`), 'utf8');
     assert.equal(day.includes('secret-value'), false);
-    assert.equal(day.includes('203.0.113.10'), false);
+    assert.equal(day.includes('203.0.113.10'), true);
     const lines = day.split('\n').filter(Boolean).map((line) => JSON.parse(line));
     const health = lines.find((line) => line.path === '/api/v1/health?v=abc');
     assert.ok(health);
@@ -154,6 +158,9 @@ test('access lines record timing, cache, and a hashed client without blocking a 
     assert.equal(health.bytesSent, 2);
     assert.equal(health.aborted, false);
     assert.equal(health.ua, 'desktop');
+    assert.equal(health.ip, '203.0.113.10');
+    assert.equal(health.country, 'JP');
+    assert.equal(health.userAgent, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
     assert.equal(health.cache.control, 'no-store');
     assert.equal(health.cache.notModified, false);
     assert.equal(Object.hasOwn(health.cache, 'hit'), false);
@@ -189,6 +196,91 @@ test('access lines record timing, cache, and a hashed client without blocking a 
     await blockedLog.close();
     rmSync(directory, { recursive: true, force: true });
     rmSync(blocked, { recursive: true, force: true });
+  }
+});
+
+test('plaintext client fields prefer Cloudflare, then the first forwarded address, then the socket', async () => {
+  assert.equal(clientIp({
+    headers: {
+      'cf-connecting-ip': ' 203.0.113.10 ',
+      'x-forwarded-for': '198.51.100.8, 10.0.0.1',
+    },
+    socket: { remoteAddress: '127.0.0.1' },
+  }), '203.0.113.10');
+  assert.equal(clientIp({
+    headers: { 'x-forwarded-for': '198.51.100.8, 10.0.0.1' },
+    socket: { remoteAddress: '10.0.0.1' },
+  }), '198.51.100.8');
+  assert.equal(clientIp({
+    headers: { 'x-forwarded-for': '[2001:db8::8], 10.0.0.1' },
+    socket: { remoteAddress: '127.0.0.1' },
+  }), '2001:db8::8');
+  assert.equal(clientIp({
+    headers: { 'cf-connecting-ip': 'not-an-ip', 'x-forwarded-for': '999.1.1.1' },
+    socket: { remoteAddress: '::ffff:127.0.0.1' },
+  }), '::ffff:127.0.0.1');
+  assert.equal(clientIp({ headers: {}, connection: { remoteAddress: '192.0.2.9' } }), '192.0.2.9');
+  assert.equal(clientIp({ headers: {} }), '');
+  assert.equal(clientCountry({ headers: { 'cf-ipcountry': 't1' } }), 'T1');
+  assert.equal(clientCountry({ headers: { 'cf-ipcountry': 'US\nXX' } }), '');
+  assert.equal(clientCountry({ headers: { 'cf-ipcountry': 'USA' } }), '');
+  const noisy = `bad\r\nagent\u0000\u2028${'x'.repeat(320)}`;
+  const cleaned = plainUserAgent(noisy);
+  assert.equal(cleaned.includes('\n'), false);
+  assert.equal(cleaned.includes('\r'), false);
+  assert.equal(cleaned.includes('\u0000'), false);
+  assert.equal(cleaned.startsWith('badagent'), true);
+  assert.equal(cleaned.length, 300);
+
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-access-plain-'));
+  const accessLog = createAccessLog({ directory, salt: 'test-salt', env: {} });
+  const server = createServer((req, res) => {
+    accessLog.observe(req, res, new URL(req.url || '/', 'http://127.0.0.1'));
+    res.writeHead(204);
+    res.end();
+  });
+  const address = await listen(server);
+  try {
+    const ua = `curl/8.0 ${'y'.repeat(400)}`;
+    const response = await fetch(`http://127.0.0.1:${address.port}/plain`, {
+      headers: {
+        'User-Agent': ua,
+        'X-Forwarded-For': '198.51.100.8, 203.0.113.10',
+        'CF-IPCountry': 'cn',
+      },
+    });
+    assert.equal(response.status, 204);
+    const socketOnly = await fetch(`http://127.0.0.1:${address.port}/socket`, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0)' },
+    });
+    assert.equal(socketOnly.status, 204);
+    await accessLog.flush();
+    const file = path.join(directory, `access.${new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)}.log`);
+    const raw = readFileSync(file, 'utf8');
+    const lines = raw.split('\n').filter(Boolean);
+    assert.equal(lines.length, 2);
+    const record = JSON.parse(lines[0]);
+    assert.equal(record.ip, '198.51.100.8');
+    assert.equal(record.country, 'CN');
+    assert.equal(record.ua, 'bot');
+    assert.equal(Object.hasOwn(record, 'client'), false);
+    assert.equal(Object.hasOwn(record, 'cfRay'), false);
+    assert.equal(record.userAgent.length, 300);
+    assert.equal(record.userAgent.startsWith('curl/8.0 '), true);
+    assert.equal(raw.includes('198.51.100.8'), true);
+    assert.equal(raw.includes(ua), false);
+    const direct = JSON.parse(lines[1]);
+    assert.equal(direct.path, '/socket');
+    assert.equal(direct.ip, '127.0.0.1');
+    assert.equal(direct.country, '');
+    assert.equal(direct.ua, 'desktop');
+    assert.equal(direct.userAgent, 'Mozilla/5.0 (Windows NT 10.0)');
+    const summary = await readAccessSummary(directory, { top: 5 });
+    assert.equal(JSON.stringify(summary).includes('198.51.100.8'), false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await accessLog.close();
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 
