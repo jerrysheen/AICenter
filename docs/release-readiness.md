@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-14 `etf.whale.sync` 把原始响应写进仍被 Git 跟踪的 `data/blobs/etf-whale/`，工作区变脏后自动部署看到 `git status --porcelain` 就放弃。现在停止跟踪并忽略这个目录。页面、重算和覆盖率只读 SQLite，不读这些文件；下次同步会自己建目录，但已成功的区间不会重新下载。拉取这次提交会从磁盘删除约 799 个曾被跟踪的文件。自动部署的备份不含这个目录。服务器要先把目录复制到仓库外，再 `git restore --source=HEAD -- data/blobs/etf-whale`，等 porcelain 为空、快进完成之后再把备份拷回。不新增 migration。不必为这项单独重启；这次差异不在 `apps/web/public/`，自动部署仍会重启 Web 和 Worker。不要重建数据库。见 `progress/2026-10-14-etf-whale-blobs-untrack.md`。
+
 2026-10-14 `#92` 之后问答立刻失败：`Harness overlay 缺少 web.searchProvider 覆盖`。服务器 `core.autocrlf=true`，`packages/harness/aicenter.cordis.yml` 检出是 CRLF，匹配只用 `\n`。现在生成 overlay 时先把 `\r\n` / `\r` 收成 `\n`，搜索配置的匹配也认 `\r?\n`，写给 dsh 的文件是 LF。`.gitattributes` 增加 `*.yml text eol=lf` 和 `*.yaml text eol=lf`。不新增 migration。63 仍空着，下一次迁移从 67 起。需要重启 Worker。Web 不用为这项重启。不要重建数据库。见 `progress/2026-10-14-overlay-crlf.md`。
 
 2026-10-14 问答联网搜索打到了过期的 DeepSeek 搜索密钥。`dsh-base` 把 `web.searchProvider` 写成 `deepseek-official`，`dsh-web` 用这份配置，不用子进程里的 `DSH_WEB_SEARCH_PROVIDER`。现在 overlay 覆盖 `web.searchProvider: elucid-grok`（由 `resolveHarnessWebSearchProvider()` 写入），并把 `web-search-deepseek` 标成 `disabled: true`。主模型仍可以是 DeepSeek 或 Grok；搜索只走 Grok。没有 `ELUCID_GROK_API_KEY` / `AI_CENTER_GROK_API_KEY` 时搜索直接报错，不改走 DeepSeek。`web.search` 的 trace 记下 `searchProvider`；工具错误里如果出现 DeepSeek 搜索，记成 `deepseek-official`。页面进度文案不写供应商。不新增 migration。63 仍空着，下一次迁移从 67 起。需要重启 Worker，已有的 dsh 子进程才会换上这份 overlay。Web 不用为这项重启。不要重建数据库。见 `progress/2026-10-14-grok-web-search.md`。
