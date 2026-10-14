@@ -167,6 +167,20 @@ test('overlay patch keeps built-in web and rewrites the plugin to a file URL', (
   assert.doesNotMatch(overlay, /id: web-search-deepseek\n  name: '@deepseek-ai\/dsh-web-search-deepseek'\n  disabled: false/);
 });
 
+test('CRLF overlay still forces Grok search and is written with LF', () => {
+  const source = readFileSync(harnessPatchPath(), 'utf8').replaceAll('\n', '\r\n');
+  assert.match(source, /\r\n/);
+  const overlay = materializeHarnessPatch(source);
+  assert.doesNotMatch(overlay, /\r/);
+  assert.match(overlay, /id: web\n  name: '@deepseek-ai\/dsh-web'\n  config:\n    searchProvider: elucid-grok\n    fetchProvider: http\n/);
+  assert.match(overlay, /id: web-search-deepseek\n  name: '@deepseek-ai\/dsh-web-search-deepseek'\n  disabled: true\n/);
+  const closed = materializeClosedContextPatch(source);
+  assert.doesNotMatch(closed, /\r/);
+  assert.match(closed, /id: tool-web/);
+  assert.match(closed, /disabled: true/);
+  assert.doesNotMatch(closed, /web-search-elucid/);
+});
+
 test('closed-context overlay disables native web tools', () => {
   const overlay = materializeClosedContextPatch(readFileSync(harnessPatchPath(), 'utf8'));
   assert.match(overlay, /id: tool-web/);

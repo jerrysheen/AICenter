@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-14-overlay-crlf.md`：Windows `core.autocrlf=true` 把 overlay 检出成 CRLF，`web.searchProvider` 的匹配只认 LF，问答在 1 秒内失败。解析先把换行收成 LF，写出的 overlay 也是 LF。`.gitattributes` 让 `*.yml` / `*.yaml` 按 LF 检出。不新增 migration。需要重启 Worker。
+
 - `progress/2026-10-14-grok-web-search.md`：问答 `web_search` 只走 Grok。overlay 把 `web.searchProvider` 写成 `elucid-grok`，并禁用 `web-search-deepseek`。没有 Grok 密钥就报错，不回退 DeepSeek 搜索。`web.search` 事件记下实际 provider。不新增 migration。需要重启 Worker。
 
 - `progress/2026-10-14-etf-whale-history.md`：ETF 鲸鱼单只序列改读路径里的代码。总览和单只 GET 对只读令牌开放。`etf.whale.sync` 默认每天上海时间 18:30 跑，并回看 12 天。指数日线走 `index_daily`，ETF 日线走 `fund_daily`，日 K 带 `amount`。缺交易日会丢掉缓存重取；收盘前不把当天未完成的柱写成完整日 K；开高低收不自洽的柱不入库。不新增 migration。需要同时重启 Web 和 Worker。
