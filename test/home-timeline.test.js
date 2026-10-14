@@ -373,11 +373,18 @@ test('the newest loaded hour stays visible even when it has no hits', () => {
   assert.equal(sections[0].label, '02:00–03:00');
   assert.equal(sections[0].items.length, 0);
   assert.equal(sections[1].items[0].title, '旧');
+  const fallback = homeHourSections({
+    editions: [edition(start), edition(older)],
+    readings: { [start]: { missing: true }, [older]: { items: [hit] } },
+    nowMs: now,
+  });
+  assert.equal(fallback.length, 1);
+  assert.equal(fallback[0].items[0].title, '旧');
   assert.equal(homeHourSections({
     editions: [edition(start), edition(older)],
     readings: { [older]: { items: [hit] } },
     nowMs: now,
-  }).length, 0);
+  })[0].items[0].title, '旧');
 });
 
 test('a quoted overview board is kept when the next payload has no prices', () => {
@@ -422,6 +429,11 @@ test('home requests are the overview set and not the old feed fan-out', () => {
   assert.match(app, /mergeReadingHours\(state\.homeReadingHours, absorbReadingIndex\(payload\)\)/);
   const snapshots = app.slice(app.indexOf('async function ensureHomeReadingSnapshots'), app.indexOf('async function loadHomeReadingIndex'));
   assert.match(snapshots, /if \(!refresh && loaded && startAt !== latestStart\) return/);
+  assert.match(snapshots, /missing: true/);
+  assert.match(app, /pageCacheFresh\(record\)/);
+  assert.match(homeNow, /home-fallback/);
+  assert.match(homeNow, /revealHomeLoadError/);
+  assert.match(app, /postClientError/);
   const catalog = app.slice(app.indexOf('function renderStaticSourceCatalog()'), app.indexOf('const staticScheduleWindows'));
   assert.match(catalog, /unavailableOfficialCount\(health\)/);
   assert.match(app.slice(app.indexOf('function renderHomeSourceLine()'), app.indexOf('async function loadHomeTree')), /unavailableOfficialCount\(officialSourceHealth\(\)\)/);

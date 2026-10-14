@@ -5,6 +5,8 @@ import {
   createLocalStoragePersist,
   createPageCache,
   createSplitPersist,
+  HOME_CACHE_MAX_AGE_MS,
+  pageCacheFresh,
   pageCacheKey,
   pageStoreFor,
 } from '../apps/web/public/page-cache.js';
@@ -62,4 +64,13 @@ test('small records stay in localStorage and large ones go to the other store', 
   await persist.clear();
   assert.equal(storage.getItem('ai-center.page:small'), null);
   assert.equal(await persist.read('large'), null);
+});
+
+test('homepage cache stays usable for two hours and then expires', () => {
+  const now = Date.parse('2026-10-14T03:00:00.000Z');
+  assert.equal(HOME_CACHE_MAX_AGE_MS, 2 * 60 * 60 * 1000);
+  assert.equal(pageCacheFresh({ savedAt: now - HOME_CACHE_MAX_AGE_MS }, now), true);
+  assert.equal(pageCacheFresh({ savedAt: now - HOME_CACHE_MAX_AGE_MS - 1 }, now), false);
+  assert.equal(pageCacheFresh({ savedAt: now + 1 }, now), false);
+  assert.equal(pageCacheFresh({}, now), false);
 });

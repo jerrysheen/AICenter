@@ -94,6 +94,7 @@ export function createStaticFileHandler(publicDirectory) {
     '/home-bootstrap.js': ['home-bootstrap.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/ask-runs.js': ['ask-runs.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/client-timing.js': ['client-timing.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
+    '/client-report.js': ['client-report.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/behavior-clicks.js': ['behavior-clicks.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/media-feed.js': ['media-feed.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/brief-page.js': ['brief-page.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],

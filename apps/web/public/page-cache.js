@@ -1,6 +1,14 @@
 export const PAGE_CACHE_MAX_BYTES = 4 * 1024 * 1024;
 export const PAGE_CACHE_MAX_ENTRIES = 80;
 export const PAGE_CACHE_LOCAL_MAX_BYTES = 48 * 1024;
+export const HOME_CACHE_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+
+export function pageCacheFresh(record, now = Date.now(), maxAge = HOME_CACHE_MAX_AGE_MS) {
+  const savedAt = Number(record?.savedAt);
+  if (!Number.isFinite(savedAt)) return false;
+  const age = now - savedAt;
+  return age >= 0 && age <= maxAge;
+}
 const LOCAL_PREFIX = 'ai-center.page:';
 
 export function pageCacheKey(user, method, path) {

@@ -21,16 +21,14 @@ function part(list, type) {
   return list.find((item) => item.type === type)?.value || '';
 }
 
+const WEEKDAY_ZH = { Sun: '周日', Mon: '周一', Tue: '周二', Wed: '周三', Thu: '周四', Fri: '周五', Sat: '周六' };
+
 export function newsDayLabel(at) {
   const value = Number(at);
   if (!Number.isFinite(value) || value <= 0) return '';
-  return new Intl.DateTimeFormat('zh-CN', {
-    timeZone: SHANGHAI,
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-    weekday: 'short',
-  }).format(new Date(value));
+  const date = zonedCalendarParts(value, SHANGHAI);
+  if (!date.year) return '';
+  return `${date.year}年${date.month}月${date.day}日${WEEKDAY_ZH[date.weekday] || ''}`;
 }
 
 export function newsEffectiveLabel(at) {

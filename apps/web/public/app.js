@@ -8,8 +8,10 @@ import { renderMarkdownInto, renderFeedTextInto, splitFeedText, stripSharePlaceh
 import { cacheTtlFor, createRequestLayer, isPreparedPending, planTranslationPoll, requestDedupeKey, resolvePreparedPending, TRANSLATION_POLL_DEADLINE_MS } from './client-request.js?v=dev';
 import { planAskRunsFetch } from './ask-runs.js?v=dev';
 import { behaviorClickName, behaviorControlLabel, behaviorDetailsExpand } from './behavior-clicks.js?v=dev';
-import { browserPagePersist, createPageCache, pageCacheKey } from './page-cache.js?v=dev';
+import { browserPagePersist, createPageCache, pageCacheFresh, pageCacheKey } from './page-cache.js?v=dev';
+import { postClientError } from './client-report.js?v=dev';
 import { HOME_BOOTSTRAP_PATH, projectHomeBootstrap } from './home-bootstrap.js?v=dev';
+import { dateKey, zonedCalendarParts, zonedClockParts } from './shanghai-time.js?v=dev';
 import {
   preferredOverviewFocus as overviewFocusClock,
   HOME_QUOTE_CAPTION,
@@ -19,6 +21,7 @@ import {
   hourlyEditions,
   homeHourSections,
   homeHourItemTime,
+  homeReadingReady,
   acceptMarketPayload,
   marketPayloadHasQuotes,
   absorbReadingIndex,
@@ -262,6 +265,7 @@ const state = {
   homeReadingError: '',
   homeEarlier: false,
   homeLoadToken: 0,
+  homeDataAt: 0,
   homeLoadStartedAt: 0,
   homeSlow: false,
   sourceLocalizations: {},
@@ -7075,12 +7079,12 @@ function staticSignalTime(item, viewKind) {
     if (item.status === 'tba') return '待公布';
     return '时间待公布';
   }
-  const date = new Date(value);
-  const releaseIsDateOnly = viewKind !== 'calendar' && date.getHours() === 0 && date.getMinutes() === 0;
-  const options = item.timePrecision === 'date' || releaseIsDateOnly
-    ? { year: 'numeric', month: 'short', day: 'numeric' }
-    : { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
-  return date.toLocaleString('zh-CN', options);
+  const date = zonedCalendarParts(value);
+  const clock = zonedClockParts(value);
+  const releaseIsDateOnly = viewKind !== 'calendar' && clock.hour === 0 && clock.minute === 0;
+  if (item.timePrecision === 'date' || releaseIsDateOnly) return `${date.year}年${date.month}月${date.day}日`;
+  const pad = (part) => String(part).padStart(2, '0');
+  return `${date.year}年${date.month}月${date.day}日 ${pad(clock.hour)}:${pad(clock.minute)}`;
 }
 
 function staticSignalLinkLabel(item, viewKind) {
@@ -7448,6 +7452,7 @@ async function loadHomeTree(path, token, { priority = 0, fresh = false } = {}) {
   } catch (error) {
     if (token !== state.homeLoadToken) return;
     state.homeTreeError = error instanceof Error ? error.message : '小时报读取失败';
+    reportHomeClientError('home-request', path, error);
   } finally {
     if (token === state.homeLoadToken) state.homeTreeLoaded = true;
   }
@@ -7467,8 +7472,9 @@ async function ensureHomeReadingSnapshots(token, { refresh = false, phase = 'vis
     const current = state.homeReadingHours[startAt];
     const loaded = Array.isArray(current?.items) && current.items.length > 0;
     if (!refresh && loaded && startAt !== latestStart) return;
+    const path = homeRequestPlan(Date.now()).readingHour(startAt, edition.window.endAt);
     try {
-      const payload = await api(homeRequestPlan(Date.now()).readingHour(startAt, edition.window.endAt), {
+      const payload = await api(path, {
         priority,
         fresh: refresh,
         cache: refresh ? 'no-store' : undefined,
@@ -7477,9 +7483,10 @@ async function ensureHomeReadingSnapshots(token, { refresh = false, phase = 'vis
       if (payload?.snapshot) state.homeReadingHours[startAt] = payload.snapshot;
     } catch (error) {
       if (token !== state.homeLoadToken) return;
+      reportHomeClientError('home-request', path, error);
       if (error?.status === 404) {
         const prior = state.homeReadingHours[startAt];
-        state.homeReadingHours[startAt] = prior ? { ...prior, items: [] } : { items: [] };
+        if (!homeReadingReady(prior)) state.homeReadingHours[startAt] = { missing: true };
         return;
       }
       state.homeReadingError = '小时报读取失败';
@@ -7506,6 +7513,7 @@ async function loadHomeReadingIndex(path, token, { priority = 0, fresh = false }
     state.homeReadingHours = mergeReadingHours(state.homeReadingHours, absorbReadingIndex(payload));
   } catch (error) {
     if (token !== state.homeLoadToken) return;
+    reportHomeClientError('home-request', path, error);
     if (error?.status === 404) state.homeReadingIndexMissing = true;
     else state.homeReadingError = '小时报读取失败';
   }
@@ -7565,9 +7573,44 @@ async function loadHomeBoard(path, { refresh = false, token = state.homeLoadToke
 }
 
 function homeHourlySnapshotReady() {
-  const edition = hourlyEditions(state.homeTree)[0];
-  if (!edition) return false;
-  return Array.isArray(state.homeReadingHours[edition.window.startAt]?.items);
+  return hourlyEditions(state.homeTree).slice(0, 8).some((edition) => homeReadingReady(state.homeReadingHours[edition.window.startAt]));
+}
+
+function homeDataFresh(now = Date.now()) {
+  return pageCacheFresh({ savedAt: state.homeDataAt }, now);
+}
+
+function reportHomeClientError(kind, path, error) {
+  const status = Number(error?.status) || 0;
+  const detail = error instanceof Error ? error.message : String(error || '');
+  postClientError({ kind, path, status, detail });
+}
+
+let homeRetryTimer = 0;
+
+function clearHomeRetry() {
+  if (homeRetryTimer) window.clearTimeout(homeRetryTimer);
+  homeRetryTimer = 0;
+}
+
+function scheduleHomeRetry(token) {
+  clearHomeRetry();
+  homeRetryTimer = window.setTimeout(() => {
+    homeRetryTimer = 0;
+    if (token !== state.homeLoadToken) return;
+    if (!state.session || document.body.dataset.view !== 'sources' || (state.overviewPane || 'home') !== 'home') return;
+    loadSourcesPage({ refresh: true }).catch(() => {});
+  }, 20_000);
+}
+
+function revealHomeLoadError() {
+  state.homeTree = null;
+  state.homeReadingHours = {};
+  state.homeTreeError = '小时报读取失败';
+  state.homeReadingError = '小时报读取失败';
+  state.homeTreeLoaded = true;
+  state.homeHourlySettled = true;
+  state.homeDataAt = 0;
 }
 
 let sourcesPageFlight = null;
@@ -7636,7 +7679,7 @@ function applyProjectedHome(projected, token) {
 async function paintHomeFromCache(token) {
   const record = pageCache.peek(pageCacheKey(pageCacheUser(), 'GET', HOME_BOOTSTRAP_PATH))
     || await pageCache.read(pageCacheKey(pageCacheUser(), 'GET', HOME_BOOTSTRAP_PATH));
-  if (!record?.bodyText || token !== state.homeLoadToken) return null;
+  if (!record?.bodyText || token !== state.homeLoadToken || !pageCacheFresh(record)) return null;
   let body;
   try {
     body = JSON.parse(record.bodyText);
@@ -7646,6 +7689,7 @@ async function paintHomeFromCache(token) {
   const projected = projectHomeBootstrap(body);
   if (!projected || token !== state.homeLoadToken) return null;
   applyProjectedHome(projected, token);
+  state.homeDataAt = Number(record.savedAt) || Date.now();
   if (document.body.dataset.view === 'sources') renderHub();
   return record;
 }
@@ -7703,14 +7747,38 @@ async function loadSourcesPageNow({ refresh = false } = {}) {
   if (refresh) state.homeTreeLoaded = false;
   armHomeSlowWatch();
   const cached = refresh ? null : await paintHomeFromCache(token);
+  let bootstrapOk = false;
   try {
     const projected = await fetchHomeBootstrap(token, { refresh, cached });
     if (token !== state.homeLoadToken) return;
     if (projected) applyProjectedHome(projected, token);
-  } catch {
+    if (projected || cached) {
+      state.homeDataAt = Date.now();
+      bootstrapOk = true;
+      clearHomeRetry();
+    } else {
+      throw new Error('总览没有数据');
+    }
+  } catch (error) {
+    if (token !== state.homeLoadToken) return;
+    const bootstrapPath = `${HOME_BOOTSTRAP_PATH}${refresh ? '?refresh=1' : ''}`;
+    reportHomeClientError('home-request', bootstrapPath, error);
+    reportHomeClientError('home-fallback', bootstrapPath, error);
     await loadSourcesPageLegacy(token, { refresh });
+    if (token !== state.homeLoadToken) return;
+    const legacyOk = Boolean(state.homeTree) && !state.homeTreeError;
+    if (legacyOk) {
+      state.homeDataAt = Date.now();
+      clearHomeRetry();
+    } else if (!homeDataFresh()) {
+      revealHomeLoadError();
+      scheduleHomeRetry(token);
+    } else {
+      scheduleHomeRetry(token);
+    }
   }
   if (token !== state.homeLoadToken) return;
+  if (bootstrapOk) clearHomeRetry();
   renderHub();
   scheduleHomeTail(token, { refresh });
 }
@@ -11271,13 +11339,8 @@ function renderBriefManagement(root,date,brief,mode,hours) {
   renderTrackingEditor(root);
 }
 
-function shanghaiDateKey(now = new Date()) {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(now);
+function shanghaiDateKey(now = Date.now()) {
+  return dateKey(now);
 }
 
 function shiftDateKey(iso, days) {
@@ -11288,13 +11351,8 @@ function shiftDateKey(iso, days) {
   return utc.toISOString().slice(0, 10);
 }
 
-function expectedBriefDate(now = new Date()) {
-  let hour = Number(new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Asia/Shanghai',
-    hour: '2-digit',
-    hourCycle: 'h23',
-  }).format(now));
-  if (hour === 24) hour = 0;
+function expectedBriefDate(now = Date.now()) {
+  const hour = zonedClockParts(now).hour;
   const today = shanghaiDateKey(now);
   return hour >= 8 ? today : shiftDateKey(today, -1);
 }

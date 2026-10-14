@@ -42,11 +42,13 @@ function readJsonLines(file) {
   return readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
 }
 
-test('request path keeps only the version query and classifies the user agent', () => {
-  assert.equal(safeRequestPath('/api/v1/feed?limit=12&token=secret&v=abc'), '/api/v1/feed?v=abc');
+test('request path keeps the query string, drops token parameters, and classifies the user agent', () => {
+  assert.equal(safeRequestPath('/api/v1/feed?limit=12&token=secret&v=abc'), '/api/v1/feed?limit=12&v=abc');
   assert.equal(safeRequestPath('/app.js?v=dev'), '/app.js?v=dev');
-  assert.equal(safeRequestPath('/api/v1/session?q=secret'), '/api/v1/session');
+  assert.equal(safeRequestPath('/api/v1/reports/reading-hour?startAt=1&endAt=2&scope=hour'), '/api/v1/reports/reading-hour?startAt=1&endAt=2&scope=hour');
+  assert.equal(safeRequestPath('/api/v1/session?q=secret'), '/api/v1/session?q=secret');
   assert.equal(safeRequestPath('/api/v1/session?v=bad value'), '/api/v1/session');
+  assert.equal(safeRequestPath('/api/v1/home/bootstrap?refresh=1&token=abc'), '/api/v1/home/bootstrap?refresh=1');
   assert.equal(userAgentClass('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)'), 'mobile');
   assert.equal(userAgentClass('Mozilla/5.0 (Windows NT 10.0; Win64; x64)'), 'desktop');
   assert.equal(userAgentClass('curl/8.0'), 'bot');

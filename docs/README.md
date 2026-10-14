@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-14-home-hour-fallback.md`：总览小时区在最新快照 404 或中间缺小时时改显示最近已有刊期。bootstrap 本地缓存最多 2 小时，新旧请求都失败后过期就显示重试并继续试。已配对设备可上报 `[web] client-error`。日期和小时按上海 UTC+8 计算。小时任务仍在第 30 分钟入队，这次不提前。不新增 migration。需要重启 Web。浏览器再加载一次。
+
 - `progress/2026-10-14-hourly-list-published-at.md`：小时报列表按原文 `publishedAt` 排序和显示，缺发布时间才用入库时间，过远的未来时间改用入库时间。去掉灰色「发布 HH:MM」。GitHub `awesome-*` 仓库更新不进小时列表。分类标签和「分享」只在展开后出现。不新增 migration。需要同时重启 Web 和 Worker。浏览器再加载一次。
 
 - `progress/2026-10-14-scrape-chrome-default-profile.md`：日常 Chrome 不带 `--user-data-dir`。配置的目录等于 `%LOCALAPPDATA%\Google\Chrome\User Data` 时，这种进程算该目录已在使用，`--type=` 子进程不算，因此不另开第二只。`AI_CENTER_SCRAPE_CHROME_PROFILE_DIRECTORY` 会连同 `--user-data-dir` 传 `--profile-directory`。不新增 migration。需要重新运行 `scripts/start-ai-center.ps1`。

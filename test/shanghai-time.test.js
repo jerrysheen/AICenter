@@ -28,4 +28,8 @@ test('Shanghai calendar day does not share a formatter with the clock', () => {
   assert.equal(monthDayLabel(inclusiveWindowInstant(Date.parse('2026-10-09T00:00:00.000Z'))), '10月9日');
   const row = newsTimeLabel(midnight, { now: Date.parse('2026-10-12T04:00:00.000Z') });
   assert.equal(row.text, '10月10日 00:00');
+  const shanghaiMidnight = Date.parse('2026-10-13T16:00:00.000Z');
+  assert.equal(dateKey(shanghaiMidnight), '2026-10-14');
+  assert.equal(clockLabel(shanghaiMidnight), '00:00');
+  assert.equal(zonedCalendarParts(shanghaiMidnight).weekday, 'Wed');
 });
