@@ -35,6 +35,20 @@ function longerTranslation(left, right) {
   return right.translatedText.length > left.translatedText.length ? right : left;
 }
 
+function translationLooksChinese(text) {
+  const value = String(text || '').trim();
+  return Boolean(value) && !needsZhLocalization(value) && /\p{Script=Han}/u.test(value);
+}
+
+export function pickReaderTranslation(rows, sourceHash) {
+  const withText = (rows || []).filter((row) => row?.translatedText);
+  const matched = withText.find((row) => row.sourceHash === sourceHash);
+  if (matched && translationLooksChinese(matched.translatedText)) return matched;
+  const chinese = withText.find((row) => translationLooksChinese(row.translatedText));
+  if (chinese) return chinese;
+  return matched || null;
+}
+
 function commentCount(body) {
   const lines = String(body || '').replace(/\r\n?/g, '\n').trim().split('\n');
   const heading = /^\s*(?:#{1,6}\s*)?(?:\*\*)?(?:评论(?:区|预览)?|Comments?|Replies)(?:\*\*)?\s*[：:]?\s*$/iu;
@@ -53,6 +67,13 @@ function commentCount(body) {
 function projectListItem(item) {
   const summary = clipText(item.normalizedArticle?.summary || item.summary || item.body);
   const translated = item.translation?.text || '';
+  const storedTitle = String(item.title || '').trim();
+  const zhLead = hanLead(storedTitle) ? '' : (
+    chineseCardLead(item.normalizedArticle?.title)
+    || chineseCardLead(translated)
+    || chineseCardLead(item.bodyLang || item.body || '')
+    || chineseCardLead(item.summary || '')
+  );
   return {
     id: item.id,
     resourceId: item.resourceId,
@@ -62,6 +83,7 @@ function projectListItem(item) {
     authorName: item.authorName || '',
     authorHandle: item.authorHandle || '',
     title: item.title || '',
+    ...(zhLead ? { zhLead } : {}),
     summary,
     excerpt: summary,
     sourceUrl: item.sourceUrl || '',
@@ -94,6 +116,28 @@ function contentHash(value) {
   return createHash('sha256').update(String(value)).digest('hex');
 }
 
+function hanLead(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text || needsZhLocalization(text) || !/\p{Script=Han}/u.test(text)) return '';
+  return text;
+}
+
+function chineseCardLead(value) {
+  const text = String(value || '').trim();
+  const first = hanLead(firstSentence(text));
+  if (first) return clipText(first, 80);
+  return clipText(hanLead(firstSentence(remainderAfterSentence(text))), 80);
+}
+
+export function listNeedsTranslation(row) {
+  const body = String(row?.body || row?.bodyLang || '').trim();
+  if (body) return needsZhLocalization(body);
+  const summary = String(row?.summary || '').trim();
+  const title = String(row?.title || '').trim();
+  if (summary && !needsZhLocalization(summary) && !needsZhLocalization(title)) return false;
+  return needsZhLocalization(summary || title);
+}
+
 function toFeedItem(providerId, row) {
   return {
     id: `${providerId}:${row.externalId}`,
@@ -106,11 +150,12 @@ function toFeedItem(providerId, row) {
     title: row.title || '',
     summary: row.summary || '',
     body: row.body || '',
+    bodyLang: row.bodyLang || '',
     sourceUrl: row.sourceUrl || '',
     publishedAt: row.publishedAt || 0,
     capturedAt: row.capturedAt || row.createdAt || 0,
     updatedAt: row.updatedAt || 0,
-    needsTranslation: needsZhLocalization(row.body || row.bodyLang || row.summary || ''),
+    needsTranslation: listNeedsTranslation(row),
     processing: '',
     subscriptionId: '',
     captureId: row.captureId || '',
@@ -198,7 +243,10 @@ function projectLocalizations(units, byItemId, failures = new Map(), now = Date.
   for (const unit of units) {
     const row = byItemId.get(unit.localizationId);
     const hash = contentHash(unit.text);
-    const ready = Boolean(row && row.sourceHash === hash && row.translatedText);
+    const shortHourlyTitle = row?.engine === 'hourly-report'
+      && unit.text.length > 400
+      && unit.text.length > String(row.translatedText || '').length * 3;
+    const ready = Boolean(row && row.sourceHash === hash && row.translatedText && !shortHourlyTitle);
     const failure = failures.get(unit.localizationId);
     const failed = !ready && failure && failure.sourceHash === hash
       && (failure.nextRetryAt == null || failure.nextRetryAt > now);
@@ -237,6 +285,8 @@ function adoptReusableTranslations(feedRepository, workspaceId, units, targetLan
     for (const unit of units) {
       const title = hourlySourceIds(unit).map((id) => titles.get?.(id)).find(Boolean);
       if (!title) continue;
+      // A hourly title is not the translation of a long body.
+      if (unit.text.length > 400 && unit.text.length > String(title).length * 3) continue;
       adopted.push({
         id: unit.localizationId,
         sourceText: unit.text,
@@ -258,6 +308,7 @@ function adoptReusableTranslations(feedRepository, workspaceId, units, targetLan
     for (const unit of rest) {
       const row = byHash.get(contentHash(unit.text));
       if (!row?.translatedText) continue;
+      if (unit.text.length > 400 && unit.text.length > String(row.translatedText).length * 3) continue;
       adopted.push({
         id: unit.localizationId,
         sourceText: unit.text,
@@ -272,7 +323,7 @@ function adoptReusableTranslations(feedRepository, workspaceId, units, targetLan
   return true;
 }
 
-async function translatePendingUnits(translationPort, pending, targetLang, checkpoint=()=>{}) {
+async function translatePendingUnits(translationPort, pending, targetLang, checkpoint=()=>{}, workspaceId='local') {
   if (!pending.length || !translationPort) return [];
   const packed = packFeedAiBatches(pending.map((unit) => ({
     id: unit.localizationId,
@@ -287,7 +338,7 @@ async function translatePendingUnits(translationPort, pending, targetLang, check
   const translations = [];
   async function translateChunk(items) {
     if (translationPort.translateMany) {
-      return translationPort.translateMany({ items, targetLang });
+      return translationPort.translateMany({ items, targetLang, workspaceId });
     }
     if (!translationPort.translate) return { translations: [] };
     const rows = [];
@@ -340,7 +391,7 @@ async function localizeCollected(feedRepository, translationPort, workspaceId, u
   const lockKey = `${workspaceId}:${targetLang}:${pending.map((unit) => unit.localizationId).sort().join(',')}`;
   const run = async () => {
     try {
-      await translatePendingUnits(translationPort, pending, targetLang, rows=>persistTranslations(feedRepository,workspaceId,rows));
+      await translatePendingUnits(translationPort, pending, targetLang, rows=>persistTranslations(feedRepository,workspaceId,rows), workspaceId);
     } catch {
       // 已成功的批次留在库里，没译完的仍是 pending，下次调用接着补。
       // 任务级失败由 Job Runner 写入 feed_translation_failures，这里不把整批打成退避失败。
@@ -901,9 +952,13 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       if (item.provider && item.externalId) ids.push(`${item.provider}:${item.externalId}`);
       const rows = feedRepository.listTranslations?.(workspaceId, ids, 'zh') || [];
       const hash = contentHash(item.body || '');
-      const row = rows.find((entry) => entry.sourceHash === hash && entry.translatedText);
+      const row = pickReaderTranslation(rows, hash);
+      const publishedAt = item.publishedAt || item.capturedAt || item.createdAt || 0;
+      const authorName = String(item.authorName || item.captureMetadata?.authorHandle || '').trim();
       return attachNormalizedArticle(workspaceId,{
         ...item,
+        authorName,
+        publishedAt,
         translation: row?.translatedText
           ? { text: row.translatedText, engine: row.engine || '', targetLang: row.targetLang || 'zh' }
           : null,
@@ -978,7 +1033,10 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       const translations = [];
       const pending = input.items.filter(item => {
         const row = stored.get(item.id);
-        if (row?.sourceHash !== contentHash(item.text) || !row.translatedText) return true;
+        const shortHourlyTitle = row?.engine === 'hourly-report'
+          && String(item.text || '').length > 400
+          && String(item.text || '').length > String(row.translatedText || '').length * 3;
+        if (shortHourlyTitle || row?.sourceHash !== contentHash(item.text) || !row.translatedText) return true;
         translations.push({ id: item.id, sourceText: item.text, translatedText: row.translatedText, targetLang, engine: row.engine, cached: true });
         return false;
       });
@@ -991,7 +1049,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       const originals = new Map((input.items || []).map((item) => [item.id, item.text]));
       async function translateChunk(items) {
         if (translationPort?.translateMany) {
-          return translationPort.translateMany({ items, targetLang: input.targetLang });
+          return translationPort.translateMany({ items, targetLang: input.targetLang, workspaceId });
         }
         if (!translationPort?.translate) throw new ValidationError('尚未配置翻译', ['items']);
         const rows = [];

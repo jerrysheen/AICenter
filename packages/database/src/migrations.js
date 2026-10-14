@@ -1912,6 +1912,22 @@ migrations.push({ version: 66, name: 'outbox_sse_data', up(database) {
   addColumn(database, 'outbox_events', 'sse_data', 'TEXT');
 }});
 
+migrations.push({ version: 67, name: 'feed_translation_chunks', up(database) {
+  database.exec(`CREATE TABLE IF NOT EXISTS feed_translation_chunks (
+      workspace_id TEXT NOT NULL,
+      item_id TEXT NOT NULL,
+      target_lang TEXT NOT NULL,
+      source_hash TEXT NOT NULL,
+      chunk_index INTEGER NOT NULL,
+      chunk_count INTEGER NOT NULL,
+      chunk_hash TEXT NOT NULL,
+      translated_text TEXT NOT NULL,
+      engine TEXT NOT NULL DEFAULT '',
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (workspace_id, item_id, target_lang, source_hash, chunk_index)
+    );`);
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

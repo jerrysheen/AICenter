@@ -86,7 +86,17 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort, res
     requestTranslation(input) {
       const value = FeedTranslationJobInputSchema.parse(input);
       const open = runtimeRepository.listOpenJobs?.('feed.translation.run')?.find(job => job.workspaceId === value.workspaceId && JSON.stringify(job.input) === JSON.stringify(value));
-      return open || runtimeRepository.createJob({ type: 'feed.translation.run', workspaceId: value.workspaceId, input: value, maxAttempts: TRANSLATION_MAX_ATTEMPTS });
+      if (open) {
+        if (open.status === 'queued' && open.priority < 10 && runtimeRepository.prioritizeQueuedJobs) {
+          runtimeRepository.prioritizeQueuedJobs(value.workspaceId, [open.id], 10);
+          return { ...open, priority: 10 };
+        }
+        return open;
+      }
+      return runtimeRepository.createJob({
+        type: 'feed.translation.run', workspaceId: value.workspaceId, input: value,
+        maxAttempts: TRANSLATION_MAX_ATTEMPTS, priority: 10,
+      });
     },
     requestHourlyDigest(input={}) {
       if (String(env?.AI_CENTER_HOURLY_DISABLED ?? '') === '1') return {status:'skipped', reason:'hourly-disabled'};

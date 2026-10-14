@@ -2,7 +2,7 @@ import {attachDailyProcessLog} from '../../../packages/runtime/src/process-log.j
 import { audioTranscriptionManifest, createAudioTranscriptionJobHandlers } from '../../../packages/runtime/src/audio-transcription-job.js';
 import {createGeminiArticleAdmission,startGeminiQuotaProbe} from '../../../packages/runtime/src/gemini-article-admission.js';
 import {resolveGoogleHourlyAdmissionModels} from '../../../packages/harness/src/llm-route.js';
-import { backfillUntranslatedFeedTranslations, createFeedTranslationJobHandlers, feedTranslationManifest, translationStartupBackfillLimit } from '../../../packages/runtime/src/feed-translation-module.js';
+import { backfillUntranslatedFeedTranslations, createFeedTranslationChunkStore, createFeedTranslationJobHandlers, feedTranslationManifest, formatTranslationBackfillLog, translationStartupBackfillLimit } from '../../../packages/runtime/src/feed-translation-module.js';
 import { createHardwareArtifactStore } from '../../../packages/connectors/src/hardware-artifacts.js';
 import { legacyPriceSnapshot } from '../../../packages/connectors/src/trendforce-prices.js';
 import { createHardwarePriceService } from '../../../packages/domain/src/hardware-price-service.js';
@@ -250,7 +250,11 @@ export function createAiCenterWorker(options = {}) {
     contentRoutingPort,
     onContentReady:env.AI_CENTER_INFORMATION_PIPELINE==='tree-v3' ? ({workspaceId,sourceIds})=>enqueueTreePreparation(store,workspaceId,sourceIds) : null,
     flashSources,
-    translationPort: options.translateService || createTranslateService({ env, quotaRepository: store.repositories.modelQuota }),
+    translationPort: options.translateService || createTranslateService({
+      env,
+      quotaRepository: store.repositories.modelQuota,
+      chunkStore: createFeedTranslationChunkStore(store.repositories.feed),
+    }),
   });
   registry.register({ manifest: feedTranslationManifest, jobHandlers: createFeedTranslationJobHandlers({ feedService }) });
   registry.register({
@@ -702,9 +706,9 @@ export function createAiCenterWorker(options = {}) {
         workspaceId: 'local',
         limit: backfillLimit,
         excludeSourceIds: [...(flashSources?.ids || [])],
-      }).then((jobs) => {
-        const enqueued = Array.isArray(jobs) ? jobs.length : 0;
-        console.log(`[worker] translation-backfill enqueued=${enqueued} limit=${backfillLimit}`);
+      }).then((result) => {
+        const enqueued = Array.isArray(result?.jobs) ? result.jobs.length : 0;
+        console.log(formatTranslationBackfillLog(result?.summary, { enqueued, limit: backfillLimit }));
       }).catch((error) => {
         console.error('[worker] translation-backfill failed:', error instanceof Error ? error.message : error);
       });

@@ -202,7 +202,7 @@ test('a retrieved body with an english excerpt still shows the client translatio
     state: { translations: {}, xTranslating: false },
   });
   vm.runInContext(`${extract([
-    'textNeedsZhView', 'postNeedsChineseTranslation', 'postIsTranslating', 'socialListPlaceholder',
+    'textNeedsZhView', 'chineseReaderText', 'postNeedsChineseTranslation', 'postIsTranslating', 'socialListPlaceholder',
     'translationFor', 'plainFeedText', 'clipFeedText', 'firstFeedSentence', 'textAfterLead',
     'postDisplayTitle', 'socialBodyText', 'listCardExcerpt', 'postListExcerpt', 'feedCardExcerpt', 'feedAsItem',
   ])}\nthis.feedAsItem=feedAsItem;this.card=feedCardExcerpt;`, context);

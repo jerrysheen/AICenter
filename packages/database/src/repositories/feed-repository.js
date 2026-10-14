@@ -1050,6 +1050,9 @@ export function createFeedRepository(database, emitEvent) {
           database.prepare(`DELETE FROM feed_translation_failures
             WHERE workspace_id = ? AND item_id = ? AND target_lang = ?`)
             .run(input.workspaceId, input.itemId, input.targetLang);
+          database.prepare(`DELETE FROM feed_translation_chunks
+            WHERE workspace_id = ? AND item_id = ? AND target_lang = ?`)
+            .run(input.workspaceId, input.itemId, input.targetLang);
           emitEvent('feed.item-translation.saved.v1', 'item-translation', input.itemId, {
             itemId: input.itemId,
             targetLang: input.targetLang,
@@ -1137,28 +1140,47 @@ export function createFeedRepository(database, emitEvent) {
     listUntranslatedFeedBodies(workspaceId, { limit = 80, scan = 400, excludeSourceIds = [] } = {}) {
       const cap = Math.max(1, Math.min(Number(scan) || Number(limit) || 80, 500));
       const excluded = [...new Set((excludeSourceIds || []).map((id) => String(id || '').trim()).filter(Boolean))].slice(0, 40);
-      const excludeSql = excluded.length
-        ? `AND COALESCE(sa.external_id, '') NOT IN (${excluded.map(() => '?').join(', ')})`
-        : '';
+      const flashOrder = excluded.length
+        ? `CASE WHEN COALESCE(sa.external_id, '') IN (${excluded.map(() => '?').join(', ')}) THEN 1 ELSE 0 END`
+        : 'CASE WHEN 1 = 0 THEN 1 ELSE 0 END';
       const rows = database.prepare(`SELECT ci.id AS id, ci.body AS body, ci.summary AS summary, ci.title AS title,
           ci.created_at AS created_at, c.provider AS provider, c.external_id AS external_id,
-          COALESCE(sa.external_id, '') AS source_external_id
+          COALESCE(sa.external_id, '') AS source_external_id,
+          COALESCE(uis.is_hidden, 0) AS is_hidden,
+          (SELECT t.source_hash FROM feed_item_translations t
+            WHERE t.workspace_id = ci.workspace_id AND t.target_lang = 'zh' AND t.translated_text != ''
+              AND t.item_id = ci.id LIMIT 1) AS translation_hash,
+          (SELECT t.engine FROM feed_item_translations t
+            WHERE t.workspace_id = ci.workspace_id AND t.target_lang = 'zh' AND t.translated_text != ''
+              AND t.item_id = ci.id LIMIT 1) AS translation_engine,
+          (SELECT length(t.translated_text) FROM feed_item_translations t
+            WHERE t.workspace_id = ci.workspace_id AND t.target_lang = 'zh' AND t.translated_text != ''
+              AND t.item_id = ci.id LIMIT 1) AS translation_length,
+          (SELECT t.source_hash FROM feed_item_translations t
+            WHERE t.workspace_id = ci.workspace_id AND t.target_lang = 'zh' AND t.translated_text != ''
+              AND t.item_id = c.provider || ':' || c.external_id LIMIT 1) AS external_translation_hash,
+          (SELECT t.engine FROM feed_item_translations t
+            WHERE t.workspace_id = ci.workspace_id AND t.target_lang = 'zh' AND t.translated_text != ''
+              AND t.item_id = c.provider || ':' || c.external_id LIMIT 1) AS external_translation_engine,
+          (SELECT length(t.translated_text) FROM feed_item_translations t
+            WHERE t.workspace_id = ci.workspace_id AND t.target_lang = 'zh' AND t.translated_text != ''
+              AND t.item_id = c.provider || ':' || c.external_id LIMIT 1) AS external_translation_length
         FROM content_items ci
         JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
         LEFT JOIN source_accounts sa ON sa.id = c.source_account_id AND sa.workspace_id = ci.workspace_id
+        LEFT JOIN user_item_states uis ON uis.workspace_id = ci.workspace_id AND uis.content_item_id = ci.id
         WHERE ci.workspace_id = ?
           AND c.provider IN ('x', 'xueqiu', 'trendforce', 'bilibili')
           AND length(ci.body) > 0
-          AND ${USER_VISIBLE_CONTENT_SQL}
-          AND NOT EXISTS (
+        ORDER BY CASE WHEN length(ci.body) > 20000 THEN 0 ELSE 1 END,
+          CASE WHEN COALESCE(uis.is_hidden, 0) = 1 THEN 1 ELSE 0 END,
+          ${flashOrder},
+          CASE WHEN EXISTS (
             SELECT 1 FROM feed_item_translations t
-            WHERE t.workspace_id = ci.workspace_id
-              AND t.target_lang = 'zh'
-              AND t.translated_text != ''
+            WHERE t.workspace_id = ci.workspace_id AND t.target_lang = 'zh' AND t.translated_text != ''
               AND (t.item_id = ci.id OR t.item_id = c.provider || ':' || c.external_id)
-          )
-          ${excludeSql}
-        ORDER BY CASE WHEN length(ci.body) > 20000 THEN 0 ELSE 1 END, ci.created_at DESC
+          ) THEN 1 ELSE 0 END,
+          ci.created_at DESC
         LIMIT ?`).all(workspaceId, ...excluded, cap);
       return rows.map((row) => ({
         id: row.id,
@@ -1169,7 +1191,78 @@ export function createFeedRepository(database, emitEvent) {
         provider: row.provider || '',
         externalId: row.external_id || '',
         sourceExternalId: row.source_external_id || '',
+        hidden: Number(row.is_hidden) === 1,
+        translationHash: row.translation_hash || '',
+        translationEngine: row.translation_engine || '',
+        translationLength: Number(row.translation_length) || 0,
+        externalTranslationHash: row.external_translation_hash || '',
+        externalTranslationEngine: row.external_translation_engine || '',
+        externalTranslationLength: Number(row.external_translation_length) || 0,
       }));
+    },
+
+    countLongUntranslatedOutsideProviders(workspaceId) {
+      const row = database.prepare(`SELECT COUNT(*) AS n FROM content_items ci
+        JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
+        WHERE ci.workspace_id = ?
+          AND c.provider NOT IN ('x', 'xueqiu', 'trendforce', 'bilibili')
+          AND length(ci.body) > 20000
+          AND ${USER_VISIBLE_CONTENT_SQL}
+          AND NOT EXISTS (
+            SELECT 1 FROM feed_item_translations t
+            WHERE t.workspace_id = ci.workspace_id AND t.target_lang = 'zh' AND t.translated_text != ''
+              AND (t.item_id = ci.id OR t.item_id = c.provider || ':' || c.external_id)
+          )`).get(workspaceId);
+      return Number(row?.n) || 0;
+    },
+
+    listTranslationChunks(workspaceId, itemId, targetLang = 'zh', sourceHash = '') {
+      const lang = targetLang === 'en' ? 'en' : 'zh';
+      const hash = String(sourceHash || '').trim();
+      if (!workspaceId || !itemId || !hash) return [];
+      return database.prepare(`SELECT chunk_index, chunk_count, chunk_hash, translated_text, engine
+        FROM feed_translation_chunks
+        WHERE workspace_id = ? AND item_id = ? AND target_lang = ? AND source_hash = ?
+        ORDER BY chunk_index ASC`).all(workspaceId, itemId, lang, hash).map((row) => ({
+        chunkIndex: row.chunk_index,
+        chunkCount: row.chunk_count,
+        chunkHash: row.chunk_hash,
+        translatedText: row.translated_text,
+        engine: row.engine || '',
+      }));
+    },
+
+    saveTranslationChunk(value) {
+      const workspaceId = String(value?.workspaceId || '').trim();
+      const itemId = String(value?.itemId || '').trim();
+      const targetLang = value?.targetLang === 'en' ? 'en' : 'zh';
+      const sourceHash = String(value?.sourceHash || '').trim();
+      const chunkHash = String(value?.chunkHash || '').trim();
+      const translatedText = String(value?.translatedText || '');
+      const chunkIndex = Number(value?.chunkIndex);
+      const chunkCount = Number(value?.chunkCount);
+      const engine = String(value?.engine || '').slice(0, 64);
+      if (!workspaceId || !itemId || !sourceHash || !chunkHash || !translatedText.trim()) return null;
+      if (!Number.isInteger(chunkIndex) || chunkIndex < 0 || !Number.isInteger(chunkCount) || chunkCount <= chunkIndex) return null;
+      const now = Date.now();
+      database.prepare(`INSERT INTO feed_translation_chunks
+        (workspace_id, item_id, target_lang, source_hash, chunk_index, chunk_count, chunk_hash, translated_text, engine, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(workspace_id, item_id, target_lang, source_hash, chunk_index) DO UPDATE SET
+          chunk_count = excluded.chunk_count,
+          chunk_hash = excluded.chunk_hash,
+          translated_text = excluded.translated_text,
+          engine = excluded.engine,
+          updated_at = excluded.updated_at`).run(
+        workspaceId, itemId, targetLang, sourceHash, chunkIndex, chunkCount, chunkHash, translatedText, engine, now,
+      );
+      return { chunkIndex, chunkCount, chunkHash, translatedText, engine };
+    },
+
+    deleteTranslationChunks(workspaceId, itemId, targetLang = 'zh') {
+      const lang = targetLang === 'en' ? 'en' : 'zh';
+      database.prepare(`DELETE FROM feed_translation_chunks
+        WHERE workspace_id = ? AND item_id = ? AND target_lang = ?`).run(workspaceId, itemId, lang);
     },
 
     listTranslationFailures(workspaceId, itemIds = [], targetLang = 'zh') {

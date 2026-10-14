@@ -25,6 +25,13 @@ export function wait(milliseconds, signal) {
   });
 }
 
+export function translationClaimMinPriority(runningTranslationJobs, translationLimit) {
+  const limit = Number(translationLimit) || 1;
+  const running = Number(runningTranslationJobs) || 0;
+  if (limit < 2 || running >= limit || running < limit - 1) return null;
+  return 0;
+}
+
 export function resolveJobTypeConcurrency(type, concurrency) {
   const limits = parseWorkerJobConcurrency(concurrency || {});
   if (type === WORK_PACKAGE_DISPATCH_JOB_TYPE) return limits.workPackageDispatchLimit;
@@ -148,11 +155,20 @@ export function createJobRunner(options) {
     return tracked.promise;
   }
 
+  function claimOptions(types) {
+    if (!types.includes('feed.translation.run')) return {};
+    const minPriority = translationClaimMinPriority(
+      runningCount('feed.translation.run'),
+      resolveJobTypeConcurrency('feed.translation.run', concurrency),
+    );
+    return minPriority == null ? {} : { minPriority };
+  }
+
   async function runOnce() {
     if (!handlers.size) return null;
     const types=claimableTypes();
     if(!types.length)return null;
-    const job = store.claimNextJob(workerId, types);
+    const job = store.claimNextJob(workerId, types, claimOptions(types));
     if (!job) return null;
     return execute(job);
   }
@@ -185,7 +201,7 @@ export function createJobRunner(options) {
         try {
           releaseSuperseded();
           const types = claimableTypes();
-          const job = types.length ? await store.claimNextJob(workerId, types) : null;
+          const job = types.length ? await store.claimNextJob(workerId, types, claimOptions(types)) : null;
           if (job) {
             launch(job);
             continue;

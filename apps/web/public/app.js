@@ -663,19 +663,16 @@ function translationFor(post) {
     if (article?.status !== 'ready' || !Array.isArray(article.paragraphs)) return null;
     return {text:[article.title,...article.paragraphs.map(p=>p.text)].filter(Boolean).join('\n\n'),cached:true};
   }
-  if (post.translation?.text) {
-    state.translations[post.id] = {
-      text: post.translation.text,
-      engine: post.translation.engine || '',
-      cached: true,
-    };
+  const apiText = String(post.translation?.text || '');
+  const normalized = String(post.normalizedArticle?.body || '');
+  const chineseApi = chineseReaderText(apiText);
+  const chineseNormalized = chineseReaderText(normalized);
+  if (chineseApi) {
+    state.translations[post.id] = { text: chineseApi, engine: post.translation.engine || '', cached: true };
     return state.translations[post.id];
   }
-  const normalized = String(post.normalizedArticle?.body || '');
-  if (normalized && !textNeedsZhView(normalized) && /\p{Script=Han}/u.test(normalized)) {
-    return { text: normalized, kind: 'normalized', cached: true };
-  }
-  if (state.translations[post.id]) return state.translations[post.id];
+  if (chineseNormalized) return { text: chineseNormalized, kind: 'normalized', cached: true };
+  if (state.translations[post.id] && chineseReaderText(state.translations[post.id].text)) return state.translations[post.id];
   const stored = loadTranslationStore()[translationStoreKey(post)];
   if (!stored?.text) return null;
   state.translations[post.id] = { text: stored.text, engine: stored.engine || '', cached: true };
@@ -703,9 +700,22 @@ function textNeedsZhView(sourceText) {
   if (hangul === 0 && latin === 0) return false;
   const foreign = hangul + latin;
   if (hangul >= 2 && hangul >= han && hangul >= latin) return true;
-  if (han >= 12) return false;
+  if (han >= 12 && (source.length <= 280 || han * 8 >= foreign)) return false;
   if (han >= 8 && foreign < Math.max(8, Math.ceil(han * 0.25))) return false;
   return latin >= 8 || hangul >= 2;
+}
+
+function chineseReaderText(value) {
+  const text = String(value || '').trim();
+  if (!text || textNeedsZhView(text) || !/\p{Script=Han}/u.test(text)) return '';
+  return text;
+}
+
+function shouldQueueTranslation(post) {
+  if (!post || post.platform === 'media') return false;
+  if (String(post.translation?.text || '').trim()) return false;
+  if (translationFor(post)) return false;
+  return postNeedsChineseTranslation(post);
 }
 
 function postNeedsChineseTranslation(post) {
@@ -767,7 +777,7 @@ function pendingXTranslations(limit = TRANSLATE_BATCH_SIZE, extra = null) {
   const seen = new Set();
   const take = (post) => {
     if (!post?.id || seen.has(post.id) || rows.length >= limit) return;
-    if (post.processing === 'ai' || !xTextNeedsTranslation(post) || translationFor(post)) return;
+    if (post.processing === 'ai' || String(post.translation?.text || '').trim() || !xTextNeedsTranslation(post) || translationFor(post)) return;
     if (!translationRequestText(post)) return;
     seen.add(post.id);
     rows.push(post);
@@ -2825,26 +2835,42 @@ function flashSourceTarget(node) {
   window.setTimeout(() => node.classList.remove('is-source-target'), 1600);
 }
 
+function readerClock(item) {
+  const publishedAt = Number(item?.publishedAt || item?.capturedAt || item?.createdAt) || 0;
+  return { publishedAt, time: publishedAt ? formatTime(publishedAt) : '' };
+}
+
+function readerAuthorName(item, platform) {
+  const name = String(item?.authorName || item?.author || item?.captureMetadata?.authorHandle || '').trim();
+  if (name) return name;
+  if (platform === 'bilibili') return 'B站';
+  if (platform === 'xueqiu') return '雪球';
+  if (platform === 'x') return 'X';
+  if (platform === 'trendforce') return 'TrendForce';
+  return '';
+}
+
 function contentItemAsPost(item) {
   const provider = String(item.provider || '');
   const platform = provider === 'bilibili' || provider === 'x' || provider === 'trendforce' || provider === 'xueqiu' ? provider : 'manual';
+  const clock = readerClock(item);
   return {
     id: item.externalId && platform !== 'manual' ? `${platform}:${item.externalId}` : item.id,
     resourceId: item.id,
     resourceType: 'content-item',
     live: true,
     platform,
-    author: item.authorName || '',
-    handle: '',
+    author: readerAuthorName(item, platform),
+    handle: item.captureMetadata?.authorHandle || '',
     title: item.title,
     body: item.body || item.summary || '无正文',
     translation: item.translation || null,
     normalizedArticle: item.normalizedArticle || null,
     tags: postTagNames({ ...item, resourceId: item.id }),
     sourceUrl: item.sourceUrl || '',
-    createdAt: item.publishedAt || item.createdAt || Date.now(),
-    publishedAt: item.publishedAt || item.capturedAt || item.createdAt || 0,
-    time: item.publishedAt ? formatTime(item.publishedAt) : '',
+    createdAt: clock.publishedAt || item.createdAt || Date.now(),
+    publishedAt: clock.publishedAt,
+    time: clock.time,
   };
 }
 
@@ -3490,7 +3516,8 @@ function textAfterLead(source, lead) {
 }
 
 function postDisplayTitle(post) {
-  if(post.normalizedArticle?.title)return post.normalizedArticle.title;
+  const normalizedTitle = chineseReaderText(post.normalizedArticle?.title);
+  if (normalizedTitle) return normalizedTitle;
   if (post.platform === 'media' && post.articleTranslation?.title) return post.articleTranslation.title;
   if (post.platform === 'media' && post.translationTitle) return post.translationTitle;
   if (post.platform === 'media' && post.translation?.title) return post.translation.title;
@@ -3641,6 +3668,7 @@ function feedAsItem(item, platform) {
     legacyFeedItemId: item.legacyFeedItemId || null,
     translation: item.translation || null,
     normalizedArticle: item.normalizedArticle || null,
+    zhLead: item.zhLead || '',
     needsTranslation: item.needsTranslation === true || item.needsTranslation === false ? item.needsTranslation : undefined,
     lowValue: Boolean(item.lowValue),
   };
@@ -4751,10 +4779,12 @@ let recentFeedPainted = '';
 
 function readyZhTitle(post) {
   const candidates = [
+    post?.zhLead,
     post?.normalizedArticle?.title,
     post?.platform === 'media' ? post?.articleTranslation?.title : '',
     post?.platform === 'media' ? post?.translationTitle : '',
     post?.translation?.title,
+    post?.translation?.summary,
   ];
   for (const value of candidates) {
     const title = String(value || '').trim();
@@ -8609,25 +8639,37 @@ const restoredArticleErrors=new Map();
 function contentItemUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ''));
 }
+function rememberReaderPost(id, post) {
+  const saved = { ...post, readerLoaded: true };
+  const keys = [id, saved.id, saved.resourceId];
+  for (const key of keys) {
+    if (key) state.restoredArticles[key] = saved;
+  }
+  return saved;
+}
 function restoredArticleFromItem(id, item) {
   const post = contentItemAsPost(item);
   const social = post.platform === 'x' || post.platform === 'xueqiu' || post.platform === 'bilibili';
   const level = String(item.contentLevel || item.captureMetadata?.contentLevel || '');
-  const publishedAt = item.publishedAt || item.capturedAt || post.publishedAt || 0;
   return {
     ...post,
     id,
-    author: item.authorName || (post.platform === 'trendforce' ? 'TrendForce' : post.author) || '',
-    publishedAt,
-    time: publishedAt ? formatTime(publishedAt) : '',
-    translation: item.translation || null,
-    normalizedArticle: item.normalizedArticle || null,
+    author: readerAuthorName(item, post.platform),
     complete: social ? Boolean(String(item.body || '').trim()) : level === 'full',
     bodyScope: social ? '' : level === 'partial' ? '部分正文' : '仅摘要',
     contentLevel: level,
     articleKind: String(item.externalId || '').startsWith('research:') ? 'report-intro' : 'article',
     hardwareSnapshot: item.hardwareSnapshot || null,
+    readerLoaded: true,
   };
+}
+function articleContentId(id) {
+  const value = String(id || '');
+  if (contentItemUuid(value)) return value;
+  const feed = value.match(/^feed:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
+  if (feed) return feed[1];
+  const cached = typeof findUnifiedItem === 'function' ? findUnifiedItem(value) : null;
+  return contentItemUuid(cached?.resourceId) ? cached.resourceId : '';
 }
 async function restoreSavedArticle(id) {
   if(!state.session || restoredArticleRequests.has(id))return;restoredArticleRequests.add(id);
@@ -8642,8 +8684,9 @@ async function restoreSavedArticle(id) {
   }
   try {
     let item = null;
-    if (contentItemUuid(id)) {
-      item = (await api(`/api/v1/content-items/${encodeURIComponent(id)}`)).item;
+    const directId = articleContentId(id);
+    if (directId) {
+      item = (await api(`/api/v1/content-items/${encodeURIComponent(directId)}`)).item;
     } else {
       const original = (await api(`/api/v1/feed/items/${encodeURIComponent(id)}/original`)).original;
       if (original?.id) {
@@ -8654,7 +8697,7 @@ async function restoreSavedArticle(id) {
     }
     if(state.session!==scope)return;
     if(!item) throw new Error('原文不存在');
-    state.restoredArticles[id]=restoredArticleFromItem(id, item);
+    rememberReaderPost(id, restoredArticleFromItem(id, item));
     if(state.pageKind==='article' && state.pageId===id)renderArticlePage();
   } catch(error) {if(state.session!==scope)return;restoredArticleErrors.set(id,error.message);if(state.pageKind==='article' && state.pageId===id)renderArticlePage();}
 }
@@ -8677,7 +8720,7 @@ async function restoreSocialArticle(id, post) {
     } : row);
     state.xItems = (state.xItems || []).map(patch);
     state.xueqiuItems = (state.xueqiuItems || []).map(patch);
-    state.restoredArticles[id] = feedAsItem({
+    rememberReaderPost(id, feedAsItem({
       id,
       resourceId: item.id || resourceId,
       externalId: item.externalId || post.externalId || '',
@@ -8693,7 +8736,7 @@ async function restoreSocialArticle(id, post) {
       translation: item.translation || null,
       normalizedArticle: item.normalizedArticle || null,
       commentCount: post.commentCount || 0,
-    }, post.platform);
+    }, post.platform));
     if (state.pageKind === 'article' && state.pageId === id) renderArticlePage();
     } catch (error) {
     if (state.session !== scope) return;
@@ -8715,8 +8758,26 @@ function renderArticlePage() {
   const itemId = official ? id.slice('official/'.length) : id;
   let post = official
     ? officialFeedItems().find((item) => item.id === itemId || item.resourceId === itemId)
-    : state.restoredArticles[itemId] || findUnifiedItem(itemId);
-  if(state.bootstrapped && itemId.startsWith('trendforce:') && !state.restoredArticles[itemId] && !restoredArticleErrors.has(itemId)){restoreSavedArticle(itemId);post=null;}
+    : (state.restoredArticles[itemId]?.readerLoaded ? state.restoredArticles[itemId] : null);
+  if (!official && !post) {
+    const cached = findUnifiedItem(itemId);
+    if (cached?.platform === 'media') post = cached;
+  }
+  const needsReaderLoad = !official && Boolean(itemId) && post?.platform !== 'media'
+    && !state.restoredArticles[itemId]?.readerLoaded && !restoredArticleErrors.has(itemId);
+  if (needsReaderLoad && state.bootstrapped) restoreSavedArticle(itemId);
+  if (needsReaderLoad && !post) {
+    const failed = restoredArticleErrors.get(itemId);
+    const loading = !state.bootstrapped || !failed;
+    renderViewState(root, {
+      kind: loading ? 'loading' : 'empty',
+      title: loading ? '正在读取文章…' : '当前未找到这篇文章',
+      message: loading ? '正在读取正文和译文。' : (failed || '可以返回信息流查看已保存内容。'),
+      action: '返回信息流',
+      onAction: leaveArticle,
+    });
+    return;
+  }
   const mediaReading = (post?.platform === 'media' || !post && state.feedPlatform === 'media' && !official)
     ? mediaReaderSession.resolve(post?.platform === 'media' ? post : null, { id:itemId, scope:state.session ? `${state.session.role}:${state.session.device?.id || 'desktop'}` : '' })
     : null;
@@ -8959,7 +9020,7 @@ function renderArticlePage() {
   shell.append(mobile);
   root.replaceChildren(shell);
   if (menuFocus) [...elements['reader-menu'].querySelectorAll('button')].find(button => button.dataset.detailAction === menuFocus)?.focus();
-  if (post.platform !== 'media' && postNeedsChineseTranslation(post) && !translationFor(post)) {
+  if (shouldQueueTranslation(post)) {
     requestTranslate(post).catch((error) => showToast(error.message));
   }
 }
@@ -11414,8 +11475,13 @@ function ensureBriefPage() {
     const content=(material.sourceRefs || []).find(ref=>ref.type==='content-item');
     if (!content) throw new Error('这份材料没有对应的站内文章');
     const cached=findFeedPost({resourceId:content.id});
-    if (cached) openArticle(cached);
-    else {const {item}=await api(`/api/v1/content-items/${encodeURIComponent(content.id)}`);if(session===state.session) openArticle(contentItemAsPost(item));}
+    if (cached?.readerLoaded) openArticle(cached);
+    else {
+      const {item}=await api(`/api/v1/content-items/${encodeURIComponent(content.id)}`);
+      if(session!==state.session) return;
+      const post = rememberReaderPost(content.id, restoredArticleFromItem(content.id, item));
+      openArticle(post);
+    }
   },
   latestBrief: () => dailyBriefSnapshot.brief,
   renderLegacy: (root,brief) => renderBriefCards(root,brief,{compact:true,showIntro:false}),
@@ -13860,7 +13926,7 @@ async function translatePost(post) {
     showToast('这条没有可翻译的正文');
     return;
   }
-  if (translationFor(post) || !postNeedsChineseTranslation(post)) return;
+  if (!shouldQueueTranslation(post)) return;
   const payload = await requestTranslation('/api/v1/translate', {
     method: 'POST',
     body: JSON.stringify({ id: post.id, text: post.body, targetLang: 'zh' }),

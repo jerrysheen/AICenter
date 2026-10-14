@@ -17,6 +17,9 @@ test('needsZhLocalization keeps Chinese posts that only mix in English product n
   assert.equal(needsZhLocalization('推荐一个挺硬核的开源量化项目：stock，作者直接把量化交易代码扔 GitHub 了。'), false);
   assert.equal(needsZhLocalization('强烈建议大家都亲自试试Jev，能让你的Codex操作速度提高10倍并省下大量token！'), false);
   assert.equal(needsZhLocalization('The latest AI Spotlight explores QwenWork International.'), true);
+  const longEnglish = `${'English report '.repeat(400)}长鑫存储扩产计划已经公开说明`;
+  assert.equal(longEnglish.length > 280, true);
+  assert.equal(needsZhLocalization(longEnglish), true);
 });
 
 test('localizationItemId hashes identifiers longer than 128 characters', () => {

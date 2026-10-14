@@ -96,6 +96,7 @@ test('Gemma pool uses only official streaming endpoints, rotates models and pers
     assert.match(url, /gemma-4-26b-a4b-it:streamGenerateContent\?alt=sse$/);
     assert.equal(init.headers['x-goog-api-key'], 'fake-key');
     assert.equal(JSON.parse(init.body).generationConfig.thinkingConfig.thinkingLevel, 'minimal');
+    assert.equal(JSON.parse(init.body).generationConfig.maxOutputTokens, 4096);
     assert.ok(init.signal instanceof AbortSignal);
     assert.equal(init.dispatcher, undefined);
   }
@@ -134,15 +135,17 @@ test('long input splits without dropping characters, batch cache preserves compl
   const source = 'English paragraph with conditions.\n\n'.repeat(180) + '😀 tail';
   const chunks = splitTranslationText(source);
   assert.equal(chunks.join(''), source); assert.ok(chunks.length > 1);
-  assert.ok(chunks.every(chunk=>chunk.length<=2400));
+  assert.ok(chunks.every(chunk=>chunk.length<=1500));
   const prompts = [];
   const service = createTranslateService({router:{generate:async({system,prompt})=>{
     assert.match(system,/任一条件/); prompts.push(prompt); return {text:'译文\n\n- 列表',engine:'gemma-4-31b-it'};
   }}});
   const result = await service.translate({text:source});
-  assert.equal(prompts.join(''),source);
+  assert.ok(chunks.every((chunk) => prompts.includes(chunk)));
+  assert.ok(prompts.every((prompt) => prompt.length <= 1500));
   assert.match(result.translatedText,/\n\n- 列表/);
-  await service.translate({text:source}); assert.equal(prompts.length,chunks.length);
+  const sent = prompts.length;
+  await service.translate({text:source}); assert.equal(prompts.length, sent);
 });
 
 test('translation worker persists full source hash and output, reuses stored originals and emits events', fixture(async store => {
