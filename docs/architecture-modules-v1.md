@@ -2,7 +2,7 @@
 
 原文全文翻译使用独立 Gemma 31B/26B Connector 与持久化配额，不回退其他模型。HTTP 仅提交已注册 `feed.translation.run` Worker 任务，沿用 Feed Service/Repository 保存译文和 Outbox；Article Normalize、Tag、小时/日报保持原路径。兼容和限制见 `gemma-original-translation.md`。
 
-用户后续授权翻译五账号并发：仅 `feed.translation.run` 使用内部 `translationLimit` 的最多五个 Worker 执行位；账号跨 31B/26B 的 10 秒发起间隔由现有 quota Repository 在事务中持久检查，本地日/小时请求数无硬上限。供应商冷却、TPM、完整译文校验不变。此处是 Connector HTTP 并发，不增加业务 Agent 或 Runtime。
+用户后续授权翻译五账号并发：仅 `feed.translation.run` 使用内部 `translationLimit` 的最多五个 Worker 执行位。默认池只有 26B。每个密钥最小间隔默认 2.5 秒（可在 2–3 秒内配置）、每分钟最多 25 次、每分钟 16000 Token、每个太平洋日最多 14400 次，由现有 quota Repository 在事务中持久检查。上游 500/502/503/408 不冷却密钥，立刻换下一把；同一密钥连续上游错误退避 10 秒、20 秒、40 秒。只有 429 和配额错误按供应商延迟冷却。此处是 Connector HTTP 并发，不增加业务 Agent 或 Runtime。
 
 TrendForce 内容分流扩展现有 Feed/Media 与行情边界：一次采集由 Feed Service 经注入 Port 分流，硬件报价独立 Contract/Service/Repository，媒体不另抓一次。报价与股票历史完全分开；旧身份映射保留状态和引用。详见 `hardware-prices-v1.md`。
 
