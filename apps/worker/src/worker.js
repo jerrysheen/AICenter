@@ -673,6 +673,10 @@ export function createAiCenterWorker(options = {}) {
     onError(error, job) {
       console.error(`[worker] ${job.type} ${job.id}:`, error);
     },
+    onClaimError(error) {
+      console.error('[worker] claim failed:', error);
+    },
+    watchdogMs: options.watchdogMs ?? process.env.AI_CENTER_JOB_LOOP_WATCHDOG_MS,
   });
   let runPromise = null;
   let schedulePromise = null;

@@ -618,6 +618,38 @@ test('expired lease can be recovered and late complete or fail is ignored', asyn
   temporary.remove();
 });
 
+test('requeue that resets attempt_count does not collide with job_attempts', async () => {
+  const temporary = temporaryStore();
+  const job = temporary.store.createJob({ type: 'test.retry', input: {}, maxAttempts: 3 });
+  const first = temporary.store.claimNextJob('worker-a', ['test.retry']);
+  assert.equal(first.attemptCount, 1);
+  const database = new Database(temporary.databasePath);
+  database.prepare(`UPDATE jobs SET status = 'queued', attempt_count = 0, locked_by = NULL, locked_at = NULL
+    WHERE id = ?`).run(job.id);
+  database.close();
+  const second = temporary.store.claimNextJob('worker-b', ['test.retry']);
+  assert.equal(second.status, 'running');
+  assert.equal(second.attemptCount, 2);
+  const completed = temporary.store.completeJob(job.id, { ok: true }, {
+    workerId: 'worker-b', attemptCount: 2,
+  });
+  assert.equal(completed.status, 'completed');
+  const running = temporary.store.createJob({ type: 'test.retry', input: {}, maxAttempts: 3 });
+  temporary.store.claimNextJob('worker-a', ['test.retry']);
+  const untouched = temporary.store.failQueuedJob(running.id, new Error('should not fail a running job'));
+  assert.equal(untouched.status, 'running');
+  temporary.store.close();
+  const verify = new Database(temporary.databasePath, { readonly: true });
+  const attempts = verify.prepare(`SELECT attempt_number, status FROM job_attempts
+    WHERE job_id = ? ORDER BY attempt_number`).all(job.id);
+  assert.deepEqual(attempts, [
+    { attempt_number: 1, status: 'running' },
+    { attempt_number: 2, status: 'completed' },
+  ]);
+  verify.close();
+  temporary.remove();
+});
+
 test('job attempts are retained independently from final job state', async () => {
   const temporary = temporaryStore();
   const job = temporary.store.createJob({ type: 'test.retry', input: {} });
