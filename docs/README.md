@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-14-feed-translation-list.md`：社媒列表带上中文标题和摘要，中文来源不再标「暂未翻译」。阅读页用接口全文译文。超过 2 万字的帖会入队，并可用脚本补队。不新增 migration。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-14-overlay-crlf.md`：Windows `core.autocrlf=true` 把 overlay 检出成 CRLF，`web.searchProvider` 的匹配只认 LF，问答在 1 秒内失败。解析先把换行收成 LF，写出的 overlay 也是 LF。`.gitattributes` 让 `*.yml` / `*.yaml` 按 LF 检出。不新增 migration。需要重启 Worker。
 
 - `progress/2026-10-14-grok-web-search.md`：问答 `web_search` 只走 Grok。overlay 把 `web.searchProvider` 写成 `elucid-grok`，并禁用 `web-search-deepseek`。没有 Grok 密钥就报错，不回退 DeepSeek 搜索。`web.search` 事件记下实际 provider。不新增 migration。需要重启 Worker。

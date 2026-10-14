@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { formatFeedBefore, ValidationError } from '../../contracts/src/index.js';
+import { FEED_TRANSLATION_TEXT_MAX, formatFeedBefore, ValidationError } from '../../contracts/src/index.js';
 import { packFeedAiBatches } from './feed-ai-batch.js';
 import { feedItemIdentityHash } from './feed-identity.js';
 import { cleanIngestExcerpt } from '../../connectors/src/excerpt-text.js';
@@ -20,6 +20,19 @@ function firstSentence(value) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   if (!text) return '';
   return (text.match(/^.+?(?:[。！？]|[.!?](?:\s|$)|…)/)?.[0] || text).trim();
+}
+
+function remainderAfterSentence(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  const lead = firstSentence(text);
+  if (!text || !lead || !text.startsWith(lead) || text === lead) return '';
+  return text.slice(lead.length).replace(/^[\s.。…]+/u, '').trim();
+}
+
+function longerTranslation(left, right) {
+  if (!left?.translatedText) return right || null;
+  if (!right?.translatedText) return left;
+  return right.translatedText.length > left.translatedText.length ? right : left;
 }
 
 function commentCount(body) {
@@ -58,9 +71,11 @@ function projectListItem(item) {
     isRead: Boolean(item.isRead),
     isSaved: Boolean(item.isSaved),
     commentCount: commentCount(item.body),
+    ...(item.needsTranslation === true || item.needsTranslation === false ? { needsTranslation: item.needsTranslation } : {}),
     translation: item.translation ? {
       status: translated ? 'ready' : 'stale',
       title: clipText(firstSentence(translated), 80),
+      summary: clipText(remainderAfterSentence(translated), LIST_SUMMARY_MAX),
       engine: item.translation.engine || '',
       targetLang: item.translation.targetLang || 'zh',
     } : null,
@@ -95,6 +110,7 @@ function toFeedItem(providerId, row) {
     publishedAt: row.publishedAt || 0,
     capturedAt: row.capturedAt || row.createdAt || 0,
     updatedAt: row.updatedAt || 0,
+    needsTranslation: needsZhLocalization(row.body || row.bodyLang || row.summary || ''),
     processing: '',
     subscriptionId: '',
     captureId: row.captureId || '',
@@ -121,13 +137,13 @@ function attachTranslations(feedRepository, workspaceId, items, targetLang = 'zh
     if (item?.resourceId) ids.push(item.resourceId);
   }
   const list = preview && feedRepository.listTranslationPreviews
-    ? feedRepository.listTranslationPreviews(workspaceId, ids, targetLang)
+    ? feedRepository.listTranslationPreviews(workspaceId, ids, targetLang, 400)
     : feedRepository.listTranslations(workspaceId, ids, targetLang);
   const rows = list || [];
   if (!rows.length) return items;
   const byId = new Map(rows.map((row) => [row.itemId, row]));
   return items.map((item) => {
-    const row = byId.get(item.id) || (item.resourceId ? byId.get(item.resourceId) : null);
+    const row = longerTranslation(byId.get(item.id), item.resourceId ? byId.get(item.resourceId) : null);
     if (!row?.translatedText) return { ...item, translation: null };
     if (verifyBody && row.sourceHash !== contentHash(item.body || '')) {
       return { ...item, translation: null };
@@ -264,11 +280,10 @@ async function translatePendingUnits(translationPort, pending, targetLang, check
   })), {
     purpose: 'translate',
     charBudget: 80_000,
-    itemClipChars: 20_000,
+    itemClipChars: FEED_TRANSLATION_TEXT_MAX,
     itemLimit: pending.length,
   });
   const originals = new Map(pending.map((unit) => [unit.localizationId, unit.text]));
-  const truncated=new Set(packed.batches.flatMap(batch=>batch.units.filter(u=>u.truncatedForModel).map(u=>u.itemId)));
   const translations = [];
   async function translateChunk(items) {
     if (translationPort.translateMany) {
@@ -287,7 +302,8 @@ async function translatePendingUnits(translationPort, pending, targetLang, check
     return { translations: rows, targetLang };
   }
   for (const batch of packed.batches) {
-    const chunk = batch.units.filter(unit=>!truncated.has(unit.itemId)).map((unit) => ({ id: unit.itemId, text: unit.text }));
+    const chunk = batch.units.map((unit) => ({ id: unit.itemId, text: originals.get(unit.itemId) || unit.text }))
+      .filter((item) => item.text && item.text.length <= FEED_TRANSLATION_TEXT_MAX);
     if(!chunk.length)continue;
     const result = await translateChunk(chunk);
     const completed=[];
@@ -712,7 +728,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
     }
     const translated=attachTranslations(feedRepository,workspaceId,items,'zh',{verifyBody:!listShape,preview:listShape});
     if(items.length>8) await yieldEventLoop();
-    if(listShape) return translated;
+    if(listShape) return attachNormalizedArticles(workspaceId,translated,{listShape:true});
     return attachNormalizedArticles(workspaceId,translated,{listShape:false});
   };
   return Object.freeze({
@@ -969,7 +985,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       const packed = packFeedAiBatches(pending, {
         purpose: 'translate',
         charBudget: 80_000,
-        itemClipChars: 20_000,
+        itemClipChars: FEED_TRANSLATION_TEXT_MAX,
         itemLimit: 30,
       });
       const originals = new Map((input.items || []).map((item) => [item.id, item.text]));
@@ -989,7 +1005,8 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
         return { translations: rows, targetLang: input.targetLang };
       }
       for (const batch of packed.batches) {
-        const chunk = batch.units.map((unit) => ({ id: unit.itemId, text: unit.text }));
+        const chunk = batch.units.map((unit) => ({ id: unit.itemId, text: originals.get(unit.itemId) || unit.text }))
+          .filter((item) => item.text && item.text.length <= FEED_TRANSLATION_TEXT_MAX);
         const result = await translateChunk(chunk);
         const completed = [];
         for (const row of result.translations || []) {

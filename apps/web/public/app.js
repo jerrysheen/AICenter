@@ -663,8 +663,6 @@ function translationFor(post) {
     if (article?.status !== 'ready' || !Array.isArray(article.paragraphs)) return null;
     return {text:[article.title,...article.paragraphs.map(p=>p.text)].filter(Boolean).join('\n\n'),cached:true};
   }
-  if(post.normalizedArticle?.body && (!post.translation?.text || !post.translation.engine && post.translation.text===post.normalizedArticle.body))return {text:post.normalizedArticle.body,kind:'normalized',cached:true};
-  if (state.translations[post.id]) return state.translations[post.id];
   if (post.translation?.text) {
     state.translations[post.id] = {
       text: post.translation.text,
@@ -673,6 +671,11 @@ function translationFor(post) {
     };
     return state.translations[post.id];
   }
+  const normalized = String(post.normalizedArticle?.body || '');
+  if (normalized && !textNeedsZhView(normalized) && /\p{Script=Han}/u.test(normalized)) {
+    return { text: normalized, kind: 'normalized', cached: true };
+  }
+  if (state.translations[post.id]) return state.translations[post.id];
   const stored = loadTranslationStore()[translationStoreKey(post)];
   if (!stored?.text) return null;
   state.translations[post.id] = { text: stored.text, engine: stored.engine || '', cached: true };
@@ -729,11 +732,58 @@ function localizedCopy(id, fallback = '') {
   return fallback || '';
 }
 
-function pendingXTranslations(limit = TRANSLATE_BATCH_SIZE) {
-  return state.xItems.map(xAsItem)
-    .sort((left, right) => (right.createdAt || 0) - (left.createdAt || 0))
-    .filter((post) => post.processing!=='ai' && postNeedsChineseTranslation(post) && !translationFor(post))
-    .slice(0, limit);
+function translationRequestText(post) {
+  const body = String(post?.body || '').trim();
+  if (body) return body;
+  return [post?.title, post?.summary].map((part) => String(part || '').trim()).filter(Boolean).join('\n');
+}
+
+function xTextNeedsTranslation(post) {
+  if (post?.needsTranslation === false) return false;
+  if (readyZhTitle(post)) return false;
+  return textNeedsZhView(translationRequestText(post));
+}
+
+function xFeedVisible() {
+  if (typeof document === 'undefined' || !document.body) return false;
+  if (document.body.dataset?.view !== 'feed') return false;
+  const channel = state.channel || 'all';
+  const platform = state.feedPlatform || state.platform || 'all';
+  if (platform === 'media' || platform === 'xueqiu' || platform === 'bilibili' || platform === 'trendforce' || platform === 'official') return false;
+  if (channel === 'recent' || channel === 'official' || channel === 'flash') return false;
+  return channel === 'social' || channel === 'all' || channel === 'focus' || platform === 'x';
+}
+
+function visibleXPosts() {
+  const items = typeof visibleFeedItems === 'function' ? visibleFeedItems() : [];
+  return items.filter((post) => post?.platform === 'x');
+}
+
+function pendingXTranslations(limit = TRANSLATE_BATCH_SIZE, extra = null) {
+  const source = xFeedVisible()
+    ? visibleXPosts()
+    : (state.xItems || []).map((item) => (item?.platform === 'x' ? item : xAsItem(item)));
+  const rows = [];
+  const seen = new Set();
+  const take = (post) => {
+    if (!post?.id || seen.has(post.id) || rows.length >= limit) return;
+    if (post.processing === 'ai' || !xTextNeedsTranslation(post) || translationFor(post)) return;
+    if (!translationRequestText(post)) return;
+    seen.add(post.id);
+    rows.push(post);
+  };
+  if (extra) take(extra);
+  for (const post of source) take(post);
+  return rows;
+}
+
+function scheduleVisibleXTranslations() {
+  if (!xFeedVisible() || state.xTranslating || !state.session || state.visibleXTranslateTimer) return;
+  state.visibleXTranslateTimer = window.setTimeout(() => {
+    state.visibleXTranslateTimer = 0;
+    if (!xFeedVisible() || state.xTranslating) return;
+    translateXBatch({ silent: true }).catch(() => {});
+  }, 400);
 }
 
 function taggingFor(resourceId) {
@@ -3468,8 +3518,14 @@ function socialListPlaceholder(item, platform) {
 
 function listCardExcerpt(item, platform) {
   if (item?.normalizedArticle?.summary) return item.normalizedArticle.summary;
+  if (item?.translation?.summary) return item.translation.summary;
   if (item?.translation?.title) return item.translation.title;
   if (item?.translation?.text) return '';
+  if (item?.needsTranslation === false) {
+    const own = item?.summary || '';
+    if (own && !textNeedsZhView(own)) return own;
+    return own || '';
+  }
   const summary = item?.summary || '';
   const foreign = textNeedsZhView(summary || item?.excerpt || '');
   if ((platform === 'x' || platform === 'xueqiu') && !item?.body && foreign) return socialListPlaceholder(item, platform);
@@ -3482,6 +3538,7 @@ function postListExcerpt(post) {
   if(post.normalizedArticle?.summary)return clipFeedText(post.normalizedArticle.summary,FEED_EXCERPT_MAX);
   const translated = translationFor(post)?.text;
   if (translated) return clipFeedText(textAfterLead(socialBodyText(post, translated), postDisplayTitle(post)), FEED_EXCERPT_MAX);
+  if (post.translation?.summary) return clipFeedText(post.translation.summary, FEED_EXCERPT_MAX);
   if (post.translation?.title) return clipFeedText(post.translation.title, FEED_EXCERPT_MAX);
   if (post.summary && !textNeedsZhView(post.summary)) return clipFeedText(post.summary, FEED_EXCERPT_MAX);
   if (postIsTranslating(post)) return '正在翻译…';
@@ -3584,6 +3641,7 @@ function feedAsItem(item, platform) {
     legacyFeedItemId: item.legacyFeedItemId || null,
     translation: item.translation || null,
     normalizedArticle: item.normalizedArticle || null,
+    needsTranslation: item.needsTranslation === true || item.needsTranslation === false ? item.needsTranslation : undefined,
     lowValue: Boolean(item.lowValue),
   };
 }
@@ -4719,6 +4777,7 @@ function feedListTitle(post) {
   if (ready) return { title: ready, tag: '' };
   const original = String(post?.title || '').trim();
   const title = original && original !== '正在翻译…' ? original : '无标题';
+  if (post?.needsTranslation === false) return { title, tag: '' };
   const needs = post?.translationStatus === 'failed' || postIsTranslating(post) || textNeedsZhView(post?.title || post?.body || post?.summary || '');
   return { title, tag: needs ? '暂未翻译' : '' };
 }
@@ -4926,6 +4985,7 @@ function renderPosts() {
     if (front) setSwipeOpen(front, true, FEED_SWIPE_WIDTH);
   }
   if (keepY !== null) window.scrollTo(0, keepY);
+  if (typeof scheduleVisibleXTranslations === 'function') scheduleVisibleXTranslations();
   renderXToolbar();
   renderBilibiliToolbar();
   if (document.body.dataset.view === 'sources') renderHub();
@@ -8546,6 +8606,29 @@ function createDetailAction({ iconName, label, primary = false, pressed = false,
 
 const restoredArticleRequests=new Set();
 const restoredArticleErrors=new Map();
+function contentItemUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ''));
+}
+function restoredArticleFromItem(id, item) {
+  const post = contentItemAsPost(item);
+  const social = post.platform === 'x' || post.platform === 'xueqiu' || post.platform === 'bilibili';
+  const level = String(item.contentLevel || item.captureMetadata?.contentLevel || '');
+  const publishedAt = item.publishedAt || item.capturedAt || post.publishedAt || 0;
+  return {
+    ...post,
+    id,
+    author: item.authorName || (post.platform === 'trendforce' ? 'TrendForce' : post.author) || '',
+    publishedAt,
+    time: publishedAt ? formatTime(publishedAt) : '',
+    translation: item.translation || null,
+    normalizedArticle: item.normalizedArticle || null,
+    complete: social ? Boolean(String(item.body || '').trim()) : level === 'full',
+    bodyScope: social ? '' : level === 'partial' ? '部分正文' : '仅摘要',
+    contentLevel: level,
+    articleKind: String(item.externalId || '').startsWith('research:') ? 'report-intro' : 'article',
+    hardwareSnapshot: item.hardwareSnapshot || null,
+  };
+}
 async function restoreSavedArticle(id) {
   if(!state.session || restoredArticleRequests.has(id))return;restoredArticleRequests.add(id);
   const scope=state.session;
@@ -8557,8 +8640,21 @@ async function restoreSavedArticle(id) {
     } catch(error) {if(state.session!==scope)return;restoredArticleErrors.set(id,error.message);if(state.pageKind==='article' && state.pageId===id)renderArticlePage();}
     return;
   }
-  try {const {original:o}=await api(`/api/v1/feed/items/${encodeURIComponent(id)}/original`);if(state.session!==scope)return;
-    state.restoredArticles[id]={id,resourceId:o.id,resourceType:'content-item',contentItemId:o.id,platform:o.provider || 'trendforce',kind:'article',author:'TrendForce',title:o.title,body:o.body,sourceUrl:o.sourceUrl,complete:o.contentLevel==='full',contentLevel:o.contentLevel,bodyScope:o.contentLevel==='partial'?'部分正文':'仅摘要',articleKind:o.externalId?.startsWith('research:')?'report-intro':'article',hardwareSnapshot:o.hardwareSnapshot};
+  try {
+    let item = null;
+    if (contentItemUuid(id)) {
+      item = (await api(`/api/v1/content-items/${encodeURIComponent(id)}`)).item;
+    } else {
+      const original = (await api(`/api/v1/feed/items/${encodeURIComponent(id)}/original`)).original;
+      if (original?.id) {
+        try { item = (await api(`/api/v1/content-items/${encodeURIComponent(original.id)}`)).item; } catch { item = null; }
+        if (item) item = { ...item, hardwareSnapshot: item.hardwareSnapshot || original.hardwareSnapshot, contentLevel: item.captureMetadata?.contentLevel || original.contentLevel };
+        else item = { id: original.id, provider: original.provider, externalId: original.externalId, title: original.title, body: original.body, summary: original.summary, sourceUrl: original.sourceUrl, contentLevel: original.contentLevel, hardwareSnapshot: original.hardwareSnapshot };
+      }
+    }
+    if(state.session!==scope)return;
+    if(!item) throw new Error('原文不存在');
+    state.restoredArticles[id]=restoredArticleFromItem(id, item);
     if(state.pageKind==='article' && state.pageId===id)renderArticlePage();
   } catch(error) {if(state.session!==scope)return;restoredArticleErrors.set(id,error.message);if(state.pageKind==='article' && state.pageId===id)renderArticlePage();}
 }
@@ -13582,7 +13678,7 @@ function openCompose() {
 
 async function requestTranslate(post) {
   if (post?.platform === 'x') {
-    await translateXBatch();
+    await translateXBatch({ include: post });
     return;
   }
   await translatePost(post);
@@ -13643,7 +13739,7 @@ async function requestTranslation(path, options) {
   }
 }
 
-async function translateXBatch({ silent = false } = {}) {
+async function translateXBatch({ silent = false, include = null } = {}) {
   if (!state.session) {
     if (!silent) {
       showToast('请先在设置中完成设备连接');
@@ -13652,17 +13748,18 @@ async function translateXBatch({ silent = false } = {}) {
     return;
   }
   if (state.xTranslating) return;
-  const pending = pendingXTranslations();
+  const pending = pendingXTranslations(TRANSLATE_BATCH_SIZE, include);
   if (!pending.length) return;
   state.xTranslating = true;
   renderXToolbar();
+  let translatedSome = false;
   try {
     const payload = await requestTranslation('/api/v1/translate/batch', {
       method: 'POST',
       timeoutMs: 120_000,
       body: JSON.stringify({
         targetLang: 'zh',
-        items: pending.map((post) => ({ id: post.id, text: post.body })),
+        items: pending.map((post) => ({ id: post.id, text: translationRequestText(post) })),
       }),
     });
     const byId = new Map((payload.translations || []).map((row) => [row.id, row]));
@@ -13683,6 +13780,7 @@ async function translateXBatch({ silent = false } = {}) {
       syncDialogTranslation(state.dialogPost);
     }
     const count = pending.filter((post) => translationFor(post)).length;
+    translatedSome = count > 0;
     if (!silent) {
       if (count) showToast(`已翻译 ${count} 条`);
       else showToast('这次没有译出新内容，可再点一次翻译');
@@ -13692,6 +13790,7 @@ async function translateXBatch({ silent = false } = {}) {
   } finally {
     state.xTranslating = false;
     renderXToolbar();
+    if (translatedSome && xFeedVisible()) scheduleVisibleXTranslations();
   }
 }
 

@@ -26,7 +26,7 @@ import {
   projectWorkPackageTimeline,
 } from './knowledge.js';
 import { TagAnalyzeJobInputSchema } from './tagging.js';
-import { PatchUserItemStateInputSchema } from './feed.js';
+import { FEED_TRANSLATION_OUTPUT_MAX, FEED_TRANSLATION_TEXT_MAX, PatchUserItemStateInputSchema } from './feed.js';
 import { WorkerJobConcurrencySchema } from './runtime.js';
 
 export * from './errors.js';
@@ -532,7 +532,7 @@ export function parseTranslateInput(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new ValidationError('请求内容必须是对象');
   }
-  const sourceText = cleanText(value.text || value.body, { field: '译文原文', max: 20_000, required: true });
+  const sourceText = cleanText(value.text || value.body, { field: '译文原文', max: FEED_TRANSLATION_TEXT_MAX, required: true });
   const target = cleanText(value.targetLang || value.target || 'zh', { field: '目标语言', max: 16 }) || 'zh';
   const targetLang = ['en', 'en-us', 'english'].includes(target.toLowerCase()) ? 'en' : 'zh';
   const id = cleanText(value.id, { field: '条目 id', max: 128 });
@@ -563,7 +563,7 @@ export function parseTranslateBatchInput(value) {
     seen.add(id);
     items.push({
       id,
-      text: cleanText(row.text || row.body, { field: `条目 ${index + 1} 的正文`, max: 20_000, required: true }),
+      text: cleanText(row.text || row.body, { field: `条目 ${index + 1} 的正文`, max: FEED_TRANSLATION_TEXT_MAX, required: true }),
     });
   }
   return { items, targetLang };
@@ -593,8 +593,8 @@ export function parsePersistFeedTranslationsInput(value) {
     seen.add(id);
     translations.push({
       id,
-      sourceText: cleanText(row.sourceText || row.body, { field: `译文 ${index + 1} 的原文`, max: 20_000, required: true }),
-      translatedText: cleanText(row.translatedText, { field: `译文 ${index + 1}`, max: 8_000, required: true }),
+      sourceText: cleanText(row.sourceText || row.body, { field: `译文 ${index + 1} 的原文`, max: FEED_TRANSLATION_TEXT_MAX, required: true }),
+      translatedText: cleanText(row.translatedText, { field: `译文 ${index + 1}`, max: FEED_TRANSLATION_OUTPUT_MAX, required: true }),
       engine: cleanText(row.engine, { field: '翻译引擎', max: 32 }),
       targetLang,
     });

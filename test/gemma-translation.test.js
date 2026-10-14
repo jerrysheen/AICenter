@@ -164,7 +164,8 @@ test('translation worker persists full source hash and output, reuses stored ori
 
 test('translation job contract refuses duplicate IDs, extra commands and oversized inputs', () => {
   assert.equal(FeedTranslationJobInputSchema.safeParse({items:[{id:'a',text:'hello'}]}).success,true);
-  for (const value of [{items:[{id:'a',text:'hello'},{id:'a',text:'world'}]}, {items:[{id:'a',text:'hello'}],command:'bash'}, {items:[{id:'a',text:'a'.repeat(20001)}]}]) {
+  assert.equal(FeedTranslationJobInputSchema.safeParse({items:[{id:'long',text:'a'.repeat(20001)}]}).success,true);
+  for (const value of [{items:[{id:'a',text:'hello'},{id:'a',text:'world'}]}, {items:[{id:'a',text:'hello'}],command:'bash'}, {items:[{id:'a',text:'a'.repeat(200_001)}]}]) {
     assert.equal(FeedTranslationJobInputSchema.safeParse(value).success,false);
   }
 });
