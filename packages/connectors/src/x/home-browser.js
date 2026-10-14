@@ -66,14 +66,61 @@ export function appendCommentsToBody(text, comments, limit = COMMENT_PREVIEW_LIM
   return body ? `${body}${COMMENT_BLOCK_MARKER}${lines.join('\n')}` : block;
 }
 
+function comparableText(value) {
+  return String(value || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/(?:\.{3,}|…+)\s*$/u, '')
+    .trim();
+}
+
+function textCoversLead(full, lead) {
+  const body = comparableText(full);
+  const head = comparableText(lead);
+  if (!body || head.length < 12) return false;
+  if (body.startsWith(head)) return true;
+  const compactBody = body.replace(/\s+/g, '');
+  const compactHead = head.replace(/\s+/g, '');
+  return compactHead.length >= 12 && compactBody.startsWith(compactHead);
+}
+
+export function stripLeadingPreview(value) {
+  const text = String(value || '').replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  if (!text) return '';
+  const parts = text.split(/\n\n/);
+  if (parts.length >= 2 && textCoversLead(parts.slice(1).join('\n\n'), parts[0])) {
+    return parts.slice(1).join('\n\n').trim();
+  }
+  const inline = text.match(/^([\s\S]{12,}?)(?:\.{3}|…+)\s+([\s\S]+)$/u);
+  if (inline && textCoversLead(inline[2], inline[1])) return inline[2].trim();
+  return text;
+}
+
+export function joinArticleTitle(title, body) {
+  const heading = String(title || '').replace(/\s+/g, ' ').trim();
+  const text = String(body || '').replace(/\r\n/g, '\n').trim();
+  if (!text) return heading;
+  if (!heading || textCoversLead(text, heading) || text.startsWith(heading)) return text;
+  return `${heading}\n\n${text}`;
+}
+
+export function articleBodyLooksComplete(value, stable = 0) {
+  const text = String(value || '').trim();
+  if (!text || stable < 1) return false;
+  const tail = text.split('\n').map((line) => line.trim()).filter(Boolean).pop() || '';
+  if (/^https?:\/\//i.test(tail)) return true;
+  if (/[。！？.!?…](?:["”’」』）\]]+)?$/u.test(tail)) return true;
+  return stable >= 2;
+}
+
 export function mergeArticleIntoTweetText(tweetText, articleText) {
-  const tweet = String(tweetText || '').replace(/\r\n/g, '\n').trim();
-  const article = String(articleText || '').replace(/\r\n/g, '\n').trim();
+  const tweet = stripLeadingPreview(tweetText);
+  const article = stripLeadingPreview(articleText);
   if (!article) return tweet;
   if (!tweet) return article;
-  if (article.includes(tweet)) return article;
-  if (tweet.includes(article)) return tweet;
-  return `${tweet}\n\n${article}`;
+  if (article.includes(tweet) || textCoversLead(article, tweet)) return article;
+  if (tweet.includes(article) || textCoversLead(tweet, article)) return tweet;
+  return stripLeadingPreview(`${tweet}\n\n${article}`);
 }
 
 const UNSCRAPED_NOTE = '[未抓取]';
@@ -346,6 +393,18 @@ export function buildStatusCommentsExpression(tweetId, limit = COMMENT_PREVIEW_L
   })()`;
 }
 
+export function buildArticleScrollExpression() {
+  return `(() => {
+    const el = document.querySelector('[data-testid="twitterArticleRichTextView"]')
+      || document.querySelector('[data-testid="longformRichTextComponent"]')
+      || document.querySelector('[data-testid="twitterArticleReadView"]')
+      || document.scrollingElement;
+    if (el && el !== document.scrollingElement) el.scrollTop = el.scrollHeight;
+    window.scrollTo(0, document.body ? document.body.scrollHeight : 0);
+    return true;
+  })()`;
+}
+
 export function buildArticleExtractExpression() {
   return `(() => {
     /* x-article-body */
@@ -465,25 +524,38 @@ export function createXHomeBrowserClient(options = {}) {
     if (!target) return { ...tweet, article_unfetched: Boolean(tweet.article_cover) };
     await session.navigate(target, { timeoutMs: EXTRACT_TIMEOUT_MS });
     let best = { title: '', body: '' };
+    let stable = 0;
     for (let attempt = 0; attempt < 6; attempt += 1) {
       await wait(attempt === 0 ? 3_000 : 1_000);
+      if (attempt > 0) {
+        try { await session.evaluate(buildArticleScrollExpression(), { timeoutMs: EXTRACT_TIMEOUT_MS }); }
+        catch { /* the next extract still uses whatever is on the page */ }
+      }
       const extracted = await session.evaluate(buildArticleExtractExpression(), { timeoutMs: EXTRACT_TIMEOUT_MS });
       if (extracted?.login_wall) break;
       const title = String(extracted?.title || '').trim();
       const body = String(extracted?.body || '').trim();
-      if (body.length > String(best.body || '').length) best = { title, body };
-      else if (!best.title && title) best = { ...best, title };
-      if (String(best.body || '').length >= 400) break;
+      if (body.length > String(best.body || '').length) {
+        best = { title, body };
+        stable = 0;
+      } else if (best.body) {
+        stable += 1;
+        if (!best.title && title) best = { ...best, title };
+      } else if (title) {
+        best = { ...best, title };
+      }
+      if (articleBodyLooksComplete(joinArticleTitle(best.title, best.body), stable)) break;
     }
-    const articleText = [best.title, best.body].filter(Boolean).join('\n\n');
+    const articleText = joinArticleTitle(best.title, best.body);
     if (!articleText) return { ...tweet, article_unfetched: true };
+    const complete = articleBodyLooksComplete(articleText, Math.max(stable, 1));
     const merged = mergeArticleIntoTweetText(tweet.text, articleText);
     const next = {
       ...tweet,
       text: merged,
-      article_url: undefined,
-      article_cover: false,
-      article_unfetched: false,
+      article_url: complete ? undefined : (articleUrl || tweet.article_url),
+      article_cover: !complete,
+      article_unfetched: !complete,
     };
     if (!articleUrl) {
       next.comments = await readStatusComments(session, tweet.tweet_id);

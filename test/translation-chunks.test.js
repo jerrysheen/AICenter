@@ -59,6 +59,26 @@ test('a short chunk is retried before the translation is saved', async () => {
   assert.equal(saved.translatedText, full);
 });
 
+test('a cut ending is retried before the translation is saved', async () => {
+  const source = 'Jeff wrote two paragraphs about the round. The second paragraph explains what is already public.';
+  assert.ok(source.length < 400);
+  const calls = [];
+  const full = '杰夫写了两段，谈到这一轮。第二段说明哪些信息已经公开。';
+  const service = createTranslateService({
+    sleep: async () => {},
+    router: {
+      batch: false,
+      generate: async () => {
+        calls.push(1);
+        return { text: calls.length === 1 ? '…缺乏公开信息（我...' : full, engine: 'gemma' };
+      },
+    },
+  });
+  const saved = await service.translate({ text: source, id: 'jeff-cut' });
+  assert.equal(calls.length, 2);
+  assert.equal(saved.translatedText, full);
+});
+
 test('chunk size defaults to 1500 and the timeout can be raised without passing 300s', () => {
   assert.equal(translationChunkChars(undefined), 1500);
   assert.equal(translationChunkChars('1500'), 1500);

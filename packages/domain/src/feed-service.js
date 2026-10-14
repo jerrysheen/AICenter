@@ -3,6 +3,7 @@ import { FEED_TRANSLATION_TEXT_MAX, formatFeedBefore, ValidationError } from '..
 import { packFeedAiBatches } from './feed-ai-batch.js';
 import { feedItemIdentityHash } from './feed-identity.js';
 import { cleanIngestExcerpt } from '../../connectors/src/excerpt-text.js';
+import { stripLeadingPreview } from '../../connectors/src/x/home-browser.js';
 import { collectLocalizationUnits, localizationItemId, needsZhLocalization, translationLooksTruncated } from './localize-texts.js';
 import { isFlashSource } from './flash-sources.js';
 
@@ -246,7 +247,7 @@ function projectLocalizations(units, byItemId, failures = new Map(), now = Date.
     const shortHourlyTitle = row?.engine === 'hourly-report'
       && unit.text.length > 400
       && unit.text.length > String(row.translatedText || '').length * 3;
-    const truncated = translationLooksTruncated(unit.text, String(row?.translatedText || '').length);
+    const truncated = translationLooksTruncated(unit.text, String(row?.translatedText || '').length, row?.translatedText || '');
     const ready = Boolean(row && row.sourceHash === hash && row.translatedText && !shortHourlyTitle && !truncated);
     const failure = failures.get(unit.localizationId);
     const failed = !ready && failure && failure.sourceHash === hash
@@ -473,7 +474,10 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
     : Date.now();
   for (const [index, item] of snapshot.items.entries()) {
     if (!item.externalId || !item.sourceUrl) continue;
-    const identityHash = feedItemIdentityHash(providerId, item);
+    const body = stripLeadingPreview(item.body || '');
+    const originalText = stripLeadingPreview(item.originalText || body);
+    const cleaned = { ...item, body, originalText };
+    const identityHash = feedItemIdentityHash(providerId, cleaned);
     const rememberFingerprint = (hiddenAt) => {
       feedRepository.upsertIdentityFingerprint?.({
         workspaceId,
@@ -492,8 +496,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
       skipped += 1;
       continue;
     }
-    const originalText = item.originalText || item.body || '';
-    const hash = contentHash(`${item.externalId}\n${originalText}\n${item.body || ''}`);
+    const hash = contentHash(`${item.externalId}\n${originalText}\n${body}`);
     const existing = feedRepository.getCapture?.(workspaceId, providerId, item.externalId);
     const existingByContentHash = feedRepository.getCaptureByContentHash?.(workspaceId, providerId, hash);
     const hasIdentityFingerprint = Boolean(
@@ -525,7 +528,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
     const filterInput = {
       workspaceId,
       provider: providerId,
-      item,
+      item: cleaned,
       originalText,
       contentHash: hash,
       identityHash,
@@ -578,7 +581,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
       originType: item.originType || 'subscription',
       contentType: item.contentType || 'post',
       title: cleanIngestExcerpt(item.title || ''),
-      body: item.body || '',
+      body,
       summary: cleanIngestExcerpt(item.summary || ''),
       sourceUrl: item.sourceUrl,
       authorName: item.authorName || '',
@@ -1056,7 +1059,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
         const shortHourlyTitle = row?.engine === 'hourly-report'
           && String(item.text || '').length > 400
           && String(item.text || '').length > String(row.translatedText || '').length * 3;
-        const truncated = translationLooksTruncated(item.text, String(row?.translatedText || '').length);
+        const truncated = translationLooksTruncated(item.text, String(row?.translatedText || '').length, row?.translatedText || '');
         if (shortHourlyTitle || truncated || row?.sourceHash !== contentHash(item.text) || !row.translatedText) return true;
         translations.push({ id: item.id, sourceText: item.text, translatedText: row.translatedText, targetLang, engine: row.engine, cached: true });
         return false;
