@@ -274,7 +274,7 @@ test('media gaps keep uncovered English titles and a missing article title', () 
     openIds: new Set([localizationItemId('media:nvidia:one')]),
     limit: 20,
   });
-  assert.deepEqual(selected.map((unit) => unit.text), [guard, partialTitle]);
+  assert.deepEqual(selected.map((unit) => unit.text), [partialTitle, guard]);
 });
 
 test('gap fill requeues a terminal failure and an uncovered title without duplicating open jobs', async () => {

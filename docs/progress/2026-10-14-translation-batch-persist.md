@@ -36,7 +36,7 @@ Worker 在启动补译之后，以及之后每隔一段时间，扫描媒体标�
 
 ## 验证
 
-`node --test test/translation-batch-persist.test.js test/translation-chunks.test.js test/feed-ai-batch.test.js test/feed-translation-display.test.js test/translation-reliability.test.js test/information-tree.test.js`。覆盖三条里成功两条只重试失败条、配额顺延留下后续条目、长文段落后重试跳过已存段、标题 5 条和环境变量 2 条、正文仍是 30 条、两个例子标题里已有任务的跳过、终态失败重新入队。
+`node --test test/translation-batch-persist.test.js test/translation-chunks.test.js test/feed-ai-batch.test.js test/feed-translation-display.test.js test/translation-reliability.test.js` 通过。覆盖三条里成功两条只重试失败条、配额顺延留下后续条目、长文段落后重试跳过已存段、标题 5 条和环境变量 2 条、正文仍是 30 条、两个例子标题里已有任务的跳过、终态失败重新入队。`test/information-tree.test.js` 里「translation persists each successful batch」在 `4188f48` 上已经失败：保存的短译文被截断判断留在 pending，这次没有改信息树，也没有改这条测试。
 
 ## 遗留
 
