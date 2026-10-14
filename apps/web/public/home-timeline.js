@@ -141,11 +141,26 @@ export function homeEditionNote(startAt, endAt, nowMs = Date.now()) {
   return `${start.month}月${start.day}日 · ${range}`;
 }
 
-export function homeHourItemTime(item) {
-  const ingested = Number(item?.firstIngestedAt);
-  if (Number.isFinite(ingested) && ingested > 0) return ingested;
-  const published = Number(item?.publishedAt);
-  return Number.isFinite(published) && published > 0 ? published : 0;
+const HOUR_LIST_FUTURE_SLACK_MS = 2 * 60 * 1000;
+
+function positiveAt(value) {
+  const at = Number(value);
+  return Number.isFinite(at) && at > 0 ? at : 0;
+}
+
+export function homeHourItemTime(item, now = Date.now()) {
+  const published = positiveAt(item?.publishedAt);
+  const ingested = positiveAt(item?.firstIngestedAt) || positiveAt(item?.eventAt);
+  const clock = positiveAt(now);
+  const within = (at) => at > 0 && (!clock || at <= clock + HOUR_LIST_FUTURE_SLACK_MS);
+  const clamp = (at) => (clock && at > clock ? clock : at);
+  if (within(published)) return clamp(published);
+  if (published > 0) {
+    if (within(ingested)) return clamp(ingested);
+    return clock || ingested || published;
+  }
+  if (within(ingested)) return clamp(ingested);
+  return clock && ingested ? Math.min(ingested, clock) : ingested;
 }
 
 export function selectHomeHourHits(snapshot) {

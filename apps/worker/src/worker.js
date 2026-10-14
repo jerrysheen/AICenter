@@ -59,7 +59,7 @@ import {createInformationTreeService} from '../../../packages/domain/src/informa
 import {loadInformationTreeSkills,loadArticleNormalizeSkills} from '../../../packages/runtime/src/information-tree/skills.js';
 import {createTreeMaterialPort} from '../../../packages/domain/src/information-tree-materials.js';
 import {informationTreeManifest,createInformationTreeJobHandlers,enqueueTreePreparation,prioritizeRecentTreePreparation} from '../../../packages/runtime/src/information-tree-module.js';
-import {createReadingHourService} from '../../../packages/domain/src/reading-hour-service.js';
+import {createReadingHourService, readingHourSourceAccess} from '../../../packages/domain/src/reading-hour-service.js';
 import {createModelUsageService} from '../../../packages/domain/src/model-usage-service.js';
 import { allowHourlyScheduleEnqueue, createReportJobHandlers, ensureDailyReportCatchupSchedule, ensureDailyReportSchedule, ensureHourlyDigestSchedule, hourlyReportDisabled, releaseOpenHourlyJobs, reportDailyManifest } from '../../../packages/runtime/src/report-module.js';
 import { boundedInt } from '../../../packages/domain/src/report-reliability.js';
@@ -483,6 +483,7 @@ export function createAiCenterWorker(options = {}) {
         feedRepository: store.repositories.feed,
         flashSources,
         env,
+        ...readingHourSourceAccess({ feed: store.repositories.feed, media: store.repositories.media }),
       }),
       beforeHourly:treeService ? (input)=>prioritizeRecentTreePreparation(store,treeMaterials.candidates,input.workspaceId || 'local') : null,
       briefService: options.briefService || createDailyBriefService({

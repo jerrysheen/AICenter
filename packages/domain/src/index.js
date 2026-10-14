@@ -1,7 +1,7 @@
 import { createFeedService } from './feed-service.js';
 import { createFeedInteractionService } from './feed-interaction-service.js';
 import { createInformationTreeReader } from './information-tree-service.js';
-import { createReadingHourService } from './reading-hour-service.js';
+import { createReadingHourService, readingHourSourceAccess } from './reading-hour-service.js';
 import { createModelUsageService } from './model-usage-service.js';
 import { createMediaIngestionService } from './media-ingestion-service.js';
 import { createIdentityService } from './identity-service.js';
@@ -152,39 +152,7 @@ export function createDomainServices({
       repository:store.repositories.informationTree,
       enabled: env.AI_CENTER_READING_HOUR === '1',
       env,
-      publishedAtFor(workspace, refs) {
-        for (const ref of refs || []) {
-          if (ref?.type === 'content-item') {
-            const at = store.repositories.feed?.getContentItem?.(workspace, ref.id)?.publishedAt;
-            if (Number.isFinite(at)) return at;
-          }
-          if (ref?.type === 'media-body') {
-            const at = store.repositories.media?.getEntry?.(workspace, ref.id)?.publishedAt;
-            if (Number.isFinite(at)) return at;
-          }
-        }
-        return null;
-      },
-      publisherFor(workspace, refs) {
-        const labels = { x: 'X', twitter: 'X', xueqiu: '雪球', bilibili: 'B站', trendforce: 'TrendForce' };
-        const clean = (value) => {
-          const text = String(value || '').trim();
-          return text && text !== '未知' ? text : '';
-        };
-        for (const ref of refs || []) {
-          if (ref?.type === 'content-item') {
-            const names = store.repositories.feed?.contentSourceNames?.(workspace, ref.id);
-            const name = clean(names?.displayName) || clean(names?.authorName) || labels[names?.provider] || '';
-            if (name) return name;
-          }
-          if (ref?.type === 'media-body') {
-            const entry = store.repositories.media?.getEntry?.(workspace, ref.id);
-            const name = clean(entry?.publisherName) || clean(entry?.publisherKey);
-            if (name) return name;
-          }
-        }
-        return '';
-      },
+      ...readingHourSourceAccess({ feed: store.repositories.feed, media: store.repositories.media }),
     }),
     modelUsage: createModelUsageService({ repository: store.repositories.modelUsage, workspaceId, rates: modelUsageRates, getJob: id => store.getJob(id) }),
     identity: createIdentityService({ identityRepository: store, loginCredential }),

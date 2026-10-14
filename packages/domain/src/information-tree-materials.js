@@ -1,14 +1,19 @@
 import {material,materialHash,paragraphs,socialParagraphs} from './daily-materials.js';
 import { isFlashSource } from './flash-sources.js';
+import { isAwesomeListUpdateNoise } from './awesome-list-noise.js';
 
 function keepHourlyCandidate(row, flashSources) {
-  return !isFlashSource({
+  if (isFlashSource({
     id: row.id,
     sourceExternalId: row.sourceExternalId,
     sourceKey: row.sourceKey,
     publisher: row.sourceName || row.publisher,
     displayName: row.sourceName,
-  }, flashSources);
+  }, flashSources)) return false;
+  return !isAwesomeListUpdateNoise({
+    title: row.title,
+    sourceUrl: row.sourceUrl || row.canonicalUrl,
+  });
 }
 
 export function createTreeMaterialPort({feedService,mediaService,flashSources=null}) {

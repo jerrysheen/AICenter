@@ -142,7 +142,8 @@ test('feed, reader, brief bullets and ask share one card', () => {
   assert.match(js, /ask-answer-share/);
   assert.match(js, /answeredAt: exchange\.completedAt \|\| exchange\.createdAt/);
   assert.match(js, /answerNode\.shareMarkdown/);
-  assert.match(tree, /onShare:\(\)=>shareReadingItem\(item, edition\)/);
+  assert.match(tree, /shareReadingItem\(item, edition\)/);
+  assert.doesNotMatch(tree, /onShare:\(\)=>shareReadingItem/);
   assert.match(tree, /shareDailyArticle\(article, edition\)/);
   assert.match(tree, /onShare:\(\)=>shareTreeNode\(item\.n, item\.edition, '日报'\)/);
   assert.match(css, /min-width:\s*0/);

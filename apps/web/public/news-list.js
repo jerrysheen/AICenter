@@ -40,15 +40,6 @@ export function newsEffectiveLabel(at) {
   return `生效：${Number(part(current, 'month'))}月${Number(part(current, 'day'))}日`;
 }
 
-const PUBLISHED_HINT_GAP_MS = 60 * 60 * 1000;
-
-export function newsIngestAt(item) {
-  const ingested = Number(item?.firstIngestedAt);
-  if (Number.isFinite(ingested) && ingested > 0) return ingested;
-  const published = Number(item?.publishedAt);
-  return Number.isFinite(published) && published > 0 ? published : 0;
-}
-
 export function reportItemTime(item, edition) {
   const start = Number(edition?.window?.startAt);
   const windowStamp = Number.isFinite(start) && start > 0 ? start : 0;
@@ -62,20 +53,6 @@ export function reportItemTime(item, edition) {
     .find((at) => ok(at));
   if (refAt) return refAt;
   return 0;
-}
-
-export function newsPublishedHint(publishedAt, ingestedAt) {
-  const published = Number(publishedAt);
-  const ingested = Number(ingestedAt);
-  if (!Number.isFinite(published) || published <= 0 || !Number.isFinite(ingested) || ingested <= 0) return '';
-  if (Math.abs(published - ingested) <= PUBLISHED_HINT_GAP_MS) return '';
-  const publishedParts = parts(published, { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-  const ingestedParts = parts(ingested, { year: 'numeric', month: 'numeric', day: 'numeric' });
-  const sameDay = part(publishedParts, 'year') === part(ingestedParts, 'year')
-    && part(publishedParts, 'month') === part(ingestedParts, 'month')
-    && part(publishedParts, 'day') === part(ingestedParts, 'day');
-  const clock = `${part(publishedParts, 'hour')}:${part(publishedParts, 'minute')}`;
-  return sameDay ? `发布 ${clock}` : `发布 ${Number(part(publishedParts, 'month'))}月${Number(part(publishedParts, 'day'))}日 ${clock}`;
 }
 
 export function newsTimeLabel(at, { ingested = false, now = Date.now() } = {}) {

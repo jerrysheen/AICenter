@@ -99,18 +99,11 @@ test('same-source bulk notices are grayed and sink to the end of that day', () =
   assert.equal(split.tail.map((row) => row.title).join('|'), '低价值');
 });
 
-test('hour rows show ingest time and add a publish hint only when the gap exceeds one hour', () => {
-  const context = vm.createContext({ zonedCalendarParts, zonedClockParts });
-  vm.runInContext(newsList, context);
-  const ingested = Date.parse('2026-10-10T15:40:00Z');
-  const near = Date.parse('2026-10-10T15:10:00Z');
-  const far = Date.parse('2026-10-10T13:00:00Z');
-  const previousDay = Date.parse('2026-10-09T13:24:00Z');
-  assert.equal(context.newsIngestAt({ publishedAt: far, firstIngestedAt: ingested }), ingested);
-  assert.equal(context.newsIngestAt({ publishedAt: far }), far);
-  assert.equal(context.newsPublishedHint(near, ingested), '');
-  assert.equal(context.newsPublishedHint(far, ingested), '发布 21:00');
-  assert.equal(context.newsPublishedHint(previousDay, ingested), '发布 10月9日 21:24');
+test('hour list rows no longer carry an ingest-time publish hint', () => {
+  assert.doesNotMatch(newsList, /function newsPublishedHint/);
+  assert.doesNotMatch(newsList, /function newsIngestAt/);
+  assert.doesNotMatch(readFileSync(new URL('../apps/web/public/information-tree.js', import.meta.url), 'utf8'), /newsPublishedHint|onShare:\(\)=>shareReadingItem/);
+  assert.doesNotMatch(readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8'), /newsPublishedHint/);
 });
 
 test('a page slice keeps normal rows ahead of bulk notices from the same day', () => {

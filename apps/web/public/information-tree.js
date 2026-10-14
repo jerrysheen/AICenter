@@ -1,6 +1,7 @@
 import { icon } from './icons.js?v=dev';
 import { decodeHtmlEntities } from './html-text.js?v=dev';
-import { newsDayLabel, newsIngestAt, newsPublishedHint, newsRow, reportItemTime } from './news-list.js?v=dev';
+import { homeHourItemTime } from './home-timeline.js?v=dev';
+import { newsDayLabel, newsRow, reportItemTime } from './news-list.js?v=dev';
 import { mountInvestorDigest } from './investor-digest.js?v=dev';
 import { shareTextBlocks, stripSharePlaceholders } from './share-card.js?v=dev';
 import { inclusiveWindowInstant, zonedCalendarParts, zonedClockParts } from './shanghai-time.js?v=dev';
@@ -956,8 +957,13 @@ export function createInformationTreePage(host) {
     const path=pinnedReadingId && openedId ? `/api/v1/reports/reading-hour/snapshot?id=${encodeURIComponent(pinnedReadingId)}` : `/api/v1/reports/reading-hour?startAt=${edition.window.startAt}&endAt=${edition.window.endAt}&scope=hour`;
     try{const data=await api(path);return data?.snapshot || null;}catch(error){if(aborted(error))throw error;return null;}
   }
-  function readingFold(id, title, {seed} = {}) {
-    const details=document.createElement('details');details.className='reading-fold';details.dataset.behavior='item.expand';
+  function appendReadingDetail(panel, item, edition) {
+    const theme=themeLabel(item?.readingThemeName);
+    if(theme) panel.append(el('span', theme, 'news-tag'));
+    if(typeof host.shareCard==='function' && item) panel.append(shareAction(()=>shareReadingItem(item, edition)));
+  }
+  function readingFold(id, title, {seed, edition} = {}) {
+    const details=document.createElement('details');details.className='reading-fold';details.dataset.behavior='item.expand';details.open=false;
     if(readingOpen.has(id)){details.dataset.expandQuiet='1';details.open=true;setTimeout(()=>{delete details.dataset.expandQuiet;},0);}
     const summary=document.createElement('summary');summary.className='news-fold-toggle';summary.textContent='展开';
     const panel=el('div','','reading-fold-body');details.append(summary,panel);
@@ -988,6 +994,7 @@ export function createInformationTreePage(host) {
         panel.append(link);
       }
       if(canReadSource(view)){const sourceButton=button('原文',()=>host.readSavedSource(view));sourceButton.dataset.behavior='source.original';panel.append(sourceButton);}
+      appendReadingDetail(panel, seed, edition);
     }
     details.addEventListener('toggle',load);
     if(details.open)void load();
@@ -997,15 +1004,13 @@ export function createInformationTreePage(host) {
   function readingSourceLine(item, {keepDirection=false}={}){
     const publisher=String(item.publisher || '').trim();
     const direction=keepDirection ? String(item.readingDirectionName || '').trim() : '';
-    const theme=themeLabel(item.readingThemeName);
-    const hint=newsPublishedHint(item.publishedAt, item.firstIngestedAt);
-    return [publisher, direction, theme, hint].filter(part=>part && part!=='未知').join(' · ');
+    return [publisher, direction].filter(part=>part && part!=='未知').join(' · ');
   }
-  function readingWhen(item, edition){
-    return {at:reportItemTime(item, edition), ingested:false};
+  function readingWhen(item){
+    return {at:homeHourItemTime(item), ingested:false};
   }
-  function byIngest(rows, edition){
-    const at=item=>reportItemTime(item, edition) || newsIngestAt(item);
+  function byPublished(rows){
+    const at=item=>homeHourItemTime(item);
     return [...rows].sort((a,b)=>at(b)-at(a) || String(a.nodeId||a.title||'').localeCompare(String(b.nodeId||b.title||'')));
   }
   function hourItemHref(edition, nodeId){
@@ -1020,7 +1025,7 @@ export function createInformationTreePage(host) {
     return {
       id:item.nodeId, resourceId:item.nodeId, resourceType:'reading-node', kind:'reading',
       title:item.title || '', author:readingSourceLine(item, {keepDirection:true}),
-      publishedAt:reportItemTime(item, edition) || Number(item.publishedAt) || 0,
+      publishedAt:homeHourItemTime(item) || Number(item.publishedAt) || 0,
       createdAt:Number(item.firstIngestedAt) || reportItemTime(item, edition) || 0,
       hourStart:edition?.window?.startAt || 0, reportHref:hourItemHref(edition, item.nodeId), focusedAt:Date.now(),
     };
@@ -1046,13 +1051,12 @@ export function createInformationTreePage(host) {
     const tags=item.timely===false ? ['时效不足'] : [];
     const sources=Array.isArray(item.sources) && item.sources.length>1 ? item.sources : null;
     const list=sources ? renderReadingSources(sources) : null;
-    const fold=sources ? null : readingFold(item.nodeId, item.title, {seed:item});
+    const fold=sources ? null : readingFold(item.nodeId, item.title, {seed:item, edition});
     const row=newsRow({
       id:item.nodeId, title:item.title || '', at:when.at, ingested:when.ingested,
       source:readingSourceLine(item, {keepDirection}), tags, muted,
       focused:Boolean(host.readingFocused?.(item.nodeId)),
       onStar:()=>host.focusReading?.(readingFocusSnapshot(item, edition)),
-      onShare:()=>shareReadingItem(item, edition),
       attachOpen(open){
         open.addEventListener('click', event=>{
           const mark=event?.target?.classList?.contains('reading-ref') ? event.target : null;
@@ -1080,7 +1084,7 @@ export function createInformationTreePage(host) {
     const rank=(order,value)=> {const index=order.indexOf(value);return index<0 ? order.length : index;};
     const directionNames=[...new Set(rows.map(item=>item.readingDirectionName).filter(Boolean))].sort((a,b)=>rank(readingDirectionOrder,a)-rank(readingDirectionOrder,b));
     for(const directionName of directionNames){
-      const matched=byIngest(rows.filter(item=>item.readingDirectionName===directionName), edition);
+      const matched=byPublished(rows.filter(item=>item.readingDirectionName===directionName));
       const block=el('section','','reading-block');
       const heading=el('h2',directionName,'reading-direction news-section-title');
       heading.append(el('span',`${matched.length} 条`,'news-section-count'));
@@ -1160,7 +1164,7 @@ export function createInformationTreePage(host) {
     page.append(el('p',`${newsDayLabel(edition.window.startAt)} · ${clock(edition.window.startAt)}\u2013${clock(edition.window.endAt)}`,'news-day-label'));
     const shown=(snapshot.items||[]).filter(item=>item.readingDirectionName && item.readingDirectionName!=='待分类' && item.disposition!=='out-of-scope');
     const hits=shown.filter(item=>item.disposition==='hit' && item.timely!==false);
-    const tail=byIngest(shown.filter(item=>item.disposition!=='hit' || item.timely===false), edition);
+    const tail=byPublished(shown.filter(item=>item.disposition!=='hit' || item.timely===false));
     if(!hits.length && !tail.length) page.append(showEmptyHour());
     else {
       renderReadingDirections(hits, page, edition);

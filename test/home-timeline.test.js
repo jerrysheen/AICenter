@@ -20,6 +20,7 @@ import {
   homeHourSections,
   hourlyEditions,
   selectHomeHourHits,
+  homeHourItemTime,
   unavailableOfficialCount,
   CHRONIC_UNAVAILABLE_MS,
   acceptMarketPayload,
@@ -301,8 +302,9 @@ test('home hour sections keep several periods and sort each one newest first', (
   assert.equal(homeHourSections({ editions: starts.map(edition), readings, sectionLimit: 3, nowMs: now }).length, 3);
 });
 
-test('home hour hits follow firstIngestedAt when publish time falls outside the hour', () => {
+test('home hour hits follow publishedAt and fall back when it is missing or far in the future', () => {
   const start = Date.parse('2026-10-10T15:00:00Z');
+  const now = Date.parse('2026-10-14T02:49:00Z');
   const item = (title, publishedAt, firstIngestedAt) => ({
     title,
     nodeId: title,
@@ -317,7 +319,11 @@ test('home hour hits follow firstIngestedAt when publish time falls outside the 
       item('收录更晚', start - 3_600_000, start + 40 * 60_000),
     ],
   });
-  assert.deepEqual(hits.map((row) => row.title), ['收录更晚', '发布更晚']);
+  assert.deepEqual(hits.map((row) => row.title), ['发布更晚', '收录更晚']);
+  assert.equal(homeHourItemTime(item('缺发布时间', null, start + 49 * 60_000), now), start + 49 * 60_000);
+  assert.equal(homeHourItemTime(item('未来发布时间', now + 24 * 3_600_000, start + 20 * 60_000), now), start + 20 * 60_000);
+  assert.equal(homeHourItemTime(item('时钟偏差', now + 30_000, start + 20 * 60_000), now), now);
+  assert.equal(homeHourItemTime({ publishedAt: start + 30 * 60_000, firstIngestedAt: start + 49 * 60_000 }, now), start + 30 * 60_000);
 });
 
 test('unavailable official count skips failures older than 24h', () => {
@@ -394,14 +400,18 @@ test('home requests are the overview set and not the old feed fan-out', () => {
   const forbidden = /\/feed\/x|xueqiu|trendforce|translate\/batch|agent\/runs|view=reading|tree\/edition|\/api\/v1\/posts/;
   assert.doesNotMatch([...plan.parallel, plan.board, plan.readingHour(1, 2)].join('\n'), forbidden);
   const app = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
-  const sourcesPage = app.match(/async function loadSourcesPage\([^]*?\n\}/)[0];
+  const sourcesPage = app.match(/async function loadSourcesPageLegacy\([^]*?\n\}/)[0];
   assert.match(sourcesPage, /homeRequestPlan\(/);
   assert.match(sourcesPage, /plan\.tree/);
   assert.match(sourcesPage, /plan\.readingIndex/);
   assert.match(sourcesPage, /plan\.board/);
   assert.match(sourcesPage, /loadDailyBrief\(/);
-  assert.match(sourcesPage, /ensureHomeMessages\(/);
-  assert.ok(sourcesPage.indexOf('loadHomeBoard(') >= 0 && sourcesPage.indexOf('loadHomeBoard(') < sourcesPage.indexOf('await Promise.all'));
+  assert.match(app.slice(app.indexOf('function scheduleHomeTail'), app.indexOf('async function loadSourcesPageNow')), /ensureHomeMessages\(/);
+  const homeNow = app.match(/async function loadSourcesPageNow\([^]*?\n\}/)[0];
+  assert.match(homeNow, /fetchHomeBootstrap\(/);
+  assert.match(homeNow, /loadSourcesPageLegacy\(/);
+  assert.doesNotMatch(homeNow, /loadGlobalAssets|loadMarketNativeBoard|scheduleOverviewManualPosts|loadXFeed|loadXueqiuFeed|loadPosts\(/);
+  assert.match(sourcesPage, /await Promise\.all\(\[[\s\S]*loadHomeBoard\(/);
   assert.match(app, /homeOfficialSettled/);
   assert.match(app, /HOME_OFFICIAL_SETTLE_MS = 8_000/);
   assert.match(app, /GET \/api\/v1\/static-signals\/board/);
@@ -411,7 +421,7 @@ test('home requests are the overview set and not the old feed fan-out', () => {
   assert.doesNotMatch(sourcesPage, /loadGlobalAssets|loadMarketNativeBoard|scheduleOverviewManualPosts|loadXFeed|loadXueqiuFeed|loadPosts\(/);
   assert.match(app, /mergeReadingHours\(state\.homeReadingHours, absorbReadingIndex\(payload\)\)/);
   const snapshots = app.slice(app.indexOf('async function ensureHomeReadingSnapshots'), app.indexOf('async function loadHomeReadingIndex'));
-  assert.match(snapshots, /if \(loaded && startAt !== latestStart\) return/);
+  assert.match(snapshots, /if \(!refresh && loaded && startAt !== latestStart\) return/);
   const catalog = app.slice(app.indexOf('function renderStaticSourceCatalog()'), app.indexOf('const staticScheduleWindows'));
   assert.match(catalog, /unavailableOfficialCount\(health\)/);
   assert.match(app.slice(app.indexOf('function renderHomeSourceLine()'), app.indexOf('async function loadHomeTree')), /unavailableOfficialCount\(officialSourceHealth\(\)\)/);

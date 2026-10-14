@@ -4,6 +4,7 @@ import {redactCondenseLog} from './information-tree-policy.js';
 import {buildFocusQuestions, parseFocusAnswer} from './us-equity-focus.js';
 import {FOCUS_GROUP_NAMES, FOCUS_GROUP_ORDER, FOCUS_QUESTIONS, READING_CLASS_VERSION, READING_DIRECTIONS, READING_ROUTE_VERSION, normalizeReadingSemantics, readingPlacement, routeReadingFocus} from './reading-focus-route.js';
 import {isFlashSource} from './flash-sources.js';
+import {isAwesomeListUpdateNoise} from './awesome-list-noise.js';
 
 const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const READING_TIMELINESS_MS = 24 * 60 * 60 * 1000;
@@ -14,7 +15,7 @@ const READING_DIRECTION_ORDER = ['金融','产业个股','科技与AI','地缘�
 const readingRank = (order, value) => { const index = order.indexOf(value); return index < 0 ? order.length : index; };
 
 function headlineFromItems(items) {
-  const shown = (items || []).filter((item) => item?.disposition === 'hit' && item.readingDirectionName && item.readingDirectionName !== '待分类' && item.disposition !== 'out-of-scope');
+  const shown = (items || []).filter((item) => item?.disposition === 'hit' && item.readingDirectionName && item.readingDirectionName !== '待分类' && item.disposition !== 'out-of-scope' && !isAwesomeListUpdateNoise({title: item.title}));
   const ranked = shown.map((item, index) => ({item, index}));
   ranked.sort((a, b) => {
     const direction = readingRank(READING_DIRECTION_ORDER, a.item.readingDirectionName) - readingRank(READING_DIRECTION_ORDER, b.item.readingDirectionName);
@@ -190,7 +191,59 @@ export function readingClassKeySuffix(keyEnv) {
   return name.slice(-12);
 }
 
-export function createReadingHourService({repository, reportRepository = null, agentRuntime = null, enabled = false, client = null, catalogIds = new Set(), publishedAtFor = null, publisherFor = null, feedRepository = null, flashSources = null, now = () => Date.now(), env = process.env, log = console.log} = {}) {
+const SOURCE_LABELS = { x: 'X', twitter: 'X', xueqiu: '雪球', bilibili: 'B站', trendforce: 'TrendForce' };
+
+function cleanSourceLabel(value) {
+  const text = String(value || '').trim();
+  return text && text !== '未知' ? text : '';
+}
+
+export function readingHourSourceAccess({ feed = null, media = null } = {}) {
+  function factsFor(workspace, refs) {
+    const titles = [];
+    const urls = [];
+    let publishedAt = null;
+    for (const ref of refs || []) {
+      if (ref?.type === 'content-item') {
+        const item = feed?.getContentItem?.(workspace, ref.id);
+        if (item?.title) titles.push(item.title);
+        if (item?.sourceUrl) urls.push(item.sourceUrl);
+        if (publishedAt == null && Number.isFinite(Number(item?.publishedAt))) publishedAt = Number(item.publishedAt);
+      }
+      if (ref?.type === 'media-body') {
+        const entry = media?.getEntry?.(workspace, ref.id);
+        if (entry?.title) titles.push(entry.title);
+        if (entry?.canonicalUrl) urls.push(entry.canonicalUrl);
+        if (entry?.originUrl) urls.push(entry.originUrl);
+        if (publishedAt == null && Number.isFinite(Number(entry?.publishedAt))) publishedAt = Number(entry.publishedAt);
+      }
+    }
+    return { titles, urls, publishedAt };
+  }
+  return {
+    sourceFactsFor: factsFor,
+    publishedAtFor(workspace, refs) {
+      return factsFor(workspace, refs).publishedAt;
+    },
+    publisherFor(workspace, refs) {
+      for (const ref of refs || []) {
+        if (ref?.type === 'content-item') {
+          const names = feed?.contentSourceNames?.(workspace, ref.id);
+          const name = cleanSourceLabel(names?.displayName) || cleanSourceLabel(names?.authorName) || SOURCE_LABELS[names?.provider] || '';
+          if (name) return name;
+        }
+        if (ref?.type === 'media-body') {
+          const entry = media?.getEntry?.(workspace, ref.id);
+          const name = cleanSourceLabel(entry?.publisherName) || cleanSourceLabel(entry?.publisherKey);
+          if (name) return name;
+        }
+      }
+      return '';
+    },
+  };
+}
+
+export function createReadingHourService({repository, reportRepository = null, agentRuntime = null, enabled = false, client = null, catalogIds = new Set(), publishedAtFor = null, publisherFor = null, sourceFactsFor = null, feedRepository = null, flashSources = null, now = () => Date.now(), env = process.env, log = console.log} = {}) {
   const indexCache = new Map();
   const batchSize = readingClassBatchSize(env);
   const keyEnvs = readingClassKeyEnvs(env);
@@ -269,9 +322,12 @@ export function createReadingHourService({repository, reportRepository = null, a
   function present(workspace, snapshot) {
     const shown = view(snapshot);
     if (!shown) return null;
-    shown.items = shown.items.map((item) => {
+    shown.items = shown.items.flatMap((item) => {
       const node = repository.getNode?.(workspace, item.nodeId);
-      const computed = publishedAtFor?.(workspace, node?.sourceRefs || []) ?? null;
+      const refs = node?.sourceRefs || [];
+      const facts = sourceFactsFor?.(workspace, refs) || { titles: [], urls: [], publishedAt: null };
+      if (isAwesomeListUpdateNoise({ title: item.title, titles: [node?.title, ...(facts.titles || [])], urls: facts.urls })) return [];
+      const computed = publishedAtFor?.(workspace, refs) ?? facts.publishedAt ?? null;
       const storedPublished = item.publishedAt == null ? null : Number(item.publishedAt);
       const publishedAt = Number.isFinite(computed) ? computed : (Number.isFinite(storedPublished) ? storedPublished : null);
       const storedIngested = item.firstIngestedAt == null ? null : Number(item.firstIngestedAt);
@@ -280,9 +336,9 @@ export function createReadingHourService({repository, reportRepository = null, a
       const anchor = snapshot.window?.endAt;
       const timely = !(Number.isFinite(publishedAt) && Number.isFinite(anchor) && anchor - publishedAt > READING_TIMELINESS_MS);
       const storedPublisher = String(item.publisher || node?.publisher || '').trim();
-      const lookedUp = storedPublisher && storedPublisher !== '未知' ? '' : String(publisherFor?.(workspace, node?.sourceRefs || []) || '').trim();
+      const lookedUp = storedPublisher && storedPublisher !== '未知' ? '' : String(publisherFor?.(workspace, refs) || '').trim();
       const publisher = storedPublisher && storedPublisher !== '未知' ? storedPublisher : (lookedUp && lookedUp !== '未知' ? lookedUp : '');
-      return {...item, publisher, publishedAt, firstIngestedAt, timely};
+      return [{...item, publisher, publishedAt, firstIngestedAt, timely}];
     });
     return shown;
   }
@@ -454,7 +510,9 @@ export function createReadingHourService({repository, reportRepository = null, a
         if (isFlashSource({publisher: node.publisher, sourceId: node.sourceId, id: node.sourceId}, flashSources)) return false;
         const ref = (node.sourceRefs || []).find((item) => item.type === 'content-item');
         const row = ref ? itemSources.get(ref.id) : null;
-        return !isFlashSource({externalId: row?.externalId, displayName: row?.displayName}, flashSources);
+        if (isFlashSource({externalId: row?.externalId, displayName: row?.displayName}, flashSources)) return false;
+        const facts = sourceFactsFor?.(workspace, node.sourceRefs || []) || { titles: [], urls: [] };
+        return !isAwesomeListUpdateNoise({ title: node.title, titles: facts.titles, urls: facts.urls });
       });
       const items = [];
       const readingErrors = [];
@@ -488,9 +546,14 @@ export function createReadingHourService({repository, reportRepository = null, a
           readingErrors.push({sourceId: node.sourceId || node.id, reason: 'jev-unavailable'});
           for (const id of route.groupIds) scores[id] = {status: 'failed', score: null, reason: 'jev-unavailable'};
         }
+        const facts = sourceFactsFor?.(workspace, node.sourceRefs || []) || {};
+        const lookedUpPublished = Number(facts.publishedAt);
+        const storedPublished = Number(node.publishedAt);
         items.push({
           sourceId: node.sourceId || node.id, sourceVersion: String(node.headSourceVersion || node.version || ''), nodeId: node.id, title: node.title,
-          publisher: node.publisher || '', publishedAt: node.publishedAt ?? null, firstIngestedAt: node.eventAt ?? null,
+          publisher: node.publisher || '',
+          publishedAt: Number.isFinite(storedPublished) && storedPublished > 0 ? storedPublished : (Number.isFinite(lookedUpPublished) ? lookedUpPublished : null),
+          firstIngestedAt: node.eventAt ?? null,
           reviewed, semantic, scores, classificationSource: classification.source, classification,
         });
       }

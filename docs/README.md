@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-14-hourly-list-published-at.md`：小时报列表按原文 `publishedAt` 排序和显示，缺发布时间才用入库时间，过远的未来时间改用入库时间。去掉灰色「发布 HH:MM」。GitHub `awesome-*` 仓库更新不进小时列表。分类标签和「分享」只在展开后出现。不新增 migration。需要同时重启 Web 和 Worker。浏览器再加载一次。
+
 - `progress/2026-10-14-scrape-chrome-default-profile.md`：日常 Chrome 不带 `--user-data-dir`。配置的目录等于 `%LOCALAPPDATA%\Google\Chrome\User Data` 时，这种进程算该目录已在使用，`--type=` 子进程不算，因此不另开第二只。`AI_CENTER_SCRAPE_CHROME_PROFILE_DIRECTORY` 会连同 `--user-data-dir` 传 `--profile-directory`。不新增 migration。需要重新运行 `scripts/start-ai-center.ps1`。
 
 - `progress/2026-10-14-worker-claim-loop.md`：手动把 `jobs.attempt_count` 清回 0 后，领取按已有 `job_attempts` 的最大序号继续，避免唯一约束把领取循环打停。领取抛错时记下日志、只把仍在排队的那条标失败，循环继续。循环超过约 5 分钟没有往下走时打一行。空的订阅来源 id 改为跳过，不再每轮报错。不新增 migration。需要重启 Worker。
