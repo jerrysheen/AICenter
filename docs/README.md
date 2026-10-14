@@ -25,7 +25,7 @@
 
 ## 当前
 
-- `progress/2026-10-14-gemma-upstream-backoff.md`：Gemma 上游 500/502/503/408 不再把密钥冷却 60 秒。同一密钥连续错误退避 10 秒、20 秒、40 秒，立刻换下一把密钥。只有 429 和真实配额窗口写「等待配额窗口」。每个密钥默认每分钟 25 次、间隔 2.5 秒、16000 Token、每个太平洋日 14400 次。不新增 migration。需要同时重启 Web 和 Worker。
+- `progress/2026-10-14-gemma-upstream-backoff.md`：Gemma 仍只用 26B，`thinkingLevel` 保持 `minimal`。HTTP 500/502/503/408 立刻换下一把密钥；同一密钥连续失败才按 10 秒起翻倍退避，上限 40 秒，成功后清零。Token 只记 `usageMetadata`。每个密钥每分钟 25 次，同密钥间隔 2–3 秒随机。状态码、次数、间隔、退避和重试次数都可由环境变量改。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-14-access-log-plaintext.md`：访问日志每一行在原有 `client` 哈希、`ua` 分类和 `cfRay` 旁边写下明文 `ip`、`country` 和截到 300 字的 `userAgent`。`ip` 优先 `CF-Connecting-IP`，否则 `X-Forwarded-For` 第一段，否则套接字地址。国家来自 `CF-IPCountry`。User-Agent 去掉换行和控制字符。仍写 `data/logs/access.yyyy-MM-dd.log`，不新增接口。不新增 migration。需要重启 Web。Worker 不用为这项重启。
 
