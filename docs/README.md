@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-14-access-log-plaintext.md`：访问日志每一行在原有 `client` 哈希、`ua` 分类和 `cfRay` 旁边写下明文 `ip`、`country` 和截到 300 字的 `userAgent`。`ip` 优先 `CF-Connecting-IP`，否则 `X-Forwarded-For` 第一段，否则套接字地址。国家来自 `CF-IPCountry`。User-Agent 去掉换行和控制字符。仍写 `data/logs/access.yyyy-MM-dd.log`，不新增接口。不新增 migration。需要重启 Web。Worker 不用为这项重启。
+
 - `progress/2026-10-14-official-media-queue.md`：媒体充实不再为每个 `h:` 正文块各建一条优先级 0 的翻译任务。正文块合成任务并降到 -10，列表标题和官方标题是 10。官方文号可以打开，短标题不再因缺少句号判成没译完。小时「展开」恢复可点，页面策略放行 Cloudflare 信标。不新增 migration。需要同时重启 Web 和 Worker。浏览器再加载一次。
 
 - `progress/2026-10-14-ellipsis-lead.md`：译文或正文以 `…` / `……` / `...` 开头、下一句又从同一前缀开始时，阅读页、列表和摘要去掉这段前缀。启动时改掉已保存的正文和译文，并写 `[worker] ellipsis-lead`。上交所空的交易日不再当作已完成区间；回看 12 天时，2026-10-14 的空结果明天会再取。不新增 migration。需要同时重启 Web 和 Worker。浏览器再加载一次。
