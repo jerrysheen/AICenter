@@ -68,6 +68,8 @@ test('allowlist is GET-only and leaves admin paths closed', () => {
     ['GET', '/api/v1/markets/search'],
     ['GET', '/api/v1/hardware-prices'],
     ['GET', '/api/v1/compute-prices'],
+    ['GET', '/api/v1/etf-whale/overview'],
+    ['GET', '/api/v1/etf-whale/etfs/159915'],
   ];
   for (const [method, pathName] of allowed) assert.equal(isApiTokenAllowlisted(method, pathName), true, pathName);
 
@@ -86,6 +88,9 @@ test('allowlist is GET-only and leaves admin paths closed', () => {
     ['GET', '/api/v1/events/stream'],
     ['POST', '/api/v1/posts'],
     ['GET', '/api/v1/feed/media/probe'],
+    ['POST', '/api/v1/etf-whale/overview'],
+    ['GET', '/api/v1/etf-whale/etfs/159915/shares'],
+    ['GET', '/api/v1/etf-whale/sync'],
   ];
   for (const [method, pathName] of denied) assert.equal(isApiTokenAllowlisted(method, pathName), false, pathName);
 });
@@ -233,6 +238,8 @@ test('bearer tokens can read the allowlist and nothing else', async () => {
       '/api/v1/compute-prices',
       '/api/v1/posts?limit=1',
       '/api/v1/feed/x?saved=1&limit=1',
+      '/api/v1/etf-whale/overview',
+      '/api/v1/etf-whale/etfs/159915',
     ];
     for (const pathName of allowed) {
       const response = await fetch(`${address.localUrl}${pathName}`, { headers: { ...publicHeaders(), ...auth } });

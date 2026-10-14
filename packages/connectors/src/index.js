@@ -2,9 +2,12 @@ export { ConnectorProcessError, createJsonProcessAdapter } from './process-json-
 export { createYahooClient, barsFromChart, quoteFromSpark, parseMarketSession, seriesFromSpark } from './yahoo.js';
 export {
   createTushareClient,
+  isCnIndexYahooSymbol,
+  isConsistentOhlcBar,
   isTushareDailySymbol,
   seriesFromTushareDaily,
   tushareCodeToYahoo,
+  tushareDailyApiName,
   yahooToTushareCode,
 } from './tushare.js';
 export { createCnQuoteClient, isCnBShareYahooSymbol, isCnFundYahooSymbol, isCnYahooSymbol, quoteFromHithinkItem, thscodeToYahoo, yahooToThscode } from './cn-quotes.js';

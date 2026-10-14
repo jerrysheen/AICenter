@@ -1,4 +1,7 @@
+import { isCnFundYahooSymbol } from './cn-quotes.js';
+
 const DEFAULT_URL = 'https://api.tushare.pro';
+const DAILY_BAR_FIELDS = 'ts_code,trade_date,open,high,low,close,vol,amount';
 const DEFAULT_TIMEOUT_MS = 12_000;
 const RANGE_DAYS = {
   '1mo': 40,
@@ -31,6 +34,27 @@ export function isTushareDailySymbol(symbol) {
   return /^\d{6}\.(SS|SZ)$/i.test(String(symbol || '').trim());
 }
 
+export function isCnIndexYahooSymbol(symbol) {
+  const match = String(symbol || '').trim().toUpperCase().match(/^(\d{6})\.(SS|SZ)$/);
+  if (!match) return false;
+  const code = match[1];
+  const suffix = match[2];
+  if (code.startsWith('399')) return suffix === 'SZ';
+  return suffix === 'SS' && code.startsWith('000');
+}
+
+export function isConsistentOhlcBar(bar) {
+  if (!bar || typeof bar !== 'object') return false;
+  const open = typeof bar.open === 'number' ? bar.open : Number.NaN;
+  const high = typeof bar.high === 'number' ? bar.high : Number.NaN;
+  const low = typeof bar.low === 'number' ? bar.low : Number.NaN;
+  const close = typeof bar.close === 'number' ? bar.close : Number.NaN;
+  if (![open, high, low, close].every((value) => Number.isFinite(value))) return false;
+  if (high < Math.max(open, close)) return false;
+  if (low > Math.min(open, close)) return false;
+  return true;
+}
+
 export function yahooToTushareCode(symbol) {
   const match = String(symbol || '').trim().toUpperCase().match(/^(\d{6})\.(SS|SZ)$/);
   if (!match) return null;
@@ -61,6 +85,12 @@ export function rangeWindow(range, now = Date.now()) {
   };
 }
 
+export function tushareDailyApiName(symbol) {
+  if (isCnIndexYahooSymbol(symbol)) return 'index_daily';
+  if (isCnFundYahooSymbol(symbol)) return 'fund_daily';
+  return 'daily';
+}
+
 export function seriesFromTushareDaily(payload, yahooSymbol) {
   const symbol = String(yahooSymbol || tushareCodeToYahoo(payload?.tsCode) || '').toUpperCase();
   const data = isRecord(payload) && isRecord(payload.data) ? payload.data : payload;
@@ -74,6 +104,7 @@ export function seriesFromTushareDaily(payload, yahooSymbol) {
   const low = indexOf('low');
   const close = indexOf('close');
   const volume = indexOf('vol') >= 0 ? indexOf('vol') : indexOf('volume');
+  const amount = indexOf('amount');
   const bars = [];
   for (const row of items) {
     if (!Array.isArray(row)) continue;
@@ -83,14 +114,18 @@ export function seriesFromTushareDaily(payload, yahooSymbol) {
     const at = Date.parse(`${dateText.slice(0, 4)}-${dateText.slice(4, 6)}-${dateText.slice(6, 8)}T00:00:00+08:00`);
     if (!Number.isFinite(at)) continue;
     const openPrice = num(row[open]) ?? closePrice;
-    bars.push({
+    const bar = {
       at,
       open: openPrice,
       high: num(row[high]) ?? Math.max(openPrice, closePrice),
       low: num(row[low]) ?? Math.min(openPrice, closePrice),
       close: closePrice,
       volume: num(row[volume]),
-    });
+    };
+    const turnover = amount >= 0 ? num(row[amount]) : null;
+    if (turnover != null) bar.amount = turnover;
+    if (!isConsistentOhlcBar(bar)) continue;
+    bars.push(bar);
   }
   bars.sort((left, right) => left.at - right.at);
   if (!bars.length) return null;
@@ -284,11 +319,11 @@ export function createTushareClient(options = {}) {
       const tsCode = yahooToTushareCode(symbol);
       if (!tsCode) continue;
       try {
-        const payload = await request('daily', {
+        const payload = await request(tushareDailyApiName(symbol), {
           ts_code: tsCode,
           start_date: window.startDate,
           end_date: window.endDate,
-        }, 'ts_code,trade_date,open,high,low,close,vol');
+        }, DAILY_BAR_FIELDS);
         const mapped = seriesFromTushareDaily(payload, symbol);
         if (mapped) series.push(mapped);
       } catch {

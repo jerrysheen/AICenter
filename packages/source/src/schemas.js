@@ -62,6 +62,7 @@ export const HistoryBarSchema = z.object({
   low: z.number().finite(),
   close: z.number().finite(),
   volume: z.number().finite().nullable().optional(),
+  amount: z.number().finite().nullable().optional(),
 }).strict();
 
 export const HistorySeriesSchema = z.array(z.object({

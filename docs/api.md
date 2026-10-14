@@ -207,7 +207,9 @@ curl -sS "https://center.example.com/api/v1/investor-discussion?date=2026-10-12"
 |---|---|---|
 | GET | `/api/v1/markets` | `board=overview`、`us`、`asia`、`cn` 或 `global` |
 | GET | `/api/v1/markets/search` | `q` |
-| GET | `/api/v1/markets/history` | `symbol`，`range=6mo`，`interval=1d` |
+| GET | `/api/v1/markets/history` | `symbol`，`range=6mo`，`interval=1d`。日 K 的 `bars[]` 在上游给出成交额时带 `amount`（Tushare 原样数值）。收盘前不把当天未完成的柱写入缓存。开高低收不自洽的柱不返回 |
+| GET | `/api/v1/etf-whale/overview` | 无。只读 ETF 鲸鱼汇总 |
+| GET | `/api/v1/etf-whale/etfs/:code` | 路径里的 6 位代码，例如 `159915` |
 | GET | `/api/v1/markets/analysis` | `symbol`，`range=5y` |
 | GET | `/api/v1/markets/baskets` | `index`，`range=5y`，可选 `asOf` |
 | GET | `/api/v1/hardware-prices` | 可选 `category=dram`、`nand`、`ssd` 或 `other-storage`，`snapshotId`，`limit`。列表不带 `rawCells`。无分类、以及这四个分类，都只写出 Worker 预备的缓冲区；没有缓冲区时 `pending: true`。`snapshotId` 在 Web 的工作线程里按快照过滤、序列化并 gzip 后写出 |

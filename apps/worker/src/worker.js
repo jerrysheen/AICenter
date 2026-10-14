@@ -69,6 +69,7 @@ import { createResearchRecallService } from '../../../packages/domain/src/resear
 import { createFeedAutomationJobHandlers, ensureDefaultContentSubscriptions, ensureFeedSubscriptionSyncSchedule, FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE, FEED_SYNC_MAX_RUNTIME_MS, feedAutomationManifest, prepareFeedSyncEnqueue } from '../../../packages/runtime/src/feed-automation-module.js';
 import { createStrategyJobHandlers, ensureDividendStrategySchedule, strategySnapshotManifest } from '../../../packages/runtime/src/strategy-module.js';
 import { createQuantJobHandlers, quantLabManifest } from '../../../packages/runtime/src/quant-module.js';
+import { ensureEtfWhaleSchedule } from '../../../packages/runtime/src/etf-whale-schedule.js';
 import { createEtfWhaleJobHandlers, etfWhaleManifest } from '../../../packages/runtime/src/etf-whale-sync.js';
 import { createEventQuoteSnapshotJobHandlers, ensureEventQuoteSnapshotSchedule, eventQuoteSnapshotManifest } from '../../../packages/runtime/src/event-quote-snapshot-job.js';
 import { createInvestorDiscussionJobHandlers, ensureInvestorDiscussionSchedule, investorDiscussionManifest } from '../../../packages/runtime/src/investor-discussion-job.js';
@@ -636,6 +637,7 @@ export function createAiCenterWorker(options = {}) {
     ensureInvestorDiscussionSchedule(store, env);
     ensureTrendForcePriceSchedules(store, env);
     ensureComputePriceSchedules(store, env);
+    ensureEtfWhaleSchedule(store, env);
     ensureDefaultContentSubscriptions(store.repositories.feed);
   }
   const scheduler = options.scheduler || createScheduler({
