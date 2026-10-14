@@ -43,6 +43,29 @@ export function explainXConnectorError(error) {
   return message || 'X 时间线加载失败';
 }
 
+const SNOWFLAKE_EPOCH = 1288834974657n;
+
+export function xSnowflakeMillis(id) {
+  const digits = String(id || '').replace(/\D/g, '');
+  if (!/^\d{15,22}$/.test(digits)) return 0;
+  try {
+    const ms = Number((BigInt(digits) >> 22n) + SNOWFLAKE_EPOCH);
+    if (!Number.isSafeInteger(ms) || ms < 1_400_000_000_000 || ms > 4_100_000_000_000) return 0;
+    return ms;
+  } catch {
+    return 0;
+  }
+}
+
+export function tweetPublishedAt(tweet, tweetId = '') {
+  const parsed = Number(tweet?.publishedAt)
+    || (Number.isFinite(Number(tweet?.published_timestamp)) ? Number(tweet.published_timestamp) * 1000 : 0)
+    || (tweet?.published_at ? Date.parse(tweet.published_at) || 0 : 0);
+  const snow = xSnowflakeMillis(tweetId || tweet?.tweetId || tweet?.tweet_id || tweet?.externalId);
+  if (snow && (!parsed || Math.abs(snow - parsed) > 36 * 60 * 60 * 1000)) return snow;
+  return parsed;
+}
+
 export function tweetToFeedItem(tweet, options = {}) {
   const tweetId = text(tweet.tweetId || tweet.tweet_id);
   const handle = parseTwitterHandle(tweet.authorHandle || tweet.author_handle || '');
@@ -51,9 +74,7 @@ export function tweetToFeedItem(tweet, options = {}) {
   const sourceUrl = text(tweet.tweetUrl || tweet.tweet_url)
     || (tweetId && handle ? `https://x.com/${handle}/status/${tweetId}` : '')
     || (tweetId ? `https://x.com/i/status/${tweetId}` : '');
-  const publishedAt = Number(tweet.publishedAt)
-    || (Number.isFinite(Number(tweet.published_timestamp)) ? Number(tweet.published_timestamp) * 1000 : 0)
-    || (tweet.published_at ? Date.parse(tweet.published_at) || 0 : 0);
+  const publishedAt = tweetPublishedAt(tweet, tweetId);
   const authorName = text(tweet.authorName || tweet.author_name, handle ? `@${handle}` : 'X');
   return {
     id: tweetId ? `x:${tweetId}` : `x:${handle}:${sourceUrl}`,

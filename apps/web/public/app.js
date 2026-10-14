@@ -668,7 +668,15 @@ function translationFor(post) {
   const chineseApi = chineseReaderText(apiText);
   const chineseNormalized = chineseReaderText(normalized);
   if (chineseApi) {
-    state.translations[post.id] = { text: chineseApi, engine: post.translation.engine || '', cached: true };
+    let text = chineseApi;
+    const leadMatch = text.match(/^[\s\S]+?(?:[。！？]|[.!?](?:\s|$))/);
+    const lead = leadMatch ? leadMatch[0].trim() : '';
+    if (lead.length >= 8) {
+      const marker = `\n\n${lead}`;
+      const at = text.indexOf(marker);
+      if (at > 0) text = `${text.slice(0, at)}\n\n${text.slice(at + marker.length)}`.replace(/\n{3,}/g, '\n\n').trim();
+    }
+    state.translations[post.id] = { text, engine: post.translation.engine || '', cached: true };
     return state.translations[post.id];
   }
   if (chineseNormalized) return { text: chineseNormalized, kind: 'normalized', cached: true };
@@ -1971,6 +1979,7 @@ window.addEventListener('pagehide', () => {
 function formatTime(timestamp) {
   if (!formatTime.formatter) {
     formatTime.formatter = new Intl.DateTimeFormat('zh-CN', {
+      timeZone: 'Asia/Shanghai',
       month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
     });
   }
@@ -3853,11 +3862,12 @@ function sinkLowValue(items) {
 function feedSortAt(post, now = Date.now()) {
   const published = Number(post?.publishedAt) || 0;
   const effective = Number(post?.effectiveAt || post?.release?.effectiveAt) || 0;
-  const created = Number(post?.createdAt || post?.observedAt || post?.release?.observedAt) || 0;
+  const created = Number(post?.createdAt || post?.observedAt || post?.release?.observedAt || post?.capturedAt) || 0;
   const official = post?.kind === 'official' || post?.platform === 'official';
   const future = published > now || effective > now;
   const capture = created > 0 && created <= now ? created : (future ? now : created);
   if (official && (!published || future)) return capture;
+  if (!official && published > 0 && published <= now + 48 * 60 * 60 * 1000) return published;
   if (future) return capture;
   return published || created;
 }
@@ -3868,7 +3878,8 @@ function sortFeedItems(items) {
   }
   const now = Date.now();
   return [...items].sort((left, right) => feedSortAt(right, now) - feedSortAt(left, now)
-    || Number(Boolean(left.isRead)) - Number(Boolean(right.isRead)));
+    || Number(Boolean(left.isRead)) - Number(Boolean(right.isRead))
+    || String(left.id || '').localeCompare(String(right.id || '')));
 }
 
 function visibleFeedItems() {
@@ -4854,6 +4865,7 @@ function feedToNewsRow(post) {
     id: post.id,
     title: titled.title,
     at: moment.at,
+    day: newsDayLabel(moment.at),
     ingested: moment.ingested,
     effectiveLabel: moment.effectiveLabel,
     source: feedSourceLine(post),
@@ -8668,8 +8680,12 @@ function articleContentId(id) {
   if (contentItemUuid(value)) return value;
   const feed = value.match(/^feed:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
   if (feed) return feed[1];
+  if (/^(?:x|xueqiu|bilibili|trendforce):[^/]+$/i.test(value)) return value;
   const cached = typeof findUnifiedItem === 'function' ? findUnifiedItem(value) : null;
-  return contentItemUuid(cached?.resourceId) ? cached.resourceId : '';
+  if (contentItemUuid(cached?.resourceId)) return cached.resourceId;
+  const platform = String(cached?.platform || '');
+  const composed = cached?.externalId && /^(?:x|xueqiu|bilibili|trendforce)$/i.test(platform) ? `${platform}:${cached.externalId}` : '';
+  return /^(?:x|xueqiu|bilibili|trendforce):[^/]+$/i.test(composed) ? composed : '';
 }
 async function restoreSavedArticle(id) {
   if(!state.session || restoredArticleRequests.has(id))return;restoredArticleRequests.add(id);
@@ -13667,6 +13683,12 @@ function ensureFeedSources(sources) {
   if (focusWindow && sources.includes('xueqiu') && !missing.includes('xueqiu') && !state.xueqiuFocusLoaded && !state.xueqiuFocusLoading && !state.xueqiuLoading) {
     tasks.push(loadFocusFeedWindow('xueqiu').catch((error) => showToast(error.message)));
   }
+  if (!focusWindow && sources.includes('x') && state.xFocusMerged && !state.xLoading) {
+    tasks.push(loadXFeed({ refresh: false }).catch((error) => showToast(error.message)));
+  }
+  if (!focusWindow && sources.includes('xueqiu') && state.xueqiuFocusMerged && !state.xueqiuLoading) {
+    tasks.push(loadXueqiuFeed({ refresh: false }).catch((error) => showToast(error.message)));
+  }
   const pending = Promise.all(tasks);
   if (tasks.length) pending.then(() => noteFeedLoaded()).catch(() => {});
   return pending.finally(() => {
@@ -14095,6 +14117,7 @@ async function mergeSocialReadHead(platform, { epoch = null } = {}) {
 async function loadXFeed({ refresh = false, autoTranslate = true, append = false, focusWindow = false, saved = false, before = '', readPage = false, priority = 4 } = {}) {
   if (!state.session) return null;
   const epoch = state.feedEpoch;
+  const pageToken = (!saved && !append) ? (loadXFeed.replaceToken = (Number(loadXFeed.replaceToken) || 0) + 1) : 0;
   state.xLoading = true;
   state.xError = '';
   state.xRefreshing = refresh;
@@ -14115,8 +14138,11 @@ const payload = await api(`/api/v1/feed/x?${params}`, { timeoutMs: refresh ? 180
     if (epoch != null && state.feedEpoch !== epoch) return payload.feed || null;
     const feed = payload.feed || {};
     const incoming = (feed.items || []).filter((item) => !isHiddenFeedItem(item));
+    if (saved && state.channel !== 'focus') return feed;
+    if (!saved && !append && loadXFeed.replaceToken !== pageToken) return feed;
     if (saved) {
       state.xItems = mergeLoadedFeed(state.xItems, incoming);
+      state.xFocusMerged = true;
     } else if (append && readPage) {
       const seen = new Set((state.xItems || []).map((item) => item.id));
       const added = incoming.filter((item) => item.id && !seen.has(item.id));
@@ -14128,15 +14154,12 @@ const payload = await api(`/api/v1/feed/x?${params}`, { timeoutMs: refresh ? 180
       state.xItems = [...(state.xItems || []), ...added];
       if (added.length) state.feedShown += added.length;
       state.xNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
-    } else if (refresh || focusWindow || !(state.xItems || []).length) {
-      state.xItems = incoming;
+    } else {
+      const previous = new Map((state.xItems || []).filter((item) => item?.id).map((item) => [item.id, item]));
+      state.xItems = incoming.map((item) => mergeLoadedFeedItem(previous.get(item.id), item));
       state.xNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
       state.xReadCursor = '';
-    } else {
-      const paged = state.xItems.length > incoming.length;
-      const cursor = state.xNextCursor;
-      state.xItems = mergeLoadedFeed(state.xItems, incoming);
-      state.xNextCursor = paged ? cursor : (incoming.length && feed.nextCursor ? feed.nextCursor : '');
+      state.xFocusMerged = false;
     }
     state.xFeed = feed.feed || state.xFeed;
     state.xNote = feed.note || '';
@@ -14218,6 +14241,7 @@ async function loadXueqiuFeed({ refresh = false, append = false, focusWindow = f
     return null;
   }
   const epoch = state.feedEpoch;
+  const pageToken = (!saved && !append) ? (loadXueqiuFeed.replaceToken = (Number(loadXueqiuFeed.replaceToken) || 0) + 1) : 0;
   state.xueqiuLoading = true;
   state.xueqiuError = '';
   state.xueqiuRefreshing = Boolean(refresh);
@@ -14238,8 +14262,11 @@ const payload = await api(`/api/v1/feed/xueqiu?${params}`, { timeoutMs: refresh 
     if (epoch != null && state.feedEpoch !== epoch) return payload.feed || null;
     const feed = payload.feed || {};
     const incoming = (feed.items || []).filter((item) => !isHiddenFeedItem(item));
+    if (saved && state.channel !== 'focus') return feed;
+    if (!saved && !append && loadXueqiuFeed.replaceToken !== pageToken) return feed;
     if (saved) {
       state.xueqiuItems = mergeLoadedFeed(state.xueqiuItems, incoming);
+      state.xueqiuFocusMerged = true;
     } else if (append && readPage) {
       const seen = new Set((state.xueqiuItems || []).map((item) => item.id));
       const added = incoming.filter((item) => item.id && !seen.has(item.id));
@@ -14251,15 +14278,12 @@ const payload = await api(`/api/v1/feed/xueqiu?${params}`, { timeoutMs: refresh 
       state.xueqiuItems = [...(state.xueqiuItems || []), ...added];
       if (added.length) state.feedShown += added.length;
       state.xueqiuNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
-    } else if (refresh || focusWindow || !(state.xueqiuItems || []).length) {
-      state.xueqiuItems = incoming;
+    } else {
+      const previous = new Map((state.xueqiuItems || []).filter((item) => item?.id).map((item) => [item.id, item]));
+      state.xueqiuItems = incoming.map((item) => mergeLoadedFeedItem(previous.get(item.id), item));
       state.xueqiuNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
       state.xueqiuReadCursor = '';
-    } else {
-      const paged = state.xueqiuItems.length > incoming.length;
-      const cursor = state.xueqiuNextCursor;
-      state.xueqiuItems = mergeLoadedFeed(state.xueqiuItems, incoming);
-      state.xueqiuNextCursor = paged ? cursor : (incoming.length && feed.nextCursor ? feed.nextCursor : '');
+      state.xueqiuFocusMerged = false;
     }
     state.xueqiuFeed = feed.feed || state.xueqiuFeed;
     state.xueqiuNote = feed.note || '';

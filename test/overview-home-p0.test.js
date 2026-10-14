@@ -34,6 +34,32 @@ test('feed rows sort by publish time and fall back to capture time', () => {
   assert.equal(context.feedSortAt(dated, now), yesterday.publishedAt);
 });
 
+test('social rows group by the Shanghai publish clock', () => {
+  const now = Date.parse('2026-10-14T08:00:00Z');
+  const context = vm.createContext({ zonedCalendarParts, zonedClockParts });
+  vm.runInContext(`${newsList}\n${functionSource('feedSortAt')}`, context);
+  const post = {
+    platform: 'x',
+    publishedAt: Date.parse('2026-10-13T21:29:00Z'),
+    createdAt: Date.parse('2026-10-12T02:00:00Z'),
+  };
+  const soon = {
+    platform: 'x',
+    publishedAt: now + 30 * 60 * 1000,
+    createdAt: Date.parse('2026-10-12T02:00:00Z'),
+  };
+  assert.equal(context.feedSortAt(post, now), post.publishedAt);
+  assert.equal(context.feedSortAt(soon, now), soon.publishedAt);
+  const label = context.newsDayLabel(context.feedSortAt(post, now));
+  assert.match(label, /10月14日/);
+  assert.doesNotMatch(label, /10月12日/);
+  assert.match(functionSource('formatTime'), /Asia\/Shanghai/);
+  assert.match(functionSource('feedToNewsRow'), /day: newsDayLabel\(moment\.at\)/);
+  assert.match(functionSource('articleContentId'), /x\|xueqiu\|bilibili\|trendforce/);
+  assert.doesNotMatch(app, /const paged = state\.xItems\.length > incoming\.length/);
+  assert.doesNotMatch(app, /const paged = state\.xueqiuItems\.length > incoming\.length/);
+});
+
 test('day groups follow newest publish time even when the input is reversed', () => {
   const context = vm.createContext({ zonedCalendarParts, zonedClockParts });
   vm.runInContext(newsList, context);

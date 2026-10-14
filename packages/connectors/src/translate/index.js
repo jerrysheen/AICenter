@@ -149,7 +149,7 @@ export function createTranslateService(options = {}) {
     const sourceHash = digest(source);
     const attempts = Number.isInteger(options.chunkAttempts) && options.chunkAttempts > 0
       ? options.chunkAttempts
-      : (chunks.length > 1 ? 3 : 1);
+      : (source.length >= 400 || chunks.length > 1 ? 3 : 1);
     let stored = [];
     if (id && chunkStore?.load && chunks.length > 1) {
       try { stored = chunkStore.load({ workspaceId, itemId: id, targetLang: target, sourceHash }) || []; }
@@ -180,6 +180,15 @@ export function createTranslateService(options = {}) {
         const started = now();
         try {
           const result = await router.generate({ system, prompt: chunk });
+          if (chunkLooksShort(chunk, result.text)) {
+            const error = new Error('翻译未完整结束');
+            logTranslationChunk({ itemId: id, chunk: index + 1, total: chunks.length, chars: chunk.length, requestChars, latencyMs: Math.max(0, now() - started), status: attempt + 1 < attempts ? 'retry' : 'error' });
+            if (attempt + 1 < attempts) {
+              await pause(CHUNK_RETRY_DELAYS_MS[Math.min(attempt, CHUNK_RETRY_DELAYS_MS.length - 1)]);
+              continue;
+            }
+            throw error;
+          }
           translated = result.text;
           engine = result.engine;
           logTranslationChunk({ itemId: id, chunk: index + 1, total: chunks.length, chars: chunk.length, requestChars, latencyMs: Math.max(0, now() - started), status: 'ok' });
@@ -197,7 +206,7 @@ export function createTranslateService(options = {}) {
         if (id) persistChunk({ workspaceId, itemId: id, targetLang: target, sourceHash, chunkIndex: index, chunkCount: chunks.length, chunkHash, translatedText: translated, engine });
       }
     }
-    return save(source, target, outputs.join('\n\n'), engines.size === 1 ? [...engines][0] : 'gemma-translation-pool');
+    return save(source, target, joinTranslationChunks(outputs), engines.size === 1 ? [...engines][0] : 'gemma-translation-pool');
   }
   async function translateMany({ items = [], targetLang = DEFAULT_TARGET, workspaceId = 'local' } = {}) {
     const target = normalizeTranslateTarget(targetLang);
@@ -233,6 +242,43 @@ export function createTranslateService(options = {}) {
     return { translations, targetLang: target };
   }
   return { translate, translateMany, chunkChars };
+}
+
+function chunkLooksShort(source, translated) {
+  const body = String(source || '');
+  const text = String(translated || '').trim();
+  if (body.length < 400) return false;
+  if (text.length >= 80 && text.length * 3 >= body.length) return false;
+  return text.length < 40 || text.length * 5 < body.length;
+}
+
+function translationLead(value) {
+  const text = String(value || '').trim();
+  const match = text.match(/^[\s\S]+?(?:[。！？]|[.!?](?:\s|$))/);
+  return match ? match[0].trim() : '';
+}
+
+export function joinTranslationChunks(parts) {
+  const kept = [];
+  for (const part of parts || []) {
+    let text = String(part || '').trim();
+    if (!text) continue;
+    const prev = kept.length ? kept[kept.length - 1] : '';
+    if (prev) {
+      const lead = translationLead(prev);
+      if (lead.length >= 8 && text.startsWith(lead)) text = text.slice(lead.length).replace(/^[\s。！？.!?]+/u, '').trim();
+      if (text) {
+        const max = Math.min(prev.length, text.length, 240);
+        let overlap = 0;
+        for (let size = max; size >= 12; size -= 1) {
+          if (prev.slice(-size) === text.slice(0, size)) { overlap = size; break; }
+        }
+        if (overlap) text = text.slice(overlap).replace(/^[\s。！？.!?]+/u, '').trim();
+      }
+    }
+    if (text) kept.push(text);
+  }
+  return kept.join('\n\n');
 }
 
 export function splitTranslationText(source, chunkChars = TRANSLATION_CHUNK_CHARS_DEFAULT) {

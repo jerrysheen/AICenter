@@ -492,7 +492,7 @@ export function createFeedRepository(database, emitEvent) {
             raw_artifact_path = excluded.raw_artifact_path,
             status = excluded.status,
             published_at = excluded.published_at,
-            captured_at = excluded.captured_at,
+            captured_at = captures.captured_at,
             metadata_json = excluded.metadata_json,
             author_handle = excluded.author_handle,
             filter_mode = excluded.filter_mode,
@@ -559,6 +559,21 @@ export function createFeedRepository(database, emitEvent) {
         ? database.prepare('SELECT * FROM content_items WHERE capture_id = ?').get(input.captureId)
         : database.prepare('SELECT * FROM content_items WHERE id = ?').get(id);
       return mapContentItem(row);
+    },
+
+    touchPublishedAt(workspaceId, provider, externalId, publishedAt) {
+      const at = Number(publishedAt);
+      if (!Number.isFinite(at) || at <= 0) return false;
+      const capture = database.prepare(`SELECT id, published_at FROM captures
+        WHERE workspace_id = ? AND provider = ? AND external_id = ?`)
+        .get(workspaceId, provider, String(externalId || ''));
+      if (!capture) return false;
+      const prev = Number(capture.published_at) || 0;
+      if (prev && Math.abs(prev - at) <= 36 * 60 * 60 * 1000) return false;
+      database.prepare('UPDATE captures SET published_at = ? WHERE id = ?').run(at, capture.id);
+      database.prepare(`UPDATE content_items SET published_at = ?, updated_at = ?
+        WHERE workspace_id = ? AND capture_id = ?`).run(at, Date.now(), workspaceId, capture.id);
+      return true;
     },
 
     getCapture(workspaceId, provider, externalId) {

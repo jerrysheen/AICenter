@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { FEED_TRANSLATION_TEXT_MAX, FeedTranslationJobInputSchema } from '../../contracts/src/index.js';
 import { TRANSLATION_MAX_ATTEMPTS } from '../../database/src/translation-retry.js';
-import { needsZhLocalization } from '../../domain/src/localize-texts.js';
+import { needsZhLocalization, translationLooksTruncated } from '../../domain/src/localize-texts.js';
 
 function bodyHash(value) {
   return createHash('sha256').update(String(value)).digest('hex');
@@ -18,6 +18,15 @@ export function translationStartupBackfillLimit(value) {
   const raw = Number(value);
   if (!Number.isInteger(raw) || raw < 0) return TRANSLATION_BACKFILL_LIMIT;
   return Math.min(raw, TRANSLATION_BACKFILL_STARTUP_MAX);
+}
+
+// Backfill stays at 1 or 2 jobs. When the translation pool has room, one slot stays for priority >= 0.
+export function translationBackfillConcurrency(value, translationLimit = 5) {
+  const slots = Number.isInteger(Number(translationLimit)) && Number(translationLimit) >= 1 ? Number(translationLimit) : 5;
+  const raw = Number(value);
+  const chosen = Number.isInteger(raw) && raw >= 1 ? raw : 2;
+  const capped = Math.min(2, Math.max(1, chosen));
+  return slots >= 2 ? Math.min(capped, slots - 1) : 1;
 }
 
 export function createFeedTranslationChunkStore(feed) {
@@ -49,7 +58,9 @@ function noteSkip(summary, key, id) {
 
 function translationCovers(rowHash, engine, translatedLength, text, hash) {
   if (!rowHash || rowHash !== hash) return false;
-  return !(engine === 'hourly-report' && text.length > 400 && text.length > Number(translatedLength) * 3);
+  if (engine === 'hourly-report' && text.length > 400 && text.length > Number(translatedLength) * 3) return false;
+  if (translationLooksTruncated(text, translatedLength)) return false;
+  return true;
 }
 
 export function formatTranslationBackfillLog(summary = {}, { enqueued = 0, limit = 0 } = {}) {
@@ -89,6 +100,10 @@ export async function enqueueOriginalTranslations({ store, feedService, workspac
   for (const unit of units.filter(unit => pending.has(unit.id) && unit.text.length > 0 && unit.text.length <= FEED_TRANSLATION_TEXT_MAX)) {
     const input = FeedTranslationJobInputSchema.parse({ workspaceId, items: [{ id: unit.localizationId || unit.id, text: unit.text }] });
     const open = store.listOpenJobs?.('feed.translation.run')?.find(job => job.workspaceId === workspaceId && JSON.stringify(job.input) === JSON.stringify(input));
+    if (open && rank < 0 && open.status === 'queued' && Number(open.priority) !== rank && store.reprioritizeQueuedJobs) {
+      store.reprioritizeQueuedJobs(workspaceId, [{ id: open.id, priority: rank, expectedPriority: Number(open.priority) || 0 }]);
+      open.priority = rank;
+    }
     jobs.push(open || store.createJob({ type: 'feed.translation.run', workspaceId, input, maxAttempts: TRANSLATION_MAX_ATTEMPTS, priority: rank }));
   }
   return jobs;
