@@ -1239,6 +1239,43 @@ export function createFeedRepository(database, emitEvent) {
       }));
     },
 
+    listFeedBodiesSince(workspaceId, { since = 0, beforeCreatedAt = null, beforeId = '', limit = 200 } = {}) {
+      const cap = Math.max(1, Math.min(Number(limit) || 200, 500));
+      const sinceAt = Number(since) || 0;
+      const cursorAt = beforeCreatedAt == null || beforeCreatedAt === '' ? Number.NaN : Number(beforeCreatedAt);
+      const hasCursor = Number.isFinite(cursorAt);
+      const cursorSql = hasCursor
+        ? `AND (ci.created_at < ? OR (ci.created_at = ? AND ci.id > ?))`
+        : '';
+      const params = hasCursor
+        ? [workspaceId, sinceAt, cursorAt, cursorAt, String(beforeId || ''), cap]
+        : [workspaceId, sinceAt, cap];
+      const rows = database.prepare(`SELECT ci.id AS id, ci.body AS body, ci.created_at AS created_at,
+          c.provider AS provider, c.external_id AS external_id,
+          COALESCE(sa.external_id, '') AS source_external_id,
+          COALESCE(uis.is_hidden, 0) AS is_hidden
+        FROM content_items ci
+        JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
+        LEFT JOIN source_accounts sa ON sa.id = c.source_account_id AND sa.workspace_id = ci.workspace_id
+        LEFT JOIN user_item_states uis ON uis.workspace_id = ci.workspace_id AND uis.content_item_id = ci.id
+        WHERE ci.workspace_id = ?
+          AND c.provider IN ('x', 'xueqiu', 'trendforce', 'bilibili')
+          AND length(ci.body) > 0
+          AND ci.created_at >= ?
+          ${cursorSql}
+        ORDER BY ci.created_at DESC, ci.id ASC
+        LIMIT ?`).all(...params);
+      return rows.map((row) => ({
+        id: row.id,
+        body: row.body || '',
+        createdAt: row.created_at,
+        provider: row.provider || '',
+        externalId: row.external_id || '',
+        sourceExternalId: row.source_external_id || '',
+        hidden: Number(row.is_hidden) === 1,
+      }));
+    },
+
     countLongUntranslatedOutsideProviders(workspaceId) {
       const row = database.prepare(`SELECT COUNT(*) AS n FROM content_items ci
         JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
@@ -1349,7 +1386,11 @@ export function createFeedRepository(database, emitEvent) {
           const saved = readReady.get(workspaceId, id, lang);
           if (saved?.translated_text && saved.source_hash === hash) continue;
           const previous = readFailure.get(workspaceId, id, lang);
-          const attempts = Number.isInteger(attemptCount) ? attemptCount : (Number(previous?.attempt_count) || 0) + 1;
+          const previousAttempts = Number(previous?.attempt_count) || 0;
+          const incoming = Number.isInteger(attemptCount) ? attemptCount : previousAttempts + 1;
+          const attempts = incoming === 1 && previousAttempts >= TRANSLATION_MAX_ATTEMPTS
+            ? previousAttempts + 1
+            : Math.max(incoming, previousAttempts);
           const done = terminal === true || attempts >= TRANSLATION_MAX_ATTEMPTS;
           const retryAt = done ? null : (Number.isInteger(nextRetryAt) ? nextRetryAt : now + translationRetryDelayMs(attempts));
           write.run(workspaceId, id, lang, hash, attempts, retryAt, message, now);

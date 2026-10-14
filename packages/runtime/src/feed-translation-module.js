@@ -214,6 +214,10 @@ export async function enqueueOriginalTranslations({
 
 export const TRANSLATION_GAP_FILL_INTERVAL_MS = 300_000;
 export const TRANSLATION_GAP_FILL_LIMIT = 20;
+export const TRANSLATION_GAP_FILL_WINDOW_MS = 72 * 60 * 60 * 1000;
+export const TRANSLATION_GAP_RETRY_BASE_MS = 15 * 60 * 1000;
+const TRANSLATION_GAP_RETRY_CAP_MS = 24 * 60 * 60 * 1000;
+const TRANSLATION_GAP_WINDOW_MAX_MS = 30 * 24 * 60 * 60 * 1000;
 
 export function translationGapFillIntervalMs(value) {
   if (value === undefined || value === null || String(value).trim() === '') return TRANSLATION_GAP_FILL_INTERVAL_MS;
@@ -228,6 +232,33 @@ export function translationGapFillLimit(value) {
   const raw = Number(value);
   if (!Number.isInteger(raw) || raw < 0) return TRANSLATION_GAP_FILL_LIMIT;
   return Math.min(TRANSLATION_BACKFILL_STARTUP_MAX, raw);
+}
+
+export function translationGapFillWindowMs(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return TRANSLATION_GAP_FILL_WINDOW_MS;
+  const raw = Number(value);
+  if (!Number.isInteger(raw) || raw < TRANSLATION_GAP_FILL_WINDOW_MS) return TRANSLATION_GAP_FILL_WINDOW_MS;
+  return Math.min(TRANSLATION_GAP_WINDOW_MAX_MS, raw);
+}
+
+export function translationGapRetryBaseMs(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return TRANSLATION_GAP_RETRY_BASE_MS;
+  const raw = Number(value);
+  if (!Number.isInteger(raw) || raw < 60_000) return TRANSLATION_GAP_RETRY_BASE_MS;
+  return Math.min(TRANSLATION_GAP_RETRY_CAP_MS, raw);
+}
+
+export function translationGapRetryDelayMs(attemptCount, base = TRANSLATION_GAP_RETRY_BASE_MS) {
+  const extra = Math.max(0, Math.trunc(Number(attemptCount) || 0) - TRANSLATION_MAX_ATTEMPTS);
+  const doubled = base * (2 ** extra);
+  return Math.min(TRANSLATION_GAP_RETRY_CAP_MS, Number.isFinite(doubled) ? doubled : TRANSLATION_GAP_RETRY_CAP_MS);
+}
+
+export function translationGapRetryBlocked(failure, sourceHash, now = Date.now(), base = TRANSLATION_GAP_RETRY_BASE_MS) {
+  if (!failure || failure.sourceHash !== sourceHash) return false;
+  if (Number.isFinite(failure.nextRetryAt) && failure.nextRetryAt > now) return true;
+  const updatedAt = Number(failure.updatedAt) || 0;
+  return updatedAt + translationGapRetryDelayMs(failure.attemptCount, base) > now;
 }
 
 export async function backfillUntranslatedFeedTranslations({
@@ -318,10 +349,12 @@ function translationReady(row, text) {
 }
 
 export function collectMediaTranslationGaps({
-  entries = [], articleUnits = [], translations = [], openIds = new Set(), limit = TRANSLATION_GAP_FILL_LIMIT,
+  entries = [], articleUnits = [], translations = [], failures = [], openIds = new Set(),
+  limit = TRANSLATION_GAP_FILL_LIMIT, now = Date.now(), retryBaseMs = TRANSLATION_GAP_RETRY_BASE_MS,
 } = {}) {
   const open = openIds instanceof Set ? openIds : new Set(openIds || []);
   const byId = new Map((translations || []).map((row) => [row.itemId, row]));
+  const failureById = failures instanceof Map ? failures : new Map((failures || []).map((row) => [row.itemId, row]));
   const cap = Math.max(0, Number(limit) || 0);
   const selected = [];
   const seen = new Set();
@@ -332,10 +365,12 @@ export function collectMediaTranslationGaps({
     if (!id || !text || seen.has(id) || open.has(id)) return;
     if (!needsZhLocalization(text) || text.length > FEED_TRANSLATION_TEXT_MAX) return;
     if (translationReady(byId.get(id), text)) return;
+    if (translationGapRetryBlocked(failureById.get(id), bodyHash(text), now, retryBaseMs)) return;
     seen.add(id);
     selected.push({
       id,
       localizationId: id,
+      externalId: unit.externalId || '',
       text,
       kind: unit.kind || '',
       paragraphId: unit.paragraphId || '',
@@ -353,6 +388,7 @@ export function collectMediaTranslationGaps({
     if (!text || !entry?.externalId) continue;
     titles.push({
       id: localizationItemId(`media:${entry.externalId}`),
+      externalId: entry.externalId,
       text,
       kind: 'heading',
       paragraphId: 'title',
@@ -367,44 +403,163 @@ function createdJobs(before, jobs) {
   return (jobs || []).filter((job) => job?.id && !known.has(job.id));
 }
 
+function entrySortAt(entry) {
+  return Number(entry?.publishedAt || entry?.observedAt || 0);
+}
+
+function numericCursor(value) {
+  if (value == null || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function scanMediaGaps({
+  store, mediaService, workspaceId, openIds, since, cursor, limit, now, retryBaseMs,
+}) {
+  const repo = store.repositories?.media;
+  if (!repo?.listEntriesSince || limit <= 0) return { units: [], scanned: 0, cursor: cursor || null };
+  const flashIds = new Set();
+  const initialSortAt = numericCursor(cursor?.sortAt);
+  let scanCursor = initialSortAt == null ? null : { sortAt: initialSortAt, externalId: String(cursor?.externalId || '') };
+  const startedMidWindow = scanCursor != null;
+  let wrapped = false;
+  let scanned = 0;
+  const selected = [];
+  while (selected.length < limit && scanned < 5_000) {
+    const page = repo.listEntriesSince(workspaceId, {
+      since,
+      beforeSortAt: scanCursor?.sortAt ?? null,
+      beforeExternalId: scanCursor?.externalId || '',
+      limit: 200,
+    }) || [];
+    if (!page.length) {
+      if (startedMidWindow && scanCursor && !wrapped) { scanCursor = null; wrapped = true; continue; }
+      scanCursor = null;
+      break;
+    }
+    scanned += page.length;
+    let entries = page;
+    if (mediaService?.flashExternalIds) {
+      const flash = mediaService.flashExternalIds(workspaceId, entries.map((entry) => entry.externalId)) || [];
+      for (const id of flash) flashIds.add(id);
+      entries = entries.filter((entry) => !flashIds.has(entry.externalId));
+    }
+    const fullIds = entries.filter((entry) => entry.contentLevel === 'full').map((entry) => entry.externalId);
+    let articleUnits = [];
+    if (fullIds.length && mediaService?.listArticleTranslationUnits) {
+      try { articleUnits = mediaService.listArticleTranslationUnits(workspaceId, fullIds) || []; }
+      catch { articleUnits = []; }
+    }
+    const translationIds = [
+      ...articleUnits.map((unit) => unit.localizationId || unit.id),
+      ...entries.filter((entry) => entry.contentLevel !== 'full' && entry.externalId).map((entry) => localizationItemId(`media:${entry.externalId}`)),
+    ];
+    const translations = translationIds.length
+      ? (store.repositories?.feed?.listTranslations?.(workspaceId, translationIds, 'zh') || [])
+      : [];
+    const failures = translationIds.length
+      ? (store.repositories?.feed?.listTranslationFailures?.(workspaceId, translationIds, 'zh') || [])
+      : [];
+    const gaps = collectMediaTranslationGaps({
+      entries, articleUnits, translations, failures, openIds, limit: limit - selected.length, now, retryBaseMs,
+    });
+    selected.push(...gaps);
+    if (selected.length >= limit) {
+      const lastUnit = gaps[gaps.length - 1];
+      const lastEntry = entries.find((entry) => entry.externalId === lastUnit?.externalId) || page[page.length - 1];
+      scanCursor = { sortAt: entrySortAt(lastEntry), externalId: lastEntry?.externalId || '' };
+      break;
+    }
+    const last = page[page.length - 1];
+    scanCursor = { sortAt: entrySortAt(last), externalId: last.externalId };
+    if (page.length < 200) {
+      if (startedMidWindow && !wrapped) { scanCursor = null; wrapped = true; continue; }
+      scanCursor = null;
+      break;
+    }
+  }
+  return { units: selected, scanned, cursor: scanCursor };
+}
+
+function scanFeedGaps({
+  store, workspaceId, openIds, since, cursor, limit, now, retryBaseMs, excludeSourceIds,
+}) {
+  const repo = store.repositories?.feed;
+  if (!repo?.listFeedBodiesSince || limit <= 0) return { units: [], scanned: 0, cursor: cursor || null };
+  const flash = new Set((excludeSourceIds || []).map((id) => String(id || '').trim()).filter(Boolean));
+  const initialCreatedAt = numericCursor(cursor?.createdAt);
+  let scanCursor = initialCreatedAt == null ? null : { createdAt: initialCreatedAt, id: String(cursor?.id || '') };
+  const startedMidWindow = scanCursor != null;
+  let wrapped = false;
+  let scanned = 0;
+  const selected = [];
+  while (selected.length < limit && scanned < 5_000) {
+    const page = repo.listFeedBodiesSince(workspaceId, {
+      since,
+      beforeCreatedAt: scanCursor?.createdAt ?? null,
+      beforeId: scanCursor?.id || '',
+      limit: 200,
+    }) || [];
+    if (!page.length) {
+      if (startedMidWindow && scanCursor && !wrapped) { scanCursor = null; wrapped = true; continue; }
+      scanCursor = null;
+      break;
+    }
+    scanned += page.length;
+    const ids = page.flatMap((row) => [row.id, row.provider && row.externalId ? `${row.provider}:${row.externalId}` : ''].filter(Boolean));
+    const translations = ids.length ? (repo.listTranslations?.(workspaceId, ids, 'zh') || []) : [];
+    const failures = ids.length ? (repo.listTranslationFailures?.(workspaceId, ids, 'zh') || []) : [];
+    const byId = new Map(translations.map((row) => [row.itemId, row]));
+    const failureById = new Map(failures.map((row) => [row.itemId, row]));
+    for (const row of page) {
+      if (selected.length >= limit) break;
+      if (row.hidden || flash.has(row.sourceExternalId)) continue;
+      const text = stripLeadingPreview(row.body || '');
+      if (!text || text.length > FEED_TRANSLATION_TEXT_MAX || !needsZhLocalization(text)) continue;
+      const externalId = row.provider && row.externalId ? `${row.provider}:${row.externalId}` : '';
+      if (translationReady(byId.get(row.id), text) || (externalId && translationReady(byId.get(externalId), text))) continue;
+      if (openIds.has(row.id) || (externalId && openIds.has(externalId))) continue;
+      if (translationGapRetryBlocked(failureById.get(row.id), bodyHash(text), now, retryBaseMs)) continue;
+      selected.push({ id: row.id, localizationId: row.id, text });
+    }
+    if (selected.length >= limit) {
+      const last = page.find((row) => row.id === selected[selected.length - 1].id) || page[page.length - 1];
+      scanCursor = { createdAt: last.createdAt, id: last.id };
+      break;
+    }
+    const last = page[page.length - 1];
+    scanCursor = { createdAt: last.createdAt, id: last.id };
+    if (page.length < 200) {
+      if (startedMidWindow && !wrapped) { scanCursor = null; wrapped = true; continue; }
+      scanCursor = null;
+      break;
+    }
+  }
+  return { units: selected, scanned, cursor: scanCursor };
+}
+
 export async function fillUncoveredTranslations({
   store, feedService, mediaService, workspaceId = 'local', limit = TRANSLATION_GAP_FILL_LIMIT,
-  excludeSourceIds = [], titleBatchLimit,
+  excludeSourceIds = [], titleBatchLimit, cursor = null, now = Date.now(), windowMs, retryBaseMs,
 } = {}) {
   const requested = Number(limit);
   const cap = Number.isInteger(requested) && requested >= 0
     ? Math.min(requested, TRANSLATION_BACKFILL_STARTUP_MAX)
     : TRANSLATION_GAP_FILL_LIMIT;
-  if (cap === 0 || !store || !feedService?.localizeTexts) {
-    return { jobs: [], enqueued: 0, scanned: 0, media: 0, feed: 0, limit: cap };
-  }
+  const empty = { jobs: [], enqueued: 0, scanned: 0, media: 0, feed: 0, limit: cap, cursor: cursor || null };
+  if (cap === 0 || !store || !feedService?.localizeTexts) return empty;
+  const window = translationGapFillWindowMs(windowMs ?? process.env.AI_CENTER_TRANSLATION_GAP_FILL_WINDOW_MS);
+  const retryBase = translationGapRetryBaseMs(retryBaseMs ?? process.env.AI_CENTER_TRANSLATION_GAP_RETRY_BASE_MS);
+  const since = now - window;
   const before = openTranslationJobs(store, workspaceId);
   const openIds = openTranslationItemIds(before);
-  const scan = Math.min(200, Math.max(cap, 80));
-  let entries = store.repositories?.media?.listEntries?.(workspaceId, { limit: scan }) || [];
-  if (mediaService?.flashExternalIds && entries.length) {
-    const flash = new Set(mediaService.flashExternalIds(workspaceId, entries.map((entry) => entry.externalId)) || []);
-    entries = entries.filter((entry) => !flash.has(entry.externalId));
-  }
-  const fullIds = entries.filter((entry) => entry.contentLevel === 'full').map((entry) => entry.externalId);
-  let articleUnits = [];
-  if (fullIds.length && mediaService?.listArticleTranslationUnits) {
-    try { articleUnits = mediaService.listArticleTranslationUnits(workspaceId, fullIds) || []; }
-    catch { articleUnits = []; }
-  }
-  const translationIds = [
-    ...articleUnits.map((unit) => unit.localizationId || unit.id),
-    ...entries.filter((entry) => entry.contentLevel !== 'full' && entry.externalId).map((entry) => localizationItemId(`media:${entry.externalId}`)),
-  ];
-  const translations = translationIds.length
-    ? (store.repositories?.feed?.listTranslations?.(workspaceId, translationIds, 'zh') || [])
-    : [];
-  const mediaUnits = collectMediaTranslationGaps({
-    entries, articleUnits, translations, openIds, limit: cap,
+  const mediaScan = scanMediaGaps({
+    store, mediaService, workspaceId, openIds, since, cursor: cursor?.media || null,
+    limit: cap, now, retryBaseMs: retryBase,
   });
   const titleLimit = translationTitleBatchLimit(titleBatchLimit ?? process.env.AI_CENTER_TRANSLATION_TITLE_BATCH_LIMIT);
-  const titleUnits = mediaUnits.filter((unit) => unit.kind === 'heading' || unit.paragraphId === 'title');
-  const bodyUnits = mediaUnits.filter((unit) => unit.kind !== 'heading' && unit.paragraphId !== 'title');
+  const titleUnits = mediaScan.units.filter((unit) => unit.kind === 'heading' || unit.paragraphId === 'title');
+  const bodyUnits = mediaScan.units.filter((unit) => unit.kind !== 'heading' && unit.paragraphId !== 'title');
   const mediaJobs = [];
   if (titleUnits.length) {
     mediaJobs.push(...await enqueueOriginalTranslations({
@@ -417,20 +572,24 @@ export async function fillUncoveredTranslations({
       store, feedService, workspaceId, units: bodyUnits, priority: TRANSLATION_BACKFILL_PRIORITY, force: true,
     }));
   }
-  const feedLimit = Math.max(0, cap - mediaUnits.length);
-  const feed = feedLimit
-    ? await backfillUntranslatedFeedTranslations({
-      store, feedService, workspaceId, limit: feedLimit, excludeSourceIds, includeTerminalFailures: true,
+  const feedScan = scanFeedGaps({
+    store, workspaceId, openIds, since, cursor: cursor?.feed || null,
+    limit: Math.max(0, cap - mediaScan.units.length), now, retryBaseMs: retryBase, excludeSourceIds,
+  });
+  const feedJobs = feedScan.units.length
+    ? await enqueueOriginalTranslations({
+      store, feedService, workspaceId, units: feedScan.units, priority: TRANSLATION_BACKFILL_PRIORITY, force: true,
     })
-    : { jobs: [], summary: { scanned: 0 } };
-  const jobs = createdJobs(before, [...mediaJobs, ...(feed.jobs || [])]);
+    : [];
+  const jobs = createdJobs(before, [...mediaJobs, ...feedJobs]);
   return {
     jobs,
     enqueued: jobs.length,
-    scanned: entries.length + (feed.summary?.scanned || 0),
+    scanned: mediaScan.scanned + feedScan.scanned,
     media: createdJobs(before, mediaJobs).length,
-    feed: createdJobs(before, feed.jobs || []).length,
+    feed: createdJobs(before, feedJobs).length,
     limit: cap,
+    cursor: { media: mediaScan.cursor, feed: feedScan.cursor },
   };
 }
 
