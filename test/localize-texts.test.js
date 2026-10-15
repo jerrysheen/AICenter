@@ -46,6 +46,9 @@ test('translationLooksTruncated uses length ratio and a cut ending', () => {
   assert.ok(titled.length * 4 >= title.length);
   assert.equal(translationLooksTruncated(title, titled.length, titled), false);
   assert.equal(translationLooksTruncated(notice, 8, '国新办通知…'), true);
+  const headline = 'Microsoft denies cloud leadership asked suppliers to cut prices this week after the earnings call';
+  assert.ok(headline.length > 80 && headline.length <= 240 && !headline.includes('\n'));
+  assert.equal(translationLooksTruncated(headline, 18, '微软否认云业务领导层曾要求供应商降价'), false);
 });
 
 test('localizationItemId hashes identifiers longer than 128 characters', () => {
