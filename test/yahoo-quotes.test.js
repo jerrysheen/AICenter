@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createYahooClient } from '../packages/connectors/src/yahoo.js';
+import { createYahooClient, isUsMarketSymbol, yahooCacheMs } from '../packages/connectors/src/yahoo.js';
 import {
   quoteFromSinaUsBody,
   quoteFromTencentUsBody,
@@ -190,4 +190,104 @@ test('a fresh shared cache serves the second snapshot without another Yahoo requ
   clock += 46_000;
   await client.fetchQuotes(['AAPL']);
   assert.equal(sparkCalls, 2);
+});
+
+test('Yahoo cache default is 30 seconds and US symbols are separate from Asia', () => {
+  assert.equal(yahooCacheMs({}), 30_000);
+  assert.equal(isUsMarketSymbol('AAPL'), true);
+  assert.equal(isUsMarketSymbol('^GSPC'), true);
+  assert.equal(isUsMarketSymbol('BRK-B'), true);
+  assert.equal(isUsMarketSymbol('005930.KS'), false);
+  assert.equal(isUsMarketSymbol('^KS11'), false);
+  assert.equal(isUsMarketSymbol('CNY=X'), false);
+});
+
+test('Yahoo HTTP 404 skips that symbol and keeps the rest of the batch', async () => {
+  const seen = [];
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (!href.includes('/v7/finance/spark')) throw new Error(href);
+    const symbols = new URL(href).searchParams.get('symbols').split(',');
+    seen.push(symbols.join(','));
+    if (symbols.includes('BAD')) return response('missing', { status: 404 });
+    return response(JSON.stringify({ spark: { result: symbols.map((symbol) => spark(symbol, 5)) } }));
+  };
+  const client = createYahooClient({
+    fetchImpl,
+    now: () => NOW,
+    timeoutMs: 1_000,
+    minIntervalMs: 0,
+    log() {},
+    fallback: { async fetchQuotes() { return []; } },
+  });
+  const board = await client.fetchQuotes(['AAPL', 'BAD', 'NVDA']);
+  assert.equal(board.quotes.find((item) => item.symbol === 'AAPL').lastPrice, 5);
+  assert.equal(board.quotes.find((item) => item.symbol === 'NVDA').lastPrice, 5);
+  assert.equal(board.quotes.find((item) => item.symbol === 'BAD'), undefined);
+  assert.ok(seen.includes('BAD'));
+});
+
+test('a later caller joins the in-flight Yahoo request', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const seen = [];
+  const fetchImpl = async (url) => {
+    const symbols = new URL(String(url)).searchParams.get('symbols');
+    seen.push(symbols);
+    if (seen.length === 1) await gate;
+    const names = symbols.split(',');
+    return response(JSON.stringify({ spark: { result: names.map((symbol) => spark(symbol, 4)) } }));
+  };
+  const client = createYahooClient({
+    fetchImpl,
+    now: () => NOW,
+    timeoutMs: 2_000,
+    minIntervalMs: 0,
+    log() {},
+    fallback: { async fetchQuotes() { return []; } },
+  });
+  const first = client.fetchQuotes(['AAPL']);
+  for (let attempt = 0; attempt < 40 && seen.length < 1; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  const second = client.fetchQuotes(['AAPL', 'NVDA']);
+  release();
+  const [left, right] = await Promise.all([first, second]);
+  assert.deepEqual(seen, ['AAPL', 'NVDA']);
+  assert.equal(left.quotes[0].lastPrice, 4);
+  assert.equal(right.quotes.find((item) => item.symbol === 'AAPL').lastPrice, 4);
+  assert.equal(right.quotes.find((item) => item.symbol === 'NVDA').lastPrice, 4);
+});
+
+test('US quotes run before a bulk batch that is only queued', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const seen = [];
+  const fetchImpl = async (url) => {
+    const symbols = new URL(String(url)).searchParams.get('symbols');
+    seen.push(symbols);
+    if (seen.length === 1) await gate;
+    const names = symbols.split(',');
+    return response(JSON.stringify({ spark: { result: names.map((symbol) => spark(symbol, 3)) } }));
+  };
+  const client = createYahooClient({
+    fetchImpl,
+    now: () => NOW,
+    timeoutMs: 2_000,
+    minIntervalMs: 0,
+    log() {},
+    fallback: { async fetchQuotes() { return []; } },
+  });
+  const bulk = Array.from({ length: 21 }, (_, index) => `${String(index).padStart(6, '0')}.KS`);
+  const bulkPromise = client.fetchQuotes(bulk);
+  for (let attempt = 0; attempt < 40 && seen.length < 1; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  const usPromise = client.fetchQuotes(['AAPL']);
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  await Promise.all([bulkPromise, usPromise]);
+  assert.equal(seen[1], 'AAPL');
+  assert.match(seen[0], /\.KS/);
+  assert.match(seen[2], /\.KS/);
 });

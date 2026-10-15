@@ -9,6 +9,7 @@ import {
   usBoardFreshnessError,
 } from '../packages/runtime/src/web-snapshot-jobs.js';
 import { marketStaleLabel } from '../apps/web/public/home-timeline.js';
+import { createMarketBoardReader } from '../packages/source/src/market/board-read.js';
 
 const catalog = {
   us: {
@@ -117,8 +118,10 @@ test('market stale window and US snapshot freshness read the environment', () =>
   assert.equal(usRegularSessionAt(closed), 'closed');
   assert.equal(usBoardFreshnessError({ fetchedAt: open - 11 * 60_000 }, open, 10 * 60_000), '美股看板行情已 11 分钟未更新');
   assert.equal(usBoardFreshnessError({ fetchedAt: open - 11 * 60_000 }, closed, 10 * 60_000), '');
-  assert.equal(marketStaleLabel({ stale: true, fetchedAt: Date.parse('2026-10-15T13:40:00Z') }), '已过期 · 10月15日 21:40');
-  assert.equal(marketStaleLabel({ fetchedAt: Date.parse('2026-10-15T13:40:00Z') }), '');
+  const at = Date.parse('2026-10-15T13:40:00Z');
+  assert.equal(marketStaleLabel({ stale: true, fetchedAt: at }, at), '已过期 · 10月15日 21:40');
+  assert.equal(marketStaleLabel({ fetchedAt: at }, at + 120_000), '');
+  assert.equal(marketStaleLabel({ fetchedAt: at }, at + 180_000), '已过期 · 10月15日 21:40');
 });
 
 test('US trading hours fail the snapshot after the freshness window and still keep the board', async () => {
@@ -173,4 +176,118 @@ test('US trading hours fail the snapshot after the freshness window and still ke
     log() {},
   });
   assert.equal(done.boards, 5);
+});
+
+test('a stored snapshot is marked stale when it is read, using the current time', async () => {
+  const fetchedAt = Date.parse('2026-10-15T13:40:00Z');
+  const clock = { value: fetchedAt + 60_000 };
+  const payload = {
+    board: 'us',
+    mode: 'live',
+    fetchedAt,
+    session: 'regular',
+    note: 'snapshot',
+    groups: [],
+    indices: [{ symbol: 'AAPL', name: 'Apple', lastPrice: 100, currency: 'USD', session: 'regular' }],
+    watchlist: [],
+    gainers: [],
+    losers: [],
+    breadth: { advancers: 0, decliners: 0, unchanged: 0 },
+  };
+  const reader = createMarketBoardReader({
+    repository: { readSnapshot: () => ({ payload }) },
+    now: () => clock.value,
+    staleMs: 180_000,
+    ttlMs: 60_000,
+  });
+  const fresh = await reader.read({ board: 'us' });
+  assert.equal(fresh.market.stale, undefined);
+  assert.equal(fresh.market.indices[0].lastPrice, 100);
+  clock.value = fetchedAt + 180_000;
+  const stale = await reader.read({ board: 'us' });
+  assert.equal(stale.market.stale, true);
+  assert.equal(stale.market.fetchedAt, fetchedAt);
+  assert.equal(payload.stale, undefined);
+  assert.equal(marketStaleLabel(stale.market, clock.value), '已过期 · 10月15日 21:40');
+});
+
+test('US snapshot is stored before a slow A-share read finishes', async () => {
+  let releaseCn;
+  const gate = new Promise((resolve) => { releaseCn = resolve; });
+  const saved = [];
+  const at = Date.parse('2026-10-15T14:00:00Z');
+  const sourcePort = {
+    async read(sourceId) {
+      const board = String(sourceId).replace(/^market\./, '');
+      if (board === 'cn') await gate;
+      return {
+        data: {
+          board,
+          mode: 'live',
+          fetchedAt: at,
+          session: 'regular',
+          note: 'snapshot',
+          groups: [],
+          indices: [],
+          watchlist: [],
+          gainers: [],
+          losers: [],
+          breadth: { advancers: 0, decliners: 0, unchanged: 0 },
+        },
+      };
+    },
+  };
+  const running = captureMarketBoards({
+    sourcePort,
+    repository: { saveSnapshot(_workspace, key) { saved.push(key); } },
+    now: () => at,
+    env: {},
+    log() {},
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(saved.includes(marketBoardSnapshotKey('us')));
+  assert.ok(saved.includes(marketBoardSnapshotKey('overview')));
+  assert.equal(saved.includes(marketBoardSnapshotKey('cn')), false);
+  releaseCn();
+  const done = await running;
+  assert.equal(done.boards, 5);
+  assert.ok(saved.includes(marketBoardSnapshotKey('cn')));
+});
+
+test('quotes that arrive after the board timeout stay available for the next read', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  const service = createMarketService({
+    marketCatalog: catalog,
+    ttlMs: 60_000,
+    inflightTimeoutMs: 20,
+    now: () => 5_000_000,
+    log() {},
+    tushare: null,
+    sinaFutures: null,
+    xueqiuQuotes: { fetchQuotes: async () => [] },
+    cnQuotes: { fetchQuotes: async () => [] },
+    yahoo: {
+      fetchQuotes: () => {
+        calls += 1;
+        if (calls === 1) {
+          return gate.then(() => ({
+            quotes: [quote('^GSPC', 5), quote('AAPL', 9), quote('NVDA', 8), quote('MSFT', 7), quote('AMD', 6)],
+            session: 'regular',
+          }));
+        }
+        return Promise.resolve({ quotes: [], session: 'closed' });
+      },
+    },
+  });
+  await assert.rejects(service.getBoard({ board: 'us' }), /行情请求超时/);
+  release();
+  await gate;
+  await new Promise((resolve) => setImmediate(resolve));
+  const board = await service.getBoard({ board: 'us' });
+  assert.equal(calls, 1);
+  assert.equal(board.indices.find((item) => item.symbol === '^GSPC').lastPrice, 5);
+  assert.equal(board.stale, undefined);
 });
