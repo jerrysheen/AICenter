@@ -6,7 +6,8 @@ const SEARCH_URL = 'https://query1.finance.yahoo.com/v1/finance/search';
 const COOKIE_URL = 'https://fc.yahoo.com';
 const CRUMB_URL = 'https://query1.finance.yahoo.com/v1/test/getcrumb';
 const DEFAULT_TIMEOUT_MS = 8_000;
-const DEFAULT_CACHE_MS = 45_000;
+const DEFAULT_CACHE_MS = 30_000;
+const US_INDEX_SYMBOLS = new Set(['^GSPC', '^DJI', '^IXIC', '^SOX', '^VIX']);
 const DEFAULT_MIN_INTERVAL_MS = 800;
 const BATCH_SIZE = 20;
 const BACKOFF_BASE_MS = 15_000;
@@ -79,18 +80,26 @@ function cookieHeaderFrom(response) {
   return raw.map((item) => String(item).split(';')[0].trim()).filter((item) => item.includes('=')).join('; ');
 }
 
+export function isUsMarketSymbol(symbol) {
+  const value = String(symbol || '').trim().toUpperCase();
+  if (!value) return false;
+  if (US_INDEX_SYMBOLS.has(value)) return true;
+  return /^[A-Z][A-Z0-9.-]{0,9}$/.test(value);
+}
+
 export function createYahooQuoteLayer(options = {}) {
   const now = options.now || (() => Date.now());
   const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_MS;
   const minIntervalMs = options.minIntervalMs ?? DEFAULT_MIN_INTERVAL_MS;
   const log = options.log || defaultLog;
   const cache = new Map();
-  const waiters = new Map();
+  const inflight = new Map();
+  const jobs = [];
   let drainScheduled = false;
+  let pumping = false;
   let fetcher = async () => [];
   let backoffUntil = 0;
   let backoffMs = BACKOFF_BASE_MS;
-  let chain = Promise.resolve();
   let nextSlot = 0;
 
   function fresh(symbol) {
@@ -120,64 +129,140 @@ export function createYahooQuoteLayer(options = {}) {
     backoffMs = BACKOFF_BASE_MS;
   }
 
-  function schedule(task) {
-    const run = chain.then(async () => {
+  function schedule(task, lane = 'bulk') {
+    let resolve;
+    let reject;
+    const promise = new Promise((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    jobs.push({ lane, task, resolve, reject });
+    pump();
+    return promise;
+  }
+
+  function pump() {
+    if (pumping) return;
+    const index = jobs.findIndex((job) => job.lane === 'us');
+    const job = jobs.splice(index >= 0 ? index : 0, 1)[0];
+    if (!job) return;
+    pumping = true;
+    Promise.resolve().then(async () => {
       const wait = Math.max(0, nextSlot - Date.now());
       if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
       nextSlot = Date.now() + minIntervalMs;
-      return task();
+      return job.task();
+    }).then((value) => {
+      job.resolve(value);
+    }, (error) => {
+      job.reject(error);
+    }).finally(() => {
+      pumping = false;
+      pump();
     });
-    chain = run.then(() => {}, () => {});
-    return run;
+  }
+
+  function quoteMap(quotes) {
+    return new Map((quotes || []).filter((quote) => quote?.symbol).map((quote) => [String(quote.symbol).toUpperCase(), quote]));
+  }
+
+  function finish(symbol, quote) {
+    const slot = inflight.get(symbol);
+    if (!slot) return;
+    inflight.delete(symbol);
+    if (quote) remember(quote);
+    slot.resolve(quote || null);
+  }
+
+  function finishMany(symbols, map) {
+    for (const symbol of symbols) finish(symbol, map.get(symbol) || null);
+  }
+
+  function dispatch(group, lane) {
+    if (!group.length) return;
+    for (const symbol of group) {
+      const slot = inflight.get(symbol);
+      if (slot) slot.started = true;
+    }
+    const loadNow = fetcher;
+    schedule(() => (backingOff() ? { blocked: true } : loadNow(group)), lane).then((result) => {
+      if (result?.blocked) {
+        finishMany(group, new Map());
+        return;
+      }
+      noteSuccess();
+      finishMany(group, quoteMap(result));
+    }).catch((error) => {
+      if (error?.status === 429) {
+        note429(error.retryAfterMs || 0);
+        const partial = quoteMap(error.partial);
+        for (const quote of partial.values()) remember(quote);
+        finishMany(group, partial);
+        return;
+      }
+      if (error?.status === 404 && group.length > 1) {
+        const mid = Math.ceil(group.length / 2);
+        for (const symbol of group) {
+          const slot = inflight.get(symbol);
+          if (slot) slot.started = false;
+        }
+        dispatch(group.slice(0, mid), lane);
+        dispatch(group.slice(mid), lane);
+        return;
+      }
+      if (error?.status === 404) {
+        log('warn', `Yahoo HTTP 404 symbol=${group[0]}`);
+        finish(group[0], null);
+        return;
+      }
+      log('error', `Yahoo 行情失败 ${error instanceof Error ? error.message : error}`);
+      const partial = quoteMap(error?.partial);
+      for (const quote of partial.values()) remember(quote);
+      finishMany(group, partial);
+    });
+  }
+
+  function drain() {
+    const pending = [];
+    for (const [symbol, slot] of inflight) {
+      if (!slot.started) pending.push(symbol);
+    }
+    if (!pending.length) return;
+    if (backingOff()) {
+      for (const symbol of pending) finish(symbol, null);
+      return;
+    }
+    const us = pending.filter((symbol) => isUsMarketSymbol(symbol));
+    const bulk = pending.filter((symbol) => !isUsMarketSymbol(symbol));
+    for (const group of chunk(us, BATCH_SIZE)) dispatch(group, 'us');
+    for (const group of chunk(bulk, BATCH_SIZE)) dispatch(group, 'bulk');
   }
 
   function enqueue(symbols, load) {
     fetcher = load;
     const pending = [];
+    let added = false;
     for (const symbol of symbols) {
       const hit = fresh(symbol);
       if (hit) {
         pending.push(Promise.resolve(hit));
         continue;
       }
-      let waiter = waiters.get(symbol);
-      if (!waiter) {
+      let slot = inflight.get(symbol);
+      if (!slot) {
         let resolve;
         const promise = new Promise((res) => { resolve = res; });
-        waiter = { resolve, promise };
-        waiters.set(symbol, waiter);
+        slot = { resolve, promise, started: false };
+        inflight.set(symbol, slot);
+        added = true;
       }
-      pending.push(waiter.promise);
+      pending.push(slot.promise);
     }
-    if (!drainScheduled && waiters.size) {
+    if (added && !drainScheduled) {
       drainScheduled = true;
       queueMicrotask(() => {
         drainScheduled = false;
-        const entries = [...waiters.entries()];
-        waiters.clear();
-        const loadNow = fetcher;
-        const names = entries.map(([symbol]) => symbol);
-        const finish = (map) => {
-          for (const [symbol, waiter] of entries) {
-            const quote = map.get(symbol) || null;
-            if (quote) remember(quote);
-            waiter.resolve(quote);
-          }
-        };
-        if (backingOff()) {
-          finish(new Map());
-          return;
-        }
-        schedule(() => loadNow(names)).then((quotes) => {
-          noteSuccess();
-          finish(new Map((quotes || []).filter((quote) => quote?.symbol).map((quote) => [String(quote.symbol).toUpperCase(), quote])));
-        }).catch((error) => {
-          if (error?.status === 429) note429(error.retryAfterMs || 0);
-          else log('error', `Yahoo 行情失败 ${error instanceof Error ? error.message : error}`);
-          const partial = new Map((error?.partial || []).filter((quote) => quote?.symbol).map((quote) => [String(quote.symbol).toUpperCase(), quote]));
-          for (const quote of partial.values()) remember(quote);
-          finish(partial);
-        });
+        drain();
       });
     }
     return Promise.all(pending);
@@ -333,16 +418,11 @@ export function createYahooClient(options = {}) {
     try {
       const fetchImpl = await loadTransport();
       const response = await fetchImpl(target, { headers, cache: 'no-store', signal: controller.signal });
-      if (response.status === 429 || response.status === 401) {
+      if (!response.ok) {
         await response.arrayBuffer().catch(() => {});
         const error = new Error(`Yahoo HTTP ${response.status}`);
         error.status = response.status;
         if (response.status === 429) error.retryAfterMs = parseRetryAfter(response.headers.get('retry-after'), Date.now());
-        throw error;
-      }
-      if (!response.ok) {
-        const error = new Error(`Yahoo HTTP ${response.status}`);
-        error.status = response.status;
         throw error;
       }
       return response;
@@ -440,6 +520,7 @@ export function createYahooClient(options = {}) {
           error.partial = quotes;
           throw error;
         }
+        if (error?.status === 404) throw error;
         log('error', `Yahoo 行情失败 ${error instanceof Error ? error.message : error}`);
       }
     }
@@ -507,22 +588,25 @@ export function createYahooClient(options = {}) {
       const series = [];
       for (const symbol of unique) {
         try {
-          const value = await layer.schedule(() => fetchChart(symbol, range, interval));
+          const value = await layer.schedule(() => fetchChart(symbol, range, interval), 'bulk');
           if (value) series.push(value);
         } catch (error) {
           if (error?.status === 429) {
             layer.note429(error.retryAfterMs || 0);
             break;
           }
+          if (error?.status === 404) log('warn', `Yahoo HTTP 404 symbol=${symbol}`);
         }
       }
       const bySymbol = new Map(series.map((item) => [item.symbol, item]));
       return unique.map((symbol) => bySymbol.get(symbol)).filter(Boolean);
     }
     const series = [];
-    for (const group of chunk(unique, BATCH_SIZE)) {
+    const queue = chunk(unique, BATCH_SIZE);
+    for (let index = 0; index < queue.length; index += 1) {
+      const group = queue[index];
       try {
-        const results = await layer.schedule(() => fetchSparkGroup(group, range, interval, false));
+        const results = await layer.schedule(() => fetchSparkGroup(group, range, interval, false), 'bulk');
         for (const result of results) {
           const mapped = seriesFromSpark(result);
           if (mapped) series.push(mapped);
@@ -532,6 +616,12 @@ export function createYahooClient(options = {}) {
           layer.note429(error.retryAfterMs || 0);
           break;
         }
+        if (error?.status === 404 && group.length > 1) {
+          const mid = Math.ceil(group.length / 2);
+          queue.push(group.slice(0, mid), group.slice(mid));
+          continue;
+        }
+        if (error?.status === 404) log('warn', `Yahoo HTTP 404 symbol=${group[0]}`);
       }
     }
     const bySymbol = new Map(series.map((item) => [item.symbol, item]));
@@ -543,7 +633,7 @@ export function createYahooClient(options = {}) {
     if (!q || layer.backingOff()) return [];
     let payload;
     try {
-      payload = await layer.schedule(() => requestJson(`${SEARCH_URL}?q=${encodeURIComponent(q)}&quotesCount=8&newsCount=0`));
+      payload = await layer.schedule(() => requestJson(`${SEARCH_URL}?q=${encodeURIComponent(q)}&quotesCount=8&newsCount=0`), 'bulk');
     } catch (error) {
       if (error?.status === 429) {
         layer.note429(error.retryAfterMs || 0);

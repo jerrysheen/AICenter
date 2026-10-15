@@ -118,9 +118,12 @@ export function acceptMarketPayload(previous, incoming) {
   return incoming;
 }
 
-export function marketStaleLabel(payload) {
-  if (!payload?.stale) return '';
-  const at = Number(payload.fetchedAt);
+export const MARKET_STALE_LABEL_MS = 180_000;
+
+export function marketStaleLabel(payload, nowMs = Date.now()) {
+  const at = Number(payload?.fetchedAt);
+  const aged = Number.isFinite(at) && at > 0 && nowMs - at >= MARKET_STALE_LABEL_MS;
+  if (!payload?.stale && !aged) return '';
   if (!Number.isFinite(at) || at <= 0) return '已过期';
   const parts = shanghaiParts(at);
   return `已过期 · ${parts.month}月${parts.day}日 ${parts.hour}:${parts.minute}`;

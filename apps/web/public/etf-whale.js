@@ -56,14 +56,18 @@ function multiple(value) {
   return `${number.toFixed(2)} 倍`;
 }
 
+function indexDataMissing(item) {
+  return !item?.method || item.method === 'insufficient';
+}
+
 function indexMetric(item, field) {
-  if (!item?.method) return '数据不足';
+  if (indexDataMissing(item)) return '数据不足';
   if (field === 'tailPct' && item.method === 'daily-approx') return '数据不足';
   return pct(item[field]);
 }
 
 function indexHit(item) {
-  if (!item?.method) return '数据不足';
+  if (indexDataMissing(item)) return '数据不足';
   const hit = item.hit ? '命中' : '未命中';
   if (item.method === 'daily-approx') return `${hit}（日线近似）`;
   return hit;
@@ -127,6 +131,7 @@ function componentCell(stage, key, field) {
 
 function indexScoreCell(stage) {
   if (Array.isArray(stage.insufficient) && stage.insufficient.includes('index')) return '数据不足';
+  if (stage.indexMethod === 'insufficient') return '数据不足';
   const value = cell(stage.sIndex);
   if (stage.indexMethod === 'daily-approx') return `${value}（日线近似）`;
   if (stage.indexMethod === 'mixed') return `${value}（含日线近似）`;

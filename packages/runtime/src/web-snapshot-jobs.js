@@ -204,21 +204,26 @@ export async function captureMarketBoards({
   if (!sourcePort?.read) throw new Error('行情看板快照需要 Source 端口');
   if (!repository?.saveSnapshot) throw new Error('行情看板快照需要存储');
   const at = now();
-  const [us, asia, cn, global] = await Promise.all([
-    readMarketBoard(sourcePort, 'us'),
-    readMarketBoard(sourcePort, 'asia'),
-    readMarketBoard(sourcePort, 'cn'),
-    readMarketBoard(sourcePort, 'global'),
-  ]);
+  const reads = {
+    us: readMarketBoard(sourcePort, 'us'),
+    asia: readMarketBoard(sourcePort, 'asia'),
+    cn: readMarketBoard(sourcePort, 'cn'),
+    global: readMarketBoard(sourcePort, 'global'),
+  };
+  const us = await reads.us;
   const focus = preferredOverviewFocus(at);
+  const cn = focus === 'cn' ? await reads.cn : null;
   const overview = buildOverviewBoard(
     focus === 'us' ? us : null,
     null,
     focus === 'cn' ? cn : null,
     { focus, now: at },
   );
-  const boards = { overview, us, asia, cn, global };
-  for (const name of MARKET_BOARD_NAMES) {
+  repository.saveSnapshot(workspaceId, marketBoardSnapshotKey('us'), us, at);
+  repository.saveSnapshot(workspaceId, marketBoardSnapshotKey('overview'), overview, at);
+  const [asia, cnBoard, global] = await Promise.all([reads.asia, reads.cn, reads.global]);
+  const boards = { overview, us, asia, cn: cnBoard, global };
+  for (const name of ['asia', 'cn', 'global']) {
     repository.saveSnapshot(workspaceId, marketBoardSnapshotKey(name), boards[name], at);
   }
   const freshError = usBoardFreshnessError(us, at, marketUsFreshMs(env));
