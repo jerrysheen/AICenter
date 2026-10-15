@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-15-translation-call-cap.md`：一次翻译尝试的 Gemma 调用有硬上限，默认是条目数 ×（密钥数 + 换密钥重试次数）。83–240 字的单行标题不再因为译文偏短被判成没译完。正文和摘要每条任务默认 8 条、4000 字，处理每条之前续租约。`WorkerLeaseExpired` 不占尝试次数，马上重新入队。用量记下密钥后 4 位和条目 id。Worker 日志默认写到实例 `data/logs`。migration 71。70 留给 ETF。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-15-hardware-price-labels.md`：闪存页 NAND 合约、NAND TLC 晶圆现货、MicroSD、SSD 合约和街价补上 USD 与表头对应的单位。週高點、日高點、均價和項目前缀不再写进规格名。数字不动，不删旧行，不新增 migration。解析版本 `trendforce-tables-5`。需要同时重启 Web 和 Worker，再跑一次 `feed.trendforce.reparse`。
 
 - `progress/2026-10-15-hardware-price-units.md`：DRAM 合约里的 SO-DIMM 按条计价。内存条、显存、晶圆、存储卡、SSD 和 NAND 合约价补上 USD 和对应单位，数字不动。列表只留带单位且有报价期的当前规格，旧行改为 `is_current=0`。每一项显示官网数据日期，超过 7 天标已过期，DRAM 合约写明「8 月下半月」。migration 69。需要同时重启 Web 和 Worker。

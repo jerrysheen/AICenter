@@ -603,10 +603,10 @@ test('media block translations share jobs, and a hashed one-unit job can be demo
     const jobs = await enqueueOriginalTranslations({
       store, feedService: service, workspaceId: 'local', units, priority: TRANSLATION_BACKFILL_PRIORITY,
     });
-    assert.equal(jobs.length, 2);
+    assert.equal(jobs.length, 4);
     assert.equal(jobs[0].priority, TRANSLATION_BACKFILL_PRIORITY);
-    assert.equal(jobs[0].input.items.length, 30);
-    assert.equal(jobs[1].input.items.length, 1);
+    assert.equal(jobs[0].input.items.length, 8);
+    assert.equal(jobs[3].input.items.length, 7);
     const hashedId = `h:${'ab'.repeat(32)}`;
     const hashedText = 'A hashed media block stays in its own flood job until restart.';
     const hashed = await enqueueOriginalTranslations({
