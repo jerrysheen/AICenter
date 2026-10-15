@@ -3,6 +3,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { parseGeminiGenerateContent } from '../gemini-grok-task.js';
 import { isGoogleConnectTimeout } from '../google-fetch.js';
 import { translationLooksTruncated } from '../../../domain/src/localize-texts.js';
+import { modelUsageContext, withModelUsageContext } from '../../../runtime/src/model-usage-context.js';
 import { createGemmaTranslationRouter, gemmaTranslationInput } from './gemma.js';
 export { parseGeminiGenerateContent };
 
@@ -23,7 +24,7 @@ function digest(value) {
 }
 
 function chunkErrorRetryable(error) {
-  if (!error || error.code === 'budget-deferred') return false;
+  if (!error || error.code === 'budget-deferred' || error.code === 'translation-call-cap') return false;
   const status = Number(error.upstreamStatus);
   if (status === 429) return false;
   if (status >= 500 && status <= 599) return true;
@@ -139,7 +140,13 @@ export function createTranslateService(options = {}) {
     try { chunkStore.save(row); }
     catch (error) { console.error('[worker] translation-chunk persist failed', error instanceof Error ? error.message : error); }
   }
-  async function translate({ text: sourceText, targetLang = DEFAULT_TARGET, id, workspaceId = 'local' } = {}) {
+  async function translate(args = {}) {
+    const parent = modelUsageContext();
+    const itemId = text(args?.id) || parent.itemId || '';
+    if (!itemId || parent.itemId === itemId) return translateRecorded(args);
+    return withModelUsageContext({ ...parent, itemId }, () => translateRecorded(args));
+  }
+  async function translateRecorded({ text: sourceText, targetLang = DEFAULT_TARGET, id, workspaceId = 'local' } = {}) {
     const source = text(sourceText);
     if (!source) throw new Error('没有可翻译的正文');
     const target = normalizeTranslateTarget(targetLang);

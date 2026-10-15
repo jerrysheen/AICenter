@@ -1,9 +1,18 @@
+import { explainPrefixLookup, rowsByUrlPrefixes } from '../url-prefix-lookup.js';
+
 // Listing/filtering indexes must not load every RSS HTML body into memory.
 const ENTRY_INDEX_COLUMNS = 'workspace_id,external_id,source_key,publisher_key,publisher_name,author_name,channel,canonical_url,title,summary,published_at,published_at_raw,content_level,content_hash,revision,status,origin_url,discovered_via_json,observed_at,body_hash,truncated,created_at,updated_at,fetch_state_json,article_kind';
 
-function sqlLikePrefix(value) {
-  return `${String(value).replace(/[\\%_]/g, '\\$&')}%`;
-}
+const MEDIA_DEDUP_SELECT = `workspace_id, external_id, source_key, publisher_key, canonical_url, title, summary,
+  author_name, published_at, created_at, body_hash`;
+
+const MEDIA_URL_PREFIX_LOOKUP = {
+  indexName: 'idx_media_canonical_url_nocase',
+  tableSql: 'media_index_entries',
+  tailJoins: '',
+  urlColumn: 'canonical_url',
+  workspaceColumn: 'workspace_id',
+};
 
 function mapState(row) {
   if (!row) return null;
@@ -106,25 +115,44 @@ export function createMediaRepository(database, emitEvent = () => {}) {
     listMediaByDedupKey(workspaceId, dedupKey) {
       const key = String(dedupKey || '');
       if (!key) return [];
-      return database.prepare(`SELECT workspace_id, external_id, source_key, publisher_key, canonical_url, title, summary,
-          author_name, published_at, created_at, body_hash
+      return database.prepare(`SELECT ${MEDIA_DEDUP_SELECT}
         FROM media_index_entries WHERE workspace_id = ? AND dedup_key = ? LIMIT 20`).all(workspaceId, key);
     },
-    listMediaByUrlPrefixes(workspaceId, prefixes) {
-      const list = [...new Set(prefixes || [])].filter(Boolean).slice(0, 8);
-      if (!list.length) return [];
-      const clause = list.map(() => `canonical_url LIKE ? ESCAPE '\\'`).join(' OR ');
-      return database.prepare(`SELECT workspace_id, external_id, source_key, publisher_key, canonical_url, title, summary,
-          author_name, published_at, created_at, body_hash
-        FROM media_index_entries WHERE workspace_id = ? AND (${clause})
-        ORDER BY length(canonical_url) ASC LIMIT 40`).all(workspaceId, ...list.map(sqlLikePrefix));
+    listMediaByDedupKeys(workspaceId, dedupKeys) {
+      const keys = [...new Set(dedupKeys || [])].map((key) => String(key || '')).filter(Boolean);
+      if (!keys.length) return [];
+      const rows = [];
+      for (let index = 0; index < keys.length; index += 400) {
+        const chunk = keys.slice(index, index + 400);
+        rows.push(...database.prepare(`SELECT ${MEDIA_DEDUP_SELECT}
+          FROM media_index_entries WHERE workspace_id = ? AND dedup_key IN (${chunk.map(() => '?').join(',')})`)
+          .all(workspaceId, ...chunk));
+      }
+      return rows;
     },
-    listMediaByPublishedAt(workspaceId, startAt, endAt) {
-      return database.prepare(`SELECT workspace_id, external_id, source_key, publisher_key, canonical_url, title, summary,
-          author_name, published_at, created_at, body_hash
+    listMediaByUrlPrefixes(workspaceId, prefixes, options = {}) {
+      const rows = rowsByUrlPrefixes(database, {
+        ...MEDIA_URL_PREFIX_LOOKUP,
+        select: MEDIA_DEDUP_SELECT,
+        workspaceId,
+        prefixes,
+        perPrefixLimit: 40,
+      });
+      if (options.perPrefix) return rows;
+      return rows
+        .sort((left, right) => String(left.canonical_url || '').length - String(right.canonical_url || '').length)
+        .slice(0, 40)
+        .map(({ match_prefix, ...row }) => row);
+    },
+    explainMediaUrlPrefix() {
+      return explainPrefixLookup(database, MEDIA_URL_PREFIX_LOOKUP);
+    },
+    listMediaByPublishedAt(workspaceId, startAt, endAt, limit = 400) {
+      const cap = Math.max(1, Math.min(Number(limit) || 400, 20_000));
+      return database.prepare(`SELECT ${MEDIA_DEDUP_SELECT}
         FROM media_index_entries
         WHERE workspace_id = ? AND published_at >= ? AND published_at <= ?
-        ORDER BY published_at ASC LIMIT 400`).all(workspaceId, startAt, endAt);
+        ORDER BY published_at ASC LIMIT ?`).all(workspaceId, startAt, endAt, cap);
     },
     fillMediaEntryGaps(workspaceId, externalId, fields) {
       const row = database.prepare(`SELECT title, summary, author_name, canonical_url, published_at, body_hash, dedup_key, content_level

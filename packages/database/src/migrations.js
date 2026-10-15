@@ -1951,6 +1951,109 @@ migrations.push({ version: 69, name: 'hardware_price_current_spec', up(database)
   retireSupersededHardwareQuotes(database);
 }});
 
+migrations.push({ version: 70, name: 'etf_whale_market_depth', up(database) {
+  database.exec(`
+    CREATE TABLE etf_whale_intraday_bars (
+      source TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      interval_key TEXT NOT NULL,
+      bar_time TEXT NOT NULL,
+      trade_date TEXT NOT NULL,
+      open REAL,
+      high REAL,
+      low REAL,
+      close REAL,
+      volume REAL,
+      amount_cny REAL,
+      captured_at INTEGER NOT NULL,
+      PRIMARY KEY (source, symbol, interval_key, bar_time)
+    );
+    CREATE INDEX etf_whale_intraday_symbol_day ON etf_whale_intraday_bars(symbol, trade_date);
+    CREATE TABLE etf_whale_index_daily (
+      symbol TEXT NOT NULL,
+      trade_date TEXT NOT NULL,
+      prev_close REAL,
+      open REAL,
+      high REAL,
+      low REAL,
+      close REAL,
+      amount_cny REAL,
+      low_time TEXT,
+      low_drop_pct REAL,
+      rebound_pct REAL,
+      tail_pct REAL,
+      source TEXT NOT NULL,
+      computed_at INTEGER NOT NULL,
+      PRIMARY KEY (symbol, trade_date)
+    );
+    CREATE TABLE etf_whale_turnover (
+      source TEXT NOT NULL,
+      code TEXT NOT NULL,
+      trade_date TEXT NOT NULL,
+      amount_cny REAL NOT NULL,
+      volume_shares REAL,
+      close REAL,
+      captured_at INTEGER NOT NULL,
+      PRIMARY KEY (source, code, trade_date)
+    );
+    CREATE INDEX etf_whale_turnover_code_date ON etf_whale_turnover(code, trade_date);
+    CREATE TABLE etf_whale_futures_rank (
+      trade_date TEXT NOT NULL,
+      product TEXT NOT NULL,
+      contract TEXT NOT NULL,
+      data_type INTEGER NOT NULL,
+      rank INTEGER NOT NULL,
+      party_id TEXT,
+      member TEXT NOT NULL,
+      volume REAL NOT NULL,
+      var_volume REAL,
+      source_url TEXT NOT NULL,
+      captured_at INTEGER NOT NULL,
+      PRIMARY KEY (trade_date, contract, data_type, rank)
+    );
+    CREATE INDEX etf_whale_futures_party ON etf_whale_futures_rank(trade_date, product, party_id);
+    CREATE TABLE etf_whale_signals (
+      trade_date TEXT NOT NULL,
+      stage TEXT NOT NULL,
+      algorithm TEXT NOT NULL,
+      score REAL,
+      max_score REAL NOT NULL,
+      s_turnover REAL,
+      s_flow REAL,
+      s_breadth REAL,
+      s_index REAL,
+      level TEXT,
+      inputs_json TEXT NOT NULL,
+      computed_at INTEGER NOT NULL,
+      PRIMARY KEY (trade_date, stage, algorithm)
+    );
+  `);
+}});
+
+// 63 stays unused. 71 is the translation usage attribution already on main.
+// 72 is article URL lookup indexes. It does not rewrite rows.
+migrations.push({ version: 71, name: 'model_usage_translation_attribution', up(database) {
+  addColumn(database, 'model_usage_index', 'key_suffix', `TEXT NOT NULL DEFAULT ''`);
+  addColumn(database, 'model_usage_index', 'item_id', `TEXT NOT NULL DEFAULT ''`);
+  database.exec(`CREATE INDEX IF NOT EXISTS model_usage_by_item ON model_usage_index(workspace_id, item_id, occurred_at);`);
+}});
+
+export function addArticleDedupLookupIndexes(database) {
+  // Indexes only. URLs, dedup_key and hidden flags stay as they are.
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_content_items_source_url_nocase
+      ON content_items(workspace_id, source_url COLLATE NOCASE);
+    CREATE INDEX IF NOT EXISTS idx_media_canonical_url_nocase
+      ON media_index_entries(workspace_id, canonical_url COLLATE NOCASE);
+    CREATE INDEX IF NOT EXISTS idx_user_item_states_hidden
+      ON user_item_states(workspace_id, content_item_id)
+      WHERE is_hidden = 1;
+  `);
+}
+
+migrations.push({ version: 72, name: 'article_dedup_url_lookup', up: addArticleDedupLookupIndexes });
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions
@@ -2029,15 +2132,24 @@ export function runMigrations(database) {
   const applied = new Set(database.prepare('SELECT version FROM schema_migrations').all()
     .map((row) => row.version));
 
+  const recorded = database.prepare('SELECT version FROM schema_migrations WHERE version = ?');
+  const insertMigration = database.prepare(
+    'INSERT OR IGNORE INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)',
+  );
   for (const migration of migrations) {
     if (applied.has(migration.version)) continue;
     database.exec('BEGIN IMMEDIATE');
     try {
+      if (recorded.get(migration.version)) {
+        database.exec('COMMIT');
+        applied.add(migration.version);
+        continue;
+      }
       migration.up(database);
-      database.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)')
-        .run(migration.version, migration.name, Date.now());
+      insertMigration.run(migration.version, migration.name, Date.now());
       database.pragma(`user_version = ${migration.version}`);
       database.exec('COMMIT');
+      applied.add(migration.version);
     } catch (error) {
       try { database.exec('ROLLBACK'); } catch {}
       throw error;

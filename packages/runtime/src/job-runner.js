@@ -76,15 +76,21 @@ export function createJobRunner(options) {
     store.recoverStaleJobs?.(staleAfterMs, Date.now(), {
       ...(Number.isFinite(maxRunningMs) && maxRunningMs > 0 ? { maxRunningMs } : {}),
       maxRunningMsByType,
+      executingIds: [...inFlight.keys()],
     });
-    for (const [id] of inFlight) {
+    for (const [id, item] of [...inFlight]) {
       const current = store.getJob?.(id);
-      if (current && current.status !== 'running') inFlight.delete(id);
+      if (current && current.status !== 'running') dropExecution(id, item);
     }
   }
 
+  function dropExecution(id, item) {
+    item.controller?.abort();
+    if (inFlight.get(id) === item) inFlight.delete(id);
+  }
+
   function releaseSuperseded(now = Date.now()) {
-    for (const [id, item] of inFlight) {
+    for (const [id, item] of [...inFlight]) {
       const limit = Number(supersedeAfterMs[item.type]);
       const current = store.getJob?.(id);
       const replaced = current && current.status !== 'running';
@@ -94,7 +100,7 @@ export function createJobRunner(options) {
         store.abandonRunningJobs?.([item.type], '新的订阅同步开始，上一轮仍未结束', now);
         options.onSupersede?.(item.type, now);
       }
-      inFlight.delete(id);
+      dropExecution(id, item);
     }
   }
 
@@ -125,39 +131,70 @@ export function createJobRunner(options) {
     ));
   }
 
-  async function execute(job) {
+  function abortResult(signal) {
+    if (!signal || signal.aborted) return { promise: Promise.resolve({ aborted: true }), cancel() {} };
+    let onAbort = () => {};
+    const promise = new Promise((resolve) => {
+      onAbort = () => resolve({ aborted: true });
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+    return {
+      promise,
+      cancel() { signal.removeEventListener('abort', onAbort); },
+    };
+  }
+
+  function executionSignal(controller) {
+    if (typeof AbortSignal.any === 'function') return AbortSignal.any([abortController.signal, controller.signal]);
+    return controller.signal;
+  }
+
+  async function execute(job, signal, jobController = null) {
     const handler = handlers.get(job.type);
-    const heartbeat = setInterval(() => store.touchJob(job.id, workerId), 30_000);
+    const heartbeat = setInterval(() => {
+      if (signal?.aborted) return;
+      store.touchJob(job.id, workerId);
+    }, 30_000);
     heartbeat.unref?.();
     const executor = { workerId, attemptCount: job.attemptCount };
     const backfill = job.type === 'feed.translation.run' && Number(job.priority) < 0;
     let quotaWaits = 0;
     try {
-      while (!abortController.signal.aborted) {
+      while (!signal?.aborted) {
+        const cancelled = jobController ? abortResult(jobController.signal) : null;
+        let outcome;
         try {
-          const output = await withModelUsageContext({ workspaceId: job.workspaceId || 'local', jobId: job.id,
+          const work = Promise.resolve().then(() => withModelUsageContext({ workspaceId: job.workspaceId || 'local', jobId: job.id,
             jobAttempt: job.attemptCount, stage: job.type, observe: value => store.repositories?.modelUsage?.save(value) }, () => handler(job.input, {
             job,
             workerId,
-            signal: abortController.signal,
+            signal,
             store,
-          }));
-          return store.completeJob(job.id, output ?? {}, executor);
-        } catch (error) {
-          const retryAt = Number(error?.retryAt);
-          if (backfill && error?.code === 'budget-deferred' && Number.isFinite(retryAt) && quotaWaits < 4) {
-            quotaWaits += 1;
-            await wait(Math.min(70_000, Math.max(1_000, retryAt - Date.now())), abortController.signal);
-            if (!abortController.signal.aborted) continue;
-          }
-          const retryDelayMs = job.type === 'feed.translation.run' && error.code === 'budget-deferred' && Number.isFinite(error.retryAt)
-            ? Math.max(1000, error.retryAt - Date.now())
-            : job.type === 'feed.translation.run'
-              ? translationRetryDelayMs(job.attemptCount)
-              : Math.min(60_000, 1_000 * (2 ** Math.max(0, job.attemptCount - 1)));
-          options.onError?.(error, job);
-          return store.failJob(job.id, error, retryDelayMs, executor);
+          }))).then(
+            (value) => ({ value }),
+            (error) => ({ error }),
+          );
+          outcome = cancelled ? await Promise.race([work, cancelled.promise]) : await work;
+        } finally {
+          cancelled?.cancel();
         }
+        if (jobController?.signal.aborted || outcome?.aborted) return null;
+        if (!outcome.error) return store.completeJob(job.id, outcome.value ?? {}, executor);
+        const error = outcome.error;
+        const retryAt = Number(error?.retryAt);
+        if (backfill && error?.code === 'budget-deferred' && Number.isFinite(retryAt) && quotaWaits < 4) {
+          quotaWaits += 1;
+          await wait(Math.min(70_000, Math.max(1_000, retryAt - Date.now())), signal);
+          if (!signal?.aborted) continue;
+          return null;
+        }
+        const retryDelayMs = job.type === 'feed.translation.run' && error.code === 'budget-deferred' && Number.isFinite(error.retryAt)
+          ? Math.max(1000, error.retryAt - Date.now())
+          : job.type === 'feed.translation.run'
+            ? translationRetryDelayMs(job.attemptCount)
+            : Math.min(60_000, 1_000 * (2 ** Math.max(0, job.attemptCount - 1)));
+        options.onError?.(error, job);
+        return store.failJob(job.id, error, retryDelayMs, executor);
       }
       return null;
     } finally {
@@ -166,17 +203,19 @@ export function createJobRunner(options) {
   }
 
   function launch(job) {
+    const controller = new AbortController();
     const tracked = {
       type: job.type,
       backfill: job.type === 'feed.translation.run' && Number(job.priority) < 0,
       startedAt: Date.now(),
-      promise: execute(job)
+      controller,
+      promise: execute(job, executionSignal(controller), controller)
         .catch((error) => {
           options.onError?.(error, job);
           return null;
         })
         .finally(() => {
-          inFlight.delete(job.id);
+          if (inFlight.get(job.id) === tracked) inFlight.delete(job.id);
         }),
     };
     inFlight.set(job.id, tracked);
@@ -200,7 +239,7 @@ export function createJobRunner(options) {
     if(!types.length)return null;
     const job = store.claimNextJob(workerId, types, claimOptions(types));
     if (!job) return null;
-    return execute(job);
+    return execute(job, abortController.signal);
   }
 
   async function start() {

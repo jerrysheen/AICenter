@@ -40,11 +40,12 @@ export function attachDailyProcessLog({directory, name, now = () => new Date(), 
 
   function hook(stream, kind) {
     const original = stream.write.bind(stream);
-    const mirror = Boolean(stream.isTTY);
     stream.write = function patchedWrite(chunk, encoding, callback) {
       appendChunk(kind, chunk);
-      // A redirected pipe whose reader has stopped must not fill and block Node.
-      if (!mirror) return finishWrite(encoding, callback);
+      // Keep the file log, and mirror while the pipe still accepts data.
+      // A reader that has stopped leaves writableNeedDrain set; skipping that
+      // write keeps a full pipe from blocking the process.
+      if (stream.writableNeedDrain) return finishWrite(encoding, callback);
       return original(chunk, encoding, callback);
     };
     return () => { stream.write = original; };

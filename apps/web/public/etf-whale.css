@@ -14,3 +14,8 @@ button { font: inherit; padding: 6px 12px; }
 pre { white-space: pre-wrap; }
 .down { color: #9b1c1c; }
 .up { color: #176b3a; }
+.disclaimer { margin: 0 0 12px; padding: 8px 12px; border-radius: 8px; background: #fff7e6; color: #6b5420; }
+.note { color: #5d6b62; }
+.scroll { overflow-x: auto; }
+.flag-red { color: #9b1c1c; font-weight: 700; }
+.flag-yellow { color: #8a5a00; font-weight: 700; }
