@@ -13,7 +13,15 @@ import {
   turnoverFromTypical,
   weekdays,
 } from '../../domain/src/etf-whale/calculate.js';
+import {
+  emptyShareStatus,
+  expectedShareDate,
+  shanghaiToday,
+  shareSlotCanSkip,
+  shouldRefetchSzseChunk,
+} from '../../domain/src/etf-whale/fetch-policy.js';
 import { ETF_WHALE_UNIVERSE } from '../../domain/src/etf-whale/universe.js';
+import { syncEtfWhaleFutures, syncEtfWhaleMarket } from './etf-whale-market.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -25,8 +33,11 @@ export async function syncEtfWhale(options) {
   const instruments = options.instruments || ETF_WHALE_UNIVERSE;
   const pauseMs = options.pauseMs ?? 250;
   const probes = [];
+  const today = options.today || shanghaiToday(options.now || new Date());
+  const pendingLimit = pendingDayLimit(options.pendingLimit ?? options.env?.AI_CENTER_ETF_WHALE_PENDING_DAYS);
   repository.replaceInstruments(instruments);
-  if (options.quotes !== false) {
+  repository.supersedeStackOverflowFetches?.();
+  if (options.quotes !== false && options.task !== 'shares') {
     for (const item of instruments) {
       const result = await fetchTencentQfqDaily(item.code, item.exchange, startDate, endDate, options);
       probes.push(...result.probes);
@@ -62,10 +73,17 @@ export async function syncEtfWhale(options) {
       await sleep(pauseMs);
     }
   }
-  if (options.shares !== false) {
+  if (options.shares !== false && options.task !== 'quotes') {
+    const quoteDates = new Set(repository.listQuoteDates?.('510300') || []);
     for (const [chunkStart, chunkEnd] of dateChunks(startDate, endDate, 31)) {
       const existing = repository.getFetch('szse-xlsx', chunkStart, chunkEnd);
-      if (options.skipExisting !== false && existing?.status === 'ok') {
+      const maxShareDate = repository.maxShareDate?.('szse-xlsx', chunkStart, chunkEnd) || null;
+      if (options.skipExisting !== false && !shouldRefetchSzseChunk({
+        status: existing?.status,
+        chunkEnd,
+        maxShareDate,
+        quoteDates,
+      })) {
         probes.push({ source: 'szse-xlsx', startDate: chunkStart, endDate: chunkEnd, status: 'skipped', rowCount: existing.row_count });
         continue;
       }
@@ -92,9 +110,25 @@ export async function syncEtfWhale(options) {
     }
     const refreshFrom = options.refreshFrom || '2026-10-08';
     let consecutiveErrors = 0;
-    for (const tradeDate of weekdays(startDate, endDate)) {
+    const pendingDates = repository.listFetchDates?.('sse', 'pending') || [];
+    const shareDates = [...new Set([...weekdays(startDate, endDate), ...pendingDates])].sort();
+    for (const tradeDate of shareDates) {
       const existing = repository.getFetch('sse', tradeDate, tradeDate);
-      if (options.skipExisting !== false && existing?.status === 'ok' && tradeDate < refreshFrom) {
+      if (options.skipExisting !== false && existing?.status === 'ok' && tradeDate < refreshFrom) continue;
+      if (options.skipExisting !== false && (existing?.status === 'holiday' || existing?.status === 'stale')) continue;
+      if (existing?.status === 'pending' && emptyShareStatus(tradeDate, today, { quoteDates, pendingLimit }) === 'stale') {
+        repository.saveFetch({
+          source: 'sse',
+          dateStart: tradeDate,
+          dateEnd: tradeDate,
+          status: 'stale',
+          rowCount: existing.row_count || 0,
+          error: '空结果已超过 5 个交易日',
+          blobPath: existing.blob_path || '',
+          contentHash: existing.content_hash || '',
+          capturedAt: Date.now(),
+        });
+        warnStale(tradeDate, options);
         continue;
       }
       const result = await fetchSseEtfShares(tradeDate, options);
@@ -110,15 +144,17 @@ export async function syncEtfWhale(options) {
       consecutiveErrors = 0;
       const relativePath = `blobs/etf-whale/sse/${tradeDate}.json`;
       const saved = await writeBlob(dataDirectory, relativePath, result.body);
+      const status = result.rows.length ? 'ok' : emptyShareStatus(tradeDate, today, { quoteDates, pendingLimit });
+      if (status === 'stale' && existing?.status !== 'stale') warnStale(tradeDate, options);
       repository.saveShares(result.rows, {
         source: 'sse',
         dateStart: tradeDate,
         dateEnd: tradeDate,
-        status: result.rows.length ? 'ok' : 'empty',
+        status,
         blobPath: saved.relativePath,
         contentHash: saved.hash,
         capturedAt: Date.now(),
-        error: '',
+        error: status === 'stale' ? '空结果已超过 5 个交易日' : '',
       });
       if (result.rows.length) options.onProgress?.(`上交所 ${tradeDate} ${result.rows.length} 只`);
       await sleep(pauseMs);
@@ -181,7 +217,20 @@ async function writeBlob(dataDirectory, relativePath, body) {
   return { relativePath, hash: createHash('sha256').update(body).digest('hex'), bytes: body.length };
 }
 
+function warnStale(tradeDate, options) {
+  console.warn(`[worker] etf-whale sse stale ${tradeDate} 空结果已超过 5 个交易日`);
+  options.onStale?.(tradeDate);
+}
+
+function pendingDayLimit(value) {
+  const number = Number(value);
+  if (!Number.isInteger(number)) return 5;
+  return Math.min(20, Math.max(1, number));
+}
+
 export const ETF_WHALE_SYNC_JOB = 'etf.whale.sync';
+export const ETF_WHALE_MARKET_JOB = 'etf.whale.market';
+export const ETF_WHALE_FUTURES_JOB = 'etf.whale.futures';
 const DEFAULT_LOOKBACK_DAYS = 12;
 
 function lookbackDays(value) {
@@ -203,18 +252,49 @@ export function etfWhaleSyncWindow(input = {}, env = process.env, now = new Date
 
 export const etfWhaleManifest = Object.freeze({
   id: 'etf.whale',
-  version: '1.0.0',
-  capabilities: ['etf.whale.sync'],
-  jobTypes: [ETF_WHALE_SYNC_JOB],
+  version: '1.1.0',
+  capabilities: ['etf.whale.sync', 'etf.whale.market', 'etf.whale.futures'],
+  jobTypes: [ETF_WHALE_SYNC_JOB, ETF_WHALE_MARKET_JOB, ETF_WHALE_FUTURES_JOB],
 });
 
 export function createEtfWhaleJobHandlers({ repository, dataDirectory, env = process.env, now = () => new Date() } = {}) {
   return {
     [ETF_WHALE_SYNC_JOB]: async (input = {}) => {
+      repository.supersedeStackOverflowFetches?.();
+      const today = shanghaiToday(now());
+      if (!input.startDate && input.skipIfSettled !== false) {
+        const expectedDate = expectedShareDate(today);
+        const pendingDates = repository.listFetchDates?.('sse', 'pending') || [];
+        if (shareSlotCanSkip({
+          pendingDates,
+          expectedDate,
+          sseStatus: expectedDate ? repository.getFetch('sse', expectedDate, expectedDate)?.status : '',
+          szseCovered: expectedDate ? repository.hasShareOn?.('szse-xlsx', expectedDate) : false,
+        })) {
+          return { skipped: true, reason: 'shares-complete', expectedShareDate: expectedDate };
+        }
+      }
       const { startDate, endDate } = etfWhaleSyncWindow(input, env, now());
-      const fetched = await syncEtfWhale({ repository, dataDirectory, startDate, endDate, skipExisting: input.skipExisting !== false });
+      const fetched = await syncEtfWhale({
+        repository,
+        dataDirectory,
+        startDate,
+        endDate,
+        skipExisting: input.skipExisting !== false,
+        task: 'shares',
+        today,
+        env,
+      });
       const computed = recomputeEtfWhale(repository);
       return { startDate, endDate, probeCount: fetched.probes.length, dailyRows: computed.rowCount, algorithm: fetched.algorithm };
+    },
+    [ETF_WHALE_MARKET_JOB]: async (input = {}) => {
+      const { startDate, endDate } = etfWhaleSyncWindow(input, env, now());
+      return syncEtfWhaleMarket({ repository, dataDirectory, startDate, endDate, env, fetchImpl: input.fetchImpl });
+    },
+    [ETF_WHALE_FUTURES_JOB]: async (input = {}) => {
+      const { startDate, endDate } = etfWhaleSyncWindow(input, env, now());
+      return syncEtfWhaleFutures({ repository, startDate, endDate, env, skipExisting: input.skipExisting !== false });
     },
   };
 }

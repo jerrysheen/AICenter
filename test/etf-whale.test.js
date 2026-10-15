@@ -3,8 +3,13 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { parseCffexPositionXml } from '../packages/connectors/src/cffex-position.js';
 import { parseSseSharePayload, parseSzseShareJson, parseSzseShareSheet } from '../packages/connectors/src/etf-exchange-shares.js';
+import { parseEastmoneyKlines, parseSinaKlinePayload } from '../packages/connectors/src/etf-sina-kline.js';
 import { parseTencentDayRows } from '../packages/connectors/src/etf-tencent-kline.js';
+import { columnWidth } from '../packages/connectors/src/xlsx-workbook.js';
+import { citicNetShort } from '../packages/domain/src/etf-whale/futures.js';
+import { indexSessionShape, indexShapeHit } from '../packages/domain/src/etf-whale/session-shape.js';
 import { createStore } from '../packages/database/src/index.js';
 import { isApiTokenAllowlisted } from '../apps/web/src/http/api-token-access.js';
 import { createRouter } from '../apps/web/src/http/router.js';
@@ -320,6 +325,7 @@ test('an empty SSE day stays inside the lookback and is fetched again', async ()
       endDate: '2026-10-14',
       quotes: false,
       pauseMs: 0,
+      today: '2026-10-15',
       fetchImpl,
       instruments: [{
         code: '510300', exchange: 'SH', name: '沪深300ETF', groupKey: '宽基',
@@ -327,13 +333,15 @@ test('an empty SSE day stays inside the lookback and is fetched again', async ()
       }],
     };
     await syncEtfWhale(options);
-    assert.equal(store.repositories.etfWhale.getFetch('sse', '2026-10-14', '2026-10-14').status, 'empty');
-    assert.equal(store.repositories.etfWhale.getFetch('sse', '2026-10-07', '2026-10-07').status, 'empty');
+    assert.equal(store.repositories.etfWhale.getFetch('sse', '2026-10-14', '2026-10-14').status, 'pending');
+    assert.equal(store.repositories.etfWhale.getFetch('sse', '2026-10-08', '2026-10-08').status, 'pending');
+    assert.equal(store.repositories.etfWhale.getFetch('sse', '2026-10-07', '2026-10-07').status, 'holiday');
     assert.equal(store.repositories.etfWhale.getFetch('sse', '2026-10-06', '2026-10-06').status, 'ok');
     seen.length = 0;
     await syncEtfWhale(options);
     assert.equal(seen.includes('2026-10-14'), true);
-    assert.equal(seen.includes('2026-10-07'), true);
+    assert.equal(seen.includes('2026-10-08'), true);
+    assert.equal(seen.includes('2026-10-07'), false);
     assert.equal(seen.includes('2026-10-06'), false);
   } finally {
     store.close();
@@ -353,20 +361,197 @@ test('ETF whale sync is scheduled after the Shanghai close and backfills a short
   try {
     const now = Date.parse('2026-10-14T02:00:00Z');
     const saved = ensureEtfWhaleSchedule(store, {}, now);
-    assert.equal(saved.enabled, true);
-    assert.equal(saved.jobType, 'etf.whale.sync');
-    assert.equal(saved.schedule.timezone, 'Asia/Shanghai');
-    assert.equal(saved.schedule.hour, 18);
-    assert.equal(saved.schedule.minute, 30);
-    assert.equal(saved.nextRunAt, Date.parse('2026-10-14T10:30:00Z'));
-    const moved = ensureEtfWhaleSchedule(store, { AI_CENTER_ETF_WHALE_AT: '19:05', AI_CENTER_ETF_WHALE_SYNC: '0' }, now);
-    assert.equal(moved.enabled, false);
-    assert.equal(moved.schedule.hour, 19);
-    assert.equal(moved.schedule.minute, 5);
+    const shares = saved.filter((item) => item.key.startsWith('etf.whale.shares.') && item.enabled);
+    assert.deepEqual(shares.map((item) => [item.schedule.hour, item.schedule.minute]), [
+      [9, 0], [12, 0], [16, 30], [18, 30], [20, 30],
+    ]);
+    assert.equal(shares[3].maxAttempts, 3);
+    assert.equal(shares[3].nextRunAt, Date.parse('2026-10-14T10:30:00Z'));
+    assert.equal(shares[3].input.task, 'shares');
+    const market = saved.find((item) => item.key === 'etf.whale.market');
+    assert.equal(market.schedule.hour, 15);
+    assert.equal(market.schedule.minute, 30);
+    assert.equal(market.jobType, 'etf.whale.market');
+    const futures = saved.find((item) => item.key === 'etf.whale.futures');
+    assert.equal(futures.schedule.hour, 17);
+    assert.equal(futures.schedule.minute, 0);
+    assert.equal(saved.find((item) => item.key === 'etf.whale.sync').enabled, false);
+    const moved = ensureEtfWhaleSchedule(store, { AI_CENTER_ETF_WHALE_SYNC: '0' }, now);
+    assert.equal(moved.every((item) => item.enabled === false), true);
   } finally {
     store.close();
   }
 });
+
+test('pending share dates are fetched outside the lookback, then go stale after five trading days', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'etf-whale-pending-'));
+  const store = createStore(path.join(root, 'ai-center.db'));
+  try {
+    const repo = store.repositories.etfWhale;
+    repo.saveFetch({
+      source: 'sse', dateStart: '2026-10-08', dateEnd: '2026-10-08', status: 'pending',
+      rowCount: 0, error: '', blobPath: '', contentHash: '', capturedAt: 1,
+    });
+    const seen = [];
+    const fetchImpl = async (url) => {
+      const text = String(url);
+      if (text.includes('szse.cn')) {
+        return { ok: false, status: 500, headers: { get: () => '' }, arrayBuffer: async () => new ArrayBuffer(0) };
+      }
+      seen.push(new URL(text).searchParams.get('STAT_DATE'));
+      const body = Buffer.from(JSON.stringify({ result: [], pageHelp: { pageCount: 1, total: 0 } }));
+      return { ok: true, status: 200, headers: { get: () => 'application/json' }, arrayBuffer: async () => Uint8Array.from(body).buffer };
+    };
+    const base = {
+      repository: repo,
+      dataDirectory: root,
+      quotes: false,
+      pauseMs: 0,
+      fetchImpl,
+      instruments: [{
+        code: '510300', exchange: 'SH', name: '沪深300ETF', groupKey: '宽基',
+        referencePool: true, source: 'test', verifiedOn: '2026-10-09',
+      }],
+    };
+    await syncEtfWhale({ ...base, startDate: '2026-10-15', endDate: '2026-10-15', today: '2026-10-15' });
+    assert.equal(seen.includes('2026-10-08'), true);
+    assert.equal(repo.getFetch('sse', '2026-10-08', '2026-10-08').status, 'pending');
+    const stale = [];
+    seen.length = 0;
+    await syncEtfWhale({
+      ...base,
+      startDate: '2026-10-16',
+      endDate: '2026-10-16',
+      today: '2026-10-16',
+      onStale: (date) => stale.push(date),
+    });
+    assert.equal(seen.includes('2026-10-08'), false);
+    assert.equal(repo.getFetch('sse', '2026-10-08', '2026-10-08').status, 'stale');
+    assert.deepEqual(stale, ['2026-10-08']);
+  } finally {
+    store.close();
+  }
+});
+
+test('a completed Shenzhen segment is skipped, an incomplete one in the same window is fetched again', async () => {
+  const calls = await szseCalls('2026-10-15');
+  assert.equal(calls.covered, 0);
+  assert.equal(calls.behind, 1);
+});
+
+test('xlsx width does not spread every cell into Math.max', () => {
+  const rows = new Map([[1, { 0: 'a', 3: 'd' }]]);
+  assert.equal(columnWidth(rows), 4);
+  const wide = { };
+  for (let index = 0; index < 20000; index += 1) wide[index] = 1;
+  assert.equal(columnWidth(new Map([[1, wide]])), 20000);
+});
+
+test('sina 5-minute bars and eastmoney amount parse the fields scoring needs', () => {
+  const bars = parseSinaKlinePayload(JSON.stringify([
+    { day: '2026-10-15 14:30:00', open: '1', high: '2', low: '0.5', close: '1.2', volume: '100' },
+    { day: '2026-10-15 14:35:00', open: '1', high: '1', low: '2', close: '1', volume: '1' },
+  ]));
+  assert.equal(bars.length, 1);
+  assert.equal(bars[0].barTime, '2026-10-15 14:30');
+  const daily = parseEastmoneyKlines({
+    data: { klines: ['2026-10-15,4.10,4.20,4.30,4.00,1000,19413000000,1,1,0.1,1'] },
+  });
+  assert.equal(daily[0].amountCny, 19_413_000_000);
+  assert.equal(daily[0].open, 4.1);
+  assert.equal(daily[0].close, 4.2);
+  const shape = indexSessionShape({
+    prevClose: 100,
+    close: 100,
+    bars: [
+      { barTime: '2026-10-15 10:00', low: 98, close: 99 },
+      { barTime: '2026-10-15 14:30', low: 99, close: 99 },
+    ],
+  });
+  assert.ok(Math.abs(shape.lowDropPct + 0.02) < 1e-12);
+  assert.ok(shape.reboundPct >= 0.01);
+  assert.equal(indexShapeHit(shape), true);
+  assert.equal(indexShapeHit({ lowDropPct: -0.009, reboundPct: 0.02, tailPct: 0.009 }), false);
+});
+
+test('cffex ranks identify 中信期货 by party id even when the short name is garbled', () => {
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+    <positionRank>
+      <data><instrumentId>IF2510</instrumentId><tradingDay>20261015</tradingDay><dataTypeId>2</dataTypeId><rank>1</rank><shortname>????</shortname><volume>8000</volume><varVolume>-120</varVolume><partyid>0018</partyid></data>
+      <data><instrumentId>IF2510</instrumentId><tradingDay>20261015</tradingDay><dataTypeId>1</dataTypeId><rank>3</rank><shortname>乱码</shortname><volume>3000</volume><varVolume>10</varVolume><partyid>0018</partyid></data>
+      <data><instrumentId>IF2510</instrumentId><tradingDay>20261015</tradingDay><dataTypeId>2</dataTypeId><rank>2</rank><shortname>其他</shortname><volume>9000</volume><varVolume>1</varVolume><partyid>0001</partyid></data>
+    </positionRank>`;
+  const rows = parseCffexPositionXml(xml, { product: 'IF', tradeDate: '2026-10-15', sourceUrl: 'http://www.cffex.com.cn/sj/ccpm/202610/15/IF.xml' });
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0].partyId, '0018');
+  assert.equal(citicNetShort(rows, '0018').IF.netShort, 5000);
+  assert.equal(citicNetShort(rows, '0001').IF.netShort, 9000);
+});
+
+test('old Shenzhen stack-overflow fetches are marked superseded and kept', () => {
+  const store = createStore(path.join(mkdtempSync(path.join(tmpdir(), 'etf-whale-stack-')), 'ai-center.db'));
+  try {
+    const repo = store.repositories.etfWhale;
+    repo.saveFetch({
+      source: 'szse-xlsx', dateStart: '2026-09-01', dateEnd: '2026-09-30', status: 'error', rowCount: 0,
+      error: 'Maximum call stack size exceeded', blobPath: 'blobs/etf-whale/szse/old.xlsx', contentHash: 'abc', capturedAt: 1,
+    });
+    repo.saveFetch({
+      source: 'szse-xlsx', dateStart: '2026-10-01', dateEnd: '2026-10-08', status: 'error', rowCount: 0,
+      error: 'HTTP 500', blobPath: '', contentHash: '', capturedAt: 1,
+    });
+    assert.equal(repo.supersedeStackOverflowFetches(), 1);
+    assert.equal(repo.getFetch('szse-xlsx', '2026-09-01', '2026-09-30').status, 'superseded');
+    assert.equal(repo.getFetch('szse-xlsx', '2026-09-01', '2026-09-30').blob_path, 'blobs/etf-whale/szse/old.xlsx');
+    assert.equal(repo.getFetch('szse-xlsx', '2026-10-01', '2026-10-08').status, 'error');
+    assert.equal(repo.supersedeStackOverflowFetches(), 0);
+  } finally {
+    store.close();
+  }
+});
+
+async function szseCalls(shareDate) {
+  async function run(tradeDate) {
+    const root = mkdtempSync(path.join(tmpdir(), 'etf-whale-szse-'));
+    const store = createStore(path.join(root, 'ai-center.db'));
+    try {
+      const repo = store.repositories.etfWhale;
+      repo.saveShares([{
+        source: 'szse-xlsx', code: '159915', name: '创业板', tradeDate, rawValue: 1, rawUnit: '份', shares: 100,
+      }], {
+        source: 'szse-xlsx', dateStart: '2026-10-13', dateEnd: '2026-10-15', status: 'ok',
+        blobPath: '', contentHash: 'abc', capturedAt: 1, error: '',
+      });
+      let calls = 0;
+      const fetchImpl = async (url) => {
+        if (String(url).includes('szse.cn')) {
+          calls += 1;
+          return { ok: false, status: 500, headers: { get: () => '' }, arrayBuffer: async () => new ArrayBuffer(0) };
+        }
+        const body = Buffer.from(JSON.stringify({ result: [], pageHelp: { pageCount: 1, total: 0 } }));
+        return { ok: true, status: 200, headers: { get: () => 'application/json' }, arrayBuffer: async () => Uint8Array.from(body).buffer };
+      };
+      await syncEtfWhale({
+        repository: repo,
+        dataDirectory: root,
+        startDate: '2026-10-13',
+        endDate: '2026-10-15',
+        quotes: false,
+        pauseMs: 0,
+        today: '2026-10-15',
+        fetchImpl,
+        instruments: [{
+          code: '159915', exchange: 'SZ', name: '创业板ETF', groupKey: '宽基',
+          referencePool: true, source: 'test', verifiedOn: '2026-10-09',
+        }],
+      });
+      return calls;
+    } finally {
+      store.close();
+    }
+  }
+  return { covered: await run(shareDate), behind: await run('2026-10-13') };
+}
 
 function bar(close, volumeLots = 100) {
   return { open: close, high: close, low: close, close, volumeLots };
