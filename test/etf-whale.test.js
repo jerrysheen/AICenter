@@ -248,7 +248,11 @@ function responseRecorder() {
 
 test('series route reads params.values and read-only tokens can GET both ETF routes', async () => {
   assert.equal(isApiTokenAllowlisted('GET', '/api/v1/etf-whale/overview'), true);
+  assert.equal(isApiTokenAllowlisted('GET', '/api/v1/etf-whale/daily'), true);
+  assert.equal(isApiTokenAllowlisted('GET', '/api/v1/etf-whale/signals'), true);
+  assert.equal(isApiTokenAllowlisted('GET', '/api/v1/etf-whale/series'), true);
   assert.equal(isApiTokenAllowlisted('GET', '/api/v1/etf-whale/etfs/159915'), true);
+  assert.equal(isApiTokenAllowlisted('GET', '/api/v1/holdings'), false);
   assert.equal(isApiTokenAllowlisted('POST', '/api/v1/etf-whale/overview'), false);
   assert.equal(isApiTokenAllowlisted('GET', '/api/v1/etf-whale/etfs/159915/shares'), false);
   assert.equal(isApiTokenAllowlisted('GET', '/api/v1/etf-whale/sync'), false);

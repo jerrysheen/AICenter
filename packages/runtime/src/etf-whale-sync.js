@@ -22,6 +22,7 @@ import {
 } from '../../domain/src/etf-whale/fetch-policy.js';
 import { ETF_WHALE_UNIVERSE } from '../../domain/src/etf-whale/universe.js';
 import { syncEtfWhaleFutures, syncEtfWhaleMarket } from './etf-whale-market.js';
+import { refreshEtfWhaleSignals } from './etf-whale-score.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -286,11 +287,14 @@ export function createEtfWhaleJobHandlers({ repository, dataDirectory, env = pro
         env,
       });
       const computed = recomputeEtfWhale(repository);
-      return { startDate, endDate, probeCount: fetched.probes.length, dailyRows: computed.rowCount, algorithm: fetched.algorithm };
+      const confirmed = refreshEtfWhaleSignals(repository, { startDate, endDate, stage: 'confirmed' });
+      return { startDate, endDate, probeCount: fetched.probes.length, dailyRows: computed.rowCount, algorithm: fetched.algorithm, confirmed };
     },
     [ETF_WHALE_MARKET_JOB]: async (input = {}) => {
       const { startDate, endDate } = etfWhaleSyncWindow(input, env, now());
-      return syncEtfWhaleMarket({ repository, dataDirectory, startDate, endDate, env, fetchImpl: input.fetchImpl });
+      const market = await syncEtfWhaleMarket({ repository, dataDirectory, startDate, endDate, env, fetchImpl: input.fetchImpl });
+      const initial = refreshEtfWhaleSignals(repository, { startDate, endDate, stage: 'initial' });
+      return { ...market, initial };
     },
     [ETF_WHALE_FUTURES_JOB]: async (input = {}) => {
       const { startDate, endDate } = etfWhaleSyncWindow(input, env, now());

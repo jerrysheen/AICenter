@@ -70,7 +70,11 @@ test('allowlist is GET-only and leaves admin paths closed', () => {
     ['GET', '/api/v1/hardware-prices'],
     ['GET', '/api/v1/compute-prices'],
     ['GET', '/api/v1/etf-whale/overview'],
+    ['GET', '/api/v1/etf-whale/daily'],
+    ['GET', '/api/v1/etf-whale/signals'],
+    ['GET', '/api/v1/etf-whale/series'],
     ['GET', '/api/v1/etf-whale/etfs/159915'],
+    ['GET', '/api/v1/etf-whale/etfs/abc'],
   ];
   for (const [method, pathName] of allowed) assert.equal(isApiTokenAllowlisted(method, pathName), true, pathName);
 
@@ -241,6 +245,9 @@ test('bearer tokens can read the allowlist and nothing else', async () => {
       '/api/v1/feed/x?saved=1&limit=1',
       '/api/v1/etf-whale/overview',
       '/api/v1/etf-whale/etfs/159915',
+      '/api/v1/etf-whale/series?code=159915',
+      '/api/v1/etf-whale/daily',
+      '/api/v1/etf-whale/signals',
     ];
     for (const pathName of allowed) {
       const response = await fetch(`${address.localUrl}${pathName}`, { headers: { ...publicHeaders(), ...auth } });
@@ -253,6 +260,19 @@ test('bearer tokens can read the allowlist and nothing else', async () => {
       headers: { ...publicHeaders(), ...auth },
     });
     assert.equal(missingItem.status, 404);
+    const unknownEtf = await fetch(`${address.localUrl}/api/v1/etf-whale/etfs/000001`, {
+      headers: { ...publicHeaders(), ...auth },
+    });
+    assert.equal(unknownEtf.status, 404);
+    assert.equal((await unknownEtf.json()).error, 'not_in_universe');
+    const badEtf = await fetch(`${address.localUrl}/api/v1/etf-whale/etfs/abc`, {
+      headers: { ...publicHeaders(), ...auth },
+    });
+    assert.equal(badEtf.status, 400);
+    const missingCode = await fetch(`${address.localUrl}/api/v1/etf-whale/series`, {
+      headers: { ...publicHeaders(), ...auth },
+    });
+    assert.equal(missingCode.status, 400);
 
     const denied = [
       ['GET', '/api/v1/api-tokens'],
