@@ -1,6 +1,6 @@
 import { parseDocument, DomUtils } from 'htmlparser2';
-import { HardwarePriceSnapshotInputSchema } from '../../contracts/src/hardware-prices.js';
-export const PRICE_PARSER_VERSION = 'trendforce-tables-4';
+import { HardwarePriceSnapshotInputSchema, canonicalHardwareSpecification, isHardwarePriceLabel } from '../../contracts/src/hardware-prices.js';
+export const PRICE_PARSER_VERSION = 'trendforce-tables-5';
 function headerIndex(headers, patterns) {
   for (const pattern of patterns) {
     const index = headers.findIndex(header => pattern.test(header));
@@ -84,11 +84,9 @@ export function parseStructuredPricePage(raw,{pageKey='dram',sourceUrl,title='',
     if(firstData<0) { warnings.push(`表${tableIndex+1}没有可识别报价行`);continue; }
     const headers=Array.from({length:Math.max(...cells.map(r=>r.length))},(_,c)=>cells.slice(0,firstData).map(r=>r[c] || '').join(' '));
     const avg=headerIndex(headers,[/盤平均|盘平均|Session Average/i,/Average|Avg|均價|均价|平均/i]);
-    const high=headerIndex(headers,[/盤高|盘高|Session High/i,/(?:日|盤|盘)?高[點点]|\bHigh\b|最高|高價|高价/i]);
-    const low=headerIndex(headers,[/盤低|盘低|Session Low/i,/(?:日|盤|盘)?低[點点]|\bLow\b|最低|低價|低价/i]);
+    const high=headerIndex(headers,[/盤高|盘高|Session High/i,/(?:週|周|日|盤|盘)?高[點点]|\bHigh\b|最高|高價|高价/i]);
+    const low=headerIndex(headers,[/盤低|盘低|Session Low/i,/(?:週|周|日|盤|盘)?低[點点]|\bLow\b|最低|低價|低价/i]);
     const change=headerIndex(headers,[/Change|漲跌|涨跌/i]);
-    const dailyHigh=headerIndex(headers,[/日高|Daily High/i]);
-    const dailyLow=headerIndex(headers,[/日低|Daily Low/i]);
     const sourceUpdatedAt=updated(p.updateRaw);
     const quoteType=/spot|現貨|现货/i.test(p.heading)?'spot':/contract|合約|合约/i.test(p.heading)?'contract':/retail|street price|零售/i.test(p.heading)?'retail':'unknown';
     let currency=/(?:US\s*\$|USD|美元)/i.test(p.context)?'USD':/(?:NT\s*\$|TWD|新台幣|新台币)/i.test(p.context)?'TWD':/(?:RMB|CNY|人民幣|人民币)/i.test(p.context)?'CNY':null;
@@ -111,9 +109,14 @@ export function parseStructuredPricePage(raw,{pageKey='dram',sourceUrl,title='',
       const r=cells[rowIndex];if(!r[0])continue;
       const average=avg>=0?number(r[avg] || ''):null,hi=high>=0?number(r[high] || ''):null,lo=low>=0?number(r[low] || ''):null;
       if([average,hi,lo].every(v=>v===null))continue;
-      const valueColumns=[avg,high,low,change,dailyHigh,dailyLow].filter(i=>i>=0),specEnd=Math.min(...valueColumns);
-      const specification=r.slice(0,specEnd).map((v,i)=>`${headers[i]}: ${v}`).join(' · ');
-      const singleSpec=specEnd===1?r[0]:specification;
+      const identity=[];
+      for(let i=0;i<headers.length;i++){
+        const label=(headers[i] || '').trim(),value=(r[i] || '').trim();
+        if(!value || isHardwarePriceLabel(label) || number(value)!==null) continue;
+        identity.push(/^(?:項目|项目|Item)$/i.test(label) || !label ? value : `${label}: ${value}`);
+      }
+      const singleSpec=canonicalHardwareSpecification(identity.join(' · '));
+      if(!singleSpec) continue;
       let rowCurrency=currency,rowUnit=unit;
       // SO-DIMM rows share the DRAM contract table with chips. They are modules (条), not chips.
       if(/contract/i.test(p.heading) && /\bDRAM\b/i.test(p.heading) && /SO-?DIMM/i.test(singleSpec) && (rowUnit==='chip' || (!rowUnit && taxBasis==='excluding-tax'))) {

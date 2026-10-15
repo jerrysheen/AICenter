@@ -20,7 +20,7 @@ function mappedRow(row) {
 
 // Marks older current rows, does not delete them. A dated quote with a unit
 // replaces an unverified period, a unitless row, a specification that still
-// contains a price column, and a SO-DIMM row still priced as chip.
+// contains a price column (日高點, 週高點, 均價), and a SO-DIMM row still priced as chip.
 export function retireSupersededHardwareQuotes(database, workspaceId = null) {
   const rows = workspaceId
     ? database.prepare(`SELECT id, workspace_id, series_key, period_key, period_start, source_updated_at, captured_at, row_json

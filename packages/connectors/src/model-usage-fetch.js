@@ -28,8 +28,10 @@ export function createUsageFetch(fetchImpl, { provider, model, observer, stage =
     const inherited = modelUsageContext();
     let usedModel = init?.usageModel || model || '';
     try { usedModel = JSON.parse(init?.body || '{}').model || usedModel; } catch {}
+    const keySuffix = String(init?.usageKeySuffix || inherited.keySuffix || '').slice(-4);
+    const itemId = String(init?.usageItemId || inherited.itemId || '').slice(0, 256);
     const row = { id: randomUUID(), kind: 'request', workspaceId: inherited.workspaceId || 'local',
-      jobId: inherited.jobId || '', jobAttempt: inherited.jobAttempt ?? null, stage,
+      jobId: inherited.jobId || '', jobAttempt: inherited.jobAttempt ?? null, itemId, keySuffix, stage,
       applicationSessionId: inherited.applicationSessionId || '', harnessSessionId: inherited.harnessSessionId || '',
       turn: inherited.turn ?? null, step: inherited.step ?? null, attempt: null,
       provider, model: usedModel, status: 'pending', completeness: 'missing', usage: emptyTokenUsage(),

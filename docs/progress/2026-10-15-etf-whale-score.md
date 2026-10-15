@@ -20,7 +20,7 @@
 
 ## 迁移
 
-不新增 migration。`etf_whale_signals` 已在 migration 70。69 仍是硬件报价当前规格。
+不新增 migration。`etf_whale_signals` 已在 migration 70。68 是文章去重，69 是 `hardware_price_current_spec`，71 是 `model_usage_translation_attribution`。
 
 ## 手动补数
 

@@ -349,13 +349,14 @@ async function translateOneItem(translationPort, item, targetLang, workspaceId) 
 
 // Each item is stored before the next one starts. A later failure must not discard
 // translations that already came back, and must name only the items still missing.
-async function translateItemsDurably(translationPort, items, targetLang, persist, workspaceId) {
+async function translateItemsDurably(translationPort, items, targetLang, persist, workspaceId, onItem) {
   const translations = [];
   const failures = [];
   let firstError = null;
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index];
     try {
+      if (typeof onItem === 'function') onItem(item);
       const result = await translateOneItem(translationPort, item, targetLang, workspaceId);
       const rows = (result?.translations || []).filter((row) => row?.id === item.id && (row.translatedText || row.engine === 'passthrough'));
       if (!rows.length) {
@@ -369,7 +370,7 @@ async function translateItemsDurably(translationPort, items, targetLang, persist
       translations.push(...completed);
     } catch (error) {
       if (!firstError) firstError = error;
-      if (error?.code === 'budget-deferred') {
+      if (error?.code === 'budget-deferred' || error?.code === 'translation-call-cap') {
         for (const rest of items.slice(index)) failures.push(rest.id);
         break;
       }
@@ -383,11 +384,11 @@ async function translateItemsDurably(translationPort, items, targetLang, persist
   return translations;
 }
 
-async function translatePendingUnits(translationPort, pending, targetLang, checkpoint=()=>{}, workspaceId='local') {
+async function translatePendingUnits(translationPort, pending, targetLang, checkpoint=()=>{}, workspaceId='local', onItem) {
   if (!pending.length || !translationPort) return [];
   const items = pending.map((unit) => ({ id: unit.localizationId, text: unit.text }))
     .filter((item) => item.id && item.text && item.text.length <= FEED_TRANSLATION_TEXT_MAX);
-  return translateItemsDurably(translationPort, items, targetLang, checkpoint, workspaceId);
+  return translateItemsDurably(translationPort, items, targetLang, checkpoint, workspaceId, onItem);
 }
 
 async function localizeCollected(feedRepository, translationPort, workspaceId, units, targetLang, options = {}) {
@@ -410,7 +411,7 @@ async function localizeCollected(feedRepository, translationPort, workspaceId, u
   const lockKey = `${workspaceId}:${targetLang}:${pending.map((unit) => unit.localizationId).sort().join(',')}`;
   const run = async () => {
     try {
-      await translatePendingUnits(translationPort, pending, targetLang, rows=>persistTranslations(feedRepository,workspaceId,rows), workspaceId);
+      await translatePendingUnits(translationPort, pending, targetLang, rows=>persistTranslations(feedRepository,workspaceId,rows), workspaceId, options.onItem);
     } catch {
       // 已成功的批次留在库里，没译完的仍是 pending，下次调用接着补。
       // 任务级失败由 Job Runner 写入 feed_translation_failures，这里不把整批打成退避失败。
@@ -1145,6 +1146,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
           targetLang,
           (rows) => persistTranslations(feedRepository, workspaceId, rows),
           workspaceId,
+          actor.onItem,
         );
         translations.push(...completed);
       }

@@ -6,6 +6,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { createStore } from '../packages/database/src/index.js';
 import { createGemmaTranslationRouter, gemmaBackoffMs, gemmaIntervalMs, gemmaQuotaDay, gemmaRetryStatuses, gemmaTranslationPolicy, readGemmaStream, resolveGemmaTranslationSlots } from '../packages/connectors/src/translate/gemma.js';
+import { translationAttemptCallLimit, withTranslationCallBudget } from '../packages/connectors/src/translate/call-budget.js';
 import { nextDailyInstant, previousDailyInstant } from '../packages/domain/src/zoned-time.js';
 import { createTranslateService, splitTranslationText } from '../packages/connectors/src/translate/index.js';
 import { createFeedService } from '../packages/domain/src/feed-service.js';
@@ -107,6 +108,12 @@ test('Gemma pool uses only official streaming endpoints, rotates models and pers
     assert.equal(init.dispatcher, undefined);
   }
   assert.equal(usage.filter(row => row.status === 'succeeded').length, 2);
+  const succeeded = usage.find(row => row.status === 'succeeded');
+  assert.equal(succeeded.keySuffix, '-key');
+  store.repositories.modelUsage.save({ ...succeeded, itemId: 'media:ms' });
+  const stored = store.repositories.modelUsage.list('local', { jobId: '' }).find(row => row.itemId === 'media:ms');
+  assert.equal(stored.itemId, 'media:ms');
+  assert.equal(stored.keySuffix, '-key');
   assert.equal(usage.filter(row => row.status === 'succeeded').every(row => row.httpStatus === 200), true);
   assert.equal(usage.at(-1).usage.totalTokens, 30);
   assert.doesNotMatch(JSON.stringify(usage), /fake-key|hidden|完整译文/);
@@ -136,6 +143,15 @@ test('truncated or error streams cannot become saved translations; hidden though
     const service = createTranslateService({ ...settings(store), fetch:async()=>sse('未完成',finish) });
     await assert.rejects(service.translate({text:'A report with unfinished translation.'}), /未完整结束/);
   }
+  const thoughtOnly = new Response([
+    { candidates: [{ content: { parts: [{ thought: true, text: '只在思考里出现的译文' }] }, finishReason: 'STOP' }] },
+  ].map(event => `data: ${JSON.stringify(event)}\n\n`).join(''));
+  const hidden = createTranslateService({ ...settings(store), fetch: async () => thoughtOnly });
+  await assert.rejects(hidden.translate({ text: 'A short English headline that must stay visible.' }), /可见文本=0/);
+  const headline = 'Microsoft denies cloud leadership asked suppliers to cut prices this week after the earnings call';
+  const saved = createTranslateService({ ...settings(store), fetch: async () => sse('微软否认云业务领导层曾要求供应商降价') });
+  const translated = await saved.translate({ id: 'media:ms', text: headline });
+  assert.equal(translated.translatedText, '微软否认云业务领导层曾要求供应商降价');
 }));
 
 test('long input splits without dropping characters, batch cache preserves complete output and formatting', async () => {
@@ -582,6 +598,30 @@ test('configured backoff base and cap replace the 10s 20s 40s ladder', fixture(a
     await assert.rejects(router.generate({ system: '翻译', prompt: 'Ladder' }), /500/);
     assert.equal(calls.at(-1) - (before ?? calls.at(-1)), gap);
   }
+}));
+
+test('a job attempt stops once the call cap is spent', fixture(async store => {
+  assert.equal(translationAttemptCallLimit({ itemCount: 1, keyCount: 5, maxRetries: 2 }), 7);
+  assert.equal(translationAttemptCallLimit({ itemCount: 1, keyCount: 5, maxRetries: 2, configured: '4' }), 4);
+  assert.equal(translationAttemptCallLimit({ itemCount: 18, keyCount: 5, maxRetries: 2, configured: '0' }), 126);
+  let calls = 0;
+  const router = createGemmaTranslationRouter({
+    env: {
+      GEMINI_API_KEY: 'cap-key',
+      AI_CENTER_GEMMA_TRANSLATION_MAX_RETRIES: '8',
+      AI_CENTER_GEMMA_TRANSLATION_BACKOFF_BASE_MS: '0',
+      AI_CENTER_GEMMA_TRANSLATION_BACKOFF_CAP_MS: '0',
+      AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MIN_MS: '0',
+      AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MAX_MS: '0',
+    },
+    quotaRepository: store.repositories.modelQuota,
+    sleep: async () => {},
+    fetch: async () => { calls += 1; return new Response('{"error":{"code":500}}', { status: 500 }); },
+  });
+  await assert.rejects(
+    withTranslationCallBudget(3, () => router.generate({ system: '翻译', prompt: 'A short English title about chips' })),
+    (error) => error.code === 'translation-call-cap' && calls === 3,
+  );
 }));
 
 test('a failed response still records usageMetadata and ignores a missing one', fixture(async (store, dir) => {
