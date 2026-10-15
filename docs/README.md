@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-15-etf-whale-capture.md`：ETF 鲸鱼份额改为 T+1 的 09:00、12:00、16:30、18:30、20:30 补抓，补齐后当天后面的时刻跳过。15:30 抓日线、5 分钟线和实际成交额，17:00 抓中金所前 20 名持仓。交易日空份额记 pending，节假日记 holiday，超过 5 个交易日改 stale。深交所不再因为分段状态是 ok 就跳过未覆盖的窗口。xlsx 列宽改为逐格取最大列，避免展开爆栈；旧的栈溢出 error 在启动时改成 superseded，不删行。migration 69 只新增表。需要同时重启 Web 和 Worker。不要在启动时自动补历史；补数命令见该进度说明。
+
 - `progress/2026-10-15-article-dedup.md`：新媒体索引和订阅源按规范化原文链接加发布者去重，已有的那条补上缺失正文，不再另建一条。小时报生成时用同一把钥匙再去重，跨小时也合并，留下 media 那条。已有行不清理、不回填。migration 68 只加列和索引。`AI_CENTER_ARTICLE_DEDUP_TITLE_THRESHOLD` 默认 0.82。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-14-translation-gap-read.md`：媒体列表按标题哈希和标题块 id 读出补漏译文，不再因为展示正文哈希对不上而标 stale。补漏按可配置时间窗口扫描缺译条目，默认至少 72 小时，每轮仍限制入队数；终态失败在递增间隔后重新入队。`feed_translation_chunks` 仍是续翻缓冲，全文落库即删除，健康部署后 0 行是预期。不新增 migration。需要同时重启 Web 和 Worker。
