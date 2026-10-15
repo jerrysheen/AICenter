@@ -65,6 +65,55 @@ export function createMarketService(options = {}) {
     return rows.some((item) => item && item.lastPrice != null);
   }
 
+  function quoteAsOf(row) {
+    const asOf = Number(row?.asOf);
+    if (Number.isFinite(asOf) && asOf > 0) return asOf;
+    const market = Number(row?.marketTime);
+    if (!Number.isFinite(market) || market <= 0) return null;
+    return market > 10_000_000_000 ? market : market * 1000;
+  }
+
+  function newerQuoteRow(current, incoming) {
+    if (!incoming) return current;
+    if (!current || current.lastPrice == null || incoming.lastPrice == null) return incoming;
+    const prevAt = quoteAsOf(current);
+    const nextAt = quoteAsOf(incoming);
+    if (prevAt != null && (nextAt == null || nextAt < prevAt)) return current;
+    return incoming;
+  }
+
+  function mergeQuoteList(previous, incoming) {
+    if (!Array.isArray(incoming) || !Array.isArray(previous)) return incoming;
+    const prev = new Map(previous.map((row) => [String(row?.symbol || '').toUpperCase(), row]));
+    return incoming.map((row) => newerQuoteRow(prev.get(String(row?.symbol || '').toUpperCase()), row));
+  }
+
+  function mergeNewerPayload(previous, incoming) {
+    if (!previous || !incoming) return incoming;
+    if (Array.isArray(incoming)) return mergeQuoteList(previous, incoming);
+    if (typeof incoming !== 'object' || Array.isArray(previous) || previous.board !== incoming.board) return incoming;
+    const sections = Array.isArray(incoming.sections)
+      ? incoming.sections.map((section) => {
+        const prev = (previous.sections || []).find((item) => item?.id === section?.id);
+        if (!prev) return section;
+        return {
+          ...section,
+          indices: mergeQuoteList(prev.indices, section.indices),
+          gainers: mergeQuoteList(prev.gainers, section.gainers),
+          losers: mergeQuoteList(prev.losers, section.losers),
+        };
+      })
+      : incoming.sections;
+    return {
+      ...incoming,
+      indices: mergeQuoteList(previous.indices, incoming.indices),
+      watchlist: mergeQuoteList(previous.watchlist, incoming.watchlist),
+      gainers: mergeQuoteList(previous.gainers, incoming.gainers),
+      losers: mergeQuoteList(previous.losers, incoming.losers),
+      ...(sections ? { sections } : {}),
+    };
+  }
+
   function withStale(payload, stale) {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
     if (Boolean(payload.stale) === Boolean(stale)) return payload;
@@ -111,7 +160,8 @@ export function createMarketService(options = {}) {
         return keepPrevious(key, previous, timestamp);
       }
       const fresh = payloadHasQuotes(payload);
-      const stored = withStale(payload, false);
+      const merged = mergeNewerPayload(previous?.payload, payload);
+      const stored = withStale(merged, false);
       cache.set(key, { at: timestamp, freshAt: fresh ? timestamp : timestamp, payload: stored });
       return stored;
     }).catch((error) => {
@@ -126,8 +176,9 @@ export function createMarketService(options = {}) {
     });
     loaderPromise.then((payload) => {
       if (attempts.get(key) !== attempt || pending.get(key) === task || !payloadHasQuotes(payload)) return;
+      const previous = cache.get(key);
       const at = now();
-      cache.set(key, { at, freshAt: at, payload: withStale(payload, false) });
+      cache.set(key, { at, freshAt: at, payload: withStale(mergeNewerPayload(previous?.payload, payload), false) });
     }, () => {});
     pending.set(key, task);
     return task;

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createYahooClient, isUsMarketSymbol, yahooCacheMs } from '../packages/connectors/src/yahoo.js';
+import { createYahooClient, isUsMarketSymbol, preferNewerQuote, yahooCacheMs } from '../packages/connectors/src/yahoo.js';
 import {
   quoteFromSinaUsBody,
   quoteFromTencentUsBody,
@@ -290,4 +290,77 @@ test('US quotes run before a bulk batch that is only queued', async () => {
   assert.equal(seen[1], 'AAPL');
   assert.match(seen[0], /\.KS/);
   assert.match(seen[2], /\.KS/);
+});
+
+test('an older quote does not replace a newer cached quote', async () => {
+  assert.equal(preferNewerQuote(
+    { symbol: 'AAPL', lastPrice: 9, marketTime: 200 },
+    { symbol: 'AAPL', lastPrice: 1, marketTime: 100 },
+  ).lastPrice, 9);
+  let clock = NOW;
+  let generation = 0;
+  const fetchImpl = async (url) => {
+    const symbols = new URL(String(url)).searchParams.get('symbols').split(',');
+    generation += 1;
+    const marketTime = generation === 1 ? Math.trunc(NOW / 1000) + 120 : Math.trunc(NOW / 1000);
+    const price = generation === 1 ? 9 : 1;
+    return response(JSON.stringify({
+      spark: {
+        result: symbols.map((symbol) => ({
+          ...spark(symbol, price),
+          response: [{
+            ...spark(symbol, price).response[0],
+            meta: { ...spark(symbol, price).response[0].meta, regularMarketTime: marketTime, regularMarketPrice: price },
+          }],
+        })),
+      },
+    }));
+  };
+  const client = createYahooClient({
+    fetchImpl,
+    now: () => clock,
+    timeoutMs: 1_000,
+    cacheTtlMs: 30_000,
+    minIntervalMs: 0,
+    log() {},
+    fallback: { async fetchQuotes() { return []; } },
+  });
+  const first = await client.fetchQuotes(['AAPL']);
+  assert.equal(first.quotes[0].lastPrice, 9);
+  clock += 31_000;
+  const second = await client.fetchQuotes(['AAPL']);
+  assert.equal(second.quotes[0].lastPrice, 9);
+  assert.equal(generation, 2);
+});
+
+test('a quote cached from the previous snapshot is fetched again before the next minute', async () => {
+  let clock = NOW;
+  let release;
+  let gate = new Promise((resolve) => { release = resolve; });
+  let sparkCalls = 0;
+  const fetchImpl = async (url) => {
+    const symbols = new URL(String(url)).searchParams.get('symbols').split(',');
+    sparkCalls += 1;
+    if (sparkCalls === 1) await gate;
+    return response(JSON.stringify({ spark: { result: symbols.map((symbol) => spark(symbol, sparkCalls)) } }));
+  };
+  const client = createYahooClient({
+    fetchImpl,
+    now: () => clock,
+    timeoutMs: 2_000,
+    cacheTtlMs: 30_000,
+    minIntervalMs: 0,
+    log() {},
+    fallback: { async fetchQuotes() { return []; } },
+  });
+  const first = client.fetchQuotes(['AAPL']);
+  for (let attempt = 0; attempt < 40 && sparkCalls < 1; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  clock = NOW + 40_000;
+  release();
+  await first;
+  clock = NOW + 46_000;
+  await client.fetchQuotes(['AAPL']);
+  assert.equal(sparkCalls, 2);
 });

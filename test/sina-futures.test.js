@@ -25,6 +25,7 @@ test('sina commodity line maps last price and previous settlement', () => {
   assert.equal(quote.lastPrice, 127160);
   assert.equal(quote.prevClose, 130120);
   assert.equal(quote.currency, 'CNY');
+  assert.equal(quote.provider, 'sina');
 });
 
 test('sina CFFEX line uses the first field as last price', () => {

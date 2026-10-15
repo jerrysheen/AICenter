@@ -7,6 +7,7 @@ const COOKIE_URL = 'https://fc.yahoo.com';
 const CRUMB_URL = 'https://query1.finance.yahoo.com/v1/test/getcrumb';
 const DEFAULT_TIMEOUT_MS = 8_000;
 const DEFAULT_CACHE_MS = 30_000;
+const CACHE_SPAN_MS = 45_000;
 const US_INDEX_SYMBOLS = new Set(['^GSPC', '^DJI', '^IXIC', '^SOX', '^VIX']);
 const DEFAULT_MIN_INTERVAL_MS = 800;
 const BATCH_SIZE = 20;
@@ -80,6 +81,23 @@ function cookieHeaderFrom(response) {
   return raw.map((item) => String(item).split(';')[0].trim()).filter((item) => item.includes('=')).join('; ');
 }
 
+export function quoteObservedAt(quote) {
+  const asOf = Number(quote?.asOf);
+  if (Number.isFinite(asOf) && asOf > 0) return asOf;
+  const market = Number(quote?.marketTime);
+  if (!Number.isFinite(market) || market <= 0) return null;
+  return market > 10_000_000_000 ? market : market * 1000;
+}
+
+export function preferNewerQuote(current, incoming) {
+  if (!incoming || incoming.lastPrice == null) return current || null;
+  if (!current || current.lastPrice == null) return incoming;
+  const prevAt = quoteObservedAt(current);
+  const nextAt = quoteObservedAt(incoming);
+  if (prevAt != null && (nextAt == null || nextAt < prevAt)) return current;
+  return incoming;
+}
+
 export function isUsMarketSymbol(symbol) {
   const value = String(symbol || '').trim().toUpperCase();
   if (!value) return false;
@@ -104,14 +122,21 @@ export function createYahooQuoteLayer(options = {}) {
 
   function fresh(symbol) {
     const hit = cache.get(symbol);
-    if (!hit || now() - hit.at >= cacheTtlMs) return null;
+    if (!hit) return null;
+    const started = hit.since ?? hit.at;
+    if (now() - hit.at >= cacheTtlMs || now() - started >= CACHE_SPAN_MS) return null;
     return hit.quote;
   }
 
-  function remember(quote) {
+  function remember(quote, since = now()) {
     const symbol = String(quote?.symbol || '').toUpperCase();
-    if (!symbol || quote.lastPrice == null) return;
-    cache.set(symbol, { at: now(), quote: { ...quote, symbol } });
+    if (!symbol || quote.lastPrice == null) return null;
+    const next = { ...quote, symbol };
+    const prev = cache.get(symbol)?.quote;
+    const chosen = preferNewerQuote(prev, next);
+    if (chosen !== next) return chosen;
+    cache.set(symbol, { at: now(), since, quote: next });
+    return next;
   }
 
   function backingOff() {
@@ -170,8 +195,10 @@ export function createYahooQuoteLayer(options = {}) {
     const slot = inflight.get(symbol);
     if (!slot) return;
     inflight.delete(symbol);
-    if (quote) remember(quote);
-    slot.resolve(quote || null);
+    const cachedQuote = cache.get(symbol)?.quote;
+    const chosen = quote && quote.lastPrice != null ? preferNewerQuote(cachedQuote, quote) : null;
+    if (quote && chosen === quote) remember(quote, slot.since || now());
+    slot.resolve(chosen || null);
   }
 
   function finishMany(symbols, map) {
@@ -180,9 +207,12 @@ export function createYahooQuoteLayer(options = {}) {
 
   function dispatch(group, lane) {
     if (!group.length) return;
+    const startedAt = now();
     for (const symbol of group) {
       const slot = inflight.get(symbol);
-      if (slot) slot.started = true;
+      if (!slot) continue;
+      slot.started = true;
+      if (!slot.since) slot.since = startedAt;
     }
     const loadNow = fetcher;
     schedule(() => (backingOff() ? { blocked: true } : loadNow(group)), lane).then((result) => {
@@ -530,8 +560,9 @@ export function createYahooClient(options = {}) {
   function pack(quotes, unique) {
     const bySymbol = new Map();
     for (const quote of quotes) {
-      if (!quote?.symbol || quote.lastPrice == null || bySymbol.has(quote.symbol)) continue;
-      bySymbol.set(quote.symbol, quote);
+      if (!quote?.symbol || quote.lastPrice == null) continue;
+      const symbol = String(quote.symbol).toUpperCase();
+      bySymbol.set(symbol, preferNewerQuote(bySymbol.get(symbol), { ...quote, symbol }) || quote);
     }
     const ordered = unique.map((symbol) => bySymbol.get(symbol)).filter(Boolean);
     const sessionQuote = ordered.find((quote) => quote.session === 'regular')
