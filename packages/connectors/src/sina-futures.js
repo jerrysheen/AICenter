@@ -66,6 +66,7 @@ export function quoteFromSinaLine(line, requestedSymbol) {
     sparkline: [],
     session: 'regular',
     currency: 'CNY',
+    provider: 'sina',
   };
 }
 

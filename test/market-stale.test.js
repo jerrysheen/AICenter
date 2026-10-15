@@ -291,3 +291,38 @@ test('quotes that arrive after the board timeout stay available for the next rea
   assert.equal(board.indices.find((item) => item.symbol === '^GSPC').lastPrice, 5);
   assert.equal(board.stale, undefined);
 });
+
+test('an older quote time does not replace a newer price already on the board', async () => {
+  const clock = { value: 5_000_000 };
+  let round = 0;
+  const service = createMarketService({
+    marketCatalog: catalog,
+    ttlMs: 1_000,
+    now: () => clock.value,
+    log() {},
+    tushare: null,
+    sinaFutures: null,
+    xueqiuQuotes: { fetchQuotes: async () => [] },
+    cnQuotes: { fetchQuotes: async () => [] },
+    yahoo: {
+      fetchQuotes: async () => {
+        round += 1;
+        const asOf = round === 1 ? 8_000_000 : 7_000_000;
+        const price = round === 1 ? 100 : 1;
+        return {
+          quotes: [quote('^GSPC', price), quote('AAPL', price), quote('NVDA', price), quote('MSFT', price), quote('AMD', price)]
+            .map((item) => ({ ...item, asOf })),
+          session: 'regular',
+        };
+      },
+    },
+  });
+  const first = await service.getBoard({ board: 'us' });
+  assert.equal(first.watchlist.find((item) => item.symbol === 'AAPL').lastPrice, 100);
+  clock.value += 2_000;
+  const second = await service.getBoard({ board: 'us' });
+  assert.equal(second.fetchedAt, clock.value);
+  assert.equal(second.watchlist.find((item) => item.symbol === 'AAPL').lastPrice, 100);
+  assert.equal(second.watchlist.find((item) => item.symbol === 'AAPL').asOf, 8_000_000);
+  assert.equal(round, 2);
+});
