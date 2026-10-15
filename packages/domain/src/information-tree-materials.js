@@ -26,7 +26,10 @@ export function createTreeMaterialPort({feedService,mediaService,flashSources=nu
         const last=page.at(-1);cursor={id:last.id.slice(5),eventAt:last.eventAt};
       }
       const media=mediaService?.informationCandidates(workspaceId,window) || [];
-      return [...rows,...media].filter(row=>keepHourlyCandidate(row, flashSources));
+      const visible=[...rows,...media].filter(row=>keepHourlyCandidate(row, flashSources));
+      return typeof mediaService?.dedupeHourlyCandidates==='function'
+        ? mediaService.dedupeHourlyCandidates(workspaceId, visible)
+        : visible;
     },
     async materials(workspaceId,sourceIds) {
       const feedIds=sourceIds.filter(id=>id.startsWith('feed:')).map(id=>id.slice(5));

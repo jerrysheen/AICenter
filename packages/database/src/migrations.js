@@ -1928,6 +1928,23 @@ migrations.push({ version: 67, name: 'feed_translation_chunks', up(database) {
     );`);
 }});
 
+export function addArticleDedupColumns(database) {
+  addColumn(database, 'media_index_entries', 'dedup_key', 'TEXT');
+  addColumn(database, 'content_items', 'dedup_key', 'TEXT');
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_media_article_dedup_key
+      ON media_index_entries(workspace_id, dedup_key) WHERE dedup_key IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_content_article_dedup_key
+      ON content_items(workspace_id, dedup_key) WHERE dedup_key IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_media_article_published
+      ON media_index_entries(workspace_id, published_at);
+    CREATE INDEX IF NOT EXISTS idx_content_article_source_url
+      ON content_items(workspace_id, source_url);
+  `);
+}
+
+migrations.push({ version: 68, name: 'article_dedup_keys', up: addArticleDedupColumns });
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

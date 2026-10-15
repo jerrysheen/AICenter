@@ -446,7 +446,25 @@ async function resolveIngestFilter(feedFilter, input) {
   return feedFilter.evaluate(input);
 }
 
-async function ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter, flashSources = null) {
+function feedSiteUrl(sourceMeta, replay) {
+  const candidates = [
+    sourceMeta?.profileUrl,
+    replay?.feedUrl,
+    replay?.siteUrl,
+    replay?.sourceInput?.url,
+    replay?.sourceInput?.feed,
+    sourceMeta?.externalId,
+  ];
+  return candidates.find((value) => /^https?:\/\//i.test(String(value || ''))) || '';
+}
+
+function feedSourceKey(sourceMeta, replay) {
+  const external = String(sourceMeta?.externalId || '');
+  if (external.startsWith('media:')) return external.slice('media:'.length);
+  return String(replay?.sourceKey || '');
+}
+
+async function ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter, flashSources = null, articleDedup = null) {
   if (!feedRepository?.saveCapture || !Array.isArray(snapshot?.items) || !snapshot.items.length) {
     return { added: 0, skipped: 0, addedItemIds: [] };
   }
@@ -542,6 +560,33 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
       skipped += 1;
       continue;
     }
+    if (!existing && articleDedup?.find) {
+      const probe = {
+        url: item.sourceUrl,
+        title: item.title || '',
+        summary: item.summary || '',
+        body,
+        authorName: item.authorName || '',
+        publishedAt: item.publishedAt || null,
+        sourceKey: feedSourceKey(sourceMeta, replay),
+        siteUrl: feedSiteUrl(sourceMeta, replay),
+        sourceExternalId: sourceMeta.externalId,
+      };
+      const match = articleDedup.find(workspaceId, probe);
+      if (match) {
+        articleDedup.fill(match, {
+          url: item.sourceUrl,
+          title: cleanIngestExcerpt(item.title || ''),
+          summary: cleanIngestExcerpt(item.summary || ''),
+          body,
+          authorName: item.authorName || '',
+          publishedAt: item.publishedAt || null,
+        });
+        rememberFingerprint();
+        skipped += 1;
+        continue;
+      }
+    }
     const filterInput = {
       workspaceId,
       provider: providerId,
@@ -604,7 +649,16 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
       authorName: item.authorName || '',
       publishedAt: item.publishedAt || null,
     });
-    if (savedItem?.id) addedItemIds.push(savedItem.id);
+    if (savedItem?.id) {
+      articleDedup?.rememberFeed?.(workspaceId, savedItem.id, {
+        url: item.sourceUrl,
+        title: item.title || '',
+        sourceKey: feedSourceKey(sourceMeta, replay),
+        siteUrl: feedSiteUrl(sourceMeta, replay),
+        sourceExternalId: sourceMeta.externalId,
+      });
+      addedItemIds.push(savedItem.id);
+    }
     rememberFingerprint();
     added += 1;
   }
@@ -885,7 +939,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       const snapshot = sourceSnapshot.data;
       let stats = { added: 0, skipped: 0 };
       try {
-        stats = contentRoutingPort && providerId==='trendforce' ? await contentRoutingPort.ingest(workspaceId,snapshot) : await ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter, flashSources);
+        stats = contentRoutingPort && providerId==='trendforce' ? await contentRoutingPort.ingest(workspaceId,snapshot) : await ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter, flashSources, mediaPort?.articleDedup);
       } catch (error) {
         if(contentRoutingPort && providerId==='trendforce') throw error;
         // Live snapshot still returns even if persistence fails.
@@ -942,7 +996,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       if (snapshot.mode === 'error' || snapshot.mode === 'unavailable') {
         throw new Error(snapshot.note || `${sourceId} 抓取失败`);
       }
-      const stats=await (contentRoutingPort && persistence.providerId==='trendforce' ? contentRoutingPort.ingest(workspaceId,snapshot) : ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter, flashSources));
+      const stats=await (contentRoutingPort && persistence.providerId==='trendforce' ? contentRoutingPort.ingest(workspaceId,snapshot) : ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter, flashSources, mediaPort?.articleDedup));
       if(stats.addedItemIds?.length)await onContentReady?.({workspaceId,sourceIds:stats.addedItemIds.map(id=>`feed:${id}`)});
       return stats;
     },

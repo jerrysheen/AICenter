@@ -259,7 +259,7 @@ test('forward migration upgrades V39 with existing content and states intact',()
       DROP INDEX IF EXISTS idx_captures_feed_sort;DROP INDEX IF EXISTS idx_captures_provider_captured;DROP INDEX IF EXISTS idx_captures_feed_filter;
       DROP INDEX IF EXISTS idx_content_items_capture_cover;DROP INDEX IF EXISTS idx_user_item_states_feed_flags;
       DROP TABLE IF EXISTS gemini_model_cursors;
-      DELETE FROM schema_migrations WHERE version IN (40,54,55,56,57,58,59,60,61,62,64,65,66);PRAGMA user_version=39;`);
+      DELETE FROM schema_migrations WHERE version IN (40,54,55,56,57,58,59,60,61,62,64,65,66,67,68);PRAGMA user_version=39;`);
     const before=db.prepare('SELECT count(*) n FROM content_items').get().n;runMigrations(db);runMigrations(db);
     assert.equal(db.pragma('user_version',{simple:true}),latestSchemaVersion());assert.equal(db.prepare('SELECT count(*) n FROM content_items').get().n,before);
     assert.equal(db.prepare(`SELECT COUNT(*) n FROM pragma_table_info('hardware_price_snapshots') WHERE name='last_checked_at'`).get().n,1);db.close();

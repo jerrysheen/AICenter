@@ -157,15 +157,15 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
 
   const upgraded = createStore(file);
   try {
-    assert.equal(latestSchemaVersion(), 67);
-    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 67);
+    assert.equal(latestSchemaVersion(), 68);
+    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 68);
   } finally {
     upgraded.close();
   }
 
   const database = new Database(file, { readonly: true, fileMustExist: true });
   try {
-    assert.equal(database.pragma('user_version', { simple: true }), 67);
+    assert.equal(database.pragma('user_version', { simple: true }), 68);
     const rows = database.prepare(`
       SELECT version, name, applied_at FROM schema_migrations WHERE version >= 57 ORDER BY version
     `).all();
@@ -180,6 +180,7 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
       [65, 'outbox_payload_bytes'],
       [66, 'outbox_sse_data'],
       [67, 'feed_translation_chunks'],
+      [68, 'article_dedup_keys'],
     ]);
     assert.ok(database.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'gemini_model_cursors'`).get());
     assert.equal(database.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('model_usage_index') WHERE name = 'http_status'`).get().n, 1);

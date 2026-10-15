@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-15-article-dedup.md`：新媒体索引和订阅源按规范化原文链接加发布者去重，已有的那条补上缺失正文，不再另建一条。小时报生成时用同一把钥匙再去重，跨小时也合并，留下 media 那条。已有行不清理、不回填。migration 68 只加列和索引。`AI_CENTER_ARTICLE_DEDUP_TITLE_THRESHOLD` 默认 0.82。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-14-translation-gap-read.md`：媒体列表按标题哈希和标题块 id 读出补漏译文，不再因为展示正文哈希对不上而标 stale。补漏按可配置时间窗口扫描缺译条目，默认至少 72 小时，每轮仍限制入队数；终态失败在递增间隔后重新入队。`feed_translation_chunks` 仍是续翻缓冲，全文落库即删除，健康部署后 0 行是预期。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-14-translation-batch-persist.md`：一批翻译里每条成功就写入 `feed_item_translations`，任务只把失败条目重新入队。长文已完成的段仍写入 `feed_translation_chunks`，重试跳过这些段。单行标题每批最多 5 条。Worker 定时把 pending 或 partial、且没有排队或进行中任务的条目以 -10 补入。不新增 migration。需要同时重启 Web 和 Worker。浏览器再加载一次。

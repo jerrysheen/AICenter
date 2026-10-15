@@ -1,6 +1,10 @@
 // Listing/filtering indexes must not load every RSS HTML body into memory.
 const ENTRY_INDEX_COLUMNS = 'workspace_id,external_id,source_key,publisher_key,publisher_name,author_name,channel,canonical_url,title,summary,published_at,published_at_raw,content_level,content_hash,revision,status,origin_url,discovered_via_json,observed_at,body_hash,truncated,created_at,updated_at,fetch_state_json,article_kind';
 
+function sqlLikePrefix(value) {
+  return `${String(value).replace(/[\\%_]/g, '\\$&')}%`;
+}
+
 function mapState(row) {
   if (!row) return null;
   return {
@@ -98,6 +102,71 @@ export function createMediaRepository(database, emitEvent = () => {}) {
     findByUrl(workspaceId, url) {
       // Preserve the oldest existing identity, including its Capture and reading state.
       return mapEntry(database.prepare('SELECT * FROM media_index_entries WHERE workspace_id=? AND canonical_url=? ORDER BY created_at,external_id LIMIT 1').get(workspaceId,url));
+    },
+    listMediaByDedupKey(workspaceId, dedupKey) {
+      const key = String(dedupKey || '');
+      if (!key) return [];
+      return database.prepare(`SELECT workspace_id, external_id, source_key, publisher_key, canonical_url, title, summary,
+          author_name, published_at, created_at, body_hash
+        FROM media_index_entries WHERE workspace_id = ? AND dedup_key = ? LIMIT 20`).all(workspaceId, key);
+    },
+    listMediaByUrlPrefixes(workspaceId, prefixes) {
+      const list = [...new Set(prefixes || [])].filter(Boolean).slice(0, 8);
+      if (!list.length) return [];
+      const clause = list.map(() => `canonical_url LIKE ? ESCAPE '\\'`).join(' OR ');
+      return database.prepare(`SELECT workspace_id, external_id, source_key, publisher_key, canonical_url, title, summary,
+          author_name, published_at, created_at, body_hash
+        FROM media_index_entries WHERE workspace_id = ? AND (${clause})
+        ORDER BY length(canonical_url) ASC LIMIT 40`).all(workspaceId, ...list.map(sqlLikePrefix));
+    },
+    listMediaByPublishedAt(workspaceId, startAt, endAt) {
+      return database.prepare(`SELECT workspace_id, external_id, source_key, publisher_key, canonical_url, title, summary,
+          author_name, published_at, created_at, body_hash
+        FROM media_index_entries
+        WHERE workspace_id = ? AND published_at >= ? AND published_at <= ?
+        ORDER BY published_at ASC LIMIT 400`).all(workspaceId, startAt, endAt);
+    },
+    fillMediaEntryGaps(workspaceId, externalId, fields) {
+      const row = database.prepare(`SELECT title, summary, author_name, canonical_url, published_at, body_hash, dedup_key, content_level
+        FROM media_index_entries WHERE workspace_id = ? AND external_id = ?`).get(workspaceId, externalId);
+      if (!row) return false;
+      const next = {
+        title: row.title || '',
+        summary: row.summary || '',
+        authorName: row.author_name || '',
+        canonicalUrl: row.canonical_url || '',
+        publishedAt: row.published_at || null,
+        bodyHash: row.body_hash || '',
+        contentLevel: row.content_level,
+        dedupKey: row.dedup_key || '',
+      };
+      let contentChanged = false;
+      if (!next.title && fields.title) { next.title = String(fields.title); contentChanged = true; }
+      if (!next.summary && fields.summary) { next.summary = String(fields.summary); contentChanged = true; }
+      if (!next.authorName && fields.authorName) { next.authorName = String(fields.authorName); contentChanged = true; }
+      if (!next.canonicalUrl && fields.url) { next.canonicalUrl = String(fields.url); contentChanged = true; }
+      if (!next.publishedAt && fields.publishedAt) { next.publishedAt = fields.publishedAt; contentChanged = true; }
+      if (!next.bodyHash && fields.bodyHash) {
+        next.bodyHash = String(fields.bodyHash);
+        if (fields.contentLevel) next.contentLevel = fields.contentLevel;
+        contentChanged = true;
+      }
+      if (!next.dedupKey && fields.dedupKey) next.dedupKey = String(fields.dedupKey);
+      const same = next.title === (row.title || '') && next.summary === (row.summary || '')
+        && next.authorName === (row.author_name || '') && next.canonicalUrl === (row.canonical_url || '')
+        && (next.publishedAt || null) === (row.published_at || null) && next.bodyHash === (row.body_hash || '')
+        && next.contentLevel === row.content_level && next.dedupKey === (row.dedup_key || '');
+      if (same) return false;
+      database.prepare(`UPDATE media_index_entries SET
+          title = ?, summary = ?, author_name = ?, canonical_url = ?, published_at = ?,
+          body_hash = ?, content_level = ?, dedup_key = ?,
+          updated_at = CASE WHEN ? = 1 THEN ? ELSE updated_at END
+        WHERE workspace_id = ? AND external_id = ?`).run(
+        next.title, next.summary, next.authorName, next.canonicalUrl, next.publishedAt,
+        next.bodyHash, next.contentLevel, next.dedupKey || null,
+        contentChanged ? 1 : 0, Date.now(), workspaceId, externalId,
+      );
+      return contentChanged;
     },
     saveDiscovery(value) {
       const row = MediaDiscoverySchema.parse(value);
@@ -372,12 +441,12 @@ export function createMediaRepository(database, emitEvent = () => {}) {
       }));
     },
     informationCandidates(workspaceId,{startAt,endAt,hiddenExternalIds=[],extractorVersion}) {
-      return database.prepare(`SELECT e.external_id,e.source_key,e.title,e.canonical_url,e.revision,e.created_at event_at,
+      return database.prepare(`SELECT e.external_id,e.source_key,e.publisher_key,e.title,e.canonical_url,e.published_at,e.revision,e.created_at event_at,
         coalesce((SELECT b.revision FROM media_body_snapshots b WHERE b.workspace_id=e.workspace_id AND b.external_id=e.external_id AND b.body_hash=e.body_hash
           AND b.revision=(SELECT max(s.revision) FROM media_body_snapshots s WHERE s.workspace_id=e.workspace_id AND s.external_id=e.external_id AND s.body_hash=e.body_hash)
           AND (b.content_level='partial' OR (b.content_level='full' AND b.truncated=0 AND json_extract(b.article_json,'$.extractorVersion')=? AND json_extract(e.fetch_state_json,'$.fetchStatus')='ready' AND json_extract(e.fetch_state_json,'$.fetchedRevision')=e.revision AND json_extract(e.fetch_state_json,'$.extractorVersion')=?))),0) body_revision
         FROM media_index_entries e WHERE e.workspace_id=? AND e.created_at>=? AND e.created_at<? AND e.external_id NOT IN (SELECT value FROM json_each(?)) ORDER BY event_at,e.external_id`)
-        .all(extractorVersion,extractorVersion,workspaceId,startAt,endAt,JSON.stringify(hiddenExternalIds)).map(r=>({id:`media:${r.external_id}`,sourceKey:r.source_key || '',title:r.title || '',sourceUrl:r.canonical_url || '',version:`index:${r.revision}/body:${r.body_revision}`,eventAt:r.event_at}));
+        .all(extractorVersion,extractorVersion,workspaceId,startAt,endAt,JSON.stringify(hiddenExternalIds)).map(r=>({id:`media:${r.external_id}`,sourceKey:r.source_key || '',publisherKey:r.publisher_key || '',title:r.title || '',sourceUrl:r.canonical_url || '',publishedAt:r.published_at ?? null,version:`index:${r.revision}/body:${r.body_revision}`,eventAt:r.event_at}));
     },
     getEntries(workspaceId, externalIds) {
       const ids = [...new Set(externalIds.filter(Boolean))];
@@ -393,8 +462,8 @@ export function createMediaRepository(database, emitEvent = () => {}) {
       database.prepare(`INSERT INTO media_index_entries
         (workspace_id, external_id, source_key, publisher_key, channel, canonical_url, title, summary,
          published_at, published_at_raw, content_level, content_hash, revision, status, origin_url,
-         discovered_via_json, observed_at, body_hash, truncated, created_at, updated_at, publisher_name, author_name)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         discovered_via_json, observed_at, body_hash, truncated, created_at, updated_at, publisher_name, author_name, dedup_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(workspace_id, external_id) DO UPDATE SET
           title = excluded.title,
           publisher_key = CASE WHEN excluded.publisher_name != '' THEN excluded.publisher_key ELSE media_index_entries.publisher_key END,
@@ -413,13 +482,17 @@ export function createMediaRepository(database, emitEvent = () => {}) {
           observed_at = excluded.observed_at,
           body_hash = CASE WHEN excluded.body_hash != '' THEN excluded.body_hash ELSE media_index_entries.body_hash END,
           truncated = excluded.truncated,
-          updated_at = excluded.updated_at`)
+          updated_at = excluded.updated_at,
+          dedup_key = CASE
+            WHEN excluded.dedup_key IS NOT NULL AND excluded.dedup_key != '' THEN excluded.dedup_key
+            ELSE media_index_entries.dedup_key END`)
         .run(
           entry.workspaceId, entry.externalId, entry.sourceKey, entry.publisherKey, entry.channel,
           entry.canonicalUrl, entry.title || '', entry.summary || '', entry.publishedAt || null,
           entry.publishedAtRaw || '', entry.contentLevel, entry.contentHash, entry.revision, entry.status,
           entry.originUrl || '', JSON.stringify(entry.discoveredVia || null), entry.observedAt,
           entry.bodyHash || '', entry.truncated ? 1 : 0, entry.createdAt, entry.updatedAt, entry.publisherName || '', entry.authorName || '',
+          entry.dedupKey || null,
         );
       emitEvent('feed.media-index.saved.v1','media-index',entry.externalId,{externalId:entry.externalId,revision:entry.revision},entry.workspaceId);
       })();
