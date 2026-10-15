@@ -56,6 +56,19 @@ function multiple(value) {
   return `${number.toFixed(2)} 倍`;
 }
 
+function indexMetric(item, field) {
+  if (!item?.method) return '数据不足';
+  if (field === 'tailPct' && item.method === 'daily-approx') return '数据不足';
+  return pct(item[field]);
+}
+
+function indexHit(item) {
+  if (!item?.method) return '数据不足';
+  const hit = item.hit ? '命中' : '未命中';
+  if (item.method === 'daily-approx') return `${hit}（日线近似）`;
+  return hit;
+}
+
 function flag(value) {
   if (value === 'red') return '<span class="flag-red">红</span>';
   if (value === 'yellow') return '<span class="flag-yellow">黄</span>';
@@ -112,6 +125,14 @@ function componentCell(stage, key, field) {
   return cell(stage[field]);
 }
 
+function indexScoreCell(stage) {
+  if (Array.isArray(stage.insufficient) && stage.insufficient.includes('index')) return '数据不足';
+  const value = cell(stage.sIndex);
+  if (stage.indexMethod === 'daily-approx') return `${value}（日线近似）`;
+  if (stage.indexMethod === 'mixed') return `${value}（含日线近似）`;
+  return value;
+}
+
 function scoreLine(label, stage) {
   if (!stage) return `<p>${label}：还没有</p>`;
   const shown = stage.scaled == null ? stage.score : `${Number(stage.score).toFixed(1)} / ${stage.maxScore}，折算 ${Number(stage.scaled).toFixed(1)}`;
@@ -119,7 +140,7 @@ function scoreLine(label, stage) {
     .filter(([key]) => Array.isArray(stage.insufficient) && stage.insufficient.includes(key))
     .map(([, name]) => name);
   const gap = missing.length ? `。${missing.join('、')}数据不足` : '';
-  return `<p>${label}：${shown}，${LEVELS[stage.level] || stage.level || '无'}。成交额 ${componentCell(stage, 'turnover', 'sTurnover')}，净申购 ${cell(stage.sFlow)}，同时异常 ${cell(stage.sBreadth)}，指数 ${componentCell(stage, 'index', 'sIndex')}${gap}</p>`;
+  return `<p>${label}：${shown}，${LEVELS[stage.level] || stage.level || '无'}。成交额 ${componentCell(stage, 'turnover', 'sTurnover')}，净申购 ${cell(stage.sFlow)}，同时异常 ${cell(stage.sBreadth)}，指数 ${indexScoreCell(stage)}${gap}</p>`;
 }
 
 async function loadSignals() {
@@ -150,7 +171,7 @@ async function loadDaily() {
   const pool = daily.pool || {};
   dailyStatus.textContent = `${daily.tradeDate} 份额${daily.sharesStatus === 'ok' ? '已到' : '未到'}。参考池成交额 ${pool.amountCny == null ? '缺失' : (pool.amountCny / 1e8).toFixed(2)} 亿元，异常 ${pool.abnormalCount ?? 0} 只，红色 ${pool.redCount ?? 0} 只。`;
   dailyBody.innerHTML = (daily.etfs || []).map((item) => `<tr><td>${item.code}</td><td>${item.name}${item.referencePool ? '' : '（对照）'}</td><td>${cell(item.close)}</td><td>${yi(item.amountCny)}</td><td>${multiple(item.amountMultiple)}</td><td>${percentile(item.amountPercentile)}</td><td>${item.deltaShares == null ? '缺失' : yi(item.deltaShares)}</td><td>${yi(item.flowCny)}</td><td>${percentile(item.flowPercentile)}</td><td>${flag(item.flag)}</td></tr>`).join('');
-  indicesBody.innerHTML = (daily.indices || []).map((item) => `<tr><td>${item.name}</td><td>${pct(item.lowDropPct)}</td><td>${pct(item.reboundPct)}</td><td>${pct(item.tailPct)}</td><td>${item.hit ? '命中' : '未命中'}</td></tr>`).join('');
+  indicesBody.innerHTML = (daily.indices || []).map((item) => `<tr><td>${item.name}</td><td>${indexMetric(item, 'lowDropPct')}</td><td>${indexMetric(item, 'reboundPct')}</td><td>${indexMetric(item, 'tailPct')}</td><td>${indexHit(item)}</td></tr>`).join('');
   const products = daily.futures?.products || {};
   futuresBody.innerHTML = Object.entries(products).map(([product, item]) => `<tr><td>${product}</td><td>${cell(item.netShort)}</td><td>${cell(item.change)}</td></tr>`).join('');
 }
