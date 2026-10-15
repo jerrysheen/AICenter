@@ -122,7 +122,12 @@ test('gjd-score-v1 gives a lone 8x name 20 and does not give partial index credi
   assert.equal(turnoverComponent(null, []).insufficient, true);
   assert.equal(turnoverComponent(null, []).score, null);
   assert.equal(indexComponent([]).insufficient, true);
-  assert.equal(indexComponent([{ symbol: '000300', lowDropPct: null, reboundPct: null, tailPct: null }]).score, null);
+  assert.equal(indexComponent([]).method, 'insufficient');
+  const blankIndex = indexComponent([{ symbol: '000300', lowDropPct: null, reboundPct: null, tailPct: null }]);
+  assert.equal(blankIndex.score, null);
+  assert.equal(blankIndex.method, 'insufficient');
+  assert.equal(blankIndex.hits[0].method, 'insufficient');
+  assert.equal(confirmed.index.method, 'insufficient');
   const scored = scoreGjdV1({
     stage: 'initial',
     poolSumToday: 3,
@@ -179,6 +184,8 @@ test('510310 at about 25x is stored as breadth 20 and futures stay out of the sc
     assert.equal(scored.maxScore, 75);
     const inputs = JSON.parse(scored.inputsJson);
     assert.deepEqual(inputs.insufficient, ['index']);
+    assert.equal(inputs.index.method, 'insufficient');
+    assert.ok(inputs.index.hits.every((item) => item.method === 'insufficient'));
     assert.equal(inputs.futuresScored, false);
     assert.equal(inputs.breadth.count, 1);
     assert.equal(inputs.breadth.hasRed, true);
@@ -189,6 +196,7 @@ test('510310 at about 25x is stored as breadth 20 and futures stay out of the sc
     assert.equal(saved[0].s_breadth, 20);
     assert.equal(saved[0].s_index, null);
     assert.equal(JSON.parse(saved[0].inputs_json).index.score, null);
+    assert.equal(JSON.parse(saved[0].inputs_json).index.method, 'insufficient');
 
     const counted = refreshEtfWhaleSignals(repository, { startDate: '2026-10-01', endDate: '2026-10-02', stage: 'initial' });
     assert.equal(counted, 0);
@@ -285,7 +293,7 @@ test('unknown ETF codes are 404, bad codes and signal ranges are 400, and series
     assert.equal(dailyBody.daily.sharesStatus, 'pending');
     assert.equal(dailyBody.disclaimer, '不构成投资建议');
     assert.equal(dailyBody.daily.futures.displayOnly, true);
-    assert.equal(dailyBody.daily.indices.every((item) => item.method == null), true);
+    assert.equal(dailyBody.daily.indices.every((item) => item.method === 'insufficient'), true);
   } finally {
     store.close();
   }
@@ -304,12 +312,16 @@ test('missing 5-minute bars use daily OHLC approximation and a real zero is not 
   assert.equal(dailyIndexApprox(WASHED_DAILY).hit, true);
   assert.equal(dailyIndexApprox({
     open: 100, high: 101, low: 99.2, close: 100.5, prevClose: 100,
-  }).hit, true);
+  }).hit, false);
   const surge = dailyIndexApprox({
     open: 99.5, high: 101, low: 99.4, close: 100.6, prevClose: 100,
     amountCny: 160, priorAmounts: Array(10).fill(100),
   });
-  assert.equal(surge.hit, true);
+  assert.equal(surge.hit, false);
+  assert.ok(surge.amountRatio >= 1.5);
+  assert.equal(dailyIndexApprox({
+    open: 100, high: 102, low: 98, close: 99, prevClose: 100,
+  }).hit, false);
   assert.equal(dailyIndexApprox({
     open: 99.5, high: 101, low: 99.4, close: 100.6, prevClose: 100,
     amountCny: 160, priorAmounts: Array(9).fill(100),
@@ -317,6 +329,8 @@ test('missing 5-minute bars use daily OHLC approximation and a real zero is not 
   assert.equal(dailyIndexApprox({
     open: 100, high: 101, low: 99.8, close: 100.1, prevClose: 100,
   }).hit, false);
+  assert.equal(dailyIndexApprox({}).usable, false);
+  assert.equal(indexComponent([{ symbol: '000300' }]).method, 'insufficient');
 
   const washed = indexComponent([{ symbol: '000300', ...WASHED_DAILY }]);
   assert.equal(washed.insufficient, false);
@@ -398,7 +412,8 @@ test('missing 5-minute bars use daily OHLC approximation and a real zero is not 
     assert.equal(hs300.method, 'daily-approx');
     assert.equal(hs300.hit, true);
     assert.equal(hs300.tailPct, null);
-    assert.equal(other.method, null);
+    assert.equal(other.method, 'insufficient');
+    assert.equal(other.hit, false);
     repository.saveIntradayBars([{
       source: 'sina', symbol: '000300', kind: 'index', intervalKey: '5m',
       barTime: '2024-01-02 10:00', tradeDate: '2024-01-02',
@@ -415,7 +430,7 @@ test('missing 5-minute bars use daily OHLC approximation and a real zero is not 
     assert.equal(repository.listSignals('2024-01-02', '2024-01-02', 'gjd-score-v1')[0].s_index, null);
     const signals = createEtfWhaleReadService({ repository }).signals({ start: '2024-01-02', end: '2024-01-02' });
     assert.equal(signals.days[0].initial.sIndex, null);
-    assert.equal(signals.days[0].initial.indexMethod, null);
+    assert.equal(signals.days[0].initial.indexMethod, 'insufficient');
     assert.ok(signals.days[0].initial.insufficient.includes('index'));
   } finally {
     store.close();
