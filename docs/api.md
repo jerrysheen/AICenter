@@ -212,7 +212,7 @@ curl -sS "https://center.example.com/api/v1/investor-discussion?date=2026-10-12"
 | GET | `/api/v1/etf-whale/etfs/{code}` | 正式路径。6 位代码，例如 `159915`。不在观察池返回 404，`error` 为 `not_in_universe`。格式不对返回 400。`588000` 在观察池里，只作对照，不进入打分池 |
 | GET | `/api/v1/etf-whale/series` | `code`。与 `/etfs/{code}` 的响应正文相同。`code` 缺失或格式不对返回 400 |
 | GET | `/api/v1/etf-whale/daily` | 可选 `date=YYYY-MM-DD`，缺省取最新行情日。每只 ETF 的收盘价、实际成交额、成交额倍数和 250 日分位、份额变化、净申购金额和分位、黄/红标记；参考池合计；6 个指数的跌幅、反弹、尾盘涨幅；中信期货 IF/IH/IC/IM 净空和变化（只展示，不计分）；`sharesStatus` 为 `ok` 或 `pending`。日期格式不对返回 400 |
-| GET | `/api/v1/etf-whale/signals` | 可选 `start` 与 `end`，必须同时给出。默认最近 20 个交易日，日历跨度最多 250 天。格式不对、只给一端或 `start` 晚于 `end` 返回 400。每天返回初判和确认分，以及成交额、净申购、同时异常、指数四项。初判满分 75，并给出折算后的 100 分制 |
+| GET | `/api/v1/etf-whale/signals` | 可选 `start` 与 `end`，必须同时给出。默认最近 20 个交易日，日历跨度最多 250 天。格式不对、只给一端或 `start` 晚于 `end` 返回 400。每天返回初判和确认分，以及成交额、净申购、同时异常、指数四项。初判满分 75，并给出折算后的 100 分制。成交额或指数没有输入时，对应分项是 null，`insufficient` 含 `turnover` 或 `index`。有输入时打分不变 |
 | GET | `/api/v1/markets/analysis` | `symbol`，`range=5y` |
 | GET | `/api/v1/markets/baskets` | `index`，`range=5y`，可选 `asOf` |
 | GET | `/api/v1/hardware-prices` | 可选 `category=dram`、`nand`、`ssd` 或 `other-storage`，`snapshotId`，`limit`。列表不带 `rawCells`。无分类、以及这四个分类，都只写出 Worker 预备的缓冲区；没有缓冲区时 `pending: true`。`snapshotId` 在 Web 的工作线程里按快照过滤、序列化并 gzip 后写出 |

@@ -1,3 +1,5 @@
+import { fetchTencentAmountDaily } from './etf-tencent-kline.js';
+
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36';
 
 function marketSymbol(code, exchange) {
@@ -18,8 +20,27 @@ function coherent(open, high, low, close) {
   return high >= Math.max(open, close) && low <= Math.min(open, close);
 }
 
+export function sinaServiceError(text) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed.startsWith('{')) return '';
+  try {
+    const payload = JSON.parse(trimmed);
+    if (!payload || Array.isArray(payload) || typeof payload !== 'object') return '';
+    if (payload.__ERROR == null && payload.__ERRORMSG == null) return '';
+    return `新浪 __ERROR ${payload.__ERROR}: ${payload.__ERRORMSG || 'Service not valid'}`;
+  } catch {
+    return '';
+  }
+}
+
 export function parseSinaKlinePayload(text, { startDate, endDate } = {}) {
   const trimmed = String(text || '').trim();
+  const serviceError = sinaServiceError(trimmed);
+  if (serviceError) {
+    const error = new Error(serviceError);
+    error.code = 'sina-service';
+    throw error;
+  }
   if (!trimmed || trimmed === 'null') return [];
   const payload = JSON.parse(trimmed);
   if (!Array.isArray(payload)) return [];
@@ -172,13 +193,60 @@ export async function fetchIntradayBars({ code, exchange, kind, startDate, endDa
   };
 }
 
-export async function fetchDailyBars({ code, exchange, startDate, endDate, fetchImpl, timeoutMs, adjusted = false } = {}) {
-  const spanDays = startDate && endDate ? Math.ceil((Date.parse(endDate) - Date.parse(startDate)) / 86400000) + 10 : 30;
-  const datalen = Math.min(1023, Math.max(30, spanDays));
-  const sina = await fetchSinaKline({
-    symbol: marketSymbol(code, exchange), scale: 240, datalen, startDate, endDate, fetchImpl, timeoutMs,
+function addIsoDays(iso, days) {
+  const [year, month, day] = String(iso).split('-').map(Number);
+  const utc = new Date(Date.UTC(year, month - 1, day));
+  utc.setUTCDate(utc.getUTCDate() + days);
+  return utc.toISOString().slice(0, 10);
+}
+
+function dateWindows(start, end, maxDays) {
+  if (!start || !end) return [[start, end]];
+  const windows = [];
+  let cursor = start;
+  while (cursor <= end) {
+    const windowEnd = addIsoDays(cursor, maxDays - 1) < end ? addIsoDays(cursor, maxDays - 1) : end;
+    windows.push([cursor, windowEnd]);
+    cursor = addIsoDays(windowEnd, 1);
+  }
+  return windows;
+}
+
+function withAmount(bars) {
+  return (bars || []).filter((bar) => Number.isFinite(bar.amountCny));
+}
+
+async function fetchSinaDailyRange({ symbol, startDate, endDate, fetchImpl, timeoutMs }) {
+  const windows = dateWindows(startDate, endDate, 900);
+  const probes = [];
+  const byDate = new Map();
+  let error = '';
+  for (const [start, end] of windows) {
+    const spanDays = start && end ? Math.ceil((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86400000) + 10 : 30;
+    const datalen = Math.min(1023, Math.max(30, spanDays));
+    const result = await fetchSinaKline({ symbol, scale: 240, datalen, startDate: start, endDate: end, fetchImpl, timeoutMs });
+    probes.push(...result.probes);
+    if (!result.ok) {
+      error = result.error || error;
+      if (result.probes.some((probe) => probe.error && String(probe.error).includes('__ERROR'))) break;
+      continue;
+    }
+    for (const bar of withAmount(result.bars)) byDate.set(bar.tradeDate, bar);
+  }
+  const bars = [...byDate.values()].sort((left, right) => left.tradeDate.localeCompare(right.tradeDate));
+  return { ok: bars.length > 0, bars, probes, error: bars.length ? '' : (error || '新浪 K 线为空'), body: Buffer.alloc(0) };
+}
+
+export async function fetchDailyBars({ code, exchange, startDate, endDate, fetchImpl, timeoutMs, adjusted = false, pageBars, endpoints } = {}) {
+  const probes = [];
+  const tencent = await fetchTencentAmountDaily(code, exchange, startDate, endDate, { fetchImpl, timeoutMs, pageBars, endpoints });
+  probes.push(...(tencent.probes || []));
+  if (tencent.ok && tencent.bars.length) return { ...tencent, probes, source: 'tencent' };
+  const sina = await fetchSinaDailyRange({
+    symbol: marketSymbol(code, exchange), startDate, endDate, fetchImpl, timeoutMs,
   });
-  if (sina.ok && sina.bars.length) return { ...sina, source: 'sina' };
+  probes.push(...(sina.probes || []));
+  if (sina.ok && sina.bars.length) return { ...sina, probes, source: 'sina' };
   const east = await fetchEastmoneyKline({
     secid: eastmoneySecid(code, exchange),
     klt: 101,
@@ -188,12 +256,14 @@ export async function fetchDailyBars({ code, exchange, startDate, endDate, fetch
     fetchImpl,
     timeoutMs,
   });
+  const bars = withAmount(east.bars);
+  const error = [tencent.error, sina.error, east.error].filter(Boolean).join('; ');
   return {
-    ok: east.ok,
-    source: east.ok ? 'eastmoney' : 'sina',
-    bars: east.bars || [],
-    probes: [...(sina.probes || []), ...(east.probes || [])],
-    error: east.error || sina.error,
+    ok: Boolean(east.ok && bars.length),
+    source: east.ok && bars.length ? 'eastmoney' : 'tencent',
+    bars,
+    probes: [...probes, ...(east.probes || [])],
+    error: east.ok && bars.length ? '' : error,
     body: east.body || sina.body,
   };
 }

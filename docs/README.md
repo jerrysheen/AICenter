@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-15-etf-whale-backfill-sources.md`：指数日线和实际成交额先读腾讯 `newfqkline` 不复权日线。成交额在第 9 列，单位是万元，入库前乘 10000 收成元。长区间按返回的最早日期向前翻页。新浪 `__ERROR` 算失败。新浪、东财仍按这个顺序兜底。抓取失败写入 `etf_whale_fetches.status=error` 并打日志。回填打印每个上游的行数。中金所 URL 在 2026-06-25 之后没变；单日异常不再打断后面的日期。历史 404 页记 holiday。中信期货 `partyid` 0018 已核对。成交额或指数没有输入时，`sTurnover` / `sIndex` 为 null，并带 `insufficient`。不新增 migration。需要同时重启 Web 和 Worker，再按该说明重跑回填和 `signals`。
+
 - `progress/2026-10-15-worker-dedup-scan.md`：小时去重不再对每条候选做 `source_url LIKE` 全表扫描。同一小时合成一次 NOCASE 前缀范围查询，并使用 migration 68 的 `dedup_key`。隐藏外部 id 走部分索引，最多 1 万条。领取时已达 `max_attempts` 的任务标失败，不再跑第 5 次。migration 72 只加索引。本机 5 万行、300 条候选从大约 2.3 秒降到 18–23ms。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-15-worker-hot-loop.md`：Worker 主线程在 Gemma 配额 `retryAt` 已经过去时每 1ms 重做 SQLite 预约，把一个核打满，翻译请求停在 pending、没有 TCP。现在不足 250ms 的等待直接 `budget-deferred`，并带一个至少 250ms 之后的 `retryAt`；连续 8 次没有真正让出的等待会抛出。翻译租约过期仍马上重新入队、不占尝试次数，但不再删 `job_attempts`、不再把 `attempt_count` 减 1，改为把 `max_attempts` 加 1。本进程还在执行、且未到运行时限的任务不重新入队；从运行表拿掉时会中止旧执行。超过运行时限仍记 `WorkerRunTimeout`。启动补漏每轮最多扫 400 行，每页让出一次。Web 和 Worker 同时迁移时在事务里重查版本，`INSERT OR IGNORE`。日志仍写 `<dataDirectory>/logs`，并镜像到 stdout。不新增 migration。需要同时重启 Web 和 Worker。

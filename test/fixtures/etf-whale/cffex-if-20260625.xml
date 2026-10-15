@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<positionRank>
+    <data Value="1" Text="IF2607">
+        <instrumentid>IF2607</instrumentid>
+        <tradingday>20260625</tradingday>
+        <datatypeid>1</datatypeid>
+        <rank>1</rank>
+        <shortname>中信期货(代客)</shortname>
+        <volume>8679</volume>
+        <varvolume>711</varvolume>
+        <partyid>0018</partyid>
+        <productid>IF</productid>
+    </data>
+</positionRank>

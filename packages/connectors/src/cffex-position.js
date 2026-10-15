@@ -52,19 +52,45 @@ export function parseCffexPositionXml(xml, { product, tradeDate, sourceUrl = '' 
   return rows;
 }
 
+export function cffexMissingPage(text, finalUrl = '') {
+  const body = String(text || '');
+  const url = String(finalUrl || '');
+  if (/error_404/i.test(url) || /error_404/i.test(body)) return true;
+  if (/<!doctype html/i.test(body) && !/<positionRank\b/i.test(body) && !/<instrumentid\b/i.test(body)) return true;
+  return false;
+}
+
+async function readCffexBody(response, timeoutMs) {
+  let timer;
+  try {
+    return Buffer.from(await Promise.race([
+      response.arrayBuffer(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('timeout')), timeoutMs);
+      }),
+    ]));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function fetchCffexPosition(product, tradeDate, options = {}) {
   const fetchImpl = options.fetchImpl ?? fetch;
   const url = cffexPositionUrl(product, tradeDate);
+  const timeoutMs = options.timeoutMs ?? 20_000;
   const started = Date.now();
+  const controller = new AbortController();
+  const abortTimer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetchImpl(url, {
       headers: { 'User-Agent': USER_AGENT, Referer: 'http://www.cffex.com.cn/' },
-      signal: AbortSignal.timeout(options.timeoutMs ?? 20_000),
+      signal: controller.signal,
     });
-    const body = Buffer.from(await response.arrayBuffer());
+    const finalUrl = response.url || url;
+    const body = await readCffexBody(response, timeoutMs);
     const probe = {
       source: 'cffex',
-      url,
+      url: finalUrl,
       product,
       tradeDate,
       status: response.status,
@@ -73,17 +99,30 @@ export async function fetchCffexPosition(product, tradeDate, options = {}) {
       error: response.ok ? '' : `HTTP ${response.status}`,
       rowCount: 0,
     };
-    if (!response.ok) return { ok: false, rows: [], probes: [probe], body, error: probe.error };
+    if (!response.ok) {
+      const missing = response.status === 404 || cffexMissingPage(body.toString('utf8'), finalUrl);
+      return { ok: false, missing, rows: [], probes: [probe], body, error: probe.error, finalUrl };
+    }
+    const utf8 = body.toString('utf8');
+    if (cffexMissingPage(utf8, finalUrl) || cffexMissingPage(body.toString('latin1'), finalUrl)) {
+      probe.error = '中金所无该日持仓文件';
+      return { ok: false, missing: true, rows: [], probes: [probe], body, error: probe.error, finalUrl };
+    }
     const rows = parseCffexPositionXml(body.toString('latin1'), { product, tradeDate, sourceUrl: url });
     probe.rowCount = rows.length;
-    return { ok: rows.length > 0, rows, probes: [probe], body, error: rows.length ? '' : '中金所持仓为空' };
+    return { ok: rows.length > 0, missing: false, rows, probes: [probe], body, error: rows.length ? '' : '中金所持仓为空', finalUrl };
   } catch (error) {
+    const message = error?.name === 'AbortError' ? 'timeout' : (error.message || String(error));
     return {
       ok: false,
+      missing: false,
       rows: [],
-      probes: [{ source: 'cffex', url, product, tradeDate, status: 0, error: error.message || String(error), rowCount: 0 }],
+      probes: [{ source: 'cffex', url, product, tradeDate, status: 0, error: message, rowCount: 0 }],
       body: Buffer.alloc(0),
-      error: error.message || String(error),
+      error: message,
+      finalUrl: url,
     };
+  } finally {
+    clearTimeout(abortTimer);
   }
 }

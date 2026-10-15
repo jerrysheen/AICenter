@@ -23,14 +23,20 @@ export function priorPercentile(history, value) {
   return percentileInclusive([...sample].sort((left, right) => left - right), value);
 }
 
+function finiteMetric(value) {
+  if (value == null || value === '') return false;
+  return Number.isFinite(Number(value));
+}
+
 export function turnoverComponent(todaySum, historySums) {
+  if (!Number.isFinite(todaySum)) return { score: null, ratio: null, percentile: null, insufficient: true };
   const prior = historySums.filter(Number.isFinite).slice(-250);
   const base = median(prior.slice(-20));
   const ratio = base > 0 && Number.isFinite(todaySum) ? todaySum / base : null;
   const percentile = priorPercentile(prior, todaySum);
   const score = 12.5 * clip(ratio == null ? Number.NaN : (ratio - 1) / 2)
     + 12.5 * clip(percentile == null ? Number.NaN : (percentile - 80) / 20);
-  return { score, ratio, percentile };
+  return { score, ratio, percentile, insufficient: false };
 }
 
 export function flowComponent(todayFlow, historyFlows) {
@@ -57,13 +63,16 @@ export function breadthComponent(items, { confirmed = false } = {}) {
 }
 
 export function indexComponent(indices) {
-  const hits = (indices || []).map((item) => ({ symbol: item.symbol, hit: indexShapeHit(item) }));
+  const list = indices || [];
+  const usable = list.some((item) => finiteMetric(item.lowDropPct) || finiteMetric(item.reboundPct) || finiteMetric(item.tailPct));
+  if (!usable) return { score: null, hits: [], count: 0, hs300: false, insufficient: true };
+  const hits = list.map((item) => ({ symbol: item.symbol, hit: indexShapeHit(item) }));
   const count = hits.filter((item) => item.hit).length;
   const hs300 = hits.some((item) => item.symbol === '000300' && item.hit);
   let score = 0;
   if (count >= 2 || hs300) score = 25;
   else if (count === 1) score = 15;
-  return { score, hits, count, hs300 };
+  return { score, hits, count, hs300, insufficient: false };
 }
 
 export function scoreLevel(score100) {
@@ -88,19 +97,25 @@ export function scoreGjdV1({ stage = 'initial', poolSumToday = null, poolHistory
   const index = indexComponent(indices);
   const flow = confirmed ? flowComponent(flowToday, flowHistory) : null;
   const maxScore = confirmed ? 100 : 75;
-  const score = turnover.score + breadth.score + index.score + (flow ? flow.score : 0);
+  const turnoverScore = turnover.insufficient ? 0 : turnover.score;
+  const indexScore = index.insufficient ? 0 : index.score;
+  const score = turnoverScore + breadth.score + indexScore + (flow ? flow.score : 0);
   const scaled = (score / maxScore) * 100;
+  const insufficient = [];
+  if (turnover.insufficient) insufficient.push('turnover');
+  if (index.insufficient) insufficient.push('index');
   return {
     algorithm: SCORE_ALGORITHM,
     stage: confirmed ? 'confirmed' : 'initial',
     score,
     maxScore,
     scaled,
-    sTurnover: turnover.score,
+    sTurnover: turnover.insufficient ? null : turnover.score,
     sFlow: flow ? flow.score : null,
     sBreadth: breadth.score,
-    sIndex: index.score,
+    sIndex: index.insufficient ? null : index.score,
     level: scoreLevel(confirmed ? score : scaled),
+    insufficient,
     turnover,
     breadth,
     index,
