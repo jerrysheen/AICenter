@@ -1,11 +1,28 @@
 import { z } from 'zod';
 
-// Old parses folded session high/low into the specification (`· 日高點: 19.70`).
+// Price-stat headers. 週高點 / 日高點 / 均價 are columns, not part of the product name.
+export function isHardwarePriceLabel(label) {
+  const text = String(label ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return false;
+  return /(?:高|低)\s*(?:點|点)|(?:高|低)\s*(?:價|价)|均\s*(?:價|价)|平均|漲跌|涨跌|\b(?:High|Low|Average|Avg|Change)\b|走勢|走势|\bChart\b/i.test(text);
+}
+
+// Old parses folded session and weekly high/low into the specification
+// (`項目: DDR5 UDIMM · 週高點: 265.00`, `· 日高點: 19.70`).
 // Reads and dedupe use the product name only.
 export function canonicalHardwareSpecification(value) {
   return String(value ?? '')
-    .replace(/^(?:項目|项目|Item)\s*:\s*/i, '')
-    .replace(/\s*·\s*(?:(?:日|盤|盘)?(?:高|低)(?:點|点)|High|Low)\s*:[\s\S]*$/i, '')
+    .split(/\s*·\s*/)
+    .map((part) => {
+      const labeled = part.match(/^([^:：]+)\s*[:：]\s*([\s\S]*)$/);
+      if (!labeled) return part.trim();
+      const label = labeled[1].trim();
+      if (/^(?:項目|项目|Item)$/i.test(label) && !isHardwarePriceLabel(labeled[2])) return labeled[2].trim();
+      if (isHardwarePriceLabel(label)) return '';
+      return part.trim();
+    })
+    .filter(Boolean)
+    .join(' · ')
     .trim();
 }
 
