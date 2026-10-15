@@ -107,10 +107,19 @@ async function loadOverview() {
   meta.textContent = JSON.stringify({ coverage: overview.coverage, report: overview.report }, null, 2);
 }
 
+function componentCell(stage, key, field) {
+  if (Array.isArray(stage.insufficient) && stage.insufficient.includes(key)) return '数据不足';
+  return cell(stage[field]);
+}
+
 function scoreLine(label, stage) {
   if (!stage) return `<p>${label}：还没有</p>`;
   const shown = stage.scaled == null ? stage.score : `${Number(stage.score).toFixed(1)} / ${stage.maxScore}，折算 ${Number(stage.scaled).toFixed(1)}`;
-  return `<p>${label}：${shown}，${LEVELS[stage.level] || stage.level || '无'}。成交额 ${cell(stage.sTurnover)}，净申购 ${cell(stage.sFlow)}，同时异常 ${cell(stage.sBreadth)}，指数 ${cell(stage.sIndex)}</p>`;
+  const missing = [['turnover', '成交额'], ['index', '指数']]
+    .filter(([key]) => Array.isArray(stage.insufficient) && stage.insufficient.includes(key))
+    .map(([, name]) => name);
+  const gap = missing.length ? `。${missing.join('、')}数据不足` : '';
+  return `<p>${label}：${shown}，${LEVELS[stage.level] || stage.level || '无'}。成交额 ${componentCell(stage, 'turnover', 'sTurnover')}，净申购 ${cell(stage.sFlow)}，同时异常 ${cell(stage.sBreadth)}，指数 ${componentCell(stage, 'index', 'sIndex')}${gap}</p>`;
 }
 
 async function loadSignals() {

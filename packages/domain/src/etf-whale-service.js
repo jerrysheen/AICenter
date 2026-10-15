@@ -156,6 +156,7 @@ function presentSignal(row) {
     sIndex: row.s_index,
     level: row.level,
     algorithm: row.algorithm,
+    insufficient: Array.isArray(inputs.insufficient) ? inputs.insufficient : [],
   };
 }
 

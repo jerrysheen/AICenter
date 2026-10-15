@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { parseCffexPositionXml } from '../packages/connectors/src/cffex-position.js';
+import { cffexPositionUrl, parseCffexPositionXml } from '../packages/connectors/src/cffex-position.js';
 import { parseSseSharePayload, parseSzseShareJson, parseSzseShareSheet } from '../packages/connectors/src/etf-exchange-shares.js';
-import { parseEastmoneyKlines, parseSinaKlinePayload } from '../packages/connectors/src/etf-sina-kline.js';
-import { parseTencentDayRows } from '../packages/connectors/src/etf-tencent-kline.js';
+import { fetchDailyBars, parseEastmoneyKlines, parseSinaKlinePayload, sinaServiceError } from '../packages/connectors/src/etf-sina-kline.js';
+import { fetchTencentAmountDaily, parseTencentAmountPayload, parseTencentDayRows, tencentWanToCny } from '../packages/connectors/src/etf-tencent-kline.js';
+import { syncEtfWhaleFutures, syncEtfWhaleMarket } from '../packages/runtime/src/etf-whale-market.js';
 import { columnWidth } from '../packages/connectors/src/xlsx-workbook.js';
 import { citicNetShort } from '../packages/domain/src/etf-whale/futures.js';
 import { indexSessionShape, indexShapeHit } from '../packages/domain/src/etf-whale/session-shape.js';
@@ -476,6 +477,202 @@ test('sina 5-minute bars and eastmoney amount parse the fields scoring needs', (
   assert.ok(shape.reboundPct >= 0.01);
   assert.equal(indexShapeHit(shape), true);
   assert.equal(indexShapeHit({ lowDropPct: -0.009, reboundPct: 0.02, tailPct: 0.009 }), false);
+});
+
+function httpResponse(body, extra = {}) {
+  const bytes = Buffer.from(body);
+  return {
+    ok: true,
+    status: 200,
+    arrayBuffer: async () => Uint8Array.from(bytes).buffer,
+    ...extra,
+  };
+}
+
+test('tencent newfqkline amount is yuan and sina __ERROR is a failure', async () => {
+  const payload = JSON.parse(readFileSync(new URL('./fixtures/etf-whale/tencent-newfqkline.json', import.meta.url), 'utf8'));
+  const bars = parseTencentAmountPayload(payload, 'sh000300');
+  assert.equal(bars.length, 2);
+  assert.equal(bars[0].tradeDate, '2024-01-02');
+  assert.equal(bars[0].open, 3426.27);
+  assert.equal(bars[0].close, 3386.35);
+  assert.equal(bars[0].high, 3426.27);
+  assert.equal(bars[0].low, 3386.35);
+  assert.equal(bars[0].volume, 116180726);
+  assert.equal(bars[0].amountCny, tencentWanToCny('18409609.74'));
+  assert.ok(Math.abs(bars[0].amountCny - 184096097448.70) < 100);
+  assert.equal(bars[1].amountCny, tencentWanToCny('16509901.86'));
+  assert.ok(Math.abs(bars[1].amountCny - 165099018642.50) < 100);
+  const etf = parseTencentAmountPayload(payload, 'sz159915');
+  assert.equal(etf[0].tradeDate, '2024-01-02');
+  assert.equal(etf[0].amountCny, tencentWanToCny('128963.67'));
+  const errorText = readFileSync(new URL('./fixtures/etf-whale/sina-kline-error.json', import.meta.url), 'utf8');
+  assert.equal(sinaServiceError(errorText), '新浪 __ERROR 3: Service not valid');
+  assert.throws(() => parseSinaKlinePayload(errorText), /__ERROR/);
+  const calls = [];
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    calls.push(href);
+    if (href.includes('newfqkline')) {
+      const end = new URL(href).searchParams.get('param').split(',')[3];
+      const rows = end >= '2024-06-03'
+        ? [['2024-06-03', '1', '1', '1', '1', '10', {}, '0', '100.5', '0', '0']]
+        : [
+          ['2024-01-02', '3426.27', '3386.35', '3426.27', '3386.35', '10', {}, '0', '18409609.74', '0', '0'],
+          ['2024-03-01', '1', '1', '1', '1', '10', {}, '0', '10', '0', '0'],
+        ];
+      return httpResponse(JSON.stringify({ code: 0, data: { sh000300: { day: rows } } }));
+    }
+    return httpResponse(errorText);
+  };
+  const paged = await fetchTencentAmountDaily('000300', 'SH', '2024-01-02', '2024-06-03', {
+    fetchImpl,
+    pageBars: 1,
+    endpoints: ['https://web.ifzq.gtimg.cn/appstock/app/newfqkline/get'],
+  });
+  assert.equal(paged.ok, true);
+  assert.equal(paged.bars[0].tradeDate, '2024-01-02');
+  assert.equal(paged.bars.at(-1).tradeDate, '2024-06-03');
+  assert.equal(paged.bars[0].amountCny, tencentWanToCny('18409609.74'));
+  assert.ok(calls.filter((href) => href.includes('newfqkline')).length >= 2);
+  const fallen = await fetchDailyBars({
+    code: '000300',
+    exchange: 'SH',
+    startDate: '2024-01-02',
+    endDate: '2024-01-05',
+    fetchImpl: async (url) => httpResponse(String(url).includes('eastmoney.com')
+      ? JSON.stringify({ data: { klines: ['2024-01-02,1,1,1,1,10,184096097448.70'] } })
+      : errorText),
+    endpoints: ['https://web.ifzq.gtimg.cn/appstock/app/newfqkline/get'],
+  });
+  assert.equal(fallen.ok, true);
+  assert.equal(fallen.source, 'eastmoney');
+  assert.equal(fallen.bars[0].amountCny, 184096097448.70);
+  assert.ok(fallen.probes.some((probe) => String(probe.error).includes('__ERROR')));
+});
+
+test('index and turnover failures are stored, and a tencent success is counted', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'etf-whale-kline-'));
+  const store = createStore(path.join(root, 'ai-center.db'));
+  try {
+    const repo = store.repositories.etfWhale;
+    const errorText = readFileSync(new URL('./fixtures/etf-whale/sina-kline-error.json', import.meta.url), 'utf8');
+    const failed = await syncEtfWhaleMarket({
+      repository: repo,
+      startDate: '2024-01-02',
+      endDate: '2024-01-05',
+      parts: ['index', 'turnover'],
+      pauseMs: 0,
+      indices: [{ symbol: '000300', exchange: 'SH', name: '沪深300' }],
+      instruments: [{ code: '510300', exchange: 'SH', name: '沪深300ETF' }],
+      endpoints: ['https://web.ifzq.gtimg.cn/appstock/app/newfqkline/get'],
+      fetchImpl: async () => httpResponse(errorText),
+    });
+    assert.equal(failed.counts.index.error, 1);
+    assert.equal(failed.counts.turnover.error, 1);
+    assert.equal(repo.getFetch('index-daily:000300', '2024-01-02', '2024-01-05').status, 'error');
+    assert.match(repo.getFetch('index-daily:000300', '2024-01-02', '2024-01-05').error, /__ERROR/);
+    assert.match(repo.getFetch('turnover:510300', '2024-01-02', '2024-01-05').error, /__ERROR/);
+    const saved = await syncEtfWhaleMarket({
+      repository: repo,
+      startDate: '2024-01-02',
+      endDate: '2024-01-03',
+      parts: ['index', 'turnover'],
+      pauseMs: 0,
+      indices: [{ symbol: '000300', exchange: 'SH', name: '沪深300' }],
+      instruments: [{ code: '510300', exchange: 'SH', name: '沪深300ETF' }],
+      endpoints: ['https://web.ifzq.gtimg.cn/appstock/app/newfqkline/get'],
+      fetchImpl: async (url) => {
+        const symbol = String(url).includes('510300') ? 'sh510300' : 'sh000300';
+        return httpResponse(JSON.stringify({
+          code: 0,
+          data: { [symbol]: { day: [['2024-01-02', '1', '1.2', '1.3', '0.9', '10', {}, '0', '100', '0', '0']] } },
+        }));
+      },
+    });
+    assert.equal(saved.counts.index.tencent, 1);
+    assert.equal(saved.counts.turnover.tencent, 1);
+    assert.equal(saved.counts.index.error, 0);
+    const indexRow = repo.listIndexDaily('2024-01-02', '2024-01-02')[0];
+    assert.equal(indexRow.source, 'tencent');
+    assert.equal(indexRow.amount_cny, 1_000_000);
+    const turnover = repo.listTurnover(['510300'], 'sina-amount', '2024-01-02', '2024-01-02');
+    assert.equal(turnover.length, 1);
+    assert.equal(turnover[0].amount_cny, 1_000_000);
+    assert.equal(repo.getFetch('index-daily:000300', '2024-01-02', '2024-01-03').status, 'ok');
+  } finally {
+    store.close();
+  }
+});
+
+test('cffex continues past 2026-06-24 and marks a historical 404 as holiday', async () => {
+  assert.equal(cffexPositionUrl('IF', '2026-06-25'), 'http://www.cffex.com.cn/sj/ccpm/202606/25/IF.xml');
+  assert.equal(cffexPositionUrl('IF', '2026-10-14'), 'http://www.cffex.com.cn/sj/ccpm/202610/14/IF.xml');
+  const xml = readFileSync(new URL('./fixtures/etf-whale/cffex-if-20260625.xml', import.meta.url), 'utf8');
+  const parsed = parseCffexPositionXml(xml, { product: 'IF', tradeDate: '2026-06-25' });
+  assert.equal(parsed[0].partyId, '0018');
+  assert.equal(parsed[0].tradeDate, '2026-06-25');
+  assert.equal(parsed[0].volume, 8679);
+  const calls = [];
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    calls.push(href);
+    if (href.includes('/202402/09/')) {
+      return httpResponse('<!DOCTYPE html><title>error_404</title>', {
+        url: 'http://www.cffex.com.cn/error_page/error_404.html',
+      });
+    }
+    if (href.includes('/202606/25/')) throw new Error('socket hang up');
+    const match = href.match(/\/(\d{4})(\d{2})\/(\d{2})\//);
+    const stamp = match ? `${match[1]}${match[2]}${match[3]}` : '20260624';
+    return httpResponse(xml.replaceAll('20260625', stamp), { url: href });
+  };
+  const root = mkdtempSync(path.join(tmpdir(), 'etf-whale-cffex-'));
+  const store = createStore(path.join(root, 'ai-center.db'));
+  try {
+    const repo = store.repositories.etfWhale;
+    const holiday = await syncEtfWhaleFutures({
+      repository: repo,
+      startDate: '2024-02-09',
+      endDate: '2024-02-09',
+      products: ['IF'],
+      pauseMs: 0,
+      today: '2026-10-15',
+      fetchImpl,
+    });
+    assert.equal(holiday.counts.holiday, 1);
+    assert.equal(repo.getFetch('cffex:IF', '2024-02-09', '2024-02-09').status, 'holiday');
+    const closed = await syncEtfWhaleFutures({
+      repository: repo,
+      startDate: '2026-06-19',
+      endDate: '2026-06-19',
+      products: ['IF'],
+      pauseMs: 0,
+      today: '2026-10-15',
+      fetchImpl: async () => { throw new Error('should not fetch a known closure'); },
+    });
+    assert.equal(closed.counts.holiday, 1);
+    assert.equal(repo.getFetch('cffex:IF', '2026-06-19', '2026-06-19').status, 'holiday');
+    const walked = await syncEtfWhaleFutures({
+      repository: repo,
+      startDate: '2026-06-24',
+      endDate: '2026-06-25',
+      products: ['IF'],
+      pauseMs: 0,
+      today: '2026-10-15',
+      fetchImpl,
+    });
+    assert.equal(walked.lastDate, '2026-06-25');
+    assert.equal(walked.counts.ok, 1);
+    assert.equal(walked.counts.error, 1);
+    assert.equal(repo.getFetch('cffex:IF', '2026-06-24', '2026-06-24').status, 'ok');
+    assert.equal(repo.getFetch('cffex:IF', '2026-06-25', '2026-06-25').status, 'error');
+    assert.ok(calls.some((href) => href.includes('/202606/24/IF.xml')));
+    assert.ok(calls.some((href) => href.includes('/202606/25/IF.xml')));
+    assert.equal(repo.hasFutures('2026-06-24', 'IF'), true);
+  } finally {
+    store.close();
+  }
 });
 
 test('cffex ranks identify 中信期货 by party id even when the short name is garbled', () => {

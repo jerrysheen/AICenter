@@ -40,7 +40,7 @@ try {
       parts: ['index'],
       onProgress: (line) => console.log(line),
     });
-    console.log(`index-daily probes=${result.probes.length}`);
+    console.log(`index-daily ${formatSourceCounts(result.counts?.index)}`);
   } else if (command === 'turnover') {
     requireRange();
     const result = await syncEtfWhaleMarket({
@@ -51,7 +51,7 @@ try {
       parts: ['turnover'],
       onProgress: (line) => console.log(line),
     });
-    console.log(`turnover probes=${result.probes.length}`);
+    console.log(`turnover ${formatSourceCounts(result.counts?.turnover)}`);
   } else if (command === 'signals') {
     requireRange();
     const initial = refreshEtfWhaleSignals(repository, { startDate, endDate, stage: 'initial' });
@@ -66,7 +66,8 @@ try {
       endDate,
       onProgress: (line) => console.log(line),
     });
-    console.log(`futures saved=${result.saved} party=${result.citicPartyId}`);
+    const counts = result.counts || {};
+    console.log(`futures saved=${result.saved} party=${result.citicPartyId} ok=${counts.ok || 0} holiday=${counts.holiday || 0} error=${counts.error || 0} skipped=${counts.skipped || 0} last=${result.lastDate || ''}`);
   } else {
     console.error('用法: shares | index-daily | turnover | futures | signals | supersede-stack-errors');
     process.exitCode = 1;
@@ -79,6 +80,10 @@ function arg(name, fallback = '') {
   const index = process.argv.indexOf(name);
   if (index < 0) return fallback;
   return process.argv[index + 1] || fallback;
+}
+
+function formatSourceCounts(counts = {}) {
+  return `tencent=${counts.tencent || 0} sina=${counts.sina || 0} eastmoney=${counts.eastmoney || 0} errors=${counts.error || 0} rows=${counts.rows || 0}`;
 }
 
 function requireRange() {
