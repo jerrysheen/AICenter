@@ -1,13 +1,11 @@
 export const INTRADAY_METHOD = 'intraday';
 export const DAILY_APPROX_METHOD = 'daily-approx';
 export const MIXED_INDEX_METHOD = 'mixed';
+export const INSUFFICIENT_INDEX_METHOD = 'insufficient';
 
 const CLOSE_NEAR_HIGH = 0.7;
-const LOWER_SHADOW_MIN = 0.4;
 const DIP_WASH = -0.01;
-const DIP_SURGE = -0.005;
 const REBOUND_MIN = 0.01;
-const VOLUME_SURGE = 1.5;
 const AMOUNT_MIN_DAYS = 10;
 
 export function metricOrNull(value) {
@@ -93,11 +91,9 @@ export function dailyIndexApprox({ open, high, low, close, prevClose, amountCny,
   const amountRatio = average > 0 && amount != null ? amount / average : null;
   const closeNearHigh = closePos != null && closePos >= CLOSE_NEAR_HIGH;
   const washedNearHigh = dip != null && dip < DIP_WASH && rebound >= REBOUND_MIN && closeNearHigh;
-  const shadowRebound = lowerShadow != null && lowerShadow >= LOWER_SHADOW_MIN && settled >= opened && rebound >= REBOUND_MIN;
-  const volumeRebound = amountRatio != null && amountRatio >= VOLUME_SURGE && dip != null && dip < DIP_SURGE && closeNearHigh && rebound >= REBOUND_MIN;
   return {
     usable: true,
-    hit: Boolean(washedNearHigh || shadowRebound || volumeRebound),
+    hit: Boolean(washedNearHigh),
     dip,
     rebound,
     closePos,
@@ -120,7 +116,7 @@ export function describeIndexPoint(point = {}) {
   }
   const approx = dailyIndexApprox(point);
   if (!approx.usable) {
-    return { method: null, hit: false, lowDropPct: null, reboundPct: null, tailPct: null };
+    return { method: INSUFFICIENT_INDEX_METHOD, hit: false, lowDropPct: null, reboundPct: null, tailPct: null };
   }
   return {
     method: DAILY_APPROX_METHOD,

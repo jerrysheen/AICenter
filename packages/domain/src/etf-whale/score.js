@@ -1,5 +1,8 @@
 import { percentileInclusive } from './calculate.js';
 import {
+  DAILY_APPROX_METHOD,
+  INSUFFICIENT_INDEX_METHOD,
+  INTRADAY_METHOD,
   MIXED_INDEX_METHOD,
   describeIndexPoint,
 } from './session-shape.js';
@@ -65,10 +68,16 @@ function classifyIndex(item) {
   return { symbol: item.symbol, hit: described.hit, method: described.method };
 }
 
+function scoredIndexMethod(method) {
+  return method === INTRADAY_METHOD || method === DAILY_APPROX_METHOD;
+}
+
 export function indexComponent(indices) {
   const hits = (indices || []).map(classifyIndex);
-  const usable = hits.filter((item) => item.method);
-  if (!usable.length) return { score: null, hits, count: 0, hs300: false, insufficient: true, method: null };
+  const usable = hits.filter((item) => scoredIndexMethod(item.method));
+  if (!usable.length) {
+    return { score: null, hits, count: 0, hs300: false, insufficient: true, method: INSUFFICIENT_INDEX_METHOD };
+  }
   const count = usable.filter((item) => item.hit).length;
   const hs300 = usable.some((item) => item.symbol === '000300' && item.hit);
   let score = 0;

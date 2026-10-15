@@ -6,7 +6,14 @@ import { classifyCalendarDay, lastTradingOnOrBefore, shanghaiToday } from './etf
 import { citicNetShort, citicNetShortChange } from './etf-whale/futures.js';
 import { CFFEX_PRODUCTS, ETF_WHALE_INDICES, TURNOVER_SOURCE, citicPartyId } from './etf-whale/indices.js';
 import { SCORE_ALGORITHM, ETF_WHALE_DISCLAIMER, median, nameFlag, priorPercentile } from './etf-whale/score.js';
-import { describeIndexPoint, resolveIndexPoint } from './etf-whale/session-shape.js';
+import {
+  DAILY_APPROX_METHOD,
+  INSUFFICIENT_INDEX_METHOD,
+  INTRADAY_METHOD,
+  MIXED_INDEX_METHOD,
+  describeIndexPoint,
+  resolveIndexPoint,
+} from './etf-whale/session-shape.js';
 import { referencePool, universeByCode } from './etf-whale/universe.js';
 
 export { ETF_WHALE_DISCLAIMER };
@@ -144,6 +151,11 @@ function signalRange(repository, query) {
   return { start: selected[0] || null, end: selected.at(-1) || null };
 }
 
+function presentIndexMethod(method) {
+  if (method === INTRADAY_METHOD || method === DAILY_APPROX_METHOD || method === MIXED_INDEX_METHOD) return method;
+  return INSUFFICIENT_INDEX_METHOD;
+}
+
 function presentSignal(row) {
   const inputs = JSON.parse(row.inputs_json || '{}');
   return {
@@ -157,7 +169,7 @@ function presentSignal(row) {
     level: row.level,
     algorithm: row.algorithm,
     insufficient: Array.isArray(inputs.insufficient) ? inputs.insufficient : [],
-    indexMethod: inputs.index?.method ?? null,
+    indexMethod: presentIndexMethod(inputs.index?.method),
   };
 }
 
