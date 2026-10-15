@@ -31,4 +31,4 @@
 
 Web 和 Worker 用的是同一个日志泵，但 stdout、stderr 各有一个读取器。读取回调抛错，或底层读取被当成结束，只会停那一路。Worker 浓缩时 stderr 更密，错误日志先停；标准输出还能再写一会儿。dsh 子进程的标准流是自己的管道，不继承 Worker 的标准输出。共用写线程如果死掉，两个文件会一起停，这次不是。
 
-Node 在 `AI_CENTER_LOG_DIR` 和 `AI_CENTER_LOG_NAME` 下用追加写入 `worker.out.yyyy-MM-dd.log` 与 `worker.error.yyyy-MM-dd.log`（Web 同理）。日期放在文件名里，不长期占着文件句柄。终端里仍打印。标准流不是终端时不再写管道，停掉的读取器不能把管道灌满并堵住进程。启动脚本仍排空管道并写下启动标记，同时把上述两个环境变量传给进程。
+Node 在 `AI_CENTER_LOG_DIR` 和 `AI_CENTER_LOG_NAME` 下用追加写入 `worker.out.yyyy-MM-dd.log` 与 `worker.error.yyyy-MM-dd.log`（Web 同理）。日期放在文件名里，不长期占着文件句柄。文件日志和原来的 stdout/stderr 一起写，管道不是终端时也镜像。管道已经积压时才停掉这一路，停掉的读取器不能把进程堵住。启动脚本仍排空管道并写下启动标记，同时把上述两个环境变量传给进程。未设置 `AI_CENTER_LOG_DIR` 时 Worker 写到实例 `<dataDirectory>/logs`。

@@ -9,7 +9,7 @@ import { createStore } from '../packages/database/src/index.js';
 import { getEventListeners } from 'node:events';
 import { createJobRunner, resolveJobTypeConcurrency, wait } from '../packages/runtime/src/job-runner.js';
 import { createAiCenterWorker } from '../apps/worker/src/worker.js';
-import { latestSchemaVersion } from '../packages/database/src/migrations.js';
+import { latestSchemaVersion, runMigrations } from '../packages/database/src/migrations.js';
 import { computeFeedIdentityHash } from '../packages/domain/src/feed-identity.js';
 
 function temporaryDatabase(prefix) {
@@ -273,6 +273,148 @@ test('job runner lets a new run replace a subscription sync that exceeded its bu
   await running;
   store.close();
   temporary.remove();
+});
+
+test('a running translation is not reclaimed when its lease expires in this process', async () => {
+  const temporary = temporaryDatabase('ai-center-lease-live-');
+  const store = createStore(temporary.path);
+  let calls = 0;
+  let release = () => {};
+  const runner = createJobRunner({
+    store,
+    workerId: 'same-worker',
+    pollIntervalMs: 15,
+    staleAfterMs: 20,
+    recoverEveryMs: 30,
+    handlers: {
+      'feed.translation.run': async () => {
+        calls += 1;
+        await new Promise((resolve) => { release = resolve; });
+        return { ok: true };
+      },
+    },
+  });
+  const job = store.createJob({
+    type: 'feed.translation.run', workspaceId: 'local', maxAttempts: 4,
+    input: { items: [{ id: 'live', text: 'Interior Department notice about public lands.' }] },
+  });
+  const running = runner.start();
+  try {
+    const deadline = Date.now() + 1_000;
+    while (calls < 1 && Date.now() < deadline) await wait(10);
+    await wait(180);
+    assert.equal(calls, 1);
+    assert.equal(store.getJob(job.id).status, 'running');
+    assert.equal(store.getJob(job.id).attemptCount, 1);
+    release();
+    const done = Date.now() + 1_000;
+    while (store.getJob(job.id).status !== 'completed' && Date.now() < done) await wait(10);
+    assert.equal(store.getJob(job.id).status, 'completed');
+  } finally {
+    release();
+    runner.stop();
+    await running;
+    store.close();
+    temporary.remove();
+  }
+});
+
+test('superseding a hung sync aborts the old execution', async () => {
+  const temporary = temporaryDatabase('ai-center-supersede-abort-');
+  const store = createStore(temporary.path);
+  let aborted = false;
+  const started = [];
+  const runner = createJobRunner({
+    store,
+    workerId: 'supersede-abort',
+    pollIntervalMs: 20,
+    supersedeAfterMs: { 'feed.subscriptions.sync': 40 },
+    handlers: {
+      'feed.subscriptions.sync': (input, context) => {
+        started.push(input.n);
+        if (input.n !== 1) return { n: input.n };
+        return new Promise((resolve) => {
+          if (context.signal.aborted) {
+            aborted = true;
+            resolve({ stopped: true });
+            return;
+          }
+          context.signal.addEventListener('abort', () => {
+            aborted = true;
+            resolve({ stopped: true });
+          }, { once: true });
+        });
+      },
+    },
+  });
+  const first = store.createJob({ type: 'feed.subscriptions.sync', input: { n: 1 }, maxAttempts: 1 });
+  const running = runner.start();
+  try {
+    const claimedDeadline = Date.now() + 1_000;
+    while (!started.includes(1) && Date.now() < claimedDeadline) await wait(20);
+    store.createJob({ type: 'feed.subscriptions.sync', input: { n: 2 }, maxAttempts: 1 });
+    const replacedDeadline = Date.now() + 1_000;
+    while ((!started.includes(2) || !aborted) && Date.now() < replacedDeadline) await wait(20);
+    assert.equal(aborted, true);
+    assert.deepEqual(started, [1, 2]);
+    assert.equal(store.getJob(first.id).status, 'failed');
+    const second = store.listJobs(10).find((job) => job.input.n === 2);
+    const doneDeadline = Date.now() + 1_000;
+    while (store.getJob(second.id).status !== 'completed' && Date.now() < doneDeadline) await wait(20);
+    assert.equal(store.getJob(second.id).status, 'completed');
+    assert.equal(store.getJob(first.id).status, 'failed');
+  } finally {
+    runner.stop();
+    await running;
+    store.close();
+    temporary.remove();
+  }
+});
+
+test('runMigrations does not throw when the other process already inserted the version', () => {
+  const temporary = temporaryDatabase('ai-center-migration-race-');
+  const database = new Database(temporary.path);
+  try {
+    runMigrations(database);
+    const latest = latestSchemaVersion();
+    database.prepare('DELETE FROM schema_migrations WHERE version = ?').run(latest);
+    let outerRead = false;
+    let planted = false;
+    const wrapped = {
+      exec(sql) {
+        if (sql === 'BEGIN IMMEDIATE' && !planted) {
+          planted = true;
+          database.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(latest, 'other-process', 1);
+        }
+        return database.exec(sql);
+      },
+      pragma(value) { return database.pragma(value); },
+      prepare(sql) {
+        const statement = database.prepare(sql);
+        if (sql.includes('FROM schema_migrations') && !sql.includes('WHERE')) {
+          return {
+            all(...args) {
+              const rows = statement.all(...args);
+              if (!outerRead) {
+                outerRead = true;
+                return rows.filter((row) => row.version !== latest);
+              }
+              return rows;
+            },
+          };
+        }
+        return statement;
+      },
+    };
+    assert.doesNotThrow(() => runMigrations(wrapped));
+    const count = database.prepare('SELECT COUNT(*) AS n FROM schema_migrations WHERE version = ?').get(latest).n;
+    assert.equal(count, 1);
+    assert.equal(outerRead, true);
+    assert.equal(planted, true);
+  } finally {
+    database.close();
+    temporary.remove();
+  }
 });
 
 test('idle job poll does not accumulate abort listeners', async () => {

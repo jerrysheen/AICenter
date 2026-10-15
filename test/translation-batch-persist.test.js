@@ -17,6 +17,7 @@ import {
   createFeedTranslationJobHandlers,
   fillUncoveredTranslations,
   packTranslationJobBatches,
+  TRANSLATION_GAP_SCAN_CAP,
   translationGapFillIntervalMs,
   translationGapFillLimit,
   translationGapFillWindowMs,
@@ -347,6 +348,43 @@ test('gap fill requeues a terminal failure and an uncovered title without duplic
       mediaService: { flashExternalIds: () => [] },
     });
     assert.equal(again.enqueued, 0);
+  } finally {
+    store.close();
+  }
+});
+
+test('gap fill yields and stops at the scan cap, then continues from the cursor', async () => {
+  const store = createStore(':memory:');
+  try {
+    const now = Date.now();
+    for (let index = 0; index < TRANSLATION_GAP_SCAN_CAP + 50; index += 1) {
+      store.repositories.media.upsertEntry(mediaEntry(
+        `zh:${String(index).padStart(4, '0')}`,
+        `中文标题已经足够不需要再翻译${index}`,
+        now - index * 1_000,
+      ));
+    }
+    const late = 'A late English headline still inside the window';
+    store.repositories.media.upsertEntry(mediaEntry('late:english', late, now - (TRANSLATION_GAP_SCAN_CAP + 60) * 1_000));
+    const service = feedService(store, { translateMany: async () => { throw new Error('gap fill must not translate'); } });
+    const mediaService = { flashExternalIds: () => [], listArticleTranslationUnits: () => [] };
+    let yields = 0;
+    const first = await fillUncoveredTranslations({
+      store, feedService: service, workspaceId: 'local', limit: 20, now, mediaService,
+      yieldTurn: () => { yields += 1; },
+    });
+    assert.ok(yields >= 2);
+    assert.ok(first.scanned <= TRANSLATION_GAP_SCAN_CAP);
+    assert.equal(first.scanned, TRANSLATION_GAP_SCAN_CAP);
+    assert.ok(first.cursor?.media?.sortAt);
+    assert.equal(first.enqueued, 0);
+    const second = await fillUncoveredTranslations({
+      store, feedService: service, workspaceId: 'local', limit: 20, now, mediaService,
+      cursor: first.cursor,
+      yieldTurn: () => {},
+    });
+    const ids = new Set(second.jobs.flatMap((job) => job.input.items.map((item) => item.id)));
+    assert.equal(ids.has(localizationItemId('media:late:english')), true);
   } finally {
     store.close();
   }

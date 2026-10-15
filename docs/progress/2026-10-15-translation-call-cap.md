@@ -28,13 +28,13 @@
 
 心跳停了大约一个租约时间（生产上约 8 分钟，示例配置是 `AI_CENTER_WORKER_LEASE_MS=600000`）之后，恢复逻辑把这次尝试当成失败。翻译任务最多 4 次。已经用到第 4 次时，重启会把它收成终态，并写入失败记录。已经译完的条目当时已经按条落库。
 
-现在只有翻译任务、并且还没超过运行时限时，租约过期不记失败、不占尝试次数，马上重新入队。进行中的那次 `job_attempts` 删掉，`attempt_count` 减 1。下一次领取仍从被打断的那次继续。真实的上游失败照旧计数。运行超时仍是终态。
+现在只有翻译任务、并且还没超过运行时限时，租约过期不记失败、不占尝试次数，马上重新入队。这次尝试的 `job_attempts` 标成 abandoned，不删除，`attempt_count` 也不减；少掉的那一次额度加在 `max_attempts` 上。下一次领取用新的尝试号。本进程还在执行的任务不重新入队。真实的上游失败照旧计数。运行超时仍是终态。
 
 ## 5. 用量尾号、条目和 Worker 日志
 
 migration 71 `model_usage_translation_attribution` 给 `model_usage_index` 加上 `key_suffix` 和 `item_id`。`key_suffix` 是密钥最后 4 位。`job_id` 原来就有。页面明细不返回密钥尾号。70 留给尚未合并的 ETF 迁移 `etf_whale_market_depth`。63 仍空着，67 不改。
 
-Worker 进程在入口挂上按天滚动的日志。未设置 `AI_CENTER_LOG_DIR` 时目录是实例 `data/logs`，`AI_CENTER_LOG_NAME` 默认 `worker`，文件是 `worker.out.YYYY-MM-DD.log` 和 `worker.error.YYYY-MM-DD.log`。任务失败和领取失败写下栈。
+Worker 进程在入口挂上按天滚动的日志。未设置 `AI_CENTER_LOG_DIR` 时目录是实例 `<dataDirectory>/logs`，`AI_CENTER_LOG_NAME` 默认 `worker`，文件是 `worker.out.YYYY-MM-DD.log` 和 `worker.error.YYYY-MM-DD.log`。同一份内容镜像到 stdout/stderr。任务失败和领取失败写下栈。
 
 ## 环境变量
 
@@ -43,7 +43,7 @@ Worker 进程在入口挂上按天滚动的日志。未设置 `AI_CENTER_LOG_DIR
 | `AI_CENTER_TRANSLATION_ATTEMPT_CALL_CAP` | 0（按条目 ×（密钥 + 重试）） | 正整数 1–500 为绝对上限 |
 | `AI_CENTER_TRANSLATION_BODY_BATCH_LIMIT` | 8 | 1–30 |
 | `AI_CENTER_TRANSLATION_BODY_CHAR_BUDGET` | 4000 | 400–12000 |
-| `AI_CENTER_LOG_DIR` | 实例 `data/logs` | 目录路径 |
+| `AI_CENTER_LOG_DIR` | 实例 `<dataDirectory>/logs` | 目录路径 |
 | `AI_CENTER_LOG_NAME` | `worker` | 文件名前缀 |
 
 标题批次、补漏窗口和 Gemma 重试次数不变。
