@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync,rmSync } from 'node:fs';
+import { mkdtempSync,readFileSync,rmSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -16,7 +17,7 @@ import { createMediaConnector } from '../packages/connectors/src/media/port.js';
 import { createMediaFeedCache,createMediaFeedLoader } from '../apps/web/public/media-feed.js';
 import { prepareDailyMaterials } from '../packages/domain/src/daily-materials.js';
 import { createFeedService } from '../packages/domain/src/feed-service.js';
-import { HardwarePriceSnapshotInputSchema,ImportedMediaArticleSchema } from '../packages/contracts/src/hardware-prices.js';
+import { HardwarePriceSnapshotInputSchema,ImportedMediaArticleSchema,canonicalHardwareSpecification } from '../packages/contracts/src/hardware-prices.js';
 import mediaConfig from '../config/media.json' with {type:'json'};
 import { createAiCenterServer } from '../apps/web/src/server.js';
 import { captureHardwarePrices } from '../packages/runtime/src/web-snapshot-jobs.js';
@@ -261,7 +262,7 @@ test('forward migration upgrades V39 with existing content and states intact',()
       DROP INDEX IF EXISTS idx_content_items_capture_cover;DROP INDEX IF EXISTS idx_user_item_states_feed_flags;
       DROP TABLE IF EXISTS gemini_model_cursors;
       DROP TABLE IF EXISTS etf_whale_intraday_bars;DROP TABLE IF EXISTS etf_whale_index_daily;DROP TABLE IF EXISTS etf_whale_turnover;DROP TABLE IF EXISTS etf_whale_futures_rank;DROP TABLE IF EXISTS etf_whale_signals;
-      DELETE FROM schema_migrations WHERE version IN (40,54,55,56,57,58,59,60,61,62,64,65,66,67,68,69,70);PRAGMA user_version=39;`);
+      DELETE FROM schema_migrations WHERE version IN (40,54,55,56,57,58,59,60,61,62,64,65,66,67,68,69,70,71);PRAGMA user_version=39;`);
     const before=db.prepare('SELECT count(*) n FROM content_items').get().n;runMigrations(db);runMigrations(db);
     assert.equal(db.pragma('user_version',{simple:true}),latestSchemaVersion());assert.equal(db.prepare('SELECT count(*) n FROM content_items').get().n,before);
     assert.equal(db.prepare(`SELECT COUNT(*) n FROM pragma_table_info('hardware_price_snapshots') WHERE name='last_checked_at'`).get().n,1);db.close();
@@ -303,7 +304,7 @@ const flashBoards=`<div class="price-title">NAND Flash Contract Price in Memory 
 <table class="price-table"><tr><th>品牌</th><th>規格</th><th>系列</th><th>容量</th><th>高點</th><th>低點</th><th>均價</th></tr>
 <tr><td>Samsung</td><td>PCIe 4.0 X4</td><td>990 Pro</td><td>1 TB</td><td>239.99</td><td>239.99</td><td>239.99</td></tr></table>`;
 test('DRAM contract SO-DIMM is priced per module and the other storage boards keep USD units without changing numbers',()=>{
-  assert.equal(PRICE_PARSER_VERSION,'trendforce-tables-4');
+  assert.equal(PRICE_PARSER_VERSION,'trendforce-tables-5');
   const dram=parseStructuredPricePage(contractHtml,{pageKey:'dram',sourceUrl:'https://www.trendforce.com.tw/price/dram/dram_spot',title:'DRAM'}).rows;
   assert.deepEqual(dram.filter(row=>/SO-DIMM/.test(row.specification)).map(row=>[row.specification,row.unit,row.currency,row.average]),[
     ['DDR5 8GB SO-DIMM','module','USD','133.00'],
@@ -378,7 +379,7 @@ test('migration 69 clears superseded current flags and keeps every observation r
     row('old-dirty','DDR5 16Gb (2Gx8) 4800/5600 · 日高點: 19.70',null,'["2026-10-05",1,2]','2026-10-05',at,1);
     row('new-clean','DDR5 16Gb (2Gx8) 4800/5600','chip','["2026-10-12",1,2]','2026-10-12',at+86400000,1);
     row('undated','DDR5 16Gb (2Gx8) 4800/5600','chip','unverified:snapshot-undated',null,null,1);
-    db.prepare('DELETE FROM schema_migrations WHERE version=69').run();
+    db.prepare('DELETE FROM schema_migrations WHERE version IN (69, 71)').run();
     db.pragma('user_version = 68');
     runMigrations(db);
     const flags=db.prepare('SELECT id,is_current current FROM hardware_price_observations ORDER BY id').all();
@@ -387,10 +388,11 @@ test('migration 69 clears superseded current flags and keeps every observation r
     assert.equal(flags.find(item=>item.id==='undated').current,0);
     assert.equal(flags.find(item=>item.id==='new-clean').current,1);
     assert.equal(db.prepare(`SELECT json_extract(row_json,'$.average') average FROM hardware_price_observations WHERE id='old-dirty'`).get().average,'10.00');
-    assert.equal(db.pragma('user_version',{simple:true}),69);
+    assert.equal(db.pragma('user_version',{simple:true}),71);
     assert.equal(db.prepare(`SELECT name FROM schema_migrations WHERE version=68`).get().name,'article_dedup_keys');
     assert.equal(db.prepare(`SELECT name FROM schema_migrations WHERE version=69`).get().name,'hardware_price_current_spec');
     assert.equal(db.prepare(`SELECT name FROM schema_migrations WHERE version=70`).get().name,'etf_whale_market_depth');
+    assert.equal(db.prepare(`SELECT name FROM schema_migrations WHERE version=71`).get().name,'model_usage_translation_attribution');
     db.close();
   }finally{rmSync(f.directory,{recursive:true,force:true});}
 });
@@ -409,4 +411,82 @@ test('hardware HTTP endpoints are read-only, scoped and explicit legacy migratio
     const migrate=await fetch(`${address.localUrl}/api/v1/feed/trendforce/migrate`,{method:'POST'});assert.equal(migrate.status,202);
     const {jobId}=await migrate.json();assert.equal(f.store.getJob(jobId).type,'feed.trendforce.migrate');
   }finally{await app.close();rmSync(f.directory,{recursive:true,force:true});}
+});
+const publicPriceHtml=name=>readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)),'fixtures/trendforce',`${name}-public.html`),'utf8');
+const priceLabel=/(?:項目|项目|Item|週高(?:點|点)|周高(?:點|点)|週低(?:點|点)|周低(?:點|点)|日高(?:點|点)|日低(?:點|点)|盤高(?:點|点)|盤低(?:點|点)|高(?:點|点)|低(?:點|点)|均價|均价|盤平均|盘平均)\s*[:：]/;
+test('every current quote on the public TrendForce tables has USD, a unit, and a product name',()=>{
+  assert.equal(canonicalHardwareSpecification('項目: DDR5 UDIMM 16GB 4800/5600 · 週高點: 265.00 · 週低點: 223.00'),'DDR5 UDIMM 16GB 4800/5600');
+  assert.equal(canonicalHardwareSpecification('項目: 512Gb TLC · 週高點: 21.00 · 週低點: 16.80'),'512Gb TLC');
+  assert.equal(canonicalHardwareSpecification('DDR5 16Gb (2Gx8) 4800/5600 · 日高點: 19.70'),'DDR5 16Gb (2Gx8) 4800/5600');
+  const expectRow=(rows,spec,unit,category,quoteType,average,high,low)=>{
+    const row=rows.find(item=>item.specification===spec);
+    assert.ok(row,spec);
+    assert.equal(row.currency,'USD',spec);assert.equal(row.unit,unit,spec);assert.equal(row.category,category,spec);assert.equal(row.quoteType,quoteType,spec);
+    assert.equal(row.average,average,spec);assert.equal(row.high,high,spec);assert.equal(row.low,low,spec);
+    assert.equal(priceLabel.test(row.specification),false,row.specification);
+  };
+  const dram=parseStructuredPricePage(publicPriceHtml('dram'),{pageKey:'dram',sourceUrl:'https://www.trendforce.com.tw/price/dram/dram_spot',title:'DRAM'}).rows;
+  assert.equal(dram.length,19);
+  assert.equal(dram.every(row=>row.currency==='USD' && row.unit && !priceLabel.test(row.specification)),true);
+  expectRow(dram,'DDR5 UDIMM 16GB 4800/5600','module','dram','spot','239.00','265.00','223.00');
+  expectRow(dram,'DDR5 RDIMM 32GB 4800/5600','module','dram','spot','2176.00','2400.00','2100.00');
+  expectRow(dram,'DDR4 UDIMM 16GB 3200','module','dram','spot','167.20','185.00','158.00');
+  expectRow(dram,'GDDR5 8Gb','chip','dram','spot','12.245','17.50','10.00');
+  expectRow(dram,'GDDR6 8Gb','chip','dram','spot','12.45','18.00','10.20');
+  expectRow(dram,'DDR5 8GB SO-DIMM','module','dram','contract','133.00','141.00','118.00');
+  expectRow(dram,'DDR5 16Gb (2Gx8) 4800/5600','chip','dram','spot','60.433','71.00','46.00');
+  const flash=parseStructuredPricePage(publicPriceHtml('flash'),{pageKey:'flash',sourceUrl:'https://www.trendforce.com.tw/price/flash/flash_spot',title:'NAND'}).rows;
+  assert.equal(flash.length,22);
+  assert.equal(flash.every(row=>row.currency==='USD' && row.unit && !priceLabel.test(row.specification)),true);
+  expectRow(flash,'NAND 128Gb 16Gx8 MLC','chip','nand','contract','30.475','30.60','30.25');
+  expectRow(flash,'NAND 64Gb 8Gx8 MLC','chip','nand','contract','23.425','23.55','23.20');
+  expectRow(flash,'NAND 32Gb 4Gx8 MLC','chip','nand','contract','18.128','18.35','17.90');
+  expectRow(flash,'512Gb TLC','wafer','nand','spot','18.833','21.00','16.80');
+  expectRow(flash,'256Gb TLC','wafer','nand','spot','18.365','20.00','16.80');
+  expectRow(flash,'128Gb TLC','wafer','nand','spot','9.967','15.00','8.00');
+  expectRow(flash,'MicroSD 16GB','card','other-storage','spot','2.965','3.20','2.85');
+  expectRow(flash,'MicroSD 32GB','card','other-storage','spot','4.15','4.80','3.80');
+  expectRow(flash,'MicroSD 64GB','card','other-storage','spot','6.40','7.00','6.00');
+  expectRow(flash,'MicroSD 128GB','card','other-storage','spot','12.29','13.00','12.00');
+  expectRow(flash,'1TB-mSATA/M.2 TLC PCIe-Value Grade','unit','ssd','contract','321.00','385.00','265.00');
+  expectRow(flash,'512GB-mSATA/M.2 TLC PCIe-Value Grade','unit','ssd','contract','201.13','210.00','165.00');
+  expectRow(flash,'256GB-mSATA/M.2 TLC PCIe-Value Grade','unit','ssd','contract','128.38','160.00','110.00');
+  expectRow(flash,'品牌: ADATA · 規格: SATA 6.0 Gb/s · 系列: Ultimate SU650 · 容量: 960 GB','unit','ssd','retail','178.97','180.48','177.46');
+  expectRow(flash,'品牌: Kimtigo · 規格: PCIe 4.0 · 系列: TP5000 · 容量: 1 TB','unit','ssd','retail','133.00','150.30','115.70');
+  expectRow(flash,'品牌: Samsung · 規格: PCIe 4.0 X4 · 系列: 990 Pro · 容量: 1 TB','unit','ssd','retail','239.99','239.99','239.99');
+  expectRow(flash,'品牌: PNY · 規格: PCIe 5.0 X4 · 系列: CS2150 · 容量: 2 TB','unit','ssd','retail','380.00','390.00','370.00');
+  expectRow(flash,'品牌: Silicon Power · 規格: PCIe 4.0 X4 · 系列: US75 · 容量: 1 TB','unit','ssd','retail','189.97','189.97','189.97');
+  assert.equal(flash.filter(row=>row.quoteType==='contract' && row.category==='nand').length,3);
+  assert.equal(flash.filter(row=>row.unit==='wafer').length,3);
+  assert.equal(flash.filter(row=>row.unit==='card').length,4);
+  assert.equal(flash.filter(row=>row.category==='ssd' && row.quoteType==='contract').length,3);
+  assert.equal(flash.filter(row=>row.quoteType==='retail').length,5);
+});
+test('a same-number reparse fills currency without deleting the unitless or dirty row',()=>{
+  const f=fixture();try {
+    const parsedFlash=parseStructuredPricePage(publicPriceHtml('flash'),{pageKey:'flash',sourceUrl:'https://www.trendforce.com.tw/price/flash/flash_spot',title:'NAND',capturedAt:at});
+    const blank={...parsedFlash,parserVersion:'trendforce-tables-4',rows:parsedFlash.rows.map(row=>({...row,currency:null,unit:null,taxBasis:null,
+      specification:row.specification==='512Gb TLC'?'項目: 512Gb TLC · 週高點: 21.00 · 週低點: 16.80':row.specification}))};
+    const old=f.hardware.ingest('local',blank);
+    f.hardware.ingest('local',parsedFlash);
+    const items=f.hardware.list('local').items;
+    const tlc=items.filter(row=>row.specification==='512Gb TLC' || row.specification.includes('週高點'));
+    assert.equal(tlc.length,1);assert.equal(tlc[0].specification,'512Gb TLC');assert.equal(tlc[0].currency,'USD');assert.equal(tlc[0].unit,'wafer');assert.equal(tlc[0].average,'18.833');assert.equal(tlc[0].verification,'verified');
+    const nand=items.find(row=>row.specification==='NAND 128Gb 16Gx8 MLC');
+    assert.equal(nand.currency,'USD');assert.equal(nand.unit,'chip');assert.equal(nand.average,'30.475');assert.equal(nand.verification,'verified');
+    assert.equal(items.find(row=>row.specification==='MicroSD 128GB').unit,'card');
+    assert.equal(items.find(row=>row.specification==='1TB-mSATA/M.2 TLC PCIe-Value Grade').unit,'unit');
+    assert.equal(items.find(row=>row.specification.includes('ADATA')).currency,'USD');
+    assert.equal(items.some(row=>priceLabel.test(row.specification)),false);
+    assert.equal(f.hardware.snapshot('local',old.id).items.some(row=>row.specification.includes('週高點')),true);
+    const db=new Database(path.join(f.directory,'test.db'),{readonly:true,fileMustExist:true});
+    try {
+      assert.equal(db.prepare(`SELECT COUNT(*) n FROM hardware_price_observations WHERE json_extract(row_json,'$.specification') LIKE '%週高點%'`).get().n,1);
+      assert.equal(db.prepare(`SELECT is_current c FROM hardware_price_observations WHERE json_extract(row_json,'$.specification') LIKE '%週高點%'`).get().c,0);
+      const kept=db.prepare(`SELECT is_current c,json_extract(row_json,'$.currency') currency,json_extract(row_json,'$.average') average FROM hardware_price_observations WHERE json_extract(row_json,'$.specification')='NAND 128Gb 16Gx8 MLC' ORDER BY is_current`).all();
+      assert.equal(kept.length,2);
+      assert.equal(kept[0].c,0);assert.equal(kept[0].currency,null);assert.equal(kept[0].average,'30.475');
+      assert.equal(kept[1].c,1);assert.equal(kept[1].currency,'USD');assert.equal(kept[1].average,'30.475');
+    }finally{db.close();}
+  }finally{f.close();}
 });

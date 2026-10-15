@@ -51,7 +51,7 @@ node --env-file=.env scripts/etf-whale-backfill.mjs supersede-stack-errors
 
 ## 迁移
 
-migration 70，只建五张新表。69 已由硬件报价当前规格占用。`etf_whale_fetches.status` 增加使用 `pending`、`holiday`、`stale`、`superseded`，没有改列。
+migration 70，只建五张新表。68 是文章去重，69 是 `hardware_price_current_spec`，71 是 `model_usage_translation_attribution`。`etf_whale_fetches.status` 增加使用 `pending`、`holiday`、`stale`、`superseded`，没有改列。
 
 ## 重启
 

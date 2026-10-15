@@ -57,3 +57,9 @@ UI 合成检查：`scripts/verify-trendforce-routing.mjs` 使用 Host 注入的�
 每一项价格直接带官网 Last Update 的月日。DRAM 等合约的半月期写成「8 月下半月」，和 Last Update 的 `08-31` 放在一起，不把 9 月 30 日的会员通知当成报价日。超过 7 天标「已过期」，例如合约价 `08-31`、SSD OEM `08-05`。不另加「更新时间」行。
 
 已保存的 HTML 要用显式 `feed.trendforce.reparse`，或等下一次价表同步；解析版本变了才会写出新观测。生效需要同时重启 Web 和 Worker，浏览器再加载一次。不要重建数据库。
+
+### 2026-10-15 周高低列与空币种修订
+
+`trendforce-tables-5` 仍按上表的单位填写，不改高低均价。内存条、显存和 NAND TLC 晶圆现货的表在盘高之前还有週高、週低。这些列和「項目」「日高點」「均價」一样，只从规格名里拿掉。SSD 街价保留品牌、規格、系列、容量。
+
+同一规格、同一报价期、数字没变时，如果旧行的币种或单位是空的，写入一条新修订，把 USD 和单位放进当前行。旧行留在库里，`is_current=0`。不新增 migration。已保存的 HTML 要再跑一次 `feed.trendforce.reparse`，或等下一次价表同步。需要同时重启 Web 和 Worker。

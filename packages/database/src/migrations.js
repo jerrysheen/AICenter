@@ -2031,6 +2031,13 @@ migrations.push({ version: 70, name: 'etf_whale_market_depth', up(database) {
   `);
 }});
 
+// 63 stays unused. 71 is the translation usage attribution already on main.
+migrations.push({ version: 71, name: 'model_usage_translation_attribution', up(database) {
+  addColumn(database, 'model_usage_index', 'key_suffix', `TEXT NOT NULL DEFAULT ''`);
+  addColumn(database, 'model_usage_index', 'item_id', `TEXT NOT NULL DEFAULT ''`);
+  database.exec(`CREATE INDEX IF NOT EXISTS model_usage_by_item ON model_usage_index(workspace_id, item_id, occurred_at);`);
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions
