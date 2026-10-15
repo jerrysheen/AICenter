@@ -139,7 +139,7 @@ test('same source hash reuses an hourly-report translation only', async () => {
   } finally { temporary.remove(); }
 });
 
-test('lease expiry requeues a translation without counting the interrupted attempt', () => {
+test('lease expiry records a translation failure instead of leaving the item in progress', () => {
   const temporary = temporaryStore();
   try {
     const store = temporary.store;
@@ -151,34 +151,12 @@ test('lease expiry requeues a translation without counting the interrupted attem
     assert.equal(claimed.id, job.id);
     assert.equal(store.recoverStaleJobs(1, claimed.lockedAt + 5), 1);
     const current = store.getJob(job.id);
+    const failure = store.repositories.feed.listTranslationFailures('local', ['rel-lease'])[0];
     assert.equal(current.status, 'queued');
-    assert.equal(current.attemptCount, 0);
-    assert.equal(current.error.name, 'WorkerLeaseExpired');
-    assert.equal(store.repositories.feed.listTranslationFailures('local', ['rel-lease']).length, 0);
-    assert.ok(current.availableAt <= Date.now());
-    const again = store.claimNextJob('worker-2', ['feed.translation.run']);
-    assert.equal(again.attemptCount, 1);
-    store.completeJob(again.id, {}, { workerId: 'worker-2', attemptCount: again.attemptCount });
-    const fourth = store.createJob({
-      type: 'feed.translation.run', workspaceId: 'local', maxAttempts: TRANSLATION_MAX_ATTEMPTS,
-      input: { items: [{ id: 'rel-lease-4', text: 'A fourth attempt interrupted by a worker restart.' }] },
-    });
-    for (let attempt = 1; attempt <= TRANSLATION_MAX_ATTEMPTS; attempt += 1) {
-      const running = store.claimNextJob('worker-4', ['feed.translation.run']);
-      assert.equal(running.id, fourth.id);
-      assert.equal(running.attemptCount, attempt);
-      if (attempt < TRANSLATION_MAX_ATTEMPTS) store.failJob(running.id, new Error('Gemma 翻译失败（500）'), 0, { workerId: 'worker-4', attemptCount: attempt });
-    }
-    const held = store.getJob(fourth.id);
-    assert.equal(held.status, 'running');
-    assert.equal(held.attemptCount, TRANSLATION_MAX_ATTEMPTS);
-    assert.equal(store.recoverStaleJobs(1, held.lockedAt + 5), 1);
-    const refunded = store.getJob(fourth.id);
-    assert.equal(refunded.status, 'queued');
-    assert.equal(refunded.attemptCount, TRANSLATION_MAX_ATTEMPTS - 1);
-    const kept = store.repositories.feed.listTranslationFailures('local', ['rel-lease-4'])[0];
-    assert.equal(kept.attemptCount, TRANSLATION_MAX_ATTEMPTS - 1);
-    assert.doesNotMatch(kept.lastError, /租约已过期/);
+    assert.match(failure.lastError, /租约已过期/);
+    assert.equal(failure.attemptCount, 1);
+    assert.equal(failure.nextRetryAt, current.availableAt);
+    assert.ok(current.availableAt > claimed.lockedAt);
   } finally { temporary.remove(); }
 });
 

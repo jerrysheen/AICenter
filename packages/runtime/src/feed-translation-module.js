@@ -2,9 +2,7 @@ import { createHash } from 'node:crypto';
 import { FEED_TRANSLATION_TEXT_MAX, FeedTranslationJobInputSchema } from '../../contracts/src/index.js';
 import { TRANSLATION_MAX_ATTEMPTS } from '../../database/src/translation-retry.js';
 import { stripLeadingPreview } from '../../connectors/src/x/home-browser.js';
-import { translationBodyBatchLimit, translationBodyCharBudget, translationTitleBatchLimit } from '../../domain/src/feed-ai-batch.js';
-import { gemmaTranslationPolicy, resolveGemmaTranslationSlots } from '../../connectors/src/translate/gemma.js';
-import { translationAttemptCallLimit, withTranslationCallBudget } from '../../connectors/src/translate/call-budget.js';
+import { translationTitleBatchLimit } from '../../domain/src/feed-ai-batch.js';
 import { localizationItemId, needsZhLocalization, translationLooksTruncated } from '../../domain/src/localize-texts.js';
 
 function bodyHash(value) {
@@ -89,36 +87,12 @@ export const feedTranslationManifest = Object.freeze({
   capabilities: ['feed.translation.run'], jobTypes: ['feed.translation.run'],
 });
 
-function translationKeyCount(env = process.env) {
-  try {
-    const count = resolveGemmaTranslationSlots(env).length;
-    return count || 1;
-  } catch {
-    return 1;
-  }
-}
-
-export function createFeedTranslationJobHandlers({ feedService, env = process.env } = {}) {
+export function createFeedTranslationJobHandlers({ feedService }) {
   return {
     'feed.translation.run': async (input, context) => {
       const value = FeedTranslationJobInputSchema.parse(input);
-      const policy = gemmaTranslationPolicy(env);
-      const callLimit = translationAttemptCallLimit({
-        itemCount: value.items.length,
-        keyCount: translationKeyCount(env),
-        maxRetries: policy.maxRetries,
-        configured: env.AI_CENTER_TRANSLATION_ATTEMPT_CALL_CAP,
-      });
-      const touch = () => {
-        const job = context?.job;
-        if (job && context?.store?.touchJob && context.workerId) context.store.touchJob(job.id, context.workerId);
-      };
       try {
-        touch();
-        return await withTranslationCallBudget(callLimit, () => feedService.translateMany(value, {
-          workspaceId: value.workspaceId,
-          onItem: touch,
-        }));
+        return await feedService.translateMany(value, { workspaceId: value.workspaceId });
       } catch (error) {
         const failedIds = Array.isArray(error?.failedItemIds) ? error.failedItemIds.filter(Boolean) : [];
         const job = context?.job;
@@ -139,15 +113,14 @@ export function createFeedTranslationJobHandlers({ feedService, env = process.en
 }
 
 export function packTranslationJobBatches(units, options = {}) {
-  const requested = Number.isInteger(options.unitLimit) ? options.unitLimit : translationBodyBatchLimit(options.bodyBatchLimit);
+  const requested = Number.isInteger(options.unitLimit) ? options.unitLimit : TRANSLATION_JOB_UNIT_LIMIT;
   const unitLimit = Math.min(TRANSLATION_JOB_UNIT_LIMIT, Math.max(1, requested));
-  const charBudget = translationBodyCharBudget(options.charBudget ?? options.bodyCharBudget);
   const batches = [];
   let batch = [];
   let chars = 0;
   for (const unit of units) {
     const size = String(unit?.text || '').length;
-    if (batch.length && (batch.length >= unitLimit || chars + size > charBudget)) {
+    if (batch.length && (batch.length >= unitLimit || chars + size > TRANSLATION_JOB_CHAR_BUDGET)) {
       batches.push(batch);
       batch = [];
       chars = 0;

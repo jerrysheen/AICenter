@@ -193,7 +193,7 @@ test('a long article keeps finished chunks and a later retry skips them', async 
   }
 });
 
-test('title jobs split at five and body jobs stay inside the lease-sized pack', () => {
+test('title jobs split at five and body jobs stay on the thirty-item pack', () => {
   const titles = Array.from({ length: 6 }, (_, index) => ({ id: `t${index}`, text: `English title number ${index} about chips` }));
   assert.ok(titles.every((item) => translationTextIsTitle(item.text)));
   const store = createStore(':memory:');
@@ -211,11 +211,7 @@ test('title jobs split at five and body jobs stay inside the lease-sized pack', 
     assert.equal(paragraphJobs[0].input.items.length, 6);
 
     const packed = packTranslationJobBatches(Array.from({ length: 31 }, (_, index) => ({ id: `b${index}`, text: `block ${index}` })));
-    assert.deepEqual(packed.map((batch) => batch.length), [8, 8, 8, 7]);
-    const wide = Array.from({ length: 18 }, (_, index) => ({ id: `w${index}`, text: `${'English summary '.repeat(11)}\n${index}` }));
-    runtime.requestTranslation({ workspaceId: 'local', targetLang: 'zh', items: wide });
-    const wideJobs = store.listOpenJobs('feed.translation.run').filter((job) => job.input.items[0].id.startsWith('w'));
-    assert.deepEqual(wideJobs.map((job) => job.input.items.length).sort((a, b) => b - a), [8, 8, 2]);
+    assert.deepEqual(packed.map((batch) => batch.length), [30, 1]);
     const titled = packTranslationJobBatches(titles.map((item) => ({ id: item.id, text: item.text })), { unitLimit: 5 });
     assert.deepEqual(titled.map((batch) => batch.length), [5, 1]);
   } finally {

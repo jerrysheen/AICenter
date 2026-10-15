@@ -1951,13 +1951,6 @@ migrations.push({ version: 69, name: 'hardware_price_current_spec', up(database)
   retireSupersededHardwareQuotes(database);
 }});
 
-// 70 stays free for the open ETF migration etf_whale_market_depth. 63 stays unused.
-migrations.push({ version: 71, name: 'model_usage_translation_attribution', up(database) {
-  addColumn(database, 'model_usage_index', 'key_suffix', `TEXT NOT NULL DEFAULT ''`);
-  addColumn(database, 'model_usage_index', 'item_id', `TEXT NOT NULL DEFAULT ''`);
-  database.exec(`CREATE INDEX IF NOT EXISTS model_usage_by_item ON model_usage_index(workspace_id, item_id, occurred_at);`);
-}});
-
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

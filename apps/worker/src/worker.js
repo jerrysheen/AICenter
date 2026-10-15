@@ -682,12 +682,10 @@ export function createAiCenterWorker(options = {}) {
       Number(env.AI_CENTER_WORKER_TRANSLATION_CONCURRENCY || 5),
     ),
     onError(error, job) {
-      const stack = error instanceof Error ? error.stack : '';
-      console.error(`[worker] ${job.type} ${job.id}: ${stack || error?.message || error}`);
+      console.error(`[worker] ${job.type} ${job.id}:`, error);
     },
     onClaimError(error) {
-      const stack = error instanceof Error ? error.stack : '';
-      console.error(`[worker] claim failed: ${stack || error?.message || error}`);
+      console.error('[worker] claim failed:', error);
     },
     watchdogMs: options.watchdogMs ?? process.env.AI_CENTER_JOB_LOOP_WATCHDOG_MS,
   });
@@ -787,8 +785,7 @@ export function createAiCenterWorker(options = {}) {
 }
 
 async function main() {
-  const instance = resolveInstanceConfig({ repositoryRoot });
-  attachDailyProcessLog({directory: process.env.AI_CENTER_LOG_DIR || path.join(instance.dataDirectory, 'logs'), name: process.env.AI_CENTER_LOG_NAME || 'worker'});
+  attachDailyProcessLog({directory: process.env.AI_CENTER_LOG_DIR, name: process.env.AI_CENTER_LOG_NAME});
   const worker = createAiCenterWorker();
   console.log(`AI Center worker ${worker.runner.workerId}`);
   try {

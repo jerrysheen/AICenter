@@ -46,9 +46,6 @@ function clipForModel(value, options) {
 
 export const TRANSLATION_TITLE_BATCH_LIMIT = 5;
 export const TRANSLATION_TITLE_MAX_CHARS = 240;
-export const TRANSLATION_BODY_BATCH_LIMIT = 8;
-export const TRANSLATION_BODY_CHAR_BUDGET = 4_000;
-export const TRANSLATION_BODY_CHAR_BUDGET_MAX = 12_000;
 
 export function translationTextIsTitle(text) {
   const value = String(text || '').trim();
@@ -60,20 +57,6 @@ export function translationTitleBatchLimit(value) {
   const raw = Number(value);
   if (!Number.isInteger(raw) || raw < 1) return TRANSLATION_TITLE_BATCH_LIMIT;
   return Math.min(30, raw);
-}
-
-export function translationBodyBatchLimit(value) {
-  if (value === undefined || value === null || String(value).trim() === '') return TRANSLATION_BODY_BATCH_LIMIT;
-  const raw = Number(value);
-  if (!Number.isInteger(raw) || raw < 1) return TRANSLATION_BODY_BATCH_LIMIT;
-  return Math.min(30, raw);
-}
-
-export function translationBodyCharBudget(value) {
-  if (value === undefined || value === null || String(value).trim() === '') return TRANSLATION_BODY_CHAR_BUDGET;
-  const raw = Number(value);
-  if (!Number.isInteger(raw)) return TRANSLATION_BODY_CHAR_BUDGET;
-  return Math.min(TRANSLATION_BODY_CHAR_BUDGET_MAX, Math.max(400, raw));
 }
 
 export function packFeedAiBatches(items, options = {}) {

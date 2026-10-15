@@ -1,8 +1,6 @@
 import { createHash } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { createUsageFetch } from '../model-usage-fetch.js';
-import { chargeTranslationCall } from './call-budget.js';
-import { modelUsageContext } from '../../../runtime/src/model-usage-context.js';
 import { geminiQuotaCooldown, nextGeminiDailyReset } from '../gemini-grok-task.js';
 import { googleFetch, isGoogleConnectTimeout } from '../google-fetch.js';
 
@@ -278,7 +276,6 @@ export function createGemmaTranslationRouter(options = {}) {
       const inputBytes = Buffer.byteLength(input, 'utf8');
       let lastError;
       for (let attempt = 0; attempt <= policy.maxRetries; attempt++) {
-        chargeTranslationCall();
         let ticket;
         try { ticket = await admit(attempt === 0 ? 61000 : 1500, attempt === 0 ? models : retryModels); }
         catch (error) {
@@ -294,10 +291,7 @@ export function createGemmaTranslationRouter(options = {}) {
           let response;
           try {
             response = await metered(`https://generativelanguage.googleapis.com/v1beta/models/${ticket.model}:streamGenerateContent?alt=sse`, {
-              usageModel: ticket.model,
-              usageKeySuffix: apiKey.slice(-4),
-              usageItemId: modelUsageContext().itemId || '',
-              method: 'POST', headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
+              usageModel: ticket.model, method: 'POST', headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
               signal: AbortSignal.timeout(options.timeoutMs ?? gemmaTranslationTimeoutMs(env.AI_CENTER_GEMMA_TRANSLATION_TIMEOUT_MS)),
               body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: input }] }],
                 generationConfig: { maxOutputTokens: 4096, thinkingConfig: { thinkingLevel: 'minimal' } } }),
@@ -339,11 +333,7 @@ export function createGemmaTranslationRouter(options = {}) {
               else throw error;
             } else {
               const candidate = payload.candidates?.[0];
-              const visible = String(candidate?.content?.parts?.[0]?.text || '').trim();
-              const finishReason = candidate?.finishReason || '';
-              if (finishReason !== 'STOP' || !visible) {
-                throw new Error(`Gemma 翻译未完整结束，未保存译文（finishReason=${finishReason || 'missing'}，可见文本=${visible.length}）`);
-              }
+              if (candidate?.finishReason !== 'STOP' || !candidate.content?.parts?.[0]?.text) throw new Error('Gemma 翻译未完整结束，未保存译文');
               const actual = gemmaUsageTokens(payload.usageMetadata);
               if (actual) repository.recordActualTokens?.(ticket.id, actual);
               upstreamBackoff.delete(ticket.project);

@@ -17,8 +17,6 @@ export const ModelUsageRecordSchema = z.object({
   provider: z.string().max(128), model: z.string().max(128),
   status: z.enum(['pending', 'succeeded', 'failed', 'interrupted']),
   httpStatus: z.number().int().min(100).max(599).nullable().default(null),
-  itemId: z.string().max(256).default(''),
-  keySuffix: z.string().max(8).default(''),
   completeness: z.enum(['complete', 'partial', 'missing']),
   usage: ModelTokenUsageSchema, occurredAt: z.number().int().nonnegative(),
   supplierAmount: z.number().nonnegative().finite().nullable(),
@@ -51,7 +49,7 @@ export const ModelUsageSummarySchema=usageTotals.extend({asOf:summaryCount,
   scope:z.object({workspaceId:z.string(),startAt:summaryCount.nullable(),endAt:summaryCount.nullable(),jobId:z.string().nullable(),stage:z.string().nullable()}).strict(),
   byStage:z.array(usageTotals.extend({stage:z.string()}).strict()),
 }).strict();
-export const ModelUsageViewSchema = ModelUsageRecordSchema.omit({ provider: true, model: true, harnessSessionId: true, keySuffix: true }).extend({
+export const ModelUsageViewSchema = ModelUsageRecordSchema.omit({ provider: true, model: true, harnessSessionId: true }).extend({
   executionId: z.string().max(256),
   estimate: z.object({ amount: z.number().finite().nonnegative(), currency: z.string(), rateVersion: z.string() }).strict().nullable(),
 }).strict();

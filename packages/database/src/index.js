@@ -780,29 +780,22 @@ export function createStore(databasePath) {
       database.transaction(() => {
         for (const row of rows) {
           const expiredRuntime = row.runtimeStale === true;
-          const leaseInterrupted = !expiredRuntime && row.type === 'feed.translation.run';
-          const retry = leaseInterrupted || (!expiredRuntime && row.attempt_count < row.max_attempts);
+          const retry = !expiredRuntime && row.attempt_count < row.max_attempts;
           const status = retry ? 'queued' : 'failed';
           const error = expiredRuntime
             ? { name: 'WorkerRunTimeout', message: '任务运行超过时限，已释放以便队列继续' }
             : { name: 'WorkerLeaseExpired', message: '后台进程中断，任务租约已过期' };
-          const refundedAttempt = leaseInterrupted ? Math.max(0, Number(row.attempt_count) - 1) : row.attempt_count;
-          const delay = row.type === 'feed.translation.run' && !leaseInterrupted ? translationRetryDelayMs(row.attempt_count) : 0;
+          const delay = row.type === 'feed.translation.run' ? translationRetryDelayMs(row.attempt_count) : 0;
           const availableAt = retry ? observedAt + delay : row.available_at;
           database.prepare(`UPDATE jobs SET status = ?, error_json = ?, available_at = ?, completed_at = ?,
-            attempt_count = ?, locked_by = NULL, locked_at = NULL, updated_at = ? WHERE id = ?`)
-            .run(status, JSON.stringify(error), availableAt, retry ? null : observedAt, refundedAttempt, observedAt, row.id);
-          if (leaseInterrupted) {
-            database.prepare(`DELETE FROM job_attempts WHERE job_id = ? AND attempt_number = ?`)
-              .run(row.id, row.attempt_count);
-          } else {
-            database.prepare(`UPDATE job_attempts SET status = 'abandoned', error_json = ?, completed_at = ?
-              WHERE job_id = ? AND attempt_number = ? AND status = 'running'`)
-              .run(JSON.stringify(error), observedAt, row.id, row.attempt_count);
-          }
+            locked_by = NULL, locked_at = NULL, updated_at = ? WHERE id = ?`)
+            .run(status, JSON.stringify(error), availableAt, retry ? null : observedAt, observedAt, row.id);
+          database.prepare(`UPDATE job_attempts SET status = 'abandoned', error_json = ?, completed_at = ?
+            WHERE job_id = ? AND attempt_number = ? AND status = 'running'`)
+            .run(JSON.stringify(error), observedAt, row.id, row.attempt_count);
           insertEvent(retry ? 'job.recovered' : 'job.failed', 'job', row.id,
             { jobId: row.id, error }, row.workspace_id);
-          if (row.type === 'feed.translation.run' && !leaseInterrupted) {
+          if (row.type === 'feed.translation.run') {
             const input = parseJson(row.input_json);
             repositories.feed.noteTranslationFailure?.({
               workspaceId: row.workspace_id,
