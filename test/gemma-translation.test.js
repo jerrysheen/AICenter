@@ -28,6 +28,64 @@ const settings = store => {
  return { env: { AI_CENTER_GEMMA_TRANSLATION_KEY_ENV:'GEMINI_API_KEY5',GEMINI_API_KEY5: 'fake-key', GEMINI_API_KEY: 'must-not-use', ELUCID_GROK_API_KEY: 'must-not-use' }, quotaRepository: store.repositories.modelQuota,now:()=>at,sleep:async ms=>{at+=ms;} };
 };
 
+test('past quota retryAt does not spin the admit loop', { timeout: 3_000 }, async () => {
+  let reserves = 0;
+  let clock = 1_700_000_000_000;
+  const router = createGemmaTranslationRouter({
+    env: {
+      GEMINI_API_KEY: 'fake-key',
+      AI_CENTER_GEMMA_TRANSLATION_MAX_RETRIES: '0',
+      AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MIN_MS: '0',
+      AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MAX_MS: '0',
+    },
+    now: () => clock,
+    sleep: async (ms) => { clock += Math.max(1, ms); },
+    quotaRepository: {
+      reserve() {
+        reserves += 1;
+        return { admitted: false, retryAt: clock - 5_000 };
+      },
+      release() {},
+    },
+    fetch: async () => { throw new Error('fetch must not run'); },
+  });
+  const started = Date.now();
+  await assert.rejects(
+    router.generate({ system: '翻译', prompt: 'One sentence that needs translation.' }),
+    (error) => error?.code === 'budget-deferred' && error.retryAt === 1_700_000_000_000 + 250,
+  );
+  assert.ok(Date.now() - started < 1_500, `admit took ${Date.now() - started}ms`);
+  assert.ok(reserves < 20, `reserve ran ${reserves} times`);
+});
+
+test('admit throws when waits do not actually yield', async () => {
+  let reserves = 0;
+  let clock = 1_700_000_000_000;
+  const router = createGemmaTranslationRouter({
+    env: {
+      GEMINI_API_KEY: 'fake-key',
+      AI_CENTER_GEMMA_TRANSLATION_MAX_RETRIES: '0',
+      AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MIN_MS: '0',
+      AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MAX_MS: '0',
+    },
+    now: () => clock,
+    sleep: async () => { clock += 1; },
+    quotaRepository: {
+      reserve() {
+        reserves += 1;
+        return { admitted: false, retryAt: clock + 5_000 };
+      },
+      release() {},
+    },
+    fetch: async () => { throw new Error('fetch must not run'); },
+  });
+  await assert.rejects(
+    router.generate({ system: '翻译', prompt: 'One sentence that needs translation.' }),
+    (error) => error?.code === 'budget-deferred' && error.retryAt >= clock,
+  );
+  assert.ok(reserves <= 8, `reserve ran ${reserves} times`);
+});
+
 test('five translation accounts dispatch together, cross-model pacing survives router restart',fixture(async store=>{
  let at=Date.now();const calls=[],waiters=[];
  const env=Object.fromEntries(Array.from({length:5},(_,i)=>[i?'GEMINI_API_KEY'+(i+1):'GEMINI_API_KEY','fake-'+i]));

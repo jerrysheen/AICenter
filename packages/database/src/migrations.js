@@ -2116,15 +2116,24 @@ export function runMigrations(database) {
   const applied = new Set(database.prepare('SELECT version FROM schema_migrations').all()
     .map((row) => row.version));
 
+  const recorded = database.prepare('SELECT version FROM schema_migrations WHERE version = ?');
+  const insertMigration = database.prepare(
+    'INSERT OR IGNORE INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)',
+  );
   for (const migration of migrations) {
     if (applied.has(migration.version)) continue;
     database.exec('BEGIN IMMEDIATE');
     try {
+      if (recorded.get(migration.version)) {
+        database.exec('COMMIT');
+        applied.add(migration.version);
+        continue;
+      }
       migration.up(database);
-      database.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)')
-        .run(migration.version, migration.name, Date.now());
+      insertMigration.run(migration.version, migration.name, Date.now());
       database.pragma(`user_version = ${migration.version}`);
       database.exec('COMMIT');
+      applied.add(migration.version);
     } catch (error) {
       try { database.exec('ROLLBACK'); } catch {}
       throw error;

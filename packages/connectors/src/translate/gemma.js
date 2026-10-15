@@ -89,6 +89,11 @@ export function gemmaQuotaDay(at) {
   return { dayStart: nextGeminiDailyReset(dayEnd - 27 * 3600000), dayEnd };
 }
 
+// A past or tiny retryAt must not turn into a 1ms SQLite poll. Eight waits that
+// do not actually yield are a stuck loop, not a quota window.
+const GEMMA_ADMIT_MIN_WAIT_MS = 250;
+const GEMMA_ADMIT_SPIN_LIMIT = 8;
+
 const GEMMA_26B = 'gemma-4-26b-a4b-it';
 export const GEMMA_TRANSLATION_MODELS = ['gemma-4-31b-it', GEMMA_26B];
 export const GEMMA_TRANSLATION_DEFAULT_MODELS = [GEMMA_26B];
@@ -205,11 +210,19 @@ export function createGemmaTranslationRouter(options = {}) {
     nextRequestAt.set(project, at + gemmaIntervalMs(policy.intervalMinMs, policy.intervalMaxMs, random));
   }
 
+  function deferred(at, upstream) {
+    return Object.assign(new Error(upstream ? 'Gemma 翻译上游 500 退避' : 'Gemma 翻译等待配额窗口'), {
+      code: 'budget-deferred',
+      retryAt: at + GEMMA_ADMIT_MIN_WAIT_MS,
+    });
+  }
+
   async function admit(waitMs, pool) {
     let ticket;
     let quotaRetryAt = Infinity;
     let upstreamRetryAt = Infinity;
     const deadline = now() + waitMs;
+    let spins = 0;
     do {
       const at = now();
       quotaRetryAt = Infinity;
@@ -257,13 +270,26 @@ export function createGemmaTranslationRouter(options = {}) {
       const retryAt = Math.min(quotaRetryAt, upstreamRetryAt);
       if (!Number.isFinite(retryAt) || retryAt > deadline) break;
       const stamp = now();
-      await pause(Math.max(1, retryAt - stamp));
-      if (now() <= stamp) break;
+      const upstream = Number.isFinite(upstreamRetryAt) && upstreamRetryAt < quotaRetryAt;
+      const waitFor = retryAt - stamp;
+      if (waitFor < GEMMA_ADMIT_MIN_WAIT_MS) throw deferred(stamp, upstream);
+      const before = now();
+      await pause(waitFor);
+      if (now() - before < GEMMA_ADMIT_MIN_WAIT_MS) {
+        spins += 1;
+        if (spins >= GEMMA_ADMIT_SPIN_LIMIT) throw deferred(now(), upstream);
+      } else {
+        spins = 0;
+      }
     } while (now() < deadline);
     if (!ticket) {
       const retryAt = Math.min(quotaRetryAt, upstreamRetryAt);
       const upstream = Number.isFinite(upstreamRetryAt) && upstreamRetryAt < quotaRetryAt;
-      throw Object.assign(new Error(upstream ? 'Gemma 翻译上游 500 退避' : 'Gemma 翻译等待配额窗口'), { code: 'budget-deferred', retryAt });
+      const at = now();
+      throw Object.assign(new Error(upstream ? 'Gemma 翻译上游 500 退避' : 'Gemma 翻译等待配额窗口'), {
+        code: 'budget-deferred',
+        retryAt: Number.isFinite(retryAt) ? retryAt : at + GEMMA_ADMIT_MIN_WAIT_MS,
+      });
     }
     armInterval(ticket.project, now());
     return ticket;

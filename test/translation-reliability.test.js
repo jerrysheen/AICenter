@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
+import Database from 'better-sqlite3';
 import { createStore } from '../packages/database/src/index.js';
 import { TRANSLATION_MAX_ATTEMPTS, translationRetryDelayMs } from '../packages/database/src/translation-retry.js';
 import { cleanIngestExcerpt } from '../packages/connectors/src/excerpt-text.js';
@@ -152,13 +153,24 @@ test('lease expiry requeues a translation without counting the interrupted attem
     assert.equal(store.recoverStaleJobs(1, claimed.lockedAt + 5), 1);
     const current = store.getJob(job.id);
     assert.equal(current.status, 'queued');
-    assert.equal(current.attemptCount, 0);
+    assert.equal(current.attemptCount, 1);
+    assert.equal(current.maxAttempts, TRANSLATION_MAX_ATTEMPTS + 1);
     assert.equal(current.error.name, 'WorkerLeaseExpired');
     assert.equal(store.repositories.feed.listTranslationFailures('local', ['rel-lease']).length, 0);
     assert.ok(current.availableAt <= Date.now());
-    const again = store.claimNextJob('worker-2', ['feed.translation.run']);
-    assert.equal(again.attemptCount, 1);
-    store.completeJob(again.id, {}, { workerId: 'worker-2', attemptCount: again.attemptCount });
+    const side = new Database(path.join(temporary.dir, 'test.db'), { readonly: true });
+    try {
+      assert.deepEqual(
+        side.prepare(`SELECT attempt_number, status FROM job_attempts WHERE job_id = ? ORDER BY attempt_number`).all(job.id),
+        [{ attempt_number: 1, status: 'abandoned' }],
+      );
+    } finally { side.close(); }
+    const again = store.claimNextJob('worker-1', ['feed.translation.run']);
+    assert.equal(again.attemptCount, 2);
+    store.completeJob(again.id, { stolen: true }, { workerId: 'worker-1', attemptCount: 1 });
+    store.failJob(again.id, new Error('old execution'), 0, { workerId: 'worker-1', attemptCount: 1 });
+    assert.equal(store.getJob(again.id).status, 'running');
+    store.completeJob(again.id, {}, { workerId: 'worker-1', attemptCount: again.attemptCount });
     const fourth = store.createJob({
       type: 'feed.translation.run', workspaceId: 'local', maxAttempts: TRANSLATION_MAX_ATTEMPTS,
       input: { items: [{ id: 'rel-lease-4', text: 'A fourth attempt interrupted by a worker restart.' }] },
@@ -175,10 +187,31 @@ test('lease expiry requeues a translation without counting the interrupted attem
     assert.equal(store.recoverStaleJobs(1, held.lockedAt + 5), 1);
     const refunded = store.getJob(fourth.id);
     assert.equal(refunded.status, 'queued');
-    assert.equal(refunded.attemptCount, TRANSLATION_MAX_ATTEMPTS - 1);
+    assert.equal(refunded.attemptCount, TRANSLATION_MAX_ATTEMPTS);
+    assert.equal(refunded.maxAttempts, TRANSLATION_MAX_ATTEMPTS + 1);
+    const resumed = store.claimNextJob('worker-4', ['feed.translation.run']);
+    assert.equal(resumed.id, fourth.id);
+    assert.equal(resumed.attemptCount, TRANSLATION_MAX_ATTEMPTS + 1);
     const kept = store.repositories.feed.listTranslationFailures('local', ['rel-lease-4'])[0];
     assert.equal(kept.attemptCount, TRANSLATION_MAX_ATTEMPTS - 1);
     assert.doesNotMatch(kept.lastError, /租约已过期/);
+  } finally { temporary.remove(); }
+});
+
+test('lease recovery skips a translation this process is still executing', () => {
+  const temporary = temporaryStore();
+  try {
+    const store = temporary.store;
+    const job = store.createJob({
+      type: 'feed.translation.run', workspaceId: 'local', maxAttempts: TRANSLATION_MAX_ATTEMPTS,
+      input: { items: [{ id: 'rel-live', text: 'Interior Department notice about public lands.' }] },
+    });
+    const claimed = store.claimNextJob('worker-1', ['feed.translation.run']);
+    assert.equal(store.recoverStaleJobs(1, claimed.lockedAt + 5, { executingIds: [job.id] }), 0);
+    const current = store.getJob(job.id);
+    assert.equal(current.status, 'running');
+    assert.equal(current.attemptCount, 1);
+    assert.equal(current.lockedBy, 'worker-1');
   } finally { temporary.remove(); }
 });
 
