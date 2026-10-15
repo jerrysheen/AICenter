@@ -51,7 +51,7 @@ node --env-file=.env scripts/etf-whale-backfill.mjs supersede-stack-errors
 
 ## 迁移
 
-migration 70，只建五张新表。68 是文章去重，69 是 `hardware_price_current_spec`，71 是 `model_usage_translation_attribution`。`etf_whale_fetches.status` 增加使用 `pending`、`holiday`、`stale`、`superseded`，没有改列。
+migration 70，只建五张新表。68 是文章去重，69 是 `hardware_price_current_spec`，71 是 `model_usage_translation_attribution`。生产库若已经先跑到 71，部署后仍会补执行尚未写入 `schema_migrations` 的 70：执行器按单个 version 判断，不看最大版本号。补上 70 时会把 `PRAGMA user_version` 写成 70，已记录的 71 不会重跑；运行时 `schemaVersion` 仍是迁移数组末尾的 71。`etf_whale_fetches.status` 增加使用 `pending`、`holiday`、`stale`、`superseded`，没有改列。
 
 ## 重启
 
