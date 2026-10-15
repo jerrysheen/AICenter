@@ -20,7 +20,7 @@
 
 ## 迁移
 
-不新增 migration。`etf_whale_signals` 已在 migration 70。68 是文章去重，69 是 `hardware_price_current_spec`，71 是 `model_usage_translation_attribution`。
+不新增 migration。`etf_whale_signals` 已在 migration 70。68 是文章去重，69 是 `hardware_price_current_spec`，71 是 `model_usage_translation_attribution`。生产库若已经先跑到 71，部署后仍按单个 version 补上未应用的 70，不改号。
 
 ## 手动补数
 
