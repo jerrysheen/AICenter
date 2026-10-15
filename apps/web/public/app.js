@@ -39,6 +39,7 @@ const pageCache = createPageCache({
 let feedLikeButton = () => null;
 let feedLikeReady = false;
 let hardwareMarketItem = () => null;
+let fillHardwareCaption = () => {};
 let hardwarePricesPage = null;
 let hardwareReady = false;
 let computeMarketItems = () => [];
@@ -1657,6 +1658,7 @@ function ensureHardware() {
   if (!ensureHardware.promise) {
     ensureHardware.promise = import('./hardware-prices.js?v=dev').then((mod) => {
       hardwareMarketItem = mod.hardwareMarketItem;
+      fillHardwareCaption = mod.fillHardwareCaption;
       hardwarePricesPage = mod.createHardwarePricesPage({
         api,
         openPage,
@@ -8235,7 +8237,7 @@ function renderWatchRows(target, rows, { formatValue } = {}) {
     row.querySelector('.quote-code').textContent=code;
     if(item.hardware) {
       row.dataset.hardwareSeries=item.hardware.seriesKey;row.tabIndex=0;row.setAttribute('role','button');row.setAttribute('aria-label',`${item.name} ${item.lastPrice}，查看报价走势`);
-      row.querySelector('.quote-code').textContent=item.group;
+      fillHardwareCaption(row.querySelector('.quote-code'),item);
       const priceLabel=[item.hardware.currency,item.hardware.unit].filter(Boolean).join('/');
       if(priceLabel) row.querySelector('.quote-price').textContent=`${format(item, item.lastPrice)} ${priceLabel}`;
       row.querySelector('.quote-price').classList.toggle('up',item.changePct!==null && up);

@@ -1,5 +1,6 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { HardwarePriceSnapshotInputSchema, HardwareQuoteRowSchema } from '../../../contracts/src/hardware-prices.js';
+import { retireSupersededHardwareQuotes } from '../hardware-price-current.js';
 const hash = v => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const snapshot = r => r ? ({id:r.id,sourceKey:r.source_key,pageKey:r.page_key,sourceUrl:r.source_url,title:r.title,capturedAt:r.captured_at,
   lastCheckedAt:r.last_checked_at || r.captured_at,lastChangedAt:r.captured_at,
@@ -29,6 +30,7 @@ export function createHardwarePriceRepository(database,emitEvent=()=>{}) {
         if(saved){
           database.prepare('UPDATE hardware_price_snapshots SET last_checked_at=? WHERE id=?').run(value.capturedAt,saved.id);
           touchPage(saved.id);
+          retireSupersededHardwareQuotes(database,workspaceId);
           return snapshot(database.prepare('SELECT * FROM hardware_price_snapshots WHERE id=?').get(saved.id));
         }
         const id=randomUUID();
@@ -58,6 +60,7 @@ export function createHardwarePriceRepository(database,emitEvent=()=>{}) {
           database.prepare('INSERT INTO hardware_price_snapshot_rows VALUES (?,?,?,?,?,?)').run(workspaceId,id,row.tableIndex,row.rowIndex,obsId,JSON.stringify(row));
         }
         touchPage(id);
+        retireSupersededHardwareQuotes(database,workspaceId);
         emitEvent('trading.hardware-prices.saved.v1','hardware-price-snapshot',id,{snapshotId:id},workspaceId);
         return snapshot(database.prepare('SELECT * FROM hardware_price_snapshots WHERE id=?').get(id));
       })();

@@ -1,4 +1,64 @@
 import { z } from 'zod';
+
+// Old parses folded session high/low into the specification (`· 日高點: 19.70`).
+// Reads and dedupe use the product name only.
+export function canonicalHardwareSpecification(value) {
+  return String(value ?? '')
+    .replace(/^(?:項目|项目|Item)\s*:\s*/i, '')
+    .replace(/\s*·\s*(?:(?:日|盤|盘)?(?:高|低)(?:點|点)|High|Low)\s*:[\s\S]*$/i, '')
+    .trim();
+}
+
+export function hardwareQuoteIdentity(row) {
+  return [row.category || '', row.quoteType || '', canonicalHardwareSpecification(row.specification)].join('\0');
+}
+
+export function hardwareQuoteRank(row) {
+  const clean = canonicalHardwareSpecification(row.specification);
+  const sodimm = /SO-?DIMM/i.test(clean);
+  let score = 0;
+  if (row.unit) score += 8;
+  if (row.period && row.periodStart != null && !String(row.periodKey || '').startsWith('unverified:')) score += 4;
+  if (String(row.specification || '') === clean) score += 2;
+  if (sodimm && row.unit === 'module') score += 16;
+  if (sodimm && row.unit === 'chip') score -= 4;
+  return score;
+}
+
+export function isSupersededHardwareQuote(row, keeper) {
+  if (!keeper || !row || row.id === keeper.id) return false;
+  if (hardwareQuoteIdentity(row) !== hardwareQuoteIdentity(keeper)) return false;
+  const unverified = String(row.periodKey || '').startsWith('unverified:') || !row.period || row.periodStart == null;
+  const keeperDated = Boolean(keeper.period && keeper.periodStart != null && !String(keeper.periodKey || '').startsWith('unverified:'));
+  if (unverified) return keeperDated;
+  const sameSeries = Boolean(row.seriesKey && keeper.seriesKey && row.seriesKey === keeper.seriesKey);
+  if (sameSeries) return false;
+  if (!keeper.unit || !keeperDated) return false;
+  const clean = canonicalHardwareSpecification(row.specification);
+  const dirty = String(row.specification || '') !== clean;
+  const sodimmChip = /SO-?DIMM/i.test(clean) && row.unit === 'chip' && keeper.unit === 'module';
+  return !row.unit || dirty || sodimmChip;
+}
+
+export function preferHardwareQuotes(rows) {
+  const groups = new Map();
+  for (const row of rows) {
+    const key = hardwareQuoteIdentity(row);
+    const list = groups.get(key) || [];
+    list.push(row);
+    groups.set(key, list);
+  }
+  const chosen = [];
+  for (const list of groups.values()) {
+    const ranked = [...list].sort((a, b) => hardwareQuoteRank(b) - hardwareQuoteRank(a)
+      || (b.periodStart ?? -1) - (a.periodStart ?? -1)
+      || (b.sourceUpdatedAt ?? -1) - (a.sourceUpdatedAt ?? -1)
+      || (b.capturedAt ?? 0) - (a.capturedAt ?? 0));
+    chosen.push(ranked[0]);
+  }
+  return chosen;
+}
+
 const nullableText = z.string().trim().min(1).max(1000).nullable();
 const epoch = z.number().int().nonnegative().nullable();
 const decimal = z.string().regex(/^-?\d+(?:\.\d+)?$/).nullable();
