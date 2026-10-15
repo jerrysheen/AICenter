@@ -7,7 +7,8 @@ import Database from 'better-sqlite3';
 import { createStore } from '../packages/database/src/index.js';
 import { latestSchemaVersion, runMigrations } from '../packages/database/src/migrations.js';
 import { createHardwareArtifactStore } from '../packages/connectors/src/hardware-artifacts.js';
-import { parseStructuredPricePage,legacyPriceSnapshot } from '../packages/connectors/src/trendforce-prices.js';
+import { parseStructuredPricePage,legacyPriceSnapshot,PRICE_PARSER_VERSION } from '../packages/connectors/src/trendforce-prices.js';
+import { hardwareMarketItem,hardwareQuoteCaption,quoteIsStale } from '../apps/web/public/hardware-prices.js';
 import { createHardwarePriceService } from '../packages/domain/src/hardware-price-service.js';
 import { createMediaIngestionService } from '../packages/domain/src/media-ingestion-service.js';
 import { createContentRoutingService } from '../packages/domain/src/content-routing-service.js';
@@ -259,10 +260,134 @@ test('forward migration upgrades V39 with existing content and states intact',()
       DROP INDEX IF EXISTS idx_captures_feed_sort;DROP INDEX IF EXISTS idx_captures_provider_captured;DROP INDEX IF EXISTS idx_captures_feed_filter;
       DROP INDEX IF EXISTS idx_content_items_capture_cover;DROP INDEX IF EXISTS idx_user_item_states_feed_flags;
       DROP TABLE IF EXISTS gemini_model_cursors;
-      DELETE FROM schema_migrations WHERE version IN (40,54,55,56,57,58,59,60,61,62,64,65,66);PRAGMA user_version=39;`);
+      DELETE FROM schema_migrations WHERE version IN (40,54,55,56,57,58,59,60,61,62,64,65,66,67,68);PRAGMA user_version=39;`);
     const before=db.prepare('SELECT count(*) n FROM content_items').get().n;runMigrations(db);runMigrations(db);
     assert.equal(db.pragma('user_version',{simple:true}),latestSchemaVersion());assert.equal(db.prepare('SELECT count(*) n FROM content_items').get().n,before);
     assert.equal(db.prepare(`SELECT COUNT(*) n FROM pragma_table_info('hardware_price_snapshots') WHERE name='last_checked_at'`).get().n,1);db.close();
+  }finally{rmSync(f.directory,{recursive:true,force:true});}
+});
+const contractHtml=`<div class="price-title">DRAM Contract Price (2H Aug) <small>(未稅)</small></div>
+<div class="price-last-update">Last Update 2026-08-31 14:00 (GMT+8)</div>
+<table class="price-table"><tr><th>項目</th><th>盤高點</th><th>盤低點</th><th>盤平均</th></tr>
+<tr><td>DDR5 8GB SO-DIMM</td><td>141.00</td><td>118.00</td><td>133.00</td></tr>
+<tr><td>DDR4 16GB SO-DIMM</td><td>290.00</td><td>245.00</td><td>270.00</td></tr>
+<tr><td>DDR4 8GB SO-DIMM</td><td>148.00</td><td>125.00</td><td>142.00</td></tr>
+<tr><td>DDR4 8Gb 1Gx8</td><td>34.50</td><td>22.50</td><td>25.00</td></tr></table>
+<div class="price-title">Module Spot Price <small>(未稅)</small></div>
+<div class="price-last-update">Last Update 2026-10-05 14:40 (GMT+8)</div>
+<table class="price-table"><tr><th>項目</th><th>盤高點</th><th>盤低點</th><th>盤平均</th></tr>
+<tr><td>DDR5 UDIMM 16GB 4800/5600</td><td>265.00</td><td>223.00</td><td>239.00</td></tr></table>
+<div class="price-title">GDDR Spot Price <small>(未稅)</small></div>
+<div class="price-last-update">Last Update 2026-10-05 14:40 (GMT+8)</div>
+<table class="price-table"><tr><th>項目</th><th>盤高點</th><th>盤低點</th><th>盤平均</th></tr>
+<tr><td>GDDR6 8Gb</td><td>18.00</td><td>10.20</td><td>12.45</td></tr></table>`;
+const flashBoards=`<div class="price-title">NAND Flash Contract Price in Memory Card/UFD (2H Aug) <small>(未稅)</small></div>
+<div class="price-last-update">Last Update 2026-08-31 18:00 (GMT+8)</div>
+<table class="price-table"><tr><th>項目</th><th>高點</th><th>低點</th><th>均價</th></tr>
+<tr><td>NAND 128Gb 16Gx8 MLC</td><td>30.60</td><td>30.25</td><td>30.475</td></tr></table>
+<div class="price-title">Wafer Spot Price <small>(未稅)</small></div>
+<div class="price-last-update">Last Update 2026-10-05 14:40 (GMT+8)</div>
+<table class="price-table"><tr><th>項目</th><th>盤高點</th><th>盤低點</th><th>盤平均</th></tr>
+<tr><td>512Gb TLC</td><td>21.00</td><td>16.80</td><td>18.833</td></tr></table>
+<div class="price-title">Memory Card Spot Price <small>(未稅)</small></div>
+<div class="price-last-update">Last Update 2026-10-05 14:40 (GMT+8)</div>
+<table class="price-table"><tr><th>項目</th><th>盤高點</th><th>盤低點</th><th>盤平均</th></tr>
+<tr><td>MicroSD 128GB</td><td>13.00</td><td>12.00</td><td>12.29</td></tr></table>
+<div class="price-title">PC-Client OEM SSD Contract Price (3Q'26) <small>(未稅)</small></div>
+<div class="price-last-update">Last Update 2026-08-05 11:00 (GMT+8)</div>
+<table class="price-table"><tr><th>項目</th><th>高點</th><th>低點</th><th>均價</th></tr>
+<tr><td>1TB-mSATA/M.2 TLC PCIe-Value Grade</td><td>385.00</td><td>265.00</td><td>321.00</td></tr></table>
+<div class="price-title">SSD Street Price <small>(未稅)</small></div>
+<div class="price-last-update">Last Update 2026-09-24 11:30 (GMT+8)</div>
+<table class="price-table"><tr><th>品牌</th><th>規格</th><th>系列</th><th>容量</th><th>高點</th><th>低點</th><th>均價</th></tr>
+<tr><td>Samsung</td><td>PCIe 4.0 X4</td><td>990 Pro</td><td>1 TB</td><td>239.99</td><td>239.99</td><td>239.99</td></tr></table>`;
+test('DRAM contract SO-DIMM is priced per module and the other storage boards keep USD units without changing numbers',()=>{
+  assert.equal(PRICE_PARSER_VERSION,'trendforce-tables-4');
+  const dram=parseStructuredPricePage(contractHtml,{pageKey:'dram',sourceUrl:'https://www.trendforce.com.tw/price/dram/dram_spot',title:'DRAM'}).rows;
+  assert.deepEqual(dram.filter(row=>/SO-DIMM/.test(row.specification)).map(row=>[row.specification,row.unit,row.currency,row.average]),[
+    ['DDR5 8GB SO-DIMM','module','USD','133.00'],
+    ['DDR4 16GB SO-DIMM','module','USD','270.00'],
+    ['DDR4 8GB SO-DIMM','module','USD','142.00'],
+  ]);
+  const granule=dram.find(row=>row.specification==='DDR4 8Gb 1Gx8');
+  assert.equal(granule.unit,'chip');assert.equal(granule.currency,'USD');assert.equal(granule.average,'25.00');
+  assert.equal(dram.find(row=>row.specification.startsWith('DDR5 UDIMM')).unit,'module');
+  assert.equal(dram.find(row=>row.specification==='GDDR6 8Gb').unit,'chip');
+  assert.equal(dram.find(row=>row.specification==='GDDR6 8Gb').average,'12.45');
+  const flash=parseStructuredPricePage(flashBoards,{pageKey:'flash',sourceUrl:'https://www.trendforce.com.tw/price/flash/flash_spot',title:'NAND'}).rows;
+  const bySpec=spec=>flash.find(row=>row.specification===spec || row.specification.includes(spec));
+  assert.equal(bySpec('NAND 128Gb').unit,'chip');assert.equal(bySpec('NAND 128Gb').currency,'USD');assert.equal(bySpec('NAND 128Gb').average,'30.475');
+  assert.equal(bySpec('512Gb TLC').unit,'wafer');assert.equal(bySpec('512Gb TLC').average,'18.833');
+  assert.equal(bySpec('MicroSD 128GB').unit,'card');assert.equal(bySpec('MicroSD 128GB').category,'other-storage');assert.equal(bySpec('MicroSD 128GB').average,'12.29');
+  assert.equal(bySpec('1TB-mSATA').unit,'unit');assert.equal(bySpec('1TB-mSATA').currency,'USD');assert.equal(bySpec('1TB-mSATA').average,'321.00');
+  assert.equal(bySpec('990 Pro').currency,'USD');assert.equal(bySpec('990 Pro').unit,'unit');assert.equal(bySpec('990 Pro').average,'239.99');
+});
+test('reading keeps the dated quote with a unit and marks the old current rows without deleting them',()=>{
+  const f=fixture();try {
+    const base=parsed();
+    const mixed={...base,raw:html()+'<!--mixed-->',rows:[
+      {...base.rows[0],specification:'DDR5 16Gb (2Gx8) 4800/5600 · 日高點: 12.00',currency:null,unit:null,high:null,low:null},
+      {...base.rows[0],tableIndex:1,rowIndex:1},
+      {...base.rows[0],period:null,periodStart:null,periodEnd:null,tableIndex:2,rowIndex:1},
+    ]};
+    const saved=f.hardware.ingest('local',mixed);
+    const spot=f.hardware.list('local').items.filter(row=>row.specification.includes('DDR5 16Gb'));
+    assert.equal(spot.length,1);assert.equal(spot[0].unit,'chip');assert.equal(spot[0].specification.includes('日高點'),false);
+    const chipRows=parseStructuredPricePage(contractHtml,{pageKey:'dram',sourceUrl:'https://www.trendforce.com.tw/price/dram/dram_spot',title:'DRAM'}).rows.map(row=>row.specification.includes('SO-DIMM')?{...row,unit:'chip'}:row);
+    f.hardware.ingest('local',{...parseStructuredPricePage(contractHtml,{pageKey:'dram',sourceUrl:'https://www.trendforce.com.tw/price/dram/dram_spot',title:'DRAM',capturedAt:at+2}),parserVersion:'trendforce-tables-3',raw:contractHtml+'<!--chip sodimm-->',capturedAt:at+2,rows:chipRows});
+    f.hardware.ingest('local',parseStructuredPricePage(contractHtml+'<!--module-->',{pageKey:'dram',sourceUrl:'https://www.trendforce.com.tw/price/dram/dram_spot',title:'DRAM',capturedAt:at+3}));
+    const items=f.hardware.list('local').items;
+    assert.equal(items.filter(row=>/SO-DIMM/.test(row.specification)).every(row=>row.unit==='module'),true);
+    assert.equal(items.some(row=>row.period==null),false);
+    const db=new Database(path.join(f.directory,'test.db'),{readonly:true});
+    const flags=db.prepare(`SELECT is_current current,json_extract(row_json,'$.specification') spec,json_extract(row_json,'$.unit') unit,period_key periodKey FROM hardware_price_observations`).all();
+    assert.equal(flags.some(row=>row.spec.includes('日高點') && row.current===0),true);
+    assert.equal(flags.some(row=>String(row.periodKey).startsWith('unverified:') && row.current===0),true);
+    assert.equal(flags.some(row=>/SO-DIMM/.test(row.spec) && row.unit==='chip' && row.current===0),true);
+    assert.equal(flags.some(row=>/SO-DIMM/.test(row.spec) && row.unit==='module' && row.current===1),true);
+    assert.equal(flags.filter(row=>row.spec.includes('日高點')).length,1);
+    db.close();
+    assert.equal(f.hardware.snapshot('local',saved.id).items.some(row=>row.specification.includes('日高點')),true);
+  }finally{f.close();}
+});
+test('each hardware quote shows its source date, marks week-old prints, and names the DRAM contract half',()=>{
+  const now=Date.parse('2026-10-15T04:00:00Z');
+  const contract={category:'dram',quoteType:'contract',currency:'USD',unit:'module',specification:'DDR5 8GB SO-DIMM',seriesKey:'a'.repeat(64),
+    period:'2026-08 2H',periodStart:Date.parse('2026-08-16T00:00:00+08:00'),sourceUpdatedAt:Date.parse('2026-08-31T14:00:00+08:00'),verification:'verified',average:'133.00',changePct:null,history:[]};
+  const caption=hardwareQuoteCaption(contract,now);
+  assert.match(caption.text,/8 月下半月/);assert.match(caption.text,/08-31/);assert.match(caption.text,/已过期/);
+  assert.equal(caption.text.includes('9 月'),false);assert.equal(caption.text.includes('09-30'),false);
+  assert.equal(hardwareMarketItem(contract,now).stale,true);
+  const spot={category:'dram',quoteType:'spot',currency:'USD',unit:'chip',specification:'DDR5 16Gb (2Gx8) 4800/5600',seriesKey:'b'.repeat(64),
+    period:'2026-10-15',periodStart:Date.parse('2026-10-15T00:00:00+08:00'),sourceUpdatedAt:Date.parse('2026-10-15T14:40:00+08:00'),verification:'verified',average:'60.433',changePct:null,history:[]};
+  const live=hardwareQuoteCaption(spot,now);
+  assert.match(live.text,/10-15/);assert.equal(live.stale,false);assert.equal(live.text.includes('已过期'),false);
+  const ssd={category:'ssd',quoteType:'contract',currency:'USD',unit:'unit',specification:'1TB-mSATA/M.2 TLC PCIe-Value Grade',seriesKey:'c'.repeat(64),
+    period:'2026 Q3',periodStart:Date.parse('2026-07-01T00:00:00+08:00'),sourceUpdatedAt:Date.parse('2026-08-05T11:00:00+08:00'),verification:'verified',average:'321.00',changePct:null,history:[]};
+  assert.match(hardwareQuoteCaption(ssd,now).text,/2026 Q3/);assert.match(hardwareQuoteCaption(ssd,now).text,/08-05/);assert.equal(hardwareQuoteCaption(ssd,now).stale,true);
+  assert.equal(quoteIsStale(now-7*86400000,now),false);
+  assert.equal(quoteIsStale(now-7*86400000-1,now),true);
+});
+test('migration 68 clears superseded current flags and keeps every observation row',()=>{
+  const f=fixture();try {
+    f.store.close();
+    const db=new Database(path.join(f.directory,'test.db'));
+    const row=(id,spec,unit,periodKey,period,periodStart,current)=>db.prepare('INSERT INTO hardware_price_observations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)').run(
+      id,'local','series-'+id,periodKey,1,null,'hash-'+id,'snapshot-'+id,at,periodStart,at,current,JSON.stringify({specification:spec,category:'dram',quoteType:'spot',unit,period,average:'10.00',high:null,low:null}));
+    row('old-dirty','DDR5 16Gb (2Gx8) 4800/5600 · 日高點: 19.70',null,'["2026-10-05",1,2]','2026-10-05',at,1);
+    row('new-clean','DDR5 16Gb (2Gx8) 4800/5600','chip','["2026-10-12",1,2]','2026-10-12',at+86400000,1);
+    row('undated','DDR5 16Gb (2Gx8) 4800/5600','chip','unverified:snapshot-undated',null,null,1);
+    db.prepare('DELETE FROM schema_migrations WHERE version=68').run();
+    db.pragma('user_version = 67');
+    runMigrations(db);
+    const flags=db.prepare('SELECT id,is_current current FROM hardware_price_observations ORDER BY id').all();
+    assert.equal(flags.length,3);
+    assert.equal(flags.find(item=>item.id==='old-dirty').current,0);
+    assert.equal(flags.find(item=>item.id==='undated').current,0);
+    assert.equal(flags.find(item=>item.id==='new-clean').current,1);
+    assert.equal(db.prepare(`SELECT json_extract(row_json,'$.average') average FROM hardware_price_observations WHERE id='old-dirty'`).get().average,'10.00');
+    assert.equal(db.pragma('user_version',{simple:true}),68);
+    db.close();
   }finally{rmSync(f.directory,{recursive:true,force:true});}
 });
 test('hardware HTTP endpoints are read-only, scoped and explicit legacy migration queues a registered job',async()=>{

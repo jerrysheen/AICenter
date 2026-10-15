@@ -1,6 +1,6 @@
 import { parseDocument, DomUtils } from 'htmlparser2';
 import { HardwarePriceSnapshotInputSchema } from '../../contracts/src/hardware-prices.js';
-export const PRICE_PARSER_VERSION = 'trendforce-tables-3';
+export const PRICE_PARSER_VERSION = 'trendforce-tables-4';
 function headerIndex(headers, patterns) {
   for (const pattern of patterns) {
     const index = headers.findIndex(header => pattern.test(header));
@@ -10,6 +10,18 @@ function headerIndex(headers, patterns) {
 }
 function memoryChipLabel(heading) {
   return /(?:DRAM|NAND Flash)\s+(?:Spot|Contract)\s+Price/i.test(heading) && !/Wafer|Module|eMMC|Card|SSD|Street/i.test(heading);
+}
+// Public titles now only say 未稅. The unit follows the table the row belongs to.
+function boardUnit(heading) {
+  const title = heading || '';
+  if (/\bModule\b/i.test(title)) return 'module';
+  if (/\bGDDR\b/i.test(title)) return 'chip';
+  if (/\bWafer\b/i.test(title)) return 'wafer';
+  if (/\bSSD\b/i.test(title)) return 'unit';
+  if (/NAND Flash\s+Contract/i.test(title)) return 'chip';
+  if (/Memory Card|存储卡|存儲卡/i.test(title)) return 'card';
+  if (memoryChipLabel(title)) return 'chip';
+  return null;
 }
 const clean = n => DomUtils.textContent(n).replace(/\s+/g,' ').trim();
 const hasClass = (n,c) => (n.attribs?.class || '').split(/\s+/).includes(c);
@@ -83,8 +95,12 @@ export function parseStructuredPricePage(raw,{pageKey='dram',sourceUrl,title='',
     const unitMatch=p.context.match(/(?:USD|US\s*\$|NT\s*\$|TWD|RMB|CNY|美元)\s*(?:\/|per\s+)\s*(piece|pcs?|unit|chip|GB|Gb|TB|顆|颗|個|个|片)/i);
     let unit=unitMatch?unitMatch[1]:null;
     const taxBasis=/未稅|未税|excluding tax/i.test(p.context)?'excluding-tax':/含稅|含税|including tax/i.test(p.context)?'including-tax':null;
-    // The public title used to say US$/chip and now only says 未稅. DRAM/NAND spot and contract tables are still that board.
-    if(!currency && !unit && taxBasis==='excluding-tax' && memoryChipLabel(p.heading)) { currency='USD'; unit='chip'; }
+    // Titles used to spell US$/chip and now only say 未稅. Fill USD and the table's unit, without copying a number from anywhere else.
+    const inferred=boardUnit(p.heading);
+    if(taxBasis==='excluding-tax' && inferred) {
+      if(!currency) currency='USD';
+      if(!unit) unit=inferred;
+    }
     const memberNotice=p.context.match(/updated on\s+(\d{1,2})\/(\d{1,2})\/(\d{4})/i);
     if(memberNotice) {
       const stamp=`${memberNotice[3]}-${memberNotice[1].padStart(2,'0')}-${memberNotice[2].padStart(2,'0')}`;
@@ -98,8 +114,14 @@ export function parseStructuredPricePage(raw,{pageKey='dram',sourceUrl,title='',
       const valueColumns=[avg,high,low,change,dailyHigh,dailyLow].filter(i=>i>=0),specEnd=Math.min(...valueColumns);
       const specification=r.slice(0,specEnd).map((v,i)=>`${headers[i]}: ${v}`).join(' · ');
       const singleSpec=specEnd===1?r[0]:specification;
+      let rowCurrency=currency,rowUnit=unit;
+      // SO-DIMM rows share the DRAM contract table with chips. They are modules (条), not chips.
+      if(/contract/i.test(p.heading) && /\bDRAM\b/i.test(p.heading) && /SO-?DIMM/i.test(singleSpec) && (rowUnit==='chip' || (!rowUnit && taxBasis==='excluding-tax'))) {
+        rowUnit='module';
+        if(!rowCurrency) rowCurrency='USD';
+      }
       const category=/micro\s*sd|sd\s*card|memory card|存儲卡|存储卡/i.test(singleSpec) || /^(?:Memory Card|存储卡|存儲卡) /i.test(p.heading)?'other-storage':/SSD/i.test(p.heading+' '+singleSpec)?'ssd':pageKey==='dram'?'dram':'nand';
-      rows.push({specification:singleSpec,category,quoteType,average,high:hi,low:lo,averageBasis:avg>=0?headers[avg]:null,highBasis:high>=0?headers[high]:null,lowBasis:low>=0?headers[low]:null,currency,unit,taxBasis,...periodFor(p.heading+' '+p.context,quoteType,sourceUpdatedAt),
+      rows.push({specification:singleSpec,category,quoteType,average,high:hi,low:lo,averageBasis:avg>=0?headers[avg]:null,highBasis:high>=0?headers[high]:null,lowBasis:low>=0?headers[low]:null,currency:rowCurrency,unit:rowUnit,taxBasis,...periodFor(p.heading+' '+p.context,quoteType,sourceUpdatedAt),
         sourceUpdatedAt,sourceUpdatedRaw:p.updateRaw,reportedChange:change>=0?r[change] || null:null,changeBasis:null,tableIndex,rowIndex,rawCells:r.map(v=>v || '')});
     }
   }

@@ -1,4 +1,4 @@
-import { HardwarePriceListQuerySchema, HardwarePriceSnapshotInputSchema, HardwarePriceListViewSchema, HardwarePriceDetailViewSchema, HardwarePriceSnapshotViewSchema } from '../../contracts/src/hardware-prices.js';
+import { HardwarePriceListQuerySchema, HardwarePriceSnapshotInputSchema, HardwarePriceListViewSchema, HardwarePriceDetailViewSchema, HardwarePriceSnapshotViewSchema, preferHardwareQuotes } from '../../contracts/src/hardware-prices.js';
 const verified = r => Boolean(r.currency && r.unit && r.period && r.quoteType!=='unknown' && r.periodStart!==null && r.periodEnd!==null);
 const publicSnapshot = s => s && (({artifactPath:_path,...rest})=>rest)(s);
 function project(row,history=[]) {
@@ -28,6 +28,7 @@ export function createHardwarePriceService({repository,artifactStore}) {
             rows.push(repository.list(workspaceId,{seriesKey:row.seriesKey,limit:1})[0] || row);
           }
         }
+        rows=preferHardwareQuotes(rows);
       }
       const items=rows.filter(r=>!q.category || r.category===q.category).slice(0,q.limit)
         .map(r=>{
@@ -38,8 +39,10 @@ export function createHardwarePriceService({repository,artifactStore}) {
     },
     detail(workspaceId,seriesKey) {
       const revisions=repository.history(workspaceId,seriesKey);if(!revisions.length)return null;
-      const observations=revisions.filter(r=>r.isCurrent).sort((a,b)=>(a.periodStart ?? -1)-(b.periodStart ?? -1) || a.capturedAt-b.capturedAt);
-      const current=repository.list(workspaceId,{seriesKey,limit:1})[0];const datedPeriods=observations.filter(r=>r.period && r.periodStart!==null && r.periodEnd!==null);
+      const currentRows=revisions.filter(r=>r.isCurrent);
+      const dated=currentRows.filter(r=>r.period && r.periodStart!==null && r.periodEnd!==null);
+      const observations=(dated.length?dated:currentRows).sort((a,b)=>(a.periodStart ?? -1)-(b.periodStart ?? -1) || a.capturedAt-b.capturedAt);
+      const current=repository.list(workspaceId,{seriesKey,limit:1})[0] || revisions.at(-1);const datedPeriods=observations.filter(r=>r.period && r.periodStart!==null && r.periodEnd!==null);
       return HardwarePriceDetailViewSchema.parse({current:project(current,revisions),observations:observations.map(r=>project(r,revisions)),revisions:revisions.map(r=>project(r)),hasHistory:datedPeriods.length>1,
         snapshots:repository.seriesSnapshots(workspaceId,seriesKey).map(publicSnapshot)});
     },

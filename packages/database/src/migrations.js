@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { computeFeedIdentityHash } from '../../domain/src/feed-identity.js';
+import { retireSupersededHardwareQuotes } from './hardware-price-current.js';
 import { seedWorkspaceTaxonomy } from './taxonomy-seed.js';
 
 export const DEFAULT_WORKSPACE_ID = 'local';
@@ -1926,6 +1927,11 @@ migrations.push({ version: 67, name: 'feed_translation_chunks', up(database) {
       updated_at INTEGER NOT NULL,
       PRIMARY KEY (workspace_id, item_id, target_lang, source_hash, chunk_index)
     );`);
+}});
+
+migrations.push({ version: 68, name: 'hardware_price_current_spec', up(database) {
+  // Flags only. Rows, numbers and snapshot HTML stay.
+  retireSupersededHardwareQuotes(database);
 }});
 
 export function backfillKnowledgeRevisionIndex(database) {

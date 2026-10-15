@@ -1059,6 +1059,7 @@ main {
 .quote-identity { min-width: 0; flex: 1; }
 .quote-name { display: block; font-size: 14px; font-weight: 600; line-height: 20px; }
 .quote-code { display: block; margin-top: 2px; color: var(--font-tertiary); font-size: 11px; }
+.price-stale { color: var(--warning); font-weight: 650; }
 .quote-metrics {
   display: flex;
   flex: none;
