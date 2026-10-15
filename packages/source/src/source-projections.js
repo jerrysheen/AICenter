@@ -50,6 +50,7 @@ export function projectGlobalMarketBoardForAI(data = {}) {
 
 export function marketBoardAiWarnings(data = {}) {
   const warnings = [];
+  if (data.stale) warnings.push('行情已过期');
   if (data.mode && data.mode !== 'live') warnings.push(data.note || '部分行情不可用');
   if (data.board === 'global' && !(data.watchlist || []).length && !(data.indices || []).length) {
     warnings.push('global market board returned no projected instruments');

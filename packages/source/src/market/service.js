@@ -7,6 +7,32 @@ import { createYahooClient } from '../../../connectors/src/yahoo.js';
 import { resolveMarketCatalog } from './catalog.js';
 import { cnTradingCalendarAt } from '../../../domain/src/cn-trading-calendar.js';
 
+function envInt(env, key, fallback, min, max) {
+  const raw = env?.[key];
+  if (raw == null || String(raw).trim() === '') return fallback;
+  const value = Number(String(raw).trim());
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`${key} must be an integer from ${min} to ${max}`);
+  }
+  return value;
+}
+
+export function marketStaleMs(env = process.env) {
+  return envInt(env, 'AI_CENTER_MARKET_STALE_MS', 3 * 60_000, 1_000, 30 * 60_000);
+}
+
+function defaultMarketLog(level, message) {
+  const line = `[market] ${message}`;
+  if (level === 'error') console.error(line);
+  else console.warn(line);
+}
+
+function quoteCountIsLow(got, expected) {
+  if (expected <= 0) return false;
+  if (got <= 0) return true;
+  return expected >= 4 && got * 2 < expected;
+}
+
 export function createMarketService(options = {}) {
   const marketCatalog = options.marketCatalog || resolveMarketCatalog(options.marketCatalogPath);
   const yahoo = options.yahoo || createYahooClient(options);
@@ -17,7 +43,9 @@ export function createMarketService(options = {}) {
   const ttlMs = options.ttlMs ?? 20_000;
   const xueqiuTtlMs = options.xueqiuTtlMs ?? 3_000;
   const inflightTimeoutMs = options.inflightTimeoutMs ?? 20_000;
+  const staleMs = options.staleMs ?? marketStaleMs(options.env || process.env);
   const now = options.now || (() => Date.now());
+  const log = options.log || defaultMarketLog;
   const cache = new Map();
   const pending = new Map();
 
@@ -36,26 +64,58 @@ export function createMarketService(options = {}) {
     return rows.some((item) => item && item.lastPrice != null);
   }
 
+  function withStale(payload, stale) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+    if (Boolean(payload.stale) === Boolean(stale)) return payload;
+    return { ...payload, stale: Boolean(stale) };
+  }
+
+  function expose(entry, timestamp) {
+    const stale = timestamp - entry.freshAt >= staleMs;
+    const payload = withStale(entry.payload, stale);
+    if (payload !== entry.payload) entry.payload = payload;
+    return payload;
+  }
+
+  function keepPrevious(key, previous, timestamp) {
+    const payload = withStale(previous.payload, timestamp - previous.freshAt >= staleMs);
+    cache.set(key, { at: timestamp, freshAt: previous.freshAt, payload });
+    return payload;
+  }
+
+  function reportQuotes(label, expected, quotes) {
+    const got = (quotes || []).filter((item) => item && item.lastPrice != null).length;
+    if (quoteCountIsLow(got, expected)) log('warn', `${label}报价不足 got=${got} expected=${expected}`);
+    return got;
+  }
+
   async function cached(key, loader, { refresh = false, ttl = ttlMs } = {}) {
     const timestamp = now();
     if (!refresh) {
       const hit = cache.get(key);
-      if (hit && timestamp - hit.at < ttl) return hit.payload;
+      if (hit && timestamp - hit.at < ttl) return expose(hit, timestamp);
       if (pending.has(key)) return pending.get(key);
     }
     let timer;
     const loaderPromise = Promise.resolve().then(loader);
+    loaderPromise.catch(() => {});
     const timeout = new Promise((_, reject) => {
       timer = setTimeout(() => reject(new Error('行情请求超时')), inflightTimeoutMs);
     });
     const task = Promise.race([loaderPromise, timeout]).then((payload) => {
-      const previous = cache.get(key)?.payload;
-      if (payloadHasQuotes(previous) && !payloadHasQuotes(payload)) return previous;
-      cache.set(key, { at: now(), payload });
-      return payload;
+      const previous = cache.get(key);
+      if (previous && payloadHasQuotes(previous.payload) && !payloadHasQuotes(payload)) {
+        return keepPrevious(key, previous, timestamp);
+      }
+      const fresh = payloadHasQuotes(payload);
+      const stored = withStale(payload, false);
+      cache.set(key, { at: timestamp, freshAt: fresh ? timestamp : timestamp, payload: stored });
+      return stored;
     }).catch((error) => {
-      const previous = cache.get(key)?.payload;
-      if (payloadHasQuotes(previous)) return previous;
+      const message = error instanceof Error ? error.message : String(error);
+      log('error', `行情请求失败 ${String(key).slice(0, 80)} ${message}`);
+      const previous = cache.get(key);
+      if (previous && payloadHasQuotes(previous.payload)) return keepPrevious(key, previous, timestamp);
       throw error;
     }).finally(() => {
       clearTimeout(timer);
@@ -70,6 +130,7 @@ export function createMarketService(options = {}) {
       const tracked = usTrackedItems(extraSymbols, marketCatalog);
       try {
         const { quotes, session } = await yahoo.fetchQuotes(tracked.map((item) => item.symbol));
+        reportQuotes('美股', tracked.length, quotes);
         return buildUsMarketBoard({
           quotes,
           extraSymbols,
@@ -78,7 +139,9 @@ export function createMarketService(options = {}) {
           errors: Math.max(tracked.length - quotes.length, 0),
           marketCatalog,
         });
-      } catch {
+      } catch (error) {
+        log('error', `美股行情失败 ${error instanceof Error ? error.message : error}`);
+        reportQuotes('美股', tracked.length, []);
         return buildUsMarketBoard({
           quotes: [],
           extraSymbols,
@@ -97,6 +160,7 @@ export function createMarketService(options = {}) {
       const symbols = [...new Set(tracked.map((item) => item.yahoo))];
       try {
         const quotes = await fetchQuotes(symbols);
+        reportQuotes('全球资产', symbols.length, quotes);
         const session = quotes.some((item) => item.session === 'regular') ? 'regular' : 'closed';
         return buildGlobalAssetBoard({
           quotes,
@@ -105,7 +169,9 @@ export function createMarketService(options = {}) {
           errors: Math.max(symbols.length - quotes.length, 0),
           marketCatalog,
         });
-      } catch {
+      } catch (error) {
+        log('error', `全球资产行情失败 ${error instanceof Error ? error.message : error}`);
+        reportQuotes('全球资产', symbols.length, []);
         return buildGlobalAssetBoard({
           quotes: [],
           session: 'closed',
@@ -123,6 +189,7 @@ export function createMarketService(options = {}) {
       const unique = [...new Set(tracked.map((item) => item.symbol))];
       try {
         const quotes = await fetchQuotes(unique);
+        reportQuotes('A股', unique.length, quotes);
         return buildCnMarketBoard({
           quotes,
           extraSymbols,
@@ -130,7 +197,9 @@ export function createMarketService(options = {}) {
           errors: unique.filter((symbol) => !quotes.some((item) => item.symbol === symbol)).length,
           marketCatalog,
         });
-      } catch {
+      } catch (error) {
+        log('error', `A股行情失败 ${error instanceof Error ? error.message : error}`);
+        reportQuotes('A股', unique.length, []);
         return buildCnMarketBoard({
           quotes: [],
           extraSymbols,
@@ -147,6 +216,7 @@ export function createMarketService(options = {}) {
       const tracked = asiaTrackedItems(extraSymbols, marketCatalog);
       try {
         const { quotes } = await yahoo.fetchQuotes(tracked.map((item) => item.symbol));
+        reportQuotes('亚洲', tracked.length, quotes);
         return buildAsiaMarketBoard({
           quotes,
           extraSymbols,
@@ -154,7 +224,9 @@ export function createMarketService(options = {}) {
           errors: Math.max(tracked.length - quotes.length, 0),
           marketCatalog,
         });
-      } catch {
+      } catch (error) {
+        log('error', `亚洲行情失败 ${error instanceof Error ? error.message : error}`);
+        reportQuotes('亚洲', tracked.length, []);
         return buildAsiaMarketBoard({
           quotes: [],
           extraSymbols,
@@ -171,6 +243,7 @@ export function createMarketService(options = {}) {
     return cached(`yahoo:${symbols.slice().sort().join(',')}`, async () => {
       try {
         const { quotes } = await yahoo.fetchQuotes(symbols, { interval: refresh ? '1m' : '5m' });
+        reportQuotes('行情', symbols.length, quotes);
         return quotes.map((item) => mapQuote({
           symbol: item.symbol,
           name: item.name,
@@ -185,8 +258,11 @@ export function createMarketService(options = {}) {
           currency: item.currency,
           session: item.session,
           asOf: item.asOf ?? (item.marketTime ? item.marketTime * 1000 : null),
+          provider: item.provider,
         }));
-      } catch {
+      } catch (error) {
+        log('error', `行情读取失败 ${error instanceof Error ? error.message : error}`);
+        reportQuotes('行情', symbols.length, []);
         return [];
       }
     }, { refresh });
@@ -211,6 +287,7 @@ export function createMarketService(options = {}) {
       asOf: item.asOf ?? (item.marketTime ? item.marketTime * 1000 : null),
       session: item.session || sessionFallback,
       ...(item.currency ? { currency: item.currency } : {}),
+      ...(item.provider ? { provider: item.provider } : {}),
     };
   }
 

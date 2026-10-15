@@ -5,7 +5,7 @@ import {
   MARKET_NATIVE_BOARD_CAPTURE_LIMIT,
   MARKET_NATIVE_BOARD_SNAPSHOT_KEY,
 } from '../../source/src/static/market-native-read.js';
-import { buildOverviewBoard, preferredOverviewFocus } from '../../source/src/market/boards.js';
+import { buildOverviewBoard, preferredOverviewFocus, usRegularSessionAt } from '../../source/src/market/boards.js';
 import { MARKET_BOARD_NAMES, marketBoardSnapshotKey } from '../../source/src/market/board-read.js';
 import { listHoldingsQuoteSymbols, retainPreciseQuotes } from '../../domain/src/trading-service.js';
 
@@ -158,6 +158,30 @@ export async function captureHoldingsMarket({
   };
 }
 
+function envInt(env, key, fallback, min, max) {
+  const raw = env?.[key];
+  if (raw == null || String(raw).trim() === '') return fallback;
+  const value = Number(String(raw).trim());
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`${key} must be an integer from ${min} to ${max}`);
+  }
+  return value;
+}
+
+export function marketUsFreshMs(env = process.env) {
+  return envInt(env, 'AI_CENTER_MARKET_US_FRESH_MS', 10 * 60_000, 60_000, 60 * 60_000);
+}
+
+export function usBoardFreshnessError(board, nowMs, maxAgeMs) {
+  if (usRegularSessionAt(nowMs) !== 'regular') return '';
+  const fetchedAt = Number(board?.fetchedAt);
+  if (!Number.isFinite(fetchedAt)) return '美股看板没有行情时间';
+  const ageMs = nowMs - fetchedAt;
+  if (ageMs <= maxAgeMs) return '';
+  const minutes = Math.max(1, Math.round(ageMs / 60_000));
+  return `美股看板行情已 ${minutes} 分钟未更新`;
+}
+
 async function readMarketBoard(sourcePort, board) {
   const snapshot = await sourcePort.read(`market.${board}`, {}, { refresh: true });
   const data = snapshot?.data;
@@ -170,6 +194,12 @@ export async function captureMarketBoards({
   repository,
   workspaceId = 'local',
   now = () => Date.now(),
+  env = process.env,
+  log = (level, message) => {
+    const line = `[market] ${message}`;
+    if (level === 'error') console.error(line);
+    else console.warn(line);
+  },
 }) {
   if (!sourcePort?.read) throw new Error('行情看板快照需要 Source 端口');
   if (!repository?.saveSnapshot) throw new Error('行情看板快照需要存储');
@@ -190,6 +220,11 @@ export async function captureMarketBoards({
   const boards = { overview, us, asia, cn, global };
   for (const name of MARKET_BOARD_NAMES) {
     repository.saveSnapshot(workspaceId, marketBoardSnapshotKey(name), boards[name], at);
+  }
+  const freshError = usBoardFreshnessError(us, at, marketUsFreshMs(env));
+  if (freshError) {
+    log('warn', freshError);
+    throw new Error(freshError);
   }
   return {
     generatedAt: at,

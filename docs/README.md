@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-15-us-market-yahoo-429.md`：美股看板在 Yahoo HTTP 429 之后停在几小时前的快照。看板和持仓每分钟各打一轮 Yahoo，共用一层报价：45 秒缓存、进行中请求合并、两次请求至少间隔 800 毫秒。429 按 `Retry-After` 退避并打日志。退避或失败时美股改走腾讯 `qt.gtimg.cn`，没有的再走新浪 `hq.sinajs.cn`。上一份价格默认保留 3 分钟，之后标 `stale`，页面写「已过期」和上海时间。美股常规交易时段超过 10 分钟没更新，快照先写入再标失败。不新增 migration。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-15-etf-whale-index-daily-approx.md`：没有 5 分钟线时，指数形态用日线开高低收和成交额近似，`inputs_json.index.method` 为 `daily-approx`；有分钟线时仍用原来的 5 分钟形态。日线也没有时 `sIndex` 为 null，接口和页面显示「数据不足」。信号写入会把 `insufficient` 里的分项强制写成 null，不再把 0 当成缺失。不新增 migration。15:30 的行情任务继续抓 5 分钟线。需要同时重启 Web 和 Worker，再跑 `signals --start 2024-01-02`。
 
 - `progress/2026-10-15-etf-whale-backfill-sources.md`：指数日线和实际成交额先读腾讯 `newfqkline` 不复权日线。成交额在第 9 列，单位是万元，入库前乘 10000 收成元。长区间按返回的最早日期向前翻页。新浪 `__ERROR` 算失败。新浪、东财仍按这个顺序兜底。抓取失败写入 `etf_whale_fetches.status=error` 并打日志。回填打印每个上游的行数。中金所 URL 在 2026-06-25 之后没变；单日异常不再打断后面的日期。历史 404 页记 holiday。中信期货 `partyid` 0018 已核对。成交额或指数没有输入时，`sTurnover` / `sIndex` 为 null，并带 `insufficient`。不新增 migration。需要同时重启 Web 和 Worker，再按该说明重跑回填和 `signals`。
