@@ -2,9 +2,33 @@ import { addDays, weekdays } from '../../domain/src/etf-whale/calculate.js';
 import { classifyCalendarDay } from '../../domain/src/etf-whale/fetch-policy.js';
 import { ETF_WHALE_INDICES, TURNOVER_SOURCE } from '../../domain/src/etf-whale/indices.js';
 import { SCORE_ALGORITHM, median, priorPercentile, scoreGjdV1 } from '../../domain/src/etf-whale/score.js';
+import { resolveIndexPoint } from '../../domain/src/etf-whale/session-shape.js';
 import { referencePool } from '../../domain/src/etf-whale/universe.js';
 
+const INDEX_LOOKBACK_DAYS = 90;
+
 const CODES = () => referencePool().map((item) => item.code);
+
+function intradayDaySet(repository, startDate, endDate) {
+  return new Set(repository.listIntradayDays(startDate, endDate).map((row) => `${row.symbol}|${row.trade_date}`));
+}
+
+function priorIndexAmounts(indexRows, symbol, tradeDate) {
+  return indexRows
+    .filter((row) => row.symbol === symbol && row.trade_date < tradeDate && Number.isFinite(row.amount_cny) && row.amount_cny > 0)
+    .sort((left, right) => left.trade_date.localeCompare(right.trade_date))
+    .slice(-20)
+    .map((row) => row.amount_cny);
+}
+
+function indexPoint(repository, indexRows, barDays, symbol, tradeDate) {
+  const row = indexRows.find((entry) => entry.symbol === symbol && entry.trade_date === tradeDate) || null;
+  const key = `${symbol}|${tradeDate}`;
+  const bars = barDays.has(key)
+    ? repository.listIntradayBars(symbol, tradeDate).map((bar) => ({ barTime: bar.bar_time, low: bar.low, close: bar.close }))
+    : [];
+  return resolveIndexPoint(symbol, row, bars, priorIndexAmounts(indexRows, symbol, tradeDate));
+}
 
 function groupAmounts(rows) {
   const byCode = new Map();
@@ -78,17 +102,9 @@ export function scoreTradeDate(repository, tradeDate, stage, cache = null) {
       item.sharePercentile = priorPercentile(own, current?.deltaShares);
     }
   }
-  const indexRows = (cache?.indexRows || repository.listIndexDaily(tradeDate, tradeDate))
-    .filter((row) => row.trade_date === tradeDate);
-  const indices = ETF_WHALE_INDICES.map((item) => {
-    const row = indexRows.find((entry) => entry.symbol === item.symbol);
-    return {
-      symbol: item.symbol,
-      lowDropPct: row?.low_drop_pct,
-      reboundPct: row?.rebound_pct,
-      tailPct: row?.tail_pct,
-    };
-  });
+  const indexRows = cache?.indexRows || repository.listIndexDaily(addDays(tradeDate, -INDEX_LOOKBACK_DAYS), tradeDate);
+  const barDays = cache?.barDays || intradayDaySet(repository, tradeDate, tradeDate);
+  const indices = ETF_WHALE_INDICES.map((item) => indexPoint(repository, indexRows, barDays, item.symbol, tradeDate));
   const scored = scoreGjdV1({
     stage,
     poolSumToday: poolSumOn(amounts, codes, tradeDate),
@@ -128,7 +144,8 @@ export function refreshEtfWhaleSignals(repository, { startDate, endDate, stage }
   const cache = {
     amounts: groupAmounts(repository.listTurnover(codes, TURNOVER_SOURCE, addDays(dates[0], -420), endDate)),
     daily: stage === 'confirmed' ? repository.listDaily().filter((row) => codes.includes(row.code)) : [],
-    indexRows: repository.listIndexDaily(dates[0], endDate),
+    indexRows: repository.listIndexDaily(addDays(dates[0], -INDEX_LOOKBACK_DAYS), endDate),
+    barDays: intradayDaySet(repository, dates[0], endDate),
   };
   for (const tradeDate of dates) repository.saveSignal(scoreTradeDate(repository, tradeDate, stage, cache));
   return dates.length;

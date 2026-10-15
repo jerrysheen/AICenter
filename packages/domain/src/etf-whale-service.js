@@ -6,7 +6,7 @@ import { classifyCalendarDay, lastTradingOnOrBefore, shanghaiToday } from './etf
 import { citicNetShort, citicNetShortChange } from './etf-whale/futures.js';
 import { CFFEX_PRODUCTS, ETF_WHALE_INDICES, TURNOVER_SOURCE, citicPartyId } from './etf-whale/indices.js';
 import { SCORE_ALGORITHM, ETF_WHALE_DISCLAIMER, median, nameFlag, priorPercentile } from './etf-whale/score.js';
-import { indexShapeHit } from './etf-whale/session-shape.js';
+import { describeIndexPoint, resolveIndexPoint } from './etf-whale/session-shape.js';
 import { referencePool, universeByCode } from './etf-whale/universe.js';
 
 export { ETF_WHALE_DISCLAIMER };
@@ -157,6 +157,7 @@ function presentSignal(row) {
     level: row.level,
     algorithm: row.algorithm,
     insufficient: Array.isArray(inputs.insufficient) ? inputs.insufficient : [],
+    indexMethod: inputs.index?.method ?? null,
   };
 }
 
@@ -211,7 +212,8 @@ function presentDaily(repository, pool, tradeDate) {
   const poolRows = etfs.filter((item) => item.referencePool);
   const poolAmounts = poolRows.map((item) => item.amountCny);
   const poolComplete = poolAmounts.length === poolRows.length && poolAmounts.every(Number.isFinite);
-  const indexRows = repository.listIndexDaily(tradeDate, tradeDate);
+  const indexHistory = repository.listIndexDaily(addDays(tradeDate, -90), tradeDate);
+  const barDays = new Set((repository.listIntradayDays?.(tradeDate, tradeDate) || []).map((row) => `${row.symbol}|${row.trade_date}`));
   const sse = repository.getFetch('sse', tradeDate, tradeDate);
   return {
     tradeDate,
@@ -224,15 +226,18 @@ function presentDaily(repository, pool, tradeDate) {
     },
     etfs,
     indices: ETF_WHALE_INDICES.map((item) => {
-      const row = indexRows.find((entry) => entry.symbol === item.symbol);
-      const shape = {
-        symbol: item.symbol,
-        name: item.name,
-        lowDropPct: row?.low_drop_pct ?? null,
-        reboundPct: row?.rebound_pct ?? null,
-        tailPct: row?.tail_pct ?? null,
-      };
-      return { ...shape, hit: indexShapeHit(shape) };
+      const row = indexHistory.find((entry) => entry.symbol === item.symbol && entry.trade_date === tradeDate) || null;
+      const key = `${item.symbol}|${tradeDate}`;
+      const bars = barDays.has(key)
+        ? repository.listIntradayBars(item.symbol, tradeDate).map((bar) => ({ barTime: bar.bar_time, low: bar.low, close: bar.close }))
+        : [];
+      const priorAmounts = indexHistory
+        .filter((entry) => entry.symbol === item.symbol && entry.trade_date < tradeDate && Number.isFinite(entry.amount_cny) && entry.amount_cny > 0)
+        .sort((left, right) => left.trade_date.localeCompare(right.trade_date))
+        .slice(-20)
+        .map((entry) => entry.amount_cny);
+      const described = describeIndexPoint(resolveIndexPoint(item.symbol, row, bars, priorAmounts));
+      return { symbol: item.symbol, name: item.name, ...described };
     }),
     futures: presentFutures(repository, tradeDate),
   };
