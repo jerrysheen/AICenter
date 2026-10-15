@@ -555,6 +555,7 @@ export function createAiCenterWorker(options = {}) {
         timezone: dailyConfig.timezone,
         pipeline: treeEnabled ? 'tree-v3' : 'legacy',
       }),
+      env,
     }),
   });
   registry.register({

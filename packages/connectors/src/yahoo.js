@@ -1,8 +1,16 @@
+import { createUsQuoteFallback } from './us-quote-fallback.js';
+
 const SPARK_URL = 'https://query1.finance.yahoo.com/v7/finance/spark';
 const CHART_URL = 'https://query1.finance.yahoo.com/v8/finance/chart';
 const SEARCH_URL = 'https://query1.finance.yahoo.com/v1/finance/search';
-const DEFAULT_TIMEOUT_MS = 12_000;
+const COOKIE_URL = 'https://fc.yahoo.com';
+const CRUMB_URL = 'https://query1.finance.yahoo.com/v1/test/getcrumb';
+const DEFAULT_TIMEOUT_MS = 8_000;
+const DEFAULT_CACHE_MS = 45_000;
+const DEFAULT_MIN_INTERVAL_MS = 800;
 const BATCH_SIZE = 20;
+const BACKOFF_BASE_MS = 15_000;
+const BACKOFF_CAP_MS = 5 * 60_000;
 const YAHOO_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
   Accept: 'application/json',
@@ -24,6 +32,165 @@ function chunk(items, size) {
   const groups = [];
   for (let index = 0; index < items.length; index += size) groups.push(items.slice(index, index + size));
   return groups;
+}
+
+function envInt(env, key, fallback, min, max) {
+  const raw = env?.[key];
+  if (raw == null || String(raw).trim() === '') return fallback;
+  const value = Number(String(raw).trim());
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`${key} must be an integer from ${min} to ${max}`);
+  }
+  return value;
+}
+
+export function yahooCacheMs(env = process.env) {
+  return envInt(env, 'AI_CENTER_YAHOO_CACHE_MS', DEFAULT_CACHE_MS, 30_000, 60_000);
+}
+
+export function yahooMinIntervalMs(env = process.env) {
+  return envInt(env, 'AI_CENTER_YAHOO_MIN_INTERVAL_MS', DEFAULT_MIN_INTERVAL_MS, 0, 10_000);
+}
+
+export function yahooTimeoutMs(env = process.env) {
+  return envInt(env, 'AI_CENTER_YAHOO_TIMEOUT_MS', DEFAULT_TIMEOUT_MS, 1_000, 20_000);
+}
+
+function defaultLog(level, message) {
+  const line = `[market] ${message}`;
+  if (level === 'error') console.error(line);
+  else console.warn(line);
+}
+
+function parseRetryAfter(value, nowMs) {
+  if (value == null || String(value).trim() === '') return 0;
+  const seconds = Number(String(value).trim());
+  if (Number.isFinite(seconds)) return Math.max(0, Math.round(seconds * 1000));
+  const date = Date.parse(String(value));
+  if (Number.isFinite(date)) return Math.max(0, date - nowMs);
+  return 0;
+}
+
+function cookieHeaderFrom(response) {
+  const headers = response?.headers;
+  if (!headers) return '';
+  const list = typeof headers.getSetCookie === 'function' ? headers.getSetCookie() : [];
+  const raw = list.length ? list : [headers.get('set-cookie')].filter(Boolean);
+  return raw.map((item) => String(item).split(';')[0].trim()).filter((item) => item.includes('=')).join('; ');
+}
+
+export function createYahooQuoteLayer(options = {}) {
+  const now = options.now || (() => Date.now());
+  const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_MS;
+  const minIntervalMs = options.minIntervalMs ?? DEFAULT_MIN_INTERVAL_MS;
+  const log = options.log || defaultLog;
+  const cache = new Map();
+  const waiters = new Map();
+  let drainScheduled = false;
+  let fetcher = async () => [];
+  let backoffUntil = 0;
+  let backoffMs = BACKOFF_BASE_MS;
+  let chain = Promise.resolve();
+  let nextSlot = 0;
+
+  function fresh(symbol) {
+    const hit = cache.get(symbol);
+    if (!hit || now() - hit.at >= cacheTtlMs) return null;
+    return hit.quote;
+  }
+
+  function remember(quote) {
+    const symbol = String(quote?.symbol || '').toUpperCase();
+    if (!symbol || quote.lastPrice == null) return;
+    cache.set(symbol, { at: now(), quote: { ...quote, symbol } });
+  }
+
+  function backingOff() {
+    return now() < backoffUntil;
+  }
+
+  function note429(retryAfterMs = 0) {
+    const chosen = Math.min(BACKOFF_CAP_MS, Math.max(Number(retryAfterMs) || 0, backoffMs));
+    backoffUntil = now() + chosen;
+    log('warn', `Yahoo HTTP 429 backoffMs=${chosen} retryAfterMs=${Number(retryAfterMs) || 0}`);
+    backoffMs = Math.min(BACKOFF_CAP_MS, Math.max(backoffMs, BACKOFF_BASE_MS) * 2);
+  }
+
+  function noteSuccess() {
+    backoffMs = BACKOFF_BASE_MS;
+  }
+
+  function schedule(task) {
+    const run = chain.then(async () => {
+      const wait = Math.max(0, nextSlot - Date.now());
+      if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
+      nextSlot = Date.now() + minIntervalMs;
+      return task();
+    });
+    chain = run.then(() => {}, () => {});
+    return run;
+  }
+
+  function enqueue(symbols, load) {
+    fetcher = load;
+    const pending = [];
+    for (const symbol of symbols) {
+      const hit = fresh(symbol);
+      if (hit) {
+        pending.push(Promise.resolve(hit));
+        continue;
+      }
+      let waiter = waiters.get(symbol);
+      if (!waiter) {
+        let resolve;
+        const promise = new Promise((res) => { resolve = res; });
+        waiter = { resolve, promise };
+        waiters.set(symbol, waiter);
+      }
+      pending.push(waiter.promise);
+    }
+    if (!drainScheduled && waiters.size) {
+      drainScheduled = true;
+      queueMicrotask(() => {
+        drainScheduled = false;
+        const entries = [...waiters.entries()];
+        waiters.clear();
+        const loadNow = fetcher;
+        const names = entries.map(([symbol]) => symbol);
+        const finish = (map) => {
+          for (const [symbol, waiter] of entries) {
+            const quote = map.get(symbol) || null;
+            if (quote) remember(quote);
+            waiter.resolve(quote);
+          }
+        };
+        if (backingOff()) {
+          finish(new Map());
+          return;
+        }
+        schedule(() => loadNow(names)).then((quotes) => {
+          noteSuccess();
+          finish(new Map((quotes || []).filter((quote) => quote?.symbol).map((quote) => [String(quote.symbol).toUpperCase(), quote])));
+        }).catch((error) => {
+          if (error?.status === 429) note429(error.retryAfterMs || 0);
+          else log('error', `Yahoo 行情失败 ${error instanceof Error ? error.message : error}`);
+          const partial = new Map((error?.partial || []).filter((quote) => quote?.symbol).map((quote) => [String(quote.symbol).toUpperCase(), quote]));
+          for (const quote of partial.values()) remember(quote);
+          finish(partial);
+        });
+      });
+    }
+    return Promise.all(pending);
+  }
+
+  return { fresh, remember, enqueue, backingOff, note429, noteSuccess, schedule };
+}
+
+let sharedLayer = null;
+
+function sharedYahooQuoteLayer(options) {
+  if (!sharedLayer) sharedLayer = createYahooQuoteLayer(options);
+  return sharedLayer;
 }
 
 export function parseMarketSession(meta, nowSec = Math.floor(Date.now() / 1000)) {
@@ -121,16 +288,64 @@ export function barsFromChart(payload, symbolHint = '') {
 }
 
 export function createYahooClient(options = {}) {
-  const fetchImpl = options.fetchImpl ?? fetch;
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const env = options.env || process.env;
+  const timeoutMs = options.timeoutMs ?? yahooTimeoutMs(env);
+  const log = options.log || defaultLog;
+  const injected = options.fetchImpl;
+  const layer = options.layer || (injected
+    ? createYahooQuoteLayer({ ...options, log, cacheTtlMs: options.cacheTtlMs, minIntervalMs: options.minIntervalMs ?? 0 })
+    : sharedYahooQuoteLayer({
+      cacheTtlMs: options.cacheTtlMs ?? yahooCacheMs(env),
+      minIntervalMs: options.minIntervalMs ?? yahooMinIntervalMs(env),
+      log,
+    }));
+  const fallback = options.fallback === undefined
+    ? createUsQuoteFallback({ fetchImpl: injected, timeoutMs, now: options.now })
+    : options.fallback;
+  let transport = injected || null;
+  let agent = null;
+  let cookie = '';
+  let crumb = '';
+  let crumbFlight = null;
 
-  async function request(url) {
+  async function loadTransport() {
+    if (transport) return transport;
+    const undici = await import('undici');
+    agent = new undici.Agent({
+      connections: 2,
+      pipelining: 1,
+      keepAliveTimeout: 4_000,
+      headersTimeout: timeoutMs,
+      bodyTimeout: timeoutMs,
+      connect: { timeout: Math.min(5_000, timeoutMs) },
+    });
+    transport = (url, init) => undici.fetch(url, { ...init, dispatcher: agent });
+    return transport;
+  }
+
+  async function request(url, { withCrumb = true, cookieHeader = cookie, accept = 'application/json' } = {}) {
+    const target = url instanceof URL ? new URL(url.href) : new URL(String(url));
+    if (withCrumb && crumb) target.searchParams.set('crumb', crumb);
+    const headers = { ...YAHOO_HEADERS, Accept: accept };
+    if (cookieHeader) headers.Cookie = cookieHeader;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetchImpl(url, { headers: YAHOO_HEADERS, cache: 'no-store', signal: controller.signal });
-      if (!response.ok) throw new Error(`Yahoo HTTP ${response.status}`);
-      return await response.json();
+      const fetchImpl = await loadTransport();
+      const response = await fetchImpl(target, { headers, cache: 'no-store', signal: controller.signal });
+      if (response.status === 429 || response.status === 401) {
+        await response.arrayBuffer().catch(() => {});
+        const error = new Error(`Yahoo HTTP ${response.status}`);
+        error.status = response.status;
+        if (response.status === 429) error.retryAfterMs = parseRetryAfter(response.headers.get('retry-after'), Date.now());
+        throw error;
+      }
+      if (!response.ok) {
+        const error = new Error(`Yahoo HTTP ${response.status}`);
+        error.status = response.status;
+        throw error;
+      }
+      return response;
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') throw new Error('Yahoo 行情请求超时。');
       throw error;
@@ -139,39 +354,142 @@ export function createYahooClient(options = {}) {
     }
   }
 
-  async function fetchSparkGroup(group, range, interval, includePrePost) {
+  async function requestJson(url, requestOptions) {
+    const response = await request(url, requestOptions);
+    return response.json();
+  }
+
+  function refreshCrumb() {
+    if (!crumbFlight) {
+      crumbFlight = loadCrumb().finally(() => { crumbFlight = null; });
+    }
+    return crumbFlight;
+  }
+
+  async function loadCrumb() {
+    const fetchImpl = await loadTransport();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let cookieResponse;
+    try {
+      cookieResponse = await fetchImpl(COOKIE_URL, {
+        headers: { ...YAHOO_HEADERS, Accept: '*/*' },
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') throw new Error('Yahoo 行情请求超时。');
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+    await cookieResponse.arrayBuffer().catch(() => {});
+    const nextCookie = cookieHeaderFrom(cookieResponse);
+    if (!nextCookie) throw new Error('Yahoo 没有返回 cookie');
+    const crumbResponse = await request(CRUMB_URL, { withCrumb: false, cookieHeader: nextCookie, accept: 'text/plain' });
+    const value = (await crumbResponse.text()).trim().replace(/^"|"$/g, '');
+    if (!value || value.includes('<') || value.length > 128) throw new Error('Yahoo crumb 无效');
+    cookie = nextCookie;
+    crumb = value;
+  }
+
+  function sparkResults(payload) {
+    if (isRecord(payload?.spark?.error) && /unauthor|crumb|invalid/i.test(String(payload.spark.error.code || payload.spark.error.description || ''))) {
+      const error = new Error('Yahoo HTTP 401');
+      error.status = 401;
+      throw error;
+    }
+    return isRecord(payload) && isRecord(payload.spark) && Array.isArray(payload.spark.result)
+      ? payload.spark.result
+      : [];
+  }
+
+  async function fetchSparkGroup(group, range, interval, includePrePost, attempt = 0) {
     const url = new URL(SPARK_URL);
     url.searchParams.set('symbols', group.join(','));
     url.searchParams.set('range', range);
     url.searchParams.set('interval', interval);
     url.searchParams.set('includePrePost', includePrePost ? 'true' : 'false');
-    const payload = await request(url);
-    const results = isRecord(payload) && isRecord(payload.spark) && Array.isArray(payload.spark.result)
-      ? payload.spark.result
-      : [];
-    return results;
+    try {
+      const results = sparkResults(await requestJson(url));
+      if (!results.length && attempt < 1) {
+        await refreshCrumb();
+        return fetchSparkGroup(group, range, interval, includePrePost, attempt + 1);
+      }
+      return results;
+    } catch (error) {
+      if (error?.status === 401 && attempt < 1) {
+        await refreshCrumb();
+        return fetchSparkGroup(group, range, interval, includePrePost, attempt + 1);
+      }
+      throw error;
+    }
   }
 
-  async function fetchQuoteGroup(group, interval = '5m') {
-    return (await fetchSparkGroup(group, '1d', interval, true)).map((result) => quoteFromSpark(result)).filter(Boolean);
+  async function loadSymbols(symbols, interval) {
+    const quotes = [];
+    for (const group of chunk(symbols, BATCH_SIZE)) {
+      try {
+        const results = await fetchSparkGroup(group, '1d', interval, true);
+        for (const result of results) {
+          const quote = quoteFromSpark(result);
+          if (quote) quotes.push({ ...quote, provider: 'yahoo' });
+        }
+      } catch (error) {
+        if (error?.status === 429) {
+          error.partial = quotes;
+          throw error;
+        }
+        log('error', `Yahoo 行情失败 ${error instanceof Error ? error.message : error}`);
+      }
+    }
+    return quotes;
+  }
+
+  function pack(quotes, unique) {
+    const bySymbol = new Map();
+    for (const quote of quotes) {
+      if (!quote?.symbol || quote.lastPrice == null || bySymbol.has(quote.symbol)) continue;
+      bySymbol.set(quote.symbol, quote);
+    }
+    const ordered = unique.map((symbol) => bySymbol.get(symbol)).filter(Boolean);
+    const sessionQuote = ordered.find((quote) => quote.session === 'regular')
+      || ordered.find((quote) => quote.session === 'pre')
+      || ordered.find((quote) => quote.session === 'post')
+      || ordered[0];
+    return { quotes: ordered, session: sessionQuote?.session || 'closed' };
+  }
+
+  async function fillFallback(symbols) {
+    if (!symbols.length || !fallback?.fetchQuotes) return [];
+    try {
+      const quotes = await fallback.fetchQuotes(symbols);
+      const list = Array.isArray(quotes) ? quotes.filter((quote) => quote?.lastPrice != null) : [];
+      for (const quote of list) layer.remember(quote);
+      if (list.length) {
+        const providers = [...new Set(list.map((quote) => quote.provider || 'fallback'))].join(',');
+        log('warn', `Yahoo 不可用，改用备用行情 ${list.length} 项 source=${providers}`);
+      }
+      return list;
+    } catch (error) {
+      log('error', `备用行情失败 ${error instanceof Error ? error.message : error}`);
+      return [];
+    }
   }
 
   async function fetchQuotes(symbols, { interval = '5m' } = {}) {
-    const unique = [...new Set(symbols.map((symbol) => String(symbol || '').trim().toUpperCase()).filter(Boolean))];
-    const settled = await Promise.allSettled(chunk(unique, BATCH_SIZE).map((group) => fetchQuoteGroup(group, interval)));
-    const quotes = [];
-    for (const item of settled) {
-      if (item.status === 'fulfilled') quotes.push(...item.value);
+    const unique = [...new Set((symbols || []).map((symbol) => String(symbol || '').trim().toUpperCase()).filter(Boolean))];
+    if (!unique.length) return { quotes: [], session: 'closed' };
+    if (layer.backingOff()) {
+      const cached = unique.map((symbol) => layer.fresh(symbol)).filter(Boolean);
+      const have = new Set(cached.map((quote) => quote.symbol));
+      const extra = await fillFallback(unique.filter((symbol) => !have.has(symbol)));
+      return pack([...cached, ...extra], unique);
     }
-    const bySymbol = new Map(quotes.map((quote) => [quote.symbol, quote]));
-    const sessionQuote = quotes.find((quote) => quote.session === 'regular')
-      || quotes.find((quote) => quote.session === 'pre')
-      || quotes.find((quote) => quote.session === 'post')
-      || quotes[0];
-    return {
-      quotes: unique.map((symbol) => bySymbol.get(symbol)).filter(Boolean),
-      session: sessionQuote?.session || 'closed',
-    };
+    const rows = await layer.enqueue(unique, (batch) => loadSymbols(batch, interval));
+    const have = new Set(rows.filter((quote) => quote?.lastPrice != null).map((quote) => quote.symbol));
+    const extra = await fillFallback(unique.filter((symbol) => !have.has(symbol)));
+    return pack([...rows.filter(Boolean), ...extra], unique);
   }
 
   async function fetchChart(symbol, range, interval) {
@@ -179,28 +497,41 @@ export function createYahooClient(options = {}) {
     url.searchParams.set('range', range);
     url.searchParams.set('interval', interval);
     url.searchParams.set('includePrePost', 'false');
-    return barsFromChart(await request(url), symbol);
+    return barsFromChart(await requestJson(url), symbol);
   }
 
   async function fetchHistory(symbols, { range = '3mo', interval = '1d', ohlc = false } = {}) {
-    const unique = [...new Set(symbols.map((symbol) => String(symbol || '').trim().toUpperCase()).filter(Boolean))];
-    if (!unique.length) return [];
+    const unique = [...new Set((symbols || []).map((symbol) => String(symbol || '').trim().toUpperCase()).filter(Boolean))];
+    if (!unique.length || layer.backingOff()) return [];
     if (ohlc) {
-      const settled = await Promise.allSettled(unique.map((symbol) => fetchChart(symbol, range, interval)));
       const series = [];
-      for (const item of settled) {
-        if (item.status === 'fulfilled' && item.value) series.push(item.value);
+      for (const symbol of unique) {
+        try {
+          const value = await layer.schedule(() => fetchChart(symbol, range, interval));
+          if (value) series.push(value);
+        } catch (error) {
+          if (error?.status === 429) {
+            layer.note429(error.retryAfterMs || 0);
+            break;
+          }
+        }
       }
       const bySymbol = new Map(series.map((item) => [item.symbol, item]));
       return unique.map((symbol) => bySymbol.get(symbol)).filter(Boolean);
     }
-    const settled = await Promise.allSettled(chunk(unique, BATCH_SIZE).map((group) => fetchSparkGroup(group, range, interval, false)));
     const series = [];
-    for (const item of settled) {
-      if (item.status !== 'fulfilled') continue;
-      for (const result of item.value) {
-        const mapped = seriesFromSpark(result);
-        if (mapped) series.push(mapped);
+    for (const group of chunk(unique, BATCH_SIZE)) {
+      try {
+        const results = await layer.schedule(() => fetchSparkGroup(group, range, interval, false));
+        for (const result of results) {
+          const mapped = seriesFromSpark(result);
+          if (mapped) series.push(mapped);
+        }
+      } catch (error) {
+        if (error?.status === 429) {
+          layer.note429(error.retryAfterMs || 0);
+          break;
+        }
       }
     }
     const bySymbol = new Map(series.map((item) => [item.symbol, item]));
@@ -208,12 +539,16 @@ export function createYahooClient(options = {}) {
   }
 
   async function searchSymbols(query) {
-    const q = query.trim();
-    if (!q) return [];
+    const q = String(query || '').trim();
+    if (!q || layer.backingOff()) return [];
     let payload;
     try {
-      payload = await request(`${SEARCH_URL}?q=${encodeURIComponent(q)}&quotesCount=8&newsCount=0`);
+      payload = await layer.schedule(() => requestJson(`${SEARCH_URL}?q=${encodeURIComponent(q)}&quotesCount=8&newsCount=0`));
     } catch (error) {
+      if (error?.status === 429) {
+        layer.note429(error.retryAfterMs || 0);
+        return [];
+      }
       if (error instanceof Error && /Yahoo HTTP 400/.test(error.message)) return [];
       throw error;
     }
@@ -232,5 +567,5 @@ export function createYahooClient(options = {}) {
     });
   }
 
-  return { fetchQuotes, fetchHistory, searchSymbols };
+  return { fetchQuotes, fetchHistory, searchSymbols, layer };
 }

@@ -46,7 +46,7 @@ function toSnapshot(quote, extras = {}) {
     session: /^\d{6}\.(SS|SZ)$/.test(quote.symbol) && extras.fetchedAt != null
       ? cnTradingCalendarAt(extras.fetchedAt).session : quote.session || extras.session || 'closed',
     asOf: quote.asOf ?? (quote.marketTime ? quote.marketTime * 1000 : null),
-    provider: extras.provider || 'yahoo',
+    provider: quote.provider || extras.provider || 'yahoo',
     expiry: extras.expiry || '',
   };
 }
@@ -115,6 +115,10 @@ function sessionInWindow(nowMs, timeZone, openMinutes, closeMinutes) {
   const minute = Number(parts.find((part) => part.type === 'minute')?.value || 0);
   const current = hour * 60 + minute;
   return current >= openMinutes && current < closeMinutes ? 'regular' : 'closed';
+}
+
+export function usRegularSessionAt(nowMs = Date.now()) {
+  return sessionInWindow(nowMs, 'America/New_York', 9 * 60 + 30, 16 * 60);
 }
 
 export function asiaSessionsAt(nowMs = Date.now()) {
@@ -382,6 +386,7 @@ export function buildOverviewBoard(usBoard, asiaBoard, cnBoard, options = {}) {
     ...(focused?.calendar ? { calendar: focused.calendar } : {}),
     sessions: asiaBoard?.sessions || null,
     focus,
+    ...(focused?.stale ? { stale: true } : {}),
     note: focus === 'cn'
       ? `北京时间工作日 05:00–17:00 显示 A 股与港股观察，指数行同时包含韩国综指与台湾加权。${focused?.calendar ? cnTradingCalendarNote(focused.calendar) : ''} 港股按香港市场状态显示。`
       : '北京时间 17:00 后至次日 05:00 及周末显示美股观察。完整分组在美股分览。',

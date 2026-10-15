@@ -17,6 +17,7 @@ import {
   HOME_QUOTE_CAPTION,
   pickHomeQuoteCards,
   quoteStatusText,
+  marketStaleLabel,
   homeRequestPlan,
   hourlyEditions,
   homeHourSections,
@@ -6558,6 +6559,11 @@ function renderHubTicker() {
       slow: Boolean(state.homeSlow && pending),
     });
     elements['hub-market-note'].replaceChildren();
+    const stale = marketStaleLabel(state.markets.overview);
+    if (stale && status.kind !== 'error' && status.kind !== 'slow') {
+      elements['hub-market-note'].textContent = stale;
+      return;
+    }
     if (status.kind === 'error' || status.kind === 'slow') {
       const button = document.createElement('button');
       button.type = 'button';
@@ -8054,13 +8060,17 @@ function scheduleOverviewFocusWatch() {
 function renderMarketStatus() {
   const el = elements['market-status'];
   if (!el) return;
+  const market = currentMarket();
   const error = !state.marketLoading && (state.marketBoardErrors[state.stockBoard] || state.marketError)
     ? (state.marketBoardErrors[state.stockBoard] || state.marketError)
     : '';
+  const stale = marketStaleLabel(market);
   el.replaceChildren();
-  el.classList.toggle('hidden', !error);
+  el.classList.toggle('is-stale', Boolean(stale));
+  el.classList.toggle('hidden', !stale && !error);
+  if (stale) el.append(document.createTextNode(error ? `${stale} · ${error}` : stale));
+  else if (error) el.append(document.createTextNode(error));
   if (!error) return;
-  el.append(document.createTextNode(error));
   const retry = document.createElement('button');
   retry.type = 'button';
   retry.className = 'text-button';

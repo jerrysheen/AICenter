@@ -34,6 +34,7 @@ export const MarketBoardViewSchema = z.looseObject({
   board: z.enum(['overview', 'us', 'asia', 'cn', 'global']),
   mode: z.enum(['live', 'partial']),
   fetchedAt: z.number().int().nonnegative(),
+  stale: z.boolean().optional(),
   session: z.string().max(32),
   focus: z.enum(['us', 'cn']).optional(),
   note: z.string().max(1_000),

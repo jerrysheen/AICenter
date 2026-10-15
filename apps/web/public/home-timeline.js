@@ -118,6 +118,14 @@ export function acceptMarketPayload(previous, incoming) {
   return incoming;
 }
 
+export function marketStaleLabel(payload) {
+  if (!payload?.stale) return '';
+  const at = Number(payload.fetchedAt);
+  if (!Number.isFinite(at) || at <= 0) return '已过期';
+  const parts = shanghaiParts(at);
+  return `已过期 · ${parts.month}月${parts.day}日 ${parts.hour}:${parts.minute}`;
+}
+
 export function quoteStatusText({ cards = [], fetchedAt, error = false, pending = false, slow = false } = {}) {
   const live = cards.some((item) => item?.lastPrice != null);
   if (error && !live) return { kind: 'error', text: '行情暂不可用 · 重试' };
