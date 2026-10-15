@@ -43,3 +43,17 @@
 报价另有注册任务 `feed.trendforce.prices`。Worker 用两条 `daily` 日程，默认 Asia/Shanghai 10:30 与 17:30，最多四档。`AI_CENTER_TRENDFORCE_PRICE_SYNC=0` 关闭；`AI_CENTER_TRENDFORCE_PRICE_AT` 为逗号分隔的 `HH:MM`；`AI_CENTER_TRENDFORCE_PRICE_TIMEZONE` 默认 `Asia/Shanghai`。原订阅同步仍走同一解析与仓储。`config/media.json` 的 TrendForce 文章源保持关闭。行情行显示币种／单位，以及「已抓取、页面未变」或「抓到新内容」。生效需要重启 Worker；行情提示需要重载 Web 静态资源。已存 HTML 要用显式 `feed.trendforce.reparse` 重读，启动时不隐式重抓。
 
 UI 合成检查：`scripts/verify-trendforce-routing.mjs` 使用 Host 注入的无头浏览器，检查桌面/手机宽度、来源切换晚返回、完整旧链接、简介阅读、真实表格安全文本呈现、单观测无图表；不控制用户桌面。
+
+### 2026-10-15 单位、当前报价与数据日期
+
+公开标题只写「未税」。解析器改为 `trendforce-tables-4`，沿用各表自己的计价单位，不改已核对的数字：
+
+- DRAM／NAND 现货，以及 DRAM 合约里的颗粒，仍是 `USD` / `chip`。
+- DRAM 合约里的 SO-DIMM（DDR5 8GB、DDR4 16GB、DDR4 8GB）是 `USD` / `module`（条）。
+- 内存条 `module`，显存 `chip`，晶圆 `wafer`，存储卡 `card`，SSD（OEM 合约和街价）`unit`，NAND 合约价 `chip`。NAND 合约标题里的 Memory Card/UFD 是用途，不是存储卡现货。
+
+同一规格可以同时有两组 `is_current=1`：2026-10-05 的旧行（单位空，规格名带「· 日高點: 19.70」）和后来带单位的行；另外有 `period_key` 以 `unverified:` 开头、没有报价期的行。行情列表按规范化规格名只留带单位且有报价期的那一版。migration 69 把被取代的行标成 `is_current=0`，不删除行，不改数字。之后每次写入也会把这些旧行从当前拿掉。精确快照链接仍能打开旧表。
+
+每一项价格直接带官网 Last Update 的月日。DRAM 等合约的半月期写成「8 月下半月」，和 Last Update 的 `08-31` 放在一起，不把 9 月 30 日的会员通知当成报价日。超过 7 天标「已过期」，例如合约价 `08-31`、SSD OEM `08-05`。不另加「更新时间」行。
+
+已保存的 HTML 要用显式 `feed.trendforce.reparse`，或等下一次价表同步；解析版本变了才会写出新观测。生效需要同时重启 Web 和 Worker，浏览器再加载一次。不要重建数据库。

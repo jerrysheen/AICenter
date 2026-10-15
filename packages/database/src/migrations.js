@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { computeFeedIdentityHash } from '../../domain/src/feed-identity.js';
+import { retireSupersededHardwareQuotes } from './hardware-price-current.js';
 import { seedWorkspaceTaxonomy } from './taxonomy-seed.js';
 
 export const DEFAULT_WORKSPACE_ID = 'local';
@@ -1945,7 +1946,12 @@ export function addArticleDedupColumns(database) {
 
 migrations.push({ version: 68, name: 'article_dedup_keys', up: addArticleDedupColumns });
 
-migrations.push({ version: 69, name: 'etf_whale_market_depth', up(database) {
+migrations.push({ version: 69, name: 'hardware_price_current_spec', up(database) {
+  // Flags only. Rows, numbers and snapshot HTML stay.
+  retireSupersededHardwareQuotes(database);
+}});
+
+migrations.push({ version: 70, name: 'etf_whale_market_depth', up(database) {
   database.exec(`
     CREATE TABLE etf_whale_intraday_bars (
       source TEXT NOT NULL,

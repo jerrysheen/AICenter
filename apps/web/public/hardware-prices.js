@@ -4,9 +4,50 @@ const node=(tag,text='',className='')=>Object.assign(document.createElement(tag)
 const time=at=>at==null?'来源未提供':new Date(at).toLocaleString('zh-CN');
 const number=value=>value==null?'—':Number(value).toLocaleString('zh-CN',{maximumFractionDigits:5,useGrouping:false});
 const specification=row=>row.specification.replace(/^(?:項目|项目|Item)\s*:\s*/i,'').replace(/\s*·\s*(?:(?:日|盤|盘)?(?:高|低)(?:點|点)|High|Low)\s*:[\s\S]*$/i,'').trim();
-export function hardwareMarketItem(row) {
+const STALE_MS=7*86400000;
+export function contractPeriodLabel(row) {
+  if(row?.quoteType!=='contract' || !row.period) return '';
+  const half=String(row.period).match(/^(\d{4})-(\d{2}) (1H|2H)$/);
+  if(!half) return '';
+  return `${Number(half[2])} 月${half[3]==='1H'?'上':'下'}半月`;
+}
+export function quoteAsOfLabel(sourceUpdatedAt) {
+  if(sourceUpdatedAt==null) return '';
+  const date=new Date(sourceUpdatedAt+8*3600000);
+  return `${String(date.getUTCMonth()+1).padStart(2,'0')}-${String(date.getUTCDate()).padStart(2,'0')}`;
+}
+export function quoteIsStale(sourceUpdatedAt, now=Date.now()) {
+  return sourceUpdatedAt!=null && now-sourceUpdatedAt>STALE_MS;
+}
+export function hardwareQuoteCaption(row, now=Date.now()) {
+  const parts=[categories[row.category] || row.category, types[row.quoteType] || row.quoteType];
+  if(row.currency && row.unit) parts.push(`${row.currency}/${row.unit}`);
+  const half=contractPeriodLabel(row);
+  if(half) parts.push(half);
+  else if(row.quoteType==='contract' && row.period) parts.push(row.period);
+  const asOf=quoteAsOfLabel(row.sourceUpdatedAt);
+  if(asOf) parts.push(asOf);
+  else if(!half && row.period) parts.push(row.period);
+  else if(!row.period) parts.push('报价期待核验');
+  if(row.verification==='pending') parts.push('待核验');
+  const stale=quoteIsStale(row.sourceUpdatedAt, now);
+  if(stale) parts.push('已过期');
+  return {text:parts.filter(Boolean).join(' · '), stale};
+}
+export function fillHardwareCaption(element, item) {
+  const stale=Boolean(item?.stale && String(item.group || '').endsWith('已过期'));
+  element.textContent=stale?item.group.replace(/ · 已过期$/,''):(item?.group || '');
+  if(!stale) return;
+  element.append(document.createTextNode(' · '));
+  const mark=document.createElement('span');
+  mark.className='price-stale';
+  mark.textContent='已过期';
+  element.append(mark);
+}
+export function hardwareMarketItem(row, now=Date.now()) {
+  const caption=hardwareQuoteCaption(row, now);
   return {assetClass:'hardware',hardware:row,name:specification(row),symbol:row.seriesKey,
-    group:[categories[row.category],types[row.quoteType],row.currency && row.unit ? `${row.currency}/${row.unit}` : '',row.period || '报价期待核验',row.verification==='pending'?'待核验':''].filter(Boolean).join(' · '),
+    group:caption.text,stale:caption.stale,
     summary:specification(row),lastPrice:row.average,changePct:row.changePct,
     sparkline:(row.history || []).map(p=>Number(p.average))};
 }
@@ -54,7 +95,7 @@ export function createHardwarePricesPage({api,openPage,setView,renderRows,isCurr
   function button(text,click) {const b=node('button',text,'text-button');b.type='button';b.addEventListener('click',click);return b;}
   function metrics(row) {
     const grid=node('dl','','hardware-quote-metrics');
-    for(const [label,value] of [[row.highBasis || '高价',number(row.high)],[row.lowBasis || '低价',number(row.low)],['币种',row.currency || '待核验'],['计价单位',row.unit || '待核验'],['报价期',row.period || '待核验'],['涨跌口径',row.computedChangeBasis || '暂无可比报价']]){const box=node('div');box.append(node('dt',label),node('dd',value));grid.append(box);}return grid;
+    for(const [label,value] of [[row.highBasis || '高价',number(row.high)],[row.lowBasis || '低价',number(row.low)],['币种',row.currency || '待核验'],['计价单位',row.unit || '待核验'],['报价期',contractPeriodLabel(row) || row.period || '待核验'],['涨跌口径',row.computedChangeBasis || '暂无可比报价']]){const box=node('div');box.append(node('dt',label),node('dd',value));grid.append(box);}return grid;
   }
   async function render(root,id='') {
     if(!id){setView('market/global/hardware');return;}
@@ -65,7 +106,11 @@ export function createHardwarePricesPage({api,openPage,setView,renderRows,isCurr
       if(token!==request || !isCurrent(id))return;
       const shell=node('article','','detail-shell quote-detail hardware-detail');
       if(kind==='series') {
-        const d=data.detail,row=d.current,head=node('header','','detail-head');head.append(node('h2',specification(row),'detail-title'),node('div',[categories[row.category],types[row.quoteType],row.period || '报价期待核验'].join(' · '),'detail-meta'));shell.append(head);
+        const d=data.detail,row=d.current,head=node('header','','detail-head');
+        const caption=hardwareQuoteCaption(row);
+        const meta=node('div','','detail-meta');
+        fillHardwareCaption(meta,{group:caption.text,stale:caption.stale});
+        head.append(node('h2',specification(row),'detail-title'),meta);shell.append(head);
         const price=node('div','','quote-last-row');const change=row.changePct==null?'—':`${row.changePct>0?'+':''}${row.changePct.toFixed(2)}%`;
         const quoteLabel=[number(row.average),row.currency,row.unit?`/ ${row.unit}`:''].filter(Boolean).join(' ');
         price.append(node('strong',quoteLabel,'last num'),node('b',change,row.changePct==null?'':row.changePct<0?'down':'up'));shell.append(price);
