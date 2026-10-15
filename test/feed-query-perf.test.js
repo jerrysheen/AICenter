@@ -162,15 +162,15 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
 
   const upgraded = createStore(file);
   try {
-    assert.equal(latestSchemaVersion(), 71);
-    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 71);
+    assert.equal(latestSchemaVersion(), 72);
+    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 72);
   } finally {
     upgraded.close();
   }
 
   const database = new Database(file, { readonly: true, fileMustExist: true });
   try {
-    assert.equal(database.pragma('user_version', { simple: true }), 71);
+    assert.equal(database.pragma('user_version', { simple: true }), 72);
     const rows = database.prepare(`
       SELECT version, name, applied_at FROM schema_migrations WHERE version >= 57 ORDER BY version
     `).all();
@@ -189,6 +189,7 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
       [69, 'hardware_price_current_spec'],
       [70, 'etf_whale_market_depth'],
       [71, 'model_usage_translation_attribution'],
+      [72, 'article_dedup_url_lookup'],
     ]);
     assert.equal(database.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('model_usage_index') WHERE name = 'key_suffix'`).get().n, 1);
     assert.equal(database.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('model_usage_index') WHERE name = 'item_id'`).get().n, 1);
@@ -238,7 +239,7 @@ test('库已在 71 时升级', () => {
 
   const upgraded = createStore(file);
   try {
-    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 71);
+    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 72);
   } finally {
     upgraded.close();
   }
