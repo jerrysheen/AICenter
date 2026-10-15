@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-15-us-quote-minute-refresh.md`：美股报价大约每分钟更新。美股代码走优先队列，亚洲、全球资产、历史 K 线和 A 股 Yahoo 回退不再挡在前面。共享缓存默认 30 秒。HTTP 404 只跳过那个代码。Web 读快照时按 `fetchedAt` 重算 `stale`，页面落后超过 3 分钟显示「已过期」。不新增 migration。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-15-us-market-yahoo-429.md`：美股看板在 Yahoo HTTP 429 之后停在几小时前的快照。看板和持仓每分钟各打一轮 Yahoo，共用一层报价：45 秒缓存、进行中请求合并、两次请求至少间隔 800 毫秒。429 按 `Retry-After` 退避并打日志。退避或失败时美股改走腾讯 `qt.gtimg.cn`，没有的再走新浪 `hq.sinajs.cn`。上一份价格默认保留 3 分钟，之后标 `stale`，页面写「已过期」和上海时间。美股常规交易时段超过 10 分钟没更新，快照先写入再标失败。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-15-etf-whale-index-daily-approx.md`：没有 5 分钟线时，指数形态用日线开高低收和成交额近似，`inputs_json.index.method` 为 `daily-approx`；有分钟线时仍用原来的 5 分钟形态。日线也没有时 `sIndex` 为 null，接口和页面显示「数据不足」。信号写入会把 `insufficient` 里的分项强制写成 null，不再把 0 当成缺失。不新增 migration。15:30 的行情任务继续抓 5 分钟线。需要同时重启 Web 和 Worker，再跑 `signals --start 2024-01-02`。

@@ -48,6 +48,7 @@ export function createMarketService(options = {}) {
   const log = options.log || defaultMarketLog;
   const cache = new Map();
   const pending = new Map();
+  const attempts = new Map();
 
   function payloadHasQuotes(payload) {
     if (Array.isArray(payload)) return payload.some((item) => item && item.lastPrice != null);
@@ -96,6 +97,8 @@ export function createMarketService(options = {}) {
       if (hit && timestamp - hit.at < ttl) return expose(hit, timestamp);
       if (pending.has(key)) return pending.get(key);
     }
+    const attempt = (attempts.get(key) || 0) + 1;
+    attempts.set(key, attempt);
     let timer;
     const loaderPromise = Promise.resolve().then(loader);
     loaderPromise.catch(() => {});
@@ -121,6 +124,11 @@ export function createMarketService(options = {}) {
       clearTimeout(timer);
       if (pending.get(key) === task) pending.delete(key);
     });
+    loaderPromise.then((payload) => {
+      if (attempts.get(key) !== attempt || pending.get(key) === task || !payloadHasQuotes(payload)) return;
+      const at = now();
+      cache.set(key, { at, freshAt: at, payload: withStale(payload, false) });
+    }, () => {});
     pending.set(key, task);
     return task;
   }

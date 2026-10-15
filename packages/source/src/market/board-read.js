@@ -1,4 +1,5 @@
 import { createMemorySnapshotCache } from '../../../runtime/src/snapshot-cache.js';
+import { marketStaleMs } from './service.js';
 import { parseAsiaExtraSymbols, parseCnExtraSymbols, parseUsExtraSymbols } from './boards.js';
 
 export const MARKET_BOARD_CACHE_TTL_MS = 45_000;
@@ -66,6 +67,14 @@ function extraRow(symbol, quote, board) {
   };
 }
 
+export function stampBoardStale(payload, nowMs, staleMs) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+  const fetchedAt = Number(payload.fetchedAt);
+  const stale = Number.isFinite(fetchedAt) && nowMs - fetchedAt >= staleMs;
+  if (Boolean(payload.stale) === stale) return payload;
+  return { ...payload, stale };
+}
+
 export function withExtraWatchlist(board, rows) {
   if (!rows?.length || !board || board.board === 'overview' || board.board === 'global') return board;
   const watchlist = [...(board.watchlist || [])];
@@ -99,6 +108,8 @@ export function createMarketBoardReader({
   now = () => Date.now(),
   marketCatalog = null,
   quotePort = null,
+  env = process.env,
+  staleMs = marketStaleMs(env),
 } = {}) {
   if (!repository?.readSnapshot) throw new TypeError('market board reader requires a snapshot repository');
   const caches = new Map();
@@ -159,11 +170,11 @@ export function createMarketBoardReader({
         return { market: emptyMarketBoard(board, now()), pending: true };
       }
       const symbols = extraSymbolsFor(board, query, marketCatalog);
-      if (!symbols.length) return { market: payload, pending: false };
+      if (!symbols.length) return { market: stampBoardStale(payload, now(), staleMs), pending: false };
       const quotes = await loadExtraQuotes(symbols);
       const bySymbol = new Map((quotes || []).map((item) => [String(item?.symbol || '').toUpperCase(), item]));
       const rows = symbols.map((symbol) => extraRow(symbol, bySymbol.get(symbol), payload));
-      return { market: withExtraWatchlist(payload, rows), pending: false };
+      return { market: stampBoardStale(withExtraWatchlist(payload, rows), now(), staleMs), pending: false };
     },
   };
 }
