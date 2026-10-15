@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { TRANSLATION_MAX_ATTEMPTS, translationRetryDelayMs } from '../translation-retry.js';
+import { explainPrefixLookup, rowsByUrlPrefixes } from '../url-prefix-lookup.js';
 import {
   parseContract,
   SaveCaptureInputSchema,
@@ -206,9 +207,17 @@ function mapSubscription(row) {
   };
 }
 
-function sqlLikePrefix(value) {
-  return `${String(value).replace(/[\\%_]/g, '\\$&')}%`;
-}
+const HIDDEN_EXTERNAL_ID_LIMIT = 10_000;
+
+const FEED_URL_PREFIX_LOOKUP = {
+  indexName: 'idx_content_items_source_url_nocase',
+  tableSql: 'content_items ci',
+  tailJoins: `LEFT JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
+    LEFT JOIN source_accounts sa ON sa.id = c.source_account_id AND sa.workspace_id = ci.workspace_id`,
+  select: null,
+  urlColumn: 'ci.source_url',
+  workspaceColumn: 'ci.workspace_id',
+};
 
 const FEED_DEDUP_SELECT = `ci.workspace_id, ci.id, ci.title, ci.summary, ci.source_url, ci.author_name, ci.published_at, ci.created_at,
   CASE WHEN length(ci.body) > 0 THEN 1 ELSE 0 END AS has_body,
@@ -588,19 +597,43 @@ export function createFeedRepository(database, emitEvent) {
         WHERE ci.workspace_id = ? AND ci.dedup_key = ? LIMIT 20`).all(workspaceId, key);
     },
 
-    listFeedByUrlPrefixes(workspaceId, prefixes) {
-      const list = [...new Set(prefixes || [])].filter(Boolean).slice(0, 8);
-      if (!list.length) return [];
-      const clause = list.map(() => `ci.source_url LIKE ? ESCAPE '\\'`).join(' OR ');
-      return database.prepare(`SELECT ${FEED_DEDUP_SELECT} FROM ${FEED_DEDUP_FROM}
-        WHERE ci.workspace_id = ? AND (${clause})
-        ORDER BY length(ci.source_url) ASC LIMIT 40`).all(workspaceId, ...list.map(sqlLikePrefix));
+    listFeedByDedupKeys(workspaceId, dedupKeys) {
+      const keys = [...new Set(dedupKeys || [])].map((key) => String(key || '')).filter(Boolean);
+      if (!keys.length) return [];
+      const rows = [];
+      for (let index = 0; index < keys.length; index += 400) {
+        const chunk = keys.slice(index, index + 400);
+        rows.push(...database.prepare(`SELECT ${FEED_DEDUP_SELECT} FROM ${FEED_DEDUP_FROM}
+          WHERE ci.workspace_id = ? AND ci.dedup_key IN (${chunk.map(() => '?').join(',')})`)
+          .all(workspaceId, ...chunk));
+      }
+      return rows;
     },
 
-    listFeedByPublishedAt(workspaceId, startAt, endAt) {
+    listFeedByUrlPrefixes(workspaceId, prefixes, options = {}) {
+      const rows = rowsByUrlPrefixes(database, {
+        ...FEED_URL_PREFIX_LOOKUP,
+        select: FEED_DEDUP_SELECT,
+        workspaceId,
+        prefixes,
+        perPrefixLimit: 40,
+      });
+      if (options.perPrefix) return rows;
+      return rows
+        .sort((left, right) => String(left.source_url || '').length - String(right.source_url || '').length)
+        .slice(0, 40)
+        .map(({ match_prefix, ...row }) => row);
+    },
+
+    explainFeedUrlPrefix() {
+      return explainPrefixLookup(database, FEED_URL_PREFIX_LOOKUP);
+    },
+
+    listFeedByPublishedAt(workspaceId, startAt, endAt, limit = 400) {
+      const cap = Math.max(1, Math.min(Number(limit) || 400, 20_000));
       return database.prepare(`SELECT ${FEED_DEDUP_SELECT} FROM ${FEED_DEDUP_FROM}
         WHERE ci.workspace_id = ? AND ci.published_at >= ? AND ci.published_at <= ?
-        ORDER BY ci.published_at ASC LIMIT 400`).all(workspaceId, startAt, endAt);
+        ORDER BY ci.published_at ASC LIMIT ?`).all(workspaceId, startAt, endAt, cap);
     },
 
     fillFeedItemGaps(workspaceId, id, fields) {
@@ -850,21 +883,35 @@ export function createFeedRepository(database, emitEvent) {
 
     listHiddenExternalIds(workspaceId, provider) {
       const fromItems = database.prepare(`SELECT c.external_id AS externalId
-        FROM user_item_states uis
-        INNER JOIN content_items ci
+        FROM user_item_states uis INDEXED BY idx_user_item_states_hidden
+        CROSS JOIN content_items ci
           ON ci.id = uis.content_item_id AND ci.workspace_id = uis.workspace_id
-        INNER JOIN captures c ON c.id = ci.capture_id
-        WHERE uis.workspace_id = ? AND uis.is_hidden = 1 AND c.provider = ?`)
-        .all(workspaceId, provider)
+        CROSS JOIN captures c ON c.id = ci.capture_id
+        WHERE uis.workspace_id = ? AND uis.is_hidden = 1 AND c.provider = ?
+        LIMIT ?`)
+        .all(workspaceId, provider, HIDDEN_EXTERNAL_ID_LIMIT)
         .map((row) => String(row.externalId || ''))
         .filter(Boolean);
       const fromFingerprints = database.prepare(`SELECT external_id AS externalId
         FROM feed_identity_fingerprints
-        WHERE workspace_id = ? AND provider = ? AND hidden_at IS NOT NULL AND external_id != ''`)
-        .all(workspaceId, provider)
+        WHERE workspace_id = ? AND provider = ? AND hidden_at IS NOT NULL AND external_id != ''
+        LIMIT ?`)
+        .all(workspaceId, provider, HIDDEN_EXTERNAL_ID_LIMIT)
         .map((row) => String(row.externalId || ''))
         .filter(Boolean);
       return [...new Set([...fromItems, ...fromFingerprints])];
+    },
+
+    explainHiddenExternalIds() {
+      return database.prepare(`EXPLAIN QUERY PLAN
+        SELECT c.external_id
+        FROM user_item_states uis INDEXED BY idx_user_item_states_hidden
+        CROSS JOIN content_items ci
+          ON ci.id = uis.content_item_id AND ci.workspace_id = uis.workspace_id
+        CROSS JOIN captures c ON c.id = ci.capture_id
+        WHERE uis.workspace_id = ? AND uis.is_hidden = 1 AND c.provider = ?
+        LIMIT ?`).all('local', 'media', HIDDEN_EXTERNAL_ID_LIMIT)
+        .map((row) => String(row.detail || ''));
     },
 
     upsertIdentityFingerprint(value) {

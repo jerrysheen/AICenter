@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-15-worker-dedup-scan.md`：小时去重不再对每条候选做 `source_url LIKE` 全表扫描。同一小时合成一次 NOCASE 前缀范围查询，并使用 migration 68 的 `dedup_key`。隐藏外部 id 走部分索引，最多 1 万条。领取时已达 `max_attempts` 的任务标失败，不再跑第 5 次。migration 72 只加索引。本机 5 万行、300 条候选从大约 2.3 秒降到 18–23ms。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-15-worker-hot-loop.md`：Worker 主线程在 Gemma 配额 `retryAt` 已经过去时每 1ms 重做 SQLite 预约，把一个核打满，翻译请求停在 pending、没有 TCP。现在不足 250ms 的等待直接 `budget-deferred`，并带一个至少 250ms 之后的 `retryAt`；连续 8 次没有真正让出的等待会抛出。翻译租约过期仍马上重新入队、不占尝试次数，但不再删 `job_attempts`、不再把 `attempt_count` 减 1，改为把 `max_attempts` 加 1。本进程还在执行、且未到运行时限的任务不重新入队；从运行表拿掉时会中止旧执行。超过运行时限仍记 `WorkerRunTimeout`。启动补漏每轮最多扫 400 行，每页让出一次。Web 和 Worker 同时迁移时在事务里重查版本，`INSERT OR IGNORE`。日志仍写 `<dataDirectory>/logs`，并镜像到 stdout。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-15-etf-whale-score.md`：ETF 鲸鱼按 `gjd-score-v1` 打分。参考池 20 只，`588000` 只作对照。成交额、净申购、同时异常、指数形态各 25 分。单只成交额达到 8 倍时，同时异常至少 15 分，有红色标记再加 5 分，上限 25。初判在 15:30 行情之后，确认分在份额公布之后。`GET /api/v1/etf-whale/etfs/{code}` 是正式路径；`/series?code=` 返回同一份正文。不在观察池返回 404，格式不对返回 400。只读令牌新增 `daily`、`signals`、`series`。持仓和个人资产不开放。页面和接口写明「不构成投资建议」。不新增 migration，表在 migration 70。打分不在页面请求里现算。需要同时重启 Web 和 Worker。补数命令见该进度说明。

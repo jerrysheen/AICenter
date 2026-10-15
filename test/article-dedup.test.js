@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { createStore } from '../packages/database/src/index.js';
-import { addArticleDedupColumns } from '../packages/database/src/migrations.js';
+import { addArticleDedupColumns, addArticleDedupLookupIndexes } from '../packages/database/src/migrations.js';
 import { createMediaConnector } from '../packages/connectors/src/media/port.js';
 import { createMediaIngestionService } from '../packages/domain/src/media-ingestion-service.js';
 import { createFeedService } from '../packages/domain/src/feed-service.js';
@@ -128,6 +128,26 @@ test('migration 68 adds dedup columns and indexes without rewriting existing row
   assert.equal(feed.dedup_key, null);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM media_index_entries').get().n, 1);
   assert.ok(db.prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_media_article_dedup_key'`).get());
+  db.close();
+});
+
+test('migration 72 adds lookup indexes without rewriting rows', () => {
+  assert.equal(addArticleDedupLookupIndexes.toString().includes('UPDATE'), false);
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE content_items (workspace_id TEXT, id TEXT, source_url TEXT, title TEXT);
+    CREATE TABLE media_index_entries (workspace_id TEXT, external_id TEXT, canonical_url TEXT, title TEXT);
+    CREATE TABLE user_item_states (workspace_id TEXT, content_item_id TEXT, is_hidden INTEGER);
+    INSERT INTO content_items VALUES ('local', 'keep', 'https://www.BBC.com/news/articles/anthropic-q3-revenue', 'keep');
+    INSERT INTO media_index_entries VALUES ('local', 'bbc:old', 'https://www.bbc.com/news/articles/anthropic-q3-revenue', 'Anthropic Q3');
+  `);
+  addArticleDedupLookupIndexes(db);
+  assert.equal(db.prepare('SELECT title, source_url FROM content_items').get().title, 'keep');
+  assert.equal(db.prepare('SELECT title FROM media_index_entries').get().title, 'Anthropic Q3');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM content_items').get().n, 1);
+  for (const name of ['idx_content_items_source_url_nocase', 'idx_media_canonical_url_nocase', 'idx_user_item_states_hidden']) {
+    assert.ok(db.prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`).get(name), name);
+  }
   db.close();
 });
 

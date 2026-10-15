@@ -2032,11 +2032,27 @@ migrations.push({ version: 70, name: 'etf_whale_market_depth', up(database) {
 }});
 
 // 63 stays unused. 71 is the translation usage attribution already on main.
+// 72 is article URL lookup indexes. It does not rewrite rows.
 migrations.push({ version: 71, name: 'model_usage_translation_attribution', up(database) {
   addColumn(database, 'model_usage_index', 'key_suffix', `TEXT NOT NULL DEFAULT ''`);
   addColumn(database, 'model_usage_index', 'item_id', `TEXT NOT NULL DEFAULT ''`);
   database.exec(`CREATE INDEX IF NOT EXISTS model_usage_by_item ON model_usage_index(workspace_id, item_id, occurred_at);`);
 }});
+
+export function addArticleDedupLookupIndexes(database) {
+  // Indexes only. URLs, dedup_key and hidden flags stay as they are.
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_content_items_source_url_nocase
+      ON content_items(workspace_id, source_url COLLATE NOCASE);
+    CREATE INDEX IF NOT EXISTS idx_media_canonical_url_nocase
+      ON media_index_entries(workspace_id, canonical_url COLLATE NOCASE);
+    CREATE INDEX IF NOT EXISTS idx_user_item_states_hidden
+      ON user_item_states(workspace_id, content_item_id)
+      WHERE is_hidden = 1;
+  `);
+}
+
+migrations.push({ version: 72, name: 'article_dedup_url_lookup', up: addArticleDedupLookupIndexes });
 
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`

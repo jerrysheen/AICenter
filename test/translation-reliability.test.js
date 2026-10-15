@@ -198,6 +198,61 @@ test('lease expiry requeues a translation without counting the interrupted attem
   } finally { temporary.remove(); }
 });
 
+test('claim refuses a translation that is already at max attempts after manual requeue', () => {
+  const temporary = temporaryStore();
+  try {
+    const store = temporary.store;
+    const job = store.createJob({
+      type: 'feed.translation.run', workspaceId: 'local', maxAttempts: TRANSLATION_MAX_ATTEMPTS,
+      input: { items: [{ id: 'rel-cap', text: 'A notice that already used its four attempts.' }] },
+    });
+    for (let attempt = 1; attempt <= TRANSLATION_MAX_ATTEMPTS; attempt += 1) {
+      const running = store.claimNextJob('worker-cap', ['feed.translation.run']);
+      assert.equal(running.id, job.id);
+      assert.equal(running.attemptCount, attempt);
+      store.failJob(job.id, new Error('Gemma 翻译失败（500）'), 0, { workerId: 'worker-cap', attemptCount: attempt });
+    }
+    assert.equal(store.getJob(job.id).status, 'failed');
+    assert.equal(store.getJob(job.id).attemptCount, TRANSLATION_MAX_ATTEMPTS);
+    const side = new Database(path.join(temporary.dir, 'test.db'));
+    side.prepare(`UPDATE jobs SET status = 'queued', available_at = 0, locked_by = NULL, locked_at = NULL, completed_at = NULL
+      WHERE id = ?`).run(job.id);
+    side.close();
+    const fresh = store.createJob({
+      type: 'feed.translation.run', workspaceId: 'local', maxAttempts: TRANSLATION_MAX_ATTEMPTS,
+      input: { items: [{ id: 'rel-cap-next', text: 'A later translation that is still inside its cap.' }] },
+    });
+    const claimed = store.claimNextJob('worker-cap', ['feed.translation.run']);
+    assert.equal(claimed.id, fresh.id);
+    assert.equal(claimed.attemptCount, 1);
+    const exhausted = store.getJob(job.id);
+    assert.equal(exhausted.status, 'failed');
+    assert.equal(exhausted.attemptCount, TRANSLATION_MAX_ATTEMPTS);
+    assert.equal(exhausted.error.name, 'MaxAttemptsExceeded');
+    const verify = new Database(path.join(temporary.dir, 'test.db'), { readonly: true });
+    try {
+      assert.equal(verify.prepare(`SELECT COUNT(*) AS n FROM job_attempts WHERE job_id = ?`).get(job.id).n, TRANSLATION_MAX_ATTEMPTS);
+      verify.close();
+      const reset = new Database(path.join(temporary.dir, 'test.db'));
+      reset.prepare(`UPDATE jobs SET status = 'queued', attempt_count = 0, available_at = 0, error_json = NULL,
+        locked_by = NULL, locked_at = NULL, completed_at = NULL WHERE id = ?`).run(job.id);
+      reset.close();
+    } catch (error) {
+      verify.close();
+      throw error;
+    }
+    const again = store.claimNextJob('worker-cap', ['feed.translation.run']);
+    assert.equal(again, null);
+    const still = store.getJob(job.id);
+    assert.equal(still.status, 'failed');
+    assert.equal(still.attemptCount, 0);
+    const attempts = new Database(path.join(temporary.dir, 'test.db'), { readonly: true });
+    try {
+      assert.equal(attempts.prepare(`SELECT COUNT(*) AS n FROM job_attempts WHERE job_id = ?`).get(job.id).n, TRANSLATION_MAX_ATTEMPTS);
+    } finally { attempts.close(); }
+  } finally { temporary.remove(); }
+});
+
 test('lease recovery skips a translation this process is still executing', () => {
   const temporary = temporaryStore();
   try {

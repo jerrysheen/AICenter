@@ -274,7 +274,31 @@ export function createArticleDedup({
     return false;
   }
 
-  function loadRows(workspaceId, identity) {
+  function pushRow(map, key, row) {
+    if (!key || !row) return;
+    const list = map.get(key);
+    if (list) list.push(row);
+    else map.set(key, [row]);
+  }
+
+  function loadRows(workspaceId, identity, cache) {
+    if (cache) {
+      const rows = [];
+      const seen = new Set();
+      const push = (row) => {
+        if (!row || seen.has(row.refId)) return;
+        seen.add(row.refId);
+        rows.push(row);
+      };
+      if (identity.key) for (const row of cache.byKey.get(identity.key) || []) push(row);
+      const prefixed = [];
+      for (const prefix of identity.url ? urlPrefixes(identity.url) : []) {
+        prefixed.push(...(cache.byPrefix.get(prefix) || []));
+      }
+      prefixed.sort((left, right) => String(left.url || '').length - String(right.url || '').length);
+      for (const row of prefixed.slice(0, 40)) push(row);
+      return rows;
+    }
     const prefixes = identity.url ? urlPrefixes(identity.url) : [];
     const media = [
       ...(identity.key && mediaRepository?.listMediaByDedupKey ? mediaRepository.listMediaByDedupKey(workspaceId, identity.key) : []),
@@ -287,12 +311,78 @@ export function createArticleDedup({
     return [...media, ...feed];
   }
 
-  function loadByTime(workspaceId, publishedAt) {
+  function rowsInPublishedWindow(rows, start, end) {
+    return rows
+      .filter((row) => {
+        const at = Number(row.publishedAt) || 0;
+        return at >= start && at <= end;
+      })
+      .sort((left, right) => (Number(left.publishedAt) || 0) - (Number(right.publishedAt) || 0) || String(left.refId).localeCompare(String(right.refId)))
+      .slice(0, 400);
+  }
+
+  function loadByTime(workspaceId, publishedAt, cache) {
     const start = publishedAt - ARTICLE_DEDUP_WINDOW_MS;
     const end = publishedAt + ARTICLE_DEDUP_WINDOW_MS;
+    if (cache?.time && start >= cache.time.start && end <= cache.time.end) {
+      const memoKey = `${start}:${end}`;
+      if (cache.time.memo.has(memoKey)) return cache.time.memo.get(memoKey);
+      const rows = rowsInPublishedWindow(cache.time.rows, start, end);
+      cache.time.memo.set(memoKey, rows);
+      return rows;
+    }
+    const memoKey = `${start}:${end}`;
+    if (cache?.windows?.has(memoKey)) return cache.windows.get(memoKey);
     const media = mediaRepository?.listMediaByPublishedAt?.(workspaceId, start, end) || [];
     const feed = feedRepository?.listFeedByPublishedAt?.(workspaceId, start, end) || [];
-    return [...media.map(mapMedia), ...feed.map(mapFeed)].filter(Boolean);
+    const rows = [...media.map(mapMedia), ...feed.map(mapFeed)].filter(Boolean);
+    cache?.windows?.set(memoKey, rows);
+    return rows;
+  }
+
+  function primeLookup(workspaceId, items) {
+    const identities = items.map((item) => identityOf({
+      url: item.sourceUrl || '',
+      title: item.title || '',
+      publishedAt: item.publishedAt,
+      sourceKey: item.sourceKey || '',
+      publisherKey: item.publisherKey || '',
+      sourceExternalId: item.sourceExternalId || '',
+    }));
+    const keys = [...new Set(identities.map((row) => row.key).filter(Boolean))];
+    const prefixes = [...new Set(identities.flatMap((row) => (row.url ? urlPrefixes(row.url) : [])))];
+    const byKey = new Map();
+    const byPrefix = new Map();
+    const feedKeys = keys.length && feedRepository?.listFeedByDedupKeys ? feedRepository.listFeedByDedupKeys(workspaceId, keys) : [];
+    const mediaKeys = keys.length && mediaRepository?.listMediaByDedupKeys ? mediaRepository.listMediaByDedupKeys(workspaceId, keys) : [];
+    for (const row of feedKeys.map(mapFeed).filter(Boolean)) pushRow(byKey, identityOf(row).key, row);
+    for (const row of mediaKeys.map(mapMedia).filter(Boolean)) pushRow(byKey, identityOf(row).key, row);
+    const feedPrefixes = prefixes.length && feedRepository?.listFeedByUrlPrefixes
+      ? feedRepository.listFeedByUrlPrefixes(workspaceId, prefixes, { perPrefix: true }) : [];
+    const mediaPrefixes = prefixes.length && mediaRepository?.listMediaByUrlPrefixes
+      ? mediaRepository.listMediaByUrlPrefixes(workspaceId, prefixes, { perPrefix: true }) : [];
+    for (const raw of feedPrefixes) pushRow(byPrefix, raw.match_prefix, mapFeed(raw));
+    for (const raw of mediaPrefixes) pushRow(byPrefix, raw.match_prefix, mapMedia(raw));
+    const times = identities.filter((row) => row.registered && row.publishedAt).map((row) => row.publishedAt);
+    let time = null;
+    if (times.length) {
+      const start = Math.min(...times) - ARTICLE_DEDUP_WINDOW_MS;
+      const end = Math.max(...times) + ARTICLE_DEDUP_WINDOW_MS;
+      if (end - start <= 48 * 60 * 60 * 1000) {
+        const cap = 20_000;
+        const feed = feedRepository?.listFeedByPublishedAt?.(workspaceId, start, end, cap) || [];
+        const media = mediaRepository?.listMediaByPublishedAt?.(workspaceId, start, end, cap) || [];
+        if (feed.length < cap && media.length < cap) {
+          time = {
+            start,
+            end,
+            rows: [...feed.map(mapFeed), ...media.map(mapMedia)].filter(Boolean),
+            memo: new Map(),
+          };
+        }
+      }
+    }
+    return { byKey, byPrefix, time, windows: new Map() };
   }
 
   function best(matches) {
@@ -303,12 +393,12 @@ export function createArticleDedup({
     })[0] || null;
   }
 
-  function find(workspaceId, probe, ignore = {}) {
+  function find(workspaceId, probe, ignore = {}, cache = null) {
     const identity = identityOf(probe);
     if (!identity.sourceId) return null;
     const seen = new Set();
     const exact = [];
-    for (const match of loadRows(workspaceId, identity)) {
+    for (const match of loadRows(workspaceId, identity, cache)) {
       if (seen.has(match.refId) || ignored(match, ignore)) continue;
       seen.add(match.refId);
       const other = identityOf(match);
@@ -317,7 +407,7 @@ export function createArticleDedup({
     if (exact.length) return best(exact);
     if (!identity.registered || !identity.publishedAt) return null;
     const fuzzy = [];
-    for (const match of loadByTime(workspaceId, identity.publishedAt)) {
+    for (const match of loadByTime(workspaceId, identity.publishedAt, cache)) {
       if (seen.has(match.refId) || ignored(match, ignore)) continue;
       seen.add(match.refId);
       if (articlesMatch(identity, identityOf(match), threshold)) fuzzy.push(match);
@@ -370,7 +460,10 @@ export function createArticleDedup({
   }
 
   function dedupeHourlyCandidates(workspaceId, items) {
-    return (items || []).filter((item) => {
+    const list = items || [];
+    if (!list.length) return [];
+    const cache = primeLookup(workspaceId, list);
+    return list.filter((item) => {
       const self = {
         kind: String(item.id || '').startsWith('media:') ? 'media' : 'feed',
         refId: item.id,
@@ -389,7 +482,7 @@ export function createArticleDedup({
       const ignore = String(item.id || '').startsWith('media:')
         ? { ignoreMediaIds: [String(item.id).slice(6)] }
         : { ignoreFeedIds: [String(item.id).slice(5)] };
-      const rival = find(workspaceId, probe, ignore);
+      const rival = find(workspaceId, probe, ignore, cache);
       if (!rival) return true;
       const winner = chooseWinner(self, {
         kind: rival.kind,
