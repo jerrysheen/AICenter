@@ -7,10 +7,9 @@ export function createModelUsageRepository(database, emitEvent) {
       database.transaction(() => {
         const old = database.prepare('SELECT record_json FROM model_usage_index WHERE workspace_id=? AND id=?').get(row.workspaceId, row.id);
         if (old?.record_json === serialized) return;
-        database.prepare(`INSERT INTO model_usage_index(workspace_id,id,job_id,occurred_at,record_json,http_status,key_suffix,item_id) VALUES(?,?,?,?,?,?,?,?)
-          ON CONFLICT(workspace_id,id) DO UPDATE SET record_json=excluded.record_json, http_status=excluded.http_status,
-            key_suffix=excluded.key_suffix, item_id=excluded.item_id`)
-          .run(row.workspaceId, row.id, row.jobId, row.occurredAt, serialized, row.httpStatus, row.keySuffix || '', row.itemId || '');
+        database.prepare(`INSERT INTO model_usage_index(workspace_id,id,job_id,occurred_at,record_json,http_status) VALUES(?,?,?,?,?,?)
+          ON CONFLICT(workspace_id,id) DO UPDATE SET record_json=excluded.record_json, http_status=excluded.http_status`)
+          .run(row.workspaceId, row.id, row.jobId, row.occurredAt, serialized, row.httpStatus);
         emitEvent('runtime.model-usage.updated.v1', 'model-usage', row.id, { kind: row.kind }, row.workspaceId);
       })();
     },

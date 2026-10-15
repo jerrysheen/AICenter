@@ -30,9 +30,6 @@ const EXACT_PATHS = new Set([
   '/api/v1/hardware-prices',
   '/api/v1/compute-prices',
   '/api/v1/etf-whale/overview',
-  '/api/v1/etf-whale/daily',
-  '/api/v1/etf-whale/signals',
-  '/api/v1/etf-whale/series',
   '/api/v1/feed',
   '/api/v1/feed/media/article',
   '/api/v1/posts',
@@ -46,7 +43,7 @@ const PATH_PATTERNS = [
   /^\/api\/v1\/content-items\/official\/[^/]+$/i,
   /^\/api\/v1\/(?:content-items|feed\/items)\/[^/]+\/original$/i,
   /^\/api\/v1\/posts\/[0-9a-f-]+$/i,
-  /^\/api\/v1\/etf-whale\/etfs\/[^/]+$/,
+  /^\/api\/v1\/etf-whale\/etfs\/\d{6}$/,
 ];
 
 export function isApiTokenAllowlisted(method, pathname) {

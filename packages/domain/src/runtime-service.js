@@ -21,7 +21,7 @@ import {
   FeedTranslationJobInputSchema,
 } from '../../contracts/src/index.js';
 import { describeAudioTranscription, readWavInfo, resolveAudioFile } from './audio-transcription.js';
-import { translationBodyBatchLimit, translationBodyCharBudget, translationTextIsTitle, translationTitleBatchLimit } from './feed-ai-batch.js';
+import { translationTextIsTitle, translationTitleBatchLimit } from './feed-ai-batch.js';
 import { randomUUID } from 'node:crypto';
 import { resolveResearchProfile } from './research-profile.js';
 
@@ -74,29 +74,6 @@ function acceptedAnalysisSkills(selectedSkills, analysisSkillCatalog) {
   return analysisSkillCatalog.activate(selectedSkills).map(({ id, version }) => ({ id, version }));
 }
 
-function sliceTranslationJobItems(items, { titleLike, titleLimit, bodyLimit, charBudget }) {
-  if (titleLike) {
-    const slices = [];
-    for (let offset = 0; offset < items.length; offset += titleLimit) slices.push(items.slice(offset, offset + titleLimit));
-    return slices;
-  }
-  const slices = [];
-  let batch = [];
-  let chars = 0;
-  for (const item of items) {
-    const size = String(item?.text || '').length;
-    if (batch.length && (batch.length >= bodyLimit || chars + size > charBudget)) {
-      slices.push(batch);
-      batch = [];
-      chars = 0;
-    }
-    batch.push(item);
-    chars += size;
-  }
-  if (batch.length) slices.push(batch);
-  return slices;
-}
-
 function publicAudioError(error) {
   const message = error?.message || error?.name || '';
   const text = String(message).replace(/AQ\.[A-Za-z0-9_-]+/g, '[redacted]').replace(/\s+/g, ' ').trim();
@@ -110,17 +87,14 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort, res
     requestTranslation(input) {
       const value = FeedTranslationJobInputSchema.parse(input);
       const titleLike = value.items.every((item) => translationTextIsTitle(item.text));
-      const slices = sliceTranslationJobItems(value.items, {
-        titleLike,
-        titleLimit: translationTitleBatchLimit(env?.AI_CENTER_TRANSLATION_TITLE_BATCH_LIMIT),
-        bodyLimit: translationBodyBatchLimit(env?.AI_CENTER_TRANSLATION_BODY_BATCH_LIMIT),
-        charBudget: translationBodyCharBudget(env?.AI_CENTER_TRANSLATION_BODY_CHAR_BUDGET),
-      });
+      const limit = titleLike
+        ? translationTitleBatchLimit(env?.AI_CENTER_TRANSLATION_TITLE_BATCH_LIMIT)
+        : value.items.length;
       let first = null;
-      for (const items of slices) {
+      for (let offset = 0; offset < value.items.length; offset += limit) {
         const slice = FeedTranslationJobInputSchema.parse({
           ...value,
-          items,
+          items: value.items.slice(offset, offset + limit),
         });
         const open = runtimeRepository.listOpenJobs?.('feed.translation.run')?.find(job => job.workspaceId === slice.workspaceId && JSON.stringify(job.input) === JSON.stringify(slice));
         let job = open;

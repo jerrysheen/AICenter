@@ -17,7 +17,6 @@ import {
   createFeedTranslationJobHandlers,
   fillUncoveredTranslations,
   packTranslationJobBatches,
-  TRANSLATION_GAP_SCAN_CAP,
   translationGapFillIntervalMs,
   translationGapFillLimit,
   translationGapFillWindowMs,
@@ -194,7 +193,7 @@ test('a long article keeps finished chunks and a later retry skips them', async 
   }
 });
 
-test('title jobs split at five and body jobs stay inside the lease-sized pack', () => {
+test('title jobs split at five and body jobs stay on the thirty-item pack', () => {
   const titles = Array.from({ length: 6 }, (_, index) => ({ id: `t${index}`, text: `English title number ${index} about chips` }));
   assert.ok(titles.every((item) => translationTextIsTitle(item.text)));
   const store = createStore(':memory:');
@@ -212,11 +211,7 @@ test('title jobs split at five and body jobs stay inside the lease-sized pack', 
     assert.equal(paragraphJobs[0].input.items.length, 6);
 
     const packed = packTranslationJobBatches(Array.from({ length: 31 }, (_, index) => ({ id: `b${index}`, text: `block ${index}` })));
-    assert.deepEqual(packed.map((batch) => batch.length), [8, 8, 8, 7]);
-    const wide = Array.from({ length: 18 }, (_, index) => ({ id: `w${index}`, text: `${'English summary '.repeat(11)}\n${index}` }));
-    runtime.requestTranslation({ workspaceId: 'local', targetLang: 'zh', items: wide });
-    const wideJobs = store.listOpenJobs('feed.translation.run').filter((job) => job.input.items[0].id.startsWith('w'));
-    assert.deepEqual(wideJobs.map((job) => job.input.items.length).sort((a, b) => b - a), [8, 8, 2]);
+    assert.deepEqual(packed.map((batch) => batch.length), [30, 1]);
     const titled = packTranslationJobBatches(titles.map((item) => ({ id: item.id, text: item.text })), { unitLimit: 5 });
     assert.deepEqual(titled.map((batch) => batch.length), [5, 1]);
   } finally {
@@ -348,43 +343,6 @@ test('gap fill requeues a terminal failure and an uncovered title without duplic
       mediaService: { flashExternalIds: () => [] },
     });
     assert.equal(again.enqueued, 0);
-  } finally {
-    store.close();
-  }
-});
-
-test('gap fill yields and stops at the scan cap, then continues from the cursor', async () => {
-  const store = createStore(':memory:');
-  try {
-    const now = Date.now();
-    for (let index = 0; index < TRANSLATION_GAP_SCAN_CAP + 50; index += 1) {
-      store.repositories.media.upsertEntry(mediaEntry(
-        `zh:${String(index).padStart(4, '0')}`,
-        `中文标题已经足够不需要再翻译${index}`,
-        now - index * 1_000,
-      ));
-    }
-    const late = 'A late English headline still inside the window';
-    store.repositories.media.upsertEntry(mediaEntry('late:english', late, now - (TRANSLATION_GAP_SCAN_CAP + 60) * 1_000));
-    const service = feedService(store, { translateMany: async () => { throw new Error('gap fill must not translate'); } });
-    const mediaService = { flashExternalIds: () => [], listArticleTranslationUnits: () => [] };
-    let yields = 0;
-    const first = await fillUncoveredTranslations({
-      store, feedService: service, workspaceId: 'local', limit: 20, now, mediaService,
-      yieldTurn: () => { yields += 1; },
-    });
-    assert.ok(yields >= 2);
-    assert.ok(first.scanned <= TRANSLATION_GAP_SCAN_CAP);
-    assert.equal(first.scanned, TRANSLATION_GAP_SCAN_CAP);
-    assert.ok(first.cursor?.media?.sortAt);
-    assert.equal(first.enqueued, 0);
-    const second = await fillUncoveredTranslations({
-      store, feedService: service, workspaceId: 'local', limit: 20, now, mediaService,
-      cursor: first.cursor,
-      yieldTurn: () => {},
-    });
-    const ids = new Set(second.jobs.flatMap((job) => job.input.items.map((item) => item.id)));
-    assert.equal(ids.has(localizationItemId('media:late:english')), true);
   } finally {
     store.close();
   }

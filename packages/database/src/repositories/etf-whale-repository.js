@@ -82,44 +82,6 @@ export function createEtfWhaleRepository(database, emitEvent = () => {}) {
       volume_shares = excluded.volume_shares, flow_cny = excluded.flow_cny,
       comparable = excluded.comparable, reason = excluded.reason,
       payload_json = excluded.payload_json, computed_at = excluded.computed_at`);
-  const upsertIntraday = database.prepare(`INSERT INTO etf_whale_intraday_bars
-    (source, symbol, kind, interval_key, bar_time, trade_date, open, high, low, close, volume, amount_cny, captured_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(source, symbol, interval_key, bar_time) DO UPDATE SET
-      kind = excluded.kind, trade_date = excluded.trade_date,
-      open = excluded.open, high = excluded.high, low = excluded.low, close = excluded.close,
-      volume = excluded.volume, amount_cny = excluded.amount_cny, captured_at = excluded.captured_at`);
-  const upsertIndexDaily = database.prepare(`INSERT INTO etf_whale_index_daily
-    (symbol, trade_date, prev_close, open, high, low, close, amount_cny, low_time, low_drop_pct, rebound_pct, tail_pct, source, computed_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(symbol, trade_date) DO UPDATE SET
-      prev_close = excluded.prev_close, open = excluded.open, high = excluded.high, low = excluded.low, close = excluded.close,
-      amount_cny = excluded.amount_cny, low_time = excluded.low_time, low_drop_pct = excluded.low_drop_pct,
-      rebound_pct = excluded.rebound_pct, tail_pct = excluded.tail_pct, source = excluded.source, computed_at = excluded.computed_at`);
-  const upsertTurnover = database.prepare(`INSERT INTO etf_whale_turnover
-    (source, code, trade_date, amount_cny, volume_shares, close, captured_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(source, code, trade_date) DO UPDATE SET
-      amount_cny = excluded.amount_cny, volume_shares = excluded.volume_shares,
-      close = excluded.close, captured_at = excluded.captured_at`);
-  const upsertFutures = database.prepare(`INSERT INTO etf_whale_futures_rank
-    (trade_date, product, contract, data_type, rank, party_id, member, volume, var_volume, source_url, captured_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(trade_date, contract, data_type, rank) DO UPDATE SET
-      product = excluded.product, party_id = excluded.party_id, member = excluded.member,
-      volume = excluded.volume, var_volume = excluded.var_volume, source_url = excluded.source_url,
-      captured_at = excluded.captured_at`);
-  const upsertSignal = database.prepare(`INSERT INTO etf_whale_signals
-    (trade_date, stage, algorithm, score, max_score, s_turnover, s_flow, s_breadth, s_index, level, inputs_json, computed_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(trade_date, stage, algorithm) DO UPDATE SET
-      score = excluded.score, max_score = excluded.max_score, s_turnover = excluded.s_turnover,
-      s_flow = excluded.s_flow, s_breadth = excluded.s_breadth, s_index = excluded.s_index,
-      level = excluded.level, inputs_json = excluded.inputs_json, computed_at = excluded.computed_at`);
-  const supersedeStack = database.prepare(`UPDATE etf_whale_fetches
-    SET status = 'superseded'
-    WHERE source = 'szse-xlsx' AND status = 'error'
-      AND (error LIKE '%Maximum call stack%' OR error LIKE '%call stack size%')`);
   const upsertDisclosure = database.prepare(`INSERT INTO etf_whale_disclosures
     (code, source, report_end, announced_on, captured_on, ratio_pct, value_cny, total_shares)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -144,31 +106,6 @@ export function createEtfWhaleRepository(database, emitEvent = () => {}) {
     getFetch(source, dateStart, dateEnd) {
       return database.prepare('SELECT * FROM etf_whale_fetches WHERE source = ? AND date_start = ? AND date_end = ?')
         .get(source, dateStart, dateEnd) || null;
-    },
-
-    listFetchDates(source, status) {
-      return database.prepare(`SELECT date_start FROM etf_whale_fetches
-        WHERE source = ? AND status = ? ORDER BY date_start`).all(source, status).map((row) => row.date_start);
-    },
-
-    maxShareDate(source, dateStart, dateEnd) {
-      const row = database.prepare(`SELECT MAX(trade_date) AS trade_date FROM etf_whale_shares
-        WHERE source = ? AND trade_date >= ? AND trade_date <= ?`).get(source, dateStart, dateEnd);
-      return row?.trade_date || null;
-    },
-
-    hasShareOn(source, tradeDate) {
-      return Boolean(database.prepare(`SELECT 1 AS ok FROM etf_whale_shares
-        WHERE source = ? AND trade_date = ? LIMIT 1`).get(source, tradeDate));
-    },
-
-    listQuoteDates(code) {
-      return database.prepare(`SELECT trade_date FROM etf_whale_quotes
-        WHERE code = ? AND adjust = 'qfq' ORDER BY trade_date`).all(code).map((row) => row.trade_date);
-    },
-
-    supersedeStackOverflowFetches() {
-      return supersedeStack.run().changes;
     },
 
     saveFetch(entry) {
@@ -248,114 +185,6 @@ export function createEtfWhaleRepository(database, emitEvent = () => {}) {
 
     listDailyForDate(tradeDate, algorithm = ALGORITHM) {
       return database.prepare('SELECT * FROM etf_whale_daily WHERE algorithm = ? AND trade_date = ? ORDER BY code').all(algorithm, tradeDate).map(mapDaily);
-    },
-
-    saveIntradayBars(rows, capturedAt = Date.now()) {
-      const write = database.transaction(() => {
-        for (const row of rows) {
-          upsertIntraday.run(
-            row.source, row.symbol, row.kind, row.intervalKey || '5m', row.barTime, row.tradeDate,
-            row.open, row.high, row.low, row.close, row.volume, row.amountCny, row.capturedAt || capturedAt,
-          );
-        }
-      });
-      write();
-      return rows.length;
-    },
-
-    listIntradayBars(symbol, tradeDate, intervalKey = '5m') {
-      return database.prepare(`SELECT * FROM etf_whale_intraday_bars
-        WHERE symbol = ? AND trade_date = ? AND interval_key = ? ORDER BY bar_time`).all(symbol, tradeDate, intervalKey);
-    },
-
-    saveIndexDaily(rows, computedAt = Date.now()) {
-      const write = database.transaction(() => {
-        for (const row of rows) {
-          upsertIndexDaily.run(
-            row.symbol, row.tradeDate, row.prevClose, row.open, row.high, row.low, row.close, row.amountCny,
-            row.lowTime, row.lowDropPct, row.reboundPct, row.tailPct, row.source, row.computedAt || computedAt,
-          );
-        }
-      });
-      write();
-      return rows.length;
-    },
-
-    indexCloseBefore(symbol, tradeDate) {
-      const row = database.prepare(`SELECT close FROM etf_whale_index_daily
-        WHERE symbol = ? AND trade_date < ? ORDER BY trade_date DESC LIMIT 1`).get(symbol, tradeDate);
-      return row ? row.close : null;
-    },
-
-    listIndexDaily(startDate, endDate) {
-      return database.prepare(`SELECT * FROM etf_whale_index_daily
-        WHERE trade_date >= ? AND trade_date <= ? ORDER BY trade_date, symbol`).all(startDate, endDate);
-    },
-
-    saveTurnover(rows, capturedAt = Date.now()) {
-      const write = database.transaction(() => {
-        for (const row of rows) {
-          upsertTurnover.run(row.source, row.code, row.tradeDate, row.amountCny, row.volumeShares, row.close, row.capturedAt || capturedAt);
-        }
-      });
-      write();
-      return rows.length;
-    },
-
-    listTurnover(codes, source, startDate, endDate) {
-      if (!codes?.length) return [];
-      const marks = codes.map(() => '?').join(',');
-      return database.prepare(`SELECT * FROM etf_whale_turnover
-        WHERE source = ? AND trade_date >= ? AND trade_date <= ? AND code IN (${marks})
-        ORDER BY trade_date, code`).all(source, startDate, endDate, ...codes);
-    },
-
-    saveFuturesRanks(rows, capturedAt = Date.now()) {
-      const write = database.transaction(() => {
-        for (const row of rows) {
-          upsertFutures.run(
-            row.tradeDate, row.product, row.contract, row.dataType, row.rank, row.partyId, row.member,
-            row.volume, row.varVolume, row.sourceUrl, row.capturedAt || capturedAt,
-          );
-        }
-      });
-      write();
-      return rows.length;
-    },
-
-    hasFutures(tradeDate, product) {
-      return Boolean(database.prepare(`SELECT 1 AS ok FROM etf_whale_futures_rank
-        WHERE trade_date = ? AND product = ? LIMIT 1`).get(tradeDate, product));
-    },
-
-    listFutures(tradeDate) {
-      return database.prepare(`SELECT * FROM etf_whale_futures_rank
-        WHERE trade_date = ? ORDER BY product, data_type, rank`).all(tradeDate);
-    },
-
-    saveSignal(row, computedAt = Date.now()) {
-      upsertSignal.run(
-        row.tradeDate, row.stage, row.algorithm, row.score, row.maxScore, row.sTurnover, row.sFlow,
-        row.sBreadth, row.sIndex, row.level, row.inputsJson, row.computedAt || computedAt,
-      );
-    },
-
-    listSignals(startDate, endDate, algorithm) {
-      return database.prepare(`SELECT * FROM etf_whale_signals
-        WHERE trade_date >= ? AND trade_date <= ? AND algorithm = ?
-        ORDER BY trade_date, stage`).all(startDate, endDate, algorithm);
-    },
-
-    latestShareDate() {
-      const row = database.prepare('SELECT MAX(trade_date) AS trade_date FROM etf_whale_shares').get();
-      return row?.trade_date || null;
-    },
-
-    latestQuoteDate() {
-      const quotes = database.prepare(`SELECT MAX(trade_date) AS trade_date FROM etf_whale_quotes`).get()?.trade_date || null;
-      const turnover = database.prepare(`SELECT MAX(trade_date) AS trade_date FROM etf_whale_turnover`).get()?.trade_date || null;
-      const indexDaily = database.prepare(`SELECT MAX(trade_date) AS trade_date FROM etf_whale_index_daily`).get()?.trade_date || null;
-      return [quotes, turnover, indexDaily].filter(Boolean).sort().at(-1) || null;
     },
 
     coverage() {

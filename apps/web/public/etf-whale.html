@@ -9,54 +9,21 @@
 <body>
   <main>
     <p class="eyebrow">ETF 鲸鱼资金追踪</p>
-    <p class="disclaimer">不构成投资建议</p>
     <h1 id="title">正在读取本地计算结果</h1>
     <p id="status"></p>
-    <p id="fresh"></p>
     <section class="cards" id="cards"></section>
-    <h2>打分</h2>
-    <p id="signal-note">初判在收盘后计算成交额、同时异常和指数形态，并折算成 100 分制。确认分在份额公布后补上净申购。中信期货净空只展示，不计分。</p>
-    <div id="signals"></div>
-    <h2>当日明细</h2>
-    <p id="daily-status"></p>
-    <div class="scroll">
-      <table>
-        <thead><tr><th>代码</th><th>名称</th><th>收盘</th><th>成交额（亿元）</th><th>倍数</th><th>成交额分位</th><th>份额变化（亿份）</th><th>净申购（亿元）</th><th>净申购分位</th><th>标记</th></tr></thead>
-        <tbody id="daily"></tbody>
-      </table>
-    </div>
-    <h2>指数形态</h2>
-    <div class="scroll">
-      <table>
-        <thead><tr><th>指数</th><th>最低相对昨收</th><th>收盘相对最低</th><th>尾盘</th><th>命中</th></tr></thead>
-        <tbody id="indices"></tbody>
-      </table>
-    </div>
-    <h2>中信期货净空</h2>
-    <p class="note">只展示，不计分。会员按 partyid 识别。</p>
-    <div class="scroll">
-      <table>
-        <thead><tr><th>品种</th><th>净空</th><th>较前一交易日</th></tr></thead>
-        <tbody id="futures"></tbody>
-      </table>
-    </div>
     <h2>指数分组</h2>
-    <div class="scroll">
-      <table>
-        <thead><tr><th>分组</th><th>覆盖</th><th>净流入</th><th>净流出</th><th>份额变化（亿份）</th><th>净申赎（亿元）</th></tr></thead>
-        <tbody id="groups"></tbody>
-      </table>
-    </div>
+    <table>
+      <thead><tr><th>分组</th><th>覆盖</th><th>净流入</th><th>净流出</th><th>份额变化（亿份）</th><th>净申赎（亿元）</th></tr></thead>
+      <tbody id="groups"></tbody>
+    </table>
     <h2>单只走势</h2>
     <label>代码 <input id="code" value="159915" maxlength="6"></label>
     <button id="load" type="button">查看</button>
-    <p id="series-note"></p>
-    <div class="scroll">
-      <table>
-        <thead><tr><th>日期</th><th>份额（亿份）</th><th>变化（亿份）</th><th>净申赎（亿元）</th><th>收盘价</th><th>状态</th></tr></thead>
-        <tbody id="series"></tbody>
-      </table>
-    </div>
+    <table>
+      <thead><tr><th>日期</th><th>份额（亿份）</th><th>变化（亿份）</th><th>净申赎（亿元）</th><th>收盘价</th><th>状态</th></tr></thead>
+      <tbody id="series"></tbody>
+    </table>
     <h2>来源与对账</h2>
     <pre id="meta"></pre>
   </main>

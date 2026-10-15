@@ -25,14 +25,6 @@
 
 ## 当前
 
-- `progress/2026-10-15-worker-hot-loop.md`：Worker 主线程在 Gemma 配额 `retryAt` 已经过去时每 1ms 重做 SQLite 预约，把一个核打满，翻译请求停在 pending、没有 TCP。现在不足 250ms 的等待直接 `budget-deferred`，并带一个至少 250ms 之后的 `retryAt`；连续 8 次没有真正让出的等待会抛出。翻译租约过期仍马上重新入队、不占尝试次数，但不再删 `job_attempts`、不再把 `attempt_count` 减 1，改为把 `max_attempts` 加 1。本进程还在执行、且未到运行时限的任务不重新入队；从运行表拿掉时会中止旧执行。超过运行时限仍记 `WorkerRunTimeout`。启动补漏每轮最多扫 400 行，每页让出一次。Web 和 Worker 同时迁移时在事务里重查版本，`INSERT OR IGNORE`。日志仍写 `<dataDirectory>/logs`，并镜像到 stdout。不新增 migration。需要同时重启 Web 和 Worker。
-
-- `progress/2026-10-15-etf-whale-score.md`：ETF 鲸鱼按 `gjd-score-v1` 打分。参考池 20 只，`588000` 只作对照。成交额、净申购、同时异常、指数形态各 25 分。单只成交额达到 8 倍时，同时异常至少 15 分，有红色标记再加 5 分，上限 25。初判在 15:30 行情之后，确认分在份额公布之后。`GET /api/v1/etf-whale/etfs/{code}` 是正式路径；`/series?code=` 返回同一份正文。不在观察池返回 404，格式不对返回 400。只读令牌新增 `daily`、`signals`、`series`。持仓和个人资产不开放。页面和接口写明「不构成投资建议」。不新增 migration，表在 migration 70。打分不在页面请求里现算。需要同时重启 Web 和 Worker。补数命令见该进度说明。
-
-- `progress/2026-10-15-etf-whale-capture.md`：ETF 鲸鱼份额改为 T+1 的 09:00、12:00、16:30、18:30、20:30 补抓，补齐后当天后面的时刻跳过。15:30 抓日线、5 分钟线和实际成交额，17:00 抓中金所前 20 名持仓。交易日空份额记 pending，节假日记 holiday，超过 5 个交易日改 stale。深交所不再因为分段状态是 ok 就跳过未覆盖的窗口。xlsx 列宽改为逐格取最大列，避免展开爆栈；旧的栈溢出 error 在启动时改成 superseded，不删行。migration 70 只新增表。68 是文章去重，69 是硬件报价当前规格，71 是翻译用量归因。需要同时重启 Web 和 Worker。不要在启动时自动补历史；补数命令见该进度说明。
-
-- `progress/2026-10-15-translation-call-cap.md`：一次翻译尝试的 Gemma 调用有硬上限，默认是条目数 ×（密钥数 + 换密钥重试次数）。83–240 字的单行标题不再因为译文偏短被判成没译完。正文和摘要每条任务默认 8 条、4000 字，处理每条之前续租约。`WorkerLeaseExpired` 不占尝试次数，马上重新入队。用量记下密钥后 4 位和条目 id。Worker 日志写到实例 `<dataDirectory>/logs`。migration 71。租约退回的做法见 `progress/2026-10-15-worker-hot-loop.md`。需要同时重启 Web 和 Worker。
-
 - `progress/2026-10-15-hardware-price-labels.md`：闪存页 NAND 合约、NAND TLC 晶圆现货、MicroSD、SSD 合约和街价补上 USD 与表头对应的单位。週高點、日高點、均價和項目前缀不再写进规格名。数字不动，不删旧行，不新增 migration。解析版本 `trendforce-tables-5`。需要同时重启 Web 和 Worker，再跑一次 `feed.trendforce.reparse`。
 
 - `progress/2026-10-15-hardware-price-units.md`：DRAM 合约里的 SO-DIMM 按条计价。内存条、显存、晶圆、存储卡、SSD 和 NAND 合约价补上 USD 和对应单位，数字不动。列表只留带单位且有报价期的当前规格，旧行改为 `is_current=0`。每一项显示官网数据日期，超过 7 天标已过期，DRAM 合约写明「8 月下半月」。migration 69。需要同时重启 Web 和 Worker。

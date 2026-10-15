@@ -770,39 +770,32 @@ export function createStore(databasePath) {
       const globalMax = Number(options.maxRunningMs);
       const byType = options.maxRunningMsByType && typeof options.maxRunningMsByType === 'object' ? options.maxRunningMsByType : {};
       const attemptStart = database.prepare(`SELECT started_at FROM job_attempts WHERE job_id = ? AND status = 'running' ORDER BY started_at ASC LIMIT 1`);
-      const executing = new Set((Array.isArray(options.executingIds) ? options.executingIds : []).filter((id) => typeof id === 'string' && id));
       const rows = database.prepare(`SELECT * FROM jobs WHERE status = 'running'`).all().flatMap((row) => {
         const leaseStale = row.locked_at < cutoff;
         const limit = Number(byType[row.type] ?? globalMax);
         const started = attemptStart.get(row.id)?.started_at || row.started_at || row.locked_at;
         const runtimeStale = Number.isFinite(limit) && limit > 0 && Number(started) < Number(now) - limit;
-        if (executing.has(row.id) && !runtimeStale) return [];
         return leaseStale || runtimeStale ? [{ ...row, leaseStale, runtimeStale }] : [];
       });
       database.transaction(() => {
         for (const row of rows) {
           const expiredRuntime = row.runtimeStale === true;
-          const leaseInterrupted = !expiredRuntime && row.type === 'feed.translation.run';
-          const retry = leaseInterrupted || (!expiredRuntime && row.attempt_count < row.max_attempts);
+          const retry = !expiredRuntime && row.attempt_count < row.max_attempts;
           const status = retry ? 'queued' : 'failed';
           const error = expiredRuntime
             ? { name: 'WorkerRunTimeout', message: '任务运行超过时限，已释放以便队列继续' }
             : { name: 'WorkerLeaseExpired', message: '后台进程中断，任务租约已过期' };
-          // Keep attempt_count and the attempt row. A lease interrupt is compensated
-          // by one extra max_attempts so it does not consume the translation budget.
-          const attemptCount = row.attempt_count;
-          const maxAttempts = leaseInterrupted ? Number(row.max_attempts) + 1 : row.max_attempts;
-          const delay = row.type === 'feed.translation.run' && !leaseInterrupted ? translationRetryDelayMs(row.attempt_count) : 0;
+          const delay = row.type === 'feed.translation.run' ? translationRetryDelayMs(row.attempt_count) : 0;
           const availableAt = retry ? observedAt + delay : row.available_at;
           database.prepare(`UPDATE jobs SET status = ?, error_json = ?, available_at = ?, completed_at = ?,
-            attempt_count = ?, max_attempts = ?, locked_by = NULL, locked_at = NULL, updated_at = ? WHERE id = ?`)
-            .run(status, JSON.stringify(error), availableAt, retry ? null : observedAt, attemptCount, maxAttempts, observedAt, row.id);
+            locked_by = NULL, locked_at = NULL, updated_at = ? WHERE id = ?`)
+            .run(status, JSON.stringify(error), availableAt, retry ? null : observedAt, observedAt, row.id);
           database.prepare(`UPDATE job_attempts SET status = 'abandoned', error_json = ?, completed_at = ?
             WHERE job_id = ? AND attempt_number = ? AND status = 'running'`)
             .run(JSON.stringify(error), observedAt, row.id, row.attempt_count);
           insertEvent(retry ? 'job.recovered' : 'job.failed', 'job', row.id,
             { jobId: row.id, error }, row.workspace_id);
-          if (row.type === 'feed.translation.run' && !leaseInterrupted) {
+          if (row.type === 'feed.translation.run') {
             const input = parseJson(row.input_json);
             repositories.feed.noteTranslationFailure?.({
               workspaceId: row.workspace_id,

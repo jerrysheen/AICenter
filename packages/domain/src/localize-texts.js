@@ -46,7 +46,7 @@ function stripTrailingClosers(value) {
 
 function titleLikeSource(source) {
   const src = String(source || '').trim();
-  return Boolean(src) && src.length <= 240 && !src.includes('\n');
+  return Boolean(src) && src.length < 160 && !src.includes('\n');
 }
 
 // A saved translation that stops at an ellipsis, an unclosed bracket, or before the
@@ -76,7 +76,7 @@ export function translationLooksTruncated(source, translatedLength, translatedTe
   const text = String(translatedText || '');
   const length = Number(translatedLength) > 0 ? Number(translatedLength) : text.trim().length;
   if (!body.trim() || length <= 0) return false;
-  if (body.length < 80 || titleLikeSource(body)) return text.trim() ? translationEndingCut(body, text) : false;
+  if (body.length < 80) return text.trim() ? translationEndingCut(body, text) : false;
   if (text.trim() && translationEndingCut(body, text)) return true;
   if (length >= 160 && length * 4 >= body.length) return false;
   if (body.length >= 600) return length < 120 || length * 5 < body.length;

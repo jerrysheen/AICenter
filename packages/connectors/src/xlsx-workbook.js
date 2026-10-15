@@ -50,17 +50,6 @@ function cellValue(inner, type, strings) {
   return Number.isFinite(parsed) ? parsed : decodeXmlText(numeric);
 }
 
-export function columnWidth(rows) {
-  let maxIndex = -1;
-  for (const row of rows.values()) {
-    for (const key of Object.keys(row)) {
-      const index = Number(key);
-      if (index > maxIndex) maxIndex = index;
-    }
-  }
-  return Math.max(0, maxIndex) + 1;
-}
-
 function parseSheet(xml, strings) {
   const rows = new Map();
   const cells = xml.match(/<c\b[^>]*\/>|<c\b[^>]*>[\s\S]*?<\/c>/g) || [];
@@ -76,7 +65,7 @@ function parseSheet(xml, strings) {
     rows.get(row)[column] = cellValue(inner, type, strings);
   }
   const indexes = [...rows.keys()].sort((left, right) => left - right);
-  const width = columnWidth(rows);
+  const width = Math.max(0, ...[...rows.values()].flatMap((row) => Object.keys(row).map(Number))) + 1;
   return indexes.map((index) => {
     const row = rows.get(index);
     return Array.from({ length: width }, (_, column) => row[column] ?? '');
