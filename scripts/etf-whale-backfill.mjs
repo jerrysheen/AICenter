@@ -3,6 +3,7 @@ import { resolveInstanceConfig } from '../packages/instance/src/index.js';
 import { shanghaiToday } from '../packages/domain/src/etf-whale/fetch-policy.js';
 import { recomputeEtfWhale, syncEtfWhale } from '../packages/runtime/src/etf-whale-sync.js';
 import { syncEtfWhaleFutures, syncEtfWhaleMarket } from '../packages/runtime/src/etf-whale-market.js';
+import { refreshEtfWhaleSignals } from '../packages/runtime/src/etf-whale-score.js';
 
 const command = process.argv[2];
 const startDate = arg('--start');
@@ -27,7 +28,8 @@ try {
       onProgress: (line) => console.log(line),
     });
     const computed = recomputeEtfWhale(repository);
-    console.log(`shares probes=${fetched.probes.length} daily=${computed.rowCount}`);
+    const confirmed = refreshEtfWhaleSignals(repository, { startDate, endDate, stage: 'confirmed' });
+    console.log(`shares probes=${fetched.probes.length} daily=${computed.rowCount} confirmed=${confirmed}`);
   } else if (command === 'index-daily') {
     requireRange();
     const result = await syncEtfWhaleMarket({
@@ -50,6 +52,12 @@ try {
       onProgress: (line) => console.log(line),
     });
     console.log(`turnover probes=${result.probes.length}`);
+  } else if (command === 'signals') {
+    requireRange();
+    const initial = refreshEtfWhaleSignals(repository, { startDate, endDate, stage: 'initial' });
+    recomputeEtfWhale(repository);
+    const confirmed = refreshEtfWhaleSignals(repository, { startDate, endDate, stage: 'confirmed' });
+    console.log(`signals initial=${initial} confirmed=${confirmed}`);
   } else if (command === 'futures') {
     requireRange();
     const result = await syncEtfWhaleFutures({
@@ -60,7 +68,7 @@ try {
     });
     console.log(`futures saved=${result.saved} party=${result.citicPartyId}`);
   } else {
-    console.error('用法: shares | index-daily | turnover | futures | supersede-stack-errors');
+    console.error('用法: shares | index-daily | turnover | futures | signals | supersede-stack-errors');
     process.exitCode = 1;
   }
 } finally {

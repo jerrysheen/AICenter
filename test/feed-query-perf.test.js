@@ -143,6 +143,11 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
   const rewound = new Database(file);
   rewound.exec(`
     DROP TABLE IF EXISTS runtime_snapshots;
+    DROP TABLE IF EXISTS etf_whale_intraday_bars;
+    DROP TABLE IF EXISTS etf_whale_index_daily;
+    DROP TABLE IF EXISTS etf_whale_turnover;
+    DROP TABLE IF EXISTS etf_whale_futures_rank;
+    DROP TABLE IF EXISTS etf_whale_signals;
     DROP INDEX IF EXISTS idx_captures_feed_sort;
     DROP INDEX IF EXISTS idx_captures_provider_captured;
     DROP INDEX IF EXISTS idx_captures_feed_filter;
@@ -157,15 +162,15 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
 
   const upgraded = createStore(file);
   try {
-    assert.equal(latestSchemaVersion(), 69);
-    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 69);
+    assert.equal(latestSchemaVersion(), 70);
+    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 70);
   } finally {
     upgraded.close();
   }
 
   const database = new Database(file, { readonly: true, fileMustExist: true });
   try {
-    assert.equal(database.pragma('user_version', { simple: true }), 69);
+    assert.equal(database.pragma('user_version', { simple: true }), 70);
     const rows = database.prepare(`
       SELECT version, name, applied_at FROM schema_migrations WHERE version >= 57 ORDER BY version
     `).all();
@@ -182,6 +187,7 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
       [67, 'feed_translation_chunks'],
       [68, 'article_dedup_keys'],
       [69, 'hardware_price_current_spec'],
+      [70, 'etf_whale_market_depth'],
     ]);
     assert.ok(database.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'gemini_model_cursors'`).get());
     assert.equal(database.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('model_usage_index') WHERE name = 'http_status'`).get().n, 1);
