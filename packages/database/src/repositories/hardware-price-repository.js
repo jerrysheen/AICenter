@@ -50,7 +50,13 @@ export function createHardwarePriceRepository(database,emitEvent=()=>{}) {
           const periodKey=row.period ? JSON.stringify([row.period,row.periodStart,row.periodEnd]) : `unverified:${id}`;
           const valueHash=hash([row.average,row.high,row.low,row.reportedChange,row.changeBasis,row.highBasis,row.lowBasis]);
           const prior=database.prepare('SELECT * FROM hardware_price_observations WHERE workspace_id=? AND series_key=? AND period_key=? AND is_current=1 ORDER BY revision DESC LIMIT 1').get(workspaceId,seriesKey,periodKey);
-          let obsId=prior?.value_hash===valueHash ? prior.id : null;
+          const priorRow=prior ? JSON.parse(prior.row_json) : null;
+          // Same prices used to reuse the old row and leave a null currency on screen.
+          // A filled currency, unit, tax basis, or cleaned name is a new revision; the old row stays.
+          const sameQuote=Boolean(prior) && prior.value_hash===valueHash
+            && priorRow.currency===row.currency && priorRow.unit===row.unit
+            && priorRow.taxBasis===row.taxBasis && priorRow.specification===row.specification;
+          let obsId=sameQuote ? prior.id : null;
           if(!obsId) {
             obsId=randomUUID();const revision=(database.prepare('SELECT MAX(revision) n FROM hardware_price_observations WHERE workspace_id=? AND series_key=? AND period_key=?').get(workspaceId,seriesKey,periodKey).n || 0)+1;
             const current=!prior || row.sourceUpdatedAt===null || prior.source_updated_at===null || row.sourceUpdatedAt>=prior.source_updated_at;
@@ -78,7 +84,7 @@ export function createHardwarePriceRepository(database,emitEvent=()=>{}) {
       return database.prepare(`SELECT o.*,r.row_json snapshot_row_json,s.id referenced_snapshot_id,s.captured_at snapshot_captured_at FROM (SELECT *,ROW_NUMBER() OVER (PARTITION BY series_key ORDER BY period_start IS NOT NULL DESC,period_start DESC,captured_at DESC,revision DESC) n
         FROM hardware_price_observations WHERE workspace_id=? AND is_current=1 AND (? IS NULL OR series_key=?)) o
         JOIN hardware_price_snapshot_rows r ON r.observation_id=o.id AND r.rowid=(SELECT rr.rowid FROM hardware_price_snapshot_rows rr
-          JOIN hardware_price_snapshots ss ON ss.id=rr.snapshot_id AND ss.workspace_id=rr.workspace_id WHERE rr.observation_id=o.id AND rr.workspace_id=o.workspace_id ORDER BY ss.captured_at DESC,rr.table_index,rr.row_index LIMIT 1)
+          JOIN hardware_price_snapshots ss ON ss.id=rr.snapshot_id AND ss.workspace_id=rr.workspace_id WHERE rr.observation_id=o.id AND rr.workspace_id=o.workspace_id ORDER BY ss.captured_at DESC,ss.rowid DESC,rr.table_index,rr.row_index LIMIT 1)
         JOIN hardware_price_snapshots s ON s.id=r.snapshot_id AND s.workspace_id=r.workspace_id
         WHERE o.n=1 ORDER BY o.period_start DESC,s.captured_at DESC LIMIT ?`).all(workspaceId,seriesKey,seriesKey,limit).map(r=>({...observation(r),...JSON.parse(r.snapshot_row_json),snapshotId:r.referenced_snapshot_id,capturedAt:r.snapshot_captured_at}));
     },
