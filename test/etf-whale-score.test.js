@@ -113,8 +113,26 @@ test('gjd-score-v1 gives a lone 8x name 20 and does not give partial index credi
 
   const confirmed = scoreGjdV1({ stage: 'confirmed', flowToday: -1, names: [] });
   assert.equal(confirmed.sFlow, 0);
+  assert.equal(confirmed.sTurnover, null);
+  assert.equal(confirmed.sIndex, null);
+  assert.deepEqual(confirmed.insufficient, ['turnover', 'index']);
   assert.equal(confirmed.maxScore, 100);
-  assert.equal(confirmed.score, confirmed.sTurnover + confirmed.sBreadth + confirmed.sIndex);
+  assert.equal(confirmed.score, confirmed.sBreadth + confirmed.sFlow);
+  assert.equal(turnoverComponent(null, []).insufficient, true);
+  assert.equal(turnoverComponent(null, []).score, null);
+  assert.equal(indexComponent([]).insufficient, true);
+  assert.equal(indexComponent([{ symbol: '000300', lowDropPct: null, reboundPct: null, tailPct: null }]).score, null);
+  const scored = scoreGjdV1({
+    stage: 'initial',
+    poolSumToday: 3,
+    poolHistory: Array(20).fill(1),
+    names: quietNames(1),
+    indices: [{ symbol: '000300', ...HIT }],
+  });
+  assert.equal(scored.sTurnover, 25);
+  assert.equal(scored.sIndex, 25);
+  assert.deepEqual(scored.insufficient, []);
+  assert.equal(scored.score, 50);
   assert.equal(scoreLevel(70), 'strong');
   assert.equal(scoreLevel(69.9), 'suspected');
   assert.equal(scoreLevel(50), 'suspected');
@@ -156,8 +174,10 @@ test('510310 at about 25x is stored as breadth 20 and futures stay out of the sc
     const scored = scoreTradeDate(repository, tradeDate, 'initial');
     assert.equal(scored.sBreadth, 20);
     assert.equal(scored.sFlow, null);
+    assert.equal(scored.sIndex, null);
     assert.equal(scored.maxScore, 75);
     const inputs = JSON.parse(scored.inputsJson);
+    assert.deepEqual(inputs.insufficient, ['index']);
     assert.equal(inputs.futuresScored, false);
     assert.equal(inputs.breadth.count, 1);
     assert.equal(inputs.breadth.hasRed, true);

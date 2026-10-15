@@ -116,6 +116,7 @@ export function scoreTradeDate(repository, tradeDate, stage, cache = null) {
       index: scored.index,
       flow: scored.flow,
       futuresScored: false,
+      insufficient: scored.insufficient,
     }),
   };
 }
