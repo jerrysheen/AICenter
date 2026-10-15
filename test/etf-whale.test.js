@@ -7,7 +7,7 @@ import { cffexPositionUrl, parseCffexPositionXml } from '../packages/connectors/
 import { parseSseSharePayload, parseSzseShareJson, parseSzseShareSheet } from '../packages/connectors/src/etf-exchange-shares.js';
 import { fetchDailyBars, parseEastmoneyKlines, parseSinaKlinePayload, sinaServiceError } from '../packages/connectors/src/etf-sina-kline.js';
 import { fetchTencentAmountDaily, parseTencentAmountPayload, parseTencentDayRows, tencentWanToCny } from '../packages/connectors/src/etf-tencent-kline.js';
-import { syncEtfWhaleFutures, syncEtfWhaleMarket } from '../packages/runtime/src/etf-whale-market.js';
+import { ETF_WHALE_MARKET_PARTS, syncEtfWhaleFutures, syncEtfWhaleMarket } from '../packages/runtime/src/etf-whale-market.js';
 import { columnWidth } from '../packages/connectors/src/xlsx-workbook.js';
 import { citicNetShort } from '../packages/domain/src/etf-whale/futures.js';
 import { indexSessionShape, indexShapeHit } from '../packages/domain/src/etf-whale/session-shape.js';
@@ -596,10 +596,67 @@ test('index and turnover failures are stored, and a tencent success is counted',
     const indexRow = repo.listIndexDaily('2024-01-02', '2024-01-02')[0];
     assert.equal(indexRow.source, 'tencent');
     assert.equal(indexRow.amount_cny, 1_000_000);
+    assert.equal(indexRow.low_drop_pct, null);
+    assert.equal(indexRow.rebound_pct, null);
+    assert.equal(indexRow.tail_pct, null);
     const turnover = repo.listTurnover(['510300'], 'sina-amount', '2024-01-02', '2024-01-02');
     assert.equal(turnover.length, 1);
     assert.equal(turnover[0].amount_cny, 1_000_000);
     assert.equal(repo.getFetch('index-daily:000300', '2024-01-02', '2024-01-03').status, 'ok');
+  } finally {
+    store.close();
+  }
+});
+
+test('the live market job still stores 5-minute bars and prefers them over daily shape', async () => {
+  assert.ok(ETF_WHALE_MARKET_PARTS.includes('intraday'));
+  const root = mkdtempSync(path.join(tmpdir(), 'etf-whale-5m-'));
+  const store = createStore(path.join(root, 'ai-center.db'));
+  try {
+    const repo = store.repositories.etfWhale;
+    repo.saveIndexDaily([{
+      symbol: '000300', tradeDate: '2023-12-29', prevClose: 100, open: 100, high: 100, low: 100, close: 100,
+      amountCny: 1, lowTime: null, lowDropPct: null, reboundPct: null, tailPct: null, source: 'tencent',
+    }]);
+    await syncEtfWhaleMarket({
+      repository: repo,
+      startDate: '2024-01-02',
+      endDate: '2024-01-02',
+      pauseMs: 0,
+      indices: [{ symbol: '000300', exchange: 'SH', name: '沪深300' }],
+      instruments: [{ code: '510300', exchange: 'SH', name: '沪深300ETF' }],
+      endpoints: ['https://web.ifzq.gtimg.cn/appstock/app/newfqkline/get'],
+      fetchImpl: async (url) => {
+        const href = String(url);
+        if (href.includes('getKLineData')) {
+          return httpResponse(JSON.stringify([
+            { day: '2024-01-02 10:00:00', open: '100', high: '100.2', low: '97', close: '99', volume: '10', amount: '1000' },
+            { day: '2024-01-02 14:30:00', open: '99', high: '101', low: '99', close: '99', volume: '10', amount: '1000' },
+          ]));
+        }
+        if (href.includes('newfqkline')) {
+          const symbol = href.includes('510300') ? 'sh510300' : 'sh000300';
+          return httpResponse(JSON.stringify({
+            code: 0,
+            data: { [symbol]: { day: [['2024-01-02', '99', '100.8', '101', '98.5', '10', {}, '0', '100', '0', '0']] } },
+          }));
+        }
+        if (href.includes('fqkline')) {
+          return httpResponse(JSON.stringify({
+            code: 0,
+            data: { sh510300: { qfqday: [['2024-01-02', '99', '100.8', '101', '98.5', '10']] } },
+          }));
+        }
+        return httpResponse('{"__ERROR":3,"__ERRORMSG":"Service not valid"}');
+      },
+    });
+    const bars = repo.listIntradayBars('000300', '2024-01-02');
+    assert.equal(bars.length, 2);
+    assert.equal(bars[0].interval_key, '5m');
+    const indexRow = repo.listIndexDaily('2024-01-02', '2024-01-02').find((row) => row.symbol === '000300');
+    assert.equal(indexRow.low_time, '2024-01-02 10:00');
+    assert.ok(indexRow.low_drop_pct < -0.01);
+    assert.equal(repo.listIntradayBars('510300', '2024-01-02').length, 2);
   } finally {
     store.close();
   }

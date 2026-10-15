@@ -1184,6 +1184,7 @@ main {
   font-size: 12px;
   line-height: 18px;
 }
+.market-status.is-stale { color: var(--warning); }
 .index-scroller {
   display: flex;
   gap: var(--space-3);

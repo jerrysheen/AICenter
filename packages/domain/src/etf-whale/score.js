@@ -1,5 +1,8 @@
 import { percentileInclusive } from './calculate.js';
-import { indexShapeHit } from './session-shape.js';
+import {
+  MIXED_INDEX_METHOD,
+  describeIndexPoint,
+} from './session-shape.js';
 
 export const SCORE_ALGORITHM = 'gjd-score-v1';
 export const ETF_WHALE_DISCLAIMER = '不构成投资建议';
@@ -21,11 +24,6 @@ export function priorPercentile(history, value) {
   const sample = history.filter(Number.isFinite).slice(-250);
   if (!sample.length || !Number.isFinite(value)) return null;
   return percentileInclusive([...sample].sort((left, right) => left - right), value);
-}
-
-function finiteMetric(value) {
-  if (value == null || value === '') return false;
-  return Number.isFinite(Number(value));
 }
 
 export function turnoverComponent(todaySum, historySums) {
@@ -62,17 +60,23 @@ export function breadthComponent(items, { confirmed = false } = {}) {
   return { score, count, hasRed, items: flagged };
 }
 
+function classifyIndex(item) {
+  const described = describeIndexPoint(item);
+  return { symbol: item.symbol, hit: described.hit, method: described.method };
+}
+
 export function indexComponent(indices) {
-  const list = indices || [];
-  const usable = list.some((item) => finiteMetric(item.lowDropPct) || finiteMetric(item.reboundPct) || finiteMetric(item.tailPct));
-  if (!usable) return { score: null, hits: [], count: 0, hs300: false, insufficient: true };
-  const hits = list.map((item) => ({ symbol: item.symbol, hit: indexShapeHit(item) }));
-  const count = hits.filter((item) => item.hit).length;
-  const hs300 = hits.some((item) => item.symbol === '000300' && item.hit);
+  const hits = (indices || []).map(classifyIndex);
+  const usable = hits.filter((item) => item.method);
+  if (!usable.length) return { score: null, hits, count: 0, hs300: false, insufficient: true, method: null };
+  const count = usable.filter((item) => item.hit).length;
+  const hs300 = usable.some((item) => item.symbol === '000300' && item.hit);
   let score = 0;
   if (count >= 2 || hs300) score = 25;
   else if (count === 1) score = 15;
-  return { score, hits, count, hs300, insufficient: false };
+  const methods = new Set(usable.map((item) => item.method));
+  const method = methods.size > 1 ? MIXED_INDEX_METHOD : [...methods][0];
+  return { score, hits, count, hs300, insufficient: false, method };
 }
 
 export function scoreLevel(score100) {
