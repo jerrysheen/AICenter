@@ -52,7 +52,7 @@ UI 合成检查：`scripts/verify-trendforce-routing.mjs` 使用 Host 注入的�
 - DRAM 合约里的 SO-DIMM（DDR5 8GB、DDR4 16GB、DDR4 8GB）是 `USD` / `module`（条）。
 - 内存条 `module`，显存 `chip`，晶圆 `wafer`，存储卡 `card`，SSD（OEM 合约和街价）`unit`，NAND 合约价 `chip`。NAND 合约标题里的 Memory Card/UFD 是用途，不是存储卡现货。
 
-同一规格可以同时有两组 `is_current=1`：2026-10-05 的旧行（单位空，规格名带「· 日高點: 19.70」）和后来带单位的行；另外有 `period_key` 以 `unverified:` 开头、没有报价期的行。行情列表按规范化规格名只留带单位且有报价期的那一版。migration 68 把被取代的行标成 `is_current=0`，不删除行，不改数字。之后每次写入也会把这些旧行从当前拿掉。精确快照链接仍能打开旧表。
+同一规格可以同时有两组 `is_current=1`：2026-10-05 的旧行（单位空，规格名带「· 日高點: 19.70」）和后来带单位的行；另外有 `period_key` 以 `unverified:` 开头、没有报价期的行。行情列表按规范化规格名只留带单位且有报价期的那一版。migration 69 把被取代的行标成 `is_current=0`，不删除行，不改数字。之后每次写入也会把这些旧行从当前拿掉。精确快照链接仍能打开旧表。
 
 每一项价格直接带官网 Last Update 的月日。DRAM 等合约的半月期写成「8 月下半月」，和 Last Update 的 `08-31` 放在一起，不把 9 月 30 日的会员通知当成报价日。超过 7 天标「已过期」，例如合约价 `08-31`、SSD OEM `08-05`。不另加「更新时间」行。
 

@@ -25,7 +25,9 @@
 
 ## 当前
 
-- `progress/2026-10-15-hardware-price-units.md`：DRAM 合约里的 SO-DIMM 按条计价。内存条、显存、晶圆、存储卡、SSD 和 NAND 合约价补上 USD 和对应单位，数字不动。列表只留带单位且有报价期的当前规格，旧行改为 `is_current=0`。每一项显示官网数据日期，超过 7 天标已过期，DRAM 合约写明「8 月下半月」。migration 68。需要同时重启 Web 和 Worker。
+- `progress/2026-10-15-hardware-price-units.md`：DRAM 合约里的 SO-DIMM 按条计价。内存条、显存、晶圆、存储卡、SSD 和 NAND 合约价补上 USD 和对应单位，数字不动。列表只留带单位且有报价期的当前规格，旧行改为 `is_current=0`。每一项显示官网数据日期，超过 7 天标已过期，DRAM 合约写明「8 月下半月」。migration 69。需要同时重启 Web 和 Worker。
+
+- `progress/2026-10-15-article-dedup.md`：新媒体索引和订阅源按规范化原文链接加发布者去重，已有的那条补上缺失正文，不再另建一条。小时报生成时用同一把钥匙再去重，跨小时也合并，留下 media 那条。已有行不清理、不回填。migration 68 只加列和索引。`AI_CENTER_ARTICLE_DEDUP_TITLE_THRESHOLD` 默认 0.82。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-14-translation-gap-read.md`：媒体列表按标题哈希和标题块 id 读出补漏译文，不再因为展示正文哈希对不上而标 stale。补漏按可配置时间窗口扫描缺译条目，默认至少 72 小时，每轮仍限制入队数；终态失败在递增间隔后重新入队。`feed_translation_chunks` 仍是续翻缓冲，全文落库即删除，健康部署后 0 行是预期。不新增 migration。需要同时重启 Web 和 Worker。
 

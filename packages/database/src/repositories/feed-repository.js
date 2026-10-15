@@ -206,6 +206,18 @@ function mapSubscription(row) {
   };
 }
 
+function sqlLikePrefix(value) {
+  return `${String(value).replace(/[\\%_]/g, '\\$&')}%`;
+}
+
+const FEED_DEDUP_SELECT = `ci.workspace_id, ci.id, ci.title, ci.summary, ci.source_url, ci.author_name, ci.published_at, ci.created_at,
+  CASE WHEN length(ci.body) > 0 THEN 1 ELSE 0 END AS has_body,
+  COALESCE(sa.external_id, '') AS source_external_id, COALESCE(sa.profile_url, '') AS profile_url`;
+
+const FEED_DEDUP_FROM = `content_items ci
+  LEFT JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
+  LEFT JOIN source_accounts sa ON sa.id = c.source_account_id AND sa.workspace_id = ci.workspace_id`;
+
 function mapContentItem(row) {
   return {
     id: row.id,
@@ -559,6 +571,70 @@ export function createFeedRepository(database, emitEvent) {
         ? database.prepare('SELECT * FROM content_items WHERE capture_id = ?').get(input.captureId)
         : database.prepare('SELECT * FROM content_items WHERE id = ?').get(id);
       return mapContentItem(row);
+    },
+
+    rememberFeedDedupKey(workspaceId, id, dedupKey) {
+      const key = String(dedupKey || '');
+      if (!key || !id) return false;
+      const result = database.prepare(`UPDATE content_items SET dedup_key = ?
+        WHERE workspace_id = ? AND id = ? AND (dedup_key IS NULL OR dedup_key = '')`).run(key, workspaceId, id);
+      return result.changes === 1;
+    },
+
+    listFeedByDedupKey(workspaceId, dedupKey) {
+      const key = String(dedupKey || '');
+      if (!key) return [];
+      return database.prepare(`SELECT ${FEED_DEDUP_SELECT} FROM ${FEED_DEDUP_FROM}
+        WHERE ci.workspace_id = ? AND ci.dedup_key = ? LIMIT 20`).all(workspaceId, key);
+    },
+
+    listFeedByUrlPrefixes(workspaceId, prefixes) {
+      const list = [...new Set(prefixes || [])].filter(Boolean).slice(0, 8);
+      if (!list.length) return [];
+      const clause = list.map(() => `ci.source_url LIKE ? ESCAPE '\\'`).join(' OR ');
+      return database.prepare(`SELECT ${FEED_DEDUP_SELECT} FROM ${FEED_DEDUP_FROM}
+        WHERE ci.workspace_id = ? AND (${clause})
+        ORDER BY length(ci.source_url) ASC LIMIT 40`).all(workspaceId, ...list.map(sqlLikePrefix));
+    },
+
+    listFeedByPublishedAt(workspaceId, startAt, endAt) {
+      return database.prepare(`SELECT ${FEED_DEDUP_SELECT} FROM ${FEED_DEDUP_FROM}
+        WHERE ci.workspace_id = ? AND ci.published_at >= ? AND ci.published_at <= ?
+        ORDER BY ci.published_at ASC LIMIT 400`).all(workspaceId, startAt, endAt);
+    },
+
+    fillFeedItemGaps(workspaceId, id, fields) {
+      const row = database.prepare(`SELECT title, summary, body, author_name, source_url, published_at, dedup_key
+        FROM content_items WHERE workspace_id = ? AND id = ?`).get(workspaceId, id);
+      if (!row) return false;
+      const next = {
+        title: row.title || '',
+        summary: row.summary || '',
+        body: row.body || '',
+        authorName: row.author_name || '',
+        sourceUrl: row.source_url || '',
+        publishedAt: row.published_at || null,
+        dedupKey: row.dedup_key || '',
+      };
+      let contentChanged = false;
+      if (!next.title && fields.title) { next.title = String(fields.title); contentChanged = true; }
+      if (!next.summary && fields.summary) { next.summary = String(fields.summary); contentChanged = true; }
+      if (!next.body && fields.body) { next.body = String(fields.body); contentChanged = true; }
+      if (!next.authorName && fields.authorName) { next.authorName = String(fields.authorName); contentChanged = true; }
+      if (!next.sourceUrl && fields.url) { next.sourceUrl = String(fields.url); contentChanged = true; }
+      if (!next.publishedAt && fields.publishedAt) { next.publishedAt = fields.publishedAt; contentChanged = true; }
+      if (!next.dedupKey && fields.dedupKey) next.dedupKey = String(fields.dedupKey);
+      const same = next.title === (row.title || '') && next.summary === (row.summary || '') && next.body === (row.body || '')
+        && next.authorName === (row.author_name || '') && next.sourceUrl === (row.source_url || '')
+        && (next.publishedAt || null) === (row.published_at || null) && next.dedupKey === (row.dedup_key || '');
+      if (same) return false;
+      database.prepare(`UPDATE content_items SET
+          title = ?, summary = ?, body = ?, author_name = ?, source_url = ?, published_at = ?, dedup_key = ?
+        WHERE workspace_id = ? AND id = ?`).run(
+        next.title, next.summary, next.body, next.authorName, next.sourceUrl, next.publishedAt, next.dedupKey || null,
+        workspaceId, id,
+      );
+      return contentChanged;
     },
 
     touchPublishedAt(workspaceId, provider, externalId, publishedAt) {
@@ -1019,7 +1095,7 @@ export function createFeedRepository(database, emitEvent) {
         ORDER BY ${timeSql} ASC, ci.id ASC
         LIMIT ?`).all(workspaceId, Number(startAt), Number(endAt), sourceId, sourceId,
           cursor?.eventAt ?? null, cursor?.eventAt ?? 0, cursor?.id ?? '', JSON.stringify(excludedItemIds), safeLimit);
-      if(metadataOnly)return rows.map(row=>({id:`feed:${row.id}`,title:row.title || '',sourceUrl:row.source_url || '',version:String(row.updated_at || row.created_at),eventAt:timeBasis==='ingested' ? row.created_at : row.published_at ?? row.created_at,sourceExternalId:row.source_external_id || '',sourceName:row.source_name || ''}));
+      if(metadataOnly)return rows.map(row=>({id:`feed:${row.id}`,title:row.title || '',sourceUrl:row.source_url || '',publishedAt:row.published_at ?? null,version:String(row.updated_at || row.created_at),eventAt:timeBasis==='ingested' ? row.created_at : row.published_at ?? row.created_at,sourceExternalId:row.source_external_id || '',sourceName:row.source_name || ''}));
       return rows.map((row) => ({
         ...mapContentItem(row),
         capturedAt: row.captured_at ?? null,

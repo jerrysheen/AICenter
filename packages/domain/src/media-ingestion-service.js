@@ -9,6 +9,7 @@ import { mediaTranslationUnits, projectMediaTranslation } from './media-translat
 import { formatYmd, zonedParts } from './zoned-time.js';
 import { normalizeMediaUrl } from './media-url.js';
 import { isFlashSource } from './flash-sources.js';
+import { createArticleDedup } from './article-dedup.js';
 const MEDIA_BUDGET = MediaConfigSchema.parse({ version: 1, sources: [] }).budget;
 const MEDIA_TIMEZONE = 'Asia/Shanghai';
 export const MEDIA_INGESTION_POLICY = 'native-channels-v1';
@@ -197,7 +198,30 @@ export function createMediaIngestionService({
   const dayKey = at => formatYmd(zonedParts(at,mediaPort?.timeZone || MEDIA_TIMEZONE));
   budget = { ...MEDIA_BUDGET, ...(mediaPort?.budget || {}), ...budget };
   const MEDIA_PUBLISHERS = [...MEDIA_SOURCES, ...(mediaPort?.publishers || [])];
+  const articleDedup = createArticleDedup({ mediaRepository, feedRepository, sources: MEDIA_PUBLISHERS });
   const mediaSource = key => MEDIA_PUBLISHERS.find(s => s.sourceKey === key || s.sourceAliases?.includes(key)) || null;
+  function saveMediaEntry(entry) {
+    const dedupKey = articleDedup.keyFor({
+      url: entry.canonicalUrl,
+      sourceKey: entry.sourceKey,
+      publisherKey: entry.publisherKey,
+      sourceExternalId: entry.sourceKey ? `media:${entry.sourceKey}` : '',
+    });
+    return mediaRepository.upsertEntry({ ...entry, dedupKey: dedupKey || null });
+  }
+  function incomingArticle(entry, item) {
+    return {
+      url: item.sourceUrl || item.canonicalUrl || '',
+      title: item.title || '',
+      summary: item.summary || '',
+      body: String(item.feedBodyHtml || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
+      authorName: item.authorName || '',
+      publishedAt: item.publishedAt || null,
+      sourceKey: entry.sourceKey,
+      publisherKey: item.publisherKey || entry.publisherKey || entry.sourceKey,
+      sourceExternalId: `media:${entry.sourceKey}`,
+    };
+  }
   const mediaSourcesByChannel = channel => MEDIA_SOURCES.filter(s => !channel || s.channel === channel);
   const parsedHtmlList = entry => entry?.transport === 'html' && (
     entry.listReadMethod === 'browser' || (entry.listReadMethod === 'http' && Boolean(mediaPort?.supportsHtmlList?.(entry)))
@@ -542,7 +566,7 @@ export function createMediaIngestionService({
       workspaceId, dayKey(at), waiting.length, at, budget.maxNewMetadataPerDay, { recordDeferred: false },
     );
     waiting.slice(0, reservation.allowed).forEach((item) => {
-      mediaRepository.upsertEntry({ ...item, status: 'indexed', updatedAt: at });
+      saveMediaEntry({ ...item, status: 'indexed', updatedAt: at });
     });
     return reservation.allowed;
   }
@@ -656,15 +680,25 @@ export function createMediaIngestionService({
       .filter((item) => !accepted.has(item.externalId))
       .map((item) => item.externalId));
     let added = 0;
+    const mergedMediaId = new Map();
     for (const item of changed) {
       if (cappedOut.has(item.externalId)) continue;
       const previous = known.get(item.externalId);
+      if (!previous) {
+        const article = incomingArticle(entry, item);
+        const match = articleDedup.find(workspaceId, article, { ignoreMediaIds: [item.externalId] });
+        if (match) {
+          articleDedup.fill(match, article);
+          mergedMediaId.set(item.externalId, match.kind === 'media' ? match.externalId : '');
+          continue;
+        }
+      }
       const deferred = deferredIds.has(item.externalId);
       // Index and body are separate scoring inputs. Preserve both originals in media storage.
       const gateRow=entryRow(workspaceId,entry,item,{at,previous,status:deferred?'budget_deferred':'indexed'});
       const gate= !deferred && previous?.contentLevel!=='full' ? await evaluateMediaGate(workspaceId,gateRow,{text:item.summary || '',truncated:false}) : null;
       mediaRepository.atomic(() => {
-      mediaRepository.upsertEntry(entryRow(workspaceId, entry, item, {
+      saveMediaEntry(entryRow(workspaceId, entry, item, {
         at,
         previous,
         status: deferred ? 'budget_deferred' : (previous?.status === 'body_ready' ? 'body_ready' : 'indexed'),
@@ -678,14 +712,16 @@ export function createMediaIngestionService({
       const previous=known.get(item.externalId);
       if (previous && mediaSource(previous.sourceKey)?.sourceKey===entry.sourceKey && previous.contentHash===indexHash(item) &&
         ((item.publisherName && previous.publisherName!==item.publisherName) || (item.authorName && previous.authorName!==item.authorName))) {
-        mediaRepository.upsertEntry({...previous,publisherKey:item.publisherKey || previous.publisherKey,
+        saveMediaEntry({...previous,publisherKey:item.publisherKey || previous.publisherKey,
           publisherName:item.publisherName || previous.publisherName,authorName:item.authorName || previous.authorName,updatedAt:at});
       }
     }
     added += acceptDeferred(workspaceId, entry, at);
     for (const item of fresh) {
       if (cappedOut.has(item.externalId)) continue;
-      mediaRepository.saveDiscovery?.({workspaceId,externalId:item.externalId,sourceKey:entry.sourceKey,
+      const target = mergedMediaId.has(item.externalId) ? mergedMediaId.get(item.externalId) : item.externalId;
+      if (!target) continue;
+      mediaRepository.saveDiscovery?.({workspaceId,externalId:target,sourceKey:entry.sourceKey,
         entryUrl:entry.probeUrl,listPosition:item.listPosition,firstSeenAt:at,lastSeenAt:at});
     }
     const dated = parsed.items.map((item) => item.publishedAt).filter((value) => Number.isInteger(value));
@@ -836,7 +872,7 @@ export function createMediaIngestionService({
         const degrade = previous?.contentLevel === 'full' && article.contentLevel !== 'full';
         if (!degrade) {
           const articleDate=Date.parse(article.publishedAtRaw || '');
-          mediaRepository.upsertEntry({ ...row, publishedAt: row.publishedAt ?? (Number.isFinite(articleDate) && articleDate>=0 ? articleDate : null), publishedAtRaw: row.publishedAtRaw || article.publishedAtRaw || '', originUrl: response.originUrl || row.originUrl, contentLevel: article.contentLevel, bodyHash, truncated: article.truncated, status: 'body_ready', updatedAt: at });
+          saveMediaEntry({ ...row, publishedAt: row.publishedAt ?? (Number.isFinite(articleDate) && articleDate>=0 ? articleDate : null), publishedAtRaw: row.publishedAtRaw || article.publishedAtRaw || '', originUrl: response.originUrl || row.originUrl, contentLevel: article.contentLevel, bodyHash, truncated: article.truncated, status: 'body_ready', updatedAt: at });
           promoteBody(workspaceId,row,article,bodyHash,gate);
         }
         mediaRepository.saveFetchState(workspaceId,row.externalId,state);
@@ -870,8 +906,12 @@ export function createMediaIngestionService({
     if(gate) {
       const capture=saveMediaGate(workspaceId,row,article,bodyHash,gate);
       if(!gate.createContentItem) return;
-      feedRepository.saveContentItem({workspaceId,captureId:capture.id,originType:'subscription',contentType:'article',
+      const saved = feedRepository.saveContentItem({workspaceId,captureId:capture.id,originType:'subscription',contentType:'article',
         title:row.title,body:article.text,summary:row.summary,sourceUrl:row.canonicalUrl,authorName:article.author || row.publisherKey,publishedAt:row.publishedAt});
+      articleDedup.rememberFeed(workspaceId, saved?.id, {
+        url: row.canonicalUrl, title: row.title || '', publishedAt: row.publishedAt,
+        sourceKey: row.sourceKey, publisherKey: row.publisherKey, sourceExternalId: `media:${row.sourceKey}`,
+      });
       return;
     }
     const source = feedRepository.upsertSourceAccount({
@@ -903,7 +943,7 @@ export function createMediaIngestionService({
         channel: row.channel,
       },
     });
-    feedRepository.saveContentItem({
+    const saved = feedRepository.saveContentItem({
       workspaceId,
       captureId: capture.id,
       originType: 'subscription',
@@ -914,6 +954,10 @@ export function createMediaIngestionService({
       sourceUrl: row.canonicalUrl,
       authorName: article.author || row.publisherKey,
       publishedAt: row.publishedAt,
+    });
+    articleDedup.rememberFeed(workspaceId, saved?.id, {
+      url: row.canonicalUrl, title: row.title || '', publishedAt: row.publishedAt,
+      sourceKey: row.sourceKey, publisherKey: row.publisherKey, sourceExternalId: `media:${row.sourceKey}`,
     });
   }
 
@@ -993,8 +1037,14 @@ export function createMediaIngestionService({
       if (!state.enabled || !state.bodyUseAcknowledged) continue;
       const previous = mediaRepository.getEntries(workspaceId,[item.externalId])[0];
       if (previous) continue;
+      const article = incomingArticle(publisher, item);
+      const duplicate = articleDedup.find(workspaceId, article, { ignoreMediaIds: [item.externalId] });
+      if (duplicate) {
+        articleDedup.fill(duplicate, article);
+        continue;
+      }
       const reservation = mediaRepository.reserveMetadata(workspaceId,dayKey(at),1,at,budget.maxNewMetadataPerDay);
-      mediaRepository.upsertEntry(entryRow(workspaceId,publisher,item,{at,status:reservation.allowed ? 'indexed' : 'budget_deferred'}));
+      saveMediaEntry(entryRow(workspaceId,publisher,item,{at,status:reservation.allowed ? 'indexed' : 'budget_deferred'}));
       if (reservation.allowed) added++;
     }
     for (const entry of mediaPort?.publishers || []) added += acceptDeferred(workspaceId,entry,at);
@@ -1156,7 +1206,7 @@ export function createMediaIngestionService({
         mediaRepository.atomic(()=>{
           row.contentLevel=item.contentLevel;row.bodyHash=['full','partial'].includes(item.contentLevel)?bodyHash:'';
           row.status=row.bodyHash?'body_ready':'indexed';row.truncated=false;
-          mediaRepository.upsertEntry(row);mediaRepository.saveArticleKind(workspaceId,externalId,item.articleKind);
+          saveMediaEntry(row);mediaRepository.saveArticleKind(workspaceId,externalId,item.articleKind);
           if(row.bodyHash) {
             const revision=(mediaRepository.listSnapshots(workspaceId,externalId).at(-1)?.revision || 0)+1;
             mediaRepository.saveSnapshot({workspaceId,externalId,revision,bodyHash,bodyText:article.text,truncated:false,contentLevel:item.contentLevel,observedAt:at,article});
@@ -1205,6 +1255,10 @@ export function createMediaIngestionService({
     informationCandidates(workspaceId,window) {
       const excluded=[...legacyHidden(workspaceId),...(feedRepository?.listHiddenExternalIds?.(workspaceId,'media') || []),...qualityExcluded(workspaceId)];
       return mediaRepository.informationCandidates(workspaceId,{...window,hiddenExternalIds:excluded,extractorVersion});
+    },
+    articleDedup,
+    dedupeHourlyCandidates(workspaceId, items) {
+      return articleDedup.dedupeHourlyCandidates(workspaceId, items);
     },
     catalog: () => MEDIA_SOURCES.map((entry) => ({ ...entry })),
     discoverOriginals,
