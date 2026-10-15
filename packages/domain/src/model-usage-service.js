@@ -43,7 +43,7 @@ export function createModelUsageService({ repository, workspaceId = 'local', rat
     list(query = {}) {
       const rows = repository.list(workspaceId, parseContract(ModelUsageQuerySchema, query));
       // Provider routes are private accounting input; page contracts expose neutral request identities.
-      return rows.map(({ provider, model, harnessSessionId, ...row }) => {
+      return rows.map(({ provider, model, harnessSessionId, keySuffix, ...row }) => {
         const job = row.status === 'pending' && row.jobId ? getJob?.(row.jobId) : null;
         if (job && (job.status !== 'running' || job.attemptCount !== row.jobAttempt)) row.status = 'interrupted';
         return ModelUsageViewSchema.parse({ ...row,

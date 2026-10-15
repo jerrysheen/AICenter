@@ -143,6 +143,11 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
   const rewound = new Database(file);
   rewound.exec(`
     DROP TABLE IF EXISTS runtime_snapshots;
+    DROP TABLE IF EXISTS etf_whale_intraday_bars;
+    DROP TABLE IF EXISTS etf_whale_index_daily;
+    DROP TABLE IF EXISTS etf_whale_turnover;
+    DROP TABLE IF EXISTS etf_whale_futures_rank;
+    DROP TABLE IF EXISTS etf_whale_signals;
     DROP INDEX IF EXISTS idx_captures_feed_sort;
     DROP INDEX IF EXISTS idx_captures_provider_captured;
     DROP INDEX IF EXISTS idx_captures_feed_filter;
@@ -157,15 +162,15 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
 
   const upgraded = createStore(file);
   try {
-    assert.equal(latestSchemaVersion(), 69);
-    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 69);
+    assert.equal(latestSchemaVersion(), 71);
+    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 71);
   } finally {
     upgraded.close();
   }
 
   const database = new Database(file, { readonly: true, fileMustExist: true });
   try {
-    assert.equal(database.pragma('user_version', { simple: true }), 69);
+    assert.equal(database.pragma('user_version', { simple: true }), 71);
     const rows = database.prepare(`
       SELECT version, name, applied_at FROM schema_migrations WHERE version >= 57 ORDER BY version
     `).all();
@@ -182,7 +187,11 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
       [67, 'feed_translation_chunks'],
       [68, 'article_dedup_keys'],
       [69, 'hardware_price_current_spec'],
+      [70, 'etf_whale_market_depth'],
+      [71, 'model_usage_translation_attribution'],
     ]);
+    assert.equal(database.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('model_usage_index') WHERE name = 'key_suffix'`).get().n, 1);
+    assert.equal(database.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('model_usage_index') WHERE name = 'item_id'`).get().n, 1);
     assert.ok(database.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'gemini_model_cursors'`).get());
     assert.equal(database.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('model_usage_index') WHERE name = 'http_status'`).get().n, 1);
     assert.ok(rows[1].applied_at <= rows[2].applied_at);
@@ -190,6 +199,62 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
     for (const name of FEED_INDEXES) {
       assert.ok(database.prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`).get(name), name);
     }
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+const ETF_WHALE_TABLES = [
+  'etf_whale_intraday_bars',
+  'etf_whale_index_daily',
+  'etf_whale_turnover',
+  'etf_whale_futures_rank',
+  'etf_whale_signals',
+];
+
+test('库已在 71 时升级', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-schema-71-gap-'));
+  const file = path.join(directory, 'ai-center.db');
+  const seeded = createStore(file);
+  seeded.close();
+  const gap = new Database(file);
+  gap.exec(`
+    DROP TABLE IF EXISTS etf_whale_intraday_bars;
+    DROP TABLE IF EXISTS etf_whale_index_daily;
+    DROP TABLE IF EXISTS etf_whale_turnover;
+    DROP TABLE IF EXISTS etf_whale_futures_rank;
+    DROP TABLE IF EXISTS etf_whale_signals;
+    DELETE FROM schema_migrations WHERE version = 70;
+    PRAGMA user_version = 71;
+  `);
+  const applied71 = gap.prepare(`SELECT name, applied_at FROM schema_migrations WHERE version = 71`).get();
+  assert.equal(gap.pragma('user_version', { simple: true }), 71);
+  assert.equal(gap.prepare(`SELECT version FROM schema_migrations WHERE version = 70`).get(), undefined);
+  assert.equal(applied71.name, 'model_usage_translation_attribution');
+  assert.equal(gap.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'etf_whale_signals'`).get(), undefined);
+  assert.equal(gap.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('model_usage_index') WHERE name = 'key_suffix'`).get().n, 1);
+  gap.close();
+
+  const upgraded = createStore(file);
+  try {
+    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 71);
+  } finally {
+    upgraded.close();
+  }
+
+  const database = new Database(file, { readonly: true, fileMustExist: true });
+  try {
+    for (const name of ETF_WHALE_TABLES) {
+      assert.ok(database.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`).get(name), name);
+    }
+    assert.equal(database.prepare(`SELECT name FROM schema_migrations WHERE version = 70`).get().name, 'etf_whale_market_depth');
+    const kept71 = database.prepare(`SELECT name, applied_at FROM schema_migrations WHERE version = 71`).get();
+    assert.equal(kept71.name, 'model_usage_translation_attribution');
+    assert.equal(kept71.applied_at, applied71.applied_at);
+    assert.equal(database.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('model_usage_index') WHERE name = 'key_suffix'`).get().n, 1);
+    assert.equal(database.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('model_usage_index') WHERE name = 'item_id'`).get().n, 1);
+    assert.equal(database.pragma('user_version', { simple: true }), 70);
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });

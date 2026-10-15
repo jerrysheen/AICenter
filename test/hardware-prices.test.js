@@ -261,7 +261,8 @@ test('forward migration upgrades V39 with existing content and states intact',()
       DROP INDEX IF EXISTS idx_captures_feed_sort;DROP INDEX IF EXISTS idx_captures_provider_captured;DROP INDEX IF EXISTS idx_captures_feed_filter;
       DROP INDEX IF EXISTS idx_content_items_capture_cover;DROP INDEX IF EXISTS idx_user_item_states_feed_flags;
       DROP TABLE IF EXISTS gemini_model_cursors;
-      DELETE FROM schema_migrations WHERE version IN (40,54,55,56,57,58,59,60,61,62,64,65,66,67,68,69);PRAGMA user_version=39;`);
+      DROP TABLE IF EXISTS etf_whale_intraday_bars;DROP TABLE IF EXISTS etf_whale_index_daily;DROP TABLE IF EXISTS etf_whale_turnover;DROP TABLE IF EXISTS etf_whale_futures_rank;DROP TABLE IF EXISTS etf_whale_signals;
+      DELETE FROM schema_migrations WHERE version IN (40,54,55,56,57,58,59,60,61,62,64,65,66,67,68,69,70,71);PRAGMA user_version=39;`);
     const before=db.prepare('SELECT count(*) n FROM content_items').get().n;runMigrations(db);runMigrations(db);
     assert.equal(db.pragma('user_version',{simple:true}),latestSchemaVersion());assert.equal(db.prepare('SELECT count(*) n FROM content_items').get().n,before);
     assert.equal(db.prepare(`SELECT COUNT(*) n FROM pragma_table_info('hardware_price_snapshots') WHERE name='last_checked_at'`).get().n,1);db.close();
@@ -378,7 +379,7 @@ test('migration 69 clears superseded current flags and keeps every observation r
     row('old-dirty','DDR5 16Gb (2Gx8) 4800/5600 · 日高點: 19.70',null,'["2026-10-05",1,2]','2026-10-05',at,1);
     row('new-clean','DDR5 16Gb (2Gx8) 4800/5600','chip','["2026-10-12",1,2]','2026-10-12',at+86400000,1);
     row('undated','DDR5 16Gb (2Gx8) 4800/5600','chip','unverified:snapshot-undated',null,null,1);
-    db.prepare('DELETE FROM schema_migrations WHERE version=69').run();
+    db.prepare('DELETE FROM schema_migrations WHERE version IN (69, 71)').run();
     db.pragma('user_version = 68');
     runMigrations(db);
     const flags=db.prepare('SELECT id,is_current current FROM hardware_price_observations ORDER BY id').all();
@@ -387,9 +388,11 @@ test('migration 69 clears superseded current flags and keeps every observation r
     assert.equal(flags.find(item=>item.id==='undated').current,0);
     assert.equal(flags.find(item=>item.id==='new-clean').current,1);
     assert.equal(db.prepare(`SELECT json_extract(row_json,'$.average') average FROM hardware_price_observations WHERE id='old-dirty'`).get().average,'10.00');
-    assert.equal(db.pragma('user_version',{simple:true}),69);
+    assert.equal(db.pragma('user_version',{simple:true}),71);
     assert.equal(db.prepare(`SELECT name FROM schema_migrations WHERE version=68`).get().name,'article_dedup_keys');
     assert.equal(db.prepare(`SELECT name FROM schema_migrations WHERE version=69`).get().name,'hardware_price_current_spec');
+    assert.equal(db.prepare(`SELECT name FROM schema_migrations WHERE version=70`).get().name,'etf_whale_market_depth');
+    assert.equal(db.prepare(`SELECT name FROM schema_migrations WHERE version=71`).get().name,'model_usage_translation_attribution');
     db.close();
   }finally{rmSync(f.directory,{recursive:true,force:true});}
 });
