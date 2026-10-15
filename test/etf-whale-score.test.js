@@ -18,6 +18,7 @@ import {
   scoreLevel,
   turnoverComponent,
 } from '../packages/domain/src/etf-whale/score.js';
+import { dailyIndexApprox, metricOrNull } from '../packages/domain/src/etf-whale/session-shape.js';
 import { referencePool } from '../packages/domain/src/etf-whale/universe.js';
 import { refreshEtfWhaleSignals, scoreTradeDate } from '../packages/runtime/src/etf-whale-score.js';
 
@@ -186,6 +187,8 @@ test('510310 at about 25x is stored as breadth 20 and futures stay out of the sc
     const saved = repository.listSignals(tradeDate, tradeDate, 'gjd-score-v1');
     assert.equal(saved.length, 1);
     assert.equal(saved[0].s_breadth, 20);
+    assert.equal(saved[0].s_index, null);
+    assert.equal(JSON.parse(saved[0].inputs_json).index.score, null);
 
     const counted = refreshEtfWhaleSignals(repository, { startDate: '2026-10-01', endDate: '2026-10-02', stage: 'initial' });
     assert.equal(counted, 0);
@@ -282,6 +285,138 @@ test('unknown ETF codes are 404, bad codes and signal ranges are 400, and series
     assert.equal(dailyBody.daily.sharesStatus, 'pending');
     assert.equal(dailyBody.disclaimer, '不构成投资建议');
     assert.equal(dailyBody.daily.futures.displayOnly, true);
+    assert.equal(dailyBody.daily.indices.every((item) => item.method == null), true);
+  } finally {
+    store.close();
+  }
+});
+
+const WASHED_DAILY = {
+  open: 99,
+  high: 101,
+  low: 98.5,
+  close: 100.8,
+  prevClose: 100,
+};
+
+test('missing 5-minute bars use daily OHLC approximation and a real zero is not stored as insufficient', () => {
+  assert.equal(metricOrNull(null), null);
+  assert.equal(dailyIndexApprox(WASHED_DAILY).hit, true);
+  assert.equal(dailyIndexApprox({
+    open: 100, high: 101, low: 99.2, close: 100.5, prevClose: 100,
+  }).hit, true);
+  const surge = dailyIndexApprox({
+    open: 99.5, high: 101, low: 99.4, close: 100.6, prevClose: 100,
+    amountCny: 160, priorAmounts: Array(10).fill(100),
+  });
+  assert.equal(surge.hit, true);
+  assert.equal(dailyIndexApprox({
+    open: 99.5, high: 101, low: 99.4, close: 100.6, prevClose: 100,
+    amountCny: 160, priorAmounts: Array(9).fill(100),
+  }).hit, false);
+  assert.equal(dailyIndexApprox({
+    open: 100, high: 101, low: 99.8, close: 100.1, prevClose: 100,
+  }).hit, false);
+
+  const washed = indexComponent([{ symbol: '000300', ...WASHED_DAILY }]);
+  assert.equal(washed.insufficient, false);
+  assert.equal(washed.method, 'daily-approx');
+  assert.equal(washed.score, 25);
+  assert.equal(indexComponent([{ symbol: '000016', ...WASHED_DAILY }]).score, 15);
+  const coerced = indexComponent([{
+    symbol: '000300',
+    lowDropPct: 0,
+    reboundPct: 0,
+    tailPct: 0,
+    ...WASHED_DAILY,
+  }]);
+  assert.equal(coerced.method, 'daily-approx');
+  assert.equal(coerced.score, 25);
+
+  const preferred = indexComponent([{
+    symbol: '000300',
+    barsPresent: true,
+    lowDropPct: 0,
+    reboundPct: 0,
+    tailPct: 0.002,
+    lowTime: '2024-01-02 10:00',
+    ...WASHED_DAILY,
+  }]);
+  assert.equal(preferred.method, 'intraday');
+  assert.equal(preferred.score, 0);
+  assert.equal(preferred.insufficient, false);
+  const mixed = indexComponent([
+    { symbol: '000300', barsPresent: true, lowDropPct: -0.02, reboundPct: 0.02, tailPct: 0, lowTime: '2024-01-02 10:00' },
+    { symbol: '000016', ...WASHED_DAILY },
+  ]);
+  assert.equal(mixed.method, 'mixed');
+  assert.equal(mixed.score, 25);
+  assert.equal(mixed.hits.find((item) => item.symbol === '000016').method, 'daily-approx');
+
+  const quiet = scoreGjdV1({
+    stage: 'initial',
+    poolSumToday: 3,
+    poolHistory: Array(20).fill(1),
+    names: quietNames(1),
+    indices: [{ symbol: '000300', ...WASHED_DAILY }],
+  });
+  assert.equal(quiet.sTurnover, 25);
+  assert.equal(quiet.sBreadth, 0);
+  assert.equal(quiet.sIndex, 25);
+  assert.equal(quiet.score, 50);
+  assert.equal(quiet.index.method, 'daily-approx');
+  assert.deepEqual(quiet.insufficient, []);
+
+  const store = createStore(path.join(mkdtempSync(path.join(tmpdir(), 'etf-whale-approx-')), 'ai-center.db'));
+  try {
+    const repository = store.repositories.etfWhale;
+    repository.saveIndexDaily([{
+      symbol: '000300',
+      tradeDate: '2024-01-02',
+      prevClose: 100,
+      open: 99,
+      high: 101,
+      low: 98.5,
+      close: 100.8,
+      amountCny: 1e11,
+      lowTime: null,
+      lowDropPct: null,
+      reboundPct: null,
+      tailPct: null,
+      source: 'tencent',
+    }]);
+    const scored = scoreTradeDate(repository, '2024-01-02', 'initial');
+    assert.equal(scored.sIndex, 25);
+    assert.equal(JSON.parse(scored.inputsJson).index.method, 'daily-approx');
+    assert.deepEqual(JSON.parse(scored.inputsJson).insufficient, ['turnover']);
+    repository.saveSignal(scored);
+    const row = repository.listSignals('2024-01-02', '2024-01-02', 'gjd-score-v1')[0];
+    assert.equal(row.s_index, 25);
+    const daily = createEtfWhaleReadService({ repository }).daily('2024-01-02');
+    const hs300 = daily.indices.find((item) => item.symbol === '000300');
+    const other = daily.indices.find((item) => item.symbol === '000016');
+    assert.equal(hs300.method, 'daily-approx');
+    assert.equal(hs300.hit, true);
+    assert.equal(hs300.tailPct, null);
+    assert.equal(other.method, null);
+    repository.saveIntradayBars([{
+      source: 'sina', symbol: '000300', kind: 'index', intervalKey: '5m',
+      barTime: '2024-01-02 10:00', tradeDate: '2024-01-02',
+      open: 100, high: 100.1, low: 99.9, close: 100, volume: 1, amountCny: 1,
+    }]);
+    const preferredScore = scoreTradeDate(repository, '2024-01-02', 'initial');
+    assert.equal(preferredScore.sIndex, 0);
+    assert.equal(JSON.parse(preferredScore.inputsJson).index.method, 'intraday');
+    repository.saveSignal({
+      ...scored,
+      sIndex: 0,
+      inputsJson: JSON.stringify({ insufficient: ['index'], index: { score: null, method: null } }),
+    });
+    assert.equal(repository.listSignals('2024-01-02', '2024-01-02', 'gjd-score-v1')[0].s_index, null);
+    const signals = createEtfWhaleReadService({ repository }).signals({ start: '2024-01-02', end: '2024-01-02' });
+    assert.equal(signals.days[0].initial.sIndex, null);
+    assert.equal(signals.days[0].initial.indexMethod, null);
+    assert.ok(signals.days[0].initial.insufficient.includes('index'));
   } finally {
     store.close();
   }

@@ -1,5 +1,20 @@
 const ALGORITHM = 'etf-whale-qfq-typical-v1';
 
+function insufficientKeys(inputsJson) {
+  try {
+    const inputs = JSON.parse(inputsJson || '{}');
+    return new Set(Array.isArray(inputs.insufficient) ? inputs.insufficient : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function storedScore(value, missing) {
+  if (missing || value == null || value === '') return null;
+  const number = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 function mapDaily(row) {
   if (!row) return null;
   const payload = JSON.parse(row.payload_json);
@@ -268,6 +283,12 @@ export function createEtfWhaleRepository(database, emitEvent = () => {}) {
         WHERE symbol = ? AND trade_date = ? AND interval_key = ? ORDER BY bar_time`).all(symbol, tradeDate, intervalKey);
     },
 
+    listIntradayDays(startDate, endDate, intervalKey = '5m') {
+      return database.prepare(`SELECT symbol, trade_date FROM etf_whale_intraday_bars
+        WHERE interval_key = ? AND trade_date >= ? AND trade_date <= ?
+        GROUP BY symbol, trade_date`).all(intervalKey, startDate, endDate);
+    },
+
     saveIndexDaily(rows, computedAt = Date.now()) {
       const write = database.transaction(() => {
         for (const row of rows) {
@@ -334,9 +355,12 @@ export function createEtfWhaleRepository(database, emitEvent = () => {}) {
     },
 
     saveSignal(row, computedAt = Date.now()) {
+      const missing = insufficientKeys(row.inputsJson);
       upsertSignal.run(
-        row.tradeDate, row.stage, row.algorithm, row.score, row.maxScore, row.sTurnover, row.sFlow,
-        row.sBreadth, row.sIndex, row.level, row.inputsJson, row.computedAt || computedAt,
+        row.tradeDate, row.stage, row.algorithm, storedScore(row.score, false), row.maxScore,
+        storedScore(row.sTurnover, missing.has('turnover')), storedScore(row.sFlow, false),
+        storedScore(row.sBreadth, false), storedScore(row.sIndex, missing.has('index')),
+        row.level, row.inputsJson, row.computedAt || computedAt,
       );
     },
 

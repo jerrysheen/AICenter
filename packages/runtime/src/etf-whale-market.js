@@ -9,6 +9,7 @@ import { ETF_WHALE_UNIVERSE } from '../../domain/src/etf-whale/universe.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const HISTORICAL_MISS_DAYS = 7;
+export const ETF_WHALE_MARKET_PARTS = Object.freeze(['quotes', 'intraday', 'index', 'turnover']);
 
 function emptySourceCounts() {
   return { tencent: 0, sina: 0, eastmoney: 0, error: 0, rows: 0 };
@@ -48,7 +49,7 @@ function symbols(instruments) {
 export async function syncEtfWhaleMarket(options) {
   const repository = options.repository;
   const instruments = options.instruments || ETF_WHALE_UNIVERSE;
-  const parts = new Set(options.parts || ['quotes', 'intraday', 'index', 'turnover']);
+  const parts = new Set(options.parts || ETF_WHALE_MARKET_PARTS);
   const pauseMs = options.pauseMs ?? 200;
   const probes = [];
   const counts = { index: emptySourceCounts(), turnover: emptySourceCounts() };

@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-15-etf-whale-index-daily-approx.md`：没有 5 分钟线时，指数形态用日线开高低收和成交额近似，`inputs_json.index.method` 为 `daily-approx`；有分钟线时仍用原来的 5 分钟形态。日线也没有时 `sIndex` 为 null，接口和页面显示「数据不足」。信号写入会把 `insufficient` 里的分项强制写成 null，不再把 0 当成缺失。不新增 migration。15:30 的行情任务继续抓 5 分钟线。需要同时重启 Web 和 Worker，再跑 `signals --start 2024-01-02`。
+
 - `progress/2026-10-15-etf-whale-backfill-sources.md`：指数日线和实际成交额先读腾讯 `newfqkline` 不复权日线。成交额在第 9 列，单位是万元，入库前乘 10000 收成元。长区间按返回的最早日期向前翻页。新浪 `__ERROR` 算失败。新浪、东财仍按这个顺序兜底。抓取失败写入 `etf_whale_fetches.status=error` 并打日志。回填打印每个上游的行数。中金所 URL 在 2026-06-25 之后没变；单日异常不再打断后面的日期。历史 404 页记 holiday。中信期货 `partyid` 0018 已核对。成交额或指数没有输入时，`sTurnover` / `sIndex` 为 null，并带 `insufficient`。不新增 migration。需要同时重启 Web 和 Worker，再按该说明重跑回填和 `signals`。
 
 - `progress/2026-10-15-worker-dedup-scan.md`：小时去重不再对每条候选做 `source_url LIKE` 全表扫描。同一小时合成一次 NOCASE 前缀范围查询，并使用 migration 68 的 `dedup_key`。隐藏外部 id 走部分索引，最多 1 万条。领取时已达 `max_attempts` 的任务标失败，不再跑第 5 次。migration 72 只加索引。本机 5 万行、300 条候选从大约 2.3 秒降到 18–23ms。需要同时重启 Web 和 Worker。
