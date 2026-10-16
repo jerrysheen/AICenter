@@ -5737,3 +5737,30 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
 .api-token-row strong, .api-token-row small { display: block; }
 .api-token-row small { margin-top: 3px; color: var(--font-tertiary); font-size: 12px; line-height: 1.5; }
 .api-token-revoke { color: var(--warning); }
+.southbound-card { margin: 0 0 var(--space-4); padding: var(--space-4); border-radius: var(--radius-card); background: var(--background-secondary); }
+.southbound-head { display: flex; align-items: center; gap: var(--space-2); }
+.southbound-head h2 { margin: 0; font-size: 16px; }
+.southbound-head small, .southbound-note, .southbound-scope, .southbound-sums { color: var(--font-tertiary); font-size: 12px; }
+.southbound-scope { margin: var(--space-3) 0 0; line-height: 1.5; }
+.southbound-badge { margin-left: auto; padding: 2px 8px; border-radius: 99px; background: var(--warning); color: var(--font-on-primary); font-size: 12px; }
+.southbound-channels, .southbound-lists { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-2); margin-top: var(--space-3); }
+.southbound-lists { grid-template-columns: 1fr 1fr; }
+.southbound-channels div, .southbound-name { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.southbound-channels span, .southbound-lists h3 { color: var(--font-tertiary); font-size: 12px; font-weight: 500; }
+.southbound-channels b, .southbound-name b, .southbound-sums b { font-variant-numeric: tabular-nums; }
+.southbound-bars { display: flex; align-items: stretch; gap: 3px; height: 72px; margin-top: var(--space-3); }
+.southbound-bar { position: relative; flex: 1; }
+.southbound-bar i { position: absolute; left: 0; width: 100%; }
+.southbound-bar.is-up i { bottom: 50%; border-radius: 2px 2px 0 0; }
+.southbound-bar.is-down i { top: 50%; border-radius: 0 0 2px 2px; }
+.southbound-bar i.up { background: var(--data-up); }
+.southbound-bar i.down { background: var(--data-down); }
+.southbound-name { width: 100%; min-height: 32px; padding: 4px 0; border: 0; background: transparent; text-align: left; }
+.southbound-tag { display: inline-block; margin-top: 2px; padding: 0 6px; border-radius: 99px; background: var(--comp-emphasize-tertiary); color: var(--brand); font-size: 11px; }
+.southbound-history { margin-top: var(--space-4); }
+.southbound-history h3 { margin: 0 0 var(--space-2); font-size: 14px; }
+.southbound-history p { display: flex; justify-content: space-between; margin: 4px 0; }
+.southbound-daily-line { margin: 0 0 var(--space-3); padding: var(--space-3); border-radius: var(--radius-image); background: var(--background-secondary); }
+@media (max-width: 720px) {
+  .southbound-channels { grid-template-columns: 1fr; }
+}

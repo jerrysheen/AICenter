@@ -19,6 +19,7 @@ import { createQuantRoutes } from './quant-routes.js';
 import { createEtfWhaleRoutes } from './etf-whale-routes.js';
 import { createSystemRoutes } from './system-routes.js';
 import { createTradingRoutes } from './trading-routes.js';
+import { createSouthboundRoutes } from './southbound-routes.js';
 import { createSourceRoutes } from './source-routes.js';
 import { createTaggingRoutes } from './tagging-routes.js';
 
@@ -39,6 +40,7 @@ export function createApiRoutes({ slots, offthread = null } = {}) {
     ...createAgentRoutes(),
     ...createArticleAnalysisRoutes(),
     ...createTradingRoutes(),
+    ...createSouthboundRoutes(),
     ...createHomeRoutes({ slots }),
     ...createReportRoutes({ slots, offthread }),
     ...createStrategyRoutes(),
