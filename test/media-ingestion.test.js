@@ -402,7 +402,8 @@ test('media enrich requeues the rest when the budget is already gone', async () 
   assert.equal(fetched.length, 0);
   assert.equal(output.yielded, true);
   assert.equal(output.health, 'partial');
-  assert.equal(output.remaining, 1);
+  assert.equal(jobs.length, 1);
+  assert.equal(output.remaining, 2);
   assert.equal(jobs[0].type, MEDIA_ENRICH_JOB_TYPE);
   assert.deepEqual(jobs[0].input.externalIds, ['a', 'b']);
 });
