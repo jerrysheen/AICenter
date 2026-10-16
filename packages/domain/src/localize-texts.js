@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { translatePolymarketOutcome } from './polymarket-outcome-zh.js';
 
 function countMatches(source, pattern) {
   return (source.match(pattern) || []).length;
@@ -93,16 +94,25 @@ export function localizationItemId(id) {
   return `h:${createHash('sha256').update(value).digest('hex')}`;
 }
 
-function pushUnit(units, seen, id, text) {
+function pushUnit(units, seen, id, text, kind = '') {
   const sourceId = String(id || '').trim();
   const sourceText = String(text || '').trim();
   if (!sourceId || !sourceText || seen.has(sourceId)) return;
   seen.add(sourceId);
-  units.push({
+  const unit = {
     id: sourceId,
     localizationId: localizationItemId(sourceId),
     text: sourceText,
-  });
+  };
+  if (kind) unit.kind = kind;
+  units.push(unit);
+}
+
+function pushOutcome(units, seen, id, text) {
+  const sourceText = String(text || '').trim();
+  if (!sourceText || translatePolymarketOutcome(sourceText).covered) return;
+  if (!/[A-Za-z]/.test(sourceText)) return;
+  pushUnit(units, seen, id, sourceText, 'outcome');
 }
 
 export function collectLocalizationUnits(payload = {}) {
@@ -118,8 +128,9 @@ export function collectLocalizationUnits(payload = {}) {
   const quotes = data.predictionMarkets || (data.quotes || []).filter((row) => row?.marketQuestion);
   for (const quote of quotes) {
     pushUnit(units, seen, quote.quoteId, quote.marketQuestion);
+    pushOutcome(units, seen, `${quote.quoteId}:outcome`, quote.outcome);
     for (const outcome of quote.outcomes || []) {
-      pushUnit(units, seen, `${quote.quoteId}:${outcome.label}`, outcome.label);
+      pushOutcome(units, seen, `${quote.quoteId}:${outcome.label}`, outcome.label);
     }
   }
   return units;
