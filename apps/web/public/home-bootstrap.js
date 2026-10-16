@@ -48,6 +48,7 @@ export function projectHomeBootstrap(payload) {
     ? payload.brief.brief
     : null;
   return {
+    generatedAt: Number(payload.generatedAt) || 0,
     tree: payload.tree || null,
     readings,
     market: payload.market?.market || null,

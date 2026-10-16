@@ -25,7 +25,7 @@
 
 ## 当前
 
-- `progress/2026-10-16-home-perf.md`：总览首屏改读 Worker 快照，页面并行拉各模块。阅读小时批量查库。缺报价立刻 `pending`，后台再补。A 股走势用雪球日 K。看板分开写入，过期按单条 `asOf`。不新增 migration。需要同时重启 Web 和 Worker。上线前在服务器跑 `scripts/measure-home-perf.mjs`。
+- `progress/2026-10-16-home-perf.md`：总览首屏改读 Worker 快照，页面并行拉各模块。阅读只补充有条目的前 4 个小时。缺报价立刻 `pending`，补拉超过 10 秒中止。A 股日 K 按交易日缓存。休市不标红。响应不下发 `timings`。不新增 migration。需要同时重启 Web 和 Worker。上线前在服务器跑 `scripts/measure-home-perf.mjs`。
 
 - `progress/2026-10-16-polymarket-card-change.md`：事件概率卡片恢复大号概率和涨跌。序列还不满 24 小时时，只取观察清单里 1 小时到 27 小时之间最早的一点，并写「较 Xh 前」。数字 `changeBasis` 显示「较 4h 前」这类文案，没有该字段才是「较昨日」。`lastPrice` 为空时不显示「上次」。满 24 小时后自己回到「较昨日」。多个结果的卡片上面是领先结果，下面默认收起最多 3 个其余区间。不新增 migration。需要同时重启 Web 和 Worker。
 

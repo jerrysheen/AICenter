@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createReadingHourService } from '../packages/domain/src/reading-hour-service.js';
-import { composeHomeBootstrap } from '../apps/web/src/http/home-bootstrap.js';
+import { composeHomeBootstrap, HOME_BOOTSTRAP_VISIBLE_HOURS } from '../apps/web/src/http/home-bootstrap.js';
 import { createMarketBoardReader } from '../packages/source/src/market/board-read.js';
 import {
+  captureHomeBootstrap,
   captureMarketBoards,
   marketBoardSnapshotKey,
 } from '../packages/runtime/src/web-snapshot-jobs.js';
+import { createXueqiuQuoteClient } from '../packages/connectors/src/xueqiu-quotes.js';
 import { marketStaleLabel, quoteStaleLabel } from '../apps/web/public/home-timeline.js';
 import { createMarketService } from '../packages/source/src/market/service.js';
 
@@ -313,4 +315,178 @@ test('the A-share board snapshot fills sparklines from xueqiu klines', async () 
   assert.deepEqual(sparked.sort(), ['000001.SS', '600519.SS']);
   assert.deepEqual(board.indices.find((item) => item.symbol === '000001.SS').sparkline, [8, 9, 10]);
   assert.deepEqual(board.watchlist.find((item) => item.symbol === '600519.SS').sparkline, [8, 9, 10]);
+});
+
+test('home bootstrap enriches only the first filled hours', async () => {
+  const presented = [];
+  const windows = Array.from({ length: 8 }, (_, index) => {
+    const startAt = NOW - (8 - index) * 3_600_000;
+    return { startAt, endAt: startAt + 3_600_000 };
+  });
+  const emptyFrom = windows[6].startAt;
+  await composeHomeBootstrap({
+    informationTree: {
+      list() {
+        return { hours: windows.map((window) => ({ window })) };
+      },
+    },
+    readingHour: {
+      listWindowSnapshots(_workspace, requested) {
+        return requested.map((window) => ({
+          id: `h-${window.startAt}`,
+          window,
+          items: window.startAt >= emptyFrom
+            ? []
+            : [{ title: '条目', disposition: 'hit', readingDirectionName: '金融', nodeId: 'n', timely: true }],
+        }));
+      },
+      presentSnapshots(_workspace, snapshots) {
+        presented.push(...snapshots.map((item) => item.id));
+        return snapshots;
+      },
+    },
+    report: { getLatestDailyBrief: () => null },
+    marketBoard: { async read() { return { market: { board: 'overview', indices: [] }, pending: false }; } },
+    staticSignalBoard: { async read() { return { board: { generatedAt: NOW, releases: [] }, pending: false }; } },
+  }, { now: NOW });
+  assert.equal(presented.length, HOME_BOOTSTRAP_VISIBLE_HOURS);
+  assert.deepEqual(presented, [5, 4, 3, 2].map((index) => `h-${windows[index].startAt}`));
+});
+
+test('a second market capture does not request xueqiu klines again', async () => {
+  const at = Date.parse('2026-10-16T02:00:00Z');
+  let kline = 0;
+  const client = createXueqiuQuoteClient({
+    cookie: 'xq_a_token=user-token',
+    now: () => at,
+    fetchImpl: async (url) => {
+      const href = String(url);
+      if (href.includes('/v5/stock/chart/kline.json')) {
+        kline += 1;
+        return {
+          ok: true,
+          status: 200,
+          headers: { getSetCookie: () => [], get: () => null },
+          async arrayBuffer() {
+            return Buffer.from(JSON.stringify({
+              data: {
+                column: ['timestamp', 'close'],
+                item: [[1, 8], [2, 9]],
+              },
+            }));
+          },
+        };
+      }
+      const symbol = new URL(href).searchParams.get('symbol') || '';
+      const items = symbol.split(',').filter(Boolean).map((code) => ({
+        market: { status: '交易中', status_id: 5 },
+        quote: { symbol: code, current: 10.5, last_close: 10, currency: 'CNY' },
+      }));
+      return {
+        ok: true,
+        status: 200,
+        headers: { getSetCookie: () => [], get: () => null },
+        async arrayBuffer() {
+          return Buffer.from(JSON.stringify({ data: { items } }));
+        },
+      };
+    },
+  });
+  const catalog = {
+    us: { groups: ['全部'], indices: [], watchlist: [] },
+    asia: { groups: ['全部'], indices: [], watchlist: [] },
+    cn: {
+      groups: ['全部'],
+      indices: [{ symbol: '000001.SS', name: '上证指数', group: '指数' }],
+      watchlist: [{ symbol: '600519.SS', name: '贵州茅台', group: '全部' }],
+    },
+  };
+  const service = createMarketService({
+    marketCatalog: catalog,
+    ttlMs: 0,
+    now: () => at,
+    log() {},
+    tushare: null,
+    sinaFutures: null,
+    cnQuotes: { fetchQuotes: async () => [] },
+    yahoo: { fetchQuotes: async () => ({ quotes: [], session: 'closed' }) },
+    xueqiuQuotes: client,
+  });
+  const saved = [];
+  const sourcePort = {
+    async read(sourceId) {
+      const board = String(sourceId).replace(/^market\./, '');
+      if (board === 'cn') return { data: await service.getBoard({ board: 'cn' }) };
+      return {
+        data: {
+          board,
+          mode: 'live',
+          fetchedAt: at,
+          session: 'closed',
+          indices: [],
+          watchlist: [],
+          gainers: [],
+          losers: [],
+          breadth: { advancers: 0, decliners: 0, unchanged: 0 },
+        },
+      };
+    },
+  };
+  const repository = { saveSnapshot(_workspace, key, payload) { saved.push({ key, payload }); } };
+  await captureMarketBoards({ sourcePort, repository, now: () => at, env: {}, log() {} });
+  const first = kline;
+  assert.ok(first > 0);
+  const cn = saved.find((item) => item.key === marketBoardSnapshotKey('cn'));
+  assert.equal(cn.payload.indices.find((item) => item.symbol === '000001.SS').sparkline.at(-1), 10.5);
+  await captureMarketBoards({ sourcePort, repository, now: () => at, env: {}, log() {} });
+  assert.equal(kline - first, 0);
+});
+
+test('extra quotes abort when the fill exceeds ten seconds', async () => {
+  let signal;
+  const started = Date.now();
+  const reader = createMarketBoardReader({
+    repository: {
+      readSnapshot: () => ({
+        payload: {
+          board: 'us',
+          mode: 'live',
+          fetchedAt: started,
+          session: 'regular',
+          indices: [{ symbol: 'AAPL', name: 'Apple', lastPrice: 100, currency: 'USD', asOf: started }],
+          watchlist: [],
+          gainers: [],
+          losers: [],
+          breadth: { advancers: 0, decliners: 0, unchanged: 0 },
+        },
+      }),
+    },
+    now: () => started,
+    ttlMs: 60_000,
+    extraTimeoutMs: 30,
+    quotePort: {
+      fetchQuotes(_symbols, options) {
+        signal = options.signal;
+        return new Promise((_resolve, reject) => {
+          options.signal.addEventListener('abort', () => reject(new Error('aborted')));
+        });
+      },
+    },
+  });
+  const pending = await reader.read({ board: 'us', extraUs: 'MSFT' });
+  assert.equal(pending.pending, true);
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(signal.aborted, true);
+});
+
+test('the stored home snapshot leaves timings off the client payload', async () => {
+  const saved = [];
+  const result = await captureHomeBootstrap({
+    compose: async () => ({ ok: true, generatedAt: 5, timings: { tree: 1, total: 4 }, tree: { hours: [] } }),
+    repository: { saveSnapshot(_workspace, _key, body) { saved.push(body); } },
+    now: () => 5,
+  });
+  assert.equal(saved[0].timings, undefined);
+  assert.equal(saved[0].tree.hours.length, 0);
+  assert.equal(result.timings.total, 4);
 });

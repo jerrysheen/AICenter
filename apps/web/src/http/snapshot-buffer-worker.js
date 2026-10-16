@@ -8,6 +8,19 @@ db.pragma('query_only = ON');
 const select = db.prepare(`SELECT generated_at, payload_json
   FROM runtime_snapshots WHERE workspace_id = ? AND snapshot_key = ?`);
 
+function clientPayload(snapshotKey, text) {
+  const raw = String(text ?? '');
+  if (snapshotKey !== 'home-bootstrap' || !raw.includes('"timings"')) return raw;
+  try {
+    const body = JSON.parse(raw);
+    if (!body || typeof body !== 'object' || Array.isArray(body) || !Object.hasOwn(body, 'timings')) return raw;
+    delete body.timings;
+    return JSON.stringify(body);
+  } catch {
+    return raw;
+  }
+}
+
 function pack(text) {
   const raw = Buffer.from(String(text));
   const json = new Uint8Array(raw);
@@ -39,7 +52,7 @@ parentPort.on('message', (message) => {
       if (!row?.payload_json) continue;
       const generatedAt = Number(row.generated_at) || 0;
       if (known[item.slot] === generatedAt) continue;
-      const packed = pack(row.payload_json);
+      const packed = pack(clientPayload(item.snapshotKey, row.payload_json));
       updates.push({
         slot: item.slot,
         generatedAt,

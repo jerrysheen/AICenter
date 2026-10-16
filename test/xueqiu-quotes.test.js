@@ -228,4 +228,43 @@ test('xueqiu daily kline closes become the sparkline', async () => {
   assert.match(requested[0], /\/v5\/stock\/chart\/kline\.json/);
   assert.match(decodeURIComponent(requested[0]), /symbol=SH516640/);
   assert.match(requested[0], /period=day/);
+  const again = await client.fetchSparklines(['516640.SS']);
+  assert.deepEqual(again[0].sparkline, [1.2, 1.44]);
+  assert.equal(requested.length, 1);
+});
+
+test('xueqiu kline cache keeps the previous series and caps a round at ten symbols', async () => {
+  let fail = false;
+  let calls = 0;
+  const client = createXueqiuQuoteClient({
+    cookie: 'xq_a_token=user-token',
+    now: () => Date.parse('2026-10-16T02:00:00Z'),
+    fetchImpl: async (url) => {
+      const href = String(url);
+      if (!href.includes('kline.json')) return jsonResponse({ data: { items: [] } });
+      calls += 1;
+      if (fail) throw new Error('waf');
+      const symbol = new URL(href).searchParams.get('symbol');
+      return jsonResponse({
+        data: {
+          column: ['timestamp', 'close'],
+          item: [[1, 1], [2, 2]],
+        },
+        symbol,
+      });
+    },
+  });
+  const symbols = Array.from({ length: 12 }, (_, index) => `${String(600000 + index).padStart(6, '0')}.SS`);
+  const first = await client.fetchSparklines(symbols);
+  assert.equal(calls, 10);
+  assert.equal(first.length, 10);
+  fail = true;
+  const second = await client.fetchSparklines(symbols.slice(0, 10));
+  assert.equal(second.length, 10);
+  assert.deepEqual(second[0].sparkline, [1, 2]);
+  const aborted = new AbortController();
+  aborted.abort();
+  const before = calls;
+  await client.fetchSparklines(['600100.SS'], { signal: aborted.signal });
+  assert.equal(calls, before);
 });

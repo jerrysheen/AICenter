@@ -5,6 +5,8 @@ const BATCH_QUOTE_PATH = '/v5/stock/batch/quote.json';
 const KLINE_PATH = '/v5/stock/chart/kline.json';
 const SPARKLINE_COUNT = 30;
 const SPARKLINE_CONCURRENCY = 4;
+const SPARKLINE_ROUND_LIMIT = 10;
+const SPARKLINE_ROUND_MS = 8_000;
 const STOCK_API = 'https://stock.xueqiu.com';
 const DEFAULT_TIMEOUT_MS = 8_000;
 const BATCH_SIZE = 50;
@@ -163,6 +165,10 @@ export function quoteFromXueqiuItem(item, yahooSymbol) {
   };
 }
 
+function shanghaiTradingDay(at) {
+  return new Date(Number(at) + 8 * 3_600_000).toISOString().slice(0, 10);
+}
+
 export function createXueqiuQuoteClient(options = {}) {
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -170,10 +176,16 @@ export function createXueqiuQuoteClient(options = {}) {
   const cookies = parseCookieString(options.cookie ?? process.env.XUEQIU_COOKIE);
   const hasUserCookie = cookies.has('xq_a_token');
   let tokenAt = hasUserCookie ? now() : 0;
+  const sparklineCache = new Map();
 
-  async function request(url, init = {}) {
+  async function request(url, init = {}, signal) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const onAbort = () => controller.abort();
+    if (signal) {
+      if (signal.aborted) controller.abort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
     const headers = { ...BASE_HEADERS, ...init.headers };
     const cookie = cookieHeader(cookies);
     if (cookie) headers.Cookie = cookie;
@@ -192,6 +204,7 @@ export function createXueqiuQuoteClient(options = {}) {
       throw error;
     } finally {
       clearTimeout(timer);
+      if (signal?.removeEventListener) signal.removeEventListener('abort', onAbort);
     }
   }
 
@@ -214,26 +227,27 @@ export function createXueqiuQuoteClient(options = {}) {
     return payload;
   }
 
-  async function ensureToken({ force = false } = {}) {
+  async function ensureToken({ force = false, signal } = {}) {
     if (hasUserCookie) return;
     if (!force && cookies.get('xq_a_token') && now() - tokenAt < TOKEN_TTL_MS) return;
     cookies.clear();
-    const response = await request(TOKEN_URL, { headers: { Accept: 'text/html,*/*' } });
+    const response = await request(TOKEN_URL, { headers: { Accept: 'text/html,*/*' } }, signal);
     if (!response.ok) throw new Error(`雪球匿名令牌 HTTP ${response.status}`);
     await response.arrayBuffer();
     if (!cookies.get('xq_a_token')) throw new Error('未能从雪球获取访问令牌。');
     tokenAt = now();
   }
 
-  async function fetchBatch(xueqiuSymbols) {
+  async function fetchBatch(xueqiuSymbols, signal) {
     const url = new URL(BATCH_QUOTE_PATH, `${STOCK_API}/`);
     url.searchParams.set('symbol', xueqiuSymbols.join(','));
     url.searchParams.set('extend', 'detail');
-    const response = await request(url);
+    const response = await request(url, {}, signal);
     return quoteItems(await readJson(response, '雪球行情'));
   }
 
-  async function fetchQuotes(symbols) {
+  async function fetchQuotes(symbols, options = {}) {
+    const signal = options?.signal;
     const unique = [...new Set((symbols || []).map((item) => String(item || '').trim().toUpperCase()).filter(isXueqiuYahooSymbol))];
     if (!unique.length) return [];
     const pairs = unique.map((yahoo) => ({ yahoo, xueqiu: yahooToXueqiuSymbol(yahoo) })).filter((item) => item.xueqiu);
@@ -244,10 +258,10 @@ export function createXueqiuQuoteClient(options = {}) {
     }
 
     async function load(forceToken = false) {
-      await ensureToken({ force: forceToken });
+      await ensureToken({ force: forceToken, signal });
       const quotes = [];
       const settled = await Promise.allSettled(
-        chunk([...byXueqiu.keys()], BATCH_SIZE).map((group) => fetchBatch(group)),
+        chunk([...byXueqiu.keys()], BATCH_SIZE).map((group) => fetchBatch(group, signal)),
       );
       for (const item of settled) {
         if (item.status !== 'fulfilled') continue;
@@ -277,7 +291,7 @@ export function createXueqiuQuoteClient(options = {}) {
     return unique.map((symbol) => bySymbol.get(symbol)).filter(Boolean);
   }
 
-  async function fetchSparkline(xueqiuSymbol) {
+  async function fetchSparkline(xueqiuSymbol, signal) {
     const url = new URL(KLINE_PATH, `${STOCK_API}/`);
     url.searchParams.set('symbol', xueqiuSymbol);
     url.searchParams.set('begin', String(now()));
@@ -285,31 +299,78 @@ export function createXueqiuQuoteClient(options = {}) {
     url.searchParams.set('type', 'before');
     url.searchParams.set('count', String(-SPARKLINE_COUNT));
     url.searchParams.set('indicator', 'kline');
-    const response = await request(url);
+    const response = await request(url, {}, signal);
     return sparklineFromXueqiuKline(await readJson(response, '雪球K线'));
   }
 
-  async function fetchSparklines(symbols) {
+  function rememberedSparkline(symbol) {
+    const hit = sparklineCache.get(symbol);
+    return hit?.points?.length >= 2 ? hit.points.slice() : null;
+  }
+
+  async function fetchSparklines(symbols, options = {}) {
+    const signal = options?.signal;
+    const day = shanghaiTradingDay(now());
     const unique = [...new Set((symbols || []).map((item) => String(item || '').trim().toUpperCase()).filter(isXueqiuYahooSymbol))];
     const pairs = unique.map((yahoo) => ({ yahoo, xueqiu: yahooToXueqiuSymbol(yahoo) })).filter((item) => item.xueqiu);
     if (!pairs.length) return [];
+    const fresh = [];
+    const missing = [];
+    for (const pair of pairs) {
+      const hit = sparklineCache.get(pair.yahoo);
+      if (hit?.day === day && hit.points.length >= 2) fresh.push({ symbol: pair.yahoo, sparkline: hit.points.slice() });
+      else missing.push(pair);
+    }
+    const batch = missing.slice(0, SPARKLINE_ROUND_LIMIT);
+    const skipped = missing.slice(SPARKLINE_ROUND_LIMIT);
+    const gained = [];
+    const keepPrevious = (pair) => {
+      const previous = rememberedSparkline(pair.yahoo);
+      if (previous) gained.push({ symbol: pair.yahoo, sparkline: previous });
+    };
+    if (!batch.length) {
+      for (const pair of skipped) keepPrevious(pair);
+      return fresh;
+    }
+    const round = new AbortController();
+    const roundTimer = setTimeout(() => round.abort(), SPARKLINE_ROUND_MS);
+    const onAbort = () => round.abort();
+    if (signal) {
+      if (signal.aborted) round.abort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
     try {
-      await ensureToken();
-    } catch {
-      return [];
-    }
-    const series = [];
-    for (let offset = 0; offset < pairs.length; offset += SPARKLINE_CONCURRENCY) {
-      const group = pairs.slice(offset, offset + SPARKLINE_CONCURRENCY);
-      const settled = await Promise.allSettled(group.map(async (pair) => ({
-        symbol: pair.yahoo,
-        sparkline: await fetchSparkline(pair.xueqiu),
-      })));
-      for (const item of settled) {
-        if (item.status === 'fulfilled' && item.value.sparkline.length >= 2) series.push(item.value);
+      if (!round.signal.aborted) {
+        try {
+          await ensureToken({ signal: round.signal });
+        } catch {
+          /* 令牌失败时沿用上一份日 K。 */
+        }
       }
+      for (let offset = 0; offset < batch.length && !round.signal.aborted; offset += SPARKLINE_CONCURRENCY) {
+        const group = batch.slice(offset, offset + SPARKLINE_CONCURRENCY);
+        const settled = await Promise.allSettled(group.map(async (pair) => ({
+          symbol: pair.yahoo,
+          sparkline: await fetchSparkline(pair.xueqiu, round.signal),
+        })));
+        for (let index = 0; index < settled.length; index += 1) {
+          const pair = group[index];
+          const item = settled[index];
+          if (item.status === 'fulfilled' && item.value.sparkline.length >= 2) {
+            sparklineCache.set(pair.yahoo, { day, points: item.value.sparkline.slice() });
+            gained.push({ symbol: pair.yahoo, sparkline: item.value.sparkline.slice() });
+          } else keepPrevious(pair);
+        }
+      }
+    } finally {
+      clearTimeout(roundTimer);
+      if (signal?.removeEventListener) signal.removeEventListener('abort', onAbort);
     }
-    return series;
+    const returned = new Set(gained.map((item) => item.symbol));
+    for (const pair of [...batch, ...skipped]) {
+      if (!returned.has(pair.yahoo)) keepPrevious(pair);
+    }
+    return [...fresh, ...gained];
   }
 
   return { fetchQuotes, fetchSparklines };

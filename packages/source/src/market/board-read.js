@@ -1,6 +1,14 @@
 import { createMemorySnapshotCache } from '../../../runtime/src/snapshot-cache.js';
 import { marketStaleMs } from './service.js';
-import { parseAsiaExtraSymbols, parseCnExtraSymbols, parseUsExtraSymbols } from './boards.js';
+import {
+  boardInRegularSession,
+  parseAsiaExtraSymbols,
+  parseCnExtraSymbols,
+  parseUsExtraSymbols,
+  quoteInRegularSession,
+} from './boards.js';
+
+export const EXTRA_QUOTE_TIMEOUT_MS = 10_000;
 
 export const MARKET_BOARD_CACHE_TTL_MS = 45_000;
 export const MARKET_BOARD_NAMES = Object.freeze(['overview', 'us', 'asia', 'cn', 'global']);
@@ -93,9 +101,34 @@ export function newestQuoteAsOf(payload) {
   return newest || null;
 }
 
+function newestOpenQuoteAsOf(payload, nowMs) {
+  if (!payload || typeof payload !== 'object') return null;
+  const rows = [
+    ...(payload.indices || []),
+    ...(payload.watchlist || []),
+    ...((payload.sections || []).flatMap((section) => [
+      ...(section?.indices || []),
+      ...(section?.gainers || []),
+      ...(section?.losers || []),
+    ])),
+  ];
+  let newest = 0;
+  for (const item of rows) {
+    if (item?.lastPrice == null || !quoteInRegularSession(item, nowMs, payload.board)) continue;
+    const at = quoteAsOfMs(item);
+    if (at > newest) newest = at;
+  }
+  return newest || null;
+}
+
 export function stampBoardStale(payload, nowMs, staleMs) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
-  const quoteAt = newestQuoteAsOf(payload);
+  const open = boardInRegularSession(payload, nowMs);
+  if (open === false) {
+    if (!payload.stale) return payload;
+    return { ...payload, stale: false };
+  }
+  const quoteAt = open === true ? newestOpenQuoteAsOf(payload, nowMs) : newestQuoteAsOf(payload);
   const basis = quoteAt ?? Number(payload.fetchedAt);
   const stale = Number.isFinite(basis) && nowMs - basis >= staleMs;
   if (Boolean(payload.stale) === stale) return payload;
@@ -137,6 +170,7 @@ export function createMarketBoardReader({
   quotePort = null,
   env = process.env,
   staleMs = marketStaleMs(env),
+  extraTimeoutMs = EXTRA_QUOTE_TIMEOUT_MS,
 } = {}) {
   if (!repository?.readSnapshot) throw new TypeError('market board reader requires a snapshot repository');
   const caches = new Map();
@@ -167,13 +201,17 @@ export function createMarketBoardReader({
   function refreshExtraQuotes(key, symbols) {
     if (!quotePort?.fetchQuotes || extraInflight.has(key)) return;
     extraInflight.add(key);
+    const controller = new AbortController();
+    const timeout = Math.max(1, Number(extraTimeoutMs) || EXTRA_QUOTE_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), timeout);
     Promise.resolve()
-      .then(() => quotePort.fetchQuotes(symbols))
+      .then(() => quotePort.fetchQuotes(symbols, { signal: controller.signal }))
       .then((quotes) => {
         if (Array.isArray(quotes)) rememberQuotes(key, quotes);
       })
       .catch(() => {})
       .finally(() => {
+        clearTimeout(timer);
         extraInflight.delete(key);
       });
   }

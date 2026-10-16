@@ -7,6 +7,7 @@ import Database from 'better-sqlite3';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HOME_KEY = 'home-bootstrap';
 const BOARD_JOB = 'market.boards.snapshot';
+const HOME_JOB = 'home.bootstrap.snapshot';
 
 export function parseArgs(argv) {
   const out = {
@@ -152,11 +153,11 @@ function readSnapshots(database, workspace) {
   });
 }
 
-function readBoardJobs(database, since) {
+function readJobs(database, type, since) {
   return database.prepare(`SELECT status, started_at, completed_at, output_json, created_at
     FROM jobs
     WHERE type = ? AND created_at >= ?
-    ORDER BY created_at DESC`).all(BOARD_JOB, since);
+    ORDER BY created_at DESC`).all(type, since);
 }
 
 function readLogLines(directory) {
@@ -216,16 +217,22 @@ async function timeHttp(base) {
   };
 }
 
-export function formatReport({ snapshots, jobs, http, logs }) {
+export function formatReport({ snapshots, jobs, bootstrapJobs = null, http, logs }) {
   const lines = ['总览性能测量'];
   if (!snapshots.length) lines.push('home-bootstrap 快照：还没有。');
   for (const row of snapshots) {
     const when = Number.isFinite(Number(row.generatedAt)) ? new Date(Number(row.generatedAt)).toISOString() : String(row.generatedAt);
     if (!row.segments) {
-      lines.push(`home-bootstrap ${row.workspaceId} ${when}：快照里没有 timings。`);
+      lines.push(`home-bootstrap ${row.workspaceId} ${when}：响应不下发 timings。`);
     } else {
       const parts = Object.entries(row.segments).map(([name, value]) => `${name}=${value}ms`).join(' ');
       lines.push(`home-bootstrap ${row.workspaceId} ${when}：${parts}`);
+    }
+  }
+  if (bootstrapJobs) {
+    lines.push(`home.bootstrap.snapshot 耗时：${percentileText(bootstrapJobs.durationMs)}`);
+    for (const [name, stats] of Object.entries(bootstrapJobs.boards)) {
+      lines.push(`组包 ${name}：n=${stats.n} p50=${stats.p50} max=${stats.max} ms`);
     }
   }
   const rate = jobs.failureRate == null ? '无终态样本' : `${(jobs.failureRate * 100).toFixed(1)}%`;
@@ -238,7 +245,7 @@ export function formatReport({ snapshots, jobs, http, logs }) {
     lines.push(`GET /api/v1/home/bootstrap：HTTP ${http.bootstrap.status} ${http.bootstrap.ms} ms ${http.bootstrap.bytes} 字节${http.bootstrap.pending ? ' pending' : ''}`);
     if (http.bootstrap.segments) {
       lines.push(`响应 timings：${Object.entries(http.bootstrap.segments).map(([name, value]) => `${name}=${value}ms`).join(' ')}`);
-    }
+    } else lines.push('响应不下发 timings。');
     lines.push(`五个模块并行：${http.parallelMs} ms`);
     for (const item of http.modules) {
       lines.push(`  ${item.status} ${item.ms} ms${item.pending ? ' pending' : ''} ${item.path}`);
@@ -257,10 +264,11 @@ async function main() {
   try {
     const since = Date.now() - args.hours * 3_600_000;
     const snapshots = readSnapshots(database, args.workspace);
-    const jobs = summarizeBoardJobs(readBoardJobs(database, since));
+    const jobs = summarizeBoardJobs(readJobs(database, BOARD_JOB, since));
+    const bootstrapJobs = summarizeBoardJobs(readJobs(database, HOME_JOB, since));
     const http = args.base ? await timeHttp(args.base) : null;
     const logs = readLogLines(args.log);
-    console.log(formatReport({ snapshots, jobs, http, logs }));
+    console.log(formatReport({ snapshots, jobs, bootstrapJobs, http, logs }));
   } finally {
     database.close();
   }

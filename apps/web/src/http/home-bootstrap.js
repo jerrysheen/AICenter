@@ -193,6 +193,10 @@ async function timed(name, segments, fn) {
   }
 }
 
+function snapshotHasItems(snapshot) {
+  return Array.isArray(snapshot?.items) && snapshot.items.length > 0;
+}
+
 function readingsFromEditions(services, workspace, editions) {
   const windows = [];
   for (const edition of editions) {
@@ -201,8 +205,26 @@ function readingsFromEditions(services, workspace, editions) {
     if (Number.isFinite(startAt) && Number.isFinite(endAt)) windows.push({ startAt, endAt });
   }
   const loaded = new Map();
-  if (services.readingHour?.forWindows) {
-    for (const snapshot of services.readingHour.forWindows(workspace, windows, 'hour') || []) {
+  const reading = services.readingHour;
+  if (reading?.listWindowSnapshots && reading?.presentSnapshots) {
+    const raw = reading.listWindowSnapshots(workspace, windows, 'hour') || [];
+    const byStart = new Map();
+    for (const snapshot of raw) {
+      const startAt = Number(snapshot?.window?.startAt);
+      if (Number.isFinite(startAt)) byStart.set(startAt, snapshot);
+    }
+    const chosen = [];
+    for (const window of windows) {
+      if (chosen.length >= HOME_BOOTSTRAP_VISIBLE_HOURS) break;
+      const snapshot = byStart.get(window.startAt);
+      if (snapshotHasItems(snapshot)) chosen.push(snapshot);
+    }
+    for (const snapshot of reading.presentSnapshots(workspace, chosen) || []) {
+      const startAt = Number(snapshot?.window?.startAt);
+      if (Number.isFinite(startAt)) loaded.set(startAt, snapshot);
+    }
+  } else if (reading?.forWindows) {
+    for (const snapshot of reading.forWindows(workspace, windows, 'hour') || []) {
       const startAt = Number(snapshot?.window?.startAt);
       if (Number.isFinite(startAt)) loaded.set(startAt, snapshot);
     }

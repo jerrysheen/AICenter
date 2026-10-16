@@ -517,7 +517,9 @@ export async function captureHomeBootstrap({
   if (!repository?.saveSnapshot) throw new Error('总览快照需要存储');
   const at = now();
   const body = await compose({ workspace: workspaceId, now: at });
-  repository.saveSnapshot(workspaceId, HOME_BOOTSTRAP_SNAPSHOT_KEY, body, at);
+  const stored = body && typeof body === 'object' ? { ...body } : body;
+  if (stored && typeof stored === 'object') delete stored.timings;
+  repository.saveSnapshot(workspaceId, HOME_BOOTSTRAP_SNAPSHOT_KEY, stored, at);
   const timings = body?.timings && typeof body.timings === 'object' ? body.timings : {};
   const parts = Object.entries(timings).map(([name, value]) => `${name}=${value}ms`);
   console.log(`[worker] home-bootstrap ${parts.join(' ')}`);

@@ -174,6 +174,77 @@ export function acceptMarketPayload(previous, incoming) {
 }
 
 export const MARKET_STALE_LABEL_MS = 180_000;
+export const HOME_DATA_DELAY_MS = 5 * 60_000;
+
+const CN_CLOSURES = [
+  ['2026-01-01', '2026-01-03'],
+  ['2026-02-15', '2026-02-23'],
+  ['2026-04-04', '2026-04-06'],
+  ['2026-05-01', '2026-05-05'],
+  ['2026-06-19', '2026-06-21'],
+  ['2026-09-25', '2026-09-27'],
+  ['2026-10-01', '2026-10-07'],
+];
+const US_INDEX_SYMBOLS = new Set(['^GSPC', '^DJI', '^IXIC', '^VIX', '^RUT', '^NYA', '^SOX', '^TNX', '^GSPTSE']);
+
+function shanghaiDateKey(nowMs) {
+  const parts = shanghaiParts(nowMs);
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}`;
+}
+
+function minutesOf(parts) {
+  return Number(parts.hour) * 60 + Number(parts.minute);
+}
+
+function cnInRegularSession(nowMs) {
+  const date = shanghaiDateKey(nowMs);
+  if (!date.startsWith('2026-')) return false;
+  const parts = shanghaiParts(nowMs);
+  if (parts.weekday === 'Sat' || parts.weekday === 'Sun') return false;
+  if (CN_CLOSURES.some(([start, end]) => date >= start && date <= end)) return false;
+  const minute = minutesOf(parts);
+  return (minute >= 570 && minute < 690) || (minute >= 780 && minute < 900);
+}
+
+function hkInRegularSession(nowMs) {
+  const parts = shanghaiParts(nowMs);
+  if (parts.weekday === 'Sat' || parts.weekday === 'Sun') return false;
+  const minute = minutesOf(parts);
+  return (minute >= 570 && minute < 720) || (minute >= 780 && minute < 960);
+}
+
+function usInRegularSession(nowMs) {
+  const date = zonedCalendarParts(nowMs, 'America/New_York');
+  const clock = zonedClockParts(nowMs, 'America/New_York');
+  if (date.weekday === 'Sat' || date.weekday === 'Sun') return false;
+  const minute = Number(clock.hour) * 60 + Number(clock.minute);
+  return minute >= 570 && minute < 960;
+}
+
+function quoteVenue(item) {
+  const symbol = String(item?.symbol || '').trim().toUpperCase();
+  const market = String(item?.market || '').trim().toLowerCase();
+  if (/^\d{6}\.(SS|SZ)$/.test(symbol) || market === 'cn') return 'cn';
+  if (/^\d{1,5}\.HK$/.test(symbol) || symbol === '^HSI' || symbol === '^HSCE' || market === 'hk') return 'hk';
+  if (market === 'us' || US_INDEX_SYMBOLS.has(symbol)) return 'us';
+  if (market === 'asia') return 'asia';
+  if (/^[A-Z][A-Z0-9.-]{0,9}$/.test(symbol) && !symbol.startsWith('^')) return 'us';
+  const hint = String(item?.board || '').trim().toLowerCase();
+  if (hint === 'cn' || hint === 'hk' || hint === 'us' || hint === 'asia') return hint;
+  return '';
+}
+
+export function quoteSessionOpen(item, nowMs = Date.now()) {
+  const session = String(item?.session || '').trim();
+  if (session) return session === 'regular';
+  const venue = quoteVenue(item);
+  if (venue === 'cn') return cnInRegularSession(nowMs);
+  if (venue === 'hk') return hkInRegularSession(nowMs);
+  if (venue === 'us') return usInRegularSession(nowMs);
+  if (venue === 'asia') return hkInRegularSession(nowMs);
+  return false;
+}
 
 function quoteAsOfMs(item) {
   const at = Number(item?.asOf ?? item?.marketTime);
@@ -181,9 +252,14 @@ function quoteAsOfMs(item) {
   return at < 1e12 ? Math.trunc(at * 1000) : Math.trunc(at);
 }
 
-function pricedQuoteAsOfs(payload) {
+function clockText(at, prefix) {
+  const parts = shanghaiParts(at);
+  return `${prefix} · ${parts.month}月${parts.day}日 ${parts.hour}:${parts.minute}`;
+}
+
+function pricedQuotes(payload) {
   if (!payload || typeof payload !== 'object') return [];
-  const rows = [
+  return [
     ...(payload.indices || []),
     ...(payload.watchlist || []),
     ...((payload.sections || []).flatMap((section) => [
@@ -191,33 +267,70 @@ function pricedQuoteAsOfs(payload) {
       ...(section?.gainers || []),
       ...(section?.losers || []),
     ])),
-  ];
-  return rows.filter((item) => item && item.lastPrice != null).map(quoteAsOfMs).filter((at) => at > 0);
+  ].filter((item) => item && item.lastPrice != null);
 }
 
-function staleClock(at) {
-  const parts = shanghaiParts(at);
-  return `已过期 · ${parts.month}月${parts.day}日 ${parts.hour}:${parts.minute}`;
+function boardSessionOpen(payload, nowMs) {
+  const quotes = pricedQuotes(payload);
+  if (quotes.length) return quotes.some((item) => quoteSessionOpen({ ...item, board: item.board || payload.board }, nowMs));
+  const session = String(payload?.session || '').trim();
+  if (session) return session === 'regular';
+  const board = String(payload?.board || '').toLowerCase();
+  const focus = String(payload?.focus || '').toLowerCase();
+  if (board === 'cn' || focus === 'cn') return cnInRegularSession(nowMs);
+  if (board === 'us' || focus === 'us') return usInRegularSession(nowMs);
+  if (board === 'asia') return hkInRegularSession(nowMs);
+  if (board === 'overview') {
+    const which = focus || preferredOverviewFocus(nowMs);
+    return which === 'cn' ? cnInRegularSession(nowMs) : usInRegularSession(nowMs);
+  }
+  return null;
 }
 
 export function quoteStaleLabel(item, nowMs = Date.now()) {
+  if (!quoteSessionOpen(item, nowMs)) return '';
   const at = quoteAsOfMs(item);
   if (!at || nowMs - at < MARKET_STALE_LABEL_MS) return '';
-  return staleClock(at);
+  return clockText(at, '已过期');
+}
+
+export function quoteClosedLabel(item, nowMs = Date.now()) {
+  if (quoteSessionOpen(item, nowMs)) return '';
+  const at = quoteAsOfMs(item);
+  if (!at) return '';
+  return clockText(at, '收盘');
 }
 
 export function marketStaleLabel(payload, nowMs = Date.now()) {
-  const times = pricedQuoteAsOfs(payload);
+  const open = boardSessionOpen(payload, nowMs);
+  if (open === false) return '';
+  const quotes = open === true
+    ? pricedQuotes(payload).filter((item) => quoteSessionOpen({ ...item, board: item.board || payload?.board }, nowMs))
+    : pricedQuotes(payload);
+  const times = quotes.map(quoteAsOfMs).filter((at) => at > 0);
   if (times.length) {
     const newest = Math.max(...times);
     if (nowMs - newest < MARKET_STALE_LABEL_MS) return '';
-    return staleClock(newest);
+    return clockText(newest, '已过期');
   }
   const at = Number(payload?.fetchedAt);
-  const aged = Number.isFinite(at) && at > 0 && nowMs - at >= MARKET_STALE_LABEL_MS;
-  if (!payload?.stale && !aged) return '';
-  if (!Number.isFinite(at) || at <= 0) return '已过期';
-  return staleClock(at);
+  if (!Number.isFinite(at) || at <= 0 || nowMs - at < MARKET_STALE_LABEL_MS) return '';
+  return clockText(at, '已过期');
+}
+
+export function marketClosedLabel(payload, nowMs = Date.now()) {
+  if (boardSessionOpen(payload, nowMs) !== false) return '';
+  const times = pricedQuotes(payload).map(quoteAsOfMs).filter((at) => at > 0);
+  const at = times.length ? Math.max(...times) : Number(payload?.fetchedAt);
+  if (!Number.isFinite(at) || at <= 0) return '收盘';
+  return clockText(at, '收盘');
+}
+
+export function homeDataDelayLabel(generatedAt, nowMs = Date.now()) {
+  const at = Number(generatedAt);
+  if (!Number.isFinite(at) || at <= 0) return '';
+  if (nowMs - at < HOME_DATA_DELAY_MS) return '';
+  return '数据更新延迟';
 }
 
 export function quoteStatusText({ cards = [], fetchedAt, error = false, pending = false, slow = false } = {}) {

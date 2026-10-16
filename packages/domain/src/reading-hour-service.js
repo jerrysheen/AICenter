@@ -565,16 +565,22 @@ export function createReadingHourService({repository, reportRepository = null, a
     for (let offset = runnable; offset < pending.length; offset += 1) out[pending[offset]] = pooledClassification();
     return out;
   }
+  function listWindowSnapshots(workspace, windows, scope = 'hour') {
+    return repository.readingHoursForWindows
+      ? repository.readingHoursForWindows(workspace, windows, scope)
+      : (windows || []).map((window) => repository.readingHourHead?.(workspace, window, scope)).filter(Boolean);
+  }
   return {
     enabled,
     view,
     get(workspace, id) { return present(workspace, repository.getReadingHour(workspace, id)); },
     forWindow(workspace, window, scope) { return present(workspace, repository.readingHourHead(workspace, window, scope)); },
+    listWindowSnapshots,
+    presentSnapshots(workspace, snapshots) {
+      return presentMany(workspace, snapshots || []);
+    },
     forWindows(workspace, windows, scope = 'hour') {
-      const list = repository.readingHoursForWindows
-        ? repository.readingHoursForWindows(workspace, windows, scope)
-        : (windows || []).map((window) => repository.readingHourHead?.(workspace, window, scope)).filter(Boolean);
-      return presentMany(workspace, list);
+      return presentMany(workspace, listWindowSnapshots(workspace, windows, scope));
     },
     indexForRange(workspace, window, scope = 'hour') {
       const rows = repository.listReadingHourHeads(workspace, window, scope);
