@@ -198,27 +198,86 @@ function cleanSourceLabel(value) {
   return text && text !== '未知' ? text : '';
 }
 
+function factsFromMaps(refs, items, entries) {
+  const titles = [];
+  const urls = [];
+  let publishedAt = null;
+  for (const ref of refs || []) {
+    if (ref?.type === 'content-item') {
+      const item = items.get(ref.id);
+      if (item?.title) titles.push(item.title);
+      if (item?.sourceUrl) urls.push(item.sourceUrl);
+      if (publishedAt == null && Number.isFinite(Number(item?.publishedAt))) publishedAt = Number(item.publishedAt);
+    }
+    if (ref?.type === 'media-body') {
+      const entry = entries.get(ref.id);
+      if (entry?.title) titles.push(entry.title);
+      if (entry?.canonicalUrl) urls.push(entry.canonicalUrl);
+      if (entry?.originUrl) urls.push(entry.originUrl);
+      if (publishedAt == null && Number.isFinite(Number(entry?.publishedAt))) publishedAt = Number(entry.publishedAt);
+    }
+  }
+  return { titles, urls, publishedAt };
+}
+
+function publisherFromMaps(refs, names, entries) {
+  for (const ref of refs || []) {
+    if (ref?.type === 'content-item') {
+      const row = names.get(ref.id);
+      const name = cleanSourceLabel(row?.displayName) || cleanSourceLabel(row?.authorName) || SOURCE_LABELS[row?.provider] || '';
+      if (name) return name;
+    }
+    if (ref?.type === 'media-body') {
+      const entry = entries.get(ref.id);
+      const name = cleanSourceLabel(entry?.publisherName) || cleanSourceLabel(entry?.publisherKey);
+      if (name) return name;
+    }
+  }
+  return '';
+}
+
+function uniqueIds(refs, type) {
+  return [...new Set((refs || []).filter((ref) => ref?.type === type && ref.id).map((ref) => String(ref.id)))];
+}
+
 export function readingHourSourceAccess({ feed = null, media = null } = {}) {
-  function factsFor(workspace, refs) {
-    const titles = [];
-    const urls = [];
-    let publishedAt = null;
-    for (const ref of refs || []) {
-      if (ref?.type === 'content-item') {
-        const item = feed?.getContentItem?.(workspace, ref.id);
-        if (item?.title) titles.push(item.title);
-        if (item?.sourceUrl) urls.push(item.sourceUrl);
-        if (publishedAt == null && Number.isFinite(Number(item?.publishedAt))) publishedAt = Number(item.publishedAt);
-      }
-      if (ref?.type === 'media-body') {
-        const entry = media?.getEntry?.(workspace, ref.id);
-        if (entry?.title) titles.push(entry.title);
-        if (entry?.canonicalUrl) urls.push(entry.canonicalUrl);
-        if (entry?.originUrl) urls.push(entry.originUrl);
-        if (publishedAt == null && Number.isFinite(Number(entry?.publishedAt))) publishedAt = Number(entry.publishedAt);
+  function loadMaps(workspace, refs) {
+    const contentIds = uniqueIds(refs, 'content-item');
+    const mediaIds = uniqueIds(refs, 'media-body');
+    const items = new Map();
+    if (contentIds.length && feed?.listContentItemBriefs) {
+      for (const row of feed.listContentItemBriefs(workspace, contentIds)) items.set(row.id, row);
+    } else if (contentIds.length) {
+      for (const id of contentIds) {
+        const item = feed?.getContentItem?.(workspace, id);
+        if (item) items.set(id, item);
       }
     }
-    return { titles, urls, publishedAt };
+    const names = new Map();
+    if (contentIds.length && feed?.listContentSourceNames) {
+      for (const row of feed.listContentSourceNames(workspace, contentIds)) names.set(row.id, row);
+    } else if (contentIds.length) {
+      for (const id of contentIds) {
+        const row = feed?.contentSourceNames?.(workspace, id);
+        if (row) names.set(id, row);
+      }
+    }
+    const entries = new Map();
+    if (mediaIds.length && media?.getEntries) {
+      for (const entry of media.getEntries(workspace, mediaIds) || []) {
+        if (entry?.externalId) entries.set(entry.externalId, entry);
+      }
+    } else if (mediaIds.length) {
+      for (const id of mediaIds) {
+        const entry = media?.getEntry?.(workspace, id);
+        if (entry) entries.set(id, entry);
+      }
+    }
+    return { items, names, entries };
+  }
+  function factsFor(workspace, refs) {
+    const { items, entries } = loadMaps(workspace, refs);
+    return factsFromMaps(refs, items, entries);
   }
   return {
     sourceFactsFor: factsFor,
@@ -226,24 +285,20 @@ export function readingHourSourceAccess({ feed = null, media = null } = {}) {
       return factsFor(workspace, refs).publishedAt;
     },
     publisherFor(workspace, refs) {
-      for (const ref of refs || []) {
-        if (ref?.type === 'content-item') {
-          const names = feed?.contentSourceNames?.(workspace, ref.id);
-          const name = cleanSourceLabel(names?.displayName) || cleanSourceLabel(names?.authorName) || SOURCE_LABELS[names?.provider] || '';
-          if (name) return name;
-        }
-        if (ref?.type === 'media-body') {
-          const entry = media?.getEntry?.(workspace, ref.id);
-          const name = cleanSourceLabel(entry?.publisherName) || cleanSourceLabel(entry?.publisherKey);
-          if (name) return name;
-        }
-      }
-      return '';
+      const { names, entries } = loadMaps(workspace, refs);
+      return publisherFromMaps(refs, names, entries);
+    },
+    sourceContextFor(workspace, refs) {
+      const { items, names, entries } = loadMaps(workspace, refs);
+      return {
+        factsFor(itemRefs) { return factsFromMaps(itemRefs, items, entries); },
+        publisherFor(itemRefs) { return publisherFromMaps(itemRefs, names, entries); },
+      };
     },
   };
 }
 
-export function createReadingHourService({repository, reportRepository = null, agentRuntime = null, enabled = false, client = null, catalogIds = new Set(), publishedAtFor = null, publisherFor = null, sourceFactsFor = null, feedRepository = null, flashSources = null, now = () => Date.now(), env = process.env, log = console.log} = {}) {
+export function createReadingHourService({repository, reportRepository = null, agentRuntime = null, enabled = false, client = null, catalogIds = new Set(), publishedAtFor = null, publisherFor = null, sourceFactsFor = null, sourceContextFor = null, feedRepository = null, flashSources = null, now = () => Date.now(), env = process.env, log = console.log} = {}) {
   const indexCache = new Map();
   const batchSize = readingClassBatchSize(env);
   const keyEnvs = readingClassKeyEnvs(env);
@@ -319,15 +374,32 @@ export function createReadingHourService({repository, reportRepository = null, a
       })),
     };
   }
-  function present(workspace, snapshot) {
-    const shown = view(snapshot);
-    if (!shown) return null;
-    shown.items = shown.items.flatMap((item) => {
-      const node = repository.getNode?.(workspace, item.nodeId);
+  function loadNodes(workspace, ids) {
+    const wanted = [...new Set((ids || []).map((id) => String(id || '').trim()).filter(Boolean))];
+    const nodes = new Map();
+    if (repository.getNodes) {
+      for (const node of repository.getNodes(workspace, wanted) || []) {
+        if (node?.id) nodes.set(node.id, node);
+      }
+      return nodes;
+    }
+    for (const id of wanted) {
+      const node = repository.getNode?.(workspace, id);
+      if (node) nodes.set(node.id || id, node);
+    }
+    return nodes;
+  }
+  function decorateItems(workspace, snapshot, items, nodes, context) {
+    return items.flatMap((item) => {
+      const node = nodes.get(item.nodeId);
       const refs = node?.sourceRefs || [];
-      const facts = sourceFactsFor?.(workspace, refs) || { titles: [], urls: [], publishedAt: null };
+      const facts = context
+        ? context.factsFor(refs)
+        : (sourceFactsFor?.(workspace, refs) || { titles: [], urls: [], publishedAt: null });
       if (isAwesomeListUpdateNoise({ title: item.title, titles: [node?.title, ...(facts.titles || [])], urls: facts.urls })) return [];
-      const computed = publishedAtFor?.(workspace, refs) ?? facts.publishedAt ?? null;
+      const computed = context
+        ? (facts.publishedAt ?? null)
+        : (publishedAtFor?.(workspace, refs) ?? facts.publishedAt ?? null);
       const storedPublished = item.publishedAt == null ? null : Number(item.publishedAt);
       const publishedAt = Number.isFinite(computed) ? computed : (Number.isFinite(storedPublished) ? storedPublished : null);
       const storedIngested = item.firstIngestedAt == null ? null : Number(item.firstIngestedAt);
@@ -336,11 +408,27 @@ export function createReadingHourService({repository, reportRepository = null, a
       const anchor = snapshot.window?.endAt;
       const timely = !(Number.isFinite(publishedAt) && Number.isFinite(anchor) && anchor - publishedAt > READING_TIMELINESS_MS);
       const storedPublisher = String(item.publisher || node?.publisher || '').trim();
-      const lookedUp = storedPublisher && storedPublisher !== '未知' ? '' : String(publisherFor?.(workspace, refs) || '').trim();
+      const lookedUp = storedPublisher && storedPublisher !== '未知'
+        ? ''
+        : String(context ? context.publisherFor(refs) : (publisherFor?.(workspace, refs) || '')).trim();
       const publisher = storedPublisher && storedPublisher !== '未知' ? storedPublisher : (lookedUp && lookedUp !== '未知' ? lookedUp : '');
       return [{...item, publisher, publishedAt, firstIngestedAt, timely}];
     });
-    return shown;
+  }
+  function presentMany(workspace, snapshots) {
+    const views = (snapshots || []).map((snapshot) => ({ snapshot, shown: view(snapshot) })).filter((row) => row.shown);
+    const nodes = loadNodes(workspace, views.flatMap((row) => row.shown.items.map((item) => item.nodeId)));
+    const refs = [];
+    for (const node of nodes.values()) refs.push(...(node.sourceRefs || []));
+    const context = sourceContextFor?.(workspace, refs) || null;
+    return views.map(({ snapshot, shown }) => {
+      shown.items = decorateItems(workspace, snapshot, shown.items, nodes, context);
+      return shown;
+    });
+  }
+  function present(workspace, snapshot) {
+    if (!snapshot) return null;
+    return presentMany(workspace, [snapshot])[0] || null;
   }
   function stageKeyFor(node) {
     const sourceVersion = String(node.headSourceVersion || node.sourceVersion || node.version || '');
@@ -477,11 +565,23 @@ export function createReadingHourService({repository, reportRepository = null, a
     for (let offset = runnable; offset < pending.length; offset += 1) out[pending[offset]] = pooledClassification();
     return out;
   }
+  function listWindowSnapshots(workspace, windows, scope = 'hour') {
+    return repository.readingHoursForWindows
+      ? repository.readingHoursForWindows(workspace, windows, scope)
+      : (windows || []).map((window) => repository.readingHourHead?.(workspace, window, scope)).filter(Boolean);
+  }
   return {
     enabled,
     view,
     get(workspace, id) { return present(workspace, repository.getReadingHour(workspace, id)); },
     forWindow(workspace, window, scope) { return present(workspace, repository.readingHourHead(workspace, window, scope)); },
+    listWindowSnapshots,
+    presentSnapshots(workspace, snapshots) {
+      return presentMany(workspace, snapshots || []);
+    },
+    forWindows(workspace, windows, scope = 'hour') {
+      return presentMany(workspace, listWindowSnapshots(workspace, windows, scope));
+    },
     indexForRange(workspace, window, scope = 'hour') {
       const rows = repository.listReadingHourHeads(workspace, window, scope);
       const key = `${workspace}\0${rows.map((row) => row.id).join('\0')}`;

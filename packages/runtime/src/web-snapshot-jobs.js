@@ -6,7 +6,7 @@ import {
   MARKET_NATIVE_BOARD_SNAPSHOT_KEY,
 } from '../../source/src/static/market-native-read.js';
 import { buildOverviewBoard, preferredOverviewFocus, usRegularSessionAt } from '../../source/src/market/boards.js';
-import { MARKET_BOARD_NAMES, marketBoardSnapshotKey } from '../../source/src/market/board-read.js';
+import { marketBoardSnapshotKey, newestQuoteAsOf } from '../../source/src/market/board-read.js';
 import { listHoldingsQuoteSymbols, retainPreciseQuotes } from '../../domain/src/trading-service.js';
 
 export const STATIC_SIGNAL_BOARD_JOB_TYPE = 'source.static-signal-board.snapshot';
@@ -172,14 +172,39 @@ export function marketUsFreshMs(env = process.env) {
   return envInt(env, 'AI_CENTER_MARKET_US_FRESH_MS', 10 * 60_000, 60_000, 60 * 60_000);
 }
 
+export function marketBoardTimeoutMs(env = process.env) {
+  return envInt(env, 'AI_CENTER_MARKET_BOARD_TIMEOUT_MS', 12_000, 1_000, 60_000);
+}
+
 export function usBoardFreshnessError(board, nowMs, maxAgeMs) {
   if (usRegularSessionAt(nowMs) !== 'regular') return '';
-  const fetchedAt = Number(board?.fetchedAt);
+  const quoteAt = newestQuoteAsOf(board);
+  const fetchedAt = quoteAt ?? Number(board?.fetchedAt);
   if (!Number.isFinite(fetchedAt)) return '美股看板没有行情时间';
   const ageMs = nowMs - fetchedAt;
   if (ageMs <= maxAgeMs) return '';
   const minutes = Math.max(1, Math.round(ageMs / 60_000));
   return `美股看板行情已 ${minutes} 分钟未更新`;
+}
+
+function withTimeout(promise, ms, label) {
+  let timer;
+  let settled = false;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      settled = true;
+      reject(new Error(label));
+    }, ms);
+    timer.unref?.();
+  });
+  const guarded = Promise.resolve(promise).then(
+    (value) => (settled ? undefined : value),
+    (error) => {
+      if (settled) return undefined;
+      throw error;
+    },
+  );
+  return Promise.race([guarded, timeout]).finally(() => clearTimeout(timer));
 }
 
 async function readMarketBoard(sourcePort, board) {
@@ -195,6 +220,7 @@ export async function captureMarketBoards({
   workspaceId = 'local',
   now = () => Date.now(),
   env = process.env,
+  timeoutMs = marketBoardTimeoutMs(env),
   log = (level, message) => {
     const line = `[market] ${message}`;
     if (level === 'error') console.error(line);
@@ -204,37 +230,61 @@ export async function captureMarketBoards({
   if (!sourcePort?.read) throw new Error('行情看板快照需要 Source 端口');
   if (!repository?.saveSnapshot) throw new Error('行情看板快照需要存储');
   const at = now();
-  const reads = {
-    us: readMarketBoard(sourcePort, 'us'),
-    asia: readMarketBoard(sourcePort, 'asia'),
-    cn: readMarketBoard(sourcePort, 'cn'),
-    global: readMarketBoard(sourcePort, 'global'),
-  };
-  const us = await reads.us;
   const focus = preferredOverviewFocus(at);
-  const cn = focus === 'cn' ? await reads.cn : null;
-  const overview = buildOverviewBoard(
-    focus === 'us' ? us : null,
-    null,
-    focus === 'cn' ? cn : null,
-    { focus, now: at },
-  );
-  repository.saveSnapshot(workspaceId, marketBoardSnapshotKey('us'), us, at);
-  repository.saveSnapshot(workspaceId, marketBoardSnapshotKey('overview'), overview, at);
-  const [asia, cnBoard, global] = await Promise.all([reads.asia, reads.cn, reads.global]);
-  const boards = { overview, us, asia, cn: cnBoard, global };
-  for (const name of ['asia', 'cn', 'global']) {
-    repository.saveSnapshot(workspaceId, marketBoardSnapshotKey(name), boards[name], at);
+  const timings = {};
+  const failures = [];
+  const saved = new Set();
+  let overviewSaved = false;
+  async function captureOne(name) {
+    const started = Date.now();
+    try {
+      const board = await withTimeout(
+        readMarketBoard(sourcePort, name),
+        timeoutMs,
+        `行情看板 ${name} 超时`,
+      );
+      repository.saveSnapshot(workspaceId, marketBoardSnapshotKey(name), board, at);
+      saved.add(name);
+      timings[name] = Date.now() - started;
+      if (name === focus) {
+        const overview = buildOverviewBoard(
+          focus === 'us' ? board : null,
+          null,
+          focus === 'cn' ? board : null,
+          { focus, now: at },
+        );
+        repository.saveSnapshot(workspaceId, marketBoardSnapshotKey('overview'), overview, at);
+        overviewSaved = true;
+      }
+      return board;
+    } catch (error) {
+      timings[name] = Date.now() - started;
+      const message = error instanceof Error ? error.message : String(error);
+      failures.push({ board: name, message });
+      log('warn', `看板 ${name} 失败 ${message}`);
+      return null;
+    }
   }
-  const freshError = usBoardFreshnessError(us, at, marketUsFreshMs(env));
+  const boards = {};
+  await Promise.all(['us', 'asia', 'cn', 'global'].map(async (name) => {
+    boards[name] = await captureOne(name);
+  }));
+  const summary = ['us', 'asia', 'cn', 'global'].map((name) => `${name}=${timings[name] ?? 0}ms`).join(' ');
+  console.log(`[market] boards ${summary} failed=${failures.map((item) => item.board).join(',') || '0'}`);
+  const freshError = boards.us ? usBoardFreshnessError(boards.us, at, marketUsFreshMs(env)) : '';
   if (freshError) {
     log('warn', freshError);
     throw new Error(freshError);
   }
+  const usFailure = failures.find((item) => item.board === 'us');
+  if (usFailure && usRegularSessionAt(at) === 'regular') throw new Error(usFailure.message);
+  if (!saved.size && failures.length) throw new Error(failures.map((item) => item.message).join('; '));
   return {
     generatedAt: at,
     focus,
-    boards: MARKET_BOARD_NAMES.length,
+    boards: saved.size + (overviewSaved ? 1 : 0),
+    timings,
+    failures,
   };
 }
 
@@ -467,8 +517,13 @@ export async function captureHomeBootstrap({
   if (!repository?.saveSnapshot) throw new Error('总览快照需要存储');
   const at = now();
   const body = await compose({ workspace: workspaceId, now: at });
-  repository.saveSnapshot(workspaceId, HOME_BOOTSTRAP_SNAPSHOT_KEY, body, at);
-  return { generatedAt: at, pages: 1 };
+  const stored = body && typeof body === 'object' ? { ...body } : body;
+  if (stored && typeof stored === 'object') delete stored.timings;
+  repository.saveSnapshot(workspaceId, HOME_BOOTSTRAP_SNAPSHOT_KEY, stored, at);
+  const timings = body?.timings && typeof body.timings === 'object' ? body.timings : {};
+  const parts = Object.entries(timings).map(([name, value]) => `${name}=${value}ms`);
+  console.log(`[worker] home-bootstrap ${parts.join(' ')}`);
+  return { generatedAt: at, pages: 1, timings };
 }
 
 export function createHomeBootstrapCompose({

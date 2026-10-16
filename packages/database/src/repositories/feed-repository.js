@@ -1043,6 +1043,42 @@ export function createFeedRepository(database, emitEvent) {
       };
     },
 
+    listContentItemBriefs(workspaceId, ids = []) {
+      const wanted = [...new Set((ids || []).map((id) => String(id || '').trim()).filter(Boolean))];
+      const rows = [];
+      for (let offset = 0; offset < wanted.length; offset += 400) {
+        const slice = wanted.slice(offset, offset + 400);
+        rows.push(...database.prepare(`SELECT id, title, source_url, published_at
+          FROM content_items
+          WHERE workspace_id = ? AND id IN (${slice.map(() => '?').join(',')})`).all(workspaceId, ...slice));
+      }
+      return rows.map((row) => ({
+        id: row.id,
+        title: row.title || '',
+        sourceUrl: row.source_url || '',
+        publishedAt: row.published_at ?? null,
+      }));
+    },
+
+    listContentSourceNames(workspaceId, ids = []) {
+      const wanted = [...new Set((ids || []).map((id) => String(id || '').trim()).filter(Boolean))];
+      const rows = [];
+      for (let offset = 0; offset < wanted.length; offset += 400) {
+        const slice = wanted.slice(offset, offset + 400);
+        rows.push(...database.prepare(`SELECT ci.id AS id, ci.author_name AS author_name, c.provider AS provider, sa.display_name AS display_name
+          FROM content_items ci
+          LEFT JOIN captures c ON c.id = ci.capture_id
+          LEFT JOIN source_accounts sa ON sa.id = c.source_account_id
+          WHERE ci.workspace_id = ? AND ci.id IN (${slice.map(() => '?').join(',')})`).all(workspaceId, ...slice));
+      }
+      return rows.map((row) => ({
+        id: row.id,
+        displayName: String(row.display_name || '').trim(),
+        authorName: String(row.author_name || '').trim(),
+        provider: String(row.provider || '').trim(),
+      }));
+    },
+
     listItemSources(workspaceId, ids = []) {
       const wanted = [...new Set((ids || []).map((id) => String(id || '').trim()).filter(Boolean))];
       if (!wanted.length) return [];
