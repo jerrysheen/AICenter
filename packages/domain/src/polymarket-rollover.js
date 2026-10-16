@@ -62,13 +62,15 @@ export function heldSeriesEvents(outcomes, seriesId) {
   }
   return [...grouped.entries()].map(([eventId, rows]) => ({
     eventId,
+    eventSlug: String(rows[0].eventSlug || ''),
     title: rows[0].title,
     endAt: Math.max(...rows.map((row) => Number(row.endAt) || 0)),
     closed: rows.every((row) => row.lifecycle === 'closed' || row.lifecycle === 'pending_rollover'),
   }));
 }
 
-export function rollingWindow(series, held, months) {
+export function rollingWindow(series, held, months, options = {}) {
+  const seedSlug = String(options.seedSlug || '');
   const labeled = (held || []).map((event) => ({
     ...event,
     month: monthFromTitle(event.title, series.titleTemplate, months),
@@ -78,7 +80,8 @@ export function rollingWindow(series, held, months) {
 
   if (Number(series.hold) <= 1) {
     const open = labeled.filter((event) => !event.closed);
-    const current = open[open.length - 1];
+    const seedOpen = open.find((event) => seedSlug && event.eventSlug === seedSlug);
+    const current = seedOpen || open[open.length - 1];
     if (current) {
       return {
         keepIds: [current.eventId],
