@@ -28,6 +28,7 @@ export const PredictionMarketQuoteSchema = z.object({
   marketId: z.string().trim().min(1).max(512),
   marketQuestion: z.string().trim().min(1).max(2_000),
   outcome: z.string().trim().min(1).max(256),
+  key: z.string().trim().min(1).max(80).optional(),
   midPrice: NullableDecimalStringSchema,
   bestBid: NullableDecimalStringSchema,
   bestAsk: NullableDecimalStringSchema,
@@ -41,6 +42,7 @@ export const PredictionMarketQuoteSchema = z.object({
   sourceUrl: RequiredHttpUrlSchema,
   observedAt: EpochMillisSchema,
   outcomes: z.array(z.object({
+    key: z.string().trim().min(1).max(80).optional(),
     label: z.string().trim().min(1).max(256),
     midPrice: NullableDecimalStringSchema,
     midPrice24hAgo: z.string().trim()

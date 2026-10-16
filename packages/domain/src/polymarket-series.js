@@ -45,11 +45,12 @@ function seriesChange(points, now) {
   const moment = Number(now);
   if (!Number.isFinite(moment)) return { prior: null, changeBasis: null };
   const limit = moment - POLYMARKET_HOUR_MS;
+  const floor = moment - POLYMARKET_DAY_MS - POLYMARKET_DAY_WINDOW_MS;
   let earliest = null;
   for (const point of points || []) {
     const at = Number(point?.observedAt);
     const probability = point?.probability;
-    if (typeof probability !== 'string' || !Number.isFinite(at) || at > limit) continue;
+    if (typeof probability !== 'string' || !Number.isFinite(at) || at > limit || at < floor) continue;
     if (!earliest || at < earliest.at) earliest = { at, probability };
   }
   if (!earliest) return { prior: null, changeBasis: null };
@@ -116,11 +117,12 @@ function quoteFromRows(rows, pointsByKey, now) {
     sourceUrl: leader.sourceUrl,
     observedAt: Math.max(...rows.map((row) => Number(row.updatedAt) || now)),
   };
+  if (leader.outcomeKey) quote.key = leader.outcomeKey;
   if (leader.prior) quote.midPrice24hAgo = leader.prior;
   if (leader.changeBasis) quote.changeBasis = leader.changeBasis;
   if (multi) {
     quote.outcomes = ranked.slice(0, 6).map((row) => {
-      const item = { label: row.outcomeLabel, midPrice: row.probability };
+      const item = { key: row.outcomeKey, label: row.outcomeLabel, midPrice: row.probability };
       if (row.prior) item.midPrice24hAgo = row.prior;
       if (row.changeBasis) item.changeBasis = row.changeBasis;
       return item;

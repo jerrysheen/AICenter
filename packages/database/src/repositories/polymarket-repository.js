@@ -195,17 +195,12 @@ export function createPolymarketRepository(database, emitEvent = () => {}) {
     )
     SELECT event_id, market_id, outcome_key, observed_at, probability, granularity
     FROM ranked WHERE rn = 1`);
-  const dashboardEarliest = database.prepare(`WITH ranked AS (
-      SELECT event_id, market_id, outcome_key, observed_at, probability, granularity,
-        ROW_NUMBER() OVER (
-          PARTITION BY event_id, market_id, outcome_key
-          ORDER BY observed_at ASC
-        ) AS rn
-      FROM polymarket_probability_points
-      WHERE observed_at <= ?
-    )
-    SELECT event_id, market_id, outcome_key, observed_at, probability, granularity
-    FROM ranked WHERE rn = 1`);
+  const dashboardEarliest = database.prepare(`SELECT event_id, market_id, outcome_key, observed_at, probability, granularity
+    FROM polymarket_probability_points
+    WHERE event_id = ? AND market_id = ? AND outcome_key = ?
+      AND observed_at BETWEEN ? AND ?
+    ORDER BY observed_at
+    LIMIT 1`);
 
   function runDownsample(cutoff) {
     const limit = Number(cutoff);
@@ -308,7 +303,11 @@ export function createPolymarketRepository(database, emitEvent = () => {}) {
       const target = at - dayMs;
       const priors = dashboardPrior.all(target, target, target - windowMs, target + windowMs).map(mapPoint);
       const latest = dashboardLatest.all(at - latestMs, at + 60_000).map(mapPoint);
-      const earliest = dashboardEarliest.all(at - HOUR_MS).map(mapPoint);
+      const earliest = [];
+      for (const row of listWatched.all()) {
+        const point = dashboardEarliest.get(row.event_id, row.market_id, row.outcome_key, at - dayMs - windowMs, at - HOUR_MS);
+        if (point) earliest.push(mapPoint(point));
+      }
       return [...priors, ...latest, ...earliest];
     },
 

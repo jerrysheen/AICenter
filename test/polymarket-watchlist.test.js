@@ -629,6 +629,53 @@ test('a series younger than 24h falls back to the earliest point at least 1h old
   }
 });
 
+test('a series older than 27h without a 24h window does not compare against the first point', () => {
+  const temporary = temporaryDatabase();
+  const now = Date.UTC(2026, 9, 16, 12, 0, 0);
+  const hour = 60 * 60 * 1000;
+  const outcome = {
+    eventId: '1', marketId: 'm', outcomeKey: 'yes', seriesId: '', watched: true, sortOrder: 0,
+    groupKey: 'crypto', alertProfile: 'binary', eventSlug: 'btc-oct', marketSlug: '',
+    title: 'What price will Bitcoin hit in October?', outcomeLabel: 'Yes', lifecycle: 'open', endAt: null,
+    liquidity: '9000', volume24h: '10', totalVolume: '20', probability: '0.62',
+    sourceUrl: 'https://polymarket.com/event/btc-oct', updatedAt: now,
+  };
+  try {
+    const repository = temporary.store.repositories.polymarket;
+    repository.saveWatchlist({
+      outcomes: [
+        outcome,
+        { ...outcome, eventId: '9', marketId: 'other', outcomeKey: 'other', watched: false, eventSlug: 'old', title: 'Unwatched', sourceUrl: 'https://polymarket.com/event/old' },
+      ],
+      points: [
+        { eventId: '1', marketId: 'm', outcomeKey: 'yes', observedAt: now - 480 * hour, probability: '0.11', granularity: '5m' },
+        { eventId: '9', marketId: 'other', outcomeKey: 'other', observedAt: now - 15 * hour, probability: '0.01', granularity: '5m' },
+        { eventId: '1', marketId: 'm', outcomeKey: 'yes', observedAt: now - 20 * 60 * 1000, probability: '0.70', granularity: '5m' },
+      ],
+      at: now,
+    });
+    const ancient = readStoredPolymarketView(repository, now);
+    assert.equal(ancient.quotes.length, 1);
+    assert.equal('midPrice24hAgo' in ancient.quotes[0], false);
+    assert.equal('changeBasis' in ancient.quotes[0], false);
+    assert.equal(JSON.stringify(ancient.quotes[0]).includes('0.11'), false);
+
+    repository.saveWatchlist({
+      outcomes: [],
+      points: [{
+        eventId: '1', marketId: 'm', outcomeKey: 'yes', observedAt: now - 20 * hour, probability: '0.50', granularity: '5m',
+      }],
+      at: now,
+    });
+    const bounded = readStoredPolymarketView(repository, now);
+    assert.equal(bounded.quotes[0].midPrice24hAgo, '0.50');
+    assert.equal(bounded.quotes[0].changeBasis, 20);
+    assert.equal(bounded.quotes[0].changeBasis < 27, true);
+  } finally {
+    temporary.remove();
+  }
+});
+
 test('multi-outcome card shows each result and 较昨日 without backend fields', () => {
   const now = Date.UTC(2026, 9, 16, 12, 0, 0);
   const outcomes = [
@@ -704,6 +751,19 @@ test('multi-outcome card shows each result and 较昨日 without backend fields'
   assert.match(textOf(youngMain), /140k/);
   assert.match(textOf(youngMain), /较 8h 前 \+6\.0/);
   assert.equal(Boolean(findNodes(youngRoot, (node) => node.tag === 'details')[0].open), false);
+
+  const twinRoot = element('div');
+  context.appendPredictionQuote(twinRoot, {
+    ...quote,
+    key: 'no-change',
+    outcomes: [
+      { key: 'no-change', label: 'No change', midPrice: '0.62', midPrice24hAgo: '0.50' },
+      { key: 'also-no-change', label: 'No change', midPrice: '0.15' },
+    ],
+  });
+  const twinList = findNodes(findNodes(twinRoot, (node) => node.tag === 'details')[0], (node) => hasClass(node, 'prediction-outcome'));
+  assert.equal(twinList.length, 1);
+  assert.match(textOf(twinList[0]), /15\.0%/);
 });
 
 function rangeRow(label, probability, key) {

@@ -7187,7 +7187,7 @@ function appendPredictionQuote(root, quote) {
     if (mainChange) mainNodes.push(mainChange);
     main.append(...mainNodes);
     body.append(main);
-    const others = quote.outcomes.filter((item) => item.label !== quote.outcome).slice(0, 3);
+    const others = quote.outcomes.filter((item) => item.key !== quote.key).slice(0, 3);
     if (others.length) {
       const details = document.createElement('details');
       details.className = 'prediction-more';
