@@ -2157,6 +2157,35 @@ migrations.push({ version: 75, name: 'gpu_rent_daily', up(database) {
   `);
 }});
 
+migrations.push({ version: 76, name: 'twse_monthly_revenue', up(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS twse_monthly_revenue (
+      workspace_id TEXT NOT NULL,
+      company_code TEXT NOT NULL,
+      year_month TEXT NOT NULL,
+      roc_year_month TEXT NOT NULL DEFAULT '',
+      company_name TEXT NOT NULL DEFAULT '',
+      industry TEXT NOT NULL DEFAULT '',
+      revenue_month TEXT NOT NULL DEFAULT '',
+      revenue_previous_month TEXT NOT NULL DEFAULT '',
+      revenue_year_ago TEXT NOT NULL DEFAULT '',
+      revenue_mom_pct TEXT NOT NULL DEFAULT '',
+      revenue_yoy_pct TEXT NOT NULL DEFAULT '',
+      revenue_ytd TEXT NOT NULL DEFAULT '',
+      revenue_ytd_year_ago TEXT NOT NULL DEFAULT '',
+      revenue_ytd_pct TEXT NOT NULL DEFAULT '',
+      note TEXT NOT NULL DEFAULT '',
+      published_on TEXT NOT NULL DEFAULT '',
+      published_at INTEGER,
+      source_url TEXT NOT NULL DEFAULT '',
+      observed_at INTEGER NOT NULL,
+      PRIMARY KEY (workspace_id, company_code, year_month)
+    );
+    CREATE INDEX IF NOT EXISTS idx_twse_monthly_revenue_month
+      ON twse_monthly_revenue(workspace_id, year_month);
+  `);
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

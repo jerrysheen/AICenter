@@ -29,7 +29,9 @@ import { createFeedInteractionService } from '../../../packages/domain/src/feed-
 import { createXLikeBrowserPort } from '../../../packages/connectors/src/x/like-browser.js';
 import { feedInteractionManifest, createFeedInteractionJobHandlers } from '../../../packages/runtime/src/feed-interaction-module.js';
 import { createMediaIngestionService,mediaResourceId } from '../../../packages/domain/src/media-ingestion-service.js';
-import { ensureMediaIndexSyncSchedule, MEDIA_ENRICH_JOB_TYPE } from '../../../packages/connectors/src/media/index.js';
+import { ensureMediaIndexSyncSchedule, enqueueMediaIndexEnrich, MEDIA_ENRICH_JOB_TYPE } from '../../../packages/connectors/src/media/index.js';
+import { loadTwkrFlags } from '../../../packages/connectors/src/twkr-sources.js';
+import { createTwkrJobHandlers, ensureTwkrSchedules, prepareTwkrEnqueue, TWKR_NEWS_JOB_TYPE, TWKR_REVENUE_JOB_TYPE } from '../../../packages/runtime/src/twkr-job.js';
 import { createMediaEnrichJobHandlers } from '../../../packages/runtime/src/media-enrich-module.js';
 import { createKnowledgeService } from '../../../packages/domain/src/knowledge-service.js';
 import { createMarketStatisticsService } from '../../../packages/domain/src/market-statistics-service.js';
@@ -182,6 +184,8 @@ export function createAiCenterWorker(options = {}) {
     [FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE]: 60_000,
     [FEED_SUBSCRIPTION_SYNC_JOB_TYPE]: feedSyncSourceTimeoutMs(env.AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS) + 30_000,
     'media.index.enrich': boundedInt(env.AI_CENTER_MEDIA_ENRICH_MAX_RUNNING_MS, 8 * 60_000, 60_000, 30 * 60_000),
+    [TWKR_NEWS_JOB_TYPE]: 25_000,
+    [TWKR_REVENUE_JOB_TYPE]: 70_000,
   };
   store.recoverStaleJobs(staleAfterMs, Date.now(), { maxRunningMs: jobMaxRunningMs, maxRunningMsByType });
   if (hourlyReportDisabled(env)) {
@@ -642,6 +646,23 @@ export function createAiCenterWorker(options = {}) {
       taggingService,
     }),
   });
+  const twkrFlags = loadTwkrFlags(path.join(instance.configDirectory, 'twkr-sources.json'));
+  registry.register({
+    manifest: {
+      id: 'feed.twkr',
+      version: '1.0.0',
+      capabilities: ['feed.twkr'],
+      jobTypes: [TWKR_NEWS_JOB_TYPE, TWKR_REVENUE_JOB_TYPE],
+      sourceIds: [],
+    },
+    jobHandlers: options.twkrJobHandlers || createTwkrJobHandlers({
+      mediaService,
+      revenueRepository: store.repositories.twseRevenue,
+      env,
+      flags: twkrFlags,
+      enqueueTranslation: enqueueMediaIndexEnrich,
+    }),
+  });
   if (mediaService) {
     registry.register({
       manifest: {
@@ -689,6 +710,7 @@ export function createAiCenterWorker(options = {}) {
     ensureReportViewSchedule(store);
     ensureInvestorDiscussionSchedule(store, env);
     ensureTrendForcePriceSchedules(store, env);
+    ensureTwkrSchedules(store, { env, flags: twkrFlags });
     ensureComputePriceSchedules(store, env);
     ensureEtfWhaleSchedule(store, env);
     ensureDefaultContentSubscriptions(store.repositories.feed);
@@ -699,6 +721,9 @@ export function createAiCenterWorker(options = {}) {
     pollIntervalMs: options.schedulePollIntervalMs || env.AI_CENTER_SCHEDULER_POLL_MS || 20_000,
     beforeEnqueue(schedule, at) {
       if (!allowHourlyScheduleEnqueue(schedule, env)) return false;
+      if (schedule.jobType === TWKR_NEWS_JOB_TYPE || schedule.jobType === TWKR_REVENUE_JOB_TYPE) {
+        return prepareTwkrEnqueue(store, schedule);
+      }
       if (schedule.jobType !== FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE) return true;
       return prepareFeedSyncEnqueue(store, at);
     },

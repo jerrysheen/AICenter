@@ -69,7 +69,7 @@ test('normalization config maps lanes and leaves GB200 without a source', () => 
   assert.equal(normalizeGpuRentRow(mapping, { sourceKey: 'runpod', variant: 'gb200', label: 'GB200', lane: 'secure' }).model, 'gb200');
   assert.equal(normalizeGpuRentRow(mapping, { sourceKey: 'bargo', variant: 'b200', label: 'B200', lane: 'ondemand' }).model, 'b200');
   assert.deepEqual(mapping.ornn.map((item) => item.path), ['H100 SXM', 'H200', 'B200']);
-  assert.equal(latestSchemaVersion(), 75);
+  assert.ok(latestSchemaVersion() >= 75);
 });
 
 test('daily rollup is idempotent, carries an unchanged check, and keeps today live', async () => {

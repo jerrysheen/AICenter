@@ -168,19 +168,20 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
 
   const upgraded = createStore(file);
   try {
-    assert.equal(latestSchemaVersion(), 75);
-    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 75);
+    assert.equal(upgraded.getRuntimeStatus().schemaVersion, latestSchemaVersion());
   } finally {
     upgraded.close();
   }
 
   const database = new Database(file, { readonly: true, fileMustExist: true });
   try {
-    assert.equal(database.pragma('user_version', { simple: true }), 75);
+    const latest = latestSchemaVersion();
+    assert.equal(database.pragma('user_version', { simple: true }), latest);
     const rows = database.prepare(`
       SELECT version, name, applied_at FROM schema_migrations WHERE version >= 57 ORDER BY version
     `).all();
-    assert.deepEqual(rows.map((row) => [row.version, row.name]), [
+    const applied = rows.map((row) => [row.version, row.name]);
+    const baseline = [
       [57, 'api_access_tokens'],
       [58, 'runtime_snapshots'],
       [59, 'feed_provider_page_indexes'],
@@ -199,7 +200,9 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
       [73, 'polymarket_watchlist'],
       [74, 'polymarket_discovery'],
       [75, 'gpu_rent_daily'],
-    ]);
+    ];
+    assert.deepEqual(applied.slice(0, baseline.length), baseline);
+    assert.equal(applied.at(-1)[0], latest);
     assert.equal(database.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('model_usage_index') WHERE name = 'key_suffix'`).get().n, 1);
     assert.equal(database.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('model_usage_index') WHERE name = 'item_id'`).get().n, 1);
     assert.ok(database.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'gemini_model_cursors'`).get());
@@ -248,7 +251,7 @@ test('库已在 71 时升级', () => {
 
   const upgraded = createStore(file);
   try {
-    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 75);
+    assert.equal(upgraded.getRuntimeStatus().schemaVersion, latestSchemaVersion());
   } finally {
     upgraded.close();
   }
