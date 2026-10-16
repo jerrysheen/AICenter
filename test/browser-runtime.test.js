@@ -414,23 +414,13 @@ test('a slow session start reports browser_cold_start', async () => {
   assert.ok(elapsed >= 4_000, `start settled in ${elapsed}ms`);
 });
 
-test('a startup timeout stops the session left behind by that start', async () => {
+test('a startup timeout cancels only that start request', async () => {
   const commands = [];
   const client = createBrowserSkillClient({
     async runCommand(args, options) {
       commands.push({ args, timeoutMs: options.timeoutMs });
       if (args.includes('start')) {
         throw Object.assign(new Error('bsk timed out after 20ms'), { killed: true });
-      }
-      if (args.includes('list')) {
-        return {
-          code: 0,
-          stdout: JSON.stringify([
-            { session_id: 'ORPHAN', name: 'x.home' },
-            { session_id: 'KEEP', name: 'xueqiu-following' },
-          ]),
-          stderr: '',
-        };
       }
       return { code: 0, stdout: JSON.stringify({ ok: true }), stderr: '' };
     },
@@ -442,15 +432,15 @@ test('a startup timeout stops the session left behind by that start', async () =
   );
   assert.ok(Date.now() - started < 2_000);
   const start = commands.find((item) => item.args.includes('start'));
-  assert.ok(start.args.includes('--name') && start.args.includes('x.home'));
-  assert.ok(start.args.includes('--request-id'));
+  const requestId = start.args[start.args.indexOf('--request-id') + 1];
+  assert.match(requestId, /^\d+:[0-9a-f-]{36}$/i);
+  const expiry = Number(requestId.slice(0, requestId.indexOf(':')));
+  assert.ok(expiry >= started + 9 * 60 * 1000 && expiry <= started + 11 * 60 * 1000);
   const followUps = commands.filter((item) => !item.args.includes('start'));
-  assert.ok(followUps.length >= 1);
-  assert.ok(followUps.every((item) => item.timeoutMs <= 5_000));
-  const stop = commands.find((item) => item.args.includes('stop'));
-  assert.ok(stop.args.includes('ORPHAN'));
-  assert.equal(commands.some((item) => item.args.includes('KEEP')), false);
-  assert.ok(commands.some((item) => item.args.includes('--cancel')));
+  assert.equal(followUps.length, 1);
+  assert.deepEqual(followUps[0].args.slice(1), ['session', 'request', requestId, '--cancel']);
+  assert.ok(followUps[0].timeoutMs <= 5_000);
+  assert.equal(commands.some((item) => item.args.includes('list') || item.args.includes('stop')), false);
 });
 
 test('legacy-cdp provider is no longer accepted', () => {
