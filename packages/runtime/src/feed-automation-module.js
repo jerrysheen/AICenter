@@ -89,20 +89,24 @@ export function createFeedAutomationJobHandlers({ feedService, feedRepository, t
       });
       return row;
     };
+    const leaseUntil = subscription.leaseUntil;
+    if (context?.signal?.aborted) {
+      return finish('interrupted', { reason: 'aborted' });
+    }
     if (metadata.autoRefresh !== true) {
       const linkOnly = metadata.sourceId === 'content.bilibili.import';
       const parked = linkOnly
-        ? feedRepository.completeSubscriptionSync(subscription.id, Date.now())
-        : feedRepository.deferSubscriptionSync(subscription.id, Date.now(), subscription.refreshIntervalMinutes * 60_000);
-      return finish('skipped', { reason: linkOnly ? 'bilibili-link-only' : 'autoRefresh', nextSyncAt: parked?.nextSyncAt || null });
+        ? feedRepository.completeSubscriptionSync(subscription.id, Date.now(), leaseUntil)
+        : feedRepository.deferSubscriptionSync(subscription.id, Date.now(), subscription.refreshIntervalMinutes * 60_000, leaseUntil);
+      return finish(parked ? 'skipped' : 'stale-lease', { reason: linkOnly ? 'bilibili-link-only' : 'autoRefresh', nextSyncAt: parked?.nextSyncAt || null });
     }
     if (!sourceId) {
-      const parked = feedRepository.deferSubscriptionSync(subscription.id, Date.now(), subscription.refreshIntervalMinutes * 60_000);
-      return finish('skipped', { reason: 'empty-source-id', nextSyncAt: parked?.nextSyncAt || null });
+      const parked = feedRepository.deferSubscriptionSync(subscription.id, Date.now(), subscription.refreshIntervalMinutes * 60_000, leaseUntil);
+      return finish(parked ? 'skipped' : 'stale-lease', { reason: 'empty-source-id', nextSyncAt: parked?.nextSyncAt || null });
     }
     if (!metadata.sourceInput || typeof metadata.sourceInput !== 'object') {
-      const failedRow = feedRepository.failSubscriptionSync(subscription.id, Date.now(), SYNC_RETRY_MS);
-      return finish('failed', { error: 'source account metadata 缺少可重放参数', nextSyncAt: failedRow?.nextSyncAt || null });
+      const failedRow = feedRepository.failSubscriptionSync(subscription.id, Date.now(), SYNC_RETRY_MS, leaseUntil);
+      return finish(failedRow ? 'failed' : 'stale-lease', { error: 'source account metadata 缺少可重放参数', nextSyncAt: failedRow?.nextSyncAt || null });
     }
     const limit = timeoutMs();
     const deadlineAt = startedAt + limit;
@@ -141,14 +145,29 @@ export function createFeedAutomationJobHandlers({ feedService, feedRepository, t
           input: { workspaceId: subscription.workspaceId, resourceIds: addedItemIds },
         });
       }
-      const completed = feedRepository.completeSubscriptionSync(subscription.id, Date.now());
-      return finish(stats?.deadline ? 'deadline' : 'succeeded', {
-        added: Number(stats?.added) || 0,
+      if (context?.signal?.aborted) {
+        return finish('interrupted', { added: Number(stats?.added) || 0, reason: 'aborted' });
+      }
+      const added = Number(stats?.added) || 0;
+      if (stats?.deadline && added <= 0) {
+        const failedRow = feedRepository.failSubscriptionSync(subscription.id, Date.now(), SYNC_RETRY_MS, leaseUntil);
+        return finish(failedRow ? 'failed' : 'stale-lease', {
+          added: 0,
+          reason: 'deadline',
+          nextSyncAt: failedRow?.nextSyncAt || null,
+        });
+      }
+      const completed = feedRepository.completeSubscriptionSync(subscription.id, Date.now(), leaseUntil);
+      return finish(completed ? (stats?.deadline ? 'deadline' : 'succeeded') : 'stale-lease', {
+        added,
         nextSyncAt: completed?.nextSyncAt || null,
       });
     } catch (error) {
-      const failedRow = feedRepository.failSubscriptionSync(subscription.id, Date.now(), SYNC_RETRY_MS);
-      return finish('failed', {
+      if (context?.signal?.aborted) {
+        return finish('interrupted', { reason: 'aborted', error: String(error?.message || error).slice(0, 300) });
+      }
+      const failedRow = feedRepository.failSubscriptionSync(subscription.id, Date.now(), SYNC_RETRY_MS, leaseUntil);
+      return finish(failedRow ? 'failed' : 'stale-lease', {
         error: String(error?.message || error).slice(0, 300),
         nextSyncAt: failedRow?.nextSyncAt || null,
       });

@@ -888,6 +888,121 @@ test('a slow source finishes on its own deadline and does not block the next sou
   temporary.remove();
 });
 
+test('a source timeout with no items retries in five minutes', async () => {
+  const temporary = temporaryStore();
+  const feed = temporary.store.repositories.feed;
+  const account = feed.upsertSourceAccount({
+    workspaceId: 'local',
+    provider: 'xueqiu',
+    externalId: 'xueqiu:home:following',
+    displayName: '雪球',
+    metadata: {
+      sourceId: 'content.xueqiu.home',
+      sourceInput: { feed: 'following' },
+      autoRefresh: true,
+    },
+  });
+  const subscription = feed.upsertSubscription({
+    workspaceId: 'local',
+    sourceAccountId: account.id,
+    refreshIntervalMinutes: 30,
+    nextSyncAt: Date.now() - 1_000,
+  });
+  const handlers = createFeedAutomationJobHandlers({
+    feedRepository: feed,
+    sourceTimeoutMs: 40,
+    log() {},
+    feedService: {
+      async refreshPersistedSource() {
+        return { added: 0, addedItemIds: [], deadline: true };
+      },
+      async localizeContentItems() { return { pendingIds: [] }; },
+      listTaggableItems() { return []; },
+    },
+    taggingService: {
+      async analyzeItems() { return { saved: [], missingItemIds: [], skipped: 0 }; },
+    },
+  });
+  temporary.store.createJob({
+    type: FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE,
+    input: {},
+    maxAttempts: 1,
+  });
+  const completed = await drainSubscriptionJobs(temporary.store, handlers);
+  const child = completed.find((job) => job.type === FEED_SUBSCRIPTION_SYNC_JOB_TYPE);
+  assert.equal(child.output.status, 'failed');
+  assert.equal(child.output.reason, 'deadline');
+  assert.equal(child.output.added, 0);
+  const row = feed.listDueSubscriptions(Date.now() + 400 * 24 * 60 * 60_000, 10)
+    .find((item) => item.id === subscription.id);
+  assert.equal(row.lastSyncAt, null);
+  assert.ok(row.nextSyncAt <= Date.now() + 5 * 60_000 + 5_000);
+  assert.ok(row.nextSyncAt >= Date.now() + 5 * 60_000 - 5_000);
+  temporary.remove();
+});
+
+test('late complete after interruption does not overwrite new lease', async () => {
+  const temporary = temporaryStore();
+  const feed = temporary.store.repositories.feed;
+  let release = () => {};
+  const gate = new Promise((resolve) => { release = resolve; });
+  const account = feed.upsertSourceAccount({
+    workspaceId: 'local',
+    provider: 'x',
+    externalId: 'x:home:following',
+    displayName: 'X',
+    metadata: {
+      sourceId: 'content.x.home',
+      sourceInput: { feed: 'following' },
+      autoRefresh: true,
+    },
+  });
+  const subscription = feed.upsertSubscription({
+    workspaceId: 'local',
+    sourceAccountId: account.id,
+    refreshIntervalMinutes: 30,
+    nextSyncAt: Date.now() - 1_000,
+  });
+  const handlers = createFeedAutomationJobHandlers({
+    feedRepository: feed,
+    sourceTimeoutMs: 60_000,
+    log() {},
+    feedService: {
+      async refreshPersistedSource() {
+        await gate;
+        return { added: 3, addedItemIds: ['kept'] };
+      },
+      async localizeContentItems() { return { pendingIds: [] }; },
+      listTaggableItems() { return []; },
+    },
+    taggingService: {
+      async analyzeItems() { return { saved: [], missingItemIds: [], skipped: 0 }; },
+    },
+  });
+  const pending = handlers[FEED_SUBSCRIPTION_SYNC_JOB_TYPE](
+    { workspaceId: 'local', subscriptionId: subscription.id },
+    { store: temporary.store },
+  );
+  const owned = feed.listDueSubscriptions(Date.now() + 400 * 24 * 60 * 60_000, 10)
+    .find((item) => item.id === subscription.id);
+  assert.ok(owned.nextSyncAt > Date.now());
+  const Database = (await import('better-sqlite3')).default;
+  const database = new Database(path.join(temporary.directory, 'test.db'));
+  database.prepare('UPDATE subscriptions SET next_sync_at = ? WHERE id = ?').run(Date.now() - 1_000, subscription.id);
+  database.close();
+  const newer = feed.claimSubscription(subscription.id, Date.now(), 180_000);
+  assert.equal(newer.leaseUntil, newer.nextSyncAt);
+  assert.ok(newer.leaseUntil > Date.now());
+  release();
+  const output = await pending;
+  assert.equal(output.status, 'stale-lease');
+  const after = feed.listDueSubscriptions(Date.now() + 400 * 24 * 60 * 60_000, 10)
+    .find((item) => item.id === subscription.id);
+  assert.equal(after.nextSyncAt, newer.leaseUntil);
+  assert.equal(after.lastSyncAt, null);
+  temporary.remove();
+});
+
 test('default report and dividend schedules still install beside subscription sync', () => {
   const temporary = temporaryStore();
   ensureDailyReportSchedule(temporary.store, { timezone: 'Asia/Shanghai', cutoffHour: 8, cutoffMinute: 0 });

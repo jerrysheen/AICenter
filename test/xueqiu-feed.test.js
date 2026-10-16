@@ -272,6 +272,54 @@ test('xueqiu keeps the post and skips comments after the deadline', async () => 
   assert.equal(calls.some((url) => String(url).includes('comments.json')), false);
 });
 
+test('xueqiu browser calls use the remaining deadline instead of a fixed 30s', async () => {
+  const calls = [];
+  const deadlineAt = Date.now() + 8_000;
+  const runtime = {
+    async withSession(_options, callback) {
+      return callback({
+        async navigate(_url, options) { calls.push(['navigate', options?.timeoutMs]); },
+        async evaluate(_expression, options) {
+          calls.push(['evaluate', options?.timeoutMs]);
+          return { url: 'https://xueqiu.com/', title: '雪球', logged_in: true, login_wall: false };
+        },
+        async fetchJson(url, options) {
+          calls.push(['fetch', options?.timeoutMs, String(url)]);
+          if (String(url).includes('home_timeline')) {
+            return {
+              status: 200,
+              url,
+              text: JSON.stringify({
+                home_timeline: [{
+                  id: 7,
+                  text: '先看仓位',
+                  reply_count: 3,
+                  created_at: 1_700_000_000_000,
+                  target: '/2/7',
+                  user: { screen_name: '乙', id: 2 },
+                }],
+                next_max_id: -1,
+              }),
+            };
+          }
+          return { status: 200, url, text: JSON.stringify({ comments: [] }) };
+        },
+      });
+    },
+  };
+  const client = createXueqiuHomeBrowserClient({ browserRuntime: runtime, delay: async () => {} });
+  const result = await client.fetchHomeTimeline({
+    feed: 'following',
+    limit: 5,
+    deadlineAt,
+  });
+  assert.equal(result.items.length, 1);
+  const timed = calls.filter((item) => item[0] === 'navigate' || item[0] === 'evaluate' || item[0] === 'fetch');
+  assert.ok(timed.length >= 3);
+  assert.ok(timed.every((item) => item[1] > 0 && item[1] <= 8_000));
+  assert.equal(calls.some((item) => item[0] === 'fetch' && String(item[2]).includes('comments.json')), true);
+});
+
 test('xueqiu skips the comment request when reply count is zero', async () => {
   const calls = [];
   const runtime = {

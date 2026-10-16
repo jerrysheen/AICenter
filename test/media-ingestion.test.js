@@ -436,6 +436,36 @@ test('media enrich requeues ids the body fetch did not finish', async () => {
   assert.deepEqual(jobs[0].input.externalIds, ['b', 'c']);
 });
 
+test('media enrich stops requeueing after ten hops', async () => {
+  const jobs = [];
+  const handlers = createMediaEnrichJobHandlers({
+    budgetMs: 0,
+    mediaService: {
+      async fetchBodies() { throw new Error('should not fetch'); },
+      listBodyCandidates() { return []; },
+      listEnrichmentItems() { return []; },
+    },
+    feedService: { async localizeTexts() { throw new Error('should not translate'); } },
+    taggingService: { async analyzeItems() { throw new Error('should not tag'); } },
+  });
+  const store = { createJob(input) { jobs.push(input); return input; } };
+  const stopped = await handlers[MEDIA_ENRICH_JOB_TYPE](
+    { workspaceId: 'local', externalIds: ['a', 'b'], hop: 10 },
+    { store },
+  );
+  assert.equal(stopped.yielded, true);
+  assert.equal(stopped.remaining, 0);
+  assert.equal(jobs.length, 0);
+  const again = await handlers[MEDIA_ENRICH_JOB_TYPE](
+    { workspaceId: 'local', externalIds: ['a'], hop: 9 },
+    { store },
+  );
+  assert.equal(again.remaining, 1);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].input.hop, 10);
+  assert.deepEqual(jobs[0].input.externalIds, ['a']);
+});
+
 test('probe refuses unknown sources', async () => {
   const fixture = temporaryMedia(async () => response({ status: 200, body: '' }));
   try {

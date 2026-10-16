@@ -190,6 +190,11 @@ function mapCapture(row) {
   };
 }
 
+function subscriptionLeaseToken(value) {
+  const token = Number(value);
+  return Number.isInteger(token) && token > 0 ? token : null;
+}
+
 function mapSubscription(row) {
   const priority = row.priority > 0 ? 'high' : row.priority < 0 ? 'low' : 'normal';
   return {
@@ -458,28 +463,43 @@ export function createFeedRepository(database, emitEvent) {
         WHERE id = ? AND enabled = 1 AND (next_sync_at IS NULL OR next_sync_at <= ?)`)
         .run(leaseUntil, at, subscriptionId, at);
       if (!result.changes) return null;
-      return mapSubscription(database.prepare('SELECT * FROM subscriptions WHERE id = ?').get(subscriptionId));
+      return {
+        ...mapSubscription(database.prepare('SELECT * FROM subscriptions WHERE id = ?').get(subscriptionId)),
+        leaseUntil,
+      };
     },
 
-    completeSubscriptionSync(subscriptionId, syncedAt = Date.now()) {
+    completeSubscriptionSync(subscriptionId, syncedAt = Date.now(), leaseUntil = null) {
       const at = Number(syncedAt);
       const row = database.prepare('SELECT * FROM subscriptions WHERE id = ?').get(subscriptionId);
       if (!row || !Number.isInteger(at) || at < 0) return null;
       const nextSyncAt = at + row.refresh_interval_minutes * 60_000;
-      database.prepare(`UPDATE subscriptions
-        SET last_sync_at = ?, next_sync_at = ?, updated_at = ?
-        WHERE id = ?`).run(at, nextSyncAt, Date.now(), subscriptionId);
+      const token = subscriptionLeaseToken(leaseUntil);
+      const result = token == null
+        ? database.prepare(`UPDATE subscriptions
+            SET last_sync_at = ?, next_sync_at = ?, updated_at = ?
+            WHERE id = ?`).run(at, nextSyncAt, Date.now(), subscriptionId)
+        : database.prepare(`UPDATE subscriptions
+            SET last_sync_at = ?, next_sync_at = ?, updated_at = ?
+            WHERE id = ? AND next_sync_at = ?`).run(at, nextSyncAt, Date.now(), subscriptionId, token);
+      if (!result.changes) return null;
       return mapSubscription(database.prepare('SELECT * FROM subscriptions WHERE id = ?').get(subscriptionId));
     },
 
-    failSubscriptionSync(subscriptionId, failedAt = Date.now(), retryAfterMs = 5 * 60_000) {
+    failSubscriptionSync(subscriptionId, failedAt = Date.now(), retryAfterMs = 5 * 60_000, leaseUntil = null) {
       const at = Number(failedAt);
       const row = database.prepare('SELECT * FROM subscriptions WHERE id = ?').get(subscriptionId);
       if (!row || !Number.isInteger(at) || at < 0) return null;
       const nextSyncAt = at + Math.max(1_000, Number(retryAfterMs) || 5 * 60_000);
-      database.prepare(`UPDATE subscriptions
-        SET next_sync_at = ?, updated_at = ?
-        WHERE id = ?`).run(nextSyncAt, Date.now(), subscriptionId);
+      const token = subscriptionLeaseToken(leaseUntil);
+      const result = token == null
+        ? database.prepare(`UPDATE subscriptions
+            SET next_sync_at = ?, updated_at = ?
+            WHERE id = ?`).run(nextSyncAt, Date.now(), subscriptionId)
+        : database.prepare(`UPDATE subscriptions
+            SET next_sync_at = ?, updated_at = ?
+            WHERE id = ? AND next_sync_at = ?`).run(nextSyncAt, Date.now(), subscriptionId, token);
+      if (!result.changes) return null;
       return mapSubscription(database.prepare('SELECT * FROM subscriptions WHERE id = ?').get(subscriptionId));
     },
 
@@ -494,14 +514,20 @@ export function createFeedRepository(database, emitEvent) {
       return result.changes;
     },
 
-    deferSubscriptionSync(subscriptionId, deferredAt = Date.now(), delayMs = 30 * 60_000) {
+    deferSubscriptionSync(subscriptionId, deferredAt = Date.now(), delayMs = 30 * 60_000, leaseUntil = null) {
       const at = Number(deferredAt);
       const row = database.prepare('SELECT * FROM subscriptions WHERE id = ?').get(subscriptionId);
       if (!row || !Number.isInteger(at) || at < 0) return null;
       const nextSyncAt = at + Math.max(60_000, Number(delayMs) || 30 * 60_000);
-      database.prepare(`UPDATE subscriptions
-        SET next_sync_at = ?, updated_at = ?
-        WHERE id = ?`).run(nextSyncAt, Date.now(), subscriptionId);
+      const token = subscriptionLeaseToken(leaseUntil);
+      const result = token == null
+        ? database.prepare(`UPDATE subscriptions
+            SET next_sync_at = ?, updated_at = ?
+            WHERE id = ?`).run(nextSyncAt, Date.now(), subscriptionId)
+        : database.prepare(`UPDATE subscriptions
+            SET next_sync_at = ?, updated_at = ?
+            WHERE id = ? AND next_sync_at = ?`).run(nextSyncAt, Date.now(), subscriptionId, token);
+      if (!result.changes) return null;
       return mapSubscription(database.prepare('SELECT * FROM subscriptions WHERE id = ?').get(subscriptionId));
     },
 

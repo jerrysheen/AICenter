@@ -6,6 +6,7 @@ import { translationTitleBatchLimit } from '../../domain/src/feed-ai-batch.js';
 import { TRANSLATION_BACKFILL_PRIORITY, TRANSLATION_INTERACTIVE_PRIORITY, enqueueOriginalTranslations } from './feed-translation-module.js';
 
 const MEDIA_ENRICH_BUDGET_FALLBACK_MS = 4 * 60_000;
+const MEDIA_ENRICH_HOP_LIMIT = 10;
 
 export function mediaEnrichBudgetMs(value = process.env.AI_CENTER_MEDIA_ENRICH_BUDGET_MS) {
   const parsed = Number(value);
@@ -17,16 +18,21 @@ function enrichPastBudget(signal, deadlineAt) {
   return Boolean(signal?.aborted) || Date.now() >= deadlineAt;
 }
 
-function enqueueEnrichRemainder(store, workspaceId, externalIds) {
+function enqueueEnrichRemainder(store, workspaceId, externalIds, hop) {
   const ids = [...new Set((externalIds || []).map((id) => String(id || '').trim()).filter(Boolean))];
+  const nextHop = Math.max(0, Math.trunc(Number(hop) || 0)) + 1;
   if (!ids.length || !store?.createJob) return 0;
+  if (nextHop > MEDIA_ENRICH_HOP_LIMIT) {
+    console.log(`[worker] media-enrich yield stopped hop=${nextHop} remaining=${ids.length}`);
+    return 0;
+  }
   store.createJob({
     type: MEDIA_ENRICH_JOB_TYPE,
     workspaceId,
     maxAttempts: 2,
-    input: { workspaceId, externalIds: ids },
+    input: { workspaceId, externalIds: ids, hop: nextHop },
   });
-  console.log(`[worker] media-enrich yield remaining=${ids.length}`);
+  console.log(`[worker] media-enrich yield remaining=${ids.length} hop=${nextHop}`);
   return ids.length;
 }
 
@@ -49,13 +55,14 @@ export function createMediaEnrichJobHandlers({ mediaService, feedService, taggin
       // Flash rows are still fetched so the plain list can show them. Tree, translation and tagging stay on fuller articles.
       const bodies = { ok: true, fetched: [], stats: {} };
       const startedAt = Date.now();
+      const hop = Math.max(0, Math.trunc(Number(input.hop) || 0));
       const deadlineAt = startedAt + (budgetMs == null ? mediaEnrichBudgetMs() : Math.max(0, Number(budgetMs) || 0));
       let cursor = 0;
       let yielded = 0;
       let stopped = false;
       while (cursor < requested.length) {
         if (enrichPastBudget(context?.signal, deadlineAt)) {
-          yielded = enqueueEnrichRemainder(context?.store, workspaceId, requested.slice(cursor));
+          yielded = enqueueEnrichRemainder(context?.store, workspaceId, requested.slice(cursor), hop);
           stopped = true;
           break;
         }
@@ -78,19 +85,19 @@ export function createMediaEnrichJobHandlers({ mediaService, feedService, taggin
         if (batch.health) bodies.health = batch.health;
         for (const [key, value] of Object.entries(batch.stats || {})) bodies.stats[key] = (bodies.stats[key] || 0) + value;
         if (processed <= 0) {
-          yielded = enqueueEnrichRemainder(context?.store, workspaceId, requested.slice(cursor));
+          yielded = enqueueEnrichRemainder(context?.store, workspaceId, requested.slice(cursor), hop);
           stopped = true;
           break;
         }
         cursor += processed;
         if (batch.stoppedEarly || cursor < requested.length && enrichPastBudget(context?.signal, deadlineAt)) {
-          yielded = enqueueEnrichRemainder(context?.store, workspaceId, requested.slice(cursor));
+          yielded = enqueueEnrichRemainder(context?.store, workspaceId, requested.slice(cursor), hop);
           stopped = true;
           break;
         }
       }
       if (!stopped && requested.length && enrichPastBudget(context?.signal, deadlineAt)) {
-        yielded = enqueueEnrichRemainder(context?.store, workspaceId, requested);
+        yielded = enqueueEnrichRemainder(context?.store, workspaceId, requested, hop);
         stopped = true;
       }
       if (stopped) {
