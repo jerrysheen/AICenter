@@ -142,6 +142,7 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
   seeded.close();
   const rewound = new Database(file);
   rewound.exec(`
+    DROP TABLE IF EXISTS gpu_rent_daily;
     DROP TABLE IF EXISTS runtime_snapshots;
     DROP TABLE IF EXISTS etf_whale_intraday_bars;
     DROP TABLE IF EXISTS etf_whale_index_daily;
@@ -167,15 +168,15 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
 
   const upgraded = createStore(file);
   try {
-    assert.equal(latestSchemaVersion(), 74);
-    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 74);
+    assert.equal(latestSchemaVersion(), 75);
+    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 75);
   } finally {
     upgraded.close();
   }
 
   const database = new Database(file, { readonly: true, fileMustExist: true });
   try {
-    assert.equal(database.pragma('user_version', { simple: true }), 74);
+    assert.equal(database.pragma('user_version', { simple: true }), 75);
     const rows = database.prepare(`
       SELECT version, name, applied_at FROM schema_migrations WHERE version >= 57 ORDER BY version
     `).all();
@@ -197,6 +198,7 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
       [72, 'article_dedup_url_lookup'],
       [73, 'polymarket_watchlist'],
       [74, 'polymarket_discovery'],
+      [75, 'gpu_rent_daily'],
     ]);
     assert.equal(database.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('model_usage_index') WHERE name = 'key_suffix'`).get().n, 1);
     assert.equal(database.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('model_usage_index') WHERE name = 'item_id'`).get().n, 1);
@@ -246,7 +248,7 @@ test('库已在 71 时升级', () => {
 
   const upgraded = createStore(file);
   try {
-    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 74);
+    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 75);
   } finally {
     upgraded.close();
   }

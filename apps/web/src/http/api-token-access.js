@@ -29,6 +29,7 @@ const EXACT_PATHS = new Set([
   '/api/v1/markets/baskets',
   '/api/v1/hardware-prices',
   '/api/v1/compute-prices',
+  '/api/v1/compute-prices/history',
   '/api/v1/etf-whale/overview',
   '/api/v1/etf-whale/daily',
   '/api/v1/etf-whale/signals',

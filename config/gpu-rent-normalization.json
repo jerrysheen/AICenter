@@ -1,0 +1,28 @@
+{
+  "models": [
+    { "model": "gb200", "pattern": "gb200" },
+    { "model": "b300", "pattern": "b300" },
+    { "model": "b200", "pattern": "b200" },
+    { "model": "h200", "pattern": "h200" },
+    { "model": "h100", "pattern": "h100" }
+  ],
+  "tiers": [
+    { "source": "runpod", "lane": "secure", "tier": "guaranteed" },
+    { "source": "ccir", "laneSuffix": "-guaranteed", "tier": "guaranteed" },
+    { "source": "bargo", "lane": "reserved", "tier": "guaranteed" },
+    { "source": "bargo", "lane": "ondemand", "tier": "guaranteed" },
+    { "source": "runpod", "lane": "community", "tier": "community" },
+    { "source": "ccir", "laneSuffix": "-interruptible", "tier": "community" },
+    { "source": "bargo", "lane": "spot", "tier": "community" },
+    { "source": "vast", "lane": "min", "tier": "community" },
+    { "source": "vast", "lane": "median", "tier": "median" },
+    { "source": "gpueconomy", "lane": "median", "tier": "median" },
+    { "source": "ornn", "lane": "ocpi", "tier": "index" }
+  ],
+  "coverageModels": ["h100", "h200", "b200", "b300", "gb200"],
+  "ornn": [
+    { "path": "H100 SXM", "variant": "h100-sxm", "lane": "ocpi" },
+    { "path": "H200", "variant": "h200", "lane": "ocpi" },
+    { "path": "B200", "variant": "b200", "lane": "ocpi" }
+  ]
+}

@@ -14,7 +14,9 @@ import {
   fetchGpuEconomyRates,
   GPUECONOMY_PARSER_VERSION,
 } from '../../connectors/src/gpu-price-sources.js';
+import { fetchOrnnIndex } from '../../connectors/src/ornn-gpu.js';
 import { createComputePriceService } from '../../domain/src/compute-price-service.js';
+import { gpuRentNormalization } from '../../domain/src/gpu-rent-normalization.js';
 import { nextDailyInstant } from '../../domain/src/zoned-time.js';
 
 export const TOKEN_PRICE_JOB_TYPE = 'market.token-prices.snapshot';
@@ -22,24 +24,39 @@ export const GPU_RENT_JOB_TYPE = 'market.gpu-rent.snapshot';
 export const CCIR_GPU_JOB_TYPE = 'market.ccir-gpu.snapshot';
 export const GPUECONOMY_GPU_JOB_TYPE = 'market.gpueconomy-gpu.snapshot';
 export const BARGO_GPU_JOB_TYPE = 'market.bargo-gpu.snapshot';
+export const GPU_RENT_DAILY_JOB_TYPE = 'market.gpu-rent.daily';
+export const ORNN_GPU_JOB_TYPE = 'market.ornn-gpu.snapshot';
 const TOKEN_SCHEDULE_KEY = 'market.token-prices.snapshot';
 const GPU_SCHEDULE_KEY = 'market.gpu-rent.snapshot';
 const CCIR_SCHEDULE_KEY = 'market.ccir-gpu.snapshot';
 const CCIR_RETRY_KEY = 'market.ccir-gpu.retry';
 const GPUECONOMY_SCHEDULE_KEY = 'market.gpueconomy-gpu.snapshot';
 const BARGO_SCHEDULE_KEY = 'market.bargo-gpu.snapshot';
+const GPU_RENT_DAILY_KEY = 'market.gpu-rent.daily';
+const ORNN_SCHEDULE_KEY = 'market.ornn-gpu.snapshot';
+const ORNN_RETRY_KEY = 'market.ornn-gpu.retry';
 
 export const computePriceManifest = Object.freeze({
   id: 'market.compute-prices',
-  version: '1.1.0',
+  version: '1.2.0',
   capabilities: [
     'market.token-prices.snapshot',
     'market.gpu-rent.snapshot',
     'market.ccir-gpu.snapshot',
     'market.gpueconomy-gpu.snapshot',
     'market.bargo-gpu.snapshot',
+    'market.gpu-rent.daily',
+    'market.ornn-gpu.snapshot',
   ],
-  jobTypes: [TOKEN_PRICE_JOB_TYPE, GPU_RENT_JOB_TYPE, CCIR_GPU_JOB_TYPE, GPUECONOMY_GPU_JOB_TYPE, BARGO_GPU_JOB_TYPE],
+  jobTypes: [
+    TOKEN_PRICE_JOB_TYPE,
+    GPU_RENT_JOB_TYPE,
+    CCIR_GPU_JOB_TYPE,
+    GPUECONOMY_GPU_JOB_TYPE,
+    BARGO_GPU_JOB_TYPE,
+    GPU_RENT_DAILY_JOB_TYPE,
+    ORNN_GPU_JOB_TYPE,
+  ],
 });
 
 const jobInput = z.object({
@@ -73,12 +90,17 @@ export function computePriceScheduleConfig(env = process.env) {
   const ccir = parseClock(env.AI_CENTER_CCIR_GPU_AT, '20:30', 'AI_CENTER_CCIR_GPU_AT');
   const ccirRetry = parseClock(env.AI_CENTER_CCIR_GPU_RETRY_AT, '21:30', 'AI_CENTER_CCIR_GPU_RETRY_AT');
   const bargo = parseClock(env.AI_CENTER_BARGO_GPU_AT, '09:00', 'AI_CENTER_BARGO_GPU_AT');
+  const daily = parseClock(env.AI_CENTER_GPU_RENT_DAILY_AT, '00:10', 'AI_CENTER_GPU_RENT_DAILY_AT');
+  const ornn = parseClock(env.AI_CENTER_ORNN_GPU_AT, '06:00', 'AI_CENTER_ORNN_GPU_AT');
+  const ornnRetry = parseClock(env.AI_CENTER_ORNN_GPU_RETRY_AT, '09:00', 'AI_CENTER_ORNN_GPU_RETRY_AT');
   return {
     tokenEnabled: enabled(env.AI_CENTER_TOKEN_PRICE_SYNC),
     gpuEnabled: enabled(env.AI_CENTER_GPU_RENT_SYNC),
     ccirEnabled: enabled(env.AI_CENTER_CCIR_GPU_SYNC),
     gpuEconomyEnabled: enabled(env.AI_CENTER_GPUECONOMY_SYNC),
     bargoEnabled: enabled(env.AI_CENTER_BARGO_GPU_SYNC),
+    dailyEnabled: enabled(env.AI_CENTER_GPU_RENT_DAILY_SYNC),
+    ornnEnabled: enabled(env.AI_CENTER_ORNN_GPU_SYNC),
     timeZone: String(env.AI_CENTER_TOKEN_PRICE_TIMEZONE || 'Asia/Shanghai').trim() || 'Asia/Shanghai',
     hour: clock.hour,
     minute: clock.minute,
@@ -88,6 +110,12 @@ export function computePriceScheduleConfig(env = process.env) {
     ccirRetryMinute: ccirRetry.minute,
     bargoHour: bargo.hour,
     bargoMinute: bargo.minute,
+    dailyHour: daily.hour,
+    dailyMinute: daily.minute,
+    ornnHour: ornn.hour,
+    ornnMinute: ornn.minute,
+    ornnRetryHour: ornnRetry.hour,
+    ornnRetryMinute: ornnRetry.minute,
     gpuIntervalMinutes: intervalMinutes(env.AI_CENTER_GPU_RENT_INTERVAL_MINUTES, 360),
     gpuEconomyIntervalMinutes: intervalMinutes(env.AI_CENTER_GPUECONOMY_INTERVAL_MINUTES, 120),
   };
@@ -142,7 +170,10 @@ export function ensureComputePriceSchedules(store, env = process.env, now = Date
     nextRunAt: Math.trunc(now),
   });
   const bargo = daily(BARGO_SCHEDULE_KEY, BARGO_GPU_JOB_TYPE, config.bargoEnabled, config.bargoHour, config.bargoMinute);
-  return [token, gpu, ccir, ccirRetry, gpuEconomy, bargo];
+  const rentDaily = daily(GPU_RENT_DAILY_KEY, GPU_RENT_DAILY_JOB_TYPE, config.dailyEnabled, config.dailyHour, config.dailyMinute);
+  const ornn = daily(ORNN_SCHEDULE_KEY, ORNN_GPU_JOB_TYPE, config.ornnEnabled, config.ornnHour, config.ornnMinute);
+  const ornnRetry = daily(ORNN_RETRY_KEY, ORNN_GPU_JOB_TYPE, config.ornnEnabled, config.ornnRetryHour, config.ornnRetryMinute);
+  return [token, gpu, ccir, ccirRetry, gpuEconomy, bargo, rentDaily, ornn, ornnRetry];
 }
 
 function snapshot(sourceKey, capturedAt, parsed, parserVersion = COMPUTE_PRICE_PARSER_VERSION) {
@@ -208,6 +239,34 @@ export function createComputePriceJobHandlers({ repository, fetch: fetchImpl = f
     },
     async [BARGO_GPU_JOB_TYPE](input, context) {
       return saveParsedGpu(service, input, context, 'bargo', BARGO_PARSER_VERSION, fetchBargoGpuRates, fetchImpl, now);
+    },
+    async [GPU_RENT_DAILY_JOB_TYPE](input, context) {
+      const value = parseContract(jobInput, input || {});
+      if (!service) throw new Error('缺少算力价格存储');
+      const rolled = service.rollup(context?.job?.workspaceId || value.workspaceId, { now: now() });
+      return { ok: true, ...rolled };
+    },
+    async [ORNN_GPU_JOB_TYPE](input, context) {
+      const value = parseContract(jobInput, input || {});
+      if (!service) throw new Error('缺少算力价格存储');
+      const workspaceId = context?.job?.workspaceId || value.workspaceId;
+      const saved = [];
+      const errors = [];
+      for (const series of gpuRentNormalization().ornn) {
+        try {
+          const parsed = await fetchOrnnIndex({ fetch: fetchImpl, pathName: series.path });
+          if (!parsed.points.length) {
+            errors.push(parsed.warnings[0] || `Ornn ${series.path} 没有可保存的结算价`);
+            continue;
+          }
+          const days = service.saveOrnnSeries(workspaceId, series, parsed.points);
+          saved.push({ path: series.path, days });
+        } catch (error) {
+          errors.push(`${series.path}：${error?.message || error}`);
+        }
+      }
+      if (errors.length) throw new Error(errors.join('；'));
+      return { ok: true, saved };
     },
   };
 }
