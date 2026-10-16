@@ -2033,8 +2033,7 @@ migrations.push({ version: 70, name: 'etf_whale_market_depth', up(database) {
 
 // 63 stays unused. 71 is the translation usage attribution already on main.
 // 72 is article URL lookup indexes. It does not rewrite rows.
-// 73 is polymarket_watchlist and 74 is polymarket_discovery on in-flight branches.
-// 75 is the GPU rent daily table.
+// 75 is the GPU rent daily table. It follows polymarket 73 and 74 once those are on main.
 migrations.push({ version: 71, name: 'model_usage_translation_attribution', up(database) {
   addColumn(database, 'model_usage_index', 'key_suffix', `TEXT NOT NULL DEFAULT ''`);
   addColumn(database, 'model_usage_index', 'item_id', `TEXT NOT NULL DEFAULT ''`);
@@ -2058,7 +2057,7 @@ migrations.push({ version: 72, name: 'article_dedup_url_lookup', up: addArticleD
 
 migrations.push({ version: 75, name: 'gpu_rent_daily', up(database) {
   database.exec(`
-    CREATE TABLE gpu_rent_daily (
+    CREATE TABLE IF NOT EXISTS gpu_rent_daily (
       workspace_id TEXT NOT NULL,
       day TEXT NOT NULL,
       source_key TEXT NOT NULL,
@@ -2074,7 +2073,9 @@ migrations.push({ version: 75, name: 'gpu_rent_daily', up(database) {
       carried_forward INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (workspace_id, day, source_key, variant, lane)
     );
-    CREATE INDEX gpu_rent_daily_lookup ON gpu_rent_daily(workspace_id, model, tier, day);
+    CREATE INDEX IF NOT EXISTS gpu_rent_daily_lookup ON gpu_rent_daily(workspace_id, model, tier, day);
+    CREATE INDEX IF NOT EXISTS gpu_rent_observations_captured ON gpu_rent_observations(workspace_id, captured_at);
+    CREATE INDEX IF NOT EXISTS compute_price_snapshots_checked ON compute_price_snapshots(workspace_id, last_checked_at);
   `);
 }});
 

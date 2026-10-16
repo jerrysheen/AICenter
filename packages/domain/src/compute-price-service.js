@@ -5,7 +5,7 @@ import { gpuRentNormalization, normalizeGpuRentRow } from './gpu-rent-normalizat
 import {
   GPU_RENT_DAILY_SINCE,
   beijingDay,
-  catalogModels,
+  beijingDayStart,
   compareDecimal,
   eachIsoDay,
   easternDay,
@@ -13,7 +13,10 @@ import {
   previousIsoDay,
   rollGpuRentDays,
   shapeGpuRentHistory,
+  shiftIsoDay,
 } from './gpu-rent-daily.js';
+
+const TODAY_RENT_CACHE_MS = 60_000;
 
 export const COMPUTE_PRICE_TIME_ZONE = 'Asia/Shanghai';
 
@@ -51,6 +54,7 @@ export function quoteDateFor(capturedAt, timeZone = COMPUTE_PRICE_TIME_ZONE) {
 }
 
 export function createComputePriceService({ repository, timeZone = COMPUTE_PRICE_TIME_ZONE }) {
+  const todayCache = new Map();
   return {
     save(workspaceId, input) {
       const explicit = typeof input?.quoteDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(input.quoteDate)
@@ -113,9 +117,12 @@ export function createComputePriceService({ repository, timeZone = COMPUTE_PRICE
         return { sinceDay, throughDay: end, rows: 0, days: 0, carried: 0 };
       }
       const mapping = gpuRentNormalization();
-      const observations = repository.listGpuObservations(workspaceId);
-      const snapshots = repository.listGpuSnapshotChecks(workspaceId);
       const existingDays = new Set(repository.listRentDailyDays(workspaceId, sinceDay, end));
+      const rebuild = eachIsoDay(sinceDay, end).filter((day) => day === end || !existingDays.has(day));
+      if (!rebuild.length) return { sinceDay, throughDay: end, rows: 0, days: 0, carried: 0 };
+      const { fromMs, toMs } = dayWindow(rebuild[0], rebuild[rebuild.length - 1]);
+      const observations = repository.listGpuObservationsBetween(workspaceId, fromMs, toMs);
+      const snapshots = repository.listGpuSnapshotChecksBetween(workspaceId, fromMs, toMs);
       const existingByDay = new Map();
       if (existingDays.size) {
         for (const row of repository.listDailyRange(workspaceId, sinceDay, end)) {
@@ -160,7 +167,6 @@ export function createComputePriceService({ repository, timeZone = COMPUTE_PRICE
       const parsed = parseHistoryQuery(query);
       const mapping = gpuRentNormalization();
       const today = beijingDay(nowMs);
-      const observations = repository.listGpuObservations(workspaceId);
       const stored = repository.listDailyRange(workspaceId, parsed.start, parsed.end);
       const storedRentByDay = new Map();
       for (const row of stored) {
@@ -173,20 +179,24 @@ export function createComputePriceService({ repository, timeZone = COMPUTE_PRICE
       const needed = parsed.start <= last
         ? eachIsoDay(parsed.start, last).filter((day) => day === today || !storedRentByDay.has(day))
         : [];
+      const pastNeeded = needed.filter((day) => day < today);
       let live = [];
-      if (needed.length) {
+      if (pastNeeded.length) {
+        const { fromMs, toMs } = dayWindow(pastNeeded[0], pastNeeded[pastNeeded.length - 1]);
         const built = rollGpuRentDays({
-          observations,
-          snapshots: repository.listGpuSnapshotChecks(workspaceId),
+          observations: repository.listGpuObservationsBetween(workspaceId, fromMs, toMs),
+          snapshots: repository.listGpuSnapshotChecksBetween(workspaceId, fromMs, toMs),
           mapping,
-          sinceDay: needed[0],
-          throughDay: needed[needed.length - 1],
-          previousRows: repository.latestRentDailyBefore(workspaceId, needed[0]),
+          sinceDay: pastNeeded[0],
+          throughDay: pastNeeded[pastNeeded.length - 1],
+          previousRows: repository.latestRentDailyBefore(workspaceId, pastNeeded[0]),
           existingByDay: storedRentByDay,
         });
-        const want = new Set(needed);
+        const want = new Set(pastNeeded);
         live = built.filter((row) => want.has(row.day));
       }
+      const todayState = todayRent(todayCache, repository, workspaceId, today, nowMs, mapping);
+      if (needed.includes(today)) live.push(...todayState.rows);
       const rent = [];
       for (const day of parsed.start <= last ? eachIsoDay(parsed.start, last) : []) {
         if (day === today) rent.push(...live.filter((row) => row.day === day));
@@ -203,7 +213,7 @@ export function createComputePriceService({ repository, timeZone = COMPUTE_PRICE
         rows: filtered,
         grain: parsed.grain,
         coverageModels: mapping.coverageModels,
-        presentModels: catalogModels(observations, repository.distinctDailyModels(workspaceId), mapping),
+        presentModels: presentModels(repository, workspaceId, todayState.models),
       });
       return GpuRentHistorySchema.parse({
         start: parsed.start,
@@ -287,6 +297,43 @@ function parseHistoryQuery(query) {
     tiers: parseChoice(parsed.tiers, HISTORY_TIERS, '档位'),
     sources: parseChoice(parsed.sources, HISTORY_SOURCES, '来源'),
   };
+}
+
+function dayWindow(startDay, endDay) {
+  return {
+    fromMs: beijingDayStart(startDay),
+    toMs: beijingDayStart(shiftIsoDay(endDay, 1)),
+  };
+}
+
+function todayRent(cache, repository, workspaceId, today, nowMs, mapping) {
+  const hit = cache.get(workspaceId);
+  if (hit && hit.day === today && nowMs - hit.at < TODAY_RENT_CACHE_MS) return hit;
+  const { fromMs, toMs } = dayWindow(today, today);
+  const observations = repository.listGpuObservationsBetween(workspaceId, fromMs, toMs);
+  const snapshots = repository.listGpuSnapshotChecksBetween(workspaceId, fromMs, toMs);
+  const rows = rollGpuRentDays({
+    observations,
+    snapshots,
+    mapping,
+    sinceDay: today,
+    throughDay: today,
+    previousRows: repository.latestRentDailyBefore(workspaceId, today),
+  });
+  const models = new Set();
+  for (const row of observations) {
+    const normalized = normalizeGpuRentRow(mapping, row);
+    if (normalized) models.add(normalized.model);
+  }
+  const value = { at: nowMs, day: today, rows, models };
+  cache.set(workspaceId, value);
+  return value;
+}
+
+function presentModels(repository, workspaceId, todayModels) {
+  const present = new Set(repository.distinctDailyModels(workspaceId));
+  for (const model of todayModels || []) present.add(model);
+  return present;
 }
 
 function parseChoice(value, allowed, label) {

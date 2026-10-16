@@ -1,4 +1,4 @@
-import { addCalendarDays, formatYmd, zonedParts } from './zoned-time.js';
+import { addCalendarDays, formatYmd, zonedLocalToUtc, zonedParts } from './zoned-time.js';
 import { normalizeGpuRentRow } from './gpu-rent-normalization.js';
 
 export const GPU_RENT_DAILY_SINCE = '2026-10-11';
@@ -10,6 +10,11 @@ const SOURCE_ORDER = ['runpod', 'vast', 'ccir', 'gpueconomy', 'bargo', 'ornn'];
 
 export function beijingDay(utcMs) {
   return formatYmd(zonedParts(utcMs, GPU_RENT_TIME_ZONE));
+}
+
+export function beijingDayStart(day) {
+  const [year, month, date] = String(day).split('-').map(Number);
+  return zonedLocalToUtc(year, month, date, 0, 0, GPU_RENT_TIME_ZONE);
 }
 
 export function easternDay(utcMs) {
@@ -60,10 +65,38 @@ export function compareDecimal(left, right) {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+export function groupObservationsByDay(observations) {
+  const byDay = new Map();
+  for (const row of observations || []) {
+    if (!row || row.sourceKey === 'ornn' || row.sourceKey === 'openrouter') continue;
+    const day = beijingDay(row.capturedAt);
+    const list = byDay.get(day) || [];
+    list.push(row);
+    byDay.set(day, list);
+  }
+  return byDay;
+}
+
+export function groupSnapshotsByDay(snapshots) {
+  const byDay = new Map();
+  for (const snap of snapshots || []) {
+    if (!snap?.sourceKey || snap.sourceKey === 'openrouter' || snap.sourceKey === 'ornn') continue;
+    const days = new Set();
+    if (Number.isFinite(snap.lastCheckedAt)) days.add(beijingDay(snap.lastCheckedAt));
+    if (Number.isFinite(snap.capturedAt)) days.add(beijingDay(snap.capturedAt));
+    for (const day of days) {
+      const list = byDay.get(day) || [];
+      list.push(snap);
+      byDay.set(day, list);
+    }
+  }
+  return byDay;
+}
+
 export function buildGpuRentDay({ day, observations, snapshots, mapping, state }) {
   const observed = new Map();
   for (const row of observations || []) {
-    if (row.sourceKey === 'ornn' || beijingDay(row.capturedAt) !== day) continue;
+    if (row.sourceKey === 'ornn' || row.sourceKey === 'openrouter') continue;
     const list = observed.get(row.sourceKey) || [];
     list.push(row);
     observed.set(row.sourceKey, list);
@@ -71,7 +104,7 @@ export function buildGpuRentDay({ day, observations, snapshots, mapping, state }
   const checked = new Set(observed.keys());
   for (const snap of snapshots || []) {
     if (!snap?.sourceKey || snap.sourceKey === 'openrouter' || snap.sourceKey === 'ornn') continue;
-    if (beijingDay(snap.lastCheckedAt) === day || beijingDay(snap.capturedAt) === day) checked.add(snap.sourceKey);
+    checked.add(snap.sourceKey);
   }
   const rows = [];
   const touched = [];
@@ -94,6 +127,8 @@ export function rollGpuRentDays({
   existingByDay = new Map(),
 }) {
   const state = indexDailyRows(previousRows);
+  const observationsByDay = groupObservationsByDay(observations);
+  const snapshotsByDay = groupSnapshotsByDay(snapshots);
   const out = [];
   for (const day of eachIsoDay(sinceDay, throughDay)) {
     const stored = existingByDay.get(day);
@@ -101,7 +136,13 @@ export function rollGpuRentDays({
       replaceSourceState(state, [...new Set(stored.map((row) => row.sourceKey))], stored);
       continue;
     }
-    const built = buildGpuRentDay({ day, observations, snapshots, mapping, state });
+    const built = buildGpuRentDay({
+      day,
+      observations: observationsByDay.get(day) || [],
+      snapshots: snapshotsByDay.get(day) || [],
+      mapping,
+      state,
+    });
     replaceSourceState(state, built.touched, built.rows);
     out.push(...built.rows);
   }
@@ -130,10 +171,18 @@ export function catalogModels(observations, dailyModels, mapping) {
 function aggregateSource(day, source, list, mapping) {
   const groups = new Map();
   const ordered = [...list].sort((left, right) => left.capturedAt - right.capturedAt || String(left.id || '').localeCompare(String(right.id || '')));
+  const lastCapturedAt = ordered.reduce((latest, row) => Math.max(latest, row.capturedAt), 0);
+  const specs = new Set();
+  for (const row of ordered) {
+    if (row.capturedAt !== lastCapturedAt) continue;
+    if (!normalizeGpuRentRow(mapping, row)) continue;
+    specs.add(`${row.variant}\u0000${row.lane}`);
+  }
   for (const row of ordered) {
     const normalized = normalizeGpuRentRow(mapping, row);
     if (!normalized) continue;
     const key = `${row.variant}\u0000${row.lane}`;
+    if (!specs.has(key)) continue;
     const current = groups.get(key);
     if (!current) {
       groups.set(key, {
@@ -165,6 +214,8 @@ function carrySource(day, source, state, lastCapturedAt) {
   const rows = [];
   for (const row of state.values()) {
     if (row.sourceKey !== source) continue;
+    const captured = lastCapturedAt ?? row.lastCapturedAt;
+    if (captured == null) continue;
     rows.push({
       day,
       sourceKey: source,
@@ -176,21 +227,21 @@ function carrySource(day, source, state, lastCapturedAt) {
       low: row.close,
       high: row.close,
       sampleCount: row.sampleCount ?? null,
-      lastCapturedAt,
+      lastCapturedAt: captured,
       carriedForward: true,
     });
   }
   return rows;
 }
 
-function checkInstant(snapshots, source, day) {
+export function checkInstant(snapshots, source, day) {
   let latest = null;
   for (const snap of snapshots || []) {
     if (snap.sourceKey !== source) continue;
-    if (beijingDay(snap.lastCheckedAt) !== day) continue;
+    if (!Number.isFinite(snap.lastCheckedAt) || beijingDay(snap.lastCheckedAt) !== day) continue;
     if (latest == null || snap.lastCheckedAt > latest) latest = snap.lastCheckedAt;
   }
-  return latest ?? Date.parse(`${day}T00:00:00Z`);
+  return latest;
 }
 
 function replaceSourceState(state, sources, rows) {
@@ -217,6 +268,7 @@ function daySeries(rows) {
     model: group.model,
     tier: group.tier,
     source: group.source,
+    dayBasis: group.source === 'ornn' ? 'ET' : 'Beijing',
     points: [...group.byDay.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([day, list]) => ({
       day,
       close: medianDecimal(list.map((row) => row.close)),
@@ -238,6 +290,7 @@ function rawSeries(rows) {
       source: row.sourceKey,
       variant: row.variant,
       lane: row.lane,
+      dayBasis: row.sourceKey === 'ornn' ? 'ET' : 'Beijing',
       points: [],
     };
     group.points.push({

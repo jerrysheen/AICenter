@@ -105,16 +105,19 @@ export function createComputePriceRepository(database) {
       }));
     },
 
-    listGpuObservations(workspaceId) {
+    listGpuObservationsBetween(workspaceId, fromMs, toMs) {
       return database.prepare(`SELECT id, source_key sourceKey, gpu_key variant, label, lane,
         usd_per_hour usdPerHour, sample_count sampleCount, captured_at capturedAt
-        FROM gpu_rent_observations WHERE workspace_id=?
-        ORDER BY captured_at, id`).all(workspaceId);
+        FROM gpu_rent_observations
+        WHERE workspace_id=? AND captured_at>=? AND captured_at<?
+        ORDER BY captured_at, id`).all(workspaceId, fromMs, toMs);
     },
 
-    listGpuSnapshotChecks(workspaceId) {
+    listGpuSnapshotChecksBetween(workspaceId, fromMs, toMs) {
       return database.prepare(`SELECT source_key sourceKey, captured_at capturedAt, last_checked_at lastCheckedAt
-        FROM compute_price_snapshots WHERE workspace_id=? AND source_key!='openrouter'`).all(workspaceId);
+        FROM compute_price_snapshots
+        WHERE workspace_id=? AND source_key!='openrouter' AND last_checked_at>=? AND last_checked_at<?`)
+        .all(workspaceId, fromMs, toMs);
     },
 
     listDailyRange(workspaceId, start, end) {

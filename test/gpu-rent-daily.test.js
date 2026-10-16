@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createStore } from '../packages/database/src/index.js';
 import { latestSchemaVersion } from '../packages/database/src/migrations.js';
 import { gpuRentNormalization, normalizeGpuRentRow } from '../packages/domain/src/gpu-rent-normalization.js';
-import { easternDay } from '../packages/domain/src/gpu-rent-daily.js';
+import { beijingDayStart, checkInstant, easternDay, rollGpuRentDays, shiftIsoDay } from '../packages/domain/src/gpu-rent-daily.js';
 import { createComputePriceService } from '../packages/domain/src/compute-price-service.js';
 import { selectOrnnIndexHistory } from '../packages/connectors/src/ornn-gpu.js';
 import { createComputePriceJobHandlers, ensureComputePriceSchedules } from '../packages/runtime/src/compute-price-job.js';
@@ -155,6 +155,7 @@ test('daily rollup is idempotent, carries an unchanged check, and keeps today li
       assert.equal(guaranteed.variant, undefined);
       assert.equal(guaranteed.points.find((point) => point.day === '2026-10-11').close, '3.35');
       assert.equal(guaranteed.points.find((point) => point.day === '2026-10-11').low, '2.80');
+      assert.equal(guaranteed.dayBasis, 'Beijing');
       assert.equal(guaranteed.points.find((point) => point.day === '2026-10-12').carriedForward, true);
       const today = guaranteed.points.find((point) => point.day === '2026-10-13');
       assert.equal(today.close, '4.00');
@@ -221,6 +222,7 @@ test('Ornn stores the Eastern settlement day and the daily clocks stay internal'
     assert.equal(h100.tier, 'index');
     assert.equal(h100.close, '3.13');
     const history = fixture.service.history('local', { start: '2026-10-15', end: '2026-10-15', sources: 'ornn' }, day13);
+    assert.equal(history.series[0].dayBasis, 'ET');
     assert.equal(history.series[0].tier, 'index');
     assert.equal(history.series[0].points[0].close, '3.13');
     const schedules = ensureComputePriceSchedules(fixture.database, {}, Date.parse('2026-10-12T02:00:00Z'));
@@ -244,6 +246,86 @@ test('Ornn stores the Eastern settlement day and the daily clocks stay internal'
     const query = gpuHistoryQuery(day13, '90');
     assert.equal(query.end, '2026-10-13');
     assert.equal(query.grain, 'day');
+  } finally {
+    fixture.close();
+  }
+});
+
+test('history and rollup read observations only inside the Beijing day window', () => {
+  assert.equal(checkInstant([], 'runpod', '2026-10-12'), null);
+  assert.equal(checkInstant([{
+    sourceKey: 'runpod',
+    lastCheckedAt: Date.parse('2026-10-11T04:00:00Z'),
+    capturedAt: Date.parse('2026-10-11T04:00:00Z'),
+  }], 'runpod', '2026-10-12'), null);
+  const mapping = gpuRentNormalization();
+  const rolled = rollGpuRentDays({
+    observations: [
+      { id: 'a', sourceKey: 'runpod', variant: 'h100-sxm', label: 'H100 SXM', lane: 'secure', usdPerHour: '3.10', sampleCount: null, capturedAt: day11 },
+      { id: 'b', sourceKey: 'runpod', variant: 'h100-pcie', label: 'H100 PCIe', lane: 'secure', usdPerHour: '2.40', sampleCount: null, capturedAt: day11 },
+      { id: 'c', sourceKey: 'runpod', variant: 'h100-sxm', label: 'H100 SXM', lane: 'secure', usdPerHour: '3.80', sampleCount: 4, capturedAt: day11Later },
+    ],
+    snapshots: [],
+    mapping,
+    sinceDay: '2026-10-11',
+    throughDay: '2026-10-11',
+  });
+  assert.equal(rolled.some((row) => row.variant === 'h100-pcie'), false);
+  assert.equal(rolled.find((row) => row.variant === 'h100-sxm').close, '3.80');
+  assert.equal(rolled.find((row) => row.variant === 'h100-sxm').low, '3.10');
+  assert.equal(rolled.find((row) => row.variant === 'h100-sxm').sampleCount, 4);
+
+  const fixture = store();
+  const repo = fixture.database.repositories.computePrices;
+  const observationCalls = [];
+  const snapshotCalls = [];
+  const observationsBetween = repo.listGpuObservationsBetween.bind(repo);
+  const snapshotsBetween = repo.listGpuSnapshotChecksBetween.bind(repo);
+  repo.listGpuObservationsBetween = (workspaceId, fromMs, toMs) => {
+    observationCalls.push([fromMs, toMs]);
+    return observationsBetween(workspaceId, fromMs, toMs);
+  };
+  repo.listGpuSnapshotChecksBetween = (workspaceId, fromMs, toMs) => {
+    snapshotCalls.push([fromMs, toMs]);
+    return snapshotsBetween(workspaceId, fromMs, toMs);
+  };
+  repo.listGpuObservations = () => { throw new Error('全表观测'); };
+  repo.listGpuSnapshotChecks = () => { throw new Error('全表快照'); };
+  const early = Date.parse('2026-09-01T04:00:00Z');
+  try {
+    fixture.service.save('local', snapshot('runpod', early, [
+      gpu(0, 'h100-sxm', 'H100 SXM', 'secure', '9.99'),
+    ], '2026-09-01'));
+    fixture.service.save('local', snapshot('runpod', day11, [
+      gpu(0, 'h100-sxm', 'H100 SXM', 'secure', '3.50'),
+    ], '2026-10-11'));
+    const read = () => fixture.service.history('local', { start: '2026-10-11', end: '2026-10-13' }, day13);
+    const body = read();
+    const earliest = beijingDayStart('2026-10-11');
+    const tomorrow = beijingDayStart(shiftIsoDay('2026-10-13', 1));
+    assert.ok(observationCalls.length > 0);
+    assert.ok(snapshotCalls.length > 0);
+    for (const [fromMs, toMs] of [...observationCalls, ...snapshotCalls]) {
+      assert.ok(fromMs >= earliest, String(fromMs));
+      assert.ok(toMs <= tomorrow, String(toMs));
+      assert.equal(fromMs, beijingDayStart(new Date(fromMs + 8 * 60 * 60 * 1000).toISOString().slice(0, 10)));
+      assert.equal(toMs, beijingDayStart(new Date(toMs + 8 * 60 * 60 * 1000).toISOString().slice(0, 10)));
+      assert.ok(early < fromMs);
+    }
+    assert.equal(JSON.stringify(body).includes('9.99'), false);
+    assert.equal(body.series.find((item) => item.source === 'runpod').points[0].close, '3.50');
+    const todayStart = beijingDayStart('2026-10-13');
+    const todayReads = () => observationCalls.filter(([fromMs]) => fromMs === todayStart).length;
+    const before = todayReads();
+    read();
+    assert.equal(todayReads(), before);
+    observationCalls.length = 0;
+    fixture.service.rollup('local', { now: day13 });
+    assert.ok(observationCalls.length > 0);
+    for (const [fromMs, toMs] of observationCalls) {
+      assert.ok(fromMs >= earliest);
+      assert.ok(toMs <= beijingDayStart('2026-10-13'));
+    }
   } finally {
     fixture.close();
   }

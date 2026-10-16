@@ -126,6 +126,7 @@ export const GpuRentHistorySchema = z.object({
     model: historyModel,
     tier: historyTier,
     source: historySource,
+    dayBasis: z.enum(['Beijing', 'ET']),
     variant: z.string().trim().min(1).max(80).optional(),
     lane: z.string().trim().min(1).max(80).optional(),
     points: z.array(rentHistoryPoint).max(366),
