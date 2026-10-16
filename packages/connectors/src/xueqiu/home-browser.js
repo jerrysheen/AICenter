@@ -255,12 +255,10 @@ export function mapLivenewsItem(item) {
   };
 }
 
-const WRITE_RESERVE_MS = 15_000;
-
 function stepTimeout(deadlineAt, fallback = JSON_TIMEOUT_MS) {
   const limit = Math.max(1_000, Number(fallback) || JSON_TIMEOUT_MS);
   if (!Number.isFinite(Number(deadlineAt))) return limit;
-  const remaining = Number(deadlineAt) - Date.now() - WRITE_RESERVE_MS;
+  const remaining = Number(deadlineAt) - Date.now();
   if (remaining < 1_000) return 0;
   return Math.min(limit, remaining);
 }
@@ -309,7 +307,7 @@ export function createXueqiuHomeBrowserClient(options = {}) {
     const parsedLimit = Math.min(50, Math.max(1, Number(limit) || 50));
     const excluded = new Set((excludeExternalIds || []).map((id) => String(id || '')).filter(Boolean));
 
-    return runtime.withSession({ purpose: `xueqiu-${parsedFeed}`, focused: false, deadlineAt, signal }, async (session) => {
+    return runtime.withSession({ purpose: `xueqiu-${parsedFeed}`, focused: false }, async (session) => {
       let stoppedEarly = stopped(signal, deadlineAt);
       const halt = () => {
         if (!stopped(signal, deadlineAt)) return false;
