@@ -729,6 +729,7 @@ test('multi-outcome card shows each result and 较昨日 without backend fields'
   assert.equal(text.includes('100 bps decrease'), false);
   assert.match(text, /1 小时上升 6\.0 个百分点/);
   assert.match(text, /下一期尚未出现/);
+  assert.equal(text.includes('上次'), false);
   assert.equal(text.includes('606422'), false);
   assert.equal(text.includes('btc-monthly'), false);
   assert.equal(text.includes('alertProfile'), false);
@@ -750,6 +751,7 @@ test('multi-outcome card shows each result and 较昨日 without backend fields'
   const youngMain = findNodes(youngRoot, (node) => hasClass(node, 'prediction-side'))[0];
   assert.match(textOf(youngMain), /140k/);
   assert.match(textOf(youngMain), /较 8h 前 \+6\.0/);
+  assert.equal(textOf(youngRoot).includes('上次'), false);
   assert.equal(Boolean(findNodes(youngRoot, (node) => node.tag === 'details')[0].open), false);
 
   const twinRoot = element('div');
@@ -764,6 +766,68 @@ test('multi-outcome card shows each result and 较昨日 without backend fields'
   const twinList = findNodes(findNodes(twinRoot, (node) => node.tag === 'details')[0], (node) => hasClass(node, 'prediction-outcome'));
   assert.equal(twinList.length, 1);
   assert.match(textOf(twinList[0]), /15\.0%/);
+});
+
+test('numeric changeBasis says 较 Nh 前, and 上次 only uses a real lastPrice', () => {
+  const appSource = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
+  const context = vm.createContext({
+    document: { createElement: (tag) => element(tag) },
+    localizedCopy: (_id, text) => text,
+    formatTime: () => '10月29日',
+    marketNativeAmount: () => '$1',
+    attachGuardedOpen: () => {},
+    openExternalHttpUrl: () => {},
+  });
+  vm.runInContext(['predictionShare', 'formatPredictionShare', 'predictionDayChange', 'predictionChangeNode', 'appendPredictionQuote']
+    .map((name) => functionSource(appSource, name)).join('\n'), context);
+  assert.equal(context.predictionShare(null), null);
+  assert.equal(context.predictionShare(''), null);
+  assert.equal(context.formatPredictionShare(null), '—');
+  assert.equal(context.predictionDayChange('0.62', '0.50', 4).text, '较 4h 前 +12.0');
+  assert.equal(context.predictionDayChange('0.62', '0.50', 3).text, '较 3h 前 +12.0');
+  assert.equal(context.predictionDayChange('0.62', '0.50', '4').text, '较 4h 前 +12.0');
+  assert.equal(context.predictionDayChange('0.62', '0.50').text, '较昨日 +12.0');
+
+  const quote = {
+    quoteId: 'polymarket:event:606422',
+    venue: 'polymarket',
+    marketQuestion: 'Fed Decision in October?',
+    outcome: 'No change',
+    key: 'no-change',
+    midPrice: '0.62',
+    midPrice24hAgo: '0.50',
+    changeBasis: 4,
+    lastPrice: null,
+    volume24h: '1',
+    endAt: Date.UTC(2026, 9, 29),
+    sourceUrl: 'https://polymarket.com/event/fed-decision-in-october',
+    outcomes: [
+      { key: 'no-change', label: 'No change', midPrice: '0.62', midPrice24hAgo: '0.50', changeBasis: 4 },
+      { key: 'cut-25', label: '25 bps decrease', midPrice: '0.20', midPrice24hAgo: '0.17', changeBasis: 3 },
+    ],
+  };
+  const fourHours = element('div');
+  context.appendPredictionQuote(fourHours, quote);
+  const fourText = textOf(fourHours);
+  assert.match(fourText, /较 4h 前 \+12\.0/);
+  assert.match(fourText, /较 3h 前 \+3\.0/);
+  assert.equal(fourText.includes('较昨日'), false);
+  assert.equal(fourText.includes('上次'), false);
+
+  const blank = element('div');
+  context.appendPredictionQuote(blank, { ...quote, outcomes: undefined, lastPrice: '' });
+  assert.equal(textOf(blank).includes('上次'), false);
+
+  const traded = element('div');
+  context.appendPredictionQuote(traded, { ...quote, lastPrice: '0.42' });
+  assert.match(textOf(traded), /上次 42\.0%/);
+  assert.match(textOf(traded), /较 4h 前 \+12\.0/);
+
+  const zero = element('div');
+  context.appendPredictionQuote(zero, { ...quote, outcomes: undefined, changeBasis: 3, lastPrice: '0' });
+  const zeroText = textOf(zero);
+  assert.match(zeroText, /较 3h 前 \+12\.0/);
+  assert.match(zeroText, /上次 0\.0%/);
 });
 
 function rangeRow(label, probability, key) {

@@ -1,6 +1,6 @@
 # 0.2.0 发布门槛
 
-2026-10-16 事件概率卡片重新显示大号概率和涨跌。观察清单仍是 35 条，顺序不变。概率序列从 2026-10-16 才开始，还没有约 24 小时前的点时，只取观察清单里 1 小时到 27 小时之间最早的一点，页面写「较 Xh 前」。满 24 小时后不再带 `changeBasis`，文案回到「较昨日」。多个结果只在上方放大领先结果，其余区间默认收起，最多 3 条。不新增 migration。不要重建数据库。需要同时重启 Web 和 Worker。见 `progress/2026-10-16-polymarket-card-change.md`。
+2026-10-16 事件概率卡片重新显示大号概率和涨跌。观察清单仍是 35 条，顺序不变。概率序列从 2026-10-16 才开始，还没有约 24 小时前的点时，只取观察清单里 1 小时到 27 小时之间最早的一点，页面写「较 Xh 前」。整数 `changeBasis`（例如 4、3）显示「较 4h 前」「较 3h 前」；没有该字段才写「较昨日」。底部「上次」只在 `lastPrice` 有十进制概率时出现，空值不再显示成「上次 0.0%」。满 24 小时后不再带 `changeBasis`，文案回到「较昨日」。多个结果只在上方放大领先结果，其余区间默认收起，最多 3 条。不新增 migration。不要重建数据库。需要同时重启 Web 和 Worker。见 `progress/2026-10-16-polymarket-card-change.md`。
 
 2026-10-16 台湾和韩国第一批来源各自一条任务，不进 `media.sources.sync` 或 `feed.subscriptions.sync`。新闻约 12 到 15 分钟，证交所重大讯息 15 分钟，月营收每天 08:30（Asia/Shanghai）。每次请求 `AbortSignal.timeout`，默认 15 秒。同一来源已经排队或正在跑时不再入队。新闻用原文发布时间写入媒体索引，同一外部 id 不另建一条，比当前时间晚过 10 分钟的先不入库。新条目再交给现有的 `media.index.enrich`，翻译仍只用 Gemma 26B。证交所重大讯息的原文链接是 MOPS 公司公告页。标了 `summaryOnly` 的来源（重大讯息、DigiTimes）不抓正文。THE ELEC 不带时区的时间按首尔 UTC+9 解释。月营收按公司代号和资料年月累加，不写媒体索引。`config/twkr-sources.json` 或 `AI_CENTER_TWKR_<SOURCEKEY>` 可以单源关闭。migration 76 只建 `twse_monthly_revenue`。不要重建数据库。需要重启 Worker。见 `progress/2026-10-16-twkr-sources.md`。
 
