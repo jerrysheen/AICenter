@@ -57,7 +57,7 @@ function briefView(brief) {
     ...(brief.generatedAt ? { generatedAt: brief.generatedAt } : {}),
     ...(typeof brief.sentence === 'string' ? { sentence: clip(brief.sentence, 180) } : {}),
     ...(typeof brief.overview === 'string' ? { overview: clip(brief.overview, 280) } : {}),
-    informationItemCount: items.length,
+    informationItemCount: Number(brief.informationItemCount) > 0 ? Number(brief.informationItemCount) : items.length,
     informationItems: sentences,
   };
 }
@@ -208,7 +208,7 @@ export async function composeHomeBootstrap(services, { workspace = 'local', now 
   const leaveBrief = labelEventLoop('home.bootstrap');
   let brief;
   try {
-    brief = { ok: true, brief: briefView(services.report?.getLatestDailyBrief?.(workspace) ?? null) };
+    brief = { ok: true, daily: briefView(services.informationTree?.latestDaily?.(workspace) ?? null) };
   } finally {
     leaveBrief();
   }
@@ -253,7 +253,7 @@ export async function composeHomeBootstrap(services, { workspace = 'local', now 
     tree,
     readings,
     market,
-    brief,
+    daily: brief,
     board,
   };
 }

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { FEED_TRANSLATION_TEXT_MAX, formatFeedBefore, ValidationError } from '../../contracts/src/index.js';
 import { feedItemIdentityHash } from './feed-identity.js';
 import { cleanIngestExcerpt } from '../../connectors/src/excerpt-text.js';
+import { normalizeFlashCopy } from '../../connectors/src/flash-copy.js';
 import { stripLeadingPreview } from '../../connectors/src/x/home-browser.js';
 import { collectLocalizationUnits, localizationItemId, needsZhLocalization, translationLooksTruncated } from './localize-texts.js';
 import { isFlashSource } from './flash-sources.js';
@@ -510,9 +511,17 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
     : Date.now();
   for (const [index, item] of snapshot.items.entries()) {
     if (!item.externalId || !item.sourceUrl) continue;
-    const body = stripLeadingPreview(item.body || '');
+    let body = stripLeadingPreview(item.body || '');
     const originalText = stripLeadingPreview(item.originalText || body);
-    const cleaned = { ...item, body, originalText };
+    let title = item.title || '';
+    let summary = item.summary || '';
+    if (flashSource) {
+      const copy = normalizeFlashCopy(title, body);
+      title = copy.title;
+      body = copy.body;
+      summary = normalizeFlashCopy(title, summary).body;
+    }
+    const cleaned = { ...item, title, summary, body, originalText };
     const identityHash = feedItemIdentityHash(providerId, cleaned);
     const rememberFingerprint = (hiddenAt) => {
       feedRepository.upsertIdentityFingerprint?.({
@@ -564,8 +573,8 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
     if (!existing && articleDedup?.find) {
       const probe = {
         url: item.sourceUrl,
-        title: item.title || '',
-        summary: item.summary || '',
+        title: title || '',
+        summary: summary || '',
         body,
         authorName: item.authorName || '',
         publishedAt: item.publishedAt || null,
@@ -577,8 +586,8 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
       if (match) {
         articleDedup.fill(match, {
           url: item.sourceUrl,
-          title: cleanIngestExcerpt(item.title || ''),
-          summary: cleanIngestExcerpt(item.summary || ''),
+          title: cleanIngestExcerpt(title || ''),
+          summary: cleanIngestExcerpt(summary || ''),
           body,
           authorName: item.authorName || '',
           publishedAt: item.publishedAt || null,
@@ -620,7 +629,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
       externalId: String(item.externalId),
       sourceAccountId: source.id,
       sourceUrl: item.sourceUrl,
-      title: cleanIngestExcerpt(item.title || ''),
+      title: cleanIngestExcerpt(title || ''),
       contentHash: hash,
       rawArtifactPath: null,
       status: verdict.status || 'ready',
@@ -643,9 +652,9 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
       captureId: capture.id,
       originType: item.originType || 'subscription',
       contentType: item.contentType || 'post',
-      title: cleanIngestExcerpt(item.title || ''),
+      title: cleanIngestExcerpt(title || ''),
       body,
-      summary: cleanIngestExcerpt(item.summary || ''),
+      summary: cleanIngestExcerpt(summary || ''),
       sourceUrl: item.sourceUrl,
       authorName: item.authorName || '',
       publishedAt: item.publishedAt || null,
@@ -653,7 +662,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
     if (savedItem?.id) {
       articleDedup?.rememberFeed?.(workspaceId, savedItem.id, {
         url: item.sourceUrl,
-        title: item.title || '',
+        title: title || '',
         sourceKey: feedSourceKey(sourceMeta, replay),
         siteUrl: feedSiteUrl(sourceMeta, replay),
         sourceExternalId: sourceMeta.externalId,
@@ -1008,7 +1017,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       const rows = feedRepository.listFlashItems?.(workspaceId, { externalIds: [...(flashSources?.ids || [])], limit }) || [];
       return rows.map((row) => ({
         id: row.id,
-        title: row.title || clipText(row.body || row.summary, 80),
+        title: row.title || '',
         summary: clipText(row.summary || row.body),
         publishedAt: row.publishedAt ?? row.createdAt ?? null,
         source: row.source || '',

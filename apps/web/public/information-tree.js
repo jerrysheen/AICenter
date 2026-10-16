@@ -1,6 +1,6 @@
 import { icon } from './icons.js?v=dev';
 import { decodeHtmlEntities } from './html-text.js?v=dev';
-import { homeHourItemTime } from './home-timeline.js?v=dev';
+import { homeHourItemTime, homeHourPublishedNote } from './home-timeline.js?v=dev';
 import { newsDayLabel, newsRow, reportItemTime } from './news-list.js?v=dev';
 import { mountInvestorDigest } from './investor-digest.js?v=dev';
 import { shareTextBlocks, stripSharePlaceholders } from './share-card.js?v=dev';
@@ -143,7 +143,7 @@ export function createInformationTreePage(host) {
   }
   const aborted=error=>error?.name==='AbortError';
   const readingOpen=new Set();
-  const names=new Map(),cache=new Map(),nodeRequests=new Map(),editionCache=new Map(),editorialCache=new Map(),fullEditions=new Map(),editionLoads=new Map(),expanded=new Set(),positions=new Map(),memory={hourly:{},daily:{}};let viewKey='',nextManifest=null,informationRows=null,informationRequest=null,informationEpoch=0,session=0;
+  const names=new Map(),cache=new Map(),nodeRequests=new Map(),editionCache=new Map(),editorialCache=new Map(),fullEditions=new Map(),editionLoads=new Map(),expanded=new Set(),positions=new Map(),memory={hourly:{},daily:{}};let viewKey='',nextManifest=null,informationRows=null,informationRequest=null,informationEpoch=0,session=0,latestDailyPromise=null;
   const relationLabels={'same-event':'同一事件的后续进展','shared-theme':'共同主题','complementary':'相互补充','contradictory':'不同说法','supported-impact':'有依据的影响','unverified-link':'尚待验证的潜在联系'};
   const remember=n=>{if(!n)return;cache.delete(n.id);cache.set(n.id,n);while(cache.size>400)cache.delete(cache.keys().next().value);};
   const active=()=>root?.isConnected && root.classList.contains('tree-page') && (host.active?.() ?? true) && (host.session?.() ?? true);
@@ -547,8 +547,8 @@ export function createInformationTreePage(host) {
     const date=day(startAt), today=day(Date.now());
     const node=pendingNodeId ? `&node=${encodeURIComponent(pendingNodeId)}` : '';
     const hash=date===today ? `#report?hour=${hh}${node}` : `#report/${date}?hour=${hh}${node}`;
+    host.syncHour?.(hourClock(startAt), {node: pendingNodeId || '', hash, date: date===today ? '' : date});
     replaceLocationHash(hash);
-    host.syncHour?.(hourClock(startAt), {node: pendingNodeId || ''});
   }
   function focusNode(id){pendingNodeId=String(id || '');}
   function consumePendingNode(){
@@ -561,14 +561,22 @@ export function createInformationTreePage(host) {
     row.scrollIntoView?.({block:'center'});
   }
   function clearHourQuery(){
-    host.syncHour?.(null);
     const loc=globalThis.location;
-    if(!loc?.hash || !/[?&]hour=/.test(loc.hash))return;
-    const [path, query='']=loc.hash.slice(1).split('?');
-    const params=new URLSearchParams(query);
-    params.delete('hour');
-    const rest=params.toString();
-    replaceLocationHash(`#${path}${rest ? `?${rest}` : ''}`);
+    const current=loc?.hash || '';
+    let hash=current;
+    let date='';
+    if(current){
+      const [path, query='']=current.slice(1).split('?');
+      const params=new URLSearchParams(query);
+      params.delete('hour');
+      params.delete('node');
+      const rest=params.toString();
+      hash=`#${path}${rest ? `?${rest}` : ''}`;
+      const match=/^report\/(\d{4}-\d{2}-\d{2})$/.exec(path);
+      date=match ? match[1] : '';
+    }
+    host.syncHour?.(null, {hash, date, node:''});
+    replaceLocationHash(hash);
   }
   function closePeriodPop(){
     if(!periodPop) return;
@@ -817,9 +825,36 @@ export function createInformationTreePage(host) {
   function recentDailies() {
     return (manifest?.days || []).map(choice).filter(Boolean).slice(0,4);
   }
+  function loadLatestDaily() {
+    if (!latestDailyPromise) {
+      latestDailyPromise = api('/api/v1/reports/tree/latest-daily').then(data => data?.daily || null).catch(error => {
+        latestDailyPromise = null;
+        if (aborted(error)) throw error;
+        return null;
+      });
+    }
+    return latestDailyPromise;
+  }
+  function dailyFromLatest(daily) {
+    const startAt = Number(daily?.window?.startAt);
+    const endAt = Number(daily?.window?.endAt);
+    if (!daily?.editionId || !Number.isFinite(startAt) || !Number.isFinite(endAt)) return null;
+    return {
+      id: daily.editionId,
+      window: daily.window,
+      hasEditorial: daily.hasEditorial !== false,
+      generatedAt: Number(daily.generatedAt) || 0,
+      status: 'ready',
+      roots: [],
+    };
+  }
   async function renderDailyFeed(token) {
     syncHourChrome();
-    const editions=recentDailies();
+    const latest = await loadLatestDaily();
+    if (token !== epoch) return;
+    const extra = dailyFromLatest(latest);
+    let editions = recentDailies();
+    if (extra && !editions.some(item => item.window.startAt === extra.window.startAt)) editions = [extra, ...editions];
     if(!dailyStart || !editions.some(item=>item.window.startAt===dailyStart)) dailyStart=editions[0]?.window.startAt || 0;
     dayChips.replaceChildren();
     for(const edition of editions){
@@ -1086,6 +1121,7 @@ export function createInformationTreePage(host) {
     const fold=sources ? null : readingFold(item.nodeId, item.title, {seed:item, edition});
     const row=newsRow({
       id:item.nodeId, title:item.title || '', at:when.at, ingested:when.ingested,
+      publishedNote:homeHourPublishedNote(item, edition?.window),
       source:readingSourceLine(item, {keepDirection}), tags, muted,
       focused:Boolean(host.readingFocused?.(item.nodeId)),
       onStar:()=>host.focusReading?.(readingFocusSnapshot(item, edition)),
@@ -1196,8 +1232,9 @@ export function createInformationTreePage(host) {
     page.append(el('p',`${newsDayLabel(edition.window.startAt)} · ${clock(edition.window.startAt)}\u2013${clock(edition.window.endAt)}`,'news-day-label'));
     const shown=(snapshot.items||[]).filter(item=>item.readingDirectionName && item.readingDirectionName!=='待分类' && item.disposition!=='out-of-scope');
     const hits=shown.filter(item=>item.disposition==='hit' && item.timely!==false);
-    const tail=byPublished(shown.filter(item=>item.disposition!=='hit' || item.timely===false));
-    if(!hits.length && !tail.length) page.append(showEmptyHour());
+    const stale=byPublished(shown.filter(item=>item.timely===false));
+    const tail=byPublished(shown.filter(item=>item.disposition!=='hit' && item.timely!==false));
+    if(!hits.length && !tail.length && !stale.length) page.append(showEmptyHour());
     else {
       renderReadingDirections(hits, page, edition);
       if(tail.length){
@@ -1206,6 +1243,14 @@ export function createInformationTreePage(host) {
         for(const item of tail) rows.append(readingNewsItem(item, edition, {muted:true, keepDirection:true}));
         end.append(rows);
         page.append(end);
+      }
+      if(stale.length){
+        const fold=el('details','','reading-stale-fold');
+        fold.open=false;
+        const rows=el('ol','','news-rows');
+        for(const item of stale) rows.append(readingNewsItem(item, edition, {muted:true, keepDirection:true}));
+        fold.append(el('summary',`旧闻补录 ${stale.length} 条`), rows);
+        page.append(fold);
       }
     }
     list.replaceChildren(page);
@@ -1412,5 +1457,5 @@ export function createInformationTreePage(host) {
       const saved=memory[mode] || {};direction=saved.direction ?? null;directionExplicit=Boolean(saved.directionExplicit);if(saved.tag)tag.value=saved.tag;
       periods();await render();if(flightToken!==flight)return;settled=true;resume(false);
     }catch(error){if(aborted(error) || token!==epoch || flightToken!==flight)return;list.replaceChildren(el('p','暂时无法读取简报。'),button('重试读取',()=>this.mount(target,options)));}
-  },check,acceptUpdate,resume,stop,suspend,isSettled(){return settled;},selectHour,focusNode,selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){haltDigest();root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());root?.classList.remove('is-reading','is-hourly','is-discussion');clearHourSlow();readingCache.clear();readingLoads.clear();readingIndex=undefined;pendingClockHour=null;hourFallbackText='';hourRevealEarlier=false;openGaps.clear();stop();flight++;requests.abort();requests=new AbortController();epoch++;session++;settled=false;rendering=0;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();fullEditions.clear();editionLoads.clear();invalidateInformationIndex();expanded.clear();positions.clear();viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
+  },check,acceptUpdate,resume,stop,suspend,isSettled(){return settled;},selectHour,focusNode,selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){haltDigest();root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());root?.classList.remove('is-reading','is-hourly','is-discussion');clearHourSlow();readingCache.clear();readingLoads.clear();readingIndex=undefined;pendingClockHour=null;hourFallbackText='';hourRevealEarlier=false;openGaps.clear();stop();flight++;requests.abort();requests=new AbortController();epoch++;session++;settled=false;rendering=0;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();latestDailyPromise=null;fullEditions.clear();editionLoads.clear();invalidateInformationIndex();expanded.clear();positions.clear();viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
 }

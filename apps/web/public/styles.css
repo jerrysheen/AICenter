@@ -2250,6 +2250,20 @@ button.source-card:active { transform: scale(0.985); background: var(--backgroun
   font-variant-numeric: tabular-nums;
   line-height: 18px;
 }
+.news-published-note {
+  color: var(--font-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+.reading-stale-fold {
+  margin-top: 12px;
+}
+.reading-stale-fold > summary {
+  cursor: pointer;
+  color: var(--font-tertiary);
+  font-size: 13px;
+  line-height: 20px;
+}
 .news-row-title, .official-event-body strong {
   margin: 0;
   color: var(--font-primary);

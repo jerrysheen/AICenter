@@ -102,6 +102,7 @@ test('TrendForce reloads media when the filter changes and nothing is loading', 
     functionSource('feedSourcesForScope'),
     functionSource('mediaSelectionKey'),
     functionSource('mediaFeedNeedsReload'),
+    functionSource('channelForFeedScope'),
     functionSource('applyFeedPlatform'),
   ].join('\n'), box);
   await box.applyFeedPlatform('trendforce');
@@ -115,6 +116,66 @@ test('TrendForce reloads media when the filter changes and nothing is loading', 
   state.mediaLoading = true;
   await box.applyFeedPlatform('trendforce');
   assert.deepEqual(calls, ['ensure']);
+});
+
+test('each feed scope sets channel, and all keeps focus, recent, and official', async () => {
+  const state = {
+    channel: 'flash', feedPlatform: 'all', platform: 'all', feedEpoch: 0,
+    mediaChannel: '', mediaView: '', mediaSourceKey: '', mediaLoading: false, mediaLoaded: false,
+    bootstrapped: false, trendforceLoaded: false, trendforceLoading: false,
+  };
+  const noop = () => {};
+  const box = vm.createContext({
+    state,
+    document: { body: { dataset: { view: 'other' } } },
+    showToast: noop,
+    resetFeedWindow: noop,
+    renderChannels: noop,
+    renderPlatformFilters: noop,
+    renderXToolbar: noop,
+    renderXueqiuToolbar: noop,
+    renderBilibiliToolbar: noop,
+    renderTrendForceToolbar: noop,
+    renderMediaToolbar: noop,
+    renderPosts: noop,
+    loadTrendForceFeed: () => Promise.resolve(),
+    loadMediaFeed: () => Promise.resolve(),
+    loadFlashFeed: () => Promise.resolve(),
+    ensureFeedSources: () => Promise.resolve(),
+    logBehavior: noop,
+  });
+  vm.runInContext([
+    table[0],
+    functionSource('isSourceFeedScope'),
+    functionSource('feedSourcesForScope'),
+    functionSource('mediaSelectionKey'),
+    functionSource('mediaFeedNeedsReload'),
+    functionSource('channelForFeedScope'),
+    functionSource('applyFeedPlatform'),
+    functionSource('selectFeedScope'),
+  ].join('\n'), box);
+  await box.selectFeedScope('media');
+  assert.equal(state.channel, 'media');
+  assert.equal(state.feedPlatform, 'media');
+  state.channel = 'focus';
+  await box.applyFeedPlatform('all');
+  assert.equal(state.channel, 'focus');
+  state.channel = 'recent';
+  await box.applyFeedPlatform('all');
+  assert.equal(state.channel, 'recent');
+  state.channel = 'official';
+  await box.applyFeedPlatform('all');
+  assert.equal(state.channel, 'official');
+  state.channel = 'flash';
+  await box.applyFeedPlatform('all');
+  assert.equal(state.channel, 'all');
+  await box.applyFeedPlatform('trendforce');
+  assert.equal(state.channel, 'media');
+  assert.equal(state.mediaSourceKey, 'trendforce');
+  await box.selectFeedScope('flash');
+  assert.equal(state.channel, 'flash');
+  await box.selectFeedScope('social');
+  assert.equal(state.channel, 'social');
 });
 
 test('feed and schedule entry load before bootstrap finishes', () => {
@@ -137,7 +198,9 @@ test('feed and schedule entry load before bootstrap finishes', () => {
 });
 
 test('overview startup does not request X or Xueqiu', () => {
-  const sourcesPage = functionSource('loadSourcesPage');
+  const start = app.indexOf('async function loadSourcesPage(');
+  const end = app.indexOf('async function ensureHomeMessages(');
+  const sourcesPage = app.slice(start, end);
   const schedule = functionSource('scheduleOverviewManualPosts');
   assert.match(sourcesPage, /homeRequestPlan\(/);
   assert.match(sourcesPage, /ensureHomeMessages\(/);

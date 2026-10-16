@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-16-feed-report.md`：小时报主时间和排序改用入库时间，发布时间早于窗口时另写「发布于 …」，`timely=false` 放进默认收起的「旧闻补录」。信息流每个范围都显式设置 channel。首页和简报共用信息树最新日报。小时变化时写入浏览器历史。快讯入库时拆开 `【…】` 标题。灵感副标题和问答预览不再重复原文格式。不新增 migration。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-16-polymarket-card-change.md`：事件概率卡片恢复大号概率和涨跌。序列还不满 24 小时时，只取观察清单里 1 小时到 27 小时之间最早的一点，并写「较 Xh 前」。数字 `changeBasis` 显示「较 4h 前」这类文案，没有该字段才是「较昨日」。`lastPrice` 为空时不显示「上次」。满 24 小时后自己回到「较昨日」。多个结果的卡片上面是领先结果，下面默认收起最多 3 个其余区间。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-16-twkr-sources.md`：台湾和韩国第一批来源各自抓取。新闻进入媒体索引，沿用 Gemma 26B 翻译。证交所月营收写入 `twse_monthly_revenue`，不进新闻流。migration 76。需要重启 Worker。

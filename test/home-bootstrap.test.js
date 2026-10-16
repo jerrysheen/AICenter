@@ -32,6 +32,10 @@ function services() {
           days: [],
         };
       },
+      latestDaily() {
+        calls.push(['daily']);
+        return { sentence: '日报', reportDate: '2026-10-16', providerId: 'secret-provider', modelId: 'secret-model' };
+      },
     },
     readingHour: {
       indexForRange(workspace, window, scope) {
@@ -109,9 +113,13 @@ test('home bootstrap window matches the first-screen plan and strips provider fi
   const fake = services();
   const body = await composeHomeBootstrap(fake, { workspace: 'phone', now: NOW });
   assert.equal(body.window.startAt, query.tree.startAt);
-  assert.equal(body.brief.brief.sentence, '日报');
-  assert.equal(body.brief.brief.providerId, undefined);
-  assert.equal(body.brief.brief.modelId, undefined);
+  assert.equal(body.daily.daily.sentence, '日报');
+  assert.equal(body.daily.daily.reportDate, '2026-10-16');
+  assert.equal(body.daily.daily.providerId, undefined);
+  assert.equal(body.daily.daily.modelId, undefined);
+  assert.equal(body.brief, undefined);
+  assert.equal(projectHomeBootstrap(body).brief.sentence, '日报');
+  assert.equal(fake.calls.some((row) => row[0] === 'daily'), true);
   assert.equal(body.posts, undefined);
   assert.equal(body.feeds, undefined);
   assert.equal(body.readings[body.window.endAt - 3_600_000].items.length, 1);
@@ -223,7 +231,7 @@ test('first-screen bootstrap stays under 100KB without stringifying the fat snap
       hits: Array.from({ length: 8 }, () => text(20)),
     })),
   });
-  fatServices.report.getLatestDailyBrief = () => ({
+  fatServices.informationTree.latestDaily = () => ({
     reportDate: '2026-10-13',
     providerId: 'secret-provider',
     modelId: 'secret-model',
@@ -281,7 +289,7 @@ test('first-screen bootstrap stays under 100KB without stringifying the fat snap
   const prepared = await prepareJsonBody(slim);
   const afterMs = performance.now() - slimStarted;
   assert.ok(prepared.bytes < HOME_BOOTSTRAP_RAW_BUDGET, `slim bootstrap ${prepared.bytes} bytes`);
-  assert.equal(JSON.parse(prepared.json.toString('utf8')).brief.brief.providerId, undefined);
+  assert.equal(JSON.parse(prepared.json.toString('utf8')).daily.daily.providerId, undefined);
   assert.equal(slim.feeds, undefined);
   console.log(JSON.stringify({
     beforeBytes: Buffer.byteLength(beforeJson),

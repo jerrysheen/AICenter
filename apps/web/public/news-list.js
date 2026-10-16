@@ -113,6 +113,13 @@ export function newsRow(row) {
     }
     open.append(time);
   }
+  const publishedNote = String(row.publishedNote || '').trim();
+  if (publishedNote) {
+    const note = document.createElement('span');
+    note.className = 'news-published-note';
+    note.textContent = publishedNote;
+    open.append(note);
+  }
   const title = document.createElement('h3');
   title.className = 'news-row-title';
   const titleText = decodeHtmlEntities(row.title || '');

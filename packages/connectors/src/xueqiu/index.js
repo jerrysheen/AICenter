@@ -1,3 +1,4 @@
+import { normalizeFlashCopy } from '../flash-copy.js';
 import {
   createXueqiuHomeBrowserClient,
   explainXueqiuApiError,
@@ -42,9 +43,13 @@ export const xueqiuConnectorManifest = {
 export function xueqiuToFeedItem(row, options = {}) {
   const feed = normalizeXueqiuFeed(row.feed || options.feed);
   const externalId = String(row.status_id || row.externalId || '').trim();
-  const body = String(row.text || row.body || '').trim();
+  const rawBody = String(row.text || row.body || '').trim();
+  const flash = feed === 'livenews' ? normalizeFlashCopy(row.title, rawBody) : null;
+  const body = flash ? flash.body : rawBody;
   const lead = textBeforeCommentBlock(body) || body;
-  const title = String(row.title || '').trim() || (lead ? `${lead.slice(0, 48)}${lead.length > 48 ? '…' : ''}` : '雪球动态');
+  const title = flash
+    ? flash.title
+    : (String(row.title || '').trim() || (lead ? `${lead.slice(0, 48)}${lead.length > 48 ? '…' : ''}` : '雪球动态'));
   const sourceUrl = String(row.source_url || row.sourceUrl || '').trim() || 'https://xueqiu.com/';
   return {
     id: externalId ? `xueqiu:${externalId}` : `xueqiu:${feed}:${sourceUrl}`,

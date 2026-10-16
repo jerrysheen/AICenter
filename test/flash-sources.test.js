@@ -128,6 +128,47 @@ test('ingesting a flash source saves items, skips JEV, and lists them by time', 
   assert.deepEqual(service.listFlash('local').map((row) => row.title), ['较早快讯']);
 });
 
+test('flash ingest takes a leading bracket as the title and drops a body prefix', async () => {
+  const store = createStore(':memory:');
+  const bracketBody = '【央行】宣布降准五十个基点，并说明后续安排。';
+  const plainBody = '这是一条没有括号的快讯正文，用来验证四十八字标题不会再写进标题栏。后面还有更多内容。';
+  const service = createFeedService({
+    legacyRepository: {},
+    feedRepository: store.repositories.feed,
+    sourcePort: {
+      persistence() {
+        return {
+          providerId: 'xueqiu',
+          sourceAccount: {
+            externalId: 'xueqiu:home:livenews',
+            displayName: '雪球7x24',
+            profileUrl: 'https://xueqiu.com/',
+            authMode: 'browser-session',
+            metadata: { sourceInput: { feed: 'livenews' } },
+          },
+        };
+      },
+      async read() {
+        return { data: { mode: 'live', items: [
+          { externalId: 'live-bracket', sourceUrl: 'https://xueqiu.com/live/bracket', title: bracketBody.slice(0, 48), body: bracketBody, summary: bracketBody, publishedAt: 2000 },
+          { externalId: 'live-plain', sourceUrl: 'https://xueqiu.com/live/plain', title: plainBody.slice(0, 48), body: plainBody, summary: plainBody.slice(0, 48), publishedAt: 1000 },
+        ] } };
+      },
+    },
+    flashSources: flash,
+  });
+  const stats = await service.refreshPersistedSource({ sourceId: 'content.xueqiu.home', sourceInput: { feed: 'livenews' } });
+  assert.equal(stats.added, 2);
+  const listed = service.listFlash('local', { limit: 10 });
+  const bracket = listed.find((row) => row.sourceUrl.endsWith('/bracket'));
+  const plain = listed.find((row) => row.sourceUrl.endsWith('/plain'));
+  assert.equal(bracket.title, '央行');
+  assert.equal(bracket.summary.includes('【央行】'), false);
+  assert.equal(plain.title, '');
+  assert.equal(plain.summary.startsWith('【'), false);
+  store.close();
+});
+
 test('hourly candidates, preparation and reading classification skip flash sources', async () => {
   const calls = [];
   const store = createStore(':memory:');
