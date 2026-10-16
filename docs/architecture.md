@@ -175,7 +175,7 @@ packages/
 - 用户授权的信息摘选沿用 Report 域：`report.hourly.extract` 每整小时检查最近24个已结束窗口，正文版本相同则复用，部分阅读从阶段检查点续读。小时快照独立于日报版本保存，绑定正文哈希/版本及段落。日报以 `informationItems` 保存全部信息，`items` 前八项仅为兼容概览。复用同一 Harness 的封闭材料模式，不改 Ask 职责。非整点日报截止生成独立边界快照，不替换完整小时结果。见 `information-digest-v1.md`。
 
 - `jobs` 是 SQLite 持久任务队列。Worker 使用 `BEGIN IMMEDIATE` 原子领取任务。
-- `job_schedules` 是 Runtime 上的薄调度层，只决定何时创建已经注册的 Job。第一版支持 `daily` 与 `interval`，不解析 Cron 表达式。到期入队和推进 `next_run_at` 在同一个 SQLite 事务里完成；停机后的补跑只保留最近一次（latest-only）。Scheduler 与 JobRunner 并列，Scheduler 不执行 Handler。`strategy.cn-dividend.snapshot` 在上海时间 15:30 生成中证红利策略快照；08:00 日报只读取此前已经落库的快照。`feed.subscriptions.sync` 每分钟检查一次哪些订阅到期，真正的抓取间隔仍是每条 subscription 的 `refreshIntervalMinutes`。X 关注、X 推荐、雪球关注、雪球精选和雪球 7x24 默认 30 分钟。新内容入库后入队 `feed.items.enrich` 做翻译和打标。停机后同样只补跑最近一次检查，不按错过的分钟数回补。
+- `job_schedules` 是 Runtime 上的薄调度层，只决定何时创建已经注册的 Job。第一版支持 `daily` 与 `interval`，不解析 Cron 表达式。到期入队和推进 `next_run_at` 在同一个 SQLite 事务里完成；停机后的补跑只保留最近一次（latest-only）。Scheduler 与 JobRunner 并列，Scheduler 不执行 Handler。`strategy.cn-dividend.snapshot` 在上海时间 15:30 生成中证红利策略快照；08:00 日报只读取此前已经落库的快照。`feed.subscriptions.sync` 每分钟只把到期订阅各入队一条 `feed.subscription.sync`，每条有自己的时限；新的一分钟不取消仍在抓的那一条，也不释放它的租约。真正的抓取间隔仍是每条 subscription 的 `refreshIntervalMinutes`。X 关注、X 推荐、雪球关注、雪球精选和雪球 7x24 默认 30 分钟。新内容入库后入队 `feed.items.enrich` 做翻译和打标。停机后同样只补跑最近一次检查，不按错过的分钟数回补。
 - 任务只允许执行 Worker 显式注册的 handler。调度不能指定 shell、文件路径或任意 handler。
 - 手工重跑日报只创建固定的 `report.daily.generate`，并且只在本机桌面开放。注意力筛选在同一次任务里会立刻重试；两次都失败后，如果这份日报还没有筛选结果，30 分钟后再排一次。这次补跑若发现结果已经写好，就不再调用模型。
 

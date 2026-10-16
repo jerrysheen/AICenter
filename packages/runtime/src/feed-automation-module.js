@@ -1,24 +1,30 @@
-import { FeedItemsEnrichJobInputSchema, FeedSubscriptionsSyncJobInputSchema, parseContract } from '../../contracts/src/index.js';
+import { FeedItemsEnrichJobInputSchema, FeedSubscriptionSyncJobInputSchema, FeedSubscriptionsSyncJobInputSchema, parseContract } from '../../contracts/src/index.js';
 import { defaultAutoRefreshProjections } from '../../source/src/content/definitions.js';
 import {enqueueTreePreparation} from './information-tree-module.js';
 import { TRANSLATION_BACKFILL_PRIORITY, enqueueOriginalTranslations } from './feed-translation-module.js';
 
 export const FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE = 'feed.subscriptions.sync';
+export const FEED_SUBSCRIPTION_SYNC_JOB_TYPE = 'feed.subscription.sync';
 export const FEED_ITEMS_ENRICH_JOB_TYPE = 'feed.items.enrich';
 export const FEED_SUBSCRIPTION_SYNC_SCHEDULE_KEY = 'feed.subscriptions.sync.default';
 
 const SYNC_LEASE_MS = 10 * 60_000;
 const SYNC_RETRY_MS = 5 * 60_000;
 const SYNC_CLAIM_LIMIT = 50;
+const SOURCE_TIMEOUT_FALLBACK_MS = 90_000;
 export const FEED_SYNC_MAX_RUNTIME_MS = SYNC_LEASE_MS;
 
-const SUPERSEDED_MESSAGE = '新的订阅同步开始，上一轮仍未结束';
+export function feedSyncSourceTimeoutMs(value = process.env.AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS) {
+  const parsed = Number(value);
+  const chosen = Number.isFinite(parsed) && parsed > 0 ? parsed : SOURCE_TIMEOUT_FALLBACK_MS;
+  return Math.min(3 * 60_000, Math.max(15_000, Math.floor(chosen)));
+}
 
 export const feedAutomationManifest = Object.freeze({
   id: 'feed.automation',
   version: '1.0.0',
-  capabilities: ['feed.subscriptions.sync', 'feed.items.enrich'],
-  jobTypes: [FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE, FEED_ITEMS_ENRICH_JOB_TYPE],
+  capabilities: ['feed.subscriptions.sync', 'feed.subscription.sync', 'feed.items.enrich'],
+  jobTypes: [FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE, FEED_SUBSCRIPTION_SYNC_JOB_TYPE, FEED_ITEMS_ENRICH_JOB_TYPE],
 });
 
 function replayMetadata(account) {
@@ -27,159 +33,188 @@ function replayMetadata(account) {
   return metadata;
 }
 
-export function createFeedAutomationJobHandlers({ feedService, feedRepository, taggingService,articleNormalizePort=null,treeEnabled=false }) {
+export function createFeedAutomationJobHandlers({ feedService, feedRepository, taggingService,articleNormalizePort=null,treeEnabled=false, sourceTimeoutMs=null, log=console.log }) {
   if (!feedService?.refreshPersistedSource || (!articleNormalizePort && !feedService?.localizeContentItems)) {
     throw new Error('feed automation jobs require feedService');
   }
   if (!feedRepository?.claimDueSubscriptions) throw new Error('feed automation jobs require feedRepository');
   if (!articleNormalizePort && !taggingService?.analyzeItems) throw new Error('feed automation jobs require taggingService');
 
-  function ownsCurrentRun(context) {
-    if (!context?.job?.id || !context?.store?.getJob) return true;
-    const current = context.store.getJob(context.job.id);
-    return !current || current.status === 'running';
+  function timeoutMs() {
+    if (sourceTimeoutMs != null) {
+      const parsed = Number(sourceTimeoutMs);
+      if (Number.isFinite(parsed) && parsed > 0) return Math.min(3 * 60_000, Math.floor(parsed));
+    }
+    return feedSyncSourceTimeoutMs();
+  }
+
+  function feedOf(metadata) {
+    const value = metadata?.sourceInput?.feed ?? metadata?.sourceInput?.channel ?? '';
+    return typeof value === 'string' ? value : '';
+  }
+
+  function logSync(fields) {
+    const body = Object.entries(fields).map(([key, value]) => `${key}=${value}`).join(' ');
+    log(`[worker] feed-sync ${body}`);
+  }
+
+  function openSourceIds(store) {
+    const jobs = store?.listOpenJobs?.(FEED_SUBSCRIPTION_SYNC_JOB_TYPE) || [];
+    return new Set(jobs.map((job) => String(job.input?.subscriptionId || '')).filter(Boolean));
+  }
+
+  async function syncOneSubscription(subscription, context, startedAt) {
+    const account = feedRepository.getSourceAccount?.(subscription.sourceAccountId) || null;
+    const metadata = replayMetadata(account);
+    const sourceId = typeof metadata.sourceId === 'string' ? metadata.sourceId.trim() : '';
+    const feed = feedOf(metadata);
+    const finish = (status, extra = {}) => {
+      const row = {
+        subscriptionId: subscription.id,
+        sourceId,
+        feed,
+        status,
+        added: Number(extra.added) || 0,
+        durationMs: Date.now() - startedAt,
+        ...extra,
+      };
+      logSync({
+        source: sourceId || '-',
+        feed: feed || '-',
+        subscription: subscription.id,
+        status,
+        durationMs: row.durationMs,
+        added: row.added,
+        ...(extra.reason ? { reason: extra.reason } : {}),
+      });
+      return row;
+    };
+    const leaseUntil = subscription.leaseUntil;
+    if (context?.signal?.aborted) {
+      return finish('interrupted', { reason: 'aborted' });
+    }
+    if (metadata.autoRefresh !== true) {
+      const linkOnly = metadata.sourceId === 'content.bilibili.import';
+      const parked = linkOnly
+        ? feedRepository.completeSubscriptionSync(subscription.id, Date.now(), leaseUntil)
+        : feedRepository.deferSubscriptionSync(subscription.id, Date.now(), subscription.refreshIntervalMinutes * 60_000, leaseUntil);
+      return finish(parked ? 'skipped' : 'stale-lease', { reason: linkOnly ? 'bilibili-link-only' : 'autoRefresh', nextSyncAt: parked?.nextSyncAt || null });
+    }
+    if (!sourceId) {
+      const parked = feedRepository.deferSubscriptionSync(subscription.id, Date.now(), subscription.refreshIntervalMinutes * 60_000, leaseUntil);
+      return finish(parked ? 'skipped' : 'stale-lease', { reason: 'empty-source-id', nextSyncAt: parked?.nextSyncAt || null });
+    }
+    if (!metadata.sourceInput || typeof metadata.sourceInput !== 'object') {
+      const failedRow = feedRepository.failSubscriptionSync(subscription.id, Date.now(), SYNC_RETRY_MS, leaseUntil);
+      return finish(failedRow ? 'failed' : 'stale-lease', { error: 'source account metadata 缺少可重放参数', nextSyncAt: failedRow?.nextSyncAt || null });
+    }
+    const limit = timeoutMs();
+    const deadlineAt = startedAt + limit;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), limit);
+    const onParentAbort = () => controller.abort();
+    context?.signal?.addEventListener('abort', onParentAbort, { once: true });
+    try {
+      const stats = await feedService.refreshPersistedSource({
+        workspaceId: subscription.workspaceId,
+        sourceId,
+        sourceInput: metadata.sourceInput,
+        signal: controller.signal,
+        deadlineAt,
+      });
+      if (stats?.mediaExternalIds?.length && context?.store?.createJob) {
+        context.store.createJob({
+          type: 'media.index.enrich',
+          workspaceId: subscription.workspaceId,
+          maxAttempts: 2,
+          input: { workspaceId: subscription.workspaceId, externalIds: stats.mediaExternalIds },
+        });
+      }
+      const addedItemIds = stats?.addedItemIds || [];
+      if (treeEnabled && !articleNormalizePort) {
+        enqueueTreePreparation(context?.store, subscription.workspaceId, [
+          ...addedItemIds.map((id) => `feed:${id}`),
+          ...(stats?.mediaExternalIds || []).map((id) => `media:${id}`),
+        ]);
+      }
+      if (!stats?.mediaExternalIds?.length && addedItemIds.length && context?.store?.createJob) {
+        context.store.createJob({
+          type: FEED_ITEMS_ENRICH_JOB_TYPE,
+          workspaceId: subscription.workspaceId,
+          maxAttempts: 2,
+          input: { workspaceId: subscription.workspaceId, resourceIds: addedItemIds },
+        });
+      }
+      if (context?.signal?.aborted) {
+        return finish('interrupted', { added: Number(stats?.added) || 0, reason: 'aborted' });
+      }
+      const added = Number(stats?.added) || 0;
+      if (stats?.deadline && added <= 0) {
+        const failedRow = feedRepository.failSubscriptionSync(subscription.id, Date.now(), SYNC_RETRY_MS, leaseUntil);
+        return finish(failedRow ? 'failed' : 'stale-lease', {
+          added: 0,
+          reason: 'deadline',
+          nextSyncAt: failedRow?.nextSyncAt || null,
+        });
+      }
+      const completed = feedRepository.completeSubscriptionSync(subscription.id, Date.now(), leaseUntil);
+      return finish(completed ? (stats?.deadline ? 'deadline' : 'succeeded') : 'stale-lease', {
+        added,
+        nextSyncAt: completed?.nextSyncAt || null,
+      });
+    } catch (error) {
+      if (context?.signal?.aborted) {
+        return finish('interrupted', { reason: 'aborted', error: String(error?.message || error).slice(0, 300) });
+      }
+      const failedRow = feedRepository.failSubscriptionSync(subscription.id, Date.now(), SYNC_RETRY_MS, leaseUntil);
+      return finish(failedRow ? 'failed' : 'stale-lease', {
+        error: String(error?.message || error).slice(0, 300),
+        nextSyncAt: failedRow?.nextSyncAt || null,
+      });
+    } finally {
+      clearTimeout(timer);
+      context?.signal?.removeEventListener('abort', onParentAbort);
+    }
   }
 
   return {
     [FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE]: async (rawInput, context) => {
       const input = parseContract(FeedSubscriptionsSyncJobInputSchema, rawInput || {});
       const now = Date.now();
-      const claimed = feedRepository.claimDueSubscriptions(now, input.limit || SYNC_CLAIM_LIMIT, SYNC_LEASE_MS);
+      const due = feedRepository.listDueSubscriptions(now, input.limit || SYNC_CLAIM_LIMIT);
+      const open = openSourceIds(context?.store);
       const subscriptions = [];
-      let succeeded = 0;
-      let failed = 0;
-      let deferred = 0;
-      let added = 0;
-
-      for (const subscription of claimed) {
-        if (!ownsCurrentRun(context)) {
-          return {
-            due: claimed.length,
-            succeeded,
-            failed,
-            deferred,
-            added,
-            superseded: true,
-            subscriptions,
-          };
+      let enqueued = 0;
+      for (const subscription of due) {
+        if (open.has(subscription.id)) {
+          subscriptions.push({ subscriptionId: subscription.id, status: 'already-running' });
+          continue;
         }
-        const account = feedRepository.getSourceAccount?.(subscription.sourceAccountId) || null;
-        const metadata = replayMetadata(account);
-        try {
-          if (metadata.autoRefresh !== true) {
-            const linkOnly = metadata.sourceId === 'content.bilibili.import';
-            const parked = linkOnly
-              ? feedRepository.completeSubscriptionSync(subscription.id, now)
-              : feedRepository.deferSubscriptionSync(
-                subscription.id,
-                now,
-                subscription.refreshIntervalMinutes * 60_000,
-              );
-            deferred += 1;
-            subscriptions.push({
-              subscriptionId: subscription.id,
-              sourceId: metadata.sourceId || '',
-              status: 'skipped',
-              added: 0,
-              reason: linkOnly ? 'bilibili-link-only' : 'autoRefresh',
-              nextSyncAt: parked?.nextSyncAt || null,
-            });
-            continue;
-          }
-          const sourceId = typeof metadata.sourceId === 'string' ? metadata.sourceId.trim() : '';
-          if (!sourceId) {
-            const parked = feedRepository.deferSubscriptionSync(
-              subscription.id,
-              now,
-              subscription.refreshIntervalMinutes * 60_000,
-            );
-            deferred += 1;
-            subscriptions.push({
-              subscriptionId: subscription.id,
-              sourceId: '',
-              status: 'skipped',
-              added: 0,
-              reason: 'empty-source-id',
-              nextSyncAt: parked?.nextSyncAt || null,
-            });
-            continue;
-          }
-          if (!metadata.sourceInput || typeof metadata.sourceInput !== 'object') {
-            throw new Error('source account metadata 缺少可重放参数');
-          }
-          const stats = await feedService.refreshPersistedSource({
-            workspaceId: subscription.workspaceId,
-            sourceId: metadata.sourceId,
-            sourceInput: metadata.sourceInput,
-          });
-          if (!ownsCurrentRun(context)) {
-            return {
-              due: claimed.length,
-              succeeded,
-              failed,
-              deferred,
-              added,
-              superseded: true,
-              subscriptions,
-            };
-          }
-          if(stats?.mediaExternalIds?.length && context?.store?.createJob)context.store.createJob({type:'media.index.enrich',workspaceId:subscription.workspaceId,maxAttempts:2,input:{workspaceId:subscription.workspaceId,externalIds:stats.mediaExternalIds}});
-          const addedItemIds = stats?.addedItemIds || [];
-          if(treeEnabled && !articleNormalizePort)enqueueTreePreparation(context?.store,subscription.workspaceId,[...addedItemIds.map(id=>`feed:${id}`),...(stats?.mediaExternalIds || []).map(id=>`media:${id}`)]);
-          if (!stats?.mediaExternalIds?.length && addedItemIds.length && context?.store?.createJob) {
-            context.store.createJob({
-              type: FEED_ITEMS_ENRICH_JOB_TYPE,
-              workspaceId: subscription.workspaceId,
-              maxAttempts: 2,
-              input: {
-                workspaceId: subscription.workspaceId,
-                resourceIds: addedItemIds,
-              },
-            });
-          }
-          const completed = feedRepository.completeSubscriptionSync(subscription.id, Date.now());
-          succeeded += 1;
-          added += Number(stats?.added) || 0;
-          subscriptions.push({
-            subscriptionId: subscription.id,
-            sourceId: metadata.sourceId,
-            status: 'succeeded',
-            added: Number(stats?.added) || 0,
-            nextSyncAt: completed?.nextSyncAt || null,
-          });
-        } catch (error) {
-          if (!ownsCurrentRun(context)) {
-            return {
-              due: claimed.length,
-              succeeded,
-              failed,
-              deferred,
-              added,
-              superseded: true,
-              subscriptions,
-            };
-          }
-          const failedRow = feedRepository.failSubscriptionSync(subscription.id, Date.now(), SYNC_RETRY_MS);
-          failed += 1;
-          subscriptions.push({
-            subscriptionId: subscription.id,
-            sourceId: metadata.sourceId || '',
-            status: 'failed',
-            added: 0,
-            error: String(error?.message || error),
-            nextSyncAt: failedRow?.nextSyncAt || null,
-          });
-        }
+        if (!context?.store?.createJob) throw new Error('feed subscription sync requires a job store');
+        context.store.createJob({
+          type: FEED_SUBSCRIPTION_SYNC_JOB_TYPE,
+          workspaceId: subscription.workspaceId,
+          maxAttempts: 2,
+          input: { workspaceId: subscription.workspaceId, subscriptionId: subscription.id },
+        });
+        open.add(subscription.id);
+        enqueued += 1;
+        subscriptions.push({ subscriptionId: subscription.id, status: 'enqueued' });
       }
+      logSync({ status: 'dispatch', due: due.length, enqueued, alreadyRunning: due.length - enqueued });
+      return { due: due.length, enqueued, subscriptions };
+    },
 
-      return {
-        due: claimed.length,
-        succeeded,
-        failed,
-        deferred,
-        added,
-        subscriptions,
-      };
+    [FEED_SUBSCRIPTION_SYNC_JOB_TYPE]: async (rawInput, context) => {
+      const input = parseContract(FeedSubscriptionSyncJobInputSchema, rawInput || {});
+      const startedAt = Date.now();
+      const leaseMs = timeoutMs() + 30_000;
+      const subscription = feedRepository.claimSubscription?.(input.subscriptionId, startedAt, leaseMs) || null;
+      if (!subscription) {
+        logSync({ source: '-', feed: '-', subscription: input.subscriptionId, status: 'skipped', durationMs: 0, added: 0, reason: 'not-due' });
+        return { subscriptionId: input.subscriptionId, status: 'skipped', reason: 'not-due', added: 0, durationMs: 0 };
+      }
+      return syncOneSubscription(subscription, context, startedAt);
     },
 
     [FEED_ITEMS_ENRICH_JOB_TYPE]: async (rawInput,context) => {
@@ -260,16 +295,11 @@ export function ensureDefaultContentSubscriptions(feedRepository, workspaceId = 
   return saved;
 }
 
-export function prepareFeedSyncEnqueue(store, now = Date.now()) {
+export function prepareFeedSyncEnqueue(store) {
   const open = store.listOpenJobs?.(FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE) || [];
-  if (open.some((job) => job.status === 'queued')) return false;
-  const running = open.filter((job) => job.status === 'running');
-  const fresh = running.some((job) => !job.startedAt || now - job.startedAt < FEED_SYNC_MAX_RUNTIME_MS);
-  if (fresh) return false;
-  if (running.length) {
-    store.abandonRunningJobs?.([FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE], SUPERSEDED_MESSAGE, now);
-    store.repositories?.feed?.releaseOpenSubscriptionLeases?.(now, FEED_SYNC_MAX_RUNTIME_MS);
-  }
+  // A dispatcher that is still enqueueing keeps its place. It does not cancel
+  // source jobs or release leases those jobs already claimed.
+  if (open.length) return false;
   return true;
 }
 

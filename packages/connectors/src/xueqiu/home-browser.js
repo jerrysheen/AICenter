@@ -13,6 +13,8 @@ const FEEDS = {
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGES = 8;
+const JSON_TIMEOUT_MS = 30_000;
+const NAVIGATE_TIMEOUT_MS = 90_000;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -253,21 +255,34 @@ export function mapLivenewsItem(item) {
   };
 }
 
-async function loadStatusComments(session, statusId) {
+function stepTimeout(deadlineAt, fallback = JSON_TIMEOUT_MS) {
+  const limit = Math.max(1_000, Number(fallback) || JSON_TIMEOUT_MS);
+  if (!Number.isFinite(Number(deadlineAt))) return limit;
+  const remaining = Number(deadlineAt) - Date.now();
+  if (remaining < 1_000) return 0;
+  return Math.min(limit, remaining);
+}
+
+async function loadStatusComments(session, statusId, deadlineAt) {
+  const primaryTimeout = stepTimeout(deadlineAt);
+  if (!primaryTimeout) return [];
   try {
-    const primary = await fetchJsonFromSession(session, commentsUrl(statusId));
+    const primary = await fetchJsonFromSession(session, commentsUrl(statusId), primaryTimeout);
     const primaryRows = xueqiuCommentRows(primary);
     if (primaryRows) return extractXueqiuComments({ comments: primaryRows });
   } catch {
     // 旧评论接口失败时改走 v3。
   }
-  const fallback = await fetchJsonFromSession(session, commentsV3Url(statusId));
+  const fallbackTimeout = stepTimeout(deadlineAt);
+  if (!fallbackTimeout) return [];
+  const fallback = await fetchJsonFromSession(session, commentsV3Url(statusId), fallbackTimeout);
   const fallbackRows = xueqiuCommentRows(fallback);
   return extractXueqiuComments(fallbackRows ? { comments: fallbackRows } : null);
 }
 
-async function fetchJsonFromSession(session, url) {
-  const payload = await session.fetchJson(url, { headers: jsonHeaders(), timeoutMs: 30_000 });
+async function fetchJsonFromSession(session, url, timeoutMs = JSON_TIMEOUT_MS) {
+  const limit = Math.max(1_000, Number(timeoutMs) || JSON_TIMEOUT_MS);
+  const payload = await session.fetchJson(url, { headers: jsonHeaders(), timeoutMs: limit });
   const data = parseBrowserJson(payload);
   if (payload.status && payload.status >= 400) {
     if (data.error_description || data.error || data.error_code) return data;
@@ -283,15 +298,65 @@ export function createXueqiuHomeBrowserClient(options = {}) {
     throw new Error('雪球采集需要 browserRuntime（BrowserSkill）。');
   }
 
-  async function collect(feed, limit, excludeExternalIds) {
+  function stopped(signal, deadlineAt) {
+    return Boolean(signal?.aborted) || (Number.isFinite(Number(deadlineAt)) && Date.now() >= Number(deadlineAt));
+  }
+
+  async function collect(feed, limit, excludeExternalIds, signal, deadlineAt) {
     const parsedFeed = normalizeXueqiuFeed(feed);
     const parsedLimit = Math.min(50, Math.max(1, Number(limit) || 50));
     const excluded = new Set((excludeExternalIds || []).map((id) => String(id || '')).filter(Boolean));
 
     return runtime.withSession({ purpose: `xueqiu-${parsedFeed}`, focused: false }, async (session) => {
-      await session.navigate(`${XUEQIU_PAGE_ORIGIN}/hq`, { timeoutMs: 90_000 });
-      await wait(1_200);
-      const inspect = await session.evaluate(buildLoginInspectExpression());
+      let stoppedEarly = stopped(signal, deadlineAt);
+      const halt = () => {
+        if (!stopped(signal, deadlineAt)) return false;
+        stoppedEarly = true;
+        return true;
+      };
+      if (halt()) {
+        return {
+          source: 'browser_runtime_home', feed: parsedFeed, logged_in: false, login_wall: false,
+          error: 'deadline', deadline: true, page_title: '', page_url: XUEQIU_HOME_URL, items: [],
+        };
+      }
+      const pageTimeout = Number.isFinite(Number(deadlineAt))
+        ? stepTimeout(deadlineAt, JSON_TIMEOUT_MS)
+        : NAVIGATE_TIMEOUT_MS;
+      if (!pageTimeout) {
+        return {
+          source: 'browser_runtime_home', feed: parsedFeed, logged_in: false, login_wall: false,
+          error: 'deadline', deadline: true, page_title: '', page_url: XUEQIU_HOME_URL, items: [],
+        };
+      }
+      try {
+        await session.navigate(`${XUEQIU_PAGE_ORIGIN}/hq`, { timeoutMs: pageTimeout });
+      } catch (error) {
+        if (!Number.isFinite(Number(deadlineAt))) throw error;
+        return {
+          source: 'browser_runtime_home', feed: parsedFeed, logged_in: false, login_wall: false,
+          error: 'deadline', deadline: true, page_title: '', page_url: XUEQIU_HOME_URL, items: [],
+        };
+      }
+      if (!halt()) await wait(1_200);
+      const inspectTimeout = stepTimeout(deadlineAt, JSON_TIMEOUT_MS);
+      let inspect = { logged_in: false, title: '', url: XUEQIU_HOME_URL };
+      if (!halt() && inspectTimeout) {
+        try {
+          inspect = await session.evaluate(buildLoginInspectExpression(), { timeoutMs: inspectTimeout });
+        } catch {
+          stoppedEarly = true;
+        }
+      } else if (!inspectTimeout) {
+        stoppedEarly = true;
+      }
+      if (stoppedEarly && !inspect?.logged_in) {
+        return {
+          source: 'browser_runtime_home', feed: parsedFeed, logged_in: false, login_wall: false,
+          error: 'deadline', deadline: true, page_title: inspect?.title || '',
+          page_url: inspect?.url || XUEQIU_HOME_URL, items: [],
+        };
+      }
       const loggedIn = Boolean(inspect?.logged_in);
       if (!loggedIn && parsedFeed !== 'livenews') {
         return {
@@ -310,10 +375,20 @@ export function createXueqiuHomeBrowserClient(options = {}) {
       let maxId = -1;
       let lastError = '';
       for (let page = 0; page < MAX_PAGES && items.length < parsedLimit; page += 1) {
+        if (halt()) break;
+        const fetchTimeout = stepTimeout(deadlineAt, JSON_TIMEOUT_MS);
+        if (!fetchTimeout) { stoppedEarly = true; break; }
         const url = parsedFeed === 'livenews'
           ? livenewsUrl(maxId, DEFAULT_PAGE_SIZE)
           : timelineUrl(userGroupIdForFeed(parsedFeed), maxId);
-        const data = await fetchJsonFromSession(session, url);
+        let data;
+        try {
+          data = await fetchJsonFromSession(session, url, fetchTimeout);
+        } catch {
+          stoppedEarly = true;
+          lastError = 'deadline';
+          break;
+        }
         if (data.error_description || data.error_code) {
           lastError = explainXueqiuApiError(data);
           if (isXueqiuLoginError(data) && parsedFeed !== 'livenews') {
@@ -347,10 +422,13 @@ export function createXueqiuHomeBrowserClient(options = {}) {
       }
 
       for (const row of items) {
+        if (halt()) break;
+        const commentTimeout = stepTimeout(deadlineAt, JSON_TIMEOUT_MS);
+        if (!commentTimeout) { stoppedEarly = true; break; }
         const statusId = commentStatusId(row);
         if (!statusId || row.reply_count === 0) continue;
         try {
-          const comments = await loadStatusComments(session, statusId);
+          const comments = await loadStatusComments(session, statusId, deadlineAt);
           row.text = appendCommentsToBody(row.text, comments);
         } catch {
           // 评论接口失败时保留帖子正文。
@@ -364,7 +442,8 @@ export function createXueqiuHomeBrowserClient(options = {}) {
         feed: parsedFeed,
         logged_in: loggedIn || parsedFeed === 'livenews',
         login_wall: false,
-        error: items.length ? '' : lastError,
+        error: items.length ? '' : (stoppedEarly ? 'deadline' : lastError),
+        deadline: stoppedEarly,
         page_title: inspect?.title || '',
         page_url: inspect?.url || XUEQIU_HOME_URL,
         items: items.slice(0, parsedLimit),
@@ -374,7 +453,7 @@ export function createXueqiuHomeBrowserClient(options = {}) {
 
   return {
     async fetchHomeTimeline(input = {}) {
-      return collect(input.feed, input.limit, input.excludeExternalIds);
+      return collect(input.feed, input.limit, input.excludeExternalIds, input.signal, input.deadlineAt);
     },
   };
 }
