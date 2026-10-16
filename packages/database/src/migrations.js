@@ -2033,7 +2033,7 @@ migrations.push({ version: 70, name: 'etf_whale_market_depth', up(database) {
 
 // 63 stays unused. 71 is the translation usage attribution already on main.
 // 72 is article URL lookup indexes. It does not rewrite rows.
-// 75 is the GPU rent daily table. It follows polymarket 73 and 74 once those are on main.
+// 75 is the GPU rent daily table.
 migrations.push({ version: 71, name: 'model_usage_translation_attribution', up(database) {
   addColumn(database, 'model_usage_index', 'key_suffix', `TEXT NOT NULL DEFAULT ''`);
   addColumn(database, 'model_usage_index', 'item_id', `TEXT NOT NULL DEFAULT ''`);
@@ -2054,6 +2054,84 @@ export function addArticleDedupLookupIndexes(database) {
 }
 
 migrations.push({ version: 72, name: 'article_dedup_url_lookup', up: addArticleDedupLookupIndexes });
+
+migrations.push({ version: 73, name: 'polymarket_watchlist', up(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS polymarket_outcomes (
+      event_id TEXT NOT NULL,
+      market_id TEXT NOT NULL,
+      outcome_key TEXT NOT NULL,
+      series_id TEXT NOT NULL DEFAULT '',
+      watched INTEGER NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      group_key TEXT NOT NULL DEFAULT '',
+      alert_profile TEXT NOT NULL DEFAULT 'binary',
+      event_slug TEXT NOT NULL DEFAULT '',
+      market_slug TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL,
+      outcome_label TEXT NOT NULL,
+      lifecycle TEXT NOT NULL DEFAULT 'open',
+      end_at INTEGER,
+      liquidity TEXT,
+      volume_24h TEXT,
+      total_volume TEXT,
+      probability TEXT,
+      source_url TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (event_id, market_id, outcome_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_polymarket_outcomes_watched ON polymarket_outcomes(watched, sort_order);
+    CREATE INDEX IF NOT EXISTS idx_polymarket_outcomes_series ON polymarket_outcomes(series_id, watched);
+    CREATE TABLE IF NOT EXISTS polymarket_probability_points (
+      event_id TEXT NOT NULL,
+      market_id TEXT NOT NULL,
+      outcome_key TEXT NOT NULL,
+      observed_at INTEGER NOT NULL,
+      probability TEXT NOT NULL,
+      granularity TEXT NOT NULL DEFAULT '5m',
+      PRIMARY KEY (event_id, market_id, outcome_key, observed_at)
+    );
+    CREATE INDEX IF NOT EXISTS idx_polymarket_points_observed ON polymarket_probability_points(observed_at);
+  `);
+}});
+
+migrations.push({ version: 74, name: 'polymarket_discovery', up(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS polymarket_candidates (
+      event_id TEXT PRIMARY KEY,
+      event_slug TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL,
+      tag_slug TEXT NOT NULL DEFAULT '',
+      volume_24h TEXT,
+      total_volume TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      discovered_at INTEGER NOT NULL,
+      reviewed_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_polymarket_candidates_status ON polymarket_candidates(status, discovered_at);
+    CREATE TABLE IF NOT EXISTS polymarket_alerts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id TEXT NOT NULL,
+      market_id TEXT NOT NULL DEFAULT '',
+      outcome_key TEXT NOT NULL DEFAULT '',
+      alert_type TEXT NOT NULL,
+      message TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_polymarket_alerts_event ON polymarket_alerts(event_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_polymarket_alerts_created ON polymarket_alerts(created_at);
+    CREATE INDEX IF NOT EXISTS idx_polymarket_alerts_cooldown ON polymarket_alerts(event_id, market_id, alert_type, created_at);
+    CREATE TABLE IF NOT EXISTS polymarket_alert_state (
+      event_id TEXT NOT NULL,
+      market_id TEXT NOT NULL DEFAULT '',
+      outcome_key TEXT NOT NULL DEFAULT '',
+      state_key TEXT NOT NULL,
+      state_value TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (event_id, market_id, outcome_key, state_key)
+    );
+  `);
+}});
 
 migrations.push({ version: 75, name: 'gpu_rent_daily', up(database) {
   database.exec(`

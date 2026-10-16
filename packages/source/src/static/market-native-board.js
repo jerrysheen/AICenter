@@ -30,6 +30,7 @@ export async function readMarketNativeBoard(sourcePort, rawInput = {}, options =
   }));
 
   const predictionMarkets = [];
+  const keepPredictionOrder = Boolean(options.keepPredictionOrder);
   const cryptoDerivatives = [];
   let stablecoinLiquidity = null;
   const sourceHealth = settled.map(({ manifest, snapshot, error }) => {
@@ -47,8 +48,9 @@ export async function readMarketNativeBoard(sourcePort, rawInput = {}, options =
 
   return parseContract(MarketNativeBoardSchema, {
     generatedAt: now(),
-    predictionMarkets: predictionMarkets
-      .sort((left, right) => volume(right.volume24h) - volume(left.volume24h))
+    predictionMarkets: (keepPredictionOrder
+      ? predictionMarkets
+      : predictionMarkets.sort((left, right) => volume(right.volume24h) - volume(left.volume24h)))
       .slice(0, input.predictionLimit * 2),
     cryptoDerivatives,
     stablecoinLiquidity,

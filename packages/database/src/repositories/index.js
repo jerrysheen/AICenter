@@ -13,6 +13,7 @@ import { createResearchRecallRepository } from './research-recall-repository.js'
 import { createTradingRepository } from './trading-repository.js';
 import { createEtfWhaleRepository } from './etf-whale-repository.js';
 import { createEventQuoteRepository } from './event-quote-repository.js';
+import { createPolymarketRepository } from './polymarket-repository.js';
 import { createInvestorDiscussionRepository } from './investor-discussion-repository.js';
 import { createApiTokenRepository } from './api-token-repository.js';
 import { createRuntimeSnapshotRepository } from './runtime-snapshot-repository.js';
@@ -29,6 +30,7 @@ export function createDomainRepositories(database, emitEvent) {
     trading: createTradingRepository(database, emitEvent),
     etfWhale: createEtfWhaleRepository(database, emitEvent),
     eventQuotes: createEventQuoteRepository(database, emitEvent),
+    polymarket: createPolymarketRepository(database, emitEvent),
     investorDiscussion: createInvestorDiscussionRepository(database, emitEvent),
     apiTokens: createApiTokenRepository(database),
     runtimeSnapshots: createRuntimeSnapshotRepository(database),

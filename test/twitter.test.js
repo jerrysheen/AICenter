@@ -545,6 +545,45 @@ test('leading replies are appended to the tweet body and kept out of the title',
   assert.match(item.body, /甲：同意/);
 });
 
+test('x home capture keeps the tweet and skips comments after the deadline', async () => {
+  const calls = [];
+  const controller = new AbortController();
+  const runtime = {
+    async withSession(_options, callback) {
+      return callback({
+        async navigate(url) { calls.push(['navigate', url]); },
+        async evaluate(expression) {
+          const source = String(expression);
+          if (source.includes('tweetText')) {
+            controller.abort();
+            return {
+              items: [{
+                tweet_id: '5',
+                tweet_url: 'https://x.com/user/status/5',
+                text: '主帖很短',
+                reply_count: 2,
+                author_handle: 'user',
+              }],
+            };
+          }
+          return { url: 'https://x.com/home', title: 'Home', logged_in: true, login_wall: false };
+        },
+      });
+    },
+  };
+  const client = createXHomeBrowserClient({ browserRuntime: runtime, delay: async () => {} });
+  const result = await client.fetchHomeTimeline({
+    feed: 'for-you',
+    limit: 1,
+    signal: controller.signal,
+    deadlineAt: Date.now() + 60_000,
+  });
+  assert.equal(result.tweets[0].text, '主帖很短');
+  assert.equal(result.deadline, true);
+  assert.equal(result.tweets.length, 1);
+  assert.equal(calls.some((item) => item[0] === 'navigate' && String(item[1]).includes('/status/')), false);
+});
+
 test('a tweet with no replies does not open the status page for comments', async () => {
   const calls = [];
   const runtime = {

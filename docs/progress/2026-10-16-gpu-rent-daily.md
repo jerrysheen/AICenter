@@ -8,7 +8,7 @@ GPU 租金按北京日历日写入 `gpu_rent_daily`。观测仍只在内容变�
 
 Ornn 不需要密钥。公开路径是 `H100 SXM`、`H200`、`B200`。结算时间戳换成 America/New_York 的日期。每天 06:00 抓，09:00 再抓。接口大约返回三个月，第一次运行会把这些天都写上。页面写「指数来自 Ornn，按美东结算日，仅供内部参考」。
 
-migration 75 用 `IF NOT EXISTS` 建表，并给 `gpu_rent_observations(workspace_id, captured_at)` 和 `compute_price_snapshots(workspace_id, last_checked_at)` 加索引。历史和日汇总只读这段北京时间，当天结果在进程里缓存 60 秒。覆盖用日表里的型号加上当天观测。同一天多份快照时，规格只取最后一份。没有检查时间时不回退到 UTC 零点。73、74 是 Polymarket，合并进 main 之后本分支再 rebase，把 75 放在 74 后面。63 仍然空着。早期回填可能有缺口：检查时间只留最后一次，中间没变价的日子补不回来。
+migration 75 用 `IF NOT EXISTS` 建表，并给 `gpu_rent_observations(workspace_id, captured_at)` 和 `compute_price_snapshots(workspace_id, last_checked_at)` 加索引。历史和日汇总只读这段北京时间，当天结果在进程里缓存 60 秒。覆盖用日表里的型号加上当天观测。同一天多份快照时，规格只取最后一份。没有检查时间时不回退到 UTC 零点。73 是 Polymarket 观察清单，74 是 Polymarket 候选，75 接在它们后面。63 仍然空着。早期回填可能有缺口：检查时间只留最后一次，中间没变价的日子补不回来。
 
 ## 改动
 

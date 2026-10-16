@@ -66,12 +66,18 @@ import { boundedInt } from '../../../packages/domain/src/report-reliability.js';
 import { createResearchRecallJobHandlers, researchRecallManifest } from '../../../packages/runtime/src/research-recall-module.js';
 import { createResearchRelevanceJudge, createResearchTagJudge } from '../../../packages/runtime/src/research-judges.js';
 import { createResearchRecallService } from '../../../packages/domain/src/research-recall-service.js';
-import { createFeedAutomationJobHandlers, ensureDefaultContentSubscriptions, ensureFeedSubscriptionSyncSchedule, FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE, FEED_SYNC_MAX_RUNTIME_MS, feedAutomationManifest, prepareFeedSyncEnqueue } from '../../../packages/runtime/src/feed-automation-module.js';
+import { createFeedAutomationJobHandlers, ensureDefaultContentSubscriptions, ensureFeedSubscriptionSyncSchedule, FEED_SUBSCRIPTION_SYNC_JOB_TYPE, FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE, feedAutomationManifest, feedSyncSourceTimeoutMs, prepareFeedSyncEnqueue } from '../../../packages/runtime/src/feed-automation-module.js';
 import { createStrategyJobHandlers, ensureDividendStrategySchedule, strategySnapshotManifest } from '../../../packages/runtime/src/strategy-module.js';
 import { createQuantJobHandlers, quantLabManifest } from '../../../packages/runtime/src/quant-module.js';
 import { ensureEtfWhaleSchedule } from '../../../packages/runtime/src/etf-whale-schedule.js';
 import { createEtfWhaleJobHandlers, etfWhaleManifest } from '../../../packages/runtime/src/etf-whale-sync.js';
 import { createEventQuoteSnapshotJobHandlers, ensureEventQuoteSnapshotSchedule, eventQuoteSnapshotManifest } from '../../../packages/runtime/src/event-quote-snapshot-job.js';
+import { createPolymarketWatchlistJobHandlers, ensurePolymarketWatchlistSchedule, polymarketWatchlistManifest } from '../../../packages/runtime/src/polymarket-watchlist-job.js';
+import { createPolymarketDiscoveryJobHandlers, ensurePolymarketDiscoverySchedule, polymarketDiscoveryManifest } from '../../../packages/runtime/src/polymarket-discovery-job.js';
+import { createPolymarketReleaseJobHandlers, ensurePolymarketReleaseSchedule, polymarketReleaseManifest } from '../../../packages/runtime/src/polymarket-release-job.js';
+import { createPolymarketGammaClient } from '../../../packages/connectors/src/polymarket-gamma.js';
+import { loadPolymarketWatchlist, polymarketLegacyEnabled } from '../../../packages/connectors/src/polymarket-watchlist.js';
+import { readStoredPolymarketView } from '../../../packages/domain/src/polymarket-series.js';
 import { createInvestorDiscussionJobHandlers, ensureInvestorDiscussionSchedule, investorDiscussionManifest } from '../../../packages/runtime/src/investor-discussion-job.js';
 import { ensureTrendForcePriceSchedules } from '../../../packages/runtime/src/trendforce-price-schedule.js';
 import { computePriceManifest, createComputePriceJobHandlers, ensureComputePriceSchedules } from '../../../packages/runtime/src/compute-price-job.js';
@@ -173,6 +179,9 @@ export function createAiCenterWorker(options = {}) {
     'report.information.prepare': boundedInt(env.AI_CENTER_PREPARE_MAX_RUNNING_MS, 30 * 60_000, 60_000, 6 * 60 * 60_000),
     'report.hourly.extract': boundedInt(env.AI_CENTER_HOURLY_MAX_RUNNING_MS, 45 * 60_000, 60_000, 6 * 60 * 60_000),
     'report.daily.generate': boundedInt(env.AI_CENTER_DAILY_MAX_RUNNING_MS, 90 * 60_000, 60_000, 6 * 60 * 60_000),
+    [FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE]: 60_000,
+    [FEED_SUBSCRIPTION_SYNC_JOB_TYPE]: feedSyncSourceTimeoutMs(env.AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS) + 30_000,
+    'media.index.enrich': boundedInt(env.AI_CENTER_MEDIA_ENRICH_MAX_RUNNING_MS, 8 * 60_000, 60_000, 30 * 60_000),
   };
   store.recoverStaleJobs(staleAfterMs, Date.now(), { maxRunningMs: jobMaxRunningMs, maxRunningMsByType });
   if (hourlyReportDisabled(env)) {
@@ -186,7 +195,7 @@ export function createAiCenterWorker(options = {}) {
     'Worker 已重启，未完成的量化任务不会自动重跑',
   );
   store.abandonRunningJobs?.(
-    [FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE],
+    [FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE, FEED_SUBSCRIPTION_SYNC_JOB_TYPE],
     'Worker 已重启，未完成的订阅同步改由新的一轮执行',
   );
   store.discardQueuedJobs?.(
@@ -220,12 +229,25 @@ export function createAiCenterWorker(options = {}) {
     : null);
   const hardwarePriceService = options.hardwarePriceService || createHardwarePriceService({repository:store.repositories.hardwarePrices,artifactStore:createHardwareArtifactStore({dataDirectory})});
   const contentRoutingPort = options.contentRoutingPort || createContentRoutingService({mediaService,hardwarePrices:hardwarePriceService,feedRepository:store.repositories.feed,legacyPricePort:legacyPriceSnapshot});
+  const legacyPolymarket = polymarketLegacyEnabled(env);
+  const polymarketWatchlist = options.polymarketWatchlist || loadPolymarketWatchlist(path.join(instance.configDirectory, 'polymarket-watchlist.json'));
+  const polymarketClient = options.polymarketClient || createPolymarketGammaClient({
+    fetch: options.fetch,
+    minIntervalMs: polymarketWatchlist.fetch.minIntervalMs,
+    batchSize: polymarketWatchlist.fetch.batchSize,
+  });
   const registry = options.moduleRegistry || createSourceModuleRegistry({
     twitterService: options.twitterService,
     bilibiliService: options.bilibiliService,
     marketService: options.marketService,
     officialSources: options.officialSources,
     marketNativeSources: options.marketNativeSources,
+    env,
+    polymarketQuotes: legacyPolymarket || !store.repositories?.polymarket
+      ? undefined
+      : () => readStoredPolymarketView(store.repositories.polymarket, Date.now(), {
+        staleAfterMs: polymarketWatchlist.fetch.staleAfterMinutes * 60_000,
+      }),
     webSearchPort,
     browserRuntime,
     marketCatalog: options.marketCatalog,
@@ -307,7 +329,7 @@ export function createAiCenterWorker(options = {}) {
     mediaPort: mediaService,
     tradingService,
     sourceReadinessPort:{notes() {
-      const types=['media.sources.sync','feed.subscriptions.sync'];
+      const types=['media.sources.sync','feed.subscriptions.sync','feed.subscription.sync'];
       const recent=store.listJobs?.(100) || [];
       return types.flatMap(type=>{
         const job=recent.find(j=>j.type===type);
@@ -556,8 +578,29 @@ export function createAiCenterWorker(options = {}) {
         pipeline: treeEnabled ? 'tree-v3' : 'legacy',
       }),
       env,
+      keepPolymarketOrder: !legacyPolymarket,
     }),
   });
+  if (store.repositories?.polymarket) {
+    const polymarketJobOptions = {
+      client: polymarketClient,
+      repository: store.repositories.polymarket,
+      config: polymarketWatchlist,
+      now: options.now,
+    };
+    registry.register({
+      manifest: polymarketWatchlistManifest,
+      jobHandlers: options.polymarketWatchlistJobHandlers || createPolymarketWatchlistJobHandlers(polymarketJobOptions),
+    });
+    registry.register({
+      manifest: polymarketDiscoveryManifest,
+      jobHandlers: options.polymarketDiscoveryJobHandlers || createPolymarketDiscoveryJobHandlers(polymarketJobOptions),
+    });
+    registry.register({
+      manifest: polymarketReleaseManifest,
+      jobHandlers: options.polymarketReleaseJobHandlers || createPolymarketReleaseJobHandlers({ ...polymarketJobOptions, store }),
+    });
+  }
   registry.register({
     manifest: eventQuoteSnapshotManifest,
     jobHandlers: options.eventQuoteSnapshotJobHandlers || createEventQuoteSnapshotJobHandlers({
@@ -635,6 +678,11 @@ export function createAiCenterWorker(options = {}) {
     ensureHoldingsMarketSchedule(store);
     ensureMarketBoardsSchedule(store);
     ensureMarketNativeBoardSchedule(store);
+    if (store.repositories?.polymarket) {
+      ensurePolymarketWatchlistSchedule(store, polymarketWatchlist, Date.now(), { enabled: !legacyPolymarket });
+      ensurePolymarketDiscoverySchedule(store, polymarketWatchlist, Date.now(), { enabled: !legacyPolymarket });
+      ensurePolymarketReleaseSchedule(store, polymarketWatchlist, Date.now(), { enabled: !legacyPolymarket });
+    }
     ensureFeedListSchedule(store);
     ensureHardwarePriceSchedule(store);
     ensureHomeBootstrapSchedule(store);
@@ -665,12 +713,6 @@ export function createAiCenterWorker(options = {}) {
     maxRunningMsByType,
     recoverEveryMs: options.recoverEveryMs || process.env.AI_CENTER_WORKER_RECOVER_MS,
     readyAt:articleAdmission?.policy.accountMode ? {'report.information.prepare':()=>articleAdmission.nextReadyAt(env.AI_CENTER_HARNESS_ARTICLE_MODEL || 'gemini-3.1-flash-lite')} : {},
-    supersedeAfterMs: {
-      [FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE]: FEED_SYNC_MAX_RUNTIME_MS,
-    },
-    onSupersede() {
-      store.repositories?.feed?.releaseOpenSubscriptionLeases?.(Date.now(), FEED_SYNC_MAX_RUNTIME_MS);
-    },
     concurrency: options.concurrency || {
       workPackageDispatchLimit: options.workPackageConcurrency
         ?? process.env.AI_CENTER_WORKER_WORK_PACKAGE_CONCURRENCY,

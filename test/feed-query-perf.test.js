@@ -149,6 +149,11 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
     DROP TABLE IF EXISTS etf_whale_turnover;
     DROP TABLE IF EXISTS etf_whale_futures_rank;
     DROP TABLE IF EXISTS etf_whale_signals;
+    DROP TABLE IF EXISTS polymarket_outcomes;
+    DROP TABLE IF EXISTS polymarket_probability_points;
+    DROP TABLE IF EXISTS polymarket_candidates;
+    DROP TABLE IF EXISTS polymarket_alerts;
+    DROP TABLE IF EXISTS polymarket_alert_state;
     DROP INDEX IF EXISTS idx_captures_feed_sort;
     DROP INDEX IF EXISTS idx_captures_provider_captured;
     DROP INDEX IF EXISTS idx_captures_feed_filter;
@@ -191,6 +196,8 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
       [70, 'etf_whale_market_depth'],
       [71, 'model_usage_translation_attribution'],
       [72, 'article_dedup_url_lookup'],
+      [73, 'polymarket_watchlist'],
+      [74, 'polymarket_discovery'],
       [75, 'gpu_rent_daily'],
     ]);
     assert.equal(database.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('model_usage_index') WHERE name = 'key_suffix'`).get().n, 1);

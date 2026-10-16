@@ -115,6 +115,8 @@ export function createXueqiuService(options = {}) {
     limit = DEFAULT_LIMIT,
     bypassCache = false,
     excludeExternalIds = [],
+    signal,
+    deadlineAt,
   } = {}) {
     const parsedFeed = normalizeXueqiuFeed(feed);
     const parsedLimit = Math.min(DEFAULT_LIMIT, Math.max(1, Number(limit) || DEFAULT_LIMIT));
@@ -125,26 +127,32 @@ export function createXueqiuService(options = {}) {
           feed: parsedFeed,
           limit: parsedLimit,
           excludeExternalIds: excluded,
+          signal,
+          deadlineAt,
         });
         const loginRequired = result.error === 'login_required';
         const items = loginRequired ? [] : (result.items || []).map((row) => xueqiuToFeedItem(row, { feed: parsedFeed }));
+        const timedOut = result.error === 'deadline' || (result.deadline === true && !items.length && !result.error);
         const note = loginRequired
           ? explainXueqiuConnectorError('login_required')
-          : result.error && !items.length
-            ? explainXueqiuApiError({ error_description: result.error }, result.error)
-            : `已登录浏览器 · ${xueqiuFeedLabel(parsedFeed)} · ${items.length} 条`;
+          : timedOut
+            ? '这一路抓取超过单源时限，已留给下一次'
+            : result.error && !items.length
+              ? explainXueqiuApiError({ error_description: result.error }, result.error)
+              : `已登录浏览器 · ${xueqiuFeedLabel(parsedFeed)} · ${items.length} 条`;
         return {
           platform: 'xueqiu',
           workspaceId: 'local',
           feed: parsedFeed,
           handle: '',
           source: result.source || 'browser_runtime_home',
-          mode: loginRequired || (!items.length && result.error) ? 'error' : (items.length ? 'live' : 'partial'),
+          mode: loginRequired || timedOut || (!items.length && result.error) ? 'error' : (items.length ? 'live' : 'partial'),
           loggedIn: Boolean(result.logged_in),
           tweetCount: items.length,
           fetchedAt: now(),
           note,
           items,
+          ...(result.deadline ? { deadline: true } : {}),
         };
       } catch (error) {
         return {

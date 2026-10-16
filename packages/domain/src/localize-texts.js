@@ -118,6 +118,9 @@ export function collectLocalizationUnits(payload = {}) {
   const quotes = data.predictionMarkets || (data.quotes || []).filter((row) => row?.marketQuestion);
   for (const quote of quotes) {
     pushUnit(units, seen, quote.quoteId, quote.marketQuestion);
+    for (const outcome of quote.outcomes || []) {
+      pushUnit(units, seen, `${quote.quoteId}:${outcome.label}`, outcome.label);
+    }
   }
   return units;
 }
