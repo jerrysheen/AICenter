@@ -233,6 +233,17 @@ export function createBrowserSkillClient(options = {}) {
     }
   }
 
+  function coldStartError() {
+    const cold = new BrowserCommandError('browser_cold_start', { kind: 'browser_cold_start' });
+    cold.kind = 'browser_cold_start';
+    return cold;
+  }
+
+  function isTimedOut(error) {
+    const kind = error?.kind || error?.details?.kind;
+    return kind === 'timeout' || kind === 'browser_cold_start' || error?.killed || /timed out/i.test(String(error?.message || ''));
+  }
+
   return {
     id: 'bsk',
 
@@ -261,6 +272,8 @@ export function createBrowserSkillClient(options = {}) {
 
     async startSession(sessionOptions = {}) {
       const purpose = String(sessionOptions.purpose || '').trim();
+      // bsk 0.3.2 keeps this token only in the daemon process. `session start
+      // --request-id` fails unless this same id was prepared on that process.
       const requestId = `${Date.now() + 10 * 60 * 1000}:${randomUUID()}`;
       const args = ['session', 'start', '--request-id', requestId];
       if (purpose) args.push('--name', purpose);
@@ -268,31 +281,43 @@ export function createBrowserSkillClient(options = {}) {
       if (sessionOptions.browserId) args.push('--browser', String(sessionOptions.browserId));
       const deadlineAt = Number(sessionOptions.deadlineAt);
       const hasDeadline = Number.isFinite(deadlineAt);
-      const startTimeout = hasDeadline
-        ? Math.min(120_000, deadlineAt - Date.now() - 15_000)
-        : Math.max(timeoutMs, 120_000);
-      if (hasDeadline && startTimeout < 1_000) {
-        const tooLate = new BrowserCommandError('browser_cold_start', { kind: 'browser_cold_start' });
-        tooLate.kind = 'browser_cold_start';
-        throw tooLate;
-      }
+      const startBudget = () => (hasDeadline
+        ? deadlineAt - Date.now() - 15_000
+        : Math.max(timeoutMs, 120_000));
+      if (hasDeadline && startBudget() < 1_000) throw coldStartError();
       let payload;
       try {
-        payload = await run(args, { timeoutMs: Math.max(1_000, startTimeout) });
-      } catch (error) {
-        const kind = error?.kind || error?.details?.kind;
-        const timedOut = kind === 'timeout' || kind === 'browser_cold_start' || error?.killed || /timed out/i.test(String(error?.message || ''));
-        if (timedOut) await cancelStartRequest(requestId);
-        if (hasDeadline && timedOut) {
-          const cold = new BrowserCommandError('browser_cold_start', { kind: 'browser_cold_start' });
-          cold.kind = 'browser_cold_start';
-          throw cold;
+        const prepareBudget = Math.min(5_000, Math.max(1_000, startBudget()));
+        const prepared = await run(['session', 'request', requestId, '--prepare'], { timeoutMs: prepareBudget });
+        if (prepared?.state && prepared.state !== 'prepared') {
+          await cancelStartRequest(requestId);
+          throw new BrowserCommandError(`bsk session request 没有进入 prepared：${prepared.state}`, { kind: 'exit' });
         }
+        const launchBudget = Math.min(120_000, startBudget());
+        if (hasDeadline && launchBudget < 1_000) throw coldStartError();
+        payload = await run(args, { timeoutMs: Math.max(1_000, launchBudget) });
+      } catch (error) {
+        if (isTimedOut(error)) await cancelStartRequest(requestId);
+        if (hasDeadline && isTimedOut(error)) throw coldStartError();
         throw error;
       }
       const sessionId = String(payload.session_id || payload.sessionId || '').trim();
       if (!sessionId) {
+        await cancelStartRequest(requestId);
         throw new BrowserCommandError('bsk session start 没有返回 sessionId', { kind: 'invalid_json' });
+      }
+      // Claim keeps the daemon from stopping this window when the 10-minute
+      // token expires. A failed claim cancels this request, which closes only
+      // the window it owns. Timeout cleanup uses that same cancel.
+      try {
+        const claimed = await run(['session', 'request', requestId, '--claim'], { timeoutMs: 5_000 });
+        if (claimed?.state && claimed.state !== 'active') {
+          throw new BrowserCommandError(`bsk session request 没有进入 active：${claimed.state}`, { kind: 'exit' });
+        }
+      } catch (error) {
+        await cancelStartRequest(requestId);
+        if (hasDeadline && isTimedOut(error)) throw coldStartError();
+        throw error;
       }
       return {
         sessionId,

@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-16 #124 把等锁、冷启动和 X 收获收进单源 90 秒，但每次 `session start --request-id` 都没有先 prepare，生产上 X 和雪球全部失败：`request is not prepared or the daemon restarted; prepare a new request before starting`。#126 已整段回退。现在仍用那次的时限，并按 bsk 0.3.2 先 `session request <id> --prepare`，启动成功后再 `--claim`。冷启动超时只取消这一次 request，不按名字关会话。90 秒预算和 120 秒硬帽不变。不新增 migration。不要重建数据库。需要同时重启 Web 和 Worker。见 `progress/2026-10-16-feed-sync-deadline-prepare.md`。
+
 2026-10-16 `feed.subscriptions.sync` 从 09:20 之后几乎每轮跑满约 10 分钟，被下一轮标成 `WorkerInterrupted: 新的订阅同步开始，上一轮仍未结束`。X 在中断前已经落库，雪球排在后面，08:54 之后没有新的大 V 帖。没有雪球 cookie 或 401/403。现在每分钟只把到期订阅各入队一条 `feed.subscription.sync`，默认 90 秒（`AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS`，15 秒到 3 分钟）。到时有条目就按订阅间隔完成；一条都没有则 5 分钟后重试。新的一分钟不取消仍在跑的任务，也不释放租约。日志带 source、feed、status 和 durationMs。X 和雪球到截止就停，已抓到的留下。`media.index.enrich` 软预算默认 4 分钟，剩余 id 再入队；硬上限默认 8 分钟。领取时记下 `leaseUntil`，完成和失败只在 `next_sync_at` 仍是这个值时回写。一条都没抓到时 5 分钟后重试。雪球每次浏览器命令收成剩余时间，最多 30 秒。媒体充实连续交出最多 10 次。不新增 migration。不要重建数据库。需要同时重启 Web 和 Worker。见 `progress/2026-10-16-feed-sync-source-progress.md`。
 
 2026-10-15 22:50–23:04 报价大约每 2 分钟更新一次。慢请求结束后把缓存和看板换成更旧的成交时间，缓存再从完成时保留 30 秒，下一分钟仍用上一轮。现在更旧的 `asOf` / `marketTime` 不能替换已有的较新价格。缓存从请求开始起最多 45 秒，30 秒完成时间上限不变，下一分钟的快照会重新取。新浪期货条目的 `provider` 写成 `sina`。不新增 migration，下一号仍是 73。不要重建数据库。需要同时重启 Web 和 Worker。见 `progress/2026-10-15-us-quote-keep-newer.md`。

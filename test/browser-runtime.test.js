@@ -11,6 +11,73 @@ import {
 } from '../packages/connectors/src/index.js';
 import { runBrowserProcess } from '../packages/connectors/src/browser/browserskill-client.js';
 
+const NOT_PREPARED = 'request is not prepared or the daemon restarted; prepare a new request before starting';
+
+// Mirrors bsk 0.3.2: `session start --request-id` is rejected until this
+// process has seen `session request <id> --prepare`. `restart()` drops that
+// memory the way a daemon restart does.
+function createEnforcingBsk(respond) {
+  const prepared = new Set();
+  const ready = new Set();
+  const commands = [];
+  async function runCommand(args, options) {
+    commands.push({ args: [...args], timeoutMs: options?.timeoutMs });
+    const body = args[0] === '--json' ? args.slice(1) : args;
+    if (body[0] === 'session' && body[1] === 'request' && body.includes('--prepare')) {
+      prepared.add(body[2]);
+      return {
+        code: 0,
+        stdout: JSON.stringify({ request_id: body[2], state: 'prepared', session: null }),
+        stderr: '',
+      };
+    }
+    if (body[0] === 'session' && body[1] === 'request' && body.includes('--claim')) {
+      if (!ready.has(body[2])) {
+        return {
+          code: 1,
+          stdout: JSON.stringify({ code: 'not_found', message: 'start request not found' }),
+          stderr: '',
+        };
+      }
+      return {
+        code: 0,
+        stdout: JSON.stringify({ request_id: body[2], state: 'active', session: null }),
+        stderr: '',
+      };
+    }
+    if (body[0] === 'session' && body[1] === 'request' && body.includes('--cancel')) {
+      ready.delete(body[2]);
+      return {
+        code: 0,
+        stdout: JSON.stringify({ request_id: body[2], state: 'closed', session: null }),
+        stderr: '',
+      };
+    }
+    if (body[0] === 'session' && body[1] === 'start') {
+      const requestId = body[body.indexOf('--request-id') + 1];
+      if (!prepared.has(requestId)) {
+        return {
+          code: 1,
+          stdout: JSON.stringify({ code: 'invalid_params', message: NOT_PREPARED }),
+          stderr: '',
+        };
+      }
+      const result = await respond(args, options);
+      if (result && result.code === 0) ready.add(requestId);
+      return result;
+    }
+    return respond(args, options);
+  }
+  return {
+    commands,
+    runCommand,
+    restart() {
+      prepared.clear();
+      ready.clear();
+    },
+  };
+}
+
 function createRecordingProvider(options = {}) {
   const calls = [];
   const provider = {
@@ -57,33 +124,32 @@ test('bundled externaltools/bsk.exe is the default CLI path', () => {
 
 test('BrowserSkillClient parses JSON session start and status', async () => {
   const commands = [];
-  const client = createBrowserSkillClient({
-    async runCommand(args) {
-      commands.push(args);
-      if (args.includes('status')) {
-        return {
-          code: 0,
-          stdout: JSON.stringify({
-            daemon_version: '0.1.0',
-            browsers: [{ instance_id: 'chrome-1' }],
-            sessions: [],
-          }),
-          stderr: '',
-        };
-      }
-      if (args.includes('start')) {
-        return {
-          code: 0,
-          stdout: JSON.stringify({
-            session_id: 'WXYZ',
-            browser_instance_id: 'chrome-1',
-          }),
-          stderr: '',
-        };
-      }
-      return { code: 1, stdout: '', stderr: 'unexpected' };
-    },
+  const fake = createEnforcingBsk(async (args) => {
+    commands.push(args);
+    if (args.includes('status')) {
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          daemon_version: '0.1.0',
+          browsers: [{ instance_id: 'chrome-1' }],
+          sessions: [],
+        }),
+        stderr: '',
+      };
+    }
+    if (args[2] === 'start') {
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          session_id: 'WXYZ',
+          browser_instance_id: 'chrome-1',
+        }),
+        stderr: '',
+      };
+    }
+    return { code: 1, stdout: '', stderr: 'unexpected' };
   });
+  const client = createBrowserSkillClient({ runCommand: fake.runCommand });
   assert.deepEqual(await client.health(), {
     available: true,
     daemonConnected: true,
@@ -94,10 +160,50 @@ test('BrowserSkillClient parses JSON session start and status', async () => {
     sessionId: 'WXYZ',
     browserId: 'chrome-1',
   });
-  assert.equal(commands[0][0], '--json');
-  assert.deepEqual(commands[1].slice(0, 3), ['--json', 'session', 'start']);
-  assert.ok(commands[1].includes('--no-focus'));
-  assert.ok(commands[1].includes('bilibili.subtitle'));
+  const lifecycle = fake.commands.map((item) => item.args.slice(1, 3).join(' '));
+  assert.deepEqual(lifecycle, ['status', 'session request', 'session start', 'session request']);
+  const prepare = fake.commands[1];
+  const start = fake.commands[2];
+  const claim = fake.commands[3];
+  assert.equal(prepare.args[0], '--json');
+  assert.ok(prepare.args.includes('--prepare'));
+  assert.ok(start.args.includes('--no-focus'));
+  assert.ok(start.args.includes('bilibili.subtitle'));
+  assert.equal(start.args[start.args.indexOf('--request-id') + 1], prepare.args[3]);
+  assert.ok(claim.args.includes('--claim'));
+  assert.equal(claim.args[3], prepare.args[3]);
+  assert.equal(commands.some((args) => args.includes('stop') || args.includes('list')), false);
+});
+
+test('session start without prepare is rejected', async () => {
+  const fake = createEnforcingBsk(async () => ({
+    code: 0,
+    stdout: JSON.stringify({ session_id: 'WXYZ', browser_instance_id: 'chrome-1' }),
+    stderr: '',
+  }));
+  const requestId = `${Date.now() + 10 * 60 * 1000}:11111111-1111-4111-8111-111111111111`;
+  const skipped = await fake.runCommand([
+    '--json', 'session', 'start', '--request-id', requestId, '--name', 'x.home', '--no-focus',
+  ]);
+  assert.equal(skipped.code, 1);
+  assert.match(skipped.stdout, /request is not prepared or the daemon restarted/);
+  assert.equal(fake.commands.some((item) => item.args.includes('--prepare')), false);
+
+  const client = createBrowserSkillClient({ runCommand: fake.runCommand });
+  const session = await client.startSession({ purpose: 'x.home', focused: false });
+  assert.equal(session.sessionId, 'WXYZ');
+  const prepare = fake.commands.find((item) => item.args.includes('--prepare'));
+  const start = fake.commands.find((item, index) => item.args[2] === 'start' && index > fake.commands.indexOf(prepare));
+  const preparedId = prepare.args[3];
+  assert.equal(start.args[start.args.indexOf('--request-id') + 1], preparedId);
+  assert.ok(fake.commands.some((item) => item.args.includes('--claim') && item.args[3] === preparedId));
+
+  fake.restart();
+  const afterRestart = await fake.runCommand([
+    '--json', 'session', 'start', '--request-id', preparedId, '--name', 'x.home',
+  ]);
+  assert.equal(afterRestart.code, 1);
+  assert.match(afterRestart.stdout, /daemon restarted/);
 });
 
 test('BrowserSkill navigate passes a timeout and optional wait condition', async () => {
@@ -388,24 +494,25 @@ test('a lock held for 80s returns deadline without starting a session', async ()
 });
 
 test('a slow session start reports browser_cold_start', async () => {
-  const client = createBrowserSkillClient({
-    async runCommand(args, options) {
-      if (!args.includes('start')) {
-        return { code: 0, stdout: JSON.stringify({ sessions: [] }), stderr: '' };
-      }
-      await new Promise((resolve, reject) => {
-        setTimeout(
-          () => reject(Object.assign(new Error(`bsk timed out after ${options.timeoutMs}ms`), { killed: true })),
-          options.timeoutMs,
-        );
-      });
-    },
+  const fake = createEnforcingBsk(async (args, options) => {
+    if (args[2] !== 'start') {
+      return { code: 0, stdout: JSON.stringify({ sessions: [] }), stderr: '' };
+    }
+    await new Promise((resolve, reject) => {
+      setTimeout(
+        () => reject(Object.assign(new Error(`bsk timed out after ${options.timeoutMs}ms`), { killed: true })),
+        options.timeoutMs,
+      );
+    });
   });
+  const client = createBrowserSkillClient({ runCommand: fake.runCommand });
   const runtime = createBrowserRuntime({ provider: client });
   const started = Date.now();
   const result = await runtime.withSession({
     purpose: 'slow',
-    deadlineAt: Date.now() + 20_000,
+    // The runtime will not open a session with under 20s left. 22s still
+    // leaves about 7s for the start itself.
+    deadlineAt: Date.now() + 22_000,
   }, async () => 'should-not-run');
   const elapsed = Date.now() - started;
   assert.equal(result.error, 'browser_cold_start');
@@ -415,32 +522,34 @@ test('a slow session start reports browser_cold_start', async () => {
 });
 
 test('a startup timeout cancels only that start request', async () => {
-  const commands = [];
-  const client = createBrowserSkillClient({
-    async runCommand(args, options) {
-      commands.push({ args, timeoutMs: options.timeoutMs });
-      if (args.includes('start')) {
-        throw Object.assign(new Error('bsk timed out after 20ms'), { killed: true });
-      }
-      return { code: 0, stdout: JSON.stringify({ ok: true }), stderr: '' };
-    },
+  const fake = createEnforcingBsk(async (args) => {
+    if (args[2] === 'start') {
+      throw Object.assign(new Error('bsk timed out after 20ms'), { killed: true });
+    }
+    return { code: 0, stdout: JSON.stringify({ ok: true }), stderr: '' };
   });
+  const client = createBrowserSkillClient({ runCommand: fake.runCommand });
   const started = Date.now();
   await assert.rejects(
     () => client.startSession({ purpose: 'x.home', focused: false, deadlineAt: Date.now() + 20_000 }),
     (error) => error.kind === 'browser_cold_start' && error.message === 'browser_cold_start',
   );
   assert.ok(Date.now() - started < 2_000);
-  const start = commands.find((item) => item.args.includes('start'));
+  const prepare = fake.commands.find((item) => item.args.includes('--prepare'));
+  const start = fake.commands.find((item) => item.args[2] === 'start');
+  const claim = fake.commands.find((item) => item.args.includes('--claim'));
+  const cancel = fake.commands.find((item) => item.args.includes('--cancel'));
   const requestId = start.args[start.args.indexOf('--request-id') + 1];
   assert.match(requestId, /^\d+:[0-9a-f-]{36}$/i);
   const expiry = Number(requestId.slice(0, requestId.indexOf(':')));
   assert.ok(expiry >= started + 9 * 60 * 1000 && expiry <= started + 11 * 60 * 1000);
-  const followUps = commands.filter((item) => !item.args.includes('start'));
-  assert.equal(followUps.length, 1);
-  assert.deepEqual(followUps[0].args.slice(1), ['session', 'request', requestId, '--cancel']);
-  assert.ok(followUps[0].timeoutMs <= 5_000);
-  assert.equal(commands.some((item) => item.args.includes('list') || item.args.includes('stop')), false);
+  assert.equal(prepare.args[3], requestId);
+  assert.ok(fake.commands.indexOf(prepare) < fake.commands.indexOf(start));
+  assert.equal(claim, undefined);
+  assert.deepEqual(cancel.args.slice(1), ['session', 'request', requestId, '--cancel']);
+  assert.ok(cancel.timeoutMs <= 5_000);
+  assert.equal(fake.commands.filter((item) => item.args.includes('--cancel')).length, 1);
+  assert.equal(fake.commands.some((item) => item.args.includes('list') || item.args[2] === 'stop'), false);
 });
 
 test('legacy-cdp provider is no longer accepted', () => {
