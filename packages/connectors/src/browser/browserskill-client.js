@@ -1,5 +1,4 @@
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -221,18 +220,6 @@ export function createBrowserSkillClient(options = {}) {
     return run(['status'], { timeoutMs: Math.min(timeoutMs, 15_000) });
   }
 
-  // A killed `session start` can leave the Agent Window open without a
-  // session id. Cancel only this request. Web and Worker share one daemon, so
-  // stopping every session with the same --name would close a live session.
-  async function cancelStartRequest(requestId) {
-    if (!requestId) return;
-    try {
-      await run(['session', 'request', String(requestId), '--cancel'], { timeoutMs: 5_000 });
-    } catch {
-      // The start error is the one the caller needs.
-    }
-  }
-
   return {
     id: 'bsk',
 
@@ -260,36 +247,11 @@ export function createBrowserSkillClient(options = {}) {
     },
 
     async startSession(sessionOptions = {}) {
-      const purpose = String(sessionOptions.purpose || '').trim();
-      const requestId = `${Date.now() + 10 * 60 * 1000}:${randomUUID()}`;
-      const args = ['session', 'start', '--request-id', requestId];
-      if (purpose) args.push('--name', purpose);
+      const args = ['session', 'start'];
+      if (sessionOptions.purpose) args.push('--name', String(sessionOptions.purpose));
       if (sessionOptions.focused === false) args.push('--no-focus');
       if (sessionOptions.browserId) args.push('--browser', String(sessionOptions.browserId));
-      const deadlineAt = Number(sessionOptions.deadlineAt);
-      const hasDeadline = Number.isFinite(deadlineAt);
-      const startTimeout = hasDeadline
-        ? Math.min(120_000, deadlineAt - Date.now() - 15_000)
-        : Math.max(timeoutMs, 120_000);
-      if (hasDeadline && startTimeout < 1_000) {
-        const tooLate = new BrowserCommandError('browser_cold_start', { kind: 'browser_cold_start' });
-        tooLate.kind = 'browser_cold_start';
-        throw tooLate;
-      }
-      let payload;
-      try {
-        payload = await run(args, { timeoutMs: Math.max(1_000, startTimeout) });
-      } catch (error) {
-        const kind = error?.kind || error?.details?.kind;
-        const timedOut = kind === 'timeout' || kind === 'browser_cold_start' || error?.killed || /timed out/i.test(String(error?.message || ''));
-        if (timedOut) await cancelStartRequest(requestId);
-        if (hasDeadline && timedOut) {
-          const cold = new BrowserCommandError('browser_cold_start', { kind: 'browser_cold_start' });
-          cold.kind = 'browser_cold_start';
-          throw cold;
-        }
-        throw error;
-      }
+      const payload = await run(args, { timeoutMs: Math.max(timeoutMs, 120_000) });
       const sessionId = String(payload.session_id || payload.sessionId || '').trim();
       if (!sessionId) {
         throw new BrowserCommandError('bsk session start 没有返回 sessionId', { kind: 'invalid_json' });
@@ -307,9 +269,9 @@ export function createBrowserSkillClient(options = {}) {
       const limit = Math.max(1_000, Number(navigateOptions.timeoutMs) || timeoutMs);
       const args = ['navigate', String(url), '--session', String(sessionId), '--timeout', `${Math.floor(limit)}ms`];
       if (navigateOptions.waitUntil) args.push('--wait-until', String(navigateOptions.waitUntil));
-      // bsk keeps the IPC open a little past the tool timeout. Five seconds is
-      // enough for the timeout result to return before the process is killed.
-      return run(args, { timeoutMs: limit + 5_000 });
+      // bsk keeps the IPC open for the tool timeout plus 15s. Leave room so a
+      // timeout result can return before the process is killed.
+      return run(args, { timeoutMs: limit + 20_000 });
     },
 
     async evaluate(sessionId, expression, evaluateOptions = {}) {
@@ -341,7 +303,7 @@ export function createBrowserSkillClient(options = {}) {
     },
 
     async stopSession(sessionId) {
-      return run(['session', 'stop', String(sessionId)], { timeoutMs: Math.min(timeoutMs, 10_000) });
+      return run(['session', 'stop', String(sessionId)], { timeoutMs: Math.min(timeoutMs, 30_000) });
     },
   };
 }
