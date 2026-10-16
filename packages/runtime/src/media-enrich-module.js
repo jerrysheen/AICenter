@@ -5,7 +5,38 @@ import {enqueueTreePreparation} from './information-tree-module.js';
 import { translationTitleBatchLimit } from '../../domain/src/feed-ai-batch.js';
 import { TRANSLATION_BACKFILL_PRIORITY, TRANSLATION_INTERACTIVE_PRIORITY, enqueueOriginalTranslations } from './feed-translation-module.js';
 
-export function createMediaEnrichJobHandlers({ mediaService, feedService, taggingService, briefPort, articleNormalizePort=null, treeEnabled=false }) {
+const MEDIA_ENRICH_BUDGET_FALLBACK_MS = 4 * 60_000;
+const MEDIA_ENRICH_HOP_LIMIT = 10;
+
+export function mediaEnrichBudgetMs(value = process.env.AI_CENTER_MEDIA_ENRICH_BUDGET_MS) {
+  const parsed = Number(value);
+  const chosen = Number.isFinite(parsed) && parsed > 0 ? parsed : MEDIA_ENRICH_BUDGET_FALLBACK_MS;
+  return Math.min(6 * 60_000, Math.max(30_000, Math.floor(chosen)));
+}
+
+function enrichPastBudget(signal, deadlineAt) {
+  return Boolean(signal?.aborted) || Date.now() >= deadlineAt;
+}
+
+function enqueueEnrichRemainder(store, workspaceId, externalIds, hop) {
+  const ids = [...new Set((externalIds || []).map((id) => String(id || '').trim()).filter(Boolean))];
+  const nextHop = Math.max(0, Math.trunc(Number(hop) || 0)) + 1;
+  if (!ids.length || !store?.createJob) return 0;
+  if (nextHop > MEDIA_ENRICH_HOP_LIMIT) {
+    console.log(`[worker] media-enrich yield stopped hop=${nextHop} remaining=${ids.length}`);
+    return 0;
+  }
+  store.createJob({
+    type: MEDIA_ENRICH_JOB_TYPE,
+    workspaceId,
+    maxAttempts: 2,
+    input: { workspaceId, externalIds: ids, hop: nextHop },
+  });
+  console.log(`[worker] media-enrich yield remaining=${ids.length} hop=${nextHop}`);
+  return ids.length;
+}
+
+export function createMediaEnrichJobHandlers({ mediaService, feedService, taggingService, briefPort, articleNormalizePort=null, treeEnabled=false, budgetMs=null }) {
   if (!mediaService?.fetchBodies || !mediaService?.listBodyCandidates || !mediaService?.listEnrichmentItems) {
     throw new Error('media enrich jobs require mediaService');
   }
@@ -23,19 +54,63 @@ export function createMediaEnrichJobHandlers({ mediaService, feedService, taggin
       // Forty is a request batch size, not a quota for the enrichment job.
       // Flash rows are still fetched so the plain list can show them. Tree, translation and tagging stay on fuller articles.
       const bodies = { ok: true, fetched: [], stats: {} };
-      for (let offset = 0; offset < requested.length; offset += 40) {
-        const slice = requested.slice(offset, offset + 40);
+      const startedAt = Date.now();
+      const hop = Math.max(0, Math.trunc(Number(input.hop) || 0));
+      const deadlineAt = startedAt + (budgetMs == null ? mediaEnrichBudgetMs() : Math.max(0, Number(budgetMs) || 0));
+      let cursor = 0;
+      let yielded = 0;
+      let stopped = false;
+      while (cursor < requested.length) {
+        if (enrichPastBudget(context?.signal, deadlineAt)) {
+          yielded = enqueueEnrichRemainder(context?.store, workspaceId, requested.slice(cursor), hop);
+          stopped = true;
+          break;
+        }
+        const slice = requested.slice(cursor, cursor + 40);
+        const batchStarted = Date.now();
         const batch = await mediaService.fetchBodies({
           workspaceId,
           externalIds: slice,
           repair: input.repair === true,
           selectedReasons: Object.fromEntries(selected.map(r => [r.externalId,r.reason])),
+          signal: context?.signal,
+          deadlineAt,
         });
+        const processed = Number.isInteger(batch.processed) ? batch.processed : slice.length;
+        console.log(`[worker] media-enrich batch=${cursor} size=${slice.length} processed=${processed} durationMs=${Date.now() - batchStarted} stopped=${batch.stoppedEarly ? 1 : 0}`);
         bodies.fetched.push(...(batch.fetched || []));
-        const treeIds = slice.filter((id) => !flashIds.has(id));
+        const handled = slice.slice(0, Math.max(0, processed));
+        const treeIds = handled.filter((id) => !flashIds.has(id));
         if(treeEnabled && !articleNormalizePort && treeIds.length)enqueueTreePreparation(context?.store,workspaceId,treeIds.map(id=>`media:${id}`));
         if (batch.health) bodies.health = batch.health;
         for (const [key, value] of Object.entries(batch.stats || {})) bodies.stats[key] = (bodies.stats[key] || 0) + value;
+        if (processed <= 0) {
+          yielded = enqueueEnrichRemainder(context?.store, workspaceId, requested.slice(cursor), hop);
+          stopped = true;
+          break;
+        }
+        cursor += processed;
+        if (batch.stoppedEarly || cursor < requested.length && enrichPastBudget(context?.signal, deadlineAt)) {
+          yielded = enqueueEnrichRemainder(context?.store, workspaceId, requested.slice(cursor), hop);
+          stopped = true;
+          break;
+        }
+      }
+      if (!stopped && requested.length && enrichPastBudget(context?.signal, deadlineAt)) {
+        yielded = enqueueEnrichRemainder(context?.store, workspaceId, requested, hop);
+        stopped = true;
+      }
+      if (stopped) {
+        return {
+          workspaceId,
+          health: 'partial',
+          yielded: true,
+          remaining: yielded,
+          discovery,
+          bodyStats: bodies.stats || {},
+          bodiesFetched: (bodies.fetched || []).filter((item) => item.contentLevel === 'full' && !item.skipped).length,
+          durationMs: Date.now() - startedAt,
+        };
       }
       const explicit = input.externalIds?.length ? new Set(input.externalIds) : null;
       const fetchedForTree = bodies.fetched.map((row) => row.externalId).filter((id) => !flashIds.has(id));
