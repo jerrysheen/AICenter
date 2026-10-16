@@ -542,7 +542,8 @@ test('a startup timeout cancels only that start request', async () => {
   const requestId = start.args[start.args.indexOf('--request-id') + 1];
   assert.match(requestId, /^\d+:[0-9a-f-]{36}$/i);
   const expiry = Number(requestId.slice(0, requestId.indexOf(':')));
-  assert.ok(expiry >= started + 9 * 60 * 1000 && expiry <= started + 11 * 60 * 1000);
+  assert.ok(expiry >= started + 9 * 60 * 1000 - 1_000);
+  assert.ok(expiry <= started + 9 * 60 * 1000 + 5_000, `token expiry is ${expiry - started}ms, expected about 9 minutes`);
   assert.equal(prepare.args[3], requestId);
   assert.ok(fake.commands.indexOf(prepare) < fake.commands.indexOf(start));
   assert.equal(claim, undefined);
@@ -550,6 +551,144 @@ test('a startup timeout cancels only that start request', async () => {
   assert.ok(cancel.timeoutMs <= 5_000);
   assert.equal(fake.commands.filter((item) => item.args.includes('--cancel')).length, 1);
   assert.equal(fake.commands.some((item) => item.args.includes('list') || item.args[2] === 'stop'), false);
+});
+
+test('a non-timeout start error still cancels that request', async () => {
+  const commands = [];
+  const client = createBrowserSkillClient({
+    async runCommand(args, options) {
+      commands.push({ args, timeoutMs: options.timeoutMs });
+      if (args.includes('--prepare')) {
+        return { code: 0, stdout: JSON.stringify({ request_id: args[3], state: 'prepared' }), stderr: '' };
+      }
+      if (args[2] === 'start') {
+        return {
+          code: 1,
+          stdout: JSON.stringify({ code: 'no_browser_connected', message: 'extension not connected' }),
+          stderr: '',
+        };
+      }
+      if (args.includes('--cancel')) {
+        return { code: 0, stdout: JSON.stringify({ request_id: args[3], state: 'closed' }), stderr: '' };
+      }
+      return { code: 1, stdout: JSON.stringify({ message: 'unexpected' }), stderr: '' };
+    },
+  });
+  await assert.rejects(
+    () => client.startSession({ purpose: 'x.home', focused: false }),
+    (error) => error instanceof BrowserUnavailableError && /extension not connected/.test(error.message),
+  );
+  const start = commands.find((item) => item.args[2] === 'start');
+  const requestId = start.args[start.args.indexOf('--request-id') + 1];
+  const cancel = commands.filter((item) => item.args.includes('--cancel'));
+  assert.equal(cancel.length, 1);
+  assert.equal(cancel[0].args[3], requestId);
+  assert.equal(commands.some((item) => item.args.includes('--claim') || item.args[2] === 'stop'), false);
+});
+
+test('claim failure cancels the request and stops that session', async () => {
+  const commands = [];
+  const client = createBrowserSkillClient({
+    async runCommand(args, options) {
+      commands.push({ args, timeoutMs: options.timeoutMs });
+      if (args.includes('--prepare')) {
+        return { code: 0, stdout: JSON.stringify({ request_id: args[3], state: 'prepared' }), stderr: '' };
+      }
+      if (args[2] === 'start') {
+        return {
+          code: 0,
+          stdout: JSON.stringify({ session_id: 'WXYZ', browser_instance_id: 'chrome-1' }),
+          stderr: '',
+        };
+      }
+      if (args.includes('--claim')) {
+        return {
+          code: 1,
+          stdout: JSON.stringify({ code: 'cancelled', message: 'start request cannot be claimed' }),
+          stderr: '',
+        };
+      }
+      if (args.includes('--cancel')) {
+        return { code: 0, stdout: JSON.stringify({ request_id: args[3], state: 'closed' }), stderr: '' };
+      }
+      if (args[2] === 'stop') throw new Error('stop failed');
+      return { code: 1, stdout: JSON.stringify({ message: 'unexpected' }), stderr: '' };
+    },
+  });
+  await assert.rejects(
+    () => client.startSession({ purpose: 'x.home' }),
+    (error) => error instanceof BrowserCommandError && /cannot be claimed/.test(error.message),
+  );
+  const claim = commands.find((item) => item.args.includes('--claim'));
+  const cancel = commands.find((item) => item.args.includes('--cancel'));
+  const stop = commands.find((item) => item.args[2] === 'stop');
+  assert.ok(commands.indexOf(claim) < commands.indexOf(cancel));
+  assert.ok(commands.indexOf(cancel) < commands.indexOf(stop));
+  assert.deepEqual(stop.args.slice(1), ['session', 'stop', 'WXYZ']);
+  assert.equal(stop.timeoutMs, 5_000);
+  assert.equal(commands.filter((item) => item.args[2] === 'stop').length, 1);
+  assert.equal(commands.some((item) => item.args.includes('--name') && item.args[2] === 'stop'), false);
+});
+
+test('prepare and claim responses without state fail closed', async () => {
+  const missingPrepare = [];
+  const prepareClient = createBrowserSkillClient({
+    async runCommand(args) {
+      missingPrepare.push(args);
+      if (args.includes('--prepare')) {
+        return { code: 0, stdout: JSON.stringify({ request_id: args[3], session: null }), stderr: '' };
+      }
+      if (args.includes('--cancel')) {
+        return { code: 0, stdout: JSON.stringify({ request_id: args[3], state: 'closed' }), stderr: '' };
+      }
+      return {
+        code: 0,
+        stdout: JSON.stringify({ session_id: 'SHOULD-NOT-START', browser_instance_id: 'chrome-1' }),
+        stderr: '',
+      };
+    },
+  });
+  await assert.rejects(
+    () => prepareClient.startSession({ purpose: 'x.home' }),
+    (error) => error instanceof BrowserCommandError && /missing/.test(error.message),
+  );
+  assert.equal(missingPrepare.some((args) => args[2] === 'start'), false);
+  assert.equal(missingPrepare.filter((args) => args.includes('--cancel')).length, 1);
+
+  const missingClaim = [];
+  const claimClient = createBrowserSkillClient({
+    async runCommand(args, options) {
+      missingClaim.push({ args, timeoutMs: options.timeoutMs });
+      if (args.includes('--prepare')) {
+        return { code: 0, stdout: JSON.stringify({ request_id: args[3], state: 'prepared' }), stderr: '' };
+      }
+      if (args[2] === 'start') {
+        return {
+          code: 0,
+          stdout: JSON.stringify({ session_id: 'SESS', browser_instance_id: 'chrome-1' }),
+          stderr: '',
+        };
+      }
+      if (args.includes('--claim')) {
+        return { code: 0, stdout: JSON.stringify({ request_id: args[3], session: null }), stderr: '' };
+      }
+      if (args.includes('--cancel') || args[2] === 'stop') {
+        return { code: 0, stdout: JSON.stringify({ ok: true, state: 'closed' }), stderr: '' };
+      }
+      return { code: 1, stdout: JSON.stringify({ message: 'unexpected' }), stderr: '' };
+    },
+  });
+  await assert.rejects(
+    () => claimClient.startSession({ purpose: 'x.home' }),
+    (error) => error instanceof BrowserCommandError && /没有进入 active：missing/.test(error.message),
+  );
+  const claim = missingClaim.find((item) => item.args.includes('--claim'));
+  const cancel = missingClaim.find((item) => item.args.includes('--cancel'));
+  const stop = missingClaim.find((item) => item.args[2] === 'stop');
+  assert.ok(missingClaim.indexOf(claim) < missingClaim.indexOf(cancel));
+  assert.ok(missingClaim.indexOf(cancel) < missingClaim.indexOf(stop));
+  assert.deepEqual(stop.args.slice(1), ['session', 'stop', 'SESS']);
+  assert.equal(stop.timeoutMs, 5_000);
 });
 
 test('legacy-cdp provider is no longer accepted', () => {

@@ -14,7 +14,7 @@ daemon 字符串写明：`request is not prepared or the daemon restarted; prepa
 
 ## prepare、claim、cancel
 
-令牌格式是 `<expiry-unix-ms>:<UUID>`。过期时间必须落在接下来的 10 分钟里，否则 `request expired or admission deadline exceeds ten minutes; use a new request_id`。我们用 `Date.now() + 10 分钟`。
+令牌格式是 `<expiry-unix-ms>:<UUID>`。过期时间必须落在接下来的 10 分钟里，否则 `request expired or admission deadline exceeds ten minutes; use a new request_id`。我们用 `Date.now() + 9 分钟`，给时钟偏差留出余量。
 
 - `bsk --json session request <id> --prepare`：在 daemon 里记下这条请求，状态是 `prepared`。不开窗口。
 - `bsk --json session start --request-id <id> ...`：只接受已经 prepare 过的 id。状态从 `prepared` 到 `starting`，成功后是 `ready`。同一个 id、同一组参数再启动，返回已有结果，不另开窗口。参数不同则拒绝。
@@ -22,7 +22,7 @@ daemon 字符串写明：`request is not prepared or the daemon restarted; prepa
 - `bsk --json session request <id> --cancel`：只取消这一次启动请求。还没开始就留下关闭的墓碑，之后的 start 不能再把同一个 id 打开。已经开始的，等创建结束，再只停止这条请求自己的会话；浏览器、创建时间和 Agent Window 对不上就不动，避免短 session id 被复用后误关。
 - 不带上述旗标的 `bsk --json session request <id>` 只查询状态。
 
-冷启动超时、prepare 之后剩余预算不够、以及 claim 失败，都只发这一条 cancel，时限 5 秒。不发 `session list`，也不按 `--name` 调用 `session stop`。Web 和 Worker 共用一个 daemon，按 `x.home` 停会关掉另一路还在用的窗口。
+`prepare` 或 `start` 只要出错就取消这一次 request，不只是超时。返回里没有 `state`，或 `state` 不是 `prepared` / `active`，也算失败。claim 失败时，先 cancel，再对这次拿到的 `sessionId` 执行 `session stop`，限时 5 秒，报错忽略。还没有 session id 的失败只 cancel。不发 `session list`，也不按 `--name` 停会话。Web 和 Worker 共用一个 daemon，按 `x.home` 停会关掉另一路还在用的窗口。
 
 ## daemon 重启
 
