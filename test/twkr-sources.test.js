@@ -6,7 +6,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { createStore } from '../packages/database/src/index.js';
 import { createMediaIngestionService } from '../packages/domain/src/media-ingestion-service.js';
-import { ingestTwkrNews } from '../packages/domain/src/twkr-ingestion.js';
+import { ingestTwkrNews, TWKR_FUTURE_SLACK_MS } from '../packages/domain/src/twkr-ingestion.js';
 import {
   fetchTwkrDocument,
   parseTwkrPayload,
@@ -66,7 +66,7 @@ test('台湾和韩国来源按原文时间解析，付费墙只留标题和摘�
 
   const elec = parseTwkrPayload(source('thelec'), fixture('thelec.xml'));
   assert.equal(elec.items[0].externalId, 'thelec:idxno:14656');
-  assert.equal(elec.items[0].publishedAt, Date.parse('2026-10-16T15:49:05+08:00'));
+  assert.equal(elec.items[0].publishedAt, Date.parse('2026-10-16T15:49:05+09:00'));
 
   const revenue = parseTwkrPayload(source('twserevenue'), fixture('twse-revenue.json'));
   assert.equal(revenue.items.length, 0);
@@ -157,6 +157,7 @@ test('新闻去重并保留原文时间，月营收只积累历史', async () =>
   assert.equal(rows.length, 1);
   assert.equal(rows[0].publishedAt, Date.parse('2026-10-15T06:44:28+08:00'));
   assert.equal(rows[0].sourceKey, 'twsematerial');
+  assert.equal(rows[0].canonicalUrl, 'https://mops.twse.com.tw/mops/web/t05st01?co_id=3406');
   assert.equal(saved.length, 0);
   assert.equal(enqueued.length, 1);
 
@@ -260,4 +261,117 @@ test('翻译只交给现有的媒体索引，不另选模型', () => {
   const connector = readFileSync(new URL('../packages/connectors/src/twkr-sources.js', import.meta.url), 'utf8');
   assert.match(job, /enqueueMediaIndexEnrich/);
   assert.doesNotMatch(`${job}\n${connector}`, /gemma-4-31b|deepl|generativelanguage|elucid-grok|AI_CENTER_GEMMA_TRANSLATION_MODELS/i);
+});
+
+test('不带时区的韩国时间等于 UTC 加 9 小时', () => {
+  const elec = parseTwkrPayload(source('thelec'), fixture('thelec.xml'));
+  const publishedAt = elec.items[0].publishedAt;
+  assert.equal(publishedAt, Date.parse('2026-10-16T15:49:05+09:00'));
+  assert.equal(publishedAt, Date.UTC(2026, 9, 16, 6, 49, 5));
+});
+
+test('比现在晚过 10 分钟的稿件不入库', () => {
+  const { store, mediaService } = openStore();
+  const item = (id, publishedAt) => ({
+    externalId: `ctee:${id}`,
+    title: id,
+    summary: '摘要',
+    sourceUrl: `https://www.ctee.com.tw/news/${id}`,
+    publishedAt,
+    publishedAtRaw: '2026-10-16T15:06:07',
+    authorName: '證券',
+  });
+  const result = ingestTwkrNews(mediaService, 'local', source('ctee'), [
+    item('future', NOW + TWKR_FUTURE_SLACK_MS + 60_000),
+    item('edge', NOW + TWKR_FUTURE_SLACK_MS),
+    item('now', NOW),
+  ], NOW);
+  assert.equal(result.added, 2);
+  const ids = store.repositories.media.listEntries('local', { limit: 10 }).map((row) => row.externalId);
+  assert.deepEqual(ids.sort(), ['ctee:edge', 'ctee:now']);
+});
+
+test('重大讯息指向 MOPS 公告页，summaryOnly 来源不抓正文', async () => {
+  const calls = [];
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-twkr-body-'));
+  const store = createStore(path.join(directory, 'test.db'));
+  const bodySource = (sourceKey, host) => ({
+    sourceKey,
+    publisher: sourceKey,
+    publisherKey: sourceKey,
+    channel: 'tech',
+    contentAccess: 'body',
+    articleHosts: [host],
+    trackingParams: [],
+  });
+  const mediaService = createMediaIngestionService({
+    mediaRepository: store.repositories.media,
+    feedRepository: store.repositories.feed,
+    mediaPort: {
+      sources: [
+        bodySource('twsematerial', 'mops.twse.com.tw'),
+        bodySource('digitimesrss', 'www.digitimes.com'),
+        bodySource('ctee', 'www.ctee.com.tw'),
+      ],
+      readArticle: async (_entry, input) => {
+        calls.push(input.url);
+        return { ok: false, health: 'network', status: 599, bytes: 0 };
+      },
+    },
+  });
+  const filings = JSON.parse(fixture('twse-material.json'));
+  filings.push({
+    ...filings[0],
+    發言時間: '120000',
+    '主旨 ': '公告取得不动产',
+    說明: '第二条公告。',
+  });
+  const material = parseTwkrPayload(source('twsematerial'), JSON.stringify(filings));
+  assert.equal(source('twsematerial').summaryOnly, true);
+  assert.equal(source('digitimesrss').summaryOnly, true);
+  const recent = material.items.filter((item) => item.externalId.includes(':3406:'));
+  assert.equal(recent.length, 2);
+  assert.deepEqual(recent.map((item) => item.sourceUrl), [
+    'https://mops.twse.com.tw/mops/web/t05st01?co_id=3406',
+    'https://mops.twse.com.tw/mops/web/t05st01?co_id=3406',
+  ]);
+  const indexed = ingestTwkrNews(mediaService, 'local', source('twsematerial'), material.items, NOW);
+  assert.equal(indexed.added, 2);
+  ingestTwkrNews(mediaService, 'local', source('digitimesrss'), parseTwkrPayload(source('digitimesrss'), fixture('digitimes.xml')).items, NOW);
+  ingestTwkrNews(mediaService, 'local', source('ctee'), parseTwkrPayload(source('ctee'), fixture('ctee.xml')).items, NOW);
+  for (const sourceKey of ['twsematerial', 'digitimesrss', 'ctee']) {
+    store.repositories.media.saveState({
+      workspaceId: 'local',
+      sourceKey,
+      enabled: true,
+      hostDirectVerified: true,
+      bodyUseAcknowledged: true,
+      health: 'ready',
+      healthDetail: '',
+      etag: '',
+      lastModified: '',
+      feedHash: '',
+      lastProbe: null,
+      lastSyncAt: null,
+      updatedAt: NOW,
+      ingestionPolicy: '',
+    });
+  }
+  const rows = store.repositories.media.listEntries('local', { limit: 10 });
+  assert.equal(rows.filter((row) => row.sourceKey === 'twsematerial').length, 2);
+  const selected = mediaService.selectBodyCandidates('local', 40).map((row) => row.sourceKey);
+  assert.equal(selected.includes('twsematerial'), false);
+  assert.equal(selected.includes('digitimesrss'), false);
+  assert.equal(selected.includes('ctee'), true);
+  const fetched = await mediaService.fetchBodies({
+    workspaceId: 'local',
+    externalIds: rows.map((row) => row.externalId),
+    usageReviewed: true,
+  });
+  assert.deepEqual(calls, [rows.find((row) => row.sourceKey === 'ctee').canonicalUrl]);
+  assert.equal(fetched.stats.requests, 0);
+  const after = store.repositories.media.listEntries('local', { limit: 10 });
+  for (const row of after.filter((item) => item.sourceKey === 'twsematerial' || item.sourceKey === 'digitimesrss')) {
+    assert.equal(row.fetchState?.fetchStatus, undefined);
+  }
 });

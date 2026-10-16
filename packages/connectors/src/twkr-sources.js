@@ -12,7 +12,7 @@ const TEXT_LIMIT = 2_000;
 
 const OFFSET_MINUTES = {
   'Asia/Taipei': 8 * 60,
-  'Asia/Seoul': 8 * 60,
+  'Asia/Seoul': 9 * 60,
 };
 
 export const TWKR_SOURCES = Object.freeze([
@@ -27,6 +27,7 @@ export const TWKR_SOURCES = Object.freeze([
     intervalMinutes: 15,
     lookbackHours: 72,
     timeZone: 'Asia/Taipei',
+    summaryOnly: true,
     enabled: true,
   },
   {
@@ -225,6 +226,10 @@ export function zonedEpoch(parts, clock, offsetMinutes) {
   return utc - offsetMinutes * 60_000;
 }
 
+export function twkrSourceSkipsBody(sourceKey) {
+  return TWKR_SOURCES.some((item) => item.sourceKey === sourceKey && item.summaryOnly === true);
+}
+
 export function parseZonedFeedDate(value, offsetMinutes) {
   const parsed = parseFeedDate(value);
   if (parsed.publishedAt != null || offsetMinutes == null) return parsed;
@@ -262,7 +267,7 @@ function parseMaterial(body) {
       externalId: `twsematerial:${code}:${spokeKey}:${timeKey}:${shortHash(subject)}`,
       title: clip(`${name}(${code}) ${subject}`, 500),
       summary: clip(field(row, '說明', '说明')),
-      sourceUrl: `https://openapi.twse.com.tw/v1/opendata/t187ap04_L?companyId=${code}&spoke=${spokeKey}&time=${timeKey}&subject=${shortHash(subject)}`,
+      sourceUrl: `https://mops.twse.com.tw/mops/web/t05st01?co_id=${code}`,
       publishedAt,
       publishedAtRaw: `${spokeKey} ${timeKey}`,
       authorName: name,

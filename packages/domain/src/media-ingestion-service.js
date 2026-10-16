@@ -10,6 +10,7 @@ import { formatYmd, zonedParts } from './zoned-time.js';
 import { normalizeMediaUrl } from './media-url.js';
 import { isFlashSource } from './flash-sources.js';
 import { createArticleDedup } from './article-dedup.js';
+import { twkrSourceSkipsBody } from '../../connectors/src/twkr-sources.js';
 const MEDIA_BUDGET = MediaConfigSchema.parse({ version: 1, sources: [] }).budget;
 const MEDIA_TIMEZONE = 'Asia/Shanghai';
 export const MEDIA_INGESTION_POLICY = 'native-channels-v1';
@@ -799,6 +800,10 @@ export function createMediaIngestionService({
         stats[kind] += 1;
         fetched.push({ externalId: row.externalId, sourceKey: row.sourceKey, health, contentLevel: row.contentLevel, ...extra });
       };
+      if (twkrSourceSkipsBody(row.sourceKey)) {
+        result('index_only', 'skipped', { skipped: true });
+        continue;
+      }
       // TrendForce's owner collector has already saved the verified body or report intro.
       if (row.sourceKey === 'trendforce') { result(old.fetchStatus === 'ready' ? 'ready' : 'source_owned','skipped',{skipped:true}); continue; }
       if (!entry || entry.contentAccess !== 'body' || !stateOf(workspaceId,row.sourceKey,at).bodyUseAcknowledged) {
@@ -984,6 +989,7 @@ export function createMediaIngestionService({
       if (!previous || d.lastSeenAt > previous.lastSeenAt) byId.set(d.externalId,{...d,sourceKey:source.sourceKey});
     }
     const ranked = rows.filter(row => {
+      if (twkrSourceSkipsBody(row.sourceKey)) return false;
       if (row.contentLevel === 'full' && !row.fetchState?.extractorVersion) return false;
       const entry = mediaSource(row.sourceKey);
       const state = row.fetchState || {};
@@ -1302,18 +1308,19 @@ export function createMediaIngestionService({
       for (const item of items || []) {
         if (!item?.externalId || !item.sourceUrl || !String(item.title || '').trim()) continue;
         if (!Number.isInteger(item.publishedAt) || item.publishedAt <= 0) continue;
+        const sharedListingUrl = descriptor.format === 'twse-material';
         const previous = mediaRepository.getEntries(workspaceId, [item.externalId])[0]
-          || mediaRepository.findByUrl?.(workspaceId, item.sourceUrl)
+          || (sharedListingUrl ? null : mediaRepository.findByUrl?.(workspaceId, item.sourceUrl))
           || null;
         const article = incomingArticle(entry, item);
-        if (!previous) {
+        if (!previous && !sharedListingUrl) {
           const match = articleDedup.find(workspaceId, article, { ignoreMediaIds: [item.externalId] });
           if (match?.kind === 'media' && match.externalId) {
             articleDedup.fill(match, article);
             continue;
           }
-          if (added >= maxNew) continue;
         }
+        if (!previous && added >= maxNew) continue;
         const row = entryRow(workspaceId, entry, { ...item, externalId: previous?.externalId || item.externalId }, {
           at,
           previous,

@@ -13,9 +13,9 @@
 | DIGITIMES `digitimesrss` | `https://www.digitimes.com/rss/daily.xml` | 15 分钟 |
 | THE ELEC `thelec` | `https://www.thelec.net/rss/allArticle.xml` | 15 分钟 |
 
-发布时间用稿件自己的时间。证交所用发言日期和发言时间，民国年换成公元，时区是台北。工商时报和 THE ELEC 的时间没有时区，分别按台北和首尔（都是 UTC+8）解释。钜亨用 `publishAt` 的 Unix 秒。经济日报和 DIGITIMES 的 RSS 自带时区。没有可解析时间的条目不入库，也不改用抓取时间。
+发布时间用稿件自己的时间。证交所用发言日期和发言时间，民国年换成公元，时区是台北。工商时报和 THE ELEC 的时间没有时区，分别按台北（UTC+8）和首尔（UTC+9）解释。钜亨用 `publishAt` 的 Unix 秒。经济日报和 DIGITIMES 的 RSS 自带时区。没有可解析时间的条目不入库，也不改用抓取时间。比当前时间晚过 10 分钟的稿件先不入库。
 
-同一来源、同一链接或同一外部 id 不另建一条。一轮每个来源最多新写入 40 条，更早的留到下一轮。重大讯息的链接带上公司代号、发言时间和主旨摘要，避免同一家公司的不同公告被收成一条。
+同一来源、同一外部 id 不另建一条。一轮每个来源最多新写入 40 条，更早的留到下一轮。重大讯息的原文链接是 MOPS 公司公告页 `https://mops.twse.com.tw/mops/web/t05st01?co_id=<公司代号>`，同一家公司的不同公告仍各记一条。`summaryOnly` 的来源（证交所重大讯息、DIGITIMES）不抓正文，`media.index.enrich` 不会按条目再下载整份 JSON 或文章页。
 
 翻译不新开模型。新条目交给已有的 `media.index.enrich`，仍只走 Gemma 26B。
 
