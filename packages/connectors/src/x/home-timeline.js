@@ -67,16 +67,38 @@ export function tweetPublishedAt(tweet, tweetId = '') {
   return parsed;
 }
 
+function attributedXAuthor(tweet) {
+  const repostHandle = parseTwitterHandle(tweet.reposter_handle || tweet.reposterHandle || '');
+  const repostRestId = String(tweet.reposter_rest_id || tweet.reposterRestId || '').trim();
+  if (repostHandle || repostRestId) {
+    return {
+      handle: repostHandle,
+      restId: repostRestId,
+      name: text(tweet.reposter_name || tweet.reposterName, repostHandle),
+      avatar: String(tweet.reposter_avatar || tweet.reposterAvatar || '').trim(),
+    };
+  }
+  const handle = parseTwitterHandle(tweet.authorHandle || tweet.author_handle || '');
+  return {
+    handle,
+    restId: String(tweet.author_rest_id || tweet.authorRestId || tweet.author_id || tweet.authorId || '').trim(),
+    name: text(tweet.authorName || tweet.author_name, handle ? `@${handle}` : 'X'),
+    avatar: String(tweet.author_avatar || tweet.authorAvatar || '').trim(),
+  };
+}
+
 export function tweetToFeedItem(tweet, options = {}) {
   const tweetId = text(tweet.tweetId || tweet.tweet_id);
-  const handle = parseTwitterHandle(tweet.authorHandle || tweet.author_handle || '');
+  const author = attributedXAuthor(tweet);
+  const handle = author.handle;
   const body = normalizeTweetBody(tweet.text || tweet.body);
   const lead = textBeforeCommentBlock(body) || body;
   const sourceUrl = text(tweet.tweetUrl || tweet.tweet_url)
     || (tweetId && handle ? `https://x.com/${handle}/status/${tweetId}` : '')
     || (tweetId ? `https://x.com/i/status/${tweetId}` : '');
   const publishedAt = tweetPublishedAt(tweet, tweetId);
-  const authorName = text(tweet.authorName || tweet.author_name, handle ? `@${handle}` : 'X');
+  const authorName = author.name || (handle ? `@${handle}` : 'X');
+  const nativeId = author.restId || (handle ? `@${handle}` : '');
   return {
     id: tweetId ? `x:${tweetId}` : `x:${handle}:${sourceUrl}`,
     workspaceId: options.workspaceId || 'local',
@@ -84,6 +106,9 @@ export function tweetToFeedItem(tweet, options = {}) {
     externalId: tweetId,
     authorName,
     authorHandle: handle ? `@${handle}` : '',
+    authorNativeId: nativeId,
+    authorAvatar: author.avatar,
+    authorProvisional: Boolean(nativeId.startsWith('@')),
     title: lead ? `${lead.slice(0, 48)}${lead.length > 48 ? '…' : ''}` : 'X 动态',
     summary: lead.slice(0, 160),
     body,

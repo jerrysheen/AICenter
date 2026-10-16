@@ -2,6 +2,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createConfiguredBrowserRuntime, parseBrowserJson } from '../packages/connectors/src/browser/index.js';
+import { createStore } from '../packages/database/src/index.js';
+import { ingestBilibiliDynamics } from '../packages/domain/src/bilibili-dynamics.js';
 import { resolveInstanceConfig } from '../packages/instance/src/index.js';
 import { resolveBilibiliSpaceTarget } from './lib/bilibili-space-target.mjs';
 
@@ -359,6 +361,17 @@ function persist(checkpoint, records, spaceCounts, page) {
 const maxPages = Math.max(1, Number(argument('--max-pages', '250')) || 250);
 const fresh = flag('--fresh');
 const rebuildOnly = flag('--rebuild-only');
+let dynamicStore = null;
+
+function rememberDynamics(rows) {
+  if (rebuildOnly || !rows?.length) return;
+  try {
+    if (!dynamicStore) dynamicStore = createStore(instance.databasePath);
+    ingestBilibiliDynamics(dynamicStore.repositories.feed, 'local', rows);
+  } catch (error) {
+    console.error('[collect] dynamics db', error instanceof Error ? error.message : error);
+  }
+}
 mkdirSync(outputDir, { recursive: true });
 
 let checkpoint = fresh ? emptyCheckpoint() : { ...emptyCheckpoint(), ...readJson(paths.checkpoint, {}) };
@@ -447,13 +460,16 @@ const sessionResult = await runtime.withSession(
       }
       const items = Array.isArray(payload?.data?.items) ? payload.data.items : [];
       let added = 0;
+      const freshRecords = [];
       for (const item of items) {
         const record = extractRecord(item);
         if (!record.id || knownIds.has(record.id)) continue;
         knownIds.add(record.id);
         records.push(record);
+        freshRecords.push(record);
         added += 1;
       }
+      rememberDynamics(freshRecords);
       hasMore = Boolean(payload?.data?.has_more);
       offset = text(payload?.data?.offset);
       checkpoint = {
@@ -507,3 +523,4 @@ console.log('[collect] done', JSON.stringify({
   paths,
 }, null, 2));
 if (!checkpoint.complete) process.exitCode = 2;
+dynamicStore?.close();

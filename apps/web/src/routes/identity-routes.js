@@ -1,4 +1,5 @@
 import { parseBehaviorEvents, parseLoginInput, parsePairInput } from '../../../../packages/contracts/src/index.js';
+import { authorViewEnabled } from '../../../../packages/domain/src/authors.js';
 import { json, readJson } from '../http/response.js';
 
 export function createIdentityRoutes() {
@@ -70,6 +71,7 @@ export function createIdentityRoutes() {
           device: identity.device,
           serverName: appInfo.serverName,
           version: appInfo.version,
+          authorView: authorViewEnabled(),
         });
       },
     },

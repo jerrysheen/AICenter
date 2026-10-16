@@ -5,6 +5,7 @@ import { cleanIngestExcerpt } from '../../connectors/src/excerpt-text.js';
 import { stripLeadingPreview } from '../../connectors/src/x/home-browser.js';
 import { collectLocalizationUnits, localizationItemId, needsZhLocalization, translationLooksTruncated } from './localize-texts.js';
 import { isFlashSource } from './flash-sources.js';
+import { authorCaptureFields } from './authors.js';
 
 const DEFAULT_WORKSPACE_ID = 'local';
 const STORED_FEED_LIMIT = 200;
@@ -152,6 +153,7 @@ function toFeedItem(providerId, row) {
     externalId: row.externalId,
     authorName: row.authorName || '',
     authorHandle: row.captureMetadata?.authorHandle || '',
+    authorId: row.authorId || '',
     title: row.title || '',
     summary: row.summary || '',
     body: row.body || '',
@@ -552,6 +554,18 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
         if (nextPublished > 0 && Math.abs(nextPublished - prevPublished) > 36 * 60 * 60 * 1000) {
           feedRepository.touchPublishedAt?.(workspaceId, providerId, String(item.externalId), nextPublished);
         }
+        const sameAuthor = authorCaptureFields(providerId, item);
+        if (sameAuthor) {
+          feedRepository.noteCaptureAuthor?.({
+            workspaceId,
+            provider: providerId,
+            externalId: String(item.externalId),
+            authorNativeId: sameAuthor.authorNativeId,
+            authorProfile: sameAuthor.authorProfile,
+            title: item.title || '',
+            publishedAt: item.publishedAt || null,
+          });
+        }
         rememberFingerprint();
         skipped += 1;
         continue;
@@ -614,6 +628,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
     if (verdict.action === 'ignore' && linked && verdict.metadata?.filterRule!=='all-three-0.60') {
       verdict = { ...verdict, action: 'keep', createContentItem: true, status: 'ready' };
     }
+    const authorFields = authorCaptureFields(providerId, item);
     const capture = feedRepository.saveCapture({
       workspaceId,
       provider: providerId,
@@ -626,10 +641,12 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
       status: verdict.status || 'ready',
       publishedAt: item.publishedAt || null,
       capturedAt: Math.max(0, batchCapturedAt - index),
+      authorNativeId: authorFields?.authorNativeId || null,
       metadata: {
         originalText,
         ...(item.formatEngine ? { formatEngine: item.formatEngine } : {}),
         ...(item.authorHandle ? { authorHandle: item.authorHandle } : {}),
+        ...(authorFields ? { authorProfile: authorFields.authorProfile } : {}),
         ...(verdict.metadata || {}),
       },
     });

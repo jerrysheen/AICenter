@@ -203,12 +203,16 @@ export function readingHourSourceAccess({ feed = null, media = null } = {}) {
     const titles = [];
     const urls = [];
     let publishedAt = null;
+    let author = '';
+    let authorId = '';
     for (const ref of refs || []) {
       if (ref?.type === 'content-item') {
         const item = feed?.getContentItem?.(workspace, ref.id);
         if (item?.title) titles.push(item.title);
         if (item?.sourceUrl) urls.push(item.sourceUrl);
         if (publishedAt == null && Number.isFinite(Number(item?.publishedAt))) publishedAt = Number(item.publishedAt);
+        if (!authorId && item?.authorId) authorId = item.authorId;
+        if (!author && item?.authorName) author = item.authorName;
       }
       if (ref?.type === 'media-body') {
         const entry = media?.getEntry?.(workspace, ref.id);
@@ -218,7 +222,7 @@ export function readingHourSourceAccess({ feed = null, media = null } = {}) {
         if (publishedAt == null && Number.isFinite(Number(entry?.publishedAt))) publishedAt = Number(entry.publishedAt);
       }
     }
-    return { titles, urls, publishedAt };
+    return { titles, urls, publishedAt, author, authorId };
   }
   return {
     sourceFactsFor: factsFor,
@@ -338,7 +342,15 @@ export function createReadingHourService({repository, reportRepository = null, a
       const storedPublisher = String(item.publisher || node?.publisher || '').trim();
       const lookedUp = storedPublisher && storedPublisher !== '未知' ? '' : String(publisherFor?.(workspace, refs) || '').trim();
       const publisher = storedPublisher && storedPublisher !== '未知' ? storedPublisher : (lookedUp && lookedUp !== '未知' ? lookedUp : '');
-      return [{...item, publisher, publishedAt, firstIngestedAt, timely}];
+      return [{
+        ...item,
+        publisher,
+        publishedAt,
+        firstIngestedAt,
+        timely,
+        author: facts.author || '',
+        authorId: facts.authorId || '',
+      }];
     });
     return shown;
   }
