@@ -1,10 +1,13 @@
 const GAMMA_ORIGIN = 'https://gamma-api.polymarket.com';
 const USER_AGENT = 'AI-Center/0.2 (local market-native reader)';
+export const POLYMARKET_REQUEST_TIMEOUT_MS = 15_000;
+const WIDE_SPREAD = 0.1;
 
 export function createPolymarketGate(options = {}) {
   const now = options.now || (() => Date.now());
   const sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const minIntervalMs = Math.max(0, Number(options.minIntervalMs) || 0);
+  const timeoutMs = options.timeoutMs == null ? POLYMARKET_REQUEST_TIMEOUT_MS : Math.max(0, Number(options.timeoutMs) || 0);
   const log = options.log || (() => {});
   const inflight = new Map();
   let tail = Promise.resolve();
@@ -32,11 +35,33 @@ export function createPolymarketGate(options = {}) {
       const wait = Math.max(0, Math.max(nextSlot, backoffUntil) - now());
       if (wait) await sleep(wait);
       nextSlot = now() + minIntervalMs;
+      let timer;
+      let settled = false;
+      const finish = (settle, value) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        settle(value);
+      };
       try {
-        resolve(await task());
+        const result = await new Promise((resolveTask, rejectTask) => {
+          if (timeoutMs > 0) {
+            timer = setTimeout(() => {
+              const error = new Error('Polymarket 请求超时');
+              error.name = 'TimeoutError';
+              finish(rejectTask, error);
+            }, timeoutMs);
+          }
+          Promise.resolve().then(() => task()).then(
+            (value) => finish(resolveTask, value),
+            (error) => finish(rejectTask, error),
+          );
+        });
+        resolve(result);
       } catch (error) {
         reject(error);
       } finally {
+        if (timer) clearTimeout(timer);
         if (inflight.get(key) === promise) inflight.delete(key);
       }
     });
@@ -80,9 +105,8 @@ function probability(value) {
 function midpoint(bid, ask, fallback = null) {
   const left = Number(bid);
   const right = Number(ask);
-  if (Number.isFinite(left) && Number.isFinite(right) && right > 0 && left >= 0 && left <= 1 && right <= 1) {
-    return probability((left + right) / 2);
-  }
+  const quoted = Number.isFinite(left) && Number.isFinite(right) && right >= left && left >= 0 && right <= 1 && right > 0;
+  if (quoted && right - left <= WIDE_SPREAD) return probability(Number(((left + right) / 2).toFixed(6)));
   return probability(fallback);
 }
 
@@ -165,8 +189,10 @@ function chunks(values, size) {
 export function createPolymarketGammaClient(options = {}) {
   const fetchImpl = options.fetch || globalThis.fetch;
   if (typeof fetchImpl !== 'function') throw new TypeError('polymarket gamma client requires fetch');
+  const timeoutMs = options.timeoutMs == null ? POLYMARKET_REQUEST_TIMEOUT_MS : Math.max(0, Number(options.timeoutMs) || 0);
   const gate = options.gate || sharedPolymarketGate({
     minIntervalMs: options.minIntervalMs ?? 800,
+    timeoutMs,
     now: options.now,
     sleep: options.sleep,
     log: options.log,
@@ -176,7 +202,10 @@ export function createPolymarketGammaClient(options = {}) {
   async function getJson(pathAndQuery) {
     const url = `${GAMMA_ORIGIN}${pathAndQuery}`;
     const load = async () => {
-      const response = await fetchImpl(url, { headers: { accept: 'application/json', 'user-agent': USER_AGENT } });
+      const response = await fetchImpl(url, {
+        headers: { accept: 'application/json', 'user-agent': USER_AGENT },
+        signal: timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined,
+      });
       if (response?.status === 429) {
         const retryAfterMs = parseRetryAfter(response.headers?.get?.('retry-after'));
         gate.note429(retryAfterMs);

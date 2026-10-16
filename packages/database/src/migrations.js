@@ -2056,7 +2056,7 @@ migrations.push({ version: 72, name: 'article_dedup_url_lookup', up: addArticleD
 
 migrations.push({ version: 73, name: 'polymarket_watchlist', up(database) {
   database.exec(`
-    CREATE TABLE polymarket_outcomes (
+    CREATE TABLE IF NOT EXISTS polymarket_outcomes (
       event_id TEXT NOT NULL,
       market_id TEXT NOT NULL,
       outcome_key TEXT NOT NULL,
@@ -2079,9 +2079,9 @@ migrations.push({ version: 73, name: 'polymarket_watchlist', up(database) {
       updated_at INTEGER NOT NULL,
       PRIMARY KEY (event_id, market_id, outcome_key)
     );
-    CREATE INDEX idx_polymarket_outcomes_watched ON polymarket_outcomes(watched, sort_order);
-    CREATE INDEX idx_polymarket_outcomes_series ON polymarket_outcomes(series_id, watched);
-    CREATE TABLE polymarket_probability_points (
+    CREATE INDEX IF NOT EXISTS idx_polymarket_outcomes_watched ON polymarket_outcomes(watched, sort_order);
+    CREATE INDEX IF NOT EXISTS idx_polymarket_outcomes_series ON polymarket_outcomes(series_id, watched);
+    CREATE TABLE IF NOT EXISTS polymarket_probability_points (
       event_id TEXT NOT NULL,
       market_id TEXT NOT NULL,
       outcome_key TEXT NOT NULL,
@@ -2090,7 +2090,7 @@ migrations.push({ version: 73, name: 'polymarket_watchlist', up(database) {
       granularity TEXT NOT NULL DEFAULT '5m',
       PRIMARY KEY (event_id, market_id, outcome_key, observed_at)
     );
-    CREATE INDEX idx_polymarket_points_observed ON polymarket_probability_points(observed_at);
+    CREATE INDEX IF NOT EXISTS idx_polymarket_points_observed ON polymarket_probability_points(observed_at);
   `);
 }});
 

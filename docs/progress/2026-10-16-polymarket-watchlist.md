@@ -13,6 +13,8 @@ migration 73 新增两张表，不改旧表，也不删已有的 `event_quote_sn
 
 比特币月度区间放了两条 slug：`what-price-will-bitcoin-hit-in-october-2026` 已在 2026-10-16 的接口里核对到。`what-price-will-bitcoin-hit-in-november-2026` 按 2026 年 1 月到 10 月的同一命名写进配置，当天系列 `bitcoin-hit-price-monthly` 里还没有 11 月这场，抓取找不到时不会编造报价，也不会把已经写下的其他市场清掉。全年的 `what-price-will-bitcoin-hit-before-2027` 不在清单里。日频和小时盘也不在清单里。
 
+每次请求最多等 15 秒。超时或失败都会放开队列，后面的请求还能继续。买卖价差大于 0.1 时，用结果价或最近成交价，不用两边的中点。超过 30 天的降采样每次只处理截止时刻前 2 小时里的点。页面读较昨日时，每个结果只取最新一点和大约 24 小时前的一点。
+
 `AI_CENTER_POLYMARKET_LEGACY=1` 时，看板继续走原来的成交额排序和标题关键词，观察清单任务停用。代码回退时，已经执行过的 migration 73 留在库里，不要删除或改写。
 
 需要同时重启 Web 和 Worker。不要重建数据库。

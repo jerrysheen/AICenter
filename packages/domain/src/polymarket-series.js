@@ -140,8 +140,11 @@ export function readStoredPolymarketView(repository, now = Date.now(), { staleAf
     return { available: false, observedAt: at, sourceUrl, quotes: [], note: '观察清单尚未写入' };
   }
   const latest = Math.max(...outcomes.map((row) => Number(row.updatedAt) || 0));
-  const points = repository.listPointsBetween(latest - POLYMARKET_DAY_MS - POLYMARKET_DAY_WINDOW_MS, latest + 60_000);
-  const quotes = projectWatchlistQuotes(outcomes, points, latest || at);
+  const moment = latest || at;
+  const points = typeof repository.listDashboardPoints === 'function'
+    ? repository.listDashboardPoints(moment)
+    : repository.listPointsBetween(moment - POLYMARKET_DAY_MS - POLYMARKET_DAY_WINDOW_MS, moment + 60_000);
+  const quotes = projectWatchlistQuotes(outcomes, points, moment);
   const stale = at - latest > staleAfterMs;
   return {
     available: true,

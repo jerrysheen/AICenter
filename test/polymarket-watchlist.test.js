@@ -154,6 +154,7 @@ test('gamma fetches /events in batches, coalesces the same request, and backs of
   let attempts = 0;
   const gate = createPolymarketGate({
     minIntervalMs: 800,
+    timeoutMs: 0,
     now: () => clock,
     sleep: async (ms) => {
       sleeps.push(ms);
@@ -174,7 +175,7 @@ test('gamma fetches /events in batches, coalesces the same request, and backs of
       json: async () => slug.map((value, index) => ({ id: String(index + 1), slug: value, title: value, markets: [] })),
     };
   };
-  const client = createPolymarketGammaClient({ fetch, gate, batchSize: 2 });
+  const client = createPolymarketGammaClient({ fetch, gate, batchSize: 2, timeoutMs: 0 });
   const [first, second] = await Promise.all([
     client.fetchEventsBySlugs(['alpha', 'beta']),
     client.fetchEventsBySlugs(['alpha', 'beta']),
@@ -188,6 +189,121 @@ test('gamma fetches /events in batches, coalesces the same request, and backs of
   assert.ok(sleeps.some((ms) => ms >= 800));
   await client.fetchEventsBySlugs(['gamma']);
   assert.equal(urls.length, 3);
+});
+
+test('a timed out polymarket request releases the queue for the next one', async () => {
+  const gate = createPolymarketGate({ minIntervalMs: 0, timeoutMs: 20, sleep: async () => {} });
+  const controller = new AbortController();
+  const task = new Promise((_resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('late')), 500);
+    controller.signal.addEventListener('abort', () => {
+      clearTimeout(timer);
+      reject(new Error('stopped'));
+    }, { once: true });
+  });
+  try {
+    await assert.rejects(gate.request('hung', () => task), /请求超时/);
+  } finally {
+    controller.abort();
+  }
+  assert.equal(gate.inflightCount(), 0);
+  assert.equal(await gate.request('next', async () => 'ok'), 'ok');
+
+  let aborted = false;
+  let calls = 0;
+  const client = createPolymarketGammaClient({
+    timeoutMs: 30,
+    gate: createPolymarketGate({ minIntervalMs: 0, timeoutMs: 0, sleep: async () => {} }),
+    fetch: (_url, init) => {
+      calls += 1;
+      if (calls > 1) return Promise.resolve({ ok: true, status: 200, json: async () => [] });
+      return new Promise((_resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('late')), 500);
+        init.signal.addEventListener('abort', () => {
+          clearTimeout(timer);
+          aborted = true;
+          reject(init.signal.reason || new Error('aborted'));
+        }, { once: true });
+      });
+    },
+  });
+  await assert.rejects(client.fetchEventsBySlugs(['slow']), /超时|aborted|abort/i);
+  assert.equal(aborted, true);
+  assert.deepEqual(await client.fetchEventsBySlugs(['later']), []);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+});
+
+test('wide bid ask spreads use the outcome price instead of the midpoint', () => {
+  const wide = parsePolymarketEvent({
+    id: '1', slug: 'wide', title: 'Wide',
+    markets: [{
+      id: 'm', groupItemTitle: 'Yes', outcomes: '["Yes","No"]', outcomePrices: '["0.42","0.58"]',
+      bestBid: 0.01, bestAsk: 0.99, lastTradePrice: 0.4,
+    }],
+  });
+  assert.equal(wide[0].probability, '0.42');
+  const lastOnly = parsePolymarketEvent({
+    id: '2', slug: 'last', title: 'Last',
+    markets: [{
+      id: 'm2', groupItemTitle: 'Yes', outcomes: '["Yes","No"]', outcomePrices: '[]',
+      bestBid: 0.01, bestAsk: 0.9, lastTradePrice: 0.37,
+    }],
+  });
+  assert.equal(lastOnly[0].probability, '0.37');
+  const tight = parsePolymarketEvent({
+    id: '3', slug: 'tight', title: 'Tight',
+    markets: [{
+      id: 'm3', groupItemTitle: 'Yes', outcomes: '["Yes","No"]', outcomePrices: '["0.10","0.90"]',
+      bestBid: 0.4, bestAsk: 0.44,
+    }],
+  });
+  assert.equal(tight[0].probability, '0.42');
+});
+
+test('downsample only collapses the two hours before the cutoff', () => {
+  const temporary = temporaryDatabase();
+  const cutoff = Date.UTC(2026, 9, 16, 12, 0, 0);
+  const inside = cutoff - 90 * 60 * 1000;
+  const outside = cutoff - 48 * 60 * 60 * 1000;
+  const points = [];
+  for (let step = 0; step < 6; step += 1) {
+    points.push({
+      eventId: '1', marketId: 'm', outcomeKey: 'yes', observedAt: inside + step * 5 * 60 * 1000,
+      probability: '0.20', granularity: '5m',
+    });
+    points.push({
+      eventId: '1', marketId: 'm', outcomeKey: 'yes', observedAt: outside + step * 5 * 60 * 1000,
+      probability: '0.10', granularity: '5m',
+    });
+  }
+  try {
+    const repository = temporary.store.repositories.polymarket;
+    repository.saveWatchlist({
+      outcomes: [{
+        eventId: '1', marketId: 'm', outcomeKey: 'yes', seriesId: '', watched: true, sortOrder: 0,
+        groupKey: 'us-data', alertProfile: 'binary', eventSlug: 'recession', marketSlug: '',
+        title: 'US recession by end of 2026?', outcomeLabel: 'Yes', lifecycle: 'open', endAt: null,
+        liquidity: '9000', volume24h: '10', totalVolume: '20', probability: '0.55',
+        sourceUrl: 'https://polymarket.com/event/recession', updatedAt: cutoff,
+      }],
+      points,
+      at: cutoff,
+    });
+    const removed = repository.downsampleBefore(cutoff);
+    assert.equal(removed > 0, true);
+    const kept = repository.listPointsBetween(0, cutoff);
+    const oldPoints = kept.filter((point) => point.observedAt < cutoff - 2 * 60 * 60 * 1000);
+    const recent = kept.filter((point) => point.observedAt >= cutoff - 2 * 60 * 60 * 1000);
+    assert.equal(oldPoints.length, 6);
+    assert.equal(recent.length, 1);
+    assert.equal(recent[0].granularity, '1h');
+    const anchors = repository.listDashboardPoints(cutoff);
+    assert.equal(anchors.length <= 2, true);
+    const view = readStoredPolymarketView(repository, cutoff);
+    assert.equal(view.quotes[0].midPrice, '0.55');
+  } finally {
+    temporary.remove();
+  }
 });
 
 test('five minute points downsample to one hourly point after 30 days and day change uses the series', () => {

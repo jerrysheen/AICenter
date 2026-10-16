@@ -153,8 +153,9 @@ export function createPolymarketRepository(database, emitEvent = () => {}) {
     FROM polymarket_probability_points
     WHERE observed_at >= ? AND observed_at <= ?
     ORDER BY observed_at ASC`);
+  const downsampleWindowMs = 2 * HOUR_MS;
   const downsample = database.prepare(`DELETE FROM polymarket_probability_points
-    WHERE observed_at < ?
+    WHERE observed_at >= ? AND observed_at < ?
     AND EXISTS (
       SELECT 1 FROM polymarket_probability_points newer
       WHERE newer.event_id = polymarket_probability_points.event_id
@@ -169,7 +170,40 @@ export function createPolymarketRepository(database, emitEvent = () => {}) {
     )`);
   const markHourly = database.prepare(`UPDATE polymarket_probability_points
     SET granularity = '1h'
-    WHERE observed_at < ? AND granularity != '1h'`);
+    WHERE observed_at >= ? AND observed_at < ? AND granularity != '1h'`);
+  const dashboardPrior = database.prepare(`WITH ranked AS (
+      SELECT event_id, market_id, outcome_key, observed_at, probability, granularity,
+        ROW_NUMBER() OVER (
+          PARTITION BY event_id, market_id, outcome_key
+          ORDER BY ABS(observed_at - ?) ASC,
+            CASE WHEN observed_at <= ? THEN 0 ELSE 1 END,
+            observed_at ASC
+        ) AS rn
+      FROM polymarket_probability_points
+      WHERE observed_at >= ? AND observed_at <= ?
+    )
+    SELECT event_id, market_id, outcome_key, observed_at, probability, granularity
+    FROM ranked WHERE rn = 1`);
+  const dashboardLatest = database.prepare(`WITH ranked AS (
+      SELECT event_id, market_id, outcome_key, observed_at, probability, granularity,
+        ROW_NUMBER() OVER (
+          PARTITION BY event_id, market_id, outcome_key
+          ORDER BY observed_at DESC
+        ) AS rn
+      FROM polymarket_probability_points
+      WHERE observed_at >= ? AND observed_at <= ?
+    )
+    SELECT event_id, market_id, outcome_key, observed_at, probability, granularity
+    FROM ranked WHERE rn = 1`);
+
+  function runDownsample(cutoff) {
+    const limit = Number(cutoff);
+    if (!Number.isInteger(limit) || limit <= 0) return 0;
+    const start = limit - downsampleWindowMs;
+    const result = downsample.run(start, limit, limit);
+    markHourly.run(start, limit);
+    return result.changes;
+  }
 
   return {
     saveWatchlist({ outcomes = [], points = [], syncedEventIds = [], downsampleBefore = null, at = Date.now() } = {}) {
@@ -201,10 +235,7 @@ export function createPolymarketRepository(database, emitEvent = () => {}) {
         for (const point of samples) {
           upsertPoint.run(point.eventId, point.marketId, point.outcomeKey, point.observedAt, point.probability, point.granularity);
         }
-        if (Number.isInteger(downsampleBefore) && downsampleBefore > 0) {
-          downsample.run(downsampleBefore, downsampleBefore);
-          markHourly.run(downsampleBefore);
-        }
+        if (Number.isInteger(downsampleBefore) && downsampleBefore > 0) runDownsample(downsampleBefore);
         emitEvent('market.polymarket.watchlist.saved.v1', 'polymarket-watchlist', String(updatedAt), {
           observedAt: updatedAt,
           outcomes: rows.length,
@@ -230,11 +261,16 @@ export function createPolymarketRepository(database, emitEvent = () => {}) {
     },
 
     downsampleBefore(cutoff) {
-      const limit = Number(cutoff);
-      if (!Number.isInteger(limit) || limit <= 0) return 0;
-      const result = downsample.run(limit, limit);
-      markHourly.run(limit);
-      return result.changes;
+      return runDownsample(cutoff);
+    },
+
+    listDashboardPoints(now, { dayMs = 24 * HOUR_MS, windowMs = 3 * HOUR_MS, latestMs = 2 * HOUR_MS } = {}) {
+      const at = Math.trunc(Number(now));
+      if (!Number.isInteger(at) || at < 0) return [];
+      const target = at - dayMs;
+      const priors = dashboardPrior.all(target, target, target - windowMs, target + windowMs).map(mapPoint);
+      const latest = dashboardLatest.all(at - latestMs, at + 60_000).map(mapPoint);
+      return [...priors, ...latest];
     },
   };
 }
