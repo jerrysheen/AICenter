@@ -2,8 +2,15 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createConfiguredBrowserRuntime, parseBrowserJson } from '../packages/connectors/src/browser/index.js';
+import { createTypeSafeSystemOneClient } from '../packages/connectors/src/index.js';
 import { createStore } from '../packages/database/src/index.js';
-import { ingestBilibiliDynamics } from '../packages/domain/src/bilibili-dynamics.js';
+import { DEFAULT_WORKSPACE_ID } from '../packages/database/src/migrations.js';
+import {
+  createBilibiliDynamicsFilter,
+  ingestBilibiliDynamicsFiltered,
+  resolveDynamicsWorkspace,
+} from '../packages/domain/src/bilibili-dynamics.js';
+import { loadFeedValueCalibration } from '../packages/instance/src/feed-value-config.js';
 import { resolveInstanceConfig } from '../packages/instance/src/index.js';
 import { resolveBilibiliSpaceTarget } from './lib/bilibili-space-target.mjs';
 
@@ -362,12 +369,38 @@ const maxPages = Math.max(1, Number(argument('--max-pages', '250')) || 250);
 const fresh = flag('--fresh');
 const rebuildOnly = flag('--rebuild-only');
 let dynamicStore = null;
+let dynamicsFilter;
 
-function rememberDynamics(rows) {
+function dynamicsWorkspace() {
+  return resolveDynamicsWorkspace({
+    instanceId: instance.instanceId,
+    legacyLayout: instance.legacyLayout,
+    env: process.env,
+    argv: process.argv,
+    fallback: DEFAULT_WORKSPACE_ID,
+  });
+}
+
+async function rememberDynamics(rows) {
   if (rebuildOnly || !rows?.length) return;
   try {
     if (!dynamicStore) dynamicStore = createStore(instance.databasePath);
-    ingestBilibiliDynamics(dynamicStore.repositories.feed, 'local', rows);
+    if (dynamicsFilter === undefined) {
+      let client = null;
+      try { client = createTypeSafeSystemOneClient({ env: process.env }); } catch { client = null; }
+      dynamicsFilter = createBilibiliDynamicsFilter({
+        feedRepository: dynamicStore.repositories.feed,
+        env: process.env,
+        calibration: loadFeedValueCalibration(instance),
+        client,
+      });
+    }
+    await ingestBilibiliDynamicsFiltered(
+      dynamicStore.repositories.feed,
+      dynamicsWorkspace(),
+      rows,
+      dynamicsFilter,
+    );
   } catch (error) {
     console.error('[collect] dynamics db', error instanceof Error ? error.message : error);
   }
@@ -469,7 +502,7 @@ const sessionResult = await runtime.withSession(
         freshRecords.push(record);
         added += 1;
       }
-      rememberDynamics(freshRecords);
+      await rememberDynamics(freshRecords);
       hasMore = Boolean(payload?.data?.has_more);
       offset = text(payload?.data?.offset);
       checkpoint = {

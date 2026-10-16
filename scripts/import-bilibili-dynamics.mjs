@@ -1,16 +1,52 @@
-import { readFileSync } from 'node:fs';
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
+import { createInterface } from 'node:readline';
+import { DEFAULT_WORKSPACE_ID } from '../packages/database/src/migrations.js';
 import { createStore } from '../packages/database/src/index.js';
-import { ingestBilibiliDynamics } from '../packages/domain/src/bilibili-dynamics.js';
+import { ingestBilibiliDynamics, resolveDynamicsWorkspace } from '../packages/domain/src/bilibili-dynamics.js';
 import { resolveInstanceConfig } from '../packages/instance/src/index.js';
 
-export function readDynamicsJsonl(file) {
-  const text = readFileSync(file, 'utf8');
-  return text.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => JSON.parse(line));
+export const DYNAMICS_IMPORT_BATCH = 500;
+
+export async function forEachJsonlBatch(file, onBatch, { batchSize = DYNAMICS_IMPORT_BATCH } = {}) {
+  const lines = createInterface({
+    input: createReadStream(file, { encoding: 'utf8' }),
+    crlfDelay: Infinity,
+  });
+  let batch = [];
+  let batches = 0;
+  for await (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    batch.push(JSON.parse(trimmed));
+    if (batch.length >= batchSize) {
+      batches += 1;
+      await onBatch(batch, batches);
+      batch = [];
+    }
+  }
+  if (batch.length) {
+    batches += 1;
+    await onBatch(batch, batches);
+  }
+  return { batches };
 }
 
 export function importBilibiliDynamics(feedRepository, workspaceId, records) {
   return ingestBilibiliDynamics(feedRepository, workspaceId, records);
+}
+
+export async function importBilibiliDynamicsFile(store, workspaceId, file, { batchSize = DYNAMICS_IMPORT_BATCH } = {}) {
+  let added = 0;
+  let skipped = 0;
+  let transactions = 0;
+  await forEachJsonlBatch(file, async (batch) => {
+    const result = store.transaction(() => importBilibiliDynamics(store.repositories.feed, workspaceId, batch));
+    added += result.added;
+    skipped += result.skipped;
+    transactions += 1;
+  }, { batchSize });
+  return { added, skipped, transactions };
 }
 
 function arg(name, fallback = '') {
@@ -27,11 +63,17 @@ if (invoked) {
     process.exitCode = 1;
   } else {
     const instance = resolveInstanceConfig({ repositoryRoot: process.cwd() });
+    const workspaceId = resolveDynamicsWorkspace({
+      instanceId: instance.instanceId,
+      legacyLayout: instance.legacyLayout,
+      env: process.env,
+      argv: process.argv,
+      fallback: DEFAULT_WORKSPACE_ID,
+    });
     const store = createStore(instance.databasePath);
     try {
-      const records = readDynamicsJsonl(file);
-      const result = importBilibiliDynamics(store.repositories.feed, arg('--workspace', 'local'), records);
-      console.log(`[authors] bilibili dynamics added=${result.added} skipped=${result.skipped}`);
+      const result = await importBilibiliDynamicsFile(store, workspaceId, file);
+      console.log(`[authors] bilibili dynamics added=${result.added} skipped=${result.skipped} batches=${result.transactions}`);
     } finally {
       store.close();
     }

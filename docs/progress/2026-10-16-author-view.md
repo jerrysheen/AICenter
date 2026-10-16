@@ -10,12 +10,15 @@ migration 77 建 `authors`，并给 `captures` 加可空的 `author_native_id`�
 
 `AUTHOR_VIEW` 默认开启。设为 `0` 会隐藏作者页和 `/api/v1/authors`。表留着。抓取仍会登记作者。
 
-Web 和 Worker 都要重启。回填不要放进 Web 或 Worker，部署后在实例目录执行：
+Web 和 Worker 都要重启。历史回填不要放进 Web 或 Worker。Worker 会在每天凌晨 00:10（Asia/Shanghai，可用 `AI_CENTER_AUTHOR_STATS_AT` 调整）按作者重算近 30 天计数，每 500 个一批，批与批之间让出事件循环，并记下进度。部署后在实例目录按这个顺序执行：
 
 ```text
+node scripts/backfill-authors.mjs --dry-run
 node scripts/backfill-authors.mjs
-node scripts/recompute-author-stats.mjs
 node scripts/import-bilibili-dynamics.mjs --file <dynamics.jsonl>
+node scripts/recompute-author-stats.mjs
 ```
 
-`backfill-authors.mjs` 按 `captures.rowid` 每 500 行一批，批与批之间休眠，进度写在数据库旁边的 `author-backfill.json`，可以中断后继续。`recompute-author-stats.mjs` 给离线校正近 30 天计数，适合每晚跑一次。
+没有现成的 B 站 jsonl 就跳过 import。`--dry-run` 只统计会写入的行数，然后回滚。正式 backfill 按 `captures.rowid` 每 500 行一批，进度写在数据库旁边的 `author-backfill.json`。`recompute-author-stats.mjs` 是上线后的一次校正；之后由 Worker 每天凌晨重算。
+
+B 站空间采集默认走信息流过滤，不再固定写成 `ready` 进入主信息流。工作区来自 `--workspace`、`AI_CENTER_WORKSPACE_ID` 或实例，不在脚本里写死。这次没有加直通开关；要不要让空间动态不经筛选进入主信息流，留给之后决定。

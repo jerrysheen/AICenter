@@ -56,32 +56,40 @@ function defaultProfileUrl(platform, nativeId, handle) {
   return '';
 }
 
-export function provisionalAuthorId(platform, handle, name) {
-  if (platform === 'x' && handle) return `x:@${handle}`;
-  if (platform === 'xueqiu' && (name || handle)) return `xueqiu:@${name || handle}`;
-  if (platform === 'bilibili' && (name || handle)) return `bilibili:@${name || handle}`;
+export function provisionalLabel(platform, handle, name) {
+  const cleanHandle = String(handle || '').trim().replace(/^@/, '');
+  const cleanName = String(name || '').trim();
+  if (platform === 'x') return cleanHandle;
+  if (platform === 'xueqiu' || platform === 'bilibili') return cleanName || cleanHandle;
   return '';
+}
+
+export function provisionalAuthorId(platform, handle, name) {
+  const label = provisionalLabel(platform, handle, name);
+  if (!label || !AUTHOR_PLATFORMS.includes(platform)) return '';
+  return `${platform}:@${label}`;
 }
 
 export function authorCaptureFields(platform, item = {}) {
   const source = String(platform || item.platform || item.provider || '').trim();
   if (!AUTHOR_PLATFORMS.includes(source)) return null;
   const profile = item.authorProfile && typeof item.authorProfile === 'object' ? item.authorProfile : {};
-  const name = clip(item.authorName || item.name || profile.name, 256);
-  const handle = clip(String(item.authorHandle || item.handle || profile.handle || '').replace(/^@/, ''), 256);
-  let nativeId = clip(item.authorNativeId || item.nativeId || profile.nativeId, 256);
+  const name = clip(item.attributionName || item.authorName || item.name || profile.name, 256);
+  const handle = clip(String(item.attributionHandle || item.authorHandle || item.handle || profile.handle || '').replace(/^@/, ''), 256);
+  let nativeId = clip(item.attributionNativeId || item.authorNativeId || item.nativeId || profile.nativeId, 256);
   let provisional = Boolean(item.authorProvisional || item.provisional || profile.provisional);
   const requestedKind = item.authorKind || item.kind || profile.kind || '';
   const kind = isSystemAuthor({ name, handle, nativeId, kind: requestedKind }) ? 'system' : 'person';
   if (!nativeId) {
+    const label = provisionalLabel(source, handle, name);
     if (kind === 'system') nativeId = '7x24';
-    else if (handle || name) {
-      nativeId = `@${handle || name}`;
+    else if (label) {
+      nativeId = `@${label}`;
       provisional = true;
     } else return null;
   }
   if (nativeId.startsWith('@')) provisional = true;
-  const avatarUrl = clip(item.authorAvatar || item.avatarUrl || profile.avatarUrl, 1024);
+  const avatarUrl = clip(item.attributionAvatar || item.authorAvatar || item.avatarUrl || profile.avatarUrl, 1024);
   const explicitProfile = clip(item.authorProfileUrl || item.profileUrl || profile.profileUrl, 1024);
   const profileUrl = explicitProfile || defaultProfileUrl(source, nativeId, handle);
   const bio = clip(item.authorBio || item.bio || profile.bio, 500);

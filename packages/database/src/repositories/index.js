@@ -26,7 +26,7 @@ export function createDomainRepositories(database, emitEvent) {
     modelUsage: createModelUsageRepository(database, emitEvent),
     modelQuota: createModelQuotaRepository(database, emitEvent),
     feed: createFeedRepository(database, emitEvent),
-    authors: createAuthorRepository(database),
+    authors: createAuthorRepository(database, emitEvent),
     media: createMediaRepository(database, emitEvent),
     twseRevenue: createTwseRevenueRepository(database),
     hardwarePrices: createHardwarePriceRepository(database, emitEvent),

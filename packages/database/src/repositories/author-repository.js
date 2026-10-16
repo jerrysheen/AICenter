@@ -237,14 +237,10 @@ export function linkAuthorItem(database, input) {
   if (current && current.author_id !== profile.authorId) {
     database.prepare(`UPDATE item_authors SET author_id = ? WHERE workspace_id = ? AND content_item_id = ?`)
       .run(profile.authorId, input.workspaceId, input.contentItemId);
-    if (!current.is_read) {
-      database.prepare(`UPDATE author_stats SET unread_count = MAX(0, unread_count - 1)
-        WHERE workspace_id = ? AND author_id = ?`).run(input.workspaceId, current.author_id);
-      database.prepare(`UPDATE author_stats SET unread_count = unread_count + 1, has_unread = 1,
-          latest_unread_at = MAX(latest_unread_at, ?)
-        WHERE workspace_id = ? AND author_id = ?`).run(current.sort_at, input.workspaceId, profile.authorId);
-    }
+    recomputeAuthorRow(database, input.workspaceId, current.author_id);
+    recomputeAuthorRow(database, input.workspaceId, profile.authorId);
     invalidateAuthorCache();
+    return { authorId: profile.authorId, inserted: false, reassigned: true };
   }
   return { authorId: profile.authorId, inserted: false };
 }
@@ -342,10 +338,13 @@ export function noteAuthorTranslation(database, workspaceId, itemId, text) {
   const preview = authorPreviewText(text);
   if (!preview) return false;
   let contentItemId = '';
-  const direct = database.prepare(`SELECT content_item_id FROM item_authors
+  let authorId = '';
+  const direct = database.prepare(`SELECT author_id FROM item_authors
     WHERE workspace_id = ? AND content_item_id = ?`).get(workspaceId, itemId);
-  if (direct) contentItemId = itemId;
-  else {
+  if (direct?.author_id) {
+    contentItemId = itemId;
+    authorId = direct.author_id;
+  } else {
     const split = String(itemId || '').indexOf(':');
     if (split > 0) {
       const row = database.prepare(`SELECT ci.id AS id FROM captures c
@@ -354,10 +353,16 @@ export function noteAuthorTranslation(database, workspaceId, itemId, text) {
         .get(workspaceId, itemId.slice(0, split), itemId.slice(split + 1));
       contentItemId = row?.id || '';
     }
+    if (contentItemId) {
+      const link = database.prepare(`SELECT author_id FROM item_authors
+        WHERE workspace_id = ? AND content_item_id = ?`).get(workspaceId, contentItemId);
+      authorId = link?.author_id || '';
+    }
   }
-  if (!contentItemId) return false;
+  if (!contentItemId || !authorId) return false;
   const result = database.prepare(`UPDATE author_stats SET latest_title_zh = ?
-    WHERE workspace_id = ? AND latest_item_id = ?`).run(preview, workspaceId, contentItemId);
+    WHERE workspace_id = ? AND author_id = ? AND latest_item_id = ?`)
+    .run(preview, workspaceId, authorId, contentItemId);
   if (result.changes) invalidateAuthorCache();
   return result.changes > 0;
 }
@@ -411,7 +416,56 @@ function platformClause(platform) {
   return { sql: ' AND s.platform = ?', params: [platform] };
 }
 
-export function createAuthorRepository(database) {
+export function recomputeAuthorRow(database, workspaceId, authorId, now = Date.now()) {
+  const author = database.prepare(`SELECT * FROM authors WHERE workspace_id = ? AND author_id = ?`)
+    .get(workspaceId, authorId);
+  if (!author || author.merged_into) return false;
+  const since = now - AUTHOR_ACTIVITY_WINDOW_MS;
+  const totals = database.prepare(`SELECT
+      SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) AS unread_count,
+      COUNT(*) AS total_count,
+      SUM(CASE WHEN sort_at >= ? THEN 1 ELSE 0 END) AS recent_30d_count
+    FROM item_authors WHERE workspace_id = ? AND author_id = ?`).get(since, workspaceId, authorId);
+  const latest = database.prepare(`SELECT content_item_id, sort_at FROM item_authors
+    WHERE workspace_id = ? AND author_id = ?
+    ORDER BY sort_at DESC, content_item_id DESC LIMIT 1`).get(workspaceId, authorId);
+  const unread = seekLatestUnread(database, workspaceId, authorId);
+  const external = latest
+    ? database.prepare(`SELECT c.provider, c.external_id, ci.title FROM content_items ci
+        LEFT JOIN captures c ON c.id = ci.capture_id
+        WHERE ci.workspace_id = ? AND ci.id = ?`).get(workspaceId, latest.content_item_id)
+    : null;
+  const title = latest
+    ? lookupTitle(
+      database, workspaceId, latest.content_item_id,
+      external?.provider && external?.external_id ? `${external.provider}:${external.external_id}` : '',
+      external?.title || '',
+    )
+    : '';
+  const unreadCount = Number(totals?.unread_count) || 0;
+  database.prepare(`INSERT INTO author_stats
+      (workspace_id, author_id, platform, followed, unread_count, has_unread, total_count,
+       latest_unread_at, latest_item_at, latest_item_id, latest_title_zh, recent_30d_count)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(workspace_id, author_id) DO UPDATE SET
+      platform = excluded.platform,
+      followed = excluded.followed,
+      unread_count = excluded.unread_count,
+      has_unread = excluded.has_unread,
+      total_count = excluded.total_count,
+      latest_unread_at = excluded.latest_unread_at,
+      latest_item_at = excluded.latest_item_at,
+      latest_item_id = excluded.latest_item_id,
+      latest_title_zh = excluded.latest_title_zh,
+      recent_30d_count = excluded.recent_30d_count`).run(
+    workspaceId, authorId, author.platform, author.followed ? 1 : 0, unreadCount, unreadCount > 0 ? 1 : 0,
+    Number(totals?.total_count) || 0, unread?.sortAt || 0, latest?.sort_at || 0, latest?.content_item_id || '',
+    title, Number(totals?.recent_30d_count) || 0,
+  );
+  return true;
+}
+
+export function createAuthorRepository(database, emitEvent = () => {}) {
   return Object.freeze({
     listAuthors({ workspaceId, platform = 'all', cursor = null, limit = AUTHOR_LIST_PAGE_SIZE } = {}) {
       const page = Math.max(1, Math.min(Number(limit) || AUTHOR_LIST_PAGE_SIZE, AUTHOR_LIST_PAGE_SIZE));
@@ -510,6 +564,9 @@ export function createAuthorRepository(database) {
       const ids = rows.map((row) => row.content_item_id);
       const marks = ids.map(() => '?').join(',');
       const now = Date.now();
+      const states = database.prepare(`SELECT content_item_id, is_saved, is_hidden FROM user_item_states
+        WHERE workspace_id = ? AND content_item_id IN (${marks})`).all(workspaceId, ...ids);
+      const flags = new Map(states.map((row) => [row.content_item_id, row]));
       database.transaction(() => {
         database.prepare(`UPDATE item_authors SET is_read = 1
           WHERE workspace_id = ? AND author_id = ? AND content_item_id IN (${marks})`)
@@ -519,7 +576,16 @@ export function createAuthorRepository(database) {
           VALUES (?, ?, 1, 0, 0, ?)
           ON CONFLICT(workspace_id, content_item_id) DO UPDATE SET
             is_read = 1, updated_at = excluded.updated_at`);
-        for (const id of ids) upsert.run(workspaceId, id, now);
+        for (const id of ids) {
+          upsert.run(workspaceId, id, now);
+          const state = flags.get(id);
+          emitEvent('feed.item-state.updated.v1', 'user-item-state', id, {
+            contentItemId: id,
+            isHidden: Boolean(state?.is_hidden),
+            isSaved: Boolean(state?.is_saved),
+            isRead: true,
+          }, workspaceId);
+        }
         database.prepare(`UPDATE author_stats SET unread_count = MAX(0, unread_count - ?)
           WHERE workspace_id = ? AND author_id = ?`).run(ids.length, workspaceId, authorId);
       })();
@@ -555,52 +621,7 @@ export function createAuthorRepository(database) {
     },
 
     recomputeAuthor(workspaceId, authorId, now = Date.now()) {
-      const author = database.prepare(`SELECT * FROM authors WHERE workspace_id = ? AND author_id = ?`)
-        .get(workspaceId, authorId);
-      if (!author || author.merged_into) return false;
-      const since = now - AUTHOR_ACTIVITY_WINDOW_MS;
-      const totals = database.prepare(`SELECT
-          SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) AS unread_count,
-          COUNT(*) AS total_count,
-          SUM(CASE WHEN sort_at >= ? THEN 1 ELSE 0 END) AS recent_30d_count
-        FROM item_authors WHERE workspace_id = ? AND author_id = ?`).get(since, workspaceId, authorId);
-      const latest = database.prepare(`SELECT content_item_id, sort_at FROM item_authors
-        WHERE workspace_id = ? AND author_id = ?
-        ORDER BY sort_at DESC, content_item_id DESC LIMIT 1`).get(workspaceId, authorId);
-      const unread = seekLatestUnread(database, workspaceId, authorId);
-      const external = latest
-        ? database.prepare(`SELECT c.provider, c.external_id, ci.title FROM content_items ci
-            LEFT JOIN captures c ON c.id = ci.capture_id
-            WHERE ci.workspace_id = ? AND ci.id = ?`).get(workspaceId, latest.content_item_id)
-        : null;
-      const title = latest
-        ? lookupTitle(
-          database, workspaceId, latest.content_item_id,
-          external?.provider && external?.external_id ? `${external.provider}:${external.external_id}` : '',
-          external?.title || '',
-        )
-        : '';
-      const unreadCount = Number(totals?.unread_count) || 0;
-      database.prepare(`INSERT INTO author_stats
-          (workspace_id, author_id, platform, followed, unread_count, has_unread, total_count,
-           latest_unread_at, latest_item_at, latest_item_id, latest_title_zh, recent_30d_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(workspace_id, author_id) DO UPDATE SET
-          platform = excluded.platform,
-          followed = excluded.followed,
-          unread_count = excluded.unread_count,
-          has_unread = excluded.has_unread,
-          total_count = excluded.total_count,
-          latest_unread_at = excluded.latest_unread_at,
-          latest_item_at = excluded.latest_item_at,
-          latest_item_id = excluded.latest_item_id,
-          latest_title_zh = excluded.latest_title_zh,
-          recent_30d_count = excluded.recent_30d_count`).run(
-        workspaceId, authorId, author.platform, author.followed ? 1 : 0, unreadCount, unreadCount > 0 ? 1 : 0,
-        Number(totals?.total_count) || 0, unread?.sortAt || 0, latest?.sort_at || 0, latest?.content_item_id || '',
-        title, Number(totals?.recent_30d_count) || 0,
-      );
-      return true;
+      return recomputeAuthorRow(database, workspaceId, authorId, now);
     },
 
     listAuthorIds(workspaceId, after = '', limit = 500) {

@@ -317,24 +317,22 @@ export function buildTweetExtractExpression() {
         let reposterRestId = null;
         let reposterAvatar = null;
         try {
-          const userLink = [...article.querySelectorAll('a[href*="/i/user/"]')].map((link) => link.getAttribute("href") || "").find((href) => /\\/i\\/user\\/\\d+/.test(href));
-          const fromLink = userLink && userLink.match(/\\/i\\/user\\/(\\d+)/);
-          authorRestId = fromLink ? fromLink[1] : null;
-          if (!authorRestId) {
-            let node = article;
-            for (let step = 0; step < 8 && node && !authorRestId; step += 1) {
-              const fiberKey = Object.keys(node).find((key) => key.indexOf("__reactFiber") === 0 || key.indexOf("__reactInternalInstance") === 0);
-              let fiber = fiberKey ? node[fiberKey] : null;
-              let hops = 0;
-              while (fiber && hops < 8 && !authorRestId) {
-                const props = fiber.memoizedProps || fiber.pendingProps || null;
-                const candidate = props && (props.rest_id || props.restId || (props.user && (props.user.rest_id || props.user.id_str)) || "");
-                if (/^\\d{4,}$/.test(String(candidate || ""))) authorRestId = String(candidate);
-                fiber = fiber.return;
-                hops += 1;
+          let node = article;
+          for (let step = 0; step < 8 && node && !authorRestId; step += 1) {
+            const fiberKey = Object.keys(node).find((key) => key.indexOf("__reactFiber") === 0 || key.indexOf("__reactInternalInstance") === 0);
+            let fiber = fiberKey ? node[fiberKey] : null;
+            let hops = 0;
+            while (fiber && hops < 8 && !authorRestId) {
+              const props = fiber.memoizedProps || fiber.pendingProps || null;
+              const screen = props && (props.screen_name || props.screenName || (props.legacy && props.legacy.screen_name) || (props.user && (props.user.screen_name || props.user.screenName)) || "");
+              const candidate = props && (props.rest_id || props.restId || (props.user && (props.user.rest_id || props.user.id_str)) || "");
+              if (authorHandle && String(screen || "").replace(/^@/, "").toLowerCase() === String(authorHandle).replace(/^@/, "").toLowerCase() && /^\\d{4,}$/.test(String(candidate || ""))) {
+                authorRestId = String(candidate);
               }
-              node = node.parentElement;
+              fiber = fiber.return;
+              hops += 1;
             }
+            node = node.parentElement;
           }
           const avatarImg = [...article.querySelectorAll("img")].find((img) => /profile_images/.test(img.src || "") && !img.closest('[data-testid="tweetPhoto"]'));
           authorAvatar = avatarImg ? (avatarImg.src || "") : null;
@@ -391,6 +389,15 @@ export function buildTweetExtractExpression() {
     }).filter((item) => item && item.tweet_id);
     return { items };
   })()`;
+}
+
+export function acceptTweetRestId(screenName, authorHandle, restId) {
+  const id = String(restId || '').trim();
+  const screen = String(screenName || '').replace(/^@/, '').trim();
+  const handle = String(authorHandle || '').replace(/^@/, '').trim();
+  if (!screen || !handle || screen.toLowerCase() !== handle.toLowerCase()) return '';
+  if (!/^\d{4,}$/.test(id)) return '';
+  return id;
 }
 
 function buildScrollExpression() {
