@@ -2186,6 +2186,17 @@ migrations.push({ version: 76, name: 'twse_monthly_revenue', up(database) {
   `);
 }});
 
+// 63 仍空着。77–82 已被其他改动占用或预留，这里不补。
+// 83 只给日报头加 (workspace_id, layer, start_at) 索引，不改已有行。
+export const unusedSchemaVersions = [63, 77, 78, 79, 80, 81, 82];
+
+migrations.push({ version: 83, name: 'information_tree_heads_layer_start', up(database) {
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_information_tree_heads_layer_start
+      ON information_tree_heads(workspace_id, layer, start_at);
+  `);
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

@@ -41,7 +41,23 @@ function slotFromIndexRow(row) {
   return { edition: indexEdition(row, 'published', hasEditorial), attempt: indexEdition(row, 'attempt', hasEditorial) };
 }
 
+const LATEST_DAILY_CACHE_MS = 60_000;
+
 export function createInformationTreeRepository(db,emit) {
+  const latestDailyCache = new Map();
+  const forgetLatestDaily = (workspace) => {
+    latestDailyCache.delete(String(workspace ?? ''));
+  };
+  const readLatestDaily = (workspace, load, now = Date.now()) => {
+    const key = String(workspace ?? '');
+    const clock = Number(now);
+    const at = Number.isFinite(clock) ? clock : Date.now();
+    const hit = latestDailyCache.get(key);
+    if (hit && at >= hit.at && at - hit.at < LATEST_DAILY_CACHE_MS) return hit.value;
+    const value = load();
+    latestDailyCache.set(key, { at, value });
+    return value;
+  };
   const read=(table,workspace,id)=>{
     const row=db.prepare(`SELECT value_json FROM ${table} WHERE workspace_id=? AND id=?`).get(workspace,id);
     return row ? JSON.parse(row.value_json) : null;
@@ -143,6 +159,7 @@ export function createInformationTreeRepository(db,emit) {
           && !(validPrevious && previous?.status==='ready' && edition.status==='partial' && after.size<=before.size)
           && [...oldVersions].every(([id,version])=>(newVersions.get(id) ?? -1)>=version);
         if(policyAllowed && headAllowed)db.prepare('INSERT OR REPLACE INTO information_tree_heads VALUES (?,?,?,?,?,?)').run(workspace,key,edition.layer,edition.window.startAt,canPublish ? edition.id : head?.published_id || null,edition.id);
+        if(canPublish && edition.layer==='daily') forgetLatestDaily(workspace);
         emit('report.tree.edition.saved.v1','information-tree',edition.id,{layer:edition.layer,status:edition.status,published:canPublish,...(!validPrevious ? {reason:prematureEmpty ? 'previous-premature-empty' : 'previous-needs-content-is-not-valid-content'} : {})},workspace);
         return {...edition,published:canPublish,...(!policyAllowed || !headAllowed ? {stale:true} : {})};
       })();
@@ -169,8 +186,10 @@ export function createInformationTreeRepository(db,emit) {
         .all(workspace,layer,startAt,endAt).map(slotFromIndexRow);
     },
     latestDailySlot(workspace) {
-      return slotFromIndexRow(db.prepare(editionIndexSql("h.workspace_id=? AND h.layer='daily'", 'ORDER BY h.start_at DESC LIMIT 1')).get(workspace));
+      return slotFromIndexRow(db.prepare(editionIndexSql("h.workspace_id=? AND h.layer='daily' AND h.published_id IS NOT NULL", 'ORDER BY h.start_at DESC LIMIT 1')).get(workspace));
     },
+    readLatestDaily,
+    forgetLatestDaily,
     listInformationInWindow(workspace, window, {limit=200, cursor=null}={}) {
       const safe=Math.max(1, Math.min(Number(limit)||200, 200));
       return db.prepare(`SELECT n.value_json, h.event_at, h.source_id, h.source_version

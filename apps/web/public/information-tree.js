@@ -1076,7 +1076,7 @@ export function createInformationTreePage(host) {
   function readingWhen(item){
     return {at:homeHourItemTime(item), ingested:false};
   }
-  function byPublished(rows){
+  function byHourTime(rows){
     const at=item=>homeHourItemTime(item);
     return [...rows].sort((a,b)=>at(b)-at(a) || String(a.nodeId||a.title||'').localeCompare(String(b.nodeId||b.title||'')));
   }
@@ -1152,7 +1152,7 @@ export function createInformationTreePage(host) {
     const rank=(order,value)=> {const index=order.indexOf(value);return index<0 ? order.length : index;};
     const directionNames=[...new Set(rows.map(item=>item.readingDirectionName).filter(Boolean))].sort((a,b)=>rank(readingDirectionOrder,a)-rank(readingDirectionOrder,b));
     for(const directionName of directionNames){
-      const matched=byPublished(rows.filter(item=>item.readingDirectionName===directionName));
+      const matched=byHourTime(rows.filter(item=>item.readingDirectionName===directionName));
       const block=el('section','','reading-block');
       const heading=el('h2',directionName,'reading-direction news-section-title');
       heading.append(el('span',`${matched.length} 条`,'news-section-count'));
@@ -1232,8 +1232,8 @@ export function createInformationTreePage(host) {
     page.append(el('p',`${newsDayLabel(edition.window.startAt)} · ${clock(edition.window.startAt)}\u2013${clock(edition.window.endAt)}`,'news-day-label'));
     const shown=(snapshot.items||[]).filter(item=>item.readingDirectionName && item.readingDirectionName!=='待分类' && item.disposition!=='out-of-scope');
     const hits=shown.filter(item=>item.disposition==='hit' && item.timely!==false);
-    const stale=byPublished(shown.filter(item=>item.timely===false));
-    const tail=byPublished(shown.filter(item=>item.disposition!=='hit' && item.timely!==false));
+    const stale=byHourTime(shown.filter(item=>item.timely===false));
+    const tail=byHourTime(shown.filter(item=>item.disposition!=='hit' && item.timely!==false));
     if(!hits.length && !tail.length && !stale.length) page.append(showEmptyHour());
     else {
       renderReadingDirections(hits, page, edition);

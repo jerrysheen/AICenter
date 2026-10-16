@@ -44,9 +44,11 @@ export function projectHomeBootstrap(payload) {
   for (const [key, snapshot] of Object.entries(payload.readings || {})) {
     if (snapshot && typeof snapshot === 'object') readings[key] = snapshot;
   }
-  const brief = payload.daily && typeof payload.daily === 'object' && 'daily' in payload.daily
-    ? payload.daily.daily
-    : null;
+  const dailyBox = payload.daily && typeof payload.daily === 'object' ? payload.daily : null;
+  const briefBox = payload.brief && typeof payload.brief === 'object' ? payload.brief : null;
+  const brief = dailyBox && 'daily' in dailyBox
+    ? dailyBox.daily
+    : (briefBox && 'brief' in briefBox ? briefBox.brief : null);
   return {
     tree: payload.tree || null,
     readings,

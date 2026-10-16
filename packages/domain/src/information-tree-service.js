@@ -215,14 +215,18 @@ export function createInformationTreeReader({repository,timezone='Asia/Shanghai'
       const id=repository.head?.(workspace,layer,window);
       return id ? repository.getEdition(workspace,id) : null;
     },
-    latestDaily(workspace) {
-      const slot = repository.latestDailySlot?.(workspace);
-      const head = slot?.edition || slot?.attempt;
-      if (!head) return null;
-      const editorial = head.hasEditorial ? (repository.editorialForWindow?.(workspace, head.window) || null) : null;
-      const full = editorial ? null : repository.getEdition?.(workspace, head.id);
-      const nodes = editorial ? [] : (full?.roots || []).map((id) => repository.getNode?.(workspace, id)).filter(Boolean);
-      return latestDailyCard(head, editorial, nodes);
+    latestDaily(workspace, now = Date.now()) {
+      const load = () => {
+        const slot = repository.latestDailySlot?.(workspace);
+        const head = slot?.edition || null;
+        if (!head) return null;
+        const editorial = head.hasEditorial ? (repository.editorialForWindow?.(workspace, head.window) || null) : null;
+        const full = editorial ? null : repository.getEdition?.(workspace, head.id);
+        const roots = (full?.roots || []).slice(0, 5);
+        const nodes = editorial ? [] : roots.map((id) => repository.getNode?.(workspace, id)).filter(Boolean);
+        return latestDailyCard(head, editorial, nodes);
+      };
+      return typeof repository.readLatestDaily === 'function' ? repository.readLatestDaily(workspace, load, now) : load();
     },
     children(workspace,id) {
       const node=repository.getNode(workspace,id);

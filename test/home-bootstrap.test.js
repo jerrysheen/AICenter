@@ -117,8 +117,11 @@ test('home bootstrap window matches the first-screen plan and strips provider fi
   assert.equal(body.daily.daily.reportDate, '2026-10-16');
   assert.equal(body.daily.daily.providerId, undefined);
   assert.equal(body.daily.daily.modelId, undefined);
-  assert.equal(body.brief, undefined);
+  assert.equal(body.brief.brief.sentence, '日报');
+  assert.equal(body.brief.daily.sentence, '日报');
+  assert.equal(body.daily.brief.providerId, undefined);
   assert.equal(projectHomeBootstrap(body).brief.sentence, '日报');
+  assert.equal(projectHomeBootstrap({ brief: body.brief }).brief.sentence, '日报');
   assert.equal(fake.calls.some((row) => row[0] === 'daily'), true);
   assert.equal(body.posts, undefined);
   assert.equal(body.feeds, undefined);

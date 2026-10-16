@@ -208,7 +208,8 @@ export async function composeHomeBootstrap(services, { workspace = 'local', now 
   const leaveBrief = labelEventLoop('home.bootstrap');
   let brief;
   try {
-    brief = { ok: true, daily: briefView(services.informationTree?.latestDaily?.(workspace) ?? null) };
+    const card = briefView(services.informationTree?.latestDaily?.(workspace) ?? null);
+    brief = { ok: true, daily: card, brief: card };
   } finally {
     leaveBrief();
   }
@@ -254,6 +255,7 @@ export async function composeHomeBootstrap(services, { workspace = 'local', now 
     readings,
     market,
     daily: brief,
+    brief,
     board,
   };
 }

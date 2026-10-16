@@ -31,5 +31,30 @@ test('ask preview strips markdown before clipping to 180 characters', () => {
   const again = createStore(databasePath);
   assert.equal(again.repositories.knowledge.getSession('local', run.sessionId).preview, '加粗 和 代码');
   again.close();
+
+  const marked = new Database(databasePath);
+  marked.prepare('UPDATE ai_sessions SET preview = ? WHERE id = ?').run(
+    '# 标题\n> 引用\n保留 snake_case、a > b、#1，以及 **加粗**、__下划线__、~~删除~~ 和 *斜体*',
+    run.sessionId,
+  );
+  marked.close();
+  const kept = createStore(databasePath);
+  assert.equal(
+    kept.repositories.knowledge.getSession('local', run.sessionId).preview,
+    '标题 引用 保留 snake_case、a > b、#1，以及 加粗、下划线、删除 和 斜体',
+  );
+  kept.close();
+
+  const emoji = createStore(databasePath);
+  const clipped = emoji.repositories.knowledge.recordAgentRun({
+    jobId: 'job-emoji',
+    workspaceId: 'local',
+    message: '表情',
+    answer: `${'字'.repeat(179)}😀尾巴`,
+    providerId: 'fake',
+    modelId: 'fake',
+  });
+  assert.equal(emoji.repositories.knowledge.getSession('local', clipped.sessionId).preview, `${'字'.repeat(179)}😀…`);
+  emoji.close();
   rmSync(directory, { recursive: true, force: true });
 });

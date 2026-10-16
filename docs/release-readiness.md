@@ -1,6 +1,6 @@
 # 0.2.0 发布门槛
 
-2026-10-16 小时报主时间和排序改用 `firstIngestedAt`，没有入库时间才用发布时间。发布时间早于本小时窗口时另写「发布于 HH:MM」，跨日写「发布于 M月D日 HH:MM」。`timely=false` 放进默认收起的「旧闻补录」。信息流「媒体」等每个范围都显式设置 channel，不再沿用快讯。首页和简报页改读 `GET /api/v1/reports/tree/latest-daily`，不再读已停更的 `daily_report_briefs`。小时变化或日报与小时报切换时 push 历史，同一小时换条目只 replace。快讯入库时，正文以 `【…】` 开头就用括号内文字做标题，否则重复正文的标题留空。灵感副标题不再重复卡片标题。问答预览先去掉 markdown 再截到 180 字。不新增 migration。不要重建数据库。需要同时重启 Web 和 Worker。见 `progress/2026-10-16-feed-report.md`。
+2026-10-16 小时报主时间和排序改用 `firstIngestedAt`，没有入库时间才用发布时间。发布时间早于本小时窗口时另写「发布于 HH:MM」，跨日写「发布于 M月D日 HH:MM」。`timely=false` 放进默认收起的「旧闻补录」。信息流「媒体」等每个范围都显式设置 channel，不再沿用快讯。首页和简报页改读 `GET /api/v1/reports/tree/latest-daily`，只取 `published_id` 已有的日报，不再读已停更的 `daily_report_briefs`。同一工作区缓存 60 秒，新一期日报发布后清缓存。bootstrap 的 `brief` 仍指向这张卡片。小时变化或日报与小时报切换时 push 历史，同一小时换条目只 replace。快讯入库时，正文以 `【…】` 开头就用括号内文字做标题，否则重复正文的标题留空；不回填旧标题。灵感副标题不再重复卡片标题。问答预览只去掉成对强调和行首的 `>`、`#`，再按字符截到 180 字。migration 83 只加 `idx_information_tree_heads_layer_start`。不要重建数据库。需要同时重启 Web 和 Worker。见 `progress/2026-10-16-feed-report.md`。
 
 2026-10-16 事件概率卡片重新显示大号概率和涨跌。观察清单仍是 35 条，顺序不变。概率序列从 2026-10-16 才开始，还没有约 24 小时前的点时，只取观察清单里 1 小时到 27 小时之间最早的一点，页面写「较 Xh 前」。整数 `changeBasis`（例如 4、3）显示「较 4h 前」「较 3h 前」；没有该字段才写「较昨日」。底部「上次」只在 `lastPrice` 有十进制概率时出现，空值不再显示成「上次 0.0%」。满 24 小时后不再带 `changeBasis`，文案回到「较昨日」。多个结果只在上方放大领先结果，其余区间默认收起，最多 3 条。不新增 migration。不要重建数据库。需要同时重启 Web 和 Worker。见 `progress/2026-10-16-polymarket-card-change.md`。
 

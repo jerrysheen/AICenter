@@ -64,7 +64,8 @@ const SESSION_HISTORY_LIMIT = 16;
 function clipText(value, max) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   if (!text) return '';
-  return text.length > max ? `${text.slice(0, max)}…` : text;
+  const chars = Array.from(text);
+  return chars.length > max ? `${chars.slice(0, max).join('')}…` : text;
 }
 
 function stripMarkdown(value) {
@@ -74,8 +75,13 @@ function stripMarkdown(value) {
   text = text.replace(/!\[[^\]]*]\([^)]*\)/g, ' ');
   text = text.replace(/\[([^\]]*)]\([^)]*\)/g, '$1');
   text = text.replace(/`([^`\n]*)`/g, '$1');
+  text = text.replace(/^>\s?/gm, '');
   text = text.replace(/^#{1,6}\s+/gm, '');
-  text = text.replace(/[*_~`>#]/g, '');
+  text = text.replace(/\*\*([^*\n]+)\*\*/g, '$1');
+  text = text.replace(/__([^_\n]+)__/g, '$1');
+  text = text.replace(/~~([^~\n]+)~~/g, '$1');
+  text = text.replace(/(?<![\w*])\*(?!\*|\s)([^*\n]*?\S)\*(?![\w*])/g, '$1');
+  text = text.replace(/(?<![\w_])_(?!_|\s)([^_\n]*?\S)_(?![\w_])/g, '$1');
   return text;
 }
 
