@@ -1,17 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
 import { createStore } from '../packages/database/src/index.js';
 import { FeedTranslationJobInputSchema, parseTranslateBatchInput } from '../packages/contracts/src/index.js';
+import { createRuntimeService } from '../packages/domain/src/runtime-service.js';
 import { parseDefillamaStablecoins } from '../packages/connectors/src/market-native.js';
 import { createTranslateService } from '../packages/connectors/src/translate/index.js';
 import { gemmaLockedModels } from '../packages/connectors/src/translate/gemma.js';
 import { createFeedService } from '../packages/domain/src/feed-service.js';
 import { collectLocalizationUnits } from '../packages/domain/src/localize-texts.js';
-import { evaluatePolymarketAlerts, localizePolymarketAlertLabels } from '../packages/domain/src/polymarket-alerts.js';
+import { evaluatePolymarketAlerts, localizePolymarketAlertLabels, lookupStoredPolymarketOutcomes } from '../packages/domain/src/polymarket-alerts.js';
+import { projectWatchlistQuotes } from '../packages/domain/src/polymarket-series.js';
+import { storePolymarketAlerts } from '../packages/runtime/src/polymarket-watchlist-job.js';
+import { projectStaticSignalBoard } from '../packages/source/src/static/board.js';
 import {
   POLYMARKET_OUTCOME_GLOSSARY,
   POLYMARKET_OUTCOME_MODEL,
@@ -99,6 +104,8 @@ test('outcome rules cover Yes/No, bps, percents, ranges and dates, and leave the
     ['by October 16', '10月16日前'],
     ['end of November 2026', '2026年11月底'],
     ['100k-110k', '10万–11万'],
+    ['2 to 3', '2–3'],
+    ['March to June', 'March–June'],
   ];
   for (const [label, text] of cases) {
     const ruled = translatePolymarketOutcome(label);
@@ -176,18 +183,16 @@ test('lead alerts use the same outcome rules, and only uncovered labels call the
     now,
   });
   assert.equal(flipped.alerts.find((alert) => alert.alertType === 'lead_change').message, '领先结果变为 是');
-  const ruled = [{ alertType: 'lead_change', message: '领先结果变为 下降 25 个基点' }];
-  let called = false;
-  await localizePolymarketAlertLabels(ruled, async () => { called = true; return { translations: [] }; });
-  assert.equal(called, false);
-  const uncovered = [{ alertType: 'lead_change', message: '领先结果变为 Ceasefire holds' }];
-  await localizePolymarketAlertLabels(uncovered, async (input) => {
-    assert.equal(input.model, POLYMARKET_OUTCOME_MODEL);
-    assert.equal(input.glossary, POLYMARKET_OUTCOME_GLOSSARY);
-    assert.deepEqual(input.items.map((item) => item.text), ['Ceasefire holds']);
-    return { translations: [{ id: '1', translatedText: '停火维持' }] };
-  });
+  const ruled = [{ alertType: 'lead_change', message: '领先结果变为 下降 25 个基点', outcomeKey: 'cut-25' }];
+  localizePolymarketAlertLabels(ruled, new Map());
+  assert.equal(ruled[0].message, '领先结果变为 下降 25 个基点');
+  const uncovered = [{ alertType: 'lead_change', message: '领先结果变为 Ceasefire holds', outcomeKey: 'ceasefire' }];
+  localizePolymarketAlertLabels(uncovered, new Map([['Ceasefire holds', '停火维持']]));
   assert.equal(uncovered[0].message, '领先结果变为 停火维持');
+  assert.equal(uncovered[0].outcomeKey, 'ceasefire');
+  const kept = [{ alertType: 'lead_change', message: '领先结果变为 Ceasefire holds', outcomeKey: 'ceasefire' }];
+  localizePolymarketAlertLabels(kept, new Map());
+  assert.equal(kept[0].message, '领先结果变为 Ceasefire holds');
 });
 
 test('quote.outcome is collected when rules do not cover it, and short labels still need translation', async () => {
@@ -238,7 +243,7 @@ test('quote.outcome is collected when rules do not cover it, and short labels st
   }
 });
 
-test('outcome labels are enqueued past the 60 item cap with the shared glossary', async () => {
+test('outcome labels keep a glossary batch when titles fill the 60 item cap', async () => {
   const events = Array.from({ length: 61 }, (_, index) => ({
     eventId: `event-${index}`,
     title: `Federal Reserve meeting number ${index} discusses policy`,
@@ -347,6 +352,8 @@ test('amounts under 1000 round, changes use percentage points, and derivative la
   ].map((name) => functionSource(appSource, name)).join('\n'), context);
   assert.equal(context.marketNativeAmount(79.9889), '$80');
   assert.equal(context.marketNativeAmount(79.4), '$79');
+  assert.equal(context.marketNativeAmount(1.239), '$1.24');
+  assert.equal(context.marketNativeAmount(9.5), '$9.50');
   assert.equal(context.marketNativeAmount(1500), '$1.5K');
   assert.equal(context.marketNativeAmount(80.2, { currency: false }), '80');
   assert.equal(context.predictionDayChange('0.62', '0.50').text, '较昨日 +12.0 个百分点');
@@ -489,6 +496,195 @@ test('official authorities and traditional titles are localized when sources are
     const again = localizeOfficialBoard(stored.payload);
     assert.equal(again.upcoming.find((item) => item.eventId === 'treasury').title, treasury.title);
     assert.equal(again.releases[0].authority, stored.payload.releases[0].authority);
+    const focused = projectStaticSignalBoard({
+      ...stored.payload,
+      eventSourceIds: { cpi: 'calendar.us.bls', treasury: 'calendar.us.bls' },
+    }, {
+      from: NOW - 86_400_000,
+      to: NOW + 86_400_000,
+      focus: true,
+      includeUndated: false,
+      limit: 20,
+      releaseLimit: 20,
+    });
+    assert.deepEqual(focused.upcoming.map((item) => item.eventId), ['cpi']);
+    assert.equal(focused.upcoming[0].authority, '白宫');
+  } finally {
+    temporary.close();
+  }
+});
+
+test('reading the board twice enqueues each outcome once, and at most 60', async () => {
+  const temporary = temporaryStore('ai-center-outcome-enqueue-');
+  try {
+    const runtime = createRuntimeService({ runtimeRepository: temporary.store });
+    const calls = [];
+    const route = createSourceRoutes().find((entry) => entry.path === '/api/v1/market-native/board');
+    const board = {
+      predictionMarkets: [{
+        quoteId: 'q1',
+        marketQuestion: 'Will the committee change policy this month?',
+        outcome: 'Ceasefire holds',
+      }],
+    };
+    const services = {
+      marketNativeBoard: { read: async () => ({ board, pending: false }) },
+      feed: {
+        localizeTexts: async (units) => ({ pendingIds: units.map((unit) => unit.id), localizations: {} }),
+      },
+      runtime: {
+        openTranslationIds: (workspaceId) => runtime.openTranslationIds(workspaceId),
+        requestTranslation(input) {
+          calls.push(input);
+          return runtime.requestTranslation(input);
+        },
+      },
+    };
+    async function readBoard() {
+      const response = jsonResponse();
+      await route.handler({
+        response,
+        identity: { device: { workspaceId: 'local' } },
+        url: new URL('http://127.0.0.1/api/v1/market-native/board'),
+        services,
+      });
+      assert.equal(response.statusCode, 200);
+    }
+    await readBoard();
+    const firstCalls = calls.length;
+    const outcomeJob = temporary.store.listOpenJobs('feed.translation.run')
+      .find((job) => (job.input.items || []).some((item) => item.id === 'q1:outcome'));
+    assert.ok(outcomeJob);
+    await readBoard();
+    assert.equal(calls.length, firstCalls);
+    assert.equal(temporary.store.listOpenJobs('feed.translation.run')
+      .filter((job) => (job.input.items || []).some((item) => item.id === 'q1:outcome')).length, 1);
+    const again = createFeedRoutes().find((entry) => entry.path === '/api/v1/translate/batch');
+    async function postBatch() {
+      const request = (async function* requestBody() {
+        yield Buffer.from(JSON.stringify({
+          targetLang: 'zh',
+          glossary: 'polymarket-outcome',
+          items: [{ id: 'q1:outcome', text: 'Ceasefire holds' }],
+        }));
+      })();
+      const response = jsonResponse();
+      await again.handler({
+        request,
+        response,
+        identity: { device: { workspaceId: 'local' } },
+        events: { flush() {} },
+        services: { runtime },
+      });
+      return response.body.jobId;
+    }
+    assert.equal(await postBatch(), outcomeJob.id);
+    assert.equal(temporary.store.listOpenJobs('feed.translation.run')
+      .filter((job) => (job.input.items || []).some((item) => item.id === 'q1:outcome')).length, 1);
+
+    const many = [];
+    const capped = createSourceRoutes().find((entry) => entry.path === '/api/v1/market-native/board');
+    await capped.handler({
+      response: jsonResponse(),
+      identity: { device: { workspaceId: 'local' } },
+      url: new URL('http://127.0.0.1/api/v1/market-native/board'),
+      services: {
+        marketNativeBoard: {
+          read: async () => ({
+            board: {
+              predictionMarkets: Array.from({ length: 61 }, (_, index) => ({
+                quoteId: `cap-${index}`,
+                marketQuestion: `Question ${index} about the policy path ahead`,
+                outcome: `Custom result ${index}`,
+              })),
+            },
+            pending: false,
+          }),
+        },
+        feed: {
+          localizeTexts: async (units) => ({ pendingIds: units.map((unit) => unit.id), localizations: {} }),
+        },
+        runtime: {
+          requestTranslation(input) {
+            many.push(...input.items.map((item) => item.id));
+            return { id: 'cap-job' };
+          },
+        },
+      },
+    });
+    const outcomeIds = many.filter((id) => id.endsWith(':outcome'));
+    assert.equal(outcomeIds.length, 60);
+    assert.equal(outcomeIds.includes('cap-60:outcome'), false);
+  } finally {
+    temporary.close();
+  }
+});
+
+test('alert jobs reuse a stored translation and keep the original outcome key', () => {
+  const now = Date.parse('2026-10-16T12:00:00Z');
+  const config = {
+    alerts: {
+      illiquidLiquidityUsd: 1,
+      cooldownMinutes: 60,
+      profiles: { multi: { leadChange: true } },
+    },
+  };
+  function row(overrides) {
+    return {
+      eventId: '9', marketId: 'hold', outcomeKey: 'hold', watched: true, lifecycle: 'open',
+      outcomeLabel: 'Ceasefire holds', liquidity: '9000', probability: '0.20', alertProfile: 'multi',
+      ...overrides,
+    };
+  }
+  const seen = evaluatePolymarketAlerts({
+    outcomes: [row(), row({ marketId: 'other', outcomeKey: 'other', outcomeLabel: 'Other side', probability: '0.10' })],
+    config,
+    now,
+  });
+  let recorded;
+  const started = Date.now();
+  storePolymarketAlerts({
+    listAlertStates: () => seen.states,
+    listWatchedOutcomes: () => [
+      row({ probability: '0.10' }),
+      row({ marketId: 'other', outcomeKey: 'other', outcomeLabel: 'Other side', probability: '0.80' }),
+    ],
+    listPointsBetween: () => [],
+    listAlertsSince: () => [],
+    recordAlerts(value) {
+      recorded = value;
+      return { alerts: value.alerts.length, states: value.states.length };
+    },
+  }, config, now, {
+    translate() { return new Promise(() => {}); },
+    lookupTranslations: () => new Map([['Other side', '另一边']]),
+  });
+  assert.ok(Date.now() - started < 500);
+  const lead = recorded.alerts.find((alert) => alert.alertType === 'lead_change');
+  assert.equal(lead.message, '领先结果变为 另一边');
+  assert.equal(lead.outcomeKey, 'other');
+  assert.equal(recorded.states.find((state) => state.stateKey === 'lead').stateValue, 'other\tother');
+  const [quote] = projectWatchlistQuotes([
+    row({ outcomeLabel: 'No change', probability: '0.60' }),
+    row({ marketId: 'cut', outcomeKey: 'cut', outcomeLabel: '25 bps decrease', probability: '0.20' }),
+  ], [], now);
+  assert.equal(quote.outcome, '不变');
+  assert.equal(quote.outcomeLabel, 'No change');
+  assert.equal(quote.outcomes[1].label, '下降 25 个基点');
+  assert.equal(quote.outcomes[1].outcomeLabel, '25 bps decrease');
+
+  const temporary = temporaryStore('ai-center-alert-lookup-');
+  try {
+    const hash = createHash('sha256').update('Ceasefire holds').digest('hex');
+    temporary.store.repositories.feed.saveTranslations([{
+      workspaceId: 'local',
+      itemId: 'polymarket:event:9:outcome',
+      targetLang: 'zh',
+      sourceHash: hash,
+      translatedText: '停火维持',
+      engine: 'gemma-4-26b-a4b-it',
+    }]);
+    assert.equal(lookupStoredPolymarketOutcomes(temporary.store.repositories.feed, ['Ceasefire holds']).get('Ceasefire holds'), '停火维持');
   } finally {
     temporary.close();
   }

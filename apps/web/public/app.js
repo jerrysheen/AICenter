@@ -7121,6 +7121,7 @@ function marketNativeAmount(value, { currency = true } = {}) {
   if (Math.abs(number) >= 1e9) return `${prefix}${(number / 1e9).toFixed(2)}B`;
   if (Math.abs(number) >= 1e6) return `${prefix}${(number / 1e6).toFixed(1)}M`;
   if (Math.abs(number) >= 1e3) return `${prefix}${(number / 1e3).toFixed(1)}K`;
+  if (Math.abs(number) < 10) return `${prefix}${number.toFixed(2)}`;
   return `${prefix}${Math.round(number).toLocaleString('en-US')}`;
 }
 
@@ -14123,12 +14124,14 @@ async function translateXBatch({ silent = false, include = null } = {}) {
 
 async function autoLocalizeSources() {
   if (!state.session || state.sourceLocalizing) return;
+  if (!state.sourceTranslationInflight) state.sourceTranslationInflight = new Set();
   const pending = Object.values(state.sourceLocalizations)
-    .filter((row) => row?.pending && row.id && row.sourceText)
+    .filter((row) => row?.pending && row.id && row.sourceText && !state.sourceTranslationInflight.has(row.id))
     .filter((row, index, rows) => rows.findIndex((item) => item.id === row.id) === index);
   const outcomeRows = pending.filter((row) => row.kind === 'outcome' && row.status !== 'failed');
   const otherRows = pending.filter((row) => row.kind !== 'outcome' && row.status !== 'failed');
-  const waiting = (outcomeRows.length ? outcomeRows : otherRows).slice(0, TITLE_TRANSLATE_BATCH_SIZE);
+  const waiting = (outcomeRows.length ? outcomeRows : otherRows).slice(0, Math.min(60, TITLE_TRANSLATE_BATCH_SIZE));
+  for (const row of waiting) state.sourceTranslationInflight.add(row.id);
   if (!waiting.length) return;
   state.sourceLocalizing = true;
   try {
@@ -14142,6 +14145,9 @@ async function autoLocalizeSources() {
       }),
     });
     const byId = new Map((payload.translations || []).map((row) => [row.id, row.translatedText]));
+    for (const row of waiting) {
+      if (!byId.get(row.id)) state.sourceTranslationInflight.delete(row.id);
+    }
     for (const [sourceId, row] of Object.entries(state.sourceLocalizations)) {
       const text = byId.get(row.id);
       if (!text) continue;
@@ -14162,6 +14168,7 @@ async function autoLocalizeSources() {
     }
   } catch (error) {
     if (/仍在后台/.test(String(error?.message || ''))) return;
+    for (const row of waiting) state.sourceTranslationInflight.delete(row.id);
     const failedIds = new Set(waiting.map((row) => row.id));
     for (const [sourceId, row] of Object.entries(state.sourceLocalizations)) {
       if (!failedIds.has(row?.id) || row.text) continue;

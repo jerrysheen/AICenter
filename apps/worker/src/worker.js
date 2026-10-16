@@ -74,6 +74,7 @@ import { createQuantJobHandlers, quantLabManifest } from '../../../packages/runt
 import { ensureEtfWhaleSchedule } from '../../../packages/runtime/src/etf-whale-schedule.js';
 import { createEtfWhaleJobHandlers, etfWhaleManifest } from '../../../packages/runtime/src/etf-whale-sync.js';
 import { createEventQuoteSnapshotJobHandlers, ensureEventQuoteSnapshotSchedule, eventQuoteSnapshotManifest } from '../../../packages/runtime/src/event-quote-snapshot-job.js';
+import { lookupStoredPolymarketOutcomes } from '../../../packages/domain/src/polymarket-alerts.js';
 import { createPolymarketWatchlistJobHandlers, ensurePolymarketWatchlistSchedule, polymarketWatchlistManifest } from '../../../packages/runtime/src/polymarket-watchlist-job.js';
 import { createPolymarketDiscoveryJobHandlers, ensurePolymarketDiscoverySchedule, polymarketDiscoveryManifest } from '../../../packages/runtime/src/polymarket-discovery-job.js';
 import { createPolymarketReleaseJobHandlers, ensurePolymarketReleaseSchedule, polymarketReleaseManifest } from '../../../packages/runtime/src/polymarket-release-job.js';
@@ -592,7 +593,7 @@ export function createAiCenterWorker(options = {}) {
       repository: store.repositories.polymarket,
       config: polymarketWatchlist,
       now: options.now,
-      translate: translateService ? (input) => translateService.translateMany(input) : null,
+      lookupTranslations: (labels) => lookupStoredPolymarketOutcomes(store.repositories.feed, labels),
     };
     registry.register({
       manifest: polymarketWatchlistManifest,

@@ -9,6 +9,18 @@ function boardPayload(payload) {
   return data && typeof data === 'object' ? data : {};
 }
 
+function dedupeLocalizationUnits(units) {
+  const seen = new Set();
+  const rows = [];
+  for (const unit of units || []) {
+    const id = String(unit?.localizationId || '').trim();
+    if (!id || !unit.text || seen.has(id)) continue;
+    seen.add(id);
+    rows.push(unit);
+  }
+  return rows;
+}
+
 function enqueueVisibleLocalizations(services, identity, payload, units, result) {
   if (!services.runtime?.requestTranslation) return;
   const data = boardPayload(payload);
@@ -19,11 +31,13 @@ function enqueueVisibleLocalizations(services, identity, payload, units, result)
     ...units.filter((unit) => !releaseIds.has(unit.id)),
   ].filter((unit) => pending.has(unit.id) && unit.localizationId && unit.text);
   const workspaceId = identity?.device?.workspaceId || 'local';
+  const busy = services.runtime.openTranslationIds?.(workspaceId) || new Set();
+  const fresh = dedupeLocalizationUnits(ordered).filter((unit) => !busy.has(unit.localizationId));
   const batchLimit = translationTitleBatchLimit(process.env.AI_CENTER_TRANSLATION_TITLE_BATCH_LIMIT);
-  const outcomes = ordered.filter((unit) => unit.kind === 'outcome');
-  const rest = ordered.filter((unit) => unit.kind !== 'outcome');
+  const outcomes = fresh.filter((unit) => unit.kind === 'outcome');
+  const rest = fresh.filter((unit) => unit.kind !== 'outcome');
   enqueueLocalizationBatches(services, workspaceId, rest.slice(0, 60), batchLimit, {});
-  enqueueLocalizationBatches(services, workspaceId, outcomes, batchLimit, {
+  enqueueLocalizationBatches(services, workspaceId, outcomes.slice(0, 60), batchLimit, {
     glossary: POLYMARKET_OUTCOME_GLOSSARY,
     model: POLYMARKET_OUTCOME_MODEL,
   });

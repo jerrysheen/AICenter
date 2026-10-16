@@ -1,6 +1,6 @@
 import { parsePolymarketEvent } from '../../connectors/src/polymarket-gamma.js';
 import { fixedEntries } from '../../connectors/src/polymarket-watchlist.js';
-import { evaluatePolymarketAlerts, localizePolymarketAlertLabels } from '../../domain/src/polymarket-alerts.js';
+import { evaluatePolymarketAlerts, localizePolymarketAlertLabels, uncoveredLeadLabels } from '../../domain/src/polymarket-alerts.js';
 import { alertProfileForDiscovered } from '../../domain/src/polymarket-discovery.js';
 import {
   heldSeriesEvents,
@@ -195,7 +195,7 @@ function applyDiscovered(events, outcomes, observedAt) {
   return extra;
 }
 
-export async function storePolymarketAlerts(repository, config, now, options = {}) {
+export function storePolymarketAlerts(repository, config, now, options = {}) {
   if (!config?.alerts || !repository?.listAlertStates || !repository?.recordAlerts) return { alerts: 0, states: 0 };
   const at = Math.trunc(Number(now));
   const cooldownMs = (Number(config.alerts.cooldownMinutes) || 60) * 60_000;
@@ -208,10 +208,14 @@ export async function storePolymarketAlerts(repository, config, now, options = {
     config,
     now: at,
   });
-  try {
-    await localizePolymarketAlertLabels(evaluated.alerts, options.translate);
-  } catch (error) {
-    console.error('[worker] polymarket outcome translation skipped:', error instanceof Error ? error.message : error);
+  const labels = uncoveredLeadLabels(evaluated.alerts);
+  if (labels.length && typeof options.lookupTranslations === 'function') {
+    try {
+      const found = options.lookupTranslations(labels);
+      if (found && typeof found.then !== 'function') localizePolymarketAlertLabels(evaluated.alerts, found);
+    } catch (error) {
+      console.error('[worker] polymarket outcome translation skipped:', error instanceof Error ? error.message : error);
+    }
   }
   return repository.recordAlerts({ ...evaluated, now: at });
 }
@@ -221,7 +225,7 @@ export async function capturePolymarketWatchlist({
   repository,
   config,
   now = () => Date.now(),
-  translate = null,
+  lookupTranslations = null,
   log = (level, message) => {
     if (level === 'warn') console.warn(message);
   },
@@ -279,13 +283,13 @@ export async function capturePolymarketWatchlist({
     at,
   });
   if (rolled.releaseIds.length && repository.unwatchEvents) repository.unwatchEvents(rolled.releaseIds, at);
-  const alerts = await storePolymarketAlerts(repository, config, at, { translate });
+  const alerts = storePolymarketAlerts(repository, config, at, { lookupTranslations });
   return { ...saved, missing, observedAt: at, released: rolled.releaseIds, alerts: alerts.alerts };
 }
 
-export function createPolymarketWatchlistJobHandlers({ client, repository, config, now = () => Date.now(), translate = null }) {
+export function createPolymarketWatchlistJobHandlers({ client, repository, config, now = () => Date.now(), lookupTranslations = null }) {
   return {
-    [POLYMARKET_WATCHLIST_JOB_TYPE]: async () => capturePolymarketWatchlist({ client, repository, config, now, translate }),
+    [POLYMARKET_WATCHLIST_JOB_TYPE]: async () => capturePolymarketWatchlist({ client, repository, config, now, lookupTranslations }),
   };
 }
 

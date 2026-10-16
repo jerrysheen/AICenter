@@ -11,6 +11,7 @@ export const POLYMARKET_OUTCOME_GLOSSARY = [
   'Above X%=高于 X%',
   'Below X%=低于 X%',
   'A%-B%=A%–B%',
+  'X to Y=X–Y',
   'Month D=M月D日',
   'Month D, YYYY=YYYY年M月D日',
   'by Month D=M月D日前',
@@ -101,6 +102,13 @@ function ruleTranslate(source) {
     const left = zhAmount(match[1], match[2]);
     const right = zhAmount(match[3], match[4]);
     if (left && right) return `${left}–${right}`;
+  }
+
+  match = source.match(/^(.+?)\s+to\s+(.+)$/i);
+  if (match) {
+    const left = match[1].trim();
+    const right = match[2].trim();
+    if (left && right && !/\sto\s/i.test(left) && !/\sto\s/i.test(right)) return `${left}–${right}`;
   }
   return '';
 }

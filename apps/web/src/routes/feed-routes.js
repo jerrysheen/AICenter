@@ -322,7 +322,7 @@ export function createFeedRoutes({ slots = createPreparedSlotStore(), offthread 
           const job = services.runtime.requestTranslation({ workspaceId: workspaceIdFrom(identity), targetLang: input.targetLang,
             items: [{ id: input.id || 'translation', text: input.text }] });
           events.flush();
-          json(response, 202, { ok: true, jobId: job.id });
+          json(response, 202, { ok: true, jobId: job?.id || '' });
         } catch (error) {
           if (error instanceof ValidationError) throw error;
           json(response, 502, { ok: false, error: error instanceof Error ? error.message : '翻译失败' });
@@ -341,7 +341,7 @@ export function createFeedRoutes({ slots = createPreparedSlotStore(), offthread 
             ...(input.outcomeGlossary ? { glossary: POLYMARKET_OUTCOME_GLOSSARY, model: POLYMARKET_OUTCOME_MODEL } : {}),
           });
           events.flush();
-          json(response, 202, { ok: true, jobId: job.id });
+          json(response, 202, { ok: true, jobId: job?.id || '' });
         } catch (error) {
           if (error instanceof ValidationError) throw error;
           const message = error instanceof Error ? error.message : '翻译失败';

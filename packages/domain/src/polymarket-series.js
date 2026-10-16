@@ -119,12 +119,14 @@ function quoteFromRows(rows, pointsByKey, now) {
     sourceUrl: leader.sourceUrl,
     observedAt: Math.max(...rows.map((row) => Number(row.updatedAt) || now)),
   };
+  if (leader.outcomeLabel) quote.outcomeLabel = leader.outcomeLabel;
   if (leader.outcomeKey) quote.key = leader.outcomeKey;
   if (leader.prior) quote.midPrice24hAgo = leader.prior;
   if (leader.changeBasis) quote.changeBasis = leader.changeBasis;
   if (multi) {
     quote.outcomes = ranked.slice(0, 6).map((row) => {
       const item = { key: row.outcomeKey, label: polymarketOutcomeText(row.outcomeLabel), midPrice: row.probability };
+      if (row.outcomeLabel) item.outcomeLabel = row.outcomeLabel;
       if (row.prior) item.midPrice24hAgo = row.prior;
       if (row.changeBasis) item.changeBasis = row.changeBasis;
       return item;

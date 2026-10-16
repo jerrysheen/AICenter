@@ -5,7 +5,8 @@ import {
   POLYMARKET_HOUR_WINDOW_MS,
   selectSeriesProbability,
 } from './polymarket-series.js';
-import { polymarketOutcomeText, translatePolymarketOutcome, translateUncoveredPolymarketOutcomes } from './polymarket-outcome-zh.js';
+import { createHash } from 'node:crypto';
+import { polymarketOutcomeText, translatePolymarketOutcome } from './polymarket-outcome-zh.js';
 
 function pointKey(row) {
   return `${row.eventId}\0${row.marketId}\0${row.outcomeKey}`;
@@ -171,22 +172,52 @@ export function evaluatePolymarketAlerts({
   return { alerts, states: nextStates };
 }
 
-export async function localizePolymarketAlertLabels(alerts, translateMany) {
-  const pending = [];
+function leadLabel(alert) {
+  return String(alert?.message || '').replace(/^领先结果变为\s*/, '').trim();
+}
+
+export function uncoveredLeadLabels(alerts) {
+  const labels = [];
   for (const alert of alerts || []) {
     if (alert?.alertType !== 'lead_change') continue;
-    const label = String(alert.message || '').replace(/^领先结果变为\s*/, '');
+    const label = leadLabel(alert);
     if (!label || translatePolymarketOutcome(label).covered || !/[A-Za-z]/.test(label)) continue;
-    pending.push(alert);
+    labels.push(label);
   }
-  if (!pending.length || typeof translateMany !== 'function') return alerts || [];
-  const translated = await translateUncoveredPolymarketOutcomes(
-    pending.map((alert) => String(alert.message).replace(/^领先结果变为\s*/, '')),
-    translateMany,
-  );
-  for (const alert of pending) {
-    const label = String(alert.message).replace(/^领先结果变为\s*/, '');
-    const text = translated.get(label);
+  return labels;
+}
+
+export function polymarketOutcomeTranslationMap(rows, labels) {
+  const byHash = new Map();
+  for (const row of rows || []) {
+    const text = String(row?.translatedText || '').trim();
+    if (!text || row.engine === 'passthrough' || !row.sourceHash || byHash.has(row.sourceHash)) continue;
+    byHash.set(row.sourceHash, text);
+  }
+  const found = new Map();
+  for (const label of labels || []) {
+    const source = String(label || '').trim();
+    if (!source) continue;
+    const text = byHash.get(createHash('sha256').update(source).digest('hex'));
+    if (text) found.set(source, text);
+  }
+  return found;
+}
+
+export function lookupStoredPolymarketOutcomes(feedRepository, labels, workspaceId = 'local') {
+  const unique = [...new Set((labels || []).map((label) => String(label || '').trim()).filter(Boolean))];
+  if (!unique.length || !feedRepository?.listTranslationsByHash) return new Map();
+  const hashes = unique.map((label) => createHash('sha256').update(label).digest('hex'));
+  return polymarketOutcomeTranslationMap(feedRepository.listTranslationsByHash(workspaceId, hashes, 'zh'), unique);
+}
+
+export function localizePolymarketAlertLabels(alerts, stored) {
+  const known = stored instanceof Map ? stored : new Map();
+  for (const alert of alerts || []) {
+    if (alert?.alertType !== 'lead_change') continue;
+    const label = leadLabel(alert);
+    if (!label || translatePolymarketOutcome(label).covered || !/[A-Za-z]/.test(label)) continue;
+    const text = known.get(label);
     if (text && text !== label) alert.message = `领先结果变为 ${text}`.slice(0, 120);
   }
   return alerts || [];
