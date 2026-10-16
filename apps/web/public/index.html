@@ -294,26 +294,30 @@
         <section class="view is-active" id="view-sources" data-view-panel="sources">
           <div id="overview-home">
             <div class="overview-columns dashboard">
-              <section class="dashboard-market home-slot-quotes">
-                <div class="home-market-head">
-                  <h2>行情</h2>
-                  <div class="home-market-links">
-                    <button class="text-button" id="open-all-quotes" type="button">全部行情 ›</button>
-                    <button class="text-button" id="open-event-odds" type="button">事件概率 ›</button>
+              <div class="overview-col overview-col-main">
+                <section class="dashboard-timeline home-slot-hourly" id="home-timeline" aria-label="小时报"></section>
+                <section class="home-slot-latest" id="home-latest" aria-label="最新消息"></section>
+              </div>
+              <div class="overview-col overview-col-side">
+                <section class="dashboard-market home-slot-quotes">
+                  <div class="home-market-head">
+                    <h2>行情</h2>
+                    <div class="home-market-links">
+                      <button class="text-button" id="open-all-quotes" type="button">全部行情 ›</button>
+                      <button class="text-button" id="open-event-odds" type="button">事件概率 ›</button>
+                    </div>
                   </div>
-                </div>
-                <p class="hub-market-caption" id="hub-market-caption"></p>
-                <div class="ticker-strip" id="hub-ticker"></div>
-                <div class="mini-status" id="hub-market-status">
-                  <span id="hub-market-note"></span>
-                </div>
-                <p class="mini-status hidden" id="home-source-line"></p>
-              </section>
-              <section class="dashboard-timeline home-slot-hourly" id="home-timeline" aria-label="小时报"></section>
-              <section class="home-slot-latest" id="home-latest" aria-label="最新消息"></section>
-              <section class="daily-brief-peek home-slot-daily" id="home-daily" aria-live="polite"></section>
-              <section class="home-slot-official" id="home-official" aria-label="官方"></section>
-              <section class="home-slot-focus" id="home-focus" aria-label="我的重点" hidden></section>
+                  <p class="hub-market-caption" id="hub-market-caption"></p>
+                  <div class="ticker-strip" id="hub-ticker"></div>
+                  <div class="mini-status" id="hub-market-status">
+                    <span id="hub-market-note"></span>
+                  </div>
+                  <p class="mini-status hidden" id="home-source-line"></p>
+                </section>
+                <section class="daily-brief-peek home-slot-daily" id="home-daily" aria-live="polite"></section>
+                <section class="home-slot-official" id="home-official" aria-label="官方"></section>
+                <section class="home-slot-focus" id="home-focus" aria-label="我的重点" hidden></section>
+              </div>
             </div>
           </div>
 
