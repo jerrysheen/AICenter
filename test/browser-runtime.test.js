@@ -114,7 +114,7 @@ test('BrowserSkill navigate passes a timeout and optional wait condition', async
   assert.ok(commands[0].args.includes('45000ms'));
   assert.ok(commands[0].args.includes('--wait-until'));
   assert.ok(commands[0].args.includes('domcontentloaded'));
-  assert.equal(commands[0].timeoutMs, 65_000);
+  assert.equal(commands[0].timeoutMs, 50_000);
 });
 
 test('browser process timeout settles without waiting for close', async () => {
@@ -366,6 +366,81 @@ test('bsk provider is selected for bilibili fetchJson', async () => {
   assert.equal(result.status, 'ok');
   assert.equal(bsk.calls[0][0], 'start');
   assert.equal(bsk.calls.at(-1)[0], 'stop');
+});
+
+test('a lock held for 80s returns deadline without starting a session', async () => {
+  const provider = createRecordingProvider();
+  const runtime = createBrowserRuntime({ provider, maxHoldMs: 120_000 });
+  const held = runtime.withSession({ purpose: 'hold' }, () => new Promise((resolve) => setTimeout(resolve, 80_000)));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const started = Date.now();
+  const result = await runtime.withSession({
+    purpose: 'queued',
+    deadlineAt: Date.now() + 90_000,
+  }, async () => 'should-not-run');
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed <= 76_000, `waiter returned in ${elapsed}ms`);
+  assert.ok(elapsed >= 70_000, `waiter returned in ${elapsed}ms`);
+  assert.equal(result.error, 'deadline');
+  assert.equal(result.reason, 'lock_wait');
+  assert.equal(provider.calls.filter((item) => item[0] === 'start').length, 1);
+  await held;
+});
+
+test('a slow session start reports browser_cold_start', async () => {
+  const client = createBrowserSkillClient({
+    async runCommand(args, options) {
+      if (!args.includes('start')) {
+        return { code: 0, stdout: JSON.stringify({ sessions: [] }), stderr: '' };
+      }
+      await new Promise((resolve, reject) => {
+        setTimeout(
+          () => reject(Object.assign(new Error(`bsk timed out after ${options.timeoutMs}ms`), { killed: true })),
+          options.timeoutMs,
+        );
+      });
+    },
+  });
+  const runtime = createBrowserRuntime({ provider: client });
+  const started = Date.now();
+  const result = await runtime.withSession({
+    purpose: 'slow',
+    deadlineAt: Date.now() + 20_000,
+  }, async () => 'should-not-run');
+  const elapsed = Date.now() - started;
+  assert.equal(result.error, 'browser_cold_start');
+  assert.equal(result.reason, 'browser_cold_start');
+  assert.ok(elapsed < 8_000, `start settled in ${elapsed}ms`);
+  assert.ok(elapsed >= 4_000, `start settled in ${elapsed}ms`);
+});
+
+test('a startup timeout cancels only that start request', async () => {
+  const commands = [];
+  const client = createBrowserSkillClient({
+    async runCommand(args, options) {
+      commands.push({ args, timeoutMs: options.timeoutMs });
+      if (args.includes('start')) {
+        throw Object.assign(new Error('bsk timed out after 20ms'), { killed: true });
+      }
+      return { code: 0, stdout: JSON.stringify({ ok: true }), stderr: '' };
+    },
+  });
+  const started = Date.now();
+  await assert.rejects(
+    () => client.startSession({ purpose: 'x.home', focused: false, deadlineAt: Date.now() + 20_000 }),
+    (error) => error.kind === 'browser_cold_start' && error.message === 'browser_cold_start',
+  );
+  assert.ok(Date.now() - started < 2_000);
+  const start = commands.find((item) => item.args.includes('start'));
+  const requestId = start.args[start.args.indexOf('--request-id') + 1];
+  assert.match(requestId, /^\d+:[0-9a-f-]{36}$/i);
+  const expiry = Number(requestId.slice(0, requestId.indexOf(':')));
+  assert.ok(expiry >= started + 9 * 60 * 1000 && expiry <= started + 11 * 60 * 1000);
+  const followUps = commands.filter((item) => !item.args.includes('start'));
+  assert.equal(followUps.length, 1);
+  assert.deepEqual(followUps[0].args.slice(1), ['session', 'request', requestId, '--cancel']);
+  assert.ok(followUps[0].timeoutMs <= 5_000);
+  assert.equal(commands.some((item) => item.args.includes('list') || item.args.includes('stop')), false);
 });
 
 test('legacy-cdp provider is no longer accepted', () => {
