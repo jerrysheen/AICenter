@@ -73,6 +73,8 @@ import { ensureEtfWhaleSchedule } from '../../../packages/runtime/src/etf-whale-
 import { createEtfWhaleJobHandlers, etfWhaleManifest } from '../../../packages/runtime/src/etf-whale-sync.js';
 import { createEventQuoteSnapshotJobHandlers, ensureEventQuoteSnapshotSchedule, eventQuoteSnapshotManifest } from '../../../packages/runtime/src/event-quote-snapshot-job.js';
 import { createPolymarketWatchlistJobHandlers, ensurePolymarketWatchlistSchedule, polymarketWatchlistManifest } from '../../../packages/runtime/src/polymarket-watchlist-job.js';
+import { createPolymarketDiscoveryJobHandlers, ensurePolymarketDiscoverySchedule, polymarketDiscoveryManifest } from '../../../packages/runtime/src/polymarket-discovery-job.js';
+import { createPolymarketReleaseJobHandlers, ensurePolymarketReleaseSchedule, polymarketReleaseManifest } from '../../../packages/runtime/src/polymarket-release-job.js';
 import { createPolymarketGammaClient } from '../../../packages/connectors/src/polymarket-gamma.js';
 import { loadPolymarketWatchlist, polymarketLegacyEnabled } from '../../../packages/connectors/src/polymarket-watchlist.js';
 import { readStoredPolymarketView } from '../../../packages/domain/src/polymarket-series.js';
@@ -580,14 +582,23 @@ export function createAiCenterWorker(options = {}) {
     }),
   });
   if (store.repositories?.polymarket) {
+    const polymarketJobOptions = {
+      client: polymarketClient,
+      repository: store.repositories.polymarket,
+      config: polymarketWatchlist,
+      now: options.now,
+    };
     registry.register({
       manifest: polymarketWatchlistManifest,
-      jobHandlers: options.polymarketWatchlistJobHandlers || createPolymarketWatchlistJobHandlers({
-        client: polymarketClient,
-        repository: store.repositories.polymarket,
-        config: polymarketWatchlist,
-        now: options.now,
-      }),
+      jobHandlers: options.polymarketWatchlistJobHandlers || createPolymarketWatchlistJobHandlers(polymarketJobOptions),
+    });
+    registry.register({
+      manifest: polymarketDiscoveryManifest,
+      jobHandlers: options.polymarketDiscoveryJobHandlers || createPolymarketDiscoveryJobHandlers(polymarketJobOptions),
+    });
+    registry.register({
+      manifest: polymarketReleaseManifest,
+      jobHandlers: options.polymarketReleaseJobHandlers || createPolymarketReleaseJobHandlers({ ...polymarketJobOptions, store }),
     });
   }
   registry.register({
@@ -669,6 +680,8 @@ export function createAiCenterWorker(options = {}) {
     ensureMarketNativeBoardSchedule(store);
     if (store.repositories?.polymarket) {
       ensurePolymarketWatchlistSchedule(store, polymarketWatchlist, Date.now(), { enabled: !legacyPolymarket });
+      ensurePolymarketDiscoverySchedule(store, polymarketWatchlist, Date.now(), { enabled: !legacyPolymarket });
+      ensurePolymarketReleaseSchedule(store, polymarketWatchlist, Date.now(), { enabled: !legacyPolymarket });
     }
     ensureFeedListSchedule(store);
     ensureHardwarePriceSchedule(store);

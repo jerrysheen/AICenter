@@ -2094,6 +2094,44 @@ migrations.push({ version: 73, name: 'polymarket_watchlist', up(database) {
   `);
 }});
 
+migrations.push({ version: 74, name: 'polymarket_discovery', up(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS polymarket_candidates (
+      event_id TEXT PRIMARY KEY,
+      event_slug TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL,
+      tag_slug TEXT NOT NULL DEFAULT '',
+      volume_24h TEXT,
+      total_volume TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      discovered_at INTEGER NOT NULL,
+      reviewed_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_polymarket_candidates_status ON polymarket_candidates(status, discovered_at);
+    CREATE TABLE IF NOT EXISTS polymarket_alerts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id TEXT NOT NULL,
+      market_id TEXT NOT NULL DEFAULT '',
+      outcome_key TEXT NOT NULL DEFAULT '',
+      alert_type TEXT NOT NULL,
+      message TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_polymarket_alerts_event ON polymarket_alerts(event_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_polymarket_alerts_created ON polymarket_alerts(created_at);
+    CREATE INDEX IF NOT EXISTS idx_polymarket_alerts_cooldown ON polymarket_alerts(event_id, market_id, alert_type, created_at);
+    CREATE TABLE IF NOT EXISTS polymarket_alert_state (
+      event_id TEXT NOT NULL,
+      market_id TEXT NOT NULL DEFAULT '',
+      outcome_key TEXT NOT NULL DEFAULT '',
+      state_key TEXT NOT NULL,
+      state_value TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (event_id, market_id, outcome_key, state_key)
+    );
+  `);
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions
