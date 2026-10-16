@@ -414,7 +414,7 @@ const elements = Object.fromEntries([
   'knowledge-list', 'portfolio-summary',
   'report-list', 'open-subscriptions', 'subscriptions-dialog', 'subscription-list',
   'holding-dialog', 'holding-title', 'holding-meta', 'holding-metrics',
-  'stock-boards', 'market-status', 'market-overview', 'market-head', 'market-table-scroll', 'market-sort', 'market-filter', 'market-filter-wrap',
+  'stock-boards', 'market-status', 'southbound-card', 'market-overview', 'market-head', 'market-table-scroll', 'market-sort', 'market-filter', 'market-filter-wrap',
   'asset-sort', 'asset-filter', 'asset-filter-wrap', 'asset-table-scroll',
   'market-sync-hint', 'book-sync-hint',   'analysis-period', 'analysis-kpis', 'analysis-ledger', 'analysis-trend', 'analysis-pie',
   'analysis-diagnosis-1', 'analysis-diagnosis-2',
@@ -5242,6 +5242,7 @@ function setTradePane(id) {
 
 async function syncTradePaneData({ refresh = false } = {}) {
   if (state.tradePane === 'stocks') {
+    loadSouthboundCard({ force: refresh }).catch(() => {});
     await loadMarket();
     return;
   }
@@ -5603,6 +5604,12 @@ function renderHoldings() {
       Object.assign(document.createElement('strong'), { className: 'quote-name', textContent: item.name }),
       code,
     );
+    if (item.southboundTag) {
+      name.append(Object.assign(document.createElement('small'), {
+        className: 'southbound-tag',
+        textContent: item.southboundTag,
+      }));
+    }
     const qty = document.createElement('span');
     qty.className = 'holdings-qty';
     qty.textContent = formatMoneyAmount(item.quantity, 0);
@@ -8488,6 +8495,132 @@ function paintMarketPlaceholder(isOverview) {
   else elements['quote-list'].replaceChildren(...marketRowSkeleton());
 }
 
+function southboundAmount(text) {
+  const value = String(text || '');
+  const node = document.createElement('b');
+  node.className = value.startsWith('-') ? 'down' : value.startsWith('+') ? 'up' : '';
+  node.textContent = value ? `${value} 亿` : '—';
+  return node;
+}
+
+function renderSouthboundCard(payload) {
+  const card = elements['southbound-card'];
+  if (!card) return;
+  card.classList.remove('hidden');
+  card.replaceChildren();
+  const head = document.createElement('div');
+  head.className = 'southbound-head';
+  head.append(Object.assign(document.createElement('h2'), { textContent: '港股通南向' }));
+  if (payload?.tradeDate) head.append(Object.assign(document.createElement('small'), { textContent: payload.tradeDate }));
+  if (payload?.badge) {
+    head.append(Object.assign(document.createElement('span'), { className: 'southbound-badge', textContent: payload.badge }));
+  }
+  card.append(head);
+  if (!payload?.tradeDate) {
+    card.append(Object.assign(document.createElement('p'), { textContent: payload?.note || '南向资金尚未入库' }));
+    return;
+  }
+  const channels = document.createElement('div');
+  channels.className = 'southbound-channels';
+  for (const key of ['sh', 'sz', 'total']) {
+    const item = payload.channels?.[key] || { label: key, net: '' };
+    const cell = document.createElement('div');
+    cell.append(Object.assign(document.createElement('span'), { textContent: item.label }), southboundAmount(item.net));
+    channels.append(cell);
+  }
+  card.append(channels);
+  const bars = document.createElement('div');
+  bars.className = 'southbound-bars';
+  const series = payload.bars || [];
+  const peak = Math.max(1, ...series.map((item) => Math.abs(Number(item.net) || 0)));
+  for (const item of series) {
+    const column = document.createElement('div');
+    column.className = 'southbound-bar';
+    const magnitude = Math.abs(Number(item.net) || 0) / peak * 100;
+    const up = Number(item.net) >= 0;
+    const rect = document.createElement('i');
+    rect.className = up ? 'up' : 'down';
+    rect.style.height = `${Math.max(2, magnitude / 2)}%`;
+    column.classList.add(up ? 'is-up' : 'is-down');
+    column.append(rect);
+    column.title = `${item.date}`;
+    bars.append(column);
+  }
+  card.append(bars);
+  const sums = document.createElement('p');
+  sums.className = 'southbound-sums';
+  sums.append(
+    document.createTextNode('5 日累计 '),
+    southboundAmount(payload.sum5),
+    document.createTextNode(' · 20 日累计 '),
+    southboundAmount(payload.sum20),
+  );
+  card.append(sums);
+  if (payload.note) card.append(Object.assign(document.createElement('p'), { className: 'southbound-note', textContent: payload.note }));
+  const lists = document.createElement('div');
+  lists.className = 'southbound-lists';
+  for (const [title, rows] of [['净买入', payload.buy || []], ['净卖出', payload.sell || []]]) {
+    const block = document.createElement('div');
+    block.append(Object.assign(document.createElement('h3'), { textContent: title }));
+    if (!rows.length) block.append(Object.assign(document.createElement('p'), { textContent: '暂无' }));
+    for (const item of rows) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'southbound-name';
+      button.append(
+        Object.assign(document.createElement('span'), { textContent: item.name || item.code }),
+        southboundAmount(item.net),
+      );
+      if (item.symbol) button.addEventListener('click', () => openPage('quote', item.symbol));
+      block.append(button);
+    }
+    lists.append(block);
+  }
+  card.append(lists);
+}
+
+async function loadSouthboundCard({ force = false } = {}) {
+  const card = elements['southbound-card'];
+  if (!card || state.tradePane !== 'stocks') return;
+  const fresh = state.southboundBoard && Date.now() - (state.southboundLoadedAt || 0) < 60_000;
+  if (!force && fresh) {
+    renderSouthboundCard(state.southboundBoard);
+    return;
+  }
+  if (!state.southboundBoard) {
+    card.classList.remove('hidden');
+    card.textContent = '正在读取南向资金…';
+  }
+  const payload = await api('/api/v1/market/southbound?days=20');
+  state.southboundBoard = payload;
+  state.southboundLoadedAt = Date.now();
+  if (state.tradePane === 'stocks') renderSouthboundCard(payload);
+}
+
+function loadSouthboundHistory(symbol, wrap) {
+  const host = document.createElement('section');
+  host.className = 'southbound-history';
+  host.textContent = '正在读取南向成交…';
+  wrap.querySelector('.detail-body')?.append(host);
+  const code = String(symbol || '').replace(/\.HK$/i, '');
+  api(`/api/v1/market/southbound/top10?code=${encodeURIComponent(code)}&days=20`).then((payload) => {
+    if (!host.isConnected) return;
+    host.replaceChildren(Object.assign(document.createElement('h3'), { textContent: '南向成交' }));
+    const items = payload?.items || [];
+    if (!items.length) {
+      host.append(Object.assign(document.createElement('p'), { textContent: '近 20 个交易日没有进入十大成交。' }));
+      return;
+    }
+    for (const item of items) {
+      const row = document.createElement('p');
+      row.append(document.createTextNode(`${item.date} `), southboundAmount(item.net));
+      host.append(row);
+    }
+  }).catch(() => {
+    if (host.isConnected) host.textContent = '南向成交暂时读不到';
+  });
+}
+
 function renderMarket() {
   renderStockBoards();
   const market = currentMarket();
@@ -9616,6 +9749,7 @@ function renderQuotePage() {
   });
   root.replaceChildren(wrap);
   loadQuoteHistory(symbol, wrap.querySelector('#quote-chart-host')).catch((error) => showToast(error.message));
+  if (/^\d{1,5}\.HK$/i.test(symbol)) loadSouthboundHistory(symbol, wrap);
 }
 
 function paintQuotePrintFromBars(host, bars) {
