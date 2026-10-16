@@ -307,14 +307,19 @@ test('the A-share board snapshot fills sparklines from xueqiu klines', async () 
       },
       async fetchSparklines(symbols) {
         sparked.push(...symbols);
-        return symbols.map((symbol) => ({ symbol, sparkline: [8, 9, 10] }));
+        const today = Date.parse('2026-10-16T02:00:00Z');
+        return symbols.map((symbol) => ({
+          symbol,
+          sparkline: [8, 9, 10],
+          lastAt: symbol === '600519.SS' ? today - 86_400_000 : today,
+        }));
       },
     },
   });
   const board = await service.getBoard({ board: 'cn' });
   assert.deepEqual(sparked.sort(), ['000001.SS', '600519.SS']);
   assert.deepEqual(board.indices.find((item) => item.symbol === '000001.SS').sparkline, [8, 9, 10]);
-  assert.deepEqual(board.watchlist.find((item) => item.symbol === '600519.SS').sparkline, [8, 9, 10]);
+  assert.deepEqual(board.watchlist.find((item) => item.symbol === '600519.SS').sparkline, [8, 9, 10, 10]);
 });
 
 test('home bootstrap enriches only the first filled hours', async () => {
@@ -437,7 +442,7 @@ test('a second market capture does not request xueqiu klines again', async () =>
   const first = kline;
   assert.ok(first > 0);
   const cn = saved.find((item) => item.key === marketBoardSnapshotKey('cn'));
-  assert.equal(cn.payload.indices.find((item) => item.symbol === '000001.SS').sparkline.at(-1), 10.5);
+  assert.deepEqual(cn.payload.indices.find((item) => item.symbol === '000001.SS').sparkline, [8, 9, 10.5]);
   await captureMarketBoards({ sourcePort, repository, now: () => at, env: {}, log() {} });
   assert.equal(kline - first, 0);
 });

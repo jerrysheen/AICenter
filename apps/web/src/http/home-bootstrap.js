@@ -78,6 +78,8 @@ function slimQuote(item) {
     lastPrice: item.lastPrice ?? null,
     changePct: item.changePct ?? null,
     currency: item.currency || '',
+    ...(item.session ? { session: item.session } : {}),
+    ...(typeof item.marketOpen === 'boolean' ? { marketOpen: item.marketOpen } : {}),
     ...(Number.isFinite(asOf) && asOf > 0 ? { asOf } : {}),
     ...(sparkline.length ? { sparkline } : {}),
   };
@@ -93,12 +95,14 @@ function slimMarket(market) {
     mode: market.mode || '',
     fetchedAt: market.fetchedAt ?? null,
     session: market.session || '',
+    ...(typeof market.marketOpen === 'boolean' ? { marketOpen: market.marketOpen } : {}),
     focus: market.focus || '',
     ...(market.note ? { note: clip(market.note, 180) } : {}),
     sections: sections.slice(0, 2).map((section) => ({
       id: section.id || '',
       title: section.title || '',
       session: section.session || '',
+      ...(typeof section.marketOpen === 'boolean' ? { marketOpen: section.marketOpen } : {}),
       indices: (section.indices || []).map(slimQuote).filter(Boolean),
       gainers: (section.gainers || []).slice(0, 6).map(slimQuote).filter(Boolean),
       losers: (section.losers || []).slice(0, 6).map(slimQuote).filter(Boolean),

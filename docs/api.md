@@ -30,7 +30,7 @@ Retry-After: 17
 
 | 方法 | 路径 | 参数 |
 |---|---|---|
-| GET | `/api/v1/home/bootstrap` | 可选 `refresh=1`。设备登录，不接受 Bearer。只写出 Worker 预备的首屏缓冲区；没有缓冲区时 `pending: true`。带弱 ETag。`Cache-Control: private, max-age=0, stale-while-revalidate=60`。响应不下发 `timings`。页面还会并行请求目录、小时索引、行情、日报和官方看板 |
+| GET | `/api/v1/home/bootstrap` | 可选 `refresh=1`。设备登录，不接受 Bearer。只写出 Worker 预备的首屏缓冲区；没有缓冲区时 `pending: true`。带弱 ETag。`Cache-Control: private, max-age=0, stale-while-revalidate=60`。行情条带 `session` 和 `marketOpen`。响应不下发 `timings`。页面还会并行请求目录、小时索引、行情、日报和官方看板 |
 | GET | `/api/v1/reports/daily/latest` | 无 |
 | GET | `/api/v1/reports/daily` | `date` |
 | GET | `/api/v1/reports/daily/latest/brief` | 无 |

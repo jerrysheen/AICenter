@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  SPARKLINE_FAIL_BACKOFF_MS,
   createXueqiuQuoteClient,
   isHkYahooSymbol,
   isXueqiuYahooSymbol,
@@ -267,4 +268,56 @@ test('xueqiu kline cache keeps the previous series and caps a round at ten symbo
   const before = calls;
   await client.fetchSparklines(['600100.SS'], { signal: aborted.signal });
   assert.equal(calls, before);
+});
+
+test('a symbol that keeps failing gives its slot to symbols after the tenth', async () => {
+  assert.deepEqual([...SPARKLINE_FAIL_BACKOFF_MS], [10 * 60_000, 30 * 60_000, 60 * 60_000]);
+  const clock = { value: Date.parse('2026-10-16T02:00:00Z') };
+  const requested = [];
+  const client = createXueqiuQuoteClient({
+    cookie: 'xq_a_token=user-token',
+    now: () => clock.value,
+    fetchImpl: async (url) => {
+      const href = String(url);
+      if (!href.includes('kline.json')) return jsonResponse({ data: { items: [] } });
+      const symbol = new URL(href).searchParams.get('symbol');
+      requested.push(symbol);
+      if (symbol === 'SH600000') throw new Error('waf');
+      return jsonResponse({
+        data: {
+          column: ['timestamp', 'close'],
+          item: [[clock.value - 86_400_000, 1], [clock.value, 2]],
+        },
+      });
+    },
+  });
+  const symbols = Array.from({ length: 15 }, (_, index) => `${String(600000 + index).padStart(6, '0')}.SS`);
+  const first = await client.fetchSparklines(symbols);
+  assert.equal(requested.length, 10);
+  assert.equal(requested[0], 'SH600000');
+  assert.equal(requested.includes('SH600010'), false);
+  assert.equal(first.some((item) => item.symbol === '600000.SS'), false);
+  assert.equal(first.some((item) => item.symbol === '600009.SS'), true);
+  requested.length = 0;
+  const second = await client.fetchSparklines(symbols);
+  assert.deepEqual(requested, ['SH600010', 'SH600011', 'SH600012', 'SH600013', 'SH600014']);
+  assert.equal(second.some((item) => item.symbol === '600014.SS'), true);
+  requested.length = 0;
+  clock.value += 9 * 60_000;
+  await client.fetchSparklines(symbols);
+  assert.equal(requested.includes('SH600000'), false);
+  clock.value += 60_000;
+  await client.fetchSparklines(['600000.SS']);
+  assert.deepEqual(requested, ['SH600000']);
+  requested.length = 0;
+  clock.value += 10 * 60_000;
+  await client.fetchSparklines(['600000.SS']);
+  assert.deepEqual(requested, []);
+  clock.value += 20 * 60_000;
+  await client.fetchSparklines(['600000.SS']);
+  assert.deepEqual(requested, ['SH600000']);
+  requested.length = 0;
+  clock.value += 2 * 60 * 60_000;
+  await client.fetchSparklines(symbols);
+  assert.equal(requested.includes('SH600000'), false);
 });

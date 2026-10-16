@@ -19,6 +19,7 @@ import {
   quoteStatusText,
   marketStaleLabel,
   marketClosedLabel,
+  marketFillDelayMs,
   quoteStaleLabel,
   quoteClosedLabel,
   homeDataDelayLabel,
@@ -6468,11 +6469,12 @@ function clearMarketFill(board) {
 function scheduleMarketFill(board) {
   const attempts = marketFillAttempts[board] || 0;
   if (attempts >= 8 || marketFillTimers[board]) return;
+  const delay = marketFillDelayMs(attempts);
   marketFillAttempts[board] = attempts + 1;
   marketFillTimers[board] = window.setTimeout(() => {
     marketFillTimers[board] = 0;
     loadMarket({ board, priority: 2 }).catch(() => {});
-  }, 800);
+  }, delay);
 }
 
 function currentMarket() {

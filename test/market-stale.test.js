@@ -8,7 +8,7 @@ import {
   marketUsFreshMs,
   usBoardFreshnessError,
 } from '../packages/runtime/src/web-snapshot-jobs.js';
-import { homeDataDelayLabel, marketClosedLabel, marketStaleLabel, quoteClosedLabel, quoteStaleLabel } from '../apps/web/public/home-timeline.js';
+import { homeDataDelayLabel, marketClosedLabel, marketFillDelayMs, marketStaleLabel, quoteClosedLabel, quoteStaleLabel } from '../apps/web/public/home-timeline.js';
 import { createMarketBoardReader } from '../packages/source/src/market/board-read.js';
 
 const catalog = {
@@ -391,4 +391,47 @@ test('a closed market is not expired, and five quiet minutes during the session 
   assert.equal(live.market.stale, true);
   assert.match(marketStaleLabel(live.market, evening), /^已过期/);
   assert.match(quoteStaleLabel(live.market.indices[0], evening), /^已过期/);
+  assert.equal(live.market.marketOpen, true);
+  assert.equal(live.market.indices[0].session, 'regular');
+  assert.equal(cn.market.marketOpen, false);
+  assert.equal(cn.market.indices[0].marketOpen, false);
+  assert.equal(cnPayload.marketOpen, undefined);
+  assert.equal(closedUs.market.marketOpen, false);
+});
+
+test('a holiday board follows the server marketOpen, and pending retries grow', async () => {
+  const holiday = Date.parse('2026-10-01T02:00:00Z');
+  const payload = {
+    board: 'cn',
+    fetchedAt: holiday - 60_000,
+    session: 'regular',
+    indices: [{
+      symbol: '000001.SS',
+      name: '上证指数',
+      lastPrice: 3000,
+      asOf: holiday - 30 * 60_000,
+      session: 'regular',
+    }],
+    watchlist: [],
+    gainers: [],
+    losers: [],
+    breadth: { advancers: 0, decliners: 0, unchanged: 0 },
+  };
+  const read = await createMarketBoardReader({
+    repository: { readSnapshot: () => ({ payload }) },
+    now: () => holiday,
+    staleMs: 180_000,
+  }).read({ board: 'cn' });
+  assert.equal(read.market.marketOpen, false);
+  assert.equal(read.market.session, 'closed');
+  assert.equal(read.market.indices[0].marketOpen, false);
+  assert.equal(payload.session, 'regular');
+  assert.equal(payload.indices[0].session, 'regular');
+  assert.equal(quoteStaleLabel(read.market.indices[0], holiday), '');
+  assert.match(quoteClosedLabel(read.market.indices[0], holiday), /^收盘/);
+  assert.equal(marketStaleLabel(read.market, holiday), '');
+  const stored = { symbol: '000001.SS', lastPrice: 3000, asOf: holiday - 10 * 60_000, session: 'regular', marketOpen: false };
+  assert.equal(quoteStaleLabel(stored, holiday), '');
+  assert.deepEqual([0, 1, 2, 3, 4].map((attempt) => marketFillDelayMs(attempt)), [800, 1600, 3200, 6400, 10_000]);
+  assert.equal(marketFillDelayMs(8), 10_000);
 });

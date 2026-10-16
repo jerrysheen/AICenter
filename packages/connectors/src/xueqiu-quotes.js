@@ -7,6 +7,9 @@ const SPARKLINE_COUNT = 30;
 const SPARKLINE_CONCURRENCY = 4;
 const SPARKLINE_ROUND_LIMIT = 10;
 const SPARKLINE_ROUND_MS = 8_000;
+// 第 1、2 次失败后等 10 分钟、30 分钟；第 3 次失败当天不再试。最后一档是 1 小时。
+export const SPARKLINE_FAIL_BACKOFF_MS = Object.freeze([10 * 60_000, 30 * 60_000, 60 * 60_000]);
+const SPARKLINE_FAIL_LIMIT = 3;
 const STOCK_API = 'https://stock.xueqiu.com';
 const DEFAULT_TIMEOUT_MS = 8_000;
 const BATCH_SIZE = 50;
@@ -125,19 +128,36 @@ export function sessionFromXueqiuMarket(market, quote = {}) {
   return 'closed';
 }
 
-export function sparklineFromXueqiuKline(payload) {
+function barTimeMs(value) {
+  const at = num(value);
+  if (at == null || at <= 0) return null;
+  return at < 1e12 ? Math.trunc(at * 1000) : Math.trunc(at);
+}
+
+export function seriesFromXueqiuKline(payload) {
   const data = isRecord(payload?.data) ? payload.data : (isRecord(payload) ? payload : null);
-  if (!data) return [];
+  if (!data) return { points: [], lastAt: null };
   const columns = Array.isArray(data.column) ? data.column : [];
   const closeIndex = columns.indexOf('close');
+  const timeIndex = columns.indexOf('timestamp');
   const items = Array.isArray(data.item) ? data.item : [];
-  if (closeIndex < 0) return [];
-  const closes = [];
+  if (closeIndex < 0) return { points: [], lastAt: null };
+  const points = [];
+  let lastAt = null;
   for (const row of items) {
     const value = Array.isArray(row) ? num(row[closeIndex]) : null;
-    if (value != null && value > 0) closes.push(value);
+    if (value == null || value <= 0) continue;
+    points.push(value);
+    if (timeIndex >= 0 && Array.isArray(row)) {
+      const at = barTimeMs(row[timeIndex]);
+      if (at != null) lastAt = at;
+    }
   }
-  return closes;
+  return { points, lastAt };
+}
+
+export function sparklineFromXueqiuKline(payload) {
+  return seriesFromXueqiuKline(payload).points;
 }
 
 export function quoteFromXueqiuItem(item, yahooSymbol) {
@@ -165,8 +185,24 @@ export function quoteFromXueqiuItem(item, yahooSymbol) {
   };
 }
 
-function shanghaiTradingDay(at) {
+export function shanghaiCalendarDay(at) {
   return new Date(Number(at) + 8 * 3_600_000).toISOString().slice(0, 10);
+}
+
+function sparklineRetryDelayMs(fails) {
+  if (fails >= SPARKLINE_FAIL_LIMIT) return null;
+  const index = Math.min(Math.max(fails, 1), SPARKLINE_FAIL_BACKOFF_MS.length) - 1;
+  return SPARKLINE_FAIL_BACKOFF_MS[index];
+}
+
+function sparklineSlot(hit, day, at) {
+  if (!hit || hit.day !== day) return 'unseen';
+  const fails = Number(hit.fails) || 0;
+  if (!fails) return hit.points?.length >= 2 ? 'fresh' : 'unseen';
+  const delay = sparklineRetryDelayMs(fails);
+  if (delay == null) return 'exhausted';
+  if (at - Number(hit.failedAt) < delay) return 'wait';
+  return 'due';
 }
 
 export function createXueqiuQuoteClient(options = {}) {
@@ -300,76 +336,107 @@ export function createXueqiuQuoteClient(options = {}) {
     url.searchParams.set('count', String(-SPARKLINE_COUNT));
     url.searchParams.set('indicator', 'kline');
     const response = await request(url, {}, signal);
-    return sparklineFromXueqiuKline(await readJson(response, '雪球K线'));
+    return seriesFromXueqiuKline(await readJson(response, '雪球K线'));
   }
 
-  function rememberedSparkline(symbol) {
+  function rememberedSeries(symbol) {
     const hit = sparklineCache.get(symbol);
-    return hit?.points?.length >= 2 ? hit.points.slice() : null;
+    if (!hit?.points || hit.points.length < 2) return null;
+    return { sparkline: hit.points.slice(), lastAt: hit.lastAt ?? null };
+  }
+
+  function rememberFailure(yahoo, day) {
+    const previous = sparklineCache.get(yahoo);
+    const sameDay = previous?.day === day;
+    const points = Array.isArray(previous?.points) ? previous.points.slice() : [];
+    sparklineCache.set(yahoo, {
+      day,
+      points,
+      lastAt: previous?.lastAt ?? null,
+      failedAt: now(),
+      fails: (sameDay ? Number(previous?.fails) || 0 : 0) + 1,
+    });
   }
 
   async function fetchSparklines(symbols, options = {}) {
     const signal = options?.signal;
-    const day = shanghaiTradingDay(now());
+    const at = now();
+    const day = shanghaiCalendarDay(at);
     const unique = [...new Set((symbols || []).map((item) => String(item || '').trim().toUpperCase()).filter(isXueqiuYahooSymbol))];
     const pairs = unique.map((yahoo) => ({ yahoo, xueqiu: yahooToXueqiuSymbol(yahoo) })).filter((item) => item.xueqiu);
     if (!pairs.length) return [];
     const fresh = [];
-    const missing = [];
+    const unseen = [];
+    const failedDue = [];
     for (const pair of pairs) {
       const hit = sparklineCache.get(pair.yahoo);
-      if (hit?.day === day && hit.points.length >= 2) fresh.push({ symbol: pair.yahoo, sparkline: hit.points.slice() });
-      else missing.push(pair);
+      const slot = sparklineSlot(hit, day, at);
+      if (slot === 'fresh') {
+        fresh.push({ symbol: pair.yahoo, sparkline: hit.points.slice(), lastAt: hit.lastAt ?? null });
+      } else if (slot === 'unseen') unseen.push(pair);
+      else if (slot === 'due') failedDue.push({ pair, failedAt: Number(hit.failedAt) || 0 });
     }
-    const batch = missing.slice(0, SPARKLINE_ROUND_LIMIT);
-    const skipped = missing.slice(SPARKLINE_ROUND_LIMIT);
+    failedDue.sort((left, right) => left.failedAt - right.failedAt);
+    const pending = [...unseen, ...failedDue.map((item) => item.pair)];
+    const batch = pending.slice(0, SPARKLINE_ROUND_LIMIT);
     const gained = [];
-    const keepPrevious = (pair) => {
-      const previous = rememberedSparkline(pair.yahoo);
-      if (previous) gained.push({ symbol: pair.yahoo, sparkline: previous });
+    const seen = new Set(fresh.map((item) => item.symbol));
+    const addSeries = (symbol, sparkline, lastAt) => {
+      if (seen.has(symbol) || !Array.isArray(sparkline) || sparkline.length < 2) return;
+      seen.add(symbol);
+      gained.push({ symbol, sparkline: sparkline.slice(), lastAt: lastAt ?? null });
     };
-    if (!batch.length) {
-      for (const pair of skipped) keepPrevious(pair);
-      return fresh;
-    }
-    const round = new AbortController();
-    const roundTimer = setTimeout(() => round.abort(), SPARKLINE_ROUND_MS);
-    const onAbort = () => round.abort();
-    if (signal) {
-      if (signal.aborted) round.abort();
-      else signal.addEventListener('abort', onAbort, { once: true });
-    }
-    try {
-      if (!round.signal.aborted) {
-        try {
-          await ensureToken({ signal: round.signal });
-        } catch {
-          /* 令牌失败时沿用上一份日 K。 */
-        }
+    const keepPrevious = (pair) => {
+      const previous = rememberedSeries(pair.yahoo);
+      if (previous) addSeries(pair.yahoo, previous.sparkline, previous.lastAt);
+    };
+    if (batch.length) {
+      const round = new AbortController();
+      const roundTimer = setTimeout(() => round.abort(), SPARKLINE_ROUND_MS);
+      const onAbort = () => round.abort();
+      if (signal) {
+        if (signal.aborted) round.abort();
+        else signal.addEventListener('abort', onAbort, { once: true });
       }
-      for (let offset = 0; offset < batch.length && !round.signal.aborted; offset += SPARKLINE_CONCURRENCY) {
-        const group = batch.slice(offset, offset + SPARKLINE_CONCURRENCY);
-        const settled = await Promise.allSettled(group.map(async (pair) => ({
-          symbol: pair.yahoo,
-          sparkline: await fetchSparkline(pair.xueqiu, round.signal),
-        })));
-        for (let index = 0; index < settled.length; index += 1) {
-          const pair = group[index];
-          const item = settled[index];
-          if (item.status === 'fulfilled' && item.value.sparkline.length >= 2) {
-            sparklineCache.set(pair.yahoo, { day, points: item.value.sparkline.slice() });
-            gained.push({ symbol: pair.yahoo, sparkline: item.value.sparkline.slice() });
-          } else keepPrevious(pair);
+      try {
+        if (!round.signal.aborted) {
+          try {
+            await ensureToken({ signal: round.signal });
+          } catch {
+            /* 令牌失败时沿用上一份日 K。 */
+          }
         }
+        for (let offset = 0; offset < batch.length && !round.signal.aborted; offset += SPARKLINE_CONCURRENCY) {
+          const group = batch.slice(offset, offset + SPARKLINE_CONCURRENCY);
+          const settled = await Promise.allSettled(group.map(async (pair) => ({
+            symbol: pair.yahoo,
+            ...(await fetchSparkline(pair.xueqiu, round.signal)),
+          })));
+          for (let index = 0; index < settled.length; index += 1) {
+            const pair = group[index];
+            const item = settled[index];
+            const aborted = round.signal.aborted || item.reason?.name === 'AbortError';
+            if (item.status === 'fulfilled' && item.value.points.length >= 2) {
+              sparklineCache.set(pair.yahoo, {
+                day,
+                points: item.value.points.slice(),
+                lastAt: item.value.lastAt ?? null,
+                failedAt: 0,
+                fails: 0,
+              });
+              addSeries(pair.yahoo, item.value.points, item.value.lastAt);
+            } else if (!aborted) {
+              rememberFailure(pair.yahoo, day);
+              keepPrevious(pair);
+            }
+          }
+        }
+      } finally {
+        clearTimeout(roundTimer);
+        if (signal?.removeEventListener) signal.removeEventListener('abort', onAbort);
       }
-    } finally {
-      clearTimeout(roundTimer);
-      if (signal?.removeEventListener) signal.removeEventListener('abort', onAbort);
     }
-    const returned = new Set(gained.map((item) => item.symbol));
-    for (const pair of [...batch, ...skipped]) {
-      if (!returned.has(pair.yahoo)) keepPrevious(pair);
-    }
+    for (const pair of pairs) keepPrevious(pair);
     return [...fresh, ...gained];
   }
 

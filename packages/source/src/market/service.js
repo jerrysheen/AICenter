@@ -1,7 +1,7 @@
 import { asiaTrackedItems, buildAsiaMarketBoard, buildCnMarketBoard, buildGlobalAssetBoard, buildOverviewBoard, buildUsMarketBoard, cnTrackedItems, globalTrackedItems, parseAsiaExtraSymbols, parseCnExtraSymbols, parseUsExtraSymbols, preferredOverviewFocus, usTrackedItems } from './boards.js';
 import { createCnQuoteClient, isCnYahooSymbol } from '../../../connectors/src/cn-quotes.js';
 import { createSinaFuturesClient, isSinaFutureSymbol } from '../../../connectors/src/sina-futures.js';
-import { createXueqiuQuoteClient, isXueqiuYahooSymbol } from '../../../connectors/src/xueqiu-quotes.js';
+import { createXueqiuQuoteClient, isXueqiuYahooSymbol, shanghaiCalendarDay } from '../../../connectors/src/xueqiu-quotes.js';
 import { createTushareClient, isTushareDailySymbol } from '../../../connectors/src/tushare.js';
 import { createYahooClient } from '../../../connectors/src/yahoo.js';
 import { resolveMarketCatalog } from './catalog.js';
@@ -242,11 +242,15 @@ export function createMarketService(options = {}) {
     });
   }
 
-  function stampLiveClose(sparkline, lastPrice) {
+  function stampLiveClose(sparkline, lastPrice, lastAt) {
     if (!Array.isArray(sparkline) || sparkline.length < 2) return null;
     const next = sparkline.slice();
     const price = Number(lastPrice);
-    if (Number.isFinite(price) && price > 0) next[next.length - 1] = price;
+    if (!Number.isFinite(price) || price <= 0) return next;
+    const barAt = Number(lastAt);
+    const today = Number.isFinite(barAt) && barAt > 0 && shanghaiCalendarDay(barAt) === shanghaiCalendarDay(now());
+    if (today) next[next.length - 1] = price;
+    else next.push(price);
     return next;
   }
 
@@ -267,9 +271,10 @@ export function createMarketService(options = {}) {
         clearTimeout(timer);
       }
     }
-    const bySymbol = new Map((series || []).map((item) => [item.symbol, item.sparkline]));
+    const bySymbol = new Map((series || []).map((item) => [item.symbol, item]));
     return quotes.map((item) => {
-      const sparkline = stampLiveClose(bySymbol.get(item.symbol) || item.sparkline, item.lastPrice);
+      const seriesItem = bySymbol.get(item.symbol);
+      const sparkline = stampLiveClose(seriesItem?.sparkline || item.sparkline, item.lastPrice, seriesItem?.lastAt);
       return sparkline ? { ...item, sparkline } : item;
     });
   }

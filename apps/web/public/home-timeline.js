@@ -176,33 +176,15 @@ export function acceptMarketPayload(previous, incoming) {
 export const MARKET_STALE_LABEL_MS = 180_000;
 export const HOME_DATA_DELAY_MS = 5 * 60_000;
 
-const CN_CLOSURES = [
-  ['2026-01-01', '2026-01-03'],
-  ['2026-02-15', '2026-02-23'],
-  ['2026-04-04', '2026-04-06'],
-  ['2026-05-01', '2026-05-05'],
-  ['2026-06-19', '2026-06-21'],
-  ['2026-09-25', '2026-09-27'],
-  ['2026-10-01', '2026-10-07'],
-];
 const US_INDEX_SYMBOLS = new Set(['^GSPC', '^DJI', '^IXIC', '^VIX', '^RUT', '^NYA', '^SOX', '^TNX', '^GSPTSE']);
-
-function shanghaiDateKey(nowMs) {
-  const parts = shanghaiParts(nowMs);
-  const pad = (value) => String(value).padStart(2, '0');
-  return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}`;
-}
 
 function minutesOf(parts) {
   return Number(parts.hour) * 60 + Number(parts.minute);
 }
 
 function cnInRegularSession(nowMs) {
-  const date = shanghaiDateKey(nowMs);
-  if (!date.startsWith('2026-')) return false;
   const parts = shanghaiParts(nowMs);
   if (parts.weekday === 'Sat' || parts.weekday === 'Sun') return false;
-  if (CN_CLOSURES.some(([start, end]) => date >= start && date <= end)) return false;
   const minute = minutesOf(parts);
   return (minute >= 570 && minute < 690) || (minute >= 780 && minute < 900);
 }
@@ -235,7 +217,13 @@ function quoteVenue(item) {
   return '';
 }
 
+export function marketFillDelayMs(attempt) {
+  const step = Number.isFinite(Number(attempt)) && Number(attempt) > 0 ? Math.trunc(Number(attempt)) : 0;
+  return Math.min(800 * (2 ** step), 10_000);
+}
+
 export function quoteSessionOpen(item, nowMs = Date.now()) {
+  if (typeof item?.marketOpen === 'boolean') return item.marketOpen;
   const session = String(item?.session || '').trim();
   if (session) return session === 'regular';
   const venue = quoteVenue(item);
@@ -273,6 +261,7 @@ function pricedQuotes(payload) {
 function boardSessionOpen(payload, nowMs) {
   const quotes = pricedQuotes(payload);
   if (quotes.length) return quotes.some((item) => quoteSessionOpen({ ...item, board: item.board || payload.board }, nowMs));
+  if (typeof payload?.marketOpen === 'boolean') return payload.marketOpen;
   const session = String(payload?.session || '').trim();
   if (session) return session === 'regular';
   const board = String(payload?.board || '').toLowerCase();
