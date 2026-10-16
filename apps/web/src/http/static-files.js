@@ -103,6 +103,7 @@ export function createStaticFileHandler(publicDirectory) {
     '/home-timeline.js': ['home-timeline.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/html-text.js': ['html-text.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/news-list.js': ['news-list.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
+    '/author-view.js': ['author-view.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/model-usage.js': ['model-usage.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/feed-interaction.js': ['feed-interaction.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/hardware-prices.js': ['hardware-prices.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
