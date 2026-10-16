@@ -91,3 +91,44 @@ export const ComputePriceBoardSchema = z.object({
   gpus: z.array(GpuRentViewSchema).max(160),
   checks: z.array(ComputePriceCheckSchema).max(12),
 }).strict();
+
+const historyModel = z.enum(['h100', 'h200', 'b200', 'b300', 'gb200']);
+const historyTier = z.enum(['guaranteed', 'community', 'median', 'index']);
+const historySource = z.enum(['runpod', 'vast', 'ccir', 'gpueconomy', 'bargo', 'ornn']);
+
+const rentHistoryPoint = z.object({
+  day: quoteDate,
+  close: decimal,
+  low: decimal,
+  high: decimal,
+  sampleCount: z.number().int().positive().nullable(),
+  carriedForward: z.boolean(),
+}).strict();
+
+export const GpuRentHistoryQuerySchema = z.object({
+  start: quoteDate,
+  end: quoteDate,
+  models: z.string().trim().max(80).optional(),
+  tiers: z.string().trim().max(80).optional(),
+  sources: z.string().trim().max(120).optional(),
+  grain: z.enum(['day', 'raw']).optional(),
+}).strict();
+
+export const GpuRentHistorySchema = z.object({
+  start: quoteDate,
+  end: quoteDate,
+  grain: z.enum(['day', 'raw']),
+  coverage: z.array(z.object({
+    model: historyModel,
+    status: z.enum(['ok', 'no_source']),
+  }).strict()).max(8),
+  series: z.array(z.object({
+    model: historyModel,
+    tier: historyTier,
+    source: historySource,
+    dayBasis: z.enum(['Beijing', 'ET']),
+    variant: z.string().trim().min(1).max(80).optional(),
+    lane: z.string().trim().min(1).max(80).optional(),
+    points: z.array(rentHistoryPoint).max(366),
+  }).strict()).max(200),
+}).strict();

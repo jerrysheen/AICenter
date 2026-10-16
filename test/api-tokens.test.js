@@ -69,6 +69,7 @@ test('allowlist is GET-only and leaves admin paths closed', () => {
     ['GET', '/api/v1/markets/search'],
     ['GET', '/api/v1/hardware-prices'],
     ['GET', '/api/v1/compute-prices'],
+    ['GET', '/api/v1/compute-prices/history'],
     ['GET', '/api/v1/etf-whale/overview'],
     ['GET', '/api/v1/etf-whale/daily'],
     ['GET', '/api/v1/etf-whale/signals'],
@@ -111,7 +112,7 @@ test('tokens are stored as sha256, revoked tokens fail, and logs expire', () => 
     now: () => clock,
   });
   try {
-    assert.equal(latestSchemaVersion(), 74);
+    assert.equal(latestSchemaVersion(), 75);
     const issued = service.issue({ name: '行情机器人', deviceId: null });
     assert.match(issued.secret, /^aic_[A-Za-z0-9_-]{40,}$/);
     assert.equal(issued.token.prefix, issued.secret.slice(0, 12));

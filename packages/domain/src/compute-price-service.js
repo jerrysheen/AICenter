@@ -1,5 +1,22 @@
-import { ComputePriceBoardSchema } from '../../contracts/src/compute-prices.js';
+import { ComputePriceBoardSchema, GpuRentHistoryQuerySchema, GpuRentHistorySchema } from '../../contracts/src/compute-prices.js';
+import { parseContract, ValidationError } from '../../contracts/src/index.js';
 import { formatYmd, zonedParts } from './zoned-time.js';
+import { gpuRentNormalization, normalizeGpuRentRow } from './gpu-rent-normalization.js';
+import {
+  GPU_RENT_DAILY_SINCE,
+  beijingDay,
+  beijingDayStart,
+  compareDecimal,
+  eachIsoDay,
+  easternDay,
+  inclusiveIsoDays,
+  previousIsoDay,
+  rollGpuRentDays,
+  shapeGpuRentHistory,
+  shiftIsoDay,
+} from './gpu-rent-daily.js';
+
+const TODAY_RENT_CACHE_MS = 60_000;
 
 export const COMPUTE_PRICE_TIME_ZONE = 'Asia/Shanghai';
 
@@ -37,6 +54,7 @@ export function quoteDateFor(capturedAt, timeZone = COMPUTE_PRICE_TIME_ZONE) {
 }
 
 export function createComputePriceService({ repository, timeZone = COMPUTE_PRICE_TIME_ZONE }) {
+  const todayCache = new Map();
   return {
     save(workspaceId, input) {
       const explicit = typeof input?.quoteDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(input.quoteDate)
@@ -90,5 +108,240 @@ export function createComputePriceService({ repository, timeZone = COMPUTE_PRICE
         checks: repository.checks(workspaceId),
       });
     },
+
+    rollup(workspaceId, { sinceDay = GPU_RENT_DAILY_SINCE, throughDay, now: nowMs = Date.now() } = {}) {
+      const today = beijingDay(nowMs);
+      let end = throughDay || previousIsoDay(today);
+      if (end >= today) end = previousIsoDay(today);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(sinceDay) || !/^\d{4}-\d{2}-\d{2}$/.test(end) || end < sinceDay) {
+        return { sinceDay, throughDay: end, rows: 0, days: 0, carried: 0 };
+      }
+      const mapping = gpuRentNormalization();
+      const existingDays = new Set(repository.listRentDailyDays(workspaceId, sinceDay, end));
+      const rebuild = eachIsoDay(sinceDay, end).filter((day) => day === end || !existingDays.has(day));
+      if (!rebuild.length) return { sinceDay, throughDay: end, rows: 0, days: 0, carried: 0 };
+      const { fromMs, toMs } = dayWindow(rebuild[0], rebuild[rebuild.length - 1]);
+      const observations = repository.listGpuObservationsBetween(workspaceId, fromMs, toMs);
+      const snapshots = repository.listGpuSnapshotChecksBetween(workspaceId, fromMs, toMs);
+      const existingByDay = new Map();
+      if (existingDays.size) {
+        for (const row of repository.listDailyRange(workspaceId, sinceDay, end)) {
+          if (row.sourceKey === 'ornn') continue;
+          const list = existingByDay.get(row.day) || [];
+          list.push(row);
+          existingByDay.set(row.day, list);
+        }
+      }
+      const built = rollGpuRentDays({
+        observations,
+        snapshots,
+        mapping,
+        sinceDay,
+        throughDay: end,
+        previousRows: repository.latestRentDailyBefore(workspaceId, sinceDay),
+        existingByDay,
+      });
+      const byDay = new Map();
+      for (const row of built) {
+        const list = byDay.get(row.day) || [];
+        list.push(row);
+        byDay.set(row.day, list);
+      }
+      let rows = 0;
+      let days = 0;
+      let carried = 0;
+      repository.transaction(() => {
+        for (const day of eachIsoDay(sinceDay, end)) {
+          if (existingDays.has(day) && day !== end) continue;
+          const dayRows = byDay.get(day) || [];
+          repository.replaceRentDailyDay(workspaceId, day, dayRows);
+          rows += dayRows.length;
+          days += 1;
+          carried += dayRows.filter((row) => row.carriedForward).length;
+        }
+      });
+      return { sinceDay, throughDay: end, rows, days, carried };
+    },
+
+    history(workspaceId, query, nowMs = Date.now()) {
+      const parsed = parseHistoryQuery(query);
+      const mapping = gpuRentNormalization();
+      const today = beijingDay(nowMs);
+      const stored = repository.listDailyRange(workspaceId, parsed.start, parsed.end);
+      const storedRentByDay = new Map();
+      for (const row of stored) {
+        if (row.sourceKey === 'ornn' || row.day >= today) continue;
+        const list = storedRentByDay.get(row.day) || [];
+        list.push(row);
+        storedRentByDay.set(row.day, list);
+      }
+      const last = parsed.end < today ? parsed.end : today;
+      const needed = parsed.start <= last
+        ? eachIsoDay(parsed.start, last).filter((day) => day === today || !storedRentByDay.has(day))
+        : [];
+      const pastNeeded = needed.filter((day) => day < today);
+      let live = [];
+      if (pastNeeded.length) {
+        const { fromMs, toMs } = dayWindow(pastNeeded[0], pastNeeded[pastNeeded.length - 1]);
+        const built = rollGpuRentDays({
+          observations: repository.listGpuObservationsBetween(workspaceId, fromMs, toMs),
+          snapshots: repository.listGpuSnapshotChecksBetween(workspaceId, fromMs, toMs),
+          mapping,
+          sinceDay: pastNeeded[0],
+          throughDay: pastNeeded[pastNeeded.length - 1],
+          previousRows: repository.latestRentDailyBefore(workspaceId, pastNeeded[0]),
+          existingByDay: storedRentByDay,
+        });
+        const want = new Set(pastNeeded);
+        live = built.filter((row) => want.has(row.day));
+      }
+      const todayState = todayRent(todayCache, repository, workspaceId, today, nowMs, mapping);
+      if (needed.includes(today)) live.push(...todayState.rows);
+      const rent = [];
+      for (const day of parsed.start <= last ? eachIsoDay(parsed.start, last) : []) {
+        if (day === today) rent.push(...live.filter((row) => row.day === day));
+        else if (storedRentByDay.has(day)) rent.push(...storedRentByDay.get(day));
+        else rent.push(...live.filter((row) => row.day === day));
+      }
+      const rows = [...rent, ...stored.filter((row) => row.sourceKey === 'ornn')];
+      const filtered = rows.filter((row) => (
+        (!parsed.models || parsed.models.has(row.model))
+        && (!parsed.tiers || parsed.tiers.has(row.tier))
+        && (!parsed.sources || parsed.sources.has(row.sourceKey))
+      ));
+      const shaped = shapeGpuRentHistory({
+        rows: filtered,
+        grain: parsed.grain,
+        coverageModels: mapping.coverageModels,
+        presentModels: presentModels(repository, workspaceId, todayState.models),
+      });
+      return GpuRentHistorySchema.parse({
+        start: parsed.start,
+        end: parsed.end,
+        grain: parsed.grain,
+        ...shaped,
+      });
+    },
+
+    saveOrnnSeries(workspaceId, entry, points) {
+      const mapping = gpuRentNormalization();
+      const normalized = normalizeGpuRentRow(mapping, {
+        sourceKey: 'ornn',
+        variant: entry.variant,
+        lane: entry.lane,
+        label: entry.path,
+      });
+      if (!normalized) throw new Error(`Ornn ${entry.path} 无法归入型号和档位`);
+      const byDay = new Map();
+      for (const point of points || []) {
+        const close = point.close;
+        const day = easternDay(point.capturedAt);
+        const current = byDay.get(day);
+        if (!current) {
+          byDay.set(day, { day, close, low: close, high: close, lastCapturedAt: point.capturedAt });
+          continue;
+        }
+        if (point.capturedAt >= current.lastCapturedAt) {
+          current.close = close;
+          current.lastCapturedAt = point.capturedAt;
+        }
+        if (compareDecimal(close, current.low) < 0) current.low = close;
+        if (compareDecimal(close, current.high) > 0) current.high = close;
+      }
+      const rows = [...byDay.values()].map((item) => ({
+        day: item.day,
+        sourceKey: 'ornn',
+        variant: entry.variant,
+        lane: entry.lane,
+        model: normalized.model,
+        tier: normalized.tier,
+        close: item.close,
+        low: item.low,
+        high: item.high,
+        sampleCount: null,
+        lastCapturedAt: item.lastCapturedAt,
+        carriedForward: false,
+      }));
+      repository.upsertDailyRows(workspaceId, rows);
+      return rows.length;
+    },
   };
+}
+
+const HISTORY_MODELS = new Set(['h100', 'h200', 'b200', 'b300', 'gb200']);
+const HISTORY_TIERS = new Set(['guaranteed', 'community', 'median', 'index']);
+const HISTORY_SOURCES = new Set(['runpod', 'vast', 'ccir', 'gpueconomy', 'bargo', 'ornn']);
+
+function parseHistoryQuery(query) {
+  const start = String(query?.start || '');
+  const end = String(query?.end || '');
+  if (!start || !end) throw new ValidationError('需要 start 和 end');
+  const parsed = parseContract(GpuRentHistoryQuerySchema, {
+    start,
+    end,
+    models: query.models || undefined,
+    tiers: query.tiers || undefined,
+    sources: query.sources || undefined,
+    grain: query.grain || undefined,
+  }, '起止日期无效');
+  if (parsed.start > parsed.end) throw new ValidationError('start 不能晚于 end');
+  const span = inclusiveIsoDays(parsed.start, parsed.end);
+  if (span > 366) throw new ValidationError('起止日期最多 366 天');
+  const grain = parsed.grain || 'day';
+  if (grain === 'raw' && span > 31) throw new ValidationError('原始粒度最多 31 天');
+  return {
+    start: parsed.start,
+    end: parsed.end,
+    grain,
+    models: parseChoice(parsed.models, HISTORY_MODELS, '型号'),
+    tiers: parseChoice(parsed.tiers, HISTORY_TIERS, '档位'),
+    sources: parseChoice(parsed.sources, HISTORY_SOURCES, '来源'),
+  };
+}
+
+function dayWindow(startDay, endDay) {
+  return {
+    fromMs: beijingDayStart(startDay),
+    toMs: beijingDayStart(shiftIsoDay(endDay, 1)),
+  };
+}
+
+function todayRent(cache, repository, workspaceId, today, nowMs, mapping) {
+  const hit = cache.get(workspaceId);
+  if (hit && hit.day === today && nowMs - hit.at < TODAY_RENT_CACHE_MS) return hit;
+  const { fromMs, toMs } = dayWindow(today, today);
+  const observations = repository.listGpuObservationsBetween(workspaceId, fromMs, toMs);
+  const snapshots = repository.listGpuSnapshotChecksBetween(workspaceId, fromMs, toMs);
+  const rows = rollGpuRentDays({
+    observations,
+    snapshots,
+    mapping,
+    sinceDay: today,
+    throughDay: today,
+    previousRows: repository.latestRentDailyBefore(workspaceId, today),
+  });
+  const models = new Set();
+  for (const row of observations) {
+    const normalized = normalizeGpuRentRow(mapping, row);
+    if (normalized) models.add(normalized.model);
+  }
+  const value = { at: nowMs, day: today, rows, models };
+  cache.set(workspaceId, value);
+  return value;
+}
+
+function presentModels(repository, workspaceId, todayModels) {
+  const present = new Set(repository.distinctDailyModels(workspaceId));
+  for (const model of todayModels || []) present.add(model);
+  return present;
+}
+
+function parseChoice(value, allowed, label) {
+  if (!value) return null;
+  const items = String(value).split(',').map((item) => item.trim()).filter(Boolean);
+  if (!items.length) return null;
+  for (const item of items) {
+    if (!allowed.has(item)) throw new ValidationError(`未知${label}`);
+  }
+  return new Set(items);
 }
