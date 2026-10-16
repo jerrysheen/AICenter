@@ -72,6 +72,10 @@ import { createQuantJobHandlers, quantLabManifest } from '../../../packages/runt
 import { ensureEtfWhaleSchedule } from '../../../packages/runtime/src/etf-whale-schedule.js';
 import { createEtfWhaleJobHandlers, etfWhaleManifest } from '../../../packages/runtime/src/etf-whale-sync.js';
 import { createEventQuoteSnapshotJobHandlers, ensureEventQuoteSnapshotSchedule, eventQuoteSnapshotManifest } from '../../../packages/runtime/src/event-quote-snapshot-job.js';
+import { createPolymarketWatchlistJobHandlers, ensurePolymarketWatchlistSchedule, polymarketWatchlistManifest } from '../../../packages/runtime/src/polymarket-watchlist-job.js';
+import { createPolymarketGammaClient } from '../../../packages/connectors/src/polymarket-gamma.js';
+import { loadPolymarketWatchlist, polymarketLegacyEnabled } from '../../../packages/connectors/src/polymarket-watchlist.js';
+import { readStoredPolymarketView } from '../../../packages/domain/src/polymarket-series.js';
 import { createInvestorDiscussionJobHandlers, ensureInvestorDiscussionSchedule, investorDiscussionManifest } from '../../../packages/runtime/src/investor-discussion-job.js';
 import { ensureTrendForcePriceSchedules } from '../../../packages/runtime/src/trendforce-price-schedule.js';
 import { computePriceManifest, createComputePriceJobHandlers, ensureComputePriceSchedules } from '../../../packages/runtime/src/compute-price-job.js';
@@ -220,12 +224,25 @@ export function createAiCenterWorker(options = {}) {
     : null);
   const hardwarePriceService = options.hardwarePriceService || createHardwarePriceService({repository:store.repositories.hardwarePrices,artifactStore:createHardwareArtifactStore({dataDirectory})});
   const contentRoutingPort = options.contentRoutingPort || createContentRoutingService({mediaService,hardwarePrices:hardwarePriceService,feedRepository:store.repositories.feed,legacyPricePort:legacyPriceSnapshot});
+  const legacyPolymarket = polymarketLegacyEnabled(env);
+  const polymarketWatchlist = options.polymarketWatchlist || loadPolymarketWatchlist(path.join(instance.configDirectory, 'polymarket-watchlist.json'));
+  const polymarketClient = options.polymarketClient || createPolymarketGammaClient({
+    fetch: options.fetch,
+    minIntervalMs: polymarketWatchlist.fetch.minIntervalMs,
+    batchSize: polymarketWatchlist.fetch.batchSize,
+  });
   const registry = options.moduleRegistry || createSourceModuleRegistry({
     twitterService: options.twitterService,
     bilibiliService: options.bilibiliService,
     marketService: options.marketService,
     officialSources: options.officialSources,
     marketNativeSources: options.marketNativeSources,
+    env,
+    polymarketQuotes: legacyPolymarket || !store.repositories?.polymarket
+      ? undefined
+      : () => readStoredPolymarketView(store.repositories.polymarket, Date.now(), {
+        staleAfterMs: polymarketWatchlist.fetch.staleAfterMinutes * 60_000,
+      }),
     webSearchPort,
     browserRuntime,
     marketCatalog: options.marketCatalog,
@@ -556,8 +573,20 @@ export function createAiCenterWorker(options = {}) {
         pipeline: treeEnabled ? 'tree-v3' : 'legacy',
       }),
       env,
+      keepPolymarketOrder: !legacyPolymarket,
     }),
   });
+  if (store.repositories?.polymarket) {
+    registry.register({
+      manifest: polymarketWatchlistManifest,
+      jobHandlers: options.polymarketWatchlistJobHandlers || createPolymarketWatchlistJobHandlers({
+        client: polymarketClient,
+        repository: store.repositories.polymarket,
+        config: polymarketWatchlist,
+        now: options.now,
+      }),
+    });
+  }
   registry.register({
     manifest: eventQuoteSnapshotManifest,
     jobHandlers: options.eventQuoteSnapshotJobHandlers || createEventQuoteSnapshotJobHandlers({
@@ -635,6 +664,9 @@ export function createAiCenterWorker(options = {}) {
     ensureHoldingsMarketSchedule(store);
     ensureMarketBoardsSchedule(store);
     ensureMarketNativeBoardSchedule(store);
+    if (store.repositories?.polymarket) {
+      ensurePolymarketWatchlistSchedule(store, polymarketWatchlist, Date.now(), { enabled: !legacyPolymarket });
+    }
     ensureFeedListSchedule(store);
     ensureHardwarePriceSchedule(store);
     ensureHomeBootstrapSchedule(store);

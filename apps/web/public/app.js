@@ -7083,51 +7083,84 @@ function marketNativeEmpty(root, text) {
   root.replaceChildren(Object.assign(document.createElement('div'), { className: 'empty-state', textContent: text }));
 }
 
+function predictionChangeNode(current, prior) {
+  const dayChange = predictionDayChange(current, prior);
+  if (!dayChange) return null;
+  return Object.assign(document.createElement('span'), {
+    className: ['prediction-day-change', dayChange.direction].filter(Boolean).join(' '),
+    textContent: dayChange.text,
+  });
+}
+
 function appendPredictionQuote(root, quote) {
   const article = document.createElement('article');
   article.className = 'prediction-quote';
+  const title = Object.assign(document.createElement('b'), { textContent: localizedCopy(quote.quoteId, quote.marketQuestion) });
+  const ladder = Array.isArray(quote.outcomes) && quote.outcomes.length > 1;
   const yes = predictionShare(quote.midPrice);
   const last = predictionShare(quote.lastPrice);
-  const no = yes == null ? null : 1 - yes;
-  const outcome = String(quote.outcome || 'Yes');
-  const title = Object.assign(document.createElement('b'), { textContent: localizedCopy(quote.quoteId, quote.marketQuestion) });
-  const sides = document.createElement('div');
-  sides.className = 'prediction-sides';
-  const yesCol = document.createElement('div');
-  yesCol.className = 'prediction-side is-yes';
-  const yesValue = Object.assign(document.createElement('strong'), { textContent: formatPredictionShare(yes) });
-  const dayChange = predictionDayChange(quote.midPrice, quote.midPrice24hAgo);
-  const yesNodes = [
-    Object.assign(document.createElement('span'), { textContent: outcome }),
-    yesValue,
-  ];
-  if (dayChange) {
-    yesNodes.push(Object.assign(document.createElement('span'), {
-      className: ['prediction-day-change', dayChange.direction].filter(Boolean).join(' '),
-      textContent: dayChange.text,
-    }));
+  let body;
+  if (ladder) {
+    body = document.createElement('div');
+    body.className = 'prediction-outcomes';
+    for (const item of quote.outcomes) {
+      const row = document.createElement('div');
+      row.className = 'prediction-outcome';
+      const name = Object.assign(document.createElement('b'), {
+        textContent: localizedCopy(`${quote.quoteId}:${item.label}`, item.label),
+      });
+      const price = Object.assign(document.createElement('strong'), { textContent: formatPredictionShare(item.midPrice) });
+      row.append(name, price);
+      const change = predictionChangeNode(item.midPrice, item.midPrice24hAgo);
+      if (change) row.append(change);
+      body.append(row);
+    }
+  } else {
+    const no = yes == null ? null : 1 - yes;
+    body = document.createElement('div');
+    body.className = 'prediction-sides';
+    const yesCol = document.createElement('div');
+    yesCol.className = 'prediction-side is-yes';
+    const yesNodes = [
+      Object.assign(document.createElement('span'), { textContent: String(quote.outcome || 'Yes') }),
+      Object.assign(document.createElement('strong'), { textContent: formatPredictionShare(yes) }),
+    ];
+    const change = predictionChangeNode(quote.midPrice, quote.midPrice24hAgo);
+    if (change) yesNodes.push(change);
+    yesCol.append(...yesNodes);
+    const noCol = document.createElement('div');
+    noCol.className = 'prediction-side is-no';
+    noCol.append(
+      Object.assign(document.createElement('span'), { textContent: '对立' }),
+      Object.assign(document.createElement('strong'), { textContent: formatPredictionShare(no) }),
+    );
+    body.append(yesCol, noCol);
   }
-  yesCol.append(...yesNodes);
-  const noCol = document.createElement('div');
-  noCol.className = 'prediction-side is-no';
-  noCol.append(
-    Object.assign(document.createElement('span'), { textContent: '对立' }),
-    Object.assign(document.createElement('strong'), { textContent: formatPredictionShare(no) }),
-  );
-  sides.append(yesCol, noCol);
   const bar = document.createElement('div');
   bar.className = 'prediction-bar';
   const fill = document.createElement('i');
   fill.style.width = yes == null ? '0%' : `${(yes * 100).toFixed(1)}%`;
   bar.append(fill);
-  const moved = last != null && yes != null && Math.abs(yes - last) >= 0.005;
+  const moved = !ladder && last != null && yes != null && Math.abs(yes - last) >= 0.005;
   const detail = [
     moved ? `上次 ${formatPredictionShare(last)}` : '',
     quote.venue,
     quote.endAt ? `截止 ${formatTime(quote.endAt)}` : '',
     quote.volume24h ? `24h ${marketNativeAmount(quote.volume24h)}` : '',
   ].filter(Boolean).join(' · ');
-  article.append(title, sides, bar, Object.assign(document.createElement('small'), { textContent: detail }));
+  article.append(title, body, bar, Object.assign(document.createElement('small'), { textContent: detail }));
+  if (quote.statusLabel) {
+    article.append(Object.assign(document.createElement('small'), {
+      className: 'prediction-status',
+      textContent: quote.statusLabel,
+    }));
+  }
+  for (const notice of quote.notices || []) {
+    article.append(Object.assign(document.createElement('small'), {
+      className: 'prediction-notice',
+      textContent: notice,
+    }));
+  }
   attachGuardedOpen(article, () => openExternalHttpUrl(quote.sourceUrl));
   root.append(article);
 }
@@ -7227,7 +7260,7 @@ async function loadMarketNativeBoard({ refresh = false } = {}) {
   state.marketNativeError = '';
   renderMarketNativeBoard();
   try {
-    const params = new URLSearchParams({ predictionLimit: '10' });
+    const params = new URLSearchParams({ predictionLimit: '50' });
     if (refresh) params.set('refresh', '1');
     const payload = await api(`/api/v1/market-native/board?${params}`, { timeoutMs: 45_000 });
     state.marketNativeBoard = payload.board;

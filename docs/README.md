@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-16-polymarket-watchlist.md`：Polymarket 改为固定观察清单，不再用标题关键词截前 24 条。每 5 分钟按配置里的 slug 批量读 `/events`，事件身份和概率点写入新表。页面改读这份清单，并显示较昨日。`AI_CENTER_POLYMARKET_LEGACY=1` 仍走原来的成交额排序。migration 73。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-15-us-quote-keep-newer.md`：更旧的报价时间不能盖掉较新的价格。缓存从请求开始起最多 45 秒，下一分钟的快照会重新取。新浪期货的 `provider` 写成 `sina`。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-15-us-quote-minute-refresh.md`：美股报价大约每分钟更新。美股代码走优先队列，亚洲、全球资产、历史 K 线和 A 股 Yahoo 回退不再挡在前面。共享缓存默认 30 秒。HTTP 404 只跳过那个代码。Web 读快照时按 `fetchedAt` 重算 `stale`，页面落后超过 3 分钟显示「已过期」。不新增 migration。需要同时重启 Web 和 Worker。

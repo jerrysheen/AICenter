@@ -2054,6 +2054,46 @@ export function addArticleDedupLookupIndexes(database) {
 
 migrations.push({ version: 72, name: 'article_dedup_url_lookup', up: addArticleDedupLookupIndexes });
 
+migrations.push({ version: 73, name: 'polymarket_watchlist', up(database) {
+  database.exec(`
+    CREATE TABLE polymarket_outcomes (
+      event_id TEXT NOT NULL,
+      market_id TEXT NOT NULL,
+      outcome_key TEXT NOT NULL,
+      series_id TEXT NOT NULL DEFAULT '',
+      watched INTEGER NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      group_key TEXT NOT NULL DEFAULT '',
+      alert_profile TEXT NOT NULL DEFAULT 'binary',
+      event_slug TEXT NOT NULL DEFAULT '',
+      market_slug TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL,
+      outcome_label TEXT NOT NULL,
+      lifecycle TEXT NOT NULL DEFAULT 'open',
+      end_at INTEGER,
+      liquidity TEXT,
+      volume_24h TEXT,
+      total_volume TEXT,
+      probability TEXT,
+      source_url TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (event_id, market_id, outcome_key)
+    );
+    CREATE INDEX idx_polymarket_outcomes_watched ON polymarket_outcomes(watched, sort_order);
+    CREATE INDEX idx_polymarket_outcomes_series ON polymarket_outcomes(series_id, watched);
+    CREATE TABLE polymarket_probability_points (
+      event_id TEXT NOT NULL,
+      market_id TEXT NOT NULL,
+      outcome_key TEXT NOT NULL,
+      observed_at INTEGER NOT NULL,
+      probability TEXT NOT NULL,
+      granularity TEXT NOT NULL DEFAULT '5m',
+      PRIMARY KEY (event_id, market_id, outcome_key, observed_at)
+    );
+    CREATE INDEX idx_polymarket_points_observed ON polymarket_probability_points(observed_at);
+  `);
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

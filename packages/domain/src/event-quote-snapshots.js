@@ -66,6 +66,7 @@ export function withPriorPrices(board, rows, now) {
   const parsed = parseContract(MarketNativeBoardSchema, {
     ...board,
     predictionMarkets: (board.predictionMarkets || []).map((quote) => {
+      if (quote.midPrice24hAgo) return quote;
       const probability = selectProbability24hAgo(grouped.get(quote.quoteId) || [], now);
       if (probability == null) return quote;
       return { ...quote, midPrice24hAgo: probability };
