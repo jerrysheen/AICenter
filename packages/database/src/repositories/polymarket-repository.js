@@ -221,6 +221,8 @@ export function createPolymarketRepository(database, emitEvent = () => {}) {
     ) VALUES (?, ?, ?, ?, ?, ?)`);
   const listAlerts = database.prepare(`SELECT id, event_id, market_id, outcome_key, alert_type, message, created_at
     FROM polymarket_alerts WHERE created_at >= ? ORDER BY created_at DESC, id DESC`);
+  const deleteOldAlerts = database.prepare('DELETE FROM polymarket_alerts WHERE created_at < ?');
+  const alertRetentionMs = 30 * 24 * 60 * 60 * 1000;
   const listStates = database.prepare(`SELECT event_id, market_id, outcome_key, state_key, state_value, updated_at
     FROM polymarket_alert_state`);
   const upsertState = database.prepare(`INSERT INTO polymarket_alert_state (
@@ -390,7 +392,7 @@ export function createPolymarketRepository(database, emitEvent = () => {}) {
       }));
     },
 
-    recordAlerts({ alerts = [], states = [] } = {}) {
+    recordAlerts({ alerts = [], states = [], now = Date.now() } = {}) {
       const samples = alerts.map((alert) => {
         const eventId = String(alert?.eventId || '').trim();
         const message = String(alert?.message || '').trim();
@@ -413,10 +415,12 @@ export function createPolymarketRepository(database, emitEvent = () => {}) {
         stateValue: String(state?.stateValue || '').slice(0, 200),
         updatedAt: Number(state?.updatedAt),
       })).filter((state) => state.eventId && state.stateKey && Number.isInteger(state.updatedAt));
+      const recordedAt = Number.isInteger(Number(now)) ? Math.trunc(Number(now)) : Date.now();
       database.transaction(() => {
         for (const alert of samples) {
           insertAlert.run(alert.eventId, alert.marketId, alert.outcomeKey, alert.alertType, alert.message, alert.createdAt);
         }
+        deleteOldAlerts.run(recordedAt - alertRetentionMs);
         for (const state of next) {
           upsertState.run(state.eventId, state.marketId, state.outcomeKey, state.stateKey, state.stateValue, state.updatedAt);
         }

@@ -595,7 +595,7 @@ export function createAiCenterWorker(options = {}) {
     });
     registry.register({
       manifest: polymarketReleaseManifest,
-      jobHandlers: options.polymarketReleaseJobHandlers || createPolymarketReleaseJobHandlers(polymarketJobOptions),
+      jobHandlers: options.polymarketReleaseJobHandlers || createPolymarketReleaseJobHandlers({ ...polymarketJobOptions, store }),
     });
   }
   registry.register({

@@ -4,7 +4,9 @@ import { evaluatePolymarketAlerts } from '../../domain/src/polymarket-alerts.js'
 import { alertProfileForDiscovered } from '../../domain/src/polymarket-discovery.js';
 import {
   heldSeriesEvents,
+  pendingSeriesEventId,
   pickOpenSeriesEvent,
+  placeholderSeriesRows,
   rollingWindow,
 } from '../../domain/src/polymarket-rollover.js';
 import { bucketObservedAt, POLYMARKET_DAY_MS } from '../../domain/src/polymarket-series.js';
@@ -28,7 +30,8 @@ export function planWatchlistRequests(config, seriesRows = []) {
   const slugs = entries
     .filter((entry) => !seriesIds.has(entry.seriesId) || !active.has(entry.seriesId))
     .map((entry) => entry.slug);
-  const eventIds = [...new Set(seriesRows.filter((row) => seriesIds.has(row.seriesId)).map((row) => row.eventId))];
+  const eventIds = [...new Set(seriesRows.filter((row) => seriesIds.has(row.seriesId)).map((row) => row.eventId))]
+    .filter((eventId) => !String(eventId).startsWith('pending:'));
   return { slugs, eventIds };
 }
 
@@ -100,7 +103,19 @@ function attachStoredSeriesEvents(events, outcomes, seriesRows, observedAt) {
   return extra;
 }
 
-async function rollSeries(client, config, outcomes, observedAt) {
+function rememberSeriesEvent(event, series, seed, outcomes, added, foundMonths, month, observedAt) {
+  const eventId = String(event.id);
+  foundMonths.add(month);
+  if (outcomes.some((row) => row.eventId === eventId) || added.some((row) => row.eventId === eventId)) return;
+  added.push(...rowsForEvent(event, {
+    seriesId: series.id,
+    sortOrder: seed?.sortOrder ?? 800,
+    groupKey: seed?.group || series.id,
+    alertProfile: seed?.alertProfile || 'multi',
+  }, observedAt));
+}
+
+async function rollSeries(client, config, outcomes, observedAt, log = () => {}) {
   const months = config.months || [];
   const releaseIds = [];
   const added = [];
@@ -108,25 +123,31 @@ async function rollSeries(client, config, outcomes, observedAt) {
     const held = heldSeriesEvents(outcomes, series.id);
     const plan = rollingWindow(series, held, months);
     const foundMonths = new Set();
+    const seed = seedEntry(config, series.id);
+    let events = [];
     if (plan.seekMonths.length && series.seriesSlug && client?.fetchEventsBySeries) {
-      const events = await client.fetchEventsBySeries(series.seriesSlug, { closed: false, limit: 50 });
-      const seed = seedEntry(config, series.id);
-      for (const month of plan.seekMonths) {
-        const event = pickOpenSeriesEvent(events, series.titleTemplate, month);
-        if (!event) continue;
-        const eventId = String(event.id);
-        if (outcomes.some((row) => row.eventId === eventId) || added.some((row) => row.eventId === eventId)) {
-          foundMonths.add(month);
-          continue;
-        }
-        added.push(...rowsForEvent(event, {
-          seriesId: series.id,
-          sortOrder: seed?.sortOrder ?? 800,
-          groupKey: seed?.group || series.id,
-          alertProfile: seed?.alertProfile || 'multi',
-        }, observedAt));
-        foundMonths.add(month);
+      events = await client.fetchEventsBySeries(series.seriesSlug, { closed: false, limit: 50 }) || [];
+    }
+    const unmatched = [];
+    for (const month of plan.seekMonths) {
+      const event = pickOpenSeriesEvent(events, series.titleTemplate, month);
+      if (event) rememberSeriesEvent(event, series, seed, outcomes, added, foundMonths, month, observedAt);
+      else unmatched.push(month);
+    }
+    if (unmatched.length && series.tag && client?.fetchEventsByTag) {
+      const tagged = await client.fetchEventsByTag(series.tag, { closed: false, limit: 100 }) || [];
+      for (const month of unmatched) {
+        const event = pickOpenSeriesEvent(tagged, series.titleTemplate, month);
+        if (event) rememberSeriesEvent(event, series, seed, outcomes, added, foundMonths, month, observedAt);
       }
+    }
+    const coveredBySettled = Number(series.hold) <= 1 && plan.pendingIds.length > 0;
+    for (const month of coveredBySettled ? [] : plan.seekMonths) {
+      if (foundMonths.has(month)) continue;
+      log('warn', `Polymarket 滚动系列 ${series.id} 未找到 ${month}`);
+      const eventId = pendingSeriesEventId(series.id, month);
+      if (outcomes.some((row) => row.eventId === eventId) || added.some((row) => row.eventId === eventId)) continue;
+      added.push(...placeholderSeriesRows(series, month, seed, observedAt));
     }
     const stillMissing = plan.seekMonths.filter((month) => !foundMonths.has(month));
     const pendingIds = stillMissing.length ? plan.pendingIds : [];
@@ -183,7 +204,7 @@ export function storePolymarketAlerts(repository, config, now) {
     config,
     now: at,
   });
-  return repository.recordAlerts(evaluated);
+  return repository.recordAlerts({ ...evaluated, now: at });
 }
 
 export async function capturePolymarketWatchlist({
@@ -191,6 +212,9 @@ export async function capturePolymarketWatchlist({
   repository,
   config,
   now = () => Date.now(),
+  log = (level, message) => {
+    if (level === 'warn') console.warn(message);
+  },
 }) {
   if (!client?.fetchEventsBySlugs) throw new Error('Polymarket 观察清单需要事件客户端');
   if (!repository?.saveWatchlist) throw new Error('Polymarket 观察清单需要存储');
@@ -212,8 +236,12 @@ export async function capturePolymarketWatchlist({
   if (!outcomes.length && (slugs.length + eventIds.length) > 0) {
     throw new Error('Polymarket 观察清单没有返回任何事件');
   }
+  const carried = [
+    ...outcomes,
+    ...seriesRows.filter((row) => String(row.eventId).startsWith('pending:') && !outcomes.some((item) => item.eventId === row.eventId)),
+  ];
   const rolled = config?.rollingSeries?.length
-    ? await rollSeries(client, config, outcomes, at)
+    ? await rollSeries(client, config, carried, at, log)
     : { outcomes, releaseIds: [] };
   const approved = repository.listCandidates?.('approved') || [];
   const approvedIds = approved.map((candidate) => candidate.eventId)

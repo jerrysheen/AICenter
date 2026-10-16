@@ -2096,7 +2096,7 @@ migrations.push({ version: 73, name: 'polymarket_watchlist', up(database) {
 
 migrations.push({ version: 74, name: 'polymarket_discovery', up(database) {
   database.exec(`
-    CREATE TABLE polymarket_candidates (
+    CREATE TABLE IF NOT EXISTS polymarket_candidates (
       event_id TEXT PRIMARY KEY,
       event_slug TEXT NOT NULL DEFAULT '',
       title TEXT NOT NULL,
@@ -2107,8 +2107,8 @@ migrations.push({ version: 74, name: 'polymarket_discovery', up(database) {
       discovered_at INTEGER NOT NULL,
       reviewed_at INTEGER
     );
-    CREATE INDEX idx_polymarket_candidates_status ON polymarket_candidates(status, discovered_at);
-    CREATE TABLE polymarket_alerts (
+    CREATE INDEX IF NOT EXISTS idx_polymarket_candidates_status ON polymarket_candidates(status, discovered_at);
+    CREATE TABLE IF NOT EXISTS polymarket_alerts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       event_id TEXT NOT NULL,
       market_id TEXT NOT NULL DEFAULT '',
@@ -2117,9 +2117,10 @@ migrations.push({ version: 74, name: 'polymarket_discovery', up(database) {
       message TEXT NOT NULL,
       created_at INTEGER NOT NULL
     );
-    CREATE INDEX idx_polymarket_alerts_event ON polymarket_alerts(event_id, created_at);
-    CREATE INDEX idx_polymarket_alerts_cooldown ON polymarket_alerts(event_id, market_id, alert_type, created_at);
-    CREATE TABLE polymarket_alert_state (
+    CREATE INDEX IF NOT EXISTS idx_polymarket_alerts_event ON polymarket_alerts(event_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_polymarket_alerts_created ON polymarket_alerts(created_at);
+    CREATE INDEX IF NOT EXISTS idx_polymarket_alerts_cooldown ON polymarket_alerts(event_id, market_id, alert_type, created_at);
+    CREATE TABLE IF NOT EXISTS polymarket_alert_state (
       event_id TEXT NOT NULL,
       market_id TEXT NOT NULL DEFAULT '',
       outcome_key TEXT NOT NULL DEFAULT '',

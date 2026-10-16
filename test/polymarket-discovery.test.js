@@ -10,7 +10,12 @@ import { discoveryCandidate } from '../packages/domain/src/polymarket-discovery.
 import { pickOpenSeriesEvent } from '../packages/domain/src/polymarket-rollover.js';
 import { readStoredPolymarketView } from '../packages/domain/src/polymarket-series.js';
 import { discoverPolymarketCandidates } from '../packages/runtime/src/polymarket-discovery-job.js';
-import { capturePolymarketRelease, releaseSlugsForInstant } from '../packages/runtime/src/polymarket-release-job.js';
+import {
+  capturePolymarketRelease,
+  ensurePolymarketReleaseSchedule,
+  nextReleaseCheckAt,
+  releaseSlugsForInstant,
+} from '../packages/runtime/src/polymarket-release-job.js';
 import { capturePolymarketWatchlist } from '../packages/runtime/src/polymarket-watchlist-job.js';
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -292,6 +297,83 @@ test('bitcoin keeps this month and the next, then slides when the current month 
   }
 });
 
+test('a missing next bitcoin month stays on the page, and the tag is used when the series slug is empty', async () => {
+  const temporary = temporaryDatabase();
+  const config = {
+    fixed: [
+      { slug: 'what-price-will-bitcoin-hit-in-october-2026', group: 'crypto', alertProfile: 'multi', seriesId: 'btc-monthly' },
+    ],
+    months: MONTHS,
+    rollingSeries: [{ id: 'btc-monthly', tag: 'bitcoin', seriesSlug: 'bitcoin-hit-price-monthly', titleTemplate: 'What price will Bitcoin hit in {month}?', hold: 2 }],
+    fetch: { pointIntervalMinutes: 5, downsampleAfterDays: 30 },
+    alerts: watchlist.alerts,
+  };
+  const october = event({
+    id: '1112205', slug: 'what-price-will-bitcoin-hit-in-october-2026', title: 'What price will Bitcoin hit in October?',
+    endDate: '2026-11-01T04:00:00Z',
+  });
+  const november = event({
+    id: '1300001', slug: 'what-price-will-bitcoin-hit-in-november-2026-181818', title: 'What price will Bitcoin hit in November?',
+    endDate: '2026-12-01T05:00:00Z',
+  });
+  try {
+    const warnings = [];
+    const missing = gammaClient({ bySlug: { 'what-price-will-bitcoin-hit-in-october-2026': october } });
+    await capturePolymarketWatchlist({
+      client: missing,
+      repository: temporary.store.repositories.polymarket,
+      config,
+      now: () => Date.parse('2026-10-16T12:00:00Z'),
+      log: (level, message) => warnings.push(`${level}:${message}`),
+    });
+    const view = readStoredPolymarketView(temporary.store.repositories.polymarket, Date.parse('2026-10-16T12:00:00Z'));
+    const pending = view.quotes.find((quote) => quote.marketQuestion.includes('November'));
+    assert.equal(pending.statusLabel, '下一期尚未出现');
+    assert.equal(view.quotes.some((quote) => quote.marketQuestion.includes('October')), true);
+    assert.deepEqual(warnings, ['warn:Polymarket 滚动系列 btc-monthly 未找到 November']);
+
+    const tagged = gammaClient({
+      byId: { 1112205: october },
+      byTag: { bitcoin: [november] },
+    });
+    const quiet = [];
+    await capturePolymarketWatchlist({
+      client: tagged,
+      repository: temporary.store.repositories.polymarket,
+      config,
+      now: () => Date.parse('2026-10-16T12:05:00Z'),
+      log: (level, message) => quiet.push(message),
+    });
+    assert.deepEqual(tagged.calls.series, ['bitcoin-hit-price-monthly']);
+    assert.deepEqual(tagged.calls.tags, ['bitcoin']);
+    assert.equal(tagged.calls.ids.flat().some((id) => String(id).startsWith('pending:')), false);
+    const live = temporary.store.repositories.polymarket.listWatchedOutcomes();
+    assert.equal(live.some((row) => row.eventId === '1300001'), true);
+    assert.equal(live.some((row) => String(row.eventId).startsWith('pending:')), false);
+    assert.deepEqual(quiet, []);
+  } finally {
+    temporary.remove();
+  }
+});
+
+test('alerts older than 30 days are deleted', () => {
+  const temporary = temporaryDatabase();
+  const now = Date.parse('2026-10-16T12:00:00Z');
+  try {
+    const repository = temporary.store.repositories.polymarket;
+    repository.recordAlerts({
+      now,
+      alerts: [
+        { eventId: '1', marketId: 'm', outcomeKey: 'yes', alertType: 'move_1h', message: '旧告警', createdAt: now - 31 * 24 * 60 * 60 * 1000 },
+        { eventId: '1', marketId: 'm', outcomeKey: 'yes', alertType: 'move_1h', message: '新告警', createdAt: now - 2 * 24 * 60 * 60 * 1000 },
+      ],
+    });
+    assert.deepEqual(repository.listAlertsSince(0).map((alert) => alert.message), ['新告警']);
+  } finally {
+    temporary.remove();
+  }
+});
+
 test('alerts cover moves, level hysteresis, geopolitics, lead changes, illiquid markets and cooldown', () => {
   const now = Date.parse('2026-10-16T12:00:00Z');
   const base = {
@@ -315,18 +397,24 @@ test('alerts cover moves, level hysteresis, geopolitics, lead changes, illiquid 
   assert.equal(moved.alerts.find((alert) => alert.alertType === 'move_24h').message, '24 小时上升 15.0 个百分点');
 
   const first = run({ outcomes: [{ ...base, probability: '0.10' }] });
-  assert.equal(first.alerts.some((alert) => alert.alertType === 'level_cross'), false);
+  assert.equal(first.alerts.some((alert) => alert.alertType.startsWith('level_cross')), false);
   const crossed = run({
     outcomes: [{ ...base, probability: '0.21' }],
     states: first.states,
   });
-  assert.equal(crossed.alerts.find((alert) => alert.alertType === 'level_cross').message, '概率越过 20%');
+  assert.equal(crossed.alerts.find((alert) => alert.alertType === 'level_cross:0.2').message, '概率越过 20%');
+  const higher = run({
+    outcomes: [{ ...base, probability: '0.81' }],
+    states: [...first.states, ...crossed.states],
+  });
+  assert.equal(higher.alerts.some((alert) => alert.alertType === 'level_cross:0.8'), true);
+  assert.equal(higher.alerts.some((alert) => alert.alertType === 'level_cross:0.2'), false);
   const held = run({
     outcomes: [{ ...base, probability: '0.21' }],
     states: [...first.states, ...crossed.states],
     recentAlerts: crossed.alerts,
   });
-  assert.equal(held.alerts.some((alert) => alert.alertType === 'level_cross'), false);
+  assert.equal(held.alerts.some((alert) => alert.alertType.startsWith('level_cross')), false);
 
   const geo = run({
     outcomes: [{ ...base, alertProfile: 'geopolitics', probability: '0.24' }],
@@ -365,7 +453,7 @@ test('alerts cover moves, level hysteresis, geopolitics, lead changes, illiquid 
     outcomes: [{ ...base, liquidity: null, probability: '0.70' }],
     points: [{ ...hourAgo, probability: '0.60' }],
   });
-  assert.equal(unknownLiquidity.alerts.some((alert) => alert.alertType === 'move_1h'), true);
+  assert.equal(unknownLiquidity.alerts.length, 0);
 });
 
 test('release polling fetches only the series scheduled for that timezone day', async () => {
@@ -375,6 +463,15 @@ test('release polling fetches only the series scheduled for that timezone day', 
   assert.deepEqual(releaseSlugsForInstant(watchlist.releaseCalendar, fedDay), ['fed-decision-in-october-20260617190323537']);
   assert.deepEqual(releaseSlugsForInstant(watchlist.releaseCalendar, chinaDay), ['china-gdp-growth-yy-in-q3-2026-20260716161116873']);
   assert.deepEqual(releaseSlugsForInstant(watchlist.releaseCalendar, Date.parse('2026-10-16T12:00:00Z')), []);
+  const quietAt = Date.parse('2026-10-16T12:00:00Z');
+  const nextCheck = nextReleaseCheckAt(watchlist.releaseCalendar, quietAt);
+  assert.equal(nextCheck > quietAt, true);
+  assert.equal(releaseSlugsForInstant(watchlist.releaseCalendar, nextCheck).length > 0, true);
+  const quietSchedule = ensurePolymarketReleaseSchedule(temporary.store, watchlist, quietAt);
+  assert.equal(quietSchedule.schedule.intervalMinutes, 24 * 60);
+  assert.equal(quietSchedule.nextRunAt, nextCheck);
+  const activeSchedule = ensurePolymarketReleaseSchedule(temporary.store, watchlist, fedDay);
+  assert.equal(activeSchedule.schedule.intervalMinutes, 1);
   const client = gammaClient({
     bySlug: {
       'fed-decision-in-october-20260617190323537': event({

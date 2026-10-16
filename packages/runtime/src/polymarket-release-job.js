@@ -11,6 +11,25 @@ export const polymarketReleaseManifest = Object.freeze({
   jobTypes: [POLYMARKET_RELEASE_JOB_TYPE],
 });
 
+export function nextReleaseCheckAt(calendar, now) {
+  const at = Number(now);
+  if (!Number.isFinite(at)) return Date.now();
+  if (releaseSlugsForInstant(calendar, at).length) return at;
+  let best = null;
+  for (const entry of calendar || []) {
+    const start = Date.parse(`${entry?.date || ''}T00:00:00Z`);
+    if (!Number.isFinite(start)) continue;
+    for (let offset = -36; offset <= 36; offset += 1) {
+      const candidate = start + offset * 60 * 60 * 1000;
+      if (candidate <= at) continue;
+      if (!releaseSlugsForInstant([entry], candidate).length) continue;
+      if (best == null || candidate < best) best = candidate;
+      break;
+    }
+  }
+  return best ?? at + 24 * 60 * 60 * 1000;
+}
+
 export function releaseSlugsForInstant(calendar, now) {
   const at = new Date(Number(now));
   if (Number.isNaN(at.getTime())) return [];
@@ -69,22 +88,40 @@ export async function capturePolymarketRelease({
   return { skipped: false, slugs, missing, ...saved, alerts: alerts.alerts };
 }
 
-export function createPolymarketReleaseJobHandlers({ client, repository, config, now = () => Date.now() }) {
+export function createPolymarketReleaseJobHandlers({ client, repository, config, store, now = () => Date.now() }) {
   return {
-    [POLYMARKET_RELEASE_JOB_TYPE]: async () => capturePolymarketRelease({ client, repository, config, now }),
+    [POLYMARKET_RELEASE_JOB_TYPE]: async () => {
+      const at = Math.trunc(now());
+      const result = await capturePolymarketRelease({ client, repository, config, now });
+      if (store?.getJobSchedule && store?.upsertJobSchedule) {
+        const active = releaseSlugsForInstant(config?.releaseCalendar, at).length > 0;
+        const want = active ? (Number(config?.fetch?.releaseIntervalMinutes) || 1) : 24 * 60;
+        const current = store.getJobSchedule('local', POLYMARKET_RELEASE_SCHEDULE_KEY);
+        if (Number(current?.schedule?.intervalMinutes) !== want) {
+          ensurePolymarketReleaseSchedule(store, config, active ? at + want * 60_000 : at, {
+            enabled: current?.enabled !== false,
+          });
+        }
+      }
+      return result;
+    },
   };
 }
 
 export function ensurePolymarketReleaseSchedule(store, config, now = Date.now(), { enabled = true } = {}) {
+  const at = Math.trunc(Number(now));
+  const active = releaseSlugsForInstant(config?.releaseCalendar, at).length > 0;
+  const intervalMinutes = active ? (Number(config?.fetch?.releaseIntervalMinutes) || 1) : 24 * 60;
   return store.upsertJobSchedule({
     workspaceId: 'local',
     key: POLYMARKET_RELEASE_SCHEDULE_KEY,
     jobType: POLYMARKET_RELEASE_JOB_TYPE,
     enabled: Boolean(enabled),
-    schedule: { kind: 'interval', intervalMinutes: Number(config?.fetch?.releaseIntervalMinutes) || 1 },
+    schedule: { kind: 'interval', intervalMinutes },
     input: {},
     priority: 0,
     maxAttempts: 2,
-    nextRunAt: Math.trunc(Number(now)),
+    nextRunAt: active ? at : nextReleaseCheckAt(config?.releaseCalendar, at),
+    resetNextRunAt: !active,
   });
 }

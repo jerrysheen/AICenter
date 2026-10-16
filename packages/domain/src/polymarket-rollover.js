@@ -14,6 +14,37 @@ export function nextMonthName(month, months) {
   return names[(index + 1) % names.length];
 }
 
+export function pendingSeriesEventId(seriesId, month) {
+  return `pending:${seriesId}:${month}`.slice(0, 64);
+}
+
+export function placeholderSeriesRows(series, month, seed, observedAt) {
+  const title = String(series?.titleTemplate || '').replaceAll('{month}', month);
+  return [{
+    eventId: pendingSeriesEventId(series?.id, month),
+    marketId: 'pending',
+    outcomeKey: 'pending',
+    seriesId: series?.id || '',
+    watched: true,
+    sortOrder: seed?.sortOrder ?? 800,
+    groupKey: seed?.group || series?.id || '',
+    alertProfile: seed?.alertProfile || 'multi',
+    eventSlug: '',
+    marketSlug: '',
+    title,
+    outcomeLabel: '待定',
+    lifecycle: 'pending_rollover',
+    endAt: null,
+    liquidity: null,
+    volume24h: null,
+    totalVolume: null,
+    probability: null,
+    sourceUrl: 'https://polymarket.com',
+    updatedAt: observedAt,
+    closed: true,
+  }];
+}
+
 export function pickOpenSeriesEvent(events, template, month) {
   const title = String(template || '').replaceAll('{month}', month);
   const matches = (events || []).filter((event) => event && event.closed !== true && event.id != null && event.title === title);

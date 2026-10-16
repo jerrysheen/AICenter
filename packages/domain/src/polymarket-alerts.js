@@ -129,7 +129,7 @@ export function evaluatePolymarketAlerts({
     if (!leader) continue;
     const tracked = profile.leadChange || ranked.length > 1 ? leader : ranked[0];
     const liquidity = numberOrNull(tracked.liquidity);
-    const illiquid = liquidity != null && liquidity < illiquidUsd;
+    const illiquid = liquidity == null || liquidity < illiquidUsd;
     const history = pointsByKey.get(pointKey(tracked)) || [];
     const current = Number(tracked.probability);
 
@@ -155,7 +155,7 @@ export function evaluatePolymarketAlerts({
       const step = nextLevelState(previous, zone);
       remember(tracked.eventId, tracked.marketId, tracked.outcomeKey, key, step.value);
       if (step.alert && !illiquid) {
-        emit(tracked.eventId, tracked.marketId, tracked.outcomeKey, 'level_cross', `概率越过 ${Math.round(level * 100)}%`);
+        emit(tracked.eventId, tracked.marketId, tracked.outcomeKey, `level_cross:${level}`, `概率越过 ${Math.round(level * 100)}%`);
       }
     }
     if (profile.leadChange) {
