@@ -251,7 +251,29 @@ export function createBrowserSkillClient(options = {}) {
       if (sessionOptions.purpose) args.push('--name', String(sessionOptions.purpose));
       if (sessionOptions.focused === false) args.push('--no-focus');
       if (sessionOptions.browserId) args.push('--browser', String(sessionOptions.browserId));
-      const payload = await run(args, { timeoutMs: Math.max(timeoutMs, 120_000) });
+      const deadlineAt = Number(sessionOptions.deadlineAt);
+      const hasDeadline = Number.isFinite(deadlineAt);
+      const startTimeout = hasDeadline
+        ? Math.min(120_000, deadlineAt - Date.now() - 15_000)
+        : Math.max(timeoutMs, 120_000);
+      if (hasDeadline && startTimeout < 1_000) {
+        const tooLate = new BrowserCommandError('browser_cold_start', { kind: 'browser_cold_start' });
+        tooLate.kind = 'browser_cold_start';
+        throw tooLate;
+      }
+      let payload;
+      try {
+        payload = await run(args, { timeoutMs: Math.max(1_000, startTimeout) });
+      } catch (error) {
+        const kind = error?.kind || error?.details?.kind;
+        const timedOut = kind === 'timeout' || kind === 'browser_cold_start' || error?.killed || /timed out/i.test(String(error?.message || ''));
+        if (hasDeadline && timedOut) {
+          const cold = new BrowserCommandError('browser_cold_start', { kind: 'browser_cold_start' });
+          cold.kind = 'browser_cold_start';
+          throw cold;
+        }
+        throw error;
+      }
       const sessionId = String(payload.session_id || payload.sessionId || '').trim();
       if (!sessionId) {
         throw new BrowserCommandError('bsk session start 没有返回 sessionId', { kind: 'invalid_json' });
@@ -269,9 +291,9 @@ export function createBrowserSkillClient(options = {}) {
       const limit = Math.max(1_000, Number(navigateOptions.timeoutMs) || timeoutMs);
       const args = ['navigate', String(url), '--session', String(sessionId), '--timeout', `${Math.floor(limit)}ms`];
       if (navigateOptions.waitUntil) args.push('--wait-until', String(navigateOptions.waitUntil));
-      // bsk keeps the IPC open for the tool timeout plus 15s. Leave room so a
-      // timeout result can return before the process is killed.
-      return run(args, { timeoutMs: limit + 20_000 });
+      // bsk keeps the IPC open a little past the tool timeout. Five seconds is
+      // enough for the timeout result to return before the process is killed.
+      return run(args, { timeoutMs: limit + 5_000 });
     },
 
     async evaluate(sessionId, expression, evaluateOptions = {}) {
@@ -303,7 +325,7 @@ export function createBrowserSkillClient(options = {}) {
     },
 
     async stopSession(sessionId) {
-      return run(['session', 'stop', String(sessionId)], { timeoutMs: Math.min(timeoutMs, 30_000) });
+      return run(['session', 'stop', String(sessionId)], { timeoutMs: Math.min(timeoutMs, 10_000) });
     },
   };
 }
