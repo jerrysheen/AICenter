@@ -89,25 +89,92 @@ export function createBrowserRuntime(options = {}) {
   // bsk sessions share one browser. A second task can navigate the page out
   // from under an in-flight fetch, so the whole callback stays exclusive.
   // A stuck callback must not pin every later browser task.
+  const LOCK_RESERVE_MS = 15_000;
+  const MIN_SESSION_MS = 20_000;
   let tail = Promise.resolve();
-  function exclusive(task) {
+  function deadlineResult(reason) {
+    return {
+      source: 'browser_runtime',
+      error: reason === 'browser_cold_start' ? 'browser_cold_start' : 'deadline',
+      reason,
+      deadline: true,
+      logged_in: false,
+      login_wall: false,
+      tweets: [],
+      items: [],
+      tweet_count: 0,
+    };
+  }
+  function exclusive(task, budget = {}) {
     const previous = tail;
     let releaseTail = () => {};
-    tail = new Promise((resolve) => { releaseTail = resolve; });
+    const gate = new Promise((resolve) => { releaseTail = resolve; });
+    tail = gate;
     let released = false;
     const release = () => {
       if (released) return;
       released = true;
       releaseTail();
     };
-    return previous.then(() => {
-      const timer = setTimeout(() => {
-        logger.warn?.(`[browser-runtime] 浏览器会话锁超过 ${maxHoldMs}ms，已放行排队任务`);
-        release();
-      }, maxHoldMs);
-      return Promise.resolve().then(task).finally(() => {
-        clearTimeout(timer);
-        release();
+    // A waiter that gives up must not keep the next task behind it, and must
+    // not let that task overlap the holder still inside previous.
+    const passthrough = () => {
+      if (released) return;
+      released = true;
+      previous.then(() => releaseTail(), () => releaseTail());
+    };
+    const deadlineAt = Number(budget.deadlineAt);
+    const hasDeadline = Number.isFinite(deadlineAt);
+    const waitLimit = hasDeadline ? deadlineAt - Date.now() - LOCK_RESERVE_MS : null;
+    if (waitLimit != null && waitLimit <= 0) {
+      passthrough();
+      return Promise.resolve(deadlineResult('lock_wait'));
+    }
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let timer = null;
+      const onAbort = () => giveUp();
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        budget.signal?.removeEventListener('abort', onAbort);
+      };
+      const giveUp = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        passthrough();
+        resolve(deadlineResult('lock_wait'));
+      };
+      if (budget.signal?.aborted) {
+        giveUp();
+        return;
+      }
+      budget.signal?.addEventListener('abort', onAbort, { once: true });
+      if (waitLimit != null) timer = setTimeout(giveUp, waitLimit);
+      previous.then(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        const remain = hasDeadline ? deadlineAt - Date.now() : Infinity;
+        if (remain < MIN_SESSION_MS) {
+          release();
+          resolve(deadlineResult('deadline'));
+          return;
+        }
+        const holdTimer = setTimeout(() => {
+          logger.warn?.(`[browser-runtime] 浏览器会话锁超过 ${maxHoldMs}ms，已放行排队任务`);
+          release();
+        }, maxHoldMs);
+        Promise.resolve().then(task).then(resolve, reject).finally(() => {
+          clearTimeout(holdTimer);
+          release();
+        });
+      }, (error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        passthrough();
+        reject(error);
       });
     });
   }
@@ -123,12 +190,22 @@ export function createBrowserRuntime(options = {}) {
 
     async withSession(sessionOptions, callback) {
       if (typeof callback !== 'function') throw new Error('withSession 需要 callback');
+      const requested = { ...(sessionOptions || {}) };
       return exclusive(async () => {
-        const resolvedSessionOptions = { ...(sessionOptions || {}) };
+        const resolvedSessionOptions = { ...requested };
         if (!String(resolvedSessionOptions.browserId || '').trim() && defaultBrowserId) {
           resolvedSessionOptions.browserId = defaultBrowserId;
         }
-        const started = await provider.startSession(resolvedSessionOptions);
+        let started;
+        try {
+          started = await provider.startSession(resolvedSessionOptions);
+        } catch (error) {
+          const kind = error?.kind || error?.details?.kind;
+          if (kind === 'browser_cold_start' || error?.message === 'browser_cold_start') {
+            return deadlineResult('browser_cold_start');
+          }
+          throw error;
+        }
         const session = createBrowserSession(provider, started);
         try {
           return await callback(session);
@@ -140,7 +217,7 @@ export function createBrowserRuntime(options = {}) {
             logger.warn?.(`[browser-runtime] session stop failed: ${message}`);
           }
         }
-      });
+      }, { deadlineAt: requested.deadlineAt, signal: requested.signal });
     },
   };
 }
