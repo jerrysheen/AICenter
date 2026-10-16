@@ -243,13 +243,14 @@ export async function captureMarketNativeBoard({
   repository,
   workspaceId = 'local',
   now = () => Date.now(),
+  keepPolymarketOrder = false,
 }) {
   if (!sourcePort?.read || !sourcePort?.list) throw new Error('市场原生看板快照需要 Source 端口');
   if (!repository?.saveSnapshot) throw new Error('市场原生看板快照需要存储');
   const at = now();
   const board = await readMarketNativeBoard(sourcePort, {
     predictionLimit: MARKET_NATIVE_BOARD_CAPTURE_LIMIT,
-  }, { refresh: true, now: () => at });
+  }, { refresh: true, now: () => at, keepPredictionOrder: Boolean(keepPolymarketOrder) });
   repository.saveSnapshot(workspaceId, MARKET_NATIVE_BOARD_SNAPSHOT_KEY, board, board.generatedAt);
   return {
     generatedAt: board.generatedAt,

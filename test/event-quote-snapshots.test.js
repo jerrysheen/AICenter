@@ -286,7 +286,7 @@ test('prediction quote shows 较昨日 with existing up and down colors, and hid
     openExternalHttpUrl: () => {},
   });
   vm.runInContext([
-    'predictionShare', 'formatPredictionShare', 'predictionDayChange', 'appendPredictionQuote',
+    'predictionShare', 'formatPredictionShare', 'predictionDayChange', 'predictionChangeNode', 'appendPredictionQuote',
   ].map(functionSource).join('\n'), context);
   assert.equal(JSON.stringify(context.predictionDayChange('0.61', '0.58')), JSON.stringify({ text: '较昨日 +3.0', direction: 'up' }));
   assert.equal(JSON.stringify(context.predictionDayChange('0.40', '0.55')), JSON.stringify({ text: '较昨日 -15.0', direction: 'down' }));

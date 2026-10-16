@@ -1,3 +1,5 @@
+import { polymarketLegacyEnabled } from './polymarket-watchlist.js';
+
 const URLS = Object.freeze({
   polymarket: 'https://gamma-api.polymarket.com/markets',
   polymarketOpenInterest: 'https://data-api.polymarket.com/oi',
@@ -222,6 +224,9 @@ export function createMarketNativeClient(options = {}) {
   return Object.freeze({
     urls: URLS,
     async polymarket(input = {}) {
+      if (!polymarketLegacyEnabled(options.env) && typeof options.polymarketQuotes === 'function') {
+        return options.polymarketQuotes(input);
+      }
       const observedAt = now();
       const fetchLimit = Math.min(Math.max((Number(input.limit) || 12) * 8, 50), 250);
       const params = new URLSearchParams({ active: 'true', closed: 'false', limit: String(fetchLimit), order: 'volume24hr', ascending: 'false' });
