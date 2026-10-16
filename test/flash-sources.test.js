@@ -118,6 +118,41 @@ test('ingesting a flash source saves items, skips JEV, and lists them by time', 
   assert.equal(articleStats.addedItemIds.length, 1);
   assert.deepEqual(evaluated, ['post-1']);
   assert.equal(ready.length, 1);
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => { warnings.push(args.join(' ')); };
+  try {
+    const failing = createFeedService({
+      legacyRepository: {},
+      feedRepository: store.repositories.feed,
+      sourcePort: {
+        persistence() {
+          return {
+            providerId: 'xueqiu',
+            sourceAccount: {
+              externalId: 'xueqiu:home:following',
+              displayName: '雪球关注',
+              profileUrl: 'https://xueqiu.com/',
+              authMode: 'browser-session',
+              metadata: {},
+            },
+          };
+        },
+        async read() {
+          return { data: { mode: 'live', items: [
+            { externalId: 'post-2', sourceUrl: 'https://xueqiu.com/post/2', title: '另一篇', body: '另一篇正文', summary: '另一篇', publishedAt: 4000 },
+          ] } };
+        },
+      },
+      onContentReady: async () => { throw new Error('tree enqueue failed'); },
+    });
+    const continued = await failing.refreshPersistedSource({ sourceId: 'content.xueqiu.home', sourceInput: { feed: 'following' } });
+    assert.equal(continued.added, 1);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.match(warnings.join('\n'), /onContentReady failed: tree enqueue failed/);
+  } finally {
+    console.warn = originalWarn;
+  }
 
   const listed = service.listFlash('local', {limit: 50});
   assert.deepEqual(listed.map((row) => row.title), ['较新快讯', '较早快讯']);
