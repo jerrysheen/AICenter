@@ -274,7 +274,7 @@ test('xueqiu keeps the post and skips comments after the deadline', async () => 
 
 test('xueqiu browser calls use the remaining deadline instead of a fixed 30s', async () => {
   const calls = [];
-  const deadlineAt = Date.now() + 23_000;
+  const deadlineAt = Date.now() + 8_000;
   const runtime = {
     async withSession(_options, callback) {
       return callback({
