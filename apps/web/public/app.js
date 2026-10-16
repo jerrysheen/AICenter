@@ -7125,6 +7125,7 @@ function marketNativeAmount(value, { currency = true } = {}) {
 }
 
 function predictionShare(value) {
+  if (value == null || value === '') return null;
   const number = Number(value);
   if (!Number.isFinite(number)) return null;
   return Math.min(1, Math.max(0, number));
@@ -7143,8 +7144,10 @@ function predictionDayChange(current, prior, basisHours) {
   const points = Math.round((yes - before) * 1000) / 10;
   const direction = points > 0 ? 'up' : points < 0 ? 'down' : '';
   const sign = points > 0 ? '+' : '';
-  const hours = Number(basisHours);
-  const label = Number.isInteger(hours) && hours >= 1 ? `较 ${hours}h 前` : '较昨日';
+  let hours = null;
+  if (typeof basisHours === 'number' && Number.isInteger(basisHours)) hours = basisHours;
+  else if (typeof basisHours === 'string' && /^[1-9]\d*$/.test(basisHours.trim())) hours = Number(basisHours);
+  const label = hours != null && hours >= 1 && hours <= 100000 ? `较 ${hours}h 前` : '较昨日';
   return { text: `${label} ${sign}${points.toFixed(1)}`, direction };
 }
 
@@ -7237,7 +7240,7 @@ function appendPredictionQuote(root, quote) {
   const fill = document.createElement('i');
   fill.style.width = yes == null ? '0%' : `${(yes * 100).toFixed(1)}%`;
   bar.append(fill);
-  const moved = !ladder && last != null && yes != null && Math.abs(yes - last) >= 0.005;
+  const moved = last != null && yes != null && Math.abs(yes - last) >= 0.005;
   const detail = [
     moved ? `上次 ${formatPredictionShare(last)}` : '',
     quote.venue,

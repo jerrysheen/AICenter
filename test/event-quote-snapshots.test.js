@@ -291,8 +291,12 @@ test('prediction quote shows 较昨日 with existing up and down colors, and hid
   assert.equal(JSON.stringify(context.predictionDayChange('0.61', '0.58')), JSON.stringify({ text: '较昨日 +3.0', direction: 'up' }));
   assert.equal(JSON.stringify(context.predictionDayChange('0.40', '0.55')), JSON.stringify({ text: '较昨日 -15.0', direction: 'down' }));
   assert.equal(JSON.stringify(context.predictionDayChange('0.50', '0.50')), JSON.stringify({ text: '较昨日 0.0', direction: '' }));
+  assert.equal(context.predictionDayChange('0.62', '0.50', 4).text, '较 4h 前 +12.0');
+  assert.equal(context.predictionDayChange('0.62', '0.50', 3).text, '较 3h 前 +12.0');
   assert.equal(context.predictionDayChange('0.50', undefined), null);
   assert.equal(context.predictionDayChange(null, '0.50'), null);
+  assert.equal(context.predictionShare(null), null);
+  assert.equal(context.formatPredictionShare(null), '—');
 
   const upRoot = element('div');
   context.appendPredictionQuote(upRoot, { ...predictionQuote('0.61'), midPrice24hAgo: '0.58' });
@@ -301,6 +305,13 @@ test('prediction quote shows 较昨日 with existing up and down colors, and hid
   assert.equal(upChange[0].textContent, '较昨日 +3.0');
   assert.equal(upChange[0].className, 'prediction-day-change up');
   assert.equal(textOf(upRoot).includes('正在读取'), false);
+  assert.equal(textOf(upRoot).includes('上次'), false);
+
+  const recentRoot = element('div');
+  context.appendPredictionQuote(recentRoot, { ...predictionQuote('0.62'), midPrice24hAgo: '0.50', changeBasis: 4, lastPrice: '0.42' });
+  assert.match(textOf(recentRoot), /较 4h 前 \+12\.0/);
+  assert.match(textOf(recentRoot), /上次 42\.0%/);
+  assert.equal(textOf(recentRoot).includes('较昨日'), false);
 
   const downRoot = element('div');
   context.appendPredictionQuote(downRoot, { ...predictionQuote('0.40'), midPrice24hAgo: '0.55' });
