@@ -25,7 +25,10 @@
 
 ## 当前
 
+- `progress/2026-10-16-polymarket-discovery.md`：Polymarket 白名单标签每小时写入候选表，审核通过后才上页面。GPU 租金按月滚动。比特币月度区间同时保留本月和下一月，当前月结算后自动补再下一月。发布日每分钟只读当天的系列。告警只出现在页面上。migration 74。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-16-feed-sync-source-progress.md`：订阅同步每分钟只为到期订阅各入队一条 `feed.subscription.sync`。单源默认 90 秒，到时留下已抓到的条目。新的一分钟不取消仍在跑的那一条。迟到的完成不会盖掉更新的租约。雪球不再排在一轮 X 抓取后面被整轮打断。`media.index.enrich` 默认 4 分钟交出剩余 id，最多 10 次。不新增 migration。需要同时重启 Web 和 Worker。
+- `progress/2026-10-16-polymarket-watchlist.md`：Polymarket 改为固定观察清单，不再用标题关键词截前 24 条。每 5 分钟按配置里的 slug 批量读 `/events`，事件身份和概率点写入新表。页面改读这份清单，并显示较昨日。`AI_CENTER_POLYMARKET_LEGACY=1` 仍走原来的成交额排序。migration 73。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-15-us-quote-keep-newer.md`：更旧的报价时间不能盖掉较新的价格。缓存从请求开始起最多 45 秒，下一分钟的快照会重新取。新浪期货的 `provider` 写成 `sina`。不新增 migration。需要同时重启 Web 和 Worker。
 
