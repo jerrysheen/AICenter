@@ -6,6 +6,7 @@ import { sendOffthreadJson } from '../http/offthread-json.js';
 import { STORED_FEED_CACHE_PROVIDERS } from '../http/stale-read-cache.js';
 import { FEED_FLASH_LIMIT, FEED_FLASH_SNAPSHOT_KEY, FEED_TRENDFORCE_SNAPSHOT_KEY, feedPrebuiltSlot, logFeedSlotMiss } from '../../../../packages/runtime/src/web-snapshot-jobs.js';
 import { collectLocalizationUnits } from '../../../../packages/domain/src/localize-texts.js';
+import { POLYMARKET_OUTCOME_GLOSSARY, POLYMARKET_OUTCOME_MODEL } from '../../../../packages/domain/src/polymarket-outcome-zh.js';
 
 export function projectOfficialContentItem(row, localization = null, detail = null) {
   const releaseId = String(row?.releaseId || row?.eventId || '').trim();
@@ -333,7 +334,12 @@ export function createFeedRoutes({ slots = createPreparedSlotStore(), offthread 
       async handler({ request, response, services, identity, events }) {
         try {
           const input = parseTranslateBatchInput(await readJson(request));
-          const job = services.runtime.requestTranslation({ ...input, workspaceId: workspaceIdFrom(identity) });
+          const job = services.runtime.requestTranslation({
+            workspaceId: workspaceIdFrom(identity),
+            targetLang: input.targetLang,
+            items: input.items,
+            ...(input.outcomeGlossary ? { glossary: POLYMARKET_OUTCOME_GLOSSARY, model: POLYMARKET_OUTCOME_MODEL } : {}),
+          });
           events.flush();
           json(response, 202, { ok: true, jobId: job.id });
         } catch (error) {

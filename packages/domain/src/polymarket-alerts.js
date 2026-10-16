@@ -5,6 +5,7 @@ import {
   POLYMARKET_HOUR_WINDOW_MS,
   selectSeriesProbability,
 } from './polymarket-series.js';
+import { polymarketOutcomeText, translatePolymarketOutcome, translateUncoveredPolymarketOutcomes } from './polymarket-outcome-zh.js';
 
 function pointKey(row) {
   return `${row.eventId}\0${row.marketId}\0${row.outcomeKey}`;
@@ -163,9 +164,30 @@ export function evaluatePolymarketAlerts({
       const previous = known.get(`${leader.eventId}\0\0\0lead`) || '';
       remember(leader.eventId, '', '', 'lead', identity);
       if (previous && previous !== identity && !illiquid) {
-        emit(leader.eventId, '', leader.outcomeKey, 'lead_change', `领先结果变为 ${leader.outcomeLabel}`);
+        emit(leader.eventId, '', leader.outcomeKey, 'lead_change', `领先结果变为 ${polymarketOutcomeText(leader.outcomeLabel)}`);
       }
     }
   }
   return { alerts, states: nextStates };
+}
+
+export async function localizePolymarketAlertLabels(alerts, translateMany) {
+  const pending = [];
+  for (const alert of alerts || []) {
+    if (alert?.alertType !== 'lead_change') continue;
+    const label = String(alert.message || '').replace(/^领先结果变为\s*/, '');
+    if (!label || translatePolymarketOutcome(label).covered || !/[A-Za-z]/.test(label)) continue;
+    pending.push(alert);
+  }
+  if (!pending.length || typeof translateMany !== 'function') return alerts || [];
+  const translated = await translateUncoveredPolymarketOutcomes(
+    pending.map((alert) => String(alert.message).replace(/^领先结果变为\s*/, '')),
+    translateMany,
+  );
+  for (const alert of pending) {
+    const label = String(alert.message).replace(/^领先结果变为\s*/, '');
+    const text = translated.get(label);
+    if (text && text !== label) alert.message = `领先结果变为 ${text}`.slice(0, 120);
+  }
+  return alerts || [];
 }

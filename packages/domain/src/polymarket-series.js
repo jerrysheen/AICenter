@@ -1,3 +1,5 @@
+import { polymarketOutcomeText } from './polymarket-outcome-zh.js';
+
 export const POLYMARKET_POINT_MS = 5 * 60 * 1000;
 export const POLYMARKET_HOUR_MS = 60 * 60 * 1000;
 export const POLYMARKET_DAY_MS = 24 * POLYMARKET_HOUR_MS;
@@ -103,7 +105,7 @@ function quoteFromRows(rows, pointsByKey, now) {
     venue: 'polymarket',
     marketId: String(leader.eventId),
     marketQuestion: leader.title,
-    outcome: multi ? leader.outcomeLabel : (leader.outcomeLabel === 'Yes' ? 'Yes' : leader.outcomeLabel),
+    outcome: polymarketOutcomeText(leader.outcomeLabel),
     midPrice: leader.probability,
     bestBid: null,
     bestAsk: null,
@@ -122,7 +124,7 @@ function quoteFromRows(rows, pointsByKey, now) {
   if (leader.changeBasis) quote.changeBasis = leader.changeBasis;
   if (multi) {
     quote.outcomes = ranked.slice(0, 6).map((row) => {
-      const item = { key: row.outcomeKey, label: row.outcomeLabel, midPrice: row.probability };
+      const item = { key: row.outcomeKey, label: polymarketOutcomeText(row.outcomeLabel), midPrice: row.probability };
       if (row.prior) item.midPrice24hAgo = row.prior;
       if (row.changeBasis) item.changeBasis = row.changeBasis;
       return item;

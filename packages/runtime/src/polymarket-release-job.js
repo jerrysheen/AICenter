@@ -56,6 +56,7 @@ export async function capturePolymarketRelease({
   repository,
   config,
   now = () => Date.now(),
+  translate = null,
 }) {
   if (!client?.fetchEventsBySlugs) throw new Error('Polymarket 发布日读取需要事件客户端');
   if (!repository?.saveWatchlist) throw new Error('Polymarket 发布日读取需要存储');
@@ -84,15 +85,15 @@ export async function capturePolymarketRelease({
     downsampleBefore: at - (Number(config?.fetch?.downsampleAfterDays) || 30) * POLYMARKET_DAY_MS,
     at,
   });
-  const alerts = storePolymarketAlerts(repository, config, at);
+  const alerts = await storePolymarketAlerts(repository, config, at, { translate });
   return { skipped: false, slugs, missing, ...saved, alerts: alerts.alerts };
 }
 
-export function createPolymarketReleaseJobHandlers({ client, repository, config, store, now = () => Date.now() }) {
+export function createPolymarketReleaseJobHandlers({ client, repository, config, store, now = () => Date.now(), translate = null }) {
   return {
     [POLYMARKET_RELEASE_JOB_TYPE]: async () => {
       const at = Math.trunc(now());
-      const result = await capturePolymarketRelease({ client, repository, config, now });
+      const result = await capturePolymarketRelease({ client, repository, config, now, translate });
       if (store?.getJobSchedule && store?.upsertJobSchedule) {
         const active = releaseSlugsForInstant(config?.releaseCalendar, at).length > 0;
         const want = active ? (Number(config?.fetch?.releaseIntervalMinutes) || 1) : 24 * 60;

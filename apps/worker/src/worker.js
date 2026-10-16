@@ -267,6 +267,11 @@ export function createAiCenterWorker(options = {}) {
     feedRepository: store.repositories.feed, runtimeRepository: store,
     likePort: options.xLikePort !== undefined ? options.xLikePort : browserRuntime?.withSession ? createXLikeBrowserPort({ browserRuntime }) : null,
   })) });
+  const translateService = options.translateService || (options.feedService ? null : createTranslateService({
+    env,
+    quotaRepository: store.repositories.modelQuota,
+    chunkStore: createFeedTranslationChunkStore(store.repositories.feed),
+  }));
   feedService = options.feedService || createFeedService({
     legacyRepository: store,
     feedRepository: store.repositories.feed,
@@ -276,11 +281,7 @@ export function createAiCenterWorker(options = {}) {
     contentRoutingPort,
     onContentReady:env.AI_CENTER_INFORMATION_PIPELINE==='tree-v3' ? ({workspaceId,sourceIds})=>enqueueTreePreparation(store,workspaceId,sourceIds) : null,
     flashSources,
-    translationPort: options.translateService || createTranslateService({
-      env,
-      quotaRepository: store.repositories.modelQuota,
-      chunkStore: createFeedTranslationChunkStore(store.repositories.feed),
-    }),
+    translationPort: translateService,
   });
   registry.register({ manifest: feedTranslationManifest, jobHandlers: createFeedTranslationJobHandlers({ feedService }) });
   registry.register({
@@ -591,6 +592,7 @@ export function createAiCenterWorker(options = {}) {
       repository: store.repositories.polymarket,
       config: polymarketWatchlist,
       now: options.now,
+      translate: translateService ? (input) => translateService.translateMany(input) : null,
     };
     registry.register({
       manifest: polymarketWatchlistManifest,
