@@ -664,6 +664,63 @@ test('a hung harvest aborts on time', async () => {
   assert.equal(result.tweets.length, 0);
 });
 
+test('home navigate timeout reports deadline', async () => {
+  const runtime = {
+    async withSession(_options, callback) {
+      return callback({
+        async navigate() {
+          throw Object.assign(new Error('bsk timed out after 5000ms'), { killed: true });
+        },
+        async evaluate() {
+          throw new Error('should not inspect');
+        },
+      });
+    },
+  };
+  const client = createXHomeBrowserClient({ browserRuntime: runtime, delay: async () => {} });
+  const result = await client.fetchHomeTimeline({
+    feed: 'for-you',
+    limit: 1,
+    deadlineAt: Date.now() + 60_000,
+  });
+  assert.equal(result.error, 'deadline');
+  assert.equal(result.deadline, true);
+  assert.equal(result.tweets.length, 0);
+});
+
+test('a login wall with no tweets stays login_required when the budget is also gone', async () => {
+  const runtime = {
+    async withSession(_options, callback) {
+      return callback({
+        async navigate() {},
+        async evaluate(expression, evalOptions) {
+          if (String(expression).includes('tweetText')) {
+            await new Promise((resolve) => setTimeout(resolve, Math.min(8_000, Number(evalOptions?.timeoutMs) || 1_000)));
+            return { items: [] };
+          }
+          return {
+            url: 'https://x.com/home',
+            title: 'Home',
+            logged_in: false,
+            login_wall: true,
+            selected_tab: { text: 'For you' },
+          };
+        },
+      });
+    },
+  };
+  const client = createXHomeBrowserClient({ browserRuntime: runtime, delay: async () => {} });
+  const result = await client.fetchHomeTimeline({
+    feed: 'for-you',
+    limit: 1,
+    deadlineAt: Date.now() + 20_000,
+  });
+  assert.equal(result.error, 'login_required');
+  assert.equal(result.login_wall, true);
+  assert.equal(result.deadline, true);
+  assert.equal(result.tweets.length, 0);
+});
+
 test('a null inspect reports deadline when the capture budget is gone', async () => {
   const runtime = {
     async withSession(options, callback) {
