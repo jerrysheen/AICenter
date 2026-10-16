@@ -14,6 +14,8 @@ export function displaySouthboundName(name) {
   return String(name || '').replace(/-W$/, '').trim();
 }
 
+export const SOUTHBOUND_TOP10_SCOPE = '十大成交口径：合计是沪、深各自前十相加。只进了一边前十的股票，另一边的成交会少算。';
+
 export function formatSouthboundLine(netHkd, names = []) {
   if (!Number.isFinite(Number(netHkd))) return '';
   const verb = Number(netHkd) < 0 ? '净卖出' : '净买入';
@@ -78,6 +80,7 @@ export function buildSouthboundView({ dailyRows = [], topRows = [], snapshot = n
     tradeDate: latestDate,
     badge,
     note,
+    scope: SOUTHBOUND_TOP10_SCOPE,
     line: latestTotal ? formatSouthboundLine(latestTotal.netAmt, ranked) : '',
     channels: {
       sh: channelView(onLatest('sh'), '沪'),

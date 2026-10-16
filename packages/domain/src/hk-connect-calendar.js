@@ -1,5 +1,7 @@
 // 2026 南向关闭日来自港交所《沪港通及深港通交易日历》CSV。
-// 周末单独判断。2026 以外的年份日历未核验，交给数据兜底。
+// 2027 年港股通正式日历尚未公布。下面只列入港交所通告 CT/077/26（2026-06-01）
+// 和港交所日历里、港股休市的工作日。半日仍开放，不在这张表里。
+// 周末单独判断。没有整年日历的工作日 trading 为 null，实时任务按 pending / late 处理。
 const CLOSED_2026 = {
   '2026-01-01': '两地休市',
   '2026-01-02': '沪深休市',
@@ -28,6 +30,26 @@ const CLOSED_2026 = {
   '2026-12-25': '港股休市',
 };
 
+const HK_CLOSED_2027 = {
+  '2027-01-01': '港股休市',
+  '2027-02-08': '港股休市',
+  '2027-02-09': '港股休市',
+  '2027-03-26': '港股休市',
+  '2027-03-29': '港股休市',
+  '2027-04-05': '港股休市',
+  '2027-05-13': '港股休市',
+  '2027-06-09': '港股休市',
+  '2027-07-01': '港股休市',
+  '2027-09-16': '港股休市',
+  '2027-10-01': '港股休市',
+  '2027-10-08': '港股休市',
+  '2027-12-27': '港股休市',
+};
+
+const CLOSED_BY_YEAR = {
+  2026: CLOSED_2026,
+};
+
 function weekdayOf(date) {
   const [year, month, day] = date.split('-').map(Number);
   return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
@@ -49,10 +71,16 @@ export function classifyHkConnectDay(value) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { date, trading: null, reason: '日期无效' };
   const weekday = weekdayOf(date);
   if (weekday === 0 || weekday === 6) return { date, trading: false, reason: '周末' };
-  if (!date.startsWith('2026-')) return { date, trading: null, reason: '交易日历尚未核验' };
-  const reason = CLOSED_2026[date];
-  if (reason) return { date, trading: false, reason };
-  return { date, trading: true, reason: '' };
+  const year = Number(date.slice(0, 4));
+  const yearMap = CLOSED_BY_YEAR[year];
+  if (yearMap) {
+    const reason = yearMap[date];
+    if (reason) return { date, trading: false, reason };
+    return { date, trading: true, reason: '' };
+  }
+  const known = year === 2027 ? HK_CLOSED_2027[date] : '';
+  if (known) return { date, trading: false, reason: known };
+  return { date, trading: null, reason: '交易日历尚未核验' };
 }
 
 export function resolveBackfillStart(from, to, checkpoint) {

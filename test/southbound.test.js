@@ -97,6 +97,8 @@ test('东财汇总按百万港元换算，十大成交按港元合并', () => {
   assert.equal(JSON.stringify(view).includes('eastmoney'), false);
   assert.equal(view.checkStatus, undefined);
   assert.equal(view.source, undefined);
+  assert.match(view.scope, /十大成交口径/);
+  assert.match(view.scope, /只进了一边前十/);
 });
 
 test('日期区间可以分页', () => {
@@ -123,6 +125,9 @@ test('港股通日历区分周末、港股假日、沪深休市和未核验日�
   assert.equal(classifyHkConnectDay('2026-10-16').trading, true);
   assert.equal(classifyHkConnectDay('2025-03-03').trading, null);
   assert.equal(classifyHkConnectDay('2025-03-03').reason, '交易日历尚未核验');
+  assert.deepEqual(classifyHkConnectDay('2027-07-01'), { date: '2027-07-01', trading: false, reason: '港股休市' });
+  assert.equal(classifyHkConnectDay('2027-03-03').trading, null);
+  assert.equal(classifyHkConnectDay('2027-02-05').trading, null);
 });
 
 test('两次上游请求至少间隔 1 秒', async () => {
@@ -142,6 +147,25 @@ test('两次上游请求至少间隔 1 秒', async () => {
   await client.fetchDay('2026-10-16');
   await client.fetchDay('2026-10-15');
   assert.deepEqual(waits, [1_000]);
+
+  let hkexHeaders;
+  let eastmoneyHeaders;
+  const headerClient = createSouthboundClient({
+    minIntervalMs: 0,
+    fetchImpl: async (url, init) => {
+      if (String(url).includes('hkex.com.hk')) {
+        hkexHeaders = init.headers;
+        return jsonResponse('', 404);
+      }
+      eastmoneyHeaders = init.headers;
+      return jsonResponse({ result: { data: [], pages: 1 } });
+    },
+  });
+  await headerClient.fetchHkex('2026-10-16');
+  await headerClient.fetchDay('2026-10-16');
+  assert.equal(hkexHeaders.Referer, 'https://www.hkex.com.hk/');
+  assert.equal(String(hkexHeaders.Referer).includes('eastmoney'), false);
+  assert.equal(eastmoneyHeaders.Referer, 'https://data.eastmoney.com/');
 });
 
 function recordingClient(routes) {
@@ -190,7 +214,7 @@ test('交易日没数据记 pending，补跑记 late，已经 ok 则跳过', asy
     });
     assert.equal(pending.status, 'pending');
     assert.equal(empty.calls.length, 1);
-    assert.equal(pendingHealth.health[0][1], 'degraded');
+    assert.equal(pendingHealth.health[0][1], 'healthy');
     assert.equal(pendingHealth.snapshots[0][2].note, '等待公布');
 
     const lateClient = recordingClient([{ match: 'RPT_MUTUAL_DEAL_HISTORY', respond: () => jsonResponse({ result: { data: [], pages: 1 } }) }]);
@@ -222,6 +246,88 @@ test('交易日没数据记 pending，补跑记 late，已经 ok 则跳过', asy
     });
     assert.equal(skipped.status, 'skipped');
     assert.equal(skippedClient.calls.length, 0);
+
+    const uncovered = recordingClient([{ match: 'RPT_MUTUAL_DEAL_HISTORY', respond: () => jsonResponse({ result: { data: [], pages: 1 } }) }]);
+    const uncoveredDay = await syncSouthboundDay({
+      repository,
+      store: healthStore(repository).store,
+      client: uncovered.client,
+      tradeDate: '2027-03-03',
+      slot: 'primary',
+    });
+    assert.equal(uncoveredDay.status, 'pending');
+    assert.equal(uncovered.calls.length, 1);
+    const uncoveredLate = await syncSouthboundDay({
+      repository,
+      client: uncovered.client,
+      tradeDate: '2025-03-03',
+      slot: 'catchup',
+    });
+    assert.equal(uncoveredLate.status, 'late');
+  } finally {
+    opened.close();
+  }
+});
+
+test('17:00 十大成交失败后，17:30 只补十大，不改汇总', async () => {
+  const opened = openStore();
+  try {
+    const repository = opened.store.repositories.southbound;
+    let failTop = true;
+    const calls = [];
+    const client = createSouthboundClient({
+      minIntervalMs: 0,
+      fetchImpl: async (url) => {
+        const href = String(url);
+        calls.push(href);
+        if (href.includes('RPT_MUTUAL_TOP10DEAL')) {
+          if (failTop) return jsonResponse({ result: null }, 500);
+          return jsonResponse(topPayload);
+        }
+        if (href.includes('hkex.com.hk')) {
+          return { ok: true, status: 200, async json() { return {}; }, async text() { return hkexText; } };
+        }
+        return jsonResponse(dealPayload);
+      },
+    });
+    const first = await syncSouthboundDay({
+      repository,
+      store: healthStore(repository).store,
+      client,
+      tradeDate: '2026-10-16',
+      slot: 'primary',
+    });
+    assert.equal(first.status, 'ok');
+    assert.equal(repository.countTop10('local', '2026-10-16'), 0);
+    const fetchedAt = repository.getDaily('local', '2026-10-16', 'total').fetchedAt;
+    const netAmt = repository.getDaily('local', '2026-10-16', 'total').netAmt;
+    assert.equal(calls.filter((href) => href.includes('RPT_MUTUAL_TOP10DEAL')).length, 1);
+
+    failTop = false;
+    const before = calls.length;
+    const second = await syncSouthboundDay({
+      repository,
+      client,
+      tradeDate: '2026-10-16',
+      slot: 'catchup',
+    });
+    assert.equal(second.status, 'ok');
+    assert.ok(second.savedTop > 0);
+    assert.equal(calls.slice(before).every((href) => href.includes('RPT_MUTUAL_TOP10DEAL')), true);
+    assert.equal(calls.slice(before).length, 1);
+    assert.equal(repository.getDaily('local', '2026-10-16', 'total').fetchedAt, fetchedAt);
+    assert.equal(repository.getDaily('local', '2026-10-16', 'total').netAmt, netAmt);
+    assert.equal(repository.listTop10('local', '2026-10-16', 'total')[0].code, '01299');
+
+    const after = calls.length;
+    const third = await syncSouthboundDay({
+      repository,
+      client,
+      tradeDate: '2026-10-16',
+      slot: 'catchup',
+    });
+    assert.equal(third.status, 'skipped');
+    assert.equal(calls.length, after);
   } finally {
     opened.close();
   }
@@ -235,10 +341,13 @@ test('休市不请求上游，两边都没有数据时记 closed_by_data', async
     const weekend = await syncSouthboundDay({ repository, client: client.client, tradeDate: '2026-10-18' });
     const hkHoliday = await syncSouthboundDay({ repository, client: client.client, tradeDate: '2026-07-01' });
     const cnHoliday = await syncSouthboundDay({ repository, client: client.client, tradeDate: '2026-10-02' });
+    const hk2027 = await syncSouthboundDay({ repository, client: client.client, tradeDate: '2027-07-01' });
     assert.equal(weekend.status, 'closed');
     assert.equal(weekend.reason, '周末');
     assert.equal(hkHoliday.reason, '港股休市');
     assert.equal(cnHoliday.reason, '沪深休市');
+    assert.equal(hk2027.status, 'closed');
+    assert.equal(hk2027.reason, '港股休市');
     assert.equal(client.calls.length, 0);
 
     const fallback = recordingClient([

@@ -139,8 +139,9 @@ export function createSouthboundRepository(database) {
         ORDER BY trade_date ASC, channel ASC`).all(workspaceId, ...dates).map(mapDaily);
     },
     latestDate(workspaceId) {
-      return database.prepare(`SELECT MAX(trade_date) AS trade_date FROM southbound_daily
-        WHERE workspace_id = ? AND channel = 'total'`).get(workspaceId)?.trade_date || '';
+      return database.prepare(`SELECT trade_date FROM southbound_daily
+        WHERE workspace_id = ? AND channel = 'total'
+        ORDER BY trade_date DESC LIMIT 1`).get(workspaceId)?.trade_date || '';
     },
     listTop10(workspaceId, tradeDate, channel = 'total') {
       return database.prepare(`SELECT * FROM southbound_top10

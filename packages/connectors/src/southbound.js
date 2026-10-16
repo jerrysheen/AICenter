@@ -220,14 +220,15 @@ export function createSouthboundClient(options = {}) {
     return run;
   }
 
-  async function getResponse(url, accept) {
+  async function getResponse(url, accept, referer) {
     return schedule(async () => {
+      const headers = {
+        'User-Agent': 'Mozilla/5.0',
+        Accept: accept,
+      };
+      if (referer) headers.Referer = referer;
       const response = await fetchImpl(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0',
-          Referer: 'https://data.eastmoney.com/',
-          Accept: accept,
-        },
+        headers,
         signal: AbortSignal.timeout(timeoutMs),
       });
       return response;
@@ -235,7 +236,7 @@ export function createSouthboundClient(options = {}) {
   }
 
   async function getJson(url) {
-    const response = await getResponse(url, 'application/json,text/plain,*/*');
+    const response = await getResponse(url, 'application/json,text/plain,*/*', 'https://data.eastmoney.com/');
     if (!response?.ok) {
       const error = new Error(`南向接口 HTTP ${response?.status || 0}`);
       error.status = response?.status || 0;
@@ -265,7 +266,7 @@ export function createSouthboundClient(options = {}) {
       return parseTop10(payload);
     },
     async fetchHkex(date) {
-      const response = await getResponse(hkexUrl(date), 'application/javascript,text/plain,*/*');
+      const response = await getResponse(hkexUrl(date), 'application/javascript,text/plain,*/*', 'https://www.hkex.com.hk/');
       if (response?.status === 404) return null;
       if (!response?.ok) {
         const error = new Error(`港交所 HTTP ${response?.status || 0}`);

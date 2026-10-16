@@ -8577,6 +8577,7 @@ function renderSouthboundCard(payload) {
     lists.append(block);
   }
   card.append(lists);
+  if (payload.scope) card.append(Object.assign(document.createElement('p'), { className: 'southbound-scope', textContent: payload.scope }));
 }
 
 async function loadSouthboundCard({ force = false } = {}) {

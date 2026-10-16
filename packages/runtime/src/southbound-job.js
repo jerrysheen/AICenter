@@ -51,16 +51,24 @@ export function persistSouthboundDay({ repository, workspaceId, dailyRows, topRo
   });
   const savedDaily = repository.upsertDaily(workspaceId, stamped);
   const tradeDate = stamped[0]?.tradeDate || topRows?.[0]?.tradeDate || '';
-  let savedTop = 0;
-  if (Array.isArray(topRows) && tradeDate) {
-    const legs = topRows.filter((row) => row.channel === 'sh' || row.channel === 'sz');
-    const merged = mergeTop10(legs);
-    for (const channel of ['sh', 'sz', 'total']) {
-      const rows = channel === 'total' ? merged : legs.filter((row) => row.channel === channel);
-      savedTop += repository.replaceTop10(workspaceId, tradeDate, channel, rows);
-    }
-  }
+  const savedTop = saveSouthboundTop10(repository, workspaceId, tradeDate, topRows);
   return { ...compared, tradeDate, savedDaily, savedTop };
+}
+
+export function saveSouthboundTop10(repository, workspaceId, tradeDate, topRows) {
+  if (!Array.isArray(topRows) || !tradeDate) return 0;
+  const legs = topRows.filter((row) => row.channel === 'sh' || row.channel === 'sz');
+  const merged = mergeTop10(legs);
+  let saved = 0;
+  for (const channel of ['sh', 'sz', 'total']) {
+    const rows = channel === 'total' ? merged : legs.filter((row) => row.channel === channel);
+    saved += repository.replaceTop10(workspaceId, tradeDate, channel, rows);
+  }
+  return saved;
+}
+
+function hasMergedTop10(repository, workspaceId, tradeDate) {
+  return repository.listTop10(workspaceId, tradeDate, 'total').length > 0;
 }
 
 function noticeFor(status) {
@@ -75,7 +83,7 @@ function publishHealth(store, workspaceId, payload) {
   const { badge, note } = noticeFor(payload.status === 'ok' ? 'ok' : payload.status);
   const providerStatus = payload.status === 'mismatch' || payload.status === 'late'
     ? 'unhealthy'
-    : payload.status === 'hkex_missing' || payload.status === 'pending'
+    : payload.status === 'hkex_missing'
       ? 'degraded'
       : 'healthy';
   store?.setProviderHealth?.('southbound', providerStatus, badge || note || '南向资金已更新', {
@@ -102,8 +110,19 @@ export async function syncSouthboundDay(options = {}) {
   const calendar = classifyHkConnectDay(tradeDate);
   if (calendar.trading === false) return { status: 'closed', tradeDate, reason: calendar.reason };
   const existing = repository.getDaily(workspaceId, tradeDate, 'total');
-  if (mode === 'live' && existing?.checkStatus === 'ok') return { status: 'skipped', tradeDate };
+  const topped = hasMergedTop10(repository, workspaceId, tradeDate);
+  if (mode === 'live' && existing?.checkStatus === 'ok' && topped) return { status: 'skipped', tradeDate };
   const client = options.client || createSouthboundClient(options);
+  if (mode === 'live' && existing?.checkStatus === 'ok') {
+    try {
+      const topRows = await client.fetchTop10(tradeDate);
+      const savedTop = saveSouthboundTop10(repository, workspaceId, tradeDate, topRows);
+      if (!savedTop) return { status: 'top10_missing', tradeDate, savedTop };
+      return { status: 'ok', tradeDate, savedTop };
+    } catch (error) {
+      return { status: 'top10_missing', tradeDate, reason: error instanceof Error ? error.message : '十大成交读取失败' };
+    }
+  }
   let dailyRows = [];
   try {
     dailyRows = await client.fetchDay(tradeDate);
@@ -114,7 +133,7 @@ export async function syncSouthboundDay(options = {}) {
     return { status, tradeDate, reason: error instanceof Error ? error.message : '读取失败' };
   }
   if (!dailyRows.length) {
-    if (mode === 'backfill' || calendar.trading == null) {
+    if (mode === 'backfill') {
       let hkex = null;
       try {
         hkex = await client.fetchHkex(tradeDate);
