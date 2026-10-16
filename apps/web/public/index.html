@@ -171,6 +171,14 @@
           <div class="trade-pane" data-trade-pane="assets">
             <div class="chip-tabs" id="asset-filters" role="tablist" aria-label="资产分类"></div>
             <div id="hardware-market-filters" class="hardware-market-filters hidden" aria-label="硬件报价筛选"></div>
+            <section id="gpu-rent-history" class="gpu-rent-history hidden" aria-label="GPU 日租金">
+              <div class="gpu-rent-history-head">
+                <p class="section-kicker">日租金</p>
+                <div id="gpu-rent-history-ranges" class="chip-tabs" role="tablist" aria-label="日租金区间"></div>
+              </div>
+              <p id="gpu-rent-history-note" class="gpu-rent-note">指数来自 <a href="https://ornn.com" rel="noreferrer">Ornn</a>，按美东结算日，仅供内部参考。</p>
+              <div id="gpu-rent-history-body"></div>
+            </section>
             <section class="global-native-section hidden" id="global-native-section" aria-label="加密与稳定币">
               <div class="global-native-board">
                 <article class="market-native-panel">

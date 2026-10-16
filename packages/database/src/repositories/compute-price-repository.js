@@ -104,5 +104,85 @@ export function createComputePriceRepository(database) {
         unchanged: Boolean(row.unchanged),
       }));
     },
+
+    listGpuObservations(workspaceId) {
+      return database.prepare(`SELECT id, source_key sourceKey, gpu_key variant, label, lane,
+        usd_per_hour usdPerHour, sample_count sampleCount, captured_at capturedAt
+        FROM gpu_rent_observations WHERE workspace_id=?
+        ORDER BY captured_at, id`).all(workspaceId);
+    },
+
+    listGpuSnapshotChecks(workspaceId) {
+      return database.prepare(`SELECT source_key sourceKey, captured_at capturedAt, last_checked_at lastCheckedAt
+        FROM compute_price_snapshots WHERE workspace_id=? AND source_key!='openrouter'`).all(workspaceId);
+    },
+
+    listDailyRange(workspaceId, start, end) {
+      return database.prepare(`SELECT day, source_key sourceKey, variant, lane, model, tier, close, low, high,
+        sample_count sampleCount, last_captured_at lastCapturedAt, carried_forward carriedForward
+        FROM gpu_rent_daily WHERE workspace_id=? AND day>=? AND day<=?
+        ORDER BY day, source_key, variant, lane`).all(workspaceId, start, end).map(dailyRow);
+    },
+
+    listRentDailyDays(workspaceId, start, end) {
+      return database.prepare(`SELECT DISTINCT day FROM gpu_rent_daily
+        WHERE workspace_id=? AND day>=? AND day<=? AND source_key!='ornn' ORDER BY day`).all(workspaceId, start, end)
+        .map((row) => row.day);
+    },
+
+    latestRentDailyBefore(workspaceId, day) {
+      return database.prepare(`SELECT d.day day, d.source_key sourceKey, d.variant variant, d.lane lane,
+        d.model model, d.tier tier, d.close close, d.low low, d.high high,
+        d.sample_count sampleCount, d.last_captured_at lastCapturedAt, d.carried_forward carriedForward
+        FROM gpu_rent_daily d
+        INNER JOIN (
+          SELECT source_key, variant, lane, MAX(day) day
+          FROM gpu_rent_daily
+          WHERE workspace_id=? AND day<? AND source_key!='ornn'
+          GROUP BY source_key, variant, lane
+        ) m ON m.source_key=d.source_key AND m.variant=d.variant AND m.lane=d.lane AND m.day=d.day
+        WHERE d.workspace_id=?`).all(workspaceId, day, workspaceId).map(dailyRow);
+    },
+
+    distinctDailyModels(workspaceId) {
+      return database.prepare(`SELECT DISTINCT model FROM gpu_rent_daily WHERE workspace_id=?`).all(workspaceId)
+        .map((row) => row.model);
+    },
+
+    replaceRentDailyDay(workspaceId, day, rows) {
+      database.prepare(`DELETE FROM gpu_rent_daily WHERE workspace_id=? AND day=? AND source_key!='ornn'`).run(workspaceId, day);
+      const insert = database.prepare(`INSERT INTO gpu_rent_daily
+        (workspace_id, day, source_key, variant, lane, model, tier, close, low, high, sample_count, last_captured_at, carried_forward)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      for (const row of rows) insert.run(workspaceId, row.day, row.sourceKey, row.variant, row.lane, row.model, row.tier, row.close, row.low, row.high, row.sampleCount, row.lastCapturedAt, row.carriedForward ? 1 : 0);
+    },
+
+    upsertDailyRows(workspaceId, rows) {
+      const upsert = database.prepare(`INSERT INTO gpu_rent_daily
+        (workspace_id, day, source_key, variant, lane, model, tier, close, low, high, sample_count, last_captured_at, carried_forward)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(workspace_id, day, source_key, variant, lane) DO UPDATE SET
+          model=excluded.model, tier=excluded.tier, close=excluded.close, low=excluded.low, high=excluded.high,
+          sample_count=excluded.sample_count, last_captured_at=excluded.last_captured_at,
+          carried_forward=excluded.carried_forward`);
+      return database.transaction(() => {
+        for (const row of rows) {
+          upsert.run(workspaceId, row.day, row.sourceKey, row.variant, row.lane, row.model, row.tier, row.close, row.low, row.high, row.sampleCount, row.lastCapturedAt, row.carriedForward ? 1 : 0);
+        }
+        return rows.length;
+      })();
+    },
+
+    transaction(run) {
+      return database.transaction(run)();
+    },
+  };
+}
+
+function dailyRow(row) {
+  return {
+    ...row,
+    sampleCount: row.sampleCount == null ? null : Number(row.sampleCount),
+    carriedForward: Boolean(row.carriedForward),
   };
 }

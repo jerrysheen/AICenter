@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-16-gpu-rent-daily.md`：GPU 租金增加按北京日历日汇总的历史。migration 75 只建 `gpu_rent_daily`。73、74 留给进行中的 Polymarket。当天价格在接口里现算。Ornn 的 H100 SXM、H200、B200 指数按美东结算日记入，页面注明仅供内部参考。需要同时重启 Web 和 Worker，再跑 `node scripts/backfill-gpu-rent-daily.mjs`。
+
 - `progress/2026-10-15-us-quote-keep-newer.md`：更旧的报价时间不能盖掉较新的价格。缓存从请求开始起最多 45 秒，下一分钟的快照会重新取。新浪期货的 `provider` 写成 `sina`。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-15-us-quote-minute-refresh.md`：美股报价大约每分钟更新。美股代码走优先队列，亚洲、全球资产、历史 K 线和 A 股 Yahoo 回退不再挡在前面。共享缓存默认 30 秒。HTTP 404 只跳过那个代码。Web 读快照时按 `fetchedAt` 重算 `stale`，页面落后超过 3 分钟显示「已过期」。不新增 migration。需要同时重启 Web 和 Worker。
