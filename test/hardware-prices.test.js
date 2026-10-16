@@ -252,8 +252,10 @@ test('worker price schedules run twice each Shanghai day and can be turned off',
   }finally{f.close();}
 });
 test('forward migration upgrades V39 with existing content and states intact',()=>{
-  const f=fixture();try {
-    f.store.close();const db=new Database(path.join(f.directory,'test.db'));
+  const f=fixture();
+  f.store.close();
+  const db=new Database(path.join(f.directory,'test.db'));
+  try {
     db.exec(`DROP TABLE IF EXISTS gpu_rent_daily;DROP TABLE IF EXISTS gpu_rent_observations;DROP TABLE IF EXISTS token_price_observations;DROP TABLE IF EXISTS compute_price_checks;DROP TABLE IF EXISTS compute_price_snapshots;DROP TABLE IF EXISTS hardware_price_page_checks;DROP TABLE hardware_price_legacy_links;DROP TABLE hardware_price_snapshot_rows;DROP TABLE hardware_price_observations;DROP TABLE hardware_price_snapshots;
       DROP TABLE media_entry_legacy_links;ALTER TABLE media_index_entries DROP COLUMN article_kind;
       ALTER TABLE investor_discussion_digests DROP COLUMN question_set;
@@ -263,12 +265,15 @@ test('forward migration upgrades V39 with existing content and states intact',()
       DROP TABLE IF EXISTS gemini_model_cursors;
       DROP TABLE IF EXISTS etf_whale_intraday_bars;DROP TABLE IF EXISTS etf_whale_index_daily;DROP TABLE IF EXISTS etf_whale_turnover;DROP TABLE IF EXISTS etf_whale_futures_rank;DROP TABLE IF EXISTS etf_whale_signals;
       DROP TABLE IF EXISTS polymarket_outcomes;DROP TABLE IF EXISTS polymarket_probability_points;
-      DROP TABLE IF EXISTS polymarket_candidates;DROP TABLE IF EXISTS polymarket_alerts;DROP TABLE IF EXISTS polymarket_alert_state;
-      DELETE FROM schema_migrations WHERE version IN (40,54,55,56,57,58,59,60,61,62,64,65,66,67,68,69,70,71,72,73,74,75);PRAGMA user_version=39;`);
+      DROP TABLE IF EXISTS polymarket_candidates;DROP TABLE IF EXISTS polymarket_alerts;DROP TABLE IF EXISTS polymarket_alert_state;`);
+    const rewind=db.prepare(`SELECT version FROM schema_migrations WHERE version > 39 AND version NOT BETWEEN 41 AND 53 ORDER BY version`).all().map(row=>row.version);
+    assert.equal(rewind.at(-1),latestSchemaVersion());
+    db.prepare(`DELETE FROM schema_migrations WHERE version IN (${rewind.map(()=>'?').join(',')})`).run(...rewind);
+    db.pragma('user_version = 39');
     const before=db.prepare('SELECT count(*) n FROM content_items').get().n;runMigrations(db);runMigrations(db);
     assert.equal(db.pragma('user_version',{simple:true}),latestSchemaVersion());assert.equal(db.prepare('SELECT count(*) n FROM content_items').get().n,before);
-    assert.equal(db.prepare(`SELECT COUNT(*) n FROM pragma_table_info('hardware_price_snapshots') WHERE name='last_checked_at'`).get().n,1);db.close();
-  }finally{rmSync(f.directory,{recursive:true,force:true});}
+    assert.equal(db.prepare(`SELECT COUNT(*) n FROM pragma_table_info('hardware_price_snapshots') WHERE name='last_checked_at'`).get().n,1);
+  }finally{db.close();rmSync(f.directory,{recursive:true,force:true});}
 });
 const contractHtml=`<div class="price-title">DRAM Contract Price (2H Aug) <small>(未稅)</small></div>
 <div class="price-last-update">Last Update 2026-08-31 14:00 (GMT+8)</div>
@@ -373,9 +378,10 @@ test('each hardware quote shows its source date, marks week-old prints, and name
   assert.equal(quoteIsStale(now-7*86400000-1,now),true);
 });
 test('migration 69 clears superseded current flags and keeps every observation row',()=>{
-  const f=fixture();try {
-    f.store.close();
-    const db=new Database(path.join(f.directory,'test.db'));
+  const f=fixture();
+  f.store.close();
+  const db=new Database(path.join(f.directory,'test.db'));
+  try {
     const row=(id,spec,unit,periodKey,period,periodStart,current)=>db.prepare('INSERT INTO hardware_price_observations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)').run(
       id,'local','series-'+id,periodKey,1,null,'hash-'+id,'snapshot-'+id,at,periodStart,at,current,JSON.stringify({specification:spec,category:'dram',quoteType:'spot',unit,period,average:'10.00',high:null,low:null}));
     row('old-dirty','DDR5 16Gb (2Gx8) 4800/5600 · 日高點: 19.70',null,'["2026-10-05",1,2]','2026-10-05',at,1);
@@ -395,8 +401,7 @@ test('migration 69 clears superseded current flags and keeps every observation r
     assert.equal(db.prepare(`SELECT name FROM schema_migrations WHERE version=69`).get().name,'hardware_price_current_spec');
     assert.equal(db.prepare(`SELECT name FROM schema_migrations WHERE version=70`).get().name,'etf_whale_market_depth');
     assert.equal(db.prepare(`SELECT name FROM schema_migrations WHERE version=71`).get().name,'model_usage_translation_attribution');
-    db.close();
-  }finally{rmSync(f.directory,{recursive:true,force:true});}
+  }finally{db.close();rmSync(f.directory,{recursive:true,force:true});}
 });
 test('hardware HTTP endpoints are read-only, scoped and explicit legacy migration queues a registered job',async()=>{
   const f=fixture();const databasePath=path.join(f.directory,'test.db');
