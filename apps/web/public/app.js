@@ -45,6 +45,8 @@ let hardwarePricesPage = null;
 let hardwareReady = false;
 let computeMarketItems = () => [];
 let gpuMatchesSource = () => true;
+let renderGpuRentHistory = () => {};
+let gpuHistoryQuery = () => ({ start: '', end: '', grain: 'day' });
 let computeReady = false;
 let mediaModules = null;
 
@@ -136,6 +138,11 @@ const state = {
   computeLoaded: false,
   computeError: '',
   computeRequestId: 0,
+  gpuHistory: null,
+  gpuHistoryError: '',
+  gpuHistoryLoading: false,
+  gpuHistoryRange: '90',
+  gpuHistoryRequestId: 0,
   assetFilter: '',
   assetDashboard: null,
   assetDashboardError: '',
@@ -1679,6 +1686,8 @@ function ensureCompute() {
     ensureCompute.promise = import('./compute-prices.js?v=dev').then((mod) => {
       computeMarketItems = mod.computeMarketItems;
       gpuMatchesSource = mod.gpuMatchesSource;
+      renderGpuRentHistory = mod.renderGpuRentHistory;
+      gpuHistoryQuery = mod.gpuHistoryQuery;
       computeReady = true;
       return mod;
     });
@@ -5696,6 +5705,7 @@ function renderAssets() {
   const onHardware=state.assetClass==='hardware';
   const onCompute=state.assetClass==='compute';
   const onEvents = syncGlobalEventsSection();
+  renderGpuHistorySection(onCompute);
   elements['asset-filter'].placeholder=onHardware?'完整规格 / 报价类型':onCompute?'模型 / GPU':'名称 / 代码 / 介绍';
   hardwareFilters.classList.toggle('hidden',!onHardware && !onCompute);
   if(onHardware) {
@@ -5720,6 +5730,7 @@ function renderAssets() {
         {id:'ccir',label:'CCIR'},
         {id:'gpueconomy',label:'GPU Economy'},
         {id:'bargo',label:'Bargo'},
+        {id:'ornn',label:'Ornn'},
       ],state.computeGpuSource,id=>{state.computeGpuSource=id;renderAssets();});
       children.push(sources);
     }
@@ -5788,12 +5799,73 @@ async function loadComputePrices() {
     state.computeItems = computeMarketItems(payload, { kind: 'all' });
     state.computeChecks = payload.checks || [];
     state.computeLoaded = true;
+    loadGpuRentHistory().catch(() => {});
   } catch (error) {
     if (requestId === state.computeRequestId) state.computeError = error.message;
   } finally {
     if (requestId === state.computeRequestId) {
       state.computeLoading = false;
       renderAssets();
+    }
+  }
+}
+
+function renderGpuHistorySection(onCompute) {
+  const root = document.getElementById('gpu-rent-history');
+  if (!root) return;
+  const show = onCompute && state.computeKind !== 'token';
+  root.classList.toggle('hidden', !show);
+  if (!show) return;
+  const ranges = document.getElementById('gpu-rent-history-ranges');
+  if (ranges) {
+    renderChipTabs(ranges, [
+      { id: '30', label: '30 天' },
+      { id: '90', label: '90 天' },
+      { id: 'all', label: '全部' },
+    ], state.gpuHistoryRange, (id) => {
+      if (id === state.gpuHistoryRange) return;
+      state.gpuHistoryRange = id;
+      state.gpuHistory = null;
+      loadGpuRentHistory().catch((error) => showToast(error.message));
+    });
+  }
+  const body = document.getElementById('gpu-rent-history-body');
+  if (!body) return;
+  if (state.gpuHistoryLoading && !state.gpuHistory) {
+    body.textContent = '正在读取日租金…';
+    return;
+  }
+  if (state.gpuHistoryError && !state.gpuHistory) {
+    body.textContent = state.gpuHistoryError;
+    return;
+  }
+  if (!state.gpuHistory && !state.gpuHistoryLoading) {
+    body.textContent = '正在读取日租金…';
+    loadGpuRentHistory().catch(() => {});
+    return;
+  }
+  renderGpuRentHistory(body, state.gpuHistory, { source: state.computeGpuSource });
+}
+
+async function loadGpuRentHistory() {
+  if (!state.bootstrapped || !state.session) return;
+  await ensureCompute();
+  const requestId = ++state.gpuHistoryRequestId;
+  const query = gpuHistoryQuery(Date.now(), state.gpuHistoryRange);
+  state.gpuHistoryLoading = true;
+  state.gpuHistoryError = '';
+  if (state.assetClass === 'compute') renderAssets();
+  try {
+    const params = new URLSearchParams({ start: query.start, end: query.end, grain: query.grain });
+    const payload = await api(`/api/v1/compute-prices/history?${params}`);
+    if (requestId !== state.gpuHistoryRequestId) return;
+    state.gpuHistory = payload;
+  } catch (error) {
+    if (requestId === state.gpuHistoryRequestId) state.gpuHistoryError = error.message || '日租金暂时读不出来';
+  } finally {
+    if (requestId === state.gpuHistoryRequestId) {
+      state.gpuHistoryLoading = false;
+      if (state.assetClass === 'compute') renderAssets();
     }
   }
 }

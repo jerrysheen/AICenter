@@ -254,7 +254,7 @@ test('worker price schedules run twice each Shanghai day and can be turned off',
 test('forward migration upgrades V39 with existing content and states intact',()=>{
   const f=fixture();try {
     f.store.close();const db=new Database(path.join(f.directory,'test.db'));
-    db.exec(`DROP TABLE IF EXISTS gpu_rent_observations;DROP TABLE IF EXISTS token_price_observations;DROP TABLE IF EXISTS compute_price_checks;DROP TABLE IF EXISTS compute_price_snapshots;DROP TABLE IF EXISTS hardware_price_page_checks;DROP TABLE hardware_price_legacy_links;DROP TABLE hardware_price_snapshot_rows;DROP TABLE hardware_price_observations;DROP TABLE hardware_price_snapshots;
+    db.exec(`DROP TABLE IF EXISTS gpu_rent_daily;DROP TABLE IF EXISTS gpu_rent_observations;DROP TABLE IF EXISTS token_price_observations;DROP TABLE IF EXISTS compute_price_checks;DROP TABLE IF EXISTS compute_price_snapshots;DROP TABLE IF EXISTS hardware_price_page_checks;DROP TABLE hardware_price_legacy_links;DROP TABLE hardware_price_snapshot_rows;DROP TABLE hardware_price_observations;DROP TABLE hardware_price_snapshots;
       DROP TABLE media_entry_legacy_links;ALTER TABLE media_index_entries DROP COLUMN article_kind;
       ALTER TABLE investor_discussion_digests DROP COLUMN question_set;
       DROP TABLE IF EXISTS api_token_access_log;DROP TABLE IF EXISTS api_access_tokens;DROP TABLE IF EXISTS runtime_snapshots;
@@ -264,7 +264,7 @@ test('forward migration upgrades V39 with existing content and states intact',()
       DROP TABLE IF EXISTS etf_whale_intraday_bars;DROP TABLE IF EXISTS etf_whale_index_daily;DROP TABLE IF EXISTS etf_whale_turnover;DROP TABLE IF EXISTS etf_whale_futures_rank;DROP TABLE IF EXISTS etf_whale_signals;
       DROP TABLE IF EXISTS polymarket_outcomes;DROP TABLE IF EXISTS polymarket_probability_points;
       DROP TABLE IF EXISTS polymarket_candidates;DROP TABLE IF EXISTS polymarket_alerts;DROP TABLE IF EXISTS polymarket_alert_state;
-      DELETE FROM schema_migrations WHERE version IN (40,54,55,56,57,58,59,60,61,62,64,65,66,67,68,69,70,71,72,73,74);PRAGMA user_version=39;`);
+      DELETE FROM schema_migrations WHERE version IN (40,54,55,56,57,58,59,60,61,62,64,65,66,67,68,69,70,71,72,73,74,75);PRAGMA user_version=39;`);
     const before=db.prepare('SELECT count(*) n FROM content_items').get().n;runMigrations(db);runMigrations(db);
     assert.equal(db.pragma('user_version',{simple:true}),latestSchemaVersion());assert.equal(db.prepare('SELECT count(*) n FROM content_items').get().n,before);
     assert.equal(db.prepare(`SELECT COUNT(*) n FROM pragma_table_info('hardware_price_snapshots') WHERE name='last_checked_at'`).get().n,1);db.close();

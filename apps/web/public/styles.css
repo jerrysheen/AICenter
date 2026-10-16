@@ -5421,6 +5421,27 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
 .hardware-raw { white-space:pre-wrap;overflow-wrap:anywhere;max-height:32rem;overflow:auto; }
 .hardware-market-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-block: 8px; }
 .hardware-market-filters .chip-tabs { flex: 1; }
+.gpu-rent-history { display: grid; gap: 8px; margin: 4px 0 12px; min-width: 0; }
+.gpu-rent-history.hidden { display: none; }
+.gpu-rent-history-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.gpu-rent-history-head .section-kicker { margin: 0; }
+.gpu-rent-note, .gpu-rent-coverage, .gpu-rent-empty, .gpu-rent-latest, .gpu-rent-readout {
+  margin: 0; color: var(--font-secondary); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere;
+}
+.gpu-rent-note a { color: inherit; }
+.gpu-rent-panel {
+  border: 1px solid var(--comp-tertiary); border-radius: 12px; padding: 10px 10px 12px;
+  min-width: 0; background: var(--background-primary);
+}
+.gpu-rent-panel h3 { margin: 0 0 6px; font-size: 16px; font-weight: 600; }
+.gpu-rent-chart { width: 100%; height: auto; display: block; touch-action: pan-y; }
+.gpu-rent-legend { display: flex; flex-wrap: wrap; gap: 6px 12px; margin: 6px 0 0; padding: 0; list-style: none; }
+.gpu-rent-legend li { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; min-height: 28px; }
+.gpu-rent-swatch { width: 10px; height: 10px; border-radius: 999px; display: inline-block; }
+@media (max-width: 599px) {
+  .gpu-rent-history .chip-tab { min-height: 44px; }
+  .gpu-rent-panel h3 { font-size: 15px; }
+}
 .market-row[data-hardware-series] .market-spark { color: var(--font-tertiary); font-size: 10px; text-align: center; }
 .hardware-detail .quote-last-row { margin-block: 20px 8px; }
 .hardware-verification { margin: 0 0 12px; color: var(--font-tertiary); font-size: 12px; }
