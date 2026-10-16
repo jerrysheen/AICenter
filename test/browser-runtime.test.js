@@ -114,7 +114,7 @@ test('BrowserSkill navigate passes a timeout and optional wait condition', async
   assert.ok(commands[0].args.includes('45000ms'));
   assert.ok(commands[0].args.includes('--wait-until'));
   assert.ok(commands[0].args.includes('domcontentloaded'));
-  assert.equal(commands[0].timeoutMs, 65_000);
+  assert.equal(commands[0].timeoutMs, 50_000);
 });
 
 test('browser process timeout settles without waiting for close', async () => {
@@ -366,6 +366,49 @@ test('bsk provider is selected for bilibili fetchJson', async () => {
   assert.equal(result.status, 'ok');
   assert.equal(bsk.calls[0][0], 'start');
   assert.equal(bsk.calls.at(-1)[0], 'stop');
+});
+
+test('a lock held for 80s returns deadline without starting a session', async () => {
+  const provider = createRecordingProvider();
+  const runtime = createBrowserRuntime({ provider, maxHoldMs: 120_000 });
+  const held = runtime.withSession({ purpose: 'hold' }, () => new Promise((resolve) => setTimeout(resolve, 80_000)));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const started = Date.now();
+  const result = await runtime.withSession({
+    purpose: 'queued',
+    deadlineAt: Date.now() + 90_000,
+  }, async () => 'should-not-run');
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed <= 76_000, `waiter returned in ${elapsed}ms`);
+  assert.ok(elapsed >= 70_000, `waiter returned in ${elapsed}ms`);
+  assert.equal(result.error, 'deadline');
+  assert.equal(result.reason, 'lock_wait');
+  assert.equal(provider.calls.filter((item) => item[0] === 'start').length, 1);
+  await held;
+});
+
+test('a slow session start reports browser_cold_start', async () => {
+  const client = createBrowserSkillClient({
+    async runCommand(_args, options) {
+      await new Promise((resolve, reject) => {
+        setTimeout(
+          () => reject(Object.assign(new Error(`bsk timed out after ${options.timeoutMs}ms`), { killed: true })),
+          options.timeoutMs,
+        );
+      });
+    },
+  });
+  const runtime = createBrowserRuntime({ provider: client });
+  const started = Date.now();
+  const result = await runtime.withSession({
+    purpose: 'slow',
+    deadlineAt: Date.now() + 20_000,
+  }, async () => 'should-not-run');
+  const elapsed = Date.now() - started;
+  assert.equal(result.error, 'browser_cold_start');
+  assert.equal(result.reason, 'browser_cold_start');
+  assert.ok(elapsed < 8_000, `start settled in ${elapsed}ms`);
+  assert.ok(elapsed >= 4_000, `start settled in ${elapsed}ms`);
 });
 
 test('legacy-cdp provider is no longer accepted', () => {

@@ -480,10 +480,12 @@ function captureStopped(signal, deadlineAt) {
   return Boolean(signal?.aborted) || (Number.isFinite(Number(deadlineAt)) && Date.now() >= Number(deadlineAt));
 }
 
+const WRITE_RESERVE_MS = 15_000;
+
 function commandTimeout(fallback, deadlineAt) {
   const limit = Math.max(1_000, Number(fallback) || EXTRACT_TIMEOUT_MS);
   if (!Number.isFinite(Number(deadlineAt))) return limit;
-  const remaining = Number(deadlineAt) - Date.now();
+  const remaining = Number(deadlineAt) - Date.now() - WRITE_RESERVE_MS;
   if (remaining < 1_000) return 0;
   return Math.min(limit, remaining);
 }
@@ -495,15 +497,23 @@ export function createXHomeBrowserClient(options = {}) {
     throw new Error('X 浏览器访问需要 browserRuntime');
   }
 
-  async function harvestTweets(session) {
-    const extracted = await session.evaluate(buildTweetExtractExpression(), { timeoutMs: EXTRACT_TIMEOUT_MS });
+  async function harvestTweets(session, deadlineAt) {
+    const timeoutMs = Number.isFinite(Number(deadlineAt))
+      ? commandTimeout(30_000, deadlineAt)
+      : EXTRACT_TIMEOUT_MS;
+    if (!timeoutMs) return [];
+    const extracted = await session.evaluate(buildTweetExtractExpression(), { timeoutMs });
     return extracted?.items || [];
   }
 
-  async function readStatusComments(session, tweetId) {
+  async function readStatusComments(session, tweetId, deadlineAt) {
     if (!tweetId) return [];
+    const timeoutMs = Number.isFinite(Number(deadlineAt))
+      ? commandTimeout(30_000, deadlineAt)
+      : EXTRACT_TIMEOUT_MS;
+    if (!timeoutMs) return [];
     try {
-      const extracted = await session.evaluate(buildStatusCommentsExpression(tweetId), { timeoutMs: EXTRACT_TIMEOUT_MS });
+      const extracted = await session.evaluate(buildStatusCommentsExpression(tweetId), { timeoutMs });
       return Array.isArray(extracted?.comments) ? extracted.comments : [];
     } catch {
       return [];
@@ -534,7 +544,7 @@ export function createXHomeBrowserClient(options = {}) {
       const grown = String(best.text || '').length >= String(tweet.text || '').length + 200;
       if (grown && !looksTruncatedTweet({ ...best, truncated: Boolean(match?.truncated) })) break;
     }
-    const comments = await readStatusComments(session, best.tweet_id || tweet.tweet_id);
+    const comments = await readStatusComments(session, best.tweet_id || tweet.tweet_id, budget?.deadlineAt);
     return {
       ...best,
       truncated: looksTruncatedTweet(best),
@@ -589,7 +599,7 @@ export function createXHomeBrowserClient(options = {}) {
       article_unfetched: !complete,
     };
     if (!articleUrl) {
-      next.comments = await readStatusComments(session, tweet.tweet_id);
+      next.comments = await readStatusComments(session, tweet.tweet_id, budget?.deadlineAt);
       next.comments_checked = true;
     }
     return next;
@@ -606,7 +616,7 @@ export function createXHomeBrowserClient(options = {}) {
       await session.navigate(tweet.tweet_url, { timeoutMs: navigateTimeout });
       await wait(1_500);
       if (captureStopped(budget?.signal, budget?.deadlineAt)) return tweet;
-      const comments = await readStatusComments(session, tweet.tweet_id);
+      const comments = await readStatusComments(session, tweet.tweet_id, budget?.deadlineAt);
       return { ...tweet, comments, comments_checked: true };
     } catch {
       return { ...tweet, comments_checked: true };
@@ -618,7 +628,7 @@ export function createXHomeBrowserClient(options = {}) {
       const parsedLimit = Math.min(50, Math.max(1, Number(limit) || 50));
       const exclude = [...new Set((excludeExternalIds || []).map((id) => String(id || '')).filter(Boolean))];
       const budget = { signal, deadlineAt };
-      return runtime.withSession({ purpose: 'x.home', focused: false }, async (session) => {
+      return runtime.withSession({ purpose: 'x.home', focused: false, deadlineAt, signal }, async (session) => {
         let stoppedEarly = captureStopped(signal, deadlineAt);
         const stop = () => {
           if (!captureStopped(signal, deadlineAt)) return false;
@@ -641,7 +651,10 @@ export function createXHomeBrowserClient(options = {}) {
         const inspectTimeout = () => commandTimeout(EXTRACT_TIMEOUT_MS, deadlineAt);
         const inspectHome = async () => {
           const timeoutMs = inspectTimeout();
-          if (!timeoutMs) return null;
+          if (!timeoutMs) {
+            stoppedEarly = true;
+            return null;
+          }
           let inspect = await session.evaluate(buildPageInspectExpression(feed), { timeoutMs });
           if (inspect?.clicked_tab && !stop()) {
             await wait(2_500);
@@ -670,7 +683,7 @@ export function createXHomeBrowserClient(options = {}) {
           };
         }
         let items = [];
-        const harvest = () => harvestTweets(session);
+        const harvest = () => harvestTweets(session, deadlineAt);
         const merge = (current, incoming) => mergeTweets(current, incoming, parsedLimit, { excludeExternalIds: exclude });
         if (!stop()) items = merge(items, await harvest());
         let stale = 0;
@@ -683,6 +696,8 @@ export function createXHomeBrowserClient(options = {}) {
           await session.evaluate(buildScrollExpression(), { timeoutMs: scrollTimeout });
           await wait(1_800);
           if (stop()) break;
+          const harvestBudget = commandTimeout(30_000, deadlineAt);
+          if (!harvestBudget) { stoppedEarly = true; break; }
           items = merge(items, await harvest());
           if (items.length === before) {
             stale += 1;
@@ -716,6 +731,7 @@ export function createXHomeBrowserClient(options = {}) {
         }
         const loggedIn = Boolean(inspect?.logged_in);
         const loginWall = Boolean(inspect?.login_wall);
+        const pastDeadline = stoppedEarly || captureStopped(signal, deadlineAt);
         const tweets = items.slice(0, parsedLimit).map((item) => ({
           tweet_id: item.tweet_id,
           tweet_url: item.tweet_url,
@@ -740,10 +756,10 @@ export function createXHomeBrowserClient(options = {}) {
           selected_tab: inspect?.selected_tab || null,
           tweet_count: tweets.length,
           tweets,
-          deadline: stoppedEarly,
-          error: stoppedEarly && !tweets.length && loggedIn
+          deadline: pastDeadline,
+          error: !tweets.length && pastDeadline
             ? 'deadline'
-            : loggedIn ? null : loginWall ? 'login_required' : 'login_state_unclear',
+            : loggedIn ? null : loginWall ? 'login_required' : (pastDeadline ? null : 'login_state_unclear'),
         };
       });
     },

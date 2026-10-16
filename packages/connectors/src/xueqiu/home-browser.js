@@ -307,7 +307,7 @@ export function createXueqiuHomeBrowserClient(options = {}) {
     const parsedLimit = Math.min(50, Math.max(1, Number(limit) || 50));
     const excluded = new Set((excludeExternalIds || []).map((id) => String(id || '')).filter(Boolean));
 
-    return runtime.withSession({ purpose: `xueqiu-${parsedFeed}`, focused: false }, async (session) => {
+    return runtime.withSession({ purpose: `xueqiu-${parsedFeed}`, focused: false, deadlineAt, signal }, async (session) => {
       let stoppedEarly = stopped(signal, deadlineAt);
       const halt = () => {
         if (!stopped(signal, deadlineAt)) return false;
