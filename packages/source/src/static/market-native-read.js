@@ -45,33 +45,39 @@ export function createMarketNativeBoardReader({
   const cache = createMemorySnapshotCache({
     ttlMs,
     now,
-    read: () => repository.readSnapshot(workspaceId, MARKET_NATIVE_BOARD_SNAPSHOT_KEY),
+    read: async () => {
+      const stored = await repository.readSnapshot(workspaceId, MARKET_NATIVE_BOARD_SNAPSHOT_KEY);
+      if (!stored?.payload || stored.payload.generatedAt == null) return null;
+      if (typeof polymarketQuotes !== 'function') return { stored, quotes: null };
+      try {
+        const view = await polymarketQuotes();
+        const parsed = watchedPolymarketQuotes(view?.quotes);
+        return { stored, quotes: view?.available && parsed.length ? parsed : null };
+      } catch (error) {
+        console.error('[market-native] 观察清单读取失败:', error instanceof Error ? error.message : error);
+        return { stored, quotes: null };
+      }
+    },
   });
   return {
     async read(rawInput = {}, { refresh = false } = {}) {
       const input = parseContract(MarketNativeBoardInputSchema, rawInput);
-      const stored = await cache.get({ refresh: Boolean(refresh) });
-      if (!stored?.payload || stored.payload.generatedAt == null) {
+      const cached = await cache.get({ refresh: Boolean(refresh) });
+      if (!cached?.stored?.payload || cached.stored.payload.generatedAt == null) {
         return { board: emptyMarketNativeBoard(now()), pending: true };
       }
-      const projected = projectMarketNativeBoard(stored.payload, input.predictionLimit);
-      if (typeof polymarketQuotes !== 'function') return { board: projected, pending: false };
-      try {
-        const view = await polymarketQuotes();
-        const quotes = watchedPolymarketQuotes(view?.quotes);
-        if (!view?.available || !quotes.length) return { board: projected, pending: false };
-        const others = (stored.payload.predictionMarkets || []).filter((quote) => quote?.venue !== 'polymarket');
-        return {
-          board: {
-            ...projected,
-            predictionMarkets: [...quotes, ...others].slice(0, 1_000),
-          },
-          pending: false,
-        };
-      } catch (error) {
-        console.error('[market-native] 观察清单读取失败:', error instanceof Error ? error.message : error);
-        return { board: projected, pending: false };
-      }
+      const projected = projectMarketNativeBoard(cached.stored.payload, input.predictionLimit);
+      if (!cached.quotes?.length) return { board: projected, pending: false };
+      const others = (cached.stored.payload.predictionMarkets || [])
+        .filter((quote) => quote?.venue !== 'polymarket')
+        .slice(0, Math.min(MARKET_NATIVE_BOARD_CAPTURE_LIMIT, input.predictionLimit));
+      return {
+        board: {
+          ...projected,
+          predictionMarkets: [...cached.quotes, ...others],
+        },
+        pending: false,
+      };
     },
   };
 }

@@ -440,6 +440,12 @@ test('the board reads the watchlist instead of the first 24 snapshot rows', asyn
     marketId: 'KXFED',
     marketQuestion: 'Fed decision',
   };
+  const kalshiOther = {
+    ...kalshi,
+    quoteId: 'kalshi:other',
+    marketId: 'KXOTHER',
+    marketQuestion: 'Other venue',
+  };
   function outcome(eventId, title, sortOrder, extra = {}) {
     return {
       eventId,
@@ -497,16 +503,21 @@ test('the board reads the watchlist instead of the first 24 snapshot rows', asyn
     repository.saveWatchlist({ outcomes, at: now });
     temporary.store.repositories.runtimeSnapshots.saveSnapshot('local', MARKET_NATIVE_BOARD_SNAPSHOT_KEY, {
       generatedAt: now,
-      predictionMarkets: [...legacy, kalshi],
+      predictionMarkets: [...legacy, kalshi, kalshiOther],
       cryptoDerivatives: [],
       stablecoinLiquidity: null,
       sourceHealth: [],
     }, now);
-    const loaded = await createMarketNativeBoardReader({
+    let reads = 0;
+    const reader = createMarketNativeBoardReader({
       repository: temporary.store.repositories.runtimeSnapshots,
-      polymarketQuotes: () => readStoredPolymarketView(repository, now),
+      polymarketQuotes: () => {
+        reads += 1;
+        return readStoredPolymarketView(repository, now);
+      },
       now: () => now,
-    }).read({});
+    });
+    const loaded = await reader.read({ predictionLimit: 1 });
     assert.equal(loaded.pending, false);
     const questions = loaded.board.predictionMarkets.map((quote) => quote.marketQuestion);
     assert.equal(questions.some((title) => title.startsWith('Legacy market')), false);
@@ -526,7 +537,20 @@ test('the board reads the watchlist instead of the first 24 snapshot rows', asyn
       assert.equal(questions.includes(title), true, title);
     }
     assert.equal(loaded.board.predictionMarkets.length > 24, true);
-    assert.equal(loaded.board.predictionMarkets.some((quote) => quote.venue === 'kalshi'), true);
+    assert.equal(loaded.board.predictionMarkets.filter((quote) => quote.venue === 'polymarket').length, 34);
+    assert.deepEqual(
+      loaded.board.predictionMarkets.filter((quote) => quote.venue !== 'polymarket').map((quote) => quote.marketQuestion),
+      ['Fed decision'],
+    );
+    const again = await reader.read({ predictionLimit: 1 });
+    assert.equal(reads, 1);
+    assert.equal(again.board.predictionMarkets.length, loaded.board.predictionMarkets.length);
+    const refreshed = await reader.read({ predictionLimit: 50 }, { refresh: true });
+    assert.equal(reads, 2);
+    assert.deepEqual(
+      refreshed.board.predictionMarkets.filter((quote) => quote.venue !== 'polymarket').map((quote) => quote.marketQuestion),
+      ['Fed decision', 'Other venue'],
+    );
   } finally {
     temporary.remove();
   }

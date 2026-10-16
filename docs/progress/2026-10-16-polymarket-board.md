@@ -6,4 +6,8 @@ Web 现在用 `polymarket_outcomes` 里 `watched = 1` 的行替换快照中的 P
 
 H100 的种子 slug 改为 `gpu-rental-prices-h100-end-of-october`。2026-10-16 对活接口核对过：事件 id `836031`，标题 “GPU rental prices (H100) end of October?”，系列 `h100-rental-price`，尚未结束。发布日和 H200 一样，是纽约时间 2026-10-31。持有一期，10 月结算后滚动到 11 月。
 
-不新增 migration。需要重启 Web。Worker 不用为这项重启。
+生产库里已经有 H100 的 11 月行、还没有 10 月种子时，下一次观察清单抓取会请求 `gpu-rental-prices-h100-end-of-october`。只要这个种子还没结束，它就盖过同一系列里更晚结束的事件。种子已经在库里并且已结束，或处在「下一期尚未出现」时，继续按原来的滚动规则找下一月。
+
+看板把快照和观察清单放在同一层 45 秒缓存里。`predictionLimit` 只截断 Kalshi 等其他场所，观察清单全部保留。没有观察清单时，快照仍按 `predictionLimit` 的两倍截断。
+
+不新增 migration。需要重启 Web。Worker 也要重启，下一次抓取才会改跟踪 H100 的 10 月。
