@@ -25,6 +25,8 @@ import { resolveInstanceConfig } from '../../../packages/instance/src/index.js';
 import { createAgentTraceLog } from '../../../packages/runtime/src/agent-trace-log.js';
 import { createWorkPackageTracePort } from '../../../packages/runtime/src/work-package-trace.js';
 import { readTagCatalogFile } from '../../../packages/runtime/src/tagging-module.js';
+import { loadPolymarketWatchlist, polymarketLegacyEnabled } from '../../../packages/connectors/src/polymarket-watchlist.js';
+import { readStoredPolymarketView } from '../../../packages/domain/src/polymarket-series.js';
 import { createFailureStreakStore, createMarketBoardReader, createMarketNativeBoardReader, createSourceHub, createSourceModuleRegistry, createStaticSignalBoardReader, installFailureStreakStore } from '../../../packages/source/src/index.js';
 import { HOLDINGS_MARKET_SNAPSHOT_KEY, prebuiltSnapshotSlots } from '../../../packages/runtime/src/web-snapshot-jobs.js';
 import { createMemorySnapshotCache } from '../../../packages/runtime/src/snapshot-cache.js';
@@ -252,8 +254,15 @@ export function createAiCenterServer(options = {}) {
       },
     },
   });
+  const legacyPolymarket = polymarketLegacyEnabled(env);
+  const polymarketWatchlist = options.polymarketWatchlist || loadPolymarketWatchlist(path.join(instance.configDirectory, 'polymarket-watchlist.json'));
   const marketNativeBoard = options.marketNativeBoard || createMarketNativeBoardReader({
     repository: store.repositories.runtimeSnapshots,
+    polymarketQuotes: legacyPolymarket || !store.repositories?.polymarket
+      ? undefined
+      : () => readStoredPolymarketView(store.repositories.polymarket, Date.now(), {
+        staleAfterMs: polymarketWatchlist.fetch.staleAfterMinutes * 60_000,
+      }),
   });
   services = options.services || createDomainServices({
     modelUsageRates: env.AI_CENTER_MODEL_USAGE_RATES_JSON || [],
