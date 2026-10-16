@@ -820,15 +820,6 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
   if (!legacyRepository || !feedRepository || !resolvedSourcePort) throw new Error('feed repositories and source port are required');
   sourcePort = resolvedSourcePort;
   const qualityRule=feedFilter?.config?.mode==='enforce' && feedFilter.config.rule==='all-three-0.60'?'all-three-0.60':'';
-  const notifyContentReady=(workspaceId,ids)=>{
-    if(!ids?.length || typeof onContentReady!=='function')return;
-    const finish=(error)=>console.warn(`[feed] onContentReady failed: ${error instanceof Error ? error.message : error}`);
-    try{
-      Promise.resolve(onContentReady({workspaceId,sourceIds:ids.map(id=>`feed:${id}`)})).catch(finish);
-    }catch(error){
-      finish(error);
-    }
-  };
 
   const attachNormalizedArticle=(workspaceId,item)=>{
     if(!normalizedArticlePort || !item)return item;
@@ -1007,7 +998,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
         throw new Error(snapshot.note || `${sourceId} 抓取失败`);
       }
       const stats=await (contentRoutingPort && persistence.providerId==='trendforce' ? contentRoutingPort.ingest(workspaceId,snapshot) : ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter, flashSources, mediaPort?.articleDedup));
-      if(stats.addedItemIds?.length)notifyContentReady(workspaceId,stats.addedItemIds);
+      if(stats.addedItemIds?.length)await onContentReady?.({workspaceId,sourceIds:stats.addedItemIds.map(id=>`feed:${id}`)});
       return snapshot.deadline ? { ...stats, deadline: true } : stats;
     },
     listItemSources(workspaceId, ids) {
