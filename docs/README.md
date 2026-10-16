@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-16-author-view.md`：信息流最后一项是「作者」。migration 77、78。`AUTHOR_VIEW=0` 只隐藏页面和接口。需要同时重启 Web 和 Worker。上线先 `--dry-run`，再 backfill，需要的话 import，最后 recompute。Worker 每天凌晨重算近 30 天计数。
+
 - `progress/2026-10-16-polymarket-card-change.md`：事件概率卡片恢复大号概率和涨跌。序列还不满 24 小时时，只取观察清单里 1 小时到 27 小时之间最早的一点，并写「较 Xh 前」。数字 `changeBasis` 显示「较 4h 前」这类文案，没有该字段才是「较昨日」。`lastPrice` 为空时不显示「上次」。满 24 小时后自己回到「较昨日」。多个结果的卡片上面是领先结果，下面默认收起最多 3 个其余区间。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-16-twkr-sources.md`：台湾和韩国第一批来源各自抓取。新闻进入媒体索引，沿用 Gemma 26B 翻译。证交所月营收写入 `twse_monthly_revenue`，不进新闻流。migration 76。需要重启 Worker。
