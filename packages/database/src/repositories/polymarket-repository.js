@@ -204,6 +204,31 @@ export function createPolymarketRepository(database, emitEvent = () => {}) {
     markHourly.run(start, limit);
     return result.changes;
   }
+  const unwatchEvent = database.prepare(`UPDATE polymarket_outcomes
+    SET watched = 0, lifecycle = 'closed', updated_at = ?
+    WHERE event_id = ? AND watched = 1`);
+  const insertCandidate = database.prepare(`INSERT OR IGNORE INTO polymarket_candidates (
+      event_id, event_slug, title, tag_slug, volume_24h, total_volume, status, discovered_at, reviewed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, NULL)`);
+  const listCandidatesByStatus = database.prepare(`SELECT * FROM polymarket_candidates
+    WHERE status = ? ORDER BY discovered_at ASC, event_id ASC`);
+  const listCandidateIds = database.prepare('SELECT event_id FROM polymarket_candidates');
+  const reviewCandidateRow = database.prepare(`UPDATE polymarket_candidates
+    SET status = ?, reviewed_at = ?
+    WHERE event_id = ? AND status = 'pending'`);
+  const insertAlert = database.prepare(`INSERT INTO polymarket_alerts (
+      event_id, market_id, outcome_key, alert_type, message, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?)`);
+  const listAlerts = database.prepare(`SELECT id, event_id, market_id, outcome_key, alert_type, message, created_at
+    FROM polymarket_alerts WHERE created_at >= ? ORDER BY created_at DESC, id DESC`);
+  const listStates = database.prepare(`SELECT event_id, market_id, outcome_key, state_key, state_value, updated_at
+    FROM polymarket_alert_state`);
+  const upsertState = database.prepare(`INSERT INTO polymarket_alert_state (
+      event_id, market_id, outcome_key, state_key, state_value, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(event_id, market_id, outcome_key, state_key) DO UPDATE SET
+      state_value = excluded.state_value,
+      updated_at = excluded.updated_at`);
 
   return {
     saveWatchlist({ outcomes = [], points = [], syncedEventIds = [], downsampleBefore = null, at = Date.now() } = {}) {
@@ -271,6 +296,132 @@ export function createPolymarketRepository(database, emitEvent = () => {}) {
       const priors = dashboardPrior.all(target, target, target - windowMs, target + windowMs).map(mapPoint);
       const latest = dashboardLatest.all(at - latestMs, at + 60_000).map(mapPoint);
       return [...priors, ...latest];
+    },
+
+    unwatchEvents(eventIds, at = Date.now()) {
+      const updatedAt = Number.isInteger(at) ? at : Date.now();
+      const ids = [...new Set((eventIds || []).map((id) => String(id || '').trim()).filter(Boolean))];
+      if (!ids.length) return 0;
+      return database.transaction(() => {
+        let changed = 0;
+        for (const eventId of ids) changed += unwatchEvent.run(updatedAt, eventId).changes;
+        return changed;
+      })();
+    },
+
+    insertCandidates(candidates, at = Date.now()) {
+      const discoveredAt = Number.isInteger(at) ? at : Date.now();
+      const rows = (candidates || []).map((candidate) => {
+        const eventId = String(candidate?.eventId || '').trim();
+        const title = String(candidate?.title || '').trim();
+        if (!eventId || eventId.length > 64) throw new ValidationError('候选事件标识不正确', ['eventId']);
+        if (!title || title.length > 2_000) throw new ValidationError('候选标题不正确', ['title']);
+        return {
+          eventId,
+          eventSlug: String(candidate?.eventSlug || '').slice(0, 256),
+          title,
+          tagSlug: String(candidate?.tagSlug || '').slice(0, 64),
+          volume24h: decimalOrNull(candidate?.volume24h),
+          totalVolume: decimalOrNull(candidate?.totalVolume),
+        };
+      });
+      return database.transaction(() => {
+        let inserted = 0;
+        for (const row of rows) {
+          inserted += insertCandidate.run(
+            row.eventId, row.eventSlug, row.title, row.tagSlug, row.volume24h, row.totalVolume, discoveredAt,
+          ).changes;
+        }
+        return inserted;
+      })();
+    },
+
+    listCandidates(status = 'pending') {
+      const name = String(status || 'pending');
+      if (!['pending', 'approved', 'rejected'].includes(name)) return [];
+      return listCandidatesByStatus.all(name).map((row) => ({
+        eventId: row.event_id,
+        eventSlug: row.event_slug,
+        title: row.title,
+        tagSlug: row.tag_slug,
+        volume24h: row.volume_24h,
+        totalVolume: row.total_volume,
+        status: row.status,
+        discoveredAt: row.discovered_at,
+        reviewedAt: row.reviewed_at,
+      }));
+    },
+
+    listCandidateEventIds() {
+      return listCandidateIds.all().map((row) => row.event_id);
+    },
+
+    reviewCandidate(eventId, status, at = Date.now()) {
+      const name = String(status || '');
+      if (name !== 'approved' && name !== 'rejected') throw new ValidationError('审核状态不正确', ['status']);
+      const id = String(eventId || '').trim();
+      if (!id) throw new ValidationError('候选事件标识不正确', ['eventId']);
+      const reviewedAt = Number.isInteger(at) ? at : Date.now();
+      return reviewCandidateRow.run(name, reviewedAt, id).changes === 1;
+    },
+
+    listAlertsSince(from) {
+      const start = Number(from);
+      if (!Number.isInteger(start) || start < 0) return [];
+      return listAlerts.all(start).map((row) => ({
+        id: row.id,
+        eventId: row.event_id,
+        marketId: row.market_id,
+        outcomeKey: row.outcome_key,
+        alertType: row.alert_type,
+        message: row.message,
+        createdAt: row.created_at,
+      }));
+    },
+
+    listAlertStates() {
+      return listStates.all().map((row) => ({
+        eventId: row.event_id,
+        marketId: row.market_id,
+        outcomeKey: row.outcome_key,
+        stateKey: row.state_key,
+        stateValue: row.state_value,
+        updatedAt: row.updated_at,
+      }));
+    },
+
+    recordAlerts({ alerts = [], states = [] } = {}) {
+      const samples = alerts.map((alert) => {
+        const eventId = String(alert?.eventId || '').trim();
+        const message = String(alert?.message || '').trim();
+        const createdAt = Number(alert?.createdAt);
+        if (!eventId || !message || !Number.isInteger(createdAt)) throw new ValidationError('告警不正确', ['alert']);
+        return {
+          eventId,
+          marketId: String(alert?.marketId || ''),
+          outcomeKey: String(alert?.outcomeKey || ''),
+          alertType: String(alert?.alertType || '').slice(0, 40),
+          message: message.slice(0, 120),
+          createdAt,
+        };
+      });
+      const next = states.map((state) => ({
+        eventId: String(state?.eventId || '').trim(),
+        marketId: String(state?.marketId || ''),
+        outcomeKey: String(state?.outcomeKey || ''),
+        stateKey: String(state?.stateKey || '').slice(0, 64),
+        stateValue: String(state?.stateValue || '').slice(0, 200),
+        updatedAt: Number(state?.updatedAt),
+      })).filter((state) => state.eventId && state.stateKey && Number.isInteger(state.updatedAt));
+      database.transaction(() => {
+        for (const alert of samples) {
+          insertAlert.run(alert.eventId, alert.marketId, alert.outcomeKey, alert.alertType, alert.message, alert.createdAt);
+        }
+        for (const state of next) {
+          upsertState.run(state.eventId, state.marketId, state.outcomeKey, state.stateKey, state.stateValue, state.updatedAt);
+        }
+      })();
+      return { alerts: samples.length, states: next.length };
     },
   };
 }

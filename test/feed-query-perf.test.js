@@ -150,6 +150,9 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
     DROP TABLE IF EXISTS etf_whale_signals;
     DROP TABLE IF EXISTS polymarket_outcomes;
     DROP TABLE IF EXISTS polymarket_probability_points;
+    DROP TABLE IF EXISTS polymarket_candidates;
+    DROP TABLE IF EXISTS polymarket_alerts;
+    DROP TABLE IF EXISTS polymarket_alert_state;
     DROP INDEX IF EXISTS idx_captures_feed_sort;
     DROP INDEX IF EXISTS idx_captures_provider_captured;
     DROP INDEX IF EXISTS idx_captures_feed_filter;
@@ -164,15 +167,15 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
 
   const upgraded = createStore(file);
   try {
-    assert.equal(latestSchemaVersion(), 73);
-    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 73);
+    assert.equal(latestSchemaVersion(), 74);
+    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 74);
   } finally {
     upgraded.close();
   }
 
   const database = new Database(file, { readonly: true, fileMustExist: true });
   try {
-    assert.equal(database.pragma('user_version', { simple: true }), 73);
+    assert.equal(database.pragma('user_version', { simple: true }), 74);
     const rows = database.prepare(`
       SELECT version, name, applied_at FROM schema_migrations WHERE version >= 57 ORDER BY version
     `).all();
@@ -193,6 +196,7 @@ test('a database stopped at schema 57 applies runtime snapshots then feed indexe
       [71, 'model_usage_translation_attribution'],
       [72, 'article_dedup_url_lookup'],
       [73, 'polymarket_watchlist'],
+      [74, 'polymarket_discovery'],
     ]);
     assert.equal(database.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('model_usage_index') WHERE name = 'key_suffix'`).get().n, 1);
     assert.equal(database.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('model_usage_index') WHERE name = 'item_id'`).get().n, 1);
@@ -242,7 +246,7 @@ test('库已在 71 时升级', () => {
 
   const upgraded = createStore(file);
   try {
-    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 73);
+    assert.equal(upgraded.getRuntimeStatus().schemaVersion, 74);
   } finally {
     upgraded.close();
   }

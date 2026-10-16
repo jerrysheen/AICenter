@@ -111,7 +111,7 @@ function quoteFromRows(rows, pointsByKey, now) {
   return quote;
 }
 
-export function projectWatchlistQuotes(outcomes, points, now = Date.now()) {
+export function projectWatchlistQuotes(outcomes, points, now = Date.now(), noticesByEvent = new Map()) {
   const pointsByKey = new Map();
   for (const point of points || []) {
     const key = pointKey(point);
@@ -128,7 +128,13 @@ export function projectWatchlistQuotes(outcomes, points, now = Date.now()) {
   }
   return [...grouped.values()]
     .sort((left, right) => (left[0].sortOrder - right[0].sortOrder) || String(left[0].eventId).localeCompare(String(right[0].eventId)))
-    .map((rows) => quoteFromRows(rows, pointsByKey, now))
+    .map((rows) => {
+      const quote = quoteFromRows(rows, pointsByKey, now);
+      if (!quote) return null;
+      const notices = (noticesByEvent.get(quote.marketId) || []).filter(Boolean).slice(0, 3);
+      if (notices.length) quote.notices = notices;
+      return quote;
+    })
     .filter(Boolean);
 }
 
@@ -144,7 +150,16 @@ export function readStoredPolymarketView(repository, now = Date.now(), { staleAf
   const points = typeof repository.listDashboardPoints === 'function'
     ? repository.listDashboardPoints(moment)
     : repository.listPointsBetween(moment - POLYMARKET_DAY_MS - POLYMARKET_DAY_WINDOW_MS, moment + 60_000);
-  const quotes = projectWatchlistQuotes(outcomes, points, moment);
+  const noticesByEvent = new Map();
+  if (typeof repository.listAlertsSince === 'function') {
+    for (const alert of repository.listAlertsSince(moment - POLYMARKET_DAY_MS)) {
+      const list = noticesByEvent.get(alert.eventId) || [];
+      if (list.length >= 3) continue;
+      list.push(alert.message);
+      noticesByEvent.set(alert.eventId, list);
+    }
+  }
+  const quotes = projectWatchlistQuotes(outcomes, points, moment, noticesByEvent);
   const stale = at - latest > staleAfterMs;
   return {
     available: true,

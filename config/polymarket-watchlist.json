@@ -69,7 +69,7 @@
       "unemployment", "ism", "fed-rates", "fomc", "ecb", "boj", "treasuries", "ornn",
       "commodities", "oil", "gold", "indicies", "sp-500", "strait-of-hormuz", "iran", "geopolitics"
     ],
-    "excludeTags": ["sports", "esports", "crypto-prices", "elections", "weather", "mention-markets"],
+    "excludeTags": ["sports", "esports", "crypto-prices", "up-or-down", "elections", "weather", "mention-markets"],
     "excludeTitlePattern": "Up or Down|on (January|February|March|April|May|June|July|August|September|October|November|December) \\d+\\?|Week of|Highest temperature|say during",
     "minVolume24hUsd": 2000,
     "minTotalVolumeUsd": 50000,
