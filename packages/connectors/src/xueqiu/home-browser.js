@@ -283,15 +283,34 @@ export function createXueqiuHomeBrowserClient(options = {}) {
     throw new Error('雪球采集需要 browserRuntime（BrowserSkill）。');
   }
 
-  async function collect(feed, limit, excludeExternalIds) {
+  function stopped(signal, deadlineAt) {
+    return Boolean(signal?.aborted) || (Number.isFinite(Number(deadlineAt)) && Date.now() >= Number(deadlineAt));
+  }
+
+  async function collect(feed, limit, excludeExternalIds, signal, deadlineAt) {
     const parsedFeed = normalizeXueqiuFeed(feed);
     const parsedLimit = Math.min(50, Math.max(1, Number(limit) || 50));
     const excluded = new Set((excludeExternalIds || []).map((id) => String(id || '')).filter(Boolean));
 
     return runtime.withSession({ purpose: `xueqiu-${parsedFeed}`, focused: false }, async (session) => {
-      await session.navigate(`${XUEQIU_PAGE_ORIGIN}/hq`, { timeoutMs: 90_000 });
-      await wait(1_200);
-      const inspect = await session.evaluate(buildLoginInspectExpression());
+      let stoppedEarly = stopped(signal, deadlineAt);
+      const halt = () => {
+        if (!stopped(signal, deadlineAt)) return false;
+        stoppedEarly = true;
+        return true;
+      };
+      if (halt()) {
+        return {
+          source: 'browser_runtime_home', feed: parsedFeed, logged_in: false, login_wall: false,
+          error: 'deadline', deadline: true, page_title: '', page_url: XUEQIU_HOME_URL, items: [],
+        };
+      }
+      const pageTimeout = Number.isFinite(Number(deadlineAt))
+        ? Math.max(1_000, Math.min(90_000, Number(deadlineAt) - Date.now()))
+        : 90_000;
+      await session.navigate(`${XUEQIU_PAGE_ORIGIN}/hq`, { timeoutMs: pageTimeout });
+      if (!halt()) await wait(1_200);
+      const inspect = halt() ? { logged_in: false, title: '', url: XUEQIU_HOME_URL } : await session.evaluate(buildLoginInspectExpression());
       const loggedIn = Boolean(inspect?.logged_in);
       if (!loggedIn && parsedFeed !== 'livenews') {
         return {
@@ -310,6 +329,7 @@ export function createXueqiuHomeBrowserClient(options = {}) {
       let maxId = -1;
       let lastError = '';
       for (let page = 0; page < MAX_PAGES && items.length < parsedLimit; page += 1) {
+        if (halt()) break;
         const url = parsedFeed === 'livenews'
           ? livenewsUrl(maxId, DEFAULT_PAGE_SIZE)
           : timelineUrl(userGroupIdForFeed(parsedFeed), maxId);
@@ -347,6 +367,7 @@ export function createXueqiuHomeBrowserClient(options = {}) {
       }
 
       for (const row of items) {
+        if (halt()) break;
         const statusId = commentStatusId(row);
         if (!statusId || row.reply_count === 0) continue;
         try {
@@ -364,7 +385,8 @@ export function createXueqiuHomeBrowserClient(options = {}) {
         feed: parsedFeed,
         logged_in: loggedIn || parsedFeed === 'livenews',
         login_wall: false,
-        error: items.length ? '' : lastError,
+        error: items.length ? '' : (stoppedEarly ? 'deadline' : lastError),
+        deadline: stoppedEarly,
         page_title: inspect?.title || '',
         page_url: inspect?.url || XUEQIU_HOME_URL,
         items: items.slice(0, parsedLimit),
@@ -374,7 +396,7 @@ export function createXueqiuHomeBrowserClient(options = {}) {
 
   return {
     async fetchHomeTimeline(input = {}) {
-      return collect(input.feed, input.limit, input.excludeExternalIds);
+      return collect(input.feed, input.limit, input.excludeExternalIds, input.signal, input.deadlineAt);
     },
   };
 }

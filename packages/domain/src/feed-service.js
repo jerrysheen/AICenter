@@ -981,7 +981,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
         items: stored.items.length || qualityRule ? stored.items : visibleSnapshotItems,
       }, shape, workspaceId);
     },
-    async refreshPersistedSource({ workspaceId = DEFAULT_WORKSPACE_ID, sourceId, sourceInput } = {}) {
+    async refreshPersistedSource({ workspaceId = DEFAULT_WORKSPACE_ID, sourceId, sourceInput, signal, deadlineAt } = {}) {
       if (!sourceId || !sourceInput || typeof sourceInput !== 'object' || Array.isArray(sourceInput)) {
         throw new ValidationError('来源缺少可重放参数', ['sourceId']);
       }
@@ -990,7 +990,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
         throw new ValidationError(`${sourceId} 未声明 Feed 持久化投影`, ['sourceId']);
       }
       const sourceSnapshot = await sourcePort.read(contentRoutingPort && persistence.providerId==='trendforce' ? 'content.trendforce.collection' : sourceId, sourceInput, {
-        refresh: true,workspaceId,
+        refresh: true,workspaceId,signal,deadlineAt,
         excludeExternalIds: contentRoutingPort && persistence.providerId==='trendforce'?contentRoutingPort.knownFullArticleIds(workspaceId):knownExternalIds(feedRepository, workspaceId, persistence.providerId),
       });
       const snapshot = sourceSnapshot?.data || {};
@@ -999,7 +999,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       }
       const stats=await (contentRoutingPort && persistence.providerId==='trendforce' ? contentRoutingPort.ingest(workspaceId,snapshot) : ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter, flashSources, mediaPort?.articleDedup));
       if(stats.addedItemIds?.length)await onContentReady?.({workspaceId,sourceIds:stats.addedItemIds.map(id=>`feed:${id}`)});
-      return stats;
+      return snapshot.deadline ? { ...stats, deadline: true } : stats;
     },
     listItemSources(workspaceId, ids) {
       return feedRepository.listItemSources?.(workspaceId, ids) || [];

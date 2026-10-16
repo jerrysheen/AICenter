@@ -379,6 +379,62 @@ test('open sites fetch a body once, then enrich reuses translation and tagging',
   }
 });
 
+test('media enrich requeues the rest when the budget is already gone', async () => {
+  const fetched = [];
+  const jobs = [];
+  const handlers = createMediaEnrichJobHandlers({
+    budgetMs: 0,
+    mediaService: {
+      async fetchBodies(input) {
+        fetched.push(input.externalIds);
+        return { health: 'ready', fetched: [], stats: {}, processed: input.externalIds.length };
+      },
+      listBodyCandidates() { return []; },
+      listEnrichmentItems() { return []; },
+    },
+    feedService: { async localizeTexts() { throw new Error('should not translate'); } },
+    taggingService: { async analyzeItems() { throw new Error('should not tag'); } },
+  });
+  const output = await handlers[MEDIA_ENRICH_JOB_TYPE](
+    { workspaceId: 'local', externalIds: ['a', 'b'] },
+    { store: { createJob(input) { jobs.push(input); return input; } } },
+  );
+  assert.equal(fetched.length, 0);
+  assert.equal(output.yielded, true);
+  assert.equal(output.health, 'partial');
+  assert.equal(output.remaining, 1);
+  assert.equal(jobs[0].type, MEDIA_ENRICH_JOB_TYPE);
+  assert.deepEqual(jobs[0].input.externalIds, ['a', 'b']);
+});
+
+test('media enrich requeues ids the body fetch did not finish', async () => {
+  const handlers = createMediaEnrichJobHandlers({
+    budgetMs: 60_000,
+    mediaService: {
+      async fetchBodies() {
+        return {
+          health: 'partial',
+          fetched: [{ externalId: 'a', contentLevel: 'full' }],
+          stats: {},
+          processed: 1,
+          stoppedEarly: true,
+        };
+      },
+      listBodyCandidates() { return []; },
+      listEnrichmentItems() { return []; },
+    },
+    feedService: { async localizeTexts() { throw new Error('should not translate'); } },
+    taggingService: { async analyzeItems() { throw new Error('should not tag'); } },
+  });
+  const jobs = [];
+  const output = await handlers[MEDIA_ENRICH_JOB_TYPE](
+    { workspaceId: 'local', externalIds: ['a', 'b', 'c'] },
+    { store: { createJob(input) { jobs.push(input); return input; } } },
+  );
+  assert.equal(output.yielded, true);
+  assert.deepEqual(jobs[0].input.externalIds, ['b', 'c']);
+});
+
 test('probe refuses unknown sources', async () => {
   const fixture = temporaryMedia(async () => response({ status: 200, body: '' }));
   try {

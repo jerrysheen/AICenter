@@ -14,9 +14,9 @@ import {
   ensureDefaultContentSubscriptions,
   ensureFeedSubscriptionSyncSchedule,
   FEED_ITEMS_ENRICH_JOB_TYPE,
+  FEED_SUBSCRIPTION_SYNC_JOB_TYPE,
   FEED_SUBSCRIPTION_SYNC_SCHEDULE_KEY,
   FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE,
-  FEED_SYNC_MAX_RUNTIME_MS,
   prepareFeedSyncEnqueue,
 } from '../packages/runtime/src/feed-automation-module.js';
 import { ensureDailyReportSchedule } from '../packages/runtime/src/report-module.js';
@@ -45,6 +45,27 @@ function temporaryStore() {
       rmSync(directory, { recursive: true, force: true });
     },
   };
+}
+
+async function drainSubscriptionJobs(store, handlers) {
+  const runner = createJobRunner({
+    store,
+    handlers: {
+      [FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE]: handlers[FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE],
+      [FEED_SUBSCRIPTION_SYNC_JOB_TYPE]: handlers[FEED_SUBSCRIPTION_SYNC_JOB_TYPE],
+    },
+    workerId: 'feed-sync-test',
+  });
+  const outputs = [];
+  for (let i = 0; i < 30; i += 1) {
+    const open = store.listOpenJobs(FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE).length
+      + store.listOpenJobs(FEED_SUBSCRIPTION_SYNC_JOB_TYPE).length;
+    if (!open) break;
+    const job = await runner.runOnce();
+    if (!job) break;
+    outputs.push(job);
+  }
+  return outputs;
 }
 
 function definitions() {
@@ -322,24 +343,22 @@ test('feed sync uses metadata replay, isolates source failures, and enriches onl
     interval: 30,
   });
 
-  const runner = createJobRunner({
-    store: temporary.store,
-    handlers,
-    workerId: 'feed-sync-test',
-  });
   temporary.store.createJob({
     type: FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE,
     input: {},
     maxAttempts: 1,
   });
-  const completed = await runner.runOnce();
-  assert.equal(completed.status, 'completed');
-  assert.equal(completed.output.due, 6);
-  assert.equal(completed.output.succeeded, 4);
-  assert.equal(completed.output.failed, 1);
-  assert.equal(completed.output.deferred, 1);
-  assert.equal(completed.output.added, 4);
-  assert.equal(completed.output.subscriptions.length, 6);
+  const completed = await drainSubscriptionJobs(temporary.store, handlers);
+  const dispatch = completed.find((job) => job.type === FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE);
+  const synced = completed.filter((job) => job.type === FEED_SUBSCRIPTION_SYNC_JOB_TYPE);
+  assert.equal(dispatch.status, 'completed');
+  assert.equal(dispatch.output.due, 6);
+  assert.equal(dispatch.output.enqueued, 6);
+  assert.equal(synced.filter((job) => job.output.status === 'succeeded').length, 4);
+  assert.equal(synced.filter((job) => job.output.status === 'failed').length, 1);
+  assert.equal(synced.filter((job) => job.output.status === 'skipped').length, 1);
+  assert.equal(synced.reduce((sum, job) => sum + job.output.added, 0), 4);
+  assert.equal(synced.length, 6);
   assert.deepEqual(reads.map((row) => `${row.sourceId}:${row.feed}`).sort(), [
     'content.trendforce.public:public',
     'content.x.home:following',
@@ -358,7 +377,7 @@ test('feed sync uses metadata replay, isolates source failures, and enriches onl
   const biliRow = visible.find((item) => item.id === bili.subscription.id);
   assert.equal(biliRow.lastSyncAt > 0, true);
   assert.equal(biliRow.nextSyncAt, biliRow.lastSyncAt + 30 * 60_000);
-  assert.equal(completed.output.subscriptions.find((item) => item.subscriptionId === bili.subscription.id).reason, 'bilibili-link-only');
+  assert.equal(synced.find((job) => job.output.subscriptionId === bili.subscription.id).output.reason, 'bilibili-link-only');
 
   const trend = visible.find((item) => item.refreshIntervalMinutes === 120);
   assert.equal(trend.lastSyncAt, null);
@@ -391,11 +410,17 @@ test('feed sync uses metadata replay, isolates source failures, and enriches onl
     feed.failSubscriptionSync(row.id, Date.now() - 5_000, 1_000);
   }
   reads.length = 0;
-  const second = await handlers[FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE]({}, { store: temporary.store });
-  assert.equal(second.added, 0);
-  assert.equal(second.succeeded, 4);
-  assert.equal(second.failed, 0);
-  assert.equal(temporary.store.listJobs(20).filter((job) => job.type === FEED_ITEMS_ENRICH_JOB_TYPE).length, 4);
+  temporary.store.createJob({
+    type: FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE,
+    input: {},
+    maxAttempts: 1,
+  });
+  const second = await drainSubscriptionJobs(temporary.store, handlers);
+  const secondSynced = second.filter((job) => job.type === FEED_SUBSCRIPTION_SYNC_JOB_TYPE);
+  assert.equal(secondSynced.reduce((sum, job) => sum + job.output.added, 0), 0);
+  assert.equal(secondSynced.filter((job) => job.output.status === 'succeeded').length, 4);
+  assert.equal(secondSynced.filter((job) => job.output.status === 'failed').length, 0);
+  assert.equal(temporary.store.listJobs(40).filter((job) => job.type === FEED_ITEMS_ENRICH_JOB_TYPE).length, 4);
   assert.deepEqual(reads.map((row) => row.feed).sort(), ['featured', 'following', 'following', 'livenews']);
   temporary.remove();
 });
@@ -435,13 +460,20 @@ test('sync calls the source with metadata instead of parsing externalId', async 
       async analyzeItems() { return { saved: [], missingItemIds: [], skipped: 0 }; },
     },
   });
-  const output = await handlers[FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE]({}, { store: temporary.store });
-  assert.equal(output.succeeded, 1);
-  assert.deepEqual(calls, [{
-    workspaceId: 'local',
-    sourceId: 'content.x.home',
-    sourceInput: { feed: 'following' },
-  }]);
+  temporary.store.createJob({
+    type: FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE,
+    input: {},
+    maxAttempts: 1,
+  });
+  const completed = await drainSubscriptionJobs(temporary.store, handlers);
+  const child = completed.find((job) => job.type === FEED_SUBSCRIPTION_SYNC_JOB_TYPE);
+  assert.equal(child.output.status, 'succeeded');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].workspaceId, 'local');
+  assert.equal(calls[0].sourceId, 'content.x.home');
+  assert.deepEqual(calls[0].sourceInput, { feed: 'following' });
+  assert.equal(typeof calls[0].signal.aborted, 'boolean');
+  assert.equal(Number.isFinite(calls[0].deadlineAt), true);
   temporary.remove();
 });
 
@@ -482,13 +514,19 @@ test('blank source id is skipped instead of failing auto refresh', async () => {
       async analyzeItems() { return { saved: [], missingItemIds: [], skipped: 0 }; },
     },
   });
-  const output = await handlers[FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE]({}, { store: temporary.store });
-  assert.equal(output.failed, 0);
-  assert.equal(output.succeeded, 0);
-  assert.equal(output.deferred, 2);
+  temporary.store.createJob({
+    type: FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE,
+    input: {},
+    maxAttempts: 1,
+  });
+  const completed = await drainSubscriptionJobs(temporary.store, handlers);
+  const rows = completed.filter((job) => job.type === FEED_SUBSCRIPTION_SYNC_JOB_TYPE).map((job) => job.output);
+  assert.equal(rows.filter((row) => row.status === 'failed').length, 0);
+  assert.equal(rows.filter((row) => row.status === 'succeeded').length, 0);
+  assert.equal(rows.length, 2);
   assert.equal(calls.length, 0);
-  assert.deepEqual(output.subscriptions.map((row) => row.reason), ['empty-source-id', 'empty-source-id']);
-  assert.ok(output.subscriptions.every((row) => row.status === 'skipped' && row.sourceId === ''));
+  assert.deepEqual(rows.map((row) => row.reason), ['empty-source-id', 'empty-source-id']);
+  assert.ok(rows.every((row) => row.status === 'skipped' && row.sourceId === ''));
   temporary.remove();
 });
 
@@ -717,7 +755,7 @@ test('worker starts the subscription sync schedule and enriches new items withou
   }
 });
 
-test('a new subscription sync replaces one that is still running past its budget', async () => {
+test('a new subscription sync leaves an in-flight source run alone', async () => {
   const temporary = temporaryStore();
   const store = temporary.store;
   const feed = store.repositories.feed;
@@ -730,45 +768,123 @@ test('a new subscription sync replaces one that is still running past its budget
     authMode: 'browser-session',
     metadata: { autoRefresh: true, sourceId: 'content.x.home', sourceInput: { feed: 'for-you' } },
   });
-  feed.upsertSubscription({
+  const subscription = feed.upsertSubscription({
     workspaceId: 'local',
     sourceAccountId: account.id,
     enabled: true,
     refreshIntervalMinutes: 30,
     nextSyncAt: Date.now() - 1_000,
   });
-  feed.claimDueSubscriptions(Date.now(), 10, FEED_SYNC_MAX_RUNTIME_MS);
-  const stale = store.createJob({ type: FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE, input: {}, maxAttempts: 2 });
+  const claimed = feed.claimSubscription(subscription.id, Date.now(), 120_000);
+  assert.equal(claimed.id, subscription.id);
+  assert.ok(claimed.nextSyncAt > Date.now());
+  const runningSource = store.createJob({
+    type: FEED_SUBSCRIPTION_SYNC_JOB_TYPE,
+    input: { workspaceId: 'local', subscriptionId: subscription.id },
+    maxAttempts: 2,
+  });
+  store.claimNextJob('old-worker', [FEED_SUBSCRIPTION_SYNC_JOB_TYPE]);
+  const dispatcher = store.createJob({ type: FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE, input: {}, maxAttempts: 2 });
   store.claimNextJob('old-worker', [FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE]);
-  const queued = store.createJob({ type: FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE, input: {}, maxAttempts: 2 });
-  assert.equal(prepareFeedSyncEnqueue(store, Date.now()), false);
-  assert.equal(store.getJob(stale.id).status, 'running');
+  assert.equal(prepareFeedSyncEnqueue(store), false);
+  assert.equal(store.getJob(dispatcher.id).status, 'running');
+  assert.equal(store.getJob(runningSource.id).status, 'running');
 
-  store.discardQueuedJobs(FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE, 'test collapse');
-  assert.equal(store.getJob(queued.id).status, 'failed');
   const Database = (await import('better-sqlite3')).default;
   const database = new Database(path.join(temporary.directory, 'test.db'));
-  database.prepare('UPDATE jobs SET started_at = ? WHERE id = ?').run(Date.now() - FEED_SYNC_MAX_RUNTIME_MS - 1_000, stale.id);
+  database.prepare('UPDATE jobs SET started_at = ? WHERE id = ?').run(Date.now() - 11 * 60_000, dispatcher.id);
   database.close();
 
-  assert.equal(prepareFeedSyncEnqueue(store, Date.now()), true);
-  assert.equal(store.getJob(stale.id).status, 'failed');
-  assert.match(store.getJob(stale.id).error.message, /上一轮仍未结束/);
-  const subscription = feed.listDueSubscriptions(Date.now(), 10)[0];
-  assert.ok(subscription);
-  assert.ok(subscription.nextSyncAt <= Date.now());
+  assert.equal(prepareFeedSyncEnqueue(store), false);
+  assert.equal(store.getJob(dispatcher.id).status, 'running');
+  assert.equal(store.getJob(runningSource.id).status, 'running');
+  assert.equal(feed.listDueSubscriptions(Date.now(), 10).length, 0);
 
   ensureFeedSubscriptionSyncSchedule(store, Date.now() - 1_000);
   const scheduler = createScheduler({
     store,
     allowedJobTypes: [FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE],
-    beforeEnqueue: (schedule, at) => prepareFeedSyncEnqueue(store, at),
+    beforeEnqueue: () => prepareFeedSyncEnqueue(store),
   });
   const created = await scheduler.tick(Date.now());
-  assert.equal(created.length, 1);
-  assert.equal(store.listOpenJobs(FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE).length, 1);
-  const again = await scheduler.tick(Date.now());
-  assert.equal(again.length, 0);
+  assert.equal(created.length, 0);
+  assert.equal(store.listOpenJobs(FEED_SUBSCRIPTION_SYNC_JOB_TYPE).length, 1);
+  temporary.remove();
+});
+
+test('a slow source finishes on its own deadline and does not block the next source', async () => {
+  const temporary = temporaryStore();
+  const feed = temporary.store.repositories.feed;
+  const logs = [];
+  const started = [];
+  function seed(externalId, sourceId, feedName) {
+    const account = feed.upsertSourceAccount({
+      workspaceId: 'local',
+      provider: sourceId.includes('xueqiu') ? 'xueqiu' : 'x',
+      externalId,
+      displayName: feedName,
+      metadata: { sourceId, sourceInput: { feed: feedName }, autoRefresh: true },
+    });
+    return feed.upsertSubscription({
+      workspaceId: 'local',
+      sourceAccountId: account.id,
+      refreshIntervalMinutes: 30,
+      nextSyncAt: Date.now() - 1_000,
+    });
+  }
+  const slow = seed('x:home:following', 'content.x.home', 'following');
+  const fast = seed('xueqiu:home:featured', 'content.xueqiu.home', 'featured');
+  const handlers = createFeedAutomationJobHandlers({
+    feedRepository: feed,
+    sourceTimeoutMs: 40,
+    log: (line) => logs.push(line),
+    feedService: {
+      async refreshPersistedSource(input) {
+        started.push(input.sourceId);
+        if (input.sourceInput.feed === 'following') {
+          await new Promise((resolve) => {
+            if (input.signal.aborted) {
+              resolve();
+              return;
+            }
+            const timer = setTimeout(resolve, 5_000);
+            input.signal.addEventListener('abort', () => {
+              clearTimeout(timer);
+              resolve();
+            }, { once: true });
+          });
+          return { added: 2, addedItemIds: ['a', 'b'], deadline: true };
+        }
+        return { added: 1, addedItemIds: ['c'] };
+      },
+      async localizeContentItems() { return { pendingIds: [] }; },
+      listTaggableItems() { return []; },
+    },
+    taggingService: {
+      async analyzeItems() { return { saved: [], missingItemIds: [], skipped: 0 }; },
+    },
+  });
+  temporary.store.createJob({
+    type: FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE,
+    input: {},
+    maxAttempts: 1,
+  });
+  const completed = await drainSubscriptionJobs(temporary.store, handlers);
+  const synced = completed.filter((job) => job.type === FEED_SUBSCRIPTION_SYNC_JOB_TYPE);
+  assert.deepEqual(started, ['content.x.home', 'content.xueqiu.home']);
+  const slowJob = synced.find((job) => job.output.subscriptionId === slow.id);
+  const fastJob = synced.find((job) => job.output.subscriptionId === fast.id);
+  assert.equal(slowJob.output.status, 'deadline');
+  assert.equal(slowJob.output.added, 2);
+  assert.ok(slowJob.output.durationMs < 5_000);
+  assert.equal(fastJob.output.status, 'succeeded');
+  assert.equal(fastJob.output.added, 1);
+  assert.equal(feed.listDueSubscriptions(Date.now(), 10).length, 0);
+  const again = await handlers[FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE]({}, { store: temporary.store });
+  assert.equal(again.due, 0);
+  assert.equal(again.enqueued, 0);
+  assert.ok(logs.some((line) => line.includes('source=content.x.home') && line.includes('feed=following') && line.includes('status=deadline') && line.includes('durationMs=')));
+  assert.ok(logs.some((line) => line.includes('source=content.xueqiu.home') && line.includes('status=succeeded') && line.includes('durationMs=')));
   temporary.remove();
 });
 

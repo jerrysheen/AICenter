@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-16 `feed.subscriptions.sync` 从 09:20 之后几乎每轮跑满约 10 分钟，被下一轮标成 `WorkerInterrupted: 新的订阅同步开始，上一轮仍未结束`。X 在中断前已经落库，雪球排在后面，08:54 之后没有新的大 V 帖。没有雪球 cookie 或 401/403。现在每分钟只把到期订阅各入队一条 `feed.subscription.sync`，默认 90 秒（`AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS`，15 秒到 3 分钟）。到时有条目就按订阅间隔完成；一条都没有则 5 分钟后重试。新的一分钟不取消仍在跑的任务，也不释放租约。日志带 source、feed、status 和 durationMs。X 和雪球到截止就停，已抓到的留下。`media.index.enrich` 软预算默认 4 分钟，剩余 id 再入队；硬上限默认 8 分钟。不新增 migration，下一号仍是 73。不要重建数据库。需要同时重启 Web 和 Worker。见 `progress/2026-10-16-feed-sync-source-progress.md`。
+
 2026-10-15 22:50–23:04 报价大约每 2 分钟更新一次。慢请求结束后把缓存和看板换成更旧的成交时间，缓存再从完成时保留 30 秒，下一分钟仍用上一轮。现在更旧的 `asOf` / `marketTime` 不能替换已有的较新价格。缓存从请求开始起最多 45 秒，30 秒完成时间上限不变，下一分钟的快照会重新取。新浪期货条目的 `provider` 写成 `sina`。不新增 migration，下一号仍是 73。不要重建数据库。需要同时重启 Web 和 Worker。见 `progress/2026-10-15-us-quote-keep-newer.md`。
 
 2026-10-15 22:10 部署 `bfb0d63` 之后 Yahoo 不再 429，看板也不再冻住，但报价大约 3 到 5 分钟才动一次。美股、亚洲、全球资产和雪球失败后的 A 股回退共用一条队列，按 20 个代码一组串行；20 秒超时丢掉看板结果，底下的请求继续占队列，下一分钟再排一轮。默认 45 秒缓存盖不住这个间隔。`withStale` 只在 Worker 抓取时计算，成功的快照不带 `stale`。Web 原样返回已保存的快照，页面只认 `stale === true`，所以落后超过 3 分钟也不显示「已过期」。一批 spark 里一个 HTTP 404 会丢掉同组 20 个代码。现在美股代码走优先队列，普通队列里还没开始的批次让路；进行中的同一代码合并，超时后不再另开一轮。共享缓存默认 30 秒（`AI_CENTER_YAHOO_CACHE_MS`）。美股交易时段，美股和总览在美股读完后先写入。HTTP 404 拆开再请求，只跳过那个代码，并打 `[market] Yahoo HTTP 404`。Web 读快照时用当前时间和 `fetchedAt` 重算 `stale`，默认 3 分钟（`AI_CENTER_MARKET_STALE_MS`）。页面没有该字段时也按 `fetchedAt` 显示「已过期」。不新增 migration，下一号仍是 73。不要重建数据库。需要同时重启 Web 和 Worker。见 `progress/2026-10-15-us-quote-minute-refresh.md`。

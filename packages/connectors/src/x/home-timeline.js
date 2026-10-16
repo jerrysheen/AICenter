@@ -131,7 +131,7 @@ export function createTwitterService(options = {}) {
     return task;
   }
 
-  async function getFeed({ feed = 'for-you', limit = DEFAULT_LIMIT, bypassCache = false, excludeExternalIds = [] } = {}) {
+  async function getFeed({ feed = 'for-you', limit = DEFAULT_LIMIT, bypassCache = false, excludeExternalIds = [], signal, deadlineAt } = {}) {
     const parsedFeed = normalizeXHomeFeed(feed);
     const parsedLimit = Math.min(DEFAULT_LIMIT, Math.max(1, Number(limit) || DEFAULT_LIMIT));
     const excluded = [...new Set((excludeExternalIds || []).map((id) => String(id || '')).filter(Boolean))];
@@ -141,32 +141,38 @@ export function createTwitterService(options = {}) {
           feed: parsedFeed,
           limit: parsedLimit,
           excludeExternalIds: excluded,
+          signal,
+          deadlineAt,
         });
         const blocked = /451/.test(`${result.page_title || ''} ${result.page_url || ''} ${result.error || ''}`);
         const items = blocked ? [] : (result.tweets || []).map((tweet) => tweetToFeedItem(tweet, { feed: parsedFeed }));
         const loginRequired = result.error === 'login_required';
         const tabMismatch = result.error === 'feed_tab_mismatch';
+        const timedOut = result.error === 'deadline' || (result.deadline === true && !items.length && !result.error);
         const note = blocked
           ? explainXConnectorError(new Error('HTTPS 451'))
           : loginRequired
             ? '采集浏览器尚未登录 X。请先在 https://x.com/home 登录，再拉取 50 条。'
             : tabMismatch
               ? `没有切到「${parsedFeed === 'following' ? '正在关注' : '为你推荐'}」时间线，已停止抓取，避免误抓另一栏。`
-              : result.error && !items.length
-                ? explainXConnectorError(result.error)
-                : `已登录浏览器时间线 · ${parsedFeed === 'following' ? '正在关注' : '为你推荐'} · ${items.length} 条`;
+              : timedOut
+                ? '这一路抓取超过单源时限，已留给下一次'
+                : result.error && !items.length
+                  ? explainXConnectorError(result.error)
+                  : `已登录浏览器时间线 · ${parsedFeed === 'following' ? '正在关注' : '为你推荐'} · ${items.length} 条`;
         return {
           platform: 'x',
           workspaceId: 'local',
           feed: parsedFeed,
           handle: '',
           source: result.source || 'browser_runtime_home',
-          mode: blocked || loginRequired || tabMismatch || (!items.length && result.error) ? 'error' : (items.length ? 'live' : 'partial'),
+          mode: blocked || loginRequired || tabMismatch || timedOut || (!items.length && result.error) ? 'error' : (items.length ? 'live' : 'partial'),
           loggedIn: Boolean(result.logged_in),
           tweetCount: items.length,
           fetchedAt: now(),
           note,
           items,
+          ...(result.deadline ? { deadline: true } : {}),
         };
       } catch (error) {
         return {

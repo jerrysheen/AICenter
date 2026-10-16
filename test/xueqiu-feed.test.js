@@ -220,6 +220,58 @@ test('xueqiu comments are appended into the status body', async () => {
   assert.equal(item.summary, '先看仓位');
 });
 
+test('xueqiu keeps the post and skips comments after the deadline', async () => {
+  const calls = [];
+  const controller = new AbortController();
+  const runtime = {
+    async withSession(_options, callback) {
+      return callback({
+        async navigate() { calls.push(['navigate']); },
+        async evaluate() {
+          return { url: 'https://xueqiu.com/', title: '雪球', logged_in: true, login_wall: false };
+        },
+        async fetchJson(url) {
+          calls.push(url);
+          if (String(url).includes('home_timeline')) {
+            controller.abort();
+            return {
+              status: 200,
+              url,
+              text: JSON.stringify({
+                home_timeline: [{
+                  id: 7,
+                  text: '先看仓位',
+                  reply_count: 3,
+                  created_at: 1_700_000_000_000,
+                  target: '/2/7',
+                  user: { screen_name: '乙', id: 2 },
+                }],
+                next_max_id: -1,
+              }),
+            };
+          }
+          return {
+            status: 200,
+            url,
+            text: JSON.stringify({ comments: [{ text: '不应抓到', user: { screen_name: '丙' } }] }),
+          };
+        },
+      });
+    },
+  };
+  const client = createXueqiuHomeBrowserClient({ browserRuntime: runtime, delay: async () => {} });
+  const result = await client.fetchHomeTimeline({
+    feed: 'following',
+    limit: 5,
+    signal: controller.signal,
+    deadlineAt: Date.now() + 60_000,
+  });
+  assert.match(result.items[0].text, /先看仓位/);
+  assert.equal(result.items[0].text.includes('不应抓到'), false);
+  assert.equal(result.deadline, true);
+  assert.equal(calls.some((url) => String(url).includes('comments.json')), false);
+});
+
 test('xueqiu skips the comment request when reply count is zero', async () => {
   const calls = [];
   const runtime = {

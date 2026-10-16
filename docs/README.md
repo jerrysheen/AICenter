@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-16-feed-sync-source-progress.md`：订阅同步每分钟只为到期订阅各入队一条 `feed.subscription.sync`。单源默认 90 秒，到时留下已抓到的条目。新的一分钟不取消仍在跑的那一条。雪球不再排在一轮 X 抓取后面被整轮打断。`media.index.enrich` 默认 4 分钟交出剩余 id。不新增 migration。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-15-us-quote-keep-newer.md`：更旧的报价时间不能盖掉较新的价格。缓存从请求开始起最多 45 秒，下一分钟的快照会重新取。新浪期货的 `provider` 写成 `sina`。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-15-us-quote-minute-refresh.md`：美股报价大约每分钟更新。美股代码走优先队列，亚洲、全球资产、历史 K 线和 A 股 Yahoo 回退不再挡在前面。共享缓存默认 30 秒。HTTP 404 只跳过那个代码。Web 读快照时按 `fetchedAt` 重算 `stale`，页面落后超过 3 分钟显示「已过期」。不新增 migration。需要同时重启 Web 和 Worker。

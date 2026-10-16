@@ -449,6 +449,18 @@ export function createFeedRepository(database, emitEvent) {
       }
     },
 
+    claimSubscription(subscriptionId, now = Date.now(), leaseMs = 10 * 60_000) {
+      const at = Number(now);
+      const leaseUntil = at + Math.max(1_000, Number(leaseMs) || 10 * 60_000);
+      if (!subscriptionId || !Number.isInteger(at) || at < 0) return null;
+      const result = database.prepare(`UPDATE subscriptions
+        SET next_sync_at = ?, updated_at = ?
+        WHERE id = ? AND enabled = 1 AND (next_sync_at IS NULL OR next_sync_at <= ?)`)
+        .run(leaseUntil, at, subscriptionId, at);
+      if (!result.changes) return null;
+      return mapSubscription(database.prepare('SELECT * FROM subscriptions WHERE id = ?').get(subscriptionId));
+    },
+
     completeSubscriptionSync(subscriptionId, syncedAt = Date.now()) {
       const at = Number(syncedAt);
       const row = database.prepare('SELECT * FROM subscriptions WHERE id = ?').get(subscriptionId);
