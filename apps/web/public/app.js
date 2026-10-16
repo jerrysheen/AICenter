@@ -7135,7 +7135,7 @@ function formatPredictionShare(value) {
   return share == null ? '—' : `${(share * 100).toFixed(1)}%`;
 }
 
-function predictionDayChange(current, prior) {
+function predictionDayChange(current, prior, basisHours) {
   if (current == null || current === '' || prior == null || prior === '') return null;
   const yes = predictionShare(current);
   const before = predictionShare(prior);
@@ -7143,7 +7143,9 @@ function predictionDayChange(current, prior) {
   const points = Math.round((yes - before) * 1000) / 10;
   const direction = points > 0 ? 'up' : points < 0 ? 'down' : '';
   const sign = points > 0 ? '+' : '';
-  return { text: `较昨日 ${sign}${points.toFixed(1)}`, direction };
+  const hours = Number(basisHours);
+  const label = Number.isInteger(hours) && hours >= 1 ? `较 ${hours}h 前` : '较昨日';
+  return { text: `${label} ${sign}${points.toFixed(1)}`, direction };
 }
 
 function predictionPrice(value) {
@@ -7155,8 +7157,8 @@ function marketNativeEmpty(root, text) {
   root.replaceChildren(Object.assign(document.createElement('div'), { className: 'empty-state', textContent: text }));
 }
 
-function predictionChangeNode(current, prior) {
-  const dayChange = predictionDayChange(current, prior);
+function predictionChangeNode(current, prior, basisHours) {
+  const dayChange = predictionDayChange(current, prior, basisHours);
   if (!dayChange) return null;
   return Object.assign(document.createElement('span'), {
     className: ['prediction-day-change', dayChange.direction].filter(Boolean).join(' '),
@@ -7174,18 +7176,40 @@ function appendPredictionQuote(root, quote) {
   let body;
   if (ladder) {
     body = document.createElement('div');
-    body.className = 'prediction-outcomes';
-    for (const item of quote.outcomes) {
-      const row = document.createElement('div');
-      row.className = 'prediction-outcome';
-      const name = Object.assign(document.createElement('b'), {
-        textContent: localizedCopy(`${quote.quoteId}:${item.label}`, item.label),
-      });
-      const price = Object.assign(document.createElement('strong'), { textContent: formatPredictionShare(item.midPrice) });
-      row.append(name, price);
-      const change = predictionChangeNode(item.midPrice, item.midPrice24hAgo);
-      if (change) row.append(change);
-      body.append(row);
+    body.className = 'prediction-ladder';
+    const main = document.createElement('div');
+    main.className = 'prediction-side is-yes';
+    const mainNodes = [
+      Object.assign(document.createElement('span'), { textContent: String(quote.outcome || '') }),
+      Object.assign(document.createElement('strong'), { textContent: formatPredictionShare(yes) }),
+    ];
+    const mainChange = predictionChangeNode(quote.midPrice, quote.midPrice24hAgo, quote.changeBasis);
+    if (mainChange) mainNodes.push(mainChange);
+    main.append(...mainNodes);
+    body.append(main);
+    const others = quote.outcomes.filter((item) => item.label !== quote.outcome).slice(0, 3);
+    if (others.length) {
+      const details = document.createElement('details');
+      details.className = 'prediction-more';
+      const summary = document.createElement('summary');
+      summary.textContent = '其余区间';
+      const list = document.createElement('div');
+      list.className = 'prediction-outcomes';
+      for (const item of others) {
+        const row = document.createElement('div');
+        row.className = 'prediction-outcome';
+        const name = Object.assign(document.createElement('b'), {
+          textContent: localizedCopy(`${quote.quoteId}:${item.label}`, item.label),
+        });
+        const price = Object.assign(document.createElement('strong'), { textContent: formatPredictionShare(item.midPrice) });
+        row.append(name, price);
+        const change = predictionChangeNode(item.midPrice, item.midPrice24hAgo, item.changeBasis);
+        if (change) row.append(change);
+        list.append(row);
+      }
+      details.append(summary, list);
+      details.addEventListener('click', (event) => event.stopPropagation());
+      body.append(details);
     }
   } else {
     const no = yes == null ? null : 1 - yes;
@@ -7197,7 +7221,7 @@ function appendPredictionQuote(root, quote) {
       Object.assign(document.createElement('span'), { textContent: String(quote.outcome || 'Yes') }),
       Object.assign(document.createElement('strong'), { textContent: formatPredictionShare(yes) }),
     ];
-    const change = predictionChangeNode(quote.midPrice, quote.midPrice24hAgo);
+    const change = predictionChangeNode(quote.midPrice, quote.midPrice24hAgo, quote.changeBasis);
     if (change) yesNodes.push(change);
     yesCol.append(...yesNodes);
     const noCol = document.createElement('div');

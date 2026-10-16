@@ -39,6 +39,24 @@ export function selectSeriesProbability(points, now, lagMs = POLYMARKET_DAY_MS, 
   return selectClosestProbability(points, Number(now) - lagMs, windowMs);
 }
 
+function seriesChange(points, now) {
+  const prior = selectSeriesProbability(points, now);
+  if (prior) return { prior, changeBasis: null };
+  const moment = Number(now);
+  if (!Number.isFinite(moment)) return { prior: null, changeBasis: null };
+  const limit = moment - POLYMARKET_HOUR_MS;
+  let earliest = null;
+  for (const point of points || []) {
+    const at = Number(point?.observedAt);
+    const probability = point?.probability;
+    if (typeof probability !== 'string' || !Number.isFinite(at) || at > limit) continue;
+    if (!earliest || at < earliest.at) earliest = { at, probability };
+  }
+  if (!earliest) return { prior: null, changeBasis: null };
+  const hours = Math.max(1, Math.round((moment - earliest.at) / POLYMARKET_HOUR_MS));
+  return { prior: earliest.probability, changeBasis: hours };
+}
+
 export function pointsKeptAfterDownsample(points, cutoff) {
   const limit = Number(cutoff);
   const fresh = [];
@@ -73,8 +91,8 @@ function quoteFromRows(rows, pointsByKey, now) {
     ? rows.filter((row) => row.lifecycle !== 'closed')
     : rows;
   const ranked = usable.map((row) => {
-    const prior = selectSeriesProbability(pointsByKey.get(pointKey(row)) || [], now);
-    return { ...row, prior };
+    const change = seriesChange(pointsByKey.get(pointKey(row)) || [], now);
+    return { ...row, prior: change.prior, changeBasis: change.changeBasis };
   }).sort((left, right) => Number(right.probability ?? -1) - Number(left.probability ?? -1));
   const leader = ranked[0];
   if (!leader) return null;
@@ -99,10 +117,12 @@ function quoteFromRows(rows, pointsByKey, now) {
     observedAt: Math.max(...rows.map((row) => Number(row.updatedAt) || now)),
   };
   if (leader.prior) quote.midPrice24hAgo = leader.prior;
+  if (leader.changeBasis) quote.changeBasis = leader.changeBasis;
   if (multi) {
     quote.outcomes = ranked.slice(0, 6).map((row) => {
       const item = { label: row.outcomeLabel, midPrice: row.probability };
       if (row.prior) item.midPrice24hAgo = row.prior;
+      if (row.changeBasis) item.changeBasis = row.changeBasis;
       return item;
     });
   }

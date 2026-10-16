@@ -50,6 +50,7 @@ export const PredictionMarketQuoteSchema = z.object({
         return number >= 0 && number <= 1;
       }, '概率必须在 0 到 1 之间')
       .optional(),
+    changeBasis: z.number().int().min(1).max(100_000).optional(),
   }).strict()).max(8).optional(),
   statusLabel: z.string().trim().min(1).max(40).optional(),
   notices: z.array(z.string().trim().min(1).max(120)).max(4).optional(),
@@ -60,6 +61,7 @@ export const PredictionMarketQuoteSchema = z.object({
       return number >= 0 && number <= 1;
     }, '概率必须在 0 到 1 之间')
     .optional(),
+  changeBasis: z.number().int().min(1).max(100_000).optional(),
 }).strict();
 
 export const PredictionMarketSourceViewSchema = z.object({

@@ -584,18 +584,71 @@ test('legacy mode still ranks by 24h volume and watchlist mode does not call tha
   assert.equal(view.available, true);
 });
 
+test('a series younger than 24h falls back to the earliest point at least 1h old', () => {
+  const temporary = temporaryDatabase();
+  const now = Date.UTC(2026, 9, 16, 12, 0, 0);
+  const hour = 60 * 60 * 1000;
+  try {
+    const repository = temporary.store.repositories.polymarket;
+    repository.saveWatchlist({
+      outcomes: [{
+        eventId: '1', marketId: 'm', outcomeKey: 'yes', seriesId: '', watched: true, sortOrder: 0,
+        groupKey: 'crypto', alertProfile: 'binary', eventSlug: 'btc-oct', marketSlug: '',
+        title: 'What price will Bitcoin hit in October?', outcomeLabel: 'Yes', lifecycle: 'open', endAt: null,
+        liquidity: '9000', volume24h: '10', totalVolume: '20', probability: '0.62',
+        sourceUrl: 'https://polymarket.com/event/btc-oct', updatedAt: now,
+      }],
+      points: [
+        { eventId: '1', marketId: 'm', outcomeKey: 'yes', observedAt: now - 10 * hour, probability: '0.50', granularity: '5m' },
+        { eventId: '1', marketId: 'm', outcomeKey: 'yes', observedAt: now - 6 * hour, probability: '0.40', granularity: '5m' },
+        { eventId: '1', marketId: 'm', outcomeKey: 'yes', observedAt: now - 20 * 60 * 1000, probability: '0.70', granularity: '5m' },
+      ],
+      at: now,
+    });
+    const view = readStoredPolymarketView(repository, now);
+    assert.equal(view.quotes[0].midPrice, '0.62');
+    assert.equal(view.quotes[0].midPrice24hAgo, '0.50');
+    assert.equal(view.quotes[0].changeBasis, 10);
+    const parsed = parseContract(PredictionMarketSourceViewSchema, {
+      available: true, observedAt: now, sourceUrl: 'https://polymarket.com', quotes: view.quotes, note: '',
+    });
+    assert.equal(parsed.quotes[0].changeBasis, 10);
+
+    repository.saveWatchlist({
+      outcomes: [],
+      points: [{
+        eventId: '1', marketId: 'm', outcomeKey: 'yes', observedAt: now - POLYMARKET_DAY_MS, probability: '0.33', granularity: '5m',
+      }],
+      at: now,
+    });
+    const day = readStoredPolymarketView(repository, now);
+    assert.equal(day.quotes[0].midPrice24hAgo, '0.33');
+    assert.equal('changeBasis' in day.quotes[0], false);
+  } finally {
+    temporary.remove();
+  }
+});
+
 test('multi-outcome card shows each result and 较昨日 without backend fields', () => {
   const now = Date.UTC(2026, 9, 16, 12, 0, 0);
   const outcomes = [
     outcomeRow('50+ bps decrease', '0.01', 0),
     outcomeRow('No change', '0.62', 1),
+    rangeRow('25 bps decrease', '0.20', 'cut-25'),
+    rangeRow('50 bps decrease', '0.08', 'cut-50'),
+    rangeRow('75 bps decrease', '0.04', 'cut-75'),
+    rangeRow('100 bps decrease', '0.02', 'cut-100'),
   ];
   const points = [
     { eventId: '606422', marketId: 'm-1', outcomeKey: 'no-change', observedAt: now - POLYMARKET_DAY_MS, probability: '0.50', granularity: '5m' },
+    { eventId: '606422', marketId: 'cut-25', outcomeKey: 'cut-25', observedAt: now - POLYMARKET_DAY_MS, probability: '0.10', granularity: '5m' },
   ];
   const [quote] = projectWatchlistQuotes(outcomes, points, now);
   assert.equal(quote.outcome, 'No change');
-  assert.equal(quote.outcomes.length, 2);
+  assert.equal(quote.midPrice, '0.62');
+  assert.equal(quote.midPrice24hAgo, '0.50');
+  assert.equal('changeBasis' in quote, false);
+  assert.equal(quote.outcomes.length, 6);
   assert.equal(quote.outcomes[0].midPrice24hAgo, '0.50');
   assert.equal(JSON.stringify(quote).includes('alertProfile'), false);
   const appSource = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
@@ -614,14 +667,52 @@ test('multi-outcome card shows each result and 较昨日 without backend fields'
   const root = element('div');
   context.appendPredictionQuote(root, { ...quote, notices: ['1 小时上升 6.0 个百分点'], statusLabel: '下一期尚未出现' });
   const text = textOf(root);
-  assert.match(text, /No change/);
-  assert.match(text, /较昨日 \+12\.0/);
+  const main = findNodes(root, (node) => hasClass(node, 'prediction-side'))[0];
+  assert.match(textOf(main), /No change/);
+  assert.match(textOf(main), /62\.0%/);
+  assert.match(textOf(main), /较昨日 \+12\.0/);
+  assert.equal(textOf(main).includes('25 bps'), false);
+  const details = findNodes(root, (node) => node.tag === 'details')[0];
+  assert.equal(Boolean(details.open), false);
+  assert.equal(details.children[0].textContent, '其余区间');
+  const listed = findNodes(details, (node) => hasClass(node, 'prediction-outcome'));
+  assert.equal(listed.length, 3);
+  assert.match(textOf(listed[0]), /25 bps decrease/);
+  assert.match(textOf(listed[0]), /较昨日 \+10\.0/);
+  assert.equal(text.includes('100 bps decrease'), false);
   assert.match(text, /1 小时上升 6\.0 个百分点/);
   assert.match(text, /下一期尚未出现/);
   assert.equal(text.includes('606422'), false);
   assert.equal(text.includes('btc-monthly'), false);
   assert.equal(text.includes('alertProfile'), false);
+
+  const young = projectWatchlistQuotes([
+    rangeRow('150k', '0.11', '150k'),
+    rangeRow('140k', '0.46', '140k'),
+    rangeRow('130k', '0.22', '130k'),
+    rangeRow('120k', '0.09', '120k'),
+  ], [
+    { eventId: '606422', marketId: '140k', outcomeKey: '140k', observedAt: now - 8 * 60 * 60 * 1000, probability: '0.40', granularity: '5m' },
+    { eventId: '606422', marketId: '140k', outcomeKey: '140k', observedAt: now - 30 * 60 * 1000, probability: '0.44', granularity: '5m' },
+  ], now)[0];
+  assert.equal(young.outcome, '140k');
+  assert.equal(young.midPrice24hAgo, '0.40');
+  assert.equal(young.changeBasis, 8);
+  const youngRoot = element('div');
+  context.appendPredictionQuote(youngRoot, young);
+  const youngMain = findNodes(youngRoot, (node) => hasClass(node, 'prediction-side'))[0];
+  assert.match(textOf(youngMain), /140k/);
+  assert.match(textOf(youngMain), /较 8h 前 \+6\.0/);
+  assert.equal(Boolean(findNodes(youngRoot, (node) => node.tag === 'details')[0].open), false);
 });
+
+function rangeRow(label, probability, key) {
+  return {
+    ...outcomeRow(label, probability, 1),
+    marketId: key,
+    outcomeKey: key,
+  };
+}
 
 function outcomeRow(label, probability, offset) {
   return {
@@ -657,6 +748,16 @@ function element(tag) {
 
 function textOf(node) {
   return [node.textContent || '', ...(node.children || []).map(textOf)].join(' ');
+}
+
+function findNodes(node, predicate, found = []) {
+  if (predicate(node)) found.push(node);
+  for (const child of node.children || []) findNodes(child, predicate, found);
+  return found;
+}
+
+function hasClass(node, name) {
+  return String(node.className || '').split(/\s+/).includes(name);
 }
 
 function functionSource(source, name) {
