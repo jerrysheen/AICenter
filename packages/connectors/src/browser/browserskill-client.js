@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -220,6 +221,29 @@ export function createBrowserSkillClient(options = {}) {
     return run(['status'], { timeoutMs: Math.min(timeoutMs, 15_000) });
   }
 
+  // A killed `session start` can leave the Agent Window open without a
+  // session id. Cancel only this request. Web and Worker share one daemon, so
+  // stopping every session with the same --name would close a live session.
+  async function cancelStartRequest(requestId) {
+    if (!requestId) return;
+    try {
+      await run(['session', 'request', String(requestId), '--cancel'], { timeoutMs: 5_000 });
+    } catch {
+      // The start error is the one the caller needs.
+    }
+  }
+
+  function coldStartError() {
+    const cold = new BrowserCommandError('browser_cold_start', { kind: 'browser_cold_start' });
+    cold.kind = 'browser_cold_start';
+    return cold;
+  }
+
+  function isTimedOut(error) {
+    const kind = error?.kind || error?.details?.kind;
+    return kind === 'timeout' || kind === 'browser_cold_start' || error?.killed || /timed out/i.test(String(error?.message || ''));
+  }
+
   return {
     id: 'bsk',
 
@@ -247,14 +271,58 @@ export function createBrowserSkillClient(options = {}) {
     },
 
     async startSession(sessionOptions = {}) {
-      const args = ['session', 'start'];
-      if (sessionOptions.purpose) args.push('--name', String(sessionOptions.purpose));
+      const purpose = String(sessionOptions.purpose || '').trim();
+      // bsk 0.3.2 keeps this token only in the daemon process. `session start
+      // --request-id` fails unless this same id was prepared on that process.
+      // Nine minutes stays inside bsk's ten-minute admission limit.
+      const requestId = `${Date.now() + 9 * 60 * 1000}:${randomUUID()}`;
+      const args = ['session', 'start', '--request-id', requestId];
+      if (purpose) args.push('--name', purpose);
       if (sessionOptions.focused === false) args.push('--no-focus');
       if (sessionOptions.browserId) args.push('--browser', String(sessionOptions.browserId));
-      const payload = await run(args, { timeoutMs: Math.max(timeoutMs, 120_000) });
+      const deadlineAt = Number(sessionOptions.deadlineAt);
+      const hasDeadline = Number.isFinite(deadlineAt);
+      const startBudget = () => (hasDeadline
+        ? deadlineAt - Date.now() - 15_000
+        : Math.max(timeoutMs, 120_000));
+      if (hasDeadline && startBudget() < 1_000) throw coldStartError();
+      let payload;
+      try {
+        const prepareBudget = Math.min(5_000, Math.max(1_000, startBudget()));
+        const prepared = await run(['session', 'request', requestId, '--prepare'], { timeoutMs: prepareBudget });
+        if (prepared?.state !== 'prepared') {
+          throw new BrowserCommandError(`bsk session request 没有进入 prepared：${prepared?.state || 'missing'}`, { kind: 'exit' });
+        }
+        const launchBudget = Math.min(120_000, startBudget());
+        if (hasDeadline && launchBudget < 1_000) throw coldStartError();
+        payload = await run(args, { timeoutMs: Math.max(1_000, launchBudget) });
+      } catch (error) {
+        await cancelStartRequest(requestId);
+        if (hasDeadline && isTimedOut(error)) throw coldStartError();
+        throw error;
+      }
       const sessionId = String(payload.session_id || payload.sessionId || '').trim();
       if (!sessionId) {
+        await cancelStartRequest(requestId);
         throw new BrowserCommandError('bsk session start 没有返回 sessionId', { kind: 'invalid_json' });
+      }
+      // Claim keeps the daemon from stopping this window when the token
+      // expires. A failed claim cancels this request, then stops the session
+      // id from this start. A start that never returned an id only cancels.
+      try {
+        const claimed = await run(['session', 'request', requestId, '--claim'], { timeoutMs: 5_000 });
+        if (claimed?.state !== 'active') {
+          throw new BrowserCommandError(`bsk session request 没有进入 active：${claimed?.state || 'missing'}`, { kind: 'exit' });
+        }
+      } catch (error) {
+        await cancelStartRequest(requestId);
+        try {
+          await run(['session', 'stop', sessionId], { timeoutMs: 5_000 });
+        } catch {
+          // The claim error is the one the caller needs.
+        }
+        if (hasDeadline && isTimedOut(error)) throw coldStartError();
+        throw error;
       }
       return {
         sessionId,
@@ -269,9 +337,9 @@ export function createBrowserSkillClient(options = {}) {
       const limit = Math.max(1_000, Number(navigateOptions.timeoutMs) || timeoutMs);
       const args = ['navigate', String(url), '--session', String(sessionId), '--timeout', `${Math.floor(limit)}ms`];
       if (navigateOptions.waitUntil) args.push('--wait-until', String(navigateOptions.waitUntil));
-      // bsk keeps the IPC open for the tool timeout plus 15s. Leave room so a
-      // timeout result can return before the process is killed.
-      return run(args, { timeoutMs: limit + 20_000 });
+      // bsk keeps the IPC open a little past the tool timeout. Five seconds is
+      // enough for the timeout result to return before the process is killed.
+      return run(args, { timeoutMs: limit + 5_000 });
     },
 
     async evaluate(sessionId, expression, evaluateOptions = {}) {
@@ -303,7 +371,7 @@ export function createBrowserSkillClient(options = {}) {
     },
 
     async stopSession(sessionId) {
-      return run(['session', 'stop', String(sessionId)], { timeoutMs: Math.min(timeoutMs, 30_000) });
+      return run(['session', 'stop', String(sessionId)], { timeoutMs: Math.min(timeoutMs, 10_000) });
     },
   };
 }
