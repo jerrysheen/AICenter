@@ -21,6 +21,10 @@ export const polymarketWatchlistManifest = Object.freeze({
   jobTypes: [POLYMARKET_WATCHLIST_JOB_TYPE],
 });
 
+function seedTracked(entry, seriesRows) {
+  return seriesRows.some((row) => row.seriesId === entry.seriesId && row.eventSlug === entry.slug);
+}
+
 export function planWatchlistRequests(config, seriesRows = []) {
   const entries = fixedEntries(config);
   const series = Array.isArray(config?.rollingSeries) ? config.rollingSeries : [];
@@ -28,7 +32,7 @@ export function planWatchlistRequests(config, seriesRows = []) {
   const seriesIds = new Set(series.map((item) => item.id));
   const active = new Set(seriesRows.map((row) => row.seriesId).filter((id) => seriesIds.has(id)));
   const slugs = entries
-    .filter((entry) => !seriesIds.has(entry.seriesId) || !active.has(entry.seriesId))
+    .filter((entry) => !seriesIds.has(entry.seriesId) || !active.has(entry.seriesId) || !seedTracked(entry, seriesRows))
     .map((entry) => entry.slug);
   const eventIds = [...new Set(seriesRows.filter((row) => seriesIds.has(row.seriesId)).map((row) => row.eventId))]
     .filter((eventId) => !String(eventId).startsWith('pending:'));
@@ -120,10 +124,10 @@ async function rollSeries(client, config, outcomes, observedAt, log = () => {}) 
   const releaseIds = [];
   const added = [];
   for (const series of config.rollingSeries || []) {
-    const held = heldSeriesEvents(outcomes, series.id);
-    const plan = rollingWindow(series, held, months);
-    const foundMonths = new Set();
     const seed = seedEntry(config, series.id);
+    const held = heldSeriesEvents(outcomes, series.id);
+    const plan = rollingWindow(series, held, months, { seedSlug: seed?.slug || '' });
+    const foundMonths = new Set();
     let events = [];
     if (plan.seekMonths.length && series.seriesSlug && client?.fetchEventsBySeries) {
       events = await client.fetchEventsBySeries(series.seriesSlug, { closed: false, limit: 50 }) || [];

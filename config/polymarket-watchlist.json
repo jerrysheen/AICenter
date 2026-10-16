@@ -32,7 +32,7 @@
     { "slug": "will-china-invade-taiwan-before-2027", "group": "geopolitics", "alertProfile": "geopolitics" },
     { "slug": "russia-x-ukraine-ceasefire-agreement-by", "group": "geopolitics", "alertProfile": "geopolitics" },
     { "slug": "gpu-rental-prices-h200-end-of-october", "group": "compute", "alertProfile": "multi", "seriesId": "gpu-h200" },
-    { "slug": "gpu-rental-prices-h100-end-of-november", "group": "compute", "alertProfile": "multi", "seriesId": "gpu-h100" },
+    { "slug": "gpu-rental-prices-h100-end-of-october", "group": "compute", "alertProfile": "multi", "seriesId": "gpu-h100" },
     { "slug": "what-price-will-bitcoin-hit-in-october-2026", "group": "crypto", "alertProfile": "multi", "seriesId": "btc-monthly" },
     { "slug": "what-price-will-bitcoin-hit-in-november-2026", "group": "crypto", "alertProfile": "multi", "seriesId": "btc-monthly" }
   ],
@@ -99,12 +99,11 @@
     { "date": "2026-10-21", "timeZone": "Asia/Shanghai", "slugs": ["china-gdp-growth-yy-in-q3-2026-20260716161116873"] },
     { "date": "2026-10-28", "timeZone": "America/New_York", "slugs": ["fed-decision-in-october-20260617190323537"] },
     { "date": "2026-10-29", "timeZone": "America/New_York", "slugs": ["core-pce-yoy-september-2026", "us-gdp-growth-in-q3-2026-20260730144539767"] },
-    { "date": "2026-10-31", "timeZone": "America/New_York", "slugs": ["gpu-rental-prices-h200-end-of-october"] },
+    { "date": "2026-10-31", "timeZone": "America/New_York", "slugs": ["gpu-rental-prices-h200-end-of-october", "gpu-rental-prices-h100-end-of-october"] },
     { "date": "2026-11-02", "timeZone": "America/New_York", "slugs": ["ism-manufacturing-pmi-october-2026"] },
     { "date": "2026-11-06", "timeZone": "America/New_York", "slugs": ["october-unemployment-rate-2026", "how-many-jobs-added-in-october-2026"] },
     { "date": "2026-11-10", "timeZone": "America/New_York", "slugs": ["october-inflation-us-annual", "core-cpi-yoy-october-2026"] },
     { "date": "2026-11-10", "timeZone": "Asia/Shanghai", "slugs": ["october-inflation-china-annual"] },
-    { "date": "2026-11-30", "timeZone": "America/New_York", "slugs": ["gpu-rental-prices-h100-end-of-november"] },
     { "date": "2026-12-09", "timeZone": "America/New_York", "slugs": ["fed-decision-in-december-20260729232808632", "another-fed-rate-hike-in-2026"] },
     { "date": "2026-12-17", "timeZone": "Europe/Berlin", "slugs": ["ecb-interest-rates-december-2026"] },
     { "date": "2026-12-18", "timeZone": "Asia/Tokyo", "slugs": ["bank-of-japan-decision-in-december-20260918"] }

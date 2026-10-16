@@ -209,6 +209,48 @@ test('gpu rollover replaces the settled month and waits when the next month is m
   }
 });
 
+test('an open H100 October seed replaces a stored November row', async () => {
+  const temporary = temporaryDatabase();
+  const config = {
+    fixed: [{ slug: 'gpu-rental-prices-h100-end-of-october', group: 'compute', alertProfile: 'multi', seriesId: 'gpu-h100' }],
+    months: MONTHS,
+    rollingSeries: [{ id: 'gpu-h100', tag: 'ornn', seriesSlug: 'h100-rental-price', titleTemplate: 'GPU rental prices (H100) end of {month}?', hold: 1 }],
+    fetch: { pointIntervalMinutes: 5, downsampleAfterDays: 30 },
+  };
+  const october = event({
+    id: '836031', slug: 'gpu-rental-prices-h100-end-of-october', title: 'GPU rental prices (H100) end of October?',
+    endDate: '2026-11-01T03:59:00Z',
+  });
+  const november = event({
+    id: '836099', slug: 'gpu-rental-prices-h100-end-of-november', title: 'GPU rental prices (H100) end of November?',
+    endDate: '2026-12-01T04:59:00Z',
+  });
+  try {
+    temporary.store.repositories.polymarket.saveWatchlist({
+      outcomes: [{
+        eventId: '836099', marketId: 'm-836099', outcomeKey: 'yes', seriesId: 'gpu-h100', watched: true, sortOrder: 31,
+        groupKey: 'compute', alertProfile: 'multi', eventSlug: 'gpu-rental-prices-h100-end-of-november', marketSlug: '',
+        title: 'GPU rental prices (H100) end of November?', outcomeLabel: 'Yes', lifecycle: 'open',
+        endAt: Date.parse('2026-12-01T04:59:00Z'), liquidity: '9000', volume24h: '8000', totalVolume: '90000',
+        probability: '0.40', sourceUrl: 'https://polymarket.com/event/gpu-rental-prices-h100-end-of-november', updatedAt: 1,
+      }],
+      at: 1,
+    });
+    const client = gammaClient({
+      bySlug: { 'gpu-rental-prices-h100-end-of-october': october },
+      byId: { 836099: november },
+    });
+    await capturePolymarketWatchlist({
+      client, repository: temporary.store.repositories.polymarket, config, now: () => Date.parse('2026-10-16T12:00:00Z'),
+    });
+    assert.deepEqual(client.calls.slugs, [['gpu-rental-prices-h100-end-of-october']]);
+    assert.deepEqual(titles(temporary.store.repositories.polymarket), ['GPU rental prices (H100) end of October?']);
+    assert.equal(temporary.store.repositories.polymarket.listWatchedOutcomes().some((row) => row.eventId === '836099'), false);
+  } finally {
+    temporary.remove();
+  }
+});
+
 test('bitcoin keeps this month and the next, then slides when the current month settles', async () => {
   const temporary = temporaryDatabase();
   const config = {

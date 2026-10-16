@@ -21,6 +21,7 @@ import {
   readStoredPolymarketView,
 } from '../packages/domain/src/polymarket-series.js';
 import { readMarketNativeBoard } from '../packages/source/src/static/market-native-board.js';
+import { createMarketNativeBoardReader, MARKET_NATIVE_BOARD_SNAPSHOT_KEY } from '../packages/source/src/static/market-native-read.js';
 import {
   capturePolymarketWatchlist,
   watchlistRowsFromEvents,
@@ -59,7 +60,7 @@ const APPROVED_SLUGS = [
   'will-china-invade-taiwan-before-2027',
   'russia-x-ukraine-ceasefire-agreement-by',
   'gpu-rental-prices-h200-end-of-october',
-  'gpu-rental-prices-h100-end-of-november',
+  'gpu-rental-prices-h100-end-of-october',
   'what-price-will-bitcoin-hit-in-october-2026',
   'what-price-will-bitcoin-hit-in-november-2026',
 ];
@@ -405,6 +406,151 @@ test('stored watchlist keeps a low-volume market and does not wipe it when anoth
       }),
     }, { predictionLimit: 1 }, { keepPredictionOrder: true, now: () => now });
     assert.equal(board.predictionMarkets[0].marketQuestion, 'US recession by end of 2026?');
+  } finally {
+    temporary.remove();
+  }
+});
+
+test('the board reads the watchlist instead of the first 24 snapshot rows', async () => {
+  const temporary = temporaryDatabase();
+  const now = Date.UTC(2026, 9, 16, 12, 0, 0);
+  const legacy = Array.from({ length: 24 }, (_, index) => ({
+    quoteId: `polymarket:legacy:${index}`,
+    venue: 'polymarket',
+    marketId: `legacy-${index}`,
+    marketQuestion: `Legacy market ${index}`,
+    outcome: 'Yes',
+    midPrice: '0.50',
+    bestBid: null,
+    bestAsk: null,
+    spread: null,
+    lastPrice: null,
+    volume24h: '900000',
+    totalVolume: '900000',
+    liquidity: '900000',
+    openInterest: null,
+    endAt: null,
+    sourceUrl: 'https://polymarket.com/event/legacy',
+    observedAt: now,
+  }));
+  const kalshi = {
+    ...legacy[0],
+    quoteId: 'kalshi:fed',
+    venue: 'kalshi',
+    marketId: 'KXFED',
+    marketQuestion: 'Fed decision',
+  };
+  const kalshiOther = {
+    ...kalshi,
+    quoteId: 'kalshi:other',
+    marketId: 'KXOTHER',
+    marketQuestion: 'Other venue',
+  };
+  function outcome(eventId, title, sortOrder, extra = {}) {
+    return {
+      eventId,
+      marketId: 'm',
+      outcomeKey: 'yes',
+      seriesId: extra.seriesId || '',
+      watched: true,
+      sortOrder,
+      groupKey: extra.groupKey || 'macro',
+      alertProfile: 'binary',
+      eventSlug: eventId,
+      marketSlug: '',
+      title,
+      outcomeLabel: 'Yes',
+      lifecycle: 'open',
+      endAt: null,
+      liquidity: '9000',
+      volume24h: '10',
+      totalVolume: '20',
+      probability: '0.40',
+      sourceUrl: `https://polymarket.com/event/${eventId}`,
+      updatedAt: now,
+      ...extra,
+    };
+  }
+  try {
+    const repository = temporary.store.repositories.polymarket;
+    const outcomes = Array.from({ length: 24 }, (_, index) => outcome(`early-${index}`, `Early market ${index}`, index));
+    outcomes.push(
+      outcome('gold', 'What will gold (GC) hit by end of December?', 24, { groupKey: 'commodities' }),
+      outcome('iran', 'US x Iran ceasefire continues?', 25, { groupKey: 'geopolitics', alertProfile: 'geopolitics' }),
+      outcome('hormuz', 'Strait of Hormuz traffic returns to normal by October 31?', 26, { groupKey: 'geopolitics', alertProfile: 'geopolitics' }),
+      outcome('ukraine', 'Russia x Ukraine ceasefire agreement by...?', 27, { groupKey: 'geopolitics', alertProfile: 'geopolitics' }),
+      outcome('taiwan', 'Will China invade Taiwan before 2027?', 28, { groupKey: 'geopolitics', alertProfile: 'geopolitics' }),
+      outcome('bab', 'Bab el-Mandeb strait effectively closed by...?', 29, { groupKey: 'geopolitics', alertProfile: 'geopolitics' }),
+      outcome('h200', 'GPU rental prices (H200) end of October?', 30, { seriesId: 'gpu-h200', groupKey: 'compute' }),
+      outcome('h100', 'GPU rental prices (H100) end of October?', 31, { seriesId: 'gpu-h100', groupKey: 'compute' }),
+      outcome('1112205', 'What price will Bitcoin hit in October?', 32, { seriesId: 'btc-monthly', groupKey: 'crypto', alertProfile: 'multi', outcomeLabel: '100k' }),
+      outcome('pending:btc-monthly:November', 'What price will Bitcoin hit in November?', 33, {
+        seriesId: 'btc-monthly',
+        groupKey: 'crypto',
+        alertProfile: 'multi',
+        marketId: 'pending',
+        outcomeKey: 'pending',
+        outcomeLabel: '待定',
+        lifecycle: 'pending_rollover',
+        probability: null,
+        liquidity: null,
+        volume24h: null,
+        totalVolume: null,
+        eventSlug: '',
+        sourceUrl: 'https://polymarket.com',
+      }),
+    );
+    repository.saveWatchlist({ outcomes, at: now });
+    temporary.store.repositories.runtimeSnapshots.saveSnapshot('local', MARKET_NATIVE_BOARD_SNAPSHOT_KEY, {
+      generatedAt: now,
+      predictionMarkets: [...legacy, kalshi, kalshiOther],
+      cryptoDerivatives: [],
+      stablecoinLiquidity: null,
+      sourceHealth: [],
+    }, now);
+    let reads = 0;
+    const reader = createMarketNativeBoardReader({
+      repository: temporary.store.repositories.runtimeSnapshots,
+      polymarketQuotes: () => {
+        reads += 1;
+        return readStoredPolymarketView(repository, now);
+      },
+      now: () => now,
+    });
+    const loaded = await reader.read({ predictionLimit: 1 });
+    assert.equal(loaded.pending, false);
+    const questions = loaded.board.predictionMarkets.map((quote) => quote.marketQuestion);
+    assert.equal(questions.some((title) => title.startsWith('Legacy market')), false);
+    assert.equal(questions.includes('What price will Bitcoin hit in October?'), true);
+    const november = loaded.board.predictionMarkets.find((quote) => quote.marketQuestion === 'What price will Bitcoin hit in November?');
+    assert.equal(november.statusLabel, '下一期尚未出现');
+    for (const title of [
+      'What will gold (GC) hit by end of December?',
+      'US x Iran ceasefire continues?',
+      'Strait of Hormuz traffic returns to normal by October 31?',
+      'Russia x Ukraine ceasefire agreement by...?',
+      'Will China invade Taiwan before 2027?',
+      'Bab el-Mandeb strait effectively closed by...?',
+      'GPU rental prices (H200) end of October?',
+      'GPU rental prices (H100) end of October?',
+    ]) {
+      assert.equal(questions.includes(title), true, title);
+    }
+    assert.equal(loaded.board.predictionMarkets.length > 24, true);
+    assert.equal(loaded.board.predictionMarkets.filter((quote) => quote.venue === 'polymarket').length, 34);
+    assert.deepEqual(
+      loaded.board.predictionMarkets.filter((quote) => quote.venue !== 'polymarket').map((quote) => quote.marketQuestion),
+      ['Fed decision'],
+    );
+    const again = await reader.read({ predictionLimit: 1 });
+    assert.equal(reads, 1);
+    assert.equal(again.board.predictionMarkets.length, loaded.board.predictionMarkets.length);
+    const refreshed = await reader.read({ predictionLimit: 50 }, { refresh: true });
+    assert.equal(reads, 2);
+    assert.deepEqual(
+      refreshed.board.predictionMarkets.filter((quote) => quote.venue !== 'polymarket').map((quote) => quote.marketQuestion),
+      ['Fed decision', 'Other venue'],
+    );
   } finally {
     temporary.remove();
   }
