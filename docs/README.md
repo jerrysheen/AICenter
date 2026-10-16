@@ -25,8 +25,6 @@
 
 ## 当前
 
-- `progress/2026-10-16-feed-sync-deadline-prepare.md`：单源 90 秒预算重新包住等锁、冷启动和 X 收获。bsk 0.3.2 在 `session start --request-id` 之前必须 `session request <id> --prepare`，成功后再 `--claim`。超时只 `session request <id> --cancel`，不按名字关会话。不新增 migration。需要同时重启 Web 和 Worker。
-
 - `progress/2026-10-16-twkr-sources.md`：台湾和韩国第一批来源各自抓取。新闻进入媒体索引，沿用 Gemma 26B 翻译。证交所月营收写入 `twse_monthly_revenue`，不进新闻流。migration 76。需要重启 Worker。
 
 - `progress/2026-10-16-gpu-rent-daily.md`：GPU 租金增加按北京日历日汇总的历史。migration 75 建 `gpu_rent_daily` 和按捕获时间的索引，接在 Polymarket 的 73、74 之后。当天价格在接口里现算，并缓存 60 秒。历史只按时间范围读。回填靠前的日子可能有缺口。Ornn 的 H100 SXM、H200、B200 指数按美东结算日记入，页面注明仅供内部参考。需要同时重启 Web 和 Worker，再跑 `node scripts/backfill-gpu-rent-daily.mjs`。
