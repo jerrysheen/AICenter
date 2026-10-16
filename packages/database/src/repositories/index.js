@@ -17,6 +17,7 @@ import { createPolymarketRepository } from './polymarket-repository.js';
 import { createInvestorDiscussionRepository } from './investor-discussion-repository.js';
 import { createApiTokenRepository } from './api-token-repository.js';
 import { createRuntimeSnapshotRepository } from './runtime-snapshot-repository.js';
+import { createTwseRevenueRepository } from './twse-revenue-repository.js';
 
 export function createDomainRepositories(database, emitEvent) {
   return Object.freeze({
@@ -25,6 +26,7 @@ export function createDomainRepositories(database, emitEvent) {
     modelQuota: createModelQuotaRepository(database, emitEvent),
     feed: createFeedRepository(database, emitEvent),
     media: createMediaRepository(database, emitEvent),
+    twseRevenue: createTwseRevenueRepository(database),
     hardwarePrices: createHardwarePriceRepository(database, emitEvent),
     computePrices: createComputePriceRepository(database),
     trading: createTradingRepository(database, emitEvent),

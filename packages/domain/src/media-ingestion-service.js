@@ -1288,5 +1288,43 @@ export function createMediaIngestionService({
     briefForContentItem,
     listBodyCandidates,
     listEnrichmentItems,
+    indexExternalItems(workspaceId, descriptor, items, at = now(), { maxNew = 40 } = {}) {
+      const entry = {
+        sourceKey: descriptor.sourceKey,
+        publisher: descriptor.publisher || descriptor.sourceKey,
+        publisherKey: descriptor.publisherKey || descriptor.sourceKey,
+        channel: descriptor.channel === 'macro' ? 'macro' : 'tech',
+        contentAccess: 'index',
+        trackingParams: [],
+      };
+      let added = 0;
+      const externalIds = [];
+      for (const item of items || []) {
+        if (!item?.externalId || !item.sourceUrl || !String(item.title || '').trim()) continue;
+        if (!Number.isInteger(item.publishedAt) || item.publishedAt <= 0) continue;
+        const previous = mediaRepository.getEntries(workspaceId, [item.externalId])[0]
+          || mediaRepository.findByUrl?.(workspaceId, item.sourceUrl)
+          || null;
+        const article = incomingArticle(entry, item);
+        if (!previous) {
+          const match = articleDedup.find(workspaceId, article, { ignoreMediaIds: [item.externalId] });
+          if (match?.kind === 'media' && match.externalId) {
+            articleDedup.fill(match, article);
+            continue;
+          }
+          if (added >= maxNew) continue;
+        }
+        const row = entryRow(workspaceId, entry, { ...item, externalId: previous?.externalId || item.externalId }, {
+          at,
+          previous,
+          status: previous?.status === 'body_ready' ? 'body_ready' : 'indexed',
+        });
+        if (previous && previous.contentHash === row.contentHash && previous.publishedAt === row.publishedAt) continue;
+        saveMediaEntry(row);
+        if (!previous) added += 1;
+        externalIds.push(row.externalId);
+      }
+      return { added, externalIds };
+    },
   });
 }

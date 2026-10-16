@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "sources": {
+    "twsematerial": true,
+    "twserevenue": true,
+    "cnyes": true,
+    "ctee": true,
+    "udnmoney": true,
+    "digitimesrss": true,
+    "thelec": true
+  }
+}
