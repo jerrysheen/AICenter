@@ -2167,10 +2167,15 @@ button.source-card:active { transform: scale(0.985); background: var(--backgroun
   background: var(--brand);
 }
 .prediction-quote small { color: var(--font-tertiary); font-size: 11px; line-height: 16px; }
-.prediction-outcomes { display: grid; gap: 6px; }
+.prediction-ladder { display: grid; gap: 8px; }
+.prediction-more summary { color: var(--font-tertiary); font-size: 11px; line-height: 16px; cursor: pointer; }
+.prediction-outcomes { display: grid; gap: 6px; margin-top: 6px; }
 .prediction-outcome { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; align-items: baseline; }
 .prediction-outcome b { overflow: hidden; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .prediction-outcome strong { font-size: 14px; font-variant-numeric: tabular-nums; }
+.prediction-outcome .prediction-day-change { font-size: 11px; }
+.prediction-outcome .prediction-day-change.up { color: var(--data-up); }
+.prediction-outcome .prediction-day-change.down { color: var(--data-down); }
 .prediction-status, .prediction-notice { color: var(--font-secondary); }
 .news-list, .official-timeline { display: grid; gap: 0; max-width: none; padding: 0 0 12px; }
 .news-day, .official-day { display: grid; gap: 0; }

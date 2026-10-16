@@ -98,7 +98,7 @@ SourceAccount -> Subscription -> Capture -> ContentItem -> UserItemState
   不向事件添加 `importance` 字段。
 - 静态信号契约不接受 `importance`、`forecast`、`consensus`、`surprise`、`impact`、`bullish` 或 `bearish`。这些属于市场预期或解释层，不得塞入来源 metadata 绕过建模。
 - `prediction-market` 只保存场所原始报价事实：venue、问题、outcome、mid / bid / ask / spread、成交量、流动性、OI、到期时间和观测时间。Polymarket 与 Kalshi 的行保持分离，不生成跨场所加权或“真实概率”。
-- 事件报价每小时快照写入 `event_quote_snapshots`：`symbol` 是 quoteId，`probability` 是当时的 midPrice 十进制字符串，`observed_at` 是写入时的整点。`GET /api/v1/market-native/board` 的每条事件可以多一个可选字段 `midPrice24hAgo`。它只取「当前时间减 24 小时」前后 3 小时内最近的一条快照；窗口里没有记录就省略该字段，不回填 0 或当前价。
+- 事件报价每小时快照写入 `event_quote_snapshots`：`symbol` 是 quoteId，`probability` 是当时的 midPrice 十进制字符串，`observed_at` 是写入时的整点。`GET /api/v1/market-native/board` 的每条事件可以多一个可选字段 `midPrice24hAgo`。它只取「当前时间减 24 小时」前后 3 小时内最近的一条快照；窗口里没有记录就省略该字段，不回填 0 或当前价。Polymarket 观察清单改从自己的概率点计算：满 24 小时仍是较昨日；还没有这一档时，只在观察清单内、按主键取 1 小时到 27 小时之间最早的一点，并带上可选整数 `changeBasis`（已过小时数），页面写「较 Xh 前」。更早的点不参与比较。满 24 小时后不再带 `changeBasis`。多个结果用 `key` 区分，同名结果不会被当成同一个。
 - `crypto-derivatives` 当前只投影 Hyperliquid 的 BTC / ETH mark、mid、oracle、funding、OI、24h notional volume 与昨价。`openInterestUnit=base-asset`，不得在没有价格与时间口径说明时冒充美元 OI。
 - `stablecoin-liquidity` 保存美元锚定稳定币的总供给、USDT / USDC 与选定链分布；1d / 7d / 30d 字段是当前供给减去对应历史供给的 Decimal 字符串，不是涨跌判断。
 - `MarketNativeBoard` 与 `StaticSignalBoard` 分开：前者聚合市场原生 Snapshot，后者只聚合官方日程和发布。任一 market-native 来源不可用时只返回对应 source health，不回填第三方推测值。
