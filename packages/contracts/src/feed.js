@@ -207,6 +207,11 @@ export const FeedSubscriptionsSyncJobInputSchema = z.object({
   scheduleKey: z.string().trim().min(1).max(128).optional(),
 }).strict();
 
+export const FeedSubscriptionSyncJobInputSchema = z.object({
+  workspaceId: WorkspaceIdSchema.default('local'),
+  subscriptionId: EntityIdSchema,
+}).strict();
+
 export const FeedItemsEnrichJobInputSchema = z.object({
   workspaceId: WorkspaceIdSchema.default('local'),
   resourceIds: z.array(EntityIdSchema).max(200).default([]),
