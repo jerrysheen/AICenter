@@ -49,6 +49,17 @@ export function createInformationTreeRepository(db,emit) {
       })();
     },
     getNode:(workspace,id)=>read('information_tree_nodes',workspace,id),
+    getNodes(workspace, ids) {
+      const wanted = [...new Set((ids || []).map((id) => String(id || '').trim()).filter(Boolean))];
+      const nodes = [];
+      for (let offset = 0; offset < wanted.length; offset += 400) {
+        const slice = wanted.slice(offset, offset + 400);
+        const rows = db.prepare(`SELECT value_json FROM information_tree_nodes
+          WHERE workspace_id=? AND id IN (${slice.map(() => '?').join(',')})`).all(workspace, ...slice);
+        for (const row of rows) nodes.push(JSON.parse(row.value_json));
+      }
+      return nodes;
+    },
     getEdition:(workspace,id)=>read('information_tree_editions',workspace,id),
     saveNode(workspace,value) {
       const node=TreeNodeSchema.parse(value);
@@ -191,6 +202,26 @@ export function createInformationTreeRepository(db,emit) {
     readingHourHead(workspace,window,scope) {
       const id=db.prepare('SELECT published_id FROM reading_hour_heads WHERE workspace_id=? AND period_key=?').get(workspace,`${window.startAt}:${window.endAt}:${scope}`)?.published_id;
       return id ? this.getReadingHour(workspace,id) : null;
+    },
+    readingHoursForWindows(workspace, windows, scope = 'hour') {
+      const keys = [];
+      for (const window of windows || []) {
+        const startAt = Number(window?.startAt);
+        const endAt = Number(window?.endAt);
+        if (!Number.isFinite(startAt) || !Number.isFinite(endAt)) continue;
+        keys.push(`${startAt}:${endAt}:${scope}`);
+      }
+      const snapshots = [];
+      for (let offset = 0; offset < keys.length; offset += 200) {
+        const slice = keys.slice(offset, offset + 200);
+        const rows = db.prepare(`SELECT s.value_json AS valueJson
+          FROM reading_hour_heads h
+          JOIN reading_hour_snapshots s ON s.workspace_id = h.workspace_id AND s.id = h.published_id
+          WHERE h.workspace_id = ? AND h.published_id IS NOT NULL
+            AND h.period_key IN (${slice.map(() => '?').join(',')})`).all(workspace, ...slice);
+        for (const row of rows) snapshots.push(JSON.parse(row.valueJson));
+      }
+      return snapshots;
     },
     listReadingHourHeads(workspace,window,scope='hour') {
       return db.prepare(`SELECT h.published_id AS id, s.value_json AS valueJson

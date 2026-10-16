@@ -67,10 +67,37 @@ function extraRow(symbol, quote, board) {
   };
 }
 
+export function quoteAsOfMs(item) {
+  const at = Number(item?.asOf ?? item?.marketTime);
+  if (!Number.isFinite(at) || at <= 0) return 0;
+  return at < 1e12 ? Math.trunc(at * 1000) : Math.trunc(at);
+}
+
+export function newestQuoteAsOf(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const rows = [
+    ...(payload.indices || []),
+    ...(payload.watchlist || []),
+    ...((payload.sections || []).flatMap((section) => [
+      ...(section?.indices || []),
+      ...(section?.gainers || []),
+      ...(section?.losers || []),
+    ])),
+  ];
+  let newest = 0;
+  for (const item of rows) {
+    if (item?.lastPrice == null) continue;
+    const at = quoteAsOfMs(item);
+    if (at > newest) newest = at;
+  }
+  return newest || null;
+}
+
 export function stampBoardStale(payload, nowMs, staleMs) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
-  const fetchedAt = Number(payload.fetchedAt);
-  const stale = Number.isFinite(fetchedAt) && nowMs - fetchedAt >= staleMs;
+  const quoteAt = newestQuoteAsOf(payload);
+  const basis = quoteAt ?? Number(payload.fetchedAt);
+  const stale = Number.isFinite(basis) && nowMs - basis >= staleMs;
   if (Boolean(payload.stale) === stale) return payload;
   return { ...payload, stale };
 }
@@ -114,6 +141,7 @@ export function createMarketBoardReader({
   if (!repository?.readSnapshot) throw new TypeError('market board reader requires a snapshot repository');
   const caches = new Map();
   const extraQuotes = new Map();
+  const extraInflight = new Set();
 
   function cacheFor(board) {
     let cache = caches.get(board);
@@ -136,29 +164,28 @@ export function createMarketBoardReader({
     }
   }
 
-  async function loadExtraQuotes(symbols) {
+  function refreshExtraQuotes(key, symbols) {
+    if (!quotePort?.fetchQuotes || extraInflight.has(key)) return;
+    extraInflight.add(key);
+    Promise.resolve()
+      .then(() => quotePort.fetchQuotes(symbols))
+      .then((quotes) => {
+        if (Array.isArray(quotes)) rememberQuotes(key, quotes);
+      })
+      .catch(() => {})
+      .finally(() => {
+        extraInflight.delete(key);
+      });
+  }
+
+  function loadExtraQuotes(symbols) {
     const key = symbols.join(',');
     const hit = extraQuotes.get(key);
     const fresh = hit && now() - hit.at < ttlMs;
-    if (fresh) return hit.quotes;
-    if (hit) {
-      Promise.resolve()
-        .then(() => quotePort?.fetchQuotes?.(symbols))
-        .then((quotes) => {
-          if (Array.isArray(quotes)) rememberQuotes(key, quotes);
-        })
-        .catch(() => {});
-      return hit.quotes;
-    }
-    if (!quotePort?.fetchQuotes) return [];
-    try {
-      const quotes = await quotePort.fetchQuotes(symbols);
-      const list = Array.isArray(quotes) ? quotes : [];
-      rememberQuotes(key, list);
-      return list;
-    } catch {
-      return [];
-    }
+    if (fresh) return { quotes: hit.quotes, pending: false };
+    refreshExtraQuotes(key, symbols);
+    if (hit) return { quotes: hit.quotes, pending: false };
+    return { quotes: [], pending: Boolean(quotePort?.fetchQuotes) };
   }
 
   return {
@@ -171,10 +198,13 @@ export function createMarketBoardReader({
       }
       const symbols = extraSymbolsFor(board, query, marketCatalog);
       if (!symbols.length) return { market: stampBoardStale(payload, now(), staleMs), pending: false };
-      const quotes = await loadExtraQuotes(symbols);
-      const bySymbol = new Map((quotes || []).map((item) => [String(item?.symbol || '').toUpperCase(), item]));
+      const loaded = loadExtraQuotes(symbols);
+      const bySymbol = new Map((loaded.quotes || []).map((item) => [String(item?.symbol || '').toUpperCase(), item]));
       const rows = symbols.map((symbol) => extraRow(symbol, bySymbol.get(symbol), payload));
-      return { market: stampBoardStale(withExtraWatchlist(payload, rows), now(), staleMs), pending: false };
+      return {
+        market: stampBoardStale(withExtraWatchlist(payload, rows), now(), staleMs),
+        pending: loaded.pending,
+      };
     },
   };
 }

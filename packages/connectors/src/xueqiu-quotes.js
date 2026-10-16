@@ -2,6 +2,9 @@ import { isCnYahooSymbol } from './cn-quotes.js';
 
 const TOKEN_URL = 'https://xueqiu.com/hq';
 const BATCH_QUOTE_PATH = '/v5/stock/batch/quote.json';
+const KLINE_PATH = '/v5/stock/chart/kline.json';
+const SPARKLINE_COUNT = 30;
+const SPARKLINE_CONCURRENCY = 4;
 const STOCK_API = 'https://stock.xueqiu.com';
 const DEFAULT_TIMEOUT_MS = 8_000;
 const BATCH_SIZE = 50;
@@ -120,6 +123,21 @@ export function sessionFromXueqiuMarket(market, quote = {}) {
   return 'closed';
 }
 
+export function sparklineFromXueqiuKline(payload) {
+  const data = isRecord(payload?.data) ? payload.data : (isRecord(payload) ? payload : null);
+  if (!data) return [];
+  const columns = Array.isArray(data.column) ? data.column : [];
+  const closeIndex = columns.indexOf('close');
+  const items = Array.isArray(data.item) ? data.item : [];
+  if (closeIndex < 0) return [];
+  const closes = [];
+  for (const row of items) {
+    const value = Array.isArray(row) ? num(row[closeIndex]) : null;
+    if (value != null && value > 0) closes.push(value);
+  }
+  return closes;
+}
+
 export function quoteFromXueqiuItem(item, yahooSymbol) {
   const quote = isRecord(item?.quote) ? item.quote : (isRecord(item) && item.current != null ? item : null);
   if (!quote) return null;
@@ -138,7 +156,7 @@ export function quoteFromXueqiuItem(item, yahooSymbol) {
     high: num(quote.high),
     low: num(quote.low),
     volume: num(quote.volume),
-    sparkline: [],
+    sparkline: sparklineFromXueqiuKline(item?.kline),
     asOf: timestamp != null && timestamp > 0 ? Math.trunc(timestamp) : null,
     session: sessionFromXueqiuMarket(item.market, quote),
     ...(currency ? { currency } : {}),
@@ -259,5 +277,40 @@ export function createXueqiuQuoteClient(options = {}) {
     return unique.map((symbol) => bySymbol.get(symbol)).filter(Boolean);
   }
 
-  return { fetchQuotes };
+  async function fetchSparkline(xueqiuSymbol) {
+    const url = new URL(KLINE_PATH, `${STOCK_API}/`);
+    url.searchParams.set('symbol', xueqiuSymbol);
+    url.searchParams.set('begin', String(now()));
+    url.searchParams.set('period', 'day');
+    url.searchParams.set('type', 'before');
+    url.searchParams.set('count', String(-SPARKLINE_COUNT));
+    url.searchParams.set('indicator', 'kline');
+    const response = await request(url);
+    return sparklineFromXueqiuKline(await readJson(response, '雪球K线'));
+  }
+
+  async function fetchSparklines(symbols) {
+    const unique = [...new Set((symbols || []).map((item) => String(item || '').trim().toUpperCase()).filter(isXueqiuYahooSymbol))];
+    const pairs = unique.map((yahoo) => ({ yahoo, xueqiu: yahooToXueqiuSymbol(yahoo) })).filter((item) => item.xueqiu);
+    if (!pairs.length) return [];
+    try {
+      await ensureToken();
+    } catch {
+      return [];
+    }
+    const series = [];
+    for (let offset = 0; offset < pairs.length; offset += SPARKLINE_CONCURRENCY) {
+      const group = pairs.slice(offset, offset + SPARKLINE_CONCURRENCY);
+      const settled = await Promise.allSettled(group.map(async (pair) => ({
+        symbol: pair.yahoo,
+        sparkline: await fetchSparkline(pair.xueqiu),
+      })));
+      for (const item of settled) {
+        if (item.status === 'fulfilled' && item.value.sparkline.length >= 2) series.push(item.value);
+      }
+    }
+    return series;
+  }
+
+  return { fetchQuotes, fetchSparklines };
 }

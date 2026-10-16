@@ -242,12 +242,31 @@ export function createMarketService(options = {}) {
     });
   }
 
+  async function withCnSparklines(quotes) {
+    if (!xueqiuQuotes?.fetchSparklines) return quotes;
+    const symbols = quotes
+      .filter((item) => isXueqiuYahooSymbol(item.symbol) && (!Array.isArray(item.sparkline) || item.sparkline.length < 2))
+      .map((item) => item.symbol);
+    if (!symbols.length) return quotes;
+    let series = [];
+    try {
+      series = await xueqiuQuotes.fetchSparklines(symbols);
+    } catch {
+      series = [];
+    }
+    const bySymbol = new Map((series || []).map((item) => [item.symbol, item.sparkline]));
+    return quotes.map((item) => {
+      const sparkline = bySymbol.get(item.symbol);
+      return Array.isArray(sparkline) && sparkline.length >= 2 ? { ...item, sparkline } : item;
+    });
+  }
+
   async function loadCn(extraSymbols) {
     return cached(`cn-board:${extraSymbols.join(',')}`, async () => {
       const tracked = cnTrackedItems(extraSymbols, marketCatalog);
       const unique = [...new Set(tracked.map((item) => item.symbol))];
       try {
-        const quotes = await fetchQuotes(unique);
+        const quotes = await withCnSparklines(await fetchQuotes(unique));
         reportQuotes('A股', unique.length, quotes);
         return buildCnMarketBoard({
           quotes,

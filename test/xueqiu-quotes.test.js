@@ -5,6 +5,7 @@ import {
   isHkYahooSymbol,
   isXueqiuYahooSymbol,
   quoteFromXueqiuItem,
+  sparklineFromXueqiuKline,
   yahooToXueqiuSymbol,
 } from '../packages/connectors/src/xueqiu-quotes.js';
 import { createMarketService } from '../packages/connectors/src/market-service.js';
@@ -192,4 +193,39 @@ test('market service falls back to tonghuashun then yahoo when xueqiu misses', a
   assert.equal(quotes.find((item) => item.symbol === '900901.SS').lastPrice, 9);
   assert.equal(quotes.find((item) => item.symbol === '0981.HK').lastPrice, 9);
   assert.deepEqual(yahooSymbols[0], ['900901.SS', '0981.HK']);
+});
+
+test('xueqiu daily kline closes become the sparkline', async () => {
+  const payload = {
+    data: {
+      column: ['timestamp', 'volume', 'open', 'high', 'low', 'close'],
+      item: [
+        [1, 10, 1.1, 1.4, 1.0, 1.2],
+        [2, 11, 1.2, 1.5, 1.1, 1.44],
+      ],
+    },
+  };
+  assert.deepEqual(sparklineFromXueqiuKline(payload), [1.2, 1.44]);
+  const quote = quoteFromXueqiuItem({
+    ...xueqiuItem('SH516640', 1.44, 1.391),
+    kline: payload,
+  }, '516640.SS');
+  assert.deepEqual(quote.sparkline, [1.2, 1.44]);
+  assert.deepEqual(quoteFromXueqiuItem(xueqiuItem('SH516640', 1.44, 1.391), '516640.SS').sparkline, []);
+  const requested = [];
+  const client = createXueqiuQuoteClient({
+    cookie: 'xq_a_token=user-token',
+    now: () => 1_700_000_000_000,
+    fetchImpl: async (url) => {
+      requested.push(String(url));
+      return jsonResponse(payload);
+    },
+  });
+  const series = await client.fetchSparklines(['516640.SS', 'AAPL']);
+  assert.equal(series.length, 1);
+  assert.equal(series[0].symbol, '516640.SS');
+  assert.deepEqual(series[0].sparkline, [1.2, 1.44]);
+  assert.match(requested[0], /\/v5\/stock\/chart\/kline\.json/);
+  assert.match(decodeURIComponent(requested[0]), /symbol=SH516640/);
+  assert.match(requested[0], /period=day/);
 });

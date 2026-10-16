@@ -18,6 +18,7 @@ import {
   pickHomeQuoteCards,
   quoteStatusText,
   marketStaleLabel,
+  quoteStaleLabel,
   homeRequestPlan,
   hourlyEditions,
   homeHourSections,
@@ -115,6 +116,7 @@ const state = {
   marketFilter: '',
   markets: { overview: null, us: null, asia: null, cn: null },
   marketLoading: false,
+  marketPending: {},
   marketError: '',
   marketBoardErrors: {},
   marketRequestId: 0,
@@ -6356,6 +6358,21 @@ function formatQuoteTime(asOf) {
   });
 }
 
+function quoteNeedsSpinner(item) {
+  return item?.lastPrice == null && Boolean(
+    state.marketPending[state.stockBoard]
+    || state.marketPending.overview
+    || state.marketLoading
+  );
+}
+
+function sparkMarkup(item) {
+  if (quoteNeedsSpinner(item) && (!item?.sparkline || item.sparkline.length < 2)) {
+    return '<span class="quote-spinner" role="status" aria-label="行情加载中"></span>';
+  }
+  return sparkSvg(item?.sparkline, item?.changePct);
+}
+
 function sparkSvg(points, changePct) {
   if (!points || points.length < 2) return '<span class="spark empty">—</span>';
   const min = Math.min(...points);
@@ -6398,7 +6415,11 @@ async function loadMarket({ board = state.stockBoard, priority = 4, fresh = fals
     if (isActiveBoard && requestId !== state.marketRequestId) return;
     const previous = state.markets[board];
     const accepted = acceptMarketPayload(previous, payload.market);
-    state.markets[payload.market?.board || board] = accepted;
+    const boardName = payload.market?.board || board;
+    state.markets[boardName] = accepted;
+    state.marketPending[boardName] = Boolean(payload.pending);
+    if (payload.pending) scheduleMarketFill(boardName);
+    else clearMarketFill(boardName);
     state.marketBoardErrors[board] = '';
     if (isActiveBoard) state.marketError = '';
     if (isActiveBoard) renderMarket();
@@ -6429,6 +6450,25 @@ async function loadMarket({ board = state.stockBoard, priority = 4, fresh = fals
       renderMarket();
     }
   }
+}
+
+const marketFillTimers = {};
+const marketFillAttempts = {};
+
+function clearMarketFill(board) {
+  if (marketFillTimers[board]) window.clearTimeout(marketFillTimers[board]);
+  marketFillTimers[board] = 0;
+  marketFillAttempts[board] = 0;
+}
+
+function scheduleMarketFill(board) {
+  const attempts = marketFillAttempts[board] || 0;
+  if (attempts >= 8 || marketFillTimers[board]) return;
+  marketFillAttempts[board] = attempts + 1;
+  marketFillTimers[board] = window.setTimeout(() => {
+    marketFillTimers[board] = 0;
+    loadMarket({ board, priority: 2 }).catch(() => {});
+  }, 800);
 }
 
 function currentMarket() {
@@ -6618,6 +6658,13 @@ function renderHubTicker() {
     change.className = tone;
     change.textContent = known ? formatPct(up, item.changePct) : LOADING_QUOTE;
     button.append(name, price, change);
+    if (quoteNeedsSpinner(item)) {
+      const spinner = document.createElement('span');
+      spinner.className = 'quote-spinner';
+      spinner.setAttribute('role', 'status');
+      spinner.setAttribute('aria-label', '行情加载中');
+      button.append(spinner);
+    }
     button.addEventListener('click', () => openPage('quote', item.symbol));
     return button;
   }));
@@ -6634,6 +6681,14 @@ function renderHubTicker() {
     const stale = marketStaleLabel(state.markets.overview);
     if (stale && status.kind !== 'error' && status.kind !== 'slow') {
       elements['hub-market-note'].textContent = stale;
+      return;
+    }
+    if (status.kind === 'loading') {
+      const spinner = document.createElement('span');
+      spinner.className = 'quote-spinner';
+      spinner.setAttribute('role', 'status');
+      spinner.setAttribute('aria-label', '行情加载中');
+      elements['hub-market-note'].append(spinner);
       return;
     }
     if (status.kind === 'error' || status.kind === 'slow') {
@@ -8058,6 +8113,21 @@ async function fetchHomeBootstrap(token, { refresh = false, cached = null } = {}
   return { chosen, projected };
 }
 
+async function loadHomeModules(token, { refresh = false } = {}) {
+  const plan = homeRequestPlan(Date.now());
+  await Promise.all([
+    loadHomeTree(plan.tree, token, { priority: 0, fresh: refresh }).then(() => {
+      if (token === state.homeLoadToken && document.body.dataset.view === 'sources') renderHub();
+    }),
+    loadHomeReadingIndex(plan.readingIndex, token, { priority: 0, fresh: refresh }).then(() => {
+      if (token === state.homeLoadToken && document.body.dataset.view === 'sources') renderHub();
+    }),
+    loadHomeOverviewMarket(refresh),
+    loadDailyBrief({ priority: 0, fresh: refresh }).catch(() => {}),
+    loadHomeBoard(plan.board, { refresh, token }).catch(() => {}),
+  ]);
+}
+
 async function loadSourcesPageLegacy(token, { refresh = false } = {}) {
   const plan = homeRequestPlan(Date.now());
   await Promise.all([
@@ -8092,6 +8162,8 @@ async function loadSourcesPageNow({ refresh = false } = {}) {
   if (refresh) state.homeTreeLoaded = false;
   armHomeSlowWatch();
   const cached = refresh ? null : await paintHomeFromCache(token);
+  if (cached && token === state.homeLoadToken && document.body.dataset.view === 'sources') renderHub();
+  const modules = loadHomeModules(token, { refresh });
   let bootstrapOk = false;
   try {
     const loaded = await fetchHomeBootstrap(token, { refresh, cached });
@@ -8109,10 +8181,12 @@ async function loadSourcesPageNow({ refresh = false } = {}) {
     const bootstrapPath = `${HOME_BOOTSTRAP_PATH}${refresh ? '?refresh=1' : ''}`;
     reportHomeClientError('home-request', bootstrapPath, error);
     reportHomeClientError('home-fallback', bootstrapPath, error);
-    await loadSourcesPageLegacy(token, { refresh });
+    await modules;
     if (token !== state.homeLoadToken) return;
-    const legacyOk = Boolean(state.homeTree) && !state.homeTreeError;
-    if (legacyOk) {
+    const modulesOk = (Boolean(state.homeTree) && !state.homeTreeError)
+      || marketPayloadHasQuotes(state.markets.overview)
+      || Boolean(state.homeBoard);
+    if (modulesOk) {
       state.homeDataAt = Date.now();
       clearHomeRetry();
     } else if (!homeDataFresh()) {
@@ -8122,6 +8196,7 @@ async function loadSourcesPageNow({ refresh = false } = {}) {
       scheduleHomeRetry(token);
     }
   }
+  await modules;
   if (token !== state.homeLoadToken) return;
   if (bootstrapOk) clearHomeRetry();
   renderHub();
@@ -8220,10 +8295,12 @@ function renderIndexScroller(indices) {
     const card = document.createElement('article');
     card.className = 'index-card';
     const up = (item.changePct ?? 0) >= 0;
+    if (quoteStaleLabel(item)) card.classList.add('is-stale');
+    if (quoteNeedsSpinner(item)) card.classList.add('is-quote-pending');
     card.innerHTML = `<header><span>${item.name}</span><small>${item.symbol}</small></header>
       <strong class="${up ? 'up' : 'down'}">${formatPrice(item.lastPrice)}</strong>
       <b class="${up ? 'up' : 'down'}">${item.changePct === null ? '—' : formatPct(up, item.changePct)}</b>
-      ${sparkSvg(item.sparkline, item.changePct)}`;
+      ${sparkMarkup(item)}`;
     scroller.append(card);
   }
   return scroller;
@@ -8370,11 +8447,16 @@ function renderWatchRows(target, rows, { formatValue } = {}) {
         <strong class="quote-name"></strong>
         <small class="quote-code"></small>
       </span>
-      <span class="market-spark">${sparkSvg(item.sparkline, item.changePct)}</span>
+      <span class="market-spark">${sparkMarkup(item)}</span>
       <span class="q-price">
         <strong class="quote-price ${up ? 'up' : 'down'}">${format(item, item.lastPrice)}</strong>
         <b class="quote-change ${up ? 'up' : 'down'}">${item.changePct === null ? '—' : formatPct(up, item.changePct)}</b>
       </span>`;
+    if (quoteStaleLabel(item)) {
+      row.classList.add('is-stale');
+      row.title = quoteStaleLabel(item);
+    }
+    if (quoteNeedsSpinner(item)) row.classList.add('is-quote-pending');
     row.querySelector('.quote-name').textContent=item.name;
     row.querySelector('.quote-code').textContent=code;
     if(item.hardware) {

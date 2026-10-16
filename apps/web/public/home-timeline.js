@@ -113,20 +113,111 @@ export function marketPayloadHasQuotes(payload) {
   return rows.some((item) => item && item.lastPrice != null);
 }
 
+function quoteSymbol(item) {
+  return String(item?.symbol || '');
+}
+
+function indexMarketQuotes(payload) {
+  const map = new Map();
+  const visit = (item) => {
+    const symbol = quoteSymbol(item);
+    if (symbol) map.set(symbol, item);
+  };
+  for (const item of payload?.indices || []) visit(item);
+  for (const item of payload?.watchlist || []) visit(item);
+  for (const section of payload?.sections || []) {
+    for (const item of section?.indices || []) visit(item);
+    for (const item of section?.gainers || []) visit(item);
+    for (const item of section?.losers || []) visit(item);
+  }
+  return map;
+}
+
+function keepSeries(item, previous) {
+  if (!item || !previous) return item;
+  const hasSpark = Array.isArray(item.sparkline) && item.sparkline.length >= 2;
+  const sparkline = hasSpark ? item.sparkline : previous.sparkline;
+  const hasAsOf = Number(item.asOf ?? item.marketTime) > 0;
+  const asOf = hasAsOf ? (item.asOf ?? item.marketTime) : (previous.asOf ?? previous.marketTime);
+  const nextSpark = Array.isArray(sparkline) && sparkline.length >= 2 ? sparkline : null;
+  if (!nextSpark && !asOf) return item;
+  return {
+    ...item,
+    ...(nextSpark ? { sparkline: nextSpark } : {}),
+    ...(asOf ? { asOf } : {}),
+  };
+}
+
+function keepSeriesList(list, previous) {
+  if (!Array.isArray(list)) return list;
+  return list.map((item) => keepSeries(item, previous.get(quoteSymbol(item))));
+}
+
 export function acceptMarketPayload(previous, incoming) {
   if (marketPayloadHasQuotes(previous) && !marketPayloadHasQuotes(incoming)) return previous;
-  return incoming;
+  if (!previous || !incoming) return incoming;
+  const kept = indexMarketQuotes(previous);
+  if (!kept.size) return incoming;
+  return {
+    ...incoming,
+    ...(Array.isArray(incoming.indices) ? { indices: keepSeriesList(incoming.indices, kept) } : {}),
+    ...(Array.isArray(incoming.watchlist) ? { watchlist: keepSeriesList(incoming.watchlist, kept) } : {}),
+    ...(Array.isArray(incoming.sections) ? {
+      sections: incoming.sections.map((section) => ({
+        ...section,
+        indices: keepSeriesList(section.indices, kept),
+        gainers: keepSeriesList(section.gainers, kept),
+        losers: keepSeriesList(section.losers, kept),
+      })),
+    } : {}),
+  };
 }
 
 export const MARKET_STALE_LABEL_MS = 180_000;
 
+function quoteAsOfMs(item) {
+  const at = Number(item?.asOf ?? item?.marketTime);
+  if (!Number.isFinite(at) || at <= 0) return 0;
+  return at < 1e12 ? Math.trunc(at * 1000) : Math.trunc(at);
+}
+
+function pricedQuoteAsOfs(payload) {
+  if (!payload || typeof payload !== 'object') return [];
+  const rows = [
+    ...(payload.indices || []),
+    ...(payload.watchlist || []),
+    ...((payload.sections || []).flatMap((section) => [
+      ...(section?.indices || []),
+      ...(section?.gainers || []),
+      ...(section?.losers || []),
+    ])),
+  ];
+  return rows.filter((item) => item && item.lastPrice != null).map(quoteAsOfMs).filter((at) => at > 0);
+}
+
+function staleClock(at) {
+  const parts = shanghaiParts(at);
+  return `已过期 · ${parts.month}月${parts.day}日 ${parts.hour}:${parts.minute}`;
+}
+
+export function quoteStaleLabel(item, nowMs = Date.now()) {
+  const at = quoteAsOfMs(item);
+  if (!at || nowMs - at < MARKET_STALE_LABEL_MS) return '';
+  return staleClock(at);
+}
+
 export function marketStaleLabel(payload, nowMs = Date.now()) {
+  const times = pricedQuoteAsOfs(payload);
+  if (times.length) {
+    const newest = Math.max(...times);
+    if (nowMs - newest < MARKET_STALE_LABEL_MS) return '';
+    return staleClock(newest);
+  }
   const at = Number(payload?.fetchedAt);
   const aged = Number.isFinite(at) && at > 0 && nowMs - at >= MARKET_STALE_LABEL_MS;
   if (!payload?.stale && !aged) return '';
   if (!Number.isFinite(at) || at <= 0) return '已过期';
-  const parts = shanghaiParts(at);
-  return `已过期 · ${parts.month}月${parts.day}日 ${parts.hour}:${parts.minute}`;
+  return staleClock(at);
 }
 
 export function quoteStatusText({ cards = [], fetchedAt, error = false, pending = false, slow = false } = {}) {

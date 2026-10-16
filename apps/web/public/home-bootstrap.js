@@ -61,8 +61,20 @@ export function projectHomeBootstrap(payload) {
   };
 }
 
+export function homeFirstPaintRequests(nowMs = Date.now()) {
+  const plan = homeRequestPlan(nowMs);
+  return [
+    homeBootstrapCachePath(nowMs),
+    plan.tree,
+    plan.readingIndex,
+    plan.market,
+    plan.daily,
+    plan.board,
+  ];
+}
+
 export function homeColdLoadRequests({ useBootstrap = true, nowMs = Date.now(), visibleHours = 4 } = {}) {
-  if (useBootstrap) return [HOME_BOOTSTRAP_PATH];
+  if (useBootstrap) return homeFirstPaintRequests(nowMs);
   const plan = homeRequestPlan(nowMs);
   return [
     plan.tree,
