@@ -60,7 +60,7 @@ export function createXSourceDefinition(service) {
     inputSchema: XInputSchema,
     outputSchema: ContentFeedViewSchema,
     read: async (input, context) => {
-      const {priceSnapshots:_prices,...feed}=await service.getFeed({...input,bypassCache:Boolean(context.refresh),excludeExternalIds:context.excludeExternalIds});return feed;
+      const {priceSnapshots:_prices,...feed}=await service.getFeed({...input,bypassCache:Boolean(context.refresh),excludeExternalIds:context.excludeExternalIds,signal:context.signal,deadlineAt:context.deadlineAt});return feed;
     },
     observedAt: (data) => data.fetchedAt,
     status: (data) => data.mode === 'error' ? 'unavailable' : data.mode === 'partial' ? 'partial' : 'ready',
@@ -114,7 +114,7 @@ export function createXueqiuSourceDefinition(service) {
     inputSchema: XueqiuInputSchema,
     outputSchema: ContentFeedViewSchema,
     read: async (input, context) => {
-      const {priceSnapshots:_prices,...view}=await service.getFeed({...input,bypassCache:Boolean(context.refresh),excludeExternalIds:context.excludeExternalIds});
+      const {priceSnapshots:_prices,...view}=await service.getFeed({...input,bypassCache:Boolean(context.refresh),excludeExternalIds:context.excludeExternalIds,signal:context.signal,deadlineAt:context.deadlineAt});
       return view;
     },
     observedAt: (data) => data.fetchedAt,

@@ -774,7 +774,7 @@ export function createMediaIngestionService({
     }
   }
 
-  async function fetchBodies({ workspaceId = 'local', externalIds = [], usageReviewed, repair = false, selectedReasons = {} } = {}) {
+  async function fetchBodies({ workspaceId = 'local', externalIds = [], usageReviewed, repair = false, selectedReasons = {}, signal, deadlineAt } = {}) {
     if (usageReviewed === false) return { ok: false, health: 'needs_license', fetched: [] };
     // Explicit operator acknowledgement is recorded before making any request.
     const rows = mediaRepository.getEntries(workspaceId, [...new Set(externalIds)].slice(0,40));
@@ -783,7 +783,14 @@ export function createMediaIngestionService({
     const fetched = [];
     const pausedSources = new Set();
     const stats = { selected: rows.length, attempted: 0, requests: 0, validFull: 0, partial: 0, failed: 0, policySkipped: 0, deferred: 0, skipped: 0 };
+    let processed = 0;
+    let stoppedEarly = false;
     for (const row of rows) {
+      if (signal?.aborted || (Number.isFinite(Number(deadlineAt)) && Date.now() >= Number(deadlineAt))) {
+        stoppedEarly = true;
+        break;
+      }
+      processed += 1;
       const entry = mediaSource(row.sourceKey);
       const old = { ...initialFetchState(), ...row.fetchState };
       if (budgetCooldownRemoved(old, entry)) old.nextRetryAt = null;
@@ -880,7 +887,7 @@ export function createMediaIngestionService({
       if (article.contentLevel !== 'full' && !alreadyCounted) mediaRepository.releaseBody(workspaceId,dayKey(at),entry.sourceKey,at);
       result(article.contentLevel === 'full' ? 'ready' : 'partial', article.contentLevel === 'full' ? 'validFull' : 'partial', { contentLevel: article.contentLevel, bodyHash, snapshotRevision: revision, truncated: article.truncated });
     }
-    return { ok: !stats.failed && !stats.partial && !stats.policySkipped && !stats.deferred, health: stats.failed || stats.partial || stats.policySkipped || stats.deferred ? 'partial' : 'ready', stats, fetched };
+    return { ok: !stats.failed && !stats.partial && !stats.policySkipped && !stats.deferred, health: stoppedEarly || stats.failed || stats.partial || stats.policySkipped || stats.deferred ? 'partial' : 'ready', stats, fetched, processed, stoppedEarly };
   }
 
   async function evaluateMediaGate(workspaceId,row,article) {
