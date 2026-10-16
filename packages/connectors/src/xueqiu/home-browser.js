@@ -255,10 +255,12 @@ export function mapLivenewsItem(item) {
   };
 }
 
+const WRITE_RESERVE_MS = 15_000;
+
 function stepTimeout(deadlineAt, fallback = JSON_TIMEOUT_MS) {
   const limit = Math.max(1_000, Number(fallback) || JSON_TIMEOUT_MS);
   if (!Number.isFinite(Number(deadlineAt))) return limit;
-  const remaining = Number(deadlineAt) - Date.now();
+  const remaining = Number(deadlineAt) - Date.now() - WRITE_RESERVE_MS;
   if (remaining < 1_000) return 0;
   return Math.min(limit, remaining);
 }

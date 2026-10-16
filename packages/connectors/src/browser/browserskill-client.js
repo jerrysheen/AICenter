@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -220,6 +221,56 @@ export function createBrowserSkillClient(options = {}) {
     return run(['status'], { timeoutMs: Math.min(timeoutMs, 15_000) });
   }
 
+  function listedSessions(payload) {
+    if (Array.isArray(payload)) return payload;
+    if (Array.isArray(payload?.sessions)) return payload.sessions;
+    return [];
+  }
+
+  function sessionRecordName(record) {
+    return String(record?.name || record?.task_name || record?.purpose || '').trim();
+  }
+
+  function sessionRecordId(record) {
+    return String(record?.session_id || record?.sessionId || record?.id || '').trim();
+  }
+
+  // A killed `session start` can leave the Agent Window open without returning
+  // a session id. Stop listed sessions with this name, and cancel the tracked
+  // request, because `session list` does not always include the task name.
+  async function cleanupOrphanSession(purpose, requestId) {
+    const deadline = Date.now() + 5_000;
+    const left = () => deadline - Date.now();
+    const label = String(purpose || '').trim();
+    try {
+      const listBudget = left();
+      if (listBudget >= 200) {
+        const payload = await run(['session', 'list'], { timeoutMs: listBudget });
+        for (const record of listedSessions(payload)) {
+          if (!label || sessionRecordName(record) !== label) continue;
+          const id = sessionRecordId(record);
+          const stopBudget = left();
+          if (!id || stopBudget < 200) break;
+          try {
+            await run(['session', 'stop', id], { timeoutMs: stopBudget });
+          } catch {
+            // A later request cancel still covers this start.
+          }
+        }
+      }
+    } catch {
+      // Listing is best-effort. The request cancel below still runs.
+    }
+    const cancelBudget = left();
+    if (requestId && cancelBudget >= 200) {
+      try {
+        await run(['session', 'request', String(requestId), '--cancel'], { timeoutMs: cancelBudget });
+      } catch {
+        // The start error is the one the caller needs.
+      }
+    }
+  }
+
   return {
     id: 'bsk',
 
@@ -247,8 +298,10 @@ export function createBrowserSkillClient(options = {}) {
     },
 
     async startSession(sessionOptions = {}) {
-      const args = ['session', 'start'];
-      if (sessionOptions.purpose) args.push('--name', String(sessionOptions.purpose));
+      const purpose = String(sessionOptions.purpose || '').trim();
+      const requestId = `${Date.now() + 10 * 60 * 1000}:${randomUUID()}`;
+      const args = ['session', 'start', '--request-id', requestId];
+      if (purpose) args.push('--name', purpose);
       if (sessionOptions.focused === false) args.push('--no-focus');
       if (sessionOptions.browserId) args.push('--browser', String(sessionOptions.browserId));
       const deadlineAt = Number(sessionOptions.deadlineAt);
@@ -267,6 +320,7 @@ export function createBrowserSkillClient(options = {}) {
       } catch (error) {
         const kind = error?.kind || error?.details?.kind;
         const timedOut = kind === 'timeout' || kind === 'browser_cold_start' || error?.killed || /timed out/i.test(String(error?.message || ''));
+        if (timedOut) await cleanupOrphanSession(purpose, requestId);
         if (hasDeadline && timedOut) {
           const cold = new BrowserCommandError('browser_cold_start', { kind: 'browser_cold_start' });
           cold.kind = 'browser_cold_start';

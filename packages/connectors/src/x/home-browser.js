@@ -643,10 +643,19 @@ export function createXHomeBrowserClient(options = {}) {
             error: 'deadline', deadline: true,
           };
         }
-        await session.navigate('https://x.com/home', {
-          timeoutMs: homeTimeout,
-          waitUntil: 'domcontentloaded',
-        });
+        try {
+          await session.navigate('https://x.com/home', {
+            timeoutMs: homeTimeout,
+            waitUntil: 'domcontentloaded',
+          });
+        } catch (error) {
+          if (!Number.isFinite(Number(deadlineAt))) throw error;
+          return {
+            source: 'browser_runtime_home', feed, logged_in: false, login_wall: false,
+            page_url: null, page_title: null, selected_tab: null, tweet_count: 0, tweets: [],
+            error: 'deadline', deadline: true,
+          };
+        }
         if (!stop()) await wait(3_500);
         const inspectTimeout = () => commandTimeout(EXTRACT_TIMEOUT_MS, deadlineAt);
         const inspectHome = async () => {
@@ -757,9 +766,11 @@ export function createXHomeBrowserClient(options = {}) {
           tweet_count: tweets.length,
           tweets,
           deadline: pastDeadline,
-          error: !tweets.length && pastDeadline
-            ? 'deadline'
-            : loggedIn ? null : loginWall ? 'login_required' : (pastDeadline ? null : 'login_state_unclear'),
+          error: !tweets.length && loginWall
+            ? 'login_required'
+            : !tweets.length && pastDeadline
+              ? 'deadline'
+              : loggedIn ? null : loginWall ? 'login_required' : (pastDeadline ? null : 'login_state_unclear'),
         };
       });
     },

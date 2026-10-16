@@ -389,7 +389,10 @@ test('a lock held for 80s returns deadline without starting a session', async ()
 
 test('a slow session start reports browser_cold_start', async () => {
   const client = createBrowserSkillClient({
-    async runCommand(_args, options) {
+    async runCommand(args, options) {
+      if (!args.includes('start')) {
+        return { code: 0, stdout: JSON.stringify({ sessions: [] }), stderr: '' };
+      }
       await new Promise((resolve, reject) => {
         setTimeout(
           () => reject(Object.assign(new Error(`bsk timed out after ${options.timeoutMs}ms`), { killed: true })),
@@ -409,6 +412,45 @@ test('a slow session start reports browser_cold_start', async () => {
   assert.equal(result.reason, 'browser_cold_start');
   assert.ok(elapsed < 8_000, `start settled in ${elapsed}ms`);
   assert.ok(elapsed >= 4_000, `start settled in ${elapsed}ms`);
+});
+
+test('a startup timeout stops the session left behind by that start', async () => {
+  const commands = [];
+  const client = createBrowserSkillClient({
+    async runCommand(args, options) {
+      commands.push({ args, timeoutMs: options.timeoutMs });
+      if (args.includes('start')) {
+        throw Object.assign(new Error('bsk timed out after 20ms'), { killed: true });
+      }
+      if (args.includes('list')) {
+        return {
+          code: 0,
+          stdout: JSON.stringify([
+            { session_id: 'ORPHAN', name: 'x.home' },
+            { session_id: 'KEEP', name: 'xueqiu-following' },
+          ]),
+          stderr: '',
+        };
+      }
+      return { code: 0, stdout: JSON.stringify({ ok: true }), stderr: '' };
+    },
+  });
+  const started = Date.now();
+  await assert.rejects(
+    () => client.startSession({ purpose: 'x.home', focused: false, deadlineAt: Date.now() + 20_000 }),
+    (error) => error.kind === 'browser_cold_start' && error.message === 'browser_cold_start',
+  );
+  assert.ok(Date.now() - started < 2_000);
+  const start = commands.find((item) => item.args.includes('start'));
+  assert.ok(start.args.includes('--name') && start.args.includes('x.home'));
+  assert.ok(start.args.includes('--request-id'));
+  const followUps = commands.filter((item) => !item.args.includes('start'));
+  assert.ok(followUps.length >= 1);
+  assert.ok(followUps.every((item) => item.timeoutMs <= 5_000));
+  const stop = commands.find((item) => item.args.includes('stop'));
+  assert.ok(stop.args.includes('ORPHAN'));
+  assert.equal(commands.some((item) => item.args.includes('KEEP')), false);
+  assert.ok(commands.some((item) => item.args.includes('--cancel')));
 });
 
 test('legacy-cdp provider is no longer accepted', () => {
