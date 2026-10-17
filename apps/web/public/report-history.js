@@ -15,6 +15,10 @@ export function reportHistoryAction(previous = {}, next = {}) {
   return 'replace';
 }
 
+export function reportViewOwnsScroll(view, hasHourScroll) {
+  return view === 'report' && hasHourScroll === true;
+}
+
 export function commitReportHistory({ previous, next, hash, location, history } = {}) {
   const action = reportHistoryAction(previous, next);
   if (action === 'skip' || !hash || !location || location.hash === hash) return 'skip';

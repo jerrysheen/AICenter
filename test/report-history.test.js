@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { commitReportHistory, reportHistoryAction } from '../apps/web/public/report-history.js';
+import { commitReportHistory, reportHistoryAction, reportViewOwnsScroll } from '../apps/web/public/report-history.js';
+
+test('report scroll stays with the hourly page once that hour has a saved position', () => {
+  assert.equal(reportViewOwnsScroll('report', true), true);
+  assert.equal(reportViewOwnsScroll('report', false), false);
+  assert.equal(reportViewOwnsScroll('page', true), false);
+});
 
 test('hour or daily changes push, and the same hour only replaces the node', () => {
   assert.equal(reportHistoryAction({ hour: null, date: '', node: '' }, { hour: 20, date: '', node: '' }), 'push');

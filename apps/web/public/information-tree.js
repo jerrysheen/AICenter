@@ -142,8 +142,14 @@ export function createInformationTreePage(host) {
     });
   }
   const aborted=error=>error?.name==='AbortError';
-  const readingOpen=new Set();
-  const names=new Map(),cache=new Map(),nodeRequests=new Map(),editionCache=new Map(),editorialCache=new Map(),fullEditions=new Map(),editionLoads=new Map(),expanded=new Set(),positions=new Map(),memory={hourly:{},daily:{}};let viewKey='',nextManifest=null,informationRows=null,informationRequest=null,informationEpoch=0,session=0,latestDailyPromise=null;
+  const hourOpens=new Map();
+  function hourOpen(startAt=selectedHourStart){
+    const key=String(startAt || 0);
+    let set=hourOpens.get(key);
+    if(!set){set=new Set();hourOpens.set(key,set);}
+    return set;
+  }
+  const names=new Map(),cache=new Map(),nodeRequests=new Map(),editionCache=new Map(),editorialCache=new Map(),fullEditions=new Map(),editionLoads=new Map(),expanded=new Set(),positions=new Map(),memory={hourly:{},daily:{}};let viewKey='',shownKey='',away=false,restoringScroll=false,scrollLocked=0,scrollTimer=0,nextManifest=null,informationRows=null,informationRequest=null,informationEpoch=0,session=0,latestDailyPromise=null;
   const relationLabels={'same-event':'同一事件的后续进展','shared-theme':'共同主题','complementary':'相互补充','contradictory':'不同说法','supported-impact':'有依据的影响','unverified-link':'尚待验证的潜在联系'};
   const remember=n=>{if(!n)return;cache.delete(n.id);cache.set(n.id,n);while(cache.size>400)cache.delete(cache.keys().next().value);};
   const active=()=>root?.isConnected && root.classList.contains('tree-page') && (host.active?.() ?? true) && (host.session?.() ?? true);
@@ -424,11 +430,74 @@ export function createInformationTreePage(host) {
   }
   function closeHour(){openedId='';pinnedReadingId='';return render();}
   function closeDaily(){openedId='';openedDirection='';return render();}
-  function restoreScroll(opened) {
-    if(!active())return;
-    if(positions.has(viewKey))window.scrollTo({top:positions.get(viewKey),behavior:'instant'});
-    else if(opened)window.scrollTo({top:0,behavior:'instant'});
+  function firstVisibleAnchor() {
+    const rows=list?.querySelectorAll?.('[data-node-id]') || [];
+    for (const row of rows) {
+      if (typeof row.getBoundingClientRect !== 'function') continue;
+      const rect=row.getBoundingClientRect();
+      const top=Number(rect?.top), bottom=Number(rect?.bottom);
+      if (!Number.isFinite(top) || !Number.isFinite(bottom) || bottom <= 1) continue;
+      return { anchorId: String(row.dataset?.nodeId || ''), anchorOffset: top };
+    }
+    return { anchorId: '', anchorOffset: 0 };
   }
+  function rememberPosition() {
+    if (restoringScroll || !shownKey) return;
+    const anchor=firstVisibleAnchor();
+    positions.set(shownKey, {
+      y: Math.max(0, Number(window.scrollY) || 0),
+      anchorId: anchor.anchorId,
+      anchorOffset: Number(anchor.anchorOffset) || 0,
+    });
+  }
+  function positionKeyForHour(startAt=selectedHourStart) {
+    return `hourly:${startAt || 0}`;
+  }
+  function showPosition(key, opened) {
+    shownKey=key;
+    viewKey=key;
+    restoreScroll(opened);
+  }
+  function restoreScroll(opened) {
+    const saved=shownKey ? positions.get(shownKey) : null;
+    scrollLocked++;
+    const apply=()=>{
+      try {
+        if (!active()) return;
+        let top=null;
+        if (saved?.anchorId) {
+          const row=[...(list?.querySelectorAll?.('[data-node-id]') || [])].find(node=>node.dataset?.nodeId===saved.anchorId);
+          if (row && typeof row.getBoundingClientRect==='function') {
+            const rect=row.getBoundingClientRect();
+            if (Number.isFinite(Number(rect?.top))) top=(Number(window.scrollY) || 0) + Number(rect.top) - (Number(saved.anchorOffset) || 0);
+          }
+        }
+        if (top==null && saved) top=Number(saved.y) || 0;
+        else if (top==null && opened) top=0;
+        if (top==null) return;
+        restoringScroll=true;
+        try { window.scrollTo({ top, behavior: 'instant' }); }
+        finally { restoringScroll=false; }
+      } finally {
+        scrollLocked=Math.max(0, scrollLocked-1);
+      }
+    };
+    const frame=globalThis.requestAnimationFrame;
+    if (typeof frame==='function') frame(()=>frame(apply));
+    else apply();
+  }
+  function onReportScroll() {
+    if (scrollLocked || restoringScroll || away || rendering || !active()) return;
+    if (list?.querySelector?.('.tree-hour-skeleton')) return;
+    if (scrollTimer) return;
+    scrollTimer=setTimeout(()=>{
+      scrollTimer=0;
+      if (scrollLocked || restoringScroll || away || rendering || !active()) return;
+      if (list?.querySelector?.('.tree-hour-skeleton')) return;
+      rememberPosition();
+    }, 80);
+  }
+  if (typeof window?.addEventListener==='function') window.addEventListener('scroll', onReportScroll, { passive: true });
   async function card(n,token,options={}) {
     const article=el('article','','tree-card');article.dataset.nodeId=n.id;article.dataset.layer=n.layer;
     article.append(el('h3',decodeHtmlEntities(n.title)),el('p',decodeHtmlEntities(n.text),'tree-text'));
@@ -637,16 +706,35 @@ export function createInformationTreePage(host) {
     if(mode==='hourly') return stepHour(which);
     return stepDaily(which);
   }
+  function sameRenderedHour(startOrHour){
+    if(mode!=='hourly' || showMaterials || !selectedHourStart) return false;
+    if(!list?.querySelector?.('.reading-hour, .tree-hour-empty')) return false;
+    const clockPick=Number.isInteger(startOrHour) && startOrHour>=0 && startOrHour<=23;
+    if(clockPick){
+      if(dateFilter && day(selectedHourStart)!==dateFilter) return false;
+      return hourClock(selectedHourStart)===startOrHour;
+    }
+    return selectedHourStart===startOrHour;
+  }
+  function showingHour(startOrHour){return sameRenderedHour(startOrHour);}
+  function hasHourScroll(){
+    return mode==='hourly' && !showMaterials && Boolean(selectedHourStart) && positions.has(positionKeyForHour(selectedHourStart));
+  }
   function selectHour(startOrHour, source){
     closePeriodPop();
     const clockPick=Number.isInteger(startOrHour) && startOrHour>=0 && startOrHour<=23;
     if (source === 'user') host.track?.('report.hour', { hour: clockPick ? startOrHour : hourClock(startOrHour) });
+    if(sameRenderedHour(startOrHour)) return resume(false);
+    const returning=away;
+    if(!returning) rememberPosition();
     if(mode!=='hourly'){mode='hourly';showMaterials=false;}
-    openedId='';pinnedReadingId='';readingOpen.clear();
+    openedId='';pinnedReadingId='';
     if(!clockPick) pendingNodeId='';
     if(clockPick) pendingClockHour=startOrHour;
     else {pendingClockHour=null;hourFallbackText='';selectedHourStart=startOrHour;writeHourHash(startOrHour);}
-    return render();
+    const done=render({returning});
+    if(!returning) return done;
+    return Promise.resolve(done).finally(()=>resume(false));
   }
   function hourNavOpen(){return active() && mode==='hourly' && !showMaterials && !openedId;}
   function focusedHourRows(rows){
@@ -893,8 +981,7 @@ export function createInformationTreePage(host) {
         list.append(rows);
       }
     }
-    viewKey=`daily-feed:${dailyStart}:${openedId}`;
-    restoreScroll(Boolean(opened));
+    showPosition(`daily:${dailyStart}:${openedId || ''}`, Boolean(opened));
   }
   function loadEditorial(edition) {
     if(edition?.hasEditorial===false)return Promise.resolve(null);
@@ -988,8 +1075,7 @@ export function createInformationTreePage(host) {
       }
     }
     list.replaceChildren(page);
-    viewKey=`daily-research:${dailyStart}:${openedDirection}`;
-    restoreScroll(Boolean(openedDirection));
+    showPosition(`daily:${dailyStart}:${openedId || openedDirection || ''}`, Boolean(openedDirection));
   }
   function compactCard(item) {
     const at=reportItemTime(item.n, item.edition);
@@ -1017,14 +1103,14 @@ export function createInformationTreePage(host) {
   }
   function readingFold(id, title, {seed, edition} = {}) {
     const details=document.createElement('details');details.className='reading-fold';details.dataset.behavior='item.expand';details.open=false;
-    if(readingOpen.has(id)){details.dataset.expandQuiet='1';details.open=true;setTimeout(()=>{delete details.dataset.expandQuiet;},0);}
+    if(hourOpen().has(id)){details.dataset.expandQuiet='1';details.open=true;setTimeout(()=>{delete details.dataset.expandQuiet;},0);}
     const summary=document.createElement('summary');summary.className='news-fold-toggle';summary.textContent='展开';
     summary.addEventListener('click', (event) => event.stopPropagation());
     const panel=el('div','','reading-fold-body');details.append(summary,panel);
     let loaded=false,slow=0;
     async function load() {
-      if(!details.open){readingOpen.delete(id);clearTimeout(slow);return;}
-      readingOpen.add(id);if(loaded)return;loaded=true;panel.replaceChildren(hourSkeleton());
+      if(!details.open){hourOpen().delete(id);clearTimeout(slow);return;}
+      hourOpen().add(id);if(loaded)return;loaded=true;panel.replaceChildren(hourSkeleton());
       slow=setTimeout(()=>{
         if(!panel.querySelector('.tree-hour-skeleton'))return;
         loaded=false;panel.replaceChildren(button('读取较慢 · 重试',()=>{panel.replaceChildren();loaded=false;void load();}));
@@ -1253,10 +1339,10 @@ export function createInformationTreePage(host) {
         page.append(fold);
       }
     }
+    if(!away && shownKey===positionKeyForHour(edition.window.startAt)) rememberPosition();
     list.replaceChildren(page);
     root.dataset.readingSnapshot=snapshot.id||'';
-    viewKey=`hourly-reading:${edition.window.startAt}:${snapshot.id||''}`;
-    restoreScroll(false);
+    showPosition(positionKeyForHour(edition.window.startAt), false);
     consumePendingNode();
     prefetchAround(edition);
   }
@@ -1267,6 +1353,7 @@ export function createInformationTreePage(host) {
     syncHourMeta(null);
     page.append(showEmptyHour());
     list.replaceChildren(page);
+    showPosition(positionKeyForHour(edition.window.startAt), false);
     prefetchAround(edition);
   }
   async function renderHourFeed(token,claim) {
@@ -1300,9 +1387,10 @@ export function createInformationTreePage(host) {
     await renderReadingHour(token,claim,edition,snapshot);
     if(snapshot.status==='partial') refreshPartial(edition, token, claim);
   }
-  async function render() {
+  async function render(options) {
     haltDigest();
-    if(viewKey)positions.set(viewKey,window.scrollY);const token=++epoch;const flightToken=flight;
+    if(!options?.returning && !away) rememberPosition();
+    const token=++epoch;const flightToken=flight;
     rendering++;
     const hourlyFeed=mode==='hourly' && !showMaterials;
     const dailyFeed=mode==='daily' && !showMaterials;
@@ -1325,7 +1413,7 @@ export function createInformationTreePage(host) {
         root.dataset.briefMode='discussion';root.dataset.editionId='';
         list.replaceChildren();
         digestStop=mountInvestorDigest(list,{api,active:()=>mode==='discussion' && token===epoch && list.isConnected}) || (()=>{});
-        viewKey='discussion';
+        showPosition('discussion', false);
         return;
       }
       if(hourlyFeed) return await renderHourFeed(token,openingClaim);
@@ -1353,8 +1441,7 @@ export function createInformationTreePage(host) {
       if(!source.length) list.textContent=showMaterials ? '本期没有可展开的原始信息。' : '本期没有可用内容。';
       else if(!inDirection.length) list.textContent=showMaterials ? '本期材料里这个方向没有条目。' : '本期这个方向没有模块。';
       rememberIssue();
-      viewKey=`${mode}:${selected.window.startAt}:${direction}:${tag.value}:${showMaterials?'materials':'brief'}`;
-      restoreScroll(false);
+      showPosition(`${mode}:${selected.window.startAt}:${direction}:${tag.value}:${showMaterials?'materials':'brief'}`, false);
     }catch(error){if(aborted(error) || token!==epoch || flightToken!==flight)return;clearHourSlow();finishOpening(openingClaim,false);paintHourUnread();
       if(hourlyFeed) list.replaceChildren(button('这一期读取失败 · 重试',()=>render()));
       else list.replaceChildren(el('p','读取失败，请重试。'),button('重试读取',render));
@@ -1373,6 +1460,8 @@ export function createInformationTreePage(host) {
   function haltDigest(){digestStop();digestStop=()=>{};}
   function stop(){clearInterval(timer);timer=0;checking=null;clearHourSlow();}
   function suspend(){
+    if(!restoringScroll) rememberPosition();
+    away=true;
     haltDigest();
     stop();
     flight++;
@@ -1381,12 +1470,22 @@ export function createInformationTreePage(host) {
     if(!settled || rendering){epoch++;settled=false;}
     return settled;
   }
-  function resume(checkNow=true){clearInterval(timer);if(active() && !document.hidden)timer=setInterval(check,30000);if(checkNow)return check();}
+  function resume(checkNow=true){
+    const back=away;
+    away=false;
+    clearInterval(timer);
+    if(active() && !document.hidden)timer=setInterval(check,30000);
+    if(back){
+      if(pendingNodeId) consumePendingNode();
+      else restoreScroll(false);
+    }
+    if(checkNow)return check();
+  }
   document.addEventListener('visibilitychange',()=>{if(document.hidden)stop();else if(active())resume();});
   document.addEventListener('keydown',onHourKey);
   return {async mount(target,options={}){
     stop();flight++;requests.abort();requests=new AbortController();epoch++;settled=false;loadSeen();const flightToken=flight;root=target;mode=options.mode==='hourly' ? 'hourly' : 'daily';dateFilter=options.date || '';pendingClockHour=Number.isInteger(options.hour) && options.hour>=0 && options.hour<=23 ? options.hour : null;pendingNodeId=options.node ? String(options.node) : '';hourFallbackText='';hourRevealEarlier=false;showMaterials=false;root.replaceChildren();root.classList.add('tree-page','brief-page');
-    if(options.resetSelection){selected=null;viewKey='';}
+    if(options.resetSelection){selected=null;viewKey='';shownKey='';}
     const primary=el('div','','tree-primary source-control');primary.setAttribute('aria-label','简报');
     const modeTabs=el('div','','tree-mode-tabs channel-tabs');modeTabs.setAttribute('role','tablist');modeTabs.setAttribute('aria-label','简报');
     for(const [value,label] of [['daily','日报'],['hourly','小时报'],['discussion','股民讨论']]){const tab=button(label,()=>switchMode(value));tab.className='channel-tab';tab.dataset.mode=value;tab.setAttribute('role','tab');modeTabs.append(tab);}
@@ -1457,5 +1556,5 @@ export function createInformationTreePage(host) {
       const saved=memory[mode] || {};direction=saved.direction ?? null;directionExplicit=Boolean(saved.directionExplicit);if(saved.tag)tag.value=saved.tag;
       periods();await render();if(flightToken!==flight)return;settled=true;resume(false);
     }catch(error){if(aborted(error) || token!==epoch || flightToken!==flight)return;list.replaceChildren(el('p','暂时无法读取简报。'),button('重试读取',()=>this.mount(target,options)));}
-  },check,acceptUpdate,resume,stop,suspend,isSettled(){return settled;},selectHour,focusNode,selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){haltDigest();root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());root?.classList.remove('is-reading','is-hourly','is-discussion');clearHourSlow();readingCache.clear();readingLoads.clear();readingIndex=undefined;pendingClockHour=null;hourFallbackText='';hourRevealEarlier=false;openGaps.clear();stop();flight++;requests.abort();requests=new AbortController();epoch++;session++;settled=false;rendering=0;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();latestDailyPromise=null;fullEditions.clear();editionLoads.clear();invalidateInformationIndex();expanded.clear();positions.clear();viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
+  },check,acceptUpdate,resume,stop,suspend,isSettled(){return settled;},selectHour,showingHour,hasHourScroll,focusNode,selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){haltDigest();root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());root?.classList.remove('is-reading','is-hourly','is-discussion');clearHourSlow();readingCache.clear();readingLoads.clear();readingIndex=undefined;pendingClockHour=null;hourFallbackText='';hourRevealEarlier=false;openGaps.clear();stop();flight++;requests.abort();requests=new AbortController();epoch++;session++;settled=false;rendering=0;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();latestDailyPromise=null;fullEditions.clear();editionLoads.clear();invalidateInformationIndex();expanded.clear();positions.clear();hourOpens.clear();shownKey='';away=false;viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
 }

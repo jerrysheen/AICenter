@@ -31,7 +31,7 @@ import {
   reportHourHref,
   unavailableOfficialCount,
 } from './home-timeline.js?v=dev';
-import { commitReportHistory } from './report-history.js?v=dev';
+import { commitReportHistory, reportViewOwnsScroll } from './report-history.js?v=dev';
 import { decodeHtmlEntities } from './html-text.js?v=dev';
 import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, prioritizeReadableFeedRows, renderNewsList, reportItemTime } from './news-list.js?v=dev';
 
@@ -1365,7 +1365,7 @@ function setView(name, options = {}) {
     requestAnimationFrame(() => requestAnimationFrame(() => finishViewTiming(timingToken)));
   }
   if (view === 'feed' && (leaving || options.replace)) scrollFeedToTop();
-  else if (leaving) restoreViewScroll(view);
+  else if (leaving && !reportViewOwnsScroll(view, briefPage.hasHourScroll())) restoreViewScroll(view);
   else if (newArticle) window.scrollTo(0, 0);
   persistFeedBrowseState();
   syncAskKeyboard();
@@ -11708,6 +11708,7 @@ const briefPage = {
   reset(flag) { this.impl?.reset?.(flag); },
   selectDirection(key) { return this.impl?.selectDirection?.(key); },
   mount(root, options) { return ensureBriefPage().then((page) => page.mount(root, options)); },
+  hasHourScroll() { return Boolean(this.impl?.hasHourScroll?.()); },
 };
 
 function ensureBriefPage() {
