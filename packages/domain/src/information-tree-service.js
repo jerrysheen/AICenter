@@ -112,6 +112,48 @@ function projectNodeTime(repository, workspace, node, seen = new Set(), depth = 
   return pickNodeTime({ window: node.window }, childTimes);
 }
 
+function shanghaiReportDate(endAt) {
+  const end = Number(endAt);
+  if (!Number.isFinite(end)) return '';
+  const shifted = end + 8 * 3600000;
+  const dayMs = 86400000;
+  const tod = ((shifted % dayMs) + dayMs) % dayMs;
+  const instant = tod === 0 ? shifted - 1 : shifted;
+  const date = new Date(instant);
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
+}
+
+function latestDailyCard(head, editorial, nodes) {
+  if (!head?.id || !head.window) return null;
+  const articles = Array.isArray(editorial?.articles) ? editorial.articles : [];
+  const fromArticles = articles.slice(0, 5).flatMap((article) => {
+    const sentence = String(article?.lead || article?.title || '').trim();
+    if (!sentence) return [];
+    return [{ id: String(article.direction || article.title || sentence), sentence, occurredAt: null }];
+  });
+  const fromNodes = fromArticles.length ? [] : (nodes || []).slice(0, 5).flatMap((node) => {
+    const sentence = String(node?.text || node?.title || '').trim();
+    const id = String(node?.id || '').trim();
+    if (!id || !sentence) return [];
+    return [{ id, sentence, occurredAt: Number(node.eventAt) || null }];
+  });
+  const informationItems = fromArticles.length ? fromArticles : fromNodes;
+  const reportDate = String(editorial?.reportDate || shanghaiReportDate(head.window.endAt) || '');
+  if (!reportDate) return null;
+  const declared = Number(editorial?.coverage?.informationNodeCount);
+  return {
+    reportDate,
+    ...(Number(editorial?.generatedAt || head.generatedAt) ? { generatedAt: Number(editorial?.generatedAt || head.generatedAt) } : {}),
+    overview: String(editorial?.overview || ''),
+    informationItemCount: Number.isFinite(declared) && declared > 0 ? declared : informationItems.length,
+    informationItems,
+    editionId: head.id,
+    window: head.window,
+    hasEditorial: Boolean(editorial),
+  };
+}
+
 export function createInformationTreeReader({repository,timezone='Asia/Shanghai',pipeline='legacy',catalog={}}) {
   return {
     hourlyTitles(workspace, sourceIds) {
@@ -172,6 +214,19 @@ export function createInformationTreeReader({repository,timezone='Asia/Shanghai'
     published(workspace,layer,window) {
       const id=repository.head?.(workspace,layer,window);
       return id ? repository.getEdition(workspace,id) : null;
+    },
+    latestDaily(workspace, now = Date.now()) {
+      const load = () => {
+        const slot = repository.latestDailySlot?.(workspace);
+        const head = slot?.edition || null;
+        if (!head) return null;
+        const editorial = head.hasEditorial ? (repository.editorialForWindow?.(workspace, head.window) || null) : null;
+        const full = editorial ? null : repository.getEdition?.(workspace, head.id);
+        const roots = (full?.roots || []).slice(0, 5);
+        const nodes = editorial ? [] : roots.map((id) => repository.getNode?.(workspace, id)).filter(Boolean);
+        return latestDailyCard(head, editorial, nodes);
+      };
+      return typeof repository.readLatestDaily === 'function' ? repository.readLatestDaily(workspace, load, now) : load();
     },
     children(workspace,id) {
       const node=repository.getNode(workspace,id);

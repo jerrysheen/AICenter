@@ -18,6 +18,7 @@ const EXACT_PATHS = new Set([
   '/api/v1/reports/tree/node',
   '/api/v1/reports/tree/children',
   '/api/v1/reports/tree/editorial',
+  '/api/v1/reports/tree/latest-daily',
   '/api/v1/reports/reading-hour',
   '/api/v1/reports/reading-hour/index',
   '/api/v1/reports/reading-hour/snapshot',

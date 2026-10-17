@@ -1,6 +1,6 @@
 import { icon } from './icons.js?v=dev';
 import { decodeHtmlEntities } from './html-text.js?v=dev';
-import { homeHourItemTime } from './home-timeline.js?v=dev';
+import { homeHourItemTime, homeHourPublishedNote } from './home-timeline.js?v=dev';
 import { newsDayLabel, newsRow, reportItemTime } from './news-list.js?v=dev';
 import { mountInvestorDigest } from './investor-digest.js?v=dev';
 import { shareTextBlocks, stripSharePlaceholders } from './share-card.js?v=dev';
@@ -142,8 +142,17 @@ export function createInformationTreePage(host) {
     });
   }
   const aborted=error=>error?.name==='AbortError';
-  const readingOpen=new Set();
-  const names=new Map(),cache=new Map(),nodeRequests=new Map(),editionCache=new Map(),editorialCache=new Map(),fullEditions=new Map(),editionLoads=new Map(),expanded=new Set(),positions=new Map(),memory={hourly:{},daily:{}};let viewKey='',nextManifest=null,informationRows=null,informationRequest=null,informationEpoch=0,session=0;
+  const hourOpens=new Map();
+  function keepRecent(map, key, value){
+    map.delete(key);map.set(key, value);
+    while(map.size>100) map.delete(map.keys().next().value);
+    return value;
+  }
+  function hourOpen(startAt=selectedHourStart){
+    const key=String(startAt || 0);
+    return keepRecent(hourOpens, key, hourOpens.get(key) || new Set());
+  }
+  const names=new Map(),cache=new Map(),nodeRequests=new Map(),editionCache=new Map(),editorialCache=new Map(),fullEditions=new Map(),editionLoads=new Map(),expanded=new Set(),positions=new Map(),memory={hourly:{},daily:{}};let viewKey='',shownKey='',away=false,restoringScroll=false,scrollLocked=0,scrollTimer=0,nextManifest=null,informationRows=null,informationRequest=null,informationEpoch=0,session=0,latestDailyPromise=null;
   const relationLabels={'same-event':'同一事件的后续进展','shared-theme':'共同主题','complementary':'相互补充','contradictory':'不同说法','supported-impact':'有依据的影响','unverified-link':'尚待验证的潜在联系'};
   const remember=n=>{if(!n)return;cache.delete(n.id);cache.set(n.id,n);while(cache.size>400)cache.delete(cache.keys().next().value);};
   const active=()=>root?.isConnected && root.classList.contains('tree-page') && (host.active?.() ?? true) && (host.session?.() ?? true);
@@ -424,11 +433,74 @@ export function createInformationTreePage(host) {
   }
   function closeHour(){openedId='';pinnedReadingId='';return render();}
   function closeDaily(){openedId='';openedDirection='';return render();}
-  function restoreScroll(opened) {
-    if(!active())return;
-    if(positions.has(viewKey))window.scrollTo({top:positions.get(viewKey),behavior:'instant'});
-    else if(opened)window.scrollTo({top:0,behavior:'instant'});
+  function firstVisibleAnchor() {
+    const rows=list?.querySelectorAll?.('[data-node-id]') || [];
+    for (const row of rows) {
+      if (typeof row.getBoundingClientRect !== 'function') continue;
+      const rect=row.getBoundingClientRect();
+      const top=Number(rect?.top), bottom=Number(rect?.bottom);
+      if (!Number.isFinite(top) || !Number.isFinite(bottom) || bottom <= 1) continue;
+      return { anchorId: String(row.dataset?.nodeId || ''), anchorOffset: top };
+    }
+    return { anchorId: '', anchorOffset: 0 };
   }
+  function rememberPosition() {
+    if (restoringScroll || !shownKey) return;
+    const anchor=firstVisibleAnchor();
+    keepRecent(positions, shownKey, {
+      y: Math.max(0, Number(window.scrollY) || 0),
+      anchorId: anchor.anchorId,
+      anchorOffset: Number(anchor.anchorOffset) || 0,
+    });
+  }
+  function positionKeyForHour(startAt=selectedHourStart) {
+    return `hourly:${startAt || 0}`;
+  }
+  function showPosition(key, opened) {
+    shownKey=key;
+    viewKey=key;
+    restoreScroll(opened);
+  }
+  function restoreScroll(opened) {
+    const saved=shownKey ? positions.get(shownKey) : null;
+    scrollLocked++;
+    const apply=()=>{
+      try {
+        if (!active()) return;
+        let top=null;
+        if (saved?.anchorId) {
+          const row=[...(list?.querySelectorAll?.('[data-node-id]') || [])].find(node=>node.dataset?.nodeId===saved.anchorId);
+          if (row && typeof row.getBoundingClientRect==='function') {
+            const rect=row.getBoundingClientRect();
+            if (Number.isFinite(Number(rect?.top))) top=(Number(window.scrollY) || 0) + Number(rect.top) - (Number(saved.anchorOffset) || 0);
+          }
+        }
+        if (top==null && saved) top=Number(saved.y) || 0;
+        else if (top==null && opened) top=0;
+        if (top==null) return;
+        restoringScroll=true;
+        try { window.scrollTo({ top, behavior: 'instant' }); }
+        finally { restoringScroll=false; }
+      } finally {
+        scrollLocked=Math.max(0, scrollLocked-1);
+      }
+    };
+    const frame=globalThis.requestAnimationFrame;
+    if (typeof frame==='function') frame(()=>frame(apply));
+    else apply();
+  }
+  function onReportScroll() {
+    if (scrollLocked || restoringScroll || away || rendering || !active()) return;
+    if (list?.querySelector?.('.tree-hour-skeleton')) return;
+    if (scrollTimer) return;
+    scrollTimer=setTimeout(()=>{
+      scrollTimer=0;
+      if (scrollLocked || restoringScroll || away || rendering || !active()) return;
+      if (list?.querySelector?.('.tree-hour-skeleton')) return;
+      rememberPosition();
+    }, 80);
+  }
+  if (typeof window?.addEventListener==='function') window.addEventListener('scroll', onReportScroll, { passive: true });
   async function card(n,token,options={}) {
     const article=el('article','','tree-card');article.dataset.nodeId=n.id;article.dataset.layer=n.layer;
     article.append(el('h3',decodeHtmlEntities(n.title)),el('p',decodeHtmlEntities(n.text),'tree-text'));
@@ -547,8 +619,8 @@ export function createInformationTreePage(host) {
     const date=day(startAt), today=day(Date.now());
     const node=pendingNodeId ? `&node=${encodeURIComponent(pendingNodeId)}` : '';
     const hash=date===today ? `#report?hour=${hh}${node}` : `#report/${date}?hour=${hh}${node}`;
+    host.syncHour?.(hourClock(startAt), {node: pendingNodeId || '', hash, date: date===today ? '' : date});
     replaceLocationHash(hash);
-    host.syncHour?.(hourClock(startAt), {node: pendingNodeId || ''});
   }
   function focusNode(id){pendingNodeId=String(id || '');}
   function consumePendingNode(){
@@ -561,14 +633,22 @@ export function createInformationTreePage(host) {
     row.scrollIntoView?.({block:'center'});
   }
   function clearHourQuery(){
-    host.syncHour?.(null);
     const loc=globalThis.location;
-    if(!loc?.hash || !/[?&]hour=/.test(loc.hash))return;
-    const [path, query='']=loc.hash.slice(1).split('?');
-    const params=new URLSearchParams(query);
-    params.delete('hour');
-    const rest=params.toString();
-    replaceLocationHash(`#${path}${rest ? `?${rest}` : ''}`);
+    const current=loc?.hash || '';
+    let hash=current;
+    let date='';
+    if(current){
+      const [path, query='']=current.slice(1).split('?');
+      const params=new URLSearchParams(query);
+      params.delete('hour');
+      params.delete('node');
+      const rest=params.toString();
+      hash=`#${path}${rest ? `?${rest}` : ''}`;
+      const match=/^report\/(\d{4}-\d{2}-\d{2})$/.exec(path);
+      date=match ? match[1] : '';
+    }
+    host.syncHour?.(null, {hash, date, node:''});
+    replaceLocationHash(hash);
   }
   function closePeriodPop(){
     if(!periodPop) return;
@@ -629,16 +709,35 @@ export function createInformationTreePage(host) {
     if(mode==='hourly') return stepHour(which);
     return stepDaily(which);
   }
+  function sameRenderedHour(startOrHour){
+    if(mode!=='hourly' || showMaterials || !selectedHourStart) return false;
+    if(!list?.querySelector?.('.reading-hour, .tree-hour-empty')) return false;
+    const clockPick=Number.isInteger(startOrHour) && startOrHour>=0 && startOrHour<=23;
+    if(clockPick){
+      if(dateFilter && day(selectedHourStart)!==dateFilter) return false;
+      return hourClock(selectedHourStart)===startOrHour;
+    }
+    return selectedHourStart===startOrHour;
+  }
+  function showingHour(startOrHour){return sameRenderedHour(startOrHour);}
+  function hasHourScroll(){
+    return mode==='hourly' && !showMaterials && Boolean(selectedHourStart) && positions.has(positionKeyForHour(selectedHourStart));
+  }
   function selectHour(startOrHour, source){
     closePeriodPop();
     const clockPick=Number.isInteger(startOrHour) && startOrHour>=0 && startOrHour<=23;
     if (source === 'user') host.track?.('report.hour', { hour: clockPick ? startOrHour : hourClock(startOrHour) });
+    if(sameRenderedHour(startOrHour)) return resume(false);
+    const returning=away;
+    if(!returning) rememberPosition();
     if(mode!=='hourly'){mode='hourly';showMaterials=false;}
-    openedId='';pinnedReadingId='';readingOpen.clear();
+    openedId='';pinnedReadingId='';
     if(!clockPick) pendingNodeId='';
     if(clockPick) pendingClockHour=startOrHour;
     else {pendingClockHour=null;hourFallbackText='';selectedHourStart=startOrHour;writeHourHash(startOrHour);}
-    return render();
+    const done=render({returning});
+    if(!returning) return done;
+    return Promise.resolve(done).finally(()=>resume(false));
   }
   function hourNavOpen(){return active() && mode==='hourly' && !showMaterials && !openedId;}
   function focusedHourRows(rows){
@@ -817,9 +916,36 @@ export function createInformationTreePage(host) {
   function recentDailies() {
     return (manifest?.days || []).map(choice).filter(Boolean).slice(0,4);
   }
+  function loadLatestDaily() {
+    if (!latestDailyPromise) {
+      latestDailyPromise = api('/api/v1/reports/tree/latest-daily').then(data => data?.daily || null).catch(error => {
+        latestDailyPromise = null;
+        if (aborted(error)) throw error;
+        return null;
+      });
+    }
+    return latestDailyPromise;
+  }
+  function dailyFromLatest(daily) {
+    const startAt = Number(daily?.window?.startAt);
+    const endAt = Number(daily?.window?.endAt);
+    if (!daily?.editionId || !Number.isFinite(startAt) || !Number.isFinite(endAt)) return null;
+    return {
+      id: daily.editionId,
+      window: daily.window,
+      hasEditorial: daily.hasEditorial !== false,
+      generatedAt: Number(daily.generatedAt) || 0,
+      status: 'ready',
+      roots: [],
+    };
+  }
   async function renderDailyFeed(token) {
     syncHourChrome();
-    const editions=recentDailies();
+    const latest = await loadLatestDaily();
+    if (token !== epoch) return;
+    const extra = dailyFromLatest(latest);
+    let editions = recentDailies();
+    if (extra && !editions.some(item => item.window.startAt === extra.window.startAt)) editions = [extra, ...editions];
     if(!dailyStart || !editions.some(item=>item.window.startAt===dailyStart)) dailyStart=editions[0]?.window.startAt || 0;
     dayChips.replaceChildren();
     for(const edition of editions){
@@ -858,8 +984,7 @@ export function createInformationTreePage(host) {
         list.append(rows);
       }
     }
-    viewKey=`daily-feed:${dailyStart}:${openedId}`;
-    restoreScroll(Boolean(opened));
+    showPosition(`daily:${dailyStart}:${openedId || ''}`, Boolean(opened));
   }
   function loadEditorial(edition) {
     if(edition?.hasEditorial===false)return Promise.resolve(null);
@@ -953,8 +1078,7 @@ export function createInformationTreePage(host) {
       }
     }
     list.replaceChildren(page);
-    viewKey=`daily-research:${dailyStart}:${openedDirection}`;
-    restoreScroll(Boolean(openedDirection));
+    showPosition(`daily:${dailyStart}:${openedId || openedDirection || ''}`, Boolean(openedDirection));
   }
   function compactCard(item) {
     const at=reportItemTime(item.n, item.edition);
@@ -982,14 +1106,14 @@ export function createInformationTreePage(host) {
   }
   function readingFold(id, title, {seed, edition} = {}) {
     const details=document.createElement('details');details.className='reading-fold';details.dataset.behavior='item.expand';details.open=false;
-    if(readingOpen.has(id)){details.dataset.expandQuiet='1';details.open=true;setTimeout(()=>{delete details.dataset.expandQuiet;},0);}
+    if(hourOpen().has(id)){details.dataset.expandQuiet='1';details.open=true;setTimeout(()=>{delete details.dataset.expandQuiet;},0);}
     const summary=document.createElement('summary');summary.className='news-fold-toggle';summary.textContent='展开';
     summary.addEventListener('click', (event) => event.stopPropagation());
     const panel=el('div','','reading-fold-body');details.append(summary,panel);
     let loaded=false,slow=0;
     async function load() {
-      if(!details.open){readingOpen.delete(id);clearTimeout(slow);return;}
-      readingOpen.add(id);if(loaded)return;loaded=true;panel.replaceChildren(hourSkeleton());
+      if(!details.open){hourOpen().delete(id);clearTimeout(slow);return;}
+      hourOpen().add(id);if(loaded)return;loaded=true;panel.replaceChildren(hourSkeleton());
       slow=setTimeout(()=>{
         if(!panel.querySelector('.tree-hour-skeleton'))return;
         loaded=false;panel.replaceChildren(button('读取较慢 · 重试',()=>{panel.replaceChildren();loaded=false;void load();}));
@@ -1041,7 +1165,7 @@ export function createInformationTreePage(host) {
   function readingWhen(item){
     return {at:homeHourItemTime(item), ingested:false};
   }
-  function byPublished(rows){
+  function byHourTime(rows){
     const at=item=>homeHourItemTime(item);
     return [...rows].sort((a,b)=>at(b)-at(a) || String(a.nodeId||a.title||'').localeCompare(String(b.nodeId||b.title||'')));
   }
@@ -1086,6 +1210,7 @@ export function createInformationTreePage(host) {
     const fold=sources ? null : readingFold(item.nodeId, item.title, {seed:item, edition});
     const row=newsRow({
       id:item.nodeId, title:item.title || '', at:when.at, ingested:when.ingested,
+      publishedNote:homeHourPublishedNote(item, edition?.window),
       source:readingSourceLine(item, {keepDirection}), tags, muted,
       focused:Boolean(host.readingFocused?.(item.nodeId)),
       onStar:()=>host.focusReading?.(readingFocusSnapshot(item, edition)),
@@ -1116,7 +1241,7 @@ export function createInformationTreePage(host) {
     const rank=(order,value)=> {const index=order.indexOf(value);return index<0 ? order.length : index;};
     const directionNames=[...new Set(rows.map(item=>item.readingDirectionName).filter(Boolean))].sort((a,b)=>rank(readingDirectionOrder,a)-rank(readingDirectionOrder,b));
     for(const directionName of directionNames){
-      const matched=byPublished(rows.filter(item=>item.readingDirectionName===directionName));
+      const matched=byHourTime(rows.filter(item=>item.readingDirectionName===directionName));
       const block=el('section','','reading-block');
       const heading=el('h2',directionName,'reading-direction news-section-title');
       heading.append(el('span',`${matched.length} 条`,'news-section-count'));
@@ -1196,8 +1321,9 @@ export function createInformationTreePage(host) {
     page.append(el('p',`${newsDayLabel(edition.window.startAt)} · ${clock(edition.window.startAt)}\u2013${clock(edition.window.endAt)}`,'news-day-label'));
     const shown=(snapshot.items||[]).filter(item=>item.readingDirectionName && item.readingDirectionName!=='待分类' && item.disposition!=='out-of-scope');
     const hits=shown.filter(item=>item.disposition==='hit' && item.timely!==false);
-    const tail=byPublished(shown.filter(item=>item.disposition!=='hit' || item.timely===false));
-    if(!hits.length && !tail.length) page.append(showEmptyHour());
+    const stale=byHourTime(shown.filter(item=>item.timely===false));
+    const tail=byHourTime(shown.filter(item=>item.disposition!=='hit' && item.timely!==false));
+    if(!hits.length && !tail.length && !stale.length) page.append(showEmptyHour());
     else {
       renderReadingDirections(hits, page, edition);
       if(tail.length){
@@ -1207,11 +1333,19 @@ export function createInformationTreePage(host) {
         end.append(rows);
         page.append(end);
       }
+      if(stale.length){
+        const fold=el('details','','reading-stale-fold');
+        fold.open=false;
+        const rows=el('ol','','news-rows');
+        for(const item of stale) rows.append(readingNewsItem(item, edition, {muted:true, keepDirection:true}));
+        fold.append(el('summary',`旧闻补录 ${stale.length} 条`), rows);
+        page.append(fold);
+      }
     }
+    if(!away && shownKey===positionKeyForHour(edition.window.startAt)) rememberPosition();
     list.replaceChildren(page);
     root.dataset.readingSnapshot=snapshot.id||'';
-    viewKey=`hourly-reading:${edition.window.startAt}:${snapshot.id||''}`;
-    restoreScroll(false);
+    showPosition(positionKeyForHour(edition.window.startAt), false);
     consumePendingNode();
     prefetchAround(edition);
   }
@@ -1222,6 +1356,7 @@ export function createInformationTreePage(host) {
     syncHourMeta(null);
     page.append(showEmptyHour());
     list.replaceChildren(page);
+    showPosition(positionKeyForHour(edition.window.startAt), false);
     prefetchAround(edition);
   }
   async function renderHourFeed(token,claim) {
@@ -1255,9 +1390,10 @@ export function createInformationTreePage(host) {
     await renderReadingHour(token,claim,edition,snapshot);
     if(snapshot.status==='partial') refreshPartial(edition, token, claim);
   }
-  async function render() {
+  async function render(options) {
     haltDigest();
-    if(viewKey)positions.set(viewKey,window.scrollY);const token=++epoch;const flightToken=flight;
+    if(!options?.returning && !away) rememberPosition();
+    const token=++epoch;const flightToken=flight;
     rendering++;
     const hourlyFeed=mode==='hourly' && !showMaterials;
     const dailyFeed=mode==='daily' && !showMaterials;
@@ -1280,7 +1416,7 @@ export function createInformationTreePage(host) {
         root.dataset.briefMode='discussion';root.dataset.editionId='';
         list.replaceChildren();
         digestStop=mountInvestorDigest(list,{api,active:()=>mode==='discussion' && token===epoch && list.isConnected}) || (()=>{});
-        viewKey='discussion';
+        showPosition('discussion', false);
         return;
       }
       if(hourlyFeed) return await renderHourFeed(token,openingClaim);
@@ -1308,8 +1444,7 @@ export function createInformationTreePage(host) {
       if(!source.length) list.textContent=showMaterials ? '本期没有可展开的原始信息。' : '本期没有可用内容。';
       else if(!inDirection.length) list.textContent=showMaterials ? '本期材料里这个方向没有条目。' : '本期这个方向没有模块。';
       rememberIssue();
-      viewKey=`${mode}:${selected.window.startAt}:${direction}:${tag.value}:${showMaterials?'materials':'brief'}`;
-      restoreScroll(false);
+      showPosition(`${mode}:${selected.window.startAt}:${direction}:${tag.value}:${showMaterials?'materials':'brief'}`, false);
     }catch(error){if(aborted(error) || token!==epoch || flightToken!==flight)return;clearHourSlow();finishOpening(openingClaim,false);paintHourUnread();
       if(hourlyFeed) list.replaceChildren(button('这一期读取失败 · 重试',()=>render()));
       else list.replaceChildren(el('p','读取失败，请重试。'),button('重试读取',render));
@@ -1328,6 +1463,8 @@ export function createInformationTreePage(host) {
   function haltDigest(){digestStop();digestStop=()=>{};}
   function stop(){clearInterval(timer);timer=0;checking=null;clearHourSlow();}
   function suspend(){
+    if(!restoringScroll) rememberPosition();
+    away=true;
     haltDigest();
     stop();
     flight++;
@@ -1336,12 +1473,22 @@ export function createInformationTreePage(host) {
     if(!settled || rendering){epoch++;settled=false;}
     return settled;
   }
-  function resume(checkNow=true){clearInterval(timer);if(active() && !document.hidden)timer=setInterval(check,30000);if(checkNow)return check();}
+  function resume(checkNow=true){
+    const back=away;
+    away=false;
+    clearInterval(timer);
+    if(active() && !document.hidden)timer=setInterval(check,30000);
+    if(back){
+      if(pendingNodeId) consumePendingNode();
+      else restoreScroll(false);
+    }
+    if(checkNow)return check();
+  }
   document.addEventListener('visibilitychange',()=>{if(document.hidden)stop();else if(active())resume();});
   document.addEventListener('keydown',onHourKey);
   return {async mount(target,options={}){
     stop();flight++;requests.abort();requests=new AbortController();epoch++;settled=false;loadSeen();const flightToken=flight;root=target;mode=options.mode==='hourly' ? 'hourly' : 'daily';dateFilter=options.date || '';pendingClockHour=Number.isInteger(options.hour) && options.hour>=0 && options.hour<=23 ? options.hour : null;pendingNodeId=options.node ? String(options.node) : '';hourFallbackText='';hourRevealEarlier=false;showMaterials=false;root.replaceChildren();root.classList.add('tree-page','brief-page');
-    if(options.resetSelection){selected=null;viewKey='';}
+    if(options.resetSelection){selected=null;viewKey='';shownKey='';}
     const primary=el('div','','tree-primary source-control');primary.setAttribute('aria-label','简报');
     const modeTabs=el('div','','tree-mode-tabs channel-tabs');modeTabs.setAttribute('role','tablist');modeTabs.setAttribute('aria-label','简报');
     for(const [value,label] of [['daily','日报'],['hourly','小时报'],['discussion','股民讨论']]){const tab=button(label,()=>switchMode(value));tab.className='channel-tab';tab.dataset.mode=value;tab.setAttribute('role','tab');modeTabs.append(tab);}
@@ -1412,5 +1559,5 @@ export function createInformationTreePage(host) {
       const saved=memory[mode] || {};direction=saved.direction ?? null;directionExplicit=Boolean(saved.directionExplicit);if(saved.tag)tag.value=saved.tag;
       periods();await render();if(flightToken!==flight)return;settled=true;resume(false);
     }catch(error){if(aborted(error) || token!==epoch || flightToken!==flight)return;list.replaceChildren(el('p','暂时无法读取简报。'),button('重试读取',()=>this.mount(target,options)));}
-  },check,acceptUpdate,resume,stop,suspend,isSettled(){return settled;},selectHour,focusNode,selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){haltDigest();root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());root?.classList.remove('is-reading','is-hourly','is-discussion');clearHourSlow();readingCache.clear();readingLoads.clear();readingIndex=undefined;pendingClockHour=null;hourFallbackText='';hourRevealEarlier=false;openGaps.clear();stop();flight++;requests.abort();requests=new AbortController();epoch++;session++;settled=false;rendering=0;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();fullEditions.clear();editionLoads.clear();invalidateInformationIndex();expanded.clear();positions.clear();viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
+  },check,acceptUpdate,resume,stop,suspend,isSettled(){return settled;},selectHour,showingHour,hasHourScroll,focusNode,selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){haltDigest();root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());root?.classList.remove('is-reading','is-hourly','is-discussion');clearHourSlow();readingCache.clear();readingLoads.clear();readingIndex=undefined;pendingClockHour=null;hourFallbackText='';hourRevealEarlier=false;openGaps.clear();stop();flight++;requests.abort();requests=new AbortController();epoch++;session++;settled=false;rendering=0;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();latestDailyPromise=null;fullEditions.clear();editionLoads.clear();invalidateInformationIndex();expanded.clear();if(scrollTimer){clearTimeout(scrollTimer);scrollTimer=0;}positions.clear();hourOpens.clear();shownKey='';away=false;viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
 }

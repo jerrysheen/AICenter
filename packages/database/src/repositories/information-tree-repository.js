@@ -7,7 +7,57 @@ function indexEdition(row,prefix,hasEditorial) {
   return {id,layer:row.layer,window:{startAt:Number(row[`${prefix}_start`]),endAt:Number(row[`${prefix}_end`])},status:row[`${prefix}_status`],generatedAt:Number(row[`${prefix}_generated`]),rootCount:Number(row[`${prefix}_roots`] || 0),hasEditorial};
 }
 
+function editionIndexSql(whereSql, tailSql) {
+  return `SELECT h.layer AS layer,
+        CASE WHEN p.edition_status != '' THEN p.id ELSE json_extract(p.value_json, '$.id') END AS published_id,
+        CASE WHEN p.edition_status != '' THEN p.edition_status ELSE json_extract(p.value_json, '$.status') END AS published_status,
+        CASE WHEN p.edition_status != '' THEN p.generated_at ELSE json_extract(p.value_json, '$.generatedAt') END AS published_generated,
+        CASE WHEN p.edition_status != '' THEN p.start_at ELSE json_extract(p.value_json, '$.window.startAt') END AS published_start,
+        CASE WHEN p.edition_status != '' THEN p.end_at ELSE json_extract(p.value_json, '$.window.endAt') END AS published_end,
+        CASE WHEN p.edition_status != '' THEN p.root_count ELSE COALESCE(json_array_length(p.value_json, '$.roots'), 0) END AS published_roots,
+        CASE WHEN a.edition_status != '' THEN a.id ELSE json_extract(a.value_json, '$.id') END AS attempt_id,
+        CASE WHEN a.edition_status != '' THEN a.edition_status ELSE json_extract(a.value_json, '$.status') END AS attempt_status,
+        CASE WHEN a.edition_status != '' THEN a.generated_at ELSE json_extract(a.value_json, '$.generatedAt') END AS attempt_generated,
+        CASE WHEN a.edition_status != '' THEN a.start_at ELSE json_extract(a.value_json, '$.window.startAt') END AS attempt_start,
+        CASE WHEN a.edition_status != '' THEN a.end_at ELSE json_extract(a.value_json, '$.window.endAt') END AS attempt_end,
+        CASE WHEN a.edition_status != '' THEN a.root_count ELSE COALESCE(json_array_length(a.value_json, '$.roots'), 0) END AS attempt_roots,
+        CASE WHEN e.published_id IS NOT NULL THEN 1 ELSE 0 END AS has_editorial
+        FROM information_tree_heads h
+        LEFT JOIN information_tree_editions p ON p.workspace_id=h.workspace_id AND p.id=h.published_id
+        LEFT JOIN information_tree_editions a ON a.workspace_id=h.workspace_id AND a.id=h.attempt_id
+        LEFT JOIN information_tree_editorial_heads e ON e.workspace_id=h.workspace_id AND e.published_id IS NOT NULL
+          AND e.period_key = (
+            CAST(CASE WHEN COALESCE(p.edition_status, a.edition_status, '') != '' THEN COALESCE(NULLIF(p.start_at, 0), a.start_at) ELSE json_extract(COALESCE(p.value_json, a.value_json), '$.window.startAt') END AS TEXT)
+            || ':' ||
+            CAST(CASE WHEN COALESCE(p.edition_status, a.edition_status, '') != '' THEN COALESCE(NULLIF(p.end_at, 0), a.end_at) ELSE json_extract(COALESCE(p.value_json, a.value_json), '$.window.endAt') END AS TEXT)
+          )
+        WHERE ${whereSql}
+        ${tailSql}`;
+}
+
+function slotFromIndexRow(row) {
+  if (!row) return null;
+  const hasEditorial = row.has_editorial === 1;
+  return { edition: indexEdition(row, 'published', hasEditorial), attempt: indexEdition(row, 'attempt', hasEditorial) };
+}
+
+const LATEST_DAILY_CACHE_MS = 60_000;
+
 export function createInformationTreeRepository(db,emit) {
+  const latestDailyCache = new Map();
+  const forgetLatestDaily = (workspace) => {
+    latestDailyCache.delete(String(workspace ?? ''));
+  };
+  const readLatestDaily = (workspace, load, now = Date.now()) => {
+    const key = String(workspace ?? '');
+    const clock = Number(now);
+    const at = Number.isFinite(clock) ? clock : Date.now();
+    const hit = latestDailyCache.get(key);
+    if (hit && at >= hit.at && at - hit.at < LATEST_DAILY_CACHE_MS) return hit.value;
+    const value = load();
+    latestDailyCache.set(key, { at, value });
+    return value;
+  };
   const read=(table,workspace,id)=>{
     const row=db.prepare(`SELECT value_json FROM ${table} WHERE workspace_id=? AND id=?`).get(workspace,id);
     return row ? JSON.parse(row.value_json) : null;
@@ -109,6 +159,7 @@ export function createInformationTreeRepository(db,emit) {
           && !(validPrevious && previous?.status==='ready' && edition.status==='partial' && after.size<=before.size)
           && [...oldVersions].every(([id,version])=>(newVersions.get(id) ?? -1)>=version);
         if(policyAllowed && headAllowed)db.prepare('INSERT OR REPLACE INTO information_tree_heads VALUES (?,?,?,?,?,?)').run(workspace,key,edition.layer,edition.window.startAt,canPublish ? edition.id : head?.published_id || null,edition.id);
+        if(canPublish && edition.layer==='daily') forgetLatestDaily(workspace);
         emit('report.tree.edition.saved.v1','information-tree',edition.id,{layer:edition.layer,status:edition.status,published:canPublish,...(!validPrevious ? {reason:prematureEmpty ? 'previous-premature-empty' : 'previous-needs-content-is-not-valid-content'} : {})},workspace);
         return {...edition,published:canPublish,...(!policyAllowed || !headAllowed ? {stale:true} : {})};
       })();
@@ -131,35 +182,14 @@ export function createInformationTreeRepository(db,emit) {
       }));
     },
     listEditionIndex(workspace,startAt,endAt,layer='hourly') {
-      return db.prepare(`SELECT h.layer AS layer,
-        CASE WHEN p.edition_status != '' THEN p.id ELSE json_extract(p.value_json, '$.id') END AS published_id,
-        CASE WHEN p.edition_status != '' THEN p.edition_status ELSE json_extract(p.value_json, '$.status') END AS published_status,
-        CASE WHEN p.edition_status != '' THEN p.generated_at ELSE json_extract(p.value_json, '$.generatedAt') END AS published_generated,
-        CASE WHEN p.edition_status != '' THEN p.start_at ELSE json_extract(p.value_json, '$.window.startAt') END AS published_start,
-        CASE WHEN p.edition_status != '' THEN p.end_at ELSE json_extract(p.value_json, '$.window.endAt') END AS published_end,
-        CASE WHEN p.edition_status != '' THEN p.root_count ELSE COALESCE(json_array_length(p.value_json, '$.roots'), 0) END AS published_roots,
-        CASE WHEN a.edition_status != '' THEN a.id ELSE json_extract(a.value_json, '$.id') END AS attempt_id,
-        CASE WHEN a.edition_status != '' THEN a.edition_status ELSE json_extract(a.value_json, '$.status') END AS attempt_status,
-        CASE WHEN a.edition_status != '' THEN a.generated_at ELSE json_extract(a.value_json, '$.generatedAt') END AS attempt_generated,
-        CASE WHEN a.edition_status != '' THEN a.start_at ELSE json_extract(a.value_json, '$.window.startAt') END AS attempt_start,
-        CASE WHEN a.edition_status != '' THEN a.end_at ELSE json_extract(a.value_json, '$.window.endAt') END AS attempt_end,
-        CASE WHEN a.edition_status != '' THEN a.root_count ELSE COALESCE(json_array_length(a.value_json, '$.roots'), 0) END AS attempt_roots,
-        CASE WHEN e.published_id IS NOT NULL THEN 1 ELSE 0 END AS has_editorial
-        FROM information_tree_heads h
-        LEFT JOIN information_tree_editions p ON p.workspace_id=h.workspace_id AND p.id=h.published_id
-        LEFT JOIN information_tree_editions a ON a.workspace_id=h.workspace_id AND a.id=h.attempt_id
-        LEFT JOIN information_tree_editorial_heads e ON e.workspace_id=h.workspace_id AND e.published_id IS NOT NULL
-          AND e.period_key = (
-            CAST(CASE WHEN COALESCE(p.edition_status, a.edition_status, '') != '' THEN COALESCE(NULLIF(p.start_at, 0), a.start_at) ELSE json_extract(COALESCE(p.value_json, a.value_json), '$.window.startAt') END AS TEXT)
-            || ':' ||
-            CAST(CASE WHEN COALESCE(p.edition_status, a.edition_status, '') != '' THEN COALESCE(NULLIF(p.end_at, 0), a.end_at) ELSE json_extract(COALESCE(p.value_json, a.value_json), '$.window.endAt') END AS TEXT)
-          )
-        WHERE h.workspace_id=? AND h.layer=? AND h.start_at>=? AND h.start_at<?
-        ORDER BY h.start_at DESC`).all(workspace,layer,startAt,endAt).map(row=>{
-        const hasEditorial=row.has_editorial===1;
-        return {edition:indexEdition(row,'published',hasEditorial),attempt:indexEdition(row,'attempt',hasEditorial)};
-      });
+      return db.prepare(editionIndexSql('h.workspace_id=? AND h.layer=? AND h.start_at>=? AND h.start_at<?', 'ORDER BY h.start_at DESC'))
+        .all(workspace,layer,startAt,endAt).map(slotFromIndexRow);
     },
+    latestDailySlot(workspace) {
+      return slotFromIndexRow(db.prepare(editionIndexSql("h.workspace_id=? AND h.layer='daily' AND h.published_id IS NOT NULL", 'ORDER BY h.start_at DESC LIMIT 1')).get(workspace));
+    },
+    readLatestDaily,
+    forgetLatestDaily,
     listInformationInWindow(workspace, window, {limit=200, cursor=null}={}) {
       const safe=Math.max(1, Math.min(Number(limit)||200, 200));
       return db.prepare(`SELECT n.value_json, h.event_at, h.source_id, h.source_version

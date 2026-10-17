@@ -66,6 +66,18 @@ test('status and livenews map to feed items without raw fields', () => {
   }));
   assert.equal(news.externalId, 'livenews:9');
   assert.equal(news.authorName, '雪球7x24');
+  assert.equal(news.title, '');
+  assert.equal(news.body, '央行公告');
+
+  const bracketed = xueqiuToFeedItem(mapLivenewsItem({
+    id: 10,
+    text: '【央行】宣布降准五十个基点',
+    created_at: 1_700_000_200_000,
+    target: '/S/SH000001',
+  }));
+  assert.equal(bracketed.title, '央行');
+  assert.equal(bracketed.body, '宣布降准五十个基点');
+  assert.equal(bracketed.body.startsWith('【'), false);
 });
 
 test('xueqiu service caches and reports login required', async () => {
