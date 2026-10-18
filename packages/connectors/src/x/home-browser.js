@@ -310,6 +310,48 @@ export function buildTweetExtractExpression() {
             authorHandle = handleMatch ? handleMatch[1] : getText(handleLink).replace(/^@/, "").trim();
           }
         }
+        let authorRestId = null;
+        let authorAvatar = null;
+        let reposterHandle = null;
+        let reposterName = null;
+        let reposterRestId = null;
+        let reposterAvatar = null;
+        try {
+          let node = article;
+          for (let step = 0; step < 8 && node && !authorRestId; step += 1) {
+            const fiberKey = Object.keys(node).find((key) => key.indexOf("__reactFiber") === 0 || key.indexOf("__reactInternalInstance") === 0);
+            let fiber = fiberKey ? node[fiberKey] : null;
+            let hops = 0;
+            while (fiber && hops < 8 && !authorRestId) {
+              const props = fiber.memoizedProps || fiber.pendingProps || null;
+              const screen = props && (props.screen_name || props.screenName || (props.legacy && props.legacy.screen_name) || (props.user && (props.user.screen_name || props.user.screenName)) || "");
+              const candidate = props && (props.rest_id || props.restId || (props.user && (props.user.rest_id || props.user.id_str)) || "");
+              if (authorHandle && String(screen || "").replace(/^@/, "").toLowerCase() === String(authorHandle).replace(/^@/, "").toLowerCase() && /^\\d{4,}$/.test(String(candidate || ""))) {
+                authorRestId = String(candidate);
+              }
+              fiber = fiber.return;
+              hops += 1;
+            }
+            node = node.parentElement;
+          }
+          const avatarImg = [...article.querySelectorAll("img")].find((img) => /profile_images/.test(img.src || "") && !img.closest('[data-testid="tweetPhoto"]'));
+          authorAvatar = avatarImg ? (avatarImg.src || "") : null;
+          const context = article.querySelector('[data-testid="socialContext"]');
+          const contextText = getText(context);
+          if (context && /(repost|reposted|转帖|转发|已转帖)/i.test(contextText) && !/like/i.test(contextText)) {
+            const link = context.querySelector("a");
+            const href = link ? (link.getAttribute("href") || "") : "";
+            const handleMatch = href.match(/^\\/([^/?#]+)/);
+            reposterHandle = handleMatch ? handleMatch[1] : null;
+            reposterName = link ? getText(link).replace(/\\s+/g, " ").trim() : null;
+            const userHref = href.match(/\\/i\\/user\\/(\\d+)/);
+            reposterRestId = userHref ? userHref[1] : null;
+            const avatar = link ? link.querySelector("img") : null;
+            reposterAvatar = avatar ? (avatar.src || "") : null;
+          }
+        } catch (authorError) {
+          authorRestId = authorRestId || null;
+        }
         const replyEl = article.querySelector('[data-testid="reply"]');
         let replyCount = null;
         if (replyEl) {
@@ -330,6 +372,12 @@ export function buildTweetExtractExpression() {
           truncated: showMoreControl || overflow,
           author_handle: authorHandle,
           author_name: authorName,
+          author_rest_id: authorRestId,
+          author_avatar: authorAvatar,
+          reposter_handle: reposterHandle,
+          reposter_name: reposterName,
+          reposter_rest_id: reposterRestId,
+          reposter_avatar: reposterAvatar,
           reply_count: replyCount,
           published_at: time,
           published_timestamp: time ? Math.floor(new Date(time).getTime() / 1000) : null,
@@ -341,6 +389,15 @@ export function buildTweetExtractExpression() {
     }).filter((item) => item && item.tweet_id);
     return { items };
   })()`;
+}
+
+export function acceptTweetRestId(screenName, authorHandle, restId) {
+  const id = String(restId || '').trim();
+  const screen = String(screenName || '').replace(/^@/, '').trim();
+  const handle = String(authorHandle || '').replace(/^@/, '').trim();
+  if (!screen || !handle || screen.toLowerCase() !== handle.toLowerCase()) return '';
+  if (!/^\d{4,}$/.test(id)) return '';
+  return id;
 }
 
 function buildScrollExpression() {
@@ -725,6 +782,12 @@ export function createXHomeBrowserClient(options = {}) {
           }),
           author_handle: item.author_handle,
           author_name: item.author_name,
+          author_rest_id: item.author_rest_id,
+          author_avatar: item.author_avatar,
+          reposter_handle: item.reposter_handle,
+          reposter_name: item.reposter_name,
+          reposter_rest_id: item.reposter_rest_id,
+          reposter_avatar: item.reposter_avatar,
           published_at: item.published_at,
           published_timestamp: item.published_timestamp,
           text_source: item.text_source,

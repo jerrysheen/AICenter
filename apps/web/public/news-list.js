@@ -127,20 +127,35 @@ export function newsRow(row) {
   }
   open.append(title);
   const sourceText = String(row.source || '').trim();
+  const authorName = String(row.authorName || sourceText || '').trim();
+  const linkAuthor = Boolean(row.authorId && typeof row.onAuthor === 'function' && authorName);
   const tags = (Array.isArray(row.tags) ? row.tags : []).map((tag) => String(tag || '').trim()).filter(Boolean);
-  if (sourceText || tags.length) {
-    const source = document.createElement('small');
-    source.className = 'news-row-source';
-    if (sourceText) source.textContent = sourceText;
+  const sourceLine = (sourceText || tags.length) ? document.createElement('small') : null;
+  if (sourceLine) {
+    sourceLine.className = 'news-row-source';
+    if (linkAuthor) {
+      const author = document.createElement('button');
+      author.type = 'button';
+      author.className = 'author-name-link';
+      author.textContent = authorName;
+      author.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        row.onAuthor();
+      });
+      sourceLine.append(author);
+      const rest = sourceText && sourceText !== authorName ? sourceText : '';
+      if (rest) sourceLine.append(document.createTextNode(` · ${rest}`));
+    } else if (sourceText) sourceLine.textContent = sourceText;
     for (const tag of tags) {
       const chip = document.createElement('span');
       chip.className = `news-tag${tag === '时效不足' ? ' reading-stale' : ''}`;
       chip.textContent = tag;
-      source.append(chip);
+      sourceLine.append(chip);
     }
-    open.append(source);
+    if (!linkAuthor) open.append(sourceLine);
   }
-  const tail = [open];
+  const tail = linkAuthor && sourceLine ? [open, sourceLine] : [open];
   const summaryText = String(row.summary || '').trim();
   if (summaryText) {
     const summary = document.createElement('p');

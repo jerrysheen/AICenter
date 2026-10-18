@@ -1097,6 +1097,8 @@ export function createInformationTreePage(host) {
     const row=newsRow({
       id:item.nodeId, title:item.title || '', at:when.at, ingested:when.ingested,
       source:readingSourceLine(item, {keepDirection}), tags, muted,
+      authorId:item.authorId || '', authorName:item.author || '',
+      onAuthor:item.authorId ? ()=>host.openAuthor?.(item.authorId) : undefined,
       focused:Boolean(host.readingFocused?.(item.nodeId)),
       onStar:()=>host.focusReading?.(readingFocusSnapshot(item, edition)),
       attachOpen(open){

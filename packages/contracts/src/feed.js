@@ -127,6 +127,7 @@ export const SaveCaptureInputSchema = z.object({
   status: CaptureStatusSchema.default('captured'),
   publishedAt: NullableEpochMillisSchema.default(null),
   capturedAt: EpochMillisSchema.optional(),
+  authorNativeId: z.string().trim().max(256).nullable().default(null),
   metadata: MetadataSchema,
 }).strict();
 
@@ -222,6 +223,8 @@ export const FeedItemsEnrichJobInputSchema = z.object({
 export const FeedTranslationJobInputSchema = z.object({
   workspaceId: WorkspaceIdSchema.default('local'),
   targetLang: z.enum(['zh', 'en']).default('zh'),
+  glossary: z.string().trim().min(1).max(4_000).optional(),
+  model: z.literal('gemma-4-26b-a4b-it').optional(),
   items: z.array(z.object({
     id: z.string().trim().min(1).max(256),
     text: z.string().trim().min(1).max(FEED_TRANSLATION_TEXT_MAX),

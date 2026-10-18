@@ -691,7 +691,7 @@ test('multi-outcome card shows each result and 较昨日 without backend fields'
     { eventId: '606422', marketId: 'cut-25', outcomeKey: 'cut-25', observedAt: now - POLYMARKET_DAY_MS, probability: '0.10', granularity: '5m' },
   ];
   const [quote] = projectWatchlistQuotes(outcomes, points, now);
-  assert.equal(quote.outcome, 'No change');
+  assert.equal(quote.outcome, '不变');
   assert.equal(quote.midPrice, '0.62');
   assert.equal(quote.midPrice24hAgo, '0.50');
   assert.equal('changeBasis' in quote, false);
@@ -715,7 +715,7 @@ test('multi-outcome card shows each result and 较昨日 without backend fields'
   context.appendPredictionQuote(root, { ...quote, notices: ['1 小时上升 6.0 个百分点'], statusLabel: '下一期尚未出现' });
   const text = textOf(root);
   const main = findNodes(root, (node) => hasClass(node, 'prediction-side'))[0];
-  assert.match(textOf(main), /No change/);
+  assert.match(textOf(main), /不变/);
   assert.match(textOf(main), /62\.0%/);
   assert.match(textOf(main), /较昨日 \+12\.0/);
   assert.equal(textOf(main).includes('25 bps'), false);
@@ -724,9 +724,9 @@ test('multi-outcome card shows each result and 较昨日 without backend fields'
   assert.equal(details.children[0].textContent, '其余区间');
   const listed = findNodes(details, (node) => hasClass(node, 'prediction-outcome'));
   assert.equal(listed.length, 3);
-  assert.match(textOf(listed[0]), /25 bps decrease/);
+  assert.match(textOf(listed[0]), /下降 25 个基点/);
   assert.match(textOf(listed[0]), /较昨日 \+10\.0/);
-  assert.equal(text.includes('100 bps decrease'), false);
+  assert.equal(text.includes('下降 100 个基点'), false);
   assert.match(text, /1 小时上升 6\.0 个百分点/);
   assert.match(text, /下一期尚未出现/);
   assert.equal(text.includes('上次'), false);
@@ -783,10 +783,10 @@ test('numeric changeBasis says 较 Nh 前, and 上次 only uses a real lastPrice
   assert.equal(context.predictionShare(null), null);
   assert.equal(context.predictionShare(''), null);
   assert.equal(context.formatPredictionShare(null), '—');
-  assert.equal(context.predictionDayChange('0.62', '0.50', 4).text, '较 4h 前 +12.0');
-  assert.equal(context.predictionDayChange('0.62', '0.50', 3).text, '较 3h 前 +12.0');
-  assert.equal(context.predictionDayChange('0.62', '0.50', '4').text, '较 4h 前 +12.0');
-  assert.equal(context.predictionDayChange('0.62', '0.50').text, '较昨日 +12.0');
+  assert.equal(context.predictionDayChange('0.62', '0.50', 4).text, '较 4h 前 +12.0 个百分点');
+  assert.equal(context.predictionDayChange('0.62', '0.50', 3).text, '较 3h 前 +12.0 个百分点');
+  assert.equal(context.predictionDayChange('0.62', '0.50', '4').text, '较 4h 前 +12.0 个百分点');
+  assert.equal(context.predictionDayChange('0.62', '0.50').text, '较昨日 +12.0 个百分点');
 
   const quote = {
     quoteId: 'polymarket:event:606422',

@@ -178,7 +178,9 @@ html.has-known-session body:not(.is-ready) .connection-gate { display: none; }
   cursor: pointer;
   transition: background-color 200ms var(--motion), color 200ms var(--motion);
 }
-.nav-item:hover { background: var(--interactive-hover); }
+@media (hover: hover) {
+  .nav-item:hover { background: var(--interactive-hover); }
+}
 .nav-item, .tab-item { position: relative; }
 .nav-item.has-live::after, .tab-item.has-live::after {
   content: '';
@@ -1324,6 +1326,18 @@ main {
 }
 .quote-blurb { display: block; margin-top: 2px; color: var(--font-tertiary); font-size: 11px; font-style: normal; }
 .market-spark { width: 84px; height: 24px; }
+.quote-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--font-tertiary);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  vertical-align: -2px;
+}
+.market-row.is-stale .quote-change,
+.index-card.is-stale b { color: var(--warning); }
 .market-row .quote-price {
   width: auto;
   min-width: 0;
@@ -2119,6 +2133,10 @@ button.source-card:active { transform: scale(0.985); background: var(--backgroun
 .market-native-panel > header small, .market-native-panel > header span { color: var(--font-tertiary); font-size: 11px; }
 .market-native-panel > header h3 { margin: 0; font-size: 16px; font-weight: 700; }
 .market-native-list { display: grid; gap: 1px; max-height: 560px; overflow: auto; background: var(--separator); }
+.market-native-prediction-panel .market-native-list {
+  max-height: none;
+  overflow: visible;
+}
 .market-native-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--space-3); align-items: center; min-height: 66px; padding: var(--space-3) var(--space-4); background: var(--background-primary); cursor: pointer; }
 .market-native-row > div { display: grid; gap: 4px; min-width: 0; }
 .market-native-row b { overflow: hidden; color: var(--font-primary); font-size: 13px; line-height: 18px; text-overflow: ellipsis; }
@@ -4450,6 +4468,14 @@ body[data-view="inspire"] .dispatch-composer.hidden { display: none; }
   font-size: 13px;
   line-height: 1.7;
 }
+.overview-columns { display: flex; flex-direction: column; }
+.overview-col { display: contents; }
+.home-slot-quotes { order: 1; }
+.home-slot-hourly { order: 2; }
+.home-slot-latest { order: 3; }
+.home-slot-daily { order: 4; }
+.home-slot-official { order: 5; }
+.home-slot-focus { order: 6; }
 @media (min-width: 700px) {
   .overview-columns {
     display: grid;
@@ -4459,12 +4485,20 @@ body[data-view="inspire"] .dispatch-composer.hidden { display: none; }
     column-gap: 32px;
     align-items: start;
   }
-  .dashboard-timeline, .home-slot-hourly { grid-column: 1; grid-row: 1; }
-  .dashboard-market, .home-slot-quotes { grid-column: 2; grid-row: 1; }
-  .home-slot-latest { grid-column: 1; grid-row: 2; }
-  .home-slot-daily { grid-column: 2; grid-row: 2; }
-  .home-slot-official { grid-column: 2; grid-row: 3; }
-  .home-slot-focus { grid-column: 2; grid-row: 4; }
+  .overview-col {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    grid-row: 1;
+  }
+  .overview-col-main { grid-column: 1; }
+  .overview-col-side { grid-column: 2; }
+  .home-slot-quotes,
+  .home-slot-hourly,
+  .home-slot-latest,
+  .home-slot-daily,
+  .home-slot-official,
+  .home-slot-focus { order: 0; }
   .latest-head { margin-top: 0; border-top: 0; }
   .overview-subnav.is-on { margin: 0 calc(var(--page-gutter) * -1); padding: 0 var(--page-gutter); }
 }
@@ -5192,6 +5226,12 @@ button:disabled { cursor: default; }
 .nav-item.is-active, .tab-item.is-active, .text-tab.is-active { font-weight: 650; }
 .tab-item.is-active span { text-decoration: underline; text-underline-offset: 4px; }
 #nav-back { width: auto; max-width: 45%; gap: 2px; font-size: 13px; color: var(--brand); }
+/* The back control sits in front of the title. On 灵感 it used to shove 「灵感」/「任务详情」 off the reading column. */
+body[data-view="inspire"]:has(#nav-back:not(.hidden)) #nav-back {
+  flex: 1 0 100%;
+  max-width: none;
+  justify-content: flex-start;
+}
 #nav-back span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 body[data-reader="1"] #nav-back { display: none; }
 .text-button:disabled { color: var(--font-tertiary); opacity: .65; }
@@ -5763,4 +5803,65 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
 .southbound-daily-line { margin: 0 0 var(--space-3); padding: var(--space-3); border-radius: var(--radius-image); background: var(--background-secondary); }
 @media (max-width: 720px) {
   .southbound-channels { grid-template-columns: 1fr; }
+}
+
+.author-screen, .author-page { padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
+.author-switch { display: flex; gap: 8px; overflow-x: auto; padding: 8px 0 12px; }
+.author-switch-item, .author-follow, .author-read-all, .author-back, .author-more, .author-name-link, .author-row-main, .author-item {
+  min-height: 44px;
+}
+.author-switch-item {
+  border: 0; border-radius: 999px; padding: 0 14px; background: var(--comp-tertiary, #f2f3f5); color: inherit;
+}
+.author-switch-item.is-active { background: var(--brand, #0A59F7); color: #fff; }
+.author-list-rows { display: flex; flex-direction: column; }
+.author-group { margin: 12px 0 4px; font-size: 13px; color: var(--font-tertiary, #8a9199); }
+.author-row { display: flex; align-items: stretch; gap: 8px; min-height: 64px; border-bottom: 1px solid var(--comp-tertiary, #f2f3f5); }
+.author-row.is-quiet { opacity: 0.55; }
+.author-row-main {
+  flex: 1; display: flex; gap: 12px; align-items: center; min-width: 0; padding: 8px 0;
+  border: 0; background: transparent; color: inherit; text-align: left;
+}
+.author-avatar {
+  width: 40px; height: 40px; border-radius: 20px; object-fit: cover; flex: none;
+  display: grid; place-items: center; color: #fff; font-weight: 700;
+}
+.author-row-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.author-row-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.author-row-title strong { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.author-platform { font-size: 12px; color: var(--font-tertiary, #8a9199); flex: none; }
+.author-unread {
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--brand, #0A59F7);
+  color: #fff; font-size: 11px; line-height: 18px; text-align: center;
+}
+.author-row-preview { color: var(--font-tertiary, #8a9199); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.author-follow, .author-read-all, .author-back, .author-more {
+  border: 0; background: transparent; color: var(--brand, #0A59F7); padding: 0 8px;
+}
+.author-follow.is-on { color: var(--font-tertiary, #8a9199); }
+.author-page-head {
+  position: sticky; z-index: 2; display: flex; align-items: center; gap: 8px;
+  top: calc(var(--title-bar, 52px) + env(safe-area-inset-top));
+  background: var(--bg, #fff); padding: 8px 0;
+}
+.author-page-title { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; }
+.author-page-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.author-page-actions { display: flex; align-items: center; }
+.author-page-meta { color: var(--font-secondary, #4e5969); font-size: 14px; line-height: 1.5; }
+.author-page-meta a { color: var(--brand, #0A59F7); }
+.author-items { margin-top: 16px; }
+.author-items.is-quiet { opacity: 0.55; }
+.author-item {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%;
+  padding: 10px 0; border: 0; border-bottom: 1px solid var(--comp-tertiary, #f2f3f5);
+  background: transparent; color: inherit; text-align: left;
+}
+.author-item time { color: var(--font-tertiary, #8a9199); font-size: 12px; }
+.author-name-link {
+  border: 0; background: transparent; color: inherit; padding: 8px 0;
+  text-decoration: underline dashed; text-underline-offset: 3px; text-align: left;
+}
+@media (min-width: 840px) {
+  .author-list-rows { display: grid; grid-template-columns: 1fr 1fr; column-gap: 24px; }
+  .author-group { grid-column: 1 / -1; }
 }

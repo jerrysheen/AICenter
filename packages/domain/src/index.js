@@ -1,3 +1,4 @@
+import { createAuthorService } from './author-service.js';
 import { createFeedService } from './feed-service.js';
 import { createFeedInteractionService } from './feed-interaction-service.js';
 import { createInformationTreeReader } from './information-tree-service.js';
@@ -95,6 +96,16 @@ export function createDomainServices({
       flashSources,
     })
     : null);
+  const authorQualityRule = feedFilter?.config?.mode === 'enforce' && feedFilter.config.rule === 'all-three-0.60'
+    ? 'all-three-0.60'
+    : '';
+  const authors = store.repositories.authors
+    ? createAuthorService({
+      authorRepository: store.repositories.authors,
+      feedRepository: store.repositories.feed,
+      qualityRule: authorQualityRule,
+    })
+    : null;
   const feed = createFeedService({
     legacyRepository: store,
     feedRepository: store.repositories.feed,
@@ -158,6 +169,7 @@ export function createDomainServices({
     modelUsage: createModelUsageService({ repository: store.repositories.modelUsage, workspaceId, rates: modelUsageRates, getJob: id => store.getJob(id) }),
     identity: createIdentityService({ identityRepository: store, loginCredential }),
     feed,
+    authors,
     feedInteraction: createFeedInteractionService({ feedRepository: store.repositories.feed, runtimeRepository: store }),
     media,
     hardwarePrices: hardwarePriceService,

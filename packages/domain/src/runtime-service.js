@@ -107,10 +107,40 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort, res
   if (!runtimeRepository) throw new Error('runtimeRepository is required');
 
   return Object.freeze({
+    openTranslationIds(workspaceId = 'local') {
+      const ids = new Set();
+      for (const job of runtimeRepository.listOpenJobs?.('feed.translation.run') || []) {
+        if ((job.workspaceId || 'local') !== workspaceId) continue;
+        for (const item of job.input?.items || []) {
+          const id = String(item?.id || '').trim();
+          if (id) ids.add(id);
+        }
+      }
+      return ids;
+    },
     requestTranslation(input) {
       const value = FeedTranslationJobInputSchema.parse(input);
-      const titleLike = value.items.every((item) => translationTextIsTitle(item.text));
-      const slices = sliceTranslationJobItems(value.items, {
+      const openJobs = (runtimeRepository.listOpenJobs?.('feed.translation.run') || [])
+        .filter((job) => (job.workspaceId || 'local') === value.workspaceId);
+      const busy = new Set();
+      for (const job of openJobs) {
+        for (const item of job.input?.items || []) {
+          const id = String(item?.id || '').trim();
+          if (id) busy.add(id);
+        }
+      }
+      const seen = new Set();
+      const freshItems = [];
+      for (const item of value.items) {
+        if (seen.has(item.id) || busy.has(item.id)) continue;
+        seen.add(item.id);
+        freshItems.push(item);
+      }
+      if (!freshItems.length) {
+        return openJobs.find((job) => (job.input?.items || []).some((item) => value.items.some((row) => row.id === item.id))) || null;
+      }
+      const titleLike = freshItems.every((item) => translationTextIsTitle(item.text));
+      const slices = sliceTranslationJobItems(freshItems, {
         titleLike,
         titleLimit: translationTitleBatchLimit(env?.AI_CENTER_TRANSLATION_TITLE_BATCH_LIMIT),
         bodyLimit: translationBodyBatchLimit(env?.AI_CENTER_TRANSLATION_BODY_BATCH_LIMIT),

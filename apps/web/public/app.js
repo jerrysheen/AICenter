@@ -18,6 +18,11 @@ import {
   pickHomeQuoteCards,
   quoteStatusText,
   marketStaleLabel,
+  marketClosedLabel,
+  marketFillDelayMs,
+  quoteStaleLabel,
+  quoteClosedLabel,
+  homeDataDelayLabel,
   homeRequestPlan,
   hourlyEditions,
   homeHourSections,
@@ -32,6 +37,7 @@ import {
 } from './home-timeline.js?v=dev';
 import { decodeHtmlEntities } from './html-text.js?v=dev';
 import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, prioritizeReadableFeedRows, renderNewsList, reportItemTime } from './news-list.js?v=dev';
+import { createAuthorView } from './author-view.js?v=dev';
 
 const requestLayer = createRequestLayer();
 const pageCache = createPageCache({
@@ -115,6 +121,7 @@ const state = {
   marketFilter: '',
   markets: { overview: null, us: null, asia: null, cn: null },
   marketLoading: false,
+  marketPending: {},
   marketError: '',
   marketBoardErrors: {},
   marketRequestId: 0,
@@ -275,6 +282,7 @@ const state = {
   homeEarlier: false,
   homeLoadToken: 0,
   homeDataAt: 0,
+  homeGeneratedAt: 0,
   homeLoadStartedAt: 0,
   homeSlow: false,
   sourceLocalizations: {},
@@ -324,6 +332,7 @@ const state = {
   apiTokenLoad: 0,
   pageKind: '',
   pageId: '',
+  authorView: true,
   trail: [],
   originalBodies: {},
   officialBodies: {},
@@ -335,6 +344,7 @@ const state = {
 const pageKinds = {
   hardware: {title:'AI硬件价格',nav:'market'},
   article: { nav: 'sources', title: '阅读' },
+  author: { nav: 'sources', title: '作者' },
   event: { nav: 'sources', title: '日程详情' },
   source: { nav: 'sources', title: '信源' },
   quote: { nav: 'market', title: '行情' },
@@ -1018,12 +1028,13 @@ function parseLocation(name = (location.hash || '#sources').slice(1)) {
   const hourNumber = hourText != null && /^\d{1,2}$/.test(hourText) ? Number(hourText) : NaN;
   const reportHour = Number.isInteger(hourNumber) && hourNumber >= 0 && hourNumber <= 23 ? hourNumber : null;
   const reportNode = view === 'report' ? (new URLSearchParams(queryPart).get('node') || '') : '';
+  const feedTab = view === 'feed' && new URLSearchParams(queryPart).get('tab') === 'author' ? 'author' : '';
   const marketTab = view === 'market' && marketPane === 'assets' && new URLSearchParams(queryPart).get('tab') === 'events'
     ? 'events'
     : '';
   return {
     view, askSessionId, marketPane, assetPane, sourcesPane, settingsPane, inspirePane,
-    selectedWorkPackageId, pageKind, pageId, reportPane, reportDate, reportHour, reportNode, marketTab,
+    selectedWorkPackageId, pageKind, pageId, reportPane, reportDate, reportHour, reportNode, marketTab, feedTab,
   };
 }
 
@@ -1227,6 +1238,10 @@ function setView(name, options = {}) {
   }
   state.pageKind = view === 'page' ? parsed.pageKind : '';
   state.pageId = view === 'page' ? parsed.pageId : '';
+  if (view === 'feed') {
+    if (parsed.feedTab === 'author' && state.authorView !== false) state.channel = 'author';
+    else if (state.channel === 'author') state.channel = 'all';
+  }
   if (state.bootstrapped && (previous !== view || previousPageKind !== state.pageKind)) {
     logBehavior('nav.tab', { view, page: view === 'page' ? String(state.pageKind || '') : '' });
   }
@@ -1350,6 +1365,8 @@ function setView(name, options = {}) {
               ? (state.selectedWorkPackageId ? `#inspire/tasks/${state.selectedWorkPackageId}` : '#inspire/tasks')
               : view === 'report'
                 ? reportHash()
+                : view === 'feed' && state.channel === 'author'
+                  ? '#feed?tab=author'
                   : `#${view}`;
   if (location.hash !== nextHash) {
     const entry = { ...(options.fromHistory ? history.state : {}), aiCenter: true, hash: nextHash,
@@ -1361,6 +1378,10 @@ function setView(name, options = {}) {
   syncHeaderSearch();
   if (timingToken && !['sources', 'feed', 'report', 'ask'].includes(view)) {
     requestAnimationFrame(() => requestAnimationFrame(() => finishViewTiming(timingToken)));
+  }
+  if (view === 'feed' && state.channel === 'author' && elements?.feed) {
+    renderChannels();
+    renderPosts();
   }
   if (view === 'feed' && (leaving || options.replace)) scrollFeedToTop();
   else if (leaving) restoreViewScroll(view);
@@ -2938,6 +2959,7 @@ function contentItemAsPost(item) {
     live: true,
     platform,
     author: readerAuthorName(item, platform),
+    authorId: item.authorId || '',
     handle: item.captureMetadata?.authorHandle || '',
     title: item.title,
     body: item.body || item.summary || '无正文',
@@ -3726,6 +3748,7 @@ function feedAsItem(item, platform) {
     platform,
     externalId: item.externalId || '',
     author: item.authorName || item.authorHandle || (platform === 'bilibili' ? 'B站' : platform === 'trendforce' ? 'TrendForce' : platform === 'xueqiu' ? '雪球' : 'X'),
+    authorId: item.authorId || '',
     handle: item.authorHandle || '',
     time: item.publishedAt ? formatTime(item.publishedAt) : '',
     title: item.title,
@@ -4107,6 +4130,7 @@ const FEED_SCOPE_SOURCES = {
 };
 
 function feedSourcesForScope(channel, platform) {
+  if (channel === 'author') return [];
   if (platform === 'media') return [...FEED_SCOPE_SOURCES.media];
   const listed = FEED_SCOPE_SOURCES[channel];
   return listed ? [...listed] : [...FEED_SCOPE_SOURCES.all];
@@ -4288,6 +4312,16 @@ function applyFeedPlatform(id) {
 }
 
 function selectFeedScope(id) {
+  if (id === 'author') {
+    if (state.authorView === false) return;
+    state.channel = 'author';
+    state.feedPlatform = 'all';
+    state.platform = 'all';
+    setView('feed?tab=author');
+    renderChannels();
+    renderPosts();
+    return;
+  }
   if (id === 'flash') {
     state.channel = 'flash';
     state.feedPlatform = 'all';
@@ -4369,6 +4403,7 @@ function renderFeedActionButton() {
 function renderChannels() {
   const current = currentFeedScopeId();
   const tabs = [...channels, ...feedSourceTabs, { id: 'media', label: '媒体' }];
+  if (state.authorView !== false) tabs.push({ id: 'author', label: '作者' });
   if (elements['channel-tabs']) {
     elements['channel-tabs'].setAttribute('aria-label', '信息范围与信源');
   }
@@ -4942,6 +4977,9 @@ function feedToNewsRow(post) {
     ingested: moment.ingested,
     effectiveLabel: moment.effectiveLabel,
     source: feedSourceLine(post),
+    authorId: state.authorView === false ? '' : (post.authorId || ''),
+    authorName: post.author || '',
+    onAuthor: post.authorId && state.authorView !== false ? () => openAuthor(post.authorId) : undefined,
     tags,
     muted: Boolean(post.lowValue || post.bulkNotice),
     stayInDay: Boolean(post.bulkNotice),
@@ -5008,6 +5046,15 @@ function socialShownRows(rows) {
 }
 
 function renderPosts() {
+  if (state.channel === 'author') {
+    if (state.authorView === false) state.channel = 'all';
+    else {
+      elements['feed-count'].textContent = '';
+      authorView().renderList(elements.feed);
+      observeFeedSentinel(null, false);
+      return;
+    }
+  }
   if (state.channel === 'flash') {
     renderFlashPosts();
     return;
@@ -5114,6 +5161,25 @@ function syncDialogTranslation(post) {
   }
   elements['post-dialog']?.classList.remove('has-translation');
   elements['dialog-translate']?.classList.add('hidden');
+}
+
+let authorUi = null;
+
+function authorView() {
+  if (!authorUi) {
+    authorUi = createAuthorView({
+      api,
+      openAuthor,
+      openArticle,
+    });
+  }
+  return authorUi;
+}
+
+function openAuthor(authorId) {
+  const id = String(authorId || '').trim();
+  if (!id || state.authorView === false) return;
+  openPage('author', id);
 }
 
 function openArticle(post) {
@@ -6363,6 +6429,21 @@ function formatQuoteTime(asOf) {
   });
 }
 
+function quoteNeedsSpinner(item) {
+  return item?.lastPrice == null && Boolean(
+    state.marketPending[state.stockBoard]
+    || state.marketPending.overview
+    || state.marketLoading
+  );
+}
+
+function sparkMarkup(item) {
+  if (quoteNeedsSpinner(item) && (!item?.sparkline || item.sparkline.length < 2)) {
+    return '<span class="quote-spinner" role="status" aria-label="行情加载中"></span>';
+  }
+  return sparkSvg(item?.sparkline, item?.changePct);
+}
+
 function sparkSvg(points, changePct) {
   if (!points || points.length < 2) return '<span class="spark empty">—</span>';
   const min = Math.min(...points);
@@ -6405,7 +6486,11 @@ async function loadMarket({ board = state.stockBoard, priority = 4, fresh = fals
     if (isActiveBoard && requestId !== state.marketRequestId) return;
     const previous = state.markets[board];
     const accepted = acceptMarketPayload(previous, payload.market);
-    state.markets[payload.market?.board || board] = accepted;
+    const boardName = payload.market?.board || board;
+    state.markets[boardName] = accepted;
+    state.marketPending[boardName] = Boolean(payload.pending);
+    if (payload.pending) scheduleMarketFill(boardName);
+    else clearMarketFill(boardName);
     state.marketBoardErrors[board] = '';
     if (isActiveBoard) state.marketError = '';
     if (isActiveBoard) renderMarket();
@@ -6436,6 +6521,26 @@ async function loadMarket({ board = state.stockBoard, priority = 4, fresh = fals
       renderMarket();
     }
   }
+}
+
+const marketFillTimers = {};
+const marketFillAttempts = {};
+
+function clearMarketFill(board) {
+  if (marketFillTimers[board]) window.clearTimeout(marketFillTimers[board]);
+  marketFillTimers[board] = 0;
+  marketFillAttempts[board] = 0;
+}
+
+function scheduleMarketFill(board) {
+  const attempts = marketFillAttempts[board] || 0;
+  if (attempts >= 8 || marketFillTimers[board]) return;
+  const delay = marketFillDelayMs(attempts);
+  marketFillAttempts[board] = attempts + 1;
+  marketFillTimers[board] = window.setTimeout(() => {
+    marketFillTimers[board] = 0;
+    loadMarket({ board, priority: 2 }).catch(() => {});
+  }, delay);
 }
 
 function currentMarket() {
@@ -6625,6 +6730,13 @@ function renderHubTicker() {
     change.className = tone;
     change.textContent = known ? formatPct(up, item.changePct) : LOADING_QUOTE;
     button.append(name, price, change);
+    if (quoteNeedsSpinner(item)) {
+      const spinner = document.createElement('span');
+      spinner.className = 'quote-spinner';
+      spinner.setAttribute('role', 'status');
+      spinner.setAttribute('aria-label', '行情加载中');
+      button.append(spinner);
+    }
     button.addEventListener('click', () => openPage('quote', item.symbol));
     return button;
   }));
@@ -6638,9 +6750,19 @@ function renderHubTicker() {
       slow: Boolean(state.homeSlow && pending),
     });
     elements['hub-market-note'].replaceChildren();
+    const delay = homeDataDelayLabel(state.homeGeneratedAt);
     const stale = marketStaleLabel(state.markets.overview);
-    if (stale && status.kind !== 'error' && status.kind !== 'slow') {
-      elements['hub-market-note'].textContent = stale;
+    const closed = stale ? '' : marketClosedLabel(state.markets.overview);
+    if (status.kind !== 'error' && status.kind !== 'slow' && (delay || stale || closed)) {
+      elements['hub-market-note'].textContent = delay || stale || closed;
+      return;
+    }
+    if (status.kind === 'loading') {
+      const spinner = document.createElement('span');
+      spinner.className = 'quote-spinner';
+      spinner.setAttribute('role', 'status');
+      spinner.setAttribute('aria-label', '行情加载中');
+      elements['hub-market-note'].append(spinner);
       return;
     }
     if (status.kind === 'error' || status.kind === 'slow') {
@@ -6956,7 +7078,7 @@ function renderOverviewTimeline() {
     renderChipTabs(elements['overview-timeline-tabs'], [
       { id: 'latest', label: '全部' },
       { id: 'focus', label: '重点' },
-      { id: 'recent', label: '最近' },
+      { id: 'recent', label: '最近浏览' },
       { id: 'social', label: '社媒' },
       { id: 'official', label: '官方' },
     ], state.overviewTimeline === 'latest' ? 'latest' : state.overviewTimeline, (id) => {
@@ -7031,7 +7153,17 @@ function renderOverviewTimeline() {
       className: `kind-tag${post.kind === 'official' ? ' official' : ''}`,
       textContent: feedKindLabel(post),
     });
-    const author = Object.assign(document.createElement('span'), { className: 'post-identity', textContent: post.author });
+    const author = document.createElement(post.authorId && state.authorView !== false ? 'button' : 'span');
+    author.className = post.authorId && state.authorView !== false ? 'post-identity author-name-link' : 'post-identity';
+    author.textContent = post.author;
+    if (post.authorId && state.authorView !== false) {
+      author.type = 'button';
+      author.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openAuthor(post.authorId);
+      });
+    }
     const time = Object.assign(document.createElement('span'), {
       className: 'post-time',
       textContent: post.time || overviewClock(post.publishedAt || post.createdAt),
@@ -7128,7 +7260,8 @@ function marketNativeAmount(value, { currency = true } = {}) {
   if (Math.abs(number) >= 1e9) return `${prefix}${(number / 1e9).toFixed(2)}B`;
   if (Math.abs(number) >= 1e6) return `${prefix}${(number / 1e6).toFixed(1)}M`;
   if (Math.abs(number) >= 1e3) return `${prefix}${(number / 1e3).toFixed(1)}K`;
-  return `${prefix}${number.toLocaleString('en-US', { maximumFractionDigits: 4 })}`;
+  if (Math.abs(number) < 10) return `${prefix}${number.toFixed(2)}`;
+  return `${prefix}${Math.round(number).toLocaleString('en-US')}`;
 }
 
 function predictionShare(value) {
@@ -7155,7 +7288,7 @@ function predictionDayChange(current, prior, basisHours) {
   if (typeof basisHours === 'number' && Number.isInteger(basisHours)) hours = basisHours;
   else if (typeof basisHours === 'string' && /^[1-9]\d*$/.test(basisHours.trim())) hours = Number(basisHours);
   const label = hours != null && hours >= 1 && hours <= 100000 ? `较 ${hours}h 前` : '较昨日';
-  return { text: `${label} ${sign}${points.toFixed(1)}`, direction };
+  return { text: `${label} ${sign}${points.toFixed(1)} 个百分点`, direction };
 }
 
 function predictionPrice(value) {
@@ -7190,7 +7323,7 @@ function appendPredictionQuote(root, quote) {
     const main = document.createElement('div');
     main.className = 'prediction-side is-yes';
     const mainNodes = [
-      Object.assign(document.createElement('span'), { textContent: String(quote.outcome || '') }),
+      Object.assign(document.createElement('span'), { textContent: localizedCopy(`${quote.quoteId}:outcome`, String(quote.outcome || '')) }),
       Object.assign(document.createElement('strong'), { textContent: formatPredictionShare(yes) }),
     ];
     const mainChange = predictionChangeNode(quote.midPrice, quote.midPrice24hAgo, quote.changeBasis);
@@ -7228,7 +7361,7 @@ function appendPredictionQuote(root, quote) {
     const yesCol = document.createElement('div');
     yesCol.className = 'prediction-side is-yes';
     const yesNodes = [
-      Object.assign(document.createElement('span'), { textContent: String(quote.outcome || 'Yes') }),
+      Object.assign(document.createElement('span'), { textContent: localizedCopy(`${quote.quoteId}:outcome`, String(quote.outcome || '是')) }),
       Object.assign(document.createElement('strong'), { textContent: formatPredictionShare(yes) }),
     ];
     const change = predictionChangeNode(quote.midPrice, quote.midPrice24hAgo, quote.changeBasis);
@@ -7281,11 +7414,11 @@ function appendDerivativeQuote(root, quote) {
   const symbol = Object.assign(document.createElement('strong'), { className: 'market-native-symbol', textContent: quote.symbol });
   const body = document.createElement('div');
   const title = Object.assign(document.createElement('b'), {
-    textContent: `Mark ${formatPrice(quote.markPrice, Number(quote.markPrice) >= 1000 ? 0 : 2)}`,
+    textContent: `标记价 ${formatPrice(quote.markPrice, Number(quote.markPrice) >= 1000 ? 0 : 2)}`,
   });
   const funding = quote.fundingRate == null ? '—' : `${(Number(quote.fundingRate) * 100).toFixed(4)}%`;
   const detail = Object.assign(document.createElement('small'), {
-    textContent: `Funding ${funding} · OI ${marketNativeAmount(quote.openInterest, { currency: false })} ${quote.symbol} · 24h ${marketNativeAmount(quote.volume24h)}`,
+    textContent: `资金费率 ${funding} · 持仓量 ${marketNativeAmount(quote.openInterest, { currency: false })} ${quote.symbol} · 24h ${marketNativeAmount(quote.volume24h)}`,
   });
   body.append(title, detail);
   const changeEl = Object.assign(document.createElement('strong'), {
@@ -7571,6 +7704,9 @@ function homePlainRow(post) {
     ingested: moment.ingested,
     effectiveLabel: moment.effectiveLabel,
     source: feedSourceLine(post),
+    authorId: state.authorView === false ? '' : (post.authorId || ''),
+    authorName: post.author || '',
+    onAuthor: post.authorId && state.authorView !== false ? () => openAuthor(post.authorId) : undefined,
     tags,
     muted: Boolean(post.lowValue),
     focused: itemIsFocused(post),
@@ -7956,10 +8092,13 @@ function applyProjectedHome(projected, token) {
     state.homeReadingHours = mergeReadingHours(state.homeReadingHours, projected.readings);
   }
   if (homeHourlySnapshotReady()) state.homeHourlySettled = true;
+  if (Number(projected.generatedAt) > 0) state.homeGeneratedAt = Number(projected.generatedAt);
   if (projected.market) {
     const board = projected.market.board || 'overview';
     state.markets[board] = acceptMarketPayload(state.markets[board], projected.market);
     if (marketPayloadHasQuotes(state.markets[board])) state.marketBoardErrors[board] = '';
+    state.marketPending[board] = Boolean(projected.marketPending);
+    if (projected.marketPending) scheduleMarketFill(board);
   }
   dailyBriefSnapshot = { brief: projected.brief || null, loaded: true, error: '' };
   renderDailyBriefPeek();
@@ -8046,6 +8185,13 @@ async function fetchHomeBootstrap(token, { refresh = false, cached = null } = {}
   let result = await load(`${dayPath}${refresh ? '&refresh=1' : ''}`, {
     etag: !refresh && cached?.record?.etag ? cached.record.etag : '',
   });
+  let pendingWaits = 0;
+  while (result?.payload?.pending && pendingWaits < 4 && token === state.homeLoadToken) {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    if (token !== state.homeLoadToken) return null;
+    result = await load(`${dayPath}&refresh=1`);
+    pendingWaits += 1;
+  }
   if (token !== state.homeLoadToken) return null;
   let chosen = accept(result, cached?.body || null);
   if (chosen.source === 'stale' || chosen.source === 'none') {
@@ -8063,6 +8209,21 @@ async function fetchHomeBootstrap(token, { refresh = false, cached = null } = {}
     savedAt,
   }).catch(() => {});
   return { chosen, projected };
+}
+
+async function loadHomeModules(token, { refresh = false } = {}) {
+  const plan = homeRequestPlan(Date.now());
+  await Promise.all([
+    loadHomeTree(plan.tree, token, { priority: 0, fresh: refresh }).then(() => {
+      if (token === state.homeLoadToken && document.body.dataset.view === 'sources') renderHub();
+    }),
+    loadHomeReadingIndex(plan.readingIndex, token, { priority: 0, fresh: refresh }).then(() => {
+      if (token === state.homeLoadToken && document.body.dataset.view === 'sources') renderHub();
+    }),
+    loadHomeOverviewMarket(refresh),
+    loadDailyBrief({ priority: 0, fresh: refresh }).catch(() => {}),
+    loadHomeBoard(plan.board, { refresh, token }).catch(() => {}),
+  ]);
 }
 
 async function loadSourcesPageLegacy(token, { refresh = false } = {}) {
@@ -8099,6 +8260,8 @@ async function loadSourcesPageNow({ refresh = false } = {}) {
   if (refresh) state.homeTreeLoaded = false;
   armHomeSlowWatch();
   const cached = refresh ? null : await paintHomeFromCache(token);
+  if (cached && token === state.homeLoadToken && document.body.dataset.view === 'sources') renderHub();
+  const modules = loadHomeModules(token, { refresh });
   let bootstrapOk = false;
   try {
     const loaded = await fetchHomeBootstrap(token, { refresh, cached });
@@ -8116,10 +8279,12 @@ async function loadSourcesPageNow({ refresh = false } = {}) {
     const bootstrapPath = `${HOME_BOOTSTRAP_PATH}${refresh ? '?refresh=1' : ''}`;
     reportHomeClientError('home-request', bootstrapPath, error);
     reportHomeClientError('home-fallback', bootstrapPath, error);
-    await loadSourcesPageLegacy(token, { refresh });
+    await modules;
     if (token !== state.homeLoadToken) return;
-    const legacyOk = Boolean(state.homeTree) && !state.homeTreeError;
-    if (legacyOk) {
+    const modulesOk = (Boolean(state.homeTree) && !state.homeTreeError)
+      || marketPayloadHasQuotes(state.markets.overview)
+      || Boolean(state.homeBoard);
+    if (modulesOk) {
       state.homeDataAt = Date.now();
       clearHomeRetry();
     } else if (!homeDataFresh()) {
@@ -8129,6 +8294,7 @@ async function loadSourcesPageNow({ refresh = false } = {}) {
       scheduleHomeRetry(token);
     }
   }
+  await modules;
   if (token !== state.homeLoadToken) return;
   if (bootstrapOk) clearHomeRetry();
   renderHub();
@@ -8204,10 +8370,13 @@ function renderMarketStatus() {
     ? (state.marketBoardErrors[state.stockBoard] || state.marketError)
     : '';
   const stale = marketStaleLabel(market);
+  const closed = stale ? '' : marketClosedLabel(market);
+  const delay = homeDataDelayLabel(state.homeGeneratedAt);
+  const note = stale || delay || closed;
   el.replaceChildren();
   el.classList.toggle('is-stale', Boolean(stale));
-  el.classList.toggle('hidden', !stale && !error);
-  if (stale) el.append(document.createTextNode(error ? `${stale} · ${error}` : stale));
+  el.classList.toggle('hidden', !note && !error);
+  if (note) el.append(document.createTextNode(error ? `${note} · ${error}` : note));
   else if (error) el.append(document.createTextNode(error));
   if (!error) return;
   const retry = document.createElement('button');
@@ -8227,10 +8396,15 @@ function renderIndexScroller(indices) {
     const card = document.createElement('article');
     card.className = 'index-card';
     const up = (item.changePct ?? 0) >= 0;
+    const staleLabel = quoteStaleLabel(item);
+    const closedLabel = staleLabel ? '' : quoteClosedLabel(item);
+    if (staleLabel) card.classList.add('is-stale');
+    if (staleLabel || closedLabel) card.title = staleLabel || closedLabel;
+    if (quoteNeedsSpinner(item)) card.classList.add('is-quote-pending');
     card.innerHTML = `<header><span>${item.name}</span><small>${item.symbol}</small></header>
       <strong class="${up ? 'up' : 'down'}">${formatPrice(item.lastPrice)}</strong>
       <b class="${up ? 'up' : 'down'}">${item.changePct === null ? '—' : formatPct(up, item.changePct)}</b>
-      ${sparkSvg(item.sparkline, item.changePct)}`;
+      ${sparkMarkup(item)}`;
     scroller.append(card);
   }
   return scroller;
@@ -8377,11 +8551,16 @@ function renderWatchRows(target, rows, { formatValue } = {}) {
         <strong class="quote-name"></strong>
         <small class="quote-code"></small>
       </span>
-      <span class="market-spark">${sparkSvg(item.sparkline, item.changePct)}</span>
+      <span class="market-spark">${sparkMarkup(item)}</span>
       <span class="q-price">
         <strong class="quote-price ${up ? 'up' : 'down'}">${format(item, item.lastPrice)}</strong>
         <b class="quote-change ${up ? 'up' : 'down'}">${item.changePct === null ? '—' : formatPct(up, item.changePct)}</b>
       </span>`;
+    const staleLabel = quoteStaleLabel(item);
+    const closedLabel = staleLabel ? '' : quoteClosedLabel(item);
+    if (staleLabel) row.classList.add('is-stale');
+    if (staleLabel || closedLabel) row.title = staleLabel || closedLabel;
+    if (quoteNeedsSpinner(item)) row.classList.add('is-quote-pending');
     row.querySelector('.quote-name').textContent=item.name;
     row.querySelector('.quote-code').textContent=code;
     if(item.hardware) {
@@ -8909,6 +9088,7 @@ function renderPage() {
   const kind = state.pageKind;
   if (kind !== 'quote') destroyQuoteChart();
   if (kind === 'article') renderArticlePage();
+  else if (kind === 'author') authorView().renderPage(root, decodeURIComponent(state.pageId || ''));
   else if (kind === 'event') renderEventPage();
   else if (kind === 'source') renderSourcePage();
   else if (kind === 'quote') renderQuotePage();
@@ -9183,8 +9363,19 @@ function renderArticlePage() {
     original.className = 'reader-original';
     head.insertBefore(original, meta);
   }
+  const authorLink = document.createElement('button');
+  authorLink.type = 'button';
+  authorLink.className = post.authorId && state.authorView !== false ? 'text-button author-name-link' : 'text-button';
+  authorLink.textContent = `${post.author} ›`;
+  if (post.authorId && state.authorView !== false) {
+    authorLink.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openAuthor(post.authorId);
+    });
+  }
   meta.append(
-    Object.assign(document.createElement('button'), { className: 'text-button', textContent: `${post.author} ›` }),
+    authorLink,
     Object.assign(document.createElement('span'), { textContent: `${post.time || (post.publishedAt ? formatTime(post.publishedAt) : '时间未知')} 发布` }),
     Object.assign(document.createElement('span'), { className: 'kind-tag', textContent: feedKindLabel(post) }),
   );
@@ -11839,6 +12030,9 @@ function ensureBriefPage() {
   focusReading(item) {
     toggleFocus(item?.id, () => { renderPosts(); renderHub(); }, item);
   },
+  openAuthor(authorId) {
+    openAuthor(authorId);
+  },
   readingFocused(id) {
     return isFocused(id);
   },
@@ -14258,11 +14452,14 @@ async function translateXBatch({ silent = false, include = null } = {}) {
 
 async function autoLocalizeSources() {
   if (!state.session || state.sourceLocalizing) return;
+  if (!state.sourceTranslationInflight) state.sourceTranslationInflight = new Set();
   const pending = Object.values(state.sourceLocalizations)
-    .filter((row) => row?.pending && row.id && row.sourceText)
-    .filter((row, index, rows) => rows.findIndex((item) => item.id === row.id) === index)
-    .slice(0, TITLE_TRANSLATE_BATCH_SIZE);
-  const waiting = pending.filter((row) => row.status !== 'failed');
+    .filter((row) => row?.pending && row.id && row.sourceText && !state.sourceTranslationInflight.has(row.id))
+    .filter((row, index, rows) => rows.findIndex((item) => item.id === row.id) === index);
+  const outcomeRows = pending.filter((row) => row.kind === 'outcome' && row.status !== 'failed');
+  const otherRows = pending.filter((row) => row.kind !== 'outcome' && row.status !== 'failed');
+  const waiting = (outcomeRows.length ? outcomeRows : otherRows).slice(0, Math.min(60, TITLE_TRANSLATE_BATCH_SIZE));
+  for (const row of waiting) state.sourceTranslationInflight.add(row.id);
   if (!waiting.length) return;
   state.sourceLocalizing = true;
   try {
@@ -14272,9 +14469,13 @@ async function autoLocalizeSources() {
       body: JSON.stringify({
         targetLang: 'zh',
         items: waiting.map((row) => ({ id: row.id, text: row.sourceText })),
+        ...(waiting.some((row) => row.kind === 'outcome') ? { glossary: 'polymarket-outcome' } : {}),
       }),
     });
     const byId = new Map((payload.translations || []).map((row) => [row.id, row.translatedText]));
+    for (const row of waiting) {
+      if (!byId.get(row.id)) state.sourceTranslationInflight.delete(row.id);
+    }
     for (const [sourceId, row] of Object.entries(state.sourceLocalizations)) {
       const text = byId.get(row.id);
       if (!text) continue;
@@ -14295,6 +14496,7 @@ async function autoLocalizeSources() {
     }
   } catch (error) {
     if (/仍在后台/.test(String(error?.message || ''))) return;
+    for (const row of waiting) state.sourceTranslationInflight.delete(row.id);
     const failedIds = new Set(waiting.map((row) => row.id));
     for (const [sourceId, row] of Object.entries(state.sourceLocalizations)) {
       if (!failedIds.has(row?.id) || row.text) continue;
@@ -15121,6 +15323,11 @@ async function waitForAuthorizedSession(attempts = 6) {
 
 async function completeAuthorizedStart(session) {
   state.session = session;
+  state.authorView = session.authorView !== false;
+  if (state.authorView === false && (state.channel === 'author' || state.pageKind === 'author')) {
+    state.channel = 'all';
+    if (state.pageKind === 'author') setView('feed');
+  }
   rememberKnownSession(true);
   elements['server-name'].textContent = session.serverName;
   elements['session-description'].textContent = session.role === 'desktop'
@@ -15837,6 +16044,7 @@ window.addEventListener('scroll', () => {
 document.addEventListener('click', (event) => {
   const trigger = event.target.closest('[data-nav]');
   if (!trigger) return;
+  if (typeof trigger.blur === 'function') trigger.blur();
   const activation = primaryNavActivation(trigger.dataset.nav);
   setView(activation.route, activation.fromPrimaryNav ? { fromPrimaryNav: true } : {});
 });

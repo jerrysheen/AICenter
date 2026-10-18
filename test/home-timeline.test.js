@@ -387,6 +387,19 @@ test('the newest loaded hour stays visible even when it has no hits', () => {
   })[0].items[0].title, '旧');
 });
 
+test('a later quote payload keeps an existing sparkline and asOf', () => {
+  const previous = {
+    sections: [{ indices: [{ symbol: '000001.SS', lastPrice: 10, sparkline: [8, 9, 10], asOf: 100 }] }],
+  };
+  const incoming = {
+    sections: [{ indices: [{ symbol: '000001.SS', lastPrice: 11 }] }],
+  };
+  const kept = acceptMarketPayload(previous, incoming);
+  assert.equal(kept.sections[0].indices[0].lastPrice, 11);
+  assert.deepEqual(kept.sections[0].indices[0].sparkline, [8, 9, 10]);
+  assert.equal(kept.sections[0].indices[0].asOf, 100);
+});
+
 test('a quoted overview board is kept when the next payload has no prices', () => {
   const previous = { sections: [{ indices: [{ symbol: '^GSPC', lastPrice: 5800 }] }] };
   const empty = { sections: [{ indices: [{ symbol: '^GSPC', lastPrice: null }] }] };
@@ -416,7 +429,10 @@ test('home requests are the overview set and not the old feed fan-out', () => {
   assert.match(app.slice(app.indexOf('function scheduleHomeTail'), app.indexOf('async function loadSourcesPageNow')), /ensureHomeMessages\(/);
   const homeNow = app.match(/async function loadSourcesPageNow\([^]*?\n\}/)[0];
   assert.match(homeNow, /fetchHomeBootstrap\(/);
-  assert.match(homeNow, /loadSourcesPageLegacy\(/);
+  assert.match(homeNow, /loadHomeModules\(/);
+  assert.doesNotMatch(homeNow, /loadSourcesPageLegacy\(/);
+  const modules = app.match(/async function loadHomeModules\([^]*?\n\}/)[0];
+  assert.match(modules, /await Promise\.all\(\[[\s\S]*loadHomeTree\([\s\S]*loadHomeReadingIndex\([\s\S]*loadHomeOverviewMarket\([\s\S]*loadDailyBrief\([\s\S]*loadHomeBoard\(/);
   assert.doesNotMatch(homeNow, /loadGlobalAssets|loadMarketNativeBoard|scheduleOverviewManualPosts|loadXFeed|loadXueqiuFeed|loadPosts\(/);
   assert.match(sourcesPage, /await Promise\.all\(\[[\s\S]*loadHomeBoard\(/);
   assert.match(app, /homeOfficialSettled/);

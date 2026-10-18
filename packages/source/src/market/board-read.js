@@ -1,6 +1,20 @@
 import { createMemorySnapshotCache } from '../../../runtime/src/snapshot-cache.js';
 import { marketStaleMs } from './service.js';
-import { parseAsiaExtraSymbols, parseCnExtraSymbols, parseUsExtraSymbols } from './boards.js';
+import {
+  asiaSessionsAt,
+  boardInRegularSession,
+  cnSessionAt,
+  hkSessionAt,
+  parseAsiaExtraSymbols,
+  parseCnExtraSymbols,
+  parseUsExtraSymbols,
+  preferredOverviewFocus,
+  quoteInRegularSession,
+  quoteVenue,
+  usRegularSessionAt,
+} from './boards.js';
+
+export const EXTRA_QUOTE_TIMEOUT_MS = 10_000;
 
 export const MARKET_BOARD_CACHE_TTL_MS = 45_000;
 export const MARKET_BOARD_NAMES = Object.freeze(['overview', 'us', 'asia', 'cn', 'global']);
@@ -67,10 +81,150 @@ function extraRow(symbol, quote, board) {
   };
 }
 
+export function quoteAsOfMs(item) {
+  const at = Number(item?.asOf ?? item?.marketTime);
+  if (!Number.isFinite(at) || at <= 0) return 0;
+  return at < 1e12 ? Math.trunc(at * 1000) : Math.trunc(at);
+}
+
+export function newestQuoteAsOf(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const rows = [
+    ...(payload.indices || []),
+    ...(payload.watchlist || []),
+    ...((payload.sections || []).flatMap((section) => [
+      ...(section?.indices || []),
+      ...(section?.gainers || []),
+      ...(section?.losers || []),
+    ])),
+  ];
+  let newest = 0;
+  for (const item of rows) {
+    if (item?.lastPrice == null) continue;
+    const at = quoteAsOfMs(item);
+    if (at > newest) newest = at;
+  }
+  return newest || null;
+}
+
+function newestOpenQuoteAsOf(payload, nowMs) {
+  if (!payload || typeof payload !== 'object') return null;
+  const rows = [
+    ...(payload.indices || []),
+    ...(payload.watchlist || []),
+    ...((payload.sections || []).flatMap((section) => [
+      ...(section?.indices || []),
+      ...(section?.gainers || []),
+      ...(section?.losers || []),
+    ])),
+  ];
+  let newest = 0;
+  for (const item of rows) {
+    if (item?.lastPrice == null || !quoteInRegularSession(item, nowMs, payload.board)) continue;
+    const at = quoteAsOfMs(item);
+    if (at > newest) newest = at;
+  }
+  return newest || null;
+}
+
+const QUOTE_LIST_KEYS = ['indices', 'watchlist', 'gainers', 'losers'];
+
+function quoteLiveSession(item, nowMs, boardHint) {
+  const venue = quoteVenue(item, boardHint);
+  if (venue === 'cn') return cnSessionAt(nowMs);
+  if (venue === 'hk') return hkSessionAt(nowMs);
+  if (venue === 'us') return usRegularSessionAt(nowMs);
+  if (venue === 'asia') {
+    const open = hkSessionAt(nowMs) === 'regular' || Object.values(asiaSessionsAt(nowMs)).includes('regular');
+    return open ? 'regular' : 'closed';
+  }
+  const session = String(item?.session || '').trim();
+  return session || 'closed';
+}
+
+function stampQuoteClock(item, nowMs, boardHint) {
+  if (!item || typeof item !== 'object') return item;
+  const session = quoteLiveSession(item, nowMs, boardHint);
+  return { ...item, session, marketOpen: session === 'regular' };
+}
+
+function pricedRows(payload) {
+  return [
+    ...(payload.indices || []),
+    ...(payload.watchlist || []),
+    ...((payload.sections || []).flatMap((section) => [
+      ...(section?.indices || []),
+      ...(section?.gainers || []),
+      ...(section?.losers || []),
+    ])),
+  ].filter((item) => item && item.lastPrice != null);
+}
+
+function boardClockOpen(payload, nowMs) {
+  const rows = pricedRows(payload);
+  if (rows.length) return rows.some((item) => item.marketOpen === true);
+  const board = String(payload.board || '').toLowerCase();
+  const focus = String(payload.focus || '').toLowerCase();
+  if (board === 'cn' || focus === 'cn') return cnSessionAt(nowMs) === 'regular';
+  if (board === 'us' || focus === 'us') return usRegularSessionAt(nowMs) === 'regular';
+  if (board === 'hk') return hkSessionAt(nowMs) === 'regular';
+  if (board === 'asia') return hkSessionAt(nowMs) === 'regular' || Object.values(asiaSessionsAt(nowMs)).includes('regular');
+  if (board === 'overview') {
+    const which = focus || preferredOverviewFocus(nowMs);
+    return which === 'cn' ? cnSessionAt(nowMs) === 'regular' : usRegularSessionAt(nowMs) === 'regular';
+  }
+  return false;
+}
+
+function sectionLiveSession(section, nowMs) {
+  const rows = ['indices', 'gainers', 'losers']
+    .flatMap((key) => section[key] || [])
+    .filter((item) => item && item.lastPrice != null);
+  if (rows.length) return rows.some((item) => item.marketOpen === true) ? 'regular' : 'closed';
+  const id = String(section.id || '').toLowerCase();
+  if (id === 'cn') return cnSessionAt(nowMs);
+  if (id === 'us') return usRegularSessionAt(nowMs);
+  if (id === 'asia' || id === 'hk') {
+    const asia = id === 'asia' && Object.values(asiaSessionsAt(nowMs)).includes('regular');
+    return hkSessionAt(nowMs) === 'regular' || asia ? 'regular' : 'closed';
+  }
+  return String(section.session || '').trim() === 'regular' ? 'regular' : 'closed';
+}
+
+export function withMarketClock(payload, nowMs = Date.now()) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+  const board = payload.board;
+  const next = { ...payload };
+  for (const key of QUOTE_LIST_KEYS) {
+    if (Array.isArray(payload[key])) next[key] = payload[key].map((item) => stampQuoteClock(item, nowMs, board));
+  }
+  if (Array.isArray(payload.sections)) {
+    next.sections = payload.sections.map((section) => {
+      if (!section || typeof section !== 'object') return section;
+      const stamped = { ...section };
+      for (const key of ['indices', 'gainers', 'losers']) {
+        if (Array.isArray(section[key])) {
+          stamped[key] = section[key].map((item) => stampQuoteClock(item, nowMs, section.id || board));
+        }
+      }
+      const session = sectionLiveSession(stamped, nowMs);
+      return { ...stamped, session, marketOpen: session === 'regular' };
+    });
+  }
+  const open = boardClockOpen(next, nowMs);
+  return { ...next, marketOpen: open, session: open ? 'regular' : 'closed' };
+}
+
 export function stampBoardStale(payload, nowMs, staleMs) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
-  const fetchedAt = Number(payload.fetchedAt);
-  const stale = Number.isFinite(fetchedAt) && nowMs - fetchedAt >= staleMs;
+  const open = boardInRegularSession(payload, nowMs);
+  if (open === false) {
+    if (!payload.stale) return payload;
+    return { ...payload, stale: false };
+  }
+  const quoteAt = open === true ? newestOpenQuoteAsOf(payload, nowMs) : newestQuoteAsOf(payload);
+  const basis = quoteAt ?? Number(payload.fetchedAt);
+  const stale = Number.isFinite(basis) && nowMs - basis >= staleMs;
   if (Boolean(payload.stale) === stale) return payload;
   return { ...payload, stale };
 }
@@ -110,10 +264,12 @@ export function createMarketBoardReader({
   quotePort = null,
   env = process.env,
   staleMs = marketStaleMs(env),
+  extraTimeoutMs = EXTRA_QUOTE_TIMEOUT_MS,
 } = {}) {
   if (!repository?.readSnapshot) throw new TypeError('market board reader requires a snapshot repository');
   const caches = new Map();
   const extraQuotes = new Map();
+  const extraInflight = new Set();
 
   function cacheFor(board) {
     let cache = caches.get(board);
@@ -136,29 +292,32 @@ export function createMarketBoardReader({
     }
   }
 
-  async function loadExtraQuotes(symbols) {
+  function refreshExtraQuotes(key, symbols) {
+    if (!quotePort?.fetchQuotes || extraInflight.has(key)) return;
+    extraInflight.add(key);
+    const controller = new AbortController();
+    const timeout = Math.max(1, Number(extraTimeoutMs) || EXTRA_QUOTE_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), timeout);
+    Promise.resolve()
+      .then(() => quotePort.fetchQuotes(symbols, { signal: controller.signal }))
+      .then((quotes) => {
+        if (Array.isArray(quotes)) rememberQuotes(key, quotes);
+      })
+      .catch(() => {})
+      .finally(() => {
+        clearTimeout(timer);
+        extraInflight.delete(key);
+      });
+  }
+
+  function loadExtraQuotes(symbols) {
     const key = symbols.join(',');
     const hit = extraQuotes.get(key);
     const fresh = hit && now() - hit.at < ttlMs;
-    if (fresh) return hit.quotes;
-    if (hit) {
-      Promise.resolve()
-        .then(() => quotePort?.fetchQuotes?.(symbols))
-        .then((quotes) => {
-          if (Array.isArray(quotes)) rememberQuotes(key, quotes);
-        })
-        .catch(() => {});
-      return hit.quotes;
-    }
-    if (!quotePort?.fetchQuotes) return [];
-    try {
-      const quotes = await quotePort.fetchQuotes(symbols);
-      const list = Array.isArray(quotes) ? quotes : [];
-      rememberQuotes(key, list);
-      return list;
-    } catch {
-      return [];
-    }
+    if (fresh) return { quotes: hit.quotes, pending: false };
+    refreshExtraQuotes(key, symbols);
+    if (hit) return { quotes: hit.quotes, pending: false };
+    return { quotes: [], pending: Boolean(quotePort?.fetchQuotes) };
   }
 
   return {
@@ -166,15 +325,19 @@ export function createMarketBoardReader({
       const board = MARKET_BOARD_NAMES.includes(query.board) ? query.board : 'overview';
       const stored = await cacheFor(board).get({ refresh: Boolean(refresh) });
       const payload = stored?.payload;
+      const present = (boardPayload) => stampBoardStale(withMarketClock(boardPayload, now()), now(), staleMs);
       if (!payload || payload.board !== board || payload.fetchedAt == null) {
-        return { market: emptyMarketBoard(board, now()), pending: true };
+        return { market: present(emptyMarketBoard(board, now())), pending: true };
       }
       const symbols = extraSymbolsFor(board, query, marketCatalog);
-      if (!symbols.length) return { market: stampBoardStale(payload, now(), staleMs), pending: false };
-      const quotes = await loadExtraQuotes(symbols);
-      const bySymbol = new Map((quotes || []).map((item) => [String(item?.symbol || '').toUpperCase(), item]));
+      if (!symbols.length) return { market: present(payload), pending: false };
+      const loaded = loadExtraQuotes(symbols);
+      const bySymbol = new Map((loaded.quotes || []).map((item) => [String(item?.symbol || '').toUpperCase(), item]));
       const rows = symbols.map((symbol) => extraRow(symbol, bySymbol.get(symbol), payload));
-      return { market: stampBoardStale(withExtraWatchlist(payload, rows), now(), staleMs), pending: false };
+      return {
+        market: present(withExtraWatchlist(payload, rows)),
+        pending: loaded.pending,
+      };
     },
   };
 }

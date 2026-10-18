@@ -70,7 +70,7 @@ export function createMarketSourceDefinitions(marketService) {
       inputSchema: QuoteInputSchema,
       outputSchema: QuoteListSchema,
       read: (input, context) => marketService.fetchQuotes
-        ? marketService.fetchQuotes(input.symbols, { refresh: Boolean(context.refresh) })
+        ? marketService.fetchQuotes(input.symbols, { refresh: Boolean(context.refresh), signal: context.signal })
         : [],
     },
     {

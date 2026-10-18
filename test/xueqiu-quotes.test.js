@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  SPARKLINE_FAIL_BACKOFF_MS,
   createXueqiuQuoteClient,
   isHkYahooSymbol,
   isXueqiuYahooSymbol,
   quoteFromXueqiuItem,
+  sparklineFromXueqiuKline,
   yahooToXueqiuSymbol,
 } from '../packages/connectors/src/xueqiu-quotes.js';
 import { createMarketService } from '../packages/connectors/src/market-service.js';
@@ -192,4 +194,130 @@ test('market service falls back to tonghuashun then yahoo when xueqiu misses', a
   assert.equal(quotes.find((item) => item.symbol === '900901.SS').lastPrice, 9);
   assert.equal(quotes.find((item) => item.symbol === '0981.HK').lastPrice, 9);
   assert.deepEqual(yahooSymbols[0], ['900901.SS', '0981.HK']);
+});
+
+test('xueqiu daily kline closes become the sparkline', async () => {
+  const payload = {
+    data: {
+      column: ['timestamp', 'volume', 'open', 'high', 'low', 'close'],
+      item: [
+        [1, 10, 1.1, 1.4, 1.0, 1.2],
+        [2, 11, 1.2, 1.5, 1.1, 1.44],
+      ],
+    },
+  };
+  assert.deepEqual(sparklineFromXueqiuKline(payload), [1.2, 1.44]);
+  const quote = quoteFromXueqiuItem({
+    ...xueqiuItem('SH516640', 1.44, 1.391),
+    kline: payload,
+  }, '516640.SS');
+  assert.deepEqual(quote.sparkline, [1.2, 1.44]);
+  assert.deepEqual(quoteFromXueqiuItem(xueqiuItem('SH516640', 1.44, 1.391), '516640.SS').sparkline, []);
+  const requested = [];
+  const client = createXueqiuQuoteClient({
+    cookie: 'xq_a_token=user-token',
+    now: () => 1_700_000_000_000,
+    fetchImpl: async (url) => {
+      requested.push(String(url));
+      return jsonResponse(payload);
+    },
+  });
+  const series = await client.fetchSparklines(['516640.SS', 'AAPL']);
+  assert.equal(series.length, 1);
+  assert.equal(series[0].symbol, '516640.SS');
+  assert.deepEqual(series[0].sparkline, [1.2, 1.44]);
+  assert.match(requested[0], /\/v5\/stock\/chart\/kline\.json/);
+  assert.match(decodeURIComponent(requested[0]), /symbol=SH516640/);
+  assert.match(requested[0], /period=day/);
+  const again = await client.fetchSparklines(['516640.SS']);
+  assert.deepEqual(again[0].sparkline, [1.2, 1.44]);
+  assert.equal(requested.length, 1);
+});
+
+test('xueqiu kline cache keeps the previous series and caps a round at ten symbols', async () => {
+  let fail = false;
+  let calls = 0;
+  const client = createXueqiuQuoteClient({
+    cookie: 'xq_a_token=user-token',
+    now: () => Date.parse('2026-10-16T02:00:00Z'),
+    fetchImpl: async (url) => {
+      const href = String(url);
+      if (!href.includes('kline.json')) return jsonResponse({ data: { items: [] } });
+      calls += 1;
+      if (fail) throw new Error('waf');
+      const symbol = new URL(href).searchParams.get('symbol');
+      return jsonResponse({
+        data: {
+          column: ['timestamp', 'close'],
+          item: [[1, 1], [2, 2]],
+        },
+        symbol,
+      });
+    },
+  });
+  const symbols = Array.from({ length: 12 }, (_, index) => `${String(600000 + index).padStart(6, '0')}.SS`);
+  const first = await client.fetchSparklines(symbols);
+  assert.equal(calls, 10);
+  assert.equal(first.length, 10);
+  fail = true;
+  const second = await client.fetchSparklines(symbols.slice(0, 10));
+  assert.equal(second.length, 10);
+  assert.deepEqual(second[0].sparkline, [1, 2]);
+  const aborted = new AbortController();
+  aborted.abort();
+  const before = calls;
+  await client.fetchSparklines(['600100.SS'], { signal: aborted.signal });
+  assert.equal(calls, before);
+});
+
+test('a symbol that keeps failing gives its slot to symbols after the tenth', async () => {
+  assert.deepEqual([...SPARKLINE_FAIL_BACKOFF_MS], [10 * 60_000, 30 * 60_000, 60 * 60_000]);
+  const clock = { value: Date.parse('2026-10-16T02:00:00Z') };
+  const requested = [];
+  const client = createXueqiuQuoteClient({
+    cookie: 'xq_a_token=user-token',
+    now: () => clock.value,
+    fetchImpl: async (url) => {
+      const href = String(url);
+      if (!href.includes('kline.json')) return jsonResponse({ data: { items: [] } });
+      const symbol = new URL(href).searchParams.get('symbol');
+      requested.push(symbol);
+      if (symbol === 'SH600000') throw new Error('waf');
+      return jsonResponse({
+        data: {
+          column: ['timestamp', 'close'],
+          item: [[clock.value - 86_400_000, 1], [clock.value, 2]],
+        },
+      });
+    },
+  });
+  const symbols = Array.from({ length: 15 }, (_, index) => `${String(600000 + index).padStart(6, '0')}.SS`);
+  const first = await client.fetchSparklines(symbols);
+  assert.equal(requested.length, 10);
+  assert.equal(requested[0], 'SH600000');
+  assert.equal(requested.includes('SH600010'), false);
+  assert.equal(first.some((item) => item.symbol === '600000.SS'), false);
+  assert.equal(first.some((item) => item.symbol === '600009.SS'), true);
+  requested.length = 0;
+  const second = await client.fetchSparklines(symbols);
+  assert.deepEqual(requested, ['SH600010', 'SH600011', 'SH600012', 'SH600013', 'SH600014']);
+  assert.equal(second.some((item) => item.symbol === '600014.SS'), true);
+  requested.length = 0;
+  clock.value += 9 * 60_000;
+  await client.fetchSparklines(symbols);
+  assert.equal(requested.includes('SH600000'), false);
+  clock.value += 60_000;
+  await client.fetchSparklines(['600000.SS']);
+  assert.deepEqual(requested, ['SH600000']);
+  requested.length = 0;
+  clock.value += 10 * 60_000;
+  await client.fetchSparklines(['600000.SS']);
+  assert.deepEqual(requested, []);
+  clock.value += 20 * 60_000;
+  await client.fetchSparklines(['600000.SS']);
+  assert.deepEqual(requested, ['SH600000']);
+  requested.length = 0;
+  clock.value += 2 * 60 * 60_000;
+  await client.fetchSparklines(symbols);
+  assert.equal(requested.includes('SH600000'), false);
 });

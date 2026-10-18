@@ -248,8 +248,8 @@ export function createAiCenterServer(options = {}) {
     repository: store.repositories.runtimeSnapshots,
     marketCatalog: options.marketCatalog,
     quotePort: {
-      async fetchQuotes(symbols) {
-        const snapshot = await sourcePort.read('market.quotes', { symbols });
+      async fetchQuotes(symbols, { signal } = {}) {
+        const snapshot = await sourcePort.read('market.quotes', { symbols }, { signal });
         return Array.isArray(snapshot?.data) ? snapshot.data : [];
       },
     },
