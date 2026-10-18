@@ -1,3 +1,4 @@
+import { localizeOfficialBoard } from '../../domain/src/official-source-zh.js';
 import { readStaticSignalBoardSnapshot } from '../../source/src/static/board.js';
 import { STATIC_SIGNAL_BOARD_SNAPSHOT_KEY } from '../../source/src/static/board-read.js';
 import { readMarketNativeBoard } from '../../source/src/static/market-native-board.js';
@@ -93,7 +94,7 @@ export async function captureStaticSignalBoard({
 }) {
   if (!repository?.saveSnapshot) throw new Error('官方看板快照需要存储');
   const at = now();
-  const payload = await readStaticSignalBoardSnapshot(sourcePort, staticSignalBoardCaptureInput(at), { now: () => at });
+  const payload = localizeOfficialBoard(await readStaticSignalBoardSnapshot(sourcePort, staticSignalBoardCaptureInput(at), { now: () => at }));
   repository.saveSnapshot(workspaceId, STATIC_SIGNAL_BOARD_SNAPSHOT_KEY, payload, payload.generatedAt);
   return {
     generatedAt: payload.generatedAt,

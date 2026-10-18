@@ -98,6 +98,11 @@ const GEMMA_26B = 'gemma-4-26b-a4b-it';
 export const GEMMA_TRANSLATION_MODELS = ['gemma-4-31b-it', GEMMA_26B];
 export const GEMMA_TRANSLATION_DEFAULT_MODELS = [GEMMA_26B];
 
+export function gemmaLockedModels(model) {
+  if (model !== GEMMA_26B) throw new Error('结果标签只使用 Gemma 26B');
+  return [GEMMA_26B];
+}
+
 export function resolveGemmaTranslationSlots(env=process.env,apiKey) {
   const names=String(env.AI_CENTER_GEMMA_TRANSLATION_KEY_ENVS || env.AI_CENTER_GEMMA_TRANSLATION_KEY_ENV || 'GEMINI_API_KEY,GEMINI_API_KEY2,GEMINI_API_KEY3,GEMINI_API_KEY4,GEMINI_API_KEY5').split(',').map(s=>s.trim());
   if(names.length>5 || names.some(n=>!/^[A-Z][A-Z0-9_]*$/.test(n)))throw new Error('无效的 Gemma 密钥变量名');
@@ -297,16 +302,18 @@ export function createGemmaTranslationRouter(options = {}) {
 
   return {
     batch: false,
-    async generate({ system, prompt }) {
+    async generate({ system, prompt, model } = {}) {
       if (!slots.length) throw new Error('未配置 Gemma 翻译凭据');
       if (!repository?.reserve) throw new Error('Gemma 翻译需要持久化配额 Repository');
+      const firstPool = model ? gemmaLockedModels(model) : models;
+      const retryPool = model ? firstPool : retryModels;
       const input = gemmaTranslationInput(system, prompt);
       const inputBytes = Buffer.byteLength(input, 'utf8');
       let lastError;
       for (let attempt = 0; attempt <= policy.maxRetries; attempt++) {
         chargeTranslationCall();
         let ticket;
-        try { ticket = await admit(attempt === 0 ? 61000 : 1500, attempt === 0 ? models : retryModels); }
+        try { ticket = await admit(attempt === 0 ? 61000 : 1500, attempt === 0 ? firstPool : retryPool); }
         catch (error) {
           if (error?.code === 'budget-deferred' && lastError) throw lastError;
           throw error;

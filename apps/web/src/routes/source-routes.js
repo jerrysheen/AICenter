@@ -1,11 +1,24 @@
 import { json } from '../http/response.js';
 import { translationTitleBatchLimit } from '../../../../packages/domain/src/feed-ai-batch.js';
 import { collectLocalizationUnits } from '../../../../packages/domain/src/localize-texts.js';
+import { POLYMARKET_OUTCOME_GLOSSARY, POLYMARKET_OUTCOME_MODEL } from '../../../../packages/domain/src/polymarket-outcome-zh.js';
 import { emptyStaticSignalBoard, readMarketNativeBoard } from '../../../../packages/source/src/index.js';
 
 function boardPayload(payload) {
   const data = payload?.data && typeof payload.data === 'object' ? payload.data : payload;
   return data && typeof data === 'object' ? data : {};
+}
+
+function dedupeLocalizationUnits(units) {
+  const seen = new Set();
+  const rows = [];
+  for (const unit of units || []) {
+    const id = String(unit?.localizationId || '').trim();
+    if (!id || !unit.text || seen.has(id)) continue;
+    seen.add(id);
+    rows.push(unit);
+  }
+  return rows;
 }
 
 function enqueueVisibleLocalizations(services, identity, payload, units, result) {
@@ -18,11 +31,24 @@ function enqueueVisibleLocalizations(services, identity, payload, units, result)
     ...units.filter((unit) => !releaseIds.has(unit.id)),
   ].filter((unit) => pending.has(unit.id) && unit.localizationId && unit.text);
   const workspaceId = identity?.device?.workspaceId || 'local';
+  const busy = services.runtime.openTranslationIds?.(workspaceId) || new Set();
+  const fresh = dedupeLocalizationUnits(ordered).filter((unit) => !busy.has(unit.localizationId));
   const batchLimit = translationTitleBatchLimit(process.env.AI_CENTER_TRANSLATION_TITLE_BATCH_LIMIT);
-  for (let offset = 0; offset < ordered.length && offset < 60; offset += batchLimit) {
-    const items = ordered.slice(offset, offset + batchLimit).map((unit) => ({ id: unit.localizationId, text: unit.text }));
+  const outcomes = fresh.filter((unit) => unit.kind === 'outcome');
+  const rest = fresh.filter((unit) => unit.kind !== 'outcome');
+  enqueueLocalizationBatches(services, workspaceId, rest.slice(0, 60), batchLimit, {});
+  enqueueLocalizationBatches(services, workspaceId, outcomes.slice(0, 60), batchLimit, {
+    glossary: POLYMARKET_OUTCOME_GLOSSARY,
+    model: POLYMARKET_OUTCOME_MODEL,
+  });
+}
+
+function enqueueLocalizationBatches(services, workspaceId, units, batchLimit, extra) {
+  for (let offset = 0; offset < units.length; offset += batchLimit) {
+    const items = units.slice(offset, offset + batchLimit).map((unit) => ({ id: unit.localizationId, text: unit.text }));
+    if (!items.length) continue;
     try {
-      services.runtime.requestTranslation({ workspaceId, targetLang: 'zh', items });
+      services.runtime.requestTranslation({ workspaceId, targetLang: 'zh', items, ...extra });
     } catch (error) {
       console.error('[web] localization enqueue skipped:', error instanceof Error ? error.message : error);
       break;
