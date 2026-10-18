@@ -127,6 +127,7 @@ export const SaveCaptureInputSchema = z.object({
   status: CaptureStatusSchema.default('captured'),
   publishedAt: NullableEpochMillisSchema.default(null),
   capturedAt: EpochMillisSchema.optional(),
+  authorNativeId: z.string().trim().max(256).nullable().default(null),
   metadata: MetadataSchema,
 }).strict();
 

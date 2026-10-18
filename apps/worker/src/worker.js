@@ -84,6 +84,7 @@ import { readStoredPolymarketView } from '../../../packages/domain/src/polymarke
 import { createInvestorDiscussionJobHandlers, ensureInvestorDiscussionSchedule, investorDiscussionManifest } from '../../../packages/runtime/src/investor-discussion-job.js';
 import { ensureTrendForcePriceSchedules } from '../../../packages/runtime/src/trendforce-price-schedule.js';
 import { computePriceManifest, createComputePriceJobHandlers, ensureComputePriceSchedules } from '../../../packages/runtime/src/compute-price-job.js';
+import { authorStatsManifest, createAuthorStatsJobHandlers, ensureAuthorStatsSchedule } from '../../../packages/runtime/src/author-stats-job.js';
 import { QUANT_PREPARE_JOB_TYPE, QUANT_RUN_JOB_TYPE } from '../../../packages/contracts/src/index.js';
 import { createLocalToolRegistry } from '../../../packages/runtime/src/local-tools.js';
 import { createAgentTraceLog } from '../../../packages/runtime/src/agent-trace-log.js';
@@ -684,6 +685,13 @@ export function createAiCenterWorker(options = {}) {
       }),
     });
   }
+  registry.register({
+    manifest: authorStatsManifest,
+    jobHandlers: options.authorStatsJobHandlers || createAuthorStatsJobHandlers({
+      authorRepository: store.repositories.authors,
+      onProgress: (progress) => console.log('[authors.stats.recompute]', JSON.stringify(progress)),
+    }),
+  });
   registry.register({manifest:feedValueRefreshManifest,jobHandlers:createFeedValueRefreshJobHandlers({
     service:createFeedValueRefreshService({feedRepository:store.repositories.feed,mediaRepository:store.repositories.media,
       client:typesafeClient,model:loadFeedValueCalibration(instance)?.model || 'jev-1.13.0',scoreCache:loadFeedValueScoreCache(instance),flashSources}),
@@ -715,6 +723,7 @@ export function createAiCenterWorker(options = {}) {
     ensureTrendForcePriceSchedules(store, env);
     ensureTwkrSchedules(store, { env, flags: twkrFlags });
     ensureComputePriceSchedules(store, env);
+    ensureAuthorStatsSchedule(store, env);
     ensureEtfWhaleSchedule(store, env);
     ensureDefaultContentSubscriptions(store.repositories.feed);
   }

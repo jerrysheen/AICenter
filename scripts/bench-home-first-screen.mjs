@@ -86,6 +86,12 @@ function buildFixture(database, { hours, perHour }) {
       author_name TEXT,
       published_at INTEGER
     );
+    CREATE TABLE item_authors (
+      workspace_id TEXT NOT NULL,
+      content_item_id TEXT NOT NULL,
+      author_id TEXT NOT NULL,
+      PRIMARY KEY (workspace_id, content_item_id)
+    );
     CREATE TABLE captures (
       id TEXT PRIMARY KEY,
       source_account_id TEXT,

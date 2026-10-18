@@ -2186,6 +2186,70 @@ migrations.push({ version: 76, name: 'twse_monthly_revenue', up(database) {
   `);
 }});
 
+migrations.push({ version: 77, name: 'authors', up(database) {
+  addColumn(database, 'captures', 'author_native_id', 'TEXT');
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS authors (
+      workspace_id TEXT NOT NULL,
+      author_id TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      native_id TEXT NOT NULL,
+      handle TEXT NOT NULL DEFAULT '',
+      name TEXT NOT NULL DEFAULT '',
+      avatar_url TEXT NOT NULL DEFAULT '',
+      profile_url TEXT NOT NULL DEFAULT '',
+      bio TEXT NOT NULL DEFAULT '',
+      followers INTEGER,
+      kind TEXT NOT NULL DEFAULT 'person',
+      provisional INTEGER NOT NULL DEFAULT 0,
+      merged_into TEXT,
+      aliases_json TEXT NOT NULL DEFAULT '[]',
+      followed INTEGER NOT NULL DEFAULT 0,
+      followed_at INTEGER,
+      PRIMARY KEY (workspace_id, author_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_authors_platform_handle
+      ON authors(workspace_id, platform, handle);
+  `);
+}});
+
+migrations.push({ version: 78, name: 'author_stats', up(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS item_authors (
+      workspace_id TEXT NOT NULL,
+      content_item_id TEXT NOT NULL,
+      author_id TEXT NOT NULL,
+      sort_at INTEGER NOT NULL,
+      is_read INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (workspace_id, content_item_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_item_authors_author
+      ON item_authors(workspace_id, author_id, is_read, sort_at DESC, content_item_id DESC);
+    CREATE TABLE IF NOT EXISTS author_stats (
+      workspace_id TEXT NOT NULL,
+      author_id TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      followed INTEGER NOT NULL DEFAULT 0,
+      unread_count INTEGER NOT NULL DEFAULT 0,
+      has_unread INTEGER NOT NULL DEFAULT 0,
+      total_count INTEGER NOT NULL DEFAULT 0,
+      latest_unread_at INTEGER NOT NULL DEFAULT 0,
+      latest_item_at INTEGER NOT NULL DEFAULT 0,
+      latest_item_id TEXT NOT NULL DEFAULT '',
+      latest_title_zh TEXT NOT NULL DEFAULT '',
+      recent_30d_count INTEGER NOT NULL DEFAULT 0,
+      top_tickers_json TEXT NOT NULL DEFAULT '[]',
+      top_tickers_at INTEGER,
+      PRIMARY KEY (workspace_id, author_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_author_stats_list
+      ON author_stats(workspace_id, followed DESC, has_unread DESC, latest_unread_at DESC, latest_item_at DESC);
+  `);
+}});
+
+// 63 仍空着。79、80、82 留空。81、83、84 还没合入，不登记成空号。
+export const unusedSchemaVersions = [63, 79, 80, 82];
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions
