@@ -723,6 +723,27 @@ export function createFeedRepository(database, emitEvent) {
       return true;
     },
 
+    listRecentXCaptures(workspaceId, { since = 0, limit = 500 } = {}) {
+      const size = Math.max(1, Math.min(Number(limit) || 500, 5000));
+      return database.prepare(`SELECT c.captured_at AS capturedAt, c.external_id AS externalId,
+          c.metadata_json AS metadataJson, c.title AS title, c.source_url AS sourceUrl,
+          ci.id AS contentItemId, sa.external_id AS sourceExternalId
+        FROM captures c
+        LEFT JOIN source_accounts sa ON sa.id = c.source_account_id
+        LEFT JOIN content_items ci ON ci.capture_id = c.id AND ci.workspace_id = c.workspace_id
+        WHERE c.workspace_id = ? AND c.provider = 'x' AND c.captured_at >= ?
+        ORDER BY c.captured_at DESC
+        LIMIT ?`).all(workspaceId, Math.max(0, Number(since) || 0), size).map((row) => ({
+        capturedAt: Number(row.capturedAt) || 0,
+        externalId: String(row.externalId || ''),
+        title: row.title || '',
+        sourceUrl: row.sourceUrl || '',
+        contentItemId: row.contentItemId || '',
+        sourceExternalId: row.sourceExternalId || '',
+        metadata: parseJson(row.metadataJson),
+      }));
+    },
+
     getCapture(workspaceId, provider, externalId) {
       const row = database.prepare(`SELECT * FROM captures
         WHERE workspace_id = ? AND provider = ? AND external_id = ?`)

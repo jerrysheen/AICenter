@@ -1,0 +1,66 @@
+{
+  "version": "x-focus-1",
+  "enabled": true,
+  "expandMin": 0.75,
+  "hitMin": 0.5,
+  "batchSize": 20,
+  "maxExpand": 8,
+  "scoreTimeoutMs": 15000,
+  "directions": [
+    {
+      "id": "us-market",
+      "label": "美股大盘",
+      "weight": 1,
+      "question": "这则内容是否在讲美股大盘、指数、利率、汇率或整体市场涨跌？",
+      "keywords": ["标普", "纳指", "道指", "S&P", "Nasdaq", "美联储", "非农", "CPI"]
+    },
+    {
+      "id": "semis",
+      "label": "半导体与科技美股",
+      "weight": 1,
+      "question": "这则内容是否在讲半导体、芯片产业链，或英伟达、台积电、博通这类科技美股？",
+      "keywords": ["英伟达", "NVIDIA", "台积电", "TSMC", "博通", "AMD", "半导体", "芯片"]
+    },
+    {
+      "id": "polymarket",
+      "label": "Polymarket 及政要发言",
+      "weight": 1,
+      "question": "这则内容是否在讲 Polymarket、预测市场赔率，或政要公开发言对市场的影响？",
+      "keywords": ["Polymarket", "预测市场", "赔率", "特朗普", "Trump"]
+    },
+    {
+      "id": "oil-geopolitics",
+      "label": "油价大宗与地缘",
+      "weight": 3,
+      "question": "这则内容是否在讲油价、天然气、大宗商品，或地缘冲突对能源和商品的影响？",
+      "keywords": ["原油", "油价", "布伦特", "WTI", "OPEC", "天然气", "地缘"]
+    },
+    {
+      "id": "corporate",
+      "label": "企业动态",
+      "weight": 1,
+      "question": "这则内容是否在讲某家具体公司的财报、订单、产品、收购、人事或监管？",
+      "keywords": ["财报", "营收", "收购", "订单", "CEO", "guidance"]
+    },
+    {
+      "id": "hardware",
+      "label": "GPU 等硬件价格",
+      "weight": 1,
+      "question": "这则内容是否在讲 GPU、显卡、内存、闪存或服务器硬件的价格、租金或供货？",
+      "keywords": ["H100", "H200", "B200", "GPU", "显存", "DRAM", "NAND", "租金"]
+    },
+    {
+      "id": "ai-companies",
+      "label": "AI 公司",
+      "weight": 1,
+      "question": "这则内容是否在讲 OpenAI、Anthropic、Google、xAI 或其他 AI 公司的模型、产品或融资？",
+      "keywords": ["OpenAI", "Anthropic", "Gemini", "Claude", "xAI", "大模型"]
+    }
+  ],
+  "autoLike": {
+    "minScore": 0.75,
+    "dailyLimit": 20,
+    "hourlyLimit": 5,
+    "minIntervalMs": 120000
+  }
+}

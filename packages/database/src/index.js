@@ -952,6 +952,15 @@ export function createStore(databasePath) {
         .all(Math.max(1, Math.min(Number(limit) || 50, 200))).map(mapJob);
     },
 
+    listJobsByType(type, { since = 0, limit = 200 } = {}) {
+      const jobType = String(type || '').trim();
+      if (!jobType) return [];
+      const floor = Math.max(0, Number(since) || 0);
+      const size = Math.max(1, Math.min(Number(limit) || 200, 5000));
+      return database.prepare(`SELECT * FROM jobs WHERE type = ? AND created_at >= ? ORDER BY created_at DESC LIMIT ?`)
+        .all(jobType, floor, size).map(mapJob);
+    },
+
     listActiveAgentJobs(workspaceId = DEFAULT_WORKSPACE_ID) {
       return database.prepare(`SELECT * FROM jobs
         WHERE workspace_id = ? AND type IN ('ai.agent.run', 'ai.article.analyze') AND status IN ('queued', 'running')

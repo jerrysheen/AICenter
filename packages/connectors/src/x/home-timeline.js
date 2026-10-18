@@ -93,6 +93,7 @@ export function tweetToFeedItem(tweet, options = {}) {
     subscriptionId: '',
     captureId: '',
     ...(tweet.capture_context ? { captureContext: FeedCaptureContextSchema.parse(tweet.capture_context) } : {}),
+    ...(tweet.x_focus ? { xFocus: tweet.x_focus } : {}),
   };
 }
 

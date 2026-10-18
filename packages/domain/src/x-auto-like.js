@@ -1,0 +1,197 @@
+import {
+  autoLikeEnvEnabled,
+  autoLikeLimits,
+  buildDrift,
+  focusFeedFromSource,
+  nextAutoLikeSettings,
+  normalizeAutoLikeSettings,
+  rankAutoLikeCandidates,
+  shanghaiDayKey,
+  storedFocus,
+} from './x-focus.js';
+
+const SETTINGS_KEY = 'x-auto-like';
+const DAY_MS = 86_400_000;
+
+function text(value) {
+  return String(value || '').trim();
+}
+
+const RESULT_LABELS = {
+  liked: '已点赞',
+  'already-liked': '原先已点赞',
+  unconfirmed: '未确认',
+  'login-required': '需要登录',
+  blocked: '被拦截',
+  unavailable: '暂不可用',
+  'not-found': '未找到原帖',
+  unliked: '已取消点赞',
+  'not-liked': '原先未点赞',
+  failed: '未完成',
+  queued: '处理中',
+  running: '处理中',
+};
+
+export function createXFocusService({
+  config,
+  env = process.env,
+  feedRepository = null,
+  runtimeRepository = null,
+  snapshots = null,
+  requestLike = null,
+  now = () => Date.now(),
+  log = () => {},
+} = {}) {
+  if (!config) throw new Error('x-focus 配置缺失');
+  const limits = () => autoLikeLimits(config, env);
+
+  function readSettings(workspaceId) {
+    const row = snapshots?.readSnapshot?.(workspaceId, SETTINGS_KEY);
+    return normalizeAutoLikeSettings(row?.payload);
+  }
+
+  function writeSettings(workspaceId, settings) {
+    const next = normalizeAutoLikeSettings(settings);
+    snapshots?.saveSnapshot?.(workspaceId, SETTINGS_KEY, next, now());
+    return next;
+  }
+
+  function likeJobs(since) {
+    return runtimeRepository?.listJobsByType?.('feed.x.like', { since, limit: 1000 }) || [];
+  }
+
+  function unlikeJobs(since) {
+    return runtimeRepository?.listJobsByType?.('feed.x.unlike', { since, limit: 200 }) || [];
+  }
+
+  function candidates(workspaceId, at) {
+    const rows = feedRepository?.listRecentXCaptures?.(workspaceId, { since: at - DAY_MS, limit: 400 }) || [];
+    return rows.map((row) => {
+      const focus = storedFocus(row.metadata, config);
+      return {
+        contentItemId: row.contentItemId || '',
+        tweetId: String(row.externalId || ''),
+        title: row.title || '',
+        sourceUrl: row.sourceUrl || '',
+        capturedAt: row.capturedAt || 0,
+        feed: focusFeedFromSource(row.sourceExternalId),
+        metadata: row.metadata || {},
+        focus,
+      };
+    }).filter((row) => row.focus);
+  }
+
+  function noticeFor(settings) {
+    if (!autoLikeEnvEnabled(env)) return '环境变量未打开，不会自动点赞';
+    if (settings.suspended && settings.notice) return settings.notice;
+    if (!settings.pageEnabled) return '页面开关未打开，不会自动点赞';
+    return '';
+  }
+
+  return Object.freeze({
+    limits,
+    readSettings,
+    async dispatch(workspaceId = 'local') {
+      const settings = readSettings(workspaceId);
+      if (!autoLikeEnvEnabled(env) || !settings.pageEnabled || settings.suspended) return { dispatched: false };
+      const openLike = runtimeRepository?.listOpenJobs?.('feed.x.like') || [];
+      const openUnlike = runtimeRepository?.listOpenJobs?.('feed.x.unlike') || [];
+      if (openLike.length || openUnlike.length) return { dispatched: false, reason: 'busy' };
+      const at = now();
+      const ranked = rankAutoLikeCandidates(candidates(workspaceId, at), likeJobs(at - 30 * DAY_MS), { ...config, limits: limits() }, at);
+      if (!ranked.picked) return { dispatched: false, reason: ranked.usage.blocked ? 'limit' : 'empty' };
+      const picked = ranked.picked;
+      const input = {
+        contentItemId: picked.contentItemId,
+        source: 'auto',
+        tweetId: picked.tweetId,
+        focusScore: picked.focus.focusScore,
+        primaryDir: picked.focus.primaryDir,
+        directionLabel: config.labels[picked.focus.primaryDir] || '',
+        reason: picked.focus.reason,
+      };
+      requestLike(workspaceId, input);
+      log(`[worker] x-auto-like tweet=${picked.tweetId} score=${picked.focus.focusScore} dir=${picked.focus.primaryDir}`);
+      return { dispatched: true, tweetId: picked.tweetId };
+    },
+    recordAutoLike(workspaceId, output) {
+      const settings = readSettings(workspaceId);
+      const next = nextAutoLikeSettings(settings, output?.status);
+      if (next !== settings) writeSettings(workspaceId, next);
+      if (next.suspended && !settings.suspended) log(`[worker] x-auto-like stopped status=${output?.status || ''}`);
+      return next;
+    },
+    setPageEnabled(workspaceId, enabled) {
+      if (enabled === true) {
+        return writeSettings(workspaceId, { pageEnabled: true, suspended: false, notice: '', consecutiveUnconfirmed: 0 });
+      }
+      return writeSettings(workspaceId, { pageEnabled: false, suspended: false, notice: '', consecutiveUnconfirmed: 0 });
+    },
+    view(workspaceId = 'local') {
+      const at = now();
+      const settings = readSettings(workspaceId);
+      const likes = likeJobs(at - 30 * DAY_MS);
+      const unlikes = unlikeJobs(at - 30 * DAY_MS);
+      const usage = rankAutoLikeCandidates([], likes, { ...config, limits: limits() }, at).usage;
+      const rows = feedRepository?.listRecentXCaptures?.(workspaceId, { since: at - 14 * DAY_MS, limit: 5000 }) || [];
+      const driftRows = rows.map((row) => ({
+        capturedAt: row.capturedAt,
+        feed: focusFeedFromSource(row.sourceExternalId),
+        focus: storedFocus(row.metadata, config),
+      }));
+      const actions = [...likes, ...unlikes]
+        .sort((left, right) => (right.createdAt || 0) - (left.createdAt || 0))
+        .slice(0, 80)
+        .map((job) => projectAction(job, rows, config, unlikes));
+      const currentLimits = limits();
+      return {
+        autoLike: {
+          environmentOn: autoLikeEnvEnabled(env),
+          pageOn: settings.pageEnabled && !settings.suspended,
+          stopped: settings.suspended,
+          notice: noticeFor(settings),
+          todayCount: usage.dailyUsed,
+          todayLimit: currentLimits.dailyLimit,
+          hourCount: usage.hourlyUsed,
+          hourLimit: currentLimits.hourlyLimit,
+        },
+        drift: buildDrift(driftRows, likes, config, at),
+        actions,
+        capturedOn: shanghaiDayKey(at),
+      };
+    },
+  });
+}
+
+function projectAction(job, captures, config, unlikes) {
+  const input = job.input || {};
+  const capture = captures.find((row) => row.contentItemId && row.contentItemId === input.contentItemId);
+  const focus = capture ? storedFocus(capture.metadata, config) : null;
+  const resultStatus = job.status === 'completed'
+    ? (job.output?.status || 'unconfirmed')
+    : (job.status === 'failed' || job.status === 'cancelled' ? 'failed' : job.status);
+  const sourceLabel = job.type === 'feed.x.unlike' ? '取消点赞' : (input.source === 'auto' ? '自动' : '手动');
+  const laterUnlike = unlikes.some((row) => row.input?.contentItemId === input.contentItemId
+    && row.createdAt >= job.createdAt
+    && row.status === 'completed'
+    && row.output?.status === 'unliked');
+  const canUnlike = job.type === 'feed.x.like'
+    && !laterUnlike
+    && (resultStatus === 'liked' || resultStatus === 'already-liked')
+    && Boolean(input.contentItemId);
+  return {
+    id: job.id,
+    at: job.createdAt,
+    sourceLabel,
+    title: text(capture?.title) || text(input.directionLabel) || 'X 帖子',
+    href: capture?.sourceUrl || '',
+    scoreText: Number.isFinite(Number(input.focusScore))
+      ? Number(input.focusScore).toFixed(2)
+      : (focus ? focus.focusScore.toFixed(2) : '—'),
+    direction: text(input.directionLabel) || (focus ? (config.labels[focus.primaryDir] || '') : ''),
+    reason: text(input.reason) || focus?.reason || '',
+    result: RESULT_LABELS[resultStatus] || '未完成',
+    canUnlike,
+    contentItemId: input.contentItemId || '',
+  };
+}

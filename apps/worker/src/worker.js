@@ -28,6 +28,9 @@ import { createFeedService } from '../../../packages/domain/src/feed-service.js'
 import { createFeedInteractionService } from '../../../packages/domain/src/feed-interaction-service.js';
 import { createXLikeBrowserPort } from '../../../packages/connectors/src/x/like-browser.js';
 import { feedInteractionManifest, createFeedInteractionJobHandlers } from '../../../packages/runtime/src/feed-interaction-module.js';
+import { loadXFocusConfig } from '../../../packages/domain/src/x-focus.js';
+import { createAnalysisFocusCache, createXFocusScorer } from '../../../packages/domain/src/x-focus-score.js';
+import { createXFocusService } from '../../../packages/domain/src/x-auto-like.js';
 import { createMediaIngestionService,mediaResourceId } from '../../../packages/domain/src/media-ingestion-service.js';
 import { ensureMediaIndexSyncSchedule, enqueueMediaIndexEnrich, MEDIA_ENRICH_JOB_TYPE } from '../../../packages/connectors/src/media/index.js';
 import { loadTwkrFlags } from '../../../packages/connectors/src/twkr-sources.js';
@@ -215,6 +218,10 @@ export function createAiCenterWorker(options = {}) {
     defaultBrowserId: instance.browserId,
   });
   let feedService;
+  const xFocusHooks = { scoreCards: null, afterIngest: null, recordLike: null };
+  let xFocusConfig = null;
+  try { xFocusConfig = options.xFocusConfig || loadXFocusConfig(instance.configDirectory); }
+  catch (error) { console.log(`[worker] x-focus ${String(error?.message || error).slice(0, 160)}`); }
   const typesafeClient = options.typesafeClient || createTypeSafeSystemOneClient({ env });
   const feedFilter = options.feedFilter !== undefined
     ? options.feedFilter
@@ -261,12 +268,16 @@ export function createAiCenterWorker(options = {}) {
     readTrendforceStored: workspaceId => mediaService.readFeed({channel:'tech',sourceKey:'trendforce',view:'all'},{workspaceId}),
     migrateTrendforce: workspaceId=>contentRoutingPort.migrate(workspaceId),
     hardwarePriceService,
+    scoreHomeCards: (cards, context) => xFocusHooks.scoreCards?.(cards, context) ?? null,
   });
   const sourcePort = options.sourcePort || createSourceHub(registry);
-  registry.register({ manifest: feedInteractionManifest, jobHandlers: createFeedInteractionJobHandlers(createFeedInteractionService({
+  const feedInteraction = createFeedInteractionService({
     feedRepository: store.repositories.feed, runtimeRepository: store,
     likePort: options.xLikePort !== undefined ? options.xLikePort : browserRuntime?.withSession ? createXLikeBrowserPort({ browserRuntime }) : null,
-  })) });
+  });
+  registry.register({ manifest: feedInteractionManifest, jobHandlers: createFeedInteractionJobHandlers(feedInteraction, {
+    onAutoLike: (workspaceId, output) => xFocusHooks.recordLike?.(workspaceId, output),
+  }) });
   feedService = options.feedService || createFeedService({
     legacyRepository: store,
     feedRepository: store.repositories.feed,
@@ -275,6 +286,7 @@ export function createAiCenterWorker(options = {}) {
     mediaPort: mediaService,
     contentRoutingPort,
     onContentReady:env.AI_CENTER_INFORMATION_PIPELINE==='tree-v3' ? ({workspaceId,sourceIds})=>enqueueTreePreparation(store,workspaceId,sourceIds) : null,
+    onXIngest: (context) => xFocusHooks.afterIngest?.(context),
     flashSources,
     translationPort: options.translateService || createTranslateService({
       env,
@@ -416,6 +428,25 @@ export function createAiCenterWorker(options = {}) {
       quality: agentQuality,
       tools: agentTools,
     }));
+  if (xFocusConfig) {
+    const scorer = createXFocusScorer({
+      config: xFocusConfig,
+      env,
+      agentRuntime,
+      cache: createAnalysisFocusCache(store.repositories.report),
+    });
+    const autoLike = createXFocusService({
+      config: xFocusConfig,
+      env,
+      feedRepository: store.repositories.feed,
+      runtimeRepository: store,
+      snapshots: store.repositories.runtimeSnapshots,
+      requestLike: (workspaceId, input) => feedInteraction.requestLike(workspaceId, input),
+    });
+    xFocusHooks.scoreCards = (cards, context) => scorer.scoreCards(cards, context);
+    xFocusHooks.afterIngest = ({ workspaceId }) => autoLike.dispatch(workspaceId);
+    xFocusHooks.recordLike = (workspaceId, output) => autoLike.recordAutoLike(workspaceId, output);
+  }
   const agentTraceLog = options.agentTraceLog
     || (options.store && !options.dataDirectory && !options.instanceConfig
       ? null

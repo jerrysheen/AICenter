@@ -8,6 +8,7 @@ import { createHardwarePriceRoutes } from './hardware-price-routes.js';
 import { createComputePriceRoutes } from './compute-price-routes.js';
 import { createFeedRoutes } from './feed-routes.js';
 import { createFeedInteractionRoutes } from './feed-interaction-routes.js';
+import { createXFocusRoutes } from './x-focus-routes.js';
 import { createIdentityRoutes } from './identity-routes.js';
 import { createApiTokenRoutes } from './api-token-routes.js';
 import { createKnowledgeRoutes } from './knowledge-routes.js';
@@ -29,6 +30,7 @@ export function createApiRoutes({ slots, offthread = null } = {}) {
     ...createApiTokenRoutes(),
     ...createRuntimeRoutes(),
     ...createSourceRoutes(),
+    ...createXFocusRoutes(),
     ...createFeedRoutes({ slots, offthread }),
     ...createFeedInteractionRoutes(),
     ...createHardwarePriceRoutes({ slots, offthread }),
