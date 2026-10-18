@@ -6949,7 +6949,7 @@ function renderOverviewTimeline() {
     renderChipTabs(elements['overview-timeline-tabs'], [
       { id: 'latest', label: '全部' },
       { id: 'focus', label: '重点' },
-      { id: 'recent', label: '最近' },
+      { id: 'recent', label: '最近浏览' },
       { id: 'social', label: '社媒' },
       { id: 'official', label: '官方' },
     ], state.overviewTimeline === 'latest' ? 'latest' : state.overviewTimeline, (id) => {
@@ -15711,6 +15711,7 @@ window.addEventListener('scroll', () => {
 document.addEventListener('click', (event) => {
   const trigger = event.target.closest('[data-nav]');
   if (!trigger) return;
+  if (typeof trigger.blur === 'function') trigger.blur();
   const activation = primaryNavActivation(trigger.dataset.nav);
   setView(activation.route, activation.fromPrimaryNav ? { fromPrimaryNav: true } : {});
 });
