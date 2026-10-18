@@ -194,7 +194,7 @@ async function timeHttp(base) {
     '/api/v1/reports/tree?view=index',
     '/api/v1/reports/reading-hour/index?scope=hour',
     '/api/v1/markets?board=overview',
-    '/api/v1/reports/daily/latest/brief',
+    '/api/v1/reports/tree/latest-daily',
     '/api/v1/static-signals/board?focus=1&limit=40&releaseLimit=60',
   ];
   const started = performance.now();

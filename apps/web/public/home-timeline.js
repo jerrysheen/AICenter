@@ -358,13 +358,23 @@ export function homeHourItemTime(item, now = Date.now()) {
   const clock = positiveAt(now);
   const within = (at) => at > 0 && (!clock || at <= clock + HOUR_LIST_FUTURE_SLACK_MS);
   const clamp = (at) => (clock && at > clock ? clock : at);
-  if (within(published)) return clamp(published);
-  if (published > 0) {
-    if (within(ingested)) return clamp(ingested);
-    return clock || ingested || published;
-  }
-  if (within(ingested)) return clamp(ingested);
-  return clock && ingested ? Math.min(ingested, clock) : ingested;
+  const chosen = ingested || published;
+  if (!chosen) return 0;
+  if (within(chosen)) return clamp(chosen);
+  const other = chosen === ingested ? published : ingested;
+  if (within(other)) return clamp(other);
+  return clock || other || chosen;
+}
+
+export function homeHourPublishedNote(item, window) {
+  const published = positiveAt(item?.publishedAt);
+  const start = positiveAt(window?.startAt);
+  if (!published || !start || published >= start) return '';
+  const pub = shanghaiParts(published);
+  const win = shanghaiParts(start);
+  const clock = `${pub.hour}:${pub.minute}`;
+  const sameDay = pub.year === win.year && pub.month === win.month && pub.day === win.day;
+  return sameDay ? `发布于 ${clock}` : `发布于 ${pub.month}月${pub.day}日 ${clock}`;
 }
 
 export function selectHomeHourHits(snapshot) {
@@ -411,7 +421,7 @@ export function homeRequestPlan(nowMs = Date.now()) {
   const tree = `/api/v1/reports/tree?view=index&startAt=${from}&endAt=${end}`;
   const readingIndex = `/api/v1/reports/reading-hour/index?startAt=${from}&endAt=${end}&scope=hour`;
   const market = '/api/v1/markets?board=overview';
-  const daily = '/api/v1/reports/daily/latest/brief';
+  const daily = '/api/v1/reports/tree/latest-daily';
   const board = `/api/v1/static-signals/board?from=${boardFrom}&to=${boardTo}&focus=1&limit=40&releaseLimit=60`;
   return {
     tree,

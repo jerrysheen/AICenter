@@ -27,6 +27,7 @@ import {
   hourlyEditions,
   homeHourSections,
   homeHourItemTime,
+  homeHourPublishedNote,
   homeReadingReady,
   acceptMarketPayload,
   marketPayloadHasQuotes,
@@ -35,6 +36,7 @@ import {
   reportHourHref,
   unavailableOfficialCount,
 } from './home-timeline.js?v=dev';
+import { commitReportHistory, reportViewOwnsScroll } from './report-history.js?v=dev';
 import { decodeHtmlEntities } from './html-text.js?v=dev';
 import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, prioritizeReadableFeedRows, renderNewsList, reportItemTime } from './news-list.js?v=dev';
 import { createAuthorView } from './author-view.js?v=dev';
@@ -1384,7 +1386,7 @@ function setView(name, options = {}) {
     renderPosts();
   }
   if (view === 'feed' && (leaving || options.replace)) scrollFeedToTop();
-  else if (leaving) restoreViewScroll(view);
+  else if (leaving && !reportViewOwnsScroll(view, briefPage.hasHourScroll())) restoreViewScroll(view);
   else if (newArticle) window.scrollTo(0, 0);
   persistFeedBrowseState();
   syncAskKeyboard();
@@ -4275,14 +4277,32 @@ function mediaFeedNeedsReload(previousKey, nextKey, loading) {
   return previousKey !== nextKey && !loading;
 }
 
+function channelForFeedScope(id) {
+  const scope = String(id || 'all');
+  if (scope === 'flash') return 'flash';
+  if (scope === 'media' || scope === 'trendforce') return 'media';
+  if (scope === 'social' || scope === 'x' || scope === 'xueqiu') return 'social';
+  if (scope === 'focus' || scope === 'recent' || scope === 'official') return scope;
+  return 'all';
+}
+
 function applyFeedPlatform(id) {
+  const requested = id || 'all';
   const previousPlatform = state.feedPlatform;
   const previousMedia = mediaSelectionKey(state.mediaChannel, state.mediaView, state.mediaSourceKey);
-  if(id==='trendforce'){id='media';state.mediaChannel='tech';state.mediaSourceKey='trendforce';state.mediaView='all';}
-  const next = ['x', 'xueqiu'].includes(id) ? 'social' : id === 'bilibili' ? 'all' : id || 'all';
+  let next = requested;
+  if (next === 'trendforce') {
+    next = 'media';
+    state.mediaChannel = 'tech';
+    state.mediaSourceKey = 'trendforce';
+    state.mediaView = 'all';
+  }
+  next = ['x', 'xueqiu'].includes(next) ? 'social' : next === 'bilibili' ? 'all' : next || 'all';
   state.feedPlatform = next;
   state.platform = next;
-  if (isSourceFeedScope(next) || next === 'social') state.channel = 'social';
+  if (requested === 'all') {
+    if (!['focus', 'recent', 'official', 'all'].includes(state.channel)) state.channel = 'all';
+  } else state.channel = channelForFeedScope(requested);
   state.feedEpoch = (Number(state.feedEpoch) || 0) + 1;
   if (typeof elements !== 'undefined' && elements?.feed && typeof renderViewState === 'function') {
     elements.feed.replaceChildren();
@@ -4322,8 +4342,8 @@ function selectFeedScope(id) {
     renderPosts();
     return;
   }
+  state.channel = channelForFeedScope(id);
   if (id === 'flash') {
-    state.channel = 'flash';
     state.feedPlatform = 'all';
     state.platform = 'all';
     renderChannels();
@@ -4340,7 +4360,6 @@ function selectFeedScope(id) {
     applyFeedPlatform(id);
     return;
   }
-  state.channel = id;
   applyFeedPlatform(id === 'social' ? 'social' : 'all');
 }
 
@@ -4378,7 +4397,7 @@ function renderFlashPosts() {
   renderNewsList(host, items.map((item) => ({
     id: item.id,
     title: item.title || item.summary || '',
-    summary: item.summary && item.summary !== item.title ? item.summary : '',
+    summary: item.title && item.summary && item.summary !== item.title ? item.summary : '',
     at: item.publishedAt,
     source: item.source || '快讯',
     swipe: false,
@@ -7738,6 +7757,7 @@ function homeHourRow(item, edition) {
     at: when.at,
     ingested: when.ingested,
     source: homeHourSource(item),
+    publishedNote: homeHourPublishedNote(item, edition?.window),
     focused: itemIsFocused(snap) || isFocused(item.nodeId),
     onOpen: () => setView(homeHourHref(edition.window.startAt, item.nodeId)),
     onStar: () => toggleFocus(item.nodeId, () => { renderPosts(); renderHub(); }, snap),
@@ -11171,7 +11191,7 @@ function renderAskMaterials() {
     id: note.id,
     type: 'inspiration',
     title: inspirationCardTitle(note),
-    meta: note.sourceTitle || '我的随记',
+    meta: inspirationCardMeta(note),
     preview: note.body,
   }));
   const frames = state.mentionItems.filter((item) => item.resourceType === 'knowledge-revision').slice(0, 12);
@@ -12014,6 +12034,7 @@ const briefPage = {
   reset(flag) { this.impl?.reset?.(flag); },
   selectDirection(key) { return this.impl?.selectDirection?.(key); },
   mount(root, options) { return ensureBriefPage().then((page) => page.mount(root, options)); },
+  hasHourScroll() { return Boolean(this.impl?.hasHourScroll?.()); },
 };
 
 function ensureBriefPage() {
@@ -12023,9 +12044,22 @@ function ensureBriefPage() {
       briefPage.impl = mod.createBriefPage ? mod.createBriefPage({
   api, navigate: setView, session: () => state.session, active: () => document.body.dataset.view === 'report',
   syncHour(hour, extra = {}) {
-    reportHour = Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : null;
-    if (extra && Object.hasOwn(extra, 'node')) reportNode = extra.node || '';
+    const nextHour = Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : null;
+    const nextNode = extra && Object.hasOwn(extra, 'node') ? (extra.node || '') : reportNode;
+    const nextDate = extra && Object.hasOwn(extra, 'date') ? (extra.date || '') : reportDate;
+    const previous = { hour: reportHour, date: reportDate, node: reportNode };
+    const next = { hour: nextHour, date: nextDate, node: nextNode };
+    reportHour = nextHour;
+    reportNode = nextNode;
+    reportDate = nextDate;
     if (document.body.dataset.view === 'report') rememberOverviewTarget('report');
+    commitReportHistory({
+      previous,
+      next,
+      hash: extra?.hash || reportHash(),
+      location,
+      history,
+    });
   },
   focusReading(item) {
     toggleFocus(item?.id, () => { renderPosts(); renderHub(); }, item);
@@ -12213,9 +12247,9 @@ function renderHomeDaily() {
 async function loadDailyBrief({ priority = 4, fresh = false } = {}) {
   const session = state.session;
   try {
-    const payload = await api('/api/v1/reports/daily/latest/brief', { priority, fresh, cache: fresh ? 'no-store' : undefined });
+    const payload = await api('/api/v1/reports/tree/latest-daily', { priority, fresh, cache: fresh ? 'no-store' : undefined });
     if (session !== state.session) return;
-    dailyBriefSnapshot = { brief: payload.brief || null, loaded: true, error: '' };
+    dailyBriefSnapshot = { brief: payload.daily || null, loaded: true, error: '' };
   } catch (error) {
     if (session !== state.session) return;
     dailyBriefSnapshot = {
@@ -12774,6 +12808,28 @@ function inspirationCardTitle(note) {
   return '未命名灵感';
 }
 
+function inspirationCardMeta(note) {
+  const title = inspirationCardTitle(note);
+  const source = String(note?.sourceTitle || '').replace(/\s+/g, ' ').trim();
+  if (!source || source === title) return note?.sourceUrl ? '来自信息流' : '我的随记';
+  return source;
+}
+
+function noteBodyWithoutRepeatedTitle(text, title = '') {
+  let markdown = String(text || '').trim();
+  const heading = String(title || '').replace(/\s+/g, ' ').trim();
+  if (!heading) return markdown;
+  markdown = markdown.replace(new RegExp(`^#{1,6}\\s+${escapeRegExp(heading)}\\s*(?:\\n+|$)`), '');
+  const lines = markdown.split('\n');
+  const first = lines[0].replace(/^#{1,6}\s+/, '').replace(/\s+/g, ' ').trim();
+  if (first === heading) {
+    lines.shift();
+    while (lines[0] === '') lines.shift();
+    markdown = lines.join('\n').trim();
+  }
+  return markdown;
+}
+
 function setInspirationExpanded(noteId, open) {
   if (open) logBehavior('item.expand', { kind: 'note' });
   if (open) {
@@ -12814,10 +12870,7 @@ function appendResourceTags(card, { typeLabel, taxonomy = [] }) {
 function fillNoteBody(card, text, title = '') {
   const body = document.createElement('div');
   body.className = 'note-body post-markdown';
-  let markdown = String(text || '').trim();
-  if (title) {
-    markdown = markdown.replace(new RegExp(`^#{1,3}\\s+${escapeRegExp(title)}\\s*(?:\\n+|$)`), '');
-  }
+  const markdown = noteBodyWithoutRepeatedTitle(text, title);
   renderMarkdownInto(body, markdown);
   body.addEventListener('click', (event) => {
     const link = event.target instanceof Element ? event.target.closest('a') : null;
@@ -14030,7 +14083,7 @@ function renderNotes() {
     bodyButton.append(Object.assign(document.createElement('h3'), { textContent: inspirationCardTitle(note) }));
     const detail = document.createElement('div');
     detail.className = 'note-card-detail';
-    fillNoteBody(detail, note.body, note.title);
+    fillNoteBody(detail, note.body, inspirationCardTitle(note));
     if (note.sourceTitle || note.sourceUrl) {
       const source = document.createElement('div');
       source.className = 'note-source';
@@ -14055,7 +14108,7 @@ function renderNotes() {
     foot.className = 'note-foot';
     foot.append(
       Object.assign(document.createElement('small'), {
-        textContent: `${note.sourceTitle || (note.sourceUrl ? '来自信息流' : '我的随记')} · ${note.pinned ? '置顶 · ' : ''}${formatTime(note.createdAt)}`,
+        textContent: `${inspirationCardMeta(note)} · ${note.pinned ? '置顶 · ' : ''}${formatTime(note.createdAt)}`,
       }),
       cite,
     );

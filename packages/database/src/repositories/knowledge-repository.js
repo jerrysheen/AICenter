@@ -64,7 +64,29 @@ const SESSION_HISTORY_LIMIT = 16;
 function clipText(value, max) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   if (!text) return '';
-  return text.length > max ? `${text.slice(0, max)}…` : text;
+  const chars = Array.from(text);
+  return chars.length > max ? `${chars.slice(0, max).join('')}…` : text;
+}
+
+function stripMarkdown(value) {
+  let text = String(value || '');
+  text = text.replace(/```[\s\S]*?```/g, ' ');
+  text = text.replace(/```[\s\S]*$/g, ' ');
+  text = text.replace(/!\[[^\]]*]\([^)]*\)/g, ' ');
+  text = text.replace(/\[([^\]]*)]\([^)]*\)/g, '$1');
+  text = text.replace(/`([^`\n]*)`/g, '$1');
+  text = text.replace(/^>\s?/gm, '');
+  text = text.replace(/^#{1,6}\s+/gm, '');
+  text = text.replace(/\*\*([^*\n]+)\*\*/g, '$1');
+  text = text.replace(/__([^_\n]+)__/g, '$1');
+  text = text.replace(/~~([^~\n]+)~~/g, '$1');
+  text = text.replace(/(?<![\w*])\*(?!\*|\s)([^*\n]*?\S)\*(?![\w*])/g, '$1');
+  text = text.replace(/(?<![\w_])_(?!_|\s)([^_\n]*?\S)_(?![\w_])/g, '$1');
+  return text;
+}
+
+function plainPreview(value, max = SESSION_PREVIEW_MAX) {
+  return clipText(stripMarkdown(value), max);
 }
 
 function sessionKindOf(sourceType, taskType) {
@@ -94,7 +116,7 @@ function mapSession(row) {
     workspaceId: row.workspace_id,
     kind: row.kind,
     title: row.title,
-    preview: row.preview || '',
+    preview: plainPreview(row.preview || ''),
     sourceType: row.source_type || '',
     sourceId: row.source_id || '',
     runCount: Number(row.run_count || 0),
@@ -464,7 +486,7 @@ export function createKnowledgeRepository(database, emitEvent) {
           (id, workspace_id, kind, title, preview, source_type, source_id, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
           .run(id, workspaceId, sessionKind, clipText(title, SESSION_TITLE_MAX) || '未命名记录',
-            clipText(preview, SESSION_PREVIEW_MAX), sourceType, sourceId, now, now);
+            plainPreview(preview), sourceType, sourceId, now, now);
         emitEvent('knowledge.ai-session.created.v1', 'ai-session', id,
           { sessionId: id, kind: sessionKind }, workspaceId);
       })();
@@ -597,7 +619,7 @@ export function createKnowledgeRepository(database, emitEvent) {
             (id, workspace_id, kind, title, preview, source_type, source_id, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
             .run(resolvedSessionId, workspaceId, kind, clipText(message, SESSION_TITLE_MAX) || '未命名记录',
-              clipText(answer, SESSION_PREVIEW_MAX), sourceType, runSourceId || '', now, now);
+              plainPreview(answer), sourceType, runSourceId || '', now, now);
           emitEvent('knowledge.ai-session.created.v1', 'ai-session', resolvedSessionId,
             { sessionId: resolvedSessionId, kind }, workspaceId);
         }
@@ -609,7 +631,7 @@ export function createKnowledgeRepository(database, emitEvent) {
             inputHash, String(message || ''), answer,
             JSON.stringify(output !== undefined ? output : { toolCalls, warnings }), now, now);
         database.prepare('UPDATE ai_sessions SET preview = ?, updated_at = ? WHERE id = ?')
-          .run(clipText(answer || message, SESSION_PREVIEW_MAX), now, resolvedSessionId);
+          .run(plainPreview(answer || message), now, resolvedSessionId);
         const insertRef = database.prepare(`INSERT INTO ai_run_context_refs
           (id, run_id, workspace_id, resource_type, resource_id, revision, as_of, origin, label, created_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);

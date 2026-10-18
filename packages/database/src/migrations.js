@@ -2247,9 +2247,8 @@ migrations.push({ version: 78, name: 'author_stats', up(database) {
   `);
 }});
 
-// 63 仍空着。79、80、82 留空。83、84 还没合入，不登记成空号。
+// 63 仍空着。79、80、82 留空。83 是 information_tree_heads 的 (workspace_id, layer, start_at) 索引。
 export const unusedSchemaVersions = [63, 79, 80, 82];
-
 
 // 南向资金用 81，按 version 补执行，不看最大号。79、80、82 留空。
 migrations.push({ version: 81, name: 'southbound_flow', up(database) {
@@ -2291,6 +2290,13 @@ migrations.push({ version: 81, name: 'southbound_flow', up(database) {
     );
     CREATE INDEX IF NOT EXISTS idx_southbound_top10_code
       ON southbound_top10 (workspace_id, code, trade_date DESC);
+  `);
+}});
+
+migrations.push({ version: 83, name: 'information_tree_heads_layer_start', up(database) {
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_information_tree_heads_layer_start
+      ON information_tree_heads(workspace_id, layer, start_at);
   `);
 }});
 
@@ -2401,4 +2407,3 @@ export function runMigrations(database) {
 export function latestSchemaVersion() {
   return migrations.at(-1)?.version || 0;
 }
-

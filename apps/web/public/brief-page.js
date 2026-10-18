@@ -172,7 +172,11 @@ export function createBriefPage(host) {
     const nextRoute=archive ? 'archive' : date || (history ? 'history' : 'current');
     if (treeReady && root===target && routeKey===nextRoute && root.childElementCount && (treeActive || dateInput?.isConnected)) {
       if(treeActive){
-        if(clockHour!=null && !history && !archive) {tree.focusNode(focusId);return tree.selectHour(clockHour);}
+        if(clockHour!=null && !history && !archive) {
+          tree.focusNode(focusId);
+          if(tree.showingHour?.(clockHour)) return tree.resume();
+          return tree.selectHour(clockHour);
+        }
         return tree.resume();
       }
       if (s.mode==='discussion') {start(); renderContent(); return;}
@@ -937,5 +941,5 @@ export function createBriefPage(host) {
   document.addEventListener('keydown',event=>{
     if(event.key==='Escape') for(const panel of root?.querySelectorAll('.brief-tools[open],.brief-date-picker[open],.brief-item-tools[open],.brief-paragraph-tools[open]') || []) panel.open=false;
   });
-  return {mount,stop,reset,check,selectDirection,state:s};
+  return {mount,stop,reset,check,selectDirection,hasHourScroll(){return Boolean(tree.hasHourScroll?.());},state:s};
 }

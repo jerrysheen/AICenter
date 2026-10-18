@@ -1,4 +1,5 @@
 import { parseBrowserJson } from '../browser/browser-runtime.js';
+import { normalizeFlashCopy } from '../flash-copy.js';
 
 export const XUEQIU_HOME_URL = 'https://xueqiu.com/';
 export const XUEQIU_ORIGIN = 'https://xueqiu.com';
@@ -254,14 +255,15 @@ function xueqiuAvatar(user) {
 
 export function mapLivenewsItem(item) {
   const id = String(item?.id || '').trim();
-  const body = stripXueqiuHtml(item?.text || item?.title || '');
+  const raw = stripXueqiuHtml(item?.text || item?.title || '');
+  const copy = normalizeFlashCopy('', raw);
   const target = xueqiuAbsoluteUrl(item?.target) || (id ? `${XUEQIU_ORIGIN}/livenews/${id}` : XUEQIU_HOME_URL);
   return {
     status_id: id ? `livenews:${id}` : '',
     feed: 'livenews',
     kind: 'livenews',
-    text: body,
-    title: body.slice(0, 48),
+    text: copy.body,
+    title: copy.title,
     author_name: '雪球7x24',
     author_handle: '',
     author_native_id: '7x24',

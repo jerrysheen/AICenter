@@ -32,6 +32,10 @@ function services() {
           days: [],
         };
       },
+      latestDaily() {
+        calls.push(['daily']);
+        return { sentence: '日报', reportDate: '2026-10-16', providerId: 'secret-provider', modelId: 'secret-model' };
+      },
     },
     readingHour: {
       indexForRange(workspace, window, scope) {
@@ -109,9 +113,16 @@ test('home bootstrap window matches the first-screen plan and strips provider fi
   const fake = services();
   const body = await composeHomeBootstrap(fake, { workspace: 'phone', now: NOW });
   assert.equal(body.window.startAt, query.tree.startAt);
+  assert.equal(body.daily.daily.sentence, '日报');
+  assert.equal(body.daily.daily.reportDate, '2026-10-16');
+  assert.equal(body.daily.daily.providerId, undefined);
+  assert.equal(body.daily.daily.modelId, undefined);
   assert.equal(body.brief.brief.sentence, '日报');
-  assert.equal(body.brief.brief.providerId, undefined);
-  assert.equal(body.brief.brief.modelId, undefined);
+  assert.equal(body.brief.daily.sentence, '日报');
+  assert.equal(body.daily.brief.providerId, undefined);
+  assert.equal(projectHomeBootstrap(body).brief.sentence, '日报');
+  assert.equal(projectHomeBootstrap({ brief: body.brief }).brief.sentence, '日报');
+  assert.equal(fake.calls.some((row) => row[0] === 'daily'), true);
   assert.equal(body.posts, undefined);
   assert.equal(body.feeds, undefined);
   assert.equal(body.readings[body.window.endAt - 3_600_000].items.length, 1);
@@ -223,7 +234,7 @@ test('first-screen bootstrap stays under 100KB without stringifying the fat snap
       hits: Array.from({ length: 8 }, () => text(20)),
     })),
   });
-  fatServices.report.getLatestDailyBrief = () => ({
+  fatServices.informationTree.latestDaily = () => ({
     reportDate: '2026-10-13',
     providerId: 'secret-provider',
     modelId: 'secret-model',
@@ -282,7 +293,10 @@ test('first-screen bootstrap stays under 100KB without stringifying the fat snap
   const afterMs = performance.now() - slimStarted;
   assert.ok(prepared.bytes < HOME_BOOTSTRAP_RAW_BUDGET, `slim bootstrap ${prepared.bytes} bytes`);
   assert.equal(slim.market.market.sections[0].indices[0].sparkline.length, 30);
-  assert.equal(JSON.parse(prepared.json.toString('utf8')).brief.brief.providerId, undefined);
+  const published = JSON.parse(prepared.json.toString('utf8'));
+  assert.equal(published.daily.daily.providerId, undefined);
+  assert.equal(published.daily.daily.modelId, undefined);
+  assert.equal(published.brief.brief.providerId, undefined);
   assert.equal(slim.feeds, undefined);
   console.log(JSON.stringify({
     beforeBytes: Buffer.byteLength(beforeJson),
@@ -302,7 +316,7 @@ test('cold home data requests paint the snapshot and the module urls together', 
   assert.ok(after.some((path) => path.includes('/api/v1/reports/tree')));
   assert.ok(after.some((path) => path.includes('/api/v1/reports/reading-hour/index')));
   assert.ok(after.some((path) => path.startsWith('/api/v1/markets?board=overview')));
-  assert.ok(after.some((path) => path.includes('/api/v1/reports/daily/latest/brief')));
+  assert.ok(after.some((path) => path.includes('/api/v1/reports/tree/latest-daily')));
   assert.ok(after.some((path) => path.includes('/api/v1/static-signals/board')));
   assert.equal(after.filter((path) => path.includes('/api/v1/reports/reading-hour?')).length, 0);
   assert.ok(before.some((path) => path.includes('/api/v1/reports/tree')));
