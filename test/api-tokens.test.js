@@ -58,6 +58,7 @@ test('allowlist is GET-only and leaves admin paths closed', () => {
     ['GET', '/api/v1/reports/hourly'],
     ['GET', '/api/v1/reports/hourly/search'],
     ['GET', '/api/v1/reports/tree'],
+    ['GET', '/api/v1/reports/tree/latest-daily'],
     ['GET', '/api/v1/reports/reading-hour/index'],
     ['GET', '/api/v1/feed/x'],
     ['GET', '/api/v1/feed/media'],
@@ -233,6 +234,7 @@ test('bearer tokens can read the allowlist and nothing else', async () => {
     const allowed = [
       '/api/v1/reports/daily/latest',
       '/api/v1/reports/daily/latest/brief',
+      '/api/v1/reports/tree/latest-daily',
       '/api/v1/reports/daily/briefs?limit=5',
       `/api/v1/reports/hourly?hourStart=${start}`,
       `/api/v1/reports/hourly/index?startAt=${start}&endAt=${end}`,

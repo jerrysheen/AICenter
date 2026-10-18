@@ -107,6 +107,11 @@ export function createReportRoutes({ slots = createPreparedSlotStore(), offthrea
       const snapshot=services.readingHour.get(identity?.device?.workspaceId || 'local',url.searchParams.get('id') || '');
       json(response,snapshot ? 200 : 404,{ok:Boolean(snapshot),snapshot});
     }},
+    {method:'GET',path:'/api/v1/reports/tree/latest-daily',handler({response,services,identity}) {
+      const workspace=identity?.device?.workspaceId || 'local';
+      const daily=services.informationTree.latestDaily?.(workspace) || null;
+      json(response,200,{ok:true,daily});
+    }},
     {method:'GET',path:'/api/v1/reports/tree/editorial',handler({response,services,url,identity}) {
       const window=parseContract(TreeWindowQuerySchema,{startAt:url.searchParams.get('startAt'),endAt:url.searchParams.get('endAt')});
       const editorial=services.informationTree.editorial?.(identity?.device?.workspaceId || 'local',window) || null;
