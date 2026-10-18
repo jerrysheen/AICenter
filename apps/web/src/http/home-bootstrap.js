@@ -62,14 +62,26 @@ function briefView(brief) {
   };
 }
 
+function slimSparkline(value) {
+  if (!Array.isArray(value)) return [];
+  const points = value.slice(-30).map((point) => Number(point)).filter((point) => Number.isFinite(point));
+  return points.length >= 2 ? points : [];
+}
+
 function slimQuote(item) {
   if (!item?.symbol) return null;
+  const asOf = Number(item.asOf ?? item.marketTime);
+  const sparkline = slimSparkline(item.sparkline);
   return {
     symbol: item.symbol,
     name: item.name || '',
     lastPrice: item.lastPrice ?? null,
     changePct: item.changePct ?? null,
     currency: item.currency || '',
+    ...(item.session ? { session: item.session } : {}),
+    ...(typeof item.marketOpen === 'boolean' ? { marketOpen: item.marketOpen } : {}),
+    ...(Number.isFinite(asOf) && asOf > 0 ? { asOf } : {}),
+    ...(sparkline.length ? { sparkline } : {}),
   };
 }
 
@@ -83,12 +95,14 @@ function slimMarket(market) {
     mode: market.mode || '',
     fetchedAt: market.fetchedAt ?? null,
     session: market.session || '',
+    ...(typeof market.marketOpen === 'boolean' ? { marketOpen: market.marketOpen } : {}),
     focus: market.focus || '',
     ...(market.note ? { note: clip(market.note, 180) } : {}),
     sections: sections.slice(0, 2).map((section) => ({
       id: section.id || '',
       title: section.title || '',
       session: section.session || '',
+      ...(typeof section.marketOpen === 'boolean' ? { marketOpen: section.marketOpen } : {}),
       indices: (section.indices || []).map(slimQuote).filter(Boolean),
       gainers: (section.gainers || []).slice(0, 6).map(slimQuote).filter(Boolean),
       losers: (section.losers || []).slice(0, 6).map(slimQuote).filter(Boolean),
@@ -174,47 +188,92 @@ export function homeBootstrapEtag(body) {
   return `W/"${createHash('sha1').update(JSON.stringify(stable)).digest('hex')}"`;
 }
 
-export async function composeHomeBootstrap(services, { workspace = 'local', now = Date.now() } = {}) {
-  const query = homeBootstrapQuery(now);
-  const leaveTree = labelEventLoop('home.bootstrap');
-  let treeBody;
+async function timed(name, segments, fn) {
+  const started = Date.now();
   try {
-    treeBody = services.informationTree.list(workspace, query.tree);
+    return await fn();
   } finally {
-    leaveTree();
+    segments[name] = Date.now() - started;
   }
-  const tree = slimTree(treeBody);
-  await yieldEventLoop();
-  const readings = {};
-  let filled = 0;
-  for (const edition of hourlyEditions(tree)) {
+}
+
+function snapshotHasItems(snapshot) {
+  return Array.isArray(snapshot?.items) && snapshot.items.length > 0;
+}
+
+function readingsFromEditions(services, workspace, editions) {
+  const windows = [];
+  for (const edition of editions) {
     const startAt = Number(edition?.window?.startAt);
     const endAt = Number(edition?.window?.endAt);
-    if (!Number.isFinite(startAt) || !Number.isFinite(endAt)) continue;
-    const leaveHour = labelEventLoop('home.bootstrap');
-    try {
-      const loadSnapshot = filled < HOME_BOOTSTRAP_VISIBLE_HOURS && services.readingHour?.forWindow;
-      const snapshot = loadSnapshot
-        ? services.readingHour.forWindow(workspace, { startAt, endAt }, 'hour')
-        : null;
-      const limit = filled === 0 ? 5 : 2;
-      readings[startAt] = slimReading(snapshot, loadSnapshot ? limit : 0);
-      if (readings[startAt].items.length) filled += 1;
-    } finally {
-      leaveHour();
+    if (Number.isFinite(startAt) && Number.isFinite(endAt)) windows.push({ startAt, endAt });
+  }
+  const loaded = new Map();
+  const reading = services.readingHour;
+  if (reading?.listWindowSnapshots && reading?.presentSnapshots) {
+    const raw = reading.listWindowSnapshots(workspace, windows, 'hour') || [];
+    const byStart = new Map();
+    for (const snapshot of raw) {
+      const startAt = Number(snapshot?.window?.startAt);
+      if (Number.isFinite(startAt)) byStart.set(startAt, snapshot);
     }
-    await yieldEventLoop();
+    const chosen = [];
+    for (const window of windows) {
+      if (chosen.length >= HOME_BOOTSTRAP_VISIBLE_HOURS) break;
+      const snapshot = byStart.get(window.startAt);
+      if (snapshotHasItems(snapshot)) chosen.push(snapshot);
+    }
+    for (const snapshot of reading.presentSnapshots(workspace, chosen) || []) {
+      const startAt = Number(snapshot?.window?.startAt);
+      if (Number.isFinite(startAt)) loaded.set(startAt, snapshot);
+    }
+  } else if (reading?.forWindows) {
+    for (const snapshot of reading.forWindows(workspace, windows, 'hour') || []) {
+      const startAt = Number(snapshot?.window?.startAt);
+      if (Number.isFinite(startAt)) loaded.set(startAt, snapshot);
+    }
   }
-  const leaveBrief = labelEventLoop('home.bootstrap');
-  let brief;
-  try {
-    brief = { ok: true, brief: briefView(services.report?.getLatestDailyBrief?.(workspace) ?? null) };
-  } finally {
-    leaveBrief();
+  const readings = {};
+  let filled = 0;
+  for (const window of windows) {
+    const loadSnapshot = filled < HOME_BOOTSTRAP_VISIBLE_HOURS;
+    let snapshot = null;
+    if (loadSnapshot) {
+      snapshot = loaded.get(window.startAt) || null;
+      if (!snapshot && !services.readingHour?.forWindows && services.readingHour?.forWindow) {
+        snapshot = services.readingHour.forWindow(workspace, window, 'hour');
+      }
+    }
+    const limit = filled === 0 ? 5 : 2;
+    readings[window.startAt] = slimReading(snapshot, loadSnapshot ? limit : 0);
+    if (readings[window.startAt].items.length) filled += 1;
   }
+  return readings;
+}
 
-  let market = { ok: true, market: slimMarket(emptyMarketBoard('overview', now)), pending: true };
-  if (services.marketBoard?.read) {
+export async function composeHomeBootstrap(services, { workspace = 'local', now = Date.now() } = {}) {
+  const query = homeBootstrapQuery(now);
+  const segments = {};
+  const started = Date.now();
+  const treeTask = timed('tree', segments, async () => {
+    const leaveTree = labelEventLoop('home.bootstrap');
+    try {
+      return services.informationTree.list(workspace, query.tree);
+    } finally {
+      leaveTree();
+    }
+  });
+  const briefTask = timed('brief', segments, async () => {
+    const leaveBrief = labelEventLoop('home.bootstrap');
+    try {
+      return { ok: true, brief: briefView(services.report?.getLatestDailyBrief?.(workspace) ?? null) };
+    } finally {
+      leaveBrief();
+    }
+  });
+  const marketTask = timed('market', segments, async () => {
+    let market = { ok: true, market: slimMarket(emptyMarketBoard('overview', now)), pending: true };
+    if (!services.marketBoard?.read) return market;
     try {
       const loaded = await services.marketBoard.read({ board: 'overview' }, { refresh: false });
       market = {
@@ -225,10 +284,11 @@ export async function composeHomeBootstrap(services, { workspace = 'local', now 
     } catch {
       market = { ok: true, market: slimMarket(emptyMarketBoard('overview', now)), pending: true };
     }
-  }
-
-  let board = { ok: true, board: slimBoard(emptyStaticSignalBoard(now)), pending: true };
-  if (services.staticSignalBoard?.read) {
+    return market;
+  });
+  const boardTask = timed('board', segments, async () => {
+    let board = { ok: true, board: slimBoard(emptyStaticSignalBoard(now)), pending: true };
+    if (!services.staticSignalBoard?.read) return board;
     try {
       const loaded = await services.staticSignalBoard.read(query.board, { refresh: false });
       board = {
@@ -239,18 +299,24 @@ export async function composeHomeBootstrap(services, { workspace = 'local', now 
     } catch {
       board = { ok: true, board: slimBoard(emptyStaticSignalBoard(now)), pending: true };
     }
-  }
-
+    return board;
+  });
+  const treeBody = await treeTask;
+  const readings = await timed('readings', segments, async () => readingsFromEditions(services, workspace, hourlyEditions(slimTree(treeBody))));
+  const [brief, market, board] = await Promise.all([briefTask, marketTask, boardTask]);
+  await yieldEventLoop();
+  segments.total = Date.now() - started;
   return {
     ok: true,
     generatedAt: now,
+    timings: segments,
     window: {
       startAt: query.tree.startAt,
       endAt: query.tree.endAt,
       boardFrom: Number(query.board.from),
       boardTo: Number(query.board.to),
     },
-    tree,
+    tree: slimTree(treeBody),
     readings,
     market,
     brief,
@@ -266,7 +332,7 @@ export function createHomeBootstrapHandler({ slots = createPreparedSlotStore() }
   return async function homeBootstrap({ request, response, url }) {
     const refresh = url.searchParams.get('refresh') === '1' || url.searchParams.get('refresh') === 'true';
     slots.send(request, response, HOME_BOOTSTRAP_SNAPSHOT_KEY, {
-      headers: { 'Cache-Control': 'private, no-cache' },
+      headers: { 'Cache-Control': 'private, max-age=0, stale-while-revalidate=60' },
       allow304: !refresh,
     });
   };

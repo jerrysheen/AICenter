@@ -133,6 +133,66 @@ export function cnSessionAt(nowMs = Date.now()) {
   return cnTradingCalendarAt(nowMs).session;
 }
 
+export function hkSessionAt(nowMs = Date.now()) {
+  const morning = sessionInWindow(nowMs, 'Asia/Hong_Kong', 9 * 60 + 30, 12 * 60);
+  if (morning === 'regular') return 'regular';
+  return sessionInWindow(nowMs, 'Asia/Hong_Kong', 13 * 60, 16 * 60);
+}
+
+const US_INDEX_SYMBOLS = new Set(['^GSPC', '^DJI', '^IXIC', '^VIX', '^RUT', '^NYA', '^SOX', '^TNX', '^GSPTSE']);
+
+export function quoteVenue(item, boardHint = '') {
+  const symbol = String(item?.symbol || '').trim().toUpperCase();
+  const market = String(item?.market || '').trim().toLowerCase();
+  if (/^\d{6}\.(SS|SZ)$/.test(symbol) || market === 'cn') return 'cn';
+  if (/^\d{1,5}\.HK$/.test(symbol) || symbol === '^HSI' || symbol === '^HSCE' || market === 'hk') return 'hk';
+  if (market === 'us' || US_INDEX_SYMBOLS.has(symbol)) return 'us';
+  if (market === 'asia') return 'asia';
+  if (/^[A-Z][A-Z0-9.-]{0,9}$/.test(symbol) && !symbol.startsWith('^')) return 'us';
+  const hint = String(boardHint || item?.board || '').trim().toLowerCase();
+  if (hint === 'cn' || hint === 'hk' || hint === 'us' || hint === 'asia') return hint;
+  return '';
+}
+
+export function quoteInRegularSession(item, nowMs = Date.now(), boardHint = '') {
+  const session = String(item?.session || '').trim();
+  if (session) return session === 'regular';
+  const venue = quoteVenue(item, boardHint);
+  if (venue === 'cn') return cnSessionAt(nowMs) === 'regular';
+  if (venue === 'hk') return hkSessionAt(nowMs) === 'regular';
+  if (venue === 'us') return usRegularSessionAt(nowMs) === 'regular';
+  if (venue === 'asia') {
+    return hkSessionAt(nowMs) === 'regular' || Object.values(asiaSessionsAt(nowMs)).includes('regular');
+  }
+  return false;
+}
+
+export function boardInRegularSession(payload, nowMs = Date.now()) {
+  if (!payload || typeof payload !== 'object') return null;
+  const rows = [
+    ...(payload.indices || []),
+    ...(payload.watchlist || []),
+    ...((payload.sections || []).flatMap((section) => [
+      ...(section?.indices || []),
+      ...(section?.gainers || []),
+      ...(section?.losers || []),
+    ])),
+  ].filter((item) => item && item.lastPrice != null);
+  if (rows.length) return rows.some((item) => quoteInRegularSession(item, nowMs, payload.board));
+  const session = String(payload.session || '').trim();
+  if (session) return session === 'regular';
+  const board = String(payload.board || '').toLowerCase();
+  const focus = String(payload.focus || '').toLowerCase();
+  if (board === 'cn' || focus === 'cn') return cnSessionAt(nowMs) === 'regular';
+  if (board === 'us' || focus === 'us') return usRegularSessionAt(nowMs) === 'regular';
+  if (board === 'asia') return hkSessionAt(nowMs) === 'regular' || Object.values(asiaSessionsAt(nowMs)).includes('regular');
+  if (board === 'overview') {
+    const which = focus || preferredOverviewFocus(nowMs);
+    return which === 'cn' ? cnSessionAt(nowMs) === 'regular' : usRegularSessionAt(nowMs) === 'regular';
+  }
+  return null;
+}
+
 export function preferredOverviewFocus(nowMs = Date.now()) {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Asia/Shanghai', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
