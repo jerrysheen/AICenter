@@ -25,6 +25,7 @@
 
 ## 当前
 
+- `progress/2026-10-18-x-focus-steer.md`：X 抓取先给卡片打 7 个方向的分数。推荐流只展开相关度至少 0.75 的帖；关注流仍展开被截断的帖，每轮最多 8 条。自动点赞默认关。服务器必须设置 `AI_CENTER_HARNESS_HOURLY_PROVIDER=google`。migration 84 只建任务索引。需要同时重启 Web 和 Worker。
 - `progress/2026-10-16-feed-report.md`：小时报主时间和排序改用入库时间，发布时间早于窗口时另写「发布于 …」，`timely=false` 放进默认收起的「旧闻补录」。信息流每个范围都显式设置 channel。首页和简报只读已发布的信息树日报，同一工作区缓存 60 秒，新一期发布后失效。bootstrap 仍带 `brief` 别名。小时变化时写入浏览器历史。从原文返回小时报时恢复该小时的滚动和展开。快讯入库时拆开 `【…】` 标题，不回填旧行。问答预览只去掉成对强调和行首标记。migration 83 只加索引。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-16-southbound-flow.md`：股票页增加港股通南向资金。东财日度汇总和十大成交入库，港交所成交额做校验。migration 81 建 `southbound_daily` 和 `southbound_top10`。80 留给其他功能。需要同时重启 Web 和 Worker，再跑 `node --env-file=.env scripts/southbound-backfill.js --from 2021-10-16 --to 2026-10-16`。

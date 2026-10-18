@@ -5791,6 +5791,20 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
 .api-token-row strong, .api-token-row small { display: block; }
 .api-token-row small { margin-top: 3px; color: var(--font-tertiary); font-size: 12px; line-height: 1.5; }
 .api-token-revoke { color: var(--warning); }
+.x-focus-page { display: grid; gap: 16px; }
+.x-focus-card { border: 1px solid var(--separator); border-radius: var(--radius-card); background: var(--background-primary); padding: 16px; }
+.x-focus-card h2, .x-focus-card h3 { margin: 0 0 8px; }
+.x-focus-card h3 { margin-top: 12px; font-size: 15px; }
+.x-focus-card p { margin: 0 0 8px; color: var(--font-secondary); line-height: 1.5; }
+.x-focus-switch { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.x-focus-notice.is-stopped { color: var(--warning); }
+.x-focus-chart { width: 100%; height: auto; }
+.x-focus-legend { display: flex; flex-wrap: wrap; gap: 10px 14px; margin-top: 8px; color: var(--font-secondary); font-size: 12px; }
+.x-focus-legend i { display: inline-block; width: 10px; height: 10px; margin-right: 4px; border-radius: 999px; }
+.x-focus-alerts { margin: 8px 0 0; padding-left: 18px; color: var(--warning); }
+.x-focus-row { display: flex; justify-content: space-between; gap: 12px; padding: 12px 0; border-top: 1px solid var(--comp-tertiary); }
+.x-focus-row strong { display: block; }
+.x-focus-tools { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 .southbound-card { margin: 0 0 var(--space-4); padding: var(--space-4); border-radius: var(--radius-card); background: var(--background-secondary); }
 .southbound-head { display: flex; align-items: center; gap: var(--space-2); }
 .southbound-head h2 { margin: 0; font-size: 16px; }

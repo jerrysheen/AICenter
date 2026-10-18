@@ -668,6 +668,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
         originalText,
         ...(item.formatEngine ? { formatEngine: item.formatEngine } : {}),
         ...(item.authorHandle ? { authorHandle: item.authorHandle } : {}),
+        ...(item.xFocus ? { xFocus: item.xFocus } : {}),
         ...(authorFields ? { authorProfile: authorFields.authorProfile } : {}),
         ...(verdict.metadata || {}),
       },
@@ -854,11 +855,15 @@ function wrapFeedProviders(feedProviders) {
   };
 }
 
-export function createFeedService({ legacyRepository, feedRepository, sourcePort, feedProviders, translationPort, feedFilter = null, mediaPort = null, contentRoutingPort = null,onContentReady=null,normalizedArticlePort=null,taggingRepository=null,flashSources=null }) {
+export function createFeedService({ legacyRepository, feedRepository, sourcePort, feedProviders, translationPort, feedFilter = null, mediaPort = null, contentRoutingPort = null,onContentReady=null,onXIngest=null,normalizedArticlePort=null,taggingRepository=null,flashSources=null }) {
   const resolvedSourcePort = sourcePort || wrapFeedProviders(feedProviders);
   if (!legacyRepository || !feedRepository || !resolvedSourcePort) throw new Error('feed repositories and source port are required');
   sourcePort = resolvedSourcePort;
   const qualityRule=feedFilter?.config?.mode==='enforce' && feedFilter.config.rule==='all-three-0.60'?'all-three-0.60':'';
+  const notifyXIngest = async (workspaceId) => {
+    try { await onXIngest?.({ workspaceId }); }
+    catch (error) { console.log(`[worker] x-auto-like skipped ${String(error?.message || error).slice(0, 160)}`); }
+  };
 
   const attachNormalizedArticle=(workspaceId,item)=>{
     if(!normalizedArticlePort || !item)return item;
@@ -985,6 +990,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
         // Live snapshot still returns even if persistence fails.
       }
       if(stats.addedItemIds?.length)await onContentReady?.({workspaceId,sourceIds:stats.addedItemIds.map(id=>`feed:${id}`)});
+      if(providerId==='x') await notifyXIngest(workspaceId);
       if(contentRoutingPort && providerId==='trendforce')return {...mediaPort.readFeed({channel:'tech',sourceKey:'trendforce',view:'all'},{workspaceId}),added:stats.added,mediaExternalIds:stats.mediaExternalIds || []};
       const stored = readStoredFeed(feedRepository, workspaceId, persistence, pageQuery, {
         qualityRule,
@@ -1038,6 +1044,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       }
       const stats=await (contentRoutingPort && persistence.providerId==='trendforce' ? contentRoutingPort.ingest(workspaceId,snapshot) : ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter, flashSources, mediaPort?.articleDedup));
       if(stats.addedItemIds?.length)await onContentReady?.({workspaceId,sourceIds:stats.addedItemIds.map(id=>`feed:${id}`)});
+      if(persistence.providerId==='x') await notifyXIngest(workspaceId);
       return snapshot.deadline ? { ...stats, deadline: true } : stats;
     },
     listItemSources(workspaceId, ids) {

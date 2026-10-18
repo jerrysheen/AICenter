@@ -1,4 +1,4 @@
-import { LikeRequestSchema, LikeContentInputSchema } from '../../../../packages/contracts/src/feed-interaction.js';
+import { LikeRequestSchema, LikeContentInputSchema, UnlikeRequestSchema, UnlikeContentInputSchema } from '../../../../packages/contracts/src/feed-interaction.js';
 import { parseContract } from '../../../../packages/contracts/src/errors.js';
 import { json, readJson } from '../http/response.js';
 
@@ -16,6 +16,21 @@ export function createFeedInteractionRoutes() {
       handler({ response, services, identity, params }) {
         const job = services.feedInteraction.getLikeJob(identity?.device?.workspaceId || 'local', params.values[0], params.values[1]);
         json(response, job ? 200 : 404, job ? { ok: true, job } : { ok: false, error: '点赞任务不存在' });
+      } },
+    { method: 'POST', path: /^\/api\/v1\/content-items\/([0-9a-f-]{36})\/x-unlike$/i,
+      async handler({ request, response, services, identity, params, events }) {
+        parseContract(UnlikeRequestSchema, await readJson(request));
+        const input = parseContract(UnlikeContentInputSchema, { contentItemId: params.values[0] });
+        const workspaceId = identity?.device?.workspaceId || 'local';
+        const job = services.feedInteraction.requestUnlike(workspaceId, input);
+        services.xFocus?.invalidateView?.(workspaceId);
+        events.flush();
+        json(response, 202, { ok: true, jobId: job.id });
+      } },
+    { method: 'GET', path: /^\/api\/v1\/content-items\/([0-9a-f-]{36})\/x-unlike\/([0-9a-f-]{36})$/i,
+      handler({ response, services, identity, params }) {
+        const job = services.feedInteraction.getUnlikeJob(identity?.device?.workspaceId || 'local', params.values[0], params.values[1]);
+        json(response, job ? 200 : 404, job ? { ok: true, job } : { ok: false, error: '取消点赞任务不存在' });
       } },
   ];
 }

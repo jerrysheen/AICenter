@@ -545,6 +545,43 @@ function commandTimeout(fallback, deadlineAt) {
   return Math.min(limit, remaining);
 }
 
+export function fallbackFocusExpansions(items, keywords = [], limit = 8) {
+  const words = [...new Set((keywords || []).map((word) => String(word || '').trim().toLowerCase()).filter(Boolean))];
+  const cap = Math.max(1, Math.min(8, Number(limit) || 8));
+  const hits = words.length
+    ? items.filter((item) => words.some((word) => String(item.text || '').toLowerCase().includes(word)))
+    : [];
+  const chosen = hits.length
+    ? hits.slice(0, cap)
+    : [...items].sort((left, right) => String(right.text || '').length - String(left.text || '').length).slice(0, 3);
+  return {
+    mode: 'selected',
+    items,
+    expandIds: new Set(chosen.map((item) => item.tweet_id)),
+  };
+}
+
+export function selectFocusExpansions(items, scored) {
+  if (!scored) return { mode: 'all', items };
+  const byId = scored.byId || {};
+  const minScore = Number(scored.minScore);
+  const maxExpand = Math.max(1, Math.min(8, Number(scored.maxExpand) || 8));
+  const next = items.map((item) => {
+    const focus = byId[item.tweet_id];
+    return focus ? { ...item, x_focus: focus } : item;
+  });
+  const ranked = next
+    .filter((item) => Number(item.x_focus?.focusScore) >= minScore)
+    .sort((left, right) => Number(right.x_focus.focusScore) - Number(left.x_focus.focusScore)
+      || Number(right.x_focus.rank || 0) - Number(left.x_focus.rank || 0)
+      || String(left.tweet_id).localeCompare(String(right.tweet_id)));
+  return {
+    mode: 'selected',
+    items: next,
+    expandIds: new Set(ranked.slice(0, maxExpand).map((item) => item.tweet_id)),
+  };
+}
+
 export function createXHomeBrowserClient(options = {}) {
   const runtime = options.browserRuntime;
   const wait = options.delay || delay;
@@ -748,23 +785,45 @@ export function createXHomeBrowserClient(options = {}) {
             stale = 0;
           }
         }
+        let focusPlan = { mode: 'all', items };
+        if (typeof options.scoreHomeCards === 'function' && !stop()) {
+          try {
+            const scored = await options.scoreHomeCards(
+              items.map((item) => ({ id: item.tweet_id, text: String(item.text || '') })),
+              { deadlineAt, signal },
+            );
+            if (feed === 'following') {
+              const attached = selectFocusExpansions(items, scored);
+              focusPlan = scored ? { mode: 'following', items: attached.items } : { mode: 'all', items: attached.items };
+            } else {
+              focusPlan = selectFocusExpansions(items, scored);
+            }
+          } catch {
+            focusPlan = feed === 'following'
+              ? { mode: 'following', items }
+              : fallbackFocusExpansions(items, options.focusKeywords || []);
+          }
+        }
+        items = focusPlan.items;
+        const selected = (tweet) => focusPlan.mode === 'all' || focusPlan.mode === 'following' || focusPlan.expandIds.has(tweet.tweet_id);
         const truncated = items
-          .filter((item) => looksTruncatedTweet(item))
-          .sort((left, right) => String(left.text || '').length - String(right.text || '').length);
+          .filter((item) => looksTruncatedTweet(item) && (focusPlan.mode === 'following' || selected(item)))
+          .sort((left, right) => String(left.text || '').length - String(right.text || '').length)
+          .slice(0, focusPlan.mode === 'following' ? 8 : items.length);
         for (const tweet of truncated) {
           if (stop()) break;
           const completed = await completeTruncatedTweet(session, tweet, budget);
-          items = items.map((item) => (item.tweet_id === tweet.tweet_id ? completed : item));
+          items = items.map((item) => (item.tweet_id === tweet.tweet_id ? { ...completed, x_focus: item.x_focus } : item));
         }
-        const withArticles = items.filter((item) => looksLikeArticleTweet(item)).slice(0, 12);
+        const withArticles = items.filter((item) => selected(item) && looksLikeArticleTweet(item)).slice(0, 12);
         for (const tweet of withArticles) {
           if (stop()) break;
           const completed = await completeArticleTweet(session, tweet, budget);
-          items = items.map((item) => (item.tweet_id === tweet.tweet_id ? completed : item));
+          items = items.map((item) => (item.tweet_id === tweet.tweet_id ? { ...completed, x_focus: item.x_focus } : item));
         }
         const needsComments = items.filter((item) => {
           const replies = Number(item.reply_count);
-          return !item.comments_checked && item.tweet_url && Number.isFinite(replies) && replies > 0;
+          return selected(item) && !item.comments_checked && item.tweet_url && Number.isFinite(replies) && replies > 0;
         });
         for (const tweet of needsComments) {
           if (stop()) break;
@@ -792,6 +851,7 @@ export function createXHomeBrowserClient(options = {}) {
           published_timestamp: item.published_timestamp,
           text_source: item.text_source,
           capture_context: buildXCaptureContext(item),
+          ...(item.x_focus ? { x_focus: item.x_focus } : {}),
         }));
         return {
           source: 'browser_runtime_home',
