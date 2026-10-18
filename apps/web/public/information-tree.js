@@ -984,7 +984,16 @@ export function createInformationTreePage(host) {
         list.append(rows);
       }
     }
-    showPosition(`daily:${dailyStart}:${openedId || ''}`, Boolean(opened));
+    if(!opened) paintSouthboundLine(list, token);
+    showPosition(`daily-feed:${dailyStart}:${openedId || ''}`, Boolean(opened));
+  }
+  let southboundLineTicket = 0;
+  function paintSouthboundLine(page, token) {
+    const ticket = ++southboundLineTicket;
+    api('/api/v1/market/southbound?days=20').then((data) => {
+      if (ticket !== southboundLineTicket || token !== epoch || !page.isConnected || !data?.line) return;
+      page.prepend(el('p', data.line, 'southbound-daily-line'));
+    }).catch((error) => { if (!aborted(error)) return; });
   }
   function loadEditorial(edition) {
     if(edition?.hasEditorial===false)return Promise.resolve(null);
@@ -1078,7 +1087,8 @@ export function createInformationTreePage(host) {
       }
     }
     list.replaceChildren(page);
-    showPosition(`daily:${dailyStart}:${openedId || openedDirection || ''}`, Boolean(openedDirection));
+    if(!openedDirection) paintSouthboundLine(page, token);
+    showPosition(`daily-research:${dailyStart}:${openedDirection || ''}`, Boolean(openedDirection));
   }
   function compactCard(item) {
     const at=reportItemTime(item.n, item.edition);
@@ -1212,6 +1222,8 @@ export function createInformationTreePage(host) {
       id:item.nodeId, title:item.title || '', at:when.at, ingested:when.ingested,
       publishedNote:homeHourPublishedNote(item, edition?.window),
       source:readingSourceLine(item, {keepDirection}), tags, muted,
+      authorId:item.authorId || '', authorName:item.author || '',
+      onAuthor:item.authorId ? ()=>host.openAuthor?.(item.authorId) : undefined,
       focused:Boolean(host.readingFocused?.(item.nodeId)),
       onStar:()=>host.focusReading?.(readingFocusSnapshot(item, edition)),
       attachOpen(open){

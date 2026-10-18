@@ -8,7 +8,7 @@ import {
   marketUsFreshMs,
   usBoardFreshnessError,
 } from '../packages/runtime/src/web-snapshot-jobs.js';
-import { marketStaleLabel } from '../apps/web/public/home-timeline.js';
+import { homeDataDelayLabel, marketClosedLabel, marketFillDelayMs, marketStaleLabel, quoteClosedLabel, quoteStaleLabel } from '../apps/web/public/home-timeline.js';
 import { createMarketBoardReader } from '../packages/source/src/market/board-read.js';
 
 const catalog = {
@@ -119,9 +119,11 @@ test('market stale window and US snapshot freshness read the environment', () =>
   assert.equal(usBoardFreshnessError({ fetchedAt: open - 11 * 60_000 }, open, 10 * 60_000), '美股看板行情已 11 分钟未更新');
   assert.equal(usBoardFreshnessError({ fetchedAt: open - 11 * 60_000 }, closed, 10 * 60_000), '');
   const at = Date.parse('2026-10-15T13:40:00Z');
-  assert.equal(marketStaleLabel({ stale: true, fetchedAt: at }, at), '已过期 · 10月15日 21:40');
+  assert.equal(marketStaleLabel({ stale: true, fetchedAt: at }, at), '');
   assert.equal(marketStaleLabel({ fetchedAt: at }, at + 120_000), '');
   assert.equal(marketStaleLabel({ fetchedAt: at }, at + 180_000), '已过期 · 10月15日 21:40');
+  assert.equal(homeDataDelayLabel(at, at + 5 * 60_000 - 1), '');
+  assert.equal(homeDataDelayLabel(at, at + 5 * 60_000), '数据更新延迟');
 });
 
 test('US trading hours fail the snapshot after the freshness window and still keep the board', async () => {
@@ -325,4 +327,111 @@ test('an older quote time does not replace a newer price already on the board', 
   assert.equal(second.watchlist.find((item) => item.symbol === 'AAPL').lastPrice, 100);
   assert.equal(second.watchlist.find((item) => item.symbol === 'AAPL').asOf, 8_000_000);
   assert.equal(round, 2);
+});
+
+test('a closed market is not expired, and five quiet minutes during the session are', async () => {
+  const evening = Date.parse('2026-10-15T14:00:00Z');
+  const cnPayload = {
+    board: 'cn',
+    fetchedAt: evening - 60 * 60_000,
+    stale: true,
+    indices: [{ symbol: '000001.SS', name: '上证指数', lastPrice: 3000, asOf: Date.parse('2026-10-15T07:00:00Z') }],
+    watchlist: [],
+    gainers: [],
+    losers: [],
+    breadth: { advancers: 0, decliners: 0, unchanged: 0 },
+  };
+  const cn = await createMarketBoardReader({
+    repository: { readSnapshot: () => ({ payload: cnPayload }) },
+    now: () => evening,
+    staleMs: 180_000,
+  }).read({ board: 'cn' });
+  assert.equal(cn.market.stale, false);
+  assert.equal(marketStaleLabel(cn.market, evening), '');
+  assert.match(marketClosedLabel(cn.market, evening), /^收盘 · /);
+  assert.equal(quoteStaleLabel(cn.market.indices[0], evening), '');
+  assert.match(quoteClosedLabel(cn.market.indices[0], evening), /^收盘 · /);
+
+  const saturday = Date.parse('2026-10-17T15:00:00Z');
+  const usPayload = {
+    board: 'us',
+    fetchedAt: Date.parse('2026-10-16T20:00:00Z'),
+    stale: true,
+    indices: [{ symbol: 'AAPL', name: 'Apple', lastPrice: 100, asOf: Date.parse('2026-10-16T20:00:00Z') }],
+    watchlist: [],
+    gainers: [],
+    losers: [],
+    breadth: { advancers: 0, decliners: 0, unchanged: 0 },
+  };
+  const closedUs = await createMarketBoardReader({
+    repository: { readSnapshot: () => ({ payload: usPayload }) },
+    now: () => saturday,
+    staleMs: 180_000,
+  }).read({ board: 'us' });
+  assert.equal(closedUs.market.stale, false);
+  assert.equal(marketStaleLabel(closedUs.market, saturday), '');
+  assert.equal(quoteStaleLabel(closedUs.market.indices[0], saturday), '');
+  assert.match(quoteClosedLabel(closedUs.market.indices[0], saturday), /^收盘 · /);
+
+  const asOf = evening - 5 * 60_000;
+  const livePayload = {
+    board: 'us',
+    fetchedAt: asOf,
+    indices: [{ symbol: 'AAPL', name: 'Apple', lastPrice: 100, asOf }],
+    watchlist: [],
+    gainers: [],
+    losers: [],
+    breadth: { advancers: 0, decliners: 0, unchanged: 0 },
+  };
+  const live = await createMarketBoardReader({
+    repository: { readSnapshot: () => ({ payload: livePayload }) },
+    now: () => evening,
+    staleMs: 180_000,
+  }).read({ board: 'us' });
+  assert.equal(live.market.stale, true);
+  assert.match(marketStaleLabel(live.market, evening), /^已过期/);
+  assert.match(quoteStaleLabel(live.market.indices[0], evening), /^已过期/);
+  assert.equal(live.market.marketOpen, true);
+  assert.equal(live.market.indices[0].session, 'regular');
+  assert.equal(cn.market.marketOpen, false);
+  assert.equal(cn.market.indices[0].marketOpen, false);
+  assert.equal(cnPayload.marketOpen, undefined);
+  assert.equal(closedUs.market.marketOpen, false);
+});
+
+test('a holiday board follows the server marketOpen, and pending retries grow', async () => {
+  const holiday = Date.parse('2026-10-01T02:00:00Z');
+  const payload = {
+    board: 'cn',
+    fetchedAt: holiday - 60_000,
+    session: 'regular',
+    indices: [{
+      symbol: '000001.SS',
+      name: '上证指数',
+      lastPrice: 3000,
+      asOf: holiday - 30 * 60_000,
+      session: 'regular',
+    }],
+    watchlist: [],
+    gainers: [],
+    losers: [],
+    breadth: { advancers: 0, decliners: 0, unchanged: 0 },
+  };
+  const read = await createMarketBoardReader({
+    repository: { readSnapshot: () => ({ payload }) },
+    now: () => holiday,
+    staleMs: 180_000,
+  }).read({ board: 'cn' });
+  assert.equal(read.market.marketOpen, false);
+  assert.equal(read.market.session, 'closed');
+  assert.equal(read.market.indices[0].marketOpen, false);
+  assert.equal(payload.session, 'regular');
+  assert.equal(payload.indices[0].session, 'regular');
+  assert.equal(quoteStaleLabel(read.market.indices[0], holiday), '');
+  assert.match(quoteClosedLabel(read.market.indices[0], holiday), /^收盘/);
+  assert.equal(marketStaleLabel(read.market, holiday), '');
+  const stored = { symbol: '000001.SS', lastPrice: 3000, asOf: holiday - 10 * 60_000, session: 'regular', marketOpen: false };
+  assert.equal(quoteStaleLabel(stored, holiday), '');
+  assert.deepEqual([0, 1, 2, 3, 4].map((attempt) => marketFillDelayMs(attempt)), [800, 1600, 3200, 6400, 10_000]);
+  assert.equal(marketFillDelayMs(8), 10_000);
 });

@@ -50,6 +50,7 @@ export function projectHomeBootstrap(payload) {
     ? dailyBox.daily
     : (briefBox && 'brief' in briefBox ? briefBox.brief : null);
   return {
+    generatedAt: Number(payload.generatedAt) || 0,
     tree: payload.tree || null,
     readings,
     market: payload.market?.market || null,
@@ -63,8 +64,20 @@ export function projectHomeBootstrap(payload) {
   };
 }
 
+export function homeFirstPaintRequests(nowMs = Date.now()) {
+  const plan = homeRequestPlan(nowMs);
+  return [
+    homeBootstrapCachePath(nowMs),
+    plan.tree,
+    plan.readingIndex,
+    plan.market,
+    plan.daily,
+    plan.board,
+  ];
+}
+
 export function homeColdLoadRequests({ useBootstrap = true, nowMs = Date.now(), visibleHours = 4 } = {}) {
-  if (useBootstrap) return [HOME_BOOTSTRAP_PATH];
+  if (useBootstrap) return homeFirstPaintRequests(nowMs);
   const plan = homeRequestPlan(nowMs);
   return [
     plan.tree,

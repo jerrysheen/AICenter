@@ -28,6 +28,10 @@ const EXACT_PATHS = new Set([
   '/api/v1/markets/history',
   '/api/v1/markets/analysis',
   '/api/v1/markets/baskets',
+  '/api/v1/market/southbound',
+  '/api/v1/market/southbound/top10',
+  '/api/market/southbound',
+  '/api/market/southbound/top10',
   '/api/v1/hardware-prices',
   '/api/v1/compute-prices',
   '/api/v1/compute-prices/history',
@@ -36,12 +40,15 @@ const EXACT_PATHS = new Set([
   '/api/v1/etf-whale/signals',
   '/api/v1/etf-whale/series',
   '/api/v1/feed',
+  '/api/v1/authors',
   '/api/v1/feed/media/article',
   '/api/v1/posts',
 ]);
 
 const PATH_PATTERNS = [
   /^\/api\/v1\/feed\/(?:x|xueqiu|bilibili|trendforce|media)$/,
+  /^\/api\/v1\/authors\/[^/]+$/,
+  /^\/api\/v1\/authors\/[^/]+\/items$/,
   /^\/api\/v1\/hardware-prices\/series\/[a-f0-9]{64}$/,
   /^\/api\/v1\/hardware-prices\/snapshots\/[0-9a-f-]{36}$/i,
   /^\/api\/v1\/content-items\/(?:[0-9a-f-]{36}|[A-Za-z0-9_-]+:[^/]+)$/i,

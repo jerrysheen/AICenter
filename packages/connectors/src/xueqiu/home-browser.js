@@ -224,6 +224,9 @@ export function mapTimelineStatus(item, feed) {
   const target = xueqiuAbsoluteUrl(item?.target)
     || (id ? `${XUEQIU_ORIGIN}/${user.id || 'n'}/${id}` : XUEQIU_HOME_URL);
   const publishedAt = Number(item?.created_at) || 0;
+  const nativeId = String(user.id || '').trim();
+  const avatar = xueqiuAvatar(user);
+  const followers = Number(user.followers_count);
   return {
     status_id: id,
     feed,
@@ -232,10 +235,22 @@ export function mapTimelineStatus(item, feed) {
     title: stripXueqiuHtml(item?.title || '') || body.slice(0, 48),
     author_name: handle || '雪球',
     author_handle: handle ? `@${handle}` : '',
+    author_native_id: nativeId,
+    author_avatar: avatar,
+    author_bio: stripXueqiuHtml(user.description || '').slice(0, 500),
+    author_followers: Number.isFinite(followers) ? Math.max(0, Math.trunc(followers)) : null,
+    author_provisional: !nativeId,
     source_url: target,
     published_at: publishedAt,
     reply_count: replyCountOf(item?.reply_count),
   };
+}
+
+function xueqiuAvatar(user) {
+  const raw = String(user?.profile_image_url || user?.profile || user?.photo || '').trim();
+  if (!raw) return '';
+  if (raw.startsWith('//')) return `https:${raw}`;
+  return raw;
 }
 
 export function mapLivenewsItem(item) {
@@ -251,6 +266,8 @@ export function mapLivenewsItem(item) {
     title: copy.title,
     author_name: '雪球7x24',
     author_handle: '',
+    author_native_id: '7x24',
+    author_kind: 'system',
     source_url: target,
     published_at: Number(item?.created_at) || 0,
     reply_count: replyCountOf(item?.reply_count),

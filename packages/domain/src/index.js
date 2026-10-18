@@ -1,3 +1,4 @@
+import { createAuthorService } from './author-service.js';
 import { createFeedService } from './feed-service.js';
 import { createFeedInteractionService } from './feed-interaction-service.js';
 import { createInformationTreeReader } from './information-tree-service.js';
@@ -20,6 +21,7 @@ import { createEventQuoteSnapshotService } from './event-quote-snapshots.js';
 import { createInvestorDiscussionService } from './investor-discussion.js';
 import { createComputePriceService } from './compute-price-service.js';
 import { createApiTokenService } from './api-token-service.js';
+import { createSouthboundReadService } from './southbound-service.js';
 
 export { createContextService, createDailyBriefService, createFeedService, createIdentityService, createKnowledgeService, createMarketStatisticsService, createMediaIngestionService, createReportService, createRuntimeService, createTradingService, createTaggingService };
 export { buildDailyBriefCandidates } from './daily-brief-candidates.js';
@@ -94,6 +96,16 @@ export function createDomainServices({
       flashSources,
     })
     : null);
+  const authorQualityRule = feedFilter?.config?.mode === 'enforce' && feedFilter.config.rule === 'all-three-0.60'
+    ? 'all-three-0.60'
+    : '';
+  const authors = store.repositories.authors
+    ? createAuthorService({
+      authorRepository: store.repositories.authors,
+      feedRepository: store.repositories.feed,
+      qualityRule: authorQualityRule,
+    })
+    : null;
   const feed = createFeedService({
     legacyRepository: store,
     feedRepository: store.repositories.feed,
@@ -157,6 +169,7 @@ export function createDomainServices({
     modelUsage: createModelUsageService({ repository: store.repositories.modelUsage, workspaceId, rates: modelUsageRates, getJob: id => store.getJob(id) }),
     identity: createIdentityService({ identityRepository: store, loginCredential }),
     feed,
+    authors,
     feedInteraction: createFeedInteractionService({ feedRepository: store.repositories.feed, runtimeRepository: store }),
     media,
     hardwarePrices: hardwarePriceService,
@@ -198,6 +211,12 @@ export function createDomainServices({
       : null,
     computePrices: store.repositories.computePrices
       ? createComputePriceService({ repository: store.repositories.computePrices })
+      : null,
+    southbound: store.repositories.southbound
+      ? createSouthboundReadService({
+        repository: store.repositories.southbound,
+        snapshots: store.repositories.runtimeSnapshots,
+      })
       : null,
     apiTokens: createApiTokenService({
       repository: store.repositories.apiTokens,

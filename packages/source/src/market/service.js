@@ -1,7 +1,7 @@
 import { asiaTrackedItems, buildAsiaMarketBoard, buildCnMarketBoard, buildGlobalAssetBoard, buildOverviewBoard, buildUsMarketBoard, cnTrackedItems, globalTrackedItems, parseAsiaExtraSymbols, parseCnExtraSymbols, parseUsExtraSymbols, preferredOverviewFocus, usTrackedItems } from './boards.js';
 import { createCnQuoteClient, isCnYahooSymbol } from '../../../connectors/src/cn-quotes.js';
 import { createSinaFuturesClient, isSinaFutureSymbol } from '../../../connectors/src/sina-futures.js';
-import { createXueqiuQuoteClient, isXueqiuYahooSymbol } from '../../../connectors/src/xueqiu-quotes.js';
+import { createXueqiuQuoteClient, isXueqiuYahooSymbol, shanghaiCalendarDay } from '../../../connectors/src/xueqiu-quotes.js';
 import { createTushareClient, isTushareDailySymbol } from '../../../connectors/src/tushare.js';
 import { createYahooClient } from '../../../connectors/src/yahoo.js';
 import { resolveMarketCatalog } from './catalog.js';
@@ -242,12 +242,49 @@ export function createMarketService(options = {}) {
     });
   }
 
+  function stampLiveClose(sparkline, lastPrice, lastAt) {
+    if (!Array.isArray(sparkline) || sparkline.length < 2) return null;
+    const next = sparkline.slice();
+    const price = Number(lastPrice);
+    if (!Number.isFinite(price) || price <= 0) return next;
+    const barAt = Number(lastAt);
+    const today = Number.isFinite(barAt) && barAt > 0 && shanghaiCalendarDay(barAt) === shanghaiCalendarDay(now());
+    if (today) next[next.length - 1] = price;
+    else next.push(price);
+    return next;
+  }
+
+  async function withCnSparklines(quotes) {
+    if (!xueqiuQuotes?.fetchSparklines) return quotes;
+    const symbols = quotes
+      .filter((item) => isXueqiuYahooSymbol(item.symbol) && (!Array.isArray(item.sparkline) || item.sparkline.length < 2))
+      .map((item) => item.symbol);
+    let series = [];
+    if (symbols.length) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8_000);
+      try {
+        series = await xueqiuQuotes.fetchSparklines(symbols, { signal: controller.signal });
+      } catch {
+        series = [];
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    const bySymbol = new Map((series || []).map((item) => [item.symbol, item]));
+    return quotes.map((item) => {
+      const seriesItem = bySymbol.get(item.symbol);
+      const sparkline = stampLiveClose(seriesItem?.sparkline || item.sparkline, item.lastPrice, seriesItem?.lastAt);
+      return sparkline ? { ...item, sparkline } : item;
+    });
+  }
+
   async function loadCn(extraSymbols) {
     return cached(`cn-board:${extraSymbols.join(',')}`, async () => {
       const tracked = cnTrackedItems(extraSymbols, marketCatalog);
       const unique = [...new Set(tracked.map((item) => item.symbol))];
       try {
-        const quotes = await fetchQuotes(unique);
+        const quotes = await withCnSparklines(await fetchQuotes(unique));
         reportQuotes('A股', unique.length, quotes);
         return buildCnMarketBoard({
           quotes,
@@ -297,11 +334,11 @@ export function createMarketService(options = {}) {
     });
   }
 
-  async function fetchYahooQuotes(symbols, { refresh = false } = {}) {
+  async function fetchYahooQuotes(symbols, { refresh = false, signal } = {}) {
     if (!symbols.length) return [];
     return cached(`yahoo:${symbols.slice().sort().join(',')}`, async () => {
       try {
-        const { quotes } = await yahoo.fetchQuotes(symbols, { interval: refresh ? '1m' : '5m' });
+        const { quotes } = await yahoo.fetchQuotes(symbols, { interval: refresh ? '1m' : '5m', signal });
         reportQuotes('行情', symbols.length, quotes);
         return quotes.map((item) => mapQuote({
           symbol: item.symbol,
@@ -350,55 +387,55 @@ export function createMarketService(options = {}) {
     };
   }
 
-  async function fetchCnQuotes(symbols, { refresh = false } = {}) {
+  async function fetchCnQuotes(symbols, { refresh = false, signal } = {}) {
     if (!symbols.length || !cnQuotes?.fetchQuotes) return [];
     return cached(`cn:${symbols.slice().sort().join(',')}`, async () => {
       try {
-        return (await cnQuotes.fetchQuotes(symbols)).map((item) => mapQuote(item));
+        return (await cnQuotes.fetchQuotes(symbols, { signal })).map((item) => mapQuote(item));
       } catch {
         return [];
       }
     }, { refresh });
   }
 
-  async function fetchSinaFutures(symbols, { refresh = false } = {}) {
+  async function fetchSinaFutures(symbols, { refresh = false, signal } = {}) {
     if (!symbols.length || !sinaFutures?.fetchQuotes) return [];
     return cached(`sina-futures:${symbols.slice().sort().join(',')}`, async () => {
       try {
-        return (await sinaFutures.fetchQuotes(symbols)).map((item) => mapQuote(item));
+        return (await sinaFutures.fetchQuotes(symbols, { signal })).map((item) => mapQuote(item));
       } catch {
         return [];
       }
     }, { refresh });
   }
 
-  async function fetchXueqiuQuotes(symbols, { refresh = false } = {}) {
+  async function fetchXueqiuQuotes(symbols, { refresh = false, signal } = {}) {
     if (!symbols.length || !xueqiuQuotes?.fetchQuotes) return [];
     return cached(`xueqiu:${symbols.slice().sort().join(',')}`, async () => {
       try {
-        return (await xueqiuQuotes.fetchQuotes(symbols)).map((item) => mapQuote(item));
+        return (await xueqiuQuotes.fetchQuotes(symbols, { signal })).map((item) => mapQuote(item));
       } catch {
         return [];
       }
     }, { refresh, ttl: xueqiuTtlMs });
   }
 
-  async function fetchQuotes(symbols, { refresh = false } = {}) {
+  async function fetchQuotes(symbols, { refresh = false, signal } = {}) {
     const unique = [...new Set((symbols || []).map((item) => String(item || '').trim().toUpperCase()).filter(Boolean))];
     if (!unique.length) return [];
     const sinaSymbols = unique.filter(isSinaFutureSymbol);
     const xueqiuSymbols = unique.filter((symbol) => isXueqiuYahooSymbol(symbol) && !isSinaFutureSymbol(symbol));
     const otherSymbols = unique.filter((symbol) => !isXueqiuYahooSymbol(symbol) && !isSinaFutureSymbol(symbol));
     const [sinaList, xueqiuList, otherList] = await Promise.all([
-      fetchSinaFutures(sinaSymbols, { refresh }),
-      fetchXueqiuQuotes(xueqiuSymbols, { refresh }),
-      fetchYahooQuotes(otherSymbols, { refresh }),
+      fetchSinaFutures(sinaSymbols, { refresh, signal }),
+      fetchXueqiuQuotes(xueqiuSymbols, { refresh, signal }),
+      fetchYahooQuotes(otherSymbols, { refresh, signal }),
     ]);
     const missingXueqiu = xueqiuSymbols.filter((symbol) => !xueqiuList.some((item) => item.symbol === symbol));
     const missingCn = missingXueqiu.filter(isCnYahooSymbol);
-    const thsList = missingCn.length ? await fetchCnQuotes(missingCn, { refresh }) : [];
+    const thsList = missingCn.length ? await fetchCnQuotes(missingCn, { refresh, signal }) : [];
     const stillMissing = missingXueqiu.filter((symbol) => !thsList.some((item) => item.symbol === symbol));
-    const fallback = stillMissing.length ? await fetchYahooQuotes(stillMissing, { refresh }) : [];
+    const fallback = stillMissing.length ? await fetchYahooQuotes(stillMissing, { refresh, signal }) : [];
     const bySymbol = new Map([...otherList, ...fallback, ...thsList, ...xueqiuList, ...sinaList].map((item) => [item.symbol, item]));
     return unique.map((symbol) => bySymbol.get(symbol)).filter(Boolean).map(item => isCnYahooSymbol(item.symbol)
       ? { ...item, session: cnTradingCalendarAt(now()).session } : item);

@@ -169,7 +169,7 @@ test('home bootstrap serves only a prebuilt buffer and does not compose on the r
   const payload = JSON.parse(first.body);
   assert.equal(first.status, 200);
   assert.equal(first.headers.ETag, homeBootstrapEtag(payload));
-  assert.equal(first.headers['Cache-Control'], 'private, no-cache');
+  assert.equal(first.headers['Cache-Control'], 'private, max-age=0, stale-while-revalidate=60');
   assert.equal(fake.calls.filter((row) => row[0] === 'tree').length, treeCalls);
   assert.equal(fake.calls.some((row) => row[0] === 'trading'), false);
   assert.deepEqual(fake.calls.find((row) => row[0] === 'market'), ['market', 'overview', false]);
@@ -292,7 +292,11 @@ test('first-screen bootstrap stays under 100KB without stringifying the fat snap
   const prepared = await prepareJsonBody(slim);
   const afterMs = performance.now() - slimStarted;
   assert.ok(prepared.bytes < HOME_BOOTSTRAP_RAW_BUDGET, `slim bootstrap ${prepared.bytes} bytes`);
-  assert.equal(JSON.parse(prepared.json.toString('utf8')).daily.daily.providerId, undefined);
+  assert.equal(slim.market.market.sections[0].indices[0].sparkline.length, 30);
+  const published = JSON.parse(prepared.json.toString('utf8'));
+  assert.equal(published.daily.daily.providerId, undefined);
+  assert.equal(published.daily.daily.modelId, undefined);
+  assert.equal(published.brief.brief.providerId, undefined);
   assert.equal(slim.feeds, undefined);
   console.log(JSON.stringify({
     beforeBytes: Buffer.byteLength(beforeJson),
@@ -303,14 +307,23 @@ test('first-screen bootstrap stays under 100KB without stringifying the fat snap
   }));
 });
 
-test('cold home data requests collapse to the bootstrap url', () => {
+test('cold home data requests paint the snapshot and the module urls together', () => {
   const before = homeColdLoadRequests({ useBootstrap: false, nowMs: NOW, visibleHours: 4 });
   const after = homeColdLoadRequests({ useBootstrap: true, nowMs: NOW });
   assert.equal(before.length, 13);
-  assert.equal(after.length, 1);
-  assert.equal(after[0], '/api/v1/home/bootstrap');
+  assert.equal(after.length, 6);
+  assert.equal(after[0], '/api/v1/home/bootstrap?day=2026-10-10');
+  assert.ok(after.some((path) => path.includes('/api/v1/reports/tree')));
+  assert.ok(after.some((path) => path.includes('/api/v1/reports/reading-hour/index')));
+  assert.ok(after.some((path) => path.startsWith('/api/v1/markets?board=overview')));
+  assert.ok(after.some((path) => path.includes('/api/v1/reports/tree/latest-daily')));
+  assert.ok(after.some((path) => path.includes('/api/v1/static-signals/board')));
+  assert.equal(after.filter((path) => path.includes('/api/v1/reports/reading-hour?')).length, 0);
   assert.ok(before.some((path) => path.includes('/api/v1/reports/tree')));
   assert.ok(before.filter((path) => path.includes('/api/v1/static-signals/board')).length, 2);
+  const app = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
+  assert.match(app, /function loadHomeModules\(/);
+  assert.match(app, /const modules = loadHomeModules\(token, \{ refresh \}\)/);
 });
 
 test('a fresh bootstrap for today replaces yesterday cached on the same url', () => {
