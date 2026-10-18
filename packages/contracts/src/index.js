@@ -566,7 +566,9 @@ export function parseTranslateBatchInput(value) {
       text: cleanText(row.text || row.body, { field: `条目 ${index + 1} 的正文`, max: FEED_TRANSLATION_TEXT_MAX, required: true }),
     });
   }
-  return { items, targetLang };
+  return value.glossary === 'polymarket-outcome'
+    ? { items, targetLang, outcomeGlossary: true }
+    : { items, targetLang };
 }
 
 const PERSIST_TRANSLATION_LIMIT = 200;
