@@ -374,6 +374,50 @@ export function buildDrift(rows, likes, config, now = Date.now()) {
   };
 }
 
+function emptyFocusBucket(config) {
+  return {
+    total: 0,
+    hits: Object.fromEntries(config.directions.map((dir) => [dir.id, 0])),
+  };
+}
+
+export function focusWindowDays(now = Date.now()) {
+  const days = [];
+  for (let offset = 13; offset >= 0; offset -= 1) days.push(shanghaiDayKey(now - offset * 86_400_000));
+  return [...new Set(days)];
+}
+
+export function retainFocusWindow(snapshot, config, now = Date.now()) {
+  const keep = new Set(focusWindowDays(now));
+  const feeds = { 'for-you': {}, following: {} };
+  for (const feed of ['for-you', 'following']) {
+    for (const [day, bucket] of Object.entries(snapshot?.feeds?.[feed] || {})) {
+      if (keep.has(day)) feeds[feed][day] = bucket;
+    }
+  }
+  return { version: config.version, feeds };
+}
+
+export function mergeFocusSnapshot(previous, fresh, config, now = Date.now()) {
+  const keep = new Set(focusWindowDays(now));
+  const replace = new Set([
+    shanghaiDayKey(now),
+    shanghaiDayKey(shanghaiDayStart(now) - 86_400_000),
+  ]);
+  const feeds = { 'for-you': {}, following: {} };
+  for (const feed of ['for-you', 'following']) {
+    for (const [day, bucket] of Object.entries(previous?.feeds?.[feed] || {})) {
+      if (!keep.has(day) || replace.has(day)) continue;
+      feeds[feed][day] = bucket;
+    }
+    for (const day of replace) {
+      if (!keep.has(day)) continue;
+      feeds[feed][day] = fresh?.feeds?.[feed]?.[day] || emptyFocusBucket(config);
+    }
+  }
+  return { version: config.version, feeds };
+}
+
 export function aggregateFocusPoints(rows, config) {
   const feeds = { 'for-you': {}, following: {} };
   for (const row of rows || []) {

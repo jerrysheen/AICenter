@@ -220,12 +220,34 @@ export function createReportRepository(database, emitEvent) {
       const row=database.prepare('SELECT * FROM daily_analysis_stages WHERE workspace_id=? AND report_date=? AND stage_key=? AND input_hash=?').get(workspaceId,reportDate,stageKey,inputHash);
       return row ? {status:row.status,output:parseJson(row.output_json,null),input:parseJson(row.input_json,null),error:row.error,updatedAt:row.updated_at} : null;
     },
-    deleteAnalysisStagesBefore(workspaceId, reportDate, before) {
+    deleteAnalysisStagesBefore(workspaceId, reportDate, before, dayKey = '') {
       const day = String(reportDate || '');
       const at = Number(before);
       if (day !== 'x-focus' || !Number.isFinite(at)) return 0;
-      return database.prepare(`DELETE FROM daily_analysis_stages
-        WHERE workspace_id = ? AND report_date = ? AND updated_at < ?`).run(workspaceId, day, at).changes;
+      const calendarDay = String(dayKey || new Date().toISOString().slice(0, 10));
+      const marker = database.prepare(`SELECT input_json FROM daily_analysis_stages
+        WHERE workspace_id = ? AND report_date = ? AND stage_key = '__prune__' AND input_hash = 'day'`)
+        .get(workspaceId, day);
+      let recorded = '';
+      try { recorded = JSON.parse(marker?.input_json || '{}').day || ''; } catch { recorded = ''; }
+      if (recorded === calendarDay) return 0;
+      const removeBatch = database.prepare(`DELETE FROM daily_analysis_stages
+        WHERE rowid IN (
+          SELECT rowid FROM daily_analysis_stages
+          WHERE workspace_id = ? AND report_date = ? AND updated_at < ? AND stage_key != '__prune__'
+          LIMIT 500
+        )`);
+      let removed = 0;
+      for (;;) {
+        const result = removeBatch.run(workspaceId, day, at);
+        removed += result.changes;
+        if (result.changes < 500) break;
+      }
+      database.prepare(`INSERT INTO daily_analysis_stages VALUES (?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(workspace_id, report_date, stage_key, input_hash) DO UPDATE SET
+          input_json = excluded.input_json, updated_at = excluded.updated_at`)
+        .run(workspaceId, day, '__prune__', 'day', JSON.stringify({ day: calendarDay }), null, 'completed', '', Date.now());
+      return removed;
     },
     saveAnalysisStage(workspaceId,reportDate,stageKey,inputHash,input,output,status,error='') {
       database.transaction(()=>{

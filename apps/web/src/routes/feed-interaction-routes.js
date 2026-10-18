@@ -21,7 +21,9 @@ export function createFeedInteractionRoutes() {
       async handler({ request, response, services, identity, params, events }) {
         parseContract(UnlikeRequestSchema, await readJson(request));
         const input = parseContract(UnlikeContentInputSchema, { contentItemId: params.values[0] });
-        const job = services.feedInteraction.requestUnlike(identity?.device?.workspaceId || 'local', input);
+        const workspaceId = identity?.device?.workspaceId || 'local';
+        const job = services.feedInteraction.requestUnlike(workspaceId, input);
+        services.xFocus?.invalidateView?.(workspaceId);
         events.flush();
         json(response, 202, { ok: true, jobId: job.id });
       } },

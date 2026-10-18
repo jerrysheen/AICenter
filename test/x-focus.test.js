@@ -8,9 +8,10 @@ import { randomUUID } from 'node:crypto';
 import { createStore } from '../packages/database/src/index.js';
 import { runMigrations } from '../packages/database/src/migrations.js';
 import { createReportRepository } from '../packages/database/src/repositories/report-repository.js';
-import { loadXFocusConfig, composeFocus, keywordFocus, rankAutoLikeCandidates, buildDrift, nextAutoLikeSettings } from '../packages/domain/src/x-focus.js';
+import { loadXFocusConfig, composeFocus, keywordFocus, rankAutoLikeCandidates, buildDrift, nextAutoLikeSettings, shanghaiDayStart } from '../packages/domain/src/x-focus.js';
 import { createXFocusScorer, X_FOCUS_SCORE_RESERVE_MS } from '../packages/domain/src/x-focus-score.js';
-import { createXFocusService, KEYWORD_RESCORE_LIMIT } from '../packages/domain/src/x-auto-like.js';
+import { createXFocusService, KEYWORD_RESCORE_LIMIT, FOCUS_POINT_LIMIT } from '../packages/domain/src/x-auto-like.js';
+import { createFeedInteractionRoutes } from '../apps/web/src/routes/feed-interaction-routes.js';
 import { selectFocusExpansions, fallbackFocusExpansions, createXHomeBrowserClient } from '../packages/connectors/src/x/home-browser.js';
 import { tweetToFeedItem } from '../packages/connectors/src/x/home-timeline.js';
 import { createXLikeBrowserPort, buildXLikeExpression, buildXUnlikeExpression } from '../packages/connectors/src/x/like-browser.js';
@@ -250,8 +251,8 @@ test('scoring times out to keywords, rotates quota, and never calls Grok', async
   assert.equal(companies.byId['404'].primaryDir, 'ai-companies');
   assert.equal(runs[0].closedTask, 'hourly-brief');
   assert.equal(runs[0].usageStage, 'x-focus');
-  assert.equal(runs[0].googleKeyEnv, 'GEMINI_API_KEY');
-  assert.match(runs[0].googleModel, /flash-lite/);
+  assert.equal(runs[0].googleKeyEnv, undefined);
+  assert.equal(runs[0].googleModel, undefined);
 });
 
 test('a batch larger than 20 is split and a short deadline stays on keywords', async () => {
@@ -925,11 +926,120 @@ test('x-focus stage rows older than 14 days are removed', () => {
   reports.saveAnalysisStage('local', '2026-10-01', 'editorial', 'hash', {}, { ok: true }, 'completed');
   database.prepare(`UPDATE daily_analysis_stages SET updated_at = ? WHERE stage_key = 'tweet:old'`).run(NOW - 15 * 86_400_000);
   database.prepare(`UPDATE daily_analysis_stages SET updated_at = ? WHERE report_date = '2026-10-01'`).run(NOW - 15 * 86_400_000);
-  assert.equal(reports.deleteAnalysisStagesBefore('local', 'x-focus', NOW - 14 * 86_400_000), 1);
+  assert.equal(reports.deleteAnalysisStagesBefore('local', 'x-focus', NOW - 14 * 86_400_000, '2026-10-18'), 1);
   assert.equal(reports.getAnalysisStage('local', 'x-focus', 'tweet:old', 'x-focus-1'), null);
   assert.equal(reports.getAnalysisStage('local', 'x-focus', 'tweet:new', 'x-focus-1').status, 'completed');
   assert.ok(reports.getAnalysisStage('local', '2026-10-01', 'editorial', 'hash'));
+  reports.saveAnalysisStage('local', 'x-focus', 'tweet:later', 'x-focus-1', { tweetId: 'later' }, { method: 'model' }, 'completed');
+  database.prepare(`UPDATE daily_analysis_stages SET updated_at = ? WHERE stage_key = 'tweet:later'`).run(NOW - 15 * 86_400_000);
+  assert.equal(reports.deleteAnalysisStagesBefore('local', 'x-focus', NOW - 14 * 86_400_000, '2026-10-18'), 0);
+  assert.equal(reports.getAnalysisStage('local', 'x-focus', 'tweet:later', 'x-focus-1').status, 'completed');
+  const insert = database.prepare(`INSERT INTO daily_analysis_stages VALUES (?,?,?,?,?,?,?,?,?)`);
+  for (let index = 0; index < 501; index += 1) {
+    insert.run('local', 'x-focus', `tweet:batch-${index}`, 'x-focus-1', '{}', null, 'completed', '', NOW - 15 * 86_400_000);
+  }
+  assert.equal(reports.deleteAnalysisStagesBefore('local', 'x-focus', NOW - 14 * 86_400_000, '2026-10-19'), 502);
   database.close();
+});
+
+test('drift recounts only today and yesterday, and a rescored post is counted once', async () => {
+  const store = createStore(':memory:');
+  try {
+    const feed = store.repositories.feed;
+    const account = feed.upsertSourceAccount({
+      workspaceId: 'local', provider: 'x', externalId: 'x:home:for-you', displayName: '推荐',
+    });
+    const focus = modelFocus('oil-geopolitics', 0.9);
+    const olderAt = NOW - 3 * 86_400_000;
+    feed.saveCapture({
+      workspaceId: 'local', provider: 'x', externalId: 'older', sourceAccountId: account.id,
+      sourceUrl: 'https://x.com/alice/status/older', title: '较早', contentHash: 'hash-older',
+      capturedAt: olderAt, metadata: { xFocus: focus, originalText: 'older crude' },
+    });
+    feed.saveCapture({
+      workspaceId: 'local', provider: 'x', externalId: 'kw', sourceAccountId: account.id,
+      sourceUrl: 'https://x.com/alice/status/kw', title: '关键词', contentHash: 'hash-kw',
+      capturedAt: NOW,
+      metadata: {
+        xFocus: { ...focus, method: 'keyword' },
+        originalText: 'WTI crude jumped',
+      },
+    });
+    const keywordItem = feed.getCapture('local', 'x', 'kw');
+    feed.saveContentItem({
+      workspaceId: 'local', captureId: keywordItem.id, originType: 'subscription', contentType: 'post',
+      title: '译文标题', body: '原油跳涨的中文译文', sourceUrl: 'https://x.com/alice/status/kw',
+    });
+    const queries = [];
+    const feedPort = {
+      ...feed,
+      listXFocusPoints: (workspaceId, options) => {
+        queries.push(options);
+        return feed.listXFocusPoints(workspaceId, options);
+      },
+    };
+    let seenText = '';
+    const service = createXFocusService({
+      config,
+      feedRepository: feedPort,
+      snapshots: store.repositories.runtimeSnapshots,
+      scorer: {
+        scoreCards: async (cards) => {
+          seenText = cards[0]?.text || '';
+          return { byId: { kw: { ...focus, method: 'model' } } };
+        },
+      },
+      now: () => NOW,
+    });
+    const first = service.refreshDrift('local');
+    assert.equal(first.feeds['for-you']['2026-10-18']?.total || 0, 0);
+    assert.equal(first.feeds['for-you']['2026-10-15'].total, 1);
+    assert.equal(queries[0].limit, FOCUS_POINT_LIMIT);
+    assert.equal(queries[0].since, NOW - 14 * 86_400_000);
+    const rescored = await service.rescoreKeywords('local');
+    assert.equal(rescored.rescored, 1);
+    assert.equal(seenText, 'WTI crude jumped');
+    const second = service.refreshDrift('local');
+    assert.equal(queries[1].since, shanghaiDayStart(NOW) - 86_400_000);
+    assert.equal(queries[1].limit, FOCUS_POINT_LIMIT);
+    assert.equal(second.feeds['for-you']['2026-10-18'].total, 1);
+    assert.equal(second.feeds['for-you']['2026-10-18'].hits['oil-geopolitics'], 1);
+    assert.equal(second.feeds['for-you']['2026-10-15'].total, 1);
+    const third = service.refreshDrift('local');
+    assert.equal(third.feeds['for-you']['2026-10-18'].total, 1);
+    assert.equal(third.feeds['for-you']['2026-10-18'].hits['oil-geopolitics'], 1);
+    assert.equal(third.feeds['for-you']['2026-10-15'].total, 1);
+    store.repositories.runtimeSnapshots.saveSnapshot('local', 'x-focus-drift', {
+      version: 'stale',
+      feeds: { 'for-you': { '2020-01-01': { total: 9, hits: {} } }, following: {} },
+    }, NOW);
+    const rebuilt = service.refreshDrift('local');
+    assert.equal(queries.at(-1).since, NOW - 14 * 86_400_000);
+    assert.equal(rebuilt.feeds['for-you']['2020-01-01'], undefined);
+    assert.equal(rebuilt.feeds['for-you']['2026-10-18'].total, 1);
+    assert.equal(rebuilt.version, config.version);
+  } finally {
+    store.close();
+  }
+});
+
+test('unlike clears the recommendation page cache', async () => {
+  const routes = createFeedInteractionRoutes();
+  const unlike = routes.find((route) => route.method === 'POST' && String(route.path).includes('x-unlike'));
+  let invalidated = '';
+  const response = { writeHead() {}, end() {} };
+  await unlike.handler({
+    request: (async function* () { yield Buffer.from('{"confirmed":true}'); })(),
+    response,
+    services: {
+      feedInteraction: { requestUnlike: () => ({ id: randomUUID() }) },
+      xFocus: { invalidateView: (workspaceId) => { invalidated = workspaceId; } },
+    },
+    identity: { device: { workspaceId: 'local' } },
+    params: { values: [randomUUID()] },
+    events: { flush() {} },
+  });
+  assert.equal(invalidated, 'local');
 });
 
 test('three unavailable likes stop auto-like', () => {

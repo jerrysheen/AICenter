@@ -4,10 +4,13 @@ import {
   autoLikeLimits,
   buildDriftFromSnapshot,
   focusFeedFromSource,
+  mergeFocusSnapshot,
   nextAutoLikeSettings,
   normalizeAutoLikeSettings,
   rankAutoLikeCandidates,
+  retainFocusWindow,
   shanghaiDayKey,
+  shanghaiDayStart,
   storedFocus,
 } from './x-focus.js';
 
@@ -16,6 +19,7 @@ const DRIFT_KEY = 'x-focus-drift';
 const DAY_MS = 86_400_000;
 const VIEW_TTL_MS = 60_000;
 export const KEYWORD_RESCORE_LIMIT = 40;
+export const FOCUS_POINT_LIMIT = 20000;
 const KEYWORD_RESCORE_WINDOW_MS = 6 * 60 * 60 * 1000;
 
 function text(value) {
@@ -137,15 +141,22 @@ export function createXFocusService({
     },
     refreshDrift(workspaceId = 'local') {
       const at = now();
-      const points = (feedRepository?.listXFocusPoints?.(workspaceId, { since: at - 14 * DAY_MS }) || []).map((row) => ({
+      const previous = snapshots?.readSnapshot?.(workspaceId, DRIFT_KEY)?.payload || null;
+      const full = !previous || previous.version !== config.version || !previous.feeds;
+      const since = full ? at - 14 * DAY_MS : shanghaiDayStart(at) - DAY_MS;
+      const points = (feedRepository?.listXFocusPoints?.(workspaceId, { since, limit: FOCUS_POINT_LIMIT }) || []).map((row) => ({
         ...row,
         feed: focusFeedFromSource(row.sourceExternalId),
       }));
-      const payload = aggregateFocusPoints(points, config);
+      const fresh = aggregateFocusPoints(points, config);
+      const payload = full ? retainFocusWindow(fresh, config, at) : mergeFocusSnapshot(previous, fresh, config, at);
       snapshots?.saveSnapshot?.(workspaceId, DRIFT_KEY, payload, at);
-      reportRepository?.deleteAnalysisStagesBefore?.(workspaceId, 'x-focus', at - 14 * DAY_MS);
+      reportRepository?.deleteAnalysisStagesBefore?.(workspaceId, 'x-focus', at - 14 * DAY_MS, shanghaiDayKey(at));
       dropView(workspaceId);
       return payload;
+    },
+    invalidateView(workspaceId = 'local') {
+      dropView(workspaceId);
     },
     async rescoreKeywords(workspaceId = 'local') {
       if (!scorer?.scoreCards) return { rescored: 0 };

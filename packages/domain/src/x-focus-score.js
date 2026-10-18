@@ -152,8 +152,6 @@ export function createXFocusScorer({
           usageStage: 'x-focus',
           taskInstruction: instruction,
           message,
-          ...(keyEnv ? { googleKeyEnv: keyEnv } : {}),
-          ...(model ? { googleModel: model } : {}),
         });
       }
       return directGemini({

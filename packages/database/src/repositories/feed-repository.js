@@ -744,7 +744,8 @@ export function createFeedRepository(database, emitEvent) {
       }));
     },
 
-    listXFocusPoints(workspaceId, { since = 0 } = {}) {
+    listXFocusPoints(workspaceId, { since = 0, limit = 20000 } = {}) {
+      const size = Math.max(1, Math.min(Number(limit) || 20000, 20000));
       return database.prepare(`SELECT c.captured_at AS capturedAt,
           sa.external_id AS sourceExternalId,
           json_extract(c.metadata_json, '$.xFocus.method') AS method,
@@ -752,8 +753,10 @@ export function createFeedRepository(database, emitEvent) {
           json_extract(c.metadata_json, '$.xFocus.dirScores') AS dirScoresJson
         FROM captures c
         LEFT JOIN source_accounts sa ON sa.id = c.source_account_id
-        WHERE c.workspace_id = ? AND c.provider = 'x' AND c.captured_at >= ?`).all(
-        workspaceId, Math.max(0, Number(since) || 0),
+        WHERE c.workspace_id = ? AND c.provider = 'x' AND c.captured_at >= ?
+        ORDER BY c.captured_at DESC
+        LIMIT ?`).all(
+        workspaceId, Math.max(0, Number(since) || 0), size,
       ).map((row) => ({
         capturedAt: Number(row.capturedAt) || 0,
         sourceExternalId: row.sourceExternalId || '',
@@ -766,7 +769,7 @@ export function createFeedRepository(database, emitEvent) {
     listKeywordXFocus(workspaceId, { since = 0, limit = 40 } = {}) {
       const size = Math.max(1, Math.min(Number(limit) || 40, 40));
       return database.prepare(`SELECT c.external_id AS externalId,
-          COALESCE(NULLIF(ci.body, ''), c.title, '') AS text
+          COALESCE(NULLIF(json_extract(c.metadata_json, '$.originalText'), ''), NULLIF(ci.body, ''), c.title, '') AS text
         FROM captures c
         LEFT JOIN content_items ci ON ci.capture_id = c.id AND ci.workspace_id = c.workspace_id
         WHERE c.workspace_id = ? AND c.provider = 'x' AND c.captured_at >= ?
