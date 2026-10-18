@@ -7,7 +7,7 @@ import Database from 'better-sqlite3';
 import {createStore} from '../packages/database/src/index.js';
 import {runMigrations} from '../packages/database/src/migrations.js';
 import {createInformationTreeRepository} from '../packages/database/src/repositories/information-tree-repository.js';
-import {createReadingHourService} from '../packages/domain/src/reading-hour-service.js';
+import {createReadingHourService, readingHourSourceAccess} from '../packages/domain/src/reading-hour-service.js';
 import {actionablePendingCount, classificationDeferredCount, createReportJobHandlers, enqueueHourlyExtractFollowUp, enqueueHourlyPendingPreparation, formatHourlyPendingBreakdown, hourlyFollowUpPlan, hourlyPendingSweepPlan, hourlyRefreshAvailableAt, hourlySweepHours} from '../packages/runtime/src/report-module.js';
 import {normalizeReadingSemantics, readingPlacement, routeReadingFocus} from '../packages/domain/src/reading-focus-route.js';
 import {ReadingHourIndexQuerySchema, ReadingHourIndexSchema, readingHourIndexDefaultWindow} from '../packages/contracts/src/information-tree.js';
@@ -16,6 +16,50 @@ import {createReportRoutes} from '../apps/web/src/routes/report-routes.js';
 
 const catalogIds = new Set(['ai','market_cn','market_us','corporate_results','communications','software','ai_model']);
 const window = {startAt: 10, endAt: 20};
+
+test('reading hour batch facts keep the first content author', () => {
+  const store = createStore(':memory:');
+  try {
+    const feed = store.repositories.feed;
+    function save(externalId, nativeId, name) {
+      const capture = feed.saveCapture({
+        workspaceId: 'local', provider: 'xueqiu', externalId,
+        sourceUrl: `https://xueqiu.com/${nativeId}/${externalId}`,
+        title: name, contentHash: `hash-${externalId}`, publishedAt: 40,
+        authorNativeId: nativeId,
+        metadata: { authorHandle: name, authorProfile: { nativeId, name, handle: name } },
+      });
+      return feed.saveContentItem({
+        workspaceId: 'local', captureId: capture.id, originType: 'subscription', contentType: 'post',
+        title: `${name}的标题`, body: name, sourceUrl: capture.sourceUrl, authorName: name, publishedAt: 40,
+      });
+    }
+    const first = save('post-1', '100', '甲');
+    const second = save('post-2', '200', '乙');
+    let briefCalls = 0;
+    let singleReads = 0;
+    const wrapped = new Proxy(feed, {
+      get(target, prop, receiver) {
+        if (prop === 'getContentItem') return (...args) => { singleReads += 1; return target.getContentItem(...args); };
+        if (prop === 'listContentItemBriefs') return (...args) => { briefCalls += 1; return target.listContentItemBriefs(...args); };
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const access = readingHourSourceAccess({ feed: wrapped });
+    const refs = [{ type: 'content-item', id: first.id }, { type: 'content-item', id: second.id }];
+    const context = access.sourceContextFor('local', refs);
+    const facts = context.factsFor(refs);
+    assert.equal(briefCalls, 1);
+    assert.equal(singleReads, 0);
+    assert.equal(facts.author, '甲');
+    assert.equal(facts.authorId, 'xueqiu:100');
+    assert.equal(facts.titles[0], '甲的标题');
+    assert.equal(context.factsFor([refs[1]]).authorId, 'xueqiu:200');
+    assert.equal(briefCalls, 1);
+  } finally {
+    store.close();
+  }
+});
 
 test('domain ids are not information types, methods and margin balances stay on their questions', () => {
   const revenue = normalizeReadingSemantics({domainTagIds: ['ai','market_us','corporate_results'], informationTypes: ['corporate_results','market_us'], facts: [{text:'OpenAI营收未达预期'}], catalogIds});

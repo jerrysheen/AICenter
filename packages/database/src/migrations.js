@@ -2247,6 +2247,9 @@ migrations.push({ version: 78, name: 'author_stats', up(database) {
   `);
 }});
 
+// 63 仍空着。79、80、82 留空。81、83、84 还没合入，不登记成空号。
+export const unusedSchemaVersions = [63, 79, 80, 82];
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

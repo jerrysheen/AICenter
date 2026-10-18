@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   CalendarSourceViewSchema, OfficialReleaseSourceViewSchema, OfficialSourceDetailSchema,
 } from '../../../contracts/src/index.js';
+import { localizeOfficialView, simplifyOfficialTitle } from '../../../domain/src/official-source-zh.js';
 
 const CalendarInputSchema = z.object({
   from: z.coerce.number().int().nonnegative().optional(),
@@ -57,7 +58,7 @@ export function createStaticSignalSourceDefinitions(client, options = {}) {
     inputSchema: viewKind === 'calendar' ? CalendarInputSchema : ReleaseInputSchema,
     outputSchema: viewKind === 'calendar' ? CalendarSourceViewSchema : OfficialReleaseSourceViewSchema,
     async read(input) {
-      try { return await client[method](input); }
+      try { return localizeOfficialView(await client[method](input)); }
       catch (error) {
         const sourceUrl = client.urls?.[method] || client.urls?.[providerId] || 'https://example.invalid';
         return unavailable(viewKind, sourceUrl, now(), error);
@@ -89,7 +90,9 @@ export function createOfficialSourceDetailDefinition(client, options = {}) {
     async read(input) {
       try {
         if (typeof client.detail !== 'function') throw new Error('当前 Connector 未提供详情读取能力');
-        return await client.detail(input);
+        const detail = await client.detail(input);
+        if (detail?.title) detail.title = simplifyOfficialTitle(detail.title);
+        return detail;
       }
       catch (error) {
         return {

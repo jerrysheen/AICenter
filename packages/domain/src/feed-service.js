@@ -4,6 +4,7 @@ import { feedItemIdentityHash } from './feed-identity.js';
 import { cleanIngestExcerpt } from '../../connectors/src/excerpt-text.js';
 import { stripLeadingPreview } from '../../connectors/src/x/home-browser.js';
 import { collectLocalizationUnits, localizationItemId, needsZhLocalization, translationLooksTruncated } from './localize-texts.js';
+import { translatePolymarketOutcome } from './polymarket-outcome-zh.js';
 import { isFlashSource } from './flash-sources.js';
 import { authorCaptureFields } from './authors.js';
 
@@ -258,12 +259,18 @@ function projectLocalizations(units, byItemId, failures = new Map(), now = Date.
     const failure = failures.get(unit.localizationId);
     const failed = !ready && failure && failure.sourceHash === hash
       && (failure.nextRetryAt == null || failure.nextRetryAt > now);
-    const pending = needsZhLocalization(unit.text) && !ready && !failed;
+    const ruledOutcome = unit.kind === 'outcome' && translatePolymarketOutcome(unit.text).covered;
+    const foreignOutcome = unit.kind === 'outcome'
+      && /[A-Za-z]/.test(unit.text)
+      && !ruledOutcome;
+    const needs = !ruledOutcome && (needsZhLocalization(unit.text) || foreignOutcome);
+    const pending = needs && !ready && !failed;
     localizations[unit.id] = {
       id: unit.localizationId,
       text: ready ? (shownText(row.translatedText) || row.translatedText) : '',
       pending,
-      status: ready || !needsZhLocalization(unit.text) ? 'ready' : failed ? 'failed' : 'pending',
+      status: ready || !needs ? 'ready' : failed ? 'failed' : 'pending',
+      ...(unit.kind ? { kind: unit.kind } : {}),
       retryAt: failed ? (failure.nextRetryAt ?? null) : null,
       engine: ready ? (row.engine || '') : '',
       sourceText: unit.text,
@@ -331,12 +338,16 @@ function adoptReusableTranslations(feedRepository, workspaceId, units, targetLan
   return true;
 }
 
-async function translateOneItem(translationPort, item, targetLang, workspaceId) {
+async function translateOneItem(translationPort, item, targetLang, workspaceId, options = {}) {
+  const glossary = options.glossary || undefined;
+  const model = options.model || undefined;
   if (translationPort?.translateMany) {
     return translationPort.translateMany({
       items: [{ id: item.id, text: item.text }],
       targetLang,
       workspaceId,
+      ...(glossary ? { glossary } : {}),
+      ...(model ? { model } : {}),
     });
   }
   if (!translationPort?.translate) throw new ValidationError('尚未配置翻译', ['items']);
@@ -345,13 +356,15 @@ async function translateOneItem(translationPort, item, targetLang, workspaceId) 
     targetLang,
     id: item.id,
     workspaceId,
+    ...(glossary ? { glossary } : {}),
+    ...(model ? { model } : {}),
   });
   return { translations: [{ id: item.id, ...translation }], targetLang };
 }
 
 // Each item is stored before the next one starts. A later failure must not discard
 // translations that already came back, and must name only the items still missing.
-async function translateItemsDurably(translationPort, items, targetLang, persist, workspaceId, onItem) {
+async function translateItemsDurably(translationPort, items, targetLang, persist, workspaceId, onItem, options = {}) {
   const translations = [];
   const failures = [];
   let firstError = null;
@@ -359,7 +372,7 @@ async function translateItemsDurably(translationPort, items, targetLang, persist
     const item = items[index];
     try {
       if (typeof onItem === 'function') onItem(item);
-      const result = await translateOneItem(translationPort, item, targetLang, workspaceId);
+      const result = await translateOneItem(translationPort, item, targetLang, workspaceId, options);
       const rows = (result?.translations || []).filter((row) => row?.id === item.id && (row.translatedText || row.engine === 'passthrough'));
       if (!rows.length) {
         const error = new Error('翻译未完整结束');
@@ -1164,6 +1177,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
           (rows) => persistTranslations(feedRepository, workspaceId, rows),
           workspaceId,
           actor.onItem,
+          { glossary: input.glossary, model: input.model },
         );
         translations.push(...completed);
       }
@@ -1201,11 +1215,15 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       const workspaceId = actor.workspaceId || DEFAULT_WORKSPACE_ID;
       const targetLang = options.targetLang === 'en' ? 'en' : 'zh';
       const collected = Array.isArray(units) && units.length
-        ? units.map((unit) => ({
-          id: String(unit?.id || '').trim(),
-          localizationId: localizationItemId(unit?.localizationId || unit?.id),
-          text: String(unit?.text || unit?.body || '').trim(),
-        })).filter((unit) => unit.id && unit.localizationId && unit.text)
+        ? units.map((unit) => {
+          const row = {
+            id: String(unit?.id || '').trim(),
+            localizationId: localizationItemId(unit?.localizationId || unit?.id),
+            text: String(unit?.text || unit?.body || '').trim(),
+          };
+          if (unit?.kind) row.kind = String(unit.kind);
+          return row;
+        }).filter((unit) => unit.id && unit.localizationId && unit.text)
         : collectLocalizationUnits(units);
       return localizeCollected(feedRepository, translationPort, workspaceId, collected, targetLang, {
         wait: options.wait !== false,
