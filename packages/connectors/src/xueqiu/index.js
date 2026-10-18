@@ -1,3 +1,4 @@
+import { normalizeFlashCopy } from '../flash-copy.js';
 import {
   createXueqiuHomeBrowserClient,
   explainXueqiuApiError,
@@ -42,9 +43,13 @@ export const xueqiuConnectorManifest = {
 export function xueqiuToFeedItem(row, options = {}) {
   const feed = normalizeXueqiuFeed(row.feed || options.feed);
   const externalId = String(row.status_id || row.externalId || '').trim();
-  const body = String(row.text || row.body || '').trim();
+  const rawBody = String(row.text || row.body || '').trim();
+  const flash = feed === 'livenews' ? normalizeFlashCopy(row.title, rawBody) : null;
+  const body = flash ? flash.body : rawBody;
   const lead = textBeforeCommentBlock(body) || body;
-  const title = String(row.title || '').trim() || (lead ? `${lead.slice(0, 48)}${lead.length > 48 ? '…' : ''}` : '雪球动态');
+  const title = flash
+    ? flash.title
+    : (String(row.title || '').trim() || (lead ? `${lead.slice(0, 48)}${lead.length > 48 ? '…' : ''}` : '雪球动态'));
   const sourceUrl = String(row.source_url || row.sourceUrl || '').trim() || 'https://xueqiu.com/';
   return {
     id: externalId ? `xueqiu:${externalId}` : `xueqiu:${feed}:${sourceUrl}`,
@@ -53,6 +58,12 @@ export function xueqiuToFeedItem(row, options = {}) {
     externalId,
     authorName: String(row.author_name || row.authorName || '雪球').trim(),
     authorHandle: String(row.author_handle || row.authorHandle || '').trim(),
+    authorNativeId: String(row.author_native_id || row.authorNativeId || '').trim(),
+    authorAvatar: String(row.author_avatar || row.authorAvatar || '').trim(),
+    authorBio: String(row.author_bio || row.authorBio || '').trim(),
+    authorFollowers: row.author_followers ?? row.authorFollowers ?? null,
+    authorProvisional: Boolean(row.author_provisional || row.authorProvisional),
+    authorKind: String(row.author_kind || row.authorKind || '').trim(),
     title,
     summary: lead.slice(0, 160),
     body,

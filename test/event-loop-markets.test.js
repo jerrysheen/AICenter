@@ -186,10 +186,18 @@ test('market and market-native boards are served from worker snapshots', async (
     assert.equal(plain.market.watchlist[0].symbol, 'US');
     assert.equal(quoteCalls, 0);
     const withExtra = await reader.read({ board: 'us', extraUs: 'MYEXTRA' });
-    assert.equal(withExtra.market.watchlist.some((item) => item.symbol === 'MYEXTRA' && item.lastPrice === 4), true);
+    assert.equal(withExtra.pending, true);
+    assert.equal(withExtra.market.watchlist.some((item) => item.symbol === 'MYEXTRA' && item.lastPrice == null), true);
+    let filled = withExtra;
+    for (let attempt = 0; attempt < 10 && filled.pending; attempt += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+      filled = await reader.read({ board: 'us', extraUs: 'MYEXTRA' });
+    }
+    assert.equal(filled.pending, false);
+    assert.equal(filled.market.watchlist.some((item) => item.symbol === 'MYEXTRA' && item.lastPrice === 4), true);
     assert.equal(quoteCalls, 1);
     const again = await reader.read({ board: 'us', extraUs: 'MYEXTRA', refresh: false }, { refresh: true });
-    assert.equal(again.market.watchlist.some((item) => item.symbol === 'MYEXTRA'), true);
+    assert.equal(again.market.watchlist.some((item) => item.symbol === 'MYEXTRA' && item.lastPrice === 4), true);
     assert.equal(quoteCalls, 1);
     const trading = createTradingService({
       tradingRepository: temporary.store.repositories.trading,

@@ -6,6 +6,7 @@ import { createArticleAnalysisRoutes } from './article-analysis-routes.js';
 import { createContextRoutes } from './context-routes.js';
 import { createHardwarePriceRoutes } from './hardware-price-routes.js';
 import { createComputePriceRoutes } from './compute-price-routes.js';
+import { createAuthorRoutes } from './author-routes.js';
 import { createFeedRoutes } from './feed-routes.js';
 import { createFeedInteractionRoutes } from './feed-interaction-routes.js';
 import { createXFocusRoutes } from './x-focus-routes.js';
@@ -20,6 +21,7 @@ import { createQuantRoutes } from './quant-routes.js';
 import { createEtfWhaleRoutes } from './etf-whale-routes.js';
 import { createSystemRoutes } from './system-routes.js';
 import { createTradingRoutes } from './trading-routes.js';
+import { createSouthboundRoutes } from './southbound-routes.js';
 import { createSourceRoutes } from './source-routes.js';
 import { createTaggingRoutes } from './tagging-routes.js';
 
@@ -32,6 +34,7 @@ export function createApiRoutes({ slots, offthread = null } = {}) {
     ...createSourceRoutes(),
     ...createXFocusRoutes(),
     ...createFeedRoutes({ slots, offthread }),
+    ...createAuthorRoutes(),
     ...createFeedInteractionRoutes(),
     ...createHardwarePriceRoutes({ slots, offthread }),
     ...createComputePriceRoutes(),
@@ -41,6 +44,7 @@ export function createApiRoutes({ slots, offthread = null } = {}) {
     ...createAgentRoutes(),
     ...createArticleAnalysisRoutes(),
     ...createTradingRoutes(),
+    ...createSouthboundRoutes(),
     ...createHomeRoutes({ slots }),
     ...createReportRoutes({ slots, offthread }),
     ...createStrategyRoutes(),

@@ -1100,6 +1100,10 @@ export function createStore(databasePath) {
       };
     },
 
+    transaction(work) {
+      return database.transaction(work)();
+    },
+
     close() {
       database.close();
     },

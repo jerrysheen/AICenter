@@ -194,7 +194,7 @@ export function parseDefillamaStablecoins(payload, observedAt = Date.now(), inpu
     return found ? metric(`chain:${chain}`, chain, sums.current, sums.day, sums.week, sums.month) : null;
   }).filter(Boolean);
   return {
-    total: metric('total', 'Total stablecoin supply', totals.current, totals.day, totals.week, totals.month),
+    total: metric('total', '稳定币总供应', totals.current, totals.day, totals.week, totals.month),
     assets: assetMetrics, chains: chainMetrics, observedAt,
   };
 }

@@ -300,8 +300,41 @@ test('hourly reading shows hits and misses together and marks stale items', asyn
   assert.equal(root.querySelectorAll('button').some(node => node.textContent === '关注精选'), false);
   assert.equal(root.querySelectorAll('h3').some(node => node.textContent.includes('范围外讣告')), false);
   assert.equal(root.querySelector('.reading-stale').textContent, '时效不足');
+  const staleFold = root.querySelector('.reading-stale-fold');
+  assert.equal(staleFold.open, false);
+  assert.equal(staleFold.querySelector('summary').textContent, '旧闻补录 1 条');
+  assert.equal(staleFold.querySelector('h3').textContent, '未命中旧闻');
   const titles = root.querySelectorAll('h3').map(node => node.textContent);
   assert.deepEqual(titles, ['命中标题', '未命中旧闻']);
+  page.stop();
+});
+
+test('hour rows use ingest time and mark an earlier publish time', async () => {
+  const start = Date.parse('2026-10-16T12:00:00Z');
+  const current = edition('edition:ingesthour0001', start, ['info-1']);
+  const snapshot = {
+    id: 'rh:ingest', status: 'ready', scored: 1, candidates: 1, selected: 1,
+    sections: [], items: [{
+      nodeId: 'hit-1', title: '盘中消息', disposition: 'hit', readingDirectionName: '金融',
+      timely: true, publishedAt: Date.parse('2026-10-15T18:21:00Z'), firstIngestedAt: start + 21 * 60_000,
+    }],
+  };
+  const root = new El('div'); root.isConnected = true;
+  const page = createInformationTreePage({
+    session: () => ({ role: 'desktop', device: { id: 'ingest-clock' } }),
+    active: () => true,
+    loadTreeManifest: async () => manifest([current]),
+    api(path) {
+      if (path.startsWith('/api/v1/tags')) return Promise.resolve({ catalog: { tags: [] } });
+      if (path.startsWith('/api/v1/reports/reading-hour')) return Promise.resolve({ snapshot });
+      return Promise.reject(new Error('missing'));
+    },
+  });
+  await page.mount(root, { mode: 'hourly' });
+  const time = root.querySelector('.news-row-time');
+  assert.match(time.textContent, /20:21/);
+  assert.doesNotMatch(time.textContent, /02:21/);
+  assert.equal(root.querySelector('.news-published-note').textContent, '发布于 02:21');
   page.stop();
 });
 
@@ -444,6 +477,50 @@ test('selecting an hour writes hour into the address', async () => {
     const page = createInformationTreePage(hostFor('hourly-hash', () => manifest([current])));
     await page.mount(root, { mode: 'hourly' });
     assert.match(urls.at(-1) || '', /#report\/2026-10-08\?hour=14$/);
+    page.stop();
+  } finally {
+    if (previousLocation === undefined) delete globalThis.location;
+    else globalThis.location = previousLocation;
+    if (previousHistory === undefined) delete globalThis.history;
+    else globalThis.history = previousHistory;
+  }
+});
+
+test('an hour change asks the host to record history before replacing the address', async () => {
+  const start = Date.parse('2026-10-08T06:00:00Z');
+  const newer = edition('edition:hashhour000010', start, ['n1']);
+  const older = edition('edition:hashhour000011', start - 3_600_000, ['n2']);
+  const calls = [];
+  const replaced = [];
+  const previousLocation = globalThis.location;
+  const previousHistory = globalThis.history;
+  globalThis.location = { pathname: '/app', search: '', hash: '#report' };
+  globalThis.history = {
+    pushState(_state, _title, url) {
+      globalThis.location.hash = String(url).slice(String(url).indexOf('#'));
+    },
+    replaceState(_state, _title, url) {
+      replaced.push(String(url));
+      globalThis.location.hash = String(url).slice(String(url).indexOf('#'));
+    },
+  };
+  try {
+    const root = new El('div'); root.isConnected = true;
+    const page = createInformationTreePage({
+      ...hostFor('hourly-history', () => manifest([newer, older])),
+      syncHour(hour, extra) {
+        calls.push({ hour, hash: extra.hash, node: extra.node });
+        globalThis.history.pushState({ aiCenter: true }, '', `/app${extra.hash}`);
+      },
+    });
+    await page.mount(root, { mode: 'hourly', node: 'n1' });
+    assert.equal(calls[0].hour, 14);
+    assert.equal(calls[0].hash, '#report/2026-10-08?hour=14&node=n1');
+    assert.equal(calls.some((item) => item.hour === 14 && item.node === ''), true);
+    assert.equal(replaced.length, 0);
+    await chip(root, older.window.startAt).listeners.click[0]();
+    assert.equal(calls.at(-1).hour, 13);
+    assert.equal(calls.at(-1).hash, '#report/2026-10-08?hour=13');
     page.stop();
   } finally {
     if (previousLocation === undefined) delete globalThis.location;
@@ -806,7 +883,7 @@ test('hourly share uses the item title and summary, not the first source', async
   page.stop();
 });
 
-test('hourly section rows sort and label by the article publish time', async () => {
+test('hourly section rows sort and label by ingest time', async () => {
   const start = Date.parse('2026-10-08T04:00:00Z');
   const current = edition('edition:publishtime01', start, ['early']);
   const root = new El('div'); root.isConnected = true;
@@ -819,8 +896,8 @@ test('hourly section rows sort and label by the article publish time', async () 
       if (path.startsWith('/api/v1/reports/reading-hour')) return Promise.resolve({ snapshot: {
         id: 'rh:time', status: 'ready', scored: 3, candidates: 3, selected: 3,
         items: [
-          { nodeId: 'early', title: '先发布', disposition: 'hit', readingDirectionName: '金融', readingThemeName: '中国', publishedAt: start + 10 * 60_000, firstIngestedAt: start + 49 * 60_000, timely: true },
-          { nodeId: 'late', title: '后发布', disposition: 'hit', readingDirectionName: '金融', readingThemeName: '中国', publishedAt: start + 40 * 60_000, firstIngestedAt: start + 49 * 60_000, timely: true },
+          { nodeId: 'early', title: '先收录', disposition: 'hit', readingDirectionName: '金融', readingThemeName: '中国', publishedAt: start + 40 * 60_000, firstIngestedAt: start + 10 * 60_000, timely: true },
+          { nodeId: 'late', title: '后收录', disposition: 'hit', readingDirectionName: '金融', readingThemeName: '中国', publishedAt: start + 10 * 60_000, firstIngestedAt: start + 40 * 60_000, timely: true },
           { nodeId: 'missing', title: '没有发布时间', disposition: 'hit', readingDirectionName: '金融', readingThemeName: '中国', publishedAt: null, firstIngestedAt: start + 50 * 60_000, timely: true },
         ],
       } });
@@ -828,7 +905,7 @@ test('hourly section rows sort and label by the article publish time', async () 
     },
   });
   await page.mount(root, { mode: 'hourly' });
-  assert.deepEqual(root.querySelectorAll('h3').map((node) => node.textContent), ['没有发布时间', '后发布', '先发布']);
+  assert.deepEqual(root.querySelectorAll('h3').map((node) => node.textContent), ['没有发布时间', '后收录', '先收录']);
   assert.deepEqual(root.querySelectorAll('time').map((node) => node.textContent), ['10月8日 12:50', '10月8日 12:40', '10月8日 12:10']);
   assert.equal(root.querySelector('.news-share'), null);
   assert.equal(root.querySelector('.news-tag'), null);

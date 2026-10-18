@@ -26,6 +26,17 @@
 ## 当前
 
 - `progress/2026-10-18-x-focus-steer.md`：X 抓取先给卡片打 7 个方向的分数。推荐流只展开相关度至少 0.75 的帖；关注流仍展开被截断的帖，每轮最多 8 条。自动点赞默认关。服务器必须设置 `AI_CENTER_HARNESS_HOURLY_PROVIDER=google`。migration 84 只建任务索引。需要同时重启 Web 和 Worker。
+- `progress/2026-10-16-feed-report.md`：小时报主时间和排序改用入库时间，发布时间早于窗口时另写「发布于 …」，`timely=false` 放进默认收起的「旧闻补录」。信息流每个范围都显式设置 channel。首页和简报只读已发布的信息树日报，同一工作区缓存 60 秒，新一期发布后失效。bootstrap 仍带 `brief` 别名。小时变化时写入浏览器历史。从原文返回小时报时恢复该小时的滚动和展开。快讯入库时拆开 `【…】` 标题，不回填旧行。问答预览只去掉成对强调和行首标记。migration 83 只加索引。需要同时重启 Web 和 Worker。
+
+- `progress/2026-10-16-southbound-flow.md`：股票页增加港股通南向资金。东财日度汇总和十大成交入库，港交所成交额做校验。migration 81 建 `southbound_daily` 和 `southbound_top10`。80 留给其他功能。需要同时重启 Web 和 Worker，再跑 `node --env-file=.env scripts/southbound-backfill.js --from 2021-10-16 --to 2026-10-16`。
+
+- `progress/2026-10-16-author-view.md`：信息流最后一项是「作者」。migration 77、78。`AUTHOR_VIEW=0` 只隐藏页面和接口。需要同时重启 Web 和 Worker。上线先 `--dry-run`，再 backfill，需要的话 import，最后 recompute。Worker 每天凌晨重算近 30 天计数。
+
+- `progress/2026-10-16-home-perf.md`：总览首屏改读 Worker 快照，页面并行拉各模块。阅读只补充有条目的前 4 个小时。缺报价立刻 `pending`，补拉超过 10 秒中止，页面重拉间隔逐步加长。A 股日 K 按上海日历日缓存，失败按 10 分钟、30 分钟退避，满 3 次当天不再试。看板下发 `session` 和 `marketOpen`。休市不标红。响应不下发 `timings`。不新增 migration。需要同时重启 Web 和 Worker。上线前在服务器跑 `scripts/measure-home-perf.mjs`。
+
+- `progress/2026-10-16-market-translation-format.md`：事件概率的 Yes/No、不变、基点、百分比、区间和日期用规则译成中文，看板和提醒共用。规则覆盖不到的结果名用同一份词表交给 Gemma 26B，并单独入队。金额小于 1000 取整，涨跌带「个百分点」，标记价、资金费率、持仓量和稳定币总供应改为中文。官方来源名在入库时映射成中文，标题用 OpenCC 繁转简。结果名入队有 60 条上限，进行中的不再重复入队。提醒不在任务里同步调模型。上线前先跑 `npm ci`。不新增 migration。需要同时重启 Web 和 Worker。
+
+- `progress/2026-10-16-nav-layout.md`：侧栏悬停高亮不再点完残留，「最近」改为「最近浏览」。总览右栏「官方」不再被左栏行高顶出空白，事件概率跟页面滚动，灵感页返回按钮不再把标题挤偏。纯前端，浏览器再加载一次。
 
 - `progress/2026-10-16-polymarket-card-change.md`：事件概率卡片恢复大号概率和涨跌。序列还不满 24 小时时，只取观察清单里 1 小时到 27 小时之间最早的一点，并写「较 Xh 前」。数字 `changeBasis` 显示「较 4h 前」这类文案，没有该字段才是「较昨日」。`lastPrice` 为空时不显示「上次」。满 24 小时后自己回到「较昨日」。多个结果的卡片上面是领先结果，下面默认收起最多 3 个其余区间。不新增 migration。需要同时重启 Web 和 Worker。
 

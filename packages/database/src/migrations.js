@@ -2186,14 +2186,125 @@ migrations.push({ version: 76, name: 'twse_monthly_revenue', up(database) {
   `);
 }});
 
-// 63 仍空着。77、78 属于尚未合入的 #131，81 属于 #132，83 属于 #136。
-// 79、80、82 继续预留。本分支基于当前 main，这些号都还没有迁移。
-// 合并顺序是 #131 → #132 → #136 → #137；rebase 时从这份列表去掉已经落地的号。
-export const unusedSchemaVersions = [63, 77, 78, 79, 80, 81, 82, 83];
+migrations.push({ version: 77, name: 'authors', up(database) {
+  addColumn(database, 'captures', 'author_native_id', 'TEXT');
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS authors (
+      workspace_id TEXT NOT NULL,
+      author_id TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      native_id TEXT NOT NULL,
+      handle TEXT NOT NULL DEFAULT '',
+      name TEXT NOT NULL DEFAULT '',
+      avatar_url TEXT NOT NULL DEFAULT '',
+      profile_url TEXT NOT NULL DEFAULT '',
+      bio TEXT NOT NULL DEFAULT '',
+      followers INTEGER,
+      kind TEXT NOT NULL DEFAULT 'person',
+      provisional INTEGER NOT NULL DEFAULT 0,
+      merged_into TEXT,
+      aliases_json TEXT NOT NULL DEFAULT '[]',
+      followed INTEGER NOT NULL DEFAULT 0,
+      followed_at INTEGER,
+      PRIMARY KEY (workspace_id, author_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_authors_platform_handle
+      ON authors(workspace_id, platform, handle);
+  `);
+}});
+
+migrations.push({ version: 78, name: 'author_stats', up(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS item_authors (
+      workspace_id TEXT NOT NULL,
+      content_item_id TEXT NOT NULL,
+      author_id TEXT NOT NULL,
+      sort_at INTEGER NOT NULL,
+      is_read INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (workspace_id, content_item_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_item_authors_author
+      ON item_authors(workspace_id, author_id, is_read, sort_at DESC, content_item_id DESC);
+    CREATE TABLE IF NOT EXISTS author_stats (
+      workspace_id TEXT NOT NULL,
+      author_id TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      followed INTEGER NOT NULL DEFAULT 0,
+      unread_count INTEGER NOT NULL DEFAULT 0,
+      has_unread INTEGER NOT NULL DEFAULT 0,
+      total_count INTEGER NOT NULL DEFAULT 0,
+      latest_unread_at INTEGER NOT NULL DEFAULT 0,
+      latest_item_at INTEGER NOT NULL DEFAULT 0,
+      latest_item_id TEXT NOT NULL DEFAULT '',
+      latest_title_zh TEXT NOT NULL DEFAULT '',
+      recent_30d_count INTEGER NOT NULL DEFAULT 0,
+      top_tickers_json TEXT NOT NULL DEFAULT '[]',
+      top_tickers_at INTEGER,
+      PRIMARY KEY (workspace_id, author_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_author_stats_list
+      ON author_stats(workspace_id, followed DESC, has_unread DESC, latest_unread_at DESC, latest_item_at DESC);
+  `);
+}});
+
+// 63 仍空着。79、80、82 留空。83 是 information_tree_heads 的 (workspace_id, layer, start_at) 索引。
+// 84 是 jobs(type, created_at DESC)，接在已合入的 77、78、81、83 之后。
+export const unusedSchemaVersions = [63, 79, 80, 82];
+
+// 南向资金用 81，按 version 补执行，不看最大号。79、80、82 留空。
+migrations.push({ version: 81, name: 'southbound_flow', up(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS southbound_daily (
+      workspace_id TEXT NOT NULL,
+      trade_date TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      buy_amt INTEGER,
+      sell_amt INTEGER,
+      net_amt INTEGER,
+      deal_amt INTEGER,
+      deal_num INTEGER,
+      index_close REAL,
+      source TEXT NOT NULL,
+      check_status TEXT NOT NULL,
+      check_diff_pct REAL,
+      fetched_at INTEGER NOT NULL,
+      PRIMARY KEY (workspace_id, trade_date, channel),
+      CHECK (channel IN ('sh', 'sz', 'total')),
+      CHECK (check_status IN ('ok', 'mismatch', 'unchecked', 'hkex_missing'))
+    );
+    CREATE TABLE IF NOT EXISTS southbound_top10 (
+      workspace_id TEXT NOT NULL,
+      trade_date TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      rank INTEGER NOT NULL,
+      code TEXT NOT NULL,
+      name TEXT NOT NULL,
+      buy_amt INTEGER,
+      sell_amt INTEGER,
+      net_amt INTEGER,
+      deal_amt INTEGER,
+      close REAL,
+      chg_pct REAL,
+      source TEXT NOT NULL,
+      PRIMARY KEY (workspace_id, trade_date, channel, code),
+      CHECK (channel IN ('sh', 'sz', 'total'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_southbound_top10_code
+      ON southbound_top10 (workspace_id, code, trade_date DESC);
+  `);
+}});
+
+migrations.push({ version: 83, name: 'information_tree_heads_layer_start', up(database) {
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_information_tree_heads_layer_start
+      ON information_tree_heads(workspace_id, layer, start_at);
+  `);
+}});
 
 migrations.push({ version: 84, name: 'jobs_type_created', up(database) {
   database.exec('CREATE INDEX IF NOT EXISTS idx_jobs_type_created ON jobs(type, created_at DESC)');
 }});
+
 
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`

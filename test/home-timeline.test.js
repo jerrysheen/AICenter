@@ -21,6 +21,7 @@ import {
   hourlyEditions,
   selectHomeHourHits,
   homeHourItemTime,
+  homeHourPublishedNote,
   unavailableOfficialCount,
   CHRONIC_UNAVAILABLE_MS,
   acceptMarketPayload,
@@ -302,9 +303,9 @@ test('home hour sections keep several periods and sort each one newest first', (
   assert.equal(homeHourSections({ editions: starts.map(edition), readings, sectionLimit: 3, nowMs: now }).length, 3);
 });
 
-test('home hour hits follow publishedAt and fall back when it is missing or far in the future', () => {
-  const start = Date.parse('2026-10-10T15:00:00Z');
-  const now = Date.parse('2026-10-14T02:49:00Z');
+test('home hour hits follow firstIngestedAt and note a publish time before the window', () => {
+  const start = Date.parse('2026-10-16T12:00:00Z');
+  const now = Date.parse('2026-10-16T13:51:00Z');
   const item = (title, publishedAt, firstIngestedAt) => ({
     title,
     nodeId: title,
@@ -319,11 +320,17 @@ test('home hour hits follow publishedAt and fall back when it is missing or far 
       item('收录更晚', start - 3_600_000, start + 40 * 60_000),
     ],
   });
-  assert.deepEqual(hits.map((row) => row.title), ['发布更晚', '收录更晚']);
+  assert.deepEqual(hits.map((row) => row.title), ['收录更晚', '发布更晚']);
   assert.equal(homeHourItemTime(item('缺发布时间', null, start + 49 * 60_000), now), start + 49 * 60_000);
   assert.equal(homeHourItemTime(item('未来发布时间', now + 24 * 3_600_000, start + 20 * 60_000), now), start + 20 * 60_000);
-  assert.equal(homeHourItemTime(item('时钟偏差', now + 30_000, start + 20 * 60_000), now), now);
-  assert.equal(homeHourItemTime({ publishedAt: start + 30 * 60_000, firstIngestedAt: start + 49 * 60_000 }, now), start + 30 * 60_000);
+  assert.equal(homeHourItemTime(item('时钟偏差', now + 30_000, start + 20 * 60_000), now), start + 20 * 60_000);
+  assert.equal(homeHourItemTime({ publishedAt: now + 30_000 }, now), now);
+  assert.equal(homeHourItemTime({ publishedAt: start + 30 * 60_000, firstIngestedAt: start + 49 * 60_000 }, now), start + 49 * 60_000);
+  assert.equal(homeHourItemTime({ firstIngestedAt: now + 24 * 3_600_000, publishedAt: start + 20 * 60_000 }, now), start + 20 * 60_000);
+  const window = { startAt: start, endAt: start + 3_600_000 };
+  assert.equal(homeHourPublishedNote({ publishedAt: Date.parse('2026-10-15T18:21:00Z'), firstIngestedAt: start + 21 * 60_000 }, window), '发布于 02:21');
+  assert.equal(homeHourPublishedNote({ publishedAt: Date.parse('2026-10-14T18:21:00Z'), firstIngestedAt: start + 21 * 60_000 }, window), '发布于 10月15日 02:21');
+  assert.equal(homeHourPublishedNote({ publishedAt: start + 10 * 60_000, firstIngestedAt: start + 21 * 60_000 }, window), '');
 });
 
 test('unavailable official count skips failures older than 24h', () => {
@@ -387,6 +394,19 @@ test('the newest loaded hour stays visible even when it has no hits', () => {
   })[0].items[0].title, '旧');
 });
 
+test('a later quote payload keeps an existing sparkline and asOf', () => {
+  const previous = {
+    sections: [{ indices: [{ symbol: '000001.SS', lastPrice: 10, sparkline: [8, 9, 10], asOf: 100 }] }],
+  };
+  const incoming = {
+    sections: [{ indices: [{ symbol: '000001.SS', lastPrice: 11 }] }],
+  };
+  const kept = acceptMarketPayload(previous, incoming);
+  assert.equal(kept.sections[0].indices[0].lastPrice, 11);
+  assert.deepEqual(kept.sections[0].indices[0].sparkline, [8, 9, 10]);
+  assert.equal(kept.sections[0].indices[0].asOf, 100);
+});
+
 test('a quoted overview board is kept when the next payload has no prices', () => {
   const previous = { sections: [{ indices: [{ symbol: '^GSPC', lastPrice: 5800 }] }] };
   const empty = { sections: [{ indices: [{ symbol: '^GSPC', lastPrice: null }] }] };
@@ -401,7 +421,7 @@ test('home requests are the overview set and not the old feed fan-out', () => {
   assert.equal(plan.parallel.length, 4);
   assert.match(plan.tree, /^\/api\/v1\/reports\/tree\?view=index&startAt=\d+&endAt=\d+$/);
   assert.equal(plan.market, '/api/v1/markets?board=overview');
-  assert.equal(plan.daily, '/api/v1/reports/daily/latest/brief');
+  assert.equal(plan.daily, '/api/v1/reports/tree/latest-daily');
   assert.match(plan.board, /^\/api\/v1\/static-signals\/board\?from=\d+&to=\d+&focus=1&limit=40&releaseLimit=60$/);
   assert.equal(plan.parallel.join('\n').includes(plan.tree), true);
   const forbidden = /\/feed\/x|xueqiu|trendforce|translate\/batch|agent\/runs|view=reading|tree\/edition|\/api\/v1\/posts/;
@@ -416,7 +436,10 @@ test('home requests are the overview set and not the old feed fan-out', () => {
   assert.match(app.slice(app.indexOf('function scheduleHomeTail'), app.indexOf('async function loadSourcesPageNow')), /ensureHomeMessages\(/);
   const homeNow = app.match(/async function loadSourcesPageNow\([^]*?\n\}/)[0];
   assert.match(homeNow, /fetchHomeBootstrap\(/);
-  assert.match(homeNow, /loadSourcesPageLegacy\(/);
+  assert.match(homeNow, /loadHomeModules\(/);
+  assert.doesNotMatch(homeNow, /loadSourcesPageLegacy\(/);
+  const modules = app.match(/async function loadHomeModules\([^]*?\n\}/)[0];
+  assert.match(modules, /await Promise\.all\(\[[\s\S]*loadHomeTree\([\s\S]*loadHomeReadingIndex\([\s\S]*loadHomeOverviewMarket\([\s\S]*loadDailyBrief\([\s\S]*loadHomeBoard\(/);
   assert.doesNotMatch(homeNow, /loadGlobalAssets|loadMarketNativeBoard|scheduleOverviewManualPosts|loadXFeed|loadXueqiuFeed|loadPosts\(/);
   assert.match(sourcesPage, /await Promise\.all\(\[[\s\S]*loadHomeBoard\(/);
   assert.match(app, /homeOfficialSettled/);

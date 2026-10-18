@@ -11,6 +11,13 @@ import {
   UpsertSourceAccountInputSchema,
   PatchUserItemStateInputSchema,
 } from '../../../contracts/src/index.js';
+import { preferNativeId } from '../../../domain/src/authors.js';
+import {
+  noteAuthorTranslation,
+  noteCaptureAuthor as writeCaptureAuthor,
+  recordCapturedAuthor,
+  syncAuthorRead,
+} from './author-repository.js';
 
 function parseJson(value, fallback = {}) {
   try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
@@ -537,12 +544,16 @@ export function createFeedRepository(database, emitEvent) {
       const id = input.id || randomUUID();
       database.transaction(() => {
         const filter = feedFilterColumns(input.metadata);
+        const previous = database.prepare(`SELECT author_native_id FROM captures
+          WHERE workspace_id = ? AND provider = ? AND external_id = ?`)
+          .get(input.workspaceId, input.provider, input.externalId);
+        const authorNativeId = preferNativeId(previous?.author_native_id, input.authorNativeId) || null;
         database.prepare(`INSERT INTO captures
           (id, workspace_id, provider, external_id, source_account_id, source_url, title, content_hash,
            raw_artifact_path, status, published_at, captured_at, metadata_json,
            author_handle, filter_mode, filter_decision, filter_applied, filter_rule,
-           filter_reading, filter_specific, filter_sufficient, feed_filter_ready)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+           filter_reading, filter_specific, filter_sufficient, feed_filter_ready, author_native_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
           ON CONFLICT(workspace_id, provider, external_id) DO UPDATE SET
             source_account_id = excluded.source_account_id,
             source_url = excluded.source_url,
@@ -561,12 +572,13 @@ export function createFeedRepository(database, emitEvent) {
             filter_reading = excluded.filter_reading,
             filter_specific = excluded.filter_specific,
             filter_sufficient = excluded.filter_sufficient,
-            feed_filter_ready = 1`)
+            feed_filter_ready = 1,
+            author_native_id = excluded.author_native_id`)
           .run(id, input.workspaceId, input.provider, input.externalId, input.sourceAccountId,
             input.sourceUrl, input.title, input.contentHash, input.rawArtifactPath, input.status,
             input.publishedAt, capturedAt, JSON.stringify(input.metadata),
             filter.authorHandle, filter.filterMode, filter.filterDecision, filter.filterApplied, filter.filterRule,
-            filter.filterReading, filter.filterSpecific, filter.filterSufficient);
+            filter.filterReading, filter.filterSpecific, filter.filterSufficient, authorNativeId);
         const row = database.prepare(`SELECT * FROM captures
           WHERE workspace_id = ? AND provider = ? AND external_id = ?`)
           .get(input.workspaceId, input.provider, input.externalId);
@@ -611,6 +623,17 @@ export function createFeedRepository(database, emitEvent) {
         const item = input.captureId
           ? database.prepare('SELECT * FROM content_items WHERE capture_id = ?').get(input.captureId)
           : database.prepare('SELECT * FROM content_items WHERE id = ?').get(id);
+        if (item?.capture_id) {
+          recordCapturedAuthor(database, {
+            workspaceId: input.workspaceId,
+            captureId: item.capture_id,
+            contentItemId: item.id,
+            authorName: input.authorName,
+            title: input.title,
+            publishedAt: input.publishedAt,
+            createdAt: item.created_at,
+          });
+        }
         emitEvent('feed.content-item.saved.v1', 'content-item', item.id,
           { contentItemId: item.id, captureId: item.capture_id || null }, input.workspaceId);
       })();
@@ -892,8 +915,10 @@ export function createFeedRepository(database, emitEvent) {
       const rows = database.prepare(`SELECT ${itemColumns}, ${captureColumns},
           COALESCE(item_state.is_read, 0) AS is_read,
           COALESCE(item_state.is_saved, 0) AS is_saved,
-          CASE WHEN ${LOW_VALUE_SQL} THEN 1 ELSE 0 END AS low_value
+          CASE WHEN ${LOW_VALUE_SQL} THEN 1 ELSE 0 END AS low_value,
+          ia.author_id AS author_id
           ${PROVIDER_FEED_FROM}
+          LEFT JOIN item_authors ia ON ia.workspace_id = ci.workspace_id AND ia.content_item_id = ci.id
           WHERE ci.workspace_id = ? AND ci.id IN (${ids.map(() => '?').join(',')})`)
         .all(workspaceId, ...ids);
       const byId = new Map(rows.map((row) => [row.id, row]));
@@ -909,6 +934,7 @@ export function createFeedRepository(database, emitEvent) {
         isRead: Boolean(row.is_read),
         isSaved: Boolean(row.is_saved),
         lowValue: Boolean(row.low_value),
+        authorId: row.author_id || '',
       }));
     },
 
@@ -1126,6 +1152,46 @@ export function createFeedRepository(database, emitEvent) {
       };
     },
 
+    listContentItemBriefs(workspaceId, ids = []) {
+      const wanted = [...new Set((ids || []).map((id) => String(id || '').trim()).filter(Boolean))];
+      const rows = [];
+      for (let offset = 0; offset < wanted.length; offset += 400) {
+        const slice = wanted.slice(offset, offset + 400);
+        rows.push(...database.prepare(`SELECT ci.id, ci.title, ci.source_url, ci.published_at,
+            ci.author_name AS author_name, ia.author_id AS author_id
+          FROM content_items ci
+          LEFT JOIN item_authors ia ON ia.workspace_id = ci.workspace_id AND ia.content_item_id = ci.id
+          WHERE ci.workspace_id = ? AND ci.id IN (${slice.map(() => '?').join(',')})`).all(workspaceId, ...slice));
+      }
+      return rows.map((row) => ({
+        id: row.id,
+        title: row.title || '',
+        sourceUrl: row.source_url || '',
+        publishedAt: row.published_at ?? null,
+        authorName: String(row.author_name || '').trim(),
+        authorId: row.author_id || '',
+      }));
+    },
+
+    listContentSourceNames(workspaceId, ids = []) {
+      const wanted = [...new Set((ids || []).map((id) => String(id || '').trim()).filter(Boolean))];
+      const rows = [];
+      for (let offset = 0; offset < wanted.length; offset += 400) {
+        const slice = wanted.slice(offset, offset + 400);
+        rows.push(...database.prepare(`SELECT ci.id AS id, ci.author_name AS author_name, c.provider AS provider, sa.display_name AS display_name
+          FROM content_items ci
+          LEFT JOIN captures c ON c.id = ci.capture_id
+          LEFT JOIN source_accounts sa ON sa.id = c.source_account_id
+          WHERE ci.workspace_id = ? AND ci.id IN (${slice.map(() => '?').join(',')})`).all(workspaceId, ...slice));
+      }
+      return rows.map((row) => ({
+        id: row.id,
+        displayName: String(row.display_name || '').trim(),
+        authorName: String(row.author_name || '').trim(),
+        provider: String(row.provider || '').trim(),
+      }));
+    },
+
     listItemSources(workspaceId, ids = []) {
       const wanted = [...new Set((ids || []).map((id) => String(id || '').trim()).filter(Boolean))];
       if (!wanted.length) return [];
@@ -1162,9 +1228,11 @@ export function createFeedRepository(database, emitEvent) {
     },
 
     getContentItem(workspaceId, id) {
-      const row = database.prepare(`SELECT ci.*, c.provider, c.external_id, c.captured_at, c.metadata_json AS capture_metadata_json
+      const row = database.prepare(`SELECT ci.*, c.provider, c.external_id, c.captured_at, c.metadata_json AS capture_metadata_json,
+          ia.author_id AS author_id
         FROM content_items ci
         LEFT JOIN captures c ON c.id = ci.capture_id
+        LEFT JOIN item_authors ia ON ia.workspace_id = ci.workspace_id AND ia.content_item_id = ci.id
         WHERE ci.workspace_id = ? AND ci.id = ?`).get(workspaceId, id);
       if (!row) return null;
       return {
@@ -1173,13 +1241,16 @@ export function createFeedRepository(database, emitEvent) {
         externalId: row.external_id || '',
         capturedAt: row.captured_at || row.created_at,
         captureMetadata: parseJson(row.capture_metadata_json),
+        authorId: row.author_id || '',
       };
     },
 
     getContentItemByCaptureId(workspaceId, captureId) {
-      const row = database.prepare(`SELECT ci.*, c.provider, c.external_id, c.captured_at, c.metadata_json AS capture_metadata_json
+      const row = database.prepare(`SELECT ci.*, c.provider, c.external_id, c.captured_at, c.metadata_json AS capture_metadata_json,
+          ia.author_id AS author_id
         FROM content_items ci
         LEFT JOIN captures c ON c.id = ci.capture_id
+        LEFT JOIN item_authors ia ON ia.workspace_id = ci.workspace_id AND ia.content_item_id = ci.id
         WHERE ci.workspace_id = ? AND ci.capture_id = ?`).get(workspaceId, captureId);
       if (!row) return null;
       return {
@@ -1188,7 +1259,41 @@ export function createFeedRepository(database, emitEvent) {
         externalId: row.external_id || '',
         capturedAt: row.captured_at || row.created_at,
         captureMetadata: parseJson(row.capture_metadata_json),
+        authorId: row.author_id || '',
       };
+    },
+
+    listContentItemsByIds(workspaceId, ids = [], { qualityRule = '' } = {}) {
+      const wanted = [...new Set((ids || []).map((id) => String(id || '').trim()).filter(Boolean))];
+      if (!wanted.length) return [];
+      const visibility = joinedFeedVisibilitySql({ qualityRule });
+      const rows = database.prepare(`SELECT ci.*, c.provider, c.external_id, c.captured_at,
+          c.metadata_json AS capture_metadata_json,
+          COALESCE(item_state.is_read, 0) AS is_read,
+          COALESCE(item_state.is_saved, 0) AS is_saved,
+          ia.author_id AS author_id
+        FROM content_items ci
+        LEFT JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
+        LEFT JOIN user_item_states item_state
+          ON item_state.workspace_id = ci.workspace_id AND item_state.content_item_id = ci.id
+        LEFT JOIN item_authors ia ON ia.workspace_id = ci.workspace_id AND ia.content_item_id = ci.id
+        WHERE ci.workspace_id = ? AND ci.id IN (${wanted.map(() => '?').join(',')})
+          AND ${visibility}`).all(workspaceId, ...wanted);
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      return wanted.map((id) => byId.get(id)).filter(Boolean).map((row) => ({
+        ...mapContentItem(row),
+        provider: row.provider || '',
+        externalId: row.external_id || '',
+        capturedAt: row.captured_at || row.created_at,
+        captureMetadata: parseJson(row.capture_metadata_json),
+        isRead: Boolean(row.is_read),
+        isSaved: Boolean(row.is_saved),
+        authorId: row.author_id || '',
+      }));
+    },
+
+    noteCaptureAuthor(value) {
+      return database.transaction(() => writeCaptureAuthor(database, value))();
     },
 
     listContentItemsWithSource(workspaceId, { limit = 200, ids = [],qualityRule='' } = {}) {
@@ -1312,6 +1417,9 @@ export function createFeedRepository(database, emitEvent) {
           database.prepare(`DELETE FROM feed_translation_chunks
             WHERE workspace_id = ? AND item_id = ? AND target_lang = ?`)
             .run(input.workspaceId, input.itemId, input.targetLang);
+          if (input.targetLang === 'zh') {
+            noteAuthorTranslation(database, input.workspaceId, input.itemId, input.translatedText);
+          }
           emitEvent('feed.item-translation.saved.v1', 'item-translation', input.itemId, {
             itemId: input.itemId,
             targetLang: input.targetLang,
@@ -1689,21 +1797,24 @@ export function createFeedRepository(database, emitEvent) {
         isSaved: input.isSaved ?? Boolean(existing?.is_saved),
         isHidden: input.isHidden ?? Boolean(existing?.is_hidden),
       };
-      database.prepare(`INSERT INTO user_item_states
-        (workspace_id, content_item_id, is_read, is_saved, is_hidden, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(workspace_id, content_item_id) DO UPDATE SET
-          is_read = excluded.is_read,
-          is_saved = excluded.is_saved,
-          is_hidden = excluded.is_hidden,
-          updated_at = excluded.updated_at`)
-        .run(input.workspaceId, input.contentItemId, next.isRead ? 1 : 0, next.isSaved ? 1 : 0, next.isHidden ? 1 : 0, now);
-      emitEvent('feed.item-state.updated.v1', 'user-item-state', input.contentItemId, {
-        contentItemId: input.contentItemId,
-        isHidden: next.isHidden,
-        isSaved: next.isSaved,
-        isRead: next.isRead,
-      }, input.workspaceId);
+      database.transaction(() => {
+        database.prepare(`INSERT INTO user_item_states
+          (workspace_id, content_item_id, is_read, is_saved, is_hidden, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+          ON CONFLICT(workspace_id, content_item_id) DO UPDATE SET
+            is_read = excluded.is_read,
+            is_saved = excluded.is_saved,
+            is_hidden = excluded.is_hidden,
+            updated_at = excluded.updated_at`)
+          .run(input.workspaceId, input.contentItemId, next.isRead ? 1 : 0, next.isSaved ? 1 : 0, next.isHidden ? 1 : 0, now);
+        syncAuthorRead(database, input.workspaceId, input.contentItemId, next.isRead);
+        emitEvent('feed.item-state.updated.v1', 'user-item-state', input.contentItemId, {
+          contentItemId: input.contentItemId,
+          isHidden: next.isHidden,
+          isSaved: next.isSaved,
+          isRead: next.isRead,
+        }, input.workspaceId);
+      })();
       return {
         workspaceId: input.workspaceId,
         contentItemId: input.contentItemId,

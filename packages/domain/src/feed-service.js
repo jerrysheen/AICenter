@@ -2,9 +2,12 @@ import { createHash } from 'node:crypto';
 import { FEED_TRANSLATION_TEXT_MAX, formatFeedBefore, ValidationError } from '../../contracts/src/index.js';
 import { feedItemIdentityHash } from './feed-identity.js';
 import { cleanIngestExcerpt } from '../../connectors/src/excerpt-text.js';
+import { normalizeFlashCopy } from '../../connectors/src/flash-copy.js';
 import { stripLeadingPreview } from '../../connectors/src/x/home-browser.js';
 import { collectLocalizationUnits, localizationItemId, needsZhLocalization, translationLooksTruncated } from './localize-texts.js';
+import { translatePolymarketOutcome } from './polymarket-outcome-zh.js';
 import { isFlashSource } from './flash-sources.js';
+import { authorCaptureFields } from './authors.js';
 
 const DEFAULT_WORKSPACE_ID = 'local';
 const STORED_FEED_LIMIT = 200;
@@ -152,6 +155,7 @@ function toFeedItem(providerId, row) {
     externalId: row.externalId,
     authorName: row.authorName || '',
     authorHandle: row.captureMetadata?.authorHandle || '',
+    authorId: row.authorId || '',
     title: row.title || '',
     summary: row.summary || '',
     body: row.body || '',
@@ -256,12 +260,18 @@ function projectLocalizations(units, byItemId, failures = new Map(), now = Date.
     const failure = failures.get(unit.localizationId);
     const failed = !ready && failure && failure.sourceHash === hash
       && (failure.nextRetryAt == null || failure.nextRetryAt > now);
-    const pending = needsZhLocalization(unit.text) && !ready && !failed;
+    const ruledOutcome = unit.kind === 'outcome' && translatePolymarketOutcome(unit.text).covered;
+    const foreignOutcome = unit.kind === 'outcome'
+      && /[A-Za-z]/.test(unit.text)
+      && !ruledOutcome;
+    const needs = !ruledOutcome && (needsZhLocalization(unit.text) || foreignOutcome);
+    const pending = needs && !ready && !failed;
     localizations[unit.id] = {
       id: unit.localizationId,
       text: ready ? (shownText(row.translatedText) || row.translatedText) : '',
       pending,
-      status: ready || !needsZhLocalization(unit.text) ? 'ready' : failed ? 'failed' : 'pending',
+      status: ready || !needs ? 'ready' : failed ? 'failed' : 'pending',
+      ...(unit.kind ? { kind: unit.kind } : {}),
       retryAt: failed ? (failure.nextRetryAt ?? null) : null,
       engine: ready ? (row.engine || '') : '',
       sourceText: unit.text,
@@ -329,12 +339,16 @@ function adoptReusableTranslations(feedRepository, workspaceId, units, targetLan
   return true;
 }
 
-async function translateOneItem(translationPort, item, targetLang, workspaceId) {
+async function translateOneItem(translationPort, item, targetLang, workspaceId, options = {}) {
+  const glossary = options.glossary || undefined;
+  const model = options.model || undefined;
   if (translationPort?.translateMany) {
     return translationPort.translateMany({
       items: [{ id: item.id, text: item.text }],
       targetLang,
       workspaceId,
+      ...(glossary ? { glossary } : {}),
+      ...(model ? { model } : {}),
     });
   }
   if (!translationPort?.translate) throw new ValidationError('尚未配置翻译', ['items']);
@@ -343,13 +357,15 @@ async function translateOneItem(translationPort, item, targetLang, workspaceId) 
     targetLang,
     id: item.id,
     workspaceId,
+    ...(glossary ? { glossary } : {}),
+    ...(model ? { model } : {}),
   });
   return { translations: [{ id: item.id, ...translation }], targetLang };
 }
 
 // Each item is stored before the next one starts. A later failure must not discard
 // translations that already came back, and must name only the items still missing.
-async function translateItemsDurably(translationPort, items, targetLang, persist, workspaceId, onItem) {
+async function translateItemsDurably(translationPort, items, targetLang, persist, workspaceId, onItem, options = {}) {
   const translations = [];
   const failures = [];
   let firstError = null;
@@ -357,7 +373,7 @@ async function translateItemsDurably(translationPort, items, targetLang, persist
     const item = items[index];
     try {
       if (typeof onItem === 'function') onItem(item);
-      const result = await translateOneItem(translationPort, item, targetLang, workspaceId);
+      const result = await translateOneItem(translationPort, item, targetLang, workspaceId, options);
       const rows = (result?.translations || []).filter((row) => row?.id === item.id && (row.translatedText || row.engine === 'passthrough'));
       if (!rows.length) {
         const error = new Error('翻译未完整结束');
@@ -510,9 +526,17 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
     : Date.now();
   for (const [index, item] of snapshot.items.entries()) {
     if (!item.externalId || !item.sourceUrl) continue;
-    const body = stripLeadingPreview(item.body || '');
+    let body = stripLeadingPreview(item.body || '');
     const originalText = stripLeadingPreview(item.originalText || body);
-    const cleaned = { ...item, body, originalText };
+    let title = item.title || '';
+    let summary = item.summary || '';
+    if (flashSource) {
+      const copy = normalizeFlashCopy(title, body);
+      title = copy.title;
+      body = copy.body;
+      summary = normalizeFlashCopy(title, summary).body;
+    }
+    const cleaned = { ...item, title, summary, body, originalText };
     const identityHash = feedItemIdentityHash(providerId, cleaned);
     const rememberFingerprint = (hiddenAt) => {
       feedRepository.upsertIdentityFingerprint?.({
@@ -552,6 +576,18 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
         if (nextPublished > 0 && Math.abs(nextPublished - prevPublished) > 36 * 60 * 60 * 1000) {
           feedRepository.touchPublishedAt?.(workspaceId, providerId, String(item.externalId), nextPublished);
         }
+        const sameAuthor = authorCaptureFields(providerId, item);
+        if (sameAuthor) {
+          feedRepository.noteCaptureAuthor?.({
+            workspaceId,
+            provider: providerId,
+            externalId: String(item.externalId),
+            authorNativeId: sameAuthor.authorNativeId,
+            authorProfile: sameAuthor.authorProfile,
+            title: item.title || '',
+            publishedAt: item.publishedAt || null,
+          });
+        }
         rememberFingerprint();
         skipped += 1;
         continue;
@@ -564,8 +600,8 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
     if (!existing && articleDedup?.find) {
       const probe = {
         url: item.sourceUrl,
-        title: item.title || '',
-        summary: item.summary || '',
+        title: title || '',
+        summary: summary || '',
         body,
         authorName: item.authorName || '',
         publishedAt: item.publishedAt || null,
@@ -577,8 +613,8 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
       if (match) {
         articleDedup.fill(match, {
           url: item.sourceUrl,
-          title: cleanIngestExcerpt(item.title || ''),
-          summary: cleanIngestExcerpt(item.summary || ''),
+          title: cleanIngestExcerpt(title || ''),
+          summary: cleanIngestExcerpt(summary || ''),
           body,
           authorName: item.authorName || '',
           publishedAt: item.publishedAt || null,
@@ -614,23 +650,26 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
     if (verdict.action === 'ignore' && linked && verdict.metadata?.filterRule!=='all-three-0.60') {
       verdict = { ...verdict, action: 'keep', createContentItem: true, status: 'ready' };
     }
+    const authorFields = authorCaptureFields(providerId, item);
     const capture = feedRepository.saveCapture({
       workspaceId,
       provider: providerId,
       externalId: String(item.externalId),
       sourceAccountId: source.id,
       sourceUrl: item.sourceUrl,
-      title: cleanIngestExcerpt(item.title || ''),
+      title: cleanIngestExcerpt(title || ''),
       contentHash: hash,
       rawArtifactPath: null,
       status: verdict.status || 'ready',
       publishedAt: item.publishedAt || null,
       capturedAt: Math.max(0, batchCapturedAt - index),
+      authorNativeId: authorFields?.authorNativeId || null,
       metadata: {
         originalText,
         ...(item.formatEngine ? { formatEngine: item.formatEngine } : {}),
         ...(item.authorHandle ? { authorHandle: item.authorHandle } : {}),
         ...(item.xFocus ? { xFocus: item.xFocus } : {}),
+        ...(authorFields ? { authorProfile: authorFields.authorProfile } : {}),
         ...(verdict.metadata || {}),
       },
     });
@@ -644,9 +683,9 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
       captureId: capture.id,
       originType: item.originType || 'subscription',
       contentType: item.contentType || 'post',
-      title: cleanIngestExcerpt(item.title || ''),
+      title: cleanIngestExcerpt(title || ''),
       body,
-      summary: cleanIngestExcerpt(item.summary || ''),
+      summary: cleanIngestExcerpt(summary || ''),
       sourceUrl: item.sourceUrl,
       authorName: item.authorName || '',
       publishedAt: item.publishedAt || null,
@@ -654,7 +693,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
     if (savedItem?.id) {
       articleDedup?.rememberFeed?.(workspaceId, savedItem.id, {
         url: item.sourceUrl,
-        title: item.title || '',
+        title: title || '',
         sourceKey: feedSourceKey(sourceMeta, replay),
         siteUrl: feedSiteUrl(sourceMeta, replay),
         sourceExternalId: sourceMeta.externalId,
@@ -1015,7 +1054,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       const rows = feedRepository.listFlashItems?.(workspaceId, { externalIds: [...(flashSources?.ids || [])], limit }) || [];
       return rows.map((row) => ({
         id: row.id,
-        title: row.title || clipText(row.body || row.summary, 80),
+        title: row.title || '',
         summary: clipText(row.summary || row.body),
         publishedAt: row.publishedAt ?? row.createdAt ?? null,
         source: row.source || '',
@@ -1154,6 +1193,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
           (rows) => persistTranslations(feedRepository, workspaceId, rows),
           workspaceId,
           actor.onItem,
+          { glossary: input.glossary, model: input.model },
         );
         translations.push(...completed);
       }
@@ -1191,11 +1231,15 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       const workspaceId = actor.workspaceId || DEFAULT_WORKSPACE_ID;
       const targetLang = options.targetLang === 'en' ? 'en' : 'zh';
       const collected = Array.isArray(units) && units.length
-        ? units.map((unit) => ({
-          id: String(unit?.id || '').trim(),
-          localizationId: localizationItemId(unit?.localizationId || unit?.id),
-          text: String(unit?.text || unit?.body || '').trim(),
-        })).filter((unit) => unit.id && unit.localizationId && unit.text)
+        ? units.map((unit) => {
+          const row = {
+            id: String(unit?.id || '').trim(),
+            localizationId: localizationItemId(unit?.localizationId || unit?.id),
+            text: String(unit?.text || unit?.body || '').trim(),
+          };
+          if (unit?.kind) row.kind = String(unit.kind);
+          return row;
+        }).filter((unit) => unit.id && unit.localizationId && unit.text)
         : collectLocalizationUnits(units);
       return localizeCollected(feedRepository, translationPort, workspaceId, collected, targetLang, {
         wait: options.wait !== false,

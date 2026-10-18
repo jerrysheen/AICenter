@@ -76,7 +76,9 @@ import { createStrategyJobHandlers, ensureDividendStrategySchedule, strategySnap
 import { createQuantJobHandlers, quantLabManifest } from '../../../packages/runtime/src/quant-module.js';
 import { ensureEtfWhaleSchedule } from '../../../packages/runtime/src/etf-whale-schedule.js';
 import { createEtfWhaleJobHandlers, etfWhaleManifest } from '../../../packages/runtime/src/etf-whale-sync.js';
+import { createSouthboundJobHandlers, ensureSouthboundSchedules, prepareSouthboundEnqueue, SOUTHBOUND_JOB_TYPE, southboundManifest } from '../../../packages/runtime/src/southbound-job.js';
 import { createEventQuoteSnapshotJobHandlers, ensureEventQuoteSnapshotSchedule, eventQuoteSnapshotManifest } from '../../../packages/runtime/src/event-quote-snapshot-job.js';
+import { lookupStoredPolymarketOutcomes } from '../../../packages/domain/src/polymarket-alerts.js';
 import { createPolymarketWatchlistJobHandlers, ensurePolymarketWatchlistSchedule, polymarketWatchlistManifest } from '../../../packages/runtime/src/polymarket-watchlist-job.js';
 import { createPolymarketDiscoveryJobHandlers, ensurePolymarketDiscoverySchedule, polymarketDiscoveryManifest } from '../../../packages/runtime/src/polymarket-discovery-job.js';
 import { createPolymarketReleaseJobHandlers, ensurePolymarketReleaseSchedule, polymarketReleaseManifest } from '../../../packages/runtime/src/polymarket-release-job.js';
@@ -86,6 +88,7 @@ import { readStoredPolymarketView } from '../../../packages/domain/src/polymarke
 import { createInvestorDiscussionJobHandlers, ensureInvestorDiscussionSchedule, investorDiscussionManifest } from '../../../packages/runtime/src/investor-discussion-job.js';
 import { ensureTrendForcePriceSchedules } from '../../../packages/runtime/src/trendforce-price-schedule.js';
 import { computePriceManifest, createComputePriceJobHandlers, ensureComputePriceSchedules } from '../../../packages/runtime/src/compute-price-job.js';
+import { authorStatsManifest, createAuthorStatsJobHandlers, ensureAuthorStatsSchedule } from '../../../packages/runtime/src/author-stats-job.js';
 import { QUANT_PREPARE_JOB_TYPE, QUANT_RUN_JOB_TYPE } from '../../../packages/contracts/src/index.js';
 import { createLocalToolRegistry } from '../../../packages/runtime/src/local-tools.js';
 import { createAgentTraceLog } from '../../../packages/runtime/src/agent-trace-log.js';
@@ -279,6 +282,11 @@ export function createAiCenterWorker(options = {}) {
   registry.register({ manifest: feedInteractionManifest, jobHandlers: createFeedInteractionJobHandlers(feedInteraction, {
     onAutoLike: (workspaceId, output) => xFocusHooks.recordLike?.(workspaceId, output),
   }) });
+  const translateService = options.translateService || (options.feedService ? null : createTranslateService({
+    env,
+    quotaRepository: store.repositories.modelQuota,
+    chunkStore: createFeedTranslationChunkStore(store.repositories.feed),
+  }));
   feedService = options.feedService || createFeedService({
     legacyRepository: store,
     feedRepository: store.repositories.feed,
@@ -289,11 +297,7 @@ export function createAiCenterWorker(options = {}) {
     onContentReady:env.AI_CENTER_INFORMATION_PIPELINE==='tree-v3' ? ({workspaceId,sourceIds})=>enqueueTreePreparation(store,workspaceId,sourceIds) : null,
     onXIngest: (context) => xFocusHooks.afterIngest?.(context),
     flashSources,
-    translationPort: options.translateService || createTranslateService({
-      env,
-      quotaRepository: store.repositories.modelQuota,
-      chunkStore: createFeedTranslationChunkStore(store.repositories.feed),
-    }),
+    translationPort: translateService,
   });
   registry.register({ manifest: feedTranslationManifest, jobHandlers: createFeedTranslationJobHandlers({ feedService }) });
   registry.register({
@@ -591,6 +595,14 @@ export function createAiCenterWorker(options = {}) {
     }),
   });
   registry.register({
+    manifest: southboundManifest,
+    jobHandlers: options.southboundJobHandlers || createSouthboundJobHandlers({
+      repository: store.repositories.southbound,
+      store,
+      env,
+    }),
+  });
+  registry.register({
     manifest: etfWhaleManifest,
     jobHandlers: options.etfWhaleJobHandlers || createEtfWhaleJobHandlers({
       repository: store.repositories.etfWhale,
@@ -629,6 +641,7 @@ export function createAiCenterWorker(options = {}) {
       repository: store.repositories.polymarket,
       config: polymarketWatchlist,
       now: options.now,
+      lookupTranslations: (labels) => lookupStoredPolymarketOutcomes(store.repositories.feed, labels),
     };
     registry.register({
       manifest: polymarketWatchlistManifest,
@@ -719,6 +732,13 @@ export function createAiCenterWorker(options = {}) {
       }),
     });
   }
+  registry.register({
+    manifest: authorStatsManifest,
+    jobHandlers: options.authorStatsJobHandlers || createAuthorStatsJobHandlers({
+      authorRepository: store.repositories.authors,
+      onProgress: (progress) => console.log('[authors.stats.recompute]', JSON.stringify(progress)),
+    }),
+  });
   registry.register({manifest:feedValueRefreshManifest,jobHandlers:createFeedValueRefreshJobHandlers({
     service:createFeedValueRefreshService({feedRepository:store.repositories.feed,mediaRepository:store.repositories.media,
       client:typesafeClient,model:loadFeedValueCalibration(instance)?.model || 'jev-1.13.0',scoreCache:loadFeedValueScoreCache(instance),flashSources}),
@@ -750,7 +770,9 @@ export function createAiCenterWorker(options = {}) {
     ensureTrendForcePriceSchedules(store, env);
     ensureTwkrSchedules(store, { env, flags: twkrFlags });
     ensureComputePriceSchedules(store, env);
+    ensureAuthorStatsSchedule(store, env);
     ensureEtfWhaleSchedule(store, env);
+    ensureSouthboundSchedules(store, env);
     ensureDefaultContentSubscriptions(store.repositories.feed);
   }
   const scheduler = options.scheduler || createScheduler({
@@ -762,6 +784,7 @@ export function createAiCenterWorker(options = {}) {
       if (schedule.jobType === TWKR_NEWS_JOB_TYPE || schedule.jobType === TWKR_REVENUE_JOB_TYPE) {
         return prepareTwkrEnqueue(store, schedule);
       }
+      if (schedule.jobType === SOUTHBOUND_JOB_TYPE) return prepareSouthboundEnqueue(store, schedule);
       if (schedule.jobType !== FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE) return true;
       return prepareFeedSyncEnqueue(store, at);
     },
