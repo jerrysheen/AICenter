@@ -1,0 +1,432 @@
+tabData = [
+	{
+		"id": 0,
+		"date": "2026-10-16",
+		"market": "SSE Northbound",
+		"tradingDay": 1,
+		"content": [
+			{
+				"style": 1,
+				"table": {
+					"classname": "tradingTable",
+					"schema": [
+						["Total Turnover", "Total Trade Count", "DQB", "ETF Turnover"]
+					],
+					"tr": [
+						{
+							"td": [
+								["114,865.29"]
+							]
+						},
+						{
+							"td": [
+								["6,499,420"]
+							]
+						},
+						{
+							"td": [
+								["999,999,999"]
+							]
+						},
+						{
+							"td": [
+								["911.94"]
+							]
+						}
+					]
+				}
+			},
+			{
+				"style": 2,
+				"table": {
+					"classname": "top10Table",
+					"schema": [
+						["Rank", "Stock Code", "Stock Name", "Total Turnover"]
+					],
+					"tr": [
+						{
+							"td": [
+								["1", "603259", "WUXI APPTEC", "3,851,651,670"]
+							]
+						},
+						{
+							"td": [
+								["2", "600900", "CHINA YANGTZE POWER", "3,008,985,185"]
+							]
+						},
+						{
+							"td": [
+								["3", "603986", "GIGADEVICE SEMICONDUCTOR INC", "1,699,289,680"]
+							]
+						},
+						{
+							"td": [
+								["4", "600519", "KWEICHOW MOUTAI", "1,536,577,535"]
+							]
+						},
+						{
+							"td": [
+								["5", "601899", "ZIJIN MINING", "1,463,582,507"]
+							]
+						},
+						{
+							"td": [
+								["6", "688256", "CAMBRICON TECHNOLOGIES CORPORATION", "1,420,618,437"]
+							]
+						},
+						{
+							"td": [
+								["7", "600036", "CHINA MERCHANTS BANK", "1,207,545,549"]
+							]
+						},
+						{
+							"td": [
+								["8", "603893", "ROCKCHIP ELECTRONICS", "1,199,269,270"]
+							]
+						},
+						{
+							"td": [
+								["9", "600183", "SHENGYI TECHNOLOGY", "1,192,539,772"]
+							]
+						},
+						{
+							"td": [
+								["10", "688008", "MONTAGE TECHNOLOGY", "1,192,521,719"]
+							]
+						}
+					]
+				}
+			}
+		]
+	},
+	{
+		"id": 1,
+		"date": "2026-10-16",
+		"market": "SSE Southbound",
+		"tradingDay": 1,
+		"content": [
+			{
+				"style": 1,
+				"table": {
+					"classname": "tradingTable",
+					"schema": [
+						["Total Turnover", "Buy Turnover", "Sell Turnover", "Total Trade Count", "Buy Trade Count", "Sell Trade Count", "ETF Turnover"]
+					],
+					"tr": [
+						{
+							"td": [
+								["42,304.87"]
+							]
+						},
+						{
+							"td": [
+								["20,119.55"]
+							]
+						},
+						{
+							"td": [
+								["22,185.32"]
+							]
+						},
+						{
+							"td": [
+								["1,098,993"]
+							]
+						},
+						{
+							"td": [
+								["536,566"]
+							]
+						},
+						{
+							"td": [
+								["562,427"]
+							]
+						},
+						{
+							"td": [
+								["456.97"]
+							]
+						}
+					]
+				}
+			},
+			{
+				"style": 2,
+				"table": {
+					"classname": "top10Table",
+					"schema": [
+						["Rank", "Stock Code", "Stock Name", "Buy Turnover", "Sell Turnover", "Total Turnover"]
+					],
+					"tr": [
+						{
+							"td": [
+								["1", "00700", "TENCENT", "1,034,534,820", "710,186,880", "1,744,721,700"]
+							]
+						},
+						{
+							"td": [
+								["2", "01810", "XIAOMI-W", "589,390,396", "737,533,652", "1,326,924,048"]
+							]
+						},
+						{
+							"td": [
+								["3", "06869", "YOFC", "646,393,600", "665,029,350", "1,311,422,950"]
+							]
+						},
+						{
+							"td": [
+								["4", "09988", "BABA-W", "430,150,070", "774,074,430", "1,204,224,500"]
+							]
+						},
+						{
+							"td": [
+								["5", "00883", "CNOOC", "447,936,760", "657,077,220", "1,105,013,980"]
+							]
+						},
+						{
+							"td": [
+								["6", "00981", "SMIC", "441,794,575", "498,403,205", "940,197,780"]
+							]
+						},
+						{
+							"td": [
+								["7", "02269", "WUXI BIO", "298,100,280", "603,016,007", "901,116,287"]
+							]
+						},
+						{
+							"td": [
+								["8", "01888", "KB LAMINATES", "421,911,720", "474,188,200", "896,099,920"]
+							]
+						},
+						{
+							"td": [
+								["9", "02513", "Z.AI", "443,590,650", "386,616,640", "830,207,290"]
+							]
+						},
+						{
+							"td": [
+								["10", "01299", "AIA", "769,058,620", "5,413,870", "774,472,490"]
+							]
+						}
+					]
+				}
+			}
+		]
+	},
+	{
+		"id": 2,
+		"date": "2026-10-16",
+		"market": "SZSE Northbound",
+		"tradingDay": 1,
+		"content": [
+			{
+				"style": 1,
+				"table": {
+					"classname": "tradingTable",
+					"schema": [
+						["Total Turnover", "Total Trade Count", "DQB", "ETF Turnover"]
+					],
+					"tr": [
+						{
+							"td": [
+								["110,407.41"]
+							]
+						},
+						{
+							"td": [
+								["6,732,772"]
+							]
+						},
+						{
+							"td": [
+								["999,999,999"]
+							]
+						},
+						{
+							"td": [
+								["1,406.10"]
+							]
+						}
+					]
+				}
+			},
+			{
+				"style": 2,
+				"table": {
+					"classname": "top10Table",
+					"schema": [
+						["Rank", "Stock Code", "Stock Name", "Total Turnover"]
+					],
+					"tr": [
+						{
+							"td": [
+								["1", "300308", "ZHONGJI INNOLIGHT", "3,257,354,525"]
+							]
+						},
+						{
+							"td": [
+								["2", "300750", "CONTEMPORARY AMPEREX TECHNOLOGY", "2,535,370,125"]
+							]
+						},
+						{
+							"td": [
+								["3", "2371", "NAURA TECHNOLOGY GROUP", "1,950,462,139"]
+							]
+						},
+						{
+							"td": [
+								["4", "300502", "EOPTOLINK TECHNOLOGY", "1,715,434,306"]
+							]
+						},
+						{
+							"td": [
+								["5", "2815", "SUNTAK TECHNOLOGY", "1,348,986,303"]
+							]
+						},
+						{
+							"td": [
+								["6", "300274", "SUNGROW POWER SUPPLY", "1,285,254,947"]
+							]
+						},
+						{
+							"td": [
+								["7", "2384", "SUZHOU DONGSHAN PRECISION MANUFACTURING", "936,229,362"]
+							]
+						},
+						{
+							"td": [
+								["8", "2916", "SHENNAN CIRCUITS", "882,614,340"]
+							]
+						},
+						{
+							"td": [
+								["9", "300408", "CHAOZHOU THREE-CIRCLE GROUP", "725,195,960"]
+							]
+						},
+						{
+							"td": [
+								["10", "2475", "LUXSHARE PRECISION INDUSTRY", "695,316,183"]
+							]
+						}
+					]
+				}
+			}
+		]
+	},
+	{
+		"id": 3,
+		"date": "2026-10-16",
+		"market": "SZSE Southbound",
+		"tradingDay": 1,
+		"content": [
+			{
+				"style": 1,
+				"table": {
+					"classname": "tradingTable",
+					"schema": [
+						["Total Turnover", "Buy Turnover", "Sell Turnover", "Total Trade Count", "Buy Trade Count", "Sell Trade Count", "ETF Turnover"]
+					],
+					"tr": [
+						{
+							"td": [
+								["23,097.24"]
+							]
+						},
+						{
+							"td": [
+								["10,797.29"]
+							]
+						},
+						{
+							"td": [
+								["12,299.95"]
+							]
+						},
+						{
+							"td": [
+								["647,671"]
+							]
+						},
+						{
+							"td": [
+								["309,310"]
+							]
+						},
+						{
+							"td": [
+								["338,361"]
+							]
+						},
+						{
+							"td": [
+								["297.81"]
+							]
+						}
+					]
+				}
+			},
+			{
+				"style": 2,
+				"table": {
+					"classname": "top10Table",
+					"schema": [
+						["Rank", "Stock Code", "Stock Name", "Buy Turnover", "Sell Turnover", "Total Turnover"]
+					],
+					"tr": [
+						{
+							"td": [
+								["1", "00700", "TENCENT", "540,973,940", "476,875,660", "1,017,849,600"]
+							]
+						},
+						{
+							"td": [
+								["2", "01810", "XIAOMI-W", "240,721,292", "598,244,680", "838,965,972"]
+							]
+						},
+						{
+							"td": [
+								["3", "09988", "BABA-W", "460,704,090", "367,436,610", "828,140,700"]
+							]
+						},
+						{
+							"td": [
+								["4", "02269", "WUXI BIO", "173,728,885", "537,195,130", "710,924,015"]
+							]
+						},
+						{
+							"td": [
+								["5", "01888", "KB LAMINATES", "149,650,660", "402,716,680", "552,367,340"]
+							]
+						},
+						{
+							"td": [
+								["6", "01378", "CHINAHONGQIAO", "307,477,960", "241,017,760", "548,495,720"]
+							]
+						},
+						{
+							"td": [
+								["7", "02513", "Z.AI", "132,581,100", "311,886,750", "444,467,850"]
+							]
+						},
+						{
+							"td": [
+								["8", "06869", "YOFC", "201,304,900", "211,066,700", "412,371,600"]
+							]
+						},
+						{
+							"td": [
+								["9", "00981", "SMIC", "205,736,900", "204,991,825", "410,728,725"]
+							]
+						},
+						{
+							"td": [
+								["10", "00992", "LENOVO GROUP", "154,329,520", "216,890,440", "371,219,960"]
+							]
+						}
+					]
+				}
+			}
+		]
+	}
+]

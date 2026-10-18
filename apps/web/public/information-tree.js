@@ -859,7 +859,16 @@ export function createInformationTreePage(host) {
       }
     }
     viewKey=`daily-feed:${dailyStart}:${openedId}`;
+    if(!opened) paintSouthboundLine(list, token);
     restoreScroll(Boolean(opened));
+  }
+  let southboundLineTicket = 0;
+  function paintSouthboundLine(page, token) {
+    const ticket = ++southboundLineTicket;
+    api('/api/v1/market/southbound?days=20').then((data) => {
+      if (ticket !== southboundLineTicket || token !== epoch || !page.isConnected || !data?.line) return;
+      page.prepend(el('p', data.line, 'southbound-daily-line'));
+    }).catch((error) => { if (!aborted(error)) return; });
   }
   function loadEditorial(edition) {
     if(edition?.hasEditorial===false)return Promise.resolve(null);
@@ -953,6 +962,7 @@ export function createInformationTreePage(host) {
       }
     }
     list.replaceChildren(page);
+    if(!openedDirection) paintSouthboundLine(page, token);
     viewKey=`daily-research:${dailyStart}:${openedDirection}`;
     restoreScroll(Boolean(openedDirection));
   }

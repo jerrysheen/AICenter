@@ -136,7 +136,9 @@ export function createTradingRoutes() {
       async handler({ response, services, url }) {
         try {
           const query = parseHoldingsQuery(Object.fromEntries(url.searchParams.entries()));
-          json(response, 200, { ok: true, holdings: await services.trading.getHoldingsBoard(query) });
+          const holdings = await services.trading.getHoldingsBoard(query);
+          services.southbound?.annotateHoldings?.(holdings);
+          json(response, 200, { ok: true, holdings });
         } catch (error) {
           json(response, 502, { ok: false, error: error instanceof Error ? error.message : '持仓加载失败' });
         }

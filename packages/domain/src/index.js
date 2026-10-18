@@ -21,6 +21,7 @@ import { createEventQuoteSnapshotService } from './event-quote-snapshots.js';
 import { createInvestorDiscussionService } from './investor-discussion.js';
 import { createComputePriceService } from './compute-price-service.js';
 import { createApiTokenService } from './api-token-service.js';
+import { createSouthboundReadService } from './southbound-service.js';
 
 export { createContextService, createDailyBriefService, createFeedService, createIdentityService, createKnowledgeService, createMarketStatisticsService, createMediaIngestionService, createReportService, createRuntimeService, createTradingService, createTaggingService };
 export { buildDailyBriefCandidates } from './daily-brief-candidates.js';
@@ -210,6 +211,12 @@ export function createDomainServices({
       : null,
     computePrices: store.repositories.computePrices
       ? createComputePriceService({ repository: store.repositories.computePrices })
+      : null,
+    southbound: store.repositories.southbound
+      ? createSouthboundReadService({
+        repository: store.repositories.southbound,
+        snapshots: store.repositories.runtimeSnapshots,
+      })
       : null,
     apiTokens: createApiTokenService({
       repository: store.repositories.apiTokens,

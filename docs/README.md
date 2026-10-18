@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-16-southbound-flow.md`：股票页增加港股通南向资金。东财日度汇总和十大成交入库，港交所成交额做校验。migration 81 建 `southbound_daily` 和 `southbound_top10`。80 留给其他功能。需要同时重启 Web 和 Worker，再跑 `node --env-file=.env scripts/southbound-backfill.js --from 2021-10-16 --to 2026-10-16`。
+
 - `progress/2026-10-16-author-view.md`：信息流最后一项是「作者」。migration 77、78。`AUTHOR_VIEW=0` 只隐藏页面和接口。需要同时重启 Web 和 Worker。上线先 `--dry-run`，再 backfill，需要的话 import，最后 recompute。Worker 每天凌晨重算近 30 天计数。
 
 - `progress/2026-10-16-home-perf.md`：总览首屏改读 Worker 快照，页面并行拉各模块。阅读只补充有条目的前 4 个小时。缺报价立刻 `pending`，补拉超过 10 秒中止，页面重拉间隔逐步加长。A 股日 K 按上海日历日缓存，失败按 10 分钟、30 分钟退避，满 3 次当天不再试。看板下发 `session` 和 `marketOpen`。休市不标红。响应不下发 `timings`。不新增 migration。需要同时重启 Web 和 Worker。上线前在服务器跑 `scripts/measure-home-perf.mjs`。
