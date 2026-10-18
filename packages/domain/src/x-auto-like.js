@@ -1,7 +1,8 @@
 import {
+  aggregateFocusPoints,
   autoLikeEnvEnabled,
   autoLikeLimits,
-  buildDrift,
+  buildDriftFromSnapshot,
   focusFeedFromSource,
   nextAutoLikeSettings,
   normalizeAutoLikeSettings,
@@ -11,7 +12,11 @@ import {
 } from './x-focus.js';
 
 const SETTINGS_KEY = 'x-auto-like';
+const DRIFT_KEY = 'x-focus-drift';
 const DAY_MS = 86_400_000;
+const VIEW_TTL_MS = 60_000;
+export const KEYWORD_RESCORE_LIMIT = 40;
+const KEYWORD_RESCORE_WINDOW_MS = 6 * 60 * 60 * 1000;
 
 function text(value) {
   return String(value || '').trim();
@@ -38,6 +43,8 @@ export function createXFocusService({
   feedRepository = null,
   runtimeRepository = null,
   snapshots = null,
+  reportRepository = null,
+  scorer = null,
   requestLike = null,
   now = () => Date.now(),
   log = () => {},
@@ -56,12 +63,18 @@ export function createXFocusService({
     return next;
   }
 
-  function likeJobs(since) {
-    return runtimeRepository?.listJobsByType?.('feed.x.like', { since, limit: 1000 }) || [];
+  const viewCache = new Map();
+
+  function likeJobs(workspaceId, since) {
+    return runtimeRepository?.listJobsByType?.('feed.x.like', { workspaceId, since, limit: 1000 }) || [];
   }
 
-  function unlikeJobs(since) {
-    return runtimeRepository?.listJobsByType?.('feed.x.unlike', { since, limit: 200 }) || [];
+  function unlikeJobs(workspaceId, since) {
+    return runtimeRepository?.listJobsByType?.('feed.x.unlike', { workspaceId, since, limit: 200 }) || [];
+  }
+
+  function dropView(workspaceId) {
+    viewCache.delete(workspaceId);
   }
 
   function candidates(workspaceId, at) {
@@ -98,7 +111,7 @@ export function createXFocusService({
       const openUnlike = runtimeRepository?.listOpenJobs?.('feed.x.unlike') || [];
       if (openLike.length || openUnlike.length) return { dispatched: false, reason: 'busy' };
       const at = now();
-      const ranked = rankAutoLikeCandidates(candidates(workspaceId, at), likeJobs(at - 30 * DAY_MS), { ...config, limits: limits() }, at);
+      const ranked = rankAutoLikeCandidates(candidates(workspaceId, at), likeJobs(workspaceId, at - 30 * DAY_MS), { ...config, limits: limits() }, at);
       if (!ranked.picked) return { dispatched: false, reason: ranked.usage.blocked ? 'limit' : 'empty' };
       const picked = ranked.picked;
       const input = {
@@ -118,33 +131,68 @@ export function createXFocusService({
       const settings = readSettings(workspaceId);
       const next = nextAutoLikeSettings(settings, output?.status);
       if (next !== settings) writeSettings(workspaceId, next);
+      dropView(workspaceId);
       if (next.suspended && !settings.suspended) log(`[worker] x-auto-like stopped status=${output?.status || ''}`);
       return next;
     },
-    setPageEnabled(workspaceId, enabled) {
-      if (enabled === true) {
-        return writeSettings(workspaceId, { pageEnabled: true, suspended: false, notice: '', consecutiveUnconfirmed: 0 });
+    refreshDrift(workspaceId = 'local') {
+      const at = now();
+      const points = (feedRepository?.listXFocusPoints?.(workspaceId, { since: at - 14 * DAY_MS }) || []).map((row) => ({
+        ...row,
+        feed: focusFeedFromSource(row.sourceExternalId),
+      }));
+      const payload = aggregateFocusPoints(points, config);
+      snapshots?.saveSnapshot?.(workspaceId, DRIFT_KEY, payload, at);
+      reportRepository?.deleteAnalysisStagesBefore?.(workspaceId, 'x-focus', at - 14 * DAY_MS);
+      dropView(workspaceId);
+      return payload;
+    },
+    async rescoreKeywords(workspaceId = 'local') {
+      if (!scorer?.scoreCards) return { rescored: 0 };
+      const at = now();
+      const rows = feedRepository?.listKeywordXFocus?.(workspaceId, {
+        since: at - KEYWORD_RESCORE_WINDOW_MS,
+        limit: KEYWORD_RESCORE_LIMIT,
+      }) || [];
+      if (!rows.length) return { rescored: 0 };
+      const scored = await scorer.scoreCards(rows.map((row) => ({ id: row.externalId, text: row.text })), {
+        deadlineAt: at + config.scoreTimeoutMs + 15_000,
+      });
+      let rescored = 0;
+      for (const row of rows) {
+        const focus = scored?.byId?.[row.externalId];
+        if (!focus || focus.method !== 'model') continue;
+        if (feedRepository?.patchCaptureXFocus?.(workspaceId, row.externalId, focus)) rescored += 1;
       }
-      return writeSettings(workspaceId, { pageEnabled: false, suspended: false, notice: '', consecutiveUnconfirmed: 0 });
+      log(`[worker] x-focus rescore checked=${rows.length} updated=${rescored}`);
+      return { rescored };
+    },
+    setPageEnabled(workspaceId, enabled) {
+      dropView(workspaceId);
+      if (enabled === true) {
+        return writeSettings(workspaceId, { pageEnabled: true, suspended: false, notice: '', consecutiveUnconfirmed: 0, consecutiveUnavailable: 0 });
+      }
+      return writeSettings(workspaceId, { pageEnabled: false, suspended: false, notice: '', consecutiveUnconfirmed: 0, consecutiveUnavailable: 0 });
     },
     view(workspaceId = 'local') {
       const at = now();
+      const cached = viewCache.get(workspaceId);
+      if (cached && at - cached.at < VIEW_TTL_MS) return cached.value;
       const settings = readSettings(workspaceId);
-      const likes = likeJobs(at - 30 * DAY_MS);
-      const unlikes = unlikeJobs(at - 30 * DAY_MS);
+      const likes = likeJobs(workspaceId, at - 30 * DAY_MS);
+      const unlikes = unlikeJobs(workspaceId, at - 30 * DAY_MS);
       const usage = rankAutoLikeCandidates([], likes, { ...config, limits: limits() }, at).usage;
-      const rows = feedRepository?.listRecentXCaptures?.(workspaceId, { since: at - 14 * DAY_MS, limit: 5000 }) || [];
-      const driftRows = rows.map((row) => ({
-        capturedAt: row.capturedAt,
-        feed: focusFeedFromSource(row.sourceExternalId),
-        focus: storedFocus(row.metadata, config),
-      }));
-      const actions = [...likes, ...unlikes]
+      const driftSnapshot = snapshots?.readSnapshot?.(workspaceId, DRIFT_KEY)?.payload || null;
+      const recent = [...likes, ...unlikes]
         .sort((left, right) => (right.createdAt || 0) - (left.createdAt || 0))
-        .slice(0, 80)
-        .map((job) => projectAction(job, rows, config, unlikes));
+        .slice(0, 80);
+      const captures = feedRepository?.listXCapturesByContentIds?.(
+        workspaceId,
+        recent.map((job) => job.input?.contentItemId).filter(Boolean),
+      ) || [];
+      const actions = recent.map((job) => projectAction(job, captures, config, unlikes));
       const currentLimits = limits();
-      return {
+      const value = {
         autoLike: {
           environmentOn: autoLikeEnvEnabled(env),
           pageOn: settings.pageEnabled && !settings.suspended,
@@ -155,10 +203,12 @@ export function createXFocusService({
           hourCount: usage.hourlyUsed,
           hourLimit: currentLimits.hourlyLimit,
         },
-        drift: buildDrift(driftRows, likes, config, at),
+        drift: buildDriftFromSnapshot(driftSnapshot, likes, config, at),
         actions,
         capturedOn: shanghaiDayKey(at),
       };
+      viewCache.set(workspaceId, { at, value });
+      return value;
     },
   });
 }
@@ -166,7 +216,7 @@ export function createXFocusService({
 function projectAction(job, captures, config, unlikes) {
   const input = job.input || {};
   const capture = captures.find((row) => row.contentItemId && row.contentItemId === input.contentItemId);
-  const focus = capture ? storedFocus(capture.metadata, config) : null;
+  const focus = capture?.focus ? storedFocus({ xFocus: capture.focus }, config) : null;
   const resultStatus = job.status === 'completed'
     ? (job.output?.status || 'unconfirmed')
     : (job.status === 'failed' || job.status === 'cancelled' ? 'failed' : job.status);

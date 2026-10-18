@@ -238,25 +238,33 @@ export function normalizeAutoLikeSettings(payload) {
     suspended: source.suspended === true,
     notice: text(source.notice).slice(0, 180),
     consecutiveUnconfirmed: Math.max(0, Math.min(9, Number(source.consecutiveUnconfirmed) || 0)),
+    consecutiveUnavailable: Math.max(0, Math.min(9, Number(source.consecutiveUnavailable) || 0)),
   };
 }
 
 export function nextAutoLikeSettings(settings, status) {
   const current = normalizeAutoLikeSettings(settings);
   if (status === 'login-required') {
-    return { pageEnabled: false, suspended: true, notice: '采集浏览器需要重新登录 X，已停止自动点赞', consecutiveUnconfirmed: 0 };
+    return { pageEnabled: false, suspended: true, notice: '采集浏览器需要重新登录 X，已停止自动点赞', consecutiveUnconfirmed: 0, consecutiveUnavailable: 0 };
   }
   if (status === 'blocked') {
-    return { pageEnabled: false, suspended: true, notice: 'X 页面被拦截或出现验证，已停止自动点赞', consecutiveUnconfirmed: 0 };
+    return { pageEnabled: false, suspended: true, notice: 'X 页面被拦截或出现验证，已停止自动点赞', consecutiveUnconfirmed: 0, consecutiveUnavailable: 0 };
+  }
+  if (status === 'unavailable') {
+    const consecutiveUnavailable = current.consecutiveUnavailable + 1;
+    if (consecutiveUnavailable >= 3) {
+      return { pageEnabled: false, suspended: true, notice: '连续三次无法操作点赞按钮，已停止自动点赞', consecutiveUnconfirmed: 0, consecutiveUnavailable };
+    }
+    return { ...current, consecutiveUnavailable };
   }
   if (status === 'unconfirmed') {
     const consecutiveUnconfirmed = current.consecutiveUnconfirmed + 1;
     if (consecutiveUnconfirmed >= 2) {
-      return { pageEnabled: false, suspended: true, notice: '连续两次没有确认点赞结果，已停止自动点赞', consecutiveUnconfirmed };
+      return { pageEnabled: false, suspended: true, notice: '连续两次没有确认点赞结果，已停止自动点赞', consecutiveUnconfirmed, consecutiveUnavailable: current.consecutiveUnavailable };
     }
     return { ...current, consecutiveUnconfirmed };
   }
-  if (status === 'liked' || status === 'already-liked') return { ...current, consecutiveUnconfirmed: 0 };
+  if (status === 'liked' || status === 'already-liked') return { ...current, consecutiveUnconfirmed: 0, consecutiveUnavailable: 0 };
   return current;
 }
 
@@ -320,6 +328,8 @@ export function buildDrift(rows, likes, config, now = Date.now()) {
     if (!feed) continue;
     const day = shanghaiDayKey(row.capturedAt || row.at || 0);
     if (!feeds[feed][day]) continue;
+    const method = row.focus?.method;
+    if (method !== 'model' && method !== 'cache') continue;
     const bucket = feeds[feed][day];
     bucket.total += 1;
     const scores = row.focus?.dirScores || {};
@@ -340,6 +350,76 @@ export function buildDrift(rows, likes, config, now = Date.now()) {
     recommended: uniqueDays.map((day) => rate(feeds['for-you'][day], dir.id)),
     following: uniqueDays.map((day) => rate(feeds.following[day], dir.id)),
   }));
+  const alerts = [];
+  const todayIndex = uniqueDays.indexOf(today);
+  if (todayIndex > 0) {
+    for (const entry of series) {
+      for (const [feedName, values] of [['推荐', entry.recommended], ['关注', entry.following]]) {
+        const todayRate = values[todayIndex];
+        const prior = values.slice(Math.max(0, todayIndex - 7), todayIndex).filter((value) => value !== null);
+        if (todayRate === null || prior.length < 3) continue;
+        const average = prior.reduce((sum, value) => sum + value, 0) / prior.length;
+        if (average > 0 && todayRate < average * 0.7) {
+          const drop = Math.round((1 - todayRate / average) * 100);
+          alerts.push(`${entry.name}的${feedName}命中率比近 7 日均值低 ${drop}%`);
+        }
+      }
+    }
+  }
+  return {
+    dates: uniqueDays.map((day) => day.slice(5)),
+    likes: uniqueDays.map((day) => likeCounts[day]),
+    series,
+    alerts,
+  };
+}
+
+export function aggregateFocusPoints(rows, config) {
+  const feeds = { 'for-you': {}, following: {} };
+  for (const row of rows || []) {
+    const feed = row.feed === 'following' ? 'following' : row.feed === 'for-you' ? 'for-you' : '';
+    if (!feed || row.version !== config.version) continue;
+    if (row.method !== 'model' && row.method !== 'cache') continue;
+    const day = shanghaiDayKey(row.capturedAt || 0);
+    const bucket = feeds[feed][day] || {
+      total: 0,
+      hits: Object.fromEntries(config.directions.map((dir) => [dir.id, 0])),
+    };
+    bucket.total += 1;
+    for (const dir of config.directions) {
+      if (Number(row.dirScores?.[dir.id]) >= config.hitMin) bucket.hits[dir.id] += 1;
+    }
+    feeds[feed][day] = bucket;
+  }
+  return { version: config.version, feeds };
+}
+
+export function buildDriftFromSnapshot(snapshot, likes, config, now = Date.now()) {
+  const today = shanghaiDayKey(now);
+  const days = [];
+  for (let offset = 13; offset >= 0; offset -= 1) {
+    days.push(formatYmd(zonedParts(now - offset * 86_400_000, X_FOCUS_TIME_ZONE)));
+  }
+  const uniqueDays = [...new Set(days)];
+  const stored = snapshot?.version === config.version && snapshot.feeds ? snapshot.feeds : {};
+  const bucketFor = (feed, day) => stored[feed]?.[day] || { total: 0, hits: {} };
+  const rate = (bucket, id) => {
+    const total = Number(bucket.total) || 0;
+    if (!total) return null;
+    return Math.round(((Number(bucket.hits?.[id]) || 0) / total) * 1000) / 1000;
+  };
+  const series = config.directions.map((dir) => ({
+    name: dir.label,
+    recommended: uniqueDays.map((day) => rate(bucketFor('for-you', day), dir.id)),
+    following: uniqueDays.map((day) => rate(bucketFor('following', day), dir.id)),
+  }));
+  const likeCounts = Object.fromEntries(uniqueDays.map((day) => [day, 0]));
+  for (const job of likes || []) {
+    const day = shanghaiDayKey(job.createdAt || 0);
+    if (likeCounts[day] === undefined) continue;
+    const status = job.output?.status || job.result;
+    if (status === 'liked' || status === 'already-liked') likeCounts[day] += 1;
+  }
   const alerts = [];
   const todayIndex = uniqueDays.indexOf(today);
   if (todayIndex > 0) {

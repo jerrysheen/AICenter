@@ -25,7 +25,7 @@
 
 ## 当前
 
-- `progress/2026-10-18-x-focus-steer.md`：X 抓取先给卡片打 7 个方向的分数，只展开相关度至少 0.75 的帖，每轮最多 8 条。自动点赞默认关，要环境变量和「推荐记录」页开关同时打开。不新增 migration。需要同时重启 Web 和 Worker。
+- `progress/2026-10-18-x-focus-steer.md`：X 抓取先给卡片打 7 个方向的分数。推荐流只展开相关度至少 0.75 的帖；关注流仍展开被截断的帖，每轮最多 8 条。自动点赞默认关。服务器必须设置 `AI_CENTER_HARNESS_HOURLY_PROVIDER=google`。migration 84 只建任务索引。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-16-polymarket-card-change.md`：事件概率卡片恢复大号概率和涨跌。序列还不满 24 小时时，只取观察清单里 1 小时到 27 小时之间最早的一点，并写「较 Xh 前」。数字 `changeBasis` 显示「较 4h 前」这类文案，没有该字段才是「较昨日」。`lastPrice` 为空时不显示「上次」。满 24 小时后自己回到「较昨日」。多个结果的卡片上面是领先结果，下面默认收起最多 3 个其余区间。不新增 migration。需要同时重启 Web 和 Worker。
 

@@ -9,6 +9,10 @@ import {
 } from './x-focus.js';
 
 const CACHE_DATE = 'x-focus';
+export const X_FOCUS_SCORE_RESERVE_MS = 15_000;
+const SCORE_FLOOR_MS = 3_000;
+const BATCH_CONCURRENCY = 3;
+const MAX_ITEM_RETRIES = 5;
 
 function text(value) {
   return String(value || '').trim();
@@ -42,11 +46,26 @@ function timeoutError(error) {
   return error?.code === 'timeout' || name === 'AbortError' || name === 'TimeoutError' || /超时|timed out|\btimeout\b/i.test(message);
 }
 
+function hardModelError(error) {
+  if (quotaError(error) || timeoutError(error)) return true;
+  const status = Number(error?.status);
+  if (status === 429 || status >= 500) return true;
+  const code = String(error?.code || '');
+  if (['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ECONNABORTED', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET'].includes(code)) return true;
+  return /fetch failed|network|socket|ECONN|ENOTFOUND|getaddrinfo/i.test(String(error?.message || ''));
+}
+
 function answerText(result) {
   return result?.answer || result?.text || result?.output || '';
 }
 
-async function directGemini({ env, model, keyEnv, instruction, message, timeoutMs, fetchImpl }) {
+function combinedSignal(timeoutMs, signal) {
+  const timer = AbortSignal.timeout(Math.max(1, timeoutMs));
+  if (!signal) return timer;
+  return AbortSignal.any([timer, signal]);
+}
+
+async function directGemini({ env, model, keyEnv, instruction, message, timeoutMs, fetchImpl, signal }) {
   const key = text(env[keyEnv]);
   if (!key) throw new Error('缺少 Gemini 密钥');
   const root = text(env.AI_CENTER_GEMINI_API_ROOT) || 'https://generativelanguage.googleapis.com/v1beta';
@@ -58,7 +77,7 @@ async function directGemini({ env, model, keyEnv, instruction, message, timeoutM
       contents: [{ role: 'user', parts: [{ text: message }] }],
       generationConfig: { temperature: 0, responseMimeType: 'application/json' },
     }),
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: combinedSignal(timeoutMs, signal),
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -107,9 +126,20 @@ export function createXFocusScorer({
     });
   }
 
-  async function callModel(instruction, message, timeoutMs) {
-    const attempt = async (keyEnv, model) => {
-      if (complete) return complete({ instruction, message, timeoutMs, keyEnv, model });
+  function scoreDeadline(deadlineAt) {
+    const started = now();
+    const cap = started + config.scoreTimeoutMs;
+    const outer = Number.isFinite(Number(deadlineAt)) ? Number(deadlineAt) - X_FOCUS_SCORE_RESERVE_MS : cap;
+    return Math.min(cap, outer);
+  }
+
+  async function callModel(instruction, message, timeoutMs, signal) {
+    const keyList = keyEnvs.length ? keyEnvs : [''];
+    const keyEnv = keyList[keyCursor % keyList.length];
+    const model = models[0] || 'gemini-3.1-flash-lite';
+    keyCursor = (keyCursor + 1) % keyList.length;
+    const attempt = () => {
+      if (complete) return complete({ instruction, message, timeoutMs, keyEnv, model, signal });
       if (googleHourly && agentRuntime?.run) {
         return agentRuntime.run({
           closedContext: true,
@@ -118,6 +148,7 @@ export function createXFocusScorer({
           workspaceId,
           allowedToolIds: [],
           timeoutMs,
+          signal,
           usageStage: 'x-focus',
           taskInstruction: instruction,
           message,
@@ -126,51 +157,30 @@ export function createXFocusScorer({
         });
       }
       return directGemini({
-        env, model: model || models[0] || 'gemini-3.1-flash-lite', keyEnv, instruction, message, timeoutMs, fetchImpl: http,
+        env, model, keyEnv, instruction, message, timeoutMs, fetchImpl: http, signal,
       });
     };
-    const pairs = [];
-    const keyList = keyEnvs.length ? keyEnvs : [''];
-    const modelList = models.length ? models : ['gemini-3.1-flash-lite'];
-    for (let step = 0; step < keyList.length; step += 1) {
-      const keyEnv = keyList[(keyCursor + step) % keyList.length];
-      for (const model of modelList) pairs.push([keyEnv, model]);
-    }
-    let lastError = null;
-    let nonQuota = 0;
-    for (const [keyEnv, model] of pairs) {
-      try {
-        const result = await attempt(keyEnv, model);
-        keyCursor = (keyList.indexOf(keyEnv) + 1) % keyList.length;
-        return result;
-      } catch (error) {
-        lastError = error;
-        if (timeoutError(error)) throw error;
-        if (quotaError(error)) continue;
-        nonQuota += 1;
-        if (nonQuota >= 2) break;
-      }
-    }
-    throw lastError || new Error('x-focus 没有可用模型');
+    return attempt();
   }
 
-  async function scoreOne(card, timeoutMs, fallback) {
+  async function scoreOne(card, scoreUntil, signal) {
     const cached = readCache(card.id);
     if (cached) return cached;
+    const timeoutMs = scoreUntil - now();
+    if (signal?.aborted || timeoutMs < SCORE_FLOOR_MS) return keywordFocus(card.text, config);
     try {
-      const result = await callModel(xFocusInstruction(config), JSON.stringify({ text: String(card.text || '').slice(0, 4000) }), timeoutMs);
+      const result = await callModel(xFocusInstruction(config), JSON.stringify({ text: String(card.text || '').slice(0, 4000) }), timeoutMs, signal);
       const parsed = parseFocusObject(parseLoose(answerText(result)), config);
       if (!parsed) return keywordFocus(card.text, config);
       writeCache(card.id, parsed);
-      log(`[worker] x-focus batch=1 fallback=${fallback ? 1 : 0} outcome=ok`);
+      log('[worker] x-focus batch=1 fallback=1 outcome=ok');
       return parsed;
-    } catch (error) {
-      if (timeoutError(error)) throw error;
+    } catch {
       return keywordFocus(card.text, config);
     }
   }
 
-  async function scoreBatch(cards, timeoutMs) {
+  async function scorePending(cards, scoreUntil, signal) {
     const pending = [];
     const out = new Array(cards.length);
     cards.forEach((card, index) => {
@@ -178,34 +188,72 @@ export function createXFocusScorer({
       if (cached) out[index] = cached;
       else pending.push(index);
     });
+    const groups = [];
     for (let offset = 0; offset < pending.length; offset += config.batchSize) {
-      const indexes = pending.slice(offset, offset + config.batchSize);
+      groups.push(pending.slice(offset, offset + config.batchSize));
+    }
+    let fallbacksLeft = MAX_ITEM_RETRIES;
+    let stop = false;
+    const keywordGroup = (indexes) => {
+      for (const index of indexes) out[index] = keywordFocus(cards[index].text, config);
+    };
+    async function runGroup(indexes) {
+      const timeoutMs = scoreUntil - now();
+      if (stop || signal?.aborted || timeoutMs < SCORE_FLOOR_MS) {
+        keywordGroup(indexes);
+        return;
+      }
       const message = JSON.stringify(indexes.map((index, idx) => ({
         idx,
         text: String(cards[index].text || '').slice(0, 1500),
       })));
       let aligned = null;
       try {
-        const result = await callModel(xFocusBatchInstruction(config), message, timeoutMs);
+        const result = await callModel(xFocusBatchInstruction(config), message, timeoutMs, signal);
         aligned = alignFocusBatch(answerText(result), indexes.length, config);
       } catch (error) {
-        if (timeoutError(error)) throw error;
-        aligned = null;
+        if (timeoutError(error) || signal?.aborted) stop = true;
+        keywordGroup(indexes);
+        log(`[worker] x-focus batch=${indexes.length} outcome=keyword reason=${hardModelError(error) ? 'model' : 'error'}`);
+        return;
       }
       if (!aligned) {
-        for (const index of indexes) out[index] = await scoreOne(cards[index], timeoutMs, true);
-        continue;
+        for (const index of indexes) {
+          if (fallbacksLeft <= 0 || stop) {
+            out[index] = keywordFocus(cards[index].text, config);
+            continue;
+          }
+          fallbacksLeft -= 1;
+          out[index] = await scoreOne(cards[index], scoreUntil, signal);
+        }
+        return;
       }
       for (let position = 0; position < indexes.length; position += 1) {
         const parsed = aligned.get(position);
-        if (!parsed || parsed.invalid) out[indexes[position]] = await scoreOne(cards[indexes[position]], timeoutMs, true);
-        else {
-          writeCache(cards[indexes[position]].id, parsed);
-          out[indexes[position]] = parsed;
+        const index = indexes[position];
+        if (parsed && !parsed.invalid) {
+          writeCache(cards[index].id, parsed);
+          out[index] = parsed;
+          continue;
         }
+        if (fallbacksLeft <= 0 || stop) {
+          out[index] = keywordFocus(cards[index].text, config);
+          continue;
+        }
+        fallbacksLeft -= 1;
+        out[index] = await scoreOne(cards[index], scoreUntil, signal);
       }
       log(`[worker] x-focus batch=${indexes.length} fallback=0 outcome=ok`);
     }
+    async function worker() {
+      while (groups.length) {
+        const indexes = groups.shift();
+        if (!indexes) return;
+        await runGroup(indexes);
+      }
+    }
+    const workers = Math.min(BATCH_CONCURRENCY, groups.length);
+    await Promise.all(Array.from({ length: workers }, () => worker()));
     return out;
   }
 
@@ -214,25 +262,24 @@ export function createXFocusScorer({
       if (!config.enabled) return null;
       const list = (cards || []).filter((card) => card?.id).slice(0, 50);
       if (!list.length) return { minScore: config.expandMin, maxExpand: config.maxExpand, byId: {} };
-      const remaining = Number.isFinite(Number(deadlineAt)) ? Number(deadlineAt) - now() : config.scoreTimeoutMs;
-      const budget = Math.min(config.scoreTimeoutMs, Math.max(0, remaining));
+      const scoreUntil = scoreDeadline(deadlineAt);
       const byId = {};
       const applyKeyword = () => {
         for (const card of list) {
           if (!byId[card.id]) byId[card.id] = keywordFocus(card.text, config);
         }
       };
-      if (signal?.aborted || budget < 3_000) {
+      if (signal?.aborted || scoreUntil - now() < SCORE_FLOOR_MS) {
         applyKeyword();
         log('[worker] x-focus outcome=keyword reason=budget');
         return { minScore: config.expandMin, maxExpand: config.maxExpand, byId };
       }
       try {
-        const scores = await scoreBatch(list, budget);
+        const scores = await scorePending(list, scoreUntil, signal);
         list.forEach((card, index) => { byId[card.id] = scores[index] || keywordFocus(card.text, config); });
-      } catch (error) {
+      } catch {
         applyKeyword();
-        log(`[worker] x-focus outcome=keyword reason=${timeoutError(error) ? 'timeout' : 'error'}`);
+        log('[worker] x-focus outcome=keyword reason=error');
       }
       return { minScore: config.expandMin, maxExpand: config.maxExpand, byId };
     },

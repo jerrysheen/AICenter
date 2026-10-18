@@ -220,6 +220,13 @@ export function createReportRepository(database, emitEvent) {
       const row=database.prepare('SELECT * FROM daily_analysis_stages WHERE workspace_id=? AND report_date=? AND stage_key=? AND input_hash=?').get(workspaceId,reportDate,stageKey,inputHash);
       return row ? {status:row.status,output:parseJson(row.output_json,null),input:parseJson(row.input_json,null),error:row.error,updatedAt:row.updated_at} : null;
     },
+    deleteAnalysisStagesBefore(workspaceId, reportDate, before) {
+      const day = String(reportDate || '');
+      const at = Number(before);
+      if (day !== 'x-focus' || !Number.isFinite(at)) return 0;
+      return database.prepare(`DELETE FROM daily_analysis_stages
+        WHERE workspace_id = ? AND report_date = ? AND updated_at < ?`).run(workspaceId, day, at).changes;
+    },
     saveAnalysisStage(workspaceId,reportDate,stageKey,inputHash,input,output,status,error='') {
       database.transaction(()=>{
         database.prepare(`INSERT INTO daily_analysis_stages VALUES (?,?,?,?,?,?,?,?,?)

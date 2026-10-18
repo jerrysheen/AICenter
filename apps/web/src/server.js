@@ -332,13 +332,20 @@ export function createAiCenterServer(options = {}) {
     marketBoard,
     marketNativeBoard,
     runtimeSnapshots: store.repositories.runtimeSnapshots,
-    xFocus: createXFocusService({
-      config: options.xFocusConfig || loadXFocusConfig(instance.configDirectory),
-      env,
-      feedRepository: store.repositories.feed,
-      runtimeRepository: store,
-      snapshots: store.repositories.runtimeSnapshots,
-    }),
+    xFocus: (() => {
+      try {
+        return createXFocusService({
+          config: options.xFocusConfig || loadXFocusConfig(instance.configDirectory),
+          env,
+          feedRepository: store.repositories.feed,
+          runtimeRepository: store,
+          snapshots: store.repositories.runtimeSnapshots,
+        });
+      } catch (error) {
+        console.log(`[web] x-focus 配置不可用，推荐记录页暂不启用：${String(error?.message || error).slice(0, 180)}`);
+        return null;
+      }
+    })(),
   });
   const feedQueryParsers = options.feedQueryParsers || new Map([
     ['x', parseXFeedQuery],

@@ -9,7 +9,7 @@ import { createStore } from '../packages/database/src/index.js';
 import { getEventListeners } from 'node:events';
 import { createJobRunner, resolveJobTypeConcurrency, wait } from '../packages/runtime/src/job-runner.js';
 import { createAiCenterWorker } from '../apps/worker/src/worker.js';
-import { latestSchemaVersion, runMigrations } from '../packages/database/src/migrations.js';
+import { latestSchemaVersion, runMigrations, unusedSchemaVersions } from '../packages/database/src/migrations.js';
 import { computeFeedIdentityHash } from '../packages/domain/src/feed-identity.js';
 
 function temporaryDatabase(prefix) {
@@ -44,8 +44,11 @@ test('migrations upgrade a v1 database without losing posts', () => {
   assert.ok(columns.includes('workspace_id'));
   const schemaRows = upgraded.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get().count;
   const schemaLatest = latestSchemaVersion();
+  const expectedHoles = unusedSchemaVersions.filter((version) => version <= schemaLatest).length;
   assert.equal(upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, schemaLatest);
-  assert.ok(schemaLatest - schemaRows <= 1, `schema rows ${schemaRows} latest ${schemaLatest}`);
+  assert.equal(schemaLatest - schemaRows, expectedHoles, `schema rows ${schemaRows} latest ${schemaLatest}`);
+  assert.equal(schemaLatest, 84);
+  assert.ok(upgraded.prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_jobs_type_created'`).get());
   assert.ok(upgraded.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'resource_taggings'`).get());
   const refColumns = upgraded.prepare('PRAGMA table_info(ai_run_context_refs)').all().map((column) => column.name);
   assert.ok(refColumns.includes('origin'));

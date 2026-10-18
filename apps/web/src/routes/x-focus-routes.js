@@ -11,7 +11,7 @@ export function createXFocusRoutes() {
         const view = services.xFocus?.view(identity?.device?.workspaceId || 'local');
         json(response, view ? 200 : 404, view ? { ok: true, ...view } : { ok: false, error: '推荐记录还没有准备好' });
       } },
-    { method: 'POST', path: '/api/v1/feed/x-focus/auto-like',
+    { method: 'POST', path: '/api/v1/feed/x-focus/auto-like', access: 'operator',
       async handler({ request, response, services, identity }) {
         const body = parseContract(PageSwitchSchema, await readJson(request));
         if (!services.xFocus) {

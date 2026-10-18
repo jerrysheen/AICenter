@@ -2186,6 +2186,15 @@ migrations.push({ version: 76, name: 'twse_monthly_revenue', up(database) {
   `);
 }});
 
+// 63 仍空着。77、78 属于尚未合入的 #131，81 属于 #132，83 属于 #136。
+// 79、80、82 继续预留。本分支基于当前 main，这些号都还没有迁移。
+// 合并顺序是 #131 → #132 → #136 → #137；rebase 时从这份列表去掉已经落地的号。
+export const unusedSchemaVersions = [63, 77, 78, 79, 80, 81, 82, 83];
+
+migrations.push({ version: 84, name: 'jobs_type_created', up(database) {
+  database.exec('CREATE INDEX IF NOT EXISTS idx_jobs_type_created ON jobs(type, created_at DESC)');
+}});
+
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
     INSERT OR IGNORE INTO knowledge_revisions

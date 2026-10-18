@@ -269,6 +269,7 @@ export function createAiCenterWorker(options = {}) {
     migrateTrendforce: workspaceId=>contentRoutingPort.migrate(workspaceId),
     hardwarePriceService,
     scoreHomeCards: (cards, context) => xFocusHooks.scoreCards?.(cards, context) ?? null,
+    focusKeywords: (xFocusConfig?.directions || []).flatMap((direction) => direction.keywords || []),
   });
   const sourcePort = options.sourcePort || createSourceHub(registry);
   const feedInteraction = createFeedInteractionService({
@@ -441,10 +442,16 @@ export function createAiCenterWorker(options = {}) {
       feedRepository: store.repositories.feed,
       runtimeRepository: store,
       snapshots: store.repositories.runtimeSnapshots,
+      reportRepository: store.repositories.report,
+      scorer,
       requestLike: (workspaceId, input) => feedInteraction.requestLike(workspaceId, input),
     });
     xFocusHooks.scoreCards = (cards, context) => scorer.scoreCards(cards, context);
-    xFocusHooks.afterIngest = ({ workspaceId }) => autoLike.dispatch(workspaceId);
+    xFocusHooks.afterIngest = async ({ workspaceId }) => {
+      await autoLike.rescoreKeywords(workspaceId);
+      autoLike.refreshDrift(workspaceId);
+      await autoLike.dispatch(workspaceId);
+    };
     xFocusHooks.recordLike = (workspaceId, output) => autoLike.recordAutoLike(workspaceId, output);
   }
   const agentTraceLog = options.agentTraceLog
