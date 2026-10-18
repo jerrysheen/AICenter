@@ -2247,8 +2247,52 @@ migrations.push({ version: 78, name: 'author_stats', up(database) {
   `);
 }});
 
-// 63 仍空着。79、80、82 留空。81、83、84 还没合入，不登记成空号。
+// 63 仍空着。79、80、82 留空。83、84 还没合入，不登记成空号。
 export const unusedSchemaVersions = [63, 79, 80, 82];
+
+
+// 南向资金用 81，按 version 补执行，不看最大号。79、80、82 留空。
+migrations.push({ version: 81, name: 'southbound_flow', up(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS southbound_daily (
+      workspace_id TEXT NOT NULL,
+      trade_date TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      buy_amt INTEGER,
+      sell_amt INTEGER,
+      net_amt INTEGER,
+      deal_amt INTEGER,
+      deal_num INTEGER,
+      index_close REAL,
+      source TEXT NOT NULL,
+      check_status TEXT NOT NULL,
+      check_diff_pct REAL,
+      fetched_at INTEGER NOT NULL,
+      PRIMARY KEY (workspace_id, trade_date, channel),
+      CHECK (channel IN ('sh', 'sz', 'total')),
+      CHECK (check_status IN ('ok', 'mismatch', 'unchecked', 'hkex_missing'))
+    );
+    CREATE TABLE IF NOT EXISTS southbound_top10 (
+      workspace_id TEXT NOT NULL,
+      trade_date TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      rank INTEGER NOT NULL,
+      code TEXT NOT NULL,
+      name TEXT NOT NULL,
+      buy_amt INTEGER,
+      sell_amt INTEGER,
+      net_amt INTEGER,
+      deal_amt INTEGER,
+      close REAL,
+      chg_pct REAL,
+      source TEXT NOT NULL,
+      PRIMARY KEY (workspace_id, trade_date, channel, code),
+      CHECK (channel IN ('sh', 'sz', 'total'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_southbound_top10_code
+      ON southbound_top10 (workspace_id, code, trade_date DESC);
+  `);
+}});
 
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
@@ -2357,3 +2401,4 @@ export function runMigrations(database) {
 export function latestSchemaVersion() {
   return migrations.at(-1)?.version || 0;
 }
+

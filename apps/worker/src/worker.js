@@ -73,6 +73,7 @@ import { createStrategyJobHandlers, ensureDividendStrategySchedule, strategySnap
 import { createQuantJobHandlers, quantLabManifest } from '../../../packages/runtime/src/quant-module.js';
 import { ensureEtfWhaleSchedule } from '../../../packages/runtime/src/etf-whale-schedule.js';
 import { createEtfWhaleJobHandlers, etfWhaleManifest } from '../../../packages/runtime/src/etf-whale-sync.js';
+import { createSouthboundJobHandlers, ensureSouthboundSchedules, prepareSouthboundEnqueue, SOUTHBOUND_JOB_TYPE, southboundManifest } from '../../../packages/runtime/src/southbound-job.js';
 import { createEventQuoteSnapshotJobHandlers, ensureEventQuoteSnapshotSchedule, eventQuoteSnapshotManifest } from '../../../packages/runtime/src/event-quote-snapshot-job.js';
 import { lookupStoredPolymarketOutcomes } from '../../../packages/domain/src/polymarket-alerts.js';
 import { createPolymarketWatchlistJobHandlers, ensurePolymarketWatchlistSchedule, polymarketWatchlistManifest } from '../../../packages/runtime/src/polymarket-watchlist-job.js';
@@ -556,6 +557,14 @@ export function createAiCenterWorker(options = {}) {
     }),
   });
   registry.register({
+    manifest: southboundManifest,
+    jobHandlers: options.southboundJobHandlers || createSouthboundJobHandlers({
+      repository: store.repositories.southbound,
+      store,
+      env,
+    }),
+  });
+  registry.register({
     manifest: etfWhaleManifest,
     jobHandlers: options.etfWhaleJobHandlers || createEtfWhaleJobHandlers({
       repository: store.repositories.etfWhale,
@@ -725,6 +734,7 @@ export function createAiCenterWorker(options = {}) {
     ensureComputePriceSchedules(store, env);
     ensureAuthorStatsSchedule(store, env);
     ensureEtfWhaleSchedule(store, env);
+    ensureSouthboundSchedules(store, env);
     ensureDefaultContentSubscriptions(store.repositories.feed);
   }
   const scheduler = options.scheduler || createScheduler({
@@ -736,6 +746,7 @@ export function createAiCenterWorker(options = {}) {
       if (schedule.jobType === TWKR_NEWS_JOB_TYPE || schedule.jobType === TWKR_REVENUE_JOB_TYPE) {
         return prepareTwkrEnqueue(store, schedule);
       }
+      if (schedule.jobType === SOUTHBOUND_JOB_TYPE) return prepareSouthboundEnqueue(store, schedule);
       if (schedule.jobType !== FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE) return true;
       return prepareFeedSyncEnqueue(store, at);
     },
