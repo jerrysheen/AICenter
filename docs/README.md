@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-16-author-view.md`：信息流最后一项是「作者」。migration 77、78。`AUTHOR_VIEW=0` 只隐藏页面和接口。需要同时重启 Web 和 Worker。上线先 `--dry-run`，再 backfill，需要的话 import，最后 recompute。Worker 每天凌晨重算近 30 天计数。
+
 - `progress/2026-10-16-home-perf.md`：总览首屏改读 Worker 快照，页面并行拉各模块。阅读只补充有条目的前 4 个小时。缺报价立刻 `pending`，补拉超过 10 秒中止，页面重拉间隔逐步加长。A 股日 K 按上海日历日缓存，失败按 10 分钟、30 分钟退避，满 3 次当天不再试。看板下发 `session` 和 `marketOpen`。休市不标红。响应不下发 `timings`。不新增 migration。需要同时重启 Web 和 Worker。上线前在服务器跑 `scripts/measure-home-perf.mjs`。
 
 - `progress/2026-10-16-market-translation-format.md`：事件概率的 Yes/No、不变、基点、百分比、区间和日期用规则译成中文，看板和提醒共用。规则覆盖不到的结果名用同一份词表交给 Gemma 26B，并单独入队。金额小于 1000 取整，涨跌带「个百分点」，标记价、资金费率、持仓量和稳定币总供应改为中文。官方来源名在入库时映射成中文，标题用 OpenCC 繁转简。结果名入队有 60 条上限，进行中的不再重复入队。提醒不在任务里同步调模型。上线前先跑 `npm ci`。不新增 migration。需要同时重启 Web 和 Worker。

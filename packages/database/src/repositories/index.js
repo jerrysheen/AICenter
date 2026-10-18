@@ -1,4 +1,5 @@
 import { createModelQuotaRepository } from './model-quota-repository.js';
+import { createAuthorRepository } from './author-repository.js';
 import { createFeedRepository } from './feed-repository.js';
 import { createInformationTreeRepository } from './information-tree-repository.js';
 import { createModelUsageRepository } from './model-usage-repository.js';
@@ -25,6 +26,7 @@ export function createDomainRepositories(database, emitEvent) {
     modelUsage: createModelUsageRepository(database, emitEvent),
     modelQuota: createModelQuotaRepository(database, emitEvent),
     feed: createFeedRepository(database, emitEvent),
+    authors: createAuthorRepository(database, emitEvent),
     media: createMediaRepository(database, emitEvent),
     twseRevenue: createTwseRevenueRepository(database),
     hardwarePrices: createHardwarePriceRepository(database, emitEvent),

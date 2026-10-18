@@ -37,6 +37,7 @@ import {
 } from './home-timeline.js?v=dev';
 import { decodeHtmlEntities } from './html-text.js?v=dev';
 import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, prioritizeReadableFeedRows, renderNewsList, reportItemTime } from './news-list.js?v=dev';
+import { createAuthorView } from './author-view.js?v=dev';
 
 const requestLayer = createRequestLayer();
 const pageCache = createPageCache({
@@ -331,6 +332,7 @@ const state = {
   apiTokenLoad: 0,
   pageKind: '',
   pageId: '',
+  authorView: true,
   trail: [],
   originalBodies: {},
   officialBodies: {},
@@ -342,6 +344,7 @@ const state = {
 const pageKinds = {
   hardware: {title:'AI硬件价格',nav:'market'},
   article: { nav: 'sources', title: '阅读' },
+  author: { nav: 'sources', title: '作者' },
   event: { nav: 'sources', title: '日程详情' },
   source: { nav: 'sources', title: '信源' },
   quote: { nav: 'market', title: '行情' },
@@ -1025,12 +1028,13 @@ function parseLocation(name = (location.hash || '#sources').slice(1)) {
   const hourNumber = hourText != null && /^\d{1,2}$/.test(hourText) ? Number(hourText) : NaN;
   const reportHour = Number.isInteger(hourNumber) && hourNumber >= 0 && hourNumber <= 23 ? hourNumber : null;
   const reportNode = view === 'report' ? (new URLSearchParams(queryPart).get('node') || '') : '';
+  const feedTab = view === 'feed' && new URLSearchParams(queryPart).get('tab') === 'author' ? 'author' : '';
   const marketTab = view === 'market' && marketPane === 'assets' && new URLSearchParams(queryPart).get('tab') === 'events'
     ? 'events'
     : '';
   return {
     view, askSessionId, marketPane, assetPane, sourcesPane, settingsPane, inspirePane,
-    selectedWorkPackageId, pageKind, pageId, reportPane, reportDate, reportHour, reportNode, marketTab,
+    selectedWorkPackageId, pageKind, pageId, reportPane, reportDate, reportHour, reportNode, marketTab, feedTab,
   };
 }
 
@@ -1234,6 +1238,10 @@ function setView(name, options = {}) {
   }
   state.pageKind = view === 'page' ? parsed.pageKind : '';
   state.pageId = view === 'page' ? parsed.pageId : '';
+  if (view === 'feed') {
+    if (parsed.feedTab === 'author' && state.authorView !== false) state.channel = 'author';
+    else if (state.channel === 'author') state.channel = 'all';
+  }
   if (state.bootstrapped && (previous !== view || previousPageKind !== state.pageKind)) {
     logBehavior('nav.tab', { view, page: view === 'page' ? String(state.pageKind || '') : '' });
   }
@@ -1357,6 +1365,8 @@ function setView(name, options = {}) {
               ? (state.selectedWorkPackageId ? `#inspire/tasks/${state.selectedWorkPackageId}` : '#inspire/tasks')
               : view === 'report'
                 ? reportHash()
+                : view === 'feed' && state.channel === 'author'
+                  ? '#feed?tab=author'
                   : `#${view}`;
   if (location.hash !== nextHash) {
     const entry = { ...(options.fromHistory ? history.state : {}), aiCenter: true, hash: nextHash,
@@ -1368,6 +1378,10 @@ function setView(name, options = {}) {
   syncHeaderSearch();
   if (timingToken && !['sources', 'feed', 'report', 'ask'].includes(view)) {
     requestAnimationFrame(() => requestAnimationFrame(() => finishViewTiming(timingToken)));
+  }
+  if (view === 'feed' && state.channel === 'author' && elements?.feed) {
+    renderChannels();
+    renderPosts();
   }
   if (view === 'feed' && (leaving || options.replace)) scrollFeedToTop();
   else if (leaving) restoreViewScroll(view);
@@ -2945,6 +2959,7 @@ function contentItemAsPost(item) {
     live: true,
     platform,
     author: readerAuthorName(item, platform),
+    authorId: item.authorId || '',
     handle: item.captureMetadata?.authorHandle || '',
     title: item.title,
     body: item.body || item.summary || '无正文',
@@ -3733,6 +3748,7 @@ function feedAsItem(item, platform) {
     platform,
     externalId: item.externalId || '',
     author: item.authorName || item.authorHandle || (platform === 'bilibili' ? 'B站' : platform === 'trendforce' ? 'TrendForce' : platform === 'xueqiu' ? '雪球' : 'X'),
+    authorId: item.authorId || '',
     handle: item.authorHandle || '',
     time: item.publishedAt ? formatTime(item.publishedAt) : '',
     title: item.title,
@@ -4114,6 +4130,7 @@ const FEED_SCOPE_SOURCES = {
 };
 
 function feedSourcesForScope(channel, platform) {
+  if (channel === 'author') return [];
   if (platform === 'media') return [...FEED_SCOPE_SOURCES.media];
   const listed = FEED_SCOPE_SOURCES[channel];
   return listed ? [...listed] : [...FEED_SCOPE_SOURCES.all];
@@ -4295,6 +4312,16 @@ function applyFeedPlatform(id) {
 }
 
 function selectFeedScope(id) {
+  if (id === 'author') {
+    if (state.authorView === false) return;
+    state.channel = 'author';
+    state.feedPlatform = 'all';
+    state.platform = 'all';
+    setView('feed?tab=author');
+    renderChannels();
+    renderPosts();
+    return;
+  }
   if (id === 'flash') {
     state.channel = 'flash';
     state.feedPlatform = 'all';
@@ -4376,6 +4403,7 @@ function renderFeedActionButton() {
 function renderChannels() {
   const current = currentFeedScopeId();
   const tabs = [...channels, ...feedSourceTabs, { id: 'media', label: '媒体' }];
+  if (state.authorView !== false) tabs.push({ id: 'author', label: '作者' });
   if (elements['channel-tabs']) {
     elements['channel-tabs'].setAttribute('aria-label', '信息范围与信源');
   }
@@ -4949,6 +4977,9 @@ function feedToNewsRow(post) {
     ingested: moment.ingested,
     effectiveLabel: moment.effectiveLabel,
     source: feedSourceLine(post),
+    authorId: state.authorView === false ? '' : (post.authorId || ''),
+    authorName: post.author || '',
+    onAuthor: post.authorId && state.authorView !== false ? () => openAuthor(post.authorId) : undefined,
     tags,
     muted: Boolean(post.lowValue || post.bulkNotice),
     stayInDay: Boolean(post.bulkNotice),
@@ -5015,6 +5046,15 @@ function socialShownRows(rows) {
 }
 
 function renderPosts() {
+  if (state.channel === 'author') {
+    if (state.authorView === false) state.channel = 'all';
+    else {
+      elements['feed-count'].textContent = '';
+      authorView().renderList(elements.feed);
+      observeFeedSentinel(null, false);
+      return;
+    }
+  }
   if (state.channel === 'flash') {
     renderFlashPosts();
     return;
@@ -5121,6 +5161,25 @@ function syncDialogTranslation(post) {
   }
   elements['post-dialog']?.classList.remove('has-translation');
   elements['dialog-translate']?.classList.add('hidden');
+}
+
+let authorUi = null;
+
+function authorView() {
+  if (!authorUi) {
+    authorUi = createAuthorView({
+      api,
+      openAuthor,
+      openArticle,
+    });
+  }
+  return authorUi;
+}
+
+function openAuthor(authorId) {
+  const id = String(authorId || '').trim();
+  if (!id || state.authorView === false) return;
+  openPage('author', id);
 }
 
 function openArticle(post) {
@@ -7087,7 +7146,17 @@ function renderOverviewTimeline() {
       className: `kind-tag${post.kind === 'official' ? ' official' : ''}`,
       textContent: feedKindLabel(post),
     });
-    const author = Object.assign(document.createElement('span'), { className: 'post-identity', textContent: post.author });
+    const author = document.createElement(post.authorId && state.authorView !== false ? 'button' : 'span');
+    author.className = post.authorId && state.authorView !== false ? 'post-identity author-name-link' : 'post-identity';
+    author.textContent = post.author;
+    if (post.authorId && state.authorView !== false) {
+      author.type = 'button';
+      author.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openAuthor(post.authorId);
+      });
+    }
     const time = Object.assign(document.createElement('span'), {
       className: 'post-time',
       textContent: post.time || overviewClock(post.publishedAt || post.createdAt),
@@ -7628,6 +7697,9 @@ function homePlainRow(post) {
     ingested: moment.ingested,
     effectiveLabel: moment.effectiveLabel,
     source: feedSourceLine(post),
+    authorId: state.authorView === false ? '' : (post.authorId || ''),
+    authorName: post.author || '',
+    onAuthor: post.authorId && state.authorView !== false ? () => openAuthor(post.authorId) : undefined,
     tags,
     muted: Boolean(post.lowValue),
     focused: itemIsFocused(post),
@@ -8882,6 +8954,7 @@ function renderPage() {
   const kind = state.pageKind;
   if (kind !== 'quote') destroyQuoteChart();
   if (kind === 'article') renderArticlePage();
+  else if (kind === 'author') authorView().renderPage(root, decodeURIComponent(state.pageId || ''));
   else if (kind === 'event') renderEventPage();
   else if (kind === 'source') renderSourcePage();
   else if (kind === 'quote') renderQuotePage();
@@ -9156,8 +9229,19 @@ function renderArticlePage() {
     original.className = 'reader-original';
     head.insertBefore(original, meta);
   }
+  const authorLink = document.createElement('button');
+  authorLink.type = 'button';
+  authorLink.className = post.authorId && state.authorView !== false ? 'text-button author-name-link' : 'text-button';
+  authorLink.textContent = `${post.author} ›`;
+  if (post.authorId && state.authorView !== false) {
+    authorLink.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openAuthor(post.authorId);
+    });
+  }
   meta.append(
-    Object.assign(document.createElement('button'), { className: 'text-button', textContent: `${post.author} ›` }),
+    authorLink,
     Object.assign(document.createElement('span'), { textContent: `${post.time || (post.publishedAt ? formatTime(post.publishedAt) : '时间未知')} 发布` }),
     Object.assign(document.createElement('span'), { className: 'kind-tag', textContent: feedKindLabel(post) }),
   );
@@ -11810,6 +11894,9 @@ function ensureBriefPage() {
   },
   focusReading(item) {
     toggleFocus(item?.id, () => { renderPosts(); renderHub(); }, item);
+  },
+  openAuthor(authorId) {
+    openAuthor(authorId);
   },
   readingFocused(id) {
     return isFocused(id);
@@ -15101,6 +15188,11 @@ async function waitForAuthorizedSession(attempts = 6) {
 
 async function completeAuthorizedStart(session) {
   state.session = session;
+  state.authorView = session.authorView !== false;
+  if (state.authorView === false && (state.channel === 'author' || state.pageKind === 'author')) {
+    state.channel = 'all';
+    if (state.pageKind === 'author') setView('feed');
+  }
   rememberKnownSession(true);
   elements['server-name'].textContent = session.serverName;
   elements['session-description'].textContent = session.role === 'desktop'

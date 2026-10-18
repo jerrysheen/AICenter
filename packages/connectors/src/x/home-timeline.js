@@ -67,23 +67,55 @@ export function tweetPublishedAt(tweet, tweetId = '') {
   return parsed;
 }
 
+function attributedXAuthor(tweet) {
+  const repostHandle = parseTwitterHandle(tweet.reposter_handle || tweet.reposterHandle || '');
+  const repostRestId = String(tweet.reposter_rest_id || tweet.reposterRestId || '').trim();
+  if (repostHandle || repostRestId) {
+    return {
+      handle: repostHandle,
+      restId: repostRestId,
+      name: text(tweet.reposter_name || tweet.reposterName, repostHandle),
+      avatar: String(tweet.reposter_avatar || tweet.reposterAvatar || '').trim(),
+    };
+  }
+  const handle = parseTwitterHandle(tweet.authorHandle || tweet.author_handle || '');
+  return {
+    handle,
+    restId: String(tweet.author_rest_id || tweet.authorRestId || tweet.author_id || tweet.authorId || '').trim(),
+    name: text(tweet.authorName || tweet.author_name, handle ? `@${handle}` : 'X'),
+    avatar: String(tweet.author_avatar || tweet.authorAvatar || '').trim(),
+  };
+}
+
 export function tweetToFeedItem(tweet, options = {}) {
   const tweetId = text(tweet.tweetId || tweet.tweet_id);
-  const handle = parseTwitterHandle(tweet.authorHandle || tweet.author_handle || '');
+  const originalHandle = parseTwitterHandle(tweet.authorHandle || tweet.author_handle || '');
+  const originalRestId = String(tweet.author_rest_id || tweet.authorRestId || tweet.author_id || tweet.authorId || '').trim();
+  const originalName = text(tweet.authorName || tweet.author_name, originalHandle ? `@${originalHandle}` : 'X');
+  const originalAvatar = String(tweet.author_avatar || tweet.authorAvatar || '').trim();
+  const attributed = attributedXAuthor(tweet);
   const body = normalizeTweetBody(tweet.text || tweet.body);
   const lead = textBeforeCommentBlock(body) || body;
   const sourceUrl = text(tweet.tweetUrl || tweet.tweet_url)
-    || (tweetId && handle ? `https://x.com/${handle}/status/${tweetId}` : '')
+    || (tweetId && originalHandle ? `https://x.com/${originalHandle}/status/${tweetId}` : '')
     || (tweetId ? `https://x.com/i/status/${tweetId}` : '');
   const publishedAt = tweetPublishedAt(tweet, tweetId);
-  const authorName = text(tweet.authorName || tweet.author_name, handle ? `@${handle}` : 'X');
+  const nativeId = originalRestId || (originalHandle ? `@${originalHandle}` : '');
+  const attributionNativeId = attributed.restId || (attributed.handle ? `@${attributed.handle}` : '');
   return {
-    id: tweetId ? `x:${tweetId}` : `x:${handle}:${sourceUrl}`,
+    id: tweetId ? `x:${tweetId}` : `x:${originalHandle}:${sourceUrl}`,
     workspaceId: options.workspaceId || 'local',
     platform: 'x',
     externalId: tweetId,
-    authorName,
-    authorHandle: handle ? `@${handle}` : '',
+    authorName: originalName,
+    authorHandle: originalHandle ? `@${originalHandle}` : '',
+    authorNativeId: nativeId,
+    authorAvatar: originalAvatar,
+    authorProvisional: Boolean(nativeId.startsWith('@')),
+    attributionHandle: attributed.handle,
+    attributionNativeId,
+    attributionName: attributed.name,
+    attributionAvatar: attributed.avatar,
     title: lead ? `${lead.slice(0, 48)}${lead.length > 48 ? '…' : ''}` : 'X 动态',
     summary: lead.slice(0, 160),
     body,
