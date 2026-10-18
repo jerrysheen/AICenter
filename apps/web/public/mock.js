@@ -1,7 +1,7 @@
 export const channels = [
   { id: 'all', label: '全部' },
   { id: 'focus', label: '重点' },
-  { id: 'recent', label: '最近' },
+  { id: 'recent', label: '最近浏览' },
   { id: 'social', label: '社媒' },
   { id: 'official', label: '官方' },
   { id: 'flash', label: '快讯' },
