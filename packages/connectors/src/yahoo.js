@@ -438,13 +438,18 @@ export function createYahooClient(options = {}) {
     return transport;
   }
 
-  async function request(url, { withCrumb = true, cookieHeader = cookie, accept = 'application/json' } = {}) {
+  async function request(url, { withCrumb = true, cookieHeader = cookie, accept = 'application/json', signal } = {}) {
     const target = url instanceof URL ? new URL(url.href) : new URL(String(url));
     if (withCrumb && crumb) target.searchParams.set('crumb', crumb);
     const headers = { ...YAHOO_HEADERS, Accept: accept };
     if (cookieHeader) headers.Cookie = cookieHeader;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const onAbort = () => controller.abort();
+    if (signal) {
+      if (signal.aborted) controller.abort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
     try {
       const fetchImpl = await loadTransport();
       const response = await fetchImpl(target, { headers, cache: 'no-store', signal: controller.signal });
@@ -461,6 +466,7 @@ export function createYahooClient(options = {}) {
       throw error;
     } finally {
       clearTimeout(timer);
+      if (signal?.removeEventListener) signal.removeEventListener('abort', onAbort);
     }
   }
 
@@ -514,33 +520,34 @@ export function createYahooClient(options = {}) {
       : [];
   }
 
-  async function fetchSparkGroup(group, range, interval, includePrePost, attempt = 0) {
+  async function fetchSparkGroup(group, range, interval, includePrePost, attempt = 0, signal) {
     const url = new URL(SPARK_URL);
     url.searchParams.set('symbols', group.join(','));
     url.searchParams.set('range', range);
     url.searchParams.set('interval', interval);
     url.searchParams.set('includePrePost', includePrePost ? 'true' : 'false');
     try {
-      const results = sparkResults(await requestJson(url));
+      const results = sparkResults(await requestJson(url, { signal }));
       if (!results.length && attempt < 1) {
         await refreshCrumb();
-        return fetchSparkGroup(group, range, interval, includePrePost, attempt + 1);
+        return fetchSparkGroup(group, range, interval, includePrePost, attempt + 1, signal);
       }
       return results;
     } catch (error) {
-      if (error?.status === 401 && attempt < 1) {
+      if (error?.status === 401 && attempt < 1 && !signal?.aborted) {
         await refreshCrumb();
-        return fetchSparkGroup(group, range, interval, includePrePost, attempt + 1);
+        return fetchSparkGroup(group, range, interval, includePrePost, attempt + 1, signal);
       }
       throw error;
     }
   }
 
-  async function loadSymbols(symbols, interval) {
+  async function loadSymbols(symbols, interval, signal) {
     const quotes = [];
     for (const group of chunk(symbols, BATCH_SIZE)) {
+      if (signal?.aborted) break;
       try {
-        const results = await fetchSparkGroup(group, '1d', interval, true);
+        const results = await fetchSparkGroup(group, '1d', interval, true, 0, signal);
         for (const result of results) {
           const quote = quoteFromSpark(result);
           if (quote) quotes.push({ ...quote, provider: 'yahoo' });
@@ -589,16 +596,17 @@ export function createYahooClient(options = {}) {
     }
   }
 
-  async function fetchQuotes(symbols, { interval = '5m' } = {}) {
+  async function fetchQuotes(symbols, { interval = '5m', signal } = {}) {
     const unique = [...new Set((symbols || []).map((symbol) => String(symbol || '').trim().toUpperCase()).filter(Boolean))];
     if (!unique.length) return { quotes: [], session: 'closed' };
+    if (signal?.aborted) return { quotes: [], session: 'closed' };
     if (layer.backingOff()) {
       const cached = unique.map((symbol) => layer.fresh(symbol)).filter(Boolean);
       const have = new Set(cached.map((quote) => quote.symbol));
       const extra = await fillFallback(unique.filter((symbol) => !have.has(symbol)));
       return pack([...cached, ...extra], unique);
     }
-    const rows = await layer.enqueue(unique, (batch) => loadSymbols(batch, interval));
+    const rows = await layer.enqueue(unique, (batch) => loadSymbols(batch, interval, signal));
     const have = new Set(rows.filter((quote) => quote?.lastPrice != null).map((quote) => quote.symbol));
     const extra = await fillFallback(unique.filter((symbol) => !have.has(symbol)));
     return pack([...rows.filter(Boolean), ...extra], unique);

@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-16 总览首屏不再在请求里串行组包。Worker 的 `home.bootstrap.snapshot` 写入快照，Web 只读缓冲区，`Cache-Control` 为 `private, max-age=0, stale-while-revalidate=60`。页面同时请求快照、目录、小时索引、行情、日报和官方看板。阅读先取原始小时，只给有条目的前 4 个小时做 `presentMany`。自选代码不在看板里时马上返回 `pending`，后台补拉，超过 10 秒中止，页面显示加载圈并在 `pending` 时再请求。A 股日 K 按代码和上海日历日缓存。失败写入当天缓存，第 1 次后 10 分钟、第 2 次后 30 分钟再试，满 3 次当天不再试；每一轮先补没拉过的代码。最后一根是今天的才用实时价覆盖。读看板时下发 `session` 和 `marketOpen`，页面不再自带休市日表。休市不标红，写「收盘 · 时间」；只在盘中把超过 3 分钟没有更新标成「已过期」。快照 `generatedAt` 超过 5 分钟写「数据更新延迟」。行情 `pending` 时重拉间隔逐步加长。响应不下发 `timings`。不新增 migration。不要重建数据库。需要同时重启 Web 和 Worker。本机夹具不是线上 14.5 秒的回放；上线前在服务器跑 `node scripts/measure-home-perf.mjs --db data\ai-center.db --hours 24 --base http://127.0.0.1:8787 --log data\logs`。见 `progress/2026-10-16-home-perf.md`。
+
 2026-10-16 事件概率结果名不再直接显示英文。Yes/No、No change、N bps increase/decrease、Above/Below 百分比、区间和日期在投影和提醒里用同一套规则译成中文，库里的英文结果名保留。规则覆盖不到的标签用同一份词表交给 Gemma 26B，短标签不再原样跳过；其他模型名会拒绝。金额小于 1000 取整。涨跌带「个百分点」。衍生品写成标记价、资金费率、持仓量，稳定币合计写成「稳定币总供应」。官方来源名在读取和看板快照入库时映射成中文，标题用 OpenCC 繁转简，英文标题不变。结果名一次最多入队 60 条，同一 localizationId 已在排队或运行时不再入队。看板和 `/api/v1/translate` 共用这条任务。提醒只套用已保存的译文和规则，不在任务里同步调模型；去重仍用原来的 outcome key。`X to Y` 译成 `X–Y`。小于 10 的金额保留两位小数。上线前先跑 `npm ci`。不新增 migration。不要重建数据库。需要同时重启 Web 和 Worker。见 `progress/2026-10-16-market-translation-format.md`。
 
 2026-10-16 侧栏悬停样式只在 `@media (hover: hover)` 里生效，点导航后按钮失焦，高亮不再留在刚点过的一项上。信息流和总览时间线的「最近」改为「最近浏览」。总览两栏各自往下排，右栏「官方」紧跟日报，不再空出左栏那么高的一段。事件概率列表跟页面滚动，不再在 560px 的框里另滚一层。灵感页有返回按钮时，按钮单独占一行，标题仍贴着阅读列左缘。不新增 migration。浏览器再加载一次。见 `progress/2026-10-16-nav-layout.md`。
