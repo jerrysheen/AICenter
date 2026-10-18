@@ -38,13 +38,11 @@ test('reading hour batch facts keep the first content author', () => {
     const second = save('post-2', '200', '乙');
     let briefCalls = 0;
     let singleReads = 0;
-    const wrapped = new Proxy(feed, {
-      get(target, prop, receiver) {
-        if (prop === 'getContentItem') return (...args) => { singleReads += 1; return target.getContentItem(...args); };
-        if (prop === 'listContentItemBriefs') return (...args) => { briefCalls += 1; return target.listContentItemBriefs(...args); };
-        return Reflect.get(target, prop, receiver);
-      },
-    });
+    const wrapped = {
+      listContentItemBriefs(...args) { briefCalls += 1; return feed.listContentItemBriefs(...args); },
+      listContentSourceNames(...args) { return feed.listContentSourceNames(...args); },
+      getContentItem(...args) { singleReads += 1; return feed.getContentItem(...args); },
+    };
     const access = readingHourSourceAccess({ feed: wrapped });
     const refs = [{ type: 'content-item', id: first.id }, { type: 'content-item', id: second.id }];
     const context = access.sourceContextFor('local', refs);
