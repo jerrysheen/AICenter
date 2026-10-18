@@ -746,6 +746,89 @@ export function createFeedRepository(database, emitEvent) {
       return true;
     },
 
+    listRecentXCaptures(workspaceId, { since = 0, limit = 500 } = {}) {
+      const size = Math.max(1, Math.min(Number(limit) || 500, 5000));
+      return database.prepare(`SELECT c.captured_at AS capturedAt, c.external_id AS externalId,
+          c.metadata_json AS metadataJson, c.title AS title, c.source_url AS sourceUrl,
+          ci.id AS contentItemId, sa.external_id AS sourceExternalId
+        FROM captures c
+        LEFT JOIN source_accounts sa ON sa.id = c.source_account_id
+        LEFT JOIN content_items ci ON ci.capture_id = c.id AND ci.workspace_id = c.workspace_id
+        WHERE c.workspace_id = ? AND c.provider = 'x' AND c.captured_at >= ?
+        ORDER BY c.captured_at DESC
+        LIMIT ?`).all(workspaceId, Math.max(0, Number(since) || 0), size).map((row) => ({
+        capturedAt: Number(row.capturedAt) || 0,
+        externalId: String(row.externalId || ''),
+        title: row.title || '',
+        sourceUrl: row.sourceUrl || '',
+        contentItemId: row.contentItemId || '',
+        sourceExternalId: row.sourceExternalId || '',
+        metadata: parseJson(row.metadataJson),
+      }));
+    },
+
+    listXFocusPoints(workspaceId, { since = 0, limit = 20000 } = {}) {
+      const size = Math.max(1, Math.min(Number(limit) || 20000, 20000));
+      return database.prepare(`SELECT c.captured_at AS capturedAt,
+          sa.external_id AS sourceExternalId,
+          json_extract(c.metadata_json, '$.xFocus.method') AS method,
+          json_extract(c.metadata_json, '$.xFocus.version') AS version,
+          json_extract(c.metadata_json, '$.xFocus.dirScores') AS dirScoresJson
+        FROM captures c
+        LEFT JOIN source_accounts sa ON sa.id = c.source_account_id
+        WHERE c.workspace_id = ? AND c.provider = 'x' AND c.captured_at >= ?
+        ORDER BY c.captured_at DESC
+        LIMIT ?`).all(
+        workspaceId, Math.max(0, Number(since) || 0), size,
+      ).map((row) => ({
+        capturedAt: Number(row.capturedAt) || 0,
+        sourceExternalId: row.sourceExternalId || '',
+        method: row.method || '',
+        version: row.version || '',
+        dirScores: parseJson(row.dirScoresJson, {}),
+      }));
+    },
+
+    listKeywordXFocus(workspaceId, { since = 0, limit = 40 } = {}) {
+      const size = Math.max(1, Math.min(Number(limit) || 40, 40));
+      return database.prepare(`SELECT c.external_id AS externalId,
+          COALESCE(NULLIF(json_extract(c.metadata_json, '$.originalText'), ''), NULLIF(ci.body, ''), c.title, '') AS text
+        FROM captures c
+        LEFT JOIN content_items ci ON ci.capture_id = c.id AND ci.workspace_id = c.workspace_id
+        WHERE c.workspace_id = ? AND c.provider = 'x' AND c.captured_at >= ?
+          AND json_extract(c.metadata_json, '$.xFocus.method') = 'keyword'
+        ORDER BY c.captured_at DESC
+        LIMIT ?`).all(workspaceId, Math.max(0, Number(since) || 0), size).map((row) => ({
+        externalId: String(row.externalId || ''),
+        text: row.text || '',
+      }));
+    },
+
+    listXCapturesByContentIds(workspaceId, contentItemIds) {
+      const ids = [...new Set((contentItemIds || []).map((id) => String(id || '').trim()).filter(Boolean))].slice(0, 80);
+      if (!ids.length) return [];
+      return database.prepare(`SELECT ci.id AS contentItemId, c.title AS title, c.source_url AS sourceUrl,
+          json_extract(c.metadata_json, '$.xFocus') AS focusJson
+        FROM content_items ci
+        JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
+        WHERE ci.workspace_id = ? AND ci.id IN (${ids.map(() => '?').join(',')})`).all(workspaceId, ...ids).map((row) => ({
+        contentItemId: row.contentItemId || '',
+        title: row.title || '',
+        sourceUrl: row.sourceUrl || '',
+        focus: parseJson(row.focusJson, null),
+      }));
+    },
+
+    patchCaptureXFocus(workspaceId, externalId, xFocus) {
+      const id = String(externalId || '').trim();
+      if (!id || !xFocus || typeof xFocus !== 'object') return false;
+      const result = database.prepare(`UPDATE captures
+        SET metadata_json = json_set(COALESCE(NULLIF(metadata_json, ''), '{}'), '$.xFocus', json(?))
+        WHERE workspace_id = ? AND provider = 'x' AND external_id = ?`)
+        .run(JSON.stringify(xFocus), workspaceId, id);
+      return result.changes > 0;
+    },
+
     getCapture(workspaceId, provider, externalId) {
       const row = database.prepare(`SELECT * FROM captures
         WHERE workspace_id = ? AND provider = ? AND external_id = ?`)

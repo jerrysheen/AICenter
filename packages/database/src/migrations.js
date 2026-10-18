@@ -2248,6 +2248,7 @@ migrations.push({ version: 78, name: 'author_stats', up(database) {
 }});
 
 // 63 仍空着。79、80、82 留空。83 是 information_tree_heads 的 (workspace_id, layer, start_at) 索引。
+// 84 是 jobs(type, created_at DESC)，接在已合入的 77、78、81、83 之后。
 export const unusedSchemaVersions = [63, 79, 80, 82];
 
 // 南向资金用 81，按 version 补执行，不看最大号。79、80、82 留空。
@@ -2299,6 +2300,11 @@ migrations.push({ version: 83, name: 'information_tree_heads_layer_start', up(da
       ON information_tree_heads(workspace_id, layer, start_at);
   `);
 }});
+
+migrations.push({ version: 84, name: 'jobs_type_created', up(database) {
+  database.exec('CREATE INDEX IF NOT EXISTS idx_jobs_type_created ON jobs(type, created_at DESC)');
+}});
+
 
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`

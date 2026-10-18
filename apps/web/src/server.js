@@ -19,6 +19,8 @@ import { parseBilibiliFeedQuery, parseMediaFeedQuery, parseTrendForceFeedQuery, 
 import { createAnalysisSkillCatalog, createConfiguredBrowserRuntime, createDeepSeekSearchProvider, createLauncherRestartPort, createLocalKnowledgeFiles, createPersonalAssetService, createTranslateService, createTypeSafeSystemOneClient } from '../../../packages/connectors/src/index.js';
 import { createAttachmentStore, createStore } from '../../../packages/database/src/index.js';
 import { createDomainServices, createFeedFilterFromEnv, createMediaIngestionService, resolveDailyConfig, resolveLoginCredential } from '../../../packages/domain/src/index.js';
+import { loadXFocusConfig } from '../../../packages/domain/src/x-focus.js';
+import { createXFocusService } from '../../../packages/domain/src/x-auto-like.js';
 import { createFeedTranslationChunkStore } from '../../../packages/runtime/src/feed-translation-module.js';
 import {enqueueTreePreparation} from '../../../packages/runtime/src/information-tree-module.js';
 import { resolveInstanceConfig } from '../../../packages/instance/src/index.js';
@@ -330,6 +332,20 @@ export function createAiCenterServer(options = {}) {
     marketBoard,
     marketNativeBoard,
     runtimeSnapshots: store.repositories.runtimeSnapshots,
+    xFocus: (() => {
+      try {
+        return createXFocusService({
+          config: options.xFocusConfig || loadXFocusConfig(instance.configDirectory),
+          env,
+          feedRepository: store.repositories.feed,
+          runtimeRepository: store,
+          snapshots: store.repositories.runtimeSnapshots,
+        });
+      } catch (error) {
+        console.log(`[web] x-focus 配置不可用，推荐记录页暂不启用：${String(error?.message || error).slice(0, 180)}`);
+        return null;
+      }
+    })(),
   });
   const feedQueryParsers = options.feedQueryParsers || new Map([
     ['x', parseXFeedQuery],

@@ -357,6 +357,7 @@ const pageKinds = {
   holding: { nav: 'assets', title: '持仓详情' },
   automation: { nav: 'tools', title: '自动任务配置' },
   publish: { nav: 'tools', title: '快速发布' },
+  xfocus: { nav: 'feed', title: '推荐记录' },
 };
 
 const hubLanes = [
@@ -401,7 +402,7 @@ const elements = Object.fromEntries([
   'form-message', 'feed', 'feed-count', 'metrics-panel', 'metric-devices', 'metric-opens',
   'metric-published', 'metric-details', 'device-list', 'post-dialog', 'dialog-title',
   'dialog-body', 'dialog-translation', 'dialog-tags', 'dialog-source', 'dialog-save', 'dialog-cite', 'dialog-translate', 'dialog-time', 'dialog-notice', 'dialog-language', 'toast', 'channel-tabs',
-  'platform-filters', 'follow-toolbar', 'bilibili-toolbar', 'bilibili-feed-status', 'bilibili-import-form', 'bilibili-url', 'bilibili-import', 'bilibili-more', 'x-toolbar', 'x-more', 'x-translate-bar', 'x-feed-status', 'x-translate-status', 'x-feed-tabs', 'x-refresh', 'x-translate', 'x-tag', 'xueqiu-toolbar', 'xueqiu-feed-tabs', 'xueqiu-feed-status', 'xueqiu-action-bar', 'xueqiu-action-status', 'xueqiu-refresh', 'trendforce-toolbar', 'trendforce-feed-status', 'trendforce-more', 'trendforce-action-bar', 'trendforce-action-status', 'trendforce-refresh', 'media-toolbar', 'media-channel-tabs', 'quote-filters', 'quote-list', 'tool-grid', 'strategy-inspect',
+  'platform-filters', 'follow-toolbar', 'bilibili-toolbar', 'bilibili-feed-status', 'bilibili-import-form', 'bilibili-url', 'bilibili-import', 'bilibili-more', 'x-toolbar', 'x-more', 'x-translate-bar', 'x-feed-status', 'x-translate-status', 'x-feed-tabs', 'x-refresh', 'x-translate', 'x-tag', 'x-focus-open', 'xueqiu-toolbar', 'xueqiu-feed-tabs', 'xueqiu-feed-status', 'xueqiu-action-bar', 'xueqiu-action-status', 'xueqiu-refresh', 'trendforce-toolbar', 'trendforce-feed-status', 'trendforce-more', 'trendforce-action-bar', 'trendforce-action-status', 'trendforce-refresh', 'media-toolbar', 'media-channel-tabs', 'quote-filters', 'quote-list', 'tool-grid', 'strategy-inspect',
   'ask-records', 'ask-start', 'ask-session-list', 'ask-session-shell', 'ask-intro', 'ask-prompt-label',
   'ask-thread', 'ask-prompts', 'ask-materials', 'ask-material-tabs', 'ask-form', 'ask-send', 'ask-skill-chips', 'ask-ref-chips', 'ask-ref-actions', 'ask-ref-export', 'ask-ref-task', 'ask-mention-menu', 'ask-live-chip', 'compose-dialog', 'reload-view', 'open-compose', 'open-settings', 'global-search',
   'side-nav-list', 'bottom-tab', 'market-tabs', 'book-tabs', 'holdings-list', 'holdings-filters', 'asset-filters',
@@ -9096,6 +9097,21 @@ function pageRoot() {
   return elements['page-root'];
 }
 
+function renderXFocusPage() {
+  const root = pageRoot();
+  if (!root) return;
+  root.classList.add('x-focus-page');
+  if (!renderXFocusPage.loader) {
+    renderXFocusPage.loader = import('./x-focus-page.js?v=dev').then((mod) => mod.createXFocusPage({
+      api: (...args) => api(...args),
+      showToast: (message) => showToast(message),
+    }));
+  }
+  renderXFocusPage.loader.then((page) => {
+    if (state.pageKind === 'xfocus') page.render(root);
+  }).catch((error) => showToast(error.message));
+}
+
 function htmlToNode(html) {
   const wrap = document.createElement('div');
   wrap.innerHTML = html;
@@ -9105,6 +9121,7 @@ function htmlToNode(html) {
 function renderPage() {
   const root = pageRoot();
   if (!root) return;
+  root.classList.remove('x-focus-page');
   const kind = state.pageKind;
   if (kind !== 'quote') destroyQuoteChart();
   if (kind === 'article') renderArticlePage();
@@ -9124,6 +9141,7 @@ function renderPage() {
   else if (kind === 'holding') renderHoldingPage();
   else if (kind === 'automation') renderAutomationPage();
   else if (kind === 'publish') renderPublishPage();
+  else if (kind === 'xfocus') renderXFocusPage();
   else root.replaceChildren(Object.assign(document.createElement('p'), { className: 'empty-state', textContent: '找不到这个页面。' }));
   syncHeaderSearch();
 }
@@ -15635,6 +15653,7 @@ document.getElementById('knowledge-filter')?.addEventListener('input', (event) =
   renderKnowledge();
 });
 elements['x-refresh']?.addEventListener('click', () => loadXFeed({ refresh: true }).catch((error) => showToast(error.message)));
+elements['x-focus-open']?.addEventListener('click', () => openPage('xfocus'));
 elements['xueqiu-refresh']?.addEventListener('click', () => loadXueqiuFeed({ refresh: true }).catch((error) => showToast(error.message)));
 elements['trendforce-refresh']?.addEventListener('click', () => loadTrendForceFeed({ refresh: true }).catch((error) => showToast(error.message)));
 elements['trendforce-more']?.addEventListener('click', () => openSourceTasks('trendforce'));
