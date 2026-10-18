@@ -7012,7 +7012,7 @@ function renderOverviewTimeline() {
     renderChipTabs(elements['overview-timeline-tabs'], [
       { id: 'latest', label: '全部' },
       { id: 'focus', label: '重点' },
-      { id: 'recent', label: '最近' },
+      { id: 'recent', label: '最近浏览' },
       { id: 'social', label: '社媒' },
       { id: 'official', label: '官方' },
     ], state.overviewTimeline === 'latest' ? 'latest' : state.overviewTimeline, (id) => {
@@ -7184,7 +7184,8 @@ function marketNativeAmount(value, { currency = true } = {}) {
   if (Math.abs(number) >= 1e9) return `${prefix}${(number / 1e9).toFixed(2)}B`;
   if (Math.abs(number) >= 1e6) return `${prefix}${(number / 1e6).toFixed(1)}M`;
   if (Math.abs(number) >= 1e3) return `${prefix}${(number / 1e3).toFixed(1)}K`;
-  return `${prefix}${number.toLocaleString('en-US', { maximumFractionDigits: 4 })}`;
+  if (Math.abs(number) < 10) return `${prefix}${number.toFixed(2)}`;
+  return `${prefix}${Math.round(number).toLocaleString('en-US')}`;
 }
 
 function predictionShare(value) {
@@ -7211,7 +7212,7 @@ function predictionDayChange(current, prior, basisHours) {
   if (typeof basisHours === 'number' && Number.isInteger(basisHours)) hours = basisHours;
   else if (typeof basisHours === 'string' && /^[1-9]\d*$/.test(basisHours.trim())) hours = Number(basisHours);
   const label = hours != null && hours >= 1 && hours <= 100000 ? `较 ${hours}h 前` : '较昨日';
-  return { text: `${label} ${sign}${points.toFixed(1)}`, direction };
+  return { text: `${label} ${sign}${points.toFixed(1)} 个百分点`, direction };
 }
 
 function predictionPrice(value) {
@@ -7246,7 +7247,7 @@ function appendPredictionQuote(root, quote) {
     const main = document.createElement('div');
     main.className = 'prediction-side is-yes';
     const mainNodes = [
-      Object.assign(document.createElement('span'), { textContent: String(quote.outcome || '') }),
+      Object.assign(document.createElement('span'), { textContent: localizedCopy(`${quote.quoteId}:outcome`, String(quote.outcome || '')) }),
       Object.assign(document.createElement('strong'), { textContent: formatPredictionShare(yes) }),
     ];
     const mainChange = predictionChangeNode(quote.midPrice, quote.midPrice24hAgo, quote.changeBasis);
@@ -7284,7 +7285,7 @@ function appendPredictionQuote(root, quote) {
     const yesCol = document.createElement('div');
     yesCol.className = 'prediction-side is-yes';
     const yesNodes = [
-      Object.assign(document.createElement('span'), { textContent: String(quote.outcome || 'Yes') }),
+      Object.assign(document.createElement('span'), { textContent: localizedCopy(`${quote.quoteId}:outcome`, String(quote.outcome || '是')) }),
       Object.assign(document.createElement('strong'), { textContent: formatPredictionShare(yes) }),
     ];
     const change = predictionChangeNode(quote.midPrice, quote.midPrice24hAgo, quote.changeBasis);
@@ -7337,11 +7338,11 @@ function appendDerivativeQuote(root, quote) {
   const symbol = Object.assign(document.createElement('strong'), { className: 'market-native-symbol', textContent: quote.symbol });
   const body = document.createElement('div');
   const title = Object.assign(document.createElement('b'), {
-    textContent: `Mark ${formatPrice(quote.markPrice, Number(quote.markPrice) >= 1000 ? 0 : 2)}`,
+    textContent: `标记价 ${formatPrice(quote.markPrice, Number(quote.markPrice) >= 1000 ? 0 : 2)}`,
   });
   const funding = quote.fundingRate == null ? '—' : `${(Number(quote.fundingRate) * 100).toFixed(4)}%`;
   const detail = Object.assign(document.createElement('small'), {
-    textContent: `Funding ${funding} · OI ${marketNativeAmount(quote.openInterest, { currency: false })} ${quote.symbol} · 24h ${marketNativeAmount(quote.volume24h)}`,
+    textContent: `资金费率 ${funding} · 持仓量 ${marketNativeAmount(quote.openInterest, { currency: false })} ${quote.symbol} · 24h ${marketNativeAmount(quote.volume24h)}`,
   });
   body.append(title, detail);
   const changeEl = Object.assign(document.createElement('strong'), {
@@ -14229,11 +14230,14 @@ async function translateXBatch({ silent = false, include = null } = {}) {
 
 async function autoLocalizeSources() {
   if (!state.session || state.sourceLocalizing) return;
+  if (!state.sourceTranslationInflight) state.sourceTranslationInflight = new Set();
   const pending = Object.values(state.sourceLocalizations)
-    .filter((row) => row?.pending && row.id && row.sourceText)
-    .filter((row, index, rows) => rows.findIndex((item) => item.id === row.id) === index)
-    .slice(0, TITLE_TRANSLATE_BATCH_SIZE);
-  const waiting = pending.filter((row) => row.status !== 'failed');
+    .filter((row) => row?.pending && row.id && row.sourceText && !state.sourceTranslationInflight.has(row.id))
+    .filter((row, index, rows) => rows.findIndex((item) => item.id === row.id) === index);
+  const outcomeRows = pending.filter((row) => row.kind === 'outcome' && row.status !== 'failed');
+  const otherRows = pending.filter((row) => row.kind !== 'outcome' && row.status !== 'failed');
+  const waiting = (outcomeRows.length ? outcomeRows : otherRows).slice(0, Math.min(60, TITLE_TRANSLATE_BATCH_SIZE));
+  for (const row of waiting) state.sourceTranslationInflight.add(row.id);
   if (!waiting.length) return;
   state.sourceLocalizing = true;
   try {
@@ -14243,9 +14247,13 @@ async function autoLocalizeSources() {
       body: JSON.stringify({
         targetLang: 'zh',
         items: waiting.map((row) => ({ id: row.id, text: row.sourceText })),
+        ...(waiting.some((row) => row.kind === 'outcome') ? { glossary: 'polymarket-outcome' } : {}),
       }),
     });
     const byId = new Map((payload.translations || []).map((row) => [row.id, row.translatedText]));
+    for (const row of waiting) {
+      if (!byId.get(row.id)) state.sourceTranslationInflight.delete(row.id);
+    }
     for (const [sourceId, row] of Object.entries(state.sourceLocalizations)) {
       const text = byId.get(row.id);
       if (!text) continue;
@@ -14266,6 +14274,7 @@ async function autoLocalizeSources() {
     }
   } catch (error) {
     if (/仍在后台/.test(String(error?.message || ''))) return;
+    for (const row of waiting) state.sourceTranslationInflight.delete(row.id);
     const failedIds = new Set(waiting.map((row) => row.id));
     for (const [sourceId, row] of Object.entries(state.sourceLocalizations)) {
       if (!failedIds.has(row?.id) || row.text) continue;
@@ -15808,6 +15817,7 @@ window.addEventListener('scroll', () => {
 document.addEventListener('click', (event) => {
   const trigger = event.target.closest('[data-nav]');
   if (!trigger) return;
+  if (typeof trigger.blur === 'function') trigger.blur();
   const activation = primaryNavActivation(trigger.dataset.nav);
   setView(activation.route, activation.fromPrimaryNav ? { fromPrimaryNav: true } : {});
 });
