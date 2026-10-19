@@ -8,7 +8,9 @@ import { isApiTokenAllowlisted } from '../apps/web/src/http/api-token-access.js'
 import { createTradingService } from '../packages/domain/src/trading-service.js';
 import { createMarketService } from '../packages/source/src/market/service.js';
 import { buildCnMarketBoard, quoteDisplayName } from '../packages/source/src/market/boards.js';
-import { withMarketClock } from '../packages/source/src/market/board-read.js';
+import { EXTRA_QUOTE_TIMEOUT_MS, withMarketClock } from '../packages/source/src/market/board-read.js';
+import { createRouter } from '../apps/web/src/http/router.js';
+import { createTradingRoutes } from '../apps/web/src/routes/trading-routes.js';
 import { marketClosedLabel, quoteClosedLabel } from '../apps/web/public/home-timeline.js';
 
 const appSource = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
@@ -201,22 +203,57 @@ test('quote route symbol is validated and the read token can call it', async () 
   assert.equal(isApiTokenAllowlisted('POST', '/api/v1/markets/quote'), false);
   assert.equal(isApiTokenAllowlisted('GET', '/api/v1/holdings'), false);
   const calls = [];
+  const signal = AbortSignal.timeout(1_000);
   const trading = createTradingService({
     tradingRepository: {},
     sourcePort: {
-      async read(sourceId, input) {
-        calls.push([sourceId, input.symbols]);
+      async read(sourceId, input, context) {
+        calls.push([sourceId, input.symbols, context.signal]);
         return { data: [{ symbol: '600519.SS', name: '贵州茅台', lastPrice: 1400, prevClose: 1380, changePct: 1.2, session: 'break', asOf: lunch }] };
       },
     },
   });
-  const quote = await trading.getQuote('600519.SS');
-  assert.deepEqual(calls, [['market.quotes', ['600519.SS']]]);
+  const quote = await trading.getQuote('600519.SS', { signal });
+  assert.deepEqual(calls, [['market.quotes', ['600519.SS'], signal]]);
   assert.equal(quote.name, '贵州茅台');
   assert.equal(quote.prevClose, 1380);
   const missing = await trading.getQuote('000001.SS');
   assert.equal(missing.lastPrice, null);
   assert.equal(missing.symbol, '000001.SS');
+});
+
+test('quote route returns 504 when the quote read exceeds 10 seconds', async () => {
+  assert.equal(EXTRA_QUOTE_TIMEOUT_MS, 10_000);
+  const routeSource = readFileSync(new URL('../apps/web/src/routes/trading-routes.js', import.meta.url), 'utf8');
+  assert.match(routeSource, /AbortSignal\.timeout\(10_000\)/);
+  const router = createRouter(createTradingRoutes());
+  const response = {
+    status: 0,
+    body: '',
+    writeHead(status) { this.status = status; },
+    end(body = '') { this.body = body; },
+  };
+  const started = Date.now();
+  const keepAlive = setTimeout(() => {}, 20_000);
+  try {
+    await router.dispatch({
+      request: { method: 'GET' },
+      response,
+      url: new URL('http://127.0.0.1/api/v1/markets/quote?symbol=600519.SS'),
+      identity: { kind: 'desktop' },
+      services: {
+        trading: {
+          getQuote() { return new Promise(() => {}); },
+        },
+      },
+    });
+  } finally {
+    clearTimeout(keepAlive);
+  }
+  const elapsed = Date.now() - started;
+  assert.equal(response.status, 504);
+  assert.match(response.body, /报价超时/);
+  assert.ok(elapsed >= 9_000 && elapsed < 15_000, `elapsed ${elapsed}`);
 });
 
 test('the quote page reads overview cards and labels a daily-bar fallback', () => {

@@ -12,7 +12,7 @@
 
 ## 决定
 
-- `findQuote` 同时查找总览 `sections` 里的指数、领涨和领跌。有现价且名字不是代码的行优先。页面上还没有现价时，请求 `GET /api/v1/markets/quote?symbol=`，走已有的 `fetchQuotes`。没有报价时返回空壳，不另开数据源。代码不合法返回 400。只读令牌可以读这个 GET；持仓接口仍不在白名单。
+- `findQuote` 同时查找总览 `sections` 里的指数、领涨和领跌。有现价且名字不是代码的行优先。页面上还没有现价时，请求 `GET /api/v1/markets/quote?symbol=`，走已有的 `fetchQuotes`。路由用 `AbortSignal.timeout(10_000)` 生成 signal，经 `getQuote` 传给 `sourcePort.read('market.quotes')`，与看板补报价的 `EXTRA_QUOTE_TIMEOUT_MS` 相同。到时返回 504。没有报价时返回空壳，不另开数据源。代码不合法返回 400。只读令牌可以读这个 GET；持仓接口仍不在白名单。
 - 日 K 只在现价仍是「—」时填数，并写明日 K 日期。卡片、首页行情和股票页在有比较基准或数据时间时显示「基准」和上海时间。
 - A 股看板不再把 `provider` 盖成 `market`。报价自己带的 `provider` 留下；页面仍不展示供应商。卡片涨跌用报价里的 `change` / `changePct`，页面不拿昨收重算。和美股盘前盘后合在一起后，有行情时先看是否常规交易，美股区块再取 `pre` / `post`，然后才是午间 `break`，最后是收盘。`quoteLiveSession` 仍由盘前盘后那次改动决定单条报价的时段。午间文案是「午间休市」。
 - 总览数据签名不变时跳过重绘。必须重绘时按 `data-symbol` 把焦点放回原来的领涨、领跌行。领涨、领跌行增加 `:focus-visible` 轮廓。
@@ -20,7 +20,7 @@
 
 ## 验证
 
-`node --test test/quote-card-align.test.js` 覆盖名称顺序、A 股保留雪球 `provider`、午间 `break`、目录名压过实时名、2000 条上限、报价查询校验、只读令牌白名单、总览签名和焦点恢复、日 K 标注。
+`node --test test/quote-card-align.test.js` 覆盖名称顺序、A 股保留雪球 `provider`、午间 `break`、目录名压过实时名、2000 条上限、报价查询校验、只读令牌白名单、报价 signal 传到 `market.quotes`、超过 10 秒返回 504、总览签名和焦点恢复、日 K 标注。
 
 ## 遗留
 

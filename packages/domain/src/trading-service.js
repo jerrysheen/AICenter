@@ -157,9 +157,9 @@ export function createTradingService({
     async search(query) {
       return query ? (await sourcePort.read('market.search', { query })).data : [];
     },
-    async getQuote(symbol) {
+    async getQuote(symbol, { signal } = {}) {
       const normalized = String(symbol || '').trim().toUpperCase();
-      const snapshot = await sourcePort.read('market.quotes', { symbols: [normalized] });
+      const snapshot = await sourcePort.read('market.quotes', { symbols: [normalized] }, { signal });
       const list = Array.isArray(snapshot?.data) ? snapshot.data : [];
       const found = list.find((item) => String(item?.symbol || '').toUpperCase() === normalized);
       if (found) return found;
