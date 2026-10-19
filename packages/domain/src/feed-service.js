@@ -800,8 +800,7 @@ function searchTerms(query) {
 function searchStoredItems(feedRepository, workspaceId, query, limit, qualityRule) {
   const terms = searchTerms(query);
   if (!terms.length) return [];
-  const rows = (feedRepository.listContentItems(workspaceId, { limit: STORED_FEED_LIMIT, qualityRule }) || [])
-    .filter((item) => item.provider !== 'youtube');
+  const rows = feedRepository.listContentItems(workspaceId, { limit: STORED_FEED_LIMIT, qualityRule }) || [];
   return rows.map((item) => {
     const searchable = [item.title, item.summary, item.body, item.authorName].join('\n').toLocaleLowerCase();
     const score = terms.reduce((total, term) => total + (searchable.includes(term) ? 1 : 0), 0);

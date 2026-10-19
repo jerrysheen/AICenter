@@ -243,6 +243,7 @@ const FEED_URL_PREFIX_LOOKUP = {
   select: null,
   urlColumn: 'ci.source_url',
   workspaceColumn: 'ci.workspace_id',
+  extraWhere: EXCLUDE_YOUTUBE_SQL,
 };
 
 const FEED_DEDUP_SELECT = `ci.workspace_id, ci.id, ci.title, ci.summary, ci.source_url, ci.author_name, ci.published_at, ci.created_at,
@@ -670,7 +671,7 @@ export function createFeedRepository(database, emitEvent) {
       const key = String(dedupKey || '');
       if (!key) return [];
       return database.prepare(`SELECT ${FEED_DEDUP_SELECT} FROM ${FEED_DEDUP_FROM}
-        WHERE ci.workspace_id = ? AND ci.dedup_key = ? LIMIT 20`).all(workspaceId, key);
+        WHERE ci.workspace_id = ? AND ci.dedup_key = ? AND ${EXCLUDE_YOUTUBE_SQL} LIMIT 20`).all(workspaceId, key);
     },
 
     listFeedByDedupKeys(workspaceId, dedupKeys) {
@@ -680,7 +681,8 @@ export function createFeedRepository(database, emitEvent) {
       for (let index = 0; index < keys.length; index += 400) {
         const chunk = keys.slice(index, index + 400);
         rows.push(...database.prepare(`SELECT ${FEED_DEDUP_SELECT} FROM ${FEED_DEDUP_FROM}
-          WHERE ci.workspace_id = ? AND ci.dedup_key IN (${chunk.map(() => '?').join(',')})`)
+          WHERE ci.workspace_id = ? AND ci.dedup_key IN (${chunk.map(() => '?').join(',')})
+            AND ${EXCLUDE_YOUTUBE_SQL}`)
           .all(workspaceId, ...chunk));
       }
       return rows;
@@ -709,6 +711,7 @@ export function createFeedRepository(database, emitEvent) {
       const cap = Math.max(1, Math.min(Number(limit) || 400, 20_000));
       return database.prepare(`SELECT ${FEED_DEDUP_SELECT} FROM ${FEED_DEDUP_FROM}
         WHERE ci.workspace_id = ? AND ci.published_at >= ? AND ci.published_at <= ?
+          AND ${EXCLUDE_YOUTUBE_SQL}
         ORDER BY ci.published_at ASC LIMIT ?`).all(workspaceId, startAt, endAt, cap);
     },
 
@@ -1820,6 +1823,7 @@ export function createFeedRepository(database, emitEvent) {
         JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
         WHERE ci.workspace_id = ?
           AND (instr(ci.body, '…') > 0 OR instr(ci.body, '...') > 0)
+          AND ${EXCLUDE_YOUTUBE_SQL}
         ORDER BY ci.created_at DESC
         LIMIT ?`).all(workspaceId, cap);
       return rows.map((row) => ({

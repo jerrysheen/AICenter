@@ -16,16 +16,22 @@ export function youtubePodcastsEnabled(env = process.env) {
 }
 
 export function youtubePodcastClock(env = process.env) {
-  const match = String(env.AI_CENTER_YOUTUBE_PODCASTS_AT || '07:00').trim().match(/^(\d{1,2}):(\d{2})$/);
-  if (!match) throw new Error('AI_CENTER_YOUTUBE_PODCASTS_AT 需要 HH:MM');
-  const hour = Number(match[1]);
-  const minute = Number(match[2]);
-  if (hour > 23 || minute > 59) throw new Error('AI_CENTER_YOUTUBE_PODCASTS_AT 需要 HH:MM');
-  return {
-    hour,
-    minute,
-    timeZone: String(env.AI_CENTER_YOUTUBE_PODCASTS_TIMEZONE || 'Asia/Shanghai').trim() || 'Asia/Shanghai',
-  };
+  const raw = String(env.AI_CENTER_YOUTUBE_PODCASTS_AT || '07:00').trim();
+  const match = raw.match(/^(\d{1,2}):(\d{2})$/);
+  const hour = match ? Number(match[1]) : NaN;
+  const minute = match ? Number(match[2]) : NaN;
+  const timeZone = String(env.AI_CENTER_YOUTUBE_PODCASTS_TIMEZONE || 'Asia/Shanghai').trim() || 'Asia/Shanghai';
+  if (!match || hour > 23 || minute > 59) {
+    console.error(`[worker] AI_CENTER_YOUTUBE_PODCASTS_AT 无法解析（${raw.slice(0, 40) || '空'}），改用 07:00`);
+    return { hour: 7, minute: 0, timeZone };
+  }
+  return { hour, minute, timeZone };
+}
+
+export function youtubeRoundDeadlineMs(roundMs) {
+  const limit = Number(roundMs);
+  if (!Number.isFinite(limit) || limit <= 0) return 60_000;
+  return Math.max(60_000, limit - 10 * 60_000);
 }
 
 function boundedInt(value, fallback, min, max) {

@@ -17,6 +17,7 @@ import {
   watchUrl,
   youtubePodcastClock,
   youtubePodcastLimits,
+  youtubeRoundDeadlineMs,
   youtubePodcastsEnabled,
   YOUTUBE_PODCAST_JOB_TYPE,
   YOUTUBE_PODCAST_SCHEDULE_KEY,
@@ -25,6 +26,7 @@ import { createGeminiInvestorSummarizer } from '../../connectors/src/investor-di
 import { createGemmaTranslationRouter } from '../../connectors/src/translate/gemma.js';
 import {
   combineFetchSignal,
+  ensureYtDlpReady,
   probeYoutubeEpisode,
   resolveYoutubeChannelId,
   transcribeYoutubeAudio,
@@ -214,10 +216,30 @@ function attemptsOf(repository, workspaceId, videoId) {
 }
 
 function roundStop(error, signal) {
-  if (error?.code === 'youtube-round-stop' || error?.reason === 'bot-check' || error?.reason === '429') return error.reason || 'bot-check';
+  if (error?.code === 'youtube-round-stop' || error?.reason === 'bot-check' || error?.reason === '429' || error?.reason === 'yt-dlp-outdated' || error?.reason === 'yt-dlp-missing') {
+    return error.reason || 'bot-check';
+  }
   if (signal?.aborted) return 'deadline';
   if (error?.status === 429 || error?.quota || error?.code === 'budget-deferred' || error?.code === 'quota') return '429';
   return '';
+}
+
+function rememberProbeFailure(stats, repository, workspaceId, creator, channelKey, entry, detail) {
+  const reason = detail === 'probe-parse' ? 'probe-parse' : (detail || 'probe-failed');
+  const attempts = attemptsOf(repository, workspaceId, entry.videoId) + 1;
+  repository.saveEpisode({
+    workspaceId,
+    videoId: entry.videoId,
+    creatorId: creator.id,
+    channelKey: channelKey,
+    title: entry.title,
+    publishedAt: entry.publishedAt,
+    status: attempts >= 3 ? 'skipped' : 'failed',
+    reason: reason.slice(0, 180),
+    attempts,
+  });
+  stats.failed += 1;
+  pushReason(stats, reason === 'probe-parse' ? 'probe-parse' : 'probe-failed');
 }
 
 export async function runYoutubePodcastRound(deps = {}) {
@@ -233,7 +255,7 @@ export async function runYoutubePodcastRound(deps = {}) {
   const workspaceId = deps.workspaceId || 'local';
   const repository = deps.repository;
   const sleep = deps.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
-  const deadline = AbortSignal.timeout(limits.roundMs);
+  const deadline = AbortSignal.timeout(youtubeRoundDeadlineMs(limits.roundMs));
   const signal = deps.signal
     ? (typeof AbortSignal.any === 'function' ? AbortSignal.any([deps.signal, deadline]) : deps.signal)
     : deadline;
@@ -246,6 +268,20 @@ export async function runYoutubePodcastRound(deps = {}) {
   const tempRoot = deps.dataDirectory
     ? path.join(deps.dataDirectory, 'tmp', 'youtube-podcasts')
     : path.join(os.tmpdir(), 'youtube-podcasts');
+  if (!probe || deps.ytDlpVersion !== undefined) {
+    const ready = await ensureYtDlpReady({
+      env,
+      run: deps.run,
+      signal,
+      ...(deps.ytDlpVersion !== undefined ? { versionText: String(deps.ytDlpVersion) } : {}),
+    });
+    if (ready?.blocked) {
+      stats.stopped = ready.blocked;
+      pushReason(stats, ready.blocked);
+      logRound(stats);
+      return stats;
+    }
+  }
   await mkdir(tempRoot, { recursive: true });
   const root = await mkdtemp(path.join(tempRoot, 'round-'));
   let processed = 0;
@@ -343,27 +379,15 @@ export async function runYoutubePodcastRound(deps = {}) {
             break;
           }
           await sleep(limits.intervalMs);
-          if (probed?.failed) {
-            const attempts = attemptsOf(repository, workspaceId, entry.videoId) + 1;
-            repository.saveEpisode({
-              workspaceId,
-              videoId: entry.videoId,
-              creatorId: creator.id,
-              channelKey: channel.key,
-              title: entry.title,
-              publishedAt: entry.publishedAt,
-              status: attempts >= 3 ? 'skipped' : 'failed',
-              reason: probed.detail || 'probe-failed',
-              attempts,
-            });
-            stats.failed += 1;
-            pushReason(stats, 'probe-failed');
+          const durationSec = Number(probed?.durationSec);
+          if (probed?.failed || !Number.isFinite(durationSec) || durationSec <= 0) {
+            rememberProbeFailure(stats, repository, workspaceId, creator, channel.key, entry, probed?.failed ? probed.detail : 'probe-parse');
             continue;
           }
           incoming.push({
             ...entry,
             title: probed.title || entry.title,
-            durationSec: Number(probed.durationSec) || 0,
+            durationSec,
             liveStatus: probed.liveStatus || '',
             url: watchUrl(entry.videoId),
             transcript: probed.transcript || '',

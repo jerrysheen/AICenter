@@ -13,9 +13,9 @@ powershell -File scripts/ensure-yt-dlp.ps1
 node scripts/ensure-yt-dlp.mjs
 ```
 
-安装脚本先用 winget：`yt-dlp.yt-dlp` 和 `Gyan.FFmpeg`。winget 不在，或装完当前终端仍找不到命令时，再执行 `python -m pip install -U "yt-dlp[default]"`。检测脚本打印 `{"ytDlp":true,"ffmpeg":true}` 才算就绪。
+安装脚本先用 winget：`yt-dlp.yt-dlp` 和 `Gyan.FFmpeg`。winget 不在，或装完当前终端仍找不到命令时，再执行 `python -m pip install -U "yt-dlp[default]"`。检测脚本打印 `{"ytDlp":true,"ffmpeg":true}` 才算就绪。`ffmpeg` 必须有。不用安装 Deno。
 
-`yt-dlp` 需要一个 JavaScript 运行时。采集代码会传 `--js-runtimes node:<当前 node 可执行文件>`，服务器不用另装 Deno。如果绕过这段代码自己跑，也可以装 Deno 2.3 或更高版本。二进制不在 PATH 上时，把 `AI_CENTER_YT_DLP` 设成绝对路径，例如 `C:\Tools\yt-dlp.exe`。
+`yt-dlp` 必须是 **2025.11.12 或更新**。采集会传 `--js-runtimes node:<当前 node 可执行文件>`，旧版会报 `no such option`，本轮直接停，原因是 `yt-dlp-outdated`，不计入尝试次数。每轮开始先跑 `yt-dlp --version`。二进制不在 PATH 上时，把 `AI_CENTER_YT_DLP` 设成绝对路径，例如 `C:\Tools\yt-dlp.exe`。`data` 所在磁盘至少留 512MB，不够就跳过这一集的音频下载。
 
 上线前在服务器上手动冒烟，确认能读元数据和能下音频。把下面的视频换成任意公开视频：
 
@@ -24,21 +24,21 @@ yt-dlp --js-runtimes node --skip-download --dump-single-json -- "https://www.you
 yt-dlp -f bestaudio -x --audio-format wav --js-runtimes node -o "%TEMP%\yt-smoke.%(ext)s" -- "https://www.youtube.com/watch?v=jNQXAC9IVRw"
 ```
 
-第二条会在临时目录留下 wav，确认有声音后删掉。`config/youtube-podcasts.json` 缺失时，任务会报「YouTube 播客配置不存在」，页面写出同一句，不会悄悄当成空名单。
+第二条会在临时目录留下 wav，确认有声音后删掉。`config/youtube-podcasts.json` 缺失时，日志写明路径，页面只显示「配置缺失」，不会悄悄当成空名单。
 
 ## 环境变量
 
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
 | `AI_CENTER_YOUTUBE_PODCASTS` | 关 | `1` / `true` / `on` / `yes` 才跑。其他值或不设置都不跑。 |
-| `AI_CENTER_YOUTUBE_PODCASTS_AT` | `07:00` | 每天一次，`HH:MM`。 |
+| `AI_CENTER_YOUTUBE_PODCASTS_AT` | `07:00` | 每天一次，`HH:MM`。写错时改用 07:00，Worker 仍能启动。 |
 | `AI_CENTER_YOUTUBE_PODCASTS_TIMEZONE` | `Asia/Shanghai` | 上面时刻的时区。 |
 | `AI_CENTER_YOUTUBE_PODCASTS_INTERVAL_MS` | `8000` | 两次外部请求之间的间隔，1000–120000。 |
 | `AI_CENTER_YOUTUBE_PODCASTS_ROUND_LIMIT` | `24` | 每轮最多探测多少个视频，1–80。 |
 | `AI_CENTER_YOUTUBE_PODCASTS_TRANSCRIBE_MINUTES` | `90` | 每轮转写音频的分钟上限。本轮还没转过时，第一集可以超出这个数。已经转过之后再超出，记 `transcribe-budget`，下一轮再试。 |
-| `AI_CENTER_YOUTUBE_PODCASTS_EPISODE_MINUTES` | `180` | 单集转写上限。更长的记 `transcribe-too-long` 并跳过，不再每天重探。 |
-| `AI_CENTER_YOUTUBE_PODCASTS_MAX_RUNNING_MS` | `10800000` | 单轮最长 3 小时，最短 1 分钟，最长 6 小时。到点中止子进程。 |
-| `AI_CENTER_YOUTUBE_PODCASTS_SUMMARY_MODEL` | 空 | 摘要模型。空着就用现有的 Gemini 摘要模型。 |
+| `AI_CENTER_YOUTUBE_PODCASTS_EPISODE_MINUTES` | `180` | 可选。单集转写上限。更长的记 `transcribe-too-long` 并跳过，不再每天重探。 |
+| `AI_CENTER_YOUTUBE_PODCASTS_MAX_RUNNING_MS` | `10800000` | 可选。Worker 允许这一轮最多跑 3 小时。进程内的截止时间比它早 10 分钟，最短 1 分钟，好让子进程先停干净。 |
+| `AI_CENTER_YOUTUBE_PODCASTS_SUMMARY_MODEL` | 空 | 可选。摘要模型。空着就用现有的 Gemini 摘要模型。 |
 | `AI_CENTER_YOUTUBE_PODCASTS_LOOKBACK` | `2` | 每个频道第一次只留下最近几集，1–5。 |
 | `AI_CENTER_YOUTUBE_COOKIES` | 空 | 可选的 Netscape cookies 文件。默认不传给 yt-dlp。 |
 | `AI_CENTER_YT_DLP` | `yt-dlp` | 可执行文件名或路径。 |
@@ -73,9 +73,11 @@ node --env-file=.env scripts/youtube-podcasts-run.mjs
 [worker] youtube-podcasts discovered=N subtitles=N transcribed=N failed=N skipped=N stopped=- reasons=-
 ```
 
-只有 `yt-dlp` 退出码不是 0、并且 stderr 的 `ERROR:` 行里出现人机验证或 HTTP 429，才停止本轮。视频简介里的「429」不会停轮。RSS 和频道页只在状态码不是 2xx 时做这个判断。请求超过 15 秒按这一条失败，不停止整轮。Gemini 或 Gemma 的 429 和额度错误也不计入尝试次数，直接停止本轮。当前这一集不写完成，下一轮从这里继续。找不到 `yt-dlp` 同样停本轮。
+只有 `yt-dlp` 退出码不是 0、并且 stderr 的 `ERROR:` 行里出现人机验证或 HTTP 429，才因这两件事停止本轮。stderr 里的 `yt-dlp: error:` 或 `no such option` 也停止本轮，不计入尝试次数。视频简介里的「429」不会停轮。RSS 和频道页只在状态码不是 2xx 时做这个判断。请求超过 15 秒按这一条失败，不停止整轮。Gemini 或 Gemma 的 429 和额度错误也不计入尝试次数，直接停止本轮。当前这一集不写完成，下一轮从这里继续。找不到 `yt-dlp` 同样停本轮。
 
-一轮默认最多跑 3 小时。超时后会结束 `yt-dlp` 和它拉起的 ffmpeg：Windows 用 `taskkill /T /F`，其他系统结束进程组。手动再入队时，上一轮已经停干净，不会两轮同时写同一个音频文件。音频放在实例 `tmp/youtube-podcasts` 下的独立目录，转写完连同 `.part` 一起删除。Worker 启动时清掉这个目录。下载前如果剩余空间不足 512MB，就跳过这一集。
+元数据优先读工作目录里的 `*.info.json`，stdout 只作兜底，上限 16MB；stderr 仍是 256KB。JSON 解析失败或没有时长时记 `failed` / `probe-parse`，不会当成短片永久跳过。
+
+Worker 允许这一轮跑满 `AI_CENTER_YOUTUBE_PODCASTS_MAX_RUNNING_MS`（默认 3 小时）。进程内截止时间早 10 分钟。到点后结束 `yt-dlp` 和它拉起的 ffmpeg：Windows 用 `taskkill /T /F`，其他系统结束进程组。手动再入队时，上一轮已经停干净，不会两轮同时写同一个音频文件。音频放在实例 `tmp/youtube-podcasts` 下的独立目录，文件名带视频 id，转写完连同 `.part` 一起删除。Worker 启动时清掉这个目录；目录正被占用时只记日志，不因此拒绝启动。下载前如果剩余空间不足 512MB，就跳过这一集。
 
 ## 过滤和文字
 
@@ -87,7 +89,7 @@ node --env-file=.env scripts/youtube-podcasts-run.mjs
 
 小时报、信息流列表、窗口查询、搜索和研究召回都显式排除 `provider=youtube`，不依赖质量规则碰巧挡住。作者页按 id 读取时放行这些条目，所以 YouTube 标签下能看到已入库的集。
 
-自动字幕只采用 `*-orig`，或与视频原语种一致的自动字幕。`zh-Hans` 这类自动翻译字幕不采用。原视频地址一律用 `watch?v=`，并放在 `--` 后面交给 yt-dlp。超过 6 万字的文字稿分段摘要后再合并。摘要模型可用 `AI_CENTER_YOUTUBE_PODCASTS_SUMMARY_MODEL` 单独指定。
+自动字幕只采用 `*-orig`，或与视频原语种一致的自动字幕。下载字幕时不再请求 `zh.*` 和 `en` 这类自动翻译字幕。原视频地址一律用 `watch?v=`，并放在 `--` 后面交给 yt-dlp。超过 6 万字的文字稿分段摘要后再合并。摘要模型可用 `AI_CENTER_YOUTUBE_PODCASTS_SUMMARY_MODEL` 单独指定。配置文件缺失时，页面只写「配置缺失」，不带服务器路径。
 
 ## Gemini 用量
 
@@ -95,8 +97,8 @@ node --env-file=.env scripts/youtube-podcasts-run.mjs
 
 ## 上线
 
-1. 装好 `yt-dlp` 和 `ffmpeg`，跑 `node scripts/ensure-yt-dlp.mjs`。
-2. 需要时再设 `AI_CENTER_YOUTUBE_COOKIES`。默认不要设。
+1. 装好 `yt-dlp`（≥ 2025.11.12）和 `ffmpeg`，不要装 Deno。跑 `node scripts/ensure-yt-dlp.mjs`，并确认 `yt-dlp --version` 不低于 2025.11.12。`data` 所在磁盘至少留 512MB。
+2. 可选环境变量：`AI_CENTER_YOUTUBE_PODCASTS_EPISODE_MINUTES`（默认 180）、`AI_CENTER_YOUTUBE_PODCASTS_MAX_RUNNING_MS`（默认 3 小时）、`AI_CENTER_YOUTUBE_PODCASTS_SUMMARY_MODEL`（默认沿用现有 Gemini 摘要模型）。需要时再设 `AI_CENTER_YOUTUBE_COOKIES`。默认不要设。
 3. 部署后同时重启 Web 和 Worker。migration 86 在启动时自己加上。不要重建数据库，不要删已有 migration。
 4. 确认开关仍是关的，日志里不应出现对外请求。准备试跑时再设 `AI_CENTER_YOUTUBE_PODCASTS=1`，再次同时重启 Web 和 Worker。
-5. 手动入队：`node --env-file=.env scripts/youtube-podcasts-run.mjs`。入口在信源目录「社媒」，紧挨着 B 站。列表不显示标签和分享。
+5. 手动入队：`node --env-file=.env scripts/youtube-podcasts-run.mjs`。入口在信源目录「社媒」，紧挨着 B 站。列表不显示标签和分享。开关打开后先跑一轮，确认长节目的 `durationSec` 是实际分钟数，不是 0，也没有被记成 `short`。

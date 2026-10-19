@@ -4,10 +4,12 @@ import path from 'node:path';
 import { describeAudioTranscription } from '../../domain/src/audio-transcription.js';
 import { readChannelId, watchUrl } from '../../domain/src/youtube-podcasts.js';
 
-const SUB_LANGS = 'zh.*,zh-Hans,zh-Hant,zh,en,ja,.*-orig';
-const OUTPUT_CAP = 256 * 1024;
+const SUB_LANGS = 'zh-Hans,zh-Hant,zh,ja,.*-orig';
+export const YOUTUBE_STDOUT_CAP = 16 * 1024 * 1024;
+export const YOUTUBE_STDERR_CAP = 256 * 1024;
 const KILL_GRACE_MS = 5_000;
 export const YOUTUBE_FETCH_TIMEOUT_MS = 15_000;
+export const YT_DLP_MIN_VERSION = '2025.11.12';
 const MIN_FREE_BYTES = 512 * 1024 * 1024;
 
 export function youtubeBlockReason(text) {
@@ -33,10 +35,24 @@ export function cookieArgs(env = process.env) {
   return file ? ['--cookies', file] : [];
 }
 
-function appendCapped(current, chunk) {
-  if (current.length >= OUTPUT_CAP) return current;
+function appendCapped(current, chunk, cap) {
+  if (current.length >= cap) return current;
   const next = current + chunk;
-  return next.length <= OUTPUT_CAP ? next : next.slice(0, OUTPUT_CAP);
+  return next.length <= cap ? next : next.slice(0, cap);
+}
+
+export function ytDlpVersionAtLeast(text, minimum = YT_DLP_MIN_VERSION) {
+  const found = String(text || '').match(/(\d{4})\.(\d{2})\.(\d{2})/);
+  const need = String(minimum || '').match(/(\d{4})\.(\d{2})\.(\d{2})/);
+  if (!found || !need) return false;
+  const stamp = (parts) => Number(parts[1]) * 10000 + Number(parts[2]) * 100 + Number(parts[3]);
+  return stamp(found) >= stamp(need);
+}
+
+function cliStopReason(stderr) {
+  const text = String(stderr || '');
+  if (/yt-dlp:\s*error:/i.test(text) || /no such option/i.test(text)) return 'yt-dlp-outdated';
+  return '';
 }
 
 export function runProcess(command, args, { timeoutMs = 180_000, cwd, signal } = {}) {
@@ -61,7 +77,9 @@ export function runProcess(command, args, { timeoutMs = 180_000, cwd, signal } =
       const pid = child?.pid;
       if (!pid) return;
       if (process.platform === 'win32') {
-        spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+        const killer = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+        killer.on('error', () => {});
+        killer.unref();
         return;
       }
       try {
@@ -71,9 +89,16 @@ export function runProcess(command, args, { timeoutMs = 180_000, cwd, signal } =
       }
     };
 
+    const releaseChild = () => {
+      child?.stdout?.destroy();
+      child?.stderr?.destroy();
+      child?.unref?.();
+    };
+
     const forceSoon = () => {
       if (grace || settled) return;
       grace = setTimeout(() => {
+        releaseChild();
         finish({
           code: 1,
           stdout,
@@ -113,8 +138,8 @@ export function runProcess(command, args, { timeoutMs = 180_000, cwd, signal } =
 
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
-    child.stdout?.on('data', (chunk) => { stdout = appendCapped(stdout, chunk); });
-    child.stderr?.on('data', (chunk) => { stderr = appendCapped(stderr, chunk); });
+    child.stdout?.on('data', (chunk) => { stdout = appendCapped(stdout, chunk, YOUTUBE_STDOUT_CAP); });
+    child.stderr?.on('data', (chunk) => { stderr = appendCapped(stderr, chunk, YOUTUBE_STDERR_CAP); });
     child.on('error', (error) => {
       finish({
         code: 127,
@@ -221,10 +246,48 @@ async function readVttFiles(directory) {
 function blockedResult(result) {
   if (result.missing) return { blocked: 'yt-dlp-missing', detail: '没有找到 yt-dlp' };
   if (result.code === 0) return null;
+  const outdated = cliStopReason(result.stderr);
+  if (outdated) return { blocked: outdated, detail: String(result.stderr || '').slice(0, 300) };
   const errors = youtubeErrorText(result.stderr);
   const reason = youtubeBlockReason(errors);
   if (!reason) return null;
   return { blocked: reason, detail: errors.slice(0, 300) };
+}
+
+function durationOf(info) {
+  const value = Number(info?.duration);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+async function readInfoJson(directory) {
+  let names = [];
+  try {
+    names = await readdir(directory);
+  } catch {
+    return null;
+  }
+  const name = names.find((item) => item.endsWith('.info.json'));
+  if (!name) return null;
+  try {
+    return JSON.parse(await readFile(path.join(directory, name), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+export async function ensureYtDlpReady({ env = process.env, run = runProcess, signal, versionText } = {}) {
+  if (typeof versionText === 'string') {
+    if (!ytDlpVersionAtLeast(versionText)) return { blocked: 'yt-dlp-outdated', detail: versionText.slice(0, 120) };
+    return null;
+  }
+  const result = await run(ytDlpBinary(env), ['--version'], { timeoutMs: 30_000, signal });
+  if (result.missing) return { blocked: 'yt-dlp-missing', detail: '没有找到 yt-dlp' };
+  const outdated = cliStopReason(result.stderr);
+  if (outdated) return { blocked: outdated, detail: String(result.stderr || '').slice(0, 300) };
+  if (!ytDlpVersionAtLeast(`${result.stdout || ''}\n${result.stderr || ''}`)) {
+    return { blocked: 'yt-dlp-outdated', detail: String(result.stdout || result.stderr || 'yt-dlp 版本过旧').slice(0, 180) };
+  }
+  return null;
 }
 
 function ytDlpBaseArgs(env) {
@@ -252,18 +315,24 @@ export async function probeYoutubeEpisode({
     '--write-auto-subs',
     '--sub-langs', SUB_LANGS,
     '--convert-subs', 'vtt',
+    '--write-info-json',
     '--dump-single-json',
     ...ytDlpBaseArgs(env),
-    '-o', path.join(workDir, '%(ext)s'),
+    '-o', path.join(workDir, '%(id)s.%(ext)s'),
     '--',
     watchUrl(videoId),
   ];
   const result = await run(ytDlpBinary(env), args, { timeoutMs, cwd: workDir, signal });
   const blocked = blockedResult(result);
   if (blocked) return blocked;
-  const info = readYtDlpJson(result.stdout) || {};
-  if (result.code !== 0 && !info.id) {
-    return { failed: true, detail: String(result.stderr || result.stdout || `yt-dlp ${result.code}`).slice(0, 300) };
+  const fromFile = await readInfoJson(workDir);
+  const fromStdout = readYtDlpJson(result.stdout);
+  const info = durationOf(fromFile) ? fromFile : (durationOf(fromStdout) ? fromStdout : (fromFile || fromStdout));
+  if (!durationOf(info)) {
+    if (result.code !== 0 && !fromFile && !fromStdout) {
+      return { failed: true, detail: String(result.stderr || result.stdout || `yt-dlp ${result.code}`).slice(0, 300) };
+    }
+    return { failed: true, detail: 'probe-parse' };
   }
   const files = await readVttFiles(workDir);
   const subtitle = chooseSubtitle(files, info);
@@ -271,7 +340,7 @@ export async function probeYoutubeEpisode({
   return {
     videoId: info.id || videoId,
     title: info.title || '',
-    durationSec: Number(info.duration) || 0,
+    durationSec: durationOf(info),
     liveStatus: info.live_status || '',
     language: info.language || '',
     transcript: subtitle.text,
@@ -349,7 +418,7 @@ export async function transcribeYoutubeAudio({
       '--audio-format', 'wav',
       '--postprocessor-args', 'ffmpeg:-ac 1 -ar 16000',
       ...ytDlpBaseArgs(env),
-      '-o', path.join(dir, '%(ext)s'),
+      '-o', path.join(dir, '%(id)s.%(ext)s'),
       '--',
       watchUrl(videoId),
     ];

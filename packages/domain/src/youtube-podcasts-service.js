@@ -31,7 +31,9 @@ export function createYoutubePodcastService({ repository, store, configPath, env
     try {
       cache = { stamp, creators: loadYoutubePodcastConfig(configPath).creators, error: '' };
     } catch (error) {
-      cache = { stamp, creators: [], error: error instanceof Error ? error.message : 'YouTube 播客配置无法读取' };
+      const message = error instanceof Error ? error.message : 'YouTube 播客配置无法读取';
+      console.error(`[youtube-podcasts] ${message}`);
+      cache = { stamp, creators: [], error: '配置缺失' };
     }
     return cache;
   }

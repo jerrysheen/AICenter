@@ -177,7 +177,11 @@ export function createAiCenterWorker(options = {}) {
     },
   });
   const dataDirectory = instance.dataDirectory;
-  rmSync(path.join(dataDirectory, 'tmp', 'youtube-podcasts'), { recursive: true, force: true });
+  try {
+    rmSync(path.join(dataDirectory, 'tmp', 'youtube-podcasts'), { recursive: true, force: true });
+  } catch (error) {
+    console.error(`[worker] 清理 YouTube 播客临时目录失败：${error?.message || error}`);
+  }
   installFailureStreakStore(createFailureStreakStore({
     filePath: path.join(dataDirectory, 'static-source-failure-streaks.json'),
   }));

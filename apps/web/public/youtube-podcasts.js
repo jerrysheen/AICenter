@@ -64,7 +64,7 @@ export function renderYoutubePodcasts(root, { api, videoId = '', showToast = () 
       head.append(sync);
     }
     if (payload.configError) {
-      head.append(Object.assign(document.createElement('p'), { className: 'section-kicker', textContent: payload.configError }));
+      head.append(Object.assign(document.createElement('p'), { className: 'section-kicker', textContent: '配置缺失' }));
     }
     const creators = payload.creators || [];
     list.replaceChildren();

@@ -18,7 +18,8 @@ import {
 } from '../packages/domain/src/youtube-podcasts.js';
 import { createAuthorService } from '../packages/domain/src/author-service.js';
 import { createFeedService } from '../packages/domain/src/feed-service.js';
-import { youtubePodcastLimits } from '../packages/domain/src/youtube-podcasts.js';
+import { createYoutubePodcastService } from '../packages/domain/src/youtube-podcasts-service.js';
+import { youtubePodcastClock, youtubePodcastLimits, youtubeRoundDeadlineMs } from '../packages/domain/src/youtube-podcasts.js';
 import { createResearchRecallService } from '../packages/domain/src/research-recall-service.js';
 import {
   probeYoutubeEpisode,
@@ -29,6 +30,9 @@ import {
   vttToTranscript,
   youtubeBlockReason,
   youtubeErrorText,
+  ytDlpVersionAtLeast,
+  YOUTUBE_STDERR_CAP,
+  YOUTUBE_STDOUT_CAP,
 } from '../packages/connectors/src/youtube-podcasts.js';
 import {
   createYoutubePodcastJobHandlers,
@@ -544,8 +548,8 @@ test('runProcess resolves after a kill and caps captured output', { timeout: 20_
     timeoutMs: 10_000,
   });
   assert.equal(capped.code, 0);
-  assert.equal(capped.stdout.length, 256 * 1024);
-  assert.equal(capped.stderr.length, 256 * 1024);
+  assert.equal(capped.stdout.length, 400000);
+  assert.equal(capped.stderr.length, YOUTUBE_STDERR_CAP);
   const controller = new AbortController();
   const pending = runProcess(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], {
     timeoutMs: 60_000,
@@ -758,7 +762,179 @@ test('shadow lists exclude youtube and enforce author reads still return it', as
 
     feed.upsertUserItemState({ workspaceId: 'local', contentItemId: youtubeItem.id, isHidden: true });
     assert.equal(feed.listContentItemsByIds('local', [youtubeItem.id], { qualityRule: 'all-three-0.60' }).length, 0);
+    feed.upsertUserItemState({ workspaceId: 'local', contentItemId: youtubeItem.id, isHidden: false });
+    feed.rememberFeedDedupKey('local', youtubeItem.id, 'shared-dedup');
+    feed.rememberFeedDedupKey('local', plain.id, 'shared-dedup');
+    feed.saveContentItem({
+      workspaceId: 'local', captureId: plainCapture.id, originType: 'subscription', contentType: 'article',
+      title: '对照文章', body: '对照...', summary: '对照', publishedAt: Date.parse('2026-10-18T01:00:00Z'),
+      sourceUrl: 'https://example.com/plain-article',
+    });
+    feed.saveContentItem({
+      workspaceId: 'local', captureId: youtube.id, originType: 'subscription', contentType: 'video',
+      title: '利率讨论长集', body: '文字稿...', summary: '摘要', publishedAt: Date.parse('2026-10-18T00:00:00Z'),
+      sourceUrl: 'https://www.youtube.com/watch?v=shadowvid001',
+    });
+    assert.equal(feed.listFeedByDedupKey('local', 'shared-dedup').some((row) => row.id === youtubeItem.id), false);
+    assert.equal(feed.listFeedByDedupKeys('local', ['shared-dedup']).some((row) => row.id === youtubeItem.id), false);
+    assert.equal(feed.listFeedByDedupKey('local', 'shared-dedup').some((row) => row.id === plain.id), true);
+    assert.equal(feed.listFeedByPublishedAt('local', 0, Date.now() + 60_000).some((row) => row.id === youtubeItem.id), false);
+    assert.equal(feed.listEllipsisLeadBodies('local').some((row) => row.id === youtubeItem.id), false);
+    assert.equal(feed.listEllipsisLeadBodies('local').some((row) => row.id === plain.id), true);
+    assert.equal(feed.listFeedByUrlPrefixes('local', ['https://www.youtube.com/watch?v=shadowvid001']).some((row) => row.id === youtubeItem.id), false);
+    assert.equal(feed.listFeedByUrlPrefixes('local', ['https://example.com/plain-article']).some((row) => row.id === plain.id), true);
   } finally {
     opened.close();
+  }
+});
+
+test('truncated metadata, broken json, and a missing duration stay failed', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'youtube-probe-parse-'));
+  const opened = openStore();
+  try {
+    const over = await runProcess(process.execPath, ['-e', `
+      process.stdout.write('{"duration":7200,"pad":"');
+      process.stdout.write('a'.repeat(${YOUTUBE_STDOUT_CAP}));
+      process.stdout.write('"}');
+    `], { timeoutMs: 20_000 });
+    assert.equal(over.code, 0);
+    assert.equal(over.stdout.length, YOUTUBE_STDOUT_CAP);
+    const overCap = await probeYoutubeEpisode({
+      videoId: 'overcapvid01',
+      workDir: path.join(directory, 'over'),
+      run: async (_command, args) => {
+        assert.equal(args.includes('--write-info-json'), true);
+        assert.equal(args.some((arg) => arg.endsWith('%(id)s.%(ext)s')), true);
+        const langs = args[args.indexOf('--sub-langs') + 1];
+        assert.equal(langs.includes('zh.*'), false);
+        assert.equal(langs.split(',').includes('en'), false);
+        return over;
+      },
+    });
+    assert.equal(overCap.failed, true);
+    assert.equal(overCap.detail, 'probe-parse');
+
+    const broken = await probeYoutubeEpisode({
+      videoId: 'brokenvid001',
+      workDir: path.join(directory, 'broken'),
+      run: async () => ({ code: 0, stdout: '{"id":"brokenvid001","duration":', stderr: '', missing: false }),
+    });
+    assert.equal(broken.failed, true);
+    assert.equal(broken.detail, 'probe-parse');
+
+    const missingDuration = await probeYoutubeEpisode({
+      videoId: 'nodurvid0001',
+      workDir: path.join(directory, 'nodur'),
+      run: async () => ({
+        code: 0,
+        stdout: JSON.stringify({ id: 'nodurvid0001', title: 'Long talk', automatic_captions: { en: [] } }),
+        stderr: '',
+        missing: false,
+      }),
+    });
+    assert.equal(missingDuration.failed, true);
+    assert.equal(missingDuration.detail, 'probe-parse');
+
+    const fromFile = await probeYoutubeEpisode({
+      videoId: 'infovid00001',
+      workDir: path.join(directory, 'file'),
+      run: async () => {
+        writeFileSync(path.join(directory, 'file', 'clip.info.json'), JSON.stringify({
+          id: 'infovid00001', title: 'From file', duration: 5400, language: 'en',
+        }));
+        return { code: 0, stdout: '{"duration":', stderr: '', missing: false };
+      },
+    });
+    assert.equal(fromFile.failed, undefined);
+    assert.equal(fromFile.durationSec, 5400);
+
+    const round = await runYoutubePodcastRound({
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1' },
+      config: creatorConfig(),
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      sleep: async () => {},
+      translate: async () => '',
+      fetchRss: async () => ({ entries: [entry('nodurvid0001', 'A long conversation without a duration')] }),
+      probe: async () => ({ durationSec: 0, title: 'A long conversation without a duration' }),
+      transcribe: async () => '不应转写',
+      summarize: async () => SUMMARY,
+    });
+    assert.equal(round.stopped, '');
+    assert.equal(round.discovered, 0);
+    const saved = opened.store.repositories.youtubePodcasts.episode('local', 'nodurvid0001');
+    assert.equal(saved.status, 'failed');
+    assert.equal(saved.reason, 'probe-parse');
+    assert.equal(opened.store.repositories.youtubePodcasts.isDone('local', 'nodurvid0001'), false);
+  } finally {
+    opened.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('an old yt-dlp stops the round before any episode is counted', async () => {
+  const opened = openStore();
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'youtube-ytdlp-ver-'));
+  try {
+    assert.equal(ytDlpVersionAtLeast('2025.11.12'), true);
+    assert.equal(ytDlpVersionAtLeast('2025.11.11'), false);
+    assert.equal(ytDlpVersionAtLeast('2024.08.06'), false);
+    let probes = 0;
+    const outdated = await runYoutubePodcastRound({
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1' },
+      config: creatorConfig(),
+      ytDlpVersion: '2024.08.06',
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      sleep: async () => {},
+      fetchRss: async () => ({ entries: [entry('oldytdlp0001')] }),
+      probe: async () => { probes += 1; return { durationSec: 1800, transcript: '正文', transcriptSource: 'subtitle-manual' }; },
+      summarize: async () => SUMMARY,
+    });
+    assert.equal(outdated.stopped, 'yt-dlp-outdated');
+    assert.equal(probes, 0);
+    assert.equal(opened.store.repositories.youtubePodcasts.episode('local', 'oldytdlp0001'), null);
+
+    const option = await runYoutubePodcastRound({
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1' },
+      config: creatorConfig(),
+      ytDlpVersion: '2025.11.12',
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      sleep: async () => {},
+      translate: async () => '',
+      fetchRss: async () => ({ entries: [entry('nosuchopt001', 'Rates and the option flag')] }),
+      probe: async (item) => probeYoutubeEpisode({
+        videoId: item.videoId,
+        workDir: path.join(directory, item.videoId),
+        run: async () => ({
+          code: 1,
+          stdout: '',
+          stderr: 'yt-dlp: error: no such option: --js-runtimes',
+          missing: false,
+        }),
+      }),
+      summarize: async () => SUMMARY,
+    });
+    assert.equal(option.stopped, 'yt-dlp-outdated');
+    assert.equal(opened.store.repositories.youtubePodcasts.episode('local', 'nosuchopt001'), null);
+    assert.equal(youtubeRoundDeadlineMs(3 * 60 * 60_000), 3 * 60 * 60_000 - 10 * 60_000);
+    assert.equal(youtubeRoundDeadlineMs(60_000), 60_000);
+    assert.equal(youtubePodcastClock({ AI_CENTER_YOUTUBE_PODCASTS_AT: '25:99' }).hour, 7);
+    assert.equal(youtubePodcastClock({ AI_CENTER_YOUTUBE_PODCASTS_AT: '08:15' }).hour, 8);
+    const listed = createYoutubePodcastService({
+      repository: { listReady: () => [] },
+      store: {},
+      configPath: path.join(directory, 'missing-youtube-podcasts.json'),
+      env: {},
+    }).list('local');
+    assert.equal(listed.configError, '配置缺失');
+    assert.equal(listed.configError.includes(directory), false);
+  } finally {
+    opened.close();
+    rmSync(directory, { recursive: true, force: true });
   }
 });
