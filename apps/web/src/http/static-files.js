@@ -89,6 +89,7 @@ export function createStaticFileHandler(publicDirectory) {
     '/index.html': ['index.html', 'text/html; charset=utf-8', HTML_CACHE_CONTROL],
     '/ui-boot.js': ['ui-boot.js', 'text/javascript; charset=utf-8', HTML_CACHE_CONTROL],
     '/app.js': ['app.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
+    '/market-flow.js': ['market-flow.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/client-request.js': ['client-request.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/page-cache.js': ['page-cache.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/home-bootstrap.js': ['home-bootstrap.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
