@@ -728,6 +728,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
     rememberFingerprint();
     added += 1;
   }
+  settleUnseenPending(feedRepository, workspaceId, providerId, source.id, snapshot);
   return { added, skipped, addedItemIds: flashSource ? [] : [...new Set(addedItemIds)], flash: flashSource };
 }
 
@@ -909,6 +910,30 @@ function rememberTruncatedAttempt(feedRepository, existing, item, { hash, origin
     });
   }
   return next.exhausted;
+}
+
+function settleUnseenPending(feedRepository, workspaceId, providerId, sourceAccountId, snapshot, now = Date.now()) {
+  if (!sourceAccountId || snapshot?.mode === 'error' || snapshot?.mode === 'unavailable' || snapshot?.mode === 'partial') return;
+  if (!Array.isArray(snapshot?.items) || !snapshot.items.length) return;
+  if (typeof feedRepository.listPendingBodyExternalIds !== 'function' || typeof feedRepository.getCapture !== 'function') return;
+  const seen = new Set(snapshot.items.map((item) => String(item.externalId || '')).filter(Boolean));
+  const pendingIds = feedRepository.listPendingBodyExternalIds(workspaceId, providerId) || [];
+  for (const externalId of pendingIds) {
+    if (seen.has(String(externalId))) continue;
+    const existing = feedRepository.getCapture(workspaceId, providerId, externalId);
+    if (!existing || existing.sourceAccountId !== sourceAccountId) continue;
+    if (existing.metadata?.bodyCompletion !== 'pending') continue;
+    const next = resolveBodyCompletion(
+      { ...(existing.metadata || {}), capturedAt: existing.capturedAt },
+      { truncated: true, now },
+    );
+    const fields = completionFields(next);
+    const same = (existing.metadata?.bodyCompletion || '') === fields.bodyCompletion
+      && Number(existing.metadata?.bodyCompletionAttempts || 0) === fields.bodyCompletionAttempts
+      && Number(existing.metadata?.bodyCompletionSince || 0) === fields.bodyCompletionSince;
+    if (same) continue;
+    writeBodyCompletion(feedRepository, existing, { completion: fields });
+  }
 }
 
 function knownExternalIds(feedRepository, workspaceId, providerId) {

@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-19 #164 上线后 `bodyCompletion=pending` 仍只增不减，03:51 是 100 条，04:08 是 109 条，04:33 是 112 条，全部来自 X。次数只在这条再次进入入库时加一。首页一次最多 50 条，滑出去的旧帖不会再出现，`bodyCompletionAttempts` 停在空或 1，24 小时也不开始算。新的截断 KEEP 继续进来，所以数量慢慢涨，不是「旧的等满 3 次或 24 小时就会清掉」。展开失败的新条目，多半是这一轮没排上展开名额、抓取到点，或状态页上「显示更多」还在。同一来源成功抓到时间线、但这条不在结果里，也算一次。满 3 次或满 24 小时清掉 pending，判定不动。抓取失败、结果为空，或另一路时间线，不计。不新增 migration。当前 schema 仍是 91。下一号仍是 92。空号仍是 63、79、80、82。不要重建数据库。需要同时重启 Web 和 Worker。见 `progress/2026-10-19-body-completion-unseen.md`。
+
 2026-10-19 YouTube 正文第一集（Dyna Robotics，36 段，引擎 gemma）有三类质量问题。字幕已经是中文时不再翻译，只整理；汉字至少 12 个且不少于拉丁字母的一半才算中文，英文里夹一两个汉字仍会翻译。小标题按主题写，时间可以跟在主题后面，模型若仍只回 `## 00:00:00`，就用这一节的第一句改成主题。`article_state` 每一段记下 `provider`（`source`、`gemma` 或 `flash`）和 `calls.gemma`、`calls.flash`，要点另记 `summaryProvider` 和 `summaryCalls`，失败的那一次也计入。已经上线、但中文段被译成英文或小标题只剩时间的集，下一轮会修好这些段，正确的英文段不重译，修复完成前页面仍是原来的文章。Gemma 上游 500 的进程内退避仍是 10 秒、20 秒、40 秒，不是紧循环；同一次 `generate` 以前会立刻再换多把密钥，重启后退避表是空的，信息流补译会把请求放大。现在同一次请求最多再换一把密钥。分段的 12 秒、30 秒和任务级最多 4 次没有改。不新增 migration。当前 schema 仍是 91。不要重建数据库。需要同时重启 Web 和 Worker，浏览器再加载一次。见 `progress/2026-10-19-youtube-podcast-article.md` 和 `gemma-original-translation.md`。
 
 2026-10-19 #163 部署后官方发布列表连续多轮是 0 条，日历仍有数据，`source.static-signal-board.snapshot` 仍显示完成，日志里没有「重定向超过 3 跳」或「缺少地址」。status 0 的不透明重定向被当成最终响应，失败被收成不可用快照并且缓存 15 分钟。列表请求在地址被运行时隐藏时改用 `redirect: 'follow'` 取正文，最终地址仍须落在已登记官网；能读到 `Location` 时继续逐跳过白名单，最多 3 跳。失败打出 `[official-release] category=...`。不可用快照不再缓存。不新增 migration。不要重建数据库。空号仍是 63、79、80、82。需要同时重启 Web 和 Worker。见 `progress/2026-10-19-official-release-list.md`。
