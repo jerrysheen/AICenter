@@ -38,7 +38,7 @@ function securityHeaders(contentType, cacheControl, scriptSrc = "'self'") {
     'Content-Type': contentType,
     'Cache-Control': cacheControl,
     'Vary': 'Accept-Encoding',
-    'Content-Security-Policy': `default-src 'self'; img-src 'self' data:; style-src 'self'; script-src ${scriptSrc || "'self'"} https://static.cloudflareinsights.com; connect-src 'self' https://cloudflareinsights.com; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
+    'Content-Security-Policy': `default-src 'self'; img-src 'self' data: https://pbs.twimg.com https://xavatar.imedao.com; style-src 'self'; script-src ${scriptSrc || "'self'"} https://static.cloudflareinsights.com; connect-src 'self' https://cloudflareinsights.com; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',

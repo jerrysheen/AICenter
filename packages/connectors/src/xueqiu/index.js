@@ -20,6 +20,7 @@ export {
   extractXueqiuComments,
   mapLivenewsItem,
   mapTimelineStatus,
+  normalizeXueqiuAvatar,
   normalizeXueqiuFeed,
   stripXueqiuHtml,
   textBeforeCommentBlock,

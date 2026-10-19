@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-19-request-size-avatars.md`：翻译请求先读完超限正文再回 413，字节上限对齐 200000 字。YouTube 正文不再自动翻译。雪球相对头像补到 `https://xavatar.imedao.com/`，用手动脚本回填。CSP 的 `img-src` 放行 `https://pbs.twimg.com` 和 `https://xavatar.imedao.com`。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
+
 - `progress/2026-10-19-market-flow.md`：股票子页最后增加「资金」（`#market/flow`）。南向净额和北向成交额只出现在这一页。北向沿用东财和港交所已有响应，净买入没有公布就不显示。migration 88 建 `northbound_daily` 和 `northbound_top10` 两张表。需要同时重启 Web 和 Worker，再按该说明补北向历史。
 
 - `progress/2026-10-19-us-open-stale.md`：美股刚开盘的 5 分钟内，盘前报价不再标成红色「已过期」，顶部和美股观察写「盘中 · 等待报价」。盘前、盘后的 `asOf` 用报价自己的时间，行提示写盘前或盘后。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。

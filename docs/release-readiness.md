@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-19 请求体超过上限时先读完再返回 413，不再中途断开。翻译接口字节上限对齐 200000 字（每字最多 4 字节，另加 16KB）。YouTube 正文不再自动调用 `/api/v1/translate`。雪球头像取逗号前第一段，相对路径补 `https://xavatar.imedao.com/`。已有数据用 `node scripts/backfill-xueqiu-avatars.mjs --dry-run` 预览，再去掉 `--dry-run` 回填；不要放进 Web 或 Worker。CSP 的 `img-src` 只增加 `https://pbs.twimg.com` 和 `https://xavatar.imedao.com`。不新增 migration。不要重建数据库。空号仍是 63、79、80、82。需要同时重启 Web 和 Worker，浏览器再加载一次。见 `progress/2026-10-19-request-size-avatars.md`。
+
 2026-10-19 股票页的港股通南向卡片从市场概览、A股、美股市场、亚洲市场移除。子页导航最后增加「资金」，路由 `#market/flow`，刷新后仍停在这一页。南向继续用东财日度和十大成交，金额写成净买入或净卖出，并带「亿港元」和数据日期；不是当天要写明不是今天。北向不新接来源：同一份东财 `RPT_MUTUAL_DEAL_HISTORY`（`001` / `003` / `005`）和十大成交，以及港交所日文件里的 Northbound 成交额。2024年8月19日起净买入、买入额、卖出额不再公布，接口里这些字段是 null，页面直接写没有公布，只用成交额和沪、深各自十大成交。成交额单位是人民币，不写成净流入。任务仍是 `southbound.daily.sync`，17:00 和 17:30（Asia/Shanghai）。migration 88 `northbound_flow` 只建 `northbound_daily` 和 `northbound_top10` 两张表，没有净额列。87 是 YouTube 补录。空号仍是 63、79、80、82。不要重建数据库。需要同时重启 Web 和 Worker，然后跑 `node --env-file=.env scripts/southbound-backfill.js --from 2021-10-16 --to 2026-10-16 --part northbound`。见 `progress/2026-10-19-market-flow.md`。
 
 2026-10-19 美股开盘后 5 分钟内，盘前报价不再被标成红色「已过期」。顶部和美股观察在常规成交到达前写「盘中 · 等待报价」。有盘前时间的个股继续显示该价格，行提示写「盘前 · 时间」；没有这段时间的指数写「盘中 · 等待报价」。Yahoo 盘前、盘后的 `asOf` 用 `preMarketTime` / `postMarketTime` 或这段 K 线，不用上一个常规收盘时间；最高、最低、成交量只取这段，没有就留空。指数没有盘前价时，涨跌相对 `previousClose`，不再显示 +0.00%。新浪这两段的最高、最低、成交量改成空。5 分钟后仍没有常规成交，才按 3 分钟规则标过期。不新增 migration。不要重建数据库。需要同时重启 Web 和 Worker，浏览器再加载一次。见 `progress/2026-10-19-us-open-stale.md`。
