@@ -363,14 +363,18 @@ test('query keywords do not become tag hits, and recall metrics stay split', asy
   const store = createStore(':memory:');
   store.repositories.informationTree.activatePolicy('local', 'policy');
   saveNode(store, 'info:a', START + 1, '订单标题', '只出现订单两个字');
+  saveNode(store, 'info:b', START + 2, 'HBM订单', 'HBM订单上调');
   const { service } = serviceFor(store, {
     tagJudge: async (payload) => ({ assignments: payload.items.map((item) => ({ resourceId: item.resourceId, tagIds: [] })) }),
     relevanceJudge: async (payload) => ({ results: payload.items.map((item) => ({ resourceId: item.resourceId, verdict: 'irrelevant' })) }),
   });
   service.activate({ catalog: tinyCatalog(0) });
   const report = await service.buildReport({ questionId: 'sample_question', window: { startAt: START, endAt: START + DAY }, budget: { maxRequests: 10, maxMilliseconds: 60_000 } });
-  const event = report.pack.events[0];
+  assert.equal(report.pack.events.some((event) => event.title === '订单标题'), false);
+  const event = report.pack.events.find((item) => item.title === 'HBM订单');
+  assert.ok(event);
   assert.deepEqual(event.hits.tag, []);
+  assert.ok(event.hits.query.includes('HBM'));
   assert.ok(event.hits.query.includes('订单'));
   assert.equal(event.bucket, 'unverified');
   assert.equal(report.sections[0].supporting.length, 0);
@@ -395,4 +399,177 @@ test('query keywords do not become tag hits, and recall metrics stay split', asy
   const handlers = createResearchRecallJobHandlers(service);
   assert.equal(typeof handlers['research.report.generate'], 'function');
   assert.equal(typeof handlers['research.catalog.activate'], 'function');
+});
+
+test('generic tag keywords do not recall unrelated stories', async () => {
+  const store = createStore(':memory:');
+  store.repositories.informationTree.activatePolicy('local', 'policy');
+  saveNode(store, 'info:school', START + 1, '波兰校园暴力', '警方称凶手采用暴力手段，学校附近已部署警力。');
+  saveNode(store, 'info:memory', START + 2, '内存现货', '内存现货价格上涨');
+  saveNode(store, 'info:name', START + 3, '公司', '英伟达上调订单');
+  saveNode(store, 'info:glued', START + 4, '粘连', 'xHBM并不单独构成词');
+  saveNode(store, 'info:body-hbm', START + 5, '正文锚点', '摘要没有关键词', { body: 'HBM供应仍紧' });
+  saveNode(store, 'info:body-weak', START + 6, '正文弱词', '摘要', { body: '警方采用了新的说法' });
+  const { service } = serviceFor(store, {
+    tagJudge: async (payload) => ({ assignments: payload.items.map((item) => ({ resourceId: item.resourceId, tagIds: [] })) }),
+    relevanceJudge: async (payload) => ({ results: payload.items.map((item) => ({ resourceId: item.resourceId, verdict: 'irrelevant' })) }),
+  });
+  service.activate({ catalog: loadResearchCatalog(JSON.parse(readFileSync(new URL('./config/research/ai-compute.json', root), 'utf8'))) });
+  const report = await service.buildReport({ questionId: 'ai_compute_changes', window: { startAt: START, endAt: START + DAY }, budget: { maxRequests: 40, maxMilliseconds: 60_000 } });
+  const titles = report.pack.events.map((event) => event.title);
+  assert.equal(titles.includes('波兰校园暴力'), false);
+  assert.equal(titles.includes('粘连'), false);
+  assert.equal(titles.includes('正文弱词'), false);
+  assert.ok(titles.includes('正文锚点'));
+  const memory = report.pack.events.find((event) => event.title === '内存现货');
+  const named = report.pack.events.find((event) => event.title === '公司');
+  assert.ok(memory.hits.query.includes('内存'));
+  assert.equal(memory.hits.tag.length, 0);
+  assert.ok(named.hits.query.includes('英伟达'));
+  assert.ok(named.hits.query.includes('订单'));
+});
+
+test('time budget stops between calls and the next round continues', async () => {
+  const store = createStore(':memory:');
+  store.repositories.informationTree.activatePolicy('local', 'policy');
+  const nodes = ['a', 'b', 'c', 'd'].map((id, index) => saveNode(store, `info:${id}`, START + index + 1, id, `订单${id}`));
+  saveNode(store, 'info:old', START - DAY, '旧', '历史订单');
+  let clock = 10_000;
+  const tagCalls = [];
+  const relevanceCalls = [];
+  const step = 40_000;
+  const tagJudge = {
+    batchCharge: 'item',
+    async judge(payload) {
+      assert.equal(payload.items.length, 1);
+      tagCalls.push(payload.items[0].resourceId);
+      clock += step;
+      return { assignments: payload.items.map((item) => ({ resourceId: item.resourceId, tagIds: [] })), usage: { requests: 1 } };
+    },
+  };
+  const relevanceJudge = {
+    batchCharge: 'item',
+    async judge(payload) {
+      assert.equal(payload.items.length, 1);
+      relevanceCalls.push(payload.items[0].resourceId);
+      clock += step;
+      return { results: payload.items.map((item) => ({ resourceId: item.resourceId, verdict: 'irrelevant' })), usage: { requests: 1 } };
+    },
+  };
+  let scans = 0;
+  const tree = store.repositories.informationTree;
+  const list = tree.listInformationInWindow.bind(tree);
+  tree.listInformationInWindow = (...args) => { scans += 1; return list(...args); };
+  const { service } = serviceFor(store, { tagJudge, relevanceJudge }, { now: () => clock });
+  service.activate({ catalog: tinyCatalog(DAY) });
+  const window = { startAt: START, endAt: START + DAY };
+  const budget = { maxRequests: 40, maxMilliseconds: 100_000 };
+  const first = await service.buildReport({ questionId: 'sample_question', window, budget });
+  assert.equal(first.coverage.stoppedReason, 'budget-time');
+  assert.equal(first.coverage.judged, 1);
+  assert.ok(first.coverage.pending > 0);
+  assert.ok(first.coverage.historyNotStarted > 0);
+  assert.equal(first.pack.historyPoolId, null);
+  assert.ok(first.usage.elapsedMs >= 100_000);
+  assert.ok(first.usage.elapsedMs < 100_000 + step);
+  const scanned = scans;
+  assert.equal(tagCalls.length, 2);
+  const second = await service.buildReport({ questionId: 'sample_question', window, budget });
+  assert.equal(scans, scanned);
+  assert.equal(second.coverage.judged, 2);
+  assert.equal(second.pack.historyPoolId, null);
+  assert.ok(second.coverage.historyNotStarted > 0);
+  assert.deepEqual(tagCalls, [nodes[0].id, nodes[1].id, nodes[2].id, nodes[3].id]);
+  assert.deepEqual(relevanceCalls, [nodes[0].id, nodes[1].id]);
+  assert.equal(tagCalls.filter((id) => id === nodes[0].id).length, 1);
+});
+
+test('an aborted in-flight call is released so the next round can retry it', async () => {
+  const store = createStore(':memory:');
+  store.repositories.informationTree.activatePolicy('local', 'policy');
+  const firstNode = saveNode(store, 'info:a', START + 1, '甲', '订单甲');
+  saveNode(store, 'info:b', START + 2, '乙', '订单乙');
+  saveNode(store, 'info:old', START - DAY, '旧', '历史订单');
+  const seen = [];
+  const tagJudge = {
+    batchCharge: 'item',
+    async judge({ items, signal }) {
+      seen.push(items[0].resourceId);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      if (signal?.aborted) throw new DOMException('The operation was aborted', 'AbortError');
+      return { assignments: items.map((item) => ({ resourceId: item.resourceId, tagIds: [] })), usage: { requests: 1 } };
+    },
+  };
+  const relevanceJudge = {
+    batchCharge: 'item',
+    async judge({ items }) {
+      return { results: items.map((item) => ({ resourceId: item.resourceId, verdict: 'irrelevant' })), usage: { requests: 1 } };
+    },
+  };
+  const { service } = serviceFor(store, { tagJudge, relevanceJudge }, { now: () => Date.now() });
+  service.activate({ catalog: tinyCatalog(DAY) });
+  const window = { startAt: START, endAt: START + DAY };
+  const partial = await service.buildReport({ questionId: 'sample_question', window, budget: { maxRequests: 20, maxMilliseconds: 120 } });
+  assert.equal(partial.coverage.stoppedReason, 'budget-time');
+  assert.equal(partial.coverage.judged, 0);
+  assert.equal(partial.pack.historyPoolId, null);
+  assert.ok(partial.coverage.historyNotStarted > 0);
+  assert.deepEqual(seen, [firstNode.id]);
+  const again = await service.buildReport({ questionId: 'sample_question', window, budget: { maxRequests: 20, maxMilliseconds: 8_000 } });
+  assert.ok(again.coverage.judged >= 1);
+  assert.equal(seen[1], firstNode.id);
+});
+
+test('scoring hydrates one batch and the next round keeps the same pool', async () => {
+  const store = createStore(':memory:');
+  store.repositories.informationTree.activatePolicy('local', 'policy');
+  for (let index = 0; index < 20; index += 1) {
+    saveNode(store, `info:${index}`, START + index + 1, `n${index}`, `订单${index}`, { body: `正文${index}` });
+  }
+  saveNode(store, 'info:old', START - DAY, '旧', '历史订单', { body: '回看正文' });
+  let clock = 10_000;
+  let scored = false;
+  const duringJudge = [];
+  const research = store.repositories.research;
+  const readBodies = research.memberBodies.bind(research);
+  research.memberBodies = (workspaceId, poolId, ordinals) => {
+    if (!scored) duringJudge.push(ordinals.length);
+    return readBodies(workspaceId, poolId, ordinals);
+  };
+  const tagJudge = {
+    batchCharge: 'item',
+    async judge(payload) {
+      scored = true;
+      clock += 40_000;
+      return { assignments: payload.items.map((item) => ({ resourceId: item.resourceId, tagIds: [] })), usage: { requests: 1 } };
+    },
+  };
+  const relevanceJudge = {
+    batchCharge: 'item',
+    async judge(payload) {
+      clock += 40_000;
+      return { results: payload.items.map((item) => ({ resourceId: item.resourceId, verdict: 'irrelevant' })), usage: { requests: 1 } };
+    },
+  };
+  let scans = 0;
+  const tree = store.repositories.informationTree;
+  const list = tree.listInformationInWindow.bind(tree);
+  tree.listInformationInWindow = (...args) => { scans += 1; return list(...args); };
+  const { service } = serviceFor(store, { tagJudge, relevanceJudge }, { now: () => clock });
+  service.activate({ catalog: tinyCatalog(DAY) });
+  const window = { startAt: START, endAt: START + DAY };
+  const budget = { maxRequests: 40, maxMilliseconds: 100_000 };
+  const first = await service.buildReport({ questionId: 'sample_question', window, budget });
+  assert.deepEqual(duringJudge, [16]);
+  assert.equal(first.coverage.stoppedReason, 'budget-time');
+  assert.equal(first.coverage.historyNotStarted > 0, true);
+  const scanned = scans;
+  const judged = first.coverage.judged;
+  duringJudge.length = 0;
+  scored = false;
+  const second = await service.buildReport({ questionId: 'sample_question', window, budget });
+  assert.equal(scans, scanned);
+  assert.deepEqual(duringJudge, [16]);
+  assert.ok(second.coverage.judged > judged);
+  assert.equal(second.pack.historyPoolId, null);
 });
