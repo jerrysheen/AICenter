@@ -50,6 +50,6 @@ export const FeedValueDecisionSchema = z.object({
   decision: z.enum(['KEEP','DROP','REVIEW']),
   reason: z.enum(['substantive','no-saving-value','body-missing','input-truncated','context-missing',
     'context-unconfirmed','invalid-input','invalid-capture','invalid-scores','input-too-large',
-    'jev-failed','jev-unavailable','uncalibrated','calibration-mismatch','borderline','two-of-three','below-two-of-three','all-three','below-all-three']),
+    'jev-failed','jev-unavailable','jev-rejected','uncalibrated','calibration-mismatch','borderline','two-of-three','below-two-of-three','all-three','below-all-three']),
   reviewKind: z.enum(['none','technical','missing-content','semantic']),
 }).strict();

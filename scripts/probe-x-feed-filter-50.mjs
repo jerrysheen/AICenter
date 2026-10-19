@@ -8,12 +8,14 @@ import {
 } from '../packages/connectors/src/index.js';
 import { createStore } from '../packages/database/src/index.js';
 import { createFeedFilter } from '../packages/domain/src/feed-filter.js';
+import { openJevClient } from '../packages/domain/src/jev-enabled.js';
 import { resolveInstanceConfig } from '../packages/instance/src/index.js';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const instance = resolveInstanceConfig({ repositoryRoot });
 const store = createStore(instance.databasePath);
-const client = createTypeSafeSystemOneClient();
+const client = openJevClient(process.env, undefined, (options) => createTypeSafeSystemOneClient(options));
+if (!client) throw new Error('AI_CENTER_JEV_ENABLED=false，不调用 TypeSafe');
 const filter = createFeedFilter({ client });
 
 function preview(item, max = 120) {

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createGeminiTagPort } from '../packages/connectors/src/gemini-tag.js';
 import { createTypeSafeSystemOneClient } from '../packages/connectors/src/typesafe-system-one.js';
+import { openJevClient } from '../packages/domain/src/jev-enabled.js';
 import { loadTagCatalog } from '../packages/domain/src/tag-catalog.js';
 import { TAG_PROMPT_VERSION } from '../packages/domain/src/tag-prompt.js';
 import { createTaggingService } from '../packages/domain/src/tagging-service.js';
@@ -195,8 +196,8 @@ async function main() {
   const v1 = readJson(v1Path, null);
   if (!v1?.items?.length) throw new Error('找不到 V1 冻结结果');
   const definition = loadUsEquityFocus(readFileSync(path.join(root, 'config', 'research', 'us-equity-daily-focus.json'), 'utf8'));
-  const client = createTypeSafeSystemOneClient({ timeoutMs: 45_000, model: modelPin });
-  if (!client.available()) throw new Error('未配置 JEV 凭证');
+  const client = openJevClient(process.env, undefined, (options) => createTypeSafeSystemOneClient({ ...options, timeoutMs: 45_000, model: modelPin }));
+  if (!client?.available()) throw new Error('未配置 JEV 凭证');
   const evaluator = createUsEquityFocusEvaluator({ client, model: modelPin, definition, cache: fileCache(cachePath) });
   const ready = v1.items.filter(succeeded);
   const failedBefore = v1.items.filter((item) => !succeeded(item));

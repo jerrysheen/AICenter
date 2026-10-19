@@ -5,6 +5,7 @@ import { createStore } from '../packages/database/src/index.js';
 import { recordCapturedAuthor } from '../packages/database/src/repositories/author-repository.js';
 import { authorCaptureFields } from '../packages/domain/src/authors.js';
 import { resolveInstanceConfig } from '../packages/instance/src/index.js';
+import { isMain } from '../packages/runtime/src/is-main.js';
 
 const BATCH = 500;
 
@@ -110,7 +111,7 @@ function arg(name, fallback = '') {
   return process.argv[index + 1] || fallback;
 }
 
-const invoked = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname);
+const invoked = isMain(import.meta.url);
 if (invoked) {
   const root = process.cwd();
   const instance = resolveInstanceConfig({ repositoryRoot: root });

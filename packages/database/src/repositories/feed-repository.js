@@ -49,15 +49,20 @@ const VISIBLE_CONTENT_SQL = `${USER_VISIBLE_CONTENT_SQL} AND NOT EXISTS (SELECT 
     AND json_extract(quality_capture.metadata_json,'$.filterDecision') IN ('DROP','REVIEW')
     AND json_extract(quality_capture.metadata_json,'$.filterApplied')=1)`;
 
+function fallbackReasonSql(alias) {
+  return `(json_extract(${alias}.metadata_json,'$.filterReason') LIKE 'fallback-%' OR json_extract(${alias}.metadata_json,'$.filterReason') LIKE 'jev-disabled-%')`;
+}
+
 function approvedQualitySql(rule='') {
   if(!rule) return '1=1';
   if(rule!=='all-three-0.60') throw new Error('Unsupported admission rule');
   return `EXISTS (SELECT 1 FROM captures qa WHERE qa.id=ci.capture_id AND qa.workspace_id=ci.workspace_id
     AND json_extract(qa.metadata_json,'$.filterRule')='all-three-0.60'
     AND json_extract(qa.metadata_json,'$.filterDecision')='KEEP'
-    AND json_extract(qa.metadata_json,'$.filterScores.reading_value')>=0.60
-    AND json_extract(qa.metadata_json,'$.filterScores.specific_content')>=0.60
-    AND json_extract(qa.metadata_json,'$.filterScores.sufficient_information')>=0.60)`;
+    AND ((json_extract(qa.metadata_json,'$.filterScores.reading_value')>=0.60
+      AND json_extract(qa.metadata_json,'$.filterScores.specific_content')>=0.60
+      AND json_extract(qa.metadata_json,'$.filterScores.sufficient_information')>=0.60)
+      OR ${fallbackReasonSql('qa')}))`;
 }
 
 function whenFilterReady(columnSql, jsonSql) {
@@ -85,14 +90,16 @@ function captureApprovedSql(rule = '') {
   return whenFilterReady(
     `c.filter_rule = 'all-three-0.60'
     AND c.filter_decision = 'KEEP'
-    AND c.filter_reading >= 0.60
-    AND c.filter_specific >= 0.60
-    AND c.filter_sufficient >= 0.60`,
+    AND ((c.filter_reading >= 0.60
+      AND c.filter_specific >= 0.60
+      AND c.filter_sufficient >= 0.60)
+      OR ${fallbackReasonSql('c')})`,
     `json_extract(c.metadata_json,'$.filterRule')='all-three-0.60'
     AND json_extract(c.metadata_json,'$.filterDecision')='KEEP'
-    AND json_extract(c.metadata_json,'$.filterScores.reading_value')>=0.60
-    AND json_extract(c.metadata_json,'$.filterScores.specific_content')>=0.60
-    AND json_extract(c.metadata_json,'$.filterScores.sufficient_information')>=0.60`,
+    AND ((json_extract(c.metadata_json,'$.filterScores.reading_value')>=0.60
+      AND json_extract(c.metadata_json,'$.filterScores.specific_content')>=0.60
+      AND json_extract(c.metadata_json,'$.filterScores.sufficient_information')>=0.60)
+      OR ${fallbackReasonSql('c')})`,
   );
 }
 
@@ -593,6 +600,7 @@ export function createFeedRepository(database, emitEvent) {
     saveContentItem(value) {
       const input = parseContract(SaveContentItemInputSchema, value);
       const now = Date.now();
+      const createdAt = Number.isInteger(input.createdAt) ? input.createdAt : now;
       const id = input.id || randomUUID();
       database.transaction(() => {
         if (input.captureId) {
@@ -611,14 +619,14 @@ export function createFeedRepository(database, emitEvent) {
               published_at = excluded.published_at,
               updated_at = excluded.updated_at`)
             .run(id, input.workspaceId, input.captureId, input.originType, input.contentType, input.title,
-              input.body, input.summary, input.sourceUrl, input.authorName, input.publishedAt, now, now);
+              input.body, input.summary, input.sourceUrl, input.authorName, input.publishedAt, createdAt, now);
         } else {
           database.prepare(`INSERT INTO content_items
             (id, workspace_id, capture_id, origin_type, content_type, title, body, summary,
              source_url, author_name, published_at, created_at, updated_at)
             VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
             .run(id, input.workspaceId, input.originType, input.contentType, input.title, input.body,
-              input.summary, input.sourceUrl, input.authorName, input.publishedAt, now, now);
+              input.summary, input.sourceUrl, input.authorName, input.publishedAt, createdAt, now);
         }
         const item = input.captureId
           ? database.prepare('SELECT * FROM content_items WHERE capture_id = ?').get(input.captureId)
@@ -769,16 +777,22 @@ export function createFeedRepository(database, emitEvent) {
 
     listXFocusPoints(workspaceId, { since = 0, limit = 20000 } = {}) {
       const size = Math.max(1, Math.min(Number(limit) || 20000, 20000));
+      // The inner WHERE matches idx_captures_x_focus exactly. source_accounts also
+      // has provider and metadata_json, so those predicates stay unqualified here.
       return database.prepare(`SELECT c.captured_at AS capturedAt,
           sa.external_id AS sourceExternalId,
           json_extract(c.metadata_json, '$.xFocus.method') AS method,
           json_extract(c.metadata_json, '$.xFocus.version') AS version,
           json_extract(c.metadata_json, '$.xFocus.dirScores') AS dirScoresJson
-        FROM captures c
-        LEFT JOIN source_accounts sa ON sa.id = c.source_account_id
-        WHERE c.workspace_id = ? AND c.provider = 'x' AND c.captured_at >= ?
-        ORDER BY c.captured_at DESC
-        LIMIT ?`).all(
+        FROM (
+          SELECT id, captured_at, source_account_id, metadata_json
+          FROM captures INDEXED BY idx_captures_x_focus
+          WHERE workspace_id = ? AND captured_at >= ?
+            AND provider='x' AND json_extract(metadata_json,'$.xFocus.method') IS NOT NULL
+          ORDER BY captured_at DESC
+          LIMIT ?
+        ) c
+        LEFT JOIN source_accounts sa ON sa.id = c.source_account_id`).all(
         workspaceId, Math.max(0, Number(since) || 0), size,
       ).map((row) => ({
         capturedAt: Number(row.capturedAt) || 0,
@@ -787,6 +801,34 @@ export function createFeedRepository(database, emitEvent) {
         version: row.version || '',
         dirScores: parseJson(row.dirScoresJson, {}),
       }));
+    },
+
+    explainXFocusPoints(workspaceId, since = 0) {
+      return database.prepare(`EXPLAIN QUERY PLAN
+        SELECT id FROM captures INDEXED BY idx_captures_x_focus
+        WHERE workspace_id = ? AND captured_at >= ?
+          AND provider='x' AND json_extract(metadata_json,'$.xFocus.method') IS NOT NULL
+        ORDER BY captured_at DESC
+        LIMIT 20`).all(workspaceId, Math.max(0, Number(since) || 0))
+        .map((row) => row.detail)
+        .join('\n');
+    },
+
+    listJevFailedCaptures(workspaceId, { from = 0, to = Number.MAX_SAFE_INTEGER, limit = 500, reasons = ['jev-failed'] } = {}) {
+      const allowed = ['jev-failed', 'jev-unavailable', 'jev-disabled'];
+      const selected = [...new Set((Array.isArray(reasons) ? reasons : [reasons]).map((reason) => String(reason || '').trim()))]
+        .filter((reason) => allowed.includes(reason));
+      const list = selected.length ? selected : ['jev-failed'];
+      const size = Math.max(1, Math.min(Number(limit) || 500, 5000));
+      return database.prepare(`SELECT c.*, sa.external_id AS source_external_id
+        FROM captures c
+        LEFT JOIN source_accounts sa ON sa.id = c.source_account_id
+        WHERE c.workspace_id = ? AND c.status = 'captured'
+          AND json_extract(c.metadata_json,'$.filterReason') IN (${list.map(() => '?').join(',')})
+          AND c.captured_at >= ? AND c.captured_at < ?
+        ORDER BY COALESCE(c.published_at, c.captured_at), c.captured_at, c.id
+        LIMIT ?`).all(workspaceId, ...list, Math.max(0, Number(from) || 0), Number(to) || 0, size)
+        .map((row) => ({ ...mapCapture(row), sourceExternalId: row.source_external_id || '' }));
     },
 
     listKeywordXFocus(workspaceId, { since = 0, limit = 40 } = {}) {
@@ -878,9 +920,11 @@ export function createFeedRepository(database, emitEvent) {
     listQualityApprovedExternalIds(workspaceId,provider) {
       return database.prepare(`SELECT external_id FROM captures WHERE workspace_id=? AND provider=?
         AND json_extract(metadata_json,'$.filterRule')='all-three-0.60' AND json_extract(metadata_json,'$.filterDecision')='KEEP'
-        AND json_extract(metadata_json,'$.filterScores.reading_value')>=0.60
-        AND json_extract(metadata_json,'$.filterScores.specific_content')>=0.60
-        AND json_extract(metadata_json,'$.filterScores.sufficient_information')>=0.60`)
+        AND ((json_extract(metadata_json,'$.filterScores.reading_value')>=0.60
+          AND json_extract(metadata_json,'$.filterScores.specific_content')>=0.60
+          AND json_extract(metadata_json,'$.filterScores.sufficient_information')>=0.60)
+          OR (json_extract(metadata_json,'$.filterReason') LIKE 'fallback-%'
+            OR json_extract(metadata_json,'$.filterReason') LIKE 'jev-disabled-%'))`)
         .all(workspaceId,provider).map(r=>r.external_id);
     },
 

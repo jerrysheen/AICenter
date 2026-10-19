@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createConfiguredBrowserRuntime, parseBrowserJson } from '../packages/connectors/src/browser/index.js';
 import { createTypeSafeSystemOneClient } from '../packages/connectors/src/index.js';
+import { openJevClient } from '../packages/domain/src/jev-enabled.js';
 import { createStore } from '../packages/database/src/index.js';
 import { DEFAULT_WORKSPACE_ID } from '../packages/database/src/migrations.js';
 import {
@@ -387,7 +388,7 @@ async function rememberDynamics(rows) {
     if (!dynamicStore) dynamicStore = createStore(instance.databasePath);
     if (dynamicsFilter === undefined) {
       let client = null;
-      try { client = createTypeSafeSystemOneClient({ env: process.env }); } catch { client = null; }
+      try { client = openJevClient(process.env, undefined, (options) => createTypeSafeSystemOneClient(options)); } catch { client = null; }
       dynamicsFilter = createBilibiliDynamicsFilter({
         feedRepository: dynamicStore.repositories.feed,
         env: process.env,

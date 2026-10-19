@@ -14,6 +14,7 @@ import {
   resolveEvidenceGateMode,
   roundScore,
 } from './evidence-gate.js';
+import { resolveJevEnabled } from '../../domain/src/jev-enabled.js';
 
 export const AGENT_QUALITY_WEIGHTS = Object.freeze({
   coverage: 0.25,
@@ -166,7 +167,7 @@ export function isRootTool(toolId) {
 }
 
 export function resolveAgentQualityConfig(env = process.env) {
-  const disabled = envFlag(env.AI_CENTER_JEV_DISABLED) === '1';
+  const disabled = !resolveJevEnabled(env) || envFlag(env.AI_CENTER_JEV_DISABLED) === '1';
   const priorRaw = envFlag(env.AI_CENTER_JEV_PRIOR);
   const priorMode = priorRaw === 'advisory' || priorRaw === 'off' || priorRaw === 'shadow'
     ? priorRaw

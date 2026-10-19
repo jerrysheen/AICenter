@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isJevOutage } from './jev-enabled.js';
 import { FeedCaptureContextSchema, FeedValueInputSchema, FeedValueScoresSchema,
   FeedValueDecisionSchema, FeedValueCalibrationSchema, FeedValueRuleSchema } from '../../contracts/src/feed-value.js';
 import { normalizeFeedQualityText, FEED_QUALITY_PROFILES } from './feed-quality.js';
@@ -120,9 +121,16 @@ export function createFeedValueEvaluator({client,model='',calibration=null,maxSt
     const p=FeedValueInputSchema.safeParse(rawInput),input=p.success?p.data:rawInput;
     let errorReason=p.success?preflight(input):'invalid-input',response=null,errorCode='',errorStatus=null;
     if(!errorReason && Buffer.byteLength(JSON.stringify(stateOf(input)),'utf8')>maxStateBytes) errorReason='input-too-large';
-    if(!errorReason && (!client?.evaluate || client.available?.()===false)) errorReason='jev-unavailable';
+    if(!errorReason && (!client?.evaluate || client.available?.()===false)) {
+      errorReason='jev-unavailable';
+      errorCode='TYPESAFE_UNAVAILABLE';
+    }
     if(!errorReason)try{response=await client.evaluate({state:stateOf(input),questions,signal,...(model?{model}:{})});}
-    catch(e){errorReason='jev-failed';errorCode=e?.code||'unknown';errorStatus=Number.isInteger(e?.status)?e.status:null;}
+    catch(e){
+      errorCode=e?.code||'unknown';
+      errorStatus=Number.isInteger(e?.status)?e.status:null;
+      errorReason=isJevOutage(e)?'jev-failed':'jev-rejected';
+    }
     const actualModel=response?.model||model,scores=response?parseFeedValueAnswers(response.answers):null;
     return {version:FEED_VALUE_VERSION,cacheKey:cacheKey(input),policyHash:feedValuePolicyHash(),model:actualModel,
       scores,rawAnswers:response?.answers||null,errorReason,errorCode,errorStatus,

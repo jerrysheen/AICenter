@@ -2248,7 +2248,7 @@ migrations.push({ version: 78, name: 'author_stats', up(database) {
 }});
 
 // 63 仍空着。79、80、82 留空。83 是 information_tree_heads 的 (workspace_id, layer, start_at) 索引。
-// 84 是 jobs(type, created_at DESC)，接在已合入的 77、78、81、83 之后。
+// 84 是 jobs(type, created_at DESC)。85 是带 xFocus.method 的 X captures 部分索引。
 export const unusedSchemaVersions = [63, 79, 80, 82];
 
 // 南向资金用 81，按 version 补执行，不看最大号。79、80、82 留空。
@@ -2303,6 +2303,10 @@ migrations.push({ version: 83, name: 'information_tree_heads_layer_start', up(da
 
 migrations.push({ version: 84, name: 'jobs_type_created', up(database) {
   database.exec('CREATE INDEX IF NOT EXISTS idx_jobs_type_created ON jobs(type, created_at DESC)');
+}});
+
+migrations.push({ version: 85, name: 'captures_x_focus', up(database) {
+  database.exec(`CREATE INDEX IF NOT EXISTS idx_captures_x_focus ON captures(workspace_id, captured_at) WHERE provider='x' AND json_extract(metadata_json,'$.xFocus.method') IS NOT NULL`);
 }});
 
 

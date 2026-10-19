@@ -13,6 +13,7 @@ import { loadDigestMaterials, materialsFromCollection } from '../../packages/dom
 import { loadInstanceEnvironment, resolveInstanceConfig } from '../../packages/instance/src/index.js';
 import { investorDigestRuntimeConfig } from '../../packages/runtime/src/investor-discussion-job.js';
 import { experimentPaths } from './investor-digest-ab.mjs';
+import { isMain } from '../../packages/runtime/src/is-main.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -112,7 +113,7 @@ export async function main(argvEnv = process.env) {
   return { output, source: 'xueqiu-refetch', posts, comments };
 }
 
-const isDirect = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isDirect = isMain(import.meta.url);
 if (isDirect) {
   main().catch((error) => {
     console.error(error?.message || error);

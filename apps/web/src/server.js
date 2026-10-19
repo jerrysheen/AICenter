@@ -19,6 +19,8 @@ import { parseBilibiliFeedQuery, parseMediaFeedQuery, parseTrendForceFeedQuery, 
 import { createAnalysisSkillCatalog, createConfiguredBrowserRuntime, createDeepSeekSearchProvider, createLauncherRestartPort, createLocalKnowledgeFiles, createPersonalAssetService, createTranslateService, createTypeSafeSystemOneClient } from '../../../packages/connectors/src/index.js';
 import { createAttachmentStore, createStore } from '../../../packages/database/src/index.js';
 import { createDomainServices, createFeedFilterFromEnv, createMediaIngestionService, resolveDailyConfig, resolveLoginCredential } from '../../../packages/domain/src/index.js';
+import { openJevClient } from '../../../packages/domain/src/jev-enabled.js';
+import { isMain } from '../../../packages/runtime/src/is-main.js';
 import { loadXFocusConfig } from '../../../packages/domain/src/x-focus.js';
 import { createXFocusService } from '../../../packages/domain/src/x-auto-like.js';
 import { createFeedTranslationChunkStore } from '../../../packages/runtime/src/feed-translation-module.js';
@@ -202,9 +204,14 @@ export function createAiCenterServer(options = {}) {
   });
   let services;
   const env = options.env || process.env;
-  const typesafeClient = options.typesafeClient || createTypeSafeSystemOneClient({ env });
+  const typesafeClient = openJevClient(env, options.typesafeClient, createTypeSafeSystemOneClient);
+  let xFocusConfig = options.xFocusConfig || null;
+  if (!xFocusConfig) {
+    try { xFocusConfig = loadXFocusConfig(instance.configDirectory); }
+    catch { xFocusConfig = null; }
+  }
   const feedFilter=options.feedFilter !== undefined ? options.feedFilter
-    : createFeedFilterFromEnv({client:typesafeClient,env,calibration:loadFeedValueCalibration(instance)});
+    : createFeedFilterFromEnv({client:typesafeClient,env,calibration:loadFeedValueCalibration(instance),xFocusConfig,log:(message)=>console.log(message)});
   const mediaConfig = loadMediaConfig(instance.configDirectory);
   const flashSources = options.flashSources || loadResolvedFlashSources({ configDirectory: instance.configDirectory, env, mediaSources: mediaConfig.sources });
   const mediaService = options.mediaService || (store.repositories?.media
@@ -335,7 +342,7 @@ export function createAiCenterServer(options = {}) {
     xFocus: (() => {
       try {
         return createXFocusService({
-          config: options.xFocusConfig || loadXFocusConfig(instance.configDirectory),
+          config: xFocusConfig || loadXFocusConfig(instance.configDirectory),
           env,
           feedRepository: store.repositories.feed,
           runtimeRepository: store,
@@ -647,7 +654,7 @@ async function main() {
   process.on('SIGTERM', shutdown);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   main().catch((error) => {
     console.error(error);
     process.exitCode = 1;

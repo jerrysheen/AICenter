@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-19-jev-fallback.md`：TypeSafe 白名单故障或 `AI_CENTER_JEV_ENABLED=false` 时，信息流按关注流、推荐流焦点/关键词和其他来源放行。阅读小时在分组成功时直接命中。质量刷新在关闭时不改已有 KEEP、DROP 和分数。10 月 18 日 00:00（北京时间）起卡住的抓取用补评脚本按原时间放行，并注意 Gemma 每天 5000 次。关闭期间不要点「质量刷新」。migration 85 只给带 xFocus 的 X 抓取加部分索引。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-19-mover-names.md`：股票总览领涨、领跌显示名字，副标是板块和代码。首屏快照带上板块。自选在同花顺兜底时先用目录名字，再用本进程记下的雪球名字。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
 - `progress/2026-10-18-x-focus-steer.md`：X 抓取先给卡片打 7 个方向的分数。推荐流只展开相关度至少 0.75 的帖；关注流仍展开被截断的帖，每轮最多 8 条。自动点赞默认关。服务器必须设置 `AI_CENTER_HARNESS_HOURLY_PROVIDER=google`。migration 84 只建任务索引。需要同时重启 Web 和 Worker。
 - `progress/2026-10-16-feed-report.md`：小时报主时间和排序改用入库时间，发布时间早于窗口时另写「发布于 …」，`timely=false` 放进默认收起的「旧闻补录」。信息流每个范围都显式设置 channel。首页和简报只读已发布的信息树日报，同一工作区缓存 60 秒，新一期发布后失效。bootstrap 仍带 `brief` 别名。小时变化时写入浏览器历史。从原文返回小时报时恢复该小时的滚动和展开。快讯入库时拆开 `【…】` 标题，不回填旧行。问答预览只去掉成对强调和行首标记。migration 83 只加索引。需要同时重启 Web 和 Worker。

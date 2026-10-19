@@ -1,5 +1,7 @@
 import { createFeedValueEvaluator, normalizeFeedValueText, FEED_VALUE_VERSION, FEED_VALUE_RULE, feedValueRuleHash } from './feed-value.js';
 import { FeedValueRuleSchema } from '../../contracts/src/feed-value.js';
+import { isJevOutage, resolveJevEnabled } from './jev-enabled.js';
+import { focusFeedFromSource, keywordFocus } from './x-focus.js';
 export const FEED_FILTER_VERSION = FEED_VALUE_VERSION;
 
 // V1 remains explicitly selectable; V2 is a frozen offline comparison.
@@ -48,6 +50,24 @@ function combinedText(fields) {
     .join('\n');
 }
 
+const AD_TERMS = Object.freeze([
+  '返佣', '拉群', '加群', '收费群', '课程招揽', '联盟返佣', '联盟营销',
+  '优惠券', '立即购买', '点击购买', '加微信', '私信领取', '推广链接',
+  'sponsored', 'affiliate', 'advertisement', 'promo code',
+]);
+// 经营事实不是推销。「广告业」后面不接「务」时，不会落到「广告业务」这条例外里，所以单独排除。
+const AD_MARK = /广告(?!收入|营收|费|费用|支出|投放|业绩|业务|主|商|市场|业(?!务))/u;
+
+function flagOff(value) {
+  const raw = envFlag(value);
+  return raw === 'off' || raw === '0' || raw === 'false';
+}
+
+function finiteUnit(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 && number <= 1 ? number : fallback;
+}
+
 export function resolveFeedFilterConfig(env = process.env) {
   const raw = envFlag(env.AI_CENTER_FEED_FILTER);
   const mode = raw === 'enforce' || raw === 'off' ? raw : 'shadow';
@@ -55,7 +75,52 @@ export function resolveFeedFilterConfig(env = process.env) {
     mode,
     version: text(env.AI_CENTER_FEED_FILTER_VERSION, FEED_FILTER_VERSION),
     rule: FeedValueRuleSchema.parse(text(env.AI_CENTER_FEED_FILTER_RULE, FEED_VALUE_RULE)),
+    fallback: !flagOff(env.AI_CENTER_FEED_FILTER_FALLBACK),
+    jevEnabled: resolveJevEnabled(env),
+    xFocusMin: finiteUnit(env.AI_CENTER_FEED_FILTER_XFOCUS_MIN, 0.7),
   });
+}
+
+export function looksLikeFeedAd(value) {
+  const hay = String(value || '');
+  if (AD_MARK.test(hay)) return true;
+  const lower = hay.toLowerCase();
+  return AD_TERMS.some((term) => lower.includes(term.toLowerCase()));
+}
+
+function admissionText(input = {}) {
+  const item = isRecord(input.item) ? input.item : {};
+  return [item.title, item.summary, item.body, input.originalText, item.originalText]
+    .map((value) => String(value || ''))
+    .join('\n');
+}
+
+// Technical jev outage only. Following is kept. For-you needs a focus score or a
+// keyword hit, and both of those paths drop ads. Every other provider is kept.
+export function decideFeedAdmissionFallback(input = {}, {
+  xFocusConfig = null,
+  xFocusMin = 0.7,
+  prefix = 'fallback',
+} = {}) {
+  const item = isRecord(input.item) ? input.item : {};
+  const provider = String(input.provider || item.provider || '').toLowerCase();
+  const sourceExternalId = String(input.sourceExternalId || item.sourceExternalId || '');
+  const minScore = finiteUnit(xFocusMin, 0.7);
+  if (provider === 'x') {
+    if (focusFeedFromSource(sourceExternalId) === 'following') {
+      return { admit: true, reason: `${prefix}-following` };
+    }
+    const body = admissionText(input);
+    if (looksLikeFeedAd(body)) return { admit: false, reason: `${prefix}-ad` };
+    const focus = isRecord(item.xFocus) ? item.xFocus : (isRecord(input.xFocus) ? input.xFocus : null);
+    const score = Number(focus?.focusScore);
+    if (Number.isFinite(score) && score >= minScore) return { admit: true, reason: `${prefix}-xfocus` };
+    if (xFocusConfig && keywordFocus(body, xFocusConfig).focusScore > 0) {
+      return { admit: true, reason: `${prefix}-keyword` };
+    }
+    return { admit: false, reason: prefix };
+  }
+  return { admit: true, reason: `${prefix}-source` };
 }
 
 export function hasSubstantialText(value) {
@@ -203,9 +268,11 @@ function verdict({
   });
 }
 
-export function createFeedFilter({ client = null, config, lookup = {}, calibration = null } = {}) {
+export function createFeedFilter({ client = null, config, lookup = {}, calibration = null, xFocusConfig = null, log } = {}) {
   const resolved = config || resolveFeedFilterConfig();
-  if (resolved.version === FEED_VALUE_VERSION) return createFeedValueFilter({ client, config: resolved, lookup, calibration });
+  if (resolved.version === FEED_VALUE_VERSION) {
+    return createFeedValueFilter({ client, config: resolved, lookup, calibration, xFocusConfig, log });
+  }
   if (resolved.version !== 'feed-filter-v1') throw new Error('Unsupported feed filter version');
 
   return Object.freeze({
@@ -284,9 +351,21 @@ export function createFeedFilter({ client = null, config, lookup = {}, calibrati
   });
 }
 
-function createFeedValueFilter({ client, config, lookup, calibration }) {
+function createFeedValueFilter({ client, config, lookup, calibration, xFocusConfig = null, log = () => {} }) {
   const rule=FeedValueRuleSchema.parse(config.rule || 'calibrated-value');
-  const evaluator = createFeedValueEvaluator({ client, model: calibration?.model || client?.modelId || '', calibration, rule });
+  const jevEnabled = config.jevEnabled !== false;
+  const fallbackOn = jevEnabled ? config.fallback !== false : true;
+  const evaluator = createFeedValueEvaluator({
+    client: jevEnabled ? client : null,
+    model: calibration?.model || client?.modelId || '',
+    calibration,
+    rule,
+  });
+  const warnStreak = Number(config.warnStreak) > 0 ? Number(config.warnStreak) : 20;
+  const warnGapMs = Number(config.warnGapMs) >= 0 ? Number(config.warnGapMs) : 10 * 60_000;
+  const now = typeof config.now === 'function' ? config.now : () => Date.now();
+  let streak = 0;
+  let lastWarnAt = 0;
   return Object.freeze({ config, async evaluate(input = {}) {
     if (config.mode === 'off') return verdict({ action:'keep', reason:'off', stage:'off', mode:config.mode, version:config.version });
     const duplicate = evaluateDeterministic(input, lookup);
@@ -295,25 +374,63 @@ function createFeedValueFilter({ client, config, lookup, calibration }) {
     const normalized=normalizeFeedValueText(fields.originalText || fields.body || fields.summary,
       { title:fields.title, authorName:fields.authorName, capture });
     const result=await evaluator.evaluate(normalized,{signal:input.signal});
+    const outage = isJevOutage(result);
+    if (jevEnabled && outage) {
+      streak += 1;
+      const at = now();
+      if (streak >= warnStreak && at - lastWarnAt >= warnGapMs) {
+        lastWarnAt = at;
+        try { log(`[worker] jev 连续技术失败 ${streak} 次，信息流准入已进入兜底`); } catch { /* logging must not change admission */ }
+      }
+    } else if (jevEnabled && !result.errorReason) {
+      streak = 0;
+    }
+    let decision = result.decision;
+    let admittedByFallback = false;
+    if (outage && fallbackOn && rule === FEED_VALUE_RULE) {
+      const prefix = jevEnabled ? 'fallback' : 'jev-disabled';
+      const admission = decideFeedAdmissionFallback(input, {
+        xFocusConfig,
+        xFocusMin: config.xFocusMin,
+        prefix,
+      });
+      if (admission.admit) {
+        admittedByFallback = true;
+        decision = { ...decision, decision: 'KEEP', reason: admission.reason, reviewKind: 'none' };
+      } else if (!jevEnabled) {
+        decision = { ...decision, decision: 'REVIEW', reason: 'jev-disabled', reviewKind: 'technical' };
+      }
+    }
     // Explicit enforce of the user-selected rule is independent of empirical calibration qualification.
     const strictAdmission=rule===FEED_VALUE_RULE;
     const canDrop=strictAdmission || rule==='two-of-three-0.60' || config.mode!=='enforce' || calibration?.productionQualified===true;
-    const blocked=strictAdmission ? result.decision.decision!=='KEEP' : result.decision.decision==='DROP';
+    const blocked=strictAdmission ? decision.decision!=='KEEP' : decision.decision==='DROP';
     const action=blocked && canDrop?'ignore':'keep';
-    const output=verdict({action,reason:result.decision.reason,stage:'jev-value',mode:config.mode,
+    const output=verdict({action,reason:decision.reason,stage:'jev-value',mode:config.mode,
       version:config.version,model:result.model,scores:result.scores || {},failOpen:!strictAdmission && result.decision.reviewKind==='technical'});
-    return {...output,...(strictAdmission && config.mode==='enforce' && result.decision.decision==='REVIEW'?{status:'captured'}:{}),metadata:{...output.metadata,filterDecision:result.decision.decision,
-      filterReviewKind:result.decision.reviewKind,filterScores:result.scores,
+    const evaluatedAt = now();
+    return {...output,...(strictAdmission && config.mode==='enforce' && decision.decision==='REVIEW'?{status:'captured'}:{}),metadata:{...output.metadata,filterDecision:decision.decision,
+      filterReviewKind:decision.reviewKind,filterScores:result.scores,
       filterPolicyHash:result.policyHash,filterCacheKey:result.cacheKey,
       calibrationApplied:calibration?.sampleHash || '',enforceQualified:calibration?.productionQualified===true,
       filterMode:config.mode,filterApplied:output.action==='ignore',filterRule:rule,filterRuleHash:feedValueRuleHash(rule),
       captureContext:input.item?.captureContext || {},
-      qualityMissingParts:normalized.missingParts}};
+      qualityMissingParts:normalized.missingParts,
+      filterErrorCode: result.errorCode || '',
+      filterErrorStatus: Number.isInteger(result.errorStatus) ? result.errorStatus : null,
+      ...(admittedByFallback ? { fallbackAt: new Date(evaluatedAt).toISOString() } : {})}};
   }});
 }
 
-export function createFeedFilterFromEnv({ client = null, env = process.env, lookup, calibration } = {}) {
+export function createFeedFilterFromEnv({ client = null, env = process.env, lookup, calibration, xFocusConfig = null, log } = {}) {
   const config = resolveFeedFilterConfig(env);
   if (config.mode === 'off') return null;
-  return createFeedFilter({ client, config, lookup, calibration });
+  return createFeedFilter({
+    client: config.jevEnabled ? client : null,
+    config,
+    lookup,
+    calibration,
+    xFocusConfig,
+    log,
+  });
 }
