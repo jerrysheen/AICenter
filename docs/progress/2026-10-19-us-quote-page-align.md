@@ -25,6 +25,8 @@
 
 `node --test test/quote-card-align.test.js test/markets.test.js test/mover-names.test.js`。个股页在总览卡片更新时取卡片上的现价和涨跌，不用更早的美股分览行。已有现价时日 K 不覆盖。目录里不再有「名字是另一只代码前缀」的美股、亚洲和 A 股。全球资产行带上 `quoteSymbol`。
 
+全量 `node --test`：本分支 1662 项，通过 1643，失败 17，跳过 2。`origin/main`（ecec45a）1660 项，通过 1641，失败 17，跳过 2。失败名单相同，没有新增失败。多出来的 2 项是这次的个股页和目录检查。
+
 ## 遗留
 
 不新增 migration，schema 版本不变。空号仍是 63、79、80、82，87 未使用。不要重建数据库。需要同时重启 Web 和 Worker，浏览器再加载一次。
