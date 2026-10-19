@@ -11,3 +11,5 @@
 `node scripts/backfill-xueqiu-avatars.mjs --dry-run`
 
 `node scripts/backfill-xueqiu-avatars.mjs`
+
+`npm test`：最新 main `526b0ec` 是 1734 项，1715 通过，17 失败，2 跳过。这条分支是 1723 项，1704 通过，17 失败，2 跳过。17 条失败名字相同。总数少 11，是因为分支还没包含已经进 main 的 #152，同时带有还没进 main 的 #153 和 #154。
