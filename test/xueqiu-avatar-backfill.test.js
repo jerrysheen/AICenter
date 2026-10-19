@@ -13,6 +13,11 @@ test('xueqiu avatar backfill rewrites relative paths and can dry-run', () => {
     normalizeXueqiuAvatar('community/2017x/a.jpg,community/2017x/a.jpg!180x180.jpg'),
     'https://xavatar.imedao.com/community/2017x/a.jpg',
   );
+  assert.equal(
+    normalizeXueqiuAvatar('http://xavatar.imedao.com/community/2017x/c.jpg'),
+    'https://xavatar.imedao.com/community/2017x/c.jpg',
+  );
+  assert.equal(normalizeXueqiuAvatar('http://xqimg.imedao.com/a.png'), 'http://xqimg.imedao.com/a.png');
   const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-xq-avatar-'));
   const file = path.join(directory, 'ai-center.db');
   const store = createStore(file);
@@ -24,7 +29,8 @@ test('xueqiu avatar backfill rewrites relative paths and can dry-run', () => {
       VALUES
       ('local', 'xueqiu:1', 'xueqiu', '1', 'a', '甲', 'community/2017x/a.jpg,community/2017x/a.jpg!180x180.jpg', '', '', 'person', 0, '[]', 0),
       ('local', 'xueqiu:2', 'xueqiu', '2', 'b', '乙', 'https://xavatar.imedao.com/community/ok.jpg', '', '', 'person', 0, '[]', 0),
-      ('local', 'x:1', 'x', '1', 'c', '丙', 'https://pbs.twimg.com/profile_images/a.jpg', '', '', 'person', 0, '[]', 0)`).run();
+      ('local', 'x:1', 'x', '1', 'c', '丙', 'https://pbs.twimg.com/profile_images/a.jpg', '', '', 'person', 0, '[]', 0),
+      ('local', 'xueqiu:3', 'xueqiu', '3', 'd', '丁', 'http://xavatar.imedao.com/community/2017x/c.jpg', '', '', 'person', 0, '[]', 0)`).run();
     database.prepare(`INSERT INTO captures
       (id, workspace_id, provider, external_id, source_url, title, content_hash, captured_at, metadata_json)
       VALUES (?, 'local', 'xueqiu', 'ext-1', '', '', 'hash-1', 1, ?)`).run(
@@ -32,13 +38,18 @@ test('xueqiu avatar backfill rewrites relative paths and can dry-run', () => {
       JSON.stringify({ authorProfile: { avatarUrl: 'community/2017x/b.jpg', name: '甲' } }),
     );
     const preview = backfillXueqiuAvatars(database, { dryRun: true });
-    assert.equal(preview.authors, 1);
+    assert.equal(preview.authors, 2);
     assert.equal(preview.captures, 1);
     assert.equal(preview.dryRun, true);
     assert.match(database.prepare(`SELECT avatar_url FROM authors WHERE author_id = 'xueqiu:1'`).get().avatar_url, /^community\//);
+    assert.match(database.prepare(`SELECT avatar_url FROM authors WHERE author_id = 'xueqiu:3'`).get().avatar_url, /^http:\/\//);
     const applied = backfillXueqiuAvatars(database, { dryRun: false });
-    assert.equal(applied.authors, 1);
+    assert.equal(applied.authors, 2);
     assert.equal(applied.captures, 1);
+    assert.equal(
+      database.prepare(`SELECT avatar_url FROM authors WHERE author_id = 'xueqiu:3'`).get().avatar_url,
+      'https://xavatar.imedao.com/community/2017x/c.jpg',
+    );
     assert.equal(
       database.prepare(`SELECT avatar_url FROM authors WHERE author_id = 'xueqiu:1'`).get().avatar_url,
       'https://xavatar.imedao.com/community/2017x/a.jpg',

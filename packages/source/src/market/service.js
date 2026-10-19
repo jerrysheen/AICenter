@@ -188,7 +188,7 @@ export function createMarketService(options = {}) {
     return got;
   }
 
-  async function cached(key, loader, { refresh = false, ttl = ttlMs } = {}) {
+  async function cached(key, loader, { refresh = false, ttl = ttlMs, signal } = {}) {
     const timestamp = now();
     if (!refresh) {
       const hit = cache.get(key);
@@ -204,6 +204,7 @@ export function createMarketService(options = {}) {
       timer = setTimeout(() => reject(new Error('行情请求超时')), inflightTimeoutMs);
     });
     const task = Promise.race([loaderPromise, timeout]).then((payload) => {
+      if (signal?.aborted) return payload;
       const previous = cache.get(key);
       if (previous && payloadHasQuotes(previous.payload) && !payloadHasQuotes(payload)) {
         return keepPrevious(key, previous, timestamp);
@@ -224,6 +225,7 @@ export function createMarketService(options = {}) {
       if (pending.get(key) === task) pending.delete(key);
     });
     loaderPromise.then((payload) => {
+      if (signal?.aborted) return;
       if (attempts.get(key) !== attempt || pending.get(key) === task || !payloadHasQuotes(payload)) return;
       const previous = cache.get(key);
       const at = now();
@@ -259,7 +261,7 @@ export function createMarketService(options = {}) {
           marketCatalog,
         });
       }
-    }, { refresh });
+    }, { refresh, signal });
   }
 
   async function loadGlobal({ refresh = false, signal } = {}) {
@@ -288,7 +290,7 @@ export function createMarketService(options = {}) {
           marketCatalog,
         });
       }
-    }, { refresh });
+    }, { refresh, signal });
   }
 
   function stampLiveClose(sparkline, lastPrice, lastAt) {
@@ -353,7 +355,7 @@ export function createMarketService(options = {}) {
           marketCatalog,
         }));
       }
-    }, { refresh });
+    }, { refresh, signal });
   }
 
   async function loadAsia(extraSymbols, { refresh = false, signal } = {}) {
@@ -380,7 +382,7 @@ export function createMarketService(options = {}) {
           marketCatalog,
         });
       }
-    }, { refresh });
+    }, { refresh, signal });
   }
 
   async function fetchYahooQuotes(symbols, { refresh = false, signal } = {}) {
@@ -410,7 +412,7 @@ export function createMarketService(options = {}) {
         reportQuotes('行情', symbols.length, []);
         return [];
       }
-    }, { refresh });
+    }, { refresh, signal });
   }
 
   function mapQuote(item, sessionFallback = 'regular') {
@@ -444,7 +446,7 @@ export function createMarketService(options = {}) {
       } catch {
         return [];
       }
-    }, { refresh });
+    }, { refresh, signal });
   }
 
   async function fetchSinaFutures(symbols, { refresh = false, signal } = {}) {
@@ -455,7 +457,7 @@ export function createMarketService(options = {}) {
       } catch {
         return [];
       }
-    }, { refresh });
+    }, { refresh, signal });
   }
 
   async function fetchXueqiuQuotes(symbols, { refresh = false, signal } = {}) {
@@ -466,7 +468,7 @@ export function createMarketService(options = {}) {
       } catch {
         return [];
       }
-    }, { refresh, ttl: xueqiuTtlMs });
+    }, { refresh, signal, ttl: xueqiuTtlMs });
   }
 
   async function fetchQuotes(symbols, { refresh = false, signal } = {}) {
