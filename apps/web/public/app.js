@@ -123,6 +123,8 @@ const state = {
   changeSort: 'none',
   marketFilter: '',
   markets: { overview: null, us: null, asia: null, cn: null },
+  marketSeenAt: {},
+  quoteFollowBoard: '',
   marketLoading: false,
   marketPending: {},
   marketError: '',
@@ -1114,6 +1116,13 @@ function pageHash(kind = state.pageKind, id = state.pageId) {
   return id ? `#${kind}/${id}` : `#${kind}`;
 }
 
+function openQuote(symbol, boardId) {
+  const code = String(symbol || '').trim();
+  if (!code) return;
+  state.quoteFollowBoard = boardId || state.stockBoard || 'overview';
+  openPage('quote', code);
+}
+
 function openPage(kind, id = '', { back = false } = {}) {
   if (!back && (document.body.dataset.view !== 'page' || state.pageKind !== kind || state.pageId !== String(id || ''))) {
     state.trail.push(location.hash || '#sources');
@@ -1388,7 +1397,14 @@ function setView(name, options = {}) {
     renderChannels();
     renderPosts();
   }
-  if (view === 'feed' && (leaving || options.replace)) scrollFeedToTop();
+  const openingQuote = view === 'page' && state.pageKind === 'quote'
+    && (previous !== 'page' || previousPageKind !== 'quote' || previousPageId !== state.pageId);
+  if (openingQuote) viewScrollY.page = 0;
+  if (openingQuote) {
+    const apply = () => window.scrollTo(0, 0);
+    apply();
+    requestAnimationFrame(() => requestAnimationFrame(apply));
+  } else if (view === 'feed' && (leaving || options.replace)) scrollFeedToTop();
   else if (leaving && !reportViewOwnsScroll(view, briefPage.hasHourScroll())) restoreViewScroll(view);
   else if (newArticle) window.scrollTo(0, 0);
   persistFeedBrowseState();
@@ -5989,6 +6005,9 @@ async function loadGlobalAssets() {
     const payload = await api('/api/v1/markets?board=global', { timeoutMs: 25_000 });
     if (requestId !== state.assetRequestId) return;
     state.assetBoard = payload.market;
+    if (state.assetBoard && !state.assetBoard.board) state.assetBoard.board = 'global';
+    noteMarketSeen(state.assetBoard?.board || 'global');
+    syncOpenQuote();
   } catch (error) {
     if (requestId !== state.assetRequestId) return;
     state.assetError = error instanceof Error ? error.message : '全球行情加载失败';
@@ -6510,6 +6529,7 @@ async function loadMarket({ board = state.stockBoard, priority = 4, fresh = fals
     const accepted = acceptMarketPayload(previous, payload.market);
     const boardName = payload.market?.board || board;
     state.markets[boardName] = accepted;
+    noteMarketSeen(boardName);
     state.marketPending[boardName] = Boolean(payload.pending);
     if (payload.pending) scheduleMarketFill(boardName);
     else clearMarketFill(boardName);
@@ -6520,6 +6540,7 @@ async function loadMarket({ board = state.stockBoard, priority = 4, fresh = fals
       if (state.stockBoard === 'overview') renderMarket();
       else renderHub();
     }
+    syncOpenQuote();
     scheduleOverviewFocusWatch();
   } catch (error) {
     if (marketPayloadHasQuotes(state.markets[board]) && (!isActiveBoard || requestId === state.marketRequestId)) {
@@ -6738,7 +6759,7 @@ function renderHubTicker() {
       spinner.setAttribute('aria-label', '行情加载中');
       button.append(spinner);
     }
-    button.addEventListener('click', () => openPage('quote', item.symbol));
+    button.addEventListener('click', () => openQuote(item.symbol, 'overview'));
     return button;
   }));
   if (elements['hub-market-note']) {
@@ -8072,6 +8093,8 @@ function applyProjectedHome(projected, token) {
   if (projected.market) {
     const board = projected.market.board || 'overview';
     state.markets[board] = acceptMarketPayload(state.markets[board], projected.market);
+    noteMarketSeen(board);
+    syncOpenQuote();
     if (marketPayloadHasQuotes(state.markets[board])) state.marketBoardErrors[board] = '';
     state.marketPending[board] = Boolean(projected.marketPending);
     if (projected.marketPending) scheduleMarketFill(board);
@@ -8543,7 +8566,7 @@ function renderMovers(list, title) {
     change.className = up ? 'up' : 'down';
     change.textContent = item.changePct === null ? '—' : formatPct(up, item.changePct);
     row.append(identity, change);
-    row.addEventListener('click', () => openPage('quote', item.symbol));
+    row.addEventListener('click', () => openQuote(item.symbol, 'overview'));
     article.append(row);
   }
   if (!rows.length) {
@@ -8664,7 +8687,7 @@ function renderWatchRows(target, rows, { formatValue } = {}) {
     row.addEventListener('click', () => {
       if (item.compute) return;
       if (item.hardware) openPage('hardware', `series/${item.hardware.seriesKey}`);
-      else openPage('quote', item.symbol);
+      else openQuote(item.symbol, item.quoteSymbol || state.tradePane === 'assets' ? 'global' : (state.stockBoard || 'overview'));
     });
     return row;
   }));
@@ -8807,7 +8830,7 @@ function renderSouthboundCard(payload) {
         Object.assign(document.createElement('span'), { textContent: item.name || item.code }),
         southboundAmount(item.net),
       );
-      if (item.symbol) button.addEventListener('click', () => openPage('quote', item.symbol));
+      if (item.symbol) button.addEventListener('click', () => openQuote(item.symbol, 'cn'));
       block.append(button);
     }
     lists.append(block);
@@ -9954,40 +9977,85 @@ function scheduleRow(event) {
   return button;
 }
 
+function noteMarketSeen(boardName) {
+  const id = String(boardName || '').trim();
+  if (!id) return;
+  state.marketSeenAt = { ...(state.marketSeenAt || {}), [id]: Date.now() };
+}
+
+function quoteSeenAt(board) {
+  const id = String(board?.board || '').trim();
+  const stamped = Number(state.marketSeenAt?.[id]);
+  if (Number.isFinite(stamped) && stamped > 0) return stamped;
+  const fetched = Number(board?.fetchedAt);
+  return Number.isFinite(fetched) ? fetched : 0;
+}
+
+function quoteRequestSymbol(quote, symbol) {
+  const request = String(quote?.quoteSymbol || symbol || quote?.symbol || '').trim();
+  return request || String(symbol || '').trim();
+}
+
 function quoteCandidates() {
-  const boards = [state.markets.us, state.markets.asia, state.markets.cn, state.markets.overview];
-  const fromBoards = boards.flatMap((board) => [
-    ...(board?.indices || []),
-    ...(board?.watchlist || []),
-    ...(board?.gainers || []),
-    ...(board?.losers || []),
-  ]);
-  const fromSections = (state.markets.overview?.sections || []).flatMap((section) => [
-    ...(section?.indices || []),
-    ...(section?.gainers || []),
-    ...(section?.losers || []),
-  ]);
-  return [
-    ...fromBoards,
-    ...fromSections,
-    ...(state.assetBoard?.watchlist || []),
-    ...hubQuotes(),
-    ...Object.values(state.liveQuotes || {}),
-  ];
+  const tagged = [];
+  const pushAll = (rows, boardId, seenAt) => {
+    for (const item of rows || []) {
+      if (item) tagged.push({ item, boardId, seenAt });
+    }
+  };
+  const boards = [state.markets?.us, state.markets?.asia, state.markets?.cn, state.markets?.overview, state.assetBoard];
+  for (const board of boards) {
+    if (!board) continue;
+    const boardId = String(board.board || '').trim();
+    const seenAt = quoteSeenAt(board);
+    pushAll(board.indices, boardId, seenAt);
+    pushAll(board.watchlist, boardId, seenAt);
+    pushAll(board.gainers, boardId, seenAt);
+    pushAll(board.losers, boardId, seenAt);
+    for (const section of board.sections || []) {
+      pushAll(section.indices, boardId, seenAt);
+      pushAll(section.gainers, boardId, seenAt);
+      pushAll(section.losers, boardId, seenAt);
+    }
+  }
+  pushAll(hubQuotes(), 'overview', quoteSeenAt(state.markets?.overview));
+  for (const item of Object.values(state.liveQuotes || {})) {
+    pushAll([item], 'live', Number(item?.clientSeenAt) || 0);
+  }
+  return tagged;
 }
 
 function findQuote(symbol) {
   const key = String(symbol || '').trim().toUpperCase();
-  const matches = quoteCandidates().filter((item) => String(item?.symbol || '').trim().toUpperCase() === key);
+  const matches = quoteCandidates().filter((entry) => String(entry.item?.symbol || '').trim().toUpperCase() === key);
   const realName = (item) => {
     const name = String(item?.name || '').trim();
-    return name && name.toUpperCase() !== key;
+    return Boolean(name && name.toUpperCase() !== key);
   };
-  return matches.find((item) => item?.lastPrice != null && realName(item))
-    || matches.find((item) => item?.lastPrice != null)
-    || matches.find((item) => realName(item))
-    || matches[0]
+  const follow = String(state.quoteFollowBoard || '');
+  matches.sort((left, right) => {
+    const leftPrice = left.item?.lastPrice != null ? 1 : 0;
+    const rightPrice = right.item?.lastPrice != null ? 1 : 0;
+    if (leftPrice !== rightPrice) return rightPrice - leftPrice;
+    const leftFollow = follow && left.boardId === follow ? 1 : 0;
+    const rightFollow = follow && right.boardId === follow ? 1 : 0;
+    if (leftFollow !== rightFollow) return rightFollow - leftFollow;
+    if ((right.seenAt || 0) !== (left.seenAt || 0)) return (right.seenAt || 0) - (left.seenAt || 0);
+    const leftName = realName(left.item) ? 1 : 0;
+    const rightName = realName(right.item) ? 1 : 0;
+    return rightName - leftName;
+  });
+  return matches[0]?.item
     || { symbol, name: symbol, lastPrice: null, changePct: null, prevClose: null, asOf: null, session: 'closed' };
+}
+
+function syncOpenQuote() {
+  if (document.body?.dataset?.view !== 'page' || state.pageKind !== 'quote') return;
+  const wrap = document.querySelector?.('.quote-detail');
+  if (!wrap) return;
+  const quote = findQuote(state.pageId);
+  if (quote?.lastPrice == null) return;
+  paintQuoteFigures(wrap, { ...quote, symbol: quote.symbol || state.pageId });
 }
 
 function quoteInstant(item) {
@@ -10138,8 +10206,9 @@ function renderQuotePage() {
     tabs.append(button);
   });
   root.replaceChildren(wrap);
-  if (quote.lastPrice == null) loadLiveQuote(symbol, wrap).catch(() => {});
-  loadQuoteHistory(symbol, wrap.querySelector('#quote-chart-host')).catch((error) => showToast(error.message));
+  const requestSymbol = quoteRequestSymbol(quote, symbol);
+  if (quote.lastPrice == null) loadLiveQuote(requestSymbol, wrap).catch(() => {});
+  loadQuoteHistory(requestSymbol, wrap.querySelector('#quote-chart-host')).catch((error) => showToast(error.message));
   if (/^\d{1,5}\.HK$/i.test(symbol)) loadSouthboundHistory(symbol, wrap);
 }
 
@@ -10177,9 +10246,19 @@ async function loadLiveQuote(symbol, wrap) {
   if (requestId !== state.quoteLiveRequestId || !wrap?.isConnected) return;
   const quote = payload?.quote;
   if (!quote || quote.lastPrice == null) return;
-  const key = String(quote.symbol || symbol).toUpperCase();
-  state.liveQuotes = { ...(state.liveQuotes || {}), [key]: quote };
-  paintQuoteFigures(wrap, { ...quote, symbol: quote.symbol || symbol });
+  const displaySymbol = String(state.pageId || symbol || quote.symbol || '').trim();
+  const key = displaySymbol.toUpperCase();
+  const request = String(quote.symbol || symbol || '').trim();
+  state.liveQuotes = {
+    ...(state.liveQuotes || {}),
+    [key]: {
+      ...quote,
+      symbol: displaySymbol || request,
+      ...(request && request.toUpperCase() !== (displaySymbol || request).toUpperCase() ? { quoteSymbol: request } : {}),
+      clientSeenAt: Date.now(),
+    },
+  };
+  paintQuoteFigures(wrap, state.liveQuotes[key]);
 }
 
 async function loadQuoteHistory(symbol, host) {
@@ -15603,6 +15682,9 @@ async function completeAuthorizedStart(session) {
       syncHarmonyLocalInspirations().catch(() => {});
       if (!state.session) return;
       if (document.body.dataset.view === 'sources') loadMarket({ board: 'overview' }).catch(() => {});
+      if (document.body.dataset.view === 'page' && state.pageKind === 'quote') {
+        loadMarket({ board: state.quoteFollowBoard || 'overview', priority: 2 }).catch(() => {});
+      }
       if (isQuotesView()) {
         if (state.tradePane === 'stocks') loadMarket().catch(() => {});
         if (state.tradePane === 'assets') {if(state.assetClass!=='hardware')loadGlobalAssets().catch(() => {});loadHardwarePrices().catch(() => {});}

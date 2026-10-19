@@ -7,7 +7,7 @@ import { ValidationError } from '../packages/contracts/src/errors.js';
 import { isApiTokenAllowlisted } from '../apps/web/src/http/api-token-access.js';
 import { createTradingService } from '../packages/domain/src/trading-service.js';
 import { createMarketService } from '../packages/source/src/market/service.js';
-import { buildCnMarketBoard, quoteDisplayName } from '../packages/source/src/market/boards.js';
+import { buildCnMarketBoard, buildUsMarketBoard, conflictingTickerAlias, listedQuoteName, quoteDisplayName } from '../packages/source/src/market/boards.js';
 import { EXTRA_QUOTE_TIMEOUT_MS, withMarketClock } from '../packages/source/src/market/board-read.js';
 import { createRouter } from '../apps/web/src/http/router.js';
 import { createTradingRoutes } from '../apps/web/src/routes/trading-routes.js';
@@ -51,6 +51,27 @@ test('quote display name prefers the catalog, then the live name, then the remem
     rememberedName: '宁德时代',
   }), '宁德时代');
   assert.equal(quoteDisplayName({ symbol: '300750.SZ', quotedName: '300750.SZ' }), '300750.SZ');
+  assert.equal(quoteDisplayName({
+    symbol: 'TTMI',
+    quotedName: 'TTM Technologies, Inc.',
+    catalogName: 'TTM',
+  }), 'TTM Technologies, Inc.');
+  assert.equal(listedQuoteName({
+    symbol: 'TTMI',
+    listedName: 'TTM Technologies',
+    quotedName: 'TTM Technologies, Inc.',
+  }), 'TTM Technologies');
+  assert.equal(listedQuoteName({
+    symbol: 'SOXL',
+    listedName: 'SOXL',
+    quotedName: 'Direxion Daily Semiconductor Bull 3X Shares',
+  }), 'Direxion Daily Semiconductor Bull 3X Shares');
+  assert.equal(listedQuoteName({
+    symbol: 'NVDA',
+    listedName: 'NVIDIA',
+    quotedName: 'NVIDIA Corporation',
+  }), 'NVIDIA');
+  assert.equal(listedQuoteName({ symbol: 'AAPL', listedName: 'Apple', quotedName: 'Apple Inc.' }), 'Apple');
 });
 
 test('cn board keeps the quote provider instead of labeling every row market', () => {
@@ -258,7 +279,7 @@ test('quote route returns 504 when the quote read exceeds 10 seconds', async () 
 
 test('the quote page reads overview cards and labels a daily-bar fallback', () => {
   assert.match(functionSource('findQuote'), /quoteCandidates/);
-  assert.match(functionSource('quoteCandidates'), /overview\?\.sections/);
+  assert.match(functionSource('quoteCandidates'), /board\.sections/);
   assert.match(functionSource('renderOverview'), /data-overview-key/);
   assert.match(functionSource('renderOverview'), /dataset\?\.symbol/);
   assert.match(functionSource('renderMovers'), /dataset\.symbol/);
@@ -300,6 +321,7 @@ test('the quote page reads overview cards and labels a daily-bar fallback', () =
     document: { createElement: (tag) => ({ tag, className: '', textContent: '', children: [], append(...nodes) { this.children.push(...nodes); } }) },
   });
   vm.runInContext([
+    functionSource('quoteSeenAt'),
     functionSource('quoteCandidates'),
     functionSource('findQuote'),
     functionSource('quoteInstant'),
@@ -344,4 +366,130 @@ test('the quote page reads overview cards and labels a daily-bar fallback', () =
   assert.equal(last.textContent.includes('77'), true);
   assert.match(basis.textContent, /^日K 10月16日 · 基准 /);
   assert.equal(opened.length, 0);
+  last.textContent = '100.01';
+  const keptBasis = basis.textContent;
+  context.__paint(host, [
+    { at: barAt - 86_400_000, close: 90 },
+    { at: barAt, close: 93.88 },
+  ]);
+  assert.equal(last.textContent, '100.01');
+  assert.equal(basis.textContent, keptBasis);
+});
+
+test('a US stock page follows the overview card instead of an older board row', () => {
+  const friday = Date.parse('2026-10-16T20:00:00Z');
+  const context = vm.createContext({
+    state: {
+      pageId: 'MSFT',
+      quoteFollowBoard: 'overview',
+      marketSeenAt: { us: 1, overview: 2 },
+      markets: {
+        us: {
+          board: 'us',
+          fetchedAt: 1,
+          watchlist: [{
+            symbol: 'MSFT',
+            name: 'Microsoft',
+            lastPrice: 529,
+            changePct: -0.01,
+            prevClose: 529.05,
+            session: 'closed',
+            asOf: friday,
+          }],
+        },
+        overview: {
+          board: 'overview',
+          fetchedAt: 2,
+          sections: [{
+            id: 'us',
+            gainers: [{
+              symbol: 'TTMI',
+              name: 'TTM Technologies',
+              lastPrice: 100.01,
+              changePct: 6.7,
+              prevClose: 93.88,
+              session: 'pre',
+              asOf: friday,
+              group: 'PCB',
+            }],
+            losers: [{
+              symbol: 'MSFT',
+              name: 'Microsoft',
+              lastPrice: 528.15,
+              changePct: -0.16,
+              prevClose: 529,
+              session: 'pre',
+              asOf: friday,
+            }],
+          }],
+        },
+        asia: null,
+        cn: null,
+      },
+      assetBoard: null,
+      liveQuotes: {},
+    },
+    hubQuotes() { return []; },
+  });
+  vm.runInContext([
+    functionSource('quoteSeenAt'),
+    functionSource('quoteRequestSymbol'),
+    functionSource('quoteCandidates'),
+    functionSource('findQuote'),
+  ].join('\n'), context);
+  const microsoft = context.findQuote('MSFT');
+  assert.equal(microsoft.lastPrice, 528.15);
+  assert.equal(microsoft.changePct, -0.16);
+  assert.equal(microsoft.session, 'pre');
+  const ttm = context.findQuote('TTMI');
+  assert.equal(ttm.name, 'TTM Technologies');
+  assert.equal(ttm.lastPrice, 100.01);
+  assert.equal(ttm.changePct, 6.7);
+  assert.equal(context.quoteRequestSymbol(ttm, 'TTMI'), 'TTMI');
+  context.state.quoteFollowBoard = '';
+  context.state.marketSeenAt = { us: 5, overview: 2 };
+  const olderCard = context.findQuote('MSFT');
+  assert.equal(olderCard.lastPrice, 529);
+  assert.equal(olderCard.changePct, -0.01);
+  assert.match(appSource, /openingQuote/);
+  assert.match(appSource, /quoteFollowBoard \|\| 'overview'/);
+  assert.match(functionSource('renderQuotePage'), /quoteRequestSymbol/);
+  assert.match(functionSource('paintQuotePrintFromBars'), /lastEl\.textContent !== '—'/);
+});
+
+test('US catalog names are not a different ticker, and quotes stay on the real symbol', () => {
+  const catalog = JSON.parse(readFileSync(new URL('../config/markets.json', import.meta.url), 'utf8'));
+  const clashes = [];
+  for (const sectionName of ['us', 'asia', 'cn']) {
+    const section = catalog[sectionName];
+    for (const item of [...(section.indices || []), ...(section.watchlist || [])]) {
+      if (conflictingTickerAlias(item.name, item.symbol)) clashes.push(`${sectionName}:${item.symbol}:${item.name}`);
+    }
+  }
+  assert.deepEqual(clashes, []);
+  const ttm = catalog.us.watchlist.find((item) => item.symbol === 'TTMI');
+  assert.equal(ttm.name, 'TTM Technologies');
+  assert.equal(ttm.summary, 'PCB 制造');
+  const soxl = catalog.us.watchlist.find((item) => item.symbol === 'SOXL');
+  assert.equal(soxl.name, '半导体3倍做多');
+  const board = buildUsMarketBoard({
+    quotes: [{
+      symbol: 'TTMI',
+      name: 'TTM Technologies, Inc.',
+      lastPrice: 100.01,
+      prevClose: 93.88,
+      changePct: 6.7,
+      session: 'pre',
+      currency: 'USD',
+    }],
+    fetchedAt: lunch,
+    marketCatalog: catalog,
+  });
+  const row = board.watchlist.find((item) => item.symbol === 'TTMI');
+  assert.equal(row.symbol, 'TTMI');
+  assert.equal(row.name, 'TTM Technologies');
+  assert.equal(row.lastPrice, 100.01);
+  assert.equal(row.changePct, 6.7);
+  assert.equal(conflictingTickerAlias('TTM', 'TTMI'), true);
+  assert.equal(conflictingTickerAlias('NVIDIA', 'NVDA'), false);
 });

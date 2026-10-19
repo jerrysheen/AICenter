@@ -278,6 +278,10 @@ test('global asset board maps yahoo symbols to stable display codes', () => {
   assert.equal(board.board, 'global');
   assert.equal(dxy.assetClass, 'fx');
   assert.equal(dxy.lastPrice, 99.55);
+  assert.equal(dxy.quoteSymbol, 'DX-Y.NYB');
+  assert.equal(gold.quoteSymbol, 'GC=F');
+  assert.equal(future.quoteSymbol, 'GC=F');
+  assert.equal(cny.quoteSymbol, 'CNY=X');
   assert.equal(gold.assetClass, 'metal');
   assert.equal(gold.summary, 'COMEX 黄金主力');
   assert.equal(gold.expiry, '2026-12');

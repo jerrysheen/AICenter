@@ -68,6 +68,7 @@ test('mover rows show the name, a deduped subtitle, and literal text', () => {
   const opened = [];
   const context = vm.createContext({
     document: { createElement: (tag) => new El(tag) },
+    state: { quoteFollowBoard: '', stockBoard: 'overview' },
     openPage(kind, id) { opened.push([kind, id]); },
   });
   vm.runInContext([
@@ -75,6 +76,7 @@ test('mover rows show the name, a deduped subtitle, and literal text', () => {
     functionSource('moverText'),
     functionSource('moverPrimary'),
     functionSource('moverSecondary'),
+    functionSource('openQuote'),
     functionSource('renderMovers'),
   ].join('\n'), context);
   const card = context.renderMovers([

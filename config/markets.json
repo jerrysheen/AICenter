@@ -225,7 +225,7 @@
       },
       {
         "symbol": "KLAC",
-        "name": "KLA",
+        "name": "科磊",
         "group": "半导体设备",
         "summary": "检测量测"
       },
@@ -291,13 +291,13 @@
       },
       {
         "symbol": "MKSI",
-        "name": "MKS",
+        "name": "MKS Instruments",
         "group": "材料",
         "summary": "工艺气体、真空、激光"
       },
       {
         "symbol": "TTMI",
-        "name": "TTM",
+        "name": "TTM Technologies",
         "group": "PCB",
         "summary": "PCB 制造"
       },
@@ -327,7 +327,7 @@
       },
       {
         "symbol": "IPGP",
-        "name": "IPG",
+        "name": "IPG Photonics",
         "group": "光纤玻璃",
         "summary": "光纤激光"
       },
@@ -381,7 +381,7 @@
       },
       {
         "symbol": "SOXL",
-        "name": "SOXL",
+        "name": "半导体3倍做多",
         "group": "ETF",
         "summary": "费城半导体 3 倍做多"
       },

@@ -51,6 +51,7 @@ function toSnapshot(quote, extras = {}) {
     asOf: quote.asOf ?? (quote.marketTime ? quote.marketTime * 1000 : null),
     provider: quote.provider || extras.provider || 'yahoo',
     expiry: extras.expiry || '',
+    ...(quote.quoteSymbol ? { quoteSymbol: String(quote.quoteSymbol) } : {}),
   };
 }
 
@@ -209,6 +210,25 @@ export function preferredOverviewFocus(nowMs = Date.now()) {
   return 'us';
 }
 
+export function conflictingTickerAlias(name, symbol) {
+  const listed = String(name || '').trim().toUpperCase();
+  const key = String(symbol || '').trim().toUpperCase();
+  if (!listed || !key || listed === key) return false;
+  if (!/^[A-Z][A-Z0-9.]{0,5}$/.test(listed)) return false;
+  return key.startsWith(listed);
+}
+
+export function listedQuoteName({ symbol = '', listedName = '', quotedName = '' } = {}) {
+  const key = String(symbol || '').trim();
+  const listed = String(listedName || '').trim();
+  const quoted = String(quotedName || '').trim();
+  const quotedOk = quoted && quoted.toUpperCase() !== key.toUpperCase();
+  if (listed && listed.toUpperCase() !== key.toUpperCase() && !conflictingTickerAlias(listed, key)) return listed;
+  if (quotedOk) return quoted;
+  if (listed && !conflictingTickerAlias(listed, key)) return listed;
+  return key;
+}
+
 function catalogNameFor(section, symbol) {
   const key = String(symbol || '').trim().toUpperCase();
   if (!key) return '';
@@ -216,7 +236,8 @@ function catalogNameFor(section, symbol) {
   for (const row of rows) {
     if (String(row?.symbol || '').trim().toUpperCase() !== key) continue;
     const name = String(row?.name || '').trim();
-    if (name && name.toUpperCase() !== key) return name;
+    if (!name || conflictingTickerAlias(name, key)) continue;
+    if (name.toUpperCase() !== key) return name;
   }
   return '';
 }
@@ -243,10 +264,11 @@ export function quoteDisplayName({ symbol, quotedName = '', catalogName = '', re
   const catalog = String(catalogName || '').trim();
   const quoted = String(quotedName || '').trim();
   const remembered = String(rememberedName || '').trim();
-  if (catalog && catalog.toUpperCase() !== key) return catalog;
+  if (catalog && catalog.toUpperCase() !== key && !conflictingTickerAlias(catalog, key)) return catalog;
   if (quoted && quoted.toUpperCase() !== key) return quoted;
   if (remembered && remembered.toUpperCase() !== key) return remembered;
-  return quoted || catalog || remembered || String(symbol || '').trim();
+  const fallbackCatalog = conflictingTickerAlias(catalog, key) ? '' : catalog;
+  return quoted || fallbackCatalog || remembered || String(symbol || '').trim();
 }
 
 function cnWatchName(item, quote, section) {
@@ -317,15 +339,17 @@ export function buildUsMarketBoard({ quotes, extraSymbols = [], session = 'close
   const quoteMap = new Map(quotes.map((quote) => [quote.symbol, quote]));
   const indices = section.indices.map((item) => {
     const quote = quoteMap.get(item.symbol);
-    return quote ? { ...quote, name: item.name, group: item.group } : { ...emptyQuote(item.symbol, item.name, 'USD'), group: item.group };
+    const name = listedQuoteName({ symbol: item.symbol, listedName: item.name, quotedName: quote?.name });
+    return quote ? { ...quote, name, group: item.group } : { ...emptyQuote(item.symbol, name, 'USD'), group: item.group };
   });
   const watchlist = [...section.watchlist, ...extraSymbols.map((symbol) => catalog.get(symbol)).filter(Boolean)]
     .map((item) => {
       const quote = quoteMap.get(item.symbol);
       const base = quote || emptyQuote(item.symbol, item.name, 'USD');
+      const quotedName = item.group === '自选' ? (quote?.name || item.name) : quote?.name;
       return {
         ...base,
-        name: quote?.name && item.group === '自选' ? quote.name : item.name,
+        name: listedQuoteName({ symbol: item.symbol, listedName: item.name, quotedName }),
         group: item.group,
         summary: item.summary,
       };
@@ -441,9 +465,13 @@ export function buildGlobalAssetBoard({ quotes, session = 'closed', fetchedAt = 
   const watchlist = section.watchlist.map((item) => {
     const quote = quoteMap.get(item.yahoo.toUpperCase());
     const base = quote || emptyQuote(item.yahoo, item.name, item.currency);
+    const fetchSymbol = String(item.yahoo || '').trim();
     return {
       ...base,
       symbol: item.symbol,
+      ...(fetchSymbol && fetchSymbol.toUpperCase() !== String(item.symbol || '').trim().toUpperCase()
+        ? { quoteSymbol: fetchSymbol }
+        : {}),
       name: item.name,
       currency: quote?.currency || item.currency,
       market: item.market,
