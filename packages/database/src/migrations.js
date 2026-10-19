@@ -2391,6 +2391,11 @@ migrations.push({ version: 89, name: 'youtube_podcast_article', up(database) {
   addColumn(database, 'youtube_podcast_episodes', 'article_day', 'TEXT NOT NULL DEFAULT \'\'');
 }});
 
+migrations.push({ version: 91, name: 'hardware_price_snapshot_rows_observation', up(database) {
+  database.exec(`CREATE INDEX IF NOT EXISTS hardware_price_snapshot_rows_observation
+    ON hardware_price_snapshot_rows(workspace_id, observation_id)`);
+}});
+
 
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`

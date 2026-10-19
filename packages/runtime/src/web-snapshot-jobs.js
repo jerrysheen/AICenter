@@ -28,7 +28,10 @@ export const HOME_BOOTSTRAP_SCHEDULE_KEY = 'home.bootstrap.snapshot';
 export const HOME_BOOTSTRAP_SNAPSHOT_KEY = 'home-bootstrap';
 export const HOLDINGS_MARKET_SNAPSHOT_KEY = 'holdings-market';
 export const FEED_LIST_SNAPSHOT_TTL_MS = 10 * 60 * 1000;
-export const HARDWARE_PRICE_SNAPSHOT_TTL_MS = 5 * 60 * 1000;
+export const HARDWARE_PRICE_INTERVAL_MINUTES = 10;
+export const HARDWARE_PRICE_SAVED_EVENT = 'trading.hardware-prices.saved.v1';
+// 调度是 10 分钟。页面沿用上一份缓冲区，这个窗口覆盖两轮之间。
+export const HARDWARE_PRICE_SNAPSHOT_TTL_MS = 15 * 60 * 1000;
 export const FEED_FLASH_SNAPSHOT_KEY = 'feed-list-flash';
 export const FEED_FLASH_LIMIT = 80;
 export const FEED_TRENDFORCE_SNAPSHOT_KEY = 'feed-list-trendforce';
@@ -687,18 +690,35 @@ export function createWebSnapshotJobHandlers(options) {
   };
 }
 
-function upsertInterval(store, key, jobType, now) {
+function upsertInterval(store, key, jobType, now, intervalMinutes = INTERVAL_MINUTES) {
   return store.upsertJobSchedule({
     workspaceId: 'local',
     key,
     jobType,
     enabled: true,
-    schedule: { kind: 'interval', intervalMinutes: INTERVAL_MINUTES },
+    schedule: { kind: 'interval', intervalMinutes },
     input: {},
     priority: 0,
     maxAttempts: 2,
     nextRunAt: Math.trunc(Number(now)),
   });
+}
+
+export function enqueueHardwarePriceSnapshot(store, workspaceId = 'local') {
+  const open = store.listOpenJobs?.(HARDWARE_PRICE_JOB_TYPE) || [];
+  if (open.some((job) => job.status === 'queued')) return null;
+  return store.createJob({
+    workspaceId,
+    type: HARDWARE_PRICE_JOB_TYPE,
+    input: {},
+    priority: 0,
+    maxAttempts: 2,
+  });
+}
+
+export function enqueueHardwarePriceSnapshotFromEvents(store, events, workspaceId = 'local') {
+  if (!events?.some((event) => event?.name === HARDWARE_PRICE_SAVED_EVENT)) return null;
+  return enqueueHardwarePriceSnapshot(store, workspaceId);
 }
 
 export function ensureStaticSignalBoardSchedule(store, now = Date.now()) {
@@ -722,7 +742,7 @@ export function ensureFeedListSchedule(store, now = Date.now()) {
 }
 
 export function ensureHardwarePriceSchedule(store, now = Date.now()) {
-  return upsertInterval(store, HARDWARE_PRICE_SCHEDULE_KEY, HARDWARE_PRICE_JOB_TYPE, now);
+  return upsertInterval(store, HARDWARE_PRICE_SCHEDULE_KEY, HARDWARE_PRICE_JOB_TYPE, now, HARDWARE_PRICE_INTERVAL_MINUTES);
 }
 
 export function ensureHomeBootstrapSchedule(store, now = Date.now()) {

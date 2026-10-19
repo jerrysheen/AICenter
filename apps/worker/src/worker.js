@@ -61,7 +61,7 @@ import {
 import { knowledgeStructureManifest, createStructureJobHandlers } from '../../../packages/runtime/src/structure-module.js';
 import { taggingManifest, createTaggingJobHandlers, readTagCatalogFile } from '../../../packages/runtime/src/tagging-module.js';
 import { workPackageDispatchManifest, createWorkPackageJobHandlers } from '../../../packages/runtime/src/work-package-module.js';
-import { createJobRunner } from '../../../packages/runtime/src/job-runner.js';
+import { createJobRunner, formatJobLoopDelay } from '../../../packages/runtime/src/job-runner.js';
 import { createScheduler } from '../../../packages/runtime/src/scheduler.js';
 import { createDailyBriefService } from '../../../packages/domain/src/daily-brief-service.js';
 import {createInformationDigestService} from '../../../packages/domain/src/information-digest-service.js';
@@ -103,6 +103,7 @@ import { createMemorySnapshotCache } from '../../../packages/runtime/src/snapsho
 import {
   createHomeBootstrapCompose, createReportViewCapture, createWebSnapshotJobHandlers, ensureFeedListSchedule, ensureHardwarePriceSchedule, ensureHoldingsMarketSchedule, ensureHomeBootstrapSchedule, ensureMarketBoardsSchedule,
   ensureMarketNativeBoardSchedule, ensureReportViewSchedule, ensureStaticSignalBoardSchedule,
+  enqueueHardwarePriceSnapshotFromEvents,
   HOLDINGS_MARKET_SNAPSHOT_KEY, webSnapshotManifest,
 } from '../../../packages/runtime/src/web-snapshot-jobs.js';
 
@@ -875,6 +876,9 @@ export function createAiCenterWorker(options = {}) {
       const stack = error instanceof Error ? error.stack : '';
       console.error(`[worker] ${job.type} ${job.id}: ${stack || error?.message || error}`);
     },
+    onJobEnd(job, delay) {
+      console.log(formatJobLoopDelay(job, delay));
+    },
     onClaimError(error) {
       const stack = error instanceof Error ? error.stack : '';
       console.error(`[worker] claim failed: ${stack || error?.message || error}`);
@@ -888,6 +892,9 @@ export function createAiCenterWorker(options = {}) {
   let translationGapTimer = null;
   let translationGapRunning = false;
   let translationGapCursor = null;
+  let hardwarePriceTimer = null;
+  let hardwarePriceEventId = 0;
+  const hardwarePriceRefresh = options.enableDefaultSchedules !== false;
 
   return {
     store,
@@ -958,11 +965,27 @@ export function createAiCenterWorker(options = {}) {
       } catch (error) {
         console.error('[worker] ellipsis-lead failed:', error instanceof Error ? error.message : error);
       }
+      if (hardwarePriceRefresh && !hardwarePriceTimer) {
+        hardwarePriceEventId = store.latestEventId?.() ?? 0;
+        hardwarePriceTimer = setInterval(() => {
+          try {
+            const events = store.listEvents(hardwarePriceEventId, 200);
+            if (!events.length) return;
+            hardwarePriceEventId = events.at(-1).id;
+            enqueueHardwarePriceSnapshotFromEvents(store, events);
+          } catch (error) {
+            console.error('[worker] hardware-price-refresh failed:', error instanceof Error ? error.message : error);
+          }
+        }, 5_000);
+        hardwarePriceTimer.unref?.();
+      }
       return runPromise;
     },
     async close() {
       if (translationGapTimer) clearInterval(translationGapTimer);
       translationGapTimer = null;
+      if (hardwarePriceTimer) clearInterval(hardwarePriceTimer);
+      hardwarePriceTimer = null;
       quotaProbe?.stop();
       scheduler.stop();
       runner.stop();

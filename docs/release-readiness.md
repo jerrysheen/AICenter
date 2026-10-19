@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-19 Worker 里的 `hardware.prices.snapshot` 以前每分钟同步读报价，单次卡住事件循环 11–14 秒，和它重叠的看板轮次大量超时。`hardware_price_snapshot_rows` 有 5 万多行，按 `observation_id` 关联时没有索引。列表现价又对每一行再查一次系列。migration 91 `hardware_price_snapshot_rows_observation` 只加 `(workspace_id, observation_id)` 索引。当前看板按页在 SQL 里取胜出的那张价表，各系列当前行一次查出。保存下来的全部价表仍在，TrendForce 用它算新增条数。硬件报价调度改为 10 分钟，其他快照仍是 1 分钟。快照新鲜度从 5 分钟改为 15 分钟，已写出的页面缓冲区会留到下一份，不会在两轮中间变成待生成。收到 `trading.hardware-prices.saved.v1` 会再排一轮。每个任务结束只记事件循环卡顿的毫秒数。90 留给待合的作者统计迁移，这次用 91。不要重建数据库。需要重启 Worker。Web 不用为这项重启。见 `progress/2026-10-19-hardware-snapshot-loop.md`。
+
 2026-10-19 复用进行中的看板请求时，如果那次请求的 AbortSignal 已经取消，成功结果和迟到结果都不写入缓存，避免半成品空价盖掉上一版完整看板。没有取消信号的迟到完整报价仍会写入。`http://xavatar.imedao.com` 升成 https，回填脚本用同一条规则。不新增 migration。不要重建数据库。需要同时重启 Web 和 Worker。已经回填过雪球头像的再跑一次 `node scripts/backfill-xueqiu-avatars.mjs`。见 `progress/2026-10-19-aborted-board-cache.md`。
 
 2026-10-19 请求体超过上限时先读完再返回 413，不再中途断开。翻译接口字节上限对齐 200000 字（每字最多 4 字节，另加 16KB）。YouTube 正文不再自动调用 `/api/v1/translate`。雪球头像取逗号前第一段，相对路径补 `https://xavatar.imedao.com/`。已有数据用 `node scripts/backfill-xueqiu-avatars.mjs --dry-run` 预览，再去掉 `--dry-run` 回填；不要放进 Web 或 Worker。CSP 的 `img-src` 只增加 `https://pbs.twimg.com` 和 `https://xavatar.imedao.com`。不新增 migration。不要重建数据库。空号仍是 63、79、80、82。需要同时重启 Web 和 Worker，浏览器再加载一次。见 `progress/2026-10-19-request-size-avatars.md`。
