@@ -25,7 +25,7 @@
 
 ## 当前
 
-- `progress/2026-10-19-us-premarket-quotes.md`：美股盘前、盘后价格进入看板，板块不再在这两个时段标成休市。新浪读取盘前字段，盘前优先新浪；Yahoo 盘前昨收改用上一个常规收盘。报价批改为 10 只、同时 2 路，失败的那一批重试一次再转备用。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
+- `progress/2026-10-19-us-premarket-quotes.md`：美股盘前、盘后价格进入看板，板块不再在这两个时段标成休市。新浪读取盘前字段，盘前优先新浪；Yahoo 盘前昨收改用上一个常规收盘。报价批改为 10 只、同时 2 路，失败的那一批重试一次再转备用。假日表覆盖 2026 和 2027，缺年份只警告一次。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
 
 - `progress/2026-10-19-youtube-podcasts.md`：按博主抓取 YouTube 金融和 AI 播客。有字幕用字幕，没有就走现有 Gemini 转写。摘要不用 jev，翻译只用 Gemma 26B。不进小时报。总开关 `AI_CENTER_YOUTUBE_PODCASTS` 默认关。migration 86。需要同时重启 Web 和 Worker。
 

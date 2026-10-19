@@ -124,6 +124,16 @@ test('market stale window and US snapshot freshness read the environment', () =>
   assert.equal(usSessionAt(Date.parse('2026-11-27T17:00:00Z')), 'regular');
   assert.equal(usSessionAt(Date.parse('2026-11-27T18:00:00Z')), 'post');
   assert.equal(usRegularSessionAt(Date.parse('2026-10-19T11:00:00Z')), 'closed');
+  assert.equal(usSessionAt(Date.parse('2027-01-01T15:00:00Z')), 'closed');
+  assert.equal(usSessionAt(Date.parse('2027-06-18T14:00:00Z')), 'closed');
+  assert.equal(usSessionAt(Date.parse('2027-07-05T14:00:00Z')), 'closed');
+  assert.equal(usSessionAt(Date.parse('2027-11-25T16:00:00Z')), 'closed');
+  assert.equal(usSessionAt(Date.parse('2027-12-24T15:00:00Z')), 'closed');
+  assert.equal(usSessionAt(Date.parse('2027-12-24T17:00:00Z')), 'closed');
+  assert.equal(usSessionAt(Date.parse('2027-11-26T17:00:00Z')), 'regular');
+  assert.equal(usSessionAt(Date.parse('2027-11-26T18:00:00Z')), 'post');
+  assert.equal(usSessionAt(Date.parse('2027-11-26T22:00:00Z')), 'closed');
+  assert.equal(usSessionAt(Date.parse('2027-01-04T15:00:00Z')), 'regular');
   assert.equal(usBoardFreshnessError({ fetchedAt: open - 11 * 60_000 }, open, 10 * 60_000), '美股看板行情已 11 分钟未更新');
   assert.equal(usBoardFreshnessError({ fetchedAt: open - 11 * 60_000 }, closed, 10 * 60_000), '');
   const at = Date.parse('2026-10-15T13:40:00Z');
@@ -132,6 +142,26 @@ test('market stale window and US snapshot freshness read the environment', () =>
   assert.equal(marketStaleLabel({ fetchedAt: at }, at + 180_000), '已过期 · 10月15日 21:40');
   assert.equal(homeDataDelayLabel(at, at + 5 * 60_000 - 1), '');
   assert.equal(homeDataDelayLabel(at, at + 5 * 60_000), '数据更新延迟');
+});
+
+test('a year missing from the NYSE holiday table warns once', () => {
+  const warnings = [];
+  const original = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  try {
+    const monday = Date.parse('2028-01-03T15:00:00Z');
+    assert.equal(usSessionAt(monday), 'regular');
+    assert.equal(usSessionAt(monday + 60_000), 'regular');
+    assert.equal(usSessionAt(Date.parse('2025-01-06T15:00:00Z')), 'regular');
+    assert.equal(usSessionAt(Date.parse('2025-01-06T15:01:00Z')), 'regular');
+    assert.equal(usSessionAt(Date.parse('2027-01-04T15:00:00Z')), 'regular');
+  } finally {
+    console.warn = original;
+  }
+  assert.deepEqual(warnings, [
+    '[market] 2028 年纽交所休市日还没有写入假日表，这一年只按周末和美东时钟判断',
+    '[market] 2025 年纽交所休市日还没有写入假日表，这一年只按周末和美东时钟判断',
+  ]);
 });
 
 test('US trading hours fail the snapshot after the freshness window and still keep the board', async () => {
