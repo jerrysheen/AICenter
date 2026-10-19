@@ -498,6 +498,7 @@ export async function runYoutubePodcastRound(deps = {}) {
         }
         if (limitWindow && finished && !stats.stopped) {
           for (const entry of slice.ignore) {
+            if (repository.episode(workspaceId, entry.videoId)) continue;
             repository.saveEpisode({
               workspaceId,
               videoId: entry.videoId,

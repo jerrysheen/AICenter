@@ -1203,6 +1203,94 @@ test('a blocked probe does not record a finished backfill', async () => {
   }
 });
 
+test('backfill lookback does not overwrite episodes already stored', async () => {
+  const opened = openStore();
+  try {
+    const repository = opened.store.repositories.youtubePodcasts;
+    const lookback = 2;
+    const listed = Array.from({ length: 11 }, (_, index) => {
+      const videoId = index === 9 ? 'readyold0001' : index === 10 ? 'failedold001' : `freshwin${String(index).padStart(3, '0')}`;
+      return {
+        videoId,
+        title: `Separate topic ${index} ${videoId}`,
+        durationSec: 2400 + index * 500,
+        publishedAt: Date.parse('2026-10-18T00:00:00Z') - index * 86_400_000,
+      };
+    });
+    repository.saveChannel('local', 'dwarkesh', {
+      channelId: 'UCZa18YV7qayTh-MRIrBhDpA',
+      bootstrapped: true,
+    });
+    repository.saveEpisode({
+      workspaceId: 'local',
+      videoId: 'readyold0001',
+      creatorId: 'dwarkesh',
+      channelKey: 'dwarkesh',
+      title: 'Already ingested',
+      durationSec: 5400,
+      publishedAt: listed[9].publishedAt,
+      status: 'ready',
+      reason: '',
+      transcriptSource: 'subtitle-manual',
+      contentItemId: 'item-ready-1',
+      attempts: 2,
+    });
+    repository.saveEpisode({
+      workspaceId: 'local',
+      videoId: 'failedold001',
+      creatorId: 'dwarkesh',
+      channelKey: 'dwarkesh',
+      title: 'Earlier failure',
+      durationSec: 4800,
+      publishedAt: listed[10].publishedAt,
+      status: 'failed',
+      reason: 'probe-failed',
+      transcriptSource: 'subtitle-auto',
+      contentItemId: 'item-failed-1',
+      attempts: 3,
+    });
+    const result = await runYoutubePodcastRound({
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1', GEMINI_API_KEY: 'test-key' },
+      now: Date.parse('2026-10-19T02:00:00Z'),
+      limits: { lookback },
+      config: channelCreator('dwarkesh'),
+      repository,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      sleep: async () => {},
+      translate: async () => '',
+      fetchRss: async () => ({ entries: [] }),
+      listVideos: async () => ({ entries: listed }),
+      probe: async (item) => {
+        assert.equal(item.videoId === 'readyold0001' || item.videoId === 'failedold001', false);
+        return {
+          durationSec: 3000 + item.publishedAt,
+          title: item.title,
+          liveStatus: 'not_live',
+          transcript: '正文',
+          transcriptSource: 'subtitle-manual',
+        };
+      },
+      summarize: async () => SUMMARY,
+    });
+    const ready = repository.episode('local', 'readyold0001');
+    assert.equal(ready.status, 'ready');
+    assert.equal(ready.contentItemId, 'item-ready-1');
+    assert.equal(ready.attempts, 2);
+    assert.equal(ready.transcriptSource, 'subtitle-manual');
+    const failed = repository.episode('local', 'failedold001');
+    assert.equal(failed.status, 'failed');
+    assert.equal(failed.contentItemId, 'item-failed-1');
+    assert.equal(failed.attempts, 3);
+    assert.equal(failed.reason, 'probe-failed');
+    assert.equal(repository.episode('local', 'freshwin008').status, 'skipped');
+    assert.equal(repository.episode('local', 'freshwin008').reason, 'lookback');
+    assert.equal(result.stopped, '');
+  } finally {
+    opened.close();
+  }
+});
+
 test('backfill unions rss by video id and keeps rss title and time', async () => {
   const opened = openStore();
   try {
