@@ -257,6 +257,7 @@ export function createAiCenterWorker(options = {}) {
       calibration: loadFeedValueCalibration(instance),
       xFocusConfig,
       log: focusLog,
+      usageDirectory: dataDirectory,
     });
   const mediaConfig = loadMediaConfig(instance.configDirectory);
   const flashSources = options.flashSources || loadResolvedFlashSources({ configDirectory: instance.configDirectory, env, mediaSources: mediaConfig.sources });

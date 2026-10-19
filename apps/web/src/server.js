@@ -220,7 +220,7 @@ export function createAiCenterServer(options = {}) {
     catch { xFocusConfig = null; }
   }
   const feedFilter=options.feedFilter !== undefined ? options.feedFilter
-    : createFeedFilterFromEnv({client:classificationClient,env,calibration:loadFeedValueCalibration(instance),xFocusConfig,log:(message)=>console.log(message)});
+    : createFeedFilterFromEnv({client:classificationClient,env,calibration:loadFeedValueCalibration(instance),xFocusConfig,log:(message)=>console.log(message),usageDirectory:dataDirectory});
   const mediaConfig = loadMediaConfig(instance.configDirectory);
   const flashSources = options.flashSources || loadResolvedFlashSources({ configDirectory: instance.configDirectory, env, mediaSources: mediaConfig.sources });
   const mediaService = options.mediaService || (store.repositories?.media

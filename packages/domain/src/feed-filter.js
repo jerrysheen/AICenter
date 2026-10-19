@@ -2,6 +2,7 @@ import { createFeedValueEvaluator, normalizeFeedValueText, FEED_VALUE_VERSION, F
 import { FeedValueRuleSchema } from '../../contracts/src/feed-value.js';
 import { isJevOutage, resolveJevEnabled } from './jev-enabled.js';
 import { resolveClassificationProvider } from './classification-provider.js';
+import { resolveBambooDailySpread, takeBambooUsageSlot } from './bamboo-usage.js';
 import { focusFeedFromSource, keywordFocus } from './x-focus.js';
 export const FEED_FILTER_VERSION = FEED_VALUE_VERSION;
 
@@ -78,46 +79,25 @@ export function resolveBambooDailyMax(env = process.env) {
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : BAMBOO_DAILY_MAX_DEFAULT;
 }
 
-const bambooAdmissionDay = { key: '', count: 0, logged: false };
-
-export function resetBambooAdmissionCounter() {
-  bambooAdmissionDay.key = '';
-  bambooAdmissionDay.count = 0;
-  bambooAdmissionDay.logged = false;
-}
-
-function shanghaiDateKey(at) {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
-  }).format(new Date(at));
-}
-
-function takeBambooAdmissionCall(max, at, log) {
-  const key = shanghaiDateKey(at);
-  if (bambooAdmissionDay.key !== key) {
-    bambooAdmissionDay.key = key;
-    bambooAdmissionDay.count = 0;
-    bambooAdmissionDay.logged = false;
-  }
-  if (bambooAdmissionDay.count >= max) {
-    if (!bambooAdmissionDay.logged) {
-      bambooAdmissionDay.logged = true;
-      try { log(`[worker] Bamboo 信息流准入已达每日上限 ${max}，其余走本地兜底`); } catch { /* logging must not change admission */ }
-    }
-    return false;
-  }
-  bambooAdmissionDay.count += 1;
-  return true;
-}
-
-function limitBambooAdmission(client, { max, now, log }) {
+function limitBambooAdmission(client, { max, spread, now, log, usageDirectory }) {
   if (!client || typeof client.evaluate !== 'function') return client;
+  let loggedDaily = false;
+  let loggedHourly = false;
   return {
     ...client,
     async evaluate(input) {
-      if (!takeBambooAdmissionCall(max, now(), log)) {
-        const error = new Error('Bamboo 信息流准入已达每日上限');
-        error.code = 'BAMBOO_DAILY_CAP';
+      const slot = takeBambooUsageSlot({ directory: usageDirectory, max, spread, at: now() });
+      if (!slot.ok) {
+        const hourly = slot.reason === 'hourly';
+        if (hourly && !loggedHourly) {
+          loggedHourly = true;
+          try { log(`[worker] Bamboo 信息流准入本小时额度已用完，本小时其余走本地兜底`); } catch { /* logging must not change admission */ }
+        } else if (!hourly && !loggedDaily) {
+          loggedDaily = true;
+          try { log(`[worker] Bamboo 信息流准入已达每日上限 ${max}，当天其余走本地兜底`); } catch { /* logging must not change admission */ }
+        }
+        const error = new Error(hourly ? 'Bamboo 信息流准入本小时额度已用完' : 'Bamboo 信息流准入已达每日上限');
+        error.code = hourly ? 'BAMBOO_HOURLY_CAP' : 'BAMBOO_DAILY_CAP';
         throw error;
       }
       return client.evaluate(input);
@@ -136,6 +116,7 @@ export function resolveFeedFilterConfig(env = process.env) {
     jevEnabled: resolveJevEnabled(env),
     classificationProvider: resolveClassificationProvider(env),
     bambooDailyMax: resolveBambooDailyMax(env),
+    bambooDailySpread: resolveBambooDailySpread(env),
     xFocusMin: finiteUnit(env.AI_CENTER_FEED_FILTER_XFOCUS_MIN, 0.7),
   });
 }
@@ -327,10 +308,10 @@ function verdict({
   });
 }
 
-export function createFeedFilter({ client = null, config, lookup = {}, calibration = null, xFocusConfig = null, log } = {}) {
+export function createFeedFilter({ client = null, config, lookup = {}, calibration = null, xFocusConfig = null, log, usageDirectory = '' } = {}) {
   const resolved = config || resolveFeedFilterConfig();
   if (resolved.version === FEED_VALUE_VERSION) {
-    return createFeedValueFilter({ client, config: resolved, lookup, calibration, xFocusConfig, log });
+    return createFeedValueFilter({ client, config: resolved, lookup, calibration, xFocusConfig, log, usageDirectory });
   }
   if (resolved.version !== 'feed-filter-v1') throw new Error('Unsupported feed filter version');
 
@@ -410,7 +391,7 @@ export function createFeedFilter({ client = null, config, lookup = {}, calibrati
   });
 }
 
-function createFeedValueFilter({ client, config, lookup, calibration, xFocusConfig = null, log = () => {} }) {
+function createFeedValueFilter({ client, config, lookup, calibration, xFocusConfig = null, log = () => {}, usageDirectory = '' }) {
   const rule=FeedValueRuleSchema.parse(config.rule || 'calibrated-value');
   const jevEnabled = config.jevEnabled !== false;
   const bamboo = config.classificationProvider === 'bamboo';
@@ -421,7 +402,13 @@ function createFeedValueFilter({ client, config, lookup, calibration, xFocusConf
     ? config.bambooDailyMax
     : BAMBOO_DAILY_MAX_DEFAULT;
   const admissionClient = classify && bamboo
-    ? limitBambooAdmission(client, { max: dailyMax, now, log })
+    ? limitBambooAdmission(client, {
+      max: dailyMax,
+      spread: config.bambooDailySpread === 'hourly' ? 'hourly' : 'fifo',
+      now,
+      log,
+      usageDirectory,
+    })
     : (classify ? client : null);
   const evaluator = createFeedValueEvaluator({
     client: admissionClient,
@@ -442,7 +429,7 @@ function createFeedValueFilter({ client, config, lookup, calibration, xFocusConf
       { title:fields.title, authorName:fields.authorName, capture });
     const result=await evaluator.evaluate(normalized,{signal:input.signal});
     const outage = isJevOutage(result);
-    const capped = result.errorCode === 'BAMBOO_DAILY_CAP';
+    const capped = result.errorCode === 'BAMBOO_DAILY_CAP' || result.errorCode === 'BAMBOO_HOURLY_CAP';
     if (classify && outage && !capped) {
       streak += 1;
       const at = now();
@@ -491,7 +478,7 @@ function createFeedValueFilter({ client, config, lookup, calibration, xFocusConf
   }});
 }
 
-export function createFeedFilterFromEnv({ client = null, env = process.env, lookup, calibration, xFocusConfig = null, log } = {}) {
+export function createFeedFilterFromEnv({ client = null, env = process.env, lookup, calibration, xFocusConfig = null, log, usageDirectory = '' } = {}) {
   const config = resolveFeedFilterConfig(env);
   if (config.mode === 'off') return null;
   const classify = config.classificationProvider === 'bamboo' || config.jevEnabled;
@@ -502,5 +489,6 @@ export function createFeedFilterFromEnv({ client = null, env = process.env, look
     calibration,
     xFocusConfig,
     log,
+    usageDirectory,
   });
 }

@@ -14,7 +14,8 @@ import {
 } from '../packages/connectors/src/bamboo-startlux.js';
 import { openClassificationClient, resolveClassificationProvider } from '../packages/domain/src/classification-provider.js';
 import { hitsAt, labelMetrics, labelMetricsAtThresholds, selectComparisonItems } from '../packages/domain/src/bamboo-label-eval.js';
-import { createFeedFilterFromEnv, resetBambooAdmissionCounter } from '../packages/domain/src/feed-filter.js';
+import { createFeedFilterFromEnv } from '../packages/domain/src/feed-filter.js';
+import { readBambooUsage } from '../packages/domain/src/bamboo-usage.js';
 import { createFeedValueRefreshService, resolveBambooRefresh } from '../packages/domain/src/feed-value-refresh-service.js';
 import { isJevOutage } from '../packages/domain/src/jev-enabled.js';
 import { createReadingHourService } from '../packages/domain/src/reading-hour-service.js';
@@ -250,12 +251,14 @@ test('disabled JEV keeps the fallback, and Bamboo replaces it only when selected
   assert.equal(calls, 0);
   assert.equal(fallback.metadata.filterReason, 'jev-disabled-following');
 
+  const usageDirectory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-bamboo-open-'));
   const opened = createFeedFilterFromEnv({
     env: {
       AI_CENTER_JEV_ENABLED: 'false',
       AI_CENTER_CLASSIFICATION_PROVIDER: 'bamboo',
       AI_CENTER_FEED_FILTER: 'enforce',
     },
+    usageDirectory,
     client: {
       modelId: 'startlux-decision-27b-autothink',
       available: () => true,
@@ -282,6 +285,7 @@ test('disabled JEV keeps the fallback, and Bamboo replaces it only when selected
   assert.equal(calls, 1);
   assert.equal(kept.metadata.filterReason, 'all-three');
   assert.equal(kept.metadata.filterScores.reading_value, 0.91);
+  rmSync(usageDirectory, { recursive: true, force: true });
 });
 
 test('reading hour asks Bamboo when JEV is off and the provider is bamboo', async () => {
@@ -467,7 +471,7 @@ test('label metrics skip unlabeled rows and tags that have no positive example',
 });
 
 test('bamboo feed admission stops at the daily cap and uses the local fallback', async () => {
-  resetBambooAdmissionCounter();
+  const usageDirectory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-bamboo-usage-'));
   const env = {
     AI_CENTER_JEV_ENABLED: 'false',
     AI_CENTER_CLASSIFICATION_PROVIDER: 'bamboo',
@@ -477,6 +481,7 @@ test('bamboo feed admission stops at the daily cap and uses the local fallback',
   let calls = 0;
   const filter = createFeedFilterFromEnv({
     env,
+    usageDirectory,
     client: {
       modelId: 'startlux-decision-27b-autothink',
       available: () => true,
@@ -507,5 +512,6 @@ test('bamboo feed admission stops at the daily cap and uses the local fallback',
   assert.equal(first.metadata.filterReason, 'all-three');
   assert.equal(second.metadata.filterReason, 'jev-disabled-following');
   assert.equal(second.metadata.filterErrorCode, 'BAMBOO_DAILY_CAP');
-  resetBambooAdmissionCounter();
+  assert.equal(readBambooUsage(usageDirectory).count, 1);
+  rmSync(usageDirectory, { recursive: true, force: true });
 });

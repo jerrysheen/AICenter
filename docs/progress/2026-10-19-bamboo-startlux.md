@@ -1,6 +1,6 @@
 # 2026-10-19 Bamboo StartLux
 
-分类可以改走 Bamboo Relay 上的 StartLux Decision（`startlux-decision-27b-autothink`）。默认仍是 TypeSafe。`AI_CENTER_JEV_ENABLED` 的默认值和现有兜底都不改。不新增 migration，下一个空闲编号仍是 87。空号仍有 63、79、80、82。
+分类可以改走 Bamboo Relay 上的 StartLux Decision（`startlux-decision-27b-autothink`）。默认仍是 TypeSafe。`AI_CENTER_JEV_ENABLED` 的默认值和现有兜底都不改。不新增 migration。最新 main 的 87 已是 `youtube_podcast_backfill`。用量不进数据库，写在 `data/bamboo-usage-YYYYMMDD.json`。空号仍有 63、79、80、82，下一个顺序号是 88。
 
 需要同时重启 Web 和 Worker。不要部署。真实调用只在已经放好 `BAMBOO_API_KEY` 的服务器上跑。
 
@@ -17,6 +17,8 @@ BAMBOO_API_KEY=已放在服务器上的密钥
 # AI_CENTER_BAMBOO_TIMEOUT_MS=30000
 # AI_CENTER_BAMBOO_THINK_MODE=auto
 # AI_CENTER_BAMBOO_DAILY_MAX=2000
+# 默认先到先得。设成 hourly 后，每小时最多用当天剩余额度除以剩余小时数。
+# AI_CENTER_BAMBOO_DAILY_SPREAD=hourly
 # 质量刷新默认不调 Bamboo。要重评时才打开，并设单次上限。
 # AI_CENTER_BAMBOO_REFRESH=1
 # AI_CENTER_BAMBOO_REFRESH_MAX=200
@@ -38,9 +40,11 @@ BAMBOO_API_KEY=已放在服务器上的密钥
 
 信息流准入对每条通过确定性预检的新材料调用一次。订阅同步每分钟检查到期订阅，默认间隔 30 分钟。X 关注、X 推荐、雪球关注、雪球精选各拉最多 50 条。雪球 7x24 和产业在线快讯不进分类。首页列表快照上限 12，收藏第一页 50，快讯列表 80，已存信息流列表 200，这些是展示上限，不是调用次数。重复条目在调用前跳过。若上面 4 个社交源每 30 分钟全是新条目，理论上限约 4 × 50 × 48 = 9,600 次/天。本环境没有生产库，实际新增条数没有测到。媒体和新入库的哔哩哔哩动态另计，每条一次。
 
-`AI_CENTER_BAMBOO_DAILY_MAX` 默认 2000，按上海日期计算。超出后当天其余准入走本地兜底。计数在进程内存里，Web 和 Worker 各算各的，重启后清零。小时报、问答质量和显式打开的质量刷新不占这个额度。
+`AI_CENTER_BAMBOO_DAILY_MAX` 默认仍是 2000。服务器上正在统计真实日调用量，建议值以后再改。按上海日期计算，写到 Instance `data/bamboo-usage-YYYYMMDD.json`。`data/*` 已被忽略，所以这个文件不会把工作区弄脏，自动部署的 `git status --porcelain` 不会因为它放弃。Web 和 Worker 写同一个文件，用排他锁串起来。重启和自动部署都不清零。触达每日上限后，当天剩下的准入都走本地兜底，不再调用 Bamboo。小时报、问答质量和显式打开的质量刷新不占这个额度。
 
-价格：未知。冒烟响应里有 `input_tokens` 和 `output_tokens`，没有费用字段。测试期是否免费没有可核对的价目，这里不写数字。
+默认是先到先得。`AI_CENTER_BAMBOO_DAILY_SPREAD=hourly` 时，每个上海小时最多用「当天还剩的额度 ÷ 还剩的小时数」（含当前小时，向下取整）。这个小时用完就走本地兜底，下一个小时按当时的剩余额度再算。额度小于 24 时，前几个小时的份额可能是 0，次数留到后面的小时。最后一小时可以用掉当天还剩的全部。
+
+价格：未知，待用户向 Bamboo 确认。冒烟响应里有 `input_tokens` 和 `output_tokens`，没有费用字段。测试期是否免费没有可核对的价目，这里不写数字。
 
 ## noul
 
