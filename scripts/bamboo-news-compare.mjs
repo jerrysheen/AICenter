@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { createBambooStartLuxClient } from '../packages/connectors/src/bamboo-startlux.js';
 import { createTypeSafeSystemOneClient } from '../packages/connectors/src/typesafe-system-one.js';
-import { hitsAt, labelMetrics, labelSetDiff, selectComparisonItems } from '../packages/domain/src/bamboo-label-eval.js';
+import { hitsAt, labelMetrics, labelMetricsAtThresholds, labelSetDiff, selectComparisonItems } from '../packages/domain/src/bamboo-label-eval.js';
 import { resolveJevEnabled } from '../packages/domain/src/jev-enabled.js';
 import { resolveInstanceConfig } from '../packages/instance/src/index.js';
 
@@ -134,6 +134,15 @@ function markdown(report) {
     if (metric.reason) lines.push(`- ${tag}：${metric.reason}（已标 ${metric.labeled}）`);
     else lines.push(`- ${tag}：P=${round(metric.precision)} R=${round(metric.recall)} F1=${round(metric.f1)}，正例 ${metric.positives}，错例 ${metric.misses.slice(0, 5).map((item) => `${item.id}:${item.kind}`).join('、') || '无'}`);
   }
+  lines.push('', '## 不同阈值（准确率 / 召回率）', '');
+  lines.push('准确率 = (tp + tn) / 已标条数。精确率 = tp / (tp + fp)。召回率 = tp / 正例。用来之后重估信息流 0.60 和阅读小时 0.5。');
+  lines.push('', '| 阈值 | 标签 | 准确率 | 召回率 | 精确率 | F1 |', '| --- | --- | --- | --- | --- | --- |');
+  for (const row of report.thresholdSweep || []) {
+    for (const [tag, metric] of Object.entries(row.metrics || {})) {
+      if (metric.reason) lines.push(`| ${row.threshold} | ${tag} | ${metric.reason} | | | |`);
+      else lines.push(`| ${row.threshold} | ${tag} | ${round(metric.accuracy)} | ${round(metric.recall)} | ${round(metric.precision)} | ${round(metric.f1)} |`);
+    }
+  }
   lines.push('', '小样本。没有人工正例的标签不算分。合成样例不计入上表。');
   return lines.join('\n');
 }
@@ -168,9 +177,17 @@ function round(value) {
   return typeof value === 'number' ? value.toFixed(3) : '-';
 }
 
+function thresholdsOf() {
+  const raw = arg('--thresholds', '0.4,0.5,0.6,0.7');
+  const values = String(raw).split(',').map((item) => Number(item.trim())).filter((item) => Number.isFinite(item));
+  if (!values.length) throw new Error('--thresholds 需要 0 到 1 的数字，用逗号分开');
+  return values;
+}
+
 const limit = integer('--limit', 50);
 const pool = integer('--pool', 400);
 const threshold = Number(arg('--threshold', '0.5'));
+const thresholds = thresholdsOf();
 const intervalMs = integer('--interval-ms', 500);
 const workspace = arg('--workspace', 'local');
 const outFile = path.resolve(root, arg('--out', 'data/bamboo-news-compare.json'));
@@ -178,6 +195,7 @@ const dryRun = flag('--dry-run');
 const withJev = flag('--jev');
 const ids = questionsFile.questions.map((question) => question.id);
 if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) throw new Error('--threshold 需要 0 到 1 的数字');
+if (thresholds.some((value) => value < 0 || value > 1)) throw new Error('--thresholds 里的每一项都要在 0 到 1');
 
 const instance = resolveInstanceConfig({ repositoryRoot: root });
 let news = [];
@@ -233,17 +251,22 @@ if (!process.exitCode) {
       });
     }
     const labeled = items.filter((row) => Array.isArray(row.human));
+    const bambooLabeled = labeled.map((row) => ({ ...row, scores: row.bamboo.scores }));
+    const jevLabeled = labeled.filter((row) => row.jev.reason === 'ok').map((row) => ({ ...row, scores: row.jev.scores }));
     const report = {
       generatedAt: new Date().toISOString(),
       threshold,
-      note: `${questionsFile.note} 本表最多 ${limit} 条真实新闻。config/bamboo-label-fixtures.json 里的合成样例不在表内，也不能当成这 ${limit} 条。`,
+      thresholds,
+      note: `${questionsFile.note} 本表最多 ${limit} 条真实新闻。config/bamboo-label-fixtures.json 里的合成样例不在表内，也不能当成这 ${limit} 条。thresholdSweep 给出不同阈值下的准确率和召回率，供之后重估 0.60 和 0.5。`,
       model: bamboo?.modelId || '',
       count: items.length,
       items,
       metrics: {
-        bamboo: labelMetrics(labeled.map((row) => ({ ...row, scores: row.bamboo.scores })), ids, threshold),
-        jev: labelMetrics(labeled.filter((row) => row.jev.reason === 'ok').map((row) => ({ ...row, scores: row.jev.scores })), ids, threshold),
+        bamboo: labelMetrics(bambooLabeled, ids, threshold),
+        jev: labelMetrics(jevLabeled, ids, threshold),
       },
+      thresholdSweep: labelMetricsAtThresholds(bambooLabeled, ids, thresholds),
+      jevThresholdSweep: labelMetricsAtThresholds(jevLabeled, ids, thresholds),
       syntheticNotScored: fixturesFile.items.map((item) => ({ id: item.id, title: item.title, human: item.human })),
     };
     mkdirSync(path.dirname(outFile), { recursive: true });

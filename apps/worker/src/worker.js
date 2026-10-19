@@ -10,7 +10,7 @@ import { createContentRoutingService } from '../../../packages/domain/src/conten
 import { loadMediaConfig } from '../../../packages/instance/src/media-config.js';
 import { loadResolvedFlashSources } from '../../../packages/domain/src/flash-sources.js';
 import { loadFeedValueCalibration,loadFeedValueScoreCache } from '../../../packages/instance/src/feed-value-config.js';
-import {createFeedValueRefreshService} from '../../../packages/domain/src/feed-value-refresh-service.js';
+import {createFeedValueRefreshService,resolveBambooRefresh} from '../../../packages/domain/src/feed-value-refresh-service.js';
 import {feedValueRefreshManifest,createFeedValueRefreshJobHandlers} from '../../../packages/runtime/src/feed-value-refresh-module.js';
 import { createMediaConnector } from '../../../packages/connectors/src/media/port.js';
 import { createMediaBriefPort } from '../../../packages/runtime/src/media-brief-port.js';
@@ -787,6 +787,7 @@ export function createAiCenterWorker(options = {}) {
       onProgress: (progress) => console.log('[authors.stats.recompute]', JSON.stringify(progress)),
     }),
   });
+  const bambooRefresh = resolveBambooRefresh(env, feedFilterConfig.classificationProvider);
   registry.register({manifest:feedValueRefreshManifest,jobHandlers:createFeedValueRefreshJobHandlers({
     service:createFeedValueRefreshService({feedRepository:store.repositories.feed,mediaRepository:store.repositories.media,
       client:classificationClient,
@@ -795,6 +796,7 @@ export function createAiCenterWorker(options = {}) {
         : (loadFeedValueCalibration(instance)?.model || 'jev-1.13.0'),
       scoreCache:loadFeedValueScoreCache(instance),flashSources,
       jevEnabled:feedFilterConfig.jevEnabled,classificationProvider:feedFilterConfig.classificationProvider,
+      bambooRefresh:bambooRefresh.enabled,bambooRefreshMax:bambooRefresh.max,
       fallback:feedFilterConfig.fallback,xFocusConfig,xFocusMin:feedFilterConfig.xFocusMin}),
     onProgress:progress=>console.log('[feed.quality.refresh]',JSON.stringify(progress)),
   })});

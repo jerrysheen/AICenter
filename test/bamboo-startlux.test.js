@@ -13,9 +13,9 @@ import {
   resolveBambooApiKey,
 } from '../packages/connectors/src/bamboo-startlux.js';
 import { openClassificationClient, resolveClassificationProvider } from '../packages/domain/src/classification-provider.js';
-import { hitsAt, labelMetrics, selectComparisonItems } from '../packages/domain/src/bamboo-label-eval.js';
-import { createFeedFilterFromEnv } from '../packages/domain/src/feed-filter.js';
-import { createFeedValueRefreshService } from '../packages/domain/src/feed-value-refresh-service.js';
+import { hitsAt, labelMetrics, labelMetricsAtThresholds, selectComparisonItems } from '../packages/domain/src/bamboo-label-eval.js';
+import { createFeedFilterFromEnv, resetBambooAdmissionCounter } from '../packages/domain/src/feed-filter.js';
+import { createFeedValueRefreshService, resolveBambooRefresh } from '../packages/domain/src/feed-value-refresh-service.js';
 import { isJevOutage } from '../packages/domain/src/jev-enabled.js';
 import { createReadingHourService } from '../packages/domain/src/reading-hour-service.js';
 import { createStore } from '../packages/database/src/index.js';
@@ -177,18 +177,22 @@ test('HTML, missing answers, redirect, size, timeout and HTTP statuses stay dist
 test('logs and errors do not keep the key', async () => {
   const lines = [];
   const bamboo = client(async () => {
-    throw new Error(`network failed Authorization: Bearer ${secret} url?key=${secret}`);
+    const error = new Error(`network failed Authorization: Bearer ${secret} url?key=${secret} upstream-body-SHOULD-NOT-LEAK`);
+    error.cause = { code: 'ECONNRESET' };
+    throw error;
   }, {}, { log: (line) => lines.push(line) });
   await assert.rejects(() => bamboo.evaluate({ state: 'x', questions: { a: { type: 'noul', instructions: 'yes?' } } }), (error) => {
     assert.equal(error.code, 'BAMBOO_NETWORK_ERROR');
+    assert.equal(error.message, 'Bamboo 网络失败（ECONNRESET）');
     assert.equal(error.message.includes(secret), false);
-    assert.match(error.message, /Bearer \[redacted\]/);
+    assert.equal(error.message.includes('upstream-body-SHOULD-NOT-LEAK'), false);
     return true;
   });
   assert.equal(lines.length, 1);
   assert.match(lines[0], /provider=bamboo/);
   assert.match(lines[0], /category=network/);
   assert.equal(lines[0].includes(secret), false);
+  assert.equal(lines[0].includes('upstream-body-SHOULD-NOT-LEAK'), false);
   let fetched = 0;
   const leaked = createBambooStartLuxClient({
     env: { BAMBOO_API_KEY: secret, AI_CENTER_BAMBOO_ENDPOINT: `https://api.bamboonode.dev/v1/decisions?key=${secret}` },
@@ -200,6 +204,21 @@ test('logs and errors do not keep the key', async () => {
     return true;
   });
   assert.equal(fetched, 0);
+
+  const leak = 'quota-detail-SHOULD-NOT-LEAK-from-bamboo-body';
+  const lines422 = [];
+  const rejected = client(async () => jsonResponse({
+    error: { message: leak, detail: `Bearer ${secret} ${leak}` },
+  }, 422), {}, { log: (line) => lines422.push(line) });
+  await assert.rejects(() => rejected.evaluate({ state: 'x', questions: { a: { type: 'noul', instructions: 'yes?' } } }), (error) => {
+    assert.equal(error.code, 'BAMBOO_UNPROCESSABLE');
+    assert.equal(error.status, 422);
+    assert.equal(error.message, 'Bamboo 调用失败（422 unprocessable）');
+    assert.equal(error.message.includes(leak), false);
+    assert.equal(error.message.includes(secret), false);
+    return true;
+  });
+  assert.equal(lines422.some((line) => line.includes(leak) || line.includes(secret)), false);
 });
 
 test('choice null and score bounds are preserved without forcing a winner', () => {
@@ -304,7 +323,12 @@ test('quality checks turn back on for Bamboo and stay off when the provider is u
   assert.equal(createOptionalAgentQuality(undefined, off), null);
   const bamboo = { ...off, AI_CENTER_CLASSIFICATION_PROVIDER: 'bamboo', BAMBOO_API_KEY: secret };
   assert.equal(resolveAgentQualityConfig(bamboo).disabled, false);
-  assert.equal(resolveAgentQualityConfig(bamboo).evidenceGateMode, 'enforce');
+  assert.equal(resolveAgentQualityConfig(bamboo).priorMode, 'shadow');
+  assert.equal(resolveAgentQualityConfig(bamboo).evidenceGateMode, 'shadow');
+  assert.equal(resolveAgentQualityConfig({ ...bamboo, AI_CENTER_JEV_PRIOR: 'advisory' }).priorMode, 'advisory');
+  assert.equal(resolveAgentQualityConfig({ ...bamboo, AI_CENTER_JEV_EVIDENCE_GATE: 'enforce' }).evidenceGateMode, 'enforce');
+  assert.equal(resolveAgentQualityConfig({ ...bamboo, AI_CENTER_JEV_EVIDENCE_GATE: 'off' }).evidenceGateMode, 'off');
+  assert.equal(resolveAgentQualityConfig({}).evidenceGateMode, 'enforce');
   assert.equal(resolveAgentQualityConfig({ ...bamboo, AI_CENTER_JEV_DISABLED: '1' }).disabled, true);
   assert.ok(createAgentQualityLayerFromEnv({
     env: bamboo,
@@ -316,49 +340,93 @@ test('quality checks turn back on for Bamboo and stay off when the provider is u
   assert.equal(isJevOutage({ code: 'BAMBOO_UNPROCESSABLE', status: 422 }), false);
 });
 
-test('quality refresh calls Bamboo only after the provider is selected', async () => {
-  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-bamboo-refresh-'));
+function refreshFixture(feed, sourceId, externalId, metadata, capturedAt) {
+  const capture = feed.saveCapture({
+    workspaceId: 'local', provider: 'x', externalId, sourceAccountId: sourceId,
+    contentHash: externalId, ...(capturedAt == null ? {} : { capturedAt }), metadata,
+  });
+  feed.saveContentItem({
+    workspaceId: 'local', captureId: capture.id, originType: 'subscription', contentType: 'post',
+    title: externalId, body: metadata.originalText,
+  });
+}
+
+function bambooAnswers() {
+  return {
+    model: 'startlux-decision-27b-autothink',
+    answers: {
+      reading_value: { type: 'noul', noul: 0.9 },
+      advertising: { type: 'noul', noul: 0.1 },
+      specific_content: { type: 'noul', noul: 0.9 },
+      sufficient_information: { type: 'noul', noul: 0.9 },
+      missing_context: { type: 'noul', noul: 0.05 },
+    },
+  };
+}
+
+test('bamboo refresh does not call Bamboo unless AI_CENTER_BAMBOO_REFRESH=1', async () => {
+  assert.equal(resolveBambooRefresh({ AI_CENTER_CLASSIFICATION_PROVIDER: 'bamboo' }, 'bamboo').enabled, false);
+  assert.equal(resolveBambooRefresh({ AI_CENTER_BAMBOO_REFRESH: '1' }, 'bamboo').enabled, true);
+  assert.equal(resolveBambooRefresh({ AI_CENTER_BAMBOO_REFRESH: '1', AI_CENTER_BAMBOO_REFRESH_MAX: '3' }, 'bamboo').max, 3);
+  assert.equal(resolveBambooRefresh({ AI_CENTER_BAMBOO_REFRESH: '1' }, 'typesafe').enabled, false);
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-bamboo-refresh-off-'));
   const store = createStore(path.join(directory, 'test.db'));
   try {
     const feed = store.repositories.feed;
     const source = feed.upsertSourceAccount({
       workspaceId: 'local', provider: 'x', externalId: 'x:home:following', displayName: '关注',
     });
-    const capture = feed.saveCapture({
-      workspaceId: 'local', provider: 'x', externalId: 'follow', sourceAccountId: source.id,
-      contentHash: 'follow', metadata: { originalText: '关注流里的一条完整更新，包含订单金额。' },
-    });
-    feed.saveContentItem({
-      workspaceId: 'local', captureId: capture.id, originType: 'subscription', contentType: 'post',
-      title: '关注', body: '关注流里的一条完整更新，包含订单金额。',
-    });
+    refreshFixture(feed, source.id, 'follow', { originalText: '关注流里的一条完整更新，包含订单金额。' });
     let calls = 0;
     const service = createFeedValueRefreshService({
       feedRepository: feed,
       model: 'startlux-decision-27b-autothink',
       jevEnabled: false,
       classificationProvider: 'bamboo',
+      client: { async evaluate() { calls += 1; throw new Error('should not run'); } },
+    });
+    const result = await service.refresh({ concurrency: 1 }, { runId: 'bamboo-off' });
+    assert.equal(calls, 0);
+    assert.equal(result.KEEP, 1);
+    assert.equal(result.skipped, 0);
+    assert.equal(feed.getCapture('local', 'x', 'follow').metadata.filterReason, 'jev-disabled-following');
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('bamboo refresh calls stop at AI_CENTER_BAMBOO_REFRESH_MAX and count the rest as skipped', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-bamboo-refresh-cap-'));
+  const store = createStore(path.join(directory, 'test.db'));
+  try {
+    const feed = store.repositories.feed;
+    const source = feed.upsertSourceAccount({
+      workspaceId: 'local', provider: 'x', externalId: 'x:home:following', displayName: '关注',
+    });
+    refreshFixture(feed, source.id, 'first', { originalText: '第一条完整更新，包含订单金额。' }, 2);
+    refreshFixture(feed, source.id, 'second', { originalText: '第二条完整更新，包含交付日期。' }, 1);
+    let calls = 0;
+    const service = createFeedValueRefreshService({
+      feedRepository: feed,
+      model: 'startlux-decision-27b-autothink',
+      jevEnabled: false,
+      classificationProvider: 'bamboo',
+      bambooRefresh: true,
+      bambooRefreshMax: 1,
       client: {
         async evaluate() {
           calls += 1;
-          return {
-            model: 'startlux-decision-27b-autothink',
-            answers: {
-              reading_value: { type: 'noul', noul: 0.9 },
-              advertising: { type: 'noul', noul: 0.1 },
-              specific_content: { type: 'noul', noul: 0.9 },
-              sufficient_information: { type: 'noul', noul: 0.9 },
-              missing_context: { type: 'noul', noul: 0.05 },
-            },
-          };
+          return bambooAnswers();
         },
       },
     });
-    const result = await service.refresh({ concurrency: 1 }, { runId: 'bamboo' });
+    const result = await service.refresh({ concurrency: 1 }, { runId: 'bamboo-cap' });
     assert.equal(calls, 1);
+    assert.equal(result.skipped, 1);
     assert.equal(result.KEEP, 1);
-    assert.equal(feed.getCapture('local', 'x', 'follow').metadata.filterReason, 'all-three');
-    assert.equal(feed.getCapture('local', 'x', 'follow').metadata.filterScores.reading_value, 0.9);
+    assert.equal(feed.getCapture('local', 'x', 'first').metadata.filterReason, 'all-three');
+    assert.equal(feed.getCapture('local', 'x', 'second').metadata.filterReason, undefined);
   } finally {
     store.close();
     rmSync(directory, { recursive: true, force: true });
@@ -384,4 +452,60 @@ test('label metrics skip unlabeled rows and tags that have no positive example',
   assert.equal(metrics.optical.misses[0].kind, 'fn');
   assert.equal(fixtures.items.find((item) => item.id === 'fx-startup').human.length, 0);
   assert.deepEqual(hitsAt({ a_share: 0.9, chinext: 0.2, optical: 0.8 }, 0.5), ['a_share', 'optical']);
+  const rows = [
+    { id: 'hit', human: ['optical'], scores: { optical: 0.7, a_share: 0.1 } },
+    { id: 'miss', human: ['optical'], scores: { optical: 0.55, a_share: 0.1 } },
+    { id: 'none', human: [], scores: { optical: 0.9, a_share: 0.2 } },
+  ];
+  const sweep = labelMetricsAtThresholds(rows, ['optical'], [0.5, 0.6]);
+  assert.equal(sweep[0].threshold, 0.5);
+  assert.equal(sweep[0].metrics.optical.recall, 1);
+  assert.equal(sweep[0].metrics.optical.precision, 2 / 3);
+  assert.equal(sweep[1].threshold, 0.6);
+  assert.equal(sweep[1].metrics.optical.recall, 0.5);
+  assert.equal(sweep[1].metrics.optical.accuracy, 1 / 3);
+});
+
+test('bamboo feed admission stops at the daily cap and uses the local fallback', async () => {
+  resetBambooAdmissionCounter();
+  const env = {
+    AI_CENTER_JEV_ENABLED: 'false',
+    AI_CENTER_CLASSIFICATION_PROVIDER: 'bamboo',
+    AI_CENTER_FEED_FILTER: 'enforce',
+    AI_CENTER_BAMBOO_DAILY_MAX: '1',
+  };
+  let calls = 0;
+  const filter = createFeedFilterFromEnv({
+    env,
+    client: {
+      modelId: 'startlux-decision-27b-autothink',
+      available: () => true,
+      async evaluate() {
+        calls += 1;
+        return {
+          model: 'startlux-decision-27b-autothink',
+          answers: {
+            reading_value: { type: 'noul', noul: 0.9 },
+            advertising: { type: 'noul', noul: 0.1 },
+            specific_content: { type: 'noul', noul: 0.9 },
+            sufficient_information: { type: 'noul', noul: 0.9 },
+            missing_context: { type: 'noul', noul: 0.05 },
+          },
+        };
+      },
+    },
+  });
+  const input = (text) => ({
+    provider: 'x',
+    sourceExternalId: 'x:home:following',
+    originalText: text,
+    item: { provider: 'x', title: '订单', body: text, sourceExternalId: 'x:home:following' },
+  });
+  const first = await filter.evaluate(input('关注流里的一条完整更新，包含订单金额和交付日期。'));
+  const second = await filter.evaluate(input('关注流里的另一条完整更新，包含产能和客户名称。'));
+  assert.equal(calls, 1);
+  assert.equal(first.metadata.filterReason, 'all-three');
+  assert.equal(second.metadata.filterReason, 'jev-disabled-following');
+  assert.equal(second.metadata.filterErrorCode, 'BAMBOO_DAILY_CAP');
+  resetBambooAdmissionCounter();
 });

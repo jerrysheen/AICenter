@@ -176,7 +176,10 @@ export function resolveAgentQualityConfig(env = process.env) {
     : 'shadow';
   const reviewerRaw = envFlag(env.AI_CENTER_JEV_REVIEWER);
   const reviewerEnabled = reviewerRaw === 'off' || reviewerRaw === '0' ? false : true;
-  const evidenceGateMode = resolveEvidenceGateMode(env, { disabled });
+  const evidenceGateMode = resolveEvidenceGateMode(env, {
+    disabled,
+    defaultMode: bamboo && !envFlag(env.AI_CENTER_JEV_EVIDENCE_GATE) ? 'shadow' : 'enforce',
+  });
   return Object.freeze({
     disabled,
     priorMode: disabled ? 'off' : priorMode,

@@ -50,16 +50,16 @@ function redact(value, secrets) {
   return output.replace(/Bearer\s+\S+/gi, 'Bearer [redacted]').replace(/[\r\n]+/g, ' ').trim();
 }
 
-function clip(value, max = 180) {
-  const message = String(value || '').replace(/[\r\n]+/g, ' ').trim();
-  return message.length > max ? `${message.slice(0, max)}…` : message;
-}
-
-function fail(code, message, { status = null, secrets = [] } = {}) {
-  const error = new Error(redact(clip(message), secrets) || 'Bamboo 请求失败');
+function fail(code, message, { status = null } = {}) {
+  const error = new Error(message || 'Bamboo 请求失败');
   error.code = code;
   if (Number.isInteger(status)) error.status = status;
   return error;
+}
+
+function networkCauseCode(error) {
+  const code = error?.cause && typeof error.cause === 'object' ? error.cause.code : '';
+  return typeof code === 'string' && /^[A-Za-z0-9_]+$/.test(code) && code.length <= 40 ? code : '';
 }
 
 function endpointAllowed(endpoint, apiKey) {
@@ -232,15 +232,6 @@ function categoryFor(code) {
   }
 }
 
-function readErrorDetail(payload, secrets) {
-  if (typeof payload === 'string') return redact(clip(payload), secrets);
-  if (!isRecord(payload)) return '';
-  const error = isRecord(payload.error) ? payload.error : null;
-  const detail = error?.message ?? payload.error ?? payload.message ?? payload.detail ?? '';
-  const rendered = typeof detail === 'string' ? detail : (() => { try { return JSON.stringify(detail); } catch { return ''; } })();
-  return redact(clip(rendered), secrets);
-}
-
 async function readLimitedText(response, maxBytes) {
   const declared = Number(response.headers?.get?.('content-length'));
   if (Number.isFinite(declared) && declared > maxBytes) {
@@ -360,8 +351,7 @@ export function createBambooStartLuxClient(options = {}) {
         if (!response.ok) {
           const code = httpCode(response.status);
           category = categoryFor(code);
-          const detail = payload ? readErrorDetail(payload, secrets) : (html ? '' : readErrorDetail(raw, secrets));
-          throw fail(code, `Bamboo 调用失败（${response.status}${detail ? `: ${detail}` : ''}）`, { status: response.status, secrets });
+          throw fail(code, `Bamboo 调用失败（${response.status} ${category}）`, { status: response.status });
         }
         if (html || !payload) {
           category = 'bad-response';
@@ -394,7 +384,8 @@ export function createBambooStartLuxClient(options = {}) {
           throw fail('BAMBOO_TIMEOUT', `Bamboo 请求超时（${timeoutMs}ms）`, { secrets });
         }
         category = 'network';
-        throw fail('BAMBOO_NETWORK_ERROR', redact(error?.message, secrets) || 'Bamboo 网络失败', { secrets });
+        const causeCode = networkCauseCode(error);
+        throw fail('BAMBOO_NETWORK_ERROR', causeCode ? `Bamboo 网络失败（${causeCode}）` : 'Bamboo 网络失败');
       } finally {
         timeout.clear();
         finish();

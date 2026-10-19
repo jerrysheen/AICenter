@@ -69,6 +69,62 @@ function finiteUnit(value, fallback) {
   return Number.isFinite(number) && number >= 0 && number <= 1 ? number : fallback;
 }
 
+export const BAMBOO_DAILY_MAX_DEFAULT = 2000;
+
+export function resolveBambooDailyMax(env = process.env) {
+  const raw = String(env?.AI_CENTER_BAMBOO_DAILY_MAX ?? '').trim();
+  if (!raw) return BAMBOO_DAILY_MAX_DEFAULT;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : BAMBOO_DAILY_MAX_DEFAULT;
+}
+
+const bambooAdmissionDay = { key: '', count: 0, logged: false };
+
+export function resetBambooAdmissionCounter() {
+  bambooAdmissionDay.key = '';
+  bambooAdmissionDay.count = 0;
+  bambooAdmissionDay.logged = false;
+}
+
+function shanghaiDateKey(at) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date(at));
+}
+
+function takeBambooAdmissionCall(max, at, log) {
+  const key = shanghaiDateKey(at);
+  if (bambooAdmissionDay.key !== key) {
+    bambooAdmissionDay.key = key;
+    bambooAdmissionDay.count = 0;
+    bambooAdmissionDay.logged = false;
+  }
+  if (bambooAdmissionDay.count >= max) {
+    if (!bambooAdmissionDay.logged) {
+      bambooAdmissionDay.logged = true;
+      try { log(`[worker] Bamboo 信息流准入已达每日上限 ${max}，其余走本地兜底`); } catch { /* logging must not change admission */ }
+    }
+    return false;
+  }
+  bambooAdmissionDay.count += 1;
+  return true;
+}
+
+function limitBambooAdmission(client, { max, now, log }) {
+  if (!client || typeof client.evaluate !== 'function') return client;
+  return {
+    ...client,
+    async evaluate(input) {
+      if (!takeBambooAdmissionCall(max, now(), log)) {
+        const error = new Error('Bamboo 信息流准入已达每日上限');
+        error.code = 'BAMBOO_DAILY_CAP';
+        throw error;
+      }
+      return client.evaluate(input);
+    },
+  };
+}
+
 export function resolveFeedFilterConfig(env = process.env) {
   const raw = envFlag(env.AI_CENTER_FEED_FILTER);
   const mode = raw === 'enforce' || raw === 'off' ? raw : 'shadow';
@@ -79,6 +135,7 @@ export function resolveFeedFilterConfig(env = process.env) {
     fallback: !flagOff(env.AI_CENTER_FEED_FILTER_FALLBACK),
     jevEnabled: resolveJevEnabled(env),
     classificationProvider: resolveClassificationProvider(env),
+    bambooDailyMax: resolveBambooDailyMax(env),
     xFocusMin: finiteUnit(env.AI_CENTER_FEED_FILTER_XFOCUS_MIN, 0.7),
   });
 }
@@ -359,15 +416,21 @@ function createFeedValueFilter({ client, config, lookup, calibration, xFocusConf
   const bamboo = config.classificationProvider === 'bamboo';
   const classify = bamboo || jevEnabled;
   const fallbackOn = jevEnabled ? config.fallback !== false : true;
+  const now = typeof config.now === 'function' ? config.now : () => Date.now();
+  const dailyMax = Number.isInteger(config.bambooDailyMax) && config.bambooDailyMax >= 0
+    ? config.bambooDailyMax
+    : BAMBOO_DAILY_MAX_DEFAULT;
+  const admissionClient = classify && bamboo
+    ? limitBambooAdmission(client, { max: dailyMax, now, log })
+    : (classify ? client : null);
   const evaluator = createFeedValueEvaluator({
-    client: classify ? client : null,
+    client: admissionClient,
     model: bamboo ? (client?.modelId || '') : (calibration?.model || client?.modelId || ''),
     calibration,
     rule,
   });
   const warnStreak = Number(config.warnStreak) > 0 ? Number(config.warnStreak) : 20;
   const warnGapMs = Number(config.warnGapMs) >= 0 ? Number(config.warnGapMs) : 10 * 60_000;
-  const now = typeof config.now === 'function' ? config.now : () => Date.now();
   let streak = 0;
   let lastWarnAt = 0;
   return Object.freeze({ config, async evaluate(input = {}) {
@@ -379,7 +442,8 @@ function createFeedValueFilter({ client, config, lookup, calibration, xFocusConf
       { title:fields.title, authorName:fields.authorName, capture });
     const result=await evaluator.evaluate(normalized,{signal:input.signal});
     const outage = isJevOutage(result);
-    if (classify && outage) {
+    const capped = result.errorCode === 'BAMBOO_DAILY_CAP';
+    if (classify && outage && !capped) {
       streak += 1;
       const at = now();
       if (streak >= warnStreak && at - lastWarnAt >= warnGapMs) {

@@ -81,13 +81,28 @@ export function labelMetrics(rows, tagIds, threshold = 0.5) {
       }
     }
     if (positives === 0) {
-      metrics[tag] = { labeled, positives: 0, precision: null, recall: null, f1: null, reason: '无正例，不算分', misses: [] };
+      metrics[tag] = { labeled, positives: 0, precision: null, recall: null, accuracy: null, f1: null, reason: '无正例，不算分', misses: [] };
       continue;
     }
+    const tn = labeled - tp - fp - fn;
     const precision = tp + fp === 0 ? null : tp / (tp + fp);
     const recall = tp / positives;
+    const accuracy = labeled === 0 ? null : (tp + tn) / labeled;
     const f1 = precision == null || precision + recall === 0 ? null : (2 * precision * recall) / (precision + recall);
-    metrics[tag] = { labeled, positives, tp, fp, fn, precision, recall, f1, misses };
+    metrics[tag] = { labeled, positives, tp, fp, fn, tn, precision, recall, accuracy, f1, misses };
   }
   return metrics;
+}
+
+// Sweep is for re-estimating the old 0.60 admission line and the 0.5 reading-hour line.
+export const LABEL_SWEEP_THRESHOLDS = Object.freeze([0.4, 0.5, 0.6, 0.7]);
+
+export function labelMetricsAtThresholds(rows, tagIds, thresholds = LABEL_SWEEP_THRESHOLDS) {
+  const limits = (Array.isArray(thresholds) ? thresholds : [thresholds])
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value >= 0 && value <= 1);
+  return limits.map((threshold) => ({
+    threshold,
+    metrics: labelMetrics(rows, tagIds, threshold),
+  }));
 }
