@@ -25,7 +25,7 @@
 
 ## 当前
 
-- `progress/2026-10-19-youtube-podcast-article.md`：YouTube 单集正文改成豆包整理的中文文章。自动字幕先去掉滚动重复，再按句末或说话人分成约 1 万到 1.2 万字符，在同一个豆包对话里逐段发送。开关 `AI_CENTER_YOUTUBE_PODCASTS_ARTICLE` 默认关，每天默认 2 集。标题、摘要和关键句仍只用 Gemma 26B。migration 89 只加原字幕和整理进度。需要同时重启 Web 和 Worker。
+- `progress/2026-10-19-youtube-podcast-article.md`：YouTube 单集正文改成豆包整理的中文文章。自动字幕先去掉滚动重复，再按句末或说话人分成约 1 万到 1.2 万字符，在同一个豆包对话里逐段发送。开关 `AI_CENTER_YOUTUBE_PODCASTS_ARTICLE` 默认关，每天默认 2 集。打开后去重稿写入 `content_item.body`，中途失败时信息流显示去重稿而不是原始字幕。标题、摘要和关键句仍只用 Gemma 26B。migration 89 只加原字幕和整理进度。需要同时重启 Web 和 Worker。
 - `progress/2026-10-19-market-flow.md`：股票子页最后增加「资金」（`#market/flow`）。南向净额和北向成交额只出现在这一页。北向沿用东财和港交所已有响应，净买入没有公布就不显示。migration 88 建 `northbound_daily` 和 `northbound_top10` 两张表。需要同时重启 Web 和 Worker，再按该说明补北向历史。
 
 - `progress/2026-10-19-us-open-stale.md`：美股刚开盘的 5 分钟内，盘前报价不再标成红色「已过期」，顶部和美股观察写「盘中 · 等待报价」。盘前、盘后的 `asOf` 用报价自己的时间，行提示写盘前或盘后。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
