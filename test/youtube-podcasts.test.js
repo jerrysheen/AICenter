@@ -397,6 +397,7 @@ test('a description that mentions 429 does not stop the round', async () => {
       workDir: path.join(directory, 'probe'),
       run: async (_command, args) => {
         requested = args;
+        writeFileSync(path.join(directory, 'probe', 'desc429vid01.info.json'), JSON.stringify(info));
         return {
           code: 0,
           stdout: JSON.stringify(info),
@@ -405,6 +406,11 @@ test('a description that mentions 429 does not stop the round', async () => {
         };
       },
     });
+    assert.equal(requested.includes('--dump-single-json'), false);
+    assert.equal(requested.includes('--skip-download'), true);
+    assert.equal(requested.includes('--write-subs'), true);
+    assert.equal(requested.includes('--write-auto-subs'), true);
+    assert.equal(requested.includes('--write-info-json'), true);
     assert.equal(probed.blocked, undefined);
     assert.equal(probed.durationSec, 1800);
     assert.equal(requested.at(-1), 'https://www.youtube.com/watch?v=desc429vid01');
@@ -476,6 +482,7 @@ test('a description that mentions 429 does not stop the round', async () => {
         url: 'https://www.youtube.com/feeds/videos.xml?playlist_id=PLtest',
         workDir: path.join(directory, item.videoId),
         run: async () => {
+          writeFileSync(path.join(directory, item.videoId, 'desc429vid01.info.json'), JSON.stringify({ ...info, subtitles: { en: [{}] } }));
           writeFileSync(path.join(directory, item.videoId, 'clip.en.vtt'), 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello rates\n');
           return {
             code: 0,
@@ -803,6 +810,7 @@ test('truncated metadata, broken json, and a missing duration stay failed', asyn
       videoId: 'overcapvid01',
       workDir: path.join(directory, 'over'),
       run: async (_command, args) => {
+        assert.equal(args.includes('--dump-single-json'), false);
         assert.equal(args.includes('--write-info-json'), true);
         assert.equal(args.some((arg) => arg.endsWith('%(id)s.%(ext)s')), true);
         const langs = args[args.indexOf('--sub-langs') + 1];
@@ -834,6 +842,19 @@ test('truncated metadata, broken json, and a missing duration stay failed', asyn
     });
     assert.equal(missingDuration.failed, true);
     assert.equal(missingDuration.detail, 'probe-parse');
+
+    const stdoutOnly = await probeYoutubeEpisode({
+      videoId: 'stdoutonly01',
+      workDir: path.join(directory, 'stdout-only'),
+      run: async () => ({
+        code: 0,
+        stdout: JSON.stringify({ id: 'stdoutonly01', duration: 3600, title: 'Only stdout' }),
+        stderr: '',
+        missing: false,
+      }),
+    });
+    assert.equal(stdoutOnly.failed, true);
+    assert.equal(stdoutOnly.detail, 'probe-parse');
 
     const fromFile = await probeYoutubeEpisode({
       videoId: 'infovid00001',
@@ -880,6 +901,8 @@ test('an old yt-dlp stops the round before any episode is counted', async () => 
     assert.equal(ytDlpVersionAtLeast('2025.11.12'), true);
     assert.equal(ytDlpVersionAtLeast('2025.11.11'), false);
     assert.equal(ytDlpVersionAtLeast('2024.08.06'), false);
+    assert.equal(ytDlpVersionAtLeast('2026.1.2'), true);
+    assert.equal(ytDlpVersionAtLeast('2025.11.2'), false);
     let probes = 0;
     const outdated = await runYoutubePodcastRound({
       env: { AI_CENTER_YOUTUBE_PODCASTS: '1' },

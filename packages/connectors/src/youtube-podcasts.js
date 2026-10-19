@@ -42,8 +42,8 @@ function appendCapped(current, chunk, cap) {
 }
 
 export function ytDlpVersionAtLeast(text, minimum = YT_DLP_MIN_VERSION) {
-  const found = String(text || '').match(/(\d{4})\.(\d{2})\.(\d{2})/);
-  const need = String(minimum || '').match(/(\d{4})\.(\d{2})\.(\d{2})/);
+  const found = String(text || '').match(/(\d{4})\.(\d{1,2})\.(\d{1,2})/);
+  const need = String(minimum || '').match(/(\d{4})\.(\d{1,2})\.(\d{1,2})/);
   if (!found || !need) return false;
   const stamp = (parts) => Number(parts[1]) * 10000 + Number(parts[2]) * 100 + Number(parts[3]);
   return stamp(found) >= stamp(need);
@@ -152,18 +152,6 @@ export function runProcess(command, args, { timeoutMs = 180_000, cwd, signal } =
       finish({ code: code ?? 1, stdout, stderr, missing: false });
     });
   });
-}
-
-export function readYtDlpJson(stdout) {
-  const text = String(stdout || '');
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start < 0 || end <= start) return null;
-  try {
-    return JSON.parse(text.slice(start, end + 1));
-  } catch {
-    return null;
-  }
 }
 
 export function vttToTranscript(vtt) {
@@ -316,7 +304,6 @@ export async function probeYoutubeEpisode({
     '--sub-langs', SUB_LANGS,
     '--convert-subs', 'vtt',
     '--write-info-json',
-    '--dump-single-json',
     ...ytDlpBaseArgs(env),
     '-o', path.join(workDir, '%(id)s.%(ext)s'),
     '--',
@@ -326,10 +313,9 @@ export async function probeYoutubeEpisode({
   const blocked = blockedResult(result);
   if (blocked) return blocked;
   const fromFile = await readInfoJson(workDir);
-  const fromStdout = readYtDlpJson(result.stdout);
-  const info = durationOf(fromFile) ? fromFile : (durationOf(fromStdout) ? fromStdout : (fromFile || fromStdout));
+  const info = fromFile;
   if (!durationOf(info)) {
-    if (result.code !== 0 && !fromFile && !fromStdout) {
+    if (result.code !== 0 && !fromFile) {
       return { failed: true, detail: String(result.stderr || result.stdout || `yt-dlp ${result.code}`).slice(0, 300) };
     }
     return { failed: true, detail: 'probe-parse' };

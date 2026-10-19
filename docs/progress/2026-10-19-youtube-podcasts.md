@@ -17,14 +17,15 @@ node scripts/ensure-yt-dlp.mjs
 
 `yt-dlp` 必须是 **2025.11.12 或更新**。采集会传 `--js-runtimes node:<当前 node 可执行文件>`，旧版会报 `no such option`，本轮直接停，原因是 `yt-dlp-outdated`，不计入尝试次数。每轮开始先跑 `yt-dlp --version`。二进制不在 PATH 上时，把 `AI_CENTER_YT_DLP` 设成绝对路径，例如 `C:\Tools\yt-dlp.exe`。`data` 所在磁盘至少留 512MB，不够就跳过这一集的音频下载。
 
-上线前在服务器上手动冒烟，确认能读元数据和能下音频。把下面的视频换成任意公开视频：
+上线前在服务器上手动冒烟，确认元数据和字幕会写成文件，并且能下音频。不要加 `--dump-single-json`，那个开关默认是模拟模式，字幕和 `info.json` 都不会落盘。把下面的视频换成任意公开视频：
 
 ```text
-yt-dlp --js-runtimes node --skip-download --dump-single-json -- "https://www.youtube.com/watch?v=jNQXAC9IVRw"
-yt-dlp -f bestaudio -x --audio-format wav --js-runtimes node -o "%TEMP%\yt-smoke.%(ext)s" -- "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+mkdir %TEMP%\yt-smoke
+yt-dlp --js-runtimes node --skip-download --write-info-json --write-subs --write-auto-subs --convert-subs vtt --sub-langs "zh-Hans,zh-Hant,zh,ja,.*-orig" -o "%TEMP%\yt-smoke\%(id)s.%(ext)s" -- "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+yt-dlp -f bestaudio -x --audio-format wav --js-runtimes node -o "%TEMP%\yt-smoke\%(id)s.%(ext)s" -- "https://www.youtube.com/watch?v=jNQXAC9IVRw"
 ```
 
-第二条会在临时目录留下 wav，确认有声音后删掉。`config/youtube-podcasts.json` 缺失时，日志写明路径，页面只显示「配置缺失」，不会悄悄当成空名单。
+第一条跑完后，`%TEMP%\yt-smoke` 里要有 `.info.json`；这个视频有字幕时还要有 `.vtt`。第二条确认有 wav 后，把整个目录删掉。`config/youtube-podcasts.json` 缺失时，日志写明路径，页面只显示「配置缺失」，不会悄悄当成空名单。
 
 ## 环境变量
 
@@ -75,13 +76,13 @@ node --env-file=.env scripts/youtube-podcasts-run.mjs
 
 只有 `yt-dlp` 退出码不是 0、并且 stderr 的 `ERROR:` 行里出现人机验证或 HTTP 429，才因这两件事停止本轮。stderr 里的 `yt-dlp: error:` 或 `no such option` 也停止本轮，不计入尝试次数。视频简介里的「429」不会停轮。RSS 和频道页只在状态码不是 2xx 时做这个判断。请求超过 15 秒按这一条失败，不停止整轮。Gemini 或 Gemma 的 429 和额度错误也不计入尝试次数，直接停止本轮。当前这一集不写完成，下一轮从这里继续。找不到 `yt-dlp` 同样停本轮。
 
-元数据优先读工作目录里的 `*.info.json`，stdout 只作兜底，上限 16MB；stderr 仍是 256KB。JSON 解析失败或没有时长时记 `failed` / `probe-parse`，不会当成短片永久跳过。
+探测只用 `--skip-download --write-info-json --write-subs --write-auto-subs`，时长、直播状态和字幕都从 `<视频 id>.info.json` 和同目录的 `.vtt` 读取。不传 `--dump-single-json`。stdout 上限 16MB，stderr 仍是 256KB。`info.json` 解析失败或没有时长时记 `failed` / `probe-parse`，不会当成短片永久跳过。
 
 Worker 允许这一轮跑满 `AI_CENTER_YOUTUBE_PODCASTS_MAX_RUNNING_MS`（默认 3 小时）。进程内截止时间早 10 分钟。到点后结束 `yt-dlp` 和它拉起的 ffmpeg：Windows 用 `taskkill /T /F`，其他系统结束进程组。手动再入队时，上一轮已经停干净，不会两轮同时写同一个音频文件。音频放在实例 `tmp/youtube-podcasts` 下的独立目录，文件名带视频 id，转写完连同 `.part` 一起删除。Worker 启动时清掉这个目录；目录正被占用时只记日志，不因此拒绝启动。下载前如果剩余空间不足 512MB，就跳过这一集。
 
 ## 过滤和文字
 
-发现走 RSS，不翻频道页。时长、直播状态和字幕用 `yt-dlp --dump-single-json`。只要时长至少 20 分钟（配置里的 `minDurationSec`，默认 1200）。Shorts、标题里的切片和预告、正在直播和直播预告都丢掉。
+发现走 RSS，不翻频道页。时长、直播状态和字幕写在工作目录的 `.info.json` 和 `.vtt` 里，不使用 `--dump-single-json`。只要时长至少 20 分钟（配置里的 `minDurationSec`，默认 1200）。Shorts、标题里的切片和预告、正在直播和直播预告都丢掉。
 
 去重两层：全局按 `videoId`；同一博主里，标题相近且时长差在 3 分钟或 8% 以内的，视为同一集。视频版优先于音频版，中文原版优先于配音。第一次每个频道只保留最近 1–2 集（探测窗口比这个多几条，避免短片占掉名额）。频道没探测完不会标成已回溯，避免把后面的集提前标成跳过。
 
@@ -101,4 +102,4 @@ Worker 允许这一轮跑满 `AI_CENTER_YOUTUBE_PODCASTS_MAX_RUNNING_MS`（默�
 2. 可选环境变量：`AI_CENTER_YOUTUBE_PODCASTS_EPISODE_MINUTES`（默认 180）、`AI_CENTER_YOUTUBE_PODCASTS_MAX_RUNNING_MS`（默认 3 小时）、`AI_CENTER_YOUTUBE_PODCASTS_SUMMARY_MODEL`（默认沿用现有 Gemini 摘要模型）。需要时再设 `AI_CENTER_YOUTUBE_COOKIES`。默认不要设。
 3. 部署后同时重启 Web 和 Worker。migration 86 在启动时自己加上。不要重建数据库，不要删已有 migration。
 4. 确认开关仍是关的，日志里不应出现对外请求。准备试跑时再设 `AI_CENTER_YOUTUBE_PODCASTS=1`，再次同时重启 Web 和 Worker。
-5. 手动入队：`node --env-file=.env scripts/youtube-podcasts-run.mjs`。入口在信源目录「社媒」，紧挨着 B 站。列表不显示标签和分享。开关打开后先跑一轮，确认长节目的 `durationSec` 是实际分钟数，不是 0，也没有被记成 `short`。
+5. 手动入队：`node --env-file=.env scripts/youtube-podcasts-run.mjs`。入口在信源目录「社媒」，紧挨着 B 站。列表不显示标签和分享。开关打开后先跑一轮，确认长节目的 `durationSec` 是实际分钟数，不是 0，也没有被记成 `short`。有字幕的集日志里 `subtitles>0`，`transcribed` 应接近 0，几乎不走语音转写。
