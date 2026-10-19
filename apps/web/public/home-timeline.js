@@ -284,17 +284,35 @@ export function quoteStaleLabel(item, nowMs = Date.now()) {
 }
 
 function closedClockPrefix(item) {
-  return String(item?.session || '').trim() === 'break' ? '午间休市' : '收盘';
+  const session = String(item?.session || '').trim();
+  if (session === 'break') return '午间休市';
+  if (session === 'pre') return '盘前';
+  if (session === 'post') return '盘后';
+  return '收盘';
 }
 
 export function quoteClosedLabel(item, nowMs = Date.now()) {
+  if (item?.awaitingQuote) return '盘中 · 等待报价';
   if (quoteSessionOpen(item, nowMs)) return '';
   const at = quoteAsOfMs(item);
-  if (!at) return item?.session === 'break' ? '午间休市' : '';
-  return clockText(at, closedClockPrefix(item));
+  const prefix = closedClockPrefix(item);
+  if (!at) {
+    if (prefix === '盘前' || prefix === '盘后') return `${prefix} · 来源未提供时间`;
+    return item?.session === 'break' ? '午间休市' : '';
+  }
+  return clockText(at, prefix);
+}
+
+export function marketPhaseLabel(payload) {
+  if (payload?.awaitingQuote) return '盘中 · 等待报价';
+  const session = String(payload?.session || '').trim();
+  if (session === 'pre') return '盘前';
+  if (session === 'post') return '盘后';
+  return '';
 }
 
 export function marketStaleLabel(payload, nowMs = Date.now()) {
+  if (payload?.awaitingQuote) return '';
   const open = boardSessionOpen(payload, nowMs);
   if (open === false) return '';
   const quotes = open === true
@@ -312,6 +330,7 @@ export function marketStaleLabel(payload, nowMs = Date.now()) {
 }
 
 export function marketClosedLabel(payload, nowMs = Date.now()) {
+  if (payload?.awaitingQuote) return '';
   if (boardSessionOpen(payload, nowMs) !== false) return '';
   const prefix = payload?.session === 'break' ? '午间休市' : '收盘';
   const times = pricedQuotes(payload).map(quoteAsOfMs).filter((at) => at > 0);
