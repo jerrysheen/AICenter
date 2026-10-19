@@ -599,8 +599,9 @@ export function createAiCenterWorker(options = {}) {
     }),
   });
   if (env.AI_CENTER_RESEARCH_RECALL === 'on') {
-    const liveJudges = typesafeClient?.available?.()
-      ? { tagJudge: createResearchTagJudge(typesafeClient), relevanceJudge: createResearchRelevanceJudge(typesafeClient) }
+    const recallClient = resolveClassificationProvider(env) === 'bamboo' ? classificationClient : typesafeClient;
+    const liveJudges = recallClient?.available?.()
+      ? { tagJudge: createResearchTagJudge(recallClient), relevanceJudge: createResearchRelevanceJudge(recallClient) }
       : { tagJudge: null, relevanceJudge: null };
     registry.register({
       manifest: researchRecallManifest,
@@ -609,7 +610,7 @@ export function createAiCenterWorker(options = {}) {
         feedRepository: store.repositories.feed,
         mediaRepository: store.repositories.media,
         informationRepository: store.repositories.informationTree,
-        modelId: typesafeClient?.modelId || '',
+        modelId: recallClient?.modelId || '',
         ...liveJudges,
       })),
     });
@@ -780,6 +781,7 @@ export function createAiCenterWorker(options = {}) {
       configPath: path.join(instance.configDirectory, 'youtube-podcasts.json'),
       dataDirectory,
       env,
+      browserRuntime,
     }),
   });
   registry.register({

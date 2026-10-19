@@ -17,6 +17,7 @@ import {
   selectPodcastEpisodes,
   summaryNeedsChinese,
   watchUrl,
+  youtubeArticleEnabled,
   youtubePodcastClock,
   youtubePodcastLimits,
   youtubeRoundDeadlineMs,
@@ -39,10 +40,13 @@ import {
 } from '../../connectors/src/youtube-podcasts.js';
 import { createGeminiAudioTranscriber } from '../../connectors/src/audio-transcribe.js';
 import { executeAudioTranscription } from './audio-transcription-job.js';
+import { dedupeRollingCaptions, transcriptHash } from '../../domain/src/youtube-captions.js';
+import { localizePodcastCopy, repairYoutubeChineseCopy, runYoutubeArticlePass } from './youtube-article-job.js';
 
 export { YOUTUBE_PODCAST_JOB_TYPE, YOUTUBE_PODCAST_SCHEDULE_KEY };
 
 const SUMMARY_SYSTEM = `你是财经与科技播客的中文编辑。只根据给定文字稿写简体中文观点摘要，不要补充文字稿里没有的事实。
+titleZh 必须是简体中文标题，不要保留英文节目标题。quotes.text 必须是简体中文，人名、公司名和股票代码可以留英文。
 只输出 JSON，不要 Markdown 围栏：
 {"titleZh":"中文标题","guests":["嘉宾"],"points":["核心观点，写 5 到 8 条"],"companies":["公司或股票代码"],"relation":"和关注方向的关系","quotes":[{"time":"HH:MM:SS","text":"关键句"}]}`;
 
@@ -64,7 +68,7 @@ export function ensureYoutubePodcastSchedule(store, env = process.env, now = Dat
 
 function logRound(stats) {
   const reasons = stats.reasons.length ? stats.reasons.join(',') : '-';
-  console.log(`[worker] youtube-podcasts discovered=${stats.discovered} subtitles=${stats.subtitles} transcribed=${stats.transcribed} failed=${stats.failed} skipped=${stats.skipped} transcribeUnavailable=${stats.transcribeUnavailable} stopped=${stats.stopped || '-'} reasons=${reasons}`);
+  console.log(`[worker] youtube-podcasts discovered=${stats.discovered} subtitles=${stats.subtitles} transcribed=${stats.transcribed} failed=${stats.failed} skipped=${stats.skipped} transcribeUnavailable=${stats.transcribeUnavailable} articles=${stats.articlesReady || 0} articlePending=${stats.articlePending || 0} stopped=${stats.stopped || '-'} reasons=${reasons}`);
 }
 
 function emptyStats() {
@@ -77,8 +81,20 @@ function emptyStats() {
     transcribeUnavailable: 0,
     stopped: '',
     reasons: [],
+    articlesReady: 0,
+    articlePending: 0,
     status: 'ready',
   };
+}
+
+function retryTranscribeBug(repository, workspaceId, videoId) {
+  const row = repository.episode(workspaceId, videoId);
+  return /transcribe is not a function/.test(row?.reason || '');
+}
+
+function episodeSettled(repository, workspaceId, videoId) {
+  if (retryTranscribeBug(repository, workspaceId, videoId)) return false;
+  return repository.isDone(workspaceId, videoId);
 }
 
 function pushReason(stats, reason) {
@@ -161,6 +177,7 @@ function defaultSummarize(env, quotaRepository, signal) {
 }
 
 function defaultTranslate(env, quotaRepository, signal) {
+  // 标题、摘要和关键句只用 Gemma 26B。YouTube 正文整理不走这里。
   const router = createGemmaTranslationRouter({
     env,
     models: 'gemma-4-26b-a4b-it',
@@ -321,6 +338,42 @@ export async function runYoutubePodcastRound(deps = {}) {
   const transcribe = deps.transcribe;
   const summarize = deps.summarize || defaultSummarize(env, deps.quotaRepository, signal);
   const translate = deps.translate === undefined ? defaultTranslate(env, deps.quotaRepository, signal) : deps.translate;
+  async function finishRound() {
+    if (repository && deps.feedRepository) {
+      try {
+        await repairYoutubeChineseCopy({
+          env,
+          repository,
+          feedRepository: deps.feedRepository,
+          workspaceId,
+          translate,
+        });
+      } catch (error) {
+        console.warn(`[worker] youtube-podcasts 中文标题修复中断：${String(error?.message || error).slice(0, 160)}`);
+      }
+      try {
+        const articles = await runYoutubeArticlePass({
+          env,
+          repository,
+          feedRepository: deps.feedRepository,
+          workspaceId,
+          doubaoClient: deps.doubaoClient,
+          browserRuntime: deps.browserRuntime,
+          signal,
+          now,
+          timeZone,
+        });
+        stats.articlesReady = articles.ready;
+        stats.articlePending = articles.pending;
+        if (articles.stopped) pushReason(stats, `article-${articles.stopped}`);
+      } catch (error) {
+        pushReason(stats, 'article');
+        console.warn(`[worker] youtube-podcasts 正文整理中断：${String(error?.message || error).slice(0, 160)}`);
+      }
+    }
+    logRound(stats);
+    return stats;
+  }
   const tempRoot = deps.dataDirectory
     ? path.join(deps.dataDirectory, 'tmp', 'youtube-podcasts')
     : path.join(os.tmpdir(), 'youtube-podcasts');
@@ -334,8 +387,7 @@ export async function runYoutubePodcastRound(deps = {}) {
     if (ready?.blocked) {
       stats.stopped = ready.blocked;
       pushReason(stats, ready.blocked);
-      logRound(stats);
-      return stats;
+      return finishRound();
     }
   }
   await mkdir(tempRoot, { recursive: true });
@@ -447,14 +499,14 @@ export async function runYoutubePodcastRound(deps = {}) {
         const limitWindow = !state.bootstrapped || backfillListed;
         const slice = limitWindow
           ? firstRunSlice(entries, limits.lookback)
-          : { probe: entries.filter((entry) => !repository.isDone(workspaceId, entry.videoId)), ignore: [] };
+          : { probe: entries.filter((entry) => !episodeSettled(repository, workspaceId, entry.videoId)), ignore: [] };
         let finished = true;
         for (const entry of slice.probe) {
           if (stats.stopped || processed >= limits.roundLimit) {
             finished = false;
             break;
           }
-          if (repository.isDone(workspaceId, entry.videoId)) continue;
+          if (episodeSettled(repository, workspaceId, entry.videoId)) continue;
           if (signal?.aborted) {
             stats.stopped = 'deadline';
             pushReason(stats, 'deadline');
@@ -542,6 +594,7 @@ export async function runYoutubePodcastRound(deps = {}) {
         decision = { keep, skip: [...decision.skip, ...extra] };
       }
       for (const episode of decision.skip) {
+        if (repository.episode(workspaceId, episode.videoId)) continue;
         repository.saveEpisode({
           workspaceId,
           videoId: episode.videoId,
@@ -632,16 +685,24 @@ export async function runYoutubePodcastRound(deps = {}) {
           if (summaryNeedsChinese(formatted)) {
             if (!translate) throw new Error('摘要不是中文，且没有翻译');
             formatted = await translate(formatted);
-            summary = { ...summary, titleZh: summary.titleZh };
           }
+          const localized = await localizePodcastCopy({
+            summary,
+            formatted,
+            episodeTitle: episode.title,
+            translate,
+          });
+          summary = localized.summary;
+          formatted = localized.formatted;
+          const showArticle = youtubeArticleEnabled(env);
           const item = await saveYoutubeEpisode({
             feedRepository: deps.feedRepository,
             workspaceId,
             creator,
             episode,
             summaryText: formatted,
-            displayTitle: summaryNeedsChinese(summary.titleZh || '') ? episode.title : (summary.titleZh || episode.title),
-            transcript,
+            displayTitle: localized.displayTitle,
+            transcript: showArticle ? dedupeRollingCaptions(transcript) : transcript,
             transcriptSource,
           });
           repository.saveEpisode({
@@ -657,6 +718,9 @@ export async function runYoutubePodcastRound(deps = {}) {
             transcriptSource,
             contentItemId: item.id,
             attempts: attemptsOf(repository, workspaceId, episode.videoId) + 1,
+            sourceTranscript: transcript,
+            sourceHash: transcriptHash(transcript),
+            articleStatus: showArticle ? 'pending' : '',
           });
         } catch (error) {
           const stop = roundStop(error, signal);
@@ -695,8 +759,7 @@ export async function runYoutubePodcastRound(deps = {}) {
   } finally {
     await rm(root, { recursive: true, force: true }).catch(() => {});
   }
-  logRound(stats);
-  return stats;
+  return finishRound();
 }
 
 export function createYoutubePodcastJobHandlers(options = {}) {
