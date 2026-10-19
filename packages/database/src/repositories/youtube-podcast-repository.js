@@ -84,27 +84,40 @@ export function createYoutubePodcastRepository(database) {
     },
 
     channel(workspaceId, channelKey) {
-      const row = database.prepare(`SELECT channel_id, bootstrapped FROM youtube_podcast_channels
+      const row = database.prepare(`SELECT channel_id, bootstrapped, backfilled_at, backfill_attempts, backfill_failed_at
+        FROM youtube_podcast_channels
         WHERE workspace_id = ? AND channel_key = ?`).get(workspaceId, channelKey);
       return {
         channelId: row?.channel_id || '',
         bootstrapped: Boolean(row?.bootstrapped),
+        backfilledAt: row?.backfilled_at == null ? null : Number(row.backfilled_at),
+        backfillAttempts: Number(row?.backfill_attempts) || 0,
+        backfillFailedAt: row?.backfill_failed_at == null ? null : Number(row.backfill_failed_at),
       };
     },
 
-    saveChannel(workspaceId, channelKey, { channelId = '', bootstrapped = false } = {}) {
+    saveChannel(workspaceId, channelKey, patch = {}) {
       const current = this.channel(workspaceId, channelKey);
+      const backfilledAt = Object.hasOwn(patch, 'backfilledAt') ? patch.backfilledAt : current.backfilledAt;
+      const backfillAttempts = Object.hasOwn(patch, 'backfillAttempts') ? patch.backfillAttempts : current.backfillAttempts;
+      const backfillFailedAt = Object.hasOwn(patch, 'backfillFailedAt') ? patch.backfillFailedAt : current.backfillFailedAt;
       database.prepare(`INSERT INTO youtube_podcast_channels
-        (workspace_id, channel_key, channel_id, bootstrapped, updated_at)
-        VALUES (?, ?, ?, ?, ?)
+        (workspace_id, channel_key, channel_id, bootstrapped, backfilled_at, backfill_attempts, backfill_failed_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(workspace_id, channel_key) DO UPDATE SET
           channel_id = excluded.channel_id,
           bootstrapped = excluded.bootstrapped,
+          backfilled_at = excluded.backfilled_at,
+          backfill_attempts = excluded.backfill_attempts,
+          backfill_failed_at = excluded.backfill_failed_at,
           updated_at = excluded.updated_at`).run(
         workspaceId,
         channelKey,
-        channelId || current.channelId,
-        bootstrapped || current.bootstrapped ? 1 : 0,
+        patch.channelId || current.channelId,
+        patch.bootstrapped || current.bootstrapped ? 1 : 0,
+        backfilledAt ?? null,
+        Number(backfillAttempts) || 0,
+        backfillFailedAt ?? null,
         Date.now(),
       );
     },

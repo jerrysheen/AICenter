@@ -11,7 +11,8 @@
           "key": "odd-lots",
           "kind": "playlist",
           "playlistId": "PLe4PRejZgr0OJbRzA6nWybYiThLJd_ouz",
-          "url": "https://www.youtube.com/playlist?list=PLe4PRejZgr0OJbRzA6nWybYiThLJd_ouz"
+          "url": "https://www.youtube.com/playlist?list=PLe4PRejZgr0OJbRzA6nWybYiThLJd_ouz",
+          "language": "en"
         }
       ]
     },
@@ -24,7 +25,9 @@
           "key": "all-in",
           "kind": "channel",
           "handle": "allin",
-          "url": "https://www.youtube.com/@allin"
+          "url": "https://www.youtube.com/@allin",
+          "channelId": "UCESLZhusAkFfsNsApnjF_Cg",
+          "language": "en"
         }
       ]
     },
@@ -37,7 +40,9 @@
           "key": "bg2",
           "kind": "channel",
           "handle": "Bg2Pod",
-          "url": "https://www.youtube.com/@Bg2Pod"
+          "url": "https://www.youtube.com/@Bg2Pod",
+          "channelId": "UC-yRDvpR99LUc5l7i7jLzew",
+          "language": "en"
         }
       ]
     },
@@ -50,7 +55,9 @@
           "key": "macrovoices",
           "kind": "channel",
           "handle": "macrovoices7508",
-          "url": "https://www.youtube.com/@macrovoices7508"
+          "url": "https://www.youtube.com/@macrovoices7508",
+          "channelId": "UCICRehoZjq3ZtAWgRJX118A",
+          "language": "en"
         }
       ]
     },
@@ -63,7 +70,9 @@
           "key": "monetary-matters",
           "kind": "channel",
           "handle": "Monetary-Matters",
-          "url": "https://www.youtube.com/@Monetary-Matters"
+          "url": "https://www.youtube.com/@Monetary-Matters",
+          "channelId": "UCeyqw1Ns_cnhSJh5XvXPWgw",
+          "language": "en"
         }
       ]
     },
@@ -76,7 +85,9 @@
           "key": "semianalysis",
           "kind": "channel",
           "handle": "SemiAnalysis",
-          "url": "https://www.youtube.com/@SemiAnalysis"
+          "url": "https://www.youtube.com/@SemiAnalysis",
+          "channelId": "UCf_KhBXw5TIV0A7butjgFhg",
+          "language": "en"
         }
       ]
     },
@@ -89,7 +100,9 @@
           "key": "dwarkesh",
           "kind": "channel",
           "handle": "DwarkeshPatel",
-          "url": "https://www.youtube.com/@DwarkeshPatel"
+          "url": "https://www.youtube.com/@DwarkeshPatel",
+          "channelId": "UCZa18YV7qayTh-MRIrBhDpA",
+          "language": "en"
         }
       ]
     },
@@ -102,7 +115,9 @@
           "key": "latent-space",
           "kind": "channel",
           "handle": "LatentSpacePod",
-          "url": "https://www.youtube.com/@LatentSpacePod"
+          "url": "https://www.youtube.com/@LatentSpacePod",
+          "channelId": "UCxBcwypKK-W3GHd_RZ9FZrQ",
+          "language": "en"
         }
       ]
     },
@@ -115,7 +130,9 @@
           "key": "no-priors",
           "kind": "channel",
           "handle": "NoPriorsPodcast",
-          "url": "https://www.youtube.com/@NoPriorsPodcast"
+          "url": "https://www.youtube.com/@NoPriorsPodcast",
+          "channelId": "UCSI7h9hydQ40K5MJHnCrQvw",
+          "language": "en"
         }
       ]
     },
@@ -130,6 +147,7 @@
           "role": "video",
           "handle": "TheValley101",
           "url": "https://www.youtube.com/@TheValley101",
+          "channelId": "UChnNjLyx_5rk_iDPQ2BQDQA",
           "language": "zh"
         },
         {
@@ -138,6 +156,7 @@
           "role": "audio",
           "handle": "valley101podcast",
           "url": "https://www.youtube.com/@valley101podcast",
+          "channelId": "UCKV2yWPB3wn0RTZh3cTD8YA",
           "language": "zh"
         }
       ]
@@ -153,6 +172,22 @@
           "kind": "channel",
           "handle": "xiaojunpodcast",
           "url": "https://www.youtube.com/@xiaojunpodcast",
+          "channelId": "UC3Sv1JuKpbOx3csUO8FAo5g",
+          "language": "zh"
+        }
+      ]
+    },
+    {
+      "id": "dalao-lens",
+      "name": "大佬透镜",
+      "focus": "商业访谈",
+      "channels": [
+        {
+          "key": "dalao-lens",
+          "kind": "channel",
+          "handle": "大佬透镜",
+          "url": "https://www.youtube.com/@大佬透镜",
+          "channelId": "UCF68DQIdjJUDT7Ydlo0Awbw",
           "language": "zh"
         }
       ]
