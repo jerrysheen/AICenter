@@ -25,9 +25,11 @@
 
 ## 当前
 
+- `progress/2026-10-19-bamboo-feed-quality.md`：截断预览仍送 Bamboo 打分，KEEP 标正文待补全并可再抓全文。小时报 Bamboo 命中线默认 0.35，公司题材可以同时问市场组。短官方正文不直接可见，用 `scripts/hide-short-official-items.mjs --dry-run` 预览后回填。关注流按价值展开截断帖，订阅同步能在时限内中止浏览器。同一小时报不并行，重启接着检查点。事件循环日志只在超过 200 毫秒时打印。不新增 migration。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-19-author-backfill-busy.md`：作者回填的写事务改为 `BEGIN IMMEDIATE`，避免和 Worker 提交撞上时直接 `SQLITE_BUSY`。脚本按批把进度写到 `source-author-backfill.json`，中断后从最后一批继续，跑完再执行会从头再走一遍。不新增 migration。回填脚本直接再跑；正在运行的 Worker 重启后，采集写入才使用同一把保留锁。
 
-- `progress/2026-10-19-hardware-snapshot-loop.md`：硬件报价快照每天一次，放在当天最晚一档采集之后。快照行补上 `observation_id` 索引。列表一次查出各系列当前行。Worker 在任务结束时记下事件循环卡顿时长。migration 91。需要重启 Worker。
+- `progress/2026-10-19-hardware-snapshot-loop.md`：硬件报价快照每天一次，放在当天最晚一档采集之后。快照行补上 `observation_id` 索引。列表一次查出各系列当前行。事件循环卡顿超过 200 毫秒才记一行。migration 91。需要重启 Worker。
 
 - `progress/2026-10-19-aborted-board-cache.md`：看板请求被取消时，半成品不写入缓存，避免盖掉上一版完整看板。`http://xavatar.imedao.com` 升成 https，回填脚本同样处理。不新增 migration。需要同时重启 Web 和 Worker。
 

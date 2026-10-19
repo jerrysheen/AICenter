@@ -318,7 +318,42 @@ test('reading hour asks Bamboo when JEV is off and the provider is bamboo', asyn
   assert.equal(calls.length, 1);
   assert.equal(result.snapshot.items[0].questions.CO_EVENT.score, 0.22);
   assert.equal(result.snapshot.items[0].questions.CO_EVENT.reason, undefined);
+  assert.equal(result.snapshot.items[0].questions.FIN_MARKET.status, 'not_evaluated');
+  assert.equal(result.snapshot.items[0].questions.FIN_MARKET.reason, 'missing-answer');
   assert.equal(result.snapshot.items[0].disposition, 'miss');
+});
+
+test('Bamboo reading hits at 0.35 and JEV still needs 0.5', async () => {
+  const node = {
+    id: 'n1', sourceId: 's1', version: '1', title: 'CoreWeave 融资扩算力', text: '融资金额和算力订单已经写明。', publisher: '来源',
+  };
+  async function score(env) {
+    const reading = createReadingHourService({
+      enabled: true,
+      env,
+      client: {
+        available: () => true,
+        async evaluate() {
+          return { model: 'fixed', answers: { CO_EVENT: { type: 'noul', noul: 0.4 }, FIN_MARKET: { type: 'noul', noul: 0.4 } } };
+        },
+      },
+      repository: {
+        listInformationInWindow: () => [node],
+        publishReadingHour: (_workspace, snapshot) => ({ published: true, snapshot }),
+      },
+      agentRuntime: {
+        async run() {
+          return { answer: '{"primaryDirection":"industry","subjectKind":"company_event","domainTagIds":[],"classificationStatus":"classified","evidenceQuote":"融资"}' };
+        },
+      },
+      log: () => {},
+    });
+    return reading.scoreWindow({ window: { startAt: 10, endAt: 20 } });
+  }
+  const bamboo = await score({ AI_CENTER_JEV_ENABLED: 'false', AI_CENTER_CLASSIFICATION_PROVIDER: 'bamboo' });
+  assert.equal(bamboo.snapshot.items[0].disposition, 'hit');
+  const jev = await score({ AI_CENTER_JEV_ENABLED: 'true' });
+  assert.equal(jev.snapshot.items[0].disposition, 'miss');
 });
 
 test('quality checks turn back on for Bamboo and stay off when the provider is unchanged', () => {

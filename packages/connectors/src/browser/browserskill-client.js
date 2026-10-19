@@ -100,9 +100,15 @@ function stopChild(child) {
 
 // execFile only settles on the process `close` event. A killed bsk process can
 // leave that event pending, which pins the worker on one navigate forever.
+function abortError() {
+  return Object.assign(new Error('bsk aborted'), { name: 'AbortError', code: 'ABORT_ERR' });
+}
+
 export function runBrowserProcess(file, args, options = {}) {
   const timeoutMs = Math.max(1, Number(options.timeoutMs) || 60_000);
   const maxBuffer = Math.max(1, Number(options.maxBuffer) || 8 * 1024 * 1024);
+  const signal = options.signal;
+  if (signal?.aborted) return Promise.reject(abortError());
   return new Promise((resolve, reject) => {
     let child;
     try {
@@ -132,6 +138,7 @@ export function runBrowserProcess(file, args, options = {}) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
       if (error) {
         stopChild(child);
         reject(error);
@@ -139,6 +146,11 @@ export function runBrowserProcess(file, args, options = {}) {
       }
       resolve(result);
     }
+
+    function onAbort() {
+      finish(abortError());
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
 
     child.on('error', (error) => finish(error));
     child.stdout?.on('data', (chunk) => {
@@ -177,6 +189,7 @@ async function defaultRunCommand(bskPath, args, options) {
     if (isArgumentTooLong(error)) {
       throw new BrowserCommandError('发给 bsk 的脚本太长，已超过 Windows 命令行限制', { kind: 'argument_too_long' });
     }
+    if (error.name === 'AbortError' || error.code === 'ABORT_ERR') throw error;
     if (error.killed || error.signal === 'SIGTERM') {
       throw new BrowserCommandError(`bsk timed out after ${options.timeoutMs}ms`, { kind: 'timeout' });
     }
@@ -199,6 +212,7 @@ export function createBrowserSkillClient(options = {}) {
       timeoutMs: commandOptions.timeoutMs || timeoutMs,
       maxBuffer,
       env: options.env,
+      signal: commandOptions.signal,
     });
     const parsed = (() => {
       try {
@@ -271,14 +285,14 @@ export function createBrowserSkillClient(options = {}) {
       if (navigateOptions.waitUntil) args.push('--wait-until', String(navigateOptions.waitUntil));
       // bsk keeps the IPC open for the tool timeout plus 15s. Leave room so a
       // timeout result can return before the process is killed.
-      return run(args, { timeoutMs: limit + 20_000 });
+      return run(args, { timeoutMs: limit + 20_000, signal: navigateOptions.signal });
     },
 
     async evaluate(sessionId, expression, evaluateOptions = {}) {
       const evaluateTimeoutMs = Math.max(1_000, Number(evaluateOptions.timeoutMs) || timeoutMs);
       const payload = await run(
         ['evaluate', String(expression), '--session', String(sessionId), '--timeout', `${Math.floor(evaluateTimeoutMs)}ms`],
-        { timeoutMs: evaluateTimeoutMs },
+        { timeoutMs: evaluateTimeoutMs, signal: evaluateOptions.signal },
       );
       if (payload && payload.ok === false) {
         const text = String(payload.error?.text || 'evaluate failed');
@@ -289,7 +303,7 @@ export function createBrowserSkillClient(options = {}) {
 
     async click(sessionId, selector, clickOptions = {}) {
       const args = ['click', '--session', String(sessionId), '--selector', String(selector)];
-      return run(args, { timeoutMs: clickOptions.timeoutMs || timeoutMs });
+      return run(args, { timeoutMs: clickOptions.timeoutMs || timeoutMs, signal: clickOptions.signal });
     },
 
     async fill(sessionId, selector, value, fillOptions = {}) {
@@ -299,7 +313,7 @@ export function createBrowserSkillClient(options = {}) {
         '--selector', String(selector),
         '--value', String(value),
       ];
-      return run(args, { timeoutMs: fillOptions.timeoutMs || timeoutMs });
+      return run(args, { timeoutMs: fillOptions.timeoutMs || timeoutMs, signal: fillOptions.signal });
     },
 
     async stopSession(sessionId) {

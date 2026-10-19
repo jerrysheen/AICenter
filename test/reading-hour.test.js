@@ -8,7 +8,7 @@ import {createStore} from '../packages/database/src/index.js';
 import {runMigrations} from '../packages/database/src/migrations.js';
 import {createInformationTreeRepository} from '../packages/database/src/repositories/information-tree-repository.js';
 import {createReadingHourService, readingHourSourceAccess} from '../packages/domain/src/reading-hour-service.js';
-import {actionablePendingCount, classificationDeferredCount, createReportJobHandlers, enqueueHourlyExtractFollowUp, enqueueHourlyPendingPreparation, formatHourlyPendingBreakdown, hourlyFollowUpPlan, hourlyPendingSweepPlan, hourlyRefreshAvailableAt, hourlySweepHours} from '../packages/runtime/src/report-module.js';
+import {actionablePendingCount, classificationDeferredCount, createReportJobHandlers, enqueueHourlyExtractFollowUp, enqueueHourlyPendingPreparation, formatHourlyPendingBreakdown, hourlyFollowUpPlan, hourlyPendingSweepPlan, hourlyRefreshAvailableAt, hourlyRunningSameVersion, hourlySweepHours} from '../packages/runtime/src/report-module.js';
 import {normalizeReadingSemantics, readingPlacement, routeReadingFocus} from '../packages/domain/src/reading-focus-route.js';
 import {ReadingHourIndexQuerySchema, ReadingHourIndexSchema, readingHourIndexDefaultWindow} from '../packages/contracts/src/information-tree.js';
 import {ValidationError} from '../packages/contracts/src/errors.js';
@@ -66,12 +66,38 @@ test('domain ids are not information types, methods and margin balances stay on 
   const unlabeled = routeReadingFocus({title:'特朗普与普京通话达成共识：俄罗斯将向美国供应柴油', facts:['两国领导人通话并同意供应柴油'], informationTypes:[]});
   assert.equal(unlabeled.status, 'missing');
   assert.deepEqual(unlabeled.questions, []);
-  assert.deepEqual(routeReadingFocus({primaryDirection:'industry', subjectKind:'company_event', classificationStatus:'classified'}).groupIds, ['CO_EVENT']);
+  assert.deepEqual(routeReadingFocus({primaryDirection:'industry', subjectKind:'company_event', classificationStatus:'classified'}).groupIds, ['CO_EVENT','FIN_MARKET']);
+  assert.deepEqual(routeReadingFocus({primaryDirection:'finance', subjectKind:'market_asset', classificationStatus:'classified'}).groupIds, ['FIN_MARKET','CO_EVENT']);
   assert.deepEqual(routeReadingFocus({primaryDirection:'finance', subjectKind:'unknown', classificationStatus:'classified'}).groupIds, ['FIN_POLICY','FIN_MARKET']);
   assert.deepEqual(routeReadingFocus({primaryDirection:'geopolitics', subjectKind:'geopolitics_event', classificationStatus:'classified'}).groupIds, ['GEO_SECURITY']);
   assert.equal(routeReadingFocus({primaryDirection:'other', subjectKind:'other', classificationStatus:'out-of-scope'}).routed, false);
   assert.equal(readingPlacement({primaryDirection:'finance', subjectKind:'market_asset', classificationStatus:'classified', title:'两市融资余额增加40.47亿元'}).readingThemeName, '中国');
   assert.equal(readingPlacement({primaryDirection:'ai', subjectKind:'ai_model_method', classificationStatus:'classified', title:'用低精度暂存加快输入处理'}).readingThemeName, '模型与技术');
+});
+
+test('a second hourly extract for the same version waits instead of overlapping', async () => {
+  assert.equal(hourlyRunningSameVersion([
+    { id: 'job-a', status: 'running', workspaceId: 'local', input: { hourStart: 10 } },
+  ], { id: 'job-b', workspaceId: 'local', hourStart: 10 }), true);
+  assert.equal(hourlyRunningSameVersion([
+    { id: 'job-a', status: 'running', workspaceId: 'local', input: {} },
+  ], { id: 'job-b', workspaceId: 'local' }), true);
+  assert.equal(hourlyRunningSameVersion([
+    { id: 'job-a', status: 'running', workspaceId: 'local', input: { hourStart: 10 } },
+  ], { id: 'job-a', workspaceId: 'local', hourStart: 10 }), false);
+  const calls = [];
+  const handlers = createReportJobHandlers({
+    reportService: {generateDailyReport() {}},
+    informationService: {async generateHourlyDigests() { calls.push('run'); return [{id: 'edition:1', status: 'ready', published: true, window: {startAt: 10, endAt: 20}, pendingIds: [], groupFailures: []}]; }},
+    treeService: {},
+  });
+  const hourStart = 1_728_000_000_000;
+  const skipped = await handlers['report.hourly.extract']({hourStart, workspaceId: 'local'}, {
+    job: {id: 'job-b'},
+    store: {listOpenJobs: () => [{id: 'job-a', type: 'report.hourly.extract', status: 'running', workspaceId: 'local', input: {hourStart}}]},
+  });
+  assert.equal(skipped.reason, 'already-running');
+  assert.equal(calls.length, 0);
 });
 
 test('scheduled hourly job scores the windows it generated', async () => {

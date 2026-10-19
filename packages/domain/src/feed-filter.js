@@ -463,6 +463,7 @@ function createFeedValueFilter({ client, config, lookup, calibration, xFocusConf
     const canDrop=strictAdmission || rule==='two-of-three-0.60' || config.mode!=='enforce' || calibration?.productionQualified===true;
     const blocked=strictAdmission ? decision.decision!=='KEEP' : decision.decision==='DROP';
     const action=blocked && canDrop?'ignore':'keep';
+    if (decision.decision === 'KEEP' && normalized.truncated) decision = { ...decision, bodyPending: true };
     const output=verdict({action,reason:decision.reason,stage:'jev-value',mode:config.mode,
       version:config.version,model:result.model,scores:result.scores || {},failOpen:!strictAdmission && result.decision.reviewKind==='technical'});
     const evaluatedAt = now();
@@ -473,6 +474,7 @@ function createFeedValueFilter({ client, config, lookup, calibration, xFocusConf
       filterMode:config.mode,filterApplied:output.action==='ignore',filterRule:rule,filterRuleHash:feedValueRuleHash(rule),
       captureContext:input.item?.captureContext || {},
       qualityMissingParts:normalized.missingParts,
+      bodyCompletion: decision.bodyPending ? 'pending' : '',
       filterErrorCode: result.errorCode || '',
       filterErrorStatus: Number.isInteger(result.errorStatus) ? result.errorStatus : null,
       ...(admittedByFallback ? { fallbackAt: new Date(evaluatedAt).toISOString() } : {})}};
