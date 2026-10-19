@@ -304,8 +304,10 @@ export function nextAutoLikeSettings(settings, status, reason = '') {
   return current;
 }
 
-function jevKept(metadata) {
-  return metadata?.filterDecision === 'KEEP';
+export function jevKept(metadata) {
+  if (metadata?.filterDecision !== 'KEEP') return false;
+  const reason = String(metadata.filterReason || '');
+  return !reason.startsWith('fallback-') && !reason.startsWith('jev-disabled-');
 }
 
 export const AUTO_LIKE_MIN_TEXT = 40;

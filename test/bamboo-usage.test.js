@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   bambooUsagePath,
   hourlyAllowance,
@@ -14,7 +14,7 @@ import {
 } from '../packages/domain/src/bamboo-usage.js';
 import { createFeedFilter, resolveFeedFilterConfig } from '../packages/domain/src/feed-filter.js';
 
-const modulePath = fileURLToPath(new URL('../packages/domain/src/bamboo-usage.js', import.meta.url));
+const moduleUrl = pathToFileURL(fileURLToPath(new URL('../packages/domain/src/bamboo-usage.js', import.meta.url))).href;
 const hour0 = Date.parse('2026-10-18T16:00:00.000Z');
 const hour1 = Date.parse('2026-10-18T17:00:00.000Z');
 const hour23 = Date.parse('2026-10-19T15:00:00.000Z');
@@ -23,9 +23,14 @@ function temporaryDirectory() {
   return mkdtempSync(path.join(os.tmpdir(), 'ai-center-bamboo-usage-'));
 }
 
+test('child import uses a file URL so a Windows drive path is not a scheme', () => {
+  assert.equal(moduleUrl.startsWith('file:'), true);
+  assert.equal(/^[a-zA-Z]:/.test(moduleUrl), false);
+});
+
 function runChild({ directory, takes, max, at, spread = 'fifo' }) {
   const code = `
-    import { readBambooUsage, takeBambooUsageSlot } from ${JSON.stringify(modulePath)};
+    import { readBambooUsage, takeBambooUsageSlot } from ${JSON.stringify(moduleUrl)};
     const takes = Number(process.env.TAKES);
     let ok = 0;
     for (let i = 0; i < takes; i += 1) {
