@@ -388,6 +388,9 @@ test('Sina premarket fields price off the regular close', () => {
   assert.equal(quote.change, 4.07);
   assert.equal(quote.changePct, 1.9);
   assert.equal(quote.asOf, Date.parse('2026-10-19T12:35:00Z'));
+  assert.equal(quote.high, null);
+  assert.equal(quote.low, null);
+  assert.equal(quote.volume, null);
   assert.ok(Math.abs((quote.lastPrice - quote.prevClose) - quote.change) < 0.02);
   assert.notEqual(quote.prevClose, 217.23);
 
@@ -453,7 +456,97 @@ test('Yahoo pre and post prevClose is the previous regular close', () => {
     assert.equal(quote.prevClose, 227.8);
     assert.equal(quote.change, 236.98 - 227.8);
     assert.equal(quote.changePct, ((236.98 - 227.8) / 227.8) * 100);
+    assert.equal(quote.asOf, null);
+    assert.equal(quote.high, null);
+    assert.equal(quote.volume, null);
   }
+});
+
+test('Yahoo extended asOf uses the print time, and an index without one keeps the prior close', () => {
+  const preStart = Math.trunc(Date.parse('2026-10-19T08:00:00Z') / 1000);
+  const preEnd = Math.trunc(Date.parse('2026-10-19T13:30:00Z') / 1000);
+  const prePrint = Math.trunc(Date.parse('2026-10-19T13:12:00Z') / 1000);
+  const friday = Math.trunc(Date.parse('2026-10-16T20:00:00Z') / 1000);
+  const nowSec = prePrint;
+  const nvda = quoteFromSpark({
+    symbol: 'NVDA',
+    response: [{
+      meta: {
+        symbol: 'NVDA',
+        currency: 'USD',
+        regularMarketPrice: 214.13,
+        previousClose: 217.23,
+        regularMarketTime: friday,
+        regularMarketDayHigh: 218.67,
+        regularMarketDayLow: 213.32,
+        regularMarketVolume: 121_252_502,
+        preMarketTime: prePrint,
+        fulldayPrice: 218.55,
+        currentTradingPeriod: { pre: { start: preStart, end: preEnd } },
+      },
+      timestamp: [friday, prePrint - 300, prePrint],
+      indicators: { quote: [{ close: [214.13, 218.1, 218.55], high: [218.67, 218.4, 218.6], low: [213.32, 217.9, 218], volume: [100, 20, 30] }] },
+    }],
+  }, nowSec);
+  assert.equal(nvda.session, 'pre');
+  assert.equal(nvda.lastPrice, 218.55);
+  assert.equal(nvda.asOf, prePrint * 1000);
+  assert.equal(nvda.high, 218.6);
+  assert.equal(nvda.low, 217.9);
+  assert.equal(nvda.volume, 50);
+  assert.notEqual(nvda.high, 218.67);
+
+  const index = quoteFromSpark({
+    symbol: '^GSPC',
+    response: [{
+      meta: {
+        symbol: '^GSPC',
+        currency: 'USD',
+        regularMarketPrice: 5200.41,
+        previousClose: 5150,
+        regularMarketChangePercent: 0.98,
+        regularMarketTime: friday,
+        regularMarketDayHigh: 5210,
+        regularMarketVolume: 1,
+        currentTradingPeriod: { pre: { start: preStart, end: preEnd } },
+      },
+      timestamp: [friday],
+      indicators: { quote: [{ close: [5200.41] }] },
+    }],
+  }, nowSec);
+  assert.equal(index.session, 'pre');
+  assert.equal(index.lastPrice, 5200.41);
+  assert.equal(index.prevClose, 5150);
+  assert.equal(index.change, 5200.41 - 5150);
+  assert.equal(index.asOf, null);
+  assert.equal(index.high, null);
+  assert.equal(index.volume, null);
+
+  const openSec = Math.trunc(Date.parse('2026-10-19T13:31:00Z') / 1000);
+  const opening = quoteFromSpark({
+    symbol: 'NVDA',
+    response: [{
+      meta: {
+        symbol: 'NVDA',
+        currency: 'USD',
+        regularMarketPrice: 214.13,
+        previousClose: 217.23,
+        regularMarketTime: friday,
+        regularMarketDayHigh: 218.67,
+        regularMarketVolume: 121_252_502,
+        currentTradingPeriod: {
+          pre: { start: preStart, end: preEnd },
+          regular: { start: preEnd, end: preEnd + 6.5 * 60 * 60 },
+        },
+      },
+      timestamp: [friday],
+      indicators: { quote: [{ close: [214.13] }] },
+    }],
+  }, openSec);
+  assert.equal(opening.session, 'regular');
+  assert.equal(opening.asOf, null);
+  assert.equal(opening.high, null);
+  assert.equal(opening.volume, null);
 });
 
 test('a timed out Yahoo batch retries once and only that batch falls back', async () => {
