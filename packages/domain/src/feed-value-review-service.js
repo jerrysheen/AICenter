@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { FeedValueInputSchema,FeedValueScoresSchema } from '../../contracts/src/feed-value.js';
 import { normalizeFeedValueText,decideFeedValue,createFeedValueEvaluator,FEED_VALUE_RULE,feedValueRuleHash,feedValuePolicyHash,FEED_VALUE_VERSION } from './feed-value.js';
+import { bodyCompletionFields } from './body-completion.js';
 
 const hash=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 
@@ -43,14 +44,16 @@ export function createFeedValueReviewService({feedRepository,mediaRepository}={}
       const history=capture.metadata.filterRule ? [...(capture.metadata.filterHistory || []),{
         rule:capture.metadata.filterRule,decision:capture.metadata.filterDecision,at:capture.metadata.filterEvaluatedAt || null}].slice(-5) : [];
       const blocked=decision.decision!=='KEEP';
+      const evaluatedAt=Date.now();
+      const completion=bodyCompletionFields({...capture.metadata,capturedAt:capture.capturedAt},{truncated:Boolean(decision.bodyPending),now:evaluatedAt});
       feedRepository.saveCapture({...capture,status:decision.decision==='DROP'?'ignored':decision.decision==='REVIEW'?'captured':'ready',metadata:{...capture.metadata,
         filterHistory:history,filterDecision:decision.decision,filterReviewKind:decision.reviewKind,filterReason:decision.reason,
         filterScores:changed?null:row.scores,filterMode:'enforce',filterApplied:blocked,filterRule:FEED_VALUE_RULE,filterRuleHash:feedValueRuleHash(),
         filterVersion:FEED_VALUE_VERSION,filterPolicyHash:feedValuePolicyHash(),evaluatorModel:model,
         filterCacheKey:changed?'':createFeedValueEvaluator({model}).cacheKey(current),
-        bodyCompletion:decision.bodyPending?'pending':'',
+        ...completion,
         ...(runId?{filterRefreshRunId:runId}:{}),
-        filterEvaluatedAt:Date.now(),scoreOrigin:changed?'input-changed-needs-rescore':row.scoreOrigin || 'frozen-v3-identical-input',wouldIgnore:blocked}});
+        filterEvaluatedAt:evaluatedAt,scoreOrigin:changed?'input-changed-needs-rescore':row.scoreOrigin || 'frozen-v3-identical-input',wouldIgnore:blocked}});
       result.applied++;result[decision.decision]++;
     }
     return result;

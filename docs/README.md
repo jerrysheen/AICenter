@@ -25,6 +25,9 @@
 
 ## 当前
 
+- `progress/2026-10-19-body-completion-cap.md`：X 正文待补全最多 3 次或 24 小时，到了清掉 pending 并保留原来的判定。展开会点「显示更多」，状态页不再因为文本框溢出把全文继续标成截断。不新增 migration。需要同时重启 Web 和 Worker。
+- `progress/2026-10-19-official-body-extract.md`：白宫正文不再停在栏目名上。gov.cn 只有附件时改用页面摘要和附件标题。重定向逐跳过白名单，最多 3 跳。看板每轮最多补 20 条短正文。回填脚本再跑时只处理仍不足 80 字的条目。不新增 migration。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-19-official-body-backfill.md`：官方看板导入以前只写标题和链接，正文是空的。现在导入和镜像会回到原链接取正文。已经进库的用 `scripts/backfill-official-bodies.mjs --dry-run` 预览后再跑，不要先跑 `hide-short-official-items`。不新增 migration。需要重启 Worker。Web 不用为这项重启。
 
 - `progress/2026-10-19-research-recall-budget.md`：研究召回的 120 秒预算到点就停，一次只送一条，未完成的留在原池，下一轮接着判断。当前窗口没判完不冻结 7 天回看。关键词至少要有一个锚点，两个字的标签词不再单独召回。不新增 migration。需要重启 Worker。Web 不用为这项重启。

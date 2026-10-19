@@ -243,7 +243,13 @@ export function buildClickShowMoreExpression() {
   return `(() => {
     const article = document.querySelector('article[data-testid="tweet"]');
     if (!article) return { clicked: false };
-    const link = article.querySelector('[data-testid="tweet-text-show-more-link"]');
+    const getText = (el) => (el ? (el.innerText || el.textContent || "") : "");
+    const inThisArticle = (el) => el && el.closest('article[data-testid="tweet"]') === article;
+    const label = /^(Show more|显示更多|顯示更多)$/i;
+    const candidates = [...article.querySelectorAll('[data-testid="tweet-text-show-more-link"],a,span,button')]
+      .filter(inThisArticle);
+    const link = candidates.find((el) => el.getAttribute("data-testid") === "tweet-text-show-more-link")
+      || candidates.find((el) => label.test(getText(el).trim()));
     if (!link) return { clicked: false };
     link.click();
     return { clicked: true };
@@ -257,10 +263,11 @@ export function buildTweetExtractExpression() {
     const items = articles.map((article) => {
       try {
         const tweetTextEl = article.querySelector('[data-testid="tweetText"]');
-        const showMoreEl = article.querySelector('[data-testid="tweet-text-show-more-link"]');
+        const inThisArticle = (el) => el && el.closest('article[data-testid="tweet"]') === article;
+        const showMoreEl = [...article.querySelectorAll('[data-testid="tweet-text-show-more-link"]')].find(inThisArticle);
         const rawText = tweetTextEl ? getText(tweetTextEl) : "";
-        const showMoreControl = Boolean(showMoreEl) || [...(tweetTextEl ? tweetTextEl.querySelectorAll("a,span,button") : [])].some((el) => /^(Show more|显示更多|顯示更多)$/i.test(getText(el).trim()));
-        const overflow = Boolean(tweetTextEl && tweetTextEl.scrollHeight > tweetTextEl.clientHeight + 4);
+        const showMoreControl = Boolean(showMoreEl) || [...article.querySelectorAll("a,span,button")].some((el) => inThisArticle(el) && /^(Show more|显示更多|顯示更多)$/i.test(getText(el).trim()));
+        const overflow = Boolean(tweetTextEl && tweetTextEl.clientHeight > 0 && tweetTextEl.scrollHeight > tweetTextEl.clientHeight + 4);
         const text = rawText.replace(/\\s+(Show more|显示更多|顯示更多)\\s*$/i, "").trim();
         const timeEl = article.querySelector("time");
         const time = timeEl ? timeEl.getAttribute("datetime") : null;
@@ -380,6 +387,7 @@ export function buildTweetExtractExpression() {
           photo_count: photoCount,
           card_url: cardUrl,
           card_title: cardTitle,
+          show_more: showMoreControl,
           truncated: showMoreControl || overflow,
           author_handle: authorHandle,
           author_name: authorName,
@@ -673,6 +681,16 @@ export function createXHomeBrowserClient(options = {}) {
       if (match?.text && String(match.text).length > String(best.text || '').length) {
         best = { ...tweet, ...match };
       }
+      if (match && match.show_more === false) {
+        best = {
+          ...tweet,
+          ...match,
+          text: String(match.text || '').length >= String(best.text || '').length ? match.text : best.text,
+          truncated: false,
+          show_more: false,
+        };
+        break;
+      }
       const grown = String(best.text || '').length >= String(tweet.text || '').length + 200;
       if (grown && !looksTruncatedTweet({ ...best, truncated: Boolean(match?.truncated) })) break;
     }
@@ -888,10 +906,9 @@ export function createXHomeBrowserClient(options = {}) {
             else if (captureStopped(budget.signal, budget.deadlineAt) || !commandTimeout(EXTRACT_TIMEOUT_MS, budget.deadlineAt)) reason = 'deadline';
             else {
               completed = await completeTruncatedTweet(session, tweet, budget);
-              const grown = String(completed?.text || '').length >= String(tweet.text || '').length + 200;
               const still = looksTruncatedTweet(completed || tweet);
               const stopped = captureStopped(budget.signal, budget.deadlineAt) || !commandTimeout(EXTRACT_TIMEOUT_MS, budget.deadlineAt);
-              if (grown && !still) reason = '';
+              if (!still) reason = '';
               else if (stopped) reason = 'deadline';
               else if (!String(completed?.text || '').trim()) reason = 'extract-failed';
               else reason = 'still-truncated';

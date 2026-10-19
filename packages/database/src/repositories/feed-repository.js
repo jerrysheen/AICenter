@@ -1007,9 +1007,9 @@ export function createFeedRepository(database, emitEvent) {
         }));
     },
 
-    listEmptyOfficialBodies(workspaceId, { afterId = '', limit = 40 } = {}) {
+    listShortOfficialBodies(workspaceId, { afterId = '', limit = 40 } = {}) {
       const cap = Math.max(1, Math.min(100, Number(limit) || 40));
-      return database.prepare(`SELECT ci.id AS contentItemId, ci.title AS title, ci.summary AS summary,
+      return database.prepare(`SELECT ci.id AS contentItemId, ci.title AS title, ci.summary AS summary, ci.body AS body,
           COALESCE(NULLIF(ci.source_url, ''), c.source_url, '') AS sourceUrl,
           c.id AS captureId, c.external_id AS externalId, c.status,
           c.source_account_id AS sourceAccountId, c.content_hash AS contentHash,
@@ -1018,7 +1018,7 @@ export function createFeedRepository(database, emitEvent) {
         FROM content_items ci
         INNER JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
         WHERE ci.workspace_id = ? AND c.provider = 'media' AND ci.id > ?
-          AND TRIM(COALESCE(ci.body, '')) = ''
+          AND length(COALESCE(ci.body, '')) < 320
           AND (
             json_extract(c.metadata_json, '$.lane') = 'official'
             OR json_extract(c.metadata_json, '$.officialMirror') = 1
@@ -1035,6 +1035,7 @@ export function createFeedRepository(database, emitEvent) {
           sourceUrl: row.sourceUrl || '',
           title: row.title || '',
           summary: row.summary || '',
+          body: row.body || '',
           contentHash: row.contentHash,
           rawArtifactPath: row.rawArtifactPath,
           publishedAt: row.publishedAt,

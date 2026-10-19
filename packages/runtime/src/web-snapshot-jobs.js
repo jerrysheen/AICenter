@@ -92,6 +92,8 @@ export function staticSignalBoardCaptureInput(now = Date.now()) {
   };
 }
 
+export const STATIC_SIGNAL_BOARD_BODY_LIMIT = 20;
+
 export async function captureStaticSignalBoard({
   sourcePort,
   repository,
@@ -114,7 +116,7 @@ export async function captureStaticSignalBoard({
       workspaceId,
       payload.releases,
       payload.releaseSourceIds,
-      { readDetail: reader, detailDelayMs },
+      { readDetail: reader, detailDelayMs, bodyLimit: STATIC_SIGNAL_BOARD_BODY_LIMIT },
     );
     authorsLinked = synced.linked;
     bodiesFilled = synced.bodies;
