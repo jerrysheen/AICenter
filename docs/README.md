@@ -26,6 +26,7 @@
 ## 当前
 
 - `progress/2026-10-19-bamboo-research-recall.md`：资料召回在 `AI_CENTER_CLASSIFICATION_PROVIDER=bamboo` 时，标签和相关性改成 noul 题。标签 0.60 命中。相关性由直接回答、相关背景、可核对事实三题加阈值得到 direct、background、irrelevant 或 insufficient。候选标签超过 12 个才按关键词预筛。不占信息流每日 7000，仍走研究任务自己的 400 次预算。TypeSafe 的 JSON 题面不变。不新增 migration。真实 JEV 对照没有历史结果。
+- `progress/2026-10-19-market-flow.md`：股票子页最后增加「资金」（`#market/flow`）。南向净额和北向成交额只出现在这一页。北向沿用东财和港交所已有响应，净买入没有公布就不显示。migration 88 建 `northbound_daily` 和 `northbound_top10` 两张表。需要同时重启 Web 和 Worker，再按该说明补北向历史。
 
 - `progress/2026-10-19-us-open-stale.md`：美股刚开盘的 5 分钟内，盘前报价不再标成红色「已过期」，顶部和美股观察写「盘中 · 等待报价」。盘前、盘后的 `asOf` 用报价自己的时间，行提示写盘前或盘后。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
 

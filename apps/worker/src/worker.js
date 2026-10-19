@@ -631,6 +631,7 @@ export function createAiCenterWorker(options = {}) {
     manifest: southboundManifest,
     jobHandlers: options.southboundJobHandlers || createSouthboundJobHandlers({
       repository: store.repositories.southbound,
+      northboundRepository: store.repositories.northbound,
       store,
       env,
     }),
