@@ -19,6 +19,7 @@ import {
   officialAuthorByUrl,
   sourceAuthorProfile,
 } from '../packages/domain/src/source-authors.js';
+import { backfillSourceAuthorBatch, repairAuthorPublishBatch } from '../packages/database/src/repositories/author-repository.js';
 import { runSourceAuthorBackfill } from '../scripts/backfill-source-authors.mjs';
 
 function hash(value) {
@@ -286,6 +287,118 @@ test('source author backfill is idempotent and repairs publish time without usin
     assert.equal(repaired.getRuntimeStatus().schemaVersion, latestSchemaVersion());
   } finally {
     repaired.close();
+  }
+});
+
+test('source author write batches take the reserved lock before reading', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'source-authors-immediate-'));
+  const file = path.join(dir, 'test.db');
+  const store = createStore(file);
+  store.close();
+  const database = new Database(file);
+  const modes = [];
+  const original = database.transaction.bind(database);
+  database.transaction = (fn) => {
+    const transaction = original(fn);
+    const run = (mode, body) => (...args) => {
+      modes.push(mode);
+      return body(...args);
+    };
+    const deferred = run('deferred', transaction);
+    deferred.immediate = run('immediate', transaction.immediate.bind(transaction));
+    deferred.deferred = run('deferred', transaction.deferred.bind(transaction));
+    deferred.exclusive = run('exclusive', transaction.exclusive.bind(transaction));
+    return deferred;
+  };
+  try {
+    backfillSourceAuthorBatch(database, { limit: 1 });
+    repairAuthorPublishBatch(database, { limit: 1 });
+    assert.deepEqual(modes, ['immediate', 'immediate']);
+  } finally {
+    database.close();
+  }
+});
+
+test('source author backfill resumes after the last committed batch and a finished run can start over', async () => {
+  const store = openStore();
+  try {
+    const publishedAt = 1_710_000_000_000;
+    saveSourceItem(store.repositories.feed, {
+      sourceKey: 'nextplatform', externalId: 'np-1', title: '一', publishedAt, capturedAt: publishedAt,
+    });
+    saveSourceItem(store.repositories.feed, {
+      sourceKey: 'nextplatform', externalId: 'np-2', title: '二', publishedAt, capturedAt: publishedAt,
+    });
+    const busy = {
+      repositories: {
+        authors: {
+          ...store.repositories.authors,
+          backfillSourceAuthorBatch() {
+            throw Object.assign(new Error('SQLITE_BUSY'), { code: 'SQLITE_BUSY' });
+          },
+        },
+        feed: store.repositories.feed,
+      },
+    };
+    let savedDuringBusy = false;
+    await assert.rejects(
+      () => runSourceAuthorBackfill(busy, { sleepMs: 0, batchSize: 1, saveCheckpoint() { savedDuringBusy = true; } }),
+      (error) => error.code === 'SQLITE_BUSY',
+    );
+    assert.equal(savedDuringBusy, false);
+
+    let saved = null;
+    await assert.rejects(
+      () => runSourceAuthorBackfill(store, {
+        sleepMs: 0,
+        batchSize: 1,
+        saveCheckpoint(state) {
+          saved = state;
+          if (state.phase === 'captures') throw Object.assign(new Error('SQLITE_BUSY'), { code: 'SQLITE_BUSY' });
+        },
+      }),
+      (error) => error.code === 'SQLITE_BUSY',
+    );
+    assert.equal(saved.phase, 'captures');
+    assert.equal(saved.counts.captures, 1);
+    assert.ok(saved.afterRowid > 0);
+    const stoppedAt = saved.afterRowid;
+    const seen = [];
+    const rest = await runSourceAuthorBackfill(store, {
+      sleepMs: 0,
+      batchSize: 1,
+      checkpoint: saved,
+      onBatch(batch) {
+        if (batch.phase === 'captures') seen.push(batch.lastRowid);
+      },
+      saveCheckpoint(state) { saved = state; },
+    });
+    assert.deepEqual(seen, seen.filter((rowid) => rowid > stoppedAt));
+    assert.ok(seen.length >= 1);
+    assert.equal(rest.captures, 2);
+    assert.equal(saved.phase, 'done');
+    assert.equal(store.repositories.authors.getAuthor('local', 'media:nextplatform').totalCount, 2);
+    const again = await runSourceAuthorBackfill(store, {
+      sleepMs: 0,
+      checkpoint: { ...saved, counts: { ...saved.counts, captures: 99 } },
+    });
+    assert.equal(again.captures, 2);
+    assert.equal(store.repositories.authors.getAuthor('local', 'media:nextplatform').totalCount, 2);
+    let drySaved = false;
+    const preview = await runSourceAuthorBackfill(store, {
+      sleepMs: 0,
+      dryRun: true,
+      checkpoint: {
+        phase: 'publish',
+        repairAfter: 'zzz',
+        counts: { captures: 50, linked: 50, indexed: 50, official: 50, resorted: 50 },
+      },
+      saveCheckpoint() { drySaved = true; },
+    });
+    assert.equal(drySaved, false);
+    assert.equal(preview.captures, 2);
+  } finally {
+    store.close();
   }
 });
 
