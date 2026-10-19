@@ -64,6 +64,7 @@ export function createGeminiInvestorSummarizer(options = {}) {
     stage: options.usageStage || 'investor-discussion',
   });
   const timeoutMs = options.timeoutMs ?? 90_000;
+  const responseMimeType = options.responseMimeType === undefined ? 'application/json' : String(options.responseMimeType || '');
   const retries = options.retries ?? summaryRetryCount(env);
   const sleep = options.sleep || ((ms) => new Promise((resolve) => { setTimeout(resolve, ms); }));
   const now = options.now || Date.now;
@@ -133,7 +134,10 @@ export function createGeminiInvestorSummarizer(options = {}) {
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: system }] },
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.2, responseMimeType: 'application/json' },
+        generationConfig: {
+          temperature: 0.2,
+          ...(responseMimeType ? { responseMimeType } : {}),
+        },
       }),
     });
     const payload = await response.json().catch(() => ({}));

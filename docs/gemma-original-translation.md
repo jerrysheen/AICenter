@@ -1,6 +1,6 @@
 # Gemma 原文翻译
 
-2026-10-07 用户授权纯原文翻译接入 Gemma 31B 和 26B（用户确认最初的“24B”指 26B）。该职责独立于 Article Normalize、Tag、小时和日报；仅本翻译链路不消耗其他模型额度，不表示其他业务停用原模型。2026-10-19 起，YouTube 播客正文整理是用户特批的唯一例外，走已登录的豆包网页，不经过这条 Gemma 路由。标题、摘要、关键句和其他翻译仍只用 Gemma 26B。
+2026-10-07 用户授权纯原文翻译接入 Gemma 31B 和 26B（用户确认最初的“24B”指 26B）。该职责独立于 Article Normalize、Tag、小时和日报；仅本翻译链路不消耗其他模型额度，不表示其他业务停用原模型。2026-10-19 起，YouTube 播客正文在开关打开后也走这条 Gemma 26B 翻译池，只打官方 endpoint，不新接计费服务。分段长度沿用 `AI_CENTER_TRANSLATION_CHUNK_CHARS`。Gemma 失败时，缺的那一段可以用现有 Gemini Flash。豆包网页只在 `AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_ENGINE=doubao` 时使用。标题、摘要、关键句和其他翻译仍只用 Gemma 26B，不走 Flash。
 
 ## 路由和执行
 

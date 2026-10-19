@@ -7,6 +7,10 @@ import { createStore } from '../packages/database/src/index.js';
 import {
   articlePartPrompt,
   dedupeRollingCaptions,
+  GEMMA_SECTION_SYSTEM,
+  GEMMA_SUMMARY_SYSTEM,
+  GEMMA_TRANSLATE_SYSTEM,
+  joinGemmaArticle,
   needsChineseTitle,
   splitTranscriptParts,
   stripDoubaoReply,
@@ -115,6 +119,16 @@ test('transcript parts cut on a sentence and stay inside the size window', () =>
   assert.equal(splitTranscriptParts('Short manual caption. It stays one part.').length, 1);
 });
 
+test('gemma parts stay inside the stable window and still cut on a sentence', () => {
+  const parts = splitTranscriptParts(dedupeRollingCaptions(sentences(40)), { minChars: 1000, maxChars: 1500 });
+  assert.ok(parts.length >= 2);
+  for (const part of parts.slice(0, -1)) {
+    assert.ok(part.text.length <= 1500, part.text.length);
+    assert.ok(part.text.length >= 400, part.text.length);
+    assert.match(part.text.trim(), /[.?!。！？]$/);
+  }
+});
+
 test('doubao footer and follow-up questions are removed', () => {
   const cleaned = stripDoubaoReply(`主持人：市场会差 24%。\n本回答由 AI 生成，仅供参考，请仔细甄别，谨慎投资。\n如何判断AI是一场泡沫？\n能否再提供一些案例？`);
   assert.equal(cleaned, '主持人：市场会差 24%。');
@@ -186,6 +200,7 @@ test('same conversation translates each part, strips the footer, and keeps the s
       env: {
         AI_CENTER_YOUTUBE_PODCASTS: '1',
         AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1',
+        AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_ENGINE: 'doubao',
         AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_DAILY: '2',
         GEMINI_API_KEY: 'test-key',
       },
@@ -225,6 +240,7 @@ test('same conversation translates each part, strips the footer, and keeps the s
       env: {
         AI_CENTER_YOUTUBE_PODCASTS: '1',
         AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1',
+        AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_ENGINE: 'doubao',
         GEMINI_API_KEY: 'test-key',
       },
       config: creatorConfig(),
@@ -281,7 +297,7 @@ test('unconfirmed sends are resent and a missing reply is only reread', async ()
   });
   try {
     const first = await runYoutubeArticlePass({
-      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1', AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_DAILY: '2' },
+      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1', AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_ENGINE: 'doubao', AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_DAILY: '2' },
       repository: opened.store.repositories.youtubePodcasts,
       feedRepository: opened.store.repositories.feed,
       workspaceId: 'local',
@@ -314,7 +330,7 @@ test('unconfirmed sends are resent and a missing reply is only reread', async ()
     });
     const reread = fakeDoubao(() => reply('主持人：重读到的正文。'));
     const second = await runYoutubeArticlePass({
-      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1' },
+      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1', AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_ENGINE: 'doubao' },
       repository: opened.store.repositories.youtubePodcasts,
       feedRepository: opened.store.repositories.feed,
       workspaceId: 'local',
@@ -343,6 +359,7 @@ test('login stops the day and a failed part opens a new chat with the previous e
       env: {
         AI_CENTER_YOUTUBE_PODCASTS: '1',
         AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1',
+        AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_ENGINE: 'doubao',
         AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_DAILY: '4',
         GEMINI_API_KEY: 'test-key',
       },
@@ -416,7 +433,7 @@ test('a failed part opens a new chat with the previous ending', async () => {
       articleStatus: 'pending',
     });
     const recovered = await runYoutubeArticlePass({
-      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1', AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_DAILY: '4' },
+      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1', AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_ENGINE: 'doubao', AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_DAILY: '4' },
       repository: opened.store.repositories.youtubePodcasts,
       feedRepository: opened.store.repositories.feed,
       workspaceId: 'local',
@@ -439,6 +456,7 @@ test('daily cap leaves the next ready episode for tomorrow', async () => {
       env: {
         AI_CENTER_YOUTUBE_PODCASTS: '1',
         AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1',
+        AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_ENGINE: 'doubao',
         AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_DAILY: '1',
         GEMINI_API_KEY: 'test-key',
       },
@@ -613,6 +631,222 @@ test('a skipped transcribe-is-not-a-function episode is retried', async () => {
     });
     assert.equal(result.subtitles, 1);
     assert.equal(opened.store.repositories.youtubePodcasts.getReady('local', 'fnbugvid0001').transcriptSource, 'subtitle-manual');
+  } finally {
+    opened.close();
+  }
+});
+
+function fakeGemma(handler) {
+  const calls = [];
+  return {
+    calls,
+    async generate(input) {
+      calls.push(input);
+      return handler(input, calls);
+    },
+  };
+}
+
+function articleReply(input) {
+  if (input.system === GEMMA_TRANSLATE_SYSTEM) return { text: '主持人：利率会差 24%，NVDA 仍在讨论。' };
+  if (input.system === GEMMA_SECTION_SYSTEM) return { text: '## 利率（00:00:03）\n\n主持人：利率会差 24%，NVDA 仍在讨论。' };
+  if (input.system === GEMMA_SUMMARY_SYSTEM) return { text: '## 要点\n\n- 利率会差 24%。' };
+  throw new Error(`意外的提示：${input.system}`);
+}
+
+test('gemma translates each part, stores it, then writes one article', async () => {
+  const opened = openStore();
+  const gemma = fakeGemma((input) => articleReply(input));
+  const doubao = fakeDoubao(() => { throw new Error('默认不应调用豆包'); });
+  const flash = fakeGemma(() => { throw new Error('成功时不应调用 Flash'); });
+  try {
+    await runYoutubePodcastRound({
+      env: {
+        AI_CENTER_YOUTUBE_PODCASTS: '1',
+        AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1',
+        AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_DAILY: '2',
+        GEMINI_API_KEY: 'test-key',
+      },
+      config: creatorConfig(),
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      sleep: async () => {},
+      now: Date.parse('2026-10-19T02:00:00Z'),
+      translate: async () => { throw new Error('标题已是中文'); },
+      doubaoClient: doubao,
+      gemmaGenerate: gemma.generate.bind(gemma),
+      flashGenerate: flash.generate.bind(flash),
+      fetchRss: async () => ({ entries: [{ videoId: 'gemmaarticle1', title: 'Rates', publishedAt: Date.parse('2026-10-18T00:00:00Z'), channelKey: 'odd-lots' }] }),
+      probe: async () => ({ durationSec: 1800, transcript: '[00:00:03] Rates move and NVDA stays in the conversation.', transcriptSource: 'subtitle-auto' }),
+      summarize: async () => ({
+        titleZh: '利率和仓位',
+        guests: ['嘉宾甲'],
+        points: ['观点一', '观点二', '观点三', '观点四', '观点五'],
+        companies: ['NVDA'],
+        relation: '和金融相关',
+        quotes: [{ time: '00:00:03', text: '关键句' }],
+      }),
+    });
+    const saved = opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaarticle1');
+    assert.equal(saved.articleStatus, 'ready');
+    assert.match(saved.body, /^## 要点/);
+    assert.match(saved.body, /## 利率（00:00:03）/);
+    assert.match(saved.body, /主持人：/);
+    assert.equal(saved.body.includes('Rates move'), false);
+    assert.match(saved.sourceTranscript, /Rates move/);
+    assert.equal(doubao.calls.length, 0);
+    assert.equal(flash.calls.length, 0);
+    assert.deepEqual(gemma.calls.map((call) => call.system), [GEMMA_TRANSLATE_SYSTEM, GEMMA_SECTION_SYSTEM, GEMMA_SUMMARY_SYSTEM]);
+    const state = JSON.parse(saved.articleState);
+    assert.equal(state.engine, 'gemma');
+    assert.equal(state.parts[0].translation.includes('24%'), true);
+    const again = gemma.calls.length;
+    await runYoutubePodcastRound({
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1', AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1' },
+      config: creatorConfig(),
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      sleep: async () => {},
+      now: Date.parse('2026-10-19T03:00:00Z'),
+      gemmaGenerate: gemma.generate.bind(gemma),
+      fetchRss: async () => ({ entries: [{ videoId: 'gemmaarticle1', title: 'Rates', publishedAt: Date.parse('2026-10-18T00:00:00Z'), channelKey: 'odd-lots' }] }),
+      probe: async () => { throw new Error('已完成的集不应再探测'); },
+      summarize: async () => { throw new Error('已完成的集不应再摘要'); },
+    });
+    assert.equal(gemma.calls.length, again);
+    assert.equal(joinGemmaArticle('要点一', ['## 小节\n\n主持人：数字']).includes('## 要点'), true);
+  } finally {
+    opened.close();
+  }
+});
+
+test('a quota window keeps finished parts and a gemma failure can use flash', async () => {
+  const opened = openStore();
+  const transcript = sentences(30);
+  let blocked = true;
+  const gemma = fakeGemma((input) => {
+    if (blocked && gemma.calls.length === 2) {
+      const error = new Error('Gemma 翻译等待配额窗口');
+      error.code = 'budget-deferred';
+      throw error;
+    }
+    return articleReply(input);
+  });
+  const flash = fakeGemma(() => { throw new Error('配额窗口不应改走 Flash'); });
+  try {
+    const first = await runYoutubeArticlePass({
+      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1', AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_DAILY: '2' },
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      gemmaGenerate: gemma.generate.bind(gemma),
+      flashGenerate: flash.generate.bind(flash),
+      now: Date.parse('2026-10-19T02:00:00Z'),
+    });
+    assert.equal(first.ready, 0);
+    const item = await saveYoutubeEpisode({
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      creator: { id: 'odd-lots', name: 'Odd Lots', focus: '金融', channels: [{ key: 'odd-lots' }] },
+      episode: { videoId: 'gemmaquota01', title: 'Rates', channelKey: 'odd-lots', publishedAt: Date.parse('2026-10-18T00:00:00Z'), durationSec: 1800 },
+      summaryText: '中文摘要',
+      displayTitle: '利率',
+      transcript,
+      transcriptSource: 'subtitle-auto',
+    });
+    opened.store.repositories.youtubePodcasts.saveEpisode({
+      workspaceId: 'local',
+      videoId: 'gemmaquota01',
+      creatorId: 'odd-lots',
+      channelKey: 'odd-lots',
+      title: 'Rates',
+      status: 'ready',
+      contentItemId: item.id,
+      attempts: 1,
+      sourceTranscript: transcript,
+      sourceHash: transcriptHash(transcript),
+      articleStatus: 'pending',
+    });
+    const paused = await runYoutubeArticlePass({
+      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1', AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_DAILY: '2' },
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      gemmaGenerate: gemma.generate.bind(gemma),
+      flashGenerate: flash.generate.bind(flash),
+      now: Date.parse('2026-10-19T02:10:00Z'),
+    });
+    assert.equal(paused.stopped, 'quota');
+    assert.equal(flash.calls.length, 0);
+    const stored = opened.store.repositories.youtubePodcasts.episode('local', 'gemmaquota01');
+    const state = JSON.parse(stored.articleState);
+    assert.equal(state.parts[0].translation.includes('24%'), true);
+    assert.equal(state.parts[1].translation, '');
+    assert.match(opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaquota01').body, /Sentence 0 discusses/);
+    assert.equal(opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaquota01').body.includes('[00:00:04]'), false);
+    const finished = gemma.calls.length;
+    blocked = false;
+    const second = await runYoutubeArticlePass({
+      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1' },
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      gemmaGenerate: gemma.generate.bind(gemma),
+      flashGenerate: flash.generate.bind(flash),
+      now: Date.parse('2026-10-19T04:00:00Z'),
+    });
+    assert.equal(second.ready, 1);
+    assert.equal(gemma.calls.slice(finished).some((call) => call.prompt.includes('Sentence 0 discusses')), false);
+    assert.match(opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaquota01').body, /^## 要点/);
+  } finally {
+    opened.close();
+  }
+});
+
+test('a failed gemma part falls back to flash and does not resend finished text', async () => {
+  const opened = openStore();
+  const transcript = '[00:00:03] Rates move and NVDA stays in the conversation.';
+  const item = await saveYoutubeEpisode({
+    feedRepository: opened.store.repositories.feed,
+    workspaceId: 'local',
+    creator: { id: 'odd-lots', name: 'Odd Lots', focus: '金融', channels: [{ key: 'odd-lots' }] },
+    episode: { videoId: 'gemmaflash01', title: 'Rates', channelKey: 'odd-lots', publishedAt: Date.parse('2026-10-18T00:00:00Z'), durationSec: 1800 },
+    summaryText: '中文摘要',
+    displayTitle: '利率',
+    transcript,
+    transcriptSource: 'subtitle-auto',
+  });
+  opened.store.repositories.youtubePodcasts.saveEpisode({
+    workspaceId: 'local',
+    videoId: 'gemmaflash01',
+    creatorId: 'odd-lots',
+    channelKey: 'odd-lots',
+    title: 'Rates',
+    status: 'ready',
+    contentItemId: item.id,
+    attempts: 1,
+    sourceTranscript: transcript,
+    sourceHash: transcriptHash(transcript),
+    articleStatus: 'pending',
+  });
+  const gemma = fakeGemma(() => { throw new Error('Gemma 翻译失败（500）'); });
+  const flash = fakeGemma((input) => articleReply(input));
+  try {
+    const result = await runYoutubeArticlePass({
+      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1' },
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      gemmaGenerate: gemma.generate.bind(gemma),
+      flashGenerate: flash.generate.bind(flash),
+      now: Date.parse('2026-10-19T02:00:00Z'),
+    });
+    assert.equal(result.ready, 1);
+    assert.equal(flash.calls.length, 3);
+    assert.equal(gemma.calls.length, 3);
+    assert.match(opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaflash01').body, /主持人：/);
   } finally {
     opened.close();
   }
