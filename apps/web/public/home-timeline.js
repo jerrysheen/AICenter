@@ -283,11 +283,15 @@ export function quoteStaleLabel(item, nowMs = Date.now()) {
   return clockText(at, '已过期');
 }
 
+function closedClockPrefix(item) {
+  return String(item?.session || '').trim() === 'break' ? '午间休市' : '收盘';
+}
+
 export function quoteClosedLabel(item, nowMs = Date.now()) {
   if (quoteSessionOpen(item, nowMs)) return '';
   const at = quoteAsOfMs(item);
-  if (!at) return '';
-  return clockText(at, '收盘');
+  if (!at) return item?.session === 'break' ? '午间休市' : '';
+  return clockText(at, closedClockPrefix(item));
 }
 
 export function marketStaleLabel(payload, nowMs = Date.now()) {
@@ -309,10 +313,11 @@ export function marketStaleLabel(payload, nowMs = Date.now()) {
 
 export function marketClosedLabel(payload, nowMs = Date.now()) {
   if (boardSessionOpen(payload, nowMs) !== false) return '';
+  const prefix = payload?.session === 'break' ? '午间休市' : '收盘';
   const times = pricedQuotes(payload).map(quoteAsOfMs).filter((at) => at > 0);
   const at = times.length ? Math.max(...times) : Number(payload?.fetchedAt);
-  if (!Number.isFinite(at) || at <= 0) return '收盘';
-  return clockText(at, '收盘');
+  if (!Number.isFinite(at) || at <= 0) return prefix;
+  return clockText(at, prefix);
 }
 
 export function homeDataDelayLabel(generatedAt, nowMs = Date.now()) {

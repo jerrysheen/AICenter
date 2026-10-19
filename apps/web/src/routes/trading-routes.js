@@ -1,4 +1,4 @@
-import { parseHoldingsQuery, parseMarketHistoryQuery, parseMarketQuery, parseMarketSearchQuery, BasketStatsToolInputSchema, StockStatsToolInputSchema, parseContract } from '../../../../packages/contracts/src/index.js';
+import { parseHoldingsQuery, parseMarketHistoryQuery, parseMarketQuery, parseMarketQuoteQuery, parseMarketSearchQuery, BasketStatsToolInputSchema, StockStatsToolInputSchema, parseContract, ValidationError } from '../../../../packages/contracts/src/index.js';
 import { json, readJson } from '../http/response.js';
 
 export function createTradingRoutes() {
@@ -20,6 +20,21 @@ export function createTradingRoutes() {
           json(response, 200, { ok: true, market: await services.trading.getBoard(query) });
         } catch (error) {
           json(response, 502, { ok: false, error: error instanceof Error ? error.message : '行情加载失败' });
+        }
+      },
+    },
+    {
+      method: 'GET', path: '/api/v1/markets/quote',
+      async handler({ response, services, url }) {
+        try {
+          const symbol = parseMarketQuoteQuery(url.searchParams.get('symbol') || '');
+          json(response, 200, { ok: true, quote: await services.trading.getQuote(symbol) });
+        } catch (error) {
+          const invalid = error instanceof ValidationError || error?.name === 'ValidationError';
+          json(response, invalid ? 400 : (error.statusCode || 502), {
+            ok: false,
+            error: error instanceof Error ? error.message : '报价加载失败',
+          });
         }
       },
     },

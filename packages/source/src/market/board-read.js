@@ -197,6 +197,11 @@ function usExtendedSession(rows, nowMs) {
   return clock === 'pre' || clock === 'post' ? clock : '';
 }
 
+function idleSession(rows) {
+  if ((rows || []).some((item) => item?.session === 'break')) return 'break';
+  return 'closed';
+}
+
 function sectionLiveSession(section, nowMs) {
   const rows = ['indices', 'gainers', 'losers']
     .flatMap((key) => section[key] || [])
@@ -204,8 +209,11 @@ function sectionLiveSession(section, nowMs) {
   const id = String(section.id || '').toLowerCase();
   if (rows.length) {
     if (rows.some((item) => item.marketOpen === true)) return 'regular';
-    if (id === 'us') return usExtendedSession(rows, nowMs) || 'closed';
-    return 'closed';
+    if (id === 'us') {
+      const extended = usExtendedSession(rows, nowMs);
+      if (extended) return extended;
+    }
+    return idleSession(rows);
   }
   if (id === 'cn') return cnSessionAt(nowMs);
   if (id === 'us') return usSessionAt(nowMs);
@@ -221,8 +229,8 @@ function boardLiveSession(payload, nowMs, open) {
   const board = String(payload.board || '').toLowerCase();
   const focus = String(payload.focus || '').toLowerCase();
   const usBoard = board === 'us' || (board === 'overview' && (focus || preferredOverviewFocus(nowMs)) === 'us');
-  if (!usBoard) return 'closed';
-  return usExtendedSession(pricedRows(payload), nowMs) || 'closed';
+  if (!usBoard) return '';
+  return usExtendedSession(pricedRows(payload), nowMs) || '';
 }
 
 export function withMarketClock(payload, nowMs = Date.now()) {
@@ -246,7 +254,19 @@ export function withMarketClock(payload, nowMs = Date.now()) {
     });
   }
   const open = boardClockOpen(next, nowMs);
-  return { ...next, marketOpen: open, session: boardLiveSession(next, nowMs, open) };
+  const idleRows = [
+    ...(next.indices || []),
+    ...(next.watchlist || []),
+    ...(next.gainers || []),
+    ...(next.losers || []),
+    ...((next.sections || []).flatMap((section) => [
+      ...(section?.indices || []),
+      ...(section?.gainers || []),
+      ...(section?.losers || []),
+    ])),
+  ];
+  const live = open ? 'regular' : boardLiveSession(next, nowMs, open);
+  return { ...next, marketOpen: open, session: live || idleSession(idleRows) };
 }
 
 export function stampBoardStale(payload, nowMs, staleMs) {
