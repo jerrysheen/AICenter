@@ -1,3 +1,5 @@
+import { renderMarkdownInto } from './markdown.js?v=dev';
+
 const SOURCE_LABEL = {
   'subtitle-manual': '人工字幕',
   'subtitle-auto': '自动字幕',
@@ -101,7 +103,7 @@ function episodeRow(episode, { api, open }) {
   button.append(
     Object.assign(document.createElement('strong'), { textContent: episode.title || episode.originalTitle || episode.videoId }),
     Object.assign(document.createElement('small'), {
-      textContent: [clock(episode.publishedAt), minutes(episode.durationSec), SOURCE_LABEL[episode.transcriptSource] || ''].filter(Boolean).join(' · '),
+      textContent: [clock(episode.publishedAt), minutes(episode.durationSec), SOURCE_LABEL[episode.transcriptSource] || '', episode.articleStatus === 'pending' ? '待整理' : ''].filter(Boolean).join(' · '),
     }),
   );
   const detail = document.createElement('div');
@@ -131,7 +133,7 @@ function fillDetail(detail, episode, api) {
   transcriptButton.type = 'button';
   transcriptButton.className = 'text-button';
   transcriptButton.textContent = '展开全文';
-  const transcript = document.createElement('pre');
+  const transcript = document.createElement('div');
   transcript.className = 'podcast-transcript';
   transcript.hidden = true;
   transcriptButton.addEventListener('click', async () => {
@@ -144,7 +146,26 @@ function fillDetail(detail, episode, api) {
       transcriptButton.disabled = true;
       try {
         const payload = await api(`/api/v1/youtube-podcasts/${encodeURIComponent(episode.videoId)}`);
-        transcript.textContent = payload.episode?.body || '没有全文。';
+        const body = payload.episode?.body || '';
+        const articleStatus = payload.episode?.articleStatus || episode.articleStatus || '';
+        transcript.replaceChildren();
+        if (articleStatus === 'pending') {
+          transcript.append(Object.assign(document.createElement('p'), {
+            className: 'podcast-pending',
+            textContent: '待整理',
+          }));
+        }
+        if (articleStatus === 'ready') {
+          const article = document.createElement('div');
+          article.className = 'podcast-article';
+          renderMarkdownInto(article, body || '没有全文。');
+          transcript.append(article);
+        } else {
+          const plain = document.createElement('pre');
+          plain.className = 'podcast-transcript-text';
+          plain.textContent = body || '没有全文。';
+          transcript.append(plain);
+        }
         transcript.dataset.loaded = '1';
       } catch (error) {
         transcript.textContent = error instanceof Error ? error.message : '全文读取失败';
