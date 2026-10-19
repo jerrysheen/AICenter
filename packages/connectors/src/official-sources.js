@@ -830,6 +830,37 @@ export function parsePboc(html, observedAt = Date.now()) {
   });
 }
 
+function officialError(category, message) {
+  const error = new Error(message);
+  error.category = category;
+  return error;
+}
+
+function officialFailureCategory(error) {
+  if (error?.category) return error.category;
+  const message = String(error?.message || error || '');
+  if (error?.name === 'AbortError' || /aborted|timeout|timed out|fetch failed|ECONN|ENOTFOUND|EAI_AGAIN|socket/i.test(message)) return 'network';
+  if (/^HTTP\b/.test(message)) return 'http';
+  if (/已登记的官方/.test(message)) return 'redirect-off-allowlist';
+  if (/超过 3 跳/.test(message)) return 'redirect-too-many';
+  if (/缺少地址/.test(message)) return 'redirect-missing-location';
+  if (/没有落地|运行时隐藏/.test(message)) return 'opaque-redirect';
+  if (error instanceof SyntaxError || /JSON|Unexpected token/i.test(message)) return 'parse';
+  return 'unknown';
+}
+
+function responseKind(response) {
+  const type = String(response?.type || '');
+  const status = Number(response?.status);
+  if (type === 'opaqueredirect' || status === 0 || !Number.isFinite(status)) return 'opaque';
+  if (status >= 300 && status < 400) return 'redirect';
+  return 'final';
+}
+
+async function cancelBody(response) {
+  try { await response?.body?.cancel?.(); } catch { /* 重定向响应不必读完。 */ }
+}
+
 async function responseText(response) {
   if (!response?.ok) throw new Error(`HTTP ${response?.status || 'unavailable'}`);
   return response.text();
@@ -850,31 +881,70 @@ export function createOfficialSourcesClient(options = {}) {
   const timeoutMs = options.timeoutMs ?? 15_000;
   if (typeof fetchImpl !== 'function') throw new TypeError('official sources require fetch');
 
-  async function request(url, init = {}) {
+  async function fetchOnce(url, init, redirectMode) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetchImpl(url, {
+        ...init,
+        redirect: redirectMode,
+        signal: controller.signal,
+        headers: {
+          accept: init.accept || 'text/html,application/xhtml+xml,application/json,text/calendar,application/xml;q=0.9,*/*;q=0.8',
+          'user-agent': 'AI-Center/0.2 (local official-source reader)',
+          ...(init.headers || {}),
+        },
+      });
+    } finally { clearTimeout(timer); }
+  }
+
+  function nextOfficialUrl(location, current) {
+    try {
+      return officialDetailUrl(new URL(location, current).toString());
+    } catch (error) {
+      error.category = 'redirect-off-allowlist';
+      throw error;
+    }
+  }
+
+  async function request(url, init = {}, requestOptions = {}) {
+    const followOpaque = requestOptions.followOpaque === true;
     let current = officialDetailUrl(url);
-    for (let followed = 0; ; followed += 1) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      let response;
-      try {
-        response = await fetchImpl(current, {
-          ...init,
-          redirect: 'manual',
-          signal: controller.signal,
-          headers: {
-            accept: init.accept || 'text/html,application/xhtml+xml,application/json,text/calendar,application/xml;q=0.9,*/*;q=0.8',
-            'user-agent': 'AI-Center/0.2 (local official-source reader)',
-            ...(init.headers || {}),
-          },
-        });
-      } finally { clearTimeout(timer); }
-      const status = Number(response?.status) || 0;
-      if (status < 300 || status >= 400) return response;
-      try { await response.body?.cancel?.(); } catch { /* 重定向响应不必读完。 */ }
-      if (followed >= DETAIL_REDIRECT_LIMIT) throw new Error('官方详情重定向超过 3 跳');
+    let followed = 0;
+    for (;;) {
+      const response = await fetchOnce(current, init, 'manual');
+      const kind = responseKind(response);
+      if (kind === 'final') return response;
+      await cancelBody(response);
       const location = response.headers?.get?.('location');
-      if (!location) throw new Error('官方详情重定向缺少地址');
-      current = officialDetailUrl(new URL(location, current).toString());
+      if (location) {
+        if (followed >= DETAIL_REDIRECT_LIMIT) throw officialError('redirect-too-many', '官方详情重定向超过 3 跳');
+        followed += 1;
+        current = nextOfficialUrl(location, current);
+        continue;
+      }
+      if (kind === 'redirect') throw officialError('redirect-missing-location', '官方详情重定向缺少地址');
+      // 运行时把手动重定向收成 status 0 时，Location 读不到。列表地址是写死的官网，改用 follow 再核对最终地址。
+      if (!followOpaque) throw officialError('opaque-redirect', '官方请求重定向被运行时隐藏');
+      const followedResponse = await fetchOnce(current, init, 'follow');
+      const finalUrl = followedResponse.url || current;
+      try {
+        officialDetailUrl(finalUrl);
+      } catch (error) {
+        await cancelBody(followedResponse);
+        error.category = 'redirect-off-allowlist';
+        throw error;
+      }
+      const landed = responseKind(followedResponse);
+      if (landed === 'opaque') {
+        await cancelBody(followedResponse);
+        throw officialError('opaque-redirect', '官方列表重定向被运行时隐藏');
+      }
+      if (landed !== 'final') {
+        await cancelBody(followedResponse);
+        throw officialError('redirect-not-followed', '官方列表重定向没有落地');
+      }
+      return followedResponse;
     }
   }
 
@@ -916,8 +986,17 @@ export function createOfficialSourcesClient(options = {}) {
 
   async function releases(sourceUrl, input, loader) {
     const observedAt = now();
-    const result = selectReleases(await loader(observedAt), input);
-    return { available: true, observedAt, sourceUrl, releases: result, note: '' };
+    try {
+      const result = selectReleases(await loader(observedAt), input);
+      return { available: true, observedAt, sourceUrl, releases: result, note: '' };
+    } catch (error) {
+      const category = officialFailureCategory(error);
+      const message = String(error?.message || error || 'unavailable').replace(/\s+/g, ' ').slice(0, 300);
+      console.error(`[official-release] category=${category} source=${sourceUrl} ${message}`);
+      const tagged = officialError(category, `[${category}] ${message}`);
+      tagged.cause = error;
+      throw tagged;
+    }
   }
 
   function requestedCalendarYear(input, observedAt) {
@@ -1037,16 +1116,16 @@ export function createOfficialSourcesClient(options = {}) {
       return releases(URLS.federalRegister, input, async (at) => {
         const limit = Math.min(Math.max(Number(input?.limit) || 50, 1), 100);
         const params = new URLSearchParams({ per_page: String(limit), order: 'newest' });
-        const response = await request(`${URLS.federalRegister}?${params}`, { accept: 'application/json' });
+        const response = await request(`${URLS.federalRegister}?${params}`, { accept: 'application/json' }, { followOpaque: true });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return parseFederalRegister(await response.json(), at);
       });
     },
-    whiteHouse(input) { return releases(URLS.whiteHouse, input, async (at) => parseWhiteHouse(await responseText(await request(URLS.whiteHouse)), at)); },
+    whiteHouse(input) { return releases(URLS.whiteHouse, input, async (at) => parseWhiteHouse(await responseText(await request(URLS.whiteHouse, {}, { followOpaque: true })), at)); },
     fedReleases(input) {
       return releases(URLS.fedMonetary, input, async (at) => {
         const feeds = await Promise.all([URLS.fedMonetary, URLS.fedSpeeches, URLS.fedBoardMeetings]
-          .map(async (url) => parseFedRss(await responseText(await request(url)), at, url)));
+          .map(async (url) => parseFedRss(await responseText(await request(url, {}, { followOpaque: true })), at, url)));
         return feeds.flat();
       });
     },
@@ -1056,19 +1135,19 @@ export function createOfficialSourcesClient(options = {}) {
           t: 'zhengcelibrary', q: '', timetype: '', mintime: '', maxtime: '', sort: 'score', sortType: '1',
           searchfield: 'title', p: '1', n: String(Math.min(Math.max(Number(input?.limit) || 50, 5), 100)), type: 'gwyzcwjk',
         });
-        const response = await request(`${URLS.govCn}?${params}`, { accept: 'application/json' });
+        const response = await request(`${URLS.govCn}?${params}`, { accept: 'application/json' }, { followOpaque: true });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return parseGovCn(await response.json(), at);
       });
     },
     govNews(input) {
       return releases(URLS.govNews, input, async (at) => {
-        const response = await request(URLS.govNews, { accept: 'application/json' });
+        const response = await request(URLS.govNews, { accept: 'application/json' }, { followOpaque: true });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return parseGovNews(await response.json(), at);
       });
     },
-    pboc(input) { return releases(URLS.pboc, input, async (at) => parsePboc(await responseText(await request(URLS.pboc)), at)); },
+    pboc(input) { return releases(URLS.pboc, input, async (at) => parsePboc(await responseText(await request(URLS.pboc, {}, { followOpaque: true })), at)); },
   });
 }
 
