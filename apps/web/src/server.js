@@ -584,7 +584,8 @@ export function createAiCenterServer(options = {}) {
       if (!handled) json(response, 404, { ok: false, error: 'Not found' });
       logApiToken(apiTokenId, response.statusCode || 500);
     } catch (error) {
-      const status = error instanceof ValidationError ? 400 : 500;
+      const code = Number(error?.statusCode);
+      const status = error instanceof ValidationError ? (code >= 400 && code < 600 ? code : 400) : 500;
       if (status === 500) console.error(error);
       if (!response.headersSent) {
         json(response, status, {

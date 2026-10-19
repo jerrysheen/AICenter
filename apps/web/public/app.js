@@ -801,7 +801,8 @@ function chineseReaderText(value) {
 }
 
 function shouldQueueTranslation(post) {
-  if (!post || post.platform === 'media') return false;
+  const platform = post?.platform || post?.provider;
+  if (!post || platform === 'media' || platform === 'youtube') return false;
   if (String(post.translation?.text || '').trim()) return false;
   if (translationFor(post)) return false;
   return postNeedsChineseTranslation(post);

@@ -186,7 +186,7 @@ export function marketUsFreshMs(env = process.env) {
 }
 
 export function marketBoardTimeoutMs(env = process.env) {
-  return envInt(env, 'AI_CENTER_MARKET_BOARD_TIMEOUT_MS', 12_000, 1_000, 60_000);
+  return envInt(env, 'AI_CENTER_MARKET_BOARD_TIMEOUT_MS', 20_000, 1_000, 60_000);
 }
 
 export function usBoardFreshnessError(board, nowMs, maxAgeMs) {
@@ -200,28 +200,32 @@ export function usBoardFreshnessError(board, nowMs, maxAgeMs) {
   return `美股看板行情已 ${minutes} 分钟未更新`;
 }
 
-function withTimeout(promise, ms, label) {
+function withTimeout(start, ms, label) {
+  const controller = new AbortController();
   let timer;
   let settled = false;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => {
       settled = true;
+      controller.abort();
       reject(new Error(label));
     }, ms);
     timer.unref?.();
   });
-  const guarded = Promise.resolve(promise).then(
-    (value) => (settled ? undefined : value),
-    (error) => {
-      if (settled) return undefined;
-      throw error;
-    },
-  );
+  const guarded = Promise.resolve()
+    .then(() => start(controller.signal))
+    .then(
+      (value) => (settled ? undefined : value),
+      (error) => {
+        if (settled) return undefined;
+        throw error;
+      },
+    );
   return Promise.race([guarded, timeout]).finally(() => clearTimeout(timer));
 }
 
-async function readMarketBoard(sourcePort, board) {
-  const snapshot = await sourcePort.read(`market.${board}`, {}, { refresh: true });
+async function readMarketBoard(sourcePort, board, signal) {
+  const snapshot = await sourcePort.read(`market.${board}`, {}, { refresh: true, signal });
   const data = snapshot?.data;
   if (!data || data.board !== board) throw new Error(`行情看板 ${board} 没有可用快照`);
   return data;
@@ -252,7 +256,7 @@ export async function captureMarketBoards({
     const started = Date.now();
     try {
       const board = await withTimeout(
-        readMarketBoard(sourcePort, name),
+        (signal) => readMarketBoard(sourcePort, name, signal),
         timeoutMs,
         `行情看板 ${name} 超时`,
       );
