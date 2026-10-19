@@ -46,7 +46,7 @@
 - `progress/2026-10-19-market-board-backlog.md`：看板超时会取消还没发出的 Yahoo 请求。同一键的 refresh 复用进行中的请求。默认超时 20 秒。`^HSTECH` 404 只跳过自己。不新增 migration。需要同时重启 Web 和 Worker。
 
 
-- `progress/2026-10-19-youtube-podcast-article.md`：YouTube 单集正文默认用 Gemma 26B 翻译池整理成中文文章。自动字幕先去掉滚动重复，再按句末或说话人分成 Gemma 能稳定处理的段，逐段翻译落库，全部译完后再排成带要点和小标题的文章。Gemma 失败时缺的段可以改用现有 Gemini Flash。豆包要设 `AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_ENGINE=doubao` 才启用。开关 `AI_CENTER_YOUTUBE_PODCASTS_ARTICLE` 默认关。打开后去重稿写入 `content_item.body`，中途失败时信息流显示去重稿。不新增 migration。需要同时重启 Web 和 Worker。
+- `progress/2026-10-19-youtube-podcast-article.md`：YouTube 单集正文默认用 Gemma 26B 翻译池整理成中文文章。已经是中文的字幕只整理。小标题按主题写，时间可以跟在后面。`article_state` 按段记下 provider 和 Gemma、Flash 调用次数。Gemma 同一次请求遇到上游 500 最多再换一把密钥。开关 `AI_CENTER_YOUTUBE_PODCASTS_ARTICLE` 默认关。不新增 migration。需要同时重启 Web 和 Worker。
 - `progress/2026-10-19-bamboo-research-recall.md`：资料召回在 `AI_CENTER_CLASSIFICATION_PROVIDER=bamboo` 时，标签和相关性改成 noul 题。标签 0.60 命中。相关性由直接回答、相关背景、可核对事实三题加阈值得到 direct、background、irrelevant 或 insufficient。候选标签超过 12 个才按关键词预筛。不占信息流每日 7000，仍走研究任务自己的 400 次预算。TypeSafe 的 JSON 题面不变。不新增 migration。真实 JEV 对照没有历史结果。
 - `progress/2026-10-19-market-flow.md`：股票子页最后增加「资金」（`#market/flow`）。南向净额和北向成交额只出现在这一页。北向沿用东财和港交所已有响应，净买入没有公布就不显示。migration 88 建 `northbound_daily` 和 `northbound_top10` 两张表。需要同时重启 Web 和 Worker，再按该说明补北向历史。
 
