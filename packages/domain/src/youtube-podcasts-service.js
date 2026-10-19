@@ -11,6 +11,7 @@ function present(row, withBody = false) {
     durationSec: row.durationSec,
     summary: row.summary || '',
     transcriptSource: row.transcriptSource || '',
+    articleStatus: row.articleStatus || '',
     sourceUrl: row.sourceUrl || watchUrl(row.videoId),
     contentItemId: row.contentItemId || '',
     ...(withBody ? { body: row.body || '' } : {}),
