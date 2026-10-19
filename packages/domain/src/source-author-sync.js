@@ -157,9 +157,12 @@ export function ensureSourceAuthorItem(feed, input = {}) {
     };
   }
   let bodyFilled = false;
-  if (!String(existing.body || '').trim() && body.trim() && feed.replaceContentBody?.(workspaceId, existing.id, body)) {
+  const previous = String(existing.body || '').trim();
+  const incoming = body.trim();
+  if (incoming && needsOfficialBody(previous) && officialBodyLength(incoming) > officialBodyLength(previous)
+    && feed.replaceContentBody?.(workspaceId, existing.id, incoming)) {
     bodyFilled = true;
-    releaseShortOfficialLatch(feed, capture, body);
+    releaseShortOfficialLatch(feed, capture, incoming);
   }
   if (publishedAt && !capture.publishedAt && feed.touchPublishedAt) {
     feed.touchPublishedAt(workspaceId, 'media', externalId, publishedAt);
@@ -191,13 +194,20 @@ function storedBody(feed, workspaceId, capture) {
   return String(feed.getContentItemByCapture?.(workspaceId, capture.id)?.body || '');
 }
 
+function needsOfficialBody(value) {
+  return officialBodyLength(String(value || '').trim()) < OFFICIAL_MIN_BODY_LENGTH;
+}
+
 export async function syncOfficialReleases(feed, workspaceId, releases, releaseSourceIds = {}, {
   readDetail = null,
   detailDelayMs = 0,
+  bodyLimit = 0,
 } = {}) {
   let linked = 0;
   let bodies = 0;
+  let fetchedCount = 0;
   const pause = Math.max(0, Number(detailDelayMs) || 0);
+  const fetchCap = Math.max(0, Number(bodyLimit) || 0);
   for (const release of releases || []) {
     const source = officialAuthorForRelease(release, releaseSourceIds);
     if (!source) continue;
@@ -211,7 +221,9 @@ export async function syncOfficialReleases(feed, workspaceId, releases, releaseS
     let body = '';
     let summary = release.authority || '';
     let fetched = false;
-    if (!storedBody(feed, workspaceId, target).trim() && typeof readDetail === 'function' && release.sourceUrl) {
+    const canFetch = !fetchCap || fetchedCount < fetchCap;
+    if (canFetch && needsOfficialBody(storedBody(feed, workspaceId, target)) && typeof readDetail === 'function' && release.sourceUrl) {
+      fetchedCount += 1;
       fetched = true;
       try {
         const detail = await readDetail({ sourceUrl: release.sourceUrl });
@@ -310,7 +322,7 @@ export async function backfillOfficialBodies(store, {
   onItem,
 } = {}) {
   const feed = store?.repositories?.feed;
-  if (!feed?.listEmptyOfficialBodies || !feed.replaceContentBody) throw new Error('官方正文回填需要 feed repository');
+  if (!feed?.listShortOfficialBodies || !feed.replaceContentBody) throw new Error('官方正文回填需要 feed repository');
   const cap = Math.max(0, Number(limit) || 0);
   const pause = Math.max(0, Number(sleepMs) || 0);
   const pageSize = 40;
@@ -319,9 +331,10 @@ export async function backfillOfficialBodies(store, {
   for (;;) {
     const room = cap ? Math.min(pageSize, cap - counts.scanned) : pageSize;
     if (room <= 0) break;
-    const rows = feed.listEmptyOfficialBodies(workspaceId, { afterId, limit: room });
+    const rows = feed.listShortOfficialBodies(workspaceId, { afterId, limit: room });
     if (!rows.length) break;
     for (const row of rows) {
+      if (!needsOfficialBody(row.body)) continue;
       counts.scanned += 1;
       const host = sourceHost(row.sourceUrl);
       counts.hosts[host] = (counts.hosts[host] || 0) + 1;
@@ -349,9 +362,9 @@ export async function backfillOfficialBodies(store, {
         await rest();
         continue;
       }
-      if (!body) {
-        counts.missed += 1;
-        onItem?.({ id: row.contentItemId, host, title: row.title, sourceUrl: row.sourceUrl, error: '官方页面没有正文' });
+      if (!body || officialBodyLength(body) <= officialBodyLength(row.body)) {
+        counts.unchanged += 1;
+        onItem?.({ id: row.contentItemId, host, title: row.title, sourceUrl: row.sourceUrl, unchanged: true, chars: officialBodyLength(body) });
         await rest();
         continue;
       }
