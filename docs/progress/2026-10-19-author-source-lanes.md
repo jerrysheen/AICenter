@@ -14,7 +14,7 @@
 
 官方发布仍写成 `provider=media` 的内容条目，外部 id 与现有文章 id 相同，不新增 provider。作者页因此能打开这些条目。正文已经存在时只补发布时间并重新挂作者，不覆盖正文。媒体索引写入本身不新建内容条目，只给已有 capture 补 `sourceKey` 和 `authorId`。历史索引里还没有内容条目的，由回填脚本补建。
 
-官方看板镜像的 external id 是 `official-board:<sourceKey>:<稳定文章 id>`，capture 上记 `officialMirror: true`。它和媒体采集的 `stableArticleId` 不是同一条。小时报、搜索和可打标列表只按 `officialMirror` 排除，不按 `lane` 或 `official:` 作者排除，因此国务院、美联储、央行已经抓到的真实文章仍留在这三处。建镜像前先用稳定文章 id 查真实 capture，有的话只把作者挂到那条上，不另建镜像。回填走同一条同步。信息流过滤的刷新队列本来就不含这些 `provider=media` 的镜像。
+官方看板镜像的 external id 是 `official-board:<sourceKey>:<稳定文章 id>`，capture 上记 `officialMirror: true`。它和媒体采集的 `stableArticleId` 不是同一条。小时报、搜索和可打标列表只按 `officialMirror` 排除，不按 `lane` 或 `official:` 作者排除，因此国务院、美联储、央行已经抓到的真实文章仍留在这三处。建镜像前先用稳定文章 id 查真实 capture，有的话只把作者挂到那条上，不另建镜像。正文为空时，导入和镜像都回到原链接取正文；已经有正文的不覆盖。回填走同一条同步。空正文也可以单独用 `scripts/backfill-official-bodies.mjs` 补。信息流过滤的刷新队列本来就不含这些 `provider=media` 的镜像。
 
 ## 出现门槛
 
