@@ -66,11 +66,19 @@ function clipError(value, max = 240) {
   return String(value || '').replace(/[\r\n]+/g, ' ').trim().slice(0, max);
 }
 
+function detailText(value) {
+  if (value == null || value === '') return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try { return JSON.stringify(value); } catch { return ''; }
+}
+
 function readErrorDetail(payload) {
   if (typeof payload === 'string') return clipError(payload);
   if (!isRecord(payload)) return '';
   if (typeof payload.error === 'string') return clipError(payload.error);
-  return clipError(payload.error?.message || payload.message || '');
+  const error = isRecord(payload.error) ? payload.error : null;
+  return clipError(detailText(error?.message) || detailText(payload.error) || detailText(payload.message) || '');
 }
 
 /**

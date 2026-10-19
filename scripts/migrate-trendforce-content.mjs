@@ -9,6 +9,7 @@ import {loadFeedValueCalibration} from '../packages/instance/src/feed-value-conf
 import {createStore} from '../packages/database/src/index.js';
 import {createMediaConnector} from '../packages/connectors/src/media/port.js';
 import {createTypeSafeSystemOneClient} from '../packages/connectors/src/typesafe-system-one.js';
+import {openJevClient} from '../packages/domain/src/jev-enabled.js';
 import {legacyPriceSnapshot} from '../packages/connectors/src/trendforce-prices.js';
 import {createHardwareArtifactStore} from '../packages/connectors/src/hardware-artifacts.js';
 import {createHardwarePriceService} from '../packages/domain/src/hardware-price-service.js';
@@ -40,7 +41,7 @@ if(!process.argv.includes('--run')) {
   mkdirSync(path.dirname(backup),{recursive:true});await before.backup(backup);before.close();
   const store=createStore(instance.databasePath);
   try {
-    const feedFilter=createFeedFilterFromEnv({env:process.env,client:createTypeSafeSystemOneClient({env:process.env}),calibration:loadFeedValueCalibration(instance)});
+    const feedFilter=createFeedFilterFromEnv({env:process.env,client:openJevClient(process.env, undefined, (options)=>createTypeSafeSystemOneClient(options)),calibration:loadFeedValueCalibration(instance)});
     const media=createMediaIngestionService({mediaRepository:store.repositories.media,feedRepository:store.repositories.feed,taggingRepository:store.repositories.tagging,
       mediaPort:createMediaConnector(loadMediaConfig(instance.configDirectory)),feedFilter});
     const hardware=createHardwarePriceService({repository:store.repositories.hardwarePrices,artifactStore:createHardwareArtifactStore({dataDirectory:instance.dataDirectory})});

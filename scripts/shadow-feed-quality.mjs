@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { resolveInstanceConfig } from '../packages/instance/src/index.js';
 import { createTypeSafeSystemOneClient } from '../packages/connectors/src/typesafe-system-one.js';
+import { openJevClient } from '../packages/domain/src/jev-enabled.js';
 import { readFeedQualityWindow } from '../packages/database/src/repositories/feed-quality-audit-repository.js';
 import { mediaResourceId } from '../packages/domain/src/media-ingestion-service.js';
 import { normalizeFeedQualityText, createFeedQualityEvaluator, decideFeedQuality, FEED_QUALITY_VERSION } from '../packages/domain/src/feed-quality.js';
@@ -100,7 +101,8 @@ for (const item of corpus.items) item.input = normalizeFeedQualityText(item.rawT
   keyContextMissing:item.input.keyContextMissing });
 if (args.includes('--export-only')) { console.log(JSON.stringify({out,...corpus.manifest})); process.exit(0); }
 const model = option('model','jev-1.13.0');
-const client = createTypeSafeSystemOneClient({model,timeoutMs:30_000});
+const client = openJevClient(process.env, undefined, (options) => createTypeSafeSystemOneClient({...options,model,timeoutMs:30_000}));
+if (!client) throw new Error('AI_CENTER_JEV_ENABLED=false，不调用 TypeSafe');
 const evaluator = createFeedQualityEvaluator({client,readingScope:corpus.manifest.readingScope,model});
 const prior = existsSync(jsonPath('scores.jsonl')) ? readFileSync(jsonPath('scores.jsonl'),'utf8').split('\n').filter(Boolean).map(line=>JSON.parse(line)) : [];
 const byId = new Map(prior.filter(row=>row.version===FEED_QUALITY_VERSION && row.requestedModel===model

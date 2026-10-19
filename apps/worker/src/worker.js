@@ -17,12 +17,14 @@ import { createMediaBriefPort } from '../../../packages/runtime/src/media-brief-
 import { hostname } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isMain } from '../../../packages/runtime/src/is-main.js';
 import { existsSync } from 'node:fs';
 import { createAnalysisSkillCatalog, createConfiguredBrowserRuntime, createCursorSessionPort, createDeepSeekSearchProvider, createDoubaoAuxiliarySearch, createElucidGrokAgentClient, createGeminiTagPort, createLauncherRestartPort, createLocalKnowledgeFiles, createPersonalAssetService, createTranslateService, createTypeSafeSystemOneClient } from '../../../packages/connectors/src/index.js';
 import { createAgentQualityLayerFromEnv } from '../../../packages/runtime/src/agent-quality.js';
 import { articleAnalysisManifest, createArticleAnalysisJobHandlers } from '../../../packages/runtime/src/article-analysis/article-analysis-module.js';
 import { createAttachmentStore, createStore } from '../../../packages/database/src/index.js';
-import { createFeedFilterFromEnv } from '../../../packages/domain/src/feed-filter.js';
+import { createFeedFilterFromEnv, resolveFeedFilterConfig } from '../../../packages/domain/src/feed-filter.js';
+import { openJevClient, resolveJevEnabled } from '../../../packages/domain/src/jev-enabled.js';
 import { resolveDailyConfig } from '../../../packages/domain/src/daily-window.js';
 import { createFeedService } from '../../../packages/domain/src/feed-service.js';
 import { createFeedInteractionService } from '../../../packages/domain/src/feed-interaction-service.js';
@@ -130,6 +132,7 @@ function createOptionalSearchPort(explicit) {
 
 export function createOptionalAgentQuality(explicit, env = process.env, client) {
   if (explicit !== undefined) return explicit || null;
+  if (!resolveJevEnabled(env)) return null;
   try {
     return createAgentQualityLayerFromEnv({
       env,
@@ -225,10 +228,18 @@ export function createAiCenterWorker(options = {}) {
   let xFocusConfig = null;
   try { xFocusConfig = options.xFocusConfig || loadXFocusConfig(instance.configDirectory); }
   catch (error) { console.log(`[worker] x-focus ${String(error?.message || error).slice(0, 160)}`); }
-  const typesafeClient = options.typesafeClient || createTypeSafeSystemOneClient({ env });
+  const feedFilterConfig = resolveFeedFilterConfig(env);
+  const typesafeClient = openJevClient(env, options.typesafeClient, createTypeSafeSystemOneClient);
+  const focusLog = (message) => console.log(message);
   const feedFilter = options.feedFilter !== undefined
     ? options.feedFilter
-    : createFeedFilterFromEnv({ client: typesafeClient, env, calibration: loadFeedValueCalibration(instance) });
+    : createFeedFilterFromEnv({
+      client: typesafeClient,
+      env,
+      calibration: loadFeedValueCalibration(instance),
+      xFocusConfig,
+      log: focusLog,
+    });
   const mediaConfig = loadMediaConfig(instance.configDirectory);
   const flashSources = options.flashSources || loadResolvedFlashSources({ configDirectory: instance.configDirectory, env, mediaSources: mediaConfig.sources });
   const mediaService = options.mediaService || (store.repositories?.media
@@ -439,6 +450,7 @@ export function createAiCenterWorker(options = {}) {
       env,
       agentRuntime,
       cache: createAnalysisFocusCache(store.repositories.report),
+      log: focusLog,
     });
     const autoLike = createXFocusService({
       config: xFocusConfig,
@@ -449,6 +461,7 @@ export function createAiCenterWorker(options = {}) {
       reportRepository: store.repositories.report,
       scorer,
       requestLike: (workspaceId, input) => feedInteraction.requestLike(workspaceId, input),
+      log: focusLog,
     });
     xFocusHooks.scoreCards = (cards, context) => scorer.scoreCards(cards, context);
     xFocusHooks.afterIngest = async ({ workspaceId }) => {
@@ -567,7 +580,7 @@ export function createAiCenterWorker(options = {}) {
     }),
   });
   if (env.AI_CENTER_RESEARCH_RECALL === 'on') {
-    const liveJudges = typesafeClient.available()
+    const liveJudges = typesafeClient?.available?.()
       ? { tagJudge: createResearchTagJudge(typesafeClient), relevanceJudge: createResearchRelevanceJudge(typesafeClient) }
       : { tagJudge: null, relevanceJudge: null };
     registry.register({
@@ -577,7 +590,7 @@ export function createAiCenterWorker(options = {}) {
         feedRepository: store.repositories.feed,
         mediaRepository: store.repositories.media,
         informationRepository: store.repositories.informationTree,
-        modelId: typesafeClient.modelId,
+        modelId: typesafeClient?.modelId || '',
         ...liveJudges,
       })),
     });
@@ -741,7 +754,8 @@ export function createAiCenterWorker(options = {}) {
   });
   registry.register({manifest:feedValueRefreshManifest,jobHandlers:createFeedValueRefreshJobHandlers({
     service:createFeedValueRefreshService({feedRepository:store.repositories.feed,mediaRepository:store.repositories.media,
-      client:typesafeClient,model:loadFeedValueCalibration(instance)?.model || 'jev-1.13.0',scoreCache:loadFeedValueScoreCache(instance),flashSources}),
+      client:typesafeClient,model:loadFeedValueCalibration(instance)?.model || 'jev-1.13.0',scoreCache:loadFeedValueScoreCache(instance),flashSources,
+      jevEnabled:feedFilterConfig.jevEnabled,fallback:feedFilterConfig.fallback,xFocusConfig,xFocusMin:feedFilterConfig.xFocusMin}),
     onProgress:progress=>console.log('[feed.quality.refresh]',JSON.stringify(progress)),
   })});
   const handlers = options.handlers || registry.createJobHandlers();
@@ -937,7 +951,7 @@ async function main() {
   await runPromise;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   main().catch((error) => {
     console.error(error);
     process.exitCode = 1;

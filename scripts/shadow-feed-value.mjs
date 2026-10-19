@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import { resolveInstanceConfig } from '../packages/instance/src/index.js';
 import { readFeedQualityWindow } from '../packages/database/src/repositories/feed-quality-audit-repository.js';
 import { createTypeSafeSystemOneClient } from '../packages/connectors/src/typesafe-system-one.js';
+import { openJevClient } from '../packages/domain/src/jev-enabled.js';
 import { FeedValueReferenceSchema } from '../packages/contracts/src/feed-value.js';
 import { createFeedQualityEvaluator,decideFeedQuality } from '../packages/domain/src/feed-quality.js';
 import { normalizeFeedValueText,createFeedValueEvaluator,decideFeedValue,calibrateFeedValue,
@@ -53,7 +54,8 @@ const a=old.items.map(i=>({id:i.id,decision:decideFeedQualityWithoutScope(i.scor
 save('stage-a.json',{warning:'Old interest-conditioned V2 probabilities; not new topic-free scoring',counts:counts(a),items:a});
 if(args.includes('--prepare')){console.log(JSON.stringify({dir,items:corpus.items.length,old:oldRef.rows.length,fresh:refs.rows.filter(r=>r.split==='fresh-holdout').length,A:counts(a)}));process.exit(0);}
 const stage=opt('stage','C');if(!['B','C'].includes(stage))throw new Error('Stage B or C');
-const model=opt('model','jev-1.13.0'),client=createTypeSafeSystemOneClient({model,timeoutMs:30000});
+const model=opt('model','jev-1.13.0'),client=openJevClient(process.env, undefined, (options) => createTypeSafeSystemOneClient({...options,model,timeoutMs:30000}));
+if(!client) throw new Error('AI_CENTER_JEV_ENABLED=false，不调用 TypeSafe');
 if(!client.available())throw new Error('JEV unavailable; no fabricated scores');
 const evaluator=stage==='C'?createFeedValueEvaluator({client,model}):createFeedQualityEvaluator({client,model,readingScope:old.summary.manifest.readingScope});
 const bInput=i=>({...oldMap.get(i.id).input,body:[i.input.body,...i.input.continuations.map(p=>p.text),...i.input.references.map(p=>p.text)].filter(Boolean).join('\n\n'),

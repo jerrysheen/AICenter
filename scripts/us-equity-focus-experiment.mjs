@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { createGeminiTagPort } from '../packages/connectors/src/gemini-tag.js';
 import { createTypeSafeSystemOneClient } from '../packages/connectors/src/typesafe-system-one.js';
+import { openJevClient } from '../packages/domain/src/jev-enabled.js';
 import { loadTagCatalog } from '../packages/domain/src/tag-catalog.js';
 import { TAG_PROMPT_VERSION } from '../packages/domain/src/tag-prompt.js';
 import { createTaggingService } from '../packages/domain/src/tagging-service.js';
@@ -289,7 +290,8 @@ async function retryFailed() {
   const data = readJson(resultsPath, null);
   if (!data) throw new Error('还没有结果文件');
   const definition = loadUsEquityFocus(readFileSync(path.join(root, 'config', 'research', 'us-equity-daily-focus.json'), 'utf8'));
-  const client = createTypeSafeSystemOneClient({ timeoutMs: 45_000 });
+  const client = openJevClient(process.env, undefined, (options) => createTypeSafeSystemOneClient({ ...options, timeoutMs: 45_000 }));
+  if (!client) throw new Error('AI_CENTER_JEV_ENABLED=false，不调用 TypeSafe');
   const evaluator = createUsEquityFocusEvaluator({ client, definition, cache: fileCache(cachePath) });
   const pending = data.items.filter((item) => Object.values(item.focus?.answers || {}).some((row) => row.status !== 'success'));
   console.log(`retry ${pending.length}`);
@@ -343,8 +345,8 @@ async function main() {
     taggingError = String(error?.message || error);
     console.log(`tags failed ${taggingError}`);
   }
-  const client = createTypeSafeSystemOneClient({ timeoutMs: 45_000 });
-  if (!client.available()) throw new Error('未配置 JEV 凭证，不使用模拟分数');
+  const client = openJevClient(process.env, undefined, (options) => createTypeSafeSystemOneClient({ ...options, timeoutMs: 45_000 }));
+  if (!client?.available()) throw new Error('未配置 JEV 凭证，不使用模拟分数');
   const evaluator = createUsEquityFocusEvaluator({ client, definition, cache: fileCache(cachePath) });
   const started = Date.now();
   const run = await scoreAll(evaluator, sample.selected);

@@ -20,10 +20,24 @@ function clipError(value, max = 240) {
   return message.slice(0, max) || 'TypeSafe request failed';
 }
 
+function detailText(value) {
+  if (value == null || value === '') return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try { return JSON.stringify(value); } catch { return ''; }
+}
+
 function readErrorDetail(payload) {
   if (typeof payload === 'string') return clipError(payload);
   if (!isRecord(payload)) return '';
-  return clipError(payload.error?.message || payload.message || payload.detail || '');
+  const error = isRecord(payload.error) ? payload.error : null;
+  return clipError(
+    detailText(error?.message)
+    || detailText(payload.error)
+    || detailText(payload.message)
+    || detailText(payload.detail)
+    || '',
+  );
 }
 
 async function readJson(response) {
@@ -114,7 +128,10 @@ export function createTypeSafeSystemOneClient(options = {}) {
           throw error;
         }
         if (!isRecord(payload?.answers)) {
-          throw new Error('TypeSafe 没有返回 answers');
+          const error = new Error('TypeSafe 没有返回 answers');
+          error.code = 'TYPESAFE_BAD_RESPONSE';
+          error.status = response.status;
+          throw error;
         }
         return {
           model: text(payload.model, model),
@@ -122,6 +139,7 @@ export function createTypeSafeSystemOneClient(options = {}) {
           usage: isRecord(payload.usage) ? payload.usage : {},
         };
       } catch (error) {
+        if (signal?.aborted) throw error;
         if (error?.name === 'AbortError' || error?.name === 'TimeoutError' || error?.code === 'TYPESAFE_TIMEOUT') {
           if (signal?.aborted) throw error;
           const timeoutError = new Error(`TypeSafe 请求超时（${timeoutMs}ms）`);
