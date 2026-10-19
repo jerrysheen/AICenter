@@ -48,6 +48,7 @@ export function createFeedValueReviewService({feedRepository,mediaRepository}={}
         filterScores:changed?null:row.scores,filterMode:'enforce',filterApplied:blocked,filterRule:FEED_VALUE_RULE,filterRuleHash:feedValueRuleHash(),
         filterVersion:FEED_VALUE_VERSION,filterPolicyHash:feedValuePolicyHash(),evaluatorModel:model,
         filterCacheKey:changed?'':createFeedValueEvaluator({model}).cacheKey(current),
+        bodyCompletion:decision.bodyPending?'pending':'',
         ...(runId?{filterRefreshRunId:runId}:{}),
         filterEvaluatedAt:Date.now(),scoreOrigin:changed?'input-changed-needs-rescore':row.scoreOrigin || 'frozen-v3-identical-input',wouldIgnore:blocked}});
       result.applied++;result[decision.decision]++;

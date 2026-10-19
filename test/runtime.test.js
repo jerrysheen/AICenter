@@ -7,7 +7,7 @@ import Database from 'better-sqlite3';
 import { createJsonProcessAdapter } from '../packages/connectors/src/process-json-adapter.js';
 import { createStore } from '../packages/database/src/index.js';
 import { getEventListeners } from 'node:events';
-import { createJobRunner, resolveJobTypeConcurrency, wait } from '../packages/runtime/src/job-runner.js';
+import { createJobRunner, resolveJobTypeConcurrency, shouldLogJobLoopDelay, wait } from '../packages/runtime/src/job-runner.js';
 import { createAiCenterWorker } from '../apps/worker/src/worker.js';
 import { latestSchemaVersion, runMigrations, unusedSchemaVersions } from '../packages/database/src/migrations.js';
 import { computeFeedIdentityHash } from '../packages/domain/src/feed-identity.js';
@@ -524,6 +524,12 @@ test('process connector accepts JSON stdout without using a shell', async () => 
     timeoutMs: 5_000,
   });
   assert.deepEqual(await adapter(), { ok: true, source: 'child' });
+});
+
+test('job loop delay is logged only after 200ms', () => {
+  assert.equal(shouldLogJobLoopDelay(200), false);
+  assert.equal(shouldLogJobLoopDelay(201), true);
+  assert.equal(shouldLogJobLoopDelay(0), false);
 });
 
 test('worker process boundary shares jobs and health through SQLite', async () => {

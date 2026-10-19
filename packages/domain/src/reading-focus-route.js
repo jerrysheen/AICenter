@@ -1,4 +1,4 @@
-export const READING_ROUTE_VERSION = 'reading-route-2026-10-10.4';
+export const READING_ROUTE_VERSION = 'reading-route-2026-10-19.1';
 export const READING_CLASS_VERSION = 'reading-class-2026-10-10.1';
 export const INFORMATION_TYPES = ['capital_flow','macro','investment_method','technical_method','supply','operations','deal','capability','workflow','graphics','trade_control','conflict','index_move','product_progress'];
 const TYPE_ALIAS_VERSION = 'type-alias-2026-10-09.1';
@@ -42,7 +42,7 @@ export const READING_DIRECTIONS = ['finance','industry','ai','geopolitics'].map(
 export const READING_THEME_ORDER = READING_DIRECTIONS.map((item) => item.id);
 export const FOCUS_QUESTIONS = {
   FIN_POLICY: '材料的主要内容是否是宏观经济数据、财政税收、货币政策或整体金融制度，并提供具体指标、措施、适用范围、时间或明确政策表态中的至少一项？',
-  FIN_MARKET: '材料的主要内容是否是整体股票市场、指数、板块整体、ETF及市场级资金、债券利率、汇率、商品或期货行情，并提供具体价格、涨跌、成交、资金、结构变化或有依据的关系分析？明确排除以个股为主的材料。',
+  FIN_MARKET: '材料的主要内容是否是整体股票市场、指数、板块整体、ETF及市场级资金、债券利率、汇率、商品或期货行情，或公司融资、资本开支、算力需求、产能或订单在给出具体金额、规模或条件后会影响这些市场？并提供具体价格、涨跌、成交、资金、结构变化、金额或有依据的关系分析？',
   CO_EVENT: '材料是否以可识别的具体公司为主要对象，提供其营收、利润、应收、订单、客户认证、供应生产、业务或产品举措、资本开支、并购融资、人事、监管诉讼、事故或其他具体公司动态中的至少一项？',
   CO_MARKET: '材料是否以某家或几家可识别公司的证券表现为主要对象，提供具体股价、涨跌、估值、成交、公司级资金或持仓变化，或具体解释与比较？',
   AI_TECH: '材料是否主要介绍AI模型、算法、论文、数据集、训练推理或AI运行技术，并提供具体新增能力、机制、性能、评测、训练部署条件、限制或可用性变化中的至少一项？',
@@ -60,8 +60,8 @@ export const FOCUS_GROUP_ORDER = Object.keys(FOCUS_GROUP_NAMES);
 
 const QUESTION_BY_KIND = {
   macro_policy: ['FIN_POLICY'],
-  market_asset: ['FIN_MARKET'],
-  company_event: ['CO_EVENT'],
+  market_asset: ['FIN_MARKET', 'CO_EVENT'],
+  company_event: ['CO_EVENT', 'FIN_MARKET'],
   company_security: ['CO_MARKET'],
   ai_model_method: ['AI_TECH'],
   ai_application: ['AI_USE'],

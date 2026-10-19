@@ -11,6 +11,12 @@ import {
 
 export { WORK_PACKAGE_DISPATCH_JOB_TYPE };
 
+export const JOB_LOOP_LOG_MIN_MS = 200;
+
+export function shouldLogJobLoopDelay(maxMs) {
+  return Number.isFinite(Number(maxMs)) && Number(maxMs) > JOB_LOOP_LOG_MIN_MS;
+}
+
 export function wait(milliseconds, signal) {
   if (signal?.aborted) return Promise.resolve();
   return new Promise((resolve) => {

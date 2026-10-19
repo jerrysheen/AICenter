@@ -32,11 +32,12 @@ function createBambooResearchTagJudge(client) {
   return {
     promptVersion: RESEARCH_TAG_NOUL_VERSION,
     batchCharge: 'item',
-    async judge({ tags, items }) {
+    async judge({ tags, items, signal }) {
       const assignments = [];
       const usage = { requests: 0, inputTokens: null, outputTokens: null };
       let model = client.modelId || '';
       for (const item of items || []) {
+        if (signal?.aborted) break;
         const { asked } = selectResearchTags(tags, item);
         if (!asked.length) {
           assignments.push({ resourceId: item.resourceId, tagIds: [] });
@@ -46,6 +47,7 @@ function createBambooResearchTagJudge(client) {
           const response = await client.evaluate({
             state: researchItemState(item),
             questions: Object.fromEntries(asked.map((tag) => [tag.id, researchTagQuestion(tag)])),
+            signal,
           });
           usage.requests += 1;
           const reported = addUsage(usage, response);
@@ -57,6 +59,7 @@ function createBambooResearchTagJudge(client) {
           });
         } catch (error) {
           if (error?.code === 'rate-limit' || error?.status === 429) throw error;
+          if (signal?.aborted || error?.name === 'AbortError' || error?.name === 'TimeoutError') throw error;
         }
       }
       return { assignments, usage, model };
@@ -68,16 +71,18 @@ function createBambooResearchRelevanceJudge(client) {
   return {
     promptVersion: RESEARCH_RELEVANCE_NOUL_VERSION,
     batchCharge: 'item',
-    async judge({ question, items }) {
+    async judge({ question, items, signal }) {
       const results = [];
       const usage = { requests: 0, inputTokens: null, outputTokens: null };
       let model = client.modelId || '';
       const questions = researchRelevanceQuestions();
       for (const item of items || []) {
+        if (signal?.aborted) break;
         try {
           const response = await client.evaluate({
             state: researchRelevanceState(question, item),
             questions,
+            signal,
           });
           usage.requests += 1;
           const reported = addUsage(usage, response);
@@ -93,6 +98,7 @@ function createBambooResearchRelevanceJudge(client) {
           });
         } catch (error) {
           if (error?.code === 'rate-limit' || error?.status === 429) throw error;
+          if (signal?.aborted || error?.name === 'AbortError' || error?.name === 'TimeoutError') throw error;
         }
       }
       return { results, usage, model };
@@ -104,12 +110,13 @@ export function createResearchTagJudge(client) {
   if (client?.providerId === 'bamboo') return createBambooResearchTagJudge(client);
   return {
     batchCharge: 'once',
-    async judge({ tags, items }) {
+    async judge({ tags, items, signal }) {
       const response = await client.evaluate({
         state: { tag_catalog: tags, items },
         questions: {
           research_tags: '只做研究标签匹配。必须使用 tag_catalog 里的 definition、include 和 exclude。exclude 命中就不要返回该 id。没有命中返回空 tagIds。不要写报告，不要判断真伪。只返回 JSON {"assignments":[{"resourceId":"...","tagIds":[]}]}。',
         },
+        signal,
       });
       const parsed = readObject(response.answers?.research_tags);
       if (!Array.isArray(parsed?.assignments)) {
@@ -133,12 +140,13 @@ export function createResearchRelevanceJudge(client) {
   if (client?.providerId === 'bamboo') return createBambooResearchRelevanceJudge(client);
   return {
     batchCharge: 'once',
-    async judge({ question, items }) {
+    async judge({ question, items, signal }) {
       const response = await client.evaluate({
         state: { question, items },
         questions: {
           research_relevance: '只判断每条材料与研究问题的相关性，返回 direct、background、irrelevant 或 insufficient。不要写报告，不要判断真伪，不要把概率当成结论。只返回 JSON {"results":[{"resourceId":"...","verdict":"insufficient"}]}。',
         },
+        signal,
       });
       const parsed = readObject(response.answers?.research_relevance);
       if (!Array.isArray(parsed?.results)) {

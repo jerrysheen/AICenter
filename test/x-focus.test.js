@@ -13,7 +13,7 @@ import { looksLikeFeedAd } from '../packages/domain/src/feed-ad.js';
 import { createXFocusScorer, X_FOCUS_SCORE_RESERVE_MS } from '../packages/domain/src/x-focus-score.js';
 import { createXFocusService, KEYWORD_RESCORE_LIMIT, FOCUS_POINT_LIMIT } from '../packages/domain/src/x-auto-like.js';
 import { createFeedInteractionRoutes } from '../apps/web/src/routes/feed-interaction-routes.js';
-import { selectFocusExpansions, fallbackFocusExpansions, createXHomeBrowserClient } from '../packages/connectors/src/x/home-browser.js';
+import { selectFocusExpansions, fallbackFocusExpansions, createXHomeBrowserClient, rankTruncatedExpansions } from '../packages/connectors/src/x/home-browser.js';
 import { tweetToFeedItem } from '../packages/connectors/src/x/home-timeline.js';
 import { createXLikeBrowserPort, buildXLikeExpression, buildXUnlikeExpression } from '../packages/connectors/src/x/like-browser.js';
 import { createFeedInteractionService } from '../packages/domain/src/feed-interaction-service.js';
@@ -348,8 +348,8 @@ test('home capture expands only the highest focus cards and at most eight', asyn
     }),
   });
   const selected = await client.fetchHomeTimeline({ feed: 'for-you', limit: 5 });
-  assert.deepEqual(navigated.filter((url) => url.includes('/status/')), ['https://x.com/a/status/22']);
-  assert.equal(selected.tweets.find((tweet) => tweet.tweet_id === '11').text, '低分卡片');
+  assert.deepEqual(navigated.filter((url) => url.includes('/status/')), ['https://x.com/a/status/22', 'https://x.com/a/status/11']);
+  assert.match(selected.tweets.find((tweet) => tweet.tweet_id === '11').text, /全文/);
   assert.match(selected.tweets.find((tweet) => tweet.tweet_id === '22').text, /全文/);
   assert.equal(selected.tweets.find((tweet) => tweet.tweet_id === '11').x_focus.focusScore, 0.2);
   const mapped = tweetToFeedItem(selected.tweets.find((tweet) => tweet.tweet_id === '22'));
@@ -364,8 +364,8 @@ test('home capture expands only the highest focus cards and at most eight', asyn
   });
   await closed.fetchHomeTimeline({ feed: 'for-you', limit: 5 });
   assert.deepEqual(navigated.filter((url) => url.includes('/status/')), [
-    'https://x.com/a/status/22',
     'https://x.com/a/status/11',
+    'https://x.com/a/status/22',
   ]);
 });
 
@@ -1070,7 +1070,7 @@ test('following still expands truncated posts and a scoring failure keeps a fall
     scoreHomeCards: async () => ({ minScore: 0.75, maxExpand: 8, byId: low }),
   });
   const following = await client.fetchHomeTimeline({ feed: 'following', limit: 9 });
-  assert.equal(followed.navigated.filter((url) => url.includes('/status/')).length, 8);
+  assert.equal(followed.navigated.filter((url) => url.includes('/status/')).length, 9);
   assert.equal(following.tweets[0].x_focus.focusScore, 0.1);
 
   const recommendedRuntime = homeRuntime(tweets, 'For you');
@@ -1080,7 +1080,7 @@ test('following still expands truncated posts and a scoring failure keeps a fall
     scoreHomeCards: async () => ({ minScore: 0.75, maxExpand: 8, byId: low }),
   });
   const recommended = await recommendedClient.fetchHomeTimeline({ feed: 'for-you', limit: 9 });
-  assert.equal(recommendedRuntime.navigated.filter((url) => url.includes('/status/')).length, 0);
+  assert.equal(recommendedRuntime.navigated.filter((url) => url.includes('/status/')).length, 8);
   assert.equal(recommended.tweets.length, 9);
 
   const fallbackCards = [
@@ -1097,7 +1097,12 @@ test('following still expands truncated posts and a scoring failure keeps a fall
     scoreHomeCards: async () => { throw new Error('score down'); },
   });
   await broken.fetchHomeTimeline({ feed: 'for-you', limit: 4 });
-  assert.deepEqual(brokenRuntime.navigated.filter((url) => url.includes('/status/')), ['https://x.com/a/status/4']);
+  assert.deepEqual(brokenRuntime.navigated.filter((url) => url.includes('/status/')), [
+    'https://x.com/a/status/4',
+    'https://x.com/a/status/2',
+    'https://x.com/a/status/3',
+    'https://x.com/a/status/1',
+  ]);
   const plain = fallbackFocusExpansions([
     { tweet_id: 'a', text: '一' },
     { tweet_id: 'b', text: '二二' },
@@ -1105,6 +1110,11 @@ test('following still expands truncated posts and a scoring failure keeps a fall
     { tweet_id: 'd', text: '四四四四' },
   ], []);
   assert.deepEqual([...plain.expandIds], ['d', 'c', 'b']);
+  assert.deepEqual(rankTruncatedExpansions([
+    { tweet_id: 'short', text: '短', x_focus: { focusScore: 0.2 } },
+    { tweet_id: 'long-low', text: '很长的低分帖', x_focus: { focusScore: 0.1 } },
+    { tweet_id: 'valued', text: '短但更值得展开', x_focus: { focusScore: 0.95 } },
+  ]).map((item) => item.tweet_id), ['valued', 'short', 'long-low']);
 });
 
 test('drift snapshot ignores keyword rows, page data is cached, and jobs stay in one workspace', async () => {

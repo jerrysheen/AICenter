@@ -965,6 +965,48 @@ export function createFeedRepository(database, emitEvent) {
         .filter(Boolean);
     },
 
+    listPendingBodyExternalIds(workspaceId, provider) {
+      return database.prepare(`SELECT external_id AS externalId
+        FROM captures
+        WHERE workspace_id = ? AND provider = ?
+          AND json_extract(metadata_json, '$.bodyCompletion') = 'pending'`)
+        .all(workspaceId, provider)
+        .map((row) => String(row.externalId || ''))
+        .filter(Boolean);
+    },
+
+    listOfficialLaneItems(workspaceId, { afterId = '', limit = 200 } = {}) {
+      const cap = Math.max(1, Math.min(500, Number(limit) || 200));
+      return database.prepare(`SELECT c.id AS captureId, c.external_id AS externalId, c.status,
+          c.source_account_id AS sourceAccountId, c.source_url AS sourceUrl, c.title, c.content_hash AS contentHash,
+          c.raw_artifact_path AS rawArtifactPath, c.published_at AS publishedAt, c.captured_at AS capturedAt,
+          c.metadata_json AS metadataJson, ci.body AS body
+        FROM captures c
+        INNER JOIN content_items ci ON ci.capture_id = c.id AND ci.workspace_id = c.workspace_id
+        WHERE c.workspace_id = ? AND c.provider = 'media' AND c.id > ?
+          AND (
+            json_extract(c.metadata_json, '$.officialMirror') = 1
+            OR json_extract(c.metadata_json, '$.lane') = 'official'
+          )
+        ORDER BY c.id
+        LIMIT ?`)
+        .all(workspaceId, String(afterId || ''), cap)
+        .map((row) => ({
+          captureId: row.captureId,
+          externalId: row.externalId,
+          status: row.status,
+          sourceAccountId: row.sourceAccountId,
+          sourceUrl: row.sourceUrl || '',
+          title: row.title || '',
+          contentHash: row.contentHash,
+          rawArtifactPath: row.rawArtifactPath,
+          publishedAt: row.publishedAt,
+          capturedAt: row.capturedAt,
+          body: row.body || '',
+          metadata: parseJson(row.metadataJson),
+        }));
+    },
+
     listContentItemStatesByExternalIds(workspaceId, provider, externalIds) {
       const ids = [...new Set(externalIds)].slice(0, 10_000);
       if (!ids.length) return [];
@@ -1505,6 +1547,24 @@ export function createFeedRepository(database, emitEvent) {
         sourceExternalId: row.source_external_id || '',
         captureMetadata: parseJson(row.capture_metadata),
       }));
+    },
+
+    countContentItemsInWindow(workspaceId, { startAt, endAt, sourceId = null, qualityRule = '', excludedItemIds = [], timeBasis = 'published' } = {}) {
+      const timeSql = timeBasis === 'ingested' ? 'ci.created_at' : 'COALESCE(ci.published_at, ci.created_at)';
+      return database.prepare(`SELECT COUNT(*) AS count
+        FROM content_items ci
+        LEFT JOIN captures c ON c.id = ci.capture_id
+        LEFT JOIN source_accounts sa ON sa.id=c.source_account_id
+        WHERE ci.workspace_id = ?
+          AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
+          AND ${EXCLUDE_YOUTUBE_SQL}
+          AND ${EXCLUDE_OFFICIAL_MIRROR_SQL}
+          AND ${timeSql} >= ?
+          AND ${timeSql} < ?
+          AND (? IS NULL OR COALESCE(c.source_account_id,'local')=?)
+          AND ci.id NOT IN (SELECT value FROM json_each(?))`).get(
+        workspaceId, Number(startAt), Number(endAt), sourceId, sourceId, JSON.stringify(excludedItemIds),
+      ).count;
     },
 
     listLegacyProviderItems(workspaceId,provider) {

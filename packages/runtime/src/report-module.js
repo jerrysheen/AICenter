@@ -126,6 +126,20 @@ export function hourlySweepLimit(env = process.env) {
   return boundedHourlyInt(env?.AI_CENTER_HOURLY_SWEEP_LIMIT, 2, 0, 6);
 }
 
+export function hourlyRunningSameVersion(jobs, current = {}) {
+  const hour = current.hourStart;
+  const workspace = current.workspaceId || 'local';
+  return (jobs || []).some((job) => {
+    if (job?.type && job.type !== REPORT_HOURLY_JOB_TYPE) return false;
+    if (job?.status && job.status !== 'running') return false;
+    if (current.id && job?.id === current.id) return false;
+    if ((job?.workspaceId || 'local') !== workspace) return false;
+    const other = job?.input?.hourStart;
+    if (!Number.isFinite(Number(hour)) || !Number.isFinite(Number(other))) return true;
+    return Number(other) === Number(hour);
+  });
+}
+
 export function hourlyOpenHourStarts(store, workspaceId = 'local') {
   const open = store?.listOpenJobs?.(REPORT_HOURLY_JOB_TYPE) || [];
   const hours = new Set();
@@ -340,6 +354,11 @@ export function createReportJobHandlers({ reportService, briefService = null, in
       if (hourlyReportDisabled(env)) return {status:'skipped', reason:'hourly-disabled'};
       if(!informationService) throw new Error('小时摘选服务未配置');
       const input=parseContract(GenerateHourlyDigestInputSchema,rawInput || {});
+      const workspaceIdEarly = input.workspaceId || 'local';
+      const openHourly = context?.store?.listOpenJobs?.(REPORT_HOURLY_JOB_TYPE) || [];
+      if (hourlyRunningSameVersion(openHourly, { id: context?.job?.id, workspaceId: workspaceIdEarly, hourStart: input.hourStart })) {
+        return { status: 'skipped', reason: 'already-running' };
+      }
       await beforeHourly?.(input,context);
       const digests=await informationService.generateHourlyDigests(input);
       const hourMs=3600000;

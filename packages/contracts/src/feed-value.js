@@ -52,4 +52,6 @@ export const FeedValueDecisionSchema = z.object({
     'context-unconfirmed','invalid-input','invalid-capture','invalid-scores','input-too-large',
     'jev-failed','jev-unavailable','jev-rejected','uncalibrated','calibration-mismatch','borderline','two-of-three','below-two-of-three','all-three','below-all-three']),
   reviewKind: z.enum(['none','technical','missing-content','semantic']),
+  // KEEP on a truncated preview stays visible and can be fetched again once the full body arrives.
+  bodyPending: z.boolean().default(false),
 }).strict();

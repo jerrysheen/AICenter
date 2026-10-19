@@ -137,6 +137,10 @@ export function createInformationTreeRepository(db,emit) {
       if(!result.changes) throw new Error('浓缩树租约已失效');
     },
     release(workspace,key,owner) {db.prepare('DELETE FROM information_tree_leases WHERE workspace_id=? AND cache_key=? AND owner=?').run(workspace,key,owner);},
+    releaseAll() {
+      const result = db.prepare('DELETE FROM information_tree_leases').run();
+      return result.changes;
+    },
     publish(workspace,value,{expectedHead}={}) {
       const edition=TreeEditionSchema.parse(value);
       if(edition.status!=='failed') {
@@ -210,6 +214,10 @@ export function createInformationTreeRepository(db,emit) {
           AND (? IS NULL OR (h.event_at, h.source_id) > (?, ?))
         ORDER BY h.event_at, h.source_id LIMIT ?`).all(workspace, window.startAt, window.endAt, cursor?.eventAt ?? null, cursor?.eventAt ?? 0, cursor?.sourceId ?? '', safe)
         .map(row=>{const node=JSON.parse(row.value_json);return {...node,eventAt:row.event_at,sourceId:node.sourceId || row.source_id,headSourceVersion:row.source_version};});
+    },
+    countInformationInWindow(workspace, window) {
+      return db.prepare(`SELECT COUNT(*) AS count FROM information_tree_information_heads
+        WHERE workspace_id=? AND event_at>=? AND event_at<?`).get(workspace, window.startAt, window.endAt).count;
     },
     saveEditorial(workspace,value) {
       const editorial=DailyEditorialSchema.parse(value);

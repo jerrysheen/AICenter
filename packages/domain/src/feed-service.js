@@ -813,12 +813,15 @@ function searchStoredItems(feedRepository, workspaceId, query, limit, qualityRul
 }
 
 function knownExternalIds(feedRepository, workspaceId, providerId) {
+  const pending = new Set((feedRepository.listPendingBodyExternalIds?.(workspaceId, providerId) || [])
+    .map((id) => String(id || ''))
+    .filter(Boolean));
   const ids = [
     ...(feedRepository.listCaptureExternalIds?.(workspaceId, providerId) || []),
     ...(feedRepository.listHiddenExternalIds?.(workspaceId, providerId) || []),
     ...(feedRepository.listIdentityExternalIds?.(workspaceId, providerId) || []),
   ];
-  return [...new Set(ids.map((id) => String(id || '')).filter(Boolean))];
+  return [...new Set(ids.map((id) => String(id || '')).filter((id) => id && !pending.has(id)))];
 }
 
 function wrapFeedProviders(feedProviders) {
