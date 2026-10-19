@@ -21,8 +21,9 @@ function priorSince(metadata, wasPending, now) {
   return now;
 }
 
-// A truncated KEEP stays pending so the next sync can fetch the rest of the body.
-// The third observation, or 24 hours from the first, drops the marker and leaves the decision alone.
+// A truncated KEEP stays pending so a later sync can fetch the rest of the body.
+// The third time this row is counted, or 24 hours from the first, drops the marker and leaves the decision alone.
+// A home sync that no longer returns the tweet still counts: the timeline window is only the newest posts.
 export function resolveBodyCompletion(previous, { truncated = false, now = Date.now() } = {}) {
   const metadata = metadataOf(previous);
   if (!truncated) {

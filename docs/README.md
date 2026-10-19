@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-19-body-completion-unseen.md`：滑出首页 50 条的 X 正文待补全，以前次数和 24 小时都不会动。这一路成功抓到时间线、但这条不在结果里，也算一次，满 3 次或 24 小时就清掉 pending，判定不动。失败或空抓取不计。不新增 migration。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-19-official-release-list.md`：官方发布列表在手动重定向后连续为 0。status 0 的不透明重定向不再当成空正文；列表页改跟随重定向并核对最终官网地址，失败打出错误类别。不可用快照不再缓存。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-19-body-completion-cap.md`：X 正文待补全最多 3 次或 24 小时，到了清掉 pending 并保留原来的判定。展开会点「显示更多」，状态页不再因为文本框溢出把全文继续标成截断。不新增 migration。需要同时重启 Web 和 Worker。
