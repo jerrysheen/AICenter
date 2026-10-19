@@ -55,8 +55,13 @@ export function createMarketSourceDefinitions(marketService) {
     },
     inputSchema: BoardInputSchema,
     outputSchema: MarketBoardViewSchema,
-    read(input, context) {
-      return marketService.getBoard({ board, ...input, refresh: Boolean(context.refresh) });
+    read(input, context = {}) {
+      return marketService.getBoard({
+        board,
+        ...input,
+        refresh: Boolean(context.refresh),
+        signal: context.signal,
+      });
     },
     observedAt: (data) => data.fetchedAt,
     status: (data) => data.mode === 'live' ? 'ready' : 'partial',
