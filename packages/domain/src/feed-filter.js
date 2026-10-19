@@ -1,7 +1,7 @@
 import { createFeedValueEvaluator, normalizeFeedValueText, FEED_VALUE_VERSION, FEED_VALUE_RULE, feedValueRuleHash } from './feed-value.js';
 import { FeedValueRuleSchema } from '../../contracts/src/feed-value.js';
-import { resolveJevEnabled } from './jev-enabled.js';
-import { keywordFocus } from './x-focus.js';
+import { isJevOutage, resolveJevEnabled } from './jev-enabled.js';
+import { focusFeedFromSource, keywordFocus } from './x-focus.js';
 export const FEED_FILTER_VERSION = FEED_VALUE_VERSION;
 
 // V1 remains explicitly selectable; V2 is a frozen offline comparison.
@@ -51,10 +51,12 @@ function combinedText(fields) {
 }
 
 const AD_TERMS = Object.freeze([
-  '广告', '返佣', '拉群', '加群', '收费群', '课程招揽', '联盟返佣', '联盟营销',
+  '返佣', '拉群', '加群', '收费群', '课程招揽', '联盟返佣', '联盟营销',
   '优惠券', '立即购买', '点击购买', '加微信', '私信领取', '推广链接',
   'sponsored', 'affiliate', 'advertisement', 'promo code',
 ]);
+// 经营事实里的「广告收入 / 广告费 / 广告业务」不是推销。其余「广告」仍算。
+const AD_MARK = /广告(?!收入|费|费用|业务|主|商|市场)/u;
 
 function flagOff(value) {
   const raw = envFlag(value);
@@ -80,8 +82,10 @@ export function resolveFeedFilterConfig(env = process.env) {
 }
 
 export function looksLikeFeedAd(value) {
-  const hay = String(value || '').toLowerCase();
-  return AD_TERMS.some((term) => hay.includes(term.toLowerCase()));
+  const hay = String(value || '');
+  if (AD_MARK.test(hay)) return true;
+  const lower = hay.toLowerCase();
+  return AD_TERMS.some((term) => lower.includes(term.toLowerCase()));
 }
 
 function admissionText(input = {}) {
@@ -91,13 +95,7 @@ function admissionText(input = {}) {
     .join('\n');
 }
 
-function xFeedKind(sourceExternalId) {
-  const id = String(sourceExternalId || '');
-  if (id === 'x:home:following' || id.endsWith(':following')) return 'following';
-  return 'for-you';
-}
-
-// Technical jev failure only. Following is kept. For-you needs a focus score or a
+// Technical jev outage only. Following is kept. For-you needs a focus score or a
 // keyword hit, and both of those paths drop ads. Every other provider is kept.
 export function decideFeedAdmissionFallback(input = {}, {
   xFocusConfig = null,
@@ -109,7 +107,7 @@ export function decideFeedAdmissionFallback(input = {}, {
   const sourceExternalId = String(input.sourceExternalId || item.sourceExternalId || '');
   const minScore = finiteUnit(xFocusMin, 0.7);
   if (provider === 'x') {
-    if (xFeedKind(sourceExternalId) === 'following') {
+    if (focusFeedFromSource(sourceExternalId) === 'following') {
       return { admit: true, reason: `${prefix}-following` };
     }
     const body = admissionText(input);
@@ -376,20 +374,20 @@ function createFeedValueFilter({ client, config, lookup, calibration, xFocusConf
     const normalized=normalizeFeedValueText(fields.originalText || fields.body || fields.summary,
       { title:fields.title, authorName:fields.authorName, capture });
     const result=await evaluator.evaluate(normalized,{signal:input.signal});
-    const technicalJev = result.errorReason === 'jev-failed' || result.errorReason === 'jev-unavailable';
-    if (jevEnabled && technicalJev) {
+    const outage = isJevOutage(result);
+    if (jevEnabled && outage) {
       streak += 1;
       const at = now();
       if (streak >= warnStreak && at - lastWarnAt >= warnGapMs) {
         lastWarnAt = at;
         try { log(`[worker] jev 连续技术失败 ${streak} 次，信息流准入已进入兜底`); } catch { /* logging must not change admission */ }
       }
-    } else {
+    } else if (jevEnabled && !result.errorReason) {
       streak = 0;
     }
     let decision = result.decision;
     let admittedByFallback = false;
-    if (technicalJev && fallbackOn && rule === FEED_VALUE_RULE) {
+    if (outage && fallbackOn && rule === FEED_VALUE_RULE) {
       const prefix = jevEnabled ? 'fallback' : 'jev-disabled';
       const admission = decideFeedAdmissionFallback(input, {
         xFocusConfig,

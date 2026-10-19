@@ -5,7 +5,7 @@ import {buildFocusQuestions, parseFocusAnswer} from './us-equity-focus.js';
 import {FOCUS_GROUP_NAMES, FOCUS_GROUP_ORDER, FOCUS_QUESTIONS, READING_CLASS_VERSION, READING_DIRECTIONS, READING_ROUTE_VERSION, normalizeReadingSemantics, readingPlacement, routeReadingFocus} from './reading-focus-route.js';
 import {isFlashSource} from './flash-sources.js';
 import {isAwesomeListUpdateNoise} from './awesome-list-noise.js';
-import { resolveJevEnabled } from './jev-enabled.js';
+import { isJevOutage, resolveJevEnabled } from './jev-enabled.js';
 
 const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const READING_TIMELINESS_MS = 24 * 60 * 60 * 1000;
@@ -664,12 +664,13 @@ export function createReadingHourService({repository, reportRepository = null, a
           } catch (error) {
             reviewed = true;
             readingErrors.push({sourceId: node.sourceId || node.id, reason: String(error?.message || error).slice(0, 180)});
-            if (classifiedGroups && classificationHit) applyClassificationHits();
-            else for (const id of route.groupIds) scores[id] = {status: 'failed', score: null, reason: 'jev-failed'};
+            if (isJevOutage(error) && classifiedGroups && classificationHit) applyClassificationHits();
+            else for (const id of route.groupIds) scores[id] = {status: 'failed', score: null, reason: isJevOutage(error) ? 'jev-failed' : 'jev-rejected'};
           }
         } else if (route.groupIds.length) {
+          const unavailable = { code: 'TYPESAFE_UNAVAILABLE', errorReason: 'jev-unavailable' };
           readingErrors.push({sourceId: node.sourceId || node.id, reason: 'jev-unavailable'});
-          if (classifiedGroups && classificationHit) applyClassificationHits();
+          if (isJevOutage(unavailable) && classifiedGroups && classificationHit) applyClassificationHits();
           else for (const id of route.groupIds) scores[id] = {status: 'failed', score: null, reason: 'jev-unavailable'};
         }
         const facts = sourceFactsFor?.(workspace, node.sourceRefs || []) || {};

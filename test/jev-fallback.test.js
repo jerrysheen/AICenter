@@ -8,8 +8,11 @@ import { createXHomeBrowserClient, formatXExpandLog } from '../packages/connecto
 import { createStore } from '../packages/database/src/index.js';
 import { latestSchemaVersion, unusedSchemaVersions } from '../packages/database/src/migrations.js';
 import { createFeedFilter, decideFeedAdmissionFallback, resolveFeedFilterConfig } from '../packages/domain/src/feed-filter.js';
-import { openJevClient, resolveJevEnabled } from '../packages/domain/src/jev-enabled.js';
-import { admitHeldCapture, reevaluateHeldCaptures } from '../packages/domain/src/jev-replay.js';
+import { isJevOutage, openJevClient, resolveJevEnabled } from '../packages/domain/src/jev-enabled.js';
+import { admitHeldCapture, createReplayEvaluator, reevaluateHeldCaptures } from '../packages/domain/src/jev-replay.js';
+import { runJevCaptureReplay } from '../scripts/reevaluate-jev-captures.mjs';
+import { feedValueRuleHash } from '../packages/domain/src/feed-value.js';
+import { articleIdentity, createPublisherIndex } from '../packages/domain/src/article-dedup.js';
 import { createFeedValueRefreshService } from '../packages/domain/src/feed-value-refresh-service.js';
 import { createReadingHourService } from '../packages/domain/src/reading-hour-service.js';
 import { isMain } from '../packages/runtime/src/is-main.js';
@@ -363,7 +366,10 @@ test('reading hour uses classification hits when jev fails or is disabled', asyn
     available: () => true,
     async evaluate() {
       jevCalls.push('evaluate');
-      throw new Error('402');
+      const error = new Error('402');
+      error.code = 'TYPESAFE_HTTP_ERROR';
+      error.status = 402;
+      throw error;
     },
   });
   const hit = await failed.reading.scoreWindow({ window: { startAt: 10, endAt: 20 } });
@@ -464,6 +470,7 @@ test('replay keeps original time, skips a client when jev is disabled, and links
       onKeep: (capture, reason) => admitHeldCapture({ feedRepository: feed, capture, reason }),
     });
     assert.equal(feed.getCapture('local', 'x', 'a-early').capturedAt, 300);
+    assert.equal(feed.getContentItemByCapture('local', feed.getCapture('local', 'x', 'a-early').id).createdAt, 100);
     assert.equal(feed.getCapture('local', 'x', 'a-early').status, 'ready');
     assert.equal(feed.getCapture('local', 'x', 'a-early').metadata.filterReason, 'jev-disabled-following');
     const item = feed.listContentItemsByProvider('local', 'x', { qualityRule: 'all-three-0.60' })
@@ -507,4 +514,271 @@ test('object error details are stringified and Windows script paths compare', as
   const quality = worker.slice(worker.indexOf('export function createOptionalAgentQuality'), worker.indexOf('export function createOptionalAuxiliarySearch'));
   assert.ok(quality.indexOf('resolveJevEnabled') < quality.indexOf('createTypeSafeSystemOneClient'));
   assert.match(worker, /log: focusLog/);
+});
+
+function httpError(status, code = 'TYPESAFE_HTTP_ERROR') {
+  return {
+    available: () => true,
+    async evaluate() {
+      const error = new Error(`status ${status || code}`);
+      if (code) error.code = code;
+      if (Number.isInteger(status)) error.status = status;
+      throw error;
+    },
+  };
+}
+
+test('only the jev outage whitelist admits, and ad revenue is not an ad', async () => {
+  const following = { sourceExternalId: 'x:home:following' };
+  for (const status of [400, 404, 422]) {
+    const held = await filterFor(httpError(status)).evaluate(bodyInput('关注流长文', following));
+    assert.equal(held.metadata.filterDecision, 'REVIEW', String(status));
+    assert.equal(held.metadata.filterReason, 'jev-rejected');
+    assert.equal(held.metadata.fallbackAt, undefined);
+  }
+  const bad = await filterFor(httpError(200, 'TYPESAFE_BAD_RESPONSE')).evaluate(bodyInput('关注流长文', following));
+  assert.equal(bad.metadata.filterReason, 'jev-rejected');
+  const aborted = await filterFor({
+    available: () => true,
+    async evaluate() {
+      const error = new Error('The operation was aborted');
+      error.name = 'AbortError';
+      error.code = 'ABORT_ERR';
+      throw error;
+    },
+  }).evaluate(bodyInput('关注流长文', following));
+  assert.equal(aborted.metadata.filterDecision, 'REVIEW');
+  assert.equal(isJevOutage({ name: 'AbortError', code: 'ABORT_ERR' }), false);
+  const paid = await filterFor(httpError(402)).evaluate(bodyInput('关注流长文', following));
+  assert.equal(paid.metadata.filterReason, 'fallback-following');
+  const timeout = await filterFor(httpError(null, 'TYPESAFE_TIMEOUT')).evaluate(bodyInput('关注流长文', following));
+  assert.equal(timeout.metadata.filterReason, 'fallback-following');
+  const income = await filterFor(httpError(402)).evaluate(bodyInput('公司广告收入同比增长', {
+    xFocus: { focusScore: 0.91, method: 'model' },
+  }));
+  assert.equal(income.metadata.filterReason, 'fallback-xfocus');
+  const marked = await filterFor(httpError(402)).evaluate(bodyInput('本条是广告', {
+    xFocus: { focusScore: 0.91, method: 'model' },
+  }));
+  assert.equal(marked.metadata.filterDecision, 'REVIEW');
+  const bare = createTypeSafeSystemOneClient({
+    apiKey: 'test-key',
+    fetch: async () => ({ ok: true, status: 200, async text() { return JSON.stringify({ model: 'x' }); } }),
+  });
+  await assert.rejects(
+    () => bare.evaluate({ state: { title: 'a' }, questions: { reading_value: { type: 'noul' } } }),
+    (error) => error.code === 'TYPESAFE_BAD_RESPONSE' && error.code !== 'TYPESAFE_NETWORK_ERROR',
+  );
+  const controller = new AbortController();
+  controller.abort();
+  const aborting = createTypeSafeSystemOneClient({
+    apiKey: 'test-key',
+    fetch: async () => { throw Object.assign(new Error('aborted'), { name: 'AbortError', code: 'ABORT_ERR' }); },
+  });
+  await assert.rejects(
+    () => aborting.evaluate({ state: { title: 'a' }, questions: { reading_value: { type: 'noul' } }, signal: controller.signal }),
+    (error) => error.name === 'AbortError' && error.code !== 'TYPESAFE_NETWORK_ERROR',
+  );
+});
+
+test('failure streak resets only after a successful jev response', async () => {
+  const logs = [];
+  let mode = 'fail';
+  const filter = createFeedFilter({
+    client: {
+      available: () => true,
+      async evaluate() {
+        if (mode === 'ok') return { model: 'fixed', answers: answers(good) };
+        const error = new Error('down');
+        error.code = 'TYPESAFE_HTTP_ERROR';
+        error.status = 402;
+        throw error;
+      },
+    },
+    log: (message) => logs.push(message),
+    config: {
+      mode: 'enforce', version: 'feed-value-v3.0', rule: 'all-three-0.60',
+      fallback: true, jevEnabled: true, warnStreak: 2, warnGapMs: 0, now: () => 9_000,
+    },
+  });
+  await filter.evaluate(bodyInput('a', { sourceExternalId: 'x:home:following' }));
+  await filter.evaluate(bodyInput('截断', {
+    sourceExternalId: 'x:home:following',
+    captureContext: { truncated: true },
+  }));
+  await filter.evaluate(bodyInput('b', { sourceExternalId: 'x:home:following' }));
+  assert.equal(logs.length, 1);
+  mode = 'ok';
+  await filter.evaluate(bodyInput('完整的产品更新说明，包含具体数据和步骤。'));
+  mode = 'fail';
+  logs.length = 0;
+  await filter.evaluate(bodyInput('c', { sourceExternalId: 'x:home:following' }));
+  assert.equal(logs.length, 0);
+});
+
+test('disabled quality refresh leaves existing KEEP and DROP rows unchanged', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-refresh-frozen-'));
+  const store = createStore(path.join(directory, 'test.db'));
+  try {
+    const feed = store.repositories.feed;
+    const source = feed.upsertSourceAccount({
+      workspaceId: 'local', provider: 'x', externalId: 'x:home:for-you', displayName: '推荐',
+    });
+    const following = feed.upsertSourceAccount({
+      workspaceId: 'local', provider: 'x', externalId: 'x:home:following', displayName: '关注',
+    });
+    const keptScores = { ...good };
+    const droppedScores = { ...good, reading_value: 0.1, specific_content: 0.1, sufficient_information: 0.1 };
+    const kept = feed.saveCapture({
+      workspaceId: 'local', provider: 'x', externalId: 'kept', sourceAccountId: source.id,
+      contentHash: 'kept', status: 'ready',
+      metadata: {
+        originalText: '今天天气不错', filterDecision: 'KEEP', filterReason: 'all-three',
+        filterScores: keptScores, filterApplied: false, filterMode: 'enforce', filterRule: 'all-three-0.60',
+      },
+    });
+    feed.saveContentItem({
+      workspaceId: 'local', captureId: kept.id, originType: 'subscription', contentType: 'post',
+      title: 'kept', body: '今天天气不错',
+    });
+    const dropped = feed.saveCapture({
+      workspaceId: 'local', provider: 'x', externalId: 'dropped', sourceAccountId: following.id,
+      contentHash: 'dropped', status: 'ignored',
+      metadata: {
+        originalText: '关注流里本来会被兜底放行的帖子', filterDecision: 'DROP', filterReason: 'below-all-three',
+        filterScores: droppedScores, filterApplied: true, filterMode: 'enforce', filterRule: 'all-three-0.60',
+      },
+    });
+    feed.saveContentItem({
+      workspaceId: 'local', captureId: dropped.id, originType: 'subscription', contentType: 'post',
+      title: 'dropped', body: '关注流里本来会被兜底放行的帖子',
+    });
+    let calls = 0;
+    const service = createFeedValueRefreshService({
+      feedRepository: feed, model: 'fixed', jevEnabled: false, xFocusConfig: focusConfig,
+      client: { async evaluate() { calls += 1; throw new Error('should not run'); } },
+    });
+    await service.refresh({ concurrency: 1 }, { runId: 'frozen' });
+    assert.equal(calls, 0);
+    const keptMeta = feed.getCapture('local', 'x', 'kept').metadata;
+    const droppedMeta = feed.getCapture('local', 'x', 'dropped').metadata;
+    assert.equal(keptMeta.filterDecision, 'KEEP');
+    assert.equal(keptMeta.filterReason, 'all-three');
+    assert.deepEqual(keptMeta.filterScores, keptScores);
+    assert.equal(feed.getCapture('local', 'x', 'kept').status, 'ready');
+    assert.equal(droppedMeta.filterDecision, 'DROP');
+    assert.equal(droppedMeta.filterReason, 'below-all-three');
+    assert.deepEqual(droppedMeta.filterScores, droppedScores);
+    assert.equal(feed.getCapture('local', 'x', 'dropped').status, 'ignored');
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('jev replay writes scores the list can see, media fields, enqueue, and rolls back together', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-replay-admit-'));
+  const store = createStore(path.join(directory, 'test.db'));
+  try {
+    const feed = store.repositories.feed;
+    const source = feed.upsertSourceAccount({
+      workspaceId: 'local', provider: 'x', externalId: 'x:home:for-you', displayName: '推荐',
+    });
+    const mediaSource = feed.upsertSourceAccount({
+      workspaceId: 'local', provider: 'media', externalId: 'media:reuters', displayName: 'Reuters',
+    });
+    feed.saveCapture({
+      workspaceId: 'local', provider: 'x', externalId: 'scored', sourceAccountId: source.id,
+      contentHash: 'scored', title: 'scored', status: 'captured', publishedAt: 1_700, capturedAt: 1_800,
+      sourceUrl: 'https://x.com/a/status/scored',
+      metadata: { filterReason: 'jev-failed', filterDecision: 'REVIEW', filterApplied: true, originalText: '一条足够完整的产品说明，包含具体数据。' },
+    });
+    feed.saveCapture({
+      workspaceId: 'local', provider: 'media', externalId: 'story', sourceAccountId: mediaSource.id,
+      contentHash: 'story', title: '路透长标题足够做去重', status: 'captured', publishedAt: 1_600, capturedAt: 1_900,
+      sourceUrl: 'https://www.reuters.com/world/asia/long-story-title',
+      metadata: {
+        filterReason: 'jev-failed', filterDecision: 'REVIEW', filterApplied: true,
+        originalText: '路透正文足够完整，用来补评成文章。',
+        summary: '路透摘要',
+        publisherKey: 'reuters',
+        sourceKey: 'reuters',
+        article: { author: 'Ann Editor', summary: '文章摘要' },
+      },
+    });
+    feed.saveCapture({
+      workspaceId: 'local', provider: 'x', externalId: 'held-off', sourceAccountId: source.id,
+      contentHash: 'held-off', status: 'captured', capturedAt: 1_500,
+      metadata: { filterReason: 'jev-disabled', filterDecision: 'REVIEW', originalText: '关闭后没放行' },
+    });
+    assert.deepEqual(feed.listJevFailedCaptures('local', { from: 0, to: 10_000 }).map((row) => row.externalId).sort(), ['scored', 'story']);
+    assert.deepEqual(
+      feed.listJevFailedCaptures('local', { from: 0, to: 10_000, reasons: ['jev-failed', 'jev-unavailable', 'jev-disabled'] }).map((row) => row.externalId).sort(),
+      ['held-off', 'scored', 'story'],
+    );
+    const evaluator = createReplayEvaluator({
+      modelId: 'fixed',
+      available: () => true,
+      async evaluate() { return { model: 'fixed', answers: answers(good) }; },
+    }, 'fixed');
+    const scored = feed.listJevFailedCaptures('local', { from: 0, to: 10_000 }).find((row) => row.externalId === 'scored');
+    await reevaluateHeldCaptures({
+      captures: [scored], mode: 'jev', jevEnabled: true, evaluator,
+      onKeep: (capture, reason, result) => admitHeldCapture({
+        feedRepository: feed, capture, reason, evaluation: result,
+        transaction: (work) => store.transaction(work),
+      }),
+    });
+    const scoredCapture = feed.getCapture('local', 'x', 'scored');
+    assert.equal(scoredCapture.metadata.filterScores.reading_value, 0.8);
+    assert.ok(scoredCapture.metadata.filterPolicyHash);
+    assert.ok(scoredCapture.metadata.filterCacheKey);
+    assert.equal(scoredCapture.metadata.evaluatorModel, 'fixed');
+    assert.equal(scoredCapture.metadata.filterRuleHash, feedValueRuleHash('all-three-0.60'));
+    assert.ok(feed.listContentItemsByProvider('local', 'x', { qualityRule: 'all-three-0.60' }).some((row) => row.externalId === 'scored'));
+    assert.equal(feed.getContentItemByCapture('local', scoredCapture.id).createdAt, 1_700);
+    const report = await runJevCaptureReplay({
+      store, workspaceId: 'local', from: 0, to: 10_000, env: { AI_CENTER_JEV_ENABLED: 'false' }, xFocusConfig: focusConfig,
+    });
+    assert.equal(report.admitted, 1);
+    const media = feed.getCapture('local', 'media', 'story');
+    const article = feed.getContentItemByCapture('local', media.id);
+    assert.equal(article.contentType, 'article');
+    assert.equal(article.summary, '路透摘要');
+    assert.equal(article.authorName, 'Ann Editor');
+    assert.equal(article.createdAt, 1_600);
+    const dedupKey = articleIdentity({
+      url: 'https://www.reuters.com/world/asia/long-story-title',
+      title: '路透长标题足够做去重',
+      publisherKey: 'reuters',
+      sourceKey: 'reuters',
+      sourceExternalId: 'media:reuters',
+    }, createPublisherIndex([])).key;
+    assert.ok(dedupKey);
+    assert.equal(feed.listFeedByDedupKey('local', dedupKey).length, 1);
+    const jobs = store.listOpenJobs('feed.items.enrich');
+    assert.equal(jobs.length, 1);
+    assert.deepEqual(jobs[0].input.resourceIds, [article.id]);
+    const tree = store.listOpenJobs('report.information.prepare');
+    assert.ok(tree.some((job) => (job.input.sourceIds || []).includes(`feed:${article.id}`)));
+    const publisherFallback = feed.saveCapture({
+      workspaceId: 'local', provider: 'media', externalId: 'no-author', sourceAccountId: mediaSource.id,
+      contentHash: 'no-author', title: '没有作者', status: 'captured', capturedAt: 1_400,
+      sourceUrl: 'https://www.reuters.com/world/asia/no-author-story',
+      metadata: { filterReason: 'jev-failed', originalText: '正文', summary: '仅摘要', publisherKey: 'reuters' },
+    });
+    const fallbackItem = await admitHeldCapture({
+      feedRepository: feed,
+      capture: { ...feed.getCapture('local', 'media', 'no-author'), sourceExternalId: 'media:reuters' },
+      reason: 'fallback-source',
+      articleDedup: { rememberFeed() { throw new Error('dedup failed'); } },
+      transaction: (work) => store.transaction(work),
+    }).catch((error) => error);
+    assert.match(fallbackItem.message, /dedup failed/);
+    assert.equal(feed.getCapture('local', 'media', 'no-author').status, 'captured');
+    assert.equal(feed.getContentItemByCapture('local', publisherFallback.id), null);
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

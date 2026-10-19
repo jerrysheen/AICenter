@@ -600,6 +600,7 @@ export function createFeedRepository(database, emitEvent) {
     saveContentItem(value) {
       const input = parseContract(SaveContentItemInputSchema, value);
       const now = Date.now();
+      const createdAt = Number.isInteger(input.createdAt) ? input.createdAt : now;
       const id = input.id || randomUUID();
       database.transaction(() => {
         if (input.captureId) {
@@ -618,14 +619,14 @@ export function createFeedRepository(database, emitEvent) {
               published_at = excluded.published_at,
               updated_at = excluded.updated_at`)
             .run(id, input.workspaceId, input.captureId, input.originType, input.contentType, input.title,
-              input.body, input.summary, input.sourceUrl, input.authorName, input.publishedAt, now, now);
+              input.body, input.summary, input.sourceUrl, input.authorName, input.publishedAt, createdAt, now);
         } else {
           database.prepare(`INSERT INTO content_items
             (id, workspace_id, capture_id, origin_type, content_type, title, body, summary,
              source_url, author_name, published_at, created_at, updated_at)
             VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
             .run(id, input.workspaceId, input.originType, input.contentType, input.title, input.body,
-              input.summary, input.sourceUrl, input.authorName, input.publishedAt, now, now);
+              input.summary, input.sourceUrl, input.authorName, input.publishedAt, createdAt, now);
         }
         const item = input.captureId
           ? database.prepare('SELECT * FROM content_items WHERE capture_id = ?').get(input.captureId)
@@ -813,16 +814,20 @@ export function createFeedRepository(database, emitEvent) {
         .join('\n');
     },
 
-    listJevFailedCaptures(workspaceId, { from = 0, to = Number.MAX_SAFE_INTEGER, limit = 500 } = {}) {
+    listJevFailedCaptures(workspaceId, { from = 0, to = Number.MAX_SAFE_INTEGER, limit = 500, reasons = ['jev-failed'] } = {}) {
+      const allowed = ['jev-failed', 'jev-unavailable', 'jev-disabled'];
+      const selected = [...new Set((Array.isArray(reasons) ? reasons : [reasons]).map((reason) => String(reason || '').trim()))]
+        .filter((reason) => allowed.includes(reason));
+      const list = selected.length ? selected : ['jev-failed'];
       const size = Math.max(1, Math.min(Number(limit) || 500, 5000));
       return database.prepare(`SELECT c.*, sa.external_id AS source_external_id
         FROM captures c
         LEFT JOIN source_accounts sa ON sa.id = c.source_account_id
         WHERE c.workspace_id = ? AND c.status = 'captured'
-          AND json_extract(c.metadata_json,'$.filterReason') = 'jev-failed'
+          AND json_extract(c.metadata_json,'$.filterReason') IN (${list.map(() => '?').join(',')})
           AND c.captured_at >= ? AND c.captured_at < ?
         ORDER BY COALESCE(c.published_at, c.captured_at), c.captured_at, c.id
-        LIMIT ?`).all(workspaceId, Math.max(0, Number(from) || 0), Number(to) || 0, size)
+        LIMIT ?`).all(workspaceId, ...list, Math.max(0, Number(from) || 0), Number(to) || 0, size)
         .map((row) => ({ ...mapCapture(row), sourceExternalId: row.source_external_id || '' }));
     },
 

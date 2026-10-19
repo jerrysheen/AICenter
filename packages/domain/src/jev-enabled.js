@@ -16,3 +16,23 @@ export function openJevClient(env, explicit, create) {
   if (typeof create !== 'function') return null;
   return create({ env });
 }
+
+function integerStatus(error) {
+  if (Number.isInteger(error?.status)) return error.status;
+  if (Number.isInteger(error?.errorStatus)) return error.errorStatus;
+  return null;
+}
+
+// Outage whitelist. A 200 body without answers, a 4xx other than the listed
+// statuses, and a caller abort stay REVIEW. Missing client is jev-unavailable.
+export function isJevOutage(error) {
+  if (error == null) return false;
+  if (typeof error === 'string') return error === 'jev-unavailable';
+  if (typeof error !== 'object') return false;
+  if (error.name === 'AbortError' || error.code === 'ABORT_ERR' || error.errorCode === 'ABORT_ERR') return false;
+  const code = String(error.code || error.errorCode || '');
+  if (code === 'TYPESAFE_TIMEOUT' || code === 'TYPESAFE_NETWORK_ERROR' || code === 'TYPESAFE_UNAVAILABLE') return true;
+  if (error.errorReason === 'jev-unavailable') return true;
+  const status = integerStatus(error);
+  return status === 401 || status === 402 || status === 403 || status === 429 || (status != null && status >= 500);
+}

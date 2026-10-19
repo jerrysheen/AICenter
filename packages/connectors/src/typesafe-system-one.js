@@ -128,7 +128,10 @@ export function createTypeSafeSystemOneClient(options = {}) {
           throw error;
         }
         if (!isRecord(payload?.answers)) {
-          throw new Error('TypeSafe 没有返回 answers');
+          const error = new Error('TypeSafe 没有返回 answers');
+          error.code = 'TYPESAFE_BAD_RESPONSE';
+          error.status = response.status;
+          throw error;
         }
         return {
           model: text(payload.model, model),
@@ -136,6 +139,7 @@ export function createTypeSafeSystemOneClient(options = {}) {
           usage: isRecord(payload.usage) ? payload.usage : {},
         };
       } catch (error) {
+        if (signal?.aborted) throw error;
         if (error?.name === 'AbortError' || error?.name === 'TimeoutError' || error?.code === 'TYPESAFE_TIMEOUT') {
           if (signal?.aborted) throw error;
           const timeoutError = new Error(`TypeSafe 请求超时（${timeoutMs}ms）`);

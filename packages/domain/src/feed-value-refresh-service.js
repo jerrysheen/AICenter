@@ -3,6 +3,7 @@ import {createFeedValueEvaluator,normalizeFeedValueText,feedValuePolicyHash,FEED
 import {createFeedValueReviewService} from './feed-value-review-service.js';
 import {isFlashSource} from './flash-sources.js';
 import {decideFeedAdmissionFallback} from './feed-filter.js';
+import {isJevOutage} from './jev-enabled.js';
 
 function saveFallbackCapture(feedRepository, workspaceId, row, decision, reason, result, runId) {
   let capture = null;
@@ -62,15 +63,23 @@ export function createFeedValueRefreshService({feedRepository,mediaRepository,cl
     await Promise.all(Array.from({length:input.concurrency},async()=>{
       while(cursor<rows.length) {
         if(signal?.aborted) throw new Error('Quality refresh interrupted');
-        const row=rows[cursor++],key=evaluator.cacheKey(row.input),m=row.metadata;
-        const stored=m.filterPolicyHash===feedValuePolicyHash() && m.evaluatorModel===model && m.filterCacheKey===key && FeedValueScoresSchema.safeParse(m.filterScores).success ? m.filterScores : null;
+        const row=rows[cursor++],key=evaluator.cacheKey(row.input),m=row.metadata || {};
+        const parsedScores=FeedValueScoresSchema.safeParse(m.filterScores).success;
+        const decided=m.filterDecision==='KEEP' || m.filterDecision==='DROP';
+        if(!jevEnabled && (parsedScores || decided)) {
+          output.reused++;
+          output.done++;
+          if(output.done%50===0 || output.done===output.total)onProgress({...output});
+          continue;
+        }
+        const stored=m.filterPolicyHash===feedValuePolicyHash() && m.evaluatorModel===model && m.filterCacheKey===key && parsedScores ? m.filterScores : null;
         const scores=jevEnabled ? (stored || cache.get(key)) : null;
         let result;
         if(scores) {result={scores,model,errorReason:''};output.reused++;}
-        else if(!jevEnabled) {result={scores:null,model,errorReason:'jev-unavailable',errorCode:'',errorStatus:null};}
+        else if(!jevEnabled) {result={scores:null,model,errorReason:'jev-unavailable',errorCode:'TYPESAFE_UNAVAILABLE',errorStatus:null};}
         else {result=await evaluator.evaluate(row.input,{signal});if(!result.errorReason || result.errorReason==='jev-failed')output.requested++;else output.preflight++;}
-        const technical=result.errorReason==='jev-failed' || result.errorReason==='jev-unavailable';
-        const useFallback=technical && (fallback!==false || !jevEnabled) && !scores;
+        const outage=isJevOutage(result);
+        const useFallback=outage && (fallback!==false || !jevEnabled) && !scores;
         if(useFallback) {
           const prefix=jevEnabled?'fallback':'jev-disabled';
           const admission=decideFeedAdmissionFallback({provider:row.provider,sourceExternalId:row.sourceExternalId,originalText:row.metadata?.originalText || row.input?.body || '',item:{provider:row.provider,title:row.input?.title,body:row.input?.body,xFocus:row.metadata?.xFocus,sourceExternalId:row.sourceExternalId}},{xFocusConfig,xFocusMin,prefix});

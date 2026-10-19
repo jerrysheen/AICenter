@@ -143,6 +143,7 @@ export const SaveContentItemInputSchema = z.object({
   sourceUrl: HttpUrlSchema.default(''),
   authorName: z.string().max(512).default(''),
   publishedAt: NullableEpochMillisSchema.default(null),
+  createdAt: EpochMillisSchema.optional(),
 }).strict();
 
 export const FEED_TRANSLATION_TEXT_MAX = 200_000;
