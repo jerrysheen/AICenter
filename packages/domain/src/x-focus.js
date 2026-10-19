@@ -1,5 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { looksLikeFeedAd } from './feed-ad.js';
+import { resolveJevEnabled } from './jev-enabled.js';
 import { formatYmd, zonedLocalToUtc, zonedParts } from './zoned-time.js';
 
 export const X_FOCUS_TIME_ZONE = 'Asia/Shanghai';
@@ -28,10 +30,11 @@ export function xFocusInstruction(config) {
 每个方向给 0 到 1 的分数：1 表示这则内容主要就是在讲这个问题，0 表示无关。只是顺带提到名字，分数不超过 0.3。
 方向：
 ${lines}
-sensitive 为 true 的情况：选举或党派站队、战争伤亡、仇恨、成人内容、加密货币喊单、围绕争议人物的人身攻击或站队。其余为 false。
+sensitive 为 true 的情况：选举或党派站队、战争伤亡、仇恨、成人内容、加密货币喊单，以及加密货币争议人物（如孙宇晨）的采访、动态、站队或带货。围绕争议人物的人身攻击也是 true。其余为 false。
+promotional 为 true 的情况：广告、推销、折扣优惠、招募承接代投、带购买或返佣引导，以及品牌或公司官方账号的产品宣传。新闻转述财报、订单、收购、人事或监管是 false。
 officialSpeech 为 true 的情况：这是政要本人在发表自己的立场或政策。别人的转述、预测市场赔率或评论是 false。
 reason 用一句中文说明主要依据，不超过 80 字。
-仅返回 JSON：{"dirScores":{${empty}},"sensitive":false,"officialSpeech":false,"reason":""}`;
+仅返回 JSON：{"dirScores":{${empty}},"sensitive":false,"officialSpeech":false,"promotional":false,"reason":""}`;
 }
 
 export function xFocusBatchInstruction(config) {
@@ -126,6 +129,7 @@ export function keywordFocus(value, config) {
     ...composeFocus(dirScores, config),
     sensitive: false,
     officialSpeech: false,
+    promotional: false,
     reason: '模型超时，改用关键词预筛',
     method: 'keyword',
     version: config.version,
@@ -163,6 +167,7 @@ export function parseFocusObject(raw, config) {
   const provided = raw.dirScores;
   if (!provided || typeof provided !== 'object' || Array.isArray(provided)) return null;
   if (typeof raw.sensitive !== 'boolean' || typeof raw.officialSpeech !== 'boolean') return null;
+  if (raw.promotional !== undefined && typeof raw.promotional !== 'boolean') return null;
   const reason = text(raw.reason).slice(0, 80);
   if (!reason) return null;
   const dirScores = {};
@@ -174,6 +179,7 @@ export function parseFocusObject(raw, config) {
     ...composeFocus(dirScores, config),
     sensitive: raw.sensitive,
     officialSpeech: raw.officialSpeech,
+    promotional: raw.promotional === true,
     reason,
     method: 'model',
     version: config.version,
@@ -223,8 +229,9 @@ export function autoLikeEnvEnabled(env = process.env) {
 
 export function autoLikeLimits(config, env = process.env) {
   const base = config.autoLike;
+  const minScore = resolveJevEnabled(env) ? base.minScore : Math.max(base.minScore, 0.9);
   return {
-    minScore: base.minScore,
+    minScore,
     dailyLimit: limitNumber(env?.AI_CENTER_X_AUTO_LIKE_DAILY, base.dailyLimit, 0, 400),
     hourlyLimit: limitNumber(env?.AI_CENTER_X_AUTO_LIKE_HOURLY, base.hourlyLimit, 0, 50),
     minIntervalMs: limitNumber(env?.AI_CENTER_X_AUTO_LIKE_INTERVAL_MS, base.minIntervalMs, 0, 3_600_000),
@@ -239,37 +246,102 @@ export function normalizeAutoLikeSettings(payload) {
     notice: text(source.notice).slice(0, 180),
     consecutiveUnconfirmed: Math.max(0, Math.min(9, Number(source.consecutiveUnconfirmed) || 0)),
     consecutiveUnavailable: Math.max(0, Math.min(9, Number(source.consecutiveUnavailable) || 0)),
+    consecutiveTaskErrors: Math.max(0, Math.min(9, Number(source.consecutiveTaskErrors) || 0)),
+    failureWatchReady: source.failureWatchReady === true,
+    notedFailureIds: Array.isArray(source.notedFailureIds)
+      ? [...new Set(source.notedFailureIds.map((id) => text(id)).filter(Boolean))].slice(-1000)
+      : [],
   };
 }
 
-export function nextAutoLikeSettings(settings, status) {
+export function nextAutoLikeSettings(settings, status, reason = '') {
   const current = normalizeAutoLikeSettings(settings);
   if (status === 'login-required') {
-    return { pageEnabled: false, suspended: true, notice: '采集浏览器需要重新登录 X，已停止自动点赞', consecutiveUnconfirmed: 0, consecutiveUnavailable: 0 };
+    return { ...current, pageEnabled: false, suspended: true, notice: '采集浏览器需要重新登录 X，已停止自动点赞', consecutiveUnconfirmed: 0, consecutiveUnavailable: 0, consecutiveTaskErrors: 0 };
   }
   if (status === 'blocked') {
-    return { pageEnabled: false, suspended: true, notice: 'X 页面被拦截或出现验证，已停止自动点赞', consecutiveUnconfirmed: 0, consecutiveUnavailable: 0 };
+    return { ...current, pageEnabled: false, suspended: true, notice: 'X 页面被拦截或出现验证，已停止自动点赞', consecutiveUnconfirmed: 0, consecutiveUnavailable: 0, consecutiveTaskErrors: 0 };
   }
   if (status === 'unavailable') {
     const consecutiveUnavailable = current.consecutiveUnavailable + 1;
     if (consecutiveUnavailable >= 3) {
-      return { pageEnabled: false, suspended: true, notice: '连续三次无法操作点赞按钮，已停止自动点赞', consecutiveUnconfirmed: 0, consecutiveUnavailable };
+      return { ...current, pageEnabled: false, suspended: true, notice: '连续三次无法操作点赞按钮，已停止自动点赞', consecutiveUnconfirmed: 0, consecutiveUnavailable };
     }
     return { ...current, consecutiveUnavailable };
   }
   if (status === 'unconfirmed') {
     const consecutiveUnconfirmed = current.consecutiveUnconfirmed + 1;
     if (consecutiveUnconfirmed >= 2) {
-      return { pageEnabled: false, suspended: true, notice: '连续两次没有确认点赞结果，已停止自动点赞', consecutiveUnconfirmed, consecutiveUnavailable: current.consecutiveUnavailable };
+      return { ...current, pageEnabled: false, suspended: true, notice: '连续两次没有确认点赞结果，已停止自动点赞', consecutiveUnconfirmed, consecutiveUnavailable: current.consecutiveUnavailable };
     }
     return { ...current, consecutiveUnconfirmed };
   }
-  if (status === 'liked' || status === 'already-liked') return { ...current, consecutiveUnconfirmed: 0, consecutiveUnavailable: 0 };
+  if (status === 'failed') {
+    const consecutiveTaskErrors = current.consecutiveTaskErrors + 1;
+    const why = text(reason).slice(0, 80) || '任务出错';
+    if (consecutiveTaskErrors >= 2) {
+      return {
+        ...current,
+        pageEnabled: false,
+        suspended: true,
+        notice: `连续两次点赞任务出错（${why}），已停止自动点赞`.slice(0, 180),
+        consecutiveUnconfirmed: 0,
+        consecutiveUnavailable: 0,
+        consecutiveTaskErrors,
+      };
+    }
+    return { ...current, consecutiveTaskErrors };
+  }
+  if (status === 'liked' || status === 'already-liked') {
+    return { ...current, consecutiveUnconfirmed: 0, consecutiveUnavailable: 0, consecutiveTaskErrors: 0 };
+  }
   return current;
 }
 
 function jevKept(metadata) {
   return metadata?.filterDecision === 'KEEP';
+}
+
+export const AUTO_LIKE_MIN_TEXT = 40;
+const CORPORATE_LIKE_MIN = 0.9;
+const OFFICIAL_MARK = /(?:^|[^a-z0-9])(?:global|official)(?:[^a-z0-9]|$)|(?:global|official)$/i;
+const ORGANIZATION_VERIFIED = new Set(['organization', 'business', 'government', 'org']);
+
+export function substantialTextLength(value) {
+  const stripped = String(value || '').replace(/https?:\/\/\S+/gi, ' ');
+  const chars = stripped.match(/[\p{L}\p{N}]/gu);
+  return chars ? chars.length : 0;
+}
+
+function candidateText(row) {
+  return text(row?.text || row?.metadata?.originalText || row?.title);
+}
+
+function candidateAccount(row) {
+  const metadata = row?.metadata || {};
+  const profile = metadata.authorProfile && typeof metadata.authorProfile === 'object' ? metadata.authorProfile : {};
+  const handle = text(row?.authorHandle || metadata.authorHandle || profile.handle).replace(/^@/, '');
+  const name = text(row?.authorName || profile.name);
+  const fromUrl = text(row?.sourceUrl).match(/https?:\/\/(?:www\.)?(?:x|twitter)\.com\/([^/?#]+)\/status\//i);
+  const urlHandle = fromUrl && !['i', 'intent', 'share'].includes(fromUrl[1].toLowerCase()) ? fromUrl[1] : '';
+  const verified = text(row?.authorVerified || metadata.authorVerified || profile.verified || profile.verifiedType).toLowerCase();
+  return { handle: handle || urlHandle, name, verified };
+}
+
+export function looksLikeOfficialBrandAccount(account) {
+  const verified = String(account?.verified || '').toLowerCase();
+  if (ORGANIZATION_VERIFIED.has(verified)) return true;
+  const handle = String(account?.handle || '').replace(/^@/, '');
+  const name = String(account?.name || '');
+  if (OFFICIAL_MARK.test(handle) || OFFICIAL_MARK.test(name)) return true;
+  if (/官方/.test(name) || /官方/.test(handle)) return true;
+  return false;
+}
+
+function likeScoreFloor(focus, limits) {
+  const base = Number(limits.minScore) || 0;
+  if (focus?.primaryDir === 'corporate') return Math.max(base, CORPORATE_LIKE_MIN);
+  return base;
 }
 
 export function rankAutoLikeCandidates(candidates, jobs, config, now = Date.now()) {
@@ -300,8 +372,11 @@ export function rankAutoLikeCandidates(candidates, jobs, config, now = Date.now(
   for (const row of candidates || []) {
     const focus = row.focus;
     if (!focus || focus.method !== 'model' && focus.method !== 'cache') continue;
-    if (!(Number(focus.focusScore) >= limits.minScore)) continue;
-    if (focus.sensitive === true || focus.officialSpeech === true) continue;
+    if (!(Number(focus.focusScore) >= likeScoreFloor(focus, limits))) continue;
+    if (focus.sensitive === true || focus.officialSpeech === true || focus.promotional === true) continue;
+    const body = candidateText(row);
+    if (looksLikeFeedAd(body) || substantialTextLength(body) < AUTO_LIKE_MIN_TEXT) continue;
+    if (looksLikeOfficialBrandAccount(candidateAccount(row))) continue;
     if (!jevKept(row.metadata)) continue;
     if (!row.contentItemId || !row.tweetId) continue;
     if (likedItems.has(row.contentItemId) || likedTweets.has(String(row.tweetId))) continue;
@@ -502,6 +577,7 @@ export function storedFocus(metadata, config) {
     dirScores: raw.dirScores,
     sensitive: raw.sensitive === true,
     officialSpeech: raw.officialSpeech === true,
+    promotional: raw.promotional === true,
     reason: raw.reason || '已记录',
   }, config);
   if (!parsed) return null;

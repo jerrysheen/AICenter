@@ -567,6 +567,12 @@ test('only the jev outage whitelist admits, and ad revenue is not an ad', async 
     xFocus: { focusScore: 0.91, method: 'model' },
   }));
   assert.equal(marked.metadata.filterDecision, 'REVIEW');
+  const discount = await filterFor(httpError(402)).evaluate(bodyInput('模型接口折扣和优惠码', {
+    xFocus: { focusScore: 0.95, method: 'model' },
+  }));
+  assert.equal(discount.metadata.filterDecision, 'REVIEW');
+  const followingDiscount = await filterFor(httpError(402)).evaluate(bodyInput('关注流里的折扣广告', { sourceExternalId: 'x:home:following' }));
+  assert.equal(followingDiscount.metadata.filterReason, 'fallback-following');
   const bare = createTypeSafeSystemOneClient({
     apiKey: 'test-key',
     fetch: async () => ({ ok: true, status: 200, async text() { return JSON.stringify({ model: 'x' }); } }),

@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { createStore } from '../packages/database/src/index.js';
 import { runMigrations } from '../packages/database/src/migrations.js';
 import { createReportRepository } from '../packages/database/src/repositories/report-repository.js';
-import { loadXFocusConfig, composeFocus, keywordFocus, rankAutoLikeCandidates, buildDrift, nextAutoLikeSettings, shanghaiDayStart } from '../packages/domain/src/x-focus.js';
+import { loadXFocusConfig, composeFocus, keywordFocus, rankAutoLikeCandidates, buildDrift, nextAutoLikeSettings, shanghaiDayStart, autoLikeLimits, xFocusInstruction } from '../packages/domain/src/x-focus.js';
 import { createXFocusScorer, X_FOCUS_SCORE_RESERVE_MS } from '../packages/domain/src/x-focus-score.js';
 import { createXFocusService, KEYWORD_RESCORE_LIMIT, FOCUS_POINT_LIMIT } from '../packages/domain/src/x-auto-like.js';
 import { createFeedInteractionRoutes } from '../apps/web/src/routes/feed-interaction-routes.js';
@@ -104,14 +104,27 @@ test('x-focus view is served before the generic feed platform route', async () =
 });
 
 test('x-focus config keeps seven directions and the highest oil weight', () => {
-  assert.equal(config.version, 'x-focus-1');
+  assert.equal(config.version, 'x-focus-2');
   assert.deepEqual(config.directions.map((dir) => dir.id), [
     'us-market', 'semis', 'polymarket', 'oil-geopolitics', 'corporate', 'hardware', 'ai-companies',
   ]);
   assert.equal(config.directions.find((dir) => dir.id === 'oil-geopolitics').weight, 3);
-  assert.equal(config.autoLike.dailyLimit, 20);
-  assert.equal(config.autoLike.hourlyLimit, 5);
-  assert.equal(config.autoLike.minIntervalMs, 120_000);
+  assert.match(config.directions.find((dir) => dir.id === 'corporate').question, /产品宣传、折扣和官号广告不算/);
+  assert.equal(config.autoLike.dailyLimit, 8);
+  assert.equal(config.autoLike.hourlyLimit, 2);
+  assert.equal(config.autoLike.minIntervalMs, 900_000);
+  const overridden = autoLikeLimits(config, {
+    AI_CENTER_X_AUTO_LIKE_DAILY: '3',
+    AI_CENTER_X_AUTO_LIKE_HOURLY: '1',
+    AI_CENTER_X_AUTO_LIKE_INTERVAL_MS: '60000',
+  });
+  assert.equal(overridden.dailyLimit, 3);
+  assert.equal(overridden.hourlyLimit, 1);
+  assert.equal(overridden.minIntervalMs, 60_000);
+  assert.equal(autoLikeLimits(config, { AI_CENTER_JEV_ENABLED: 'false' }).minScore, 0.9);
+  assert.equal(autoLikeLimits(config, {}).minScore, 0.75);
+  assert.match(xFocusInstruction(config), /孙宇晨/);
+  assert.match(xFocusInstruction(config), /promotional/);
   assert.equal(config.batchSize, 20);
   assert.equal(config.maxExpand, 8);
 });
@@ -160,7 +173,7 @@ test('focus batches parse together, fall back per card, and cache only model sco
   assert.equal(calls.length, 4);
   assert.doesNotMatch(calls[2].instruction, /JSON 数组/);
   assert.equal(fallback.byId['201'].method, 'model');
-  assert.equal(cache.rows.has('201:x-focus-1'), true);
+  assert.equal(cache.rows.has('201:x-focus-2'), true);
 
   mode = 'partial';
   const before = calls.length;
@@ -168,7 +181,7 @@ test('focus batches parse together, fall back per card, and cache only model sco
   assert.equal(calls.length, before + 2);
   assert.equal(partial.byId['301'].method, 'model');
   assert.equal(partial.byId['302'].method, 'model');
-  assert.equal(cache.rows.has('301:x-focus-1'), true);
+  assert.equal(cache.rows.has('301:x-focus-2'), true);
 });
 
 test('scoring times out to keywords, rotates quota, and never calls Grok', async () => {
@@ -350,14 +363,20 @@ test('home capture expands only the highest focus cards and at most eight', asyn
   ]);
 });
 
-function capture(tweetId, focus, metadata = {}) {
+const SUBSTANTIAL = '布伦特原油供应持续趋紧，交易员正在重估油价，以及相关公司未来两个季度的订单和库存情况。';
+
+function capture(tweetId, focus, metadata = {}, extra = {}) {
   return {
     contentItemId: randomUUID(),
     externalId: tweetId,
-    title: '测试帖',
-    sourceUrl: `https://x.com/a/status/${tweetId}`,
-    capturedAt: NOW,
-    sourceExternalId: 'home:for-you',
+    title: extra.title || '测试帖',
+    text: extra.text === undefined ? SUBSTANTIAL : extra.text,
+    authorHandle: extra.authorHandle || '',
+    authorName: extra.authorName || '',
+    authorVerified: extra.authorVerified || '',
+    sourceUrl: extra.sourceUrl || `https://x.com/a/status/${tweetId}`,
+    capturedAt: extra.capturedAt || NOW,
+    sourceExternalId: extra.sourceExternalId || 'home:for-you',
     metadata: { filterDecision: 'KEEP', xFocus: focus, ...metadata },
   };
 }
@@ -417,7 +436,7 @@ test('auto like keeps the highest kept card and respects switches, limits and du
   assert.equal(calls[0].directionLabel, '油价大宗与地缘');
 
   assert.equal((await service.dispatch('local')).reason, 'limit');
-  state.now = NOW + 121_000;
+  state.now = NOW + 15 * 60 * 1000 + 1_000;
   const next = await service.dispatch('local');
   assert.equal(next.tweetId, chip.externalId);
 
@@ -488,6 +507,187 @@ test('login wall, block and two unconfirmed likes stop auto like', () => {
   assert.equal(JSON.stringify(service.view('local')).includes('dirScores'), false);
   assert.equal(JSON.stringify(service.view('local')).includes('focusScore'), false);
   assert.equal(JSON.stringify(service.view('local')).includes('primaryDir'), false);
+});
+
+test('auto like skips ads, official brands, promotions and one-line posts', async () => {
+  const long = SUBSTANTIAL;
+  const ad = capture('3101', modelFocus('hardware', 0.99), {}, { text: `${long} 扩展坞折扣和优惠码` });
+  const recruit = capture('3102', modelFocus('hardware', 0.99), {}, { text: `${long} 承接代投，推广链接返佣` });
+  const official = capture('3103', modelFocus('corporate', 0.99), {}, { text: long, authorHandle: 'ZeekrGlobal' });
+  const named = capture('3104', modelFocus('corporate', 0.99), {}, { text: long, authorHandle: 'brand', authorName: 'XPENG_Global' });
+  const verified = capture('3105', modelFocus('semis', 0.99), {}, { text: long, authorHandle: 'minisforum', authorVerified: 'organization' });
+  const promo = capture('3106', modelFocus('hardware', 0.99, { promotional: true }), {}, { text: long });
+  const short = capture('3107', modelFocus('semis', 0.99), {}, { text: '我空单吃够了' });
+  const imageOnly = capture('3108', modelFocus('semis', 0.99), {}, { text: '' });
+  const followingAd = capture('3109', modelFocus('oil-geopolitics', 0.99), {}, {
+    text: `${long} 模型接口打折接入`,
+    sourceExternalId: 'home:following',
+  });
+  const kept = capture('3110', modelFocus('semis', 0.8), {}, { text: long, sourceExternalId: 'home:following' });
+  const state = {
+    now: NOW,
+    rows: [ad, recruit, official, named, verified, promo, short, imageOnly, followingAd, kept],
+    jobs: [],
+    openLike: [],
+    openUnlike: [],
+    settings: { pageEnabled: true, suspended: false, notice: '', consecutiveUnconfirmed: 0, consecutiveUnavailable: 0 },
+  };
+  const calls = [];
+  const service = autoService({ AI_CENTER_X_AUTO_LIKE: '1' }, state, calls);
+  const picked = await service.dispatch('local');
+  assert.equal(picked.tweetId, kept.externalId);
+  assert.equal(calls[0].focusScore, 0.8);
+  assert.equal(calls[0].directionLabel, '半导体与科技美股');
+  assert.equal(calls[0].reason, '油价上涨');
+});
+
+test('corporate likes need 0.9 while other directions keep the lower floor', async () => {
+  const corporate = capture('3201', modelFocus('corporate', 0.85));
+  const chip = capture('3202', modelFocus('semis', 0.8));
+  const state = {
+    now: NOW,
+    rows: [corporate, chip],
+    jobs: [],
+    openLike: [],
+    openUnlike: [],
+    settings: { pageEnabled: true, suspended: false, notice: '', consecutiveUnconfirmed: 0 },
+  };
+  const calls = [];
+  const service = autoService({ AI_CENTER_X_AUTO_LIKE: '1' }, state, calls);
+  assert.equal((await service.dispatch('local')).tweetId, chip.externalId);
+  state.jobs = [];
+  state.rows = [capture('3203', modelFocus('corporate', 0.9))];
+  state.now = NOW + 15 * 60 * 1000 + 1_000;
+  assert.equal((await service.dispatch('local')).tweetId, '3203');
+});
+
+test('jev off raises the auto like floor to 0.9', async () => {
+  const low = capture('3301', modelFocus('semis', 0.85));
+  const high = capture('3302', modelFocus('semis', 0.9));
+  const state = {
+    now: NOW,
+    rows: [low, high],
+    jobs: [],
+    openLike: [],
+    openUnlike: [],
+    settings: { pageEnabled: true, suspended: false, notice: '', consecutiveUnconfirmed: 0 },
+  };
+  const service = autoService({ AI_CENTER_X_AUTO_LIKE: '1', AI_CENTER_JEV_ENABLED: 'false' }, state, []);
+  assert.equal((await service.dispatch('local')).tweetId, high.externalId);
+  state.jobs = [];
+  state.rows = [low];
+  state.now = NOW + 15 * 60 * 1000 + 1_000;
+  assert.equal((await service.dispatch('local')).reason, 'empty');
+});
+
+test('two failed auto like jobs stop before another like is sent', async () => {
+  const ready = {
+    pageEnabled: true,
+    suspended: false,
+    notice: '',
+    consecutiveUnconfirmed: 0,
+    consecutiveUnavailable: 0,
+    consecutiveTaskErrors: 0,
+    failureWatchReady: true,
+    notedFailureIds: [],
+  };
+  const once = {
+    ...ready,
+    jobs: [{
+      id: 'err-1',
+      type: X_LIKE_JOB_TYPE,
+      status: 'failed',
+      createdAt: NOW - 2 * 86_400_000,
+      input: { source: 'auto', contentItemId: randomUUID(), tweetId: '4101' },
+      error: { name: 'WorkerLeaseExpired', message: '后台进程中断，任务租约已过期' },
+    }],
+  };
+  const state = {
+    now: NOW,
+    rows: [capture('4102', modelFocus('semis', 0.95))],
+    jobs: once.jobs,
+    openLike: [],
+    openUnlike: [],
+    settings: { ...ready },
+  };
+  const calls = [];
+  const service = autoService({ AI_CENTER_X_AUTO_LIKE: '1' }, state, calls);
+  const continued = await service.dispatch('local');
+  assert.equal(continued.dispatched, true);
+  assert.equal(state.settings.suspended, false);
+  assert.equal(state.settings.consecutiveTaskErrors, 1);
+  assert.equal(calls.length, 1);
+
+  state.jobs = [
+    once.jobs[0],
+    {
+      id: 'err-2',
+      type: X_LIKE_JOB_TYPE,
+      status: 'failed',
+      createdAt: NOW - 2 * 86_400_000 + 1_000,
+      input: { source: 'auto', contentItemId: randomUUID(), tweetId: '4103' },
+      error: { name: 'WorkerRunTimeout', message: '任务运行超过时限，已释放以便队列继续' },
+    },
+  ];
+  state.now = NOW + 15 * 60 * 1000 + 1_000;
+  const stopped = await service.dispatch('local');
+  assert.equal(stopped.dispatched, false);
+  assert.equal(calls.length, 1);
+  assert.equal(state.settings.pageEnabled, false);
+  assert.equal(state.settings.suspended, true);
+  assert.match(state.settings.notice, /连续两次/);
+  assert.match(state.settings.notice, /任务运行超过时限/);
+  const stoppedSettings = state.settings;
+  service.setPageEnabled('local', true);
+  const resumed = await service.dispatch('local');
+  assert.equal(resumed.dispatched, true);
+  assert.equal(state.settings.suspended, false);
+
+  const cleared = nextAutoLikeSettings(stoppedSettings, 'liked');
+  assert.equal(cleared.consecutiveTaskErrors, 0);
+  assert.equal(cleared.suspended, true);
+});
+
+test('a thrown auto like is reported and two handler failures stop', async () => {
+  const notes = [];
+  const handlers = createFeedInteractionJobHandlers({
+    executeLike: async () => {
+      const error = new Error('后台进程中断，任务租约已过期');
+      error.name = 'WorkerLeaseExpired';
+      throw error;
+    },
+  }, {
+    onAutoLike: (_workspace, output) => { notes.push(output); },
+  });
+  await assert.rejects(
+    () => handlers[X_LIKE_JOB_TYPE]({ source: 'auto', contentItemId: 'item' }, { job: { id: 'job-1', workspaceId: 'local' } }),
+    (error) => error.name === 'WorkerLeaseExpired',
+  );
+  await assert.rejects(
+    () => handlers[X_LIKE_JOB_TYPE]({ source: 'manual', contentItemId: 'item' }, { job: { id: 'job-manual', workspaceId: 'local' } }),
+  );
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0].status, 'failed');
+  assert.equal(notes[0].jobId, 'job-1');
+  assert.match(notes[0].reason, /进程中断/);
+
+  const state = {
+    now: NOW,
+    rows: [],
+    jobs: [],
+    openLike: [],
+    openUnlike: [],
+    settings: { pageEnabled: true, suspended: false, notice: '', consecutiveUnconfirmed: 0, consecutiveUnavailable: 0 },
+  };
+  const service = autoService({ AI_CENTER_X_AUTO_LIKE: '1' }, state, []);
+  service.recordAutoLike('local', notes[0]);
+  assert.equal(state.settings.suspended, false);
+  service.recordAutoLike('local', { status: 'failed', reason: '任务运行超过时限，已释放以便队列继续', jobId: 'job-2' });
+  assert.equal(state.settings.suspended, true);
+  assert.match(state.settings.notice, /连续两次/);
+  assert.match(state.settings.notice, /任务运行超过时限/);
+  service.recordAutoLike('local', notes[0]);
+  assert.equal(state.settings.consecutiveTaskErrors, 2);
 });
 
 test('drift alerts when today is more than 30 percent under the recent average', () => {

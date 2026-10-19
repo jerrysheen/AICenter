@@ -122,6 +122,7 @@ export function createXFocusScorer({
       dirScores: value.dirScores,
       sensitive: value.sensitive,
       officialSpeech: value.officialSpeech,
+      promotional: value.promotional === true,
       reason: value.reason,
     });
   }
