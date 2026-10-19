@@ -1,5 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, writeFileSync, cpSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 class El {
   constructor(tag) {
@@ -21,7 +25,15 @@ class El {
 
 globalThis.document = { createElement: (tag) => new El(tag) };
 
-const { renderYoutubePodcasts } = await import('../apps/web/public/youtube-podcasts.js');
+const pageDir = mkdtempSync(path.join(os.tmpdir(), 'youtube-page-'));
+const publicDir = path.resolve('apps/web/public');
+writeFileSync(
+  path.join(pageDir, 'youtube-podcasts.js'),
+  readFileSync(path.join(publicDir, 'youtube-podcasts.js'), 'utf8').replaceAll('?v=dev', ''),
+);
+cpSync(path.join(publicDir, 'markdown.js'), path.join(pageDir, 'markdown.js'));
+const { renderYoutubePodcasts } = await import(pathToFileURL(path.join(pageDir, 'youtube-podcasts.js')).href);
+process.on('exit', () => rmSync(pageDir, { recursive: true, force: true }));
 
 function findAll(node, predicate, found = []) {
   if (predicate(node)) found.push(node);
