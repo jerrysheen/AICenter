@@ -223,3 +223,96 @@ test('a completed body clears pending and can be scored again', async () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('a pending tweet left off the timeline still counts, and a failed fetch does not', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-body-unseen-'));
+  const store = createStore(path.join(directory, 'test.db'));
+  const repo = store.repositories.feed;
+  const filter = createFeedFilter({
+    config: { mode: 'enforce', version: 'feed-value-v3.0', rule: 'all-three-0.60', now: () => Date.now() },
+    client: {
+      modelId: 'fixed',
+      async evaluate() {
+        return { model: 'fixed', answers: answers(good) };
+      },
+    },
+  });
+  let mode = 'live';
+  let externalId = 'gone';
+  const service = createFeedService({
+    legacyRepository: store,
+    feedRepository: repo,
+    feedFilter: filter,
+    sourcePort: {
+      findByProvider: () => ({ id: 'x' }),
+      persistence: () => ({
+        providerId: 'x',
+        sourceAccount: {
+          externalId: 'x:home:for-you',
+          displayName: '为你推荐',
+          profileUrl: 'https://x.com/home',
+          authMode: 'browser-session',
+        },
+      }),
+      read: async () => ({
+        data: {
+          feed: 'for-you',
+          fetchedAt: Date.now(),
+          mode,
+          items: [{
+            externalId,
+            body: `${externalId} 的截断预览，正文还没展开。`,
+            captureContext: { truncated: true },
+            sourceUrl: `https://x.com/u/status/${externalId}`,
+          }],
+        },
+      }),
+    },
+  });
+  try {
+    await service.getExternalFeed('x', { feed: 'for-you', refresh: true });
+    const following = repo.upsertSourceAccount({
+      workspaceId: 'local', provider: 'x', externalId: 'x:home:following',
+      displayName: '正在关注', profileUrl: 'https://x.com/home', authMode: 'browser-session',
+    });
+    repo.saveCapture({
+      workspaceId: 'local', provider: 'x', externalId: 'follow-pending', sourceAccountId: following.id,
+      contentHash: 'follow-pending', status: 'ready', sourceUrl: 'https://x.com/u/status/follow-pending',
+      metadata: { originalText: '关注流里的截断', bodyCompletion: 'pending', filterDecision: 'KEEP', filterReason: 'all-three' },
+    });
+    const first = repo.getCapture('local', 'x', 'gone');
+    assert.equal(first.metadata.bodyCompletion, 'pending');
+    assert.equal(first.metadata.bodyCompletionAttempts, 1);
+    assert.equal(first.metadata.filterDecision, 'KEEP');
+
+    mode = 'error';
+    externalId = 'noise';
+    await service.getExternalFeed('x', { feed: 'for-you', refresh: true });
+    assert.equal(repo.getCapture('local', 'x', 'gone').metadata.bodyCompletionAttempts, 1);
+    assert.equal(repo.getCapture('local', 'x', 'follow-pending').metadata.bodyCompletion, 'pending');
+    assert.equal(repo.getCapture('local', 'x', 'follow-pending').metadata.bodyCompletionAttempts, undefined);
+
+    mode = 'live';
+    externalId = 'fresh';
+    await service.getExternalFeed('x', { feed: 'for-you', refresh: true });
+    const second = repo.getCapture('local', 'x', 'gone');
+    assert.equal(second.metadata.bodyCompletion, 'pending');
+    assert.equal(second.metadata.bodyCompletionAttempts, 2);
+    assert.equal(second.metadata.filterDecision, 'KEEP');
+    assert.equal(second.metadata.filterScores.reading_value, 0.9);
+    assert.equal(repo.getCapture('local', 'x', 'follow-pending').metadata.bodyCompletionAttempts, undefined);
+
+    await service.getExternalFeed('x', { feed: 'for-you', refresh: true });
+    const cleared = repo.getCapture('local', 'x', 'gone');
+    assert.equal(cleared.metadata.bodyCompletion, '');
+    assert.equal(cleared.metadata.bodyCompletionAttempts, 3);
+    assert.equal(cleared.metadata.filterDecision, 'KEEP');
+    assert.equal(cleared.metadata.filterReason, 'all-three');
+    assert.equal(repo.getCapture('local', 'x', 'follow-pending').metadata.bodyCompletion, 'pending');
+    assert.equal(repo.listPendingBodyExternalIds('local', 'x').includes('gone'), false);
+    assert.equal(repo.listPendingBodyExternalIds('local', 'x').includes('follow-pending'), true);
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
