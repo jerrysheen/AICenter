@@ -3,7 +3,12 @@ import {
   articlePartPrompt,
   continuedDoubaoChatUrl,
   dedupeRollingCaptions,
+  GEMMA_SECTION_SYSTEM,
+  GEMMA_SUMMARY_SYSTEM,
+  GEMMA_TRANSLATE_SYSTEM,
+  gemmaSummarySource,
   joinArticleParts,
+  joinGemmaArticle,
   needsChineseTitle,
   needsEnglishQuote,
   splitTranscriptParts,
@@ -13,16 +18,22 @@ import {
 import {
   youtubeArticleDailyLimit,
   youtubeArticleEnabled,
+  youtubeArticleEngine,
   youtubePodcastClock,
   youtubeTitleRepairLimit,
 } from '../../domain/src/youtube-podcasts.js';
 import { createDoubaoChatClient } from '../../connectors/src/doubao/chat-browser.js';
+import { createGeminiInvestorSummarizer } from '../../connectors/src/investor-discussion-model.js';
+import { translationChunkChars } from '../../connectors/src/translate/index.js';
+import { createGemmaTranslationRouter } from '../../connectors/src/translate/gemma.js';
 
-// 用户特批：YouTube 播客正文只走豆包网页，而且只在 AI_CENTER_YOUTUBE_PODCASTS_ARTICLE 打开时。
-// 失败、未登录、页面改版都不改走 Gemma、Gemini 或其他翻译。标题和关键句的中文化仍用调用方传入的 Gemma。
+// 正文默认走现有 Gemma 26B 翻译池，只打官方 endpoint，不新接计费服务，也不在这里读写密钥。
+// Gemma 失败时，缺的那一段可以改用现有 Gemini Flash。豆包只在引擎显式写成 doubao 时使用。
+// 标题和关键句的中文化仍用调用方传入的 Gemma，不走 Flash。
 
 const PART_ATTEMPTS = 3;
 const ASK_TIMEOUT_MS = 120_000;
+const GEMMA_MODEL = 'gemma-4-26b-a4b-it';
 
 function shanghaiDay(now, timeZone) {
   return formatYmd(zonedParts(now, timeZone));
@@ -50,6 +61,84 @@ function articleClient(deps) {
   if (deps.doubaoClient) return deps.doubaoClient;
   if (deps.browserRuntime) return createDoubaoChatClient({ browserRuntime: deps.browserRuntime });
   return null;
+}
+
+function gemmaPartBounds(env) {
+  const maxChars = translationChunkChars(env.AI_CENTER_TRANSLATION_CHUNK_CHARS);
+  const minChars = Math.max(400, Math.floor(maxChars * 0.66));
+  return { minChars, maxChars: Math.max(minChars, maxChars) };
+}
+
+function splitSummaryBlocks(source, maxChars) {
+  const blocks = String(source || '').split(/\n\n/).map((item) => item.trim()).filter(Boolean);
+  const batches = [];
+  let current = '';
+  for (const block of blocks) {
+    const piece = block.length > maxChars ? block.slice(0, maxChars) : block;
+    if (current && current.length + 2 + piece.length > maxChars) {
+      batches.push(current);
+      current = piece;
+    } else {
+      current = current ? `${current}\n\n${piece}` : piece;
+    }
+  }
+  if (current) batches.push(current);
+  return batches;
+}
+
+function articleGemma(deps) {
+  if (deps.gemmaGenerate) return deps.gemmaGenerate;
+  if (!deps.gemmaRouter) {
+    deps.gemmaRouter = createGemmaTranslationRouter({
+      env: deps.env || process.env,
+      models: GEMMA_MODEL,
+      quotaRepository: deps.quotaRepository,
+      signal: deps.signal,
+    });
+  }
+  return (input) => deps.gemmaRouter.generate({
+    model: GEMMA_MODEL,
+    system: input.system,
+    prompt: input.prompt,
+  });
+}
+
+function articleFlash(deps) {
+  if (deps.flashGenerate === null) return null;
+  if (deps.flashGenerate) return deps.flashGenerate;
+  if (!deps.flashClient) {
+    deps.flashClient = createGeminiInvestorSummarizer({
+      env: deps.env || process.env,
+      quotaRepository: deps.quotaRepository,
+      signal: deps.signal,
+      usageStage: 'youtube-podcast-article',
+      model: 'gemini-3.1-flash-lite',
+      responseMimeType: 'text/plain',
+    });
+  }
+  return deps.flashClient;
+}
+
+async function callArticleModel(deps, input) {
+  try {
+    const result = await articleGemma(deps)(input);
+    const text = String(result?.text || '').trim();
+    if (!text) throw new Error('Gemma 没有返回正文');
+    return text;
+  } catch (error) {
+    if (error?.code === 'budget-deferred' || deps.signal?.aborted) throw error;
+    const flash = articleFlash(deps);
+    if (!flash) throw error;
+    try {
+      const result = await flash(input);
+      const text = String(result?.text || '').trim();
+      if (!text) throw error;
+      return text;
+    } catch (flashError) {
+      if (flashError?.code === 'budget-deferred') throw flashError;
+      throw error;
+    }
+  }
 }
 
 function replaceContent(feedRepository, workspaceId, contentItemId, patch) {
@@ -308,13 +397,156 @@ async function organizeEpisode({ row, client, repository, feedRepository, worksp
   return { status: 'ready' };
 }
 
+async function organizeWithGemma({ row, repository, feedRepository, workspaceId, day, signal, env, deps }) {
+  const item = row.contentItemId ? feedRepository.getContentItem(workspaceId, row.contentItemId) : null;
+  const source = row.sourceTranscript || item?.body || '';
+  if (!source.trim()) return { status: 'skipped', reason: 'empty' };
+  const hash = transcriptHash(source);
+  if (row.articleStatus === 'ready' && row.sourceHash === hash) return { status: 'skipped', reason: 'ready' };
+  const deduped = dedupeRollingCaptions(source);
+  const bounds = gemmaPartBounds(env);
+  const saved = readState(row.articleState);
+  const reusable = saved?.engine === 'gemma' && saved.hash === hash && Array.isArray(saved.parts) && saved.parts.length;
+  const parts = reusable
+    ? saved.parts.map((part) => ({
+      text: String(part.text || ''),
+      start: String(part.start || ''),
+      status: part.status === 'done' || part.status === 'translated' ? part.status : 'pending',
+      translation: String(part.translation || ''),
+      section: String(part.section || ''),
+      attempts: Number(part.attempts) || 0,
+    }))
+    : splitTranscriptParts(deduped, bounds).map((part) => ({
+      text: part.text,
+      start: part.start || '',
+      status: 'pending',
+      translation: '',
+      section: '',
+      attempts: 0,
+    }));
+  const state = {
+    engine: 'gemma',
+    hash,
+    holdDay: reusable ? String(saved.holdDay || '') : '',
+    holdReason: reusable ? String(saved.holdReason || '') : '',
+    summary: reusable ? String(saved.summary || '') : '',
+    summaryAttempts: reusable ? Number(saved.summaryAttempts) || 0 : 0,
+    parts,
+  };
+  if (state.holdDay === day) return { status: 'pending', reason: state.holdReason || 'hold' };
+  const persist = (articleStatus = 'pending') => {
+    row.articleStatus = articleStatus;
+    row.articleState = JSON.stringify(state);
+    row.sourceTranscript = source;
+    row.sourceHash = hash;
+    row.articleDay = day;
+    repository.saveEpisode(episodePatch(row, workspaceId, {
+      sourceTranscript: source,
+      sourceHash: hash,
+      articleStatus,
+      articleState: row.articleState,
+      articleDay: day,
+    }));
+  };
+  replaceContent(feedRepository, workspaceId, row.contentItemId, { body: deduped });
+  persist('pending');
+  const stop = (slot, error) => {
+    if (error?.code === 'budget-deferred') {
+      persist('pending');
+      return { status: 'pending', reason: 'quota', stopPass: true };
+    }
+    if (slot) slot.attempts += 1;
+    else state.summaryAttempts += 1;
+    const attempts = slot ? slot.attempts : state.summaryAttempts;
+    if (attempts >= PART_ATTEMPTS) {
+      state.holdDay = day;
+      state.holdReason = 'failed';
+    }
+    persist('pending');
+    return { status: 'pending', reason: attempts >= PART_ATTEMPTS ? 'failed' : 'retry' };
+  };
+  for (const slot of state.parts) {
+    if (slot.translation) continue;
+    if (slot.attempts >= PART_ATTEMPTS) {
+      state.holdDay = day;
+      state.holdReason = 'failed';
+      persist('pending');
+      return { status: 'pending', reason: 'failed' };
+    }
+    if (signal?.aborted) return { status: 'pending', reason: 'deadline' };
+    try {
+      slot.translation = await callArticleModel(deps, { system: GEMMA_TRANSLATE_SYSTEM, prompt: slot.text });
+      slot.status = 'translated';
+      slot.attempts = 0;
+      persist('pending');
+    } catch (error) {
+      return stop(slot, error);
+    }
+  }
+  for (const slot of state.parts) {
+    if (slot.section) continue;
+    if (slot.attempts >= PART_ATTEMPTS) {
+      state.holdDay = day;
+      state.holdReason = 'failed';
+      persist('pending');
+      return { status: 'pending', reason: 'failed' };
+    }
+    if (signal?.aborted) return { status: 'pending', reason: 'deadline' };
+    try {
+      slot.section = await callArticleModel(deps, { system: GEMMA_SECTION_SYSTEM, prompt: slot.translation });
+      slot.status = 'done';
+      slot.attempts = 0;
+      persist('pending');
+    } catch (error) {
+      return stop(slot, error);
+    }
+  }
+  if (!state.summary) {
+    if (state.summaryAttempts >= PART_ATTEMPTS) {
+      state.holdDay = day;
+      state.holdReason = 'failed';
+      persist('pending');
+      return { status: 'pending', reason: 'failed' };
+    }
+    if (signal?.aborted) return { status: 'pending', reason: 'deadline' };
+    try {
+      const batches = splitSummaryBlocks(gemmaSummarySource(state.parts.map((part) => part.section)), bounds.maxChars);
+      const pieces = [];
+      for (const batch of batches) {
+        pieces.push(await callArticleModel(deps, { system: GEMMA_SUMMARY_SYSTEM, prompt: batch }));
+      }
+      state.summary = pieces.length === 1
+        ? pieces[0]
+        : await callArticleModel(deps, { system: GEMMA_SUMMARY_SYSTEM, prompt: pieces.join('\n\n') });
+      if (!state.summary) throw new Error('要点为空');
+      state.summaryAttempts = 0;
+      persist('pending');
+    } catch (error) {
+      return stop(null, error);
+    }
+  }
+  const article = joinGemmaArticle(state.summary, state.parts.map((part) => part.section));
+  if (!article) {
+    state.holdDay = day;
+    state.holdReason = 'failed';
+    persist('pending');
+    return { status: 'pending', reason: 'failed' };
+  }
+  replaceContent(feedRepository, workspaceId, row.contentItemId, { body: article });
+  state.holdDay = '';
+  state.holdReason = '';
+  persist('ready');
+  return { status: 'ready' };
+}
+
 export async function runYoutubeArticlePass(deps = {}) {
   const env = deps.env || process.env;
   const stats = { ready: 0, pending: 0, skipped: 0, stopped: '' };
   if (!youtubeArticleEnabled(env)) return stats;
-  const client = articleClient(deps);
-  if (!client) {
-    console.warn('[worker] youtube-podcasts 正文整理已开启，但没有豆包浏览器。这一轮不改走其他模型');
+  const engine = youtubeArticleEngine(env);
+  const client = engine === 'doubao' ? articleClient(deps) : null;
+  if (engine === 'doubao' && !client) {
+    console.warn('[worker] youtube-podcasts 正文整理指定了豆包，但没有豆包浏览器。这一轮不改走其他模型');
     stats.stopped = 'no-client';
     return stats;
   }
@@ -342,15 +574,26 @@ export async function runYoutubeArticlePass(deps = {}) {
     }
     let result;
     try {
-      result = await organizeEpisode({
-        row,
-        client,
-        repository,
-        feedRepository,
-        workspaceId,
-        day,
-        signal: deps.signal,
-      });
+      result = engine === 'doubao'
+        ? await organizeEpisode({
+          row,
+          client,
+          repository,
+          feedRepository,
+          workspaceId,
+          day,
+          signal: deps.signal,
+        })
+        : await organizeWithGemma({
+          row,
+          repository,
+          feedRepository,
+          workspaceId,
+          day,
+          signal: deps.signal,
+          env,
+          deps,
+        });
     } catch (error) {
       stats.pending += 1;
       console.warn(`[worker] youtube-podcasts 正文整理失败：${String(error?.message || error).slice(0, 160)}`);
@@ -359,7 +602,7 @@ export async function runYoutubeArticlePass(deps = {}) {
     if (result.status === 'ready') stats.ready += 1;
     else if (result.status === 'pending') stats.pending += 1;
     else stats.skipped += 1;
-    if (result.stopDay) {
+    if (result.stopDay || result.stopPass) {
       stats.stopped = result.reason || 'blocked';
       break;
     }

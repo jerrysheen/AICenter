@@ -2,7 +2,7 @@
 
 2026-10-08 研究召回 V1 是隔离链路：研究 Tag、研究问题、三路召回和材料包写入迁移 47 的独立表。栏目 `tagId` 与 `resource_taggings` 继续只做页面归类。生产 `generateDaily()` 仍只浓缩小时模块。`AI_CENTER_RESEARCH_RECALL=on` 只注册显式 Job，不添加调度。provider 为 bamboo 时，标签和相关性改用 noul，不占信息流每日上限，见 `progress/2026-10-19-bamboo-research-recall.md`。单轮时间到点即停，未完成材料留在原池，下一轮接着判断；当前窗口没判完不冻结回看池。关键词召回至少要有一个锚点。见 `progress/2026-10-19-research-recall-budget.md`。设计与验收见 `progress/2026-10-08-research-recall-v1.md`。
 
-2026-10-07 用户后续授权原文翻译改为 Gemma 31B/26B 专用池，仅调用官方流式接口，不回退其他模型；HTTP 提交 `feed.translation.run`，Worker 调用 Connector，Feed Service/Repository 保存完整译文和原段落排版。Article Normalize、Tag、小时/日报保持原路由。当前规则覆盖下文旧的 Gemini 翻译描述，兼容边界见 `gemma-original-translation.md`。2026-10-19 用户特批的唯一例外是 YouTube 播客正文：开关打开后，用已登录的豆包网页把字幕整理成中文文章。标题、摘要、关键句和其他所有翻译仍只用 Gemma 26B，不改走豆包。
+2026-10-07 用户后续授权原文翻译改为 Gemma 31B/26B 专用池，仅调用官方流式接口，不回退其他模型；HTTP 提交 `feed.translation.run`，Worker 调用 Connector，Feed Service/Repository 保存完整译文和原段落排版。Article Normalize、Tag、小时/日报保持原路由。当前规则覆盖下文旧的 Gemini 翻译描述，兼容边界见 `gemma-original-translation.md`。2026-10-19 YouTube 播客正文在 `AI_CENTER_YOUTUBE_PODCASTS_ARTICLE` 打开后，默认走这条 Gemma 26B 翻译池，只打官方 endpoint。Gemma 失败时缺的段可以用现有 Gemini Flash。豆包网页只在 `AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_ENGINE=doubao` 时使用。标题、摘要、关键句和其他翻译仍只用 Gemma 26B。
 
 2026-10-06 用户授权三层浓缩树：在原Report / Repository / Worker和封闭Harness边界内，以单一`AI_CENTER_INFORMATION_PIPELINE=tree-v3`开关替代新稿的逐项事实底稿和方向长文；默认legacy，旧引用保持。迁移42追加不可变节点/刊期及独立发布/尝试指针，父节点固定直接子版本，HTTP仅只读展开。设计与兼容决定见`information-tree-v3.md`。
 

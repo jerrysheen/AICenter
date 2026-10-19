@@ -42,11 +42,17 @@ function boundedInt(value, fallback, min, max) {
   return Math.min(max, Math.max(min, parsed));
 }
 
-// 用户特批：AI_CENTER_YOUTUBE_PODCASTS_ARTICLE 只打开 YouTube 播客正文的豆包整理。
-// 标题、摘要、关键句和其他翻译仍只用 Gemma 26B，不会因为这个开关改道。
+// AI_CENTER_YOUTUBE_PODCASTS_ARTICLE 打开 YouTube 播客正文整理。
+// 默认走 Gemma 26B 翻译池。只有 AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_ENGINE=doubao 才用豆包网页。
+// 标题、摘要、关键句不看这个引擎，仍只用 Gemma 26B。
 export function youtubeArticleEnabled(env = process.env) {
   const raw = String(env.AI_CENTER_YOUTUBE_PODCASTS_ARTICLE || '').trim().toLowerCase();
   return raw === '1' || raw === 'true' || raw === 'on' || raw === 'yes';
+}
+
+export function youtubeArticleEngine(env = process.env) {
+  const raw = String(env.AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_ENGINE || '').trim().toLowerCase();
+  return raw === 'doubao' ? 'doubao' : 'gemma';
 }
 
 export function youtubeArticleDailyLimit(env = process.env) {

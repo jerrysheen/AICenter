@@ -177,7 +177,7 @@ function defaultSummarize(env, quotaRepository, signal) {
 }
 
 function defaultTranslate(env, quotaRepository, signal) {
-  // 标题、摘要和关键句只用 Gemma 26B。YouTube 正文整理不走这里。
+  // 标题、摘要和关键句只用 Gemma 26B。正文整理另开翻译池调用，不走这个摘要翻译函数。
   const router = createGemmaTranslationRouter({
     env,
     models: 'gemma-4-26b-a4b-it',
@@ -359,6 +359,9 @@ export async function runYoutubePodcastRound(deps = {}) {
           workspaceId,
           doubaoClient: deps.doubaoClient,
           browserRuntime: deps.browserRuntime,
+          quotaRepository: deps.quotaRepository,
+          gemmaGenerate: deps.gemmaGenerate,
+          flashGenerate: deps.flashGenerate,
           signal,
           now,
           timeZone,
