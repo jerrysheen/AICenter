@@ -49,7 +49,6 @@ export function renderYoutubePodcasts(root, { api, videoId = '', showToast = () 
       sync.disabled = false;
     }
   });
-  head.append(sync);
   page.append(head);
   const list = document.createElement('div');
   list.className = 'podcast-list';
@@ -58,9 +57,18 @@ export function renderYoutubePodcasts(root, { api, videoId = '', showToast = () 
   root.append(page);
 
   api('/api/v1/youtube-podcasts').then((payload) => {
+    if (payload.enabled === false) {
+      sync.hidden = true;
+      head.append(Object.assign(document.createElement('p'), { className: 'section-kicker', textContent: '未开启' }));
+    } else {
+      head.append(sync);
+    }
+    if (payload.configError) {
+      head.append(Object.assign(document.createElement('p'), { className: 'section-kicker', textContent: payload.configError }));
+    }
     const creators = payload.creators || [];
     list.replaceChildren();
-    if (!creators.some((creator) => creator.episodes?.length)) {
+    if (payload.enabled !== false && !creators.some((creator) => creator.episodes?.length)) {
       list.append(Object.assign(document.createElement('p'), {
         className: 'section-kicker',
         textContent: '还没有播客。打开开关后，每天早上会检查新的一集。',

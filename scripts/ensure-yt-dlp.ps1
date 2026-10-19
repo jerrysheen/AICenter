@@ -11,8 +11,9 @@ function Test-Command([string]$Name) {
 if (-not (Test-Command 'yt-dlp')) {
   if (Test-Command 'winget') {
     winget install --id yt-dlp.yt-dlp -e --accept-package-agreements --accept-source-agreements
-  } else {
-    python -m pip install -U yt-dlp
+  }
+  if (-not (Test-Command 'yt-dlp')) {
+    python -m pip install -U "yt-dlp[default]"
   }
 }
 

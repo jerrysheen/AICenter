@@ -40,12 +40,22 @@ export function youtubePodcastLimits(env = process.env) {
     intervalMs: boundedInt(env.AI_CENTER_YOUTUBE_PODCASTS_INTERVAL_MS, 8_000, 1_000, 120_000),
     roundLimit: boundedInt(env.AI_CENTER_YOUTUBE_PODCASTS_ROUND_LIMIT, 24, 1, 80),
     transcribeSec: boundedInt(env.AI_CENTER_YOUTUBE_PODCASTS_TRANSCRIBE_MINUTES, 90, 1, 24 * 60) * 60,
+    episodeTranscribeSec: boundedInt(env.AI_CENTER_YOUTUBE_PODCASTS_EPISODE_MINUTES, 180, 20, 6 * 60) * 60,
+    roundMs: boundedInt(env.AI_CENTER_YOUTUBE_PODCASTS_MAX_RUNNING_MS, 3 * 60 * 60_000, 60_000, 6 * 60 * 60_000),
     lookback: boundedInt(env.AI_CENTER_YOUTUBE_PODCASTS_LOOKBACK, YOUTUBE_LOOKBACK, 1, 5),
   };
 }
 
 export function loadYoutubePodcastConfig(filePath) {
-  const parsed = JSON.parse(readFileSync(filePath, 'utf8'));
+  if (!filePath) throw new Error('没有 YouTube 播客配置路径');
+  let raw;
+  try {
+    raw = readFileSync(filePath, 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') throw new Error(`YouTube 播客配置不存在：${filePath}`);
+    throw error;
+  }
+  const parsed = JSON.parse(raw);
   const creators = Array.isArray(parsed.creators) ? parsed.creators : [];
   if (!creators.length) throw new Error('YouTube 播客配置没有频道');
   return {

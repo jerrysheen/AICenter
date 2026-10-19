@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { authorCaptureFields } from '../../domain/src/authors.js';
@@ -24,9 +24,11 @@ import {
 import { createGeminiInvestorSummarizer } from '../../connectors/src/investor-discussion-model.js';
 import { createGemmaTranslationRouter } from '../../connectors/src/translate/gemma.js';
 import {
+  combineFetchSignal,
   probeYoutubeEpisode,
   resolveYoutubeChannelId,
   transcribeYoutubeAudio,
+  youtubeBlockReason,
 } from '../../connectors/src/youtube-podcasts.js';
 import { executeAudioTranscription } from './audio-transcription-job.js';
 
@@ -65,35 +67,84 @@ function pushReason(stats, reason) {
   if (reason && !stats.reasons.includes(reason)) stats.reasons.push(reason);
 }
 
-async function defaultFetchRss(url, fetchImpl) {
-  const response = await fetchImpl(url, {
-    headers: { 'user-agent': 'AICenter/0.2 youtube-podcasts', accept: 'application/atom+xml, application/xml, text/xml' },
-  });
-  const text = await response.text();
-  if (response.status === 429 || /too many requests|not a bot/i.test(text)) {
-    return { blocked: response.status === 429 || /429|too many requests/i.test(text) ? '429' : 'bot-check', detail: text.slice(0, 180) };
+const SUMMARY_CHUNK = 24_000;
+
+function transcriptChunks(transcript) {
+  const text = String(transcript || '');
+  if (text.length <= 60_000) return [text];
+  const chunks = [];
+  let rest = text;
+  while (rest.length > SUMMARY_CHUNK && chunks.length < 7) {
+    let cut = rest.lastIndexOf('\n', SUMMARY_CHUNK);
+    if (cut < Math.floor(SUMMARY_CHUNK / 2)) cut = SUMMARY_CHUNK;
+    chunks.push(rest.slice(0, cut));
+    rest = rest.slice(cut).trim();
   }
-  if (!response.ok) throw new Error(`RSS ${response.status}`);
-  return { entries: parseYoutubeRss(text) };
+  if (rest) chunks.push(rest);
+  return chunks;
 }
 
-function defaultSummarize(env, quotaRepository) {
-  const summarize = createGeminiInvestorSummarizer({ env, quotaRepository, usageStage: 'youtube-podcast-summary' });
-  return async ({ title, creator, transcript }) => {
-    const clipped = transcript.length > 60_000 ? `${transcript.slice(0, 60_000)}\n\n[文字稿已截断]` : transcript;
-    const result = await summarize({
-      system: SUMMARY_SYSTEM,
-      prompt: `博主：${creator.name}\n关注方向：${creator.focus || '金融与 AI'}\n标题：${title}\n\n文字稿：\n${clipped}`,
+function summaryPrompt(creator, title, transcript) {
+  return `博主：${creator.name}\n关注方向：${creator.focus || '金融与 AI'}\n标题：${title}\n\n文字稿：\n${transcript}`;
+}
+
+export async function defaultFetchRss(url, fetchImpl, signal) {
+  let response;
+  try {
+    response = await fetchImpl(url, {
+      headers: { 'user-agent': 'AICenter/0.2 youtube-podcasts', accept: 'application/atom+xml, application/xml, text/xml' },
+      signal: combineFetchSignal(signal),
     });
-    return parsePodcastSummary(result.text);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    const timeout = new Error('RSS 超时');
+    timeout.code = 'youtube-timeout';
+    throw timeout;
+  }
+  const text = await response.text();
+  if (response.ok) return { entries: parseYoutubeRss(text) };
+  const blocked = response.status === 429 ? '429' : youtubeBlockReason(text);
+  if (blocked) return { blocked, detail: text.slice(0, 180) };
+  throw new Error(`RSS ${response.status}`);
+}
+
+function defaultSummarize(env, quotaRepository, signal) {
+  const model = String(env.AI_CENTER_YOUTUBE_PODCASTS_SUMMARY_MODEL || '').trim();
+  const summarize = createGeminiInvestorSummarizer({
+    env,
+    quotaRepository,
+    usageStage: 'youtube-podcast-summary',
+    signal,
+    ...(model ? { model } : {}),
+  });
+  return async ({ title, creator, transcript }) => {
+    const chunks = transcriptChunks(transcript);
+    if (chunks.length === 1) {
+      const result = await summarize({ system: SUMMARY_SYSTEM, prompt: summaryPrompt(creator, title, chunks[0]) });
+      return parsePodcastSummary(result.text);
+    }
+    const parts = [];
+    for (let index = 0; index < chunks.length; index += 1) {
+      const result = await summarize({
+        system: SUMMARY_SYSTEM,
+        prompt: `这是同一集的第 ${index + 1}/${chunks.length} 段，只摘要这一段。\n${summaryPrompt(creator, title, chunks[index])}`,
+      });
+      parts.push(result.text);
+    }
+    const merged = await summarize({
+      system: SUMMARY_SYSTEM,
+      prompt: `下面是同一集的分段摘要。合并成一份，核心观点保留 5 到 8 条，不要重复。\n\n${parts.join('\n\n')}`,
+    });
+    return parsePodcastSummary(merged.text);
   };
 }
 
-function defaultTranslate(env, quotaRepository) {
+function defaultTranslate(env, quotaRepository, signal) {
   const router = createGemmaTranslationRouter({
     env,
     models: 'gemma-4-26b-a4b-it',
     quotaRepository,
+    signal,
   });
   return async (text) => {
     const result = await router.generate({
@@ -159,8 +210,14 @@ export async function saveYoutubeEpisode({ feedRepository, workspaceId, creator,
 }
 
 function attemptsOf(repository, workspaceId, videoId) {
-  const row = repository.listEpisodes(workspaceId).find((item) => item.videoId === videoId);
-  return row?.attempts || 0;
+  return repository.episode(workspaceId, videoId)?.attempts || 0;
+}
+
+function roundStop(error, signal) {
+  if (error?.code === 'youtube-round-stop' || error?.reason === 'bot-check' || error?.reason === '429') return error.reason || 'bot-check';
+  if (signal?.aborted) return 'deadline';
+  if (error?.status === 429 || error?.quota || error?.code === 'budget-deferred' || error?.code === 'quota') return '429';
+  return '';
 }
 
 export async function runYoutubePodcastRound(deps = {}) {
@@ -176,13 +233,21 @@ export async function runYoutubePodcastRound(deps = {}) {
   const workspaceId = deps.workspaceId || 'local';
   const repository = deps.repository;
   const sleep = deps.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
-  const fetchRss = deps.fetchRss || ((url) => defaultFetchRss(url, deps.fetchImpl || fetch));
-  const resolveChannel = deps.resolveChannel || ((handle) => resolveYoutubeChannelId({ handle, fetchImpl: deps.fetchImpl || fetch, env }));
+  const deadline = AbortSignal.timeout(limits.roundMs);
+  const signal = deps.signal
+    ? (typeof AbortSignal.any === 'function' ? AbortSignal.any([deps.signal, deadline]) : deps.signal)
+    : deadline;
+  const fetchRss = deps.fetchRss || ((url) => defaultFetchRss(url, deps.fetchImpl || fetch, signal));
+  const resolveChannel = deps.resolveChannel || ((handle) => resolveYoutubeChannelId({ handle, fetchImpl: deps.fetchImpl || fetch, signal }));
   const probe = deps.probe;
   const transcribe = deps.transcribe;
-  const summarize = deps.summarize || defaultSummarize(env, deps.quotaRepository);
-  const translate = deps.translate === undefined ? defaultTranslate(env, deps.quotaRepository) : deps.translate;
-  const root = await mkdtemp(path.join(os.tmpdir(), 'youtube-podcasts-'));
+  const summarize = deps.summarize || defaultSummarize(env, deps.quotaRepository, signal);
+  const translate = deps.translate === undefined ? defaultTranslate(env, deps.quotaRepository, signal) : deps.translate;
+  const tempRoot = deps.dataDirectory
+    ? path.join(deps.dataDirectory, 'tmp', 'youtube-podcasts')
+    : path.join(os.tmpdir(), 'youtube-podcasts');
+  await mkdir(tempRoot, { recursive: true });
+  const root = await mkdtemp(path.join(tempRoot, 'round-'));
   let processed = 0;
   let transcribedSec = 0;
   try {
@@ -196,7 +261,20 @@ export async function runYoutubePodcastRound(deps = {}) {
         if (!state.bootstrapped) freshChannels.add(channel.key);
         let channelId = state.channelId;
         if (channel.kind === 'channel' && !channelId) {
-          const resolved = await resolveChannel(channel.handle);
+          let resolved;
+          try {
+            resolved = await resolveChannel(channel.handle);
+          } catch (error) {
+            const stop = roundStop(error, signal);
+            if (stop) {
+              stats.stopped = stop;
+              pushReason(stats, stop);
+              break;
+            }
+            stats.failed += 1;
+            pushReason(stats, 'channel-id');
+            continue;
+          }
           if (resolved?.blocked) {
             stats.stopped = resolved.blocked;
             pushReason(stats, resolved.blocked);
@@ -215,8 +293,14 @@ export async function runYoutubePodcastRound(deps = {}) {
         try {
           rss = await fetchRss(rssUrlForChannel(channel, channelId));
         } catch (error) {
+          const stop = roundStop(error, signal);
+          if (stop) {
+            stats.stopped = stop;
+            pushReason(stats, stop);
+            break;
+          }
           stats.failed += 1;
-          pushReason(stats, String(error?.message || error).slice(0, 120));
+          pushReason(stats, error?.code === 'youtube-timeout' ? 'timeout' : String(error?.message || error).slice(0, 120));
           continue;
         }
         if (rss?.blocked) {
@@ -236,10 +320,22 @@ export async function runYoutubePodcastRound(deps = {}) {
             break;
           }
           if (repository.isDone(workspaceId, entry.videoId)) continue;
+          if (signal?.aborted) {
+            stats.stopped = 'deadline';
+            pushReason(stats, 'deadline');
+            finished = false;
+            break;
+          }
           const workDir = path.join(root, entry.videoId);
           const probed = probe
             ? await probe(entry)
-            : await probeYoutubeEpisode({ videoId: entry.videoId, url: entry.url || watchUrl(entry.videoId), workDir, env });
+            : await probeYoutubeEpisode({
+              videoId: entry.videoId,
+              url: watchUrl(entry.videoId),
+              workDir,
+              env,
+              signal,
+            });
           if (probed?.blocked) {
             stats.stopped = probed.blocked;
             pushReason(stats, probed.blocked);
@@ -269,7 +365,7 @@ export async function runYoutubePodcastRound(deps = {}) {
             title: probed.title || entry.title,
             durationSec: Number(probed.durationSec) || 0,
             liveStatus: probed.liveStatus || '',
-            url: entry.url || watchUrl(entry.videoId),
+            url: watchUrl(entry.videoId),
             transcript: probed.transcript || '',
             transcriptSource: probed.transcriptSource || '',
             role: channel.role || '',
@@ -337,10 +433,33 @@ export async function runYoutubePodcastRound(deps = {}) {
         try {
           let transcript = episode.transcript || '';
           let transcriptSource = episode.transcriptSource || '';
+          if (signal?.aborted) {
+            stats.stopped = 'deadline';
+            pushReason(stats, 'deadline');
+            break;
+          }
           if (transcript) {
             stats.subtitles += 1;
           } else {
-            if (transcribedSec + Number(episode.durationSec || 0) > limits.transcribeSec) {
+            const duration = Number(episode.durationSec || 0);
+            if (duration > limits.episodeTranscribeSec) {
+              repository.saveEpisode({
+                workspaceId,
+                videoId: episode.videoId,
+                creatorId: creator.id,
+                channelKey: episode.channelKey,
+                title: episode.title,
+                durationSec: episode.durationSec,
+                publishedAt: episode.publishedAt,
+                status: 'skipped',
+                reason: 'transcribe-too-long',
+                attempts: 1,
+              });
+              stats.skipped += 1;
+              pushReason(stats, 'transcribe-too-long');
+              continue;
+            }
+            if (transcribedSec > 0 && transcribedSec + duration > limits.transcribeSec) {
               repository.saveEpisode({
                 workspaceId,
                 videoId: episode.videoId,
@@ -359,13 +478,14 @@ export async function runYoutubePodcastRound(deps = {}) {
             }
             const runTranscribe = transcribe || ((item) => transcribeYoutubeAudio({
               videoId: item.videoId,
-              url: item.url,
+              url: watchUrl(item.videoId),
               dataDirectory: deps.dataDirectory,
               env,
               quotaRepository: deps.quotaRepository,
               languageCodes: [],
               execute: deps.executeAudio || executeAudioTranscription,
               workspaceId,
+              signal,
             }));
             transcript = await runTranscribe(episode);
             if (!transcript) throw new Error('转写结果为空');
@@ -405,9 +525,10 @@ export async function runYoutubePodcastRound(deps = {}) {
             attempts: attemptsOf(repository, workspaceId, episode.videoId) + 1,
           });
         } catch (error) {
-          if (error?.code === 'youtube-round-stop' || error?.reason === 'bot-check' || error?.reason === '429') {
-            stats.stopped = error.reason || 'bot-check';
-            pushReason(stats, stats.stopped);
+          const stop = roundStop(error, signal);
+          if (stop) {
+            stats.stopped = stop;
+            pushReason(stats, stop);
             stats.failed += 1;
             break;
           }
@@ -438,9 +559,10 @@ export async function runYoutubePodcastRound(deps = {}) {
 
 export function createYoutubePodcastJobHandlers(options = {}) {
   return {
-    [YOUTUBE_PODCAST_JOB_TYPE]: (input = {}) => runYoutubePodcastRound({
+    [YOUTUBE_PODCAST_JOB_TYPE]: (input = {}, ctx = {}) => runYoutubePodcastRound({
       ...options,
       workspaceId: input.workspaceId || options.workspaceId || 'local',
+      signal: ctx.signal,
     }),
   };
 }

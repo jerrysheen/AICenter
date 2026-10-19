@@ -1,3 +1,4 @@
+import { statSync } from 'node:fs';
 import { loadYoutubePodcastConfig, watchUrl, YOUTUBE_PODCAST_JOB_TYPE, youtubePodcastsEnabled } from './youtube-podcasts.js';
 
 function present(row, withBody = false) {
@@ -17,18 +18,29 @@ function present(row, withBody = false) {
 }
 
 export function createYoutubePodcastService({ repository, store, configPath, env = process.env }) {
-  function creators() {
+  let cache = { stamp: '', creators: [], error: '' };
+
+  function readConfig() {
+    let stamp = 'missing';
     try {
-      return loadYoutubePodcastConfig(configPath).creators;
+      stamp = String(statSync(configPath).mtimeMs);
     } catch {
-      return [];
+      stamp = 'missing';
     }
+    if (cache.stamp === stamp) return cache;
+    try {
+      cache = { stamp, creators: loadYoutubePodcastConfig(configPath).creators, error: '' };
+    } catch (error) {
+      cache = { stamp, creators: [], error: error instanceof Error ? error.message : 'YouTube 播客配置无法读取' };
+    }
+    return cache;
   }
 
   return {
     list(workspaceId) {
-      const rows = repository.listReady(workspaceId);
-      const configured = creators();
+      const config = readConfig();
+      const rows = repository.listReady(workspaceId, 200);
+      const configured = config.creators;
       const grouped = configured.map((creator) => ({
         id: creator.id,
         name: creator.name,
@@ -46,7 +58,7 @@ export function createYoutubePodcastService({ repository, store, configPath, env
           episodes: rows.filter((item) => item.creatorId === row.creatorId).map((item) => present(item)),
         });
       }
-      return { creators: grouped };
+      return { enabled: youtubePodcastsEnabled(env), configError: config.error, creators: grouped };
     },
 
     get(workspaceId, videoId) {

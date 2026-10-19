@@ -1,16 +1,27 @@
 import { spawn } from 'node:child_process';
-import { mkdir, open, readdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readdir, readFile, rm, statfs } from 'node:fs/promises';
 import path from 'node:path';
 import { describeAudioTranscription } from '../../domain/src/audio-transcription.js';
-import { readChannelId } from '../../domain/src/youtube-podcasts.js';
+import { readChannelId, watchUrl } from '../../domain/src/youtube-podcasts.js';
 
-const SUB_LANGS = 'zh-Hans,zh-Hant,zh-CN,zh,en,ja';
+const SUB_LANGS = 'zh.*,zh-Hans,zh-Hant,zh,en,ja,.*-orig';
+const OUTPUT_CAP = 256 * 1024;
+const KILL_GRACE_MS = 5_000;
+export const YOUTUBE_FETCH_TIMEOUT_MS = 15_000;
+const MIN_FREE_BYTES = 512 * 1024 * 1024;
 
 export function youtubeBlockReason(text) {
   const body = String(text || '');
   if (/confirm you(?:'|’)re not a bot|sign in to confirm|not a bot/i.test(body)) return 'bot-check';
   if (/\b429\b|too many requests/i.test(body)) return '429';
   return '';
+}
+
+export function youtubeErrorText(stderr) {
+  return String(stderr || '')
+    .split(/\r?\n/)
+    .filter((line) => /^\s*ERROR:/i.test(line))
+    .join('\n');
 }
 
 export function ytDlpBinary(env = process.env) {
@@ -22,40 +33,98 @@ export function cookieArgs(env = process.env) {
   return file ? ['--cookies', file] : [];
 }
 
-export function runProcess(command, args, { timeoutMs = 180_000, cwd } = {}) {
+function appendCapped(current, chunk) {
+  if (current.length >= OUTPUT_CAP) return current;
+  const next = current + chunk;
+  return next.length <= OUTPUT_CAP ? next : next.slice(0, OUTPUT_CAP);
+}
+
+export function runProcess(command, args, { timeoutMs = 180_000, cwd, signal } = {}) {
   return new Promise((resolve) => {
-    let child;
-    try {
-      child = spawn(command, args, { cwd, windowsHide: true });
-    } catch (error) {
-      resolve({ code: 127, stdout: '', stderr: error.message, missing: true });
-      return;
-    }
+    let settled = false;
     let stdout = '';
     let stderr = '';
-    const timer = setTimeout(() => {
-      child.kill();
+    let timer = null;
+    let grace = null;
+    let child = null;
+
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (grace) clearTimeout(grace);
+      signal?.removeEventListener('abort', onAbort);
+      resolve(value);
+    };
+
+    const killTree = () => {
+      const pid = child?.pid;
+      if (!pid) return;
+      if (process.platform === 'win32') {
+        spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+        return;
+      }
+      try {
+        process.kill(-pid, 'SIGKILL');
+      } catch {
+        try { child.kill('SIGKILL'); } catch { /* 进程已经退出 */ }
+      }
+    };
+
+    const forceSoon = () => {
+      if (grace || settled) return;
+      grace = setTimeout(() => {
+        finish({
+          code: 1,
+          stdout,
+          stderr: `${stderr}\n进程已强制结束`.trim(),
+          missing: false,
+          timedOut: true,
+        });
+      }, KILL_GRACE_MS);
+      grace.unref?.();
+    };
+
+    const onAbort = () => {
+      killTree();
+      forceSoon();
+    };
+
+    try {
+      child = spawn(command, args, {
+        cwd,
+        windowsHide: true,
+        detached: process.platform !== 'win32',
+      });
+    } catch (error) {
+      finish({ code: 127, stdout: '', stderr: error.message, missing: true });
+      return;
+    }
+
+    timer = setTimeout(() => {
+      killTree();
+      forceSoon();
     }, timeoutMs);
+
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
+
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
-    child.stdout?.on('data', (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr?.on('data', (chunk) => {
-      stderr += chunk;
-    });
+    child.stdout?.on('data', (chunk) => { stdout = appendCapped(stdout, chunk); });
+    child.stderr?.on('data', (chunk) => { stderr = appendCapped(stderr, chunk); });
     child.on('error', (error) => {
-      clearTimeout(timer);
-      resolve({
+      finish({
         code: 127,
         stdout,
-        stderr: `${stderr}\n${error.message}`,
+        stderr: `${stderr}\n${error.message}`.trim(),
         missing: error.code === 'ENOENT',
       });
     });
     child.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ code: code ?? 1, stdout, stderr, missing: false });
+      finish({ code: code ?? 1, stdout, stderr, missing: false });
     });
   });
 }
@@ -107,6 +176,12 @@ function sameLanguage(left, right) {
   return a === b || a.startsWith(`${b}-`) || b.startsWith(`${a}-`) || a.slice(0, 2) === b.slice(0, 2);
 }
 
+function isOriginalAuto(file, original) {
+  if (!file.auto) return false;
+  if (/-orig$/i.test(file.lang)) return true;
+  return Boolean(original) && sameLanguage(file.lang, original);
+}
+
 export function chooseSubtitle(files, info = {}) {
   const original = String(info.language || info.language_code || '').trim();
   const manualLangs = new Set(Object.keys(info.subtitles || {}));
@@ -122,7 +197,7 @@ export function chooseSubtitle(files, info = {}) {
   if (manualOriginal) return { text: manualOriginal.text, source: 'subtitle-manual' };
   const manual = rows.find((file) => file.manual);
   if (manual) return { text: manual.text, source: 'subtitle-manual' };
-  const autoOriginal = rows.find((file) => file.auto && original && sameLanguage(file.lang, original));
+  const autoOriginal = rows.find((file) => isOriginalAuto(file, original));
   if (autoOriginal) return { text: autoOriginal.text, source: 'subtitle-auto' };
   return { text: '', source: '' };
 }
@@ -144,10 +219,21 @@ async function readVttFiles(directory) {
 }
 
 function blockedResult(result) {
-  const reason = youtubeBlockReason(`${result.stderr}\n${result.stdout}`);
-  if (reason) return { blocked: reason, detail: String(result.stderr || result.stdout || '').slice(0, 300) };
   if (result.missing) return { blocked: 'yt-dlp-missing', detail: '没有找到 yt-dlp' };
-  return null;
+  if (result.code === 0) return null;
+  const errors = youtubeErrorText(result.stderr);
+  const reason = youtubeBlockReason(errors);
+  if (!reason) return null;
+  return { blocked: reason, detail: errors.slice(0, 300) };
+}
+
+function ytDlpBaseArgs(env) {
+  return [
+    '--js-runtimes', `node:${process.execPath}`,
+    '--no-warnings',
+    '--no-playlist',
+    ...cookieArgs(env),
+  ];
 }
 
 export async function probeYoutubeEpisode({
@@ -157,6 +243,7 @@ export async function probeYoutubeEpisode({
   env = process.env,
   run = runProcess,
   timeoutMs = 180_000,
+  signal,
 }) {
   await mkdir(workDir, { recursive: true });
   const args = [
@@ -166,13 +253,12 @@ export async function probeYoutubeEpisode({
     '--sub-langs', SUB_LANGS,
     '--convert-subs', 'vtt',
     '--dump-single-json',
-    '--no-warnings',
-    '--no-playlist',
-    ...cookieArgs(env),
-    '-o', path.join(workDir, `${videoId}.%(ext)s`),
-    url,
+    ...ytDlpBaseArgs(env),
+    '-o', path.join(workDir, '%(ext)s'),
+    '--',
+    watchUrl(videoId),
   ];
-  const result = await run(ytDlpBinary(env), args, { timeoutMs, cwd: workDir });
+  const result = await run(ytDlpBinary(env), args, { timeoutMs, cwd: workDir, signal });
   const blocked = blockedResult(result);
   if (blocked) return blocked;
   const info = readYtDlpJson(result.stdout) || {};
@@ -193,22 +279,43 @@ export async function probeYoutubeEpisode({
   };
 }
 
-export async function resolveYoutubeChannelId({ handle, fetchImpl = fetch, env = process.env }) {
+export function combineFetchSignal(signal, timeoutMs = YOUTUBE_FETCH_TIMEOUT_MS) {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  if (!signal) return timeout;
+  return typeof AbortSignal.any === 'function' ? AbortSignal.any([signal, timeout]) : signal;
+}
+
+export async function resolveYoutubeChannelId({ handle, fetchImpl = fetch, signal } = {}) {
   const name = String(handle || '').replace(/^@/, '');
-  const response = await fetchImpl(`https://www.youtube.com/@${encodeURIComponent(name)}`, {
-    headers: {
-      'user-agent': 'AICenter/0.2 youtube-podcasts',
-      accept: 'text/html',
-      ...(env.AI_CENTER_YOUTUBE_COOKIES ? {} : {}),
-    },
-  });
+  let response;
+  try {
+    response = await fetchImpl(`https://www.youtube.com/@${encodeURIComponent(name)}`, {
+      headers: { 'user-agent': 'AICenter/0.2 youtube-podcasts', accept: 'text/html' },
+      signal: combineFetchSignal(signal),
+    });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return { failed: true, detail: '频道页超时' };
+  }
   const html = await response.text();
-  const blocked = youtubeBlockReason(html) || (response.status === 429 ? '429' : '');
-  if (blocked) return { blocked, detail: `频道页 ${response.status || blocked}` };
-  if (!response.ok) return { failed: true, detail: `频道页 ${response.status}` };
-  const channelId = readChannelId(html);
-  if (!channelId) return { failed: true, detail: `没有解析到 @${name} 的频道编号` };
-  return { channelId };
+  if (response.ok) {
+    const channelId = readChannelId(html);
+    if (!channelId) return { failed: true, detail: `没有解析到 @${name} 的频道编号` };
+    return { channelId };
+  }
+  const blocked = response.status === 429 ? '429' : youtubeBlockReason(html);
+  if (blocked) return { blocked, detail: `频道页 ${response.status}` };
+  return { failed: true, detail: `频道页 ${response.status}` };
+}
+
+export async function ensureFreeDisk(dir, minimumBytes = MIN_FREE_BYTES) {
+  const stats = await statfs(dir);
+  const free = Number(stats.bavail) * Number(stats.bsize);
+  if (Number.isFinite(free) && free < minimumBytes) {
+    const error = new Error('磁盘空间不足，已跳过音频下载');
+    error.code = 'youtube-disk';
+    throw error;
+  }
 }
 
 export async function finishAudioFile(file, work) {
@@ -229,23 +336,24 @@ export async function transcribeYoutubeAudio({
   execute,
   run = runProcess,
   workspaceId = 'local',
+  signal,
 }) {
-  const dir = path.join(dataDirectory, 'tmp', 'youtube-podcasts');
-  await mkdir(dir, { recursive: true });
-  const target = path.join(dir, `${videoId}.wav`);
-  return finishAudioFile(target, async () => {
+  const parent = path.join(dataDirectory, 'tmp', 'youtube-podcasts');
+  await mkdir(parent, { recursive: true });
+  const dir = await mkdtemp(path.join(parent, `${videoId}-`));
+  try {
+    await ensureFreeDisk(dir);
     const args = [
       '-f', 'bestaudio',
       '-x',
       '--audio-format', 'wav',
       '--postprocessor-args', 'ffmpeg:-ac 1 -ar 16000',
-      '--no-playlist',
-      '--no-warnings',
-      ...cookieArgs(env),
-      '-o', target,
-      url,
+      ...ytDlpBaseArgs(env),
+      '-o', path.join(dir, '%(ext)s'),
+      '--',
+      watchUrl(videoId),
     ];
-    const result = await run(ytDlpBinary(env), args, { cwd: dir, timeoutMs: 15 * 60_000 });
+    const result = await run(ytDlpBinary(env), args, { cwd: dir, timeoutMs: 15 * 60_000, signal });
     const blocked = blockedResult(result);
     if (blocked) {
       const error = new Error(blocked.detail || blocked.blocked);
@@ -254,6 +362,9 @@ export async function transcribeYoutubeAudio({
       throw error;
     }
     if (result.code !== 0) throw new Error(String(result.stderr || '音频下载失败').slice(0, 300));
+    const wavName = (await readdir(dir)).find((name) => name.endsWith('.wav'));
+    if (!wavName) throw new Error('没有得到 wav');
+    const target = path.join(dir, wavName);
     const durationMs = await wavFileDurationMs(target) || 60_000;
     const plan = describeAudioTranscription(env, durationMs);
     const relative = path.relative(dataDirectory, target).split(path.sep).join('/');
@@ -268,9 +379,12 @@ export async function transcribeYoutubeAudio({
       dataDirectory,
       env,
       quotaRepository,
+      signal,
     });
     return String(transcribed?.text || '').trim();
-  });
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 async function wavFileDurationMs(file) {

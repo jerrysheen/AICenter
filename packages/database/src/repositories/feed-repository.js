@@ -37,6 +37,13 @@ function publicTranslationError(error) {
   return text || '翻译失败';
 }
 
+export const EXCLUDE_YOUTUBE_SQL = `NOT EXISTS (
+  SELECT 1 FROM captures youtube_excluded
+  WHERE youtube_excluded.id = ci.capture_id
+    AND youtube_excluded.workspace_id = ci.workspace_id
+    AND youtube_excluded.provider = 'youtube'
+)`;
+
 const USER_VISIBLE_CONTENT_SQL = `NOT EXISTS (
   SELECT 1 FROM user_item_states uis
   WHERE uis.workspace_id = ci.workspace_id
@@ -1322,7 +1329,10 @@ export function createFeedRepository(database, emitEvent) {
           ON item_state.workspace_id = ci.workspace_id AND item_state.content_item_id = ci.id
         LEFT JOIN item_authors ia ON ia.workspace_id = ci.workspace_id AND ia.content_item_id = ci.id
         WHERE ci.workspace_id = ? AND ci.id IN (${wanted.map(() => '?').join(',')})
-          AND ${visibility}`).all(workspaceId, ...wanted);
+          AND (
+            (${visibility})
+            OR (COALESCE(item_state.is_hidden, 0) = 0 AND COALESCE(c.provider, '') = 'youtube')
+          )`).all(workspaceId, ...wanted);
       const byId = new Map(rows.map((row) => [row.id, row]));
       return wanted.map((id) => byId.get(id)).filter(Boolean).map((row) => ({
         ...mapContentItem(row),
@@ -1347,11 +1357,13 @@ export function createFeedRepository(database, emitEvent) {
         ? database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id
             FROM content_items ci
             LEFT JOIN captures c ON c.id = ci.capture_id
-            WHERE ci.workspace_id = ? AND ci.id IN (${wanted.map(() => '?').join(', ')}) AND ${approvedQualitySql(qualityRule)}`).all(workspaceId, ...wanted)
+            WHERE ci.workspace_id = ? AND ci.id IN (${wanted.map(() => '?').join(', ')})
+              AND ${approvedQualitySql(qualityRule)} AND ${EXCLUDE_YOUTUBE_SQL}`).all(workspaceId, ...wanted)
         : database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id
             FROM content_items ci
             LEFT JOIN captures c ON c.id = ci.capture_id
             WHERE ci.workspace_id = ? AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
+              AND ${EXCLUDE_YOUTUBE_SQL}
             ORDER BY ci.created_at DESC, ci.id DESC LIMIT ?`).all(workspaceId, safeLimit);
       return rows.map((row) => ({
         ...mapContentItem(row),
@@ -1365,10 +1377,12 @@ export function createFeedRepository(database, emitEvent) {
       const rows = before === null
         ? database.prepare(`SELECT * FROM content_items ci WHERE ci.workspace_id = ?
             AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
+            AND ${EXCLUDE_YOUTUBE_SQL}
             ORDER BY ci.created_at DESC, ci.id DESC LIMIT ?`).all(workspaceId, safeLimit)
         : database.prepare(`SELECT * FROM content_items ci WHERE ci.workspace_id = ?
             AND ci.created_at < ?
             AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
+            AND ${EXCLUDE_YOUTUBE_SQL}
             ORDER BY ci.created_at DESC, ci.id DESC LIMIT ?`)
           .all(workspaceId, Number(before), safeLimit);
       return rows.map(mapContentItem);
@@ -1383,7 +1397,7 @@ export function createFeedRepository(database, emitEvent) {
         LEFT JOIN source_accounts sa ON sa.id=c.source_account_id AND sa.workspace_id=ci.workspace_id
         LEFT JOIN subscriptions sub ON sub.source_account_id=sa.id AND sub.workspace_id=ci.workspace_id
         WHERE ci.workspace_id=? AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
-          AND COALESCE(c.provider, '') != 'youtube'
+          AND ${EXCLUDE_YOUTUBE_SQL}
           AND COALESCE(ci.published_at,ci.created_at)>=? AND COALESCE(ci.published_at,ci.created_at)<?
         AND ci.id NOT IN (SELECT value FROM json_each(?))
         GROUP BY COALESCE(c.source_account_id,'local')`).all(workspaceId,startAt,endAt,JSON.stringify(excludedItemIds));
@@ -1405,6 +1419,7 @@ export function createFeedRepository(database, emitEvent) {
         LEFT JOIN source_accounts sa ON sa.id=c.source_account_id
         WHERE ci.workspace_id = ?
           AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
+          AND ${EXCLUDE_YOUTUBE_SQL}
           AND ${timeSql} >= ?
           AND ${timeSql} < ?
           AND (? IS NULL OR COALESCE(c.source_account_id,'local')=?)
@@ -1678,6 +1693,7 @@ export function createFeedRepository(database, emitEvent) {
         JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
         WHERE ci.workspace_id = ?
           AND c.provider NOT IN ('x', 'xueqiu', 'trendforce', 'bilibili')
+          AND ${EXCLUDE_YOUTUBE_SQL}
           AND length(ci.body) > 20000
           AND ${USER_VISIBLE_CONTENT_SQL}
           AND NOT EXISTS (

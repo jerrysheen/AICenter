@@ -37,6 +37,11 @@ export function createYoutubePodcastRepository(database) {
         .map((row) => mapEpisode(row));
     },
 
+    episode(workspaceId, videoId) {
+      return mapEpisode(database.prepare(`SELECT * FROM youtube_podcast_episodes
+        WHERE workspace_id = ? AND video_id = ?`).get(workspaceId, videoId));
+    },
+
     isDone(workspaceId, videoId) {
       const row = database.prepare(`SELECT status FROM youtube_podcast_episodes
         WHERE workspace_id = ? AND video_id = ?`).get(workspaceId, videoId);
@@ -104,13 +109,15 @@ export function createYoutubePodcastRepository(database) {
       );
     },
 
-    listReady(workspaceId) {
+    listReady(workspaceId, limit = 200) {
+      const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
       const rows = database.prepare(`SELECT e.*, ci.summary AS summary, '' AS body,
           ci.title AS display_title, ci.source_url AS source_url, ci.author_name AS author_name
         FROM youtube_podcast_episodes e
         LEFT JOIN content_items ci ON ci.id = e.content_item_id AND ci.workspace_id = e.workspace_id
         WHERE e.workspace_id = ? AND e.status = 'ready'
-        ORDER BY COALESCE(e.published_at, 0) DESC, e.video_id DESC`).all(workspaceId);
+        ORDER BY COALESCE(e.published_at, 0) DESC, e.video_id DESC
+        LIMIT ?`).all(workspaceId, safeLimit);
       return rows.map((row) => mapEpisode(row, {
         summary: row.summary || '',
         body: row.body || '',

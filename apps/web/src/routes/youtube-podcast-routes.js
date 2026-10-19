@@ -16,7 +16,7 @@ export function createYoutubePodcastRoutes() {
     {
       method: 'POST',
       path: '/api/v1/youtube-podcasts/sync',
-      access: 'desktop',
+      access: 'operator',
       handler({ response, services, identity, events }) {
         const result = services.youtubePodcasts.enqueue(workspaceIdFrom(identity));
         events?.flush?.();
