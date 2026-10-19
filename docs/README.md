@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-19-market-board-backlog.md`：看板超时会取消还没发出的 Yahoo 请求。同一键的 refresh 复用进行中的请求。默认超时 20 秒。`^HSTECH` 404 只跳过自己。不新增 migration。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-19-market-flow.md`：股票子页最后增加「资金」（`#market/flow`）。南向净额和北向成交额只出现在这一页。北向沿用东财和港交所已有响应，净买入没有公布就不显示。migration 88 建 `northbound_daily` 和 `northbound_top10` 两张表。需要同时重启 Web 和 Worker，再按该说明补北向历史。
 
 - `progress/2026-10-19-us-open-stale.md`：美股刚开盘的 5 分钟内，盘前报价不再标成红色「已过期」，顶部和美股观察写「盘中 · 等待报价」。盘前、盘后的 `asOf` 用报价自己的时间，行提示写盘前或盘后。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。

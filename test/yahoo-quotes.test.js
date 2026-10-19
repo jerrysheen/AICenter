@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createYahooClient, isUsMarketSymbol, preferNewerQuote, quoteFromSpark, yahooCacheMs } from '../packages/connectors/src/yahoo.js';
+import { createYahooClient, isUsMarketSymbol, preferNewerQuote, quoteFromSpark, yahooCacheMs, yahooQueueMaxAgeMs } from '../packages/connectors/src/yahoo.js';
 import {
   createUsQuoteFallback,
   quoteFromSinaUsBody,
@@ -8,7 +8,7 @@ import {
   yahooToSinaUs,
   yahooToTencentUs,
 } from '../packages/connectors/src/us-quote-fallback.js';
-import { usSessionAt } from '../packages/connectors/src/us-session.js';
+import { usRegularOpenAt, usSessionAt } from '../packages/connectors/src/us-session.js';
 
 const NOW = Date.parse('2026-10-15T13:53:10Z');
 
@@ -590,6 +590,119 @@ test('a timed out Yahoo batch retries once and only that batch falls back', asyn
   assert.equal(board.quotes.find((item) => item.symbol === 'S0').provider, 'sina');
   assert.equal(board.quotes.find((item) => item.symbol === 'TAIL').provider, 'yahoo');
   assert.equal(board.quotes.find((item) => item.symbol === 'TAIL').lastPrice, 5);
+});
+
+test('^HSTECH 404 skips that symbol and keeps the rest of the Asia batch', async () => {
+  const seen = [];
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (!href.includes('/v7/finance/spark')) throw new Error(href);
+    const symbols = new URL(href).searchParams.get('symbols').split(',');
+    seen.push(symbols.join(','));
+    if (symbols.includes('^HSTECH')) {
+      return response(JSON.stringify({
+        spark: { result: null, error: { code: 'Not Found', description: 'No data found, symbol may be delisted' } },
+      }), { status: 404 });
+    }
+    return response(JSON.stringify({ spark: { result: symbols.map((symbol) => spark(symbol, 8)) } }));
+  };
+  const client = createYahooClient({
+    fetchImpl,
+    now: () => NOW,
+    timeoutMs: 1_000,
+    minIntervalMs: 0,
+    log() {},
+    fallback: { async fetchQuotes() { return []; } },
+  });
+  const board = await client.fetchQuotes(['^HSI', '^HSTECH', '^KS11', '005930.KS']);
+  assert.equal(board.quotes.find((item) => item.symbol === '^HSTECH'), undefined);
+  assert.equal(board.quotes.find((item) => item.symbol === '^HSI').lastPrice, 8);
+  assert.equal(board.quotes.find((item) => item.symbol === '^KS11').lastPrice, 8);
+  assert.equal(board.quotes.find((item) => item.symbol === '005930.KS').lastPrice, 8);
+  assert.ok(seen.includes('^HSTECH'));
+});
+
+test('aborting a quote round drops queued Yahoo work and leaves no backlog', async () => {
+  let started = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const fetchImpl = async (url) => {
+    started += 1;
+    await gate;
+    const symbols = new URL(String(url)).searchParams.get('symbols').split(',');
+    return response(JSON.stringify({ spark: { result: symbols.map((symbol) => spark(symbol, 3)) } }));
+  };
+  const client = createYahooClient({
+    fetchImpl,
+    now: () => NOW,
+    timeoutMs: 2_000,
+    minIntervalMs: 0,
+    log() {},
+    fallback: { async fetchQuotes() { throw new Error('fallback should not run after abort'); } },
+  });
+  const symbols = Array.from({ length: 30 }, (_, index) => `Q${index}`);
+  const controller = new AbortController();
+  const pending = client.fetchQuotes(symbols, { signal: controller.signal, maxQueueMs: 20_000 });
+  for (let attempt = 0; attempt < 50 && started < 2; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(started, 2);
+  controller.abort();
+  release();
+  await pending;
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(started, 2);
+  await client.fetchQuotes(['AAPL'], { maxQueueMs: 20_000 });
+  assert.equal(started, 3);
+});
+
+test('a quote queued longer than the board limit is not sent', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const seen = [];
+  const fetchImpl = async (url) => {
+    const symbols = new URL(String(url)).searchParams.get('symbols');
+    seen.push(symbols);
+    if (seen.length <= 2) await gate;
+    const names = symbols.split(',');
+    return response(JSON.stringify({ spark: { result: names.map((symbol) => spark(symbol, 4)) } }));
+  };
+  const client = createYahooClient({
+    fetchImpl,
+    now: () => NOW,
+    timeoutMs: 2_000,
+    minIntervalMs: 0,
+    log() {},
+    fallback: { async fetchQuotes() { return []; } },
+  });
+  const fillers = Array.from({ length: 20 }, (_, index) => `F${index}`);
+  const blocking = client.fetchQuotes(fillers, { maxQueueMs: 60_000 });
+  for (let attempt = 0; attempt < 50 && seen.length < 2; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  const late = client.fetchQuotes(['^HSTECH', '^KS11'], { maxQueueMs: 40 });
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  release();
+  const lateBoard = await late;
+  await blocking;
+  assert.equal(seen.some((item) => item.includes('HSTECH') || item.includes('KS11')), false);
+  assert.equal(lateBoard.quotes.find((item) => item.symbol === '^HSTECH'), undefined);
+  assert.equal(lateBoard.quotes.find((item) => item.symbol === '^KS11'), undefined);
+});
+
+test('queue age follows the board timeout and session formatting is reused', () => {
+  assert.equal(yahooQueueMaxAgeMs({}), 20_000);
+  assert.equal(yahooQueueMaxAgeMs({ AI_CENTER_MARKET_BOARD_TIMEOUT_MS: '15000' }), 15_000);
+  const Original = Intl.DateTimeFormat;
+  Intl.DateTimeFormat = function dateTimeFormat() {
+    throw new Error('DateTimeFormat should be reused');
+  };
+  try {
+    assert.equal(usSessionAt(Date.parse('2026-10-19T14:00:00Z')), 'regular');
+    assert.equal(typeof usRegularOpenAt(Date.parse('2026-10-19T14:00:00Z')), 'number');
+  } finally {
+    Intl.DateTimeFormat = Original;
+  }
 });
 
 test('two Yahoo spark batches are in flight together', async () => {

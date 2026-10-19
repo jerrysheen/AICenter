@@ -10,9 +10,11 @@ const DEFAULT_CACHE_MS = 30_000;
 const CACHE_SPAN_MS = 45_000;
 const US_INDEX_SYMBOLS = new Set(['^GSPC', '^DJI', '^IXIC', '^SOX', '^VIX']);
 const DEFAULT_MIN_INTERVAL_MS = 800;
-// The US board deadline is 12s and this pump is shared with Asia and global.
+// The US board deadline defaults to 20s and this pump is shared with Asia and global.
 // Two in-flight calls use the existing undici pool (connections: 2). Batches of
 // 10 stay near a direct spark (~2.6s) instead of four serial 20-symbol calls.
+// Queued tasks carry the board AbortSignal and are dropped once they have waited
+// longer than that deadline, so a slow round cannot pile up behind the next one.
 const BATCH_SIZE = 10;
 const QUOTE_CONCURRENCY = 2;
 const BACKOFF_BASE_MS = 15_000;
@@ -60,6 +62,10 @@ export function yahooMinIntervalMs(env = process.env) {
 
 export function yahooTimeoutMs(env = process.env) {
   return envInt(env, 'AI_CENTER_YAHOO_TIMEOUT_MS', DEFAULT_TIMEOUT_MS, 1_000, 20_000);
+}
+
+export function yahooQueueMaxAgeMs(env = process.env) {
+  return envInt(env, 'AI_CENTER_MARKET_BOARD_TIMEOUT_MS', 20_000, 1_000, 60_000);
 }
 
 function defaultLog(level, message) {
@@ -158,28 +164,115 @@ export function createYahooQuoteLayer(options = {}) {
     backoffMs = BACKOFF_BASE_MS;
   }
 
-  function schedule(task, lane = 'bulk') {
+  function waiterExpired(waiter, at = Date.now()) {
+    if (!waiter) return true;
+    if (waiter.signal?.aborted) return true;
+    return waiter.maxQueueMs > 0 && at - waiter.enqueuedAt >= waiter.maxQueueMs;
+  }
+
+  function slotLive(slot, at = Date.now()) {
+    if (!slot?.waiters?.length) return false;
+    return slot.waiters.some((waiter) => !waiterExpired(waiter, at));
+  }
+
+  function liveSymbols(symbols, at = Date.now()) {
+    return (symbols || []).filter((symbol) => slotLive(inflight.get(symbol), at));
+  }
+
+  function skipQueued(job) {
+    if (!job || job.started || !job.symbols?.length) return false;
+    return liveSymbols(job.symbols).length === 0;
+  }
+
+  function discardQueued(job) {
+    const index = jobs.indexOf(job);
+    if (index < 0 || job.started) return;
+    jobs.splice(index, 1);
+    if (job.expiryTimer) clearTimeout(job.expiryTimer);
+    job.resolve({ skipped: true });
+  }
+
+  function reap() {
+    for (const job of [...jobs]) {
+      if (skipQueued(job)) discardQueued(job);
+    }
+    for (const [symbol, slot] of [...inflight]) {
+      if (!slot.started && !slotLive(slot)) finish(symbol, null);
+    }
+  }
+
+  function allAbortSignal(signals) {
+    const list = [...new Set((signals || []).filter(Boolean))];
+    if (!list.length) return undefined;
+    if (list.length === 1) return list[0];
+    const controller = new AbortController();
+    const check = () => {
+      if (list.every((signal) => signal.aborted)) controller.abort();
+    };
+    for (const signal of list) {
+      if (!signal.aborted) signal.addEventListener('abort', check, { once: true });
+    }
+    check();
+    return controller.signal;
+  }
+
+  function schedule(task, lane = 'bulk', meta = {}) {
     let resolve;
     let reject;
     const promise = new Promise((res, rej) => {
       resolve = res;
       reject = rej;
     });
-    jobs.push({ lane, task, resolve, reject });
+    const symbols = Array.isArray(meta.symbols) ? meta.symbols : [];
+    const job = {
+      lane,
+      task,
+      resolve,
+      reject,
+      symbols,
+      started: false,
+      signals: [...new Set((meta.signals || []).filter(Boolean))],
+    };
+    if (symbols.length && liveSymbols(symbols).length === 0) {
+      resolve({ skipped: true });
+      return promise;
+    }
+    jobs.push(job);
+    for (const signal of job.signals) {
+      if (signal.aborted) reap();
+      else signal.addEventListener('abort', reap, { once: true });
+    }
+    const expiryAt = symbols.reduce((soonest, symbol) => {
+      for (const waiter of inflight.get(symbol)?.waiters || []) {
+        if (!(waiter.maxQueueMs > 0) || waiter.signal?.aborted) continue;
+        const at = waiter.enqueuedAt + waiter.maxQueueMs;
+        if (soonest == null || at < soonest) soonest = at;
+      }
+      return soonest;
+    }, null);
+    if (expiryAt != null) {
+      job.expiryTimer = setTimeout(reap, Math.max(0, expiryAt - Date.now()));
+      job.expiryTimer.unref?.();
+    }
     pump();
     return promise;
   }
 
   function pump() {
+    reap();
     while (inFlight < QUOTE_CONCURRENCY) {
       const index = jobs.findIndex((job) => job.lane === 'us');
-      if (!jobs[index >= 0 ? index : 0]) return;
-      const job = jobs.splice(index >= 0 ? index : 0, 1)[0];
+      const job = jobs[index >= 0 ? index : 0];
+      if (!job) return;
+      jobs.splice(index >= 0 ? index : 0, 1);
+      if (job.expiryTimer) clearTimeout(job.expiryTimer);
       const wait = Math.max(0, nextSlot - Date.now());
       nextSlot = Date.now() + wait + minIntervalMs;
       inFlight += 1;
+      job.started = true;
       Promise.resolve().then(async () => {
         if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
+        if (job.symbols?.length && liveSymbols(job.symbols).length === 0) return { skipped: true };
         return job.task();
       }).then((value) => {
         job.resolve(value);
@@ -211,23 +304,51 @@ export function createYahooQuoteLayer(options = {}) {
   }
 
   function dispatch(group, lane) {
-    if (!group.length) return;
-    const startedAt = now();
+    const chosen = [];
     for (const symbol of group) {
       const slot = inflight.get(symbol);
-      if (!slot) continue;
+      if (!slot || slot.started) continue;
+      if (!slotLive(slot)) {
+        finish(symbol, null);
+        continue;
+      }
+      chosen.push(symbol);
+    }
+    if (!chosen.length) return;
+    const startedAt = now();
+    const waiters = [];
+    for (const symbol of chosen) {
+      const slot = inflight.get(symbol);
       slot.started = true;
       if (!slot.since) slot.since = startedAt;
+      waiters.push(...(slot.waiters || []));
     }
     const loadNow = fetcher;
-    schedule(() => (backingOff() ? { blocked: true } : loadNow(group)), lane).then((result) => {
-      if (result?.blocked) {
-        finishMany(group, new Map());
+    const signals = waiters.map((waiter) => waiter.signal).filter(Boolean);
+    schedule(() => {
+      const still = chosen.filter((symbol) => slotLive(inflight.get(symbol)));
+      for (const symbol of chosen) {
+        if (!still.includes(symbol) && inflight.has(symbol)) finish(symbol, null);
+      }
+      if (!still.length) return { skipped: true };
+      if (backingOff()) return { blocked: true };
+      const batchSignal = allAbortSignal(still.flatMap((symbol) => (
+        (inflight.get(symbol)?.waiters || []).map((waiter) => waiter.signal).filter(Boolean)
+      )));
+      return loadNow(still, batchSignal);
+    }, lane, { symbols: chosen, signals }).then((result) => {
+      const open = chosen.filter((symbol) => inflight.has(symbol));
+      if (result?.blocked || result?.skipped) {
+        finishMany(open, new Map());
         return;
       }
       noteSuccess();
-      finishMany(group, quoteMap(result));
+      finishMany(open, quoteMap(result));
     }).catch((error) => {
+      if (error?.name === 'AbortError') {
+        finishMany(chosen, new Map());
+        return;
+      }
       if (error?.status === 429) {
         note429(error.retryAfterMs || 0);
         const partial = quoteMap(error.partial);
@@ -258,9 +379,10 @@ export function createYahooQuoteLayer(options = {}) {
   }
 
   function drain() {
+    reap();
     const pending = [];
     for (const [symbol, slot] of inflight) {
-      if (!slot.started) pending.push(symbol);
+      if (!slot.started && slotLive(slot)) pending.push(symbol);
     }
     if (!pending.length) return;
     if (backingOff()) {
@@ -273,8 +395,11 @@ export function createYahooQuoteLayer(options = {}) {
     for (const group of chunk(bulk, BATCH_SIZE)) dispatch(group, 'bulk');
   }
 
-  function enqueue(symbols, load) {
+  function enqueue(symbols, load, meta = {}) {
     fetcher = load;
+    const signal = meta.signal;
+    const maxQueueMs = Number(meta.maxQueueMs) || 0;
+    const enqueuedAt = Date.now();
     const pending = [];
     let added = false;
     for (const symbol of symbols) {
@@ -287,11 +412,17 @@ export function createYahooQuoteLayer(options = {}) {
       if (!slot) {
         let resolve;
         const promise = new Promise((res) => { resolve = res; });
-        slot = { resolve, promise, started: false };
+        slot = { resolve, promise, started: false, waiters: [] };
         inflight.set(symbol, slot);
         added = true;
       }
+      if (!slot.waiters) slot.waiters = [];
+      slot.waiters.push({ signal, maxQueueMs, enqueuedAt });
       pending.push(slot.promise);
+    }
+    if (signal) {
+      if (signal.aborted) reap();
+      else signal.addEventListener('abort', reap, { once: true });
     }
     if (added && !drainScheduled) {
       drainScheduled = true;
@@ -533,7 +664,14 @@ export function createYahooClient(options = {}) {
       }
       return response;
     } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') throw new Error('Yahoo 行情请求超时。');
+      if (error instanceof Error && error.name === 'AbortError') {
+        if (signal?.aborted) {
+          const aborted = new Error('Yahoo 行情已取消');
+          aborted.name = 'AbortError';
+          throw aborted;
+        }
+        throw new Error('Yahoo 行情请求超时。');
+      }
       throw error;
     } finally {
       clearTimeout(timer);
@@ -581,10 +719,18 @@ export function createYahooClient(options = {}) {
   }
 
   function sparkResults(payload) {
-    if (isRecord(payload?.spark?.error) && /unauthor|crumb|invalid/i.test(String(payload.spark.error.code || payload.spark.error.description || ''))) {
-      const error = new Error('Yahoo HTTP 401');
-      error.status = 401;
-      throw error;
+    if (isRecord(payload?.spark?.error)) {
+      const code = String(payload.spark.error.code || payload.spark.error.description || '');
+      if (/not found|404/i.test(code)) {
+        const error = new Error('Yahoo HTTP 404');
+        error.status = 404;
+        throw error;
+      }
+      if (/unauthor|crumb|invalid/i.test(code)) {
+        const error = new Error('Yahoo HTTP 401');
+        error.status = 401;
+        throw error;
+      }
     }
     return isRecord(payload) && isRecord(payload.spark) && Array.isArray(payload.spark.result)
       ? payload.spark.result
@@ -629,6 +775,7 @@ export function createYahooClient(options = {}) {
       try {
         return quotesFromSpark(await fetchSparkGroup(group, '1d', interval, true, 0, signal));
       } catch (error) {
+        if (signal?.aborted || error?.name === 'AbortError') throw error;
         if (error?.status === 429 || error?.status === 404) throw error;
         lastError = error;
         if (attempt === 0) {
@@ -636,8 +783,31 @@ export function createYahooClient(options = {}) {
         }
       }
     }
+    if (signal?.aborted) return [];
     log('error', `Yahoo 行情失败 ${lastError instanceof Error ? lastError.message : lastError}`);
     return fillFallback(group);
+  }
+
+  async function loadGroup(group, interval, signal) {
+    if (!group.length || signal?.aborted) return [];
+    try {
+      return await loadSparkBatch(group, interval, signal);
+    } catch (error) {
+      if (signal?.aborted || error?.name === 'AbortError') return [];
+      if (error?.status === 429) throw error;
+      if (error?.status === 404) {
+        if (group.length === 1) {
+          log('warn', `Yahoo HTTP 404 symbol=${group[0]}`);
+          return [];
+        }
+        const mid = Math.ceil(group.length / 2);
+        const left = await loadGroup(group.slice(0, mid), interval, signal);
+        const right = await loadGroup(group.slice(mid), interval, signal);
+        return [...left, ...right];
+      }
+      log('error', `Yahoo 行情失败 ${error instanceof Error ? error.message : error}`);
+      return fillFallback(group);
+    }
   }
 
   async function loadSymbols(symbols, interval, signal) {
@@ -645,13 +815,13 @@ export function createYahooClient(options = {}) {
     for (const group of chunk(symbols, BATCH_SIZE)) {
       if (signal?.aborted) break;
       try {
-        quotes.push(...await loadSparkBatch(group, interval, signal));
+        quotes.push(...await loadGroup(group, interval, signal));
       } catch (error) {
+        if (signal?.aborted || error?.name === 'AbortError') break;
         if (error?.status === 429) {
           error.partial = quotes;
           throw error;
         }
-        if (error?.status === 404) throw error;
         log('error', `Yahoo 行情失败 ${error instanceof Error ? error.message : error}`);
         quotes.push(...await fillFallback(group));
       }
@@ -691,7 +861,7 @@ export function createYahooClient(options = {}) {
     }
   }
 
-  async function fetchQuotes(symbols, { interval = '5m', signal } = {}) {
+  async function fetchQuotes(symbols, { interval = '5m', signal, maxQueueMs } = {}) {
     const unique = [...new Set((symbols || []).map((symbol) => String(symbol || '').trim().toUpperCase()).filter(Boolean))];
     if (!unique.length) return { quotes: [], session: 'closed' };
     if (signal?.aborted) return { quotes: [], session: 'closed' };
@@ -701,7 +871,13 @@ export function createYahooClient(options = {}) {
       const extra = await fillFallback(unique.filter((symbol) => !have.has(symbol)));
       return pack([...cached, ...extra], unique);
     }
-    const rows = await layer.enqueue(unique, (batch) => loadSymbols(batch, interval, signal));
+    const queueLimit = maxQueueMs == null ? yahooQueueMaxAgeMs(env) : maxQueueMs;
+    const rows = await layer.enqueue(
+      unique,
+      (batch, batchSignal) => loadSymbols(batch, interval, batchSignal || signal),
+      { signal, maxQueueMs: queueLimit },
+    );
+    if (signal?.aborted) return pack((rows || []).filter(Boolean), unique);
     const have = new Set(rows.filter((quote) => quote?.lastPrice != null).map((quote) => quote.symbol));
     const extra = await fillFallback(unique.filter((symbol) => !have.has(symbol)));
     return pack([...rows.filter(Boolean), ...extra], unique);
