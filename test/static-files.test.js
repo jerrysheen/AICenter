@@ -283,6 +283,8 @@ test('served html strips the cloudflare web analytics beacon', async () => {
     assert.match(policy, /script-src 'self'/);
     assert.match(policy, /script-src [^;]*https:\/\/static\.cloudflareinsights\.com/);
     assert.match(policy, /connect-src 'self' https:\/\/cloudflareinsights\.com/);
+    assert.match(policy, /img-src 'self' data: https:\/\/pbs\.twimg\.com https:\/\/xavatar\.imedao\.com;/);
+    assert.equal(/img-src[^;]*\*/.test(policy), false);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

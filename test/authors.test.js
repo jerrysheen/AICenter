@@ -238,6 +238,17 @@ test('reposts count under the reposter and provisional authors merge', () => {
   const item = xueqiuToFeedItem(status);
   assert.equal(item.authorNativeId, '123');
   assert.equal(item.authorAvatar, 'https://xqimg.imedao.com/a.png');
+  const sized = mapTimelineStatus({
+    id: 89,
+    text: '相对头像',
+    created_at: 1,
+    user: {
+      id: 7,
+      screen_name: '甲',
+      profile_image_url: 'community/2017x/a.jpg,community/2017x/a.jpg!180x180.jpg',
+    },
+  }, 'following');
+  assert.equal(xueqiuToFeedItem(sized).authorAvatar, 'https://xavatar.imedao.com/community/2017x/a.jpg');
   assert.equal(mapLivenewsItem({ id: 1, text: '快讯' }).author_kind, 'system');
   const repost = attributeXAuthor({
     author_handle: 'alice', author_rest_id: '1', reposter_handle: 'bob', reposter_rest_id: '2',

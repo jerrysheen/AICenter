@@ -1,5 +1,5 @@
-import { parseBilibiliImportInput, parseFlashFeedQuery, parseHideFlag, parsePatchUserItemStateInput, parsePersistFeedTranslationsInput, parsePostInput, parseTranslateBatchInput, parseTranslateInput, ValidationError } from '../../../../packages/contracts/src/index.js';
-import { json, readJson } from '../http/response.js';
+import { FEED_TRANSLATION_TEXT_MAX, parseBilibiliImportInput, parseFlashFeedQuery, parseHideFlag, parsePatchUserItemStateInput, parsePersistFeedTranslationsInput, parsePostInput, parseTranslateBatchInput, parseTranslateInput, ValidationError } from '../../../../packages/contracts/src/index.js';
+import { json, jsonBodyLimit, readJson } from '../http/response.js';
 import { labelEventLoop } from '../http/event-loop-blocks.js';
 import { createPreparedSlotStore } from '../http/prepared-slots.js';
 import { sendOffthreadJson } from '../http/offthread-json.js';
@@ -7,6 +7,8 @@ import { STORED_FEED_CACHE_PROVIDERS } from '../http/stale-read-cache.js';
 import { FEED_FLASH_LIMIT, FEED_FLASH_SNAPSHOT_KEY, FEED_TRENDFORCE_SNAPSHOT_KEY, feedPrebuiltSlot, logFeedSlotMiss } from '../../../../packages/runtime/src/web-snapshot-jobs.js';
 import { collectLocalizationUnits } from '../../../../packages/domain/src/localize-texts.js';
 import { POLYMARKET_OUTCOME_GLOSSARY, POLYMARKET_OUTCOME_MODEL } from '../../../../packages/domain/src/polymarket-outcome-zh.js';
+
+export const TRANSLATE_REQUEST_MAX_BYTES = jsonBodyLimit(FEED_TRANSLATION_TEXT_MAX);
 
 export function projectOfficialContentItem(row, localization = null, detail = null) {
   const releaseId = String(row?.releaseId || row?.eventId || '').trim();
@@ -318,7 +320,7 @@ export function createFeedRoutes({ slots = createPreparedSlotStore(), offthread 
       method: 'POST', path: '/api/v1/translate',
       async handler({ request, response, services, identity, events }) {
         try {
-          const input = parseTranslateInput(await readJson(request));
+          const input = parseTranslateInput(await readJson(request, { maxBytes: TRANSLATE_REQUEST_MAX_BYTES }));
           const job = services.runtime.requestTranslation({ workspaceId: workspaceIdFrom(identity), targetLang: input.targetLang,
             items: [{ id: input.id || 'translation', text: input.text }] });
           events.flush();

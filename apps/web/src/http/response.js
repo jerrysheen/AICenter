@@ -48,15 +48,42 @@ export function json(response, status, payload, headers = {}, { compress = false
   return Promise.resolve();
 }
 
+export function jsonBodyLimit(maxChars, { perChar = 4, envelope = 16 * 1024 } = {}) {
+  const chars = Math.max(1, Number(maxChars) || 1);
+  return chars * perChar + envelope;
+}
+
+function contentLength(request) {
+  const raw = request?.headers?.['content-length'];
+  if (raw == null) return 0;
+  const text = String(Array.isArray(raw) ? raw[0] : raw).trim();
+  if (!/^\d+$/.test(text)) return 0;
+  const value = Number(text);
+  return Number.isSafeInteger(value) ? value : 0;
+}
+
+function requestTooLarge() {
+  const error = new ValidationError('请求内容过大');
+  error.statusCode = 413;
+  return error;
+}
+
 export async function readJson(request, { maxBytes = 128 * 1024 } = {}) {
   const limit = Math.max(1024, Number(maxBytes) || 128 * 1024);
+  const declared = contentLength(request);
   const chunks = [];
   let size = 0;
+  let overflow = declared > limit;
   for await (const chunk of request) {
-    size += chunk.length;
-    if (size > limit) throw new ValidationError('请求内容过大');
-    chunks.push(chunk);
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += bytes.length;
+    if (overflow || size > limit) {
+      overflow = true;
+      continue;
+    }
+    chunks.push(bytes);
   }
+  if (overflow) throw requestTooLarge();
   if (!chunks.length) return {};
   try {
     return JSON.parse(Buffer.concat(chunks).toString('utf8'));
