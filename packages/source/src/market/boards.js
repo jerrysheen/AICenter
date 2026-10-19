@@ -221,6 +221,34 @@ function catalogNameFor(section, symbol) {
   return '';
 }
 
+export function catalogQuoteName(marketCatalog, symbol) {
+  const key = String(symbol || '').trim().toUpperCase();
+  if (!key) return '';
+  const catalog = catalogOrDefault(marketCatalog);
+  for (const section of [catalog.us, catalog.asia, catalog.cn]) {
+    const found = catalogNameFor(section, key);
+    if (found) return found;
+  }
+  for (const item of catalog.global?.watchlist || []) {
+    const candidates = [item?.symbol, item?.yahoo].map((value) => String(value || '').trim().toUpperCase());
+    if (!candidates.includes(key)) continue;
+    const name = String(item?.name || '').trim();
+    if (name && name.toUpperCase() !== key) return name;
+  }
+  return '';
+}
+
+export function quoteDisplayName({ symbol, quotedName = '', catalogName = '', rememberedName = '' } = {}) {
+  const key = String(symbol || '').trim().toUpperCase();
+  const catalog = String(catalogName || '').trim();
+  const quoted = String(quotedName || '').trim();
+  const remembered = String(rememberedName || '').trim();
+  if (catalog && catalog.toUpperCase() !== key) return catalog;
+  if (quoted && quoted.toUpperCase() !== key) return quoted;
+  if (remembered && remembered.toUpperCase() !== key) return remembered;
+  return quoted || catalog || remembered || String(symbol || '').trim();
+}
+
 function cnWatchName(item, quote, section) {
   const symbol = String(item?.symbol || '').trim();
   const quoted = String(quote?.name || '').trim();
@@ -399,7 +427,6 @@ export function buildCnMarketBoard({ quotes, extraSymbols = [], fetchedAt = Date
     fetchedAt,
     indexSymbols: new Set(section.indices.map((item) => item.symbol)),
     currency: 'CNY',
-    provider: 'market',
     uniqueRankedBySymbol: true,
   });
 }

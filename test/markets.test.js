@@ -133,7 +133,7 @@ test('cn board keeps the same ticker in multiple industry groups', () => {
   const board = buildCnMarketBoard({
     quotes: [{
       symbol: '300316.SZ', name: '晶盛机电', lastPrice: 70, prevClose: 68, change: 2, changePct: 2.94,
-      currency: 'CNY', session: 'regular',
+      currency: 'CNY', session: 'regular', provider: 'xueqiu',
     }],
     extraSymbols: ['688001.SS'],
     fetchedAt: 1,
@@ -143,7 +143,7 @@ test('cn board keeps the same ticker in multiple industry groups', () => {
   assert.equal(rows.length, 2);
   assert.deepEqual(rows.map((item) => item.group), ['半导体设备', '功率半导体']);
   assert.equal(rows[0].lastPrice, 70);
-  assert.equal(board.provider || rows[0].provider, 'market');
+  assert.equal(rows[0].provider, 'xueqiu');
   assert.equal(parseCnExtraSymbols('688001.SS,NVDA,300316.SZ', marketCatalog).join(','), '688001.SS');
 });
 
