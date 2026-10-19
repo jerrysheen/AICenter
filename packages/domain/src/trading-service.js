@@ -157,6 +157,23 @@ export function createTradingService({
     async search(query) {
       return query ? (await sourcePort.read('market.search', { query })).data : [];
     },
+    async getQuote(symbol, { signal } = {}) {
+      const normalized = String(symbol || '').trim().toUpperCase();
+      const snapshot = await sourcePort.read('market.quotes', { symbols: [normalized] }, { signal });
+      const list = Array.isArray(snapshot?.data) ? snapshot.data : [];
+      const found = list.find((item) => String(item?.symbol || '').toUpperCase() === normalized);
+      if (found) return found;
+      return {
+        symbol: normalized,
+        name: normalized,
+        lastPrice: null,
+        prevClose: null,
+        change: null,
+        changePct: null,
+        session: 'closed',
+        asOf: null,
+      };
+    },
     async getQuoteHistory(query) {
       const symbol = String(query.symbol || '').toUpperCase();
       const range = query.range;
