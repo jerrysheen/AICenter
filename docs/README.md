@@ -25,7 +25,7 @@
 
 ## 当前
 
-- `progress/2026-10-19-x-auto-like-tight.md`：自动点赞选条排除广告词、官号宣传和短帖。企业动态至少 0.9 才点。jev 关闭时点赞门槛 0.9。默认每天 8 次、每小时 2 次、间隔 15 分钟。任务连续失败 2 次自动停。配置版本 `x-focus-2`。不新增 migration。需要同时重启 Web 和 Worker。
+- `progress/2026-10-19-x-auto-like-tight.md`：自动点赞选条排除广告词、官号宣传和短帖。新增推广词只用于点赞。企业动态至少 0.9 才点。jev 关闭时点赞门槛 0.9。默认每天 8 次、每小时 2 次、间隔 15 分钟。任务连续失败 2 次自动停。配置版本 `x-focus-2`，趋势图仍接受 `x-focus-1`。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-19-youtube-podcasts.md`：按博主抓取 YouTube 金融和 AI 播客。有字幕用字幕，没有就走现有 Gemini 转写。摘要不用 jev，翻译只用 Gemma 26B。不进小时报。总开关 `AI_CENTER_YOUTUBE_PODCASTS` 默认关。migration 86。需要同时重启 Web 和 Worker。
 

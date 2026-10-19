@@ -1,5 +1,6 @@
 {
   "version": "x-focus-2",
+  "driftCompatibleVersions": ["x-focus-1"],
   "enabled": true,
   "expandMin": 0.75,
   "hitMin": 0.5,

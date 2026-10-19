@@ -71,8 +71,12 @@ export function normalizeXFocusConfig(raw) {
     throw new Error('油价大宗与地缘必须是最高权重');
   }
   const auto = raw?.autoLike || {};
+  const driftCompatibleVersions = [...new Set((Array.isArray(raw?.driftCompatibleVersions) ? raw.driftCompatibleVersions : [])
+    .map(text)
+    .filter((item) => /^x-focus-\d+$/.test(item) && item !== version))];
   return Object.freeze({
     version,
+    driftCompatibleVersions: Object.freeze(driftCompatibleVersions),
     enabled: raw?.enabled !== false,
     expandMin: clamp01(raw?.expandMin ?? 0.75) || 0.75,
     hitMin: clamp01(raw?.hitMin ?? 0.5) || 0.5,
@@ -304,8 +308,15 @@ function jevKept(metadata) {
 
 export const AUTO_LIKE_MIN_TEXT = 40;
 const CORPORATE_LIKE_MIN = 0.9;
-const OFFICIAL_MARK = /(?:^|[^a-z0-9])(?:global|official)(?:[^a-z0-9]|$)|(?:global|official)$/i;
 const ORGANIZATION_VERIFIED = new Set(['organization', 'business', 'government', 'org']);
+
+function hasOfficialWord(value) {
+  return /official/i.test(value) || /官方/.test(value);
+}
+
+function globalHandleSuffix(handle) {
+  return /[_-]Global$/.test(handle) || /[a-z0-9]Global$/.test(handle);
+}
 
 export function substantialTextLength(value) {
   const stripped = String(value || '').replace(/https?:\/\/\S+/gi, ' ');
@@ -328,13 +339,14 @@ function candidateAccount(row) {
   return { handle: handle || urlHandle, name, verified };
 }
 
-export function looksLikeOfficialBrandAccount(account) {
+export function looksLikeOfficialBrandAccount(account, { promotional = false } = {}) {
   const verified = String(account?.verified || '').toLowerCase();
-  if (ORGANIZATION_VERIFIED.has(verified)) return true;
+  const organization = ORGANIZATION_VERIFIED.has(verified);
+  if (organization) return true;
   const handle = String(account?.handle || '').replace(/^@/, '');
   const name = String(account?.name || '');
-  if (OFFICIAL_MARK.test(handle) || OFFICIAL_MARK.test(name)) return true;
-  if (/官方/.test(name) || /官方/.test(handle)) return true;
+  if (hasOfficialWord(handle) || hasOfficialWord(name)) return true;
+  if (globalHandleSuffix(handle) && (organization || promotional === true)) return true;
   return false;
 }
 
@@ -375,8 +387,8 @@ export function rankAutoLikeCandidates(candidates, jobs, config, now = Date.now(
     if (!(Number(focus.focusScore) >= likeScoreFloor(focus, limits))) continue;
     if (focus.sensitive === true || focus.officialSpeech === true || focus.promotional === true) continue;
     const body = candidateText(row);
-    if (looksLikeFeedAd(body) || substantialTextLength(body) < AUTO_LIKE_MIN_TEXT) continue;
-    if (looksLikeOfficialBrandAccount(candidateAccount(row))) continue;
+    if (looksLikeFeedAd(body, { strict: true }) || substantialTextLength(body) < AUTO_LIKE_MIN_TEXT) continue;
+    if (looksLikeOfficialBrandAccount(candidateAccount(row), { promotional: focus.promotional === true })) continue;
     if (!jevKept(row.metadata)) continue;
     if (!row.contentItemId || !row.tweetId) continue;
     if (likedItems.has(row.contentItemId) || likedTweets.has(String(row.tweetId))) continue;
@@ -493,11 +505,16 @@ export function mergeFocusSnapshot(previous, fresh, config, now = Date.now()) {
   return { version: config.version, feeds };
 }
 
+export function acceptsDriftVersion(version, config) {
+  if (version === config?.version) return true;
+  return (config?.driftCompatibleVersions || []).includes(version);
+}
+
 export function aggregateFocusPoints(rows, config) {
   const feeds = { 'for-you': {}, following: {} };
   for (const row of rows || []) {
     const feed = row.feed === 'following' ? 'following' : row.feed === 'for-you' ? 'for-you' : '';
-    if (!feed || row.version !== config.version) continue;
+    if (!feed || !acceptsDriftVersion(row.version, config)) continue;
     if (row.method !== 'model' && row.method !== 'cache') continue;
     const day = shanghaiDayKey(row.capturedAt || 0);
     const bucket = feeds[feed][day] || {
@@ -520,7 +537,7 @@ export function buildDriftFromSnapshot(snapshot, likes, config, now = Date.now()
     days.push(formatYmd(zonedParts(now - offset * 86_400_000, X_FOCUS_TIME_ZONE)));
   }
   const uniqueDays = [...new Set(days)];
-  const stored = snapshot?.version === config.version && snapshot.feeds ? snapshot.feeds : {};
+  const stored = snapshot?.feeds && acceptsDriftVersion(snapshot.version, config) ? snapshot.feeds : {};
   const bucketFor = (feed, day) => stored[feed]?.[day] || { total: 0, hits: {} };
   const rate = (bucket, id) => {
     const total = Number(bucket.total) || 0;

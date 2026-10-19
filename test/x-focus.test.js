@@ -8,7 +8,8 @@ import { randomUUID } from 'node:crypto';
 import { createStore } from '../packages/database/src/index.js';
 import { runMigrations } from '../packages/database/src/migrations.js';
 import { createReportRepository } from '../packages/database/src/repositories/report-repository.js';
-import { loadXFocusConfig, composeFocus, keywordFocus, rankAutoLikeCandidates, buildDrift, nextAutoLikeSettings, shanghaiDayStart, autoLikeLimits, xFocusInstruction } from '../packages/domain/src/x-focus.js';
+import { loadXFocusConfig, composeFocus, keywordFocus, rankAutoLikeCandidates, buildDrift, buildDriftFromSnapshot, nextAutoLikeSettings, shanghaiDayStart, autoLikeLimits, xFocusInstruction, looksLikeOfficialBrandAccount, storedFocus } from '../packages/domain/src/x-focus.js';
+import { looksLikeFeedAd } from '../packages/domain/src/feed-ad.js';
 import { createXFocusScorer, X_FOCUS_SCORE_RESERVE_MS } from '../packages/domain/src/x-focus-score.js';
 import { createXFocusService, KEYWORD_RESCORE_LIMIT, FOCUS_POINT_LIMIT } from '../packages/domain/src/x-auto-like.js';
 import { createFeedInteractionRoutes } from '../apps/web/src/routes/feed-interaction-routes.js';
@@ -105,6 +106,7 @@ test('x-focus view is served before the generic feed platform route', async () =
 
 test('x-focus config keeps seven directions and the highest oil weight', () => {
   assert.equal(config.version, 'x-focus-2');
+  assert.deepEqual(config.driftCompatibleVersions, ['x-focus-1']);
   assert.deepEqual(config.directions.map((dir) => dir.id), [
     'us-market', 'semis', 'polymarket', 'oil-geopolitics', 'corporate', 'hardware', 'ai-companies',
   ]);
@@ -513,9 +515,9 @@ test('auto like skips ads, official brands, promotions and one-line posts', asyn
   const long = SUBSTANTIAL;
   const ad = capture('3101', modelFocus('hardware', 0.99), {}, { text: `${long} 扩展坞折扣和优惠码` });
   const recruit = capture('3102', modelFocus('hardware', 0.99), {}, { text: `${long} 承接代投，推广链接返佣` });
-  const official = capture('3103', modelFocus('corporate', 0.99), {}, { text: long, authorHandle: 'ZeekrGlobal' });
-  const named = capture('3104', modelFocus('corporate', 0.99), {}, { text: long, authorHandle: 'brand', authorName: 'XPENG_Global' });
-  const verified = capture('3105', modelFocus('semis', 0.99), {}, { text: long, authorHandle: 'minisforum', authorVerified: 'organization' });
+  const official = capture('3103', modelFocus('corporate', 0.99), {}, { text: long, authorName: 'XXX Official' });
+  const named = capture('3104', modelFocus('corporate', 0.99), {}, { text: long, authorHandle: 'brand', authorName: 'XX官方' });
+  const verified = capture('3105', modelFocus('semis', 0.99), {}, { text: long, authorHandle: 'minisforum', authorVerified: 'business' });
   const promo = capture('3106', modelFocus('hardware', 0.99, { promotional: true }), {}, { text: long });
   const short = capture('3107', modelFocus('semis', 0.99), {}, { text: '我空单吃够了' });
   const imageOnly = capture('3108', modelFocus('semis', 0.99), {}, { text: '' });
@@ -539,6 +541,59 @@ test('auto like skips ads, official brands, promotions and one-line posts', asyn
   assert.equal(calls[0].focusScore, 0.8);
   assert.equal(calls[0].directionLabel, '半导体与科技美股');
   assert.equal(calls[0].reason, '油价上涨');
+});
+
+test('personal Global names stay eligible while official wording and business verification do not', async () => {
+  assert.equal(looksLikeOfficialBrandAccount({ name: 'Global Macro Guy', handle: 'gmacro' }), false);
+  assert.equal(looksLikeOfficialBrandAccount({ name: 'Global Macro Guy' }, { promotional: true }), false);
+  assert.equal(looksLikeOfficialBrandAccount({ handle: 'macroglobal', name: 'Macro' }), false);
+  assert.equal(looksLikeOfficialBrandAccount({ handle: 'ZeekrGlobal' }), false);
+  assert.equal(looksLikeOfficialBrandAccount({ handle: 'brand', name: 'XPENG_Global' }), false);
+  assert.equal(looksLikeOfficialBrandAccount({ handle: 'BinanceGlobal' }, { promotional: true }), true);
+  assert.equal(looksLikeOfficialBrandAccount({ handle: 'XPENG_Global' }, { promotional: true }), true);
+  assert.equal(looksLikeOfficialBrandAccount({ handle: 'brand-Global' }, { promotional: true }), true);
+  assert.equal(looksLikeOfficialBrandAccount({ name: 'XXX Official' }), true);
+  assert.equal(looksLikeOfficialBrandAccount({ handle: 'BrandOfficial' }), true);
+  assert.equal(looksLikeOfficialBrandAccount({ name: 'XX官方' }), true);
+  assert.equal(looksLikeOfficialBrandAccount({ verified: 'business' }), true);
+  assert.equal(looksLikeOfficialBrandAccount({ verified: 'government' }), true);
+  assert.equal(looksLikeOfficialBrandAccount({ verified: 'true' }), false);
+  assert.equal(looksLikeFeedAd('公司发布招募说明书'), false);
+  assert.equal(looksLikeFeedAd('公司发布招募说明书', { strict: true }), true);
+  assert.equal(looksLikeFeedAd('债券折价发行'), false);
+  assert.equal(looksLikeFeedAd('债券折价发行', { strict: true }), false);
+  assert.equal(looksLikeFeedAd(`${SUBSTANTIAL} 折扣和优惠码`), false);
+  assert.equal(looksLikeFeedAd(`${SUBSTANTIAL} 折扣和优惠码`, { strict: true }), true);
+
+  const long = SUBSTANTIAL;
+  const macroGuy = capture('3401', modelFocus('oil-geopolitics', 0.9), {}, { text: long, authorHandle: 'gmacro', authorName: 'Global Macro Guy' });
+  const glued = capture('3402', modelFocus('oil-geopolitics', 0.8), {}, { text: long, authorHandle: 'macroglobal' });
+  const suffix = capture('3403', modelFocus('corporate', 0.99), {}, { text: long, authorHandle: 'ZeekrGlobal' });
+  const displayGlobal = capture('3404', modelFocus('corporate', 0.99), {}, { text: long, authorHandle: 'brand', authorName: 'XPENG_Global' });
+  const official = capture('3405', modelFocus('semis', 0.99), {}, { text: long, authorName: 'XXX Official' });
+  const cnOfficial = capture('3406', modelFocus('semis', 0.99), {}, { text: long, authorName: 'XX官方' });
+  const business = capture('3407', modelFocus('semis', 0.99), {}, { text: long, authorVerified: 'business' });
+  const promoGlobal = capture('3408', modelFocus('semis', 0.99, { promotional: true }), {}, { text: long, authorHandle: 'BinanceGlobal' });
+  const state = {
+    now: NOW,
+    rows: [macroGuy, glued, suffix, displayGlobal, official, cnOfficial, business, promoGlobal],
+    jobs: [],
+    openLike: [],
+    openUnlike: [],
+    settings: { pageEnabled: true, suspended: false, notice: '', consecutiveUnconfirmed: 0 },
+  };
+  const calls = [];
+  const service = autoService({ AI_CENTER_X_AUTO_LIKE: '1' }, state, calls);
+  const picked = await service.dispatch('local');
+  assert.equal(picked.tweetId, macroGuy.externalId);
+  assert.equal(calls[0].focusScore, 0.9);
+  const ranked = rankAutoLikeCandidates(state.rows.map((row) => ({
+    ...row,
+    tweetId: row.externalId,
+    focus: row.metadata.xFocus,
+  })), [], { ...config, limits: config.autoLike }, NOW);
+  assert.equal(ranked.eligible, 4);
+  assert.equal(ranked.picked.externalId, '3401');
 });
 
 test('corporate likes need 0.9 while other directions keep the lower floor', async () => {
@@ -1218,6 +1273,72 @@ test('drift recounts only today and yesterday, and a rescored post is counted on
     assert.equal(rebuilt.feeds['for-you']['2020-01-01'], undefined);
     assert.equal(rebuilt.feeds['for-you']['2026-10-18'].total, 1);
     assert.equal(rebuilt.version, config.version);
+  } finally {
+    store.close();
+  }
+});
+
+test('switching focus version keeps old points on the drift chart and ignores them for likes', async () => {
+  const oldFocus = { ...modelFocus('oil-geopolitics', 0.95), version: 'x-focus-1' };
+  assert.equal(storedFocus({ xFocus: oldFocus }, config), null);
+  assert.equal(storedFocus({ xFocus: modelFocus('oil-geopolitics', 0.95) }, config).version, config.version);
+  const legacySnapshot = {
+    version: 'x-focus-1',
+    feeds: {
+      'for-you': { '2026-10-18': { total: 4, hits: { 'oil-geopolitics': 2 } } },
+      following: {},
+    },
+  };
+  const shown = buildDriftFromSnapshot(legacySnapshot, [], config, NOW);
+  const oil = shown.series.find((entry) => entry.name === '油价大宗与地缘');
+  assert.equal(oil.recommended.at(-1), 0.5);
+  const unknown = buildDriftFromSnapshot({ ...legacySnapshot, version: 'x-focus-0' }, [], config, NOW);
+  assert.equal(unknown.series.find((entry) => entry.name === '油价大宗与地缘').recommended.at(-1), null);
+
+  const store = createStore(':memory:');
+  try {
+    const feed = store.repositories.feed;
+    const account = feed.upsertSourceAccount({
+      workspaceId: 'local', provider: 'x', externalId: 'x:home:for-you', displayName: '推荐',
+    });
+    feed.saveCapture({
+      workspaceId: 'local', provider: 'x', externalId: 'legacy', sourceAccountId: account.id,
+      sourceUrl: 'https://x.com/alice/status/legacy', title: '旧版本', contentHash: 'hash-legacy',
+      capturedAt: NOW,
+      metadata: { xFocus: oldFocus, originalText: SUBSTANTIAL, filterDecision: 'KEEP' },
+    });
+    const captured = feed.getCapture('local', 'x', 'legacy');
+    feed.saveContentItem({
+      workspaceId: 'local', captureId: captured.id, originType: 'subscription', contentType: 'post',
+      title: '旧版本', body: SUBSTANTIAL, sourceUrl: 'https://x.com/alice/status/legacy',
+    });
+    const calls = [];
+    const service = createXFocusService({
+      config,
+      env: { AI_CENTER_X_AUTO_LIKE: '1' },
+      feedRepository: feed,
+      runtimeRepository: {
+        listJobsByType: () => [],
+        listOpenJobs: () => [],
+      },
+      snapshots: store.repositories.runtimeSnapshots,
+      requestLike: () => {
+        calls.push('like');
+        return { id: 'should-not-like' };
+      },
+      now: () => NOW,
+    });
+    service.setPageEnabled('local', true);
+    const rebuilt = service.refreshDrift('local');
+    assert.equal(rebuilt.version, 'x-focus-2');
+    assert.equal(rebuilt.feeds['for-you']['2026-10-18'].total, 1);
+    assert.equal(rebuilt.feeds['for-you']['2026-10-18'].hits['oil-geopolitics'], 1);
+    const series = service.view('local').drift.series.find((entry) => entry.name === '油价大宗与地缘');
+    assert.equal(series.recommended.at(-1), 1);
+    const dispatched = await service.dispatch('local');
+    assert.equal(dispatched.reason, 'empty');
+    assert.equal(dispatched.dispatched, false);
+    assert.equal(calls.length, 0);
   } finally {
     store.close();
   }
