@@ -50,6 +50,21 @@ test('module registry owns source contributions and SourceHub validates both bou
   }), /未声明 Source/);
 });
 
+test('SourceHub does not cache an unavailable snapshot', async () => {
+  const registry = createModuleRegistry();
+  const fixture = testDefinition({ status: () => 'unavailable' });
+  registry.register({
+    manifest: { id: 'connector.test', version: '1.0.0', capabilities: ['market.read'], jobTypes: [], sourceIds: ['market.test'] },
+    sources: [fixture.definition],
+  });
+  const hub = createSourceHub(registry, { now: () => 100 });
+  const first = await hub.read('market.test', { symbol: 'AAPL' });
+  const second = await hub.read('market.test', { symbol: 'AAPL' });
+  assert.equal(first.status, 'unavailable');
+  assert.notEqual(second, first);
+  assert.equal(fixture.reads(), 2);
+});
+
 test('SourceHub rejects an invalid source output before it reaches routes or tools', async () => {
   const registry = createModuleRegistry();
   const fixture = testDefinition({ read: async () => ({ symbol: 'AAPL', price: '1' }) });

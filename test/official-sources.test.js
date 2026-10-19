@@ -287,6 +287,98 @@ test('a gov.cn page that only links an attachment keeps the summary and attachme
   assert.equal(detail.bodyText.includes('附件下载'), false);
 });
 
+test('official release lists follow an allowlisted redirect and do not keep an opaque redirect as an empty success', async () => {
+  const errors = [];
+  const originalError = console.error;
+  console.error = (...args) => { errors.push(args.map(String).join(' ')); };
+  const document = {
+    document_number: '2026-10001',
+    title: 'Landed Federal Register rule',
+    publication_date: '2026-10-18',
+    html_url: 'https://www.federalregister.gov/documents/2026/10/18/2026-10001/landed-rule',
+    type: 'Rule',
+  };
+  const listUrl = 'https://www.federalregister.gov/api/v1/documents.json?per_page=1&order=newest';
+  try {
+    const redirected = [];
+    const client = createOfficialSourcesClient({
+      now: () => OBSERVED_AT,
+      async fetch(url, init) {
+        redirected.push({ url: String(url), redirect: init.redirect });
+        if (String(url) === listUrl && init.redirect === 'manual') {
+          return new Response(null, {
+            status: 302,
+            headers: { location: 'https://www.federalregister.gov/api/v1/documents.json?landed=1' },
+          });
+        }
+        return Response.json({ results: [document] });
+      },
+    });
+    const view = await client.federalRegister({ limit: 1 });
+    assert.equal(view.available, true);
+    assert.equal(view.releases.length, 1);
+    assert.equal(view.releases[0].title, 'Landed Federal Register rule');
+    assert.equal(redirected[0].redirect, 'manual');
+    assert.match(redirected[1].url, /landed=1/);
+    assert.equal(errors.length, 0);
+
+    const opaqueCalls = [];
+    const opaqueClient = createOfficialSourcesClient({
+      now: () => OBSERVED_AT,
+      async fetch(url, init) {
+        opaqueCalls.push({ url: String(url), redirect: init.redirect });
+        if (init.redirect === 'manual') {
+          return {
+            status: 0,
+            ok: false,
+            type: 'opaqueredirect',
+            url: '',
+            headers: { get() { return null; } },
+            body: { async cancel() {} },
+            async text() { return ''; },
+            async json() { return {}; },
+          };
+        }
+        return Response.json({ results: [document] });
+      },
+    });
+    const opaqueView = await opaqueClient.federalRegister({ limit: 1 });
+    assert.equal(opaqueView.releases.length, 1);
+    assert.equal(opaqueCalls[0].redirect, 'manual');
+    assert.equal(opaqueCalls[1].redirect, 'follow');
+    assert.equal(opaqueCalls[1].url, listUrl);
+
+    const hidden = createOfficialSourcesClient({
+      now: () => OBSERVED_AT,
+      async fetch() {
+        return {
+          status: 0,
+          ok: false,
+          type: 'opaqueredirect',
+          url: '',
+          headers: { get() { return null; } },
+          body: { async cancel() {} },
+          async text() { return ''; },
+          async json() { return {}; },
+        };
+      },
+    });
+    await assert.rejects(() => hidden.federalRegister({ limit: 1 }), /\[opaque-redirect\]/);
+    assert.match(errors.at(-1), /category=opaque-redirect/);
+    assert.match(errors.at(-1), /federalregister\.gov/);
+
+    const definitions = createStaticSignalSourceDefinitions(hidden, { now: () => OBSERVED_AT });
+    const source = definitions.find((item) => item.manifest.id === 'policy.us.federal-register');
+    const failed = await source.read({ limit: 1 });
+    assert.equal(failed.available, false);
+    assert.equal(failed.releases.length, 0);
+    assert.match(failed.note, /opaque-redirect/);
+    assert.match(errors.at(-1), /category=opaque-redirect/);
+  } finally {
+    console.error = originalError;
+  }
+});
+
 test('official detail redirects stay on the allowlist and stop after three hops', async () => {
   const requested = [];
   const client = createOfficialSourcesClient({
