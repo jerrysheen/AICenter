@@ -336,6 +336,23 @@ test('Gemma HTTP 500 retries another key and logs length, key, latency and concu
   } finally { console.error = original; }
 }));
 
+test('three keys on HTTP 500 fail over only once inside the same generate', fixture(async store => {
+  let at = Date.now();
+  const calls = [];
+  const router = createGemmaTranslationRouter({
+    env: { GEMINI_API_KEY: 'key-one', GEMINI_API_KEY2: 'key-two', GEMINI_API_KEY3: 'key-three' },
+    quotaRepository: store.repositories.modelQuota, now: () => at, sleep: async ms => { at += ms; },
+    fetch: async (url, init) => {
+      calls.push({ key: init.headers['x-goog-api-key'], at });
+      return new Response('{"error":{"code":500,"status":"INTERNAL"}}', { status: 500 });
+    },
+  });
+  await assert.rejects(router.generate({ system: '翻译', prompt: 'Fan out' }), /500/);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls.map(call => call.key), ['key-one', 'key-two']);
+  assert.equal(calls[1].at, calls[0].at);
+}));
+
 test('Gemma timeout retries another key without leaving the Gemma pool', fixture(async store => {
   let at = Date.now();
   const calls = [];
@@ -677,8 +694,8 @@ test('a job attempt stops once the call cap is spent', fixture(async store => {
     fetch: async () => { calls += 1; return new Response('{"error":{"code":500}}', { status: 500 }); },
   });
   await assert.rejects(
-    withTranslationCallBudget(3, () => router.generate({ system: '翻译', prompt: 'A short English title about chips' })),
-    (error) => error.code === 'translation-call-cap' && calls === 3,
+    withTranslationCallBudget(1, () => router.generate({ system: '翻译', prompt: 'A short English title about chips' })),
+    (error) => error.code === 'translation-call-cap' && calls === 1,
   );
 }));
 

@@ -118,8 +118,16 @@ export function createYoutubePodcastRepository(database) {
           ci.title AS display_title, ci.source_url AS source_url, ci.author_name AS author_name
         FROM youtube_podcast_episodes e
         LEFT JOIN content_items ci ON ci.id = e.content_item_id AND ci.workspace_id = e.workspace_id
-        WHERE e.workspace_id = ? AND e.status = 'ready' AND e.article_status != 'ready'
-        ORDER BY CASE WHEN e.article_status = 'pending' THEN 0 ELSE 1 END,
+        WHERE e.workspace_id = ? AND e.status = 'ready'
+          AND (
+            e.article_status != 'ready'
+            OR (e.article_status = 'ready' AND e.article_state LIKE '%"engine":"gemma"%')
+          )
+        ORDER BY CASE
+            WHEN e.article_status = 'pending' THEN 0
+            WHEN e.article_status = 'ready' THEN 2
+            ELSE 1
+          END,
           COALESCE(e.published_at, 0) DESC, e.video_id DESC`).all(workspaceId)
         .map((row) => mapEpisode(row, {
           summary: row.summary || '',

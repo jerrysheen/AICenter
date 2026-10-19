@@ -210,7 +210,7 @@ export function articlePartPrompt({ index, total, text, previousTail = '', fresh
 
 export const GEMMA_TRANSLATE_SYSTEM = '你是翻译器。把英文播客字幕译成简体中文。不要总结，不要扩写，不要加评论。保留时间戳、说话人标记（>>）、人名、公司名、股票代码和数字。已经通用的英文术语保留英文。只输出译文。';
 
-export const GEMMA_SECTION_SYSTEM = '把下面这段播客译文排成一个 Markdown 小节。只用一个 ## 小标题，标题里带上这段开头的时间（HH:MM:SS）；没有时间就不要编。发言人写成「名字：」。听不出名字时用「主持人：」或「嘉宾：」。保留数字、公司名、股票代码和关键数据。不要写要点摘要，不要加评论。只输出这一节。';
+export const GEMMA_SECTION_SYSTEM = '把下面这段播客译文排成一个 Markdown 小节。只用一个 ## 小标题，小标题必须是这段的中文主题，不要只用时间。时间可以写在主题后面，例如 ## 利率路径（00:12:03），也可以不写时间。禁止写成 ## 00:00:00 这种只有时间的标题。没有时间就不要编。发言人写成「名字：」。听不出名字时用「主持人：」或「嘉宾：」。保留数字、公司名、股票代码和关键数据。不要写要点摘要，不要加评论。只输出这一节。';
 
 export const GEMMA_SUMMARY_SYSTEM = '根据下面的小节，写这一集开头的要点摘要。用 Markdown，第一行是 ## 要点，下面 5 到 8 条列表。保留人名和关键数字。不要重写全文，不要加评论。';
 
@@ -241,6 +241,68 @@ export function joinArticleParts(replies) {
 export function continuedDoubaoChatUrl(value) {
   const url = String(value || '').trim();
   return /^https:\/\/www\.doubao\.com\/chat\/\d+/.test(url) ? url : '';
+}
+
+const CLOCK_ONLY_HEADING = /^##\s*[（(]?\d{1,2}:\d{2}(?::\d{2})?[)）]?\s*$/;
+
+export function captionAlreadyChinese(text) {
+  const value = String(text || '')
+    .replace(/\[[^\]]{0,16}\]/g, ' ')
+    .replace(/>>/g, ' ');
+  const han = (value.match(/\p{Script=Han}/gu) || []).length;
+  const latin = (value.match(/[A-Za-z]/g) || []).length;
+  return han >= 12 && han * 2 >= latin;
+}
+
+export function timestampOnlyHeading(section) {
+  const heading = String(section || '').split('\n').map((line) => line.trim()).find((line) => line.startsWith('##'));
+  return Boolean(heading && CLOCK_ONLY_HEADING.test(heading));
+}
+
+function usableClock(value) {
+  const raw = String(value || '').trim();
+  if (!/^\d{1,2}:\d{2}(?::\d{2})?$/.test(raw)) return '';
+  return normalizeClock(raw);
+}
+
+export function repairTimestampHeading(section, start = '', source = '') {
+  const text = String(section || '').replace(/\r\n/g, '\n').trim();
+  if (!timestampOnlyHeading(text)) return text;
+  const lines = text.split('\n');
+  const heading = lines.map((line) => line.trim()).find((line) => line.startsWith('##')) || '';
+  const clock = usableClock(heading.match(/(\d{1,2}:\d{2}(?::\d{2})?)/)?.[1])
+    || usableClock(start)
+    || usableClock(firstClock(source));
+  const bodyLines = lines.filter((line) => !CLOCK_ONLY_HEADING.test(line.trim()));
+  const candidates = bodyLines.map((line) => line.trim()).filter(Boolean);
+  if (!candidates.length && String(source || '').trim()) candidates.push(String(source).trim());
+  let topic = '';
+  for (const line of candidates) {
+    const stripped = line
+      .replace(/^\[[^\]]{0,16}\]\s*/, '')
+      .replace(/^>>\s*/, '')
+      .replace(/^[-*]\s+/, '')
+      .replace(/^[^：:\n]{1,16}[：:]\s*/, '')
+      .trim();
+    const sentence = stripped.split(/[。！？!?]/)[0].replace(/\s+/g, ' ').trim();
+    if (!sentence) continue;
+    topic = [...sentence].slice(0, 18).join('');
+    break;
+  }
+  if (!topic) topic = '本节';
+  const title = clock ? `## ${topic}（${clock}）` : `## ${topic}`;
+  const rest = bodyLines.join('\n').trim();
+  return rest ? `${title}\n\n${rest}` : title;
+}
+
+export function gemmaArticleNeedsRepair(state) {
+  if (!state || state.engine !== 'gemma' || !Array.isArray(state.parts) || !state.parts.length) return false;
+  return state.parts.some((part) => {
+    const text = String(part?.text || '');
+    const translation = String(part?.translation || '');
+    if (captionAlreadyChinese(text) && translation && !captionAlreadyChinese(translation)) return true;
+    return timestampOnlyHeading(part?.section);
+  });
 }
 
 export function needsChineseTitle(text) {

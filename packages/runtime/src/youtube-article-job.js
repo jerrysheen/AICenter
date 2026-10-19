@@ -3,12 +3,16 @@ import {
   articlePartPrompt,
   continuedDoubaoChatUrl,
   dedupeRollingCaptions,
+  captionAlreadyChinese,
   GEMMA_SECTION_SYSTEM,
   GEMMA_SUMMARY_SYSTEM,
   GEMMA_TRANSLATE_SYSTEM,
+  gemmaArticleNeedsRepair,
   gemmaSummarySource,
   joinArticleParts,
   joinGemmaArticle,
+  repairTimestampHeading,
+  timestampOnlyHeading,
   needsChineseTitle,
   needsEnglishQuote,
   splitTranscriptParts,
@@ -119,26 +123,82 @@ function articleFlash(deps) {
   return deps.flashClient;
 }
 
+function callCounts(raw) {
+  return {
+    gemma: Math.max(0, Number(raw?.gemma) || 0),
+    flash: Math.max(0, Number(raw?.flash) || 0),
+  };
+}
+
+function addCalls(target, extra) {
+  if (!target || !extra) return;
+  target.gemma += Math.max(0, Number(extra.gemma) || 0);
+  target.flash += Math.max(0, Number(extra.flash) || 0);
+}
+
+function attachCalls(error, calls) {
+  if (error && typeof error === 'object') error.articleCalls = calls;
+  return error;
+}
+
 async function callArticleModel(deps, input) {
+  const calls = callCounts();
   try {
+    calls.gemma += 1;
     const result = await articleGemma(deps)(input);
     const text = String(result?.text || '').trim();
     if (!text) throw new Error('Gemma 没有返回正文');
-    return text;
+    return { text, provider: 'gemma', calls };
   } catch (error) {
-    if (error?.code === 'budget-deferred' || deps.signal?.aborted) throw error;
+    if (error?.code === 'budget-deferred' || deps.signal?.aborted) throw attachCalls(error, calls);
     const flash = articleFlash(deps);
-    if (!flash) throw error;
+    if (!flash) throw attachCalls(error, calls);
     try {
+      calls.flash += 1;
       const result = await flash(input);
       const text = String(result?.text || '').trim();
       if (!text) throw error;
-      return text;
+      return { text, provider: 'flash', calls };
     } catch (flashError) {
-      if (flashError?.code === 'budget-deferred') throw flashError;
-      throw error;
+      throw attachCalls(flashError?.code === 'budget-deferred' ? flashError : error, calls);
     }
   }
+}
+
+function loadGemmaPart(part) {
+  const text = String(part?.text || '');
+  let translation = String(part?.translation || '');
+  let section = String(part?.section || '');
+  let provider = part?.provider === 'source' || part?.provider === 'gemma' || part?.provider === 'flash' ? part.provider : '';
+  let status = part?.status === 'done' || part?.status === 'translated' ? part.status : 'pending';
+  let attempts = Number(part?.attempts) || 0;
+  let dropped = false;
+  if (captionAlreadyChinese(text) && translation && !captionAlreadyChinese(translation)) {
+    translation = '';
+    section = '';
+    provider = '';
+    status = 'pending';
+    attempts = 0;
+    dropped = true;
+  }
+  if (timestampOnlyHeading(section)) {
+    section = '';
+    status = translation ? 'translated' : status;
+    attempts = 0;
+    dropped = true;
+  }
+  if (translation && status === 'pending') status = 'translated';
+  return {
+    text,
+    start: String(part?.start || ''),
+    status,
+    translation,
+    section,
+    attempts,
+    provider,
+    calls: callCounts(part?.calls),
+    dropped,
+  };
 }
 
 function replaceContent(feedRepository, workspaceId, contentItemId, patch) {
@@ -402,20 +462,15 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
   const source = row.sourceTranscript || item?.body || '';
   if (!source.trim()) return { status: 'skipped', reason: 'empty' };
   const hash = transcriptHash(source);
-  if (row.articleStatus === 'ready' && row.sourceHash === hash) return { status: 'skipped', reason: 'ready' };
-  const deduped = dedupeRollingCaptions(source);
-  const bounds = gemmaPartBounds(env);
   const saved = readState(row.articleState);
   const reusable = saved?.engine === 'gemma' && saved.hash === hash && Array.isArray(saved.parts) && saved.parts.length;
-  const parts = reusable
-    ? saved.parts.map((part) => ({
-      text: String(part.text || ''),
-      start: String(part.start || ''),
-      status: part.status === 'done' || part.status === 'translated' ? part.status : 'pending',
-      translation: String(part.translation || ''),
-      section: String(part.section || ''),
-      attempts: Number(part.attempts) || 0,
-    }))
+  if (row.articleStatus === 'ready' && reusable && !gemmaArticleNeedsRepair(saved)) return { status: 'skipped', reason: 'ready' };
+  const repairing = row.articleStatus === 'ready' && reusable && gemmaArticleNeedsRepair(saved);
+  const deduped = dedupeRollingCaptions(source);
+  const bounds = gemmaPartBounds(env);
+  const loaded = reusable ? saved.parts.map((part) => loadGemmaPart(part)) : null;
+  const parts = loaded
+    ? loaded.map(({ dropped, ...part }) => part)
     : splitTranscriptParts(deduped, bounds).map((part) => ({
       text: part.text,
       start: part.start || '',
@@ -423,19 +478,25 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
       translation: '',
       section: '',
       attempts: 0,
+      provider: '',
+      calls: callCounts(),
     }));
   const state = {
     engine: 'gemma',
     hash,
     holdDay: reusable ? String(saved.holdDay || '') : '',
     holdReason: reusable ? String(saved.holdReason || '') : '',
-    summary: reusable ? String(saved.summary || '') : '',
-    summaryAttempts: reusable ? Number(saved.summaryAttempts) || 0 : 0,
+    summary: reusable && !repairing ? String(saved.summary || '') : '',
+    summaryAttempts: reusable && !repairing ? Number(saved.summaryAttempts) || 0 : 0,
+    summaryProvider: reusable && !repairing ? String(saved.summaryProvider || '') : '',
+    summaryCalls: reusable && !repairing ? callCounts(saved.summaryCalls) : callCounts(),
     parts,
   };
   if (state.holdDay === day) return { status: 'pending', reason: state.holdReason || 'hold' };
+  const visibleStatus = (articleStatus) => (repairing && articleStatus !== 'ready' ? 'ready' : articleStatus);
   const persist = (articleStatus = 'pending') => {
-    row.articleStatus = articleStatus;
+    const status = visibleStatus(articleStatus);
+    row.articleStatus = status;
     row.articleState = JSON.stringify(state);
     row.sourceTranscript = source;
     row.sourceHash = hash;
@@ -443,14 +504,16 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
     repository.saveEpisode(episodePatch(row, workspaceId, {
       sourceTranscript: source,
       sourceHash: hash,
-      articleStatus,
+      articleStatus: status,
       articleState: row.articleState,
       articleDay: day,
     }));
   };
-  replaceContent(feedRepository, workspaceId, row.contentItemId, { body: deduped });
-  persist('pending');
+  if (!repairing) replaceContent(feedRepository, workspaceId, row.contentItemId, { body: deduped });
+  persist(repairing ? 'ready' : 'pending');
   const stop = (slot, error) => {
+    if (slot) addCalls(slot.calls, error?.articleCalls);
+    else addCalls(state.summaryCalls, error?.articleCalls);
     if (error?.code === 'budget-deferred') {
       persist('pending');
       return { status: 'pending', reason: 'quota', stopPass: true };
@@ -474,8 +537,19 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
       return { status: 'pending', reason: 'failed' };
     }
     if (signal?.aborted) return { status: 'pending', reason: 'deadline' };
+    if (captionAlreadyChinese(slot.text)) {
+      slot.translation = slot.text;
+      slot.provider = 'source';
+      slot.status = 'translated';
+      slot.attempts = 0;
+      persist('pending');
+      continue;
+    }
     try {
-      slot.translation = await callArticleModel(deps, { system: GEMMA_TRANSLATE_SYSTEM, prompt: slot.text });
+      const result = await callArticleModel(deps, { system: GEMMA_TRANSLATE_SYSTEM, prompt: slot.text });
+      slot.translation = result.text;
+      slot.provider = result.provider;
+      addCalls(slot.calls, result.calls);
       slot.status = 'translated';
       slot.attempts = 0;
       persist('pending');
@@ -493,7 +567,10 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
     }
     if (signal?.aborted) return { status: 'pending', reason: 'deadline' };
     try {
-      slot.section = await callArticleModel(deps, { system: GEMMA_SECTION_SYSTEM, prompt: slot.translation });
+      const result = await callArticleModel(deps, { system: GEMMA_SECTION_SYSTEM, prompt: slot.translation });
+      slot.section = repairTimestampHeading(result.text, slot.start, slot.translation);
+      if (!slot.provider) slot.provider = result.provider;
+      addCalls(slot.calls, result.calls);
       slot.status = 'done';
       slot.attempts = 0;
       persist('pending');
@@ -513,11 +590,19 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
       const batches = splitSummaryBlocks(gemmaSummarySource(state.parts.map((part) => part.section)), bounds.maxChars);
       const pieces = [];
       for (const batch of batches) {
-        pieces.push(await callArticleModel(deps, { system: GEMMA_SUMMARY_SYSTEM, prompt: batch }));
+        const result = await callArticleModel(deps, { system: GEMMA_SUMMARY_SYSTEM, prompt: batch });
+        pieces.push(result.text);
+        addCalls(state.summaryCalls, result.calls);
+        state.summaryProvider = result.provider;
       }
-      state.summary = pieces.length === 1
-        ? pieces[0]
-        : await callArticleModel(deps, { system: GEMMA_SUMMARY_SYSTEM, prompt: pieces.join('\n\n') });
+      if (pieces.length > 1) {
+        const merged = await callArticleModel(deps, { system: GEMMA_SUMMARY_SYSTEM, prompt: pieces.join('\n\n') });
+        state.summary = merged.text;
+        addCalls(state.summaryCalls, merged.calls);
+        state.summaryProvider = merged.provider;
+      } else {
+        state.summary = pieces[0] || '';
+      }
       if (!state.summary) throw new Error('要点为空');
       state.summaryAttempts = 0;
       persist('pending');
@@ -565,6 +650,10 @@ export async function runYoutubeArticlePass(deps = {}) {
     const saved = readState(row.articleState);
     if (saved?.holdDay === day) {
       stats.pending += 1;
+      continue;
+    }
+    if (row.articleStatus === 'ready' && (engine !== 'gemma' || !gemmaArticleNeedsRepair(saved))) {
+      stats.skipped += 1;
       continue;
     }
     if (row.articleDay !== day) {
