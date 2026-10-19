@@ -128,9 +128,10 @@ test('technical jev failure uses following, focus, keyword, and source rules', a
     sourceExternalId: 'x:home:following',
     captureContext: { truncated: true },
   }));
-  assert.equal(truncated.metadata.filterReason, 'input-truncated');
-  assert.equal(truncated.status, 'captured');
-  assert.ok(calls >= 5);
+  assert.equal(truncated.metadata.filterReason, 'fallback-following');
+  assert.equal(truncated.metadata.bodyCompletion, 'pending');
+  assert.equal(truncated.status, 'ready');
+  assert.ok(calls >= 6);
 
   const healthy = filterFor({
     available: () => true,
@@ -623,9 +624,9 @@ test('failure streak resets only after a successful jev response', async () => {
     },
   });
   await filter.evaluate(bodyInput('a', { sourceExternalId: 'x:home:following' }));
-  await filter.evaluate(bodyInput('截断', {
+  await filter.evaluate(bodyInput('线程未齐', {
     sourceExternalId: 'x:home:following',
-    captureContext: { truncated: true },
+    captureContext: { threadIncomplete: true },
   }));
   await filter.evaluate(bodyInput('b', { sourceExternalId: 'x:home:following' }));
   assert.equal(logs.length, 1);
@@ -707,9 +708,10 @@ test('disabled quality refresh leaves existing KEEP and DROP rows unchanged', as
     });
     await service.refresh({ concurrency: 1 }, { runId: 'truncated' });
     const cut = feed.getCapture('local', 'x', 'cut');
-    assert.equal(cut.metadata.filterDecision, 'REVIEW');
-    assert.equal(cut.metadata.filterReason, 'input-truncated');
-    assert.equal(cut.status, 'captured');
+    assert.equal(cut.metadata.filterDecision, 'KEEP');
+    assert.equal(cut.metadata.filterReason, 'jev-disabled-following');
+    assert.equal(cut.metadata.bodyCompletion, 'pending');
+    assert.equal(cut.status, 'ready');
     assert.equal(calls, 0);
   } finally {
     store.close();

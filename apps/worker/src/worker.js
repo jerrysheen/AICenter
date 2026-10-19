@@ -61,7 +61,7 @@ import {
 import { knowledgeStructureManifest, createStructureJobHandlers } from '../../../packages/runtime/src/structure-module.js';
 import { taggingManifest, createTaggingJobHandlers, readTagCatalogFile } from '../../../packages/runtime/src/tagging-module.js';
 import { workPackageDispatchManifest, createWorkPackageJobHandlers } from '../../../packages/runtime/src/work-package-module.js';
-import { createJobRunner, formatJobLoopDelay } from '../../../packages/runtime/src/job-runner.js';
+import { createJobRunner, formatJobLoopDelay, shouldLogJobLoopDelay } from '../../../packages/runtime/src/job-runner.js';
 import { createScheduler } from '../../../packages/runtime/src/scheduler.js';
 import { createDailyBriefService } from '../../../packages/domain/src/daily-brief-service.js';
 import {createInformationDigestService} from '../../../packages/domain/src/information-digest-service.js';
@@ -208,6 +208,11 @@ export function createAiCenterWorker(options = {}) {
     [TWKR_REVENUE_JOB_TYPE]: 70_000,
   };
   store.recoverStaleJobs(staleAfterMs, Date.now(), { maxRunningMs: jobMaxRunningMs, maxRunningMsByType });
+  try {
+    store.repositories?.informationTree?.releaseAll?.();
+  } catch (error) {
+    console.error(`[worker] 清理浓缩树租约失败：${error?.message || error}`);
+  }
   if (hourlyReportDisabled(env)) {
     const cancelled = releaseOpenHourlyJobs(store, env);
     console.log(`[worker] 小时报已停用（AI_CENTER_HOURLY_DISABLED=1），已取消 ${cancelled} 个未完成任务`);
@@ -877,6 +882,8 @@ export function createAiCenterWorker(options = {}) {
       console.error(`[worker] ${job.type} ${job.id}: ${stack || error?.message || error}`);
     },
     onJobEnd(job, delay) {
+      const maxMs = Math.round(Number(delay?.maxMs) || 0);
+      if (!shouldLogJobLoopDelay(maxMs)) return;
       console.log(formatJobLoopDelay(job, delay));
     },
     onClaimError(error) {

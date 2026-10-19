@@ -117,6 +117,15 @@ test('BrowserSkill navigate passes a timeout and optional wait condition', async
   assert.equal(commands[0].timeoutMs, 65_000);
 });
 
+test('browser process abort settles without waiting for close', async () => {
+  const controller = new AbortController();
+  const started = Date.now();
+  const pending = runBrowserProcess(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { timeoutMs: 30_000, signal: controller.signal });
+  setTimeout(() => controller.abort(), 40);
+  await assert.rejects(pending, (error) => error.name === 'AbortError' && error.code === 'ABORT_ERR');
+  assert.ok(Date.now() - started < 2_000);
+});
+
 test('browser process timeout settles without waiting for close', async () => {
   const started = Date.now();
   await assert.rejects(

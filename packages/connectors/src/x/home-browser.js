@@ -18,8 +18,19 @@ const FEED_TAB_LABELS = {
   following: ['Following', '正在关注', '正在關注', '跟隨'],
 };
 
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function delay(ms, signal) {
+  if (signal?.aborted) return Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError', code: 'ABORT_ERR' }));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(Object.assign(new Error('aborted'), { name: 'AbortError', code: 'ABORT_ERR' }));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 export function normalizeXArticleUrl(value) {
@@ -532,6 +543,29 @@ export function mergeTweets(existing, incoming, limit, options = {}) {
 }
 
 const EXTRACT_TIMEOUT_MS = 45_000;
+const FOLLOWING_EXPAND_CAP = 16;
+const FOR_YOU_TRUNCATED_CAP = 8;
+const EXPAND_TIME_RESERVE_MS = 45_000;
+
+function stepOptions(timeoutMs, budget) {
+  return { timeoutMs, ...(budget?.signal ? { signal: budget.signal } : {}) };
+}
+
+function abortedError(error) {
+  return error?.name === 'AbortError' || error?.code === 'ABORT_ERR';
+}
+
+export function rankTruncatedExpansions(items) {
+  return [...items].sort((left, right) => {
+    const leftScore = Number(left.x_focus?.focusScore);
+    const rightScore = Number(right.x_focus?.focusScore);
+    const scoreDelta = (Number.isFinite(rightScore) ? rightScore : -1) - (Number.isFinite(leftScore) ? leftScore : -1);
+    if (scoreDelta !== 0) return scoreDelta;
+    const lengthDelta = String(right.text || '').length - String(left.text || '').length;
+    if (lengthDelta) return lengthDelta;
+    return String(left.tweet_id).localeCompare(String(right.tweet_id));
+  });
+}
 
 function captureStopped(signal, deadlineAt) {
   return Boolean(signal?.aborted) || (Number.isFinite(Number(deadlineAt)) && Date.now() >= Number(deadlineAt));
@@ -598,17 +632,22 @@ export function createXHomeBrowserClient(options = {}) {
     throw new Error('X 浏览器访问需要 browserRuntime');
   }
 
-  async function harvestTweets(session) {
-    const extracted = await session.evaluate(buildTweetExtractExpression(), { timeoutMs: EXTRACT_TIMEOUT_MS });
+  async function harvestTweets(session, budget) {
+    const timeoutMs = commandTimeout(EXTRACT_TIMEOUT_MS, budget?.deadlineAt);
+    if (!timeoutMs || captureStopped(budget?.signal, budget?.deadlineAt)) return [];
+    const extracted = await session.evaluate(buildTweetExtractExpression(), stepOptions(timeoutMs, budget));
     return extracted?.items || [];
   }
 
-  async function readStatusComments(session, tweetId) {
+  async function readStatusComments(session, tweetId, budget) {
     if (!tweetId) return [];
+    const timeoutMs = commandTimeout(EXTRACT_TIMEOUT_MS, budget?.deadlineAt);
+    if (!timeoutMs || captureStopped(budget?.signal, budget?.deadlineAt)) return [];
     try {
-      const extracted = await session.evaluate(buildStatusCommentsExpression(tweetId), { timeoutMs: EXTRACT_TIMEOUT_MS });
+      const extracted = await session.evaluate(buildStatusCommentsExpression(tweetId), stepOptions(timeoutMs, budget));
       return Array.isArray(extracted?.comments) ? extracted.comments : [];
-    } catch {
+    } catch (error) {
+      if (abortedError(error)) throw error;
       return [];
     }
   }
@@ -618,16 +657,16 @@ export function createXHomeBrowserClient(options = {}) {
     if (captureStopped(budget?.signal, budget?.deadlineAt)) return tweet;
     const navigateTimeout = commandTimeout(EXTRACT_TIMEOUT_MS, budget?.deadlineAt);
     if (!navigateTimeout) return tweet;
-    await session.navigate(tweet.tweet_url, { timeoutMs: navigateTimeout });
+    await session.navigate(tweet.tweet_url, stepOptions(navigateTimeout, budget));
     let best = tweet;
     for (let attempt = 0; attempt < 6; attempt += 1) {
       if (captureStopped(budget?.signal, budget?.deadlineAt)) break;
       const stepTimeout = commandTimeout(EXTRACT_TIMEOUT_MS, budget?.deadlineAt);
       if (!stepTimeout) break;
-      await wait(attempt === 0 ? 2_000 : 700);
-      const expanded = await session.evaluate(buildClickShowMoreExpression(), { timeoutMs: stepTimeout });
-      if (expanded?.clicked) await wait(700);
-      const extracted = await session.evaluate(buildTweetExtractExpression(), { timeoutMs: stepTimeout });
+      await wait(attempt === 0 ? 2_000 : 700, budget?.signal);
+      const expanded = await session.evaluate(buildClickShowMoreExpression(), stepOptions(stepTimeout, budget));
+      if (expanded?.clicked) await wait(700, budget?.signal);
+      const extracted = await session.evaluate(buildTweetExtractExpression(), stepOptions(stepTimeout, budget));
       const match = (extracted?.items || []).find((item) => item.tweet_id === tweet.tweet_id)
         || extracted?.items?.[0]
         || null;
@@ -637,7 +676,7 @@ export function createXHomeBrowserClient(options = {}) {
       const grown = String(best.text || '').length >= String(tweet.text || '').length + 200;
       if (grown && !looksTruncatedTweet({ ...best, truncated: Boolean(match?.truncated) })) break;
     }
-    const comments = await readStatusComments(session, best.tweet_id || tweet.tweet_id);
+    const comments = await readStatusComments(session, best.tweet_id || tweet.tweet_id, budget);
     return {
       ...best,
       truncated: looksTruncatedTweet(best),
@@ -653,19 +692,22 @@ export function createXHomeBrowserClient(options = {}) {
     if (captureStopped(budget?.signal, budget?.deadlineAt)) return { ...tweet, article_unfetched: Boolean(tweet.article_cover) };
     const navigateTimeout = commandTimeout(EXTRACT_TIMEOUT_MS, budget?.deadlineAt);
     if (!navigateTimeout) return { ...tweet, article_unfetched: Boolean(tweet.article_cover) };
-    await session.navigate(target, { timeoutMs: navigateTimeout });
+    await session.navigate(target, stepOptions(navigateTimeout, budget));
     let best = { title: '', body: '' };
     let stable = 0;
     for (let attempt = 0; attempt < 6; attempt += 1) {
       if (captureStopped(budget?.signal, budget?.deadlineAt)) break;
       const stepTimeout = commandTimeout(EXTRACT_TIMEOUT_MS, budget?.deadlineAt);
       if (!stepTimeout) break;
-      await wait(attempt === 0 ? 3_000 : 1_000);
+      await wait(attempt === 0 ? 3_000 : 1_000, budget?.signal);
       if (attempt > 0) {
-        try { await session.evaluate(buildArticleScrollExpression(), { timeoutMs: stepTimeout }); }
-        catch { /* the next extract still uses whatever is on the page */ }
+        try { await session.evaluate(buildArticleScrollExpression(), stepOptions(stepTimeout, budget)); }
+        catch (error) {
+          if (abortedError(error)) throw error;
+          /* the next extract still uses whatever is on the page */
+        }
       }
-      const extracted = await session.evaluate(buildArticleExtractExpression(), { timeoutMs: stepTimeout });
+      const extracted = await session.evaluate(buildArticleExtractExpression(), stepOptions(stepTimeout, budget));
       if (extracted?.login_wall) break;
       const title = String(extracted?.title || '').trim();
       const body = String(extracted?.body || '').trim();
@@ -692,7 +734,7 @@ export function createXHomeBrowserClient(options = {}) {
       article_unfetched: !complete,
     };
     if (!articleUrl) {
-      next.comments = await readStatusComments(session, tweet.tweet_id);
+      next.comments = await readStatusComments(session, tweet.tweet_id, budget);
       next.comments_checked = true;
     }
     return next;
@@ -706,10 +748,10 @@ export function createXHomeBrowserClient(options = {}) {
     const navigateTimeout = commandTimeout(EXTRACT_TIMEOUT_MS, budget?.deadlineAt);
     if (!navigateTimeout) return tweet;
     try {
-      await session.navigate(tweet.tweet_url, { timeoutMs: navigateTimeout });
-      await wait(1_500);
+      await session.navigate(tweet.tweet_url, stepOptions(navigateTimeout, budget));
+      await wait(1_500, budget?.signal);
       if (captureStopped(budget?.signal, budget?.deadlineAt)) return tweet;
-      const comments = await readStatusComments(session, tweet.tweet_id);
+      const comments = await readStatusComments(session, tweet.tweet_id, budget);
       return { ...tweet, comments, comments_checked: true };
     } catch {
       return { ...tweet, comments_checked: true };
@@ -737,19 +779,19 @@ export function createXHomeBrowserClient(options = {}) {
           };
         }
         await session.navigate('https://x.com/home', {
-          timeoutMs: homeTimeout,
+          ...stepOptions(homeTimeout, budget),
           waitUntil: 'domcontentloaded',
         });
-        if (!stop()) await wait(3_500);
+        if (!stop()) await wait(3_500, signal);
         const inspectTimeout = () => commandTimeout(EXTRACT_TIMEOUT_MS, deadlineAt);
         const inspectHome = async () => {
           const timeoutMs = inspectTimeout();
           if (!timeoutMs) return null;
-          let inspect = await session.evaluate(buildPageInspectExpression(feed), { timeoutMs });
+          let inspect = await session.evaluate(buildPageInspectExpression(feed), stepOptions(timeoutMs, budget));
           if (inspect?.clicked_tab && !stop()) {
-            await wait(2_500);
+            await wait(2_500, signal);
             const again = inspectTimeout();
-            if (again) inspect = { ...inspect, ...(await session.evaluate(buildPageInspectExpression(feed), { timeoutMs: again })), clicked_tab: inspect.clicked_tab };
+            if (again) inspect = { ...inspect, ...(await session.evaluate(buildPageInspectExpression(feed), stepOptions(again, budget))), clicked_tab: inspect.clicked_tab };
           }
           return inspect;
         };
@@ -773,7 +815,7 @@ export function createXHomeBrowserClient(options = {}) {
           };
         }
         let items = [];
-        const harvest = () => harvestTweets(session);
+        const harvest = () => harvestTweets(session, budget);
         const merge = (current, incoming) => mergeTweets(current, incoming, parsedLimit, { excludeExternalIds: exclude });
         if (!stop()) items = merge(items, await harvest());
         let stale = 0;
@@ -783,8 +825,8 @@ export function createXHomeBrowserClient(options = {}) {
           const scrollTimeout = commandTimeout(EXTRACT_TIMEOUT_MS, deadlineAt);
           if (!scrollTimeout) { stoppedEarly = true; break; }
           const before = items.length;
-          await session.evaluate(buildScrollExpression(), { timeoutMs: scrollTimeout });
-          await wait(1_800);
+          await session.evaluate(buildScrollExpression(), stepOptions(scrollTimeout, budget));
+          await wait(1_800, signal);
           if (stop()) break;
           items = merge(items, await harvest());
           if (items.length === before) {
@@ -796,37 +838,41 @@ export function createXHomeBrowserClient(options = {}) {
         }
         let focusPlan = { mode: 'all', items };
         if (typeof options.scoreHomeCards === 'function' && !stop()) {
-          try {
-            const scored = await options.scoreHomeCards(
-              items.map((item) => ({ id: item.tweet_id, text: String(item.text || '') })),
-              { deadlineAt, signal },
-            );
-            if (feed === 'following') {
-              const attached = selectFocusExpansions(items, scored);
-              focusPlan = scored ? { mode: 'following', items: attached.items } : { mode: 'all', items: attached.items };
-            } else {
-              focusPlan = selectFocusExpansions(items, scored);
-            }
-          } catch {
+          const reservedDeadline = Number.isFinite(Number(deadlineAt)) ? Number(deadlineAt) - EXPAND_TIME_RESERVE_MS : deadlineAt;
+          const skipScore = Number.isFinite(Number(reservedDeadline)) && Date.now() >= Number(reservedDeadline);
+          if (skipScore) {
             focusPlan = feed === 'following'
               ? { mode: 'following', items }
               : fallbackFocusExpansions(items, options.focusKeywords || []);
+          } else {
+            try {
+              const scored = await options.scoreHomeCards(
+                items.map((item) => ({ id: item.tweet_id, text: String(item.text || '') })),
+                { deadlineAt: reservedDeadline, signal },
+              );
+              if (feed === 'following') {
+                const attached = selectFocusExpansions(items, scored);
+                focusPlan = scored ? { mode: 'following', items: attached.items } : { mode: 'all', items: attached.items };
+              } else {
+                focusPlan = selectFocusExpansions(items, scored);
+              }
+            } catch (error) {
+              if (abortedError(error)) throw error;
+              focusPlan = feed === 'following'
+                ? { mode: 'following', items }
+                : fallbackFocusExpansions(items, options.focusKeywords || []);
+            }
           }
         }
         items = focusPlan.items;
         const selected = (tweet) => focusPlan.mode === 'all' || focusPlan.mode === 'following' || focusPlan.expandIds.has(tweet.tweet_id);
         const truncatedAll = items.filter((item) => looksTruncatedTweet(item));
-        const eligible = truncatedAll.filter((item) => focusPlan.mode === 'following' || selected(item));
-        const cap = focusPlan.mode === 'following' ? 8 : eligible.length;
-        const queued = [...eligible]
-          .sort((left, right) => String(left.text || '').length - String(right.text || '').length)
-          .slice(0, cap);
+        const cap = feed === 'following' ? FOLLOWING_EXPAND_CAP : FOR_YOU_TRUNCATED_CAP;
+        const queued = rankTruncatedExpansions(truncatedAll).slice(0, cap);
         const reasons = {};
         const bump = (reason) => { reasons[reason] = (reasons[reason] || 0) + 1; };
-        const overCap = eligible.length - queued.length;
+        const overCap = truncatedAll.length - queued.length;
         if (overCap > 0) reasons['over-cap'] = overCap;
-        const notSelected = truncatedAll.length - eligible.length;
-        if (notSelected > 0) reasons['not-selected'] = notSelected;
         let attempted = 0;
         let ok = 0;
         let failed = 0;
@@ -851,6 +897,15 @@ export function createXHomeBrowserClient(options = {}) {
               else reason = 'still-truncated';
             }
           } catch (error) {
+            if (abortedError(error) || captureStopped(budget.signal, budget.deadlineAt)) {
+              reason = 'deadline';
+              completed = tweet;
+              bump(reason);
+              failed += 1;
+              items = items.map((item) => (item.tweet_id === tweet.tweet_id ? { ...completed, x_focus: item.x_focus } : item));
+              cursor += 1;
+              break;
+            }
             reason = /extract/i.test(String(error?.message || '')) ? 'extract-failed' : 'navigate-failed';
             completed = tweet;
           }

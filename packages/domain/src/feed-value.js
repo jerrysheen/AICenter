@@ -77,13 +77,14 @@ export function parseFeedValueAnswers(answers={}) {
 function preflight(input) {
   if(input.captureInvalid) return 'invalid-capture';
   if(input.bodyMissing || (!input.body.trim() && !input.continuations.some(p=>p.text.trim()) && !input.references.some(p=>p.text.trim()))) return 'body-missing';
-  if(input.truncated) return 'input-truncated';
+  // Truncation is a marker for the scorer, not a reason to skip the preview.
   if(input.keyContextMissing) return 'context-missing';
   return '';
 }
 export function decideFeedValue(scores,{input={},calibration=null,model='',errorReason='',rule='calibrated-value'}={}) {
   FeedValueRuleSchema.parse(rule);
-  const result=(decision,reason,reviewKind='none')=>FeedValueDecisionSchema.parse({decision,reason,reviewKind});
+  const result=(decision,reason,reviewKind='none',bodyPending=false)=>FeedValueDecisionSchema.parse({decision,reason,reviewKind,bodyPending});
+  const keep=(reason)=>result('KEEP',reason,'none',Boolean(parsed.success && parsed.data.truncated));
   const parsed=FeedValueInputSchema.safeParse(input);
   if(!parsed.success) return result('REVIEW','invalid-input','technical');
   const issue=preflight(parsed.data);
@@ -95,14 +96,14 @@ export function decideFeedValue(scores,{input={},calibration=null,model='',error
   if(s.data.missing_context>=.60) return result('REVIEW','context-missing','missing-content');
   if(rule===FEED_VALUE_RULE || rule==='two-of-three-0.60') {
     const all=rule===FEED_VALUE_RULE;
-    if(all ? FEED_VALUE_POSITIVE_KEYS.every(k=>s.data[k]>=.60) : FEED_VALUE_POSITIVE_KEYS.filter(k=>s.data[k]>.60).length>=2) return result('KEEP',all?'all-three':'two-of-three');
+    if(all ? FEED_VALUE_POSITIVE_KEYS.every(k=>s.data[k]>=.60) : FEED_VALUE_POSITIVE_KEYS.filter(k=>s.data[k]>.60).length>=2) return keep(all?'all-three':'two-of-three');
     if(parsed.data.suspectedContinuation || parsed.data.missingParts.some(p=>p.critical!==false)) return result('REVIEW','context-unconfirmed','missing-content');
     return result('DROP',all?'below-all-three':'below-two-of-three');
   }
   const c=FeedValueCalibrationSchema.safeParse(calibration);
   if(!c.success) return result('REVIEW','uncalibrated','semantic');
   if(c.data.policyHash!==feedValuePolicyHash() || c.data.model!==model) return result('REVIEW','calibration-mismatch','technical');
-  if(s.data.reading_value>=c.data.keepAt) return result('KEEP','substantive');
+  if(s.data.reading_value>=c.data.keepAt) return keep('substantive');
   if(s.data.reading_value<c.data.dropBelow) {
     if(parsed.data.suspectedContinuation || parsed.data.missingParts.some(p=>p.critical!==false)) return result('REVIEW','context-unconfirmed','missing-content');
     return result('DROP','no-saving-value');
@@ -115,7 +116,8 @@ export function createFeedValueEvaluator({client,model='',calibration=null,maxSt
   const questions=buildFeedValueQuestions();
   const stateOf=input=>({title:input.title,body:input.body,continuations:input.continuations,
     references:input.references,unavailableMedia:input.unavailableMedia,
-    captureState:{missingParts:input.missingParts,suspectedContinuation:input.suspectedContinuation}});
+    truncated:Boolean(input.truncated),
+    captureState:{missingParts:input.missingParts,suspectedContinuation:input.suspectedContinuation,truncated:Boolean(input.truncated)}});
   const cacheKey=input=>hash({version:FEED_VALUE_VERSION,model,questions,input});
   return Object.freeze({version:FEED_VALUE_VERSION,cacheKey,async evaluate(rawInput,{signal}={}){
     const p=FeedValueInputSchema.safeParse(rawInput),input=p.success?p.data:rawInput;

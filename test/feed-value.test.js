@@ -61,12 +61,16 @@ test('display-name text is suspicion, not an authenticated continuation; low val
 
 test('capture facts preempt model scores and avoid requests; supplementary media do not block standalone value',async()=>{
   let calls=0;const e=createFeedValueEvaluator({model:'fixed',calibration,client:{async evaluate(){calls++;return {model:'fixed',answers:answers(scores)};}}});
-  for(const capture of [{truncated:true},{threadIncomplete:true},{missingParts:[{kind:'image',critical:true,status:'confirmed',evidence:'only-answer-in-image'}]}]) {
+  const truncated=await e.evaluate(normalizeFeedValueText('看图',{capture:{truncated:true}}));
+  assert.equal(truncated.decision.decision,'KEEP');
+  assert.equal(truncated.decision.bodyPending,true);
+  assert.equal(truncated.decision.reviewKind,'none');
+  for(const capture of [{threadIncomplete:true},{missingParts:[{kind:'image',critical:true,status:'confirmed',evidence:'only-answer-in-image'}]}]) {
     const r=await e.evaluate(normalizeFeedValueText('看图',{capture}));assert.equal(r.decision.reviewKind,'missing-content');
   }
-  assert.equal(calls,0);
+  assert.equal(calls,1);
   const i=normalizeFeedValueText('完整提示词：绘制一个红色立方体。\n[未抓取] 视频',{capture:{missingParts:[{kind:'video',critical:false,status:'confirmed',evidence:'output-demo-only'}]}});
-  assert.equal((await e.evaluate(i)).decision.decision,'KEEP');assert.equal(calls,1);
+  assert.equal((await e.evaluate(i)).decision.decision,'KEEP');assert.equal(calls,2);
   assert.equal((await e.evaluate(normalizeFeedValueText('长文摘要\n[未抓取] X 长文'))).decision.reason,'context-missing');
 });
 
@@ -151,7 +155,12 @@ test('explicit two-of-three enforce applies strict boundaries, all pairs, and ke
     assert.equal(decideFeedValue(s,options).decision,'DROP');
   }
   assert.equal(decideFeedValue({...scores,reading_value:.60,specific_content:.60,sufficient_information:.60},options).decision,'DROP');
-  assert.equal(decideFeedValue(scores,{...options,input:{...input,truncated:true}}).reviewKind,'missing-content');
+  const truncatedTwo=decideFeedValue(scores,{...options,input:{...input,truncated:true}});
+  assert.equal(truncatedTwo.decision,'DROP');
+  assert.equal(truncatedTwo.bodyPending,false);
+  const keptTruncated=decideFeedValue({...scores,reading_value:.9,specific_content:.9,sufficient_information:.9},{...options,input:{...input,truncated:true}});
+  assert.equal(keptTruncated.decision,'KEEP');
+  assert.equal(keptTruncated.bodyPending,true);
   assert.equal(decideFeedValue({...scores,missing_context:.60},options).decision,'REVIEW');
   assert.equal(decideFeedValue(scores,{...options,input:{...input,suspectedContinuation:true}}).reason,'context-unconfirmed');
   const e=createFeedValueEvaluator({rule,model:'fixed'});
@@ -210,9 +219,14 @@ test('all-three requires each score >=0.60, and actual admission blocks DROP, mi
     const service=createFeedService({legacyRepository:store,feedRepository:repo,feedFilter:filter,
       sourcePort:{findByProvider:()=>({id:'x'}),persistence:()=>({providerId:'x',sourceAccount:{externalId:'x:all-three',displayName:'X',profileUrl:'https://x.com/home',authMode:'browser-session'}}),
         read:async()=>({data:{feed:'for-you',fetchedAt:Date.now(),items,mode:'live'}})}});
-    assert.equal((await service.getExternalFeed('x',{feed:'for-you',refresh:true})).added,1);
-    assert.deepEqual(repo.listContentItemsByProvider('local','x').map(i=>i.externalId),['pass']);
-    for(const id of ['drop','missing','failure']) {
+    assert.equal((await service.getExternalFeed('x',{feed:'for-you',refresh:true})).added,2);
+    assert.deepEqual(repo.listContentItemsByProvider('local','x').map(i=>i.externalId).sort(),['missing','pass']);
+    const pending=repo.getCapture('local','x','missing');
+    assert.equal(pending.metadata.filterDecision,'KEEP');
+    assert.equal(pending.metadata.bodyCompletion,'pending');
+    assert.equal(pending.status,'ready');
+    assert.deepEqual(repo.listPendingBodyExternalIds('local','x'),['missing']);
+    for(const id of ['drop','failure']) {
       const capture=repo.getCapture('local','x',id);
       assert.ok(capture.metadata.originalText);assert.equal(capture.metadata.filterApplied,true);
       assert.equal(repo.getContentItemByCapture('local',capture.id),null);
@@ -222,7 +236,7 @@ test('all-three requires each score >=0.60, and actual admission blocks DROP, mi
     const item=repo.getContentItemByCapture('local',existing.id);
     const replay=createFeedValueReviewService({feedRepository:repo});
     replay.apply([{id:`feed:${item.id}`,input:normalizeFeedValueText('完整材料',{capture:{}}),scores:good,model:'jev-1.13.0',errorReason:'jev-failed'}]);
-    assert.equal(repo.listContentItemsByProvider('local','x').length,0);
+    assert.deepEqual(repo.listContentItemsByProvider('local','x').map((row) => row.externalId), ['missing']);
     assert.equal(repo.getContentItem('local',item.id).body,'完整材料');
   }finally{store.close();rmSync(directory,{recursive:true,force:true});}
 });
