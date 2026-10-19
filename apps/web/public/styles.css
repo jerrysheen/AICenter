@@ -5855,6 +5855,35 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
   .southbound-channels { grid-template-columns: 1fr; }
 }
 
+.market-flow { display: grid; gap: var(--space-4); }
+.market-flow.hidden { display: none; }
+.flow-block { padding: var(--space-4); border-radius: var(--radius-card); background: var(--background-secondary); }
+.flow-head h2 { margin: 0; font-size: 18px; font-weight: 650; }
+.flow-date { margin: 8px 0 0; padding: 8px 10px; border-radius: 8px; font-size: 16px; font-weight: 700; line-height: 1.4; }
+.flow-date.is-old { background: #fff4e5; color: #8a4b08; }
+.flow-badge { display: inline-block; margin-top: 8px; padding: 2px 8px; border-radius: 99px; background: var(--warning); color: var(--font-on-primary); font-size: 12px; }
+.flow-missing, .flow-scope, .flow-chart-label { margin: 12px 0 0; color: var(--font-secondary); font-size: 13px; line-height: 1.6; }
+.flow-channels, .flow-sums, .flow-lists { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+.flow-lists { grid-template-columns: 1fr 1fr; }
+.flow-channel, .flow-lists h3 { display: block; margin: 0 0 4px; color: var(--font-tertiary); font-size: 13px; font-weight: 650; }
+.flow-figure { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin: 0; }
+.flow-figure-label { color: var(--font-secondary); font-size: 13px; }
+.flow-figure strong { color: var(--font-primary); font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: 0; }
+.flow-figure small { color: var(--font-tertiary); font-size: 13px; }
+.flow-bars { display: flex; align-items: flex-end; gap: 3px; height: 72px; margin-top: 8px; }
+.flow-bars.is-signed { align-items: center; }
+.flow-bar { position: relative; flex: 1; height: 100%; }
+.flow-bar i { position: absolute; left: 0; width: 100%; border-radius: 2px; background: #8aa0b8; }
+.flow-bars.is-signed .flow-bar i { background: #8aa0b8; }
+.flow-bars.is-signed .flow-bar.is-in i { bottom: 50%; background: #c4b07a; }
+.flow-bars.is-signed .flow-bar.is-out i { top: 50%; background: #7f93a8; }
+.flow-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; width: 100%; min-height: 44px; padding: 6px 0; border: 0; background: transparent; text-align: left; color: inherit; }
+.flow-row > span { min-width: 0; font-size: 15px; }
+@media (max-width: 720px) {
+  .flow-channels, .flow-sums, .flow-lists { grid-template-columns: 1fr; }
+  .flow-figure strong { font-size: 20px; }
+}
+
 .author-screen, .author-page { padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
 .author-switch {
   display: flex; flex-wrap: nowrap; gap: 8px; overflow-x: auto; padding: 8px 28px 12px 0;

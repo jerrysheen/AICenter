@@ -3,6 +3,7 @@ export const SOUTHBOUND_MIN_INTERVAL_MS = 1_000;
 
 const EASTMONEY_URL = 'https://datacenter-web.eastmoney.com/api/data/v1/get';
 const CHANNEL_BY_TYPE = { '002': 'sh', '004': 'sz', '006': 'total' };
+const NORTHBOUND_CHANNEL_BY_TYPE = { '001': 'sh', '003': 'sz', '005': 'total' };
 
 export function millionHkdToHkd(value) {
   if (value == null || value === '') return null;
@@ -70,6 +71,47 @@ export function parseTop10(payload) {
   });
 }
 
+export function parseNorthboundHistory(payload) {
+  const rows = payload?.result?.data;
+  if (!Array.isArray(rows)) return [];
+  return rows.flatMap((row) => {
+    const channel = NORTHBOUND_CHANNEL_BY_TYPE[String(row?.MUTUAL_TYPE || '')];
+    const tradeDate = tradeDateOf(row?.TRADE_DATE);
+    const dealAmt = millionHkdToHkd(row?.DEAL_AMT);
+    if (!channel || !tradeDate || dealAmt == null) return [];
+    return [{
+      tradeDate,
+      channel,
+      mutualType: String(row.MUTUAL_TYPE),
+      dealAmt,
+      dealNum: row.DEAL_NUM == null || row.DEAL_NUM === '' ? null : Math.round(Number(row.DEAL_NUM)),
+      source: 'eastmoney',
+    }];
+  });
+}
+
+export function parseNorthboundTop10(payload) {
+  const rows = payload?.result?.data;
+  if (!Array.isArray(rows)) return [];
+  return rows.flatMap((row) => {
+    const channel = NORTHBOUND_CHANNEL_BY_TYPE[String(row?.MUTUAL_TYPE || '')];
+    const tradeDate = tradeDateOf(row?.TRADE_DATE);
+    const digits = String(row?.SECURITY_CODE || '').replace(/\D/g, '');
+    const code = digits.length > 0 && digits.length <= 6 ? digits.padStart(6, '0') : '';
+    const dealAmt = hkdAmount(row?.DEAL_AMT);
+    if (!channel || channel === 'total' || !tradeDate || !/^\d{6}$/.test(code) || dealAmt == null) return [];
+    return [{
+      tradeDate,
+      channel,
+      rank: Number(row.RANK) || 0,
+      code,
+      name: String(row.SECURITY_NAME || '').trim(),
+      dealAmt,
+      source: 'eastmoney',
+    }];
+  });
+}
+
 export function mergeTop10(rows) {
   const byCode = new Map();
   for (const row of rows || []) {
@@ -123,23 +165,38 @@ export function parseHkexDaily(text) {
   }
   if (!Array.isArray(tabs)) return null;
   const markets = {};
+  const northboundMarkets = {};
   for (const tab of tabs) {
     const market = String(tab?.market || '');
-    const channel = market === 'SSE Southbound' ? 'sh' : market === 'SZSE Southbound' ? 'sz' : '';
-    if (!channel) continue;
     const summary = (tab.content || []).find((block) => block?.style === 1)?.table;
     const values = summaryCells(summary);
-    markets[channel] = {
-      tradeDate: tradeDateOf(tab.date),
-      totalTurnoverHkd: millionHkdToHkd(values[0]),
-      buyTurnoverHkd: millionHkdToHkd(values[1]),
-      sellTurnoverHkd: millionHkdToHkd(values[2]),
-      tradeCount: Number(String(values[3] || '').replace(/,/g, '')) || null,
-    };
+    if (market === 'SSE Southbound' || market === 'SZSE Southbound') {
+      const channel = market === 'SSE Southbound' ? 'sh' : 'sz';
+      markets[channel] = {
+        tradeDate: tradeDateOf(tab.date),
+        totalTurnoverHkd: millionHkdToHkd(values[0]),
+        buyTurnoverHkd: millionHkdToHkd(values[1]),
+        sellTurnoverHkd: millionHkdToHkd(values[2]),
+        tradeCount: Number(String(values[3] || '').replace(/,/g, '')) || null,
+      };
+      continue;
+    }
+    if (market === 'SSE Northbound' || market === 'SZSE Northbound') {
+      const channel = market === 'SSE Northbound' ? 'sh' : 'sz';
+      northboundMarkets[channel] = {
+        tradeDate: tradeDateOf(tab.date),
+        totalTurnoverCny: millionHkdToHkd(values[0]),
+        tradeCount: Number(String(values[1] || '').replace(/,/g, '')) || null,
+      };
+    }
   }
-  if (!markets.sh && !markets.sz) return null;
+  if (!markets.sh && !markets.sz && !northboundMarkets.sh && !northboundMarkets.sz) return null;
   const dealAmt = (markets.sh?.totalTurnoverHkd || 0) + (markets.sz?.totalTurnoverHkd || 0);
-  return { markets, dealAmt: dealAmt || null };
+  const northDeal = (northboundMarkets.sh?.totalTurnoverCny || 0) + (northboundMarkets.sz?.totalTurnoverCny || 0);
+  const northbound = northboundMarkets.sh || northboundMarkets.sz
+    ? { markets: northboundMarkets, dealAmt: northDeal || null }
+    : null;
+  return { markets, dealAmt: dealAmt || null, northbound };
 }
 
 export function compareSouthboundDeal(eastmoneyHkd, hkexHkd) {
@@ -246,24 +303,40 @@ export function createSouthboundClient(options = {}) {
   }
 
   return {
-    async fetchHistory({ mutualType = '', start, end, pageSize = 200 } = {}) {
+    async fetchHistory({ mutualType = '', start, end, pageSize = 200, parse = parseDealHistory } = {}) {
       const rows = [];
       let page = 1;
       let pages = 1;
       while (page <= pages && page <= 40) {
         const payload = await getJson(historyUrl({ mutualType, start, end, pageNumber: page, pageSize }));
         pages = Number(payload?.result?.pages) || 1;
-        rows.push(...parseDealHistory(payload));
+        rows.push(...parse(payload));
         page += 1;
       }
       return rows;
     },
-    fetchDay(date) {
-      return this.fetchHistory({ start: date, end: date, pageSize: 20 });
+    async fetchDayBundle(date) {
+      const payload = await getJson(historyUrl({ start: date, end: date, pageNumber: 1, pageSize: 20 }));
+      return {
+        southbound: parseDealHistory(payload),
+        northbound: parseNorthboundHistory(payload),
+      };
     },
-    async fetchTop10(date) {
+    fetchDay(date) {
+      return this.fetchDayBundle(date).then((bundle) => bundle.southbound);
+    },
+    fetchNorthboundHistory(args = {}) {
+      return this.fetchHistory({ ...args, parse: parseNorthboundHistory });
+    },
+    async fetchTop10Bundle(date) {
       const payload = await getJson(top10Url(date));
-      return parseTop10(payload);
+      return {
+        southbound: parseTop10(payload),
+        northbound: parseNorthboundTop10(payload),
+      };
+    },
+    fetchTop10(date) {
+      return this.fetchTop10Bundle(date).then((bundle) => bundle.southbound);
     },
     async fetchHkex(date) {
       const response = await getResponse(hkexUrl(date), 'application/javascript,text/plain,*/*', 'https://www.hkex.com.hk/');

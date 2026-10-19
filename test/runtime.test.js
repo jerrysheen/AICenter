@@ -47,8 +47,10 @@ test('migrations upgrade a v1 database without losing posts', () => {
   const expectedHoles = unusedSchemaVersions.filter((version) => version <= schemaLatest).length;
   assert.deepEqual(unusedSchemaVersions, [63, 79, 80, 82]);
   assert.equal(upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, schemaLatest);
-  assert.equal(schemaLatest - schemaRows, expectedHoles, `schema rows ${schemaRows} latest ${schemaLatest}`);
-  assert.equal(schemaLatest, 88);
+  // 89 是 #152 的 youtube_podcast_article，还没进 main，本分支不登记，也不把它写成永久空号。
+  const reservedMissing = upgraded.prepare('SELECT 1 FROM schema_migrations WHERE version = 89').get() ? 0 : 1;
+  assert.equal(schemaLatest - schemaRows, expectedHoles + reservedMissing, `schema rows ${schemaRows} latest ${schemaLatest}`);
+  assert.equal(schemaLatest, 90);
   assert.ok(upgraded.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'youtube_podcast_episodes'`).get());
   const channelColumns = upgraded.prepare('PRAGMA table_info(youtube_podcast_channels)').all().map((column) => column.name);
   assert.ok(channelColumns.includes('backfilled_at'));

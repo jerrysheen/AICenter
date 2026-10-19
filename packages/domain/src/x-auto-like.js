@@ -7,6 +7,7 @@ import {
   mergeFocusSnapshot,
   nextAutoLikeSettings,
   normalizeAutoLikeSettings,
+  jevKept,
   rankAutoLikeCandidates,
   retainFocusWindow,
   shanghaiDayKey,
@@ -101,7 +102,7 @@ export function createXFocusService({
         metadata,
         focus,
       };
-    }).filter((row) => row.focus);
+    }).filter((row) => row.focus && jevKept(row.metadata));
   }
 
   function noticeFor(settings) {

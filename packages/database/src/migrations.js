@@ -2250,7 +2250,8 @@ migrations.push({ version: 78, name: 'author_stats', up(database) {
 // 63 仍空着。79、80、82 留空。83 是 information_tree_heads 的 (workspace_id, layer, start_at) 索引。
 // 84 是 jobs(type, created_at DESC)。85 是带 xFocus.method 的 X captures 部分索引。
 // 86 是 YouTube 播客的剧集和频道状态。87 只给频道补录状态加列。
-// 88 是作者列表按最新原文发布时间排序的索引。
+// 88 是北向资金 northbound_flow。89 是 YouTube 正文 youtube_podcast_article（#152），本分支不登记。
+// 90 是作者列表按最新原文发布时间排序的索引。
 export const unusedSchemaVersions = [63, 79, 80, 82];
 
 // 南向资金用 81，按 version 补执行，不看最大号。79、80、82 留空。
@@ -2349,7 +2350,42 @@ migrations.push({ version: 87, name: 'youtube_podcast_backfill', up(database) {
   addColumn(database, 'youtube_podcast_channels', 'backfill_failed_at', 'INTEGER');
 }});
 
-migrations.push({ version: 88, name: 'author_stats_published', up(database) {
+migrations.push({ version: 88, name: 'northbound_flow', up(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS northbound_daily (
+      workspace_id TEXT NOT NULL,
+      trade_date TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      deal_amt INTEGER,
+      deal_num INTEGER,
+      source TEXT NOT NULL,
+      check_status TEXT NOT NULL,
+      check_diff_pct REAL,
+      fetched_at INTEGER NOT NULL,
+      PRIMARY KEY (workspace_id, trade_date, channel),
+      CHECK (channel IN ('sh', 'sz', 'total')),
+      CHECK (check_status IN ('ok', 'mismatch', 'unchecked', 'hkex_missing'))
+    );
+    CREATE TABLE IF NOT EXISTS northbound_top10 (
+      workspace_id TEXT NOT NULL,
+      trade_date TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      rank INTEGER NOT NULL,
+      code TEXT NOT NULL,
+      name TEXT NOT NULL,
+      deal_amt INTEGER,
+      source TEXT NOT NULL,
+      PRIMARY KEY (workspace_id, trade_date, channel, code),
+      CHECK (channel IN ('sh', 'sz'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_northbound_daily_date
+      ON northbound_daily (workspace_id, trade_date DESC);
+    CREATE INDEX IF NOT EXISTS idx_northbound_top10_code
+      ON northbound_top10 (workspace_id, code, trade_date DESC);
+  `);
+}});
+
+migrations.push({ version: 90, name: 'author_stats_published', up(database) {
   database.exec(`CREATE INDEX IF NOT EXISTS idx_author_stats_published
     ON author_stats(workspace_id, followed DESC, latest_item_at DESC, author_id DESC)`);
 }});

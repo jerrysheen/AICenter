@@ -9,7 +9,8 @@ import { createStore } from '../packages/database/src/index.js';
 import { latestSchemaVersion } from '../packages/database/src/migrations.js';
 import { createAuthorService } from '../packages/domain/src/author-service.js';
 import { authorCaptureFields } from '../packages/domain/src/authors.js';
-import { syncOfficialReleases } from '../packages/domain/src/source-author-sync.js';
+import { officialReleaseExternalId, syncOfficialReleases } from '../packages/domain/src/source-author-sync.js';
+import { createTreeMaterialPort } from '../packages/domain/src/information-tree-materials.js';
 import {
   annotateOfficialReleases,
   authorSortAt,
@@ -325,16 +326,18 @@ test('official release sync links the source author and can run again', () => {
   }
 });
 
-test('migration 88 only adds the publish-time index and the phone chips scroll without a list swipe', () => {
+test('migration 90 only adds the publish-time index and the phone chips scroll without a list swipe', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'source-authors-schema-'));
   const file = path.join(dir, 'test.db');
   const store = createStore(file);
   store.close();
   const database = new Database(file);
-  const version = database.prepare(`SELECT name FROM schema_migrations WHERE version = 88`).get();
+  assert.equal(database.prepare(`SELECT name FROM schema_migrations WHERE version = 88`).get().name, 'northbound_flow');
+  const version = database.prepare(`SELECT name FROM schema_migrations WHERE version = 90`).get();
   assert.equal(version.name, 'author_stats_published');
+  assert.equal(database.prepare(`SELECT name FROM schema_migrations WHERE version = 89`).get(), undefined);
   assert.ok(database.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_author_stats_published'`).get());
-  database.prepare('DELETE FROM schema_migrations WHERE version = 88').run();
+  database.prepare('DELETE FROM schema_migrations WHERE version = 90').run();
   database.close();
   const reopened = createStore(file);
   try {
@@ -351,4 +354,116 @@ test('migration 88 only adds the publish-time index and the phone chips scroll w
   assert.match(view, /scrollIntoView\(\{ inline: 'nearest'/);
   assert.match(view, /iOS 边缘返回/);
   assert.doesNotMatch(view, /touchstart|touchmove|pointerdown/);
+});
+
+test('official board mirrors stay out of the feed, hourly report, and classification queues', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'source-authors-mirrors-'));
+  const file = path.join(dir, 'test.db');
+  const store = createStore(file);
+  const publishedAt = Date.now() - 1_000;
+  const window = { startAt: publishedAt - 60_000, endAt: Date.now() + 60_000 };
+  const release = {
+    releaseId: 'fed-mirror',
+    title: 'FOMC statement',
+    authority: 'Federal Reserve',
+    sourceUrl: 'https://www.federalreserve.gov/newsevents/pressreleases/monetary20261019a.htm',
+    publishedAt,
+  };
+  try {
+    const feed = store.repositories.feed;
+    saveSocial(feed, {
+      externalId: 'xq-social', nativeId: '1001', name: '社交作者', publishedAt, title: '社交一条',
+    });
+    saveSourceItem(feed, {
+      sourceKey: 'nextplatform', externalId: 'nextplatform:body', title: '媒体正文', publishedAt,
+    });
+    saveSourceItem(feed, {
+      sourceKey: 'fed', externalId: 'fed-prefix-only', title: '只有作者前缀', publishedAt,
+    });
+    syncOfficialReleases(store.repositories.feed, 'local', [release], {
+      'fed-mirror': 'policy.us.fed',
+    });
+    store.repositories.runtimeSnapshots.saveSnapshot('local', 'static-signal-board', {
+      generatedAt: publishedAt,
+      releases: [release],
+      releaseSourceIds: { 'fed-mirror': 'policy.us.fed' },
+    }, publishedAt);
+
+    const externalId = officialReleaseExternalId('fed', release);
+    const capture = feed.getCapture('local', 'media', externalId);
+    assert.equal(capture.metadata.lane, 'official');
+    assert.equal(capture.metadata.filterDecision || '', '');
+    assert.equal(capture.status, 'ready');
+    const prefixCapture = feed.getCapture('local', 'media', 'fed-prefix-only');
+    assert.equal(prefixCapture.metadata.lane || '', '');
+    assert.equal(prefixCapture.metadata.filterDecision || '', '');
+
+    const titles = (rows) => rows.map((row) => row.title);
+    const stored = titles(feed.listContentItems('local', { limit: 20 }));
+    assert.deepEqual(stored.filter((title) => title === 'FOMC statement' || title === '只有作者前缀'), []);
+    assert.ok(stored.includes('社交一条'));
+    assert.ok(stored.includes('媒体正文'));
+
+    const social = titles(feed.listContentItemsByProvider('local', 'xueqiu'));
+    const allFeed = [...social, release.title];
+    assert.deepEqual(allFeed.filter((title) => title === 'FOMC statement'), ['FOMC statement']);
+    assert.equal(allFeed.includes('只有作者前缀'), false);
+    store.repositories.media.upsertEntry({
+      workspaceId: 'local', externalId: 'nextplatform:index-only', sourceKey: 'nextplatform', publisherKey: 'nextplatform',
+      channel: 'tech', canonicalUrl: 'https://www.nextplatform.com/2026/10/19/index/', title: '媒体索引',
+      summary: '摘要', publishedAt, publishedAtRaw: '', contentLevel: 'summary_only', contentHash: hash('index'),
+      revision: 1, status: 'indexed', observedAt: publishedAt, createdAt: publishedAt, updatedAt: publishedAt,
+    });
+    const mediaTab = titles(store.repositories.media.listEntries('local', { limit: 20 }));
+    assert.deepEqual(mediaTab, ['媒体索引']);
+    assert.equal(feed.getCapture('local', 'media', 'nextplatform:index-only'), null);
+
+    const hourly = await createTreeMaterialPort({
+      feedService: {
+        listContentItemsInWindow: (workspaceId, query) => feed.listContentItemsInWindow(workspaceId, query),
+      },
+      mediaService: { informationCandidates: () => [] },
+    }).candidates('local', window);
+    assert.deepEqual(titles(hourly).filter((title) => title === 'FOMC statement' || title === '只有作者前缀'), []);
+    assert.ok(titles(hourly).includes('社交一条'));
+    assert.ok(titles(hourly).includes('媒体正文'));
+    const officialAccount = feed.listWindowSources('local', window)
+      .find((row) => row.sourceId === capture.sourceAccountId);
+    assert.equal(officialAccount?.available || 0, 0);
+
+    const refresh = feed.listQualityRefreshItems('local');
+    assert.ok(refresh.some((row) => row.externalId === 'xq-social'));
+    assert.equal(refresh.some((row) => row.externalId === externalId || row.externalId === 'fed-prefix-only'), false);
+    const taggable = titles(feed.listContentItemsWithSource('local', { limit: 20 }));
+    assert.deepEqual(taggable.filter((title) => title === 'FOMC statement' || title === '只有作者前缀'), []);
+    const officialIds = [
+      feed.getContentItemByCapture('local', capture.id).id,
+      feed.getContentItemByCapture('local', prefixCapture.id).id,
+    ];
+    const mediaId = feed.getContentItemByCapture('local', feed.getCapture('local', 'media', 'nextplatform:body').id).id;
+    assert.deepEqual(
+      titles(feed.listContentItemsWithSource('local', { ids: [...officialIds, mediaId], limit: 10 })),
+      ['媒体正文'],
+    );
+
+    const authors = createAuthorService({
+      authorRepository: store.repositories.authors,
+      feedRepository: feed,
+    });
+    assert.deepEqual(authors.items('local', 'official:fed').items.map((item) => item.title).sort(), ['FOMC statement', '只有作者前缀']);
+
+    const backed = await runSourceAuthorBackfill(store, { sleepMs: 0 });
+    assert.equal(backed.official, 1);
+    assert.equal(feed.getCapture('local', 'media', externalId).metadata.filterDecision || '', '');
+    assert.equal(feed.getCapture('local', 'media', 'fed-prefix-only').metadata.filterDecision || '', '');
+    assert.deepEqual(
+      titles(feed.listContentItems('local', { limit: 20 })).filter((title) => title === 'FOMC statement' || title === '只有作者前缀'),
+      [],
+    );
+    assert.equal(store.listJobs(20).some((job) => /quality\.refresh|information\.prepare|tagging\.analyze|reading-class/.test(job.type)), false);
+    const script = readFileSync(new URL('../scripts/backfill-source-authors.mjs', import.meta.url), 'utf8');
+    assert.doesNotMatch(script, /feedFilter|listContentItems|listQualityRefresh|enqueueTree|reading-class|tagging\.analyze/);
+  } finally {
+    store.close();
+  }
 });

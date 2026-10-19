@@ -1,8 +1,8 @@
-import { usSessionAt } from '../../../connectors/src/us-session.js';
+import { usRegularOpenAt, usSessionAt } from '../../../connectors/src/us-session.js';
 import { DEFAULT_MARKET_CATALOG, isForeignToUsListingSymbol } from './catalog.js';
 import { cnTradingCalendarAt, cnTradingCalendarNote } from '../../../domain/src/cn-trading-calendar.js';
 
-export { usSessionAt };
+export { usRegularOpenAt, usSessionAt };
 
 function catalogOrDefault(catalog) {
   return catalog || DEFAULT_MARKET_CATALOG;
@@ -158,6 +158,7 @@ export function quoteVenue(item, boardHint = '') {
 }
 
 export function quoteInRegularSession(item, nowMs = Date.now(), boardHint = '') {
+  if (typeof item?.marketOpen === 'boolean') return item.marketOpen;
   const session = String(item?.session || '').trim();
   if (session) return session === 'regular';
   const venue = quoteVenue(item, boardHint);

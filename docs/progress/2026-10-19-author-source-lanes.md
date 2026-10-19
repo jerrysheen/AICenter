@@ -12,7 +12,9 @@
 - 美国能源信息署（EIA）没有 policy sourceId，继续算媒体：`media:eia`。日历源不是作者。
 - 仓库目录里没有发改委。现有中文官方来源是国务院政策文件库、中国政府重要会议发布和中国人民银行。要出现发改委，需要先加来源，再按同一个 `official:<sourceKey>` 规则生成。
 
-官方发布仍写成 `provider=media` 的内容条目，外部 id 与现有文章 id 相同，不新增 provider。作者页因此能打开这些条目。正文已经存在时只补发布时间并重新挂作者，不覆盖正文。媒体索引写入本身不新建内容条目，避免打乱去重；正文入库时才挂作者。历史索引里还没有内容条目的，由回填脚本补建。
+官方发布仍写成 `provider=media` 的内容条目，外部 id 与现有文章 id 相同，不新增 provider。作者页因此能打开这些条目。正文已经存在时只补发布时间并重新挂作者，不覆盖正文。媒体索引写入本身不新建内容条目，只给已有 capture 补 `sourceKey` 和 `authorId`。历史索引里还没有内容条目的，由回填脚本补建。
+
+官方看板镜像的 `metadata.lane` 是 `official`，作者 id 以 `official:` 开头。这些行只出现在作者页。信息流「媒体」读媒体索引，「全部」读社交条目加看板，都不读镜像，所以不会和看板各出现一次。小时报窗口、可打标列表和阅读材料按 `lane=official` 或 `official:` 排除；信息流过滤的刷新队列本来就不含 `provider=media` 的内容条目，媒体索引扫描也扫不到看板镜像。回填脚本调用同一套写入，不调用过滤、小时报或分类。
 
 ## 出现门槛
 
@@ -30,7 +32,7 @@
 
 ## 上线
 
-migration 88 只建 `idx_author_stats_published`，`CREATE INDEX IF NOT EXISTS`，不改已有行。空号仍是 63、79、80、82。不要重建数据库。需要同时重启 Web 和 Worker。
+migration 90 只建 `idx_author_stats_published`，`CREATE INDEX IF NOT EXISTS`，不改已有行。88 是北向 `northbound_flow`。89 是 YouTube 正文 `youtube_podcast_article`（#152），本分支不登记，也不把它写成永久空号。空号仍是 63、79、80、82。不要重建数据库。需要同时重启 Web 和 Worker。
 
 历史回填不要放进 Web 或 Worker。部署后在实例目录执行：
 

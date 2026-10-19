@@ -330,6 +330,51 @@ export function parseMarketSession(meta, nowSec = Math.floor(Date.now() / 1000))
   return 'closed';
 }
 
+function unixMs(value) {
+  const at = num(value);
+  if (at == null || at <= 0) return null;
+  return at > 10_000_000_000 ? Math.trunc(at) : Math.trunc(at * 1000);
+}
+
+function periodBounds(meta, name) {
+  const slot = isRecord(meta?.currentTradingPeriod) ? meta.currentTradingPeriod[name] : null;
+  const start = unixMs(slot?.start);
+  const end = unixMs(slot?.end);
+  if (start == null || end == null || end <= start) return null;
+  return { start, end };
+}
+
+function barsInPeriod(chart, bounds) {
+  if (!bounds) return [];
+  const timestamps = Array.isArray(chart?.timestamp) ? chart.timestamp : [];
+  const quote = chart?.indicators?.quote?.[0] || {};
+  const rows = [];
+  for (let index = 0; index < timestamps.length; index += 1) {
+    const at = unixMs(timestamps[index]);
+    const close = num(quote.close?.[index]);
+    if (at == null || close == null || at < bounds.start || at >= bounds.end) continue;
+    rows.push({
+      at,
+      close,
+      high: num(quote.high?.[index]),
+      low: num(quote.low?.[index]),
+      volume: num(quote.volume?.[index]),
+    });
+  }
+  return rows;
+}
+
+function barRange(bars) {
+  const highs = bars.map((bar) => bar.high).filter((value) => value != null);
+  const lows = bars.map((bar) => bar.low).filter((value) => value != null);
+  const volumes = bars.map((bar) => bar.volume).filter((value) => value != null);
+  return {
+    high: highs.length ? Math.max(...highs) : null,
+    low: lows.length ? Math.min(...lows) : null,
+    volume: volumes.length ? volumes.reduce((sum, value) => sum + value, 0) : null,
+  };
+}
+
 export function quoteFromSpark(result, nowSec = Math.floor(Date.now() / 1000)) {
   const chart = result.response?.[0];
   const meta = chart?.meta;
@@ -341,18 +386,32 @@ export function quoteFromSpark(result, nowSec = Math.floor(Date.now() / 1000)) {
   const extended = session === 'pre' || session === 'post';
   const regularClose = num(meta.regularMarketPrice);
   const previous = num(meta.previousClose) ?? num(meta.chartPreviousClose);
-  const lastPrice = extended
-    ? (num(meta.fulldayPrice) ?? lastPrint ?? regularClose)
-    : (regularClose ?? num(meta.fulldayPrice) ?? lastPrint);
-  const prevClose = extended ? (regularClose ?? previous) : previous;
-  let changePct = extended
+  const bounds = extended ? periodBounds(meta, session) : null;
+  const sessionBars = barsInPeriod(chart, bounds);
+  const sessionStamp = extended
+    ? (unixMs(session === 'pre' ? meta.preMarketTime : meta.postMarketTime) ?? (sessionBars.at(-1)?.at ?? null))
+    : null;
+  const fullday = num(meta.fulldayPrice);
+  const extendedPrice = fullday ?? (sessionBars.at(-1)?.close ?? null);
+  const distinctPrint = extendedPrice != null && (regularClose == null || Math.abs(extendedPrice - regularClose) > 1e-6);
+  const hasExtendedPrint = extended && (sessionStamp != null || sessionBars.length > 0 || distinctPrint);
+  const regularStamp = unixMs(meta.regularMarketTime);
+  const regularBounds = periodBounds(meta, 'regular');
+  const staleRegular = session === 'regular' && regularBounds != null && regularStamp != null && regularStamp < regularBounds.start;
+  const lastPrice = hasExtendedPrint
+    ? extendedPrice
+    : (regularClose ?? fullday ?? lastPrint);
+  const prevClose = hasExtendedPrint ? (regularClose ?? previous) : previous;
+  let changePct = hasExtendedPrint
     ? (num(meta.fulldayChangePercent) ?? num(meta.regularMarketChangePercent))
     : (num(meta.regularMarketChangePercent) ?? num(meta.fulldayChangePercent));
   let change = lastPrice !== null && prevClose !== null ? lastPrice - prevClose : num(meta.fulldayChange);
-  if (extended && lastPrice !== null && prevClose !== null) {
+  if (hasExtendedPrint && lastPrice !== null && prevClose !== null) {
     change = lastPrice - prevClose;
     changePct = prevClose ? (change / prevClose) * 100 : changePct;
   }
+  const ranged = hasExtendedPrint ? barRange(sessionBars) : null;
+  const asOf = hasExtendedPrint ? sessionStamp : (extended || staleRegular ? null : regularStamp);
   return {
     symbol,
     name: text(meta.shortName || meta.longName, symbol),
@@ -360,14 +419,15 @@ export function quoteFromSpark(result, nowSec = Math.floor(Date.now() / 1000)) {
     changePct,
     change,
     open: closes[0] ?? null,
-    high: num(meta.regularMarketDayHigh),
-    low: num(meta.regularMarketDayLow),
+    high: ranged ? ranged.high : (extended || staleRegular ? null : num(meta.regularMarketDayHigh)),
+    low: ranged ? ranged.low : (extended || staleRegular ? null : num(meta.regularMarketDayLow)),
     prevClose,
-    volume: num(meta.regularMarketVolume),
+    volume: ranged ? ranged.volume : (extended || staleRegular ? null : num(meta.regularMarketVolume)),
     sparkline: closes,
     currency: text(meta.currency, 'USD'),
     exchange: text(meta.fullExchangeName || meta.exchangeName),
-    marketTime: num(meta.regularMarketTime),
+    marketTime: asOf == null ? null : Math.trunc(asOf / 1000),
+    asOf,
     session,
   };
 }

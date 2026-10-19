@@ -25,7 +25,13 @@
 
 ## 当前
 
-- `progress/2026-10-19-x-auto-like-tight.md`：自动点赞选条排除广告词、官号宣传和短帖。新增推广词只用于点赞。企业动态至少 0.9 才点。jev 关闭时点赞门槛 0.9。默认每天 8 次、每小时 2 次、间隔 15 分钟。任务连续失败 2 次自动停。配置版本 `x-focus-2`，趋势图仍接受 `x-focus-1`。不新增 migration。需要同时重启 Web 和 Worker。
+- `progress/2026-10-19-market-flow.md`：股票子页最后增加「资金」（`#market/flow`）。南向净额和北向成交额只出现在这一页。北向沿用东财和港交所已有响应，净买入没有公布就不显示。migration 88 建 `northbound_daily` 和 `northbound_top10` 两张表。需要同时重启 Web 和 Worker，再按该说明补北向历史。
+
+- `progress/2026-10-19-us-open-stale.md`：美股刚开盘的 5 分钟内，盘前报价不再标成红色「已过期」，顶部和美股观察写「盘中 · 等待报价」。盘前、盘后的 `asOf` 用报价自己的时间，行提示写盘前或盘后。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
+
+- `progress/2026-10-19-bamboo-startlux.md`：Bamboo StartLux 作为可选分类 provider。默认仍是 TypeSafe。`AI_CENTER_JEV_ENABLED` 不变。设 `AI_CENTER_CLASSIFICATION_PROVIDER=bamboo` 后，信息流准入和小时报选题改走 Bamboo；问答先验和证据门默认 shadow。质量刷新默认不调 Bamboo，要设 `AI_CENTER_BAMBOO_REFRESH=1`。信息流准入每日上限 7000，只计准入。计数写在 `data/bamboo-usage-YYYYMMDD.json`，Web 和 Worker 共用，重启不清零。触达上限后当天其余走本地兜底。默认先到先得，可选按小时均分。目前免费。不新增 migration。需要同时重启 Web 和 Worker。真实对照在服务器上跑，仓库里没有密钥。
+
+- `progress/2026-10-19-x-auto-like-tight.md`：自动点赞选条排除广告词、官号宣传和短帖。新增推广词只用于点赞。企业动态至少 0.9 才点。没有分类客户端时点赞门槛 0.9。`AI_CENTER_CLASSIFICATION_PROVIDER=bamboo` 时按有分类客户端处理，不抬到 0.9。`filterReason` 以 `fallback-` 或 `jev-disabled-` 开头的兜底 KEEP 不点赞。默认每天 8 次、每小时 2 次、间隔 15 分钟。任务连续失败 2 次自动停。配置版本 `x-focus-2`，趋势图仍接受 `x-focus-1`。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-19-quote-card-align.md`：股票页涨跌和标题跟总览卡片对齐。没有现价时走 `GET /api/v1/markets/quote`，10 秒超时返回 504。午间休市保持 `break`。总览数据没变不重绘，键盘焦点按代码恢复。名字先目录、再实时、再本进程记下的 A 股名字，最多 2000 条。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
 

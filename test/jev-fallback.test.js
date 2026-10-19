@@ -823,3 +823,43 @@ test('jev replay writes scores the list can see, media fields, enqueue, and roll
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('bamboo replay uses the classification client when JEV is off', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-bamboo-replay-'));
+  const store = createStore(path.join(directory, 'test.db'));
+  try {
+    const feed = store.repositories.feed;
+    const source = feed.upsertSourceAccount({
+      workspaceId: 'local', provider: 'x', externalId: 'x:home:following', displayName: '关注',
+    });
+    feed.saveCapture({
+      workspaceId: 'local', provider: 'x', externalId: 'bamboo-held', sourceAccountId: source.id,
+      contentHash: 'bamboo-held', title: '订单', status: 'captured', capturedAt: 2_000,
+      metadata: { filterReason: 'jev-failed', filterDecision: 'REVIEW', originalText: '一条包含订单金额和交付日期的完整更新。' },
+    });
+    let calls = 0;
+    const report = await runJevCaptureReplay({
+      store,
+      workspaceId: 'local',
+      from: 0,
+      to: 10_000,
+      mode: 'jev',
+      env: { AI_CENTER_JEV_ENABLED: 'false', AI_CENTER_CLASSIFICATION_PROVIDER: 'bamboo' },
+      client: {
+        modelId: 'startlux-decision-27b-autothink',
+        available: () => true,
+        async evaluate() {
+          calls += 1;
+          return { model: 'startlux-decision-27b-autothink', answers: answers(good) };
+        },
+      },
+    });
+    assert.equal(calls, 1);
+    assert.equal(report.mode, 'jev');
+    assert.equal(report.admitted, 1);
+    assert.equal(feed.getCapture('local', 'x', 'bamboo-held').metadata.filterDecision, 'KEEP');
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
