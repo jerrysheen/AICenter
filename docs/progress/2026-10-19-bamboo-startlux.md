@@ -32,7 +32,7 @@ BAMBOO_API_KEY=已放在服务器上的密钥
 - 小时报选题对已分组材料调用 Bamboo 的 FOCUS noul，不再直接记 1。故障时仍用阅读分组命中。命中线仍是 0.5。
 - 问答先验和证据门在没有显式设置 `AI_CENTER_JEV_PRIOR`、`AI_CENTER_JEV_EVIDENCE_GATE` 时用 shadow：只记录，不把提示注入主模型，也不按证据门丢掉检索结果。显式设成 `advisory` 或 `enforce` 才按原阈值拦截。复核仍只在回答写完后记分，不改回答。`AI_CENTER_JEV_DISABLED=1` 仍然全关。
 - 质量刷新默认只复用已有 KEEP、DROP 和分数，没有结果的走本地兜底，不调用 Bamboo。只有 `AI_CENTER_BAMBOO_REFRESH=1` 才调用。单次上限 `AI_CENTER_BAMBOO_REFRESH_MAX` 默认 200，超出的计入 `skipped`，不改那些行。JEV 仍关闭且 provider 不是 bamboo 时，行为与原来一样。
-- 资料召回的标签和相关性判断仍只跟 JEV 开关，这次不切。
+- 资料召回在 provider 为 bamboo 时改走 noul 题，见 `progress/2026-10-19-bamboo-research-recall.md`。provider 仍是 typesafe 时继续只跟 JEV 开关。这些调用不占信息流每日 7000。
 
 信息流的 0.60 和阅读小时的 0.5 都是旧阈值。Bamboo 的 noul 还没有按这些阈值重估。接口文档里的 0.5 只是演示。对照脚本会按 0.4、0.5、0.6、0.7 输出准确率和召回率，供之后重估。
 

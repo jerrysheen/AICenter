@@ -1,6 +1,6 @@
 # 架构
 
-2026-10-08 研究召回 V1 是隔离链路：研究 Tag、研究问题、三路召回和材料包写入迁移 47 的独立表。栏目 `tagId` 与 `resource_taggings` 继续只做页面归类。生产 `generateDaily()` 仍只浓缩小时模块。`AI_CENTER_RESEARCH_RECALL=on` 只注册显式 Job，不添加调度。设计与验收见 `progress/2026-10-08-research-recall-v1.md`。
+2026-10-08 研究召回 V1 是隔离链路：研究 Tag、研究问题、三路召回和材料包写入迁移 47 的独立表。栏目 `tagId` 与 `resource_taggings` 继续只做页面归类。生产 `generateDaily()` 仍只浓缩小时模块。`AI_CENTER_RESEARCH_RECALL=on` 只注册显式 Job，不添加调度。provider 为 bamboo 时，标签和相关性改用 noul，不占信息流每日上限，见 `progress/2026-10-19-bamboo-research-recall.md`。设计与验收见 `progress/2026-10-08-research-recall-v1.md`。
 
 2026-10-07 用户后续授权原文翻译改为 Gemma 31B/26B 专用池，仅调用官方流式接口，不回退其他模型；HTTP 提交 `feed.translation.run`，Worker 调用 Connector，Feed Service/Repository 保存完整译文和原段落排版。Article Normalize、Tag、小时/日报保持原路由。当前规则覆盖下文旧的 Gemini 翻译描述，兼容边界见 `gemma-original-translation.md`。
 
