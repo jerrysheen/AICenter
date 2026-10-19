@@ -15,7 +15,7 @@ Worker 每分钟跑的 `hardware.prices.snapshot` 全程是同步的 SQLite 读�
 
 ## 验证
 
-同一组价表上，新的列表和原来的逐行查询返回相同的规格、均价、快照和顺序。较新的旧文本不会盖过同一页较早的 HTML。同一采集时间里，`trendforce-tables-10` 胜过 `trendforce-tables-3`。行情看板调度仍是 1 分钟。
+同一组价表上，新的列表和原来的逐行查询返回相同的规格、均价、快照和顺序。较新的旧文本不会盖过同一页较早的 HTML。同一采集时间里，`trendforce-tables-10` 胜过 `trendforce-tables-3`。默认两档采集时，报价快照是上海 17:40；只配 10:30 时是 10:40。行情看板调度仍是 1 分钟。
 
 `npm test` 与 `origin/main`（`55c2730`）对照：
 
