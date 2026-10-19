@@ -4,6 +4,7 @@ import {createFeedValueReviewService} from './feed-value-review-service.js';
 import {isFlashSource} from './flash-sources.js';
 import {decideFeedAdmissionFallback} from './feed-filter.js';
 import {isJevOutage} from './jev-enabled.js';
+import { bodyCompletionFields } from './body-completion.js';
 
 function saveFallbackCapture(feedRepository, workspaceId, row, decision, reason, result, runId) {
   let capture = null;
@@ -15,6 +16,7 @@ function saveFallbackCapture(feedRepository, workspaceId, row, decision, reason,
     capture = feedRepository.getCapture(workspaceId, 'media', row.id.slice(6));
   }
   if (!capture) return false;
+  const evaluatedAt = Date.now();
   const metadata = {
     ...capture.metadata,
     filterDecision: decision,
@@ -28,10 +30,13 @@ function saveFallbackCapture(feedRepository, workspaceId, row, decision, reason,
     filterVersion: FEED_VALUE_VERSION,
     filterErrorCode: result?.errorCode || capture.metadata.filterErrorCode || '',
     filterErrorStatus: Number.isInteger(result?.errorStatus) ? result.errorStatus : (capture.metadata.filterErrorStatus ?? null),
-    bodyCompletion: decision === 'KEEP' && row.input?.truncated ? 'pending' : '',
+    ...bodyCompletionFields({ ...capture.metadata, capturedAt: capture.capturedAt }, {
+      truncated: decision === 'KEEP' && Boolean(row.input?.truncated),
+      now: evaluatedAt,
+    }),
     ...(decision === 'KEEP' ? { fallbackAt: new Date().toISOString() } : {}),
     ...(runId ? { filterRefreshRunId: runId } : {}),
-    filterEvaluatedAt: Date.now(),
+    filterEvaluatedAt: evaluatedAt,
   };
   feedRepository.saveCapture({
     ...capture,

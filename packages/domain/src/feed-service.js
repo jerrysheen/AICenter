@@ -8,6 +8,7 @@ import { collectLocalizationUnits, localizationItemId, needsZhLocalization, tran
 import { translatePolymarketOutcome } from './polymarket-outcome-zh.js';
 import { isFlashSource } from './flash-sources.js';
 import { authorCaptureFields } from './authors.js';
+import { resolveBodyCompletion } from './body-completion.js';
 
 const DEFAULT_WORKSPACE_ID = 'local';
 const STORED_FEED_LIMIT = 200;
@@ -588,6 +589,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
             publishedAt: item.publishedAt || null,
           });
         }
+        rememberTruncatedAttempt(feedRepository, existing, cleaned, { hash, originalText });
         rememberFingerprint();
         skipped += 1;
         continue;
@@ -618,6 +620,28 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
           body,
           authorName: item.authorName || '',
           publishedAt: item.publishedAt || null,
+        });
+        rememberFingerprint();
+        skipped += 1;
+        continue;
+      }
+    }
+    if (existing && itemBodyTruncated(cleaned)) {
+      const next = resolveBodyCompletion(
+        { ...(existing.metadata || {}), capturedAt: existing.capturedAt },
+        { truncated: true, now: Date.now() },
+      );
+      if (next.exhausted) {
+        writeBodyCompletion(feedRepository, existing, {
+          sourceUrl: item.sourceUrl,
+          title: cleanIngestExcerpt(title || existing.title || ''),
+          hash,
+          publishedAt: item.publishedAt || existing.publishedAt,
+          originalText,
+          body,
+          summary: cleanIngestExcerpt(summary || ''),
+          captureContext: item.captureContext,
+          completion: completionFields(next),
         });
         rememberFingerprint();
         skipped += 1;
@@ -810,6 +834,81 @@ function searchStoredItems(feedRepository, workspaceId, query, limit, qualityRul
       || (right.item.createdAt || right.item.publishedAt) - (left.item.createdAt || left.item.publishedAt))
     .slice(0, Math.max(1, Math.min(Number(limit) || 8, 20)))
     .map(({ item }) => item);
+}
+
+function itemBodyTruncated(item) {
+  return item?.captureContext?.truncated === true;
+}
+
+function completionFields(next) {
+  return {
+    bodyCompletion: next.bodyCompletion,
+    bodyCompletionAttempts: next.bodyCompletionAttempts,
+    bodyCompletionSince: next.bodyCompletionSince,
+  };
+}
+
+function writeBodyCompletion(feedRepository, existing, {
+  sourceUrl, title, hash, publishedAt, originalText, body, summary, captureContext, completion,
+} = {}) {
+  feedRepository.saveCapture({
+    id: existing.id,
+    workspaceId: existing.workspaceId,
+    provider: existing.provider,
+    externalId: existing.externalId,
+    sourceAccountId: existing.sourceAccountId,
+    sourceUrl: sourceUrl || existing.sourceUrl || '',
+    title: title || existing.title || '',
+    contentHash: hash || existing.contentHash,
+    rawArtifactPath: existing.rawArtifactPath,
+    status: existing.status,
+    publishedAt: publishedAt ?? existing.publishedAt ?? null,
+    capturedAt: existing.capturedAt,
+    metadata: {
+      ...(existing.metadata || {}),
+      ...(originalText !== undefined ? { originalText } : {}),
+      ...completion,
+      ...(captureContext ? { captureContext } : {}),
+    },
+  });
+  if (body === undefined) return;
+  const linked = feedRepository.getContentItemByCapture?.(existing.workspaceId, existing.id)
+    || feedRepository.getContentItemByCaptureId?.(existing.workspaceId, existing.id);
+  if (!linked || body === linked.body) return;
+  feedRepository.saveContentItem({
+    id: linked.id,
+    workspaceId: linked.workspaceId,
+    captureId: linked.captureId || existing.id,
+    originType: linked.originType,
+    contentType: linked.contentType,
+    title: linked.title || '',
+    body,
+    summary: summary ?? linked.summary ?? '',
+    sourceUrl: linked.sourceUrl || sourceUrl || '',
+    authorName: linked.authorName || '',
+    publishedAt: linked.publishedAt ?? null,
+    createdAt: linked.createdAt,
+  });
+}
+
+function rememberTruncatedAttempt(feedRepository, existing, item, { hash, originalText, now = Date.now() } = {}) {
+  const pending = existing?.metadata?.bodyCompletion === 'pending';
+  const truncated = itemBodyTruncated(item);
+  if (!pending && !truncated) return false;
+  const next = resolveBodyCompletion({ ...(existing.metadata || {}), capturedAt: existing.capturedAt }, { truncated, now });
+  const fields = completionFields(next);
+  const same = (existing.metadata?.bodyCompletion || '') === fields.bodyCompletion
+    && Number(existing.metadata?.bodyCompletionAttempts || 0) === fields.bodyCompletionAttempts
+    && Number(existing.metadata?.bodyCompletionSince || 0) === fields.bodyCompletionSince;
+  if (!same) {
+    writeBodyCompletion(feedRepository, existing, {
+      hash,
+      originalText,
+      captureContext: item.captureContext,
+      completion: fields,
+    });
+  }
+  return next.exhausted;
 }
 
 function knownExternalIds(feedRepository, workspaceId, providerId) {
