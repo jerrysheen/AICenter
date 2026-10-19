@@ -310,7 +310,9 @@ export function createGemmaTranslationRouter(options = {}) {
       const input = gemmaTranslationInput(system, prompt);
       const inputBytes = Buffer.byteLength(input, 'utf8');
       let lastError;
-      for (let attempt = 0; attempt <= policy.maxRetries; attempt++) {
+      // 同一次 generate 最多再换一把密钥。多把密钥同时 500 时，不再在同一毫秒把后面的密钥也打满。
+      const upstreamFailovers = Math.min(policy.maxRetries, 1);
+      for (let attempt = 0; attempt <= upstreamFailovers; attempt++) {
         chargeTranslationCall();
         let ticket;
         try { ticket = await admit(attempt === 0 ? 61000 : 1500, attempt === 0 ? firstPool : retryPool); }
@@ -351,7 +353,7 @@ export function createGemmaTranslationRouter(options = {}) {
             }
             if (streamQuota) repository.cooldown(ticket.project, ticket.model, streamQuota.blockedUntil);
             else if (retryable) noteUpstream(ticket);
-            if (retryable && attempt < policy.maxRetries) { lastError = error; retry = true; }
+            if (retryable && attempt < upstreamFailovers) { lastError = error; retry = true; }
             else throw error;
           }
           if (!retry) {
@@ -370,7 +372,7 @@ export function createGemmaTranslationRouter(options = {}) {
                 upstreamStatus: response.status,
                 upstreamBody: redactGemmaLog(raw),
               });
-              if (retryable && attempt < policy.maxRetries) { lastError = error; retry = true; }
+              if (retryable && attempt < upstreamFailovers) { lastError = error; retry = true; }
               else throw error;
             } else {
               const candidate = payload.candidates?.[0];

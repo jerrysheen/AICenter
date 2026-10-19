@@ -7,10 +7,13 @@ import { createStore } from '../packages/database/src/index.js';
 import {
   articlePartPrompt,
   dedupeRollingCaptions,
+  captionAlreadyChinese,
   GEMMA_SECTION_SYSTEM,
   GEMMA_SUMMARY_SYSTEM,
   GEMMA_TRANSLATE_SYSTEM,
+  gemmaArticleNeedsRepair,
   joinGemmaArticle,
+  repairTimestampHeading,
   needsChineseTitle,
   splitTranscriptParts,
   stripDoubaoReply,
@@ -700,6 +703,10 @@ test('gemma translates each part, stores it, then writes one article', async () 
     assert.deepEqual(gemma.calls.map((call) => call.system), [GEMMA_TRANSLATE_SYSTEM, GEMMA_SECTION_SYSTEM, GEMMA_SUMMARY_SYSTEM]);
     const state = JSON.parse(saved.articleState);
     assert.equal(state.engine, 'gemma');
+    assert.equal(state.parts[0].provider, 'gemma');
+    assert.deepEqual(state.parts[0].calls, { gemma: 2, flash: 0 });
+    assert.equal(state.summaryProvider, 'gemma');
+    assert.deepEqual(state.summaryCalls, { gemma: 1, flash: 0 });
     assert.equal(state.parts[0].translation.includes('24%'), true);
     const again = gemma.calls.length;
     await runYoutubePodcastRound({
@@ -783,7 +790,9 @@ test('a quota window keeps finished parts and a gemma failure can use flash', as
     const stored = opened.store.repositories.youtubePodcasts.episode('local', 'gemmaquota01');
     const state = JSON.parse(stored.articleState);
     assert.equal(state.parts[0].translation.includes('24%'), true);
+    assert.deepEqual(state.parts[0].calls, { gemma: 1, flash: 0 });
     assert.equal(state.parts[1].translation, '');
+    assert.deepEqual(state.parts[1].calls, { gemma: 1, flash: 0 });
     assert.match(opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaquota01').body, /Sentence 0 discusses/);
     assert.equal(opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaquota01').body.includes('[00:00:04]'), false);
     const finished = gemma.calls.length;
@@ -846,7 +855,224 @@ test('a failed gemma part falls back to flash and does not resend finished text'
     assert.equal(result.ready, 1);
     assert.equal(flash.calls.length, 3);
     assert.equal(gemma.calls.length, 3);
+    const flashState = JSON.parse(opened.store.repositories.youtubePodcasts.episode('local', 'gemmaflash01').articleState);
+    assert.equal(flashState.parts[0].provider, 'flash');
+    assert.deepEqual(flashState.parts[0].calls, { gemma: 2, flash: 2 });
+    assert.equal(flashState.summaryProvider, 'flash');
+    assert.deepEqual(flashState.summaryCalls, { gemma: 1, flash: 1 });
     assert.match(opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaflash01').body, /主持人：/);
+  } finally {
+    opened.close();
+  }
+});
+
+test('chinese captions are organized without a translation call', async () => {
+  const opened = openStore();
+  const transcript = '[00:00:01] Dyna Robotics 今天发布了新的机器人行走方案，现场演示了户外地形适应，工程师解释了关节扭矩。';
+  const item = await saveYoutubeEpisode({
+    feedRepository: opened.store.repositories.feed,
+    workspaceId: 'local',
+    creator: { id: 'odd-lots', name: 'Odd Lots', focus: '金融', channels: [{ key: 'odd-lots' }] },
+    episode: { videoId: 'gemmachinese1', title: 'Dyna', channelKey: 'odd-lots', publishedAt: Date.parse('2026-10-18T00:00:00Z'), durationSec: 1800 },
+    summaryText: '中文摘要',
+    displayTitle: '机器人',
+    transcript,
+    transcriptSource: 'subtitle-manual',
+  });
+  opened.store.repositories.youtubePodcasts.saveEpisode({
+    workspaceId: 'local',
+    videoId: 'gemmachinese1',
+    creatorId: 'odd-lots',
+    channelKey: 'odd-lots',
+    title: 'Dyna',
+    status: 'ready',
+    contentItemId: item.id,
+    attempts: 1,
+    sourceTranscript: transcript,
+    sourceHash: transcriptHash(transcript),
+    articleStatus: 'pending',
+  });
+  const gemma = fakeGemma((input) => {
+    if (input.system === GEMMA_TRANSLATE_SYSTEM) throw new Error('中文字幕不应再翻译');
+    if (input.system === GEMMA_SECTION_SYSTEM) return { text: '## 户外行走（00:00:01）\n\n主持人：Dyna Robotics 今天发布了新的机器人行走方案。' };
+    return articleReply(input);
+  });
+  try {
+    const result = await runYoutubeArticlePass({
+      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1' },
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      gemmaGenerate: gemma.generate.bind(gemma),
+      flashGenerate: null,
+      now: Date.parse('2026-10-19T02:00:00Z'),
+    });
+    assert.equal(result.ready, 1);
+    assert.deepEqual(gemma.calls.map((call) => call.system), [GEMMA_SECTION_SYSTEM, GEMMA_SUMMARY_SYSTEM]);
+    assert.match(gemma.calls[0].prompt, /机器人行走方案/);
+    const state = JSON.parse(opened.store.repositories.youtubePodcasts.episode('local', 'gemmachinese1').articleState);
+    assert.equal(state.parts[0].provider, 'source');
+    assert.match(state.parts[0].translation, /机器人行走方案/);
+    assert.deepEqual(state.parts[0].calls, { gemma: 1, flash: 0 });
+    const body = opened.store.repositories.youtubePodcasts.getReady('local', 'gemmachinese1').body;
+    assert.match(body, /## 户外行走（00:00:01）/);
+    assert.equal(/^## 00:00:01$/m.test(body), false);
+  } finally {
+    opened.close();
+  }
+});
+
+test('a ready gemma article repairs chinese segments and clock-only headings', async () => {
+  const opened = openStore();
+  const chinese = '[00:00:01] Dyna Robotics 今天发布了新的机器人行走方案，现场演示了户外地形适应，工程师解释了关节扭矩。';
+  const english = '[00:12:03] Rates move and NVDA stays in the conversation.';
+  const transcript = `${chinese}\n${english}`;
+  const item = await saveYoutubeEpisode({
+    feedRepository: opened.store.repositories.feed,
+    workspaceId: 'local',
+    creator: { id: 'odd-lots', name: 'Odd Lots', focus: '金融', channels: [{ key: 'odd-lots' }] },
+    episode: { videoId: 'gemmarepair01', title: 'Dyna', channelKey: 'odd-lots', publishedAt: Date.parse('2026-10-18T00:00:00Z'), durationSec: 1800 },
+    summaryText: '中文摘要',
+    displayTitle: '机器人',
+    transcript,
+    transcriptSource: 'subtitle-auto',
+  });
+  const hash = transcriptHash(transcript);
+  opened.store.repositories.youtubePodcasts.saveEpisode({
+    workspaceId: 'local',
+    videoId: 'gemmarepair01',
+    creatorId: 'odd-lots',
+    channelKey: 'odd-lots',
+    title: 'Dyna',
+    status: 'ready',
+    contentItemId: item.id,
+    attempts: 1,
+    sourceTranscript: transcript,
+    sourceHash: hash,
+    articleStatus: 'ready',
+    articleDay: '2026-10-19',
+    articleState: JSON.stringify({
+      engine: 'gemma',
+      hash,
+      summary: '## 要点\n\n- 旧要点',
+      summaryProvider: 'gemma',
+      summaryCalls: { gemma: 1, flash: 0 },
+      parts: [
+        {
+          text: chinese,
+          start: '00:00:01',
+          status: 'done',
+          translation: 'The team explained how the robot walks outdoors and keeps its balance on rough ground.',
+          section: '## 00:00:01\n\nThe team explained how the robot walks outdoors.',
+          attempts: 0,
+          provider: 'gemma',
+          calls: { gemma: 2, flash: 0 },
+        },
+        {
+          text: english,
+          start: '00:12:03',
+          status: 'done',
+          translation: '主持人：利率会差 24%，NVDA 仍在讨论。',
+          section: '## 利率（00:12:03）\n\n主持人：利率会差 24%，NVDA 仍在讨论。',
+          attempts: 0,
+          provider: 'gemma',
+          calls: { gemma: 2, flash: 0 },
+        },
+      ],
+    }),
+  });
+  const gemma = fakeGemma((input) => {
+    if (input.system === GEMMA_TRANSLATE_SYSTEM) throw new Error('修复时不应重译');
+    if (input.prompt.includes('Rates move')) throw new Error('已经译好的英文段不应重排');
+    if (input.system === GEMMA_SECTION_SYSTEM) return { text: '## 户外行走（00:00:01）\n\n主持人：Dyna Robotics 今天发布了新的机器人行走方案。' };
+    return { text: '## 要点\n\n- 机器人能在户外走路。' };
+  });
+  try {
+    const result = await runYoutubeArticlePass({
+      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1', AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_DAILY: '1' },
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      gemmaGenerate: gemma.generate.bind(gemma),
+      flashGenerate: null,
+      now: Date.parse('2026-10-19T06:00:00Z'),
+    });
+    assert.equal(result.ready, 1);
+    assert.deepEqual(gemma.calls.map((call) => call.system), [GEMMA_SECTION_SYSTEM, GEMMA_SUMMARY_SYSTEM]);
+    assert.match(gemma.calls[0].prompt, /机器人行走方案/);
+    const state = JSON.parse(opened.store.repositories.youtubePodcasts.episode('local', 'gemmarepair01').articleState);
+    assert.equal(state.parts[0].provider, 'source');
+    assert.match(state.parts[0].translation, /机器人行走方案/);
+    assert.deepEqual(state.parts[0].calls, { gemma: 3, flash: 0 });
+    assert.equal(state.parts[1].provider, 'gemma');
+    assert.match(state.parts[1].translation, /24%/);
+    assert.deepEqual(state.parts[1].calls, { gemma: 2, flash: 0 });
+    assert.equal(state.summaryProvider, 'gemma');
+    assert.deepEqual(state.summaryCalls, { gemma: 1, flash: 0 });
+    const body = opened.store.repositories.youtubePodcasts.getReady('local', 'gemmarepair01').body;
+    assert.match(body, /## 户外行走（00:00:01）/);
+    assert.match(body, /## 利率（00:12:03）/);
+    assert.equal(/^## 00:00:01$/m.test(body), false);
+    assert.equal(body.includes('walks outdoors'), false);
+  } finally {
+    opened.close();
+  }
+});
+
+test('a clock-only heading is rewritten from the section topic', async () => {
+  assert.equal(captionAlreadyChinese('[00:00:01] >> Dyna Robotics 今天发布了新的机器人行走方案，现场演示了户外地形适应。'), true);
+  assert.equal(captionAlreadyChinese('[00:00:03] Rates move and NVDA stays in the conversation with 李明.'), false);
+  assert.equal(repairTimestampHeading('## 利率（00:00:03）\n\n主持人：利率会差 24%。', '00:00:03'), '## 利率（00:00:03）\n\n主持人：利率会差 24%。');
+  assert.match(GEMMA_SECTION_SYSTEM, /中文主题/);
+  assert.match(GEMMA_SECTION_SYSTEM, /禁止写成 ## 00:00:00/);
+  assert.equal(gemmaArticleNeedsRepair({
+    engine: 'gemma',
+    parts: [{ text: '已经是中文的一段字幕，里面提到 Dyna Robotics 的机器人。', translation: 'This was flipped into English by the translator.', section: '## 00:00:00' }],
+  }), true);
+  const opened = openStore();
+  const transcript = '[00:00:03] Rates move and NVDA stays in the conversation.';
+  const item = await saveYoutubeEpisode({
+    feedRepository: opened.store.repositories.feed,
+    workspaceId: 'local',
+    creator: { id: 'odd-lots', name: 'Odd Lots', focus: '金融', channels: [{ key: 'odd-lots' }] },
+    episode: { videoId: 'gemmaclock001', title: 'Rates', channelKey: 'odd-lots', publishedAt: Date.parse('2026-10-18T00:00:00Z'), durationSec: 1800 },
+    summaryText: '中文摘要',
+    displayTitle: '利率',
+    transcript,
+    transcriptSource: 'subtitle-auto',
+  });
+  opened.store.repositories.youtubePodcasts.saveEpisode({
+    workspaceId: 'local',
+    videoId: 'gemmaclock001',
+    creatorId: 'odd-lots',
+    channelKey: 'odd-lots',
+    title: 'Rates',
+    status: 'ready',
+    contentItemId: item.id,
+    attempts: 1,
+    sourceTranscript: transcript,
+    sourceHash: transcriptHash(transcript),
+    articleStatus: 'pending',
+  });
+  const gemma = fakeGemma((input) => {
+    if (input.system === GEMMA_SECTION_SYSTEM) return { text: '## 00:00:03\n\n主持人：利率会差 24%，NVDA 仍在讨论。' };
+    return articleReply(input);
+  });
+  try {
+    const result = await runYoutubeArticlePass({
+      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1' },
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      gemmaGenerate: gemma.generate.bind(gemma),
+      flashGenerate: null,
+      now: Date.parse('2026-10-19T02:00:00Z'),
+    });
+    assert.equal(result.ready, 1);
+    const body = opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaclock001').body;
+    assert.match(body, /## 利率会差 24%，NVDA 仍在讨论（00:00:03）/);
+    assert.equal(/^## 00:00:03$/m.test(body), false);
+    assert.equal(repairTimestampHeading('## 00:00:00\n\n主持人：利率会差 24%，NVDA 仍在讨论。', '00:00:00').startsWith('## 利率会差'), true);
   } finally {
     opened.close();
   }
