@@ -250,6 +250,7 @@ export function normalizeXueqiuAvatar(value) {
   const first = String(value || '').split(',')[0].trim();
   if (!first) return '';
   if (first.startsWith('//')) return `https:${first}`;
+  if (/^http:\/\/xavatar\.imedao\.com(?=\/|$)/i.test(first)) return `https://${first.slice('http://'.length)}`;
   if (/^[a-z][a-z0-9+.-]*:/i.test(first)) return first;
   const relative = first.replace(/^\/+/, '');
   if (!relative) return '';

@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-19 复用进行中的看板请求时，如果那次请求的 AbortSignal 已经取消，成功结果和迟到结果都不写入缓存，避免半成品空价盖掉上一版完整看板。没有取消信号的迟到完整报价仍会写入。`http://xavatar.imedao.com` 升成 https，回填脚本用同一条规则。不新增 migration。不要重建数据库。需要同时重启 Web 和 Worker。已经回填过雪球头像的再跑一次 `node scripts/backfill-xueqiu-avatars.mjs`。见 `progress/2026-10-19-aborted-board-cache.md`。
+
 2026-10-19 请求体超过上限时先读完再返回 413，不再中途断开。翻译接口字节上限对齐 200000 字（每字最多 4 字节，另加 16KB）。YouTube 正文不再自动调用 `/api/v1/translate`。雪球头像取逗号前第一段，相对路径补 `https://xavatar.imedao.com/`。已有数据用 `node scripts/backfill-xueqiu-avatars.mjs --dry-run` 预览，再去掉 `--dry-run` 回填；不要放进 Web 或 Worker。CSP 的 `img-src` 只增加 `https://pbs.twimg.com` 和 `https://xavatar.imedao.com`。不新增 migration。不要重建数据库。空号仍是 63、79、80、82。需要同时重启 Web 和 Worker，浏览器再加载一次。见 `progress/2026-10-19-request-size-avatars.md`。
 
 2026-10-19 美股看板会停在超时上。`market.boards.snapshot` 的超时以前只停止等待，Yahoo 队列里的请求继续占着并发 2 和 800 毫秒间隔，下一分钟 `refresh: true` 再排一整套，积压消不掉。现在超时带 AbortSignal，还没执行的队列任务丢掉；排队超过看板上限的报价直接跳过。`cached()` 在 refresh 时如果同一个键已经在请求，就复用那一次。默认超时从 12 秒改为 20 秒，`AI_CENTER_MARKET_BOARD_TIMEOUT_MS` 仍可覆盖。`^HSTECH` 返回 404 或 Not Found 时只跳过该代码，同批其他亚洲代码照常返回。美东时间格式化复用同一份 `Intl.DateTimeFormat`。不新增 migration。不要重建数据库。需要同时重启 Web 和 Worker。见 `progress/2026-10-19-market-board-backlog.md`。
