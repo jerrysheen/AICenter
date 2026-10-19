@@ -57,9 +57,10 @@ export function isEvidenceGateTool(toolId) {
   return GATED_TOOL_SET.has(String(toolId || ''));
 }
 
-export function resolveEvidenceGateMode(env = process.env, { disabled = false } = {}) {
+export function resolveEvidenceGateMode(env = process.env, { disabled = false, defaultMode = 'enforce' } = {}) {
   if (disabled) return 'off';
   const raw = envFlag(env.AI_CENTER_JEV_EVIDENCE_GATE);
+  if (!raw) return defaultMode === 'shadow' ? 'shadow' : 'enforce';
   if (raw === 'off' || raw === '0') return 'off';
   if (raw === 'shadow') return 'shadow';
   return 'enforce';

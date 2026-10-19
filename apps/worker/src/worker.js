@@ -10,7 +10,7 @@ import { createContentRoutingService } from '../../../packages/domain/src/conten
 import { loadMediaConfig } from '../../../packages/instance/src/media-config.js';
 import { loadResolvedFlashSources } from '../../../packages/domain/src/flash-sources.js';
 import { loadFeedValueCalibration,loadFeedValueScoreCache } from '../../../packages/instance/src/feed-value-config.js';
-import {createFeedValueRefreshService} from '../../../packages/domain/src/feed-value-refresh-service.js';
+import {createFeedValueRefreshService,resolveBambooRefresh} from '../../../packages/domain/src/feed-value-refresh-service.js';
 import {feedValueRefreshManifest,createFeedValueRefreshJobHandlers} from '../../../packages/runtime/src/feed-value-refresh-module.js';
 import { createMediaConnector } from '../../../packages/connectors/src/media/port.js';
 import { createMediaBriefPort } from '../../../packages/runtime/src/media-brief-port.js';
@@ -19,12 +19,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from '../../../packages/runtime/src/is-main.js';
 import { existsSync, rmSync } from 'node:fs';
-import { createAnalysisSkillCatalog, createConfiguredBrowserRuntime, createCursorSessionPort, createDeepSeekSearchProvider, createDoubaoAuxiliarySearch, createElucidGrokAgentClient, createGeminiTagPort, createLauncherRestartPort, createLocalKnowledgeFiles, createPersonalAssetService, createTranslateService, createTypeSafeSystemOneClient } from '../../../packages/connectors/src/index.js';
+import { createAnalysisSkillCatalog, createBambooStartLuxClient, createConfiguredBrowserRuntime, createCursorSessionPort, createDeepSeekSearchProvider, createDoubaoAuxiliarySearch, createElucidGrokAgentClient, createGeminiTagPort, createLauncherRestartPort, createLocalKnowledgeFiles, createPersonalAssetService, createTranslateService, createTypeSafeSystemOneClient } from '../../../packages/connectors/src/index.js';
 import { createAgentQualityLayerFromEnv } from '../../../packages/runtime/src/agent-quality.js';
 import { articleAnalysisManifest, createArticleAnalysisJobHandlers } from '../../../packages/runtime/src/article-analysis/article-analysis-module.js';
 import { createAttachmentStore, createStore } from '../../../packages/database/src/index.js';
 import { createFeedFilterFromEnv, resolveFeedFilterConfig } from '../../../packages/domain/src/feed-filter.js';
 import { openJevClient, resolveJevEnabled } from '../../../packages/domain/src/jev-enabled.js';
+import { openClassificationClient, resolveClassificationProvider } from '../../../packages/domain/src/classification-provider.js';
 import { resolveDailyConfig } from '../../../packages/domain/src/daily-window.js';
 import { createFeedService } from '../../../packages/domain/src/feed-service.js';
 import { createFeedInteractionService } from '../../../packages/domain/src/feed-interaction-service.js';
@@ -134,13 +135,14 @@ function createOptionalSearchPort(explicit) {
 
 export function createOptionalAgentQuality(explicit, env = process.env, client) {
   if (explicit !== undefined) return explicit || null;
-  if (!resolveJevEnabled(env)) return null;
+  const bamboo = resolveClassificationProvider(env) === 'bamboo';
+  if (!resolveJevEnabled(env) && !bamboo) return null;
   try {
     return createAgentQualityLayerFromEnv({
       env,
       client: client && typeof client.evaluate === 'function'
         ? client
-        : createTypeSafeSystemOneClient({ env }),
+        : (bamboo ? createBambooStartLuxClient({ env }) : createTypeSafeSystemOneClient({ env })),
     });
   } catch (error) {
     console.error('[worker] Jev quality 未启用：', error?.message || error);
@@ -239,14 +241,23 @@ export function createAiCenterWorker(options = {}) {
   const feedFilterConfig = resolveFeedFilterConfig(env);
   const typesafeClient = openJevClient(env, options.typesafeClient, createTypeSafeSystemOneClient);
   const focusLog = (message) => console.log(message);
+  const classificationClient = openClassificationClient(env, {
+    typesafeClient,
+    ...(options.classificationClient !== undefined ? { explicit: options.classificationClient } : {}),
+    createBamboo: (opts) => createBambooStartLuxClient({ ...opts, log: focusLog }),
+  });
+  if (resolveClassificationProvider(env) === 'bamboo') {
+    console.log(`[worker] classification provider=bamboo model=${classificationClient?.modelId || '-'} available=${classificationClient?.available?.() ? 1 : 0}`);
+  }
   const feedFilter = options.feedFilter !== undefined
     ? options.feedFilter
     : createFeedFilterFromEnv({
-      client: typesafeClient,
+      client: classificationClient,
       env,
       calibration: loadFeedValueCalibration(instance),
       xFocusConfig,
       log: focusLog,
+      usageDirectory: dataDirectory,
     });
   const mediaConfig = loadMediaConfig(instance.configDirectory);
   const flashSources = options.flashSources || loadResolvedFlashSources({ configDirectory: instance.configDirectory, env, mediaSources: mediaConfig.sources });
@@ -407,7 +418,7 @@ export function createAiCenterWorker(options = {}) {
     ? options.agentQuality
     : (options.store && !options.dataDirectory && !options.instanceConfig
       ? null
-      : createOptionalAgentQuality(undefined, options.env || process.env, typesafeClient));
+      : createOptionalAgentQuality(undefined, options.env || process.env, classificationClient));
   if (agentQuality?.config) {
     console.log(`[worker] Jev quality prior=${agentQuality.config.priorMode} reviewer=${agentQuality.config.reviewerEnabled ? 'on' : 'off'} evidenceGate=${agentQuality.config.evidenceGateMode || 'off'}`);
   }
@@ -572,7 +583,7 @@ export function createAiCenterWorker(options = {}) {
         reportRepository: store.repositories.report,
         agentRuntime,
         enabled: env.AI_CENTER_READING_HOUR === '1',
-        client: typesafeClient,
+        client: classificationClient,
         catalogIds: new Set((treeCatalog?.tags || []).map((tag) => tag.id)),
         feedRepository: store.repositories.feed,
         flashSources,
@@ -778,10 +789,17 @@ export function createAiCenterWorker(options = {}) {
       onProgress: (progress) => console.log('[authors.stats.recompute]', JSON.stringify(progress)),
     }),
   });
+  const bambooRefresh = resolveBambooRefresh(env, feedFilterConfig.classificationProvider);
   registry.register({manifest:feedValueRefreshManifest,jobHandlers:createFeedValueRefreshJobHandlers({
     service:createFeedValueRefreshService({feedRepository:store.repositories.feed,mediaRepository:store.repositories.media,
-      client:typesafeClient,model:loadFeedValueCalibration(instance)?.model || 'jev-1.13.0',scoreCache:loadFeedValueScoreCache(instance),flashSources,
-      jevEnabled:feedFilterConfig.jevEnabled,fallback:feedFilterConfig.fallback,xFocusConfig,xFocusMin:feedFilterConfig.xFocusMin}),
+      client:classificationClient,
+      model:feedFilterConfig.classificationProvider==='bamboo'
+        ? (classificationClient?.modelId || 'startlux-decision-27b-autothink')
+        : (loadFeedValueCalibration(instance)?.model || 'jev-1.13.0'),
+      scoreCache:loadFeedValueScoreCache(instance),flashSources,
+      jevEnabled:feedFilterConfig.jevEnabled,classificationProvider:feedFilterConfig.classificationProvider,
+      bambooRefresh:bambooRefresh.enabled,bambooRefreshMax:bambooRefresh.max,
+      fallback:feedFilterConfig.fallback,xFocusConfig,xFocusMin:feedFilterConfig.xFocusMin}),
     onProgress:progress=>console.log('[feed.quality.refresh]',JSON.stringify(progress)),
   })});
   const handlers = options.handlers || registry.createJobHandlers();

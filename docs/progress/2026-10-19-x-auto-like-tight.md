@@ -9,7 +9,8 @@ jev 关闭后，关注流整段放行，推荐流只要 xFocus ≥ 0.7 或命中
 - 企业动态继续可以点赞，但主方向是企业动态时至少 0.9。完全停掉会丢掉高分财报、订单和监管。方向问题改成只认财报、订单、收购、人事和监管，产品宣传、折扣和官号广告不算。
 - 品牌或公司官号不点赞。用户名或显示名里出现 Official 或「官方」就跳过。Global 只在两种情况下跳过：它是用户名的独立后缀（`_Global`、`-Global`，或 `BinanceGlobal` 这种大写分词结尾），并且同时有品牌证据（认证为机构，或打分给出 `promotional=true`）；或者认证类型本身就是机构、企业、政府。显示名里只有 Global，例如「Global Macro Guy」，以及 `macroglobal` 这种个人用户名，继续可以点赞。打分提示词增加 `promotional`：广告、推销和官号产品宣传为 true 时不点赞。当前 X 采集只保存作者 id、用户名、显示名、简介和粉丝数，metadata 里没有 `verified`，也没有 `verifiedType`。`ORGANIZATION_VERIFIED` 读得到 `authorVerified`、`authorProfile.verified` 或 `authorProfile.verifiedType`，但现有抓取不会写入这些字段，所以机构认证这条在真实数据上还不会生效。布尔值 `verified` 即使以后写进来，也不会被当成机构。
 - 敏感判断写明加密货币争议人物的采访、动态、站队或带货，例如孙宇晨，不只看喊单和人身攻击。
-- `AI_CENTER_JEV_ENABLED=false`（以及 `0`、`off`）时，点赞分数门槛提高到 0.9。jev 开启时其他方向仍是 0.75。
+- 没有分类客户端时，点赞分数门槛提高到 0.9。`AI_CENTER_JEV_ENABLED=false`（以及 `0`、`off`）且 provider 仍是 TypeSafe 时如此。`AI_CENTER_CLASSIFICATION_PROVIDER=bamboo` 按有分类客户端处理，其他方向仍是 0.75。
+- `filterDecision` 为 KEEP 还不够。`filterReason` 以 `fallback-` 或 `jev-disabled-` 开头的是本地兜底，不点赞。Bamboo 失败、达到每日或每小时上限、用量文件异常时都走这个前缀，不会因为兜底 KEEP 被点赞。切到 Bamboo 之后，只点 Bamboo 自己给出的 KEEP。
 - 默认上限改为每天 8 次、每小时 2 次、间隔 15 分钟。`AI_CENTER_X_AUTO_LIKE_DAILY`、`AI_CENTER_X_AUTO_LIKE_HOURLY`、`AI_CENTER_X_AUTO_LIKE_INTERVAL_MS` 仍可覆盖。
 - 点赞任务直接失败也计入自动停，包括任务抛错、运行超时和进程中断后的租约过期。连续 2 次就关掉页面开关，通知里写上最近一次原因。成功点赞会把这串计数清零。已经记下的失败不会在重新打开开关后再次计数。
 - 配置版本改为 `x-focus-2`。自动点赞只认这个版本，已经按 `x-focus-1` 打分的帖不会被点赞。关注方向趋势图同时接受 `driftCompatibleVersions` 里的 `x-focus-1`，版本切换后旧点仍留在图上。新抓取按新提示词打分。最近 6 小时里仍是关键词分的帖，下一轮会补打。

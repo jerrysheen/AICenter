@@ -6,6 +6,7 @@ import {FOCUS_GROUP_NAMES, FOCUS_GROUP_ORDER, FOCUS_QUESTIONS, READING_CLASS_VER
 import {isFlashSource} from './flash-sources.js';
 import {isAwesomeListUpdateNoise} from './awesome-list-noise.js';
 import { isJevOutage, resolveJevEnabled } from './jev-enabled.js';
+import { resolveClassificationProvider } from './classification-provider.js';
 
 const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const READING_TIMELINESS_MS = 24 * 60 * 60 * 1000;
@@ -638,9 +639,12 @@ export function createReadingHourService({repository, reportRepository = null, a
         const scores = {};
         let reviewed = classification.status === 'classified';
         const state = readingState(node);
-        const jevKey = `reading-jev:${node.sourceId || node.id}:${String(node.headSourceVersion || node.version || '')}:${route.groupIds.join(',')}`;
-        const stateHash = hash(state);
         const jevOn = resolveJevEnabled(env);
+        const bambooOn = resolveClassificationProvider(env) === 'bamboo';
+        const classify = jevOn || bambooOn;
+        const stageName = bambooOn ? 'reading-bamboo' : 'reading-jev';
+        const jevKey = `${stageName}:${node.sourceId || node.id}:${String(node.headSourceVersion || node.version || '')}:${route.groupIds.join(',')}`;
+        const stateHash = hash(state);
         const fallbackRaw = String(env?.AI_CENTER_FEED_FILTER_FALLBACK ?? '').trim().toLowerCase();
         const classificationHit = jevOn
           ? !(fallbackRaw === 'off' || fallbackRaw === '0' || fallbackRaw === 'false')
@@ -649,9 +653,9 @@ export function createReadingHourService({repository, reportRepository = null, a
         const applyClassificationHits = () => {
           for (const id of route.groupIds) scores[id] = {status: 'scored', score: 1, reason: 'reading-classification'};
         };
-        const cachedScores = jevOn && route.groupIds.length ? reportRepository?.getAnalysisStage?.(workspace, 'reading-jev', jevKey, stateHash) : null;
+        const cachedScores = classify && route.groupIds.length ? reportRepository?.getAnalysisStage?.(workspace, stageName, jevKey, stateHash) : null;
         if (cachedScores?.status === 'completed' && cachedScores.output?.scores) Object.assign(scores, cachedScores.output.scores);
-        else if (!jevOn) {
+        else if (!classify) {
           if (classifiedGroups && classificationHit) applyClassificationHits();
         } else if (route.groupIds.length && client?.available?.()) {
           try {
@@ -660,7 +664,7 @@ export function createReadingHourService({repository, reportRepository = null, a
               const parsed = parseFocusAnswer(response.answers?.[id]);
               scores[id] = parsed.status === 'success' ? {status: 'scored', score: parsed.score, model: response.model || ''} : {status: 'failed', score: null, reason: 'invalid-answer'};
             }
-            if (Object.values(scores).some((row) => row.status === 'scored')) reportRepository?.saveAnalysisStage?.(workspace, 'reading-jev', jevKey, stateHash, {inputScope: 'title-summary'}, {scores, model: response.model || ''}, 'completed');
+            if (Object.values(scores).some((row) => row.status === 'scored')) reportRepository?.saveAnalysisStage?.(workspace, stageName, jevKey, stateHash, {inputScope: 'title-summary'}, {scores, model: response.model || ''}, 'completed');
           } catch (error) {
             reviewed = true;
             readingErrors.push({sourceId: node.sourceId || node.id, reason: String(error?.message || error).slice(0, 180)});
