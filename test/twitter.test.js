@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { tweetToFeedItem, createTwitterService, normalizeXHomeFeed, explainXConnectorError, normalizeTweetBody, mergeArticleIntoTweetText, findXArticleUrl, appendCommentsToBody, appendUnscrapedMediaNotes, stripLeadingPreview, joinArticleTitle, articleBodyLooksComplete } from '../packages/connectors/src/twitter.js';
-import { createXHomeBrowserClient, inspectMatchesRequestedFeed, looksLikeArticleTweet, looksTruncatedTweet, mergeTweets, tabTextMatchesFeed } from '../packages/connectors/src/x/home-browser.js';
+import { buildClickShowMoreExpression, buildTweetExtractExpression, createXHomeBrowserClient, inspectMatchesRequestedFeed, looksLikeArticleTweet, looksTruncatedTweet, mergeTweets, tabTextMatchesFeed } from '../packages/connectors/src/x/home-browser.js';
 import { createConnectorRegistry } from '../packages/connectors/src/index.js';
 
 test('home tweet maps to a feed item without chrome fields', () => {
@@ -159,6 +159,64 @@ test('X home browser client uses BrowserRuntime and stops the session', async ()
   assert.equal(calls[0][0], 'start');
   assert.equal(calls.at(-1)[0], 'stop');
   assert.equal(calls.some((item) => item[0] === 'navigate' && String(item[1] || '').includes('/status/')), false);
+});
+
+test('show more click matches the label the extractor already counts', () => {
+  const click = buildClickShowMoreExpression();
+  assert.match(click, /tweet-text-show-more-link/);
+  assert.match(click, /Show more/);
+  assert.match(click, /显示更多/);
+  assert.match(click, /顯示更多/);
+  const extract = buildTweetExtractExpression();
+  assert.match(extract, /show_more: showMoreControl/);
+  assert.match(extract, /clientHeight > 0/);
+  assert.match(extract, /显示更多/);
+});
+
+test('a status page without a show-more control is complete even when the text box still overflows', async () => {
+  const calls = [];
+  const runtime = {
+    async withSession(_options, callback) {
+      return callback({
+        async navigate(url) { calls.push(['navigate', url]); },
+        async evaluate(expression) {
+          const source = String(expression);
+          if (source.includes('tweet-text-show-more-link') && source.includes('clicked')) {
+            return { clicked: false };
+          }
+          if (source.includes('tweetText')) {
+            if (calls.some((item) => item[0] === 'navigate' && String(item[1]).includes('/status/88'))) {
+              return {
+                items: [{
+                  tweet_id: '88',
+                  tweet_url: 'https://x.com/u/status/88',
+                  text: '短预览补上了一小段尾巴。',
+                  truncated: true,
+                  show_more: false,
+                  author_handle: 'u',
+                }],
+              };
+            }
+            return {
+              items: [{
+                tweet_id: '88',
+                tweet_url: 'https://x.com/u/status/88',
+                text: '短预览',
+                truncated: true,
+                show_more: true,
+                author_handle: 'u',
+              }],
+            };
+          }
+          return { url: 'https://x.com/home', title: 'Home', logged_in: true, login_wall: false };
+        },
+      });
+    },
+  };
+  const client = createXHomeBrowserClient({ browserRuntime: runtime, delay: async () => {} });
+  const result = await client.fetchHomeTimeline({ feed: 'for-you', limit: 1 });
+  assert.equal(result.tweets[0].text, '短预览补上了一小段尾巴。');
+  assert.equal(result.tweets[0].capture_context.truncated, false);
 });
 
 test('truncated home tweets are completed from the status page', async () => {

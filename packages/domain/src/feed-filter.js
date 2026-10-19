@@ -5,6 +5,7 @@ import { resolveClassificationProvider } from './classification-provider.js';
 import { resolveBambooDailySpread, takeBambooUsageSlot } from './bamboo-usage.js';
 import { looksLikeFeedAd } from './feed-ad.js';
 import { focusFeedFromSource, keywordFocus } from './x-focus.js';
+import { bodyCompletionFields } from './body-completion.js';
 export const FEED_FILTER_VERSION = FEED_VALUE_VERSION;
 
 // V1 remains explicitly selectable; V2 is a frozen offline comparison.
@@ -467,6 +468,13 @@ function createFeedValueFilter({ client, config, lookup, calibration, xFocusConf
     const output=verdict({action,reason:decision.reason,stage:'jev-value',mode:config.mode,
       version:config.version,model:result.model,scores:result.scores || {},failOpen:!strictAdmission && result.decision.reviewKind==='technical'});
     const evaluatedAt = now();
+    const completion = bodyCompletionFields({
+      ...(input.existingCapture?.metadata || {}),
+      capturedAt: input.existingCapture?.capturedAt,
+    }, {
+      truncated: Boolean(decision.bodyPending),
+      now: evaluatedAt,
+    });
     return {...output,...(strictAdmission && config.mode==='enforce' && decision.decision==='REVIEW'?{status:'captured'}:{}),metadata:{...output.metadata,filterDecision:decision.decision,
       filterReviewKind:decision.reviewKind,filterScores:result.scores,
       filterPolicyHash:result.policyHash,filterCacheKey:result.cacheKey,
@@ -474,7 +482,7 @@ function createFeedValueFilter({ client, config, lookup, calibration, xFocusConf
       filterMode:config.mode,filterApplied:output.action==='ignore',filterRule:rule,filterRuleHash:feedValueRuleHash(rule),
       captureContext:input.item?.captureContext || {},
       qualityMissingParts:normalized.missingParts,
-      bodyCompletion: decision.bodyPending ? 'pending' : '',
+      ...completion,
       filterErrorCode: result.errorCode || '',
       filterErrorStatus: Number.isInteger(result.errorStatus) ? result.errorStatus : null,
       ...(admittedByFallback ? { fallbackAt: new Date(evaluatedAt).toISOString() } : {})}};
