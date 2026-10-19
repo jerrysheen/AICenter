@@ -10,6 +10,8 @@ import {
 import { buildOverviewBoard, preferredOverviewFocus, usRegularSessionAt } from '../../source/src/market/boards.js';
 import { marketBoardSnapshotKey, newestQuoteAsOf } from '../../source/src/market/board-read.js';
 import { listHoldingsQuoteSymbols, retainPreciseQuotes } from '../../domain/src/trading-service.js';
+import { nextDailyInstant } from '../../domain/src/zoned-time.js';
+import { trendForcePriceScheduleConfig } from './trendforce-price-schedule.js';
 
 export const STATIC_SIGNAL_BOARD_JOB_TYPE = 'source.static-signal-board.snapshot';
 export const HOLDINGS_MARKET_JOB_TYPE = 'market.holdings.snapshot';
@@ -29,10 +31,11 @@ export const HOME_BOOTSTRAP_SCHEDULE_KEY = 'home.bootstrap.snapshot';
 export const HOME_BOOTSTRAP_SNAPSHOT_KEY = 'home-bootstrap';
 export const HOLDINGS_MARKET_SNAPSHOT_KEY = 'holdings-market';
 export const FEED_LIST_SNAPSHOT_TTL_MS = 10 * 60 * 1000;
-export const HARDWARE_PRICE_INTERVAL_MINUTES = 10;
 export const HARDWARE_PRICE_SAVED_EVENT = 'trading.hardware-prices.saved.v1';
-// 调度是 10 分钟。页面沿用上一份缓冲区，这个窗口覆盖两轮之间。
-export const HARDWARE_PRICE_SNAPSHOT_TTL_MS = 15 * 60 * 1000;
+export const HARDWARE_PRICE_AFTER_COLLECT_MINUTES = 10;
+const DAY_MS = 86_400_000;
+// 一天再加两小时，覆盖每天一次的调度和采集之后的那几分钟。
+export const HARDWARE_PRICE_SNAPSHOT_TTL_MS = DAY_MS + 2 * 60 * 60 * 1000;
 export const FEED_FLASH_SNAPSHOT_KEY = 'feed-list-flash';
 export const FEED_FLASH_LIMIT = 80;
 export const FEED_TRENDFORCE_SNAPSHOT_KEY = 'feed-list-trendforce';
@@ -50,7 +53,6 @@ export function hardwarePriceCategoryKey(category) {
   return `hardware-prices-${category}`;
 }
 
-const DAY_MS = 86_400_000;
 const HISTORY_REFRESH_MS = 15 * 60 * 1000;
 const INTERVAL_MINUTES = 1;
 
@@ -702,18 +704,32 @@ export function createWebSnapshotJobHandlers(options) {
   };
 }
 
-function upsertInterval(store, key, jobType, now, intervalMinutes = INTERVAL_MINUTES) {
+function upsertInterval(store, key, jobType, now) {
   return store.upsertJobSchedule({
     workspaceId: 'local',
     key,
     jobType,
     enabled: true,
-    schedule: { kind: 'interval', intervalMinutes },
+    schedule: { kind: 'interval', intervalMinutes: INTERVAL_MINUTES },
     input: {},
     priority: 0,
     maxAttempts: 2,
     nextRunAt: Math.trunc(Number(now)),
   });
+}
+
+export function hardwarePriceSnapshotClock(env = process.env) {
+  const config = trendForcePriceScheduleConfig(env);
+  const clocks = config.clocks.length ? config.clocks : [{ hour: 17, minute: 30 }];
+  const latest = clocks.reduce((best, clock) => (
+    clock.hour * 60 + clock.minute >= best.hour * 60 + best.minute ? clock : best
+  ));
+  const total = latest.hour * 60 + latest.minute + HARDWARE_PRICE_AFTER_COLLECT_MINUTES;
+  return {
+    timeZone: config.timeZone,
+    hour: Math.floor(total / 60) % 24,
+    minute: total % 60,
+  };
 }
 
 export function enqueueHardwarePriceSnapshot(store, workspaceId = 'local') {
@@ -753,8 +769,20 @@ export function ensureFeedListSchedule(store, now = Date.now()) {
   return upsertInterval(store, FEED_LIST_SCHEDULE_KEY, FEED_LIST_JOB_TYPE, now);
 }
 
-export function ensureHardwarePriceSchedule(store, now = Date.now()) {
-  return upsertInterval(store, HARDWARE_PRICE_SCHEDULE_KEY, HARDWARE_PRICE_JOB_TYPE, now, HARDWARE_PRICE_INTERVAL_MINUTES);
+export function ensureHardwarePriceSchedule(store, now = Date.now(), env = process.env) {
+  const clock = hardwarePriceSnapshotClock(env);
+  const at = Math.trunc(Number(now));
+  return store.upsertJobSchedule({
+    workspaceId: 'local',
+    key: HARDWARE_PRICE_SCHEDULE_KEY,
+    jobType: HARDWARE_PRICE_JOB_TYPE,
+    enabled: true,
+    schedule: { kind: 'daily', timezone: clock.timeZone, hour: clock.hour, minute: clock.minute },
+    input: {},
+    priority: 0,
+    maxAttempts: 2,
+    nextRunAt: nextDailyInstant(at - 1, clock),
+  });
 }
 
 export function ensureHomeBootstrapSchedule(store, now = Date.now()) {

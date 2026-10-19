@@ -11,8 +11,8 @@ import { parseStructuredPricePage } from '../packages/connectors/src/trendforce-
 import { createHardwarePriceService } from '../packages/domain/src/hardware-price-service.js';
 import { preferHardwareQuotes } from '../packages/contracts/src/hardware-prices.js';
 import { createJobRunner, formatJobLoopDelay } from '../packages/runtime/src/job-runner.js';
+import { HARDWARE_PRICE_CACHE_TTL_MS } from '../apps/web/src/http/stale-read-cache.js';
 import {
-  HARDWARE_PRICE_INTERVAL_MINUTES,
   HARDWARE_PRICE_JOB_TYPE,
   HARDWARE_PRICE_SAVED_EVENT,
   HARDWARE_PRICE_SNAPSHOT_TTL_MS,
@@ -137,17 +137,32 @@ test('current board matches the per-series lookup and keeps every saved snapshot
   }
 });
 
-test('hardware price snapshots run every ten minutes and other boards stay at one', () => {
+test('hardware price snapshots run once a day after the last collection', () => {
   const store = createStore(':memory:');
   try {
-    const now = 1_700_000_000_000;
-    const hardware = ensureHardwarePriceSchedule(store, now);
+    const now = Date.parse('2026-10-12T02:00:00Z');
+    const env = {
+      AI_CENTER_TRENDFORCE_PRICE_AT: '10:30,17:30',
+      AI_CENTER_TRENDFORCE_PRICE_TIMEZONE: 'Asia/Shanghai',
+    };
+    const hardware = ensureHardwarePriceSchedule(store, now, env);
     const boards = ensureMarketBoardsSchedule(store, now);
-    assert.equal(hardware.schedule.intervalMinutes, HARDWARE_PRICE_INTERVAL_MINUTES);
-    assert.equal(hardware.schedule.intervalMinutes, 10);
+    assert.deepEqual(hardware.schedule, { kind: 'daily', timezone: 'Asia/Shanghai', hour: 17, minute: 40 });
+    assert.equal(hardware.nextRunAt, Date.parse('2026-10-12T09:40:00Z'));
     assert.equal(boards.schedule.intervalMinutes, 1);
-    assert.equal(HARDWARE_PRICE_SNAPSHOT_TTL_MS, 15 * 60 * 1000);
-    assert.ok(HARDWARE_PRICE_SNAPSHOT_TTL_MS >= HARDWARE_PRICE_INTERVAL_MINUTES * 60 * 1000);
+    const morning = ensureHardwarePriceSchedule(store, now, {
+      AI_CENTER_TRENDFORCE_PRICE_AT: '10:30',
+      AI_CENTER_TRENDFORCE_PRICE_TIMEZONE: 'Asia/Shanghai',
+    });
+    assert.deepEqual(morning.schedule, { kind: 'daily', timezone: 'Asia/Shanghai', hour: 10, minute: 40 });
+    const late = ensureHardwarePriceSchedule(store, now, {
+      AI_CENTER_TRENDFORCE_PRICE_AT: '23:55',
+      AI_CENTER_TRENDFORCE_PRICE_TIMEZONE: 'Asia/Shanghai',
+    });
+    assert.deepEqual(late.schedule, { kind: 'daily', timezone: 'Asia/Shanghai', hour: 0, minute: 5 });
+    assert.equal(HARDWARE_PRICE_SNAPSHOT_TTL_MS, 26 * 60 * 60 * 1000);
+    assert.ok(HARDWARE_PRICE_SNAPSHOT_TTL_MS >= 24 * 60 * 60 * 1000 + 60 * 60 * 1000);
+    assert.equal(HARDWARE_PRICE_CACHE_TTL_MS, HARDWARE_PRICE_SNAPSHOT_TTL_MS);
   } finally {
     store.close();
   }

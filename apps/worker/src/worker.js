@@ -824,7 +824,7 @@ export function createAiCenterWorker(options = {}) {
       ensurePolymarketReleaseSchedule(store, polymarketWatchlist, Date.now(), { enabled: !legacyPolymarket });
     }
     ensureFeedListSchedule(store);
-    ensureHardwarePriceSchedule(store);
+    ensureHardwarePriceSchedule(store, Date.now(), env);
     ensureHomeBootstrapSchedule(store);
     ensureReportViewSchedule(store);
     ensureInvestorDiscussionSchedule(store, env);

@@ -25,7 +25,7 @@
 
 ## 当前
 
-- `progress/2026-10-19-hardware-snapshot-loop.md`：硬件报价快照改为每 10 分钟，并给快照行补上 `observation_id` 索引。列表一次查出各系列当前行。Worker 在任务结束时记下事件循环卡顿时长。migration 91。需要重启 Worker。
+- `progress/2026-10-19-hardware-snapshot-loop.md`：硬件报价快照每天一次，放在当天最晚一档采集之后。快照行补上 `observation_id` 索引。列表一次查出各系列当前行。Worker 在任务结束时记下事件循环卡顿时长。migration 91。需要重启 Worker。
 
 - `progress/2026-10-19-aborted-board-cache.md`：看板请求被取消时，半成品不写入缓存，避免盖掉上一版完整看板。`http://xavatar.imedao.com` 升成 https，回填脚本同样处理。不新增 migration。需要同时重启 Web 和 Worker。
 

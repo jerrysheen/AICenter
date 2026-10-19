@@ -1,7 +1,8 @@
 import { createMemorySnapshotCache } from '../../../../packages/runtime/src/snapshot-cache.js';
+import { HARDWARE_PRICE_SNAPSHOT_TTL_MS } from '../../../../packages/runtime/src/web-snapshot-jobs.js';
 
 export const STORED_FEED_CACHE_TTL_MS = 20_000;
-export const HARDWARE_PRICE_CACHE_TTL_MS = 45_000;
+export const HARDWARE_PRICE_CACHE_TTL_MS = HARDWARE_PRICE_SNAPSHOT_TTL_MS;
 export const STORED_FEED_CACHE_PROVIDERS = new Set(['x', 'xueqiu']);
 
 export function storedFeedCacheKey(workspaceId, providerId, query = {}) {
