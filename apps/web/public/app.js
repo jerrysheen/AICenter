@@ -6706,28 +6706,6 @@ function hubQuotes() {
   return homeQuoteCards();
 }
 
-function hubMovers() {
-  const live = (state.markets.overview?.sections || []).flatMap((section) => [
-    ...(section.gainers || []), ...(section.losers || []),
-  ]).filter((item) => item?.symbol);
-  if (live.length) {
-    const seen = new Set();
-    return live.filter((item) => {
-      if (seen.has(item.symbol)) return false;
-      seen.add(item.symbol);
-      return true;
-    }).slice(0, 10);
-  }
-  return [];
-}
-
-function hubStreamItems() {
-  if (state.hubLane === 'market') {
-    return hubMovers().map((item) => ({ kind: 'market', ...item }));
-  }
-  return hubFeedPicks().map((item) => ({ kind: 'feed', ...item }));
-}
-
 function renderHubTicker() {
   const ticker = elements['hub-ticker'];
   if (!ticker) return;
@@ -6799,36 +6777,6 @@ function renderHubTicker() {
       elements['hub-market-note'].append(button);
     } else elements['hub-market-note'].textContent = status.text;
   }
-}
-
-function renderHubExcerpts() {
-  const root = elements['hub-excerpts'];
-  if (!root) return;
-  const excerpts = [
-    ...hubFeedPicks(3).map((item) => ({
-      label: postDisplayTitle(item),
-      onClick: () => openPost(item),
-    })),
-    ...hubMovers().slice(0, 2).map((item) => ({
-      label: `${item.name} ${item.changePct === null || item.changePct === undefined ? '' : formatPct((item.changePct ?? 0) >= 0, item.changePct)}`.trim(),
-      onClick: () => setView('market'),
-    })),
-  ];
-  if (!excerpts.length) {
-    root.replaceChildren(Object.assign(document.createElement('p'), {
-      className: 'hub-excerpt-empty',
-      textContent: '摘选位：接入后会放标题、要点或图表注释。',
-    }));
-    return;
-  }
-  root.replaceChildren(...excerpts.map((item) => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'hub-excerpt';
-    button.textContent = item.label;
-    button.addEventListener('click', item.onClick);
-    return button;
-  }));
 }
 
 function renderHub() {
@@ -8498,20 +8446,62 @@ function renderBreadth(target, breadth, title) {
   target.append(article);
 }
 
+function moverText(value) {
+  return String(value || '').trim();
+}
+
+function moverPrimary(item) {
+  const symbol = moverText(item?.symbol);
+  const name = moverText(item?.name);
+  const summary = moverText(item?.summary);
+  if (name && name !== symbol) return name;
+  if (summary) return summary;
+  return symbol;
+}
+
+function moverSecondary(item, primary) {
+  const parts = [];
+  for (const part of [moverText(item?.summary), moverText(item?.symbol)]) {
+    if (!part || part === primary || parts.includes(part)) continue;
+    parts.push(part);
+  }
+  return parts.join(' · ');
+}
+
 function renderMovers(list, title) {
   const article = document.createElement('article');
   article.className = 'mover-card';
   const heading = document.createElement('h3');
   heading.textContent = title;
   article.append(heading);
-  for (const item of list || []) {
-    const row = document.createElement('div');
-    row.className = 'mover-row';
+  const rows = list || [];
+  for (const item of rows) {
     const up = (item.changePct ?? 0) >= 0;
-    row.innerHTML = `<span>${item.symbol}</span><small>${item.summary || item.name}</small><b class="${up ? 'up' : 'down'}">${item.changePct === null ? '—' : formatPct(up, item.changePct)}</b>`;
+    const primary = moverPrimary(item);
+    const secondary = moverSecondary(item, primary);
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'mover-row';
+    const identity = document.createElement('span');
+    identity.className = 'quote-identity';
+    const name = document.createElement('strong');
+    name.className = 'quote-name';
+    name.textContent = primary;
+    identity.append(name);
+    if (secondary) {
+      const code = document.createElement('small');
+      code.className = 'quote-code';
+      code.textContent = secondary;
+      identity.append(code);
+    }
+    const change = document.createElement('b');
+    change.className = up ? 'up' : 'down';
+    change.textContent = item.changePct === null ? '—' : formatPct(up, item.changePct);
+    row.append(identity, change);
+    row.addEventListener('click', () => openPage('quote', item.symbol));
     article.append(row);
   }
-  if (!(list || []).length) {
+  if (!rows.length) {
     article.append(Object.assign(document.createElement('p'), { textContent: '暂无' }));
   }
   return article;
