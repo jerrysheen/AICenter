@@ -1,5 +1,6 @@
 import { localizeOfficialBoard } from '../../domain/src/official-source-zh.js';
 import { readStaticSignalBoardSnapshot } from '../../source/src/static/board.js';
+import { syncOfficialReleases } from '../../domain/src/source-author-sync.js';
 import { STATIC_SIGNAL_BOARD_SNAPSHOT_KEY } from '../../source/src/static/board-read.js';
 import { readMarketNativeBoard } from '../../source/src/static/market-native-board.js';
 import {
@@ -89,6 +90,7 @@ export function staticSignalBoardCaptureInput(now = Date.now()) {
 export async function captureStaticSignalBoard({
   sourcePort,
   repository,
+  feedRepository = null,
   workspaceId = 'local',
   now = () => Date.now(),
 }) {
@@ -96,11 +98,21 @@ export async function captureStaticSignalBoard({
   const at = now();
   const payload = localizeOfficialBoard(await readStaticSignalBoardSnapshot(sourcePort, staticSignalBoardCaptureInput(at), { now: () => at }));
   repository.saveSnapshot(workspaceId, STATIC_SIGNAL_BOARD_SNAPSHOT_KEY, payload, payload.generatedAt);
+  let authorsLinked = 0;
+  if (feedRepository?.saveCapture) {
+    authorsLinked = syncOfficialReleases(
+      feedRepository,
+      workspaceId,
+      payload.releases,
+      payload.releaseSourceIds,
+    ).linked;
+  }
   return {
     generatedAt: payload.generatedAt,
     upcoming: payload.upcoming.length,
     releases: payload.releases.length,
     sources: payload.sourceHealth.length,
+    authorsLinked,
   };
 }
 

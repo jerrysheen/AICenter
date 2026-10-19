@@ -5856,11 +5856,22 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
 }
 
 .author-screen, .author-page { padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
-.author-switch { display: flex; gap: 8px; overflow-x: auto; padding: 8px 0 12px; }
+.author-switch {
+  display: flex; flex-wrap: nowrap; gap: 8px; overflow-x: auto; padding: 8px 28px 12px 0;
+  scroll-padding-inline: 12px; scrollbar-width: none;
+}
+.author-switch::-webkit-scrollbar { display: none; }
+@media (max-width: 720px) {
+  .author-switch {
+    -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 28px), transparent);
+  }
+}
 .author-switch-item, .author-follow, .author-read-all, .author-back, .author-more, .author-name-link, .author-row-main, .author-item {
   min-height: 44px;
 }
 .author-switch-item {
+  flex: none; white-space: nowrap;
   border: 0; border-radius: 999px; padding: 0 14px; background: var(--comp-tertiary, #f2f3f5); color: inherit;
 }
 .author-switch-item.is-active { background: var(--brand, #0A59F7); color: #fff; }

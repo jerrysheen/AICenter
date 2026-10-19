@@ -11,6 +11,8 @@ import { normalizeMediaUrl } from './media-url.js';
 import { isFlashSource } from './flash-sources.js';
 import { createArticleDedup } from './article-dedup.js';
 import { twkrSourceSkipsBody } from '../../connectors/src/twkr-sources.js';
+import { sourceAuthorProfile } from './source-authors.js';
+import { ensureSourceAuthorItem } from './source-author-sync.js';
 const MEDIA_BUDGET = MediaConfigSchema.parse({ version: 1, sources: [] }).budget;
 const MEDIA_TIMEZONE = 'Asia/Shanghai';
 export const MEDIA_INGESTION_POLICY = 'native-channels-v1';
@@ -208,7 +210,25 @@ export function createMediaIngestionService({
       publisherKey: entry.publisherKey,
       sourceExternalId: entry.sourceKey ? `media:${entry.sourceKey}` : '',
     });
-    return mediaRepository.upsertEntry({ ...entry, dedupKey: dedupKey || null });
+    const saved = mediaRepository.upsertEntry({ ...entry, dedupKey: dedupKey || null });
+    if (entry?.status !== 'budget_deferred' && entry?.externalId && entry?.sourceKey && entry?.workspaceId) {
+      try {
+        ensureSourceAuthorItem(feedRepository, {
+          workspaceId: entry.workspaceId,
+          sourceKey: entry.sourceKey,
+          externalId: entry.externalId,
+          title: entry.title,
+          summary: entry.summary,
+          sourceUrl: entry.canonicalUrl,
+          publishedAt: entry.publishedAt,
+          publishedAtRaw: entry.publishedAtRaw,
+          contentHash: entry.contentHash,
+        });
+      } catch (error) {
+        console.error('[media] 来源作者未挂上:', error instanceof Error ? error.message : error);
+      }
+    }
+    return saved;
   }
   function incomingArticle(entry, item) {
     return {
@@ -396,6 +416,8 @@ export function createMediaIngestionService({
         publisherKey: item.publisherKey,
         publisherName: item.publisherName || mediaSource(item.publisherKey)?.publisher || item.publisherKey,
         sourceKey: item.sourceKey,
+        authorId: sourceAuthorProfile(item.sourceKey)?.authorId || '',
+        sourceAuthorName: sourceAuthorProfile(item.sourceKey)?.name || '',
         discoveryChannels: discoveries.filter(d=>d.externalId===item.externalId).map(d=>({...d,channelName:mediaSource(d.sourceKey)?.channelName || mediaSource(d.sourceKey)?.publisher || d.sourceKey})),
         channel: item.channel,
         originUrl: item.originUrl,
@@ -909,7 +931,7 @@ export function createMediaIngestionService({
       metadata:{sourceId:'content.media.articles',autoRefresh:false,sourceKey:row.sourceKey}});
     return feedRepository.saveCapture({workspaceId,provider:'media',externalId:row.externalId,sourceAccountId:source.id,
       sourceUrl:row.canonicalUrl,title:row.title,contentHash:bodyHash,status:gate?.status || 'ready',publishedAt:row.publishedAt,
-      metadata:{...(gate?.metadata || {}),originalText:article.text || row.title,publisherKey:row.publisherKey,articleKind:row.articleKind || 'article',contentLevel:article.contentLevel || 'summary_only',
+      metadata:{...(gate?.metadata || {}),originalText:article.text || row.title,publisherKey:row.publisherKey,sourceKey:row.sourceKey,articleKind:row.articleKind || 'article',contentLevel:article.contentLevel || 'summary_only',
         extractorVersion,bodyHash,truncated:Boolean(article.truncated),publishedAtRaw:row.publishedAtRaw,channel:row.channel}});
   }
 
@@ -947,6 +969,7 @@ export function createMediaIngestionService({
       publishedAt: row.publishedAt,
       metadata: {
         publisherKey: row.publisherKey,
+        sourceKey: row.sourceKey,
         contentLevel: article.contentLevel,
         extractorVersion,
         bodyHash,

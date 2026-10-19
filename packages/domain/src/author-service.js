@@ -40,7 +40,8 @@ export function createAuthorService({ authorRepository, feedRepository, qualityR
   if (!authorRepository || !feedRepository) throw new Error('author repository is required');
 
   function list({ workspaceId, platform = 'all', cursor = '' } = {}) {
-    const source = AUTHOR_PLATFORMS.includes(platform) ? platform : 'all';
+    const known = AUTHOR_PLATFORMS.includes(platform) || platform === 'official' || platform === 'media';
+    const source = known ? platform : 'all';
     const decoded = decodeCursor(cursor);
     const cacheKey = `${workspaceId}|${source}|${cursor || ''}`;
     const cached = readAuthorCache(cacheKey);
@@ -54,12 +55,7 @@ export function createAuthorService({ authorRepository, feedRepository, qualityR
     const counts = authorRepository.countAuthors(workspaceId);
     const last = page.others.at(-1);
     const nextCursor = page.hasMore && last
-      ? encodeCursor({
-        hasUnread: last.hasUnread ? 1 : 0,
-        latestUnreadAt: last.latestUnreadAt,
-        latestItemAt: last.latestItemAt,
-        authorId: last.authorId,
-      })
+      ? encodeCursor({ latestItemAt: last.latestItemAt, authorId: last.authorId })
       : '';
     const value = { counts, followed: page.followed, others: page.others, nextCursor };
     writeAuthorCache(cacheKey, value);
@@ -75,6 +71,7 @@ export function createAuthorService({ authorRepository, feedRepository, qualityR
   function items(workspaceId, authorId, { read = 'unread', cursor = '', limit = AUTHOR_ITEM_PAGE_SIZE } = {}) {
     const author = get(workspaceId, authorId);
     if (!author || author.kind === 'system') return null;
+    const sourceAuthor = author.platform === 'official' || author.platform === 'media';
     const readFlag = read === 'read' ? 1 : 0;
     const before = decodeCursor(cursor);
     const page = authorRepository.listAuthorItemIds(workspaceId, author.authorId, {
@@ -84,7 +81,7 @@ export function createAuthorService({ authorRepository, feedRepository, qualityR
     });
     const ids = page.rows.map((row) => row.id);
     const loaded = ids.length
-      ? feedRepository.listContentItemsByIds(workspaceId, ids, { qualityRule })
+      ? feedRepository.listContentItemsByIds(workspaceId, ids, { qualityRule: sourceAuthor ? '' : qualityRule })
       : [];
     const byId = new Map(loaded.map((row) => [row.id, row]));
     const visible = page.rows.map((row) => byId.get(row.id)).filter(Boolean);
@@ -107,7 +104,7 @@ export function createAuthorService({ authorRepository, feedRepository, qualityR
         summary: item.summary || '',
         preview: previewFor(item, translations),
         sourceUrl: item.sourceUrl || '',
-        publishedAt: item.publishedAt || item.createdAt || 0,
+        publishedAt: item.publishedAt || item.capturedAt || item.createdAt || 0,
         isRead: Boolean(item.isRead),
       })),
       nextCursor: page.hasMore && last ? encodeCursor({ at: last.sortAt, id: last.id }) : '',

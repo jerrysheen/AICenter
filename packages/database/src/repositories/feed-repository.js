@@ -746,6 +746,20 @@ export function createFeedRepository(database, emitEvent) {
         next.title, next.summary, next.body, next.authorName, next.sourceUrl, next.publishedAt, next.dedupKey || null,
         workspaceId, id,
       );
+      if (next.publishedAt && next.publishedAt !== (row.published_at || null)) {
+        const captureId = database.prepare(`SELECT capture_id, created_at FROM content_items
+          WHERE workspace_id = ? AND id = ?`).get(workspaceId, id);
+        if (captureId?.capture_id) {
+          recordCapturedAuthor(database, {
+            workspaceId,
+            captureId: captureId.capture_id,
+            contentItemId: id,
+            title: next.title,
+            publishedAt: next.publishedAt,
+            createdAt: captureId.created_at,
+          });
+        }
+      }
       return contentChanged;
     },
 
@@ -761,7 +775,34 @@ export function createFeedRepository(database, emitEvent) {
       database.prepare('UPDATE captures SET published_at = ? WHERE id = ?').run(at, capture.id);
       database.prepare(`UPDATE content_items SET published_at = ?, updated_at = ?
         WHERE workspace_id = ? AND capture_id = ?`).run(at, Date.now(), workspaceId, capture.id);
+      const item = database.prepare(`SELECT id, title, created_at FROM content_items
+        WHERE workspace_id = ? AND capture_id = ?`).get(workspaceId, capture.id);
+      if (item) {
+        recordCapturedAuthor(database, {
+          workspaceId,
+          captureId: capture.id,
+          contentItemId: item.id,
+          title: item.title || '',
+          publishedAt: at,
+          createdAt: item.created_at,
+        });
+      }
       return true;
+    },
+
+    relinkCapturedAuthor(workspaceId, captureId, extras = {}) {
+      const item = database.prepare(`SELECT id, title, published_at, created_at FROM content_items
+        WHERE workspace_id = ? AND capture_id = ?`).get(workspaceId, captureId);
+      if (!item) return null;
+      return recordCapturedAuthor(database, {
+        workspaceId,
+        captureId,
+        contentItemId: item.id,
+        title: extras.title || item.title || '',
+        publishedAt: extras.publishedAt || item.published_at,
+        publishedAtRaw: extras.publishedAtRaw || '',
+        createdAt: item.created_at,
+      });
     },
 
     listRecentXCaptures(workspaceId, { since = 0, limit = 500 } = {}) {

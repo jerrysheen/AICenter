@@ -6,6 +6,7 @@ import {FOCUS_GROUP_NAMES, FOCUS_GROUP_ORDER, FOCUS_QUESTIONS, READING_CLASS_VER
 import {isFlashSource} from './flash-sources.js';
 import {isAwesomeListUpdateNoise} from './awesome-list-noise.js';
 import { isJevOutage, resolveJevEnabled } from './jev-enabled.js';
+import { sourceAuthorProfile } from './source-authors.js';
 
 const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const READING_TIMELINESS_MS = 24 * 60 * 60 * 1000;
@@ -212,7 +213,9 @@ function factsFromMaps(refs, items, entries) {
       if (item?.sourceUrl) urls.push(item.sourceUrl);
       if (publishedAt == null && Number.isFinite(Number(item?.publishedAt))) publishedAt = Number(item.publishedAt);
       if (!authorId && item?.authorId) authorId = item.authorId;
-      if (!author && item?.authorName) author = item.authorName;
+      const sourceName = sourceAuthorProfile(String(item?.authorId || '').split(':')[1] || '')?.name || '';
+      if (!author && /^(official|media):/.test(String(item?.authorId || '')) && sourceName) author = sourceName;
+      else if (!author && item?.authorName) author = item.authorName;
     }
     if (ref?.type === 'media-body') {
       const entry = entries.get(ref.id);
@@ -220,6 +223,9 @@ function factsFromMaps(refs, items, entries) {
       if (entry?.canonicalUrl) urls.push(entry.canonicalUrl);
       if (entry?.originUrl) urls.push(entry.originUrl);
       if (publishedAt == null && Number.isFinite(Number(entry?.publishedAt))) publishedAt = Number(entry.publishedAt);
+      const sourceAuthor = sourceAuthorProfile(entry?.sourceKey);
+      if (!authorId && sourceAuthor?.authorId) authorId = sourceAuthor.authorId;
+      if (!author && sourceAuthor?.name) author = sourceAuthor.name;
     }
   }
   return { titles, urls, publishedAt, author, authorId };
