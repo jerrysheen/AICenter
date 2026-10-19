@@ -627,6 +627,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
     const filterInput = {
       workspaceId,
       provider: providerId,
+      sourceExternalId: sourceMeta.externalId,
       item: cleaned,
       originalText,
       contentHash: hash,

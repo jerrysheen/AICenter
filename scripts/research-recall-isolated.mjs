@@ -7,6 +7,7 @@ import { resolveInstanceConfig } from '../packages/instance/src/index.js';
 import { loadResearchCatalog } from '../packages/domain/src/research-catalog.js';
 import { createResearchRecallService } from '../packages/domain/src/research-recall-service.js';
 import { createTypeSafeSystemOneClient } from '../packages/connectors/src/typesafe-system-one.js';
+import { openJevClient } from '../packages/domain/src/jev-enabled.js';
 import { createResearchRelevanceJudge, createResearchTagJudge } from '../packages/runtime/src/research-judges.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -133,8 +134,8 @@ const firstFacts = new Set(recalledFacts(first).flatMap((event) => event.origins
 const recovered = recalledFacts(second).filter((event) => event.origins.some((origin) => !firstFacts.has(`${origin.type}:${origin.id}`)) || event.hits.tag.includes('overseas_orders'));
 let live = { status: '未执行', reason: '没有设置 AI_CENTER_RESEARCH_RECALL_LIVE=1，或没有已配置的 JEV 凭证。模拟调用不能当作实测。' };
 if (process.env.AI_CENTER_RESEARCH_RECALL_LIVE === '1') {
-  const client = createTypeSafeSystemOneClient();
-  if (!client.available()) live = { status: '未执行', reason: 'JEV 客户端不可用，未改用其他模型。' };
+  const client = openJevClient(process.env, undefined, (options) => createTypeSafeSystemOneClient(options));
+  if (!client?.available()) live = { status: '未执行', reason: 'JEV 客户端不可用，未改用其他模型。' };
   else {
     const liveService = createResearchRecallService({
       repository: store.repositories.research,

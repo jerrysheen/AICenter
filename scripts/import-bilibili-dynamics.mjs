@@ -1,10 +1,10 @@
 import { createReadStream } from 'node:fs';
-import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { DEFAULT_WORKSPACE_ID } from '../packages/database/src/migrations.js';
 import { createStore } from '../packages/database/src/index.js';
 import { ingestBilibiliDynamics, resolveDynamicsWorkspace } from '../packages/domain/src/bilibili-dynamics.js';
 import { resolveInstanceConfig } from '../packages/instance/src/index.js';
+import { isMain } from '../packages/runtime/src/is-main.js';
 
 export const DYNAMICS_IMPORT_BATCH = 500;
 
@@ -55,7 +55,7 @@ function arg(name, fallback = '') {
   return process.argv[index + 1] || fallback;
 }
 
-const invoked = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname);
+const invoked = isMain(import.meta.url);
 if (invoked) {
   const file = arg('--file', '');
   if (!file) {

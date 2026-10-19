@@ -48,6 +48,7 @@ export {
   buildFeedFilterState,
   createFeedFilter,
   createFeedFilterFromEnv,
+  decideFeedAdmissionFallback,
   decideFeedFilter,
   evaluateDeterministic,
   hasSubstantialText,

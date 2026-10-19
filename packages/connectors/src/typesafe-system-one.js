@@ -20,10 +20,24 @@ function clipError(value, max = 240) {
   return message.slice(0, max) || 'TypeSafe request failed';
 }
 
+function detailText(value) {
+  if (value == null || value === '') return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try { return JSON.stringify(value); } catch { return ''; }
+}
+
 function readErrorDetail(payload) {
   if (typeof payload === 'string') return clipError(payload);
   if (!isRecord(payload)) return '';
-  return clipError(payload.error?.message || payload.message || payload.detail || '');
+  const error = isRecord(payload.error) ? payload.error : null;
+  return clipError(
+    detailText(error?.message)
+    || detailText(payload.error)
+    || detailText(payload.message)
+    || detailText(payload.detail)
+    || '',
+  );
 }
 
 async function readJson(response) {

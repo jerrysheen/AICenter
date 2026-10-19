@@ -92,7 +92,10 @@ function keepAnswers() {
 }
 
 test('feed filter defaults to shadow and ignores Agent Quality disable', () => {
-  assert.deepEqual(resolveFeedFilterConfig({}), { mode: 'shadow', version: 'feed-value-v3.0',rule:'all-three-0.60' });
+  assert.deepEqual(resolveFeedFilterConfig({}), {
+    mode: 'shadow', version: 'feed-value-v3.0', rule: 'all-three-0.60',
+    fallback: true, jevEnabled: true, xFocusMin: 0.7,
+  });
   assert.equal(resolveFeedFilterConfig({ AI_CENTER_FEED_FILTER: 'enforce' }).mode, 'enforce');
   assert.equal(resolveFeedFilterConfig({ AI_CENTER_FEED_FILTER: 'off' }).mode, 'off');
   assert.equal(resolveFeedFilterConfig({ AI_CENTER_JEV_DISABLED: '1' }).mode, 'shadow');

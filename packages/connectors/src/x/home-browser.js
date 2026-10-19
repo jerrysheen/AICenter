@@ -561,6 +561,15 @@ export function fallbackFocusExpansions(items, keywords = [], limit = 8) {
   };
 }
 
+export function formatXExpandLog({ feed, truncated, attempted, ok, failed, reasons } = {}) {
+  const reasonText = Object.entries(reasons || {})
+    .filter(([, count]) => count > 0)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([reason, count]) => `${reason}:${count}`)
+    .join(',') || '-';
+  return `[x-home] expand feed=${feed} truncated=${truncated} attempted=${attempted} ok=${ok} failed=${failed} reasons=${reasonText}`;
+}
+
 export function selectFocusExpansions(items, scored) {
   if (!scored) return { mode: 'all', items };
   const byId = scored.byId || {};
@@ -806,15 +815,59 @@ export function createXHomeBrowserClient(options = {}) {
         }
         items = focusPlan.items;
         const selected = (tweet) => focusPlan.mode === 'all' || focusPlan.mode === 'following' || focusPlan.expandIds.has(tweet.tweet_id);
-        const truncated = items
-          .filter((item) => looksTruncatedTweet(item) && (focusPlan.mode === 'following' || selected(item)))
+        const truncatedAll = items.filter((item) => looksTruncatedTweet(item));
+        const eligible = truncatedAll.filter((item) => focusPlan.mode === 'following' || selected(item));
+        const cap = focusPlan.mode === 'following' ? 8 : eligible.length;
+        const queued = [...eligible]
           .sort((left, right) => String(left.text || '').length - String(right.text || '').length)
-          .slice(0, focusPlan.mode === 'following' ? 8 : items.length);
-        for (const tweet of truncated) {
+          .slice(0, cap);
+        const reasons = {};
+        const bump = (reason) => { reasons[reason] = (reasons[reason] || 0) + 1; };
+        const overCap = eligible.length - queued.length;
+        if (overCap > 0) reasons['over-cap'] = overCap;
+        const notSelected = truncatedAll.length - eligible.length;
+        if (notSelected > 0) reasons['not-selected'] = notSelected;
+        let attempted = 0;
+        let ok = 0;
+        let failed = 0;
+        let cursor = 0;
+        for (; cursor < queued.length; cursor += 1) {
           if (stop()) break;
-          const completed = await completeTruncatedTweet(session, tweet, budget);
+          const tweet = queued[cursor];
+          attempted += 1;
+          let completed = tweet;
+          let reason = '';
+          try {
+            if (!tweet?.tweet_url) reason = 'no-url';
+            else if (captureStopped(budget.signal, budget.deadlineAt) || !commandTimeout(EXTRACT_TIMEOUT_MS, budget.deadlineAt)) reason = 'deadline';
+            else {
+              completed = await completeTruncatedTweet(session, tweet, budget);
+              const grown = String(completed?.text || '').length >= String(tweet.text || '').length + 200;
+              const still = looksTruncatedTweet(completed || tweet);
+              const stopped = captureStopped(budget.signal, budget.deadlineAt) || !commandTimeout(EXTRACT_TIMEOUT_MS, budget.deadlineAt);
+              if (grown && !still) reason = '';
+              else if (stopped) reason = 'deadline';
+              else if (!String(completed?.text || '').trim()) reason = 'extract-failed';
+              else reason = 'still-truncated';
+            }
+          } catch (error) {
+            reason = /extract/i.test(String(error?.message || '')) ? 'extract-failed' : 'navigate-failed';
+            completed = tweet;
+          }
+          if (reason) { bump(reason); failed += 1; }
+          else ok += 1;
           items = items.map((item) => (item.tweet_id === tweet.tweet_id ? { ...completed, x_focus: item.x_focus } : item));
         }
+        for (let rest = cursor; rest < queued.length; rest += 1) {
+          bump('deadline');
+          failed += 1;
+        }
+        const writeLog = typeof options.log === 'function' ? options.log : console.log;
+        try {
+          writeLog(formatXExpandLog({
+            feed, truncated: truncatedAll.length, attempted, ok, failed, reasons,
+          }));
+        } catch { /* a log failure must not drop the timeline */ }
         const withArticles = items.filter((item) => selected(item) && looksLikeArticleTweet(item)).slice(0, 12);
         for (const tweet of withArticles) {
           if (stop()) break;
