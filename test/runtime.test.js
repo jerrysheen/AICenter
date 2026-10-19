@@ -48,7 +48,9 @@ test('migrations upgrade a v1 database without losing posts', () => {
   assert.deepEqual(unusedSchemaVersions, [63, 79, 80, 82]);
   assert.equal(upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, schemaLatest);
   assert.equal(schemaLatest - schemaRows, expectedHoles, `schema rows ${schemaRows} latest ${schemaLatest}`);
-  assert.equal(schemaLatest, 89);
+  assert.equal(schemaLatest, 90);
+  assert.equal(upgraded.prepare(`SELECT name FROM schema_migrations WHERE version = 89`).get().name, 'youtube_podcast_article');
+  assert.equal(upgraded.prepare(`SELECT name FROM schema_migrations WHERE version = 90`).get().name, 'author_stats_published');
   assert.ok(upgraded.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'northbound_daily'`).get());
   assert.ok(upgraded.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'youtube_podcast_episodes'`).get());
   const episodeColumns = upgraded.prepare('PRAGMA table_info(youtube_podcast_episodes)').all().map((column) => column.name);
