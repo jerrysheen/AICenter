@@ -9,10 +9,11 @@ import {
   formatPodcastSummary,
   limitFirstRun,
   loadYoutubePodcastConfig,
+  mergePodcastEntries,
   parsePodcastSummary,
   parseYoutubeRss,
+  podcastBackfillDue,
   rssUrlForChannel,
-  selectBackfillEntries,
   selectPodcastEpisodes,
   summaryNeedsChinese,
   watchUrl,
@@ -29,6 +30,7 @@ import {
   ensureYtDlpReady,
   fetchYoutubeText,
   listChannelLongVideos,
+  prepareYoutubeTranscriber,
   probeYoutubeEpisode,
   resolveYoutubeChannelId,
   transcribeYoutubeAudio,
@@ -62,11 +64,21 @@ export function ensureYoutubePodcastSchedule(store, env = process.env, now = Dat
 
 function logRound(stats) {
   const reasons = stats.reasons.length ? stats.reasons.join(',') : '-';
-  console.log(`[worker] youtube-podcasts discovered=${stats.discovered} subtitles=${stats.subtitles} transcribed=${stats.transcribed} failed=${stats.failed} skipped=${stats.skipped} stopped=${stats.stopped || '-'} reasons=${reasons}`);
+  console.log(`[worker] youtube-podcasts discovered=${stats.discovered} subtitles=${stats.subtitles} transcribed=${stats.transcribed} failed=${stats.failed} skipped=${stats.skipped} transcribeUnavailable=${stats.transcribeUnavailable} stopped=${stats.stopped || '-'} reasons=${reasons}`);
 }
 
 function emptyStats() {
-  return { discovered: 0, subtitles: 0, transcribed: 0, failed: 0, skipped: 0, stopped: '', reasons: [], status: 'ready' };
+  return {
+    discovered: 0,
+    subtitles: 0,
+    transcribed: 0,
+    failed: 0,
+    skipped: 0,
+    transcribeUnavailable: 0,
+    stopped: '',
+    reasons: [],
+    status: 'ready',
+  };
 }
 
 function pushReason(stats, reason) {
@@ -222,6 +234,24 @@ function attemptsOf(repository, workspaceId, videoId) {
   return repository.episode(workspaceId, videoId)?.attempts || 0;
 }
 
+function recordTranscribeUnavailable(stats, repository, workspaceId, creator, episode) {
+  repository.saveEpisode({
+    workspaceId,
+    videoId: episode.videoId,
+    creatorId: creator.id,
+    channelKey: episode.channelKey,
+    title: episode.title,
+    durationSec: episode.durationSec,
+    publishedAt: episode.publishedAt,
+    status: 'failed',
+    reason: 'transcribe-unavailable',
+    attempts: attemptsOf(repository, workspaceId, episode.videoId),
+  });
+  stats.failed += 1;
+  stats.transcribeUnavailable += 1;
+  pushReason(stats, 'transcribe-unavailable');
+}
+
 function roundStop(error, signal) {
   if (error?.code === 'youtube-round-stop' || error?.reason === 'bot-check' || error?.reason === '429' || error?.reason === 'yt-dlp-outdated' || error?.reason === 'yt-dlp-missing') {
     return error.reason || 'bot-check';
@@ -276,6 +306,17 @@ export async function runYoutubePodcastRound(deps = {}) {
     signal,
   }));
   const audioTranscribe = deps.audioTranscribe || createGeminiAudioTranscriber();
+  const now = Number(deps.now) || Date.now();
+  const timeZone = youtubePodcastClock(env).timeZone;
+  let audioDisabled = false;
+  try {
+    prepareYoutubeTranscriber(env, audioTranscribe);
+  } catch (error) {
+    if (!youtubeTranscribeUnavailable(error)) throw error;
+    audioDisabled = true;
+    pushReason(stats, 'transcribe-unavailable');
+    console.warn(`[worker] youtube-podcasts 转写器不可用，本轮只收有字幕的集：${String(error?.message || error).slice(0, 180)}`);
+  }
   const probe = deps.probe;
   const transcribe = deps.transcribe;
   const summarize = deps.summarize || defaultSummarize(env, deps.quotaRepository, signal);
@@ -306,16 +347,11 @@ export async function runYoutubePodcastRound(deps = {}) {
       if (stats.stopped) break;
       const incoming = [];
       const freshChannels = new Set();
-      const readyChannels = new Set(
-        repository.listForDedup(workspaceId, creator.id)
-          .filter((row) => row.status === 'ready')
-          .map((row) => row.channelKey),
-      );
       for (const channel of creator.channels) {
         if (stats.stopped || processed >= limits.roundLimit) break;
         const state = repository.channel(workspaceId, channel.key);
-        const needsBackfill = channel.kind === 'channel' && (!state.bootstrapped || !readyChannels.has(channel.key));
-        if (!state.bootstrapped || needsBackfill) freshChannels.add(channel.key);
+        const needsBackfill = channel.kind === 'channel' && podcastBackfillDue(state, now, timeZone);
+        if (!state.bootstrapped) freshChannels.add(channel.key);
         let channelId = String(channel.channelId || state.channelId || '').trim();
         if (channel.kind === 'channel' && channel.channelId && state.channelId !== channel.channelId) {
           repository.saveChannel(workspaceId, channel.key, { channelId: channel.channelId, bootstrapped: state.bootstrapped });
@@ -388,18 +424,25 @@ export async function runYoutubePodcastRound(deps = {}) {
             pushReason(stats, listed.blocked);
             break;
           }
-          const backfill = selectBackfillEntries(listed?.entries, config.minDurationSec, limits.lookback)
-            .map((entry) => ({ ...entry, channelKey: channel.key, role: channel.role || '' }));
-          if (backfill.length) {
-            const byId = new Map(entries.map((entry) => [entry.videoId, entry]));
-            entries = backfill.map((entry) => ({
-              ...entry,
-              title: byId.get(entry.videoId)?.title || entry.title,
-              publishedAt: byId.get(entry.videoId)?.publishedAt || entry.publishedAt,
-              url: byId.get(entry.videoId)?.url || entry.url,
-            }));
-          } else if (listed?.failed) {
+          if (!listed || listed.failed) {
+            repository.saveChannel(workspaceId, channel.key, {
+              channelId,
+              bootstrapped: state.bootstrapped,
+              backfillAttempts: (state.backfillAttempts || 0) + 1,
+              backfillFailedAt: now,
+            });
             pushReason(stats, 'backfill');
+          } else {
+            repository.saveChannel(workspaceId, channel.key, {
+              channelId,
+              bootstrapped: state.bootstrapped,
+              backfilledAt: now,
+            });
+            entries = mergePodcastEntries(entries, (listed.entries || []).map((entry) => ({
+              ...entry,
+              channelKey: channel.key,
+              role: channel.role || '',
+            })));
           }
           await sleep(limits.intervalMs);
         }
@@ -558,6 +601,10 @@ export async function runYoutubePodcastRound(deps = {}) {
               pushReason(stats, 'transcribe-budget');
               continue;
             }
+            if (audioDisabled) {
+              recordTranscribeUnavailable(stats, repository, workspaceId, creator, episode);
+              continue;
+            }
             const runTranscribe = transcribe || ((item) => transcribeYoutubeAudio({
               videoId: item.videoId,
               url: watchUrl(item.videoId),
@@ -616,22 +663,12 @@ export async function runYoutubePodcastRound(deps = {}) {
             break;
           }
           if (youtubeTranscribeUnavailable(error)) {
-            repository.saveEpisode({
-              workspaceId,
-              videoId: episode.videoId,
-              creatorId: creator.id,
-              channelKey: episode.channelKey,
-              title: episode.title,
-              durationSec: episode.durationSec,
-              publishedAt: episode.publishedAt,
-              status: 'failed',
-              reason: String(error?.message || error).slice(0, 180),
-              attempts: attemptsOf(repository, workspaceId, episode.videoId),
-            });
-            stats.failed += 1;
-            stats.stopped = 'transcribe-unavailable';
-            pushReason(stats, 'transcribe-unavailable');
-            break;
+            if (!audioDisabled) {
+              audioDisabled = true;
+              console.warn(`[worker] youtube-podcasts 转写器不可用，本轮剩下的集不再下载音频：${String(error?.message || error).slice(0, 180)}`);
+            }
+            recordTranscribeUnavailable(stats, repository, workspaceId, creator, episode);
+            continue;
           }
           const attempts = attemptsOf(repository, workspaceId, episode.videoId) + 1;
           repository.saveEpisode({

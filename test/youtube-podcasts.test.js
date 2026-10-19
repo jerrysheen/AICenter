@@ -14,6 +14,7 @@ import {
   formatPodcastSummary,
   isShortOrPreview,
   loadYoutubePodcastConfig,
+  mergePodcastEntries,
   parseYoutubeRss,
   selectBackfillEntries,
   selectPodcastEpisodes,
@@ -245,7 +246,7 @@ test('subtitles skip transcription and missing subtitles call it', async () => {
 
     let secondProbe = 0;
     await runYoutubePodcastRound({
-      env: { AI_CENTER_YOUTUBE_PODCASTS: '1' },
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1', GEMINI_API_KEY: 'test-key' },
       config: creatorConfig(),
       repository: opened.store.repositories.youtubePodcasts,
       feedRepository: opened.store.repositories.feed,
@@ -428,7 +429,7 @@ test('audio is deleted after transcription and vtt prefers manual original capti
     automatic_captions: { 'zh-Hans': [{}], ja: [{}] },
   }, 'zh'), { lang: 'zh', kind: 'manual' });
   assert.match(formatPodcastSummary(SUMMARY, { focus: '金融' }), /与关注方向的关系：和金融相关/);
-  assert.equal(latestSchemaVersion(), 86);
+  assert.equal(latestSchemaVersion(), 87);
   assert.deepEqual(unusedSchemaVersions, [63, 79, 80, 82]);
   assert.equal(youtubePodcastLimits({}).roundMs, 3 * 60 * 60_000);
   assert.equal(youtubePodcastLimits({}).episodeTranscribeSec, 180 * 60);
@@ -691,7 +692,7 @@ test('over-long episodes are skipped and the first transcription may exceed the 
     assert.equal(opened.store.repositories.youtubePodcasts.isDone('local', 'toolongvid01'), true);
 
     const budget = await runYoutubePodcastRound({
-      env: { AI_CENTER_YOUTUBE_PODCASTS: '1' },
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1', GEMINI_API_KEY: 'test-key' },
       config: creatorConfig(),
       limits: { transcribeSec: 30, episodeTranscribeSec: 60 * 60 },
       repository: opened.store.repositories.youtubePodcasts,
@@ -952,81 +953,258 @@ test('channel page body gets a fresh timeout and configured channel ids skip res
     assert.equal(resolved, 0);
     assert.match(rssUrl, /channel_id=UChnNjLyx_5rk_iDPQ2BQDQA/);
     assert.equal(result.stopped, '');
-    assert.equal(opened.store.repositories.youtubePodcasts.channel('local', 'valley101-video').channelId, 'UChnNjLyx_5rk_iDPQ2BQDQA');
+    const stored = opened.store.repositories.youtubePodcasts.channel('local', 'valley101-video');
+    assert.equal(stored.channelId, 'UChnNjLyx_5rk_iDPQ2BQDQA');
+    assert.equal(typeof stored.backfilledAt, 'number');
   } finally {
     opened.close();
   }
 });
 
-test('a first run buried under shorts backfills long episodes once', async () => {
+function channelCreator(key, id = key) {
+  return {
+    minDurationSec: 1200,
+    lookback: 2,
+    creators: [{
+      id,
+      name: id,
+      focus: 'AI',
+      channels: [{
+        key,
+        kind: 'channel',
+        handle: 'ExampleHandle',
+        channelId: 'UCZa18YV7qayTh-MRIrBhDpA',
+        language: 'en',
+        url: 'https://www.youtube.com/@ExampleHandle',
+      }],
+    }],
+  };
+}
+
+test('one successful listing stops backfill even when nothing is ready', async () => {
   const opened = openStore();
   try {
-    const shorts = Array.from({ length: 8 }, (_, index) => ({
-      videoId: `short${String(index).padStart(7, '0')}`,
-      title: `Clip ${index} #shorts`,
-      publishedAt: Date.parse('2026-10-18T00:00:00Z') - index * 1000,
-      url: `https://www.youtube.com/shorts/short${index}`,
-    }));
-    opened.store.repositories.youtubePodcasts.saveChannel('local', 'dwarkesh', {
-      channelId: 'UCZa18YV7qayTh-MRIrBhDpA',
-      bootstrapped: true,
+    const day1 = Date.parse('2026-10-18T02:00:00Z');
+    const day2 = Date.parse('2026-10-19T02:00:00Z');
+    opened.store.repositories.youtubePodcasts.saveEpisode({
+      workspaceId: 'local',
+      videoId: 'dupaudio0001',
+      creatorId: 'valley101',
+      channelKey: 'valley101-audio',
+      title: '已去重的音频版',
+      durationSec: 3600,
+      publishedAt: day1,
+      status: 'skipped',
+      reason: 'duplicate-episode',
+      attempts: 1,
     });
-    const probed = [];
     let lists = 0;
-    const round = async () => runYoutubePodcastRound({
-      env: { AI_CENTER_YOUTUBE_PODCASTS: '1' },
-      config: {
-        minDurationSec: 1200,
-        lookback: 2,
-        creators: [{
-          id: 'dwarkesh',
-          name: 'Dwarkesh',
-          focus: 'AI',
-          channels: [{
-            key: 'dwarkesh',
-            kind: 'channel',
-            handle: 'DwarkeshPatel',
-            channelId: 'UCZa18YV7qayTh-MRIrBhDpA',
-            language: 'en',
-            url: 'https://www.youtube.com/@DwarkeshPatel',
-          }],
-        }],
-      },
+    let resolved = 0;
+    const round = (now) => runYoutubePodcastRound({
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1', GEMINI_API_KEY: 'test-key' },
+      now,
+      config: channelCreator('valley101-audio', 'valley101'),
       repository: opened.store.repositories.youtubePodcasts,
       feedRepository: opened.store.repositories.feed,
       workspaceId: 'local',
       sleep: async () => {},
       translate: async () => '',
-      fetchRss: async () => ({ entries: lists === 0 ? shorts : [] }),
+      resolveChannel: async () => { resolved += 1; return { channelId: 'should-not-resolve' }; },
+      fetchRss: async () => ({ entries: [] }),
       listVideos: async (channel) => {
         lists += 1;
         assert.equal(channel.channelId, 'UCZa18YV7qayTh-MRIrBhDpA');
         return { entries: [
-          { videoId: 'fullepisode1', title: 'A long interview', durationSec: 5400, publishedAt: 30, url: 'https://www.youtube.com/watch?v=fullepisode1' },
-          { videoId: 'anotherfull02', title: 'Another talk', durationSec: 3600, publishedAt: 20, url: 'https://www.youtube.com/watch?v=anotherfull02' },
-          { videoId: 'thirdfull0003', title: 'Older talk', durationSec: 3000, publishedAt: 10, url: 'https://www.youtube.com/watch?v=thirdfull0003' },
-          { videoId: 'shortclip0001', title: 'clip', durationSec: 180, publishedAt: 40, url: 'https://www.youtube.com/shorts/shortclip0001' },
+          { videoId: 'dupaudio0001', title: 'playlist title', durationSec: 3600, publishedAt: 0 },
+          { videoId: 'onlyshort001', title: 'clip #shorts', durationSec: 40, publishedAt: 0 },
         ] };
       },
-      probe: async (item) => {
-        probed.push(item.videoId);
-        return { durationSec: item.durationSec || 1800, title: item.title, liveStatus: 'not_live', transcript: '正片', transcriptSource: 'subtitle-manual' };
-      },
+      probe: async (item) => ({
+        durationSec: item.videoId === 'onlyshort001' ? 40 : 3600,
+        title: item.title,
+        liveStatus: 'not_live',
+        transcript: '不应入库',
+        transcriptSource: 'subtitle-manual',
+      }),
       summarize: async () => SUMMARY,
     });
-    const first = await round();
+    const first = await round(day1);
     assert.equal(lists, 1);
-    assert.deepEqual(probed, ['fullepisode1', 'anotherfull02', 'thirdfull0003']);
-    assert.equal(first.discovered, 2);
-    assert.equal(first.subtitles, 2);
-    assert.equal(opened.store.repositories.youtubePodcasts.channel('local', 'dwarkesh').bootstrapped, true);
-    const second = await round();
+    assert.equal(resolved, 0);
+    assert.equal(first.discovered, 0);
+    assert.equal(opened.store.repositories.youtubePodcasts.listReady('local').length, 0);
+    const stored = opened.store.repositories.youtubePodcasts.channel('local', 'valley101-audio');
+    assert.equal(stored.backfilledAt, day1);
+    assert.equal(stored.backfillAttempts, 0);
+    assert.equal(stored.bootstrapped, true);
+    opened.store.repositories.youtubePodcasts.saveChannel('local', 'valley101-audio', { channelId: stored.channelId });
+    assert.equal(opened.store.repositories.youtubePodcasts.channel('local', 'valley101-audio').backfilledAt, day1);
+    const second = await round(day2);
     assert.equal(lists, 1);
     assert.equal(second.discovered, 0);
     assert.deepEqual(selectBackfillEntries([
       { videoId: 'shortone0001', title: 'short', durationSec: 30 },
       { videoId: 'longone00001', title: 'long', durationSec: 4000 },
     ], 1200, 2).map((item) => item.videoId), ['longone00001']);
+  } finally {
+    opened.close();
+  }
+});
+
+test('backfill retries on the next Shanghai day and stops after three failures', async () => {
+  const opened = openStore();
+  try {
+    const day1 = Date.parse('2026-10-18T02:00:00Z');
+    const day1Later = Date.parse('2026-10-18T14:00:00Z');
+    const day2 = Date.parse('2026-10-19T02:00:00Z');
+    const day3 = Date.parse('2026-10-20T02:00:00Z');
+    const day4 = Date.parse('2026-10-21T02:00:00Z');
+    let lists = 0;
+    const round = (now, listVideos) => runYoutubePodcastRound({
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1', GEMINI_API_KEY: 'test-key' },
+      now,
+      config: channelCreator('dwarkesh'),
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      sleep: async () => {},
+      translate: async () => '',
+      fetchRss: async () => ({ entries: [] }),
+      listVideos,
+      probe: async () => { throw new Error('空列表不应探测'); },
+      summarize: async () => SUMMARY,
+    });
+    const blocked = await round(day1, async () => {
+      lists += 1;
+      return { blocked: '429' };
+    });
+    assert.equal(blocked.stopped, '429');
+    assert.equal(lists, 1);
+    assert.equal(opened.store.repositories.youtubePodcasts.channel('local', 'dwarkesh').backfillAttempts, 0);
+    lists = 0;
+    const fail = async () => {
+      lists += 1;
+      throw new Error('playlist down');
+    };
+    const first = await round(day1, fail);
+    assert.equal(first.stopped, '');
+    assert.equal(first.reasons.includes('backfill'), true);
+    assert.equal(lists, 1);
+    assert.equal(opened.store.repositories.youtubePodcasts.channel('local', 'dwarkesh').backfillAttempts, 1);
+    assert.equal(opened.store.repositories.youtubePodcasts.channel('local', 'dwarkesh').backfilledAt, null);
+    await round(day1Later, fail);
+    assert.equal(lists, 1);
+    assert.equal(opened.store.repositories.youtubePodcasts.channel('local', 'dwarkesh').backfillAttempts, 1);
+    await round(day2, fail);
+    await round(day3, fail);
+    assert.equal(lists, 3);
+    assert.equal(opened.store.repositories.youtubePodcasts.channel('local', 'dwarkesh').backfillAttempts, 3);
+    await round(day4, fail);
+    assert.equal(lists, 3);
+    assert.equal(opened.store.repositories.youtubePodcasts.channel('local', 'dwarkesh').backfilledAt, null);
+  } finally {
+    opened.close();
+  }
+});
+
+test('backfill unions rss by video id and keeps rss title and time', async () => {
+  const opened = openStore();
+  try {
+    const bothAt = Date.parse('2026-10-18T00:00:00Z');
+    const rssOnlyAt = Date.parse('2026-10-17T00:00:00Z');
+    const listOnlyAt = Date.parse('2026-10-16T00:00:00Z');
+    const rss = [
+      { videoId: 'both00000001', title: 'RSS title', publishedAt: bothAt, url: 'https://www.youtube.com/watch?v=both00000001' },
+      { videoId: 'rssonly00001', title: 'RSS only', publishedAt: rssOnlyAt, url: 'https://www.youtube.com/watch?v=rssonly00001' },
+    ];
+    const listed = [
+      { videoId: 'both00000001', title: 'Playlist title', publishedAt: Date.parse('2026-10-01T00:00:00Z'), durationSec: 3600, url: 'https://www.youtube.com/watch?v=both00000001' },
+      { videoId: 'listonly0001', title: 'List only', publishedAt: listOnlyAt, durationSec: 2400, url: 'https://www.youtube.com/watch?v=listonly0001' },
+    ];
+    const merged = mergePodcastEntries(rss, listed);
+    assert.deepEqual(merged.map((item) => item.videoId), ['both00000001', 'rssonly00001', 'listonly0001']);
+    assert.equal(merged[0].title, 'RSS title');
+    assert.equal(merged[0].publishedAt, bothAt);
+    assert.equal(merged[0].durationSec, 3600);
+    assert.equal(merged[1].title, 'RSS only');
+    const probed = [];
+    let lists = 0;
+    const round = () => runYoutubePodcastRound({
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1', GEMINI_API_KEY: 'test-key' },
+      config: channelCreator('dwarkesh'),
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      sleep: async () => {},
+      translate: async () => '',
+      fetchRss: async () => ({ entries: rss }),
+      listVideos: async () => {
+        lists += 1;
+        return { entries: listed };
+      },
+      probe: async (item) => {
+        probed.push(item);
+        return { durationSec: 1800, title: item.title, liveStatus: 'not_live', transcript: '正文', transcriptSource: 'subtitle-manual' };
+      },
+      summarize: async () => SUMMARY,
+    });
+    const first = await round();
+    assert.equal(lists, 1);
+    assert.deepEqual(probed.map((item) => item.videoId), ['both00000001', 'rssonly00001', 'listonly0001']);
+    assert.equal(probed[0].title, 'RSS title');
+    assert.equal(probed[0].publishedAt, bothAt);
+    assert.equal(probed[0].durationSec, 3600);
+    assert.equal(first.discovered, 2);
+    assert.equal(opened.store.repositories.youtubePodcasts.episode('local', 'both00000001').title, 'RSS title');
+    assert.equal(opened.store.repositories.youtubePodcasts.episode('local', 'listonly0001').reason, 'lookback');
+    await round();
+    assert.equal(lists, 1);
+  } finally {
+    opened.close();
+  }
+});
+
+test('backfill without timestamps keeps playlist order ahead of lookback', async () => {
+  const rss = Array.from({ length: 8 }, (_, index) => ({
+    videoId: `timedrss${String(index).padStart(3, '0')}`,
+    title: `RSS ${index}`,
+    publishedAt: Date.parse('2026-10-18T00:00:00Z') - index * 86_400_000,
+    url: `https://www.youtube.com/watch?v=timedrss${String(index).padStart(3, '0')}`,
+  }));
+  const listed = [
+    { videoId: 'newuntimed01', title: 'Newest playlist', publishedAt: 0, durationSec: 4000 },
+    { videoId: 'olduntimed01', title: 'Second playlist', publishedAt: 0, durationSec: 3000 },
+  ];
+  const merged = mergePodcastEntries(rss, listed);
+  const slice = firstRunSlice(merged, 2);
+  assert.equal(slice.probe[0].videoId, 'newuntimed01');
+  assert.equal(slice.probe[1].videoId, 'olduntimed01');
+  assert.equal(slice.probe.some((item) => item.videoId === 'timedrss007'), false);
+  assert.equal(slice.ignore.some((item) => item.videoId === 'timedrss007'), true);
+  const opened = openStore();
+  try {
+    const probed = [];
+    const result = await runYoutubePodcastRound({
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1', GEMINI_API_KEY: 'test-key' },
+      config: channelCreator('dwarkesh'),
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      sleep: async () => {},
+      translate: async () => '',
+      fetchRss: async () => ({ entries: rss }),
+      listVideos: async () => ({ entries: listed }),
+      probe: async (item) => {
+        probed.push(item.videoId);
+        return { durationSec: 1800, title: item.title, liveStatus: 'not_live', transcript: '正文', transcriptSource: 'subtitle-manual' };
+      },
+      summarize: async () => SUMMARY,
+    });
+    assert.equal(probed[0], 'newuntimed01');
+    assert.equal(probed.includes('timedrss007'), false);
+    assert.equal(opened.store.repositories.youtubePodcasts.episode('local', 'timedrss007').reason, 'lookback');
+    assert.equal(opened.store.repositories.youtubePodcasts.getReady('local', 'newuntimed01') != null, true);
+    assert.equal(result.stopped, '');
   } finally {
     opened.close();
   }
@@ -1096,6 +1274,9 @@ test('transcription uses the real executor and a missing transcriber does not do
     assert.equal(downloaded, false);
 
     const opened = openStore();
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args.join(' '));
     try {
       const result = await runYoutubePodcastRound({
         env: { AI_CENTER_YOUTUBE_PODCASTS: '1' },
@@ -1105,21 +1286,97 @@ test('transcription uses the real executor and a missing transcriber does not do
         workspaceId: 'local',
         dataDirectory: root,
         sleep: async () => {},
-        fetchRss: async () => ({ entries: [entry('nosubvid0001', '没有字幕的一集')] }),
-        probe: async () => ({ durationSec: 1800, title: '没有字幕的一集', liveStatus: 'not_live', transcript: '' }),
-        summarize: async () => { throw new Error('转写器不可用时不应摘要'); },
+        fetchRss: async () => ({ entries: [
+          { ...entry('nosubvid0001', 'Rates without captions'), publishedAt: 200 },
+          { ...entry('subvid000001', 'Chip supply with captions'), publishedAt: 100 },
+        ] }),
+        probe: async (item) => ({
+          durationSec: 1800,
+          title: item.title,
+          liveStatus: 'not_live',
+          transcript: item.videoId === 'subvid000001' ? '有字幕正文' : '',
+          transcriptSource: item.videoId === 'subvid000001' ? 'subtitle-manual' : '',
+        }),
+        summarize: async ({ title }) => {
+          assert.equal(title, 'Chip supply with captions');
+          return SUMMARY;
+        },
       });
-      assert.equal(result.stopped, 'transcribe-unavailable');
+      assert.equal(result.stopped, '');
+      assert.equal(result.subtitles, 1);
+      assert.equal(result.transcribeUnavailable, 1);
+      assert.equal(result.reasons.includes('transcribe-unavailable'), true);
+      assert.equal(warnings.length, 1);
       const saved = opened.store.repositories.youtubePodcasts.episode('local', 'nosubvid0001');
       assert.equal(saved.status, 'failed');
+      assert.equal(saved.reason, 'transcribe-unavailable');
       assert.equal(saved.attempts, 0);
       assert.equal(opened.store.repositories.youtubePodcasts.isDone('local', 'nosubvid0001'), false);
+      assert.equal(opened.store.repositories.youtubePodcasts.getReady('local', 'subvid000001').transcriptSource, 'subtitle-manual');
     } finally {
+      console.warn = originalWarn;
       opened.close();
     }
   } finally {
     store.close();
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a transcriber that fails mid-round does not stop later episodes', async () => {
+  const opened = openStore();
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  try {
+    let calls = 0;
+    const result = await runYoutubePodcastRound({
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1', GEMINI_API_KEY: 'test-key' },
+      config: creatorConfig(),
+      limits: { lookback: 3 },
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      sleep: async () => {},
+      fetchRss: async () => ({ entries: [
+        { ...entry('audfirst0001', 'Alpha rates briefing'), publishedAt: 300 },
+        { ...entry('audnext00001', 'Beta chip supply'), publishedAt: 200 },
+        { ...entry('sublater0001', 'Gamma housing starts'), publishedAt: 100 },
+      ] }),
+      probe: async (item) => ({
+        durationSec: 1800,
+        title: item.title,
+        liveStatus: 'not_live',
+        transcript: item.videoId === 'sublater0001' ? '字幕正文' : '',
+        transcriptSource: item.videoId === 'sublater0001' ? 'subtitle-manual' : '',
+      }),
+      transcribe: async (episode) => {
+        calls += 1;
+        assert.equal(episode.videoId, 'audfirst0001');
+        const error = new Error('没有配置可用的转写密钥');
+        error.code = 'youtube-transcribe-unavailable';
+        throw error;
+      },
+      summarize: async ({ title }) => {
+        assert.equal(title, 'Gamma housing starts');
+        return SUMMARY;
+      },
+    });
+    assert.equal(calls, 1);
+    assert.equal(result.stopped, '');
+    assert.equal(result.subtitles, 1);
+    assert.equal(result.transcribeUnavailable, 2);
+    assert.equal(warnings.length, 1);
+    for (const videoId of ['audfirst0001', 'audnext00001']) {
+      const saved = opened.store.repositories.youtubePodcasts.episode('local', videoId);
+      assert.equal(saved.status, 'failed');
+      assert.equal(saved.reason, 'transcribe-unavailable');
+      assert.equal(saved.attempts, 0);
+    }
+    assert.equal(opened.store.repositories.youtubePodcasts.getReady('local', 'sublater0001').transcriptSource, 'subtitle-manual');
+  } finally {
+    console.warn = originalWarn;
+    opened.close();
   }
 });
 

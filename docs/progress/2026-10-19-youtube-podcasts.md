@@ -2,7 +2,7 @@
 
 V1 按博主抓取 YouTube 上金融和 AI 方向的播客。有人工字幕或自动生成的原语种字幕就用字幕；没有字幕时下载音频，切块后走现有的 Gemini 语音转写，转写完删除音频。摘要走现有的 Gemini 文本调用，不用 jev。摘要不是中文时只用 Gemma 26B（`gemma-4-26b-a4b-it`）翻译。总开关默认关闭。这些内容不进小时报，单独在信源目录展示。
 
-migration 86 `youtube_podcasts` 只建 `youtube_podcast_episodes` 和 `youtube_podcast_channels`。空号仍是 63、79、80、82。不要重建数据库。需要同时重启 Web 和 Worker。
+migration 86 `youtube_podcasts` 只建 `youtube_podcast_episodes` 和 `youtube_podcast_channels`。migration 87 `youtube_podcast_backfill` 只给 `youtube_podcast_channels` 加 `backfilled_at`、`backfill_attempts`、`backfill_failed_at`。空号仍是 63、79、80、82。不要重建数据库。需要同时重启 Web 和 Worker。
 
 ## 服务器上要装
 
@@ -83,7 +83,7 @@ node --env-file=.env scripts/youtube-podcasts-run.mjs
 每轮一行：
 
 ```text
-[worker] youtube-podcasts discovered=N subtitles=N transcribed=N failed=N skipped=N stopped=- reasons=-
+[worker] youtube-podcasts discovered=N subtitles=N transcribed=N failed=N skipped=N transcribeUnavailable=N stopped=- reasons=-
 ```
 
 只有 `yt-dlp` 退出码不是 0、并且 stderr 的 `ERROR:` 行里出现人机验证或 HTTP 429，才因这两件事停止本轮。stderr 里的 `yt-dlp: error:` 或 `no such option` 也停止本轮，不计入尝试次数。视频简介里的「429」不会停轮。RSS 和频道页只在状态码不是 2xx 时做这个判断。请求超过 15 秒按这一条失败，不停止整轮。Gemini 或 Gemma 的 429 和额度错误也不计入尝试次数，直接停止本轮。当前这一集不写完成，下一轮从这里继续。找不到 `yt-dlp` 同样停本轮。
@@ -96,7 +96,7 @@ Worker 允许这一轮跑满 `AI_CENTER_YOUTUBE_PODCASTS_MAX_RUNNING_MS`（默�
 
 发现走 RSS，不翻频道页。时长、直播状态和字幕写在工作目录的 `.info.json` 和 `.vtt` 里，不使用 `--dump-single-json`。只要时长至少 20 分钟（配置里的 `minDurationSec`，默认 1200）。Shorts、标题里的切片和预告、正在直播和直播预告都丢掉。
 
-去重两层：全局按 `videoId`；同一博主里，标题相近且时长差在 3 分钟或 8% 以内的，视为同一集。视频版优先于音频版，中文原版优先于配音。第一次每个频道只保留最近 1–2 集（探测窗口比这个多几条，避免短片占掉名额）。RSS 最新十几条如果全是切片，首次运行再用 yt-dlp `--flat-playlist` 读该频道 `/videos` 最近 30 条，只挑时长至少 20 分钟的正片，探测数量仍受「最近几集」限制，不下载音视频。频道没探测完不会标成已回溯，避免把后面的集提前标成跳过。
+去重两层：全局按 `videoId`；同一博主里，标题相近且时长差在 3 分钟或 8% 以内的，视为同一集。视频版优先于音频版，中文原版优先于配音。第一次每个频道只保留最近 1–2 集（探测窗口比这个多几条，避免短片占掉名额）。频道还没成功列出过 `/videos` 时，用 yt-dlp `--flat-playlist` 读最近 30 条，和 RSS 按 videoId 取并集：标题和发布时间以 RSS 为准，播放列表补上时长。有发布时间的按从新到旧排；没有时间戳的留在 `/videos` 原来的位置，避免被排到最后后让首次回溯截掉。列出成功就写下 `backfilledAt`，以后不再列，哪怕这一轮没有正片入库。列出失败不写这个时间，同一天（Asia/Shanghai）不再试，下一天再试，最多 3 次。人机验证或 HTTP 429 不计入这 3 次。播放列表频道不走这一步。频道没探测完不会标成已回溯，避免把后面的集提前标成跳过。
 
 文字来源记在抓取元数据和页面上：`subtitle-manual`（人工字幕）、`subtitle-auto`（原语种自动字幕）、`gemini-transcribe`（语音转写）。页面上分别写成人工字幕、自动字幕、语音转写。完整文字稿在内容正文，摘要在 `summary`。作者 id 是 `youtube:<博主 id>`，硅谷101 两个频道算同一个作者。发布时间用 RSS 的上传时间。`provider` 为 `youtube`。
 
@@ -110,16 +110,16 @@ Worker 允许这一轮跑满 `AI_CENTER_YOUTUBE_PODCASTS_MAX_RUNNING_MS`（默�
 
 ## 试跑之后
 
-没有字幕时，下载音频之前先确认转写函数和 Gemini 密钥。密钥或转写器不可用就停止本轮，该集尝试次数不加。以前 `executeAudioTranscription` 没有收到 `transcribe`，会在整集音频下完之后才抛 `transcribe is not a function`。
+没有字幕时，下载音频之前先确认转写函数和 Gemini 密钥。一轮开始先做这一次检查。密钥或转写器不可用就打一条警告，这一轮 `audioDisabled`：有字幕的集照常入库；要转写的集不下载音频，记 `failed` / `transcribe-unavailable`，尝试次数不加，然后继续下一集。轮到一半才发现不可用（例如密钥刚被吊销）也一样，不停止整轮。`transcribeUnavailable` 记下这种集的数量。以前 `executeAudioTranscription` 没有收到 `transcribe`，会在整集音频下完之后才抛 `transcribe is not a function`，并且整轮停住。
 
 频道页的 15 秒限制以前从发出请求就开始，响应头到达后读正文仍算在同一段里，正文超时也没有收成「频道页超时」。现在响应头和正文各有 15 秒。配置里写了 `channelId` 的频道不再请求频道页。大佬透镜是第 12 个频道。
 
-Dwarkesh 这类频道的 RSS 最新条目可能全是切片。还没有入库正片的频道（包括已经把第一轮标成回溯过的）会用 `--flat-playlist` 看 `/videos` 最近 30 条，只把不少于 20 分钟的正片拿去探测，入库仍只留最近几集。已经有正片之后不再列这张表。
+Dwarkesh 这类频道的 RSS 最新条目可能全是切片。补录只看有没有成功列出过视频，不看库里有没有 `ready`。全被去重成 `skipped` 的音频频道，或者转写一直失败的频道，列出一次之后就停。flat-playlist 的 `timestamp` 经常是空的，这些条目保持 `/videos` 从新到旧的顺序，不因为 `publishedAt` 为 0 被排到末尾。
 
 ## 上线
 
 1. 装好 `yt-dlp`（≥ 2025.11.12）和 `ffmpeg`，不要装 Deno。跑 `node scripts/ensure-yt-dlp.mjs`，并确认 `yt-dlp --version` 不低于 2025.11.12。`data` 所在磁盘至少留 512MB。
 2. 可选环境变量：`AI_CENTER_YOUTUBE_PODCASTS_EPISODE_MINUTES`（默认 180）、`AI_CENTER_YOUTUBE_PODCASTS_MAX_RUNNING_MS`（默认 3 小时）、`AI_CENTER_YOUTUBE_PODCASTS_SUMMARY_MODEL`（默认沿用现有 Gemini 摘要模型）。需要时再设 `AI_CENTER_YOUTUBE_COOKIES`。默认不要设。
-3. 部署后同时重启 Web 和 Worker。migration 86 在启动时自己加上。不要重建数据库，不要删已有 migration。
+3. 部署后同时重启 Web 和 Worker。migration 86 和 87 在启动时自己加上。87 只加列。不要重建数据库，不要删已有 migration。
 4. 确认开关仍是关的，日志里不应出现对外请求。准备试跑时再设 `AI_CENTER_YOUTUBE_PODCASTS=1`，再次同时重启 Web 和 Worker。
 5. 手动入队：`node --env-file=.env scripts/youtube-podcasts-run.mjs`。入口在信源目录「社媒」，紧挨着 B 站。列表不显示标签和分享。开关打开后先跑一轮，确认长节目的 `durationSec` 是实际分钟数，不是 0，也没有被记成 `short`。有字幕的集日志里 `subtitles>0`，`transcribed` 应接近 0，几乎不走语音转写。
