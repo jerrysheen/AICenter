@@ -16,6 +16,15 @@ Worker 每分钟跑的 `hardware.prices.snapshot` 全程是同步的 SQLite 读�
 
 同一组价表上，新的列表和原来的逐行查询返回相同的规格、均价、快照和顺序。较新的旧文本不会盖过同一页较早的 HTML。同一采集时间里，`trendforce-tables-10` 胜过 `trendforce-tables-3`。行情看板调度仍是 1 分钟。
 
+`npm test` 与 `origin/main`（`55c2730`）对照：
+
+| | tests | pass | fail | skipped |
+| --- | ---: | ---: | ---: | ---: |
+| origin/main | 1754 | 1735 | 17 | 2 |
+| 本分支 | 1759 | 1740 | 17 | 2 |
+
+17 条失败两边同名，没有新增失败。多出来的 5 条都通过。
+
 ## 遗留
 
 migration 91 只加索引。不要重建数据库。需要重启 Worker。Web 不用为这项重启。这次不把同步查询搬进 `worker_threads`。
