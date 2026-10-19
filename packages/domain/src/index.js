@@ -22,6 +22,7 @@ import { createInvestorDiscussionService } from './investor-discussion.js';
 import { createComputePriceService } from './compute-price-service.js';
 import { createApiTokenService } from './api-token-service.js';
 import { createSouthboundReadService } from './southbound-service.js';
+import { createNorthboundReadService } from './northbound-service.js';
 import { createYoutubePodcastService } from './youtube-podcasts-service.js';
 
 export { createContextService, createDailyBriefService, createFeedService, createIdentityService, createKnowledgeService, createMarketStatisticsService, createMediaIngestionService, createReportService, createRuntimeService, createTradingService, createTaggingService };
@@ -220,6 +221,9 @@ export function createDomainServices({
         repository: store.repositories.southbound,
         snapshots: store.repositories.runtimeSnapshots,
       })
+      : null,
+    northbound: store.repositories.northbound
+      ? createNorthboundReadService({ repository: store.repositories.northbound })
       : null,
     apiTokens: createApiTokenService({
       repository: store.repositories.apiTokens,
