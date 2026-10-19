@@ -18,7 +18,7 @@ import { hostname } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from '../../../packages/runtime/src/is-main.js';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { createAnalysisSkillCatalog, createConfiguredBrowserRuntime, createCursorSessionPort, createDeepSeekSearchProvider, createDoubaoAuxiliarySearch, createElucidGrokAgentClient, createGeminiTagPort, createLauncherRestartPort, createLocalKnowledgeFiles, createPersonalAssetService, createTranslateService, createTypeSafeSystemOneClient } from '../../../packages/connectors/src/index.js';
 import { createAgentQualityLayerFromEnv } from '../../../packages/runtime/src/agent-quality.js';
 import { articleAnalysisManifest, createArticleAnalysisJobHandlers } from '../../../packages/runtime/src/article-analysis/article-analysis-module.js';
@@ -37,6 +37,8 @@ import { createMediaIngestionService,mediaResourceId } from '../../../packages/d
 import { ensureMediaIndexSyncSchedule, enqueueMediaIndexEnrich, MEDIA_ENRICH_JOB_TYPE } from '../../../packages/connectors/src/media/index.js';
 import { loadTwkrFlags } from '../../../packages/connectors/src/twkr-sources.js';
 import { createTwkrJobHandlers, ensureTwkrSchedules, prepareTwkrEnqueue, TWKR_NEWS_JOB_TYPE, TWKR_REVENUE_JOB_TYPE } from '../../../packages/runtime/src/twkr-job.js';
+import { createYoutubePodcastJobHandlers, ensureYoutubePodcastSchedule, YOUTUBE_PODCAST_JOB_TYPE } from '../../../packages/runtime/src/youtube-podcasts-job.js';
+import { youtubePodcastLimits } from '../../../packages/domain/src/youtube-podcasts.js';
 import { createMediaEnrichJobHandlers } from '../../../packages/runtime/src/media-enrich-module.js';
 import { createKnowledgeService } from '../../../packages/domain/src/knowledge-service.js';
 import { createMarketStatisticsService } from '../../../packages/domain/src/market-statistics-service.js';
@@ -175,6 +177,11 @@ export function createAiCenterWorker(options = {}) {
     },
   });
   const dataDirectory = instance.dataDirectory;
+  try {
+    rmSync(path.join(dataDirectory, 'tmp', 'youtube-podcasts'), { recursive: true, force: true });
+  } catch (error) {
+    console.error(`[worker] 清理 YouTube 播客临时目录失败：${error?.message || error}`);
+  }
   installFailureStreakStore(createFailureStreakStore({
     filePath: path.join(dataDirectory, 'static-source-failure-streaks.json'),
   }));
@@ -193,6 +200,7 @@ export function createAiCenterWorker(options = {}) {
     [FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE]: 60_000,
     [FEED_SUBSCRIPTION_SYNC_JOB_TYPE]: feedSyncSourceTimeoutMs(env.AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS) + 30_000,
     'media.index.enrich': boundedInt(env.AI_CENTER_MEDIA_ENRICH_MAX_RUNNING_MS, 8 * 60_000, 60_000, 30 * 60_000),
+    [YOUTUBE_PODCAST_JOB_TYPE]: youtubePodcastLimits(env).roundMs,
     [TWKR_NEWS_JOB_TYPE]: 25_000,
     [TWKR_REVENUE_JOB_TYPE]: 70_000,
   };
@@ -746,6 +754,23 @@ export function createAiCenterWorker(options = {}) {
     });
   }
   registry.register({
+    manifest: {
+      id: 'youtube.podcasts',
+      version: '1.0.0',
+      capabilities: ['youtube.podcasts.sync'],
+      jobTypes: [YOUTUBE_PODCAST_JOB_TYPE],
+      sourceIds: [],
+    },
+    jobHandlers: options.youtubePodcastJobHandlers || createYoutubePodcastJobHandlers({
+      repository: store.repositories.youtubePodcasts,
+      feedRepository: store.repositories.feed,
+      quotaRepository: store.repositories.modelQuota,
+      configPath: path.join(instance.configDirectory, 'youtube-podcasts.json'),
+      dataDirectory,
+      env,
+    }),
+  });
+  registry.register({
     manifest: authorStatsManifest,
     jobHandlers: options.authorStatsJobHandlers || createAuthorStatsJobHandlers({
       authorRepository: store.repositories.authors,
@@ -785,6 +810,7 @@ export function createAiCenterWorker(options = {}) {
     ensureTwkrSchedules(store, { env, flags: twkrFlags });
     ensureComputePriceSchedules(store, env);
     ensureAuthorStatsSchedule(store, env);
+    ensureYoutubePodcastSchedule(store, env);
     ensureEtfWhaleSchedule(store, env);
     ensureSouthboundSchedules(store, env);
     ensureDefaultContentSubscriptions(store.repositories.feed);

@@ -331,7 +331,9 @@ export function createGemmaTranslationRouter(options = {}) {
               usageKeySuffix: apiKey.slice(-4),
               usageItemId: modelUsageContext().itemId || '',
               method: 'POST', headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
-              signal: AbortSignal.timeout(options.timeoutMs ?? gemmaTranslationTimeoutMs(env.AI_CENTER_GEMMA_TRANSLATION_TIMEOUT_MS)),
+              signal: options.signal
+                ? AbortSignal.any([options.signal, AbortSignal.timeout(options.timeoutMs ?? gemmaTranslationTimeoutMs(env.AI_CENTER_GEMMA_TRANSLATION_TIMEOUT_MS))])
+                : AbortSignal.timeout(options.timeoutMs ?? gemmaTranslationTimeoutMs(env.AI_CENTER_GEMMA_TRANSLATION_TIMEOUT_MS)),
               body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: input }] }],
                 generationConfig: { maxOutputTokens: 4096, thinkingConfig: { thinkingLevel: 'minimal' } } }),
             });

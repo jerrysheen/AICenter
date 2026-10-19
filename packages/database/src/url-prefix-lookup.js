@@ -29,8 +29,9 @@ function rangesFor(prefixes) {
   return ranges;
 }
 
-function lookupSql({ indexName, tableSql, tailJoins, select, urlColumn, workspaceColumn }) {
+function lookupSql({ indexName, tableSql, tailJoins, select, urlColumn, workspaceColumn, extraWhere }) {
   const joins = tailJoins ? `\n${tailJoins}` : '';
+  const filter = extraWhere ? ` AND ${extraWhere}` : '';
   return `SELECT * FROM (
     SELECT r.lower AS match_prefix, ${select},
       ROW_NUMBER() OVER (PARTITION BY r.lower ORDER BY length(${urlColumn}) ASC) AS dedup_prefix_rank
@@ -38,7 +39,7 @@ function lookupSql({ indexName, tableSql, tailJoins, select, urlColumn, workspac
     JOIN ${tableSql} INDEXED BY ${indexName}
       ON ${workspaceColumn} = ?
      AND ${urlColumn} >= r.lower COLLATE NOCASE
-     AND ${urlColumn} < r.upper COLLATE NOCASE${joins}
+     AND ${urlColumn} < r.upper COLLATE NOCASE${filter}${joins}
   ) WHERE dedup_prefix_rank <= ?`;
 }
 

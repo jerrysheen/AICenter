@@ -20,6 +20,7 @@ import { createApiTokenRepository } from './api-token-repository.js';
 import { createRuntimeSnapshotRepository } from './runtime-snapshot-repository.js';
 import { createTwseRevenueRepository } from './twse-revenue-repository.js';
 import { createSouthboundRepository } from './southbound-repository.js';
+import { createYoutubePodcastRepository } from './youtube-podcast-repository.js';
 
 export function createDomainRepositories(database, emitEvent) {
   return Object.freeze({
@@ -31,6 +32,7 @@ export function createDomainRepositories(database, emitEvent) {
     media: createMediaRepository(database, emitEvent),
     twseRevenue: createTwseRevenueRepository(database),
     southbound: createSouthboundRepository(database),
+    youtubePodcasts: createYoutubePodcastRepository(database),
     hardwarePrices: createHardwarePriceRepository(database, emitEvent),
     computePrices: createComputePriceRepository(database),
     trading: createTradingRepository(database, emitEvent),

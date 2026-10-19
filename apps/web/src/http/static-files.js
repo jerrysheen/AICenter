@@ -105,6 +105,7 @@ export function createStaticFileHandler(publicDirectory) {
     '/html-text.js': ['html-text.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/news-list.js': ['news-list.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/author-view.js': ['author-view.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
+    '/youtube-podcasts.js': ['youtube-podcasts.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/model-usage.js': ['model-usage.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/feed-interaction.js': ['feed-interaction.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/x-focus-page.js': ['x-focus-page.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],

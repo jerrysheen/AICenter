@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createTypeSafeSystemOneClient } from '../packages/connectors/src/typesafe-system-one.js';
 import { createXHomeBrowserClient, formatXExpandLog } from '../packages/connectors/src/x/home-browser.js';
 import { createStore } from '../packages/database/src/index.js';
-import { latestSchemaVersion, unusedSchemaVersions } from '../packages/database/src/migrations.js';
+import { unusedSchemaVersions } from '../packages/database/src/migrations.js';
 import { createFeedFilter, decideFeedAdmissionFallback, resolveFeedFilterConfig } from '../packages/domain/src/feed-filter.js';
 import { isJevOutage, openJevClient, resolveJevEnabled } from '../packages/domain/src/jev-enabled.js';
 import { admitHeldCapture, createReplayEvaluator, reevaluateHeldCaptures } from '../packages/domain/src/jev-replay.js';
@@ -246,8 +246,8 @@ test('approved lists recognize fallback markers without scanning', () => {
 
 test('x focus partial index is migration 85 and the point query uses it', () => {
   assert.deepEqual(unusedSchemaVersions, [63, 79, 80, 82]);
-  assert.equal(latestSchemaVersion(), 85);
   const migration = readFileSync(path.join(root, 'packages/database/src/migrations.js'), 'utf8');
+  assert.match(migration, /version: 85, name: 'captures_x_focus'/);
   const repository = readFileSync(path.join(root, 'packages/database/src/repositories/feed-repository.js'), 'utf8');
   assert.match(migration, new RegExp(`idx_captures_x_focus ON captures\\(workspace_id, captured_at\\) WHERE ${predicate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
   assert.equal(repository.includes(predicate), true);

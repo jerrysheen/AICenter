@@ -250,7 +250,7 @@ export function recordCapturedAuthor(database, input) {
   const capture = database.prepare(`SELECT provider, external_id, author_native_id, author_handle, metadata_json,
       published_at, captured_at
     FROM captures WHERE id = ?`).get(input.captureId);
-  if (!capture || !['x', 'xueqiu', 'bilibili'].includes(capture.provider)) return null;
+  if (!capture || !['x', 'xueqiu', 'bilibili', 'youtube'].includes(capture.provider)) return null;
   let metadata = {};
   try { metadata = JSON.parse(capture.metadata_json || '{}') || {}; } catch { metadata = {}; }
   const fields = authorCaptureFields(capture.provider, {
@@ -504,7 +504,7 @@ export function createAuthorRepository(database, emitEvent = () => {}) {
         WHERE s.workspace_id = ? AND ${VISIBLE_AUTHOR}
           AND (s.followed = 1 OR s.recent_30d_count >= ?)
         GROUP BY s.platform`).all(workspaceId, AUTHOR_ACTIVITY_MIN);
-      const counts = { all: 0, x: 0, xueqiu: 0, bilibili: 0 };
+      const counts = { all: 0, x: 0, xueqiu: 0, bilibili: 0, youtube: 0 };
       for (const row of rows) {
         const count = Number(row.count) || 0;
         if (Object.hasOwn(counts, row.platform)) counts[row.platform] = count;

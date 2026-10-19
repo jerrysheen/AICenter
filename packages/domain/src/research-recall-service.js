@@ -133,7 +133,7 @@ export function createResearchRecallService({
       for (const item of pageUntil((cursor) => feedRepository.listContentItemsInWindow(workspaceId, {
         ...window, limit: PAGE, timeBasis: 'published', cursor: cursor ? { eventAt: cursor.eventAt, id: cursor.id } : null,
       }))) {
-        if (prepared.has(`feed:${item.id}`)) continue;
+        if (item.provider === 'youtube' || prepared.has(`feed:${item.id}`)) continue;
         members.push({
           lane: 'unprepared',
           resourceType: 'content-item',
