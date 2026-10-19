@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { translationRetryDelayMs } from '../../database/src/translation-retry.js';
 import { withModelUsageContext } from './model-usage-context.js';
 import {
@@ -33,6 +34,33 @@ export function translationClaimMinPriority(runningTranslationJobs, translationL
   if (cap != null && limit >= 2 && backfill >= Math.min(cap, limit - 1)) return 0;
   if (limit < 2 || running >= limit || running < limit - 1) return null;
   return 0;
+}
+
+export function formatJobLoopDelay(job, delay) {
+  const maxMs = Math.round(Number(delay?.maxMs) || 0);
+  const meanMs = Math.round(Number(delay?.meanMs) || 0);
+  return `[worker] ${job.type} ${job.id} loopMaxMs=${maxMs} loopMeanMs=${meanMs}`;
+}
+
+function openLoopDelay() {
+  try {
+    const histogram = monitorEventLoopDelay({ resolution: 20 });
+    histogram.enable();
+    return histogram;
+  } catch {
+    return null;
+  }
+}
+
+function readLoopDelay(histogram) {
+  if (!histogram) return { maxMs: 0, meanMs: 0 };
+  const maxMs = Number(histogram.max) / 1e6;
+  const meanMs = Number(histogram.mean) / 1e6;
+  try { histogram.disable(); } catch { /* 采样结束失败不影响任务结果。 */ }
+  return {
+    maxMs: Number.isFinite(maxMs) ? maxMs : 0,
+    meanMs: Number.isFinite(meanMs) ? meanMs : 0,
+  };
 }
 
 export function resolveJobTypeConcurrency(type, concurrency) {
@@ -156,6 +184,7 @@ export function createJobRunner(options) {
       store.touchJob(job.id, workerId);
     }, 30_000);
     heartbeat.unref?.();
+    const loopDelay = openLoopDelay();
     const executor = { workerId, attemptCount: job.attemptCount };
     const backfill = job.type === 'feed.translation.run' && Number(job.priority) < 0;
     let quotaWaits = 0;
@@ -199,6 +228,11 @@ export function createJobRunner(options) {
       return null;
     } finally {
       clearInterval(heartbeat);
+      try {
+        options.onJobEnd?.(job, readLoopDelay(loopDelay));
+      } catch {
+        // 卡顿日志失败不影响任务结果。
+      }
     }
   }
 
