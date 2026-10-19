@@ -17,14 +17,12 @@ Worker 每分钟跑的 `hardware.prices.snapshot` 全程是同步的 SQLite 读�
 
 同一组价表上，新的列表和原来的逐行查询返回相同的规格、均价、快照和顺序。较新的旧文本不会盖过同一页较早的 HTML。同一采集时间里，`trendforce-tables-10` 胜过 `trendforce-tables-3`。默认两档采集时，报价快照是上海 17:40；只配 10:30 时是 10:40。行情看板调度仍是 1 分钟。
 
-`npm test` 与 `origin/main`（`55c2730`）对照：
+`npm test` 与 `origin/main`（`55c2730`）对照。每天一次的这次全量跑出 18 条失败，多出来的是 `Gemma pool uses only official streaming endpoints, rotates models and persists quota and usage`（`Gemma 翻译等待配额窗口`）。同一文件单独跑是 32/32。其余 17 条与 main 同名。改成每天一次之前，同一分支的全量结果是 1740 通过、17 失败。
 
 | | tests | pass | fail | skipped |
 | --- | ---: | ---: | ---: | ---: |
 | origin/main | 1754 | 1735 | 17 | 2 |
-| 本分支 | 1759 | 1740 | 17 | 2 |
-
-17 条失败两边同名，没有新增失败。多出来的 5 条都通过。
+| 本分支（每天一次这次） | 1759 | 1739 | 18 | 2 |
 
 ## 遗留
 
