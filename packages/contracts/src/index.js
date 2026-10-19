@@ -175,6 +175,12 @@ export function parseMarketSearchQuery(value) {
   return query;
 }
 
+export function parseMarketQuoteQuery(value) {
+  const symbol = cleanText(value, { field: '标的代码', max: 64, required: true }).toUpperCase();
+  if (!/^[A-Z0-9.^=-]{1,32}$/.test(symbol)) throw new ValidationError('标的代码无效', ['symbol']);
+  return symbol;
+}
+
 export function parseMarketHistoryQuery(value) {
   const query = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const symbol = cleanText(query.symbol, { field: '标的代码', max: 64, required: true }).toUpperCase();

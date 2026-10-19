@@ -1,5 +1,26 @@
-import { parseHoldingsQuery, parseMarketHistoryQuery, parseMarketQuery, parseMarketSearchQuery, BasketStatsToolInputSchema, StockStatsToolInputSchema, parseContract } from '../../../../packages/contracts/src/index.js';
+import { parseHoldingsQuery, parseMarketHistoryQuery, parseMarketQuery, parseMarketQuoteQuery, parseMarketSearchQuery, BasketStatsToolInputSchema, StockStatsToolInputSchema, parseContract, ValidationError } from '../../../../packages/contracts/src/index.js';
 import { json, readJson } from '../http/response.js';
+
+function quoteTimedOut(error, signal) {
+  return signal?.aborted === true || error?.name === 'TimeoutError' || error?.name === 'AbortError';
+}
+
+function readWithinSignal(signal, work) {
+  let onAbort;
+  const deadline = new Promise((_, reject) => {
+    onAbort = () => {
+      const reason = signal.reason;
+      reject(reason instanceof Error ? reason : Object.assign(new Error('报价超时'), { name: 'TimeoutError' }));
+    };
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  });
+  const task = Promise.resolve().then(work);
+  task.catch(() => {});
+  return Promise.race([task, deadline]).finally(() => {
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+  });
+}
 
 export function createTradingRoutes() {
   return [
@@ -20,6 +41,25 @@ export function createTradingRoutes() {
           json(response, 200, { ok: true, market: await services.trading.getBoard(query) });
         } catch (error) {
           json(response, 502, { ok: false, error: error instanceof Error ? error.message : '行情加载失败' });
+        }
+      },
+    },
+    {
+      method: 'GET', path: '/api/v1/markets/quote',
+      async handler({ response, services, url }) {
+        let signal;
+        try {
+          const symbol = parseMarketQuoteQuery(url.searchParams.get('symbol') || '');
+          signal = AbortSignal.timeout(10_000);
+          const quote = await readWithinSignal(signal, () => services.trading.getQuote(symbol, { signal }));
+          json(response, 200, { ok: true, quote });
+        } catch (error) {
+          const invalid = error instanceof ValidationError || error?.name === 'ValidationError';
+          const timedOut = !invalid && quoteTimedOut(error, signal);
+          json(response, invalid ? 400 : timedOut ? 504 : (error.statusCode || 502), {
+            ok: false,
+            error: timedOut ? '报价超时' : (error instanceof Error ? error.message : '报价加载失败'),
+          });
         }
       },
     },
