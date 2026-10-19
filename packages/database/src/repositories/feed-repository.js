@@ -1383,6 +1383,7 @@ export function createFeedRepository(database, emitEvent) {
         LEFT JOIN source_accounts sa ON sa.id=c.source_account_id AND sa.workspace_id=ci.workspace_id
         LEFT JOIN subscriptions sub ON sub.source_account_id=sa.id AND sub.workspace_id=ci.workspace_id
         WHERE ci.workspace_id=? AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
+          AND COALESCE(c.provider, '') != 'youtube'
           AND COALESCE(ci.published_at,ci.created_at)>=? AND COALESCE(ci.published_at,ci.created_at)<?
         AND ci.id NOT IN (SELECT value FROM json_each(?))
         GROUP BY COALESCE(c.source_account_id,'local')`).all(workspaceId,startAt,endAt,JSON.stringify(excludedItemIds));
@@ -1412,7 +1413,7 @@ export function createFeedRepository(database, emitEvent) {
         ORDER BY ${timeSql} ASC, ci.id ASC
         LIMIT ?`).all(workspaceId, Number(startAt), Number(endAt), sourceId, sourceId,
           cursor?.eventAt ?? null, cursor?.eventAt ?? 0, cursor?.id ?? '', JSON.stringify(excludedItemIds), safeLimit);
-      if(metadataOnly)return rows.map(row=>({id:`feed:${row.id}`,title:row.title || '',sourceUrl:row.source_url || '',publishedAt:row.published_at ?? null,version:String(row.updated_at || row.created_at),eventAt:timeBasis==='ingested' ? row.created_at : row.published_at ?? row.created_at,sourceExternalId:row.source_external_id || '',sourceName:row.source_name || ''}));
+      if(metadataOnly)return rows.map(row=>({id:`feed:${row.id}`,title:row.title || '',sourceUrl:row.source_url || '',publishedAt:row.published_at ?? null,version:String(row.updated_at || row.created_at),eventAt:timeBasis==='ingested' ? row.created_at : row.published_at ?? row.created_at,sourceExternalId:row.source_external_id || '',sourceName:row.source_name || '',provider:row.provider || ''}));
       return rows.map((row) => ({
         ...mapContentItem(row),
         capturedAt: row.captured_at ?? null,

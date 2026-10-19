@@ -318,6 +318,7 @@ export function createAiCenterServer(options = {}) {
     informationPipeline: env.AI_CENTER_INFORMATION_PIPELINE === 'tree-v3' ? 'tree-v3' : 'legacy',
     onContentReady:env.AI_CENTER_INFORMATION_PIPELINE==='tree-v3' ? ({workspaceId,sourceIds})=>enqueueTreePreparation(store,workspaceId,sourceIds) : null,
     flashSources,
+    youtubeConfigPath: path.join(instance.configDirectory, 'youtube-podcasts.json'),
     holdingsQuotePort: {
       read: (readOptions) => holdingsQuoteCache.get(readOptions),
     },

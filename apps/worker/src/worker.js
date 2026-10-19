@@ -37,6 +37,7 @@ import { createMediaIngestionService,mediaResourceId } from '../../../packages/d
 import { ensureMediaIndexSyncSchedule, enqueueMediaIndexEnrich, MEDIA_ENRICH_JOB_TYPE } from '../../../packages/connectors/src/media/index.js';
 import { loadTwkrFlags } from '../../../packages/connectors/src/twkr-sources.js';
 import { createTwkrJobHandlers, ensureTwkrSchedules, prepareTwkrEnqueue, TWKR_NEWS_JOB_TYPE, TWKR_REVENUE_JOB_TYPE } from '../../../packages/runtime/src/twkr-job.js';
+import { createYoutubePodcastJobHandlers, ensureYoutubePodcastSchedule, YOUTUBE_PODCAST_JOB_TYPE } from '../../../packages/runtime/src/youtube-podcasts-job.js';
 import { createMediaEnrichJobHandlers } from '../../../packages/runtime/src/media-enrich-module.js';
 import { createKnowledgeService } from '../../../packages/domain/src/knowledge-service.js';
 import { createMarketStatisticsService } from '../../../packages/domain/src/market-statistics-service.js';
@@ -746,6 +747,23 @@ export function createAiCenterWorker(options = {}) {
     });
   }
   registry.register({
+    manifest: {
+      id: 'youtube.podcasts',
+      version: '1.0.0',
+      capabilities: ['youtube.podcasts.sync'],
+      jobTypes: [YOUTUBE_PODCAST_JOB_TYPE],
+      sourceIds: [],
+    },
+    jobHandlers: options.youtubePodcastJobHandlers || createYoutubePodcastJobHandlers({
+      repository: store.repositories.youtubePodcasts,
+      feedRepository: store.repositories.feed,
+      quotaRepository: store.repositories.modelQuota,
+      configPath: path.join(instance.configDirectory, 'youtube-podcasts.json'),
+      dataDirectory,
+      env,
+    }),
+  });
+  registry.register({
     manifest: authorStatsManifest,
     jobHandlers: options.authorStatsJobHandlers || createAuthorStatsJobHandlers({
       authorRepository: store.repositories.authors,
@@ -785,6 +803,7 @@ export function createAiCenterWorker(options = {}) {
     ensureTwkrSchedules(store, { env, flags: twkrFlags });
     ensureComputePriceSchedules(store, env);
     ensureAuthorStatsSchedule(store, env);
+    ensureYoutubePodcastSchedule(store, env);
     ensureEtfWhaleSchedule(store, env);
     ensureSouthboundSchedules(store, env);
     ensureDefaultContentSubscriptions(store.repositories.feed);

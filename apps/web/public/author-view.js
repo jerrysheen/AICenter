@@ -1,5 +1,5 @@
-const PLATFORM_LABEL = { all: '全部', x: 'X', xueqiu: '雪球', bilibili: 'B站' };
-const PLATFORM_COLOR = { x: '#111111', xueqiu: '#c0392b', bilibili: '#fb7299' };
+const PLATFORM_LABEL = { all: '全部', x: 'X', xueqiu: '雪球', bilibili: 'B站', youtube: 'YouTube' };
+const PLATFORM_COLOR = { x: '#111111', xueqiu: '#c0392b', bilibili: '#fb7299', youtube: '#cc0000' };
 const PAGE_SIZE = 30;
 
 const pages = new Map();
@@ -133,7 +133,7 @@ export function createAuthorView({ api, openAuthor, openArticle }) {
     switcher.className = 'author-switch';
     switcher.setAttribute('role', 'tablist');
     switcher.setAttribute('aria-label', '作者平台');
-    for (const id of ['all', 'x', 'xueqiu', 'bilibili']) {
+    for (const id of ['all', 'x', 'xueqiu', 'bilibili', 'youtube']) {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = `author-switch-item${id === listPlatform ? ' is-active' : ''}`;
