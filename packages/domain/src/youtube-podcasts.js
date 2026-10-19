@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { formatYmd, zonedParts } from './zoned-time.js';
 
 export const YOUTUBE_PODCAST_JOB_TYPE = 'youtube.podcasts.sync';
 export const YOUTUBE_PODCAST_SCHEDULE_KEY = 'youtube.podcasts.sync';
@@ -80,6 +81,7 @@ export function loadYoutubePodcastConfig(filePath) {
         handle: String(channel.handle || '').replace(/^@/, '').trim(),
         url: String(channel.url || '').trim(),
         language: String(channel.language || creator.language || '').trim(),
+        channelId: /^UC[\w-]{20,}$/.test(String(channel.channelId || '').trim()) ? String(channel.channelId).trim() : '',
       })),
     })),
   };
@@ -279,8 +281,71 @@ export function selectPodcastEpisodes({
   return { keep, skip };
 }
 
+function publishedStamp(entry) {
+  const value = Number(entry?.publishedAt);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+export function podcastBackfillDue(state = {}, now = Date.now(), timeZone = 'Asia/Shanghai') {
+  if (state?.backfilledAt) return false;
+  if ((Number(state?.backfillAttempts) || 0) >= 3) return false;
+  const failedAt = Number(state?.backfillFailedAt) || 0;
+  if (failedAt > 0 && formatYmd(zonedParts(failedAt, timeZone)) === formatYmd(zonedParts(now, timeZone))) return false;
+  return true;
+}
+
+export function orderPodcastEntries(entries = []) {
+  const list = [...entries];
+  const slots = [];
+  const timed = [];
+  list.forEach((entry, index) => {
+    if (publishedStamp(entry) > 0) {
+      slots.push(index);
+      timed.push(entry);
+    }
+  });
+  timed.sort((left, right) => publishedStamp(right) - publishedStamp(left)
+    || String(left.videoId || '').localeCompare(String(right.videoId || '')));
+  const ordered = list.slice();
+  slots.forEach((index, position) => {
+    ordered[index] = timed[position];
+  });
+  return ordered;
+}
+
+export function mergePodcastEntries(rssEntries = [], listedEntries = []) {
+  const rssById = new Map();
+  for (const entry of rssEntries || []) {
+    if (entry?.videoId) rssById.set(entry.videoId, entry);
+  }
+  const seen = new Set();
+  const merged = [];
+  for (const entry of listedEntries || []) {
+    if (!entry?.videoId || seen.has(entry.videoId)) continue;
+    seen.add(entry.videoId);
+    const rss = rssById.get(entry.videoId);
+    merged.push({
+      ...entry,
+      ...(rss || {}),
+      videoId: entry.videoId,
+      title: rss?.title || entry.title || '',
+      publishedAt: rss ? publishedStamp(rss) : publishedStamp(entry),
+      url: rss?.url || entry.url || '',
+      durationSec: Number(entry.durationSec) || Number(rss?.durationSec) || 0,
+      channelKey: rss?.channelKey || entry.channelKey || '',
+      role: rss?.role || entry.role || '',
+    });
+  }
+  for (const entry of rssEntries || []) {
+    if (!entry?.videoId || seen.has(entry.videoId)) continue;
+    seen.add(entry.videoId);
+    merged.push({ ...entry, publishedAt: publishedStamp(entry) });
+  }
+  return orderPodcastEntries(merged);
+}
+
 export function firstRunSlice(entries, lookback = YOUTUBE_LOOKBACK) {
-  const sorted = [...entries].sort((left, right) => right.publishedAt - left.publishedAt);
+  const sorted = orderPodcastEntries(entries);
   const probeCount = Math.max(1, lookback) + 6;
   return {
     probe: sorted.slice(0, probeCount),
@@ -288,8 +353,20 @@ export function firstRunSlice(entries, lookback = YOUTUBE_LOOKBACK) {
   };
 }
 
+export function selectBackfillEntries(entries, minDurationSec = YOUTUBE_MIN_DURATION_SEC, lookback = YOUTUBE_LOOKBACK) {
+  const cap = Math.max(1, lookback) + 2;
+  const selected = [];
+  for (const entry of entries || []) {
+    if (selected.length >= cap) break;
+    if (!entry?.videoId) continue;
+    if (isShortOrPreview(entry, minDurationSec)) continue;
+    selected.push(entry);
+  }
+  return selected;
+}
+
 export function limitFirstRun(kept, lookback = YOUTUBE_LOOKBACK) {
-  const sorted = [...kept].sort((left, right) => right.publishedAt - left.publishedAt);
+  const sorted = orderPodcastEntries(kept);
   return {
     keep: sorted.slice(0, lookback),
     extra: sorted.slice(lookback).map((episode) => ({ ...episode, reason: 'lookback' })),

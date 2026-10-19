@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStore } from '../packages/database/src/index.js';
+import { buildWav } from '../packages/domain/src/audio-transcription.js';
+import { executeAudioTranscription } from '../packages/runtime/src/audio-transcription-job.js';
 import { latestSchemaVersion, unusedSchemaVersions } from '../packages/database/src/migrations.js';
 import { createTreeMaterialPort } from '../packages/domain/src/information-tree-materials.js';
 import {
@@ -12,7 +14,9 @@ import {
   formatPodcastSummary,
   isShortOrPreview,
   loadYoutubePodcastConfig,
+  mergePodcastEntries,
   parseYoutubeRss,
+  selectBackfillEntries,
   selectPodcastEpisodes,
   youtubePodcastsEnabled,
 } from '../packages/domain/src/youtube-podcasts.js';
@@ -22,9 +26,12 @@ import { createYoutubePodcastService } from '../packages/domain/src/youtube-podc
 import { youtubePodcastClock, youtubePodcastLimits, youtubeRoundDeadlineMs } from '../packages/domain/src/youtube-podcasts.js';
 import { createResearchRecallService } from '../packages/domain/src/research-recall-service.js';
 import {
+  fetchYoutubeText,
+  listChannelLongVideos,
   probeYoutubeEpisode,
   resolveYoutubeChannelId,
   runProcess,
+  transcribeYoutubeAudio,
   chooseSubtitle,
   pickSubtitleRequest,
   finishAudioFile,
@@ -114,7 +121,7 @@ test('youtube podcast config and rss parse use a file url path', () => {
   assert.equal(configPath.includes(`${path.sep}config${path.sep}youtube-podcasts.json`), true);
   assert.doesNotMatch(configPath, /^[A-Za-z]:\\[A-Za-z]:\\/);
   const config = loadYoutubePodcastConfig(configPath);
-  assert.equal(config.creators.length, 11);
+  assert.equal(config.creators.length, 12);
   assert.equal(config.creators[0].channels[0].kind, 'playlist');
   assert.equal(config.creators[0].channels[0].playlistId, 'PLe4PRejZgr0OJbRzA6nWybYiThLJd_ouz');
   const valley = config.creators.find((item) => item.id === 'valley101');
@@ -123,7 +130,15 @@ test('youtube podcast config and rss parse use a file url path', () => {
   const xiaojun = config.creators.find((item) => item.id === 'xiaojun');
   assert.equal(xiaojun.prefer, 'zh');
   assert.equal(xiaojun.channels[0].language, 'zh');
-  assert.equal(config.creators.find((item) => item.id === 'no-priors').channels[0].language, '');
+  assert.equal(config.creators.find((item) => item.id === 'no-priors').channels[0].language, 'en');
+  assert.equal(config.creators.find((item) => item.id === 'dwarkesh').channels[0].channelId, 'UCZa18YV7qayTh-MRIrBhDpA');
+  assert.equal(valley.channels[0].channelId, 'UChnNjLyx_5rk_iDPQ2BQDQA');
+  assert.equal(valley.channels[1].channelId, 'UCKV2yWPB3wn0RTZh3cTD8YA');
+  const dalao = config.creators.find((item) => item.id === 'dalao-lens');
+  assert.equal(dalao.name, '大佬透镜');
+  assert.equal(dalao.channels[0].channelId, 'UCF68DQIdjJUDT7Ydlo0Awbw');
+  assert.equal(dalao.channels[0].language, 'zh');
+  assert.equal(config.creators.filter((creator) => creator.id !== 'odd-lots').every((creator) => creator.channels.every((channel) => /^UC[\w-]{20,}$/.test(channel.channelId))), true);
   const entries = parseYoutubeRss(RSS);
   assert.equal(entries[0].videoId, 'aaaaaaaaaaa');
   assert.equal(entries[0].title, 'Odd Lots & Rates');
@@ -231,7 +246,7 @@ test('subtitles skip transcription and missing subtitles call it', async () => {
 
     let secondProbe = 0;
     await runYoutubePodcastRound({
-      env: { AI_CENTER_YOUTUBE_PODCASTS: '1' },
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1', GEMINI_API_KEY: 'test-key' },
       config: creatorConfig(),
       repository: opened.store.repositories.youtubePodcasts,
       feedRepository: opened.store.repositories.feed,
@@ -380,8 +395,24 @@ test('audio is deleted after transcription and vtt prefers manual original capti
   const translatedOnly = chooseSubtitle([
     { name: 'id.zh-Hans.auto.vtt', text: '翻译字幕' },
     { name: 'id.en-orig.auto.vtt', text: 'original speech' },
-  ], { language: '', subtitles: {}, automatic_captions: { 'zh-Hans': [{}], 'en-orig': [{}] } });
+    { name: 'id.ar-orig.auto.vtt', text: 'arabic' },
+  ], { language: '', subtitles: {}, automatic_captions: { 'zh-Hans': [{}], 'en-orig': [{}], 'ar-orig': [{}] } });
   assert.equal(translatedOnly.text, '');
+  const onlyOrig = chooseSubtitle([
+    { name: 'id.zh-Hans.auto.vtt', text: '翻译字幕' },
+    { name: 'id.en-orig.auto.vtt', text: 'original speech' },
+  ], { language: '', subtitles: {}, automatic_captions: { 'zh-Hans': [{}], 'en-orig': [{}] } });
+  assert.equal(onlyOrig.source, 'subtitle-auto');
+  assert.equal(onlyOrig.text, 'original speech');
+  assert.deepEqual(pickSubtitleRequest({
+    language: '',
+    subtitles: {},
+    automatic_captions: { 'zh-Hans': [{}], ja: [{}], 'en-orig': [{}] },
+  }), { lang: 'en-orig', kind: 'auto' });
+  assert.equal(pickSubtitleRequest({
+    language: '',
+    automatic_captions: { 'en-orig': [{}], 'ar-orig': [{}] },
+  }), null);
   assert.deepEqual(pickSubtitleRequest({
     language: 'en-US',
     subtitles: {},
@@ -398,7 +429,7 @@ test('audio is deleted after transcription and vtt prefers manual original capti
     automatic_captions: { 'zh-Hans': [{}], ja: [{}] },
   }, 'zh'), { lang: 'zh', kind: 'manual' });
   assert.match(formatPodcastSummary(SUMMARY, { focus: '金融' }), /与关注方向的关系：和金融相关/);
-  assert.equal(latestSchemaVersion(), 86);
+  assert.equal(latestSchemaVersion(), 87);
   assert.deepEqual(unusedSchemaVersions, [63, 79, 80, 82]);
   assert.equal(youtubePodcastLimits({}).roundMs, 3 * 60 * 60_000);
   assert.equal(youtubePodcastLimits({}).episodeTranscribeSec, 180 * 60);
@@ -661,7 +692,7 @@ test('over-long episodes are skipped and the first transcription may exceed the 
     assert.equal(opened.store.repositories.youtubePodcasts.isDone('local', 'toolongvid01'), true);
 
     const budget = await runYoutubePodcastRound({
-      env: { AI_CENTER_YOUTUBE_PODCASTS: '1' },
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1', GEMINI_API_KEY: 'test-key' },
       config: creatorConfig(),
       limits: { transcribeSec: 30, episodeTranscribeSec: 60 * 60 },
       repository: opened.store.repositories.youtubePodcasts,
@@ -831,6 +862,704 @@ test('shadow lists exclude youtube and enforce author reads still return it', as
     assert.equal(feed.listFeedByUrlPrefixes('local', ['https://www.youtube.com/watch?v=shadowvid001']).some((row) => row.id === youtubeItem.id), false);
     assert.equal(feed.listFeedByUrlPrefixes('local', ['https://example.com/plain-article']).some((row) => row.id === plain.id), true);
   } finally {
+    opened.close();
+  }
+});
+
+function delayedFetch({ headerMs, bodyMs, html, status = 200 }) {
+  return (_url, { signal } = {}) => new Promise((resolve, reject) => {
+    const fail = () => reject(Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }));
+    if (signal?.aborted) { fail(); return; }
+    const onAbort = () => { clearTimeout(headerTimer); fail(); };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    const headerTimer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve({
+        ok: status >= 200 && status < 300,
+        status,
+        text: () => new Promise((resolveText, rejectText) => {
+          const bodyFail = () => rejectText(Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }));
+          if (signal?.aborted) { bodyFail(); return; }
+          const onBodyAbort = () => { clearTimeout(bodyTimer); bodyFail(); };
+          signal?.addEventListener('abort', onBodyAbort, { once: true });
+          const bodyTimer = setTimeout(() => {
+            signal?.removeEventListener('abort', onBodyAbort);
+            resolveText(html);
+          }, bodyMs);
+        }),
+      });
+    }, headerMs);
+  });
+}
+
+test('channel page body gets a fresh timeout and configured channel ids skip resolution', async () => {
+  const slowBody = await resolveYoutubeChannelId({
+    handle: 'TheValley101',
+    timeoutMs: 200,
+    fetchImpl: delayedFetch({
+      headerMs: 150,
+      bodyMs: 150,
+      html: '<html>"channelId":"UChnNjLyx_5rk_iDPQ2BQDQA"</html>',
+    }),
+  });
+  assert.equal(slowBody.channelId, 'UChnNjLyx_5rk_iDPQ2BQDQA');
+  const bodyTooSlow = await resolveYoutubeChannelId({
+    handle: 'TheValley101',
+    timeoutMs: 100,
+    fetchImpl: delayedFetch({ headerMs: 20, bodyMs: 400, html: '<html>"channelId":"UChnNjLyx_5rk_iDPQ2BQDQA"</html>' }),
+  });
+  assert.equal(bodyTooSlow.failed, true);
+  assert.equal(bodyTooSlow.detail, '频道页超时');
+  const headerTooSlow = await fetchYoutubeText('https://www.youtube.com/@TheValley101', {
+    timeoutMs: 80,
+    fetchImpl: delayedFetch({ headerMs: 200, bodyMs: 10, html: 'late' }),
+  }).catch((error) => error);
+  assert.equal(headerTooSlow.code, 'youtube-timeout');
+
+  const opened = openStore();
+  try {
+    let resolved = 0;
+    let rssUrl = '';
+    const result = await runYoutubePodcastRound({
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1' },
+      config: {
+        minDurationSec: 1200,
+        lookback: 2,
+        creators: [{
+          id: 'valley101',
+          name: '硅谷101',
+          focus: '科技',
+          channels: [{
+            key: 'valley101-video',
+            kind: 'channel',
+            handle: 'TheValley101',
+            channelId: 'UChnNjLyx_5rk_iDPQ2BQDQA',
+            language: 'zh',
+            url: 'https://www.youtube.com/@TheValley101',
+          }],
+        }],
+      },
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      sleep: async () => {},
+      translate: async () => '',
+      resolveChannel: async () => { resolved += 1; return { failed: true, detail: '频道页超时' }; },
+      fetchRss: async (url) => { rssUrl = url; return { entries: [] }; },
+      listVideos: async () => ({ entries: [] }),
+      probe: async () => { throw new Error('没有条目不应探测'); },
+      summarize: async () => SUMMARY,
+    });
+    assert.equal(resolved, 0);
+    assert.match(rssUrl, /channel_id=UChnNjLyx_5rk_iDPQ2BQDQA/);
+    assert.equal(result.stopped, '');
+    const stored = opened.store.repositories.youtubePodcasts.channel('local', 'valley101-video');
+    assert.equal(stored.channelId, 'UChnNjLyx_5rk_iDPQ2BQDQA');
+    assert.equal(typeof stored.backfilledAt, 'number');
+  } finally {
+    opened.close();
+  }
+});
+
+function channelCreator(key, id = key) {
+  return {
+    minDurationSec: 1200,
+    lookback: 2,
+    creators: [{
+      id,
+      name: id,
+      focus: 'AI',
+      channels: [{
+        key,
+        kind: 'channel',
+        handle: 'ExampleHandle',
+        channelId: 'UCZa18YV7qayTh-MRIrBhDpA',
+        language: 'en',
+        url: 'https://www.youtube.com/@ExampleHandle',
+      }],
+    }],
+  };
+}
+
+test('one successful listing stops backfill even when nothing is ready', async () => {
+  const opened = openStore();
+  try {
+    const day1 = Date.parse('2026-10-18T02:00:00Z');
+    const day2 = Date.parse('2026-10-19T02:00:00Z');
+    opened.store.repositories.youtubePodcasts.saveEpisode({
+      workspaceId: 'local',
+      videoId: 'dupaudio0001',
+      creatorId: 'valley101',
+      channelKey: 'valley101-audio',
+      title: '已去重的音频版',
+      durationSec: 3600,
+      publishedAt: day1,
+      status: 'skipped',
+      reason: 'duplicate-episode',
+      attempts: 1,
+    });
+    let lists = 0;
+    let resolved = 0;
+    const round = (now) => runYoutubePodcastRound({
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1', GEMINI_API_KEY: 'test-key' },
+      now,
+      config: channelCreator('valley101-audio', 'valley101'),
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      sleep: async () => {},
+      translate: async () => '',
+      resolveChannel: async () => { resolved += 1; return { channelId: 'should-not-resolve' }; },
+      fetchRss: async () => ({ entries: [] }),
+      listVideos: async (channel) => {
+        lists += 1;
+        assert.equal(channel.channelId, 'UCZa18YV7qayTh-MRIrBhDpA');
+        return { entries: [
+          { videoId: 'dupaudio0001', title: 'playlist title', durationSec: 3600, publishedAt: 0 },
+          { videoId: 'onlyshort001', title: 'clip #shorts', durationSec: 40, publishedAt: 0 },
+        ] };
+      },
+      probe: async (item) => ({
+        durationSec: item.videoId === 'onlyshort001' ? 40 : 3600,
+        title: item.title,
+        liveStatus: 'not_live',
+        transcript: '不应入库',
+        transcriptSource: 'subtitle-manual',
+      }),
+      summarize: async () => SUMMARY,
+    });
+    const first = await round(day1);
+    assert.equal(lists, 1);
+    assert.equal(resolved, 0);
+    assert.equal(first.discovered, 0);
+    assert.equal(opened.store.repositories.youtubePodcasts.listReady('local').length, 0);
+    const stored = opened.store.repositories.youtubePodcasts.channel('local', 'valley101-audio');
+    assert.equal(stored.backfilledAt, day1);
+    assert.equal(stored.backfillAttempts, 0);
+    assert.equal(stored.bootstrapped, true);
+    opened.store.repositories.youtubePodcasts.saveChannel('local', 'valley101-audio', { channelId: stored.channelId });
+    assert.equal(opened.store.repositories.youtubePodcasts.channel('local', 'valley101-audio').backfilledAt, day1);
+    const second = await round(day2);
+    assert.equal(lists, 1);
+    assert.equal(second.discovered, 0);
+    assert.deepEqual(selectBackfillEntries([
+      { videoId: 'shortone0001', title: 'short', durationSec: 30 },
+      { videoId: 'longone00001', title: 'long', durationSec: 4000 },
+    ], 1200, 2).map((item) => item.videoId), ['longone00001']);
+  } finally {
+    opened.close();
+  }
+});
+
+test('backfill retries on the next Shanghai day and stops after three failures', async () => {
+  const opened = openStore();
+  try {
+    const day1 = Date.parse('2026-10-18T02:00:00Z');
+    const day1Later = Date.parse('2026-10-18T14:00:00Z');
+    const day2 = Date.parse('2026-10-19T02:00:00Z');
+    const day3 = Date.parse('2026-10-20T02:00:00Z');
+    const day4 = Date.parse('2026-10-21T02:00:00Z');
+    let lists = 0;
+    const round = (now, listVideos) => runYoutubePodcastRound({
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1', GEMINI_API_KEY: 'test-key' },
+      now,
+      config: channelCreator('dwarkesh'),
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      sleep: async () => {},
+      translate: async () => '',
+      fetchRss: async () => ({ entries: [] }),
+      listVideos,
+      probe: async () => { throw new Error('空列表不应探测'); },
+      summarize: async () => SUMMARY,
+    });
+    const blocked = await round(day1, async () => {
+      lists += 1;
+      return { blocked: '429' };
+    });
+    assert.equal(blocked.stopped, '429');
+    assert.equal(lists, 1);
+    assert.equal(opened.store.repositories.youtubePodcasts.channel('local', 'dwarkesh').backfillAttempts, 0);
+    lists = 0;
+    const fail = async () => {
+      lists += 1;
+      throw new Error('playlist down');
+    };
+    const first = await round(day1, fail);
+    assert.equal(first.stopped, '');
+    assert.equal(first.reasons.includes('backfill'), true);
+    assert.equal(lists, 1);
+    assert.equal(opened.store.repositories.youtubePodcasts.channel('local', 'dwarkesh').backfillAttempts, 1);
+    assert.equal(opened.store.repositories.youtubePodcasts.channel('local', 'dwarkesh').backfilledAt, null);
+    await round(day1Later, fail);
+    assert.equal(lists, 1);
+    assert.equal(opened.store.repositories.youtubePodcasts.channel('local', 'dwarkesh').backfillAttempts, 1);
+    await round(day2, fail);
+    await round(day3, fail);
+    assert.equal(lists, 3);
+    assert.equal(opened.store.repositories.youtubePodcasts.channel('local', 'dwarkesh').backfillAttempts, 3);
+    await round(day4, fail);
+    assert.equal(lists, 3);
+    assert.equal(opened.store.repositories.youtubePodcasts.channel('local', 'dwarkesh').backfilledAt, null);
+  } finally {
+    opened.close();
+  }
+});
+
+test('a bootstrapped backfill keeps only the lookback window', async () => {
+  const opened = openStore();
+  try {
+    const lookback = 2;
+    const listed = Array.from({ length: 30 }, (_, index) => ({
+      videoId: `window${String(index).padStart(6, '0')}`,
+      title: `Distinct interview ${index} ${index * 97}`,
+      durationSec: 1800 + index * 500,
+      publishedAt: Date.parse('2026-10-18T00:00:00Z') - index * 86_400_000,
+    }));
+    opened.store.repositories.youtubePodcasts.saveChannel('local', 'dwarkesh', {
+      channelId: 'UCZa18YV7qayTh-MRIrBhDpA',
+      bootstrapped: true,
+    });
+    const probed = [];
+    const result = await runYoutubePodcastRound({
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1', GEMINI_API_KEY: 'test-key' },
+      now: Date.parse('2026-10-19T02:00:00Z'),
+      limits: { lookback },
+      config: channelCreator('dwarkesh'),
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      sleep: async () => {},
+      translate: async () => '',
+      fetchRss: async () => ({ entries: [] }),
+      listVideos: async () => ({ entries: listed }),
+      probe: async (item) => {
+        probed.push(item.videoId);
+        return {
+          durationSec: 1800 + probed.length * 500,
+          title: item.title,
+          liveStatus: 'not_live',
+          transcript: '正文',
+          transcriptSource: 'subtitle-manual',
+        };
+      },
+      summarize: async () => SUMMARY,
+    });
+    assert.equal(probed.length <= lookback + 6, true);
+    assert.equal(probed.length, lookback + 6);
+    assert.equal(result.discovered, lookback);
+    assert.equal(opened.store.repositories.youtubePodcasts.listReady('local').length, lookback);
+    const stored = opened.store.repositories.youtubePodcasts.listEpisodes('local');
+    const lookbackSkips = stored.filter((row) => row.reason === 'lookback');
+    assert.equal(lookbackSkips.length, listed.length - lookback);
+    assert.equal(lookbackSkips.every((row) => row.status === 'skipped'), true);
+    assert.equal(opened.store.repositories.youtubePodcasts.channel('local', 'dwarkesh').backfilledAt, Date.parse('2026-10-19T02:00:00Z'));
+  } finally {
+    opened.close();
+  }
+});
+
+test('a blocked probe does not record a finished backfill', async () => {
+  const opened = openStore();
+  try {
+    opened.store.repositories.youtubePodcasts.saveChannel('local', 'dwarkesh', {
+      channelId: 'UCZa18YV7qayTh-MRIrBhDpA',
+      bootstrapped: true,
+    });
+    const before = opened.store.repositories.youtubePodcasts.channel('local', 'dwarkesh');
+    let probes = 0;
+    const result = await runYoutubePodcastRound({
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1', GEMINI_API_KEY: 'test-key' },
+      now: Date.parse('2026-10-19T02:00:00Z'),
+      config: channelCreator('dwarkesh'),
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      sleep: async () => {},
+      translate: async () => '',
+      fetchRss: async () => ({ entries: [] }),
+      listVideos: async () => ({ entries: [
+        { videoId: 'blockfirst01', title: 'First long interview', durationSec: 3600, publishedAt: 300 },
+        { videoId: 'blocknext001', title: 'Second long interview', durationSec: 4200, publishedAt: 200 },
+        { videoId: 'blocklater01', title: 'Later long interview', durationSec: 5000, publishedAt: 100 },
+      ] }),
+      probe: async () => {
+        probes += 1;
+        if (probes === 2) return { blocked: 'bot-check' };
+        return { durationSec: 3600, title: 'First long interview', liveStatus: 'not_live', transcript: '正文', transcriptSource: 'subtitle-manual' };
+      },
+      summarize: async () => SUMMARY,
+    });
+    const after = opened.store.repositories.youtubePodcasts.channel('local', 'dwarkesh');
+    assert.equal(result.stopped, 'bot-check');
+    assert.equal(probes, 2);
+    assert.equal(after.backfilledAt, null);
+    assert.equal(after.backfillAttempts, before.backfillAttempts);
+    assert.equal(opened.store.repositories.youtubePodcasts.episode('local', 'blocklater01'), null);
+    assert.equal(opened.store.repositories.youtubePodcasts.episode('local', 'blocknext001'), null);
+  } finally {
+    opened.close();
+  }
+});
+
+test('backfill lookback does not overwrite episodes already stored', async () => {
+  const opened = openStore();
+  try {
+    const repository = opened.store.repositories.youtubePodcasts;
+    const lookback = 2;
+    const listed = Array.from({ length: 11 }, (_, index) => {
+      const videoId = index === 9 ? 'readyold0001' : index === 10 ? 'failedold001' : `freshwin${String(index).padStart(3, '0')}`;
+      return {
+        videoId,
+        title: `Separate topic ${index} ${videoId}`,
+        durationSec: 2400 + index * 500,
+        publishedAt: Date.parse('2026-10-18T00:00:00Z') - index * 86_400_000,
+      };
+    });
+    repository.saveChannel('local', 'dwarkesh', {
+      channelId: 'UCZa18YV7qayTh-MRIrBhDpA',
+      bootstrapped: true,
+    });
+    repository.saveEpisode({
+      workspaceId: 'local',
+      videoId: 'readyold0001',
+      creatorId: 'dwarkesh',
+      channelKey: 'dwarkesh',
+      title: 'Already ingested',
+      durationSec: 5400,
+      publishedAt: listed[9].publishedAt,
+      status: 'ready',
+      reason: '',
+      transcriptSource: 'subtitle-manual',
+      contentItemId: 'item-ready-1',
+      attempts: 2,
+    });
+    repository.saveEpisode({
+      workspaceId: 'local',
+      videoId: 'failedold001',
+      creatorId: 'dwarkesh',
+      channelKey: 'dwarkesh',
+      title: 'Earlier failure',
+      durationSec: 4800,
+      publishedAt: listed[10].publishedAt,
+      status: 'failed',
+      reason: 'probe-failed',
+      transcriptSource: 'subtitle-auto',
+      contentItemId: 'item-failed-1',
+      attempts: 3,
+    });
+    const result = await runYoutubePodcastRound({
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1', GEMINI_API_KEY: 'test-key' },
+      now: Date.parse('2026-10-19T02:00:00Z'),
+      limits: { lookback },
+      config: channelCreator('dwarkesh'),
+      repository,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      sleep: async () => {},
+      translate: async () => '',
+      fetchRss: async () => ({ entries: [] }),
+      listVideos: async () => ({ entries: listed }),
+      probe: async (item) => {
+        assert.equal(item.videoId === 'readyold0001' || item.videoId === 'failedold001', false);
+        return {
+          durationSec: 3000 + item.publishedAt,
+          title: item.title,
+          liveStatus: 'not_live',
+          transcript: '正文',
+          transcriptSource: 'subtitle-manual',
+        };
+      },
+      summarize: async () => SUMMARY,
+    });
+    const ready = repository.episode('local', 'readyold0001');
+    assert.equal(ready.status, 'ready');
+    assert.equal(ready.contentItemId, 'item-ready-1');
+    assert.equal(ready.attempts, 2);
+    assert.equal(ready.transcriptSource, 'subtitle-manual');
+    const failed = repository.episode('local', 'failedold001');
+    assert.equal(failed.status, 'failed');
+    assert.equal(failed.contentItemId, 'item-failed-1');
+    assert.equal(failed.attempts, 3);
+    assert.equal(failed.reason, 'probe-failed');
+    assert.equal(repository.episode('local', 'freshwin008').status, 'skipped');
+    assert.equal(repository.episode('local', 'freshwin008').reason, 'lookback');
+    assert.equal(result.stopped, '');
+  } finally {
+    opened.close();
+  }
+});
+
+test('backfill unions rss by video id and keeps rss title and time', async () => {
+  const opened = openStore();
+  try {
+    const bothAt = Date.parse('2026-10-18T00:00:00Z');
+    const rssOnlyAt = Date.parse('2026-10-17T00:00:00Z');
+    const listOnlyAt = Date.parse('2026-10-16T00:00:00Z');
+    const rss = [
+      { videoId: 'both00000001', title: 'RSS title', publishedAt: bothAt, url: 'https://www.youtube.com/watch?v=both00000001' },
+      { videoId: 'rssonly00001', title: 'RSS only', publishedAt: rssOnlyAt, url: 'https://www.youtube.com/watch?v=rssonly00001' },
+    ];
+    const listed = [
+      { videoId: 'both00000001', title: 'Playlist title', publishedAt: Date.parse('2026-10-01T00:00:00Z'), durationSec: 3600, url: 'https://www.youtube.com/watch?v=both00000001' },
+      { videoId: 'listonly0001', title: 'List only', publishedAt: listOnlyAt, durationSec: 2400, url: 'https://www.youtube.com/watch?v=listonly0001' },
+    ];
+    const merged = mergePodcastEntries(rss, listed);
+    assert.deepEqual(merged.map((item) => item.videoId), ['both00000001', 'rssonly00001', 'listonly0001']);
+    assert.equal(merged[0].title, 'RSS title');
+    assert.equal(merged[0].publishedAt, bothAt);
+    assert.equal(merged[0].durationSec, 3600);
+    assert.equal(merged[1].title, 'RSS only');
+    const probed = [];
+    let lists = 0;
+    const round = () => runYoutubePodcastRound({
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1', GEMINI_API_KEY: 'test-key' },
+      config: channelCreator('dwarkesh'),
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      sleep: async () => {},
+      translate: async () => '',
+      fetchRss: async () => ({ entries: rss }),
+      listVideos: async () => {
+        lists += 1;
+        return { entries: listed };
+      },
+      probe: async (item) => {
+        probed.push(item);
+        return { durationSec: 1800, title: item.title, liveStatus: 'not_live', transcript: '正文', transcriptSource: 'subtitle-manual' };
+      },
+      summarize: async () => SUMMARY,
+    });
+    const first = await round();
+    assert.equal(lists, 1);
+    assert.deepEqual(probed.map((item) => item.videoId), ['both00000001', 'rssonly00001', 'listonly0001']);
+    assert.equal(probed[0].title, 'RSS title');
+    assert.equal(probed[0].publishedAt, bothAt);
+    assert.equal(probed[0].durationSec, 3600);
+    assert.equal(first.discovered, 2);
+    assert.equal(opened.store.repositories.youtubePodcasts.episode('local', 'both00000001').title, 'RSS title');
+    assert.equal(opened.store.repositories.youtubePodcasts.episode('local', 'listonly0001').reason, 'lookback');
+    await round();
+    assert.equal(lists, 1);
+  } finally {
+    opened.close();
+  }
+});
+
+test('backfill without timestamps keeps playlist order ahead of lookback', async () => {
+  const rss = Array.from({ length: 8 }, (_, index) => ({
+    videoId: `timedrss${String(index).padStart(3, '0')}`,
+    title: `RSS ${index}`,
+    publishedAt: Date.parse('2026-10-18T00:00:00Z') - index * 86_400_000,
+    url: `https://www.youtube.com/watch?v=timedrss${String(index).padStart(3, '0')}`,
+  }));
+  const listed = [
+    { videoId: 'newuntimed01', title: 'Newest playlist', publishedAt: 0, durationSec: 4000 },
+    { videoId: 'olduntimed01', title: 'Second playlist', publishedAt: 0, durationSec: 3000 },
+  ];
+  const merged = mergePodcastEntries(rss, listed);
+  const slice = firstRunSlice(merged, 2);
+  assert.equal(slice.probe[0].videoId, 'newuntimed01');
+  assert.equal(slice.probe[1].videoId, 'olduntimed01');
+  assert.equal(slice.probe.some((item) => item.videoId === 'timedrss007'), false);
+  assert.equal(slice.ignore.some((item) => item.videoId === 'timedrss007'), true);
+  const opened = openStore();
+  try {
+    const probed = [];
+    const result = await runYoutubePodcastRound({
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1', GEMINI_API_KEY: 'test-key' },
+      config: channelCreator('dwarkesh'),
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      sleep: async () => {},
+      translate: async () => '',
+      fetchRss: async () => ({ entries: rss }),
+      listVideos: async () => ({ entries: listed }),
+      probe: async (item) => {
+        probed.push(item.videoId);
+        return { durationSec: 1800, title: item.title, liveStatus: 'not_live', transcript: '正文', transcriptSource: 'subtitle-manual' };
+      },
+      summarize: async () => SUMMARY,
+    });
+    assert.equal(probed[0], 'newuntimed01');
+    assert.equal(probed.includes('timedrss007'), false);
+    assert.equal(opened.store.repositories.youtubePodcasts.episode('local', 'timedrss007').reason, 'lookback');
+    assert.equal(opened.store.repositories.youtubePodcasts.getReady('local', 'newuntimed01') != null, true);
+    assert.equal(result.stopped, '');
+  } finally {
+    opened.close();
+  }
+});
+
+test('flat playlist args stay on one videos tab and do not download media', async () => {
+  let args = [];
+  const listed = await listChannelLongVideos({
+    channelId: 'UCZa18YV7qayTh-MRIrBhDpA',
+    limit: 30,
+    run: async (_command, received) => {
+      args = received;
+      return {
+        code: 0,
+        stdout: JSON.stringify({ entries: [
+          { id: 'fullepisode1', title: 'Long', duration: 5400, timestamp: 100 },
+          { id: 'shortclip0001', title: 'Short', duration: 40, timestamp: 90 },
+        ] }),
+        stderr: '',
+        missing: false,
+      };
+    },
+  });
+  assert.equal(args.includes('--flat-playlist'), true);
+  assert.equal(args[args.indexOf('--playlist-end') + 1], '30');
+  assert.equal(args.includes('--skip-download'), true);
+  assert.equal(args.at(-1), 'https://www.youtube.com/channel/UCZa18YV7qayTh-MRIrBhDpA/videos');
+  assert.equal(/zh-Hans|zh-Hant|\bja\b|\.\*-orig/.test(args.join('\n')), false);
+  assert.deepEqual(listed.entries.map((item) => item.videoId), ['fullepisode1', 'shortclip0001']);
+  assert.equal(listed.entries[0].durationSec, 5400);
+});
+
+test('transcription uses the real executor and a missing transcriber does not download audio', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'youtube-tx-'));
+  const store = createStore(path.join(root, 'test.db'));
+  try {
+    let geminiCalls = 0;
+    const text = await transcribeYoutubeAudio({
+      videoId: 'xiaojunvid01',
+      dataDirectory: root,
+      env: { GEMINI_API_KEY: 'test-key' },
+      quotaRepository: store.repositories.modelQuota,
+      execute: executeAudioTranscription,
+      transcribe: async ({ apiKey, audio }) => {
+        geminiCalls += 1;
+        assert.equal(apiKey, 'test-key');
+        assert.ok(audio.length > 44);
+        return '张小珺正文';
+      },
+      run: async (_command, _args, opts) => {
+        const pcm = Buffer.alloc(16_000 * 2);
+        writeFileSync(path.join(opts.cwd, 'xiaojunvid01.wav'), buildWav(pcm, { channels: 1, sampleRate: 16_000, bitsPerSample: 16, blockAlign: 2 }));
+        return { code: 0, stdout: '', stderr: '', missing: false };
+      },
+    });
+    assert.equal(text, '张小珺正文');
+    assert.equal(geminiCalls, 1);
+
+    let downloaded = false;
+    await assert.rejects(() => transcribeYoutubeAudio({
+      videoId: 'nokeyvid0001',
+      dataDirectory: root,
+      env: {},
+      execute: executeAudioTranscription,
+      run: async () => { downloaded = true; return { code: 0, stdout: '', stderr: '', missing: false }; },
+    }), (error) => error?.code === 'youtube-transcribe-unavailable' && /转写密钥/.test(error.message));
+    assert.equal(downloaded, false);
+
+    const opened = openStore();
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args.join(' '));
+    try {
+      const result = await runYoutubePodcastRound({
+        env: { AI_CENTER_YOUTUBE_PODCASTS: '1' },
+        config: creatorConfig(),
+        repository: opened.store.repositories.youtubePodcasts,
+        feedRepository: opened.store.repositories.feed,
+        workspaceId: 'local',
+        dataDirectory: root,
+        sleep: async () => {},
+        fetchRss: async () => ({ entries: [
+          { ...entry('nosubvid0001', 'Rates without captions'), publishedAt: 200 },
+          { ...entry('subvid000001', 'Chip supply with captions'), publishedAt: 100 },
+        ] }),
+        probe: async (item) => ({
+          durationSec: 1800,
+          title: item.title,
+          liveStatus: 'not_live',
+          transcript: item.videoId === 'subvid000001' ? '有字幕正文' : '',
+          transcriptSource: item.videoId === 'subvid000001' ? 'subtitle-manual' : '',
+        }),
+        summarize: async ({ title }) => {
+          assert.equal(title, 'Chip supply with captions');
+          return SUMMARY;
+        },
+      });
+      assert.equal(result.stopped, '');
+      assert.equal(result.subtitles, 1);
+      assert.equal(result.transcribeUnavailable, 1);
+      assert.equal(result.reasons.includes('transcribe-unavailable'), true);
+      assert.equal(warnings.length, 1);
+      const saved = opened.store.repositories.youtubePodcasts.episode('local', 'nosubvid0001');
+      assert.equal(saved.status, 'failed');
+      assert.equal(saved.reason, 'transcribe-unavailable');
+      assert.equal(saved.attempts, 0);
+      assert.equal(opened.store.repositories.youtubePodcasts.isDone('local', 'nosubvid0001'), false);
+      assert.equal(opened.store.repositories.youtubePodcasts.getReady('local', 'subvid000001').transcriptSource, 'subtitle-manual');
+    } finally {
+      console.warn = originalWarn;
+      opened.close();
+    }
+  } finally {
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a transcriber that fails mid-round does not stop later episodes', async () => {
+  const opened = openStore();
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  try {
+    let calls = 0;
+    const result = await runYoutubePodcastRound({
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1', GEMINI_API_KEY: 'test-key' },
+      config: creatorConfig(),
+      limits: { lookback: 3 },
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      sleep: async () => {},
+      fetchRss: async () => ({ entries: [
+        { ...entry('audfirst0001', 'Alpha rates briefing'), publishedAt: 300 },
+        { ...entry('audnext00001', 'Beta chip supply'), publishedAt: 200 },
+        { ...entry('sublater0001', 'Gamma housing starts'), publishedAt: 100 },
+      ] }),
+      probe: async (item) => ({
+        durationSec: 1800,
+        title: item.title,
+        liveStatus: 'not_live',
+        transcript: item.videoId === 'sublater0001' ? '字幕正文' : '',
+        transcriptSource: item.videoId === 'sublater0001' ? 'subtitle-manual' : '',
+      }),
+      transcribe: async (episode) => {
+        calls += 1;
+        assert.equal(episode.videoId, 'audfirst0001');
+        const error = new Error('没有配置可用的转写密钥');
+        error.code = 'youtube-transcribe-unavailable';
+        throw error;
+      },
+      summarize: async ({ title }) => {
+        assert.equal(title, 'Gamma housing starts');
+        return SUMMARY;
+      },
+    });
+    assert.equal(calls, 1);
+    assert.equal(result.stopped, '');
+    assert.equal(result.subtitles, 1);
+    assert.equal(result.transcribeUnavailable, 2);
+    assert.equal(warnings.length, 1);
+    for (const videoId of ['audfirst0001', 'audnext00001']) {
+      const saved = opened.store.repositories.youtubePodcasts.episode('local', videoId);
+      assert.equal(saved.status, 'failed');
+      assert.equal(saved.reason, 'transcribe-unavailable');
+      assert.equal(saved.attempts, 0);
+    }
+    assert.equal(opened.store.repositories.youtubePodcasts.getReady('local', 'sublater0001').transcriptSource, 'subtitle-manual');
+  } finally {
+    console.warn = originalWarn;
     opened.close();
   }
 });
