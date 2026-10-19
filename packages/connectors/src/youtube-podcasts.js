@@ -4,7 +4,6 @@ import path from 'node:path';
 import { describeAudioTranscription } from '../../domain/src/audio-transcription.js';
 import { readChannelId, watchUrl } from '../../domain/src/youtube-podcasts.js';
 
-const SUB_LANGS = 'zh-Hans,zh-Hant,zh,ja,.*-orig';
 export const YOUTUBE_STDOUT_CAP = 16 * 1024 * 1024;
 export const YOUTUBE_STDERR_CAP = 256 * 1024;
 const KILL_GRACE_MS = 5_000;
@@ -182,17 +181,50 @@ function languageOf(fileName) {
   return match ? match[1] : '';
 }
 
+function primaryLang(value) {
+  const token = String(value || '').trim().toLowerCase().split('.')[0].replace(/-orig$/, '');
+  const tag = token.split('-')[0];
+  return /^[a-z]{2,3}$/.test(tag) ? tag : '';
+}
+
 function sameLanguage(left, right) {
-  const a = String(left || '').toLowerCase();
-  const b = String(right || '').toLowerCase();
-  if (!a || !b) return false;
-  return a === b || a.startsWith(`${b}-`) || b.startsWith(`${a}-`) || a.slice(0, 2) === b.slice(0, 2);
+  const a = primaryLang(left);
+  const b = primaryLang(right);
+  return Boolean(a) && a === b;
 }
 
 function isOriginalAuto(file, original) {
-  if (!file.auto) return false;
-  if (/-orig$/i.test(file.lang)) return true;
-  return Boolean(original) && sameLanguage(file.lang, original);
+  return Boolean(file.auto) && sameLanguage(file.lang, original);
+}
+
+const ZH_MANUAL_ORDER = ['zh', 'zh-hans', 'zh-hant', 'zh-cn', 'zh-tw', 'zh-hk', 'zh-sg'];
+
+function chooseManualLang(keys, original) {
+  const usable = keys.filter((lang) => !/-orig$/i.test(lang) && primaryLang(lang) === original);
+  if (!usable.length) return '';
+  if (original === 'zh') {
+    for (const preferred of ZH_MANUAL_ORDER) {
+      const found = usable.find((lang) => lang.toLowerCase() === preferred);
+      if (found) return found;
+    }
+  }
+  return usable.find((lang) => lang.toLowerCase() === original) || usable[0];
+}
+
+function chooseAutoOrigLang(keys, original) {
+  const exact = keys.find((lang) => lang.toLowerCase() === `${original}-orig`);
+  if (exact) return exact;
+  return keys.find((lang) => /-orig$/i.test(lang) && primaryLang(lang) === original) || '';
+}
+
+export function pickSubtitleRequest(info = {}, fallbackLanguage = '') {
+  const original = primaryLang(info.language || info.language_code || fallbackLanguage);
+  if (!original) return null;
+  const manual = chooseManualLang(Object.keys(info.subtitles || {}), original);
+  if (manual) return { lang: manual, kind: 'manual' };
+  const auto = chooseAutoOrigLang(Object.keys(info.automatic_captions || {}), original);
+  if (auto) return { lang: auto, kind: 'auto' };
+  return null;
 }
 
 export function chooseSubtitle(files, info = {}) {
@@ -208,9 +240,8 @@ export function chooseSubtitle(files, info = {}) {
   }).filter((file) => file.text);
   const manualOriginal = rows.find((file) => file.manual && sameLanguage(file.lang, original));
   if (manualOriginal) return { text: manualOriginal.text, source: 'subtitle-manual' };
-  const manual = rows.find((file) => file.manual);
-  if (manual) return { text: manual.text, source: 'subtitle-manual' };
-  const autoOriginal = rows.find((file) => isOriginalAuto(file, original));
+  const autoOriginals = rows.filter((file) => isOriginalAuto(file, original));
+  const autoOriginal = autoOriginals.find((file) => /-orig$/i.test(file.lang)) || autoOriginals[0];
   if (autoOriginal) return { text: autoOriginal.text, source: 'subtitle-auto' };
   return { text: '', source: '' };
 }
@@ -287,6 +318,15 @@ function ytDlpBaseArgs(env) {
   ];
 }
 
+function outputArgs(workDir, videoId, env) {
+  return [
+    ...ytDlpBaseArgs(env),
+    '-o', path.join(workDir, '%(id)s.%(ext)s'),
+    '--',
+    watchUrl(videoId),
+  ];
+}
+
 export async function probeYoutubeEpisode({
   videoId,
   url,
@@ -295,19 +335,13 @@ export async function probeYoutubeEpisode({
   run = runProcess,
   timeoutMs = 180_000,
   signal,
+  language = '',
 }) {
   await mkdir(workDir, { recursive: true });
   const args = [
     '--skip-download',
-    '--write-subs',
-    '--write-auto-subs',
-    '--sub-langs', SUB_LANGS,
-    '--convert-subs', 'vtt',
     '--write-info-json',
-    ...ytDlpBaseArgs(env),
-    '-o', path.join(workDir, '%(id)s.%(ext)s'),
-    '--',
-    watchUrl(videoId),
+    ...outputArgs(workDir, videoId, env),
   ];
   const result = await run(ytDlpBinary(env), args, { timeoutMs, cwd: workDir, signal });
   const blocked = blockedResult(result);
@@ -320,15 +354,31 @@ export async function probeYoutubeEpisode({
     }
     return { failed: true, detail: 'probe-parse' };
   }
+  const pick = pickSubtitleRequest(info, language);
+  if (pick) {
+    const subArgs = [
+      '--skip-download',
+      pick.kind === 'auto' ? '--write-auto-subs' : '--write-subs',
+      '--convert-subs', 'vtt',
+      '--sub-langs', pick.lang,
+      ...outputArgs(workDir, videoId, env),
+    ];
+    const subResult = await run(ytDlpBinary(env), subArgs, { timeoutMs, cwd: workDir, signal });
+    const subBlocked = blockedResult(subResult);
+    if (subBlocked) return subBlocked;
+  }
   const files = await readVttFiles(workDir);
-  const subtitle = chooseSubtitle(files, info);
+  const subtitle = chooseSubtitle(files, {
+    ...info,
+    language: info.language || info.language_code || language || '',
+  });
   await rm(workDir, { recursive: true, force: true }).catch(() => {});
   return {
     videoId: info.id || videoId,
     title: info.title || '',
     durationSec: durationOf(info),
     liveStatus: info.live_status || '',
-    language: info.language || '',
+    language: info.language || language || '',
     transcript: subtitle.text,
     transcriptSource: subtitle.source,
   };

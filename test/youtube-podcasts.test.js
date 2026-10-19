@@ -26,6 +26,7 @@ import {
   resolveYoutubeChannelId,
   runProcess,
   chooseSubtitle,
+  pickSubtitleRequest,
   finishAudioFile,
   vttToTranscript,
   youtubeBlockReason,
@@ -116,8 +117,13 @@ test('youtube podcast config and rss parse use a file url path', () => {
   assert.equal(config.creators.length, 11);
   assert.equal(config.creators[0].channels[0].kind, 'playlist');
   assert.equal(config.creators[0].channels[0].playlistId, 'PLe4PRejZgr0OJbRzA6nWybYiThLJd_ouz');
-  assert.equal(config.creators.find((item) => item.id === 'valley101').channels.length, 2);
-  assert.equal(config.creators.find((item) => item.id === 'xiaojun').prefer, 'zh');
+  const valley = config.creators.find((item) => item.id === 'valley101');
+  assert.equal(valley.channels.length, 2);
+  assert.deepEqual(valley.channels.map((channel) => channel.language), ['zh', 'zh']);
+  const xiaojun = config.creators.find((item) => item.id === 'xiaojun');
+  assert.equal(xiaojun.prefer, 'zh');
+  assert.equal(xiaojun.channels[0].language, 'zh');
+  assert.equal(config.creators.find((item) => item.id === 'no-priors').channels[0].language, '');
   const entries = parseYoutubeRss(RSS);
   assert.equal(entries[0].videoId, 'aaaaaaaaaaa');
   assert.equal(entries[0].title, 'Odd Lots & Rates');
@@ -359,14 +365,38 @@ test('audio is deleted after transcription and vtt prefers manual original capti
   assert.equal(auto.text, '自动中文');
   const originalAuto = chooseSubtitle([
     { name: 'id.zh-Hans.auto.vtt', text: '翻译字幕' },
+    { name: 'id.ar-orig.auto.vtt', text: 'arabic' },
+    { name: 'id.en.auto.vtt', text: 'english auto' },
     { name: 'id.en-orig.auto.vtt', text: 'original speech' },
-  ], { language: '', subtitles: {}, automatic_captions: { 'zh-Hans': [{}], 'en-orig': [{}] } });
+  ], { language: 'en-US', subtitles: {}, automatic_captions: { 'zh-Hans': [{}], 'ar-orig': [{}], en: [{}], 'en-orig': [{}] } });
   assert.equal(originalAuto.source, 'subtitle-auto');
   assert.equal(originalAuto.text, 'original speech');
+  const chineseManual = chooseSubtitle([
+    { name: 'id.en-orig.auto.vtt', text: 'english auto' },
+    { name: 'id.zh.vtt', text: '中文原版' },
+  ], { language: 'zh-CN', subtitles: { zh: [{}] }, automatic_captions: { 'en-orig': [{}] } });
+  assert.equal(chineseManual.source, 'subtitle-manual');
+  assert.equal(chineseManual.text, '中文原版');
   const translatedOnly = chooseSubtitle([
     { name: 'id.zh-Hans.auto.vtt', text: '翻译字幕' },
-  ], { language: '', subtitles: {}, automatic_captions: { 'zh-Hans': [{}] } });
+    { name: 'id.en-orig.auto.vtt', text: 'original speech' },
+  ], { language: '', subtitles: {}, automatic_captions: { 'zh-Hans': [{}], 'en-orig': [{}] } });
   assert.equal(translatedOnly.text, '');
+  assert.deepEqual(pickSubtitleRequest({
+    language: 'en-US',
+    subtitles: {},
+    automatic_captions: { 'zh-Hans': [{}], ja: [{}], 'ar-orig': [{}], 'bn-orig': [{}], 'en-orig': [{}] },
+  }), { lang: 'en-orig', kind: 'auto' });
+  assert.deepEqual(pickSubtitleRequest({
+    language: 'zh-Hans',
+    subtitles: { zh: [{}], en: [{}] },
+    automatic_captions: { 'zh-Hans': [{}], 'en-orig': [{}] },
+  }, 'zh'), { lang: 'zh', kind: 'manual' });
+  assert.deepEqual(pickSubtitleRequest({
+    language: '',
+    subtitles: { zh: [{}] },
+    automatic_captions: { 'zh-Hans': [{}], ja: [{}] },
+  }, 'zh'), { lang: 'zh', kind: 'manual' });
   assert.match(formatPodcastSummary(SUMMARY, { focus: '金融' }), /与关注方向的关系：和金融相关/);
   assert.equal(latestSchemaVersion(), 86);
   assert.deepEqual(unusedSchemaVersions, [63, 79, 80, 82]);
@@ -408,9 +438,11 @@ test('a description that mentions 429 does not stop the round', async () => {
     });
     assert.equal(requested.includes('--dump-single-json'), false);
     assert.equal(requested.includes('--skip-download'), true);
-    assert.equal(requested.includes('--write-subs'), true);
-    assert.equal(requested.includes('--write-auto-subs'), true);
+    assert.equal(requested.includes('--write-subs'), false);
+    assert.equal(requested.includes('--write-auto-subs'), false);
+    assert.equal(requested.includes('--sub-langs'), false);
     assert.equal(requested.includes('--write-info-json'), true);
+    assert.equal(/zh-Hans|zh-Hant|\bja\b|\.\*-orig/.test(requested.join('\n')), false);
     assert.equal(probed.blocked, undefined);
     assert.equal(probed.durationSec, 1800);
     assert.equal(requested.at(-1), 'https://www.youtube.com/watch?v=desc429vid01');
@@ -481,15 +513,23 @@ test('a description that mentions 429 does not stop the round', async () => {
         videoId: item.videoId,
         url: 'https://www.youtube.com/feeds/videos.xml?playlist_id=PLtest',
         workDir: path.join(directory, item.videoId),
-        run: async () => {
-          writeFileSync(path.join(directory, item.videoId, 'desc429vid01.info.json'), JSON.stringify({ ...info, subtitles: { en: [{}] } }));
-          writeFileSync(path.join(directory, item.videoId, 'clip.en.vtt'), 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello rates\n');
-          return {
-            code: 0,
-            stdout: JSON.stringify({ ...info, subtitles: { en: [{}] } }),
-            stderr: '$429 billion',
-            missing: false,
-          };
+        run: async (_command, args) => {
+          const blob = args.join('\n');
+          assert.equal(/zh-Hans|zh-Hant|\bja\b|\.\*-orig/.test(blob), false);
+          writeFileSync(path.join(directory, item.videoId, 'desc429vid01.info.json'), JSON.stringify({
+            ...info,
+            language: 'en-US',
+            subtitles: {},
+            automatic_captions: { 'zh-Hans': [{}], ja: [{}], 'en-orig': [{}], 'ar-orig': [{}] },
+          }));
+          if (!args.includes('--sub-langs')) {
+            return { code: 0, stdout: '', stderr: '$429 billion', missing: false };
+          }
+          assert.equal(args[args.indexOf('--sub-langs') + 1], 'en-orig');
+          assert.equal(args.includes('--write-auto-subs'), true);
+          assert.equal(args.includes('--write-subs'), false);
+          writeFileSync(path.join(directory, item.videoId, 'clip.en-orig.vtt'), 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello rates\n');
+          return { code: 0, stdout: '', stderr: '', missing: false };
         },
       }),
       transcribe: async () => { throw new Error('有字幕不应转写'); },
@@ -795,6 +835,106 @@ test('shadow lists exclude youtube and enforce author reads still return it', as
   }
 });
 
+test('english videos download only en-orig and chinese channels keep zh', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'youtube-one-sub-'));
+  const forbidden = /zh-Hans|zh-Hant|\bja\b|\.\*-orig/;
+  try {
+    const englishCalls = [];
+    const english = await probeYoutubeEpisode({
+      videoId: 'allinorig01',
+      workDir: path.join(directory, 'en'),
+      run: async (_command, args) => {
+        englishCalls.push(args);
+        assert.equal(forbidden.test(args.join('\n')), false);
+        if (englishCalls.length === 1) {
+          assert.equal(args.includes('--write-info-json'), true);
+          assert.equal(args.includes('--write-subs'), false);
+          assert.equal(args.includes('--write-auto-subs'), false);
+          assert.equal(args.includes('--sub-langs'), false);
+          writeFileSync(path.join(directory, 'en', 'allinorig01.info.json'), JSON.stringify({
+            id: 'allinorig01',
+            title: 'All-In',
+            duration: 5646,
+            language: 'en-US',
+            live_status: 'not_live',
+            subtitles: {},
+            automatic_captions: { 'zh-Hans': [{}], 'zh-Hant': [{}], ja: [{}], 'ar-orig': [{}], 'bn-orig': [{}], 'en-orig': [{}] },
+          }));
+          return { code: 0, stdout: '', stderr: '', missing: false };
+        }
+        assert.equal(args[args.indexOf('--sub-langs') + 1], 'en-orig');
+        assert.equal(args.includes('--write-auto-subs'), true);
+        assert.equal(args.includes('--convert-subs'), true);
+        writeFileSync(path.join(directory, 'en', 'allinorig01.en-orig.vtt'), 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nOriginal english\n');
+        return { code: 0, stdout: '', stderr: '', missing: false };
+      },
+    });
+    assert.equal(englishCalls.length, 2);
+    assert.equal(english.durationSec, 5646);
+    assert.equal(english.language, 'en-US');
+    assert.equal(english.transcriptSource, 'subtitle-auto');
+    assert.match(english.transcript, /Original english/);
+
+    const chineseCalls = [];
+    for (const [videoId, fallback] of [['valley101vid', 'zh'], ['xiaojunvid01', 'zh']]) {
+      const probed = await probeYoutubeEpisode({
+        videoId,
+        workDir: path.join(directory, videoId),
+        language: fallback,
+        run: async (_command, args) => {
+          chineseCalls.push(args);
+          assert.equal(forbidden.test(args.join('\n')), false);
+          if (!args.includes('--sub-langs')) {
+            writeFileSync(path.join(directory, videoId, `${videoId}.info.json`), JSON.stringify({
+              id: videoId,
+              title: videoId,
+              duration: 3600,
+              language: videoId.startsWith('valley') ? 'zh-CN' : '',
+              subtitles: { zh: [{}], en: [{}] },
+              automatic_captions: { 'zh-Hans': [{}], ja: [{}], 'en-orig': [{}] },
+            }));
+            return { code: 0, stdout: '', stderr: '', missing: false };
+          }
+          assert.equal(args[args.indexOf('--sub-langs') + 1], 'zh');
+          assert.equal(args.includes('--write-subs'), true);
+          assert.equal(args.includes('--write-auto-subs'), false);
+          writeFileSync(path.join(directory, videoId, `${videoId}.zh.vtt`), 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n中文原版\n');
+          return { code: 0, stdout: '', stderr: '', missing: false };
+        },
+      });
+      assert.equal(probed.transcriptSource, 'subtitle-manual');
+      assert.match(probed.transcript, /中文原版/);
+    }
+    assert.equal(chineseCalls.length, 4);
+
+    let subtitleStep = 0;
+    const rateLimited = await probeYoutubeEpisode({
+      videoId: 'ratelimited1',
+      workDir: path.join(directory, 'rate'),
+      run: async () => {
+        subtitleStep += 1;
+        if (subtitleStep === 1) {
+          writeFileSync(path.join(directory, 'rate', 'ratelimited1.info.json'), JSON.stringify({
+            id: 'ratelimited1', duration: 5646, language: 'en-US', live_status: 'not_live',
+            automatic_captions: { 'en-orig': [{}] },
+          }));
+          return { code: 0, stdout: '', stderr: '', missing: false };
+        }
+        return {
+          code: 1,
+          stdout: '',
+          stderr: "ERROR: Unable to download video subtitles for 'en-orig': HTTP Error 429",
+          missing: false,
+        };
+      },
+    });
+    assert.equal(rateLimited.blocked, '429');
+    assert.equal(subtitleStep, 2);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('truncated metadata, broken json, and a missing duration stay failed', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'youtube-probe-parse-'));
   const opened = openStore();
@@ -813,9 +953,9 @@ test('truncated metadata, broken json, and a missing duration stay failed', asyn
         assert.equal(args.includes('--dump-single-json'), false);
         assert.equal(args.includes('--write-info-json'), true);
         assert.equal(args.some((arg) => arg.endsWith('%(id)s.%(ext)s')), true);
-        const langs = args[args.indexOf('--sub-langs') + 1];
-        assert.equal(langs.includes('zh.*'), false);
-        assert.equal(langs.split(',').includes('en'), false);
+        assert.equal(args.includes('--sub-langs'), false);
+        assert.equal(args.includes('--write-subs'), false);
+        assert.equal(/zh-Hans|zh-Hant|\bja\b|\.\*-orig/.test(args.join('\n')), false);
         return over;
       },
     });

@@ -129,14 +129,16 @@
           "kind": "channel",
           "role": "video",
           "handle": "TheValley101",
-          "url": "https://www.youtube.com/@TheValley101"
+          "url": "https://www.youtube.com/@TheValley101",
+          "language": "zh"
         },
         {
           "key": "valley101-audio",
           "kind": "channel",
           "role": "audio",
           "handle": "valley101podcast",
-          "url": "https://www.youtube.com/@valley101podcast"
+          "url": "https://www.youtube.com/@valley101podcast",
+          "language": "zh"
         }
       ]
     },
@@ -150,7 +152,8 @@
           "key": "xiaojun",
           "kind": "channel",
           "handle": "xiaojunpodcast",
-          "url": "https://www.youtube.com/@xiaojunpodcast"
+          "url": "https://www.youtube.com/@xiaojunpodcast",
+          "language": "zh"
         }
       ]
     }

@@ -371,6 +371,7 @@ export async function runYoutubePodcastRound(deps = {}) {
               workDir,
               env,
               signal,
+              language: channel.language || '',
             });
           if (probed?.blocked) {
             stats.stopped = probed.blocked;

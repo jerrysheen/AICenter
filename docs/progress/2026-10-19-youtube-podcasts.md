@@ -17,15 +17,26 @@ node scripts/ensure-yt-dlp.mjs
 
 `yt-dlp` 必须是 **2025.11.12 或更新**。采集会传 `--js-runtimes node:<当前 node 可执行文件>`，旧版会报 `no such option`，本轮直接停，原因是 `yt-dlp-outdated`，不计入尝试次数。每轮开始先跑 `yt-dlp --version`。二进制不在 PATH 上时，把 `AI_CENTER_YT_DLP` 设成绝对路径，例如 `C:\Tools\yt-dlp.exe`。`data` 所在磁盘至少留 512MB，不够就跳过这一集的音频下载。
 
-上线前在服务器上手动冒烟，确认元数据和字幕会写成文件，并且能下音频。不要加 `--dump-single-json`，那个开关默认是模拟模式，字幕和 `info.json` 都不会落盘。把下面的视频换成任意公开视频：
+上线前在服务器上手动冒烟，确认元数据和一条字幕会写成文件，并且能下音频。不要加 `--dump-single-json`，那个开关默认是模拟模式，字幕和 `info.json` 都不会落盘。也不要一次请求 `zh-Hans`、`zh-Hant`、`ja` 或 `.*-orig`：英文节目的 `zh-Hans` 是自动翻译，会 HTTP 429，第一条失败时 `.vtt` 和 `.info.json` 都不会生成；`.*-orig` 会一次匹配二十几种语言。把下面的视频换成任意公开视频：
 
 ```text
 mkdir %TEMP%\yt-smoke
-yt-dlp --js-runtimes node --skip-download --write-info-json --write-subs --write-auto-subs --convert-subs vtt --sub-langs "zh-Hans,zh-Hant,zh,ja,.*-orig" -o "%TEMP%\yt-smoke\%(id)s.%(ext)s" -- "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+yt-dlp --js-runtimes node --skip-download --write-info-json -o "%TEMP%\yt-smoke\%(id)s.%(ext)s" -- "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+```
+
+打开生成的 `.info.json`，看 `language`、`subtitles`（人工）和 `automatic_captions`。再只下一轨。`language` 是 `en-US` 这类英文、且没有人工原语种字幕时：
+
+```text
+yt-dlp --js-runtimes node --skip-download --write-auto-subs --convert-subs vtt --sub-langs "en-orig" -o "%TEMP%\yt-smoke\%(id)s.%(ext)s" -- "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+```
+
+中文节目有人工 `zh` 时，把这一条换成 `--write-subs --sub-langs "zh"`。主语言取 `en-US` 的 `en` 这一段。第一条必须生成 `.info.json`。第二条只应多出一个 `.vtt`。然后再确认音频：
+
+```text
 yt-dlp -f bestaudio -x --audio-format wav --js-runtimes node -o "%TEMP%\yt-smoke\%(id)s.%(ext)s" -- "https://www.youtube.com/watch?v=jNQXAC9IVRw"
 ```
 
-第一条跑完后，`%TEMP%\yt-smoke` 里要有 `.info.json`；这个视频有字幕时还要有 `.vtt`。第二条确认有 wav 后，把整个目录删掉。`config/youtube-podcasts.json` 缺失时，日志写明路径，页面只显示「配置缺失」，不会悄悄当成空名单。
+有 wav 后把整个目录删掉。`config/youtube-podcasts.json` 缺失时，日志写明路径，页面只显示「配置缺失」，不会悄悄当成空名单。
 
 ## 环境变量
 
@@ -54,6 +65,7 @@ yt-dlp -f bestaudio -x --audio-format wav --js-runtimes node -o "%TEMP%\yt-smoke
 - `kind: "playlist"` 只抓这个播放列表，不抓整个频道。Odd Lots 必须保持播放列表 `PLe4PRejZgr0OJbRzA6nWybYiThLJd_ouz`。
 - 同一博主的多个频道放在同一个 `creators[].id` 下，并用 `role` 标 `video` 或 `audio`。硅谷101 的视频版和音频版共用 `valley101`。
 - `prefer: "zh"` 只留中文原版。张小玺的英文配音版会在同一期里被丢掉。
+- `language` 只在 `info.json` 没有 `language` 时兜底。硅谷101 和张小玺的频道是 `zh`。英文节目靠视频自己的 `en-US` 即可，不必写这个字段。
 - 删掉一个博主后，已经入库的集仍留在库里，页面会排在配置列表后面。
 
 ## 怎么跑
@@ -76,7 +88,7 @@ node --env-file=.env scripts/youtube-podcasts-run.mjs
 
 只有 `yt-dlp` 退出码不是 0、并且 stderr 的 `ERROR:` 行里出现人机验证或 HTTP 429，才因这两件事停止本轮。stderr 里的 `yt-dlp: error:` 或 `no such option` 也停止本轮，不计入尝试次数。视频简介里的「429」不会停轮。RSS 和频道页只在状态码不是 2xx 时做这个判断。请求超过 15 秒按这一条失败，不停止整轮。Gemini 或 Gemma 的 429 和额度错误也不计入尝试次数，直接停止本轮。当前这一集不写完成，下一轮从这里继续。找不到 `yt-dlp` 同样停本轮。
 
-探测只用 `--skip-download --write-info-json --write-subs --write-auto-subs`，时长、直播状态和字幕都从 `<视频 id>.info.json` 和同目录的 `.vtt` 读取。不传 `--dump-single-json`。stdout 上限 16MB，stderr 仍是 256KB。`info.json` 解析失败或没有时长时记 `failed` / `probe-parse`，不会当成短片永久跳过。
+探测分两步。第一步只用 `--skip-download --write-info-json`，不写字幕。时长、直播状态、`language`、人工 `subtitles` 和 `automatic_captions` 都从 `<视频 id>.info.json` 读。第二步只下一条：人工中文或人工原语种优先，否则下 `<主语言>-orig`（`en-US` 对上 `en-orig`）。不传 `--dump-single-json`，也不传 `zh-Hans`、`zh-Hant`、`ja` 或 `.*-orig`。字幕这一步的 `ERROR:` 行如果是 HTTP 429，仍停止本轮。stdout 上限 16MB，stderr 仍是 256KB。`info.json` 解析失败或没有时长时记 `failed` / `probe-parse`，不会当成短片永久跳过。
 
 Worker 允许这一轮跑满 `AI_CENTER_YOUTUBE_PODCASTS_MAX_RUNNING_MS`（默认 3 小时）。进程内截止时间早 10 分钟。到点后结束 `yt-dlp` 和它拉起的 ffmpeg：Windows 用 `taskkill /T /F`，其他系统结束进程组。手动再入队时，上一轮已经停干净，不会两轮同时写同一个音频文件。音频放在实例 `tmp/youtube-podcasts` 下的独立目录，文件名带视频 id，转写完连同 `.part` 一起删除。Worker 启动时清掉这个目录；目录正被占用时只记日志，不因此拒绝启动。下载前如果剩余空间不足 512MB，就跳过这一集。
 
@@ -90,7 +102,7 @@ Worker 允许这一轮跑满 `AI_CENTER_YOUTUBE_PODCASTS_MAX_RUNNING_MS`（默�
 
 小时报、信息流列表、窗口查询、搜索和研究召回都显式排除 `provider=youtube`，不依赖质量规则碰巧挡住。作者页按 id 读取时放行这些条目，所以 YouTube 标签下能看到已入库的集。
 
-自动字幕只采用 `*-orig`，或与视频原语种一致的自动字幕。下载字幕时不再请求 `zh.*` 和 `en` 这类自动翻译字幕。原视频地址一律用 `watch?v=`，并放在 `--` 后面交给 yt-dlp。超过 6 万字的文字稿分段摘要后再合并。摘要模型可用 `AI_CENTER_YOUTUBE_PODCASTS_SUMMARY_MODEL` 单独指定。配置文件缺失时，页面只写「配置缺失」，不带服务器路径。
+自动字幕只下与视频主语言一致的那一条 `*-orig`（`en-US` 对上 `en-orig`，不会把 `ar-orig` 也当成原语种）。不下载自动翻译的 `zh-Hans`、`zh-Hant` 或 `ja`。原视频地址一律用 `watch?v=`，并放在 `--` 后面交给 yt-dlp。超过 6 万字的文字稿分段摘要后再合并。摘要模型可用 `AI_CENTER_YOUTUBE_PODCASTS_SUMMARY_MODEL` 单独指定。配置文件缺失时，页面只写「配置缺失」，不带服务器路径。
 
 ## Gemini 用量
 

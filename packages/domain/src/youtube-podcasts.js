@@ -79,6 +79,7 @@ export function loadYoutubePodcastConfig(filePath) {
         playlistId: String(channel.playlistId || '').trim(),
         handle: String(channel.handle || '').replace(/^@/, '').trim(),
         url: String(channel.url || '').trim(),
+        language: String(channel.language || creator.language || '').trim(),
       })),
     })),
   };
