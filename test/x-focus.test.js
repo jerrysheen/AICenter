@@ -409,6 +409,42 @@ function autoService(env, state, calls) {
   });
 }
 
+test('auto like skips KEEP produced by the local fallback', async () => {
+  const following = capture('3001', modelFocus('oil-geopolitics', 0.99), { filterReason: 'jev-disabled-following' });
+  const capped = capture('3002', modelFocus('oil-geopolitics', 0.98), { filterReason: 'fallback-following' });
+  const usage = capture('3003', modelFocus('oil-geopolitics', 0.97), { filterReason: 'fallback-xfocus' });
+  const real = capture('3004', modelFocus('oil-geopolitics', 0.8), { filterReason: 'all-three' });
+  const asCandidate = (row) => ({
+    contentItemId: row.contentItemId,
+    tweetId: row.externalId,
+    text: row.text,
+    title: row.title,
+    metadata: row.metadata,
+    focus: row.metadata.xFocus,
+    capturedAt: row.capturedAt,
+  });
+  const ranked = rankAutoLikeCandidates(
+    [following, capped, usage, real].map(asCandidate),
+    [],
+    { ...config, limits: config.autoLike },
+    NOW,
+  );
+  assert.equal(ranked.eligible, 1);
+  assert.equal(ranked.picked.tweetId, real.externalId);
+  const state = {
+    now: NOW,
+    rows: [following, capped, usage, real],
+    jobs: [],
+    openLike: [],
+    openUnlike: [],
+    settings: { pageEnabled: true, suspended: false, notice: '', consecutiveUnconfirmed: 0 },
+  };
+  const calls = [];
+  const dispatched = await autoService({ AI_CENTER_X_AUTO_LIKE: '1' }, state, calls).dispatch('local');
+  assert.equal(dispatched.tweetId, real.externalId);
+  assert.equal(calls.length, 1);
+});
+
 test('auto like keeps the highest kept card and respects switches, limits and duplicates', async () => {
   const oil = capture('1001', modelFocus('oil-geopolitics', 0.8));
   const chip = capture('1002', modelFocus('semis', 0.95));

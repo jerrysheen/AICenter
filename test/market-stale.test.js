@@ -8,7 +8,7 @@ import {
   marketUsFreshMs,
   usBoardFreshnessError,
 } from '../packages/runtime/src/web-snapshot-jobs.js';
-import { homeDataDelayLabel, marketClosedLabel, marketFillDelayMs, marketStaleLabel, quoteClosedLabel, quoteStaleLabel } from '../apps/web/public/home-timeline.js';
+import { homeDataDelayLabel, marketClosedLabel, marketFillDelayMs, marketPhaseLabel, marketStaleLabel, quoteClosedLabel, quoteStaleLabel } from '../apps/web/public/home-timeline.js';
 import { createMarketBoardReader } from '../packages/source/src/market/board-read.js';
 
 const catalog = {
@@ -532,12 +532,16 @@ test('US pre and post stay on the board and do not count as expired', async () =
   assert.equal(pre.market.sections[0].session, 'pre');
   assert.equal(pre.market.sections[0].marketOpen, false);
   assert.equal(marketStaleLabel(pre.market, Date.parse('2026-10-19T11:00:00Z')), '');
+  assert.equal(marketPhaseLabel(pre.market), '盘前');
+  assert.equal(quoteStaleLabel(pre.market.indices[0], Date.parse('2026-10-19T11:00:00Z')), '');
+  assert.equal(quoteClosedLabel(pre.market.indices[0], Date.parse('2026-10-19T11:00:00Z')), '盘前 · 10月19日 19:00');
 
   const post = await readAt(Date.parse('2026-10-19T21:00:00Z'), 'post');
   assert.equal(post.market.session, 'post');
   assert.equal(post.market.marketOpen, false);
   assert.equal(post.market.indices[0].session, 'post');
   assert.equal(post.market.stale, false);
+  assert.equal(quoteClosedLabel(post.market.indices[0], Date.parse('2026-10-19T21:00:00Z')), '盘后 · 10月20日 05:00');
 
   const night = await readAt(Date.parse('2026-10-20T01:00:00Z'), 'post');
   assert.equal(night.market.session, 'closed');
@@ -548,4 +552,89 @@ test('US pre and post stay on the board and do not count as expired', async () =
   assert.equal(weekend.market.session, 'closed');
   assert.equal(weekend.market.indices[0].session, 'closed');
   assert.equal(weekend.market.marketOpen, false);
+});
+
+test('the US open keeps premarket prices for five minutes instead of marking them expired', async () => {
+  const friday = Date.parse('2026-10-16T20:00:00Z');
+  const preAt = Date.parse('2026-10-19T13:12:00Z');
+  const payload = {
+    board: 'us',
+    mode: 'live',
+    fetchedAt: preAt,
+    stale: false,
+    session: 'pre',
+    groups: [],
+    indices: [{
+      symbol: '^GSPC', name: '标普 500', lastPrice: 5200.41, prevClose: 5200.41, change: 0, changePct: 0,
+      currency: 'USD', session: 'pre', asOf: friday,
+    }],
+    watchlist: [{
+      symbol: 'NVDA', name: 'NVIDIA', lastPrice: 218.55, prevClose: 214.13, change: 4.42, changePct: 2.06,
+      currency: 'USD', session: 'pre', asOf: preAt,
+    }],
+    gainers: [],
+    losers: [],
+    breadth: { advancers: 1, decliners: 0, unchanged: 1 },
+    sections: [{
+      id: 'us',
+      title: '美股观察',
+      session: 'pre',
+      indices: [{
+        symbol: '^GSPC', name: '标普 500', lastPrice: 5200.41, prevClose: 5200.41, change: 0, changePct: 0,
+        session: 'pre', asOf: friday,
+      }],
+      gainers: [],
+      losers: [],
+    }],
+  };
+  const readAt = (at) => createMarketBoardReader({
+    repository: { readSnapshot: () => ({ payload }) },
+    now: () => at,
+    staleMs: 180_000,
+  }).read({ board: 'us' });
+
+  const justOpen = Date.parse('2026-10-19T13:32:00Z');
+  const opening = await readAt(justOpen);
+  assert.equal(opening.market.session, 'regular');
+  assert.equal(opening.market.awaitingQuote, true);
+  assert.equal(opening.market.marketOpen, false);
+  assert.equal(opening.market.stale, false);
+  assert.equal(opening.market.sections[0].session, 'regular');
+  assert.equal(opening.market.sections[0].awaitingQuote, true);
+  assert.equal(marketStaleLabel(opening.market, justOpen), '');
+  assert.equal(marketPhaseLabel(opening.market), '盘中 · 等待报价');
+  assert.equal(marketPhaseLabel(opening.market.sections[0]), '盘中 · 等待报价');
+  assert.equal(marketClosedLabel(opening.market, justOpen), '');
+  const nvda = opening.market.watchlist[0];
+  assert.equal(nvda.session, 'pre');
+  assert.equal(nvda.lastPrice, 218.55);
+  assert.equal(quoteStaleLabel(nvda, justOpen), '');
+  assert.equal(quoteClosedLabel(nvda, justOpen), '盘前 · 10月19日 21:12');
+  const index = opening.market.indices[0];
+  assert.equal(quoteStaleLabel(index, justOpen), '');
+  assert.equal(quoteClosedLabel(index, justOpen), '盘中 · 等待报价');
+  assert.equal(quoteClosedLabel(opening.market.sections[0].indices[0], justOpen), '盘中 · 等待报价');
+
+  const printedAt = Date.parse('2026-10-19T13:31:00Z');
+  const settled = await createMarketBoardReader({
+    repository: { readSnapshot: () => ({ payload: { ...payload, watchlist: [{ ...payload.watchlist[0], asOf: printedAt, session: 'regular' }] } }) },
+    now: () => printedAt,
+    staleMs: 180_000,
+  }).read({ board: 'us' });
+  assert.equal(settled.market.awaitingQuote, undefined);
+  assert.equal(settled.market.session, 'regular');
+  assert.equal(settled.market.marketOpen, true);
+  assert.equal(settled.market.stale, false);
+  assert.equal(marketStaleLabel(settled.market, printedAt), '');
+  assert.equal(marketPhaseLabel(settled.market), '');
+  assert.equal(settled.market.sections[0].session, 'regular');
+  assert.equal(settled.market.sections[0].awaitingQuote, undefined);
+
+  const late = Date.parse('2026-10-19T13:36:00Z');
+  const expired = await readAt(late);
+  assert.equal(expired.market.awaitingQuote, undefined);
+  assert.equal(expired.market.marketOpen, true);
+  assert.equal(expired.market.session, 'regular');
+  assert.match(marketStaleLabel(expired.market, late), /^已过期 · 10月19日 21:12$/);
+  assert.match(quoteStaleLabel(expired.market.watchlist[0], late), /^已过期 · 10月19日 21:12$/);
 });

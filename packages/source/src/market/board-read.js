@@ -11,9 +11,11 @@ import {
   preferredOverviewFocus,
   quoteInRegularSession,
   quoteVenue,
+  usRegularOpenAt,
   usRegularSessionAt,
   usSessionAt,
 } from './boards.js';
+import { US_OPEN_GRACE_MS, usPreStartAt } from '../../../connectors/src/us-session.js';
 
 export const EXTRA_QUOTE_TIMEOUT_MS = 10_000;
 
@@ -136,10 +138,20 @@ function quoteLiveSession(item, nowMs, boardHint) {
   if (venue === 'hk') return hkSessionAt(nowMs);
   if (venue === 'us') {
     const clock = usSessionAt(nowMs);
-    if (clock !== 'pre' && clock !== 'post') return clock;
-    const own = String(item?.session || '').trim();
-    if (own === 'pre' || own === 'post') return own;
-    return clock;
+    if (clock === 'pre' || clock === 'post') {
+      const own = String(item?.session || '').trim();
+      if (own === 'pre' || own === 'post') return own;
+      return clock;
+    }
+    if (clock !== 'regular') return clock;
+    const openAt = usRegularOpenAt(nowMs);
+    const at = quoteAsOfMs(item);
+    if (openAt != null && at >= openAt) return 'regular';
+    if (openAt != null && nowMs - openAt < US_OPEN_GRACE_MS) {
+      const preStart = usPreStartAt(nowMs);
+      if (preStart != null && at >= preStart && at < openAt) return 'pre';
+    }
+    return 'regular';
   }
   if (venue === 'asia') {
     const open = hkSessionAt(nowMs) === 'regular' || Object.values(asiaSessionsAt(nowMs)).includes('regular');
@@ -152,7 +164,32 @@ function quoteLiveSession(item, nowMs, boardHint) {
 function stampQuoteClock(item, nowMs, boardHint) {
   if (!item || typeof item !== 'object') return item;
   const session = quoteLiveSession(item, nowMs, boardHint);
-  return { ...item, session, marketOpen: session === 'regular' };
+  const venue = quoteVenue(item, boardHint);
+  const openAt = venue === 'us' ? usRegularOpenAt(nowMs) : null;
+  const at = quoteAsOfMs(item);
+  const inGrace = venue === 'us'
+    && usSessionAt(nowMs) === 'regular'
+    && openAt != null
+    && nowMs - openAt < US_OPEN_GRACE_MS;
+  const hasRegularPrint = openAt != null && at >= openAt;
+  const awaitingQuote = inGrace && !hasRegularPrint && session !== 'pre' && session !== 'post';
+  const next = {
+    ...item,
+    session,
+    marketOpen: session === 'regular' && !awaitingQuote,
+  };
+  if (awaitingQuote) next.awaitingQuote = true;
+  else delete next.awaitingQuote;
+  return next;
+}
+
+function usRowsAwaitingOpen(rows, nowMs) {
+  if (usSessionAt(nowMs) !== 'regular') return false;
+  const openAt = usRegularOpenAt(nowMs);
+  if (openAt == null || nowMs - openAt >= US_OPEN_GRACE_MS) return false;
+  const usRows = (rows || []).filter((item) => item?.lastPrice != null && quoteVenue(item, 'us') === 'us');
+  if (!usRows.length) return true;
+  return !usRows.some((item) => quoteAsOfMs(item) >= openAt);
 }
 
 function pricedRows(payload) {
@@ -207,6 +244,7 @@ function sectionLiveSession(section, nowMs) {
     .flatMap((key) => section[key] || [])
     .filter((item) => item && item.lastPrice != null);
   const id = String(section.id || '').toLowerCase();
+  if (id === 'us' && usRowsAwaitingOpen(rows, nowMs)) return 'regular';
   if (rows.length) {
     if (rows.some((item) => item.marketOpen === true)) return 'regular';
     if (id === 'us') {
@@ -224,12 +262,16 @@ function sectionLiveSession(section, nowMs) {
   return String(section.session || '').trim() === 'regular' ? 'regular' : 'closed';
 }
 
-function boardLiveSession(payload, nowMs, open) {
-  if (open) return 'regular';
+function focusesUs(payload, nowMs) {
   const board = String(payload.board || '').toLowerCase();
   const focus = String(payload.focus || '').toLowerCase();
-  const usBoard = board === 'us' || (board === 'overview' && (focus || preferredOverviewFocus(nowMs)) === 'us');
-  if (!usBoard) return '';
+  return board === 'us' || (board === 'overview' && (focus || preferredOverviewFocus(nowMs)) === 'us');
+}
+
+function boardLiveSession(payload, nowMs, open) {
+  if (open) return 'regular';
+  if (!focusesUs(payload, nowMs)) return '';
+  if (usRowsAwaitingOpen(pricedRows(payload), nowMs)) return 'regular';
   return usExtendedSession(pricedRows(payload), nowMs) || '';
 }
 
@@ -249,11 +291,22 @@ export function withMarketClock(payload, nowMs = Date.now()) {
           stamped[key] = section[key].map((item) => stampQuoteClock(item, nowMs, section.id || board));
         }
       }
-      const session = sectionLiveSession(stamped, nowMs);
-      return { ...stamped, session, marketOpen: session === 'regular' };
+      return stamped;
     });
   }
   const open = boardClockOpen(next, nowMs);
+  const awaitingQuote = !open && focusesUs(next, nowMs) && usRowsAwaitingOpen(pricedRows(next), nowMs);
+  if (Array.isArray(next.sections)) {
+    next.sections = next.sections.map((section) => {
+      if (!section || typeof section !== 'object') return section;
+      const session = sectionLiveSession(section, nowMs);
+      const sectionAwaiting = awaitingQuote && String(section.id || '').toLowerCase() === 'us';
+      const nextSection = { ...section, session, marketOpen: session === 'regular' && !sectionAwaiting };
+      if (sectionAwaiting) nextSection.awaitingQuote = true;
+      else delete nextSection.awaitingQuote;
+      return nextSection;
+    });
+  }
   const idleRows = [
     ...(next.indices || []),
     ...(next.watchlist || []),
@@ -266,7 +319,10 @@ export function withMarketClock(payload, nowMs = Date.now()) {
     ])),
   ];
   const live = open ? 'regular' : boardLiveSession(next, nowMs, open);
-  return { ...next, marketOpen: open, session: live || idleSession(idleRows) };
+  const stamped = { ...next, marketOpen: open, session: live || idleSession(idleRows) };
+  if (awaitingQuote) stamped.awaitingQuote = true;
+  else delete stamped.awaitingQuote;
+  return stamped;
 }
 
 export function stampBoardStale(payload, nowMs, staleMs) {
