@@ -565,7 +565,7 @@ export function createFeedRepository(database, emitEvent) {
       const input = parseContract(SaveCaptureInputSchema, value);
       const capturedAt = input.capturedAt || Date.now();
       const id = input.id || randomUUID();
-      database.transaction(() => {
+      const apply = database.transaction(() => {
         const filter = feedFilterColumns(input.metadata);
         const previous = database.prepare(`SELECT author_native_id FROM captures
           WHERE workspace_id = ? AND provider = ? AND external_id = ?`)
@@ -607,7 +607,8 @@ export function createFeedRepository(database, emitEvent) {
           .get(input.workspaceId, input.provider, input.externalId);
         emitEvent('feed.capture.saved.v1', 'capture', row.id,
           { captureId: row.id, provider: input.provider, status: input.status }, input.workspaceId);
-      })();
+      });
+      apply.immediate();
       return mapCapture(database.prepare(`SELECT * FROM captures
         WHERE workspace_id = ? AND provider = ? AND external_id = ?`)
         .get(input.workspaceId, input.provider, input.externalId));
@@ -1407,7 +1408,8 @@ export function createFeedRepository(database, emitEvent) {
     },
 
     noteCaptureAuthor(value) {
-      return database.transaction(() => writeCaptureAuthor(database, value))();
+      const apply = database.transaction(() => writeCaptureAuthor(database, value));
+      return apply.immediate();
     },
 
     listContentItemsWithSource(workspaceId, { limit = 200, ids = [],qualityRule='' } = {}) {
