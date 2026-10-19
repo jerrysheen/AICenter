@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createYahooClient, isUsMarketSymbol, preferNewerQuote, yahooCacheMs } from '../packages/connectors/src/yahoo.js';
+import { createYahooClient, isUsMarketSymbol, preferNewerQuote, quoteFromSpark, yahooCacheMs } from '../packages/connectors/src/yahoo.js';
 import {
+  createUsQuoteFallback,
   quoteFromSinaUsBody,
   quoteFromTencentUsBody,
   yahooToSinaUs,
   yahooToTencentUs,
 } from '../packages/connectors/src/us-quote-fallback.js';
+import { usSessionAt } from '../packages/connectors/src/us-session.js';
 
 const NOW = Date.parse('2026-10-15T13:53:10Z');
 
@@ -262,11 +264,14 @@ test('a later caller joins the in-flight Yahoo request', async () => {
 test('US quotes run before a bulk batch that is only queued', async () => {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
+  let started = 0;
   const seen = [];
   const fetchImpl = async (url) => {
     const symbols = new URL(String(url)).searchParams.get('symbols');
+    const order = started;
+    started += 1;
     seen.push(symbols);
-    if (seen.length === 1) await gate;
+    if (order < 2) await gate;
     const names = symbols.split(',');
     return response(JSON.stringify({ spark: { result: names.map((symbol) => spark(symbol, 3)) } }));
   };
@@ -280,16 +285,17 @@ test('US quotes run before a bulk batch that is only queued', async () => {
   });
   const bulk = Array.from({ length: 21 }, (_, index) => `${String(index).padStart(6, '0')}.KS`);
   const bulkPromise = client.fetchQuotes(bulk);
-  for (let attempt = 0; attempt < 40 && seen.length < 1; attempt += 1) {
+  for (let attempt = 0; attempt < 40 && started < 2; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   const usPromise = client.fetchQuotes(['AAPL']);
   await new Promise((resolve) => setImmediate(resolve));
   release();
   await Promise.all([bulkPromise, usPromise]);
-  assert.equal(seen[1], 'AAPL');
+  assert.equal(seen[2], 'AAPL');
   assert.match(seen[0], /\.KS/);
-  assert.match(seen[2], /\.KS/);
+  assert.match(seen[1], /\.KS/);
+  assert.match(seen[3], /\.KS/);
 });
 
 test('an older quote does not replace a newer cached quote', async () => {
@@ -363,4 +369,166 @@ test('a quote cached from the previous snapshot is fetched again before the next
   clock = NOW + 46_000;
   await client.fetchQuotes(['AAPL']);
   assert.equal(sparkCalls, 2);
+});
+
+const PRE_NOW = Date.parse('2026-10-19T12:35:10Z');
+const SINA_NVDA_PRE = [
+  '英伟达', '214.1300', '-1.43', '2026-10-19 20:35:03', '-3.1000', '216.5600',
+  '218.6760', '213.3200', '243.3700', '164.0200', '121252502', '', '', '', '', '', '', '', '', '',
+  '69', '218.2000', '1.90', '4.07', 'Oct 19 08:35AM EDT', 'Oct 16 04:00PM EDT', '217.2300', '', '', '2026',
+].join(',');
+
+test('Sina premarket fields price off the regular close', () => {
+  assert.equal(usSessionAt(Date.parse('2026-10-19T11:00:00Z')), 'pre');
+  const quote = quoteFromSinaUsBody(SINA_NVDA_PRE, 'NVDA', PRE_NOW);
+  assert.equal(quote.provider, 'sina');
+  assert.equal(quote.session, 'pre');
+  assert.equal(quote.lastPrice, 218.2);
+  assert.equal(quote.prevClose, 214.13);
+  assert.equal(quote.change, 4.07);
+  assert.equal(quote.changePct, 1.9);
+  assert.equal(quote.asOf, Date.parse('2026-10-19T12:35:00Z'));
+  assert.ok(Math.abs((quote.lastPrice - quote.prevClose) - quote.change) < 0.02);
+  assert.notEqual(quote.prevClose, 217.23);
+
+  const fields = SINA_NVDA_PRE.split(',');
+  fields[21] = '0.0000';
+  fields[24] = '';
+  const regular = quoteFromSinaUsBody(fields.join(','), 'NVDA', PRE_NOW);
+  assert.equal(regular.session, 'closed');
+  assert.equal(regular.lastPrice, 214.13);
+  assert.equal(regular.prevClose, 217.23);
+  assert.equal(regular.asOf, Date.parse('2026-10-16T20:00:00Z'));
+});
+
+test('premarket prefers Sina because Tencent has no extended fields', async () => {
+  const urls = [];
+  const fetchImpl = async (url) => {
+    urls.push(String(url));
+    if (String(url).includes('hq.sinajs.cn')) {
+      return response(`var hq_str_gb_nvda="${SINA_NVDA_PRE}";`);
+    }
+    throw new Error(`unexpected ${url}`);
+  };
+  const quotes = await createUsQuoteFallback({
+    fetchImpl,
+    now: () => PRE_NOW,
+    timeoutMs: 1_000,
+  }).fetchQuotes(['NVDA']);
+  assert.match(urls[0], /hq\.sinajs\.cn/);
+  assert.equal(urls.some((url) => url.includes('qt.gtimg.cn')), false);
+  assert.equal(quotes[0].session, 'pre');
+  assert.equal(quotes[0].lastPrice, 218.2);
+});
+
+test('Yahoo pre and post prevClose is the previous regular close', () => {
+  const nowSec = Math.trunc(Date.parse('2026-10-19T12:00:00Z') / 1000);
+  function extended(sessionName) {
+    return quoteFromSpark({
+      symbol: 'ARM',
+      response: [{
+        meta: {
+          symbol: 'ARM',
+          shortName: 'ARM',
+          currency: 'USD',
+          regularMarketPrice: 227.8,
+          previousClose: 244.79,
+          chartPreviousClose: 244.79,
+          fulldayPrice: 236.98,
+          fulldayChangePercent: 4.03,
+          fulldayChange: -7.81,
+          regularMarketChangePercent: -6.94,
+          currentTradingPeriod: {
+            [sessionName]: { start: nowSec - 60, end: nowSec + 60 },
+          },
+        },
+        indicators: { quote: [{ close: [227.8] }] },
+      }],
+    }, nowSec);
+  }
+  for (const sessionName of ['pre', 'post']) {
+    const quote = extended(sessionName);
+    assert.equal(quote.session, sessionName);
+    assert.equal(quote.lastPrice, 236.98);
+    assert.equal(quote.prevClose, 227.8);
+    assert.equal(quote.change, 236.98 - 227.8);
+    assert.equal(quote.changePct, ((236.98 - 227.8) / 227.8) * 100);
+  }
+});
+
+test('a timed out Yahoo batch retries once and only that batch falls back', async () => {
+  const attempts = new Map();
+  const fallbackSymbols = [];
+  const fetchImpl = async (url) => {
+    const symbols = new URL(String(url)).searchParams.get('symbols').split(',');
+    const key = symbols.includes('S0') ? 'slow' : symbols.join(',');
+    const count = (attempts.get(key) || 0) + 1;
+    attempts.set(key, count);
+    if (symbols.includes('S0') && count <= 2) throw new Error('Yahoo 行情请求超时。');
+    return response(JSON.stringify({ spark: { result: symbols.map((symbol) => spark(symbol, 5)) } }));
+  };
+  const client = createYahooClient({
+    fetchImpl,
+    now: () => NOW,
+    timeoutMs: 1_000,
+    minIntervalMs: 0,
+    log() {},
+    fallback: {
+      async fetchQuotes(symbols) {
+        fallbackSymbols.push(...symbols);
+        return symbols.map((symbol) => ({
+          symbol,
+          lastPrice: 1,
+          prevClose: 2,
+          change: -1,
+          changePct: -50,
+          session: 'pre',
+          provider: 'sina',
+          asOf: NOW,
+        }));
+      },
+    },
+  });
+  const slow = Array.from({ length: 10 }, (_, index) => `S${index}`);
+  const board = await client.fetchQuotes([...slow, 'TAIL']);
+  assert.equal(attempts.get('slow'), 2);
+  assert.equal(attempts.get('TAIL'), 1);
+  assert.deepEqual(fallbackSymbols, slow);
+  assert.equal(board.quotes.find((item) => item.symbol === 'S0').provider, 'sina');
+  assert.equal(board.quotes.find((item) => item.symbol === 'TAIL').provider, 'yahoo');
+  assert.equal(board.quotes.find((item) => item.symbol === 'TAIL').lastPrice, 5);
+});
+
+test('two Yahoo spark batches are in flight together', async () => {
+  let inflight = 0;
+  let maxInflight = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let started = 0;
+  const fetchImpl = async (url) => {
+    inflight += 1;
+    maxInflight = Math.max(maxInflight, inflight);
+    started += 1;
+    if (started <= 2) await gate;
+    inflight -= 1;
+    const symbols = new URL(String(url)).searchParams.get('symbols').split(',');
+    return response(JSON.stringify({ spark: { result: symbols.map((symbol) => spark(symbol, 6)) } }));
+  };
+  const client = createYahooClient({
+    fetchImpl,
+    now: () => NOW,
+    timeoutMs: 2_000,
+    minIntervalMs: 0,
+    log() {},
+    fallback: { async fetchQuotes() { return []; } },
+  });
+  const symbols = Array.from({ length: 20 }, (_, index) => `B${index}`);
+  const pending = client.fetchQuotes(symbols);
+  for (let attempt = 0; attempt < 40 && started < 2; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(maxInflight, 2);
+  release();
+  const board = await pending;
+  assert.equal(board.quotes.length, 20);
 });
