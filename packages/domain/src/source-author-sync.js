@@ -46,6 +46,7 @@ export function ensureSourceAuthorItem(feed, input = {}) {
         sourceId: profile.sourceId || '',
         lane: profile.platform,
         publishedAtRaw: input.publishedAtRaw || '',
+        ...(input.officialMirror ? { officialMirror: true } : {}),
       },
     });
   }
@@ -76,19 +77,31 @@ export function ensureSourceAuthorItem(feed, input = {}) {
   return { authorId: profile.authorId, created: false, contentItemId: existing.id };
 }
 
-export function officialReleaseExternalId(sourceKey, release) {
+export function officialArticleExternalId(sourceKey, release) {
   const fromUrl = stableArticleId(sourceKey, { link: release?.sourceUrl || '' });
-  if (fromUrl) return fromUrl.slice(0, 400);
+  return fromUrl ? fromUrl.slice(0, 400) : '';
+}
+
+export function officialReleaseExternalId(sourceKey, release) {
+  const key = String(sourceKey || '').trim();
+  const articleId = officialArticleExternalId(key, release);
   const releaseId = String(release?.releaseId || '').trim();
-  return releaseId ? `${sourceKey}:release:${releaseId}`.slice(0, 400) : '';
+  const id = articleId || (releaseId ? `${key}:release:${releaseId}` : '');
+  if (!key || !id) return '';
+  return `official-board:${key}:${id}`.slice(0, 400);
 }
 
 export function syncOfficialReleases(feed, workspaceId, releases, releaseSourceIds = {}) {
   let linked = 0;
   for (const release of releases || []) {
     const source = officialAuthorForRelease(release, releaseSourceIds);
-    const externalId = source ? officialReleaseExternalId(source.sourceKey, release) : '';
-    if (!source || !externalId) continue;
+    if (!source) continue;
+    const articleId = officialArticleExternalId(source.sourceKey, release);
+    const real = articleId ? feed.getCapture(workspaceId, 'media', articleId) : null;
+    const externalId = real && real.metadata?.officialMirror !== true
+      ? articleId
+      : officialReleaseExternalId(source.sourceKey, release);
+    if (!externalId) continue;
     try {
       const result = ensureSourceAuthorItem(feed, {
         workspaceId,
@@ -99,6 +112,7 @@ export function syncOfficialReleases(feed, workspaceId, releases, releaseSourceI
         sourceUrl: release.sourceUrl || '',
         publishedAt: release.publishedAt,
         contentHash: contentHash(`official:${release.releaseId || externalId}`),
+        officialMirror: externalId !== articleId,
       });
       if (result) linked += 1;
     } catch (error) {

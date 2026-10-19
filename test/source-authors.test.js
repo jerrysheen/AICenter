@@ -9,7 +9,8 @@ import { createStore } from '../packages/database/src/index.js';
 import { latestSchemaVersion } from '../packages/database/src/migrations.js';
 import { createAuthorService } from '../packages/domain/src/author-service.js';
 import { authorCaptureFields } from '../packages/domain/src/authors.js';
-import { officialReleaseExternalId, syncOfficialReleases } from '../packages/domain/src/source-author-sync.js';
+import { officialArticleExternalId, officialReleaseExternalId, syncOfficialReleases } from '../packages/domain/src/source-author-sync.js';
+import { stableArticleId } from '../packages/connectors/src/media/article-url.js';
 import { createTreeMaterialPort } from '../packages/domain/src/information-tree-materials.js';
 import {
   annotateOfficialReleases,
@@ -390,17 +391,20 @@ test('official board mirrors stay out of the feed, hourly report, and classifica
     }, publishedAt);
 
     const externalId = officialReleaseExternalId('fed', release);
+    assert.equal(externalId.startsWith('official-board:fed:'), true);
+    assert.notEqual(externalId, officialArticleExternalId('fed', release));
     const capture = feed.getCapture('local', 'media', externalId);
-    assert.equal(capture.metadata.lane, 'official');
+    assert.equal(capture.metadata.officialMirror, true);
     assert.equal(capture.metadata.filterDecision || '', '');
     assert.equal(capture.status, 'ready');
     const prefixCapture = feed.getCapture('local', 'media', 'fed-prefix-only');
-    assert.equal(prefixCapture.metadata.lane || '', '');
+    assert.equal(prefixCapture.metadata.officialMirror || false, false);
     assert.equal(prefixCapture.metadata.filterDecision || '', '');
 
     const titles = (rows) => rows.map((row) => row.title);
     const stored = titles(feed.listContentItems('local', { limit: 20 }));
-    assert.deepEqual(stored.filter((title) => title === 'FOMC statement' || title === '只有作者前缀'), []);
+    assert.equal(stored.includes('FOMC statement'), false);
+    assert.ok(stored.includes('只有作者前缀'));
     assert.ok(stored.includes('社交一条'));
     assert.ok(stored.includes('媒体正文'));
 
@@ -424,7 +428,8 @@ test('official board mirrors stay out of the feed, hourly report, and classifica
       },
       mediaService: { informationCandidates: () => [] },
     }).candidates('local', window);
-    assert.deepEqual(titles(hourly).filter((title) => title === 'FOMC statement' || title === '只有作者前缀'), []);
+    assert.equal(titles(hourly).includes('FOMC statement'), false);
+    assert.ok(titles(hourly).includes('只有作者前缀'));
     assert.ok(titles(hourly).includes('社交一条'));
     assert.ok(titles(hourly).includes('媒体正文'));
     const officialAccount = feed.listWindowSources('local', window)
@@ -435,15 +440,16 @@ test('official board mirrors stay out of the feed, hourly report, and classifica
     assert.ok(refresh.some((row) => row.externalId === 'xq-social'));
     assert.equal(refresh.some((row) => row.externalId === externalId || row.externalId === 'fed-prefix-only'), false);
     const taggable = titles(feed.listContentItemsWithSource('local', { limit: 20 }));
-    assert.deepEqual(taggable.filter((title) => title === 'FOMC statement' || title === '只有作者前缀'), []);
+    assert.equal(taggable.includes('FOMC statement'), false);
+    assert.ok(taggable.includes('只有作者前缀'));
     const officialIds = [
       feed.getContentItemByCapture('local', capture.id).id,
       feed.getContentItemByCapture('local', prefixCapture.id).id,
     ];
     const mediaId = feed.getContentItemByCapture('local', feed.getCapture('local', 'media', 'nextplatform:body').id).id;
     assert.deepEqual(
-      titles(feed.listContentItemsWithSource('local', { ids: [...officialIds, mediaId], limit: 10 })),
-      ['媒体正文'],
+      titles(feed.listContentItemsWithSource('local', { ids: [...officialIds, mediaId], limit: 10 })).sort(),
+      ['只有作者前缀', '媒体正文'],
     );
 
     const authors = createAuthorService({
@@ -454,15 +460,141 @@ test('official board mirrors stay out of the feed, hourly report, and classifica
 
     const backed = await runSourceAuthorBackfill(store, { sleepMs: 0 });
     assert.equal(backed.official, 1);
+    assert.equal(feed.getCapture('local', 'media', externalId).metadata.officialMirror, true);
     assert.equal(feed.getCapture('local', 'media', externalId).metadata.filterDecision || '', '');
-    assert.equal(feed.getCapture('local', 'media', 'fed-prefix-only').metadata.filterDecision || '', '');
-    assert.deepEqual(
-      titles(feed.listContentItems('local', { limit: 20 })).filter((title) => title === 'FOMC statement' || title === '只有作者前缀'),
-      [],
-    );
+    assert.equal(feed.getCapture('local', 'media', 'fed-prefix-only').metadata.officialMirror || false, false);
+    const afterBackfill = titles(feed.listContentItems('local', { limit: 20 }));
+    assert.equal(afterBackfill.includes('FOMC statement'), false);
+    assert.ok(afterBackfill.includes('只有作者前缀'));
     assert.equal(store.listJobs(20).some((job) => /quality\.refresh|information\.prepare|tagging\.analyze|reading-class/.test(job.type)), false);
     const script = readFileSync(new URL('../scripts/backfill-source-authors.mjs', import.meta.url), 'utf8');
     assert.doesNotMatch(script, /feedFilter|listContentItems|listQualityRefresh|enqueueTree|reading-class|tagging\.analyze/);
+  } finally {
+    store.close();
+  }
+});
+
+test('a real policy-source article stays in hourly, search, and taggable lists', async () => {
+  const store = openStore();
+  const publishedAt = Date.now() - 1_000;
+  const window = { startAt: publishedAt - 60_000, endAt: Date.now() + 60_000 };
+  const link = 'https://www.federalreserve.gov/newsevents/pressreleases/monetary20261018a.htm';
+  const articleId = stableArticleId('fed', { link });
+  const release = {
+    releaseId: 'fed-real',
+    title: '看板标题',
+    authority: 'Federal Reserve',
+    sourceUrl: link,
+    publishedAt,
+  };
+  try {
+    const feed = store.repositories.feed;
+    saveSourceItem(feed, {
+      sourceKey: 'fed', externalId: articleId, title: '美联储原文', publishedAt,
+    });
+    syncOfficialReleases(feed, 'local', [release], { 'fed-real': 'policy.us.fed' });
+    store.repositories.runtimeSnapshots.saveSnapshot('local', 'static-signal-board', {
+      generatedAt: publishedAt,
+      releases: [release],
+      releaseSourceIds: { 'fed-real': 'policy.us.fed' },
+    }, publishedAt);
+    await runSourceAuthorBackfill(store, { sleepMs: 0 });
+
+    assert.equal(feed.getCapture('local', 'media', officialReleaseExternalId('fed', release)), null);
+    const capture = feed.getCapture('local', 'media', articleId);
+    assert.equal(capture.metadata.officialMirror || false, false);
+    assert.equal(capture.metadata.sourceKey, 'fed');
+    const titles = (rows) => rows.map((row) => row.title);
+    assert.ok(titles(feed.listContentItems('local', { limit: 20 })).includes('美联储原文'));
+    assert.equal(titles(feed.listContentItems('local', { limit: 20 })).includes('看板标题'), false);
+    assert.ok(titles(feed.listContentItemsInWindow('local', { ...window, timeBasis: 'ingested' })).includes('美联储原文'));
+    assert.ok(titles(feed.listContentItemsWithSource('local', { limit: 20 })).includes('美联储原文'));
+    const authors = createAuthorService({
+      authorRepository: store.repositories.authors,
+      feedRepository: feed,
+    });
+    assert.deepEqual(authors.items('local', 'official:fed').items.map((item) => item.title), ['美联储原文']);
+  } finally {
+    store.close();
+  }
+});
+
+test('media ingestion after an official mirror keeps the real article visible', () => {
+  const store = openStore();
+  const publishedAt = Date.now() - 1_000;
+  const window = { startAt: publishedAt - 60_000, endAt: Date.now() + 60_000 };
+  const release = {
+    releaseId: 'fed-later',
+    title: 'FOMC statement',
+    authority: 'Federal Reserve',
+    sourceUrl: 'https://www.federalreserve.gov/newsevents/pressreleases/monetary20261017a.htm',
+    publishedAt,
+  };
+  try {
+    const feed = store.repositories.feed;
+    syncOfficialReleases(feed, 'local', [release], { 'fed-later': 'policy.us.fed' });
+    const articleId = officialArticleExternalId('fed', release);
+    const mirrorId = officialReleaseExternalId('fed', release);
+    assert.equal(mirrorId.startsWith('official-board:fed:'), true);
+    assert.notEqual(articleId, mirrorId);
+    assert.equal(feed.getCapture('local', 'media', articleId), null);
+    assert.equal(feed.getCapture('local', 'media', mirrorId).metadata.officialMirror, true);
+
+    const account = feed.upsertSourceAccount({
+      workspaceId: 'local',
+      provider: 'media',
+      externalId: 'media:fed',
+      displayName: '美联储',
+      profileUrl: release.sourceUrl,
+      authMode: 'public',
+      metadata: { sourceKey: 'fed', sourceId: 'policy.us.fed' },
+    });
+    feed.saveCapture({
+      workspaceId: 'local',
+      provider: 'media',
+      externalId: articleId,
+      sourceAccountId: account.id,
+      sourceUrl: release.sourceUrl,
+      title: '美联储全文',
+      contentHash: hash('fed-body'),
+      status: 'ready',
+      publishedAt,
+      metadata: {
+        publisherKey: 'fed',
+        sourceKey: 'fed',
+        contentLevel: 'full',
+        publishedAtRaw: '',
+        channel: 'macro',
+      },
+    });
+    const real = feed.getCapture('local', 'media', articleId);
+    feed.saveContentItem({
+      workspaceId: 'local',
+      captureId: real.id,
+      originType: 'subscription',
+      contentType: 'article',
+      title: '美联储全文',
+      body: '这是媒体采集到的正文',
+      summary: '摘要',
+      sourceUrl: release.sourceUrl,
+      authorName: '美联储',
+      publishedAt,
+    });
+
+    assert.equal(real.metadata.officialMirror || false, false);
+    assert.notEqual(real.id, feed.getCapture('local', 'media', mirrorId).id);
+    const titles = (rows) => rows.map((row) => row.title);
+    assert.ok(titles(feed.listContentItems('local', { limit: 20 })).includes('美联储全文'));
+    assert.equal(titles(feed.listContentItems('local', { limit: 20 })).includes('FOMC statement'), false);
+    assert.ok(titles(feed.listContentItemsInWindow('local', { ...window, timeBasis: 'ingested' })).includes('美联储全文'));
+    assert.equal(titles(feed.listContentItemsInWindow('local', { ...window, timeBasis: 'ingested' })).includes('FOMC statement'), false);
+    assert.ok(titles(feed.listContentItemsWithSource('local', { limit: 20 })).includes('美联储全文'));
+    assert.equal(titles(feed.listContentItemsWithSource('local', { limit: 20 })).includes('FOMC statement'), false);
+    const authors = createAuthorService({
+      authorRepository: store.repositories.authors,
+      feedRepository: feed,
+    });
+    assert.ok(authors.items('local', 'official:fed').items.some((item) => item.title === '美联储全文'));
   } finally {
     store.close();
   }

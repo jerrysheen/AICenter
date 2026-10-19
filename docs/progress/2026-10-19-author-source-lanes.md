@@ -14,7 +14,7 @@
 
 官方发布仍写成 `provider=media` 的内容条目，外部 id 与现有文章 id 相同，不新增 provider。作者页因此能打开这些条目。正文已经存在时只补发布时间并重新挂作者，不覆盖正文。媒体索引写入本身不新建内容条目，只给已有 capture 补 `sourceKey` 和 `authorId`。历史索引里还没有内容条目的，由回填脚本补建。
 
-官方看板镜像的 `metadata.lane` 是 `official`，作者 id 以 `official:` 开头。这些行只出现在作者页。信息流「媒体」读媒体索引，「全部」读社交条目加看板，都不读镜像，所以不会和看板各出现一次。小时报窗口、可打标列表和阅读材料按 `lane=official` 或 `official:` 排除；信息流过滤的刷新队列本来就不含 `provider=media` 的内容条目，媒体索引扫描也扫不到看板镜像。回填脚本调用同一套写入，不调用过滤、小时报或分类。
+官方看板镜像的 external id 是 `official-board:<sourceKey>:<稳定文章 id>`，capture 上记 `officialMirror: true`。它和媒体采集的 `stableArticleId` 不是同一条。小时报、搜索和可打标列表只按 `officialMirror` 排除，不按 `lane` 或 `official:` 作者排除，因此国务院、美联储、央行已经抓到的真实文章仍留在这三处。建镜像前先用稳定文章 id 查真实 capture，有的话只把作者挂到那条上，不另建镜像。回填走同一条同步。信息流过滤的刷新队列本来就不含这些 `provider=media` 的镜像。
 
 ## 出现门槛
 

@@ -44,20 +44,12 @@ export const EXCLUDE_YOUTUBE_SQL = `NOT EXISTS (
     AND youtube_excluded.provider = 'youtube'
 )`;
 
-// 官方看板镜像只给作者页。信息流、小时报和分类按 lane 或 official: 作者排除。
+// 只排除看板镜像。policy 源的真实媒体文章作者也是 official:，不能按作者或 lane 排除。
 export const EXCLUDE_OFFICIAL_MIRROR_SQL = `NOT EXISTS (
   SELECT 1 FROM captures official_mirror
   WHERE official_mirror.id = ci.capture_id
     AND official_mirror.workspace_id = ci.workspace_id
-    AND (
-      json_extract(official_mirror.metadata_json, '$.lane') = 'official'
-      OR EXISTS (
-        SELECT 1 FROM item_authors official_author
-        WHERE official_author.workspace_id = ci.workspace_id
-          AND official_author.content_item_id = ci.id
-          AND official_author.author_id LIKE 'official:%'
-      )
-    )
+    AND json_extract(official_mirror.metadata_json, '$.officialMirror') = 1
 )`;
 
 const USER_VISIBLE_CONTENT_SQL = `NOT EXISTS (
