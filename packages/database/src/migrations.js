@@ -2250,7 +2250,7 @@ migrations.push({ version: 78, name: 'author_stats', up(database) {
 // 63 仍空着。79、80、82 留空。83 是 information_tree_heads 的 (workspace_id, layer, start_at) 索引。
 // 84 是 jobs(type, created_at DESC)。85 是带 xFocus.method 的 X captures 部分索引。
 // 86 是 YouTube 播客的剧集和频道状态。87 只给频道补录状态加列。
-// 88 是北向资金 northbound_flow。89 是 YouTube 正文 youtube_podcast_article（#152），本分支不登记。
+// 88 是北向资金 northbound_flow。89 是 YouTube 正文 youtube_podcast_article。
 // 90 是作者列表按最新原文发布时间排序的索引。
 export const unusedSchemaVersions = [63, 79, 80, 82];
 
@@ -2383,6 +2383,14 @@ migrations.push({ version: 88, name: 'northbound_flow', up(database) {
     CREATE INDEX IF NOT EXISTS idx_northbound_top10_code
       ON northbound_top10 (workspace_id, code, trade_date DESC);
   `);
+}});
+
+migrations.push({ version: 89, name: 'youtube_podcast_article', up(database) {
+  addColumn(database, 'youtube_podcast_episodes', 'source_transcript', 'TEXT NOT NULL DEFAULT \'\'');
+  addColumn(database, 'youtube_podcast_episodes', 'source_hash', 'TEXT NOT NULL DEFAULT \'\'');
+  addColumn(database, 'youtube_podcast_episodes', 'article_status', 'TEXT NOT NULL DEFAULT \'\'');
+  addColumn(database, 'youtube_podcast_episodes', 'article_state', 'TEXT NOT NULL DEFAULT \'\'');
+  addColumn(database, 'youtube_podcast_episodes', 'article_day', 'TEXT NOT NULL DEFAULT \'\'');
 }});
 
 migrations.push({ version: 90, name: 'author_stats_published', up(database) {

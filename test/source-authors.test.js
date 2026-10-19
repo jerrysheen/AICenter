@@ -336,7 +336,7 @@ test('migration 90 only adds the publish-time index and the phone chips scroll w
   assert.equal(database.prepare(`SELECT name FROM schema_migrations WHERE version = 88`).get().name, 'northbound_flow');
   const version = database.prepare(`SELECT name FROM schema_migrations WHERE version = 90`).get();
   assert.equal(version.name, 'author_stats_published');
-  assert.equal(database.prepare(`SELECT name FROM schema_migrations WHERE version = 89`).get(), undefined);
+  assert.equal(database.prepare(`SELECT name FROM schema_migrations WHERE version = 89`).get().name, 'youtube_podcast_article');
   assert.ok(database.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_author_stats_published'`).get());
   database.prepare('DELETE FROM schema_migrations WHERE version = 90').run();
   database.close();

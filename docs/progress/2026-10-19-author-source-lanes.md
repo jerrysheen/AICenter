@@ -32,7 +32,7 @@
 
 ## 上线
 
-migration 90 只建 `idx_author_stats_published`，`CREATE INDEX IF NOT EXISTS`，不改已有行。88 是北向 `northbound_flow`。89 是 YouTube 正文 `youtube_podcast_article`（#152），本分支不登记，也不把它写成永久空号。空号仍是 63、79、80、82。不要重建数据库。需要同时重启 Web 和 Worker。
+migration 90 只建 `idx_author_stats_published`，`CREATE INDEX IF NOT EXISTS`，不改已有行。88 是北向 `northbound_flow`。89 是 YouTube 正文 `youtube_podcast_article`。空号仍是 63、79、80、82。不要重建数据库。需要同时重启 Web 和 Worker。
 
 历史回填不要放进 Web 或 Worker。部署后在实例目录执行：
 

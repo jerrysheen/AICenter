@@ -15,6 +15,11 @@ export function createYoutubePodcastRepository(database) {
       transcriptSource: row.transcript_source || '',
       contentItemId: row.content_item_id || '',
       attempts: Number(row.attempts) || 0,
+      sourceTranscript: row.source_transcript || '',
+      sourceHash: row.source_hash || '',
+      articleStatus: row.article_status || '',
+      articleState: row.article_state || '',
+      articleDay: row.article_day || '',
       summary: extra.summary || '',
       body: extra.body || '',
       sourceUrl: extra.sourceUrl || '',
@@ -50,10 +55,19 @@ export function createYoutubePodcastRepository(database) {
 
     saveEpisode(input) {
       const now = Date.now();
+      const current = this.episode(input.workspaceId, input.videoId);
+      const sourceTranscript = input.sourceTranscript !== undefined ? input.sourceTranscript : (current?.sourceTranscript || '');
+      const sourceHash = input.sourceHash !== undefined ? input.sourceHash : (current?.sourceHash || '');
+      const articleStatus = input.articleStatus !== undefined ? input.articleStatus : (current?.articleStatus || '');
+      const articleState = input.articleState !== undefined ? input.articleState : (current?.articleState || '');
+      const articleDay = input.articleDay !== undefined ? input.articleDay : (current?.articleDay || '');
+      const contentItemId = input.contentItemId !== undefined ? (input.contentItemId || '') : (current?.contentItemId || '');
       database.prepare(`INSERT INTO youtube_podcast_episodes
         (workspace_id, video_id, creator_id, channel_key, title, duration_sec, published_at,
-         status, reason, transcript_source, content_item_id, attempts, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         status, reason, transcript_source, content_item_id, attempts,
+         source_transcript, source_hash, article_status, article_state, article_day,
+         created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(workspace_id, video_id) DO UPDATE SET
           creator_id = excluded.creator_id,
           channel_key = excluded.channel_key,
@@ -65,6 +79,11 @@ export function createYoutubePodcastRepository(database) {
           transcript_source = excluded.transcript_source,
           content_item_id = excluded.content_item_id,
           attempts = excluded.attempts,
+          source_transcript = excluded.source_transcript,
+          source_hash = excluded.source_hash,
+          article_status = excluded.article_status,
+          article_state = excluded.article_state,
+          article_day = excluded.article_day,
           updated_at = excluded.updated_at`).run(
         input.workspaceId,
         input.videoId,
@@ -76,11 +95,39 @@ export function createYoutubePodcastRepository(database) {
         input.status,
         input.reason || '',
         input.transcriptSource || '',
-        input.contentItemId || '',
+        contentItemId,
         Number(input.attempts) || 0,
+        sourceTranscript,
+        sourceHash,
+        articleStatus,
+        articleState,
+        articleDay,
         now,
         now,
       );
+    },
+
+    countArticleDay(workspaceId, day) {
+      const row = database.prepare(`SELECT COUNT(*) AS n FROM youtube_podcast_episodes
+        WHERE workspace_id = ? AND article_day = ?`).get(workspaceId, day);
+      return Number(row?.n) || 0;
+    },
+
+    listArticleCandidates(workspaceId) {
+      return database.prepare(`SELECT e.*, ci.summary AS summary, ci.body AS body,
+          ci.title AS display_title, ci.source_url AS source_url, ci.author_name AS author_name
+        FROM youtube_podcast_episodes e
+        LEFT JOIN content_items ci ON ci.id = e.content_item_id AND ci.workspace_id = e.workspace_id
+        WHERE e.workspace_id = ? AND e.status = 'ready' AND e.article_status != 'ready'
+        ORDER BY CASE WHEN e.article_status = 'pending' THEN 0 ELSE 1 END,
+          COALESCE(e.published_at, 0) DESC, e.video_id DESC`).all(workspaceId)
+        .map((row) => mapEpisode(row, {
+          summary: row.summary || '',
+          body: row.body || '',
+          displayTitle: row.display_title || '',
+          sourceUrl: row.source_url || '',
+          authorName: row.author_name || '',
+        }));
     },
 
     channel(workspaceId, channelKey) {
@@ -124,7 +171,9 @@ export function createYoutubePodcastRepository(database) {
 
     listReady(workspaceId, limit = 200) {
       const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
-      const rows = database.prepare(`SELECT e.*, ci.summary AS summary, '' AS body,
+      const rows = database.prepare(`SELECT e.video_id, e.creator_id, e.channel_key, e.title,
+          e.duration_sec, e.published_at, e.status, e.reason, e.transcript_source, e.content_item_id,
+          e.attempts, e.article_status, e.article_day, ci.summary AS summary, '' AS body,
           ci.title AS display_title, ci.source_url AS source_url, ci.author_name AS author_name
         FROM youtube_podcast_episodes e
         LEFT JOIN content_items ci ON ci.id = e.content_item_id AND ci.workspace_id = e.workspace_id
