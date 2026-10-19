@@ -326,6 +326,95 @@ test('US snapshot is stored before a slow A-share read finishes', async () => {
   assert.ok(saved.includes(marketBoardSnapshotKey('cn')));
 });
 
+test('an aborted refresh does not replace a complete board already in cache', async () => {
+  const controller = new AbortController();
+  let started;
+  const gate = new Promise((resolve) => { started = resolve; });
+  let calls = 0;
+  const service = createMarketService({
+    marketCatalog: catalog,
+    ttlMs: 60_000,
+    inflightTimeoutMs: 5_000,
+    now: () => 5_000_000,
+    log() {},
+    tushare: null,
+    sinaFutures: null,
+    xueqiuQuotes: { fetchQuotes: async () => [] },
+    cnQuotes: { fetchQuotes: async () => [] },
+    yahoo: {
+      fetchQuotes: (_symbols, options = {}) => {
+        calls += 1;
+        if (calls === 1) {
+          return Promise.resolve({
+            quotes: [quote('^GSPC', 5), quote('AAPL', 9), quote('NVDA', 8), quote('MSFT', 7), quote('AMD', 6)],
+            session: 'regular',
+          });
+        }
+        started();
+        return new Promise((resolve) => {
+          const finish = () => resolve({ quotes: [quote('AAPL', 1)], session: 'regular' });
+          if (options.signal?.aborted) finish();
+          else options.signal?.addEventListener('abort', finish, { once: true });
+        });
+      },
+    },
+  });
+  const first = await service.getBoard({ board: 'us', refresh: true });
+  assert.equal(first.watchlist.find((item) => item.symbol === 'NVDA').lastPrice, 8);
+  const snapshot = service.getBoard({ board: 'us', refresh: true, signal: controller.signal });
+  const joined = service.getBoard({ board: 'us', refresh: true });
+  await gate;
+  controller.abort();
+  await snapshot;
+  await joined;
+  const cached = await service.getBoard({ board: 'us' });
+  assert.equal(calls, 2);
+  assert.equal(cached.indices.find((item) => item.symbol === '^GSPC').lastPrice, 5);
+  assert.equal(cached.watchlist.find((item) => item.symbol === 'AAPL').lastPrice, 9);
+  assert.equal(cached.watchlist.find((item) => item.symbol === 'NVDA').lastPrice, 8);
+});
+
+test('a partial board that arrives after abort does not replace the cached board', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const controller = new AbortController();
+  let calls = 0;
+  const service = createMarketService({
+    marketCatalog: catalog,
+    ttlMs: 60_000,
+    inflightTimeoutMs: 20,
+    now: () => 5_000_000,
+    log() {},
+    tushare: null,
+    sinaFutures: null,
+    xueqiuQuotes: { fetchQuotes: async () => [] },
+    cnQuotes: { fetchQuotes: async () => [] },
+    yahoo: {
+      fetchQuotes: () => {
+        calls += 1;
+        if (calls === 1) {
+          return Promise.resolve({
+            quotes: [quote('^GSPC', 5), quote('AAPL', 9), quote('NVDA', 8), quote('MSFT', 7), quote('AMD', 6)],
+            session: 'regular',
+          });
+        }
+        return gate.then(() => ({ quotes: [quote('AAPL', 1)], session: 'regular' }));
+      },
+    },
+  });
+  await service.getBoard({ board: 'us', refresh: true });
+  const pending = service.getBoard({ board: 'us', refresh: true, signal: controller.signal });
+  controller.abort();
+  await pending;
+  release();
+  await gate;
+  await new Promise((resolve) => setImmediate(resolve));
+  const cached = await service.getBoard({ board: 'us' });
+  assert.equal(calls, 2);
+  assert.equal(cached.watchlist.find((item) => item.symbol === 'NVDA').lastPrice, 8);
+  assert.equal(cached.watchlist.find((item) => item.symbol === 'AAPL').lastPrice, 9);
+});
+
 test('quotes that arrive after the board timeout stay available for the next read', async () => {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
