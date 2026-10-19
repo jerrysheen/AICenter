@@ -94,6 +94,7 @@ export {
 export { createGeminiAgentClient } from './gemini-agent.js';
 export { createElucidGrokAgentClient } from './elucid-grok-agent.js';
 export { createTypeSafeSystemOneClient, resolveTypeSafeApiKey } from './typesafe-system-one.js';
+export { createBambooStartLuxClient, resolveBambooApiKey, projectDecisionQuestions, noulWireVariants, matchedNoulLabels, readChoiceAnswer, readScoreAnswer } from './bamboo-startlux.js';
 export { modelIdForProfile } from './agent-model-profile.js';
 export { createLocalKnowledgeFiles, parseKnowledgeFrontMatter } from './local-knowledge-files.js';
 export { createAnalysisSkillCatalog } from './analysis-skill-catalog.js';

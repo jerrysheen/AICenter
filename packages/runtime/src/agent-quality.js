@@ -15,6 +15,7 @@ import {
   roundScore,
 } from './evidence-gate.js';
 import { resolveJevEnabled } from '../../domain/src/jev-enabled.js';
+import { resolveClassificationProvider } from '../../domain/src/classification-provider.js';
 
 export const AGENT_QUALITY_WEIGHTS = Object.freeze({
   coverage: 0.25,
@@ -167,7 +168,8 @@ export function isRootTool(toolId) {
 }
 
 export function resolveAgentQualityConfig(env = process.env) {
-  const disabled = !resolveJevEnabled(env) || envFlag(env.AI_CENTER_JEV_DISABLED) === '1';
+  const bamboo = resolveClassificationProvider(env) === 'bamboo';
+  const disabled = envFlag(env.AI_CENTER_JEV_DISABLED) === '1' || (!resolveJevEnabled(env) && !bamboo);
   const priorRaw = envFlag(env.AI_CENTER_JEV_PRIOR);
   const priorMode = priorRaw === 'advisory' || priorRaw === 'off' || priorRaw === 'shadow'
     ? priorRaw

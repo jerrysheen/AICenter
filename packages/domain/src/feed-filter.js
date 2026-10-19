@@ -1,6 +1,7 @@
 import { createFeedValueEvaluator, normalizeFeedValueText, FEED_VALUE_VERSION, FEED_VALUE_RULE, feedValueRuleHash } from './feed-value.js';
 import { FeedValueRuleSchema } from '../../contracts/src/feed-value.js';
 import { isJevOutage, resolveJevEnabled } from './jev-enabled.js';
+import { resolveClassificationProvider } from './classification-provider.js';
 import { focusFeedFromSource, keywordFocus } from './x-focus.js';
 export const FEED_FILTER_VERSION = FEED_VALUE_VERSION;
 
@@ -77,6 +78,7 @@ export function resolveFeedFilterConfig(env = process.env) {
     rule: FeedValueRuleSchema.parse(text(env.AI_CENTER_FEED_FILTER_RULE, FEED_VALUE_RULE)),
     fallback: !flagOff(env.AI_CENTER_FEED_FILTER_FALLBACK),
     jevEnabled: resolveJevEnabled(env),
+    classificationProvider: resolveClassificationProvider(env),
     xFocusMin: finiteUnit(env.AI_CENTER_FEED_FILTER_XFOCUS_MIN, 0.7),
   });
 }
@@ -354,10 +356,12 @@ export function createFeedFilter({ client = null, config, lookup = {}, calibrati
 function createFeedValueFilter({ client, config, lookup, calibration, xFocusConfig = null, log = () => {} }) {
   const rule=FeedValueRuleSchema.parse(config.rule || 'calibrated-value');
   const jevEnabled = config.jevEnabled !== false;
+  const bamboo = config.classificationProvider === 'bamboo';
+  const classify = bamboo || jevEnabled;
   const fallbackOn = jevEnabled ? config.fallback !== false : true;
   const evaluator = createFeedValueEvaluator({
-    client: jevEnabled ? client : null,
-    model: calibration?.model || client?.modelId || '',
+    client: classify ? client : null,
+    model: bamboo ? (client?.modelId || '') : (calibration?.model || client?.modelId || ''),
     calibration,
     rule,
   });
@@ -375,14 +379,15 @@ function createFeedValueFilter({ client, config, lookup, calibration, xFocusConf
       { title:fields.title, authorName:fields.authorName, capture });
     const result=await evaluator.evaluate(normalized,{signal:input.signal});
     const outage = isJevOutage(result);
-    if (jevEnabled && outage) {
+    if (classify && outage) {
       streak += 1;
       const at = now();
       if (streak >= warnStreak && at - lastWarnAt >= warnGapMs) {
         lastWarnAt = at;
-        try { log(`[worker] jev 连续技术失败 ${streak} 次，信息流准入已进入兜底`); } catch { /* logging must not change admission */ }
+        const label = bamboo ? 'Bamboo' : 'jev';
+        try { log(`[worker] ${label} 连续技术失败 ${streak} 次，信息流准入已进入兜底`); } catch { /* logging must not change admission */ }
       }
-    } else if (jevEnabled && !result.errorReason) {
+    } else if (classify && !result.errorReason) {
       streak = 0;
     }
     let decision = result.decision;
@@ -425,8 +430,9 @@ function createFeedValueFilter({ client, config, lookup, calibration, xFocusConf
 export function createFeedFilterFromEnv({ client = null, env = process.env, lookup, calibration, xFocusConfig = null, log } = {}) {
   const config = resolveFeedFilterConfig(env);
   if (config.mode === 'off') return null;
+  const classify = config.classificationProvider === 'bamboo' || config.jevEnabled;
   return createFeedFilter({
-    client: config.jevEnabled ? client : null,
+    client: classify ? client : null,
     config,
     lookup,
     calibration,

@@ -40,8 +40,9 @@ function saveFallbackCapture(feedRepository, workspaceId, row, decision, reason,
   return true;
 }
 
-export function createFeedValueRefreshService({feedRepository,mediaRepository,client,model='jev-1.13.0',scoreCache=null,flashSources=null,jevEnabled=true,fallback=true,xFocusConfig=null,xFocusMin=0.7}={}) {
-  const evaluator=createFeedValueEvaluator({client:jevEnabled?client:null,model,rule:FEED_VALUE_RULE});
+export function createFeedValueRefreshService({feedRepository,mediaRepository,client,model='jev-1.13.0',scoreCache=null,flashSources=null,jevEnabled=true,classificationProvider='typesafe',fallback=true,xFocusConfig=null,xFocusMin=0.7}={}) {
+  const classify=classificationProvider==='bamboo' || jevEnabled!==false;
+  const evaluator=createFeedValueEvaluator({client:classify?client:null,model,rule:FEED_VALUE_RULE});
   const cache=new Map();
   if(scoreCache?.policyHash===feedValuePolicyHash() && scoreCache.model===model) for(const r of scoreCache.rows || []) {
     if(r.model===model && !r.errorReason && FeedValueScoresSchema.safeParse(r.scores).success) cache.set(evaluator.cacheKey(r.input),r.scores);
@@ -66,14 +67,14 @@ export function createFeedValueRefreshService({feedRepository,mediaRepository,cl
         const row=rows[cursor++],key=evaluator.cacheKey(row.input),m=row.metadata || {};
         const parsedScores=FeedValueScoresSchema.safeParse(m.filterScores).success;
         const decided=m.filterDecision==='KEEP' || m.filterDecision==='DROP';
-        if(!jevEnabled && (parsedScores || decided)) {
+        if(!classify && (parsedScores || decided)) {
           output.reused++;
           output.done++;
           if(output.done%50===0 || output.done===output.total)onProgress({...output});
           continue;
         }
         const stored=m.filterPolicyHash===feedValuePolicyHash() && m.evaluatorModel===model && m.filterCacheKey===key && parsedScores ? m.filterScores : null;
-        const scores=jevEnabled ? (stored || cache.get(key)) : null;
+        const scores=classify ? (stored || cache.get(key)) : null;
         let result;
         if(scores) {result={scores,model,errorReason:''};output.reused++;}
         else {
