@@ -2398,6 +2398,11 @@ migrations.push({ version: 90, name: 'author_stats_published', up(database) {
     ON author_stats(workspace_id, followed DESC, latest_item_at DESC, author_id DESC)`);
 }});
 
+migrations.push({ version: 91, name: 'hardware_price_snapshot_rows_observation', up(database) {
+  database.exec(`CREATE INDEX IF NOT EXISTS hardware_price_snapshot_rows_observation
+    ON hardware_price_snapshot_rows(workspace_id, observation_id)`);
+}});
+
 
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`

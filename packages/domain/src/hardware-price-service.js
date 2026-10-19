@@ -19,16 +19,17 @@ export function createHardwarePriceService({repository,artifactStore}) {
       if(!q.snapshotId) {
         // The market is a current board, not a union of every retired table and parser edition.
         // Old editions remain available through their exact snapshot and series links.
-        const snapshots=repository.savedSnapshots(workspaceId).sort((a,b)=>Number(b.format==='html')-Number(a.format==='html') || b.capturedAt-a.capturedAt || b.parserVersion.localeCompare(a.parserVersion,undefined,{numeric:true}));
-        const pages=new Set(),series=new Set();rows=[];
+        const snapshots=repository.latestSnapshotsByPage(workspaceId);
+        const pages=new Set(),series=new Set(),ordered=[];
         for(const snapshot of snapshots) {
           const page=JSON.stringify([snapshot.sourceKey,snapshot.pageKey]);if(pages.has(page))continue;pages.add(page);
           for(const row of repository.list(workspaceId,{snapshotId:snapshot.id,limit:500})) {
             if(series.has(row.seriesKey))continue;series.add(row.seriesKey);
-            rows.push(repository.list(workspaceId,{seriesKey:row.seriesKey,limit:1})[0] || row);
+            ordered.push(row);
           }
         }
-        rows=preferHardwareQuotes(rows);
+        const current=repository.currentRows(workspaceId,ordered.map(row=>row.seriesKey));
+        rows=preferHardwareQuotes(ordered.map(row=>current.get(row.seriesKey) || row));
       }
       const items=rows.filter(r=>!q.category || r.category===q.category).slice(0,q.limit)
         .map(r=>{

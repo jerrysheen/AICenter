@@ -2,6 +2,10 @@ import { randomUUID, createHash } from 'node:crypto';
 import { HardwarePriceSnapshotInputSchema, HardwareQuoteRowSchema } from '../../../contracts/src/hardware-prices.js';
 import { retireSupersededHardwareQuotes } from '../hardware-price-current.js';
 const hash = v => createHash('sha256').update(JSON.stringify(v)).digest('hex');
+const SERIES_CHUNK = 400;
+const seriesRow = r => ({...observation(r),...JSON.parse(r.snapshot_row_json),snapshotId:r.referenced_snapshot_id,capturedAt:r.snapshot_captured_at});
+const CURRENT_SERIES_SQL = `SELECT o.*,r.row_json snapshot_row_json,s.id referenced_snapshot_id,s.captured_at snapshot_captured_at FROM (SELECT *,ROW_NUMBER() OVER (PARTITION BY series_key ORDER BY period_start IS NOT NULL DESC,period_start DESC,captured_at DESC,revision DESC) n
+        FROM hardware_price_observations WHERE workspace_id=? AND is_current=1 AND series_key IN (`;
 const snapshot = r => r ? ({id:r.id,sourceKey:r.source_key,pageKey:r.page_key,sourceUrl:r.source_url,title:r.title,capturedAt:r.captured_at,
   lastCheckedAt:r.last_checked_at || r.captured_at,lastChangedAt:r.captured_at,
   format:r.format,parserVersion:r.parser_version,artifactPath:r.artifact_path,warnings:JSON.parse(r.warnings_json)}) : null;
@@ -86,7 +90,52 @@ export function createHardwarePriceRepository(database,emitEvent=()=>{}) {
         JOIN hardware_price_snapshot_rows r ON r.observation_id=o.id AND r.rowid=(SELECT rr.rowid FROM hardware_price_snapshot_rows rr
           JOIN hardware_price_snapshots ss ON ss.id=rr.snapshot_id AND ss.workspace_id=rr.workspace_id WHERE rr.observation_id=o.id AND rr.workspace_id=o.workspace_id ORDER BY ss.captured_at DESC,ss.rowid DESC,rr.table_index,rr.row_index LIMIT 1)
         JOIN hardware_price_snapshots s ON s.id=r.snapshot_id AND s.workspace_id=r.workspace_id
-        WHERE o.n=1 ORDER BY o.period_start DESC,s.captured_at DESC LIMIT ?`).all(workspaceId,seriesKey,seriesKey,limit).map(r=>({...observation(r),...JSON.parse(r.snapshot_row_json),snapshotId:r.referenced_snapshot_id,capturedAt:r.snapshot_captured_at}));
+        WHERE o.n=1 ORDER BY o.period_start DESC,s.captured_at DESC LIMIT ?`).all(workspaceId,seriesKey,seriesKey,limit).map(seriesRow);
+    },
+    currentRows(workspaceId, seriesKeys) {
+      const keys=[...new Set((seriesKeys || []).filter(key=>typeof key==='string' && key))];
+      const found=new Map();
+      for(let offset=0;offset<keys.length;offset+=SERIES_CHUNK) {
+        const chunk=keys.slice(offset,offset+SERIES_CHUNK);
+        const sql=`${CURRENT_SERIES_SQL}${chunk.map(()=>'?').join(',')})) o
+        JOIN hardware_price_snapshot_rows r ON r.observation_id=o.id AND r.rowid=(SELECT rr.rowid FROM hardware_price_snapshot_rows rr
+          JOIN hardware_price_snapshots ss ON ss.id=rr.snapshot_id AND ss.workspace_id=rr.workspace_id WHERE rr.observation_id=o.id AND rr.workspace_id=o.workspace_id ORDER BY ss.captured_at DESC,ss.rowid DESC,rr.table_index,rr.row_index LIMIT 1)
+        JOIN hardware_price_snapshots s ON s.id=r.snapshot_id AND s.workspace_id=r.workspace_id
+        WHERE o.n=1`;
+        for(const row of database.prepare(sql).all(workspaceId,...chunk).map(seriesRow)) found.set(row.seriesKey,row);
+      }
+      return found;
+    },
+    latestSnapshotsByPage(workspaceId) {
+      const rows=database.prepare(`WITH tagged AS (
+          SELECT s.*, CASE WHEN s.format='html' THEN 1 ELSE 0 END AS html_rank
+          FROM hardware_price_snapshots s WHERE s.workspace_id=?
+        ), best_format AS (
+          SELECT source_key, page_key, MAX(html_rank) AS html_rank FROM tagged GROUP BY source_key, page_key
+        ), best_time AS (
+          SELECT t.source_key, t.page_key, MAX(t.captured_at) AS captured_at
+          FROM tagged t
+          JOIN best_format b ON b.source_key=t.source_key AND b.page_key=t.page_key AND b.html_rank=t.html_rank
+          GROUP BY t.source_key, t.page_key
+        )
+        SELECT t.* FROM tagged t
+        JOIN best_time b ON b.source_key=t.source_key AND b.page_key=t.page_key AND t.captured_at=b.captured_at
+        JOIN best_format f ON f.source_key=t.source_key AND f.page_key=t.page_key AND f.html_rank=t.html_rank`).all(workspaceId);
+      const byPage=new Map();
+      for(const row of rows) {
+        const key=`${row.source_key}\0${row.page_key}`;
+        const list=byPage.get(key);
+        if(list) list.push(row); else byPage.set(key,[row]);
+      }
+      const winners=[];
+      for(const list of byPage.values()) {
+        list.sort((a,b)=>String(b.parser_version).localeCompare(String(a.parser_version),undefined,{numeric:true}) || String(a.id).localeCompare(String(b.id)));
+        winners.push(list[0]);
+      }
+      winners.sort((a,b)=>(b.html_rank-a.html_rank) || (b.captured_at-a.captured_at)
+        || String(b.parser_version).localeCompare(String(a.parser_version),undefined,{numeric:true})
+        || String(a.id).localeCompare(String(b.id)));
+      return winners.map(snapshot);
     },
     history(workspaceId,seriesKey) { return database.prepare('SELECT * FROM hardware_price_observations WHERE workspace_id=? AND series_key=? ORDER BY period_start,captured_at,revision LIMIT 5000').all(workspaceId,seriesKey).map(observation); },
     recentHistory(workspaceId,seriesKey,limit=30) {
