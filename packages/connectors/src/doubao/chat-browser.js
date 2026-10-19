@@ -369,7 +369,8 @@ export function createDoubaoChatClient(options = {}) {
       }
 
       return browserRuntime.withSession({ purpose: 'doubao.ask', focused: true }, async (session) => {
-        await session.navigate(chatUrl, { timeoutMs: 60_000 });
+        const targetUrl = String(askOptions.pageUrl || chatUrl);
+        await session.navigate(targetUrl, { timeoutMs: 60_000 });
         const ready = await waitForEditor(session, 20_000);
         if (!ready.loggedIn) {
           return {
@@ -487,6 +488,7 @@ export function createDoubaoChatClient(options = {}) {
             note: '已发出但没有读到稳定的助手回复',
             recovery_hint: 'read_again_do_not_resend',
             completion: waited.completion,
+            reply_count_before: beforeReplyCount,
           };
         }
 
@@ -500,6 +502,82 @@ export function createDoubaoChatClient(options = {}) {
           reply_observed: true,
           completion: waited.completion,
           note: waited.completion === 'complete' ? '' : `completion=${waited.completion}`,
+          reply_count_before: beforeReplyCount,
+        };
+      });
+    },
+
+    async readReply(readOptions = {}) {
+      const targetUrl = String(readOptions.pageUrl || '').trim();
+      if (!targetUrl) {
+        return {
+          status: 'invalid_input',
+          sent_message: '',
+          reply_text: '',
+          page_url: '',
+          send_confirmed: true,
+          reply_observed: false,
+          note: '没有可重读的对话地址',
+          recovery_hint: 'read_again_do_not_resend',
+        };
+      }
+      const beforeReplyCount = Math.max(0, Number(readOptions.beforeReplyCount) || 0);
+      return browserRuntime.withSession({ purpose: 'doubao.read', focused: true }, async (session) => {
+        await session.navigate(targetUrl, { timeoutMs: 60_000 });
+        const ready = await waitForEditor(session, 20_000);
+        if (!ready.loggedIn) {
+          return {
+            status: 'login_required',
+            sent_message: '',
+            reply_text: '',
+            page_url: ready.url,
+            send_confirmed: true,
+            generation_observed: false,
+            reply_observed: false,
+            note: '豆包输入框不可用，请先在 BrowserSkill 所连 Chrome 里登录 doubao.com',
+            recovery_hint: 'user_login_then_retry',
+            reply_count_before: beforeReplyCount,
+          };
+        }
+        let waited = await waitForReply(session, '', beforeReplyCount, readOptions);
+        if (readOptions.reloadOnce && !waited.replyObserved) {
+          await session.navigate(waited.snapshot?.url || targetUrl, { timeoutMs: 30_000 });
+          await wait(2_000);
+          const reread = await rereadAfterReload(session, beforeReplyCount, readOptions.isComplete);
+          waited = {
+            ...waited,
+            snapshot: reread.snapshot,
+            replyText: reread.replyText || waited.replyText,
+            replyObserved: Boolean(reread.replyText || waited.replyObserved),
+            completion: reread.replyText ? 'complete' : waited.completion,
+          };
+        }
+        if (!waited.replyObserved || !String(waited.replyText || '').trim()) {
+          return {
+            status: 'reply_not_observed',
+            sent_message: '',
+            reply_text: waited.replyText || '',
+            page_url: waited.snapshot?.url || targetUrl,
+            send_confirmed: true,
+            generation_observed: waited.generationObserved,
+            reply_observed: false,
+            note: '已发出但没有读到稳定的助手回复',
+            recovery_hint: 'read_again_do_not_resend',
+            completion: waited.completion,
+            reply_count_before: beforeReplyCount,
+          };
+        }
+        return {
+          status: 'ok',
+          sent_message: '',
+          reply_text: waited.replyText,
+          page_url: waited.snapshot?.url || targetUrl,
+          send_confirmed: true,
+          generation_observed: waited.generationObserved,
+          reply_observed: true,
+          completion: waited.completion,
+          note: '',
+          reply_count_before: beforeReplyCount,
         };
       });
     },

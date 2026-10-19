@@ -264,3 +264,75 @@ test('doubao client asks through BrowserRuntime evaluate, not CDP', async () => 
   assert.deepEqual(calls[0], ['navigate', 'https://www.doubao.com/chat']);
   assert.ok(calls.some((item) => item[0] === 'click' && item[1] === '.send-btn-wrapper button'));
 });
+
+test('continued ask opens the saved chat and readReply does not send', async () => {
+  const calls = [];
+  const readyReply = {
+    url: 'https://www.doubao.com/chat/42',
+    loggedIn: true,
+    editorEmpty: true,
+    hasSendButton: false,
+    userMessages: ['第 2 段，沿用格式。'],
+    assistantReplies: ['## 下一段（00:14:15）\n\n主持人：继续。'],
+    generating: false,
+    streaming: false,
+  };
+  const snapshots = [
+    { url: 'https://www.doubao.com/chat/42', loggedIn: true, editorEmpty: true, hasSendButton: false, userMessages: [], assistantReplies: [] },
+    { url: 'https://www.doubao.com/chat/42', loggedIn: true, editorEmpty: true, hasSendButton: false, userMessages: [], assistantReplies: [] },
+    { url: 'https://www.doubao.com/chat/42', loggedIn: true, editorEmpty: false, hasSendButton: true, userMessages: [], assistantReplies: [] },
+    readyReply,
+    readyReply,
+    readyReply,
+  ];
+  let index = 0;
+  const runtime = {
+    async withSession(_options, callback) {
+      return callback({
+        async navigate(url) {
+          calls.push(['navigate', url]);
+        },
+        async evaluate(expression) {
+          const source = String(expression);
+          if (source.includes('__AI_CENTER_DOUBAO_HTML') && !source.includes('setContent')) return { ok: true };
+          if (source.includes('setContent')) {
+            calls.push(['fill']);
+            return { ok: true, text: '第 2 段，沿用格式。', isEmpty: false };
+          }
+          if (source.includes('trigger.click()')) return { ok: true };
+          const snapshot = snapshots[Math.min(index, snapshots.length - 1)];
+          index += 1;
+          return snapshot;
+        },
+        async click(selector) {
+          calls.push(['click', selector]);
+        },
+      });
+    },
+  };
+  const client = createDoubaoChatClient({
+    browserRuntime: runtime,
+    delay: async () => {},
+    now: (() => {
+      let t = 0;
+      return () => {
+        t += 1_000;
+        return t;
+      };
+    })(),
+    pollIntervalMs: 1,
+    sendWaitMs: 8_000,
+    idleTimeoutMs: 30_000,
+    stableChecks: 1,
+  });
+  const asked = await client.ask('第 2 段，沿用格式。', { pageUrl: 'https://www.doubao.com/chat/42' });
+  assert.equal(asked.status, 'ok');
+  assert.equal(calls[0][1], 'https://www.doubao.com/chat/42');
+  calls.length = 0;
+  index = 3;
+  const read = await client.readReply({ pageUrl: 'https://www.doubao.com/chat/42', beforeReplyCount: 0 });
+  assert.equal(read.status, 'ok');
+  assert.match(read.reply_text, /继续/);
+  assert.equal(calls.some((item) => item[0] === 'fill' || item[0] === 'click'), false);
+  assert.equal(calls[0][1], 'https://www.doubao.com/chat/42');
+});
