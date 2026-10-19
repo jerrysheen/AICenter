@@ -288,7 +288,9 @@ export function createInformationTreeService({repository,reportRepository,feedSe
     const period='tree-cache',cached=reportRepository.getAnalysisStage(s.workspaceId,period,key,key);
     if(cached?.status==='completed') {try{s.cacheHits=(s.cacheHits || 0)+1;return articleStrategy && stage==='information' ? check(cached.output.status ? cached.output : {title:cached.output.title,tagId:cached.output.tagId,summary:cached.output.text,body:cached.output.body}) : check(cached.output);}catch{reportRepository.saveAnalysisStage(s.workspaceId,period,key,key,{stage,effectivePromptHash},null,'failed','invalid-output: cached response no longer valid');}}
     const owner=randomUUID();
+    let acquired=false;
     if(!repository.acquire(s.workspaceId,key,owner,Date.now())) throw Object.assign(new Error('同版本加工中'),{code:'lease-conflict'});
+    acquired=true;
     const heartbeat=()=>{repository.renew(s.workspaceId,key,owner,Date.now());renew();};
     const shape=treeResponseProtocol(stage==='information' && articleStrategy ? 'article' : stage);
     let correction='',lastAnswer='',checkpoint=articleStrategy ? cached?.input?.checkpoint || null : null;
@@ -402,8 +404,10 @@ export function createInformationTreeService({repository,reportRepository,feedSe
         if(!Number.isFinite(error.inputChars)) error.inputChars=sentMessage.length;
         if(!Number.isFinite(error.inputBytes)) error.inputBytes=Buffer.byteLength(sentMessage);
       }
-      error.timing=timing;reportRepository.saveAnalysisStage(s.workspaceId,period,key,key,{...stageInput(),failure:treeFailure(error,key,'',now())},null,'failed',error.message);throw error;
-    } finally {repository.release(s.workspaceId,key,owner);}
+      error.timing=timing;
+      if(!(error?.code==='lease-conflict' && !acquired)) reportRepository.saveAnalysisStage(s.workspaceId,period,key,key,{...stageInput(),failure:treeFailure(error,key,'',now())},null,'failed',error.message);
+      throw error;
+    } finally { if(acquired) repository.release(s.workspaceId,key,owner); }
   }
   async function information(m,window,s) {
     const node=await informationDraft(m,window,s),eventAt=m.eventAt ?? m.publishedAt ?? window.startAt;
@@ -534,6 +538,10 @@ export function createInformationTreeService({repository,reportRepository,feedSe
       });
       reportRepository.saveAnalysisStage(s.workspaceId,'tree-cache',stageKey,version,{stage:layer},{ids:nodes.map(n=>n.id)},'completed');result.push(...nodes);
       } catch(error) {
+        if(error?.code==='lease-conflict') {
+          result.failures.push({...treeFailure(error,stageKey,'',now()),tagId});
+          continue;
+        }
         const selected=route(layer) || {};
         const meta={layer,task:layer==='daily' ? 'daily-analysis' : 'hourly-brief',tagId,tagName:tagNames.get(tagId) || '未分类',windowStart:window?.startAt,
           elapsedMs:Date.now()-s.started,provider:selected.provider,model:selected.model};

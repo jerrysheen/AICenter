@@ -698,7 +698,8 @@ export function createAuthorRepository(database, emitEvent = () => {}) {
 
     listOfficialBoardPayloads() {
       return database.prepare(`SELECT workspace_id AS workspaceId, payload_json AS payload
-        FROM runtime_snapshots WHERE snapshot_key = 'static-signal-board'`).all().flatMap((row) => {
+        FROM runtime_snapshots WHERE snapshot_key = 'static-signal-board'
+        ORDER BY workspace_id`).all().flatMap((row) => {
         try {
           const payload = JSON.parse(row.payload || '');
           return payload && typeof payload === 'object' ? [{ workspaceId: row.workspaceId, payload }] : [];
@@ -769,7 +770,7 @@ export function backfillSourceAuthorBatch(database, { afterRowid = 0, limit = 50
       if (result) linked += 1;
     }
   });
-  apply();
+  apply.immediate();
   return { rows: rows.length, linked, lastRowid: rows.length ? Number(rows.at(-1).rowid) : Number(afterRowid) || 0 };
 }
 
@@ -820,7 +821,7 @@ export function repairAuthorPublishBatch(database, { afterId = '', limit = 500, 
       recomputeAuthorRow(database, key.slice(0, split), key.slice(split + 1));
     }
   });
-  apply();
+  apply.immediate();
   if (updated) invalidateAuthorCache();
   return { rows: rows.length, updated, lastId: rows.length ? rows.at(-1).id : String(afterId || '') };
 }

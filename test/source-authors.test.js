@@ -9,7 +9,7 @@ import { createStore } from '../packages/database/src/index.js';
 import { latestSchemaVersion } from '../packages/database/src/migrations.js';
 import { createAuthorService } from '../packages/domain/src/author-service.js';
 import { authorCaptureFields } from '../packages/domain/src/authors.js';
-import { officialArticleExternalId, officialReleaseExternalId, syncOfficialReleases } from '../packages/domain/src/source-author-sync.js';
+import { hideShortOfficialItems, officialArticleExternalId, officialBodyAction, officialReleaseExternalId, syncOfficialReleases } from '../packages/domain/src/source-author-sync.js';
 import { stableArticleId } from '../packages/connectors/src/media/article-url.js';
 import { createTreeMaterialPort } from '../packages/domain/src/information-tree-materials.js';
 import {
@@ -19,6 +19,7 @@ import {
   officialAuthorByUrl,
   sourceAuthorProfile,
 } from '../packages/domain/src/source-authors.js';
+import { backfillSourceAuthorBatch, repairAuthorPublishBatch } from '../packages/database/src/repositories/author-repository.js';
 import { runSourceAuthorBackfill } from '../scripts/backfill-source-authors.mjs';
 
 function hash(value) {
@@ -289,6 +290,118 @@ test('source author backfill is idempotent and repairs publish time without usin
   }
 });
 
+test('source author write batches take the reserved lock before reading', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'source-authors-immediate-'));
+  const file = path.join(dir, 'test.db');
+  const store = createStore(file);
+  store.close();
+  const database = new Database(file);
+  const modes = [];
+  const original = database.transaction.bind(database);
+  database.transaction = (fn) => {
+    const transaction = original(fn);
+    const run = (mode, body) => (...args) => {
+      modes.push(mode);
+      return body(...args);
+    };
+    const deferred = run('deferred', transaction);
+    deferred.immediate = run('immediate', transaction.immediate.bind(transaction));
+    deferred.deferred = run('deferred', transaction.deferred.bind(transaction));
+    deferred.exclusive = run('exclusive', transaction.exclusive.bind(transaction));
+    return deferred;
+  };
+  try {
+    backfillSourceAuthorBatch(database, { limit: 1 });
+    repairAuthorPublishBatch(database, { limit: 1 });
+    assert.deepEqual(modes, ['immediate', 'immediate']);
+  } finally {
+    database.close();
+  }
+});
+
+test('source author backfill resumes after the last committed batch and a finished run can start over', async () => {
+  const store = openStore();
+  try {
+    const publishedAt = 1_710_000_000_000;
+    saveSourceItem(store.repositories.feed, {
+      sourceKey: 'nextplatform', externalId: 'np-1', title: '一', publishedAt, capturedAt: publishedAt,
+    });
+    saveSourceItem(store.repositories.feed, {
+      sourceKey: 'nextplatform', externalId: 'np-2', title: '二', publishedAt, capturedAt: publishedAt,
+    });
+    const busy = {
+      repositories: {
+        authors: {
+          ...store.repositories.authors,
+          backfillSourceAuthorBatch() {
+            throw Object.assign(new Error('SQLITE_BUSY'), { code: 'SQLITE_BUSY' });
+          },
+        },
+        feed: store.repositories.feed,
+      },
+    };
+    let savedDuringBusy = false;
+    await assert.rejects(
+      () => runSourceAuthorBackfill(busy, { sleepMs: 0, batchSize: 1, saveCheckpoint() { savedDuringBusy = true; } }),
+      (error) => error.code === 'SQLITE_BUSY',
+    );
+    assert.equal(savedDuringBusy, false);
+
+    let saved = null;
+    await assert.rejects(
+      () => runSourceAuthorBackfill(store, {
+        sleepMs: 0,
+        batchSize: 1,
+        saveCheckpoint(state) {
+          saved = state;
+          if (state.phase === 'captures') throw Object.assign(new Error('SQLITE_BUSY'), { code: 'SQLITE_BUSY' });
+        },
+      }),
+      (error) => error.code === 'SQLITE_BUSY',
+    );
+    assert.equal(saved.phase, 'captures');
+    assert.equal(saved.counts.captures, 1);
+    assert.ok(saved.afterRowid > 0);
+    const stoppedAt = saved.afterRowid;
+    const seen = [];
+    const rest = await runSourceAuthorBackfill(store, {
+      sleepMs: 0,
+      batchSize: 1,
+      checkpoint: saved,
+      onBatch(batch) {
+        if (batch.phase === 'captures') seen.push(batch.lastRowid);
+      },
+      saveCheckpoint(state) { saved = state; },
+    });
+    assert.deepEqual(seen, seen.filter((rowid) => rowid > stoppedAt));
+    assert.ok(seen.length >= 1);
+    assert.equal(rest.captures, 2);
+    assert.equal(saved.phase, 'done');
+    assert.equal(store.repositories.authors.getAuthor('local', 'media:nextplatform').totalCount, 2);
+    const again = await runSourceAuthorBackfill(store, {
+      sleepMs: 0,
+      checkpoint: { ...saved, counts: { ...saved.counts, captures: 99 } },
+    });
+    assert.equal(again.captures, 2);
+    assert.equal(store.repositories.authors.getAuthor('local', 'media:nextplatform').totalCount, 2);
+    let drySaved = false;
+    const preview = await runSourceAuthorBackfill(store, {
+      sleepMs: 0,
+      dryRun: true,
+      checkpoint: {
+        phase: 'publish',
+        repairAfter: 'zzz',
+        counts: { captures: 50, linked: 50, indexed: 50, official: 50, resorted: 50 },
+      },
+      saveCheckpoint() { drySaved = true; },
+    });
+    assert.equal(drySaved, false);
+    assert.equal(preview.captures, 2);
+  } finally {
+    store.close();
+  }
+});
+
 test('official release sync links the source author and can run again', () => {
   const store = openStore();
   try {
@@ -321,7 +434,7 @@ test('official release sync links the source author and can run again', () => {
       feedRepository: store.repositories.feed,
       qualityRule: 'all-three-0.60',
     });
-    assert.deepEqual(service.items('local', 'official:federalregister').items.map((item) => item.title), ['A rule', 'Older rule']);
+    assert.deepEqual(service.items('local', 'official:federalregister').items.map((item) => item.title), []);
   } finally {
     store.close();
   }
@@ -395,8 +508,10 @@ test('official board mirrors stay out of the feed, hourly report, and classifica
     assert.notEqual(externalId, officialArticleExternalId('fed', release));
     const capture = feed.getCapture('local', 'media', externalId);
     assert.equal(capture.metadata.officialMirror, true);
-    assert.equal(capture.metadata.filterDecision || '', '');
-    assert.equal(capture.status, 'ready');
+    assert.equal(capture.metadata.filterDecision, 'REVIEW');
+    assert.equal(capture.metadata.filterReason, 'body-too-short');
+    assert.equal(capture.metadata.filterApplied, true);
+    assert.equal(capture.status, 'captured');
     const prefixCapture = feed.getCapture('local', 'media', 'fed-prefix-only');
     assert.equal(prefixCapture.metadata.officialMirror || false, false);
     assert.equal(prefixCapture.metadata.filterDecision || '', '');
@@ -456,12 +571,12 @@ test('official board mirrors stay out of the feed, hourly report, and classifica
       authorRepository: store.repositories.authors,
       feedRepository: feed,
     });
-    assert.deepEqual(authors.items('local', 'official:fed').items.map((item) => item.title).sort(), ['FOMC statement', '只有作者前缀']);
+    assert.deepEqual(authors.items('local', 'official:fed').items.map((item) => item.title).sort(), ['只有作者前缀']);
 
     const backed = await runSourceAuthorBackfill(store, { sleepMs: 0 });
     assert.equal(backed.official, 1);
     assert.equal(feed.getCapture('local', 'media', externalId).metadata.officialMirror, true);
-    assert.equal(feed.getCapture('local', 'media', externalId).metadata.filterDecision || '', '');
+    assert.equal(feed.getCapture('local', 'media', externalId).metadata.filterDecision, 'REVIEW');
     assert.equal(feed.getCapture('local', 'media', 'fed-prefix-only').metadata.officialMirror || false, false);
     const afterBackfill = titles(feed.listContentItems('local', { limit: 20 }));
     assert.equal(afterBackfill.includes('FOMC statement'), false);
@@ -595,6 +710,52 @@ test('media ingestion after an official mirror keeps the real article visible', 
       feedRepository: feed,
     });
     assert.ok(authors.items('local', 'official:fed').items.some((item) => item.title === '美联储全文'));
+  } finally {
+    store.close();
+  }
+});
+
+test('short official imports stay hidden until the body is long enough', () => {
+  const store = openStore();
+  const publishedAt = Date.now() - 1_000;
+  const release = {
+    releaseId: 'short-fed',
+    title: '短公告',
+    authority: '只有标题',
+    sourceUrl: 'https://www.federalreserve.gov/newsevents/pressreleases/monetary20261019b.htm',
+    publishedAt,
+  };
+  try {
+    const feed = store.repositories.feed;
+    syncOfficialReleases(feed, 'local', [release], { 'short-fed': 'policy.us.fed' });
+    const externalId = officialReleaseExternalId('fed', release);
+    const capture = feed.getCapture('local', 'media', externalId);
+    assert.equal(officialBodyAction({ body: '', metadata: capture.metadata }), 'unchanged');
+    assert.equal(officialBodyAction({ body: '短', metadata: { filterDecision: 'KEEP', filterApplied: false } }), 'keep');
+    feed.saveCapture({
+      ...capture,
+      status: 'ready',
+      metadata: { ...capture.metadata, filterMode: '', filterDecision: '', filterReason: '', filterApplied: false, filterReviewKind: 'none' },
+    });
+    const preview = hideShortOfficialItems(store, { dryRun: true });
+    assert.equal(preview.dryRun, true);
+    assert.equal(preview.hidden, 1);
+    assert.equal(feed.getCapture('local', 'media', externalId).status, 'ready');
+    const applied = hideShortOfficialItems(store);
+    assert.equal(applied.hidden, 1);
+    assert.equal(feed.getCapture('local', 'media', externalId).status, 'captured');
+    assert.equal(feed.getCapture('local', 'media', externalId).metadata.filterReason, 'body-too-short');
+    const item = feed.getContentItemByCapture('local', capture.id);
+    feed.saveContentItem({
+      workspaceId: 'local', captureId: capture.id, originType: 'subscription', contentType: 'article',
+      title: item.title, body: '正'.repeat(80), summary: item.summary || '', sourceUrl: item.sourceUrl,
+      authorName: item.authorName, publishedAt: item.publishedAt,
+    });
+    const cleared = hideShortOfficialItems(store);
+    assert.equal(cleared.cleared, 1);
+    const restored = feed.getCapture('local', 'media', externalId);
+    assert.equal(restored.status, 'ready');
+    assert.equal(restored.metadata.filterReason || '', '');
   } finally {
     store.close();
   }

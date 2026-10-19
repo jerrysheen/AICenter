@@ -565,7 +565,7 @@ export function createFeedRepository(database, emitEvent) {
       const input = parseContract(SaveCaptureInputSchema, value);
       const capturedAt = input.capturedAt || Date.now();
       const id = input.id || randomUUID();
-      database.transaction(() => {
+      const apply = database.transaction(() => {
         const filter = feedFilterColumns(input.metadata);
         const previous = database.prepare(`SELECT author_native_id FROM captures
           WHERE workspace_id = ? AND provider = ? AND external_id = ?`)
@@ -607,7 +607,8 @@ export function createFeedRepository(database, emitEvent) {
           .get(input.workspaceId, input.provider, input.externalId);
         emitEvent('feed.capture.saved.v1', 'capture', row.id,
           { captureId: row.id, provider: input.provider, status: input.status }, input.workspaceId);
-      })();
+      });
+      apply.immediate();
       return mapCapture(database.prepare(`SELECT * FROM captures
         WHERE workspace_id = ? AND provider = ? AND external_id = ?`)
         .get(input.workspaceId, input.provider, input.externalId));
@@ -962,6 +963,48 @@ export function createFeedRepository(database, emitEvent) {
         .all(workspaceId, provider)
         .map((row) => String(row.externalId || ''))
         .filter(Boolean);
+    },
+
+    listPendingBodyExternalIds(workspaceId, provider) {
+      return database.prepare(`SELECT external_id AS externalId
+        FROM captures
+        WHERE workspace_id = ? AND provider = ?
+          AND json_extract(metadata_json, '$.bodyCompletion') = 'pending'`)
+        .all(workspaceId, provider)
+        .map((row) => String(row.externalId || ''))
+        .filter(Boolean);
+    },
+
+    listOfficialLaneItems(workspaceId, { afterId = '', limit = 200 } = {}) {
+      const cap = Math.max(1, Math.min(500, Number(limit) || 200));
+      return database.prepare(`SELECT c.id AS captureId, c.external_id AS externalId, c.status,
+          c.source_account_id AS sourceAccountId, c.source_url AS sourceUrl, c.title, c.content_hash AS contentHash,
+          c.raw_artifact_path AS rawArtifactPath, c.published_at AS publishedAt, c.captured_at AS capturedAt,
+          c.metadata_json AS metadataJson, ci.body AS body
+        FROM captures c
+        INNER JOIN content_items ci ON ci.capture_id = c.id AND ci.workspace_id = c.workspace_id
+        WHERE c.workspace_id = ? AND c.provider = 'media' AND c.id > ?
+          AND (
+            json_extract(c.metadata_json, '$.officialMirror') = 1
+            OR json_extract(c.metadata_json, '$.lane') = 'official'
+          )
+        ORDER BY c.id
+        LIMIT ?`)
+        .all(workspaceId, String(afterId || ''), cap)
+        .map((row) => ({
+          captureId: row.captureId,
+          externalId: row.externalId,
+          status: row.status,
+          sourceAccountId: row.sourceAccountId,
+          sourceUrl: row.sourceUrl || '',
+          title: row.title || '',
+          contentHash: row.contentHash,
+          rawArtifactPath: row.rawArtifactPath,
+          publishedAt: row.publishedAt,
+          capturedAt: row.capturedAt,
+          body: row.body || '',
+          metadata: parseJson(row.metadataJson),
+        }));
     },
 
     listContentItemStatesByExternalIds(workspaceId, provider, externalIds) {
@@ -1407,7 +1450,8 @@ export function createFeedRepository(database, emitEvent) {
     },
 
     noteCaptureAuthor(value) {
-      return database.transaction(() => writeCaptureAuthor(database, value))();
+      const apply = database.transaction(() => writeCaptureAuthor(database, value));
+      return apply.immediate();
     },
 
     listContentItemsWithSource(workspaceId, { limit = 200, ids = [],qualityRule='' } = {}) {

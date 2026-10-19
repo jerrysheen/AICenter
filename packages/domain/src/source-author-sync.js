@@ -11,6 +11,49 @@ function positiveTime(value) {
   return Number.isFinite(time) && time > 0 ? Math.trunc(time) : null;
 }
 
+export const OFFICIAL_MIN_BODY_LENGTH = 80;
+
+export function officialBodyLength(text) {
+  return [...String(text || '')].length;
+}
+
+function admittedOfficialBody(metadata = {}) {
+  return metadata.filterDecision === 'KEEP' && metadata.filterApplied !== true && metadata.filterApplied !== 1;
+}
+
+export function officialBodyAction({ body = '', metadata = {} } = {}) {
+  const length = officialBodyLength(body);
+  if (length >= OFFICIAL_MIN_BODY_LENGTH) {
+    return metadata.filterReason === 'body-too-short' ? 'clear' : 'keep';
+  }
+  if (admittedOfficialBody(metadata)) return 'keep';
+  if (metadata.filterReason === 'body-too-short' && metadata.filterDecision === 'REVIEW' && metadata.filterApplied) return 'unchanged';
+  return 'hide';
+}
+
+function shortOfficialMetadata(metadata = {}) {
+  return {
+    ...metadata,
+    filterMode: 'enforce',
+    filterDecision: 'REVIEW',
+    filterReason: 'body-too-short',
+    filterApplied: true,
+    filterReviewKind: 'missing-content',
+  };
+}
+
+function clearedOfficialMetadata(metadata = {}) {
+  if (metadata.filterReason !== 'body-too-short') return metadata;
+  return {
+    ...metadata,
+    filterMode: '',
+    filterDecision: '',
+    filterReason: '',
+    filterApplied: false,
+    filterReviewKind: 'none',
+  };
+}
+
 export function ensureSourceAuthorItem(feed, input = {}) {
   const profile = sourceAuthorProfile(input.sourceKey);
   const externalId = String(input.externalId || '').trim().slice(0, 400);
@@ -20,6 +63,9 @@ export function ensureSourceAuthorItem(feed, input = {}) {
   const workspaceId = input.workspaceId || 'local';
   const publishedAt = positiveTime(input.publishedAt);
   const sourceUrl = String(input.sourceUrl || '').trim();
+  const body = String(input.body || '');
+  const official = profile.platform === 'official' || input.officialMirror === true;
+  const gate = official && officialBodyAction({ body, metadata: {} }) === 'hide';
   let capture = feed.getCapture(workspaceId, 'media', externalId);
   if (!capture) {
     const account = feed.upsertSourceAccount({
@@ -39,9 +85,15 @@ export function ensureSourceAuthorItem(feed, input = {}) {
       sourceUrl,
       title: input.title || '',
       contentHash: String(input.contentHash || '').trim() || contentHash(`${profile.nativeId}:${externalId}`),
-      status: 'ready',
+      status: gate ? 'captured' : 'ready',
       publishedAt,
-      metadata: {
+      metadata: gate ? shortOfficialMetadata({
+        sourceKey: profile.nativeId,
+        sourceId: profile.sourceId || '',
+        lane: profile.platform,
+        publishedAtRaw: input.publishedAtRaw || '',
+        ...(input.officialMirror ? { officialMirror: true } : {}),
+      }) : {
         sourceKey: profile.nativeId,
         sourceId: profile.sourceId || '',
         lane: profile.platform,
@@ -120,4 +172,60 @@ export function syncOfficialReleases(feed, workspaceId, releases, releaseSourceI
     }
   }
   return { linked };
+}
+
+export function hideShortOfficialItems(store, { dryRun = false, workspaceId = 'local', limit = 200 } = {}) {
+  const feed = store?.repositories?.feed;
+  if (!feed?.listOfficialLaneItems || !feed.saveCapture) throw new Error('官方正文回填需要 feed repository');
+  const counts = { scanned: 0, hidden: 0, cleared: 0, unchanged: 0, dryRun: Boolean(dryRun) };
+  let afterId = '';
+  const page = Math.max(1, Math.min(500, Number(limit) || 200));
+  for (;;) {
+    const rows = feed.listOfficialLaneItems(workspaceId, { afterId, limit: page });
+    if (!rows.length) break;
+    for (const row of rows) {
+      counts.scanned += 1;
+      const action = officialBodyAction(row);
+      if (action === 'hide') {
+        counts.hidden += 1;
+        if (!dryRun) {
+          feed.saveCapture({
+            workspaceId,
+            provider: 'media',
+            externalId: row.externalId,
+            sourceAccountId: row.sourceAccountId,
+            sourceUrl: row.sourceUrl,
+            title: row.title,
+            contentHash: row.contentHash,
+            rawArtifactPath: row.rawArtifactPath,
+            status: 'captured',
+            publishedAt: row.publishedAt,
+            capturedAt: row.capturedAt,
+            metadata: shortOfficialMetadata(row.metadata),
+          });
+        }
+      } else if (action === 'clear') {
+        counts.cleared += 1;
+        if (!dryRun) {
+          feed.saveCapture({
+            workspaceId,
+            provider: 'media',
+            externalId: row.externalId,
+            sourceAccountId: row.sourceAccountId,
+            sourceUrl: row.sourceUrl,
+            title: row.title,
+            contentHash: row.contentHash,
+            rawArtifactPath: row.rawArtifactPath,
+            status: 'ready',
+            publishedAt: row.publishedAt,
+            capturedAt: row.capturedAt,
+            metadata: clearedOfficialMetadata(row.metadata),
+          });
+        }
+      } else counts.unchanged += 1;
+    }
+    afterId = rows.at(-1).captureId;
+    if (rows.length < page) break;
+  }
+  return counts;
 }

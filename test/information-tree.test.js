@@ -113,7 +113,7 @@ test('aborted output cannot complete; missing bodies and hours remain explicit; 
   }finally{f.store.close();}
 });
 test('database lease isolates workers and workspaces',()=>{
-  const f=fixture();try{const r=f.store.repositories.informationTree;assert.equal(r.acquire('local','key','one',100),true);assert.equal(r.acquire('local','key','two',200),false);assert.equal(r.acquire('other','key','two',200),true);assert.equal(r.acquire('local','key','two',200000),true);assert.throws(()=>r.renew('local','key','one',200001));}finally{f.store.close();}
+  const f=fixture();try{const r=f.store.repositories.informationTree;assert.equal(r.acquire('local','key','one',100),true);assert.equal(r.acquire('local','key','two',200),false);assert.equal(r.acquire('other','key','two',200),true);assert.equal(r.releaseAll(),2);assert.equal(r.acquire('local','key','two',200),true);assert.equal(r.acquire('other','key','two',200),true);assert.equal(r.acquire('local','key','two',200000),true);assert.throws(()=>r.renew('local','key','one',200001));}finally{f.store.close();}
 });
 test('oversized single paragraph is fully processed internally and yields one information node',async()=>{
   const f=fixture();try {

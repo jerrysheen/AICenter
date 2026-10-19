@@ -137,6 +137,10 @@ export function createInformationTreeRepository(db,emit) {
       if(!result.changes) throw new Error('浓缩树租约已失效');
     },
     release(workspace,key,owner) {db.prepare('DELETE FROM information_tree_leases WHERE workspace_id=? AND cache_key=? AND owner=?').run(workspace,key,owner);},
+    releaseAll() {
+      const result = db.prepare('DELETE FROM information_tree_leases').run();
+      return result.changes;
+    },
     publish(workspace,value,{expectedHead}={}) {
       const edition=TreeEditionSchema.parse(value);
       if(edition.status!=='failed') {
