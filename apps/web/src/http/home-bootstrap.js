@@ -121,6 +121,8 @@ function slimRelease(release) {
     documentNumber: release.documentNumber || '',
     sourceUrl: release.sourceUrl || '',
     publishedAt: release.publishedAt ?? null,
+    authorId: release.authorId || '',
+    sourceAuthorName: release.sourceAuthorName || '',
     observedAt: release.observedAt ?? null,
     effectiveAt: release.effectiveAt ?? null,
   };

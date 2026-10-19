@@ -6,7 +6,7 @@ Worker 每分钟跑的 `hardware.prices.snapshot` 全程是同步的 SQLite 读�
 
 ## 决定
 
-- migration 91 给 `hardware_price_snapshot_rows` 增加 `(workspace_id, observation_id)` 索引。90 留给待合的作者统计迁移。
+- migration 91 给 `hardware_price_snapshot_rows` 增加 `(workspace_id, observation_id)` 索引。90 是作者统计索引。
 - 当前看板不再逐行查系列，也不再把全部价表读出来排序。每个来源页面只取胜出的一张：HTML 优先于旧文本，然后取较新的采集时间，解析版本按数字比较。各系列的当前行一次查出。页面上的规格、价格和顺序与原来一致。全部价表仍由 `savedSnapshots()` 返回，采集任务继续用条数差计算新增。
 - 硬件报价调度单独改为 10 分钟。其他快照仍是 1 分钟。快照新鲜度改为 15 分钟。页面沿用上一份缓冲区，直到下一份写上，不会在间隔里显示成待生成。
 - 已有的 `trading.hardware-prices.saved.v1` 到达后，如果还没有排队中的报价快照，就再排一轮。启动时不重放旧事件。

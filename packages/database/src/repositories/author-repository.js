@@ -8,6 +8,12 @@ import {
   preferNativeId,
   provisionalAuthorId,
 } from '../../../domain/src/authors.js';
+import {
+  authorSortAt,
+  isXueqiuLiveAuthor,
+  sourceAuthorProfile,
+  sourceKeyFromCapture,
+} from '../../../domain/src/source-authors.js';
 
 const cache = new Map();
 const CACHE_MS = 30_000;
@@ -206,7 +212,13 @@ export function linkAuthorItem(database, input) {
   const state = database.prepare(`SELECT is_read FROM user_item_states
     WHERE workspace_id = ? AND content_item_id = ?`).get(input.workspaceId, input.contentItemId);
   const isRead = state?.is_read ? 1 : 0;
-  const sortAt = Number(input.sortAt) || Date.now();
+  const sort = authorSortAt({
+    publishedAt: input.publishedAt,
+    publishedAtRaw: input.publishedAtRaw,
+    capturedAt: input.capturedAt,
+    createdAt: input.createdAt,
+  });
+  const sortAt = sort.at || (Number(input.sortAt) > 0 ? Math.trunc(Number(input.sortAt)) : 0);
   const title = lookupTitle(
     database,
     input.workspaceId,
@@ -235,24 +247,58 @@ export function linkAuthorItem(database, input) {
   const current = database.prepare(`SELECT author_id, is_read, sort_at FROM item_authors
     WHERE workspace_id = ? AND content_item_id = ?`).get(input.workspaceId, input.contentItemId);
   if (current && current.author_id !== profile.authorId) {
-    database.prepare(`UPDATE item_authors SET author_id = ? WHERE workspace_id = ? AND content_item_id = ?`)
-      .run(profile.authorId, input.workspaceId, input.contentItemId);
+    database.prepare(`UPDATE item_authors SET author_id = ?, sort_at = ? WHERE workspace_id = ? AND content_item_id = ?`)
+      .run(profile.authorId, sortAt || current.sort_at, input.workspaceId, input.contentItemId);
     recomputeAuthorRow(database, input.workspaceId, current.author_id);
     recomputeAuthorRow(database, input.workspaceId, profile.authorId);
     invalidateAuthorCache();
     return { authorId: profile.authorId, inserted: false, reassigned: true };
   }
+  if (current && sort.basis === 'published' && sortAt && sortAt !== Number(current.sort_at)) {
+    database.prepare(`UPDATE item_authors SET sort_at = ? WHERE workspace_id = ? AND content_item_id = ?`)
+      .run(sortAt, input.workspaceId, input.contentItemId);
+    recomputeAuthorRow(database, input.workspaceId, profile.authorId);
+    invalidateAuthorCache();
+    return { authorId: profile.authorId, inserted: false, resorted: true };
+  }
   return { authorId: profile.authorId, inserted: false };
+}
+
+function captureTiming(input, capture, metadata) {
+  return {
+    publishedAt: Number(input.publishedAt) || Number(capture.published_at) || 0,
+    publishedAtRaw: metadata.publishedAtRaw || input.publishedAtRaw || '',
+    capturedAt: Number(capture.captured_at) || 0,
+    createdAt: Number(input.createdAt) || 0,
+  };
 }
 
 export function recordCapturedAuthor(database, input) {
   if (!input?.captureId || !input.contentItemId) return null;
   const capture = database.prepare(`SELECT provider, external_id, author_native_id, author_handle, metadata_json,
-      published_at, captured_at
+      published_at, captured_at, source_account_id
     FROM captures WHERE id = ?`).get(input.captureId);
-  if (!capture || !['x', 'xueqiu', 'bilibili', 'youtube'].includes(capture.provider)) return null;
+  if (!capture) return null;
   let metadata = {};
   try { metadata = JSON.parse(capture.metadata_json || '{}') || {}; } catch { metadata = {}; }
+  const timing = captureTiming(input, capture, metadata);
+  if (capture.provider === 'media') {
+    const account = capture.source_account_id
+      ? database.prepare('SELECT external_id FROM source_accounts WHERE id = ?').get(capture.source_account_id)
+      : null;
+    const sourceKey = sourceKeyFromCapture(metadata, account?.external_id || '');
+    const profile = sourceAuthorProfile(sourceKey);
+    if (!profile) return null;
+    return linkAuthorItem(database, {
+      ...profile,
+      workspaceId: input.workspaceId,
+      contentItemId: input.contentItemId,
+      externalId: capture.external_id,
+      title: input.title || '',
+      ...timing,
+    });
+  }
+  if (!['x', 'xueqiu', 'bilibili', 'youtube'].includes(capture.provider)) return null;
   const fields = authorCaptureFields(capture.provider, {
     ...(metadata.authorProfile || {}),
     authorNativeId: capture.author_native_id || metadata.authorProfile?.nativeId || '',
@@ -260,13 +306,17 @@ export function recordCapturedAuthor(database, input) {
     authorName: metadata.authorProfile?.name || input.authorName || '',
   });
   if (!fields) return null;
+  let profile = fields.authorProfile;
+  if (capture.provider === 'xueqiu' && isXueqiuLiveAuthor(profile)) {
+    profile = sourceAuthorProfile('xueqiu7x24') || profile;
+  }
   return linkAuthorItem(database, {
-    ...fields.authorProfile,
+    ...profile,
     workspaceId: input.workspaceId,
     contentItemId: input.contentItemId,
     externalId: capture.external_id,
-    sortAt: Number(input.publishedAt) || Number(capture.published_at) || Number(capture.captured_at) || input.createdAt || Date.now(),
     title: input.title || '',
+    ...timing,
   });
 }
 
@@ -410,6 +460,9 @@ const AUTHOR_FROM = `author_stats s
   JOIN authors a ON a.workspace_id = s.workspace_id AND a.author_id = s.author_id`;
 
 const VISIBLE_AUTHOR = `a.kind != 'system' AND (a.merged_into IS NULL OR a.merged_into = '')`;
+const SOURCE_ACTIVITY = `(s.platform IN ('official', 'media') AND s.total_count >= 1)`;
+const SOCIAL_ACTIVITY = `(s.platform NOT IN ('official', 'media') AND s.recent_30d_count >= ?)`;
+const AUTHOR_ORDER = `s.latest_item_at DESC, s.author_id DESC`;
 
 function platformClause(platform) {
   if (!platform || platform === 'all') return { sql: '', params: [] };
@@ -470,29 +523,24 @@ export function createAuthorRepository(database, emitEvent = () => {}) {
     listAuthors({ workspaceId, platform = 'all', cursor = null, limit = AUTHOR_LIST_PAGE_SIZE } = {}) {
       const page = Math.max(1, Math.min(Number(limit) || AUTHOR_LIST_PAGE_SIZE, AUTHOR_LIST_PAGE_SIZE));
       const filter = platformClause(platform);
-      const order = `s.has_unread DESC, s.latest_unread_at DESC, s.latest_item_at DESC, s.author_id DESC`;
       const followed = cursor ? [] : database.prepare(`SELECT ${AUTHOR_SELECT} FROM ${AUTHOR_FROM}
         WHERE s.workspace_id = ? AND ${VISIBLE_AUTHOR} AND s.followed = 1 ${filter.sql}
-        ORDER BY ${order}`).all(workspaceId, ...filter.params).map(mapAuthor);
+        ORDER BY ${AUTHOR_ORDER}`).all(workspaceId, ...filter.params).map(mapAuthor);
       const params = [workspaceId, AUTHOR_ACTIVITY_MIN, ...filter.params];
       let cursorSql = '';
-      if (cursor) {
+      const latestItemAt = Number(cursor?.latestItemAt);
+      if (cursor && Number.isFinite(latestItemAt) && cursor.authorId) {
         cursorSql = ` AND (
-          s.has_unread < ? OR
-          (s.has_unread = ? AND s.latest_unread_at < ?) OR
-          (s.has_unread = ? AND s.latest_unread_at = ? AND s.latest_item_at < ?) OR
-          (s.has_unread = ? AND s.latest_unread_at = ? AND s.latest_item_at = ? AND s.author_id < ?)
+          s.latest_item_at < ? OR
+          (s.latest_item_at = ? AND s.author_id < ?)
         )`;
-        params.push(
-          cursor.hasUnread, cursor.hasUnread, cursor.latestUnreadAt,
-          cursor.hasUnread, cursor.latestUnreadAt, cursor.latestItemAt,
-          cursor.hasUnread, cursor.latestUnreadAt, cursor.latestItemAt, cursor.authorId,
-        );
+        params.push(latestItemAt, latestItemAt, String(cursor.authorId));
       }
       const others = database.prepare(`SELECT ${AUTHOR_SELECT} FROM ${AUTHOR_FROM}
-        WHERE s.workspace_id = ? AND ${VISIBLE_AUTHOR} AND s.followed = 0 AND s.recent_30d_count >= ?
+        WHERE s.workspace_id = ? AND ${VISIBLE_AUTHOR} AND s.followed = 0
+          AND (${SOURCE_ACTIVITY} OR ${SOCIAL_ACTIVITY})
           ${filter.sql} ${cursorSql}
-        ORDER BY ${order}
+        ORDER BY ${AUTHOR_ORDER}
         LIMIT ?`).all(...params, page + 1).map(mapAuthor);
       const hasMore = others.length > page;
       return { followed, others: others.slice(0, page), hasMore };
@@ -502,9 +550,9 @@ export function createAuthorRepository(database, emitEvent = () => {}) {
       const rows = database.prepare(`SELECT s.platform AS platform, COUNT(*) AS count
         FROM ${AUTHOR_FROM}
         WHERE s.workspace_id = ? AND ${VISIBLE_AUTHOR}
-          AND (s.followed = 1 OR s.recent_30d_count >= ?)
+          AND (s.followed = 1 OR ${SOURCE_ACTIVITY} OR ${SOCIAL_ACTIVITY})
         GROUP BY s.platform`).all(workspaceId, AUTHOR_ACTIVITY_MIN);
-      const counts = { all: 0, x: 0, xueqiu: 0, bilibili: 0, youtube: 0 };
+      const counts = { all: 0, x: 0, xueqiu: 0, bilibili: 0, youtube: 0, official: 0, media: 0 };
       for (const row of rows) {
         const count = Number(row.count) || 0;
         if (Object.hasOwn(counts, row.platform)) counts[row.platform] = count;
@@ -629,5 +677,150 @@ export function createAuthorRepository(database, emitEvent = () => {}) {
         WHERE workspace_id = ? AND (merged_into IS NULL OR merged_into = '') AND author_id > ?
         ORDER BY author_id LIMIT ?`).all(workspaceId, after, limit).map((row) => row.authorId);
     },
+
+    backfillSourceAuthorBatch({ afterRowid = 0, limit = 500, dryRun = false } = {}) {
+      return backfillSourceAuthorBatch(database, { afterRowid, limit, dryRun });
+    },
+
+    repairAuthorPublishBatch({ afterId = '', limit = 500, dryRun = false } = {}) {
+      return repairAuthorPublishBatch(database, { afterId, limit, dryRun });
+    },
+
+    listMediaIndexForAuthors({ afterId = '', limit = 500 } = {}) {
+      return database.prepare(`SELECT workspace_id AS workspaceId, external_id AS externalId, source_key AS sourceKey,
+          title, summary, canonical_url AS sourceUrl, published_at AS publishedAt,
+          published_at_raw AS publishedAtRaw, content_hash AS contentHash, status
+        FROM media_index_entries
+        WHERE external_id > ? AND status != 'budget_deferred'
+        ORDER BY external_id
+        LIMIT ?`).all(String(afterId || ''), Math.max(1, Math.min(Number(limit) || 500, 500)));
+    },
+
+    listOfficialBoardPayloads() {
+      return database.prepare(`SELECT workspace_id AS workspaceId, payload_json AS payload
+        FROM runtime_snapshots WHERE snapshot_key = 'static-signal-board'`).all().flatMap((row) => {
+        try {
+          const payload = JSON.parse(row.payload || '');
+          return payload && typeof payload === 'object' ? [{ workspaceId: row.workspaceId, payload }] : [];
+        } catch {
+          return [];
+        }
+      });
+    },
   });
+}
+
+function sourceCaptureWouldLink(row) {
+  if (!row?.content_item_id) return false;
+  if (row.provider === 'xueqiu') {
+    let metadata = {};
+    try { metadata = JSON.parse(row.metadata_json || '{}') || {}; } catch { metadata = {}; }
+    const profile = metadata.authorProfile || {};
+    return isXueqiuLiveAuthor({
+      nativeId: row.author_native_id || profile.nativeId || '',
+      handle: profile.handle || '',
+      name: profile.name || '',
+    });
+  }
+  let metadata = {};
+  try { metadata = JSON.parse(row.metadata_json || '{}') || {}; } catch { metadata = {}; }
+  return Boolean(sourceKeyFromCapture(metadata, row.account_external_id || ''));
+}
+
+export function backfillSourceAuthorBatch(database, { afterRowid = 0, limit = 500, dryRun = false } = {}) {
+  const cap = Math.max(1, Math.min(Number(limit) || 500, 500));
+  const rows = database.prepare(`SELECT c.rowid AS rowid, c.provider, c.id AS capture_id, c.workspace_id,
+      c.metadata_json, c.author_native_id, sa.external_id AS account_external_id,
+      ci.id AS content_item_id, ci.author_name, ci.title, ci.published_at AS item_published_at, ci.created_at
+    FROM captures c
+    LEFT JOIN content_items ci ON ci.capture_id = c.id AND ci.workspace_id = c.workspace_id
+    LEFT JOIN source_accounts sa ON sa.id = c.source_account_id
+    WHERE c.rowid > ?
+      AND (
+        c.provider = 'media'
+        OR (c.provider = 'xueqiu' AND (
+          c.author_native_id = '7x24'
+          OR IFNULL(json_extract(c.metadata_json, '$.authorProfile.nativeId'), '') = '7x24'
+        ))
+      )
+    ORDER BY c.rowid
+    LIMIT ?`).all(Number(afterRowid) || 0, cap);
+  if (dryRun) {
+    return {
+      rows: rows.length,
+      linked: rows.filter(sourceCaptureWouldLink).length,
+      lastRowid: rows.length ? Number(rows.at(-1).rowid) : Number(afterRowid) || 0,
+      dryRun: true,
+    };
+  }
+  let linked = 0;
+  const apply = database.transaction(() => {
+    for (const row of rows) {
+      if (!row.content_item_id) continue;
+      const result = recordCapturedAuthor(database, {
+        workspaceId: row.workspace_id,
+        captureId: row.capture_id,
+        contentItemId: row.content_item_id,
+        authorName: row.author_name || '',
+        title: row.title || '',
+        publishedAt: row.item_published_at,
+        createdAt: row.created_at,
+      });
+      if (result) linked += 1;
+    }
+  });
+  apply();
+  return { rows: rows.length, linked, lastRowid: rows.length ? Number(rows.at(-1).rowid) : Number(afterRowid) || 0 };
+}
+
+export function repairAuthorPublishBatch(database, { afterId = '', limit = 500, dryRun = false } = {}) {
+  const cap = Math.max(1, Math.min(Number(limit) || 500, 500));
+  const rows = database.prepare(`SELECT ia.content_item_id AS id, ia.workspace_id, ia.author_id, ia.sort_at,
+      ci.published_at, ci.created_at, c.published_at AS capture_published, c.captured_at, c.metadata_json
+    FROM item_authors ia
+    JOIN content_items ci ON ci.workspace_id = ia.workspace_id AND ci.id = ia.content_item_id
+    LEFT JOIN captures c ON c.id = ci.capture_id
+    WHERE ia.content_item_id > ?
+    ORDER BY ia.content_item_id
+    LIMIT ?`).all(String(afterId || ''), cap);
+  const authors = new Set();
+  let updated = 0;
+  if (dryRun) {
+    for (const row of rows) {
+      let raw = '';
+      try { raw = JSON.parse(row.metadata_json || '{}')?.publishedAtRaw || ''; } catch { raw = ''; }
+      const sort = authorSortAt({
+        publishedAt: row.published_at || row.capture_published,
+        publishedAtRaw: raw,
+        capturedAt: row.captured_at,
+        createdAt: row.created_at,
+      });
+      if (sort.at && sort.at !== Number(row.sort_at)) updated += 1;
+    }
+    return { rows: rows.length, updated, lastId: rows.length ? rows.at(-1).id : String(afterId || ''), dryRun: true };
+  }
+  const apply = database.transaction(() => {
+    for (const row of rows) {
+      let raw = '';
+      try { raw = JSON.parse(row.metadata_json || '{}')?.publishedAtRaw || ''; } catch { raw = ''; }
+      const sort = authorSortAt({
+        publishedAt: row.published_at || row.capture_published,
+        publishedAtRaw: raw,
+        capturedAt: row.captured_at,
+        createdAt: row.created_at,
+      });
+      if (!sort.at || sort.at === Number(row.sort_at)) continue;
+      database.prepare(`UPDATE item_authors SET sort_at = ? WHERE workspace_id = ? AND content_item_id = ?`)
+        .run(sort.at, row.workspace_id, row.id);
+      authors.add(`${row.workspace_id}\0${row.author_id}`);
+      updated += 1;
+    }
+    for (const key of authors) {
+      const split = key.indexOf('\0');
+      recomputeAuthorRow(database, key.slice(0, split), key.slice(split + 1));
+    }
+  });
+  apply();
+  if (updated) invalidateAuthorCache();
+  return { rows: rows.length, updated, lastId: rows.length ? rows.at(-1).id : String(afterId || '') };
 }
