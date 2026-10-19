@@ -6,7 +6,9 @@ import { createStore } from '../packages/database/src/index.js';
 import { resolveInstanceConfig } from '../packages/instance/src/index.js';
 import { loadResearchCatalog } from '../packages/domain/src/research-catalog.js';
 import { createResearchRecallService } from '../packages/domain/src/research-recall-service.js';
+import { createBambooStartLuxClient } from '../packages/connectors/src/bamboo-startlux.js';
 import { createTypeSafeSystemOneClient } from '../packages/connectors/src/typesafe-system-one.js';
+import { openClassificationClient } from '../packages/domain/src/classification-provider.js';
 import { openJevClient } from '../packages/domain/src/jev-enabled.js';
 import { createResearchRelevanceJudge, createResearchTagJudge } from '../packages/runtime/src/research-judges.js';
 
@@ -132,10 +134,13 @@ service.activate({ addition });
 const second = await service.buildReport({ questionId: 'optical_export_conditions', window, budget: { maxRequests: 400, maxMilliseconds: 120_000 } });
 const firstFacts = new Set(recalledFacts(first).flatMap((event) => event.origins.map((origin) => `${origin.type}:${origin.id}`)));
 const recovered = recalledFacts(second).filter((event) => event.origins.some((origin) => !firstFacts.has(`${origin.type}:${origin.id}`)) || event.hits.tag.includes('overseas_orders'));
-let live = { status: '未执行', reason: '没有设置 AI_CENTER_RESEARCH_RECALL_LIVE=1，或没有已配置的 JEV 凭证。模拟调用不能当作实测。' };
+let live = { status: '未执行', reason: '没有设置 AI_CENTER_RESEARCH_RECALL_LIVE=1，或分类客户端不可用。模拟调用不能当作实测。' };
 if (process.env.AI_CENTER_RESEARCH_RECALL_LIVE === '1') {
-  const client = openJevClient(process.env, undefined, (options) => createTypeSafeSystemOneClient(options));
-  if (!client?.available()) live = { status: '未执行', reason: 'JEV 客户端不可用，未改用其他模型。' };
+  const client = openClassificationClient(process.env, {
+    typesafeClient: openJevClient(process.env, undefined, (options) => createTypeSafeSystemOneClient(options)),
+    createBamboo: (options) => createBambooStartLuxClient(options),
+  });
+  if (!client?.available()) live = { status: '未执行', reason: '分类客户端不可用，未改用其他模型。' };
   else {
     const liveService = createResearchRecallService({
       repository: store.repositories.research,
