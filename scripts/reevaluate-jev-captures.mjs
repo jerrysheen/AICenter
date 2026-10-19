@@ -6,8 +6,6 @@ import { admitHeldCapture, createReplayEvaluator, JEV_REPLAY_REASONS, reevaluate
 import { openJevClient, resolveJevEnabled } from '../packages/domain/src/jev-enabled.js';
 import { resolveInstanceConfig } from '../packages/instance/src/index.js';
 import { isMain } from '../packages/runtime/src/is-main.js';
-import { enqueueOriginalTranslations } from '../packages/runtime/src/feed-translation-module.js';
-import { createFeedService } from '../packages/domain/src/feed-service.js';
 import { createArticleDedup } from '../packages/domain/src/article-dedup.js';
 import { enqueueTreePreparation } from '../packages/runtime/src/information-tree-module.js';
 import { FEED_ITEMS_ENRICH_JOB_TYPE } from '../packages/runtime/src/feed-automation-module.js';
@@ -65,7 +63,6 @@ export async function runJevCaptureReplay({
   reasons = ['jev-failed'],
   env = process.env,
   xFocusConfig = null,
-  feedService = null,
   articleDedup = null,
 } = {}) {
   const jevEnabled = resolveJevEnabled(env);
@@ -108,17 +105,6 @@ export async function runJevCaptureReplay({
             evaluation,
             articleDedup: dedup,
             transaction: (work) => store.transaction(work),
-            enqueueTranslation: feedService ? async (capture, item) => {
-              const text = String(item?.body || '').trim();
-              if (!text) return;
-              await enqueueOriginalTranslations({
-                store,
-                feedService,
-                workspaceId,
-                units: [{ id: `${capture.provider}:${capture.externalId}`, text }],
-                priority: -1,
-              });
-            } : null,
           });
           if (saved?.item?.id) admitted.push(saved.item.id);
         },
@@ -146,15 +132,6 @@ async function main() {
   const env = process.env;
   let xFocusConfig = null;
   try { xFocusConfig = loadXFocusConfig(instance.configDirectory); } catch { xFocusConfig = null; }
-  const feedService = createFeedService({
-    legacyRepository: store,
-    feedRepository: store.repositories.feed,
-    sourcePort: {
-      findByProvider: () => null,
-      persistence: () => null,
-      read: async () => ({ data: { items: [] } }),
-    },
-  });
   try {
     const report = await runJevCaptureReplay({
       store,
@@ -169,7 +146,6 @@ async function main() {
       reasons: replayReasons(arg('reasons', 'jev-failed')),
       env,
       xFocusConfig,
-      feedService,
     });
     console.log(JSON.stringify({
       jevEnabled: resolveJevEnabled(env),

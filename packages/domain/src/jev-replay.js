@@ -64,10 +64,10 @@ function replayContent(capture) {
 }
 
 function originalCreatedAt(capture) {
-  const published = Number(capture.publishedAt);
-  if (Number.isInteger(published) && published > 0) return published;
   const captured = Number(capture.capturedAt);
   if (Number.isInteger(captured) && captured >= 0) return captured;
+  const published = Number(capture.publishedAt);
+  if (Number.isInteger(published) && published > 0) return published;
   return Date.now();
 }
 

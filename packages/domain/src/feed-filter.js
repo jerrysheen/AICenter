@@ -55,8 +55,8 @@ const AD_TERMS = Object.freeze([
   '优惠券', '立即购买', '点击购买', '加微信', '私信领取', '推广链接',
   'sponsored', 'affiliate', 'advertisement', 'promo code',
 ]);
-// 经营事实里的「广告收入 / 广告费 / 广告业务」不是推销。其余「广告」仍算。
-const AD_MARK = /广告(?!收入|费|费用|业务|主|商|市场)/u;
+// 经营事实不是推销。「广告业」后面不接「务」时，不会落到「广告业务」这条例外里，所以单独排除。
+const AD_MARK = /广告(?!收入|营收|费|费用|支出|投放|业绩|业务|主|商|市场|业(?!务))/u;
 
 function flagOff(value) {
   const raw = envFlag(value);

@@ -76,8 +76,11 @@ export function createFeedValueRefreshService({feedRepository,mediaRepository,cl
         const scores=jevEnabled ? (stored || cache.get(key)) : null;
         let result;
         if(scores) {result={scores,model,errorReason:''};output.reused++;}
-        else if(!jevEnabled) {result={scores:null,model,errorReason:'jev-unavailable',errorCode:'TYPESAFE_UNAVAILABLE',errorStatus:null};}
-        else {result=await evaluator.evaluate(row.input,{signal});if(!result.errorReason || result.errorReason==='jev-failed')output.requested++;else output.preflight++;}
+        else {
+          result=await evaluator.evaluate(row.input,{signal});
+          if(!result.errorReason || result.errorReason==='jev-failed') output.requested++;
+          else output.preflight++;
+        }
         const outage=isJevOutage(result);
         const useFallback=outage && (fallback!==false || !jevEnabled) && !scores;
         if(useFallback) {

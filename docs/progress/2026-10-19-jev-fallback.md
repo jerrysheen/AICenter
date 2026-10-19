@@ -15,7 +15,7 @@ TypeSafe 从 2026-10-18 08:18 起返回 HTTP 402。`AI_CENTER_FEED_FILTER=enforc
 只在 `isJevOutage` 为真时兜底：HTTP 401、402、403、429、大于等于 500，`TYPESAFE_TIMEOUT`，真实 fetch 失败的 `TYPESAFE_NETWORK_ERROR`，以及未配置客户端的 `TYPESAFE_UNAVAILABLE`。200 但没有 answers 是 `TYPESAFE_BAD_RESPONSE`。调用方主动 abort、400、404、422 和其他非白名单错误继续 REVIEW，原因 `jev-rejected`。预检（正文缺失、截断、缺上下文）仍然挡住。正常 jev 打分不变。连续失败计数只在 jev 成功时清零，预检失败不清零。
 
 - X 关注流直接 KEEP，原因 `fallback-following` 或 `jev-disabled-following`。
-- X 推荐流先排除广告用语。单独的「广告」仍算推销；「广告收入」「广告费」「广告业务」「广告主」「广告商」「广告市场」不算。`xFocus.focusScore` 达到阈值则 `*-xfocus`，否则命中 `config/x-focus.json` 关键词则 `*-keyword`。都没有则继续 REVIEW。关注流和推荐流的来源判断共用 `focusFeedFromSource`，没有标明关注流的 X 时间线按推荐流处理。
+- X 推荐流先排除广告用语。单独的「广告」仍算推销。不算推销的有：广告收入、广告营收、广告费、广告费用、广告支出、广告投放、广告业绩、广告业务、广告主、广告商、广告市场，以及后面不接「务」的「广告业」。`xFocus.focusScore` 达到阈值则 `*-xfocus`，否则命中 `config/x-focus.json` 关键词则 `*-keyword`。都没有则继续 REVIEW。关注流和推荐流的来源判断共用 `focusFeedFromSource`，没有标明关注流的 X 时间线按推荐流处理。
 - 雪球、媒体、哔哩哔哩动态和其他来源直接 `*-source`。
 - KEEP 时 `filterDecision=KEEP`，`filterApplied=false`，写入 `fallbackAt`，并保留原来的 `filterErrorCode` / `filterErrorStatus`。分数保持为空，不伪造 0.60。
 - 全局关闭且没有放行时，原因是 `jev-disabled`，不再写成 `jev-failed`。
@@ -29,7 +29,7 @@ TypeSafe 从 2026-10-18 08:18 起返回 HTTP 402。`AI_CENTER_FEED_FILTER=enforc
 
 FOCUS 问题遇到白名单故障，或全局开关关闭时，Gemini 阅读分组已经给出方向的材料直接记为命中（分数 1，原因 `reading-classification`）。400、坏响应和调用方 abort 不记命中。分组失败、预算推迟和缺分组仍按原原因留下，小时任务本身不因为 jev 抛错。
 
-`feed.quality.refresh` 在开关关闭时不调用 jev。已经有 jev 分数，或判定已是 KEEP / DROP 的行保持原样，只给没有分数的行走兜底。开关开启时，白名单内的故障才改走兜底，已经成功的分数仍复用。jev 关闭期间不要在页面上点「质量刷新」：没有分数的历史行会被兜底改写。
+`feed.quality.refresh` 在开关关闭时不调用 jev。已经有 jev 分数，或判定已是 KEEP / DROP 的行保持原样。没有分数的行仍先走预检：正文缺失或被截断的继续 REVIEW，预检通过后才按兜底放行。开关开启时，白名单内的故障才改走兜底，已经成功的分数仍复用。jev 关闭期间不要在页面上点「质量刷新」：没有分数且预检通过的历史行会被兜底改写。
 
 问答先验、复核和证据门在全局关闭时全部关掉，检索结果原样进入。资料召回的标签和相关性判断同样跳过。投资者材料里的 Gemini 问题集不是 TypeSafe，不受这个开关影响。
 
@@ -44,11 +44,11 @@ node --env-file=.env scripts/reevaluate-jev-captures.mjs --from 1792252800000 --
 node --env-file=.env scripts/reevaluate-jev-captures.mjs --from 1792252800000 --limit 300 --interval-ms 200
 ```
 
-`--from 1792252800000` 是北京时间 2026-10-18 00:00。不传 `--to`，窗口一直开到现在。时间用抓取时间的毫秒。默认只处理状态为 `captured` 且 `filterReason=jev-failed` 的行。TypeSafe 恢复后可以用 `--reasons jev-failed,jev-unavailable,jev-disabled` 把另外两类也纳入，再配合 `--jev` 重评。按原来的发布时间或抓取时间排序，不改 `captured_at`。内容条目的 `created_at` 写成原来的发布时间，没有发布时间则用抓取时间，所以按入库时间排序的列表里旧帖不会排到最前。
+`--from 1792252800000` 是北京时间 2026-10-18 00:00。不传 `--to`，窗口一直开到现在。时间用抓取时间的毫秒。默认只处理状态为 `captured` 且 `filterReason=jev-failed` 的行。TypeSafe 恢复后可以用 `--reasons jev-failed,jev-unavailable,jev-disabled` 把另外两类也纳入，再配合 `--jev` 重评。按原来的发布时间或抓取时间排序，不改 `captured_at`。内容条目的 `created_at` 优先用抓取时间，没有抓取时间再用发布时间。信息树和阅读小时按 `ci.created_at` 归入小时，补刷只覆盖最近 24 小时；用抓取时间才能落进当时的小时。
 
-媒体按 article 写入：带上 summary，作者用 `article.author`，没有则用 `publisherKey`，并记入文章去重。capture 和内容条目在同一个事务里写入。放行后的 id 批量进入信息树准备和 `feed.items.enrich`。`--jev` 放行时写入 `filterScores`、`filterPolicyHash`、`filterCacheKey`、`evaluatorModel` 和 `filterRuleHash`，列表 SQL 才能选中。
+媒体按 article 写入：带上 summary，作者用 `article.author`，没有则用 `publisherKey`，并记入文章去重。capture 和内容条目在同一个事务里写入。放行后的 id 批量进入信息树准备和 `feed.items.enrich`。翻译只走这一条任务里的 `localizeContentItems`（文章归一开启时由该任务自己入队），脚本不再另开一条 Gemma 队列。`--jev` 放行时写入 `filterScores`、`filterPolicyHash`、`filterCacheKey`、`evaluatorModel` 和 `filterRuleHash`，列表 SQL 才能选中。
 
-大约 1721 条 X 内容会进入 Gemma 原文翻译。Gemma 每天 5000 次额度，正式运行用 `--limit 300 --interval-ms 200` 分批，不要一次把窗口打满。
+大约 1721 条 X 内容会经 `feed.items.enrich` 进入 Gemma 原文翻译，每条只译一次。Gemma 每天 5000 次额度，正式运行用 `--limit 300 --interval-ms 200` 分批，不要一次把窗口打满。
 
 全局开关为 false 时只套兜底，即使加上 `--jev` 也不会创建 TypeSafe 客户端。开关为 true 时，`--jev` 重新调用 jev，不加 `--jev` 则按 `fallback-*` 补放。
 

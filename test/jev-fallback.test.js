@@ -470,7 +470,7 @@ test('replay keeps original time, skips a client when jev is disabled, and links
       onKeep: (capture, reason) => admitHeldCapture({ feedRepository: feed, capture, reason }),
     });
     assert.equal(feed.getCapture('local', 'x', 'a-early').capturedAt, 300);
-    assert.equal(feed.getContentItemByCapture('local', feed.getCapture('local', 'x', 'a-early').id).createdAt, 100);
+    assert.equal(feed.getContentItemByCapture('local', feed.getCapture('local', 'x', 'a-early').id).createdAt, 300);
     assert.equal(feed.getCapture('local', 'x', 'a-early').status, 'ready');
     assert.equal(feed.getCapture('local', 'x', 'a-early').metadata.filterReason, 'jev-disabled-following');
     const item = feed.listContentItemsByProvider('local', 'x', { qualityRule: 'all-three-0.60' })
@@ -557,6 +557,12 @@ test('only the jev outage whitelist admits, and ad revenue is not an ad', async 
     xFocus: { focusScore: 0.91, method: 'model' },
   }));
   assert.equal(income.metadata.filterReason, 'fallback-xfocus');
+  for (const phrase of ['广告营收', '广告支出', '广告投放', '广告业绩', '广告业规模']) {
+    const business = await filterFor(httpError(402)).evaluate(bodyInput(`公司${phrase}同比改善`, {
+      xFocus: { focusScore: 0.91, method: 'model' },
+    }));
+    assert.equal(business.metadata.filterReason, 'fallback-xfocus', phrase);
+  }
   const marked = await filterFor(httpError(402)).evaluate(bodyInput('本条是广告', {
     xFocus: { focusScore: 0.91, method: 'model' },
   }));
@@ -670,6 +676,26 @@ test('disabled quality refresh leaves existing KEEP and DROP rows unchanged', as
     assert.equal(droppedMeta.filterReason, 'below-all-three');
     assert.deepEqual(droppedMeta.filterScores, droppedScores);
     assert.equal(feed.getCapture('local', 'x', 'dropped').status, 'ignored');
+    const truncated = feed.saveCapture({
+      workspaceId: 'local', provider: 'x', externalId: 'cut', sourceAccountId: following.id,
+      contentHash: 'cut', status: 'captured',
+      metadata: {
+        originalText: '关注流长文还没展开，正文在截断处停下。',
+        filterDecision: 'REVIEW', filterReason: 'input-truncated', filterApplied: true,
+        filterMode: 'enforce', filterRule: 'all-three-0.60',
+        captureContext: { truncated: true },
+      },
+    });
+    feed.saveContentItem({
+      workspaceId: 'local', captureId: truncated.id, originType: 'subscription', contentType: 'post',
+      title: 'cut', body: '关注流长文还没展开，正文在截断处停下。',
+    });
+    await service.refresh({ concurrency: 1 }, { runId: 'truncated' });
+    const cut = feed.getCapture('local', 'x', 'cut');
+    assert.equal(cut.metadata.filterDecision, 'REVIEW');
+    assert.equal(cut.metadata.filterReason, 'input-truncated');
+    assert.equal(cut.status, 'captured');
+    assert.equal(calls, 0);
   } finally {
     store.close();
     rmSync(directory, { recursive: true, force: true });
@@ -736,7 +762,7 @@ test('jev replay writes scores the list can see, media fields, enqueue, and roll
     assert.equal(scoredCapture.metadata.evaluatorModel, 'fixed');
     assert.equal(scoredCapture.metadata.filterRuleHash, feedValueRuleHash('all-three-0.60'));
     assert.ok(feed.listContentItemsByProvider('local', 'x', { qualityRule: 'all-three-0.60' }).some((row) => row.externalId === 'scored'));
-    assert.equal(feed.getContentItemByCapture('local', scoredCapture.id).createdAt, 1_700);
+    assert.equal(feed.getContentItemByCapture('local', scoredCapture.id).createdAt, 1_800);
     const report = await runJevCaptureReplay({
       store, workspaceId: 'local', from: 0, to: 10_000, env: { AI_CENTER_JEV_ENABLED: 'false' }, xFocusConfig: focusConfig,
     });
@@ -746,7 +772,7 @@ test('jev replay writes scores the list can see, media fields, enqueue, and roll
     assert.equal(article.contentType, 'article');
     assert.equal(article.summary, '路透摘要');
     assert.equal(article.authorName, 'Ann Editor');
-    assert.equal(article.createdAt, 1_600);
+    assert.equal(article.createdAt, 1_900);
     const dedupKey = articleIdentity({
       url: 'https://www.reuters.com/world/asia/long-story-title',
       title: '路透长标题足够做去重',
