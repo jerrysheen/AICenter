@@ -114,7 +114,7 @@ test('youtube podcast config and rss parse use a file url path', () => {
   assert.equal(configPath.includes(`${path.sep}config${path.sep}youtube-podcasts.json`), true);
   assert.doesNotMatch(configPath, /^[A-Za-z]:\\[A-Za-z]:\\/);
   const config = loadYoutubePodcastConfig(configPath);
-  assert.equal(config.creators.length, 11);
+  assert.equal(config.creators.length, 12);
   assert.equal(config.creators[0].channels[0].kind, 'playlist');
   assert.equal(config.creators[0].channels[0].playlistId, 'PLe4PRejZgr0OJbRzA6nWybYiThLJd_ouz');
   const valley = config.creators.find((item) => item.id === 'valley101');

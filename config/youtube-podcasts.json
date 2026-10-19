@@ -156,6 +156,20 @@
           "language": "zh"
         }
       ]
+    },
+    {
+      "id": "dalao-lens",
+      "name": "大佬透镜",
+      "focus": "大佬访谈",
+      "channels": [
+        {
+          "key": "dalao-lens",
+          "kind": "channel",
+          "handle": "大佬透镜",
+          "url": "https://www.youtube.com/@%E5%A4%A7%E4%BD%AC%E9%80%8F%E9%95%9C",
+          "language": "zh"
+        }
+      ]
     }
   ]
 }
