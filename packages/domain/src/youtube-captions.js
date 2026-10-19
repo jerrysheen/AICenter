@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 
-// 用户特批：只有 YouTube 播客正文整理走豆包网页。
-// 标题、摘要、关键句，以及其他所有翻译，仍只用 Gemma 26B（gemma-4-26b-a4b-it）。
-// 这里的函数只处理字幕文本和提示词，不调用任何模型。
+// YouTube 播客正文默认走 Gemma 26B 翻译池（官方 endpoint）。
+// 标题、摘要、关键句仍只用 Gemma 26B，不走 Gemini Flash。
+// 豆包提示词只在显式选择豆包引擎时使用。这里的函数不调用任何模型。
 
 export const ARTICLE_PART_MIN = 10_000;
 export const ARTICLE_PART_MAX = 12_000;
@@ -206,6 +206,29 @@ export function articlePartPrompt({ index, total, text, previousTail = '', fresh
     return `请把下面的英文播客字幕整理成简体中文文章，不要写成摘要。\n\n要求：\n- 按说话顺序写完整，保留论证、数字和例子。\n- 用 Markdown。小节标题写成 ## 小标题（HH:MM:SS），时间用这一小节开始的字幕时间。\n- 发言人单独成段，写成「名字：」。听不出名字时用「主持人：」或「嘉宾：」。\n- 公司、产品、股票代码和已经通用的英文术语保留英文，第一次出现时在中文后面用括号标出英文。\n- 口播广告可以缩短成一两句，但保留赞助方和股票代码。\n- 不要写「本回答由AI生成」，不要附上推荐追问。\n- 这是第 1/${count} 段。\n\n字幕：\n${body}`;
   }
   return `第 ${part}/${count} 段，沿用格式。\n\n字幕：\n${body}`;
+}
+
+export const GEMMA_TRANSLATE_SYSTEM = '你是翻译器。把英文播客字幕译成简体中文。不要总结，不要扩写，不要加评论。保留时间戳、说话人标记（>>）、人名、公司名、股票代码和数字。已经通用的英文术语保留英文。只输出译文。';
+
+export const GEMMA_SECTION_SYSTEM = '把下面这段播客译文排成一个 Markdown 小节。只用一个 ## 小标题，标题里带上这段开头的时间（HH:MM:SS）；没有时间就不要编。发言人写成「名字：」。听不出名字时用「主持人：」或「嘉宾：」。保留数字、公司名、股票代码和关键数据。不要写要点摘要，不要加评论。只输出这一节。';
+
+export const GEMMA_SUMMARY_SYSTEM = '根据下面的小节，写这一集开头的要点摘要。用 Markdown，第一行是 ## 要点，下面 5 到 8 条列表。保留人名和关键数字。不要重写全文，不要加评论。';
+
+export function gemmaSummarySource(sections) {
+  return (Array.isArray(sections) ? sections : []).map((section, index) => {
+    const lines = String(section || '').trim().split('\n');
+    const heading = lines.find((line) => /^##\s/.test(line.trim())) || `第 ${index + 1} 节`;
+    const body = lines.filter((line) => line.trim() && !/^##\s/.test(line.trim())).join(' ').replace(/\s+/g, ' ').trim().slice(0, 180);
+    return body ? `${heading.trim()}\n${body}` : heading.trim();
+  }).filter(Boolean).join('\n\n');
+}
+
+export function joinGemmaArticle(summary, sections) {
+  const opening = String(summary || '').trim();
+  const body = (Array.isArray(sections) ? sections : []).map((item) => String(item || '').trim()).filter(Boolean).join('\n\n');
+  if (!opening) return body;
+  const head = opening.startsWith('## ') ? opening : `## 要点\n\n${opening}`;
+  return body ? `${head}\n\n${body}`.trim() : head;
 }
 
 export function joinArticleParts(replies) {

@@ -2,7 +2,7 @@
 
 V1 按博主抓取 YouTube 上金融和 AI 方向的播客。有人工字幕或自动生成的原语种字幕就用字幕；没有字幕时下载音频，切块后走现有的 Gemini 语音转写，转写完删除音频。摘要走现有的 Gemini 文本调用，不用 jev。摘要不是中文时只用 Gemma 26B（`gemma-4-26b-a4b-it`）翻译。总开关默认关闭。这些内容不进小时报，单独在信源目录展示。
 
-正文整理是后来加的，见 `2026-10-19-youtube-podcast-article.md`。只有这一处正文走豆包网页。标题、摘要和关键句仍只用 Gemma 26B。
+正文整理见 `2026-10-19-youtube-podcast-article.md`。默认用 Gemma 26B 翻译池，失败时缺的段可以改用现有 Gemini Flash。豆包不是默认。标题、摘要和关键句仍只用 Gemma 26B。
 
 migration 86 `youtube_podcasts` 只建 `youtube_podcast_episodes` 和 `youtube_podcast_channels`。migration 87 `youtube_podcast_backfill` 只给 `youtube_podcast_channels` 加 `backfilled_at`、`backfill_attempts`、`backfill_failed_at`。空号仍是 63、79、80、82。不要重建数据库。需要同时重启 Web 和 Worker。
 
