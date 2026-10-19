@@ -768,7 +768,11 @@ export function createFeedRepository(database, emitEvent) {
       const size = Math.max(1, Math.min(Number(limit) || 500, 5000));
       return database.prepare(`SELECT c.captured_at AS capturedAt, c.external_id AS externalId,
           c.metadata_json AS metadataJson, c.title AS title, c.source_url AS sourceUrl,
-          ci.id AS contentItemId, sa.external_id AS sourceExternalId
+          ci.id AS contentItemId, sa.external_id AS sourceExternalId,
+          COALESCE(NULLIF(json_extract(c.metadata_json, '$.originalText'), ''), NULLIF(ci.body, ''), c.title, '') AS text,
+          COALESCE(NULLIF(c.author_handle, ''), NULLIF(json_extract(c.metadata_json, '$.authorHandle'), ''), NULLIF(json_extract(c.metadata_json, '$.authorProfile.handle'), '')) AS authorHandle,
+          COALESCE(NULLIF(json_extract(c.metadata_json, '$.authorProfile.name'), ''), '') AS authorName,
+          COALESCE(NULLIF(json_extract(c.metadata_json, '$.authorVerified'), ''), NULLIF(json_extract(c.metadata_json, '$.authorProfile.verified'), ''), NULLIF(json_extract(c.metadata_json, '$.authorProfile.verifiedType'), '')) AS authorVerified
         FROM captures c
         LEFT JOIN source_accounts sa ON sa.id = c.source_account_id
         LEFT JOIN content_items ci ON ci.capture_id = c.id AND ci.workspace_id = c.workspace_id
@@ -778,6 +782,10 @@ export function createFeedRepository(database, emitEvent) {
         capturedAt: Number(row.capturedAt) || 0,
         externalId: String(row.externalId || ''),
         title: row.title || '',
+        text: row.text || '',
+        authorHandle: row.authorHandle || '',
+        authorName: row.authorName || '',
+        authorVerified: row.authorVerified || '',
         sourceUrl: row.sourceUrl || '',
         contentItemId: row.contentItemId || '',
         sourceExternalId: row.sourceExternalId || '',

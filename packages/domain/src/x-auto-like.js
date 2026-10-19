@@ -84,15 +84,21 @@ export function createXFocusService({
   function candidates(workspaceId, at) {
     const rows = feedRepository?.listRecentXCaptures?.(workspaceId, { since: at - DAY_MS, limit: 400 }) || [];
     return rows.map((row) => {
-      const focus = storedFocus(row.metadata, config);
+      const metadata = row.metadata || {};
+      const focus = storedFocus(metadata, config);
+      const profile = metadata.authorProfile && typeof metadata.authorProfile === 'object' ? metadata.authorProfile : {};
       return {
         contentItemId: row.contentItemId || '',
         tweetId: String(row.externalId || ''),
         title: row.title || '',
+        text: row.text || metadata.originalText || '',
+        authorHandle: row.authorHandle || metadata.authorHandle || profile.handle || '',
+        authorName: row.authorName || profile.name || '',
+        authorVerified: row.authorVerified || metadata.authorVerified || profile.verified || profile.verifiedType || '',
         sourceUrl: row.sourceUrl || '',
         capturedAt: row.capturedAt || 0,
-        feed: focusFeedFromSource(row.sourceExternalId),
-        metadata: row.metadata || {},
+        feed: row.feed || focusFeedFromSource(row.sourceExternalId),
+        metadata,
         focus,
       };
     }).filter((row) => row.focus);
@@ -105,10 +111,57 @@ export function createXFocusService({
     return '';
   }
 
+  function jobFailureReason(job) {
+    const error = job?.error;
+    if (error && typeof error === 'object') return text(error.message) || text(error.name) || '任务出错';
+    return text(error) || '任务出错';
+  }
+
+  function failedAutoLikes(workspaceId, at) {
+    return likeJobs(workspaceId, at - 30 * DAY_MS).filter((job) => job?.input?.source === 'auto' && job.status === 'failed' && job.id);
+  }
+
+  function observeAutoLikeFailures(workspaceId) {
+    const settings = readSettings(workspaceId);
+    const at = now();
+    const failed = failedAutoLikes(workspaceId, at).sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
+    if (!settings.failureWatchReady) {
+      writeSettings(workspaceId, {
+        ...settings,
+        failureWatchReady: true,
+        notedFailureIds: [...new Set([...settings.notedFailureIds, ...failed.map((job) => job.id)])].slice(-1000),
+      });
+      return;
+    }
+    const noted = new Set(settings.notedFailureIds);
+    let current = settings;
+    let changed = false;
+    let announced = false;
+    for (const job of failed) {
+      if (noted.has(job.id)) continue;
+      const reason = jobFailureReason(job);
+      current = nextAutoLikeSettings(current, 'failed', reason);
+      noted.add(job.id);
+      changed = true;
+      if (!announced && current.suspended && !settings.suspended) {
+        announced = true;
+        log(`[worker] x-auto-like stopped status=failed reason=${reason}`);
+      }
+    }
+    if (!changed) return;
+    writeSettings(workspaceId, {
+      ...current,
+      failureWatchReady: true,
+      notedFailureIds: [...noted].slice(-1000),
+    });
+    dropView(workspaceId);
+  }
+
   return Object.freeze({
     limits,
     readSettings,
     async dispatch(workspaceId = 'local') {
+      observeAutoLikeFailures(workspaceId);
       const settings = readSettings(workspaceId);
       if (!autoLikeEnvEnabled(env) || !settings.pageEnabled || settings.suspended) return { dispatched: false };
       const openLike = runtimeRepository?.listOpenJobs?.('feed.x.like') || [];
@@ -133,10 +186,20 @@ export function createXFocusService({
     },
     recordAutoLike(workspaceId, output) {
       const settings = readSettings(workspaceId);
-      const next = nextAutoLikeSettings(settings, output?.status);
+      const jobId = text(output?.jobId);
+      if (output?.status === 'failed' && jobId && settings.notedFailureIds.includes(jobId)) return settings;
+      let next = nextAutoLikeSettings(settings, output?.status, output?.reason);
+      if (output?.status === 'failed' && jobId) {
+        next = {
+          ...next,
+          notedFailureIds: [...new Set([...next.notedFailureIds, jobId])].slice(-1000),
+        };
+      }
       if (next !== settings) writeSettings(workspaceId, next);
       dropView(workspaceId);
-      if (next.suspended && !settings.suspended) log(`[worker] x-auto-like stopped status=${output?.status || ''}`);
+      if (next.suspended && !settings.suspended) {
+        log(`[worker] x-auto-like stopped status=${output?.status || ''} reason=${text(output?.reason)}`);
+      }
       return next;
     },
     refreshDrift(workspaceId = 'local') {
@@ -180,10 +243,31 @@ export function createXFocusService({
     },
     setPageEnabled(workspaceId, enabled) {
       dropView(workspaceId);
+      const current = readSettings(workspaceId);
+      const watch = {
+        notedFailureIds: current.notedFailureIds,
+        failureWatchReady: current.failureWatchReady,
+      };
       if (enabled === true) {
-        return writeSettings(workspaceId, { pageEnabled: true, suspended: false, notice: '', consecutiveUnconfirmed: 0, consecutiveUnavailable: 0 });
+        return writeSettings(workspaceId, {
+          pageEnabled: true,
+          suspended: false,
+          notice: '',
+          consecutiveUnconfirmed: 0,
+          consecutiveUnavailable: 0,
+          consecutiveTaskErrors: 0,
+          ...watch,
+        });
       }
-      return writeSettings(workspaceId, { pageEnabled: false, suspended: false, notice: '', consecutiveUnconfirmed: 0, consecutiveUnavailable: 0 });
+      return writeSettings(workspaceId, {
+        pageEnabled: false,
+        suspended: false,
+        notice: '',
+        consecutiveUnconfirmed: 0,
+        consecutiveUnavailable: 0,
+        consecutiveTaskErrors: 0,
+        ...watch,
+      });
     },
     view(workspaceId = 'local') {
       const at = now();
