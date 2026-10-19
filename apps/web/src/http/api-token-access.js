@@ -33,6 +33,8 @@ const EXACT_PATHS = new Set([
   '/api/v1/market/southbound/top10',
   '/api/market/southbound',
   '/api/market/southbound/top10',
+  '/api/v1/market/northbound',
+  '/api/market/northbound',
   '/api/v1/hardware-prices',
   '/api/v1/compute-prices',
   '/api/v1/compute-prices/history',

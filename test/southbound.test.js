@@ -91,6 +91,7 @@ test('东财汇总按百万港元换算，十大成交按港元合并', () => {
     dailyRows: daily.map((row) => ({ ...row, checkStatus: 'ok', checkDiffPct: 0 })),
     topRows: merged,
   });
+  assert.equal(view.dateLabel, '数据日期 2026-10-16');
   assert.equal(view.channels.total.net, '-35.68');
   assert.equal(view.buy[0].name, '友邦保险');
   assert.equal(view.sell[0].name, '药明生物');

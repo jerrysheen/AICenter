@@ -2348,6 +2348,41 @@ migrations.push({ version: 87, name: 'youtube_podcast_backfill', up(database) {
   addColumn(database, 'youtube_podcast_channels', 'backfill_failed_at', 'INTEGER');
 }});
 
+migrations.push({ version: 88, name: 'northbound_flow', up(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS northbound_daily (
+      workspace_id TEXT NOT NULL,
+      trade_date TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      deal_amt INTEGER,
+      deal_num INTEGER,
+      source TEXT NOT NULL,
+      check_status TEXT NOT NULL,
+      check_diff_pct REAL,
+      fetched_at INTEGER NOT NULL,
+      PRIMARY KEY (workspace_id, trade_date, channel),
+      CHECK (channel IN ('sh', 'sz', 'total')),
+      CHECK (check_status IN ('ok', 'mismatch', 'unchecked', 'hkex_missing'))
+    );
+    CREATE TABLE IF NOT EXISTS northbound_top10 (
+      workspace_id TEXT NOT NULL,
+      trade_date TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      rank INTEGER NOT NULL,
+      code TEXT NOT NULL,
+      name TEXT NOT NULL,
+      deal_amt INTEGER,
+      source TEXT NOT NULL,
+      PRIMARY KEY (workspace_id, trade_date, channel, code),
+      CHECK (channel IN ('sh', 'sz'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_northbound_daily_date
+      ON northbound_daily (workspace_id, trade_date DESC);
+    CREATE INDEX IF NOT EXISTS idx_northbound_top10_code
+      ON northbound_top10 (workspace_id, code, trade_date DESC);
+  `);
+}});
+
 
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
