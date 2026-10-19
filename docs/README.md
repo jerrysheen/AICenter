@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-19-request-size-avatars.md`：翻译请求先读完超限正文再回 413，字节上限对齐 200000 字。YouTube 正文不再自动翻译。雪球相对头像补到 `https://xavatar.imedao.com/`，用手动脚本回填。CSP 的 `img-src` 放行 `https://pbs.twimg.com` 和 `https://xavatar.imedao.com`。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
+
 - `progress/2026-10-19-market-board-backlog.md`：看板超时会取消还没发出的 Yahoo 请求。同一键的 refresh 复用进行中的请求。默认超时 20 秒。`^HSTECH` 404 只跳过自己。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-19-youtube-podcast-article.md`：YouTube 单集正文改成豆包整理的中文文章。自动字幕先去掉滚动重复，再按句末或说话人分成约 1 万到 1.2 万字符，在同一个豆包对话里逐段发送。开关 `AI_CENTER_YOUTUBE_PODCASTS_ARTICLE` 默认关，每天默认 2 集。打开后去重稿写入 `content_item.body`，中途失败时信息流显示去重稿而不是原始字幕。标题、摘要和关键句仍只用 Gemma 26B。migration 89 只加原字幕和整理进度。需要同时重启 Web 和 Worker。
