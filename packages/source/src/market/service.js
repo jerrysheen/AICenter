@@ -1,4 +1,4 @@
-import { asiaTrackedItems, buildAsiaMarketBoard, buildCnMarketBoard, buildGlobalAssetBoard, buildOverviewBoard, buildUsMarketBoard, cnTrackedItems, globalTrackedItems, parseAsiaExtraSymbols, parseCnExtraSymbols, parseUsExtraSymbols, preferredOverviewFocus, usTrackedItems } from './boards.js';
+import { asiaTrackedItems, buildAsiaMarketBoard, buildCnMarketBoard, buildGlobalAssetBoard, buildOverviewBoard, buildUsMarketBoard, catalogQuoteName, cnTrackedItems, globalTrackedItems, parseAsiaExtraSymbols, parseCnExtraSymbols, parseUsExtraSymbols, preferredOverviewFocus, quoteDisplayName, usTrackedItems } from './boards.js';
 import { createCnQuoteClient, isCnYahooSymbol } from '../../../connectors/src/cn-quotes.js';
 import { createSinaFuturesClient, isSinaFutureSymbol } from '../../../connectors/src/sina-futures.js';
 import { createXueqiuQuoteClient, isXueqiuYahooSymbol, shanghaiCalendarDay } from '../../../connectors/src/xueqiu-quotes.js';
@@ -49,30 +49,46 @@ export function createMarketService(options = {}) {
   const cache = new Map();
   const pending = new Map();
   const attempts = new Map();
-  const cnNames = new Map();
+  const quoteNames = new Map();
+  const quoteNameLimit = 2000;
 
-  function rememberCnNames(quotes) {
+  function rememberQuoteNames(quotes) {
     for (const item of quotes || []) {
       const symbol = String(item?.symbol || '').trim().toUpperCase();
       const name = String(item?.name || '').trim();
-      if (!symbol || !name || name.toUpperCase() === symbol) continue;
-      cnNames.set(symbol, name);
+      if (!/^\d{6}\.(SS|SZ|BJ)$/.test(symbol) || !name || name.toUpperCase() === symbol) continue;
+      if (quoteNames.has(symbol)) quoteNames.delete(symbol);
+      quoteNames.set(symbol, name);
+      while (quoteNames.size > quoteNameLimit) {
+        const oldest = quoteNames.keys().next().value;
+        if (!oldest) break;
+        quoteNames.delete(oldest);
+      }
     }
   }
 
-  function withRememberedName(item) {
+  function resolvedQuoteName(symbol, quotedName) {
+    const key = String(symbol || '').trim().toUpperCase();
+    return quoteDisplayName({
+      symbol: key,
+      quotedName,
+      catalogName: catalogQuoteName(marketCatalog, key),
+      rememberedName: quoteNames.get(key) || '',
+    });
+  }
+
+  function withResolvedName(item) {
     if (!item || typeof item !== 'object') return item;
     const symbol = String(item.symbol || '').trim().toUpperCase();
-    const name = String(item.name || '').trim();
-    if (!symbol || (name && name.toUpperCase() !== symbol)) return item;
-    const remembered = cnNames.get(symbol);
-    if (!remembered) return item;
-    return { ...item, name: remembered };
+    if (!symbol) return item;
+    const name = resolvedQuoteName(symbol, item.name);
+    if (!name || name === String(item.name || '').trim()) return item;
+    return { ...item, name };
   }
 
   function withRememberedBoard(board) {
     if (!board || typeof board !== 'object') return board;
-    const mapList = (list) => (Array.isArray(list) ? list.map(withRememberedName) : list);
+    const mapList = (list) => (Array.isArray(list) ? list.map(withResolvedName) : list);
     return {
       ...board,
       indices: mapList(board.indices),
@@ -446,9 +462,7 @@ export function createMarketService(options = {}) {
     if (!symbols.length || !xueqiuQuotes?.fetchQuotes) return [];
     return cached(`xueqiu:${symbols.slice().sort().join(',')}`, async () => {
       try {
-        const quotes = (await xueqiuQuotes.fetchQuotes(symbols, { signal })).map((item) => mapQuote(item));
-        rememberCnNames(quotes);
-        return quotes;
+        return (await xueqiuQuotes.fetchQuotes(symbols, { signal })).map((item) => mapQuote(item));
       } catch {
         return [];
       }
@@ -472,7 +486,9 @@ export function createMarketService(options = {}) {
     const stillMissing = missingXueqiu.filter((symbol) => !thsList.some((item) => item.symbol === symbol));
     const fallback = stillMissing.length ? await fetchYahooQuotes(stillMissing, { refresh, signal }) : [];
     const bySymbol = new Map([...otherList, ...fallback, ...thsList, ...xueqiuList, ...sinaList].map((item) => [item.symbol, item]));
-    return unique.map((symbol) => bySymbol.get(symbol)).filter(Boolean).map((item) => withRememberedName(isCnYahooSymbol(item.symbol)
+    const merged = unique.map((symbol) => bySymbol.get(symbol)).filter(Boolean);
+    rememberQuoteNames(merged);
+    return merged.map((item) => withResolvedName(/^\d{6}\.(SS|SZ|BJ)$/.test(item.symbol)
       ? { ...item, session: cnTradingCalendarAt(now()).session } : item));
   }
 

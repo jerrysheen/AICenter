@@ -3,6 +3,7 @@ import { FeedValueRuleSchema } from '../../contracts/src/feed-value.js';
 import { isJevOutage, resolveJevEnabled } from './jev-enabled.js';
 import { resolveClassificationProvider } from './classification-provider.js';
 import { resolveBambooDailySpread, takeBambooUsageSlot } from './bamboo-usage.js';
+import { looksLikeFeedAd } from './feed-ad.js';
 import { focusFeedFromSource, keywordFocus } from './x-focus.js';
 export const FEED_FILTER_VERSION = FEED_VALUE_VERSION;
 
@@ -52,14 +53,6 @@ function combinedText(fields) {
     .join('\n');
 }
 
-const AD_TERMS = Object.freeze([
-  '返佣', '拉群', '加群', '收费群', '课程招揽', '联盟返佣', '联盟营销',
-  '优惠券', '立即购买', '点击购买', '加微信', '私信领取', '推广链接',
-  'sponsored', 'affiliate', 'advertisement', 'promo code',
-]);
-// 经营事实不是推销。「广告业」后面不接「务」时，不会落到「广告业务」这条例外里，所以单独排除。
-const AD_MARK = /广告(?!收入|营收|费|费用|支出|投放|业绩|业务|主|商|市场|业(?!务))/u;
-
 function flagOff(value) {
   const raw = envFlag(value);
   return raw === 'off' || raw === '0' || raw === 'false';
@@ -70,8 +63,8 @@ function finiteUnit(value, fallback) {
   return Number.isFinite(number) && number >= 0 && number <= 1 ? number : fallback;
 }
 
-// 暂定。正式默认值按 JEV 开着时信息流准入的最大日调用量取整到百位，统计结果出来前保持 2000。
-export const BAMBOO_DAILY_MAX_DEFAULT = 2000;
+// 信息流准入每日上限。2026-10-11 至 10-17 的峰值是 7011（10-17），取整到百位。只管准入，默认先到先得。
+export const BAMBOO_DAILY_MAX_DEFAULT = 7000;
 
 export function resolveBambooDailyMax(env = process.env) {
   const raw = String(env?.AI_CENTER_BAMBOO_DAILY_MAX ?? '').trim();
@@ -84,11 +77,22 @@ function limitBambooAdmission(client, { max, spread, now, log, usageDirectory })
   if (!client || typeof client.evaluate !== 'function') return client;
   let loggedDaily = false;
   let loggedHourly = false;
+  let loggedUsage = false;
   return {
     ...client,
     async evaluate(input) {
       const slot = takeBambooUsageSlot({ directory: usageDirectory, max, spread, at: now() });
       if (!slot.ok) {
+        if (slot.reason === 'usage-error') {
+          if (!loggedUsage) {
+            loggedUsage = true;
+            const category = /^[A-Za-z0-9_]{1,40}$/.test(String(slot.category || '')) ? slot.category : 'usage-error';
+            try { log(`[worker] Bamboo 用量文件异常，走本地兜底（${category}）`); } catch { /* logging must not change admission */ }
+          }
+          const error = new Error('Bamboo 用量文件异常');
+          error.code = 'BAMBOO_USAGE_ERROR';
+          throw error;
+        }
         const hourly = slot.reason === 'hourly';
         if (hourly && !loggedHourly) {
           loggedHourly = true;
@@ -122,12 +126,7 @@ export function resolveFeedFilterConfig(env = process.env) {
   });
 }
 
-export function looksLikeFeedAd(value) {
-  const hay = String(value || '');
-  if (AD_MARK.test(hay)) return true;
-  const lower = hay.toLowerCase();
-  return AD_TERMS.some((term) => lower.includes(term.toLowerCase()));
-}
+export { looksLikeFeedAd };
 
 function admissionText(input = {}) {
   const item = isRecord(input.item) ? input.item : {};
@@ -431,7 +430,8 @@ function createFeedValueFilter({ client, config, lookup, calibration, xFocusConf
     const result=await evaluator.evaluate(normalized,{signal:input.signal});
     const outage = isJevOutage(result);
     const capped = result.errorCode === 'BAMBOO_DAILY_CAP' || result.errorCode === 'BAMBOO_HOURLY_CAP';
-    if (classify && outage && !capped) {
+    const usageFault = result.errorCode === 'BAMBOO_USAGE_ERROR';
+    if (classify && outage && !capped && !usageFault) {
       streak += 1;
       const at = now();
       if (streak >= warnStreak && at - lastWarnAt >= warnGapMs) {

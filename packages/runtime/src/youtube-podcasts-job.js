@@ -9,8 +9,10 @@ import {
   formatPodcastSummary,
   limitFirstRun,
   loadYoutubePodcastConfig,
+  mergePodcastEntries,
   parsePodcastSummary,
   parseYoutubeRss,
+  podcastBackfillDue,
   rssUrlForChannel,
   selectPodcastEpisodes,
   summaryNeedsChinese,
@@ -25,13 +27,17 @@ import {
 import { createGeminiInvestorSummarizer } from '../../connectors/src/investor-discussion-model.js';
 import { createGemmaTranslationRouter } from '../../connectors/src/translate/gemma.js';
 import {
-  combineFetchSignal,
   ensureYtDlpReady,
+  fetchYoutubeText,
+  listChannelLongVideos,
+  prepareYoutubeTranscriber,
   probeYoutubeEpisode,
   resolveYoutubeChannelId,
   transcribeYoutubeAudio,
   youtubeBlockReason,
+  youtubeTranscribeUnavailable,
 } from '../../connectors/src/youtube-podcasts.js';
+import { createGeminiAudioTranscriber } from '../../connectors/src/audio-transcribe.js';
 import { executeAudioTranscription } from './audio-transcription-job.js';
 
 export { YOUTUBE_PODCAST_JOB_TYPE, YOUTUBE_PODCAST_SCHEDULE_KEY };
@@ -58,11 +64,21 @@ export function ensureYoutubePodcastSchedule(store, env = process.env, now = Dat
 
 function logRound(stats) {
   const reasons = stats.reasons.length ? stats.reasons.join(',') : '-';
-  console.log(`[worker] youtube-podcasts discovered=${stats.discovered} subtitles=${stats.subtitles} transcribed=${stats.transcribed} failed=${stats.failed} skipped=${stats.skipped} stopped=${stats.stopped || '-'} reasons=${reasons}`);
+  console.log(`[worker] youtube-podcasts discovered=${stats.discovered} subtitles=${stats.subtitles} transcribed=${stats.transcribed} failed=${stats.failed} skipped=${stats.skipped} transcribeUnavailable=${stats.transcribeUnavailable} stopped=${stats.stopped || '-'} reasons=${reasons}`);
 }
 
 function emptyStats() {
-  return { discovered: 0, subtitles: 0, transcribed: 0, failed: 0, skipped: 0, stopped: '', reasons: [], status: 'ready' };
+  return {
+    discovered: 0,
+    subtitles: 0,
+    transcribed: 0,
+    failed: 0,
+    skipped: 0,
+    transcribeUnavailable: 0,
+    stopped: '',
+    reasons: [],
+    status: 'ready',
+  };
 }
 
 function pushReason(stats, reason) {
@@ -92,18 +108,21 @@ function summaryPrompt(creator, title, transcript) {
 
 export async function defaultFetchRss(url, fetchImpl, signal) {
   let response;
+  let text = '';
   try {
-    response = await fetchImpl(url, {
+    const loaded = await fetchYoutubeText(url, {
+      fetchImpl,
+      signal,
       headers: { 'user-agent': 'AICenter/0.2 youtube-podcasts', accept: 'application/atom+xml, application/xml, text/xml' },
-      signal: combineFetchSignal(signal),
     });
+    response = loaded.response;
+    text = loaded.text;
   } catch (error) {
     if (signal?.aborted) throw error;
     const timeout = new Error('RSS 超时');
     timeout.code = 'youtube-timeout';
     throw timeout;
   }
-  const text = await response.text();
   if (response.ok) return { entries: parseYoutubeRss(text) };
   const blocked = response.status === 429 ? '429' : youtubeBlockReason(text);
   if (blocked) return { blocked, detail: text.slice(0, 180) };
@@ -215,6 +234,24 @@ function attemptsOf(repository, workspaceId, videoId) {
   return repository.episode(workspaceId, videoId)?.attempts || 0;
 }
 
+function recordTranscribeUnavailable(stats, repository, workspaceId, creator, episode) {
+  repository.saveEpisode({
+    workspaceId,
+    videoId: episode.videoId,
+    creatorId: creator.id,
+    channelKey: episode.channelKey,
+    title: episode.title,
+    durationSec: episode.durationSec,
+    publishedAt: episode.publishedAt,
+    status: 'failed',
+    reason: 'transcribe-unavailable',
+    attempts: attemptsOf(repository, workspaceId, episode.videoId),
+  });
+  stats.failed += 1;
+  stats.transcribeUnavailable += 1;
+  pushReason(stats, 'transcribe-unavailable');
+}
+
 function roundStop(error, signal) {
   if (error?.code === 'youtube-round-stop' || error?.reason === 'bot-check' || error?.reason === '429' || error?.reason === 'yt-dlp-outdated' || error?.reason === 'yt-dlp-missing') {
     return error.reason || 'bot-check';
@@ -261,6 +298,25 @@ export async function runYoutubePodcastRound(deps = {}) {
     : deadline;
   const fetchRss = deps.fetchRss || ((url) => defaultFetchRss(url, deps.fetchImpl || fetch, signal));
   const resolveChannel = deps.resolveChannel || ((handle) => resolveYoutubeChannelId({ handle, fetchImpl: deps.fetchImpl || fetch, signal }));
+  const listVideos = deps.listVideos || ((channel) => listChannelLongVideos({
+    channelId: channel.channelId,
+    handle: channel.handle,
+    env,
+    run: deps.run,
+    signal,
+  }));
+  const audioTranscribe = deps.audioTranscribe || createGeminiAudioTranscriber();
+  const now = Number(deps.now) || Date.now();
+  const timeZone = youtubePodcastClock(env).timeZone;
+  let audioDisabled = false;
+  try {
+    prepareYoutubeTranscriber(env, audioTranscribe);
+  } catch (error) {
+    if (!youtubeTranscribeUnavailable(error)) throw error;
+    audioDisabled = true;
+    pushReason(stats, 'transcribe-unavailable');
+    console.warn(`[worker] youtube-podcasts 转写器不可用，本轮只收有字幕的集：${String(error?.message || error).slice(0, 180)}`);
+  }
   const probe = deps.probe;
   const transcribe = deps.transcribe;
   const summarize = deps.summarize || defaultSummarize(env, deps.quotaRepository, signal);
@@ -294,8 +350,12 @@ export async function runYoutubePodcastRound(deps = {}) {
       for (const channel of creator.channels) {
         if (stats.stopped || processed >= limits.roundLimit) break;
         const state = repository.channel(workspaceId, channel.key);
+        const needsBackfill = channel.kind === 'channel' && podcastBackfillDue(state, now, timeZone);
         if (!state.bootstrapped) freshChannels.add(channel.key);
-        let channelId = state.channelId;
+        let channelId = String(channel.channelId || state.channelId || '').trim();
+        if (channel.kind === 'channel' && channel.channelId && state.channelId !== channel.channelId) {
+          repository.saveChannel(workspaceId, channel.key, { channelId: channel.channelId, bootstrapped: state.bootstrapped });
+        }
         if (channel.kind === 'channel' && !channelId) {
           let resolved;
           try {
@@ -345,10 +405,49 @@ export async function runYoutubePodcastRound(deps = {}) {
           break;
         }
         await sleep(limits.intervalMs);
-        const entries = (rss?.entries || []).map((entry) => ({ ...entry, channelKey: channel.key, role: channel.role || '' }));
-        const slice = state.bootstrapped
-          ? { probe: entries.filter((entry) => !repository.isDone(workspaceId, entry.videoId)), ignore: [] }
-          : firstRunSlice(entries, limits.lookback);
+        let entries = (rss?.entries || []).map((entry) => ({ ...entry, channelKey: channel.key, role: channel.role || '' }));
+        let backfillListed = false;
+        if (needsBackfill) {
+          let listed;
+          try {
+            listed = await listVideos({ ...channel, channelId });
+          } catch (error) {
+            const stop = roundStop(error, signal);
+            if (stop) {
+              stats.stopped = stop;
+              pushReason(stats, stop);
+              break;
+            }
+            listed = { failed: true, detail: String(error?.message || error).slice(0, 120) };
+          }
+          if (listed?.blocked) {
+            stats.stopped = listed.blocked;
+            pushReason(stats, listed.blocked);
+            break;
+          }
+          if (!listed || listed.failed) {
+            repository.saveChannel(workspaceId, channel.key, {
+              channelId,
+              bootstrapped: state.bootstrapped,
+              backfillAttempts: (state.backfillAttempts || 0) + 1,
+              backfillFailedAt: now,
+            });
+            pushReason(stats, 'backfill');
+          } else {
+            backfillListed = true;
+            freshChannels.add(channel.key);
+            entries = mergePodcastEntries(entries, (listed.entries || []).map((entry) => ({
+              ...entry,
+              channelKey: channel.key,
+              role: channel.role || '',
+            })));
+          }
+          await sleep(limits.intervalMs);
+        }
+        const limitWindow = !state.bootstrapped || backfillListed;
+        const slice = limitWindow
+          ? firstRunSlice(entries, limits.lookback)
+          : { probe: entries.filter((entry) => !repository.isDone(workspaceId, entry.videoId)), ignore: [] };
         let finished = true;
         for (const entry of slice.probe) {
           if (stats.stopped || processed >= limits.roundLimit) {
@@ -397,8 +496,9 @@ export async function runYoutubePodcastRound(deps = {}) {
           });
           processed += 1;
         }
-        if (!state.bootstrapped && finished && !stats.stopped) {
+        if (limitWindow && finished && !stats.stopped) {
           for (const entry of slice.ignore) {
+            if (repository.episode(workspaceId, entry.videoId)) continue;
             repository.saveEpisode({
               workspaceId,
               videoId: entry.videoId,
@@ -412,7 +512,11 @@ export async function runYoutubePodcastRound(deps = {}) {
             });
             stats.skipped += 1;
           }
-          repository.saveChannel(workspaceId, channel.key, { channelId, bootstrapped: true });
+          repository.saveChannel(workspaceId, channel.key, {
+            channelId,
+            bootstrapped: true,
+            ...(backfillListed ? { backfilledAt: now } : {}),
+          });
         }
       }
       const existing = repository.listForDedup(workspaceId, creator.id);
@@ -501,6 +605,10 @@ export async function runYoutubePodcastRound(deps = {}) {
               pushReason(stats, 'transcribe-budget');
               continue;
             }
+            if (audioDisabled) {
+              recordTranscribeUnavailable(stats, repository, workspaceId, creator, episode);
+              continue;
+            }
             const runTranscribe = transcribe || ((item) => transcribeYoutubeAudio({
               videoId: item.videoId,
               url: watchUrl(item.videoId),
@@ -509,6 +617,7 @@ export async function runYoutubePodcastRound(deps = {}) {
               quotaRepository: deps.quotaRepository,
               languageCodes: [],
               execute: deps.executeAudio || executeAudioTranscription,
+              transcribe: audioTranscribe,
               workspaceId,
               signal,
             }));
@@ -556,6 +665,14 @@ export async function runYoutubePodcastRound(deps = {}) {
             pushReason(stats, stop);
             stats.failed += 1;
             break;
+          }
+          if (youtubeTranscribeUnavailable(error)) {
+            if (!audioDisabled) {
+              audioDisabled = true;
+              console.warn(`[worker] youtube-podcasts 转写器不可用，本轮剩下的集不再下载音频：${String(error?.message || error).slice(0, 180)}`);
+            }
+            recordTranscribeUnavailable(stats, repository, workspaceId, creator, episode);
+            continue;
           }
           const attempts = attemptsOf(repository, workspaceId, episode.videoId) + 1;
           repository.saveEpisode({

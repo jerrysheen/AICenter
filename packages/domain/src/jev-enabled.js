@@ -32,7 +32,7 @@ export function isJevOutage(error) {
   if (error.name === 'AbortError' || error.code === 'ABORT_ERR' || error.errorCode === 'ABORT_ERR') return false;
   const code = String(error.code || error.errorCode || '');
   if (code === 'TYPESAFE_TIMEOUT' || code === 'TYPESAFE_NETWORK_ERROR' || code === 'TYPESAFE_UNAVAILABLE') return true;
-  if (code === 'BAMBOO_TIMEOUT' || code === 'BAMBOO_NETWORK_ERROR' || code === 'BAMBOO_UNAVAILABLE' || code === 'BAMBOO_DAILY_CAP' || code === 'BAMBOO_HOURLY_CAP') return true;
+  if (code === 'BAMBOO_TIMEOUT' || code === 'BAMBOO_NETWORK_ERROR' || code === 'BAMBOO_UNAVAILABLE' || code === 'BAMBOO_DAILY_CAP' || code === 'BAMBOO_HOURLY_CAP' || code === 'BAMBOO_USAGE_ERROR') return true;
   if (error.errorReason === 'jev-unavailable') return true;
   const status = integerStatus(error);
   return status === 401 || status === 402 || status === 403 || status === 429 || (status != null && status >= 500);

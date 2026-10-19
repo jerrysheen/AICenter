@@ -110,11 +110,39 @@ function readUsage(filePath) {
   }
 }
 
-function writeUsage(filePath, data) {
+const RENAME_ATTEMPTS = 3;
+const RENAME_WAIT_MS = 20;
+
+function renameReplacing(from, to, rename) {
+  let last = null;
+  for (let attempt = 0; attempt < RENAME_ATTEMPTS; attempt += 1) {
+    try {
+      rename(from, to);
+      return;
+    } catch (error) {
+      last = error;
+      const retryable = error?.code === 'EPERM' || error?.code === 'EBUSY';
+      if (!retryable || attempt === RENAME_ATTEMPTS - 1) break;
+      sleepMs(RENAME_WAIT_MS);
+    }
+  }
+  const wrapped = new Error('Bamboo 用量文件无法写入');
+  wrapped.code = 'BAMBOO_USAGE_WRITE';
+  const cause = typeof last?.code === 'string' && /^[A-Za-z0-9_]+$/.test(last.code) ? last.code : 'unknown';
+  wrapped.causeCode = cause;
+  throw wrapped;
+}
+
+function writeUsage(filePath, data, rename = renameSync) {
   mkdirSync(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.${process.pid}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(data)}\n`);
-  renameSync(tmp, filePath);
+  try {
+    renameReplacing(tmp, filePath, rename);
+  } catch (error) {
+    try { unlinkSync(tmp); } catch { /* the replacement did not happen */ }
+    throw error;
+  }
 }
 
 export function readBambooUsage(directory, at = Date.now()) {
@@ -130,10 +158,10 @@ export function resolveBambooDailySpread(env = process.env) {
 
 // One admission call. Returns ok:false without writing when the daily cap,
 // or the current hour's share, is already used.
-export function takeBambooUsageSlot({ directory, max, spread = 'fifo', at = Date.now() } = {}) {
+export function takeBambooUsageSlot({ directory, max, spread = 'fifo', at = Date.now(), rename = renameSync } = {}) {
   const stamp = shanghaiUsageStamp(at);
   const limit = Number(max);
-  const denied = (reason, usage, allowance = null) => ({
+  const denied = (reason, usage, allowance = null, category = '') => ({
     ok: false,
     reason,
     day: stamp.day,
@@ -141,6 +169,7 @@ export function takeBambooUsageSlot({ directory, max, spread = 'fifo', at = Date
     count: usage.count,
     hourCount: usage.hour === stamp.hour ? usage.hourCount : 0,
     allowance,
+    category,
   });
   if (!directory || typeof directory !== 'string') return denied('daily', emptyUsage());
   if (!Number.isInteger(limit) || limit < 0) return denied('daily', emptyUsage());
@@ -166,11 +195,15 @@ export function takeBambooUsageSlot({ directory, max, spread = 'fifo', at = Date
         hour: stamp.hour,
         hourCount: hourCount + 1,
       };
-      writeUsage(filePath, next);
+      writeUsage(filePath, next, rename);
       return { ok: true, reason: '', day: stamp.day, hour: stamp.hour, count: next.count, hourCount: next.hourCount, allowance: null };
     });
   } catch (error) {
-    if (error?.code === 'BAMBOO_USAGE_LOCK' || error?.code === 'BAMBOO_USAGE_READ') return denied('daily', emptyUsage());
+    const code = error?.code;
+    if (code === 'BAMBOO_USAGE_LOCK' || code === 'BAMBOO_USAGE_READ' || code === 'BAMBOO_USAGE_WRITE') {
+      const category = code === 'BAMBOO_USAGE_WRITE' ? (error.causeCode || code) : code;
+      return denied('usage-error', emptyUsage(), null, category);
+    }
     throw error;
   }
 }

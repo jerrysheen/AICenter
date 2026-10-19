@@ -6730,6 +6730,7 @@ function renderHubTicker() {
     change.className = tone;
     change.textContent = known ? formatPct(up, item.changePct) : LOADING_QUOTE;
     button.append(name, price, change);
+    appendQuoteBasis(button, item);
     if (quoteNeedsSpinner(item)) {
       const spinner = document.createElement('span');
       spinner.className = 'quote-spinner';
@@ -8345,9 +8346,10 @@ function renderMarketStatus() {
     ? (state.marketBoardErrors[state.stockBoard] || state.marketError)
     : '';
   const stale = marketStaleLabel(market);
-  const closed = stale ? '' : marketClosedLabel(market);
+  const phase = !stale && (market?.session === 'pre' || market?.session === 'post') ? sessionLabel(market.session) : '';
+  const closed = stale || phase ? '' : marketClosedLabel(market);
   const delay = homeDataDelayLabel(state.homeGeneratedAt);
-  const note = stale || delay || closed;
+  const note = stale || phase || delay || closed;
   el.replaceChildren();
   el.classList.toggle('is-stale', Boolean(stale));
   el.classList.toggle('hidden', !note && !error);
@@ -8370,6 +8372,7 @@ function renderIndexScroller(indices) {
   for (const item of indices || []) {
     const card = document.createElement('article');
     card.className = 'index-card';
+    card.dataset.quoteCard = '1';
     const up = (item.changePct ?? 0) >= 0;
     const staleLabel = quoteStaleLabel(item);
     const closedLabel = staleLabel ? '' : quoteClosedLabel(item);
@@ -8380,17 +8383,46 @@ function renderIndexScroller(indices) {
       <strong class="${up ? 'up' : 'down'}">${formatPrice(item.lastPrice)}</strong>
       <b class="${up ? 'up' : 'down'}">${item.changePct === null ? '—' : formatPct(up, item.changePct)}</b>
       ${sparkMarkup(item)}`;
+    appendQuoteBasis(card, item);
     scroller.append(card);
   }
   return scroller;
 }
 
+function overviewSignature(market) {
+  const parts = [];
+  for (const section of market?.sections || []) {
+    parts.push(section?.id || '', section?.session || '');
+    for (const key of ['indices', 'gainers', 'losers']) {
+      for (const item of section?.[key] || []) {
+        parts.push([
+          item?.symbol, item?.name, item?.summary, item?.lastPrice, item?.changePct,
+          item?.prevClose, item?.asOf, item?.marketTime, item?.session,
+        ].join('~'));
+      }
+    }
+  }
+  return parts.join('\n');
+}
+
+function restoreOverviewFocus(root, symbol) {
+  if (!symbol || !root?.querySelector) return;
+  const escaped = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(symbol) : String(symbol).replace(/["\\]/g, '');
+  const next = root.querySelector(`[data-symbol="${escaped}"]`);
+  if (next && next !== document.activeElement) next.focus?.();
+}
+
 function renderOverview(market) {
   const root = elements['market-overview'];
+  const key = overviewSignature(market);
+  if (root.getAttribute?.('data-overview-key') === key && root.querySelector?.('[data-quote-card]')) return;
+  const active = document.activeElement;
+  const focusedSymbol = active && root.contains?.(active) ? String(active.dataset?.symbol || '') : '';
   root.replaceChildren();
   for (const section of market?.sections || []) {
     const wrap = document.createElement('section');
     wrap.className = 'market-section';
+    wrap.dataset.quoteCard = '1';
     const heading = document.createElement('div');
     heading.className = 'market-section-title';
     heading.append(Object.assign(document.createElement('h2'), { textContent: section.title }));
@@ -8405,6 +8437,8 @@ function renderOverview(market) {
     wrap.append(heading, renderIndexScroller(section.indices), brief);
     root.append(wrap);
   }
+  if (root.setAttribute) root.setAttribute('data-overview-key', key);
+  restoreOverviewFocus(root, focusedSymbol);
 }
 
 function renderBreadth(target, breadth, title) {
@@ -8488,6 +8522,10 @@ function renderMovers(list, title) {
     const row = document.createElement('button');
     row.type = 'button';
     row.className = 'mover-row';
+    if (row.dataset) {
+      row.dataset.quoteCard = '1';
+      if (item?.symbol) row.dataset.symbol = item.symbol;
+    }
     const identity = document.createElement('span');
     identity.className = 'quote-identity';
     const name = document.createElement('strong');
@@ -8500,6 +8538,7 @@ function renderMovers(list, title) {
       code.textContent = secondary;
       identity.append(code);
     }
+    if (item?.prevClose != null || item?.asOf != null || item?.marketTime != null) appendQuoteBasis(identity, item);
     const change = document.createElement('b');
     change.className = up ? 'up' : 'down';
     change.textContent = item.changePct === null ? '—' : formatPct(up, item.changePct);
@@ -8681,6 +8720,7 @@ function paintMarketPlaceholder(isOverview) {
     elements['quote-filters'].replaceChildren();
     elements['quote-list'].replaceChildren();
     const root = elements['market-overview'];
+    root.removeAttribute?.('data-overview-key');
     root.replaceChildren(showError ? marketRetryBlock(error) : marketIndexSkeleton());
     return;
   }
@@ -9914,15 +9954,89 @@ function scheduleRow(event) {
   return button;
 }
 
-function findQuote(symbol) {
-  const lists = [
-    ...(state.markets.us?.watchlist || []),
-    ...(state.markets.asia?.watchlist || []),
-    ...(state.markets.cn?.watchlist || []),
+function quoteCandidates() {
+  const boards = [state.markets.us, state.markets.asia, state.markets.cn, state.markets.overview];
+  const fromBoards = boards.flatMap((board) => [
+    ...(board?.indices || []),
+    ...(board?.watchlist || []),
+    ...(board?.gainers || []),
+    ...(board?.losers || []),
+  ]);
+  const fromSections = (state.markets.overview?.sections || []).flatMap((section) => [
+    ...(section?.indices || []),
+    ...(section?.gainers || []),
+    ...(section?.losers || []),
+  ]);
+  return [
+    ...fromBoards,
+    ...fromSections,
     ...(state.assetBoard?.watchlist || []),
     ...hubQuotes(),
+    ...Object.values(state.liveQuotes || {}),
   ];
-  return lists.find((item) => item.symbol === symbol) || { symbol, name: symbol, lastPrice: null, changePct: null };
+}
+
+function findQuote(symbol) {
+  const key = String(symbol || '').trim().toUpperCase();
+  const matches = quoteCandidates().filter((item) => String(item?.symbol || '').trim().toUpperCase() === key);
+  const realName = (item) => {
+    const name = String(item?.name || '').trim();
+    return name && name.toUpperCase() !== key;
+  };
+  return matches.find((item) => item?.lastPrice != null && realName(item))
+    || matches.find((item) => item?.lastPrice != null)
+    || matches.find((item) => realName(item))
+    || matches[0]
+    || { symbol, name: symbol, lastPrice: null, changePct: null, prevClose: null, asOf: null, session: 'closed' };
+}
+
+function quoteInstant(item) {
+  const at = Number(item?.asOf ?? item?.marketTime);
+  if (!Number.isFinite(at) || at <= 0) return 0;
+  return at < 1e12 ? Math.trunc(at * 1000) : Math.trunc(at);
+}
+
+function shanghaiQuoteParts(at) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date(at));
+  const read = (type) => parts.find((part) => part.type === type)?.value || '';
+  return { month: read('month'), day: read('day'), hour: read('hour'), minute: read('minute') };
+}
+
+function formatQuoteStamp(at) {
+  const clock = shanghaiQuoteParts(at);
+  if (!clock.month) return '';
+  return `${clock.month}月${clock.day}日 ${clock.hour}:${clock.minute}`;
+}
+
+function formatQuoteDay(at) {
+  const clock = shanghaiQuoteParts(at);
+  if (!clock.month) return '';
+  return `${clock.month}月${clock.day}日`;
+}
+
+function quoteBasisText(item, extra = {}) {
+  const parts = [];
+  const dailyAt = quoteInstant({ asOf: extra.dailyAt });
+  if (dailyAt) parts.push(`日K ${formatQuoteDay(dailyAt)}`);
+  if (item?.prevClose != null && item.prevClose !== '') parts.push(`基准 ${formatPrice(item.prevClose)}`);
+  if (!dailyAt) {
+    const at = quoteInstant(item);
+    if (at) parts.push(formatQuoteStamp(at));
+  }
+  return parts.join(' · ');
+}
+
+function appendQuoteBasis(parent, item) {
+  const text = quoteBasisText(item);
+  if (!text || !parent) return;
+  parent.append(Object.assign(document.createElement('small'), { className: 'quote-basis', textContent: text }));
 }
 
 const quotePeriods = [
@@ -9934,6 +10048,51 @@ const quotePeriods = [
 function destroyQuoteChart() {
   state.quoteChart?.destroy?.();
   state.quoteChart = null;
+}
+
+function quoteTitleText(quote, symbol) {
+  const name = String(quote?.name || '').trim();
+  const key = String(symbol || '').trim().toUpperCase();
+  if (name && name.toUpperCase() !== key) return name;
+  return name || symbol;
+}
+
+function keptQuoteName(currentTitle, incoming, symbol) {
+  const incomingName = quoteTitleText(incoming, symbol);
+  const key = String(symbol || '').trim().toUpperCase();
+  if (incomingName && incomingName.toUpperCase() !== key) return incomingName;
+  const current = String(currentTitle || '').trim();
+  if (current && current.toUpperCase() !== key && current !== '—') return current;
+  return incomingName || current || symbol;
+}
+
+function paintQuoteFigures(wrap, quote, { dailyAt = 0 } = {}) {
+  if (!wrap || !quote) return;
+  const symbol = quote.symbol || state.pageId;
+  const knownChange = quote.changePct != null && quote.changePct !== '';
+  const up = (quote.changePct ?? 0) >= 0;
+  const title = wrap.querySelector('.detail-title');
+  if (title && !dailyAt) title.textContent = keptQuoteName(title.textContent, quote, symbol);
+  const meta = wrap.querySelector('.detail-meta');
+  if (meta && !dailyAt) {
+    const group = quote.group || wrap.dataset.group || '';
+    const assetClass = quote.assetClass || wrap.dataset.asset || '';
+    meta.textContent = `${symbol}${group ? ` · ${group}` : ''}${assetClass ? ` · ${assetClass}` : ''} · ${sessionLabel(quote.session)}`;
+  }
+  const last = wrap.querySelector('.last');
+  if (last) {
+    last.textContent = quote.lastPrice == null ? '—' : formatPrice(quote.lastPrice);
+    last.classList.toggle('up', quote.lastPrice != null && up);
+    last.classList.toggle('down', quote.lastPrice != null && !up);
+  }
+  const change = wrap.querySelector('.change');
+  if (change) {
+    change.textContent = knownChange ? formatPct(up, quote.changePct) : '—';
+    change.classList.toggle('up', knownChange && up);
+    change.classList.toggle('down', knownChange && !up);
+  }
+  const basis = wrap.querySelector('.quote-basis');
+  if (basis) basis.textContent = quoteBasisText(dailyAt ? { prevClose: quote.prevClose } : quote, dailyAt ? { dailyAt } : {});
 }
 
 function renderQuotePage() {
@@ -9953,15 +10112,19 @@ function renderQuotePage() {
         <strong class="last num"></strong>
         <b class="change"></b>
       </div>
+      <p class="quote-basis"></p>
       <div class="chip-tabs quote-period-tabs" role="tablist" aria-label="K线周期"></div>
       <div class="quote-chart-host" id="quote-chart-host"></div>
     </div>`;
-  wrap.querySelector('.detail-title').textContent = quote.name || symbol;
+  wrap.querySelector('.detail-title').textContent = quoteTitleText(quote, symbol);
   wrap.querySelector('.detail-meta').textContent = `${symbol}${quote.group ? ` · ${quote.group}` : ''}${quote.assetClass ? ` · ${quote.assetClass}` : ''} · ${sessionLabel(quote.session)}`;
+  wrap.dataset.group = quote.group || '';
+  wrap.dataset.asset = quote.assetClass || '';
   wrap.querySelector('.last').textContent = quote.lastPrice == null ? '—' : formatPrice(quote.lastPrice);
   wrap.querySelector('.last').classList.add(up ? 'up' : 'down');
   wrap.querySelector('.change').textContent = quote.changePct == null ? '—' : formatPct(up, quote.changePct);
   wrap.querySelector('.change').classList.add(up ? 'up' : 'down');
+  wrap.querySelector('.quote-basis').textContent = quoteBasisText(quote);
   const tabs = wrap.querySelector('.quote-period-tabs');
   quotePeriods.forEach((item) => {
     const button = document.createElement('button');
@@ -9975,6 +10138,7 @@ function renderQuotePage() {
     tabs.append(button);
   });
   root.replaceChildren(wrap);
+  if (quote.lastPrice == null) loadLiveQuote(symbol, wrap).catch(() => {});
   loadQuoteHistory(symbol, wrap.querySelector('#quote-chart-host')).catch((error) => showToast(error.message));
   if (/^\d{1,5}\.HK$/i.test(symbol)) loadSouthboundHistory(symbol, wrap);
 }
@@ -9984,7 +10148,8 @@ function paintQuotePrintFromBars(host, bars) {
   const lastEl = detail?.querySelector('.last');
   const changeEl = detail?.querySelector('.change');
   if (!lastEl || lastEl.textContent !== '—') return;
-  const close = Number(bars.at(-1)?.close);
+  const bar = bars.at(-1);
+  const close = Number(bar?.close);
   const previous = Number(bars.at(-2)?.close);
   if (!Number.isFinite(close)) return;
   const up = Number.isFinite(previous) ? close >= previous : true;
@@ -9992,10 +10157,29 @@ function paintQuotePrintFromBars(host, bars) {
   lastEl.textContent = formatPrice(close.toFixed(digits));
   lastEl.classList.toggle('up', up);
   lastEl.classList.toggle('down', !up);
+  const basis = detail.querySelector('.quote-basis');
+  if (basis) {
+    basis.textContent = quoteBasisText(
+      { prevClose: Number.isFinite(previous) ? previous : null },
+      { dailyAt: bar?.at },
+    );
+  }
   if (!changeEl || !Number.isFinite(previous) || previous === 0) return;
   changeEl.textContent = formatPct(up, ((close - previous) / Math.abs(previous)) * 100);
   changeEl.classList.toggle('up', up);
   changeEl.classList.toggle('down', !up);
+}
+
+async function loadLiveQuote(symbol, wrap) {
+  const requestId = (state.quoteLiveRequestId || 0) + 1;
+  state.quoteLiveRequestId = requestId;
+  const payload = await api(`/api/v1/markets/quote?symbol=${encodeURIComponent(symbol)}`, { timeoutMs: 20_000 });
+  if (requestId !== state.quoteLiveRequestId || !wrap?.isConnected) return;
+  const quote = payload?.quote;
+  if (!quote || quote.lastPrice == null) return;
+  const key = String(quote.symbol || symbol).toUpperCase();
+  state.liveQuotes = { ...(state.liveQuotes || {}), [key]: quote };
+  paintQuoteFigures(wrap, { ...quote, symbol: quote.symbol || symbol });
 }
 
 async function loadQuoteHistory(symbol, host) {

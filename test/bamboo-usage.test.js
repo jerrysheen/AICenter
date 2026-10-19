@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  bambooUsagePath,
   hourlyAllowance,
   readBambooUsage,
   shanghaiUsageStamp,
@@ -140,6 +141,88 @@ test('hourly spread keeps the unused part of the day for later hours', () => {
     } finally {
       rmSync(fifo, { recursive: true, force: true });
     }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('rename EPERM retries and then reports usage-error without throwing', () => {
+  const directory = temporaryDirectory();
+  try {
+    let attempts = 0;
+    const rename = (from, to) => {
+      attempts += 1;
+      if (attempts < 3) {
+        const error = new Error('EPERM');
+        error.code = 'EPERM';
+        throw error;
+      }
+      renameSync(from, to);
+    };
+    const recovered = takeBambooUsageSlot({ directory, max: 5, at: hour0, rename });
+    assert.equal(recovered.ok, true);
+    assert.equal(attempts, 3);
+    assert.equal(readBambooUsage(directory, hour0).count, 1);
+    const blocked = takeBambooUsageSlot({
+      directory,
+      max: 5,
+      at: hour0,
+      rename: () => {
+        const error = new Error('EPERM');
+        error.code = 'EPERM';
+        throw error;
+      },
+    });
+    assert.equal(blocked.ok, false);
+    assert.equal(blocked.reason, 'usage-error');
+    assert.equal(blocked.category, 'EPERM');
+    assert.equal(readBambooUsage(directory, hour0).count, 1);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('an unreadable usage file logs the file fault and uses the local fallback', async () => {
+  const directory = temporaryDirectory();
+  try {
+    writeFileSync(bambooUsagePath(directory, '20261019'), '{');
+    const logs = [];
+    let calls = 0;
+    const filter = createFeedFilter({
+      usageDirectory: directory,
+      log: (message) => logs.push(message),
+      config: {
+        ...resolveFeedFilterConfig({
+          AI_CENTER_JEV_ENABLED: 'false',
+          AI_CENTER_CLASSIFICATION_PROVIDER: 'bamboo',
+          AI_CENTER_FEED_FILTER: 'enforce',
+        }),
+        now: () => hour0,
+      },
+      client: {
+        available: () => true,
+        async evaluate() {
+          calls += 1;
+          throw new Error('should not call');
+        },
+      },
+    });
+    const result = await filter.evaluate({
+      provider: 'x',
+      sourceExternalId: 'x:home:following',
+      originalText: '关注流里的一条完整更新，包含订单金额和交付日期。',
+      item: {
+        provider: 'x',
+        title: '订单',
+        body: '关注流里的一条完整更新，包含订单金额和交付日期。',
+        sourceExternalId: 'x:home:following',
+      },
+    });
+    assert.equal(calls, 0);
+    assert.equal(logs.length, 1);
+    assert.equal(logs[0], '[worker] Bamboo 用量文件异常，走本地兜底（BAMBOO_USAGE_READ）');
+    assert.equal(result.metadata.filterErrorCode, 'BAMBOO_USAGE_ERROR');
+    assert.equal(result.metadata.filterReason, 'jev-disabled-following');
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

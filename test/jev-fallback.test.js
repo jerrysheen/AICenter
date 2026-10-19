@@ -567,6 +567,21 @@ test('only the jev outage whitelist admits, and ad revenue is not an ad', async 
     xFocus: { focusScore: 0.91, method: 'model' },
   }));
   assert.equal(marked.metadata.filterDecision, 'REVIEW');
+  const discount = await filterFor(httpError(402)).evaluate(bodyInput('模型接口折扣和优惠码', {
+    xFocus: { focusScore: 0.95, method: 'model' },
+  }));
+  assert.equal(discount.metadata.filterDecision, 'KEEP');
+  assert.equal(discount.metadata.filterReason, 'fallback-xfocus');
+  const prospectus = await filterFor(httpError(402)).evaluate(bodyInput('公司发布招募说明书', {
+    xFocus: { focusScore: 0.91, method: 'model' },
+  }));
+  assert.equal(prospectus.metadata.filterReason, 'fallback-xfocus');
+  const issuance = await filterFor(httpError(402)).evaluate(bodyInput('债券折价发行', {
+    xFocus: { focusScore: 0.91, method: 'model' },
+  }));
+  assert.equal(issuance.metadata.filterReason, 'fallback-xfocus');
+  const followingDiscount = await filterFor(httpError(402)).evaluate(bodyInput('关注流里的折扣广告', { sourceExternalId: 'x:home:following' }));
+  assert.equal(followingDiscount.metadata.filterReason, 'fallback-following');
   const bare = createTypeSafeSystemOneClient({
     apiKey: 'test-key',
     fetch: async () => ({ ok: true, status: 200, async text() { return JSON.stringify({ model: 'x' }); } }),
@@ -803,6 +818,46 @@ test('jev replay writes scores the list can see, media fields, enqueue, and roll
     assert.match(fallbackItem.message, /dedup failed/);
     assert.equal(feed.getCapture('local', 'media', 'no-author').status, 'captured');
     assert.equal(feed.getContentItemByCapture('local', publisherFallback.id), null);
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('bamboo replay uses the classification client when JEV is off', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ai-center-bamboo-replay-'));
+  const store = createStore(path.join(directory, 'test.db'));
+  try {
+    const feed = store.repositories.feed;
+    const source = feed.upsertSourceAccount({
+      workspaceId: 'local', provider: 'x', externalId: 'x:home:following', displayName: '关注',
+    });
+    feed.saveCapture({
+      workspaceId: 'local', provider: 'x', externalId: 'bamboo-held', sourceAccountId: source.id,
+      contentHash: 'bamboo-held', title: '订单', status: 'captured', capturedAt: 2_000,
+      metadata: { filterReason: 'jev-failed', filterDecision: 'REVIEW', originalText: '一条包含订单金额和交付日期的完整更新。' },
+    });
+    let calls = 0;
+    const report = await runJevCaptureReplay({
+      store,
+      workspaceId: 'local',
+      from: 0,
+      to: 10_000,
+      mode: 'jev',
+      env: { AI_CENTER_JEV_ENABLED: 'false', AI_CENTER_CLASSIFICATION_PROVIDER: 'bamboo' },
+      client: {
+        modelId: 'startlux-decision-27b-autothink',
+        available: () => true,
+        async evaluate() {
+          calls += 1;
+          return { model: 'startlux-decision-27b-autothink', answers: answers(good) };
+        },
+      },
+    });
+    assert.equal(calls, 1);
+    assert.equal(report.mode, 'jev');
+    assert.equal(report.admitted, 1);
+    assert.equal(feed.getCapture('local', 'x', 'bamboo-held').metadata.filterDecision, 'KEEP');
   } finally {
     store.close();
     rmSync(directory, { recursive: true, force: true });

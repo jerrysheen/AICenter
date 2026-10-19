@@ -24,6 +24,7 @@ const EXACT_PATHS = new Set([
   '/api/v1/reports/reading-hour/snapshot',
   '/api/v1/investor-discussion',
   '/api/v1/markets',
+  '/api/v1/markets/quote',
   '/api/v1/markets/search',
   '/api/v1/markets/history',
   '/api/v1/markets/analysis',
