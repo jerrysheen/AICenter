@@ -406,6 +406,7 @@ export async function runYoutubePodcastRound(deps = {}) {
         }
         await sleep(limits.intervalMs);
         let entries = (rss?.entries || []).map((entry) => ({ ...entry, channelKey: channel.key, role: channel.role || '' }));
+        let backfillListed = false;
         if (needsBackfill) {
           let listed;
           try {
@@ -433,11 +434,8 @@ export async function runYoutubePodcastRound(deps = {}) {
             });
             pushReason(stats, 'backfill');
           } else {
-            repository.saveChannel(workspaceId, channel.key, {
-              channelId,
-              bootstrapped: state.bootstrapped,
-              backfilledAt: now,
-            });
+            backfillListed = true;
+            freshChannels.add(channel.key);
             entries = mergePodcastEntries(entries, (listed.entries || []).map((entry) => ({
               ...entry,
               channelKey: channel.key,
@@ -446,9 +444,10 @@ export async function runYoutubePodcastRound(deps = {}) {
           }
           await sleep(limits.intervalMs);
         }
-        const slice = state.bootstrapped
-          ? { probe: entries.filter((entry) => !repository.isDone(workspaceId, entry.videoId)), ignore: [] }
-          : firstRunSlice(entries, limits.lookback);
+        const limitWindow = !state.bootstrapped || backfillListed;
+        const slice = limitWindow
+          ? firstRunSlice(entries, limits.lookback)
+          : { probe: entries.filter((entry) => !repository.isDone(workspaceId, entry.videoId)), ignore: [] };
         let finished = true;
         for (const entry of slice.probe) {
           if (stats.stopped || processed >= limits.roundLimit) {
@@ -497,7 +496,7 @@ export async function runYoutubePodcastRound(deps = {}) {
           });
           processed += 1;
         }
-        if (!state.bootstrapped && finished && !stats.stopped) {
+        if (limitWindow && finished && !stats.stopped) {
           for (const entry of slice.ignore) {
             repository.saveEpisode({
               workspaceId,
@@ -512,7 +511,11 @@ export async function runYoutubePodcastRound(deps = {}) {
             });
             stats.skipped += 1;
           }
-          repository.saveChannel(workspaceId, channel.key, { channelId, bootstrapped: true });
+          repository.saveChannel(workspaceId, channel.key, {
+            channelId,
+            bootstrapped: true,
+            ...(backfillListed ? { backfilledAt: now } : {}),
+          });
         }
       }
       const existing = repository.listForDedup(workspaceId, creator.id);

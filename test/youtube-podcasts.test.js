@@ -1107,6 +1107,102 @@ test('backfill retries on the next Shanghai day and stops after three failures',
   }
 });
 
+test('a bootstrapped backfill keeps only the lookback window', async () => {
+  const opened = openStore();
+  try {
+    const lookback = 2;
+    const listed = Array.from({ length: 30 }, (_, index) => ({
+      videoId: `window${String(index).padStart(6, '0')}`,
+      title: `Distinct interview ${index} ${index * 97}`,
+      durationSec: 1800 + index * 500,
+      publishedAt: Date.parse('2026-10-18T00:00:00Z') - index * 86_400_000,
+    }));
+    opened.store.repositories.youtubePodcasts.saveChannel('local', 'dwarkesh', {
+      channelId: 'UCZa18YV7qayTh-MRIrBhDpA',
+      bootstrapped: true,
+    });
+    const probed = [];
+    const result = await runYoutubePodcastRound({
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1', GEMINI_API_KEY: 'test-key' },
+      now: Date.parse('2026-10-19T02:00:00Z'),
+      limits: { lookback },
+      config: channelCreator('dwarkesh'),
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      sleep: async () => {},
+      translate: async () => '',
+      fetchRss: async () => ({ entries: [] }),
+      listVideos: async () => ({ entries: listed }),
+      probe: async (item) => {
+        probed.push(item.videoId);
+        return {
+          durationSec: 1800 + probed.length * 500,
+          title: item.title,
+          liveStatus: 'not_live',
+          transcript: '正文',
+          transcriptSource: 'subtitle-manual',
+        };
+      },
+      summarize: async () => SUMMARY,
+    });
+    assert.equal(probed.length <= lookback + 6, true);
+    assert.equal(probed.length, lookback + 6);
+    assert.equal(result.discovered, lookback);
+    assert.equal(opened.store.repositories.youtubePodcasts.listReady('local').length, lookback);
+    const stored = opened.store.repositories.youtubePodcasts.listEpisodes('local');
+    const lookbackSkips = stored.filter((row) => row.reason === 'lookback');
+    assert.equal(lookbackSkips.length, listed.length - lookback);
+    assert.equal(lookbackSkips.every((row) => row.status === 'skipped'), true);
+    assert.equal(opened.store.repositories.youtubePodcasts.channel('local', 'dwarkesh').backfilledAt, Date.parse('2026-10-19T02:00:00Z'));
+  } finally {
+    opened.close();
+  }
+});
+
+test('a blocked probe does not record a finished backfill', async () => {
+  const opened = openStore();
+  try {
+    opened.store.repositories.youtubePodcasts.saveChannel('local', 'dwarkesh', {
+      channelId: 'UCZa18YV7qayTh-MRIrBhDpA',
+      bootstrapped: true,
+    });
+    const before = opened.store.repositories.youtubePodcasts.channel('local', 'dwarkesh');
+    let probes = 0;
+    const result = await runYoutubePodcastRound({
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1', GEMINI_API_KEY: 'test-key' },
+      now: Date.parse('2026-10-19T02:00:00Z'),
+      config: channelCreator('dwarkesh'),
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      sleep: async () => {},
+      translate: async () => '',
+      fetchRss: async () => ({ entries: [] }),
+      listVideos: async () => ({ entries: [
+        { videoId: 'blockfirst01', title: 'First long interview', durationSec: 3600, publishedAt: 300 },
+        { videoId: 'blocknext001', title: 'Second long interview', durationSec: 4200, publishedAt: 200 },
+        { videoId: 'blocklater01', title: 'Later long interview', durationSec: 5000, publishedAt: 100 },
+      ] }),
+      probe: async () => {
+        probes += 1;
+        if (probes === 2) return { blocked: 'bot-check' };
+        return { durationSec: 3600, title: 'First long interview', liveStatus: 'not_live', transcript: '正文', transcriptSource: 'subtitle-manual' };
+      },
+      summarize: async () => SUMMARY,
+    });
+    const after = opened.store.repositories.youtubePodcasts.channel('local', 'dwarkesh');
+    assert.equal(result.stopped, 'bot-check');
+    assert.equal(probes, 2);
+    assert.equal(after.backfilledAt, null);
+    assert.equal(after.backfillAttempts, before.backfillAttempts);
+    assert.equal(opened.store.repositories.youtubePodcasts.episode('local', 'blocklater01'), null);
+    assert.equal(opened.store.repositories.youtubePodcasts.episode('local', 'blocknext001'), null);
+  } finally {
+    opened.close();
+  }
+});
+
 test('backfill unions rss by video id and keeps rss title and time', async () => {
   const opened = openStore();
   try {
