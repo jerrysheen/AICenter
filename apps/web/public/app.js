@@ -8687,7 +8687,7 @@ function renderWatchRows(target, rows, { formatValue } = {}) {
     row.addEventListener('click', () => {
       if (item.compute) return;
       if (item.hardware) openPage('hardware', `series/${item.hardware.seriesKey}`);
-      else openQuote(item.symbol, item.quoteSymbol || state.tradePane === 'assets' ? 'global' : (state.stockBoard || 'overview'));
+      else openQuote(item.symbol, (item.quoteSymbol || state.tradePane === 'assets') ? 'global' : (state.stockBoard || 'overview'));
     });
     return row;
   }));
