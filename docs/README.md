@@ -25,10 +25,12 @@
 
 ## 当前
 
+- `progress/2026-10-19-official-body-backfill.md`：官方看板导入以前只写标题和链接，正文是空的。现在导入和镜像会回到原链接取正文。已经进库的用 `scripts/backfill-official-bodies.mjs --dry-run` 预览后再跑，不要先跑 `hide-short-official-items`。不新增 migration。需要重启 Worker。Web 不用为这项重启。
+
 - `progress/2026-10-19-research-recall-budget.md`：研究召回的 120 秒预算到点就停，一次只送一条，未完成的留在原池，下一轮接着判断。当前窗口没判完不冻结 7 天回看。关键词至少要有一个锚点，两个字的标签词不再单独召回。不新增 migration。需要重启 Worker。Web 不用为这项重启。
 
 - `progress/2026-10-19-hardware-snapshot-loop.md`：硬件报价快照每天一次，放在当天最晚一档采集之后。快照行补上 `observation_id` 索引。列表一次查出各系列当前行。Worker 在任务结束时记下事件循环卡顿时长。migration 91。需要重启 Worker。
-- `progress/2026-10-19-bamboo-feed-quality.md`：截断预览仍送 Bamboo 打分，KEEP 标正文待补全并可再抓全文。小时报 Bamboo 命中线默认 0.35，公司题材可以同时问市场组。短官方正文不直接可见，用 `scripts/hide-short-official-items.mjs --dry-run` 预览后回填。关注流按价值展开截断帖，订阅同步能在时限内中止浏览器。同一小时报不并行，重启接着检查点。事件循环日志只在超过 200 毫秒时打印。不新增 migration。需要同时重启 Web 和 Worker。
+- `progress/2026-10-19-bamboo-feed-quality.md`：截断预览仍送 Bamboo 打分，KEEP 标正文待补全并可再抓全文。小时报 Bamboo 命中线默认 0.35，公司题材可以同时问市场组。新导入的短官方正文仍不直接可见；已经进库的空正文先用 `scripts/backfill-official-bodies.mjs` 补原文，不要先跑 `hide-short-official-items`。关注流按价值展开截断帖，订阅同步能在时限内中止浏览器。同一小时报不并行，重启接着检查点。事件循环日志只在超过 200 毫秒时打印。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-19-author-backfill-busy.md`：作者回填的写事务改为 `BEGIN IMMEDIATE`，避免和 Worker 提交撞上时直接 `SQLITE_BUSY`。脚本按批把进度写到 `source-author-backfill.json`，中断后从最后一批继续，跑完再执行会从头再走一遍。不新增 migration。回填脚本直接再跑；正在运行的 Worker 重启后，采集写入才使用同一把保留锁。
 

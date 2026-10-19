@@ -9,7 +9,7 @@ import { createStore } from '../packages/database/src/index.js';
 import { latestSchemaVersion } from '../packages/database/src/migrations.js';
 import { createAuthorService } from '../packages/domain/src/author-service.js';
 import { authorCaptureFields } from '../packages/domain/src/authors.js';
-import { hideShortOfficialItems, officialArticleExternalId, officialBodyAction, officialReleaseExternalId, syncOfficialReleases } from '../packages/domain/src/source-author-sync.js';
+import { backfillOfficialBodies, hideShortOfficialItems, officialArticleExternalId, officialBodyAction, officialReleaseExternalId, syncOfficialReleases } from '../packages/domain/src/source-author-sync.js';
 import { stableArticleId } from '../packages/connectors/src/media/article-url.js';
 import { createTreeMaterialPort } from '../packages/domain/src/information-tree-materials.js';
 import {
@@ -402,7 +402,7 @@ test('source author backfill resumes after the last committed batch and a finish
   }
 });
 
-test('official release sync links the source author and can run again', () => {
+test('official release sync links the source author and can run again', async () => {
   const store = openStore();
   try {
     const release = {
@@ -416,12 +416,12 @@ test('official release sync links the source author and can run again', () => {
     const annotated = annotateOfficialReleases({ releases: [release] }, { 'fr-9': 'policy.us.federal-register' });
     assert.equal(annotated.releases[0].authorId, 'official:federalregister');
     assert.equal(annotated.releases[0].sourceAuthorName, 'Federal Register');
-    const first = syncOfficialReleases(store.repositories.feed, 'local', [release, older], {
+    const first = await syncOfficialReleases(store.repositories.feed, 'local', [release, older], {
       'fr-9': 'policy.us.federal-register',
       'fr-8': 'policy.us.federal-register',
     });
     assert.equal(first.linked, 2);
-    const second = syncOfficialReleases(store.repositories.feed, 'local', [release, older], {
+    const second = await syncOfficialReleases(store.repositories.feed, 'local', [release, older], {
       'fr-9': 'policy.us.federal-register',
       'fr-8': 'policy.us.federal-register',
     });
@@ -494,7 +494,7 @@ test('official board mirrors stay out of the feed, hourly report, and classifica
     saveSourceItem(feed, {
       sourceKey: 'fed', externalId: 'fed-prefix-only', title: '只有作者前缀', publishedAt,
     });
-    syncOfficialReleases(store.repositories.feed, 'local', [release], {
+    await syncOfficialReleases(store.repositories.feed, 'local', [release], {
       'fed-mirror': 'policy.us.fed',
     });
     store.repositories.runtimeSnapshots.saveSnapshot('local', 'static-signal-board', {
@@ -607,7 +607,7 @@ test('a real policy-source article stays in hourly, search, and taggable lists',
     saveSourceItem(feed, {
       sourceKey: 'fed', externalId: articleId, title: '美联储原文', publishedAt,
     });
-    syncOfficialReleases(feed, 'local', [release], { 'fed-real': 'policy.us.fed' });
+    await syncOfficialReleases(feed, 'local', [release], { 'fed-real': 'policy.us.fed' });
     store.repositories.runtimeSnapshots.saveSnapshot('local', 'static-signal-board', {
       generatedAt: publishedAt,
       releases: [release],
@@ -634,7 +634,7 @@ test('a real policy-source article stays in hourly, search, and taggable lists',
   }
 });
 
-test('media ingestion after an official mirror keeps the real article visible', () => {
+test('media ingestion after an official mirror keeps the real article visible', async () => {
   const store = openStore();
   const publishedAt = Date.now() - 1_000;
   const window = { startAt: publishedAt - 60_000, endAt: Date.now() + 60_000 };
@@ -647,7 +647,7 @@ test('media ingestion after an official mirror keeps the real article visible', 
   };
   try {
     const feed = store.repositories.feed;
-    syncOfficialReleases(feed, 'local', [release], { 'fed-later': 'policy.us.fed' });
+    await syncOfficialReleases(feed, 'local', [release], { 'fed-later': 'policy.us.fed' });
     const articleId = officialArticleExternalId('fed', release);
     const mirrorId = officialReleaseExternalId('fed', release);
     assert.equal(mirrorId.startsWith('official-board:fed:'), true);
@@ -715,7 +715,7 @@ test('media ingestion after an official mirror keeps the real article visible', 
   }
 });
 
-test('short official imports stay hidden until the body is long enough', () => {
+test('short official imports stay hidden until the body is long enough', async () => {
   const store = openStore();
   const publishedAt = Date.now() - 1_000;
   const release = {
@@ -727,7 +727,7 @@ test('short official imports stay hidden until the body is long enough', () => {
   };
   try {
     const feed = store.repositories.feed;
-    syncOfficialReleases(feed, 'local', [release], { 'short-fed': 'policy.us.fed' });
+    await syncOfficialReleases(feed, 'local', [release], { 'short-fed': 'policy.us.fed' });
     const externalId = officialReleaseExternalId('fed', release);
     const capture = feed.getCapture('local', 'media', externalId);
     assert.equal(officialBodyAction({ body: '', metadata: capture.metadata }), 'unchanged');
@@ -756,6 +756,253 @@ test('short official imports stay hidden until the body is long enough', () => {
     const restored = feed.getCapture('local', 'media', externalId);
     assert.equal(restored.status, 'ready');
     assert.equal(restored.metadata.filterReason || '', '');
+  } finally {
+    store.close();
+  }
+});
+
+test('official import fetches the original body and the backfill fills empty ones without hiding them', async () => {
+  const store = openStore();
+  const publishedAt = Date.now() - 1_000;
+  const aviation = {
+    releaseId: 'aviation',
+    title: '商务部等9部门关于促进航空保税维修高质量发展的意见',
+    authority: '商务部',
+    sourceUrl: 'https://www.gov.cn/zhengce/202610/19/content_aviation.htm',
+    publishedAt,
+  };
+  const keptRelease = {
+    releaseId: 'power',
+    title: '电力安全事故应急处置和调查处理条例',
+    authority: '国务院',
+    sourceUrl: 'https://www.gov.cn/zhengce/202610/18/content_power.htm',
+    publishedAt,
+  };
+  const articleId = officialArticleExternalId('govcn', aviation);
+  const keptId = officialArticleExternalId('govcn', keptRelease);
+  const bodyText = '商务部等9部门关于促进航空保税维修高质量发展的意见。'.repeat(4);
+  const keptBody = '电力安全事故应急处置和调查处理条例已经有正文。'.repeat(3);
+  let reads = 0;
+  try {
+    const feed = store.repositories.feed;
+    const account = feed.upsertSourceAccount({
+      workspaceId: 'local',
+      provider: 'media',
+      externalId: 'media:govcn',
+      displayName: '国务院政策文件库',
+      profileUrl: aviation.sourceUrl,
+      authMode: 'public',
+      metadata: { sourceKey: 'govcn', sourceId: 'policy.cn.govcn', lane: 'official' },
+    });
+    const empty = feed.saveCapture({
+      workspaceId: 'local',
+      provider: 'media',
+      externalId: articleId,
+      sourceAccountId: account.id,
+      sourceUrl: aviation.sourceUrl,
+      title: aviation.title,
+      contentHash: hash('empty-gov'),
+      status: 'ready',
+      publishedAt,
+      metadata: { sourceKey: 'govcn', sourceId: 'policy.cn.govcn', lane: 'official', publishedAtRaw: '' },
+    });
+    feed.saveContentItem({
+      workspaceId: 'local',
+      captureId: empty.id,
+      originType: 'subscription',
+      contentType: 'article',
+      title: aviation.title,
+      body: '',
+      summary: '商务部',
+      sourceUrl: aviation.sourceUrl,
+      authorName: '国务院政策文件库',
+      publishedAt,
+    });
+    const keptCapture = feed.saveCapture({
+      workspaceId: 'local',
+      provider: 'media',
+      externalId: keptId,
+      sourceAccountId: account.id,
+      sourceUrl: keptRelease.sourceUrl,
+      title: keptRelease.title,
+      contentHash: hash('kept-gov'),
+      status: 'ready',
+      publishedAt,
+      metadata: { sourceKey: 'govcn', lane: 'official' },
+    });
+    feed.saveContentItem({
+      workspaceId: 'local',
+      captureId: keptCapture.id,
+      originType: 'subscription',
+      contentType: 'article',
+      title: keptRelease.title,
+      body: keptBody,
+      summary: '国务院',
+      sourceUrl: keptRelease.sourceUrl,
+      authorName: '国务院政策文件库',
+      publishedAt,
+    });
+    const readDetail = async ({ sourceUrl }) => {
+      reads += 1;
+      assert.equal(sourceUrl, aviation.sourceUrl);
+      return { bodyText, officialSummary: '航空保税维修' };
+    };
+    const filled = await syncOfficialReleases(feed, 'local', [aviation, keptRelease], {}, { readDetail });
+    assert.equal(filled.bodies, 1);
+    assert.equal(reads, 1);
+    assert.equal(feed.getContentItemByCapture('local', empty.id).body, bodyText);
+    assert.equal(feed.getContentItemByCapture('local', keptCapture.id).body, keptBody);
+    const capture = feed.getCapture('local', 'media', articleId);
+    assert.equal(capture.metadata.officialMirror || false, false);
+    assert.equal(capture.metadata.filterDecision || '', '');
+    assert.equal(feed.getCapture('local', 'media', officialReleaseExternalId('govcn', aviation)), null);
+    const again = await syncOfficialReleases(feed, 'local', [aviation, keptRelease], {}, { readDetail });
+    assert.equal(again.bodies, 0);
+    assert.equal(reads, 1);
+
+    let mirrorReads = 0;
+    const mirrorBody = '联邦公报正文。'.repeat(20);
+    const mirrorRelease = {
+      releaseId: 'fr-body',
+      title: 'A real rule',
+      authority: 'Federal Register',
+      sourceUrl: 'https://www.federalregister.gov/documents/2026/10/19/2026-22222/a-real-rule',
+      publishedAt,
+    };
+    await syncOfficialReleases(feed, 'local', [mirrorRelease], {}, {
+      readDetail: async () => {
+        mirrorReads += 1;
+        return { bodyText: mirrorBody };
+      },
+    });
+    const mirrorId = officialReleaseExternalId('federalregister', mirrorRelease);
+    const mirror = feed.getCapture('local', 'media', mirrorId);
+    assert.equal(mirror.metadata.officialMirror, true);
+    assert.equal(mirror.metadata.filterDecision || '', '');
+    assert.equal(mirror.status, 'ready');
+    assert.equal(feed.getContentItemByCapture('local', mirror.id).body, mirrorBody);
+    assert.equal(feed.listContentItems('local', { limit: 20 }).some((row) => row.title === mirrorRelease.title), false);
+    assert.equal(feed.listContentItems('local', { limit: 20 }).some((row) => row.title === aviation.title), true);
+    await syncOfficialReleases(feed, 'local', [mirrorRelease], {}, {
+      readDetail: async () => {
+        mirrorReads += 1;
+        return { bodyText: '第二次不该写入' };
+      },
+    });
+    assert.equal(mirrorReads, 1);
+    assert.equal(feed.getContentItemByCapture('local', mirror.id).body, mirrorBody);
+
+    const leftoverUrl = 'https://www.whitehouse.gov/briefing-room/statements/2026/10/19/empty/';
+    const leftoverCapture = feed.saveCapture({
+      workspaceId: 'local',
+      provider: 'media',
+      externalId: 'whitehouse:empty-body',
+      sourceAccountId: account.id,
+      sourceUrl: leftoverUrl,
+      title: '白宫空正文',
+      contentHash: hash('wh-empty'),
+      status: 'ready',
+      publishedAt,
+      metadata: { sourceKey: 'whitehouse', lane: 'official' },
+    });
+    feed.saveContentItem({
+      workspaceId: 'local',
+      captureId: leftoverCapture.id,
+      originType: 'subscription',
+      contentType: 'article',
+      title: '白宫空正文',
+      body: '',
+      summary: '白宫',
+      sourceUrl: leftoverUrl,
+      authorName: '白宫',
+      publishedAt,
+    });
+    let backfillReads = 0;
+    const preview = await backfillOfficialBodies(store, {
+      dryRun: true,
+      sleepMs: 0,
+      readDetail: async () => {
+        backfillReads += 1;
+        return { bodyText: '不应读取' };
+      },
+    });
+    assert.equal(preview.dryRun, true);
+    assert.equal(preview.scanned, 1);
+    assert.equal(preview.filled, 0);
+    assert.equal(preview.hosts['whitehouse.gov'], 1);
+    assert.equal(backfillReads, 0);
+    assert.equal(feed.getContentItemByCapture('local', leftoverCapture.id).body, '');
+    const liveBody = '白宫声明正文。'.repeat(10);
+    const live = await backfillOfficialBodies(store, {
+      dryRun: false,
+      sleepMs: 0,
+      readDetail: async ({ sourceUrl }) => {
+        backfillReads += 1;
+        assert.equal(sourceUrl, leftoverUrl);
+        return { bodyText: liveBody };
+      },
+    });
+    assert.equal(live.filled, 1);
+    assert.equal(backfillReads, 1);
+    assert.equal(feed.getContentItemByCapture('local', leftoverCapture.id).body, liveBody);
+    assert.equal(feed.getCapture('local', 'media', 'whitehouse:empty-body').metadata.filterDecision || '', '');
+    const done = await backfillOfficialBodies(store, {
+      dryRun: true,
+      sleepMs: 0,
+      readDetail: async () => {
+        backfillReads += 1;
+        return { bodyText: 'x' };
+      },
+    });
+    assert.equal(done.scanned, 0);
+    assert.equal(backfillReads, 1);
+
+    const hiddenUrl = 'https://www.federalreserve.gov/newsevents/pressreleases/monetary20261019d.htm';
+    const hiddenCapture = feed.saveCapture({
+      workspaceId: 'local',
+      provider: 'media',
+      externalId: 'fed:hidden-empty',
+      sourceAccountId: account.id,
+      sourceUrl: hiddenUrl,
+      title: '被挡住的空正文',
+      contentHash: hash('fed-hidden'),
+      status: 'captured',
+      publishedAt,
+      metadata: {
+        sourceKey: 'fed',
+        lane: 'official',
+        filterMode: 'enforce',
+        filterDecision: 'REVIEW',
+        filterReason: 'body-too-short',
+        filterApplied: true,
+        filterReviewKind: 'missing-content',
+      },
+    });
+    feed.saveContentItem({
+      workspaceId: 'local',
+      captureId: hiddenCapture.id,
+      originType: 'subscription',
+      contentType: 'article',
+      title: '被挡住的空正文',
+      body: '',
+      summary: '美联储',
+      sourceUrl: hiddenUrl,
+      authorName: '美联储',
+      publishedAt,
+    });
+    const repaired = await backfillOfficialBodies(store, {
+      sleepMs: 0,
+      readDetail: async () => ({ bodyText: '美联储正文'.repeat(20) }),
+    });
+    assert.equal(repaired.filled, 1);
+    const restored = feed.getCapture('local', 'media', 'fed:hidden-empty');
+    assert.equal(restored.status, 'ready');
+    assert.equal(restored.metadata.filterReason || '', '');
+    assert.equal(restored.metadata.filterDecision || '', '');
+
+    const script = readFileSync(new URL('../scripts/backfill-official-bodies.mjs', import.meta.url), 'utf8');
+    assert.match(script, /--dry-run/);
+    assert.doesNotMatch(script, /hideShortOfficialItems|hide-short-official-items/);
   } finally {
     store.close();
   }
