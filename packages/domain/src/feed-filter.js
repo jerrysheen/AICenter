@@ -70,6 +70,7 @@ function finiteUnit(value, fallback) {
   return Number.isFinite(number) && number >= 0 && number <= 1 ? number : fallback;
 }
 
+// 暂定。正式默认值按 JEV 开着时信息流准入的最大日调用量取整到百位，统计结果出来前保持 2000。
 export const BAMBOO_DAILY_MAX_DEFAULT = 2000;
 
 export function resolveBambooDailyMax(env = process.env) {

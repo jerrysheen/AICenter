@@ -25,7 +25,7 @@
 
 ## 当前
 
-- `progress/2026-10-19-bamboo-startlux.md`：Bamboo StartLux 作为可选分类 provider。默认仍是 TypeSafe。`AI_CENTER_JEV_ENABLED` 不变。设 `AI_CENTER_CLASSIFICATION_PROVIDER=bamboo` 后，信息流准入和小时报选题改走 Bamboo；问答先验和证据门默认 shadow。质量刷新默认不调 Bamboo，要设 `AI_CENTER_BAMBOO_REFRESH=1`。信息流准入每日上限默认 2000，计数写在 `data/bamboo-usage-YYYYMMDD.json`，Web 和 Worker 共用，重启不清零。触达上限后当天其余走本地兜底。可选按小时均分。价格未知，待向 Bamboo 确认。不新增 migration。需要同时重启 Web 和 Worker。真实对照在服务器上跑，仓库里没有密钥。
+- `progress/2026-10-19-bamboo-startlux.md`：Bamboo StartLux 作为可选分类 provider。默认仍是 TypeSafe。`AI_CENTER_JEV_ENABLED` 不变。设 `AI_CENTER_CLASSIFICATION_PROVIDER=bamboo` 后，信息流准入和小时报选题改走 Bamboo；问答先验和证据门默认 shadow。质量刷新默认不调 Bamboo，要设 `AI_CENTER_BAMBOO_REFRESH=1`。信息流准入每日上限暂定 2000，待按 JEV 开着时的最大日调用量取整到百位。计数写在 `data/bamboo-usage-YYYYMMDD.json`，Web 和 Worker 共用，重启不清零。触达上限后当天其余走本地兜底。可选按小时均分。目前免费。不新增 migration。需要同时重启 Web 和 Worker。真实对照在服务器上跑，仓库里没有密钥。
 
 - `progress/2026-10-19-youtube-podcasts.md`：按博主抓取 YouTube 金融和 AI 播客。有字幕用字幕，没有就走现有 Gemini 转写。摘要不用 jev，翻译只用 Gemma 26B。不进小时报。总开关 `AI_CENTER_YOUTUBE_PODCASTS` 默认关。migration 86。需要同时重启 Web 和 Worker。
 
