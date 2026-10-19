@@ -8345,9 +8345,10 @@ function renderMarketStatus() {
     ? (state.marketBoardErrors[state.stockBoard] || state.marketError)
     : '';
   const stale = marketStaleLabel(market);
-  const closed = stale ? '' : marketClosedLabel(market);
+  const phase = !stale && (market?.session === 'pre' || market?.session === 'post') ? sessionLabel(market.session) : '';
+  const closed = stale || phase ? '' : marketClosedLabel(market);
   const delay = homeDataDelayLabel(state.homeGeneratedAt);
-  const note = stale || delay || closed;
+  const note = stale || phase || delay || closed;
   el.replaceChildren();
   el.classList.toggle('is-stale', Boolean(stale));
   el.classList.toggle('hidden', !note && !error);
