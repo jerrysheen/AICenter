@@ -42,6 +42,21 @@ function boundedInt(value, fallback, min, max) {
   return Math.min(max, Math.max(min, parsed));
 }
 
+// 用户特批：AI_CENTER_YOUTUBE_PODCASTS_ARTICLE 只打开 YouTube 播客正文的豆包整理。
+// 标题、摘要、关键句和其他翻译仍只用 Gemma 26B，不会因为这个开关改道。
+export function youtubeArticleEnabled(env = process.env) {
+  const raw = String(env.AI_CENTER_YOUTUBE_PODCASTS_ARTICLE || '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'on' || raw === 'yes';
+}
+
+export function youtubeArticleDailyLimit(env = process.env) {
+  return boundedInt(env.AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_DAILY, 2, 1, 8);
+}
+
+export function youtubeTitleRepairLimit(env = process.env) {
+  return boundedInt(env.AI_CENTER_YOUTUBE_PODCASTS_TITLE_DAILY, 8, 1, 30);
+}
+
 export function youtubePodcastLimits(env = process.env) {
   return {
     intervalMs: boundedInt(env.AI_CENTER_YOUTUBE_PODCASTS_INTERVAL_MS, 8_000, 1_000, 120_000),

@@ -781,6 +781,7 @@ export function createAiCenterWorker(options = {}) {
       configPath: path.join(instance.configDirectory, 'youtube-podcasts.json'),
       dataDirectory,
       env,
+      browserRuntime,
     }),
   });
   registry.register({
