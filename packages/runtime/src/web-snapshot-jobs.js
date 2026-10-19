@@ -1,6 +1,6 @@
 import { localizeOfficialBoard } from '../../domain/src/official-source-zh.js';
 import { readStaticSignalBoardSnapshot } from '../../source/src/static/board.js';
-import { syncOfficialReleases } from '../../domain/src/source-author-sync.js';
+import { officialDetailReader, syncOfficialReleases } from '../../domain/src/source-author-sync.js';
 import { STATIC_SIGNAL_BOARD_SNAPSHOT_KEY } from '../../source/src/static/board-read.js';
 import { readMarketNativeBoard } from '../../source/src/static/market-native-board.js';
 import {
@@ -98,19 +98,26 @@ export async function captureStaticSignalBoard({
   feedRepository = null,
   workspaceId = 'local',
   now = () => Date.now(),
+  readDetail,
+  detailDelayMs = 200,
 }) {
   if (!repository?.saveSnapshot) throw new Error('官方看板快照需要存储');
   const at = now();
   const payload = localizeOfficialBoard(await readStaticSignalBoardSnapshot(sourcePort, staticSignalBoardCaptureInput(at), { now: () => at }));
   repository.saveSnapshot(workspaceId, STATIC_SIGNAL_BOARD_SNAPSHOT_KEY, payload, payload.generatedAt);
   let authorsLinked = 0;
+  let bodiesFilled = 0;
   if (feedRepository?.saveCapture) {
-    authorsLinked = syncOfficialReleases(
+    const reader = readDetail === undefined ? officialDetailReader() : readDetail;
+    const synced = await syncOfficialReleases(
       feedRepository,
       workspaceId,
       payload.releases,
       payload.releaseSourceIds,
-    ).linked;
+      { readDetail: reader, detailDelayMs },
+    );
+    authorsLinked = synced.linked;
+    bodiesFilled = synced.bodies;
   }
   return {
     generatedAt: payload.generatedAt,
@@ -118,6 +125,7 @@ export async function captureStaticSignalBoard({
     releases: payload.releases.length,
     sources: payload.sourceHealth.length,
     authorsLinked,
+    bodiesFilled,
   };
 }
 

@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createStore } from '../packages/database/src/index.js';
 import { sourceAuthorProfile, officialAuthorForRelease } from '../packages/domain/src/source-authors.js';
-import { ensureSourceAuthorItem, syncOfficialReleases } from '../packages/domain/src/source-author-sync.js';
+import { ensureSourceAuthorItem, officialDetailReader, syncOfficialReleases } from '../packages/domain/src/source-author-sync.js';
 import { resolveInstanceConfig } from '../packages/instance/src/index.js';
 import { isMain } from '../packages/runtime/src/is-main.js';
 
@@ -39,6 +39,8 @@ export async function runSourceAuthorBackfill(store, {
   batchSize = BATCH,
   checkpoint = null,
   saveCheckpoint,
+  readDetail = null,
+  detailDelayMs = 0,
 } = {}) {
   const limit = Math.max(1, Math.min(Number(batchSize) || BATCH, BATCH));
   const authors = store.repositories.authors;
@@ -85,7 +87,7 @@ export async function runSourceAuthorBackfill(store, {
       if (!dryRun) {
         for (const row of rows) {
           if (!sourceAuthorProfile(row.sourceKey) || !feed) continue;
-          const result = syncIndexRow(feed, row);
+          const result = await syncIndexRow(feed, row, { readDetail, detailDelayMs });
           if (result) indexed += 1;
         }
       } else {
@@ -113,7 +115,13 @@ export async function runSourceAuthorBackfill(store, {
         counts.official += resolvable;
         onBatch?.({ phase: 'official', workspaceId: board.workspaceId, linked: resolvable, dryRun: true });
       } else {
-        const result = syncOfficialReleases(feed, board.workspaceId, releases, board.payload?.releaseSourceIds || {});
+        const result = await syncOfficialReleases(
+          feed,
+          board.workspaceId,
+          releases,
+          board.payload?.releaseSourceIds || {},
+          { readDetail, detailDelayMs },
+        );
         counts.official += result.linked;
         onBatch?.({ phase: 'official', workspaceId: board.workspaceId, linked: result.linked });
       }
@@ -138,18 +146,40 @@ export async function runSourceAuthorBackfill(store, {
   return counts;
 }
 
-function syncIndexRow(feed, row) {
-  return ensureSourceAuthorItem(feed, {
+async function syncIndexRow(feed, row, { readDetail = null, detailDelayMs = 0 } = {}) {
+  const profile = sourceAuthorProfile(row.sourceKey);
+  let body = '';
+  let summary = row.summary || '';
+  const official = profile?.platform === 'official';
+  const capture = official ? feed.getCapture(row.workspaceId, 'media', row.externalId) : null;
+  const existingBody = capture ? feed.getContentItemByCapture?.(row.workspaceId, capture.id)?.body : '';
+  let fetched = false;
+  if (official && !String(existingBody || '').trim() && typeof readDetail === 'function' && row.sourceUrl) {
+    fetched = true;
+    try {
+      const detail = await readDetail({ sourceUrl: row.sourceUrl });
+      body = String(detail?.bodyText || '').trim();
+      const officialSummary = String(detail?.officialSummary || '').trim();
+      if (officialSummary) summary = officialSummary;
+    } catch (error) {
+      console.error('[authors] 官方正文未读到:', error instanceof Error ? error.message : error);
+    }
+  }
+  const result = ensureSourceAuthorItem(feed, {
     workspaceId: row.workspaceId,
     sourceKey: row.sourceKey,
     externalId: row.externalId,
     title: row.title,
-    summary: row.summary,
+    body,
+    summary,
     sourceUrl: row.sourceUrl,
     publishedAt: row.publishedAt,
     publishedAtRaw: row.publishedAtRaw,
     contentHash: row.contentHash,
   });
+  const pause = Math.max(0, Number(detailDelayMs) || 0);
+  if (fetched && pause > 0) await new Promise((resolve) => setTimeout(resolve, pause));
+  return result;
 }
 
 const invoked = isMain(import.meta.url);
@@ -164,10 +194,13 @@ if (invoked) {
   try {
     let checkpoint = null;
     try { checkpoint = JSON.parse(readFileSync(checkpointPath, 'utf8')); } catch { checkpoint = null; }
+    const officialSources = dryRun ? null : officialDetailReader();
     const result = await runSourceAuthorBackfill(store, {
       sleepMs,
       dryRun,
       checkpoint,
+      readDetail: officialSources,
+      detailDelayMs: dryRun ? 0 : 200,
       onBatch(batch) {
         console.log(`[source-authors] ${JSON.stringify(batch)}`);
       },
