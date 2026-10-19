@@ -18,6 +18,7 @@ import {
   pickHomeQuoteCards,
   quoteStatusText,
   marketStaleLabel,
+  marketPhaseLabel,
   marketClosedLabel,
   marketFillDelayMs,
   quoteStaleLabel,
@@ -8346,7 +8347,7 @@ function renderMarketStatus() {
     ? (state.marketBoardErrors[state.stockBoard] || state.marketError)
     : '';
   const stale = marketStaleLabel(market);
-  const phase = !stale && (market?.session === 'pre' || market?.session === 'post') ? sessionLabel(market.session) : '';
+  const phase = stale ? '' : marketPhaseLabel(market);
   const closed = stale || phase ? '' : marketClosedLabel(market);
   const delay = homeDataDelayLabel(state.homeGeneratedAt);
   const note = stale || phase || delay || closed;
@@ -8426,7 +8427,7 @@ function renderOverview(market) {
     const heading = document.createElement('div');
     heading.className = 'market-section-title';
     heading.append(Object.assign(document.createElement('h2'), { textContent: section.title }));
-    const sectionMeta = section.session ? sessionLabel(section.session) : '';
+    const sectionMeta = section.awaitingQuote ? marketPhaseLabel(section) : (section.session ? sessionLabel(section.session) : '');
     if (sectionMeta) {
       heading.append(Object.assign(document.createElement('small'), { className: 'muted', textContent: sectionMeta }));
     }
