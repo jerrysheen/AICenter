@@ -61,11 +61,11 @@ yt-dlp -f bestaudio -x --audio-format wav --js-runtimes node -o "%TEMP%\yt-smoke
 
 改 `config/youtube-podcasts.json`，然后同时重启 Web 和 Worker。
 
-- `kind: "channel"` 配 `handle`，用 `https://www.youtube.com/feeds/videos.xml?channel_id=`。频道 id 从频道页解析一次，写进 `youtube_podcast_channels`。
+- `kind: "channel"` 配 `handle`，用 `https://www.youtube.com/feeds/videos.xml?channel_id=`。有 `channelId` 就直接用，不再打开频道页。没有时才解析一次，写进 `youtube_podcast_channels`。现有频道都已经写上核对过的 `channelId`。
 - `kind: "playlist"` 只抓这个播放列表，不抓整个频道。Odd Lots 必须保持播放列表 `PLe4PRejZgr0OJbRzA6nWybYiThLJd_ouz`。
 - 同一博主的多个频道放在同一个 `creators[].id` 下，并用 `role` 标 `video` 或 `audio`。硅谷101 的视频版和音频版共用 `valley101`。
 - `prefer: "zh"` 只留中文原版。张小玺的英文配音版会在同一期里被丢掉。
-- `language` 只在 `info.json` 没有 `language` 时兜底。硅谷101 和张小玺的频道是 `zh`。英文节目靠视频自己的 `en-US` 即可，不必写这个字段。
+- `language` 只在 `info.json` 没有 `language` 时兜底。硅谷101、张小玺和大佬透镜是 `zh`。英文频道是 `en`。视频语言仍为空、且自动字幕里只有一条 `*-orig` 时，就下这一条。
 - 删掉一个博主后，已经入库的集仍留在库里，页面会排在配置列表后面。
 
 ## 怎么跑
@@ -96,7 +96,7 @@ Worker 允许这一轮跑满 `AI_CENTER_YOUTUBE_PODCASTS_MAX_RUNNING_MS`（默�
 
 发现走 RSS，不翻频道页。时长、直播状态和字幕写在工作目录的 `.info.json` 和 `.vtt` 里，不使用 `--dump-single-json`。只要时长至少 20 分钟（配置里的 `minDurationSec`，默认 1200）。Shorts、标题里的切片和预告、正在直播和直播预告都丢掉。
 
-去重两层：全局按 `videoId`；同一博主里，标题相近且时长差在 3 分钟或 8% 以内的，视为同一集。视频版优先于音频版，中文原版优先于配音。第一次每个频道只保留最近 1–2 集（探测窗口比这个多几条，避免短片占掉名额）。频道没探测完不会标成已回溯，避免把后面的集提前标成跳过。
+去重两层：全局按 `videoId`；同一博主里，标题相近且时长差在 3 分钟或 8% 以内的，视为同一集。视频版优先于音频版，中文原版优先于配音。第一次每个频道只保留最近 1–2 集（探测窗口比这个多几条，避免短片占掉名额）。RSS 最新十几条如果全是切片，首次运行再用 yt-dlp `--flat-playlist` 读该频道 `/videos` 最近 30 条，只挑时长至少 20 分钟的正片，探测数量仍受「最近几集」限制，不下载音视频。频道没探测完不会标成已回溯，避免把后面的集提前标成跳过。
 
 文字来源记在抓取元数据和页面上：`subtitle-manual`（人工字幕）、`subtitle-auto`（原语种自动字幕）、`gemini-transcribe`（语音转写）。页面上分别写成人工字幕、自动字幕、语音转写。完整文字稿在内容正文，摘要在 `summary`。作者 id 是 `youtube:<博主 id>`，硅谷101 两个频道算同一个作者。发布时间用 RSS 的上传时间。`provider` 为 `youtube`。
 
@@ -106,7 +106,15 @@ Worker 允许这一轮跑满 `AI_CENTER_YOUTUBE_PODCASTS_MAX_RUNNING_MS`（默�
 
 ## Gemini 用量
 
-首批 11 个频道大约每周 20 集，平均一天 3 集左右。多数频道有字幕，只有摘要一次 `generateContent`。按大约八成有字幕估算：每周约 16 次摘要、4 集转写。转写按现有额度切块，大约每 8 分钟一段；一集 50 分钟大约 6 次。一周合计大约 40 次 Gemini 调用，一天常态大约 6 次。张小玺中文原版经常没有字幕，新的一集会吃掉转写额度；每轮转写默认不超过 90 分钟，多出来的下一轮再做。摘要已经是中文时不调用 Gemma。偶发英文摘要大约每周 0–5 次 Gemma 26B。
+首批 12 个频道大约每周 20 集，平均一天 3 集左右。多数频道有字幕，只有摘要一次 `generateContent`。按大约八成有字幕估算：每周约 16 次摘要、4 集转写。转写按现有额度切块，大约每 8 分钟一段；一集 50 分钟大约 6 次。一周合计大约 40 次 Gemini 调用，一天常态大约 6 次。张小玺中文原版经常没有字幕，新的一集会吃掉转写额度；每轮转写默认不超过 90 分钟，多出来的下一轮再做。摘要已经是中文时不调用 Gemma。偶发英文摘要大约每周 0–5 次 Gemma 26B。
+
+## 试跑之后
+
+没有字幕时，下载音频之前先确认转写函数和 Gemini 密钥。密钥或转写器不可用就停止本轮，该集尝试次数不加。以前 `executeAudioTranscription` 没有收到 `transcribe`，会在整集音频下完之后才抛 `transcribe is not a function`。
+
+频道页的 15 秒限制以前从发出请求就开始，响应头到达后读正文仍算在同一段里，正文超时也没有收成「频道页超时」。现在响应头和正文各有 15 秒。配置里写了 `channelId` 的频道不再请求频道页。大佬透镜是第 12 个频道。
+
+Dwarkesh 这类频道的 RSS 最新条目可能全是切片。还没有入库正片的频道（包括已经把第一轮标成回溯过的）会用 `--flat-playlist` 看 `/videos` 最近 30 条，只把不少于 20 分钟的正片拿去探测，入库仍只留最近几集。已经有正片之后不再列这张表。
 
 ## 上线
 

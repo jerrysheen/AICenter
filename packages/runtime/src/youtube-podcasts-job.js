@@ -12,6 +12,7 @@ import {
   parsePodcastSummary,
   parseYoutubeRss,
   rssUrlForChannel,
+  selectBackfillEntries,
   selectPodcastEpisodes,
   summaryNeedsChinese,
   watchUrl,
@@ -25,13 +26,16 @@ import {
 import { createGeminiInvestorSummarizer } from '../../connectors/src/investor-discussion-model.js';
 import { createGemmaTranslationRouter } from '../../connectors/src/translate/gemma.js';
 import {
-  combineFetchSignal,
   ensureYtDlpReady,
+  fetchYoutubeText,
+  listChannelLongVideos,
   probeYoutubeEpisode,
   resolveYoutubeChannelId,
   transcribeYoutubeAudio,
   youtubeBlockReason,
+  youtubeTranscribeUnavailable,
 } from '../../connectors/src/youtube-podcasts.js';
+import { createGeminiAudioTranscriber } from '../../connectors/src/audio-transcribe.js';
 import { executeAudioTranscription } from './audio-transcription-job.js';
 
 export { YOUTUBE_PODCAST_JOB_TYPE, YOUTUBE_PODCAST_SCHEDULE_KEY };
@@ -92,18 +96,21 @@ function summaryPrompt(creator, title, transcript) {
 
 export async function defaultFetchRss(url, fetchImpl, signal) {
   let response;
+  let text = '';
   try {
-    response = await fetchImpl(url, {
+    const loaded = await fetchYoutubeText(url, {
+      fetchImpl,
+      signal,
       headers: { 'user-agent': 'AICenter/0.2 youtube-podcasts', accept: 'application/atom+xml, application/xml, text/xml' },
-      signal: combineFetchSignal(signal),
     });
+    response = loaded.response;
+    text = loaded.text;
   } catch (error) {
     if (signal?.aborted) throw error;
     const timeout = new Error('RSS 超时');
     timeout.code = 'youtube-timeout';
     throw timeout;
   }
-  const text = await response.text();
   if (response.ok) return { entries: parseYoutubeRss(text) };
   const blocked = response.status === 429 ? '429' : youtubeBlockReason(text);
   if (blocked) return { blocked, detail: text.slice(0, 180) };
@@ -261,6 +268,14 @@ export async function runYoutubePodcastRound(deps = {}) {
     : deadline;
   const fetchRss = deps.fetchRss || ((url) => defaultFetchRss(url, deps.fetchImpl || fetch, signal));
   const resolveChannel = deps.resolveChannel || ((handle) => resolveYoutubeChannelId({ handle, fetchImpl: deps.fetchImpl || fetch, signal }));
+  const listVideos = deps.listVideos || ((channel) => listChannelLongVideos({
+    channelId: channel.channelId,
+    handle: channel.handle,
+    env,
+    run: deps.run,
+    signal,
+  }));
+  const audioTranscribe = deps.audioTranscribe || createGeminiAudioTranscriber();
   const probe = deps.probe;
   const transcribe = deps.transcribe;
   const summarize = deps.summarize || defaultSummarize(env, deps.quotaRepository, signal);
@@ -291,11 +306,20 @@ export async function runYoutubePodcastRound(deps = {}) {
       if (stats.stopped) break;
       const incoming = [];
       const freshChannels = new Set();
+      const readyChannels = new Set(
+        repository.listForDedup(workspaceId, creator.id)
+          .filter((row) => row.status === 'ready')
+          .map((row) => row.channelKey),
+      );
       for (const channel of creator.channels) {
         if (stats.stopped || processed >= limits.roundLimit) break;
         const state = repository.channel(workspaceId, channel.key);
-        if (!state.bootstrapped) freshChannels.add(channel.key);
-        let channelId = state.channelId;
+        const needsBackfill = channel.kind === 'channel' && (!state.bootstrapped || !readyChannels.has(channel.key));
+        if (!state.bootstrapped || needsBackfill) freshChannels.add(channel.key);
+        let channelId = String(channel.channelId || state.channelId || '').trim();
+        if (channel.kind === 'channel' && channel.channelId && state.channelId !== channel.channelId) {
+          repository.saveChannel(workspaceId, channel.key, { channelId: channel.channelId, bootstrapped: state.bootstrapped });
+        }
         if (channel.kind === 'channel' && !channelId) {
           let resolved;
           try {
@@ -345,7 +369,40 @@ export async function runYoutubePodcastRound(deps = {}) {
           break;
         }
         await sleep(limits.intervalMs);
-        const entries = (rss?.entries || []).map((entry) => ({ ...entry, channelKey: channel.key, role: channel.role || '' }));
+        let entries = (rss?.entries || []).map((entry) => ({ ...entry, channelKey: channel.key, role: channel.role || '' }));
+        if (needsBackfill) {
+          let listed;
+          try {
+            listed = await listVideos({ ...channel, channelId });
+          } catch (error) {
+            const stop = roundStop(error, signal);
+            if (stop) {
+              stats.stopped = stop;
+              pushReason(stats, stop);
+              break;
+            }
+            listed = { failed: true, detail: String(error?.message || error).slice(0, 120) };
+          }
+          if (listed?.blocked) {
+            stats.stopped = listed.blocked;
+            pushReason(stats, listed.blocked);
+            break;
+          }
+          const backfill = selectBackfillEntries(listed?.entries, config.minDurationSec, limits.lookback)
+            .map((entry) => ({ ...entry, channelKey: channel.key, role: channel.role || '' }));
+          if (backfill.length) {
+            const byId = new Map(entries.map((entry) => [entry.videoId, entry]));
+            entries = backfill.map((entry) => ({
+              ...entry,
+              title: byId.get(entry.videoId)?.title || entry.title,
+              publishedAt: byId.get(entry.videoId)?.publishedAt || entry.publishedAt,
+              url: byId.get(entry.videoId)?.url || entry.url,
+            }));
+          } else if (listed?.failed) {
+            pushReason(stats, 'backfill');
+          }
+          await sleep(limits.intervalMs);
+        }
         const slice = state.bootstrapped
           ? { probe: entries.filter((entry) => !repository.isDone(workspaceId, entry.videoId)), ignore: [] }
           : firstRunSlice(entries, limits.lookback);
@@ -509,6 +566,7 @@ export async function runYoutubePodcastRound(deps = {}) {
               quotaRepository: deps.quotaRepository,
               languageCodes: [],
               execute: deps.executeAudio || executeAudioTranscription,
+              transcribe: audioTranscribe,
               workspaceId,
               signal,
             }));
@@ -555,6 +613,24 @@ export async function runYoutubePodcastRound(deps = {}) {
             stats.stopped = stop;
             pushReason(stats, stop);
             stats.failed += 1;
+            break;
+          }
+          if (youtubeTranscribeUnavailable(error)) {
+            repository.saveEpisode({
+              workspaceId,
+              videoId: episode.videoId,
+              creatorId: creator.id,
+              channelKey: episode.channelKey,
+              title: episode.title,
+              durationSec: episode.durationSec,
+              publishedAt: episode.publishedAt,
+              status: 'failed',
+              reason: String(error?.message || error).slice(0, 180),
+              attempts: attemptsOf(repository, workspaceId, episode.videoId),
+            });
+            stats.failed += 1;
+            stats.stopped = 'transcribe-unavailable';
+            pushReason(stats, 'transcribe-unavailable');
             break;
           }
           const attempts = attemptsOf(repository, workspaceId, episode.videoId) + 1;

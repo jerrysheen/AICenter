@@ -80,6 +80,7 @@ export function loadYoutubePodcastConfig(filePath) {
         handle: String(channel.handle || '').replace(/^@/, '').trim(),
         url: String(channel.url || '').trim(),
         language: String(channel.language || creator.language || '').trim(),
+        channelId: /^UC[\w-]{20,}$/.test(String(channel.channelId || '').trim()) ? String(channel.channelId).trim() : '',
       })),
     })),
   };
@@ -286,6 +287,18 @@ export function firstRunSlice(entries, lookback = YOUTUBE_LOOKBACK) {
     probe: sorted.slice(0, probeCount),
     ignore: sorted.slice(probeCount),
   };
+}
+
+export function selectBackfillEntries(entries, minDurationSec = YOUTUBE_MIN_DURATION_SEC, lookback = YOUTUBE_LOOKBACK) {
+  const cap = Math.max(1, lookback) + 2;
+  const selected = [];
+  for (const entry of entries || []) {
+    if (selected.length >= cap) break;
+    if (!entry?.videoId) continue;
+    if (isShortOrPreview(entry, minDurationSec)) continue;
+    selected.push(entry);
+  }
+  return selected;
 }
 
 export function limitFirstRun(kept, lookback = YOUTUBE_LOOKBACK) {
