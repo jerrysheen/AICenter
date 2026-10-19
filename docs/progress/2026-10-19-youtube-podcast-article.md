@@ -25,7 +25,7 @@
 
 整理完成的正文按 Markdown 显示小标题、段落和发言人，替换原来的「展开全文」。原字幕不再显示。原字幕仍在 `youtube_podcast_episodes.source_transcript`，用来重跑。
 
-migration 88 `youtube_podcast_article` 只加五列：`source_transcript`、`source_hash`、`article_status`、`article_state`、`article_day`。空号仍是 63、79、80、82。不要重建数据库。需要同时重启 Web 和 Worker，浏览器再加载一次。
+migration 89 `youtube_podcast_article` 只加五列：`source_transcript`、`source_hash`、`article_status`、`article_state`、`article_day`。空号仍是 63、79、80、82。不要重建数据库。需要同时重启 Web 和 Worker，浏览器再加载一次。
 
 ## 另外三处
 

@@ -25,7 +25,7 @@
 
 ## 当前
 
-- `progress/2026-10-19-youtube-podcast-article.md`：YouTube 单集正文改成豆包整理的中文文章。自动字幕先去掉滚动重复，再按句末或说话人分成约 1 万到 1.2 万字符，在同一个豆包对话里逐段发送。开关 `AI_CENTER_YOUTUBE_PODCASTS_ARTICLE` 默认关，每天默认 2 集。标题、摘要和关键句仍只用 Gemma 26B。migration 88 只加原字幕和整理进度。需要同时重启 Web 和 Worker。
+- `progress/2026-10-19-youtube-podcast-article.md`：YouTube 单集正文改成豆包整理的中文文章。自动字幕先去掉滚动重复，再按句末或说话人分成约 1 万到 1.2 万字符，在同一个豆包对话里逐段发送。开关 `AI_CENTER_YOUTUBE_PODCASTS_ARTICLE` 默认关，每天默认 2 集。标题、摘要和关键句仍只用 Gemma 26B。migration 89 只加原字幕和整理进度。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-19-us-open-stale.md`：美股刚开盘的 5 分钟内，盘前报价不再标成红色「已过期」，顶部和美股观察写「盘中 · 等待报价」。盘前、盘后的 `asOf` 用报价自己的时间，行提示写盘前或盘后。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
 - `progress/2026-10-19-x-auto-like-tight.md`：自动点赞选条排除广告词、官号宣传和短帖。新增推广词只用于点赞。企业动态至少 0.9 才点。jev 关闭时点赞门槛 0.9。默认每天 8 次、每小时 2 次、间隔 15 分钟。任务连续失败 2 次自动停。配置版本 `x-focus-2`，趋势图仍接受 `x-focus-1`。不新增 migration。需要同时重启 Web 和 Worker。

@@ -2348,7 +2348,7 @@ migrations.push({ version: 87, name: 'youtube_podcast_backfill', up(database) {
   addColumn(database, 'youtube_podcast_channels', 'backfill_failed_at', 'INTEGER');
 }});
 
-migrations.push({ version: 88, name: 'youtube_podcast_article', up(database) {
+migrations.push({ version: 89, name: 'youtube_podcast_article', up(database) {
   addColumn(database, 'youtube_podcast_episodes', 'source_transcript', 'TEXT NOT NULL DEFAULT \'\'');
   addColumn(database, 'youtube_podcast_episodes', 'source_hash', 'TEXT NOT NULL DEFAULT \'\'');
   addColumn(database, 'youtube_podcast_episodes', 'article_status', 'TEXT NOT NULL DEFAULT \'\'');
