@@ -48,8 +48,13 @@ test('migrations upgrade a v1 database without losing posts', () => {
   assert.deepEqual(unusedSchemaVersions, [63, 79, 80, 82]);
   assert.equal(upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, schemaLatest);
   assert.equal(schemaLatest - schemaRows, expectedHoles, `schema rows ${schemaRows} latest ${schemaLatest}`);
-  assert.equal(schemaLatest, 88);
+  assert.equal(schemaLatest, 89);
+  assert.ok(upgraded.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'northbound_daily'`).get());
   assert.ok(upgraded.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'youtube_podcast_episodes'`).get());
+  const episodeColumns = upgraded.prepare('PRAGMA table_info(youtube_podcast_episodes)').all().map((column) => column.name);
+  assert.ok(episodeColumns.includes('source_transcript'));
+  assert.ok(episodeColumns.includes('article_status'));
+  assert.ok(episodeColumns.includes('article_state'));
   const channelColumns = upgraded.prepare('PRAGMA table_info(youtube_podcast_channels)').all().map((column) => column.name);
   assert.ok(channelColumns.includes('backfilled_at'));
   assert.ok(channelColumns.includes('backfill_attempts'));

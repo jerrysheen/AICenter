@@ -2383,6 +2383,14 @@ migrations.push({ version: 88, name: 'northbound_flow', up(database) {
   `);
 }});
 
+migrations.push({ version: 89, name: 'youtube_podcast_article', up(database) {
+  addColumn(database, 'youtube_podcast_episodes', 'source_transcript', 'TEXT NOT NULL DEFAULT \'\'');
+  addColumn(database, 'youtube_podcast_episodes', 'source_hash', 'TEXT NOT NULL DEFAULT \'\'');
+  addColumn(database, 'youtube_podcast_episodes', 'article_status', 'TEXT NOT NULL DEFAULT \'\'');
+  addColumn(database, 'youtube_podcast_episodes', 'article_state', 'TEXT NOT NULL DEFAULT \'\'');
+  addColumn(database, 'youtube_podcast_episodes', 'article_day', 'TEXT NOT NULL DEFAULT \'\'');
+}});
+
 
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
