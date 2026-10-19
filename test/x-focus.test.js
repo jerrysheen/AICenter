@@ -553,6 +553,8 @@ test('personal Global names stay eligible while official wording and business ve
   assert.equal(looksLikeOfficialBrandAccount({ handle: 'XPENG_Global' }, { promotional: true }), true);
   assert.equal(looksLikeOfficialBrandAccount({ handle: 'brand-Global' }, { promotional: true }), true);
   assert.equal(looksLikeOfficialBrandAccount({ name: 'XXX Official' }), true);
+  assert.equal(looksLikeOfficialBrandAccount({ handle: 'Unofficial' }), false);
+  assert.equal(looksLikeOfficialBrandAccount({ name: 'Unofficial Macro' }), false);
   assert.equal(looksLikeOfficialBrandAccount({ handle: 'BrandOfficial' }), true);
   assert.equal(looksLikeOfficialBrandAccount({ name: 'XX官方' }), true);
   assert.equal(looksLikeOfficialBrandAccount({ verified: 'business' }), true);

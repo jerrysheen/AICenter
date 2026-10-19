@@ -311,7 +311,7 @@ const CORPORATE_LIKE_MIN = 0.9;
 const ORGANIZATION_VERIFIED = new Set(['organization', 'business', 'government', 'org']);
 
 function hasOfficialWord(value) {
-  return /official/i.test(value) || /官方/.test(value);
+  return /(?<!un)official/i.test(value) || /官方/.test(value);
 }
 
 function globalHandleSuffix(handle) {
