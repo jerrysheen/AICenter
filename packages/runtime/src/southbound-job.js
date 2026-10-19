@@ -71,6 +71,76 @@ function hasMergedTop10(repository, workspaceId, tradeDate) {
   return repository.listTop10(workspaceId, tradeDate, 'total').length > 0;
 }
 
+export function persistNorthboundDay({ repository, workspaceId, dailyRows, hkex, fetchedAt }) {
+  if (!repository) return { checkStatus: 'unchecked', checkDiffPct: null, tradeDate: '', savedDaily: 0 };
+  const byChannel = new Map((dailyRows || []).filter((row) => row?.dealAmt != null).map((row) => [row.channel, row]));
+  if (!byChannel.get('total') && (byChannel.get('sh') || byChannel.get('sz'))) {
+    const sh = byChannel.get('sh');
+    const sz = byChannel.get('sz');
+    byChannel.set('total', {
+      tradeDate: sh?.tradeDate || sz?.tradeDate,
+      channel: 'total',
+      dealAmt: (sh?.dealAmt || 0) + (sz?.dealAmt || 0),
+      dealNum: ((sh?.dealNum || 0) + (sz?.dealNum || 0)) || null,
+      source: 'derived',
+    });
+  }
+  const total = byChannel.get('total') || null;
+  const compared = compareSouthboundDeal(total?.dealAmt ?? null, hkex ? hkex.dealAmt : null);
+  const stamped = ['sh', 'sz', 'total'].flatMap((channel) => {
+    const row = byChannel.get(channel);
+    if (!row) return [];
+    return [{ ...row, checkStatus: compared.checkStatus, checkDiffPct: compared.checkDiffPct, fetchedAt }];
+  });
+  const savedDaily = repository.upsertDaily(workspaceId, stamped);
+  return { ...compared, tradeDate: stamped[0]?.tradeDate || '', savedDaily };
+}
+
+export function saveNorthboundTop10(repository, workspaceId, tradeDate, topRows) {
+  if (!repository || !Array.isArray(topRows) || !tradeDate) return 0;
+  let saved = 0;
+  for (const channel of ['sh', 'sz']) {
+    saved += repository.replaceTop10(workspaceId, tradeDate, channel, topRows.filter((row) => row.channel === channel));
+  }
+  return saved;
+}
+
+async function readDayBundle(client, tradeDate) {
+  if (client.fetchDayBundle) return client.fetchDayBundle(tradeDate);
+  return { southbound: await client.fetchDay(tradeDate), northbound: [] };
+}
+
+async function readTop10Bundle(client, tradeDate) {
+  if (client.fetchTop10Bundle) return client.fetchTop10Bundle(tradeDate);
+  return { southbound: await client.fetchTop10(tradeDate), northbound: [] };
+}
+
+async function fillNorthboundOnly({ client, repository, workspaceId, tradeDate, fetchedAt }) {
+  const bundle = await readDayBundle(client, tradeDate);
+  let hkex = null;
+  try {
+    hkex = await client.fetchHkex(tradeDate);
+  } catch {
+    hkex = null;
+  }
+  let northTop = [];
+  try {
+    northTop = (await readTop10Bundle(client, tradeDate)).northbound || [];
+  } catch {
+    northTop = [];
+  }
+  const saved = persistNorthboundDay({
+    repository,
+    workspaceId,
+    dailyRows: bundle.northbound || [],
+    hkex: hkex?.northbound || null,
+    fetchedAt,
+  });
+  const savedTop = saveNorthboundTop10(repository, workspaceId, tradeDate, northTop);
+  if (!saved.savedDaily) return { status: 'northbound_missing', tradeDate, savedTop };
+  return { status: saved.checkStatus || 'ok', tradeDate, savedTop, northbound: true };
+}
+
 function noticeFor(status) {
   if (status === 'mismatch') return { badge: '与港交所成交额不一致', note: '' };
   if (status === 'hkex_missing') return { badge: '港交所尚未公布', note: '' };
@@ -111,12 +181,38 @@ export async function syncSouthboundDay(options = {}) {
   if (calendar.trading === false) return { status: 'closed', tradeDate, reason: calendar.reason };
   const existing = repository.getDaily(workspaceId, tradeDate, 'total');
   const topped = hasMergedTop10(repository, workspaceId, tradeDate);
-  if (mode === 'live' && existing?.checkStatus === 'ok' && topped) return { status: 'skipped', tradeDate };
+  const northboundRepository = options.northboundRepository || null;
+  const northReady = !northboundRepository || Boolean(northboundRepository.getDaily(workspaceId, tradeDate, 'total'));
   const client = options.client || createSouthboundClient(options);
+  if (mode === 'live' && existing?.checkStatus === 'ok' && topped) {
+    if (northReady) return { status: 'skipped', tradeDate };
+    try {
+      return await fillNorthboundOnly({
+        client,
+        repository: northboundRepository,
+        workspaceId,
+        tradeDate,
+        fetchedAt: now,
+      });
+    } catch (error) {
+      return { status: 'northbound_missing', tradeDate, reason: error instanceof Error ? error.message : '北向读取失败' };
+    }
+  }
   if (mode === 'live' && existing?.checkStatus === 'ok') {
     try {
-      const topRows = await client.fetchTop10(tradeDate);
-      const savedTop = saveSouthboundTop10(repository, workspaceId, tradeDate, topRows);
+      const topBundle = await readTop10Bundle(client, tradeDate);
+      const savedTop = saveSouthboundTop10(repository, workspaceId, tradeDate, topBundle.southbound || []);
+      if (northboundRepository && !northReady) {
+        await fillNorthboundOnly({
+          client,
+          repository: northboundRepository,
+          workspaceId,
+          tradeDate,
+          fetchedAt: now,
+        });
+      } else if (northboundRepository) {
+        saveNorthboundTop10(northboundRepository, workspaceId, tradeDate, topBundle.northbound || []);
+      }
       if (!savedTop) return { status: 'top10_missing', tradeDate, savedTop };
       return { status: 'ok', tradeDate, savedTop };
     } catch (error) {
@@ -124,8 +220,11 @@ export async function syncSouthboundDay(options = {}) {
     }
   }
   let dailyRows = [];
+  let northRows = [];
   try {
-    dailyRows = await client.fetchDay(tradeDate);
+    const bundle = await readDayBundle(client, tradeDate);
+    dailyRows = bundle.southbound || [];
+    northRows = bundle.northbound || [];
   } catch (error) {
     if (mode === 'backfill') throw error;
     const status = slot === 'catchup' ? 'late' : 'pending';
@@ -133,6 +232,21 @@ export async function syncSouthboundDay(options = {}) {
     return { status, tradeDate, reason: error instanceof Error ? error.message : '读取失败' };
   }
   if (!dailyRows.length) {
+    if (northboundRepository && northRows.length) {
+      let northHkex = null;
+      try {
+        northHkex = await client.fetchHkex(tradeDate);
+      } catch {
+        northHkex = null;
+      }
+      persistNorthboundDay({
+        repository: northboundRepository,
+        workspaceId,
+        dailyRows: northRows,
+        hkex: northHkex?.northbound || null,
+        fetchedAt: now,
+      });
+    }
     if (mode === 'backfill') {
       let hkex = null;
       try {
@@ -152,6 +266,7 @@ export async function syncSouthboundDay(options = {}) {
   }
   let hkex = null;
   let topRows = [];
+  let northTopRows = [];
   try {
     hkex = await client.fetchHkex(tradeDate);
   } catch {
@@ -159,9 +274,12 @@ export async function syncSouthboundDay(options = {}) {
   }
   if (options.includeTop10 !== false) {
     try {
-      topRows = await client.fetchTop10(tradeDate);
+      const topBundle = await readTop10Bundle(client, tradeDate);
+      topRows = topBundle.southbound || [];
+      northTopRows = topBundle.northbound || [];
     } catch {
       topRows = null;
+      northTopRows = [];
     }
   }
   const saved = persistSouthboundDay({
@@ -172,6 +290,18 @@ export async function syncSouthboundDay(options = {}) {
     hkex,
     fetchedAt: now,
   });
+  if (northboundRepository && northRows.length) {
+    persistNorthboundDay({
+      repository: northboundRepository,
+      workspaceId,
+      dailyRows: northRows,
+      hkex: hkex?.northbound || null,
+      fetchedAt: now,
+    });
+    if (Array.isArray(northTopRows) && northTopRows.length) {
+      saveNorthboundTop10(northboundRepository, workspaceId, tradeDate, northTopRows);
+    }
+  }
   if (mode === 'live') {
     publishHealth(options.store, workspaceId, {
       status: saved.checkStatus,

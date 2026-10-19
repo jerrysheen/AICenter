@@ -4,19 +4,20 @@ import { createSouthboundClient, mergeTop10 } from '../packages/connectors/src/s
 import { createStore } from '../packages/database/src/index.js';
 import { addIsoDays, classifyHkConnectDay, eachIsoDate, resolveBackfillStart } from '../packages/domain/src/hk-connect-calendar.js';
 import { resolveInstanceConfig } from '../packages/instance/src/index.js';
-import { persistSouthboundDay } from '../packages/runtime/src/southbound-job.js';
+import { persistNorthboundDay, persistSouthboundDay, saveNorthboundTop10 } from '../packages/runtime/src/southbound-job.js';
 
 const from = arg('--from');
 const to = arg('--to');
 const part = arg('--part', 'all');
-if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to || !['all', 'daily', 'top10'].includes(part)) {
-  console.error('用法: node scripts/southbound-backfill.js --from YYYY-MM-DD --to YYYY-MM-DD [--part daily|top10|all]');
+if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to || !['all', 'daily', 'top10', 'northbound'].includes(part)) {
+  console.error('用法: node scripts/southbound-backfill.js --from YYYY-MM-DD --to YYYY-MM-DD [--part daily|top10|northbound|all]');
   process.exit(1);
 }
 
 const instance = resolveInstanceConfig({ repositoryRoot: process.cwd() });
 const store = createStore(instance.databasePath);
 const repository = store.repositories.southbound;
+const northboundRepository = store.repositories.northbound;
 const checkpointPath = path.join(path.dirname(instance.databasePath), 'southbound-backfill.json');
 const checkpoint = readCheckpoint(checkpointPath);
 const client = createSouthboundClient();
@@ -25,8 +26,9 @@ const top10From = part === 'top10' ? from : (addIsoDays(to, -364) > from ? addIs
 let stoppedAt = '';
 
 try {
-  if (part !== 'top10') await backfillDaily();
-  if (!stoppedAt && part !== 'daily') await backfillTop10();
+  if (part === 'all' || part === 'daily') await backfillDaily();
+  if (!stoppedAt && (part === 'all' || part === 'top10')) await backfillTop10();
+  if (!stoppedAt && (part === 'all' || part === 'northbound')) await backfillNorthbound();
   if (stoppedAt) {
     console.error(`southbound backfill stopped at ${stoppedAt}; rerun the same command to resume`);
     process.exitCode = 1;
@@ -127,6 +129,64 @@ async function backfillTop10() {
   console.log(`top10 saved=${saved}`);
 }
 
+async function backfillNorthbound() {
+  const start = resolveBackfillStart(from, to, checkpoint.northboundThrough);
+  if (!start || start > to) {
+    console.log(`northbound already through ${checkpoint.northboundThrough || to}`);
+    return;
+  }
+  const history = [];
+  for (const mutualType of ['001', '003', '005']) {
+    for (let cursor = start; cursor <= to; cursor = addIsoDays(chunkEnd(cursor), 1)) {
+      const end = chunkEnd(cursor);
+      const rows = await client.fetchNorthboundHistory({ mutualType, start: cursor, end });
+      history.push(...rows);
+      console.log(`northbound ${mutualType} ${cursor} ${end} rows=${rows.length}`);
+    }
+  }
+  const byDate = new Map();
+  for (const row of history) {
+    const list = byDate.get(row.tradeDate) || [];
+    list.push(row);
+    byDate.set(row.tradeDate, list);
+  }
+  const topFrom = addIsoDays(to, -364) > from ? addIsoDays(to, -364) : from;
+  for (const date of eachIsoDate(start, to)) {
+    const calendar = classifyHkConnectDay(date);
+    if (calendar.trading === false) {
+      remember('northboundThrough', date);
+      continue;
+    }
+    const dailyRows = byDate.get(date) || [];
+    const loaded = await loadHkex(date);
+    if (!loaded.ok) return;
+    if (dailyRows.length) {
+      const saved = persistNorthboundDay({
+        repository: northboundRepository,
+        workspaceId: 'local',
+        dailyRows,
+        hkex: loaded.hkex?.northbound || null,
+        fetchedAt: Date.now(),
+      });
+      console.log(`${date} northbound ${saved.checkStatus}`);
+    } else {
+      console.log(`${date} northbound_missing`);
+    }
+    if (date >= topFrom) {
+      try {
+        const bundle = await client.fetchTop10Bundle(date);
+        const savedTop = saveNorthboundTop10(northboundRepository, 'local', date, bundle.northbound || []);
+        if (savedTop) console.log(`${date} northbound top10 ${savedTop}`);
+      } catch (error) {
+        stoppedAt = date;
+        console.log(`${date} northbound top10 ${error instanceof Error ? error.message : error}`);
+        return;
+      }
+    }
+    remember('northboundThrough', date);
+  }
+}
+
 async function loadHkex(date) {
   try {
     return { ok: true, hkex: await client.fetchHkex(date) };
@@ -154,6 +214,7 @@ function readCheckpoint(file) {
     return {
       dailyThrough: String(parsed.dailyThrough || ''),
       top10Through: String(parsed.top10Through || ''),
+      northboundThrough: String(parsed.northboundThrough || ''),
     };
   } catch {
     return { dailyThrough: '', top10Through: '' };

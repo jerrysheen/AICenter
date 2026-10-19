@@ -13,6 +13,10 @@ import { postClientError } from './client-report.js?v=dev';
 import { HOME_BOOTSTRAP_PATH, chooseHomeBootstrap, homeBootstrapCachePath, projectHomeBootstrap } from './home-bootstrap.js?v=dev';
 import { dateKey, zonedCalendarParts, zonedClockParts } from './shanghai-time.js?v=dev';
 import {
+  flowNetCopy, flowNoteVisible, flowTurnoverCopy, marketStockPath, nextStockBoard, stocksHash,
+  NORTHBOUND_NET_FALLBACK,
+} from './market-flow.js?v=dev';
+import {
   preferredOverviewFocus as overviewFocusClock,
   HOME_QUOTE_CAPTION,
   pickHomeQuoteCards,
@@ -429,7 +433,7 @@ const elements = Object.fromEntries([
   'knowledge-list', 'portfolio-summary',
   'report-list', 'open-subscriptions', 'subscriptions-dialog', 'subscription-list',
   'holding-dialog', 'holding-title', 'holding-meta', 'holding-metrics',
-  'stock-boards', 'market-status', 'southbound-card', 'market-overview', 'market-head', 'market-table-scroll', 'market-sort', 'market-filter', 'market-filter-wrap',
+  'stock-boards', 'market-status', 'market-flow', 'market-overview', 'market-head', 'market-table-scroll', 'market-sort', 'market-filter', 'market-filter-wrap',
   'asset-sort', 'asset-filter', 'asset-filter-wrap', 'asset-table-scroll',
   'market-sync-hint', 'book-sync-hint',   'analysis-period', 'analysis-kpis', 'analysis-ledger', 'analysis-trend', 'analysis-pie',
   'analysis-diagnosis-1', 'analysis-diagnosis-2',
@@ -1037,9 +1041,11 @@ function parseLocation(name = (location.hash || '#sources').slice(1)) {
   const marketTab = view === 'market' && marketPane === 'assets' && new URLSearchParams(queryPart).get('tab') === 'events'
     ? 'events'
     : '';
+  const stockBoard = view === 'market' && marketPane === 'stocks' ? marketStockPath(rest) : '';
   return {
     view, askSessionId, marketPane, assetPane, sourcesPane, settingsPane, inspirePane,
     selectedWorkPackageId, pageKind, pageId, reportPane, reportDate, reportHour, reportNode, marketTab, feedTab,
+    stockBoard,
   };
 }
 
@@ -1057,7 +1063,7 @@ function readLastOverviewTarget() {
 function rememberOverviewTarget(view, pane = state.tradePane) {
   if (!overviewViews.includes(view)) return;
   let target = view;
-  if (view === 'market') target = pane === 'assets' ? 'market/global' : 'market';
+  if (view === 'market') target = pane === 'assets' ? 'market/global' : (state.stockBoard === 'flow' ? 'market/flow' : 'market');
   if (view === 'report' && reportPane === 'history') target = 'report/history';
   else if (view === 'report' && reportPane === 'archive') target = 'report/archive';
   else if (view === 'report') {
@@ -1078,14 +1084,14 @@ function overviewLane(view = document.body.dataset.view, pane = state.tradePane)
 
 function overviewHash(lane = overviewLane()) {
   if (lane === 'feed') return '#feed';
-  if (lane === 'stocks') return '#market';
+  if (lane === 'stocks') return stocksHash(state.stockBoard);
   if (lane === 'global') return marketLocationHash('assets');
   if (lane === 'report') return '#report';
   return '#sources';
 }
 
 function marketLocationHash(pane = state.tradePane) {
-  if (pane !== 'assets') return '#market';
+  if (pane !== 'assets') return stocksHash(state.stockBoard);
   if (state.assetClass === 'events') return '#market/global?tab=events';
   return '#market/global';
 }
@@ -1224,6 +1230,9 @@ function setView(name, options = {}) {
   if (leaving) captureViewScroll(previous);
   state.askSessionId = view === 'ask' ? parsed.askSessionId : '';
   if (view === 'market' && parsed.marketPane) state.tradePane = parsed.marketPane;
+  if (view === 'market' && parsed.marketPane === 'stocks') {
+    state.stockBoard = nextStockBoard(state.stockBoard, parsed.stockBoard);
+  }
   if (view === 'market' && parsed.marketPane === 'assets') {
     if (requested.startsWith('market/global/hardware')) state.assetClass = 'hardware';
     else if (requested.startsWith('market/global/compute')) state.assetClass = 'compute';
@@ -5330,7 +5339,10 @@ function setTradePane(id) {
 
 async function syncTradePaneData({ refresh = false } = {}) {
   if (state.tradePane === 'stocks') {
-    loadSouthboundCard({ force: refresh }).catch(() => {});
+    if (state.stockBoard === 'flow') {
+      await loadFlowPage({ force: refresh });
+      return;
+    }
     await loadMarket();
     return;
   }
@@ -6492,6 +6504,7 @@ function extraQuery(board = state.stockBoard) {
 }
 
 async function loadMarket({ board = state.stockBoard, priority = 4, fresh = false } = {}) {
+  if (board === 'flow') return;
   if (!state.bootstrapped) return;
   const isActiveBoard = board === state.stockBoard;
   const requestId = isActiveBoard ? state.marketRequestId + 1 : state.marketRequestId;
@@ -6572,8 +6585,9 @@ function currentMarket() {
 function renderStockBoards() {
   const sourceBoards = state.sourceCatalog
     .filter((source) => source.category === 'market' && source.viewKind === 'market-board' && source.id !== 'market.global')
-    .map((source) => ({ id: source.id.replace(/^market\./, ''), label: source.title }));
-  const boards = sourceBoards.length ? sourceBoards : fallbackStockBoards;
+    .map((source) => ({ id: source.id.replace(/^market\./, ''), label: source.title }))
+    .filter((item) => item.id && item.id !== 'flow');
+  const boards = [...(sourceBoards.length ? sourceBoards : fallbackStockBoards), { id: 'flow', label: '资金' }];
   const target = elements['stock-boards'];
   if (!target) return;
   target.replaceChildren(...boards.map((item) => {
@@ -6583,15 +6597,20 @@ function renderStockBoards() {
     button.setAttribute('aria-pressed', String(item.id === state.stockBoard));
     button.textContent = item.label;
     button.addEventListener('click', () => {
+      if (item.id === state.stockBoard) return;
       state.stockBoard = item.id;
       state.stockGroup = '全部';
       state.marketFilter = '';
       if (elements['market-filter']) elements['market-filter'].value = '';
-      renderStockBoards();
-      loadMarket().catch((error) => showToast(error.message));
+      setView(item.id === 'flow' ? 'market/flow' : 'market');
     });
     return button;
   }));
+  const active = target.querySelector('.is-active');
+  if (active && target.scrollWidth > target.clientWidth) {
+    const left = active.offsetLeft - (target.clientWidth - active.offsetWidth) / 2;
+    target.scrollLeft = Math.max(0, left);
+  }
   bindHorizontalTabScroll();
 }
 
@@ -8330,7 +8349,7 @@ function scheduleOverviewFocusWatch() {
     overviewFocusTimer = 0;
     if (state.session && (document.body.dataset.view === 'sources' || (isQuotesView() && state.tradePane === 'stocks') || overviewFocusIsStale())) {
       loadMarket({ board: 'overview' }).catch(() => {});
-      if (state.stockBoard !== 'overview' && isQuotesView() && state.tradePane === 'stocks') {
+      if (state.stockBoard !== 'overview' && state.stockBoard !== 'flow' && isQuotesView() && state.tradePane === 'stocks') {
         loadMarket().catch(() => {});
       }
     }
@@ -8341,6 +8360,11 @@ function scheduleOverviewFocusWatch() {
 function renderMarketStatus() {
   const el = elements['market-status'];
   if (!el) return;
+  if (state.stockBoard === 'flow') {
+    el.classList.add('hidden');
+    el.replaceChildren();
+    return;
+  }
   const market = currentMarket();
   const error = !state.marketLoading && (state.marketBoardErrors[state.stockBoard] || state.marketError)
     ? (state.marketBoardErrors[state.stockBoard] || state.marketError)
@@ -8731,107 +8755,227 @@ function paintMarketPlaceholder(isOverview) {
   else elements['quote-list'].replaceChildren(...marketRowSkeleton());
 }
 
-function southboundAmount(text) {
-  const value = String(text || '');
-  const node = document.createElement('b');
-  node.className = value.startsWith('-') ? 'down' : value.startsWith('+') ? 'up' : '';
-  node.textContent = value ? `${value} 亿` : '—';
-  return node;
+function flowFigure(copy) {
+  const figure = document.createElement('p');
+  figure.className = 'flow-figure';
+  figure.append(
+    Object.assign(document.createElement('span'), { className: 'flow-figure-label', textContent: copy.label }),
+    Object.assign(document.createElement('strong'), { textContent: copy.amount }),
+    Object.assign(document.createElement('small'), { textContent: copy.unit }),
+  );
+  return figure;
 }
 
-function renderSouthboundCard(payload) {
-  const card = elements['southbound-card'];
-  if (!card) return;
-  card.classList.remove('hidden');
-  card.replaceChildren();
-  const head = document.createElement('div');
-  head.className = 'southbound-head';
-  head.append(Object.assign(document.createElement('h2'), { textContent: '港股通南向' }));
-  if (payload?.tradeDate) head.append(Object.assign(document.createElement('small'), { textContent: payload.tradeDate }));
-  if (payload?.badge) {
-    head.append(Object.assign(document.createElement('span'), { className: 'southbound-badge', textContent: payload.badge }));
+function flowDateLine(label) {
+  const line = document.createElement('p');
+  line.className = `flow-date${String(label || '').includes('不是今天') ? ' is-old' : ''}`;
+  line.textContent = label || '';
+  return line;
+}
+
+function flowBars(series, { signed = false, unit = '' } = {}) {
+  const bars = document.createElement('div');
+  bars.className = signed ? 'flow-bars is-signed' : 'flow-bars';
+  bars.setAttribute('aria-hidden', 'true');
+  const peak = Math.max(1, ...series.map((item) => Math.abs(Number(signed ? item.net : item.turnover) || 0)));
+  for (const item of series) {
+    const value = Number(signed ? item.net : item.turnover) || 0;
+    const column = document.createElement('div');
+    column.className = 'flow-bar';
+    const rect = document.createElement('i');
+    const magnitude = Math.abs(value) / peak * 100;
+    rect.style.height = `${Math.max(4, magnitude / 2)}%`;
+    if (signed) {
+      column.classList.add(value < 0 ? 'is-out' : 'is-in');
+      const yi = (Math.abs(value) / 100_000_000).toFixed(2);
+      column.title = `${item.date} ${value < 0 ? '净卖出' : '净买入'} ${yi} 亿港元`;
+    } else {
+      column.classList.add('is-turnover');
+      column.title = `${item.date} 成交额 ${Number(value).toFixed(2)} ${unit}`;
+    }
+    column.append(rect);
+    bars.append(column);
   }
-  card.append(head);
+  return bars;
+}
+
+function flowNameRow(item, copy) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'flow-row';
+  const name = document.createElement('span');
+  name.textContent = item.name || item.code || '';
+  button.append(name, flowFigure(copy));
+  if (item.symbol) button.addEventListener('click', () => openPage('quote', item.symbol));
+  return button;
+}
+
+function renderSouthboundFlow(payload, error) {
+  const block = document.createElement('section');
+  block.className = 'flow-block';
+  block.setAttribute('aria-label', '港股通南向');
+  const head = document.createElement('div');
+  head.className = 'flow-head';
+  head.append(Object.assign(document.createElement('h2'), { textContent: '港股通南向' }));
+  if (payload?.dateLabel) head.append(flowDateLine(payload.dateLabel));
+  const badge = flowNoteVisible(payload?.badge);
+  if (badge) head.append(Object.assign(document.createElement('span'), { className: 'flow-badge', textContent: badge }));
+  block.append(head);
+  if (error) {
+    block.append(Object.assign(document.createElement('p'), { className: 'flow-missing', textContent: '南向资金暂时读不到' }));
+    return block;
+  }
   if (!payload?.tradeDate) {
-    card.append(Object.assign(document.createElement('p'), { textContent: payload?.note || '南向资金尚未入库' }));
-    return;
+    block.append(Object.assign(document.createElement('p'), { className: 'flow-missing', textContent: flowNoteVisible(payload?.note) || '南向资金尚未入库，所以没有数据日期。' }));
+    return block;
   }
   const channels = document.createElement('div');
-  channels.className = 'southbound-channels';
+  channels.className = 'flow-channels';
+  const southChannelLabel = { sh: '港股通（沪）', sz: '港股通（深）', total: '南向合计' };
   for (const key of ['sh', 'sz', 'total']) {
     const item = payload.channels?.[key] || { label: key, net: '' };
     const cell = document.createElement('div');
-    cell.append(Object.assign(document.createElement('span'), { textContent: item.label }), southboundAmount(item.net));
+    cell.append(
+      Object.assign(document.createElement('span'), { className: 'flow-channel', textContent: southChannelLabel[key] || item.label }),
+      flowFigure(flowNetCopy(item.net)),
+    );
     channels.append(cell);
   }
-  card.append(channels);
-  const bars = document.createElement('div');
-  bars.className = 'southbound-bars';
+  block.append(channels);
   const series = payload.bars || [];
-  const peak = Math.max(1, ...series.map((item) => Math.abs(Number(item.net) || 0)));
-  for (const item of series) {
-    const column = document.createElement('div');
-    column.className = 'southbound-bar';
-    const magnitude = Math.abs(Number(item.net) || 0) / peak * 100;
-    const up = Number(item.net) >= 0;
-    const rect = document.createElement('i');
-    rect.className = up ? 'up' : 'down';
-    rect.style.height = `${Math.max(2, magnitude / 2)}%`;
-    column.classList.add(up ? 'is-up' : 'is-down');
-    column.append(rect);
-    column.title = `${item.date}`;
-    bars.append(column);
+  if (series.length) {
+    block.append(Object.assign(document.createElement('p'), { className: 'flow-chart-label', textContent: '合计净额 · 亿港元' }));
+    block.append(flowBars(series, { signed: true }));
   }
-  card.append(bars);
-  const sums = document.createElement('p');
-  sums.className = 'southbound-sums';
-  sums.append(
-    document.createTextNode('5 日累计 '),
-    southboundAmount(payload.sum5),
-    document.createTextNode(' · 20 日累计 '),
-    southboundAmount(payload.sum20),
-  );
-  card.append(sums);
-  if (payload.note) card.append(Object.assign(document.createElement('p'), { className: 'southbound-note', textContent: payload.note }));
+  const sums = document.createElement('div');
+  sums.className = 'flow-sums';
+  const sum5 = document.createElement('div');
+  sum5.append(Object.assign(document.createElement('span'), { className: 'flow-channel', textContent: '5 日累计净额' }), flowFigure(flowNetCopy(payload.sum5)));
+  const sum20 = document.createElement('div');
+  sum20.append(Object.assign(document.createElement('span'), { className: 'flow-channel', textContent: '20 日累计净额' }), flowFigure(flowNetCopy(payload.sum20)));
+  sums.append(sum5, sum20);
+  block.append(sums);
+  const note = flowNoteVisible(payload.note);
+  if (note) block.append(Object.assign(document.createElement('p'), { className: 'flow-missing', textContent: note }));
   const lists = document.createElement('div');
-  lists.className = 'southbound-lists';
+  lists.className = 'flow-lists';
   for (const [title, rows] of [['净买入', payload.buy || []], ['净卖出', payload.sell || []]]) {
-    const block = document.createElement('div');
-    block.append(Object.assign(document.createElement('h3'), { textContent: title }));
-    if (!rows.length) block.append(Object.assign(document.createElement('p'), { textContent: '暂无' }));
-    for (const item of rows) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'southbound-name';
-      button.append(
-        Object.assign(document.createElement('span'), { textContent: item.name || item.code }),
-        southboundAmount(item.net),
-      );
-      if (item.symbol) button.addEventListener('click', () => openPage('quote', item.symbol));
-      block.append(button);
-    }
-    lists.append(block);
+    const column = document.createElement('div');
+    column.append(Object.assign(document.createElement('h3'), { textContent: title }));
+    if (!rows.length) column.append(Object.assign(document.createElement('p'), { className: 'flow-missing', textContent: '暂无' }));
+    for (const item of rows) column.append(flowNameRow(item, flowNetCopy(item.net)));
+    lists.append(column);
   }
-  card.append(lists);
-  if (payload.scope) card.append(Object.assign(document.createElement('p'), { className: 'southbound-scope', textContent: payload.scope }));
+  block.append(lists);
+  const scope = flowNoteVisible(payload.scope);
+  if (scope) block.append(Object.assign(document.createElement('p'), { className: 'flow-scope', textContent: scope }));
+  return block;
 }
 
-async function loadSouthboundCard({ force = false } = {}) {
-  const card = elements['southbound-card'];
-  if (!card || state.tradePane !== 'stocks') return;
-  const fresh = state.southboundBoard && Date.now() - (state.southboundLoadedAt || 0) < 60_000;
-  if (!force && fresh) {
-    renderSouthboundCard(state.southboundBoard);
+function renderNorthboundFlow(payload, error) {
+  const block = document.createElement('section');
+  block.className = 'flow-block';
+  block.setAttribute('aria-label', '沪深股通北向');
+  const head = document.createElement('div');
+  head.className = 'flow-head';
+  head.append(Object.assign(document.createElement('h2'), { textContent: '沪深股通北向' }));
+  if (payload?.dateLabel) head.append(flowDateLine(payload.dateLabel));
+  const badge = flowNoteVisible(payload?.badge);
+  if (badge) head.append(Object.assign(document.createElement('span'), { className: 'flow-badge', textContent: badge }));
+  block.append(head);
+  block.append(Object.assign(document.createElement('p'), {
+    className: 'flow-missing',
+    textContent: flowNoteVisible(payload?.unavailable) || NORTHBOUND_NET_FALLBACK,
+  }));
+  if (error) {
+    block.append(Object.assign(document.createElement('p'), { className: 'flow-missing', textContent: '北向成交额暂时读不到' }));
+    return block;
+  }
+  if (!payload?.tradeDate) {
+    block.append(Object.assign(document.createElement('p'), { className: 'flow-missing', textContent: payload?.empty || '北向成交额还没有入库，所以没有数据日期。' }));
+    return block;
+  }
+  const channels = document.createElement('div');
+  channels.className = 'flow-channels';
+  for (const key of ['sh', 'sz', 'total']) {
+    const item = payload.channels?.[key] || { label: key, turnover: '' };
+    const cell = document.createElement('div');
+    cell.append(
+      Object.assign(document.createElement('span'), { className: 'flow-channel', textContent: item.label }),
+      flowFigure(flowTurnoverCopy(item.turnover)),
+    );
+    channels.append(cell);
+  }
+  block.append(channels);
+  const series = payload.bars || [];
+  if (series.length) {
+    block.append(Object.assign(document.createElement('p'), { className: 'flow-chart-label', textContent: '合计成交额 · 亿元人民币' }));
+    block.append(flowBars(series, { unit: '亿元人民币' }));
+  }
+  if (payload.rangeTurnover) {
+    const range = document.createElement('div');
+    range.className = 'flow-sums';
+    const cell = document.createElement('div');
+    cell.append(
+      Object.assign(document.createElement('span'), { className: 'flow-channel', textContent: `近 ${payload.rangeDays || series.length} 日成交额累计` }),
+      flowFigure(flowTurnoverCopy(payload.rangeTurnover)),
+    );
+    range.append(cell);
+    block.append(range);
+  }
+  const lists = document.createElement('div');
+  lists.className = 'flow-lists';
+  for (const [title, rows] of [['沪股通十大成交', payload.shTop || []], ['深股通十大成交', payload.szTop || []]]) {
+    const column = document.createElement('div');
+    column.append(Object.assign(document.createElement('h3'), { textContent: title }));
+    if (!rows.length) column.append(Object.assign(document.createElement('p'), { className: 'flow-missing', textContent: '暂无' }));
+    for (const item of rows) column.append(flowNameRow(item, flowTurnoverCopy(item.turnover)));
+    lists.append(column);
+  }
+  block.append(lists);
+  const scope = flowNoteVisible(payload.scope);
+  if (scope) block.append(Object.assign(document.createElement('p'), { className: 'flow-scope', textContent: scope }));
+  return block;
+}
+
+function renderFlowPage({ loading = false } = {}) {
+  const root = elements['market-flow'];
+  if (!root) return;
+  root.classList.toggle('hidden', state.stockBoard !== 'flow' || state.tradePane !== 'stocks');
+  if (state.stockBoard !== 'flow') return;
+  if ((loading || !state.flowLoadedAt) && !state.flowSouth && !state.flowNorth) {
+    root.replaceChildren(Object.assign(document.createElement('p'), { className: 'flow-missing', textContent: '正在读取资金…' }));
     return;
   }
-  if (!state.southboundBoard) {
-    card.classList.remove('hidden');
-    card.textContent = '正在读取南向资金…';
+  root.replaceChildren(
+    renderSouthboundFlow(state.flowSouth, state.flowSouthError),
+    renderNorthboundFlow(state.flowNorth, state.flowNorthError),
+  );
+}
+
+async function loadFlowPage({ force = false } = {}) {
+  if (state.stockBoard !== 'flow' || state.tradePane !== 'stocks') return;
+  const fresh = state.flowSouth && state.flowNorth && Date.now() - (state.flowLoadedAt || 0) < 60_000;
+  if (!force && fresh) {
+    renderFlowPage();
+    return;
   }
-  const payload = await api('/api/v1/market/southbound?days=20');
-  state.southboundBoard = payload;
-  state.southboundLoadedAt = Date.now();
-  if (state.tradePane === 'stocks') renderSouthboundCard(payload);
+  if (!state.flowSouth && !state.flowNorth) renderFlowPage({ loading: true });
+  const [southResult, northResult] = await Promise.allSettled([
+    api('/api/v1/market/southbound?days=20'),
+    api('/api/v1/market/northbound?days=20'),
+  ]);
+  if (state.stockBoard !== 'flow') return;
+  if (southResult.status === 'fulfilled') {
+    state.flowSouth = southResult.value;
+    state.flowSouthError = '';
+  } else state.flowSouthError = '南向资金暂时读不到';
+  if (northResult.status === 'fulfilled') {
+    state.flowNorth = northResult.value;
+    state.flowNorthError = '';
+  } else state.flowNorthError = '北向成交额暂时读不到';
+  state.flowLoadedAt = Date.now();
+  renderFlowPage();
 }
 
 function loadSouthboundHistory(symbol, wrap) {
@@ -8849,8 +8993,9 @@ function loadSouthboundHistory(symbol, wrap) {
       return;
     }
     for (const item of items) {
+      const copy = flowNetCopy(item.net);
       const row = document.createElement('p');
-      row.append(document.createTextNode(`${item.date} `), southboundAmount(item.net));
+      row.textContent = `${item.date} ${copy.label} ${copy.amount} ${copy.unit}`;
       host.append(row);
     }
   }).catch(() => {
@@ -8861,7 +9006,20 @@ function loadSouthboundHistory(symbol, wrap) {
 function renderMarket() {
   renderStockBoards();
   const market = currentMarket();
+  const isFlow = state.stockBoard === 'flow';
   const isOverview = state.stockBoard === 'overview';
+  elements['market-flow']?.classList.toggle('hidden', !isFlow);
+  if (isFlow) {
+    elements['market-filter-wrap']?.classList.add('hidden');
+    elements['market-table-scroll']?.classList.add('hidden');
+    elements['market-overview']?.replaceChildren();
+    elements['quote-filters']?.replaceChildren();
+    elements['quote-list']?.replaceChildren();
+    renderMarketStatus();
+    if (document.body.dataset.view === 'market' && state.tradePane === 'stocks') setTradeHint('');
+    renderFlowPage();
+    return;
+  }
   renderMarketStatus();
   elements['market-filter-wrap'].classList.toggle('hidden', isOverview);
   elements['market-table-scroll'].classList.toggle('hidden', isOverview);
@@ -8932,7 +9090,7 @@ async function renderSearch(query = '') {
         state.stockBoard = board;
         state.stockGroup = '自选';
         elements['search-dialog'].close();
-        loadMarket().catch((error) => showToast(error.message));
+        setView('market');
       });
       row.append(copy, add);
       return row;
@@ -15604,7 +15762,10 @@ async function completeAuthorizedStart(session) {
       if (!state.session) return;
       if (document.body.dataset.view === 'sources') loadMarket({ board: 'overview' }).catch(() => {});
       if (isQuotesView()) {
-        if (state.tradePane === 'stocks') loadMarket().catch(() => {});
+        if (state.tradePane === 'stocks') {
+          if (state.stockBoard === 'flow') loadFlowPage().catch(() => {});
+          else loadMarket().catch(() => {});
+        }
         if (state.tradePane === 'assets') {if(state.assetClass!=='hardware')loadGlobalAssets().catch(() => {});loadHardwarePrices().catch(() => {});}
         if (state.tradePane === 'holdings') loadHoldings().catch(() => {});
       }
