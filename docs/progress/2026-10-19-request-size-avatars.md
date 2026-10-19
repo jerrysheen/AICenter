@@ -8,7 +8,11 @@
 
 页面 CSP 的 `img-src` 增加 `https://pbs.twimg.com` 和 `https://xavatar.imedao.com`，没有改成通配。X 头像和补全后的雪球头像可以显示。
 
-不新增 migration。不要重建数据库。空号仍是 63、79、80、82。88、89 不要占用。需要同时重启 Web 和 Worker，浏览器再加载一次。上线后先看会改多少行：
+不新增 migration。不要重建数据库。空号仍是 63、79、80、82。88、89 不要占用。需要同时重启 Web 和 Worker，浏览器再加载一次。
+
+`npm test`：main `57ec42e` 是 1712 项，1693 通过，17 失败，2 跳过。这条分支是 1715 项，1696 通过，17 失败，2 跳过。失败名字与 main 相同。多出来的 3 项是请求体读完再拒绝、翻译和行为事件超限、雪球头像回填，都通过。YouTube 不入队和 CSP 写在原有测试里。全量里 `Gemma pool uses only official streaming endpoints` 曾因「等待配额窗口」失败，单独跑该文件 32 项全过，再跑全量已回到上面的 17 项。
+
+上线后先看会改多少行：
 
 `node scripts/backfill-xueqiu-avatars.mjs --dry-run`
 
