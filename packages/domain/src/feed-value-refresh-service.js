@@ -40,8 +40,23 @@ function saveFallbackCapture(feedRepository, workspaceId, row, decision, reason,
   return true;
 }
 
-export function createFeedValueRefreshService({feedRepository,mediaRepository,client,model='jev-1.13.0',scoreCache=null,flashSources=null,jevEnabled=true,fallback=true,xFocusConfig=null,xFocusMin=0.7}={}) {
-  const evaluator=createFeedValueEvaluator({client:jevEnabled?client:null,model,rule:FEED_VALUE_RULE});
+export function resolveBambooRefresh(env = process.env, provider = 'typesafe') {
+  const enabled = provider === 'bamboo' && String(env?.AI_CENTER_BAMBOO_REFRESH ?? '').trim() === '1';
+  const raw = String(env?.AI_CENTER_BAMBOO_REFRESH_MAX ?? '').trim();
+  let max = 200;
+  if (raw) {
+    const parsed = Number(raw);
+    if (Number.isInteger(parsed) && parsed >= 0) max = parsed;
+  }
+  return { enabled, max };
+}
+
+export function createFeedValueRefreshService({feedRepository,mediaRepository,client,model='jev-1.13.0',scoreCache=null,flashSources=null,jevEnabled=true,classificationProvider='typesafe',fallback=true,xFocusConfig=null,xFocusMin=0.7,bambooRefresh=false,bambooRefreshMax=200}={}) {
+  const bamboo = classificationProvider === 'bamboo';
+  const classify = bamboo ? bambooRefresh === true : jevEnabled !== false;
+  const refreshCap = Number.isInteger(bambooRefreshMax) && bambooRefreshMax >= 0 ? bambooRefreshMax : 200;
+  let refreshCalls = 0;
+  const evaluator=createFeedValueEvaluator({client:classify?client:null,model,rule:FEED_VALUE_RULE});
   const cache=new Map();
   if(scoreCache?.policyHash===feedValuePolicyHash() && scoreCache.model===model) for(const r of scoreCache.rows || []) {
     if(r.model===model && !r.errorReason && FeedValueScoresSchema.safeParse(r.scores).success) cache.set(evaluator.cacheKey(r.input),r.scores);
@@ -57,7 +72,7 @@ export function createFeedValueRefreshService({feedRepository,mediaRepository,cl
     const rows=[...feed,...media.map(r=>({id:`media:${r.externalId}`,provider:'media',sourceExternalId:r.sourceKey || '',externalId:r.externalId,
       input:normalizeFeedValueText(bodies.get(r.externalId)?.bodyText || r.summary || '',{title:r.title,capture:{truncated:Boolean(bodies.get(r.externalId)?.truncated)}}),
       metadata:feedRepository.getCapture(workspaceId,'media',r.externalId)?.metadata || {}}))];
-    const output={total:rows.length,done:0,KEEP:0,DROP:0,REVIEW:0,reused:0,requested:0,preflight:0,changedInput:0,missing:0,invalid:0,rule:FEED_VALUE_RULE,runId,perSourceLimit:input.perSourceLimit};
+    const output={total:rows.length,done:0,KEEP:0,DROP:0,REVIEW:0,reused:0,requested:0,preflight:0,skipped:0,changedInput:0,missing:0,invalid:0,rule:FEED_VALUE_RULE,runId,perSourceLimit:input.perSourceLimit};
     let cursor=0;
     onProgress({...output});
     await Promise.all(Array.from({length:input.concurrency},async()=>{
@@ -66,17 +81,24 @@ export function createFeedValueRefreshService({feedRepository,mediaRepository,cl
         const row=rows[cursor++],key=evaluator.cacheKey(row.input),m=row.metadata || {};
         const parsedScores=FeedValueScoresSchema.safeParse(m.filterScores).success;
         const decided=m.filterDecision==='KEEP' || m.filterDecision==='DROP';
-        if(!jevEnabled && (parsedScores || decided)) {
+        if(!classify && (parsedScores || decided)) {
           output.reused++;
           output.done++;
           if(output.done%50===0 || output.done===output.total)onProgress({...output});
           continue;
         }
         const stored=m.filterPolicyHash===feedValuePolicyHash() && m.evaluatorModel===model && m.filterCacheKey===key && parsedScores ? m.filterScores : null;
-        const scores=jevEnabled ? (stored || cache.get(key)) : null;
+        const scores=classify ? (stored || cache.get(key)) : null;
         let result;
         if(scores) {result={scores,model,errorReason:''};output.reused++;}
+        else if(bamboo && classify && refreshCalls>=refreshCap) {
+          output.skipped++;
+          output.done++;
+          if(output.done%50===0 || output.done===output.total)onProgress({...output});
+          continue;
+        }
         else {
+          if(bamboo && classify) refreshCalls++;
           result=await evaluator.evaluate(row.input,{signal});
           if(!result.errorReason || result.errorReason==='jev-failed') output.requested++;
           else output.preflight++;

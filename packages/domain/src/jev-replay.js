@@ -144,6 +144,7 @@ export async function reevaluateHeldCaptures({
   captures = [],
   mode = 'fallback',
   jevEnabled = true,
+  classify = jevEnabled !== false,
   xFocusConfig = null,
   xFocusMin = 0.7,
   evaluator = null,
@@ -151,8 +152,8 @@ export async function reevaluateHeldCaptures({
   onKeep,
   prefix = '',
 } = {}) {
-  const useJev = mode === 'jev' && jevEnabled === true && evaluator;
-  const reasonPrefix = prefix || (jevEnabled === false ? 'jev-disabled' : 'fallback');
+  const useJev = mode === 'jev' && classify === true && evaluator;
+  const reasonPrefix = prefix || (classify === true ? 'fallback' : 'jev-disabled');
   const results = [];
   for (const capture of captures) {
     if (useJev) {
