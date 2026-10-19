@@ -39,6 +39,26 @@ const EARLY_CLOSE = {
 };
 
 const warnedHolidayYears = new Set();
+const ET_PARTS = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  weekday: 'short',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+const ET_STAMP = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  hourCycle: 'h23',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+});
 
 function warnMissingHolidayYear(year) {
   if (warnedHolidayYears.has(year)) return;
@@ -49,16 +69,7 @@ function warnMissingHolidayYear(year) {
 export const US_OPEN_GRACE_MS = 5 * 60 * 1000;
 
 function etParts(nowMs) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    weekday: 'short',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(new Date(nowMs));
+  const parts = ET_PARTS.formatToParts(new Date(nowMs));
   const map = {};
   for (const part of parts) {
     if (part.type !== 'literal') map[part.type] = part.value;
@@ -77,16 +88,7 @@ function etParts(nowMs) {
 
 function etTimestamp(parts, hour, minute) {
   const utcGuess = Date.UTC(parts.year, parts.month - 1, parts.day, hour, minute, 0);
-  const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    hourCycle: 'h23',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
+  const fmt = ET_STAMP;
   const asUtc = (ms) => {
     const map = {};
     for (const part of fmt.formatToParts(new Date(ms))) {

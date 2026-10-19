@@ -5,6 +5,7 @@ import { usRegularSessionAt, usSessionAt } from '../packages/source/src/market/b
 import {
   captureMarketBoards,
   marketBoardSnapshotKey,
+  marketBoardTimeoutMs,
   marketUsFreshMs,
   usBoardFreshnessError,
 } from '../packages/runtime/src/web-snapshot-jobs.js';
@@ -162,6 +163,36 @@ test('a year missing from the NYSE holiday table warns once', () => {
     '[market] 2028 年纽交所休市日还没有写入假日表，这一年只按周末和美东时钟判断',
     '[market] 2025 年纽交所休市日还没有写入假日表，这一年只按周末和美东时钟判断',
   ]);
+});
+
+test('board timeout defaults to 20s and aborts the in-flight read', async () => {
+  assert.equal(marketBoardTimeoutMs({}), 20_000);
+  assert.equal(marketBoardTimeoutMs({ AI_CENTER_MARKET_BOARD_TIMEOUT_MS: '12000' }), 12_000);
+  const signals = [];
+  const at = Date.parse('2026-10-17T21:30:00Z');
+  const sourcePort = {
+    async read(_sourceId, _input, context) {
+      signals.push(context.signal);
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 500);
+        context.signal?.addEventListener('abort', () => {
+          clearTimeout(timer);
+          resolve();
+        }, { once: true });
+      });
+      return { data: null };
+    },
+  };
+  await assert.rejects(() => captureMarketBoards({
+    sourcePort,
+    repository: { saveSnapshot() {} },
+    now: () => at,
+    timeoutMs: 30,
+    env: {},
+    log() {},
+  }), /超时/);
+  assert.equal(signals.length, 4);
+  assert.equal(signals.every((signal) => signal?.aborted), true);
 });
 
 test('US trading hours fail the snapshot after the freshness window and still keep the board', async () => {

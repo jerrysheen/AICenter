@@ -193,8 +193,8 @@ export function createMarketService(options = {}) {
     if (!refresh) {
       const hit = cache.get(key);
       if (hit && timestamp - hit.at < ttl) return expose(hit, timestamp);
-      if (pending.has(key)) return pending.get(key);
     }
+    if (pending.has(key)) return pending.get(key);
     const attempt = (attempts.get(key) || 0) + 1;
     attempts.set(key, attempt);
     let timer;
@@ -233,11 +233,11 @@ export function createMarketService(options = {}) {
     return task;
   }
 
-  async function loadUs(extraSymbols) {
+  async function loadUs(extraSymbols, { refresh = false, signal } = {}) {
     return cached(`us:${extraSymbols.join(',')}`, async () => {
       const tracked = usTrackedItems(extraSymbols, marketCatalog);
       try {
-        const { quotes, session } = await yahoo.fetchQuotes(tracked.map((item) => item.symbol));
+        const { quotes, session } = await yahoo.fetchQuotes(tracked.map((item) => item.symbol), { signal });
         reportQuotes('美股', tracked.length, quotes);
         return buildUsMarketBoard({
           quotes,
@@ -259,15 +259,15 @@ export function createMarketService(options = {}) {
           marketCatalog,
         });
       }
-    });
+    }, { refresh });
   }
 
-  async function loadGlobal() {
+  async function loadGlobal({ refresh = false, signal } = {}) {
     return cached('global', async () => {
       const tracked = globalTrackedItems(marketCatalog);
       const symbols = [...new Set(tracked.map((item) => item.yahoo))];
       try {
-        const quotes = await fetchQuotes(symbols);
+        const quotes = await fetchQuotes(symbols, { refresh, signal });
         reportQuotes('全球资产', symbols.length, quotes);
         const session = quotes.some((item) => item.session === 'regular') ? 'regular' : 'closed';
         return buildGlobalAssetBoard({
@@ -288,7 +288,7 @@ export function createMarketService(options = {}) {
           marketCatalog,
         });
       }
-    });
+    }, { refresh });
   }
 
   function stampLiveClose(sparkline, lastPrice, lastAt) {
@@ -328,12 +328,12 @@ export function createMarketService(options = {}) {
     });
   }
 
-  async function loadCn(extraSymbols) {
+  async function loadCn(extraSymbols, { refresh = false, signal } = {}) {
     return cached(`cn-board:${extraSymbols.join(',')}`, async () => {
       const tracked = cnTrackedItems(extraSymbols, marketCatalog);
       const unique = [...new Set(tracked.map((item) => item.symbol))];
       try {
-        const quotes = await withCnSparklines(await fetchQuotes(unique));
+        const quotes = await withCnSparklines(await fetchQuotes(unique, { refresh, signal }));
         reportQuotes('A股', unique.length, quotes);
         return withRememberedBoard(buildCnMarketBoard({
           quotes,
@@ -353,14 +353,14 @@ export function createMarketService(options = {}) {
           marketCatalog,
         }));
       }
-    });
+    }, { refresh });
   }
 
-  async function loadAsia(extraSymbols) {
+  async function loadAsia(extraSymbols, { refresh = false, signal } = {}) {
     return cached(`asia:${extraSymbols.join(',')}`, async () => {
       const tracked = asiaTrackedItems(extraSymbols, marketCatalog);
       try {
-        const { quotes } = await yahoo.fetchQuotes(tracked.map((item) => item.symbol));
+        const { quotes } = await yahoo.fetchQuotes(tracked.map((item) => item.symbol), { signal });
         reportQuotes('亚洲', tracked.length, quotes);
         return buildAsiaMarketBoard({
           quotes,
@@ -380,7 +380,7 @@ export function createMarketService(options = {}) {
           marketCatalog,
         });
       }
-    });
+    }, { refresh });
   }
 
   async function fetchYahooQuotes(symbols, { refresh = false, signal } = {}) {
@@ -492,19 +492,23 @@ export function createMarketService(options = {}) {
       ? { ...item, session: cnTradingCalendarAt(now()).session } : item));
   }
 
-  async function getBoard({ board = 'overview', extra = '', extraUs = extra, extraAsia = extra, extraCn = extra } = {}) {
+  async function getBoard({
+    board = 'overview', extra = '', extraUs = extra, extraAsia = extra, extraCn = extra,
+    refresh = false, signal,
+  } = {}) {
     const usExtras = parseUsExtraSymbols(extraUs, marketCatalog);
     const asiaExtras = parseAsiaExtraSymbols(extraAsia, marketCatalog);
     const cnExtras = parseCnExtraSymbols(extraCn, marketCatalog);
-    if (board === 'us') return loadUs(usExtras);
-    if (board === 'asia') return loadAsia(asiaExtras);
-    if (board === 'cn') return loadCn(cnExtras);
-    if (board === 'global') return loadGlobal();
+    const opts = { refresh: Boolean(refresh), signal };
+    if (board === 'us') return loadUs(usExtras, opts);
+    if (board === 'asia') return loadAsia(asiaExtras, opts);
+    if (board === 'cn') return loadCn(cnExtras, opts);
+    if (board === 'global') return loadGlobal(opts);
     const focus = preferredOverviewFocus(now());
     const [usBoard, asiaBoard, cnBoard] = await Promise.all([
-      focus === 'us' ? loadUs(usExtras) : Promise.resolve(null),
+      focus === 'us' ? loadUs(usExtras, opts) : Promise.resolve(null),
       Promise.resolve(null),
-      focus === 'cn' ? loadCn(cnExtras) : Promise.resolve(null),
+      focus === 'cn' ? loadCn(cnExtras, opts) : Promise.resolve(null),
     ]);
     return buildOverviewBoard(usBoard, asiaBoard, cnBoard, { focus, now: now() });
   }
