@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-19-official-release-list.md`：官方发布列表在手动重定向后连续为 0。status 0 的不透明重定向不再当成空正文；列表页改跟随重定向并核对最终官网地址，失败打出错误类别。不可用快照不再缓存。不新增 migration。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-19-body-completion-cap.md`：X 正文待补全最多 3 次或 24 小时，到了清掉 pending 并保留原来的判定。展开会点「显示更多」，状态页不再因为文本框溢出把全文继续标成截断。不新增 migration。需要同时重启 Web 和 Worker。
 - `progress/2026-10-19-official-body-extract.md`：白宫正文不再停在栏目名上。gov.cn 只有附件时改用页面摘要和附件标题。重定向逐跳过白名单，最多 3 跳。看板每轮最多补 20 条短正文。回填脚本再跑时只处理仍不足 80 字的条目。不新增 migration。需要同时重启 Web 和 Worker。
 

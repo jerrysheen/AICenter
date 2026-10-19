@@ -63,7 +63,7 @@ export function createSourceHub(moduleRegistry, options = {}) {
         data,
         warnings,
       });
-      if (ttlMs > 0) cache.set(key, { cachedAt: now(), snapshot });
+      if (ttlMs > 0 && snapshot.status !== 'unavailable') cache.set(key, { cachedAt: now(), snapshot });
       return snapshot;
     }).finally(() => pending.delete(key));
     if (!refresh && ttlMs > 0) pending.set(key, task);
