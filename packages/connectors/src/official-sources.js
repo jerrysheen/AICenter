@@ -60,6 +60,8 @@ const OFFICIAL_DETAIL_HOSTS = Object.freeze([
 const DETAIL_RAW_BYTE_LIMIT = 2 * 1024 * 1024;
 const DETAIL_SUMMARY_BYTE_LIMIT = 8 * 1024;
 const DETAIL_BODY_BYTE_LIMIT = 36 * 1024;
+const DETAIL_REDIRECT_LIMIT = 3;
+const OFFICIAL_CHROME_LABEL = /^(?:office of the [\w' -]+|fact sheets?|releases?|briefings?(?: & statements)?|statements?|presidential actions?|speeches?|remarks|news|press releases?|首页|正文|附件下载)$/i;
 
 function utf8Clip(value, maxBytes) {
   const chars = Array.from(String(value || ''));
@@ -108,22 +110,81 @@ function jsonLdFacts(html) {
   return facts.sort((left, right) => String(right.articleBody || '').length - String(left.articleBody || '').length);
 }
 
+function elementInner(html, from, tag) {
+  const re = new RegExp(`<(/)?${tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b[^>]*>`, 'gi');
+  re.lastIndex = from;
+  let depth = 1;
+  let match;
+  while ((match = re.exec(html))) {
+    if (/\/>\s*$/.test(match[0])) continue;
+    if (match[1]) depth -= 1;
+    else depth += 1;
+    if (depth === 0) return html.slice(from, match.index);
+  }
+  return '';
+}
+
 function namedBlocks(html, names) {
   const blocks = [];
-  for (const name of names) {
-    const pattern = new RegExp(`<([a-z][\\w:-]*)\\b[^>]*(?:id|class)=["'][^"']*${name}[^"']*["'][^>]*>([\\s\\S]*?)<\\/\\1>`, 'gi');
-    for (const match of String(html).matchAll(pattern)) {
-      const value = text(match[2]);
-      if (value) blocks.push(value);
-    }
+  const classPattern = new RegExp(`(?:^|[\\s"'/_-])(?:${names.join('|')})(?:$|[\\s"'/_-])`, 'i');
+  const openRe = /<([a-z][\w:-]*)\b([^>]*)>/gi;
+  let match;
+  while ((match = openRe.exec(html))) {
+    const attrs = match[2] || '';
+    if (/\/>\s*$/.test(match[0])) continue;
+    const id = attr(attrs, 'id');
+    const className = attr(attrs, 'class');
+    if (!classPattern.test(`${id} ${className}`)) continue;
+    const inner = elementInner(html, match.index + match[0].length, match[1]);
+    const value = paragraphText(inner) || text(inner);
+    if (value) blocks.push(value);
   }
-  return blocks;
+  return blocks.sort((left, right) => [...right].length - [...left].length);
+}
+
+function chooseOfficialBody(candidates) {
+  const usable = [];
+  for (const candidate of candidates) {
+    const value = text(candidate);
+    if (!value || OFFICIAL_CHROME_LABEL.test(value)) continue;
+    usable.push(value);
+  }
+  usable.sort((left, right) => [...right].length - [...left].length);
+  return usable[0] || '';
+}
+
+function attachmentBody(html, bodyText, officialSummary, title) {
+  const names = [];
+  let sawAttachment = false;
+  for (const match of String(html).matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)) {
+    const href = attr(match[1], 'href');
+    const label = text(attr(match[1], 'title') || match[2] || '');
+    if (!/\.(?:pdf|docx?|wps|xlsx?|zip|ofd)(?:$|[?#])|附件|download/i.test(`${href} ${label}`)) continue;
+    sawAttachment = true;
+    const name = label.replace(/\.(?:pdf|docx?|wps|xlsx?|zip|ofd)$/i, '').trim();
+    if (!name || /^(?:附件\d*|下载|点击下载|点击此处|正文|全文|附件下载)$/.test(name) || [...name].length < 4) continue;
+    if (!names.includes(name)) names.push(name);
+  }
+  const stripped = text(bodyText)
+    .replace(/https?:\/\/\S+/gi, ' ')
+    .replace(/[\w./-]+\.(?:pdf|docx?|wps|xlsx?|zip|ofd)/gi, ' ')
+    .replace(/附件\d*|下载|点击下载|点击此处|附件下载/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!sawAttachment || [...stripped].length >= 80) return '';
+  const summary = text(officialSummary);
+  const parts = [];
+  if (summary && summary !== text(title) && !OFFICIAL_CHROME_LABEL.test(summary)) parts.push(summary);
+  for (const name of names) {
+    if (!parts.some((part) => part.includes(name))) parts.push(name);
+  }
+  return parts.join('\n\n');
 }
 
 function paragraphText(html) {
   const rows = [...String(html).matchAll(/<(?:p|h[2-6]|li)\b[^>]*>([\s\S]*?)<\/(?:p|h[2-6]|li)>/gi)]
     .map((match) => text(match[1]))
-    .filter((value) => value.length >= 20 && !/^(home|top news|press room|search|print|share|网站地图|联系我们|版权所有)/i.test(value));
+    .filter((value) => value.length >= 20 && !OFFICIAL_CHROME_LABEL.test(value) && !/^(home|top news|press room|search|print|share|网站地图|联系我们|版权所有)/i.test(value));
   return [...new Set(rows)].join('\n\n');
 }
 
@@ -145,11 +206,15 @@ export function extractOfficialSourceDetail(html, sourceUrl, observedAt = Date.n
   const articleBody = text(structured.find((item) => item.articleBody)?.articleBody);
   const bodyBlocks = namedBlocks(cleaned, [
     'UCAP-CONTENT', 'TRS_Editor', 'document-contents', 'article[_-]?content', 'article[_-]?body',
-    'entry[_-]?content', 'body[_-]?content', 'page[_-]?content', 'pages[_-]?content', 'p_content', 'zoom',
-  ]).sort((left, right) => right.length - left.length);
-  const article = text(cleaned.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i)?.[1] || '');
-  let bodyText = articleBody || bodyBlocks[0] || article || paragraphText(cleaned);
+    'entry[_-]?content', 'post-content', 'body[_-]?content', 'page[_-]?content', 'pages[_-]?content', 'p_content', 'zoom',
+  ]);
+  const articleOpen = /<article\b[^>]*>/i.exec(cleaned);
+  const articleInner = articleOpen ? elementInner(cleaned, articleOpen.index + articleOpen[0].length, 'article') : '';
+  const article = articleInner ? paragraphText(articleInner) || text(articleInner) : '';
+  let bodyText = chooseOfficialBody([articleBody, bodyBlocks[0], article, paragraphText(cleaned)]);
   if (bodyText === title || bodyText === officialSummary) bodyText = '';
+  const attachment = attachmentBody(html, bodyText, officialSummary, title);
+  if (attachment) bodyText = attachment;
   const summaryClip = utf8Clip(officialSummary, DETAIL_SUMMARY_BYTE_LIMIT);
   const bodyClip = utf8Clip(bodyText, DETAIL_BODY_BYTE_LIMIT);
   const dateValue = structured.find((item) => item.datePublished)?.datePublished
@@ -786,19 +851,31 @@ export function createOfficialSourcesClient(options = {}) {
   if (typeof fetchImpl !== 'function') throw new TypeError('official sources require fetch');
 
   async function request(url, init = {}) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      return await fetchImpl(url, {
-        ...init,
-        signal: controller.signal,
-        headers: {
-          accept: init.accept || 'text/html,application/xhtml+xml,application/json,text/calendar,application/xml;q=0.9,*/*;q=0.8',
-          'user-agent': 'AI-Center/0.2 (local official-source reader)',
-          ...(init.headers || {}),
-        },
-      });
-    } finally { clearTimeout(timer); }
+    let current = officialDetailUrl(url);
+    for (let followed = 0; ; followed += 1) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      let response;
+      try {
+        response = await fetchImpl(current, {
+          ...init,
+          redirect: 'manual',
+          signal: controller.signal,
+          headers: {
+            accept: init.accept || 'text/html,application/xhtml+xml,application/json,text/calendar,application/xml;q=0.9,*/*;q=0.8',
+            'user-agent': 'AI-Center/0.2 (local official-source reader)',
+            ...(init.headers || {}),
+          },
+        });
+      } finally { clearTimeout(timer); }
+      const status = Number(response?.status) || 0;
+      if (status < 300 || status >= 400) return response;
+      try { await response.body?.cancel?.(); } catch { /* 重定向响应不必读完。 */ }
+      if (followed >= DETAIL_REDIRECT_LIMIT) throw new Error('官方详情重定向超过 3 跳');
+      const location = response.headers?.get?.('location');
+      if (!location) throw new Error('官方详情重定向缺少地址');
+      current = officialDetailUrl(new URL(location, current).toString());
+    }
   }
 
   async function federalRegisterDetail(sourceUrl, observedAt) {

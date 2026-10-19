@@ -252,6 +252,73 @@ test('official detail extraction keeps the SCIO subject and body as official tex
   assert.equal(OfficialSourceDetailSchema.safeParse({ ...detail, impact: 'bullish' }).success, false);
 });
 
+test('White House detail keeps the article instead of the section label', () => {
+  const detail = extractOfficialSourceDetail(`
+    <html><head>
+      <meta property="og:title" content="Example Fact Sheet">
+    </head><body><article>
+      <div class="wp-block-post-terms"><a>Fact Sheets</a></div>
+      <h1>Example Fact Sheet</h1>
+      <div class="wp-block-post-content entry-content">
+        <div class="wp-block-whitehouse-byline"><p>Office of the First Lady</p></div>
+        <p>The White House published the full fact sheet for agencies carrying out the aviation maintenance program.</p>
+        <p>The sheet sets inspection rules, funding conditions, and the offices responsible for each step.</p>
+      </div>
+    </article></body></html>
+  `, 'https://www.whitehouse.gov/briefing-room/statements/2026/10/19/example/', OBSERVED_AT);
+  assert.match(detail.bodyText, /inspection rules/);
+  assert.equal(detail.bodyText.includes('Fact Sheets'), false);
+  assert.equal(detail.bodyText.includes('Office of the First Lady'), false);
+});
+
+test('a gov.cn page that only links an attachment keeps the summary and attachment title', () => {
+  const detail = extractOfficialSourceDetail(`
+    <html><head>
+      <title>国务院办公厅关于示例事项的通知</title>
+      <meta name="description" content="国务院办公厅关于示例事项的通知，说明适用范围、执行部门和完成时限。">
+    </head><body>
+      <div id="UCAP-CONTENT">
+        <p><a href="./P020261019.doc" title="国务院办公厅关于示例事项的通知.doc">附件下载</a></p>
+      </div>
+    </body></html>
+  `, 'https://www.gov.cn/zhengce/202610/19/content_example.htm', OBSERVED_AT);
+  assert.match(detail.bodyText, /适用范围、执行部门和完成时限/);
+  assert.match(detail.bodyText, /国务院办公厅关于示例事项的通知/);
+  assert.equal(detail.bodyText.includes('附件下载'), false);
+});
+
+test('official detail redirects stay on the allowlist and stop after three hops', async () => {
+  const requested = [];
+  const client = createOfficialSourcesClient({
+    now: () => OBSERVED_AT,
+    async fetch(url, init) {
+      requested.push(String(url));
+      assert.equal(init.redirect, 'manual');
+      if (String(url) === 'https://www.whitehouse.gov/start') {
+        return new Response(null, { status: 302, headers: { location: 'https://evil.example/phish' } });
+      }
+      if (String(url) === 'https://www.whitehouse.gov/hop') {
+        return new Response(null, { status: 302, headers: { location: '/news/landed/' } });
+      }
+      if (String(url) === 'https://www.whitehouse.gov/chain') {
+        return new Response(null, { status: 302, headers: { location: 'https://www.whitehouse.gov/chain-1' } });
+      }
+      if (/whitehouse\.gov\/chain-\d$/.test(String(url))) {
+        const step = Number(String(url).slice(-1));
+        return new Response(null, { status: 302, headers: { location: `https://www.whitehouse.gov/chain-${step + 1}` } });
+      }
+      return new Response('<article><p>The landed White House page contains the full official statement for agencies.</p></article>', { status: 200 });
+    },
+  });
+  await assert.rejects(() => client.detail({ sourceUrl: 'https://www.whitehouse.gov/start' }), /已登记的官方/);
+  assert.deepEqual(requested, ['https://www.whitehouse.gov/start']);
+  const landed = await client.detail({ sourceUrl: 'https://www.whitehouse.gov/hop' });
+  assert.match(landed.bodyText, /full official statement/);
+  assert.equal(requested.at(-1), 'https://www.whitehouse.gov/news/landed/');
+  await assert.rejects(() => client.detail({ sourceUrl: 'https://www.whitehouse.gov/chain' }), /超过 3 跳/);
+  assert.equal(requested.filter((url) => url.includes('/chain')).length, 4);
+});
+
 test('official detail reader rejects arbitrary hosts and keeps the SCIO HTTP exception scoped', async () => {
   let calls = 0;
   const client = createOfficialSourcesClient({

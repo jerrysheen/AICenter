@@ -10,6 +10,7 @@ import { latestSchemaVersion } from '../packages/database/src/migrations.js';
 import { createAuthorService } from '../packages/domain/src/author-service.js';
 import { authorCaptureFields } from '../packages/domain/src/authors.js';
 import { backfillOfficialBodies, hideShortOfficialItems, officialArticleExternalId, officialBodyAction, officialReleaseExternalId, syncOfficialReleases } from '../packages/domain/src/source-author-sync.js';
+import { STATIC_SIGNAL_BOARD_BODY_LIMIT } from '../packages/runtime/src/web-snapshot-jobs.js';
 import { stableArticleId } from '../packages/connectors/src/media/article-url.js';
 import { createTreeMaterialPort } from '../packages/domain/src/information-tree-materials.js';
 import {
@@ -781,7 +782,7 @@ test('official import fetches the original body and the backfill fills empty one
   const articleId = officialArticleExternalId('govcn', aviation);
   const keptId = officialArticleExternalId('govcn', keptRelease);
   const bodyText = '商务部等9部门关于促进航空保税维修高质量发展的意见。'.repeat(4);
-  const keptBody = '电力安全事故应急处置和调查处理条例已经有正文。'.repeat(3);
+  const keptBody = '电力安全事故应急处置和调查处理条例已经有正文。'.repeat(5);
   let reads = 0;
   try {
     const feed = store.repositories.feed;
@@ -932,7 +933,7 @@ test('official import fetches the original body and the backfill fills empty one
     assert.equal(preview.hosts['whitehouse.gov'], 1);
     assert.equal(backfillReads, 0);
     assert.equal(feed.getContentItemByCapture('local', leftoverCapture.id).body, '');
-    const liveBody = '白宫声明正文。'.repeat(10);
+    const liveBody = '白宫声明正文。'.repeat(12);
     const live = await backfillOfficialBodies(store, {
       dryRun: false,
       sleepMs: 0,
@@ -1003,6 +1004,138 @@ test('official import fetches the original body and the backfill fills empty one
     const script = readFileSync(new URL('../scripts/backfill-official-bodies.mjs', import.meta.url), 'utf8');
     assert.match(script, /--dry-run/);
     assert.doesNotMatch(script, /hideShortOfficialItems|hide-short-official-items/);
+  } finally {
+    store.close();
+  }
+});
+
+test('short official bodies can be refilled and a board round fetches at most twenty', async () => {
+  const store = openStore();
+  const publishedAt = Date.now() - 1_000;
+  try {
+    const feed = store.repositories.feed;
+    const account = feed.upsertSourceAccount({
+      workspaceId: 'local',
+      provider: 'media',
+      externalId: 'media:whitehouse',
+      displayName: '白宫',
+      profileUrl: 'https://www.whitehouse.gov/',
+      authMode: 'public',
+      metadata: { sourceKey: 'whitehouse', lane: 'official' },
+    });
+    const short = feed.saveCapture({
+      workspaceId: 'local',
+      provider: 'media',
+      externalId: 'whitehouse:fact-sheets',
+      sourceAccountId: account.id,
+      sourceUrl: 'https://www.whitehouse.gov/briefing-room/statements/2026/10/19/fact-sheet/',
+      title: '一份情况说明',
+      contentHash: hash('wh-short'),
+      status: 'ready',
+      publishedAt,
+      metadata: { sourceKey: 'whitehouse', lane: 'official' },
+    });
+    feed.saveContentItem({
+      workspaceId: 'local',
+      captureId: short.id,
+      originType: 'subscription',
+      contentType: 'article',
+      title: '一份情况说明',
+      body: 'Fact Sheets',
+      summary: '白宫',
+      sourceUrl: 'https://www.whitehouse.gov/briefing-room/statements/2026/10/19/fact-sheet/',
+      authorName: '白宫',
+      publishedAt,
+    });
+    const longBody = '已经足够长的白宫正文。'.repeat(8);
+    const kept = feed.saveCapture({
+      workspaceId: 'local',
+      provider: 'media',
+      externalId: 'whitehouse:kept',
+      sourceAccountId: account.id,
+      sourceUrl: 'https://www.whitehouse.gov/briefing-room/statements/2026/10/18/kept/',
+      title: '已有正文',
+      contentHash: hash('wh-kept'),
+      status: 'ready',
+      publishedAt,
+      metadata: { sourceKey: 'whitehouse', lane: 'official' },
+    });
+    feed.saveContentItem({
+      workspaceId: 'local',
+      captureId: kept.id,
+      originType: 'subscription',
+      contentType: 'article',
+      title: '已有正文',
+      body: longBody,
+      summary: '白宫',
+      sourceUrl: 'https://www.whitehouse.gov/briefing-room/statements/2026/10/18/kept/',
+      authorName: '白宫',
+      publishedAt,
+    });
+    let reads = 0;
+    const preview = await backfillOfficialBodies(store, {
+      dryRun: true,
+      sleepMs: 0,
+      readDetail: async () => {
+        reads += 1;
+        return { bodyText: '不应读取' };
+      },
+    });
+    assert.equal(preview.scanned, 1);
+    assert.equal(preview.hosts['whitehouse.gov'], 1);
+    assert.equal(reads, 0);
+    assert.equal(feed.getContentItemByCapture('local', short.id).body, 'Fact Sheets');
+    const replacement = '白宫情况说明的正文。'.repeat(8);
+    const live = await backfillOfficialBodies(store, {
+      sleepMs: 0,
+      readDetail: async ({ sourceUrl }) => {
+        reads += 1;
+        assert.match(sourceUrl, /fact-sheet/);
+        return { bodyText: replacement };
+      },
+    });
+    assert.equal(live.filled, 1);
+    assert.equal(reads, 1);
+    assert.equal(feed.getContentItemByCapture('local', short.id).body, replacement);
+    assert.equal(feed.getContentItemByCapture('local', kept.id).body, longBody);
+    const again = await backfillOfficialBodies(store, {
+      dryRun: true,
+      sleepMs: 0,
+      readDetail: async () => {
+        reads += 1;
+        return { bodyText: '第二次' };
+      },
+    });
+    assert.equal(again.scanned, 0);
+    assert.equal(reads, 1);
+
+    assert.equal(STATIC_SIGNAL_BOARD_BODY_LIMIT, 20);
+    const releases = Array.from({ length: 21 }, (_item, index) => ({
+      releaseId: `cap-${index}`,
+      title: `第 ${index} 条`,
+      authority: 'The White House',
+      sourceUrl: `https://www.whitehouse.gov/news/2026/10/${index}/`,
+      publishedAt: publishedAt - index,
+    }));
+    let capped = 0;
+    const firstRound = await syncOfficialReleases(feed, 'local', releases, {}, {
+      bodyLimit: STATIC_SIGNAL_BOARD_BODY_LIMIT,
+      readDetail: async () => {
+        capped += 1;
+        return { bodyText: '看板补上的正文。'.repeat(12) };
+      },
+    });
+    assert.equal(capped, 20);
+    assert.equal(firstRound.bodies, 20);
+    const secondRound = await syncOfficialReleases(feed, 'local', releases, {}, {
+      bodyLimit: STATIC_SIGNAL_BOARD_BODY_LIMIT,
+      readDetail: async () => {
+        capped += 1;
+        return { bodyText: '看板补上的正文。'.repeat(12) };
+      },
+    });
+    assert.equal(capped, 21);
+    assert.equal(secondRound.bodies, 1);
   } finally {
     store.close();
   }
