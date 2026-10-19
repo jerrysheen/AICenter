@@ -108,6 +108,11 @@ export function createMediaRepository(database, emitEvent = () => {}) {
         LIMIT ?`).all(workspaceId, startAt, endAt, cursor?.eventAt ?? null, cursor?.eventAt ?? 0, cursor?.id ?? '', safe)
         .map(row=>({...mapEntry(row), briefStatus:row.brief_status || '', eventAt:row.published_at || row.observed_at}));
     },
+    countEntriesAcrossWindow(workspaceId, {startAt, endAt} = {}) {
+      return database.prepare(`SELECT COUNT(*) AS count FROM media_index_entries
+        WHERE workspace_id=? AND COALESCE(published_at,observed_at)>=? AND COALESCE(published_at,observed_at)<?`)
+        .get(workspaceId, startAt, endAt).count;
+    },
     findByUrl(workspaceId, url) {
       // Preserve the oldest existing identity, including its Capture and reading state.
       return mapEntry(database.prepare('SELECT * FROM media_index_entries WHERE workspace_id=? AND canonical_url=? ORDER BY created_at,external_id LIMIT 1').get(workspaceId,url));

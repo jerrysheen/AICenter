@@ -165,6 +165,91 @@ export function createResearchRecallRepository(database, emitEvent = () => {}) {
         .all(workspaceId, poolId).map(mapMember);
     },
 
+    listMemberHeads(workspaceId, poolId) {
+      return database.prepare(`SELECT ordinal, lane, resource_type, resource_id, source_version, event_at, title, text,
+          CASE WHEN length(body) > 0 THEN 1 ELSE 0 END AS has_body,
+          origin_type, origin_id, node_id, column_tag_id, history
+        FROM research_pool_members WHERE workspace_id=? AND pool_id=? ORDER BY ordinal`)
+        .all(workspaceId, poolId).map((row) => ({
+          ordinal: row.ordinal,
+          lane: row.lane,
+          resourceType: row.resource_type,
+          resourceId: row.resource_id,
+          sourceVersion: row.source_version,
+          eventAt: row.event_at,
+          title: row.title,
+          text: row.text,
+          body: '',
+          hasBody: row.has_body === 1,
+          originType: row.origin_type,
+          originId: row.origin_id,
+          nodeId: row.node_id || null,
+          columnTagId: row.column_tag_id || null,
+          history: Boolean(row.history),
+        }));
+    },
+
+    memberBodies(workspaceId, poolId, ordinals) {
+      const ids = [...new Set(ordinals || [])].filter((ordinal) => Number.isInteger(ordinal));
+      const bodies = new Map();
+      for (let index = 0; index < ids.length; index += 200) {
+        const chunk = ids.slice(index, index + 200);
+        const rows = database.prepare(`SELECT ordinal, body FROM research_pool_members
+          WHERE workspace_id=? AND pool_id=? AND ordinal IN (${chunk.map(() => '?').join(',')})`)
+          .all(workspaceId, poolId, ...chunk);
+        for (const row of rows) bodies.set(row.ordinal, row.body || '');
+      }
+      return bodies;
+    },
+
+    countMembers(workspaceId, poolId) {
+      return database.prepare('SELECT COUNT(*) AS count FROM research_pool_members WHERE workspace_id=? AND pool_id=?')
+        .get(workspaceId, poolId).count;
+    },
+
+    hasPool(workspaceId, poolId) {
+      return Boolean(database.prepare('SELECT 1 AS ok FROM research_pools WHERE workspace_id=? AND pool_id=?').get(workspaceId, poolId));
+    },
+
+    latestReport(workspaceId, questionId, window) {
+      const key = `${questionId}:${window.startAt}:${window.endAt}`;
+      const id = database.prepare('SELECT report_id FROM research_report_heads WHERE workspace_id=? AND period_key=?')
+        .get(workspaceId, key)?.report_id;
+      return id ? this.getReport(workspaceId, id) : null;
+    },
+
+    listTagJudgmentsForPool(workspaceId, poolId, modelId) {
+      return database.prepare(`SELECT j.* FROM research_pool_members m
+        JOIN research_tag_judgments j
+          ON j.workspace_id=m.workspace_id AND j.resource_type=m.resource_type
+          AND j.resource_id=m.resource_id AND j.source_version=m.source_version
+        WHERE m.workspace_id=? AND m.pool_id=? AND j.model_id=?`).all(workspaceId, poolId, modelId).map((row) => ({
+        ...mapTag(row),
+        resourceType: row.resource_type,
+        resourceId: row.resource_id,
+        sourceVersion: row.source_version,
+        tagId: row.tag_id,
+        definitionHash: row.definition_hash,
+        promptVersion: row.prompt_version,
+      }));
+    },
+
+    listRelevanceJudgmentsForPool(workspaceId, poolId, modelId) {
+      return database.prepare(`SELECT j.* FROM research_pool_members m
+        JOIN research_relevance_judgments j
+          ON j.workspace_id=m.workspace_id AND j.resource_type=m.resource_type
+          AND j.resource_id=m.resource_id AND j.source_version=m.source_version
+        WHERE m.workspace_id=? AND m.pool_id=? AND j.model_id=?`).all(workspaceId, poolId, modelId).map((row) => ({
+        ...mapRelevance(row),
+        resourceType: row.resource_type,
+        resourceId: row.resource_id,
+        sourceVersion: row.source_version,
+        questionId: row.question_id,
+        questionHash: row.question_hash,
+        promptVersion: row.prompt_version,
+      }));
+    },
+
     getTagJudgment(key) {
       return mapTag(database.prepare(tagSelect).get(
         key.workspaceId, key.resourceType, key.resourceId, key.sourceVersion, key.tagId, key.definitionHash,
@@ -196,6 +281,15 @@ export function createResearchRecallRepository(database, emitEvent = () => {}) {
         key.promptVersion, key.modelId, key.inputHash, token,
       );
       if (!result.changes && this.getTagJudgment(key)?.status !== 'succeeded') throw new Error('研究Tag判断租约已失效');
+    },
+
+    releaseTag(key, token) {
+      database.prepare(`DELETE FROM research_tag_judgments
+        WHERE workspace_id=? AND resource_type=? AND resource_id=? AND source_version=? AND tag_id=? AND definition_hash=?
+        AND prompt_version=? AND model_id=? AND input_hash=? AND claim_token=? AND status='running'`).run(
+        key.workspaceId, key.resourceType, key.resourceId, key.sourceVersion, key.tagId, key.definitionHash,
+        key.promptVersion, key.modelId, key.inputHash, token,
+      );
     },
 
     failTag(key, token, errorCode) {
@@ -239,6 +333,15 @@ export function createResearchRecallRepository(database, emitEvent = () => {}) {
         key.promptVersion, key.modelId, key.inputHash, token,
       );
       if (!result.changes && this.getRelevanceJudgment(key)?.status !== 'succeeded') throw new Error('研究相关性判断租约已失效');
+    },
+
+    releaseRelevance(key, token) {
+      database.prepare(`DELETE FROM research_relevance_judgments
+        WHERE workspace_id=? AND resource_type=? AND resource_id=? AND source_version=? AND question_id=? AND question_hash=?
+        AND prompt_version=? AND model_id=? AND input_hash=? AND claim_token=? AND status='running'`).run(
+        key.workspaceId, key.resourceType, key.resourceId, key.sourceVersion, key.questionId, key.questionHash,
+        key.promptVersion, key.modelId, key.inputHash, token,
+      );
     },
 
     failRelevance(key, token, errorCode) {

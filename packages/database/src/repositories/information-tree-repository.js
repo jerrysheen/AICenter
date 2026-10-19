@@ -215,6 +215,10 @@ export function createInformationTreeRepository(db,emit) {
         ORDER BY h.event_at, h.source_id LIMIT ?`).all(workspace, window.startAt, window.endAt, cursor?.eventAt ?? null, cursor?.eventAt ?? 0, cursor?.sourceId ?? '', safe)
         .map(row=>{const node=JSON.parse(row.value_json);return {...node,eventAt:row.event_at,sourceId:node.sourceId || row.source_id,headSourceVersion:row.source_version};});
     },
+    countInformationInWindow(workspace, window) {
+      return db.prepare(`SELECT COUNT(*) AS count FROM information_tree_information_heads
+        WHERE workspace_id=? AND event_at>=? AND event_at<?`).get(workspace, window.startAt, window.endAt).count;
+    },
     saveEditorial(workspace,value) {
       const editorial=DailyEditorialSchema.parse(value);
       return db.transaction(()=>{

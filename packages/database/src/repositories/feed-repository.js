@@ -1549,6 +1549,24 @@ export function createFeedRepository(database, emitEvent) {
       }));
     },
 
+    countContentItemsInWindow(workspaceId, { startAt, endAt, sourceId = null, qualityRule = '', excludedItemIds = [], timeBasis = 'published' } = {}) {
+      const timeSql = timeBasis === 'ingested' ? 'ci.created_at' : 'COALESCE(ci.published_at, ci.created_at)';
+      return database.prepare(`SELECT COUNT(*) AS count
+        FROM content_items ci
+        LEFT JOIN captures c ON c.id = ci.capture_id
+        LEFT JOIN source_accounts sa ON sa.id=c.source_account_id
+        WHERE ci.workspace_id = ?
+          AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
+          AND ${EXCLUDE_YOUTUBE_SQL}
+          AND ${EXCLUDE_OFFICIAL_MIRROR_SQL}
+          AND ${timeSql} >= ?
+          AND ${timeSql} < ?
+          AND (? IS NULL OR COALESCE(c.source_account_id,'local')=?)
+          AND ci.id NOT IN (SELECT value FROM json_each(?))`).get(
+        workspaceId, Number(startAt), Number(endAt), sourceId, sourceId, JSON.stringify(excludedItemIds),
+      ).count;
+    },
+
     listLegacyProviderItems(workspaceId,provider) {
       return database.prepare(`SELECT ci.*,c.external_id,c.captured_at,c.metadata_json capture_metadata FROM content_items ci
         JOIN captures c ON c.id=ci.capture_id AND c.workspace_id=ci.workspace_id WHERE ci.workspace_id=? AND c.provider=? ORDER BY ci.created_at`)
