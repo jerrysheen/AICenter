@@ -1,4 +1,4 @@
-import { renderMarkdownInto } from './markdown.js?v=dev';
+import { renderMarkdownInto } from './markdown.js';
 
 const SOURCE_LABEL = {
   'subtitle-manual': '人工字幕',
