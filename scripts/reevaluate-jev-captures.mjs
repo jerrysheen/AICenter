@@ -1,5 +1,7 @@
+import { createBambooStartLuxClient } from '../packages/connectors/src/bamboo-startlux.js';
 import { createTypeSafeSystemOneClient } from '../packages/connectors/src/typesafe-system-one.js';
 import { createStore } from '../packages/database/src/index.js';
+import { openClassificationClient, resolveClassificationProvider } from '../packages/domain/src/classification-provider.js';
 import { resolveFeedFilterConfig } from '../packages/domain/src/feed-filter.js';
 import { loadXFocusConfig } from '../packages/domain/src/x-focus.js';
 import { admitHeldCapture, createReplayEvaluator, JEV_REPLAY_REASONS, reevaluateHeldCaptures } from '../packages/domain/src/jev-replay.js';
@@ -64,15 +66,21 @@ export async function runJevCaptureReplay({
   env = process.env,
   xFocusConfig = null,
   articleDedup = null,
+  client = undefined,
 } = {}) {
   const jevEnabled = resolveJevEnabled(env);
+  const bamboo = resolveClassificationProvider(env) === 'bamboo';
+  const classify = jevEnabled || bamboo;
   const config = resolveFeedFilterConfig(env);
-  const forcedFallback = !jevEnabled || mode !== 'jev';
+  const forcedFallback = !classify || mode !== 'jev';
   let evaluator = null;
   if (!forcedFallback) {
-    const client = openJevClient(env, undefined, (options) => createTypeSafeSystemOneClient({ ...options, timeoutMs: 30_000 }));
-    evaluator = createReplayEvaluator(client, client?.modelId || '');
-    if (!evaluator) throw new Error('AI_CENTER_JEV_ENABLED=false，补评不会创建 TypeSafe 客户端');
+    const opened = client !== undefined ? client : openClassificationClient(env, {
+      typesafeClient: openJevClient(env, undefined, (options) => createTypeSafeSystemOneClient({ ...options, timeoutMs: 30_000 })),
+      createBamboo: (options) => createBambooStartLuxClient({ ...options, timeoutMs: 30_000 }),
+    });
+    evaluator = createReplayEvaluator(opened, opened?.modelId || '');
+    if (!evaluator) throw new Error(bamboo ? '未创建 Bamboo 客户端，补评不会调用' : 'AI_CENTER_JEV_ENABLED=false，补评不会创建 TypeSafe 客户端');
   }
   const captures = store.repositories.feed.listJevFailedCaptures(workspaceId, { from, to, limit, reasons });
   const dedup = articleDedup || createArticleDedup({
@@ -93,6 +101,7 @@ export async function runJevCaptureReplay({
         captures: [captures[index]],
         mode: forcedFallback ? 'fallback' : 'jev',
         jevEnabled,
+        classify,
         xFocusConfig,
         xFocusMin: config.xFocusMin,
         evaluator,

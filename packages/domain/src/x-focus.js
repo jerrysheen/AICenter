@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { looksLikeFeedAd } from './feed-ad.js';
+import { resolveClassificationProvider } from './classification-provider.js';
 import { resolveJevEnabled } from './jev-enabled.js';
 import { formatYmd, zonedLocalToUtc, zonedParts } from './zoned-time.js';
 
@@ -233,7 +234,8 @@ export function autoLikeEnvEnabled(env = process.env) {
 
 export function autoLikeLimits(config, env = process.env) {
   const base = config.autoLike;
-  const minScore = resolveJevEnabled(env) ? base.minScore : Math.max(base.minScore, 0.9);
+  const classified = resolveJevEnabled(env) || resolveClassificationProvider(env) === 'bamboo';
+  const minScore = classified ? base.minScore : Math.max(base.minScore, 0.9);
   return {
     minScore,
     dailyLimit: limitNumber(env?.AI_CENTER_X_AUTO_LIKE_DAILY, base.dailyLimit, 0, 400),
@@ -302,8 +304,10 @@ export function nextAutoLikeSettings(settings, status, reason = '') {
   return current;
 }
 
-function jevKept(metadata) {
-  return metadata?.filterDecision === 'KEEP';
+export function jevKept(metadata) {
+  if (metadata?.filterDecision !== 'KEEP') return false;
+  const reason = String(metadata.filterReason || '');
+  return !reason.startsWith('fallback-') && !reason.startsWith('jev-disabled-');
 }
 
 export const AUTO_LIKE_MIN_TEXT = 40;

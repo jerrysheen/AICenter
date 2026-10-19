@@ -16,10 +16,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import QRCode from 'qrcode';
 import { parseBilibiliFeedQuery, parseMediaFeedQuery, parseTrendForceFeedQuery, parseXFeedQuery, parseXueqiuFeedQuery, ValidationError } from '../../../packages/contracts/src/index.js';
-import { createAnalysisSkillCatalog, createConfiguredBrowserRuntime, createDeepSeekSearchProvider, createLauncherRestartPort, createLocalKnowledgeFiles, createPersonalAssetService, createTranslateService, createTypeSafeSystemOneClient } from '../../../packages/connectors/src/index.js';
+import { createAnalysisSkillCatalog, createBambooStartLuxClient, createConfiguredBrowserRuntime, createDeepSeekSearchProvider, createLauncherRestartPort, createLocalKnowledgeFiles, createPersonalAssetService, createTranslateService, createTypeSafeSystemOneClient } from '../../../packages/connectors/src/index.js';
 import { createAttachmentStore, createStore } from '../../../packages/database/src/index.js';
 import { createDomainServices, createFeedFilterFromEnv, createMediaIngestionService, resolveDailyConfig, resolveLoginCredential } from '../../../packages/domain/src/index.js';
 import { openJevClient } from '../../../packages/domain/src/jev-enabled.js';
+import { openClassificationClient, resolveClassificationProvider } from '../../../packages/domain/src/classification-provider.js';
 import { isMain } from '../../../packages/runtime/src/is-main.js';
 import { loadXFocusConfig } from '../../../packages/domain/src/x-focus.js';
 import { createXFocusService } from '../../../packages/domain/src/x-auto-like.js';
@@ -205,13 +206,21 @@ export function createAiCenterServer(options = {}) {
   let services;
   const env = options.env || process.env;
   const typesafeClient = openJevClient(env, options.typesafeClient, createTypeSafeSystemOneClient);
+  const classificationClient = openClassificationClient(env, {
+    typesafeClient,
+    ...(options.classificationClient !== undefined ? { explicit: options.classificationClient } : {}),
+    createBamboo: (opts) => createBambooStartLuxClient({ ...opts, log: (message) => console.log(message) }),
+  });
+  if (resolveClassificationProvider(env) === 'bamboo') {
+    console.log(`[web] classification provider=bamboo model=${classificationClient?.modelId || '-'} available=${classificationClient?.available?.() ? 1 : 0}`);
+  }
   let xFocusConfig = options.xFocusConfig || null;
   if (!xFocusConfig) {
     try { xFocusConfig = loadXFocusConfig(instance.configDirectory); }
     catch { xFocusConfig = null; }
   }
   const feedFilter=options.feedFilter !== undefined ? options.feedFilter
-    : createFeedFilterFromEnv({client:typesafeClient,env,calibration:loadFeedValueCalibration(instance),xFocusConfig,log:(message)=>console.log(message)});
+    : createFeedFilterFromEnv({client:classificationClient,env,calibration:loadFeedValueCalibration(instance),xFocusConfig,log:(message)=>console.log(message),usageDirectory:dataDirectory});
   const mediaConfig = loadMediaConfig(instance.configDirectory);
   const flashSources = options.flashSources || loadResolvedFlashSources({ configDirectory: instance.configDirectory, env, mediaSources: mediaConfig.sources });
   const mediaService = options.mediaService || (store.repositories?.media
