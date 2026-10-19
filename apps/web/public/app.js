@@ -40,6 +40,7 @@ import { commitReportHistory, reportViewOwnsScroll } from './report-history.js?v
 import { decodeHtmlEntities } from './html-text.js?v=dev';
 import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, prioritizeReadableFeedRows, renderNewsList, reportItemTime } from './news-list.js?v=dev';
 import { createAuthorView } from './author-view.js?v=dev';
+import { renderYoutubePodcasts } from './youtube-podcasts.js?v=dev';
 
 const requestLayer = createRequestLayer();
 const pageCache = createPageCache({
@@ -358,6 +359,7 @@ const pageKinds = {
   automation: { nav: 'tools', title: '自动任务配置' },
   publish: { nav: 'tools', title: '快速发布' },
   xfocus: { nav: 'feed', title: '推荐记录' },
+  youtube: { nav: 'sources', title: 'YouTube 播客' },
 };
 
 const hubLanes = [
@@ -6855,6 +6857,7 @@ function renderStaticSourceCatalog() {
     { id: 'xueqiu', title: '雪球', category: 'content', viewKind: 'content-feed', letter: '雪', note: '关注、精选和 7x24' },
     { id: 'trendforce', title: 'TrendForce', category: 'content', viewKind: 'content-feed', letter: 'T', note: '公开洞察与价表' },
     { id: 'bilibili', title: 'B站', category: 'content', viewKind: 'content-feed', letter: 'B', note: '字幕' },
+    { id: 'youtube', title: 'YouTube 播客', category: 'content', viewKind: 'content-feed', letter: 'Y', note: '金融与 AI' },
     { id: 'manual', title: '手工发布', category: 'content', viewKind: 'content-feed', letter: '手', note: '自己保存的资料' },
   ];
   const official = state.sourceCatalog.filter((source) => ['calendar', 'policy'].includes(source.category));
@@ -6912,7 +6915,10 @@ function renderStaticSourceCatalog() {
           textContent: status === 'ready' ? '最近检查成功' : status === 'partial' ? '部分可用' : status === 'unavailable' ? '暂不可用' : '尚未检查',
         }),
       );
-      copy.addEventListener('click', () => openPage('source', source.id));
+      copy.addEventListener('click', () => {
+        if (source.id === 'youtube') openPage('youtube');
+        else openPage('source', source.id);
+      });
       const more = document.createElement('button');
       more.type = 'button';
       more.className = 'icon-button ghost';
@@ -9132,6 +9138,7 @@ function renderPage() {
   else if (kind === 'automation') renderAutomationPage();
   else if (kind === 'publish') renderPublishPage();
   else if (kind === 'xfocus') renderXFocusPage();
+  else if (kind === 'youtube') renderYoutubePodcasts(root, { api, videoId: state.pageId, showToast });
   else root.replaceChildren(Object.assign(document.createElement('p'), { className: 'empty-state', textContent: '找不到这个页面。' }));
   syncHeaderSearch();
 }

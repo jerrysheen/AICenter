@@ -22,6 +22,7 @@ import { createInvestorDiscussionService } from './investor-discussion.js';
 import { createComputePriceService } from './compute-price-service.js';
 import { createApiTokenService } from './api-token-service.js';
 import { createSouthboundReadService } from './southbound-service.js';
+import { createYoutubePodcastService } from './youtube-podcasts-service.js';
 
 export { createContextService, createDailyBriefService, createFeedService, createIdentityService, createKnowledgeService, createMarketStatisticsService, createMediaIngestionService, createReportService, createRuntimeService, createTradingService, createTaggingService };
 export { buildDailyBriefCandidates } from './daily-brief-candidates.js';
@@ -86,6 +87,7 @@ export function createDomainServices({
   flashSources = null,
   analysisSkillCatalog = null,
   parityDirectory = '',
+  youtubeConfigPath = '',
 }) {
   if (!store?.repositories) throw new Error('store repositories are required');
   const media = mediaService || (store.repositories.media
@@ -224,5 +226,13 @@ export function createDomainServices({
       ratePerMinute: env.AI_CENTER_API_TOKEN_RATE_PER_MINUTE,
       logRetentionDays: env.AI_CENTER_API_TOKEN_LOG_RETENTION_DAYS,
     }),
+    youtubePodcasts: store.repositories.youtubePodcasts
+      ? createYoutubePodcastService({
+        repository: store.repositories.youtubePodcasts,
+        store,
+        configPath: youtubeConfigPath,
+        env,
+      })
+      : null,
   });
 }

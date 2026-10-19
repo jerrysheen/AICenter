@@ -37,6 +37,13 @@ function publicTranslationError(error) {
   return text || '翻译失败';
 }
 
+export const EXCLUDE_YOUTUBE_SQL = `NOT EXISTS (
+  SELECT 1 FROM captures youtube_excluded
+  WHERE youtube_excluded.id = ci.capture_id
+    AND youtube_excluded.workspace_id = ci.workspace_id
+    AND youtube_excluded.provider = 'youtube'
+)`;
+
 const USER_VISIBLE_CONTENT_SQL = `NOT EXISTS (
   SELECT 1 FROM user_item_states uis
   WHERE uis.workspace_id = ci.workspace_id
@@ -236,6 +243,7 @@ const FEED_URL_PREFIX_LOOKUP = {
   select: null,
   urlColumn: 'ci.source_url',
   workspaceColumn: 'ci.workspace_id',
+  extraWhere: EXCLUDE_YOUTUBE_SQL,
 };
 
 const FEED_DEDUP_SELECT = `ci.workspace_id, ci.id, ci.title, ci.summary, ci.source_url, ci.author_name, ci.published_at, ci.created_at,
@@ -663,7 +671,7 @@ export function createFeedRepository(database, emitEvent) {
       const key = String(dedupKey || '');
       if (!key) return [];
       return database.prepare(`SELECT ${FEED_DEDUP_SELECT} FROM ${FEED_DEDUP_FROM}
-        WHERE ci.workspace_id = ? AND ci.dedup_key = ? LIMIT 20`).all(workspaceId, key);
+        WHERE ci.workspace_id = ? AND ci.dedup_key = ? AND ${EXCLUDE_YOUTUBE_SQL} LIMIT 20`).all(workspaceId, key);
     },
 
     listFeedByDedupKeys(workspaceId, dedupKeys) {
@@ -673,7 +681,8 @@ export function createFeedRepository(database, emitEvent) {
       for (let index = 0; index < keys.length; index += 400) {
         const chunk = keys.slice(index, index + 400);
         rows.push(...database.prepare(`SELECT ${FEED_DEDUP_SELECT} FROM ${FEED_DEDUP_FROM}
-          WHERE ci.workspace_id = ? AND ci.dedup_key IN (${chunk.map(() => '?').join(',')})`)
+          WHERE ci.workspace_id = ? AND ci.dedup_key IN (${chunk.map(() => '?').join(',')})
+            AND ${EXCLUDE_YOUTUBE_SQL}`)
           .all(workspaceId, ...chunk));
       }
       return rows;
@@ -702,6 +711,7 @@ export function createFeedRepository(database, emitEvent) {
       const cap = Math.max(1, Math.min(Number(limit) || 400, 20_000));
       return database.prepare(`SELECT ${FEED_DEDUP_SELECT} FROM ${FEED_DEDUP_FROM}
         WHERE ci.workspace_id = ? AND ci.published_at >= ? AND ci.published_at <= ?
+          AND ${EXCLUDE_YOUTUBE_SQL}
         ORDER BY ci.published_at ASC LIMIT ?`).all(workspaceId, startAt, endAt, cap);
     },
 
@@ -1322,7 +1332,10 @@ export function createFeedRepository(database, emitEvent) {
           ON item_state.workspace_id = ci.workspace_id AND item_state.content_item_id = ci.id
         LEFT JOIN item_authors ia ON ia.workspace_id = ci.workspace_id AND ia.content_item_id = ci.id
         WHERE ci.workspace_id = ? AND ci.id IN (${wanted.map(() => '?').join(',')})
-          AND ${visibility}`).all(workspaceId, ...wanted);
+          AND (
+            (${visibility})
+            OR (COALESCE(item_state.is_hidden, 0) = 0 AND COALESCE(c.provider, '') = 'youtube')
+          )`).all(workspaceId, ...wanted);
       const byId = new Map(rows.map((row) => [row.id, row]));
       return wanted.map((id) => byId.get(id)).filter(Boolean).map((row) => ({
         ...mapContentItem(row),
@@ -1347,11 +1360,13 @@ export function createFeedRepository(database, emitEvent) {
         ? database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id
             FROM content_items ci
             LEFT JOIN captures c ON c.id = ci.capture_id
-            WHERE ci.workspace_id = ? AND ci.id IN (${wanted.map(() => '?').join(', ')}) AND ${approvedQualitySql(qualityRule)}`).all(workspaceId, ...wanted)
+            WHERE ci.workspace_id = ? AND ci.id IN (${wanted.map(() => '?').join(', ')})
+              AND ${approvedQualitySql(qualityRule)} AND ${EXCLUDE_YOUTUBE_SQL}`).all(workspaceId, ...wanted)
         : database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id
             FROM content_items ci
             LEFT JOIN captures c ON c.id = ci.capture_id
             WHERE ci.workspace_id = ? AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
+              AND ${EXCLUDE_YOUTUBE_SQL}
             ORDER BY ci.created_at DESC, ci.id DESC LIMIT ?`).all(workspaceId, safeLimit);
       return rows.map((row) => ({
         ...mapContentItem(row),
@@ -1365,10 +1380,12 @@ export function createFeedRepository(database, emitEvent) {
       const rows = before === null
         ? database.prepare(`SELECT * FROM content_items ci WHERE ci.workspace_id = ?
             AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
+            AND ${EXCLUDE_YOUTUBE_SQL}
             ORDER BY ci.created_at DESC, ci.id DESC LIMIT ?`).all(workspaceId, safeLimit)
         : database.prepare(`SELECT * FROM content_items ci WHERE ci.workspace_id = ?
             AND ci.created_at < ?
             AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
+            AND ${EXCLUDE_YOUTUBE_SQL}
             ORDER BY ci.created_at DESC, ci.id DESC LIMIT ?`)
           .all(workspaceId, Number(before), safeLimit);
       return rows.map(mapContentItem);
@@ -1383,6 +1400,7 @@ export function createFeedRepository(database, emitEvent) {
         LEFT JOIN source_accounts sa ON sa.id=c.source_account_id AND sa.workspace_id=ci.workspace_id
         LEFT JOIN subscriptions sub ON sub.source_account_id=sa.id AND sub.workspace_id=ci.workspace_id
         WHERE ci.workspace_id=? AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
+          AND ${EXCLUDE_YOUTUBE_SQL}
           AND COALESCE(ci.published_at,ci.created_at)>=? AND COALESCE(ci.published_at,ci.created_at)<?
         AND ci.id NOT IN (SELECT value FROM json_each(?))
         GROUP BY COALESCE(c.source_account_id,'local')`).all(workspaceId,startAt,endAt,JSON.stringify(excludedItemIds));
@@ -1404,6 +1422,7 @@ export function createFeedRepository(database, emitEvent) {
         LEFT JOIN source_accounts sa ON sa.id=c.source_account_id
         WHERE ci.workspace_id = ?
           AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
+          AND ${EXCLUDE_YOUTUBE_SQL}
           AND ${timeSql} >= ?
           AND ${timeSql} < ?
           AND (? IS NULL OR COALESCE(c.source_account_id,'local')=?)
@@ -1412,7 +1431,7 @@ export function createFeedRepository(database, emitEvent) {
         ORDER BY ${timeSql} ASC, ci.id ASC
         LIMIT ?`).all(workspaceId, Number(startAt), Number(endAt), sourceId, sourceId,
           cursor?.eventAt ?? null, cursor?.eventAt ?? 0, cursor?.id ?? '', JSON.stringify(excludedItemIds), safeLimit);
-      if(metadataOnly)return rows.map(row=>({id:`feed:${row.id}`,title:row.title || '',sourceUrl:row.source_url || '',publishedAt:row.published_at ?? null,version:String(row.updated_at || row.created_at),eventAt:timeBasis==='ingested' ? row.created_at : row.published_at ?? row.created_at,sourceExternalId:row.source_external_id || '',sourceName:row.source_name || ''}));
+      if(metadataOnly)return rows.map(row=>({id:`feed:${row.id}`,title:row.title || '',sourceUrl:row.source_url || '',publishedAt:row.published_at ?? null,version:String(row.updated_at || row.created_at),eventAt:timeBasis==='ingested' ? row.created_at : row.published_at ?? row.created_at,sourceExternalId:row.source_external_id || '',sourceName:row.source_name || '',provider:row.provider || ''}));
       return rows.map((row) => ({
         ...mapContentItem(row),
         capturedAt: row.captured_at ?? null,
@@ -1677,6 +1696,7 @@ export function createFeedRepository(database, emitEvent) {
         JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
         WHERE ci.workspace_id = ?
           AND c.provider NOT IN ('x', 'xueqiu', 'trendforce', 'bilibili')
+          AND ${EXCLUDE_YOUTUBE_SQL}
           AND length(ci.body) > 20000
           AND ${USER_VISIBLE_CONTENT_SQL}
           AND NOT EXISTS (
@@ -1803,6 +1823,7 @@ export function createFeedRepository(database, emitEvent) {
         JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
         WHERE ci.workspace_id = ?
           AND (instr(ci.body, '…') > 0 OR instr(ci.body, '...') > 0)
+          AND ${EXCLUDE_YOUTUBE_SQL}
         ORDER BY ci.created_at DESC
         LIMIT ?`).all(workspaceId, cap);
       return rows.map((row) => ({

@@ -3,6 +3,7 @@ import { isFlashSource } from './flash-sources.js';
 import { isAwesomeListUpdateNoise } from './awesome-list-noise.js';
 
 function keepHourlyCandidate(row, flashSources) {
+  if (row.provider === 'youtube') return false;
   if (isFlashSource({
     id: row.id,
     sourceExternalId: row.sourceExternalId,
@@ -35,7 +36,7 @@ export function createTreeMaterialPort({feedService,mediaService,flashSources=nu
       const feedIds=sourceIds.filter(id=>id.startsWith('feed:')).map(id=>id.slice(5));
       const approved=new Set(feedIds.length ? feedService.listTaggableItems(workspaceId,{ids:feedIds,limit:feedIds.length}).map(item=>item.id) : []);
       const sourceNames=new Map((feedService.listItemSources?.(workspaceId, feedIds) || []).map(row=>[row.id, row]));
-      const feeds=feedIds.filter(id=>approved.has(id)).map(id=>feedService.getContentItem(workspaceId,id)).filter(Boolean).map(item=>{
+      const feeds=feedIds.filter(id=>approved.has(id)).map(id=>feedService.getContentItem(workspaceId,id)).filter(item=>item && item.provider!=='youtube').map(item=>{
         const social=['x','twitter','xueqiu'].includes(item.provider),at=item.createdAt;
         const named=sourceNames.get(item.id);
         return material({id:`feed:${item.id}`,sourceId:item.sourceId || 'local',kind:social ? 'social' : 'other',group:social ? 'social' : 'other',title:item.title || '',author:item.authorName || '',publisher:named?.displayName || item.sourceName || '',

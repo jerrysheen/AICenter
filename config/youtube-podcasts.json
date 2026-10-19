@@ -1,0 +1,161 @@
+{
+  "minDurationSec": 1200,
+  "lookback": 2,
+  "creators": [
+    {
+      "id": "odd-lots",
+      "name": "Odd Lots",
+      "focus": "金融",
+      "channels": [
+        {
+          "key": "odd-lots",
+          "kind": "playlist",
+          "playlistId": "PLe4PRejZgr0OJbRzA6nWybYiThLJd_ouz",
+          "url": "https://www.youtube.com/playlist?list=PLe4PRejZgr0OJbRzA6nWybYiThLJd_ouz"
+        }
+      ]
+    },
+    {
+      "id": "all-in",
+      "name": "All-In",
+      "focus": "科技与金融",
+      "channels": [
+        {
+          "key": "all-in",
+          "kind": "channel",
+          "handle": "allin",
+          "url": "https://www.youtube.com/@allin"
+        }
+      ]
+    },
+    {
+      "id": "bg2",
+      "name": "BG2 Pod",
+      "focus": "AI 与科技",
+      "channels": [
+        {
+          "key": "bg2",
+          "kind": "channel",
+          "handle": "Bg2Pod",
+          "url": "https://www.youtube.com/@Bg2Pod"
+        }
+      ]
+    },
+    {
+      "id": "macrovoices",
+      "name": "MacroVoices",
+      "focus": "宏观",
+      "channels": [
+        {
+          "key": "macrovoices",
+          "kind": "channel",
+          "handle": "macrovoices7508",
+          "url": "https://www.youtube.com/@macrovoices7508"
+        }
+      ]
+    },
+    {
+      "id": "monetary-matters",
+      "name": "Monetary Matters",
+      "focus": "货币与宏观",
+      "channels": [
+        {
+          "key": "monetary-matters",
+          "kind": "channel",
+          "handle": "Monetary-Matters",
+          "url": "https://www.youtube.com/@Monetary-Matters"
+        }
+      ]
+    },
+    {
+      "id": "semianalysis",
+      "name": "SemiAnalysis",
+      "focus": "AI 半导体",
+      "channels": [
+        {
+          "key": "semianalysis",
+          "kind": "channel",
+          "handle": "SemiAnalysis",
+          "url": "https://www.youtube.com/@SemiAnalysis"
+        }
+      ]
+    },
+    {
+      "id": "dwarkesh",
+      "name": "Dwarkesh Podcast",
+      "focus": "AI",
+      "channels": [
+        {
+          "key": "dwarkesh",
+          "kind": "channel",
+          "handle": "DwarkeshPatel",
+          "url": "https://www.youtube.com/@DwarkeshPatel"
+        }
+      ]
+    },
+    {
+      "id": "latent-space",
+      "name": "Latent Space",
+      "focus": "AI",
+      "channels": [
+        {
+          "key": "latent-space",
+          "kind": "channel",
+          "handle": "LatentSpacePod",
+          "url": "https://www.youtube.com/@LatentSpacePod"
+        }
+      ]
+    },
+    {
+      "id": "no-priors",
+      "name": "No Priors",
+      "focus": "AI",
+      "channels": [
+        {
+          "key": "no-priors",
+          "kind": "channel",
+          "handle": "NoPriorsPodcast",
+          "url": "https://www.youtube.com/@NoPriorsPodcast"
+        }
+      ]
+    },
+    {
+      "id": "valley101",
+      "name": "硅谷101",
+      "focus": "科技",
+      "channels": [
+        {
+          "key": "valley101-video",
+          "kind": "channel",
+          "role": "video",
+          "handle": "TheValley101",
+          "url": "https://www.youtube.com/@TheValley101",
+          "language": "zh"
+        },
+        {
+          "key": "valley101-audio",
+          "kind": "channel",
+          "role": "audio",
+          "handle": "valley101podcast",
+          "url": "https://www.youtube.com/@valley101podcast",
+          "language": "zh"
+        }
+      ]
+    },
+    {
+      "id": "xiaojun",
+      "name": "张小玺商业访谈录",
+      "focus": "商业访谈",
+      "prefer": "zh",
+      "channels": [
+        {
+          "key": "xiaojun",
+          "kind": "channel",
+          "handle": "xiaojunpodcast",
+          "url": "https://www.youtube.com/@xiaojunpodcast",
+          "language": "zh"
+        }
+      ]
+    }
+  ]
+}

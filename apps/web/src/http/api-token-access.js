@@ -43,6 +43,7 @@ const EXACT_PATHS = new Set([
   '/api/v1/authors',
   '/api/v1/feed/media/article',
   '/api/v1/posts',
+  '/api/v1/youtube-podcasts',
 ]);
 
 const PATH_PATTERNS = [
@@ -56,6 +57,7 @@ const PATH_PATTERNS = [
   /^\/api\/v1\/(?:content-items|feed\/items)\/[^/]+\/original$/i,
   /^\/api\/v1\/posts\/[0-9a-f-]+$/i,
   /^\/api\/v1\/etf-whale\/etfs\/[^/]+$/,
+  /^\/api\/v1\/youtube-podcasts\/[A-Za-z0-9_-]{6,}$/,
 ];
 
 export function isApiTokenAllowlisted(method, pathname) {

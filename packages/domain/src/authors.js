@@ -3,7 +3,7 @@ export const AUTHOR_ACTIVITY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 export const AUTHOR_LIST_PAGE_SIZE = 50;
 export const AUTHOR_ITEM_PAGE_SIZE = 30;
 export const AUTHOR_READ_BATCH = 500;
-export const AUTHOR_PLATFORMS = Object.freeze(['x', 'xueqiu', 'bilibili']);
+export const AUTHOR_PLATFORMS = Object.freeze(['x', 'xueqiu', 'bilibili', 'youtube']);
 
 const PREVIEW_LIMIT = 80;
 
@@ -53,6 +53,7 @@ function defaultProfileUrl(platform, nativeId, handle) {
   if (platform === 'x' && handle) return `https://x.com/${handle}`;
   if (platform === 'xueqiu' && nativeId) return `https://xueqiu.com/u/${nativeId}`;
   if (platform === 'bilibili' && nativeId) return `https://space.bilibili.com/${nativeId}`;
+  if (platform === 'youtube' && handle) return `https://www.youtube.com/@${handle}`;
   return '';
 }
 
@@ -60,7 +61,7 @@ export function provisionalLabel(platform, handle, name) {
   const cleanHandle = String(handle || '').trim().replace(/^@/, '');
   const cleanName = String(name || '').trim();
   if (platform === 'x') return cleanHandle;
-  if (platform === 'xueqiu' || platform === 'bilibili') return cleanName || cleanHandle;
+  if (platform === 'xueqiu' || platform === 'bilibili' || platform === 'youtube') return cleanName || cleanHandle;
   return '';
 }
 
