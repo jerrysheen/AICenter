@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-19-market-flow.md`：股票子页最后增加「资金」（`#market/flow`）。南向净额和北向成交额只出现在这一页。北向沿用东财和港交所已有响应，净买入没有公布就不显示。migration 88 建 `northbound_daily` 和 `northbound_top10` 两张表。需要同时重启 Web 和 Worker，再按该说明补北向历史。
+
 - `progress/2026-10-19-us-open-stale.md`：美股刚开盘的 5 分钟内，盘前报价不再标成红色「已过期」，顶部和美股观察写「盘中 · 等待报价」。盘前、盘后的 `asOf` 用报价自己的时间，行提示写盘前或盘后。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
 - `progress/2026-10-19-x-auto-like-tight.md`：自动点赞选条排除广告词、官号宣传和短帖。新增推广词只用于点赞。企业动态至少 0.9 才点。jev 关闭时点赞门槛 0.9。默认每天 8 次、每小时 2 次、间隔 15 分钟。任务连续失败 2 次自动停。配置版本 `x-focus-2`，趋势图仍接受 `x-focus-1`。不新增 migration。需要同时重启 Web 和 Worker。
 

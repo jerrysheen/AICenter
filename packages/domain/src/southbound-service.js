@@ -1,3 +1,5 @@
+import { flowDateLabel, shanghaiToday } from './flow-labels.js';
+
 export function formatYiAmount(hkd) {
   const number = Number(hkd);
   if (!Number.isFinite(number)) return '';
@@ -66,7 +68,7 @@ function nameRows(rows) {
   }));
 }
 
-export function buildSouthboundView({ dailyRows = [], topRows = [], snapshot = null, days = 20 } = {}) {
+export function buildSouthboundView({ dailyRows = [], topRows = [], snapshot = null, days = 20, today = '' } = {}) {
   const totals = dailyRows.filter((row) => row.channel === 'total');
   const latestDate = totals.at(-1)?.tradeDate || '';
   const onLatest = (channel) => dailyRows.find((row) => row.tradeDate === latestDate && row.channel === channel) || null;
@@ -78,6 +80,7 @@ export function buildSouthboundView({ dailyRows = [], topRows = [], snapshot = n
   return {
     ok: true,
     tradeDate: latestDate,
+    dateLabel: flowDateLabel(latestDate, today),
     badge,
     note,
     scope: SOUTHBOUND_TOP10_SCOPE,
@@ -111,7 +114,13 @@ export function createSouthboundReadService({ repository, snapshots = null, work
       const dailyRows = repository.listRecent(workspaceId, limit);
       const tradeDate = repository.latestDate(workspaceId);
       const topRows = tradeDate ? repository.listTop10(workspaceId, tradeDate, 'total') : [];
-      return buildSouthboundView({ dailyRows, topRows, snapshot: snapshot(), days: limit });
+      return buildSouthboundView({
+        dailyRows,
+        topRows,
+        snapshot: snapshot(),
+        days: limit,
+        today: shanghaiToday(),
+      });
     },
     top10(date) {
       const tradeDate = date || repository.latestDate(workspaceId);
