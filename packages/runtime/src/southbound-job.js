@@ -71,6 +71,11 @@ function hasMergedTop10(repository, workspaceId, tradeDate) {
   return repository.listTop10(workspaceId, tradeDate, 'total').length > 0;
 }
 
+function northboundReady(repository, workspaceId, tradeDate) {
+  if (!repository) return true;
+  return Boolean(repository.getDaily(workspaceId, tradeDate, 'total'));
+}
+
 export function persistNorthboundDay({ repository, workspaceId, dailyRows, hkex, fetchedAt }) {
   if (!repository) return { checkStatus: 'unchecked', checkDiffPct: null, tradeDate: '', savedDaily: 0 };
   const byChannel = new Map((dailyRows || []).filter((row) => row?.dealAmt != null).map((row) => [row.channel, row]));
@@ -100,7 +105,9 @@ export function saveNorthboundTop10(repository, workspaceId, tradeDate, topRows)
   if (!repository || !Array.isArray(topRows) || !tradeDate) return 0;
   let saved = 0;
   for (const channel of ['sh', 'sz']) {
-    saved += repository.replaceTop10(workspaceId, tradeDate, channel, topRows.filter((row) => row.channel === channel));
+    const rows = topRows.filter((row) => row.channel === channel);
+    if (!rows.length) continue;
+    saved += repository.replaceTop10(workspaceId, tradeDate, channel, rows);
   }
   return saved;
 }
@@ -139,6 +146,28 @@ async function fillNorthboundOnly({ client, repository, workspaceId, tradeDate, 
   const savedTop = saveNorthboundTop10(repository, workspaceId, tradeDate, northTop);
   if (!saved.savedDaily) return { status: 'northbound_missing', tradeDate, savedTop };
   return { status: saved.checkStatus || 'ok', tradeDate, savedTop, northbound: true };
+}
+
+async function noteNorthboundBesideTop10({
+  client, northboundRepository, northReady, workspaceId, tradeDate, fetchedAt, northRows,
+}) {
+  if (!northboundRepository) return '';
+  try {
+    if (!northReady) {
+      const filled = await fillNorthboundOnly({
+        client,
+        repository: northboundRepository,
+        workspaceId,
+        tradeDate,
+        fetchedAt,
+      });
+      return filled.status === 'northbound_missing' ? 'northbound_missing' : '';
+    }
+    saveNorthboundTop10(northboundRepository, workspaceId, tradeDate, northRows);
+    return '';
+  } catch {
+    return 'northbound_missing';
+  }
 }
 
 function noticeFor(status) {
@@ -182,7 +211,7 @@ export async function syncSouthboundDay(options = {}) {
   const existing = repository.getDaily(workspaceId, tradeDate, 'total');
   const topped = hasMergedTop10(repository, workspaceId, tradeDate);
   const northboundRepository = options.northboundRepository || null;
-  const northReady = !northboundRepository || Boolean(northboundRepository.getDaily(workspaceId, tradeDate, 'total'));
+  const northReady = northboundReady(northboundRepository, workspaceId, tradeDate);
   const client = options.client || createSouthboundClient(options);
   if (mode === 'live' && existing?.checkStatus === 'ok' && topped) {
     if (northReady) return { status: 'skipped', tradeDate };
@@ -202,19 +231,18 @@ export async function syncSouthboundDay(options = {}) {
     try {
       const topBundle = await readTop10Bundle(client, tradeDate);
       const savedTop = saveSouthboundTop10(repository, workspaceId, tradeDate, topBundle.southbound || []);
-      if (northboundRepository && !northReady) {
-        await fillNorthboundOnly({
-          client,
-          repository: northboundRepository,
-          workspaceId,
-          tradeDate,
-          fetchedAt: now,
-        });
-      } else if (northboundRepository) {
-        saveNorthboundTop10(northboundRepository, workspaceId, tradeDate, topBundle.northbound || []);
-      }
-      if (!savedTop) return { status: 'top10_missing', tradeDate, savedTop };
-      return { status: 'ok', tradeDate, savedTop };
+      const northboundStatus = await noteNorthboundBesideTop10({
+        client,
+        northboundRepository,
+        northReady,
+        workspaceId,
+        tradeDate,
+        fetchedAt: now,
+        northRows: topBundle.northbound || [],
+      });
+      const payload = { status: savedTop ? 'ok' : 'top10_missing', tradeDate, savedTop };
+      if (northboundStatus) payload.northboundStatus = northboundStatus;
+      return payload;
     } catch (error) {
       return { status: 'top10_missing', tradeDate, reason: error instanceof Error ? error.message : '十大成交读取失败' };
     }

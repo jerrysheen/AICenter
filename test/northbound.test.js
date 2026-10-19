@@ -19,7 +19,7 @@ import {
   createNorthboundReadService,
 } from '../packages/domain/src/northbound-service.js';
 import { isApiTokenAllowlisted } from '../apps/web/src/http/api-token-access.js';
-import { persistSouthboundDay, syncSouthboundDay } from '../packages/runtime/src/southbound-job.js';
+import { persistSouthboundDay, saveNorthboundTop10, syncSouthboundDay } from '../packages/runtime/src/southbound-job.js';
 import { parseDealHistory, parseTop10 } from '../packages/connectors/src/southbound.js';
 
 const fixture = (name) => readFileSync(new URL(`./fixtures/southbound/${name}`, import.meta.url), 'utf8');
@@ -211,6 +211,60 @@ test('南向已经入库时补写北向，不把成交额写成净额', async ()
     });
     assert.equal(skipped.status, 'skipped');
     assert.equal(calls.length, after);
+  } finally {
+    opened.close();
+  }
+});
+
+test('北向失败时，南向状态仍然正确', async () => {
+  const opened = openStore();
+  try {
+    const repository = opened.store.repositories.southbound;
+    persistSouthboundDay({
+      repository,
+      workspaceId: 'local',
+      dailyRows: parseDealHistory(dealPayload),
+      hkex: parseHkexDaily(hkexText),
+      fetchedAt: 1,
+    });
+    const client = createSouthboundClient({
+      minIntervalMs: 0,
+      fetchImpl: async (url) => {
+        const href = String(url);
+        if (href.includes('RPT_MUTUAL_TOP10DEAL')) return jsonResponse(topPayload);
+        throw new Error('北向汇总失败');
+      },
+    });
+    const saved = await syncSouthboundDay({
+      repository,
+      northboundRepository: opened.store.repositories.northbound,
+      client,
+      tradeDate: '2026-10-16',
+      mode: 'live',
+      slot: 'catchup',
+    });
+    assert.equal(saved.status, 'ok');
+    assert.equal(saved.northboundStatus, 'northbound_missing');
+    assert.equal(repository.listTop10('local', '2026-10-16', 'total').length > 0, true);
+    assert.equal(opened.store.repositories.northbound.getDaily('local', '2026-10-16', 'total'), null);
+  } finally {
+    opened.close();
+  }
+});
+
+test('北向十大返回空数组时，不清空已有数据', () => {
+  const opened = openStore();
+  try {
+    const repository = opened.store.repositories.northbound;
+    const rows = parseNorthboundTop10(topPayload);
+    assert.ok(saveNorthboundTop10(repository, 'local', '2026-10-16', rows) > 0);
+    assert.equal(repository.listTop10('local', '2026-10-16', 'sh').length, 10);
+    assert.equal(repository.listTop10('local', '2026-10-16', 'sz').length, 10);
+    assert.equal(saveNorthboundTop10(repository, 'local', '2026-10-16', []), 0);
+    assert.equal(repository.listTop10('local', '2026-10-16', 'sh').map((row) => row.name)[0], '药明康德');
+    assert.equal(repository.listTop10('local', '2026-10-16', 'sz').length, 10);
+    saveNorthboundTop10(repository, 'local', '2026-10-16', rows.filter((row) => row.channel === 'sh'));
+    assert.equal(repository.listTop10('local', '2026-10-16', 'sz').length, 10);
   } finally {
     opened.close();
   }
