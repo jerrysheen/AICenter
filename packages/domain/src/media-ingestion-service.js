@@ -12,7 +12,6 @@ import { isFlashSource } from './flash-sources.js';
 import { createArticleDedup } from './article-dedup.js';
 import { twkrSourceSkipsBody } from '../../connectors/src/twkr-sources.js';
 import { sourceAuthorProfile } from './source-authors.js';
-import { ensureSourceAuthorItem } from './source-author-sync.js';
 const MEDIA_BUDGET = MediaConfigSchema.parse({ version: 1, sources: [] }).budget;
 const MEDIA_TIMEZONE = 'Asia/Shanghai';
 export const MEDIA_INGESTION_POLICY = 'native-channels-v1';
@@ -210,25 +209,7 @@ export function createMediaIngestionService({
       publisherKey: entry.publisherKey,
       sourceExternalId: entry.sourceKey ? `media:${entry.sourceKey}` : '',
     });
-    const saved = mediaRepository.upsertEntry({ ...entry, dedupKey: dedupKey || null });
-    if (entry?.status !== 'budget_deferred' && entry?.externalId && entry?.sourceKey && entry?.workspaceId) {
-      try {
-        ensureSourceAuthorItem(feedRepository, {
-          workspaceId: entry.workspaceId,
-          sourceKey: entry.sourceKey,
-          externalId: entry.externalId,
-          title: entry.title,
-          summary: entry.summary,
-          sourceUrl: entry.canonicalUrl,
-          publishedAt: entry.publishedAt,
-          publishedAtRaw: entry.publishedAtRaw,
-          contentHash: entry.contentHash,
-        });
-      } catch (error) {
-        console.error('[media] 来源作者未挂上:', error instanceof Error ? error.message : error);
-      }
-    }
-    return saved;
+    return mediaRepository.upsertEntry({ ...entry, dedupKey: dedupKey || null });
   }
   function incomingArticle(entry, item) {
     return {
