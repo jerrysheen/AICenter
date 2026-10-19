@@ -10,7 +10,11 @@ const DEFAULT_CACHE_MS = 30_000;
 const CACHE_SPAN_MS = 45_000;
 const US_INDEX_SYMBOLS = new Set(['^GSPC', '^DJI', '^IXIC', '^SOX', '^VIX']);
 const DEFAULT_MIN_INTERVAL_MS = 800;
-const BATCH_SIZE = 20;
+// The US board deadline is 12s and this pump is shared with Asia and global.
+// Two in-flight calls use the existing undici pool (connections: 2). Batches of
+// 10 stay near a direct spark (~2.6s) instead of four serial 20-symbol calls.
+const BATCH_SIZE = 10;
+const QUOTE_CONCURRENCY = 2;
 const BACKOFF_BASE_MS = 15_000;
 const BACKOFF_CAP_MS = 5 * 60_000;
 const YAHOO_HEADERS = {
@@ -114,7 +118,7 @@ export function createYahooQuoteLayer(options = {}) {
   const inflight = new Map();
   const jobs = [];
   let drainScheduled = false;
-  let pumping = false;
+  let inFlight = 0;
   let fetcher = async () => [];
   let backoffUntil = 0;
   let backoffMs = BACKOFF_BASE_MS;
@@ -167,24 +171,25 @@ export function createYahooQuoteLayer(options = {}) {
   }
 
   function pump() {
-    if (pumping) return;
-    const index = jobs.findIndex((job) => job.lane === 'us');
-    const job = jobs.splice(index >= 0 ? index : 0, 1)[0];
-    if (!job) return;
-    pumping = true;
-    Promise.resolve().then(async () => {
+    while (inFlight < QUOTE_CONCURRENCY) {
+      const index = jobs.findIndex((job) => job.lane === 'us');
+      if (!jobs[index >= 0 ? index : 0]) return;
+      const job = jobs.splice(index >= 0 ? index : 0, 1)[0];
       const wait = Math.max(0, nextSlot - Date.now());
-      if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
-      nextSlot = Date.now() + minIntervalMs;
-      return job.task();
-    }).then((value) => {
-      job.resolve(value);
-    }, (error) => {
-      job.reject(error);
-    }).finally(() => {
-      pumping = false;
-      pump();
-    });
+      nextSlot = Date.now() + wait + minIntervalMs;
+      inFlight += 1;
+      Promise.resolve().then(async () => {
+        if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
+        return job.task();
+      }).then((value) => {
+        job.resolve(value);
+      }, (error) => {
+        job.reject(error);
+      }).finally(() => {
+        inFlight -= 1;
+        pump();
+      });
+    }
   }
 
   function quoteMap(quotes) {
@@ -334,14 +339,20 @@ export function quoteFromSpark(result, nowSec = Math.floor(Date.now() / 1000)) {
   const closes = (chart?.indicators?.quote?.[0]?.close || []).filter((value) => typeof value === 'number' && Number.isFinite(value));
   const lastPrint = closes.at(-1) ?? null;
   const extended = session === 'pre' || session === 'post';
+  const regularClose = num(meta.regularMarketPrice);
+  const previous = num(meta.previousClose) ?? num(meta.chartPreviousClose);
   const lastPrice = extended
-    ? (num(meta.fulldayPrice) ?? lastPrint ?? num(meta.regularMarketPrice))
-    : (num(meta.regularMarketPrice) ?? num(meta.fulldayPrice) ?? lastPrint);
-  const prevClose = num(meta.previousClose) ?? num(meta.chartPreviousClose);
-  const changePct = extended
+    ? (num(meta.fulldayPrice) ?? lastPrint ?? regularClose)
+    : (regularClose ?? num(meta.fulldayPrice) ?? lastPrint);
+  const prevClose = extended ? (regularClose ?? previous) : previous;
+  let changePct = extended
     ? (num(meta.fulldayChangePercent) ?? num(meta.regularMarketChangePercent))
     : (num(meta.regularMarketChangePercent) ?? num(meta.fulldayChangePercent));
-  const change = lastPrice !== null && prevClose !== null ? lastPrice - prevClose : num(meta.fulldayChange);
+  let change = lastPrice !== null && prevClose !== null ? lastPrice - prevClose : num(meta.fulldayChange);
+  if (extended && lastPrice !== null && prevClose !== null) {
+    change = lastPrice - prevClose;
+    changePct = prevClose ? (change / prevClose) * 100 : changePct;
+  }
   return {
     symbol,
     name: text(meta.shortName || meta.longName, symbol),
@@ -542,16 +553,39 @@ export function createYahooClient(options = {}) {
     }
   }
 
+  function quotesFromSpark(results) {
+    const quotes = [];
+    for (const result of results) {
+      const quote = quoteFromSpark(result);
+      if (quote) quotes.push({ ...quote, provider: 'yahoo' });
+    }
+    return quotes;
+  }
+
+  async function loadSparkBatch(group, interval, signal) {
+    let lastError;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (signal?.aborted) break;
+      try {
+        return quotesFromSpark(await fetchSparkGroup(group, '1d', interval, true, 0, signal));
+      } catch (error) {
+        if (error?.status === 429 || error?.status === 404) throw error;
+        lastError = error;
+        if (attempt === 0) {
+          log('warn', `Yahoo 行情批失败，重试一次 ${group.length} 项 ${error instanceof Error ? error.message : error}`);
+        }
+      }
+    }
+    log('error', `Yahoo 行情失败 ${lastError instanceof Error ? lastError.message : lastError}`);
+    return fillFallback(group);
+  }
+
   async function loadSymbols(symbols, interval, signal) {
     const quotes = [];
     for (const group of chunk(symbols, BATCH_SIZE)) {
       if (signal?.aborted) break;
       try {
-        const results = await fetchSparkGroup(group, '1d', interval, true, 0, signal);
-        for (const result of results) {
-          const quote = quoteFromSpark(result);
-          if (quote) quotes.push({ ...quote, provider: 'yahoo' });
-        }
+        quotes.push(...await loadSparkBatch(group, interval, signal));
       } catch (error) {
         if (error?.status === 429) {
           error.partial = quotes;
@@ -559,6 +593,7 @@ export function createYahooClient(options = {}) {
         }
         if (error?.status === 404) throw error;
         log('error', `Yahoo 行情失败 ${error instanceof Error ? error.message : error}`);
+        quotes.push(...await fillFallback(group));
       }
     }
     return quotes;

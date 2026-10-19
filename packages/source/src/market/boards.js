@@ -1,5 +1,8 @@
+import { usSessionAt } from '../../../connectors/src/us-session.js';
 import { DEFAULT_MARKET_CATALOG, isForeignToUsListingSymbol } from './catalog.js';
 import { cnTradingCalendarAt, cnTradingCalendarNote } from '../../../domain/src/cn-trading-calendar.js';
+
+export { usSessionAt };
 
 function catalogOrDefault(catalog) {
   return catalog || DEFAULT_MARKET_CATALOG;
@@ -118,7 +121,7 @@ function sessionInWindow(nowMs, timeZone, openMinutes, closeMinutes) {
 }
 
 export function usRegularSessionAt(nowMs = Date.now()) {
-  return sessionInWindow(nowMs, 'America/New_York', 9 * 60 + 30, 16 * 60);
+  return usSessionAt(nowMs) === 'regular' ? 'regular' : 'closed';
 }
 
 export function asiaSessionsAt(nowMs = Date.now()) {

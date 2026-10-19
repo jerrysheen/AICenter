@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMarketService, marketStaleMs } from '../packages/source/src/market/service.js';
-import { usRegularSessionAt } from '../packages/source/src/market/boards.js';
+import { usRegularSessionAt, usSessionAt } from '../packages/source/src/market/boards.js';
 import {
   captureMarketBoards,
   marketBoardSnapshotKey,
@@ -116,6 +116,24 @@ test('market stale window and US snapshot freshness read the environment', () =>
   const closed = Date.parse('2026-10-15T21:30:00Z');
   assert.equal(usRegularSessionAt(open), 'regular');
   assert.equal(usRegularSessionAt(closed), 'closed');
+  assert.equal(usSessionAt(Date.parse('2026-10-19T11:00:00Z')), 'pre');
+  assert.equal(usSessionAt(Date.parse('2026-10-19T21:00:00Z')), 'post');
+  assert.equal(usSessionAt(Date.parse('2026-10-20T01:00:00Z')), 'closed');
+  assert.equal(usSessionAt(Date.parse('2026-10-17T15:00:00Z')), 'closed');
+  assert.equal(usSessionAt(Date.parse('2026-11-26T16:00:00Z')), 'closed');
+  assert.equal(usSessionAt(Date.parse('2026-11-27T17:00:00Z')), 'regular');
+  assert.equal(usSessionAt(Date.parse('2026-11-27T18:00:00Z')), 'post');
+  assert.equal(usRegularSessionAt(Date.parse('2026-10-19T11:00:00Z')), 'closed');
+  assert.equal(usSessionAt(Date.parse('2027-01-01T15:00:00Z')), 'closed');
+  assert.equal(usSessionAt(Date.parse('2027-06-18T14:00:00Z')), 'closed');
+  assert.equal(usSessionAt(Date.parse('2027-07-05T14:00:00Z')), 'closed');
+  assert.equal(usSessionAt(Date.parse('2027-11-25T16:00:00Z')), 'closed');
+  assert.equal(usSessionAt(Date.parse('2027-12-24T15:00:00Z')), 'closed');
+  assert.equal(usSessionAt(Date.parse('2027-12-24T17:00:00Z')), 'closed');
+  assert.equal(usSessionAt(Date.parse('2027-11-26T17:00:00Z')), 'regular');
+  assert.equal(usSessionAt(Date.parse('2027-11-26T18:00:00Z')), 'post');
+  assert.equal(usSessionAt(Date.parse('2027-11-26T22:00:00Z')), 'closed');
+  assert.equal(usSessionAt(Date.parse('2027-01-04T15:00:00Z')), 'regular');
   assert.equal(usBoardFreshnessError({ fetchedAt: open - 11 * 60_000 }, open, 10 * 60_000), '美股看板行情已 11 分钟未更新');
   assert.equal(usBoardFreshnessError({ fetchedAt: open - 11 * 60_000 }, closed, 10 * 60_000), '');
   const at = Date.parse('2026-10-15T13:40:00Z');
@@ -124,6 +142,26 @@ test('market stale window and US snapshot freshness read the environment', () =>
   assert.equal(marketStaleLabel({ fetchedAt: at }, at + 180_000), '已过期 · 10月15日 21:40');
   assert.equal(homeDataDelayLabel(at, at + 5 * 60_000 - 1), '');
   assert.equal(homeDataDelayLabel(at, at + 5 * 60_000), '数据更新延迟');
+});
+
+test('a year missing from the NYSE holiday table warns once', () => {
+  const warnings = [];
+  const original = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  try {
+    const monday = Date.parse('2028-01-03T15:00:00Z');
+    assert.equal(usSessionAt(monday), 'regular');
+    assert.equal(usSessionAt(monday + 60_000), 'regular');
+    assert.equal(usSessionAt(Date.parse('2025-01-06T15:00:00Z')), 'regular');
+    assert.equal(usSessionAt(Date.parse('2025-01-06T15:01:00Z')), 'regular');
+    assert.equal(usSessionAt(Date.parse('2027-01-04T15:00:00Z')), 'regular');
+  } finally {
+    console.warn = original;
+  }
+  assert.deepEqual(warnings, [
+    '[market] 2028 年纽交所休市日还没有写入假日表，这一年只按周末和美东时钟判断',
+    '[market] 2025 年纽交所休市日还没有写入假日表，这一年只按周末和美东时钟判断',
+  ]);
 });
 
 test('US trading hours fail the snapshot after the freshness window and still keep the board', async () => {
@@ -434,4 +472,80 @@ test('a holiday board follows the server marketOpen, and pending retries grow', 
   assert.equal(quoteStaleLabel(stored, holiday), '');
   assert.deepEqual([0, 1, 2, 3, 4].map((attempt) => marketFillDelayMs(attempt)), [800, 1600, 3200, 6400, 10_000]);
   assert.equal(marketFillDelayMs(8), 10_000);
+});
+
+test('US pre and post stay on the board and do not count as expired', async () => {
+  async function readAt(at, session) {
+    const payload = {
+      board: 'us',
+      mode: 'live',
+      fetchedAt: at - 30 * 60_000,
+      stale: true,
+      session: 'closed',
+      groups: [],
+      indices: [{
+        symbol: 'NVDA',
+        name: 'NVIDIA',
+        lastPrice: 218.2,
+        prevClose: 214.13,
+        change: 4.07,
+        changePct: 1.9,
+        currency: 'USD',
+        session,
+        asOf: at,
+      }],
+      watchlist: [],
+      gainers: [],
+      losers: [],
+      breadth: { advancers: 1, decliners: 0, unchanged: 0 },
+      sections: [{
+        id: 'us',
+        title: '美股观察',
+        session: 'closed',
+        indices: [{
+          symbol: 'NVDA',
+          name: 'NVIDIA',
+          lastPrice: 218.2,
+          prevClose: 214.13,
+          change: 4.07,
+          changePct: 1.9,
+          session,
+          asOf: at,
+        }],
+        gainers: [],
+        losers: [],
+      }],
+    };
+    return createMarketBoardReader({
+      repository: { readSnapshot: () => ({ payload }) },
+      now: () => at,
+      staleMs: 180_000,
+    }).read({ board: 'us' });
+  }
+
+  const pre = await readAt(Date.parse('2026-10-19T11:00:00Z'), 'pre');
+  assert.equal(pre.market.session, 'pre');
+  assert.equal(pre.market.marketOpen, false);
+  assert.equal(pre.market.stale, false);
+  assert.equal(pre.market.indices[0].session, 'pre');
+  assert.equal(pre.market.indices[0].marketOpen, false);
+  assert.equal(pre.market.sections[0].session, 'pre');
+  assert.equal(pre.market.sections[0].marketOpen, false);
+  assert.equal(marketStaleLabel(pre.market, Date.parse('2026-10-19T11:00:00Z')), '');
+
+  const post = await readAt(Date.parse('2026-10-19T21:00:00Z'), 'post');
+  assert.equal(post.market.session, 'post');
+  assert.equal(post.market.marketOpen, false);
+  assert.equal(post.market.indices[0].session, 'post');
+  assert.equal(post.market.stale, false);
+
+  const night = await readAt(Date.parse('2026-10-20T01:00:00Z'), 'post');
+  assert.equal(night.market.session, 'closed');
+  assert.equal(night.market.indices[0].session, 'closed');
+  assert.equal(night.market.marketOpen, false);
+
+  const weekend = await readAt(Date.parse('2026-10-17T15:00:00Z'), 'pre');
+  assert.equal(weekend.market.session, 'closed');
+  assert.equal(weekend.market.indices[0].session, 'closed');
+  assert.equal(weekend.market.marketOpen, false);
 });
