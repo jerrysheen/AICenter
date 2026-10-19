@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, open, readdir, readFile, rm, statfs } from 'node:fs/promises';
 import path from 'node:path';
-import { describeAudioTranscription } from '../../domain/src/audio-transcription.js';
+import { describeAudioTranscription, resolveAudioTranscriptionLanes } from '../../domain/src/audio-transcription.js';
 import { readChannelId, watchUrl } from '../../domain/src/youtube-podcasts.js';
+import { createGeminiAudioTranscriber } from './audio-transcribe.js';
 
 export const YOUTUBE_STDOUT_CAP = 16 * 1024 * 1024;
 export const YOUTUBE_STDERR_CAP = 256 * 1024;
@@ -217,12 +218,22 @@ function chooseAutoOrigLang(keys, original) {
   return keys.find((lang) => /-orig$/i.test(lang) && primaryLang(lang) === original) || '';
 }
 
+function uniqueOrigKey(keys) {
+  const orig = keys.filter((lang) => /-orig$/i.test(lang));
+  return orig.length === 1 ? orig[0] : '';
+}
+
 export function pickSubtitleRequest(info = {}, fallbackLanguage = '') {
   const original = primaryLang(info.language || info.language_code || fallbackLanguage);
-  if (!original) return null;
-  const manual = chooseManualLang(Object.keys(info.subtitles || {}), original);
+  const manualKeys = Object.keys(info.subtitles || {});
+  const autoKeys = Object.keys(info.automatic_captions || {});
+  if (!original) {
+    const auto = uniqueOrigKey(autoKeys);
+    return auto ? { lang: auto, kind: 'auto' } : null;
+  }
+  const manual = chooseManualLang(manualKeys, original);
   if (manual) return { lang: manual, kind: 'manual' };
-  const auto = chooseAutoOrigLang(Object.keys(info.automatic_captions || {}), original);
+  const auto = chooseAutoOrigLang(autoKeys, original);
   if (auto) return { lang: auto, kind: 'auto' };
   return null;
 }
@@ -240,6 +251,11 @@ export function chooseSubtitle(files, info = {}) {
   }).filter((file) => file.text);
   const manualOriginal = rows.find((file) => file.manual && sameLanguage(file.lang, original));
   if (manualOriginal) return { text: manualOriginal.text, source: 'subtitle-manual' };
+  if (!primaryLang(original)) {
+    const origFiles = rows.filter((file) => file.auto && /-orig$/i.test(file.lang));
+    if (origFiles.length === 1) return { text: origFiles[0].text, source: 'subtitle-auto' };
+    return { text: '', source: '' };
+  }
   const autoOriginals = rows.filter((file) => isOriginalAuto(file, original));
   const autoOriginal = autoOriginals.find((file) => /-orig$/i.test(file.lang)) || autoOriginals[0];
   if (autoOriginal) return { text: autoOriginal.text, source: 'subtitle-auto' };
@@ -390,19 +406,71 @@ export function combineFetchSignal(signal, timeoutMs = YOUTUBE_FETCH_TIMEOUT_MS)
   return typeof AbortSignal.any === 'function' ? AbortSignal.any([signal, timeout]) : signal;
 }
 
-export async function resolveYoutubeChannelId({ handle, fetchImpl = fetch, signal } = {}) {
+export async function fetchYoutubeText(url, {
+  fetchImpl = fetch,
+  signal,
+  timeoutMs = YOUTUBE_FETCH_TIMEOUT_MS,
+  headers,
+} = {}) {
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(signal.reason);
+  if (signal) {
+    if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('请求已取消');
+    signal.addEventListener('abort', onAbort, { once: true });
+  }
+  let timer = null;
+  const arm = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      controller.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+    }, timeoutMs);
+  };
+  const asTimeout = (error) => {
+    if (signal?.aborted) throw error;
+    const timeout = new Error('请求超时');
+    timeout.code = 'youtube-timeout';
+    timeout.cause = error;
+    throw timeout;
+  };
+  try {
+    arm();
+    let response;
+    try {
+      response = await fetchImpl(url, { headers, signal: controller.signal });
+    } catch (error) {
+      asTimeout(error);
+    }
+    // 响应头到达后重新计时。否则 15 秒从发请求就开始，慢一点的频道页会在读 body 时被掐掉。
+    arm();
+    try {
+      const text = await response.text();
+      return { response, text };
+    } catch (error) {
+      asTimeout(error);
+    }
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+export async function resolveYoutubeChannelId({ handle, fetchImpl = fetch, signal, timeoutMs = YOUTUBE_FETCH_TIMEOUT_MS } = {}) {
   const name = String(handle || '').replace(/^@/, '');
   let response;
+  let html = '';
   try {
-    response = await fetchImpl(`https://www.youtube.com/@${encodeURIComponent(name)}`, {
+    const loaded = await fetchYoutubeText(`https://www.youtube.com/@${encodeURIComponent(name)}`, {
+      fetchImpl,
+      signal,
+      timeoutMs,
       headers: { 'user-agent': 'AICenter/0.2 youtube-podcasts', accept: 'text/html' },
-      signal: combineFetchSignal(signal),
     });
+    response = loaded.response;
+    html = loaded.text;
   } catch (error) {
     if (signal?.aborted) throw error;
     return { failed: true, detail: '频道页超时' };
   }
-  const html = await response.text();
   if (response.ok) {
     const channelId = readChannelId(html);
     if (!channelId) return { failed: true, detail: `没有解析到 @${name} 的频道编号` };
@@ -411,6 +479,83 @@ export async function resolveYoutubeChannelId({ handle, fetchImpl = fetch, signa
   const blocked = response.status === 429 ? '429' : youtubeBlockReason(html);
   if (blocked) return { blocked, detail: `频道页 ${response.status}` };
   return { failed: true, detail: `频道页 ${response.status}` };
+}
+
+export const YOUTUBE_BACKFILL_LIMIT = 30;
+
+export async function listChannelLongVideos({
+  channelId = '',
+  handle = '',
+  limit = YOUTUBE_BACKFILL_LIMIT,
+  env = process.env,
+  run = runProcess,
+  signal,
+  timeoutMs = 180_000,
+} = {}) {
+  const id = String(channelId || '').trim();
+  const name = String(handle || '').replace(/^@/, '').trim();
+  const target = id
+    ? `https://www.youtube.com/channel/${id}/videos`
+    : `https://www.youtube.com/@${encodeURIComponent(name)}/videos`;
+  const args = [
+    '--flat-playlist',
+    '--playlist-end', String(Math.max(1, Math.min(Number(limit) || YOUTUBE_BACKFILL_LIMIT, 50))),
+    '--dump-single-json',
+    '--skip-download',
+    ...ytDlpBaseArgs(env),
+    '--',
+    target,
+  ];
+  const result = await run(ytDlpBinary(env), args, { timeoutMs, signal });
+  const blocked = blockedResult(result);
+  if (blocked) return blocked;
+  if (result.code !== 0) return { failed: true, detail: String(result.stderr || 'flat-playlist').slice(0, 180) };
+  const start = String(result.stdout || '').indexOf('{');
+  if (start < 0) return { failed: true, detail: 'flat-playlist' };
+  let parsed;
+  try {
+    parsed = JSON.parse(result.stdout.slice(start));
+  } catch {
+    return { failed: true, detail: 'flat-playlist' };
+  }
+  const rows = Array.isArray(parsed.entries) ? parsed.entries : [];
+  const entries = [];
+  for (const row of rows) {
+    const videoId = String(row?.id || '').trim();
+    if (!/^[A-Za-z0-9_-]{6,}$/.test(videoId)) continue;
+    const durationSec = Number(row?.duration);
+    const timestamp = Number(row?.timestamp);
+    entries.push({
+      videoId,
+      title: String(row?.title || ''),
+      durationSec: Number.isFinite(durationSec) && durationSec > 0 ? durationSec : 0,
+      publishedAt: Number.isFinite(timestamp) && timestamp > 0 ? timestamp * 1000 : 0,
+      url: watchUrl(videoId),
+    });
+  }
+  return { entries };
+}
+
+export function youtubeTranscribeUnavailable(error) {
+  if (error?.code === 'youtube-transcribe-unavailable') return true;
+  const message = String(error?.message || '');
+  return /transcribe is not a function|没有配置可用的转写密钥|invalid Gemini key environment/.test(message);
+}
+
+function markTranscribeUnavailable(error) {
+  const wrapped = new Error(String(error?.message || '转写器不可用'));
+  wrapped.code = 'youtube-transcribe-unavailable';
+  return wrapped;
+}
+
+export function prepareYoutubeTranscriber(env = process.env, transcribe = createGeminiAudioTranscriber()) {
+  if (typeof transcribe !== 'function') throw markTranscribeUnavailable(new Error('transcribe is not a function'));
+  try {
+    resolveAudioTranscriptionLanes(env);
+  } catch (error) {
+    throw markTranscribeUnavailable(error);
+  }
+  return transcribe;
 }
 
 export async function ensureFreeDisk(dir, minimumBytes = MIN_FREE_BYTES) {
@@ -439,10 +584,12 @@ export async function transcribeYoutubeAudio({
   quotaRepository,
   languageCodes = [],
   execute,
+  transcribe,
   run = runProcess,
   workspaceId = 'local',
   signal,
 }) {
+  const transcriber = prepareYoutubeTranscriber(env, transcribe || createGeminiAudioTranscriber());
   const parent = path.join(dataDirectory, 'tmp', 'youtube-podcasts');
   await mkdir(parent, { recursive: true });
   const dir = await mkdtemp(path.join(parent, `${videoId}-`));
@@ -484,6 +631,7 @@ export async function transcribeYoutubeAudio({
       dataDirectory,
       env,
       quotaRepository,
+      transcribe: transcriber,
       signal,
     });
     return String(transcribed?.text || '').trim();

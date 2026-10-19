@@ -1,6 +1,7 @@
 import { createFeedValueEvaluator, normalizeFeedValueText, FEED_VALUE_VERSION, FEED_VALUE_RULE, feedValueRuleHash } from './feed-value.js';
 import { FeedValueRuleSchema } from '../../contracts/src/feed-value.js';
 import { isJevOutage, resolveJevEnabled } from './jev-enabled.js';
+import { looksLikeFeedAd } from './feed-ad.js';
 import { focusFeedFromSource, keywordFocus } from './x-focus.js';
 export const FEED_FILTER_VERSION = FEED_VALUE_VERSION;
 
@@ -50,14 +51,6 @@ function combinedText(fields) {
     .join('\n');
 }
 
-const AD_TERMS = Object.freeze([
-  '返佣', '拉群', '加群', '收费群', '课程招揽', '联盟返佣', '联盟营销',
-  '优惠券', '立即购买', '点击购买', '加微信', '私信领取', '推广链接',
-  'sponsored', 'affiliate', 'advertisement', 'promo code',
-]);
-// 经营事实不是推销。「广告业」后面不接「务」时，不会落到「广告业务」这条例外里，所以单独排除。
-const AD_MARK = /广告(?!收入|营收|费|费用|支出|投放|业绩|业务|主|商|市场|业(?!务))/u;
-
 function flagOff(value) {
   const raw = envFlag(value);
   return raw === 'off' || raw === '0' || raw === 'false';
@@ -81,12 +74,7 @@ export function resolveFeedFilterConfig(env = process.env) {
   });
 }
 
-export function looksLikeFeedAd(value) {
-  const hay = String(value || '');
-  if (AD_MARK.test(hay)) return true;
-  const lower = hay.toLowerCase();
-  return AD_TERMS.some((term) => lower.includes(term.toLowerCase()));
-}
+export { looksLikeFeedAd };
 
 function admissionText(input = {}) {
   const item = isRecord(input.item) ? input.item : {};

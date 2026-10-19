@@ -1,5 +1,6 @@
 {
-  "version": "x-focus-1",
+  "version": "x-focus-2",
+  "driftCompatibleVersions": ["x-focus-1"],
   "enabled": true,
   "expandMin": 0.75,
   "hitMin": 0.5,
@@ -39,7 +40,7 @@
       "id": "corporate",
       "label": "企业动态",
       "weight": 1,
-      "question": "这则内容是否在讲某家具体公司的财报、订单、产品、收购、人事或监管？",
+      "question": "这则内容是否在讲某家具体公司的财报、订单、收购、人事或监管？产品宣传、折扣和官号广告不算。",
       "keywords": ["财报", "营收", "收购", "订单", "CEO", "guidance"]
     },
     {
@@ -59,8 +60,8 @@
   ],
   "autoLike": {
     "minScore": 0.75,
-    "dailyLimit": 20,
-    "hourlyLimit": 5,
-    "minIntervalMs": 120000
+    "dailyLimit": 8,
+    "hourlyLimit": 2,
+    "minIntervalMs": 900000
   }
 }

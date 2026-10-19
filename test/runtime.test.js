@@ -48,8 +48,12 @@ test('migrations upgrade a v1 database without losing posts', () => {
   assert.deepEqual(unusedSchemaVersions, [63, 79, 80, 82]);
   assert.equal(upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, schemaLatest);
   assert.equal(schemaLatest - schemaRows, expectedHoles, `schema rows ${schemaRows} latest ${schemaLatest}`);
-  assert.equal(schemaLatest, 86);
+  assert.equal(schemaLatest, 87);
   assert.ok(upgraded.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'youtube_podcast_episodes'`).get());
+  const channelColumns = upgraded.prepare('PRAGMA table_info(youtube_podcast_channels)').all().map((column) => column.name);
+  assert.ok(channelColumns.includes('backfilled_at'));
+  assert.ok(channelColumns.includes('backfill_attempts'));
+  assert.ok(channelColumns.includes('backfill_failed_at'));
   assert.ok(upgraded.prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_jobs_type_created'`).get());
   assert.ok(upgraded.prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_captures_x_focus'`).get());
   assert.ok(upgraded.prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_information_tree_heads_layer_start'`).get());
