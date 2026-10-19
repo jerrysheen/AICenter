@@ -154,7 +154,7 @@ async function syncIndexRow(feed, row, { readDetail = null, detailDelayMs = 0 } 
   const capture = official ? feed.getCapture(row.workspaceId, 'media', row.externalId) : null;
   const existingBody = capture ? feed.getContentItemByCapture?.(row.workspaceId, capture.id)?.body : '';
   let fetched = false;
-  if (official && !String(existingBody || '').trim() && typeof readDetail === 'function' && row.sourceUrl) {
+  if (official && [...String(existingBody || '').trim()].length < 80 && typeof readDetail === 'function' && row.sourceUrl) {
     fetched = true;
     try {
       const detail = await readDetail({ sourceUrl: row.sourceUrl });
