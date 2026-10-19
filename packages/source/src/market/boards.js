@@ -206,6 +206,30 @@ export function preferredOverviewFocus(nowMs = Date.now()) {
   return 'us';
 }
 
+function catalogNameFor(section, symbol) {
+  const key = String(symbol || '').trim().toUpperCase();
+  if (!key) return '';
+  const rows = [...(section?.indices || []), ...(section?.watchlist || [])];
+  for (const row of rows) {
+    if (String(row?.symbol || '').trim().toUpperCase() !== key) continue;
+    const name = String(row?.name || '').trim();
+    if (name && name.toUpperCase() !== key) return name;
+  }
+  return '';
+}
+
+function cnWatchName(item, quote, section) {
+  const symbol = String(item?.symbol || '').trim();
+  const quoted = String(quote?.name || '').trim();
+  const listed = String(item?.name || '').trim();
+  let name = item?.group === '自选' && quoted ? quoted : listed;
+  if (!name || name.toUpperCase() === symbol.toUpperCase()) {
+    const fromCatalog = catalogNameFor(section, symbol);
+    if (fromCatalog) name = fromCatalog;
+  }
+  return name || symbol;
+}
+
 function uniqueBySymbol(items) {
   const seen = new Set();
   return items.filter((item) => {
@@ -348,7 +372,7 @@ export function buildCnMarketBoard({ quotes, extraSymbols = [], fetchedAt = Date
       const change = base.change ?? (lastPrice != null && prevClose != null ? lastPrice - prevClose : null);
       return {
         ...base,
-        name: quote?.name && item.group === '自选' ? quote.name : item.name,
+        name: cnWatchName(item, quote, section),
         group: item.group,
         summary: item.summary,
         change,

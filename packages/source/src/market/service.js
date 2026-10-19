@@ -49,6 +49,39 @@ export function createMarketService(options = {}) {
   const cache = new Map();
   const pending = new Map();
   const attempts = new Map();
+  const cnNames = new Map();
+
+  function rememberCnNames(quotes) {
+    for (const item of quotes || []) {
+      const symbol = String(item?.symbol || '').trim().toUpperCase();
+      const name = String(item?.name || '').trim();
+      if (!symbol || !name || name.toUpperCase() === symbol) continue;
+      cnNames.set(symbol, name);
+    }
+  }
+
+  function withRememberedName(item) {
+    if (!item || typeof item !== 'object') return item;
+    const symbol = String(item.symbol || '').trim().toUpperCase();
+    const name = String(item.name || '').trim();
+    if (!symbol || (name && name.toUpperCase() !== symbol)) return item;
+    const remembered = cnNames.get(symbol);
+    if (!remembered) return item;
+    return { ...item, name: remembered };
+  }
+
+  function withRememberedBoard(board) {
+    if (!board || typeof board !== 'object') return board;
+    const mapList = (list) => (Array.isArray(list) ? list.map(withRememberedName) : list);
+    return {
+      ...board,
+      indices: mapList(board.indices),
+      watchlist: mapList(board.watchlist),
+      gainers: mapList(board.gainers),
+      losers: mapList(board.losers),
+      ...(Array.isArray(board.sections) ? { sections: board.sections.map(withRememberedBoard) } : {}),
+    };
+  }
 
   function payloadHasQuotes(payload) {
     if (Array.isArray(payload)) return payload.some((item) => item && item.lastPrice != null);
@@ -286,23 +319,23 @@ export function createMarketService(options = {}) {
       try {
         const quotes = await withCnSparklines(await fetchQuotes(unique));
         reportQuotes('A股', unique.length, quotes);
-        return buildCnMarketBoard({
+        return withRememberedBoard(buildCnMarketBoard({
           quotes,
           extraSymbols,
           fetchedAt: now(),
           errors: unique.filter((symbol) => !quotes.some((item) => item.symbol === symbol)).length,
           marketCatalog,
-        });
+        }));
       } catch (error) {
         log('error', `A股行情失败 ${error instanceof Error ? error.message : error}`);
         reportQuotes('A股', unique.length, []);
-        return buildCnMarketBoard({
+        return withRememberedBoard(buildCnMarketBoard({
           quotes: [],
           extraSymbols,
           fetchedAt: now(),
           errors: unique.length,
           marketCatalog,
-        });
+        }));
       }
     });
   }
@@ -413,7 +446,9 @@ export function createMarketService(options = {}) {
     if (!symbols.length || !xueqiuQuotes?.fetchQuotes) return [];
     return cached(`xueqiu:${symbols.slice().sort().join(',')}`, async () => {
       try {
-        return (await xueqiuQuotes.fetchQuotes(symbols, { signal })).map((item) => mapQuote(item));
+        const quotes = (await xueqiuQuotes.fetchQuotes(symbols, { signal })).map((item) => mapQuote(item));
+        rememberCnNames(quotes);
+        return quotes;
       } catch {
         return [];
       }
@@ -437,8 +472,8 @@ export function createMarketService(options = {}) {
     const stillMissing = missingXueqiu.filter((symbol) => !thsList.some((item) => item.symbol === symbol));
     const fallback = stillMissing.length ? await fetchYahooQuotes(stillMissing, { refresh, signal }) : [];
     const bySymbol = new Map([...otherList, ...fallback, ...thsList, ...xueqiuList, ...sinaList].map((item) => [item.symbol, item]));
-    return unique.map((symbol) => bySymbol.get(symbol)).filter(Boolean).map(item => isCnYahooSymbol(item.symbol)
-      ? { ...item, session: cnTradingCalendarAt(now()).session } : item);
+    return unique.map((symbol) => bySymbol.get(symbol)).filter(Boolean).map((item) => withRememberedName(isCnYahooSymbol(item.symbol)
+      ? { ...item, session: cnTradingCalendarAt(now()).session } : item));
   }
 
   async function getBoard({ board = 'overview', extra = '', extraUs = extra, extraAsia = extra, extraCn = extra } = {}) {
