@@ -68,16 +68,18 @@ function slimSparkline(value) {
   return points.length >= 2 ? points : [];
 }
 
-function slimQuote(item) {
+function slimQuote(item, { includeSummary = false } = {}) {
   if (!item?.symbol) return null;
   const asOf = Number(item.asOf ?? item.marketTime);
   const sparkline = slimSparkline(item.sparkline);
+  const summary = includeSummary ? clip(item.summary, 40) : '';
   return {
     symbol: item.symbol,
     name: item.name || '',
     lastPrice: item.lastPrice ?? null,
     changePct: item.changePct ?? null,
     currency: item.currency || '',
+    ...(summary ? { summary } : {}),
     ...(item.session ? { session: item.session } : {}),
     ...(typeof item.marketOpen === 'boolean' ? { marketOpen: item.marketOpen } : {}),
     ...(Number.isFinite(asOf) && asOf > 0 ? { asOf } : {}),
@@ -103,9 +105,9 @@ function slimMarket(market) {
       title: section.title || '',
       session: section.session || '',
       ...(typeof section.marketOpen === 'boolean' ? { marketOpen: section.marketOpen } : {}),
-      indices: (section.indices || []).map(slimQuote).filter(Boolean),
-      gainers: (section.gainers || []).slice(0, 6).map(slimQuote).filter(Boolean),
-      losers: (section.losers || []).slice(0, 6).map(slimQuote).filter(Boolean),
+      indices: (section.indices || []).map((item) => slimQuote(item)).filter(Boolean),
+      gainers: (section.gainers || []).slice(0, 6).map((item) => slimQuote(item, { includeSummary: true })).filter(Boolean),
+      losers: (section.losers || []).slice(0, 6).map((item) => slimQuote(item, { includeSummary: true })).filter(Boolean),
     })),
   };
 }
