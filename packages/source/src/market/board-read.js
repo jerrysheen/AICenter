@@ -12,6 +12,7 @@ import {
   quoteInRegularSession,
   quoteVenue,
   usRegularSessionAt,
+  usSessionAt,
 } from './boards.js';
 
 export const EXTRA_QUOTE_TIMEOUT_MS = 10_000;
@@ -133,7 +134,13 @@ function quoteLiveSession(item, nowMs, boardHint) {
   const venue = quoteVenue(item, boardHint);
   if (venue === 'cn') return cnSessionAt(nowMs);
   if (venue === 'hk') return hkSessionAt(nowMs);
-  if (venue === 'us') return usRegularSessionAt(nowMs);
+  if (venue === 'us') {
+    const clock = usSessionAt(nowMs);
+    if (clock !== 'pre' && clock !== 'post') return clock;
+    const own = String(item?.session || '').trim();
+    if (own === 'pre' || own === 'post') return own;
+    return clock;
+  }
   if (venue === 'asia') {
     const open = hkSessionAt(nowMs) === 'regular' || Object.values(asiaSessionsAt(nowMs)).includes('regular');
     return open ? 'regular' : 'closed';
@@ -176,19 +183,54 @@ function boardClockOpen(payload, nowMs) {
   return false;
 }
 
+function listedExtendedSession(rows) {
+  const sessions = rows.map((item) => String(item?.session || '').trim());
+  if (sessions.includes('pre')) return 'pre';
+  if (sessions.includes('post')) return 'post';
+  return '';
+}
+
+function usExtendedSession(rows, nowMs) {
+  const listed = listedExtendedSession(rows);
+  if (listed) return listed;
+  const clock = usSessionAt(nowMs);
+  return clock === 'pre' || clock === 'post' ? clock : '';
+}
+
+function idleSession(rows) {
+  if ((rows || []).some((item) => item?.session === 'break')) return 'break';
+  return 'closed';
+}
+
 function sectionLiveSession(section, nowMs) {
   const rows = ['indices', 'gainers', 'losers']
     .flatMap((key) => section[key] || [])
     .filter((item) => item && item.lastPrice != null);
-  if (rows.length) return rows.some((item) => item.marketOpen === true) ? 'regular' : 'closed';
   const id = String(section.id || '').toLowerCase();
+  if (rows.length) {
+    if (rows.some((item) => item.marketOpen === true)) return 'regular';
+    if (id === 'us') {
+      const extended = usExtendedSession(rows, nowMs);
+      if (extended) return extended;
+    }
+    return idleSession(rows);
+  }
   if (id === 'cn') return cnSessionAt(nowMs);
-  if (id === 'us') return usRegularSessionAt(nowMs);
+  if (id === 'us') return usSessionAt(nowMs);
   if (id === 'asia' || id === 'hk') {
     const asia = id === 'asia' && Object.values(asiaSessionsAt(nowMs)).includes('regular');
     return hkSessionAt(nowMs) === 'regular' || asia ? 'regular' : 'closed';
   }
   return String(section.session || '').trim() === 'regular' ? 'regular' : 'closed';
+}
+
+function boardLiveSession(payload, nowMs, open) {
+  if (open) return 'regular';
+  const board = String(payload.board || '').toLowerCase();
+  const focus = String(payload.focus || '').toLowerCase();
+  const usBoard = board === 'us' || (board === 'overview' && (focus || preferredOverviewFocus(nowMs)) === 'us');
+  if (!usBoard) return '';
+  return usExtendedSession(pricedRows(payload), nowMs) || '';
 }
 
 export function withMarketClock(payload, nowMs = Date.now()) {
@@ -212,7 +254,19 @@ export function withMarketClock(payload, nowMs = Date.now()) {
     });
   }
   const open = boardClockOpen(next, nowMs);
-  return { ...next, marketOpen: open, session: open ? 'regular' : 'closed' };
+  const idleRows = [
+    ...(next.indices || []),
+    ...(next.watchlist || []),
+    ...(next.gainers || []),
+    ...(next.losers || []),
+    ...((next.sections || []).flatMap((section) => [
+      ...(section?.indices || []),
+      ...(section?.gainers || []),
+      ...(section?.losers || []),
+    ])),
+  ];
+  const live = open ? 'regular' : boardLiveSession(next, nowMs, open);
+  return { ...next, marketOpen: open, session: live || idleSession(idleRows) };
 }
 
 export function stampBoardStale(payload, nowMs, staleMs) {

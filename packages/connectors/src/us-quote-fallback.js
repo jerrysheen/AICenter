@@ -1,3 +1,5 @@
+import { usSessionAt } from './us-session.js';
+
 const TENCENT_URL = 'https://qt.gtimg.cn/q=';
 const SINA_URL = 'https://hq.sinajs.cn/list=';
 const DEFAULT_TIMEOUT_MS = 8_000;
@@ -71,6 +73,35 @@ function parseClock(text, timeZone) {
   }, timeZone);
 }
 
+const SINA_MONTHS = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+};
+
+function sinaYear(value, nowMs) {
+  const year = Number(String(value || '').trim());
+  if (Number.isInteger(year) && year >= 1990 && year <= 2100) return year;
+  return Number(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+  }).format(new Date(nowMs)));
+}
+
+function parseSinaEt(text, year) {
+  const match = String(text || '').trim().match(/^([A-Za-z]{3})\s+(\d{1,2})\s+(\d{1,2}):(\d{2})(AM|PM)\s+E[DS]T$/i);
+  if (!match || !SINA_MONTHS[match[1].toLowerCase()]) return null;
+  let hour = Number(match[3]) % 12;
+  if (match[5].toUpperCase() === 'PM') hour += 12;
+  return timestampInZone({
+    year,
+    month: SINA_MONTHS[match[1].toLowerCase()],
+    day: Number(match[2]),
+    hour,
+    minute: Number(match[4]),
+    second: 0,
+  }, 'America/New_York');
+}
+
 function freshEnough(asOf, nowMs) {
   if (asOf == null) return false;
   return nowMs - asOf <= MAX_QUOTE_AGE_MS && asOf - nowMs < 5 * 60_000;
@@ -125,13 +156,21 @@ export function quoteFromTencentUsBody(body, symbol, nowMs = Date.now()) {
 
 export function quoteFromSinaUsBody(body, symbol, nowMs = Date.now()) {
   const fields = String(body || '').split(',');
-  const lastPrice = num(fields[1]);
-  if (!String(fields[0] || '').trim() || lastPrice == null || lastPrice <= 0) return null;
-  const asOf = parseClock(fields[3], 'Asia/Shanghai');
+  const regularPrice = num(fields[1]);
+  if (!String(fields[0] || '').trim() || regularPrice == null || regularPrice <= 0) return null;
+  const year = sinaYear(fields[29], nowMs);
+  const extendedAt = parseSinaEt(fields[24], year);
+  const extendedSession = extendedAt == null ? '' : usSessionAt(extendedAt);
+  const extendedPrice = num(fields[21]);
+  const extended = extendedPrice != null && extendedPrice > 0 && (extendedSession === 'pre' || extendedSession === 'post');
+  const asOf = extended
+    ? extendedAt
+    : (parseSinaEt(fields[25], year) ?? parseClock(fields[3], 'Asia/Shanghai'));
   if (!freshEnough(asOf, nowMs)) return null;
-  const prevClose = num(fields[26]);
-  const change = num(fields[4]);
-  const changePct = num(fields[2]);
+  const lastPrice = extended ? extendedPrice : regularPrice;
+  const prevClose = extended ? regularPrice : num(fields[26]);
+  const change = extended ? num(fields[23]) : num(fields[4]);
+  const changePct = extended ? num(fields[22]) : num(fields[2]);
   return {
     symbol: String(symbol || '').toUpperCase(),
     name: String(fields[0] || symbol).trim() || String(symbol),
@@ -144,7 +183,7 @@ export function quoteFromSinaUsBody(body, symbol, nowMs = Date.now()) {
     volume: num(fields[10]),
     sparkline: [],
     currency: 'USD',
-    session: sessionFor(asOf, nowMs),
+    session: extended ? extendedSession : sessionFor(asOf, nowMs),
     marketTime: asOf == null ? null : Math.trunc(asOf / 1000),
     asOf,
     provider: 'sina',
@@ -215,24 +254,24 @@ export function createUsQuoteFallback(options = {}) {
     const unique = [...new Set((symbols || []).map((item) => String(item || '').trim().toUpperCase()).filter(Boolean))];
     const quotes = [];
     const errors = [];
-    const tencentPairs = unique
-      .map((symbol) => ({ symbol, code: yahooToTencentUs(symbol) }))
-      .filter((item) => item.code);
-    if (tencentPairs.length) {
+    const have = new Set();
+    const session = usSessionAt(now());
+    const extended = session === 'pre' || session === 'post';
+    const stages = extended
+      ? [{ map: yahooToSinaUs, run: fetchSina }, { map: yahooToTencentUs, run: fetchTencent }]
+      : [{ map: yahooToTencentUs, run: fetchTencent }, { map: yahooToSinaUs, run: fetchSina }];
+    for (const stage of stages) {
+      const pairs = unique
+        .filter((symbol) => !have.has(symbol))
+        .map((symbol) => ({ symbol, code: stage.map(symbol) }))
+        .filter((item) => item.code);
+      if (!pairs.length) continue;
       try {
-        quotes.push(...await fetchTencent(tencentPairs));
-      } catch (error) {
-        errors.push(error);
-      }
-    }
-    const have = new Set(quotes.map((item) => item.symbol));
-    const sinaPairs = unique
-      .filter((symbol) => !have.has(symbol))
-      .map((symbol) => ({ symbol, code: yahooToSinaUs(symbol) }))
-      .filter((item) => item.code);
-    if (sinaPairs.length) {
-      try {
-        quotes.push(...await fetchSina(sinaPairs));
+        for (const quote of await stage.run(pairs)) {
+          if (have.has(quote.symbol)) continue;
+          have.add(quote.symbol);
+          quotes.push(quote);
+        }
       } catch (error) {
         errors.push(error);
       }

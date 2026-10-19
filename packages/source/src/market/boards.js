@@ -1,5 +1,8 @@
+import { usSessionAt } from '../../../connectors/src/us-session.js';
 import { DEFAULT_MARKET_CATALOG, isForeignToUsListingSymbol } from './catalog.js';
 import { cnTradingCalendarAt, cnTradingCalendarNote } from '../../../domain/src/cn-trading-calendar.js';
+
+export { usSessionAt };
 
 function catalogOrDefault(catalog) {
   return catalog || DEFAULT_MARKET_CATALOG;
@@ -118,7 +121,7 @@ function sessionInWindow(nowMs, timeZone, openMinutes, closeMinutes) {
 }
 
 export function usRegularSessionAt(nowMs = Date.now()) {
-  return sessionInWindow(nowMs, 'America/New_York', 9 * 60 + 30, 16 * 60);
+  return usSessionAt(nowMs) === 'regular' ? 'regular' : 'closed';
 }
 
 export function asiaSessionsAt(nowMs = Date.now()) {
@@ -216,6 +219,34 @@ function catalogNameFor(section, symbol) {
     if (name && name.toUpperCase() !== key) return name;
   }
   return '';
+}
+
+export function catalogQuoteName(marketCatalog, symbol) {
+  const key = String(symbol || '').trim().toUpperCase();
+  if (!key) return '';
+  const catalog = catalogOrDefault(marketCatalog);
+  for (const section of [catalog.us, catalog.asia, catalog.cn]) {
+    const found = catalogNameFor(section, key);
+    if (found) return found;
+  }
+  for (const item of catalog.global?.watchlist || []) {
+    const candidates = [item?.symbol, item?.yahoo].map((value) => String(value || '').trim().toUpperCase());
+    if (!candidates.includes(key)) continue;
+    const name = String(item?.name || '').trim();
+    if (name && name.toUpperCase() !== key) return name;
+  }
+  return '';
+}
+
+export function quoteDisplayName({ symbol, quotedName = '', catalogName = '', rememberedName = '' } = {}) {
+  const key = String(symbol || '').trim().toUpperCase();
+  const catalog = String(catalogName || '').trim();
+  const quoted = String(quotedName || '').trim();
+  const remembered = String(rememberedName || '').trim();
+  if (catalog && catalog.toUpperCase() !== key) return catalog;
+  if (quoted && quoted.toUpperCase() !== key) return quoted;
+  if (remembered && remembered.toUpperCase() !== key) return remembered;
+  return quoted || catalog || remembered || String(symbol || '').trim();
 }
 
 function cnWatchName(item, quote, section) {
@@ -396,7 +427,6 @@ export function buildCnMarketBoard({ quotes, extraSymbols = [], fetchedAt = Date
     fetchedAt,
     indexSymbols: new Set(section.indices.map((item) => item.symbol)),
     currency: 'CNY',
-    provider: 'market',
     uniqueRankedBySymbol: true,
   });
 }
