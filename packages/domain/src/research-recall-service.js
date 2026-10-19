@@ -60,6 +60,7 @@ function addTokens(usage, extra = {}) {
   const output = extra.outputTokens ?? extra.output_tokens;
   if (Number.isFinite(Number(input))) usage.inputTokens = (usage.inputTokens ?? 0) + Number(input);
   if (Number.isFinite(Number(output))) usage.outputTokens = (usage.outputTokens ?? 0) + Number(output);
+  if (extra.requests === 0) return;
   const reported = extra.requests;
   usage.requests += Number.isInteger(reported) && reported > 0 ? reported : 1;
 }
@@ -323,12 +324,20 @@ export function createResearchRecallService({
     return { workspaceId, resourceType: member.resourceType, resourceId: member.resourceId, sourceVersion: member.sourceVersion, modelId };
   }
 
+  function tagPromptVersion() {
+    return tagPort?.promptVersion || RESEARCH_TAG_PROMPT_VERSION;
+  }
+
+  function relevancePromptVersion() {
+    return relevancePort?.promptVersion || RESEARCH_RELEVANCE_PROMPT_VERSION;
+  }
+
   function tagKey(workspaceId, member, tag, pass) {
-    return { ...baseKey(workspaceId, member), tagId: tag.id, definitionHash: tag.definitionHash, promptVersion: RESEARCH_TAG_PROMPT_VERSION, inputHash: inputHash(member, pass) };
+    return { ...baseKey(workspaceId, member), tagId: tag.id, definitionHash: tag.definitionHash, promptVersion: tagPromptVersion(), inputHash: inputHash(member, pass) };
   }
 
   function relevanceKey(workspaceId, member, question, pass) {
-    return { ...baseKey(workspaceId, member), questionId: question.id, questionHash: question.questionHash, promptVersion: RESEARCH_RELEVANCE_PROMPT_VERSION, inputHash: inputHash(member, pass) };
+    return { ...baseKey(workspaceId, member), questionId: question.id, questionHash: question.questionHash, promptVersion: relevancePromptVersion(), inputHash: inputHash(member, pass) };
   }
 
   async function judgeMembers(members, ctx) {
@@ -400,7 +409,7 @@ export function createResearchRecallService({
     if (claimed.length) {
       const asked = projectResearchTags(uniqueTags(claimed.flatMap((item) => item.tags)));
       try {
-        const result = await tagPort.judge({ tags: asked, items: claimed.map((item) => payloadItem(item.member, pass)), promptVersion: RESEARCH_TAG_PROMPT_VERSION, question: ctx.question });
+        const result = await tagPort.judge({ tags: asked, items: claimed.map((item) => payloadItem(item.member, pass)), promptVersion: tagPromptVersion(), question: ctx.question });
         addTokens(ctx.usage, result?.usage || {});
         if (result?.model) ctx.usage.model = result.model;
         const byId = new Map((result?.assignments || []).map((item) => [item.resourceId, item]));
@@ -437,7 +446,7 @@ export function createResearchRecallService({
         const result = await relevancePort.judge({
           question: { id: ctx.question.id, objective: ctx.question.objective, subquestions: ctx.question.subquestions.map((item) => ({ id: item.id, text: item.text })), evidence: ctx.question.evidence },
           items: claimed.map((member) => payloadItem(member, pass)),
-          promptVersion: RESEARCH_RELEVANCE_PROMPT_VERSION,
+          promptVersion: relevancePromptVersion(),
         });
         addTokens(ctx.usage, result?.usage || {});
         if (result?.model) ctx.usage.model = result.model;
