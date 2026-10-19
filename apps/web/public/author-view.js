@@ -1,5 +1,6 @@
-const PLATFORM_LABEL = { all: '全部', x: 'X', xueqiu: '雪球', bilibili: 'B站', youtube: 'YouTube' };
-const PLATFORM_COLOR = { x: '#111111', xueqiu: '#c0392b', bilibili: '#fb7299', youtube: '#cc0000' };
+const PLATFORM_LABEL = { all: '全部', x: 'X', xueqiu: '雪球', bilibili: 'B站', youtube: 'YouTube', official: '官方', media: '媒体' };
+const PLATFORM_ORDER = ['all', 'x', 'xueqiu', 'bilibili', 'youtube', 'official', 'media'];
+const PLATFORM_COLOR = { x: '#111111', xueqiu: '#c0392b', bilibili: '#fb7299', youtube: '#cc0000', official: '#0A59F7', media: '#0f6b4c' };
 const PAGE_SIZE = 30;
 
 const pages = new Map();
@@ -131,9 +132,10 @@ export function createAuthorView({ api, openAuthor, openArticle }) {
     const counts = payload.counts || {};
     const switcher = document.createElement('div');
     switcher.className = 'author-switch';
+    // 列表左右滑会和 iOS 边缘返回、Android 返回手势抢水平滑动，所以只让这一行标签自己横滑。
     switcher.setAttribute('role', 'tablist');
     switcher.setAttribute('aria-label', '作者平台');
-    for (const id of ['all', 'x', 'xueqiu', 'bilibili', 'youtube']) {
+    for (const id of PLATFORM_ORDER) {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = `author-switch-item${id === listPlatform ? ' is-active' : ''}`;
@@ -148,6 +150,8 @@ export function createAuthorView({ api, openAuthor, openArticle }) {
       switcher.append(button);
     }
     shell.append(switcher);
+    const active = switcher.querySelector('.is-active');
+    if (active) active.scrollIntoView({ inline: 'nearest', block: 'nearest' });
     const rows = document.createElement('div');
     rows.className = 'author-list-rows';
     const followed = Array.isArray(payload.followed) ? payload.followed : [];
@@ -169,7 +173,7 @@ export function createAuthorView({ api, openAuthor, openArticle }) {
     if (!followed.length && !others.length) {
       const empty = document.createElement('p');
       empty.className = 'feed-empty';
-      empty.textContent = '近 30 天还没有足够的作者更新。';
+      empty.textContent = '这里还没有符合条件的作者。';
       rows.append(empty);
     }
     shell.append(rows);

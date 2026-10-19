@@ -1,3 +1,4 @@
+import { annotateOfficialReleases } from '../../../domain/src/source-authors.js';
 import { createMemorySnapshotCache } from '../../../runtime/src/snapshot-cache.js';
 import { emptyStaticSignalBoard, projectStaticSignalBoard } from './board.js';
 
@@ -23,7 +24,10 @@ export function createStaticSignalBoardReader({
         return { board: emptyStaticSignalBoard(now()), pending: true };
       }
       return {
-        board: projectStaticSignalBoard(stored.payload, rawInput),
+        board: annotateOfficialReleases(
+          projectStaticSignalBoard(stored.payload, rawInput),
+          stored.payload.releaseSourceIds,
+        ),
         pending: false,
       };
     },

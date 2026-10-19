@@ -140,13 +140,15 @@ function dedupeEvents(rows) {
 function dedupeReleases(rows) {
   const seen = new Set();
   const releases = [];
+  const releaseSourceIds = {};
   for (const row of rows.sort((left, right) => right.release.publishedAt - left.release.publishedAt)) {
     const keys = releaseKeys(row.release);
     if (keys.some((key) => seen.has(key))) continue;
     keys.forEach((key) => seen.add(key));
     releases.push(row.release);
+    if (row.release?.releaseId && row.sourceId) releaseSourceIds[row.release.releaseId] = row.sourceId;
   }
-  return releases;
+  return { releases, releaseSourceIds };
 }
 
 function isFocusEvent(event, sourceId) {
@@ -204,13 +206,19 @@ async function assembleStaticSignalBoard(sourcePort, rawInput, options = {}) {
   streaks.flush();
 
   const deduped = dedupeEvents(calendarRows);
+  const releaseDeduped = dedupeReleases(releaseRows);
   const board = parseContract(StaticSignalBoardSchema, {
     generatedAt: observedNow,
     upcoming: deduped.events.slice(0, input.limit),
-    releases: dedupeReleases(releaseRows).slice(0, input.releaseLimit),
+    releases: releaseDeduped.releases.slice(0, input.releaseLimit),
     sourceHealth,
   });
-  return { board, eventSourceIds: deduped.eventSourceIds };
+  const releaseSourceIds = {};
+  for (const release of board.releases) {
+    const sourceId = releaseDeduped.releaseSourceIds[release.releaseId];
+    if (sourceId) releaseSourceIds[release.releaseId] = sourceId;
+  }
+  return { board, eventSourceIds: deduped.eventSourceIds, releaseSourceIds };
 }
 
 export async function readStaticSignalBoard(sourcePort, rawInput, options = {}) {
@@ -220,7 +228,7 @@ export async function readStaticSignalBoard(sourcePort, rawInput, options = {}) 
 
 export async function readStaticSignalBoardSnapshot(sourcePort, rawInput, options = {}) {
   const assembled = await assembleStaticSignalBoard(sourcePort, rawInput, options);
-  return { ...assembled.board, eventSourceIds: assembled.eventSourceIds };
+  return { ...assembled.board, eventSourceIds: assembled.eventSourceIds, releaseSourceIds: assembled.releaseSourceIds };
 }
 
 export function emptyStaticSignalBoard(generatedAt = Date.now()) {

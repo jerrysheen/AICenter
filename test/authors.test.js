@@ -200,7 +200,9 @@ test('author list pages with a cursor and keeps followed authors above the activ
     assert.notEqual(second.others[0].authorId, first.others[0].authorId);
     const counts = authors.countAuthors('local');
     assert.equal(counts.xueqiu, 3);
-    assert.equal(counts.all, 3);
+    assert.equal(counts.media, 1);
+    assert.equal(authors.getAuthor('local', 'media:xueqiu7x24').name, '雪球7x24');
+    assert.equal(counts.all, 4);
     authors.setFollow('local', 'xueqiu:3', false);
     assert.equal(authors.getAuthor('local', 'xueqiu:3').followed, false);
     const service = createAuthorService({

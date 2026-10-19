@@ -44,6 +44,14 @@ export const EXCLUDE_YOUTUBE_SQL = `NOT EXISTS (
     AND youtube_excluded.provider = 'youtube'
 )`;
 
+// 只排除看板镜像。policy 源的真实媒体文章作者也是 official:，不能按作者或 lane 排除。
+export const EXCLUDE_OFFICIAL_MIRROR_SQL = `NOT EXISTS (
+  SELECT 1 FROM captures official_mirror
+  WHERE official_mirror.id = ci.capture_id
+    AND official_mirror.workspace_id = ci.workspace_id
+    AND json_extract(official_mirror.metadata_json, '$.officialMirror') = 1
+)`;
+
 const USER_VISIBLE_CONTENT_SQL = `NOT EXISTS (
   SELECT 1 FROM user_item_states uis
   WHERE uis.workspace_id = ci.workspace_id
@@ -746,6 +754,20 @@ export function createFeedRepository(database, emitEvent) {
         next.title, next.summary, next.body, next.authorName, next.sourceUrl, next.publishedAt, next.dedupKey || null,
         workspaceId, id,
       );
+      if (next.publishedAt && next.publishedAt !== (row.published_at || null)) {
+        const captureId = database.prepare(`SELECT capture_id, created_at FROM content_items
+          WHERE workspace_id = ? AND id = ?`).get(workspaceId, id);
+        if (captureId?.capture_id) {
+          recordCapturedAuthor(database, {
+            workspaceId,
+            captureId: captureId.capture_id,
+            contentItemId: id,
+            title: next.title,
+            publishedAt: next.publishedAt,
+            createdAt: captureId.created_at,
+          });
+        }
+      }
       return contentChanged;
     },
 
@@ -761,7 +783,34 @@ export function createFeedRepository(database, emitEvent) {
       database.prepare('UPDATE captures SET published_at = ? WHERE id = ?').run(at, capture.id);
       database.prepare(`UPDATE content_items SET published_at = ?, updated_at = ?
         WHERE workspace_id = ? AND capture_id = ?`).run(at, Date.now(), workspaceId, capture.id);
+      const item = database.prepare(`SELECT id, title, created_at FROM content_items
+        WHERE workspace_id = ? AND capture_id = ?`).get(workspaceId, capture.id);
+      if (item) {
+        recordCapturedAuthor(database, {
+          workspaceId,
+          captureId: capture.id,
+          contentItemId: item.id,
+          title: item.title || '',
+          publishedAt: at,
+          createdAt: item.created_at,
+        });
+      }
       return true;
+    },
+
+    relinkCapturedAuthor(workspaceId, captureId, extras = {}) {
+      const item = database.prepare(`SELECT id, title, published_at, created_at FROM content_items
+        WHERE workspace_id = ? AND capture_id = ?`).get(workspaceId, captureId);
+      if (!item) return null;
+      return recordCapturedAuthor(database, {
+        workspaceId,
+        captureId,
+        contentItemId: item.id,
+        title: extras.title || item.title || '',
+        publishedAt: extras.publishedAt || item.published_at,
+        publishedAtRaw: extras.publishedAtRaw || '',
+        createdAt: item.created_at,
+      });
     },
 
     listRecentXCaptures(workspaceId, { since = 0, limit = 500 } = {}) {
@@ -1369,12 +1418,14 @@ export function createFeedRepository(database, emitEvent) {
             FROM content_items ci
             LEFT JOIN captures c ON c.id = ci.capture_id
             WHERE ci.workspace_id = ? AND ci.id IN (${wanted.map(() => '?').join(', ')})
-              AND ${approvedQualitySql(qualityRule)} AND ${EXCLUDE_YOUTUBE_SQL}`).all(workspaceId, ...wanted)
+              AND ${approvedQualitySql(qualityRule)} AND ${EXCLUDE_YOUTUBE_SQL}
+              AND ${EXCLUDE_OFFICIAL_MIRROR_SQL}`).all(workspaceId, ...wanted)
         : database.prepare(`SELECT ci.*, c.provider AS provider, c.external_id AS external_id
             FROM content_items ci
             LEFT JOIN captures c ON c.id = ci.capture_id
             WHERE ci.workspace_id = ? AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
               AND ${EXCLUDE_YOUTUBE_SQL}
+              AND ${EXCLUDE_OFFICIAL_MIRROR_SQL}
             ORDER BY ci.created_at DESC, ci.id DESC LIMIT ?`).all(workspaceId, safeLimit);
       return rows.map((row) => ({
         ...mapContentItem(row),
@@ -1389,11 +1440,13 @@ export function createFeedRepository(database, emitEvent) {
         ? database.prepare(`SELECT * FROM content_items ci WHERE ci.workspace_id = ?
             AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
             AND ${EXCLUDE_YOUTUBE_SQL}
+            AND ${EXCLUDE_OFFICIAL_MIRROR_SQL}
             ORDER BY ci.created_at DESC, ci.id DESC LIMIT ?`).all(workspaceId, safeLimit)
         : database.prepare(`SELECT * FROM content_items ci WHERE ci.workspace_id = ?
             AND ci.created_at < ?
             AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
             AND ${EXCLUDE_YOUTUBE_SQL}
+            AND ${EXCLUDE_OFFICIAL_MIRROR_SQL}
             ORDER BY ci.created_at DESC, ci.id DESC LIMIT ?`)
           .all(workspaceId, Number(before), safeLimit);
       return rows.map(mapContentItem);
@@ -1409,6 +1462,7 @@ export function createFeedRepository(database, emitEvent) {
         LEFT JOIN subscriptions sub ON sub.source_account_id=sa.id AND sub.workspace_id=ci.workspace_id
         WHERE ci.workspace_id=? AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
           AND ${EXCLUDE_YOUTUBE_SQL}
+          AND ${EXCLUDE_OFFICIAL_MIRROR_SQL}
           AND COALESCE(ci.published_at,ci.created_at)>=? AND COALESCE(ci.published_at,ci.created_at)<?
         AND ci.id NOT IN (SELECT value FROM json_each(?))
         GROUP BY COALESCE(c.source_account_id,'local')`).all(workspaceId,startAt,endAt,JSON.stringify(excludedItemIds));
@@ -1431,6 +1485,7 @@ export function createFeedRepository(database, emitEvent) {
         WHERE ci.workspace_id = ?
           AND ${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}
           AND ${EXCLUDE_YOUTUBE_SQL}
+          AND ${EXCLUDE_OFFICIAL_MIRROR_SQL}
           AND ${timeSql} >= ?
           AND ${timeSql} < ?
           AND (? IS NULL OR COALESCE(c.source_account_id,'local')=?)
