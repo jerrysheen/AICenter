@@ -1234,8 +1234,42 @@ main {
 .breadth-track rect.up { fill: var(--data-up); }
 .breadth-track rect.flat { fill: var(--font-tertiary); }
 .breadth-track rect.down { fill: var(--data-down); }
-.mover-row { display: grid; grid-template-columns: 56px 1fr auto; gap: var(--space-2); align-items: center; min-height: 32px; font-size: 12px; }
-.mover-row small { color: var(--font-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mover-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  align-items: center;
+  width: 100%;
+  min-height: 40px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font-size: 12px;
+}
+.mover-row .quote-identity { min-width: 0; }
+.mover-row .quote-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+}
+.mover-row .quote-code {
+  display: block;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--font-tertiary);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 16px;
+}
+.mover-row b { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .market-filter {
   display: block;
   margin: var(--space-2) 0 var(--space-3);
