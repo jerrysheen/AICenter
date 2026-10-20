@@ -1267,6 +1267,23 @@ function setView(name, options = {}) {
   const newArticle = view === 'page' && state.pageKind === 'article'
     && (previousPageKind !== 'article' || previousPageId !== state.pageId) && !options.fromHistory;
   if (newArticle) viewScrollY.page = 0;
+  const openingQuote = openingQuotePage({
+    view,
+    pageKind: state.pageKind,
+    previousPageKind,
+    previousPageId,
+    pageId: state.pageId,
+    fromHistory: Boolean(options.fromHistory),
+    back: Boolean(options.back),
+  });
+  if (openingQuote) {
+    viewScrollY.page = 0;
+    try { history.scrollRestoration = 'manual'; } catch {}
+  }
+  // 切页会先改布局。滚动事件若在复位前写入 viewScrollY，列表原位置会被详情页的夹住滚动盖掉。
+  if (openingQuote || (leaving && view !== 'feed' && !reportViewOwnsScroll(view, briefPage.hasHourScroll()))) {
+    restoringViewScroll = true;
+  }
   if ((view !== 'page' || parsed.pageKind !== 'article') && !elements['post-dialog']?.open) {
     state.dialogPost = null;
   }
@@ -1400,8 +1417,10 @@ function setView(name, options = {}) {
     renderPosts();
   }
   if (view === 'feed' && (leaving || options.replace)) scrollFeedToTop();
+  else if (openingQuote) scrollPageToTop();
   else if (leaving && !reportViewOwnsScroll(view, briefPage.hasHourScroll())) restoreViewScroll(view);
   else if (newArticle) window.scrollTo(0, 0);
+  else restoringViewScroll = false;
   persistFeedBrowseState();
   syncAskKeyboard();
 }
@@ -2331,6 +2350,54 @@ function scrollFeedToTop() {
   requestAnimationFrame(() => {
     apply();
     requestAnimationFrame(apply);
+  });
+}
+
+function openingQuotePage(input = {}) {
+  const view = input.view;
+  const pageKind = input.pageKind;
+  const previousPageKind = input.previousPageKind;
+  const previousPageId = input.previousPageId;
+  const pageId = input.pageId;
+  const fromHistory = input.fromHistory === true;
+  const back = input.back === true;
+  return view === 'page' && pageKind === 'quote'
+    && (previousPageKind !== 'quote' || String(previousPageId || '') !== String(pageId || ''))
+    && !fromHistory && !back;
+}
+
+function scrollPageToTop() {
+  viewScrollY.page = 0;
+  restoringViewScroll = true;
+  const release = () => {
+    restoringViewScroll = false;
+    viewScrollY.page = 0;
+  };
+  if (document.body?.dataset?.view !== 'page' || document.body.classList.contains('is-dialog-open')) {
+    release();
+    return;
+  }
+  try { history.scrollRestoration = 'manual'; } catch {}
+  const focused = document.activeElement;
+  if (focused && focused !== document.body && typeof focused.blur === 'function') {
+    try { focused.blur(); } catch {}
+  }
+  const apply = () => {
+    viewScrollY.page = 0;
+    window.scrollTo(0, 0);
+  };
+  apply();
+  const frame = window.requestAnimationFrame?.bind(window);
+  if (typeof frame !== 'function') {
+    release();
+    return;
+  }
+  frame(() => {
+    apply();
+    frame(() => {
+      apply();
+      release();
+    });
   });
 }
 
@@ -10212,6 +10279,46 @@ function destroyQuoteChart() {
   state.quoteChart = null;
 }
 
+const QUOTE_ASSET_LABELS = {
+  equity: '股票',
+  index: '指数',
+  fx: '外汇',
+  rate: '利率',
+  metal: '贵金属',
+  energy: '能源',
+  future: '期货',
+  crypto: '加密',
+  fund: '基金',
+  cash: '现金',
+  etf: 'ETF',
+};
+
+function quoteAssetLabel(assetClass) {
+  const key = String(assetClass || '').trim();
+  if (!key) return '';
+  return QUOTE_ASSET_LABELS[key] || '';
+}
+
+function quotePriceReady(quote) {
+  return quote?.lastPrice != null && quote.lastPrice !== '';
+}
+
+function quoteMetaParts(quote, symbol, extras = {}) {
+  const key = String(symbol || quote?.symbol || '').trim();
+  const group = String(quote?.group || extras.group || '').trim();
+  const asset = quoteAssetLabel(quote?.assetClass || extras.asset || extras.assetClass || '');
+  const parts = [key, group, asset].filter(Boolean);
+  if (quotePriceReady(quote)) parts.push(sessionLabel(quote?.session));
+  return { pending: !quotePriceReady(quote), text: parts.filter(Boolean).join(' · ') };
+}
+
+function quoteSkeletonBar() {
+  const bar = document.createElement('span');
+  bar.className = 'quote-skeleton';
+  bar.setAttribute('aria-hidden', 'true');
+  return bar;
+}
+
 function quoteTitleText(quote, symbol) {
   const name = String(quote?.name || '').trim();
   const key = String(symbol || '').trim().toUpperCase();
@@ -10228,40 +10335,80 @@ function keptQuoteName(currentTitle, incoming, symbol) {
   return incomingName || current || symbol;
 }
 
+function paintPendingQuoteSlot(node) {
+  node.textContent = '';
+  node.classList.remove('up', 'down');
+  node.classList.add('is-pending');
+  node.setAttribute('aria-busy', 'true');
+  node.replaceChildren(quoteSkeletonBar());
+}
+
 function paintQuoteFigures(wrap, quote, { dailyAt = 0 } = {}) {
   if (!wrap || !quote) return;
   const symbol = quote.symbol || state.pageId;
+  const pending = !quotePriceReady(quote);
   const knownChange = quote.changePct != null && quote.changePct !== '';
   const up = (quote.changePct ?? 0) >= 0;
+  if (quote.group) wrap.dataset.group = quote.group;
+  if (quote.assetClass) wrap.dataset.asset = quote.assetClass;
   const title = wrap.querySelector('.detail-title');
-  if (title && !dailyAt) title.textContent = keptQuoteName(title.textContent, quote, symbol);
+  if (title && !dailyAt) {
+    const named = keptQuoteName(title.textContent, quote, symbol);
+    const showName = named && named.toUpperCase() !== String(symbol || '').trim().toUpperCase();
+    if (pending && !showName) {
+      title.textContent = '';
+      title.classList.add('is-pending');
+      title.setAttribute('aria-busy', 'true');
+    } else {
+      title.textContent = named || symbol;
+      title.classList.remove('is-pending');
+      title.removeAttribute('aria-busy');
+    }
+  }
   const meta = wrap.querySelector('.detail-meta');
   if (meta && !dailyAt) {
-    const group = quote.group || wrap.dataset.group || '';
-    const assetClass = quote.assetClass || wrap.dataset.asset || '';
-    meta.textContent = `${symbol}${group ? ` · ${group}` : ''}${assetClass ? ` · ${assetClass}` : ''} · ${sessionLabel(quote.session)}`;
+    const parts = quoteMetaParts(quote, symbol, { group: wrap.dataset.group, asset: wrap.dataset.asset });
+    meta.replaceChildren(document.createTextNode(parts.text));
+    if (pending) {
+      if (parts.text) meta.append(document.createTextNode(' · '));
+      meta.append(quoteSkeletonBar());
+      meta.setAttribute('aria-busy', 'true');
+    } else meta.removeAttribute('aria-busy');
   }
   const last = wrap.querySelector('.last');
   if (last) {
-    last.textContent = quote.lastPrice == null ? '—' : formatPrice(quote.lastPrice);
-    last.classList.toggle('up', quote.lastPrice != null && up);
-    last.classList.toggle('down', quote.lastPrice != null && !up);
+    if (pending) paintPendingQuoteSlot(last);
+    else {
+      last.classList.remove('is-pending');
+      last.removeAttribute('aria-busy');
+      last.textContent = formatPrice(quote.lastPrice);
+      last.classList.toggle('up', up);
+      last.classList.toggle('down', !up);
+    }
   }
   const change = wrap.querySelector('.change');
   if (change) {
-    change.textContent = knownChange ? formatPct(up, quote.changePct) : '—';
-    change.classList.toggle('up', knownChange && up);
-    change.classList.toggle('down', knownChange && !up);
+    if (pending) paintPendingQuoteSlot(change);
+    else {
+      change.classList.remove('is-pending');
+      change.removeAttribute('aria-busy');
+      change.textContent = knownChange ? formatPct(up, quote.changePct) : '—';
+      change.classList.toggle('up', knownChange && up);
+      change.classList.toggle('down', knownChange && !up);
+    }
   }
   const basis = wrap.querySelector('.quote-basis');
-  if (basis) basis.textContent = quoteBasisText(dailyAt ? { prevClose: quote.prevClose } : quote, dailyAt ? { dailyAt } : {});
+  if (basis) {
+    basis.textContent = pending
+      ? ''
+      : quoteBasisText(dailyAt ? { prevClose: quote.prevClose } : quote, dailyAt ? { dailyAt } : {});
+  }
 }
 
 function renderQuotePage() {
   const root = pageRoot();
   const quote = findQuote(state.pageId);
   const symbol = quote.symbol || state.pageId;
-  const up = (quote.changePct ?? 0) >= 0;
   destroyQuoteChart();
   const wrap = document.createElement('article');
   wrap.className = 'detail-shell quote-detail';
@@ -10278,15 +10425,9 @@ function renderQuotePage() {
       <div class="chip-tabs quote-period-tabs" role="tablist" aria-label="K线周期"></div>
       <div class="quote-chart-host" id="quote-chart-host"></div>
     </div>`;
-  wrap.querySelector('.detail-title').textContent = quoteTitleText(quote, symbol);
-  wrap.querySelector('.detail-meta').textContent = `${symbol}${quote.group ? ` · ${quote.group}` : ''}${quote.assetClass ? ` · ${quote.assetClass}` : ''} · ${sessionLabel(quote.session)}`;
   wrap.dataset.group = quote.group || '';
   wrap.dataset.asset = quote.assetClass || '';
-  wrap.querySelector('.last').textContent = quote.lastPrice == null ? '—' : formatPrice(quote.lastPrice);
-  wrap.querySelector('.last').classList.add(up ? 'up' : 'down');
-  wrap.querySelector('.change').textContent = quote.changePct == null ? '—' : formatPct(up, quote.changePct);
-  wrap.querySelector('.change').classList.add(up ? 'up' : 'down');
-  wrap.querySelector('.quote-basis').textContent = quoteBasisText(quote);
+  paintQuoteFigures(wrap, quote);
   const tabs = wrap.querySelector('.quote-period-tabs');
   quotePeriods.forEach((item) => {
     const button = document.createElement('button');
@@ -10309,7 +10450,8 @@ function paintQuotePrintFromBars(host, bars) {
   const detail = host.closest('.quote-detail');
   const lastEl = detail?.querySelector('.last');
   const changeEl = detail?.querySelector('.change');
-  if (!lastEl || lastEl.textContent !== '—') return;
+  const placeholder = lastEl?.textContent === '—' || lastEl?.classList?.contains?.('is-pending');
+  if (!lastEl || !placeholder) return;
   const bar = bars.at(-1);
   const close = Number(bar?.close);
   const previous = Number(bars.at(-2)?.close);
@@ -10317,6 +10459,8 @@ function paintQuotePrintFromBars(host, bars) {
   const up = Number.isFinite(previous) ? close >= previous : true;
   const digits = Math.abs(close) >= 1 ? 2 : Math.abs(close) >= 0.01 ? 4 : 6;
   lastEl.textContent = formatPrice(close.toFixed(digits));
+  lastEl.classList.remove?.('is-pending');
+  lastEl.removeAttribute?.('aria-busy');
   lastEl.classList.toggle('up', up);
   lastEl.classList.toggle('down', !up);
   const basis = detail.querySelector('.quote-basis');
@@ -10327,6 +10471,8 @@ function paintQuotePrintFromBars(host, bars) {
     );
   }
   if (!changeEl || !Number.isFinite(previous) || previous === 0) return;
+  changeEl.classList.remove?.('is-pending');
+  changeEl.removeAttribute?.('aria-busy');
   changeEl.textContent = formatPct(up, ((close - previous) / Math.abs(previous)) * 100);
   changeEl.classList.toggle('up', up);
   changeEl.classList.toggle('down', !up);

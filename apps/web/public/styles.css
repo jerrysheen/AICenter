@@ -4803,6 +4803,24 @@ body[data-view="inspire"] .dispatch-composer.hidden { display: none; }
 }
 .quote-detail .last { font-size: 28px; font-weight: 700; line-height: 1.2; font-variant-numeric: tabular-nums; }
 .quote-detail .change { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+body[data-view="page"]:has(.quote-detail) { overflow-anchor: none; }
+.quote-detail .detail-title { scroll-margin-top: calc(var(--title-bar) + env(safe-area-inset-top)); }
+.quote-detail .detail-title.is-pending {
+  width: min(180px, 46%);
+  height: 22px;
+  border-radius: 4px;
+  background: var(--comp-tertiary);
+}
+.quote-skeleton {
+  display: inline-block;
+  width: 72px;
+  height: 12px;
+  border-radius: 4px;
+  background: var(--comp-tertiary);
+  vertical-align: middle;
+}
+.quote-detail .last.is-pending .quote-skeleton { width: 96px; height: 28px; }
+.quote-detail .change.is-pending .quote-skeleton { width: 56px; height: 14px; }
 .quote-period-tabs { margin: 4px 0 10px; }
 .quote-chart-host {
   width: 100%;
