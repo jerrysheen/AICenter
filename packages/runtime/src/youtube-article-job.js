@@ -537,7 +537,7 @@ async function organizeEpisode({ row, client, repository, feedRepository, worksp
       const prompt = articlePartPrompt({
         index,
         total: state.parts.length,
-        text: slot.text,
+        text: dedupeRollingCaptions(slot.text) || slot.text,
         previousTail: index > 0 ? state.parts[index - 1].reply : '',
         fresh: index > 0 && !state.chatUrl,
       });
@@ -706,7 +706,8 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
     }
     try {
       touch();
-      const result = await withUpstreamRetry(deps, () => callArticleModel(deps, { system: GEMMA_TRANSLATE_SYSTEM, prompt: slot.text }));
+      const sourceText = dedupeRollingCaptions(slot.text) || slot.text;
+      const result = await withUpstreamRetry(deps, () => callArticleModel(deps, { system: GEMMA_TRANSLATE_SYSTEM, prompt: sourceText }));
       slot.translation = result.text;
       slot.provider = result.provider;
       addCalls(slot.calls, result.calls);

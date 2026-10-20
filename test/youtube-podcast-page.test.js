@@ -139,8 +139,15 @@ test('queued article polls the status path slowly until the expected time is clo
   assert.equal(youtubeReaderScopeLabel({ id: 'youtube:2Zj6uMv3kTA', platform: 'youtube' }, {
     articleStatus: 'pending',
     partial: { text: '主持人：已经译出的一段。', remaining: 4 },
-  }), '未完整');
+  }), '');
   assert.equal(partialArticleLabel({ text: '主持人：已经译出的一段。', remaining: 4 }), '未完整 · 还剩 4 段');
+  assert.equal(
+    partialArticleLabel(
+      { text: '主持人：已经译出的一段。', remaining: 4 },
+      '已译 24/28 段，模型服务暂时出错，明天 00:10 继续',
+    ),
+    '未完整 · 还剩 4 段，明天 00:10 继续',
+  );
   const partialRoot = new El('div');
   appendPartialArticle(partialRoot, { text: '## 开场\n\n主持人：已经译出的一段。', remaining: 4 });
   assert.equal(partialRoot.children[0].textContent, '未完整 · 还剩 4 段');

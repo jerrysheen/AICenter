@@ -48,8 +48,8 @@ import { commitReportHistory, reportViewOwnsScroll } from './report-history.js?v
 import { decodeHtmlEntities } from './html-text.js?v=dev';
 import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, prioritizeReadableFeedRows, renderNewsList, reportItemTime } from './news-list.js?v=dev';
 import { createAuthorView } from './author-view.js?v=dev';
-import { appendPartialArticle, episodeArticleMessage, foldedOriginal, renderYoutubePodcasts, YOUTUBE_ARTICLE_POLL_SLOW_MS, youtubeArticlePollDelay, youtubeArticleRequestPath, youtubeReaderScopeLabel } from './youtube-podcasts.js?v=dev';
-import { xVideoArticleReady, xVideoArticleRequestPath, xVideoTweetId } from './x-video-article.js?v=dev';
+import { appendPartialArticle, episodeArticleMessage, foldedOriginal, partialArticleLabel, renderYoutubePodcasts, YOUTUBE_ARTICLE_POLL_SLOW_MS, youtubeArticlePollDelay, youtubeArticleRequestPath, youtubeReaderScopeLabel } from './youtube-podcasts.js?v=dev';
+import { xVideoArticleReady, xVideoArticleRequestPath, xVideoReaderScopeLabel, xVideoTweetId } from './x-video-article.js?v=dev';
 
 const requestLayer = createRequestLayer();
 const pageCache = createPageCache({
@@ -9596,6 +9596,7 @@ function restoredArticleFromItem(id, item) {
     id,
     author: readerAuthorName(item, post.platform),
     complete: social ? Boolean(String(item.body || '').trim()) : level === 'full',
+    xVideo: Boolean(item.captureMetadata?.xVideo || item.xVideo),
     bodyScope: social ? '' : level === 'partial' ? '部分正文' : '仅摘要',
     contentLevel: level,
     articleKind: String(item.externalId || '').startsWith('research:') ? 'report-intro' : 'article',
@@ -9730,11 +9731,14 @@ function renderYoutubeWaiting(post) {
   const wrap = document.createElement('div');
   wrap.className = 'reader-content detail-body';
   const episode = state.youtubeEpisodes[youtubeEpisodeId(post)];
-  wrap.append(Object.assign(document.createElement('p'), {
-    className: 'podcast-pending',
-    textContent: episode ? (episodeArticleMessage(episode) || '中文整理排队中') : '正在查看整理进度',
-  }));
-  appendPartialArticle(wrap, episode?.partial);
+  const line = partialArticleLabel(episode?.partial, episode?.article?.message || '');
+  if (line) appendPartialArticle(wrap, episode.partial, line);
+  else {
+    wrap.append(Object.assign(document.createElement('p'), {
+      className: 'podcast-pending',
+      textContent: episode ? (episodeArticleMessage(episode) || '中文整理排队中') : '正在查看整理进度',
+    }));
+  }
   const original = state.originalBodies[post.resourceId || post.id] || post.body;
   wrap.append(foldedOriginal(original));
   return wrap;
@@ -10051,12 +10055,14 @@ function renderArticlePage() {
   }
   const officialBody = post.kind === 'official' ? state.officialBodies[post.id] : null;
   const youtubeScope = youtubeReaderScopeLabel(post, state.youtubeEpisodes[youtubeEpisodeId(post)]);
+  const xVideoScope = xVideoReaderScopeLabel(post, xVideoRecord(post));
   const completeLabel = post.articleKind === 'report-intro' ? '报告简介'
     : officialBody?.status === 'ready' ? '正文完整'
       : officialBody?.status === 'loading' ? '正在获取'
         : youtubeScope != null ? youtubeScope
-          : post.complete === false ? (post.bodyScope || '仅索引')
-            : '正文完整';
+          : xVideoScope != null ? xVideoScope
+            : post.complete === false ? (post.bodyScope || '仅索引')
+              : '正文完整';
   if (completeLabel) meta.append(Object.assign(document.createElement('span'), { className: 'kind-tag official', textContent: completeLabel }));
   meta.querySelector('button').addEventListener('click', () => {
     if (post.platform === 'official') openPage('source', `policy.${post.author}`);

@@ -48,22 +48,36 @@ export function youtubeReaderScopeLabel(post, episode) {
   const youtube = post?.platform === 'youtube' || /^youtube:/i.test(String(post?.id || ''));
   if (!youtube) return null;
   if (episode?.article?.status === 'ready' || episode?.articleStatus === 'ready') return '正文完整';
-  if (String(episode?.partial?.text || '').trim()) return '未完整';
   return '';
 }
 
-export function partialArticleLabel(partial) {
-  if (!String(partial?.text || '').trim()) return '';
-  const remaining = Number(partial.remaining) || 0;
-  return remaining > 0 ? `未完整 · 还剩 ${remaining} 段` : '未完整';
+export function articleContinueWhen(message) {
+  const value = String(message || '');
+  const named = value.match(/明天\s+\d{1,2}(?::\d{2}|点)/);
+  if (named) return named[0].replace(/\s+/g, ' ');
+  const dated = value.match(/\d{1,2}月\d{1,2}日\s+\d{1,2}(?::\d{2}|点)/);
+  if (dated) return dated[0].replace(/\s+/g, ' ');
+  const directed = value.match(/(?:将于|预计)\s+(\d{1,2}(?::\d{2}|点))/);
+  if (directed) return directed[1];
+  const bare = value.match(/(\d{2}:\d{2}|\d{1,2}点)\s+继续/);
+  if (bare) return bare[1];
+  return '';
 }
 
-export function appendPartialArticle(parent, partial) {
-  const label = partialArticleLabel(partial);
-  if (!label) return false;
+export function partialArticleLabel(partial, message = '') {
+  if (!String(partial?.text || '').trim()) return '';
+  const remaining = Number(partial.remaining) || 0;
+  const lead = remaining > 0 ? `未完整 · 还剩 ${remaining} 段` : '未完整';
+  const when = articleContinueWhen(message);
+  return when ? `${lead}，${when} 继续` : lead;
+}
+
+export function appendPartialArticle(parent, partial, label = '') {
+  const shown = label || partialArticleLabel(partial);
+  if (!String(partial?.text || '').trim() || !shown) return false;
   parent.append(Object.assign(document.createElement('p'), {
     className: 'podcast-pending partial-article-label',
-    textContent: label,
+    textContent: shown,
   }));
   const article = document.createElement('div');
   article.className = 'podcast-article partial-article';
@@ -233,11 +247,16 @@ function fillDetail(detail, episode, api) {
           attachYoutubeHeadingTimes(article, episode.videoId);
           transcript.append(article);
         } else {
-          transcript.append(Object.assign(document.createElement('p'), {
-            className: 'podcast-pending',
-            textContent: episodeArticleMessage(loaded) || episodeArticleMessage(episode) || '中文整理排队中',
-          }));
-          appendPartialArticle(transcript, loaded.partial || episode.partial);
+          const partial = loaded.partial || episode.partial;
+          const message = loaded.article?.message || episode.article?.message || episodeArticleMessage(loaded) || episodeArticleMessage(episode);
+          const line = partialArticleLabel(partial, message);
+          if (line) appendPartialArticle(transcript, partial, line);
+          else {
+            transcript.append(Object.assign(document.createElement('p'), {
+              className: 'podcast-pending',
+              textContent: message || '中文整理排队中',
+            }));
+          }
           transcript.append(foldedOriginal(body));
         }
         transcript.dataset.loaded = '1';
