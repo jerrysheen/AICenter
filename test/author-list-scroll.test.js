@@ -1,0 +1,354 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
+
+const authorSource = readFileSync(new URL('../apps/web/public/author-view.js', import.meta.url), 'utf8')
+  .replace(/^export function /gm, 'function ');
+const appSource = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
+
+function extract(source, name) {
+  const match = source.match(new RegExp(`(?:async )?function ${name}\\([^]*?\\n\\}`));
+  assert.ok(match, name);
+  return match[0];
+}
+
+function classListFor(el) {
+  const names = () => String(el.className || '').split(/\s+/).filter(Boolean);
+  return { contains: (name) => names().includes(name) };
+}
+
+function createDom() {
+  const window = {
+    scrollY: 0,
+    moved: 0,
+    usedScrollIntoView: false,
+    scrollTo(x, y) {
+      const top = typeof y === 'number' ? y : Number(x?.top);
+      if (!Number.isFinite(top) || top === this.scrollY) return;
+      this.scrollY = top;
+      this.moved += 1;
+    },
+    requestAnimationFrame(fn) { fn(); return 1; },
+  };
+  class El {
+    constructor(tag = 'div') {
+      this.tagName = String(tag).toUpperCase();
+      this.children = [];
+      this.parentNode = null;
+      this.dataset = {};
+      this.attrs = {};
+      this.listeners = {};
+      this.className = '';
+      this.textContent = '';
+      this.style = {};
+      this.classList = classListFor(this);
+      this.scrollLeft = 0;
+      this.disabled = false;
+      this.type = '';
+      this._connected = false;
+    }
+    get parentElement() { return this.parentNode; }
+    get isConnected() {
+      let node = this;
+      while (node) {
+        if (node._connected) return true;
+        node = node.parentNode;
+      }
+      return false;
+    }
+    setAttribute(key, value) { this.attrs[key] = String(value); }
+    addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
+    append(...nodes) {
+      for (const node of nodes.flat()) {
+        if (!node || typeof node !== 'object') continue;
+        const previous = node.parentNode?.children;
+        if (previous) {
+          const index = previous.indexOf(node);
+          if (index >= 0) previous.splice(index, 1);
+        }
+        node.parentNode = this;
+        this.children.push(node);
+      }
+    }
+    prepend(...nodes) {
+      const list = nodes.flat().filter((node) => node && typeof node === 'object');
+      for (const node of list) {
+        const previous = node.parentNode?.children;
+        if (previous) {
+          const index = previous.indexOf(node);
+          if (index >= 0) previous.splice(index, 1);
+        }
+        node.parentNode = this;
+      }
+      this.children.unshift(...list);
+    }
+    replaceChildren(...nodes) {
+      this.replaceCount = (this.replaceCount || 0) + 1;
+      for (const child of this.children) child.parentNode = null;
+      this.children = [];
+      if (nodes.length) this.append(...nodes);
+    }
+    replaceWith(node) {
+      const parent = this.parentNode;
+      if (!parent) return;
+      const index = parent.children.indexOf(this);
+      if (index < 0) return;
+      node.parentNode = parent;
+      parent.children.splice(index, 1, node);
+      this.parentNode = null;
+    }
+    remove() {
+      const list = this.parentNode?.children;
+      if (!list) return;
+      const index = list.indexOf(this);
+      if (index >= 0) list.splice(index, 1);
+      this.parentNode = null;
+    }
+    get offsetLeft() { return this.classList.contains('is-active') ? 240 : 0; }
+    get offsetWidth() { return 48; }
+    get clientWidth() { return this.classList.contains('author-switch') ? 120 : 0; }
+    scrollIntoView() { window.usedScrollIntoView = true; }
+    getBoundingClientRect() {
+      if (!this.classList.contains('author-row')) return { top: 0, bottom: 0 };
+      const rows = feed.querySelectorAll('.author-row');
+      const index = rows.indexOf(this);
+      const top = index * 80 - (Number(window.scrollY) || 0);
+      return { top, bottom: top + 72 };
+    }
+    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+    querySelectorAll(selector) {
+      const out = [];
+      const walk = (node) => {
+        for (const child of node.children || []) {
+          if (matches(child, selector)) out.push(child);
+          walk(child);
+        }
+      };
+      walk(this);
+      return out;
+    }
+  }
+  function matches(node, selector) {
+    if (selector.startsWith('.')) return node.classList.contains(selector.slice(1));
+    return node.tagName === selector.toUpperCase();
+  }
+  const feed = new El('div');
+  feed._connected = true;
+  const body = { dataset: { view: 'feed' }, classList: { contains: () => false } };
+  const document = {
+    body,
+    createElement: (tag) => new El(tag),
+    querySelector: (selector) => (selector === '#feed' ? feed : null),
+  };
+  return { window, document, feed, body };
+}
+
+function authorRows(count) {
+  return Array.from({ length: count }, (_, index) => ({
+    authorId: `x:${index}`,
+    name: `作者${index}`,
+    handle: `u${index}`,
+    platform: 'x',
+    followed: false,
+    unreadCount: 0,
+    latestItemAt: 1_700_000_000_000 + index * 1000,
+    latestTitleZh: `标题${index}`,
+    avatarUrl: '',
+  }));
+}
+
+function listPayload(rows, extra = {}) {
+  return {
+    counts: { all: rows.length, x: rows.length, xueqiu: 0, bilibili: 0, youtube: 0, official: 0, media: 0 },
+    followed: rows.filter((row) => row.followed),
+    others: rows.filter((row) => !row.followed),
+    nextCursor: extra.nextCursor || '',
+  };
+}
+
+function mountAuthorView(rows, api) {
+  const dom = createDom();
+  const context = vm.createContext({
+    URLSearchParams,
+    document: dom.document,
+    window: dom.window,
+    api,
+    console,
+  });
+  vm.runInContext(`${authorSource}\nthis.createAuthorView = createAuthorView`, context);
+  const view = context.createAuthorView({
+    api,
+    openAuthor() {},
+    openArticle() {},
+  });
+  return { ...dom, view, calls: [] };
+}
+
+test('author list stays put while the same payload is painted again', async () => {
+  const rows = authorRows(8);
+  let calls = 0;
+  const api = async () => {
+    calls += 1;
+    return listPayload(rows);
+  };
+  const { feed, view, window } = mountAuthorView(rows, api);
+  await view.renderList(feed);
+  const row = feed.querySelectorAll('.author-row')[6];
+  const rowsHost = feed.querySelector('.author-list-rows');
+  const replaced = rowsHost.replaceCount;
+  const chipScroll = feed.querySelector('.author-switch').scrollLeft;
+  window.scrollY = 400;
+  for (let i = 0; i < 30; i += 1) await view.renderList(feed);
+  assert.equal(calls, 1);
+  assert.equal(window.scrollY, 400);
+  assert.equal(window.moved, 0);
+  assert.equal(window.usedScrollIntoView, false);
+  assert.equal(feed.querySelectorAll('.author-row')[6], row);
+  assert.equal(rowsHost.replaceCount, replaced);
+  assert.equal(feed.querySelector('.author-switch').scrollLeft, chipScroll);
+  assert.equal(chipScroll, 168);
+  rows[6].unreadCount = 4;
+  rows[6].latestTitleZh = '更新了';
+  await view.renderList(feed);
+  assert.equal(feed.querySelectorAll('.author-row')[6], row);
+  assert.equal(row.querySelector('.author-unread').textContent, '4');
+  assert.match(row.querySelector('.author-row-preview').textContent, /更新了/);
+  assert.equal(rowsHost.replaceCount, replaced);
+  assert.equal(window.scrollY, 400);
+  assert.equal(window.moved, 0);
+});
+
+test('reordering authors keeps the anchored row at the same viewport offset', async () => {
+  const rows = authorRows(8);
+  const api = async (url, options = {}) => {
+    if (String(url).includes('/follow')) {
+      const id = decodeURIComponent(String(url).split('/authors/')[1].split('/')[0]);
+      const row = rows.find((item) => item.authorId === id);
+      row.followed = options.method !== 'DELETE';
+      return { author: row };
+    }
+    return listPayload(rows);
+  };
+  const { feed, view, window } = mountAuthorView(rows, api);
+  await view.renderList(feed);
+  window.scrollY = 400;
+  const anchor = feed.querySelectorAll('.author-row')[6];
+  const moved = feed.querySelectorAll('.author-row')[7];
+  assert.equal(anchor.dataset.authorId, 'x:6');
+  assert.equal(moved.dataset.authorId, 'x:7');
+  await moved.querySelector('.author-follow').listeners.click[0]({ preventDefault() {}, stopPropagation() {} });
+  const painted = feed.querySelectorAll('.author-row');
+  assert.equal(painted[0], moved);
+  assert.equal(painted[0].dataset.authorId, 'x:7');
+  assert.equal(painted[0].querySelector('.author-follow').textContent, '已关注');
+  const anchorNow = painted.find((row) => row.dataset.authorId === 'x:6');
+  assert.equal(anchorNow, anchor);
+  assert.equal(window.scrollY, 480);
+  assert.equal(anchorNow.getBoundingClientRect().top, 80);
+  assert.equal(window.usedScrollIntoView, false);
+});
+
+test('background author refresh does not move an article or hourly report', async () => {
+  const rows = authorRows(4);
+  const api = async () => listPayload(rows);
+  const { feed, view, window, body } = mountAuthorView(rows, api);
+  await view.renderList(feed);
+  window.scrollY = 640;
+  body.dataset.view = 'page';
+  rows[1].latestTitleZh = '文章还在读';
+  await view.renderList(feed);
+  assert.equal(window.scrollY, 640);
+  assert.match(feed.querySelectorAll('.author-row')[1].querySelector('.author-row-preview').textContent, /文章还在读/);
+  body.dataset.view = 'report';
+  rows[1].latestTitleZh = '小时报还在读';
+  await view.renderList(feed);
+  assert.equal(window.scrollY, 640);
+  assert.equal(window.moved, 0);
+  assert.match(feed.querySelectorAll('.author-row')[1].querySelector('.author-row-preview').textContent, /小时报还在读/);
+});
+
+test('loading more authors keeps the current anchor', async () => {
+  const rows = authorRows(8);
+  const api = async (url) => {
+    if (String(url).includes('cursor=')) {
+      return {
+        others: [{ authorId: 'x:more', name: '更多', platform: 'x', followed: false, unreadCount: 0, latestTitleZh: '后加', latestItemAt: 1_700_000_100_000 }],
+        nextCursor: '',
+      };
+    }
+    return listPayload(rows, { nextCursor: 'p2' });
+  };
+  const { feed, view, window } = mountAuthorView(rows, api);
+  await view.renderList(feed);
+  window.scrollY = 400;
+  const anchor = feed.querySelectorAll('.author-row')[6];
+  const more = feed.querySelector('.author-more');
+  await more.onclick();
+  const painted = feed.querySelectorAll('.author-row');
+  assert.equal(painted.at(-1).dataset.authorId, 'x:more');
+  assert.equal(painted.find((row) => row.dataset.authorId === 'x:6'), anchor);
+  assert.equal(window.scrollY, 400);
+  assert.equal(anchor.getBoundingClientRect().top, 80);
+});
+
+test('social feed polling does not repaint the author list', async () => {
+  const calls = [];
+  let rendered = 0;
+  const context = vm.createContext({
+    URLSearchParams,
+    FEED_PAGE_SIZE: 12,
+    state: {
+      session: {}, channel: 'author', feedPlatform: 'all', feedEpoch: 3, feedShown: 12,
+      xFeed: 'following', xItems: [], xNextCursor: '',
+      xueqiuFeed: 'following', xueqiuItems: [], xueqiuNextCursor: '',
+    },
+    api: async (url) => {
+      calls.push(url);
+      if (String(url).includes('/feed/xueqiu')) {
+        return { feed: { items: [{ id: 'q:new', resourceId: 'rq' }], nextCursor: '', feed: 'following' } };
+      }
+      return { feed: { items: [{ id: 'x:new', resourceId: 'rx' }], nextCursor: '', feed: 'following' } };
+    },
+    isHiddenFeedItem: () => false,
+    hydrateFeedTranslations: () => {},
+    renderPosts() { rendered += 1; },
+    renderXToolbar: () => {},
+    renderXueqiuToolbar: () => {},
+    syncLocalTranslationsToServer: () => Promise.resolve(),
+    loadFeedTaggings: () => Promise.resolve(),
+    translateXBatch: async () => {},
+    document: { body: { dataset: { view: 'feed' } } },
+    renderOverviewTimeline: () => {},
+  });
+  vm.runInContext([
+    extract(appSource, 'paintLoadedSocialFeed'),
+    extract(appSource, 'mergeLoadedFeedItem'),
+    extract(appSource, 'loadXFeed'),
+    extract(appSource, 'loadXueqiuFeed'),
+    'this.loadX = loadXFeed; this.loadQ = loadXueqiuFeed;',
+  ].join('\n'), context);
+  await context.loadX({ autoTranslate: false });
+  await context.loadQ();
+  await Promise.resolve();
+  assert.equal(rendered, 0);
+  assert.deepEqual(Array.from(context.state.xItems, (item) => item.id), ['x:new']);
+  assert.deepEqual(Array.from(context.state.xueqiuItems, (item) => item.id), ['q:new']);
+  assert.ok(calls.some((url) => url.includes('/api/v1/feed/x?') && url.includes('feed=following')));
+  assert.ok(calls.some((url) => url.includes('/api/v1/feed/xueqiu?') && url.includes('feed=following')));
+  context.state.channel = 'recent';
+  await context.loadX({ autoTranslate: false });
+  assert.equal(rendered, 0);
+  context.state.channel = 'official';
+  await context.loadX({ autoTranslate: false });
+  assert.equal(rendered, 0);
+  context.state.channel = 'all';
+  context.state.xItems = [];
+  await context.loadX({ autoTranslate: false });
+  assert.ok(rendered >= 2);
+  const socialRendered = rendered;
+  context.state.channel = 'social';
+  context.state.xItems = [];
+  await context.loadX({ autoTranslate: false });
+  assert.ok(rendered > socialRendered);
+});
