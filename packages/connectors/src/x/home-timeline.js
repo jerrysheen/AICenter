@@ -126,6 +126,7 @@ export function tweetToFeedItem(tweet, options = {}) {
     captureId: '',
     ...(tweet.capture_context ? { captureContext: FeedCaptureContextSchema.parse(tweet.capture_context) } : {}),
     ...(tweet.x_focus ? { xFocus: tweet.x_focus } : {}),
+    ...(tweet.x_video ? { xVideo: tweet.x_video } : {}),
   };
 }
 

@@ -2417,6 +2417,41 @@ migrations.push({ version: 92, name: 'feed_translation_chunk_failures', up(datab
     );`);
 }});
 
+migrations.push({ version: 93, name: 'x_video_articles', up(database) {
+  database.exec(`CREATE TABLE IF NOT EXISTS x_video_articles (
+      workspace_id TEXT NOT NULL,
+      video_id TEXT NOT NULL,
+      duration_sec INTEGER,
+      status TEXT NOT NULL DEFAULT 'probe',
+      reason TEXT NOT NULL DEFAULT '',
+      source_transcript TEXT NOT NULL DEFAULT '',
+      source_hash TEXT NOT NULL DEFAULT '',
+      article_status TEXT NOT NULL DEFAULT '',
+      article_state TEXT NOT NULL DEFAULT '',
+      article_body TEXT NOT NULL DEFAULT '',
+      article_title TEXT NOT NULL DEFAULT '',
+      article_day TEXT NOT NULL DEFAULT '',
+      manual INTEGER NOT NULL DEFAULT 0,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (workspace_id, video_id)
+    );
+    CREATE TABLE IF NOT EXISTS x_video_posts (
+      workspace_id TEXT NOT NULL,
+      tweet_id TEXT NOT NULL,
+      video_id TEXT NOT NULL,
+      content_item_id TEXT NOT NULL DEFAULT '',
+      quoted_tweet_id TEXT NOT NULL DEFAULT '',
+      source_url TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (workspace_id, tweet_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_x_video_posts_video
+      ON x_video_posts(workspace_id, video_id);`);
+}});
+
 
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
