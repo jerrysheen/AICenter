@@ -41,10 +41,13 @@ export function resolveGoogleArticleModelPool(env = process.env) {
     .map(model=>resolveGoogleArticleModel(env,model));
 }
 
+export const HOURLY_TRUNCATION_FALLBACK_MODEL = 'gemini-3.5-flash-lite';
+
 export function resolveGoogleHourlyModel(env = process.env, requestedModel) {
+  const listed = [env.AI_CENTER_GEMINI_HOURLY_MODELS || '', HOURLY_TRUNCATION_FALLBACK_MODEL].filter(Boolean).join(',');
   return resolveGoogleArticleModel({...env,
     AI_CENTER_HARNESS_ARTICLE_MODEL:text(env.AI_CENTER_HARNESS_HOURLY_MODEL) || 'gemini-3.1-flash-lite',
-    AI_CENTER_GEMINI_ARTICLE_MODELS:env.AI_CENTER_GEMINI_HOURLY_MODELS || '',
+    AI_CENTER_GEMINI_ARTICLE_MODELS:listed,
   },requestedModel);
 }
 

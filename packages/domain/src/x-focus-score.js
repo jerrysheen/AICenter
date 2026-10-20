@@ -1,4 +1,5 @@
 import { googleFetch } from '../../connectors/src/google-fetch.js';
+import { yieldEventLoop } from './event-loop.js';
 import { resolveGoogleHourlyAdmissionModels } from '../../harness/src/llm-route.js';
 import {
   alignFocusBatch,
@@ -249,6 +250,7 @@ export function createXFocusScorer({
         const indexes = groups.shift();
         if (!indexes) return;
         await runGroup(indexes);
+        await yieldEventLoop();
       }
     }
     const workers = Math.min(BATCH_CONCURRENCY, groups.length);

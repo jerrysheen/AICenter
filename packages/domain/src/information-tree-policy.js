@@ -231,6 +231,7 @@ export function formatCondenseFailureLog(error, meta = {}) {
     `inputChars=${numberOrDash(inputChars)}`,
     `skillBytes=${numberOrDash(meta.skillBytes)}`,
     `calls=${numberOrDash(meta.calls)}`,
+    `splits=${numberOrDash(meta.splitRuns)}`,
     `queueMs=${numberOrDash(Number.isFinite(timing.queueMs) ? timing.queueMs : meta.queueMs)}`,
     `executionMs=${numberOrDash(Number.isFinite(timing.executionMs) ? timing.executionMs : meta.executionMs)}`,
     `elapsedMs=${numberOrDash(meta.elapsedMs)}`,
@@ -245,6 +246,25 @@ export const TERMINAL_PENDING_REASONS = Object.freeze(['needs-content', 'stale-p
 
 export function isTerminalPendingReason(reason) {
   return TERMINAL_PENDING_REASONS.includes(reason);
+}
+
+export const HOURLY_TRUNCATION_FALLBACK_MODEL = 'gemini-3.5-flash-lite';
+export const HOURLY_TRUNCATION_MAX_TOKENS = 8192;
+
+export function isTruncatedModelFailure(error, result = null) {
+  const finish = treeHourlyFinishReason(error?.finishReason || result?.finishReason || '');
+  if (finish === 'MAX_TOKENS' || finish === 'LENGTH' || finish === 'length') return true;
+  if (error?.code === 'truncated') return true;
+  const message = String(error?.message || '');
+  if (/截断|MAX_TOKENS/.test(message)) return true;
+  const answer = String(result?.answer || '');
+  const trimmed = answer.trim().replace(/```$/, '').trim();
+  if (trimmed && !/[}\]]\s*$/.test(trimmed) && /截断|MAX_TOKENS/.test(message)) return true;
+  return false;
+}
+
+export function cachedTruncationFailure(cached) {
+  return /截断|MAX_TOKENS|\btruncated\b/i.test(`${cached?.error || ''} ${cached?.input?.failure?.reason || ''}`);
 }
 
 export function treeFailure(error,id,sourceVersion='',at=Date.now()) {

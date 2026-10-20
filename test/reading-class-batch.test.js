@@ -368,7 +368,7 @@ test('a non-quota batch error is logged once per call, retried on the next key, 
   const result = await failed.service.scoreWindow({workspace: 'local', window});
   assert.equal(failed.calls.length, 2);
   assert.deepEqual(failed.calls.map((call) => call.googleKeyEnv), ['GEMINI_API_KEY', 'GEMINI_API_KEY2']);
-  assert.equal(failed.calls[0].timeoutMs, 180000);
+  assert.equal(failed.calls[0].timeoutMs, 60000);
   assert.equal(lines.length, failed.calls.length);
   assert.match(lines[0], /batch=2 fallback=0 key=KEY outcome=error status=500 name=HarnessModelError model=gemini-3\.1-flash-lite latencyMs=\d+ inputBytes=\d+ body=internal error token=\[redacted\] message=upstream 500 body/);
   assert.match(lines[1], /key=KEY2 outcome=error status=500 /);
@@ -453,4 +453,24 @@ test('a one-item object is accepted and a multi-item object still falls back', a
   assert.equal(many.calls.length, 4);
   assert.equal(many.calls[0].taskInstruction, readingClassBatchInstruction());
   assert.deepEqual(many.calls.slice(1).map((call) => call.taskInstruction), [READING_CLASS_INSTRUCTION, READING_CLASS_INSTRUCTION, READING_CLASS_INSTRUCTION]);
+});
+
+test('reading class batches overlap and each call times out at 60 seconds', async () => {
+  let active = 0;
+  let maxActive = 0;
+  const gate = open({
+    env: {...googleKeys, AI_CENTER_READING_CLASS_BATCH: '2'},
+    nodes: [node('a', '甲'), node('b', '乙'), node('c', '丙'), node('d', '丁'), node('e', '戊'), node('f', '己')],
+    async run(input) {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setImmediate(resolve));
+      active -= 1;
+      const message = JSON.parse(input.message);
+      return {answer: JSON.stringify(message.map((item) => classified('finance', 'market_asset', item.title, item.idx)))};
+    },
+  });
+  await gate.service.scoreWindow({workspace: 'local', window});
+  assert.ok(maxActive >= 2 && maxActive <= 3, `expected 2-3 overlapping batches, got ${maxActive}`);
+  assert.equal(gate.calls[0].timeoutMs, 60000);
 });
