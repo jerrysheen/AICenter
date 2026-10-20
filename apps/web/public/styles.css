@@ -337,8 +337,8 @@ main {
 html.quote-boot #page-title .page-title-live { display: none; }
 html.quote-boot #page-title .page-title-boot { display: inline; }
 html.quote-boot #page-subtitle { display: none; }
-html.quote-boot body[data-view="sources"] #view-sources { display: none; }
-html.quote-boot body[data-view="sources"] #view-page { display: block; }
+html.quote-boot .view { display: none; }
+html.quote-boot #view-page { display: block; }
 #page-root { min-width: 0; max-width: 100%; }
 
 .channel-bar {
@@ -5204,6 +5204,15 @@ body.is-ask-keyboard .ask-live-chip {
   }
 
   .app-shell {
+    display: grid;
+    grid-template-columns: var(--side-nav) minmax(0, 1fr);
+  }
+
+  /* Known-session shell is display:block until ready. That wins over the rule
+     above and drops the quote skeleton below the 100vh sidebar. */
+  html.has-known-session body.is-unpaired .app-shell,
+  html.has-known-session body:not(.is-ready) .app-shell,
+  html.quote-boot .app-shell {
     display: grid;
     grid-template-columns: var(--side-nav) minmax(0, 1fr);
   }
