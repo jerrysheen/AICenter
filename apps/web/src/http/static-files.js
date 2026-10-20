@@ -105,6 +105,8 @@ export function createStaticFileHandler(publicDirectory) {
     '/report-history.js': ['report-history.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/html-text.js': ['html-text.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/news-list.js': ['news-list.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
+    '/youtube-article-links.js': ['youtube-article-links.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
+    '/article-read-position.js': ['article-read-position.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/author-view.js': ['author-view.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/youtube-podcasts.js': ['youtube-podcasts.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/model-usage.js': ['model-usage.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],

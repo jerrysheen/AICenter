@@ -5,6 +5,8 @@ import {
 } from './mock.js?v=dev';
 import { icon } from './icons.js?v=dev';
 import { renderMarkdownInto, renderFeedTextInto, splitFeedText, stripSharePlaceholders } from './markdown.js?v=dev';
+import { attachYoutubeHeadingTimes, youtubeVideoId, youtubeWatchUrl } from './youtube-article-links.js?v=dev';
+import { createArticleReadPosition } from './article-read-position.js?v=dev';
 import { cacheTtlFor, createRequestLayer, isPreparedPending, planTranslationPoll, requestDedupeKey, resolvePreparedPending, TRANSLATION_POLL_DEADLINE_MS } from './client-request.js?v=dev';
 import { planAskRunsFetch } from './ask-runs.js?v=dev';
 import { behaviorClickName, behaviorControlLabel, behaviorDetailsExpand } from './behavior-clicks.js?v=dev';
@@ -3050,6 +3052,7 @@ function contentItemAsPost(item) {
     normalizedArticle: item.normalizedArticle || null,
     tags: postTagNames({ ...item, resourceId: item.id }),
     sourceUrl: item.sourceUrl || '',
+    originalTitle: String(item.captureMetadata?.originalTitle || item.originalTitle || '').trim(),
     createdAt: clock.publishedAt || item.createdAt || Date.now(),
     publishedAt: clock.publishedAt,
     time: clock.time,
@@ -3813,6 +3816,8 @@ function fillPostBody(element, value, post = null) {
   if (looksLikeMarkdown(text)) {
     element.classList.add('post-markdown');
     renderMarkdownInto(element, text);
+    const videoId = youtubeVideoId(post?.sourceUrl);
+    if (videoId) attachYoutubeHeadingTimes(element, videoId, { onOpen: openExternalHttpUrl });
   } else {
     element.classList.remove('post-markdown');
     element.textContent = text;
@@ -9389,6 +9394,7 @@ function renderPage() {
   root.classList.remove('x-focus-page');
   const kind = state.pageKind;
   if (kind !== 'quote') destroyQuoteChart();
+  if (kind !== 'article') articleReadPosition().unmount();
   if (kind === 'article') renderArticlePage();
   else if (kind === 'author') authorView().renderPage(root, decodeURIComponent(state.pageId || ''));
   else if (kind === 'event') renderEventPage();
@@ -9585,7 +9591,14 @@ async function restoreSocialArticle(id, post) {
     if (state.pageKind === 'article' && state.pageId === id) renderArticlePage();
   }
 }
+let articleReading = null;
+function articleReadPosition() {
+  if (!articleReading) articleReading = createArticleReadPosition();
+  return articleReading;
+}
+
 function renderArticlePage() {
+  articleReadPosition().capture();
   if (!mediaModules || !feedLikeReady) {
     Promise.all([ensureMediaFeed(), ensureFeedLike()]).then(() => {
       if (document.body.dataset.view === 'page' && state.pageKind === 'article') renderArticlePage();
@@ -9660,12 +9673,26 @@ function renderArticlePage() {
   const head = document.createElement('header');
   head.className = 'detail-head reader-head';
   head.innerHTML = `<h2 class="detail-title"></h2><div class="detail-meta reader-meta"></div>`;
-  head.querySelector('h2').textContent = state.readerLang==='original' ? post.title : postDisplayTitle(post);
+  const shownTitle = state.readerLang==='original' ? post.title : postDisplayTitle(post);
+  head.querySelector('h2').textContent = shownTitle;
   const meta = head.querySelector('.reader-meta');
-  if (isHttpUrl(post.sourceUrl)) {
+  const youtubeId = youtubeVideoId(post.sourceUrl);
+  const originalTitle = String(post.originalTitle || '').trim();
+  if (youtubeId) {
+    const original = appendExternalLink(head, youtubeWatchUrl(youtubeId), '原帖');
+    original.className = 'reader-original';
+    original.dataset.youtubeVideo = youtubeId;
+    head.insertBefore(original, meta);
+  } else if (isHttpUrl(post.sourceUrl)) {
     const original = appendExternalLink(head, post.sourceUrl, '打开原站');
     original.className = 'reader-original';
     head.insertBefore(original, meta);
+  }
+  if (youtubeId && originalTitle && originalTitle !== shownTitle) {
+    const note = document.createElement('p');
+    note.className = 'reader-original-title';
+    note.textContent = `原标题：${originalTitle}`;
+    head.insertBefore(note, meta);
   }
   const authorLink = document.createElement('button');
   authorLink.type = 'button';
@@ -9849,7 +9876,8 @@ function renderArticlePage() {
     onClick: () => presentShareCard(postShareInput(post)),
   });
   bar.append(save, cite, analyze, star, share);
-  if (isHttpUrl(post.sourceUrl)) bar.append(createDetailAction({ iconName: 'newspaper', label: '打开原文', onClick: () => openExternalHttpUrl(post.sourceUrl) }));
+  if (youtubeId) bar.append(createDetailAction({ iconName: 'newspaper', label: '原帖', onClick: () => openExternalHttpUrl(youtubeWatchUrl(youtubeId)) }));
+  else if (isHttpUrl(post.sourceUrl)) bar.append(createDetailAction({ iconName: 'newspaper', label: '打开原文', onClick: () => openExternalHttpUrl(post.sourceUrl) }));
   const fontControls = document.createElement('div');
   fontControls.className = 'reader-font-controls';
   const size = Object.assign(document.createElement('span'), { textContent: `正文字号 ${state.readerFont}px` });
@@ -9879,6 +9907,7 @@ function renderArticlePage() {
   if (analysis) shell.append(analysis);
   shell.append(mobile);
   root.replaceChildren(shell);
+  articleReadPosition().mount({ articleId: itemId, shell });
   if (menuFocus) [...elements['reader-menu'].querySelectorAll('button')].find(button => button.dataset.detailAction === menuFocus)?.focus();
   if (shouldQueueTranslation(post)) {
     requestTranslate(post).catch((error) => showToast(error.message));

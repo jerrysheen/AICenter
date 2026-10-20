@@ -4,11 +4,14 @@ import {
   continuedDoubaoChatUrl,
   dedupeRollingCaptions,
   captionAlreadyChinese,
+  GEMMA_ARTICLE_TITLE_SYSTEM,
   GEMMA_SECTION_SYSTEM,
   GEMMA_SUMMARY_SYSTEM,
   GEMMA_TRANSLATE_SYSTEM,
+  articleTitleSource,
   gemmaArticleNeedsRepair,
   gemmaSummarySource,
+  normalizeArticleTitle,
   joinArticleParts,
   joinGemmaArticle,
   repairTimestampHeading,
@@ -33,7 +36,8 @@ import { createGemmaTranslationRouter } from '../../connectors/src/translate/gem
 
 // 正文默认走现有 Gemma 26B 翻译池，只打官方 endpoint，不新接计费服务，也不在这里读写密钥。
 // Gemma 失败时，缺的那一段可以改用现有 Gemini Flash。豆包只在引擎显式写成 doubao 时使用。
-// 标题和关键句的中文化仍用调用方传入的 Gemma，不走 Flash。
+// 标题和关键句的中文化仍只用 Gemma，不走 Flash。
+// 正文整理完成后，再用 Gemma 按中文正文写一句话标题；失败就留着原来的标题。
 
 const PART_ATTEMPTS = 3;
 const ASK_TIMEOUT_MS = 120_000;
@@ -218,8 +222,77 @@ function replaceContent(feedRepository, workspaceId, contentItemId, patch) {
   });
 }
 
+function articleTitleGenerator(deps) {
+  if (deps.gemmaGenerate === null) return null;
+  if (typeof deps.gemmaGenerate === 'function') return deps.gemmaGenerate;
+  if (!deps.quotaRepository) return null;
+  return articleGemma(deps);
+}
+
+async function applyArticleTitle(deps, { row, feedRepository, workspaceId, article, state }) {
+  const generate = articleTitleGenerator(deps);
+  if (!generate) return { status: 'skipped' };
+  const source = articleTitleSource(article);
+  const calls = callCounts();
+  if (!source) {
+    state.titleStatus = 'failed';
+    state.articleTitle = '';
+    state.titleCalls = calls;
+    return { status: 'failed' };
+  }
+  calls.gemma = 1;
+  try {
+    const result = await generate({ system: GEMMA_ARTICLE_TITLE_SYSTEM, prompt: `文章：\n${source}` });
+    const title = normalizeArticleTitle(result?.text);
+    state.titleCalls = calls;
+    if (!title) {
+      state.titleStatus = 'failed';
+      state.articleTitle = '';
+      return { status: 'failed' };
+    }
+    replaceContent(feedRepository, workspaceId, row.contentItemId, { title, body: article });
+    state.titleStatus = 'ready';
+    state.articleTitle = title;
+    return { status: 'ready', title };
+  } catch (error) {
+    state.titleCalls = calls;
+    if (error?.code === 'budget-deferred' || deps.signal?.aborted) {
+      state.titleStatus = 'pending';
+      state.articleTitle = '';
+      return { status: 'pending', reason: 'quota', stopPass: true };
+    }
+    state.titleStatus = 'failed';
+    state.articleTitle = '';
+    console.warn(`[worker] youtube-podcasts 文章标题未写成：${String(error?.message || error).slice(0, 160)}`);
+    return { status: 'failed' };
+  }
+}
+
+async function finishArticle(deps, { row, repository, feedRepository, workspaceId, article, state, persist }) {
+  const titled = await applyArticleTitle(deps, { row, feedRepository, workspaceId, article, state });
+  if (titled.status !== 'ready') replaceContent(feedRepository, workspaceId, row.contentItemId, { body: article });
+  state.holdDay = '';
+  state.holdReason = '';
+  persist('ready');
+  if (titled.stopPass) return { status: 'ready', stopPass: true, reason: titled.reason || 'quota' };
+  return { status: 'ready' };
+}
+
+async function titlePendingArticle({ row, repository, feedRepository, workspaceId, deps }) {
+  const state = readState(row.articleState) || {};
+  if (state.titleStatus !== 'pending') return { status: 'skipped' };
+  const item = row.contentItemId ? feedRepository.getContentItem(workspaceId, row.contentItemId) : null;
+  const article = String(item?.body || row.body || '').trim();
+  const titled = await applyArticleTitle(deps, { row, feedRepository, workspaceId, article, state });
+  repository.saveEpisode(episodePatch(row, workspaceId, {
+    articleStatus: row.articleStatus || 'ready',
+    articleState: JSON.stringify(state),
+  }));
+  return titled;
+}
+
 function episodePatch(row, workspaceId, patch) {
-  return {
+  const next = {
     workspaceId,
     videoId: row.videoId,
     creatorId: row.creatorId,
@@ -232,13 +305,14 @@ function episodePatch(row, workspaceId, patch) {
     transcriptSource: row.transcriptSource || '',
     contentItemId: row.contentItemId || '',
     attempts: row.attempts || 0,
-    sourceTranscript: row.sourceTranscript || '',
     sourceHash: row.sourceHash || '',
     articleStatus: row.articleStatus || '',
     articleState: row.articleState || '',
     articleDay: row.articleDay || '',
     ...patch,
   };
+  if (Object.prototype.hasOwnProperty.call(row, 'sourceTranscript')) next.sourceTranscript = row.sourceTranscript || '';
+  return next;
 }
 
 async function localizeQuoteLines(summary, translate) {
@@ -331,7 +405,7 @@ function rememberChat(state, result) {
   if (url) state.chatUrl = url;
 }
 
-async function organizeEpisode({ row, client, repository, feedRepository, workspaceId, day, signal }) {
+async function organizeEpisode({ row, client, repository, feedRepository, workspaceId, day, signal, deps = {} }) {
   const item = row.contentItemId ? feedRepository.getContentItem(workspaceId, row.contentItemId) : null;
   const source = row.sourceTranscript || item?.body || '';
   if (!source.trim()) return { status: 'skipped', reason: 'empty' };
@@ -450,11 +524,10 @@ async function organizeEpisode({ row, client, repository, feedRepository, worksp
     persist('pending');
     return { status: 'pending', reason: 'failed' };
   }
-  replaceContent(feedRepository, workspaceId, row.contentItemId, { body: article });
-  state.holdDay = '';
-  state.holdReason = '';
-  persist('ready');
-  return { status: 'ready' };
+  return finishArticle(
+    { ...deps, signal },
+    { row, repository, feedRepository, workspaceId, article, state, persist },
+  );
 }
 
 async function organizeWithGemma({ row, repository, feedRepository, workspaceId, day, signal, env, deps }) {
@@ -617,11 +690,10 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
     persist('pending');
     return { status: 'pending', reason: 'failed' };
   }
-  replaceContent(feedRepository, workspaceId, row.contentItemId, { body: article });
-  state.holdDay = '';
-  state.holdReason = '';
-  persist('ready');
-  return { status: 'ready' };
+  return finishArticle(
+    { ...deps, signal },
+    { row, repository, feedRepository, workspaceId, article, state, persist },
+  );
 }
 
 export async function runYoutubeArticlePass(deps = {}) {
@@ -652,6 +724,19 @@ export async function runYoutubeArticlePass(deps = {}) {
       stats.pending += 1;
       continue;
     }
+    if (row.articleStatus === 'ready' && saved?.titleStatus === 'pending' && !(engine === 'gemma' && gemmaArticleNeedsRepair(saved))) {
+      try {
+        const titled = await titlePendingArticle({ row, repository, feedRepository, workspaceId, deps });
+        if (titled.stopPass) {
+          stats.stopped = titled.reason || 'quota';
+          break;
+        }
+      } catch (error) {
+        console.warn(`[worker] youtube-podcasts 文章标题未写成：${String(error?.message || error).slice(0, 160)}`);
+      }
+      stats.skipped += 1;
+      continue;
+    }
     if (row.articleStatus === 'ready' && (engine !== 'gemma' || !gemmaArticleNeedsRepair(saved))) {
       stats.skipped += 1;
       continue;
@@ -672,6 +757,7 @@ export async function runYoutubeArticlePass(deps = {}) {
           workspaceId,
           day,
           signal: deps.signal,
+          deps,
         })
         : await organizeWithGemma({
           row,
@@ -694,6 +780,58 @@ export async function runYoutubeArticlePass(deps = {}) {
     if (result.stopDay || result.stopPass) {
       stats.stopped = result.reason || 'blocked';
       break;
+    }
+  }
+  return stats;
+}
+
+export async function backfillYoutubeArticleTitles(deps = {}) {
+  const repository = deps.repository;
+  const feedRepository = deps.feedRepository;
+  if (!repository || !feedRepository) return { titled: 0, failed: 0, skipped: 0, stopped: '' };
+  const workspaceId = deps.workspaceId || 'local';
+  const limit = Math.max(1, Math.min(Number(deps.limit) || 500, 500));
+  const rows = repository.listArticlesNeedingTitle(workspaceId, limit);
+  const stats = { titled: 0, failed: 0, skipped: 0, stopped: '' };
+  const generate = deps.dryRun ? null : articleTitleGenerator({ ...deps, quotaRepository: deps.quotaRepository || {}, gemmaGenerate: deps.gemmaGenerate });
+  for (const row of rows) {
+    if (deps.signal?.aborted) {
+      stats.stopped = 'deadline';
+      break;
+    }
+    const state = readState(row.articleState) || {};
+    if (!deps.force && state.titleStatus === 'ready' && state.articleTitle) {
+      stats.skipped += 1;
+      continue;
+    }
+    const article = String(row.body || '').trim();
+    if (deps.dryRun) {
+      stats.titled += 1;
+      deps.onItem?.({ videoId: row.videoId, title: row.displayTitle || row.title, originalTitle: row.title, dryRun: true });
+      continue;
+    }
+    if (!generate) {
+      stats.failed += 1;
+      continue;
+    }
+    const titled = await applyArticleTitle(
+      { ...deps, gemmaGenerate: generate, quotaRepository: deps.quotaRepository || {} },
+      { row, feedRepository, workspaceId, article, state },
+    );
+    repository.saveEpisode(episodePatch(row, workspaceId, {
+      articleStatus: 'ready',
+      articleState: JSON.stringify(state),
+    }));
+    if (titled.stopPass) {
+      stats.stopped = titled.reason || 'quota';
+      break;
+    }
+    if (titled.status === 'ready') {
+      stats.titled += 1;
+      deps.onItem?.({ videoId: row.videoId, title: titled.title, originalTitle: row.title });
+    } else {
+      stats.failed += 1;
+      deps.onItem?.({ videoId: row.videoId, title: row.displayTitle || row.title, originalTitle: row.title, failed: true });
     }
   }
   return stats;

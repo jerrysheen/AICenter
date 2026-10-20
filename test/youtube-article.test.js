@@ -8,6 +8,7 @@ import {
   articlePartPrompt,
   dedupeRollingCaptions,
   captionAlreadyChinese,
+  GEMMA_ARTICLE_TITLE_SYSTEM,
   GEMMA_SECTION_SYSTEM,
   GEMMA_SUMMARY_SYSTEM,
   GEMMA_TRANSLATE_SYSTEM,
@@ -20,7 +21,7 @@ import {
   transcriptHash,
 } from '../packages/domain/src/youtube-captions.js';
 import { formatPodcastSummary } from '../packages/domain/src/youtube-podcasts.js';
-import { repairYoutubeChineseCopy, runYoutubeArticlePass } from '../packages/runtime/src/youtube-article-job.js';
+import { backfillYoutubeArticleTitles, repairYoutubeChineseCopy, runYoutubeArticlePass } from '../packages/runtime/src/youtube-article-job.js';
 import { runYoutubePodcastRound, saveYoutubeEpisode } from '../packages/runtime/src/youtube-podcasts-job.js';
 
 const ROLLING = `[00:00:03] In general, the market does about 4% worse per
@@ -654,6 +655,7 @@ function articleReply(input) {
   if (input.system === GEMMA_TRANSLATE_SYSTEM) return { text: '主持人：利率会差 24%，NVDA 仍在讨论。' };
   if (input.system === GEMMA_SECTION_SYSTEM) return { text: '## 利率（00:00:03）\n\n主持人：利率会差 24%，NVDA 仍在讨论。' };
   if (input.system === GEMMA_SUMMARY_SYSTEM) return { text: '## 要点\n\n- 利率会差 24%。' };
+  if (input.system === GEMMA_ARTICLE_TITLE_SYSTEM) return { text: '利率路径仍在左右仓位' };
   throw new Error(`意外的提示：${input.system}`);
 }
 
@@ -700,7 +702,11 @@ test('gemma translates each part, stores it, then writes one article', async () 
     assert.match(saved.sourceTranscript, /Rates move/);
     assert.equal(doubao.calls.length, 0);
     assert.equal(flash.calls.length, 0);
-    assert.deepEqual(gemma.calls.map((call) => call.system), [GEMMA_TRANSLATE_SYSTEM, GEMMA_SECTION_SYSTEM, GEMMA_SUMMARY_SYSTEM]);
+    assert.deepEqual(gemma.calls.map((call) => call.system), [GEMMA_TRANSLATE_SYSTEM, GEMMA_SECTION_SYSTEM, GEMMA_SUMMARY_SYSTEM, GEMMA_ARTICLE_TITLE_SYSTEM]);
+    assert.equal(saved.displayTitle, '利率路径仍在左右仓位');
+    assert.equal(saved.title, 'Rates');
+    assert.equal(JSON.parse(saved.articleState).titleStatus, 'ready');
+    assert.deepEqual(JSON.parse(saved.articleState).titleCalls, { gemma: 1, flash: 0 });
     const state = JSON.parse(saved.articleState);
     assert.equal(state.engine, 'gemma');
     assert.equal(state.parts[0].provider, 'gemma');
@@ -854,7 +860,12 @@ test('a failed gemma part falls back to flash and does not resend finished text'
     });
     assert.equal(result.ready, 1);
     assert.equal(flash.calls.length, 3);
-    assert.equal(gemma.calls.length, 3);
+    assert.equal(gemma.calls.length, 4);
+    assert.equal(gemma.calls.at(-1).system, GEMMA_ARTICLE_TITLE_SYSTEM);
+    assert.equal(flash.calls.some((call) => call.system === GEMMA_ARTICLE_TITLE_SYSTEM), false);
+    assert.equal(opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaflash01').displayTitle, '利率');
+    assert.equal(opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaflash01').title, 'Rates');
+    assert.equal(JSON.parse(opened.store.repositories.youtubePodcasts.episode('local', 'gemmaflash01').articleState).titleStatus, 'failed');
     const flashState = JSON.parse(opened.store.repositories.youtubePodcasts.episode('local', 'gemmaflash01').articleState);
     assert.equal(flashState.parts[0].provider, 'flash');
     assert.deepEqual(flashState.parts[0].calls, { gemma: 2, flash: 2 });
@@ -908,7 +919,7 @@ test('chinese captions are organized without a translation call', async () => {
       now: Date.parse('2026-10-19T02:00:00Z'),
     });
     assert.equal(result.ready, 1);
-    assert.deepEqual(gemma.calls.map((call) => call.system), [GEMMA_SECTION_SYSTEM, GEMMA_SUMMARY_SYSTEM]);
+    assert.deepEqual(gemma.calls.map((call) => call.system), [GEMMA_SECTION_SYSTEM, GEMMA_SUMMARY_SYSTEM, GEMMA_ARTICLE_TITLE_SYSTEM]);
     assert.match(gemma.calls[0].prompt, /机器人行走方案/);
     const state = JSON.parse(opened.store.repositories.youtubePodcasts.episode('local', 'gemmachinese1').articleState);
     assert.equal(state.parts[0].provider, 'source');
@@ -998,7 +1009,7 @@ test('a ready gemma article repairs chinese segments and clock-only headings', a
       now: Date.parse('2026-10-19T06:00:00Z'),
     });
     assert.equal(result.ready, 1);
-    assert.deepEqual(gemma.calls.map((call) => call.system), [GEMMA_SECTION_SYSTEM, GEMMA_SUMMARY_SYSTEM]);
+    assert.deepEqual(gemma.calls.map((call) => call.system), [GEMMA_SECTION_SYSTEM, GEMMA_SUMMARY_SYSTEM, GEMMA_ARTICLE_TITLE_SYSTEM]);
     assert.match(gemma.calls[0].prompt, /机器人行走方案/);
     const state = JSON.parse(opened.store.repositories.youtubePodcasts.episode('local', 'gemmarepair01').articleState);
     assert.equal(state.parts[0].provider, 'source');
@@ -1073,6 +1084,161 @@ test('a clock-only heading is rewritten from the section topic', async () => {
     assert.match(body, /## 利率会差 24%，NVDA 仍在讨论（00:00:03）/);
     assert.equal(/^## 00:00:03$/m.test(body), false);
     assert.equal(repairTimestampHeading('## 00:00:00\n\n主持人：利率会差 24%，NVDA 仍在讨论。', '00:00:00').startsWith('## 利率会差'), true);
+  } finally {
+    opened.close();
+  }
+});
+
+test('a quota deferral on the article title keeps the original title and retries once', async () => {
+  const opened = openStore();
+  const body = '## 要点\n\n- 利率会差 24%。\n\n## 利率路径（00:12:03）\n\n主持人：利率会差 24%，NVDA 仍在讨论。';
+  const item = await saveYoutubeEpisode({
+    feedRepository: opened.store.repositories.feed,
+    workspaceId: 'local',
+    creator: { id: 'odd-lots', name: 'Odd Lots', focus: '金融', channels: [{ key: 'odd-lots' }] },
+    episode: { videoId: 'titlequota001', title: 'Rates and Positioning', channelKey: 'odd-lots', publishedAt: Date.parse('2026-10-18T00:00:00Z'), durationSec: 1800 },
+    summaryText: '中文摘要',
+    displayTitle: 'Rates and Positioning',
+    transcript: body,
+    transcriptSource: 'subtitle-manual',
+  });
+  opened.store.repositories.youtubePodcasts.saveEpisode({
+    workspaceId: 'local',
+    videoId: 'titlequota001',
+    creatorId: 'odd-lots',
+    channelKey: 'odd-lots',
+    title: 'Rates and Positioning',
+    status: 'ready',
+    contentItemId: item.id,
+    attempts: 1,
+    articleStatus: 'ready',
+    articleDay: '2026-10-19',
+    articleState: JSON.stringify({
+      engine: 'gemma',
+      hash: 'title-quota',
+      summary: '## 要点',
+      parts: [{ text: 'ready', translation: 'ready', section: '## 利率路径（00:12:03）', status: 'done', provider: 'gemma', calls: { gemma: 1, flash: 0 } }],
+      titleStatus: 'pending',
+    }),
+  });
+  let blocked = true;
+  const gemma = fakeGemma(() => {
+    if (blocked) {
+      const error = new Error('Gemma 翻译等待配额窗口');
+      error.code = 'budget-deferred';
+      throw error;
+    }
+    return { text: '利率路径仍在左右仓位' };
+  });
+  try {
+    const paused = await runYoutubeArticlePass({
+      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1' },
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      gemmaGenerate: gemma.generate.bind(gemma),
+      flashGenerate: null,
+      now: Date.parse('2026-10-19T08:00:00Z'),
+    });
+    assert.equal(paused.stopped, 'quota');
+    assert.equal(gemma.calls.length, 1);
+    assert.equal(gemma.calls[0].system, GEMMA_ARTICLE_TITLE_SYSTEM);
+    assert.equal(opened.store.repositories.youtubePodcasts.getReady('local', 'titlequota001').displayTitle, 'Rates and Positioning');
+    assert.equal(opened.store.repositories.youtubePodcasts.getReady('local', 'titlequota001').title, 'Rates and Positioning');
+    blocked = false;
+    const again = await runYoutubeArticlePass({
+      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1' },
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      gemmaGenerate: gemma.generate.bind(gemma),
+      flashGenerate: null,
+      now: Date.parse('2026-10-19T09:00:00Z'),
+    });
+    assert.equal(again.stopped, '');
+    assert.equal(gemma.calls.length, 2);
+    const saved = opened.store.repositories.youtubePodcasts.getReady('local', 'titlequota001');
+    assert.equal(saved.displayTitle, '利率路径仍在左右仓位');
+    assert.equal(saved.title, 'Rates and Positioning');
+    assert.equal(JSON.parse(saved.articleState).titleStatus, 'ready');
+    await runYoutubeArticlePass({
+      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1' },
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      gemmaGenerate: gemma.generate.bind(gemma),
+      flashGenerate: null,
+      now: Date.parse('2026-10-19T10:00:00Z'),
+    });
+    assert.equal(gemma.calls.length, 2);
+  } finally {
+    opened.close();
+  }
+});
+
+test('backfill writes one gemma title per ready article and skips it the next time', async () => {
+  const opened = openStore();
+  const body = '## 要点\n\n- 机器人能在户外走路。\n\n## 户外行走（00:00:01）\n\n主持人：Dyna Robotics 今天发布了新的机器人行走方案。';
+  const item = await saveYoutubeEpisode({
+    feedRepository: opened.store.repositories.feed,
+    workspaceId: 'local',
+    creator: { id: 'odd-lots', name: 'Odd Lots', focus: '金融', channels: [{ key: 'odd-lots' }] },
+    episode: { videoId: 'titlebackfill1', title: 'Dyna Robotics walks outside', channelKey: 'odd-lots', publishedAt: Date.parse('2026-10-18T00:00:00Z'), durationSec: 1800 },
+    summaryText: '中文摘要',
+    displayTitle: 'Dyna Robotics walks outside',
+    transcript: body,
+    transcriptSource: 'subtitle-manual',
+  });
+  opened.store.repositories.youtubePodcasts.saveEpisode({
+    workspaceId: 'local',
+    videoId: 'titlebackfill1',
+    creatorId: 'odd-lots',
+    channelKey: 'odd-lots',
+    title: 'Dyna Robotics walks outside',
+    status: 'ready',
+    contentItemId: item.id,
+    attempts: 1,
+    sourceTranscript: '原始字幕还在',
+    articleStatus: 'ready',
+    articleState: JSON.stringify({ engine: 'gemma', hash: 'backfill', parts: [] }),
+  });
+  const gemma = fakeGemma((input) => {
+    assert.equal(input.system, GEMMA_ARTICLE_TITLE_SYSTEM);
+    if (input.prompt.includes('请再写一次')) return { text: '不该再调用' };
+    return { text: '「Dyna 机器人开始户外行走」' };
+  });
+  try {
+    const dry = await backfillYoutubeArticleTitles({
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      dryRun: true,
+      gemmaGenerate: gemma.generate.bind(gemma),
+    });
+    assert.equal(dry.titled, 1);
+    assert.equal(gemma.calls.length, 0);
+    assert.equal(opened.store.repositories.youtubePodcasts.getReady('local', 'titlebackfill1').displayTitle, 'Dyna Robotics walks outside');
+    const first = await backfillYoutubeArticleTitles({
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      gemmaGenerate: gemma.generate.bind(gemma),
+    });
+    assert.equal(first.titled, 1);
+    assert.equal(first.failed, 0);
+    assert.equal(gemma.calls.length, 1);
+    const saved = opened.store.repositories.youtubePodcasts.getReady('local', 'titlebackfill1');
+    assert.equal(saved.displayTitle, 'Dyna 机器人开始户外行走');
+    assert.equal(saved.title, 'Dyna Robotics walks outside');
+    assert.equal(saved.sourceTranscript, '原始字幕还在');
+    const second = await backfillYoutubeArticleTitles({
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      gemmaGenerate: gemma.generate.bind(gemma),
+    });
+    assert.equal(second.titled, 0);
+    assert.equal(gemma.calls.length, 1);
   } finally {
     opened.close();
   }
