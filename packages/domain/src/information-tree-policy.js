@@ -231,6 +231,7 @@ export function formatCondenseFailureLog(error, meta = {}) {
     `inputChars=${numberOrDash(inputChars)}`,
     `skillBytes=${numberOrDash(meta.skillBytes)}`,
     `calls=${numberOrDash(meta.calls)}`,
+    `splits=${numberOrDash(meta.splitRuns)}`,
     `queueMs=${numberOrDash(Number.isFinite(timing.queueMs) ? timing.queueMs : meta.queueMs)}`,
     `executionMs=${numberOrDash(Number.isFinite(timing.executionMs) ? timing.executionMs : meta.executionMs)}`,
     `elapsedMs=${numberOrDash(meta.elapsedMs)}`,

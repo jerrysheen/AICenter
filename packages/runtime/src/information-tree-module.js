@@ -18,7 +18,8 @@ export function materialStamp(node) {
   return `${node?.sourceId || node?.id || ''}\0${node?.sourceVersion || ''}`;
 }
 
-// A published edition, or an attempt that already ran this same material batch, must not be queued again.
+// A published edition covering this material batch is not queued again.
+// A non-terminal attempt (429, timeout, truncation) still retries the same materials.
 export function editionCoversMaterials(edition, hourNodes, lookup) {
   if(!edition || !hourNodes?.length) return false;
   const ids=new Set(edition.inputIds || []);
@@ -47,7 +48,7 @@ export function enqueuePreparedHourRefreshes(store,service,workspaceId,nodes,at=
     const attempt=slot?.attempt;
     const lookup=id=>service.node?.(workspaceId,id);
     if(editionCoversMaterials(published,hourNodes,lookup))continue;
-    if(editionCoversMaterials(attempt,hourNodes,lookup))continue;
+    if(attempt?.terminal && editionCoversMaterials(attempt,hourNodes,lookup))continue;
     // A running hour may already have frozen its inputs; retain one queued follow-up.
     if(queued.some(j=>j.input.hourStart===hourStart && !j.input.snapshotId && j.input.mode!=='rewrite'))continue;
     jobs.push(store.createJob({type:'report.hourly.extract',workspaceId,priority:hourStart===latest ? 10 : -5,maxAttempts:2,availableAt:hourlyRefreshAvailableAt(at,minute),input:{workspaceId,hourStart}}));

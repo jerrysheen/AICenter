@@ -502,6 +502,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
       await yieldEventLoop();
       const version=await materialHashYielding({layer,inputs:rows.map(i=>({id:i.id,version:i.version})),tagId,window,skill:skills[layer].version,generationVersion:generationVersion(layer),groups:classification.groupVersion});
       const stageKey=`tree-${layer}:${version}`,cached=reportRepository.getAnalysisStage(s.workspaceId,'tree-cache',stageKey,version);
+      let splitRuns=0;
       try {
       const manualTransientRetry=s.retryTransient===true && cached?.input?.failure?.reason==='retryable-model-error';
       if(!cachedTruncationFailure(cached) && cached?.status==='failed' && cached.input?.failure?.retryAt>now() && !manualTransientRetry) {
@@ -512,6 +513,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
         try {const nodes=cached.output.ids.map(id=>TreeNodeSchema.parse(repository.getNode(s.workspaceId,id)));validateTreeModules({modules:nodes.map(n=>({...n,inputIds:n.children}))},rows,modelTags);s.cacheHits=(s.cacheHits || 0)+1;part.nodes.push(...nodes);return part;}catch{/* Locally rebuild the invalid group; other completed caches remain. */}
       }
       const project=(rows)=>rows.map((i,n)=>({...projectTreeInput(i,`n${n+1}`),tagId,...(layer==='daily' ? {window:i.window} : {})}));
+      const truncationSplitDepth=3;
       async function merge(rows,depth=0) {
         if(depth>12) throw new Error('分批合并未收敛');
         const projection=project(rows),batches=packTreeInputs(projection,config.batchBytes);
@@ -531,7 +533,8 @@ export function createInformationTreeService({repository,reportRepository,feedSe
             },s);
             return value.modules.map(m=>({...m,inputIds:m.inputIds.flatMap(alias=>rows[Number(alias.slice(1))-1].directIds)}));
           } catch(error) {
-            if(error?.code==='truncated' && rows.length>1 && depth<12) {
+            if(error?.code==='truncated' && rows.length>1 && depth<truncationSplitDepth) {
+              splitRuns+=1;
               const mid=Math.ceil(rows.length/2);
               return [...await merge(rows.slice(0,mid),depth+1),...await merge(rows.slice(mid),depth+1)];
             }
@@ -552,6 +555,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
         && (rows[0].layer==='information' ? reusableInformation(rows[0]) : rows[0].effectivePromptHash===skills.hourly.version) && Array.from(rows[0].text).length<=80
         ? [{title:rows[0].title,text:rows[0].text,tagId,inputIds:[rows[0].id]}]
         : await merge(rows.map(i=>({...i,directIds:[i.id]})));
+      if(splitRuns) console.log(`[worker] tree-hourly truncation-split tag=${tagId ?? 'null'} splits=${splitRuns}`);
       // Flattened internal batches still belong to the original immediate previous layer.
       validateTreeModules({modules:output},rows,modelTags);
       const nodes=[];
@@ -564,6 +568,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
       }
       reportRepository.saveAnalysisStage(s.workspaceId,'tree-cache',stageKey,version,{stage:layer},{ids:nodes.map(n=>n.id)},'completed');part.nodes.push(...nodes);
       } catch(error) {
+        if(splitRuns) console.log(`[worker] tree-hourly truncation-split tag=${tagId ?? 'null'} splits=${splitRuns}`);
         if(error?.code==='lease-conflict') {
           part.failures.push({...treeFailure(error,stageKey,'',now()),tagId});
           return part;
@@ -574,7 +579,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
         try {
           const projection=rows.map((row,index)=>({...projectTreeInput(row,`n${index+1}`),tagId,...(layer==='daily' ? {window:row.window} : {})}));
           console.error(formatCondenseFailureLog(error,{...meta,inputCount:rows.length,inputBytes:Buffer.byteLength(JSON.stringify(projection)),
-            skillBytes:Buffer.byteLength(String(skills[layer]?.instruction || '')),calls:s.calls}));
+            skillBytes:Buffer.byteLength(String(skills[layer]?.instruction || '')),calls:s.calls,splitRuns}));
         } catch { /* 诊断日志失败不能挡住失败分组落库 */ }
         try { part.diagnostics.push(describeCondenseFailure(error,meta)); } catch { /* 诊断字段失败不能挡住失败分组落库 */ }
         const failure={...(error.cachedPending || treeFailure(error,stageKey,'',now())),tagId};part.failures.push(failure);

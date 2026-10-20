@@ -388,6 +388,29 @@ test('a published edition with the same material stamps is not refreshed again',
   assert.deepEqual(enqueuePreparedHourRefreshes(store, service, 'local', [hourNode], start + H + 1000), []);
 });
 
+test('a non-terminal failed attempt with the same materials is queued again', () => {
+  const hourNode = { id: 'new-node', sourceId: 'src', sourceVersion: 'v1', window: { startAt: start } };
+  const service = {
+    list() { return { hours: [{ edition: null, attempt: { inputIds: ['old-node'], terminal: false } }] }; },
+    node(_workspace, id) { return id === 'old-node' ? { sourceId: 'src', sourceVersion: 'v1' } : null; },
+  };
+  const store = {
+    createJob(job) { return { ...job, id: 'retry-hour' }; },
+    listOpenJobs() { return []; },
+  };
+  const jobs = enqueuePreparedHourRefreshes(store, service, 'local', [hourNode], start + H + 1000);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].input.hourStart, start);
+  const stopped = {
+    list() { return { hours: [{ edition: null, attempt: { inputIds: ['old-node'], terminal: true } }] }; },
+    node: service.node,
+  };
+  assert.deepEqual(enqueuePreparedHourRefreshes({
+    createJob() { throw new Error('terminal attempt must not enqueue'); },
+    listOpenJobs() { return []; },
+  }, stopped, 'local', [hourNode], start + H + 1000), []);
+});
+
 test('truncated hourly output retries a larger model and is not cached as a failed stage', async () => {
   const f = fixture();
   const long = (id) => ({ ...material(id, '公司宣布新产品已开放测试。'.repeat(12)), publishedAt: start + 1 });
@@ -436,4 +459,35 @@ test('a truncated single group is not reused as a cached whole-task failure', as
     assert.equal(second.status, 'failed');
     assert.ok(hourly > seen);
   } finally { f.store.close(); }
+});
+
+test('truncated groups split at most three times and record the split count', async () => {
+  const f = fixture();
+  const lines = [];
+  const previous = console.log;
+  console.log = (...args) => { lines.push(args.join(' ')); previous(...args); };
+  const text = '公司宣布新产品已开放测试。'.repeat(6);
+  f.runtime.run = async (input) => {
+    f.calls.push(input);
+    const payload = JSON.parse(input.message);
+    if (input.usageStage !== 'tree-hourly') {
+      return { answer: JSON.stringify({ title: payload.source.title, text: payload.source.paragraphs.map((row) => row.text).join(''), tagId: null }) };
+    }
+    const count = Array.isArray(payload.inputs) ? payload.inputs.length : 0;
+    if (count === 1) throw new Error('depth cap should stop before a single row');
+    throw Object.assign(new Error('输出被截断'), { finishReason: 'MAX_TOKENS' });
+  };
+  try {
+    const hour = await f.service.generateHour({
+      hourStart: start,
+      materials: Array.from({ length: 16 }, (_, index) => ({ ...material(`n${index}`, text), publishedAt: start + 1 })),
+    });
+    assert.equal(hour.status, 'failed');
+    assert.ok(lines.some((line) => line.includes('truncation-split') && line.includes('splits=3')), lines.join('\n'));
+    const hourly = f.calls.filter((call) => call.usageStage === 'tree-hourly');
+    assert.equal(JSON.parse(hourly.at(-1).message).inputs.length, 2);
+  } finally {
+    console.log = previous;
+    f.store.close();
+  }
 });
