@@ -5,6 +5,7 @@ import {
   loadYoutubePodcastConfig,
   nextYoutubeArticleOpportunity,
   nextZonedDayStart,
+  previousYoutubeArticleOpportunity,
   watchUrl,
   YOUTUBE_PODCAST_JOB_TYPE,
   youtubePodcastClock,
@@ -23,20 +24,38 @@ function articleFacts(row) {
   };
 }
 
+function activeHold(facts, today) {
+  const hold = String(facts.holdReason || '');
+  if (hold === 'daily-limit' && facts.holdDay && facts.holdDay !== today) return '';
+  return hold;
+}
+
+function articleSlotMissed(row, facts, hold, now, env) {
+  if (String(row.articleStatus || '') === 'ready') return false;
+  if (hold === 'daily-limit' || hold === 'failed' || hold === 'quota' || hold === 'login' || hold === 'page') return false;
+  if ((Number(facts.done) || 0) > 0 && (Number(facts.total) || 0) > 0) return false;
+  const ingested = Number(row.ingestedAt) || 0;
+  if (!ingested) return false;
+  const last = previousYoutubeArticleOpportunity(now, env);
+  return Number.isFinite(last) && last >= ingested && now > last;
+}
+
 function articleView(row, now, env) {
   const facts = articleFacts(row);
   const clock = youtubePodcastClock(env);
   const today = formatYmd(zonedParts(now, clock.timeZone));
+  const hold = activeHold(facts, today);
   const blocked = facts.holdDay === today && BLOCKED_HOLD.has(facts.holdReason);
   const nextAt = row.articleStatus === 'ready'
     ? null
     : nextYoutubeArticleOpportunity(blocked ? nextZonedDayStart(now, clock.timeZone) - 1 : now, env);
   return describeYoutubeArticle({
     articleStatus: row.articleStatus,
-    holdReason: facts.holdReason,
+    holdReason: hold,
     done: facts.done,
     total: facts.total,
     nextAt,
+    overdue: articleSlotMissed(row, facts, hold, now, env),
     now,
     timeZone: clock.timeZone,
   });
@@ -106,9 +125,16 @@ export function createYoutubePodcastService({ repository, store, configPath, env
       return { enabled: youtubePodcastsEnabled(env), configError: config.error, creators: grouped };
     },
 
-    get(workspaceId, videoId) {
+    get(workspaceId, videoId, now = Date.now()) {
       const row = repository.getReady(workspaceId, videoId);
-      return row ? present(row, { withBody: true, env }) : null;
+      return row ? present(row, { withBody: true, now, env }) : null;
+    },
+
+    status(workspaceId, videoId, now = Date.now()) {
+      const row = repository.getStatus(workspaceId, videoId);
+      if (!row) return null;
+      const view = present(row, { now, env });
+      return { videoId: view.videoId, articleStatus: view.articleStatus, article: view.article };
     },
 
     enqueue(workspaceId) {

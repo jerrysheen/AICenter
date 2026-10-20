@@ -12,8 +12,10 @@ import {
   nextYoutubeArticleOpportunity,
   nextYoutubeArticleSlot,
   nextZonedDayStart,
+  previousYoutubeArticleOpportunity,
   youtubeArticleDailyLimit,
 } from '../packages/domain/src/youtube-podcasts.js';
+import { isApiTokenAllowlisted } from '../apps/web/src/http/api-token-access.js';
 import { retireYoutubeTranslationJobs } from '../packages/runtime/src/feed-translation-module.js';
 import { runYoutubeArticlePass } from '../packages/runtime/src/youtube-article-job.js';
 import { ensureYoutubeArticleSchedule } from '../packages/runtime/src/youtube-podcasts-job.js';
@@ -102,8 +104,20 @@ test('catch-up slots stay on minute 10 and a blocked day waits until tomorrow', 
     now: at,
   });
   assert.equal(queued.status, 'queued');
-  assert.equal(queued.message, '中文整理排队中，预计明天 00:10 处理');
+  assert.equal(queued.message, '今天的整理名额已用完，将于明天 00:10 处理');
+  assert.equal(queued.message.includes('排队中'), false);
   assert.equal(queued.message.includes('整理中'), false);
+  const missed = describeYoutubeArticle({
+    articleStatus: 'pending',
+    overdue: true,
+    nextAt: slot,
+    now: at,
+  });
+  assert.equal(missed.message, '预计时间已过，将于 12:10 重试');
+  assert.equal(missed.message.includes('排队中'), false);
+  const last = previousYoutubeArticleOpportunity(Date.parse('2026-10-20T04:20:00Z'), env);
+  assert.equal(zonedParts(last, 'Asia/Shanghai').hour, 12);
+  assert.equal(zonedParts(last, 'Asia/Shanghai').minute, 10);
   const running = describeYoutubeArticle({ articleStatus: 'pending', done: 12, total: 27, nextAt: slot, now: at });
   assert.equal(running.status, 'running');
   assert.equal(running.message, '整理中 12/27 段');
@@ -207,10 +221,44 @@ test('episode list reports part progress without loading the article state blob'
         AI_CENTER_YOUTUBE_PODCASTS_AT: '07:00',
       },
     });
-    const view = service.get('local', 'partsvideo01');
+    const now = Date.parse('2026-10-20T04:00:00Z');
+    const view = service.get('local', 'partsvideo01', now);
     assert.equal(view.article.status, 'queued');
-    assert.match(view.article.message, /中文整理排队中/);
+    assert.equal(view.article.message, '今天的整理名额已用完，将于明天 00:10 处理');
+    assert.equal(view.article.message.includes('排队中'), false);
     assert.equal(view.article.message.includes('整理中'), false);
+    const status = service.status('local', 'partsvideo01', now);
+    assert.equal(status.article.message, view.article.message);
+    assert.equal(Object.hasOwn(status, 'body'), false);
+    assert.equal(isApiTokenAllowlisted('GET', '/api/v1/youtube-podcasts/partsvideo01/article'), true);
+  } finally {
+    opened.close();
+  }
+});
+
+test('a missed slot stops saying the episode is still queued', () => {
+  const opened = openStore();
+  try {
+    const repository = opened.store.repositories.youtubePodcasts;
+    const now = Date.parse('2026-10-20T04:20:00Z');
+    repository.saveEpisode(episode('missedvideo1', { createdAt: Date.parse('2026-10-20T01:00:00Z') }));
+    repository.saveEpisode(episode('freshvideo001', { createdAt: Date.parse('2026-10-20T04:15:00Z') }));
+    const service = createYoutubePodcastService({
+      repository,
+      store: opened.store,
+      configPath: path.join(os.tmpdir(), 'missing-youtube-podcasts.json'),
+      env: {
+        AI_CENTER_YOUTUBE_PODCASTS: '1',
+        AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1',
+        AI_CENTER_YOUTUBE_PODCASTS_AT: '07:00',
+        AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_EVERY_HOURS: '3',
+      },
+    });
+    const missed = service.status('local', 'missedvideo1', now);
+    const fresh = service.status('local', 'freshvideo001', now);
+    assert.equal(missed.article.message, '预计时间已过，将于 15:10 重试');
+    assert.equal(missed.article.message.includes('排队中'), false);
+    assert.equal(fresh.article.message, '中文整理排队中，预计 15:10 处理');
   } finally {
     opened.close();
   }
