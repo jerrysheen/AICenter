@@ -25,6 +25,7 @@ import { createSouthboundRoutes } from './southbound-routes.js';
 import { createNorthboundRoutes } from './northbound-routes.js';
 import { createSourceRoutes } from './source-routes.js';
 import { createYoutubePodcastRoutes } from './youtube-podcast-routes.js';
+import { createXVideoRoutes } from './x-video-routes.js';
 import { createTaggingRoutes } from './tagging-routes.js';
 
 export function createApiRoutes({ slots, offthread = null } = {}) {
@@ -57,5 +58,6 @@ export function createApiRoutes({ slots, offthread = null } = {}) {
     ...createEventRoutes(),
     ...createInvestorDiscussionRoutes(),
     ...createYoutubePodcastRoutes(),
+    ...createXVideoRoutes(),
   ];
 }

@@ -39,6 +39,7 @@ import { ensureMediaIndexSyncSchedule, enqueueMediaIndexEnrich, MEDIA_ENRICH_JOB
 import { loadTwkrFlags } from '../../../packages/connectors/src/twkr-sources.js';
 import { createTwkrJobHandlers, ensureTwkrSchedules, prepareTwkrEnqueue, TWKR_NEWS_JOB_TYPE, TWKR_REVENUE_JOB_TYPE } from '../../../packages/runtime/src/twkr-job.js';
 import { createYoutubePodcastJobHandlers, ensureYoutubeArticleSchedule, ensureYoutubePodcastSchedule, YOUTUBE_ARTICLE_JOB_TYPE, YOUTUBE_PODCAST_JOB_TYPE } from '../../../packages/runtime/src/youtube-podcasts-job.js';
+import { X_VIDEO_ARTICLE_JOB_TYPE } from '../../../packages/domain/src/x-video-articles.js';
 import { youtubePodcastLimits } from '../../../packages/domain/src/youtube-podcasts.js';
 import { createMediaEnrichJobHandlers } from '../../../packages/runtime/src/media-enrich-module.js';
 import { createKnowledgeService } from '../../../packages/domain/src/knowledge-service.js';
@@ -207,6 +208,7 @@ export function createAiCenterWorker(options = {}) {
     'media.index.enrich': boundedInt(env.AI_CENTER_MEDIA_ENRICH_MAX_RUNNING_MS, 8 * 60_000, 60_000, 30 * 60_000),
     [YOUTUBE_PODCAST_JOB_TYPE]: youtubePodcastLimits(env).roundMs,
     [YOUTUBE_ARTICLE_JOB_TYPE]: youtubePodcastLimits(env).roundMs,
+    [X_VIDEO_ARTICLE_JOB_TYPE]: youtubePodcastLimits(env).roundMs,
     [TWKR_NEWS_JOB_TYPE]: 25_000,
     [TWKR_REVENUE_JOB_TYPE]: 70_000,
   };
@@ -779,12 +781,13 @@ export function createAiCenterWorker(options = {}) {
     manifest: {
       id: 'youtube.podcasts',
       version: '1.0.0',
-      capabilities: ['youtube.podcasts.sync', YOUTUBE_ARTICLE_JOB_TYPE],
-      jobTypes: [YOUTUBE_PODCAST_JOB_TYPE, YOUTUBE_ARTICLE_JOB_TYPE],
+      capabilities: ['youtube.podcasts.sync', YOUTUBE_ARTICLE_JOB_TYPE, X_VIDEO_ARTICLE_JOB_TYPE],
+      jobTypes: [YOUTUBE_PODCAST_JOB_TYPE, YOUTUBE_ARTICLE_JOB_TYPE, X_VIDEO_ARTICLE_JOB_TYPE],
       sourceIds: [],
     },
     jobHandlers: options.youtubePodcastJobHandlers || createYoutubePodcastJobHandlers({
       repository: store.repositories.youtubePodcasts,
+      xVideoRepository: store.repositories.xVideos,
       feedRepository: store.repositories.feed,
       quotaRepository: store.repositories.modelQuota,
       configPath: path.join(instance.configDirectory, 'youtube-podcasts.json'),

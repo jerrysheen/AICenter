@@ -98,7 +98,7 @@ test('migration 91 indexes snapshot rows by observation', () => {
   store.close();
   const db = new Database(dbPath, { readonly: true });
   try {
-    assert.equal(latestSchemaVersion(), 92);
+    assert.equal(latestSchemaVersion(), 93);
     const row = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'hardware_price_snapshot_rows_observation'`).get();
     assert.match(row.sql, /ON hardware_price_snapshot_rows\(workspace_id, observation_id\)/);
   } finally {

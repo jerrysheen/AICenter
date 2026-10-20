@@ -149,8 +149,10 @@ test('article catch-up schedule follows the switch and lands on minute 10', () =
   assert.equal(saved[0].schedule.kind, 'interval');
   assert.equal(saved[0].schedule.intervalMinutes, 180);
   assert.equal(zonedParts(saved[0].nextRunAt, 'Asia/Shanghai').minute, 10);
-  ensureYoutubeArticleSchedule(store, {}, now);
+  ensureYoutubeArticleSchedule(store, { AI_CENTER_X_VIDEO_ARTICLE: '0' }, now);
   assert.equal(saved[1].enabled, false);
+  ensureYoutubeArticleSchedule(store, { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '0' }, now);
+  assert.equal(saved[2].enabled, true);
 });
 
 test('a freshly ingested episode takes the daily slot ahead of an older pending one', async () => {

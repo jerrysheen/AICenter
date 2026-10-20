@@ -49,6 +49,7 @@ import { decodeHtmlEntities } from './html-text.js?v=dev';
 import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, prioritizeReadableFeedRows, renderNewsList, reportItemTime } from './news-list.js?v=dev';
 import { createAuthorView } from './author-view.js?v=dev';
 import { episodeArticleMessage, foldedOriginal, renderYoutubePodcasts, YOUTUBE_ARTICLE_POLL_SLOW_MS, youtubeArticlePollDelay, youtubeArticleRequestPath } from './youtube-podcasts.js?v=dev';
+import { xVideoArticleReady, xVideoArticleRequestPath, xVideoTweetId } from './x-video-article.js?v=dev';
 
 const requestLayer = createRequestLayer();
 const pageCache = createPageCache({
@@ -9793,6 +9794,118 @@ function scheduleYoutubeArticleWatch(post) {
   youtubeArticleWatch.set(id, { timer, delay });
 }
 
+const xVideoArticles = new Map();
+const xVideoArticleWatch = new Map();
+const xVideoArticleInflight = new Set();
+
+function xVideoRecord(post) {
+  const id = xVideoTweetId(post);
+  return id ? xVideoArticles.get(id) : null;
+}
+
+function applyXVideoReady(post, record) {
+  if (!xVideoArticleReady(record)) return post;
+  const body = String(record.body || '').trim();
+  const title = String(record.title || '').trim();
+  if (!body && !title) return post;
+  const next = { ...post };
+  if (!next.xVideoOriginal) next.xVideoOriginal = post.xVideoOriginal || post.body;
+  if (body) next.body = body;
+  if (title) {
+    next.title = title;
+    if (!next.originalTitle) next.originalTitle = post.title;
+  }
+  const saved = state.restoredArticles[post.id];
+  if (saved) state.restoredArticles[post.id] = { ...saved, ...next, readerLoaded: true };
+  return next;
+}
+
+function renderXVideoWaiting(post) {
+  const wrap = document.createElement('div');
+  wrap.className = 'reader-content detail-body';
+  const record = xVideoRecord(post);
+  wrap.append(Object.assign(document.createElement('p'), {
+    className: 'podcast-pending',
+    textContent: record ? (episodeArticleMessage(record) || '中文整理排队中') : '正在查看整理进度',
+  }));
+  const original = state.originalBodies[post.resourceId || post.id] || post.body;
+  wrap.append(foldedOriginal(original, '原帖正文'));
+  return wrap;
+}
+
+function clearXVideoArticleWatch(id) {
+  const existing = xVideoArticleWatch.get(id);
+  if (!existing) return;
+  clearTimeout(existing.timer);
+  xVideoArticleWatch.delete(id);
+}
+
+async function refreshXVideoArticle(post) {
+  const id = xVideoTweetId(post);
+  if (!id || xVideoArticleInflight.has(id)) return;
+  xVideoArticleInflight.add(id);
+  try {
+    const current = xVideoArticles.get(id);
+    if (current?.absent || xVideoArticleReady(current)) return;
+    const payload = await api(xVideoArticleRequestPath(id));
+    const article = payload.article || { status: 'queued', message: '正在查看整理进度' };
+    if (article.status === 'ready') {
+      const full = await api(xVideoArticleRequestPath(id, { ready: true }));
+      const ready = full.article || {};
+      xVideoArticles.set(id, {
+        tweetId: id,
+        articleStatus: 'ready',
+        article: ready.article || article,
+        body: ready.body || '',
+        title: ready.title || '',
+      });
+      return;
+    }
+    xVideoArticles.set(id, {
+      tweetId: id,
+      articleStatus: payload.articleStatus || current?.articleStatus || 'pending',
+      article,
+    });
+  } catch (error) {
+    const missing = Number(error?.status) === 404 || /没有长视频/.test(String(error?.message || ''));
+    if (missing) xVideoArticles.set(id, { absent: true, tweetId: id });
+    else if (!xVideoArticles.has(id)) {
+      xVideoArticles.set(id, {
+        tweetId: id,
+        articleStatus: 'pending',
+        article: { status: 'queued', message: '正在查看整理进度' },
+      });
+    }
+  } finally {
+    xVideoArticleInflight.delete(id);
+    if (document.body.dataset.view === 'page' && state.pageKind === 'article' && xVideoTweetId(state.dialogPost) === id) {
+      renderArticlePage();
+    }
+  }
+}
+
+function scheduleXVideoArticleWatch(post) {
+  const id = xVideoTweetId(post);
+  if (!id) return;
+  const record = xVideoArticles.get(id);
+  if (record?.absent || xVideoArticleReady(record)) {
+    clearXVideoArticleWatch(id);
+    return;
+  }
+  if (!record && !xVideoArticleInflight.has(id)) refreshXVideoArticle(post);
+  const delay = record ? youtubeArticlePollDelay(record) : YOUTUBE_ARTICLE_POLL_SLOW_MS;
+  const existing = xVideoArticleWatch.get(id);
+  if (existing?.delay === delay) return;
+  if (existing) clearTimeout(existing.timer);
+  const timer = setTimeout(() => {
+    xVideoArticleWatch.delete(id);
+    if (document.body.dataset.view !== 'page' || state.pageKind !== 'article') return;
+    if (xVideoTweetId(state.dialogPost) !== id) return;
+    refreshXVideoArticle(state.dialogPost);
+  }, delay);
+  xVideoArticleWatch.set(id, { timer, delay });
+}
+
 function renderArticlePage() {
   articleReadPosition().capture();
   if (!mediaModules || !feedLikeReady) {
@@ -9847,6 +9960,9 @@ function renderArticlePage() {
   if (post && youtubeArticleReady(state.youtubeEpisodes[youtubeEpisodeId(post)])) {
     post = applyYoutubeReady(post, state.youtubeEpisodes[youtubeEpisodeId(post)]);
   }
+  if (post && xVideoArticleReady(xVideoRecord(post))) {
+    post = applyXVideoReady(post, xVideoRecord(post));
+  }
   if (!post) {
     if(state.bootstrapped && !official) restoreSavedArticle(itemId);
     const loading=!state.bootstrapped || restoredArticleRequests.has(itemId) && !restoredArticleErrors.has(itemId);
@@ -9881,6 +9997,10 @@ function renderArticlePage() {
     const original = appendExternalLink(head, youtubeWatchUrl(youtubeId), '原帖');
     original.className = 'reader-original';
     original.dataset.youtubeVideo = youtubeId;
+    head.insertBefore(original, meta);
+  } else if (post.platform === 'x' && isHttpUrl(post.sourceUrl)) {
+    const original = appendExternalLink(head, post.sourceUrl, '原帖');
+    original.className = 'reader-original';
     head.insertBefore(original, meta);
   } else if (isHttpUrl(post.sourceUrl)) {
     const original = appendExternalLink(head, post.sourceUrl, '打开原站');
@@ -9998,6 +10118,14 @@ function renderArticlePage() {
       stateBox.querySelector('button').addEventListener('click', () => fetchOfficialBody(post));
     }
     if (status !== 'ready') body.append(metaGrid, stateBox);
+  } else if (xVideoTweetId(post) && xVideoRecord(post) && !xVideoRecord(post).absent && !xVideoArticleReady(xVideoRecord(post))) {
+    body.append(renderXVideoWaiting(post));
+    const waitingTags = createTagRow(postTagNames(post));
+    if (waitingTags) {
+      waitingTags.classList.add('detail-tags');
+      body.append(waitingTags);
+    }
+    ensurePostTags(post);
   } else if (youtubeEpisodeId(post) && !youtubeArticleReady(state.youtubeEpisodes[youtubeEpisodeId(post)])) {
     body.append(renderYoutubeWaiting(post));
     const waitingTags = createTagRow(postTagNames(post));
@@ -10007,7 +10135,8 @@ function renderArticlePage() {
     }
     ensurePostTags(post);
   } else {
-    if (hasTranslation) {
+    const xReady = xVideoArticleReady(xVideoRecord(post));
+    if (hasTranslation && !xReady) {
       const tabs = document.createElement('div');
       tabs.className = 'dense-tabs reader-tabs';
       renderChipTabs(tabs, [
@@ -10024,7 +10153,7 @@ function renderArticlePage() {
     const content = document.createElement('div');
     content.className = 'reader-content detail-body';
     const original = state.originalBodies[post.resourceId || post.id] || post.body;
-    const viewText = mediaIndexBody({ ...post, body: original }, state.readerLang, translated);
+    const viewText = xReady ? post.body : mediaIndexBody({ ...post, body: original }, state.readerLang, translated);
     fillPostBody(content, viewText, post);
     if (state.readerLang === 'compare' && translated) {
       content.append(Object.assign(document.createElement('h3'), { className: 'lang-label', textContent: '原文' }));
@@ -10033,6 +10162,7 @@ function renderArticlePage() {
       content.append(orig);
     }
     body.append(content);
+    if (xReady) body.append(foldedOriginal(post.xVideoOriginal || state.originalBodies[post.resourceId || post.id] || '', '原帖正文'));
     const articleTags = createTagRow(postTagNames(post));
     if (articleTags) {
       articleTags.classList.add('detail-tags');
@@ -10084,6 +10214,7 @@ function renderArticlePage() {
   });
   bar.append(save, cite, analyze, star, share);
   if (youtubeId) bar.append(createDetailAction({ iconName: 'newspaper', label: '原帖', onClick: () => openExternalHttpUrl(youtubeWatchUrl(youtubeId)) }));
+  else if (post.platform === 'x' && isHttpUrl(post.sourceUrl)) bar.append(createDetailAction({ iconName: 'newspaper', label: '原帖', onClick: () => openExternalHttpUrl(post.sourceUrl) }));
   else if (isHttpUrl(post.sourceUrl)) bar.append(createDetailAction({ iconName: 'newspaper', label: '打开原文', onClick: () => openExternalHttpUrl(post.sourceUrl) }));
   const fontControls = document.createElement('div');
   fontControls.className = 'reader-font-controls';
@@ -10117,7 +10248,12 @@ function renderArticlePage() {
   articleReadPosition().mount({ articleId: articleReadKey(itemId), shell });
   if (menuFocus) [...elements['reader-menu'].querySelectorAll('button')].find(button => button.dataset.detailAction === menuFocus)?.focus();
   if (youtubeEpisodeId(post)) scheduleYoutubeArticleWatch(post);
-  else if (shouldQueueTranslation(post)) {
+  else if (xVideoTweetId(post)) {
+    const record = xVideoRecord(post);
+    if (record?.absent) {
+      if (shouldQueueTranslation(post)) requestTranslate(post).catch((error) => showToast(error.message));
+    } else scheduleXVideoArticleWatch(post);
+  } else if (shouldQueueTranslation(post)) {
     requestTranslate(post).catch((error) => showToast(error.message));
   }
 }

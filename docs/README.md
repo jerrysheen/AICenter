@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-20-x-video-article.md`：信息流里超过门槛的 X 视频进入和 YouTube 共用的整理队列。先抽音频，用现有 Gemini 转写，再交给 Gemma。详情里读中文长文，并有「原帖」。migration 93。需要同时重启 Web 和 Worker，浏览器再加载一次。
+
 - `progress/2026-10-20-feed-load-more.md`：信息流「全部」滚到底加载更多后停在原处，已加载的内容不会被刷掉。作者未读数和未读列表只算可见条目。宽屏长作者列表的占位按两列计算。不新增 migration。需要重启 Web，浏览器再加载一次。
 
 - `progress/2026-10-20-youtube-article-status-poll.md`：YouTube 整理失败、预计时间已过或当天名额用完时，不再一直显示「排队中」。排队时文章页只查不含正文的状态，离预计时间较远时每 3 分钟一次，临近预计时间或正在整理时约 20 秒。不新增 migration。需要重启 Web，浏览器再加载一次。

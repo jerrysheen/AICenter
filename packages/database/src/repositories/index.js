@@ -22,6 +22,7 @@ import { createTwseRevenueRepository } from './twse-revenue-repository.js';
 import { createSouthboundRepository } from './southbound-repository.js';
 import { createNorthboundRepository } from './northbound-repository.js';
 import { createYoutubePodcastRepository } from './youtube-podcast-repository.js';
+import { createXVideoRepository } from './x-video-repository.js';
 
 export function createDomainRepositories(database, emitEvent) {
   return Object.freeze({
@@ -35,6 +36,7 @@ export function createDomainRepositories(database, emitEvent) {
     southbound: createSouthboundRepository(database),
     northbound: createNorthboundRepository(database),
     youtubePodcasts: createYoutubePodcastRepository(database),
+    xVideos: createXVideoRepository(database),
     hardwarePrices: createHardwarePriceRepository(database, emitEvent),
     computePrices: createComputePriceRepository(database),
     trading: createTradingRepository(database, emitEvent),

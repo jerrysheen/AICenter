@@ -896,6 +896,16 @@ export function createFeedRepository(database, emitEvent) {
       }));
     },
 
+    patchCaptureXVideo(workspaceId, externalId, xVideo) {
+      const id = String(externalId || '').trim();
+      if (!id || !xVideo || typeof xVideo !== 'object') return false;
+      const result = database.prepare(`UPDATE captures
+        SET metadata_json = json_set(COALESCE(NULLIF(metadata_json, ''), '{}'), '$.xVideo', json(?))
+        WHERE workspace_id = ? AND provider = 'x' AND external_id = ?`)
+        .run(JSON.stringify(xVideo), workspaceId, id);
+      return result.changes > 0;
+    },
+
     patchCaptureXFocus(workspaceId, externalId, xFocus) {
       const id = String(externalId || '').trim();
       if (!id || !xFocus || typeof xFocus !== 'object') return false;

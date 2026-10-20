@@ -1,0 +1,398 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createStore } from '../packages/database/src/index.js';
+import { planAudioTranscription } from '../packages/domain/src/audio-transcription.js';
+import { createXVideoService } from '../packages/domain/src/x-video-service.js';
+import {
+  parseXStatusId,
+  shanghaiArticleDay,
+  stampTranscriptSegments,
+  xVideoArticleDailyLimit,
+  xVideoArticleEnabled,
+  xVideoArticleMinSec,
+  xVideoArticleSlots,
+  xVideoCaptureMetadata,
+} from '../packages/domain/src/x-video-articles.js';
+import {
+  allowedMediaUrl,
+  fetchXVideoMedia,
+  parseSyndicationTweet,
+  pickXVideoVariant,
+  selectLongVideo,
+  xVideoFromExtract,
+  xVideoIdFromUrl,
+} from '../packages/connectors/src/x/video-media.js';
+import { buildTweetExtractExpression, createXHomeBrowserClient } from '../packages/connectors/src/x/home-browser.js';
+import { tweetToFeedItem } from '../packages/connectors/src/x/home-timeline.js';
+import { runXVideoArticlePass, xVideoChunkCount } from '../packages/runtime/src/x-video-article-job.js';
+import { runYoutubeArticlePass } from '../packages/runtime/src/youtube-article-job.js';
+import { isApiTokenAllowlisted } from '../apps/web/src/http/api-token-access.js';
+import { xVideoArticleRequestPath, xVideoTweetId } from '../apps/web/public/x-video-article.js';
+
+const TWEET = '2111105654211608847';
+const FIXTURE = {
+  id_str: TWEET,
+  mediaDetails: [{
+    type: 'video',
+    expanded_url: `https://x.com/MilesCranmer/status/${TWEET}/video/1`,
+    video_info: {
+      duration_millis: 3_335_700,
+      variants: [
+        { content_type: 'application/x-mpegURL', url: 'https://video.twimg.com/ext_tw_video/1/pl/playlist.m3u8' },
+        { bitrate: 832000, content_type: 'video/mp4', url: 'https://video.twimg.com/amplify_video/1/360.mp4' },
+        { bitrate: 256000, content_type: 'video/mp4', url: 'https://video.twimg.com/amplify_video/1/270.mp4' },
+        { bitrate: 2176000, content_type: 'video/mp4', url: 'https://evil.example/steal.mp4' },
+        { bitrate: 1000, content_type: 'video/mp4', url: 'http://video.twimg.com/not-https.mp4' },
+      ],
+    },
+  }],
+  quoted_tweet: {
+    id_str: '2110683420217286882',
+    mediaDetails: [{ type: 'photo', media_url_https: 'https://pbs.twimg.com/media/photo.jpg' }],
+  },
+};
+
+function openStore() {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'x-video-article-'));
+  const store = createStore(path.join(directory, 'test.db'));
+  return {
+    directory,
+    store,
+    close() {
+      store.close();
+      rmSync(directory, { recursive: true, force: true });
+    },
+  };
+}
+
+function gemmaGenerate({ system }) {
+  const text = String(system || '');
+  if (text.includes('标题')) return { text: '如何避免人工智能把判断力带偏' };
+  if (text.includes('要点')) return { text: '## 要点\n- 讲座按时间说明怎样避免被人工智能带偏' };
+  if (text.includes('小节')) return { text: '## 开场说明（00:00:01）\n主持人：这是一段关于判断力的说明。' };
+  return { text: '这是按原文顺序译出的一句话。' };
+}
+
+const TRANSCRIPT = `[00:00:01] Hello there, this is a complete sentence about judgment.
+[00:00:08] This is another sentence about avoiding a rotten habit.`;
+
+test('lowest mp4 on video.twimg.com is kept and other hosts are dropped', () => {
+  const picked = pickXVideoVariant(FIXTURE.mediaDetails[0].video_info.variants);
+  assert.equal(picked.url, 'https://video.twimg.com/amplify_video/1/270.mp4');
+  assert.equal(picked.bitrate, 256000);
+  assert.equal(allowedMediaUrl('https://user:pass@video.twimg.com/a.mp4'), false);
+  assert.equal(allowedMediaUrl('https://evil.example/a.mp4'), false);
+  const parsed = parseSyndicationTweet(FIXTURE, TWEET);
+  assert.equal(parsed.video.videoId, `${TWEET}:1`);
+  assert.equal(parsed.video.durationMs, 3_335_700);
+  assert.equal(parsed.quote, null);
+  assert.equal(xVideoIdFromUrl(`https://x.com/MilesCranmer/status/${TWEET}/video/1`), `${TWEET}:1`);
+  const selected = selectLongVideo(parsed, 15 * 60);
+  assert.equal(selected.source, 'own');
+  assert.equal(selectLongVideo({ video: { ...parsed.video, durationMs: 30_000 } }, 15 * 60).source, 'short');
+});
+
+test('syndication fetch does not send cookies', async () => {
+  let seen = null;
+  const parsed = await fetchXVideoMedia(TWEET, {
+    fetch: async (url, options) => {
+      seen = { url: String(url), headers: options.headers };
+      return { ok: true, url: String(url), json: async () => FIXTURE };
+    },
+  });
+  assert.match(seen.url, /^https:\/\/cdn\.syndication\.twimg\.com\/tweet-result\?/);
+  assert.equal(seen.headers.cookie, undefined);
+  assert.equal(seen.headers.Cookie, undefined);
+  assert.equal(parsed.video.variant.bitrate, 256000);
+});
+
+test('quote video is identified separately and the public tweet hides has_video', async () => {
+  const hint = xVideoFromExtract({
+    tweet_id: TWEET,
+    has_video: true,
+    quote_has_video: true,
+    quote_tweet_id: '2110683420217286882',
+  });
+  assert.deepEqual(hint, { tweetId: TWEET, own: true, quoteTweetId: '2110683420217286882' });
+  const item = tweetToFeedItem({ tweet_id: TWEET, text: '讲座', author_handle: 'MilesCranmer', x_video: hint });
+  assert.equal(item.xVideo.quoteTweetId, '2110683420217286882');
+  assert.equal('has_video' in item, false);
+  new Function(buildTweetExtractExpression());
+  const runtime = {
+    async withSession(_options, callback) {
+      return callback({
+        async navigate() {},
+        async evaluate(expression) {
+          if (String(expression).includes('tweetText')) {
+            return {
+              items: [{
+                tweet_id: '1234567890',
+                tweet_url: 'https://x.com/user/status/1234567890',
+                text: '看这段',
+                has_video: true,
+                own_has_video: true,
+                author_handle: 'user',
+              }],
+            };
+          }
+          return { url: 'https://x.com/home', title: 'Home', logged_in: true, login_wall: false };
+        },
+      });
+    },
+  };
+  const client = createXHomeBrowserClient({ browserRuntime: runtime, delay: async () => {} });
+  const result = await client.fetchHomeTimeline({ feed: 'for-you', limit: 1 });
+  assert.equal('has_video' in result.tweets[0], false);
+  assert.equal(result.tweets[0].x_video.own, true);
+  assert.match(result.tweets[0].text, /\[未抓取\] 视频/);
+});
+
+test('threshold, shared slots and transcript stamps', () => {
+  assert.equal(xVideoArticleEnabled({}), true);
+  assert.equal(xVideoArticleEnabled({ AI_CENTER_X_VIDEO_ARTICLE: '0' }), false);
+  assert.equal(xVideoArticleMinSec({}), 15 * 60);
+  assert.equal(xVideoArticleDailyLimit({}), 1);
+  assert.equal(xVideoArticleSlots({ sharedLimit: 4, xLimit: 1, youtubeUsed: 2, xUsed: 0 }), 1);
+  assert.equal(xVideoArticleSlots({ sharedLimit: 4, xLimit: 1, youtubeUsed: 2, xUsed: 1 }), 0);
+  assert.equal(xVideoArticleSlots({ sharedLimit: 4, xLimit: 1, youtubeUsed: 2, xUsed: 1, manual: true }), 1);
+  assert.equal(xVideoArticleSlots({ sharedLimit: 4, xLimit: 1, youtubeUsed: 3, xUsed: 1, manual: true }), 0);
+  assert.equal(parseXStatusId(`https://x.com/MilesCranmer/status/${TWEET}`), TWEET);
+  assert.equal(xVideoCaptureMetadata({ externalId: TWEET, xVideo: { tweetId: TWEET, own: true, quoteTweetId: 'nope' } }).quoteTweetId, '');
+  const stamped = stampTranscriptSegments([{ startMs: 65_000, text: 'Hello\nthere' }]);
+  assert.equal(stamped, '[00:01:05] Hello\n[00:01:05] there');
+  assert.equal(xVideoChunkCount(56 * 60 * 1000), 7);
+  assert.equal(planAudioTranscription({ durationMs: 3_335_700, laneCount: 1 }).chunkCount, 7);
+  assert.equal(xVideoTweetId({ platform: 'x', id: `x:${TWEET}` }), TWEET);
+  assert.equal(xVideoArticleRequestPath(TWEET), `/api/v1/x-videos/${TWEET}/article`);
+  assert.equal(isApiTokenAllowlisted('GET', `/api/v1/x-videos/${TWEET}/article`), true);
+  assert.equal(isApiTokenAllowlisted('POST', '/api/v1/x-videos/article'), false);
+});
+
+test('a long X video is transcribed once, keeps the tweet body, and shares the daily slot', async () => {
+  const opened = openStore();
+  const env = {
+    AI_CENTER_X_VIDEO_ARTICLE: '1',
+    AI_CENTER_X_VIDEO_ARTICLE_DAILY: '1',
+    AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_DAILY: '4',
+    AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '0',
+  };
+  try {
+    const feed = opened.store.repositories.feed;
+    const videos = opened.store.repositories.xVideos;
+    const capture = feed.saveCapture({
+      workspaceId: 'local',
+      provider: 'x',
+      externalId: TWEET,
+      sourceUrl: `https://x.com/MilesCranmer/status/${TWEET}`,
+      title: 'How to avoid AI Brain Rot',
+      contentHash: 'hash-1',
+      metadata: { xVideo: { tweetId: TWEET, own: true, quoteTweetId: '' } },
+    });
+    const item = feed.saveContentItem({
+      workspaceId: 'local',
+      captureId: capture.id,
+      originType: 'subscription',
+      contentType: 'post',
+      title: 'How to avoid AI Brain Rot',
+      body: '原帖不要被覆盖，这是推文正文。',
+      sourceUrl: capture.sourceUrl,
+      authorName: 'Miles Cranmer',
+    });
+    let downloads = 0;
+    const stats = await runXVideoArticlePass({
+      env,
+      repository: videos,
+      feedRepository: feed,
+      youtubeRepository: opened.store.repositories.youtubePodcasts,
+      workspaceId: 'local',
+      dataDirectory: opened.directory,
+      now: Date.parse('2026-10-20T04:00:00Z'),
+      skipMedia: true,
+      loadMedia: async () => parseSyndicationTweet(FIXTURE, TWEET),
+      transcribeAudio: async () => {
+        downloads += 1;
+        return { segments: [{ startMs: 0, text: 'Hello there, this is a complete sentence about judgment.' }] };
+      },
+      gemmaGenerate,
+      flashGenerate: null,
+    });
+    assert.equal(stats.ready, 1);
+    assert.equal(downloads, 1);
+    const article = videos.article('local', `${TWEET}:1`);
+    assert.equal(article.status, 'ready');
+    assert.match(article.articleBody, /要点/);
+    assert.equal(article.articleTitle, '如何避免人工智能把判断力带偏');
+    assert.match(article.sourceTranscript, /^\[00:00:00\]/);
+    assert.equal(feed.getContentItem('local', item.id).body, '原帖不要被覆盖，这是推文正文。');
+    const service = createXVideoService({ repository: videos, store: opened.store, env });
+    const full = service.get('local', TWEET);
+    assert.equal(full.title, article.articleTitle);
+    const again = await runXVideoArticlePass({
+      env,
+      repository: videos,
+      feedRepository: feed,
+      workspaceId: 'local',
+      dataDirectory: opened.directory,
+      skipMedia: true,
+      loadMedia: async () => parseSyndicationTweet(FIXTURE, TWEET),
+      transcribeAudio: async () => { downloads += 1; return { text: TRANSCRIPT }; },
+      gemmaGenerate,
+      flashGenerate: null,
+    });
+    assert.equal(again.ready, 0);
+    assert.equal(downloads, 1);
+    const quoteTweet = '2110683420217286001';
+    feed.saveCapture({
+      workspaceId: 'local',
+      provider: 'x',
+      externalId: quoteTweet,
+      sourceUrl: `https://x.com/someone/status/${quoteTweet}`,
+      title: '引用',
+      contentHash: 'hash-2',
+      metadata: { xVideo: { tweetId: quoteTweet, own: false, quoteTweetId: TWEET } },
+    });
+    await runXVideoArticlePass({
+      env,
+      repository: videos,
+      feedRepository: feed,
+      workspaceId: 'local',
+      dataDirectory: opened.directory,
+      skipMedia: true,
+      loadMedia: async (id) => (id === quoteTweet
+        ? { video: null, quote: null }
+        : parseSyndicationTweet(FIXTURE, TWEET)),
+      transcribeAudio: async () => { downloads += 1; return { text: TRANSCRIPT }; },
+      gemmaGenerate,
+      flashGenerate: null,
+    });
+    assert.equal(videos.post('local', quoteTweet).videoId, `${TWEET}:1`);
+    assert.equal(downloads, 1);
+    assert.equal(videos.postsForVideo('local', `${TWEET}:1`).length, 2);
+  } finally {
+    opened.close();
+  }
+});
+
+test('X sub-cap holds automatic videos while manual backfill still uses a shared slot', async () => {
+  const opened = openStore();
+  const env = {
+    AI_CENTER_X_VIDEO_ARTICLE: '1',
+    AI_CENTER_X_VIDEO_ARTICLE_DAILY: '1',
+    AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_DAILY: '4',
+  };
+  const day = shanghaiArticleDay(Date.parse('2026-10-20T04:00:00Z'));
+  try {
+    const videos = opened.store.repositories.xVideos;
+    videos.savePost({ workspaceId: 'local', tweetId: '1000000000000000001', videoId: '1000000000000000001:1', sourceUrl: 'https://x.com/i/status/1000000000000000001' });
+    videos.saveArticle({
+      workspaceId: 'local',
+      videoId: '1000000000000000001:1',
+      status: 'pending',
+      durationSec: 3600,
+      articleDay: day,
+      sourceTranscript: TRANSCRIPT,
+      manual: 0,
+    });
+    videos.savePost({ workspaceId: 'local', tweetId: '1000000000000000002', videoId: '1000000000000000002:1', sourceUrl: 'https://x.com/i/status/1000000000000000002' });
+    videos.saveArticle({
+      workspaceId: 'local',
+      videoId: '1000000000000000002:1',
+      status: 'pending',
+      durationSec: 3600,
+      manual: 0,
+    });
+    videos.savePost({ workspaceId: 'local', tweetId: '1000000000000000003', videoId: '1000000000000000003:1', sourceUrl: 'https://x.com/i/status/1000000000000000003' });
+    videos.saveArticle({
+      workspaceId: 'local',
+      videoId: '1000000000000000003:1',
+      status: 'pending',
+      durationSec: 3600,
+      manual: 1,
+      sourceTranscript: TRANSCRIPT,
+    });
+    let transcribed = 0;
+    const stats = await runXVideoArticlePass({
+      env,
+      repository: videos,
+      feedRepository: opened.store.repositories.feed,
+      youtubeRepository: { countArticleDay: () => 0 },
+      workspaceId: 'local',
+      now: Date.parse('2026-10-20T04:00:00Z'),
+      skipMedia: true,
+      transcribeAudio: async () => { transcribed += 1; return { text: TRANSCRIPT }; },
+      gemmaGenerate,
+      flashGenerate: null,
+    });
+    assert.equal(transcribed, 0);
+    assert.ok(stats.ready >= 1);
+    const held = videos.article('local', '1000000000000000002:1');
+    assert.match(held.articleState, /daily-limit/);
+    const manual = videos.article('local', '1000000000000000003:1');
+    assert.equal(manual.status, 'ready');
+    const service = createXVideoService({ repository: videos, store: opened.store, env });
+    const queued = service.status('local', '1000000000000000002');
+    assert.match(queued.article.message, /今天的整理名额已用完/);
+    videos.saveArticle({
+      workspaceId: 'local',
+      videoId: '1000000000000000002:1',
+      articleState: JSON.stringify({ holdDay: day, holdReason: 'failed' }),
+      articleStatus: 'pending',
+      status: 'pending',
+    });
+    assert.match(service.status('local', '1000000000000000002').article.message, /整理失败/);
+    videos.saveArticle({ workspaceId: 'local', videoId: '1000000000000000002:1', status: 'skipped', reason: 'short' });
+    assert.equal(service.status('local', '1000000000000000002'), null);
+  } finally {
+    opened.close();
+  }
+});
+
+test('youtube daily slots count X videos that already took a day', async () => {
+  const saved = [];
+  await runYoutubeArticlePass({
+    env: {
+      AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1',
+      AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_DAILY: '4',
+      AI_CENTER_X_VIDEO_ARTICLE: '0',
+    },
+    now: Date.parse('2026-10-20T04:00:00Z'),
+    repository: {
+      countArticleDay: () => 0,
+      listArticleCandidates: () => [{
+        videoId: 'abcdefghijk',
+        articleStatus: '',
+        articleDay: '',
+        status: 'ready',
+        sourceTranscript: TRANSCRIPT,
+        publishedAt: Date.parse('2026-10-20T00:00:00Z'),
+        ingestedAt: Date.parse('2026-10-20T00:00:00Z'),
+      }],
+      saveEpisode: (row) => saved.push(row),
+    },
+    feedRepository: {},
+    xVideoRepository: { countArticleDay: () => 4 },
+  });
+  assert.equal(saved.length, 1);
+  assert.match(saved[0].articleState, /daily-limit/);
+});
+
+test('operator can enqueue one tweet', () => {
+  const opened = openStore();
+  try {
+    const service = createXVideoService({
+      repository: opened.store.repositories.xVideos,
+      store: opened.store,
+      env: { AI_CENTER_X_VIDEO_ARTICLE: '1' },
+    });
+    const queued = service.enqueue('local', { url: `https://x.com/MilesCranmer/status/${TWEET}` });
+    assert.equal(queued.status, 'queued');
+    assert.equal(opened.store.repositories.xVideos.article('local', `tweet:${TWEET}`).manual, 1);
+    const again = service.enqueue('local', { tweetId: TWEET });
+    assert.equal(again.jobId, queued.jobId);
+  } finally {
+    opened.close();
+  }
+});

@@ -251,7 +251,12 @@ async function applyArticleTitle(deps, { row, feedRepository, workspaceId, artic
       state.articleTitle = '';
       return { status: 'failed' };
     }
-    replaceContent(feedRepository, workspaceId, row.contentItemId, { title, body: article });
+    if (deps.keepFeedBody) {
+      row.articleBody = article;
+      row.articleTitle = title;
+    } else {
+      replaceContent(feedRepository, workspaceId, row.contentItemId, { title, body: article });
+    }
     state.titleStatus = 'ready';
     state.articleTitle = title;
     return { status: 'ready', title };
@@ -271,7 +276,10 @@ async function applyArticleTitle(deps, { row, feedRepository, workspaceId, artic
 
 async function finishArticle(deps, { row, repository, feedRepository, workspaceId, article, state, persist }) {
   const titled = await applyArticleTitle(deps, { row, feedRepository, workspaceId, article, state });
-  if (titled.status !== 'ready') replaceContent(feedRepository, workspaceId, row.contentItemId, { body: article });
+  if (titled.status !== 'ready') {
+    if (deps.keepFeedBody) row.articleBody = article;
+    else replaceContent(feedRepository, workspaceId, row.contentItemId, { body: article });
+  }
   state.holdDay = '';
   state.holdReason = '';
   persist('ready');
@@ -282,8 +290,8 @@ async function finishArticle(deps, { row, repository, feedRepository, workspaceI
 async function titlePendingArticle({ row, repository, feedRepository, workspaceId, deps }) {
   const state = readState(row.articleState) || {};
   if (state.titleStatus !== 'pending') return { status: 'skipped' };
-  const item = row.contentItemId ? feedRepository.getContentItem(workspaceId, row.contentItemId) : null;
-  const article = String(item?.body || row.body || '').trim();
+  const item = row.contentItemId && !deps.keepFeedBody ? feedRepository.getContentItem(workspaceId, row.contentItemId) : null;
+  const article = String(deps.keepFeedBody ? (row.articleBody || '') : (item?.body || row.body || '')).trim();
   const titled = await applyArticleTitle(deps, { row, feedRepository, workspaceId, article, state });
   repository.saveEpisode(episodePatch(row, workspaceId, {
     articleStatus: row.articleStatus || 'ready',
@@ -313,6 +321,8 @@ function episodePatch(row, workspaceId, patch) {
     ...patch,
   };
   if (Object.prototype.hasOwnProperty.call(row, 'sourceTranscript')) next.sourceTranscript = row.sourceTranscript || '';
+  if (row.articleBody) next.articleBody = row.articleBody;
+  if (row.articleTitle) next.articleTitle = row.articleTitle;
   return next;
 }
 
@@ -584,7 +594,7 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
       articleDay,
     }));
   };
-  if (!repairing) replaceContent(feedRepository, workspaceId, row.contentItemId, { body: deduped });
+  if (!repairing && !deps.keepFeedBody) replaceContent(feedRepository, workspaceId, row.contentItemId, { body: deduped });
   persist(repairing ? 'ready' : 'pending');
   const stop = (slot, error) => {
     if (slot) addCalls(slot.calls, error?.articleCalls);
@@ -747,7 +757,8 @@ export async function runYoutubeArticlePass(deps = {}) {
   const now = Number(deps.now) || Date.now();
   const day = shanghaiDay(now, deps.timeZone || youtubePodcastClock(env).timeZone);
   const limit = deps.dailyLimit || youtubeArticleDailyLimit(env);
-  let slots = Math.max(0, limit - repository.countArticleDay(workspaceId, day));
+  const xVideoUsed = Math.max(0, Number(deps.xVideoRepository?.countArticleDay?.(workspaceId, day)) || 0);
+  let slots = Math.max(0, limit - repository.countArticleDay(workspaceId, day) - xVideoUsed);
   const candidates = sortArticleCandidates(repository.listArticleCandidates(workspaceId), day, now);
   for (const row of candidates) {
     if (deps.signal?.aborted) {
@@ -825,6 +836,14 @@ export async function runYoutubeArticlePass(deps = {}) {
     }
   }
   return stats;
+}
+
+export async function organizeGemmaTranscript(input) {
+  return organizeWithGemma(input);
+}
+
+export async function resumeArticleTitle(input) {
+  return titlePendingArticle(input);
 }
 
 export async function backfillYoutubeArticleTitles(deps = {}) {

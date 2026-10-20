@@ -51,12 +51,12 @@ export function episodeArticleMessage(episode) {
   return '';
 }
 
-export function foldedOriginal(text) {
+export function foldedOriginal(text, label = '英文原文') {
   const details = document.createElement('details');
   details.className = 'podcast-original';
   details.open = false;
   const summary = document.createElement('summary');
-  summary.textContent = '英文原文';
+  summary.textContent = label;
   const pre = document.createElement('pre');
   pre.className = 'podcast-transcript-text';
   pre.textContent = text || '没有全文。';
