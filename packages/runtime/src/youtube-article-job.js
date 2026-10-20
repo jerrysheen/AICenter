@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import { formatYmd, zonedParts } from '../../domain/src/zoned-time.js';
 import {
   articlePartPrompt,
@@ -40,6 +41,10 @@ import { createGemmaTranslationRouter } from '../../connectors/src/translate/gem
 // 正文整理完成后，再用 Gemma 按中文正文写一句话标题；失败就留着原来的标题。
 
 const PART_ATTEMPTS = 3;
+const UPSTREAM_EXTRA_TRIES = 2;
+const UPSTREAM_WAIT_MIN_MS = 10_000;
+const UPSTREAM_WAIT_MAX_MS = 40_000;
+const UPSTREAM_HTTP = new Set([408, 500, 502, 503]);
 const ASK_TIMEOUT_MS = 120_000;
 const GEMMA_MODEL = 'gemma-4-26b-a4b-it';
 const ARTICLE_FRESH_MS = 36 * 60 * 60 * 1000;
@@ -170,6 +175,46 @@ async function callArticleModel(deps, input) {
   }
 }
 
+export function articlePauseReason(error) {
+  if (!error || typeof error !== 'object') return '';
+  const status = Number(error.upstreamStatus);
+  const upstreamHttp = UPSTREAM_HTTP.has(status) || error.code === 'gemma-stream-error';
+  if (error.code === 'budget-deferred') {
+    if (error.upstream === true || upstreamHttp || /上游/.test(String(error.message || ''))) return 'upstream';
+    return 'quota';
+  }
+  if (upstreamHttp) return 'upstream';
+  return '';
+}
+
+function upstreamWaitMs(error, now = Date.now()) {
+  const retryAt = Number(error?.retryAt);
+  const remaining = Number.isFinite(retryAt) ? retryAt - now : UPSTREAM_WAIT_MIN_MS;
+  return Math.min(UPSTREAM_WAIT_MAX_MS, Math.max(UPSTREAM_WAIT_MIN_MS, remaining));
+}
+
+async function waitQuiet(deps, ms) {
+  if (typeof deps?.sleep === 'function') {
+    await deps.sleep(ms);
+    return;
+  }
+  if (ms > 0) await delay(ms, undefined, { signal: deps?.signal }).catch(() => {});
+}
+
+async function withUpstreamRetry(deps, run) {
+  let extra = 0;
+  for (;;) {
+    try {
+      return await run();
+    } catch (error) {
+      if (articlePauseReason(error) !== 'upstream' || extra >= UPSTREAM_EXTRA_TRIES || deps?.signal?.aborted) throw error;
+      extra += 1;
+      await waitQuiet(deps, upstreamWaitMs(error));
+      if (deps?.signal?.aborted) throw error;
+    }
+  }
+}
+
 function loadGemmaPart(part) {
   const text = String(part?.text || '');
   let translation = String(part?.translation || '');
@@ -241,9 +286,11 @@ async function applyArticleTitle(deps, { row, feedRepository, workspaceId, artic
     state.titleCalls = calls;
     return { status: 'failed' };
   }
-  calls.gemma = 1;
   try {
-    const result = await generate({ system: GEMMA_ARTICLE_TITLE_SYSTEM, prompt: `文章：\n${source}` });
+    const result = await withUpstreamRetry(deps, async () => {
+      calls.gemma += 1;
+      return generate({ system: GEMMA_ARTICLE_TITLE_SYSTEM, prompt: `文章：\n${source}` });
+    });
     const title = normalizeArticleTitle(result?.text);
     state.titleCalls = calls;
     if (!title) {
@@ -257,10 +304,16 @@ async function applyArticleTitle(deps, { row, feedRepository, workspaceId, artic
     return { status: 'ready', title };
   } catch (error) {
     state.titleCalls = calls;
-    if (error?.code === 'budget-deferred' || deps.signal?.aborted) {
+    if (deps.signal?.aborted) {
       state.titleStatus = 'pending';
       state.articleTitle = '';
-      return { status: 'pending', reason: 'quota', stopPass: true };
+      return { status: 'pending', reason: 'deadline', stopPass: true };
+    }
+    const kind = articlePauseReason(error);
+    if (kind) {
+      state.titleStatus = 'pending';
+      state.articleTitle = '';
+      return { status: 'pending', reason: kind, stopPass: true };
     }
     state.titleStatus = 'failed';
     state.articleTitle = '';
@@ -270,6 +323,8 @@ async function applyArticleTitle(deps, { row, feedRepository, workspaceId, artic
 }
 
 async function finishArticle(deps, { row, repository, feedRepository, workspaceId, article, state, persist }) {
+  state.touchedAt = Date.now();
+  persist('pending');
   const titled = await applyArticleTitle(deps, { row, feedRepository, workspaceId, article, state });
   if (titled.status !== 'ready') replaceContent(feedRepository, workspaceId, row.contentItemId, { body: article });
   state.holdDay = '';
@@ -464,7 +519,11 @@ async function organizeEpisode({ row, client, repository, feedRepository, worksp
     let spins = 0;
     while (slot.status !== 'done' && spins < 8) {
       spins += 1;
-      if (signal?.aborted) return { status: 'pending', reason: 'deadline' };
+      if (signal?.aborted) {
+        state.holdReason = 'deadline';
+        persist('pending');
+        return { status: 'pending', reason: 'deadline', stopPass: true };
+      }
       const prompt = articlePartPrompt({
         index,
         total: state.parts.length,
@@ -564,6 +623,7 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
     summaryAttempts: reusable && !repairing ? Number(saved.summaryAttempts) || 0 : 0,
     summaryProvider: reusable && !repairing ? String(saved.summaryProvider || '') : '',
     summaryCalls: reusable && !repairing ? callCounts(saved.summaryCalls) : callCounts(),
+    touchedAt: reusable ? Number(saved.touchedAt) || 0 : 0,
     parts,
   };
   if (state.holdDay === day) return { status: 'pending', reason: state.holdReason || 'hold' };
@@ -586,13 +646,26 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
   };
   if (!repairing) replaceContent(feedRepository, workspaceId, row.contentItemId, { body: deduped });
   persist(repairing ? 'ready' : 'pending');
+  const touch = () => {
+    state.touchedAt = Date.now();
+    persist(repairing ? 'ready' : 'pending');
+  };
+  const pause = (reason) => {
+    state.holdReason = reason;
+    if (reason === 'upstream') console.warn('[worker] youtube-podcasts 正文整理因模型 5xx 停下，下一轮继续');
+    persist(repairing ? 'ready' : 'pending');
+    return { status: 'pending', reason, stopPass: true };
+  };
+  const halted = () => {
+    if (!signal?.aborted) return null;
+    return pause('deadline');
+  };
   const stop = (slot, error) => {
     if (slot) addCalls(slot.calls, error?.articleCalls);
     else addCalls(state.summaryCalls, error?.articleCalls);
-    if (error?.code === 'budget-deferred') {
-      persist('pending');
-      return { status: 'pending', reason: 'quota', stopPass: true };
-    }
+    if (signal?.aborted) return pause('deadline');
+    const kind = articlePauseReason(error);
+    if (kind === 'quota' || kind === 'upstream') return pause(kind);
     if (slot) slot.attempts += 1;
     else state.summaryAttempts += 1;
     const attempts = slot ? slot.attempts : state.summaryAttempts;
@@ -600,7 +673,7 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
       state.holdDay = day;
       state.holdReason = 'failed';
     }
-    persist('pending');
+    persist(repairing ? 'ready' : 'pending');
     return { status: 'pending', reason: attempts >= PART_ATTEMPTS ? 'failed' : 'retry' };
   };
   for (const slot of state.parts) {
@@ -611,7 +684,8 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
       persist('pending');
       return { status: 'pending', reason: 'failed' };
     }
-    if (signal?.aborted) return { status: 'pending', reason: 'deadline' };
+    const translateStopped = halted();
+    if (translateStopped) return translateStopped;
     if (captionAlreadyChinese(slot.text)) {
       slot.translation = slot.text;
       slot.provider = 'source';
@@ -621,7 +695,8 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
       continue;
     }
     try {
-      const result = await callArticleModel(deps, { system: GEMMA_TRANSLATE_SYSTEM, prompt: slot.text });
+      touch();
+      const result = await withUpstreamRetry(deps, () => callArticleModel(deps, { system: GEMMA_TRANSLATE_SYSTEM, prompt: slot.text }));
       slot.translation = result.text;
       slot.provider = result.provider;
       addCalls(slot.calls, result.calls);
@@ -640,9 +715,11 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
       persist('pending');
       return { status: 'pending', reason: 'failed' };
     }
-    if (signal?.aborted) return { status: 'pending', reason: 'deadline' };
+    const sectionStopped = halted();
+    if (sectionStopped) return sectionStopped;
     try {
-      const result = await callArticleModel(deps, { system: GEMMA_SECTION_SYSTEM, prompt: slot.translation });
+      touch();
+      const result = await withUpstreamRetry(deps, () => callArticleModel(deps, { system: GEMMA_SECTION_SYSTEM, prompt: slot.translation }));
       slot.section = repairTimestampHeading(result.text, slot.start, slot.translation);
       if (!slot.provider) slot.provider = result.provider;
       addCalls(slot.calls, result.calls);
@@ -660,18 +737,21 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
       persist('pending');
       return { status: 'pending', reason: 'failed' };
     }
-    if (signal?.aborted) return { status: 'pending', reason: 'deadline' };
+    const summaryStopped = halted();
+    if (summaryStopped) return summaryStopped;
     try {
       const batches = splitSummaryBlocks(gemmaSummarySource(state.parts.map((part) => part.section)), bounds.maxChars);
       const pieces = [];
       for (const batch of batches) {
-        const result = await callArticleModel(deps, { system: GEMMA_SUMMARY_SYSTEM, prompt: batch });
+        touch();
+        const result = await withUpstreamRetry(deps, () => callArticleModel(deps, { system: GEMMA_SUMMARY_SYSTEM, prompt: batch }));
         pieces.push(result.text);
         addCalls(state.summaryCalls, result.calls);
         state.summaryProvider = result.provider;
       }
       if (pieces.length > 1) {
-        const merged = await callArticleModel(deps, { system: GEMMA_SUMMARY_SYSTEM, prompt: pieces.join('\n\n') });
+        touch();
+        const merged = await withUpstreamRetry(deps, () => callArticleModel(deps, { system: GEMMA_SUMMARY_SYSTEM, prompt: pieces.join('\n\n') }));
         state.summary = merged.text;
         addCalls(state.summaryCalls, merged.calls);
         state.summaryProvider = merged.provider;

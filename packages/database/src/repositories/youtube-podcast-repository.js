@@ -1,3 +1,50 @@
+const ARTICLE_PROGRESS_COLUMNS = `
+          CASE WHEN json_valid(e.article_state) THEN json_extract(e.article_state, '$.holdReason') ELSE '' END AS hold_reason,
+          CASE WHEN json_valid(e.article_state) THEN json_extract(e.article_state, '$.holdDay') ELSE '' END AS hold_day,
+          CASE WHEN json_valid(e.article_state) THEN json_extract(e.article_state, '$.touchedAt') ELSE 0 END AS touched_at,
+          CASE WHEN json_valid(e.article_state) THEN COALESCE(json_extract(e.article_state, '$.summary'), '') ELSE '' END AS article_summary,
+          CASE WHEN json_valid(e.article_state) THEN COALESCE(json_extract(e.article_state, '$.titleStatus'), '') ELSE '' END AS title_status,
+          CASE
+            WHEN json_valid(e.article_state) AND json_type(json_extract(e.article_state, '$.parts')) = 'array'
+            THEN json_array_length(e.article_state, '$.parts')
+            ELSE 0
+          END AS parts_total,
+          (
+            SELECT COUNT(*) FROM json_each(
+              CASE
+                WHEN json_valid(e.article_state) AND json_type(json_extract(e.article_state, '$.parts')) = 'array'
+                THEN json_extract(e.article_state, '$.parts')
+                ELSE '[]'
+              END
+            ) AS part
+            WHERE TRIM(COALESCE(json_extract(part.value, '$.translation'), '')) != ''
+               OR TRIM(COALESCE(json_extract(part.value, '$.reply'), '')) != ''
+          ) AS parts_done,
+          (
+            SELECT COUNT(*) FROM json_each(
+              CASE
+                WHEN json_valid(e.article_state) AND json_type(json_extract(e.article_state, '$.parts')) = 'array'
+                THEN json_extract(e.article_state, '$.parts')
+                ELSE '[]'
+              END
+            ) AS part
+            WHERE TRIM(COALESCE(json_extract(part.value, '$.section'), '')) != ''
+               OR TRIM(COALESCE(json_extract(part.value, '$.reply'), '')) != ''
+          ) AS parts_organized`;
+
+function progressExtra(row) {
+  return {
+    holdReason: row.hold_reason || '',
+    holdDay: row.hold_day || '',
+    partsDone: Number(row.parts_done) || 0,
+    partsTotal: Number(row.parts_total) || 0,
+    partsOrganized: Number(row.parts_organized) || 0,
+    touchedAt: Number(row.touched_at) || 0,
+    articleSummary: row.article_summary || '',
+    titleStatus: row.title_status || '',
+  };
+}
+
 export function createYoutubePodcastRepository(database) {
   const done = new Set(['ready', 'skipped']);
 
@@ -24,7 +71,11 @@ export function createYoutubePodcastRepository(database) {
       holdReason: extra.holdReason || '',
       holdDay: extra.holdDay || '',
       partsDone: Number(extra.partsDone) || 0,
+      partsOrganized: Number(extra.partsOrganized) || 0,
       partsTotal: Number(extra.partsTotal) || 0,
+      touchedAt: Number(extra.touchedAt) || 0,
+      articleSummary: extra.articleSummary || '',
+      titleStatus: extra.titleStatus || '',
       summary: extra.summary || '',
       body: extra.body || '',
       sourceUrl: extra.sourceUrl || '',
@@ -219,24 +270,7 @@ export function createYoutubePodcastRepository(database) {
           e.duration_sec, e.published_at, e.status, e.reason, e.transcript_source, e.content_item_id,
           e.attempts, e.article_status, e.article_day, e.created_at, ci.summary AS summary, '' AS body,
           ci.title AS display_title, ci.source_url AS source_url, ci.author_name AS author_name,
-          CASE WHEN json_valid(e.article_state) THEN json_extract(e.article_state, '$.holdReason') ELSE '' END AS hold_reason,
-          CASE WHEN json_valid(e.article_state) THEN json_extract(e.article_state, '$.holdDay') ELSE '' END AS hold_day,
-          CASE
-            WHEN json_valid(e.article_state) AND json_type(json_extract(e.article_state, '$.parts')) = 'array'
-            THEN json_array_length(e.article_state, '$.parts')
-            ELSE 0
-          END AS parts_total,
-          (
-            SELECT COUNT(*) FROM json_each(
-              CASE
-                WHEN json_valid(e.article_state) AND json_type(json_extract(e.article_state, '$.parts')) = 'array'
-                THEN json_extract(e.article_state, '$.parts')
-                ELSE '[]'
-              END
-            ) AS part
-            WHERE TRIM(COALESCE(json_extract(part.value, '$.translation'), '')) != ''
-               OR TRIM(COALESCE(json_extract(part.value, '$.reply'), '')) != ''
-          ) AS parts_done
+          ${ARTICLE_PROGRESS_COLUMNS}
         FROM youtube_podcast_episodes e
         LEFT JOIN content_items ci ON ci.id = e.content_item_id AND ci.workspace_id = e.workspace_id
         WHERE e.workspace_id = ? AND e.status = 'ready'
@@ -248,10 +282,7 @@ export function createYoutubePodcastRepository(database) {
         displayTitle: row.display_title || '',
         sourceUrl: row.source_url || '',
         authorName: row.author_name || '',
-        holdReason: row.hold_reason || '',
-        holdDay: row.hold_day || '',
-        partsDone: Number(row.parts_done) || 0,
-        partsTotal: Number(row.parts_total) || 0,
+        ...progressExtra(row),
       }));
     },
 
@@ -260,33 +291,11 @@ export function createYoutubePodcastRepository(database) {
           e.duration_sec, e.published_at, e.status, e.reason, e.transcript_source, e.content_item_id,
           e.attempts, e.article_status, e.article_day, e.created_at, '' AS body,
           '' AS summary, '' AS display_title, '' AS source_url, '' AS author_name,
-          CASE WHEN json_valid(e.article_state) THEN json_extract(e.article_state, '$.holdReason') ELSE '' END AS hold_reason,
-          CASE WHEN json_valid(e.article_state) THEN json_extract(e.article_state, '$.holdDay') ELSE '' END AS hold_day,
-          CASE
-            WHEN json_valid(e.article_state) AND json_type(json_extract(e.article_state, '$.parts')) = 'array'
-            THEN json_array_length(e.article_state, '$.parts')
-            ELSE 0
-          END AS parts_total,
-          (
-            SELECT COUNT(*) FROM json_each(
-              CASE
-                WHEN json_valid(e.article_state) AND json_type(json_extract(e.article_state, '$.parts')) = 'array'
-                THEN json_extract(e.article_state, '$.parts')
-                ELSE '[]'
-              END
-            ) AS part
-            WHERE TRIM(COALESCE(json_extract(part.value, '$.translation'), '')) != ''
-               OR TRIM(COALESCE(json_extract(part.value, '$.reply'), '')) != ''
-          ) AS parts_done
+          ${ARTICLE_PROGRESS_COLUMNS}
         FROM youtube_podcast_episodes e
         WHERE e.workspace_id = ? AND e.video_id = ? AND e.status = 'ready'`).get(workspaceId, videoId);
       if (!row) return null;
-      const episode = mapEpisode(row, {
-        holdReason: row.hold_reason || '',
-        holdDay: row.hold_day || '',
-        partsDone: Number(row.parts_done) || 0,
-        partsTotal: Number(row.parts_total) || 0,
-      });
+      const episode = mapEpisode(row, progressExtra(row));
       delete episode.sourceTranscript;
       delete episode.articleState;
       return episode;

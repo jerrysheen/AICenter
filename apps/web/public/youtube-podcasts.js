@@ -44,6 +44,13 @@ export function youtubeArticlePollDelay(episode, now = Date.now()) {
   return YOUTUBE_ARTICLE_POLL_SLOW_MS;
 }
 
+export function youtubeReaderScopeLabel(post, episode) {
+  const youtube = post?.platform === 'youtube' || /^youtube:/i.test(String(post?.id || ''));
+  if (!youtube) return null;
+  if (episode?.article?.status === 'ready' || episode?.articleStatus === 'ready') return '正文完整';
+  return '';
+}
+
 export function episodeArticleMessage(episode) {
   const message = String(episode?.article?.message || '').trim();
   if (message) return message;
