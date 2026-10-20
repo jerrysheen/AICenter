@@ -2,7 +2,7 @@ import {attachDailyProcessLog} from '../../../packages/runtime/src/process-log.j
 import { audioTranscriptionManifest, createAudioTranscriptionJobHandlers } from '../../../packages/runtime/src/audio-transcription-job.js';
 import {createGeminiArticleAdmission,startGeminiQuotaProbe} from '../../../packages/runtime/src/gemini-article-admission.js';
 import {resolveGoogleHourlyAdmissionModels} from '../../../packages/harness/src/llm-route.js';
-import { backfillUntranslatedFeedTranslations, createFeedTranslationChunkStore, createFeedTranslationJobHandlers, demoteQueuedHashTranslationJobs, feedTranslationManifest, fillUncoveredTranslations, formatTranslationBackfillLog, repairEllipsisLeadTexts, retireYoutubeTranslationJobs, translationBackfillConcurrency, translationGapFillIntervalMs, translationGapFillLimit, translationStartupBackfillLimit } from '../../../packages/runtime/src/feed-translation-module.js';
+import { backfillUntranslatedFeedTranslations, createFeedTranslationChunkStore, createFeedTranslationJobHandlers, demoteQueuedHashTranslationJobsBatched, feedTranslationManifest, fillUncoveredTranslations, formatTranslationBackfillLog, repairEllipsisLeadTexts, retireYoutubeTranslationJobsBatched, translationBackfillConcurrency, translationGapFillIntervalMs, translationGapFillLimit, translationStartupBackfillLimit } from '../../../packages/runtime/src/feed-translation-module.js';
 import { createHardwareArtifactStore } from '../../../packages/connectors/src/hardware-artifacts.js';
 import { legacyPriceSnapshot } from '../../../packages/connectors/src/trendforce-prices.js';
 import { createHardwarePriceService } from '../../../packages/domain/src/hardware-price-service.js';
@@ -62,7 +62,7 @@ import {
 import { knowledgeStructureManifest, createStructureJobHandlers } from '../../../packages/runtime/src/structure-module.js';
 import { taggingManifest, createTaggingJobHandlers, readTagCatalogFile } from '../../../packages/runtime/src/tagging-module.js';
 import { workPackageDispatchManifest, createWorkPackageJobHandlers } from '../../../packages/runtime/src/work-package-module.js';
-import { createJobRunner, formatJobLoopDelay, shouldLogJobLoopDelay } from '../../../packages/runtime/src/job-runner.js';
+import { createJobRunner, deadLocalWorkerLock, formatJobLoopDelay, formatStartupStep, shouldLogJobLoopDelay } from '../../../packages/runtime/src/job-runner.js';
 import { mainThreadWatchdogEnabled, startMainThreadWatchdog } from '../../../packages/runtime/src/main-thread-watchdog.js';
 import { installWorkerLogStamps } from '../../../packages/runtime/src/worker-log.js';
 import { createScheduler } from '../../../packages/runtime/src/scheduler.js';
@@ -166,6 +166,15 @@ export function createOptionalAuxiliarySearch(explicit, browserRuntime, env = pr
   }
 }
 
+function createStartupClock(startedAt = Date.now()) {
+  let mark = startedAt;
+  return (name) => {
+    const now = Date.now();
+    console.log(formatStartupStep(name, now - mark));
+    mark = now;
+  };
+}
+
 export function createAiCenterWorker(options = {}) {
   const instance = options.instanceConfig || resolveInstanceConfig({
     repositoryRoot,
@@ -196,7 +205,14 @@ export function createAiCenterWorker(options = {}) {
   const restartPort = options.restartPort || createLauncherRestartPort({
     runtimeDirectory: instance.runtimeDirectory,
   });
-  const store = options.store || createStore(instance.databasePath);
+  let store = options.store || null;
+  if (!store) {
+    const openedAt = Date.now();
+    store = createStore(instance.databasePath);
+    console.log(formatStartupStep('database', Date.now() - openedAt));
+  }
+  const startupStep = createStartupClock();
+  const workerId = options.workerId || `${hostname()}-${process.pid}`;
   const staleAfterMs = Number(options.staleAfterMs || process.env.AI_CENTER_WORKER_LEASE_MS) || 10 * 60_000;
   const jobMaxRunningMs = boundedInt(env.AI_CENTER_JOB_MAX_RUNNING_MS, 45 * 60_000, 60_000, 6 * 60 * 60_000);
   const maxRunningMsByType = {
@@ -212,31 +228,44 @@ export function createAiCenterWorker(options = {}) {
     [TWKR_NEWS_JOB_TYPE]: 25_000,
     [TWKR_REVENUE_JOB_TYPE]: 70_000,
   };
-  store.recoverStaleJobs(staleAfterMs, Date.now(), { maxRunningMs: jobMaxRunningMs, maxRunningMsByType });
+  store.recoverStaleJobs(staleAfterMs, Date.now(), {
+    maxRunningMs: jobMaxRunningMs,
+    maxRunningMsByType,
+    ownerStale: (lockedBy) => deadLocalWorkerLock(lockedBy),
+  });
+  startupStep('recover-stale');
   try {
     store.repositories?.informationTree?.releaseAll?.();
   } catch (error) {
     console.error(`[worker] 清理浓缩树租约失败：${error?.message || error}`);
   }
+  startupStep('release-tree');
   if (hourlyReportDisabled(env)) {
     const cancelled = releaseOpenHourlyJobs(store, env);
     console.log(`[worker] 小时报已停用（AI_CENTER_HOURLY_DISABLED=1），已取消 ${cancelled} 个未完成任务`);
   }
+  startupStep('hourly-jobs');
   store.abandonRunningJobs?.([MEDIA_ENRICH_JOB_TYPE], 'Worker 已重启，未完成的正文任务需按保存状态继续');
+  startupStep('abandon-media');
   store.repositories?.media?.recoverBriefProcessing?.();
+  startupStep('media-brief');
   store.abandonRunningJobs?.(
     [QUANT_PREPARE_JOB_TYPE, QUANT_RUN_JOB_TYPE],
     'Worker 已重启，未完成的量化任务不会自动重跑',
   );
+  startupStep('abandon-quant');
   store.abandonRunningJobs?.(
     [FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE, FEED_SUBSCRIPTION_SYNC_JOB_TYPE],
     'Worker 已重启，未完成的订阅同步改由新的一轮执行',
   );
+  startupStep('abandon-feed-sync');
   store.discardQueuedJobs?.(
     FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE,
     'Worker 重启时合并了积压的订阅同步',
   );
+  startupStep('discard-subscription-sync');
   store.repositories?.feed?.releaseOpenSubscriptionLeases?.();
+  startupStep('release-subscription-leases');
   const webSearchPort = runtimeMode === 'local' || options.webSearchPort !== undefined
     ? createOptionalSearchPort(options.webSearchPort)
     : null;
@@ -818,6 +847,7 @@ export function createAiCenterWorker(options = {}) {
     onProgress:progress=>console.log('[feed.quality.refresh]',JSON.stringify(progress)),
   })});
   const handlers = options.handlers || registry.createJobHandlers();
+  startupStep('services');
   if (options.enableDefaultSchedules !== false) {
     ensureDailyReportSchedule(store, dailyConfig);
     ensureDailyReportCatchupSchedule(store, dailyConfig);
@@ -850,6 +880,7 @@ export function createAiCenterWorker(options = {}) {
     ensureSouthboundSchedules(store, env);
     ensureDefaultContentSubscriptions(store.repositories.feed);
   }
+  startupStep('schedules');
   const scheduler = options.scheduler || createScheduler({
     store,
     allowedJobTypes: Object.keys(handlers),
@@ -867,7 +898,7 @@ export function createAiCenterWorker(options = {}) {
   const runner = createJobRunner({
     store,
     handlers,
-    workerId: options.workerId || `${hostname()}-${process.pid}`,
+    workerId,
     pollIntervalMs: options.pollIntervalMs || process.env.AI_CENTER_WORKER_POLL_MS,
     staleAfterMs,
     maxRunningMs: jobMaxRunningMs,
@@ -914,6 +945,76 @@ export function createAiCenterWorker(options = {}) {
     enabled: mainThreadWatchdogEnabled(env),
     tasks: () => runner.runningTasks(),
   });
+  let startupMaintenanceStarted = false;
+
+  async function runDeferredTranslationStartup() {
+    const deferredStep = createStartupClock();
+    try {
+      const retired = await retireYoutubeTranslationJobsBatched(store, 'local');
+      console.log(`[worker] youtube-translation retired=${retired.cancelled} split=${retired.split}`);
+    } catch (error) {
+      console.error('[worker] youtube-translation retire failed:', error instanceof Error ? error.message : error);
+    }
+    deferredStep('youtube-retire');
+    try {
+      const demoted = await demoteQueuedHashTranslationJobsBatched(store, 'local');
+      console.log(`[worker] translation-flood demoted=${demoted}`);
+    } catch (error) {
+      console.error('[worker] translation-flood failed:', error instanceof Error ? error.message : error);
+    }
+    deferredStep('translation-demote');
+    const backfillLimit = translationStartupBackfillLimit(env.AI_CENTER_TRANSLATION_BACKFILL_LIMIT);
+    const gapLimit = translationGapFillLimit(env.AI_CENTER_TRANSLATION_GAP_FILL_LIMIT);
+    const gapInterval = translationGapFillIntervalMs(env.AI_CENTER_TRANSLATION_GAP_FILL_INTERVAL_MS);
+    const runGapFill = async () => {
+      if (translationGapRunning || gapLimit === 0) return;
+      translationGapRunning = true;
+      try {
+        const result = await fillUncoveredTranslations({
+          store,
+          feedService,
+          mediaService,
+          workspaceId: 'local',
+          limit: gapLimit,
+          excludeSourceIds: [...(flashSources?.ids || [])],
+          cursor: translationGapCursor,
+        });
+        translationGapCursor = result.cursor || null;
+        console.log(`[worker] translation-gap-fill enqueued=${result.enqueued} limit=${gapLimit} scanned=${result.scanned} media=${result.media} feed=${result.feed}`);
+      } catch (error) {
+        console.error('[worker] translation-gap-fill failed:', error instanceof Error ? error.message : error);
+      } finally {
+        translationGapRunning = false;
+      }
+    };
+    try {
+      const repaired = repairEllipsisLeadTexts({ store, workspaceId: 'local', limit: backfillLimit });
+      console.log(`[worker] ellipsis-lead bodies=${repaired.bodies} translations=${repaired.translations}`);
+    } catch (error) {
+      console.error('[worker] ellipsis-lead failed:', error instanceof Error ? error.message : error);
+    }
+    deferredStep('ellipsis-lead');
+    translationBackfill ||= backfillUntranslatedFeedTranslations({
+      store,
+      feedService,
+      workspaceId: 'local',
+      limit: backfillLimit,
+      excludeSourceIds: [...(flashSources?.ids || [])],
+    }).then((result) => {
+      const enqueued = Array.isArray(result?.jobs) ? result.jobs.length : 0;
+      console.log(formatTranslationBackfillLog(result?.summary, { enqueued, limit: backfillLimit }));
+    }).catch((error) => {
+      console.error('[worker] translation-backfill failed:', error instanceof Error ? error.message : error);
+    }).then(() => {
+      if (gapLimit > 0 && gapInterval > 0) return runGapFill();
+      return null;
+    });
+    deferredStep('translation-backfill');
+    if (gapLimit > 0 && gapInterval > 0 && !translationGapTimer) {
+      translationGapTimer = setInterval(() => { runGapFill(); }, gapInterval);
+      translationGapTimer.unref?.();
+    }
+  }
 
   return {
     store,
@@ -921,74 +1022,25 @@ export function createAiCenterWorker(options = {}) {
     scheduler,
     browserRuntime,
     start() {
+      const startupStep = createStartupClock();
       quotaProbe ||= startGeminiQuotaProbe([articleAdmission, hourlyAdmission].filter(Boolean), { env });
-      try {
-        const retired = retireYoutubeTranslationJobs(store, 'local');
-        console.log(`[worker] youtube-translation retired=${retired.cancelled} split=${retired.split}`);
-      } catch (error) {
-        console.error('[worker] youtube-translation retire failed:', error instanceof Error ? error.message : error);
-      }
+      startupStep('quota-probe');
       schedulePromise ||= scheduler.start();
+      startupStep('scheduler');
       runPromise ||= runner.start();
-      const backfillLimit = translationStartupBackfillLimit(env.AI_CENTER_TRANSLATION_BACKFILL_LIMIT);
+      startupStep('runner');
       const backfillCap = translationBackfillConcurrency(
         env.AI_CENTER_TRANSLATION_BACKFILL_CONCURRENCY,
         Number(env.AI_CENTER_WORKER_TRANSLATION_CONCURRENCY || 5),
       );
       console.log(`[worker] translation-slots limit=${Number(env.AI_CENTER_WORKER_TRANSLATION_CONCURRENCY || 5)} backfillCap=${backfillCap}`);
-      try {
-        const demoted = demoteQueuedHashTranslationJobs(store, 'local');
-        console.log(`[worker] translation-flood demoted=${demoted}`);
-      } catch (error) {
-        console.error('[worker] translation-flood failed:', error instanceof Error ? error.message : error);
-      }
-      const gapLimit = translationGapFillLimit(env.AI_CENTER_TRANSLATION_GAP_FILL_LIMIT);
-      const gapInterval = translationGapFillIntervalMs(env.AI_CENTER_TRANSLATION_GAP_FILL_INTERVAL_MS);
-      const runGapFill = async () => {
-        if (translationGapRunning || gapLimit === 0) return;
-        translationGapRunning = true;
-        try {
-          const result = await fillUncoveredTranslations({
-            store,
-            feedService,
-            mediaService,
-            workspaceId: 'local',
-            limit: gapLimit,
-            excludeSourceIds: [...(flashSources?.ids || [])],
-            cursor: translationGapCursor,
+      if (!startupMaintenanceStarted) {
+        startupMaintenanceStarted = true;
+        setImmediate(() => {
+          runDeferredTranslationStartup().catch((error) => {
+            console.error('[worker] startup maintenance failed:', error instanceof Error ? error.message : error);
           });
-          translationGapCursor = result.cursor || null;
-          console.log(`[worker] translation-gap-fill enqueued=${result.enqueued} limit=${gapLimit} scanned=${result.scanned} media=${result.media} feed=${result.feed}`);
-        } catch (error) {
-          console.error('[worker] translation-gap-fill failed:', error instanceof Error ? error.message : error);
-        } finally {
-          translationGapRunning = false;
-        }
-      };
-      translationBackfill ||= backfillUntranslatedFeedTranslations({
-        store,
-        feedService,
-        workspaceId: 'local',
-        limit: backfillLimit,
-        excludeSourceIds: [...(flashSources?.ids || [])],
-      }).then((result) => {
-        const enqueued = Array.isArray(result?.jobs) ? result.jobs.length : 0;
-        console.log(formatTranslationBackfillLog(result?.summary, { enqueued, limit: backfillLimit }));
-      }).catch((error) => {
-        console.error('[worker] translation-backfill failed:', error instanceof Error ? error.message : error);
-      }).then(() => {
-        if (gapLimit > 0 && gapInterval > 0) return runGapFill();
-        return null;
-      });
-      if (gapLimit > 0 && gapInterval > 0 && !translationGapTimer) {
-        translationGapTimer = setInterval(() => { runGapFill(); }, gapInterval);
-        translationGapTimer.unref?.();
-      }
-      try {
-        const repaired = repairEllipsisLeadTexts({ store, workspaceId: 'local', limit: backfillLimit });
-        console.log(`[worker] ellipsis-lead bodies=${repaired.bodies} translations=${repaired.translations}`);
-      } catch (error) {
-        console.error('[worker] ellipsis-lead failed:', error instanceof Error ? error.message : error);
+        });
       }
       if (hardwarePriceRefresh && !hardwarePriceTimer) {
         hardwarePriceEventId = store.latestEventId?.() ?? 0;
@@ -1031,6 +1083,7 @@ async function main() {
   installWorkerLogStamps();
   const worker = createAiCenterWorker();
   console.log(`AI Center worker ${worker.runner.workerId}`);
+  const healthStarted = Date.now();
   try {
     const health = await worker.browserRuntime?.health?.();
     if (health) {
@@ -1039,6 +1092,7 @@ async function main() {
   } catch (error) {
     console.error('[worker] browser health failed:', error instanceof Error ? error.message : error);
   }
+  console.log(formatStartupStep('browser-health', Date.now() - healthStarted));
   const runPromise = worker.start();
   const shutdown = async () => {
     await worker.close();

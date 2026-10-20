@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { translationRetryDelayMs } from '../../database/src/translation-retry.js';
 import { withModelUsageContext } from './model-usage-context.js';
@@ -47,6 +48,37 @@ export function formatJobLoopDelay(job, delay) {
   const maxMs = Math.round(Number(delay?.maxMs) || 0);
   const meanMs = Math.round(Number(delay?.meanMs) || 0);
   return `[worker] ${job.type} ${job.id} loopMaxMs=${maxMs} loopMeanMs=${meanMs}`;
+}
+
+export function formatStartupStep(name, elapsedMs) {
+  const ms = Math.max(0, Math.round(Number(elapsedMs) || 0));
+  return `[worker] startup ${name} ${ms}ms`;
+}
+
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
+// Worker id is `${hostname}-${pid}`. A lock from this machine whose pid is gone
+// can be taken over immediately. Another host, or a pid that is still alive, keeps the lease.
+export function deadLocalWorkerLock(lockedBy, options = {}) {
+  const value = String(lockedBy || '');
+  const dash = value.lastIndexOf('-');
+  if (dash <= 0) return false;
+  const host = value.slice(0, dash);
+  const pidText = value.slice(dash + 1);
+  if (!/^\d+$/.test(pidText)) return false;
+  const pid = Number(pidText);
+  if (host !== (options.hostname ?? hostname())) return false;
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  if (pid === (options.pid ?? process.pid)) return false;
+  const alive = options.isAlive || processAlive;
+  return alive(pid) !== true;
 }
 
 function openLoopDelay() {
@@ -112,6 +144,7 @@ export function createJobRunner(options) {
       ...(Number.isFinite(maxRunningMs) && maxRunningMs > 0 ? { maxRunningMs } : {}),
       maxRunningMsByType,
       executingIds: [...inFlight.keys()],
+      ownerStale: (lockedBy) => deadLocalWorkerLock(lockedBy),
     });
     for (const [id, item] of [...inFlight]) {
       const current = store.getJob?.(id);
@@ -313,7 +346,10 @@ export function createJobRunner(options) {
   async function start() {
     if (running) return;
     running = true;
+    const log = options.log || ((line) => console.log(line));
+    const startupAt = Date.now();
     recoverStale();
+    log(formatStartupStep('runner-recover', Date.now() - startupAt));
     const recoverTimer = setInterval(recoverStale, recoverEveryMs);
     recoverTimer.unref?.();
     let lastTick = Date.now();
@@ -331,13 +367,20 @@ export function createJobRunner(options) {
       options.onWatchdog?.(line, idleMs);
     }, Math.min(watchdogMs, 60_000));
     watchdogTimer.unref?.();
+    let firstClaimLogged = false;
     try {
+      log(formatStartupStep('runner-ready', Date.now() - startupAt));
       while (!abortController.signal.aborted) {
         lastTick = Date.now();
         watchdogLogged = false;
         try {
           releaseSuperseded();
+          const claimStarted = firstClaimLogged ? 0 : Date.now();
           const job = await claimNextWork();
+          if (!firstClaimLogged) {
+            firstClaimLogged = true;
+            log(formatStartupStep('first-claim', Date.now() - claimStarted));
+          }
           if (job) {
             launch(job);
             continue;
