@@ -15,3 +15,5 @@ node scripts/backfill-youtube-article-titles.mjs --dry-run
 再去掉 `--dry-run`。已经写成的会跳过，失败的下次再跑仍是每篇 1 次。`--limit` 默认 500。不要把这条放进 Web 或 Worker 的启动流程。
 
 需要同时重启 Web 和 Worker，浏览器再加载一次。回填脚本另跑，不随进程启动。
+
+`app.js` 新引用的 `youtube-article-links.js` 和 `article-read-position.js` 必须写进静态文件白名单，否则线上 404，整站白屏。登记方式与 `news-list.js` 相同。白名单测试从 `index.html` 的 `app.js` 顺着传递 import 走，再向静态服务请求；没登记就是 404。

@@ -138,6 +138,56 @@ test('public JS imports are listed in the static file whitelist', () => {
   assert.deepEqual(missing, []);
 });
 
+function resolvePublicPath(fromPath, specifier) {
+  const bare = String(specifier || '').split(/[?#]/)[0];
+  if (!bare) return '';
+  if (bare.startsWith('/')) return path.posix.normalize(bare);
+  const dir = path.posix.dirname(fromPath.startsWith('/') ? fromPath : `/${fromPath}`);
+  return path.posix.normalize(path.posix.join(dir, bare));
+}
+
+function htmlModuleEntries(source) {
+  const entries = [];
+  for (const match of source.matchAll(/<(script|link)\b([^>]*)>/gi)) {
+    const tag = match[1].toLowerCase();
+    const attrs = match[2];
+    if (tag === 'script') {
+      if (!/\bmodule\b/i.test(attribute(attrs, 'type'))) continue;
+      const src = attribute(attrs, 'src');
+      if (isLocalJsReference(src)) entries.push(resolvePublicPath('/index.html', src));
+    } else if (/\b(?:modulepreload|module)\b/i.test(attribute(attrs, 'rel'))) {
+      const href = attribute(attrs, 'href');
+      if (isLocalJsReference(href)) entries.push(resolvePublicPath('/index.html', href));
+    }
+  }
+  return entries;
+}
+
+function reachableModules(startPaths) {
+  const seen = [];
+  const queued = new Set();
+  const missing = [];
+  const queue = [...startPaths];
+  while (queue.length) {
+    const urlPath = queue.shift();
+    if (!urlPath || queued.has(urlPath)) continue;
+    queued.add(urlPath);
+    seen.push(urlPath);
+    let source = '';
+    try {
+      source = readFileSync(path.join(publicDirectory, urlPath.replace(/^\//, '')), 'utf8');
+    } catch {
+      missing.push(urlPath);
+      continue;
+    }
+    for (const match of source.matchAll(JS_SPECIFIER)) {
+      if (!isLocalJsReference(match[1])) continue;
+      queue.push(resolvePublicPath(urlPath, match[1]));
+    }
+  }
+  return { seen, missing };
+}
+
 function listen(handler) {
   const server = createServer(async (req, response) => {
     const url = new URL(req.url || '/', 'http://127.0.0.1');
@@ -151,15 +201,26 @@ function listen(handler) {
   });
 }
 
-test('news-list.js and html-text.js are served as javascript', async () => {
+// 源码文件名集合能发现完全没写进白名单的 import，但只比文件名时，数组里的磁盘文件名也会被当成已登记路由。
+// 这次漏登记没有先跑到上面的核对。从 index.html 的 app.js 顺着 import / import() 走完，再向静态服务要文件；没登记就是 404，线上就是白屏。
+test('app.js and its transitive imports are served as javascript', async () => {
+  const indexHtml = readFileSync(path.join(publicDirectory, 'index.html'), 'utf8');
+  const entries = htmlModuleEntries(indexHtml);
+  assert.ok(entries.includes('/app.js'), 'index.html loads app.js as a module');
+  const { seen, missing } = reachableModules(entries);
+  assert.deepEqual(missing, []);
+  assert.ok(seen.includes('/youtube-article-links.js'), 'app.js import graph reaches youtube-article-links.js');
+  assert.ok(seen.includes('/article-read-position.js'), 'app.js import graph reaches article-read-position.js');
+  assert.ok(seen.includes('/news-list.js'));
+  assert.ok(seen.includes('/klinecharts.js'), 'dynamic import() is followed transitively');
   const server = await listen(createStaticFileHandler(publicDirectory));
   const { port } = server.address();
   try {
-    for (const pathname of ['/news-list.js', '/html-text.js', '/qr-code.js', '/share-card.js']) {
-      const response = await getRaw(`http://127.0.0.1:${port}${pathname}`);
+    for (const pathname of seen) {
+      const response = await getRaw(`http://127.0.0.1:${port}${pathname}?v=dev`);
       assert.equal(response.status, 200, pathname);
       assert.equal(response.headers['content-type'], 'text/javascript; charset=utf-8', pathname);
-      assert.match(response.body.toString('utf8'), /export function /);
+      assert.equal(response.headers['cache-control'], 'public, max-age=31536000, immutable', pathname);
     }
   } finally {
     await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
