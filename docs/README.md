@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-20-us-market-time-label.md`：美股市场页顶部加上报价时间。概览里的昨收改成「昨收」，更新时间单独写成「更新 23:15」。VIX 标明「延迟 15 分钟」，不因此显示「已过期」。不新增 migration。需要重启 Web，浏览器再加载一次。
+
 - `progress/2026-10-20-worker-startup-stall.md`：Worker 重启后先领任务，不再把历史翻译任务整表读出来。本机已退出进程留下的「运行中」任务立刻收回。清理改到后台分批。每一步启动打耗时。不新增 migration。需要重启 Worker。
 
 - `progress/2026-10-20-x-video-article.md`：信息流里超过门槛的 X 视频进入和 YouTube 共用的整理队列。先抽音频，用现有 Gemini 转写，再交给 Gemma。详情里读中文长文，并有「原帖」。migration 93。需要同时重启 Web 和 Worker，浏览器再加载一次。

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
+import { quoteBasisParts } from '../apps/web/public/home-timeline.js';
 
 const appSource = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
 const cssSource = readFileSync(new URL('../apps/web/public/styles.css', import.meta.url), 'utf8');
@@ -96,7 +97,7 @@ function quoteContext() {
     createElement: (tag) => new Node(tag),
     createTextNode: (text) => ({ textContent: String(text ?? '') }),
   };
-  const context = vm.createContext({ document, state: { pageId: '688361.SS' } });
+  const context = vm.createContext({ document, state: { pageId: '688361.SS' }, quoteBasisParts });
   vm.runInContext([
     sourceBetween('const QUOTE_ASSET_LABELS', 'function quotePriceReady'),
     functionSource('sessionLabel'),
@@ -112,6 +113,7 @@ function quoteContext() {
     functionSource('shanghaiQuoteParts'),
     functionSource('formatQuoteStamp'),
     functionSource('formatQuoteDay'),
+    functionSource('quoteBasisLines'),
     functionSource('quoteBasisText'),
     functionSource('paintQuoteFigures'),
   ].join('\n'), context);

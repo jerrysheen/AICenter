@@ -28,6 +28,8 @@ import {
   marketFillDelayMs,
   quoteStaleLabel,
   quoteClosedLabel,
+  quoteBasisParts,
+  marketQuoteTimeLabel,
   homeDataDelayLabel,
   homeRequestPlan,
   hourlyEditions,
@@ -8542,10 +8544,12 @@ function renderMarketStatus() {
   const stale = marketStaleLabel(market);
   const delay = homeDataDelayLabel(state.homeGeneratedAt);
   const note = marketStatusLabel(market) || delay;
+  const quoteTime = state.stockBoard === 'us' ? marketQuoteTimeLabel(market) : '';
+  const headline = [note, quoteTime].filter(Boolean).join(' · ');
   el.replaceChildren();
   el.classList.toggle('is-stale', Boolean(stale));
-  el.classList.toggle('hidden', !note && !error);
-  if (note) el.append(document.createTextNode(error ? `${note} · ${error}` : note));
+  el.classList.toggle('hidden', !headline && !error);
+  if (headline) el.append(document.createTextNode(error ? `${headline} · ${error}` : headline));
   else if (error) el.append(document.createTextNode(error));
   if (!error) return;
   const retry = document.createElement('button');
@@ -10639,22 +10643,26 @@ function formatQuoteDay(at) {
   return `${clock.month}月${clock.day}日`;
 }
 
-function quoteBasisText(item, extra = {}) {
-  const parts = [];
+function quoteBasisLines(item, extra = {}) {
+  const lines = [];
   const dailyAt = quoteInstant({ asOf: extra.dailyAt });
-  if (dailyAt) parts.push(`日K ${formatQuoteDay(dailyAt)}`);
-  if (item?.prevClose != null && item.prevClose !== '') parts.push(`基准 ${formatPrice(item.prevClose)}`);
-  if (!dailyAt) {
-    const at = quoteInstant(item);
-    if (at) parts.push(formatQuoteStamp(at));
-  }
-  return parts.join(' · ');
+  if (dailyAt) lines.push(`日K ${formatQuoteDay(dailyAt)}`);
+  if (item?.prevClose != null && item.prevClose !== '') lines.push(`昨收 ${formatPrice(item.prevClose)}`);
+  const basis = quoteBasisParts(item, extra.nowMs);
+  if (!dailyAt && basis.delay) lines.push(basis.delay);
+  else if (!dailyAt && basis.update) lines.push(basis.update);
+  return lines;
+}
+
+function quoteBasisText(item, extra = {}) {
+  return quoteBasisLines(item, extra).join(' · ');
 }
 
 function appendQuoteBasis(parent, item) {
-  const text = quoteBasisText(item);
-  if (!text || !parent) return;
-  parent.append(Object.assign(document.createElement('small'), { className: 'quote-basis', textContent: text }));
+  if (!parent) return;
+  for (const line of quoteBasisLines(item)) {
+    parent.append(Object.assign(document.createElement('small'), { className: 'quote-basis', textContent: line }));
+  }
 }
 
 const quotePeriods = [

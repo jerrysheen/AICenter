@@ -9,7 +9,7 @@ import {
   marketUsFreshMs,
   usBoardFreshnessError,
 } from '../packages/runtime/src/web-snapshot-jobs.js';
-import { acceptMarketPayload, alignMarketBoards, homeDataDelayLabel, marketClosedLabel, marketFillDelayMs, marketPhaseLabel, marketStaleLabel, marketStatusLabel, quoteClosedLabel, quoteStaleLabel } from '../apps/web/public/home-timeline.js';
+import { acceptMarketPayload, alignMarketBoards, homeDataDelayLabel, marketClosedLabel, marketFillDelayMs, marketPhaseLabel, marketQuoteTimeLabel, marketStaleLabel, marketStatusLabel, marketStatusWithQuoteTime, quoteBasisParts, quoteClosedLabel, quoteSourceDelayLabel, quoteStaleLabel, quoteUpdateLabel } from '../apps/web/public/home-timeline.js';
 import { createMarketBoardReader } from '../packages/source/src/market/board-read.js';
 
 const catalog = {
@@ -974,10 +974,44 @@ test('client boards keep one basis time after either side refreshes', () => {
   assert.equal(aligned.overview.sections[0].session, 'regular');
   assert.equal(marketStatusLabel(aligned.overview, evening), '盘中');
   assert.equal(marketStatusLabel(aligned.us, evening), '盘中');
+  assert.equal(marketQuoteTimeLabel(aligned.us, evening), '更新 21:48');
+  assert.equal(marketStatusWithQuoteTime(aligned.us, evening), '盘中 · 更新 21:48');
+  assert.equal(quoteBasisParts(aligned.us.indices[1], evening).delay, '延迟 15 分钟');
+  assert.equal(quoteBasisParts(aligned.us.indices[1], evening).update, '');
   const rolled = acceptMarketPayload(
     { indices: [{ symbol: '^GSPC', lastPrice: 2, asOf: newer }] },
     { indices: [{ symbol: '^GSPC', lastPrice: 1, asOf: older }] },
   );
   assert.equal(rolled.indices[0].lastPrice, 2);
   assert.equal(rolled.indices[0].asOf, newer);
+});
+
+test('VIX keeps the source delay and does not expire the board', () => {
+  const now = Date.parse('2026-10-20T13:50:00Z');
+  const vixAt = now - 15 * 60_000;
+  assert.equal(quoteSourceDelayLabel({ symbol: '^VIX' }), '延迟 15 分钟');
+  assert.equal(quoteSourceDelayLabel({ symbol: '^GSPC' }), '');
+  assert.equal(quoteUpdateLabel(now, now), '更新 21:50');
+  assert.equal(quoteUpdateLabel(vixAt, now), '更新 21:35');
+  const board = {
+    board: 'us',
+    session: 'regular',
+    indices: [
+      { symbol: '^GSPC', lastPrice: 5200, asOf: now, session: 'regular' },
+      { symbol: '^VIX', lastPrice: 18, asOf: vixAt, session: 'regular' },
+    ],
+    watchlist: [],
+  };
+  assert.equal(quoteStaleLabel(board.indices[1], now), '');
+  assert.equal(marketStaleLabel(board, now), '');
+  assert.equal(marketStatusWithQuoteTime(board, now), '盘中 · 更新 21:50');
+  assert.equal(quoteBasisParts(board.indices[1], now).delay, '延迟 15 分钟');
+  assert.equal(quoteBasisParts(board.indices[1], now).update, '');
+  assert.equal(quoteBasisParts(board.indices[0], now).update, '更新 21:50');
+  const closed = Date.parse('2026-10-20T22:00:00Z');
+  const rested = {
+    indices: [{ symbol: '^VIX', lastPrice: 18, asOf: closed - 20 * 60_000, session: 'closed' }],
+  };
+  assert.equal(marketStaleLabel(rested, closed), '');
+  assert.match(marketStatusLabel(rested, closed), /^收盘/);
 });

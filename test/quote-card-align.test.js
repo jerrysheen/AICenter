@@ -11,7 +11,7 @@ import { buildCnMarketBoard, quoteDisplayName } from '../packages/source/src/mar
 import { EXTRA_QUOTE_TIMEOUT_MS, withMarketClock } from '../packages/source/src/market/board-read.js';
 import { createRouter } from '../apps/web/src/http/router.js';
 import { createTradingRoutes } from '../apps/web/src/routes/trading-routes.js';
-import { marketClosedLabel, quoteClosedLabel } from '../apps/web/public/home-timeline.js';
+import { marketClosedLabel, quoteBasisParts, quoteClosedLabel } from '../apps/web/public/home-timeline.js';
 
 const appSource = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
 const cssSource = readFileSync(new URL('../apps/web/public/styles.css', import.meta.url), 'utf8');
@@ -262,7 +262,13 @@ test('the quote page reads overview cards and labels a daily-bar fallback', () =
   assert.match(functionSource('renderOverview'), /data-overview-key/);
   assert.match(functionSource('renderOverview'), /dataset\?\.symbol/);
   assert.match(functionSource('renderMovers'), /dataset\.symbol/);
-  assert.match(functionSource('quoteBasisText'), /日K/);
+  assert.match(functionSource('quoteBasisLines'), /日K/);
+  assert.match(functionSource('quoteBasisLines'), /昨收/);
+  const marketStatus = appSource.slice(appSource.indexOf('function renderMarketStatus'), appSource.indexOf('function renderIndexScroller'));
+  assert.match(marketStatus, /stockBoard === 'us'/);
+  assert.match(marketStatus, /marketQuoteTimeLabel\(market\)/);
+  const watchRows = appSource.slice(appSource.indexOf('function renderWatchRows'), appSource.indexOf('function marketRetryBlock'));
+  assert.equal(watchRows.includes('appendQuoteBasis'), false);
   assert.match(functionSource('paintQuotePrintFromBars'), /dailyAt: bar\?\.at/);
   assert.match(functionSource('loadLiveQuote'), /\/api\/v1\/markets\/quote\?symbol=/);
   assert.match(cssSource, /\.mover-row:focus-visible \{[^}]*outline: 2px solid var\(--brand\)/);
@@ -307,15 +313,19 @@ test('the quote page reads overview cards and labels a daily-bar fallback', () =
     functionSource('formatQuoteStamp'),
     functionSource('formatQuoteDay'),
     functionSource('formatPrice'),
+    functionSource('quoteBasisLines'),
     functionSource('quoteBasisText'),
   ].join('\n'), context);
+  context.quoteBasisParts = quoteBasisParts;
   const quote = context.findQuote('688110.ss');
   assert.equal(quote.name, '东芯股份');
   assert.equal(quote.lastPrice, 80);
   assert.equal(quote.changePct, 3.2);
   assert.equal(quote.session, 'break');
-  assert.match(context.quoteBasisText(quote), /基准 77\.5/);
-  assert.match(context.quoteBasisText(quote), /10月19日 12:00/);
+  const basisText = context.quoteBasisText(quote, { nowMs: Date.parse('2026-10-20T13:50:00Z') });
+  assert.match(basisText, /昨收 77\.5/);
+  assert.match(basisText, /更新 10月19日 12:00/);
+  assert.equal(basisText.includes('基准'), false);
   const host = {
     closest() { return detail; },
   };
@@ -342,6 +352,6 @@ test('the quote page reads overview cards and labels a daily-bar fallback', () =
     { at: barAt, close: 77 },
   ]);
   assert.equal(last.textContent.includes('77'), true);
-  assert.match(basis.textContent, /^日K 10月16日 · 基准 /);
+  assert.match(basis.textContent, /^日K 10月16日 · 昨收 /);
   assert.equal(opened.length, 0);
 });

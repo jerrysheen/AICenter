@@ -293,7 +293,44 @@ function boardSessionOpen(payload, nowMs) {
   return null;
 }
 
+export function quoteSourceDelayLabel(item) {
+  const symbol = String(item?.symbol || '').trim().toUpperCase();
+  if (symbol === '^VIX') return '延迟 15 分钟';
+  return '';
+}
+
+export function quoteUpdateLabel(at, nowMs = Date.now()) {
+  const ms = quoteAsOfMs({ asOf: at });
+  if (!ms) return '';
+  const clock = shanghaiParts(ms);
+  const today = shanghaiParts(nowMs);
+  const time = `${clock.hour}:${clock.minute}`;
+  const sameDay = clock.year === today.year && clock.month === today.month && clock.day === today.day;
+  return sameDay ? `更新 ${time}` : `更新 ${clock.month}月${clock.day}日 ${time}`;
+}
+
+export function quoteBasisParts(item, nowMs = Date.now()) {
+  const delay = quoteSourceDelayLabel(item);
+  if (delay) return { delay, update: '' };
+  const at = quoteAsOfMs(item);
+  return { delay: '', update: at ? quoteUpdateLabel(at, nowMs) : '' };
+}
+
+export function marketQuoteTimeLabel(payload, nowMs = Date.now()) {
+  const times = pricedQuotes(payload)
+    .filter((item) => !quoteSourceDelayLabel(item))
+    .map(quoteAsOfMs)
+    .filter((at) => at > 0);
+  if (!times.length) return '';
+  return quoteUpdateLabel(Math.max(...times), nowMs);
+}
+
+export function marketStatusWithQuoteTime(payload, nowMs = Date.now()) {
+  return [marketStatusLabel(payload, nowMs), marketQuoteTimeLabel(payload, nowMs)].filter(Boolean).join(' · ');
+}
+
 export function quoteStaleLabel(item, nowMs = Date.now()) {
+  if (quoteSourceDelayLabel(item)) return '';
   if (quoteSessionOpen(item, nowMs)) return '';
   return '';
 }
@@ -330,7 +367,7 @@ export function marketStaleLabel(payload, nowMs = Date.now()) {
   if (payload?.awaitingQuote) return '';
   const open = boardSessionOpen(payload, nowMs);
   if (open !== null) return '';
-  const quotes = pricedQuotes(payload);
+  const quotes = pricedQuotes(payload).filter((item) => !quoteSourceDelayLabel(item));
   const times = quotes.map(quoteAsOfMs).filter((at) => at > 0);
   if (times.length) {
     const newest = Math.max(...times);
