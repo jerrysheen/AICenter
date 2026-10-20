@@ -200,10 +200,14 @@ test('quote page keeps status and placeholder price off the screen until a price
 test('opening a quote resets the page scroll and still restores the list', () => {
   const setView = functionSource('setView');
   const lockAt = setView.indexOf('restoringViewScroll = true');
+  const tryAt = setView.indexOf('try {', lockAt);
   const swapAt = setView.indexOf('document.body.dataset.view = view');
-  const topAt = setView.indexOf('openingQuote) scrollPageToTop()');
-  const restoreAt = setView.indexOf("leaving && !reportViewOwnsScroll(view, briefPage.hasHourScroll())) restoreViewScroll(view)");
-  assert.ok(lockAt > 0 && lockAt < swapAt);
+  const topAt = setView.indexOf('scrollPageToTop()');
+  const restoreAt = setView.indexOf('restoreViewScroll(view)');
+  const finallyAt = setView.lastIndexOf('finally {');
+  assert.ok(lockAt > 0 && tryAt > lockAt && tryAt < swapAt);
+  assert.ok(finallyAt > swapAt);
+  assert.match(setView, /finally \{[\s\S]*if \(releaseViewScroll\) restoringViewScroll = false/);
   assert.match(setView, /view === 'feed' && \(leaving \|\| options\.replace\)\) scrollFeedToTop\(\)/);
   assert.ok(topAt > 0 && topAt < restoreAt);
   assert.match(setView, /openingQuote \|\| \(leaving && view !== 'feed' && !reportViewOwnsScroll\(view, briefPage\.hasHourScroll\(\)\)\)/);
@@ -289,8 +293,11 @@ test('quote hash paints a skeleton before startup requests and does not leave a 
 
   assert.match(bootSource, /quote-boot/);
   assert.match(bootSource, /#quote\\\/\[\^\/\?#\]\+/);
-  assert.match(cssSource, /html\.quote-boot body\[data-view="sources"\] #view-sources \{ display: none; \}/);
-  assert.match(cssSource, /html\.quote-boot body\[data-view="sources"\] #view-page \{ display: block; \}/);
+  assert.match(cssSource, /html\.quote-boot \.view \{ display: none; \}/);
+  assert.match(cssSource, /html\.quote-boot #view-page \{ display: block; \}/);
+  assert.doesNotMatch(cssSource, /html\.quote-boot body\[data-view="sources"\] #view-page/);
+  const desktop = cssSource.slice(cssSource.indexOf('@media (min-width: 1200px)'));
+  assert.match(desktop, /html\.has-known-session body\.is-unpaired \.app-shell,\s*html\.has-known-session body:not\(\.is-ready\) \.app-shell,\s*html\.quote-boot \.app-shell \{\s*display: grid;/);
   assert.match(cssSource, /html\.quote-boot #page-title \.page-title-boot \{ display: inline; \}/);
   assert.match(htmlSource, /class="page-title-boot">行情</);
   const skeleton = htmlSource.match(/id="quote-boot-skeleton"[\s\S]*?<\/article>/);

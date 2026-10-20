@@ -6,7 +6,7 @@ import {
 import { icon } from './icons.js?v=dev';
 import { renderMarkdownInto, renderFeedTextInto, splitFeedText, stripSharePlaceholders } from './markdown.js?v=dev';
 import { attachYoutubeHeadingTimes, youtubeVideoId, youtubeWatchUrl } from './youtube-article-links.js?v=dev';
-import { createArticleReadPosition } from './article-read-position.js?v=dev';
+import { articleReadKey, createArticleReadPosition } from './article-read-position.js?v=dev';
 import { cacheTtlFor, createRequestLayer, isPreparedPending, planTranslationPoll, requestDedupeKey, resolvePreparedPending, TRANSLATION_POLL_DEADLINE_MS } from './client-request.js?v=dev';
 import { planAskRunsFetch } from './ask-runs.js?v=dev';
 import { behaviorClickName, behaviorControlLabel, behaviorDetailsExpand } from './behavior-clicks.js?v=dev';
@@ -1282,10 +1282,14 @@ function setView(name, options = {}) {
     viewScrollY.page = 0;
     try { history.scrollRestoration = 'manual'; } catch {}
   }
-  // 切页会先改布局。滚动事件若在复位前写入 viewScrollY，列表原位置会被详情页的夹住滚动盖掉。
-  if (openingQuote || (leaving && view !== 'feed' && !reportViewOwnsScroll(view, briefPage.hasHourScroll()))) {
-    restoringViewScroll = true;
+  if (view === 'page' && state.pageKind === 'article') {
+    try { history.scrollRestoration = 'manual'; } catch {}
   }
+  // 切页会先改布局。滚动事件若在复位前写入 viewScrollY，列表原位置会被详情页的夹住滚动盖掉。
+  const holdViewScroll = openingQuote || (leaving && view !== 'feed' && !reportViewOwnsScroll(view, briefPage.hasHourScroll()));
+  if (holdViewScroll) restoringViewScroll = true;
+  let releaseViewScroll = holdViewScroll;
+  try {
   if ((view !== 'page' || parsed.pageKind !== 'article') && !elements['post-dialog']?.open) {
     state.dialogPost = null;
   }
@@ -1420,12 +1424,14 @@ function setView(name, options = {}) {
     renderPosts();
   }
   if (view === 'feed' && (leaving || options.replace)) scrollFeedToTop();
-  else if (openingQuote) scrollPageToTop();
-  else if (leaving && !reportViewOwnsScroll(view, briefPage.hasHourScroll())) restoreViewScroll(view);
+  else if (openingQuote) { scrollPageToTop(); releaseViewScroll = false; }
+  else if (leaving && !reportViewOwnsScroll(view, briefPage.hasHourScroll())) { restoreViewScroll(view); releaseViewScroll = false; }
   else if (newArticle) window.scrollTo(0, 0);
-  else restoringViewScroll = false;
   persistFeedBrowseState();
   syncAskKeyboard();
+  } finally {
+    if (releaseViewScroll) restoringViewScroll = false;
+  }
 }
 
 function updateHeaderAction(view) {
@@ -9523,12 +9529,12 @@ function articleContentId(id) {
   if (contentItemUuid(value)) return value;
   const feed = value.match(/^feed:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
   if (feed) return feed[1];
-  if (/^(?:x|xueqiu|bilibili|trendforce):[^/]+$/i.test(value)) return value;
+  if (/^(?:x|xueqiu|bilibili|trendforce|youtube):[^/]+$/i.test(value)) return value;
   const cached = typeof findUnifiedItem === 'function' ? findUnifiedItem(value) : null;
   if (contentItemUuid(cached?.resourceId)) return cached.resourceId;
   const platform = String(cached?.platform || '');
-  const composed = cached?.externalId && /^(?:x|xueqiu|bilibili|trendforce)$/i.test(platform) ? `${platform}:${cached.externalId}` : '';
-  return /^(?:x|xueqiu|bilibili|trendforce):[^/]+$/i.test(composed) ? composed : '';
+  const composed = cached?.externalId && /^(?:x|xueqiu|bilibili|trendforce|youtube)$/i.test(platform) ? `${platform}:${cached.externalId}` : '';
+  return /^(?:x|xueqiu|bilibili|trendforce|youtube):[^/]+$/i.test(composed) ? composed : '';
 }
 async function restoreSavedArticle(id) {
   if(!state.session || restoredArticleRequests.has(id))return;restoredArticleRequests.add(id);
@@ -9920,7 +9926,7 @@ function renderArticlePage() {
   if (analysis) shell.append(analysis);
   shell.append(mobile);
   root.replaceChildren(shell);
-  articleReadPosition().mount({ articleId: itemId, shell });
+  articleReadPosition().mount({ articleId: articleReadKey(itemId), shell });
   if (menuFocus) [...elements['reader-menu'].querySelectorAll('button')].find(button => button.dataset.detailAction === menuFocus)?.focus();
   if (shouldQueueTranslation(post)) {
     requestTranslate(post).catch((error) => showToast(error.message));

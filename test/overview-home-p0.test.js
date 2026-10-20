@@ -55,7 +55,7 @@ test('social rows group by the Shanghai publish clock', () => {
   assert.doesNotMatch(label, /10月12日/);
   assert.match(functionSource('formatTime'), /Asia\/Shanghai/);
   assert.match(functionSource('feedToNewsRow'), /day: newsDayLabel\(moment\.at\)/);
-  assert.match(functionSource('articleContentId'), /x\|xueqiu\|bilibili\|trendforce/);
+  assert.match(functionSource('articleContentId'), /x\|xueqiu\|bilibili\|trendforce\|youtube/);
   assert.doesNotMatch(app, /const paged = state\.xItems\.length > incoming\.length/);
   assert.doesNotMatch(app, /const paged = state\.xueqiuItems\.length > incoming\.length/);
 });

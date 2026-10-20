@@ -43,8 +43,18 @@ function writeItems(storage, items) {
   }
 }
 
+export function articleReadKey(articleId) {
+  const value = String(articleId || '').trim();
+  if (!value) return '';
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 export function saveArticleReadPosition(storage, articleId, position, now = Date.now()) {
-  const id = String(articleId || '').trim();
+  const id = articleReadKey(articleId);
   if (!storage || typeof storage.setItem !== 'function' || !id || !position?.anchorId) return false;
   const items = loadArticleReadPositions(storage);
   items[id] = {
@@ -59,7 +69,7 @@ export function saveArticleReadPosition(storage, articleId, position, now = Date
 }
 
 export function clearArticleReadPosition(storage, articleId) {
-  const id = String(articleId || '').trim();
+  const id = articleReadKey(articleId);
   if (!storage || typeof storage.setItem !== 'function' || !id) return false;
   const items = loadArticleReadPositions(storage);
   if (!items[id]) return false;
@@ -202,26 +212,57 @@ export function createArticleReadPosition(options = {}) {
   let listening = false;
   let dismissed = '';
   let restoredY = 0;
+  let pinned = null;
+  let userMoved = false;
   let onScroll = null;
   let onHide = null;
+  const jumpPx = 900;
 
   function contentOf(node = shell) {
     return node?.querySelector?.('.reader-content') || null;
   }
 
-  function capture() {
+  function storedPosition(id = articleId) {
+    const key = articleReadKey(id);
+    if (!key) return null;
+    const items = loadArticleReadPositions(storage());
+    return items[key] || items[String(id || '').trim()] || null;
+  }
+
+  function persistPinned() {
+    if (!articleId || !pinned?.anchorId) return false;
+    return saveArticleReadPosition(storage(), articleId, pinned);
+  }
+
+  function rememberFromScroll() {
     if (!articleId || restoring || !shell?.isConnected) return;
     const content = contentOf();
     if (!content) return;
     const view = metrics();
     if (!articleIsLong(view)) return;
     if (reachedArticleEnd(view)) {
+      pinned = null;
       clearArticleReadPosition(storage(), articleId);
       return;
     }
     const picked = pickReadAnchor(readBlocks(content), view.line);
     if (!picked) return;
-    saveArticleReadPosition(storage(), articleId, picked);
+    pinned = { anchorId: picked.anchorId, offset: picked.offset, scrollY: Number(view.scrollY) || 0 };
+  }
+
+  function jumpedAway() {
+    if (!pinned?.anchorId || !Number.isFinite(pinned.scrollY)) return false;
+    return Math.abs((Number(metrics().scrollY) || 0) - pinned.scrollY) > jumpPx;
+  }
+
+  function capture() {
+    if (!articleId) return;
+    if (restoring || !userMoved || !shell?.isConnected || jumpedAway()) {
+      persistPinned();
+      return;
+    }
+    rememberFromScroll();
+    persistPinned();
   }
 
   function bind() {
@@ -229,10 +270,15 @@ export function createArticleReadPosition(options = {}) {
     listening = true;
     onScroll = () => {
       if (restoring) return;
+      const y = Number(metrics().scrollY) || 0;
+      if (pinned?.anchorId && Number.isFinite(pinned.scrollY) && Math.abs(y - pinned.scrollY) > jumpPx) return;
+      userMoved = true;
+      rememberFromScroll();
       if (timer) return;
       timer = setTimeout(() => {
         timer = 0;
-        capture();
+        if (restoring) return;
+        persistPinned();
         const banner = shell?.querySelector?.('.read-resume');
         if (!banner) return;
         if (Math.abs((metrics().scrollY || 0) - restoredY) > 160) {
@@ -263,6 +309,8 @@ export function createArticleReadPosition(options = {}) {
   function readFromStart() {
     clearArticleReadPosition(storage(), articleId);
     dismissed = articleId;
+    pinned = null;
+    userMoved = false;
     shell?.querySelector?.('.read-resume')?.remove();
     restoring = true;
     try {
@@ -273,17 +321,17 @@ export function createArticleReadPosition(options = {}) {
   }
 
   function restoreSaved() {
-    if (!shell?.isConnected || !articleId) return;
+    if (!shell?.isConnected || !articleId) return 'stop';
     const content = contentOf();
-    if (!content) return;
+    if (!content) return 'retry';
     assignReadAnchors(content);
     const view = metrics();
-    if (!articleIsLong(view)) return;
-    const saved = loadArticleReadPositions(storage())[articleId];
+    if (!articleIsLong(view)) return 'retry';
+    const saved = storedPosition();
     const blocks = readBlocks(content);
-    if (!positionWorthRestoring(saved, { firstAnchorId: blocks[0]?.id || '' })) return;
+    if (!positionWorthRestoring(saved, { firstAnchorId: blocks[0]?.id || '' })) return 'stop';
     const node = anchorNodes(content).find((item) => (item.dataset?.readAnchor || item.getAttribute?.('data-read-anchor')) === saved.anchorId);
-    if (!node || typeof node.getBoundingClientRect !== 'function') return;
+    if (!node || typeof node.getBoundingClientRect !== 'function') return 'retry';
     const rect = node.getBoundingClientRect();
     const top = scrollTopForAnchor({
       scrollY: view.scrollY,
@@ -291,45 +339,68 @@ export function createArticleReadPosition(options = {}) {
       line: view.line,
       offset: saved.offset,
     });
-    restoring = true;
     try {
       globalThis.scrollTo?.({ top, behavior: 'instant' });
-    } finally {
-      restoring = false;
+    } catch {
+      return 'retry';
     }
+    pinned = { anchorId: saved.anchorId, offset: Number(saved.offset) || 0, scrollY: top };
     restoredY = top;
-    if (dismissed === articleId) return;
+    if (dismissed === articleId) return 'stop';
     showResumeBanner(shell, readFromStart);
+    return 'stop';
   }
 
   function scheduleRestore() {
     const frame = globalThis.requestAnimationFrame;
+    let tries = 0;
+    const step = () => {
+      tries += 1;
+      const result = restoreSaved();
+      if (result === 'retry' && tries < 8 && typeof frame === 'function') frame(step);
+      else restoring = false;
+    };
+    restoring = true;
     if (typeof frame !== 'function') {
-      restoreSaved();
+      step();
       return;
     }
-    frame(() => frame(() => frame(restoreSaved)));
+    frame(step);
   }
 
   return {
     capture,
     readFromStart,
     mount({ articleId: nextId, shell: nextShell } = {}) {
-      const next = String(nextId || '');
+      const next = articleReadKey(nextId);
       if (articleId && shell?.isConnected) capture();
-      if (next !== articleId) dismissed = '';
+      if (next !== articleId) {
+        dismissed = '';
+        pinned = null;
+        userMoved = false;
+      }
       articleId = next;
       shell = nextShell || null;
+      const saved = storedPosition();
+      if (saved?.anchorId && !pinned) {
+        pinned = { anchorId: saved.anchorId, offset: Number(saved.offset) || 0, scrollY: null };
+      }
+      try { globalThis.history.scrollRestoration = 'manual'; } catch { /* 浏览器不支持时仍在离开时记下锚点 */ }
       bind();
       const content = contentOf();
       if (content) assignReadAnchors(content);
       scheduleRestore();
     },
     unmount() {
+      if (timer) {
+        clearTimeout(timer);
+        timer = 0;
+      }
       capture();
       articleId = '';
       shell = null;
       dismissed = '';
+      pinned = null;
       unbind();
     },
   };
