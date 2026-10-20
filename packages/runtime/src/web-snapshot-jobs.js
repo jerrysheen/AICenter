@@ -55,6 +55,35 @@ export function hardwarePriceCategoryKey(category) {
 
 const HISTORY_REFRESH_MS = 15 * 60 * 1000;
 const INTERVAL_MINUTES = 1;
+const SLOW_SNAPSHOT_MINUTES = 5;
+
+function quoteSignature(quotes) {
+  return (quotes || []).map((quote) => (
+    `${String(quote?.symbol || '').toUpperCase()}|${quote?.lastPrice ?? ''}|${quote?.prevClose ?? ''}`
+  )).join('\n');
+}
+
+function seriesSignature(series) {
+  return (series || []).map((item) => {
+    const points = Array.isArray(item?.points) ? item.points : [];
+    const last = points.length ? points[points.length - 1] : {};
+    return `${String(item?.symbol || '').toUpperCase()}|${points.length}|${last?.at ?? ''}|${last?.close ?? ''}`;
+  }).join('\n');
+}
+
+function idSignature(rows) {
+  return (rows || []).map((row) => String(row?.id || row?.eventId || row?.sourceId || row?.url || '')).join(',');
+}
+
+function feedItemSignature(payload) {
+  const items = payload?.items || payload?.feed?.items || [];
+  return items.map((item) => `${item?.id || item?.externalId || ''}|${item?.updatedAt || item?.publishedAt || ''}`).join(',');
+}
+
+function sameSnapshot(previous, next, signature) {
+  if (!previous) return false;
+  return signature(previous) === signature(next);
+}
 
 export const webSnapshotManifest = Object.freeze({
   id: 'runtime.web-snapshots',
@@ -106,7 +135,9 @@ export async function captureStaticSignalBoard({
   if (!repository?.saveSnapshot) throw new Error('官方看板快照需要存储');
   const at = now();
   const payload = localizeOfficialBoard(await readStaticSignalBoardSnapshot(sourcePort, staticSignalBoardCaptureInput(at), { now: () => at }));
-  repository.saveSnapshot(workspaceId, STATIC_SIGNAL_BOARD_SNAPSHOT_KEY, payload, payload.generatedAt);
+  const previous = repository.readSnapshot?.(workspaceId, STATIC_SIGNAL_BOARD_SNAPSHOT_KEY)?.payload;
+  const unchanged = sameSnapshot(previous, payload, (board) => `${idSignature(board?.upcoming)}\n${idSignature(board?.releases)}`);
+  if (!unchanged) repository.saveSnapshot(workspaceId, STATIC_SIGNAL_BOARD_SNAPSHOT_KEY, payload, payload.generatedAt);
   let authorsLinked = 0;
   let bodiesFilled = 0;
   if (feedRepository?.saveCapture) {
@@ -177,7 +208,10 @@ export async function captureHoldingsMarket({
     series,
     historyGeneratedAt: historyAt,
   };
-  repository.saveSnapshot(workspaceId, HOLDINGS_MARKET_SNAPSHOT_KEY, payload, at);
+  const holdingsSame = sameSnapshot(existing?.payload, payload, (board) => `${quoteSignature(board?.quotes)}\n${seriesSignature(board?.series)}`);
+  if (!holdingsSame || Number(existing?.payload?.historyGeneratedAt) !== historyAt) {
+    repository.saveSnapshot(workspaceId, HOLDINGS_MARKET_SNAPSHOT_KEY, payload, at);
+  }
   return {
     generatedAt: at,
     quotes: quotes.length,
@@ -508,7 +542,11 @@ export async function captureFeedLists({
     try {
       const feed = await feedService.getExternalFeed(providerId, query, { workspaceId });
       generatedAt = now();
-      repository.saveSnapshot(workspaceId, key, { ok: true, feed }, generatedAt);
+      const nextPayload = { ok: true, feed };
+      const previous = repository.readSnapshot?.(workspaceId, key)?.payload;
+      if (!sameSnapshot(previous, nextPayload, feedItemSignature)) {
+        repository.saveSnapshot(workspaceId, key, nextPayload, generatedAt);
+      }
       pages += 1;
     } catch {
       /* 未启用的来源不写快照，请求仍走原来的读取。 */
@@ -518,7 +556,11 @@ export async function captureFeedLists({
   try {
     const items = feedService.listFlash?.(workspaceId, { limit: FEED_FLASH_LIMIT }) || [];
     generatedAt = now();
-    repository.saveSnapshot(workspaceId, FEED_FLASH_SNAPSHOT_KEY, { ok: true, items }, generatedAt);
+    const nextPayload = { ok: true, items };
+    const previous = repository.readSnapshot?.(workspaceId, FEED_FLASH_SNAPSHOT_KEY)?.payload;
+    if (!sameSnapshot(previous, nextPayload, feedItemSignature)) {
+      repository.saveSnapshot(workspaceId, FEED_FLASH_SNAPSHOT_KEY, nextPayload, generatedAt);
+    }
     pages += 1;
   } catch {
     /* 快讯名单未就绪时不写快照。 */
@@ -531,7 +573,11 @@ export async function captureFeedLists({
       refresh: false,
     }, { workspaceId });
     generatedAt = now();
-    repository.saveSnapshot(workspaceId, FEED_TRENDFORCE_SNAPSHOT_KEY, { ok: true, feed }, generatedAt);
+    const nextPayload = { ok: true, feed };
+    const previous = repository.readSnapshot?.(workspaceId, FEED_TRENDFORCE_SNAPSHOT_KEY)?.payload;
+    if (!sameSnapshot(previous, nextPayload, feedItemSignature)) {
+      repository.saveSnapshot(workspaceId, FEED_TRENDFORCE_SNAPSHOT_KEY, nextPayload, generatedAt);
+    }
     pages += 1;
   } catch {
     /* TrendForce 未启用时不写快照。 */
@@ -714,13 +760,13 @@ export function createWebSnapshotJobHandlers(options) {
   };
 }
 
-function upsertInterval(store, key, jobType, now) {
+function upsertInterval(store, key, jobType, now, intervalMinutes = INTERVAL_MINUTES) {
   return store.upsertJobSchedule({
     workspaceId: 'local',
     key,
     jobType,
     enabled: true,
-    schedule: { kind: 'interval', intervalMinutes: INTERVAL_MINUTES },
+    schedule: { kind: 'interval', intervalMinutes },
     input: {},
     priority: 0,
     maxAttempts: 2,
@@ -760,11 +806,11 @@ export function enqueueHardwarePriceSnapshotFromEvents(store, events, workspaceI
 }
 
 export function ensureStaticSignalBoardSchedule(store, now = Date.now()) {
-  return upsertInterval(store, STATIC_SIGNAL_BOARD_SCHEDULE_KEY, STATIC_SIGNAL_BOARD_JOB_TYPE, now);
+  return upsertInterval(store, STATIC_SIGNAL_BOARD_SCHEDULE_KEY, STATIC_SIGNAL_BOARD_JOB_TYPE, now, SLOW_SNAPSHOT_MINUTES);
 }
 
 export function ensureHoldingsMarketSchedule(store, now = Date.now()) {
-  return upsertInterval(store, HOLDINGS_MARKET_SCHEDULE_KEY, HOLDINGS_MARKET_JOB_TYPE, now);
+  return upsertInterval(store, HOLDINGS_MARKET_SCHEDULE_KEY, HOLDINGS_MARKET_JOB_TYPE, now, SLOW_SNAPSHOT_MINUTES);
 }
 
 export function ensureMarketBoardsSchedule(store, now = Date.now()) {
@@ -776,7 +822,7 @@ export function ensureMarketNativeBoardSchedule(store, now = Date.now()) {
 }
 
 export function ensureFeedListSchedule(store, now = Date.now()) {
-  return upsertInterval(store, FEED_LIST_SCHEDULE_KEY, FEED_LIST_JOB_TYPE, now);
+  return upsertInterval(store, FEED_LIST_SCHEDULE_KEY, FEED_LIST_JOB_TYPE, now, SLOW_SNAPSHOT_MINUTES);
 }
 
 export function ensureHardwarePriceSchedule(store, now = Date.now(), env = process.env) {

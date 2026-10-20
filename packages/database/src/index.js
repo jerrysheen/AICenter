@@ -640,14 +640,19 @@ export function createStore(databasePath) {
       const now = Date.now();
       let claimedId = null;
       const minPriority = Number.isFinite(Number(options?.minPriority)) ? Math.trunc(Number(options.minPriority)) : null;
+      const maxPriority = Number.isFinite(Number(options?.maxPriority)) ? Math.trunc(Number(options.maxPriority)) : null;
       database.exec('BEGIN IMMEDIATE');
       try {
         const typeFilter = acceptedTypes.length
           ? `AND type IN (${acceptedTypes.map(() => '?').join(', ')})`
           : '';
-        const priorityFilter = minPriority == null ? '' : 'AND priority >= ?';
+        const priorityFilter = [
+          minPriority == null ? '' : 'AND priority >= ?',
+          maxPriority == null ? '' : 'AND priority <= ?',
+        ].filter(Boolean).join(' ');
         const params = [now, ...acceptedTypes];
         if (minPriority != null) params.push(minPriority);
+        if (maxPriority != null) params.push(maxPriority);
         const nextQueued = database.prepare(`SELECT * FROM jobs
           WHERE status = 'queued' AND available_at <= ? ${typeFilter} ${priorityFilter}
           ORDER BY priority DESC, created_at ASC LIMIT 1`);

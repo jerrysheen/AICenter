@@ -526,6 +526,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
     ? Number(snapshot.fetchedAt)
     : Date.now();
   for (const [index, item] of snapshot.items.entries()) {
+    if (index > 0 && index % 8 === 0) await yieldEventLoop();
     if (!item.externalId || !item.sourceUrl) continue;
     let body = stripLeadingPreview(item.body || '');
     const originalText = stripLeadingPreview(item.originalText || body);
@@ -728,7 +729,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
     rememberFingerprint();
     added += 1;
   }
-  settleUnseenPending(feedRepository, workspaceId, providerId, source.id, snapshot);
+  await settleUnseenPending(feedRepository, workspaceId, providerId, source.id, snapshot);
   return { added, skipped, addedItemIds: flashSource ? [] : [...new Set(addedItemIds)], flash: flashSource };
 }
 
@@ -912,13 +913,14 @@ function rememberTruncatedAttempt(feedRepository, existing, item, { hash, origin
   return next.exhausted;
 }
 
-function settleUnseenPending(feedRepository, workspaceId, providerId, sourceAccountId, snapshot, now = Date.now()) {
+async function settleUnseenPending(feedRepository, workspaceId, providerId, sourceAccountId, snapshot, now = Date.now()) {
   if (!sourceAccountId || snapshot?.mode === 'error' || snapshot?.mode === 'unavailable' || snapshot?.mode === 'partial') return;
   if (!Array.isArray(snapshot?.items) || !snapshot.items.length) return;
   if (typeof feedRepository.listPendingBodyExternalIds !== 'function' || typeof feedRepository.getCapture !== 'function') return;
   const seen = new Set(snapshot.items.map((item) => String(item.externalId || '')).filter(Boolean));
   const pendingIds = feedRepository.listPendingBodyExternalIds(workspaceId, providerId) || [];
-  for (const externalId of pendingIds) {
+  for (const [index, externalId] of pendingIds.entries()) {
+    if (index > 0 && index % 8 === 0) await yieldEventLoop();
     if (seen.has(String(externalId))) continue;
     const existing = feedRepository.getCapture(workspaceId, providerId, externalId);
     if (!existing || existing.sourceAccountId !== sourceAccountId) continue;

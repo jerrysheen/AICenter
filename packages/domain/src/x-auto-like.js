@@ -1,3 +1,4 @@
+import { yieldEventLoop } from './event-loop.js';
 import {
   aggregateFocusPoints,
   autoLikeEnvEnabled,
@@ -234,7 +235,8 @@ export function createXFocusService({
         deadlineAt: at + config.scoreTimeoutMs + 15_000,
       });
       let rescored = 0;
-      for (const row of rows) {
+      for (const [index, row] of rows.entries()) {
+        if (index > 0 && index % 8 === 0) await yieldEventLoop();
         const focus = scored?.byId?.[row.externalId];
         if (!focus || focus.method !== 'model') continue;
         if (feedRepository?.patchCaptureXFocus?.(workspaceId, row.externalId, focus)) rescored += 1;

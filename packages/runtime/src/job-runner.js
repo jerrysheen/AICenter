@@ -12,6 +12,7 @@ import {
 export { WORK_PACKAGE_DISPATCH_JOB_TYPE };
 
 export const JOB_LOOP_LOG_MIN_MS = 200;
+const HOURLY_EXTRACT_JOB_TYPE = 'report.hourly.extract';
 
 export function shouldLogJobLoopDelay(maxMs) {
   return Number.isFinite(Number(maxMs)) && Number(maxMs) > JOB_LOOP_LOG_MIN_MS;
@@ -158,6 +159,14 @@ export function createJobRunner(options) {
     return count;
   }
 
+  function hourlyLaneRunning(backfill) {
+    let count = 0;
+    for (const item of inFlight.values()) {
+      if (item.type === HOURLY_EXTRACT_JOB_TYPE && Boolean(item.backfill) === backfill) count += 1;
+    }
+    return count;
+  }
+
   function claimableTypes() {
     return [...handlers.keys()].filter((type) => (
       runningCount(type) < resolveJobTypeConcurrency(type, concurrency)
@@ -246,7 +255,7 @@ export function createJobRunner(options) {
     const controller = new AbortController();
     const tracked = {
       type: job.type,
-      backfill: job.type === 'feed.translation.run' && Number(job.priority) < 0,
+      backfill: (job.type === 'feed.translation.run' || job.type === HOURLY_EXTRACT_JOB_TYPE) && Number(job.priority) < 0,
       startedAt: Date.now(),
       controller,
       promise: execute(job, executionSignal(controller), controller)
@@ -271,6 +280,25 @@ export function createJobRunner(options) {
       translationBackfillCap,
     );
     return minPriority == null ? {} : { minPriority };
+  }
+
+  async function claimNextWork() {
+    const hourlyReady = handlers.has(HOURLY_EXTRACT_JOB_TYPE)
+      && (!options.readyAt?.[HOURLY_EXTRACT_JOB_TYPE] || options.readyAt[HOURLY_EXTRACT_JOB_TYPE]() <= Date.now());
+    const hourlyLimit = resolveJobTypeConcurrency(HOURLY_EXTRACT_JOB_TYPE, concurrency);
+    if (hourlyReady && hourlyLaneRunning(false) < hourlyLimit) {
+      const latest = await store.claimNextJob(workerId, [HOURLY_EXTRACT_JOB_TYPE], { minPriority: 0 });
+      if (latest) return latest;
+    }
+    const types = claimableTypes().filter((type) => type !== HOURLY_EXTRACT_JOB_TYPE);
+    if (types.length) {
+      const job = await store.claimNextJob(workerId, types, claimOptions(types));
+      if (job) return job;
+    }
+    if (hourlyReady && hourlyLaneRunning(true) < 1) {
+      return store.claimNextJob(workerId, [HOURLY_EXTRACT_JOB_TYPE], { maxPriority: -1 });
+    }
+    return null;
   }
 
   async function runOnce() {
@@ -309,8 +337,7 @@ export function createJobRunner(options) {
         watchdogLogged = false;
         try {
           releaseSuperseded();
-          const types = claimableTypes();
-          const job = types.length ? await store.claimNextJob(workerId, types, claimOptions(types)) : null;
+          const job = await claimNextWork();
           if (job) {
             launch(job);
             continue;
@@ -355,6 +382,9 @@ export function createJobRunner(options) {
     concurrency,
     get running() { return running; },
     get inFlightCount() { return inFlight.size; },
+    runningTasks() {
+      return [...inFlight.entries()].map(([id, item]) => ({ id, type: item.type, startedAt: item.startedAt }));
+    },
     runOnce,
     start,
     stop,
