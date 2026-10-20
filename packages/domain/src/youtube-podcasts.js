@@ -1,8 +1,11 @@
 import { readFileSync } from 'node:fs';
-import { formatYmd, zonedParts } from './zoned-time.js';
+import { addCalendarDays, formatYmd, nextDailyInstant, zonedLocalToUtc, zonedParts } from './zoned-time.js';
 
 export const YOUTUBE_PODCAST_JOB_TYPE = 'youtube.podcasts.sync';
 export const YOUTUBE_PODCAST_SCHEDULE_KEY = 'youtube.podcasts.sync';
+export const YOUTUBE_ARTICLE_JOB_TYPE = 'youtube.podcasts.article';
+export const YOUTUBE_ARTICLE_SCHEDULE_KEY = 'youtube.podcasts.article';
+export const YOUTUBE_ARTICLE_CATCHUP_MINUTE = 10;
 export const YOUTUBE_MIN_DURATION_SEC = 20 * 60;
 export const YOUTUBE_LOOKBACK = 2;
 const DUB_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
@@ -56,7 +59,55 @@ export function youtubeArticleEngine(env = process.env) {
 }
 
 export function youtubeArticleDailyLimit(env = process.env) {
-  return boundedInt(env.AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_DAILY, 2, 1, 8);
+  return boundedInt(env.AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_DAILY, 4, 1, 8);
+}
+
+export function youtubeArticleEveryHours(env = process.env) {
+  return boundedInt(env.AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_EVERY_HOURS, 3, 2, 12);
+}
+
+export function isYoutubeTranslationId(id) {
+  return /^youtube:[A-Za-z0-9_-]{6,}$/i.test(String(id || '').trim());
+}
+
+export function isYoutubeTranslationItem(item, feed, workspaceId = 'local') {
+  const id = String(item?.id || '').trim();
+  if (!id) return false;
+  if (isYoutubeTranslationId(id) || /^youtube:/i.test(id)) return true;
+  return Boolean(feed?.isYoutubeTranslationTarget?.(workspaceId, id));
+}
+
+export function nextYoutubeArticleSlot(afterMs, options = {}) {
+  const timeZone = options.timeZone || 'Asia/Shanghai';
+  const everyHours = Math.min(12, Math.max(2, Number(options.everyHours) || 3));
+  const minute = Number.isInteger(options.minute) ? options.minute : YOUTUBE_ARTICLE_CATCHUP_MINUTE;
+  const parts = zonedParts(afterMs, timeZone);
+  for (let dayOffset = 0; dayOffset < 4; dayOffset += 1) {
+    const cursor = addCalendarDays(parts.year, parts.month, parts.day, dayOffset);
+    for (let hour = 0; hour < 24; hour += everyHours) {
+      const instant = zonedLocalToUtc(cursor.year, cursor.month, cursor.day, hour, minute, timeZone);
+      if (instant > afterMs) return instant;
+    }
+  }
+  throw new Error('无法计算下一次整理时刻');
+}
+
+export function nextZonedDayStart(atMs, timeZone = 'Asia/Shanghai') {
+  const parts = zonedParts(atMs, timeZone);
+  const next = addCalendarDays(parts.year, parts.month, parts.day, 1);
+  return zonedLocalToUtc(next.year, next.month, next.day, 0, 0, timeZone);
+}
+
+export function nextYoutubeArticleOpportunity(afterMs, env = process.env) {
+  if (!youtubeArticleEnabled(env)) return null;
+  const clock = youtubePodcastClock(env);
+  const times = [nextYoutubeArticleSlot(afterMs, {
+    timeZone: clock.timeZone,
+    everyHours: youtubeArticleEveryHours(env),
+    minute: YOUTUBE_ARTICLE_CATCHUP_MINUTE,
+  })];
+  if (youtubePodcastsEnabled(env)) times.push(nextDailyInstant(afterMs, clock));
+  return Math.min(...times);
 }
 
 export function youtubeTitleRepairLimit(env = process.env) {

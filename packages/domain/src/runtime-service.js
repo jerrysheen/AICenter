@@ -1,5 +1,6 @@
 import { open } from 'node:fs/promises';
 import { TRANSLATION_MAX_ATTEMPTS } from '../../database/src/translation-retry.js';
+import { isYoutubeTranslationItem } from './youtube-podcasts.js';
 import {
   ActiveAgentRunSchema,
   AgentRunStatusViewSchema,
@@ -119,7 +120,11 @@ export function createRuntimeService({ runtimeRepository, agentProgressPort, res
       return ids;
     },
     requestTranslation(input) {
-      const value = FeedTranslationJobInputSchema.parse(input);
+      const parsed = FeedTranslationJobInputSchema.parse(input);
+      const feed = runtimeRepository.repositories?.feed;
+      const allowed = parsed.items.filter((item) => !isYoutubeTranslationItem(item, feed, parsed.workspaceId));
+      if (!allowed.length) return { skipped: true, reason: 'youtube-article' };
+      const value = allowed.length === parsed.items.length ? parsed : { ...parsed, items: allowed };
       const openJobs = (runtimeRepository.listOpenJobs?.('feed.translation.run') || [])
         .filter((job) => (job.workspaceId || 'local') === value.workspaceId);
       const busy = new Set();

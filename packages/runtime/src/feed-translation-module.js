@@ -6,6 +6,7 @@ import { translationBodyBatchLimit, translationBodyCharBudget, translationTitleB
 import { gemmaTranslationPolicy, resolveGemmaTranslationSlots } from '../../connectors/src/translate/gemma.js';
 import { translationAttemptCallLimit, withTranslationCallBudget } from '../../connectors/src/translate/call-budget.js';
 import { localizationItemId, needsZhLocalization, translationLooksTruncated } from '../../domain/src/localize-texts.js';
+import { isYoutubeTranslationItem } from '../../domain/src/youtube-podcasts.js';
 
 function bodyHash(value) {
   return createHash('sha256').update(String(value)).digest('hex');
@@ -47,7 +48,62 @@ export function createFeedTranslationChunkStore(feed) {
     clear({ workspaceId, itemId, targetLang }) {
       feed?.deleteTranslationChunks?.(workspaceId, itemId, targetLang);
     },
+    failureCount(meta) {
+      return feed?.translationChunkFailureCount?.(meta) || 0;
+    },
+    noteFailure(meta) {
+      return feed?.noteTranslationChunkFailure?.(meta) || { failCount: 0, exhausted: false };
+    },
+    clearFailure(meta) {
+      feed?.clearTranslationChunkFailure?.(meta);
+    },
   };
+}
+
+export function retireYoutubeTranslationJobs(store, workspaceId = 'local') {
+  if (!store?.listOpenJobs || !store?.cancelJob) return { cancelled: 0, split: 0 };
+  const feed = store.repositories?.feed;
+  let cancelled = 0;
+  let split = 0;
+  for (const job of store.listOpenJobs('feed.translation.run') || []) {
+    if ((job.workspaceId || 'local') !== workspaceId) continue;
+    const items = Array.isArray(job.input?.items) ? job.input.items : [];
+    if (!items.length) continue;
+    const youtube = items.filter((item) => isYoutubeTranslationItem(item, feed, workspaceId));
+    if (!youtube.length) continue;
+    const rest = items.filter((item) => !youtube.some((row) => row.id === item.id));
+    const removed = store.cancelJob(job.id, { status: 'cancelled', reason: 'youtube-article' });
+    if (!removed) continue;
+    cancelled += 1;
+    feed?.noteTranslationFailure?.({
+      workspaceId,
+      items: youtube.map((item) => ({
+        id: item.id,
+        text: String(item.text || '').trim() || 'youtube-episode',
+      })),
+      targetLang: job.input?.targetLang || 'zh',
+      error: new Error('YouTube 正文改由整理任务处理'),
+      attemptCount: TRANSLATION_MAX_ATTEMPTS,
+      terminal: true,
+      nextRetryAt: null,
+    });
+    if (rest.length && store.createJob) {
+      const input = FeedTranslationJobInputSchema.parse({
+        ...(job.input || {}),
+        workspaceId,
+        items: rest,
+      });
+      store.createJob({
+        type: 'feed.translation.run',
+        workspaceId,
+        input,
+        priority: job.priority,
+        maxAttempts: job.maxAttempts || TRANSLATION_MAX_ATTEMPTS,
+      });
+      split += 1;
+    }
+  }
+  return { cancelled, split };
 }
 
 function emptyBackfillSummary(limit) {
@@ -98,10 +154,14 @@ function translationKeyCount(env = process.env) {
   }
 }
 
-export function createFeedTranslationJobHandlers({ feedService, env = process.env } = {}) {
+export function createFeedTranslationJobHandlers({ feedService, feed, env = process.env } = {}) {
   return {
     'feed.translation.run': async (input, context) => {
-      const value = FeedTranslationJobInputSchema.parse(input);
+      const parsed = FeedTranslationJobInputSchema.parse(input);
+      const catalog = feed || context?.store?.repositories?.feed;
+      const kept = parsed.items.filter((item) => !isYoutubeTranslationItem(item, catalog, parsed.workspaceId));
+      if (!kept.length) return { translations: [], skipped: 'youtube-article' };
+      const value = kept.length === parsed.items.length ? parsed : { ...parsed, items: kept };
       const policy = gemmaTranslationPolicy(env);
       const callLimit = translationAttemptCallLimit({
         itemCount: value.items.length,

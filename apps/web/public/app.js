@@ -48,7 +48,7 @@ import { commitReportHistory, reportViewOwnsScroll } from './report-history.js?v
 import { decodeHtmlEntities } from './html-text.js?v=dev';
 import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, prioritizeReadableFeedRows, renderNewsList, reportItemTime } from './news-list.js?v=dev';
 import { createAuthorView } from './author-view.js?v=dev';
-import { renderYoutubePodcasts } from './youtube-podcasts.js?v=dev';
+import { episodeArticleMessage, foldedOriginal, renderYoutubePodcasts } from './youtube-podcasts.js?v=dev';
 
 const requestLayer = createRequestLayer();
 const pageCache = createPageCache({
@@ -108,6 +108,8 @@ function renderViewState(root, { kind, title, message = '', action, onAction }) 
 
 const state = {
   session: null,
+  translationQueued: {},
+  youtubeEpisodes: {},
   loginAvailable: false,
   posts: [],
   pairing: null,
@@ -806,6 +808,8 @@ function chineseReaderText(value) {
 function shouldQueueTranslation(post) {
   const platform = post?.platform || post?.provider;
   if (!post || platform === 'media' || platform === 'youtube') return false;
+  if (/^youtube:/i.test(String(post.id || ''))) return false;
+  if (state.translationQueued?.[post.id]) return false;
   if (String(post.translation?.text || '').trim()) return false;
   if (translationFor(post)) return false;
   return postNeedsChineseTranslation(post);
@@ -3055,7 +3059,7 @@ function readerAuthorName(item, platform) {
 
 function contentItemAsPost(item) {
   const provider = String(item.provider || '');
-  const platform = provider === 'bilibili' || provider === 'x' || provider === 'trendforce' || provider === 'xueqiu' ? provider : 'manual';
+  const platform = provider === 'bilibili' || provider === 'x' || provider === 'trendforce' || provider === 'xueqiu' || provider === 'youtube' ? provider : 'manual';
   const clock = readerClock(item);
   return {
     id: item.externalId && platform !== 'manual' ? `${platform}:${item.externalId}` : item.id,
@@ -9618,6 +9622,92 @@ function articleReadPosition() {
   return articleReading;
 }
 
+function youtubeEpisodeId(post) {
+  const platform = post?.platform || post?.provider;
+  const match = String(post?.id || '').match(/^youtube:([A-Za-z0-9_-]{6,})$/i);
+  if (platform !== 'youtube' && !match) return '';
+  return youtubeVideoId(post?.sourceUrl) || (match ? match[1] : '');
+}
+
+function youtubeArticleReady(episode) {
+  return episode?.article?.status === 'ready' || episode?.articleStatus === 'ready';
+}
+
+const youtubeArticleWatch = new Map();
+const youtubeArticleInflight = new Set();
+
+function applyYoutubeReady(post, episode) {
+  if (!youtubeArticleReady(episode)) return post;
+  const body = String(episode.body || '').trim();
+  const title = String(episode.title || '').trim();
+  if (!body && !title) return post;
+  const next = { ...post };
+  if (body) next.body = body;
+  if (title) next.title = title;
+  const saved = state.restoredArticles[post.id];
+  if (saved) state.restoredArticles[post.id] = { ...saved, ...next, readerLoaded: true };
+  return next;
+}
+
+function renderYoutubeWaiting(post) {
+  const wrap = document.createElement('div');
+  wrap.className = 'reader-content detail-body';
+  const episode = state.youtubeEpisodes[youtubeEpisodeId(post)];
+  wrap.append(Object.assign(document.createElement('p'), {
+    className: 'podcast-pending',
+    textContent: episode ? (episodeArticleMessage(episode) || '中文整理排队中') : '正在查看整理进度',
+  }));
+  const original = state.originalBodies[post.resourceId || post.id] || post.body;
+  wrap.append(foldedOriginal(original));
+  return wrap;
+}
+
+async function refreshYoutubeArticle(post) {
+  const id = youtubeEpisodeId(post);
+  if (!id || youtubeArticleInflight.has(id)) return;
+  youtubeArticleInflight.add(id);
+  try {
+    const payload = await api(`/api/v1/youtube-podcasts/${encodeURIComponent(id)}`);
+    state.youtubeEpisodes[id] = payload.episode || {
+      articleStatus: 'pending',
+      article: { status: 'queued', message: '正在查看整理进度' },
+    };
+  } catch {
+    if (!state.youtubeEpisodes[id]) {
+      state.youtubeEpisodes[id] = {
+        articleStatus: 'pending',
+        article: { status: 'queued', message: '正在查看整理进度' },
+      };
+    }
+  } finally {
+    youtubeArticleInflight.delete(id);
+    if (document.body.dataset.view === 'page' && state.pageKind === 'article' && youtubeEpisodeId(state.dialogPost) === id) {
+      renderArticlePage();
+    }
+  }
+}
+
+function scheduleYoutubeArticleWatch(post) {
+  const id = youtubeEpisodeId(post);
+  if (!id) return;
+  const episode = state.youtubeEpisodes[id];
+  if (youtubeArticleReady(episode)) {
+    const timer = youtubeArticleWatch.get(id);
+    if (timer) clearTimeout(timer);
+    youtubeArticleWatch.delete(id);
+    return;
+  }
+  if (!episode && !youtubeArticleInflight.has(id)) refreshYoutubeArticle(post);
+  if (youtubeArticleWatch.has(id)) return;
+  const timer = setTimeout(() => {
+    youtubeArticleWatch.delete(id);
+    if (document.body.dataset.view !== 'page' || state.pageKind !== 'article') return;
+    if (youtubeEpisodeId(state.dialogPost) !== id) return;
+    refreshYoutubeArticle(state.dialogPost);
+  }, 20_000);
+  youtubeArticleWatch.set(id, timer);
+}
+
 function renderArticlePage() {
   articleReadPosition().capture();
   if (!mediaModules || !feedLikeReady) {
@@ -9668,6 +9758,9 @@ function renderArticlePage() {
     restoreSocialArticle(itemId, post);
     renderViewState(root, { kind: 'loading', title: '正在读取文章…', message: '正在加载正文。' });
     return;
+  }
+  if (post && youtubeArticleReady(state.youtubeEpisodes[youtubeEpisodeId(post)])) {
+    post = applyYoutubeReady(post, state.youtubeEpisodes[youtubeEpisodeId(post)]);
   }
   if (!post) {
     if(state.bootstrapped && !official) restoreSavedArticle(itemId);
@@ -9820,6 +9913,14 @@ function renderArticlePage() {
       stateBox.querySelector('button').addEventListener('click', () => fetchOfficialBody(post));
     }
     if (status !== 'ready') body.append(metaGrid, stateBox);
+  } else if (youtubeEpisodeId(post) && !youtubeArticleReady(state.youtubeEpisodes[youtubeEpisodeId(post)])) {
+    body.append(renderYoutubeWaiting(post));
+    const waitingTags = createTagRow(postTagNames(post));
+    if (waitingTags) {
+      waitingTags.classList.add('detail-tags');
+      body.append(waitingTags);
+    }
+    ensurePostTags(post);
   } else {
     if (hasTranslation) {
       const tabs = document.createElement('div');
@@ -9930,7 +10031,8 @@ function renderArticlePage() {
   root.replaceChildren(shell);
   articleReadPosition().mount({ articleId: articleReadKey(itemId), shell });
   if (menuFocus) [...elements['reader-menu'].querySelectorAll('button')].find(button => button.dataset.detailAction === menuFocus)?.focus();
-  if (shouldQueueTranslation(post)) {
+  if (youtubeEpisodeId(post)) scheduleYoutubeArticleWatch(post);
+  else if (shouldQueueTranslation(post)) {
     requestTranslate(post).catch((error) => showToast(error.message));
   }
 }
@@ -15138,6 +15240,7 @@ async function translatePost(post) {
     return;
   }
   if (!shouldQueueTranslation(post)) return;
+  state.translationQueued[post.id] = true;
   const payload = await requestTranslation('/api/v1/translate', {
     method: 'POST',
     body: JSON.stringify({ id: post.id, text: post.body, targetLang: 'zh' }),

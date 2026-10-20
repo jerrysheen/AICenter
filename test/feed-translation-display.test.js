@@ -263,6 +263,10 @@ test('reader prefers API translation text over cache and English normalized body
   assert.equal(context.shouldQueue({
     provider: 'youtube', body: 'This English transcript still needs a Chinese translation today.',
   }), false);
+  assert.equal(context.shouldQueue({
+    id: 'youtube:2Zj6uMv3kTA', platform: 'manual',
+    body: 'This English transcript still needs a Chinese translation today.',
+  }), false);
 });
 
 test('Chinese-source cards are not tagged untranslated, and the visible X list requests translation without a body', () => {

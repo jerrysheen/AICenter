@@ -61,7 +61,11 @@ function findAll(node, predicate, found = []) {
 test('ready article renders markdown and pending text is marked', async () => {
   const episodes = {
     readyvid0001: { body: '## 股权供给（00:00:03）\n\nBen Inker：市场会差 24%。', articleStatus: 'ready' },
-    pendvid00001: { body: '[00:00:03] In general, the market does about 4% worse per percent.', articleStatus: 'pending' },
+    pendvid00001: {
+      body: '[00:00:03] In general, the market does about 4% worse per percent.',
+      articleStatus: 'pending',
+      article: { status: 'queued', message: '中文整理排队中，预计 12:10 处理' },
+    },
   };
   const root = new El('div');
   renderYoutubePodcasts(root, {
@@ -76,7 +80,7 @@ test('ready article renders markdown and pending text is marked', async () => {
           focus: '金融',
           episodes: [
             { videoId: 'readyvid0001', title: '奇谈：唐·威尔逊', articleStatus: 'ready', summary: '中文摘要', sourceUrl: 'https://www.youtube.com/watch?v=readyvid0001', publishedAt: Date.parse('2026-10-18T00:00:00Z'), durationSec: 4200, transcriptSource: 'subtitle-auto' },
-            { videoId: 'pendvid00001', title: '待整理的一集', articleStatus: 'pending', summary: '中文摘要', sourceUrl: 'https://www.youtube.com/watch?v=pendvid00001', publishedAt: Date.parse('2026-10-17T00:00:00Z'), durationSec: 3600, transcriptSource: 'subtitle-auto' },
+            { videoId: 'pendvid00001', title: '待整理的一集', articleStatus: 'pending', article: { status: 'queued', message: '中文整理排队中，预计 12:10 处理' }, summary: '中文摘要', sourceUrl: 'https://www.youtube.com/watch?v=pendvid00001', publishedAt: Date.parse('2026-10-17T00:00:00Z'), durationSec: 3600, transcriptSource: 'subtitle-auto' },
           ],
         }],
       };
@@ -85,7 +89,9 @@ test('ready article renders markdown and pending text is marked', async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
   const titles = findAll(root, (node) => node.className === 'podcast-episode-title');
   assert.equal(titles.length, 2);
-  assert.match(titles[1].children.find((node) => node.tagName === 'small').textContent, /待整理/);
+  const pendingLabel = titles[1].children.find((node) => node.tagName === 'small').textContent;
+  assert.match(pendingLabel, /中文整理排队中，预计 12:10 处理/);
+  assert.equal(pendingLabel.includes('待整理'), false);
   for (const title of titles) await title.listeners.click();
   const buttons = findAll(root, (node) => node.textContent === '展开全文');
   assert.equal(buttons.length, 2);
@@ -95,7 +101,10 @@ test('ready article renders markdown and pending text is marked', async () => {
   assert.match(article.innerHTML, /股权供给/);
   assert.equal(article.textContent.includes('[00:00:03]'), false);
   const pending = findAll(root, (node) => node.className === 'podcast-pending')[0];
-  assert.equal(pending.textContent, '待整理');
-  const plain = findAll(root, (node) => node.className === 'podcast-transcript-text')[0];
+  assert.equal(pending.textContent, '中文整理排队中，预计 12:10 处理');
+  const folded = findAll(root, (node) => node.className === 'podcast-original')[0];
+  assert.equal(folded.open, false);
+  assert.equal(folded.children.find((node) => node.tagName === 'summary').textContent, '英文原文');
+  const plain = findAll(folded, (node) => node.className === 'podcast-transcript-text')[0];
   assert.match(plain.textContent, /worse per percent/);
 });

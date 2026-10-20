@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { TRANSLATION_MAX_ATTEMPTS, translationRetryDelayMs } from '../translation-retry.js';
+import { TRANSLATION_CHUNK_FAIL_LIMIT, TRANSLATION_MAX_ATTEMPTS, translationRetryDelayMs } from '../translation-retry.js';
 import { explainPrefixLookup, rowsByUrlPrefixes } from '../url-prefix-lookup.js';
 import {
   parseContract,
@@ -1916,6 +1916,66 @@ export function createFeedRepository(database, emitEvent) {
       const lang = targetLang === 'en' ? 'en' : 'zh';
       database.prepare(`DELETE FROM feed_translation_chunks
         WHERE workspace_id = ? AND item_id = ? AND target_lang = ?`).run(workspaceId, itemId, lang);
+    },
+
+    isYoutubeTranslationTarget(workspaceId, itemId) {
+      const id = String(itemId || '').trim();
+      if (!id) return false;
+      if (/^youtube:/i.test(id)) return true;
+      const row = database.prepare(`SELECT 1 AS hit FROM content_items ci
+        JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
+        WHERE ci.workspace_id = ? AND c.provider = 'youtube'
+          AND (ci.id = ? OR c.external_id = ? OR ('youtube:' || c.external_id) = ?)
+        LIMIT 1`).get(workspaceId, id, id.replace(/^youtube:/i, ''), id);
+      return Boolean(row);
+    },
+
+    translationChunkFailureCount({ workspaceId, itemId, targetLang = 'zh', sourceHash, chunkIndex, chunkHash } = {}) {
+      const id = String(itemId || '').trim();
+      const hash = String(sourceHash || '');
+      const chunk = String(chunkHash || '');
+      const index = Number(chunkIndex);
+      if (!id || !hash || !chunk || !Number.isInteger(index) || index < 0) return 0;
+      const lang = targetLang === 'en' ? 'en' : 'zh';
+      const row = database.prepare(`SELECT fail_count, chunk_hash FROM feed_translation_chunk_failures
+        WHERE workspace_id = ? AND item_id = ? AND target_lang = ? AND source_hash = ? AND chunk_index = ?`)
+        .get(workspaceId, id, lang, hash, index);
+      if (!row || row.chunk_hash !== chunk) return 0;
+      return Number(row.fail_count) || 0;
+    },
+
+    noteTranslationChunkFailure({ workspaceId, itemId, targetLang = 'zh', sourceHash, chunkIndex, chunkHash } = {}) {
+      const id = String(itemId || '').trim();
+      const hash = String(sourceHash || '');
+      const chunk = String(chunkHash || '');
+      const index = Number(chunkIndex);
+      if (!id || !hash || !chunk || !Number.isInteger(index) || index < 0) return { failCount: 0, exhausted: false };
+      const lang = targetLang === 'en' ? 'en' : 'zh';
+      const now = Date.now();
+      database.prepare(`INSERT INTO feed_translation_chunk_failures
+        (workspace_id, item_id, target_lang, source_hash, chunk_index, chunk_hash, fail_count, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+        ON CONFLICT(workspace_id, item_id, target_lang, source_hash, chunk_index) DO UPDATE SET
+          fail_count = CASE
+            WHEN feed_translation_chunk_failures.chunk_hash = excluded.chunk_hash
+            THEN feed_translation_chunk_failures.fail_count + 1
+            ELSE 1
+          END,
+          chunk_hash = excluded.chunk_hash,
+          updated_at = excluded.updated_at`).run(workspaceId, id, lang, hash, index, chunk, now);
+      const failCount = this.translationChunkFailureCount({ workspaceId, itemId: id, targetLang: lang, sourceHash: hash, chunkIndex: index, chunkHash: chunk });
+      return { failCount, exhausted: failCount >= TRANSLATION_CHUNK_FAIL_LIMIT };
+    },
+
+    clearTranslationChunkFailure({ workspaceId, itemId, targetLang = 'zh', sourceHash, chunkIndex } = {}) {
+      const id = String(itemId || '').trim();
+      const hash = String(sourceHash || '');
+      const index = Number(chunkIndex);
+      if (!id || !hash || !Number.isInteger(index) || index < 0) return;
+      const lang = targetLang === 'en' ? 'en' : 'zh';
+      database.prepare(`DELETE FROM feed_translation_chunk_failures
+        WHERE workspace_id = ? AND item_id = ? AND target_lang = ? AND source_hash = ? AND chunk_index = ?`)
+        .run(workspaceId, id, lang, hash, index);
     },
 
     listTranslationFailures(workspaceId, itemIds = [], targetLang = 'zh') {

@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-20 YouTube 播客新的一期可以只有中文标题，正文仍是英文。整理以前只在每天 07:00 收尾跑一次，默认每天 2 期，名额用完不留原因。文章页又把 YouTube 送进整篇翻译，去重字幕的译文被判过短，同一段一直重新排队。现在新入库 36 小时内的期次先整理，每天默认 4 期，仍可用 `AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_DAILY` 调整。07:00 之外按 `AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_EVERY_HOURS`（默认 3）在本地 :10 补跑，避开小时报的 :30。被名额挡住的期次写下 `holdReason=daily-limit`，并计入统计。YouTube 不再走 feed 整篇翻译。Worker 启动时取消残留的 YouTube 翻译任务，包括 `youtube:2Zj6uMv3kTA`、`youtube:2tAywoHiIpo`、`youtube:U3x7aZ11WT4`，不再重新排队。其它来源同一段连续失败 3 次写成失败。期次接口返回整理状态。中文版没好时，页面写明排队、整理进度或失败后的下一次时间，英文原文默认折叠。正文仍按时间顺序翻译，Gemma 26B 为主，Flash 只补缺段，标题仍在整理完成后由 Gemma 根据正文来写。migration 92 `feed_translation_chunk_failures` 只新增同段失败次数表。当前 schema 是 92。下一号是 93。空号仍是 63、79、80、82。不要重建数据库。需要同时重启 Web 和 Worker，浏览器再加载一次。见 `progress/2026-10-20-youtube-article-queue.md`。
+
 2026-10-20 小时报翻到没有已发布快照的小时时，`GET /api/v1/reports/reading-hour?scope=hour` 以前返回 404。页面把它抛成「请求失败 (404)」，请求层清理进行中的请求时又留下一条没人接住的同样报错。现在这个窗口返回 200，`empty: true`，`snapshot: null`，`message` 为「这一小时没有内容」。电脑端和手机端都显示原来的「这一小时没有条目」，不弹提示。有内容的小时、左右滑动和相邻小时预加载不变。按 id 读取未知快照、未知刊期仍是 404。不新增 migration。不要重建数据库。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。见 `progress/2026-10-20-hour-empty-state.md`。
 
 2026-10-20 电脑上强制刷新 `#quote/代码`，前大约 2 秒只有左侧栏，主栏是空的；手机上骨架已经出来。已记住登录时，就绪前的外壳被排成一整块，侧栏占满一屏，骨架在下面。现在宽屏仍是左右分栏，第一帧就能看到个股骨架。YouTube 文章 `#article/youtube:视频` 滚到后面，用浏览器后退或页内「返回」再打开，又从标题开始。路由 id 和保存用的 id 都是 `youtube:视频`。离开时浏览器先把滚动拉回去，把还没落盘的段落盖成页顶。现在阅读中的段落在离开时写入本地，这种拉回不覆盖。`setView` 锁滚动的标志放进 `try/finally`。不新增 migration。不要重建数据库。需要重启 Web，浏览器再加载一次。见 `progress/2026-10-20-quote-boot-desktop-article-resume.md`。

@@ -324,6 +324,10 @@ export function createFeedRoutes({ slots = createPreparedSlotStore(), offthread 
           const input = parseTranslateInput(await readJson(request, { maxBytes: TRANSLATE_REQUEST_MAX_BYTES }));
           const job = services.runtime.requestTranslation({ workspaceId: workspaceIdFrom(identity), targetLang: input.targetLang,
             items: [{ id: input.id || 'translation', text: input.text }] });
+          if (job?.skipped) {
+            json(response, 409, { ok: false, error: 'YouTube 正文由整理任务处理' });
+            return;
+          }
           events.flush();
           json(response, 202, { ok: true, jobId: job?.id || '' });
         } catch (error) {
@@ -343,6 +347,10 @@ export function createFeedRoutes({ slots = createPreparedSlotStore(), offthread 
             items: input.items,
             ...(input.outcomeGlossary ? { glossary: POLYMARKET_OUTCOME_GLOSSARY, model: POLYMARKET_OUTCOME_MODEL } : {}),
           });
+          if (job?.skipped) {
+            json(response, 409, { ok: false, error: 'YouTube 正文由整理任务处理' });
+            return;
+          }
           events.flush();
           json(response, 202, { ok: true, jobId: job?.id || '' });
         } catch (error) {

@@ -254,3 +254,85 @@ test('backfill records skip reasons and still queues a long post that only has a
     store.close();
   }
 });
+
+function memoryChunkFailures() {
+  const failures = new Map();
+  const keyOf = (meta) => `${meta.itemId}:${meta.chunkIndex}:${meta.chunkHash}`;
+  return {
+    failures,
+    failureCount(meta) { return failures.get(keyOf(meta)) || 0; },
+    noteFailure(meta) {
+      const key = keyOf(meta);
+      const failCount = (failures.get(key) || 0) + 1;
+      failures.set(key, failCount);
+      return { failCount, exhausted: failCount >= 3 };
+    },
+    clearFailure(meta) { failures.delete(keyOf(meta)); },
+  };
+}
+
+test('the same short chunk becomes terminal after three abandoned attempts', async () => {
+  const source = `${'Capacity plan remains uncertain. '.repeat(20)}`;
+  const chunkStore = memoryChunkFailures();
+  let calls = 0;
+  const service = createTranslateService({
+    chunkChars: 1500,
+    sleep: async () => {},
+    chunkStore,
+    router: {
+      batch: false,
+      generate: async () => {
+        calls += 1;
+        return { text: '短', engine: 'gemma' };
+      },
+    },
+  });
+  await assert.rejects(service.translate({ text: source, id: 'chunk-fail', workspaceId: 'local' }), /翻译未完整结束/);
+  await assert.rejects(service.translate({ text: source, id: 'chunk-fail', workspaceId: 'local' }), /翻译未完整结束/);
+  await assert.rejects(
+    service.translate({ text: source, id: 'chunk-fail', workspaceId: 'local' }),
+    (error) => error.code === 'translation-chunk-exhausted',
+  );
+  const before = calls;
+  await assert.rejects(
+    service.translate({ text: source, id: 'chunk-fail', workspaceId: 'local' }),
+    (error) => error.code === 'translation-chunk-exhausted',
+  );
+  assert.equal(calls, before);
+  chunkStore.clearFailure({ itemId: 'chunk-fail', chunkIndex: 0, chunkHash: 'reset' });
+});
+
+test('a successful chunk clears the failure count and a quota deferral does not count', async () => {
+  const source = `${'Capacity plan remains uncertain. '.repeat(20)}`;
+  const chunkStore = memoryChunkFailures();
+  let mode = 'short';
+  const full = '这是一段足够长的中文译文，用来说明原文并没有在第一句就停住，后面继续把产品、时间和后续安排说完。'.repeat(8);
+  const service = createTranslateService({
+    chunkChars: 1500,
+    sleep: async () => {},
+    chunkStore,
+    router: {
+      batch: false,
+      generate: async () => {
+        if (mode === 'quota') {
+          const error = new Error('等待配额窗口');
+          error.code = 'budget-deferred';
+          throw error;
+        }
+        return { text: mode === 'short' ? '短' : full, engine: 'gemma' };
+      },
+    },
+  });
+  await assert.rejects(
+    service.translate({ text: source, id: 'chunk-clear', workspaceId: 'local' }),
+    (error) => error.code === 'budget-deferred',
+  );
+  assert.equal(chunkStore.failures.size, 0);
+  mode = 'short';
+  await assert.rejects(service.translate({ text: source, id: 'chunk-clear', workspaceId: 'local' }), /翻译未完整结束/);
+  assert.equal([...chunkStore.failures.values()][0], 1);
+  mode = 'full';
+  const saved = await service.translate({ text: source, id: 'chunk-clear', workspaceId: 'local' });
+  assert.equal(saved.translatedText, full);
+  assert.equal(chunkStore.failures.size, 0);
+});

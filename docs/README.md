@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-20-youtube-article-queue.md`：YouTube 新入库的期次优先整理，每天默认 4 期，07:00 之外每 3 小时在 :10 补跑。名额挡下的期次记下 `daily-limit`。文章页只看整理状态，不再整篇翻译；同一段连续失败 3 次就停。migration 92。需要同时重启 Web 和 Worker，浏览器再加载一次。
+
 - `progress/2026-10-20-hour-empty-state.md`：小时报翻到没有快照的小时时，`reading-hour` 返回「这一小时没有内容」，页面显示原来的空态，控制台不再出现未处理的「请求失败 (404)」。不新增 migration。需要重启 Web，浏览器再加载一次。
 
 - `progress/2026-10-20-quote-boot-desktop-article-resume.md`：电脑端强制刷新个股时，第一帧就是侧栏旁边的个股骨架。YouTube 文章用浏览器后退或页内「返回」离开后再打开，回到离开时的段落。不新增 migration。需要重启 Web，浏览器再加载一次。
