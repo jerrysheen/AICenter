@@ -49,7 +49,13 @@ function copyModuleGraph(entry) {
 }
 
 copyModuleGraph('youtube-podcasts.js');
-const { renderYoutubePodcasts } = await import(pathToFileURL(path.join(pageDir, 'youtube-podcasts.js')).href);
+const {
+  renderYoutubePodcasts,
+  youtubeArticlePollDelay,
+  youtubeArticleRequestPath,
+  YOUTUBE_ARTICLE_POLL_NEAR_MS,
+  YOUTUBE_ARTICLE_POLL_SLOW_MS,
+} = await import(pathToFileURL(path.join(pageDir, 'youtube-podcasts.js')).href);
 process.on('exit', () => rmSync(pageDir, { recursive: true, force: true }));
 
 function findAll(node, predicate, found = []) {
@@ -107,4 +113,20 @@ test('ready article renders markdown and pending text is marked', async () => {
   assert.equal(folded.children.find((node) => node.tagName === 'summary').textContent, '英文原文');
   const plain = findAll(folded, (node) => node.className === 'podcast-transcript-text')[0];
   assert.match(plain.textContent, /worse per percent/);
+});
+
+test('queued article polls the status path slowly until the expected time is close', () => {
+  const now = Date.parse('2026-10-20T02:00:00Z');
+  const far = { articleStatus: 'pending', article: { status: 'queued', message: '中文整理排队中，预计 12:10 处理', nextAt: now + 3 * 60 * 60 * 1000 } };
+  const near = { articleStatus: 'pending', article: { status: 'queued', message: '预计时间已过，将于 12:10 重试', nextAt: now + 90_000 } };
+  const running = { articleStatus: 'pending', article: { status: 'running', message: '整理中 2/9 段', nextAt: now + 3 * 60 * 60 * 1000 } };
+  const failed = { articleStatus: 'pending', article: { status: 'failed', message: '整理失败：模型没有整理完这一段，将于 15:10 重试', nextAt: now + 3 * 60 * 60 * 1000 } };
+  assert.equal(youtubeArticleRequestPath('pendvid00001'), '/api/v1/youtube-podcasts/pendvid00001/article');
+  assert.equal(youtubeArticleRequestPath('pendvid00001', { ready: true }), '/api/v1/youtube-podcasts/pendvid00001');
+  assert.equal(youtubeArticlePollDelay(far, now), YOUTUBE_ARTICLE_POLL_SLOW_MS);
+  assert.equal(youtubeArticlePollDelay(failed, now), YOUTUBE_ARTICLE_POLL_SLOW_MS);
+  assert.equal(youtubeArticlePollDelay(near, now), YOUTUBE_ARTICLE_POLL_NEAR_MS);
+  assert.equal(youtubeArticlePollDelay(running, now), YOUTUBE_ARTICLE_POLL_NEAR_MS);
+  assert.equal(youtubeArticlePollDelay({ articleStatus: 'ready', article: { status: 'ready' } }, now), 0);
+  assert.equal(YOUTUBE_ARTICLE_POLL_SLOW_MS >= 3 * 60 * 1000, true);
 });

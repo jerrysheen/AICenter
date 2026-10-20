@@ -48,7 +48,7 @@ import { commitReportHistory, reportViewOwnsScroll } from './report-history.js?v
 import { decodeHtmlEntities } from './html-text.js?v=dev';
 import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, prioritizeReadableFeedRows, renderNewsList, reportItemTime } from './news-list.js?v=dev';
 import { createAuthorView } from './author-view.js?v=dev';
-import { episodeArticleMessage, foldedOriginal, renderYoutubePodcasts } from './youtube-podcasts.js?v=dev';
+import { episodeArticleMessage, foldedOriginal, renderYoutubePodcasts, YOUTUBE_ARTICLE_POLL_SLOW_MS, youtubeArticlePollDelay, youtubeArticleRequestPath } from './youtube-podcasts.js?v=dev';
 
 const requestLayer = createRequestLayer();
 const pageCache = createPageCache({
@@ -9724,15 +9724,37 @@ function renderYoutubeWaiting(post) {
   return wrap;
 }
 
+function clearYoutubeArticleWatch(id) {
+  const existing = youtubeArticleWatch.get(id);
+  if (!existing) return;
+  clearTimeout(existing.timer);
+  youtubeArticleWatch.delete(id);
+}
+
 async function refreshYoutubeArticle(post) {
   const id = youtubeEpisodeId(post);
   if (!id || youtubeArticleInflight.has(id)) return;
   youtubeArticleInflight.add(id);
   try {
-    const payload = await api(`/api/v1/youtube-podcasts/${encodeURIComponent(id)}`);
-    state.youtubeEpisodes[id] = payload.episode || {
-      articleStatus: 'pending',
-      article: { status: 'queued', message: '正在查看整理进度' },
+    const current = state.youtubeEpisodes[id];
+    if (youtubeArticleReady(current)) return;
+    const payload = await api(youtubeArticleRequestPath(id));
+    const article = payload.article || { status: 'queued', message: '正在查看整理进度' };
+    if (article.status === 'ready') {
+      const full = await api(youtubeArticleRequestPath(id, { ready: true }));
+      state.youtubeEpisodes[id] = full.episode || {
+        ...(current || {}),
+        videoId: id,
+        articleStatus: payload.articleStatus || 'ready',
+        article,
+      };
+      return;
+    }
+    state.youtubeEpisodes[id] = {
+      ...(current || {}),
+      videoId: payload.videoId || id,
+      articleStatus: payload.articleStatus || current?.articleStatus || '',
+      article,
     };
   } catch {
     if (!state.youtubeEpisodes[id]) {
@@ -9754,20 +9776,21 @@ function scheduleYoutubeArticleWatch(post) {
   if (!id) return;
   const episode = state.youtubeEpisodes[id];
   if (youtubeArticleReady(episode)) {
-    const timer = youtubeArticleWatch.get(id);
-    if (timer) clearTimeout(timer);
-    youtubeArticleWatch.delete(id);
+    clearYoutubeArticleWatch(id);
     return;
   }
   if (!episode && !youtubeArticleInflight.has(id)) refreshYoutubeArticle(post);
-  if (youtubeArticleWatch.has(id)) return;
+  const delay = episode ? youtubeArticlePollDelay(episode) : YOUTUBE_ARTICLE_POLL_SLOW_MS;
+  const existing = youtubeArticleWatch.get(id);
+  if (existing?.delay === delay) return;
+  if (existing) clearTimeout(existing.timer);
   const timer = setTimeout(() => {
     youtubeArticleWatch.delete(id);
     if (document.body.dataset.view !== 'page' || state.pageKind !== 'article') return;
     if (youtubeEpisodeId(state.dialogPost) !== id) return;
     refreshYoutubeArticle(state.dialogPost);
-  }, 20_000);
-  youtubeArticleWatch.set(id, timer);
+  }, delay);
+  youtubeArticleWatch.set(id, { timer, delay });
 }
 
 function renderArticlePage() {
