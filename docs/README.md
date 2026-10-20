@@ -25,6 +25,10 @@
 
 ## 当前
 
+- `progress/2026-10-20-article-partial-backfill.md`：补录一条还没进信息流的 X 帖时，帖子和作者一起写入，文章页能打开并显示排队状态。已经有整理记录时不再另建任务。YouTube 还没整理完时，按时间显示已整理或已译段落，标明未完整和剩余段数。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
+
+- `progress/2026-10-20-worker-startup-stall.md`：Worker 重启后先领任务，不再把历史翻译任务整表读出来。本机已退出进程留下的「运行中」任务立刻收回。清理改到后台分批。每一步启动打耗时。不新增 migration。需要重启 Worker。
+
 - `progress/2026-10-20-x-video-article.md`：信息流里超过门槛的 X 视频进入和 YouTube 共用的整理队列。先抽音频，用现有 Gemini 转写，再交给 Gemma。详情里读中文长文，并有「原帖」。migration 93。需要同时重启 Web 和 Worker，浏览器再加载一次。
 
 - `progress/2026-10-20-youtube-article-round-stop.md`：YouTube 一轮因配额、连续 5xx 或时间到停下后，不再一直显示「整理中」。页面写已译段数、原因和下一次时间，3 分钟查一次。只有还在续租约的任务才算正在整理。写导读和标题时显示「收尾中」。没正文的期次不再标「仅摘要」。5xx 记成 upstream。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。

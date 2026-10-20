@@ -653,20 +653,32 @@ export function createStore(databasePath) {
         const params = [now, ...acceptedTypes];
         if (minPriority != null) params.push(minPriority);
         if (maxPriority != null) params.push(maxPriority);
-        const nextQueued = database.prepare(`SELECT * FROM jobs
-          WHERE status = 'queued' AND available_at <= ? ${typeFilter} ${priorityFilter}
-          ORDER BY priority DESC, created_at ASC LIMIT 1`);
-        const maxAttemptFor = database.prepare('SELECT MAX(attempt_number) AS maxAttempt FROM job_attempts WHERE job_id = ?');
         const capError = JSON.stringify({ name: 'MaxAttemptsExceeded', message: '已达到尝试上限，不再领取' });
         const exhaust = database.prepare(`UPDATE jobs SET status = 'failed', error_json = ?, completed_at = ?,
           locked_by = NULL, locked_at = NULL, updated_at = ?
           WHERE id = ? AND status = 'queued'`);
+        const sweep = database.prepare(`SELECT id, workspace_id FROM jobs INDEXED BY idx_jobs_claim
+          WHERE status = 'queued' AND available_at <= ? AND attempt_count >= max_attempts ${typeFilter} ${priorityFilter}
+          LIMIT 40`);
+        for (const row of sweep.all(...params)) {
+          const capped = exhaust.run(capError, now, now, row.id);
+          if (!capped.changes) continue;
+          insertEvent('job.failed', 'job', row.id, {
+            jobId: row.id,
+            error: { name: 'MaxAttemptsExceeded', message: '已达到尝试上限，不再领取' },
+          }, row.workspace_id);
+        }
+        const nextQueued = database.prepare(`SELECT id, workspace_id, attempt_count, max_attempts FROM jobs INDEXED BY idx_jobs_claim
+          WHERE status = 'queued' AND available_at <= ? AND attempt_count < max_attempts ${typeFilter} ${priorityFilter}
+          ORDER BY priority DESC, created_at ASC LIMIT 1`);
+        const maxAttemptFor = database.prepare('SELECT MAX(attempt_number) AS maxAttempt FROM job_attempts WHERE job_id = ?');
         const claim = database.prepare(`UPDATE jobs SET status = 'running', locked_by = ?, locked_at = ?,
           started_at = COALESCE(started_at, ?), attempt_count = ?, updated_at = ?
           WHERE id = ? AND status = 'queued'`);
         const insertAttempt = database.prepare(`INSERT INTO job_attempts
           (id, job_id, attempt_number, worker_id, status, error_json, started_at, completed_at)
           VALUES (?, ?, ?, ?, 'running', NULL, ?, NULL)`);
+        let swept = 0;
         while (true) {
           const row = nextQueued.get(...params);
           if (!row) {
@@ -686,6 +698,11 @@ export function createStore(databasePath) {
               jobId: row.id,
               error: { name: 'MaxAttemptsExceeded', message: '已达到尝试上限，不再领取' },
             }, row.workspace_id);
+            swept += 1;
+            if (swept >= 40) {
+              database.exec('COMMIT');
+              return null;
+            }
             continue;
           }
           claimedId = row.id;
@@ -799,12 +816,17 @@ export function createStore(databasePath) {
       const byType = options.maxRunningMsByType && typeof options.maxRunningMsByType === 'object' ? options.maxRunningMsByType : {};
       const attemptStart = database.prepare(`SELECT started_at FROM job_attempts WHERE job_id = ? AND status = 'running' ORDER BY started_at ASC LIMIT 1`);
       const executing = new Set((Array.isArray(options.executingIds) ? options.executingIds : []).filter((id) => typeof id === 'string' && id));
-      const rows = database.prepare(`SELECT * FROM jobs WHERE status = 'running'`).all().flatMap((row) => {
-        const leaseStale = row.locked_at < cutoff;
+      const ownerStale = typeof options.ownerStale === 'function' ? options.ownerStale : null;
+      const rows = database.prepare(`SELECT * FROM jobs INDEXED BY idx_jobs_claim WHERE status = 'running'`).all().flatMap((row) => {
+        let deadOwner = false;
+        if (ownerStale) {
+          try { deadOwner = ownerStale(row.locked_by) === true; } catch { deadOwner = false; }
+        }
+        const leaseStale = row.locked_at < cutoff || deadOwner;
         const limit = Number(byType[row.type] ?? globalMax);
         const started = attemptStart.get(row.id)?.started_at || row.started_at || row.locked_at;
         const runtimeStale = Number.isFinite(limit) && limit > 0 && Number(started) < Number(now) - limit;
-        if (executing.has(row.id) && !runtimeStale) return [];
+        if (executing.has(row.id) && !runtimeStale && !deadOwner) return [];
         return leaseStale || runtimeStale ? [{ ...row, leaseStale, runtimeStale }] : [];
       });
       database.transaction(() => {
@@ -872,9 +894,12 @@ export function createStore(databasePath) {
     listOpenJobs(type) {
       const jobType = String(type || '').trim();
       if (!jobType) return [];
-      return database.prepare(`SELECT * FROM jobs
-        WHERE type = ? AND status IN ('queued', 'running')
-        ORDER BY created_at ASC`).all(jobType).map(mapJob);
+      const read = database.prepare(`SELECT * FROM jobs INDEXED BY idx_jobs_claim
+        WHERE status = ? AND type = ?
+        ORDER BY created_at ASC, id ASC`);
+      const rows = read.all('queued', jobType).concat(read.all('running', jobType));
+      rows.sort((left, right) => left.created_at - right.created_at || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+      return rows.map(mapJob);
     },
 
     cancelJob(id, output = {}, now = Date.now()) {
@@ -935,7 +960,8 @@ export function createStore(databasePath) {
     discardQueuedJobs(type, message, now = Date.now()) {
       const jobType = String(type || '').trim();
       if (!jobType) return 0;
-      const rows = database.prepare(`SELECT * FROM jobs WHERE type = ? AND status = 'queued'`).all(jobType);
+      const rows = database.prepare(`SELECT id, workspace_id FROM jobs INDEXED BY idx_jobs_claim
+        WHERE status = 'queued' AND type = ?`).all(jobType);
       const error = { name: 'FeedSyncCollapsed', message: String(message || '积压的订阅同步已合并为新的一轮') };
       database.transaction(() => {
         for (const row of rows) {
