@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-20-author-list-scroll.md`：作者列表在 X、雪球和 tagging 轮询返回后不再跳回顶部。数据没变不重绘；有变化按条目原地更新，并保住当前滚动位置。不新增 migration。需要重启 Web，浏览器再加载一次。
+
 - `progress/2026-10-20-hour-empty-state.md`：小时报翻到没有快照的小时时，`reading-hour` 返回「这一小时没有内容」，页面显示原来的空态，控制台不再出现未处理的「请求失败 (404)」。不新增 migration。需要重启 Web，浏览器再加载一次。
 
 - `progress/2026-10-20-quote-boot-desktop-article-resume.md`：电脑端强制刷新个股时，第一帧就是侧栏旁边的个股骨架。YouTube 文章用浏览器后退或页内「返回」离开后再打开，回到离开时的段落。不新增 migration。需要重启 Web，浏览器再加载一次。

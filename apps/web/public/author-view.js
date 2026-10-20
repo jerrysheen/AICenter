@@ -6,6 +6,7 @@ const PAGE_SIZE = 30;
 const pages = new Map();
 let listPlatform = 'all';
 let listCache = null;
+let listFetchToken = 0;
 
 function platformLabel(platform) {
   return PLATFORM_LABEL[platform] || platform || '';
@@ -36,6 +37,7 @@ function avatar(author) {
   if (author.avatarUrl) {
     node.alt = '';
     node.src = author.avatarUrl;
+    node.dataset.avatarUrl = author.avatarUrl;
     node.addEventListener('error', () => {
       const fallback = document.createElement('span');
       fallback.className = 'author-avatar';
@@ -55,46 +57,210 @@ function followButton(author, onToggle) {
   button.type = 'button';
   button.className = `author-follow${author.followed ? ' is-on' : ''}`;
   button.textContent = author.followed ? '已关注' : '关注';
+  button._author = author;
   button.addEventListener('click', (event) => {
     event.preventDefault();
     event.stopPropagation();
-    onToggle(author);
+    return onToggle(button._author || author);
   });
   return button;
 }
 
-function authorRow(author, { onOpen, onFollow }) {
-  const row = document.createElement('article');
+const AUTHOR_ANCHOR_LINE = 96;
+
+function authorListStamp(platform, payload) {
+  const counts = payload?.counts || {};
+  const countPart = PLATFORM_ORDER.map((id) => `${id}:${Number(counts[id]) || 0}`).join(',');
+  const rows = (list) => (Array.isArray(list) ? list : []).map((author) => [
+    author?.authorId || '',
+    author?.name || '',
+    author?.handle || '',
+    author?.platform || '',
+    author?.followed ? 1 : 0,
+    Number(author?.unreadCount) || 0,
+    Number(author?.latestUnreadAt || author?.latestItemAt) || 0,
+    author?.latestTitleZh || '',
+    author?.avatarUrl || '',
+  ].join('\u001f')).join('\u001e');
+  return [platform || 'all', countPart, payload?.nextCursor || '', rows(payload?.followed), rows(payload?.others)].join('\u001d');
+}
+
+function childByClass(parent, className) {
+  for (const node of parent?.children || []) {
+    if (node?.classList?.contains(className)) return node;
+  }
+  return null;
+}
+
+function authorListOnScreen() {
+  if (document.body?.dataset?.view !== 'feed') return false;
+  if (document.body?.classList?.contains('is-dialog-open')) return false;
+  return true;
+}
+
+function revealActiveChip(switcher) {
+  // 列表左右滑会和 iOS 边缘返回、Android 返回手势抢水平滑动，所以只让这一行标签自己横滑。
+  const active = switcher?.querySelector?.('.is-active');
+  if (!active) return;
+  const view = Number(switcher.clientWidth) || 0;
+  if (!view) return;
+  const left = Number(active.offsetLeft) || 0;
+  const width = Number(active.offsetWidth) || 0;
+  const start = Number(switcher.scrollLeft) || 0;
+  if (left < start) switcher.scrollLeft = left;
+  else if (left + width > start + view) switcher.scrollLeft = left + width - view;
+}
+
+function captureListAnchor(root) {
+  const scrollY = Number(window.scrollY) || 0;
+  const rows = root?.querySelectorAll?.('.author-row') || [];
+  for (const row of rows) {
+    const rect = row.getBoundingClientRect?.() || { top: 0, bottom: 0 };
+    if (rect.bottom > AUTHOR_ANCHOR_LINE) {
+      return { scrollY, authorId: row.dataset?.authorId || '', offset: rect.top };
+    }
+  }
+  return { scrollY, authorId: '', offset: 0 };
+}
+
+function restoreListAnchor(root, saved) {
+  if (!saved?.authorId || !authorListOnScreen()) return;
+  const apply = () => {
+    if (!authorListOnScreen()) return;
+    let row = null;
+    for (const item of root?.querySelectorAll?.('.author-row') || []) {
+      if (item.dataset?.authorId === saved.authorId) { row = item; break; }
+    }
+    if (!row?.getBoundingClientRect) return;
+    const delta = row.getBoundingClientRect().top - (Number(saved.offset) || 0);
+    if (Math.abs(delta) > 1) window.scrollTo(0, (Number(window.scrollY) || 0) + delta);
+  };
+  apply();
+  const frame = window.requestAnimationFrame?.bind(window);
+  if (typeof frame !== 'function') return;
+  frame(() => { apply(); frame(apply); });
+}
+
+function syncAvatar(row, author) {
+  const open = row.querySelector('.author-row-main');
+  if (!open) return;
+  const current = open.querySelector('.author-avatar');
+  const url = author.avatarUrl || '';
+  if (url && current?.dataset?.avatarUrl === url) return;
+  if (!url && current && !current.dataset?.avatarUrl && current.textContent === initial(author.name)) return;
+  const next = avatar(author);
+  if (current) current.replaceWith(next);
+  else open.prepend(next);
+}
+
+function applyAuthorRow(row, author) {
+  row._author = author;
+  row.dataset.authorId = author.authorId || '';
   row.className = `author-row${author.unreadCount ? '' : ' is-quiet'}`;
+  syncAvatar(row, author);
+  const name = row.querySelector('strong');
+  if (name) name.textContent = author.name || author.handle || '未命名作者';
+  const badge = row.querySelector('.author-platform');
+  if (badge) badge.textContent = platformLabel(author.platform);
+  const title = row.querySelector('.author-row-title');
+  let unread = title?.querySelector('.author-unread') || null;
+  if (author.unreadCount > 0) {
+    if (!unread && title) {
+      unread = document.createElement('span');
+      unread.className = 'author-unread';
+      title.append(unread);
+    }
+    if (unread) unread.textContent = String(author.unreadCount);
+  } else if (unread) unread.remove();
+  const preview = row.querySelector('.author-row-preview');
+  if (preview) {
+    const when = clock(author.latestUnreadAt || author.latestItemAt);
+    preview.textContent = [when, author.latestTitleZh].filter(Boolean).join('  ');
+  }
+  const follow = row.querySelector('.author-follow');
+  if (follow) {
+    follow._author = author;
+    follow.className = `author-follow${author.followed ? ' is-on' : ''}`;
+    follow.textContent = author.followed ? '已关注' : '关注';
+  }
+}
+
+function authorRow(author, handlers) {
+  const row = document.createElement('article');
   const open = document.createElement('button');
   open.type = 'button';
   open.className = 'author-row-main';
-  open.append(avatar(author));
   const copy = document.createElement('span');
   copy.className = 'author-row-copy';
   const title = document.createElement('span');
   title.className = 'author-row-title';
   const name = document.createElement('strong');
-  name.textContent = author.name || author.handle || '未命名作者';
   const badge = document.createElement('span');
   badge.className = 'author-platform';
-  badge.textContent = platformLabel(author.platform);
   title.append(name, badge);
-  if (author.unreadCount > 0) {
-    const unread = document.createElement('span');
-    unread.className = 'author-unread';
-    unread.textContent = String(author.unreadCount);
-    title.append(unread);
-  }
   const preview = document.createElement('span');
   preview.className = 'author-row-preview';
-  const when = clock(author.latestUnreadAt || author.latestItemAt);
-  preview.textContent = [when, author.latestTitleZh].filter(Boolean).join('  ');
   copy.append(title, preview);
   open.append(copy);
-  open.addEventListener('click', () => onOpen(author));
-  row.append(open, followButton(author, onFollow));
+  open.addEventListener('click', () => handlers.onOpen(row._author));
+  row.append(open, followButton(author, handlers.onFollow));
+  applyAuthorRow(row, author);
   return row;
+}
+
+function sameRowOrder(rowsHost, followed, others) {
+  const current = [...(rowsHost?.querySelectorAll?.('.author-row') || [])].map((row) => row.dataset?.authorId || '');
+  const next = [...followed, ...others].map((author) => author.authorId || '');
+  if (current.length !== next.length) return false;
+  for (let index = 0; index < current.length; index += 1) {
+    if (current[index] !== next[index]) return false;
+  }
+  const labels = [...(rowsHost?.querySelectorAll?.('.author-group') || [])].map((node) => node.textContent);
+  const wanted = [];
+  if (followed.length) wanted.push('已关注');
+  if (others.length) wanted.push(followed.length ? '其他' : '作者');
+  if (labels.length !== wanted.length) return false;
+  return labels.every((text, index) => text === wanted[index]);
+}
+
+function updateRowsInPlace(rowsHost, followed, others) {
+  const rows = [...rowsHost.querySelectorAll('.author-row')];
+  [...followed, ...others].forEach((author, index) => applyAuthorRow(rows[index], author));
+}
+
+function rebuildRows(rowsHost, followed, others, handlers) {
+  const existing = new Map();
+  for (const row of [...rowsHost.querySelectorAll('.author-row')]) {
+    const id = row.dataset?.authorId || '';
+    if (id && !existing.has(id)) existing.set(id, row);
+  }
+  const nodes = [];
+  const addGroup = (label, authors) => {
+    if (!authors.length) return;
+    const heading = document.createElement('h3');
+    heading.className = 'author-group';
+    heading.textContent = label;
+    nodes.push(heading);
+    for (const author of authors) {
+      const id = author.authorId || '';
+      let row = existing.get(id);
+      if (row) {
+        applyAuthorRow(row, author);
+        existing.delete(id);
+      } else row = authorRow(author, handlers);
+      nodes.push(row);
+    }
+  };
+  addGroup('已关注', followed);
+  addGroup(followed.length ? '其他' : '作者', others);
+  if (!nodes.length) {
+    const empty = document.createElement('p');
+    empty.className = 'feed-empty';
+    empty.textContent = '这里还没有符合条件的作者。';
+    nodes.push(empty);
+  }
+  for (const stale of existing.values()) stale.remove();
+  rowsHost.replaceChildren(...nodes);
 }
 
 export function createAuthorView({ api, openAuthor, openArticle }) {
@@ -104,100 +270,153 @@ export function createAuthorView({ api, openAuthor, openArticle }) {
     return api(`/api/v1/authors?${query}`, { fresh: true });
   }
 
-  async function renderList(root) {
-    root.replaceChildren();
-    const shell = document.createElement('div');
-    shell.className = 'author-screen';
+  function showLoading(shell) {
+    shell.replaceChildren();
     const loading = document.createElement('p');
     loading.className = 'feed-empty';
     loading.textContent = '正在读取作者…';
     shell.append(loading);
-    root.append(shell);
-    let payload = listCache && listCache.platform === listPlatform ? listCache.payload : null;
-    try {
-      if (!payload) {
-        payload = await loadList(listPlatform);
-        listCache = { platform: listPlatform, payload };
-      }
-    } catch (error) {
-      loading.textContent = error?.message || '作者列表读取失败';
-      return;
-    }
-    if (!root.isConnected) return;
-    paintList(shell, payload);
+    shell.dataset.listStamp = '';
+    shell.dataset.platform = '';
   }
 
-  function paintList(shell, payload) {
-    shell.replaceChildren();
-    const counts = payload.counts || {};
-    const switcher = document.createElement('div');
-    switcher.className = 'author-switch';
-    // 列表左右滑会和 iOS 边缘返回、Android 返回手势抢水平滑动，所以只让这一行标签自己横滑。
-    switcher.setAttribute('role', 'tablist');
-    switcher.setAttribute('aria-label', '作者平台');
-    for (const id of PLATFORM_ORDER) {
-      const button = document.createElement('button');
-      button.type = 'button';
+  async function renderList(root, options = {}) {
+    const preserveScroll = options.preserveScroll !== false;
+    const platform = listPlatform;
+    let shell = childByClass(root, 'author-screen');
+    const cached = listCache && listCache.platform === platform ? listCache.payload : null;
+    if (
+      cached
+      && shell
+      && shell.dataset.platform === platform
+      && shell.dataset.listStamp === authorListStamp(platform, cached)
+    ) return;
+    const anchor = preserveScroll && authorListOnScreen() && shell ? captureListAnchor(shell) : null;
+    if (!shell) {
+      root.replaceChildren();
+      shell = document.createElement('div');
+      shell.className = 'author-screen';
+      root.append(shell);
+    }
+    let payload = cached;
+    if (!payload) {
+      const token = ++listFetchToken;
+      const switching = shell.dataset.platform !== platform;
+      if (!preserveScroll || switching || !shell.dataset.listStamp) showLoading(shell);
+      try {
+        payload = await loadList(platform);
+        if (token !== listFetchToken || platform !== listPlatform) return;
+        listCache = { platform, payload };
+      } catch (error) {
+        if (token !== listFetchToken || platform !== listPlatform) return;
+        const loading = shell.querySelector?.('.feed-empty');
+        if (loading && !childByClass(shell, 'author-list-rows')) loading.textContent = error?.message || '作者列表读取失败';
+        return;
+      }
+    }
+    if (!root.isConnected || !shell.isConnected) return;
+    paintList(shell, payload, { preserveScroll, anchor });
+  }
+
+  function syncSwitcher(switcher, counts) {
+    let buttons = [...switcher.querySelectorAll('.author-switch-item')];
+    if (buttons.length !== PLATFORM_ORDER.length) {
+      switcher.replaceChildren();
+      switcher.setAttribute('role', 'tablist');
+      switcher.setAttribute('aria-label', '作者平台');
+      for (const id of PLATFORM_ORDER) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'author-switch-item';
+        button.dataset.platform = id;
+        button.addEventListener('click', () => {
+          if (id === listPlatform) return;
+          listPlatform = id;
+          listCache = null;
+          const host = switcher.parentElement?.parentElement;
+          if (host) return renderList(host, { preserveScroll: false });
+        });
+        switcher.append(button);
+      }
+      buttons = [...switcher.querySelectorAll('.author-switch-item')];
+    }
+    PLATFORM_ORDER.forEach((id, index) => {
+      const button = buttons[index];
       button.className = `author-switch-item${id === listPlatform ? ' is-active' : ''}`;
       button.textContent = `${platformLabel(id)} ${Number(counts[id]) || 0}`;
-      button.addEventListener('click', () => {
-        if (id === listPlatform) return;
-        listPlatform = id;
-        listCache = null;
-        const host = shell.parentElement;
-        if (host) renderList(host);
-      });
-      switcher.append(button);
+    });
+  }
+
+  function syncMore(shell, payload) {
+    let more = childByClass(shell, 'author-more');
+    if (!payload.nextCursor) {
+      more?.remove();
+      return;
     }
-    shell.append(switcher);
-    const active = switcher.querySelector('.is-active');
-    if (active) active.scrollIntoView({ inline: 'nearest', block: 'nearest' });
-    const rows = document.createElement('div');
-    rows.className = 'author-list-rows';
-    const followed = Array.isArray(payload.followed) ? payload.followed : [];
-    const others = Array.isArray(payload.others) ? payload.others : [];
-    if (followed.length) {
-      const label = document.createElement('h3');
-      label.className = 'author-group';
-      label.textContent = '已关注';
-      rows.append(label);
-      for (const author of followed) rows.append(authorRow(author, { onOpen: openRow, onFollow: toggleFollow }));
-    }
-    if (others.length) {
-      const label = document.createElement('h3');
-      label.className = 'author-group';
-      label.textContent = followed.length ? '其他' : '作者';
-      rows.append(label);
-      for (const author of others) rows.append(authorRow(author, { onOpen: openRow, onFollow: toggleFollow }));
-    }
-    if (!followed.length && !others.length) {
-      const empty = document.createElement('p');
-      empty.className = 'feed-empty';
-      empty.textContent = '这里还没有符合条件的作者。';
-      rows.append(empty);
-    }
-    shell.append(rows);
-    if (payload.nextCursor) {
-      const more = document.createElement('button');
+    if (!more) {
+      more = document.createElement('button');
       more.type = 'button';
       more.className = 'author-more';
-      more.textContent = '继续加载';
-      more.addEventListener('click', async () => {
-        more.disabled = true;
-        more.textContent = '正在读取…';
-        try {
-          const next = await loadList(listPlatform, payload.nextCursor);
-          payload.others = others.concat(next.others || []);
-          payload.nextCursor = next.nextCursor || '';
-          listCache = { platform: listPlatform, payload };
-          paintList(shell, payload);
-        } catch (error) {
-          more.disabled = false;
-          more.textContent = error?.message || '继续加载失败';
-        }
-      });
       shell.append(more);
     }
+    more.disabled = false;
+    more.textContent = '继续加载';
+    more.onclick = async () => {
+      const cursor = payload.nextCursor;
+      if (!cursor) return;
+      more.disabled = true;
+      more.textContent = '正在读取…';
+      try {
+        const next = await loadList(listPlatform, cursor);
+        const followed = Array.isArray(payload.followed) ? payload.followed : [];
+        const others = Array.isArray(payload.others) ? payload.others : [];
+        payload.others = others.concat(next.others || []);
+        payload.followed = followed;
+        payload.nextCursor = next.nextCursor || '';
+        listCache = { platform: listPlatform, payload };
+        paintList(shell, payload);
+      } catch (error) {
+        more.disabled = false;
+        more.textContent = error?.message || '继续加载失败';
+      }
+    };
+  }
+
+  function paintList(shell, payload, options = {}) {
+    const platform = listPlatform;
+    const stamp = authorListStamp(platform, payload);
+    if (shell.dataset.platform === platform && shell.dataset.listStamp === stamp) return;
+    const preserveScroll = options.preserveScroll !== false;
+    const anchor = !preserveScroll ? null : (options.anchor || (authorListOnScreen() ? captureListAnchor(shell) : null));
+    let switcher = childByClass(shell, 'author-switch');
+    if (!switcher) {
+      switcher = document.createElement('div');
+      switcher.className = 'author-switch';
+      shell.prepend(switcher);
+    }
+    syncSwitcher(switcher, payload.counts || {});
+    revealActiveChip(switcher);
+    let rows = childByClass(shell, 'author-list-rows');
+    if (!rows) {
+      rows = document.createElement('div');
+      rows.className = 'author-list-rows';
+      shell.append(rows);
+    }
+    const followed = Array.isArray(payload.followed) ? payload.followed : [];
+    const others = Array.isArray(payload.others) ? payload.others : [];
+    const same = sameRowOrder(rows, followed, others);
+    if (same) updateRowsInPlace(rows, followed, others);
+    else rebuildRows(rows, followed, others, { onOpen: openRow, onFollow: toggleFollow });
+    syncMore(shell, payload);
+    childByClass(shell, 'feed-empty')?.remove();
+    shell.dataset.platform = platform;
+    shell.dataset.listStamp = stamp;
+    if (!authorListOnScreen()) return;
+    if (!preserveScroll) {
+      window.scrollTo(0, 0);
+      return;
+    }
+    if (anchor?.authorId) restoreListAnchor(shell, anchor);
   }
 
   function openRow(author) {
@@ -211,7 +430,7 @@ export function createAuthorView({ api, openAuthor, openArticle }) {
       listCache = null;
       pages.delete(author.authorId);
       const root = document.querySelector('#feed');
-      if (root && document.body.dataset.view === 'feed') renderList(root);
+      if (root && document.body.dataset.view === 'feed') return renderList(root);
     } catch {
       listCache = null;
     }
