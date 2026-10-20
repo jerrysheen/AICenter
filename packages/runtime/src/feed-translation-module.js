@@ -60,12 +60,13 @@ export function createFeedTranslationChunkStore(feed) {
   };
 }
 
-export function retireYoutubeTranslationJobs(store, workspaceId = 'local') {
-  if (!store?.listOpenJobs || !store?.cancelJob) return { cancelled: 0, split: 0 };
+export function retireYoutubeTranslationJobs(store, workspaceId = 'local', options = {}) {
+  if (!store?.cancelJob) return { cancelled: 0, split: 0 };
+  const jobs = Array.isArray(options.jobs) ? options.jobs : (store.listOpenJobs?.('feed.translation.run') || []);
   const feed = store.repositories?.feed;
   let cancelled = 0;
   let split = 0;
-  for (const job of store.listOpenJobs('feed.translation.run') || []) {
+  for (const job of jobs) {
     if ((job.workspaceId || 'local') !== workspaceId) continue;
     const items = Array.isArray(job.input?.items) ? job.input.items : [];
     if (!items.length) continue;
@@ -102,6 +103,26 @@ export function retireYoutubeTranslationJobs(store, workspaceId = 'local') {
       });
       split += 1;
     }
+  }
+  return { cancelled, split };
+}
+
+function yieldToEventLoop() {
+  return new Promise((resolve) => { setImmediate(resolve); });
+}
+
+export async function retireYoutubeTranslationJobsBatched(store, workspaceId = 'local', options = {}) {
+  const jobs = store?.listOpenJobs?.('feed.translation.run') || [];
+  const batchSize = Math.max(1, Number(options.batchSize) || 25);
+  const yieldTurn = options.yieldTurn || yieldToEventLoop;
+  let cancelled = 0;
+  let split = 0;
+  if (!jobs.length) return { cancelled, split };
+  for (let offset = 0; offset < jobs.length; offset += batchSize) {
+    const part = retireYoutubeTranslationJobs(store, workspaceId, { jobs: jobs.slice(offset, offset + batchSize) });
+    cancelled += part.cancelled;
+    split += part.split;
+    if (offset + batchSize < jobs.length) await yieldTurn();
   }
   return { cancelled, split };
 }
@@ -223,10 +244,11 @@ function translationItemId(unit) {
   return unit.localizationId || unit.id;
 }
 
-export function demoteQueuedHashTranslationJobs(store, workspaceId = 'local') {
-  if (!store?.listOpenJobs || !store?.reprioritizeQueuedJobs) return 0;
+export function demoteQueuedHashTranslationJobs(store, workspaceId = 'local', options = {}) {
+  if (!store?.reprioritizeQueuedJobs) return 0;
+  const jobs = Array.isArray(options.jobs) ? options.jobs : (store.listOpenJobs?.('feed.translation.run') || []);
   const changes = [];
-  for (const job of store.listOpenJobs('feed.translation.run') || []) {
+  for (const job of jobs) {
     if (job.workspaceId !== workspaceId || job.status !== 'queued') continue;
     const priority = Number(job.priority) || 0;
     if (priority < 0) continue;
@@ -237,6 +259,19 @@ export function demoteQueuedHashTranslationJobs(store, workspaceId = 'local') {
   if (!changes.length) return 0;
   const changed = store.reprioritizeQueuedJobs(workspaceId, changes);
   return Array.isArray(changed) ? changed.length : changes.length;
+}
+
+export async function demoteQueuedHashTranslationJobsBatched(store, workspaceId = 'local', options = {}) {
+  const jobs = store?.listOpenJobs?.('feed.translation.run') || [];
+  const batchSize = Math.max(1, Number(options.batchSize) || 50);
+  const yieldTurn = options.yieldTurn || yieldToEventLoop;
+  let demoted = 0;
+  if (!jobs.length) return demoted;
+  for (let offset = 0; offset < jobs.length; offset += batchSize) {
+    demoted += demoteQueuedHashTranslationJobs(store, workspaceId, { jobs: jobs.slice(offset, offset + batchSize) }) || 0;
+    if (offset + batchSize < jobs.length) await yieldTurn();
+  }
+  return demoted;
 }
 
 export async function enqueueOriginalTranslations({
