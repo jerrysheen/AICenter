@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-20-worker-startup-test-cleanup.md`：启动测试收尾先停 Worker、清掉定时器、关掉数据库，再删临时目录。Windows 上删除带重试。断言失败不会被 EBUSY 盖住。这个测试有超时。不新增 migration。需要重启 Worker。
+
 - `progress/2026-10-20-worker-startup-stall.md`：Worker 重启后先领任务，不再把历史翻译任务整表读出来。本机已退出进程留下的「运行中」任务立刻收回。清理改到后台分批。每一步启动打耗时。不新增 migration。需要重启 Worker。
 
 - `progress/2026-10-20-x-video-article.md`：信息流里超过门槛的 X 视频进入和 YouTube 共用的整理队列。先抽音频，用现有 Gemini 转写，再交给 Gemma。详情里读中文长文，并有「原帖」。migration 93。需要同时重启 Web 和 Worker，浏览器再加载一次。
