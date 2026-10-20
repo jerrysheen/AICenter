@@ -6,6 +6,7 @@ test('original and expand controls map to behavior events', () => {
   assert.equal(behaviorClickName('原文'), 'source.original');
   assert.equal(behaviorClickName('打开原文'), 'source.original');
   assert.equal(behaviorClickName('打开原站'), 'source.original');
+  assert.equal(behaviorClickName('原帖'), 'source.original');
   assert.equal(behaviorClickName('前往原站 ↗'), 'source.original');
   assert.equal(behaviorClickName('阅读站内原文'), 'source.original');
   assert.equal(behaviorClickName('展开'), 'item.expand');

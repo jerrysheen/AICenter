@@ -214,6 +214,39 @@ export const GEMMA_SECTION_SYSTEM = '把下面这段播客译文排成一个 Mar
 
 export const GEMMA_SUMMARY_SYSTEM = '根据下面的小节，写这一集开头的要点摘要。用 Markdown，第一行是 ## 要点，下面 5 到 8 条列表。保留人名和关键数字。不要重写全文，不要加评论。';
 
+export const GEMMA_ARTICLE_TITLE_SYSTEM = '根据下面这篇已经整理好的简体中文播客文章，写一个准确的中文标题。标题要具体点出这一集的话题和核心信息，不要标题党，不要用疑问句吊胃口，不要加引号、书名号或句号。建议 15 到 30 个字。只输出标题本身。';
+
+export function articleTitleSource(body, maxChars = 6000) {
+  const text = String(body || '').replace(/\r\n/g, '\n').trim();
+  if (!text) return '';
+  const chars = [...text];
+  const limit = Math.max(400, Number(maxChars) || 6000);
+  if (chars.length <= limit) return text;
+  const headings = text.split('\n').map((line) => line.trim()).filter((line) => /^##\s+\S/.test(line));
+  const headingBlock = headings.join('\n');
+  const reserve = Math.min(1200, [...headingBlock].length);
+  const head = chars.slice(0, Math.max(400, limit - reserve)).join('');
+  if (!headingBlock) return head;
+  return `${head}\n\n小节标题：\n${headingBlock}`;
+}
+
+export function normalizeArticleTitle(raw) {
+  let text = String(raw || '').replace(/\r/g, '').trim();
+  if (!text) return '';
+  text = text.split('\n').map((line) => line.trim()).find(Boolean) || '';
+  text = text.replace(/^标题\s*[:：]\s*/, '');
+  text = text.replace(/^#{1,6}\s*/, '');
+  text = text.replace(/^["“「『《]+/, '').replace(/["”」』》]+$/u, '');
+  text = text.replace(/[。！？!?…]+$/u, '').trim();
+  text = text.replace(/\s+/g, ' ').trim();
+  if (!text || text === '要点' || text === '本节') return '';
+  if (needsChineseTitle(text)) return '';
+  const han = (text.match(/\p{Script=Han}/gu) || []).length;
+  if (han < 8 || han > 40) return '';
+  if ([...text].length > 48) return '';
+  return text;
+}
+
 export function gemmaSummarySource(sections) {
   return (Array.isArray(sections) ? sections : []).map((section, index) => {
     const lines = String(section || '').trim().split('\n');
