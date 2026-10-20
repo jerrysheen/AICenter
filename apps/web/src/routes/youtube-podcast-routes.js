@@ -26,6 +26,18 @@ export function createYoutubePodcastRoutes() {
     },
     {
       method: 'GET',
+      path: /^\/api\/v1\/youtube-podcasts\/([A-Za-z0-9_-]{6,})\/article$/,
+      handler({ response, services, identity, params }) {
+        const article = services.youtubePodcasts.status(workspaceIdFrom(identity), params.values[0]);
+        if (!article) {
+          json(response, 404, { ok: false, error: '没有这一集' });
+          return;
+        }
+        json(response, 200, { ok: true, ...article });
+      },
+    },
+    {
+      method: 'GET',
       path: /^\/api\/v1\/youtube-podcasts\/([A-Za-z0-9_-]{6,})$/,
       handler({ response, services, identity, params }) {
         const episode = services.youtubePodcasts.get(workspaceIdFrom(identity), params.values[0]);

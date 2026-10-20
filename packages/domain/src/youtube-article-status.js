@@ -56,6 +56,7 @@ export function describeYoutubeArticle({
   done = 0,
   total = 0,
   nextAt = null,
+  overdue = false,
   now = Date.now(),
   timeZone = 'Asia/Shanghai',
 } = {}) {
@@ -89,8 +90,32 @@ export function describeYoutubeArticle({
       nextAt: nextAt || null,
     };
   }
+  if (hold === 'daily-limit') {
+    const retry = when ? `${schedulePhrase(when, '将于')} 处理` : '';
+    return {
+      status: 'queued',
+      message: `今天的整理名额已用完${retry}`,
+      done: finished,
+      total: count,
+      holdReason: hold,
+      nextAt: nextAt || null,
+    };
+  }
   if (status !== 'pending' && !hold) {
     return { status: '', message: '', done: finished, total: count, holdReason: '', nextAt: null };
+  }
+  const dueAt = Number(nextAt);
+  const missed = overdue === true || (Number.isFinite(dueAt) && dueAt > 0 && dueAt <= Number(now));
+  if (missed) {
+    const retry = when ? `${schedulePhrase(when, '将于')} 重试` : '';
+    return {
+      status: 'queued',
+      message: `预计时间已过${retry}`,
+      done: finished,
+      total: count,
+      holdReason: hold,
+      nextAt: nextAt || null,
+    };
   }
   return {
     status: 'queued',

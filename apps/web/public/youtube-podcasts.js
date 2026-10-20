@@ -24,6 +24,26 @@ function minutes(durationSec) {
   return `${Math.round(value / 60)} 分钟`;
 }
 
+export const YOUTUBE_ARTICLE_POLL_SLOW_MS = 3 * 60 * 1000;
+export const YOUTUBE_ARTICLE_POLL_NEAR_MS = 20_000;
+const YOUTUBE_ARTICLE_POLL_NEAR_WINDOW_MS = 2 * 60 * 1000;
+
+export function youtubeArticleRequestPath(videoId, { ready = false } = {}) {
+  const id = encodeURIComponent(String(videoId || ''));
+  return ready ? `/api/v1/youtube-podcasts/${id}` : `/api/v1/youtube-podcasts/${id}/article`;
+}
+
+export function youtubeArticlePollDelay(episode, now = Date.now()) {
+  const article = episode?.article;
+  if (!episode || article?.status === 'ready' || episode.articleStatus === 'ready') return 0;
+  if (article?.status === 'running') return YOUTUBE_ARTICLE_POLL_NEAR_MS;
+  const nextAt = Number(article?.nextAt);
+  if (Number.isFinite(nextAt) && nextAt > now && nextAt - now <= YOUTUBE_ARTICLE_POLL_NEAR_WINDOW_MS) {
+    return YOUTUBE_ARTICLE_POLL_NEAR_MS;
+  }
+  return YOUTUBE_ARTICLE_POLL_SLOW_MS;
+}
+
 export function episodeArticleMessage(episode) {
   const message = String(episode?.article?.message || '').trim();
   if (message) return message;

@@ -255,6 +255,43 @@ export function createYoutubePodcastRepository(database) {
       }));
     },
 
+    getStatus(workspaceId, videoId) {
+      const row = database.prepare(`SELECT e.video_id, e.creator_id, e.channel_key, e.title,
+          e.duration_sec, e.published_at, e.status, e.reason, e.transcript_source, e.content_item_id,
+          e.attempts, e.article_status, e.article_day, e.created_at, '' AS body,
+          '' AS summary, '' AS display_title, '' AS source_url, '' AS author_name,
+          CASE WHEN json_valid(e.article_state) THEN json_extract(e.article_state, '$.holdReason') ELSE '' END AS hold_reason,
+          CASE WHEN json_valid(e.article_state) THEN json_extract(e.article_state, '$.holdDay') ELSE '' END AS hold_day,
+          CASE
+            WHEN json_valid(e.article_state) AND json_type(json_extract(e.article_state, '$.parts')) = 'array'
+            THEN json_array_length(e.article_state, '$.parts')
+            ELSE 0
+          END AS parts_total,
+          (
+            SELECT COUNT(*) FROM json_each(
+              CASE
+                WHEN json_valid(e.article_state) AND json_type(json_extract(e.article_state, '$.parts')) = 'array'
+                THEN json_extract(e.article_state, '$.parts')
+                ELSE '[]'
+              END
+            ) AS part
+            WHERE TRIM(COALESCE(json_extract(part.value, '$.translation'), '')) != ''
+               OR TRIM(COALESCE(json_extract(part.value, '$.reply'), '')) != ''
+          ) AS parts_done
+        FROM youtube_podcast_episodes e
+        WHERE e.workspace_id = ? AND e.video_id = ? AND e.status = 'ready'`).get(workspaceId, videoId);
+      if (!row) return null;
+      const episode = mapEpisode(row, {
+        holdReason: row.hold_reason || '',
+        holdDay: row.hold_day || '',
+        partsDone: Number(row.parts_done) || 0,
+        partsTotal: Number(row.parts_total) || 0,
+      });
+      delete episode.sourceTranscript;
+      delete episode.articleState;
+      return episode;
+    },
+
     getReady(workspaceId, videoId) {
       const row = database.prepare(`SELECT e.*, ci.summary AS summary, ci.body AS body,
           ci.title AS display_title, ci.source_url AS source_url, ci.author_name AS author_name
