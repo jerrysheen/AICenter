@@ -1,4 +1,5 @@
 import { FeedCaptureContextSchema } from '../../../contracts/src/feed-value.js';
+import { xVideoFromExtract } from './video-media.js';
 
 export function buildXCaptureContext(tweet) {
   const rootId=String(tweet.tweet_id || tweet.tweetId || '');
@@ -292,6 +293,19 @@ export function buildTweetExtractExpression() {
         }
         const articleCover = Boolean(article.querySelector('[data-testid="article-cover-image"]'));
         const hasVideo = Boolean(article.querySelector('video, [data-testid="videoPlayer"], [data-testid="videoComponent"]'));
+        const quoteEl = article.querySelector('[data-testid="quoteTweet"]');
+        const videoNodes = [...article.querySelectorAll('video, [data-testid="videoPlayer"], [data-testid="videoComponent"]')];
+        const ownHasVideo = videoNodes.some((node) => !quoteEl || !quoteEl.contains(node));
+        const quoteHasVideo = Boolean(quoteEl && videoNodes.some((node) => quoteEl.contains(node)));
+        let quoteTweetId = null;
+        if (quoteEl) {
+          const quoteHref = [...quoteEl.querySelectorAll('a[href*="/status/"]')].map((link) => {
+            const href = link.getAttribute("href") || link.href || "";
+            return href.startsWith("http") ? href : ("https://x.com" + href);
+          }).find((href) => /\\/status\\/\\d+/.test(href)) || "";
+          const quoteMatch = String(quoteHref).match(/\\/status\\/(\\d+)/);
+          quoteTweetId = quoteMatch ? quoteMatch[1] : null;
+        }
         const photoCount = article.querySelectorAll('[data-testid="tweetPhoto"]').length;
         const card = article.querySelector('[data-testid="card.wrapper"]');
         let cardUrl = null;
@@ -384,6 +398,9 @@ export function buildTweetExtractExpression() {
           article_url: articleUrl,
           article_cover: articleCover,
           has_video: hasVideo,
+          own_has_video: ownHasVideo,
+          quote_has_video: quoteHasVideo,
+          quote_tweet_id: quoteTweetId,
           photo_count: photoCount,
           card_url: cardUrl,
           card_title: cardTitle,
@@ -977,6 +994,7 @@ export function createXHomeBrowserClient(options = {}) {
           text_source: item.text_source,
           capture_context: buildXCaptureContext(item),
           ...(item.x_focus ? { x_focus: item.x_focus } : {}),
+          ...(xVideoFromExtract(item) ? { x_video: xVideoFromExtract(item) } : {}),
         }));
         return {
           source: 'browser_runtime_home',

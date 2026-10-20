@@ -24,6 +24,7 @@ import { createApiTokenService } from './api-token-service.js';
 import { createSouthboundReadService } from './southbound-service.js';
 import { createNorthboundReadService } from './northbound-service.js';
 import { createYoutubePodcastService } from './youtube-podcasts-service.js';
+import { createXVideoService } from './x-video-service.js';
 
 export { createContextService, createDailyBriefService, createFeedService, createIdentityService, createKnowledgeService, createMarketStatisticsService, createMediaIngestionService, createReportService, createRuntimeService, createTradingService, createTaggingService };
 export { buildDailyBriefCandidates } from './daily-brief-candidates.js';
@@ -235,6 +236,13 @@ export function createDomainServices({
         repository: store.repositories.youtubePodcasts,
         store,
         configPath: youtubeConfigPath,
+        env,
+      })
+      : null,
+    xVideos: store.repositories.xVideos
+      ? createXVideoService({
+        repository: store.repositories.xVideos,
+        store,
         env,
       })
       : null,

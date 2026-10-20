@@ -9,6 +9,7 @@ import { translatePolymarketOutcome } from './polymarket-outcome-zh.js';
 import { isFlashSource } from './flash-sources.js';
 import { authorCaptureFields } from './authors.js';
 import { resolveBodyCompletion } from './body-completion.js';
+import { xVideoCaptureMetadata } from './x-video-articles.js';
 
 const DEFAULT_WORKSPACE_ID = 'local';
 const STORED_FEED_LIMIT = 200;
@@ -591,6 +592,8 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
           });
         }
         rememberTruncatedAttempt(feedRepository, existing, cleaned, { hash, originalText });
+        const video = xVideoCaptureMetadata(item);
+        if (video) feedRepository.patchCaptureXVideo?.(workspaceId, String(item.externalId), video);
         rememberFingerprint();
         skipped += 1;
         continue;
@@ -695,6 +698,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
         ...(item.formatEngine ? { formatEngine: item.formatEngine } : {}),
         ...(item.authorHandle ? { authorHandle: item.authorHandle } : {}),
         ...(item.xFocus ? { xFocus: item.xFocus } : {}),
+        ...(xVideoCaptureMetadata(item) ? { xVideo: xVideoCaptureMetadata(item) } : {}),
         ...(authorFields ? { authorProfile: authorFields.authorProfile } : {}),
         ...(verdict.metadata || {}),
       },

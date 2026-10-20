@@ -62,6 +62,8 @@ const PATH_PATTERNS = [
   /^\/api\/v1\/etf-whale\/etfs\/[^/]+$/,
   /^\/api\/v1\/youtube-podcasts\/[A-Za-z0-9_-]{6,}$/,
   /^\/api\/v1\/youtube-podcasts\/[A-Za-z0-9_-]{6,}\/article$/,
+  /^\/api\/v1\/x-videos\/\d{5,25}$/,
+  /^\/api\/v1\/x-videos\/\d{5,25}\/article$/,
 ];
 
 export function isApiTokenAllowlisted(method, pathname) {

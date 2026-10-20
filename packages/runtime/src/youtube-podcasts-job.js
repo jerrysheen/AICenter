@@ -47,6 +47,8 @@ import { createGeminiAudioTranscriber } from '../../connectors/src/audio-transcr
 import { executeAudioTranscription } from './audio-transcription-job.js';
 import { dedupeRollingCaptions, transcriptHash } from '../../domain/src/youtube-captions.js';
 import { localizePodcastCopy, repairYoutubeChineseCopy, runYoutubeArticlePass } from './youtube-article-job.js';
+import { runXVideoArticlePass, runXVideoArticleTweet } from './x-video-article-job.js';
+import { xVideoArticleEnabled, X_VIDEO_ARTICLE_JOB_TYPE } from '../../domain/src/x-video-articles.js';
 import { retireYoutubeTranslationJobs } from './feed-translation-module.js';
 
 export { YOUTUBE_ARTICLE_JOB_TYPE, YOUTUBE_PODCAST_JOB_TYPE, YOUTUBE_PODCAST_SCHEDULE_KEY };
@@ -79,7 +81,7 @@ export function ensureYoutubeArticleSchedule(store, env = process.env, now = Dat
     workspaceId: 'local',
     key: YOUTUBE_ARTICLE_SCHEDULE_KEY,
     jobType: YOUTUBE_ARTICLE_JOB_TYPE,
-    enabled: youtubeArticleEnabled(env),
+    enabled: youtubeArticleEnabled(env) || xVideoArticleEnabled(env),
     schedule: { kind: 'interval', intervalMinutes: everyHours * 60 },
     input: {},
     priority: 0,
@@ -383,6 +385,7 @@ export async function runYoutubePodcastRound(deps = {}) {
           env,
           repository,
           feedRepository: deps.feedRepository,
+          xVideoRepository: deps.xVideoRepository,
           workspaceId,
           doubaoClient: deps.doubaoClient,
           browserRuntime: deps.browserRuntime,
@@ -393,6 +396,25 @@ export async function runYoutubePodcastRound(deps = {}) {
           now,
           timeZone,
         });
+        if (deps.xVideoRepository) {
+          const xArticles = await runXVideoArticlePass({
+            env,
+            repository: deps.xVideoRepository,
+            feedRepository: deps.feedRepository,
+            youtubeRepository: repository,
+            quotaRepository: deps.quotaRepository,
+            dataDirectory: deps.dataDirectory,
+            workspaceId,
+            signal,
+            now,
+            timeZone,
+            gemmaGenerate: deps.gemmaGenerate,
+            flashGenerate: deps.flashGenerate,
+          });
+          stats.articlesReady += xArticles.ready || 0;
+          stats.articlePending += xArticles.pending || 0;
+          stats.articleHeld += xArticles.dailyLimit || 0;
+        }
         stats.articlesReady = articles.ready;
         stats.articlePending = articles.pending;
         stats.articleHeld = articles.dailyLimit || 0;
@@ -806,23 +828,63 @@ export function createYoutubePodcastJobHandlers(options = {}) {
       const jobStore = ctx.store || options.store;
       if (jobStore) retireYoutubeTranslationJobs(jobStore, workspaceId);
       const syncing = (jobStore?.listOpenJobs?.(YOUTUBE_PODCAST_JOB_TYPE) || []).some((job) => job.status === 'running');
-      if (syncing) {
-        console.log('[worker] youtube-article skipped sync-running');
-        return { ready: 0, pending: 0, skipped: 0, dailyLimit: 0, stopped: 'sync-running' };
-      }
       const limits = youtubePodcastLimits(env);
       const deadline = AbortSignal.timeout(youtubeRoundDeadlineMs(limits.roundMs));
       const signal = ctx.signal && typeof AbortSignal.any === 'function'
         ? AbortSignal.any([ctx.signal, deadline])
         : (ctx.signal || deadline);
-      const articles = await runYoutubeArticlePass({
+      let articles = { ready: 0, pending: 0, skipped: 0, dailyLimit: 0, stopped: '' };
+      if (syncing) {
+        console.log('[worker] youtube-article skipped sync-running');
+        articles.stopped = 'sync-running';
+      } else {
+        articles = await runYoutubeArticlePass({
+          ...options,
+          env,
+          workspaceId,
+          signal,
+          xVideoRepository: options.xVideoRepository,
+        });
+        console.log(`[worker] youtube-article ready=${articles.ready} pending=${articles.pending} held=${articles.dailyLimit || 0} skipped=${articles.skipped} stopped=${articles.stopped || '-'}`);
+      }
+      if (options.xVideoRepository) {
+        const xArticles = await runXVideoArticlePass({
+          ...options,
+          repository: options.xVideoRepository,
+          youtubeRepository: options.repository,
+          env,
+          workspaceId,
+          signal,
+        });
+        console.log(`[worker] x-video-article ready=${xArticles.ready} pending=${xArticles.pending} held=${xArticles.dailyLimit || 0} skipped=${xArticles.skipped} discovered=${xArticles.discovered} stopped=${xArticles.stopped || '-'}`);
+        articles = {
+          ...articles,
+          xReady: xArticles.ready,
+          xPending: xArticles.pending,
+          xDailyLimit: xArticles.dailyLimit || 0,
+        };
+      }
+      return articles;
+    },
+    [X_VIDEO_ARTICLE_JOB_TYPE]: async (input = {}, ctx = {}) => {
+      const env = options.env || process.env;
+      const workspaceId = input.workspaceId || options.workspaceId || 'local';
+      const limits = youtubePodcastLimits(env);
+      const deadline = AbortSignal.timeout(youtubeRoundDeadlineMs(limits.roundMs));
+      const signal = ctx.signal && typeof AbortSignal.any === 'function'
+        ? AbortSignal.any([ctx.signal, deadline])
+        : (ctx.signal || deadline);
+      const tweetId = String(input.tweetId || '').trim();
+      if (!tweetId) return { ready: 0, pending: 0, skipped: 0, stopped: 'no-tweet' };
+      return runXVideoArticleTweet({
         ...options,
+        repository: options.xVideoRepository,
+        youtubeRepository: options.repository,
         env,
         workspaceId,
         signal,
-      });
-      console.log(`[worker] youtube-article ready=${articles.ready} pending=${articles.pending} held=${articles.dailyLimit || 0} skipped=${articles.skipped} stopped=${articles.stopped || '-'}`);
-      return articles;
+        manual: true,
+      }, tweetId);
     },
   };
 }
