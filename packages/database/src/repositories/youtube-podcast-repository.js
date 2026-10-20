@@ -113,6 +113,36 @@ export function createYoutubePodcastRepository(database) {
       return Number(row?.n) || 0;
     },
 
+    listArticlesNeedingTitle(workspaceId, limit = 500) {
+      const safeLimit = Math.max(1, Math.min(Number(limit) || 500, 500));
+      return database.prepare(`SELECT e.video_id, e.creator_id, e.channel_key, e.title,
+          e.duration_sec, e.published_at, e.status, e.reason, e.transcript_source, e.content_item_id,
+          e.attempts, e.source_hash, e.article_status, e.article_state, e.article_day,
+          ci.summary AS summary, ci.body AS body, ci.title AS display_title,
+          ci.source_url AS source_url, ci.author_name AS author_name
+        FROM youtube_podcast_episodes e
+        LEFT JOIN content_items ci ON ci.id = e.content_item_id AND ci.workspace_id = e.workspace_id
+        WHERE e.workspace_id = ? AND e.status = 'ready' AND e.article_status = 'ready'
+          AND (
+            e.article_state = ''
+            OR json_extract(e.article_state, '$.titleStatus') IS NULL
+            OR json_extract(e.article_state, '$.titleStatus') != 'ready'
+          )
+        ORDER BY COALESCE(e.published_at, 0) DESC, e.video_id DESC
+        LIMIT ?`).all(workspaceId, safeLimit)
+        .map((row) => {
+          const episode = mapEpisode(row, {
+            summary: row.summary || '',
+            body: row.body || '',
+            displayTitle: row.display_title || '',
+            sourceUrl: row.source_url || '',
+            authorName: row.author_name || '',
+          });
+          delete episode.sourceTranscript;
+          return episode;
+        });
+    },
+
     listArticleCandidates(workspaceId) {
       return database.prepare(`SELECT e.*, ci.summary AS summary, ci.body AS body,
           ci.title AS display_title, ci.source_url AS source_url, ci.author_name AS author_name

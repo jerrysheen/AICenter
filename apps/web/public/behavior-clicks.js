@@ -1,4 +1,4 @@
-const ORIGINAL = /^(?:原文|打开原文|打开原站|前往原站(?:\s*↗)?)(?:\s|$)/;
+const ORIGINAL = /^(?:原文|原帖|打开原文|打开原站|前往原站(?:\s*↗)?)(?:\s|$)/;
 const SAVED_ORIGINAL = /^阅读站内原文/;
 const EXPAND = /^展开/;
 

@@ -4674,6 +4674,51 @@ body[data-view="inspire"] .dispatch-composer.hidden { display: none; }
   display: inline-flex; align-items: center; min-height: 44px; margin-top: 4px;
   color: var(--brand); font-size: 14px; font-weight: 650; text-decoration: underline; text-underline-offset: 3px;
 }
+.reader-original-title {
+  margin: 0;
+  color: var(--font-tertiary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.reader-content .youtube-time {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  margin: -10px 0;
+  padding: 0 4px;
+  color: var(--brand);
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  white-space: nowrap;
+}
+.read-resume {
+  position: sticky;
+  top: calc(var(--title-bar) + 61px);
+  z-index: 11;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  background: var(--background-primary);
+  color: var(--font-tertiary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.read-resume button {
+  min-height: 44px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--brand);
+  font-size: 13px;
+}
+@media (max-width: 699px) {
+  .read-resume { top: var(--title-bar); }
+}
 .detail-body,
 .reader-content {
   max-width: 100%;

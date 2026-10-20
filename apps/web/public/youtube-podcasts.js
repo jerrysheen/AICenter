@@ -1,4 +1,5 @@
 import { renderMarkdownInto } from './markdown.js?v=dev';
+import { attachYoutubeHeadingTimes, youtubeWatchUrl } from './youtube-article-links.js?v=dev';
 
 const SOURCE_LABEL = {
   'subtitle-manual': '人工字幕',
@@ -103,7 +104,13 @@ function episodeRow(episode, { api, open }) {
   button.append(
     Object.assign(document.createElement('strong'), { textContent: episode.title || episode.originalTitle || episode.videoId }),
     Object.assign(document.createElement('small'), {
-      textContent: [clock(episode.publishedAt), minutes(episode.durationSec), SOURCE_LABEL[episode.transcriptSource] || '', episode.articleStatus === 'pending' ? '待整理' : ''].filter(Boolean).join(' · '),
+      textContent: [
+        episode.originalTitle && episode.originalTitle !== episode.title ? episode.originalTitle : '',
+        clock(episode.publishedAt),
+        minutes(episode.durationSec),
+        SOURCE_LABEL[episode.transcriptSource] || '',
+        episode.articleStatus === 'pending' ? '待整理' : '',
+      ].filter(Boolean).join(' · '),
     }),
   );
   const detail = document.createElement('div');
@@ -125,10 +132,10 @@ function fillDetail(detail, episode, api) {
   summary.className = 'podcast-summary';
   summary.textContent = episode.summary || '这一集还没有摘要。';
   const link = document.createElement('a');
-  link.href = episode.sourceUrl;
+  link.href = youtubeWatchUrl(episode.videoId) || episode.sourceUrl;
   link.target = '_blank';
-  link.rel = 'noreferrer';
-  link.textContent = '打开原视频';
+  link.rel = 'noopener noreferrer';
+  link.textContent = '原帖';
   const transcriptButton = document.createElement('button');
   transcriptButton.type = 'button';
   transcriptButton.className = 'text-button';
@@ -159,6 +166,7 @@ function fillDetail(detail, episode, api) {
           const article = document.createElement('div');
           article.className = 'podcast-article';
           renderMarkdownInto(article, body || '没有全文。');
+          attachYoutubeHeadingTimes(article, episode.videoId);
           transcript.append(article);
         } else {
           const plain = document.createElement('pre');
