@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync, cpSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -27,11 +27,28 @@ globalThis.document = { createElement: (tag) => new El(tag) };
 
 const pageDir = mkdtempSync(path.join(os.tmpdir(), 'youtube-page-'));
 const publicDir = path.resolve('apps/web/public');
-writeFileSync(
-  path.join(pageDir, 'youtube-podcasts.js'),
-  readFileSync(path.join(publicDir, 'youtube-podcasts.js'), 'utf8').replaceAll('?v=dev', ''),
-);
-cpSync(path.join(publicDir, 'markdown.js'), path.join(pageDir, 'markdown.js'));
+const localImport = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)['"](\.[^'"]+)['"]/g;
+
+function copyModuleGraph(entry) {
+  const seen = new Set();
+  const pending = [entry];
+  while (pending.length) {
+    const relative = pending.pop();
+    if (seen.has(relative)) continue;
+    seen.add(relative);
+    const source = readFileSync(path.join(publicDir, relative), 'utf8').replaceAll('?v=dev', '');
+    const destination = path.join(pageDir, relative);
+    mkdirSync(path.dirname(destination), { recursive: true });
+    writeFileSync(destination, source);
+    for (const match of source.matchAll(localImport)) {
+      const specifier = match[1].split(/[?#]/)[0];
+      if (!specifier.endsWith('.js')) continue;
+      pending.push(path.posix.normalize(path.posix.join(path.posix.dirname(relative), specifier)));
+    }
+  }
+}
+
+copyModuleGraph('youtube-podcasts.js');
 const { renderYoutubePodcasts } = await import(pathToFileURL(path.join(pageDir, 'youtube-podcasts.js')).href);
 process.on('exit', () => rmSync(pageDir, { recursive: true, force: true }));
 
