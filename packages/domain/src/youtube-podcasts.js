@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { addCalendarDays, formatYmd, nextDailyInstant, zonedLocalToUtc, zonedParts } from './zoned-time.js';
+import { addCalendarDays, formatYmd, nextDailyInstant, previousDailyInstant, zonedLocalToUtc, zonedParts } from './zoned-time.js';
 
 export const YOUTUBE_PODCAST_JOB_TYPE = 'youtube.podcasts.sync';
 export const YOUTUBE_PODCAST_SCHEDULE_KEY = 'youtube.podcasts.sync';
@@ -108,6 +108,36 @@ export function nextYoutubeArticleOpportunity(afterMs, env = process.env) {
   })];
   if (youtubePodcastsEnabled(env)) times.push(nextDailyInstant(afterMs, clock));
   return Math.min(...times);
+}
+
+export function previousYoutubeArticleSlot(atMs, options = {}) {
+  const timeZone = options.timeZone || 'Asia/Shanghai';
+  const everyHours = Math.min(12, Math.max(2, Number(options.everyHours) || 3));
+  const minute = Number.isInteger(options.minute) ? options.minute : YOUTUBE_ARTICLE_CATCHUP_MINUTE;
+  const parts = zonedParts(atMs, timeZone);
+  let found = null;
+  for (let dayOffset = 0; dayOffset < 3; dayOffset += 1) {
+    const cursor = addCalendarDays(parts.year, parts.month, parts.day, -dayOffset);
+    for (let hour = 0; hour < 24; hour += everyHours) {
+      const instant = zonedLocalToUtc(cursor.year, cursor.month, cursor.day, hour, minute, timeZone);
+      if (instant <= atMs && (found == null || instant > found)) found = instant;
+    }
+  }
+  return found;
+}
+
+export function previousYoutubeArticleOpportunity(atMs, env = process.env) {
+  if (!youtubeArticleEnabled(env)) return null;
+  const clock = youtubePodcastClock(env);
+  const times = [];
+  const slot = previousYoutubeArticleSlot(atMs, {
+    timeZone: clock.timeZone,
+    everyHours: youtubeArticleEveryHours(env),
+    minute: YOUTUBE_ARTICLE_CATCHUP_MINUTE,
+  });
+  if (slot != null) times.push(slot);
+  if (youtubePodcastsEnabled(env)) times.push(previousDailyInstant(atMs, clock));
+  return times.length ? Math.max(...times) : null;
 }
 
 export function youtubeTitleRepairLimit(env = process.env) {
