@@ -305,7 +305,7 @@ test('the same short chunk becomes terminal after three abandoned attempts', asy
 test('a successful chunk clears the failure count and a quota deferral does not count', async () => {
   const source = `${'Capacity plan remains uncertain. '.repeat(20)}`;
   const chunkStore = memoryChunkFailures();
-  let mode = 'short';
+  let mode = 'quota';
   const full = '这是一段足够长的中文译文，用来说明原文并没有在第一句就停住，后面继续把产品、时间和后续安排说完。'.repeat(8);
   const service = createTranslateService({
     chunkChars: 1500,
