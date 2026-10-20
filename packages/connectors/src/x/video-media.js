@@ -62,14 +62,48 @@ function videoFromPayload(payload, fallbackTweetId) {
   return best;
 }
 
+function syndicationUser(payload) {
+  const direct = payload?.user;
+  if (direct && (direct.screen_name || direct.screenName || direct.name || direct.id_str || direct.id)) return direct;
+  const result = payload?.core?.user_results?.result;
+  if (!result || typeof result !== 'object') return {};
+  const legacy = result.legacy && typeof result.legacy === 'object' ? result.legacy : {};
+  const core = result.core && typeof result.core === 'object' ? result.core : {};
+  return {
+    id_str: result.rest_id || legacy.id_str || '',
+    name: legacy.name || core.name || '',
+    screen_name: legacy.screen_name || core.screen_name || '',
+    profile_image_url_https: legacy.profile_image_url_https || '',
+  };
+}
+
+function syndicationText(payload) {
+  const note = payload?.note_tweet?.note_tweet_results?.result?.text || payload?.note_tweet?.text || '';
+  return String(note || payload?.full_text || payload?.text || '').trim();
+}
+
+function syndicationCreatedAt(payload) {
+  const parsed = payload?.created_at ? Date.parse(payload.created_at) : NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 export function parseSyndicationTweet(payload, fallbackTweetId = '') {
   const tweetId = String(payload?.id_str || payload?.id || fallbackTweetId || '').trim();
   const own = videoFromPayload(payload, tweetId || fallbackTweetId);
   const quoted = payload?.quoted_tweet || payload?.quotedTweet || null;
   const quoteId = String(quoted?.id_str || quoted?.id || '').trim();
   const quote = quoted ? videoFromPayload(quoted, quoteId) : null;
+  const user = syndicationUser(payload);
   return {
     tweetId,
+    text: syndicationText(payload),
+    createdAt: syndicationCreatedAt(payload),
+    author: {
+      handle: String(user.screen_name || user.screenName || '').replace(/^@/, '').trim(),
+      name: String(user.name || '').trim(),
+      restId: String(user.id_str || user.id || '').trim(),
+      avatar: String(user.profile_image_url_https || user.profile_image_url || '').trim(),
+    },
     video: own,
     quote: quote ? { ...quote, tweetId: quoteId || quote.tweetId } : null,
   };

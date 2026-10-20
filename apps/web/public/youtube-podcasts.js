@@ -48,7 +48,28 @@ export function youtubeReaderScopeLabel(post, episode) {
   const youtube = post?.platform === 'youtube' || /^youtube:/i.test(String(post?.id || ''));
   if (!youtube) return null;
   if (episode?.article?.status === 'ready' || episode?.articleStatus === 'ready') return '正文完整';
+  if (String(episode?.partial?.text || '').trim()) return '未完整';
   return '';
+}
+
+export function partialArticleLabel(partial) {
+  if (!String(partial?.text || '').trim()) return '';
+  const remaining = Number(partial.remaining) || 0;
+  return remaining > 0 ? `未完整 · 还剩 ${remaining} 段` : '未完整';
+}
+
+export function appendPartialArticle(parent, partial) {
+  const label = partialArticleLabel(partial);
+  if (!label) return false;
+  parent.append(Object.assign(document.createElement('p'), {
+    className: 'podcast-pending partial-article-label',
+    textContent: label,
+  }));
+  const article = document.createElement('div');
+  article.className = 'podcast-article partial-article';
+  renderMarkdownInto(article, partial.text);
+  parent.append(article);
+  return true;
 }
 
 export function episodeArticleMessage(episode) {
@@ -214,8 +235,9 @@ function fillDetail(detail, episode, api) {
         } else {
           transcript.append(Object.assign(document.createElement('p'), {
             className: 'podcast-pending',
-            textContent: episodeArticleMessage(loaded) || '中文整理排队中',
+            textContent: episodeArticleMessage(loaded) || episodeArticleMessage(episode) || '中文整理排队中',
           }));
+          appendPartialArticle(transcript, loaded.partial || episode.partial);
           transcript.append(foldedOriginal(body));
         }
         transcript.dataset.loaded = '1';
