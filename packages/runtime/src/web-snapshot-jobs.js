@@ -249,28 +249,40 @@ export function usBoardFreshnessError(board, nowMs, maxAgeMs) {
   return `美股看板行情已 ${minutes} 分钟未更新`;
 }
 
+function boardPayload(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) && value.board ? value : null;
+}
+
 function withTimeout(start, ms, label) {
   const controller = new AbortController();
   let timer;
-  let settled = false;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => {
-      settled = true;
-      controller.abort();
-      reject(new Error(label));
-    }, ms);
-    timer.unref?.();
-  });
-  const guarded = Promise.resolve()
+  let lateTimer;
+  const work = Promise.resolve()
     .then(() => start(controller.signal))
     .then(
-      (value) => (settled ? undefined : value),
-      (error) => {
-        if (settled) return undefined;
-        throw error;
-      },
+      (value) => ({ ok: true, value }),
+      (error) => ({ ok: false, error }),
     );
-  return Promise.race([guarded, timeout]).finally(() => clearTimeout(timer));
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({ ok: false, timeout: true }), ms);
+  });
+  return Promise.race([work, timeout]).then(async (first) => {
+    if (first?.ok) return first.value;
+    if (!first?.timeout) throw first.error;
+    controller.abort();
+    const late = await Promise.race([
+      work,
+      new Promise((resolve) => {
+        lateTimer = setTimeout(() => resolve(null), 1_500);
+      }),
+    ]);
+    const partial = late?.ok ? boardPayload(late.value) : null;
+    if (partial) return partial;
+    throw new Error(label);
+  }).finally(() => {
+    clearTimeout(timer);
+    clearTimeout(lateTimer);
+  });
 }
 
 async function readMarketBoard(sourcePort, board, signal) {

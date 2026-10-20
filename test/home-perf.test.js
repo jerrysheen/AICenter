@@ -9,7 +9,7 @@ import {
   marketBoardSnapshotKey,
 } from '../packages/runtime/src/web-snapshot-jobs.js';
 import { createXueqiuQuoteClient } from '../packages/connectors/src/xueqiu-quotes.js';
-import { marketStaleLabel, quoteStaleLabel } from '../apps/web/public/home-timeline.js';
+import { marketStaleLabel, marketStatusLabel, quoteStaleLabel } from '../apps/web/public/home-timeline.js';
 import { createMarketService } from '../packages/source/src/market/service.js';
 
 const NOW = Date.parse('2026-10-10T02:00:00Z');
@@ -256,7 +256,7 @@ test('each market board is stored on its own timeout', async () => {
   releaseUs();
 });
 
-test('a fresh quote asOf is not expired when the board fetchedAt is old', () => {
+test('an open US board does not say expired when one print is older', () => {
   const fetchedAt = Date.parse('2026-10-15T13:40:00Z');
   const asOf = fetchedAt + 10 * 60_000;
   const payload = {
@@ -267,9 +267,10 @@ test('a fresh quote asOf is not expired when the board fetchedAt is old', () => 
     watchlist: [{ symbol: 'MSFT', name: 'Microsoft', lastPrice: 90, asOf: fetchedAt }],
   };
   assert.equal(marketStaleLabel(payload, asOf + 60_000), '');
-  assert.match(quoteStaleLabel(payload.watchlist[0], asOf + 60_000), /^已过期/);
+  assert.equal(quoteStaleLabel(payload.watchlist[0], asOf + 60_000), '');
   assert.equal(quoteStaleLabel(payload.indices[0], asOf + 60_000), '');
-  assert.match(marketStaleLabel(payload, asOf + 180_000), /^已过期/);
+  assert.equal(marketStaleLabel(payload, asOf + 180_000), '');
+  assert.equal(marketStatusLabel(payload, asOf + 180_000), '盘中');
 });
 
 test('the A-share board snapshot fills sparklines from xueqiu klines', async () => {
