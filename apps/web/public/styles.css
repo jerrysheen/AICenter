@@ -5365,7 +5365,7 @@ body[data-reader="1"] #nav-back { display: none; }
 #reader-menu { max-width: min(600px, calc(100vw - 24px)); }
 #reader-menu .reader-bar { flex-wrap: wrap; }
 #reader-menu .reader-bar button { flex: 1 1 80px; }
-#view-feed .feed-list, #feed { max-width: none; width: 100%; margin-inline: 0; }
+#view-feed .feed-list, #feed { max-width: none; width: 100%; margin-inline: 0; overflow-anchor: none; }
 #view-tools > .section-kicker { padding-top: 12px; }
 #view-tools #strategy-inspect { margin-top: 20px; }
 .market-native-supply { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -5983,8 +5983,7 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
 }
 .author-switch-item.is-active { background: var(--brand, #0A59F7); color: #fff; }
 .author-list-rows { display: flex; flex-direction: column; }
-.author-list-rows.is-virtual { display: flex; flex-direction: column; }
-.author-spacer { width: 100%; pointer-events: none; }
+.author-spacer { width: 100%; flex: none; pointer-events: none; }
 .author-group { margin: 12px 0 4px; font-size: 13px; color: var(--font-tertiary, #8a9199); }
 .author-row { display: flex; align-items: stretch; gap: 8px; min-height: 64px; border-bottom: 1px solid var(--comp-tertiary, #f2f3f5); }
 .author-row.is-quiet { opacity: 0.55; }
@@ -6032,8 +6031,9 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
   text-decoration: underline dashed; text-underline-offset: 3px; text-align: left;
 }
 @media (min-width: 840px) {
-  .author-list-rows:not(.is-virtual) { display: grid; grid-template-columns: 1fr 1fr; column-gap: 24px; }
-  .author-list-rows:not(.is-virtual) .author-group { grid-column: 1 / -1; }
+  .author-list-rows { display: grid; grid-template-columns: 1fr 1fr; column-gap: 24px; align-items: start; }
+  .author-list-rows .author-group,
+  .author-list-rows .author-spacer { grid-column: 1 / -1; }
 }
 .podcast-page { display: flex; flex-direction: column; gap: 16px; padding: 8px 0 32px; }
 .podcast-head { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }

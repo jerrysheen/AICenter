@@ -8,6 +8,7 @@ import Database from 'better-sqlite3';
 import { acceptTweetRestId, buildTweetExtractExpression } from '../packages/connectors/src/x/home-browser.js';
 import { tweetToFeedItem } from '../packages/connectors/src/x/home-timeline.js';
 import { createStore } from '../packages/database/src/index.js';
+import { invalidateAuthorCache } from '../packages/database/src/repositories/author-repository.js';
 import { latestSchemaVersion } from '../packages/database/src/migrations.js';
 import { createAuthorService } from '../packages/domain/src/author-service.js';
 import { attributeXAuthor, authorCaptureFields, provisionalAuthorId } from '../packages/domain/src/authors.js';
@@ -37,7 +38,7 @@ function openStore() {
   return createStore(':memory:');
 }
 
-function saveAuthorItem(feed, { provider = 'xueqiu', externalId, nativeId, name, handle, kind = '', publishedAt, title }) {
+function saveAuthorItem(feed, { provider = 'xueqiu', externalId, nativeId, name, handle, kind = '', publishedAt, title, metadata = {} }) {
   const fields = authorCaptureFields(provider, {
     authorNativeId: nativeId,
     authorName: name,
@@ -56,6 +57,7 @@ function saveAuthorItem(feed, { provider = 'xueqiu', externalId, nativeId, name,
     metadata: {
       authorHandle: handle || name || '',
       ...(fields ? { authorProfile: fields.authorProfile } : {}),
+      ...metadata,
     },
   });
   return feed.saveContentItem({
@@ -659,4 +661,74 @@ test('bilibili jsonl import streams lines and commits each batch', async () => {
   assert.equal(rollback.repositories.feed.getCapture('local', 'bilibili', 'dyn:9'), null);
   assert.equal(rollback.repositories.authors.getAuthor('local', 'bilibili:401'), null);
   rollback.close();
+});
+
+test('author unread count matches the visible unread list', () => {
+  const store = openStore();
+  try {
+    invalidateAuthorCache();
+    const now = Date.now();
+    const feed = store.repositories.feed;
+    const keep = {
+      filterMode: 'enforce',
+      filterDecision: 'KEEP',
+      filterApplied: true,
+      filterRule: 'all-three-0.60',
+      filterScores: { reading_value: 0.9, specific_content: 0.9, sufficient_information: 0.9 },
+    };
+    const visible = [
+      ['visible-a', '原创甲', now - 4_000],
+      ['visible-b', '原创乙', now - 3_000],
+      ['repost', '转发一条', now - 2_000],
+    ];
+    for (const [externalId, title, publishedAt] of visible) {
+      saveAuthorItem(feed, {
+        provider: 'x', externalId, nativeId: '568', name: '小飞象568', publishedAt, title, metadata: keep,
+      });
+    }
+    const hidden = saveAuthorItem(feed, {
+      provider: 'x', externalId: 'hidden', nativeId: '568', name: '小飞象568',
+      publishedAt: now - 1_000, title: '隐藏的一条', metadata: keep,
+    });
+    feed.upsertUserItemState({ workspaceId: 'local', contentItemId: hidden.id, isHidden: true });
+    saveAuthorItem(feed, {
+      provider: 'x', externalId: 'drop', nativeId: '568', name: '小飞象568',
+      publishedAt: now - 500, title: '低价值',
+      metadata: { filterMode: 'enforce', filterDecision: 'DROP', filterApplied: true },
+    });
+    saveAuthorItem(feed, {
+      provider: 'x', externalId: 'low-score', nativeId: '568', name: '小飞象568',
+      publishedAt: now - 100, title: '分数不够',
+      metadata: {
+        filterMode: 'enforce', filterDecision: 'KEEP', filterApplied: true, filterRule: 'all-three-0.60',
+        filterScores: { reading_value: 0.1, specific_content: 0.1, sufficient_information: 0.1 },
+      },
+    });
+    for (let index = 0; index < 30; index += 1) {
+      const buried = saveAuthorItem(feed, {
+        provider: 'x', externalId: `buried-${index}`, nativeId: '568', name: '小飞象568',
+        publishedAt: now + index, title: `占位${index}`, metadata: keep,
+      });
+      feed.upsertUserItemState({ workspaceId: 'local', contentItemId: buried.id, isHidden: true });
+    }
+    const service = createAuthorService({
+      authorRepository: store.repositories.authors,
+      feedRepository: feed,
+      qualityRule: 'all-three-0.60',
+    });
+    invalidateAuthorCache();
+    const author = service.get('local', 'x:568');
+    const page = service.items('local', 'x:568', { read: 'unread' });
+    const listed = service.list({ workspaceId: 'local', platform: 'x' });
+    const row = [...listed.followed, ...listed.others].find((item) => item.authorId === 'x:568');
+    assert.equal(author.unreadCount, 3);
+    assert.equal(row.unreadCount, 3);
+    assert.deepEqual(page.items.map((item) => item.title), ['转发一条', '原创乙', '原创甲']);
+    assert.equal(page.nextCursor, '');
+    store.repositories.authors.recomputeAuthor('local', 'x:568');
+    // 夜间重算不带准入规则，分数不够的一条仍留在库存里。接口读取时再按规则扣掉。
+    assert.equal(store.repositories.authors.getAuthor('local', 'x:568').unreadCount, 4);
+  } finally {
+    store.close();
+  }
 });
