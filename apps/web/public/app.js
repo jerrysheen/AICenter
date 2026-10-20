@@ -48,7 +48,7 @@ import { commitReportHistory, reportViewOwnsScroll } from './report-history.js?v
 import { decodeHtmlEntities } from './html-text.js?v=dev';
 import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, prioritizeReadableFeedRows, renderNewsList, reportItemTime } from './news-list.js?v=dev';
 import { createAuthorView } from './author-view.js?v=dev';
-import { episodeArticleMessage, foldedOriginal, renderYoutubePodcasts, YOUTUBE_ARTICLE_POLL_SLOW_MS, youtubeArticlePollDelay, youtubeArticleRequestPath } from './youtube-podcasts.js?v=dev';
+import { episodeArticleMessage, foldedOriginal, renderYoutubePodcasts, YOUTUBE_ARTICLE_POLL_SLOW_MS, youtubeArticlePollDelay, youtubeArticleRequestPath, youtubeReaderScopeLabel } from './youtube-podcasts.js?v=dev';
 
 const requestLayer = createRequestLayer();
 const pageCache = createPageCache({
@@ -9714,7 +9714,11 @@ function applyYoutubeReady(post, episode) {
   const title = String(episode.title || '').trim();
   if (!body && !title) return post;
   const next = { ...post };
-  if (body) next.body = body;
+  if (body) {
+    next.body = body;
+    next.complete = true;
+    next.bodyScope = '';
+  }
   if (title) next.title = title;
   const saved = state.restoredArticles[post.id];
   if (saved) state.restoredArticles[post.id] = { ...saved, ...next, readerLoaded: true };
@@ -9924,12 +9928,14 @@ function renderArticlePage() {
     loadOfficialArticle(post);
   }
   const officialBody = post.kind === 'official' ? state.officialBodies[post.id] : null;
+  const youtubeScope = youtubeReaderScopeLabel(post, state.youtubeEpisodes[youtubeEpisodeId(post)]);
   const completeLabel = post.articleKind === 'report-intro' ? '报告简介'
     : officialBody?.status === 'ready' ? '正文完整'
       : officialBody?.status === 'loading' ? '正在获取'
-        : post.complete === false ? (post.bodyScope || '仅索引')
-          : '正文完整';
-  meta.append(Object.assign(document.createElement('span'), { className: 'kind-tag official', textContent: completeLabel }));
+        : youtubeScope != null ? youtubeScope
+          : post.complete === false ? (post.bodyScope || '仅索引')
+            : '正文完整';
+  if (completeLabel) meta.append(Object.assign(document.createElement('span'), { className: 'kind-tag official', textContent: completeLabel }));
   meta.querySelector('button').addEventListener('click', () => {
     if (post.platform === 'official') openPage('source', `policy.${post.author}`);
     else openPage('source', post.platform === 'manual' ? 'manual' : post.platform);

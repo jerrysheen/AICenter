@@ -565,7 +565,7 @@ test('translation limits come from env and clamp into the documented range', fix
   });
   await capped.generate({ system: '翻译', prompt: 'One' });
   await capped.generate({ system: '翻译', prompt: 'Two' });
-  await assert.rejects(capped.generate({ system: '翻译', prompt: 'Three' }), error => error.code === 'budget-deferred' && /等待配额窗口/.test(error.message));
+  await assert.rejects(capped.generate({ system: '翻译', prompt: 'Three' }), error => error.code === 'budget-deferred' && error.upstream === false && /等待配额窗口/.test(error.message));
   assert.equal(requests, 2);
 }));
 
