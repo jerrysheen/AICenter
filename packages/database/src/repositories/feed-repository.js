@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { TRANSLATION_CHUNK_FAIL_LIMIT, TRANSLATION_MAX_ATTEMPTS, translationRetryDelayMs } from '../translation-retry.js';
+import { TRANSLATION_CHUNK_FAIL_LIMIT, TRANSLATION_CHUNK_FAIL_TTL_MS, TRANSLATION_MAX_ATTEMPTS, translationRetryDelayMs } from '../translation-retry.js';
 import { explainPrefixLookup, rowsByUrlPrefixes } from '../url-prefix-lookup.js';
 import {
   parseContract,
@@ -1930,40 +1930,41 @@ export function createFeedRepository(database, emitEvent) {
       return Boolean(row);
     },
 
-    translationChunkFailureCount({ workspaceId, itemId, targetLang = 'zh', sourceHash, chunkIndex, chunkHash } = {}) {
+    translationChunkFailureCount({ workspaceId, itemId, targetLang = 'zh', sourceHash, chunkIndex, chunkHash, now = Date.now() } = {}) {
       const id = String(itemId || '').trim();
       const hash = String(sourceHash || '');
       const chunk = String(chunkHash || '');
       const index = Number(chunkIndex);
       if (!id || !hash || !chunk || !Number.isInteger(index) || index < 0) return 0;
       const lang = targetLang === 'en' ? 'en' : 'zh';
-      const row = database.prepare(`SELECT fail_count, chunk_hash FROM feed_translation_chunk_failures
+      const row = database.prepare(`SELECT fail_count, chunk_hash, updated_at FROM feed_translation_chunk_failures
         WHERE workspace_id = ? AND item_id = ? AND target_lang = ? AND source_hash = ? AND chunk_index = ?`)
         .get(workspaceId, id, lang, hash, index);
       if (!row || row.chunk_hash !== chunk) return 0;
+      if (Number(now) - Number(row.updated_at) >= TRANSLATION_CHUNK_FAIL_TTL_MS) return 0;
       return Number(row.fail_count) || 0;
     },
 
-    noteTranslationChunkFailure({ workspaceId, itemId, targetLang = 'zh', sourceHash, chunkIndex, chunkHash } = {}) {
+    noteTranslationChunkFailure({ workspaceId, itemId, targetLang = 'zh', sourceHash, chunkIndex, chunkHash, now = Date.now() } = {}) {
       const id = String(itemId || '').trim();
       const hash = String(sourceHash || '');
       const chunk = String(chunkHash || '');
       const index = Number(chunkIndex);
       if (!id || !hash || !chunk || !Number.isInteger(index) || index < 0) return { failCount: 0, exhausted: false };
       const lang = targetLang === 'en' ? 'en' : 'zh';
-      const now = Date.now();
+      const at = Number.isFinite(Number(now)) ? Number(now) : Date.now();
       database.prepare(`INSERT INTO feed_translation_chunk_failures
         (workspace_id, item_id, target_lang, source_hash, chunk_index, chunk_hash, fail_count, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, 1, ?)
         ON CONFLICT(workspace_id, item_id, target_lang, source_hash, chunk_index) DO UPDATE SET
           fail_count = CASE
-            WHEN feed_translation_chunk_failures.chunk_hash = excluded.chunk_hash
-            THEN feed_translation_chunk_failures.fail_count + 1
-            ELSE 1
+            WHEN feed_translation_chunk_failures.chunk_hash != excluded.chunk_hash THEN 1
+            WHEN excluded.updated_at - feed_translation_chunk_failures.updated_at >= ? THEN 1
+            ELSE feed_translation_chunk_failures.fail_count + 1
           END,
           chunk_hash = excluded.chunk_hash,
-          updated_at = excluded.updated_at`).run(workspaceId, id, lang, hash, index, chunk, now);
-      const failCount = this.translationChunkFailureCount({ workspaceId, itemId: id, targetLang: lang, sourceHash: hash, chunkIndex: index, chunkHash: chunk });
+          updated_at = excluded.updated_at`).run(workspaceId, id, lang, hash, index, chunk, at, TRANSLATION_CHUNK_FAIL_TTL_MS);
+      const failCount = this.translationChunkFailureCount({ workspaceId, itemId: id, targetLang: lang, sourceHash: hash, chunkIndex: index, chunkHash: chunk, now: at });
       return { failCount, exhausted: failCount >= TRANSLATION_CHUNK_FAIL_LIMIT };
     },
 

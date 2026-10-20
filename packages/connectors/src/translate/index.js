@@ -129,10 +129,18 @@ function forgetChunkFailure(chunkStore, meta) {
   }
 }
 
+function chunkFailureSkippable(error) {
+  if (!error) return true;
+  if (error.code === 'budget-deferred' || error.code === 'translation-call-cap' || error.code === 'translation-chunk-exhausted') return true;
+  const status = Number(error.upstreamStatus);
+  if (status === 429 || (status >= 500 && status <= 599)) return true;
+  const message = String(error.message || '');
+  if (/配额|quota/i.test(message) || /\b429\b/.test(message)) return true;
+  return /翻译失败（5\d\d）/.test(message) || /上游 5\d\d/.test(message);
+}
+
 function abandonChunk(chunkStore, meta, error) {
-  if (!error || error.code === 'budget-deferred' || error.code === 'translation-call-cap' || error.code === 'translation-chunk-exhausted') {
-    throw error;
-  }
+  if (chunkFailureSkippable(error)) throw error;
   if (!chunkStore?.noteFailure || !meta?.itemId) throw error;
   let noted = null;
   try { noted = chunkStore.noteFailure(meta); }

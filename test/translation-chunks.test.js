@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createStore } from '../packages/database/src/index.js';
+import { TRANSLATION_CHUNK_FAIL_TTL_MS } from '../packages/database/src/translation-retry.js';
 import { createFeedService } from '../packages/domain/src/feed-service.js';
 import { createTranslateService, joinTranslationChunks, splitTranslationText, translationChunkChars } from '../packages/connectors/src/translate/index.js';
 import { gemmaTranslationInput, gemmaTranslationTimeoutMs } from '../packages/connectors/src/translate/gemma.js';
@@ -335,4 +336,71 @@ test('a successful chunk clears the failure count and a quota deferral does not 
   const saved = await service.translate({ text: source, id: 'chunk-clear', workspaceId: 'local' });
   assert.equal(saved.translatedText, full);
   assert.equal(chunkStore.failures.size, 0);
+});
+
+test('429, quota, and 5xx do not count toward the same chunk', async () => {
+  const source = 'Capacity remains uncertain today.';
+  assert.ok(source.length < 400);
+  const chunkStore = memoryChunkFailures();
+  let mode = 'rate';
+  let calls = 0;
+  const service = createTranslateService({
+    sleep: async () => {},
+    chunkStore,
+    router: {
+      batch: false,
+      generate: async () => {
+        calls += 1;
+        if (mode === 'rate') throw Object.assign(new Error('Gemma 翻译失败（429）'), { upstreamStatus: 429 });
+        if (mode === 'quota') throw new Error('模型额度暂时用完 quota');
+        if (mode === 'server') throw Object.assign(new Error('Gemma 翻译失败（503）'), { upstreamStatus: 503 });
+        throw new Error('翻译未完整结束');
+      },
+    },
+  });
+  await assert.rejects(
+    service.translate({ text: source, id: 'chunk-skip', workspaceId: 'local' }),
+    (error) => error.upstreamStatus === 429,
+  );
+  mode = 'quota';
+  await assert.rejects(
+    service.translate({ text: source, id: 'chunk-skip', workspaceId: 'local' }),
+    /quota/,
+  );
+  mode = 'server';
+  await assert.rejects(
+    service.translate({ text: source, id: 'chunk-skip', workspaceId: 'local' }),
+    (error) => error.upstreamStatus === 503,
+  );
+  assert.equal(chunkStore.failures.size, 0);
+  const before = calls;
+  mode = 'short';
+  await assert.rejects(
+    service.translate({ text: source, id: 'chunk-skip', workspaceId: 'local' }),
+    /翻译未完整结束/,
+  );
+  assert.equal(calls, before + 1);
+  assert.equal([...chunkStore.failures.values()][0], 1);
+});
+
+test('a chunk failure older than 24 hours resets instead of staying blocked', () => {
+  const store = createStore(':memory:');
+  try {
+    const feed = store.repositories.feed;
+    const meta = { workspaceId: 'local', itemId: 'post-1', sourceHash: 'src', chunkIndex: 0, chunkHash: 'chunk' };
+    const start = 1_700_000_000_000;
+    for (let index = 0; index < 3; index += 1) {
+      const noted = feed.noteTranslationChunkFailure({ ...meta, now: start + index });
+      assert.equal(noted.failCount, index + 1);
+    }
+    assert.equal(feed.translationChunkFailureCount({ ...meta, now: start + 2 }), 3);
+    assert.equal(feed.translationChunkFailureCount({ ...meta, now: start + 2 + TRANSLATION_CHUNK_FAIL_TTL_MS - 1 }), 3);
+    assert.equal(feed.translationChunkFailureCount({ ...meta, now: start + 2 + TRANSLATION_CHUNK_FAIL_TTL_MS }), 0);
+    const reset = feed.noteTranslationChunkFailure({ ...meta, now: start + 2 + TRANSLATION_CHUNK_FAIL_TTL_MS });
+    assert.equal(reset.failCount, 1);
+    assert.equal(reset.exhausted, false);
+    assert.equal(feed.translationChunkFailureCount({ ...meta, now: start + 2 + TRANSLATION_CHUNK_FAIL_TTL_MS }), 1);
+  } finally {
+    store.close();
+  }
 });
