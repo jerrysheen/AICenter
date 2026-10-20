@@ -1,9 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   ARTICLE_READ_POSITION_KEY,
   articleIsLong,
+  articleReadKey,
   clearArticleReadPosition,
+  createArticleReadPosition,
   loadArticleReadPositions,
   pickReadAnchor,
   positionWorthRestoring,
@@ -55,4 +58,110 @@ test('positions are stored per article and cleared at the end or from the start'
   assert.match(storage.getItem(ARTICLE_READ_POSITION_KEY), /article-b/);
   const broken = memoryStorage({ [ARTICLE_READ_POSITION_KEY]: '{oops' });
   assert.deepEqual(loadArticleReadPositions(broken), {});
+  assert.equal(articleReadKey('youtube%3ApC3QbOu7_s4'), 'youtube:pC3QbOu7_s4');
+  assert.equal(articleReadKey('youtube:pC3QbOu7_s4'), 'youtube:pC3QbOu7_s4');
+});
+
+test('leaving a youtube article keeps the paragraph when the page scroll jumps home', () => {
+  const appSource = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
+  assert.match(appSource, /articleReadKey\(itemId\)/);
+  assert.match(appSource, /pageKind === 'article'\) \{\s*try \{ history\.scrollRestoration = 'manual'; \}/);
+
+  const storage = memoryStorage();
+  const view = { scrollY: 0, viewport: 800, scrollHeight: 8000, line: 60 };
+  const scrolls = [];
+  const listeners = new Map();
+  const previous = {
+    addEventListener: globalThis.addEventListener,
+    removeEventListener: globalThis.removeEventListener,
+    scrollTo: globalThis.scrollTo,
+    requestAnimationFrame: globalThis.requestAnimationFrame,
+    history: globalThis.history,
+    document: globalThis.document,
+  };
+  function listen(type, fn) {
+    const list = listeners.get(type) || [];
+    list.push(fn);
+    listeners.set(type, list);
+  }
+  function unlisten(type, fn) {
+    listeners.set(type, (listeners.get(type) || []).filter((item) => item !== fn));
+  }
+  function element(tag, text, top) {
+    return {
+      tagName: tag,
+      textContent: text,
+      dataset: {},
+      docTop: top,
+      closest: () => null,
+      getBoundingClientRect() {
+        return { top: this.docTop - view.scrollY, bottom: this.docTop + 40 - view.scrollY };
+      },
+      setAttribute() {},
+    };
+  }
+  const title = element('H3', '对话开场', 80);
+  const section = element('H3', '部署逻辑与 Scaling Law（00:06:06）', 2400);
+  const content = {
+    classList: { contains: () => false },
+    querySelectorAll: () => [title, section],
+  };
+  const shell = {
+    isConnected: true,
+    prepend() {},
+    querySelector(selector) {
+      if (selector === '.reader-content') return content;
+      return null;
+    },
+  };
+  globalThis.addEventListener = listen;
+  globalThis.removeEventListener = unlisten;
+  globalThis.scrollTo = (arg) => {
+    const top = typeof arg === 'number' ? arg : Number(arg?.top) || 0;
+    scrolls.push(top);
+    view.scrollY = top;
+  };
+  globalThis.requestAnimationFrame = (fn) => {
+    fn();
+    return 1;
+  };
+  globalThis.history = { scrollRestoration: 'auto' };
+  globalThis.document = {
+    createElement() {
+      return {
+        className: '',
+        textContent: '',
+        setAttribute() {},
+        append() {},
+        addEventListener() {},
+      };
+    },
+  };
+  const reader = createArticleReadPosition({ storage: () => storage, metrics: () => view });
+  try {
+    reader.mount({ articleId: 'youtube%3ApC3QbOu7_s4', shell });
+    assert.equal(globalThis.history.scrollRestoration, 'manual');
+    view.scrollY = 2200;
+    for (const fn of listeners.get('scroll') || []) fn();
+    view.scrollY = 0;
+    for (const fn of [...(listeners.get('scroll') || [])]) fn();
+    reader.unmount();
+    const saved = loadArticleReadPositions(storage)['youtube:pC3QbOu7_s4'];
+    assert.equal(saved.anchorId, readAnchorId({ kind: 'h3', text: '部署逻辑与 Scaling Law（00:06:06）' }, new Map()));
+    assert.notEqual(saved.anchorId, readAnchorId({ kind: 'h3', text: '对话开场' }, new Map()));
+
+    scrolls.length = 0;
+    view.scrollY = 0;
+    reader.mount({ articleId: 'youtube:pC3QbOu7_s4', shell });
+    assert.ok(scrolls.some((top) => top > 1000));
+    reader.unmount();
+    assert.equal(loadArticleReadPositions(storage)['youtube:pC3QbOu7_s4'].anchorId, saved.anchorId);
+  } finally {
+    globalThis.addEventListener = previous.addEventListener;
+    globalThis.removeEventListener = previous.removeEventListener;
+    globalThis.scrollTo = previous.scrollTo;
+    globalThis.requestAnimationFrame = previous.requestAnimationFrame;
+    globalThis.history = previous.history;
+    globalThis.document = previous.document;
+  }
 });
