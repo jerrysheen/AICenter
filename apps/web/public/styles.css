@@ -333,6 +333,12 @@ main {
 }
 .view { display: none; min-width: 0; max-width: 100%; }
 .view.is-active { display: block; }
+.page-title-boot { display: none; }
+html.quote-boot #page-title .page-title-live { display: none; }
+html.quote-boot #page-title .page-title-boot { display: inline; }
+html.quote-boot #page-subtitle { display: none; }
+html.quote-boot body[data-view="sources"] #view-sources { display: none; }
+html.quote-boot body[data-view="sources"] #view-page { display: block; }
 #page-root { min-width: 0; max-width: 100%; }
 
 .channel-bar {

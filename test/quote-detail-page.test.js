@@ -5,6 +5,8 @@ import { readFileSync } from 'node:fs';
 
 const appSource = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
 const cssSource = readFileSync(new URL('../apps/web/public/styles.css', import.meta.url), 'utf8');
+const bootSource = readFileSync(new URL('../apps/web/public/ui-boot.js', import.meta.url), 'utf8');
+const htmlSource = readFileSync(new URL('../apps/web/public/index.html', import.meta.url), 'utf8');
 
 function functionSource(name) {
   const match = appSource.match(new RegExp(`function ${name}\\([^]*?\\n\\}`));
@@ -148,6 +150,8 @@ test('quote page keeps status and placeholder price off the screen until a price
     prevClose: null,
     asOf: null,
     session: 'closed',
+    group: '半导体设备',
+    assetClass: 'equity',
   };
   const parts = context.quoteMetaParts(pendingQuote, '688361.SS');
   assert.equal(parts.pending, true);
@@ -158,6 +162,10 @@ test('quote page keeps status and placeholder price off the screen until a price
   assert.equal(view.title.textContent, '');
   assert.equal(view.title.classList.contains('is-pending'), true);
   assert.equal(view.title.textContent.includes('688361'), false);
+  assert.equal(view.meta.textContent.includes('688361'), false);
+  assert.equal(view.meta.textContent.includes('·'), false);
+  assert.equal(view.meta.textContent.includes('半导体'), false);
+  assert.equal(view.meta.textContent.includes('股票'), false);
   assert.equal(view.meta.textContent.includes('休市'), false);
   assert.equal(view.meta.attrs['aria-busy'], 'true');
   assert.equal(view.meta.children.some((child) => child.className === 'quote-skeleton'), true);
@@ -250,4 +258,58 @@ test('opening a quote resets the page scroll and still restores the list', () =>
   assert.equal(context.restoringViewScroll, false);
   assert.equal(context.history.scrollRestoration, 'manual');
   assert.equal(blurred, true);
+});
+
+test('quote hash paints a skeleton before startup requests and does not leave a partial subtitle', () => {
+  const hashContext = vm.createContext({ location: { hash: '#quote/300852.SZ' } });
+  vm.runInContext(functionSource('quoteHashPath'), hashContext);
+  assert.equal(hashContext.quoteHashPath(), 'quote/300852.SZ');
+  hashContext.location.hash = '#quote/300852.SZ?from=list';
+  assert.equal(hashContext.quoteHashPath(), 'quote/300852.SZ');
+  hashContext.location.hash = '#sources';
+  assert.equal(hashContext.quoteHashPath(), '');
+  hashContext.location.hash = '#quote';
+  assert.equal(hashContext.quoteHashPath(), '');
+  assert.match(functionSource('bootQuoteRoute'), /setView\(route, \{ replace: true \}\)/);
+
+  const init = functionSource('initialize');
+  const bootAt = init.indexOf('bootQuoteRoute()');
+  const awaitAt = init.indexOf('await ');
+  assert.ok(bootAt > 0 && bootAt < awaitAt);
+
+  const render = functionSource('renderQuotePage');
+  const guardAt = render.indexOf('if (!state.session) return;');
+  const historyAt = render.indexOf('loadQuoteHistory(');
+  assert.ok(guardAt > 0 && guardAt < historyAt);
+
+  const setView = functionSource('setView');
+  const titleAt = setView.indexOf('pageKinds[state.pageKind]?.title');
+  const releaseAt = setView.indexOf("classList.remove('quote-boot')");
+  assert.ok(titleAt > 0 && releaseAt > titleAt);
+
+  assert.match(bootSource, /quote-boot/);
+  assert.match(bootSource, /#quote\\\/\[\^\/\?#\]\+/);
+  assert.match(cssSource, /html\.quote-boot body\[data-view="sources"\] #view-sources \{ display: none; \}/);
+  assert.match(cssSource, /html\.quote-boot body\[data-view="sources"\] #view-page \{ display: block; \}/);
+  assert.match(cssSource, /html\.quote-boot #page-title \.page-title-boot \{ display: inline; \}/);
+  assert.match(htmlSource, /class="page-title-boot">行情</);
+  const skeleton = htmlSource.match(/id="quote-boot-skeleton"[\s\S]*?<\/article>/);
+  assert.ok(skeleton);
+  assert.match(skeleton[0], /quote-skeleton/);
+  assert.match(skeleton[0], /is-pending/);
+  assert.doesNotMatch(skeleton[0], /·|休市|—|\d{6}/);
+
+  assert.doesNotMatch(functionSource('scheduleOverviewManualPosts'), /showToast/);
+  assert.match(functionSource('flushBehavior'), /\.catch\(\(\) => \{\}\)/);
+  assert.doesNotMatch(functionSource('flushBehavior'), /showToast/);
+  const streamStart = appSource.indexOf('function connectStream()');
+  const streamEnd = appSource.indexOf('async function pairFromUrl(');
+  const stream = appSource.slice(streamStart, streamEnd);
+  assert.match(stream, /onerror = \(\) => setConnection\('waiting', '正在重连'\)/);
+  assert.doesNotMatch(stream, /请求超时/);
+  const startup = functionSource('completeAuthorizedStart');
+  const streamCall = startup.indexOf('connectStream()');
+  const awaited = startup.indexOf('await Promise.all(startupLoads)');
+  assert.ok(streamCall > 0 && streamCall < awaited);
+  assert.doesNotMatch(startup, /await connectStream|await flushBehavior|await loadPosts/);
 });

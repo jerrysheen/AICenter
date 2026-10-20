@@ -1343,6 +1343,7 @@ function setView(name, options = {}) {
     elements['page-title'].textContent = viewCopy[view].title;
     elements['page-subtitle'].textContent = viewCopy[view].subtitle;
   }
+  document.documentElement.classList.remove('quote-boot');
   syncWorkPackageProgressWatch();
   updateHeaderAction(view);
   renderOverviewLanes();
@@ -2319,6 +2320,18 @@ function restorePersistedFeedBrowseState() {
   } catch {
     return null;
   }
+}
+
+function quoteHashPath() {
+  const hash = String(location.hash || '').split('?')[0];
+  if (!/^#quote\/[^/?#]+$/.test(hash)) return '';
+  return hash.slice(1);
+}
+
+function bootQuoteRoute() {
+  const route = quoteHashPath();
+  if (!route) return;
+  setView(route, { replace: true });
 }
 
 function restoreLastLocationHash() {
@@ -8398,7 +8411,7 @@ function scheduleOverviewManualPosts() {
   const run = () => {
     scheduleOverviewManualPosts.queued = false;
     if (!state.session || state.postsLoaded || state.postsLoading) return;
-    loadPosts().catch((error) => showToast(error.message));
+    loadPosts().catch(() => {});
   };
   if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(run, { timeout: 1500 });
   else window.setTimeout(run, 0);
@@ -10396,13 +10409,14 @@ function paintQuoteFigures(wrap, quote, { dailyAt = 0 } = {}) {
   }
   const meta = wrap.querySelector('.detail-meta');
   if (meta && !dailyAt) {
-    const parts = quoteMetaParts(quote, symbol, { group: wrap.dataset.group, asset: wrap.dataset.asset });
-    meta.replaceChildren(document.createTextNode(parts.text));
     if (pending) {
-      if (parts.text) meta.append(document.createTextNode(' · '));
-      meta.append(quoteSkeletonBar());
+      meta.replaceChildren(quoteSkeletonBar());
       meta.setAttribute('aria-busy', 'true');
-    } else meta.removeAttribute('aria-busy');
+    } else {
+      const parts = quoteMetaParts(quote, symbol, { group: wrap.dataset.group, asset: wrap.dataset.asset });
+      meta.textContent = parts.text;
+      meta.removeAttribute('aria-busy');
+    }
   }
   const last = wrap.querySelector('.last');
   if (last) {
@@ -10470,6 +10484,7 @@ function renderQuotePage() {
     tabs.append(button);
   });
   root.replaceChildren(wrap);
+  if (!state.session) return;
   if (quote.lastPrice == null) loadLiveQuote(symbol, wrap).catch(() => {});
   loadQuoteHistory(symbol, wrap.querySelector('#quote-chart-host')).catch((error) => showToast(error.message));
   if (/^\d{1,5}\.HK$/i.test(symbol)) loadSouthboundHistory(symbol, wrap);
@@ -16002,6 +16017,7 @@ async function completeAuthorizedStart(session) {
 async function initialize() {
   forgetLegacyDeviceGrant();
   try {
+    bootQuoteRoute();
     const paired = await pairFromUrl();
     if (paired && window.aiCenterSessionBoot) window.aiCenterSessionBoot.used = true;
     const shellCheck = maybeReloadStaleShell();
