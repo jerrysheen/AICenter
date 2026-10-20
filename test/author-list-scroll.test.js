@@ -30,6 +30,10 @@ function createDom() {
       this.moved += 1;
     },
     requestAnimationFrame(fn) { fn(); return 1; },
+    innerHeight: 800,
+    listeners: {},
+    addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); },
+    dispatchEvent(event) { for (const fn of this.listeners[event?.type] || []) fn(event); },
   };
   class El {
     constructor(tag = 'div') {
@@ -110,10 +114,18 @@ function createDom() {
     get clientWidth() { return this.classList.contains('author-switch') ? 120 : 0; }
     scrollIntoView() { window.usedScrollIntoView = true; }
     getBoundingClientRect() {
+      if (this.classList.contains('author-list-rows')) {
+        const top = -(Number(window.scrollY) || 0);
+        return { top, bottom: top };
+      }
       if (!this.classList.contains('author-row')) return { top: 0, bottom: 0 };
-      const rows = feed.querySelectorAll('.author-row');
+      let host = this.parentNode;
+      while (host && !host.classList?.contains('author-list-rows')) host = host.parentNode;
+      const rows = host?.querySelectorAll('.author-row') || [];
       const index = rows.indexOf(this);
-      const top = index * 80 - (Number(window.scrollY) || 0);
+      const spacer = Number.parseFloat(host?.querySelector('.author-spacer-top')?.style?.height) || 0;
+      const stride = spacer ? 72 : 80;
+      const top = spacer + index * stride - (Number(window.scrollY) || 0);
       return { top, bottom: top + 72 };
     }
     querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
@@ -351,4 +363,158 @@ test('social feed polling does not repaint the author list', async () => {
   context.state.xItems = [];
   await context.loadX({ autoTranslate: false });
   assert.ok(rendered > socialRendered);
+});
+
+test('reading one unread drops the detail and list counts before the next fetch', async () => {
+  const author = {
+    authorId: 'x:wolfram',
+    name: 'wolfram capital',
+    platform: 'x',
+    followed: true,
+    unreadCount: 7,
+    totalCount: 10,
+    latestTitleZh: '最新',
+    latestItemAt: 1_700_000_000_000,
+  };
+  const unread = Array.from({ length: 7 }, (_, index) => ({
+    id: `item-${index}`,
+    title: `未读${index}`,
+    preview: `未读${index}`,
+    publishedAt: 1_700_000_000_000 - index * 1000,
+    isRead: false,
+  }));
+  const read = [{ id: 'old', title: '已读', preview: '已读', publishedAt: 1_600_000_000_000, isRead: true }];
+  let listCalls = 0;
+  const api = async (url) => {
+    const path = String(url);
+    if (path.includes('/items')) {
+      return path.includes('read=unread')
+        ? { items: unread, nextCursor: '' }
+        : { items: read, nextCursor: '' };
+    }
+    if (path.includes('/authors?')) {
+      listCalls += 1;
+      return listPayload([{ ...author }]);
+    }
+    return { author: { ...author } };
+  };
+  const { feed, view, document } = mountAuthorView([], api);
+  await view.renderList(feed);
+  assert.equal(feed.querySelector('.author-unread').textContent, '7');
+  const pageRoot = document.createElement('div');
+  pageRoot._connected = true;
+  await view.renderPage(pageRoot, 'x:wolfram');
+  const item = [...pageRoot.querySelectorAll('.author-item')].find((node) => node.querySelector('strong').textContent === '未读0');
+  item.listeners.click[0]();
+  await view.renderPage(pageRoot, 'x:wolfram');
+  assert.equal(pageRoot.querySelector('h3').textContent, '未读 · 6');
+  const blocks = pageRoot.querySelectorAll('.author-items');
+  assert.equal([...blocks[0].querySelectorAll('strong')].some((node) => node.textContent === '未读0'), false);
+  assert.equal([...blocks[1].querySelectorAll('strong')].some((node) => node.textContent === '未读0'), true);
+  await view.renderList(feed);
+  assert.equal(feed.querySelector('.author-unread').textContent, '6');
+  assert.equal(listCalls, 1);
+  view.noteRead('x:wolfram', 'item-0');
+  await view.renderPage(pageRoot, 'x:wolfram');
+  await view.renderList(feed);
+  assert.equal(pageRoot.querySelector('h3').textContent, '未读 · 6');
+  assert.equal(feed.querySelector('.author-unread').textContent, '6');
+});
+
+test('a long author list paints a window and keeps the anchored row', async () => {
+  const rows = authorRows(3500);
+  const api = async () => listPayload(rows);
+  const { feed, view, window } = mountAuthorView(rows, api);
+  await view.renderList(feed);
+  assert.ok(feed.querySelectorAll('.author-row').length < 40);
+  assert.equal(feed.querySelector('.author-row').dataset.authorId, 'x:0');
+  assert.equal(feed.querySelectorAll('.author-row').some((row) => row.dataset.authorId === 'x:3000'), false);
+  window.scrollY = 1000 * 72;
+  window.dispatchEvent({ type: 'scroll' });
+  const deep = feed.querySelectorAll('.author-row');
+  assert.ok(deep.length < 40);
+  assert.equal(deep.some((row) => row.dataset.authorId === 'x:991'), true);
+  assert.equal(deep.some((row) => row.dataset.authorId === 'x:0'), false);
+  window.scrollY = 0;
+  window.dispatchEvent({ type: 'scroll' });
+  assert.equal(feed.querySelector('.author-row').dataset.authorId, 'x:0');
+  assert.ok(feed.querySelectorAll('.author-row').length < 40);
+
+  const shorter = authorRows(120);
+  const again = mountAuthorView(shorter, async () => listPayload(shorter));
+  await again.view.renderList(again.feed);
+  again.window.scrollY = 40 * 72;
+  again.window.dispatchEvent({ type: 'scroll' });
+  const anchor = [...again.feed.querySelectorAll('.author-row')].find((row) => row.getBoundingClientRect().bottom > 96);
+  const before = anchor.getBoundingClientRect().top;
+  const anchorId = anchor.dataset.authorId;
+  const moved = shorter[shorter.length - 1];
+  shorter.splice(shorter.length - 1, 1);
+  shorter.unshift(moved);
+  await again.view.renderList(again.feed);
+  const kept = [...again.feed.querySelectorAll('.author-row')].find((row) => row.dataset.authorId === anchorId);
+  assert.ok(kept);
+  assert.equal(kept.getBoundingClientRect().top, before);
+  assert.notEqual(again.window.scrollY, 0);
+  assert.equal(again.window.usedScrollIntoView, false);
+});
+
+test('returning to the feed restores the saved position and the scope hash', () => {
+  const setView = extract(appSource, 'setView');
+  assert.match(setView, /view === 'feed' && options\.replace\) scrollFeedToTop\(\)/);
+  assert.match(setView, /view === 'feed' && leaving\) restoreViewScroll\('feed'\)/);
+  assert.doesNotMatch(setView, /view === 'feed' && \(leaving \|\| options\.replace\)\) scrollFeedToTop\(\)/);
+  assert.match(extract(appSource, 'applyFeedPlatform'), /syncFeedScopeHash\(\)/);
+  assert.match(extract(appSource, 'selectFeedScope'), /syncFeedScopeHash\(\)/);
+  assert.match(extract(appSource, 'restoreViewScroll'), /syncAuthorListWindow\(\)/);
+
+  const scrolls = [];
+  const restore = vm.createContext({
+    viewScrollY: { feed: 640 },
+    state: { feedAnchorId: '', channel: 'all' },
+    restoringViewScroll: false,
+    document: {
+      body: { classList: { contains: () => false }, dataset: { view: 'feed' } },
+      querySelector() { return null; },
+    },
+    window: {
+      scrollY: 0,
+      scrollTo(_x, y) { this.scrollY = y; scrolls.push(y); },
+      requestAnimationFrame(fn) { fn(); },
+    },
+    requestAnimationFrame(fn) { fn(); },
+    visibleFeedItems: () => [],
+    FEED_PAGE_SIZE: 12,
+    renderPosts() {},
+  });
+  vm.runInContext(`${extract(appSource, 'restoreViewScroll')}\nthis.restoreViewScroll = restoreViewScroll;`, restore);
+  restore.restoreViewScroll('feed');
+  assert.equal(scrolls.at(-1), 640);
+  assert.equal(restore.viewScrollY.feed, 640);
+
+  const location = { hash: '#feed?tab=author', pathname: '/', search: '' };
+  const history = {
+    state: { aiCenter: true },
+    replaceState(next, _title, url) {
+      this.state = next;
+      location.hash = url.slice(url.indexOf('#'));
+    },
+  };
+  const hashBox = vm.createContext({
+    state: { channel: 'all' },
+    document: { body: { dataset: { view: 'feed' } } },
+    history,
+    location,
+  });
+  vm.runInContext(`${extract(appSource, 'syncFeedScopeHash')}\nthis.syncFeedScopeHash = syncFeedScopeHash;`, hashBox);
+  hashBox.syncFeedScopeHash();
+  assert.equal(location.hash, '#feed');
+  hashBox.state.channel = 'author';
+  hashBox.syncFeedScopeHash();
+  assert.equal(location.hash, '#feed?tab=author');
+  hashBox.document.body.dataset.view = 'inspire';
+  location.hash = '#feed?tab=author';
+  hashBox.state.channel = 'all';
+  hashBox.syncFeedScopeHash();
+  assert.equal(location.hash, '#feed?tab=author');
 });

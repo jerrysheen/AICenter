@@ -24,6 +24,26 @@ function minutes(durationSec) {
   return `${Math.round(value / 60)} 分钟`;
 }
 
+export function episodeArticleMessage(episode) {
+  const message = String(episode?.article?.message || '').trim();
+  if (message) return message;
+  if (episode?.articleStatus === 'pending') return '中文整理排队中';
+  return '';
+}
+
+export function foldedOriginal(text) {
+  const details = document.createElement('details');
+  details.className = 'podcast-original';
+  details.open = false;
+  const summary = document.createElement('summary');
+  summary.textContent = '英文原文';
+  const pre = document.createElement('pre');
+  pre.className = 'podcast-transcript-text';
+  pre.textContent = text || '没有全文。';
+  details.append(summary, pre);
+  return details;
+}
+
 export function renderYoutubePodcasts(root, { api, videoId = '', showToast = () => {} } = {}) {
   root.replaceChildren();
   const page = document.createElement('section');
@@ -109,7 +129,7 @@ function episodeRow(episode, { api, open }) {
         clock(episode.publishedAt),
         minutes(episode.durationSec),
         SOURCE_LABEL[episode.transcriptSource] || '',
-        episode.articleStatus === 'pending' ? '待整理' : '',
+        episodeArticleMessage(episode),
       ].filter(Boolean).join(' · '),
     }),
   );
@@ -153,26 +173,23 @@ function fillDetail(detail, episode, api) {
       transcriptButton.disabled = true;
       try {
         const payload = await api(`/api/v1/youtube-podcasts/${encodeURIComponent(episode.videoId)}`);
-        const body = payload.episode?.body || '';
-        const articleStatus = payload.episode?.articleStatus || episode.articleStatus || '';
+        const loaded = payload.episode || episode;
+        const body = loaded.body || '';
+        const articleStatus = loaded.articleStatus || episode.articleStatus || '';
+        const articleReady = articleStatus === 'ready' || loaded.article?.status === 'ready';
         transcript.replaceChildren();
-        if (articleStatus === 'pending') {
-          transcript.append(Object.assign(document.createElement('p'), {
-            className: 'podcast-pending',
-            textContent: '待整理',
-          }));
-        }
-        if (articleStatus === 'ready') {
+        if (articleReady) {
           const article = document.createElement('div');
           article.className = 'podcast-article';
           renderMarkdownInto(article, body || '没有全文。');
           attachYoutubeHeadingTimes(article, episode.videoId);
           transcript.append(article);
         } else {
-          const plain = document.createElement('pre');
-          plain.className = 'podcast-transcript-text';
-          plain.textContent = body || '没有全文。';
-          transcript.append(plain);
+          transcript.append(Object.assign(document.createElement('p'), {
+            className: 'podcast-pending',
+            textContent: episodeArticleMessage(loaded) || '中文整理排队中',
+          }));
+          transcript.append(foldedOriginal(body));
         }
         transcript.dataset.loaded = '1';
       } catch (error) {

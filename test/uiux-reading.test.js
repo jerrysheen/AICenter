@@ -136,7 +136,8 @@ test('browse persistence restores filters and list size without the old scroll p
   for (const [key, value] of Object.entries({ feedQuery: '混排', feedSort: 'published', feedRange: '7d', feedPlatform: 'media', feedShown: 48 })) assert.equal(context.state[key], value);
   assert.equal(context.state.feedAnchorId, undefined);
   assert.equal(context.viewScrollY.feed, undefined);
-  assert.match(functionSource('setView'), /view === 'feed' && \(leaving \|\| options\.replace\)\) scrollFeedToTop\(\)/);
+  assert.match(functionSource('setView'), /view === 'feed' && options\.replace\) scrollFeedToTop\(\)/);
+  assert.match(functionSource('setView'), /view === 'feed' && leaving\) restoreViewScroll\('feed'\)/);
   assert.match(functionSource('resetFeedWindow'), /scrollFeedToTop\(\)/);
   assert.match(functionSource('completeAuthorizedStart'), /scrollFeedToTop\(\)/);
 });

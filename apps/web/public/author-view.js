@@ -67,6 +67,12 @@ function followButton(author, onToggle) {
 }
 
 const AUTHOR_ANCHOR_LINE = 96;
+const AUTHOR_ROW_STRIDE = 72;
+const AUTHOR_WINDOW_OVERSCAN = 8;
+const AUTHOR_WINDOW_MIN = 64;
+
+let authorRowHandlers = null;
+let authorWindowBound = false;
 
 function authorListStamp(platform, payload) {
   const counts = payload?.counts || {};
@@ -226,6 +232,157 @@ function sameRowOrder(rowsHost, followed, others) {
 function updateRowsInPlace(rowsHost, followed, others) {
   const rows = [...rowsHost.querySelectorAll('.author-row')];
   [...followed, ...others].forEach((author, index) => applyAuthorRow(rows[index], author));
+}
+
+function authorEntries(followed, others) {
+  const entries = [];
+  if (followed.length) {
+    entries.push({ kind: 'head', text: '已关注' });
+    for (const author of followed) entries.push({ kind: 'row', author });
+  }
+  if (others.length) {
+    entries.push({ kind: 'head', text: followed.length ? '其他' : '作者' });
+    for (const author of others) entries.push({ kind: 'row', author });
+  }
+  return entries;
+}
+
+function setAuthorVirtual(rowsHost, enabled) {
+  const names = String(rowsHost.className || '').split(/\s+/).filter((name) => name && name !== 'is-virtual');
+  if (enabled) names.push('is-virtual');
+  rowsHost.className = names.join(' ');
+}
+
+function authorStride(rowsHost) {
+  const saved = Number(rowsHost?.dataset?.stride);
+  if (saved >= 48 && saved <= 160) return saved;
+  return AUTHOR_ROW_STRIDE;
+}
+
+function rememberAuthorStride(rowsHost) {
+  const row = rowsHost.querySelector?.('.author-row');
+  const height = Number(row?.offsetHeight) || 0;
+  if (height >= 48 && height <= 160) rowsHost.dataset.stride = String(Math.round(height));
+}
+
+function authorHiddenAbove(rowsHost) {
+  const top = Number(rowsHost?.getBoundingClientRect?.().top);
+  if (Number.isFinite(top) && top < 0) return -top;
+  const y = Number(window.scrollY) || 0;
+  return y > 160 ? y - 160 : 0;
+}
+
+function authorWindowRange(rowsHost, count, anchorIndex) {
+  const stride = authorStride(rowsHost);
+  const view = Math.max(320, Number(window.innerHeight) || 800);
+  const size = Math.ceil(view / stride) + AUTHOR_WINDOW_OVERSCAN * 2;
+  let start = Math.max(0, Math.floor(authorHiddenAbove(rowsHost) / stride) - AUTHOR_WINDOW_OVERSCAN);
+  if (anchorIndex >= 0 && (anchorIndex < start || anchorIndex >= start + size)) {
+    start = Math.max(0, anchorIndex - AUTHOR_WINDOW_OVERSCAN);
+  }
+  const end = Math.min(count, Math.max(start + 1, start + size));
+  return { start, end };
+}
+
+function placeAuthorWindow(rowsHost, followed, others, handlers, options = {}) {
+  setAuthorVirtual(rowsHost, true);
+  const entries = authorEntries(followed, others);
+  const anchorIndex = options.anchorId
+    ? entries.findIndex((entry) => entry.kind === 'row' && entry.author?.authorId === options.anchorId)
+    : -1;
+  const range = authorWindowRange(rowsHost, entries.length, anchorIndex);
+  const stride = authorStride(rowsHost);
+  const key = `${range.start}:${range.end}:${stride}`;
+  const rows = [...(rowsHost.querySelectorAll?.('.author-row') || [])];
+  const expected = [];
+  for (let index = range.start; index < range.end; index += 1) {
+    if (entries[index]?.kind === 'row') expected.push(entries[index].author);
+  }
+  const sameWindow = rowsHost.dataset.window === key && rows.length > 0;
+  if (sameWindow && !options.force) return;
+  if (
+    sameWindow
+    && rows.length === expected.length
+    && rows.every((row, index) => (row.dataset?.authorId || '') === (expected[index]?.authorId || ''))
+  ) {
+    expected.forEach((author, index) => applyAuthorRow(rows[index], author));
+    return;
+  }
+  const existing = new Map();
+  for (const row of rows) {
+    const id = row.dataset?.authorId || '';
+    if (id && !existing.has(id)) existing.set(id, row);
+  }
+  let top = childByClass(rowsHost, 'author-spacer-top');
+  let bottom = childByClass(rowsHost, 'author-spacer-bottom');
+  if (!top) {
+    top = document.createElement('div');
+    top.className = 'author-spacer author-spacer-top';
+    top.setAttribute('aria-hidden', 'true');
+  }
+  if (!bottom) {
+    bottom = document.createElement('div');
+    bottom.className = 'author-spacer author-spacer-bottom';
+    bottom.setAttribute('aria-hidden', 'true');
+  }
+  top.style.height = `${range.start * stride}px`;
+  bottom.style.height = `${Math.max(0, entries.length - range.end) * stride}px`;
+  const nodes = [top];
+  for (let index = range.start; index < range.end; index += 1) {
+    const entry = entries[index];
+    if (!entry) continue;
+    if (entry.kind === 'head') {
+      const heading = document.createElement('h3');
+      heading.className = 'author-group';
+      heading.textContent = entry.text;
+      nodes.push(heading);
+    } else {
+      const id = entry.author?.authorId || '';
+      let row = existing.get(id);
+      if (row) {
+        applyAuthorRow(row, entry.author);
+        existing.delete(id);
+      } else row = authorRow(entry.author, handlers);
+      nodes.push(row);
+    }
+  }
+  for (const stale of existing.values()) stale.remove();
+  nodes.push(bottom);
+  rowsHost.replaceChildren(...nodes);
+  rowsHost.dataset.window = key;
+  rememberAuthorStride(rowsHost);
+}
+
+function syncAuthorWindow() {
+  if (!authorListOnScreen() || !authorRowHandlers) return;
+  const shell = childByClass(document.querySelector('#feed'), 'author-screen');
+  if (shell?.dataset?.virtual !== '1' || !listCache || listCache.platform !== listPlatform) return;
+  const rows = childByClass(shell, 'author-list-rows');
+  const payload = listCache.payload || {};
+  if (!rows) return;
+  placeAuthorWindow(
+    rows,
+    Array.isArray(payload.followed) ? payload.followed : [],
+    Array.isArray(payload.others) ? payload.others : [],
+    authorRowHandlers,
+  );
+}
+
+function bindAuthorWindow() {
+  if (authorWindowBound || typeof window.addEventListener !== 'function') return;
+  authorWindowBound = true;
+  let queued = false;
+  window.addEventListener('scroll', () => {
+    if (queued) return;
+    queued = true;
+    const schedule = window.requestAnimationFrame?.bind(window);
+    const run = () => {
+      queued = false;
+      syncAuthorWindow();
+    };
+    if (typeof schedule === 'function') schedule(run);
+    else run();
+  }, { passive: true });
 }
 
 function rebuildRows(rowsHost, followed, others, handlers) {
@@ -404,9 +561,20 @@ export function createAuthorView({ api, openAuthor, openArticle }) {
     }
     const followed = Array.isArray(payload.followed) ? payload.followed : [];
     const others = Array.isArray(payload.others) ? payload.others : [];
-    const same = sameRowOrder(rows, followed, others);
-    if (same) updateRowsInPlace(rows, followed, others);
-    else rebuildRows(rows, followed, others, { onOpen: openRow, onFollow: toggleFollow });
+    const handlers = { onOpen: openRow, onFollow: toggleFollow };
+    authorRowHandlers = handlers;
+    bindAuthorWindow();
+    const virtual = followed.length + others.length > AUTHOR_WINDOW_MIN;
+    shell.dataset.virtual = virtual ? '1' : '';
+    if (virtual) {
+      placeAuthorWindow(rows, followed, others, handlers, { force: true, anchorId: anchor?.authorId || '' });
+    } else {
+      setAuthorVirtual(rows, false);
+      rows.dataset.window = '';
+      const same = sameRowOrder(rows, followed, others);
+      if (same) updateRowsInPlace(rows, followed, others);
+      else rebuildRows(rows, followed, others, handlers);
+    }
     syncMore(shell, payload);
     childByClass(shell, 'feed-empty')?.remove();
     shell.dataset.platform = platform;
@@ -448,6 +616,30 @@ export function createAuthorView({ api, openAuthor, openArticle }) {
     page.justRead = page.justRead || new Set();
     page.justRead.add(itemId);
     page.scrollY = window.scrollY;
+    const unreadItems = page.unread?.items;
+    const index = Array.isArray(unreadItems)
+      ? unreadItems.findIndex((item) => item && item.id === itemId)
+      : -1;
+    if (index >= 0) {
+      const [item] = unreadItems.splice(index, 1);
+      if (item) item.isRead = true;
+      if (Array.isArray(page.read?.items) && item) page.read.items.unshift(item);
+      const touched = new Set();
+      const dropUnread = (row) => {
+        if (!row || touched.has(row)) return;
+        touched.add(row);
+        row.unreadCount = Math.max(0, (Number(row.unreadCount) || 0) - 1);
+      };
+      dropUnread(page.author);
+      const lists = [listCache?.payload?.followed, listCache?.payload?.others];
+      for (const list of lists) {
+        if (!Array.isArray(list)) continue;
+        const author = list.find((row) => row && row.authorId === authorId);
+        if (!author) continue;
+        dropUnread(author);
+        break;
+      }
+    }
     pages.set(authorId, page);
   }
 
@@ -557,7 +749,9 @@ export function createAuthorView({ api, openAuthor, openArticle }) {
     if (page.read) shell.append(section(author, page, 'read', `已读 · ${Math.max(0, (author.totalCount || 0) - (author.unreadCount || 0))}`, true));
     root.append(shell);
     const y = page.scrollY || 0;
-    requestAnimationFrame(() => window.scrollTo(0, y));
+    const frame = window.requestAnimationFrame?.bind(window);
+    if (typeof frame === 'function') frame(() => window.scrollTo(0, y));
+    else window.scrollTo(0, y);
   }
 
   function section(author, page, key, label, quiet = false) {
@@ -630,5 +824,5 @@ export function createAuthorView({ api, openAuthor, openArticle }) {
     return row;
   }
 
-  return { renderList, renderPage, noteRead, remember };
+  return { renderList, renderPage, noteRead, remember, syncWindow: syncAuthorWindow };
 }

@@ -401,7 +401,7 @@ test('social cards show translation state instead of the foreign summary, and tr
   const context = vm.createContext({
     formatTime: () => '',
     postTagNames: () => [],
-    state: { translations: {}, restoredArticles: {}, session: {}, dialogPost: null },
+    state: { translations: {}, restoredArticles: {}, session: {}, dialogPost: null, translationQueued: {} },
     elements: {},
     showToast(message) { context.toast = message; },
     setView() {},

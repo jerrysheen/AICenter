@@ -42,6 +42,7 @@ import { createGemmaTranslationRouter } from '../../connectors/src/translate/gem
 const PART_ATTEMPTS = 3;
 const ASK_TIMEOUT_MS = 120_000;
 const GEMMA_MODEL = 'gemma-4-26b-a4b-it';
+const ARTICLE_FRESH_MS = 36 * 60 * 60 * 1000;
 
 function shanghaiDay(now, timeZone) {
   return formatYmd(zonedParts(now, timeZone));
@@ -573,13 +574,14 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
     row.articleState = JSON.stringify(state);
     row.sourceTranscript = source;
     row.sourceHash = hash;
-    row.articleDay = day;
+    const articleDay = repairing ? (row.articleDay || '') : day;
+    if (!repairing) row.articleDay = day;
     repository.saveEpisode(episodePatch(row, workspaceId, {
       sourceTranscript: source,
       sourceHash: hash,
       articleStatus: status,
       articleState: row.articleState,
-      articleDay: day,
+      articleDay,
     }));
   };
   if (!repairing) replaceContent(feedRepository, workspaceId, row.contentItemId, { body: deduped });
@@ -696,9 +698,41 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
   );
 }
 
+function articleQueueTier(row, day, now) {
+  if (row.articleStatus === 'ready') return 3;
+  if (row.articleDay === day) return 0;
+  const ingested = Number(row.ingestedAt) || 0;
+  if (ingested && now - ingested <= ARTICLE_FRESH_MS) return 1;
+  return 2;
+}
+
+function sortArticleCandidates(rows, day, now) {
+  return [...rows].sort((left, right) => {
+    const tier = articleQueueTier(left, day, now) - articleQueueTier(right, day, now);
+    if (tier) return tier;
+    const published = (Number(right.publishedAt) || 0) - (Number(left.publishedAt) || 0);
+    if (published) return published;
+    const ingested = (Number(right.ingestedAt) || 0) - (Number(left.ingestedAt) || 0);
+    if (ingested) return ingested;
+    return String(right.videoId).localeCompare(String(left.videoId));
+  });
+}
+
+function markArticleHold(repository, row, workspaceId, day, reason) {
+  const state = readState(row.articleState) || {};
+  state.holdDay = day;
+  state.holdReason = reason;
+  const articleState = JSON.stringify(state);
+  repository.saveEpisode(episodePatch(row, workspaceId, {
+    articleState,
+    articleStatus: row.articleStatus || 'pending',
+  }));
+  row.articleState = articleState;
+}
+
 export async function runYoutubeArticlePass(deps = {}) {
   const env = deps.env || process.env;
-  const stats = { ready: 0, pending: 0, skipped: 0, stopped: '' };
+  const stats = { ready: 0, pending: 0, skipped: 0, stopped: '', dailyLimit: 0 };
   if (!youtubeArticleEnabled(env)) return stats;
   const engine = youtubeArticleEngine(env);
   const client = engine === 'doubao' ? articleClient(deps) : null;
@@ -714,7 +748,8 @@ export async function runYoutubeArticlePass(deps = {}) {
   const day = shanghaiDay(now, deps.timeZone || youtubePodcastClock(env).timeZone);
   const limit = deps.dailyLimit || youtubeArticleDailyLimit(env);
   let slots = Math.max(0, limit - repository.countArticleDay(workspaceId, day));
-  for (const row of repository.listArticleCandidates(workspaceId)) {
+  const candidates = sortArticleCandidates(repository.listArticleCandidates(workspaceId), day, now);
+  for (const row of candidates) {
     if (deps.signal?.aborted) {
       stats.stopped = 'deadline';
       break;
@@ -722,6 +757,7 @@ export async function runYoutubeArticlePass(deps = {}) {
     const saved = readState(row.articleState);
     if (saved?.holdDay === day) {
       stats.pending += 1;
+      if (saved.holdReason === 'daily-limit') stats.dailyLimit += 1;
       continue;
     }
     if (row.articleStatus === 'ready' && saved?.titleStatus === 'pending' && !(engine === 'gemma' && gemmaArticleNeedsRepair(saved))) {
@@ -741,8 +777,14 @@ export async function runYoutubeArticlePass(deps = {}) {
       stats.skipped += 1;
       continue;
     }
-    if (row.articleDay !== day) {
-      if (slots <= 0) continue;
+    const repair = row.articleStatus === 'ready' && engine === 'gemma' && gemmaArticleNeedsRepair(saved);
+    if (row.articleDay !== day && !repair) {
+      if (slots <= 0) {
+        markArticleHold(repository, row, workspaceId, day, 'daily-limit');
+        stats.dailyLimit += 1;
+        stats.pending += 1;
+        continue;
+      }
       slots -= 1;
       row.articleDay = day;
     }

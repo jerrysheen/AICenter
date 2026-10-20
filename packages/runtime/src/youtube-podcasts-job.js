@@ -17,11 +17,16 @@ import {
   selectPodcastEpisodes,
   summaryNeedsChinese,
   watchUrl,
+  nextYoutubeArticleSlot,
   youtubeArticleEnabled,
+  youtubeArticleEveryHours,
   youtubePodcastClock,
   youtubePodcastLimits,
   youtubeRoundDeadlineMs,
   youtubePodcastsEnabled,
+  YOUTUBE_ARTICLE_CATCHUP_MINUTE,
+  YOUTUBE_ARTICLE_JOB_TYPE,
+  YOUTUBE_ARTICLE_SCHEDULE_KEY,
   YOUTUBE_PODCAST_JOB_TYPE,
   YOUTUBE_PODCAST_SCHEDULE_KEY,
 } from '../../domain/src/youtube-podcasts.js';
@@ -42,8 +47,9 @@ import { createGeminiAudioTranscriber } from '../../connectors/src/audio-transcr
 import { executeAudioTranscription } from './audio-transcription-job.js';
 import { dedupeRollingCaptions, transcriptHash } from '../../domain/src/youtube-captions.js';
 import { localizePodcastCopy, repairYoutubeChineseCopy, runYoutubeArticlePass } from './youtube-article-job.js';
+import { retireYoutubeTranslationJobs } from './feed-translation-module.js';
 
-export { YOUTUBE_PODCAST_JOB_TYPE, YOUTUBE_PODCAST_SCHEDULE_KEY };
+export { YOUTUBE_ARTICLE_JOB_TYPE, YOUTUBE_PODCAST_JOB_TYPE, YOUTUBE_PODCAST_SCHEDULE_KEY };
 
 const SUMMARY_SYSTEM = `你是财经与科技播客的中文编辑。只根据给定文字稿写简体中文观点摘要，不要补充文字稿里没有的事实。
 titleZh 必须是简体中文标题，不要保留英文节目标题。quotes.text 必须是简体中文，人名、公司名和股票代码可以留英文。
@@ -66,9 +72,29 @@ export function ensureYoutubePodcastSchedule(store, env = process.env, now = Dat
   });
 }
 
+export function ensureYoutubeArticleSchedule(store, env = process.env, now = Date.now()) {
+  const clock = youtubePodcastClock(env);
+  const everyHours = youtubeArticleEveryHours(env);
+  return store.upsertJobSchedule({
+    workspaceId: 'local',
+    key: YOUTUBE_ARTICLE_SCHEDULE_KEY,
+    jobType: YOUTUBE_ARTICLE_JOB_TYPE,
+    enabled: youtubeArticleEnabled(env),
+    schedule: { kind: 'interval', intervalMinutes: everyHours * 60 },
+    input: {},
+    priority: 0,
+    maxAttempts: 1,
+    nextRunAt: nextYoutubeArticleSlot(now - 1, {
+      timeZone: clock.timeZone,
+      everyHours,
+      minute: YOUTUBE_ARTICLE_CATCHUP_MINUTE,
+    }),
+  });
+}
+
 function logRound(stats) {
   const reasons = stats.reasons.length ? stats.reasons.join(',') : '-';
-  console.log(`[worker] youtube-podcasts discovered=${stats.discovered} subtitles=${stats.subtitles} transcribed=${stats.transcribed} failed=${stats.failed} skipped=${stats.skipped} transcribeUnavailable=${stats.transcribeUnavailable} articles=${stats.articlesReady || 0} articlePending=${stats.articlePending || 0} stopped=${stats.stopped || '-'} reasons=${reasons}`);
+  console.log(`[worker] youtube-podcasts discovered=${stats.discovered} subtitles=${stats.subtitles} transcribed=${stats.transcribed} failed=${stats.failed} skipped=${stats.skipped} transcribeUnavailable=${stats.transcribeUnavailable} articles=${stats.articlesReady || 0} articlePending=${stats.articlePending || 0} articleHeld=${stats.articleHeld || 0} stopped=${stats.stopped || '-'} reasons=${reasons}`);
 }
 
 function emptyStats() {
@@ -83,6 +109,7 @@ function emptyStats() {
     reasons: [],
     articlesReady: 0,
     articlePending: 0,
+    articleHeld: 0,
     status: 'ready',
   };
 }
@@ -368,6 +395,7 @@ export async function runYoutubePodcastRound(deps = {}) {
         });
         stats.articlesReady = articles.ready;
         stats.articlePending = articles.pending;
+        stats.articleHeld = articles.dailyLimit || 0;
         if (articles.stopped) pushReason(stats, `article-${articles.stopped}`);
       } catch (error) {
         pushReason(stats, 'article');
@@ -772,5 +800,29 @@ export function createYoutubePodcastJobHandlers(options = {}) {
       workspaceId: input.workspaceId || options.workspaceId || 'local',
       signal: ctx.signal,
     }),
+    [YOUTUBE_ARTICLE_JOB_TYPE]: async (input = {}, ctx = {}) => {
+      const env = options.env || process.env;
+      const workspaceId = input.workspaceId || options.workspaceId || 'local';
+      const jobStore = ctx.store || options.store;
+      if (jobStore) retireYoutubeTranslationJobs(jobStore, workspaceId);
+      const syncing = (jobStore?.listOpenJobs?.(YOUTUBE_PODCAST_JOB_TYPE) || []).some((job) => job.status === 'running');
+      if (syncing) {
+        console.log('[worker] youtube-article skipped sync-running');
+        return { ready: 0, pending: 0, skipped: 0, dailyLimit: 0, stopped: 'sync-running' };
+      }
+      const limits = youtubePodcastLimits(env);
+      const deadline = AbortSignal.timeout(youtubeRoundDeadlineMs(limits.roundMs));
+      const signal = ctx.signal && typeof AbortSignal.any === 'function'
+        ? AbortSignal.any([ctx.signal, deadline])
+        : (ctx.signal || deadline);
+      const articles = await runYoutubeArticlePass({
+        ...options,
+        env,
+        workspaceId,
+        signal,
+      });
+      console.log(`[worker] youtube-article ready=${articles.ready} pending=${articles.pending} held=${articles.dailyLimit || 0} skipped=${articles.skipped} stopped=${articles.stopped || '-'}`);
+      return articles;
+    },
   };
 }
