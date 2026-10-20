@@ -24,8 +24,7 @@ import {
   pickHomeQuoteCards,
   quoteStatusText,
   marketStaleLabel,
-  marketPhaseLabel,
-  marketClosedLabel,
+  marketStatusLabel,
   marketFillDelayMs,
   quoteStaleLabel,
   quoteClosedLabel,
@@ -38,6 +37,7 @@ import {
   homeReadingReady,
   nextHomeReadingHour,
   acceptMarketPayload,
+  alignMarketBoards,
   marketPayloadHasQuotes,
   absorbReadingIndex,
   mergeReadingHours,
@@ -6685,6 +6685,7 @@ async function loadMarket({ board = state.stockBoard, priority = 4, fresh = fals
     const accepted = acceptMarketPayload(previous, payload.market);
     const boardName = payload.market?.board || board;
     state.markets[boardName] = accepted;
+    state.markets = alignMarketBoards(state.markets);
     state.marketPending[boardName] = Boolean(payload.pending);
     if (payload.pending) scheduleMarketFill(boardName);
     else clearMarketFill(boardName);
@@ -6889,7 +6890,12 @@ function hubQuotes() {
   return homeQuoteCards();
 }
 
+function syncMarketState() {
+  state.markets = alignMarketBoards(state.markets);
+}
+
 function renderHubTicker() {
+  syncMarketState();
   const ticker = elements['hub-ticker'];
   if (!ticker) return;
   const focus = preferredOverviewFocus();
@@ -6933,10 +6939,9 @@ function renderHubTicker() {
     });
     elements['hub-market-note'].replaceChildren();
     const delay = homeDataDelayLabel(state.homeGeneratedAt);
-    const stale = marketStaleLabel(state.markets.overview);
-    const closed = stale ? '' : marketClosedLabel(state.markets.overview);
-    if (status.kind !== 'error' && status.kind !== 'slow' && (delay || stale || closed)) {
-      elements['hub-market-note'].textContent = delay || stale || closed;
+    const note = marketStatusLabel(state.markets.overview);
+    if (status.kind !== 'error' && status.kind !== 'slow' && (note || delay)) {
+      elements['hub-market-note'].textContent = note || delay;
       return;
     }
     if (status.kind === 'loading') {
@@ -8254,6 +8259,7 @@ function applyProjectedHome(projected, token) {
   if (projected.market) {
     const board = projected.market.board || 'overview';
     state.markets[board] = acceptMarketPayload(state.markets[board], projected.market);
+    state.markets = alignMarketBoards(state.markets);
     if (marketPayloadHasQuotes(state.markets[board])) state.marketBoardErrors[board] = '';
     state.marketPending[board] = Boolean(projected.marketPending);
     if (projected.marketPending) scheduleMarketFill(board);
@@ -8533,10 +8539,8 @@ function renderMarketStatus() {
     ? (state.marketBoardErrors[state.stockBoard] || state.marketError)
     : '';
   const stale = marketStaleLabel(market);
-  const phase = stale ? '' : marketPhaseLabel(market);
-  const closed = stale || phase ? '' : marketClosedLabel(market);
   const delay = homeDataDelayLabel(state.homeGeneratedAt);
-  const note = stale || phase || delay || closed;
+  const note = marketStatusLabel(market) || delay;
   el.replaceChildren();
   el.classList.toggle('is-stale', Boolean(stale));
   el.classList.toggle('hidden', !note && !error);
@@ -8613,7 +8617,12 @@ function renderOverview(market) {
     const heading = document.createElement('div');
     heading.className = 'market-section-title';
     heading.append(Object.assign(document.createElement('h2'), { textContent: section.title }));
-    const sectionMeta = section.awaitingQuote ? marketPhaseLabel(section) : (section.session ? sessionLabel(section.session) : '');
+    const sectionMeta = marketStatusLabel({
+      ...section,
+      board: section.board || section.id || market?.board,
+      focus: market?.focus,
+      fetchedAt: section.fetchedAt || market?.fetchedAt,
+    });
     if (sectionMeta) {
       heading.append(Object.assign(document.createElement('small'), { className: 'muted', textContent: sectionMeta }));
     }
@@ -9167,6 +9176,7 @@ function loadSouthboundHistory(symbol, wrap) {
 }
 
 function renderMarket() {
+  syncMarketState();
   renderStockBoards();
   const market = currentMarket();
   const isFlow = state.stockBoard === 'flow';
