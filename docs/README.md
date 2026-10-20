@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-20-quote-boot-skeleton.md`：刷新 `#quote/代码` 时按地址直接显示个股骨架，中间不经过总览。报价未到时副标题只留骨架，不先写代码和间隔号。帖子、行为和实时流不挡住这一帧，失败不弹「请求超时」。不新增 migration。需要重启 Web，浏览器再加载一次。
+
 - `progress/2026-10-20-quote-detail-scroll.md`：从观察列表进入个股详情时回到页面顶部，返回列表仍用原来的滚动位置。小时报自己的返回位置不改。报价还没到时标题、状态和价格用骨架，不先写代码、「休市」和「—」。副标题里的资产类别改成中文。不新增 migration。需要重启 Web，浏览器再加载一次。
 
 - `progress/2026-10-20-youtube-article-origin.md`：YouTube 文章页加「原帖」和时间点链接，长文按锚点记住阅读位置。整理完成后只用 Gemma 写中文标题，原标题留着。已整理的用 `scripts/backfill-youtube-article-titles.mjs` 回填，每篇 1 次。不新增 migration。需要同时重启 Web 和 Worker。

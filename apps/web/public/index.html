@@ -66,7 +66,7 @@
       <header class="title-bar">
         <button class="icon-button hidden" id="nav-back" type="button" aria-label="返回"></button>
         <div class="title-default">
-          <h1 id="page-title">总览</h1>
+          <h1 id="page-title"><span class="page-title-live">总览</span><span class="page-title-boot">行情</span></h1>
           <p class="title-sub" id="page-subtitle">信息、市场与新闻里抽出的最高优先级内容</p>
         </div>
         <label class="search-field" id="header-search">
@@ -477,7 +477,18 @@
         </section>
 
         <section class="view" id="view-page" data-view-panel="page">
-          <div id="page-root"></div>
+          <div id="page-root"><article class="detail-shell quote-detail quote-boot-skeleton" id="quote-boot-skeleton" aria-hidden="true">
+            <header class="detail-head">
+              <h2 class="detail-title is-pending" aria-busy="true"></h2>
+              <div class="detail-meta" aria-busy="true"><span class="quote-skeleton" aria-hidden="true"></span></div>
+            </header>
+            <div class="detail-body">
+              <div class="quote-last-row">
+                <strong class="last num is-pending" aria-busy="true"><span class="quote-skeleton" aria-hidden="true"></span></strong>
+                <b class="change is-pending" aria-busy="true"><span class="quote-skeleton" aria-hidden="true"></span></b>
+              </div>
+            </div>
+          </article></div>
         </section>
 
         <section class="view" id="view-settings" data-view-panel="settings">
