@@ -1,6 +1,8 @@
+import { fetchXVideoMedia } from '../../connectors/src/x/video-media.js';
 import { articleProgress, describeYoutubeArticle } from './youtube-article-status.js';
 import { formatYmd, zonedParts } from './zoned-time.js';
 import { nextZonedDayStart, youtubeArticleDailyLimit, youtubePodcastClock } from './youtube-podcasts.js';
+import { ensureXVideoFeedPost } from './x-video-feed.js';
 import {
   nextSharedArticleOpportunity,
   parseXStatusId,
@@ -73,7 +75,32 @@ function visible(row) {
   return true;
 }
 
-export function createXVideoService({ repository, store, env = process.env }) {
+export function createXVideoService({ repository, store, feedRepository = null, loadMedia = null, env = process.env }) {
+  async function loadTweet(tweetId) {
+    if (typeof loadMedia === 'function') return loadMedia(tweetId);
+    return fetchXVideoMedia(tweetId);
+  }
+
+  async function ensureFeed(workspaceId, tweetId) {
+    return ensureXVideoFeedPost({
+      feedRepository,
+      workspaceId,
+      tweetId,
+      loadTweet,
+    });
+  }
+
+  function rememberFeed(workspaceId, tweetId, videoId, current, feed) {
+    if (!feed?.contentItemId || feed.contentItemId === (current?.contentItemId || '')) return;
+    repository.savePost({
+      workspaceId,
+      tweetId,
+      videoId,
+      contentItemId: feed.contentItemId,
+      ...(feed.sourceUrl ? { sourceUrl: feed.sourceUrl } : {}),
+    });
+  }
+
   return {
     enabled() {
       return xVideoArticleEnabled(env);
@@ -110,53 +137,62 @@ export function createXVideoService({ repository, store, env = process.env }) {
       };
     },
 
-    enqueue(workspaceId, raw) {
+    async enqueue(workspaceId, raw) {
       if (!xVideoArticleEnabled(env)) return { status: 'disabled' };
       const tweetId = parseXStatusId(raw?.tweetId || raw?.url || raw);
       if (!tweetId) return { status: 'invalid' };
       const existing = repository.articleForTweet(workspaceId, tweetId);
-      if (existing?.status === 'ready' && existing.articleStatus === 'ready') {
-        return { status: 'ready', tweetId, videoId: existing.videoId };
-      }
       const videoId = existing?.videoId || `tweet:${tweetId}`;
-      repository.savePost({
-        workspaceId,
-        tweetId,
-        videoId,
-        contentItemId: existing?.contentItemId || '',
-        quotedTweetId: existing?.quotedTweetId || '',
-        sourceUrl: existing?.sourceUrl || `https://x.com/i/status/${tweetId}`,
-      });
-      if (!existing?.videoId || existing.videoId === videoId) {
+      if (!existing) {
+        repository.savePost({
+          workspaceId,
+          tweetId,
+          videoId,
+          contentItemId: '',
+          quotedTweetId: '',
+          sourceUrl: `https://x.com/i/status/${tweetId}`,
+        });
         repository.saveArticle({
           workspaceId,
           videoId,
-          status: existing?.status && existing.status !== 'skipped' ? existing.status : 'probe',
+          status: 'probe',
           manual: 1,
-          durationSec: existing?.durationSec,
-          sourceTranscript: existing?.sourceTranscript,
-          sourceHash: existing?.sourceHash,
-          articleStatus: existing?.articleStatus,
-          articleState: existing?.articleState,
-          articleBody: existing?.articleBody,
-          articleTitle: existing?.articleTitle,
-          articleDay: existing?.articleDay,
-          attempts: existing?.attempts,
           reason: '',
         });
-      } else {
-        repository.saveArticle({ workspaceId, videoId: existing.videoId, manual: 1 });
       }
       const open = (store.listOpenJobs?.(X_VIDEO_ARTICLE_JOB_TYPE) || [])
         .find((job) => String(job.input?.tweetId || '') === tweetId);
-      if (open) return { status: 'queued', tweetId, jobId: open.id };
-      const job = store.createJob({
-        type: X_VIDEO_ARTICLE_JOB_TYPE,
-        workspaceId,
-        maxAttempts: 1,
-        input: { workspaceId, tweetId, manual: true },
-      });
-      return { status: 'queued', tweetId, jobId: job.id, dailyLimit: youtubeArticleDailyLimit(env) };
+      let job = null;
+      const jobCreated = !existing && !open;
+      if (jobCreated) {
+        job = store.createJob({
+          type: X_VIDEO_ARTICLE_JOB_TYPE,
+          workspaceId,
+          maxAttempts: 1,
+          input: { workspaceId, tweetId, manual: true },
+        });
+      }
+      const feed = await ensureFeed(workspaceId, tweetId);
+      rememberFeed(workspaceId, tweetId, videoId, existing, feed);
+      if (existing?.status === 'ready' && existing.articleStatus === 'ready') {
+        return {
+          status: 'ready',
+          tweetId,
+          videoId: existing.videoId,
+          contentItemId: feed.contentItemId || existing.contentItemId || '',
+          authorId: feed.authorId || '',
+          jobCreated: false,
+        };
+      }
+      return {
+        status: 'queued',
+        tweetId,
+        jobId: open?.id || job?.id || '',
+        jobCreated,
+        contentItemId: feed.contentItemId || existing?.contentItemId || '',
+        authorId: feed.authorId || '',
+        ...(jobCreated ? { dailyLimit: youtubeArticleDailyLimit(env) } : {}),
+      };
     },
 
     holdState(row) {

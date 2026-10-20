@@ -243,6 +243,7 @@ export function createDomainServices({
     xVideos: store.repositories.xVideos
       ? createXVideoService({
         repository: store.repositories.xVideos,
+        feedRepository: store.repositories.feed,
         store,
         env,
       })

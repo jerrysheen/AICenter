@@ -286,6 +286,12 @@ export function createYoutubePodcastRepository(database) {
       }));
     },
 
+    getArticleState(workspaceId, videoId) {
+      const row = database.prepare(`SELECT article_state FROM youtube_podcast_episodes
+        WHERE workspace_id = ? AND video_id = ?`).get(workspaceId, videoId);
+      return row?.article_state || '';
+    },
+
     getStatus(workspaceId, videoId) {
       const row = database.prepare(`SELECT e.video_id, e.creator_id, e.channel_key, e.title,
           e.duration_sec, e.published_at, e.status, e.reason, e.transcript_source, e.content_item_id,
