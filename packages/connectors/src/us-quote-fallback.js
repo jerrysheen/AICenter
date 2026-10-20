@@ -2,7 +2,9 @@ import { usSessionAt } from './us-session.js';
 
 const TENCENT_URL = 'https://qt.gtimg.cn/q=';
 const SINA_URL = 'https://hq.sinajs.cn/list=';
-const DEFAULT_TIMEOUT_MS = 8_000;
+const DEFAULT_TIMEOUT_MS = 4_000;
+const CHUNK_SIZE = 40;
+const CHUNK_CONCURRENCY = 4;
 const MAX_QUOTE_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 
@@ -215,39 +217,69 @@ export function createUsQuoteFallback(options = {}) {
     }
   }
 
-  async function fetchTencent(pairs) {
+  async function runChunks(pairs, run) {
+    const groups = chunk(pairs, CHUNK_SIZE);
     const quotes = [];
-    for (const group of chunk(pairs, 40)) {
+    let failure = null;
+    let cursor = 0;
+    async function once(group) {
+      try {
+        return await run(group);
+      } catch (error) {
+        try {
+          return await run(group);
+        } catch (again) {
+          failure = again;
+          return [];
+        }
+      }
+    }
+    async function worker() {
+      while (cursor < groups.length) {
+        const group = groups[cursor];
+        cursor += 1;
+        quotes.push(...await once(group));
+      }
+    }
+    const workers = Math.min(CHUNK_CONCURRENCY, groups.length || 0);
+    if (workers) await Promise.all(Array.from({ length: workers }, () => worker()));
+    if (!quotes.length && failure) throw failure;
+    return quotes;
+  }
+
+  async function fetchTencent(pairs) {
+    return runChunks(pairs, async (group) => {
       const text = await request(`${TENCENT_URL}${group.map((item) => item.code).join(',')}`, {
         'User-Agent': USER_AGENT,
         Accept: '*/*',
       });
       const byCode = new Map(group.map((item) => [item.code.toUpperCase(), item.symbol]));
+      const quotes = [];
       for (const match of text.matchAll(/v_([^=\s]+)="([^"]*)"/g)) {
         const symbol = byCode.get(match[1].toUpperCase());
         const quote = symbol ? quoteFromTencentUsBody(match[2], symbol, now()) : null;
         if (quote) quotes.push(quote);
       }
-    }
-    return quotes;
+      return quotes;
+    });
   }
 
   async function fetchSina(pairs) {
-    const quotes = [];
-    for (const group of chunk(pairs, 40)) {
+    return runChunks(pairs, async (group) => {
       const text = await request(`${SINA_URL}${group.map((item) => item.code).join(',')}`, {
         'User-Agent': USER_AGENT,
         Referer: 'https://finance.sina.com.cn',
         Accept: '*/*',
       });
       const byCode = new Map(group.map((item) => [item.code.toLowerCase(), item.symbol]));
+      const quotes = [];
       for (const match of text.matchAll(/hq_str_([A-Za-z0-9_$.]+)="([^"]*)"/g)) {
         const symbol = byCode.get(match[1].toLowerCase());
         const quote = symbol ? quoteFromSinaUsBody(match[2], symbol, now()) : null;
         if (quote) quotes.push(quote);
       }
-    }
-    return quotes;
+      return quotes;
+    });
   }
 
   async function fetchQuotes(symbols) {

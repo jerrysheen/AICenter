@@ -68,6 +68,16 @@ export function yahooQueueMaxAgeMs(env = process.env) {
   return envInt(env, 'AI_CENTER_MARKET_BOARD_TIMEOUT_MS', 20_000, 1_000, 60_000);
 }
 
+// Leave the tail of the board deadline for the free backup (Tencent, then Sina).
+// A 20s board timeout otherwise aborts Yahoo and the backup in the same instant.
+export const YAHOO_FALLBACK_RESERVE_MS = 10_000;
+
+export function quoteQueueBudget(limit) {
+  const value = Number(limit) || 0;
+  if (value >= YAHOO_FALLBACK_RESERVE_MS + 4_000) return value - YAHOO_FALLBACK_RESERVE_MS;
+  return value;
+}
+
 function defaultLog(level, message) {
   const line = `[market] ${message}`;
   if (level === 'error') console.error(line);
@@ -197,22 +207,26 @@ export function createYahooQuoteLayer(options = {}) {
       if (skipQueued(job)) discardQueued(job);
     }
     for (const [symbol, slot] of [...inflight]) {
-      if (!slot.started && !slotLive(slot)) finish(symbol, null);
+      if (slotLive(slot)) continue;
+      slot.cancel?.();
+      finish(symbol, null);
     }
   }
 
-  function allAbortSignal(signals) {
-    const list = [...new Set((signals || []).filter(Boolean))];
-    if (!list.length) return undefined;
-    if (list.length === 1) return list[0];
+  function batchAbortSignal(waiters, lifetime) {
+    const list = [...new Set((waiters || []).filter(Boolean))];
     const controller = new AbortController();
     const check = () => {
-      if (list.every((signal) => signal.aborted)) controller.abort();
+      if (lifetime?.aborted || (list.length > 0 && list.every((signal) => signal.aborted))) controller.abort();
     };
-    for (const signal of list) {
-      if (!signal.aborted) signal.addEventListener('abort', check, { once: true });
+    if (lifetime) {
+      if (lifetime.aborted) controller.abort();
+      else lifetime.addEventListener('abort', check, { once: true });
     }
-    check();
+    for (const signal of list) {
+      if (signal.aborted) check();
+      else signal.addEventListener('abort', check, { once: true });
+    }
     return controller.signal;
   }
 
@@ -332,9 +346,14 @@ export function createYahooQuoteLayer(options = {}) {
       }
       if (!still.length) return { skipped: true };
       if (backingOff()) return { blocked: true };
-      const batchSignal = allAbortSignal(still.flatMap((symbol) => (
+      const lifetime = new AbortController();
+      for (const symbol of still) {
+        const slot = inflight.get(symbol);
+        if (slot) slot.cancel = () => lifetime.abort();
+      }
+      const batchSignal = batchAbortSignal(still.flatMap((symbol) => (
         (inflight.get(symbol)?.waiters || []).map((waiter) => waiter.signal).filter(Boolean)
-      )));
+      )), lifetime.signal);
       return loadNow(still, batchSignal);
     }, lane, { symbols: chosen, signals }).then((result) => {
       const open = chosen.filter((symbol) => inflight.has(symbol));
@@ -872,10 +891,11 @@ export function createYahooClient(options = {}) {
       return pack([...cached, ...extra], unique);
     }
     const queueLimit = maxQueueMs == null ? yahooQueueMaxAgeMs(env) : maxQueueMs;
+    const yahooBudget = quoteQueueBudget(queueLimit);
     const rows = await layer.enqueue(
       unique,
       (batch, batchSignal) => loadSymbols(batch, interval, batchSignal || signal),
-      { signal, maxQueueMs: queueLimit },
+      { signal, maxQueueMs: yahooBudget },
     );
     if (signal?.aborted) return pack((rows || []).filter(Boolean), unique);
     const have = new Set(rows.filter((quote) => quote?.lastPrice != null).map((quote) => quote.symbol));

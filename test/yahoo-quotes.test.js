@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createYahooClient, isUsMarketSymbol, preferNewerQuote, quoteFromSpark, yahooCacheMs, yahooQueueMaxAgeMs } from '../packages/connectors/src/yahoo.js';
+import { createYahooClient, isUsMarketSymbol, preferNewerQuote, quoteFromSpark, quoteQueueBudget, yahooCacheMs, yahooQueueMaxAgeMs } from '../packages/connectors/src/yahoo.js';
 import {
   createUsQuoteFallback,
   quoteFromSinaUsBody,
@@ -404,6 +404,34 @@ test('Sina premarket fields price off the regular close', () => {
   assert.equal(regular.asOf, Date.parse('2026-10-16T20:00:00Z'));
 });
 
+test('one backup chunk timing out keeps quotes from the other chunk', async () => {
+  const symbols = ['AAPL', ...Array.from({ length: 40 }, (_, index) => `S${index}`)];
+  let slowTries = 0;
+  const fetchImpl = async (url) => {
+    const href = String(url);
+    if (!href.includes('qt.gtimg.cn')) throw new Error(`unexpected ${href}`);
+    const codes = href.split('q=')[1].split(',');
+    if (codes.length === 1) {
+      slowTries += 1;
+      throw new Error('备用行情请求超时。');
+    }
+    const lines = codes.map((code) => {
+      const fields = TENCENT_AAPL.split('~');
+      fields[2] = code;
+      return `v_${code}="${fields.join('~')}";`;
+    });
+    return response(lines.join('\n'));
+  };
+  const quotes = await createUsQuoteFallback({
+    fetchImpl,
+    now: () => NOW,
+    timeoutMs: 20,
+  }).fetchQuotes(symbols);
+  assert.equal(slowTries, 2);
+  assert.equal(quotes.find((item) => item.symbol === 'AAPL').lastPrice, 345.95);
+  assert.equal(quotes.some((item) => item.symbol === 'S39'), false);
+});
+
 test('premarket prefers Sina because Tencent has no extended fields', async () => {
   const urls = [];
   const fetchImpl = async (url) => {
@@ -693,6 +721,8 @@ test('a quote queued longer than the board limit is not sent', async () => {
 test('queue age follows the board timeout and session formatting is reused', () => {
   assert.equal(yahooQueueMaxAgeMs({}), 20_000);
   assert.equal(yahooQueueMaxAgeMs({ AI_CENTER_MARKET_BOARD_TIMEOUT_MS: '15000' }), 15_000);
+  assert.equal(quoteQueueBudget(20_000), 10_000);
+  assert.equal(quoteQueueBudget(40), 40);
   const Original = Intl.DateTimeFormat;
   Intl.DateTimeFormat = function dateTimeFormat() {
     throw new Error('DateTimeFormat should be reused');

@@ -27,6 +27,10 @@
 
 - `progress/2026-10-20-x-video-article.md`：信息流里超过门槛的 X 视频进入和 YouTube 共用的整理队列。先抽音频，用现有 Gemini 转写，再交给 Gemma。详情里读中文长文，并有「原帖」。migration 93。需要同时重启 Web 和 Worker，浏览器再加载一次。
 
+- `progress/2026-10-20-youtube-article-round-stop.md`：YouTube 一轮因配额、连续 5xx 或时间到停下后，不再一直显示「整理中」。页面写已译段数、原因和下一次时间，3 分钟查一次。只有还在续租约的任务才算正在整理。写导读和标题时显示「收尾中」。没正文的期次不再标「仅摘要」。5xx 记成 upstream。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
+
+- `progress/2026-10-20-us-quote-partial.md`：美股一路超时或少返回标的时，已有报价留下，并改走腾讯或新浪。总览、市场概览、美股市场共用同一笔基准时间。盘中写「盘中」或「盘中 · 等待报价」，不写「已过期」。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
+
 - `progress/2026-10-20-feed-load-more.md`：信息流「全部」滚到底加载更多后停在原处，已加载的内容不会被刷掉。作者未读数和未读列表只算可见条目。宽屏长作者列表的占位按两列计算。不新增 migration。需要重启 Web，浏览器再加载一次。
 
 - `progress/2026-10-20-youtube-article-status-poll.md`：YouTube 整理失败、预计时间已过或当天名额用完时，不再一直显示「排队中」。排队时文章页只查不含正文的状态，离预计时间较远时每 3 分钟一次，临近预计时间或正在整理时约 20 秒。不新增 migration。需要重启 Web，浏览器再加载一次。

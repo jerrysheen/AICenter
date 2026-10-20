@@ -9,7 +9,7 @@ import {
   marketUsFreshMs,
   usBoardFreshnessError,
 } from '../packages/runtime/src/web-snapshot-jobs.js';
-import { homeDataDelayLabel, marketClosedLabel, marketFillDelayMs, marketPhaseLabel, marketStaleLabel, quoteClosedLabel, quoteStaleLabel } from '../apps/web/public/home-timeline.js';
+import { acceptMarketPayload, alignMarketBoards, homeDataDelayLabel, marketClosedLabel, marketFillDelayMs, marketPhaseLabel, marketStaleLabel, marketStatusLabel, quoteClosedLabel, quoteStaleLabel } from '../apps/web/public/home-timeline.js';
 import { createMarketBoardReader } from '../packages/source/src/market/board-read.js';
 
 const catalog = {
@@ -99,7 +99,8 @@ test('kept quotes stay on the board and become stale after the time limit', asyn
   assert.equal(stale.fetchedAt, fetchedAt);
   assert.equal(stale.indices.find((item) => item.symbol === '^GSPC').lastPrice, 5000);
   assert.match(logs.join('\n'), /美股行情失败 Yahoo HTTP 401/);
-  assert.equal(marketStaleLabel(stale), '已过期 · 1月1日 08:16');
+  assert.equal(marketStaleLabel(stale), '');
+  assert.equal(marketStatusLabel(stale), '盘中');
 
   mode = 'thin';
   clock.value += 20_000;
@@ -279,7 +280,8 @@ test('a stored snapshot is marked stale when it is read, using the current time'
   assert.equal(stale.market.stale, true);
   assert.equal(stale.market.fetchedAt, fetchedAt);
   assert.equal(payload.stale, undefined);
-  assert.equal(marketStaleLabel(stale.market, clock.value), '已过期 · 10月15日 21:40');
+  assert.equal(marketStaleLabel(stale.market, clock.value), '');
+  assert.equal(marketStatusLabel(stale.market, clock.value), '盘中');
 });
 
 test('US snapshot is stored before a slow A-share read finishes', async () => {
@@ -487,7 +489,7 @@ test('an older quote time does not replace a newer price already on the board', 
   assert.equal(round, 2);
 });
 
-test('a closed market is not expired, and five quiet minutes during the session are', async () => {
+test('a closed market is not expired, and a quiet regular session stays 盘中', async () => {
   const evening = Date.parse('2026-10-15T14:00:00Z');
   const cnPayload = {
     board: 'cn',
@@ -547,8 +549,9 @@ test('a closed market is not expired, and five quiet minutes during the session 
     staleMs: 180_000,
   }).read({ board: 'us' });
   assert.equal(live.market.stale, true);
-  assert.match(marketStaleLabel(live.market, evening), /^已过期/);
-  assert.match(quoteStaleLabel(live.market.indices[0], evening), /^已过期/);
+  assert.equal(marketStaleLabel(live.market, evening), '');
+  assert.equal(quoteStaleLabel(live.market.indices[0], evening), '');
+  assert.equal(marketStatusLabel(live.market, evening), '盘中');
   assert.equal(live.market.marketOpen, true);
   assert.equal(live.market.indices[0].session, 'regular');
   assert.equal(cn.market.marketOpen, false);
@@ -653,6 +656,7 @@ test('US pre and post stay on the board and do not count as expired', async () =
   assert.equal(pre.market.sections[0].marketOpen, false);
   assert.equal(marketStaleLabel(pre.market, Date.parse('2026-10-19T11:00:00Z')), '');
   assert.equal(marketPhaseLabel(pre.market), '盘前');
+  assert.equal(marketStatusLabel(pre.market, Date.parse('2026-10-19T11:00:00Z')), '盘前');
   assert.equal(quoteStaleLabel(pre.market.indices[0], Date.parse('2026-10-19T11:00:00Z')), '');
   assert.equal(quoteClosedLabel(pre.market.indices[0], Date.parse('2026-10-19T11:00:00Z')), '盘前 · 10月19日 19:00');
 
@@ -662,6 +666,7 @@ test('US pre and post stay on the board and do not count as expired', async () =
   assert.equal(post.market.indices[0].session, 'post');
   assert.equal(post.market.stale, false);
   assert.equal(quoteClosedLabel(post.market.indices[0], Date.parse('2026-10-19T21:00:00Z')), '盘后 · 10月20日 05:00');
+  assert.equal(marketStatusLabel(post.market, Date.parse('2026-10-19T21:00:00Z')), '盘后');
 
   const night = await readAt(Date.parse('2026-10-20T01:00:00Z'), 'post');
   assert.equal(night.market.session, 'closed');
@@ -723,6 +728,8 @@ test('the US open keeps premarket prices for five minutes instead of marking the
   assert.equal(opening.market.sections[0].awaitingQuote, true);
   assert.equal(marketStaleLabel(opening.market, justOpen), '');
   assert.equal(marketPhaseLabel(opening.market), '盘中 · 等待报价');
+  assert.equal(marketStatusLabel(opening.market, justOpen), '盘中 · 等待报价');
+  assert.equal(marketStatusLabel(opening.market.sections[0], justOpen), '盘中 · 等待报价');
   assert.equal(marketPhaseLabel(opening.market.sections[0]), '盘中 · 等待报价');
   assert.equal(marketClosedLabel(opening.market, justOpen), '');
   const nvda = opening.market.watchlist[0];
@@ -755,6 +762,222 @@ test('the US open keeps premarket prices for five minutes instead of marking the
   assert.equal(expired.market.awaitingQuote, undefined);
   assert.equal(expired.market.marketOpen, true);
   assert.equal(expired.market.session, 'regular');
-  assert.match(marketStaleLabel(expired.market, late), /^已过期 · 10月19日 21:12$/);
-  assert.match(quoteStaleLabel(expired.market.watchlist[0], late), /^已过期 · 10月19日 21:12$/);
+  assert.equal(marketStaleLabel(expired.market, late), '');
+  assert.equal(quoteStaleLabel(expired.market.watchlist[0], late), '');
+  assert.equal(marketStatusLabel(expired.market, late), '盘中');
+});
+
+test('a partial US refresh keeps prices the new fetch missed', async () => {
+  const logs = [];
+  const clock = { value: Date.parse('2026-10-20T14:00:00Z') };
+  let mode = 'full';
+  const service = serviceWith(() => {
+    if (mode === 'partial') {
+      return {
+        quotes: [{ ...quote('AAPL', 110), asOf: clock.value }],
+        session: 'regular',
+      };
+    }
+    return {
+      quotes: [quote('^GSPC', 5000), quote('AAPL', 100), quote('NVDA', 200), quote('MSFT', 300), quote('AMD', 400)]
+        .map((item) => ({ ...item, asOf: clock.value - 60_000 })),
+      session: 'regular',
+    };
+  }, logs, clock);
+  const first = await service.getBoard({ board: 'us' });
+  const previousAt = first.indices.find((item) => item.symbol === '^GSPC').asOf;
+  mode = 'partial';
+  clock.value += 60_000;
+  const second = await service.getBoard({ board: 'us', refresh: true });
+  assert.equal(second.indices.find((item) => item.symbol === '^GSPC').lastPrice, 5000);
+  assert.equal(second.indices.find((item) => item.symbol === '^GSPC').asOf, previousAt);
+  assert.equal(second.watchlist.find((item) => item.symbol === 'AAPL').lastPrice, 110);
+  assert.equal(second.watchlist.find((item) => item.symbol === 'AAPL').asOf, clock.value);
+});
+
+test('a hung Yahoo source does not drop futures that already arrived', async () => {
+  const logs = [];
+  const service = createMarketService({
+    inflightTimeoutMs: 30,
+    yahoo: { async fetchQuotes() { return new Promise(() => {}); } },
+    sinaFutures: {
+      async fetchQuotes() {
+        return [{ symbol: 'M00Y', lastPrice: 3, prevClose: 2, currency: 'CNY', session: 'regular' }];
+      },
+    },
+    xueqiuQuotes: { async fetchQuotes() { return []; } },
+    cnQuotes: { async fetchQuotes() { return []; } },
+    tushare: null,
+    now: () => Date.parse('2026-10-20T02:00:00Z'),
+    log(_level, message) { logs.push(message); },
+  });
+  const quotes = await service.fetchQuotes(['M00Y', 'AAPL']);
+  assert.equal(quotes.find((item) => item.symbol === 'M00Y').lastPrice, 3);
+  assert.equal(quotes.some((item) => item.symbol === 'AAPL'), false);
+  assert.match(logs.join('\n'), /行情源失败/);
+});
+
+test('overview and the US board share the newer quote for each symbol', async () => {
+  const evening = Date.parse('2026-10-20T13:50:00Z');
+  const older = Date.parse('2026-10-20T13:43:00Z');
+  const newer = Date.parse('2026-10-20T13:48:00Z');
+  const vixAt = Date.parse('2026-10-20T13:25:00Z');
+  const us = {
+    board: 'us',
+    fetchedAt: newer,
+    session: 'regular',
+    indices: [
+      { symbol: '^GSPC', name: '标普 500', lastPrice: 5200, asOf: newer, session: 'regular' },
+      { symbol: '^VIX', name: 'VIX', lastPrice: 18, asOf: vixAt, session: 'regular' },
+    ],
+    watchlist: [
+      { symbol: 'NVDA', name: 'NVIDIA', lastPrice: 200, asOf: Date.parse('2026-10-20T13:46:00Z'), session: 'regular' },
+    ],
+    gainers: [],
+    losers: [],
+    breadth: { advancers: 1, decliners: 0, unchanged: 0 },
+  };
+  const overview = {
+    board: 'overview',
+    focus: 'us',
+    fetchedAt: older,
+    session: 'regular',
+    indices: [],
+    watchlist: [],
+    gainers: [],
+    losers: [],
+    breadth: {
+      us: { advancers: 0, decliners: 0, unchanged: 0 },
+      asia: { advancers: 0, decliners: 0, unchanged: 0 },
+      cn: { advancers: 0, decliners: 0, unchanged: 0 },
+    },
+    sections: [{
+      id: 'us',
+      title: '美股观察',
+      session: 'regular',
+      indices: [
+        { symbol: '^GSPC', name: '标普 500', lastPrice: 5100, asOf: older, session: 'regular' },
+        { symbol: '^VIX', name: 'VIX', lastPrice: 19, asOf: vixAt, session: 'regular' },
+      ],
+      gainers: [],
+      losers: [],
+    }],
+  };
+  const repository = {
+    readSnapshot(_workspace, key) {
+      if (key === marketBoardSnapshotKey('us')) return { payload: us };
+      if (key === marketBoardSnapshotKey('overview')) return { payload: overview };
+      return null;
+    },
+  };
+  const reader = createMarketBoardReader({ repository, now: () => evening, staleMs: 180_000, ttlMs: 60_000 });
+  const overviewRead = await reader.read({ board: 'overview' });
+  const usRead = await reader.read({ board: 'us' });
+  const overviewSpx = overviewRead.market.sections[0].indices.find((item) => item.symbol === '^GSPC');
+  const usSpx = usRead.market.indices.find((item) => item.symbol === '^GSPC');
+  assert.equal(overviewSpx.asOf, newer);
+  assert.equal(overviewSpx.lastPrice, 5200);
+  assert.equal(usSpx.asOf, newer);
+  assert.equal(usSpx.lastPrice, 5200);
+  const overviewVix = overviewRead.market.sections[0].indices.find((item) => item.symbol === '^VIX');
+  const usVix = usRead.market.indices.find((item) => item.symbol === '^VIX');
+  assert.equal(overviewVix.asOf, vixAt);
+  assert.equal(usVix.asOf, vixAt);
+  assert.equal(marketStaleLabel(overviewRead.market, evening), '');
+  assert.equal(marketStaleLabel(usRead.market, evening), '');
+  assert.equal(marketStatusLabel(overviewRead.market, evening), '盘中');
+  assert.equal(marketStatusLabel(usRead.market, evening), '盘中');
+  assert.equal(marketStatusLabel(overviewRead.market.sections[0], evening), '盘中');
+});
+
+test('just after the US open the overview says 盘中 · 等待报价', async () => {
+  const at = Date.parse('2026-10-20T13:31:49Z');
+  const preAt = Date.parse('2026-10-20T13:29:00Z');
+  const payload = {
+    board: 'overview',
+    focus: 'us',
+    fetchedAt: preAt,
+    session: 'pre',
+    indices: [],
+    watchlist: [],
+    gainers: [],
+    losers: [],
+    breadth: {
+      us: { advancers: 0, decliners: 0, unchanged: 0 },
+      asia: { advancers: 0, decliners: 0, unchanged: 0 },
+      cn: { advancers: 0, decliners: 0, unchanged: 0 },
+    },
+    sections: [{
+      id: 'us',
+      title: '美股观察',
+      session: 'pre',
+      indices: [{ symbol: '^GSPC', name: '标普 500', lastPrice: 5200, asOf: preAt, session: 'pre' }],
+      gainers: [],
+      losers: [],
+    }],
+  };
+  const read = await createMarketBoardReader({
+    repository: { readSnapshot: () => ({ payload }) },
+    now: () => at,
+    staleMs: 180_000,
+  }).read({ board: 'overview' });
+  assert.equal(read.market.awaitingQuote, true);
+  assert.equal(read.market.sections[0].awaitingQuote, true);
+  assert.equal(marketStatusLabel(read.market, at), '盘中 · 等待报价');
+  assert.equal(marketStatusLabel({
+    ...read.market.sections[0],
+    board: 'us',
+    focus: 'us',
+    fetchedAt: read.market.fetchedAt,
+  }, at), '盘中 · 等待报价');
+  assert.equal(marketClosedLabel(read.market, at), '');
+  assert.equal(marketStaleLabel(read.market, at), '');
+});
+
+test('client boards keep one basis time after either side refreshes', () => {
+  const older = Date.parse('2026-10-20T13:43:00Z');
+  const newer = Date.parse('2026-10-20T13:48:00Z');
+  const vixAt = Date.parse('2026-10-20T13:25:00Z');
+  const evening = Date.parse('2026-10-20T13:50:00Z');
+  const aligned = alignMarketBoards({
+    overview: {
+      board: 'overview',
+      focus: 'us',
+      session: 'closed',
+      fetchedAt: older,
+      sections: [{
+        id: 'us',
+        session: 'closed',
+        indices: [
+          { symbol: '^GSPC', lastPrice: 1, asOf: older },
+          { symbol: '^VIX', lastPrice: 18, asOf: vixAt },
+        ],
+      }],
+    },
+    us: {
+      board: 'us',
+      session: 'regular',
+      marketOpen: true,
+      fetchedAt: newer,
+      indices: [
+        { symbol: '^GSPC', lastPrice: 2, asOf: newer },
+        { symbol: '^VIX', lastPrice: 18, asOf: vixAt },
+      ],
+    },
+  });
+  assert.equal(aligned.overview.sections[0].indices[0].asOf, newer);
+  assert.equal(aligned.overview.sections[0].indices[0].lastPrice, 2);
+  assert.equal(aligned.us.indices[0].asOf, newer);
+  assert.equal(aligned.overview.sections[0].indices[1].asOf, vixAt);
+  assert.equal(aligned.us.indices[1].asOf, vixAt);
+  assert.equal(aligned.overview.session, 'regular');
+  assert.equal(aligned.overview.sections[0].session, 'regular');
+  assert.equal(marketStatusLabel(aligned.overview, evening), '盘中');
+  assert.equal(marketStatusLabel(aligned.us, evening), '盘中');
+  const rolled = acceptMarketPayload(
+    { indices: [{ symbol: '^GSPC', lastPrice: 2, asOf: newer }] },
+    { indices: [{ symbol: '^GSPC', lastPrice: 1, asOf: older }] },
+  );
+  assert.equal(rolled.indices[0].lastPrice, 2);
+  assert.equal(rolled.indices[0].asOf, newer);
 });

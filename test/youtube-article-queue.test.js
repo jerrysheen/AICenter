@@ -118,9 +118,47 @@ test('catch-up slots stay on minute 10 and a blocked day waits until tomorrow', 
   const last = previousYoutubeArticleOpportunity(Date.parse('2026-10-20T04:20:00Z'), env);
   assert.equal(zonedParts(last, 'Asia/Shanghai').hour, 12);
   assert.equal(zonedParts(last, 'Asia/Shanghai').minute, 10);
-  const running = describeYoutubeArticle({ articleStatus: 'pending', done: 12, total: 27, nextAt: slot, now: at });
+  const running = describeYoutubeArticle({ articleStatus: 'pending', done: 12, total: 27, nextAt: slot, now: at, active: true });
   assert.equal(running.status, 'running');
   assert.equal(running.message, '整理中 12/27 段');
+  const idle = describeYoutubeArticle({ articleStatus: 'pending', done: 12, total: 27, nextAt: slot, now: at });
+  assert.equal(idle.status, 'queued');
+  assert.equal(idle.message, '已译 12/27 段，等待下一轮，12:10 继续');
+  assert.equal(idle.message.includes('整理中'), false);
+  const upstream = describeYoutubeArticle({
+    articleStatus: 'pending',
+    holdReason: 'upstream',
+    done: 28,
+    organized: 4,
+    total: 28,
+    nextAt: Date.parse('2026-10-21T00:10:00+08:00'),
+    now: Date.parse('2026-10-20T21:45:00+08:00'),
+  });
+  assert.equal(upstream.status, 'queued');
+  assert.equal(upstream.message, '已译 24/28 段，模型服务暂时出错，明天 00:10 继续');
+  const quotaPause = describeYoutubeArticle({
+    articleStatus: 'pending',
+    holdReason: 'quota',
+    done: 28,
+    organized: 4,
+    total: 28,
+    nextAt: Date.parse('2026-10-21T00:10:00+08:00'),
+    now: Date.parse('2026-10-20T21:45:00+08:00'),
+  });
+  assert.equal(quotaPause.status, 'queued');
+  assert.equal(quotaPause.message, '已译 24/28 段，模型额度暂时用完，明天 00:10 继续');
+  assert.equal(quotaPause.message.includes('整理失败'), false);
+  const finishing = describeYoutubeArticle({
+    articleStatus: 'pending',
+    done: 28,
+    organized: 28,
+    total: 28,
+    summary: '要点',
+    titleStatus: 'pending',
+    active: true,
+  });
+  assert.equal(finishing.status, 'running');
+  assert.equal(finishing.message, '收尾中');
   const failed = describeYoutubeArticle({
     articleStatus: 'pending',
     holdReason: 'failed',
@@ -233,6 +271,62 @@ test('episode list reports part progress without loading the article state blob'
     assert.equal(status.article.message, view.article.message);
     assert.equal(Object.hasOwn(status, 'body'), false);
     assert.equal(isApiTokenAllowlisted('GET', '/api/v1/youtube-podcasts/partsvideo01/article'), true);
+  } finally {
+    opened.close();
+  }
+});
+
+test('a stopped round waits for the next slot unless the job lease is still fresh', () => {
+  const opened = openStore();
+  try {
+    const repository = opened.store.repositories.youtubePodcasts;
+    const now = Date.parse('2026-10-20T13:45:00Z');
+    const touched = now - 60_000;
+    const env = {
+      AI_CENTER_YOUTUBE_PODCASTS: '1',
+      AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1',
+      AI_CENTER_YOUTUBE_PODCASTS_AT: '07:00',
+      AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_EVERY_HOURS: '3',
+    };
+    repository.saveEpisode(episode('roundstop001', {
+      articleState: JSON.stringify({
+        holdReason: 'upstream',
+        touchedAt: touched,
+        summary: '',
+        parts: [
+          ...Array.from({ length: 4 }, () => ({ translation: '已整理', section: '## 小节' })),
+          ...Array.from({ length: 24 }, () => ({ translation: '已译', section: '' })),
+        ],
+      }),
+    }));
+    repository.saveEpisode(episode('roundtail0001', {
+      articleState: JSON.stringify({
+        touchedAt: touched,
+        summary: '',
+        parts: Array.from({ length: 3 }, () => ({ translation: '译', section: '## 节' })),
+      }),
+    }));
+    const service = (jobs) => createYoutubePodcastService({
+      repository,
+      store: { listOpenJobs: () => jobs },
+      configPath: path.join(os.tmpdir(), 'missing-youtube-podcasts.json'),
+      env,
+    });
+    const waiting = service([]).status('local', 'roundstop001', now);
+    assert.equal(waiting.article.status, 'queued');
+    assert.equal(waiting.article.message, '已译 24/28 段，模型服务暂时出错，明天 00:10 继续');
+    const crashed = service([{ status: 'running', lockedAt: now - 10 * 60_000 }]).status('local', 'roundstop001', now);
+    assert.equal(crashed.article.status, 'queued');
+    assert.equal(crashed.article.message.includes('整理中'), false);
+    const live = service([{ status: 'running', lockedAt: now - 20_000 }]).status('local', 'roundstop001', now);
+    assert.equal(live.article.status, 'running');
+    assert.equal(live.article.message, '整理中 4/28 段');
+    const tail = service([{ status: 'running', lockedAt: now - 20_000 }]).status('local', 'roundtail0001', now);
+    assert.equal(tail.article.status, 'running');
+    assert.equal(tail.article.message, '收尾中');
+    const tailIdle = service([]).status('local', 'roundtail0001', now);
+    assert.equal(tailIdle.article.status, 'queued');
+    assert.equal(tailIdle.article.message.includes('收尾中'), false);
   } finally {
     opened.close();
   }

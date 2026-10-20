@@ -135,14 +135,31 @@ function indexMarketQuotes(payload) {
 
 function keepSeries(item, previous) {
   if (!item || !previous) return item;
-  const hasSpark = Array.isArray(item.sparkline) && item.sparkline.length >= 2;
-  const sparkline = hasSpark ? item.sparkline : previous.sparkline;
-  const hasAsOf = Number(item.asOf ?? item.marketTime) > 0;
-  const asOf = hasAsOf ? (item.asOf ?? item.marketTime) : (previous.asOf ?? previous.marketTime);
-  const nextSpark = Array.isArray(sparkline) && sparkline.length >= 2 ? sparkline : null;
-  if (!nextSpark && !asOf) return item;
-  return {
+  const incomingAt = quoteAsOfMs(item);
+  const previousAt = quoteAsOfMs(previous);
+  const rolledBack = previous.lastPrice != null && incomingAt > 0 && previousAt > incomingAt;
+  const base = rolledBack ? {
     ...item,
+    lastPrice: previous.lastPrice,
+    ...(previous.changePct != null ? { changePct: previous.changePct } : {}),
+    ...(previous.change != null ? { change: previous.change } : {}),
+    ...(previous.high != null ? { high: previous.high } : {}),
+    ...(previous.low != null ? { low: previous.low } : {}),
+    ...(previous.prevClose != null ? { prevClose: previous.prevClose } : {}),
+    ...(previous.volume != null ? { volume: previous.volume } : {}),
+    ...(previous.session ? { session: previous.session } : {}),
+    ...(previous.provider ? { provider: previous.provider } : {}),
+    asOf: previousAt,
+    ...(previous.marketTime != null ? { marketTime: previous.marketTime } : {}),
+  } : item;
+  const hasSpark = Array.isArray(base.sparkline) && base.sparkline.length >= 2;
+  const sparkline = hasSpark ? base.sparkline : previous.sparkline;
+  const hasAsOf = quoteAsOfMs(base) > 0;
+  const asOf = hasAsOf ? (base.asOf ?? base.marketTime) : (previous.asOf ?? previous.marketTime);
+  const nextSpark = Array.isArray(sparkline) && sparkline.length >= 2 ? sparkline : null;
+  if (!nextSpark && !asOf) return base;
+  return {
+    ...base,
     ...(nextSpark ? { sparkline: nextSpark } : {}),
     ...(asOf ? { asOf } : {}),
   };
@@ -277,10 +294,8 @@ function boardSessionOpen(payload, nowMs) {
 }
 
 export function quoteStaleLabel(item, nowMs = Date.now()) {
-  if (!quoteSessionOpen(item, nowMs)) return '';
-  const at = quoteAsOfMs(item);
-  if (!at || nowMs - at < MARKET_STALE_LABEL_MS) return '';
-  return clockText(at, '已过期');
+  if (quoteSessionOpen(item, nowMs)) return '';
+  return '';
 }
 
 function closedClockPrefix(item) {
@@ -314,10 +329,8 @@ export function marketPhaseLabel(payload) {
 export function marketStaleLabel(payload, nowMs = Date.now()) {
   if (payload?.awaitingQuote) return '';
   const open = boardSessionOpen(payload, nowMs);
-  if (open === false) return '';
-  const quotes = open === true
-    ? pricedQuotes(payload).filter((item) => quoteSessionOpen({ ...item, board: item.board || payload?.board }, nowMs))
-    : pricedQuotes(payload);
+  if (open !== null) return '';
+  const quotes = pricedQuotes(payload);
   const times = quotes.map(quoteAsOfMs).filter((at) => at > 0);
   if (times.length) {
     const newest = Math.max(...times);
@@ -331,12 +344,158 @@ export function marketStaleLabel(payload, nowMs = Date.now()) {
 
 export function marketClosedLabel(payload, nowMs = Date.now()) {
   if (payload?.awaitingQuote) return '';
+  const session = String(payload?.session || '').trim();
+  if (session === 'pre' || session === 'post' || session === 'regular') return '';
   if (boardSessionOpen(payload, nowMs) !== false) return '';
-  const prefix = payload?.session === 'break' ? '午间休市' : '收盘';
+  const prefix = session === 'break' ? '午间休市' : '收盘';
   const times = pricedQuotes(payload).map(quoteAsOfMs).filter((at) => at > 0);
   const at = times.length ? Math.max(...times) : Number(payload?.fetchedAt);
   if (!Number.isFinite(at) || at <= 0) return prefix;
   return clockText(at, prefix);
+}
+
+export function marketStatusLabel(payload, nowMs = Date.now()) {
+  const phase = marketPhaseLabel(payload);
+  if (phase) return phase;
+  if (boardSessionOpen(payload, nowMs) === true) return '盘中';
+  const stale = marketStaleLabel(payload, nowMs);
+  if (stale) return stale;
+  const session = String(payload?.session || '').trim();
+  if (session === 'regular') return '盘中';
+  if (session === 'pre') return '盘前';
+  if (session === 'post') return '盘后';
+  if (session === 'break') return '午间休市';
+  return marketClosedLabel(payload, nowMs);
+}
+
+const MARKET_BOARD_KEYS = ['overview', 'us', 'asia', 'cn', 'global'];
+const QUOTE_FIELDS = ['lastPrice', 'changePct', 'change', 'high', 'low', 'prevClose', 'volume', 'currency', 'session', 'asOf', 'marketTime', 'provider'];
+
+function newerMarketQuote(current, incoming) {
+  if (!incoming || incoming.lastPrice == null) return current || incoming;
+  if (!current || current.lastPrice == null) return incoming;
+  const prevAt = quoteAsOfMs(current);
+  const nextAt = quoteAsOfMs(incoming);
+  if (prevAt && (!nextAt || nextAt < prevAt)) return current;
+  return incoming;
+}
+
+function marketQuoteBook(markets) {
+  const book = new Map();
+  const visit = (item) => {
+    const symbol = String(item?.symbol || '').trim().toUpperCase();
+    if (!symbol || item?.lastPrice == null) return;
+    book.set(symbol, newerMarketQuote(book.get(symbol), item));
+  };
+  const walk = (payload) => {
+    if (!payload || typeof payload !== 'object') return;
+    for (const item of payload.indices || []) visit(item);
+    for (const item of payload.watchlist || []) visit(item);
+    for (const item of payload.gainers || []) visit(item);
+    for (const item of payload.losers || []) visit(item);
+    for (const section of payload.sections || []) {
+      for (const item of section?.indices || []) visit(item);
+      for (const item of section?.gainers || []) visit(item);
+      for (const item of section?.losers || []) visit(item);
+    }
+  };
+  for (const key of MARKET_BOARD_KEYS) walk(markets?.[key]);
+  return book;
+}
+
+function applyMarketQuote(item, book) {
+  if (!item) return item;
+  const symbol = String(item.symbol || '').trim().toUpperCase();
+  const newer = book.get(symbol);
+  if (!newer) return item;
+  const chosen = newerMarketQuote(item, newer);
+  if (chosen === item) return item;
+  const next = { ...item };
+  for (const key of QUOTE_FIELDS) {
+    if (chosen[key] != null) next[key] = chosen[key];
+  }
+  if (!(Array.isArray(next.sparkline) && next.sparkline.length >= 2) && Array.isArray(chosen.sparkline) && chosen.sparkline.length >= 2) {
+    next.sparkline = chosen.sparkline;
+  }
+  return next;
+}
+
+function overlayMarketPayload(payload, book) {
+  if (!payload || !book.size) return payload;
+  const next = { ...payload };
+  for (const key of ['indices', 'watchlist', 'gainers', 'losers']) {
+    if (Array.isArray(payload[key])) next[key] = payload[key].map((item) => applyMarketQuote(item, book));
+  }
+  if (Array.isArray(payload.sections)) {
+    next.sections = payload.sections.map((section) => ({
+      ...section,
+      indices: (section?.indices || []).map((item) => applyMarketQuote(item, book)),
+      gainers: (section?.gainers || []).map((item) => applyMarketQuote(item, book)),
+      losers: (section?.losers || []).map((item) => applyMarketQuote(item, book)),
+    }));
+  }
+  return next;
+}
+
+function marketQuoteClock(payload) {
+  let newest = 0;
+  const visit = (item) => {
+    if (!item || item.lastPrice == null) return;
+    const at = quoteAsOfMs(item);
+    if (at > newest) newest = at;
+  };
+  for (const item of payload?.indices || []) visit(item);
+  for (const item of payload?.watchlist || []) visit(item);
+  for (const item of payload?.gainers || []) visit(item);
+  for (const item of payload?.losers || []) visit(item);
+  for (const section of payload?.sections || []) {
+    for (const item of section?.indices || []) visit(item);
+    for (const item of section?.gainers || []) visit(item);
+    for (const item of section?.losers || []) visit(item);
+  }
+  return newest;
+}
+
+function stampSharedStatus(payload, donor, sectionId) {
+  if (!payload || !donor) return payload;
+  const next = { ...payload };
+  if (donor.session) next.session = donor.session;
+  if (typeof donor.marketOpen === 'boolean') next.marketOpen = donor.marketOpen;
+  if (donor.awaitingQuote) next.awaitingQuote = true;
+  else delete next.awaitingQuote;
+  const fetchedAt = Math.max(Number(payload.fetchedAt) || 0, Number(donor.fetchedAt) || 0);
+  if (fetchedAt) next.fetchedAt = fetchedAt;
+  if (sectionId && Array.isArray(next.sections)) {
+    next.sections = next.sections.map((section) => {
+      if (String(section?.id || '').toLowerCase() !== sectionId) return section;
+      const stamped = { ...section };
+      if (donor.session) stamped.session = donor.session;
+      if (typeof donor.marketOpen === 'boolean') stamped.marketOpen = donor.marketOpen;
+      if (donor.awaitingQuote) stamped.awaitingQuote = true;
+      else delete stamped.awaitingQuote;
+      return stamped;
+    });
+  }
+  return next;
+}
+
+export function alignMarketBoards(markets) {
+  if (!markets || typeof markets !== 'object') return markets;
+  const book = marketQuoteBook(markets);
+  const next = { ...markets };
+  for (const key of MARKET_BOARD_KEYS) {
+    if (markets[key]) next[key] = overlayMarketPayload(markets[key], book);
+  }
+  const overview = next.overview;
+  if (!overview) return next;
+  const focus = String(overview.focus || preferredOverviewFocus()).toLowerCase();
+  const peerKey = focus === 'cn' ? 'cn' : 'us';
+  const peer = next[peerKey];
+  if (!peer) return next;
+  const donor = marketQuoteClock(peer) >= marketQuoteClock(overview) ? peer : overview;
+  next.overview = stampSharedStatus(overview, donor, peerKey);
+  next[peerKey] = stampSharedStatus(peer, donor, '');
+  return next;
 }
 
 export function homeDataDelayLabel(generatedAt, nowMs = Date.now()) {

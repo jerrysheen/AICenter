@@ -21,7 +21,7 @@ import {
   transcriptHash,
 } from '../packages/domain/src/youtube-captions.js';
 import { formatPodcastSummary } from '../packages/domain/src/youtube-podcasts.js';
-import { backfillYoutubeArticleTitles, repairYoutubeChineseCopy, runYoutubeArticlePass } from '../packages/runtime/src/youtube-article-job.js';
+import { articlePauseReason, backfillYoutubeArticleTitles, repairYoutubeChineseCopy, runYoutubeArticlePass } from '../packages/runtime/src/youtube-article-job.js';
 import { runYoutubePodcastRound, saveYoutubeEpisode } from '../packages/runtime/src/youtube-podcasts-job.js';
 
 const ROLLING = `[00:00:03] In general, the market does about 4% worse per
@@ -1239,6 +1239,144 @@ test('backfill writes one gemma title per ready article and skips it the next ti
     });
     assert.equal(second.titled, 0);
     assert.equal(gemma.calls.length, 1);
+  } finally {
+    opened.close();
+  }
+});
+
+test('5xx is not recorded as a quota stop', () => {
+  assert.equal(articlePauseReason(Object.assign(new Error('Gemma 翻译上游 500 退避'), { code: 'budget-deferred', upstream: true })), 'upstream');
+  assert.equal(articlePauseReason(Object.assign(new Error('Gemma 翻译等待配额窗口'), { code: 'budget-deferred', upstream: false })), 'quota');
+  assert.equal(articlePauseReason(Object.assign(new Error('Gemma 翻译失败（500）'), { upstreamStatus: 500 })), 'upstream');
+  assert.equal(articlePauseReason(new Error('Gemma 翻译失败（500）')), '');
+});
+
+async function saveShortEpisode(opened, videoId) {
+  const transcript = '[00:00:03] Rates move and NVDA stays in the conversation.';
+  const item = await saveYoutubeEpisode({
+    feedRepository: opened.store.repositories.feed,
+    workspaceId: 'local',
+    creator: { id: 'odd-lots', name: 'Odd Lots', focus: '金融', channels: [{ key: 'odd-lots' }] },
+    episode: { videoId, title: 'Rates', channelKey: 'odd-lots', publishedAt: Date.parse('2026-10-18T00:00:00Z'), durationSec: 1800 },
+    summaryText: '中文摘要',
+    displayTitle: '利率',
+    transcript,
+    transcriptSource: 'subtitle-auto',
+  });
+  opened.store.repositories.youtubePodcasts.saveEpisode({
+    workspaceId: 'local',
+    videoId,
+    creatorId: 'odd-lots',
+    channelKey: 'odd-lots',
+    title: 'Rates',
+    status: 'ready',
+    contentItemId: item.id,
+    attempts: 1,
+    sourceTranscript: transcript,
+    sourceHash: transcriptHash(transcript),
+    articleStatus: 'pending',
+  });
+  return transcript;
+}
+
+test('the same part waits and retries inside the round when gemma keeps returning 5xx', async () => {
+  const opened = openStore();
+  const waits = [];
+  let failures = 0;
+  const gemma = fakeGemma((input) => {
+    if (input.system === GEMMA_TRANSLATE_SYSTEM && failures < 2) {
+      failures += 1;
+      const error = new Error('Gemma 翻译上游 500 退避');
+      error.code = 'budget-deferred';
+      error.upstream = true;
+      error.retryAt = Date.now() + 10_000;
+      throw error;
+    }
+    return articleReply(input);
+  });
+  const flash = fakeGemma(() => { throw new Error('5xx 不应改走 Flash'); });
+  try {
+    await saveShortEpisode(opened, 'gemma5xxretry');
+    const result = await runYoutubeArticlePass({
+      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1' },
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      gemmaGenerate: gemma.generate.bind(gemma),
+      flashGenerate: flash.generate.bind(flash),
+      sleep: async (ms) => { waits.push(ms); },
+      now: Date.parse('2026-10-19T02:00:00Z'),
+    });
+    assert.equal(result.ready, 1);
+    assert.equal(result.stopped, '');
+    assert.equal(flash.calls.length, 0);
+    assert.deepEqual(waits, [10_000, 10_000]);
+    assert.equal(opened.store.repositories.youtubePodcasts.episode('local', 'gemma5xxretry').articleStatus, 'ready');
+  } finally {
+    opened.close();
+  }
+});
+
+test('exhausted 5xx retries stop the round as upstream and do not count as a part failure', async () => {
+  const opened = openStore();
+  const waits = [];
+  const gemma = fakeGemma(() => {
+    const error = new Error('Gemma 翻译失败（500）');
+    error.upstreamStatus = 500;
+    throw error;
+  });
+  const flash = fakeGemma(() => { throw new Error('flash down'); });
+  try {
+    await saveShortEpisode(opened, 'gemma5xxstop1');
+    const result = await runYoutubeArticlePass({
+      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1' },
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      gemmaGenerate: gemma.generate.bind(gemma),
+      flashGenerate: flash.generate.bind(flash),
+      sleep: async (ms) => { waits.push(ms); },
+      now: Date.parse('2026-10-19T02:00:00Z'),
+    });
+    assert.equal(result.stopped, 'upstream');
+    assert.equal(result.ready, 0);
+    assert.equal(waits.length, 2);
+    assert.equal(gemma.calls.length, 3);
+    assert.equal(flash.calls.length, 3);
+    const state = JSON.parse(opened.store.repositories.youtubePodcasts.episode('local', 'gemma5xxstop1').articleState);
+    assert.equal(state.holdReason, 'upstream');
+    assert.equal(state.holdDay || '', '');
+    assert.equal(state.parts[0].attempts, 0);
+    assert.equal(state.parts[0].translation, '');
+  } finally {
+    opened.close();
+  }
+});
+
+test('a round that hits its deadline records deadline instead of quota', async () => {
+  const opened = openStore();
+  const controller = new AbortController();
+  const gemma = fakeGemma((input) => {
+    if (input.system === GEMMA_SECTION_SYSTEM) controller.abort();
+    return articleReply(input);
+  });
+  try {
+    await saveShortEpisode(opened, 'gemmadeadline');
+    const result = await runYoutubeArticlePass({
+      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1' },
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      gemmaGenerate: gemma.generate.bind(gemma),
+      flashGenerate: null,
+      signal: controller.signal,
+      sleep: async () => {},
+      now: Date.parse('2026-10-19T02:00:00Z'),
+    });
+    assert.equal(result.stopped, 'deadline');
+    const state = JSON.parse(opened.store.repositories.youtubePodcasts.episode('local', 'gemmadeadline').articleState);
+    assert.equal(state.holdReason, 'deadline');
+    assert.equal(state.parts[0].translation.includes('24%'), true);
   } finally {
     opened.close();
   }

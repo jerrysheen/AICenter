@@ -216,8 +216,10 @@ export function createGemmaTranslationRouter(options = {}) {
   }
 
   function deferred(at, upstream) {
-    return Object.assign(new Error(upstream ? 'Gemma 翻译上游 500 退避' : 'Gemma 翻译等待配额窗口'), {
+    const failedUpstream = upstream === true;
+    return Object.assign(new Error(failedUpstream ? 'Gemma 翻译上游 500 退避' : 'Gemma 翻译等待配额窗口'), {
       code: 'budget-deferred',
+      upstream: failedUpstream,
       retryAt: at + GEMMA_ADMIT_MIN_WAIT_MS,
     });
   }
@@ -291,8 +293,10 @@ export function createGemmaTranslationRouter(options = {}) {
       const retryAt = Math.min(quotaRetryAt, upstreamRetryAt);
       const upstream = Number.isFinite(upstreamRetryAt) && upstreamRetryAt < quotaRetryAt;
       const at = now();
-      throw Object.assign(new Error(upstream ? 'Gemma 翻译上游 500 退避' : 'Gemma 翻译等待配额窗口'), {
+      const failedUpstream = upstream === true;
+      throw Object.assign(new Error(failedUpstream ? 'Gemma 翻译上游 500 退避' : 'Gemma 翻译等待配额窗口'), {
         code: 'budget-deferred',
+        upstream: failedUpstream,
         retryAt: Number.isFinite(retryAt) ? retryAt : at + GEMMA_ADMIT_MIN_WAIT_MS,
       });
     }
