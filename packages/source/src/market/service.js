@@ -123,8 +123,8 @@ export function createMarketService(options = {}) {
   }
 
   function newerQuoteRow(current, incoming) {
-    if (!incoming) return current;
-    if (!current || current.lastPrice == null || incoming.lastPrice == null) return incoming;
+    if (!incoming || incoming.lastPrice == null) return current || incoming;
+    if (!current || current.lastPrice == null) return incoming;
     const prevAt = quoteAsOf(current);
     const nextAt = quoteAsOf(incoming);
     if (prevAt != null && (nextAt == null || nextAt < prevAt)) return current;
@@ -471,6 +471,16 @@ export function createMarketService(options = {}) {
     }, { refresh, signal, ttl: xueqiuTtlMs });
   }
 
+  async function settledQuotes(task) {
+    try {
+      return await task;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log('warn', `行情源失败 ${message}`);
+      return [];
+    }
+  }
+
   async function fetchQuotes(symbols, { refresh = false, signal } = {}) {
     const unique = [...new Set((symbols || []).map((item) => String(item || '').trim().toUpperCase()).filter(Boolean))];
     if (!unique.length) return [];
@@ -478,9 +488,9 @@ export function createMarketService(options = {}) {
     const xueqiuSymbols = unique.filter((symbol) => isXueqiuYahooSymbol(symbol) && !isSinaFutureSymbol(symbol));
     const otherSymbols = unique.filter((symbol) => !isXueqiuYahooSymbol(symbol) && !isSinaFutureSymbol(symbol));
     const [sinaList, xueqiuList, otherList] = await Promise.all([
-      fetchSinaFutures(sinaSymbols, { refresh, signal }),
-      fetchXueqiuQuotes(xueqiuSymbols, { refresh, signal }),
-      fetchYahooQuotes(otherSymbols, { refresh, signal }),
+      settledQuotes(fetchSinaFutures(sinaSymbols, { refresh, signal })),
+      settledQuotes(fetchXueqiuQuotes(xueqiuSymbols, { refresh, signal })),
+      settledQuotes(fetchYahooQuotes(otherSymbols, { refresh, signal })),
     ]);
     const missingXueqiu = xueqiuSymbols.filter((symbol) => !xueqiuList.some((item) => item.symbol === symbol));
     const missingCn = missingXueqiu.filter(isCnYahooSymbol);

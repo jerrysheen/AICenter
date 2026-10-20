@@ -7,6 +7,7 @@ import {
   hkSessionAt,
   parseAsiaExtraSymbols,
   parseCnExtraSymbols,
+  buildOverviewBoard,
   parseUsExtraSymbols,
   preferredOverviewFocus,
   quoteInRegularSession,
@@ -365,6 +366,97 @@ export function withExtraWatchlist(board, rows) {
   };
 }
 
+const STORED_QUOTE_FIELDS = ['lastPrice', 'changePct', 'change', 'high', 'low', 'prevClose', 'volume', 'currency', 'exchange', 'session', 'asOf', 'marketTime', 'provider'];
+
+function newerStoredQuote(current, incoming) {
+  if (!incoming || incoming.lastPrice == null) return current || incoming;
+  if (!current || current.lastPrice == null) return incoming;
+  const prevAt = quoteAsOfMs(current);
+  const nextAt = quoteAsOfMs(incoming);
+  if (prevAt && (!nextAt || nextAt < prevAt)) return current;
+  return incoming;
+}
+
+function indexStoredQuotes(payload) {
+  const book = new Map();
+  const visit = (item) => {
+    const symbol = String(item?.symbol || '').trim().toUpperCase();
+    if (!symbol || item?.lastPrice == null) return;
+    book.set(symbol, newerStoredQuote(book.get(symbol), item));
+  };
+  for (const item of payload?.indices || []) visit(item);
+  for (const item of payload?.watchlist || []) visit(item);
+  for (const item of payload?.gainers || []) visit(item);
+  for (const item of payload?.losers || []) visit(item);
+  for (const section of payload?.sections || []) {
+    for (const item of section?.indices || []) visit(item);
+    for (const item of section?.gainers || []) visit(item);
+    for (const item of section?.losers || []) visit(item);
+  }
+  return book;
+}
+
+function applyStoredQuote(item, book) {
+  if (!item) return item;
+  const symbol = String(item.symbol || '').trim().toUpperCase();
+  const newer = book.get(symbol);
+  if (!newer) return item;
+  const chosen = newerStoredQuote(item, newer);
+  if (chosen === item) return item;
+  const next = { ...item };
+  for (const key of STORED_QUOTE_FIELDS) {
+    if (chosen[key] != null) next[key] = chosen[key];
+  }
+  return next;
+}
+
+function overlayStoredQuotes(payload, book) {
+  if (!payload || !book?.size) return payload;
+  const next = { ...payload };
+  for (const key of QUOTE_LIST_KEYS) {
+    if (Array.isArray(payload[key])) next[key] = payload[key].map((item) => applyStoredQuote(item, book));
+  }
+  if (Array.isArray(payload.sections)) {
+    next.sections = payload.sections.map((section) => ({
+      ...section,
+      indices: (section?.indices || []).map((item) => applyStoredQuote(item, book)),
+      gainers: (section?.gainers || []).map((item) => applyStoredQuote(item, book)),
+      losers: (section?.losers || []).map((item) => applyStoredQuote(item, book)),
+    }));
+  }
+  return next;
+}
+
+function mergeBoardSnapshots(board, stored, sibling, nowMs) {
+  if (board === 'overview') {
+    const source = sibling && (sibling.board === 'us' || sibling.board === 'cn') ? sibling : null;
+    if (!stored && source) {
+      return buildOverviewBoard(
+        source.board === 'us' ? source : null,
+        null,
+        source.board === 'cn' ? source : null,
+        { focus: source.board === 'cn' ? 'cn' : 'us', now: nowMs },
+      );
+    }
+    if (!stored || !source) return stored;
+    const merged = overlayStoredQuotes(stored, indexStoredQuotes(source));
+    const sourceAt = newestQuoteAsOf(source) || 0;
+    const storedAt = newestQuoteAsOf(stored) || 0;
+    if (sourceAt < storedAt) return merged;
+    const fetchedAt = Math.max(Number(source.fetchedAt) || 0, Number(stored.fetchedAt) || 0);
+    return fetchedAt ? { ...merged, fetchedAt } : merged;
+  }
+  if ((board === 'us' || board === 'cn') && stored && sibling?.board === 'overview') {
+    const merged = overlayStoredQuotes(stored, indexStoredQuotes(sibling));
+    const siblingAt = newestQuoteAsOf(sibling) || 0;
+    const storedAt = newestQuoteAsOf(stored) || 0;
+    if (siblingAt < storedAt) return merged;
+    const fetchedAt = Math.max(Number(stored.fetchedAt) || 0, Number(sibling.fetchedAt) || 0);
+    return fetchedAt ? { ...merged, fetchedAt } : merged;
+  }
+  return stored;
+}
+
 export function createMarketBoardReader({
   repository,
   workspaceId = 'local',
@@ -430,11 +522,27 @@ export function createMarketBoardReader({
     return { quotes: [], pending: Boolean(quotePort?.fetchQuotes) };
   }
 
+  async function readStored(board, refresh) {
+    const stored = await cacheFor(board).get({ refresh: Boolean(refresh) });
+    const payload = stored?.payload;
+    if (!payload || payload.board !== board || payload.fetchedAt == null) return null;
+    return payload;
+  }
+
+  function siblingBoard(board, stored) {
+    if (board === 'us' || board === 'cn') return 'overview';
+    if (board !== 'overview') return '';
+    const focus = String(stored?.focus || preferredOverviewFocus(now())).toLowerCase();
+    return focus === 'cn' ? 'cn' : 'us';
+  }
+
   return {
     async read(query = {}, { refresh = false } = {}) {
       const board = MARKET_BOARD_NAMES.includes(query.board) ? query.board : 'overview';
-      const stored = await cacheFor(board).get({ refresh: Boolean(refresh) });
-      const payload = stored?.payload;
+      const stored = await readStored(board, refresh);
+      const siblingName = siblingBoard(board, stored);
+      const sibling = siblingName ? await readStored(siblingName, refresh) : null;
+      const payload = mergeBoardSnapshots(board, stored, sibling, now());
       const present = (boardPayload) => stampBoardStale(withMarketClock(boardPayload, now()), now(), staleMs);
       if (!payload || payload.board !== board || payload.fetchedAt == null) {
         return { market: present(emptyMarketBoard(board, now())), pending: true };

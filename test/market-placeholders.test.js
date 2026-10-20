@@ -48,6 +48,9 @@ test('overview ticker renders the loading mark without a fetched-at footnote', (
   assert.doesNotMatch(functionSource(app, 'assetBoardHint'), /formatTime/);
   const ticker = functionSource(app, 'renderHubTicker');
   assert.match(ticker, /HOME_QUOTE_CAPTION/);
+  assert.match(app, /marketStatusLabel\(state\.markets\.overview\)/);
+  assert.match(app, /marketStatusLabel\(market\)/);
+  assert.match(app, /alignMarketBoards\(state\.markets\)/);
   assert.doesNotMatch(ticker, /行情已连接 · 更新|更新于 /);
   const timeline = readFileSync(new URL('../apps/web/public/home-timeline.js', import.meta.url), 'utf8');
   assert.match(timeline, /行情暂不可用 · 重试/);
