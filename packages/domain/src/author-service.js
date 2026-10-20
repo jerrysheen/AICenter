@@ -39,6 +39,21 @@ function previewFor(item, translations) {
 export function createAuthorService({ authorRepository, feedRepository, qualityRule = '' } = {}) {
   if (!authorRepository || !feedRepository) throw new Error('author repository is required');
 
+  function withVisibleUnread(workspaceId, authors) {
+    const rows = (authors || []).filter(Boolean);
+    if (!rows.length || typeof authorRepository.countVisibleUnread !== 'function') return rows;
+    const counts = authorRepository.countVisibleUnread(
+      workspaceId,
+      rows.map((author) => author.authorId),
+      { qualityRule },
+    );
+    return rows.map((author) => {
+      const unreadCount = counts.get(author.authorId) || 0;
+      if (unreadCount === (Number(author.unreadCount) || 0) && Boolean(author.hasUnread) === unreadCount > 0) return author;
+      return { ...author, unreadCount, hasUnread: unreadCount > 0 };
+    });
+  }
+
   function list({ workspaceId, platform = 'all', cursor = '' } = {}) {
     const known = AUTHOR_PLATFORMS.includes(platform) || platform === 'official' || platform === 'media';
     const source = known ? platform : 'all';
@@ -52,12 +67,14 @@ export function createAuthorService({ authorRepository, feedRepository, qualityR
       cursor: decoded,
       limit: AUTHOR_LIST_PAGE_SIZE,
     });
+    const followed = withVisibleUnread(workspaceId, page.followed);
+    const others = withVisibleUnread(workspaceId, page.others);
     const counts = authorRepository.countAuthors(workspaceId);
-    const last = page.others.at(-1);
+    const last = others.at(-1);
     const nextCursor = page.hasMore && last
       ? encodeCursor({ latestItemAt: last.latestItemAt, authorId: last.authorId })
       : '';
-    const value = { counts, followed: page.followed, others: page.others, nextCursor };
+    const value = { counts, followed, others, nextCursor };
     writeAuthorCache(cacheKey, value);
     return value;
   }
@@ -65,7 +82,9 @@ export function createAuthorService({ authorRepository, feedRepository, qualityR
   function get(workspaceId, authorId) {
     const id = decodeAuthorId(authorId);
     if (!id) return null;
-    return authorRepository.getAuthor(workspaceId, id);
+    const author = authorRepository.getAuthor(workspaceId, id);
+    if (!author) return null;
+    return withVisibleUnread(workspaceId, [author])[0] || null;
   }
 
   function items(workspaceId, authorId, { read = 'unread', cursor = '', limit = AUTHOR_ITEM_PAGE_SIZE } = {}) {
@@ -78,6 +97,7 @@ export function createAuthorService({ authorRepository, feedRepository, qualityR
       readFlag,
       before: before && before.id ? { at: Number(before.at) || 0, id: String(before.id) } : null,
       limit,
+      qualityRule: sourceAuthor ? '' : qualityRule,
     });
     const ids = page.rows.map((row) => row.id);
     const loaded = ids.length

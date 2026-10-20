@@ -348,7 +348,7 @@ test('media list cards prefer the translated title segment', () => {
   assert.equal(context.title(original), 'Oil prices rise after the supply cut');
 });
 
-test('a background reload returns to the first page and keeps opened text', async () => {
+test('a background reload keeps already paged items and opened text', async () => {
   const source = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
   const calls = [];
   let reads = 0;
@@ -386,12 +386,11 @@ test('a background reload returns to the first page and keeps opened text', asyn
   const cursor = context.state.xNextCursor;
   await context.load({ autoTranslate: false });
   const items = Array.from(context.state.xItems);
-  assert.deepEqual(items.map((item) => item.id), ['x:1']);
+  assert.deepEqual(items.map((item) => item.id), ['x:1', 'x:2']);
   assert.equal(items[0].body, '已展开的全文');
   assert.equal(items[0].translation.text, '中文全文');
   assert.equal(items[0].detail, 'full');
-  assert.equal(context.state.xNextCursor, '0,9,reset');
-  assert.notEqual(context.state.xNextCursor, cursor);
+  assert.equal(context.state.xNextCursor, cursor);
   assert.equal(calls.at(-1).includes('before='), false);
   assert.match(calls.at(-1), /limit=12/);
 });

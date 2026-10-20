@@ -5190,6 +5190,40 @@ function socialShownRows(rows) {
   return [...unread.slice(0, state.feedShown), ...read];
 }
 
+function feedPaintId(row) {
+  return row?.dataset?.nodeId || row?.dataset?.postId || '';
+}
+
+function captureFeedPaintAnchor() {
+  if (typeof document === 'undefined' || document.body?.dataset?.view !== 'feed') return null;
+  if (document.body.classList?.contains('is-dialog-open') || restoringViewScroll) return null;
+  const root = elements?.feed;
+  if (!root?.querySelectorAll) return null;
+  for (const row of root.querySelectorAll('.news-row[data-node-id], .post-card[data-post-id]')) {
+    const rect = row.getBoundingClientRect?.();
+    if (!rect || rect.bottom <= 96) continue;
+    const id = feedPaintId(row);
+    if (!id) continue;
+    return { id, offset: rect.top };
+  }
+  return null;
+}
+
+function restoreFeedPaintAnchor(saved) {
+  if (!saved?.id || typeof document === 'undefined' || document.body?.dataset?.view !== 'feed') return false;
+  if (document.body.classList?.contains('is-dialog-open')) return false;
+  const root = elements?.feed;
+  if (!root?.querySelectorAll) return false;
+  let row = null;
+  for (const item of root.querySelectorAll('.news-row[data-node-id], .post-card[data-post-id]')) {
+    if (feedPaintId(item) === saved.id) { row = item; break; }
+  }
+  if (!row?.getBoundingClientRect) return false;
+  const delta = row.getBoundingClientRect().top - (Number(saved.offset) || 0);
+  if (Math.abs(delta) > 1) window.scrollTo(0, (Number(window.scrollY) || 0) + delta);
+  return true;
+}
+
 function renderPosts() {
   if (state.channel === 'author') {
     if (state.authorView === false) state.channel = 'all';
@@ -5223,6 +5257,7 @@ function renderPosts() {
     }
     recentFeedPainted = signature;
   } else recentFeedPainted = '';
+  const paintAnchor = captureFeedPaintAnchor();
   const keepY = document.body.dataset.view === 'feed'
     && !document.body.classList.contains('is-dialog-open')
     && !restoringViewScroll
@@ -5291,7 +5326,15 @@ function renderPosts() {
     const front = elements.feed.querySelector(`.swipe-front[data-post-id="${restoreSwipeId}"]`);
     if (front) setSwipeOpen(front, true, FEED_SWIPE_WIDTH);
   }
-  if (keepY !== null) window.scrollTo(0, keepY);
+  if (paintAnchor && restoreFeedPaintAnchor(paintAnchor)) {
+    const frame = window.requestAnimationFrame?.bind(window);
+    if (typeof frame === 'function') {
+      frame(() => {
+        restoreFeedPaintAnchor(paintAnchor);
+        frame(() => restoreFeedPaintAnchor(paintAnchor));
+      });
+    }
+  } else if (keepY !== null) window.scrollTo(0, keepY);
   if (typeof scheduleVisibleXTranslations === 'function') scheduleVisibleXTranslations();
   renderXToolbar();
   renderBilibiliToolbar();
@@ -15466,10 +15509,23 @@ const payload = await api(`/api/v1/feed/x?${params}`, { timeoutMs: refresh ? 180
       if (added.length) state.feedShown += added.length;
       state.xNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
     } else {
-      const previous = new Map((state.xItems || []).filter((item) => item?.id).map((item) => [item.id, item]));
-      state.xItems = incoming.map((item) => mergeLoadedFeedItem(previous.get(item.id), item));
-      state.xNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
-      state.xReadCursor = '';
+      const existing = state.xItems || [];
+      const previous = new Map(existing.filter((item) => item?.id).map((item) => [item.id, item]));
+      const seen = new Set();
+      const head = [];
+      for (const item of incoming) {
+        if (!item?.id || seen.has(item.id)) continue;
+        seen.add(item.id);
+        head.push(mergeLoadedFeedItem(previous.get(item.id), item));
+      }
+      const tail = existing.filter((item) => item?.id && !seen.has(item.id));
+      const added = head.filter((item) => item?.id && !previous.has(item.id)).length;
+      state.xItems = tail.length ? [...head, ...tail] : head;
+      if (existing.length && added) state.feedShown += added;
+      if (!tail.length) {
+        state.xNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
+        state.xReadCursor = '';
+      }
       state.xFocusMerged = false;
     }
     state.xFeed = feed.feed || state.xFeed;
@@ -15590,10 +15646,23 @@ const payload = await api(`/api/v1/feed/xueqiu?${params}`, { timeoutMs: refresh 
       if (added.length) state.feedShown += added.length;
       state.xueqiuNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
     } else {
-      const previous = new Map((state.xueqiuItems || []).filter((item) => item?.id).map((item) => [item.id, item]));
-      state.xueqiuItems = incoming.map((item) => mergeLoadedFeedItem(previous.get(item.id), item));
-      state.xueqiuNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
-      state.xueqiuReadCursor = '';
+      const existing = state.xueqiuItems || [];
+      const previous = new Map(existing.filter((item) => item?.id).map((item) => [item.id, item]));
+      const seen = new Set();
+      const head = [];
+      for (const item of incoming) {
+        if (!item?.id || seen.has(item.id)) continue;
+        seen.add(item.id);
+        head.push(mergeLoadedFeedItem(previous.get(item.id), item));
+      }
+      const tail = existing.filter((item) => item?.id && !seen.has(item.id));
+      const added = head.filter((item) => item?.id && !previous.has(item.id)).length;
+      state.xueqiuItems = tail.length ? [...head, ...tail] : head;
+      if (existing.length && added) state.feedShown += added;
+      if (!tail.length) {
+        state.xueqiuNextCursor = incoming.length && feed.nextCursor ? feed.nextCursor : '';
+        state.xueqiuReadCursor = '';
+      }
       state.xueqiuFocusMerged = false;
     }
     state.xueqiuFeed = feed.feed || state.xueqiuFeed;

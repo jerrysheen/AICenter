@@ -14,6 +14,7 @@ import {
   sourceAuthorProfile,
   sourceKeyFromCapture,
 } from '../../../domain/src/source-authors.js';
+import { authorItemVisibilitySql } from '../feed-visibility.js';
 
 const cache = new Map();
 const CACHE_MS = 30_000;
@@ -417,10 +418,19 @@ export function noteAuthorTranslation(database, workspaceId, itemId, text) {
   return result.changes > 0;
 }
 
+const AUTHOR_ITEM_FROM = `item_authors ia
+  JOIN content_items ci ON ci.workspace_id = ia.workspace_id AND ci.id = ia.content_item_id
+  LEFT JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
+  LEFT JOIN user_item_states item_state
+    ON item_state.workspace_id = ci.workspace_id AND item_state.content_item_id = ci.id`;
+
 export function seekLatestUnread(database, workspaceId, authorId) {
-  return database.prepare(`SELECT sort_at AS sortAt FROM item_authors
-    WHERE workspace_id = ? AND author_id = ? AND is_read = 0
-    ORDER BY sort_at DESC, content_item_id DESC LIMIT 1`).get(workspaceId, authorId) || null;
+  const visible = authorItemVisibilitySql({ qualityRule: '' });
+  return database.prepare(`SELECT ia.sort_at AS sortAt
+    FROM ${AUTHOR_ITEM_FROM}
+    WHERE ia.workspace_id = ? AND ia.author_id = ? AND ia.is_read = 0
+      AND ${visible}
+    ORDER BY ia.sort_at DESC, ia.content_item_id DESC LIMIT 1`).get(workspaceId, authorId) || null;
 }
 
 function mapAuthor(row) {
@@ -474,11 +484,13 @@ export function recomputeAuthorRow(database, workspaceId, authorId, now = Date.n
     .get(workspaceId, authorId);
   if (!author || author.merged_into) return false;
   const since = now - AUTHOR_ACTIVITY_WINDOW_MS;
+  const visible = authorItemVisibilitySql({ qualityRule: '' });
   const totals = database.prepare(`SELECT
-      SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) AS unread_count,
+      SUM(CASE WHEN ia.is_read = 0 AND ${visible} THEN 1 ELSE 0 END) AS unread_count,
       COUNT(*) AS total_count,
-      SUM(CASE WHEN sort_at >= ? THEN 1 ELSE 0 END) AS recent_30d_count
-    FROM item_authors WHERE workspace_id = ? AND author_id = ?`).get(since, workspaceId, authorId);
+      SUM(CASE WHEN ia.sort_at >= ? THEN 1 ELSE 0 END) AS recent_30d_count
+    FROM ${AUTHOR_ITEM_FROM}
+    WHERE ia.workspace_id = ? AND ia.author_id = ?`).get(since, workspaceId, authorId);
   const latest = database.prepare(`SELECT content_item_id, sort_at FROM item_authors
     WHERE workspace_id = ? AND author_id = ?
     ORDER BY sort_at DESC, content_item_id DESC LIMIT 1`).get(workspaceId, authorId);
@@ -652,20 +664,40 @@ export function createAuthorRepository(database, emitEvent = () => {}) {
       invalidateAuthorCache();
     },
 
-    listAuthorItemIds(workspaceId, authorId, { readFlag = 0, before = null, limit = 30 } = {}) {
+    listAuthorItemIds(workspaceId, authorId, { readFlag = 0, before = null, limit = 30, qualityRule = '' } = {}) {
       const page = Math.max(1, Math.min(Number(limit) || 30, 50));
+      const visible = authorItemVisibilitySql({ qualityRule });
       const params = [workspaceId, authorId, readFlag ? 1 : 0];
       let cursorSql = '';
       if (before) {
-        cursorSql = ' AND (sort_at < ? OR (sort_at = ? AND content_item_id < ?))';
+        cursorSql = ' AND (ia.sort_at < ? OR (ia.sort_at = ? AND ia.content_item_id < ?))';
         params.push(before.at, before.at, before.id);
       }
-      const rows = database.prepare(`SELECT content_item_id AS id, sort_at AS sortAt
-        FROM item_authors
-        WHERE workspace_id = ? AND author_id = ? AND is_read = ? ${cursorSql}
-        ORDER BY sort_at DESC, content_item_id DESC
+      const rows = database.prepare(`SELECT ia.content_item_id AS id, ia.sort_at AS sortAt
+        FROM ${AUTHOR_ITEM_FROM}
+        WHERE ia.workspace_id = ? AND ia.author_id = ? AND ia.is_read = ? ${cursorSql}
+          AND ${visible}
+        ORDER BY ia.sort_at DESC, ia.content_item_id DESC
         LIMIT ?`).all(...params, page + 1);
       return { rows: rows.slice(0, page), hasMore: rows.length > page };
+    },
+
+    countVisibleUnread(workspaceId, authorIds, { qualityRule = '' } = {}) {
+      const ids = [...new Set((authorIds || []).map((id) => String(id || '').trim()).filter(Boolean))];
+      if (!ids.length) return new Map();
+      const social = authorItemVisibilitySql({ qualityRule });
+      const plain = authorItemVisibilitySql({ qualityRule: '' });
+      const marks = ids.map(() => '?').join(',');
+      const rows = database.prepare(`SELECT ia.author_id AS authorId, COUNT(*) AS unreadCount
+        FROM ${AUTHOR_ITEM_FROM}
+        JOIN authors a ON a.workspace_id = ia.workspace_id AND a.author_id = ia.author_id
+        WHERE ia.workspace_id = ? AND ia.author_id IN (${marks}) AND ia.is_read = 0
+          AND (
+            (a.platform IN ('official', 'media') AND ${plain})
+            OR (a.platform NOT IN ('official', 'media') AND ${social})
+          )
+        GROUP BY ia.author_id`).all(workspaceId, ...ids);
+      return new Map(rows.map((row) => [row.authorId, Number(row.unreadCount) || 0]));
     },
 
     recomputeAuthor(workspaceId, authorId, now = Date.now()) {
