@@ -15243,7 +15243,7 @@ function paintLoadedSocialFeed(source, epoch) {
     const channel = state.channel || 'all';
     const platform = state.feedPlatform || state.platform || 'all';
     const shows = platform === 'media' ? false
-      : channel === 'recent' || channel === 'official' ? false
+      : channel === 'recent' || channel === 'official' || channel === 'author' ? false
       : channel === 'social' ? source === 'x' || source === 'xueqiu'
       : true;
     if (!shows) return;

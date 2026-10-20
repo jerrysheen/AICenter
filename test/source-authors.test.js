@@ -466,7 +466,9 @@ test('migration 90 only adds the publish-time index and the phone chips scroll w
   assert.match(css, /\.author-switch-item \{[^}]*flex: none/);
   const view = readFileSync(new URL('../apps/web/public/author-view.js', import.meta.url), 'utf8');
   assert.match(view, /youtube', 'official', 'media'/);
-  assert.match(view, /scrollIntoView\(\{ inline: 'nearest'/);
+  assert.match(view, /function revealActiveChip/);
+  assert.match(view, /switcher\.scrollLeft/);
+  assert.doesNotMatch(view, /scrollIntoView/);
   assert.match(view, /iOS 边缘返回/);
   assert.doesNotMatch(view, /touchstart|touchmove|pointerdown/);
 });
