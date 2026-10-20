@@ -83,6 +83,21 @@ export const ReadingHourIndexQuerySchema=z.object({
   if(!hasStart && !hasEnd) return;
   if(!hasStart || !hasEnd || !(value.endAt>value.startAt) || value.endAt-value.startAt>7*86400000) ctx.addIssue({code:'custom',message:'时间窗口必须大于0且不超过7天'});
 }).transform(value=>value.startAt===undefined && value.endAt===undefined ? {...value,...readingHourIndexDefaultWindow()} : value);
+export const EMPTY_READING_HOUR_MESSAGE='这一小时没有内容';
+export const ReadingHourEmptySchema=z.object({
+  ok:z.literal(true),
+  empty:z.literal(true),
+  snapshot:z.null(),
+  message:z.literal(EMPTY_READING_HOUR_MESSAGE),
+}).strict();
+export function emptyReadingHourPayload() {
+  return ReadingHourEmptySchema.parse({
+    ok:true,
+    empty:true,
+    snapshot:null,
+    message:EMPTY_READING_HOUR_MESSAGE,
+  });
+}
 export const ReadingHourIndexSchema=z.object({
   hours:z.array(z.object({
     startAt:z.number().int().nonnegative(),

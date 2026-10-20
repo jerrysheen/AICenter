@@ -955,3 +955,86 @@ test('daily bullets have a share entry on the list and the detail', async () => 
   assert.equal(shared[1].title, '芯片单条');
   page.stop();
 });
+
+function hourCalls(calls, startAt) {
+  return calls.filter((path) => path.startsWith('/api/v1/reports/reading-hour?') && path.includes(`startAt=${startAt}`));
+}
+
+async function stepToEarlier(root, mobile) {
+  if (!mobile) return root.querySelector('[aria-label="上一期"]').listeners.click[0]();
+  const list = root.querySelector('.tree-list');
+  const x = 180;
+  const y = 220;
+  list.listeners.touchstart[0]({ touches: [{ clientX: x, clientY: y }] });
+  list.listeners.touchmove[0]({ touches: [{ clientX: x - 80, clientY: y + 8 }], preventDefault() {} });
+  return list.listeners.touchend[0]({ changedTouches: [{ clientX: x - 80, clientY: y + 8 }] });
+}
+
+async function stepToLater(root, mobile) {
+  if (!mobile) return root.querySelector('[aria-label="下一期"]').listeners.click[0]();
+  const list = root.querySelector('.tree-list');
+  const x = 180;
+  const y = 220;
+  list.listeners.touchstart[0]({ touches: [{ clientX: x, clientY: y }] });
+  list.listeners.touchmove[0]({ touches: [{ clientX: x + 80, clientY: y + 8 }], preventDefault() {} });
+  return list.listeners.touchend[0]({ changedTouches: [{ clientX: x + 80, clientY: y + 8 }] });
+}
+
+test('desktop and phone empty hours stay quiet while neighbors still load', async () => {
+  const start = Date.parse('2026-10-08T06:00:00Z');
+  const filled = edition('edition:filledhour0001', start, ['n1']);
+  const blank = edition('edition:blankhour00001', start - HOUR, ['n2']);
+  const filledBody = {
+    snapshot: {
+      id: 'rh:filled', status: 'ready', scored: 1, candidates: 1, selected: 1,
+      items: [{ nodeId: 'n1', title: '有内容的小时', disposition: 'hit', readingDirectionName: '产业个股', readingThemeName: '中国', timely: true }],
+    },
+  };
+  const emptyBody = { ok: true, empty: true, snapshot: null, message: '这一小时没有内容' };
+  async function open(mobile, blankResponse) {
+    setHourMedia(mobile);
+    const calls = [];
+    const toasts = [];
+    const root = new El('div');
+    root.isConnected = true;
+    const page = createInformationTreePage({
+      session: () => ({ role: mobile ? 'phone' : 'desktop', device: { id: mobile ? 'phone-empty' : 'desk-empty' } }),
+      active: () => true,
+      toast(text) { toasts.push(text); },
+      loadTreeManifest: async () => manifest([filled, blank]),
+      api(path) {
+        calls.push(path);
+        if (path.startsWith('/api/v1/tags')) return Promise.resolve({ catalog: { tags: [] } });
+        if (path.startsWith('/api/v1/reports/reading-hour/index')) return Promise.resolve({ hours: [] });
+        if (path.startsWith('/api/v1/reports/reading-hour')) {
+          const startAt = Number(new URL(path, 'http://tree.local').searchParams.get('startAt'));
+          if (startAt === blank.window.startAt) return blankResponse();
+          return Promise.resolve(filledBody);
+        }
+        return Promise.reject(new Error(`unexpected ${path}`));
+      },
+    });
+    await page.mount(root, { mode: 'hourly' });
+    assert.equal(root.querySelector('h3').textContent, '有内容的小时');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(hourCalls(calls, blank.window.startAt).length >= 1, true);
+    assert.equal(root.querySelector('h3').textContent, '有内容的小时');
+    const prefetched = hourCalls(calls, blank.window.startAt).length;
+    await stepToEarlier(root, mobile);
+    assert.equal(root.querySelector('.tree-hour-empty').textContent, '这一小时没有条目');
+    assert.equal(root.querySelector('h3'), null);
+    assert.equal(root.querySelectorAll('button').some((item) => String(item.textContent).includes('读取失败')), false);
+    assert.deepEqual(toasts, []);
+    await stepToLater(root, mobile);
+    assert.equal(root.querySelector('h3').textContent, '有内容的小时');
+    assert.equal(hourCalls(calls, filled.window.startAt).length >= 1, true);
+    assert.equal(hourCalls(calls, blank.window.startAt).length, prefetched);
+    page.stop();
+  }
+  const quietEmpty = () => Promise.resolve(emptyBody);
+  await open(false, quietEmpty);
+  await open(true, quietEmpty);
+  const legacyMiss = () => Promise.reject(Object.assign(new Error('请求失败 (404)'), { status: 404 }));
+  await open(false, legacyMiss);
+  await open(true, legacyMiss);
+});

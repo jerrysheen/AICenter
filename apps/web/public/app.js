@@ -36,6 +36,7 @@ import {
   homeHourItemTime,
   homeHourPublishedNote,
   homeReadingReady,
+  nextHomeReadingHour,
   acceptMarketPayload,
   marketPayloadHasQuotes,
   absorbReadingIndex,
@@ -8016,15 +8017,16 @@ async function ensureHomeReadingSnapshots(token, { refresh = false, phase = 'vis
         cache: refresh ? 'no-store' : undefined,
       });
       if (token !== state.homeLoadToken) return;
-      if (payload?.snapshot) state.homeReadingHours[startAt] = payload.snapshot;
+      const next = nextHomeReadingHour(state.homeReadingHours[startAt], payload);
+      if (next) state.homeReadingHours[startAt] = next;
     } catch (error) {
       if (token !== state.homeLoadToken) return;
-      reportHomeClientError('home-request', path, error);
       if (error?.status === 404) {
         const prior = state.homeReadingHours[startAt];
         if (!homeReadingReady(prior)) state.homeReadingHours[startAt] = { missing: true };
         return;
       }
+      reportHomeClientError('home-request', path, error);
       state.homeReadingError = '小时报读取失败';
     }
   }));
