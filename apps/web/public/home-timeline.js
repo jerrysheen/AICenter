@@ -413,6 +413,12 @@ export function homeReadingReady(snapshot) {
   return Array.isArray(snapshot?.items) && snapshot.missing !== true;
 }
 
+export function nextHomeReadingHour(current, payload) {
+  if (payload?.snapshot) return payload.snapshot;
+  if (payload?.empty === true) return homeReadingReady(current) ? current : { missing: true };
+  return null;
+}
+
 export function homeHourSections({ editions = [], readings = {}, sectionLimit = 4, nowMs = Date.now() } = {}) {
   const sections = [];
   const cap = Math.max(1, Number(sectionLimit) || 4);

@@ -45,7 +45,7 @@ Retry-After: 17
 | GET | `/api/v1/reports/tree/node` | `id` |
 | GET | `/api/v1/reports/tree/children` | `id` |
 | GET | `/api/v1/reports/tree/editorial` | `startAt`，`endAt` |
-| GET | `/api/v1/reports/reading-hour` | `startAt`，`endAt`，`scope=hour`。在 Web 的工作线程里读取该小时，序列化并 gzip 后写出。没有快照时 404 |
+| GET | `/api/v1/reports/reading-hour` | `startAt`，`endAt`，`scope=hour`。在 Web 的工作线程里读取该小时，序列化并 gzip 后写出。窗口合法但没有已发布快照时返回 200：`empty: true`，`snapshot: null`，`message` 为「这一小时没有内容」。按 id 读取未知快照仍是 404 |
 | GET | `/api/v1/reports/reading-hour/index` | `startAt`，`endAt`，`scope=hour`。当前七日和首页 48 小时只写出 Worker 预备的缓冲区；还没有时 `pending: true`。其他窗口在工作线程里查询后写出 |
 | GET | `/api/v1/reports/reading-hour/snapshot` | `id` |
 

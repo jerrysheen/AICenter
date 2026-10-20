@@ -105,6 +105,34 @@ test('a prepared pending body is retried and is not stored in the request cache'
   assert.equal(again.items[0], 1);
 });
 
+test('a caught rejection does not leave the inflight cleanup unhandled', async () => {
+  const layer = createRequestLayer();
+  const unhandled = [];
+  const onUnhandled = (reason) => { unhandled.push(reason); };
+  process.on('unhandledRejection', onUnhandled);
+  let calls = 0;
+  try {
+    const error = Object.assign(new Error('请求失败 (404)'), { status: 404 });
+    const rejectHour = () => {
+      calls += 1;
+      return Promise.reject(error);
+    };
+    await assert.rejects(
+      layer.run('missing-hour', rejectHour, { share: true, ttl: 30_000 }),
+      (reason) => reason === error,
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+    await assert.rejects(
+      layer.run('missing-hour', rejectHour, { share: true, ttl: 30_000 }),
+      (reason) => reason === error,
+    );
+    assert.equal(calls, 2);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
 test('translation polling backs off and stops when the job will not be claimed', () => {
   const startedAt = 10_000;
   const deadline = startedAt + TRANSLATION_POLL_DEADLINE_MS;

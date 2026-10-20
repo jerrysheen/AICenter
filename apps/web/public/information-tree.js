@@ -1284,7 +1284,8 @@ export function createInformationTreePage(host) {
   async function fetchReadingSnapshot(edition, {refresh=false}={}) {
     const path=pinnedReadingId && openedId ? `/api/v1/reports/reading-hour/snapshot?id=${encodeURIComponent(pinnedReadingId)}` : `/api/v1/reports/reading-hour?startAt=${edition.window.startAt}&endAt=${edition.window.endAt}&scope=hour`;
     try{
-      const data=await api(path, refresh ? { cache: 'no-store', priority: 1 } : { priority: 2 });const snapshot=data?.snapshot || null;
+      const data=await api(path, refresh ? { cache: 'no-store', priority: 1 } : { priority: 2 });
+      const snapshot=data?.empty===true ? null : (data?.snapshot || null);
       readingCache.set(edition.window.startAt, snapshot);return snapshot;
     }catch(error){
       if(aborted(error)) throw error;

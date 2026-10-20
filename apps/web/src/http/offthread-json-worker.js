@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { parentPort, workerData } from 'node:worker_threads';
 import { gzipSync } from 'node:zlib';
 import { parseContract } from '../../../../packages/contracts/src/errors.js';
+import { emptyReadingHourPayload } from '../../../../packages/contracts/src/information-tree.js';
 import { createStore } from '../../../../packages/database/src/index.js';
 import { createFeedService } from '../../../../packages/domain/src/feed-service.js';
 import { createHardwarePriceService } from '../../../../packages/domain/src/hardware-price-service.js';
@@ -97,7 +98,7 @@ async function run(task) {
   }
   if (task.kind === 'reading-hour') {
     const snapshot = readers.readingHour.forWindow(workspace, { startAt: task.startAt, endAt: task.endAt }, task.scope || 'hour');
-    if (!snapshot) return { status: 404, payload: { ok: false } };
+    if (!snapshot) return { status: 200, payload: emptyReadingHourPayload() };
     return { status: 200, payload: { ok: true, snapshot } };
   }
   if (task.kind === 'reading-index') {

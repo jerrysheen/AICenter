@@ -111,9 +111,12 @@ export function createRequestLayer({ maxInflight = API_REQUEST_LIMIT, now = () =
     });
     if (share) {
       inflight.set(flightKey, promise);
+      // finally() returns a second promise that rejects with the same reason.
+      // Catch it here so a caller that already handled the original rejection
+      // does not also get an unhandled "请求失败" in the console.
       promise.finally(() => {
         if (inflight.get(flightKey) === promise) inflight.delete(flightKey);
-      });
+      }).catch(() => {});
     }
     queue.push({ priority, seq: seq += 1, factory, resolve, reject });
     pump();
