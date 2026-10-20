@@ -7,9 +7,12 @@ import { createStore } from '../packages/database/src/index.js';
 import { createTradingService } from '../packages/domain/src/trading-service.js';
 import { createMemorySnapshotCache } from '../packages/runtime/src/snapshot-cache.js';
 import {
+  captureFeedLists,
   captureHoldingsMarket,
   captureStaticSignalBoard,
+  ensureFeedListSchedule,
   ensureHoldingsMarketSchedule,
+  ensureMarketBoardsSchedule,
   ensureStaticSignalBoardSchedule,
   HOLDINGS_MARKET_JOB_TYPE,
   HOLDINGS_MARKET_SNAPSHOT_KEY,
@@ -220,16 +223,66 @@ test('holdings quotes come from the worker snapshot and keep the last precise pr
   }
 });
 
-test('snapshot schedules are one minute interval jobs', () => {
+test('slow snapshots run every five minutes and market boards stay at one minute', () => {
   const temporary = temporaryStore('ai-center-snapshot-schedule-');
   try {
     const board = ensureStaticSignalBoardSchedule(temporary.store, NOW);
     const holdings = ensureHoldingsMarketSchedule(temporary.store, NOW);
+    const feeds = ensureFeedListSchedule(temporary.store, NOW);
+    const markets = ensureMarketBoardsSchedule(temporary.store, NOW);
     assert.equal(board.jobType, STATIC_SIGNAL_BOARD_JOB_TYPE);
     assert.equal(holdings.jobType, HOLDINGS_MARKET_JOB_TYPE);
-    assert.equal(board.schedule.intervalMinutes, 1);
-    assert.equal(holdings.schedule.intervalMinutes, 1);
+    assert.equal(board.schedule.intervalMinutes, 5);
+    assert.equal(holdings.schedule.intervalMinutes, 5);
+    assert.equal(feeds.schedule.intervalMinutes, 5);
+    assert.equal(markets.schedule.intervalMinutes, 1);
     assert.equal(board.enabled, true);
+  } finally {
+    temporary.close();
+  }
+});
+
+test('unchanged holdings, board and feed snapshots are not rewritten', async () => {
+  const temporary = temporaryStore('ai-center-snapshot-skip-');
+  const base = temporary.store.repositories.runtimeSnapshots;
+  let writes = 0;
+  const repository = {
+    readSnapshot: (...args) => base.readSnapshot(...args),
+    saveSnapshot: (...args) => {
+      writes += 1;
+      return base.saveSnapshot(...args);
+    },
+  };
+  const sourcePort = {
+    async read(sourceId, input) {
+      if (sourceId === 'market.history') {
+        return { data: input.symbols.map((symbol) => ({ symbol, points: [{ at: NOW, close: 10 }] })) };
+      }
+      return { data: input.symbols.map((symbol) => ({ symbol, lastPrice: 7, prevClose: 6 })) };
+    },
+  };
+  const feed = { items: [{ id: 'post-1', publishedAt: NOW }] };
+  const feedService = {
+    async getExternalFeed() { return feed; },
+    listFlash() { return [{ id: 'flash-1', publishedAt: NOW }]; },
+  };
+  try {
+    await captureHoldingsMarket({
+      sourcePort, repository, tradingRepository: temporary.store.repositories.trading, now: () => NOW,
+    });
+    const afterHoldings = writes;
+    await captureHoldingsMarket({
+      sourcePort, repository, tradingRepository: temporary.store.repositories.trading, now: () => NOW + 60_000,
+    });
+    assert.equal(writes, afterHoldings);
+    await captureStaticSignalBoard({ sourcePort: boardPort(), repository, now: () => NOW });
+    const afterBoard = writes;
+    await captureStaticSignalBoard({ sourcePort: boardPort(), repository, now: () => NOW + 60_000 });
+    assert.equal(writes, afterBoard);
+    await captureFeedLists({ feedService, repository, now: () => NOW });
+    const afterFeed = writes;
+    await captureFeedLists({ feedService, repository, now: () => NOW + 60_000 });
+    assert.equal(writes, afterFeed);
   } finally {
     temporary.close();
   }

@@ -62,6 +62,8 @@ import { knowledgeStructureManifest, createStructureJobHandlers } from '../../..
 import { taggingManifest, createTaggingJobHandlers, readTagCatalogFile } from '../../../packages/runtime/src/tagging-module.js';
 import { workPackageDispatchManifest, createWorkPackageJobHandlers } from '../../../packages/runtime/src/work-package-module.js';
 import { createJobRunner, formatJobLoopDelay, shouldLogJobLoopDelay } from '../../../packages/runtime/src/job-runner.js';
+import { mainThreadWatchdogEnabled, startMainThreadWatchdog } from '../../../packages/runtime/src/main-thread-watchdog.js';
+import { installWorkerLogStamps } from '../../../packages/runtime/src/worker-log.js';
 import { createScheduler } from '../../../packages/runtime/src/scheduler.js';
 import { createDailyBriefService } from '../../../packages/domain/src/daily-brief-service.js';
 import {createInformationDigestService} from '../../../packages/domain/src/information-digest-service.js';
@@ -902,6 +904,10 @@ export function createAiCenterWorker(options = {}) {
   let hardwarePriceTimer = null;
   let hardwarePriceEventId = 0;
   const hardwarePriceRefresh = options.enableDefaultSchedules !== false;
+  const mainThreadWatchdog = startMainThreadWatchdog({
+    enabled: mainThreadWatchdogEnabled(env),
+    tasks: () => runner.runningTasks(),
+  });
 
   return {
     store,
@@ -989,6 +995,7 @@ export function createAiCenterWorker(options = {}) {
       return runPromise;
     },
     async close() {
+      mainThreadWatchdog.stop();
       if (translationGapTimer) clearInterval(translationGapTimer);
       translationGapTimer = null;
       if (hardwarePriceTimer) clearInterval(hardwarePriceTimer);
@@ -1009,6 +1016,7 @@ export function createAiCenterWorker(options = {}) {
 async function main() {
   const instance = resolveInstanceConfig({ repositoryRoot });
   attachDailyProcessLog({directory: process.env.AI_CENTER_LOG_DIR || path.join(instance.dataDirectory, 'logs'), name: process.env.AI_CENTER_LOG_NAME || 'worker'});
+  installWorkerLogStamps();
   const worker = createAiCenterWorker();
   console.log(`AI Center worker ${worker.runner.workerId}`);
   try {

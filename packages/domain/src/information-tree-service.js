@@ -1,9 +1,10 @@
 import {randomUUID} from 'node:crypto';
 import {validateTreeModules,repairTreeModuleAttribution,normalizeInformationResponse,treeResponseProtocol,TREE_VALIDATOR_VERSION,TreeNodeSchema,normalizeArticleResponse,ArticleOutputSchema,ARTICLE_VALIDATOR_VERSION,projectTreeInput,FeedNormalizedArticleSchema,TreeIndexEditionSchema,TreeIndexInformationSchema} from '../../contracts/src/information-tree.js';
-import {materialHash,prepareDailyMaterials} from './daily-materials.js';
+import {materialHash,materialHashYielding,prepareDailyMaterials} from './daily-materials.js';
+import {yieldEventLoop} from './event-loop.js';
 import {needsZhLocalization} from './localize-texts.js';
 import {runBounded} from './daily-analysis.js';
-import {treeCatalog,treeSource,treeFailure,formatCondenseFailureLog,formatTreeHourlyCallLog,describeCondenseFailure,isTerminalPendingReason} from './information-tree-policy.js';
+import {treeCatalog,treeSource,treeFailure,formatCondenseFailureLog,formatTreeHourlyCallLog,describeCondenseFailure,isTerminalPendingReason,isTruncatedModelFailure,cachedTruncationFailure,HOURLY_TRUNCATION_FALLBACK_MODEL,HOURLY_TRUNCATION_MAX_TOKENS} from './information-tree-policy.js';
 import {readingClassKeyEnvs} from './reading-hour-service.js';
 import {isFlashSource} from './flash-sources.js';
 import {boundedInt,isAttributionValidationError,isRetryableUpstreamStatus,modelRetryDelayMs,nextHourlyAttempt,sameIdSet,upstreamHttpStatus} from './report-reliability.js';
@@ -284,7 +285,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
     const skill=skills[stage] || skills.information;
     const instruction=stage==='classification' ? treeResponseProtocol(stage) : skill.injected || skill.instruction+'\n'+treeResponseProtocol(stage==='information' && articleStrategy ? 'article' : stage);
     const effectivePromptHash=stage==='classification' ? materialHash({instruction,validator:TREE_VALIDATOR_VERSION,skill:skill.version}) : skill.version;
-    const key=materialHash({stage,payload,effectivePromptHash,generationVersion:generationVersion(stage)});
+    const key=await materialHashYielding({stage,payload,effectivePromptHash,generationVersion:generationVersion(stage)});
     const period='tree-cache',cached=reportRepository.getAnalysisStage(s.workspaceId,period,key,key);
     if(cached?.status==='completed') {try{s.cacheHits=(s.cacheHits || 0)+1;return articleStrategy && stage==='information' ? check(cached.output.status ? cached.output : {title:cached.output.title,tagId:cached.output.tagId,summary:cached.output.text,body:cached.output.body}) : check(cached.output);}catch{reportRepository.saveAnalysisStage(s.workspaceId,period,key,key,{stage,effectivePromptHash},null,'failed','invalid-output: cached response no longer valid');}}
     const owner=randomUUID();
@@ -299,7 +300,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
       if(lastAnswer)return {response:lastAnswer,correction:'只修复JSON语法，保留原有内容。'+shape};
       return payload;
     };
-    let timing,sentMessage='';const stageInput=()=>({stage,effectivePromptHash,validatorVersion,executionTiming:timing,...(checkpoint ? {checkpoint} : {}),...(lastAnswer ? {lastAnswer} : {})});
+    let timing,sentMessage='',useFallbackModel=false;const stageInput=()=>({stage,effectivePromptHash,validatorVersion,executionTiming:timing,...(checkpoint ? {checkpoint} : {}),...(lastAnswer ? {lastAnswer} : {})});
     const acceptOutput=(result)=>{
       lastAnswer=result.answer;
       const parsed=parse(result.answer);
@@ -345,7 +346,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
                 result=await runBounded(agentRuntime,{workspaceId:s.workspaceId,usageStage:`tree-${stage}`,closedContext:true,
                   closedTask:stage==='information' && articleStrategy ? 'article-normalize' : stage==='daily' ? 'daily-analysis' : 'hourly-brief',allowedToolIds:[],webMode:'off',enableAuxiliarySearch:false,executionPriority:s.priority,
                   taskInstruction:instruction,
-                  ...(typeof googleModel==='string' ? {googleModel} : {}),
+                  ...(useFallbackModel ? {googleModel:HOURLY_TRUNCATION_FALLBACK_MODEL,hourlyMaxTokens:HOURLY_TRUNCATION_MAX_TOKENS} : (typeof googleModel==='string' ? {googleModel} : {})),
                   ...(keyEnv ? {googleKeyEnv: keyEnv} : {}),
                   message},
                   Math.min(callTimeout,remaining),heartbeat,30000,{queueTimeoutMs:config.queueTimeoutMs,totalTimeoutMs:remaining,onTiming:value=>{timing=value;reportRepository.saveAnalysisStage(s.workspaceId,period,key,key,stageInput(),null,'running');}});
@@ -358,13 +359,17 @@ export function createInformationTreeService({repository,reportRepository,feedSe
                   try {
                     log(formatTreeHourlyCallLog({
                       error:callError,result:callResult,keyEnv:keyEnv || callError?.googleKeyEnv || '',
-                      model:googleModel || route('hourly').model,inputBytes:Buffer.byteLength(sentMessage || ''),
+                      model:(useFallbackModel ? HOURLY_TRUNCATION_FALLBACK_MODEL : googleModel) || route('hourly').model,inputBytes:Buffer.byteLength(sentMessage || ''),
                       latencyMs:Date.now()-startedAt,finishReason:callError?.finishReason || callResult?.finishReason || timing?.finishReason,
                     }));
                   } catch { /* a log failure must not change the condense call */ }
                 }
               }
             } catch(error) {
+              if(stage==='hourly' && isTruncatedModelFailure(error)) {
+                if(!useFallbackModel) { useFallbackModel=true; correction=''; continue; }
+                error.code='truncated'; error.uncached=true; throw error;
+              }
               const status=upstreamHttpStatus(error);
               const quota=error?.code==='budget-deferred' || error?.quotaExhausted===true || Number(error?.status)===429 || Number(error?.upstreamStatus)===429;
               // Configured Google keys: one different key for a non-quota failure, including upstream 5xx. Quota may walk the remaining keys.
@@ -382,9 +387,17 @@ export function createInformationTreeService({repository,reportRepository,feedSe
               if(stage==='hourly' && modelIndex<models.length-1 && (isRetryableUpstreamStatus(status) || (quota && typeof googleModel==='string'))) continue modelLoop;
               throw error;
             }
+            if(stage==='hourly' && isTruncatedModelFailure(null, result)) {
+              if(!useFallbackModel) { useFallbackModel=true; correction=''; continue; }
+              throw Object.assign(new Error('输出被截断'),{code:'truncated',uncached:true,finishReason:result?.finishReason || 'MAX_TOKENS'});
+            }
             // Transport errors and aborted turns propagate; only completed malformed output gets one format repair.
             try {return acceptOutput(result);}
             catch(error) {
+              if(stage==='hourly' && isTruncatedModelFailure(error, result)) {
+                if(!useFallbackModel) { useFallbackModel=true; correction=''; continue; }
+                throw Object.assign(error,{code:'truncated',uncached:true,finishReason:error.finishReason || result?.finishReason || 'MAX_TOKENS'});
+              }
               if(articleStrategy && !/[}\]]\s*$/.test(String(result.answer).trim().replace(/```$/, '').trim()))throw Object.assign(new Error('响应中止或截断；不当作完整JSON修复'),{code:'invalid-output'});
               if(attempt) {
                 lastError=Object.assign(error,{code:error.code || 'invalid-output'});
@@ -405,7 +418,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
         if(!Number.isFinite(error.inputBytes)) error.inputBytes=Buffer.byteLength(sentMessage);
       }
       error.timing=timing;
-      if(!(error?.code==='lease-conflict' && !acquired)) reportRepository.saveAnalysisStage(s.workspaceId,period,key,key,{...stageInput(),failure:treeFailure(error,key,'',now())},null,'failed',error.message);
+      if(!(error?.code==='lease-conflict' && !acquired) && !error?.uncached) reportRepository.saveAnalysisStage(s.workspaceId,period,key,key,{...stageInput(),failure:treeFailure(error,key,'',now())},null,'failed',error.message);
       throw error;
     } finally { if(acquired) repository.release(s.workspaceId,key,owner); }
   }
@@ -420,11 +433,11 @@ export function createInformationTreeService({repository,reportRepository,feedSe
     return repository.saveNode(workspaceId,{...node,id:`i:${version}`,version,window,eventAt});
   }
   async function informationDraft(m,window,s) {
-    const source=treeSource(m),sourceHash=materialHash(source),sourceVersion=String(m.version || m.updatedAt || sourceHash);
+    const source=treeSource(m),sourceHash=await materialHashYielding(source),sourceVersion=String(m.version || m.updatedAt || sourceHash);
     // This prompt revision only clarifies titles; completed, validated text remains reusable.
     const head=repository.informationHead(s.workspaceId,m.id)?.node;
     if(head?.sourceVersion===sourceVersion && reusableInformation(head) && head.draftKey===materialHash({source,skill:head.effectivePromptHash,generationVersion:generationVersion('information')})) {s.cacheHits=(s.cacheHits || 0)+1;return classified(head,m,s);}
-    const version=materialHash({source,skill:skills.information.version,generationVersion:generationVersion('information')}),id=`i:${version}`;
+    const version=await materialHashYielding({source,skill:skills.information.version,generationVersion:generationVersion('information')}),id=`i:${version}`;
     const stateKey=`${articleStrategy ? 'article' : 'information'}:${m.id}`,previous=reportRepository.getAnalysisStage(s.workspaceId,'tree-preparation',stateKey,sourceHash);
     const saved=repository.getNode(s.workspaceId,id);
     if(previous?.output?.pending && (!articleStrategy || previous.input?.generationVersion===generationVersion('information')) && previous.output.pending.sourceVersion===sourceVersion && (!previous.output.pending.retryable || previous.output.pending.retryAt>now()) && !s.force && !(previous.output.pending.reason==='budget-deferred' && budgetReady?.()) && !(saved?.catalogVersion===classification.classificationVersion && saved?.validatorVersion===TREE_VALIDATOR_VERSION))throw Object.assign(new Error(previous.output.pending.reason),{code:previous.output.pending.reason,cachedPending:previous.output.pending});
@@ -483,36 +496,47 @@ export function createInformationTreeService({repository,reportRepository,feedSe
       const rows=groups.get(tag) || [];rows.push(input);groups.set(tag,rows);
     }
     const result=[];result.failures=[];result.diagnostics=[];
-    for(const [tagId,rows] of groups) {
-      const version=materialHash({layer,inputs:rows.map(i=>({id:i.id,version:i.version})),tagId,window,skill:skills[layer].version,generationVersion:generationVersion(layer),groups:classification.groupVersion});
+    const groupEntries=[...groups];
+    async function condenseTag(tagId,rows) {
+      const part={nodes:[],failures:[],diagnostics:[],freshFailure:false};
+      await yieldEventLoop();
+      const version=await materialHashYielding({layer,inputs:rows.map(i=>({id:i.id,version:i.version})),tagId,window,skill:skills[layer].version,generationVersion:generationVersion(layer),groups:classification.groupVersion});
       const stageKey=`tree-${layer}:${version}`,cached=reportRepository.getAnalysisStage(s.workspaceId,'tree-cache',stageKey,version);
       try {
       const manualTransientRetry=s.retryTransient===true && cached?.input?.failure?.reason==='retryable-model-error';
-      if(cached?.status==='failed' && cached.input?.failure?.retryAt>now() && !manualTransientRetry) {
+      if(!cachedTruncationFailure(cached) && cached?.status==='failed' && cached.input?.failure?.retryAt>now() && !manualTransientRetry) {
         const pending=cached.input.failure;
         throw Object.assign(new Error(pending.reason),{code:pending.reason,cachedPending:pending,priorError:cached.error || '',...(Number.isFinite(pending.queueMs) || Number.isFinite(pending.executionMs) ? {timing:{queueMs:pending.queueMs,executionMs:pending.executionMs}} : {})});
       }
       if(cached?.status==='completed') {
-        try {const nodes=cached.output.ids.map(id=>TreeNodeSchema.parse(repository.getNode(s.workspaceId,id)));validateTreeModules({modules:nodes.map(n=>({...n,inputIds:n.children}))},rows,modelTags);s.cacheHits=(s.cacheHits || 0)+1;result.push(...nodes);continue;}catch{/* Locally rebuild the invalid group; other completed caches remain. */}
+        try {const nodes=cached.output.ids.map(id=>TreeNodeSchema.parse(repository.getNode(s.workspaceId,id)));validateTreeModules({modules:nodes.map(n=>({...n,inputIds:n.children}))},rows,modelTags);s.cacheHits=(s.cacheHits || 0)+1;part.nodes.push(...nodes);return part;}catch{/* Locally rebuild the invalid group; other completed caches remain. */}
       }
       const project=(rows)=>rows.map((i,n)=>({...projectTreeInput(i,`n${n+1}`),tagId,...(layer==='daily' ? {window:i.window} : {})}));
       async function merge(rows,depth=0) {
         if(depth>12) throw new Error('分批合并未收敛');
         const projection=project(rows),batches=packTreeInputs(projection,config.batchBytes);
         if(batches.length===1) {
-          const value=await model(layer,{inputs:projection,tagId,tagName:tagNames.get(tagId) || '未分类'},raw=>{
-            try {
-              const output=validateTreeModules(raw,projection,modelTags);
-              if(output.modules.some(m=>m.tagId!==tagId)) throw new Error('模块主Tag与固定分组不符');
-              return output;
-            } catch(error) {
-              if(!s.allowAttributionRepair || !isAttributionValidationError(error)) throw error;
-              const repaired=repairTreeModuleAttribution(raw,projection,modelTags,{tagId});
-              if(!repaired) throw error;
-              return repaired;
+          try {
+            const value=await model(layer,{inputs:projection,tagId,tagName:tagNames.get(tagId) || '未分类'},raw=>{
+              try {
+                const output=validateTreeModules(raw,projection,modelTags);
+                if(output.modules.some(m=>m.tagId!==tagId)) throw new Error('模块主Tag与固定分组不符');
+                return output;
+              } catch(error) {
+                if(!s.allowAttributionRepair || !isAttributionValidationError(error)) throw error;
+                const repaired=repairTreeModuleAttribution(raw,projection,modelTags,{tagId});
+                if(!repaired) throw error;
+                return repaired;
+              }
+            },s);
+            return value.modules.map(m=>({...m,inputIds:m.inputIds.flatMap(alias=>rows[Number(alias.slice(1))-1].directIds)}));
+          } catch(error) {
+            if(error?.code==='truncated' && rows.length>1 && depth<12) {
+              const mid=Math.ceil(rows.length/2);
+              return [...await merge(rows.slice(0,mid),depth+1),...await merge(rows.slice(mid),depth+1)];
             }
-          },s);
-          return value.modules.map(m=>({...m,inputIds:m.inputIds.flatMap(alias=>rows[Number(alias.slice(1))-1].directIds)}));
+            throw error;
+          }
         }
         const intermediate=[];
         let offset=0;
@@ -530,17 +554,19 @@ export function createInformationTreeService({repository,reportRepository,feedSe
         : await merge(rows.map(i=>({...i,directIds:[i.id]})));
       // Flattened internal batches still belong to the original immediate previous layer.
       validateTreeModules({modules:output},rows,modelTags);
-      const nodes=output.map(m=>{
+      const nodes=[];
+      for(const m of output) {
+        await yieldEventLoop();
         const children=stable(m.inputIds.map(id=>rows.find(i=>i.id===id)));
-        const nodeVersion=materialHash({version,title:m.title,text:m.text,children:children.map(i=>i.id)});
-        return repository.saveNode(s.workspaceId,{title:m.title,text:m.text,tagId:m.tagId,id:`${layer[0]}:${nodeVersion}`,version:nodeVersion,layer,
-          children:children.map(i=>i.id),articleIds:[...new Set(children.flatMap(i=>i.articleIds))].sort(),window,generatedAt:now(),effectivePromptHash:skills[layer].version,validatorVersion:TREE_VALIDATOR_VERSION,safePassthrough:Array.from(m.text).length<=80});
-      });
-      reportRepository.saveAnalysisStage(s.workspaceId,'tree-cache',stageKey,version,{stage:layer},{ids:nodes.map(n=>n.id)},'completed');result.push(...nodes);
+        const nodeVersion=await materialHashYielding({version,title:m.title,text:m.text,children:children.map(i=>i.id)});
+        nodes.push(repository.saveNode(s.workspaceId,{title:m.title,text:m.text,tagId:m.tagId,id:`${layer[0]}:${nodeVersion}`,version:nodeVersion,layer,
+          children:children.map(i=>i.id),articleIds:[...new Set(children.flatMap(i=>i.articleIds))].sort(),window,generatedAt:now(),effectivePromptHash:skills[layer].version,validatorVersion:TREE_VALIDATOR_VERSION,safePassthrough:Array.from(m.text).length<=80}));
+      }
+      reportRepository.saveAnalysisStage(s.workspaceId,'tree-cache',stageKey,version,{stage:layer},{ids:nodes.map(n=>n.id)},'completed');part.nodes.push(...nodes);
       } catch(error) {
         if(error?.code==='lease-conflict') {
-          result.failures.push({...treeFailure(error,stageKey,'',now()),tagId});
-          continue;
+          part.failures.push({...treeFailure(error,stageKey,'',now()),tagId});
+          return part;
         }
         const selected=route(layer) || {};
         const meta={layer,task:layer==='daily' ? 'daily-analysis' : 'hourly-brief',tagId,tagName:tagNames.get(tagId) || '未分类',windowStart:window?.startAt,
@@ -550,11 +576,29 @@ export function createInformationTreeService({repository,reportRepository,feedSe
           console.error(formatCondenseFailureLog(error,{...meta,inputCount:rows.length,inputBytes:Buffer.byteLength(JSON.stringify(projection)),
             skillBytes:Buffer.byteLength(String(skills[layer]?.instruction || '')),calls:s.calls}));
         } catch { /* 诊断日志失败不能挡住失败分组落库 */ }
-        try { result.diagnostics.push(describeCondenseFailure(error,meta)); } catch { /* 诊断字段失败不能挡住失败分组落库 */ }
-        const failure={...(error.cachedPending || treeFailure(error,stageKey,'',now())),tagId};result.failures.push(failure);
-        if(!error.cachedPending) result.freshFailure=true;
-        reportRepository.saveAnalysisStage(s.workspaceId,'tree-cache',stageKey,version,{stage:layer,failure,inputs:rows.map(n=>n.id)},null,'failed',String(error.message).slice(0,1200));
+        try { part.diagnostics.push(describeCondenseFailure(error,meta)); } catch { /* 诊断字段失败不能挡住失败分组落库 */ }
+        const failure={...(error.cachedPending || treeFailure(error,stageKey,'',now())),tagId};part.failures.push(failure);
+        if(!error.cachedPending) part.freshFailure=true;
+        if(!error?.uncached) reportRepository.saveAnalysisStage(s.workspaceId,'tree-cache',stageKey,version,{stage:layer,failure,inputs:rows.map(n=>n.id)},null,'failed',String(error.message).slice(0,1200));
       }
+      return part;
+    }
+    const parts=new Array(groupEntries.length);
+    let groupCursor=0;
+    async function nextTagGroup() {
+      while(groupCursor<groupEntries.length) {
+        const index=groupCursor++;
+        const [tagId,rows]=groupEntries[index];
+        parts[index]=await condenseTag(tagId,rows);
+      }
+    }
+    await Promise.all(Array.from({length:Math.min(3,groupEntries.length)},()=>nextTagGroup()));
+    for(const part of parts) {
+      if(!part) continue;
+      result.push(...part.nodes);
+      result.failures.push(...part.failures);
+      result.diagnostics.push(...part.diagnostics);
+      if(part.freshFailure) result.freshFailure=true;
     }
     return result;
   }
@@ -592,7 +636,8 @@ export function createInformationTreeService({repository,reportRepository,feedSe
       reportRepository.saveAnalysisStage(workspaceId,'tree-preparation',`information:${id}`,materialHash({id,unavailable:true}),{sourceId:id,sourceVersion:'unavailable'},{pending:failure},'failed','来源未就绪或不在允许处理范围');
     }
     for(const m of stable(materials)) {
-      const at=m.eventAt ?? m.publishedAt ?? now(),window={startAt:Math.floor(at/HOUR)*HOUR,endAt:(Math.floor(at/HOUR)+1)*HOUR},sourceHash=materialHash(treeSource(m)),sourceVersion=String(m.version || m.updatedAt || sourceHash);
+      await yieldEventLoop();
+      const at=m.eventAt ?? m.publishedAt ?? now(),window={startAt:Math.floor(at/HOUR)*HOUR,endAt:(Math.floor(at/HOUR)+1)*HOUR},sourceHash=await materialHashYielding(treeSource(m)),sourceVersion=String(m.version || m.updatedAt || sourceHash);
       if(isFlashSource({id:m.id,sourceId:m.sourceId,publisher:m.publisher,displayName:m.publisher}, flashSources)) {
         pending.push({id:m.id,reason:'flash-source',retryable:false,retryAt:null,sourceVersion});
         continue;

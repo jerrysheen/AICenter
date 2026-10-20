@@ -11,8 +11,9 @@ import { sourceAuthorProfile } from './source-authors.js';
 
 const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const READING_TIMELINESS_MS = 24 * 60 * 60 * 1000;
-// A batch of ten article prefixes needs longer than the old 90s call budget. 180s matches the condense call timeout.
-const READING_CLASS_TIMEOUT_MS = 180_000;
+// One batch waits 60 seconds. A timeout is a non-quota error and is retried once on the next key.
+const READING_CLASS_TIMEOUT_MS = 60_000;
+const READING_CLASS_CONCURRENCY = 3;
 const SLICE_ORDER = ['中国','美国','欧洲','日本','韩国','中国台湾','多地','其他','模型与技术','应用与工作流','安全与外交','贸易与限制'];
 const READING_DIRECTION_ORDER = ['金融','产业个股','科技与AI','地缘政治','待分类'];
 const readingRank = (order, value) => { const index = order.indexOf(value); return index < 0 ? order.length : index; };
@@ -500,25 +501,25 @@ export function createReadingHourService({repository, reportRepository = null, a
     });
     if (!keyEnvs.length) return attempt('');
     const start = keyCursor % keyEnvs.length;
+    keyCursor = start + 1;
     let lastError = null;
     let nonQuotaErrors = 0;
     for (let step = 0; step < keyEnvs.length; step += 1) {
       const index = (start + step) % keyEnvs.length;
       try {
         const result = await attempt(keyEnvs[index]);
-        keyCursor = index + 1;
+        if (index + 1 > keyCursor) keyCursor = index + 1;
         return result;
       } catch (error) {
         lastError = error;
         if (isQuotaExhausted(error)) continue;
         nonQuotaErrors += 1;
         if (nonQuotaErrors >= 2) {
-          keyCursor = index + 1;
+          if (index + 1 > keyCursor) keyCursor = index + 1;
           throw error;
         }
       }
     }
-    keyCursor = start + 1;
     throw lastError;
   }
   async function requestOne(workspace, node, fallback = null) {
@@ -589,11 +590,18 @@ export function createReadingHourService({repository, reportRepository = null, a
       else pending.push(index);
     }
     const runnable = flushRemainder ? pending.length : pending.length - (pending.length % batchSize);
-    for (let offset = 0; offset < runnable; offset += batchSize) {
-      const indexes = pending.slice(offset, offset + batchSize);
-      const batch = await classifyBatch(workspace, indexes.map((index) => nodes[index]));
-      indexes.forEach((index, position) => { out[index] = batch[position]; });
+    const batches = [];
+    for (let offset = 0; offset < runnable; offset += batchSize) batches.push(pending.slice(offset, offset + batchSize));
+    let batchCursor = 0;
+    async function nextBatch() {
+      while (batchCursor < batches.length) {
+        const indexes = batches[batchCursor];
+        batchCursor += 1;
+        const batch = await classifyBatch(workspace, indexes.map((index) => nodes[index]));
+        indexes.forEach((index, position) => { out[index] = batch[position]; });
+      }
     }
+    await Promise.all(Array.from({ length: Math.min(READING_CLASS_CONCURRENCY, batches.length) }, () => nextBatch()));
     for (let offset = runnable; offset < pending.length; offset += 1) out[pending[offset]] = pooledClassification();
     return out;
   }

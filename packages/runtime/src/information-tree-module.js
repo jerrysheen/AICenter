@@ -14,6 +14,26 @@ export async function prioritizeRecentTreePreparation(store,candidates,workspace
   });
   return store.reprioritizeQueuedJobs(workspaceId,changes);
 }
+export function materialStamp(node) {
+  return `${node?.sourceId || node?.id || ''}\0${node?.sourceVersion || ''}`;
+}
+
+// A published edition, or an attempt that already ran this same material batch, must not be queued again.
+export function editionCoversMaterials(edition, hourNodes, lookup) {
+  if(!edition || !hourNodes?.length) return false;
+  const ids=new Set(edition.inputIds || []);
+  if(hourNodes.every(node=>ids.has(node.id))) return true;
+  if(typeof lookup!=='function' || !edition.inputIds?.length) return false;
+  const stamps=new Set();
+  for(const id of edition.inputIds) {
+    let node=null;
+    try { node=lookup(id); } catch { return false; }
+    if(!node?.sourceId) return false;
+    stamps.add(materialStamp(node));
+  }
+  return hourNodes.every(node=>node?.sourceId && stamps.has(materialStamp(node)));
+}
+
 export function enqueuePreparedHourRefreshes(store,service,workspaceId,nodes,at=Date.now(),{minute=null,env=process.env}={}) {
   if(hourlyReportDisabled(env) || !store?.createJob || !nodes.length)return [];
   const latest=Math.floor(at/HOUR)*HOUR-HOUR;
@@ -21,11 +41,13 @@ export function enqueuePreparedHourRefreshes(store,service,workspaceId,nodes,at=
   const queued=store.listOpenJobs('report.hourly.extract').filter(j=>j.workspaceId===workspaceId && j.status==='queued');
   const jobs=[];
   for(const hourStart of hours) {
+    const hourNodes=nodes.filter(n=>n.window.startAt===hourStart);
     const slot=service.list(workspaceId,{startAt:hourStart,endAt:hourStart+HOUR}).hours[0];
     const published=slot?.edition;
     const attempt=slot?.attempt;
-    if(nodes.filter(n=>n.window.startAt===hourStart).every(n=>published?.inputIds.includes(n.id)))continue;
-    if(attempt?.terminal && nodes.filter(n=>n.window.startAt===hourStart).every(n=>attempt.inputIds.includes(n.id)))continue;
+    const lookup=id=>service.node?.(workspaceId,id);
+    if(editionCoversMaterials(published,hourNodes,lookup))continue;
+    if(editionCoversMaterials(attempt,hourNodes,lookup))continue;
     // A running hour may already have frozen its inputs; retain one queued follow-up.
     if(queued.some(j=>j.input.hourStart===hourStart && !j.input.snapshotId && j.input.mode!=='rewrite'))continue;
     jobs.push(store.createJob({type:'report.hourly.extract',workspaceId,priority:hourStart===latest ? 10 : -5,maxAttempts:2,availableAt:hourlyRefreshAvailableAt(at,minute),input:{workspaceId,hourStart}}));

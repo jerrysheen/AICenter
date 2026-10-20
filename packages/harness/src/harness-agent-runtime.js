@@ -428,16 +428,21 @@ export function createHarnessAgentRuntime({
     message, workspaceId, sessionId = '', jobId = '', selectedRefs = [], signal,
     priorTurns = [], selectedContext = '', webMode = 'off',
     researchMode = 'standard', researchProfile, taskInstruction = '',
-    allowedToolIds: runAllow, timeoutMs, trace, now, closedContext = false, closedTask = '', usageStage = '', googleModel, googleKeyEnv,
+    allowedToolIds: runAllow, timeoutMs, trace, now, closedContext = false, closedTask = '', usageStage = '', googleModel, googleKeyEnv, hourlyMaxTokens,
   } = {}, articleFallback=false) {
     let runEnv=articleFallback ? {...env,AI_CENTER_HARNESS_ARTICLE_PROVIDER:'elucid-grok',AI_CENTER_HARNESS_ARTICLE_MODEL:env.AI_CENTER_HARNESS_ARTICLE_FALLBACK_MODEL || 'grok-4.7'} : env;
+    if(!articleFallback && hourlyMaxTokens && closedTask==='hourly-brief') {
+      const tokens=Number(hourlyMaxTokens);
+      if(![4096,6144,8192].includes(tokens)) throw new Error('hourly max tokens must be 4096, 6144 or 8192');
+      runEnv={...runEnv,AI_CENTER_HARNESS_HOURLY_MAX_TOKENS:String(tokens)};
+    }
     if(!articleFallback && (googleModel!==undefined || googleKeyEnv!==undefined)) {
       const hourlyGoogle=closedTask==='hourly-brief' && String(env.AI_CENTER_HARNESS_HOURLY_PROVIDER || '').trim()==='google';
       const articleGoogle=closedTask==='article-normalize' && String(env.AI_CENTER_HARNESS_ARTICLE_PROVIDER || '').trim()==='google';
       if(closedContext!==true || (!hourlyGoogle && !articleGoogle))throw new Error('Google selectors require a closed Google task');
       const selected=resolveHarnessLlm(env,{closedTask,googleModel});
       const prefix=hourlyGoogle ? 'AI_CENTER_HARNESS_HOURLY' : 'AI_CENTER_HARNESS_ARTICLE';
-      runEnv={...env,[`${prefix}_MODEL`]:selected.model};
+      runEnv={...runEnv,[`${prefix}_MODEL`]:selected.model};
     }
     const runStartedAt = Date.now();
     const runtimeContext = buildRuntimeContext(now ?? clock(), timeZone);

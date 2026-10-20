@@ -1,7 +1,15 @@
 import {createHash} from 'node:crypto';
 import {DailyMaterialSchema} from '../../contracts/src/report.js';
+import {hashTextYielding, yieldEventLoop} from './event-loop.js';
 
 export const materialHash = value => createHash('sha256').update(typeof value==='string' ? value : JSON.stringify(value)).digest('hex');
+
+// Large JSON stays on the main thread for one stringify, then the digest yields between chunks.
+export async function materialHashYielding(value) {
+  await yieldEventLoop();
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  return hashTextYielding(text);
+}
 const clip=(v,n)=>String(v || '').slice(0,n);
 
 export function material(value) {

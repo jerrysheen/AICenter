@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createStore} from '../packages/database/src/index.js';
 import {createInformationTreeService} from '../packages/domain/src/information-tree-service.js';
 import {loadInformationTreeSkills} from '../packages/runtime/src/information-tree/skills.js';
-import {createInformationTreeJobHandlers,enqueueTreePreparation,TREE_PREPARE_JOB_TYPE,informationTreeManifest,enqueuePreparedHourRefreshes,prioritizeRecentTreePreparation} from '../packages/runtime/src/information-tree-module.js';
+import {createInformationTreeJobHandlers,enqueueTreePreparation,TREE_PREPARE_JOB_TYPE,informationTreeManifest,enqueuePreparedHourRefreshes,prioritizeRecentTreePreparation,editionCoversMaterials} from '../packages/runtime/src/information-tree-module.js';
 import {createCapabilityRegistry} from '../packages/runtime/src/capability-registry.js';
 import {createTreeMaterialPort} from '../packages/domain/src/information-tree-materials.js';
 import {createFeedService} from '../packages/domain/src/feed-service.js';
@@ -369,4 +369,71 @@ test('registered preparation handler feeds its successful versions into an ended
     const published=await f.service.generateHour({hourStart:hour});assert.equal(published.published,true);assert.equal(published.inputIds.length,1);
     await handler({sourceIds:[m.id]},{store:f.store});assert.equal(f.calls.length,1);
   }finally{f.store.close();}
+});
+
+test('a published edition with the same material stamps is not refreshed again', () => {
+  const hourNode = { id: 'new-node', sourceId: 'src', sourceVersion: 'v1', window: { startAt: start } };
+  const published = { inputIds: ['old-node'] };
+  const lookup = (id) => (id === 'old-node' ? { sourceId: 'src', sourceVersion: 'v1' } : null);
+  assert.equal(editionCoversMaterials(published, [hourNode], lookup), true);
+  assert.equal(editionCoversMaterials({ inputIds: ['old-node'] }, [{ ...hourNode, sourceVersion: 'v2' }], lookup), false);
+  const store = {
+    createJob() { throw new Error('should not enqueue'); },
+    listOpenJobs() { return []; },
+  };
+  const service = {
+    list() { return { hours: [{ edition: published, attempt: { inputIds: ['attempt-node'] } }] }; },
+    node(_workspace, id) { return lookup(id) || (id === 'attempt-node' ? { sourceId: 'src', sourceVersion: 'v1' } : null); },
+  };
+  assert.deepEqual(enqueuePreparedHourRefreshes(store, service, 'local', [hourNode], start + H + 1000), []);
+});
+
+test('truncated hourly output retries a larger model and is not cached as a failed stage', async () => {
+  const f = fixture();
+  const long = (id) => ({ ...material(id, '公司宣布新产品已开放测试。'.repeat(12)), publishedAt: start + 1 });
+  let hourly = 0;
+  f.runtime.run = async (input) => {
+    f.calls.push(input);
+    const payload = JSON.parse(input.message);
+    if (input.usageStage !== 'tree-hourly') {
+      return { answer: JSON.stringify({ title: payload.source.title, text: payload.source.paragraphs.map((row) => row.text).join(''), tagId: payload.tags[0]?.id ?? null }) };
+    }
+    hourly += 1;
+    if (!input.googleModel) throw Object.assign(new Error('输出被截断'), { finishReason: 'MAX_TOKENS' });
+    assert.equal(input.googleModel, 'gemini-3.5-flash-lite');
+    assert.equal(input.hourlyMaxTokens, 8192);
+    return { answer: JSON.stringify({ modules: payload.inputs.map((item) => ({ title: item.title, text: item.text, tagId: payload.tagId, inputIds: [item.id] })) }) };
+  };
+  try {
+    const hour = await f.service.generateHour({ hourStart: start, materials: [long('a'), long('b')] });
+    assert.equal(hour.status, 'ready');
+    assert.equal(hourly, 2);
+    const before = f.calls.length;
+    const again = await f.service.generateHour({ hourStart: start });
+    assert.equal(again.status, 'ready');
+    assert.equal(f.calls.length, before);
+  } finally { f.store.close(); }
+});
+
+test('a truncated single group is not reused as a cached whole-task failure', async () => {
+  const f = fixture();
+  const long = { ...material('only', '公司宣布新产品已开放测试。'.repeat(12)), publishedAt: start + 1 };
+  let hourly = 0;
+  f.runtime.run = async (input) => {
+    f.calls.push(input);
+    const payload = JSON.parse(input.message);
+    if (input.usageStage !== 'tree-hourly') {
+      return { answer: JSON.stringify({ title: payload.source.title, text: payload.source.paragraphs.map((row) => row.text).join(''), tagId: null }) };
+    }
+    hourly += 1;
+    throw Object.assign(new Error('输出被截断'), { finishReason: 'MAX_TOKENS', code: 'truncated' });
+  };
+  try {
+    const first = await f.service.generateHour({ hourStart: start, materials: [long] });
+    assert.equal(first.status, 'failed');
+    const seen = hourly;
+    const second = await f.service.generateHour({ hourStart: start, materials: [long] });
+    assert.equal(second.status, 'failed');
+    assert.ok(hourly > seen);
+  } finally { f.store.close(); }
 });
