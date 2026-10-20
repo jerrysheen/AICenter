@@ -25,6 +25,7 @@ import { createSouthboundReadService } from './southbound-service.js';
 import { createNorthboundReadService } from './northbound-service.js';
 import { createYoutubePodcastService } from './youtube-podcasts-service.js';
 import { createXVideoService } from './x-video-service.js';
+import { createXLinkService } from './x-link-service.js';
 
 export { createContextService, createDailyBriefService, createFeedService, createIdentityService, createKnowledgeService, createMarketStatisticsService, createMediaIngestionService, createReportService, createRuntimeService, createTradingService, createTaggingService };
 export { buildDailyBriefCandidates } from './daily-brief-candidates.js';
@@ -242,6 +243,14 @@ export function createDomainServices({
     xVideos: store.repositories.xVideos
       ? createXVideoService({
         repository: store.repositories.xVideos,
+        store,
+        env,
+      })
+      : null,
+    xLinks: store.repositories.xLinks
+      ? createXLinkService({
+        repository: store.repositories.xLinks,
+        feedRepository: store.repositories.feed,
         store,
         env,
       })
