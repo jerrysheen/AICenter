@@ -48,7 +48,7 @@ import { commitReportHistory, reportViewOwnsScroll } from './report-history.js?v
 import { decodeHtmlEntities } from './html-text.js?v=dev';
 import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, prioritizeReadableFeedRows, renderNewsList, reportItemTime } from './news-list.js?v=dev';
 import { createAuthorView } from './author-view.js?v=dev';
-import { episodeArticleMessage, foldedOriginal, renderYoutubePodcasts, YOUTUBE_ARTICLE_POLL_SLOW_MS, youtubeArticlePollDelay, youtubeArticleRequestPath, youtubeReaderScopeLabel } from './youtube-podcasts.js?v=dev';
+import { appendPartialArticle, episodeArticleMessage, foldedOriginal, renderYoutubePodcasts, YOUTUBE_ARTICLE_POLL_SLOW_MS, youtubeArticlePollDelay, youtubeArticleRequestPath, youtubeReaderScopeLabel } from './youtube-podcasts.js?v=dev';
 import { xVideoArticleReady, xVideoArticleRequestPath, xVideoTweetId } from './x-video-article.js?v=dev';
 
 const requestLayer = createRequestLayer();
@@ -9734,6 +9734,7 @@ function renderYoutubeWaiting(post) {
     className: 'podcast-pending',
     textContent: episode ? (episodeArticleMessage(episode) || '中文整理排队中') : '正在查看整理进度',
   }));
+  appendPartialArticle(wrap, episode?.partial);
   const original = state.originalBodies[post.resourceId || post.id] || post.body;
   wrap.append(foldedOriginal(original));
   return wrap;
@@ -9770,6 +9771,7 @@ async function refreshYoutubeArticle(post) {
       videoId: payload.videoId || id,
       articleStatus: payload.articleStatus || current?.articleStatus || '',
       article,
+      partial: payload.partial || null,
     };
   } catch {
     if (!state.youtubeEpisodes[id]) {

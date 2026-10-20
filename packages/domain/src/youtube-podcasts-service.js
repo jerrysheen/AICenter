@@ -1,5 +1,5 @@
 import { statSync } from 'node:fs';
-import { articleProgress, describeYoutubeArticle, youtubeArticleJobLive, YOUTUBE_ARTICLE_TOUCH_MS } from './youtube-article-status.js';
+import { articleProgress, describeYoutubeArticle, partialArticleBody, youtubeArticleJobLive, YOUTUBE_ARTICLE_TOUCH_MS } from './youtube-article-status.js';
 import { formatYmd, zonedParts } from './zoned-time.js';
 import {
   loadYoutubePodcastConfig,
@@ -82,6 +82,8 @@ function articleView(row, now, env, store) {
 }
 
 function present(row, { withBody = false, now = Date.now(), env = process.env, store = null } = {}) {
+  const ready = row.articleStatus === 'ready';
+  const partial = ready ? null : partialArticleBody(row.articleState);
   return {
     videoId: row.videoId,
     creatorId: row.creatorId,
@@ -95,6 +97,7 @@ function present(row, { withBody = false, now = Date.now(), env = process.env, s
     sourceUrl: row.sourceUrl || watchUrl(row.videoId),
     contentItemId: row.contentItemId || '',
     article: articleView(row, now, env, store),
+    ...(partial?.text ? { partial } : {}),
     ...(withBody ? { body: row.body || '' } : {}),
   };
 }
@@ -153,8 +156,14 @@ export function createYoutubePodcastService({ repository, store, configPath, env
     status(workspaceId, videoId, now = Date.now()) {
       const row = repository.getStatus(workspaceId, videoId);
       if (!row) return null;
-      const view = present(row, { now, env, store });
-      return { videoId: view.videoId, articleStatus: view.articleStatus, article: view.article };
+      const articleState = repository.getArticleState?.(workspaceId, videoId) || '';
+      const view = present({ ...row, articleState }, { now, env, store });
+      return {
+        videoId: view.videoId,
+        articleStatus: view.articleStatus,
+        article: view.article,
+        ...(view.partial ? { partial: view.partial } : {}),
+      };
     },
 
     enqueue(workspaceId) {
