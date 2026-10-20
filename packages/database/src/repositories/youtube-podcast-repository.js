@@ -20,6 +20,11 @@ export function createYoutubePodcastRepository(database) {
       articleStatus: row.article_status || '',
       articleState: row.article_state || '',
       articleDay: row.article_day || '',
+      ingestedAt: row.created_at == null ? null : Number(row.created_at),
+      holdReason: extra.holdReason || '',
+      holdDay: extra.holdDay || '',
+      partsDone: Number(extra.partsDone) || 0,
+      partsTotal: Number(extra.partsTotal) || 0,
       summary: extra.summary || '',
       body: extra.body || '',
       sourceUrl: extra.sourceUrl || '',
@@ -62,6 +67,7 @@ export function createYoutubePodcastRepository(database) {
       const articleState = input.articleState !== undefined ? input.articleState : (current?.articleState || '');
       const articleDay = input.articleDay !== undefined ? input.articleDay : (current?.articleDay || '');
       const contentItemId = input.contentItemId !== undefined ? (input.contentItemId || '') : (current?.contentItemId || '');
+      const createdAt = Number.isFinite(Number(input.createdAt)) ? Number(input.createdAt) : now;
       database.prepare(`INSERT INTO youtube_podcast_episodes
         (workspace_id, video_id, creator_id, channel_key, title, duration_sec, published_at,
          status, reason, transcript_source, content_item_id, attempts,
@@ -102,7 +108,7 @@ export function createYoutubePodcastRepository(database) {
         articleStatus,
         articleState,
         articleDay,
-        now,
+        createdAt,
         now,
       );
     },
@@ -211,8 +217,26 @@ export function createYoutubePodcastRepository(database) {
       const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
       const rows = database.prepare(`SELECT e.video_id, e.creator_id, e.channel_key, e.title,
           e.duration_sec, e.published_at, e.status, e.reason, e.transcript_source, e.content_item_id,
-          e.attempts, e.article_status, e.article_day, ci.summary AS summary, '' AS body,
-          ci.title AS display_title, ci.source_url AS source_url, ci.author_name AS author_name
+          e.attempts, e.article_status, e.article_day, e.created_at, ci.summary AS summary, '' AS body,
+          ci.title AS display_title, ci.source_url AS source_url, ci.author_name AS author_name,
+          CASE WHEN json_valid(e.article_state) THEN json_extract(e.article_state, '$.holdReason') ELSE '' END AS hold_reason,
+          CASE WHEN json_valid(e.article_state) THEN json_extract(e.article_state, '$.holdDay') ELSE '' END AS hold_day,
+          CASE
+            WHEN json_valid(e.article_state) AND json_type(json_extract(e.article_state, '$.parts')) = 'array'
+            THEN json_array_length(e.article_state, '$.parts')
+            ELSE 0
+          END AS parts_total,
+          (
+            SELECT COUNT(*) FROM json_each(
+              CASE
+                WHEN json_valid(e.article_state) AND json_type(json_extract(e.article_state, '$.parts')) = 'array'
+                THEN json_extract(e.article_state, '$.parts')
+                ELSE '[]'
+              END
+            ) AS part
+            WHERE TRIM(COALESCE(json_extract(part.value, '$.translation'), '')) != ''
+               OR TRIM(COALESCE(json_extract(part.value, '$.reply'), '')) != ''
+          ) AS parts_done
         FROM youtube_podcast_episodes e
         LEFT JOIN content_items ci ON ci.id = e.content_item_id AND ci.workspace_id = e.workspace_id
         WHERE e.workspace_id = ? AND e.status = 'ready'
@@ -224,6 +248,10 @@ export function createYoutubePodcastRepository(database) {
         displayTitle: row.display_title || '',
         sourceUrl: row.source_url || '',
         authorName: row.author_name || '',
+        holdReason: row.hold_reason || '',
+        holdDay: row.hold_day || '',
+        partsDone: Number(row.parts_done) || 0,
+        partsTotal: Number(row.parts_total) || 0,
       }));
     },
 

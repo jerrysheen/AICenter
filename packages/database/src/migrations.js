@@ -2403,6 +2403,20 @@ migrations.push({ version: 91, name: 'hardware_price_snapshot_rows_observation',
     ON hardware_price_snapshot_rows(workspace_id, observation_id)`);
 }});
 
+migrations.push({ version: 92, name: 'feed_translation_chunk_failures', up(database) {
+  database.exec(`CREATE TABLE IF NOT EXISTS feed_translation_chunk_failures (
+      workspace_id TEXT NOT NULL,
+      item_id TEXT NOT NULL,
+      target_lang TEXT NOT NULL,
+      source_hash TEXT NOT NULL,
+      chunk_index INTEGER NOT NULL,
+      chunk_hash TEXT NOT NULL,
+      fail_count INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (workspace_id, item_id, target_lang, source_hash, chunk_index)
+    );`);
+}});
+
 
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`

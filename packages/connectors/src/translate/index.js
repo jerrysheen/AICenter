@@ -3,6 +3,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { parseGeminiGenerateContent } from '../gemini-grok-task.js';
 import { isGoogleConnectTimeout } from '../google-fetch.js';
 import { translationLooksTruncated } from '../../../domain/src/localize-texts.js';
+import { TRANSLATION_CHUNK_FAIL_LIMIT } from '../../../database/src/translation-retry.js';
 import { modelUsageContext, withModelUsageContext } from '../../../runtime/src/model-usage-context.js';
 import { createGemmaTranslationRouter, gemmaTranslationInput } from './gemma.js';
 export { parseGeminiGenerateContent };
@@ -108,6 +109,48 @@ export function needsTranslation(sourceText, targetLang = DEFAULT_TARGET) {
   return latin >= 8 || hangul >= 2;
 }
 
+function chunkExhaustedError() {
+  const error = new Error('同一段连续失败，不再重试');
+  error.code = 'translation-chunk-exhausted';
+  return error;
+}
+
+function readChunkFailures(chunkStore, meta) {
+  if (!chunkStore?.failureCount || !meta?.itemId) return 0;
+  try { return Number(chunkStore.failureCount(meta)) || 0; }
+  catch { return 0; }
+}
+
+function forgetChunkFailure(chunkStore, meta) {
+  if (!chunkStore?.clearFailure || !meta?.itemId) return;
+  try { chunkStore.clearFailure(meta); }
+  catch (error) {
+    console.error('[worker] translation-chunk failure clear failed', error instanceof Error ? error.message : error);
+  }
+}
+
+function chunkFailureSkippable(error) {
+  if (!error) return true;
+  if (error.code === 'budget-deferred' || error.code === 'translation-call-cap' || error.code === 'translation-chunk-exhausted') return true;
+  const status = Number(error.upstreamStatus);
+  if (status === 429 || (status >= 500 && status <= 599)) return true;
+  const message = String(error.message || '');
+  if (/配额|quota/i.test(message) || /\b429\b/.test(message)) return true;
+  return /翻译失败（5\d\d）/.test(message) || /上游 5\d\d/.test(message);
+}
+
+function abandonChunk(chunkStore, meta, error) {
+  if (chunkFailureSkippable(error)) throw error;
+  if (!chunkStore?.noteFailure || !meta?.itemId) throw error;
+  let noted = null;
+  try { noted = chunkStore.noteFailure(meta); }
+  catch (persistError) {
+    console.error('[worker] translation-chunk failure persist failed', persistError instanceof Error ? persistError.message : persistError);
+  }
+  if (noted?.exhausted || Number(noted?.failCount) >= TRANSLATION_CHUNK_FAIL_LIMIT) throw chunkExhaustedError();
+  throw error;
+}
+
 function cacheKey(sourceText, targetLang) {
   return createHash('sha256').update(`${targetLang}\n${sourceText}`).digest('hex');
 }
@@ -187,6 +230,8 @@ export function createTranslateService(options = {}) {
         logTranslationChunk({ itemId: id, chunk: index + 1, total: chunks.length, chars: chunk.length, requestChars, latencyMs: 0, status: 'cached' });
         continue;
       }
+      const meta = { workspaceId, itemId: id, targetLang: target, sourceHash, chunkIndex: index, chunkHash };
+      if (id && readChunkFailures(chunkStore, meta) >= TRANSLATION_CHUNK_FAIL_LIMIT) throw chunkExhaustedError();
       let translated = null;
       let engine = '';
       for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -211,10 +256,11 @@ export function createTranslateService(options = {}) {
         } catch (error) {
           const retry = attempt + 1 < attempts && chunkErrorRetryable(error);
           logTranslationChunk({ itemId: id, chunk: index + 1, total: chunks.length, chars: chunk.length, requestChars, latencyMs: Math.max(0, now() - started), status: retry ? 'retry' : 'error' });
-          if (!retry) throw error;
+          if (!retry) throw abandonChunk(chunkStore, meta, error);
           await pause(CHUNK_RETRY_DELAYS_MS[Math.min(attempt, CHUNK_RETRY_DELAYS_MS.length - 1)]);
         }
       }
+      forgetChunkFailure(chunkStore, meta);
       outputs.push(translated); engines.add(engine);
       if (chunks.length > 1) {
         save(chunk, target, translated, engine);

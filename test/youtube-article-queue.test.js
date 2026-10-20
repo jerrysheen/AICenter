@@ -1,0 +1,278 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createStore } from '../packages/database/src/index.js';
+import { createRuntimeService } from '../packages/domain/src/runtime-service.js';
+import { createYoutubePodcastService } from '../packages/domain/src/youtube-podcasts-service.js';
+import { describeYoutubeArticle } from '../packages/domain/src/youtube-article-status.js';
+import { zonedParts } from '../packages/domain/src/zoned-time.js';
+import {
+  nextYoutubeArticleOpportunity,
+  nextYoutubeArticleSlot,
+  nextZonedDayStart,
+  youtubeArticleDailyLimit,
+} from '../packages/domain/src/youtube-podcasts.js';
+import { retireYoutubeTranslationJobs } from '../packages/runtime/src/feed-translation-module.js';
+import { runYoutubeArticlePass } from '../packages/runtime/src/youtube-article-job.js';
+import { ensureYoutubeArticleSchedule } from '../packages/runtime/src/youtube-podcasts-job.js';
+import { createFeedRoutes } from '../apps/web/src/routes/feed-routes.js';
+
+const MANUAL = `[00:01:00] Hello there, this is a complete sentence.
+[00:01:04] This is a new sentence without any repeated words.
+[00:01:08] Manual captions stay intact for the reader.`;
+
+function openStore() {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'youtube-queue-'));
+  const store = createStore(path.join(directory, 'test.db'));
+  return {
+    store,
+    close() {
+      store.close();
+      rmSync(directory, { recursive: true, force: true });
+    },
+  };
+}
+
+function episode(videoId, extra = {}) {
+  return {
+    workspaceId: 'local',
+    videoId,
+    creatorId: 'odd-lots',
+    channelKey: 'odd-lots',
+    title: videoId,
+    status: 'ready',
+    transcriptSource: 'subtitle-manual',
+    articleStatus: 'pending',
+    sourceTranscript: MANUAL,
+    ...extra,
+  };
+}
+
+function fakeDoubao() {
+  const calls = [];
+  return {
+    calls,
+    async ask(question) {
+      calls.push(question);
+      return {
+        status: 'ok',
+        reply_text: '## 开场（00:01:00）\n\n主持人：这一段已经整理成中文。\n本回答由AI生成，仅供参考，请仔细甄别。',
+        page_url: 'https://www.doubao.com/chat/42',
+        send_confirmed: true,
+        reply_count_before: 1,
+      };
+    },
+    async readReply() {
+      return { status: 'ok', reply_text: '' };
+    },
+  };
+}
+
+test('article daily limit defaults to 4 and stays configurable', () => {
+  assert.equal(youtubeArticleDailyLimit({}), 4);
+  assert.equal(youtubeArticleDailyLimit({ AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_DAILY: '6' }), 6);
+  assert.equal(youtubeArticleDailyLimit({ AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_DAILY: 'nope' }), 4);
+});
+
+test('catch-up slots stay on minute 10 and a blocked day waits until tomorrow', () => {
+  const at = Date.parse('2026-10-20T02:00:00Z');
+  const slot = nextYoutubeArticleSlot(at, { timeZone: 'Asia/Shanghai', everyHours: 3, minute: 10 });
+  const parts = zonedParts(slot, 'Asia/Shanghai');
+  assert.equal(parts.hour, 12);
+  assert.equal(parts.minute, 10);
+  const env = {
+    AI_CENTER_YOUTUBE_PODCASTS: '1',
+    AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1',
+    AI_CENTER_YOUTUBE_PODCASTS_AT: '07:00',
+    AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_EVERY_HOURS: '3',
+  };
+  assert.equal(nextYoutubeArticleOpportunity(at, env), slot);
+  const tomorrow = nextYoutubeArticleOpportunity(nextZonedDayStart(at, 'Asia/Shanghai') - 1, env);
+  const next = zonedParts(tomorrow, 'Asia/Shanghai');
+  assert.equal(next.hour, 0);
+  assert.equal(next.minute, 10);
+  const queued = describeYoutubeArticle({
+    articleStatus: 'pending',
+    holdReason: 'daily-limit',
+    done: 12,
+    total: 27,
+    nextAt: tomorrow,
+    now: at,
+  });
+  assert.equal(queued.status, 'queued');
+  assert.equal(queued.message, '中文整理排队中，预计明天 00:10 处理');
+  assert.equal(queued.message.includes('整理中'), false);
+  const running = describeYoutubeArticle({ articleStatus: 'pending', done: 12, total: 27, nextAt: slot, now: at });
+  assert.equal(running.status, 'running');
+  assert.equal(running.message, '整理中 12/27 段');
+  const failed = describeYoutubeArticle({
+    articleStatus: 'pending',
+    holdReason: 'failed',
+    nextAt: Date.parse('2026-10-20T23:00:00Z'),
+    now: at,
+  });
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.message, '整理失败：模型没有整理完这一段，将于明天 7点 重试');
+});
+
+test('article catch-up schedule follows the switch and lands on minute 10', () => {
+  const saved = [];
+  const store = {
+    upsertJobSchedule(input) {
+      saved.push(input);
+      return input;
+    },
+  };
+  const now = Date.parse('2026-10-20T02:00:00Z');
+  ensureYoutubeArticleSchedule(store, {
+    AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1',
+    AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_EVERY_HOURS: '3',
+  }, now);
+  assert.equal(saved[0].enabled, true);
+  assert.equal(saved[0].jobType, 'youtube.podcasts.article');
+  assert.equal(saved[0].schedule.kind, 'interval');
+  assert.equal(saved[0].schedule.intervalMinutes, 180);
+  assert.equal(zonedParts(saved[0].nextRunAt, 'Asia/Shanghai').minute, 10);
+  ensureYoutubeArticleSchedule(store, {}, now);
+  assert.equal(saved[1].enabled, false);
+});
+
+test('a freshly ingested episode takes the daily slot ahead of an older pending one', async () => {
+  const opened = openStore();
+  const doubao = fakeDoubao();
+  const now = Date.parse('2026-10-20T02:00:00Z');
+  try {
+    const repository = opened.store.repositories.youtubePodcasts;
+    repository.saveEpisode(episode('stalevid0001', {
+      publishedAt: Date.parse('2026-10-19T00:00:00Z'),
+      createdAt: now - 10 * 24 * 60 * 60 * 1000,
+    }));
+    repository.saveEpisode(episode('freshvid0001', {
+      publishedAt: Date.parse('2026-10-18T00:00:00Z'),
+      createdAt: now - 60_000,
+    }));
+    const stats = await runYoutubeArticlePass({
+      env: {
+        AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1',
+        AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_ENGINE: 'doubao',
+        AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_DAILY: '1',
+      },
+      repository,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      doubaoClient: doubao,
+      gemmaGenerate: null,
+      flashGenerate: null,
+      now,
+      dailyLimit: 1,
+    });
+    assert.equal(doubao.calls.length, 1);
+    assert.equal(stats.ready, 1);
+    assert.equal(stats.dailyLimit, 1);
+    assert.equal(repository.episode('local', 'freshvid0001').articleStatus, 'ready');
+    const held = repository.episode('local', 'stalevid0001');
+    assert.equal(held.articleDay, '');
+    assert.equal(held.articleStatus, 'pending');
+    assert.equal(JSON.parse(held.articleState).holdReason, 'daily-limit');
+  } finally {
+    opened.close();
+  }
+});
+
+test('episode list reports part progress without loading the article state blob', () => {
+  const opened = openStore();
+  try {
+    const repository = opened.store.repositories.youtubePodcasts;
+    repository.saveEpisode(episode('partsvideo01', {
+      articleState: JSON.stringify({
+        holdReason: 'daily-limit',
+        holdDay: '2026-10-20',
+        parts: [{ translation: '已完成' }, { reply: '' }, { translation: '', reply: '另一段' }],
+      }),
+    }));
+    const listed = repository.listReady('local');
+    assert.equal(listed[0].partsDone, 2);
+    assert.equal(listed[0].partsTotal, 3);
+    assert.equal(listed[0].holdReason, 'daily-limit');
+    assert.equal(listed[0].articleState, '');
+    const service = createYoutubePodcastService({
+      repository,
+      store: opened.store,
+      configPath: path.join(os.tmpdir(), 'missing-youtube-podcasts.json'),
+      env: {
+        AI_CENTER_YOUTUBE_PODCASTS: '1',
+        AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1',
+        AI_CENTER_YOUTUBE_PODCASTS_AT: '07:00',
+      },
+    });
+    const view = service.get('local', 'partsvideo01');
+    assert.equal(view.article.status, 'queued');
+    assert.match(view.article.message, /中文整理排队中/);
+    assert.equal(view.article.message.includes('整理中'), false);
+  } finally {
+    opened.close();
+  }
+});
+
+test('a stuck youtube translation is cancelled and not queued again', async () => {
+  const opened = openStore();
+  try {
+    const store = opened.store;
+    const job = store.createJob({
+      type: 'feed.translation.run',
+      workspaceId: 'local',
+      maxAttempts: 4,
+      input: { items: [{ id: 'youtube:abc12345', text: 'English transcript that should not be requeued.' }] },
+    });
+    const retired = retireYoutubeTranslationJobs(store, 'local');
+    assert.equal(retired.cancelled, 1);
+    assert.equal(store.getJob(job.id).status, 'cancelled');
+    const runtime = createRuntimeService({ runtimeRepository: store });
+    const again = runtime.requestTranslation({
+      workspaceId: 'local',
+      items: [{ id: 'youtube:abc12345', text: 'English transcript that should not be requeued.' }],
+    });
+    assert.equal(again.skipped, true);
+    assert.equal(again.reason, 'youtube-article');
+    assert.equal(store.listOpenJobs('feed.translation.run').length, 0);
+    const route = createFeedRoutes().find((entry) => entry.path === '/api/v1/translate');
+    const response = { statusCode: 0, body: null, writeHead(status) { this.statusCode = status; }, end(payload) { this.body = JSON.parse(String(payload)); } };
+    await route.handler({
+      request: (async function* body() {
+        yield Buffer.from(JSON.stringify({ id: 'youtube:abc12345', text: 'English transcript that should not be requeued.', targetLang: 'zh' }));
+      })(),
+      response,
+      identity: { device: { workspaceId: 'local' } },
+      events: { flush() {} },
+      services: { runtime },
+    });
+    assert.equal(response.statusCode, 409);
+    assert.equal(response.body.error, 'YouTube 正文由整理任务处理');
+  } finally {
+    opened.close();
+  }
+});
+
+test('the same chunk failing outright stops the translation job', () => {
+  const opened = openStore();
+  try {
+    const store = opened.store;
+    const job = store.createJob({
+      type: 'feed.translation.run',
+      workspaceId: 'local',
+      maxAttempts: 4,
+      input: { items: [{ id: 'feed-item-1', text: 'An ordinary English paragraph that can fail as one chunk.' }] },
+    });
+    const claimed = store.claimNextJob('worker-chunk', ['feed.translation.run']);
+    assert.equal(claimed.id, job.id);
+    const error = new Error('同一段连续失败，不再重试');
+    error.code = 'translation-chunk-exhausted';
+    store.failJob(claimed.id, error, 0, { workerId: 'worker-chunk', attemptCount: claimed.attemptCount });
+    assert.equal(store.getJob(job.id).status, 'failed');
+    assert.equal(store.getJob(job.id).attemptCount, 1);
+  } finally {
+    opened.close();
+  }
+});

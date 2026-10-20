@@ -748,7 +748,8 @@ export function createStore(databasePath) {
       const current = database.prepare('SELECT * FROM jobs WHERE id = ?').get(id);
       if (!current) return null;
       if (!claim || current.status !== 'running') return mapJob(current);
-      const retry = current.attempt_count < current.max_attempts;
+      const terminalChunk = error?.code === 'translation-chunk-exhausted';
+      const retry = !terminalChunk && current.attempt_count < current.max_attempts;
       const status = retry ? 'queued' : 'failed';
       const availableAt = retry ? now + Math.max(0, Number(retryDelayMs) || 0) : current.available_at;
       const errorPayload = jobErrorPayload(error);
@@ -874,6 +875,26 @@ export function createStore(databasePath) {
       return database.prepare(`SELECT * FROM jobs
         WHERE type = ? AND status IN ('queued', 'running')
         ORDER BY created_at ASC`).all(jobType).map(mapJob);
+    },
+
+    cancelJob(id, output = {}, now = Date.now()) {
+      const current = database.prepare('SELECT * FROM jobs WHERE id = ?').get(id);
+      if (!current || (current.status !== 'queued' && current.status !== 'running')) return null;
+      const payload = JSON.stringify(output && typeof output === 'object' ? output : { status: 'cancelled' });
+      let changed = false;
+      database.transaction(() => {
+        const result = database.prepare(`UPDATE jobs SET status = 'cancelled', output_json = ?, error_json = NULL,
+          completed_at = ?, locked_by = NULL, locked_at = NULL, updated_at = ?
+          WHERE id = ? AND status IN ('queued', 'running')`)
+          .run(payload, now, now, id);
+        if (!result.changes) return;
+        changed = true;
+        database.prepare(`UPDATE job_attempts SET status = 'abandoned', completed_at = ?
+          WHERE job_id = ? AND status = 'running'`).run(now, id);
+        insertEvent('job.cancelled', 'job', id, { jobId: id, ...(output && typeof output === 'object' ? output : {}) }, current.workspace_id);
+      })();
+      if (!changed) return null;
+      return mapJob(database.prepare('SELECT * FROM jobs WHERE id = ?').get(id));
     },
 
     cancelOpenJobs(type, output = {}, now = Date.now()) {
