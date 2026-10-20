@@ -10,12 +10,22 @@ import {createInformationTreeRepository} from '../packages/database/src/reposito
 import {createReadingHourService, readingHourSourceAccess} from '../packages/domain/src/reading-hour-service.js';
 import {actionablePendingCount, classificationDeferredCount, createReportJobHandlers, enqueueHourlyExtractFollowUp, enqueueHourlyPendingPreparation, formatHourlyPendingBreakdown, hourlyFollowUpPlan, hourlyPendingSweepPlan, hourlyRefreshAvailableAt, hourlyRunningSameVersion, hourlySweepHours} from '../packages/runtime/src/report-module.js';
 import {normalizeReadingSemantics, readingPlacement, routeReadingFocus} from '../packages/domain/src/reading-focus-route.js';
-import {ReadingHourIndexQuerySchema, ReadingHourIndexSchema, readingHourIndexDefaultWindow} from '../packages/contracts/src/information-tree.js';
+import {emptyReadingHourPayload, ReadingHourEmptySchema, ReadingHourIndexQuerySchema, ReadingHourIndexSchema, readingHourIndexDefaultWindow} from '../packages/contracts/src/information-tree.js';
 import {ValidationError} from '../packages/contracts/src/errors.js';
 import {createReportRoutes} from '../apps/web/src/routes/report-routes.js';
 
 const catalogIds = new Set(['ai','market_cn','market_us','corporate_results','communications','software','ai_model']);
 const window = {startAt: 10, endAt: 20};
+
+test('an hour without a snapshot is an empty reading payload', () => {
+  const payload = emptyReadingHourPayload();
+  assert.equal(ReadingHourEmptySchema.safeParse(payload).success, true);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.empty, true);
+  assert.equal(payload.snapshot, null);
+  assert.equal(payload.message, '这一小时没有内容');
+  assert.equal(ReadingHourEmptySchema.safeParse({...payload, snapshot: {id: 'rh'}}).success, false);
+});
 
 test('reading hour batch facts keep the first content author', () => {
   const store = createStore(':memory:');

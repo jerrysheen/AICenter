@@ -7,6 +7,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { createAiCenterServer } from '../apps/web/src/server.js';
 import { createReadingHourService } from '../packages/domain/src/reading-hour-service.js';
+import { emptyReadingHourPayload } from '../packages/contracts/src/information-tree.js';
 import { parseStructuredPricePage } from '../packages/connectors/src/trendforce-prices.js';
 
 const catalogIds = new Set(['ai', 'market_cn', 'market_us', 'corporate_results', 'communications', 'software', 'ai_model']);
@@ -135,8 +136,10 @@ test('x feed page 2 and an older hour return stored content off the request thre
     assert.equal(hour.pending, undefined);
     assert.equal(hour.snapshot.items[0].title, '更早一小时');
     const missingHour = await fetch(`${address.localUrl}/api/v1/reports/reading-hour?startAt=1&endAt=2&scope=hour`);
-    assert.equal(missingHour.status, 404);
-    assert.equal((await missingHour.json()).pending, undefined);
+    assert.equal(missingHour.status, 200);
+    const missingBody = await missingHour.json();
+    assert.deepEqual(missingBody, emptyReadingHourPayload());
+    assert.equal(missingBody.pending, undefined);
 
     const editionStarted = performance.now();
     const editionResponse = await fetch(`${address.localUrl}/api/v1/reports/tree/edition?id=${encodeURIComponent(edition.id)}`);

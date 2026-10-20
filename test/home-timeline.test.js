@@ -22,6 +22,7 @@ import {
   selectHomeHourHits,
   homeHourItemTime,
   homeHourPublishedNote,
+  nextHomeReadingHour,
   unavailableOfficialCount,
   CHRONIC_UNAVAILABLE_MS,
   acceptMarketPayload,
@@ -195,6 +196,15 @@ test('loading timeline does not claim missing hours before the index arrives', (
   assert.equal(loading.statusText, '');
   assert.deepEqual(loading.gaps, []);
   assert.equal(loading.hours.length, 0);
+});
+
+test('an empty reading hour settles without replacing a loaded snapshot', () => {
+  const loaded = { items: [{ title: '已有' }] };
+  const empty = { ok: true, empty: true, snapshot: null, message: '这一小时没有内容' };
+  assert.deepEqual(nextHomeReadingHour(undefined, empty), { missing: true });
+  assert.equal(nextHomeReadingHour(loaded, empty), loaded);
+  assert.equal(nextHomeReadingHour({ missing: true }, { ok: true, snapshot: loaded }).items[0].title, '已有');
+  assert.equal(nextHomeReadingHour(undefined, { ok: false }), null);
 });
 
 test('reading-hour snapshots stay ahead of a later index refresh', () => {
