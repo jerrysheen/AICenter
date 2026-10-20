@@ -1428,7 +1428,8 @@ function setView(name, options = {}) {
     renderChannels();
     renderPosts();
   }
-  if (view === 'feed' && (leaving || options.replace)) scrollFeedToTop();
+  if (view === 'feed' && options.replace) scrollFeedToTop();
+  else if (view === 'feed' && leaving) restoreViewScroll('feed');
   else if (openingQuote) { scrollPageToTop(); releaseViewScroll = false; }
   else if (leaving && !reportViewOwnsScroll(view, briefPage.hasHourScroll())) { restoreViewScroll(view); releaseViewScroll = false; }
   else if (newArticle) window.scrollTo(0, 0);
@@ -2440,6 +2441,7 @@ function restoreViewScroll(view) {
   }
   const apply = () => {
     window.scrollTo(0, y);
+    if (view === 'feed' && typeof syncAuthorListWindow === 'function') syncAuthorListWindow();
     if (view !== 'feed' || !postId) return;
     if (Math.abs(window.scrollY - y) <= 8) return;
     const selector = `[data-post-id="${typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(postId) : postId.replace(/"/g, '')}"]`;
@@ -4440,6 +4442,16 @@ function applyFeedPlatform(id) {
   if ((state.bootstrapped || state.session) && document.body.dataset.view === 'feed') {
     ensureFeedSources(feedSourcesForScope(state.channel, state.feedPlatform)).catch((error) => showToast(error.message));
   }
+  if (typeof syncFeedScopeHash === 'function') syncFeedScopeHash();
+}
+
+function syncFeedScopeHash() {
+  if (document.body?.dataset?.view !== 'feed') return;
+  if (typeof history?.replaceState !== 'function' || typeof location === 'undefined') return;
+  const next = state.channel === 'author' ? '#feed?tab=author' : '#feed';
+  if ((location.hash || '') === next) return;
+  const entry = { ...(history.state || {}), aiCenter: true, hash: next };
+  history.replaceState(entry, '', `${location.pathname || ''}${location.search || ''}${next}`);
 }
 
 function selectFeedScope(id) {
@@ -4451,6 +4463,7 @@ function selectFeedScope(id) {
     setView('feed?tab=author');
     renderChannels();
     renderPosts();
+    if (typeof syncFeedScopeHash === 'function') syncFeedScopeHash();
     return;
   }
   state.channel = channelForFeedScope(id);
@@ -4465,6 +4478,7 @@ function selectFeedScope(id) {
     renderTrendForceToolbar();
     renderMediaToolbar();
     loadFlashFeed().catch((error) => showToast(error.message));
+    if (typeof syncFeedScopeHash === 'function') syncFeedScopeHash();
     return;
   }
   if (id === 'media' || isSourceFeedScope(id)) {
@@ -5305,6 +5319,11 @@ function authorView() {
     });
   }
   return authorUi;
+}
+
+function syncAuthorListWindow() {
+  if (!authorUi) return;
+  authorUi.syncWindow?.();
 }
 
 function openAuthor(authorId) {

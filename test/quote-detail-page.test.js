@@ -208,7 +208,8 @@ test('opening a quote resets the page scroll and still restores the list', () =>
   assert.ok(lockAt > 0 && tryAt > lockAt && tryAt < swapAt);
   assert.ok(finallyAt > swapAt);
   assert.match(setView, /finally \{[\s\S]*if \(releaseViewScroll\) restoringViewScroll = false/);
-  assert.match(setView, /view === 'feed' && \(leaving \|\| options\.replace\)\) scrollFeedToTop\(\)/);
+  assert.match(setView, /view === 'feed' && options\.replace\) scrollFeedToTop\(\)/);
+  assert.match(setView, /view === 'feed' && leaving\) restoreViewScroll\('feed'\)/);
   assert.ok(topAt > 0 && topAt < restoreAt);
   assert.match(setView, /openingQuote \|\| \(leaving && view !== 'feed' && !reportViewOwnsScroll\(view, briefPage\.hasHourScroll\(\)\)\)/);
   assert.match(cssSource, /body\[data-view="page"\]:has\(\.quote-detail\) \{ overflow-anchor: none; \}/);
