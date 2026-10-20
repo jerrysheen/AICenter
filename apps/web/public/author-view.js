@@ -272,16 +272,69 @@ function authorHiddenAbove(rowsHost) {
   return y > 160 ? y - 160 : 0;
 }
 
-function authorWindowRange(rowsHost, count, anchorIndex) {
+function authorColumnCount() {
+  const query = window.matchMedia;
+  if (typeof query !== 'function') return 1;
+  try {
+    return query.call(window, '(min-width: 840px)').matches ? 2 : 1;
+  } catch {
+    return 1;
+  }
+}
+
+function authorVisualLayout(entries, columns) {
+  const cols = Math.max(1, Number(columns) || 1);
+  const rowOf = new Array(entries.length);
+  const indexAtRow = [];
+  let row = 0;
+  let slot = 0;
+  for (let index = 0; index < entries.length; index += 1) {
+    const full = cols === 1 || entries[index]?.kind === 'head';
+    if (full && slot) {
+      row += 1;
+      slot = 0;
+    }
+    if (indexAtRow[row] == null) indexAtRow[row] = index;
+    rowOf[index] = row;
+    if (full) {
+      row += 1;
+      slot = 0;
+    } else {
+      slot += 1;
+      if (slot >= cols) {
+        row += 1;
+        slot = 0;
+      }
+    }
+  }
+  if (slot) row += 1;
+  return { rowOf, indexAtRow, totalRows: row };
+}
+
+function authorWindowRange(rowsHost, entries, anchorIndex) {
+  const columns = authorColumnCount();
   const stride = authorStride(rowsHost);
   const view = Math.max(320, Number(window.innerHeight) || 800);
-  const size = Math.ceil(view / stride) + AUTHOR_WINDOW_OVERSCAN * 2;
-  let start = Math.max(0, Math.floor(authorHiddenAbove(rowsHost) / stride) - AUTHOR_WINDOW_OVERSCAN);
-  if (anchorIndex >= 0 && (anchorIndex < start || anchorIndex >= start + size)) {
-    start = Math.max(0, anchorIndex - AUTHOR_WINDOW_OVERSCAN);
+  const visibleRows = Math.ceil(view / stride) + AUTHOR_WINDOW_OVERSCAN * 2;
+  const layout = authorVisualLayout(entries, columns);
+  let startRow = Math.max(0, Math.floor(authorHiddenAbove(rowsHost) / stride) - AUTHOR_WINDOW_OVERSCAN);
+  if (anchorIndex >= 0) {
+    const anchorRow = Number(layout.rowOf[anchorIndex]);
+    if (anchorRow < startRow || anchorRow >= startRow + visibleRows) {
+      startRow = Math.max(0, anchorRow - AUTHOR_WINDOW_OVERSCAN);
+    }
   }
-  const end = Math.min(count, Math.max(start + 1, start + size));
-  return { start, end };
+  const endRow = Math.min(layout.totalRows, Math.max(startRow + 1, startRow + visibleRows));
+  const start = layout.indexAtRow[startRow] ?? entries.length;
+  const end = endRow >= layout.totalRows ? entries.length : (layout.indexAtRow[endRow] ?? entries.length);
+  return {
+    start,
+    end,
+    topRows: startRow,
+    bottomRows: Math.max(0, layout.totalRows - endRow),
+    columns,
+    stride,
+  };
 }
 
 function placeAuthorWindow(rowsHost, followed, others, handlers, options = {}) {
@@ -290,9 +343,9 @@ function placeAuthorWindow(rowsHost, followed, others, handlers, options = {}) {
   const anchorIndex = options.anchorId
     ? entries.findIndex((entry) => entry.kind === 'row' && entry.author?.authorId === options.anchorId)
     : -1;
-  const range = authorWindowRange(rowsHost, entries.length, anchorIndex);
-  const stride = authorStride(rowsHost);
-  const key = `${range.start}:${range.end}:${stride}`;
+  const range = authorWindowRange(rowsHost, entries, anchorIndex);
+  const stride = range.stride;
+  const key = `${range.start}:${range.end}:${stride}:${range.columns}`;
   const rows = [...(rowsHost.querySelectorAll?.('.author-row') || [])];
   const expected = [];
   for (let index = range.start; index < range.end; index += 1) {
@@ -325,8 +378,8 @@ function placeAuthorWindow(rowsHost, followed, others, handlers, options = {}) {
     bottom.className = 'author-spacer author-spacer-bottom';
     bottom.setAttribute('aria-hidden', 'true');
   }
-  top.style.height = `${range.start * stride}px`;
-  bottom.style.height = `${Math.max(0, entries.length - range.end) * stride}px`;
+  top.style.height = `${range.topRows * stride}px`;
+  bottom.style.height = `${range.bottomRows * stride}px`;
   const nodes = [top];
   for (let index = range.start; index < range.end; index += 1) {
     const entry = entries[index];
@@ -372,17 +425,19 @@ function bindAuthorWindow() {
   if (authorWindowBound || typeof window.addEventListener !== 'function') return;
   authorWindowBound = true;
   let queued = false;
-  window.addEventListener('scroll', () => {
+  const schedule = window.requestAnimationFrame?.bind(window);
+  const run = () => {
+    queued = false;
+    syncAuthorWindow();
+  };
+  const onChange = () => {
     if (queued) return;
     queued = true;
-    const schedule = window.requestAnimationFrame?.bind(window);
-    const run = () => {
-      queued = false;
-      syncAuthorWindow();
-    };
     if (typeof schedule === 'function') schedule(run);
     else run();
-  }, { passive: true });
+  };
+  window.addEventListener('scroll', onChange, { passive: true });
+  window.addEventListener('resize', onChange);
 }
 
 function rebuildRows(rowsHost, followed, others, handlers) {

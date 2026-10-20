@@ -179,8 +179,9 @@ function listPayload(rows, extra = {}) {
   };
 }
 
-function mountAuthorView(rows, api) {
+function mountAuthorView(rows, api, options = {}) {
   const dom = createDom();
+  if (options.wide) dom.window.matchMedia = (query) => ({ matches: String(query).includes('840px') });
   const context = vm.createContext({
     URLSearchParams,
     document: dom.document,
@@ -517,4 +518,18 @@ test('returning to the feed restores the saved position and the scope hash', () 
   hashBox.state.channel = 'all';
   hashBox.syncFeedScopeHash();
   assert.equal(location.hash, '#feed?tab=author');
+});
+
+test('a wide virtual author list sizes the spacer by column count', async () => {
+  const rows = authorRows(80);
+  const { feed, view, window } = mountAuthorView(rows, async () => listPayload(rows), { wide: true });
+  await view.renderList(feed);
+  const bottom = Number.parseFloat(feed.querySelector('.author-spacer-bottom')?.style?.height) || 0;
+  const singleColumnBottom = (1 + rows.length - 28) * 72;
+  assert.equal(bottom, 13 * 72);
+  assert.ok(bottom * 2 < singleColumnBottom);
+  window.scrollY = 10 * 72;
+  window.dispatchEvent({ type: 'scroll' });
+  assert.equal(feed.querySelector('.author-row').dataset.authorId, 'x:2');
+  assert.equal(Number.parseFloat(feed.querySelector('.author-spacer-top').style.height), 2 * 72);
 });
