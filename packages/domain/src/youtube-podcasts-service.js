@@ -1,7 +1,48 @@
 import { statSync } from 'node:fs';
-import { loadYoutubePodcastConfig, watchUrl, YOUTUBE_PODCAST_JOB_TYPE, youtubePodcastsEnabled } from './youtube-podcasts.js';
+import { articleProgress, describeYoutubeArticle } from './youtube-article-status.js';
+import { formatYmd, zonedParts } from './zoned-time.js';
+import {
+  loadYoutubePodcastConfig,
+  nextYoutubeArticleOpportunity,
+  nextZonedDayStart,
+  watchUrl,
+  YOUTUBE_PODCAST_JOB_TYPE,
+  youtubePodcastClock,
+  youtubePodcastsEnabled,
+} from './youtube-podcasts.js';
 
-function present(row, withBody = false) {
+const BLOCKED_HOLD = new Set(['daily-limit', 'failed', 'quota', 'login', 'page']);
+
+function articleFacts(row) {
+  if (row.articleState) return articleProgress(row.articleState);
+  return {
+    holdReason: row.holdReason || '',
+    holdDay: row.holdDay || '',
+    done: Number(row.partsDone) || 0,
+    total: Number(row.partsTotal) || 0,
+  };
+}
+
+function articleView(row, now, env) {
+  const facts = articleFacts(row);
+  const clock = youtubePodcastClock(env);
+  const today = formatYmd(zonedParts(now, clock.timeZone));
+  const blocked = facts.holdDay === today && BLOCKED_HOLD.has(facts.holdReason);
+  const nextAt = row.articleStatus === 'ready'
+    ? null
+    : nextYoutubeArticleOpportunity(blocked ? nextZonedDayStart(now, clock.timeZone) - 1 : now, env);
+  return describeYoutubeArticle({
+    articleStatus: row.articleStatus,
+    holdReason: facts.holdReason,
+    done: facts.done,
+    total: facts.total,
+    nextAt,
+    now,
+    timeZone: clock.timeZone,
+  });
+}
+
+function present(row, { withBody = false, now = Date.now(), env = process.env } = {}) {
   return {
     videoId: row.videoId,
     creatorId: row.creatorId,
@@ -14,6 +55,7 @@ function present(row, withBody = false) {
     articleStatus: row.articleStatus || '',
     sourceUrl: row.sourceUrl || watchUrl(row.videoId),
     contentItemId: row.contentItemId || '',
+    article: articleView(row, now, env),
     ...(withBody ? { body: row.body || '' } : {}),
   };
 }
@@ -48,7 +90,7 @@ export function createYoutubePodcastService({ repository, store, configPath, env
         id: creator.id,
         name: creator.name,
         focus: creator.focus,
-        episodes: rows.filter((row) => row.creatorId === creator.id).map((row) => present(row)),
+        episodes: rows.filter((row) => row.creatorId === creator.id).map((row) => present(row, { env })),
       }));
       const known = new Set(configured.map((creator) => creator.id));
       for (const row of rows) {
@@ -58,7 +100,7 @@ export function createYoutubePodcastService({ repository, store, configPath, env
           id: row.creatorId,
           name: row.authorName || row.creatorId,
           focus: '',
-          episodes: rows.filter((item) => item.creatorId === row.creatorId).map((item) => present(item)),
+          episodes: rows.filter((item) => item.creatorId === row.creatorId).map((item) => present(item, { env })),
         });
       }
       return { enabled: youtubePodcastsEnabled(env), configError: config.error, creators: grouped };
@@ -66,7 +108,7 @@ export function createYoutubePodcastService({ repository, store, configPath, env
 
     get(workspaceId, videoId) {
       const row = repository.getReady(workspaceId, videoId);
-      return row ? present(row, true) : null;
+      return row ? present(row, { withBody: true, env }) : null;
     },
 
     enqueue(workspaceId) {

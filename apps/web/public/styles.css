@@ -6051,6 +6051,8 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
 }
 .podcast-transcript { max-height: 480px; overflow: auto; color: var(--font-secondary, #4e5969); }
 .podcast-pending { margin: 0 0 8px; color: var(--font-tertiary, #8a9199); }
+.podcast-original { width: 100%; }
+.podcast-original summary { cursor: pointer; color: var(--font-tertiary, #8a9199); }
 .podcast-article { line-height: 1.7; }
 .podcast-article h2, .podcast-article h3, .podcast-article h4 { font-size: 15px; margin: 16px 0 8px; }
 .podcast-article p { margin: 0 0 10px; }

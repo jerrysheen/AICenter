@@ -2,7 +2,7 @@ import {attachDailyProcessLog} from '../../../packages/runtime/src/process-log.j
 import { audioTranscriptionManifest, createAudioTranscriptionJobHandlers } from '../../../packages/runtime/src/audio-transcription-job.js';
 import {createGeminiArticleAdmission,startGeminiQuotaProbe} from '../../../packages/runtime/src/gemini-article-admission.js';
 import {resolveGoogleHourlyAdmissionModels} from '../../../packages/harness/src/llm-route.js';
-import { backfillUntranslatedFeedTranslations, createFeedTranslationChunkStore, createFeedTranslationJobHandlers, demoteQueuedHashTranslationJobs, feedTranslationManifest, fillUncoveredTranslations, formatTranslationBackfillLog, repairEllipsisLeadTexts, translationBackfillConcurrency, translationGapFillIntervalMs, translationGapFillLimit, translationStartupBackfillLimit } from '../../../packages/runtime/src/feed-translation-module.js';
+import { backfillUntranslatedFeedTranslations, createFeedTranslationChunkStore, createFeedTranslationJobHandlers, demoteQueuedHashTranslationJobs, feedTranslationManifest, fillUncoveredTranslations, formatTranslationBackfillLog, repairEllipsisLeadTexts, retireYoutubeTranslationJobs, translationBackfillConcurrency, translationGapFillIntervalMs, translationGapFillLimit, translationStartupBackfillLimit } from '../../../packages/runtime/src/feed-translation-module.js';
 import { createHardwareArtifactStore } from '../../../packages/connectors/src/hardware-artifacts.js';
 import { legacyPriceSnapshot } from '../../../packages/connectors/src/trendforce-prices.js';
 import { createHardwarePriceService } from '../../../packages/domain/src/hardware-price-service.js';
@@ -38,7 +38,7 @@ import { createMediaIngestionService,mediaResourceId } from '../../../packages/d
 import { ensureMediaIndexSyncSchedule, enqueueMediaIndexEnrich, MEDIA_ENRICH_JOB_TYPE } from '../../../packages/connectors/src/media/index.js';
 import { loadTwkrFlags } from '../../../packages/connectors/src/twkr-sources.js';
 import { createTwkrJobHandlers, ensureTwkrSchedules, prepareTwkrEnqueue, TWKR_NEWS_JOB_TYPE, TWKR_REVENUE_JOB_TYPE } from '../../../packages/runtime/src/twkr-job.js';
-import { createYoutubePodcastJobHandlers, ensureYoutubePodcastSchedule, YOUTUBE_PODCAST_JOB_TYPE } from '../../../packages/runtime/src/youtube-podcasts-job.js';
+import { createYoutubePodcastJobHandlers, ensureYoutubeArticleSchedule, ensureYoutubePodcastSchedule, YOUTUBE_ARTICLE_JOB_TYPE, YOUTUBE_PODCAST_JOB_TYPE } from '../../../packages/runtime/src/youtube-podcasts-job.js';
 import { youtubePodcastLimits } from '../../../packages/domain/src/youtube-podcasts.js';
 import { createMediaEnrichJobHandlers } from '../../../packages/runtime/src/media-enrich-module.js';
 import { createKnowledgeService } from '../../../packages/domain/src/knowledge-service.js';
@@ -206,6 +206,7 @@ export function createAiCenterWorker(options = {}) {
     [FEED_SUBSCRIPTION_SYNC_JOB_TYPE]: feedSyncSourceTimeoutMs(env.AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS) + 30_000,
     'media.index.enrich': boundedInt(env.AI_CENTER_MEDIA_ENRICH_MAX_RUNNING_MS, 8 * 60_000, 60_000, 30 * 60_000),
     [YOUTUBE_PODCAST_JOB_TYPE]: youtubePodcastLimits(env).roundMs,
+    [YOUTUBE_ARTICLE_JOB_TYPE]: youtubePodcastLimits(env).roundMs,
     [TWKR_NEWS_JOB_TYPE]: 25_000,
     [TWKR_REVENUE_JOB_TYPE]: 70_000,
   };
@@ -337,7 +338,7 @@ export function createAiCenterWorker(options = {}) {
     flashSources,
     translationPort: translateService,
   });
-  registry.register({ manifest: feedTranslationManifest, jobHandlers: createFeedTranslationJobHandlers({ feedService }) });
+  registry.register({ manifest: feedTranslationManifest, jobHandlers: createFeedTranslationJobHandlers({ feedService, feed: store.repositories.feed }) });
   registry.register({
     manifest: audioTranscriptionManifest,
     jobHandlers: options.audioTranscriptionJobHandlers || createAudioTranscriptionJobHandlers({
@@ -778,8 +779,8 @@ export function createAiCenterWorker(options = {}) {
     manifest: {
       id: 'youtube.podcasts',
       version: '1.0.0',
-      capabilities: ['youtube.podcasts.sync'],
-      jobTypes: [YOUTUBE_PODCAST_JOB_TYPE],
+      capabilities: ['youtube.podcasts.sync', YOUTUBE_ARTICLE_JOB_TYPE],
+      jobTypes: [YOUTUBE_PODCAST_JOB_TYPE, YOUTUBE_ARTICLE_JOB_TYPE],
       sourceIds: [],
     },
     jobHandlers: options.youtubePodcastJobHandlers || createYoutubePodcastJobHandlers({
@@ -790,6 +791,7 @@ export function createAiCenterWorker(options = {}) {
       dataDirectory,
       env,
       browserRuntime,
+      store,
     }),
   });
   registry.register({
@@ -840,6 +842,7 @@ export function createAiCenterWorker(options = {}) {
     ensureComputePriceSchedules(store, env);
     ensureAuthorStatsSchedule(store, env);
     ensureYoutubePodcastSchedule(store, env);
+    ensureYoutubeArticleSchedule(store, env);
     ensureEtfWhaleSchedule(store, env);
     ensureSouthboundSchedules(store, env);
     ensureDefaultContentSubscriptions(store.repositories.feed);
@@ -916,6 +919,12 @@ export function createAiCenterWorker(options = {}) {
     browserRuntime,
     start() {
       quotaProbe ||= startGeminiQuotaProbe([articleAdmission, hourlyAdmission].filter(Boolean), { env });
+      try {
+        const retired = retireYoutubeTranslationJobs(store, 'local');
+        console.log(`[worker] youtube-translation retired=${retired.cancelled} split=${retired.split}`);
+      } catch (error) {
+        console.error('[worker] youtube-translation retire failed:', error instanceof Error ? error.message : error);
+      }
       schedulePromise ||= scheduler.start();
       runPromise ||= runner.start();
       const backfillLimit = translationStartupBackfillLimit(env.AI_CENTER_TRANSLATION_BACKFILL_LIMIT);
