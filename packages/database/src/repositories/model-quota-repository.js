@@ -25,7 +25,13 @@ export function createModelQuotaRepository(database, emitEvent) {
         const projectCap = flashProjectCap === false ? null : FLASH_LITE_PROJECT_CAP[model];
         const dayModels=JSON.stringify(pacingModels.length?pacingModels:[model]);
         const day=database.prepare('SELECT project,at FROM model_quota_reservations WHERE model IN (SELECT value FROM json_each(?)) AND at>=? AND at<? ORDER BY at').all(dayModels,dayStart,dayEnd);
-        if(day.length>=requestsPerDay)return {admitted:false,retryAt:dayEnd};
+        // Account mode still sums every key into requestsPerDay (default 2500) before the
+        // per-key Flash loop. That sum is a daily cap. Leaving it unlabeled made the sibling
+        // model look like a minute wait, so hourly kept the Pacific-midnight retry.
+        if(day.length>=requestsPerDay){
+          if(projectCap)return {admitted:false,retryAt:dayEnd,flashHeadroom:'rpd',model,quotaExhausted:true};
+          return {admitted:false,retryAt:dayEnd};
+        }
         const latest=global.at(-1)?.at;
         if(!accountMode && latest!==undefined && at<latest+minIntervalMs)return {admitted:false,retryAt:latest+minIntervalMs};
         let retryAt=Infinity,cooldownCount=0,flashRpm=0,flashRpd=0;
@@ -53,7 +59,11 @@ export function createModelQuotaRepository(database, emitEvent) {
           const block=database.prepare('SELECT until_at FROM model_quota_cooldowns WHERE project=? AND model=?').get(cooldownKey,model);
           if(block?.until_at>at){cooldownCount++;retryAt=Math.min(retryAt,block.until_at);continue;}
           const keyDay=day.filter(r=>r.project===slot.project || (legacyProject && r.project===legacyProject));
-          if(keyDay.length>=requestsPerKeyPerDay){retryAt=Math.min(retryAt,dayEnd);continue;}
+          if(keyDay.length>=requestsPerKeyPerDay){
+            if(projectCap)flashRpd++;
+            retryAt=Math.min(retryAt,dayEnd);
+            continue;
+          }
           if(accountMode){
             const lease=database.prepare('SELECT until_at FROM model_quota_leases WHERE project=? AND model=?').get(slot.project,model);
             if(lease?.until_at>at){retryAt=Math.min(retryAt,lease.until_at);continue;}

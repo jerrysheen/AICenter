@@ -4,7 +4,7 @@ import {materialHash,materialHashYielding,prepareDailyMaterials} from './daily-m
 import {yieldEventLoop} from './event-loop.js';
 import {needsZhLocalization} from './localize-texts.js';
 import {runBounded} from './daily-analysis.js';
-import {treeCatalog,treeSource,treeFailure,formatCondenseFailureLog,formatTreeHourlyCallLog,describeCondenseFailure,isTerminalPendingReason,isTruncatedModelFailure,cachedTruncationFailure,HOURLY_TRUNCATION_FALLBACK_MODEL,HOURLY_TRUNCATION_MAX_TOKENS} from './information-tree-policy.js';
+import {treeCatalog,treeSource,treeFailure,formatCondenseFailureLog,formatTreeHourlyCallLog,describeCondenseFailure,isTerminalPendingReason,isTruncatedModelFailure,cachedTruncationFailure,cachedFlashQuotaWait,HOURLY_TRUNCATION_FALLBACK_MODEL,HOURLY_TRUNCATION_MAX_TOKENS} from './information-tree-policy.js';
 import {readingClassKeyEnvs} from './reading-hour-service.js';
 import {isFlashSource} from './flash-sources.js';
 import {boundedInt,isAttributionValidationError,isRetryableUpstreamStatus,modelRetryDelayMs,nextHourlyAttempt,sameIdSet,upstreamHttpStatus} from './report-reliability.js';
@@ -510,7 +510,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
       let splitRuns=0;
       try {
       const manualTransientRetry=s.retryTransient===true && cached?.input?.failure?.reason==='retryable-model-error';
-      if(!cachedTruncationFailure(cached) && cached?.status==='failed' && cached.input?.failure?.retryAt>now() && !manualTransientRetry) {
+      if(!cachedTruncationFailure(cached) && !cachedFlashQuotaWait(cached) && cached?.status==='failed' && cached.input?.failure?.retryAt>now() && !manualTransientRetry) {
         const pending=cached.input.failure;
         throw Object.assign(new Error(pending.reason),{code:pending.reason,cachedPending:pending,priorError:cached.error || '',...(Number.isFinite(pending.queueMs) || Number.isFinite(pending.executionMs) ? {timing:{queueMs:pending.queueMs,executionMs:pending.executionMs}} : {})});
       }

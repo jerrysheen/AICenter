@@ -4,7 +4,7 @@ import { createStore } from '../packages/database/src/index.js';
 import { createGeminiArticleAdmission } from '../packages/runtime/src/gemini-article-admission.js';
 import { resolveGoogleHourlyAdmissionModels } from '../packages/harness/src/llm-route.js';
 import { investorSummaryModelList } from '../packages/connectors/src/investor-discussion-model.js';
-import { nextGeminiDailyReset } from '../packages/connectors/src/gemini-grok-task.js';
+import { formatGeminiQuotaClock, geminiQuotaDay, nextGeminiDailyReset } from '../packages/connectors/src/gemini-grok-task.js';
 
 const env = {
   GEMINI_API_KEY: 'one',
@@ -168,6 +168,90 @@ test('both keys at 480 RPD wait until the Pacific day instead of merging early',
     });
     assert.equal(counts.filter((row) => row.model === 'gemini-3.1-flash-lite').reduce((sum, row) => sum + row.calls, 0), 960);
     assert.equal(counts.filter((row) => row.model === 'gemini-3.5-flash-lite').reduce((sum, row) => sum + row.calls, 0), 960);
+  } finally {
+    store.close();
+  }
+});
+
+test('the Pacific quota day is labeled in both Pacific and Beijing clocks', () => {
+  const at = Date.parse('2026-10-21T06:11:00Z');
+  const { dayStart, dayEnd } = geminiQuotaDay(at);
+  assert.equal(dayEnd, nextGeminiDailyReset(at));
+  assert.equal(formatGeminiQuotaClock(dayEnd), 'pacific=2026-10-21 00:00 beijing=2026-10-21 15:00');
+  assert.equal(formatGeminiQuotaClock(dayStart), 'pacific=2026-10-20 00:00 beijing=2026-10-20 15:00');
+});
+
+test('a merged 2500 Flash Lite day is daily exhaustion even when the other model is only per-key full', () => {
+  const at = Date.parse('2026-10-21T06:11:00Z');
+  const store = createStore(':memory:');
+  const admission = createGeminiArticleAdmission({
+    repository: store.repositories.modelQuota,
+    env: {
+      ...env,
+      GEMINI_API_KEY2: 'two',
+      AI_CENTER_GEMINI_KEY_ENVS: 'GEMINI_API_KEY,GEMINI_API_KEY2',
+      AI_CENTER_GEMINI_ARTICLE_POOL_CONCURRENCY: '2',
+      AI_CENTER_GEMINI_ARTICLE_REQUESTS_PER_DAY: '2500',
+      AI_CENTER_GEMINI_ARTICLE_KEY_REQUESTS_PER_DAY: '5000',
+      AI_CENTER_GEMINI_ARTICLE_REQUESTS_PER_HOUR: '20000',
+      AI_CENTER_HARNESS_ARTICLE_FALLBACK: 'elucid-grok',
+    },
+    now: () => at,
+    models: ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite'],
+    allowFallback: false,
+    modelOrder: 'least-used',
+  });
+  try {
+    const earlier = at - 5 * 60_000;
+    for (const keyEnv of ['GEMINI_API_KEY', 'GEMINI_API_KEY2']) {
+      for (let index = 0; index < 480; index += 1) {
+        store.repositories.modelQuota.recordProbeUse({ project: 'other', keyEnv, model: 'gemini-3.1-flash-lite', at: earlier });
+      }
+    }
+    for (let index = 0; index < 2500; index += 1) {
+      store.repositories.modelQuota.recordProbeUse({
+        project: 'other', keyEnv: index % 2 ? 'GEMINI_API_KEY2' : 'GEMINI_API_KEY', model: 'gemini-3.5-flash-lite', at: earlier,
+      });
+    }
+    assert.throws(
+      () => admission.reserve({ model: 'gemini-3.1-flash-lite', inputBytes: 1, maxTokens: 1 }),
+      (error) => error?.code === 'budget-deferred' && error.quotaExhausted === true && error.flashHeadroom === 'rpd' && error.retryAt === nextGeminiDailyReset(at),
+    );
+    assert.equal(admission.nextReadyAt('gemini-3.1-flash-lite'), at);
+  } finally {
+    store.close();
+  }
+});
+
+test('per-key Flash daily cap still marks exhaustion when the 480 counter did not see those rows', () => {
+  const at = Date.parse('2026-10-21T06:11:00Z');
+  const store = createStore(':memory:');
+  const admission = createGeminiArticleAdmission({
+    repository: store.repositories.modelQuota,
+    env: {
+      ...env,
+      AI_CENTER_GEMINI_ARTICLE_POOL_CONCURRENCY: '2',
+      AI_CENTER_GEMINI_ARTICLE_REQUESTS_PER_DAY: '5000',
+      AI_CENTER_GEMINI_ARTICLE_KEY_REQUESTS_PER_DAY: '500',
+      AI_CENTER_GEMINI_ARTICLE_REQUESTS_PER_HOUR: '20000',
+    },
+    now: () => at,
+    models: ['gemini-3.1-flash-lite'],
+    allowFallback: false,
+  });
+  try {
+    const ticket = admission.reserve({ model: 'gemini-3.1-flash-lite', inputBytes: 1, maxTokens: 1 });
+    store.repositories.modelQuota.discard(ticket);
+    const earlier = at - 5 * 60_000;
+    for (const model of ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite']) {
+      for (let index = 0; index < 500; index += 1) {
+        store.repositories.modelQuota.recordProbeUse({ project: ticket.project, keyEnv: 'OTHER', model, at: earlier });
+      }
+    }
+    assert.throws(
+      () => admission.reserve({ model: 'gemini-3.1-flash-lite', inputBytes: 1, maxTokens: 1 }),
+      (error) => error?.code === 'budget-deferred' && error.quotaExhausted === true && error.flashHeadroom === 'rpd',
+    );
   } finally {
     store.close();
   }
