@@ -98,9 +98,13 @@ test('rebuilding the feed keeps the visible card in place', () => {
       this.children = [];
       this.className = '';
       this.dataset = {};
+      this.attrs = {};
       this.classList = classListFor(this);
       this.style = {};
     }
+    setAttribute(key, value) { this.attrs[key] = String(value); }
+    getAttribute(key) { return Object.hasOwn(this.attrs, key) ? this.attrs[key] : null; }
+    removeAttribute(key) { delete this.attrs[key]; }
     append(...nodes) {
       for (const node of nodes) {
         node.parentNode = this;
@@ -191,8 +195,10 @@ test('rebuilding the feed keeps the visible card in place', () => {
   context.renderPosts();
   const before = [...feed.querySelectorAll('.news-row')].find((row) => row.dataset.nodeId === 'c').getBoundingClientRect().top;
   state.items = [{ id: 'new' }, ...state.items];
+  feed.setAttribute('aria-busy', 'true');
   context.renderPosts();
   const card = [...feed.querySelectorAll('.news-row')].find((row) => row.dataset.nodeId === 'c');
+  assert.equal(feed.getAttribute('aria-busy'), null);
   assert.equal(card.getBoundingClientRect().top, before);
   assert.equal(window.scrollY, 250);
   assert.deepEqual(feed.querySelectorAll('.news-row').map((row) => row.dataset.nodeId), ['new', 'a', 'b', 'c', 'd', 'e']);
