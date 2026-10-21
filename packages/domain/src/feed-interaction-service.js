@@ -1,5 +1,5 @@
 import { ValidationError } from '../../contracts/src/index.js';
-import { LikeContentInputSchema, LikeResultSchema, UnlikeContentInputSchema, UnlikeResultSchema, X_LIKE_JOB_TYPE, X_UNLIKE_JOB_TYPE } from '../../contracts/src/feed-interaction.js';
+import { LikeContentInputSchema, LikeResultSchema, NotInterestedContentInputSchema, NotInterestedResultSchema, UnlikeContentInputSchema, UnlikeResultSchema, X_LIKE_JOB_TYPE, X_NOT_INTERESTED_JOB_TYPE, X_UNLIKE_JOB_TYPE } from '../../contracts/src/feed-interaction.js';
 
 export function createFeedInteractionService({ feedRepository, runtimeRepository, likePort = null }) {
   function target(workspaceId, contentItemId) {
@@ -18,6 +18,7 @@ export function createFeedInteractionService({ feedRepository, runtimeRepository
       const open = runtimeRepository.listOpenJobs(X_LIKE_JOB_TYPE).find(job => job.workspaceId === workspaceId);
       if (open && open.input.contentItemId !== value.contentItemId) throw new ValidationError('已有点赞正在处理，请稍后再试');
       if (runtimeRepository.listOpenJobs(X_UNLIKE_JOB_TYPE).some(job => job.workspaceId === workspaceId)) throw new ValidationError('已有点赞正在处理，请稍后再试');
+      if (runtimeRepository.listOpenJobs(X_NOT_INTERESTED_JOB_TYPE).some(job => job.workspaceId === workspaceId)) throw new ValidationError('已有点赞正在处理，请稍后再试');
       return open || runtimeRepository.createJob({ type: X_LIKE_JOB_TYPE, workspaceId, input: value, maxAttempts: 1, priority: 20 });
     },
     async executeLike(workspaceId, input) {
@@ -33,6 +34,7 @@ export function createFeedInteractionService({ feedRepository, runtimeRepository
       if (openLike) throw new ValidationError('已有点赞正在处理，请稍后再试');
       const open = runtimeRepository.listOpenJobs(X_UNLIKE_JOB_TYPE).find(job => job.workspaceId === workspaceId);
       if (open && open.input.contentItemId !== value.contentItemId) throw new ValidationError('已有取消点赞正在处理，请稍后再试');
+      if (runtimeRepository.listOpenJobs(X_NOT_INTERESTED_JOB_TYPE).some(job => job.workspaceId === workspaceId)) throw new ValidationError('已有点赞正在处理，请稍后再试');
       return open || runtimeRepository.createJob({ type: X_UNLIKE_JOB_TYPE, workspaceId, input: value, maxAttempts: 1, priority: 20 });
     },
     async executeUnlike(workspaceId, input) {
@@ -40,6 +42,21 @@ export function createFeedInteractionService({ feedRepository, runtimeRepository
       const postId = target(workspaceId, value.contentItemId);
       if (!likePort?.unlike) return { status: 'unavailable', accountHandle: '', checkedAt: Date.now() };
       return UnlikeResultSchema.parse(await likePort.unlike(postId));
+    },
+    requestNotInterested(workspaceId, input) {
+      const value = NotInterestedContentInputSchema.parse(input);
+      target(workspaceId, value.contentItemId);
+      if (runtimeRepository.listOpenJobs(X_LIKE_JOB_TYPE).some(job => job.workspaceId === workspaceId)) throw new ValidationError('已有点赞正在处理，请稍后再试');
+      if (runtimeRepository.listOpenJobs(X_UNLIKE_JOB_TYPE).some(job => job.workspaceId === workspaceId)) throw new ValidationError('已有点赞正在处理，请稍后再试');
+      const open = runtimeRepository.listOpenJobs(X_NOT_INTERESTED_JOB_TYPE).find(job => job.workspaceId === workspaceId);
+      if (open && open.input.contentItemId !== value.contentItemId) throw new ValidationError('已有不感兴趣正在处理，请稍后再试');
+      return open || runtimeRepository.createJob({ type: X_NOT_INTERESTED_JOB_TYPE, workspaceId, input: value, maxAttempts: 1, priority: 20 });
+    },
+    async executeNotInterested(workspaceId, input) {
+      const value = NotInterestedContentInputSchema.parse(input);
+      const postId = target(workspaceId, value.contentItemId);
+      if (!likePort?.notInterested) return { status: 'unavailable', accountHandle: '', checkedAt: Date.now() };
+      return NotInterestedResultSchema.parse(await likePort.notInterested(postId));
     },
     getLikeJob(workspaceId, contentItemId, jobId) {
       const job = runtimeRepository.getJob(jobId);

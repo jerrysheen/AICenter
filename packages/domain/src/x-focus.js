@@ -32,10 +32,12 @@ export function xFocusInstruction(config) {
 方向：
 ${lines}
 sensitive 为 true 的情况：选举或党派站队、战争伤亡、仇恨、成人内容、加密货币喊单，以及加密货币争议人物（如孙宇晨）的采访、动态、站队或带货。围绕争议人物的人身攻击也是 true。其余为 false。
-promotional 为 true 的情况：广告、推销、折扣优惠、招募承接代投、带购买或返佣引导，以及品牌或公司官方账号的产品宣传。新闻转述财报、订单、收购、人事或监管是 false。
+promotional 为 true 的情况：广告、推销、折扣优惠、招募承接代投、带购买或返佣引导，以及品牌或公司官方账号的产品宣传。SaaS 或 AI 工具的推广、营销和口水帖也是 true。新闻转述财报、订单、收购、人事或监管是 false。
+polymarket 只看 Polymarket 和预测市场。体育竞猜、比赛赔率和博彩不是 Polymarket，即使出现赔率或下注，也不要给 polymarket 高分。
 officialSpeech 为 true 的情况：这是政要本人在发表自己的立场或政策。别人的转述、预测市场赔率或评论是 false。
+gossip 为 true 的情况：娱乐八卦、明星私生活、绯闻，或与市场无关的爆料闲聊。公司、市场或政策新闻是 false。
 reason 用一句中文说明主要依据，不超过 80 字。
-仅返回 JSON：{"dirScores":{${empty}},"sensitive":false,"officialSpeech":false,"promotional":false,"reason":""}`;
+仅返回 JSON：{"dirScores":{${empty}},"sensitive":false,"officialSpeech":false,"promotional":false,"gossip":false,"reason":""}`;
 }
 
 export function xFocusBatchInstruction(config) {
@@ -92,7 +94,20 @@ export function normalizeXFocusConfig(raw) {
       hourlyLimit: limitNumber(auto.hourlyLimit, 5, 0, 50),
       minIntervalMs: limitNumber(auto.minIntervalMs, 120_000, 0, 3_600_000),
     }),
+    notInterested: Object.freeze(normalizeNotInterestedConfig(raw?.notInterested)),
   });
+}
+
+function normalizeNotInterestedConfig(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const lowScore = clamp01(source.lowScore ?? 0.3);
+  return {
+    dailyLimit: limitNumber(source.dailyLimit, 10, 0, 100),
+    hourlyLimit: limitNumber(source.hourlyLimit, 3, 0, 20),
+    minIntervalMs: limitNumber(source.minIntervalMs, 600_000, 0, 3_600_000),
+    lowScore: lowScore || 0.3,
+    streak: limitNumber(source.streak, 3, 2, 8),
+  };
 }
 
 export function loadXFocusConfig(configDirectory) {
@@ -105,13 +120,13 @@ export function composeFocus(dirScores, config) {
   const scores = {};
   let focusScore = 0;
   let bestRank = -1;
-  let primaryDir = config.directions[0].id;
+  let primaryDir = '';
   for (const dir of config.directions) {
     const score = round3(dirScores?.[dir.id]);
     scores[dir.id] = score;
     if (score > focusScore) focusScore = score;
     const rank = score * dir.weight;
-    if (rank > bestRank) {
+    if (score > 0 && rank > bestRank) {
       bestRank = rank;
       primaryDir = dir.id;
     }
@@ -120,7 +135,7 @@ export function composeFocus(dirScores, config) {
     dirScores: scores,
     focusScore: round3(focusScore),
     primaryDir,
-    rank: Math.round(bestRank * 1000) / 1000,
+    rank: bestRank < 0 ? 0 : Math.round(bestRank * 1000) / 1000,
   };
 }
 
@@ -173,6 +188,7 @@ export function parseFocusObject(raw, config) {
   if (!provided || typeof provided !== 'object' || Array.isArray(provided)) return null;
   if (typeof raw.sensitive !== 'boolean' || typeof raw.officialSpeech !== 'boolean') return null;
   if (raw.promotional !== undefined && typeof raw.promotional !== 'boolean') return null;
+  if (raw.gossip !== undefined && typeof raw.gossip !== 'boolean') return null;
   const reason = text(raw.reason).slice(0, 80);
   if (!reason) return null;
   const dirScores = {};
@@ -185,6 +201,7 @@ export function parseFocusObject(raw, config) {
     sensitive: raw.sensitive,
     officialSpeech: raw.officialSpeech,
     promotional: raw.promotional === true,
+    gossip: raw.gossip === true,
     reason,
     method: 'model',
     version: config.version,
@@ -234,13 +251,31 @@ export function autoLikeEnvEnabled(env = process.env) {
 
 export function autoLikeLimits(config, env = process.env) {
   const base = config.autoLike;
-  const classified = resolveJevEnabled(env) || resolveClassificationProvider(env) === 'bamboo';
-  const minScore = classified ? base.minScore : Math.max(base.minScore, 0.9);
+  const provider = resolveClassificationProvider(env);
+  const classified = resolveJevEnabled(env) || provider === 'bamboo';
+  let minScore = classified ? base.minScore : Math.max(base.minScore, 0.9);
+  if (provider === 'bamboo') minScore = Math.max(minScore, 0.8);
   return {
     minScore,
     dailyLimit: limitNumber(env?.AI_CENTER_X_AUTO_LIKE_DAILY, base.dailyLimit, 0, 400),
     hourlyLimit: limitNumber(env?.AI_CENTER_X_AUTO_LIKE_HOURLY, base.hourlyLimit, 0, 50),
     minIntervalMs: limitNumber(env?.AI_CENTER_X_AUTO_LIKE_INTERVAL_MS, base.minIntervalMs, 0, 3_600_000),
+  };
+}
+
+export function notInterestedEnvEnabled(env = process.env) {
+  const raw = text(env?.AI_CENTER_X_NOT_INTERESTED).toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'on';
+}
+
+export function notInterestedLimits(config, env = process.env) {
+  const base = config?.notInterested || normalizeNotInterestedConfig(null);
+  return {
+    dailyLimit: limitNumber(env?.AI_CENTER_X_NOT_INTERESTED_DAILY, base.dailyLimit, 0, 100),
+    hourlyLimit: limitNumber(env?.AI_CENTER_X_NOT_INTERESTED_HOURLY, base.hourlyLimit, 0, 20),
+    minIntervalMs: limitNumber(env?.AI_CENTER_X_NOT_INTERESTED_INTERVAL_MS, base.minIntervalMs, 0, 3_600_000),
+    lowScore: base.lowScore,
+    streak: base.streak,
   };
 }
 
@@ -304,10 +339,63 @@ export function nextAutoLikeSettings(settings, status, reason = '') {
   return current;
 }
 
+export function normalizeNotInterestedSettings(payload) {
+  return normalizeAutoLikeSettings(payload);
+}
+
+export function nextNotInterestedSettings(settings, status, reason = '') {
+  const current = normalizeNotInterestedSettings(settings);
+  if (status === 'login-required') {
+    return { ...current, pageEnabled: false, suspended: true, notice: '采集浏览器需要重新登录 X，已停止自动不感兴趣', consecutiveUnconfirmed: 0, consecutiveUnavailable: 0, consecutiveTaskErrors: 0 };
+  }
+  if (status === 'blocked') {
+    return { ...current, pageEnabled: false, suspended: true, notice: 'X 页面被拦截或出现验证，已停止自动不感兴趣', consecutiveUnconfirmed: 0, consecutiveUnavailable: 0, consecutiveTaskErrors: 0 };
+  }
+  if (status === 'unavailable') {
+    const consecutiveUnavailable = current.consecutiveUnavailable + 1;
+    if (consecutiveUnavailable >= 3) {
+      return { ...current, pageEnabled: false, suspended: true, notice: '连续三次无法操作不感兴趣，已停止', consecutiveUnconfirmed: 0, consecutiveUnavailable };
+    }
+    return { ...current, consecutiveUnavailable };
+  }
+  if (status === 'unconfirmed') {
+    const consecutiveUnconfirmed = current.consecutiveUnconfirmed + 1;
+    if (consecutiveUnconfirmed >= 2) {
+      return { ...current, pageEnabled: false, suspended: true, notice: '连续两次没有确认不感兴趣结果，已停止', consecutiveUnconfirmed, consecutiveUnavailable: current.consecutiveUnavailable };
+    }
+    return { ...current, consecutiveUnconfirmed };
+  }
+  if (status === 'failed') {
+    const consecutiveTaskErrors = current.consecutiveTaskErrors + 1;
+    const why = text(reason).slice(0, 80) || '任务出错';
+    if (consecutiveTaskErrors >= 2) {
+      return {
+        ...current,
+        pageEnabled: false,
+        suspended: true,
+        notice: `连续两次不感兴趣任务出错（${why}），已停止`.slice(0, 180),
+        consecutiveUnconfirmed: 0,
+        consecutiveUnavailable: 0,
+        consecutiveTaskErrors,
+      };
+    }
+    return { ...current, consecutiveTaskErrors };
+  }
+  if (status === 'done' || status === 'already') {
+    return { ...current, consecutiveUnconfirmed: 0, consecutiveUnavailable: 0, consecutiveTaskErrors: 0 };
+  }
+  return current;
+}
+
 export function jevKept(metadata) {
   if (metadata?.filterDecision !== 'KEEP') return false;
   const reason = String(metadata.filterReason || '');
   return !reason.startsWith('fallback-') && !reason.startsWith('jev-disabled-');
+}
+
+export function focusAdmissionAllows(metadata, provider = '') {
+  if (provider === 'bamboo') return metadata?.filterDecision !== 'DROP';
+  return jevKept(metadata);
 }
 
 export const AUTO_LIKE_MIN_TEXT = 40;
@@ -393,7 +481,7 @@ export function rankAutoLikeCandidates(candidates, jobs, config, now = Date.now(
     const body = candidateText(row);
     if (looksLikeFeedAd(body, { strict: true }) || substantialTextLength(body) < AUTO_LIKE_MIN_TEXT) continue;
     if (looksLikeOfficialBrandAccount(candidateAccount(row), { promotional: focus.promotional === true })) continue;
-    if (!jevKept(row.metadata)) continue;
+    if (!focusAdmissionAllows(row.metadata, config.classificationProvider || '')) continue;
     if (!row.contentItemId || !row.tweetId) continue;
     if (likedItems.has(row.contentItemId) || likedTweets.has(String(row.tweetId))) continue;
     ranked.push(row);
@@ -404,7 +492,105 @@ export function rankAutoLikeCandidates(candidates, jobs, config, now = Date.now(
   return { usage, picked: usage.blocked ? null : (ranked[0] || null), eligible: ranked.length };
 }
 
-export function buildDrift(rows, likes, config, now = Date.now()) {
+const NOT_INTERESTED_JOB_TYPE = 'feed.x.not-interested';
+
+function quotaUsage(jobs, limits, now, type) {
+  const times = [];
+  for (const job of jobs || []) {
+    if (job?.type && job.type !== type) continue;
+    if (job?.input?.source !== 'auto') continue;
+    times.push(Number(job.createdAt) || 0);
+  }
+  times.sort((left, right) => right - left);
+  const dayStart = shanghaiDayStart(now);
+  const hourStart = now - 60 * 60 * 1000;
+  const dailyUsed = times.filter((at) => at >= dayStart).length;
+  const hourlyUsed = times.filter((at) => at >= hourStart).length;
+  const lastAt = times[0] || 0;
+  return {
+    dailyUsed,
+    hourlyUsed,
+    lastAt,
+    blocked: dailyUsed >= limits.dailyLimit || hourlyUsed >= limits.hourlyLimit || (lastAt && now - lastAt < limits.minIntervalMs),
+  };
+}
+
+function rowHandle(row) {
+  return candidateAccount(row).handle.replace(/^@/, '').toLowerCase();
+}
+
+export function rankNotInterestedCandidates(candidates, jobs, config, now = Date.now(), options = {}) {
+  const limits = config.notInterestedLimits || config.notInterested || notInterestedLimits(config);
+  const followed = new Set((options.followed || [])
+    .map((handle) => String(handle || '').replace(/^@/, '').trim().toLowerCase())
+    .filter(Boolean));
+  const acted = new Set((options.actedTweetIds || []).map((id) => String(id || '')).filter(Boolean));
+  for (const job of jobs || []) {
+    const tweetId = String(job?.input?.tweetId || '');
+    if (!tweetId) continue;
+    if (job.type === NOT_INTERESTED_JOB_TYPE) acted.add(tweetId);
+    if (job.type === 'feed.x.like') {
+      const status = job.output?.status || job.status;
+      if (status === 'liked' || status === 'already-liked' || status === 'queued' || status === 'running') acted.add(tweetId);
+    }
+  }
+  const usage = quotaUsage(jobs, limits, now, NOT_INTERESTED_JOB_TYPE);
+  const grouped = new Map();
+  for (const row of candidates || []) {
+    const focus = row?.focus;
+    if (!focus || (focus.method !== 'model' && focus.method !== 'cache')) continue;
+    const handle = rowHandle(row);
+    const feed = row.feed || focusFeedFromSource(row.sourceExternalId);
+    if (!handle || followed.has(handle) || feed !== 'for-you') continue;
+    const list = grouped.get(handle) || [];
+    list.push(row);
+    grouped.set(handle, list);
+  }
+  const streakHeads = new Set();
+  for (const list of grouped.values()) {
+    list.sort((left, right) => (Number(right.capturedAt) || 0) - (Number(left.capturedAt) || 0));
+    let low = 0;
+    for (const row of list) {
+      if (row.focus?.officialSpeech === true) break;
+      if (Number(row.focus?.focusScore) < limits.lowScore) low += 1;
+      else break;
+    }
+    if (low >= limits.streak && list[0].focus?.officialSpeech !== true) streakHeads.add(list[0]);
+  }
+  const ranked = [];
+  for (const row of candidates || []) {
+    const focus = row?.focus;
+    if (!focus || (focus.method !== 'model' && focus.method !== 'cache')) continue;
+    if (focus.officialSpeech === true) continue;
+    const feed = row.feed || focusFeedFromSource(row.sourceExternalId);
+    if (feed !== 'for-you') continue;
+    const handle = rowHandle(row);
+    if (handle && followed.has(handle)) continue;
+    if (!row.contentItemId || !row.tweetId || acted.has(String(row.tweetId))) continue;
+    const body = candidateText(row);
+    let trigger = '';
+    if (focus.promotional === true || focus.gossip === true || looksLikeFeedAd(body, { strict: true })) trigger = 'post';
+    else if (streakHeads.has(row)) trigger = 'streak';
+    if (!trigger) continue;
+    ranked.push({ ...row, trigger });
+  }
+  ranked.sort((left, right) => (Number(left.focus.focusScore) - Number(right.focus.focusScore))
+    || ((Number(right.capturedAt) || 0) - (Number(left.capturedAt) || 0)));
+  return { usage, picked: usage.blocked ? null : (ranked[0] || null), eligible: ranked.length };
+}
+
+function countDayMarks(items, days, accept) {
+  const counts = Object.fromEntries(days.map((day) => [day, 0]));
+  for (const item of items || []) {
+    const day = shanghaiDayKey(item.createdAt || item.at || 0);
+    if (counts[day] === undefined) continue;
+    const status = item.output?.status || item.result || item.status;
+    if (accept(status)) counts[day] += 1;
+  }
+  return counts;
+}
+
+export function buildDrift(rows, likes, config, now = Date.now(), hides = []) {
   const today = shanghaiDayKey(now);
   const days = [];
   for (let offset = 13; offset >= 0; offset -= 1) {
@@ -428,13 +614,8 @@ export function buildDrift(rows, likes, config, now = Date.now()) {
       if (Number(scores[dir.id]) >= config.hitMin) bucket.hits[dir.id] += 1;
     }
   }
-  const likeCounts = Object.fromEntries(uniqueDays.map((day) => [day, 0]));
-  for (const job of likes || []) {
-    const day = shanghaiDayKey(job.createdAt || 0);
-    if (likeCounts[day] === undefined) continue;
-    const status = job.output?.status || job.result;
-    if (status === 'liked' || status === 'already-liked') likeCounts[day] += 1;
-  }
+  const likeCounts = countDayMarks(likes, uniqueDays, (status) => status === 'liked' || status === 'already-liked');
+  const hideCounts = countDayMarks(hides, uniqueDays, (status) => status === 'done' || status === 'already');
   const rate = (bucket, id) => (bucket.total ? Math.round((bucket.hits[id] / bucket.total) * 1000) / 1000 : null);
   const series = config.directions.map((dir) => ({
     name: dir.label,
@@ -460,6 +641,7 @@ export function buildDrift(rows, likes, config, now = Date.now()) {
   return {
     dates: uniqueDays.map((day) => day.slice(5)),
     likes: uniqueDays.map((day) => likeCounts[day]),
+    notInterested: uniqueDays.map((day) => hideCounts[day]),
     series,
     alerts,
   };
@@ -534,7 +716,7 @@ export function aggregateFocusPoints(rows, config) {
   return { version: config.version, feeds };
 }
 
-export function buildDriftFromSnapshot(snapshot, likes, config, now = Date.now()) {
+export function buildDriftFromSnapshot(snapshot, likes, config, now = Date.now(), hides = []) {
   const today = shanghaiDayKey(now);
   const days = [];
   for (let offset = 13; offset >= 0; offset -= 1) {
@@ -553,13 +735,8 @@ export function buildDriftFromSnapshot(snapshot, likes, config, now = Date.now()
     recommended: uniqueDays.map((day) => rate(bucketFor('for-you', day), dir.id)),
     following: uniqueDays.map((day) => rate(bucketFor('following', day), dir.id)),
   }));
-  const likeCounts = Object.fromEntries(uniqueDays.map((day) => [day, 0]));
-  for (const job of likes || []) {
-    const day = shanghaiDayKey(job.createdAt || 0);
-    if (likeCounts[day] === undefined) continue;
-    const status = job.output?.status || job.result;
-    if (status === 'liked' || status === 'already-liked') likeCounts[day] += 1;
-  }
+  const likeCounts = countDayMarks(likes, uniqueDays, (status) => status === 'liked' || status === 'already-liked');
+  const hideCounts = countDayMarks(hides, uniqueDays, (status) => status === 'done' || status === 'already');
   const alerts = [];
   const todayIndex = uniqueDays.indexOf(today);
   if (todayIndex > 0) {
@@ -579,6 +756,7 @@ export function buildDriftFromSnapshot(snapshot, likes, config, now = Date.now()
   return {
     dates: uniqueDays.map((day) => day.slice(5)),
     likes: uniqueDays.map((day) => likeCounts[day]),
+    notInterested: uniqueDays.map((day) => hideCounts[day]),
     series,
     alerts,
   };
@@ -599,6 +777,7 @@ export function storedFocus(metadata, config) {
     sensitive: raw.sensitive === true,
     officialSpeech: raw.officialSpeech === true,
     promotional: raw.promotional === true,
+    gossip: raw.gossip === true,
     reason: raw.reason || '已记录',
   }, config);
   if (!parsed) return null;
