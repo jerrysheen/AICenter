@@ -174,9 +174,11 @@ export function createBriefPage(host) {
       if(treeActive){
         if(clockHour!=null && !history && !archive) {
           tree.focusNode(focusId);
+          if(!focusId) tree.clearOpened?.();
           if(tree.showingHour?.(clockHour)) return tree.resume();
           return tree.selectHour(clockHour);
         }
+        if(!focusId) tree.clearOpened?.();
         return tree.resume();
       }
       if (s.mode==='discussion') {start(); renderContent(); return;}

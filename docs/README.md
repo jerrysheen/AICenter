@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-21-brief-back.md`：手机上从简报里的一条或阅读页按返回，回到简报列表，不再跳过简报。直接打开带条目的简报地址时，列表压在这条下面。已经离开简报后，小时地址不再改写详情页的历史。不新增 migration。需要重启 Web，浏览器再加载一次。
+
 - `progress/2026-10-21-gemma-rpm-tpm.md`：Gemma 五个账号不再做本地每日 1.44 万封顶，只守每分钟 25 次和 16000 token。请求间隔默认 0–500 毫秒，每把密钥同时 2 个请求，可用环境变量改成 3。240 秒租约不再把单密钥卡成串行。429 仍按原逻辑冷却。补扫起点改为 `AI_CENTER_TAG_RESCAN_NOT_BEFORE`，默认仍是 2026-10-21 14:47（UTC+8）。不新增 migration。需要重启 Worker。
 
 - `progress/2026-10-21-gemma-tag-rescan.md`：打标提示词改为按上市地，并且只标正文明确在讲的内容。宁德时代标 A 股，不标港股；中国移动不因公司名加 AI 算力；英文短标题不因此标半导体。每 15 分钟只补扫上线之后、最近 2 小时内还没有 `resource_taggings` 的新帖。起点用 `AI_CENTER_TAG_RESCAN_NOT_BEFORE`，默认 2026-10-21 14:47（UTC+8）。旧帖不补。窗口用 `AI_CENTER_TAG_RESCAN_HOURS`，默认 2 小时。正常看完但没有标签的，包括整批空回复，写一条空记录，避免反复选中同样 20 条。回复不是 JSON 或调用失败不写。Flash 日上限的下次可跑时间带上 Gemma 的等待。Bamboo 不动。不新增 migration。需要重启 Worker。
