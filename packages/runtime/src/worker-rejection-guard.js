@@ -1,14 +1,15 @@
 // Node 22 treats an unhandled rejection as a fatal error and exits.
 // The launcher then starts another Worker, and jobs left running are
 // saved as WorkerLeaseExpired. One rejection is logged and the process
-// stays up. A burst, or the same database error repeating, exits so the
-// launcher can start a fresh Worker.
+// stays up. A burst, or the same non-busy database error repeating, exits
+// so the launcher can start a fresh Worker. SQLITE_BUSY is ordinary lock
+// contention and only counts toward the burst.
 
 export const REJECTION_WINDOW_MS = 10 * 60 * 1000;
 export const REJECTION_WINDOW_LIMIT = 20;
 export const DATABASE_REJECTION_REPEAT_LIMIT = 3;
 
-export function databaseRejectionKey(error) {
+function sqliteCode(error) {
   const code = typeof error?.code === 'string' ? error.code : '';
   if (/^SQLITE_[A-Z0-9_]+$/.test(code)) return code;
   const message = error instanceof Error ? error.message : String(error ?? '');
@@ -17,6 +18,13 @@ export function databaseRejectionKey(error) {
   if (named) return named[0];
   if (/database is locked/i.test(first)) return 'SQLITE_BUSY';
   return '';
+}
+
+// Empty for lock contention. Those rejections still count toward the 10-minute total.
+export function databaseRejectionKey(error) {
+  const code = sqliteCode(error);
+  if (!code || code === 'SQLITE_BUSY' || code.startsWith('SQLITE_BUSY_')) return '';
+  return code;
 }
 
 export function installWorkerRejectionGuard(target = process, log = console.error, options = {}) {
