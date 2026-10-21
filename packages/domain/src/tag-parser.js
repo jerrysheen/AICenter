@@ -54,7 +54,8 @@ function isTagResultRow(row) {
 }
 
 function scoreTagItems(items) {
-  if (!Array.isArray(items) || !items.length) return -1;
+  if (!Array.isArray(items)) return -1;
+  if (!items.length) return 0;
   let tagRows = 0;
   let inputRows = 0;
   for (const row of items) {
@@ -166,6 +167,7 @@ export function parseTagBatchOutput(raw, options = {}) {
     return {
       ok: false,
       reason: 'not_json_items',
+      emptyAnswer: parsed.items.length === 0,
       accepted: [],
       missingItemIds: [...expectedIds],
       unknownItems: [],

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createStore } from '../packages/database/src/index.js';
 import { createGeminiArticleAdmission } from '../packages/runtime/src/gemini-article-admission.js';
+import { GEMMA_26B, resolveGemmaTranslationSlots } from '../packages/connectors/src/translate/gemma.js';
 import { resolveGoogleHourlyAdmissionModels } from '../packages/harness/src/llm-route.js';
 import { investorSummaryModelList } from '../packages/connectors/src/investor-discussion-model.js';
 import { formatGeminiQuotaClock, geminiQuotaDay, nextGeminiDailyReset } from '../packages/connectors/src/gemini-grok-task.js';
@@ -218,6 +219,28 @@ test('a merged 2500 Flash Lite day is daily exhaustion even when the other model
       (error) => error?.code === 'budget-deferred' && error.quotaExhausted === true && error.flashHeadroom === 'rpd' && error.retryAt === nextGeminiDailyReset(at),
     );
     assert.equal(admission.nextReadyAt('gemini-3.1-flash-lite'), at);
+    const gemmaEnv = {
+      ...env,
+      AI_CENTER_GEMINI_KEY_ENVS: 'GEMINI_API_KEY',
+      AI_CENTER_GEMINI_ARTICLE_POOL_CONCURRENCY: '2',
+      AI_CENTER_GEMINI_ARTICLE_REQUESTS_PER_DAY: '2500',
+      AI_CENTER_GEMINI_ARTICLE_KEY_REQUESTS_PER_DAY: '5000',
+      AI_CENTER_GEMINI_ARTICLE_REQUESTS_PER_HOUR: '20000',
+      AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MIN_MS: '60000',
+      AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MAX_MS: '60000',
+      AI_CENTER_GEMMA_TRANSLATION_REQUESTS_PER_MINUTE: '100',
+    };
+    const waiting = createGeminiArticleAdmission({
+      repository: store.repositories.modelQuota,
+      env: gemmaEnv,
+      now: () => at,
+      models: ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite'],
+      allowFallback: false,
+      modelOrder: 'least-used',
+    });
+    const slot = resolveGemmaTranslationSlots(gemmaEnv)[0];
+    store.repositories.modelQuota.recordProbeUse({ project: slot.project, keyEnv: slot.keyEnv, model: GEMMA_26B, at: at - 1000 });
+    assert.equal(waiting.nextReadyAt('gemini-3.1-flash-lite'), at - 1000 + 60000);
   } finally {
     store.close();
   }

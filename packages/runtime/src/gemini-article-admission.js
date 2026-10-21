@@ -3,6 +3,7 @@ import { flashLiteSibling } from '../../database/src/repositories/model-quota-re
 import { createHash, randomUUID } from 'node:crypto';
 import {resolveGoogleArticleModelPool} from '../../harness/src/llm-route.js';
 import {nextGeminiDailyReset} from '../../connectors/src/gemini-grok-task.js';
+import {GEMMA_26B, GEMMA_TRANSLATION_MODELS, gemmaQuotaDay, gemmaTranslationPolicy, resolveGemmaTranslationSlots} from '../../connectors/src/translate/gemma.js';
 import {googleFetch,isGoogleConnectTimeout} from '../../connectors/src/google-fetch.js';
 import {emptyTokenUsage} from '../../contracts/src/model-usage.js';
 
@@ -139,6 +140,32 @@ export function createGeminiArticleAdmission({ repository, usage, env = process.
     const label=blocks.length?(blocks.some(block=>dailyCooldown(block.untilAt,at))?'daily':'rate'):'window';
     return `quota=${label} key=${suffixes.join(',')||'-'} model=${names.join(',')||'-'} cooldownUntil=${Number.isFinite(retryAt)?retryAt:0} Gemini 文章任务等待流量窗口`;
   }
+  function gemmaFallbackReadyAt(at) {
+    let slots = [];
+    try { slots = resolveGemmaTranslationSlots(env); } catch { return at; }
+    if (!slots.length) return at;
+    const pacing = gemmaTranslationPolicy(env);
+    const day = gemmaQuotaDay(at);
+    const result = repository.reserve({
+      slots,
+      model: GEMMA_26B,
+      at,
+      dryRun: true,
+      accountMode: true,
+      requestsPerDay: Infinity,
+      requestsPerKeyPerDay: pacing.requestsPerKeyPerDay,
+      requestsPerHour: Infinity,
+      requestsPerMinute: pacing.requestsPerMinute,
+      minIntervalMs: pacing.intervalMinMs,
+      estimatedTokensPerMinute: pacing.tokensPerMinute,
+      estimatedTokens: 6144 + 8192,
+      pacingModels: GEMMA_TRANSLATION_MODELS,
+      dayStart: day.dayStart,
+      dayEnd: day.dayEnd,
+    });
+    if (result.admitted) return at;
+    return Number.isFinite(result.retryAt) ? result.retryAt : at;
+  }
   function deferred(results, retryAt) {
     const dayBlocked = results.length > 0 && results.every((item) => item.flashHeadroom === 'rpd');
     return Object.assign(new Error(waitMessage(results, retryAt)), {
@@ -153,9 +180,9 @@ export function createGeminiArticleAdmission({ repository, usage, env = process.
     nextReadyAt(model) {
       const results=(policy.models.length ? policy.models : [model]).map(m=>request(m,6144+8192,true));
       if(results.some(r=>r.admitted))return now();
-      // Local Flash Lite daily cap now falls back to Gemma 26B, so the job can run
-      // before Pacific midnight. Supplier cooldown without that flag still uses Grok.
-      if(results.length>0 && results.every(r=>r.flashHeadroom==='rpd'))return now();
+      // Local Flash Lite daily cap falls back to Gemma 26B. If Gemma is also
+      // waiting, return that retryAt so the job does not spin until it is free.
+      if(results.length>0 && results.every(r=>r.flashHeadroom==='rpd'))return gemmaFallbackReadyAt(now());
       if(results.every(r=>r.quotaExhausted) && env.AI_CENTER_HARNESS_ARTICLE_FALLBACK==='elucid-grok'){const f=repository.reserve({...policy,accountMode:false,requestsPerDay:Infinity,requestsPerKeyPerDay:Infinity,slots:[{project:'article-fallback-elucid',keyEnv:'ELUCID_GROK_API_KEY'}],model:env.AI_CENTER_HARNESS_ARTICLE_FALLBACK_MODEL || 'grok-4.7',at:now(),estimatedTokens:6144+8192,dryRun:true});return f.admitted ? now() : f.retryAt;}
       return Math.min(...results.map(r=>r.retryAt));
     },
