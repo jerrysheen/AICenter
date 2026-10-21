@@ -66,7 +66,7 @@
       <header class="title-bar">
         <button class="icon-button hidden" id="nav-back" type="button" aria-label="返回"></button>
         <div class="title-default">
-          <h1 id="page-title"><span class="page-title-live">总览</span><span class="page-title-boot">行情</span></h1>
+          <h1 id="page-title"><span class="page-title-live">总览</span><span class="page-title-boot">行情</span><span class="page-title-feed">信息</span></h1>
           <p class="title-sub" id="page-subtitle">信息、市场与新闻里抽出的最高优先级内容</p>
         </div>
         <label class="search-field" id="header-search">
@@ -140,7 +140,7 @@
               <p>关注对象是平台账号，不是标签。</p>
               <button class="text-button" id="open-subscriptions" type="button">管理关注</button>
             </div>
-            <div class="feed" id="feed"><div class="empty-state">正在载入信息…</div></div>
+            <div class="feed" id="feed" aria-busy="true"><div class="list-skeleton" role="status" aria-busy="true" aria-label="正在读取内容…" data-rows="6"><div class="list-skeleton-rows"><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div></div></div></div>
           </div>
         </section>
 
@@ -298,8 +298,8 @@
           <div id="overview-home">
             <div class="overview-columns dashboard">
               <div class="overview-col overview-col-main">
-                <section class="dashboard-timeline home-slot-hourly" id="home-timeline" aria-label="小时报"></section>
-                <section class="home-slot-latest" id="home-latest" aria-label="最新消息"></section>
+                <section class="dashboard-timeline home-slot-hourly" id="home-timeline" aria-label="小时报" aria-busy="true"><div class="home-module-head"><h2>小时报</h2></div><div class="list-skeleton" role="status" aria-busy="true" aria-label="正在读取" data-rows="4"><div class="list-skeleton-rows"><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div></div></div></section>
+                <section class="home-slot-latest" id="home-latest" aria-label="最新消息" aria-busy="true"><div class="home-module-head"><h2>最新消息</h2></div><div class="list-skeleton" role="status" aria-busy="true" aria-label="正在读取" data-rows="4"><div class="list-skeleton-rows"><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div></div></div></section>
               </div>
               <div class="overview-col overview-col-side">
                 <section class="dashboard-market home-slot-quotes">
@@ -311,14 +311,14 @@
                     </div>
                   </div>
                   <p class="hub-market-caption" id="hub-market-caption"></p>
-                  <div class="ticker-strip" id="hub-ticker"></div>
+                  <div class="ticker-strip" id="hub-ticker" aria-busy="true"><div class="hub-tick is-skeleton" aria-hidden="true"><span></span><span></span><span></span></div><div class="hub-tick is-skeleton" aria-hidden="true"><span></span><span></span><span></span></div><div class="hub-tick is-skeleton" aria-hidden="true"><span></span><span></span><span></span></div><div class="hub-tick is-skeleton" aria-hidden="true"><span></span><span></span><span></span></div></div>
                   <div class="mini-status" id="hub-market-status">
                     <span id="hub-market-note"></span>
                   </div>
                   <p class="mini-status hidden" id="home-source-line"></p>
                 </section>
-                <section class="daily-brief-peek home-slot-daily" id="home-daily" aria-live="polite"></section>
-                <section class="home-slot-official" id="home-official" aria-label="官方"></section>
+                <section class="daily-brief-peek home-slot-daily" id="home-daily" aria-live="polite" aria-busy="true"><div class="home-module-head"><h2>日报</h2></div><div class="list-skeleton" role="status" aria-busy="true" aria-label="正在读取" data-rows="4"><div class="list-skeleton-rows"><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div></div></div></section>
+                <section class="home-slot-official" id="home-official" aria-label="官方" aria-busy="true"><div class="home-module-head"><h2>官方</h2></div><div class="list-skeleton" role="status" aria-busy="true" aria-label="正在读取" data-rows="4"><div class="list-skeleton-rows"><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div></div></div></section>
                 <section class="home-slot-focus" id="home-focus" aria-label="我的重点" hidden></section>
               </div>
             </div>
@@ -391,12 +391,12 @@
               <small id="note-focus-hint">回看标记的重点，不催着清空</small>
             </button>
             <div class="chip-tabs" id="note-filters" role="tablist" aria-label="灵感筛选"></div>
-            <div id="note-list"></div>
+            <div id="note-list" aria-busy="true"><div class="list-skeleton" role="status" aria-busy="true" aria-label="正在读取" data-rows="4"><div class="list-skeleton-rows"><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div></div></div></div>
           </div>
           <div id="inspire-tasks-pane" class="hidden">
             <div id="task-list-pane">
               <div class="chip-tabs" id="task-filters" role="tablist" aria-label="任务筛选"></div>
-              <div id="task-list"></div>
+              <div id="task-list" aria-busy="true"><div class="list-skeleton" role="status" aria-busy="true" aria-label="正在读取" data-rows="4"><div class="list-skeleton-rows"><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div></div></div></div>
             </div>
             <div id="task-detail-pane" class="hidden"></div>
           </div>
@@ -405,7 +405,7 @@
         <section class="view" id="view-knowledge" data-view-panel="knowledge">
           <label class="market-filter"><span class="vh">搜索知识库</span><input id="knowledge-filter" type="search" placeholder="搜索知识库标题 / 正文" autocomplete="off"></label>
           <p class="section-kicker">知识库是可长期复用内容的规范层。左滑一条可从库中删除。</p>
-          <div id="knowledge-list"></div>
+          <div id="knowledge-list" aria-busy="true"><div class="list-skeleton" role="status" aria-busy="true" aria-label="正在读取" data-rows="4"><div class="list-skeleton-rows"><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div></div></div></div>
         </section>
 
         <section class="view" id="view-ask" data-view-panel="ask">
@@ -416,7 +416,7 @@
             </button>
             <section class="ask-history">
               <h2 class="ask-history-title">继续研究</h2>
-              <div id="ask-session-list"><div class="empty-state">正在载入 AI 记录…</div></div>
+              <div id="ask-session-list" aria-busy="true"><div class="list-skeleton" role="status" aria-busy="true" aria-label="正在读取问答历史…" data-rows="4"><div class="list-skeleton-rows"><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div><div class="list-skeleton-row" aria-hidden="true"><span class="list-skeleton-title"></span><span class="list-skeleton-meta"></span></div></div></div></div>
             </section>
           </div>
           <div class="ask-shell detail-shell hidden" id="ask-session-shell">
