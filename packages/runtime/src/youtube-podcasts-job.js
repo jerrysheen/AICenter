@@ -43,7 +43,6 @@ import {
   youtubeBlockReason,
   youtubeTranscribeUnavailable,
 } from '../../connectors/src/youtube-podcasts.js';
-import { createGeminiAudioTranscriber } from '../../connectors/src/audio-transcribe.js';
 import { executeAudioTranscription } from './audio-transcription-job.js';
 import { dedupeRollingCaptions, transcriptHash } from '../../domain/src/youtube-captions.js';
 import { localizePodcastCopy, repairYoutubeChineseCopy, runYoutubeArticlePass } from './youtube-article-job.js';
@@ -351,7 +350,7 @@ export async function runYoutubePodcastRound(deps = {}) {
     run: deps.run,
     signal,
   }));
-  const audioTranscribe = deps.audioTranscribe || createGeminiAudioTranscriber();
+  const audioTranscribe = deps.audioTranscribe;
   const now = Number(deps.now) || Date.now();
   const timeZone = youtubePodcastClock(env).timeZone;
   let audioDisabled = false;
