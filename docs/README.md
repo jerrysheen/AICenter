@@ -25,6 +25,10 @@
 
 ## 当前
 
+- `progress/2026-10-20-youtube-caption-dedupe.md`：YouTube 译文在翻译前合并滚动字幕，已经译好的段落在显示时再去重。未完整状态合成一行。长视频帖标「视频待整理」或「视频已整理」，只有链接的帖子挂进 X 关注信息流并写出中文摘要。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
+
+- `progress/2026-10-20-x-link-article.md`：媒体或官方账号的 X 外链会抓新闻正文并翻译。抓不到不标「正文完整」，短链展开后显示「阅读 BBC 原文」。标注查询改为分批 POST。migration 94。需要同时重启 Web 和 Worker，浏览器再加载一次。
+
 - `progress/2026-10-20-article-partial-backfill.md`：补录一条还没进信息流的 X 帖时，帖子和作者一起写入，文章页能打开并显示排队状态。已经有整理记录时不再另建任务。YouTube 还没整理完时，按时间显示已整理或已译段落，标明未完整和剩余段数。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
 
 - `progress/2026-10-20-worker-startup-stall.md`：Worker 重启后先领任务，不再把历史翻译任务整表读出来。本机已退出进程留下的「运行中」任务立刻收回。清理改到后台分批。每一步启动打耗时。不新增 migration。需要重启 Worker。

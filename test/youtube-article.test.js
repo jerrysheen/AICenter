@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createStore } from '../packages/database/src/index.js';
 import {
   articlePartPrompt,
+  cleanDisplayedTranscript,
   dedupeRollingCaptions,
   captionAlreadyChinese,
   GEMMA_ARTICLE_TITLE_SYSTEM,
@@ -105,11 +106,44 @@ test('rolling captions collapse repeated tails and manual captions keep their wo
   assert.equal(deduped.includes('worse per percent of market cap that comes in in an IPO'), true);
   assert.equal(deduped.includes('worse per worse per'), false);
   assert.equal(deduped.includes('&gt;'), false);
-  assert.match(deduped, />> This episode is brought to you by Sarmaaya/);
+  assert.equal(deduped.includes('>>'), false);
+  assert.match(deduped, /This episode is brought to you by Sarmaaya/);
   const manual = dedupeRollingCaptions(MANUAL);
   assert.match(manual, /Hello there, this is a complete sentence/);
   assert.match(manual, /This is a new sentence without any repeated words/);
   assert.match(manual, /Manual captions stay intact for the reader/);
+});
+
+test('translated rolling captions drop leftover english, repeated lines and repeated stamps', () => {
+  const raw = [
+    '[00:05:59] 上一段已经说到 competitor.',
+    '[00:06:00] competitor. >> 然后说到产品',
+    '[00:06:00] case. >>',
+    '[00:06:00] Design. >>',
+    '[00:12:53] 是的。',
+    '[00:12:55] 是的。',
+    '[00:12:58] 是的。',
+    '[00:13:01] 是的。',
+    '[00:23:13] 这一段只保留一次',
+    '[00:23:13] 这一段只保留一次',
+    '[00:37:52] 每个人都可以成为 a maker',
+    '[00:37:53] 每个人都可以成为 a maker',
+  ].join('\n');
+  const cleaned = cleanDisplayedTranscript(raw);
+  assert.equal(cleaned.includes('>>'), false);
+  assert.equal(cleaned.split('\n').some((line) => /competitor\.|case\.|Design\./.test(line) && line.includes('00:06:00')), false);
+  assert.equal(cleaned.includes('case.'), false);
+  assert.equal(cleaned.includes('Design.'), false);
+  assert.match(cleaned, /然后说到产品/);
+  assert.equal((cleaned.match(/是的。/g) || []).length, 1);
+  assert.equal((cleaned.match(/00:23:13/g) || []).length, 1);
+  assert.equal((cleaned.match(/每个人都可以成为 a maker/g) || []).length, 1);
+  const bodies = cleaned.split('\n').map((line) => line.replace(/^\[[^\]]+\]\s*/, ''));
+  for (let index = 1; index < bodies.length; index += 1) {
+    assert.notEqual(bodies[index], bodies[index - 1]);
+  }
+  assert.equal(GEMMA_TRANSLATE_SYSTEM.includes('>>'), false);
+  assert.match(GEMMA_TRANSLATE_SYSTEM, /句子或段落/);
 });
 
 test('transcript parts cut on a sentence and stay inside the size window', () => {

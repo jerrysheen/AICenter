@@ -17,3 +17,12 @@ export function xVideoArticleRequestPath(tweetId, { ready = false } = {}) {
 export function xVideoArticleReady(record) {
   return record?.article?.status === 'ready' || record?.articleStatus === 'ready';
 }
+
+export function xVideoReaderScopeLabel(post, record) {
+  if (record?.absent) return null;
+  const platform = post?.platform || post?.provider;
+  if (platform !== 'x') return null;
+  const known = Boolean(post?.xVideo) || Boolean(record && !record.absent);
+  if (!known) return null;
+  return xVideoArticleReady(record) ? '视频已整理' : '视频待整理';
+}
