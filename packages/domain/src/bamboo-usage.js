@@ -10,6 +10,21 @@ import path from 'node:path';
 const LOCK_WAIT_MS = 3_000;
 const LOCK_STALE_MS = 5_000;
 
+export const BAMBOO_DAILY_USAGE_DAYS = 14;
+
+export function shiftShanghaiDay(day, delta = 0) {
+  if (!/^\d{8}$/.test(String(day))) return '';
+  const year = Number(String(day).slice(0, 4));
+  const month = Number(String(day).slice(4, 6));
+  const date = Number(String(day).slice(6, 8));
+  const utc = new Date(Date.UTC(year, month - 1, date + Number(delta)));
+  if (Number.isNaN(utc.getTime())) return '';
+  const y = utc.getUTCFullYear();
+  const m = String(utc.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(utc.getUTCDate()).padStart(2, '0');
+  return `${y}${m}${d}`;
+}
+
 export function shanghaiUsageStamp(at = Date.now()) {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Asia/Shanghai',
@@ -150,6 +165,29 @@ export function readBambooUsage(directory, at = Date.now()) {
   const usage = readUsage(bambooUsagePath(directory, stamp.day));
   const hourCount = usage.hour === stamp.hour ? usage.hourCount : 0;
   return { day: stamp.day, hour: stamp.hour, count: usage.count, hourCount };
+}
+
+// Read-only window for the usage page. Newest Shanghai day first.
+// Missing files are zero. A file that cannot be parsed is null, not a new write.
+export function listBambooDailyUsage({ directory, at = Date.now(), days = BAMBOO_DAILY_USAGE_DAYS, limit = 7000 } = {}) {
+  const span = Number.isInteger(days) && days >= 1 && days <= 31 ? days : BAMBOO_DAILY_USAGE_DAYS;
+  const cap = Number.isInteger(limit) && limit >= 0 ? limit : 7000;
+  const today = shanghaiUsageStamp(at).day;
+  const rows = [];
+  for (let offset = 0; offset < span; offset += 1) {
+    const day = shiftShanghaiDay(today, -offset);
+    let count = 0;
+    if (directory && day) {
+      try {
+        count = readUsage(bambooUsagePath(directory, day)).count;
+      } catch (error) {
+        if (error?.code === 'BAMBOO_USAGE_READ') count = null;
+        else throw error;
+      }
+    }
+    rows.push({ day, count, limit: cap });
+  }
+  return rows;
 }
 
 export function resolveBambooDailySpread(env = process.env) {

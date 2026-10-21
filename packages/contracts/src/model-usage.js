@@ -55,3 +55,9 @@ export const ModelUsageViewSchema = ModelUsageRecordSchema.omit({ provider: true
   executionId: z.string().max(256),
   estimate: z.object({ amount: z.number().finite().nonnegative(), currency: z.string(), rateVersion: z.string() }).strict().nullable(),
 }).strict();
+// Page view of the Shanghai-day admission counter. No provider, model, key, endpoint, or file path.
+export const BambooDailyUsageDaySchema = z.object({
+  day: z.string().regex(/^\d{8}$/),
+  count: z.number().int().nonnegative().nullable(),
+  limit: z.number().int().nonnegative(),
+}).strict();
