@@ -52,6 +52,17 @@ test('tagging ids are batched into POST bodies and not repeated inside the fresh
   assert.deepEqual(again, []);
   assert.equal(calls.length, 3);
   assert.deepEqual(planFeedTaggingRequests(['a', 'a', 'b'], { known: ['b'], batch: 40 }), [['a']]);
+  const capped = createFeedTaggingLoader({
+    post: async (body) => ({ items: body.resourceIds.map((resourceId) => ({ resourceId })) }),
+    gapMs: 0,
+    freshMs: 60_000,
+    batch: 40,
+    now: () => 2_000,
+  });
+  const first = await capped.load(ids, 'content-item', { maxBatches: 1 });
+  assert.equal(first.length, 40);
+  const second = await capped.load(ids, 'content-item', { maxBatches: 1 });
+  assert.equal(second.length, 40);
 });
 
 test('tagging query accepts a POST body and rejects a long GET query', async () => {

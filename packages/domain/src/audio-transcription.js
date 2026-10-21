@@ -5,6 +5,27 @@ import { parseContract, ValidationError } from '../../contracts/src/errors.js';
 
 export const AUDIO_TRANSCRIBE_TOKENS_PER_SECOND = 32;
 export const AUDIO_TRANSCRIBE_TOKENS_PER_MINUTE = 20_000;
+export const AUDIO_TRANSCRIBE_LIVE_MODEL = 'gemini-3.5-transcribe-live';
+export const AUDIO_TRANSCRIBE_FILE_MODEL = 'gemini-3.5-transcribe';
+// Non-live is 10K TPM and 25 RPD. Stop one request early so a later call does not wait for 429.
+export const AUDIO_TRANSCRIBE_FILE_TOKENS_PER_MINUTE = 10_000;
+export const AUDIO_TRANSCRIBE_FILE_REQUESTS_PER_DAY = 24;
+
+const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/;
+
+function modelSetting(env, name, fallback) {
+  const raw = String(env[name] ?? '').trim();
+  if (!raw) return fallback;
+  if (!MODEL_ID.test(raw)) throw new Error(`${name} 不是可用的模型名`);
+  return raw;
+}
+
+export function resolveAudioTranscribeModels(env = process.env) {
+  return {
+    live: modelSetting(env, 'AI_CENTER_AUDIO_TRANSCRIBE_LIVE_MODEL', AUDIO_TRANSCRIBE_LIVE_MODEL),
+    file: modelSetting(env, 'AI_CENTER_AUDIO_TRANSCRIBE_MODEL', AUDIO_TRANSCRIBE_FILE_MODEL),
+  };
+}
 const MAX_CHUNK_MS = 50 * 60_000;
 const SAFETY = 0.8;
 
@@ -110,6 +131,20 @@ export function planAudioTranscription({
     laneChunkCounts,
     chunks,
   };
+}
+
+export function planFileTranscribePieces(chunk, tokensPerSecond = AUDIO_TRANSCRIBE_TOKENS_PER_SECOND) {
+  const pieceMs = Math.floor(AUDIO_TRANSCRIBE_FILE_TOKENS_PER_MINUTE * 0.8 / tokensPerSecond) * 1000;
+  const pieces = [];
+  for (let startMs = chunk.startMs; startMs < chunk.endMs; startMs += pieceMs) {
+    const endMs = Math.min(chunk.endMs, startMs + pieceMs);
+    pieces.push({
+      startMs,
+      endMs,
+      estimatedTokens: Math.ceil((endMs - startMs) / 1000 * tokensPerSecond),
+    });
+  }
+  return pieces;
 }
 
 export function mergeTranscripts(parts) {

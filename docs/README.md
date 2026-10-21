@@ -27,6 +27,12 @@
 
 - `progress/2026-10-21-gemma-long-video-chunks.md`：YouTube 和 X 长视频在 16000 token 内加长分段，按说话人或句末切开，并按 26B、26B、31B 轮换。同一档字幕从 62 次降到 14 次。信息流翻译仍是 1500 字。不新增 migration。需要重启 Worker。
 
+- `progress/2026-10-21-live-transcribe.md`：语音转写默认走 `gemini-3.5-transcribe-live`，音频分帧并按每分钟 20000 token 限速。只有 Live 失败才回到 `gemini-3.5-transcribe`，本地每天停在 24 次。不新增 migration。需要重启 Worker。
+
+- `progress/2026-10-21-x-not-interested.md`：自动点赞改为从最近 24 小时已有模型分数的推文里按分数选。Bamboo 下没有分类结果的推文可以点，只排除明确丢弃的；分数线 0.8，企业动态仍是 0.9。全 0 分不再默认成美股大盘。低分营销号、八卦号和推广帖可以自动点「不感兴趣」，总开关和页面开关都默认关闭。推荐记录页能看到每天点赞、不感兴趣的条数，以及各方向命中率。migration 95。需要同时重启 Web 和 Worker，浏览器再加载一次。
+
+- `progress/2026-10-21-x-link-plain-url.md`：媒体帖的 t.co、bbc.in 和正文里的纯文本短链都会跟到新闻原文。译完才标「正文完整」，否则给出「阅读 BBC 原文」。已经在库里的用 `scripts/backfill-x-link-articles.mjs` 补跑，每天仍最多 8 篇。没有视频的帖子不再请求视频文章接口。作者列表打开时不再被整表标注请求堵住。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
+
 - `progress/2026-10-21-cranmer-author-search.md`：信息流搜索按作者名和 handle 查已保存的帖子，不再只看已加载的一页。`#author/x:@MilesCranmer` 打开 `x:382008009`。文章页点作者名进入作者页。YouTube 译文在显示时去掉整句英文残留，不重跑这一集。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
 
 - `progress/2026-10-20-youtube-caption-dedupe.md`：YouTube 译文在翻译前合并滚动字幕，已经译好的段落在显示时再去重。未完整状态合成一行。长视频帖标「视频待整理」或「视频已整理」，只有链接的帖子挂进 X 关注信息流并写出中文摘要。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。

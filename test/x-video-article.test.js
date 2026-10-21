@@ -33,7 +33,7 @@ import { tweetToFeedItem } from '../packages/connectors/src/x/home-timeline.js';
 import { runXVideoArticlePass, xVideoChunkCount } from '../packages/runtime/src/x-video-article-job.js';
 import { runYoutubeArticlePass } from '../packages/runtime/src/youtube-article-job.js';
 import { isApiTokenAllowlisted } from '../apps/web/src/http/api-token-access.js';
-import { xVideoArticleRequestPath, xVideoReaderScopeLabel, xVideoTweetId } from '../apps/web/public/x-video-article.js';
+import { xPostHasVideo, xVideoArticleRequestPath, xVideoReaderScopeLabel, xVideoTweetId } from '../apps/web/public/x-video-article.js';
 
 const TWEET = '2111105654211608847';
 const FIXTURE = {
@@ -175,6 +175,9 @@ test('threshold, shared slots and transcript stamps', () => {
   assert.equal(xVideoChunkCount(56 * 60 * 1000), 7);
   assert.equal(planAudioTranscription({ durationMs: 3_335_700, laneCount: 1 }).chunkCount, 7);
   assert.equal(xVideoTweetId({ platform: 'x', id: `x:${TWEET}` }), TWEET);
+  assert.equal(xPostHasVideo({ platform: 'x', id: `x:${TWEET}` }), false);
+  assert.equal(xPostHasVideo({ platform: 'x', xVideo: true }), true);
+  assert.equal(xPostHasVideo({ platform: 'x', xVideo: { own: true, tweetId: TWEET } }), true);
   assert.equal(xVideoArticleRequestPath(TWEET), `/api/v1/x-videos/${TWEET}/article`);
   assert.equal(isApiTokenAllowlisted('GET', `/api/v1/x-videos/${TWEET}/article`), true);
   assert.equal(isApiTokenAllowlisted('POST', '/api/v1/x-videos/article'), false);
