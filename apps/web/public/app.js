@@ -1251,6 +1251,8 @@ function setView(name, options = {}) {
   if (elements['reader-menu']?.open) elements['reader-menu'].close();
   const leaving = previous && previous !== view;
   if (leaving) captureViewScroll(previous);
+  // 切走简报之前先记下滚动。之后 data-view 一变，简报专用的粘性条会卸掉，再量位置会偏。
+  if (leaving && previous === 'report') briefPage.captureScroll();
   state.askSessionId = view === 'ask' ? parsed.askSessionId : '';
   if (view === 'market' && parsed.marketPane) state.tradePane = parsed.marketPane;
   if (view === 'market' && parsed.marketPane === 'stocks') {
@@ -2487,6 +2489,15 @@ function restoreViewScroll(view) {
       restoringViewScroll = false;
       if (viewScrollY.hasOwnProperty(view) && !document.body.classList.contains('is-dialog-open')) {
         viewScrollY[view] = window.scrollY;
+      }
+      // 浏览器后退有时会在我们复位之后再改一次滚动。简报再钉回离开时的位置。
+      if (view === 'report' && typeof setTimeout === 'function') {
+        setTimeout(() => {
+          if (document.body?.dataset?.view !== 'report' || document.body.classList.contains('is-dialog-open')) return;
+          restoringViewScroll = true;
+          window.scrollTo(0, y);
+          restoringViewScroll = false;
+        }, 0);
       }
     });
   });
@@ -5355,11 +5366,11 @@ function renderPosts() {
   if (!items.length) {
     const focusPending = state.channel === 'focus' && state.feedPlatform !== 'media' && !state.feedQuery
       && focusFeedPending(feedSourcesForScope('focus', state.feedPlatform), feedLoadFlags());
-    const presentation = state.feedQuery ? 'empty' : feedScopePresentation(
+    const presentation = feedScopePresentation(
       feedSourcesForScope(state.channel, state.feedPlatform),
       feedLoadFlags({ count: 0 }),
     );
-    if (focusPending || (!state.feedQuery && presentation === 'loading')) {
+    if (focusPending || presentation === 'loading') {
       const label = focusPending ? '正在读取重点…' : '正在读取内容…';
       paintListSkeleton(elements.feed, { rows: 6, label, variant: 'feed' });
       elements['feed-count'].textContent = label;
@@ -5370,7 +5381,7 @@ function renderPosts() {
   const painted = [];
   elements['feed-count'].textContent = feedCountLabel(shown, items);
   if (!items.length) {
-    const presentation = state.feedQuery ? 'empty' : feedScopePresentation(
+    const presentation = feedScopePresentation(
       feedSourcesForScope(state.channel, state.feedPlatform),
       feedLoadFlags({ count: 0 }),
     );
@@ -13184,6 +13195,7 @@ const briefPage = {
   impl: null,
   get state() { return this.impl?.state || { timezone: 'Asia/Shanghai', hourStart: null }; },
   stop() { this.impl?.stop(); },
+  captureScroll() { this.impl?.captureScroll?.(); },
   reset(flag) { this.impl?.reset?.(flag); },
   selectDirection(key) { return this.impl?.selectDirection?.(key); },
   mount(root, options) { return ensureBriefPage().then((page) => page.mount(root, options)); },

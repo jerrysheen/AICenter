@@ -7,7 +7,7 @@ import { shareTextBlocks, stripSharePlaceholders } from './share-card.js?v=dev';
 import { inclusiveWindowInstant, zonedCalendarParts, zonedClockParts } from './shanghai-time.js?v=dev';
 import { createListSkeleton, paintListSkeleton } from './list-skeleton.js?v=dev';
 
-// 贴在标题栏下面的行不算可见。coverBottom 是标题栏、子导航和简报条的下沿。
+// 贴在标题栏下面的行不算可见。行的顶要落到 coverBottom 上或更下面，只露出一截底边的高行也不算。
 export function briefVisibleAnchor(rows, coverBottom = 0) {
   const line = Number(coverBottom) || 0;
   for (const row of rows || []) {
@@ -15,7 +15,7 @@ export function briefVisibleAnchor(rows, coverBottom = 0) {
     const rect = row.getBoundingClientRect();
     const top = Number(rect?.top);
     const bottom = Number(rect?.bottom);
-    if (!Number.isFinite(top) || !Number.isFinite(bottom) || bottom <= line + 1) continue;
+    if (!Number.isFinite(top) || !Number.isFinite(bottom) || bottom <= line + 1 || top < line - 1) continue;
     return { anchorId: String(row.dataset?.nodeId || ''), anchorOffset: top };
   }
   return { anchorId: '', anchorOffset: 0 };
@@ -493,6 +493,8 @@ export function createInformationTreePage(host) {
   }
   function rememberPosition() {
     if (restoringScroll || !shownKey) return;
+    // 简报已经不在画面上时，行的位置是 0，再记会把离开前的滚动盖掉。
+    if (typeof host.active === 'function' && !host.active()) return;
     const anchor=firstVisibleAnchor();
     keepRecent(positions, shownKey, {
       y: Math.max(0, Number(window.scrollY) || 0),
@@ -508,14 +510,16 @@ export function createInformationTreePage(host) {
     viewKey=key;
     restoreScroll(opened);
   }
-  function restoreScroll(opened) {
+  function restoreScroll(opened, options) {
     const saved=shownKey ? positions.get(shownKey) : null;
+    // 从别的页面退回时只用离开前记下的 scrollY。锚点是给页内「返回日报」用的，那边内容会先换成骨架再换回来。
+    const preferSaved=options?.preferSavedY===true;
     scrollLocked++;
     const apply=()=>{
       try {
         if (!active()) return;
         let top=null;
-        if (saved?.anchorId) {
+        if (!preferSaved && saved?.anchorId) {
           const row=[...(list?.querySelectorAll?.('[data-node-id]') || [])].find(node=>node.dataset?.nodeId===saved.anchorId);
           if (row && typeof row.getBoundingClientRect==='function') {
             const rect=row.getBoundingClientRect();
@@ -1554,7 +1558,7 @@ export function createInformationTreePage(host) {
     if(active() && !document.hidden)timer=setInterval(check,30000);
     if(back){
       if(pendingNodeId) consumePendingNode();
-      else restoreScroll(false);
+      else restoreScroll(false, {preferSavedY:true});
     }
     if(checkNow)return check();
   }
@@ -1633,5 +1637,5 @@ export function createInformationTreePage(host) {
       const saved=memory[mode] || {};direction=saved.direction ?? null;directionExplicit=Boolean(saved.directionExplicit);if(saved.tag)tag.value=saved.tag;
       periods();await render();if(flightToken!==flight)return;settled=true;resume(false);
     }catch(error){if(aborted(error) || token!==epoch || flightToken!==flight)return;list.replaceChildren(el('p','暂时无法读取简报。'),button('重试读取',()=>this.mount(target,options)));}
-  },check,acceptUpdate,resume,stop,suspend,isSettled(){return settled;},selectHour,showingHour,hasHourScroll,focusNode,clearOpened,selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){haltDigest();root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());root?.classList.remove('is-reading','is-hourly','is-discussion');clearHourSlow();readingCache.clear();readingLoads.clear();readingIndex=undefined;pendingClockHour=null;hourFallbackText='';hourRevealEarlier=false;openGaps.clear();stop();flight++;requests.abort();requests=new AbortController();epoch++;session++;settled=false;rendering=0;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();latestDailyPromise=null;fullEditions.clear();editionLoads.clear();invalidateInformationIndex();expanded.clear();if(scrollTimer){clearTimeout(scrollTimer);scrollTimer=0;}positions.clear();hourOpens.clear();shownKey='';away=false;viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
+  },check,acceptUpdate,resume,stop,suspend,captureScroll(){rememberPosition();},isSettled(){return settled;},selectHour,showingHour,hasHourScroll,focusNode,clearOpened,selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){haltDigest();root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());root?.classList.remove('is-reading','is-hourly','is-discussion');clearHourSlow();readingCache.clear();readingLoads.clear();readingIndex=undefined;pendingClockHour=null;hourFallbackText='';hourRevealEarlier=false;openGaps.clear();stop();flight++;requests.abort();requests=new AbortController();epoch++;session++;settled=false;rendering=0;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();latestDailyPromise=null;fullEditions.clear();editionLoads.clear();invalidateInformationIndex();expanded.clear();if(scrollTimer){clearTimeout(scrollTimer);scrollTimer=0;}positions.clear();hourOpens.clear();shownKey='';away=false;viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
 }
