@@ -55,6 +55,18 @@ export function createFeedAutomationJobHandlers({ feedService, feedRepository, t
     return tagging;
   }
 
+  function tagFailure(error, itemCount) {
+    const message = String(error?.message || '');
+    const incomplete = message.match(/还有 (\d+) 条内容没有完成打标/);
+    const status = Number(error?.upstreamStatus);
+    let category = 'tagging';
+    if (error?.code === 'budget-deferred') category = 'budget-deferred';
+    else if (status === 429 || /429|RESOURCE_EXHAUSTED|配额/.test(message)) category = 'rate-limit';
+    else if ((status >= 500 && status <= 599) || /（5\d\d）|\b5\d\d\b|上游/.test(message)) category = 'upstream';
+    else if (incomplete) category = 'incomplete';
+    return { count: incomplete ? Number(incomplete[1]) : itemCount, category };
+  }
+
   function timeoutMs() {
     if (sourceTimeoutMs != null) {
       const parsed = Number(sourceTimeoutMs);
@@ -249,7 +261,18 @@ export function createFeedAutomationJobHandlers({ feedService, feedRepository, t
         const rows = feedService.listTaggableItems?.(input.workspaceId, { ids: resourceIds, limit: resourceIds.length }) || [];
         // Article normalize writes a tree tagId. It does not write resource_taggings.
         // Short-post tags still go through the Gemma tagging service before the tree job is queued.
-        const tagging = await tagContentItems(input.workspaceId, rows);
+        // A tagging failure must not stop the tree job.
+        let tagging = { saved: [], skipped: 0 };
+        let taggingError = '';
+        let taggingFailed = 0;
+        try {
+          tagging = await tagContentItems(input.workspaceId, rows);
+        } catch (error) {
+          const failure = tagFailure(error, rows.length);
+          taggingError = failure.category;
+          taggingFailed = failure.count;
+          log(`[worker] feed-enrich tagging failed count=${taggingFailed} category=${taggingError}`);
+        }
         const units = rows.map(row => ({ id: row.id, text: row.body || row.summary || row.title || '' })).filter(row => row.text);
         await enqueueOriginalTranslations({
           store: context?.store, feedService, workspaceId: input.workspaceId, units, priority: TRANSLATION_BACKFILL_PRIORITY,
@@ -259,8 +282,9 @@ export function createFeedAutomationJobHandlers({ feedService, feedRepository, t
           ...(prepared && typeof prepared === 'object' ? prepared : {}),
           workspaceId: input.workspaceId,
           resourceIds,
-          tagged: tagging.saved?.length || 0,
-          skippedTagging: tagging.skipped || 0,
+          tagged: taggingError ? 0 : (tagging.saved?.length || 0),
+          skippedTagging: taggingError ? 0 : (tagging.skipped || 0),
+          ...(taggingError ? { taggingFailed, taggingError } : {}),
         };
       }
       const localization = await feedService.localizeContentItems(input.workspaceId, resourceIds);

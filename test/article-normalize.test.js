@@ -100,6 +100,100 @@ test('article normalize still tags short posts before queueing preparation', asy
   assert.equal(result.queued, 1);
 });
 
+test('Gemma tagging failure still queues information preparation', async () => {
+  const order = [];
+  const logs = [];
+  const rows = [
+    { id: 'a', title: '短帖', summary: '', body: '正文' },
+    { id: 'b', title: '另一条', summary: '', body: '更多' },
+  ];
+  const handlers = createFeedAutomationJobHandlers({
+    log: (line) => logs.push(line),
+    feedService: {
+      refreshPersistedSource: async () => { throw new Error('not used'); },
+      listTaggableItems: () => rows,
+    },
+    feedRepository: { claimDueSubscriptions() { return []; } },
+    taggingService: {
+      async analyzeItems() {
+        order.push('tag');
+        throw Object.assign(new Error('Gemma 翻译等待配额窗口'), { code: 'budget-deferred' });
+      },
+    },
+    articleNormalizePort: {
+      prepareInformation: async (payload) => {
+        order.push('prepare');
+        return { queued: payload.sourceIds.length };
+      },
+    },
+    treeEnabled: true,
+  });
+  const result = await handlers['feed.items.enrich']({ workspaceId: 'local', resourceIds: ['a', 'b'] }, { store: {} });
+  assert.deepEqual(order, ['tag', 'prepare']);
+  assert.equal(result.tagged, 0);
+  assert.equal(result.taggingFailed, 2);
+  assert.equal(result.taggingError, 'budget-deferred');
+  assert.equal(result.queued, 2);
+  assert.match(logs.join('\n'), /count=2 category=budget-deferred/);
+  assert.doesNotMatch(logs.join('\n'), /配额窗口|正文/);
+});
+
+test('incomplete tags and upstream failures do not block preparation; the legacy path still requires every tag', async () => {
+  const order = [];
+  async function articleHandlers(analyzeItems) {
+    return createFeedAutomationJobHandlers({
+      log() {},
+      feedService: {
+        refreshPersistedSource: async () => { throw new Error('not used'); },
+        listTaggableItems: () => [{ id: 'a', title: '短帖', summary: '', body: '正文' }],
+      },
+      feedRepository: { claimDueSubscriptions() { return []; } },
+      taggingService: { analyzeItems },
+      articleNormalizePort: {
+        prepareInformation: async (payload) => {
+          order.push('prepare');
+          return { queued: payload.sourceIds.length };
+        },
+      },
+    });
+  }
+  const missing = await articleHandlers(async () => {
+    order.push('tag');
+    return { saved: [], skipped: 0, missingItemIds: ['a'] };
+  });
+  const incomplete = await missing['feed.items.enrich']({ workspaceId: 'local', resourceIds: ['a'] }, { store: {} });
+  assert.equal(incomplete.tagged, 0);
+  assert.equal(incomplete.taggingFailed, 1);
+  assert.equal(incomplete.taggingError, 'incomplete');
+  assert.equal(incomplete.queued, 1);
+  const upstream = await articleHandlers(async () => {
+    order.push('tag');
+    throw Object.assign(new Error('Gemma 翻译失败（500）'), { upstreamStatus: 500 });
+  });
+  const failed = await upstream['feed.items.enrich']({ workspaceId: 'local', resourceIds: ['a'] }, { store: {} });
+  assert.equal(failed.tagged, 0);
+  assert.equal(failed.taggingError, 'upstream');
+  assert.equal(failed.queued, 1);
+  assert.deepEqual(order, ['tag', 'prepare', 'tag', 'prepare']);
+  const legacy = createFeedAutomationJobHandlers({
+    feedService: {
+      refreshPersistedSource: async () => {},
+      localizeContentItems: async () => ({ pendingIds: [], translated: 0 }),
+      listTaggableItems: () => [{ id: 'a', body: '正文' }],
+    },
+    feedRepository: { claimDueSubscriptions() { return []; } },
+    taggingService: {
+      async analyzeItems() {
+        return { saved: [], skipped: 0, missingItemIds: ['a'] };
+      },
+    },
+  });
+  await assert.rejects(
+    legacy['feed.items.enrich']({ workspaceId: 'local', resourceIds: ['a'] }, { store: {} }),
+    /没有完成打标/,
+  );
+});
+
 test('saved Gemma tags replace the article model tag on the information node', async () => {
   const f = fixture(() => ({ ...output, tagId: 'macro' }), {
     catalog: { tags: [{ id: 'ai', name: '人工智能' }, { id: 'macro', name: '宏观' }] },

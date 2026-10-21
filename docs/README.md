@@ -25,7 +25,7 @@
 
 ## 当前
 
-- `progress/2026-10-21-feed-enrich-gemma-tags.md`：文章整理不再跳过短帖标注。`feed.items.enrich` 先用 Gemma 26B 写入 `resource_taggings`，信息树的 `tagId` 采用这份标签。10-07 起标签表停写，是因为文章整理旁路没有调用标注入口。Bamboo 准入分类不动。不新增 migration。需要重启 Worker。
+- `progress/2026-10-21-feed-enrich-gemma-tags.md`：文章整理不再跳过短帖标注。`feed.items.enrich` 先用 Gemma 26B 写入 `resource_taggings`，信息树的 `tagId` 采用这份标签。打标失败只记条数和错误类别，信息树照常排队。10-07 起标签表停写，是因为文章整理旁路没有调用标注入口。Bamboo 准入分类不动。不新增 migration。需要重启 Worker。
 
 - `progress/2026-10-21-x-video-transcribe-resume.md`：X 视频转写在 Live 失败时只记错误类别。网络错误在任务内有限重试。任务失败会取消未完成的分段，已经完成的分段留下，下一轮续跑。续跑要比对起止时间，对不上就重转。文件转写在请求发出后才计入每天 24 次，重试不重复扣。不新增 migration。需要重启 Worker。
 

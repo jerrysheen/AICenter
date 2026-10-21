@@ -8,6 +8,8 @@
 
 文章整理仍然先排队。短帖在排队之前先走原来的标注服务，模型仍是 Gemma 26B，结果写入 `resource_taggings`。信息树如果已经读到这份标签，节点的 `tagId` 用其中第一个有效标签，不再采用 Flash Lite 在正文里顺手返回的标签。没有标签时正文整理照旧。Bamboo 的信息流准入分类不动。媒体正文整理不改。
 
+打标失败不挡住信息树。`missingItemIds` 非空，或 Gemma 限流、500，只记失败条数和错误类别，然后照常 `prepareInformation`。这次返回 `tagged=0` 和 `taggingError`。没有文章整理、仍要求打标全部完成的那条路径继续抛错。
+
 不新增 migration。当前 schema 是 95。下一号是 96。空号仍是 63、79、80、82。不要重建数据库。
 
 需要重启 Worker。页面没有改，Web 不用为这项重启。
