@@ -27,6 +27,8 @@
 
 - `progress/2026-10-21-feed-search-fts.md`：信息流搜索改走 FTS5。索引 rowid 用 `content_items.rowid`，删除按这个主键。回填没完成时，三个字以上仍走 LIKE。回填完成后三个字及以上用全文索引，两个字只查标题和作者。索引在启动之后分批写入。关注流修复只挪作者已关注或带 following 标记的帖，挪之前备份，可以用 `--rollback` 还原。搜索和作者页共用已保存的译文。文章页首屏就显示作者。migration 96。需要同时重启 Web 和 Worker，浏览器再加载一次。
 
+- `progress/2026-10-21-sqlite-busy-not-repeat-exit.md`：`SQLITE_BUSY` 和 `database is locked` 只计入 10 分钟内的总次数，不再 3 次就退出。其它 `SQLITE_` 错误仍是同一种出现 3 次就 `exit(1)`。不新增 migration。需要重启 Worker。
+
 - `progress/2026-10-21-bamboo-daily-usage.md`：用量页列出 Bamboo 最近 14 个上海日的信息流准入次数，上限默认 7000。只读原来的计数文件，不另记一次，也不改准入分类。接口只有日期、次数和上限。不新增 migration。需要重启 Web，浏览器再加载一次。
 
 - `progress/2026-10-21-worker-restart-watchdog.md`：调度入队失败不再让 Worker 自己退出。Node 22 会把没人接住的拒绝当成致命错误，启动器再拉起后，正在跑的任务被记成 `WorkerLeaseExpired`。现在一条调度失败只记日志，循环继续。没人接住的拒绝先记下来；10 分钟内超过 20 次，或同一种数据库错误出现 3 次，就 exit(1)，交给启动器重启。看门狗记下正在跑的任务，自己的工作线程出错也不会把进程打退出。不新增 migration。需要重启 Worker。
