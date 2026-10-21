@@ -84,3 +84,357 @@ test('segments are sent separately and joined back in order', async () => {
 test('audio path must stay inside the data directory', () => {
   assert.throws(() => resolveAudioFile('C:/data', '../secret.wav'), /数据目录/);
 });
+
+function writeSeconds(root, seconds) {
+  const relative = 'blobs/sample.wav';
+  const absolute = path.join(root, relative);
+  fs.mkdirSync(path.dirname(absolute), { recursive: true });
+  fs.writeFileSync(absolute, buildWav(Buffer.alloc(16_000 * 2 * seconds), {
+    channels: 1, sampleRate: 16_000, bitsPerSample: 16, blockAlign: 2,
+  }));
+  return relative;
+}
+
+function quota() {
+  return {
+    reserve() { return { admitted: true, keyEnv: 'GEMINI_API_KEY' }; },
+    release() {},
+  };
+}
+
+test('a live failure is logged by category and only then uses the file model', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'audio-live-log-'));
+  const env = { GEMINI_API_KEY: 'assembly-key' };
+  const relative = writeSeconds(root, 1);
+  const secret = 'AIzaSySECRETKEY1234567890';
+  const warnings = [];
+  const original = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  let liveCalls = 0;
+  let fileCalls = 0;
+  try {
+    const result = await executeAudioTranscription({
+      input: {
+        workspaceId: 'local',
+        path: relative,
+        languageCodes: ['en'],
+        mode: 'SMART',
+        plan: describeAudioTranscription(env, 1_000),
+      },
+      dataDirectory: root,
+      env,
+      quotaRepository: quota(),
+      now: () => 1_000,
+      sleep: async () => {},
+      transcribe: async () => {
+        liveCalls += 1;
+        throw new Error(`fetch failed wss://generativelanguage.googleapis.com/ws?key=${secret}`);
+      },
+      fileTranscribe: async () => {
+        fileCalls += 1;
+        return '文件转写';
+      },
+    });
+    assert.equal(result.text, '文件转写');
+    assert.equal(liveCalls, 3);
+    assert.equal(fileCalls, 1);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /语音转写 Live 失败，改走文件转写：network/);
+    assert.equal(warnings[0].includes(secret), false);
+    assert.equal(warnings[0].includes('wss://'), false);
+    assert.equal(warnings[0].includes('generativelanguage'), false);
+  } finally {
+    console.warn = original;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a failed segment aborts the others and a later run keeps the finished text', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'audio-abort-'));
+  const env = {
+    GEMINI_API_KEY: 'one',
+    GEMINI_API_KEY2: 'two',
+    GEMINI_API_KEY3: 'three',
+    AI_CENTER_AUDIO_TRANSCRIBE_TOKENS_PER_MINUTE: '80',
+  };
+  const relative = writeSeconds(root, 5);
+  let entered = 0;
+  let aborted = false;
+  const saved = [];
+  try {
+    await assert.rejects(() => executeAudioTranscription({
+      input: {
+        workspaceId: 'local',
+        path: relative,
+        languageCodes: [],
+        mode: 'SMART',
+        plan: describeAudioTranscription(env, 5_000),
+      },
+      dataDirectory: root,
+      env,
+      quotaRepository: {
+        reserve(input) {
+          return { admitted: true, keyEnv: input.slots[0].keyEnv };
+        },
+        release() {},
+      },
+      now: () => 1_000,
+      sleep: async () => {},
+      onSegment: (segment) => saved.push(segment),
+      transcribe: ({ signal }) => {
+        const mine = entered;
+        entered += 1;
+        if (mine === 0) return '第一段';
+        if (mine === 1) {
+          return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('分段没有取消')), 2_000);
+            signal.addEventListener('abort', () => {
+              clearTimeout(timer);
+              aborted = true;
+              reject(Object.assign(new Error('转写已取消'), { name: 'AbortError', code: 'aborted' }));
+            }, { once: true });
+          });
+        }
+        throw new Error('分段失败');
+      },
+    }), (error) => {
+      assert.equal(error.completedSegments.length, 1);
+      assert.equal(error.completedSegments[0].text, '第一段');
+      assert.equal(String(error.message).includes('wss://'), false);
+      return true;
+    });
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0].text, '第一段');
+    assert.equal(aborted, true);
+
+    let resumedCalls = 0;
+    const again = await executeAudioTranscription({
+      input: {
+        workspaceId: 'local',
+        path: relative,
+        languageCodes: [],
+        mode: 'SMART',
+        plan: describeAudioTranscription(env, 5_000),
+      },
+      dataDirectory: root,
+      env,
+      quotaRepository: {
+        reserve(input) {
+          return { admitted: true, keyEnv: input.slots[0].keyEnv };
+        },
+        release() {},
+      },
+      now: () => 2_000,
+      sleep: async () => {},
+      resumeSegments: saved,
+      transcribe: () => {
+        resumedCalls += 1;
+        return '续上';
+      },
+    });
+    assert.equal(resumedCalls, 2);
+    assert.match(again.text, /第一段/);
+    assert.match(again.text, /续上/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('fetch failed is retried a limited number of times and abort is not', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'audio-retry-'));
+  const env = { GEMINI_API_KEY: 'one' };
+  const relative = writeSeconds(root, 1);
+  const input = {
+    workspaceId: 'local',
+    path: relative,
+    languageCodes: [],
+    mode: 'SMART',
+    plan: describeAudioTranscription(env, 1_000),
+  };
+  try {
+    let calls = 0;
+    const result = await executeAudioTranscription({
+      input,
+      dataDirectory: root,
+      env,
+      quotaRepository: quota(),
+      now: () => 1_000,
+      sleep: async () => {},
+      transcribe: async () => {
+        calls += 1;
+        if (calls < 3) throw new Error('fetch failed');
+        return '第三次成功';
+      },
+    });
+    assert.equal(calls, 3);
+    assert.equal(result.text, '第三次成功');
+
+    let abortedCalls = 0;
+    await assert.rejects(() => executeAudioTranscription({
+      input,
+      dataDirectory: root,
+      env,
+      quotaRepository: quota(),
+      now: () => 1_000,
+      sleep: async () => {},
+      transcribe: async () => {
+        abortedCalls += 1;
+        throw Object.assign(new Error('转写已取消'), { name: 'AbortError', code: 'aborted' });
+      },
+    }), (error) => error.name === 'AbortError');
+    assert.equal(abortedCalls, 1);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('resume keeps a segment only when the start and end both match', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'audio-resume-bounds-'));
+  const env = {
+    GEMINI_API_KEY: 'one',
+    AI_CENTER_AUDIO_TRANSCRIBE_TOKENS_PER_MINUTE: '80',
+  };
+  const relative = writeSeconds(root, 5);
+  const plan = describeAudioTranscription(env, 5_000);
+  const [first, second] = plan.chunks;
+  let calls = 0;
+  try {
+    const result = await executeAudioTranscription({
+      input: {
+        workspaceId: 'local',
+        path: relative,
+        languageCodes: [],
+        mode: 'SMART',
+        plan,
+      },
+      dataDirectory: root,
+      env,
+      quotaRepository: quota(),
+      now: () => 1_000,
+      sleep: async () => {},
+      resumeSegments: [
+        { index: first.index, startMs: first.startMs + 1, endMs: first.endMs, text: '起点对不上' },
+        { index: second.index, startMs: second.startMs, endMs: second.endMs, text: '时间对齐' },
+        { index: second.index, startMs: second.startMs, endMs: second.endMs - 1, text: '终点对不上' },
+      ],
+      transcribe: () => {
+        calls += 1;
+        return '重转';
+      },
+    });
+    assert.equal(calls, plan.chunkCount - 1);
+    assert.match(result.text, /时间对齐/);
+    assert.equal(result.text.includes('起点对不上'), false);
+    assert.equal(result.text.includes('终点对不上'), false);
+    assert.equal(result.segments[second.index].text, '时间对齐');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a file request is counted once it is sent and a retry does not count again', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'audio-file-quota-'));
+  const env = { GEMINI_API_KEY: 'one' };
+  const relative = writeSeconds(root, 1);
+  const rows = [];
+  const quotaRepository = {
+    reserve(input) {
+      const id = `row-${rows.length + 1}`;
+      rows.push({ id, model: input.model, requestsPerDay: input.requestsPerDay, counted: true });
+      return {
+        admitted: true,
+        id,
+        keyEnv: 'GEMINI_API_KEY',
+        project: 'p',
+        model: input.model,
+        cooldownKey: 'p',
+      };
+    },
+    discard(ticket) {
+      const row = rows.find((item) => item.id === ticket.id);
+      if (row) row.counted = false;
+    },
+    release() {},
+  };
+  const input = {
+    workspaceId: 'local',
+    path: relative,
+    languageCodes: [],
+    mode: 'SMART',
+    plan: describeAudioTranscription(env, 1_000),
+  };
+  try {
+    let sends = 0;
+    const result = await executeAudioTranscription({
+      input,
+      dataDirectory: root,
+      env,
+      quotaRepository,
+      now: () => Date.parse('2026-10-21T18:00:00Z'),
+      sleep: async () => {},
+      transcribe: async () => {
+        throw Object.assign(new Error('live down'), { code: 'live-failed' });
+      },
+      fileTranscribe: async ({ onRequest }) => {
+        onRequest();
+        sends += 1;
+        if (sends < 3) throw new Error('fetch failed');
+        return '文件转写成功';
+      },
+    });
+    assert.equal(result.text, '文件转写成功');
+    assert.equal(sends, 3);
+    const counted = rows.filter((row) => row.model === 'gemini-3.5-transcribe' && row.counted);
+    assert.equal(counted.length, 1);
+    assert.equal(counted[0].requestsPerDay, 24);
+    assert.equal(rows.filter((row) => row.model === 'gemini-3.5-transcribe').length, 1);
+
+    rows.length = 0;
+    await assert.rejects(() => executeAudioTranscription({
+      input,
+      dataDirectory: root,
+      env,
+      quotaRepository,
+      now: () => Date.parse('2026-10-21T18:00:00Z'),
+      sleep: async () => {},
+      transcribe: async () => {
+        throw Object.assign(new Error('live down'), { code: 'live-failed' });
+      },
+      fileTranscribe: async () => {
+        throw new Error('转写密钥不可用');
+      },
+    }));
+    assert.equal(rows.filter((row) => row.model === 'gemini-3.5-transcribe' && row.counted).length, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('discarding an unsent file reservation frees that daily slot', () => {
+  const store = createStore(':memory:');
+  try {
+    const repository = store.repositories.modelQuota;
+    const request = {
+      slots: [{ project: 'p', keyEnv: 'GEMINI_API_KEY' }],
+      model: 'gemini-3.5-transcribe',
+      at: 1_000,
+      requestsPerHour: 2_000,
+      requestsPerMinute: 30,
+      minIntervalMs: 0,
+      estimatedTokensPerMinute: 10_000,
+      estimatedTokens: 32,
+      accountMode: true,
+      requestsPerDay: 1,
+      requestsPerKeyPerDay: 1,
+      dayStart: 0,
+      dayEnd: 10_000,
+    };
+    const ticket = repository.reserve(request);
+    assert.equal(ticket.admitted, true);
+    repository.discard(ticket);
+    const again = repository.reserve({ ...request, at: 1_001 });
+    assert.equal(again.admitted, true);
+  } finally {
+    store.close();
+  }
+});

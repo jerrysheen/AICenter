@@ -75,6 +75,16 @@ export function createModelQuotaRepository(database, emitEvent) {
         if(result.changes)emitEvent('runtime.model-quota.released.v1','model-quota',ticket.id,{model:ticket.model},'local');
       }).immediate();
     },
+    // Drops a file-transcription hold that never left the process, so it does not consume the daily 24.
+    discard(ticket) {
+      if (!ticket?.id) return 0;
+      return database.transaction(()=>{
+        const removed=database.prepare('DELETE FROM model_quota_reservations WHERE id=?').run(ticket.id).changes;
+        const lease=database.prepare('DELETE FROM model_quota_leases WHERE project=? AND model=? AND owner=?').run(ticket.project,ticket.model,ticket.id);
+        if(lease.changes)emitEvent('runtime.model-quota.released.v1','model-quota',ticket.id,{model:ticket.model},'local');
+        return removed;
+      }).immediate();
+    },
     cooldown(project,model,untilAt) {
       database.transaction(()=>{
         database.prepare('INSERT INTO model_quota_cooldowns(project,model,until_at) VALUES(?,?,?) ON CONFLICT(project,model) DO UPDATE SET until_at=MAX(until_at,excluded.until_at)').run(project,model,untilAt);

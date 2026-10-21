@@ -17,7 +17,7 @@ import {
 } from '../../domain/src/x-video-articles.js';
 import { allowedMediaUrl, fetchXVideoMedia, selectLongVideo } from '../../connectors/src/x/video-media.js';
 import { runProcess } from '../../connectors/src/youtube-podcasts.js';
-import { executeAudioTranscription } from './audio-transcription-job.js';
+import { executeAudioTranscription, safeTranscribeMessage } from './audio-transcription-job.js';
 import { organizeGemmaTranscript, resumeArticleTitle } from './youtube-article-job.js';
 
 const PROBE_LIMIT = 8;
@@ -112,7 +112,33 @@ async function extractWav(deps, mp4, wav, durationSec, signal) {
   if (result.code !== 0) throw new Error('音频抽取失败');
 }
 
-async function transcribeFile(deps, { workspaceId, relativePath, durationSec, signal, env }) {
+function transcriptSegments(row) {
+  const state = holdOf(row);
+  const rows = Array.isArray(state.transcriptSegments) ? state.transcriptSegments : [];
+  return rows.filter((segment) => Number.isInteger(segment?.index) && String(segment?.text || '').trim());
+}
+
+function storeTranscriptSegment(deps, row, workspaceId, segment) {
+  const state = holdOf(row);
+  const rows = transcriptSegments(row).filter((item) => item.index !== segment.index);
+  rows.push({
+    index: segment.index,
+    startMs: segment.startMs,
+    endMs: segment.endMs,
+    text: String(segment.text || '').trim(),
+  });
+  rows.sort((left, right) => left.index - right.index);
+  state.transcriptSegments = rows;
+  const articleState = JSON.stringify(state);
+  deps.repository.saveArticle({
+    workspaceId,
+    videoId: row.videoId,
+    articleState,
+  });
+  row.articleState = articleState;
+}
+
+async function transcribeFile(deps, row, { workspaceId, relativePath, durationSec, signal, env }) {
   if (typeof deps.transcribeAudio === 'function') {
     return deps.transcribeAudio({ workspaceId, relativePath, durationSec, signal });
   }
@@ -130,6 +156,8 @@ async function transcribeFile(deps, { workspaceId, relativePath, durationSec, si
     env,
     quotaRepository: deps.quotaRepository,
     signal,
+    resumeSegments: transcriptSegments(row),
+    onSegment: (segment) => storeTranscriptSegment(deps, row, workspaceId, segment),
   };
   const transcribe = typeof deps.geminiTranscribe === 'function' ? deps.geminiTranscribe : executeAudioTranscription;
   return transcribe(request);
@@ -150,7 +178,7 @@ async function writeTranscript(deps, row, media, workspaceId, signal, env) {
     if (typeof deps.downloadMedia === 'function') await deps.downloadMedia({ url: media.variant.url, file: mp4, signal });
     else await downloadMp4(media.variant.url, mp4, fetchImpl, signal);
     await extractWav(deps, mp4, wav, Math.ceil(media.durationMs / 1000), signal);
-    const result = await transcribeFile(deps, {
+    const result = await transcribeFile(deps, row, {
       workspaceId,
       relativePath,
       durationSec: Math.ceil(media.durationMs / 1000),
@@ -458,11 +486,11 @@ export async function runXVideoArticlePass(deps = {}) {
         videoId: current.videoId,
         status: 'pending',
         attempts,
-        reason: String(error?.message || error).slice(0, 160),
+        reason: safeTranscribeMessage(error),
         articleDay: current.articleDay || day,
       });
       stats.pending += 1;
-      console.warn(`[worker] x-video 整理没有完成：${String(error?.message || error).slice(0, 160)}`);
+      console.warn(`[worker] x-video 整理没有完成：${safeTranscribeMessage(error)}`);
     }
   }
   return stats;
