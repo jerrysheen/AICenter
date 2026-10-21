@@ -77,7 +77,7 @@ test('hourly backfill takes the next closed slot after one latest-hour cut-in', 
   const releases = [];
   const calls = [];
   const runtime = createHarnessAgentRuntime({
-    tools: createToolRegistry(), runtimeDirectory: directory, env: { DEEPSEEK_API_KEY: 'test-key' },
+    tools: createToolRegistry(), runtimeDirectory: directory, env: { DEEPSEEK_API_KEY: 'test-key', ELUCID_GROK_API_KEY: 'test-key' },
     createClient: async () => ({
       run: async (prompt) => {
         calls.push(prompt);
@@ -119,7 +119,7 @@ test('Ask still starts before an aged hourly backfill', async () => {
   const releases = [];
   const calls = [];
   const runtime = createHarnessAgentRuntime({
-    tools: createToolRegistry(), runtimeDirectory: directory, env: { DEEPSEEK_API_KEY: 'test-key' },
+    tools: createToolRegistry(), runtimeDirectory: directory, env: { DEEPSEEK_API_KEY: 'test-key', ELUCID_GROK_API_KEY: 'test-key' },
     createClient: async () => ({
       run: async (prompt) => {
         calls.push(prompt);
