@@ -8,7 +8,7 @@
 
 #189 上线后，搜「Cranmer」能找到 Miles Cranmer 的帖子，但本机每次要 3.8 到 4.5 秒。搜索把标题、摘要、作者和正文前 4000 字拼在一起做 `LIKE`，每一行还要再查可见性。
 
-现在三个字及以上走 SQLite FTS5 trigram 全文索引，忽略大小写。索引的 `rowid` 直接用 `content_items.rowid`。写入是 `INSERT INTO content_item_fts(rowid, content_item_id, workspace_id, text) VALUES(ci.rowid, ...)`。删掉旧行用 `DELETE FROM content_item_fts WHERE rowid = ?`，不再按未索引的 `content_item_id` 删。回填没完成（`feedSearchIndexStatus().done` 之前），三个字以上的搜索仍走原来的 LIKE，正文前 4000 字算在里面。回填完成之后才用全文索引。两个字 trigram 对不上，只查标题、摘要和作者，不扫正文。一个字不查。页面上少于两个字不发请求；发出新的搜索时取消上一个请求，搜索结果也不进 8 秒缓存。
+现在三个字及以上走 SQLite FTS5 trigram 全文索引，忽略大小写。索引的 `rowid` 直接用 `content_items.rowid`。写入是 `INSERT INTO content_item_fts(rowid, content_item_id, workspace_id, text) VALUES(ci.rowid, ...)`。删掉旧行用 `DELETE FROM content_item_fts WHERE rowid = ?`，不再按未索引的 `content_item_id` 删。回填没完成（`feedSearchIndexStatus().done` 之前），三个字以上的搜索仍走原来的 LIKE，正文前 4000 字算在里面。回填完成之后才用全文索引。判断是否建完只读 `feed_search_index_cursor`，不对 `content_item_fts` 做 `count(*)`。`done` 一旦为真就记在当前进程里，后面的搜索不再读游标表。两个字 trigram 对不上，只查标题、摘要和作者，不扫正文。一个字不查。页面上少于两个字不发请求；发出新的搜索时取消上一个请求，搜索结果也不进 8 秒缓存。对主库做原地 VACUUM 时，要把 FTS 游标清零并重新建索引，再重启 Web 和 Worker，进程里记住的「已建完」才会丢掉。`VACUUM INTO` 备份不受影响。
 
 migration 96 只建空的 `content_item_fts` 和进度表 `feed_search_index_cursor`，不在迁移里灌入已有帖子。Web 和 Worker 启动并开始接请求之后，每次 40 条写入索引，写完一批就让出主线程。新保存的帖子当时就写入索引，不用等这一轮走完。当前 schema 是 96。下一号是 97。95 已是不感兴趣那张表。空号仍是 63、79、80、82。不要重建数据库。
 

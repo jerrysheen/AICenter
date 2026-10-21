@@ -289,7 +289,7 @@ test('quote hash paints a skeleton before startup requests and does not leave a 
 
   const setView = functionSource('setView');
   const titleAt = setView.indexOf('pageKinds[state.pageKind]?.title');
-  const releaseAt = setView.indexOf("classList.remove('quote-boot')");
+  const releaseAt = setView.indexOf("classList.remove('quote-boot'");
   assert.ok(titleAt > 0 && releaseAt > titleAt);
 
   assert.match(bootSource, /quote-boot/);

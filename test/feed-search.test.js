@@ -7,7 +7,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { createStore } from '../packages/database/src/index.js';
 import { runMigrations } from '../packages/database/src/migrations.js';
-import { indexFeedSearchBatch, replaceFeedSearchRow } from '../packages/database/src/feed-search-index.js';
+import { feedSearchIndexStatus, indexFeedSearchBatch, replaceFeedSearchRow } from '../packages/database/src/feed-search-index.js';
 import { createAuthorService } from '../packages/domain/src/author-service.js';
 import { createFeedService } from '../packages/domain/src/feed-service.js';
 import { ensureXVideoFeedPost, repairXFollowingFeed } from '../packages/domain/src/x-video-feed.js';
@@ -153,7 +153,6 @@ test('feed search uses the full-text index in batches and keeps short queries of
     const feed = opened.store.repositories.feed;
     const empty = feed.feedSearchIndexStatus();
     assert.equal(empty.ready, true);
-    assert.equal(empty.rows, 0);
     assert.equal(empty.done, false);
     assert.equal(empty.cursor, 0);
     const account = feed.upsertSourceAccount({
@@ -228,9 +227,44 @@ test('feed search backfill starts after the caller returns', async () => {
     assert.equal(feed.feedSearchIndexStatus().done, false);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(feed.feedSearchIndexStatus().done, true);
-    assert.equal(feed.feedSearchIndexStatus().rows, 0);
+    assert.equal(feed.feedSearchIndexStatus().ready, true);
   } finally {
     opened.close();
+  }
+});
+
+test('finished feed search index is read from the cursor and remembered', () => {
+  const source = readFileSync(new URL('../packages/database/src/feed-search-index.js', import.meta.url), 'utf8');
+  assert.equal(source.includes('count(*)'), false);
+  const db = new Database(':memory:');
+  try {
+    runMigrations(db);
+    let cursorReads = 0;
+    const original = db.prepare.bind(db);
+    db.prepare = (sql) => {
+      const text = String(sql);
+      if (/count\s*\(\s*\*\s*\)/i.test(text) && text.includes('content_item_fts')) {
+        throw new Error('status counted the fts table');
+      }
+      if (text.includes('feed_search_index_cursor')) cursorReads += 1;
+      return original(sql);
+    };
+    assert.equal(feedSearchIndexStatus(db).done, false);
+    assert.equal(cursorReads, 1);
+    assert.equal(feedSearchIndexStatus(db).done, false);
+    assert.equal(cursorReads, 2);
+    original('UPDATE feed_search_index_cursor SET done = 1, rowid_cursor = 9 WHERE id = 1').run();
+    const finished = feedSearchIndexStatus(db);
+    assert.equal(finished.done, true);
+    assert.equal(finished.cursor, 9);
+    const readsAfterDone = cursorReads;
+    original('UPDATE feed_search_index_cursor SET done = 0, rowid_cursor = 0 WHERE id = 1').run();
+    const remembered = feedSearchIndexStatus(db);
+    assert.equal(remembered.done, true);
+    assert.equal(remembered.cursor, 9);
+    assert.equal(cursorReads, readsAfterDone);
+  } finally {
+    db.close();
   }
 });
 
@@ -286,6 +320,7 @@ test('feed search writes and deletes through the content item rowid', () => {
   assert.match(source, /INSERT INTO content_item_fts\(rowid, content_item_id, workspace_id, text\) VALUES\(\?, \?, \?, \?\)/);
   assert.match(source, /DELETE FROM content_item_fts WHERE rowid = \?/);
   assert.equal(source.includes('WHERE content_item_id = ?'), false);
+  assert.equal(source.includes('count(*)'), false);
 
   const db = new Database(':memory:');
   try {

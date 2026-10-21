@@ -1,6 +1,7 @@
 // 信息流搜索的 FTS5 索引。迁移只建空表；已有帖子在启动之后分批写入，不堵住 Worker。
 
 const readyCache = new WeakMap();
+const doneCache = new WeakMap();
 const running = new WeakMap();
 
 const FEED_SEARCH_SOURCE_SQL = `
@@ -87,17 +88,19 @@ export function indexFeedSearchBatch(database, { limit = 40 } = {}) {
 }
 
 export function feedSearchIndexStatus(database) {
-  if (!ftsReady(database)) return { rows: 0, done: false, cursor: 0, ready: false };
+  if (!ftsReady(database)) return { done: false, cursor: 0, ready: false };
+  const remembered = doneCache.get(database);
+  if (remembered) return remembered;
   const cursor = database.prepare(
     'SELECT rowid_cursor, done FROM feed_search_index_cursor WHERE id = 1',
   ).get();
-  const rows = database.prepare('SELECT count(*) AS n FROM content_item_fts').get()?.n || 0;
-  return {
-    rows,
+  const status = {
     done: Boolean(cursor?.done),
     cursor: Number(cursor?.rowid_cursor) || 0,
     ready: true,
   };
+  if (status.done) doneCache.set(database, status);
+  return status;
 }
 
 // 返回停止函数。调用方立刻返回，索引在后续事件循环里一批一批写。

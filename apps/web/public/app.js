@@ -44,7 +44,7 @@ import {
   reportHourHref,
   unavailableOfficialCount,
 } from './home-timeline.js?v=dev';
-import { commitReportHistory, reportViewOwnsScroll } from './report-history.js?v=dev';
+import { commitReportHistory, reportListHash, reportViewOwnsScroll, stackReportNode } from './report-history.js?v=dev';
 import { decodeHtmlEntities } from './html-text.js?v=dev';
 import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, prioritizeReadableFeedRows, renderNewsList, reportItemTime } from './news-list.js?v=dev';
 import { createAuthorView } from './author-view.js?v=dev';
@@ -52,6 +52,7 @@ import { appendPartialArticle, episodeArticleMessage, foldedOriginal, partialArt
 import { xPostHasVideo, xVideoArticleReady, xVideoArticleRequestPath, xVideoReaderScopeLabel, xVideoTweetId } from './x-video-article.js?v=dev';
 import { createFeedTaggingLoader, FEED_TAG_QUERY_PATH } from './feed-tagging.js?v=dev';
 import { articleAuthorFields, articleAuthorTarget, feedSearchPath, feedSearchQueryReady, linkAbortSignal, socialArticleBodyPending } from './feed-search.js?v=dev';
+import { createListSkeleton, paintHubTickSkeleton, paintListSkeleton } from './list-skeleton.js?v=dev';
 import {
   xLinkArticleReady, xLinkArticleRequestPath, xLinkClosed, xLinkOwnsBody, xLinkReaderScope,
   xLinkTerminal, xLinkTweetId, xPostHasOutboundLink,
@@ -1364,7 +1365,7 @@ function setView(name, options = {}) {
     elements['page-title'].textContent = viewCopy[view].title;
     elements['page-subtitle'].textContent = viewCopy[view].subtitle;
   }
-  document.documentElement.classList.remove('quote-boot');
+  document.documentElement.classList.remove('quote-boot', 'feed-boot');
   syncWorkPackageProgressWatch();
   updateHeaderAction(view);
   renderOverviewLanes();
@@ -1430,6 +1431,15 @@ function setView(name, options = {}) {
       ...(!options.fromHistory && !options.back && !options.replace ? { aiCenterPrevious: previousHash } : {}) };
     if (options.fromHistory || options.back || options.replace) history.replaceState(entry, '', `${location.pathname}${location.search}${nextHash}`);
     else history.pushState(entry, '', `${location.pathname}${location.search}${nextHash}`);
+  }
+  if (view === 'report' && reportNode && !options.back) {
+    const detailHash = reportHash();
+    stackReportNode({
+      history,
+      location,
+      listHash: reportListHash(detailHash),
+      detailHash,
+    });
   }
   state.navigationFrom = '';
   syncHeaderSearch();
@@ -4451,9 +4461,8 @@ function applyFeedPlatform(id) {
     if (!['focus', 'recent', 'official', 'all'].includes(state.channel)) state.channel = 'all';
   } else state.channel = channelForFeedScope(requested);
   state.feedEpoch = (Number(state.feedEpoch) || 0) + 1;
-  if (typeof elements !== 'undefined' && elements?.feed && typeof renderViewState === 'function') {
-    elements.feed.replaceChildren();
-    renderViewState(elements.feed, { kind: 'loading', title: '正在读取内容…', message: '' });
+  if (typeof elements !== 'undefined' && elements?.feed && typeof paintListSkeleton === 'function') {
+    paintListSkeleton(elements.feed, { rows: 6, label: '正在读取内容…' });
   }
   resetFeedWindow();
   renderChannels();
@@ -4540,15 +4549,19 @@ async function loadFlashFeed() {
 
 function renderFlashPosts() {
   if (!elements.feed) return;
-  elements.feed.replaceChildren();
   const items = [...(state.flashItems || [])].sort((a, b) => (Number(b.publishedAt) || 0) - (Number(a.publishedAt) || 0));
-  elements['feed-count'].textContent = state.flashLoading && !items.length
-    ? '正在读取快讯…'
-    : `${items.length} 条`;
+  if (!items.length && state.flashLoading && !state.flashError) {
+    paintListSkeleton(elements.feed, { rows: 6, label: '正在读取快讯…' });
+    elements['feed-count'].textContent = '正在读取快讯…';
+    return;
+  }
+  elements.feed.removeAttribute('aria-busy');
+  elements.feed.replaceChildren();
+  elements['feed-count'].textContent = `${items.length} 条`;
   if (!items.length) {
     const empty = document.createElement('p');
     empty.className = 'feed-empty';
-    empty.textContent = state.flashLoading ? '正在读取快讯…' : (state.flashError || '还没有快讯。雪球 7x24 抓取后会按时间排在这里，不再送去小时报。');
+    empty.textContent = state.flashError || '还没有快讯。雪球 7x24 抓取后会按时间排在这里，不再送去小时报。';
     elements.feed.append(empty);
     return;
   }
@@ -5297,20 +5310,25 @@ function renderPosts() {
     && !restoringViewScroll
     ? window.scrollY
     : null;
-  elements.feed.replaceChildren();
-  elements['feed-count'].textContent = feedCountLabel(shown, items);
   if (!items.length) {
     const focusPending = state.channel === 'focus' && state.feedPlatform !== 'media' && !state.feedQuery
       && focusFeedPending(feedSourcesForScope('focus', state.feedPlatform), feedLoadFlags());
-    if (focusPending) {
-      renderViewState(elements.feed, {
-        kind: 'loading',
-        title: '正在读取重点…',
-        message: '已标记的内容还在读取。',
-      });
+    const presentation = state.feedQuery ? 'empty' : feedScopePresentation(
+      feedSourcesForScope(state.channel, state.feedPlatform),
+      feedLoadFlags({ count: 0 }),
+    );
+    if (focusPending || (!state.feedQuery && presentation === 'loading')) {
+      const label = focusPending ? '正在读取重点…' : '正在读取内容…';
+      paintListSkeleton(elements.feed, { rows: 6, label });
+      elements['feed-count'].textContent = label;
       observeFeedSentinel(null, false);
       return;
     }
+  }
+  elements.feed.removeAttribute('aria-busy');
+  elements.feed.replaceChildren();
+  elements['feed-count'].textContent = feedCountLabel(shown, items);
+  if (!items.length) {
     const presentation = state.feedQuery ? 'empty' : feedScopePresentation(
       feedSourcesForScope(state.channel, state.feedPlatform),
       feedLoadFlags({ count: 0 }),
@@ -5319,9 +5337,7 @@ function renderPosts() {
     empty.className = 'feed-empty';
     empty.textContent = state.feedQuery
       ? '没有匹配的已收录内容。清除搜索后再看。'
-      : presentation === 'loading'
-        ? '正在读取内容…'
-        : presentation === 'error'
+      : presentation === 'error'
           ? '读取失败 · 重试'
           : state.channel === 'recent'
             ? '打开一条就会出现在这里，方便找回看过的内容。'
@@ -6935,6 +6951,11 @@ function renderHubTicker() {
   const focus = preferredOverviewFocus();
   if (elements['hub-market-caption']) elements['hub-market-caption'].textContent = HOME_QUOTE_CAPTION[focus] || HOME_QUOTE_CAPTION.us;
   const quotesForTick = homeQuoteCards().slice(0, 4);
+  const quotesPending = !state.marketBoardErrors.overview && quotesForTick.every((item) => item.lastPrice == null);
+  if (quotesPending) {
+    paintHubTickSkeleton(ticker, Math.max(quotesForTick.length, 4));
+  } else {
+  ticker.removeAttribute('aria-busy');
   ticker.replaceChildren(...quotesForTick.map((item) => {
     const known = item.changePct !== null && item.changePct !== undefined;
     const up = known && item.changePct >= 0;
@@ -6962,6 +6983,7 @@ function renderHubTicker() {
     button.addEventListener('click', () => openPage('quote', item.symbol));
     return button;
   }));
+  }
   if (elements['hub-market-note']) {
     const pending = !overviewLiveIndices().length && !state.marketBoardErrors.overview;
     const status = quoteStatusText({
@@ -7054,8 +7076,12 @@ function renderStaticSourceCatalog() {
   const root = elements['static-source-groups'];
   if (!root) return;
   if (!state.sourceCatalogLoaded) {
-    renderViewState(root, { kind: state.sourceCatalogError ? 'error' : 'loading',
-      title: state.sourceCatalogError ? '信源目录读取失败' : '正在读取信源目录…',
+    if (!state.sourceCatalogError) {
+      paintListSkeleton(root, { rows: 6, label: '正在读取信源目录…' });
+      return;
+    }
+    renderViewState(root, { kind: 'error',
+      title: '信源目录读取失败',
       message: state.sourceCatalogError, action: '重试', onAction: () => loadSourceCatalog().catch(() => {}) });
     return;
   }
@@ -7243,9 +7269,13 @@ function renderStaticSignalBoard() {
         root.setAttribute('aria-busy', 'false');
         return;
       }
-      renderViewState(root, { kind: loading ? 'loading' : error ? 'error' : 'empty',
-        title: loading ? '正在读取官方日程…' : error ? '日程暂未完整读取' : '暂无日程',
-        message: loading ? '正在核对所选时间范围。' : state.staticBoardError || (unavailable ? '部分官方来源暂不可用，不能确认没有日程。' : emptyText),
+      if (loading && !error) {
+        paintListSkeleton(root, { rows: 4, label: '正在读取官方日程…' });
+        return;
+      }
+      renderViewState(root, { kind: error ? 'error' : 'empty',
+        title: error ? '日程暂未完整读取' : '暂无日程',
+        message: state.staticBoardError || (unavailable ? '部分官方来源暂不可用，不能确认没有日程。' : emptyText),
         action: error ? '重试' : '', onAction: () => loadStaticSignalBoard({ refresh: true }).catch(() => {}) });
       return;
     }
@@ -7297,13 +7327,15 @@ function renderOverviewTimeline() {
     overviewTimelineSources(state.overviewTimeline),
     feedLoadFlags({ count: rows.length }),
   );
+  if (presentation === 'loading') {
+    paintListSkeleton(root, { rows: 6, label: '正在读取内容…' });
+    return;
+  }
   if (presentation !== 'ready') {
     const officialEmpty = state.overviewTimeline === 'official';
     renderViewState(root, {
       kind: presentation,
-      title: presentation === 'loading'
-        ? '正在读取内容…'
-        : presentation === 'error'
+      title: presentation === 'error'
           ? '内容暂时未能读取'
           : officialEmpty ? '这个筛选下还没有官方信息。' : '这个筛选下还没有已发布内容。',
       message: presentation === 'error' ? '请重试。' : '',
@@ -7838,6 +7870,19 @@ function homeReadingSnapshot(item, edition) {
 }
 
 function homeModuleFrame(root, { title, note = '', onMore, status = 'ready', onRetry, detail = '' }) {
+  if ((status === 'loading' || status === 'slow') && root.querySelector?.('.list-skeleton')) {
+    root.setAttribute('aria-busy', 'true');
+    if (status === 'slow' && onRetry && !root.querySelector('.home-module-retry')) {
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'text-button home-module-retry';
+      retry.textContent = '读取较慢 · 重试';
+      retry.addEventListener('click', onRetry);
+      root.append(retry);
+    }
+    return null;
+  }
+  root.removeAttribute?.('aria-busy');
   root.replaceChildren();
   const head = document.createElement('div');
   head.className = 'home-module-head';
@@ -7853,15 +7898,12 @@ function homeModuleFrame(root, { title, note = '', onMore, status = 'ready', onR
   }
   root.append(head);
   if (status === 'loading' || status === 'slow') {
-    const skeleton = document.createElement('div');
-    skeleton.className = 'home-module-skeleton';
-    skeleton.setAttribute('aria-hidden', 'true');
-    for (let index = 0; index < 3; index += 1) skeleton.append(document.createElement('span'));
-    root.append(skeleton);
+    root.setAttribute('aria-busy', 'true');
+    root.append(createListSkeleton(document, { rows: 4, label: '正在读取' }));
     if (status === 'slow' && onRetry) {
       const retry = document.createElement('button');
       retry.type = 'button';
-      retry.className = 'text-button';
+      retry.className = 'text-button home-module-retry';
       retry.textContent = '读取较慢 · 重试';
       retry.addEventListener('click', onRetry);
       root.append(retry);
@@ -12120,9 +12162,13 @@ function openAskSession(sessionId) {
 
 function renderAskRecords() {
   const list = elements['ask-session-list'];
+  if (!state.askSessionsLoaded && !state.askSessionsError) {
+    paintListSkeleton(list, { rows: 4, label: '正在读取问答历史…' });
+    return;
+  }
   if (state.askSessionsError || !state.askSessionsLoaded) {
-    renderViewState(list, { kind: state.askSessionsError ? 'error' : 'loading',
-      title: state.askSessionsError ? '问答历史读取失败' : '正在读取问答历史…',
+    renderViewState(list, { kind: 'error',
+      title: '问答历史读取失败',
       message: state.askSessionsError, action: '重试', onAction: () => loadAskSessions().catch(() => {}) });
     return;
   }
@@ -14155,6 +14201,11 @@ function renderTasks() {
   renderTaskFilters();
   const list = elements['task-list'];
   if (!list) return;
+  if (!state.notesLoaded && !visibleWorkPackages().length) {
+    paintListSkeleton(list, { rows: 4, label: '正在读取任务…' });
+    return;
+  }
+  list.removeAttribute('aria-busy');
   list.replaceChildren();
   const packs = visibleWorkPackages();
   if (!packs.length) {
@@ -15053,6 +15104,11 @@ async function retryWorkPackage(parentId, button) {
 function renderNotes() {
   closeNoteSwipes();
   renderNoteFilters();
+  if (!state.notesLoaded) {
+    paintListSkeleton(elements['note-list'], { rows: 4, label: '正在读取灵感…' });
+    return;
+  }
+  elements['note-list'].removeAttribute('aria-busy');
   elements['note-list'].replaceChildren();
   const inbox = regularNotes();
   const notes = state.noteFilter === 'focus'
@@ -15175,10 +15231,15 @@ function renderNotes() {
 
 function renderKnowledge() {
   closeNoteSwipes();
+  if (!state.knowledgeLoaded && !state.knowledgeError) {
+    paintListSkeleton(elements['knowledge-list'], { rows: 4, label: '正在读取知识库…' });
+    return;
+  }
+  elements['knowledge-list'].removeAttribute('aria-busy');
   elements['knowledge-list'].replaceChildren();
   if (state.knowledgeError || !state.knowledgeLoaded) {
-    renderViewState(elements['knowledge-list'], { kind: state.knowledgeError ? 'error' : 'loading',
-      title: state.knowledgeError ? '知识库读取失败' : '正在读取知识库…', message: state.knowledgeError,
+    renderViewState(elements['knowledge-list'], { kind: 'error',
+      title: '知识库读取失败', message: state.knowledgeError,
       action: '重试', onAction: () => loadKnowledge().catch(() => {}) });
     return;
   }

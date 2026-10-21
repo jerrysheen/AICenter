@@ -25,7 +25,11 @@
 
 ## 当前
 
-- `progress/2026-10-21-feed-search-fts.md`：信息流搜索改走 FTS5。索引 rowid 用 `content_items.rowid`，删除按这个主键。回填没完成时，三个字以上仍走 LIKE。回填完成后三个字及以上用全文索引，两个字只查标题和作者。索引在启动之后分批写入。关注流修复只挪作者已关注或带 following 标记的帖，挪之前备份，可以用 `--rollback` 还原。搜索和作者页共用已保存的译文。文章页首屏就显示作者。migration 96。需要同时重启 Web 和 Worker，浏览器再加载一次。
+- `progress/2026-10-21-feed-search-fts.md`：信息流搜索改走 FTS5。索引 rowid 用 `content_items.rowid`，删除按这个主键。回填没完成时，三个字以上仍走 LIKE。回填完成后三个字及以上用全文索引，两个字只查标题和作者。索引在启动之后分批写入。判断索引是否建完只读游标表，建完之后记在进程里。关注流修复只挪作者已关注或带 following 标记的帖，挪之前备份，可以用 `--rollback` 还原。搜索和作者页共用已保存的译文。文章页首屏就显示作者。对主库做原地 VACUUM 时，要把 FTS 游标清零并重新建索引，再重启 Web 和 Worker。`VACUUM INTO` 备份不受影响。migration 96。需要同时重启 Web 和 Worker，浏览器再加载一次。
+
+- `progress/2026-10-21-list-skeleton.md`：总览、信息流和几份列表在数据回来前显示固定高度的骨架，不先留白或只写一行「正在读取」。直接打开 `#feed` 时第一帧就是信息流。报价未到时行情条保持骨架。不新增 migration。需要重启 Web，浏览器再加载一次。
+
+- `progress/2026-10-21-brief-back.md`：手机上从简报里的一条或阅读页按返回，回到简报列表，不再跳过简报。直接打开带条目的简报地址时，列表压在这条下面。已经离开简报后，小时地址不再改写详情页的历史。不新增 migration。需要重启 Web，浏览器再加载一次。
 
 - `progress/2026-10-21-sqlite-busy-not-repeat-exit.md`：`SQLITE_BUSY` 和 `database is locked` 只计入 10 分钟内的总次数，不再 3 次就退出。其它 `SQLITE_` 错误仍是同一种出现 3 次就 `exit(1)`。不新增 migration。需要重启 Worker。
 
