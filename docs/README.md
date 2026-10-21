@@ -27,6 +27,8 @@
 
 - `progress/2026-10-21-list-skeleton.md`：总览、信息流和几份列表在数据回来前显示固定高度的骨架，不先留白或只写一行「正在读取」。直接打开 `#feed` 时第一帧就是信息流。报价未到时行情条保持骨架。不新增 migration。需要重启 Web，浏览器再加载一次。
 
+- `progress/2026-10-21-live-usage-and-feed.md`：Live 转写不再把密钥放进 WebSocket 地址，成功和失败都写入用量表。最终转写不再因为 `turnComplete` 没到就丢掉。关注流修复只挪作者已关注或带 following 标记的帖，挪之前备份 capture id 和原来的来源，可以用 `--rollback` 还原。陌生帖不会被锁在关注源。搜索和作者页用同一份译文，文章页先画出作者。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
+
 - `progress/2026-10-21-gemma-rpm-tpm.md`：Gemma 五个账号不再做本地每日 1.44 万封顶，只守每分钟 25 次和 16000 token。请求间隔默认 0–500 毫秒，每把密钥同时 2 个请求，可用环境变量改成 3。240 秒租约不再把单密钥卡成串行。429 仍按原逻辑冷却。补扫起点改为 `AI_CENTER_TAG_RESCAN_NOT_BEFORE`，默认仍是 2026-10-21 14:47（UTC+8）。不新增 migration。需要重启 Worker。
 
 - `progress/2026-10-21-gemma-tag-rescan.md`：打标提示词改为按上市地，并且只标正文明确在讲的内容。宁德时代标 A 股，不标港股；中国移动不因公司名加 AI 算力；英文短标题不因此标半导体。每 15 分钟只补扫上线之后、最近 2 小时内还没有 `resource_taggings` 的新帖。起点用 `AI_CENTER_TAG_RESCAN_NOT_BEFORE`，默认 2026-10-21 14:47（UTC+8）。旧帖不补。窗口用 `AI_CENTER_TAG_RESCAN_HOURS`，默认 2 小时。正常看完但没有标签的，包括整批空回复，写一条空记录，避免反复选中同样 20 条。回复不是 JSON 或调用失败不写。Flash 日上限的下次可跑时间带上 Gemma 的等待。Bamboo 不动。不新增 migration。需要重启 Worker。

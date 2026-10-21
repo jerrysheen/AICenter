@@ -66,6 +66,49 @@ const VISIBLE_CONTENT_SQL = `${USER_VISIBLE_CONTENT_SQL} AND NOT EXISTS (SELECT 
     AND json_extract(quality_capture.metadata_json,'$.filterDecision') IN ('DROP','REVIEW')
     AND json_extract(quality_capture.metadata_json,'$.filterApplied')=1)`;
 
+// 作者页和搜索来的帖留在原来的来源。推荐页用 x:home:for-you，不在这里。
+const X_AUTHOR_OR_SEARCH_SOURCE_SQL = `(
+  sa.external_id LIKE 'x:author:%'
+  OR sa.external_id LIKE 'x:profile:%'
+  OR sa.external_id LIKE 'x:user:%'
+  OR sa.external_id = 'x:search'
+  OR sa.external_id LIKE 'x:search:%'
+  OR LOWER(COALESCE(json_extract(sa.metadata_json, '$.sourceInput.feed'), '')) IN ('author', 'profile', 'user', 'search', 'author-page')
+  OR LOWER(COALESCE(json_extract(sa.metadata_json, '$.sourceId'), '')) IN ('content.x.author', 'content.x.profile', 'content.x.search')
+  OR LOWER(COALESCE(json_extract(c.metadata_json, '$.origin'), '')) IN ('author', 'author-page', 'profile', 'search')
+  OR LOWER(COALESCE(json_extract(c.metadata_json, '$.homeFeed'), '')) IN ('author', 'author-page', 'profile', 'search')
+)`;
+
+const X_VIDEO_POST_SQL = `(
+  EXISTS (
+    SELECT 1 FROM x_video_posts video_post
+    WHERE video_post.workspace_id = c.workspace_id
+      AND video_post.tweet_id = c.external_id
+  )
+  OR IFNULL(json_extract(c.metadata_json, '$.xVideo.own'), 0) = 1
+)`;
+
+const X_FOLLOWING_MARKER_SQL = `(
+  json_extract(c.metadata_json, '$.homeFeed') = 'following'
+  OR json_extract(c.metadata_json, '$.feed') = 'following'
+  OR json_extract(c.metadata_json, '$.sourceInput.feed') = 'following'
+  OR json_extract(sa.metadata_json, '$.sourceInput.feed') = 'following'
+)`;
+
+const X_FOLLOWED_AUTHOR_SQL = `EXISTS (
+  SELECT 1
+  FROM item_authors followed_link
+  JOIN authors followed_author
+    ON followed_author.workspace_id = followed_link.workspace_id
+   AND followed_author.author_id = followed_link.author_id
+  LEFT JOIN authors followed_target
+    ON followed_target.workspace_id = followed_author.workspace_id
+   AND followed_target.author_id = followed_author.merged_into
+  WHERE followed_link.workspace_id = ci.workspace_id
+    AND followed_link.content_item_id = ci.id
+    AND COALESCE(followed_target.followed, followed_author.followed) = 1
+)`;
+
 function fallbackReasonSql(alias) {
   return `(json_extract(${alias}.metadata_json,'$.filterReason') LIKE 'fallback-%' OR json_extract(${alias}.metadata_json,'$.filterReason') LIKE 'jev-disabled-%')`;
 }
@@ -381,6 +424,66 @@ export function createFeedRepository(database, emitEvent) {
       return row ? mapCapture(row) : null;
     },
 
+    findSubscriptionBySource(workspaceId, sourceAccountId) {
+      if (!sourceAccountId) return null;
+      const row = database.prepare(`SELECT * FROM subscriptions
+        WHERE workspace_id = ? AND source_account_id = ?`).get(workspaceId, sourceAccountId);
+      return row ? mapSubscription(row) : null;
+    },
+
+    // 只列出该回到关注源的帖：作者已关注，或捕获上有 following 标记。
+    // 推荐页里没关注的作者、作者页、搜索来源、视频帖都不在里面。
+    listXPostsOffFollowing(workspaceId, { limit = 40, offset = 0 } = {}) {
+      const page = Math.max(1, Math.min(Number(limit) || 40, 500));
+      const skip = Math.max(0, Math.min(Number(offset) || 0, 10_000));
+      const where = `ci.workspace_id = ?
+        AND c.provider = 'x'
+        AND COALESCE(sa.external_id, '') != 'x:home:following'
+        AND ${VISIBLE_CONTENT_SQL}
+        AND ${EXCLUDE_OFFICIAL_MIRROR_SQL}
+        AND NOT ${X_VIDEO_POST_SQL}
+        AND NOT ${X_AUTHOR_OR_SEARCH_SOURCE_SQL}
+        AND (${X_FOLLOWED_AUTHOR_SQL} OR ${X_FOLLOWING_MARKER_SQL})`;
+      const from = `FROM content_items ci
+        JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
+        LEFT JOIN source_accounts sa ON sa.id = c.source_account_id
+        WHERE ${where}`;
+      const count = database.prepare(`SELECT COUNT(DISTINCT c.external_id) AS n ${from}`).get(workspaceId);
+      const posts = database.prepare(`SELECT c.id AS captureId, c.external_id AS externalId,
+          c.source_account_id AS sourceAccountId, c.title AS title,
+          COALESCE(sa.external_id, '') AS sourceExternalId
+        ${from}
+        GROUP BY c.id
+        ORDER BY MAX(COALESCE(c.published_at, 0)) DESC, c.external_id
+        LIMIT ? OFFSET ?`).all(workspaceId, page, skip);
+      return {
+        count: Number(count?.n) || 0,
+        posts: posts.map((row) => ({
+          captureId: row.captureId || '',
+          externalId: row.externalId || '',
+          sourceAccountId: row.sourceAccountId || null,
+          title: row.title || '',
+          sourceExternalId: row.sourceExternalId || '',
+        })),
+      };
+    },
+
+    // 按捕获 id 写回来源。不经过 saveCapture，关注源上的保留规则拦不住回滚。
+    restoreCaptureSource(workspaceId, captureId, sourceAccountId) {
+      const id = String(captureId || '').trim();
+      if (!id) return { status: 'missing' };
+      const next = sourceAccountId ? String(sourceAccountId) : null;
+      if (next) {
+        const account = database.prepare(`SELECT id FROM source_accounts
+          WHERE id = ? AND workspace_id = ?`).get(next, workspaceId);
+        if (!account) return { status: 'missing-account' };
+      }
+      const result = database.prepare(`UPDATE captures SET source_account_id = ?
+        WHERE id = ? AND workspace_id = ? AND provider = 'x'`).run(next, id, workspaceId);
+      if (!result.changes) return { status: 'missing' };
+      return { status: 'restored', sourceAccountId: next };
+    },
+
     authorIdForContentItem(workspaceId, contentItemId) {
       if (!contentItemId) return '';
       const row = database.prepare(`SELECT author_id AS authorId FROM item_authors
@@ -583,7 +686,36 @@ export function createFeedRepository(database, emitEvent) {
            filter_reading, filter_specific, filter_sufficient, feed_filter_ready, author_native_id)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
           ON CONFLICT(workspace_id, provider, external_id) DO UPDATE SET
-            source_account_id = excluded.source_account_id,
+            source_account_id = CASE
+              WHEN EXISTS (
+                SELECT 1 FROM source_accounts kept
+                WHERE kept.id = captures.source_account_id
+                  AND kept.provider = 'x'
+                  AND kept.external_id = 'x:home:following'
+              ) AND (
+                json_extract(captures.metadata_json, '$.homeFeed') = 'following'
+                OR json_extract(captures.metadata_json, '$.feed') = 'following'
+                OR json_extract(captures.metadata_json, '$.sourceInput.feed') = 'following'
+                OR EXISTS (
+                  SELECT 1
+                  FROM content_items sticky_item
+                  JOIN item_authors sticky_link
+                    ON sticky_link.workspace_id = sticky_item.workspace_id
+                   AND sticky_link.content_item_id = sticky_item.id
+                  JOIN authors sticky_author
+                    ON sticky_author.workspace_id = sticky_link.workspace_id
+                   AND sticky_author.author_id = sticky_link.author_id
+                  LEFT JOIN authors sticky_target
+                    ON sticky_target.workspace_id = sticky_author.workspace_id
+                   AND sticky_target.author_id = sticky_author.merged_into
+                  WHERE sticky_item.workspace_id = captures.workspace_id
+                    AND sticky_item.capture_id = captures.id
+                    AND COALESCE(sticky_target.followed, sticky_author.followed) = 1
+                )
+              ) THEN captures.source_account_id
+              WHEN excluded.source_account_id IS NULL OR excluded.source_account_id = '' THEN captures.source_account_id
+              ELSE excluded.source_account_id
+            END,
             source_url = excluded.source_url,
             title = excluded.title,
             content_hash = excluded.content_hash,
@@ -591,7 +723,12 @@ export function createFeedRepository(database, emitEvent) {
             status = excluded.status,
             published_at = excluded.published_at,
             captured_at = captures.captured_at,
-            metadata_json = excluded.metadata_json,
+            metadata_json = CASE
+              WHEN json_extract(captures.metadata_json, '$.homeFeed') = 'following'
+                AND IFNULL(json_extract(excluded.metadata_json, '$.homeFeed'), '') != 'following'
+              THEN json_set(excluded.metadata_json, '$.homeFeed', 'following')
+              ELSE excluded.metadata_json
+            END,
             author_handle = excluded.author_handle,
             filter_mode = excluded.filter_mode,
             filter_decision = excluded.filter_decision,
@@ -1707,13 +1844,16 @@ export function createFeedRepository(database, emitEvent) {
           c.provider AS provider, c.external_id AS external_id, c.captured_at AS captured_at,
           ${AUTHOR_HANDLE_SQL} AS author_handle,
           COALESCE(item_state.is_read, 0) AS is_read,
-          ia.author_id AS author_id
+          ia.author_id AS author_id,
+          COALESCE(sub.id, '') AS subscription_id
         FROM content_items ci
         JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
         LEFT JOIN user_item_states item_state
           ON item_state.workspace_id = ci.workspace_id AND item_state.content_item_id = ci.id
         LEFT JOIN item_authors ia ON ia.workspace_id = ci.workspace_id AND ia.content_item_id = ci.id
         LEFT JOIN authors a ON a.workspace_id = ia.workspace_id AND a.author_id = ia.author_id
+        LEFT JOIN subscriptions sub
+          ON sub.workspace_id = c.workspace_id AND sub.source_account_id = c.source_account_id AND sub.enabled = 1
         WHERE ${clauses.join(' AND ')}
         ORDER BY COALESCE(ci.published_at, c.captured_at, ci.created_at) DESC, ci.id DESC
         LIMIT ?`).all(...params);
@@ -1726,6 +1866,7 @@ export function createFeedRepository(database, emitEvent) {
         captureMetadata: { authorHandle: row.author_handle || '' },
         isRead: Boolean(row.is_read),
         authorId: row.author_id || '',
+        subscriptionId: row.subscription_id || '',
       }));
     },
 
