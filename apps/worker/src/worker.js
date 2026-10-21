@@ -445,7 +445,10 @@ export function createAiCenterWorker(options = {}) {
       existsSync(instance.tagCatalogPath) ? instance.tagCatalogPath : path.join(repositoryRoot, 'config/tags.default.json'),
     ),
     taggingRepository: store.repositories.tagging,
-    taggingPort: options.taggingPort || createGeminiTagPort(),
+    taggingPort: options.taggingPort || createGeminiTagPort({
+      env,
+      quotaRepository: store.repositories.modelQuota,
+    }),
   });
   const contextService = options.contextService || createContextService({
     feedService,

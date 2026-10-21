@@ -2,11 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createTranslateService as createService} from '../packages/connectors/src/translate/index.js';
 import {createGeminiGrokTaskRouter} from '../packages/connectors/src/gemini-grok-task.js';
-// Legacy shared router is still used by tagging; production translation uses Gemma only.
+// Legacy shared router covers old Gemini translation tests. Feed tags use Gemma and do not call it.
 const createTranslateService = options => createService({...options, router:createGeminiGrokTaskRouter(options)});
-import {createGeminiTagPort} from '../packages/connectors/src/gemini-tag.js';
 import {geminiQuotaCooldown,nextGeminiDailyReset} from '../packages/connectors/src/gemini-grok-task.js';
-import {parseTagBatchOutput} from '../packages/domain/src/tag-parser.js';
 
 const NOW=Date.parse('2026-10-04T14:00:00Z');
 const quota=(details=[],message='Quota exceeded')=>new Response(JSON.stringify({error:{code:429,status:'RESOURCE_EXHAUSTED',message,details}}),{status:429});
@@ -29,20 +27,19 @@ test('Gemini batch quota exhaustion uses one Grok batch and caches its translati
  const repeat=await service.translateMany({items});assert.ok(repeat.translations.every(r=>r.cached));assert.equal(calls.length,2);
 });
 
-test('translation quota knowledge is shared with tagging, cooldown expires back to Gemini',async()=>{
+test('translation quota cooldown expires back to Gemini',async()=>{
  const options=settings();let at=NOW;options.now=()=>at;const calls=[];
- options.fetch=async(url,init)=>{
+ options.fetch=async(url)=>{
   calls.push(String(url));
-  if(String(url).endsWith('/responses'))return grok(JSON.parse(init.body).instructions.includes('catalog')?' {"items":[{"item_id":"a","tags":["macro","invented"]}]}':'测试译文');
-  return calls.length===1?quota([{retryDelay:'12s'}]):gemini('{"items":[{"item_id":"a","tags":["macro"]}]}');
+  if(String(url).endsWith('/responses'))return grok('测试译文');
+  return calls.length===1?quota([{retryDelay:'12s'}]):gemini('测试译文');
  };
- await createTranslateService(options).translate({text:'A business opened another factory.'});
- const tag=createGeminiTagPort({...options,apiKey:options.geminiApiKey});
- const output=await tag.tagBatch({systemPrompt:'Use only catalog tags',userPayload:{items:[{item_id:'a',text:'Economic news'}]}});
- assert.equal(output.model,'elucid-grok');assert.equal(calls.length,3);assert.ok(calls[2].endsWith('/responses'));
- const parsed=parseTagBatchOutput(output.reply_text,{itemIds:['a'],catalogIds:['macro'],maxTags:4});
- assert.deepEqual(parsed.accepted[0].tags,['macro']);assert.ok(parsed.unknownTags.some(row=>row.tagId==='invented'));
- at+=12001;assert.equal((await tag.tagBatch({})).model,'gemini');assert.equal(calls.length,4);
+ const service=createTranslateService(options);
+ await service.translate({text:'A business opened another factory.'});
+ assert.equal(calls.length,2);assert.ok(calls[1].endsWith('/responses'));
+ at+=12001;
+ await service.translate({text:'A second business opened a different factory.'});
+ assert.equal(calls.length,3);assert.match(calls[2],/generateContent/);
 });
 
 test('daily quota ignores short retry hints and resumes at midnight Pacific across DST',()=>{
