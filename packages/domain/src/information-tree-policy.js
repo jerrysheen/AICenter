@@ -274,12 +274,19 @@ export function cachedFlashQuotaWait(cached) {
   return /Gemini 文章任务等待流量窗口|cooldownUntil=/.test(String(cached.error || ''));
 }
 
+// One in-flight call can take timeoutMs, and the latest hour is allowed to cut in once.
+// The waiter must survive both or it dies before onExecutionStart.
+export function hourlyModelQueueTimeoutMs({queueTimeoutMs=120000,timeoutMs=180000}={}) {
+  return Math.max(Number(queueTimeoutMs) || 0, Number(timeoutMs) * 2 + 30_000);
+}
+
 export function treeFailure(error,id,sourceVersion='',at=Date.now()) {
   let reason=error.code;
   if(!reason)reason=error.name==='ModelQueueTimeout' ? 'queue-timeout' : error.name==='ModelExecutionTimeout' ? 'execution-timeout' : error.name==='StageBudgetTimeout' ? 'budget-deferred' : error.name==='ZodError' || error instanceof SyntaxError ? 'invalid-output' : 'retryable-model-error';
   if(!['needs-content','retryable-model-error','queue-timeout','execution-timeout','budget-deferred','lease-conflict','invalid-output','information-not-ready','stale-policy','prep-exhausted'].includes(reason))reason='retryable-model-error';
   const retryable=!isTerminalPendingReason(reason) && reason!=='information-not-ready';
-  return {id,reason,retryable,retryAt:retryable ? Number.isFinite(error.retryAt) ? Math.max(at+1000,error.retryAt) : at+30*60000 : null,sourceVersion,...(error.timing ? {queueMs:error.timing.queueMs,executionMs:error.timing.executionMs} : {})};
+  const waitMs=reason==='queue-timeout' ? 60_000 : 30*60_000;
+  return {id,reason,retryable,retryAt:retryable ? Number.isFinite(error.retryAt) ? Math.max(at+1000,error.retryAt) : at+waitMs : null,sourceVersion,...(error.timing ? {queueMs:error.timing.queueMs,executionMs:error.timing.executionMs} : {})};
 }
 
 export function treeSource(m) {

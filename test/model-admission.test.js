@@ -66,3 +66,91 @@ test('Harness turn errors retain their actual cause and aborted partial answers 
   assert.equal((await runtime.run({closedContext:true,message:'completed'})).answer,'partial answer');
  }finally{await runtime.close();rmSync(directory,{recursive:true,force:true});}
 });
+
+async function untilCalls(calls, count) {
+  for (let turn = 0; turn < 50 && calls.length < count; turn += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(calls.length, count);
+}
+
+test('hourly backfill takes the next closed slot after one latest-hour cut-in', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'model-backfill-'));
+  const releases = [];
+  const calls = [];
+  const runtime = createHarnessAgentRuntime({
+    tools: createToolRegistry(), runtimeDirectory: directory, env: { DEEPSEEK_API_KEY: 'test-key', ELUCID_GROK_API_KEY: 'test-key' },
+    createClient: async () => ({
+      run: async (prompt) => {
+        calls.push(prompt);
+        const gate = deferred();
+        releases.push(gate);
+        await gate.promise;
+        return { finalResponse: 'ok', events: [] };
+      },
+      close: async () => {},
+    }),
+  });
+  const brief = { closedContext: true, closedTask: 'hourly-brief' };
+  try {
+    const current = runtime.run({ ...brief, message: 'current-hour' });
+    await untilCalls(calls, 1);
+    const backfill = runtime.run({ ...brief, message: 'aged-backfill', executionPriority: -10 });
+    const latest = runtime.run({ ...brief, message: 'latest-hour', executionPriority: 10 });
+    releases[0].resolve();
+    await untilCalls(calls, 2);
+    assert.match(calls[1], /latest-hour/);
+    const again = runtime.run({ ...brief, message: 'latest-again', executionPriority: 10 });
+    releases[1].resolve();
+    await untilCalls(calls, 3);
+    assert.match(calls[2], /aged-backfill/);
+    releases[2].resolve();
+    await untilCalls(calls, 4);
+    assert.match(calls[3], /latest-again/);
+    releases[3].resolve();
+    await Promise.all([current, backfill, latest, again]);
+  } finally {
+    for (const gate of releases) gate.resolve();
+    await runtime.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('Ask still starts before an aged hourly backfill', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'model-ask-'));
+  const releases = [];
+  const calls = [];
+  const runtime = createHarnessAgentRuntime({
+    tools: createToolRegistry(), runtimeDirectory: directory, env: { DEEPSEEK_API_KEY: 'test-key', ELUCID_GROK_API_KEY: 'test-key' },
+    createClient: async () => ({
+      run: async (prompt) => {
+        calls.push(prompt);
+        const gate = deferred();
+        releases.push(gate);
+        await gate.promise;
+        return { finalResponse: 'ok', events: [] };
+      },
+      close: async () => {},
+    }),
+  });
+  const brief = { closedContext: true, closedTask: 'hourly-brief' };
+  try {
+    const current = runtime.run({ ...brief, message: 'current-hour' });
+    await untilCalls(calls, 1);
+    const backfill = runtime.run({ ...brief, message: 'aged-backfill', executionPriority: -10 });
+    const latest = runtime.run({ ...brief, message: 'latest-hour', executionPriority: 10 });
+    releases[0].resolve();
+    await untilCalls(calls, 2);
+    const ask = runtime.run({ message: 'interactive-ask' });
+    releases[1].resolve();
+    await untilCalls(calls, 3);
+    assert.match(calls[2], /interactive-ask/);
+    releases[2].resolve();
+    await untilCalls(calls, 4);
+    assert.match(calls[3], /aged-backfill/);
+    releases[3].resolve();
+    await Promise.all([current, backfill, latest, ask]);
+  } finally {
+    for (const gate of releases) gate.resolve();
+    await runtime.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

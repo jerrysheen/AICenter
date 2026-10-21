@@ -277,7 +277,7 @@ export function createHarnessAgentRuntime({
   };
   let engine = null;
   const queue = [];
-  let activeEntry = null, closing = false, sequence = 0;
+  let activeEntry = null, closing = false, sequence = 0, backfillDeferred = false;
 
   async function disposeEngine() {
     const current = engine;
@@ -383,10 +383,27 @@ export function createHarnessAgentRuntime({
     return engine;
   }
 
+  function hourlyBackfill(entry) {
+    return entry.priority < 0 && entry.input?.closedTask === 'hourly-brief';
+  }
+  // Latest-hour calls still outrank a backfill that just arrived. After one such
+  // cut-in, the next closed slot goes to the waiting hourly backfill so priority 10
+  // cannot occupy the only slot for the whole backfill budget. Ask (priority 20) stays first.
+  function pickIndex() {
+    queue.sort((a,b)=>b.priority-a.priority || a.sequence-b.sequence);
+    if(!queue.some(hourlyBackfill)) backfillDeferred = false;
+    if(!backfillDeferred || queue[0].priority >= 20) return 0;
+    const index = queue.findIndex(hourlyBackfill);
+    return index >= 0 ? index : 0;
+  }
+  function noteAdmission(entry) {
+    if(hourlyBackfill(entry)) backfillDeferred = false;
+    else if(queue.some(hourlyBackfill)) backfillDeferred = true;
+  }
   function drain() {
     if(activeEntry || closing || !queue.length) return;
-    queue.sort((a,b)=>b.priority-a.priority || a.sequence-b.sequence);
-    const entry=queue.shift();activeEntry=entry;
+    const entry=queue.splice(pickIndex(),1)[0];activeEntry=entry;
+    noteAdmission(entry);
     entry.input.signal?.removeEventListener('abort',entry.cancel);
     Promise.resolve().then(async()=>{
       entry.input.signal?.throwIfAborted();
