@@ -1,5 +1,5 @@
 import {PrepareTreeInformationInputSchema} from '../../contracts/src/information-tree.js';
-import {hourlyRefreshAvailableAt,hourlyReportDisabled} from './report-module.js';
+import {hourlyFailureCatchupLimit,hourlyOpenHourStarts,hourlyRefreshAvailableAt,hourlyReportDisabled} from './report-module.js';
 export const TREE_PREPARE_JOB_TYPE='report.information.prepare';
 export const informationTreeManifest={id:'report.information',version:'3.1.0',capabilities:['report.information.prepare'],jobTypes:[TREE_PREPARE_JOB_TYPE]};
 const HOUR=3600000;
@@ -58,6 +58,94 @@ export function enqueuePreparedHourRefreshes(store,service,workspaceId,nodes,at=
   }
   return jobs;
 }
+
+// A failed hour is due when a saved failure still says it can be retried and that time has arrived.
+export function attemptRetryDue(attempt, at) {
+  if (!attempt || attempt.terminal === true || attempt.status !== 'failed') return false;
+  const records = [...(attempt.groupFailures || []), ...(attempt.pending || [])];
+  return records.some((record) => record?.retryable === true && Number.isFinite(Number(record.retryAt)) && Number(record.retryAt) <= at);
+}
+
+// New material is a node the failed attempt does not already cover. Empty hours have nothing new.
+export function hourHasNewMaterial(attempt, nodes, lookup) {
+  if (!nodes?.length) return false;
+  return !editionCoversMaterials(attempt, nodes, lookup);
+}
+
+// Older due hours fill the cap first. The latest ended hour only uses a slot that is still free,
+// so a failing current hour cannot keep 10:00 and 11:00 off the queue.
+export function dueFailedHourCatchupPlan({at, rows = [], openHourStarts = new Set(), limit = 2, windowHours = 24} = {}) {
+  const cap = Number.isInteger(limit) && limit >= 1 && limit <= 4 ? limit : 2;
+  const span = Number.isInteger(windowHours) && windowHours >= 1 && windowHours <= 24 ? windowHours : 24;
+  if (!Number.isFinite(at)) return [];
+  const latest = Math.floor(at / HOUR) * HOUR - HOUR;
+  const oldest = latest - (span - 1) * HOUR;
+  const older = [];
+  let current = false;
+  const seen = new Set();
+  for (const row of rows) {
+    const hourStart = Number(row?.hourStart);
+    if (!Number.isFinite(hourStart) || hourStart > latest || hourStart < oldest || seen.has(hourStart)) continue;
+    seen.add(hourStart);
+    if (openHourStarts.has(hourStart)) continue;
+    if (!attemptRetryDue(row.attempt, at)) continue;
+    if (row.hasNewMaterial) continue;
+    if (hourStart === latest) current = true;
+    else older.push(hourStart);
+  }
+  older.sort((a, b) => a - b);
+  const selected = older.slice(0, cap);
+  if (current && selected.length < cap) selected.push(latest);
+  return selected.map((hourStart) => ({hourStart, priority: hourStart === latest ? 0 : -1}));
+}
+
+export function enqueueDueFailedHourRefreshes(store, service, workspaceId = 'local', at = Date.now(), {limit, env = process.env, windowHours = 24} = {}) {
+  if (hourlyReportDisabled(env) || !store?.createJob || !store?.listOpenJobs || typeof service?.list !== 'function') return [];
+  const latest = Math.floor(at / HOUR) * HOUR - HOUR;
+  const span = Number.isInteger(windowHours) && windowHours >= 1 && windowHours <= 24 ? windowHours : 24;
+  const oldest = latest - (span - 1) * HOUR;
+  const listed = service.list(workspaceId, {startAt: oldest, endAt: latest + HOUR}) || {};
+  const slots = Array.isArray(listed.hours) ? listed.hours : [];
+  const nodes = Array.isArray(listed.information) ? listed.information : [];
+  const byHour = new Map();
+  for (const node of nodes) {
+    const start = node?.window?.startAt;
+    if (!Number.isFinite(start)) continue;
+    const bucket = byHour.get(start) || [];
+    bucket.push(node);
+    byHour.set(start, bucket);
+  }
+  const lookup = (id) => {
+    try { return service.node?.(workspaceId, id) ?? null; }
+    catch { return null; }
+  };
+  const rows = [];
+  for (const slot of slots) {
+    const attempt = slot?.attempt;
+    const hourStart = Number(attempt?.window?.startAt);
+    if (!Number.isFinite(hourStart)) continue;
+    const hourNodes = byHour.get(hourStart) || [];
+    rows.push({hourStart, attempt, hasNewMaterial: hourHasNewMaterial(attempt, hourNodes, lookup)});
+  }
+  const open = hourlyOpenHourStarts(store, workspaceId);
+  const cap = Number.isInteger(limit) ? limit : hourlyFailureCatchupLimit(env);
+  const jobs = [];
+  for (const plan of dueFailedHourCatchupPlan({at, rows, openHourStarts: open, limit: cap, windowHours: span})) {
+    if (open.has(plan.hourStart)) continue;
+    const job = store.createJob({
+      type: 'report.hourly.extract',
+      workspaceId,
+      priority: plan.priority,
+      maxAttempts: 2,
+      availableAt: at,
+      input: {workspaceId, hourStart: plan.hourStart},
+    });
+    open.add(plan.hourStart);
+    jobs.push(job);
+  }
+  return jobs;
+}
+
 export function enqueueTreePreparation(store,workspaceId,sourceIds) {
   if(!store?.createJob)return [];
   // A running preparation may have read the prior body revision. Keep at most one queued follow-up.

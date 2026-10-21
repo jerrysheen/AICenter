@@ -323,6 +323,12 @@ export function createJobRunner(options) {
       const latest = await store.claimNextJob(workerId, [HOURLY_EXTRACT_JOB_TYPE], { minPriority: 0 });
       if (latest) return latest;
     }
+    // Priority -1 is a due failed hour. Claim it before other work so the current
+    // hour on the foreground lane cannot leave 10:00 and 11:00 waiting behind the rest of the queue.
+    if (hourlyReady && hourlyLaneRunning(true) < 1) {
+      const due = await store.claimNextJob(workerId, [HOURLY_EXTRACT_JOB_TYPE], { minPriority: -1, maxPriority: -1 });
+      if (due) return due;
+    }
     const types = claimableTypes().filter((type) => type !== HOURLY_EXTRACT_JOB_TYPE);
     if (types.length) {
       const job = await store.claimNextJob(workerId, types, claimOptions(types));

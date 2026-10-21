@@ -81,7 +81,7 @@ import {createTreeMaterialPort} from '../../../packages/domain/src/information-t
 import {informationTreeManifest,createInformationTreeJobHandlers,enqueueTreePreparation,prioritizeRecentTreePreparation} from '../../../packages/runtime/src/information-tree-module.js';
 import {createReadingHourService, readingHourSourceAccess} from '../../../packages/domain/src/reading-hour-service.js';
 import {createModelUsageService} from '../../../packages/domain/src/model-usage-service.js';
-import { allowHourlyScheduleEnqueue, createReportJobHandlers, ensureDailyReportCatchupSchedule, ensureDailyReportSchedule, ensureHourlyDigestSchedule, hourlyReportDisabled, releaseOpenHourlyJobs, reportDailyManifest } from '../../../packages/runtime/src/report-module.js';
+import { allowHourlyScheduleEnqueue, createReportJobHandlers, ensureDailyReportCatchupSchedule, ensureDailyReportSchedule, ensureHourlyDigestSchedule, ensureHourlyFailureCatchupSchedule, hourlyReportDisabled, releaseOpenHourlyJobs, reportDailyManifest } from '../../../packages/runtime/src/report-module.js';
 import { boundedInt } from '../../../packages/domain/src/report-reliability.js';
 import { createResearchRecallJobHandlers, researchRecallManifest } from '../../../packages/runtime/src/research-recall-module.js';
 import { createResearchRelevanceJudge, createResearchTagJudge } from '../../../packages/runtime/src/research-judges.js';
@@ -910,6 +910,7 @@ export function createAiCenterWorker(options = {}) {
     ensureDailyReportSchedule(store, dailyConfig);
     ensureDailyReportCatchupSchedule(store, dailyConfig);
     ensureHourlyDigestSchedule(store,Date.now(),{minute:articleStrategy ? 30 : 0,env});
+    ensureHourlyFailureCatchupSchedule(store, Date.now(), {env});
     ensureDividendStrategySchedule(store);
     ensureFeedSubscriptionSyncSchedule(store);
     ensureTagRescanSchedule(store, Date.now(), env);
