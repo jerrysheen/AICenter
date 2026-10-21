@@ -27,6 +27,8 @@
 
 - `progress/2026-10-21-gemma-long-video-chunks.md`：YouTube 和 X 长视频在 16000 token 内加长分段，按说话人或句末切开，并按 26B、26B、31B 轮换。同一档字幕从 62 次降到 14 次。信息流翻译仍是 1500 字。不新增 migration。需要重启 Worker。
 
+- `progress/2026-10-21-flash-lite-headroom.md`：两个 Flash Lite 按剩余 RPM、RPD 提前互换，不等 429。Worker 启动时按模型打出当天调用次数。不新增 migration。需要重启 Worker。
+
 - `progress/2026-10-21-live-transcribe.md`：语音转写默认走 `gemini-3.5-transcribe-live`，音频分帧并按每分钟 20000 token 限速。只有 Live 失败才回到 `gemini-3.5-transcribe`，本地每天停在 24 次。不新增 migration。需要重启 Worker。
 
 - `progress/2026-10-21-x-not-interested.md`：自动点赞改为从最近 24 小时已有模型分数的推文里按分数选。Bamboo 下没有分类结果的推文可以点，只排除明确丢弃的；分数线 0.8，企业动态仍是 0.9。全 0 分不再默认成美股大盘。低分营销号、八卦号和推广帖可以自动点「不感兴趣」，总开关和页面开关都默认关闭。推荐记录页能看到每天点赞、不感兴趣的条数，以及各方向命中率。migration 95。需要同时重启 Web 和 Worker，浏览器再加载一次。
