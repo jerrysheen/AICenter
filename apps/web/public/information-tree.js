@@ -1605,7 +1605,7 @@ export function createInformationTreePage(host) {
   document.addEventListener('visibilitychange',()=>{if(document.hidden)stop();else if(active())resume();});
   document.addEventListener('keydown',onHourKey);
   return {async mount(target,options={}){
-    stop();flight++;requests.abort();requests=new AbortController();epoch++;settled=false;loadSeen();const flightToken=flight;root=target;mode=options.mode==='hourly' ? 'hourly' : 'daily';dateFilter=options.date || '';pendingClockHour=Number.isInteger(options.hour) && options.hour>=0 && options.hour<=23 ? options.hour : null;pendingNodeId=options.node ? String(options.node) : '';hourFallbackText='';hourRevealEarlier=false;showMaterials=false;root.replaceChildren();root.classList.add('tree-page','brief-page');
+    stop();flight++;requests.abort();requests=new AbortController();epoch++;settled=false;loadSeen();const flightToken=flight;root=target;mode=options.mode==='hourly' ? 'hourly' : 'daily';dateFilter=options.date || '';pendingClockHour=Number.isInteger(options.hour) && options.hour>=0 && options.hour<=23 ? options.hour : null;pendingNodeId=options.node ? String(options.node) : '';hourFallbackText='';hourRevealEarlier=false;showMaterials=false;root.replaceChildren();root.classList.add('tree-page','brief-page');if(mode==='hourly')root.classList.add('is-hourly');
     if(options.resetSelection){selected=null;viewKey='';shownKey='';}
     const primary=el('div','','tree-primary source-control');primary.setAttribute('aria-label','简报');
     const modeTabs=el('div','','tree-mode-tabs channel-tabs');modeTabs.setAttribute('role','tablist');modeTabs.setAttribute('aria-label','简报');
@@ -1666,7 +1666,7 @@ export function createInformationTreePage(host) {
     tools.append(materialsBtn);
     tagPanel=el('div','','tree-tag-panel');tagPanel.hidden=true;
     tag=el('select');tag.setAttribute('aria-label','主Tag筛选');tag.add(new Option('全部Tag','*'));tag.addEventListener('change',()=>{memory[mode]={...(memory[mode]||{}),tag:tag.value};render();});tagPanel.append(tag);
-    notice=el('div','','tree-update');notice.hidden=true;notice.setAttribute('role','status');list=el('div','','tree-list');paintListSkeleton(list,{rows:6,label:'正在读取简报…',variant:'feed'});bindHourSwipe(list);
+    notice=el('div','','tree-update');notice.hidden=true;notice.setAttribute('role','status');list=el('div','','tree-list');if(mode==='hourly')list.append(hourSkeleton());else paintListSkeleton(list,{rows:6,label:'正在读取简报…',variant:'feed'});bindHourSwipe(list);
     const hourLayout=el('div','','tree-hour-layout');hourLayout.append(list);
     root.append(primary,issue,delayEl,backIssues,directionNav,tools,tagPanel,notice,hourLayout);
     const token=epoch;
