@@ -956,6 +956,133 @@ test('daily bullets have a share entry on the list and the detail', async () => 
   page.stop();
 });
 
+function flatNodes(node, out = []) {
+  if (!node?.tagName) return out;
+  out.push(node);
+  for (const child of node.children || []) flatNodes(child, out);
+  return out;
+}
+
+function dailyIssue(id, start, roots, hasEditorial) {
+  return {
+    id, layer: 'daily', window: { startAt: start, endAt: start + 24 * HOUR }, timezone: 'Asia/Shanghai',
+    status: 'ready', roots, hasEditorial, generatedAt: start,
+  };
+}
+
+function southboundHost(issue, { editorial = null, nodes = [], directions = {} } = {}) {
+  return {
+    session: () => ({ role: 'desktop', device: { id: 'southbound-section' } }),
+    active: () => true,
+    toast() {},
+    loadTreeManifest: async () => ({ timezone: 'Asia/Shanghai', directions, hours: [], days: [{ edition: issue }], information: [] }),
+    api(path) {
+      if (path.startsWith('/api/v1/tags')) return Promise.resolve({ catalog: { tags: [] } });
+      if (path.startsWith('/api/v1/reports/tree/editorial')) return Promise.resolve({ editorial });
+      if (path.startsWith('/api/v1/reports/tree/edition')) return Promise.resolve({ edition: issue, nodes });
+      return Promise.reject(new Error(`missing ${path}`));
+    },
+  };
+}
+
+test('southbound stays at the end of a daily that has no finance section', async () => {
+  const start = Date.parse('2026-10-08T16:00:00Z');
+  const issue = dailyIssue('edition:daily-no-finance', start, ['mod'], true);
+  const editorial = {
+    id: 'ed-no-finance', status: 'ready', statusNote: '已覆盖', overview: '今天没有市场成稿',
+    coverage: { hourlyModuleCount: 1, informationNodeCount: 2, eventCount: 2, inBodyEventCount: 2, indexOnlyEventCount: 0 },
+    relations: [], events: [],
+    articles: [
+      { direction: 'policy', title: '政策标题', lead: '政策导语', leadEventIds: [], sections: [{ heading: '时事', paragraphs: ['政策正文'], eventIds: [], kind: 'theme' }] },
+      { direction: 'tech', title: '科技标题', lead: '科技导语', leadEventIds: [], sections: [{ heading: '产业', paragraphs: ['科技正文'], eventIds: [], kind: 'theme' }] },
+    ],
+  };
+  const root = new El('div'); root.isConnected = true;
+  const page = createInformationTreePage(southboundHost(issue, { editorial }));
+  await page.mount(root);
+  const research = root.querySelector('.daily-research');
+  const line = research.querySelector('.southbound-daily-line');
+  assert.equal(research.querySelectorAll('.southbound-daily-line').length, 1);
+  assert.equal(research.children[0].classList.contains('daily-overview'), true);
+  assert.equal(research.children.at(-1), line);
+  assert.ok(flatNodes(research).findIndex((node) => node.tagName === 'H3') < flatNodes(research).indexOf(line));
+  await research.querySelector('.daily-direction-card').listeners.click[0]();
+  const opened = root.querySelector('.daily-research');
+  const openedLine = opened.querySelector('.southbound-daily-line');
+  assert.equal(opened.querySelectorAll('.southbound-daily-line').length, 1);
+  assert.equal(opened.children[0].classList.contains('daily-detail-head'), true);
+  assert.equal(opened.children.at(-1), openedLine);
+  assert.equal(opened.querySelector('h3').textContent, '政策标题');
+  page.stop();
+});
+
+test('southbound stays after the news when none of the items are finance', async () => {
+  const start = Date.parse('2026-10-08T16:00:00Z');
+  const issue = dailyIssue('edition:daily-no-finance-news', start, ['policy-mod', 'tech-mod'], false);
+  const nodes = [
+    { id: 'policy-mod', layer: 'daily', title: '政策新闻', text: '一条', tagId: 'geopolitics' },
+    { id: 'tech-mod', layer: 'daily', title: '科技新闻', text: '另一条', tagId: 'ai' },
+  ];
+  const root = new El('div'); root.isConnected = true;
+  const page = createInformationTreePage(southboundHost(issue, { nodes, directions: { geopolitics: 'policy', ai: 'tech' } }));
+  await page.mount(root);
+  const feed = root.querySelector('.daily-news');
+  const titles = feed.querySelectorAll('h3').map((node) => node.textContent);
+  assert.deepEqual(titles, ['政策新闻', '科技新闻']);
+  assert.equal(feed.children[0].classList.contains('news-rows'), true);
+  assert.equal(feed.children.at(-1).classList.contains('southbound-daily-line'), true);
+  assert.equal(feed.querySelectorAll('.southbound-daily-line').length, 1);
+  assert.ok(flatNodes(feed).findIndex((node) => node.classList.contains('news-row-title')) < flatNodes(feed).findIndex((node) => node.classList.contains('southbound-daily-line')));
+  page.stop();
+});
+
+test('an empty daily keeps the note first and southbound after it', async () => {
+  const start = Date.parse('2026-10-08T16:00:00Z');
+  const issue = dailyIssue('edition:daily-empty', start, [], false);
+  const root = new El('div'); root.isConnected = true;
+  const page = createInformationTreePage(southboundHost(issue));
+  await page.mount(root);
+  const feed = root.querySelector('.daily-news');
+  assert.equal(feed.children[0].textContent, '这一天还没有日报。');
+  assert.equal(feed.children[1].classList.contains('southbound-daily-line'), true);
+  assert.equal(feed.querySelectorAll('.southbound-daily-line').length, 1);
+  page.stop();
+});
+
+test('a finance article without an A-share heading still keeps southbound under the first section', async () => {
+  const start = Date.parse('2026-10-08T16:00:00Z');
+  const issue = dailyIssue('edition:daily-no-ashare', start, ['mod'], true);
+  const editorial = {
+    id: 'ed-no-ashare', status: 'ready', statusNote: '已覆盖', overview: '市场成稿没有 A 股标题',
+    coverage: { hourlyModuleCount: 1, informationNodeCount: 1, eventCount: 1, inBodyEventCount: 1, indexOnlyEventCount: 0 },
+    relations: [], events: [],
+    articles: [{
+      direction: 'finance', title: '金融与市场', lead: '市场导语', leadEventIds: [],
+      sections: [
+        { heading: '港股', paragraphs: ['港股正文'], eventIds: [], kind: 'theme' },
+        { heading: '美债', paragraphs: ['美债正文'], eventIds: [], kind: 'theme' },
+      ],
+    }],
+  };
+  const root = new El('div'); root.isConnected = true;
+  const page = createInformationTreePage(southboundHost(issue, { editorial }));
+  await page.mount(root);
+  const research = root.querySelector('.daily-research');
+  const stack = research.querySelector('.daily-direction-stack');
+  assert.equal(research.children[0].classList.contains('daily-overview'), true);
+  assert.equal(stack.children[0].classList.contains('daily-direction-card'), true);
+  assert.equal(stack.children[1].classList.contains('southbound-daily-line'), true);
+  await stack.querySelector('.daily-direction-card').listeners.click[0]();
+  const opened = root.querySelector('.daily-research');
+  const section = opened.querySelector('.daily-section');
+  assert.equal(opened.children[0].classList.contains('daily-detail-head'), true);
+  assert.equal(section.querySelector('h4').textContent, '港股');
+  assert.equal(section.children[1].classList.contains('southbound-daily-line'), true);
+  assert.equal(opened.querySelectorAll('.daily-section')[1].querySelector('.southbound-daily-line'), null);
+  assert.equal(opened.querySelectorAll('.southbound-daily-line').length, 1);
+  page.stop();
+});
+
 function hourCalls(calls, startAt) {
   return calls.filter((path) => path.startsWith('/api/v1/reports/reading-hour?') && path.includes(`startAt=${startAt}`));
 }
