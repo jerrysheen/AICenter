@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import {
   absorbHttp2TeardownError,
   http2StreamErrorSinkInstalled,
+  http2TeardownErrorCount,
   installHttp2StreamErrorSink,
 } from '../packages/connectors/src/http2-stream-error-sink.js';
 
@@ -65,6 +66,7 @@ test('the stream error sink keeps the process up after undici drops its own list
   const result = await runChild(true);
   assert.equal(result.exitCode, 0, result.err);
   assert.match(result.out, /still-alive/);
+  assert.match(result.out, /\[worker\] http2 stream error absorbed count=\d+ socket idle timeout/);
   assert.doesNotMatch(result.err, /Unhandled/);
 });
 
@@ -93,8 +95,18 @@ test('installing the sink is idempotent and a request still completes', async ()
       if (listener !== absorbHttp2TeardownError) stream.off('error', listener);
     }
     assert.deepEqual(stream.listeners('error'), [absorbHttp2TeardownError]);
-    stream.destroy(Object.assign(new Error('socket idle timeout'), { code: 'UND_ERR_INFO' }));
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    const before = http2TeardownErrorCount();
+    const lines = [];
+    const original = console.debug;
+    console.debug = (...args) => { lines.push(args.join(' ')); };
+    try {
+      stream.destroy(Object.assign(new Error('socket idle timeout'), { code: 'UND_ERR_INFO' }));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    } finally {
+      console.debug = original;
+    }
+    assert.equal(http2TeardownErrorCount(), before + 1);
+    assert.match(lines.join('\n'), /\[worker\] http2 stream error absorbed count=\d+ socket idle timeout/);
   } finally {
     session.close();
     await new Promise((resolve) => server.close(resolve));

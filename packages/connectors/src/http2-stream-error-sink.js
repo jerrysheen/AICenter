@@ -1,13 +1,20 @@
 import http2 from 'node:http2';
 
 const SINK = Symbol.for('ai-center.http2-stream-error-sink');
+let absorbedCount = 0;
 
 // undici closes an idle HTTP/2 session with InformationalError('socket idle timeout').
 // Node then destroys every ClientHttp2Stream the session still tracks. undici removes
 // its own listener by function identity and leaves a one-shot noop only sometimes,
 // so the second 'error' event exits the process. This is not an unhandledRejection.
-export function absorbHttp2TeardownError() {
-  // The listener itself is the fix. Re-throwing would exit the process again.
+export function absorbHttp2TeardownError(error) {
+  absorbedCount += 1;
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  console.debug(`[worker] http2 stream error absorbed count=${absorbedCount} ${message.split('\n')[0]}`);
+}
+
+export function http2TeardownErrorCount() {
+  return absorbedCount;
 }
 
 function attachSink(emitter) {

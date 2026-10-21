@@ -185,6 +185,7 @@ function createStartupClock(startedAt = Date.now()) {
 }
 
 export function createAiCenterWorker(options = {}) {
+  installHttp2StreamErrorSink();
   const instance = options.instanceConfig || resolveInstanceConfig({
     repositoryRoot,
     env: options.env || process.env,

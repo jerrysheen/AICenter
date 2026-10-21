@@ -1,5 +1,5 @@
 import {PrepareTreeInformationInputSchema} from '../../contracts/src/information-tree.js';
-import {hourlyFailureCatchupLimit,hourlyOpenHourStarts,hourlyRefreshAvailableAt,hourlyReportDisabled} from './report-module.js';
+import {hourlyFailureCatchupLimit,hourlyRefreshAvailableAt,hourlyReportDisabled} from './report-module.js';
 export const TREE_PREPARE_JOB_TYPE='report.information.prepare';
 export const informationTreeManifest={id:'report.information',version:'3.1.0',capabilities:['report.information.prepare'],jobTypes:[TREE_PREPARE_JOB_TYPE]};
 const HOUR=3600000;
@@ -74,6 +74,9 @@ export function hourHasNewMaterial(attempt, nodes, lookup) {
 
 // Older due hours fill the cap first. The latest ended hour only uses a slot that is still free,
 // so a failing current hour cannot keep 10:00 and 11:00 off the queue.
+// A failed attempt that does not cover the current nodes is still due. The prepare path
+// queues only the newest hour, so treating that gap as "new material" left a middle hour
+// off both paths.
 export function dueFailedHourCatchupPlan({at, rows = [], openHourStarts = new Set(), limit = 2, windowHours = 24} = {}) {
   const cap = Number.isInteger(limit) && limit >= 1 && limit <= 4 ? limit : 2;
   const span = Number.isInteger(windowHours) && windowHours >= 1 && windowHours <= 24 ? windowHours : 24;
@@ -89,7 +92,6 @@ export function dueFailedHourCatchupPlan({at, rows = [], openHourStarts = new Se
     seen.add(hourStart);
     if (openHourStarts.has(hourStart)) continue;
     if (!attemptRetryDue(row.attempt, at)) continue;
-    if (row.hasNewMaterial) continue;
     if (hourStart === latest) current = true;
     else older.push(hourStart);
   }
@@ -106,32 +108,28 @@ export function enqueueDueFailedHourRefreshes(store, service, workspaceId = 'loc
   const oldest = latest - (span - 1) * HOUR;
   const listed = service.list(workspaceId, {startAt: oldest, endAt: latest + HOUR}) || {};
   const slots = Array.isArray(listed.hours) ? listed.hours : [];
-  const nodes = Array.isArray(listed.information) ? listed.information : [];
-  const byHour = new Map();
-  for (const node of nodes) {
-    const start = node?.window?.startAt;
-    if (!Number.isFinite(start)) continue;
-    const bucket = byHour.get(start) || [];
-    bucket.push(node);
-    byHour.set(start, bucket);
-  }
-  const lookup = (id) => {
-    try { return service.node?.(workspaceId, id) ?? null; }
-    catch { return null; }
-  };
   const rows = [];
   for (const slot of slots) {
     const attempt = slot?.attempt;
     const hourStart = Number(attempt?.window?.startAt);
     if (!Number.isFinite(hourStart)) continue;
-    const hourNodes = byHour.get(hourStart) || [];
-    rows.push({hourStart, attempt, hasNewMaterial: hourHasNewMaterial(attempt, hourNodes, lookup)});
+    rows.push({hourStart, attempt});
   }
-  const open = hourlyOpenHourStarts(store, workspaceId);
+  const openJobs = hourlyWorkspaceJobs(store, workspaceId);
+  const covered = hourlyRetryLaneHourStarts(openJobs);
   const cap = Number.isInteger(limit) ? limit : hourlyFailureCatchupLimit(env);
   const jobs = [];
-  for (const plan of dueFailedHourCatchupPlan({at, rows, openHourStarts: open, limit: cap, windowHours: span})) {
-    if (open.has(plan.hourStart)) continue;
+  for (const plan of dueFailedHourCatchupPlan({at, rows, openHourStarts: covered, limit: cap, windowHours: span})) {
+    if (covered.has(plan.hourStart)) continue;
+    const parked = openJobs.filter((job) => job.status === 'queued' && job.input?.hourStart === plan.hourStart && job.priority < plan.priority);
+    if (parked.length) {
+      const promoted = promoteParkedHourJobs(store, workspaceId, parked, plan.priority, at);
+      for (const job of promoted) {
+        covered.add(plan.hourStart);
+        jobs.push(job);
+      }
+      continue;
+    }
     const job = store.createJob({
       type: 'report.hourly.extract',
       workspaceId,
@@ -140,10 +138,36 @@ export function enqueueDueFailedHourRefreshes(store, service, workspaceId = 'loc
       availableAt: at,
       input: {workspaceId, hourStart: plan.hourStart},
     });
-    open.add(plan.hourStart);
+    covered.add(plan.hourStart);
     jobs.push(job);
   }
   return jobs;
+}
+
+function hourlyWorkspaceJobs(store, workspaceId) {
+  return (store?.listOpenJobs?.('report.hourly.extract') || []).filter((job) => job?.workspaceId === workspaceId && !job.input?.snapshotId && job.input?.mode !== 'rewrite');
+}
+
+// The backfill lane claims priority -1. A running hour, or a queued job already at
+// -1 or higher, is covered. A queued -5 job is not: other work keeps that lane from running.
+export function hourlyRetryLaneHourStarts(jobs) {
+  const hours = new Set();
+  for (const job of jobs || []) {
+    const hourStart = job?.input?.hourStart;
+    if (!Number.isFinite(hourStart)) continue;
+    if (job.status === 'running' || (job.status === 'queued' && Number(job.priority) >= -1)) hours.add(hourStart);
+  }
+  return hours;
+}
+
+function promoteParkedHourJobs(store, workspaceId, jobs, priority, at) {
+  const changes = jobs.map((job) => ({id: job.id, priority, expectedPriority: job.priority}));
+  const changed = new Set(store.reprioritizeQueuedJobs?.(workspaceId, changes) || []);
+  const late = jobs.filter((job) => changed.has(job.id) && Number(job.availableAt) > at);
+  if (late.length && store.rescheduleQueuedJobs) {
+    store.rescheduleQueuedJobs(workspaceId, late.map((job) => ({id: job.id, availableAt: at, expectedAvailableAt: job.availableAt})));
+  }
+  return jobs.filter((job) => changed.has(job.id)).map((job) => ({...job, priority, availableAt: Math.min(Number(job.availableAt) || at, at)}));
 }
 
 export function enqueueTreePreparation(store,workspaceId,sourceIds) {

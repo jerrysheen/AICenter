@@ -10,4 +10,4 @@ Google 和 Yahoo 的 undici Agent 默认会协商 HTTP/2。空闲会话到期时
 
 在 `http2.connect` 返回会话时给会话挂上 `'error'` 监听，并在每次 `session.request` 时给流挂上同一个监听。undici 只会摘掉它自己的函数，这个监听留着。空闲拆连接不再变成没人接的 `'error'`。HTTP/2 仍开着。
 
-Google 建连、Yahoo 建连，以及 Worker 进程入口都会装上。不新增 migration。当前 schema 仍是 96。下一号是 97。空号仍是 63、79、80、82。不要重建数据库。需要重启 Worker。页面没有改，Web 不用为这项重启。
+Google 建连、Yahoo 建连，以及 Worker 创建时都会装上。启动之后 `http2StreamErrorSinkInstalled` 为真。被接住的错误不把堆栈打出来，用 `console.debug` 记一行，带上这次进程里的累计次数。不新增 migration。当前 schema 仍是 96。下一号是 97。空号仍是 63、79、80、82。不要重建数据库。需要重启 Worker。页面没有改，Web 不用为这项重启。
