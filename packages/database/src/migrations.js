@@ -2452,6 +2452,31 @@ migrations.push({ version: 93, name: 'x_video_articles', up(database) {
       ON x_video_posts(workspace_id, video_id);`);
 }});
 
+migrations.push({ version: 94, name: 'x_link_articles', up(database) {
+  database.exec(`CREATE TABLE IF NOT EXISTS x_link_articles (
+      workspace_id TEXT NOT NULL,
+      tweet_id TEXT NOT NULL,
+      content_item_id TEXT NOT NULL DEFAULT '',
+      author_handle TEXT NOT NULL DEFAULT '',
+      author_name TEXT NOT NULL DEFAULT '',
+      source_url TEXT NOT NULL DEFAULT '',
+      final_url TEXT NOT NULL DEFAULT '',
+      publisher TEXT NOT NULL DEFAULT '',
+      link_label TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending',
+      reason TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL DEFAULT '',
+      body_zh TEXT NOT NULL DEFAULT '',
+      article_day TEXT NOT NULL DEFAULT '',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (workspace_id, tweet_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_x_link_articles_final
+      ON x_link_articles(workspace_id, final_url, status);`);
+}});
+
 
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`

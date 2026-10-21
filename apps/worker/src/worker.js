@@ -40,6 +40,9 @@ import { loadTwkrFlags } from '../../../packages/connectors/src/twkr-sources.js'
 import { createTwkrJobHandlers, ensureTwkrSchedules, prepareTwkrEnqueue, TWKR_NEWS_JOB_TYPE, TWKR_REVENUE_JOB_TYPE } from '../../../packages/runtime/src/twkr-job.js';
 import { createYoutubePodcastJobHandlers, ensureYoutubeArticleSchedule, ensureYoutubePodcastSchedule, YOUTUBE_ARTICLE_JOB_TYPE, YOUTUBE_PODCAST_JOB_TYPE } from '../../../packages/runtime/src/youtube-podcasts-job.js';
 import { X_VIDEO_ARTICLE_JOB_TYPE } from '../../../packages/domain/src/x-video-articles.js';
+import { X_LINK_ARTICLE_JOB_TYPE } from '../../../packages/domain/src/x-link-articles.js';
+import { loadXLinkPublisherIndex } from '../../../packages/domain/src/x-link-service.js';
+import { createXLinkArticleJobHandlers } from '../../../packages/runtime/src/x-link-article-job.js';
 import { youtubePodcastLimits } from '../../../packages/domain/src/youtube-podcasts.js';
 import { createMediaEnrichJobHandlers } from '../../../packages/runtime/src/media-enrich-module.js';
 import { createKnowledgeService } from '../../../packages/domain/src/knowledge-service.js';
@@ -824,6 +827,21 @@ export function createAiCenterWorker(options = {}) {
       env,
       browserRuntime,
       store,
+    }),
+  });
+  registry.register({
+    manifest: {
+      id: 'x.links.article',
+      version: '1.0.0',
+      capabilities: [X_LINK_ARTICLE_JOB_TYPE],
+      jobTypes: [X_LINK_ARTICLE_JOB_TYPE],
+      sourceIds: [],
+    },
+    jobHandlers: options.xLinkArticleJobHandlers || createXLinkArticleJobHandlers({
+      repository: store.repositories.xLinks,
+      publishers: loadXLinkPublisherIndex(),
+      quotaRepository: store.repositories.modelQuota,
+      env,
     }),
   });
   registry.register({

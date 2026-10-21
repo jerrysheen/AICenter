@@ -50,6 +50,11 @@ import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, prioritizeRe
 import { createAuthorView } from './author-view.js?v=dev';
 import { appendPartialArticle, episodeArticleMessage, foldedOriginal, renderYoutubePodcasts, YOUTUBE_ARTICLE_POLL_SLOW_MS, youtubeArticlePollDelay, youtubeArticleRequestPath, youtubeReaderScopeLabel } from './youtube-podcasts.js?v=dev';
 import { xVideoArticleReady, xVideoArticleRequestPath, xVideoTweetId } from './x-video-article.js?v=dev';
+import { createFeedTaggingLoader, FEED_TAG_QUERY_PATH } from './feed-tagging.js?v=dev';
+import {
+  xLinkArticleReady, xLinkArticleRequestPath, xLinkClosed, xLinkOwnsBody, xLinkReaderScope,
+  xLinkTerminal, xLinkTweetId, xPostHasOutboundLink,
+} from './x-link-article.js?v=dev';
 
 const requestLayer = createRequestLayer();
 const pageCache = createPageCache({
@@ -9922,6 +9927,90 @@ function scheduleXVideoArticleWatch(post) {
   xVideoArticleWatch.set(id, { timer, delay });
 }
 
+const xLinkArticles = new Map();
+const xLinkArticleWatch = new Map();
+const xLinkArticleInflight = new Set();
+const X_LINK_POLL_MS = 4_000;
+
+function xLinkRecord(post) {
+  const id = xLinkTweetId(post);
+  return id ? xLinkArticles.get(id) : null;
+}
+
+function applyXLinkReady(post, record) {
+  if (!xLinkArticleReady(record)) return post;
+  const next = { ...post, complete: true, bodyScope: '' };
+  if (!next.xLinkOriginal) next.xLinkOriginal = post.xLinkOriginal || post.body;
+  next.body = record.body;
+  if (record.title) {
+    if (!next.originalTitle) next.originalTitle = post.title;
+    next.title = record.title;
+  }
+  const saved = state.restoredArticles[post.id];
+  if (saved) state.restoredArticles[post.id] = { ...saved, ...next, readerLoaded: true };
+  return next;
+}
+
+function clearXLinkArticleWatch(id) {
+  const existing = xLinkArticleWatch.get(id);
+  if (!existing) return;
+  clearTimeout(existing.timer);
+  xLinkArticleWatch.delete(id);
+}
+
+async function refreshXLinkArticle(post) {
+  const id = xLinkTweetId(post);
+  if (!id || xLinkArticleInflight.has(id)) return;
+  xLinkArticleInflight.add(id);
+  try {
+    const current = xLinkArticles.get(id);
+    if (xLinkClosed(current) || xLinkArticleReady(current)) return;
+    const payload = current
+      ? await api(xLinkArticleRequestPath(id))
+      : await api('/api/v1/x-links/article', { method: 'POST', body: JSON.stringify({ tweetId: id }) });
+    if (payload.eligible === false || payload.status === 'disabled' || payload.status === 'ineligible') {
+      xLinkArticles.set(id, { absent: true, eligible: false, tweetId: id, status: payload.status || 'ineligible' });
+      return;
+    }
+    if (payload.status === 'ready' && !payload.body) {
+      const full = await api(xLinkArticleRequestPath(id, { ready: true }));
+      xLinkArticles.set(id, { ...full, tweetId: id, eligible: true });
+      return;
+    }
+    xLinkArticles.set(id, { ...payload, tweetId: id, eligible: payload.eligible !== false });
+  } catch (error) {
+    const missing = Number(error?.status) === 404 || Number(error?.status) === 409 || Number(error?.status) === 400;
+    if (missing) xLinkArticles.set(id, { absent: true, eligible: false, tweetId: id, status: 'ineligible' });
+  } finally {
+    xLinkArticleInflight.delete(id);
+    if (document.body.dataset.view === 'page' && state.pageKind === 'article' && xLinkTweetId(state.dialogPost) === id) {
+      renderArticlePage();
+    }
+  }
+}
+
+function scheduleXLinkArticleWatch(post) {
+  const id = xLinkTweetId(post);
+  if (!id || !xPostHasOutboundLink(post)) return;
+  const record = xLinkArticles.get(id);
+  if (xLinkTerminal(record)) {
+    clearXLinkArticleWatch(id);
+    return;
+  }
+  if (!record && !xLinkArticleInflight.has(id)) refreshXLinkArticle(post);
+  const existing = xLinkArticleWatch.get(id);
+  if (existing) return;
+  const timer = setTimeout(() => {
+    xLinkArticleWatch.delete(id);
+    if (document.body.dataset.view !== 'page' || state.pageKind !== 'article') return;
+    if (xLinkTweetId(state.dialogPost) !== id) return;
+    refreshXLinkArticle(state.dialogPost).finally(() => {
+      if (!xLinkTerminal(xLinkArticles.get(id))) scheduleXLinkArticleWatch(state.dialogPost);
+    });
+  }, X_LINK_POLL_MS);
+  xLinkArticleWatch.set(id, { timer });
+}
+
 function renderArticlePage() {
   articleReadPosition().capture();
   if (!mediaModules || !feedLikeReady) {
@@ -9979,6 +10068,9 @@ function renderArticlePage() {
   if (post && xVideoArticleReady(xVideoRecord(post))) {
     post = applyXVideoReady(post, xVideoRecord(post));
   }
+  if (post && xLinkArticleReady(xLinkRecord(post))) {
+    post = applyXLinkReady(post, xLinkRecord(post));
+  }
   if (!post) {
     if(state.bootstrapped && !official) restoreSavedArticle(itemId);
     const loading=!state.bootstrapped || restoredArticleRequests.has(itemId) && !restoredArticleErrors.has(itemId);
@@ -10023,6 +10115,13 @@ function renderArticlePage() {
     original.className = 'reader-original';
     head.insertBefore(original, meta);
   }
+  const linkArticle = xLinkRecord(post);
+  if (linkArticle?.finalUrl && linkArticle.linkLabel && !xLinkClosed(linkArticle)) {
+    const sourceLink = appendExternalLink(head, linkArticle.finalUrl, linkArticle.linkLabel);
+    sourceLink.className = 'reader-original';
+    sourceLink.dataset.xLink = '1';
+    head.insertBefore(sourceLink, meta);
+  }
   if (youtubeId && originalTitle && originalTitle !== shownTitle) {
     const note = document.createElement('p');
     note.className = 'reader-original-title';
@@ -10051,12 +10150,14 @@ function renderArticlePage() {
   }
   const officialBody = post.kind === 'official' ? state.officialBodies[post.id] : null;
   const youtubeScope = youtubeReaderScopeLabel(post, state.youtubeEpisodes[youtubeEpisodeId(post)]);
+  const linkScope = xLinkReaderScope(post, xLinkRecord(post));
   const completeLabel = post.articleKind === 'report-intro' ? '报告简介'
     : officialBody?.status === 'ready' ? '正文完整'
       : officialBody?.status === 'loading' ? '正在获取'
         : youtubeScope != null ? youtubeScope
-          : post.complete === false ? (post.bodyScope || '仅索引')
-            : '正文完整';
+          : linkScope != null ? linkScope
+            : post.complete === false ? (post.bodyScope || '仅索引')
+              : '正文完整';
   if (completeLabel) meta.append(Object.assign(document.createElement('span'), { className: 'kind-tag official', textContent: completeLabel }));
   meta.querySelector('button').addEventListener('click', () => {
     if (post.platform === 'official') openPage('source', `policy.${post.author}`);
@@ -10153,7 +10254,7 @@ function renderArticlePage() {
     }
     ensurePostTags(post);
   } else {
-    const xReady = xVideoArticleReady(xVideoRecord(post));
+    const xReady = xVideoArticleReady(xVideoRecord(post)) || xLinkArticleReady(xLinkRecord(post));
     if (hasTranslation && !xReady) {
       const tabs = document.createElement('div');
       tabs.className = 'dense-tabs reader-tabs';
@@ -10265,13 +10366,15 @@ function renderArticlePage() {
   root.replaceChildren(shell);
   articleReadPosition().mount({ articleId: articleReadKey(itemId), shell });
   if (menuFocus) [...elements['reader-menu'].querySelectorAll('button')].find(button => button.dataset.detailAction === menuFocus)?.focus();
+  if (xPostHasOutboundLink(post)) scheduleXLinkArticleWatch(post);
+  const linkOwns = xLinkOwnsBody(post, xLinkRecord(post));
   if (youtubeEpisodeId(post)) scheduleYoutubeArticleWatch(post);
   else if (xVideoTweetId(post)) {
     const record = xVideoRecord(post);
     if (record?.absent) {
-      if (shouldQueueTranslation(post)) requestTranslate(post).catch((error) => showToast(error.message));
+      if (!linkOwns && shouldQueueTranslation(post)) requestTranslate(post).catch((error) => showToast(error.message));
     } else scheduleXVideoArticleWatch(post);
-  } else if (shouldQueueTranslation(post)) {
+  } else if (!linkOwns && shouldQueueTranslation(post)) {
     requestTranslate(post).catch((error) => showToast(error.message));
   }
 }
@@ -15509,18 +15612,19 @@ async function ensureTagCatalog() {
   return state.tagCatalog;
 }
 
+const feedTaggingLoader = createFeedTaggingLoader({
+  post: (body) => api(FEED_TAG_QUERY_PATH, { method: 'POST', body: JSON.stringify(body) }),
+});
+
 async function loadFeedTaggings(items = [], resourceType = 'content-item') {
   const ids = [...new Set((items || []).map((item) => String(item?.resourceId || '').trim()).filter(Boolean))];
   if (!ids.length) return;
   await ensureTagCatalog();
-  const params = new URLSearchParams({ resourceType });
-  for (const id of ids) params.append('resourceId', id);
-  const payload = await api(`/api/v1/tagging?${params}`);
-  const rows = payload.items || (payload.tagging ? [payload.tagging] : []);
+  const rows = await feedTaggingLoader.load(ids, resourceType);
+  if (!rows?.length) return;
   const next = { ...state.feedTaggings };
-  for (const id of ids) {
-    const row = rows.find((item) => item.resourceId === id);
-    if (row) next[id] = row;
+  for (const row of rows) {
+    if (row?.resourceId) next[row.resourceId] = row;
   }
   state.feedTaggings = next;
 }
