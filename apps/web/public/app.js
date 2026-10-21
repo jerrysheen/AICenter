@@ -2348,7 +2348,7 @@ function restorePersistedFeedBrowseState() {
       state.feedPlatform = state.platform;
     }
     if (saved.channel) state.channel = saved.channel;
-    if (typeof saved.query === 'string') state.feedQuery = saved.query;
+    // 整页重载不恢复搜索词。搜索框收起后词仍会过滤，而本地窗口对不上上次的服务端结果。
     if (['captured', 'published'].includes(saved.sort)) state.feedSort = saved.sort;
     if (['all', 'today', '7d'].includes(saved.range)) state.feedRange = saved.range;
     if (state.feedPlatform === 'social' || (state.channel === 'social' && state.feedPlatform === 'all')) {

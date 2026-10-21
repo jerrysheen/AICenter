@@ -40,6 +40,14 @@ test('the brief list keeps a skeleton until the rows exist', () => {
   assert.equal(boot.includes("if (bootHash === '#feed') history.scrollRestoration"), false);
   assert.equal(tree.includes("list.textContent='读取中…'"), false);
   assert.match(tree, /paintListSkeleton\(list,\{rows:6,label:'正在读取简报…',variant:'feed'\}/);
+  assert.match(tree, /if\(dailyFeed && !openedId && !openedDirection\) ensureSouthboundSlot\(skeleton \|\| list\)/);
+  const dailyFeed = tree.slice(tree.indexOf('async function renderDailyFeed'), tree.indexOf('function directSouthbound'));
+  const showAt = dailyFeed.indexOf('showPosition(`daily-feed:');
+  assert.ok(dailyFeed.indexOf('ensureSouthboundSlot(list)') >= 0 && dailyFeed.indexOf('ensureSouthboundSlot(list)') < showAt);
+  assert.match(tree, /current\.textContent = data\.line/);
+  assert.match(tree, /box\.classList\.add\('is-page'\)/);
+  assert.match(tree, /el\('p','\\u00a0','news-day-label'\)/);
+  assert.match(tree, /reading-direction news-section-title/);
   assert.match(brief, /readingSkeleton\(root\)/);
   assert.equal(brief.includes('正在读取简报…'), true);
   assert.equal(brief.includes("node('p','brief-empty','正在读取简报…')"), false);
