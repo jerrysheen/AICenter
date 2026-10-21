@@ -231,6 +231,12 @@ function collectHarnessToolCalls(run) {
  * Domain tools still run in-process through Tool Gateway.
  * One Worker keeps one dsh child while the visible Tool set stays the same.
  */
+export function hourlyUsesGemmaFallback(error) {
+  if (error?.code !== 'budget-deferred' || error.quotaExhausted !== true) return false;
+  if (error.flashHeadroom && error.flashHeadroom !== 'rpd') return false;
+  return true;
+}
+
 export function createHarnessAgentRuntime({
   tools,
   quality = null,
@@ -243,6 +249,7 @@ export function createHarnessAgentRuntime({
   usageLedger = null,
   articleAdmission = null,
   hourlyAdmission = null,
+  hourlyGemmaFallback = null,
 } = {}) {
   if (!tools || typeof tools.list !== 'function' || typeof tools.execute !== 'function') {
     throw new Error('Harness runtime 需要现有 ToolRegistry');
@@ -418,6 +425,14 @@ export function createHarnessAgentRuntime({
 
   async function runWithFallback(input) {
     try {return await runOnce(input);}catch(error) {
+      if(input.closedContext===true && input.closedTask==='hourly-brief' && hourlyUsesGemmaFallback(error) && hourlyGemmaFallback) {
+        await input.trace?.({event:'hourly.provider.fallback',detail:{from:'flash-lite',to:'gemma-26b',reason:'quota-exhausted'}});
+        try { return await hourlyGemmaFallback(input); }
+        catch (gemmaError) {
+          if (gemmaError?.code === 'budget-deferred') throw error;
+          throw gemmaError;
+        }
+      }
       if(input.closedContext!==true || input.closedTask!=='article-normalize' || !error.quotaExhausted || env.AI_CENTER_HARNESS_ARTICLE_FALLBACK!=='elucid-grok')throw error;
       await input.trace?.({event:'article.provider.fallback',detail:{from:'google',to:'elucid-grok',reason:'quota-exhausted'}});
       return runOnce(input,true);

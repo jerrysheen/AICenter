@@ -76,6 +76,103 @@ test('investor summaries use the other Flash Lite when no extra model list is co
   }), ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite']);
 });
 
+test('Flash Lite RPM and RPD headroom stay on the key that still has room', () => {
+  const atRef = { at: Date.parse('2026-10-21T04:30:00Z') };
+  const store = createStore(':memory:');
+  const admission = createGeminiArticleAdmission({
+    repository: store.repositories.modelQuota,
+    env: {
+      ...env,
+      GEMINI_API_KEY2: 'two',
+      AI_CENTER_GEMINI_KEY_ENVS: 'GEMINI_API_KEY,GEMINI_API_KEY2',
+    },
+    now: () => atRef.at,
+    allowFallback: false,
+  });
+  try {
+    for (let index = 0; index < 15; index += 1) {
+      const ticket = admission.reserve({ model: 'gemini-3.1-flash-lite', inputBytes: 1, maxTokens: 1 });
+      assert.equal(ticket.model, 'gemini-3.1-flash-lite');
+      atRef.at += 20;
+    }
+    const earlier = atRef.at - 5 * 60_000;
+    for (const model of ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite']) {
+      for (let index = 0; index < 480; index += 1) {
+        store.repositories.modelQuota.recordProbeUse({ project: 'other-project', keyEnv: 'GEMINI_API_KEY', model, at: earlier });
+      }
+    }
+    const open = admission.reserve({ model: 'gemini-3.1-flash-lite', inputBytes: 1, maxTokens: 1 });
+    assert.equal(open.model, 'gemini-3.1-flash-lite');
+    assert.equal(open.keyEnv, 'GEMINI_API_KEY2');
+  } finally {
+    store.close();
+  }
+});
+
+test('keys that name the same project still share the Flash Lite cap', () => {
+  const atRef = { at: Date.parse('2026-10-21T04:30:00Z') };
+  const store = createStore(':memory:');
+  const admission = createGeminiArticleAdmission({
+    repository: store.repositories.modelQuota,
+    env: {
+      ...env,
+      GEMINI_API_KEY2: 'two',
+      AI_CENTER_GEMINI_KEY_ENVS: 'GEMINI_API_KEY,GEMINI_API_KEY2',
+      GEMINI_API_KEY_PROJECT: 'shared-flash',
+      GEMINI_API_KEY2_PROJECT: 'shared-flash',
+    },
+    now: () => atRef.at,
+    allowFallback: false,
+  });
+  try {
+    for (let index = 0; index < 14; index += 1) {
+      assert.equal(admission.reserve({ model: 'gemini-3.1-flash-lite', inputBytes: 1, maxTokens: 1 }).model, 'gemini-3.1-flash-lite');
+      atRef.at += 20;
+    }
+    assert.equal(admission.reserve({ model: 'gemini-3.1-flash-lite', inputBytes: 1, maxTokens: 1 }).model, 'gemini-3.5-flash-lite');
+  } finally {
+    store.close();
+  }
+});
+
+test('both keys at 480 RPD wait until the Pacific day instead of merging early', () => {
+  const at = Date.parse('2026-10-21T04:30:00Z');
+  const store = createStore(':memory:');
+  const admission = createGeminiArticleAdmission({
+    repository: store.repositories.modelQuota,
+    env: {
+      ...env,
+      GEMINI_API_KEY2: 'two',
+      AI_CENTER_GEMINI_KEY_ENVS: 'GEMINI_API_KEY,GEMINI_API_KEY2',
+    },
+    now: () => at,
+    allowFallback: false,
+  });
+  try {
+    const earlier = at - 5 * 60_000;
+    for (const keyEnv of ['GEMINI_API_KEY', 'GEMINI_API_KEY2']) {
+      for (const model of ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite']) {
+        for (let index = 0; index < 480; index += 1) {
+          store.repositories.modelQuota.recordProbeUse({ project: 'other-project', keyEnv, model, at: earlier });
+        }
+      }
+    }
+    assert.throws(
+      () => admission.reserve({ model: 'gemini-3.1-flash-lite', inputBytes: 1, maxTokens: 1 }),
+      (error) => error?.code === 'budget-deferred' && error.quotaExhausted === true && error.flashHeadroom === 'rpd' && error.retryAt === nextGeminiDailyReset(at),
+    );
+    const counts = store.repositories.modelQuota.reservationDayCounts({
+      models: ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite'],
+      dayStart: at - 24 * 3600000,
+      dayEnd: at + 3600000,
+    });
+    assert.equal(counts.filter((row) => row.model === 'gemini-3.1-flash-lite').reduce((sum, row) => sum + row.calls, 0), 960);
+    assert.equal(counts.filter((row) => row.model === 'gemini-3.5-flash-lite').reduce((sum, row) => sum + row.calls, 0), 960);
+  } finally {
+    store.close();
+  }
+});
+
 test('daily model counts group request rows and omit turns', () => {
   const store = createStore(':memory:');
   const at = Date.parse('2026-10-20T13:00:00Z');
