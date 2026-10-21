@@ -124,6 +124,7 @@ export function createXFocusScorer({
       sensitive: value.sensitive,
       officialSpeech: value.officialSpeech,
       promotional: value.promotional === true,
+      gossip: value.gossip === true,
       reason: value.reason,
     });
   }

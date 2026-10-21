@@ -5905,6 +5905,8 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
 .x-focus-row { display: flex; justify-content: space-between; gap: 12px; padding: 12px 0; border-top: 1px solid var(--comp-tertiary); }
 .x-focus-row strong { display: block; }
 .x-focus-tools { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.x-focus-counts { width: 100%; border-collapse: collapse; margin: 8px 0 12px; font-size: 13px; }
+.x-focus-counts th, .x-focus-counts td { text-align: left; padding: 4px 12px 4px 0; color: var(--font-secondary); font-weight: 400; }
 .southbound-card { margin: 0 0 var(--space-4); padding: var(--space-4); border-radius: var(--radius-card); background: var(--background-secondary); }
 .southbound-head { display: flex; align-items: center; gap: var(--space-2); }
 .southbound-head h2 { margin: 0; font-size: 16px; }

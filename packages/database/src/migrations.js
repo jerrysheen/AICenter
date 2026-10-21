@@ -2477,6 +2477,27 @@ migrations.push({ version: 94, name: 'x_link_articles', up(database) {
       ON x_link_articles(workspace_id, final_url, status);`);
 }});
 
+migrations.push({ version: 95, name: 'x_not_interested_actions', up(database) {
+  database.exec(`CREATE TABLE IF NOT EXISTS x_not_interested_actions (
+      workspace_id TEXT NOT NULL,
+      tweet_id TEXT NOT NULL,
+      content_item_id TEXT NOT NULL DEFAULT '',
+      author_handle TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL DEFAULT '',
+      source_url TEXT NOT NULL DEFAULT '',
+      trigger TEXT NOT NULL DEFAULT '',
+      note TEXT NOT NULL DEFAULT '',
+      score REAL,
+      primary_dir TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'queued',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (workspace_id, tweet_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_x_not_interested_created
+      ON x_not_interested_actions(workspace_id, created_at DESC);`);
+}});
+
 
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`

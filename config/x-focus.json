@@ -26,7 +26,7 @@
       "id": "polymarket",
       "label": "Polymarket 及政要发言",
       "weight": 1,
-      "question": "这则内容是否在讲 Polymarket、预测市场赔率，或政要公开发言对市场的影响？",
+      "question": "这则内容是否在讲 Polymarket、预测市场赔率，或政要公开发言对市场的影响？体育竞猜和比赛博彩不算。",
       "keywords": ["Polymarket", "预测市场", "赔率", "特朗普", "Trump"]
     },
     {
@@ -63,5 +63,12 @@
     "dailyLimit": 8,
     "hourlyLimit": 2,
     "minIntervalMs": 900000
+  },
+  "notInterested": {
+    "dailyLimit": 10,
+    "hourlyLimit": 3,
+    "minIntervalMs": 600000,
+    "lowScore": 0.3,
+    "streak": 3
   }
 }

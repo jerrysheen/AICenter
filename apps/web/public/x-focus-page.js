@@ -36,17 +36,20 @@ function chartSvg(seriesKey, view) {
   const pad = 24;
   const series = view.drift?.series || [];
   const likes = view.drift?.likes || [];
-  const maxLikes = Math.max(1, ...likes);
-  const likeRate = likes.map((count) => count / maxLikes);
+  const hides = view.drift?.notInterested || [];
+  const maxCount = Math.max(1, ...likes, ...hides);
+  const likeRate = likes.map((count) => count / maxCount);
+  const hideRate = hides.map((count) => count / maxCount);
   const paths = series.map((entry, index) => line(entry[seriesKey] || [], COLORS[index % COLORS.length], width, height, pad, false)).join('');
   const likePath = line(likeRate, '#64748b', width, height, pad, true);
+  const hidePath = line(hideRate, '#b45309', width, height, pad, true);
   const dates = view.drift?.dates || [];
   const labels = dates.map((label, index) => {
     if (dates.length > 8 && index % 2) return '';
     const step = dates.length > 1 ? (width - pad * 2) / (dates.length - 1) : 0;
     return `<text x="${pad + step * index}" y="${height - 6}" font-size="10" fill="#64748b">${label}</text>`;
   }).join('');
-  return `<svg class="x-focus-chart" viewBox="0 0 ${width} ${height}" role="img">${paths}${likePath}${labels}</svg>`;
+  return `<svg class="x-focus-chart" viewBox="0 0 ${width} ${height}" role="img">${paths}${likePath}${hidePath}${labels}</svg>`;
 }
 
 function legend(view) {
@@ -59,7 +62,9 @@ function legend(view) {
   });
   const likes = document.createElement('span');
   likes.innerHTML = '<i style="background:#64748b"></i>点赞次数';
-  row.append(likes);
+  const hides = document.createElement('span');
+  hides.innerHTML = '<i style="background:#b45309"></i>不感兴趣';
+  row.append(likes, hides);
   return row;
 }
 
@@ -84,7 +89,7 @@ export function createXFocusPage({ api, showToast }) {
       }
       root.replaceChildren();
       const refresh = () => this.render(root);
-      root.append(switchCard(view, refresh), driftCard(view), actionCard(view, api, showToast, refresh));
+      root.append(switchCard(view, refresh), hideSwitchCard(view, api, refresh), driftCard(view), actionCard(view, api, showToast, refresh), hideActionCard(view));
     },
   };
 }
@@ -123,14 +128,49 @@ function switchCard(view, refresh) {
   return card;
 }
 
+function hideSwitchCard(view, api, refresh) {
+  const card = document.createElement('section');
+  card.className = 'x-focus-card';
+  const state = view.notInterested || {};
+  const title = document.createElement('h2');
+  title.textContent = '自动不感兴趣';
+  const summary = document.createElement('p');
+  const minutes = Number(state.intervalMinutes) || 10;
+  summary.textContent = `今天 ${state.todayCount || 0} / ${state.todayLimit || 0} 次，这一小时 ${state.hourCount || 0} / ${state.hourLimit || 0} 次。两次之间至少间隔 ${minutes} 分钟。`;
+  const label = document.createElement('label');
+  label.className = 'x-focus-switch';
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.checked = Boolean(state.pageOn);
+  input.addEventListener('change', async () => {
+    input.disabled = true;
+    try {
+      await api('/api/v1/feed/x-focus/not-interested', { method: 'POST', body: JSON.stringify({ enabled: input.checked }) });
+      refresh();
+    } catch (error) {
+      input.checked = !input.checked;
+      const note = card.querySelector('.x-focus-notice');
+      if (note) note.textContent = error.message || '没有保存开关';
+    } finally {
+      input.disabled = false;
+    }
+  });
+  label.append(input, document.createTextNode(' 打开自动不感兴趣'));
+  const notice = document.createElement('p');
+  notice.className = `x-focus-notice${state.stopped ? ' is-stopped' : ''}`;
+  notice.textContent = text(state.notice);
+  card.append(title, summary, label, notice);
+  return card;
+}
+
 function driftCard(view) {
   const card = document.createElement('section');
   card.className = 'x-focus-card';
   const title = document.createElement('h2');
   title.textContent = '方向命中率';
   const hint = document.createElement('p');
-  hint.textContent = '每天按方向统计相关内容占当天抓取的比例，推荐和关注分开。灰色虚线是当天点赞次数，按这段时间里的最高一天缩放。';
-  card.append(title, hint);
+  hint.textContent = '每天按方向统计相关内容占当天已打分内容的比例，推荐和关注分开。灰色虚线是当天点赞次数，棕色虚线是当天不感兴趣次数，两条都按这段时间里较高的一天缩放。';
+  card.append(title, hint, countTable(view));
   for (const [name, key] of [['推荐', 'recommended'], ['关注', 'following']]) {
     const heading = document.createElement('h3');
     heading.textContent = name;
@@ -151,6 +191,31 @@ function driftCard(view) {
     card.append(list);
   }
   return card;
+}
+
+function countTable(view) {
+  const table = document.createElement('table');
+  table.className = 'x-focus-counts';
+  const head = document.createElement('tr');
+  for (const name of ['日期', '点赞', '不感兴趣']) {
+    const cell = document.createElement('th');
+    cell.textContent = name;
+    head.append(cell);
+  }
+  table.append(head);
+  const dates = view.drift?.dates || [];
+  const likes = view.drift?.likes || [];
+  const hides = view.drift?.notInterested || [];
+  dates.forEach((date, index) => {
+    const row = document.createElement('tr');
+    for (const value of [date, likes[index] || 0, hides[index] || 0]) {
+      const cell = document.createElement('td');
+      cell.textContent = String(value);
+      row.append(cell);
+    }
+    table.append(row);
+  });
+  return table;
 }
 
 function actionCard(view, api, showToast, refresh) {
@@ -221,6 +286,56 @@ function actionCard(view, api, showToast, refresh) {
       tools.append(button);
     }
     row.append(tools);
+    card.append(row);
+  }
+  return card;
+}
+
+function hideActionCard(view) {
+  const card = document.createElement('section');
+  card.className = 'x-focus-card';
+  const title = document.createElement('h2');
+  title.textContent = '不感兴趣记录';
+  card.append(title);
+  const actions = view.notInterestedActions || [];
+  if (!actions.length) {
+    const empty = document.createElement('p');
+    empty.className = 'empty-state';
+    empty.textContent = '还没有不感兴趣记录。';
+    card.append(empty);
+    return card;
+  }
+  for (const action of actions) {
+    const row = document.createElement('article');
+    row.className = 'x-focus-row';
+    const main = document.createElement('div');
+    const heading = document.createElement('strong');
+    heading.textContent = text(action.title) || 'X 帖子';
+    const meta = document.createElement('p');
+    meta.textContent = [
+      formatTime(action.at),
+      action.handle ? `@${action.handle}` : '',
+      action.triggerLabel,
+      action.direction,
+      action.scoreText && action.scoreText !== '—' ? `相关度 ${action.scoreText}` : '',
+      action.result,
+    ].filter(Boolean).join(' · ');
+    const reason = document.createElement('p');
+    reason.textContent = text(action.reason);
+    main.append(heading, meta);
+    if (reason.textContent) main.append(reason);
+    row.append(main);
+    if (action.href) {
+      const tools = document.createElement('div');
+      tools.className = 'x-focus-tools';
+      const link = document.createElement('a');
+      link.href = action.href;
+      link.target = '_blank';
+      link.rel = 'noreferrer';
+      link.textContent = '原帖';
+      tools.append(link);
+      row.append(tools);
+    }
     card.append(row);
   }
   return card;
