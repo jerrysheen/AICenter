@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-21-feed-search-present.md`：搜索进行中只显示「搜索中…」，读完才给出条数。窗口没画完写「已显示 n / N 条」并提供「加载更多」。空结果不再写继续读取。标题命中会高亮；只有正文命中时另起一行摘录。信息流和简报的骨架留到真实列表换上的那一帧，行高和两行标题的信息行一致。返回简报时，贴在标题栏下面的行不再当作滚动锚点。不新增 migration。需要重启 Web，浏览器再加载一次。
+
 - `progress/2026-10-21-http2-idle-error-sink.md`：undici HTTP/2 的 `socket idle timeout` 打在流的 `'error'` 事件上，拒绝计数接不住。建连时给会话和流挂上错误监听，空闲拆连接不再让 Worker 退出。被接住的错误用一行 debug 记下累计次数。Worker 启动后这个监听已经装上。不新增 migration。需要重启 Worker。
 
 - `progress/2026-10-21-hourly-due-retry-cover.md`：到了重试时间的失败小时不再因为旧尝试没盖住节点就被跳过。优先级低于 -1 的排队任务会抬到补跑通道，而不是一直占着名额却不执行。不新增 migration。需要重启 Worker。

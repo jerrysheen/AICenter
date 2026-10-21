@@ -123,7 +123,17 @@ export function newsRow(row) {
   const title = document.createElement('h3');
   title.className = 'news-row-title';
   const titleText = decodeHtmlEntities(row.title || '');
-  title.textContent = titleText;
+  const titleParts = Array.isArray(row.titleParts) ? row.titleParts : [];
+  if (titleParts.length) {
+    title.replaceChildren(...titleParts.map((part) => {
+      const value = decodeHtmlEntities(part?.text || '');
+      if (!part?.hit) return document.createTextNode(value);
+      const mark = document.createElement('mark');
+      mark.className = 'search-hit';
+      mark.textContent = value;
+      return mark;
+    }));
+  } else title.textContent = titleText;
   title.title = titleText;
   const effectiveLabel = String(row.effectiveLabel || '').trim();
   if (effectiveLabel) {
@@ -165,9 +175,19 @@ export function newsRow(row) {
   const tail = linkAuthor && sourceLine ? [open, sourceLine] : [open];
   const summaryText = String(row.summary || '').trim();
   if (summaryText) {
+    const summaryParts = Array.isArray(row.summaryParts) ? row.summaryParts : [];
     const summary = document.createElement('p');
-    summary.className = 'news-row-summary';
-    summary.textContent = decodeHtmlEntities(summaryText);
+    summary.className = summaryParts.length ? 'news-row-summary is-search-excerpt' : 'news-row-summary';
+    if (summaryParts.length) {
+      summary.replaceChildren(...summaryParts.map((part) => {
+        const value = decodeHtmlEntities(part?.text || '');
+        if (!part?.hit) return document.createTextNode(value);
+        const mark = document.createElement('mark');
+        mark.className = 'search-hit';
+        mark.textContent = value;
+        return mark;
+      }));
+    } else summary.textContent = decodeHtmlEntities(summaryText);
     tail.push(summary);
   }
   if (row.commentCount > 0) {
