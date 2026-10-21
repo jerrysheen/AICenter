@@ -1666,7 +1666,7 @@ export function createInformationTreePage(host) {
     tools.append(materialsBtn);
     tagPanel=el('div','','tree-tag-panel');tagPanel.hidden=true;
     tag=el('select');tag.setAttribute('aria-label','主Tag筛选');tag.add(new Option('全部Tag','*'));tag.addEventListener('change',()=>{memory[mode]={...(memory[mode]||{}),tag:tag.value};render();});tagPanel.append(tag);
-    notice=el('div','','tree-update');notice.hidden=true;notice.setAttribute('role','status');list=el('div','','tree-list');if(mode==='hourly')list.append(hourSkeleton());else paintListSkeleton(list,{rows:6,label:'正在读取简报…',variant:'feed'});bindHourSwipe(list);
+    notice=el('div','','tree-update');notice.hidden=true;notice.setAttribute('role','status');list=el('div','','tree-list');if(mode==='hourly')list.append(hourSkeleton());else{paintListSkeleton(list,{rows:6,label:'正在读取简报…',variant:'feed'});ensureSouthboundSlot(list.querySelector('.list-skeleton')||list);}bindHourSwipe(list);
     const hourLayout=el('div','','tree-hour-layout');hourLayout.append(list);
     root.append(primary,issue,delayEl,backIssues,directionNav,tools,tagPanel,notice,hourLayout);
     const token=epoch;

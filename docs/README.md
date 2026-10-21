@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-21-brief-skeleton-lead.md`：简报骨架第一帧就带上期数条和南向占位，首行不再等这两块晚到再往下跳。不新增 migration。需要重启 Web，浏览器再加载一次。
+
 - `progress/2026-10-21-hour-period-blank.md`：小时报骨架顶栏不再写死「00:00–01:00」，改成同高度的空白占位。不新增 migration。需要重启 Web，浏览器再加载一次。
 
 - `progress/2026-10-21-brief-mobile-lead.md`：窄屏南向资金占位改成两行高，文字折行不再把简报首行往下推。小时报从第一帧骨架到正式列表用同一套顶栏和标题占位。不新增 migration。需要重启 Web，浏览器再加载一次。
