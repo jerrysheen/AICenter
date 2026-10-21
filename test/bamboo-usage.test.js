@@ -1,17 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   bambooUsagePath,
   hourlyAllowance,
+  listBambooDailyUsage,
   readBambooUsage,
   shanghaiUsageStamp,
+  shiftShanghaiDay,
   takeBambooUsageSlot,
 } from '../packages/domain/src/bamboo-usage.js';
+import { createBambooUsageView } from '../packages/domain/src/bamboo-usage-view.js';
+import { BambooDailyUsageDaySchema } from '../packages/contracts/src/model-usage.js';
+import { formatBambooDailySummary, openModelUsageDialog } from '../apps/web/public/model-usage.js';
+import { createAiCenterServer } from '../apps/web/src/server.js';
 import { createFeedFilter, resolveFeedFilterConfig } from '../packages/domain/src/feed-filter.js';
 
 const moduleUrl = pathToFileURL(fileURLToPath(new URL('../packages/domain/src/bamboo-usage.js', import.meta.url))).href;
@@ -281,6 +287,123 @@ test('feed admission hourly mode does not call Bamboo after the hour share is us
     assert.equal(second.metadata.filterReason, 'jev-disabled-following');
     assert.equal(readBambooUsage(directory, hour0).count, 1);
   } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('the usage page reads each Shanghai day without taking another slot', () => {
+  assert.equal(shiftShanghaiDay('20261001', -1), '20260930');
+  assert.equal(shiftShanghaiDay('20260301', -1), '20260228');
+  const directory = temporaryDirectory();
+  try {
+    const today = shanghaiUsageStamp(hour0).day;
+    const yesterday = shiftShanghaiDay(today, -1);
+    const broken = shiftShanghaiDay(today, -2);
+    writeFileSync(bambooUsagePath(directory, today), JSON.stringify({
+      count: 1234, hour: 0, hourCount: 4, provider: 'bamboo', apiKey: 'should-not-leak',
+    }));
+    writeFileSync(bambooUsagePath(directory, yesterday), JSON.stringify({ count: 50, hour: 23, hourCount: 1 }));
+    writeFileSync(bambooUsagePath(directory, broken), '{');
+    writeFileSync(path.join(directory, 'bamboo-usage-lock'), '{"count":9999}');
+    const before = readdirSync(directory).sort();
+    const rows = listBambooDailyUsage({ directory, at: hour0, days: 3, limit: 7000 });
+    assert.deepEqual(rows, [
+      { day: today, count: 1234, limit: 7000 },
+      { day: yesterday, count: 50, limit: 7000 },
+      { day: broken, count: null, limit: 7000 },
+    ]);
+    assert.deepEqual(readdirSync(directory).sort(), before);
+    assert.equal(readBambooUsage(directory, hour0).count, 1234);
+    assert.equal(JSON.stringify(rows).includes('should-not-leak'), false);
+    assert.equal(JSON.stringify(rows).includes('provider'), false);
+    assert.throws(() => BambooDailyUsageDaySchema.parse({ ...rows[0], provider: 'bamboo' }));
+    const view = createBambooUsageView({ directory, env: {}, now: () => hour0, days: 3 });
+    assert.equal(view.listDays()[0].limit, 7000);
+    assert.equal(createBambooUsageView({ directory, env: { AI_CENTER_BAMBOO_DAILY_MAX: 'nope' }, now: () => hour0, days: 1 }).listDays()[0].limit, 7000);
+    const text = formatBambooDailySummary(rows);
+    assert.match(text, /^Bamboo 每天调用（信息流准入）\n今天 1,234 \/ 7,000\n10月18日 50 \/ 7,000\n10月17日 无法读取 \/ 7,000$/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function fakeDocument() {
+  function createElement(tag) {
+    return {
+      tag,
+      className: '',
+      textContent: '',
+      type: '',
+      placeholder: '',
+      value: '',
+      disabled: false,
+      children: [],
+      isConnected: false,
+      setAttribute() {},
+      append(...nodes) { this.children.push(...nodes); },
+      replaceChildren(...nodes) { this.children = [...nodes]; },
+      addEventListener(type, fn) { this.listeners = { ...this.listeners, [type]: fn }; },
+      close() { this.listeners?.close?.(); },
+      showModal() { this.isConnected = true; },
+      remove() { this.isConnected = false; },
+    };
+  }
+  const body = { children: [], append(node) { this.children.push(node); } };
+  return { createElement, body };
+}
+
+test('the usage dialog shows the daily Bamboo count and cap', async () => {
+  const document = fakeDocument();
+  const urls = [];
+  openModelUsageDialog({
+    document,
+    api: async (url) => {
+      urls.push(url);
+      return {
+        records: [],
+        bambooDays: [
+          { day: '20261019', count: 1234, limit: 7000 },
+          { day: '20261018', count: 50, limit: 7000 },
+        ],
+      };
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const dialog = document.body.children[0];
+  const bamboo = dialog.children.find((node) => node.className === 'model-usage-bamboo');
+  assert.match(bamboo.textContent, /Bamboo 每天调用（信息流准入）/);
+  assert.match(bamboo.textContent, /今天 1,234 \/ 7,000/);
+  assert.match(bamboo.textContent, /10月18日 50 \/ 7,000/);
+  assert.equal(bamboo.textContent.includes('should-not-leak'), false);
+  assert.match(dialog.children.at(-1).textContent, /暂无记录/);
+  const actions = dialog.children.find((node) => node.className === 'model-usage-actions');
+  actions.children[0].value = 'fixture-job';
+  actions.children[1].onclick();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(urls.at(-1), /jobId=fixture-job/);
+});
+
+test('model usage HTTP returns Bamboo days and does not increment the counter', async () => {
+  const directory = temporaryDirectory();
+  const stamp = shanghaiUsageStamp(Date.now());
+  writeFileSync(bambooUsagePath(directory, stamp.day), JSON.stringify({
+    count: 42, hour: stamp.hour, hourCount: 1, apiKey: 'should-not-leak',
+  }));
+  const app = createAiCenterServer({ host: '127.0.0.1', port: 0, dataDirectory: directory, env: {} });
+  const { localUrl } = await app.listen();
+  try {
+    const response = await fetch(`${localUrl}/api/v1/runtime/model-usage`);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(body.records, []);
+    assert.equal(body.bambooDays.length, 14);
+    assert.deepEqual(body.bambooDays[0], { day: stamp.day, count: 42, limit: 7000 });
+    assert.deepEqual(Object.keys(body.bambooDays[0]).sort(), ['count', 'day', 'limit']);
+    assert.equal(JSON.stringify(body).includes('should-not-leak'), false);
+    assert.equal(JSON.stringify(body).includes('bamboo-usage-'), false);
+    assert.equal(readBambooUsage(directory).count, 42);
+  } finally {
+    await app.close();
     rmSync(directory, { recursive: true, force: true });
   }
 });

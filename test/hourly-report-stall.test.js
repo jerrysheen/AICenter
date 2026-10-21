@@ -18,6 +18,23 @@ test('worker log lines carry a timestamp and the running job id', () => {
   assert.equal(stampWorkerLogLine('idle', { at }), '[worker] 2026-10-20T00:00:00.000Z idle');
 });
 
+test('a watchdog reply that cannot be cloned does not escape the message handler', async () => {
+  const circular = {};
+  circular.self = circular;
+  const watchdog = startMainThreadWatchdog({
+    enabled: true,
+    intervalMs: 20,
+    blockMs: 60_000,
+    tasks: () => [circular],
+    log() { throw new Error('watchdog should not report a clone failure as a stall'); },
+  });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 80));
+  } finally {
+    watchdog.stop();
+  }
+});
+
 test('main thread watchdog stays off unless the env switch is 1', () => {
   assert.equal(mainThreadWatchdogEnabled({}), false);
   assert.equal(mainThreadWatchdogEnabled({ AI_CENTER_MAIN_THREAD_WATCHDOG: '0' }), false);
@@ -102,4 +119,52 @@ test('latest hour uses the foreground slot and catch-up uses another', async () 
   assert.ok(claims.some((claim) => claim.max === -1 && claim.id === 'old'));
   assert.equal(started[0], 'new');
   assert.ok(started.includes('old'));
+});
+
+test('a due failed hour is claimed before other queued work', async () => {
+  const claims = [];
+  const queued = [
+    { id: 'echo', type: 'test.echo', priority: 100, input: {} },
+    { id: 'due', type: 'report.hourly.extract', priority: -1, input: { hourStart: 1 } },
+    { id: 'new', type: 'report.hourly.extract', priority: 10, input: { hourStart: 2 } },
+  ];
+  const store = {
+    recoverStaleJobs() {},
+    touchJob() {},
+    completeJob(id) { return { id, status: 'completed', output: {} }; },
+    claimNextJob(_worker, types, options = {}) {
+      const min = options.minPriority;
+      const max = options.maxPriority;
+      const index = queued.findIndex((job) => types.includes(job.type)
+        && (min == null || job.priority >= min)
+        && (max == null || job.priority <= max));
+      const job = index < 0 ? null : queued.splice(index, 1)[0];
+      claims.push({ types: [...types], min, max, id: job?.id || '' });
+      if (!job) return null;
+      return { ...job, workspaceId: 'local', attemptCount: 1 };
+    },
+  };
+  const started = [];
+  const runner = createJobRunner({
+    store,
+    workerId: 'due-hour-worker',
+    handlers: {
+      'report.hourly.extract': async (_input, context) => { started.push(context.job.id); return {}; },
+      'test.echo': async () => { started.push('echo'); return {}; },
+    },
+    pollIntervalMs: 30,
+    watchdogMs: 60_000,
+  });
+  const running = runner.start();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  runner.stop();
+  await running;
+  const dueAt = claims.findIndex((claim) => claim.id === 'due');
+  const echoAt = claims.findIndex((claim) => claim.id === 'echo');
+  assert.ok(dueAt >= 0);
+  assert.equal(claims[dueAt].min, -1);
+  assert.equal(claims[dueAt].max, -1);
+  assert.ok(echoAt === -1 || dueAt < echoAt);
+  assert.ok(started.includes('due'));
+  assert.equal(started[0], 'new');
 });

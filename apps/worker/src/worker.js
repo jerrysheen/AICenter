@@ -71,6 +71,7 @@ import { taggingManifest, createTaggingJobHandlers, ensureTagRescanSchedule, rea
 import { workPackageDispatchManifest, createWorkPackageJobHandlers } from '../../../packages/runtime/src/work-package-module.js';
 import { createJobRunner, deadLocalWorkerLock, formatJobLoopDelay, formatStartupStep, shouldLogJobLoopDelay } from '../../../packages/runtime/src/job-runner.js';
 import { mainThreadWatchdogEnabled, startMainThreadWatchdog } from '../../../packages/runtime/src/main-thread-watchdog.js';
+import { installWorkerRejectionGuard } from '../../../packages/runtime/src/worker-rejection-guard.js';
 import { installWorkerLogStamps } from '../../../packages/runtime/src/worker-log.js';
 import { createScheduler } from '../../../packages/runtime/src/scheduler.js';
 import { createDailyBriefService } from '../../../packages/domain/src/daily-brief-service.js';
@@ -81,7 +82,7 @@ import {createTreeMaterialPort} from '../../../packages/domain/src/information-t
 import {informationTreeManifest,createInformationTreeJobHandlers,enqueueTreePreparation,prioritizeRecentTreePreparation} from '../../../packages/runtime/src/information-tree-module.js';
 import {createReadingHourService, readingHourSourceAccess} from '../../../packages/domain/src/reading-hour-service.js';
 import {createModelUsageService} from '../../../packages/domain/src/model-usage-service.js';
-import { allowHourlyScheduleEnqueue, createReportJobHandlers, ensureDailyReportCatchupSchedule, ensureDailyReportSchedule, ensureHourlyDigestSchedule, hourlyReportDisabled, releaseOpenHourlyJobs, reportDailyManifest } from '../../../packages/runtime/src/report-module.js';
+import { allowHourlyScheduleEnqueue, createReportJobHandlers, ensureDailyReportCatchupSchedule, ensureDailyReportSchedule, ensureHourlyDigestSchedule, ensureHourlyFailureCatchupSchedule, hourlyReportDisabled, releaseOpenHourlyJobs, reportDailyManifest } from '../../../packages/runtime/src/report-module.js';
 import { boundedInt } from '../../../packages/domain/src/report-reliability.js';
 import { createResearchRecallJobHandlers, researchRecallManifest } from '../../../packages/runtime/src/research-recall-module.js';
 import { createResearchRelevanceJudge, createResearchTagJudge } from '../../../packages/runtime/src/research-judges.js';
@@ -910,6 +911,7 @@ export function createAiCenterWorker(options = {}) {
     ensureDailyReportSchedule(store, dailyConfig);
     ensureDailyReportCatchupSchedule(store, dailyConfig);
     ensureHourlyDigestSchedule(store,Date.now(),{minute:articleStrategy ? 30 : 0,env});
+    ensureHourlyFailureCatchupSchedule(store, Date.now(), {env});
     ensureDividendStrategySchedule(store);
     ensureFeedSubscriptionSyncSchedule(store);
     ensureTagRescanSchedule(store, Date.now(), env);
@@ -1206,6 +1208,7 @@ async function main() {
 }
 
 if (isMain(import.meta.url)) {
+  installWorkerRejectionGuard();
   main().catch((error) => {
     console.error(error);
     process.exitCode = 1;
