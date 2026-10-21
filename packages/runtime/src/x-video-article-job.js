@@ -129,8 +129,8 @@ async function transcribeFile(deps, { workspaceId, relativePath, durationSec, si
     dataDirectory: deps.dataDirectory,
     env,
     quotaRepository: deps.quotaRepository,
-    transcribe: typeof deps.geminiTranscribe === 'function' ? deps.geminiTranscribe : undefined,
-    fileTranscribe: typeof deps.geminiFileTranscribe === 'function' ? deps.geminiFileTranscribe : undefined,
+    transcribe: deps.geminiTranscribe,
+    fileTranscribe: deps.geminiFileTranscribe,
     signal,
   });
 }

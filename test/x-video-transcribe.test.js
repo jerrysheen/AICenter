@@ -43,7 +43,12 @@ function openStore() {
 
 test('worker assembly puts a live transcriber on x-video deps', () => {
   const worker = readFileSync(new URL('../apps/worker/src/worker.js', import.meta.url), 'utf8');
+  const assembly = readFileSync(new URL('../packages/runtime/src/x-video-transcribe.js', import.meta.url), 'utf8');
   assert.match(worker, /assembleXVideoTranscribeDeps\(/);
+  assert.match(assembly, /createGeminiLiveTranscriber\(/);
+  assert.match(assembly, /createGeminiAudioTranscriber\(/);
+  assert.equal(assembly.includes('WebSocket'), false);
+  assert.equal(assembly.includes('wss://'), false);
   const deps = assembleXVideoTranscribeDeps({
     env: { GEMINI_API_KEY: 'assembly-key' },
   });

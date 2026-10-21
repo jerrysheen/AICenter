@@ -25,7 +25,7 @@
 
 ## 当前
 
-- `progress/2026-10-21-x-video-transcribe.md`：X 视频整理在 Worker 装配时接上转写。优先 `gemini-3.5-transcribe-live`，失败才回到 `gemini-3.5-transcribe`。长音频按现有分块。密钥只从环境变量读。不新增 migration。需要重启 Worker。
+- `progress/2026-10-21-x-video-transcribe.md`：X 视频整理把 #194 的 Live 转写装进任务依赖，不另写一套。优先 `gemini-3.5-transcribe-live`，失败才回到 `gemini-3.5-transcribe`。不新增 migration。需要重启 Worker。
 
 - `progress/2026-10-21-live-transcribe.md`：语音转写默认走 `gemini-3.5-transcribe-live`，音频分帧并按每分钟 20000 token 限速。只有 Live 失败才回到 `gemini-3.5-transcribe`，本地每天停在 24 次。不新增 migration。需要重启 Worker。
 

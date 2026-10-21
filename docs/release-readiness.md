@@ -1,6 +1,6 @@
 # 0.2.0 发布门槛
 
-2026-10-21 X 视频整理报 `transcribe is not a function`。`x-video-article-job` 使用 `deps.geminiTranscribe`，Worker 没有把函数装进去。现在装配时放上 Live 转写，默认 `gemini-3.5-transcribe-live`，RPD 不限；这一路失败才用原来的 `gemini-3.5-transcribe` 文件转写。3336 秒这类长音频仍先按每分钟 20000 token 切成多段，每段短于 Live 的 10 分钟会话。密钥只从 `GEMINI_API_KEY` 这一组环境变量读取，不写进代码和日志。已经因为这句错误停住的条目，下一轮会再转写，不另占当天名额。不新增 migration。当前 schema 仍是 95。下一号是 96。空号仍是 63、79、80、82。不要重建数据库。需要重启 Worker。页面没有改，Web 不用为这项重启。见 `progress/2026-10-21-x-video-transcribe.md`。
+2026-10-21 X 视频整理报 `transcribe is not a function`。`x-video-article-job` 使用 `deps.geminiTranscribe`，Worker 没有把函数装进去。现在只把 #194 的 `createGeminiLiveTranscriber` 和 `createGeminiAudioTranscriber` 装进任务依赖，不另写 Live 会话或切段。默认 `gemini-3.5-transcribe-live`，RPD 不限；这一路失败才用原来的 `gemini-3.5-transcribe`。3336 秒这类长音频仍由 `executeAudioTranscription` 按每分钟 20000 token 切成多段，每段短于 Live 的 10 分钟会话。密钥只从 `GEMINI_API_KEY` 这一组环境变量读取，不写进代码和日志。已经因为这句错误停住的条目，下一轮会再转写，不另占当天名额。不新增 migration。当前 schema 仍是 95。下一号是 96。空号仍是 63、79、80、82。不要重建数据库。需要重启 Worker。页面没有改，Web 不用为这项重启。见 `progress/2026-10-21-x-video-transcribe.md`。
 
 2026-10-21 语音转写不再默认打 `gemini-3.5-transcribe`。YouTube 和 X 长视频先走 Live，模型名默认 `gemini-3.5-transcribe-live`，可用 `AI_CENTER_AUDIO_TRANSCRIBE_LIVE_MODEL` 改。16 位 PCM 按大约 100 毫秒一帧送进同一条会话，并按每分钟 20000 token 拉开。RPD 不限。连接地址和密钥不写进日志。Live 失败才用 `AI_CENTER_AUDIO_TRANSCRIBE_MODEL`（默认 `gemini-3.5-transcribe`）做文件转写，按 10K TPM 再切短，本地每天停在 24 次，太平洋日切。不改走其他计费服务。不新增 migration。当前 schema 是 95。下一号是 96。空号仍是 63、79、80、82。不要重建数据库。需要重启 Worker。页面没有改，Web 不用为这项重启。见 `progress/2026-10-21-live-transcribe.md`。
 
