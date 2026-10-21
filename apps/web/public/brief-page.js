@@ -78,12 +78,14 @@ function hourChromeSkeleton() {
   }
   const period = node('div', 'tree-period-bar');
   const switcher = node('div', 'tree-period-switch');
-  for (const label of ['‹', '00:00–01:00', '›']) {
-    const button = node('button', label === '00:00–01:00' ? 'tree-period-label' : 'tree-period-step', label);
+  const prev = node('button', 'tree-period-step', '‹');
+  const label = node('button', 'tree-period-label', '\u00a0');
+  const next = node('button', 'tree-period-step', '›');
+  for (const button of [prev, label, next]) {
     button.type = 'button';
     button.tabIndex = -1;
-    switcher.append(button);
   }
+  switcher.append(prev, label, next);
   period.append(switcher);
   primary.append(tabs, period);
   return primary;
