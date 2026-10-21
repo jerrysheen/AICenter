@@ -40,6 +40,7 @@ import { ensureMediaIndexSyncSchedule, enqueueMediaIndexEnrich, MEDIA_ENRICH_JOB
 import { loadTwkrFlags } from '../../../packages/connectors/src/twkr-sources.js';
 import { createTwkrJobHandlers, ensureTwkrSchedules, prepareTwkrEnqueue, TWKR_NEWS_JOB_TYPE, TWKR_REVENUE_JOB_TYPE } from '../../../packages/runtime/src/twkr-job.js';
 import { createYoutubePodcastJobHandlers, ensureYoutubeArticleSchedule, ensureYoutubePodcastSchedule, YOUTUBE_ARTICLE_JOB_TYPE, YOUTUBE_PODCAST_JOB_TYPE } from '../../../packages/runtime/src/youtube-podcasts-job.js';
+import { assembleXVideoTranscribeDeps } from '../../../packages/runtime/src/x-video-transcribe.js';
 import { X_VIDEO_ARTICLE_JOB_TYPE } from '../../../packages/domain/src/x-video-articles.js';
 import { X_LINK_ARTICLE_JOB_TYPE } from '../../../packages/domain/src/x-link-articles.js';
 import { loadXLinkPublisherIndex } from '../../../packages/domain/src/x-link-service.js';
@@ -826,7 +827,7 @@ export function createAiCenterWorker(options = {}) {
       jobTypes: [YOUTUBE_PODCAST_JOB_TYPE, YOUTUBE_ARTICLE_JOB_TYPE, X_VIDEO_ARTICLE_JOB_TYPE],
       sourceIds: [],
     },
-    jobHandlers: options.youtubePodcastJobHandlers || createYoutubePodcastJobHandlers({
+    jobHandlers: options.youtubePodcastJobHandlers || createYoutubePodcastJobHandlers(assembleXVideoTranscribeDeps({
       repository: store.repositories.youtubePodcasts,
       xVideoRepository: store.repositories.xVideos,
       feedRepository: store.repositories.feed,
@@ -836,7 +837,7 @@ export function createAiCenterWorker(options = {}) {
       env,
       browserRuntime,
       store,
-    }),
+    })),
   });
   registry.register({
     manifest: {
