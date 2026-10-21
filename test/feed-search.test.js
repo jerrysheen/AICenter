@@ -4,7 +4,10 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { createStore } from '../packages/database/src/index.js';
+import { runMigrations } from '../packages/database/src/migrations.js';
+import { indexFeedSearchBatch, replaceFeedSearchRow } from '../packages/database/src/feed-search-index.js';
 import { createAuthorService } from '../packages/domain/src/author-service.js';
 import { createFeedService } from '../packages/domain/src/feed-service.js';
 import { ensureXVideoFeedPost, repairXFollowingFeed } from '../packages/domain/src/x-video-feed.js';
@@ -228,6 +231,116 @@ test('feed search backfill starts after the caller returns', async () => {
     assert.equal(feed.feedSearchIndexStatus().rows, 0);
   } finally {
     opened.close();
+  }
+});
+
+test('a long query keeps using LIKE until the full-text backfill is done', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'feed-search-like-'));
+  const dbPath = path.join(directory, 'test.db');
+  const store = createStore(dbPath);
+  try {
+    const feed = store.repositories.feed;
+    const account = feed.upsertSourceAccount({
+      workspaceId: 'local', provider: 'x', externalId: 'x:home:for-you', displayName: 'For you',
+    });
+    const publishedAt = Date.parse('2026-10-16T08:00:00Z');
+    const capture = feed.saveCapture({
+      workspaceId: 'local', provider: 'x', externalId: 'like-body', sourceAccountId: account.id,
+      sourceUrl: 'https://example.com/like-body', title: '普通标题', contentHash: hash('like-body'), publishedAt,
+      metadata: { authorHandle: 'other' },
+    });
+    feed.saveContentItem({
+      workspaceId: 'local', captureId: capture.id, originType: 'subscription', contentType: 'post',
+      title: '普通标题', body: `${'甲'.repeat(40)} LikeOnlyToken ${'乙'.repeat(40)}`,
+      summary: '普通标题', sourceUrl: capture.sourceUrl, authorName: '别人', publishedAt,
+    });
+    const reader = createFeedService({
+      legacyRepository: { listPosts() { return []; }, getPost() { return null; } },
+      feedRepository: feed,
+      sourcePort: { findByProvider() { return null; }, persistence() { return null; }, async read() { return { data: null }; } },
+    });
+    assert.equal(feed.feedSearchIndexStatus().done, false);
+    const raw = new Database(dbPath);
+    raw.exec('DELETE FROM content_item_fts');
+    raw.close();
+    assert.equal(reader.searchContentItems('local', 'LikeOnlyToken').some((row) => row.title === '普通标题'), true);
+    let guard = 0;
+    while (!feed.feedSearchIndexStatus().done && guard < 20) {
+      feed.indexFeedSearchBatch(40);
+      guard += 1;
+    }
+    assert.equal(feed.feedSearchIndexStatus().done, true);
+    assert.equal(reader.searchContentItems('local', 'LikeOnlyToken').some((row) => row.title === '普通标题'), true);
+    const indexed = new Database(dbPath);
+    indexed.exec('DELETE FROM content_item_fts');
+    indexed.close();
+    assert.equal(reader.searchContentItems('local', 'LikeOnlyToken').some((row) => row.title === '普通标题'), false);
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('feed search writes and deletes through the content item rowid', () => {
+  const source = readFileSync(new URL('../packages/database/src/feed-search-index.js', import.meta.url), 'utf8');
+  assert.match(source, /INSERT INTO content_item_fts\(rowid, content_item_id, workspace_id, text\) VALUES\(\?, \?, \?, \?\)/);
+  assert.match(source, /DELETE FROM content_item_fts WHERE rowid = \?/);
+  assert.equal(source.includes('WHERE content_item_id = ?'), false);
+
+  const db = new Database(':memory:');
+  try {
+    runMigrations(db);
+    const now = Date.now();
+    const count = 4000;
+    const insert = db.prepare(`INSERT INTO content_items
+      (id, workspace_id, capture_id, origin_type, content_type, title, body, summary, source_url, author_name, published_at, created_at, updated_at)
+      VALUES (?, 'local', NULL, 'manual', 'post', ?, ?, '', '', '', ?, ?, ?)`);
+    db.transaction(() => {
+      for (let index = 0; index < count; index += 1) {
+        insert.run(`item-${index}`, `标题 ${index}`, index === 10 ? 'RowidProbeToken' : `正文 ${index}`, now, now, now);
+      }
+    })();
+    let guard = 0;
+    while (guard < 40) {
+      const result = indexFeedSearchBatch(db, { limit: 200 });
+      guard += 1;
+      if (result.done) break;
+    }
+    const matched = db.prepare(`SELECT ci.rowid AS rowid, ci.id AS id
+      FROM content_items ci
+      JOIN content_item_fts f ON f.rowid = ci.rowid AND f.content_item_id = ci.id
+      WHERE ci.id = 'item-10'`).get();
+    assert.equal(db.prepare('SELECT count(*) AS n FROM content_item_fts').get().n, count);
+    assert.equal(matched.id, 'item-10');
+
+    const deleteOps = db.prepare('EXPLAIN DELETE FROM content_item_fts WHERE rowid = ?').all(matched.rowid);
+    assert.equal(deleteOps.some((op) => op.opcode === 'VFilter' && String(op.p4) === '='), true);
+    assert.equal(deleteOps.some((op) => op.opcode === 'VNext'), false);
+    const scanOps = db.prepare('EXPLAIN DELETE FROM content_item_fts WHERE content_item_id = ?').all(matched.id);
+    assert.equal(scanOps.some((op) => op.opcode === 'VNext'), true);
+
+    const writePlan = db.prepare(`EXPLAIN QUERY PLAN
+      INSERT INTO content_item_fts(rowid, content_item_id, workspace_id, text)
+      SELECT ci.rowid, ci.id, ci.workspace_id, ci.title
+      FROM content_items ci WHERE ci.rowid = ?`).all(matched.rowid);
+    assert.match(writePlan.map((row) => row.detail).join('\n'), /INTEGER PRIMARY KEY \(rowid=\?\)/);
+
+    const deleteByRowid = db.prepare('DELETE FROM content_item_fts WHERE rowid = ?');
+    const deleteByColumn = db.prepare('DELETE FROM content_item_fts WHERE content_item_id = ?');
+    const rowidStarted = performance.now();
+    for (let index = 0; index < 40; index += 1) deleteByRowid.run(matched.rowid);
+    const rowidMs = performance.now() - rowidStarted;
+    const scanStarted = performance.now();
+    for (let index = 0; index < 8; index += 1) deleteByColumn.run(`item-${200 + index}`);
+    const scanMs = (performance.now() - scanStarted) * 5;
+    assert.ok(scanMs > rowidMs * 8, `rowid ${rowidMs.toFixed(2)}ms normalized scan ${scanMs.toFixed(2)}ms`);
+
+    assert.equal(replaceFeedSearchRow(db, 'item-10'), true);
+    const rewritten = db.prepare('SELECT rowid AS rowid FROM content_item_fts WHERE rowid = ?').get(matched.rowid);
+    assert.equal(rewritten.rowid, matched.rowid);
+    assert.equal(db.prepare('SELECT content_item_id AS id FROM content_item_fts WHERE rowid = ?').get(matched.rowid).id, 'item-10');
+  } finally {
+    db.close();
   }
 });
 

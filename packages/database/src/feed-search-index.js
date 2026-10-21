@@ -40,15 +40,24 @@ function ftsReady(database) {
   return ready;
 }
 
+const DELETE_FEED_SEARCH_SQL = 'DELETE FROM content_item_fts WHERE rowid = ?';
+const INSERT_FEED_SEARCH_SQL = `INSERT INTO content_item_fts(rowid, content_item_id, workspace_id, text) VALUES(?, ?, ?, ?)`;
+
+function writeFeedSearchRow(row, remove, insert) {
+  remove.run(row.rowid);
+  insert.run(row.rowid, row.content_item_id, row.workspace_id, row.text || '');
+}
+
 export function replaceFeedSearchRow(database, contentItemId) {
   const id = String(contentItemId || '');
   if (!id || !ftsReady(database)) return false;
-  database.prepare('DELETE FROM content_item_fts WHERE content_item_id = ?').run(id);
   const row = database.prepare(`${FEED_SEARCH_SOURCE_SQL} WHERE ci.id = ?`).get(id);
-  if (!row) return false;
-  database.prepare(
-    'INSERT INTO content_item_fts (content_item_id, workspace_id, text) VALUES (?, ?, ?)',
-  ).run(row.content_item_id, row.workspace_id, row.text || '');
+  if (!row?.rowid) return false;
+  writeFeedSearchRow(
+    row,
+    database.prepare(DELETE_FEED_SEARCH_SQL),
+    database.prepare(INSERT_FEED_SEARCH_SQL),
+  );
   return true;
 }
 
@@ -64,14 +73,9 @@ export function indexFeedSearchBatch(database, { limit = 40 } = {}) {
     const rows = database.prepare(
       `${FEED_SEARCH_SOURCE_SQL} WHERE ci.rowid > ? ORDER BY ci.rowid LIMIT ?`,
     ).all(Number(cursor.rowid_cursor) || 0, size);
-    const remove = database.prepare('DELETE FROM content_item_fts WHERE content_item_id = ?');
-    const insert = database.prepare(
-      'INSERT INTO content_item_fts (content_item_id, workspace_id, text) VALUES (?, ?, ?)',
-    );
-    for (const row of rows) {
-      remove.run(row.content_item_id);
-      insert.run(row.content_item_id, row.workspace_id, row.text || '');
-    }
+    const remove = database.prepare(DELETE_FEED_SEARCH_SQL);
+    const insert = database.prepare(INSERT_FEED_SEARCH_SQL);
+    for (const row of rows) writeFeedSearchRow(row, remove, insert);
     const next = rows.length ? Number(rows[rows.length - 1].rowid) || 0 : Number(cursor.rowid_cursor) || 0;
     const done = rows.length < size ? 1 : 0;
     database.prepare(

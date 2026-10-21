@@ -149,6 +149,19 @@ function likeTerm(term) {
   return `%${String(term).replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
 }
 
+// 回填没完成时，三个字以上仍走这条 LIKE，正文前 4000 字算在里面。
+const SEARCH_BODY_HAYSTACK = `lower(
+  COALESCE(ci.title, '') || char(10) || COALESCE(ci.summary, '') || char(10) ||
+  COALESCE(ci.author_name, '') || char(10) || COALESCE(${AUTHOR_HANDLE_SQL}, '') || char(10) ||
+  COALESCE((
+    SELECT group_concat(COALESCE(a.name, '') || char(10) || COALESCE(a.handle, ''), char(10))
+    FROM item_authors ia
+    JOIN authors a ON a.workspace_id = ia.workspace_id AND a.author_id = ia.author_id
+    WHERE ia.workspace_id = ci.workspace_id AND ia.content_item_id = ci.id
+  ), '') || char(10) ||
+  substr(COALESCE(ci.body, ''), 1, 4000)
+)`;
+
 // 两个字用不上 trigram。只拼标题、摘要和作者，不扫正文。
 const SEARCH_SHORT_HAYSTACK = `lower(
   COALESCE(ci.title, '') || char(10) || COALESCE(ci.summary, '') || char(10) ||
@@ -1889,7 +1902,7 @@ export function createFeedRepository(database, emitEvent) {
       return rows.map(mapContentItem);
     },
 
-    // 三个字及以上走 FTS5。两个字 trigram 对不上，只查标题、摘要和作者。
+    // 回填完成前，三个字以上仍走 LIKE。完成之后才用 FTS5。两个字只查标题、摘要和作者。
     searchVisibleItems(workspaceId, { query = '', provider = '', limit = 40, qualityRule = '' } = {}) {
       const terms = String(query || '').trim().toLocaleLowerCase().split(/\s+/).filter((term) => term.length >= 2).slice(0, 8);
       if (!terms.length) return [];
@@ -1898,6 +1911,7 @@ export function createFeedRepository(database, emitEvent) {
       const source = providerId && providerId !== 'all' ? providerId : '';
       const longTerms = terms.filter((term) => term.length >= 3);
       const shortTerms = terms.filter((term) => term.length < 3);
+      const indexDone = longTerms.length > 0 && readFeedSearchIndexStatus(database).done === true;
       const clauses = [
         'ci.workspace_id = ?',
         VISIBLE_CONTENT_SQL,
@@ -1908,7 +1922,7 @@ export function createFeedRepository(database, emitEvent) {
       const params = [workspaceId];
       let from = `FROM content_items ci
         JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id`;
-      if (longTerms.length) {
+      if (indexDone) {
         const match = escapeFts5MatchQuery(longTerms.join(' '));
         if (!match) return [];
         from = `FROM (
@@ -1923,8 +1937,10 @@ export function createFeedRepository(database, emitEvent) {
         clauses.push('c.provider = ?');
         params.push(source);
       }
-      for (const term of (longTerms.length ? shortTerms : terms)) {
-        clauses.push(`${SEARCH_SHORT_HAYSTACK} LIKE ? ESCAPE '\\'`);
+      const likeTerms = indexDone ? shortTerms : terms;
+      const haystack = indexDone || !longTerms.length ? SEARCH_SHORT_HAYSTACK : SEARCH_BODY_HAYSTACK;
+      for (const term of likeTerms) {
+        clauses.push(`${haystack} LIKE ? ESCAPE '\\'`);
         params.push(likeTerm(term));
       }
       params.push(safeLimit);
