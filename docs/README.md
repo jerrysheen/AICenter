@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-21-flash-lite-headroom.md`：两个 Flash Lite 按剩余 RPM、RPD 提前互换，不等 429。Worker 启动时按模型打出当天调用次数。不新增 migration。需要重启 Worker。
+
 - `progress/2026-10-20-youtube-caption-dedupe.md`：YouTube 译文在翻译前合并滚动字幕，已经译好的段落在显示时再去重。未完整状态合成一行。长视频帖标「视频待整理」或「视频已整理」，只有链接的帖子挂进 X 关注信息流并写出中文摘要。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
 
 - `progress/2026-10-20-x-link-article.md`：媒体或官方账号的 X 外链会抓新闻正文并翻译。抓不到不标「正文完整」，短链展开后显示「阅读 BBC 原文」。标注查询改为分批 POST。migration 94。需要同时重启 Web 和 Worker，浏览器再加载一次。
