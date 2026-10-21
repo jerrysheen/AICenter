@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildWav, describeAudioTranscription, planFileTranscribePieces, resolveAudioTranscribeModels, AUDIO_TRANSCRIBE_FILE_REQUESTS_PER_DAY } from '../packages/domain/src/audio-transcription.js';
 import { clipSecret, createGeminiAudioTranscriber } from '../packages/connectors/src/audio-transcribe.js';
-import { createGeminiLiveTranscriber } from '../packages/connectors/src/audio-transcribe-live.js';
+import { createGeminiLiveTranscriber, liveTranscribeUrl } from '../packages/connectors/src/audio-transcribe-live.js';
+import { withModelUsageContext } from '../packages/runtime/src/model-usage-context.js';
 import { executeAudioTranscription } from '../packages/runtime/src/audio-transcription-job.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -13,8 +14,9 @@ function wav(seconds = 1) {
 }
 
 class FakeSocket {
-  constructor(url) {
+  constructor(url, init) {
     this.url = url;
+    this.init = init || {};
     this.sent = [];
     this.listeners = {};
     queueMicrotask(() => this.emit('open', {}));
@@ -88,8 +90,8 @@ test('live transcription streams pcm frames inside the 20K token minute', async 
 test('a live session reports the configured model and does not echo the key', async () => {
   let seen;
   class RecordingSocket extends FakeSocket {
-    constructor(url) {
-      super(url);
+    constructor(url, init) {
+      super(url, init);
       seen = this;
     }
   }
@@ -101,9 +103,14 @@ test('a live session reports the configured model and does not echo the key', as
   });
   await transcribe({ apiKey: 'AIzaSyTESTKEY1234567890', audio: wav(1) });
   assert.equal(seen.sent[0].setup.model, 'models/custom-live-transcribe');
+  assert.equal(seen.sent[0].setup.generationConfig, undefined);
+  assert.equal(seen.url, liveTranscribeUrl());
+  assert.equal(seen.url.includes('key='), false);
+  assert.equal(seen.init.headers['x-goog-api-key'], 'AIzaSyTESTKEY1234567890');
   assert.equal(seen.sent.some((message) => message.realtimeInput?.audio?.mimeType === 'audio/pcm;rate=16000'), true);
   assert.equal(seen.sent.at(-1).realtimeInput.audioStreamEnd, true);
   assert.equal(JSON.stringify(seen.sent).includes('AIzaSyTESTKEY1234567890'), false);
+  assert.equal(JSON.stringify(seen.url).includes('AIzaSyTESTKEY1234567890'), false);
   await assert.rejects(
     createGeminiLiveTranscriber({ WebSocket: FailingSocket, now: () => 0, sleep: async () => {} })({
       apiKey: 'AIzaSyTESTKEY1234567890',
@@ -111,6 +118,76 @@ test('a live session reports the configured model and does not echo the key', as
     }),
     (error) => error.code === 'live-failed' && !String(error.message).includes('AIzaSyTESTKEY1234567890'),
   );
+});
+
+test('a live call is recorded on success and failure without the key or socket address', async () => {
+  const secret = 'AIzaSyTESTKEY1234567890';
+  const rows = [];
+  const observe = (row) => rows.push(JSON.parse(JSON.stringify(row)));
+  await withModelUsageContext({ workspaceId: 'local', jobId: 'job-live', stage: 'x-video.article', observe }, async () => {
+    const transcribe = createGeminiLiveTranscriber({
+      WebSocket: FakeSocket,
+      now: () => 0,
+      sleep: async () => {},
+      model: 'gemini-3.5-transcribe-live',
+    });
+    const text = await transcribe({ apiKey: secret, audio: wav(1) });
+    assert.equal(text, '前半句');
+  });
+  assert.equal(rows[0].status, 'pending');
+  assert.equal(rows.at(-1).status, 'succeeded');
+  assert.equal(rows.at(-1).model, 'gemini-3.5-transcribe-live');
+  assert.equal(rows.at(-1).provider, 'gemini');
+  assert.equal(rows.at(-1).kind, 'request');
+  assert.equal(rows.at(-1).stage, 'x-video.article');
+  assert.equal(rows.at(-1).jobId, 'job-live');
+  assert.equal(rows.at(-1).keySuffix, '7890');
+  assert.equal(JSON.stringify(rows).includes(secret), false);
+  assert.equal(JSON.stringify(rows).includes('wss://'), false);
+  assert.equal(JSON.stringify(rows).includes('generativelanguage'), false);
+
+  rows.length = 0;
+  await withModelUsageContext({ workspaceId: 'local', jobId: 'job-live', stage: 'x-video.article', observe }, async () => {
+    await assert.rejects(createGeminiLiveTranscriber({
+      WebSocket: FailingSocket,
+      now: () => 0,
+      sleep: async () => {},
+    })({ apiKey: secret, audio: wav(1) }), (error) => {
+      assert.equal(error.code, 'live-failed');
+      assert.equal(String(error.message).includes(secret), false);
+      assert.equal(String(error.message).includes('wss://'), false);
+      return true;
+    });
+  });
+  assert.equal(rows[0].status, 'pending');
+  assert.equal(rows.at(-1).status, 'failed');
+  assert.equal(JSON.stringify(rows).includes(secret), false);
+});
+
+test('final transcript text is kept when the live turn does not complete', async () => {
+  class FinalWithoutTurn extends FakeSocket {
+    send(raw) {
+      const message = JSON.parse(raw);
+      this.sent.push(message);
+      if (message.setup) {
+        queueMicrotask(() => this.emit('message', { data: JSON.stringify({ setupComplete: {} }) }));
+      }
+      if (!this.noted && message.realtimeInput?.audio && !message.realtimeInput.audioStreamEnd) {
+        this.noted = true;
+        queueMicrotask(() => this.emit('message', {
+          data: JSON.stringify({ serverContent: { inputTranscription: { text: '已经转出的句子' } } }),
+        }));
+      }
+    }
+  }
+  const transcribe = createGeminiLiveTranscriber({
+    WebSocket: FinalWithoutTurn,
+    now: () => 0,
+    sleep: async () => {},
+    timeoutMs: 30,
+  });
+  const text = await transcribe({ apiKey: 'AIzaSyTESTKEY1234567890', audio: wav(1) });
+  assert.equal(text, '已经转出的句子');
 });
 
 test('live failure falls back to the file model with a 10K budget and a 24 call day', async () => {

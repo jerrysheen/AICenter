@@ -1,3 +1,21 @@
+// 文章页首屏要用的作者字段。最近打开的快照会丢掉未列出的字段。
+export function articleAuthorFields(item) {
+  return {
+    author: String(item?.author || '').trim(),
+    authorId: String(item?.authorId || '').trim(),
+    handle: String(item?.handle || '').trim(),
+    authorHandle: String(item?.authorHandle || '').trim(),
+  };
+}
+
+// 正文还没到时，文章页仍先画出作者。X 和雪球的列表项常常没有正文。
+export function socialArticleBodyPending(post) {
+  const platform = String(post?.platform || '');
+  if (platform !== 'x' && platform !== 'xueqiu') return false;
+  if (String(post?.body || '').trim()) return false;
+  return Boolean(String(post?.resourceId || '').trim());
+}
+
 export function feedSearchPath({ platform = '', query = '' } = {}) {
   const params = new URLSearchParams();
   const text = String(query || '').trim();
