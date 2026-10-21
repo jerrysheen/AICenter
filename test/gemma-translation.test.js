@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { createStore } from '../packages/database/src/index.js';
-import { createGemmaTranslationRouter, gemmaBackoffMs, gemmaIntervalMs, gemmaQuotaDay, gemmaReservedTokens, gemmaRetryStatuses, gemmaTranslationInput, gemmaTranslationPolicy, readGemmaStream, resolveGemmaTranslationSlots } from '../packages/connectors/src/translate/gemma.js';
+import { createGemmaTranslationRouter, gemmaBackoffMs, gemmaIntervalMs, gemmaQuotaDay, gemmaRequestNeedsKeyAlone, gemmaReservedTokens, gemmaRetryStatuses, gemmaTranslationInput, gemmaTranslationPolicy, readGemmaStream, resolveGemmaTranslationSlots } from '../packages/connectors/src/translate/gemma.js';
 import { translationAttemptCallLimit, withTranslationCallBudget } from '../packages/connectors/src/translate/call-budget.js';
 import { nextDailyInstant, previousDailyInstant } from '../packages/domain/src/zoned-time.js';
 import { createTranslateService, splitTranslationText } from '../packages/connectors/src/translate/index.js';
@@ -169,6 +169,103 @@ test('one key keeps two requests in flight and the next does not wait out 240s',
   await Promise.all([first, second, third]);
 }));
 
+test('a large request takes one key alone and short requests still share it', fixture(async (store) => {
+  const policy = gemmaTranslationPolicy({});
+  const shortReserved = gemmaReservedTokens(gemmaTranslationInput('翻译', 'One'), {});
+  const feedReserved = gemmaReservedTokens(gemmaTranslationInput('翻译', 'a'.repeat(1500)), { maxOutputTokens: 4096 });
+  assert.equal(gemmaRequestNeedsKeyAlone(shortReserved, policy), false);
+  assert.equal(gemmaRequestNeedsKeyAlone(feedReserved, policy), false);
+  assert.equal(gemmaRequestNeedsKeyAlone(Math.floor(policy.tokensPerMinute / 4), policy), false);
+  assert.equal(gemmaRequestNeedsKeyAlone(Math.floor(policy.tokensPerMinute / 4) + 1, policy), true);
+  const longPrompt = '字'.repeat(6000);
+  const longReserved = gemmaReservedTokens(gemmaTranslationInput('翻译', longPrompt), { maxOutputTokens: 8192 });
+  assert.equal(gemmaRequestNeedsKeyAlone(longReserved, policy), true);
+  assert.ok(longReserved <= policy.tokensPerMinute);
+
+  let at = Date.parse('2026-10-21T09:35:00Z');
+  const gates = [];
+  let started = 0;
+  const router = createGemmaTranslationRouter({
+    env: {
+      GEMINI_API_KEY: 'large-key',
+      AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MIN_MS: '0',
+      AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MAX_MS: '0',
+    },
+    quotaRepository: store.repositories.modelQuota,
+    now: () => at,
+    sleep: async (ms) => { at += ms; await new Promise((resolve) => setImmediate(resolve)); },
+    fetch: async () => {
+      started += 1;
+      if (started === 1) await new Promise((resolve) => gates.push(resolve));
+      return sse('译文');
+    },
+  });
+  const first = router.generate({ system: '翻译', prompt: longPrompt, maxOutputTokens: 8192 });
+  for (let turn = 0; turn < 20 && started < 1; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(started, 1);
+  const second = router.generate({ system: '翻译', prompt: longPrompt, maxOutputTokens: 8192 });
+  for (let turn = 0; turn < 8; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(started, 1);
+  gates.shift()();
+  for (let turn = 0; turn < 40 && started < 2; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(started, 2);
+  await Promise.all([first, second]);
+
+  let atShort = at;
+  let shortStarted = 0;
+  const shortGates = [];
+  const shared = createGemmaTranslationRouter({
+    env: {
+      GEMINI_API_KEY: 'short-key',
+      AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MIN_MS: '0',
+      AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MAX_MS: '0',
+    },
+    quotaRepository: store.repositories.modelQuota,
+    now: () => atShort,
+    sleep: async (ms) => { atShort += ms; await new Promise((resolve) => setImmediate(resolve)); },
+    fetch: async () => {
+      shortStarted += 1;
+      if (shortStarted <= 2) await new Promise((resolve) => shortGates.push(resolve));
+      return sse('译文');
+    },
+  });
+  const one = shared.generate({ system: '翻译', prompt: 'One' });
+  const two = shared.generate({ system: '翻译', prompt: 'Two' });
+  for (let turn = 0; turn < 20 && shortStarted < 2; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(shortStarted, 2);
+  shortGates.splice(0).forEach((release) => release());
+  await Promise.all([one, two]);
+}));
+
+test('two keys split concurrent large requests instead of stacking them', fixture(async (store) => {
+  let at = Date.parse('2026-10-21T09:40:00Z');
+  const longPrompt = '字'.repeat(6000);
+  const keys = [];
+  const gates = [];
+  const router = createGemmaTranslationRouter({
+    env: {
+      GEMINI_API_KEY: 'spread-a',
+      GEMINI_API_KEY2: 'spread-b',
+      AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MIN_MS: '0',
+      AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MAX_MS: '0',
+    },
+    quotaRepository: store.repositories.modelQuota,
+    now: () => at,
+    sleep: async (ms) => { at += ms; await new Promise((resolve) => setImmediate(resolve)); },
+    fetch: async (_url, init) => {
+      keys.push(init.headers['x-goog-api-key']);
+      await new Promise((resolve) => gates.push(resolve));
+      return sse('译文');
+    },
+  });
+  const first = router.generate({ system: '翻译', prompt: longPrompt, maxOutputTokens: 8192 });
+  const second = router.generate({ system: '翻译', prompt: longPrompt, maxOutputTokens: 8192 });
+  for (let turn = 0; turn < 30 && keys.length < 2; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(keys.slice().sort(), ['spread-a', 'spread-b']);
+  gates.splice(0).forEach((release) => release());
+  await Promise.all([first, second]);
+}));
+
 test('Worker executes five translations without increasing other job type concurrency',fixture(async store=>{
  let active=0,maximum=0,started;
  const allStarted=new Promise(resolve=>{started=resolve;});let release;
@@ -217,7 +314,7 @@ test('Gemma does not apply a local daily cap unless the env sets one',fixture(as
 
 test('Gemma pool uses only official streaming endpoints, rotates models and persists quota and usage', fixture(async store => {
   const calls = [], usage = [];
-  const router = createGemmaTranslationRouter({ ...settings(store), usageObserver: row => usage.push(structuredClone(row)),
+  const router = createGemmaTranslationRouter({ ...settings(store), random: () => 0, usageObserver: row => usage.push(structuredClone(row)),
     fetch: async (url, init) => { calls.push([url, init]); return sse('完整译文'); } });
   const first = await router.generate({ system: '翻译', prompt: 'Report one' });
   const second = await router.generate({ system: '翻译', prompt: 'Report two' });

@@ -66,6 +66,14 @@ export function estimateGemmaTokens(text) {
   return Math.ceil(quarter / 4);
 }
 
+// Two copies above half the per-key minute budget were leaving together and coming back as HTTP 500.
+// 429 stayed at 0, so this is not the RPM cap. Short chunks remain at the configured key concurrency.
+export function gemmaRequestNeedsKeyAlone(reservedTokens, policy = {}) {
+  const budget = Math.max(1, Math.floor(Number(policy.tokensPerMinute) || 1));
+  const reserved = Math.max(0, Math.ceil(Number(reservedTokens) || 0));
+  return reserved * 2 > Math.floor(budget / 2);
+}
+
 export function gemmaReservedTokens(input, { estimatedTokens = 0, maxOutputTokens = 4096 } = {}) {
   const outputCap = Number.isInteger(maxOutputTokens) && maxOutputTokens > 0 ? Math.min(8192, maxOutputTokens) : 4096;
   const inputTokens = estimateGemmaTokens(input);
@@ -258,7 +266,7 @@ export function createGemmaTranslationRouter(options = {}) {
     });
   }
 
-  async function admit(waitMs, pool, estimatedTokens = 0) {
+  async function admit(waitMs, pool, estimatedTokens = 0, exclusiveInflight = false) {
     let ticket;
     let quotaRetryAt = Infinity;
     let upstreamRetryAt = Infinity;
@@ -283,7 +291,7 @@ export function createGemmaTranslationRouter(options = {}) {
         requestsPerHour: Infinity, requestsPerMinute: policy.requestsPerMinute, minIntervalMs: policy.intervalMinMs,
         pacingModels: GEMMA_TRANSLATION_MODELS, estimatedTokensPerMinute: policy.tokensPerMinute, estimatedTokens,
         dayStart: day.dayStart, dayEnd: day.dayEnd,
-        inflightLimit: policy.keyConcurrency, inflightRetryMs: GEMMA_ADMIT_MIN_WAIT_MS,
+        inflightLimit: policy.keyConcurrency, inflightRetryMs: GEMMA_ADMIT_MIN_WAIT_MS, exclusiveInflight,
       });
       if (ready.length) {
         const origin = pool === schedule ? scheduleCursor : pool === models ? cursor : 0;
@@ -371,7 +379,7 @@ export function createGemmaTranslationRouter(options = {}) {
       for (let attempt = 0; attempt <= upstreamFailovers; attempt++) {
         chargeTranslationCall();
         let ticket;
-        try { ticket = await admit(attempt === 0 ? 61000 : 1500, attempt === 0 ? firstPool : retryPool, reserved); }
+        try { ticket = await admit(attempt === 0 ? 61000 : 1500, attempt === 0 ? firstPool : retryPool, reserved, gemmaRequestNeedsKeyAlone(reserved, policy)); }
         catch (error) {
           if (error?.code === 'budget-deferred' && lastError) throw lastError;
           throw error;

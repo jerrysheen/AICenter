@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-21-gemma-large-exclusive.md`：Gemma 26B 的 HTTP 500 在负载升高时从约 11% 升到约 23%，429 仍是 0。预留超过每分钟额度四分之一的请求改为独占一把密钥。大约 1500 字的信息流分段仍允许同一把密钥同时 2 个。不新增 migration。需要重启 Worker。
+
 - `progress/2026-10-21-http2-idle-error-sink.md`：undici HTTP/2 的 `socket idle timeout` 打在流的 `'error'` 事件上，拒绝计数接不住。建连时给会话和流挂上错误监听，空闲拆连接不再让 Worker 退出。被接住的错误用一行 debug 记下累计次数。Worker 启动后这个监听已经装上。不新增 migration。需要重启 Worker。
 
 - `progress/2026-10-21-hourly-due-retry-cover.md`：到了重试时间的失败小时不再因为旧尝试没盖住节点就被跳过。优先级低于 -1 的排队任务会抬到补跑通道，而不是一直占着名额却不执行。不新增 migration。需要重启 Worker。

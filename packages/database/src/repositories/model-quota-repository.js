@@ -51,7 +51,7 @@ function releaseLease(database, emitEvent, ticket) {
 
 export function createModelQuotaRepository(database, emitEvent) {
   return Object.freeze({
-    reserve({ slots, model, at, requestsPerHour, requestsPerMinute, minIntervalMs, estimatedTokensPerMinute, estimatedTokens, accountMode=false, requestsPerDay=Infinity, requestsPerKeyPerDay=Infinity, dayStart=at, dayEnd=at+86400000, legacyProject='', dryRun=false, pacingModels=[], balance='', idleAfterMs=0, flashProjectCap=true, inflightLimit=1, inflightRetryMs=250 }) {
+    reserve({ slots, model, at, requestsPerHour, requestsPerMinute, minIntervalMs, estimatedTokensPerMinute, estimatedTokens, accountMode=false, requestsPerDay=Infinity, requestsPerKeyPerDay=Infinity, dayStart=at, dayEnd=at+86400000, legacyProject='', dryRun=false, pacingModels=[], balance='', idleAfterMs=0, flashProjectCap=true, inflightLimit=1, inflightRetryMs=250, exclusiveInflight=false }) {
       return database.transaction(() => {
         const global = accountMode
           ? database.prepare('SELECT at FROM model_quota_reservations WHERE model=? AND at>? ORDER BY at').all(model,at-3600000)
@@ -105,7 +105,7 @@ export function createModelQuotaRepository(database, emitEvent) {
             if(roomLimit>1){
               const row=database.prepare('SELECT owner, until_at FROM model_quota_leases WHERE project=? AND model=?').get(slot.project,model);
               const holders=activeLeaseHolders(row?.owner, row?.until_at, at);
-              if(holders.length>=roomLimit){
+              if(holders.length>=roomLimit || (exclusiveInflight && holders.length>0)){
                 retryAt=Math.min(retryAt, at+Math.max(250, Math.floor(Number(inflightRetryMs)||250)));
                 continue;
               }
@@ -126,7 +126,9 @@ export function createModelQuotaRepository(database, emitEvent) {
           const id=randomUUID();
           database.prepare('INSERT INTO model_quota_reservations(id,project,model,at,estimated_tokens,key_env) VALUES(?,?,?,?,?,?)').run(id,slot.project,model,at,estimatedTokens,slot.keyEnv || '');
           if(accountMode && roomLimit>1){
-            const holders=(inflightRooms.get(slot.project)||[]).concat([{id,until:at+QUOTA_LEASE_TTL_MS}]);
+            const seats=exclusiveInflight ? roomLimit : 1;
+            const added=Array.from({length:seats},()=>({id,until:at+QUOTA_LEASE_TTL_MS}));
+            const holders=(inflightRooms.get(slot.project)||[]).concat(added);
             const until=holders.reduce((max,holder)=>Math.max(max,holder.until),at);
             database.prepare('INSERT INTO model_quota_leases(project,model,owner,until_at) VALUES(?,?,?,?) ON CONFLICT(project,model) DO UPDATE SET owner=excluded.owner,until_at=excluded.until_at').run(slot.project,model,JSON.stringify(holders),until);
           }else if(accountMode)database.prepare('INSERT INTO model_quota_leases(project,model,owner,until_at) VALUES(?,?,?,?) ON CONFLICT(project,model) DO UPDATE SET owner=excluded.owner,until_at=excluded.until_at').run(slot.project,model,id,at+QUOTA_LEASE_TTL_MS);
