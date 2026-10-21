@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-21-worker-restart-watchdog.md`：调度入队失败不再让 Worker 自己退出。Node 22 会把没人接住的拒绝当成致命错误，启动器再拉起后，正在跑的任务被记成 `WorkerLeaseExpired`。现在一条调度失败只记日志，循环继续。看门狗记下正在跑的任务，自己的工作线程出错也不会把进程打退出。不新增 migration。需要重启 Worker。
+
 - `progress/2026-10-21-hourly-failure-requeue.md`：失败的小时报不再只靠新素材触发补跑。每 10 分钟把 `retryAt` 已到、仍然失败、也没有新素材的小时重新排进去。每次最多 2 个，旧小时先排，当前小时不能占满名额。已在队列里的不重复排。不新增 migration。需要重启 Worker。
 - `progress/2026-10-20-worker-startup-test-cleanup.md`：启动测试收尾先停 Worker、清掉定时器、关掉数据库，再删临时目录。Windows 上删除带重试。断言失败不会被 EBUSY 盖住。这个测试有超时。不新增 migration。需要重启 Worker。
 

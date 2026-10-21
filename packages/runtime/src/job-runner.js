@@ -368,7 +368,8 @@ export function createJobRunner(options) {
       }
       if (watchdogLogged) return;
       watchdogLogged = true;
-      const line = `[worker] job loop has not ticked for ${Math.max(1, Math.round(idleMs / 1000))}s`;
+      const tasks = [...inFlight.entries()].map(([id, item]) => `${item.type}:${id}`).join(',') || '-';
+      const line = `[worker] job loop has not ticked for ${Math.max(1, Math.round(idleMs / 1000))}s tasks=${tasks}`;
       console.error(line);
       options.onWatchdog?.(line, idleMs);
     }, Math.min(watchdogMs, 60_000));
