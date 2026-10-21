@@ -28,6 +28,36 @@ const settings = store => {
  return { env: { AI_CENTER_GEMMA_TRANSLATION_KEY_ENV:'GEMINI_API_KEY5',GEMINI_API_KEY5: 'fake-key', GEMINI_API_KEY: 'must-not-use', ELUCID_GROK_API_KEY: 'must-not-use' }, quotaRepository: store.repositories.modelQuota,now:()=>at,sleep:async ms=>{at+=ms;} };
 };
 
+test('a local interval just above the database gap still admits the next call', fixture(async (store) => {
+  let calls = 0;
+  const router = createGemmaTranslationRouter({
+    ...settings(store),
+    random: () => 0.001,
+    fetch: async () => { calls += 1; return sse('完整译文'); },
+  });
+  assert.equal((await router.generate({ system: '翻译', prompt: 'Report one' })).engine, 'gemma-4-26b-a4b-it');
+  assert.equal((await router.generate({ system: '翻译', prompt: 'Report two' })).engine, 'gemma-4-26b-a4b-it');
+  assert.equal(calls, 2);
+}));
+
+test('hourly Gemma input is the task itself', fixture(async (store) => {
+  let text = '';
+  const router = createGemmaTranslationRouter({
+    ...settings(store),
+    fetch: async (_url, init) => {
+      text = JSON.parse(init.body).contents[0].parts[0].text;
+      return sse('{"modules":[]}');
+    },
+  });
+  const result = await router.generate({
+    system: '只返回 JSON', prompt: '材料', model: 'gemma-4-26b-a4b-it', task: 'hourly', estimatedTokens: 10, maxOutputTokens: 4096,
+  });
+  assert.equal(result.engine, 'gemma-4-26b-a4b-it');
+  assert.match(text, /只返回 JSON/);
+  assert.match(text, /材料/);
+  assert.doesNotMatch(text, /原文数据|待标注数据/);
+}));
+
 test('past quota retryAt does not spin the admit loop', { timeout: 3_000 }, async () => {
   let reserves = 0;
   let clock = 1_700_000_000_000;

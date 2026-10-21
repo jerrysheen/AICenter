@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
-// Published Flash Lite project limits are 15 RPM and 500 RPD. Leave one RPM and
-// 20 RPD unused so a later call switches before Google returns 429.
+// Published Flash Lite limits are 15 RPM and 500 RPD per project. Leave one RPM and
+// 20 RPD unused so a later call switches before Google returns 429. Each key is its
+// own bucket unless GEMINI_API_KEY*_PROJECT names the same project.
 export const FLASH_LITE_PROJECT_CAP = Object.freeze({
   'gemini-3.1-flash-lite': { requestsPerMinute: 14, requestsPerDay: 480 },
   'gemini-3.5-flash-lite': { requestsPerMinute: 14, requestsPerDay: 480 },
@@ -22,27 +23,32 @@ export function createModelQuotaRepository(database, emitEvent) {
           : database.prepare('SELECT at FROM model_quota_reservations WHERE at>? ORDER BY at').all(at-3600000);
         if(global.length>=requestsPerHour)return {admitted:false,retryAt:global[0].at+3600000};
         const projectCap = flashProjectCap === false ? null : FLASH_LITE_PROJECT_CAP[model];
-        if (projectCap) {
-          const minuteRows = database.prepare('SELECT at FROM model_quota_reservations WHERE model=? AND at>? ORDER BY at').all(model, at - 60000);
-          if (minuteRows.length >= projectCap.requestsPerMinute) {
-            return { admitted: false, retryAt: minuteRows[0].at + 60000, flashHeadroom: 'rpm', model };
-          }
-          const dayCount = database.prepare('SELECT COUNT(*) AS n FROM model_quota_reservations WHERE model=? AND at>=? AND at<?').get(model, dayStart, dayEnd).n;
-          if (dayCount >= projectCap.requestsPerDay) {
-            return { admitted: false, retryAt: dayEnd, flashHeadroom: 'rpd', model };
-          }
-        }
         const dayModels=JSON.stringify(pacingModels.length?pacingModels:[model]);
         const day=database.prepare('SELECT project,at FROM model_quota_reservations WHERE model IN (SELECT value FROM json_each(?)) AND at>=? AND at<? ORDER BY at').all(dayModels,dayStart,dayEnd);
         if(day.length>=requestsPerDay)return {admitted:false,retryAt:dayEnd};
         const latest=global.at(-1)?.at;
         if(!accountMode && latest!==undefined && at<latest+minIntervalMs)return {admitted:false,retryAt:latest+minIntervalMs};
-        let retryAt=Infinity,cooldownCount=0;
+        let retryAt=Infinity,cooldownCount=0,flashRpm=0,flashRpd=0;
         const ordered=balance==='least-used' ? leastUsed(database,slots,model,at,dayStart,dayEnd,idleAfterMs) : accountMode ? [...slots].sort((a,b)=>{
           const rows=p=>day.filter(r=>r.project===p);
           return rows(a.project).length-rows(b.project).length || (rows(a.project).at(-1)?.at || 0)-(rows(b.project).at(-1)?.at || 0);
         }) : slots;
         for(const slot of ordered) {
+          if (projectCap) {
+            const scoped = flashReservationScope(slot);
+            const minuteRows = database.prepare(`SELECT at FROM model_quota_reservations WHERE model=? AND ${scoped.column}=? AND at>? ORDER BY at`).all(model, scoped.value, at - 60000);
+            if (minuteRows.length >= projectCap.requestsPerMinute) {
+              flashRpm++;
+              retryAt = Math.min(retryAt, minuteRows[0].at + 60000);
+              continue;
+            }
+            const dayCount = database.prepare(`SELECT COUNT(*) AS n FROM model_quota_reservations WHERE model=? AND ${scoped.column}=? AND at>=? AND at<?`).get(model, scoped.value, dayStart, dayEnd).n;
+            if (dayCount >= projectCap.requestsPerDay) {
+              flashRpd++;
+              retryAt = Math.min(retryAt, dayEnd);
+              continue;
+            }
+          }
           const cooldownKey=slot.cooldownKey || slot.project;
           const block=database.prepare('SELECT until_at FROM model_quota_cooldowns WHERE project=? AND model=?').get(cooldownKey,model);
           if(block?.until_at>at){cooldownCount++;retryAt=Math.min(retryAt,block.until_at);continue;}
@@ -65,6 +71,11 @@ export function createModelQuotaRepository(database, emitEvent) {
           if(accountMode)database.prepare('INSERT INTO model_quota_leases(project,model,owner,until_at) VALUES(?,?,?,?) ON CONFLICT(project,model) DO UPDATE SET owner=excluded.owner,until_at=excluded.until_at').run(slot.project,model,id,at+240000);
           emitEvent('runtime.model-quota.reserved.v1','model-quota',id,{model,at},'local');
           return {admitted:true,id,project:slot.project,cooldownKey,model,keyEnv:slot.keyEnv};
+        }
+        const flashBlocked=flashRpm+flashRpd;
+        if(flashBlocked===ordered.length && flashBlocked>0){
+          const flashHeadroom=flashRpm>0 ? 'rpm' : 'rpd';
+          return {admitted:false,retryAt,flashHeadroom,model,quotaExhausted:flashHeadroom==='rpd'};
         }
         return {admitted:false,retryAt,quotaExhausted:cooldownCount===slots.length};
       }).immediate();
@@ -127,6 +138,13 @@ export function createModelQuotaRepository(database, emitEvent) {
       database.prepare('INSERT INTO model_quota_reservations(id,project,model,at,estimated_tokens,key_env) VALUES(?,?,?,?,?,?)')
         .run(randomUUID(),project,model,at,1,keyEnv || '');
     },
+    reservationDayCounts({ models, dayStart, dayEnd }) {
+      const rows = database.prepare(`SELECT model, key_env AS keyEnv, COUNT(*) AS calls
+        FROM model_quota_reservations
+        WHERE model IN (SELECT value FROM json_each(?)) AND at>=? AND at<?
+        GROUP BY model, key_env ORDER BY model, key_env`).all(JSON.stringify(models), dayStart, dayEnd);
+      return rows.map((row) => ({ model: String(row.model || ''), keyEnv: String(row.keyEnv || ''), calls: Number(row.calls) || 0 }));
+    },
     pairUsage({ models, dayStart, dayEnd }) {
       const rows = database.prepare(`SELECT model, key_env AS keyEnv, COUNT(*) AS n, MAX(at) AS last
         FROM model_quota_reservations
@@ -151,6 +169,11 @@ export function createModelQuotaRepository(database, emitEvent) {
         .run(poolKey, JSON.stringify(models), cursor, at);
     },
   });
+}
+
+function flashReservationScope(slot) {
+  if (slot?.explicitProject) return { column: 'project', value: slot.project };
+  return { column: 'key_env', value: slot?.keyEnv || '' };
 }
 
 function leastUsed(database, slots, model, at, dayStart, dayEnd, idleAfterMs) {
