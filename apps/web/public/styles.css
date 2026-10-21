@@ -6020,6 +6020,12 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
   min-height: calc(22px + 2 * var(--space-3));
 }
 @media (max-width: 720px) {
+  .southbound-daily-line,
+  .daily-research > .southbound-daily-line {
+    min-height: calc(44px + 2 * var(--space-3));
+  }
+}
+@media (max-width: 720px) {
   .southbound-channels { grid-template-columns: 1fr; }
 }
 

@@ -46,6 +46,12 @@ test('the brief list keeps a skeleton until the rows exist', () => {
   assert.ok(dailyFeed.indexOf('ensureSouthboundSlot(list)') >= 0 && dailyFeed.indexOf('ensureSouthboundSlot(list)') < showAt);
   assert.match(tree, /current\.textContent = data\.line/);
   assert.match(tree, /box\.classList\.add\('is-page'\)/);
+  assert.match(tree, /if\(mode==='hourly'\)list\.append\(hourSkeleton\(\)\)/);
+  assert.match(brief, /tree-hour-skeleton is-page/);
+  assert.match(brief, /hourChromeSkeleton\(\), layout\)/);
+  const html = readFileSync(new URL('../apps/web/public/index.html', import.meta.url), 'utf8');
+  assert.match(html, /\[\?&\]hour=\\d/);
+  assert.match(html, /tree-hour-skeleton is-page/);
   assert.match(tree, /el\('p','\\u00a0','news-day-label'\)/);
   assert.match(tree, /reading-direction news-section-title/);
   assert.match(brief, /readingSkeleton\(root\)/);
