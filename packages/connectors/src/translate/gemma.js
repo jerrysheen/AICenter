@@ -325,7 +325,7 @@ export function createGemmaTranslationRouter(options = {}) {
       if (!repository?.reserve) throw new Error('Gemma 翻译需要持久化配额 Repository');
       const reserved = Math.max(0, Math.ceil(Number(estimatedTokens) || 0));
       if (reserved > policy.tokensPerMinute) {
-        const noun = task === 'tag' ? '标注' : task === 'hourly' ? '浓缩' : '翻译';
+        const noun = task === 'tag' ? '标注' : task === 'hourly' ? '浓缩' : task === 'article' ? '整理' : '翻译';
         throw Object.assign(new Error(`Gemma ${noun}这一段超过每分钟 token 上限`), {
           code: 'budget-deferred',
           retryAt: now() + 60_000,
@@ -336,7 +336,7 @@ export function createGemmaTranslationRouter(options = {}) {
       const retryPool = model ? firstPool : retryModels;
       const input = task === 'tag'
         ? gemmaTagInput(system, prompt)
-        : task === 'hourly'
+        : task === 'hourly' || task === 'article'
           ? `${system}\n\n${prompt}`
           : gemmaTranslationInput(system, prompt);
       const inputBytes = Buffer.byteLength(input, 'utf8');

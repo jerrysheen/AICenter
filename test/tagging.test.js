@@ -392,6 +392,85 @@ test('tagging analyze API enqueues a job that can be polled', async () => {
   }
 });
 
+test('a completed rescan records an empty tagging when the model leaves an item unlabeled', async () => {
+  const temporary = temporaryStore();
+  const service = createTaggingService({
+    catalog: CATALOG,
+    taggingRepository: temporary.store.repositories.tagging,
+    taggingPort: {
+      async tagBatch(input) {
+        const ids = input.userPayload.items.map((item) => item.item_id);
+        return {
+          reply_text: JSON.stringify({
+            items: ids.filter((id) => id !== 'plain').map((id) => ({ item_id: id, tags: ['ai'] })),
+          }),
+          model: 'test',
+        };
+      },
+    },
+  });
+  const items = [
+    { id: 'marked', text: 'A new LLM was released' },
+    { id: 'plain', text: 'Weather is nice today' },
+  ];
+  const open = await service.analyzeItems({
+    workspaceId: 'local', resourceType: 'content-item', items,
+  });
+  assert.deepEqual(open.missingItemIds, ['plain']);
+  assert.equal(service.getTagging('local', 'content-item', 'plain'), null);
+  const recorded = await service.analyzeItems({
+    workspaceId: 'local', resourceType: 'content-item', items, recordEmptyWhenUnlabeled: true,
+  });
+  assert.deepEqual(recorded.missingItemIds, []);
+  assert.deepEqual(service.getTagging('local', 'content-item', 'plain').tags, []);
+  const again = await service.analyzeItems({
+    workspaceId: 'local', resourceType: 'content-item', items, recordEmptyWhenUnlabeled: true,
+  });
+  assert.equal(again.skipped, 2);
+  assert.deepEqual(again.saved, []);
+  temporary.remove();
+});
+
+test('a completed rescan records empty taggings for an empty item list and skips a bad reply', async () => {
+  const temporary = temporaryStore();
+  const items = [
+    { id: 'a', text: 'Weather is nice today' },
+    { id: 'b', text: 'Coffee this morning' },
+  ];
+  const empty = createTaggingService({
+    catalog: CATALOG,
+    taggingRepository: temporary.store.repositories.tagging,
+    taggingPort: {
+      async tagBatch() {
+        return { reply_text: JSON.stringify({ items: [] }), model: 'test' };
+      },
+    },
+  });
+  const recorded = await empty.analyzeItems({
+    workspaceId: 'local', resourceType: 'content-item', items, recordEmptyWhenUnlabeled: true,
+  });
+  assert.deepEqual(recorded.missingItemIds, []);
+  assert.deepEqual(empty.getTagging('local', 'content-item', 'a').tags, []);
+  assert.deepEqual(empty.getTagging('local', 'content-item', 'b').tags, []);
+  const brokenStore = temporaryStore();
+  const broken = createTaggingService({
+    catalog: CATALOG,
+    taggingRepository: brokenStore.store.repositories.tagging,
+    taggingPort: {
+      async tagBatch() {
+        return { reply_text: 'not json', model: 'test' };
+      },
+    },
+  });
+  await assert.rejects(() => broken.analyzeItems({
+    workspaceId: 'local', resourceType: 'content-item', items, recordEmptyWhenUnlabeled: true,
+  }), /标注全部失败/);
+  assert.equal(broken.getTagging('local', 'content-item', 'a'), null);
+  assert.equal(broken.getTagging('local', 'content-item', 'b'), null);
+  temporary.remove();
+  brokenStore.remove();
+});
+
 test('untagged rescan selects recent items with no tagging row and keeps going when Gemma fails', async () => {
   const store = createStore(':memory:');
   const now = Date.parse('2026-10-21T06:00:00Z');

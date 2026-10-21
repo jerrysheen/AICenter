@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createStore} from '../packages/database/src/index.js';
 import {createInformationTreeService} from '../packages/domain/src/information-tree-service.js';
 import {loadInformationTreeSkills} from '../packages/runtime/src/information-tree/skills.js';
-import {classifyCondenseError, formatCondenseFailureLog, formatTreeHourlyCallLog, redactCondenseLog, treeHourlyFinishReason} from '../packages/domain/src/information-tree-policy.js';
+import {cachedFlashQuotaWait, classifyCondenseError, formatCondenseFailureLog, formatTreeHourlyCallLog, redactCondenseLog, treeHourlyFinishReason} from '../packages/domain/src/information-tree-policy.js';
 import {createReportJobHandlers} from '../packages/runtime/src/report-module.js';
 
 const H = 3600000;
@@ -160,6 +160,55 @@ test('hourly condense failure log keeps the cause and omits prompt text', async 
     assert.equal(cooledHour.condenseDiagnostics[0].message.includes('AIzaSyDUMMYKEY1234567890'), false);
   } finally {
     console.error = original;
+    store.close();
+  }
+});
+
+test('a cached Flash quota wait is retried so the hour can fall back', async () => {
+  assert.equal(cachedFlashQuotaWait({
+    status: 'failed',
+    error: 'quota=window key=- model=gemini-3.5-flash-lite cooldownUntil=1 Gemini 文章任务等待流量窗口',
+    input: { failure: { reason: 'budget-deferred', retryAt: Date.now() + 3600000 } },
+  }), true);
+  assert.equal(cachedFlashQuotaWait({
+    status: 'failed',
+    error: '浓缩树预算耗尽',
+    input: { failure: { reason: 'budget-deferred', retryAt: Date.now() + 3600000 } },
+  }), false);
+  const store = createStore(':memory:');
+  const calls = [];
+  const skills = loadInformationTreeSkills();
+  let hourlyCalls = 0;
+  const runtime = {async run(input) {
+    calls.push(input.usageStage);
+    if (input.usageStage === 'tree-hourly' && hourlyCalls === 0) {
+      hourlyCalls += 1;
+      throw Object.assign(new Error('quota=daily key=- model=gemini-3.5-flash-lite cooldownUntil=999 Gemini 文章任务等待流量窗口'), {
+        code: 'budget-deferred', retryAt: Date.now() + 3600000,
+      });
+    }
+    if (input.usageStage === 'tree-hourly') {
+      hourlyCalls += 1;
+      return { answer: JSON.stringify({ modules: [{ title: '小时', text: '补上了', tagId: null, inputIds: ['n1'] }] }) };
+    }
+    const payload = JSON.parse(input.message);
+    return { answer: JSON.stringify({ title: payload.source.title, text: payload.source.paragraphs.map(item => item.text).join(''), tagId: null }) };
+  }};
+  const service = createInformationTreeService({
+    repository: store.repositories.informationTree,
+    reportRepository: store.repositories.report,
+    agentRuntime: runtime,
+    skills,
+    sleep: async () => {},
+  });
+  try {
+    const material = {id: 'quota-a', title: '标题', publishedAt: start + 1, updatedAt: start + 2, version: '1', contentLevel: 'full', paragraphs: [{role: 'body', text: body}], sourceRefs: []};
+    const failed = await service.generateHour({hourStart: start, materials: [material]});
+    assert.equal(failed.groupFailures.some(item => item.reason === 'budget-deferred'), true);
+    const again = await service.generateHour({hourStart: start, materials: [material]});
+    assert.equal(hourlyCalls, 2);
+    assert.equal(again.groupFailures.some(item => item.reason === 'budget-deferred'), false);
+  } finally {
     store.close();
   }
 });

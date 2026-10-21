@@ -82,6 +82,7 @@ export function createTaggingJobHandlers({ taggingService, feedService, knowledg
           workspaceId: 'local',
           resourceType: 'content-item',
           items,
+          recordEmptyWhenUnlabeled: true,
         });
         return { scanned: ids.length, tagged: result?.saved?.length || 0, skipped: result?.skipped || 0 };
       } catch (error) {
