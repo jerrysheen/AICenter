@@ -40,6 +40,21 @@ export function createFeedAutomationJobHandlers({ feedService, feedRepository, t
   if (!feedRepository?.claimDueSubscriptions) throw new Error('feed automation jobs require feedRepository');
   if (!articleNormalizePort && !taggingService?.analyzeItems) throw new Error('feed automation jobs require taggingService');
 
+  async function tagContentItems(workspaceId, items) {
+    if (!items.length) return { saved: [], skipped: 0, missingItemIds: [] };
+    if (!taggingService?.analyzeItems) throw new Error('feed automation jobs require taggingService');
+    const tagging = await taggingService.analyzeItems({
+      workspaceId,
+      resourceType: 'content-item',
+      items,
+      force: false,
+    });
+    if (tagging.missingItemIds?.length) {
+      throw new Error(`还有 ${tagging.missingItemIds.length} 条内容没有完成打标`);
+    }
+    return tagging;
+  }
+
   function timeoutMs() {
     if (sourceTimeoutMs != null) {
       const parsed = Number(sourceTimeoutMs);
@@ -232,26 +247,28 @@ export function createFeedAutomationJobHandlers({ feedService, feedRepository, t
       }
       if(articleNormalizePort) {
         const rows = feedService.listTaggableItems?.(input.workspaceId, { ids: resourceIds, limit: resourceIds.length }) || [];
+        // Article normalize writes a tree tagId. It does not write resource_taggings.
+        // Short-post tags still go through the Gemma tagging service before the tree job is queued.
+        const tagging = await tagContentItems(input.workspaceId, rows);
         const units = rows.map(row => ({ id: row.id, text: row.body || row.summary || row.title || '' })).filter(row => row.text);
         await enqueueOriginalTranslations({
           store: context?.store, feedService, workspaceId: input.workspaceId, units, priority: TRANSLATION_BACKFILL_PRIORITY,
         });
-        return articleNormalizePort.prepareInformation({workspaceId:input.workspaceId,sourceIds:resourceIds.map(id=>`feed:${id}`)});
+        const prepared = await articleNormalizePort.prepareInformation({workspaceId:input.workspaceId,sourceIds:resourceIds.map(id=>`feed:${id}`)});
+        return {
+          ...(prepared && typeof prepared === 'object' ? prepared : {}),
+          workspaceId: input.workspaceId,
+          resourceIds,
+          tagged: tagging.saved?.length || 0,
+          skippedTagging: tagging.skipped || 0,
+        };
       }
       const localization = await feedService.localizeContentItems(input.workspaceId, resourceIds);
       const items = feedService.listTaggableItems(input.workspaceId, {
         ids: resourceIds,
         limit: resourceIds.length,
       });
-      const tagging = await taggingService.analyzeItems({
-        workspaceId: input.workspaceId,
-        resourceType: 'content-item',
-        items,
-        force: false,
-      });
-      if (tagging.missingItemIds?.length) {
-        throw new Error(`还有 ${tagging.missingItemIds.length} 条内容没有完成打标`);
-      }
+      const tagging = await tagContentItems(input.workspaceId, items);
       if (localization.pendingIds?.length) throw new Error(`还有 ${localization.pendingIds.length} 条内容没有完成翻译；成功标签已保留`);
       return {
         workspaceId: input.workspaceId,

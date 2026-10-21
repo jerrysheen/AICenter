@@ -73,3 +73,43 @@ test('expanded pool admission can retry stale local budget pending without inval
   const cached=await f.service.prepareInformation({materials:[source()]});assert.equal(cached.calls,0);assert.equal(f.calls.length,2);
  }finally{f.store.close();}
 });
+
+test('article normalize still tags short posts before queueing preparation', async () => {
+  const order = [];
+  const port = { prepareInformation: async (payload) => { order.push('prepare'); return { queued: payload.sourceIds.length }; } };
+  const handlers = createFeedAutomationJobHandlers({
+    feedService: {
+      refreshPersistedSource: async () => { throw new Error('not used'); },
+      listTaggableItems: () => [{ id: 'a', title: '短帖', summary: '', body: '正文' }],
+    },
+    feedRepository: { claimDueSubscriptions() { return []; } },
+    taggingService: {
+      async analyzeItems(input) {
+        order.push('tag');
+        assert.equal(input.resourceType, 'content-item');
+        assert.deepEqual(input.items.map((item) => item.id), ['a']);
+        return { saved: [{ resourceId: 'a', tags: ['ai'] }], skipped: 0, missingItemIds: [] };
+      },
+    },
+    articleNormalizePort: port,
+    treeEnabled: true,
+  });
+  const result = await handlers['feed.items.enrich']({ workspaceId: 'local', resourceIds: ['a'] }, { store: {} });
+  assert.deepEqual(order, ['tag', 'prepare']);
+  assert.equal(result.tagged, 1);
+  assert.equal(result.queued, 1);
+});
+
+test('saved Gemma tags replace the article model tag on the information node', async () => {
+  const f = fixture(() => ({ ...output, tagId: 'macro' }), {
+    catalog: { tags: [{ id: 'ai', name: '人工智能' }, { id: 'macro', name: '宏观' }] },
+    tagHints: () => ['ai', 'macro'],
+  });
+  try {
+    const result = await f.service.prepareInformation({ materials: [source()] });
+    assert.equal(result.nodes[0].tagId, 'ai');
+    assert.equal(f.calls[0].closedTask, 'article-normalize');
+  } finally {
+    f.store.close();
+  }
+});

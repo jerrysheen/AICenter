@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-21 `#195` 上线后，信息流新帖的标签覆盖率仍是 0%，Gemma `tagging` 调用是 0。生产的 `feed.items.enrich` 在文章整理打开时直接 `prepareInformation`，不调用 `#195` 改过的标注入口。这从 2026-10-07 文章整理接入起就是这样：Flash Lite 只把一个 `tagId` 写在信息树节点上，`resource_taggings` 不再插入，页面覆盖率读的是这张表。现在短帖先走 Gemma 26B 写入 `resource_taggings`，再排队整理正文。信息树已经读到这份标签时，节点 `tagId` 用其中第一个有效标签。没有标签时正文整理照旧。Bamboo 准入分类不动。不新增 migration。当前 schema 仍是 95。下一号是 96。空号仍是 63、79、80、82。不要重建数据库。需要重启 Worker。页面没有改，Web 不用为这项重启。见 `progress/2026-10-21-feed-enrich-gemma-tags.md`。
+
 2026-10-21 #197 上线后，`2111105654211608847:1` 重跑仍失败。任务 `2630fc4a` 11:39:23 以 `fetch failed` 结束，4 次 `gemini-3.5-transcribe` 却在 11:39:50 之后才返回。Live 走 WebSocket，失败后直接改走文件转写，用量里看不到，日志也没有类别。已经发出的分段没有随任务取消。现在 Live 失败只记 `network` 或 `live-connect` 这类类别，不记地址和密钥。`fetch failed` 在这一段里最多再试 2 次。未完成的分段用 AbortSignal 取消，完成的分段写进整理记录，下一轮接着转。续跑时旧分段还要比对起止时间，对不上就丢掉重转。文件转写只在请求真正发出后才计入每天 24 次，重试不重复扣。不新增 migration。当前 schema 仍是 95。下一号是 96。空号仍是 63、79、80、82。不要重建数据库。需要重启 Worker。页面没有改，Web 不用为这项重启。见 `progress/2026-10-21-x-video-transcribe-resume.md`。
 
 2026-10-21 信息流短帖的标签，以及一条只选一个标签的简单分类，不再打 Gemini Flash Lite，也不再在配额不够时改打 Elucid Grok。默认模型是 `gemma-4-26b-a4b-it`。`AI_CENTER_GEMMA_TAG_MODEL` 只能写成这个名字。一批仍先按 20 条、3 万字装好，送给模型前按输入加上 4096 的输出上限计算，超过每分钟 16000 token 就按条目切开，结果按原来的顺序拼回。这一分钟的 token 已经满了就等到窗口过去。单条放不下就不再请求。Bamboo 的信息流准入分类不动。用量记在原账上，阶段是 `tagging`。不新增 migration。当前 schema 是 95。下一号是 96。空号仍是 63、79、80、82。不要重建数据库。需要重启 Worker。页面没有改，Web 不用为这项重启。见 `progress/2026-10-21-gemma-feed-tags.md`。

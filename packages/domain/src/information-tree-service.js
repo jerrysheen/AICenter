@@ -482,6 +482,11 @@ export function createInformationTreeService({repository,reportRepository,feedSe
       }
       output=await model('information',{source:{...modelSource,paragraphs:condensed},tags},check,s);
     }
+    if(articleStrategy && output?.status!=='needs_content') {
+      const hinted=tagHints?.(s.workspaceId,m);
+      const preferred=Array.isArray(hinted) ? hinted.find(id=>modelTags.has(id)) : '';
+      if(preferred) output={...output,tagId:preferred};
+    }
     if(output.status==='needs_content')throw Object.assign(new Error('保存材料不足以提炼'),{code:'needs-content'});
     const node=repository.saveNode(s.workspaceId,{...output,id,version,layer:'information',children:[],articleIds:[m.id],sourceId:m.id,
       sourceRefs:m.sourceRefs || [],window,eventAt:m.eventAt ?? m.publishedAt ?? window.startAt,sourceUpdatedAt:m.updatedAt ?? m.obtainedAt ?? m.publishedAt ?? window.startAt,generatedAt:now(),
