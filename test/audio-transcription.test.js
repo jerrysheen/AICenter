@@ -287,3 +287,154 @@ test('fetch failed is retried a limited number of times and abort is not', async
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('resume keeps a segment only when the start and end both match', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'audio-resume-bounds-'));
+  const env = {
+    GEMINI_API_KEY: 'one',
+    AI_CENTER_AUDIO_TRANSCRIBE_TOKENS_PER_MINUTE: '80',
+  };
+  const relative = writeSeconds(root, 5);
+  const plan = describeAudioTranscription(env, 5_000);
+  const [first, second] = plan.chunks;
+  let calls = 0;
+  try {
+    const result = await executeAudioTranscription({
+      input: {
+        workspaceId: 'local',
+        path: relative,
+        languageCodes: [],
+        mode: 'SMART',
+        plan,
+      },
+      dataDirectory: root,
+      env,
+      quotaRepository: quota(),
+      now: () => 1_000,
+      sleep: async () => {},
+      resumeSegments: [
+        { index: first.index, startMs: first.startMs + 1, endMs: first.endMs, text: '起点对不上' },
+        { index: second.index, startMs: second.startMs, endMs: second.endMs, text: '时间对齐' },
+        { index: second.index, startMs: second.startMs, endMs: second.endMs - 1, text: '终点对不上' },
+      ],
+      transcribe: () => {
+        calls += 1;
+        return '重转';
+      },
+    });
+    assert.equal(calls, plan.chunkCount - 1);
+    assert.match(result.text, /时间对齐/);
+    assert.equal(result.text.includes('起点对不上'), false);
+    assert.equal(result.text.includes('终点对不上'), false);
+    assert.equal(result.segments[second.index].text, '时间对齐');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a file request is counted once it is sent and a retry does not count again', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'audio-file-quota-'));
+  const env = { GEMINI_API_KEY: 'one' };
+  const relative = writeSeconds(root, 1);
+  const rows = [];
+  const quotaRepository = {
+    reserve(input) {
+      const id = `row-${rows.length + 1}`;
+      rows.push({ id, model: input.model, requestsPerDay: input.requestsPerDay, counted: true });
+      return {
+        admitted: true,
+        id,
+        keyEnv: 'GEMINI_API_KEY',
+        project: 'p',
+        model: input.model,
+        cooldownKey: 'p',
+      };
+    },
+    discard(ticket) {
+      const row = rows.find((item) => item.id === ticket.id);
+      if (row) row.counted = false;
+    },
+    release() {},
+  };
+  const input = {
+    workspaceId: 'local',
+    path: relative,
+    languageCodes: [],
+    mode: 'SMART',
+    plan: describeAudioTranscription(env, 1_000),
+  };
+  try {
+    let sends = 0;
+    const result = await executeAudioTranscription({
+      input,
+      dataDirectory: root,
+      env,
+      quotaRepository,
+      now: () => Date.parse('2026-10-21T18:00:00Z'),
+      sleep: async () => {},
+      transcribe: async () => {
+        throw Object.assign(new Error('live down'), { code: 'live-failed' });
+      },
+      fileTranscribe: async ({ onRequest }) => {
+        onRequest();
+        sends += 1;
+        if (sends < 3) throw new Error('fetch failed');
+        return '文件转写成功';
+      },
+    });
+    assert.equal(result.text, '文件转写成功');
+    assert.equal(sends, 3);
+    const counted = rows.filter((row) => row.model === 'gemini-3.5-transcribe' && row.counted);
+    assert.equal(counted.length, 1);
+    assert.equal(counted[0].requestsPerDay, 24);
+    assert.equal(rows.filter((row) => row.model === 'gemini-3.5-transcribe').length, 1);
+
+    rows.length = 0;
+    await assert.rejects(() => executeAudioTranscription({
+      input,
+      dataDirectory: root,
+      env,
+      quotaRepository,
+      now: () => Date.parse('2026-10-21T18:00:00Z'),
+      sleep: async () => {},
+      transcribe: async () => {
+        throw Object.assign(new Error('live down'), { code: 'live-failed' });
+      },
+      fileTranscribe: async () => {
+        throw new Error('转写密钥不可用');
+      },
+    }));
+    assert.equal(rows.filter((row) => row.model === 'gemini-3.5-transcribe' && row.counted).length, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('discarding an unsent file reservation frees that daily slot', () => {
+  const store = createStore(':memory:');
+  try {
+    const repository = store.repositories.modelQuota;
+    const request = {
+      slots: [{ project: 'p', keyEnv: 'GEMINI_API_KEY' }],
+      model: 'gemini-3.5-transcribe',
+      at: 1_000,
+      requestsPerHour: 2_000,
+      requestsPerMinute: 30,
+      minIntervalMs: 0,
+      estimatedTokensPerMinute: 10_000,
+      estimatedTokens: 32,
+      accountMode: true,
+      requestsPerDay: 1,
+      requestsPerKeyPerDay: 1,
+      dayStart: 0,
+      dayEnd: 10_000,
+    };
+    const ticket = repository.reserve(request);
+    assert.equal(ticket.admitted, true);
+    repository.discard(ticket);
+    const again = repository.reserve({ ...request, at: 1_001 });
+    assert.equal(again.admitted, true);
+  } finally {
+    store.close();
+  }
+});

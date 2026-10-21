@@ -129,33 +129,39 @@ async function admit({ repository, lane, tokens, now, sleep, signal, model, requ
   throw new Error('转写额度等待超时');
 }
 
-async function callLimited({ repository, lane, tokens, now, sleep, signal, model, requestsPerDay, estimatedTokensPerMinute, dayStart, dayEnd, run }) {
+async function callLimited({ repository, lane, tokens, now, sleep, signal, model, requestsPerDay, estimatedTokensPerMinute, dayStart, dayEnd, run, chargeOnceSent = false }) {
   let quotaAttempt = 0;
   let networkAttempt = 0;
+  let reuseKey = '';
   while (quotaAttempt < 3) {
     if (signal?.aborted) throw Object.assign(new Error('转写已取消'), { name: 'AbortError', code: 'aborted' });
-    const ticket = await admit({
+    const ticket = reuseKey ? null : await admit({
       repository, lane, tokens, now, sleep, signal, model, requestsPerDay, estimatedTokensPerMinute, dayStart, dayEnd,
     });
+    const state = { sent: false };
+    const keyEnv = reuseKey || ticket.keyEnv || lane.slots[attemptKey(lane, quotaAttempt + networkAttempt)].keyEnv;
     try {
-      const keyEnv = ticket.keyEnv || lane.slots[attemptKey(lane, quotaAttempt + networkAttempt)].keyEnv;
-      return await run(keyEnv);
+      return await run(keyEnv, state);
     } catch (error) {
+      const unsent = chargeOnceSent && ticket && !state.sent;
+      if (unsent) repository.discard?.(ticket);
       if (error?.name === 'AbortError' || signal?.aborted) throw error;
       if (error.code === 'quota' && quotaAttempt < 2) {
         quotaAttempt += 1;
-        repository.cooldown?.(ticket.cooldownKey || lane.project, model, now() + quotaDelay(error));
+        reuseKey = '';
+        repository.cooldown?.(ticket?.cooldownKey || lane.project, model, now() + quotaDelay(error));
         await sleep(quotaDelay(error));
         continue;
       }
       if (isTranscribeNetworkError(error) && networkAttempt < NETWORK_ATTEMPTS - 1) {
         networkAttempt += 1;
+        reuseKey = chargeOnceSent && state.sent ? keyEnv : '';
         await sleep(Math.min(4_000, 500 * (2 ** (networkAttempt - 1))));
         continue;
       }
       throw error;
     } finally {
-      repository.release?.(ticket);
+      if (ticket) repository.release?.(ticket);
     }
   }
   throw new Error('转写失败');
@@ -169,12 +175,15 @@ function attemptKey(lane, attempt) {
 async function transcribeChunk({
   audio, chunk, lane, env, job, liveModel, fileModel, tokensPerSecond, liveTranscribe, fallbackTranscribe, quotaRepository, now, sleep, signal, onLiveFailure,
 }) {
-  const run = (client, piece) => (keyEnv) => client({
+  const run = (client, piece) => (keyEnv, state) => client({
     apiKey: env[keyEnv],
     audio: piece,
     languageCodes: job.languageCodes,
     mode: job.mode,
     signal,
+    onRequest() {
+      if (state) state.sent = true;
+    },
   });
   try {
     const at = now();
@@ -212,6 +221,7 @@ async function transcribeChunk({
         dayStart: day.dayStart,
         dayEnd: day.dayEnd,
         run: run(fallbackTranscribe, slice),
+        chargeOnceSent: true,
       }));
     }
     return parts.filter(Boolean).join('\n');
@@ -255,8 +265,14 @@ export async function executeAudioTranscription({
   const saved = new Map();
   for (const segment of Array.isArray(resumeSegments) ? resumeSegments : []) {
     const text = String(segment?.text || '').trim();
+    const startMs = segment?.startMs;
+    const endMs = segment?.endMs;
     if (!Number.isInteger(segment?.index) || segment.index < 0 || !text) continue;
-    saved.set(segment.index, text);
+    if (!Number.isInteger(startMs) || !Number.isInteger(endMs) || endMs <= startMs) continue;
+    const row = { startMs, endMs, text };
+    const rows = saved.get(segment.index);
+    if (rows) rows.push(row);
+    else saved.set(segment.index, [row]);
   }
   let liveFailureLogged = false;
   const noteLiveFailure = (error) => {
@@ -287,9 +303,9 @@ export async function executeAudioTranscription({
         const mine = plan.chunks.filter((chunk) => chunk.lane === laneIndex);
         for (const chunk of mine) {
           if (linked.aborted) throw Object.assign(new Error('转写已取消'), { name: 'AbortError', code: 'aborted' });
-          const resumed = saved.get(chunk.index);
+          const resumed = (saved.get(chunk.index) || []).find((row) => row.startMs === chunk.startMs && row.endMs === chunk.endMs);
           if (resumed) {
-            texts[chunk.index] = resumed;
+            texts[chunk.index] = resumed.text;
             continue;
           }
           const audio = await exclusive(() => readSlice(file, info, chunk.startMs, chunk.endMs));
