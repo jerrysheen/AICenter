@@ -1055,6 +1055,10 @@ export function createAiCenterWorker(options = {}) {
       if (!startupMaintenanceStarted) {
         startupMaintenanceStarted = true;
         setImmediate(() => {
+          try { store.repositories.feed.startFeedSearchIndex?.(); }
+          catch (error) {
+            console.error('[worker] feed-search index failed:', error instanceof Error ? error.message : error);
+          }
           runDeferredTranslationStartup().catch((error) => {
             console.error('[worker] startup maintenance failed:', error instanceof Error ? error.message : error);
           });

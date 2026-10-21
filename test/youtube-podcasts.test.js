@@ -429,8 +429,8 @@ test('audio is deleted after transcription and vtt prefers manual original capti
     automatic_captions: { 'zh-Hans': [{}], ja: [{}] },
   }, 'zh'), { lang: 'zh', kind: 'manual' });
   assert.match(formatPodcastSummary(SUMMARY, { focus: '金融' }), /与关注方向的关系：和金融相关/);
-  assert.equal(latestSchemaVersion(), 94);
-  assert.deepEqual(unusedSchemaVersions, [63, 79, 80, 82]);
+  assert.equal(latestSchemaVersion(), 96);
+  assert.deepEqual(unusedSchemaVersions, [63, 79, 80, 82, 95]);
   assert.equal(youtubePodcastLimits({}).roundMs, 3 * 60 * 60_000);
   assert.equal(youtubePodcastLimits({}).episodeTranscribeSec, 180 * 60);
   assert.throws(

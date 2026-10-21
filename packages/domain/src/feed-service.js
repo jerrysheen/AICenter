@@ -168,7 +168,7 @@ function toFeedItem(providerId, row) {
     updatedAt: row.updatedAt || 0,
     needsTranslation: listNeedsTranslation(row),
     processing: '',
-    subscriptionId: '',
+    subscriptionId: row.subscriptionId || '',
     captureId: row.captureId || '',
     isRead: Boolean(row.isRead),
     isSaved: Boolean(row.isSaved),
@@ -827,11 +827,11 @@ function searchTerms(query) {
   return String(query || '').trim().toLocaleLowerCase().split(/\s+/).filter(Boolean).slice(0, 8);
 }
 
-function searchStoredItems(feedRepository, workspaceId, query, limit, qualityRule) {
+function searchStoredItems(feedRepository, workspaceId, query, limit, qualityRule, provider = '') {
   const terms = searchTerms(query);
   if (!terms.length) return [];
   if (typeof feedRepository.searchVisibleItems === 'function') {
-    const searched = feedRepository.searchVisibleItems(workspaceId, { query, limit, qualityRule });
+    const searched = feedRepository.searchVisibleItems(workspaceId, { query, provider, limit, qualityRule });
     if (Array.isArray(searched)) return searched;
   }
   const rows = feedRepository.listContentItems(workspaceId, { limit: STORED_FEED_LIMIT, qualityRule }) || [];
@@ -1280,8 +1280,9 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
     },
     searchFeed(workspaceId, { query = '', platform = '', limit = 40 } = {}) {
       const provider = String(platform || '').trim();
-      const rows = searchStoredItems(feedRepository, workspaceId, query, limit, qualityRule);
-      return rows.map((row) => toFeedItem(row.provider || provider || 'manual', row));
+      const source = provider && provider !== 'all' ? provider : '';
+      const rows = searchStoredItems(feedRepository, workspaceId, query, limit, qualityRule, source);
+      return rows.map((row) => toFeedItem(row.provider || source || 'manual', row));
     },
     upsertSourceAccount(input) {
       return feedRepository.upsertSourceAccount(input);

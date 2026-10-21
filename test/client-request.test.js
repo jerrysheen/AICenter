@@ -26,6 +26,8 @@ test('reading-hour callers share one cache key per hour window', () => {
   assert.equal(cacheTtlFor('GET', '/api/v1/translate/jobs/abc'), 0);
   assert.equal(cacheTtlFor('POST', '/api/v1/posts'), 0);
   assert.equal(cacheTtlFor('GET', '/api/v1/reports/tree?view=index&refresh=1'), 0);
+  assert.equal(cacheTtlFor('GET', '/api/v1/feed/search?q=Cranmer'), 0);
+  assert.equal(cacheTtlFor('GET', '/api/v1/feed/x?feed=following'), 8_000);
   assert.equal(API_REQUEST_LIMIT, 6);
 });
 

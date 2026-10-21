@@ -118,6 +118,9 @@ test('handle url opens the numeric author and search finds an older post', async
     assert.equal(found.some((row) => row.authorName === 'Miles Cranmer' && row.title === '以下是演讲全文：'), true);
     const hits = reader.searchFeed('local', { query: 'Cranmer', platform: 'x' });
     assert.equal(hits.some((row) => row.id === `x:${TWEET}` && row.authorId === 'x:382008009'), true);
+    assert.equal(hits.find((row) => row.id === `x:${TWEET}`).subscriptionId, '');
+    assert.equal(reader.searchFeed('local', { query: 'Cr', platform: 'x' }).some((row) => row.id === `x:${TWEET}`), true);
+    assert.equal(reader.searchFeed('local', { query: 'C' }).length, 0);
     const before = feed.listContentItemsByProvider('local', 'x', { sourceExternalId: 'x:home:following', limit: 20 });
     assert.equal(before.some((row) => row.externalId === TWEET), false);
     await ensureXVideoFeedPost({
@@ -129,6 +132,99 @@ test('handle url opens the numeric author and search finds an older post', async
     const after = feed.listContentItemsByProvider('local', 'x', { sourceExternalId: 'x:home:following', limit: 20 });
     assert.equal(after.some((row) => row.externalId === TWEET && row.authorId === 'x:382008009'), true);
     assert.equal(after.find((row) => row.externalId === TWEET).title, '以下是演讲全文：');
+    const account = feed.findSourceAccount('local', 'x', 'x:home:following');
+    const subscription = feed.findSubscriptionBySource('local', account.id);
+    assert.ok(subscription?.id);
+    const repaired = reader.searchFeed('local', { query: 'Cranmer', platform: 'x' });
+    assert.equal(repaired.find((row) => row.id === `x:${TWEET}`).subscriptionId, subscription.id);
+    assert.equal(repaired.find((row) => row.id === `x:${TWEET}`).title, '以下是演讲全文：');
+  } finally {
+    opened.close();
+  }
+});
+
+test('feed search uses the full-text index in batches and keeps short queries off the body', async () => {
+  const opened = openStore();
+  try {
+    const feed = opened.store.repositories.feed;
+    const empty = feed.feedSearchIndexStatus();
+    assert.equal(empty.ready, true);
+    assert.equal(empty.rows, 0);
+    assert.equal(empty.done, false);
+    assert.equal(empty.cursor, 0);
+    const account = feed.upsertSourceAccount({
+      workspaceId: 'local', provider: 'x', externalId: 'x:home:for-you', displayName: 'For you',
+    });
+    const publishedAt = Date.parse('2026-10-16T08:00:00Z');
+    const save = (externalId, title, body, provider = 'x') => {
+      const capture = feed.saveCapture({
+        workspaceId: 'local',
+        provider,
+        externalId,
+        sourceAccountId: account.id,
+        sourceUrl: `https://example.com/${externalId}`,
+        title,
+        contentHash: hash(externalId),
+        publishedAt,
+        metadata: provider === 'x' ? { authorHandle: 'other' } : {},
+      });
+      feed.saveContentItem({
+        workspaceId: 'local',
+        captureId: capture.id,
+        originType: 'subscription',
+        contentType: 'post',
+        title,
+        body,
+        summary: title,
+        sourceUrl: capture.sourceUrl,
+        authorName: '别人',
+        publishedAt,
+      });
+    };
+    save('body-hit', '普通标题', `${'甲'.repeat(80)} CranmerToken ${'乙'.repeat(80)}`);
+    save('body-short', '另一个标题', `${'丙'.repeat(80)} zz ${'丁'.repeat(80)}`);
+    save('title-short', '甲乙标题', '没有目标词');
+    save('youtube-hit', '视频标题', 'CranmerToken 在视频里', 'youtube');
+    for (let index = 0; index < 5; index += 1) save(`pad-${index}`, `填充 ${index}`, '没有这个词');
+    const reader = createFeedService({
+      legacyRepository: { listPosts() { return []; }, getPost() { return null; } },
+      feedRepository: feed,
+      sourcePort: { findByProvider() { return null; }, persistence() { return null; }, async read() { return { data: null }; } },
+    });
+    assert.equal(reader.searchContentItems('local', 'CranmerToken').some((row) => row.title === '普通标题'), true);
+    assert.equal(reader.searchContentItems('local', 'zz').some((row) => row.title === '另一个标题'), false);
+    assert.equal(reader.searchContentItems('local', '甲乙').some((row) => row.title === '甲乙标题'), true);
+    assert.equal(reader.searchFeed('local', { query: 'CranmerToken' }).some((row) => row.externalId === 'youtube-hit'), false);
+    const first = feed.indexFeedSearchBatch(2);
+    assert.equal(first.done, false);
+    assert.equal(first.indexed, 2);
+    assert.equal(feed.feedSearchIndexStatus().done, false);
+    let guard = 0;
+    while (!feed.feedSearchIndexStatus().done && guard < 20) {
+      feed.indexFeedSearchBatch(2);
+      guard += 1;
+    }
+    assert.equal(feed.feedSearchIndexStatus().done, true);
+    assert.equal(reader.searchContentItems('local', 'CranmerToken').some((row) => row.title === '普通标题'), true);
+    const startedAt = performance.now();
+    reader.searchFeed('local', { query: 'CranmerToken' });
+    assert.ok(performance.now() - startedAt < 300);
+    feed.startFeedSearchIndex();
+    assert.equal(feed.feedSearchIndexStatus().done, true);
+  } finally {
+    opened.close();
+  }
+});
+
+test('feed search backfill starts after the caller returns', async () => {
+  const opened = openStore();
+  try {
+    const feed = opened.store.repositories.feed;
+    feed.startFeedSearchIndex();
+    assert.equal(feed.feedSearchIndexStatus().done, false);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(feed.feedSearchIndexStatus().done, true);
+    assert.equal(feed.feedSearchIndexStatus().rows, 0);
   } finally {
     opened.close();
   }

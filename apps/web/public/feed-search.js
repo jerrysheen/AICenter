@@ -1,3 +1,21 @@
+export function feedSearchQueryReady(query) {
+  return String(query || '').trim().length >= 2;
+}
+
+// 新的搜索请求取消上一次。target 是这次 fetch 的 AbortController。
+export function linkAbortSignal(target, signal) {
+  if (!target?.abort || !signal?.addEventListener) return () => {};
+  const abort = () => {
+    try { target.abort(); } catch { /* already aborted */ }
+  };
+  if (signal.aborted) {
+    abort();
+    return () => {};
+  }
+  signal.addEventListener('abort', abort, { once: true });
+  return () => signal.removeEventListener('abort', abort);
+}
+
 export function feedSearchPath({ platform = '', query = '' } = {}) {
   const params = new URLSearchParams();
   const text = String(query || '').trim();

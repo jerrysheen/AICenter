@@ -42,23 +42,33 @@ function noteAuthor(feedRepository, workspaceId, tweetId, item) {
 
 function ensureXHomeAccount(feedRepository, workspaceId) {
   const found = feedRepository.findSourceAccount?.(workspaceId, 'x', X_HOME_FOLLOWING_ACCOUNT);
-  if (found?.id) return found.id;
-  if (typeof feedRepository.upsertSourceAccount !== 'function') return '';
-  const created = feedRepository.upsertSourceAccount({
-    workspaceId,
-    provider: 'x',
-    externalId: X_HOME_FOLLOWING_ACCOUNT,
-    handle: '',
-    displayName: 'X 首页',
-    profileUrl: 'https://x.com/home',
-    authMode: 'browser-session',
-    metadata: {
-      sourceId: 'content.x.home',
-      sourceInput: { feed: 'following' },
-      autoRefresh: true,
-    },
-  });
-  return created?.id || '';
+  let accountId = found?.id || '';
+  if (!accountId && typeof feedRepository.upsertSourceAccount === 'function') {
+    const created = feedRepository.upsertSourceAccount({
+      workspaceId,
+      provider: 'x',
+      externalId: X_HOME_FOLLOWING_ACCOUNT,
+      handle: '',
+      displayName: 'X 首页',
+      profileUrl: 'https://x.com/home',
+      authMode: 'browser-session',
+      metadata: {
+        sourceId: 'content.x.home',
+        sourceInput: { feed: 'following' },
+        autoRefresh: true,
+      },
+    });
+    accountId = created?.id || '';
+  }
+  if (accountId && typeof feedRepository.ensureSubscription === 'function') {
+    feedRepository.ensureSubscription({
+      workspaceId,
+      sourceAccountId: accountId,
+      enabled: true,
+      refreshIntervalMinutes: 30,
+    });
+  }
+  return accountId;
 }
 
 function presentFeedCopy(item) {

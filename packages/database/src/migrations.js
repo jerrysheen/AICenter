@@ -2252,7 +2252,7 @@ migrations.push({ version: 78, name: 'author_stats', up(database) {
 // 86 是 YouTube 播客的剧集和频道状态。87 只给频道补录状态加列。
 // 88 是北向资金 northbound_flow。89 是 YouTube 正文 youtube_podcast_article。
 // 90 是作者列表按最新原文发布时间排序的索引。
-export const unusedSchemaVersions = [63, 79, 80, 82];
+export const unusedSchemaVersions = [63, 79, 80, 82, 95];
 
 // 南向资金用 81，按 version 补执行，不看最大号。79、80、82 留空。
 migrations.push({ version: 81, name: 'southbound_flow', up(database) {
@@ -2475,6 +2475,21 @@ migrations.push({ version: 94, name: 'x_link_articles', up(database) {
     );
     CREATE INDEX IF NOT EXISTS idx_x_link_articles_final
       ON x_link_articles(workspace_id, final_url, status);`);
+}});
+
+migrations.push({ version: 96, name: 'content_item_fts', up(database) {
+  database.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS content_item_fts USING fts5(
+      content_item_id UNINDEXED,
+      workspace_id UNINDEXED,
+      text,
+      tokenize = 'trigram case_sensitive 0'
+    );
+    CREATE TABLE IF NOT EXISTS feed_search_index_cursor (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      rowid_cursor INTEGER NOT NULL DEFAULT 0,
+      done INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT OR IGNORE INTO feed_search_index_cursor (id, rowid_cursor, done) VALUES (1, 0, 0);`);
 }});
 
 
