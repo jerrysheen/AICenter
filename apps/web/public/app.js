@@ -44,7 +44,7 @@ import {
   reportHourHref,
   unavailableOfficialCount,
 } from './home-timeline.js?v=dev';
-import { commitReportHistory, reportViewOwnsScroll } from './report-history.js?v=dev';
+import { commitReportHistory, reportListHash, reportViewOwnsScroll, stackReportNode } from './report-history.js?v=dev';
 import { decodeHtmlEntities } from './html-text.js?v=dev';
 import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, prioritizeReadableFeedRows, renderNewsList, reportItemTime } from './news-list.js?v=dev';
 import { createAuthorView } from './author-view.js?v=dev';
@@ -1431,6 +1431,15 @@ function setView(name, options = {}) {
       ...(!options.fromHistory && !options.back && !options.replace ? { aiCenterPrevious: previousHash } : {}) };
     if (options.fromHistory || options.back || options.replace) history.replaceState(entry, '', `${location.pathname}${location.search}${nextHash}`);
     else history.pushState(entry, '', `${location.pathname}${location.search}${nextHash}`);
+  }
+  if (view === 'report' && reportNode && !options.back) {
+    const detailHash = reportHash();
+    stackReportNode({
+      history,
+      location,
+      listHash: reportListHash(detailHash),
+      detailHash,
+    });
   }
   state.navigationFrom = '';
   syncHeaderSearch();
