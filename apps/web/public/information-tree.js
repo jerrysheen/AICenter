@@ -431,8 +431,28 @@ export function createInformationTreePage(host) {
     else root.append(toolbar);
     root.append(mobile);
   }
-  function closeHour(){openedId='';pinnedReadingId='';return render();}
-  function closeDaily(){openedId='';openedDirection='';return render();}
+  let suppressHourHash=false;
+  function closeHour(){
+    if(globalThis.history?.state?.aiCenterReportList && typeof globalThis.history.back==='function'){
+      globalThis.history.back();
+      return;
+    }
+    openedId='';pinnedReadingId='';return render();
+  }
+  function closeDaily(){
+    if(globalThis.history?.state?.aiCenterReportList && typeof globalThis.history.back==='function'){
+      globalThis.history.back();
+      return;
+    }
+    openedId='';openedDirection='';return render();
+  }
+  function clearOpened(){
+    if(!openedId && !openedDirection && !pinnedReadingId) return false;
+    openedId='';openedDirection='';pinnedReadingId='';
+    suppressHourHash=true;
+    Promise.resolve(render()).finally(()=>{suppressHourHash=false;});
+    return true;
+  }
   function firstVisibleAnchor() {
     const rows=list?.querySelectorAll?.('[data-node-id]') || [];
     for (const row of rows) {
@@ -611,10 +631,13 @@ export function createInformationTreePage(host) {
   function replaceLocationHash(hash){
     const hist=globalThis.history, loc=globalThis.location;
     if(!hist || typeof hist.replaceState!=='function' || !loc || loc.hash===hash)return;
-    try{hist.replaceState({aiCenter:true,hash},'',`${loc.pathname||''}${loc.search||''}${hash}`);}catch{}
+    // 详情页已经压在简报上面时，不要把那一条历史改成小时地址。
+    if(!String(loc.hash || '').startsWith('#report')) return;
+    const previous=hist.state && typeof hist.state==='object' ? hist.state : {};
+    try{hist.replaceState({...previous, aiCenter:true, hash},'',`${loc.pathname||''}${loc.search||''}${hash}`);}catch{}
   }
   function writeHourHash(startAt){
-    if(!startAt || mode!=='hourly')return;
+    if(suppressHourHash || !startAt || mode!=='hourly')return;
     const hh=String(hourClock(startAt)).padStart(2,'0');
     const date=day(startAt), today=day(Date.now());
     const node=pendingNodeId ? `&node=${encodeURIComponent(pendingNodeId)}` : '';
@@ -967,6 +990,7 @@ export function createInformationTreePage(host) {
     const opened=openedId ? items.find(item=>item.n.id===openedId) : null;
     list.replaceChildren();
     if(opened){
+      host.syncHour?.(null, {node: opened.n.id});
       syncReadingChrome({node:opened.n,label:'返回日报',onBack:closeDaily});
       const article=await card(opened.n,token,{actions:false});
       const share=shareAction(()=>shareTreeNode(opened.n, edition, '日报'));
@@ -1572,5 +1596,5 @@ export function createInformationTreePage(host) {
       const saved=memory[mode] || {};direction=saved.direction ?? null;directionExplicit=Boolean(saved.directionExplicit);if(saved.tag)tag.value=saved.tag;
       periods();await render();if(flightToken!==flight)return;settled=true;resume(false);
     }catch(error){if(aborted(error) || token!==epoch || flightToken!==flight)return;list.replaceChildren(el('p','暂时无法读取简报。'),button('重试读取',()=>this.mount(target,options)));}
-  },check,acceptUpdate,resume,stop,suspend,isSettled(){return settled;},selectHour,showingHour,hasHourScroll,focusNode,selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){haltDigest();root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());root?.classList.remove('is-reading','is-hourly','is-discussion');clearHourSlow();readingCache.clear();readingLoads.clear();readingIndex=undefined;pendingClockHour=null;hourFallbackText='';hourRevealEarlier=false;openGaps.clear();stop();flight++;requests.abort();requests=new AbortController();epoch++;session++;settled=false;rendering=0;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();latestDailyPromise=null;fullEditions.clear();editionLoads.clear();invalidateInformationIndex();expanded.clear();if(scrollTimer){clearTimeout(scrollTimer);scrollTimer=0;}positions.clear();hourOpens.clear();shownKey='';away=false;viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
+  },check,acceptUpdate,resume,stop,suspend,isSettled(){return settled;},selectHour,showingHour,hasHourScroll,focusNode,clearOpened,selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){haltDigest();root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());root?.classList.remove('is-reading','is-hourly','is-discussion');clearHourSlow();readingCache.clear();readingLoads.clear();readingIndex=undefined;pendingClockHour=null;hourFallbackText='';hourRevealEarlier=false;openGaps.clear();stop();flight++;requests.abort();requests=new AbortController();epoch++;session++;settled=false;rendering=0;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();latestDailyPromise=null;fullEditions.clear();editionLoads.clear();invalidateInformationIndex();expanded.clear();if(scrollTimer){clearTimeout(scrollTimer);scrollTimer=0;}positions.clear();hourOpens.clear();shownKey='';away=false;viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
 }

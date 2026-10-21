@@ -25,6 +25,10 @@
 
 ## 当前
 
+- `progress/2026-10-21-list-skeleton.md`：总览、信息流和几份列表在数据回来前显示固定高度的骨架，不先留白或只写一行「正在读取」。直接打开 `#feed` 时第一帧就是信息流。报价未到时行情条保持骨架。不新增 migration。需要重启 Web，浏览器再加载一次。
+
+- `progress/2026-10-21-brief-back.md`：手机上从简报里的一条或阅读页按返回，回到简报列表，不再跳过简报。直接打开带条目的简报地址时，列表压在这条下面。已经离开简报后，小时地址不再改写详情页的历史。不新增 migration。需要重启 Web，浏览器再加载一次。
+
 - `progress/2026-10-21-sqlite-busy-not-repeat-exit.md`：`SQLITE_BUSY` 和 `database is locked` 只计入 10 分钟内的总次数，不再 3 次就退出。其它 `SQLITE_` 错误仍是同一种出现 3 次就 `exit(1)`。不新增 migration。需要重启 Worker。
 
 - `progress/2026-10-21-bamboo-daily-usage.md`：用量页列出 Bamboo 最近 14 个上海日的信息流准入次数，上限默认 7000。只读原来的计数文件，不另记一次，也不改准入分类。接口只有日期、次数和上限。不新增 migration。需要重启 Web，浏览器再加载一次。
