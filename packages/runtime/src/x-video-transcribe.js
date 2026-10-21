@@ -14,6 +14,8 @@ export function assembleXVideoTranscribeDeps(options = {}) {
       now: request.now,
       sleep: request.sleep,
       signal: request.signal,
+      resumeSegments: request.resumeSegments,
+      onSegment: request.onSegment,
     });
   return { ...options, env, geminiTranscribe };
 }

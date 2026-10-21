@@ -36,9 +36,26 @@ export function liveFrameBytes(sampleRate, frameMs = FRAME_MS) {
   return Math.max(2, Math.floor(sampleRate * frameMs / 1000) * 2);
 }
 
+function liveClientError(error, code) {
+  if (error?.name === 'AbortError') return error;
+  const category = code === 'network' || /fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND/i.test(String(error?.message || ''))
+    ? 'network'
+    : (code || 'live-failed');
+  const message = category === 'network' ? 'fetch failed'
+    : category === 'live-timeout' ? 'Live 转写超时'
+      : category === 'live-connect' ? 'Live 转写连接失败'
+        : category === 'live-unavailable' ? 'Live 转写不可用'
+          : category === 'live-audio' ? 'Live 转写读不到音频'
+            : category === 'live-empty' ? 'Live 转写结果为空'
+              : 'Live 转写失败';
+  const wrapped = new Error(message);
+  wrapped.code = category;
+  return wrapped;
+}
+
 function waitFor(socket, ready, timeoutMs, signal) {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => finish(new Error('Live 转写超时')), timeoutMs);
+    const timer = setTimeout(() => finish(liveClientError(new Error('Live 转写超时'), 'live-timeout')), timeoutMs);
     const onAbort = () => finish(Object.assign(new Error('转写已取消'), { name: 'AbortError' }));
     function finish(error, value) {
       clearTimeout(timer);
@@ -74,7 +91,7 @@ export function createGeminiLiveTranscriber({
   return async function transcribeLive({ apiKey, audio, languageCodes = [], signal }) {
     const secret = String(apiKey || '').trim();
     if (!secret) throw new Error('转写密钥不可用');
-    if (!WebSocketImpl) throw new Error('Live 转写不可用');
+    if (!WebSocketImpl) throw liveClientError(new Error('Live 转写不可用'), 'live-unavailable');
     let pcm;
     let sampleRate;
     try {
@@ -88,7 +105,7 @@ export function createGeminiLiveTranscriber({
     try {
       socket = new WebSocketImpl(url);
     } catch (error) {
-      throw new Error(clipSecret(error?.message) || 'Live 转写连接失败');
+      throw liveClientError(error, /fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND/i.test(String(error?.message || '')) ? 'network' : 'live-connect');
     }
     const finals = [];
     let interim = '';
@@ -105,7 +122,7 @@ export function createGeminiLiveTranscriber({
       failed = error instanceof Error ? error : new Error(clipSecret(error));
       notify();
     };
-    socket.addEventListener?.('error', () => fail(new Error('Live 转写连接失败')));
+    socket.addEventListener?.('error', () => fail(liveClientError(new Error('Live 转写连接失败'), 'live-connect')));
     socket.addEventListener?.('open', () => { isOpen = true; notify(); });
     socket.addEventListener?.('close', () => notify());
     socket.addEventListener?.('message', (event) => {
@@ -179,13 +196,11 @@ export function createGeminiLiveTranscriber({
         check();
       }, timeoutMs, signal);
       const text = (finals.join('') || interim).trim();
-      if (!text) throw new Error('Live 转写结果为空');
+      if (!text) throw liveClientError(new Error('Live 转写结果为空'), 'live-empty');
       return text;
     } catch (error) {
       if (error?.name === 'AbortError') throw error;
-      const wrapped = new Error(clipSecret(error?.message) || 'Live 转写失败');
-      wrapped.code = error?.code || 'live-failed';
-      throw wrapped;
+      throw liveClientError(error, error?.code || 'live-failed');
     } finally {
       try { socket.close?.(); } catch { /* The session is already done. */ }
     }

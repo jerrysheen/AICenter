@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-21 #197 上线后，`2111105654211608847:1` 重跑仍失败。任务 `2630fc4a` 11:39:23 以 `fetch failed` 结束，4 次 `gemini-3.5-transcribe` 却在 11:39:50 之后才返回。Live 走 WebSocket，失败后直接改走文件转写，用量里看不到，日志也没有类别。已经发出的分段没有随任务取消。现在 Live 失败只记 `network` 或 `live-connect` 这类类别，不记地址和密钥。`fetch failed` 在这一段里最多再试 2 次。未完成的分段用 AbortSignal 取消，完成的分段写进整理记录，下一轮接着转。不新增 migration。当前 schema 仍是 95。下一号是 96。空号仍是 63、79、80、82。不要重建数据库。需要重启 Worker。页面没有改，Web 不用为这项重启。见 `progress/2026-10-21-x-video-transcribe-resume.md`。
+
 2026-10-21 X 视频整理报 `transcribe is not a function`。`x-video-article-job` 使用 `deps.geminiTranscribe`，Worker 没有把函数装进去。现在这个函数就是 `audio-transcription-job` 里的 `executeAudioTranscription`：不传入旧的 `createGeminiAudioTranscriber`，所以先走 `gemini-3.5-transcribe-live`，只有 Live 失败才用 `gemini-3.5-transcribe`，不会绕过 Live 去吃每天 25 次的文件转写额度。3336 秒仍由这一层按每分钟 20000 token 切成多段，每段短于 Live 的 10 分钟会话。密钥只从 `GEMINI_API_KEY` 这一组环境变量读取，不写进代码和日志。已经因为这句错误停住的条目，下一轮会再转写，不另占当天名额。不新增 migration。当前 schema 仍是 95。下一号是 96。空号仍是 63、79、80、82。不要重建数据库。需要重启 Worker。页面没有改，Web 不用为这项重启。见 `progress/2026-10-21-x-video-transcribe.md`。
 
 2026-10-21 Gemini 3.1 Flash Lite 的 RPM 峰值 19，超过 15；RPD 558，超过 500。3.5 Flash Lite 的 RPM 只有 4，RPD 也到了 510。小时报、文章整理、投资摘要和 x-focus 默认打 3.1；3.5 主要接截断和回退。现在两个模型都在小时准入的默认候选里。本地在 14 RPM 或 480 RPD 就停掉这一个，改走另一个。两个都到了余量就等到下一分钟或太平洋日切，不再把请求打到 Google。投资摘要在没有另外配置模型时带上另一个 Flash Lite。x-focus 直接打分轮换。Worker 启动时按模型打出当天调用次数，不写密钥。不新增 migration。当前 schema 仍是 94。下一号仍是 95。空号仍是 63、79、80、82。不要重建数据库。需要重启 Worker。页面没有改，Web 不用为这项重启。见 `progress/2026-10-21-flash-lite-headroom.md`。

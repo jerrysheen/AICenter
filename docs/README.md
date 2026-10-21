@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-21-x-video-transcribe-resume.md`：X 视频转写在 Live 失败时只记错误类别。网络错误在任务内有限重试。任务失败会取消未完成的分段，已经完成的分段留下，下一轮续跑。不新增 migration。需要重启 Worker。
+
 - `progress/2026-10-21-x-video-transcribe.md`：X 视频的 `deps.geminiTranscribe` 接到 `executeAudioTranscription`。先走 Live，失败才用文件转写，不直接接 `createGeminiAudioTranscriber`。不新增 migration。需要重启 Worker。
 
 - `progress/2026-10-21-flash-lite-headroom.md`：两个 Flash Lite 按剩余 RPM、RPD 提前互换，不等 429。Worker 启动时按模型打出当天调用次数。不新增 migration。需要重启 Worker。

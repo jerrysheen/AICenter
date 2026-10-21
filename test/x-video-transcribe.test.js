@@ -285,3 +285,89 @@ test('the x-video job calls the assembled transcriber and retries a missing-func
     opened.close();
   }
 });
+
+test('a failed x-video pass keeps finished segments and the next pass skips them', async () => {
+  const opened = openStore();
+  const now = Date.parse('2026-10-21T02:00:00Z');
+  const day = shanghaiArticleDay(now);
+  const env = {
+    GEMINI_API_KEY: 'assembly-key',
+    AI_CENTER_X_VIDEO_ARTICLE: '1',
+    AI_CENTER_X_VIDEO_ARTICLE_DAILY: '1',
+    AI_CENTER_YOUTUBE_PODCASTS_ARTICLE_DAILY: '4',
+  };
+  const secret = 'AIzaSySECRETKEY1234567890';
+  try {
+    const videos = opened.store.repositories.xVideos;
+    videos.savePost({
+      workspaceId: 'local',
+      tweetId: TWEET,
+      videoId: `${TWEET}:1`,
+      sourceUrl: `https://x.com/MilesCranmer/status/${TWEET}`,
+    });
+    videos.saveArticle({
+      workspaceId: 'local',
+      videoId: `${TWEET}:1`,
+      status: 'pending',
+      durationSec: 3336,
+      articleDay: day,
+    });
+    let passes = 0;
+    await runXVideoArticlePass({
+      env,
+      repository: videos,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      now,
+      dataDirectory: opened.directory,
+      manual: true,
+      loadMedia: async () => parseSyndicationTweet(FIXTURE, TWEET),
+      downloadMedia: async () => {},
+      extractAudio: async ({ wav }) => {
+        writeFileSync(wav, buildWav(Buffer.alloc(16_000 * 2), {
+          channels: 1, sampleRate: 16_000, bitsPerSample: 16, blockAlign: 2,
+        }));
+      },
+      geminiTranscribe: async (request) => {
+        passes += 1;
+        assert.equal(request.resumeSegments.length, 0);
+        await request.onSegment({ index: 0, startMs: 0, endMs: 500_000, text: '第一段已经完成' });
+        throw new Error(`fetch failed wss://generativelanguage.googleapis.com/ws?key=${secret}`);
+      },
+    });
+    const saved = videos.article('local', `${TWEET}:1`);
+    const state = JSON.parse(saved.articleState);
+    assert.equal(state.transcriptSegments[0].text, '第一段已经完成');
+    assert.equal(saved.sourceTranscript, '');
+    assert.equal(saved.reason.includes(secret), false);
+    assert.equal(saved.reason.includes('wss://'), false);
+    assert.equal(saved.reason, 'fetch failed');
+
+    let resumed = null;
+    await runXVideoArticlePass({
+      env,
+      repository: videos,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      now,
+      dataDirectory: opened.directory,
+      manual: true,
+      loadMedia: async () => parseSyndicationTweet(FIXTURE, TWEET),
+      downloadMedia: async () => {},
+      extractAudio: async ({ wav }) => {
+        writeFileSync(wav, buildWav(Buffer.alloc(16_000 * 2), {
+          channels: 1, sampleRate: 16_000, bitsPerSample: 16, blockAlign: 2,
+        }));
+      },
+      geminiTranscribe: async (request) => {
+        resumed = request.resumeSegments;
+        return { text: '第一段已经完成\n第二段' };
+      },
+      gemmaGenerate: async () => ({ text: '## 要点\n- 演讲按时间展开。' }),
+    });
+    assert.equal(resumed[0].text, '第一段已经完成');
+    assert.equal(passes, 1);
+  } finally {
+    opened.close();
+  }
+});
