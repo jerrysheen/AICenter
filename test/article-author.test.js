@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { articleAuthorTarget, feedSearchPath, feedSearchQueryReady, linkAbortSignal } from '../apps/web/public/feed-search.js';
+import { articleAuthorFields, articleAuthorTarget, feedSearchPath, feedSearchQueryReady, linkAbortSignal, socialArticleBodyPending } from '../apps/web/public/feed-search.js';
 
 test('article author click opens the stored author id', () => {
   assert.deepEqual(
@@ -26,4 +26,37 @@ test('article author click opens the stored author id', () => {
   previous.abort();
   assert.equal(next.signal.aborted, true);
   unlink();
+});
+
+test('article shell keeps the author before the body arrives', () => {
+  const fields = articleAuthorFields({
+    author: 'Miles Cranmer',
+    authorId: 'x:382008009',
+    handle: 'MilesCranmer',
+    authorHandle: 'MilesCranmer',
+  });
+  assert.deepEqual(fields, {
+    author: 'Miles Cranmer',
+    authorId: 'x:382008009',
+    handle: 'MilesCranmer',
+    authorHandle: 'MilesCranmer',
+  });
+  assert.deepEqual(
+    articleAuthorTarget({ platform: 'x', ...fields }),
+    { kind: 'author', id: 'x:382008009' },
+  );
+  assert.equal(socialArticleBodyPending({
+    platform: 'x',
+    author: 'Miles Cranmer',
+    authorId: 'x:382008009',
+    resourceId: 'item-1',
+    body: '',
+  }), true);
+  assert.equal(socialArticleBodyPending({
+    platform: 'x',
+    author: 'Miles Cranmer',
+    authorId: 'x:382008009',
+    resourceId: 'item-1',
+    body: 'Here is the full talk',
+  }), false);
 });

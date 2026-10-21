@@ -7,7 +7,7 @@ import path from 'node:path';
 import { createStore } from '../packages/database/src/index.js';
 import { createAuthorService } from '../packages/domain/src/author-service.js';
 import { createFeedService } from '../packages/domain/src/feed-service.js';
-import { ensureXVideoFeedPost } from '../packages/domain/src/x-video-feed.js';
+import { ensureXVideoFeedPost, repairXFollowingFeed } from '../packages/domain/src/x-video-feed.js';
 import { createYoutubePodcastService } from '../packages/domain/src/youtube-podcasts-service.js';
 
 const TWEET = '2111105654211608847';
@@ -253,4 +253,151 @@ test('ready youtube body drops leftover english without rewriting the episode', 
   assert.match(episode.body, /主持人：是的。/);
   assert.match(episode.body, /每个人都可以成为 a maker/);
   assert.equal(service.get('local', 'abc12345678').body, episode.body);
+});
+
+test('searchable posts land on the following feed and search shows the saved translation', async () => {
+  const opened = openStore();
+  try {
+    const feed = opened.store.repositories.feed;
+    const forYou = feed.upsertSourceAccount({
+      workspaceId: 'local', provider: 'x', externalId: 'x:home:for-you', displayName: 'For you',
+    });
+    const loose = feed.upsertSourceAccount({
+      workspaceId: 'local', provider: 'x', externalId: 'x:misc', displayName: 'Loose',
+    });
+    feed.ensureSubscription({
+      workspaceId: 'local', sourceAccountId: forYou.id, enabled: true, refreshIntervalMinutes: 30,
+    });
+    const publishedAt = Date.parse('2026-10-16T14:43:00Z');
+    const save = (externalId, accountId, title, body, metadata) => {
+      const capture = feed.saveCapture({
+        workspaceId: 'local',
+        provider: 'x',
+        externalId,
+        sourceAccountId: accountId,
+        sourceUrl: `https://x.com/i/status/${externalId}`,
+        title,
+        contentHash: hash(externalId),
+        publishedAt,
+        authorNativeId: metadata.authorProfile?.nativeId || null,
+        metadata,
+      });
+      return feed.saveContentItem({
+        workspaceId: 'local',
+        captureId: capture.id,
+        originType: 'subscription',
+        contentType: 'post',
+        title,
+        body,
+        summary: title,
+        sourceUrl: capture.sourceUrl,
+        authorName: metadata.authorProfile?.name || '别人',
+        publishedAt,
+      });
+    };
+    const plain = save('9002', forYou.id, '普通帖', '推荐页里的普通帖', { authorHandle: 'other' });
+    const video = save('9001', forYou.id, '视频帖', '这是一条视频', { authorHandle: 'other' });
+    const talk = save(TWEET, loose.id, 'Here is the full talk', 'Here is the full talk', {
+      authorHandle: 'MilesCranmer',
+      filterReason: 'fallback-manual',
+      authorProfile: {
+        authorId: 'x:382008009',
+        platform: 'x',
+        nativeId: '382008009',
+        handle: 'MilesCranmer',
+        name: 'Miles Cranmer',
+        kind: 'person',
+      },
+    });
+    opened.store.repositories.xVideos.savePost({
+      workspaceId: 'local',
+      tweetId: '9001',
+      videoId: 'vid-1',
+      contentItemId: video.id,
+      sourceUrl: 'https://x.com/i/status/9001',
+    });
+    feed.saveTranslations({
+      workspaceId: 'local',
+      itemId: talk.id,
+      targetLang: 'zh',
+      sourceHash: hash('Here is the full talk'),
+      translatedText: '以下是演讲全文：',
+      engine: 'test',
+    });
+    const reader = createFeedService({
+      legacyRepository: { listPosts() { return []; }, getPost() { return null; } },
+      feedRepository: feed,
+      sourcePort: { findByProvider() { return null; }, persistence() { return null; }, async read() { return { data: null }; } },
+    });
+    const before = repairXFollowingFeed({ feedRepository: feed, workspaceId: 'local', dryRun: true });
+    assert.equal(before.status, 'dry-run');
+    assert.equal(before.moved, 0);
+    assert.equal(before.examples.some((row) => row.externalId === TWEET), true);
+    assert.equal(before.examples.some((row) => row.externalId === '9001'), true);
+    assert.equal(before.examples.some((row) => row.externalId === '9002'), false);
+    assert.equal(feed.findSourceAccount('local', 'x', 'x:home:following'), null);
+    assert.equal(feed.getCapture('local', 'x', TWEET).sourceAccountId, loose.id);
+    assert.equal(feed.getCapture('local', 'x', TWEET).title, 'Here is the full talk');
+    const moved = repairXFollowingFeed({ feedRepository: feed, workspaceId: 'local' });
+    assert.equal(moved.moved, 2);
+    const following = feed.findSourceAccount('local', 'x', 'x:home:following');
+    const subscription = feed.findSubscriptionBySource('local', following.id);
+    assert.equal(feed.getCapture('local', 'x', TWEET).sourceAccountId, following.id);
+    assert.equal(feed.getCapture('local', 'x', TWEET).title, 'Here is the full talk');
+    assert.equal(feed.getCapture('local', 'x', '9001').sourceAccountId, following.id);
+    assert.equal(feed.getCapture('local', 'x', '9001').title, '视频帖');
+    assert.equal(feed.getCapture('local', 'x', '9002').sourceAccountId, forYou.id);
+    assert.equal(plain.id.length > 0, true);
+    const listed = feed.listContentItemsByProvider('local', 'x', { sourceExternalId: 'x:home:following', limit: 20 });
+    assert.equal(listed.some((row) => row.externalId === TWEET && row.publishedAt === publishedAt), true);
+    const hit = reader.searchFeed('local', { query: 'Cranmer', platform: 'x' }).find((row) => row.id === `x:${TWEET}`);
+    assert.equal(hit.subscriptionId, subscription.id);
+    assert.match(hit.translation.text, /以下是演讲全文：/);
+    const authors = createAuthorService({
+      authorRepository: opened.store.repositories.authors,
+      feedRepository: feed,
+    });
+    const page = authors.items('local', 'x:382008009', { read: 'unread' });
+    assert.match(page.items.find((row) => row.externalId === TWEET).preview, /以下是演讲全文：/);
+    feed.saveCapture({
+      workspaceId: 'local',
+      provider: 'x',
+      externalId: TWEET,
+      sourceAccountId: forYou.id,
+      sourceUrl: `https://x.com/MilesCranmer/status/${TWEET}`,
+      title: 'Here is the full talk',
+      contentHash: hash(`${TWEET}-again`),
+      publishedAt,
+      metadata: { authorHandle: 'MilesCranmer', filterReason: 'fallback-manual' },
+    });
+    assert.equal(feed.getCapture('local', 'x', TWEET).sourceAccountId, following.id);
+    assert.equal(feed.getCapture('local', 'x', TWEET).title, 'Here is the full talk');
+    feed.saveCapture({
+      workspaceId: 'local',
+      provider: 'x',
+      externalId: TWEET,
+      sourceAccountId: null,
+      sourceUrl: `https://x.com/MilesCranmer/status/${TWEET}`,
+      title: 'Here is the full talk',
+      contentHash: hash(`${TWEET}-empty`),
+      publishedAt,
+      metadata: { authorHandle: 'MilesCranmer' },
+    });
+    assert.equal(feed.getCapture('local', 'x', TWEET).sourceAccountId, following.id);
+    feed.saveCapture({
+      workspaceId: 'local',
+      provider: 'x',
+      externalId: '9002',
+      sourceAccountId: following.id,
+      sourceUrl: 'https://x.com/i/status/9002',
+      title: '普通帖',
+      contentHash: hash('9002-follow'),
+      publishedAt,
+      metadata: { authorHandle: 'other' },
+    });
+    assert.equal(feed.getCapture('local', 'x', '9002').sourceAccountId, following.id);
+    assert.equal(feed.getCapture('local', 'x', '9002').title, '普通帖');
+  } finally {
+    opened.close();
+  }
 });

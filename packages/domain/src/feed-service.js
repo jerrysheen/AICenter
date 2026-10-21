@@ -1282,7 +1282,8 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       const provider = String(platform || '').trim();
       const source = provider && provider !== 'all' ? provider : '';
       const rows = searchStoredItems(feedRepository, workspaceId, query, limit, qualityRule, source);
-      return rows.map((row) => toFeedItem(row.provider || source || 'manual', row));
+      const items = rows.map((row) => toFeedItem(row.provider || source || 'manual', row));
+      return attachTranslations(feedRepository, workspaceId, items, 'zh', { verifyBody: false, preview: true });
     },
     upsertSourceAccount(input) {
       return feedRepository.upsertSourceAccount(input);

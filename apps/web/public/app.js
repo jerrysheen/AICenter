@@ -51,7 +51,7 @@ import { createAuthorView } from './author-view.js?v=dev';
 import { appendPartialArticle, episodeArticleMessage, foldedOriginal, partialArticleLabel, renderYoutubePodcasts, YOUTUBE_ARTICLE_POLL_SLOW_MS, youtubeArticlePollDelay, youtubeArticleRequestPath, youtubeReaderScopeLabel } from './youtube-podcasts.js?v=dev';
 import { xVideoArticleReady, xVideoArticleRequestPath, xVideoReaderScopeLabel, xVideoTweetId } from './x-video-article.js?v=dev';
 import { createFeedTaggingLoader, FEED_TAG_QUERY_PATH } from './feed-tagging.js?v=dev';
-import { articleAuthorTarget, feedSearchPath, feedSearchQueryReady, linkAbortSignal } from './feed-search.js?v=dev';
+import { articleAuthorFields, articleAuthorTarget, feedSearchPath, feedSearchQueryReady, linkAbortSignal, socialArticleBodyPending } from './feed-search.js?v=dev';
 import {
   xLinkArticleReady, xLinkArticleRequestPath, xLinkClosed, xLinkOwnsBody, xLinkReaderScope,
   xLinkTerminal, xLinkTweetId, xPostHasOutboundLink,
@@ -540,6 +540,7 @@ function isFeedFocusItem(item) {
 }
 
 function snapshotFocusItem(item) {
+  const author = articleAuthorFields(item);
   return {
     id: item.id,
     resourceId: item.resourceId || '',
@@ -548,8 +549,10 @@ function snapshotFocusItem(item) {
     kind: item.kind || 'social',
     platform: item.platform || '',
     externalId: item.externalId || '',
-    author: item.author || '',
-    handle: item.handle || '',
+    author: author.author,
+    authorId: author.authorId,
+    handle: author.handle,
+    authorHandle: author.authorHandle,
     time: item.time || '',
     title: item.title || '',
     body: item.body || '',
@@ -10055,10 +10058,7 @@ function renderArticlePage() {
   let post = official
     ? officialFeedItems().find((item) => item.id === itemId || item.resourceId === itemId)
     : (state.restoredArticles[itemId]?.readerLoaded ? state.restoredArticles[itemId] : null);
-  if (!official && !post) {
-    const cached = findUnifiedItem(itemId);
-    if (cached?.platform === 'media') post = cached;
-  }
+  if (!official && !post) post = findUnifiedItem(itemId) || null;
   const needsReaderLoad = !official && Boolean(itemId) && post?.platform !== 'media'
     && !state.restoredArticles[itemId]?.readerLoaded && !restoredArticleErrors.has(itemId);
   if (needsReaderLoad && state.bootstrapped) restoreSavedArticle(itemId);
@@ -10085,11 +10085,12 @@ function renderArticlePage() {
       return;
     }
   }
-  if ((post?.platform === 'x' || post?.platform === 'xueqiu') && !String(post.body || '').trim() && post.resourceId && !state.restoredArticles[itemId] && !restoredArticleErrors.has(itemId)) {
+  const socialBodyPending = socialArticleBodyPending(post)
+    && !state.restoredArticles[itemId]?.readerLoaded
+    && !restoredArticleErrors.has(itemId);
+  if (socialBodyPending && state.bootstrapped) {
     markFeedItemRead(post);
     restoreSocialArticle(itemId, post);
-    renderViewState(root, { kind: 'loading', title: '正在读取文章…', message: '正在加载正文。' });
-    return;
   }
   if (post && youtubeArticleReady(state.youtubeEpisodes[youtubeEpisodeId(post)])) {
     post = applyYoutubeReady(post, state.youtubeEpisodes[youtubeEpisodeId(post)]);
@@ -10210,7 +10211,9 @@ function renderArticlePage() {
       if (!post.paragraphs?.length) body.append(brief);
     }
   }
-  if (post.platform === 'media' && post.paragraphs?.length) {
+  if (socialBodyPending) {
+    body.append(Object.assign(document.createElement('p'), { className: 'body-state', textContent: '正在读取正文…' }));
+  } else if (post.platform === 'media' && post.paragraphs?.length) {
     const article = post.articleTranslation;
     const ready = article?.status === 'ready';
     if (mediaReading?.notice) {
@@ -10395,9 +10398,11 @@ function renderArticlePage() {
   root.replaceChildren(shell);
   articleReadPosition().mount({ articleId: articleReadKey(itemId), shell });
   if (menuFocus) [...elements['reader-menu'].querySelectorAll('button')].find(button => button.dataset.detailAction === menuFocus)?.focus();
-  if (xPostHasOutboundLink(post)) scheduleXLinkArticleWatch(post);
+  if (!socialBodyPending && xPostHasOutboundLink(post)) scheduleXLinkArticleWatch(post);
   const linkOwns = xLinkOwnsBody(post, xLinkRecord(post));
-  if (youtubeEpisodeId(post)) scheduleYoutubeArticleWatch(post);
+  if (socialBodyPending) {
+    // 正文还在读。作者已经在首屏，空正文不送去翻译。
+  } else if (youtubeEpisodeId(post)) scheduleYoutubeArticleWatch(post);
   else if (xVideoTweetId(post)) {
     const record = xVideoRecord(post);
     if (record?.absent) {

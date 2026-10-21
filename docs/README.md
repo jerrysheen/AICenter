@@ -25,7 +25,7 @@
 
 ## 当前
 
-- `progress/2026-10-21-feed-search-fts.md`：信息流搜索改走 FTS5。三个字及以上用全文索引，两个字只查标题和作者。索引在启动之后分批写入，不挡住 Worker。搜索词至少两个字才发请求，新请求取消上一个。补录会给 `x:home:following` 补上订阅，搜索结果带上 `subscriptionId`。migration 96。需要同时重启 Web 和 Worker，浏览器再加载一次。
+- `progress/2026-10-21-feed-search-fts.md`：信息流搜索改走 FTS5。三个字及以上用全文索引，两个字只查标题和作者。索引在启动之后分批写入。搜得到的帖按时间出现在「全部」：关注来源不再被后一次同步拉走，历史用 `scripts/repair-x-following-feed.mjs`，先 `--dry-run`。搜索和作者页共用已保存的译文。文章页首屏就显示作者。migration 96。需要同时重启 Web 和 Worker，浏览器再加载一次。
 
 - `progress/2026-10-21-cranmer-author-search.md`：信息流搜索按作者名和 handle 查已保存的帖子，不再只看已加载的一页。`#author/x:@MilesCranmer` 打开 `x:382008009`。文章页点作者名进入作者页。YouTube 译文在显示时去掉整句英文残留，不重跑这一集。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
 

@@ -434,6 +434,50 @@ export function createFeedRepository(database, emitEvent) {
       return row ? mapCapture(row) : null;
     },
 
+    // 搜得到、但没挂在关注信息流上的帖。推荐页里已有订阅的普通帖留在原处。
+    listXPostsOffFollowing(workspaceId, { limit = 40 } = {}) {
+      const page = Math.max(1, Math.min(Number(limit) || 40, 200));
+      const where = `ci.workspace_id = ?
+        AND c.provider = 'x'
+        AND COALESCE(sa.external_id, '') != 'x:home:following'
+        AND ${VISIBLE_CONTENT_SQL}
+        AND ${EXCLUDE_OFFICIAL_MIRROR_SQL}
+        AND (
+          COALESCE(sa.external_id, '') != 'x:home:for-you'
+          OR NOT EXISTS (
+            SELECT 1 FROM subscriptions follow_sub
+            WHERE follow_sub.workspace_id = c.workspace_id
+              AND follow_sub.source_account_id = c.source_account_id
+              AND follow_sub.enabled = 1
+          )
+          OR EXISTS (
+            SELECT 1 FROM x_video_posts video_post
+            WHERE video_post.workspace_id = c.workspace_id
+              AND video_post.tweet_id = c.external_id
+          )
+          OR json_extract(c.metadata_json, '$.filterReason') LIKE 'fallback-%'
+        )`;
+      const from = `FROM content_items ci
+        JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
+        LEFT JOIN source_accounts sa ON sa.id = c.source_account_id
+        WHERE ${where}`;
+      const count = database.prepare(`SELECT COUNT(DISTINCT c.external_id) AS n ${from}`).get(workspaceId);
+      const posts = database.prepare(`SELECT c.external_id AS externalId, c.title AS title,
+          COALESCE(sa.external_id, '') AS sourceExternalId
+        ${from}
+        GROUP BY c.external_id
+        ORDER BY MAX(COALESCE(c.published_at, 0)) DESC, c.external_id
+        LIMIT ?`).all(workspaceId, page);
+      return {
+        count: Number(count?.n) || 0,
+        posts: posts.map((row) => ({
+          externalId: row.externalId || '',
+          title: row.title || '',
+          sourceExternalId: row.sourceExternalId || '',
+        })),
+      };
+    },
+
     authorIdForContentItem(workspaceId, contentItemId) {
       if (!contentItemId) return '';
       const row = database.prepare(`SELECT author_id AS authorId FROM item_authors
@@ -636,7 +680,16 @@ export function createFeedRepository(database, emitEvent) {
            filter_reading, filter_specific, filter_sufficient, feed_filter_ready, author_native_id)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
           ON CONFLICT(workspace_id, provider, external_id) DO UPDATE SET
-            source_account_id = excluded.source_account_id,
+            source_account_id = CASE
+              WHEN EXISTS (
+                SELECT 1 FROM source_accounts kept
+                WHERE kept.id = captures.source_account_id
+                  AND kept.provider = 'x'
+                  AND kept.external_id = 'x:home:following'
+              ) THEN captures.source_account_id
+              WHEN excluded.source_account_id IS NULL OR excluded.source_account_id = '' THEN captures.source_account_id
+              ELSE excluded.source_account_id
+            END,
             source_url = excluded.source_url,
             title = excluded.title,
             content_hash = excluded.content_hash,

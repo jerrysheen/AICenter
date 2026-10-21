@@ -71,6 +71,35 @@ function ensureXHomeAccount(feedRepository, workspaceId) {
   return accountId;
 }
 
+// 把没挂上关注信息流、搜索却能找到的帖挪过去。不改标题，也不另建整理任务。
+export function repairXFollowingFeed({
+  feedRepository,
+  workspaceId = 'local',
+  dryRun = false,
+  limit = 40,
+} = {}) {
+  const preview = typeof feedRepository?.listXPostsOffFollowing === 'function'
+    ? feedRepository.listXPostsOffFollowing(workspaceId, { limit })
+    : { count: 0, posts: [] };
+  const posts = Array.isArray(preview?.posts) ? preview.posts : [];
+  const examples = posts.slice(0, 8).map((row) => ({
+    externalId: row.externalId || '',
+    title: row.title || '',
+    sourceExternalId: row.sourceExternalId || '',
+  }));
+  const count = Number(preview?.count) || 0;
+  if (dryRun) return { status: 'dry-run', count, moved: 0, examples };
+  const accountId = ensureXHomeAccount(feedRepository, workspaceId);
+  if (!accountId) return { status: 'missing-account', count, moved: 0, examples };
+  let moved = 0;
+  for (const row of posts) {
+    if (!row?.externalId) continue;
+    const placed = feedRepository.placeCaptureOnAccount?.(workspaceId, 'x', row.externalId, accountId);
+    if (placed?.sourceAccountId === accountId) moved += 1;
+  }
+  return { status: moved ? 'moved' : 'done', count, moved, examples, sourceAccountId: accountId };
+}
+
 function presentFeedCopy(item) {
   const body = String(item?.body || '').trim();
   const title = String(item?.title || '').trim();
