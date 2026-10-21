@@ -49,7 +49,13 @@ test('the brief list keeps a skeleton until the rows exist', () => {
   assert.match(tree, /if\(mode==='hourly'\)list\.append\(hourSkeleton\(\)\)/);
   assert.match(brief, /tree-hour-skeleton is-page/);
   assert.match(brief, /hourChromeSkeleton\(\), layout\)/);
+  const chrome = brief.slice(brief.indexOf('function hourChromeSkeleton'), brief.indexOf('function readingSkeleton'));
+  assert.match(chrome, /node\('button', 'tree-period-label', '\\u00a0'\)/);
+  assert.equal(chrome.includes('00:00'), false);
   const html = readFileSync(new URL('../apps/web/public/index.html', import.meta.url), 'utf8');
+  const reportHtml = html.slice(html.indexOf('id="view-report"'), html.indexOf('id="view-page"'));
+  assert.match(reportHtml, /tree-period-label" type="button" tabindex="-1">&nbsp;</);
+  assert.equal(reportHtml.includes('00:00'), false);
   assert.match(html, /\[\?&\]hour=\\d/);
   assert.match(html, /tree-hour-skeleton is-page/);
   assert.match(tree, /el\('p','\\u00a0','news-day-label'\)/);
