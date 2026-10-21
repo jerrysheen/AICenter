@@ -71,6 +71,7 @@ import { taggingManifest, createTaggingJobHandlers, ensureTagRescanSchedule, rea
 import { workPackageDispatchManifest, createWorkPackageJobHandlers } from '../../../packages/runtime/src/work-package-module.js';
 import { createJobRunner, deadLocalWorkerLock, formatJobLoopDelay, formatStartupStep, shouldLogJobLoopDelay } from '../../../packages/runtime/src/job-runner.js';
 import { mainThreadWatchdogEnabled, startMainThreadWatchdog } from '../../../packages/runtime/src/main-thread-watchdog.js';
+import { installWorkerRejectionGuard } from '../../../packages/runtime/src/worker-rejection-guard.js';
 import { installWorkerLogStamps } from '../../../packages/runtime/src/worker-log.js';
 import { createScheduler } from '../../../packages/runtime/src/scheduler.js';
 import { createDailyBriefService } from '../../../packages/domain/src/daily-brief-service.js';
@@ -81,7 +82,7 @@ import {createTreeMaterialPort} from '../../../packages/domain/src/information-t
 import {informationTreeManifest,createInformationTreeJobHandlers,enqueueTreePreparation,prioritizeRecentTreePreparation} from '../../../packages/runtime/src/information-tree-module.js';
 import {createReadingHourService, readingHourSourceAccess} from '../../../packages/domain/src/reading-hour-service.js';
 import {createModelUsageService} from '../../../packages/domain/src/model-usage-service.js';
-import { allowHourlyScheduleEnqueue, createReportJobHandlers, ensureDailyReportCatchupSchedule, ensureDailyReportSchedule, ensureHourlyDigestSchedule, hourlyReportDisabled, releaseOpenHourlyJobs, reportDailyManifest } from '../../../packages/runtime/src/report-module.js';
+import { allowHourlyScheduleEnqueue, createReportJobHandlers, ensureDailyReportCatchupSchedule, ensureDailyReportSchedule, ensureHourlyDigestSchedule, ensureHourlyFailureCatchupSchedule, hourlyReportDisabled, releaseOpenHourlyJobs, reportDailyManifest } from '../../../packages/runtime/src/report-module.js';
 import { boundedInt } from '../../../packages/domain/src/report-reliability.js';
 import { createResearchRecallJobHandlers, researchRecallManifest } from '../../../packages/runtime/src/research-recall-module.js';
 import { createResearchRelevanceJudge, createResearchTagJudge } from '../../../packages/runtime/src/research-judges.js';
@@ -910,6 +911,7 @@ export function createAiCenterWorker(options = {}) {
     ensureDailyReportSchedule(store, dailyConfig);
     ensureDailyReportCatchupSchedule(store, dailyConfig);
     ensureHourlyDigestSchedule(store,Date.now(),{minute:articleStrategy ? 30 : 0,env});
+    ensureHourlyFailureCatchupSchedule(store, Date.now(), {env});
     ensureDividendStrategySchedule(store);
     ensureFeedSubscriptionSyncSchedule(store);
     ensureTagRescanSchedule(store, Date.now(), env);
@@ -994,7 +996,10 @@ export function createAiCenterWorker(options = {}) {
   let schedulePromise = null;
   let quotaProbe = null;
   let translationBackfill = null;
+  let maintenancePromise = null;
   let translationGapTimer = null;
+  let closed = false;
+  let closing = null;
   let translationGapRunning = false;
   let translationGapCursor = null;
   let hardwarePriceTimer = null;
@@ -1065,11 +1070,11 @@ export function createAiCenterWorker(options = {}) {
     }).catch((error) => {
       console.error('[worker] translation-backfill failed:', error instanceof Error ? error.message : error);
     }).then(() => {
-      if (gapLimit > 0 && gapInterval > 0) return runGapFill();
-      return null;
+      if (closed || gapLimit <= 0 || gapInterval <= 0) return null;
+      return runGapFill();
     });
     deferredStep('translation-backfill');
-    if (gapLimit > 0 && gapInterval > 0 && !translationGapTimer) {
+    if (!closed && gapLimit > 0 && gapInterval > 0 && !translationGapTimer) {
       translationGapTimer = setInterval(() => { runGapFill(); }, gapInterval);
       translationGapTimer.unref?.();
     }
@@ -1117,9 +1122,15 @@ export function createAiCenterWorker(options = {}) {
       }
       if (!startupMaintenanceStarted) {
         startupMaintenanceStarted = true;
-        setImmediate(() => {
-          runDeferredTranslationStartup().catch((error) => {
-            console.error('[worker] startup maintenance failed:', error instanceof Error ? error.message : error);
+        maintenancePromise = new Promise((resolve) => {
+          setImmediate(() => {
+            if (closed) {
+              resolve();
+              return;
+            }
+            runDeferredTranslationStartup().catch((error) => {
+              console.error('[worker] startup maintenance failed:', error instanceof Error ? error.message : error);
+            }).then(resolve, resolve);
           });
         });
       }
@@ -1139,21 +1150,34 @@ export function createAiCenterWorker(options = {}) {
       }
       return runPromise;
     },
-    async close() {
-      mainThreadWatchdog.stop();
-      if (translationGapTimer) clearInterval(translationGapTimer);
-      translationGapTimer = null;
-      if (hardwarePriceTimer) clearInterval(hardwarePriceTimer);
-      hardwarePriceTimer = null;
-      quotaProbe?.stop();
-      scheduler.stop();
-      runner.stop();
-      try {
-        await Promise.allSettled([schedulePromise, runPromise].filter(Boolean));
-      } finally {
-        try { await agentRuntime.close?.(); } catch {}
-        store.close();
-      }
+    close() {
+      if (closing) return closing;
+      closing = (async () => {
+        closed = true;
+        mainThreadWatchdog.stop();
+        if (translationGapTimer) clearInterval(translationGapTimer);
+        translationGapTimer = null;
+        if (hardwarePriceTimer) clearInterval(hardwarePriceTimer);
+        hardwarePriceTimer = null;
+        quotaProbe?.stop();
+        scheduler.stop();
+        runner.stop();
+        try {
+          await Promise.allSettled([schedulePromise, runPromise, maintenancePromise, translationBackfill].filter(Boolean));
+        } finally {
+          if (translationGapTimer) clearInterval(translationGapTimer);
+          translationGapTimer = null;
+          if (hardwarePriceTimer) clearInterval(hardwarePriceTimer);
+          hardwarePriceTimer = null;
+          try { await agentRuntime.close?.(); } catch { /* 运行时已经关掉 */ }
+          try {
+            store.close();
+          } catch (error) {
+            if (!String(error?.message || error).includes('not open')) throw error;
+          }
+        }
+      })();
+      return closing;
     },
   };
 }
@@ -1184,6 +1208,7 @@ async function main() {
 }
 
 if (isMain(import.meta.url)) {
+  installWorkerRejectionGuard();
   main().catch((error) => {
     console.error(error);
     process.exitCode = 1;

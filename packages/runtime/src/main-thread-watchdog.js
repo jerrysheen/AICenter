@@ -19,17 +19,20 @@ export function startMainThreadWatchdog({
     if (message?.type === 'ping') {
       let running = [];
       try { running = tasks() || []; } catch { running = []; }
-      worker.postMessage({ type: 'pong', tasks: running });
+      try { worker.postMessage({ type: 'pong', tasks: running }); } catch { /* 线程已退出时不能把主进程带走 */ }
       return;
     }
     if (message?.type !== 'blocked') return;
     const list = (message.tasks || []).map((task) => `${task.type}:${task.id}`).join(',') || '-';
     log(`[worker] ${message.at} loop-blocked lagMs=${message.lagMs} tasks=${list}`);
   });
+  worker.on('error', (error) => {
+    log(`[worker] main-thread watchdog failed: ${error instanceof Error ? error.message : error}`);
+  });
   worker.unref?.();
   return {
     stop() {
-      worker.postMessage({ type: 'stop' });
+      try { worker.postMessage({ type: 'stop' }); } catch { /* 线程已退出 */ }
       worker.terminate();
     },
   };

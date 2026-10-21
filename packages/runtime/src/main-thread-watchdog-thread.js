@@ -6,18 +6,22 @@ let lastPongAt = Date.now();
 let lastTasks = [];
 let reported = false;
 
+function post(message) {
+  try { parentPort.postMessage(message); } catch { /* 主进程正在退出 */ }
+}
+
 const timer = setInterval(() => {
   const lagMs = Date.now() - lastPongAt;
   if (lagMs >= blockMs && !reported) {
     reported = true;
-    parentPort.postMessage({
+    post({
       type: 'blocked',
       at: new Date().toISOString(),
       lagMs,
       tasks: lastTasks,
     });
   }
-  parentPort.postMessage({ type: 'ping' });
+  post({ type: 'ping' });
 }, intervalMs);
 
 parentPort.on('message', (message) => {
