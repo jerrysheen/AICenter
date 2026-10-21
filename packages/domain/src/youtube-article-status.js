@@ -1,4 +1,4 @@
-import { dedupeRollingCaptions } from './youtube-captions.js';
+import { cleanDisplayedTranscript } from './youtube-captions.js';
 import { addCalendarDays, zonedParts } from './zoned-time.js';
 
 const FAIL_REASON = {
@@ -64,10 +64,7 @@ function readArticleState(raw) {
 }
 
 function showUnorganizedTranslation(value) {
-  const text = String(value || '').trim();
-  if (!text) return '';
-  if (!/\[\d{1,2}:\d{2}:\d{2}\]/.test(text)) return text;
-  return dedupeRollingCaptions(text);
+  return cleanDisplayedTranscript(value);
 }
 
 // 还没写成整篇时，按段的先后给出已经整理好的小节，没有小节就给出去掉滚动字幕重复的译文。
@@ -76,8 +73,8 @@ export function partialArticleBody(raw) {
   const parts = Array.isArray(state?.parts) ? state.parts : [];
   const blocks = [];
   for (const part of parts) {
-    const section = String(part?.section || '').trim();
-    const reply = String(part?.reply || '').trim();
+    const section = showUnorganizedTranslation(part?.section);
+    const reply = showUnorganizedTranslation(part?.reply);
     const translation = showUnorganizedTranslation(part?.translation);
     const text = section || reply || translation;
     if (text) blocks.push(text);

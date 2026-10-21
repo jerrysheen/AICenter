@@ -350,6 +350,32 @@ export function createFeedRepository(database, emitEvent) {
       return row ? mapSourceAccount(row) : null;
     },
 
+    findSourceAccount(workspaceId, provider, externalId) {
+      const row = database.prepare(`SELECT * FROM source_accounts
+        WHERE workspace_id = ? AND provider = ? AND external_id = ?`)
+        .get(workspaceId, provider, String(externalId || ''));
+      return row ? mapSourceAccount(row) : null;
+    },
+
+    attachCaptureSource(workspaceId, provider, externalId, sourceAccountId) {
+      if (!sourceAccountId) return null;
+      database.prepare(`UPDATE captures SET source_account_id = ?
+        WHERE workspace_id = ? AND provider = ? AND external_id = ?
+          AND (source_account_id IS NULL OR source_account_id = '')`)
+        .run(sourceAccountId, workspaceId, provider, externalId);
+      const row = database.prepare(`SELECT * FROM captures
+        WHERE workspace_id = ? AND provider = ? AND external_id = ?`)
+        .get(workspaceId, provider, externalId);
+      return row ? mapCapture(row) : null;
+    },
+
+    authorIdForContentItem(workspaceId, contentItemId) {
+      if (!contentItemId) return '';
+      const row = database.prepare(`SELECT author_id AS authorId FROM item_authors
+        WHERE workspace_id = ? AND content_item_id = ?`).get(workspaceId, contentItemId);
+      return row?.authorId || '';
+    },
+
     upsertSubscription(value) {
       const input = parseContract(UpsertSubscriptionInputSchema, value);
       const now = Date.now();

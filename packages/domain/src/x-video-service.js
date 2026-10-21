@@ -87,6 +87,7 @@ export function createXVideoService({ repository, store, feedRepository = null, 
       workspaceId,
       tweetId,
       loadTweet,
+      recomputeAuthor: (authorId) => store?.repositories?.authors?.recomputeAuthor?.(workspaceId, authorId),
     });
   }
 

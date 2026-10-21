@@ -297,6 +297,24 @@ test('partial article keeps finished sections and drops rolling caption repeats'
   assert.match(partial.text, /第一段已经整理好/);
   assert.equal(partial.text.includes('not translated yet'), false);
   assert.equal((partial.text.match(/Hello there this is the start of the sentence/g) || []).length, 1);
+  const repeated = partialArticleBody({
+    parts: [{
+      translation: [
+        '[00:06:00] competitor. >> 然后说到产品',
+        '[00:12:53] 是的。',
+        '[00:13:01] 是的。',
+        '[00:23:13] 同一时间',
+        '[00:23:13] 同一时间',
+        '[00:37:52] 每个人都可以成为 a maker',
+        '[00:37:53] 每个人都可以成为 a maker',
+      ].join('\n'),
+    }],
+  });
+  assert.equal(repeated.text.includes('>>'), false);
+  assert.equal(repeated.text.includes('competitor.'), false);
+  assert.equal((repeated.text.match(/每个人都可以成为 a maker/g) || []).length, 1);
+  assert.equal((repeated.text.match(/00:23:13/g) || []).length, 1);
+  assert.equal((repeated.text.match(/是的。/g) || []).length, 1);
   const opened = openStore();
   try {
     const repository = opened.store.repositories.youtubePodcasts;

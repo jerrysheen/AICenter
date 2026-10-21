@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createStore } from '../packages/database/src/index.js';
 import { planAudioTranscription } from '../packages/domain/src/audio-transcription.js';
 import { createFeedService } from '../packages/domain/src/feed-service.js';
+import { createAuthorService } from '../packages/domain/src/author-service.js';
 import { createXVideoService } from '../packages/domain/src/x-video-service.js';
 import {
   parseXStatusId,
@@ -32,7 +33,7 @@ import { tweetToFeedItem } from '../packages/connectors/src/x/home-timeline.js';
 import { runXVideoArticlePass, xVideoChunkCount } from '../packages/runtime/src/x-video-article-job.js';
 import { runYoutubeArticlePass } from '../packages/runtime/src/youtube-article-job.js';
 import { isApiTokenAllowlisted } from '../apps/web/src/http/api-token-access.js';
-import { xVideoArticleRequestPath, xVideoTweetId } from '../apps/web/public/x-video-article.js';
+import { xVideoArticleRequestPath, xVideoReaderScopeLabel, xVideoTweetId } from '../apps/web/public/x-video-article.js';
 
 const TWEET = '2111105654211608847';
 const FIXTURE = {
@@ -341,7 +342,7 @@ test('X sub-cap holds automatic videos while manual backfill still uses a shared
     const manual = videos.article('local', '1000000000000000003:1');
     assert.equal(manual.status, 'ready');
     const service = createXVideoService({ repository: videos, store: opened.store, env });
-    const queued = service.status('local', '1000000000000000002');
+    const queued = service.status('local', '1000000000000000002', Date.parse('2026-10-20T04:00:00Z'));
     assert.match(queued.article.message, /今天的整理名额已用完/);
     videos.saveArticle({
       workspaceId: 'local',
@@ -350,9 +351,9 @@ test('X sub-cap holds automatic videos while manual backfill still uses a shared
       articleStatus: 'pending',
       status: 'pending',
     });
-    assert.match(service.status('local', '1000000000000000002').article.message, /整理失败/);
+    assert.match(service.status('local', '1000000000000000002', Date.parse('2026-10-20T04:00:00Z')).article.message, /整理失败/);
     videos.saveArticle({ workspaceId: 'local', videoId: '1000000000000000002:1', status: 'skipped', reason: 'short' });
-    assert.equal(service.status('local', '1000000000000000002'), null);
+    assert.equal(service.status('local', '1000000000000000002', Date.parse('2026-10-20T04:00:00Z')), null);
   } finally {
     opened.close();
   }
@@ -483,6 +484,12 @@ test('backfill writes the missing post and author without a second job', async (
     assert.equal(item.authorId, 'x:999001');
     const found = reader.searchContentItems('local', 'Miles Cranmer');
     assert.equal(found.some((row) => row.authorName === 'Miles Cranmer'), true);
+    const listed = feed.listContentItemsByProvider('local', 'x', {
+      sourceExternalId: 'x:home:following',
+      qualityRule: 'all-three-0.60',
+      limit: 20,
+    });
+    assert.equal(listed.some((row) => row.externalId === TWEET && row.authorName === 'Miles Cranmer'), true);
     const authors = opened.store.repositories.authors.listAuthors({ workspaceId: 'local', platform: 'x' });
     assert.equal(authors.others.some((row) => row.authorId === 'x:999001' && row.name === 'Miles Cranmer'), true);
     assert.equal(authors.others.some((row) => row.authorId === 'x:888'), false);
@@ -523,4 +530,116 @@ test('backfill writes the missing post and author without a second job', async (
   } finally {
     opened.close();
   }
+});
+
+test('a link-only long video stays on the X feed with a Chinese title and no second job', async () => {
+  const opened = openStore();
+  try {
+    const videos = opened.store.repositories.xVideos;
+    const feed = opened.store.repositories.feed;
+    const hold = JSON.stringify({ holdReason: 'daily-limit', holdDay: '2026-10-20' });
+    const capture = feed.saveCapture({
+      workspaceId: 'local',
+      provider: 'x',
+      externalId: TWEET,
+      sourceUrl: `https://x.com/MilesCranmer/status/${TWEET}`,
+      title: 'https://t.co/abc123XY',
+      contentHash: 'link-only-hash',
+      publishedAt: Date.now(),
+      authorNativeId: '999001',
+      metadata: {
+        originalText: 'https://t.co/abc123XY',
+        filterMode: 'enforce',
+        filterDecision: 'KEEP',
+        filterApplied: true,
+        filterRule: 'all-three-0.60',
+        filterReason: 'fallback-manual',
+        authorHandle: '@MilesCranmer',
+        authorProfile: {
+          authorId: 'x:999001',
+          platform: 'x',
+          nativeId: '999001',
+          handle: 'MilesCranmer',
+          name: 'Miles Cranmer',
+          kind: 'person',
+        },
+        xVideo: { tweetId: TWEET, own: true },
+      },
+    });
+    feed.saveContentItem({
+      workspaceId: 'local',
+      captureId: capture.id,
+      originType: 'subscription',
+      contentType: 'post',
+      title: 'https://t.co/abc123XY',
+      body: 'https://t.co/abc123XY',
+      summary: 'https://t.co/abc123XY',
+      sourceUrl: capture.sourceUrl,
+      authorName: 'Miles Cranmer',
+      publishedAt: Date.now(),
+    });
+    videos.savePost({
+      workspaceId: 'local',
+      tweetId: TWEET,
+      videoId: `tweet:${TWEET}`,
+      contentItemId: '',
+      sourceUrl: capture.sourceUrl,
+    });
+    videos.saveArticle({
+      workspaceId: 'local',
+      videoId: `tweet:${TWEET}`,
+      status: 'pending',
+      articleStatus: 'pending',
+      manual: 1,
+      articleState: hold,
+    });
+    const service = createXVideoService({
+      repository: videos,
+      feedRepository: feed,
+      store: opened.store,
+      loadMedia: async () => parseSyndicationTweet({ ...FIXTURE, text: 'https://t.co/abc123XY' }, TWEET),
+      env: { AI_CENTER_X_VIDEO_ARTICLE: '1' },
+    });
+    const repaired = await service.enqueue('local', { tweetId: TWEET });
+    assert.equal(repaired.jobCreated, false);
+    assert.equal(opened.store.listJobsByType(X_VIDEO_ARTICLE_JOB_TYPE).length, 0);
+    assert.equal(videos.article('local', `tweet:${TWEET}`).articleState, hold);
+    const item = feed.getContentItemByCapture('local', capture.id);
+    assert.equal(item.title, '视频待整理');
+    assert.equal(item.summary, '视频待整理');
+    assert.match(item.body, /t\.co\/abc123XY/);
+    assert.equal(item.authorName, 'Miles Cranmer');
+    const savedCapture = feed.getCapture('local', 'x', TWEET);
+    assert.equal(Boolean(savedCapture.sourceAccountId), true);
+    const listed = feed.listContentItemsByProvider('local', 'x', {
+      sourceExternalId: 'x:home:following',
+      qualityRule: 'all-three-0.60',
+      limit: 20,
+    });
+    assert.equal(listed.some((row) => row.externalId === TWEET), true);
+    const authors = createAuthorService({
+      authorRepository: opened.store.repositories.authors,
+      feedRepository: feed,
+      qualityRule: 'all-three-0.60',
+    });
+    const page = authors.list({ workspaceId: 'local', platform: 'x' });
+    const miles = page.others.find((row) => row.authorId === 'x:999001');
+    assert.equal(miles?.name, 'Miles Cranmer');
+    assert.equal(miles?.unreadCount, 1);
+    assert.equal(miles?.latestTitleZh, '视频待整理');
+    const again = await service.enqueue('local', { tweetId: TWEET });
+    assert.equal(again.jobCreated, false);
+    assert.equal(videos.article('local', `tweet:${TWEET}`).articleState, hold);
+  } finally {
+    opened.close();
+  }
+});
+
+test('long video posts use the video label instead of a complete body tag', () => {
+  assert.equal(xVideoReaderScopeLabel({ platform: 'x', xVideo: { tweetId: TWEET } }, null), '视频待整理');
+  assert.equal(xVideoReaderScopeLabel({ platform: 'x' }, { articleStatus: 'pending', article: { status: 'queued' } }), '视频待整理');
+  assert.equal(xVideoReaderScopeLabel({ platform: 'x' }, { articleStatus: 'ready', article: { status: 'ready' } }), '视频已整理');
+  assert.equal(xVideoReaderScopeLabel({ platform: 'x', xVideo: true }, { absent: true }), null);
+  assert.equal(xVideoReaderScopeLabel({ platform: 'x' }, null), null);
+  assert.equal(xVideoReaderScopeLabel({ platform: 'media', complete: true }, null), null);
 });
