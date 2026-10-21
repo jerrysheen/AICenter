@@ -1,13 +1,37 @@
 import { randomUUID } from 'node:crypto';
 
+// Published Flash Lite project limits are 15 RPM and 500 RPD. Leave one RPM and
+// 20 RPD unused so a later call switches before Google returns 429.
+export const FLASH_LITE_PROJECT_CAP = Object.freeze({
+  'gemini-3.1-flash-lite': { requestsPerMinute: 14, requestsPerDay: 480 },
+  'gemini-3.5-flash-lite': { requestsPerMinute: 14, requestsPerDay: 480 },
+});
+
+export function flashLiteSibling(model) {
+  if (model === 'gemini-3.1-flash-lite') return 'gemini-3.5-flash-lite';
+  if (model === 'gemini-3.5-flash-lite') return 'gemini-3.1-flash-lite';
+  return '';
+}
+
 export function createModelQuotaRepository(database, emitEvent) {
   return Object.freeze({
-    reserve({ slots, model, at, requestsPerHour, requestsPerMinute, minIntervalMs, estimatedTokensPerMinute, estimatedTokens, accountMode=false, requestsPerDay=Infinity, requestsPerKeyPerDay=Infinity, dayStart=at, dayEnd=at+86400000, legacyProject='', dryRun=false, pacingModels=[], balance='', idleAfterMs=0 }) {
+    reserve({ slots, model, at, requestsPerHour, requestsPerMinute, minIntervalMs, estimatedTokensPerMinute, estimatedTokens, accountMode=false, requestsPerDay=Infinity, requestsPerKeyPerDay=Infinity, dayStart=at, dayEnd=at+86400000, legacyProject='', dryRun=false, pacingModels=[], balance='', idleAfterMs=0, flashProjectCap=true }) {
       return database.transaction(() => {
         const global = accountMode
           ? database.prepare('SELECT at FROM model_quota_reservations WHERE model=? AND at>? ORDER BY at').all(model,at-3600000)
           : database.prepare('SELECT at FROM model_quota_reservations WHERE at>? ORDER BY at').all(at-3600000);
         if(global.length>=requestsPerHour)return {admitted:false,retryAt:global[0].at+3600000};
+        const projectCap = flashProjectCap === false ? null : FLASH_LITE_PROJECT_CAP[model];
+        if (projectCap) {
+          const minuteRows = database.prepare('SELECT at FROM model_quota_reservations WHERE model=? AND at>? ORDER BY at').all(model, at - 60000);
+          if (minuteRows.length >= projectCap.requestsPerMinute) {
+            return { admitted: false, retryAt: minuteRows[0].at + 60000, flashHeadroom: 'rpm', model };
+          }
+          const dayCount = database.prepare('SELECT COUNT(*) AS n FROM model_quota_reservations WHERE model=? AND at>=? AND at<?').get(model, dayStart, dayEnd).n;
+          if (dayCount >= projectCap.requestsPerDay) {
+            return { admitted: false, retryAt: dayEnd, flashHeadroom: 'rpd', model };
+          }
+        }
         const dayModels=JSON.stringify(pacingModels.length?pacingModels:[model]);
         const day=database.prepare('SELECT project,at FROM model_quota_reservations WHERE model IN (SELECT value FROM json_each(?)) AND at>=? AND at<? ORDER BY at').all(dayModels,dayStart,dayEnd);
         if(day.length>=requestsPerDay)return {admitted:false,retryAt:dayEnd};

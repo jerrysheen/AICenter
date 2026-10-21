@@ -178,13 +178,19 @@ export async function readGemmaStream(response) {
 
 export function createGemmaTranslationRouter(options = {}) {
   const env = options.env || process.env;
-  const models = String(options.models || env.AI_CENTER_GEMMA_TRANSLATION_MODELS || GEMMA_TRANSLATION_DEFAULT_MODELS.join(',')).split(',').map(value => value.trim()).filter(Boolean);
+  const models = (Array.isArray(options.models) ? options.models : String(options.models || env.AI_CENTER_GEMMA_TRANSLATION_MODELS || GEMMA_TRANSLATION_DEFAULT_MODELS.join(',')).split(',')).map(value => String(value).trim()).filter(Boolean);
   if (!models.length || new Set(models).size !== models.length || models.some(model => !GEMMA_TRANSLATION_MODELS.includes(model))) throw new Error('无效的 Gemma 翻译模型池');
+  let schedule = null;
+  if (options.schedule != null) {
+    schedule = (Array.isArray(options.schedule) ? options.schedule : String(options.schedule).split(',')).map(value => String(value).trim()).filter(Boolean);
+    if (!schedule.length || schedule.some(model => !models.includes(model))) throw new Error('无效的 Gemma 翻译模型池');
+  }
   const retryModels = models.includes(GEMMA_26B) ? [GEMMA_26B] : models;
   const slots=resolveGemmaTranslationSlots(env,options.apiKey);
   const now = options.now || Date.now;
   const repository = options.quotaRepository;
   let cursor = 0;
+  let scheduleCursor = 0;
   const fetchImpl = googleFetch(options.fetch || fetch, env);
   const pause = options.sleep || sleep;
   const random = options.random || Math.random;
@@ -255,12 +261,14 @@ export function createGemmaTranslationRouter(options = {}) {
         dayStart: day.dayStart, dayEnd: day.dayEnd,
       });
       if (ready.length) {
+        const origin = pool === schedule ? scheduleCursor : pool === models ? cursor : 0;
         for (let offset = 0; offset < pool.length; offset++) {
-          const index = (cursor + offset) % pool.length;
+          const index = (origin + offset) % pool.length;
           const result = reserve(ready, pool[index]);
           if (result.admitted) {
             ticket = result;
-            if (pool === models) cursor = (index + 1) % models.length;
+            if (pool === schedule) scheduleCursor = (index + 1) % schedule.length;
+            else if (pool === models) cursor = (index + 1) % models.length;
             break;
           }
           quotaRetryAt = Math.min(quotaRetryAt, result.retryAt);
@@ -310,7 +318,7 @@ export function createGemmaTranslationRouter(options = {}) {
 
   return {
     batch: false,
-    async generate({ system, prompt, model, task, estimatedTokens = 0 } = {}) {
+    async generate({ system, prompt, model, task, estimatedTokens = 0, maxOutputTokens } = {}) {
       if (!slots.length) throw new Error('未配置 Gemma 翻译凭据');
       if (!repository?.reserve) throw new Error('Gemma 翻译需要持久化配额 Repository');
       const reserved = Math.max(0, Math.ceil(Number(estimatedTokens) || 0));
@@ -321,7 +329,8 @@ export function createGemmaTranslationRouter(options = {}) {
           retryAt: now() + 60_000,
         });
       }
-      const firstPool = model ? gemmaLockedModels(model) : models;
+      const outputCap = Number.isInteger(maxOutputTokens) && maxOutputTokens > 0 ? Math.min(8192, maxOutputTokens) : 4096;
+      const firstPool = model ? gemmaLockedModels(model) : (schedule || models);
       const retryPool = model ? firstPool : retryModels;
       const input = task === 'tag' ? gemmaTagInput(system, prompt) : gemmaTranslationInput(system, prompt);
       const inputBytes = Buffer.byteLength(input, 'utf8');
@@ -353,7 +362,7 @@ export function createGemmaTranslationRouter(options = {}) {
                 ? AbortSignal.any([options.signal, AbortSignal.timeout(options.timeoutMs ?? gemmaTranslationTimeoutMs(env.AI_CENTER_GEMMA_TRANSLATION_TIMEOUT_MS))])
                 : AbortSignal.timeout(options.timeoutMs ?? gemmaTranslationTimeoutMs(env.AI_CENTER_GEMMA_TRANSLATION_TIMEOUT_MS)),
               body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: input }] }],
-                generationConfig: { maxOutputTokens: 4096, thinkingConfig: { thinkingLevel: 'minimal' } } }),
+                generationConfig: { maxOutputTokens: outputCap, thinkingConfig: { thinkingLevel: 'minimal' } } }),
             });
           } catch (error) {
             const streamStatus = Number(error?.upstreamStatus);

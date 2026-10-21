@@ -33,8 +33,15 @@ import {
 } from '../../domain/src/youtube-podcasts.js';
 import { createDoubaoChatClient } from '../../connectors/src/doubao/chat-browser.js';
 import { createGeminiInvestorSummarizer } from '../../connectors/src/investor-discussion-model.js';
-import { translationChunkChars } from '../../connectors/src/translate/index.js';
 import { createGemmaTranslationRouter } from '../../connectors/src/translate/gemma.js';
+import {
+  GEMMA_26B,
+  GEMMA_31B,
+  LONG_VIDEO_GEMMA_SCHEDULE,
+  longVideoCallBudget,
+  longVideoPartBounds,
+  splitSummaryBlocks,
+} from '../../domain/src/gemma-long-video.js';
 
 // 正文默认走现有 Gemma 26B 翻译池，只打官方 endpoint，不新接计费服务，也不在这里读写密钥。
 // Gemma 失败时，缺的那一段可以改用现有 Gemini Flash。豆包只在引擎显式写成 doubao 时使用。
@@ -47,7 +54,7 @@ const UPSTREAM_WAIT_MIN_MS = 10_000;
 const UPSTREAM_WAIT_MAX_MS = 40_000;
 const UPSTREAM_HTTP = new Set([408, 500, 502, 503]);
 const ASK_TIMEOUT_MS = 120_000;
-const GEMMA_MODEL = 'gemma-4-26b-a4b-it';
+const GEMMA_MODEL = GEMMA_26B;
 const ARTICLE_FRESH_MS = 36 * 60 * 60 * 1000;
 
 function shanghaiDay(now, timeZone) {
@@ -78,44 +85,27 @@ function articleClient(deps) {
   return null;
 }
 
-function gemmaPartBounds(env) {
-  const maxChars = translationChunkChars(env.AI_CENTER_TRANSLATION_CHUNK_CHARS);
-  const minChars = Math.max(400, Math.floor(maxChars * 0.66));
-  return { minChars, maxChars: Math.max(minChars, maxChars) };
-}
-
-function splitSummaryBlocks(source, maxChars) {
-  const blocks = String(source || '').split(/\n\n/).map((item) => item.trim()).filter(Boolean);
-  const batches = [];
-  let current = '';
-  for (const block of blocks) {
-    const piece = block.length > maxChars ? block.slice(0, maxChars) : block;
-    if (current && current.length + 2 + piece.length > maxChars) {
-      batches.push(current);
-      current = piece;
-    } else {
-      current = current ? `${current}\n\n${piece}` : piece;
-    }
-  }
-  if (current) batches.push(current);
-  return batches;
-}
-
-function articleGemma(deps) {
+function articleGemma(deps, { lockModel = false } = {}) {
   if (deps.gemmaGenerate) return deps.gemmaGenerate;
   if (!deps.gemmaRouter) {
     deps.gemmaRouter = createGemmaTranslationRouter({
       env: deps.env || process.env,
-      models: GEMMA_MODEL,
+      models: [GEMMA_26B, GEMMA_31B],
+      schedule: LONG_VIDEO_GEMMA_SCHEDULE,
       quotaRepository: deps.quotaRepository,
       signal: deps.signal,
     });
   }
-  return (input) => deps.gemmaRouter.generate({
-    model: GEMMA_MODEL,
-    system: input.system,
-    prompt: input.prompt,
-  });
+  return (input) => {
+    const budget = longVideoCallBudget(input.system, input.prompt);
+    return deps.gemmaRouter.generate({
+      ...(lockModel ? { model: GEMMA_MODEL } : {}),
+      system: input.system,
+      prompt: input.prompt,
+      estimatedTokens: budget.total,
+      maxOutputTokens: budget.maxOutputTokens,
+    });
+  };
 }
 
 function articleFlash(deps) {
@@ -273,7 +263,7 @@ function articleTitleGenerator(deps) {
   if (deps.gemmaGenerate === null) return null;
   if (typeof deps.gemmaGenerate === 'function') return deps.gemmaGenerate;
   if (!deps.quotaRepository) return null;
-  return articleGemma(deps);
+  return articleGemma(deps, { lockModel: true });
 }
 
 async function applyArticleTitle(deps, { row, feedRepository, workspaceId, article, state }) {
@@ -601,7 +591,7 @@ async function organizeEpisode({ row, client, repository, feedRepository, worksp
   );
 }
 
-async function organizeWithGemma({ row, repository, feedRepository, workspaceId, day, signal, env, deps }) {
+async function organizeWithGemma({ row, repository, feedRepository, workspaceId, day, signal, deps }) {
   const item = row.contentItemId ? feedRepository.getContentItem(workspaceId, row.contentItemId) : null;
   const source = row.sourceTranscript || item?.body || '';
   if (!source.trim()) return { status: 'skipped', reason: 'empty' };
@@ -611,7 +601,7 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
   if (row.articleStatus === 'ready' && reusable && !gemmaArticleNeedsRepair(saved)) return { status: 'skipped', reason: 'ready' };
   const repairing = row.articleStatus === 'ready' && reusable && gemmaArticleNeedsRepair(saved);
   const deduped = dedupeRollingCaptions(source);
-  const bounds = gemmaPartBounds(env);
+  const bounds = longVideoPartBounds();
   const loaded = reusable ? saved.parts.map((part) => loadGemmaPart(part)) : null;
   const parts = loaded
     ? loaded.map(({ dropped, ...part }) => part)

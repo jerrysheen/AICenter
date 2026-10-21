@@ -6,17 +6,23 @@ import {
   parseContract,
 } from '../../contracts/src/index.js';
 import { createGeminiAudioTranscriber } from '../../connectors/src/audio-transcribe.js';
+import { createGeminiLiveTranscriber } from '../../connectors/src/audio-transcribe-live.js';
+import { nextGeminiDailyReset } from '../../connectors/src/gemini-grok-task.js';
 import {
+  AUDIO_TRANSCRIBE_FILE_REQUESTS_PER_DAY,
+  AUDIO_TRANSCRIBE_FILE_TOKENS_PER_MINUTE,
   buildWav,
   describeAudioTranscription,
   mergeTranscripts,
+  planFileTranscribePieces,
   readWavInfo,
   resolveAudioFile,
+  resolveAudioTranscribeModels,
   resolveAudioTranscriptionLanes,
+  sliceWav,
   wavSliceRange,
 } from '../../domain/src/audio-transcription.js';
 
-const MODEL = 'gemini-3.5-transcribe';
 const WAIT_LIMIT_MS = 6 * 60 * 60_000;
 
 export const audioTranscriptionManifest = Object.freeze({
@@ -45,31 +51,114 @@ async function readSlice(file, info, startMs, endMs) {
   return buildWav(pcm, info);
 }
 
-async function admit({ repository, lane, tokens, now, sleep, signal }) {
+function pacificDay(at) {
+  const dayEnd = nextGeminiDailyReset(at);
+  return { dayStart: nextGeminiDailyReset(dayEnd - 27 * 3600000), dayEnd };
+}
+
+function slicePiece(audio, chunkStartMs, startMs, endMs) {
+  if (startMs === chunkStartMs && endMs - startMs === readWavInfo(audio, audio.length).durationMs) return audio;
+  const info = readWavInfo(audio, audio.length);
+  return sliceWav(audio, info, startMs - chunkStartMs, endMs - chunkStartMs);
+}
+
+async function admit({ repository, lane, tokens, now, sleep, signal, model, requestsPerDay, estimatedTokensPerMinute, dayStart, dayEnd }) {
   const started = now();
   while (now() - started <= WAIT_LIMIT_MS) {
     if (signal?.aborted) throw new Error('转写已取消');
     const at = now();
     const ticket = repository.reserve({
       slots: lane.slots.map((slot) => ({ ...slot, project: lane.project, cooldownKey: lane.project })),
-      model: MODEL,
+      model,
       at,
       requestsPerHour: 2_000,
       requestsPerMinute: 30,
       minIntervalMs: 0,
-      estimatedTokensPerMinute: lane.tokensPerMinute,
+      estimatedTokensPerMinute,
       estimatedTokens: tokens,
       accountMode: true,
-      requestsPerDay: Number.POSITIVE_INFINITY,
-      requestsPerKeyPerDay: Number.POSITIVE_INFINITY,
-      dayStart: at,
-      dayEnd: at + 86_400_000,
+      requestsPerDay,
+      requestsPerKeyPerDay: requestsPerDay,
+      dayStart,
+      dayEnd,
     });
     if (ticket.admitted) return ticket;
     if (!Number.isFinite(ticket.retryAt)) throw new Error('转写额度不可用');
     await sleep(Math.min(60_000, Math.max(200, ticket.retryAt - now())));
   }
   throw new Error('转写额度等待超时');
+}
+
+async function callLimited({ repository, lane, tokens, now, sleep, signal, model, requestsPerDay, estimatedTokensPerMinute, dayStart, dayEnd, run }) {
+  let attempt = 0;
+  while (attempt < 3) {
+    const ticket = await admit({
+      repository, lane, tokens, now, sleep, signal, model, requestsPerDay, estimatedTokensPerMinute, dayStart, dayEnd,
+    });
+    try {
+      const keyEnv = ticket.keyEnv || lane.slots[attempt % lane.slots.length].keyEnv;
+      return await run(keyEnv);
+    } catch (error) {
+      attempt += 1;
+      if (error?.name === 'AbortError' || signal?.aborted || error.code !== 'quota' || attempt >= 3) throw error;
+      repository.cooldown?.(ticket.cooldownKey || lane.project, model, now() + quotaDelay(error));
+      await sleep(quotaDelay(error));
+    } finally {
+      repository.release?.(ticket);
+    }
+  }
+  throw new Error('转写失败');
+}
+
+async function transcribeChunk({
+  audio, chunk, lane, env, job, liveModel, fileModel, tokensPerSecond, liveTranscribe, fallbackTranscribe, quotaRepository, now, sleep, signal,
+}) {
+  const run = (client, piece) => (keyEnv) => client({
+    apiKey: env[keyEnv],
+    audio: piece,
+    languageCodes: job.languageCodes,
+    mode: job.mode,
+    signal,
+  });
+  try {
+    const at = now();
+    return await callLimited({
+      repository: quotaRepository,
+      lane,
+      tokens: chunk.estimatedTokens,
+      now,
+      sleep,
+      signal,
+      model: liveModel,
+      requestsPerDay: Number.POSITIVE_INFINITY,
+      estimatedTokensPerMinute: lane.tokensPerMinute,
+      dayStart: at,
+      dayEnd: at + 86_400_000,
+      run: run(liveTranscribe, audio),
+    });
+  } catch (error) {
+    if (error?.name === 'AbortError' || signal?.aborted || !fallbackTranscribe) throw error;
+    const parts = [];
+    for (const piece of planFileTranscribePieces(chunk, tokensPerSecond)) {
+      const slice = slicePiece(audio, chunk.startMs, piece.startMs, piece.endMs);
+      const day = pacificDay(now());
+      parts.push(await callLimited({
+        repository: quotaRepository,
+        lane,
+        tokens: piece.estimatedTokens,
+        now,
+        sleep,
+        signal,
+        model: fileModel,
+        requestsPerDay: AUDIO_TRANSCRIBE_FILE_REQUESTS_PER_DAY,
+        estimatedTokensPerMinute: AUDIO_TRANSCRIBE_FILE_TOKENS_PER_MINUTE,
+        dayStart: day.dayStart,
+        dayEnd: day.dayEnd,
+        run: run(fallbackTranscribe, slice),
+      }));
+    }
+    return parts.filter(Boolean).join('\n');
+  }
 }
 
 function quotaDelay(error) {
@@ -83,11 +172,18 @@ export async function executeAudioTranscription({
   env = process.env,
   quotaRepository,
   transcribe,
+  fileTranscribe,
   now = Date.now,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   signal,
 }) {
   const job = parseContract(AudioTranscriptionJobInputSchema, input);
+  const models = resolveAudioTranscribeModels(env);
+  const usingDefault = transcribe == null;
+  const liveTranscribe = transcribe || createGeminiLiveTranscriber({ env, model: models.live });
+  const fallbackTranscribe = fileTranscribe !== undefined
+    ? fileTranscribe
+    : (usingDefault ? createGeminiAudioTranscriber({ env, model: models.file }) : null);
   const absolute = resolveAudioFile(dataDirectory, job.path);
   const resolved = resolveAudioTranscriptionLanes(env);
   const file = await open(absolute, 'r');
@@ -106,28 +202,22 @@ export async function executeAudioTranscription({
       const mine = plan.chunks.filter((chunk) => chunk.lane === laneIndex);
       for (const chunk of mine) {
         const audio = await exclusive(() => readSlice(file, info, chunk.startMs, chunk.endMs));
-        let attempt = 0;
-        while (attempt < 3) {
-          const ticket = await admit({ repository: quotaRepository, lane, tokens: chunk.estimatedTokens, now, sleep, signal });
-          try {
-            const keyEnv = ticket.keyEnv || lane.slots[attempt % lane.slots.length].keyEnv;
-            texts[chunk.index] = await transcribe({
-              apiKey: env[keyEnv],
-              audio,
-              languageCodes: job.languageCodes,
-              mode: job.mode,
-              signal,
-            });
-            break;
-          } catch (error) {
-            attempt += 1;
-            if (error.code !== 'quota' || attempt >= 3) throw error;
-            quotaRepository.cooldown?.(ticket.cooldownKey || lane.project, MODEL, now() + quotaDelay(error));
-            await sleep(quotaDelay(error));
-          } finally {
-            quotaRepository.release?.(ticket);
-          }
-        }
+        texts[chunk.index] = await transcribeChunk({
+          audio,
+          chunk,
+          lane,
+          env,
+          job,
+          liveModel: models.live,
+          fileModel: models.file,
+          tokensPerSecond: plan.tokensPerSecond,
+          liveTranscribe,
+          fallbackTranscribe,
+          quotaRepository,
+          now,
+          sleep,
+          signal,
+        });
       }
     }));
     return parseContract(AudioTranscriptionResultSchema, {
@@ -146,14 +236,14 @@ export async function executeAudioTranscription({
 }
 
 export function createAudioTranscriptionJobHandlers(options) {
-  const transcribe = options.transcribe || createGeminiAudioTranscriber();
   return {
     [AUDIO_TRANSCRIBE_JOB_TYPE]: (input, context = {}) => executeAudioTranscription({
       input,
       dataDirectory: options.dataDirectory,
       env: options.env || process.env,
       quotaRepository: options.quotaRepository,
-      transcribe,
+      transcribe: options.transcribe,
+      fileTranscribe: options.fileTranscribe,
       now: options.now,
       sleep: options.sleep,
       signal: context.signal,

@@ -1,4 +1,5 @@
 import {previousDailyInstant,nextDailyInstant} from '../../domain/src/zoned-time.js';
+import { flashLiteSibling } from '../../database/src/repositories/model-quota-repository.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {resolveGoogleArticleModelPool} from '../../harness/src/llm-route.js';
 import {nextGeminiDailyReset} from '../../connectors/src/gemini-grok-task.js';
@@ -110,6 +111,14 @@ export function createGeminiArticleAdmission({ repository, usage, env = process.
       dayStart:previousDailyInstant(at,PACIFIC),dayEnd:nextDailyInstant(at,PACIFIC),
       ...(policy.accountMode ? {} : {requestsPerDay:Infinity,requestsPerKeyPerDay:Infinity})});
   };
+  function admitFlash(model, estimated, keyEnv) {
+    const result = request(model, estimated, false, keyEnv);
+    if (result.admitted || !result.flashHeadroom) return result;
+    const sibling = flashLiteSibling(model);
+    if (!sibling) return result;
+    const alternate = request(sibling, estimated, false, keyEnv);
+    return alternate.admitted ? alternate : result;
+  }
   function waitMessage(results,retryAt){
     const at=now();
     const names=[...new Set(results.map(item=>item.model).filter(Boolean))];
@@ -137,9 +146,9 @@ export function createGeminiArticleAdmission({ repository, usage, env = process.
         }
         const results=[];
         for(const pair of pairs){
-          const result=request(pair.model,estimated,false,pair.keyEnv);
+          const result=admitFlash(pair.model,estimated,pair.keyEnv);
           if(result.admitted)return result;
-          results.push({...result,model:pair.model});
+          results.push({...result,model:result.model||pair.model});
         }
         const result={retryAt:Math.min(...results.map(item=>item.retryAt)),quotaExhausted:results.every(item=>item.quotaExhausted)};
         throw Object.assign(new Error(waitMessage(results,result.retryAt)), { code: 'budget-deferred', retryAt: result.retryAt, quotaExhausted:result.quotaExhausted===true });
@@ -147,9 +156,9 @@ export function createGeminiArticleAdmission({ repository, usage, env = process.
       const results=[];
       const ordered=modelOrder==='ordered';
       for(let i=0;i<pool.length;i++){
-        const index=ordered?i:(modelCursor+i)%pool.length,chosen=pool[index],result=request(chosen,estimated,false,keyEnv);
-        if(result.admitted){if(useModelPool && !ordered)rememberCursor((index+1)%pool.length);return result;}
-        results.push({...result,model:chosen});
+        const index=ordered?i:(modelCursor+i)%pool.length,chosen=pool[index],result=admitFlash(chosen,estimated,keyEnv);
+        if(result.admitted){if(useModelPool && !ordered && result.model===chosen)rememberCursor((index+1)%pool.length);return result;}
+        results.push({...result,model:result.model||chosen});
       }
       const result={retryAt:Math.min(...results.map(r=>r.retryAt)),quotaExhausted:results.every(r=>r.quotaExhausted)};
       if (!result.admitted) throw Object.assign(new Error(waitMessage(results,result.retryAt)), { code: 'budget-deferred', retryAt: result.retryAt, quotaExhausted:result.quotaExhausted===true });

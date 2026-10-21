@@ -1,6 +1,7 @@
 import {attachDailyProcessLog} from '../../../packages/runtime/src/process-log.js';
 import { audioTranscriptionManifest, createAudioTranscriptionJobHandlers } from '../../../packages/runtime/src/audio-transcription-job.js';
 import {createGeminiArticleAdmission,startGeminiQuotaProbe} from '../../../packages/runtime/src/gemini-article-admission.js';
+import { nextGeminiDailyReset } from '../../../packages/connectors/src/gemini-grok-task.js';
 import {resolveGoogleHourlyAdmissionModels} from '../../../packages/harness/src/llm-route.js';
 import { backfillUntranslatedFeedTranslations, createFeedTranslationChunkStore, createFeedTranslationJobHandlers, demoteQueuedHashTranslationJobsBatched, feedTranslationManifest, fillUncoveredTranslations, formatTranslationBackfillLog, repairEllipsisLeadTexts, retireYoutubeTranslationJobsBatched, translationBackfillConcurrency, translationGapFillIntervalMs, translationGapFillLimit, translationStartupBackfillLimit } from '../../../packages/runtime/src/feed-translation-module.js';
 import { createHardwareArtifactStore } from '../../../packages/connectors/src/hardware-artifacts.js';
@@ -1060,6 +1061,17 @@ export function createAiCenterWorker(options = {}) {
         Number(env.AI_CENTER_WORKER_TRANSLATION_CONCURRENCY || 5),
       );
       console.log(`[worker] translation-slots limit=${Number(env.AI_CENTER_WORKER_TRANSLATION_CONCURRENCY || 5)} backfillCap=${backfillCap}`);
+      try {
+        const at = Date.now();
+        const dayEnd = nextGeminiDailyReset(at);
+        const dayStart = nextGeminiDailyReset(dayEnd - 27 * 3600000);
+        for (const row of store.repositories.modelUsage?.dailyCounts?.('local', { startAt: dayStart, endAt: dayEnd }) || []) {
+          if (!row.model) continue;
+          console.log(`[worker] model-usage day model=${row.model} calls=${row.calls}`);
+        }
+      } catch (error) {
+        console.error('[worker] model-usage day failed:', error instanceof Error ? error.message : error);
+      }
       if (!startupMaintenanceStarted) {
         startupMaintenanceStarted = true;
         setImmediate(() => {
