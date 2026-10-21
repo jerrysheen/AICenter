@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-21-hourly-quota-catchup.md`：账号并发的 2500 次合计仍会把小时报指到北京时间 15:00，缓存还会挡住 13/10/05 的补跑。现在这条日上限和按密钥的日上限都改走 Gemma 26B。文章整理上的 114 次 grok-4.7 是这条新标记碰到了 10-07 的旧回退；本地日上限改为 Gemma 26B。启动日志按太平洋日列出每把密钥是否到 480。没配 `GEMINI_API_KEY*_PROJECT` 不必补。不新增 migration。需要重启 Worker。
+
 - `progress/2026-10-21-feed-enrich-gemma-tags.md`：文章整理不再跳过短帖标注。`feed.items.enrich` 先用 Gemma 26B 写入 `resource_taggings`，信息树的 `tagId` 采用这份标签。打标失败只记条数和错误类别，信息树照常排队。10-07 起标签表停写，是因为文章整理旁路没有调用标注入口。Bamboo 准入分类不动。不新增 migration。需要重启 Worker。
 
 - `progress/2026-10-21-flash-lite-per-key.md`：Flash Lite 的 14 RPM 和 480 RPD 按密钥计数，不再把多把密钥加在一起。两把模型都到了当日上限时，小时浓缩和阅读分类改走 Gemma 26B。不新增 migration。需要重启 Worker。

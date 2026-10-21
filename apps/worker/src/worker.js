@@ -1,7 +1,8 @@
 import {attachDailyProcessLog} from '../../../packages/runtime/src/process-log.js';
 import { audioTranscriptionManifest, createAudioTranscriptionJobHandlers } from '../../../packages/runtime/src/audio-transcription-job.js';
 import {createGeminiArticleAdmission,startGeminiQuotaProbe} from '../../../packages/runtime/src/gemini-article-admission.js';
-import { nextGeminiDailyReset } from '../../../packages/connectors/src/gemini-grok-task.js';
+import { formatGeminiQuotaClock, geminiQuotaDay } from '../../../packages/connectors/src/gemini-grok-task.js';
+import { FLASH_LITE_PROJECT_CAP } from '../../../packages/database/src/repositories/model-quota-repository.js';
 import { GEMMA_26B, createGemmaTranslationRouter } from '../../../packages/connectors/src/translate/gemma.js';
 import {resolveGoogleHourlyAdmissionModels} from '../../../packages/harness/src/llm-route.js';
 import { backfillUntranslatedFeedTranslations, createFeedTranslationChunkStore, createFeedTranslationJobHandlers, demoteQueuedHashTranslationJobsBatched, feedTranslationManifest, fillUncoveredTranslations, formatTranslationBackfillLog, repairEllipsisLeadTexts, retireYoutubeTranslationJobsBatched, translationBackfillConcurrency, translationGapFillIntervalMs, translationGapFillLimit, translationStartupBackfillLimit } from '../../../packages/runtime/src/feed-translation-module.js';
@@ -495,36 +496,38 @@ export function createAiCenterWorker(options = {}) {
   const quotaUsage=store.repositories.modelUsage;
   const articleAdmission=env.AI_CENTER_ARTICLE_NORMALIZE==='1' && env.AI_CENTER_HARNESS_ARTICLE_PROVIDER==='google' ? createGeminiArticleAdmission({repository:store.repositories.modelQuota,usage:quotaUsage,env}) : null;
   const hourlyAdmission=env.AI_CENTER_HARNESS_HOURLY_PROVIDER==='google' ? createGeminiArticleAdmission({repository:store.repositories.modelQuota,usage:quotaUsage,env,models:resolveGoogleHourlyAdmissionModels(env),allowFallback:false,modelOrder:'least-used'}) : null;
+  const gemmaClosedFallback = (task) => async (input) => {
+    const router = createGemmaTranslationRouter({
+      env,
+      quotaRepository: store.repositories.modelQuota,
+      models: [GEMMA_26B],
+      usageStage: input.usageStage || (task === 'article' ? 'tree-information' : 'tree-hourly'),
+    });
+    const maxOutputTokens = Number(input.hourlyMaxTokens) || Number(task === 'hourly' ? (env.AI_CENTER_HARNESS_HOURLY_MAX_TOKENS || 4096) : 8192);
+    const system = String(input.taskInstruction || '');
+    const prompt = String(input.message || '');
+    const estimatedTokens = Buffer.byteLength(`${system}\n\n${prompt}`, 'utf8') + Math.min(8192, maxOutputTokens);
+    const result = await router.generate({
+      system, prompt, model: GEMMA_26B, task, estimatedTokens, maxOutputTokens,
+    });
+    const answer = String(result.text || '').trim();
+    if (!answer) throw new Error(task === 'article' ? 'Gemma 没有返回文章整理' : 'Gemma 没有返回小时浓缩');
+    return {
+      answer,
+      providerId: 'google',
+      modelId: result.engine || GEMMA_26B,
+      toolCalls: [],
+      toolAudits: [],
+      refs: [],
+      warnings: [],
+    };
+  };
   const agentRuntime = runtimeMode === 'harness'
     ? createHarnessExecutionRuntime({
       articleAdmission,
       hourlyAdmission,
-      hourlyGemmaFallback: async (input) => {
-        const router = createGemmaTranslationRouter({
-          env,
-          quotaRepository: store.repositories.modelQuota,
-          models: [GEMMA_26B],
-          usageStage: input.usageStage || 'tree-hourly',
-        });
-        const maxOutputTokens = Number(input.hourlyMaxTokens) || Number(env.AI_CENTER_HARNESS_HOURLY_MAX_TOKENS || 4096);
-        const system = String(input.taskInstruction || '');
-        const prompt = String(input.message || '');
-        const estimatedTokens = Buffer.byteLength(`${system}\n\n${prompt}`, 'utf8') + Math.min(8192, maxOutputTokens);
-        const result = await router.generate({
-          system, prompt, model: GEMMA_26B, task: 'hourly', estimatedTokens, maxOutputTokens,
-        });
-        const answer = String(result.text || '').trim();
-        if (!answer) throw new Error('Gemma 没有返回小时浓缩');
-        return {
-          answer,
-          providerId: 'google',
-          modelId: result.engine || GEMMA_26B,
-          toolCalls: [],
-          toolAudits: [],
-          refs: [],
-          warnings: [],
-        };
-      },
+      hourlyGemmaFallback: gemmaClosedFallback('hourly'),
+      articleGemmaFallback: gemmaClosedFallback('article'),
       tools: agentTools,
       quality: agentQuality,
       env,
@@ -1090,22 +1093,22 @@ export function createAiCenterWorker(options = {}) {
       );
       console.log(`[worker] translation-slots limit=${Number(env.AI_CENTER_WORKER_TRANSLATION_CONCURRENCY || 5)} backfillCap=${backfillCap}`);
       try {
-        const at = Date.now();
-        const dayEnd = nextGeminiDailyReset(at);
-        const dayStart = nextGeminiDailyReset(dayEnd - 27 * 3600000);
+        const { dayStart, dayEnd } = geminiQuotaDay(Date.now());
+        console.log(`[worker] quota-day window=pacific start=${dayStart} end=${dayEnd} ${formatGeminiQuotaClock(dayStart)} -> ${formatGeminiQuotaClock(dayEnd)} usage=model_usage_index reservations=model_quota_reservations`);
         for (const row of store.repositories.modelUsage?.dailyCounts?.('local', { startAt: dayStart, endAt: dayEnd }) || []) {
           if (!row.model) continue;
-          console.log(`[worker] model-usage day model=${row.model} calls=${row.calls}`);
+          console.log(`[worker] model-usage pacific-day model=${row.model} calls=${row.calls}`);
         }
         const flashModels = ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite'];
         const reservations = store.repositories.modelQuota?.reservationDayCounts?.({ models: flashModels, dayStart, dayEnd }) || [];
         for (const model of flashModels) {
           const rows = reservations.filter((row) => row.model === model);
           const calls = rows.reduce((sum, row) => sum + row.calls, 0);
-          console.log(`[worker] flash-lite reservations day model=${model} calls=${calls}`);
+          const cap = FLASH_LITE_PROJECT_CAP[model].requestsPerDay;
+          console.log(`[worker] flash-lite reservations pacific-day model=${model} calls=${calls} cap=${cap}`);
           for (const row of rows) {
-            if (!row.keyEnv) continue;
-            console.log(`[worker] flash-lite reservations day model=${model} key=${row.keyEnv} calls=${row.calls}`);
+            const key = row.keyEnv || '(empty)';
+            console.log(`[worker] flash-lite reservations pacific-day model=${model} key=${key} calls=${row.calls} full=${row.calls >= cap ? 1 : 0}`);
           }
         }
       } catch (error) {

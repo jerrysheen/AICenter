@@ -150,7 +150,15 @@ export function createGeminiArticleAdmission({ repository, usage, env = process.
   }
   return {
     policy,
-    nextReadyAt(model) {const results=(policy.models.length ? policy.models : [model]).map(m=>request(m,6144+8192,true));if(results.some(r=>r.admitted))return now();if(results.every(r=>r.quotaExhausted) && env.AI_CENTER_HARNESS_ARTICLE_FALLBACK==='elucid-grok'){const f=repository.reserve({...policy,accountMode:false,requestsPerDay:Infinity,requestsPerKeyPerDay:Infinity,slots:[{project:'article-fallback-elucid',keyEnv:'ELUCID_GROK_API_KEY'}],model:env.AI_CENTER_HARNESS_ARTICLE_FALLBACK_MODEL || 'grok-4.7',at:now(),estimatedTokens:6144+8192,dryRun:true});return f.admitted ? now() : f.retryAt;}return Math.min(...results.map(r=>r.retryAt));},
+    nextReadyAt(model) {
+      const results=(policy.models.length ? policy.models : [model]).map(m=>request(m,6144+8192,true));
+      if(results.some(r=>r.admitted))return now();
+      // Local Flash Lite daily cap now falls back to Gemma 26B, so the job can run
+      // before Pacific midnight. Supplier cooldown without that flag still uses Grok.
+      if(results.length>0 && results.every(r=>r.flashHeadroom==='rpd'))return now();
+      if(results.every(r=>r.quotaExhausted) && env.AI_CENTER_HARNESS_ARTICLE_FALLBACK==='elucid-grok'){const f=repository.reserve({...policy,accountMode:false,requestsPerDay:Infinity,requestsPerKeyPerDay:Infinity,slots:[{project:'article-fallback-elucid',keyEnv:'ELUCID_GROK_API_KEY'}],model:env.AI_CENTER_HARNESS_ARTICLE_FALLBACK_MODEL || 'grok-4.7',at:now(),estimatedTokens:6144+8192,dryRun:true});return f.admitted ? now() : f.retryAt;}
+      return Math.min(...results.map(r=>r.retryAt));
+    },
     release(ticket){repository.release?.(ticket);},
     reserve({ model, keyEnv, inputBytes, maxTokens, useModelPool=false }) {
       const pool=useModelPool && policy.models.length ? policy.models : [model];
