@@ -60,6 +60,123 @@ export function createXLinkService({
     return repository.get(workspaceId, id);
   }
 
+  function enqueue(workspaceId, raw = {}) {
+    if (!xLinkArticleEnabled(env)) return { eligible: false, status: 'disabled' };
+    const tweetId = parseXStatusId(raw.tweetId || raw.url || raw);
+    if (!tweetId) return { eligible: false, status: 'invalid' };
+    const capture = feedRepository?.getCapture?.(workspaceId, 'x', tweetId) || null;
+    const item = capture ? feedRepository?.getContentItemByCaptureId?.(workspaceId, capture.id) : null;
+    const author = tweetAuthor(capture, item);
+    const outlet = matchMediaOutlet(author, index);
+    if (!outlet) return { eligible: false, status: 'ineligible' };
+    const sourceUrl = chooseOutboundUrl(extractOutboundUrls(tweetOutboundText(capture, item)), index.hopHosts);
+    if (!sourceUrl) return { eligible: false, status: 'ineligible' };
+    const existing = repository.get(workspaceId, tweetId);
+    const today = xLinkArticleDay(now());
+    if (existing?.status === 'ready') return view(existing);
+    if (existing && TERMINAL.has(existing.status) && existing.status !== 'failed') return view(existing);
+    if (existing?.status === 'failed' && existing.attempts >= 3) return view(existing);
+    if (existing?.status === 'limited' && existing.articleDay === today) return view(existing);
+    const label = readingLinkLabel(outlet.label);
+    repository.save({
+      workspaceId,
+      tweetId,
+      contentItemId: item?.id || existing?.contentItemId || '',
+      authorHandle: author.handle,
+      authorName: author.name,
+      sourceUrl,
+      finalUrl: existing?.finalUrl || sourceUrl,
+      publisher: existing?.publisher || outlet.label,
+      linkLabel: existing?.linkLabel || label,
+      status: 'pending',
+      reason: '',
+      title: existing?.title || '',
+      bodyZh: existing?.bodyZh || '',
+      articleDay: existing?.articleDay || '',
+      attempts: existing?.attempts || 0,
+    });
+    const open = (store?.listOpenJobs?.(X_LINK_ARTICLE_JOB_TYPE) || [])
+      .find((job) => job.workspaceId === workspaceId && String(job.input?.tweetId || '') === tweetId);
+    if (!open) {
+      store?.createJob?.({
+        type: X_LINK_ARTICLE_JOB_TYPE,
+        workspaceId,
+        input: { workspaceId, tweetId },
+        maxAttempts: 2,
+      });
+    }
+    return view(repository.get(workspaceId, tweetId));
+  }
+
+  function backfill(workspaceId, { since = 0, dryRun = false, tweetIds = [] } = {}) {
+    const today = xLinkArticleDay(now());
+    const cap = xLinkArticleDailyLimit(env);
+    const ready = repository?.countReadyOnDay?.(workspaceId, today) || 0;
+    const openJobs = (store?.listOpenJobs?.(X_LINK_ARTICLE_JOB_TYPE) || [])
+      .filter((job) => job.workspaceId === workspaceId);
+    let room = Math.max(0, cap - ready - openJobs.length);
+    const wanted = new Set((tweetIds || []).map((id) => parseXStatusId(id)).filter(Boolean));
+    const rows = wanted.size
+      ? [...wanted].map((externalId) => ({ externalId }))
+      : (feedRepository?.listRecentXCaptures?.(workspaceId, { since, limit: 2000 }) || []);
+    const queued = [];
+    const skipped = [];
+    for (const row of rows) {
+      const tweetId = parseXStatusId(row.externalId);
+      if (!tweetId) continue;
+      const capture = feedRepository?.getCapture?.(workspaceId, 'x', tweetId) || null;
+      const item = capture ? feedRepository?.getContentItemByCaptureId?.(workspaceId, capture.id) : null;
+      const author = tweetAuthor(capture, item);
+      if (!matchMediaOutlet(author, index)) {
+        skipped.push({ tweetId, reason: 'ineligible' });
+        continue;
+      }
+      const sourceUrl = chooseOutboundUrl(extractOutboundUrls(tweetOutboundText(capture, item)), index.hopHosts);
+      if (!sourceUrl) {
+        skipped.push({ tweetId, reason: 'no-link' });
+        continue;
+      }
+      const existing = repository.get(workspaceId, tweetId);
+      if (existing?.status === 'ready' || (existing && TERMINAL.has(existing.status) && existing.status !== 'failed')) {
+        skipped.push({ tweetId, reason: existing.status });
+        continue;
+      }
+      if (existing?.status === 'limited' && existing.articleDay === today) {
+        skipped.push({ tweetId, reason: 'limited' });
+        continue;
+      }
+      if (existing?.status === 'pending') {
+        skipped.push({ tweetId, reason: 'pending' });
+        continue;
+      }
+      if (room <= 0) {
+        skipped.push({ tweetId, reason: 'daily-limit' });
+        continue;
+      }
+      if (dryRun) {
+        queued.push({ tweetId, sourceUrl, publisher: matchMediaOutlet(author, index)?.label || '' });
+        room -= 1;
+        continue;
+      }
+      if (existing?.status === 'failed' && existing.attempts >= 3
+        && (existing.reason === 'blocked_host' || existing.reason === 'blocked_url')) {
+        repository.save({
+          workspaceId,
+          tweetId,
+          attempts: 0,
+          status: 'pending',
+          reason: '',
+        });
+      }
+      const result = enqueue(workspaceId, { tweetId });
+      if (result.status === 'pending') {
+        queued.push({ tweetId, sourceUrl: result.finalUrl || sourceUrl, publisher: result.publisher || '' });
+        room -= 1;
+      } else skipped.push({ tweetId, reason: result.status || 'skipped' });
+    }
+    return { queued, skipped, room, dailyLimit: cap, ready };
+  }
+
   return {
     enabled() {
       return xLinkArticleEnabled(env);
@@ -77,53 +194,8 @@ export function createXLinkService({
       return view(row, { includeBody: true });
     },
 
-    enqueue(workspaceId, raw = {}) {
-      if (!xLinkArticleEnabled(env)) return { eligible: false, status: 'disabled' };
-      const tweetId = parseXStatusId(raw.tweetId || raw.url || raw);
-      if (!tweetId) return { eligible: false, status: 'invalid' };
-      const capture = feedRepository?.getCapture?.(workspaceId, 'x', tweetId) || null;
-      const item = capture ? feedRepository?.getContentItemByCaptureId?.(workspaceId, capture.id) : null;
-      const author = tweetAuthor(capture, item);
-      const outlet = matchMediaOutlet(author, index);
-      if (!outlet) return { eligible: false, status: 'ineligible' };
-      const sourceUrl = chooseOutboundUrl(extractOutboundUrls(tweetOutboundText(capture, item)));
-      if (!sourceUrl) return { eligible: false, status: 'ineligible' };
-      const existing = repository.get(workspaceId, tweetId);
-      const today = xLinkArticleDay(now());
-      if (existing?.status === 'ready') return view(existing);
-      if (existing && TERMINAL.has(existing.status) && existing.status !== 'failed') return view(existing);
-      if (existing?.status === 'failed' && existing.attempts >= 3) return view(existing);
-      if (existing?.status === 'limited' && existing.articleDay === today) return view(existing);
-      repository.save({
-        workspaceId,
-        tweetId,
-        contentItemId: item?.id || existing?.contentItemId || '',
-        authorHandle: author.handle,
-        authorName: author.name,
-        sourceUrl,
-        finalUrl: existing?.finalUrl || '',
-        publisher: existing?.publisher || outlet.label,
-        linkLabel: existing?.linkLabel || '',
-        status: 'pending',
-        reason: '',
-        title: existing?.title || '',
-        bodyZh: existing?.bodyZh || '',
-        articleDay: existing?.articleDay || '',
-        attempts: existing?.attempts || 0,
-      });
-      const open = (store?.listOpenJobs?.(X_LINK_ARTICLE_JOB_TYPE) || [])
-        .find((job) => job.workspaceId === workspaceId && String(job.input?.tweetId || '') === tweetId);
-      if (!open) {
-        store?.createJob?.({
-          type: X_LINK_ARTICLE_JOB_TYPE,
-          workspaceId,
-          input: { workspaceId, tweetId },
-          maxAttempts: 2,
-        });
-      }
-      return view(repository.get(workspaceId, tweetId));
-    },
-
+    enqueue,
+    backfill,
     publishers: index,
     dailyLimit: () => xLinkArticleDailyLimit(env),
   };

@@ -49,7 +49,7 @@ import { decodeHtmlEntities } from './html-text.js?v=dev';
 import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, prioritizeReadableFeedRows, renderNewsList, reportItemTime } from './news-list.js?v=dev';
 import { createAuthorView } from './author-view.js?v=dev';
 import { appendPartialArticle, episodeArticleMessage, foldedOriginal, partialArticleLabel, renderYoutubePodcasts, YOUTUBE_ARTICLE_POLL_SLOW_MS, youtubeArticlePollDelay, youtubeArticleRequestPath, youtubeReaderScopeLabel } from './youtube-podcasts.js?v=dev';
-import { xVideoArticleReady, xVideoArticleRequestPath, xVideoReaderScopeLabel, xVideoTweetId } from './x-video-article.js?v=dev';
+import { xPostHasVideo, xVideoArticleReady, xVideoArticleRequestPath, xVideoReaderScopeLabel, xVideoTweetId } from './x-video-article.js?v=dev';
 import { createFeedTaggingLoader, FEED_TAG_QUERY_PATH } from './feed-tagging.js?v=dev';
 import {
   xLinkArticleReady, xLinkArticleRequestPath, xLinkClosed, xLinkOwnsBody, xLinkReaderScope,
@@ -10243,7 +10243,7 @@ function renderArticlePage() {
       stateBox.querySelector('button').addEventListener('click', () => fetchOfficialBody(post));
     }
     if (status !== 'ready') body.append(metaGrid, stateBox);
-  } else if (xVideoTweetId(post) && xVideoRecord(post) && !xVideoRecord(post).absent && !xVideoArticleReady(xVideoRecord(post))) {
+  } else if (xPostHasVideo(post) && xVideoRecord(post) && !xVideoRecord(post).absent && !xVideoArticleReady(xVideoRecord(post))) {
     body.append(renderXVideoWaiting(post));
     const waitingTags = createTagRow(postTagNames(post));
     if (waitingTags) {
@@ -10375,7 +10375,7 @@ function renderArticlePage() {
   if (xPostHasOutboundLink(post)) scheduleXLinkArticleWatch(post);
   const linkOwns = xLinkOwnsBody(post, xLinkRecord(post));
   if (youtubeEpisodeId(post)) scheduleYoutubeArticleWatch(post);
-  else if (xVideoTweetId(post)) {
+  else if (xPostHasVideo(post)) {
     const record = xVideoRecord(post);
     if (record?.absent) {
       if (!linkOwns && shouldQueueTranslation(post)) requestTranslate(post).catch((error) => showToast(error.message));
@@ -15622,11 +15622,16 @@ const feedTaggingLoader = createFeedTaggingLoader({
   post: (body) => api(FEED_TAG_QUERY_PATH, { method: 'POST', body: JSON.stringify(body) }),
 });
 
-async function loadFeedTaggings(items = [], resourceType = 'content-item') {
+function feedTagRefreshPaused() {
+  const view = typeof document === 'undefined' ? '' : (document.body?.dataset?.view || '');
+  return view === 'feed' && state.channel === 'author';
+}
+
+async function loadFeedTaggings(items = [], resourceType = 'content-item', options = {}) {
   const ids = [...new Set((items || []).map((item) => String(item?.resourceId || '').trim()).filter(Boolean))];
   if (!ids.length) return;
   await ensureTagCatalog();
-  const rows = await feedTaggingLoader.load(ids, resourceType);
+  const rows = await feedTaggingLoader.load(ids, resourceType, options);
   if (!rows?.length) return;
   const next = { ...state.feedTaggings };
   for (const row of rows) {
@@ -15825,7 +15830,7 @@ const payload = await api(`/api/v1/feed/x?${params}`, { timeoutMs: refresh ? 180
     paintLoadedSocialFeed('x', epoch);
     renderXToolbar();
     syncLocalTranslationsToServer(state.xItems).catch(() => {});
-    loadFeedTaggings(state.xItems).then(() => paintLoadedSocialFeed('x', epoch)).catch(() => {});
+    if (!feedTagRefreshPaused()) loadFeedTaggings(state.xItems, 'content-item', { maxBatches: 1 }).then(() => paintLoadedSocialFeed('x', epoch)).catch(() => {});
     if (autoTranslate) translateXBatch({ silent: true }).catch(() => {});
     return feed;
   } catch (error) {
@@ -15961,7 +15966,7 @@ const payload = await api(`/api/v1/feed/xueqiu?${params}`, { timeoutMs: refresh 
     hydrateFeedTranslations(state.xueqiuItems);
     paintLoadedSocialFeed('xueqiu', epoch);
     renderXueqiuToolbar();
-    loadFeedTaggings(state.xueqiuItems).then(() => paintLoadedSocialFeed('xueqiu', epoch)).catch(() => {});
+    if (!feedTagRefreshPaused()) loadFeedTaggings(state.xueqiuItems, 'content-item', { maxBatches: 1 }).then(() => paintLoadedSocialFeed('xueqiu', epoch)).catch(() => {});
     if (refresh) {
       if (feed.mode === 'error' || feed.mode === 'unavailable') showToast(feed.note || '雪球抓取失败');
       else showToast(feed.note || `已写入 ${state.xueqiuItems.length} 条`);
@@ -16081,7 +16086,7 @@ async function loadTrendForceFeed({ refresh = false } = {}) {
     state.trendforceNote = payload.feed?.note || '';
     state.trendforceLoaded = true;
     hydrateFeedTranslations(state.trendforceItems);
-    await loadFeedTaggings(state.trendforceItems);
+    if (!feedTagRefreshPaused()) await loadFeedTaggings(state.trendforceItems, 'content-item', { maxBatches: 1 });
     renderPosts();
     renderTrendForceToolbar();
     if (refresh) {
@@ -16119,7 +16124,7 @@ async function loadBilibiliFeed({ url = '', refresh = false } = {}) {
     state.bilibiliNote = payload.feed?.note || '';
     state.bilibiliLoaded = true;
     hydrateFeedTranslations(state.bilibiliItems);
-    await loadFeedTaggings(state.bilibiliItems);
+    if (!feedTagRefreshPaused()) await loadFeedTaggings(state.bilibiliItems, 'content-item', { maxBatches: 1 });
     renderPosts();
     renderBilibiliToolbar();
     if (state.pageKind === 'source' && state.pageId === 'bilibili') renderSourcePage();

@@ -2,6 +2,7 @@ import { createTranslateService } from '../../connectors/src/translate/index.js'
 import { fetchLinkedArticle } from '../../connectors/src/x/link-fetch.js';
 import {
   hostArticleMeta,
+  readingLinkLabel,
   xLinkArticleDailyLimit,
   xLinkArticleDay,
   xLinkArticleEnabled,
@@ -34,19 +35,22 @@ export async function runXLinkArticle({
   }
   if (row.status === 'failed' && row.attempts >= 3) return { status: 'failed' };
   const allowedHosts = [...(publishers?.hosts?.keys?.() || [])];
+  const hopHosts = publishers?.hopHosts ? [...publishers.hopHosts] : undefined;
   const fetched = await fetchArticle({
     url: row.sourceUrl,
     allowedHosts,
+    ...(hopHosts ? { hopHosts } : {}),
     publisherForHost: (host) => hostArticleMeta(host, publishers),
     signal,
   });
   const labeled = fetched.finalUrl ? linkLabelForUrl(fetched.finalUrl, publishers) : { publisher: '', linkLabel: '', finalUrl: '', meta: null };
+  const publisher = labeled.publisher || row.publisher || '';
   const base = {
     workspaceId,
     tweetId: id,
-    finalUrl: labeled.finalUrl || fetched.finalUrl || '',
-    publisher: labeled.publisher || row.publisher || '',
-    linkLabel: labeled.linkLabel || '',
+    finalUrl: labeled.finalUrl || fetched.finalUrl || row.finalUrl || row.sourceUrl || '',
+    publisher,
+    linkLabel: labeled.linkLabel || row.linkLabel || (publisher ? readingLinkLabel(publisher) : ''),
   };
   if (!fetched.ok) {
     const terminal = fetched.reason === 'paywall' || fetched.reason === 'blocked' || fetched.reason === 'incomplete'
