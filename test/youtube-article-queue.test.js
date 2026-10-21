@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createStore } from '../packages/database/src/index.js';
 import { createRuntimeService } from '../packages/domain/src/runtime-service.js';
 import { createYoutubePodcastService } from '../packages/domain/src/youtube-podcasts-service.js';
-import { describeYoutubeArticle } from '../packages/domain/src/youtube-article-status.js';
+import { describeYoutubeArticle, partialArticleBody } from '../packages/domain/src/youtube-article-status.js';
 import { zonedParts } from '../packages/domain/src/zoned-time.js';
 import {
   nextYoutubeArticleOpportunity,
@@ -270,7 +270,81 @@ test('episode list reports part progress without loading the article state blob'
     const status = service.status('local', 'partsvideo01', now);
     assert.equal(status.article.message, view.article.message);
     assert.equal(Object.hasOwn(status, 'body'), false);
+    assert.match(status.partial.text, /已完成/);
+    assert.match(status.partial.text, /另一段/);
     assert.equal(isApiTokenAllowlisted('GET', '/api/v1/youtube-podcasts/partsvideo01/article'), true);
+  } finally {
+    opened.close();
+  }
+});
+
+test('partial article keeps finished sections and drops rolling caption repeats', () => {
+  const rolling = [
+    '[00:00:01] Hello there this is the start of the sentence',
+    '[00:00:03] Hello there this is the start of the sentence and it continues',
+    '[00:00:06] and it continues past the overlap',
+  ].join('\n');
+  const partial = partialArticleBody({
+    parts: [
+      { section: '## 开场（00:00:01）\n主持人：第一段已经整理好。', translation: rolling },
+      { translation: rolling },
+      { text: '[00:01:00] not translated yet' },
+    ],
+  });
+  assert.equal(partial.shown, 2);
+  assert.equal(partial.total, 3);
+  assert.equal(partial.remaining, 1);
+  assert.match(partial.text, /第一段已经整理好/);
+  assert.equal(partial.text.includes('not translated yet'), false);
+  assert.equal((partial.text.match(/Hello there this is the start of the sentence/g) || []).length, 1);
+  const repeated = partialArticleBody({
+    parts: [{
+      translation: [
+        '[00:06:00] competitor. >> 然后说到产品',
+        '[00:12:53] 是的。',
+        '[00:13:01] 是的。',
+        '[00:23:13] 同一时间',
+        '[00:23:13] 同一时间',
+        '[00:37:52] 每个人都可以成为 a maker',
+        '[00:37:53] 每个人都可以成为 a maker',
+      ].join('\n'),
+    }],
+  });
+  assert.equal(repeated.text.includes('>>'), false);
+  assert.equal(repeated.text.includes('competitor.'), false);
+  assert.equal((repeated.text.match(/每个人都可以成为 a maker/g) || []).length, 1);
+  assert.equal((repeated.text.match(/00:23:13/g) || []).length, 1);
+  assert.equal((repeated.text.match(/是的。/g) || []).length, 1);
+  const opened = openStore();
+  try {
+    const repository = opened.store.repositories.youtubePodcasts;
+    repository.saveEpisode(episode('partialvid01', {
+      articleStatus: 'pending',
+      articleState: JSON.stringify({
+        holdReason: 'upstream',
+        holdDay: '',
+        parts: [
+          { section: '## 开场（00:00:01）\n主持人：已经整理的一段。' },
+          { translation: rolling },
+          { text: '还没译' },
+        ],
+      }),
+    }));
+    const service = createYoutubePodcastService({
+      repository,
+      store: opened.store,
+      configPath: path.join(os.tmpdir(), 'missing-youtube-podcasts.json'),
+      env: { AI_CENTER_YOUTUBE_PODCASTS: '1', AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1' },
+    });
+    const status = service.status('local', 'partialvid01', Date.parse('2026-10-20T13:45:00Z'));
+    assert.equal(Object.hasOwn(status, 'body'), false);
+    assert.equal(status.partial.remaining, 1);
+    assert.match(status.partial.text, /已经整理的一段/);
+    assert.equal((status.partial.text.match(/Hello there this is the start of the sentence/g) || []).length, 1);
+    repository.saveEpisode(episode('partialvid01', { articleStatus: 'ready' }));
+    const ready = service.status('local', 'partialvid01', Date.parse('2026-10-20T13:45:00Z'));
+    assert.equal(ready.articleStatus, 'ready');
+    assert.equal(ready.partial, undefined);
   } finally {
     opened.close();
   }

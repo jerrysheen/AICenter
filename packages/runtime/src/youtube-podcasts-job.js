@@ -43,11 +43,11 @@ import {
   youtubeBlockReason,
   youtubeTranscribeUnavailable,
 } from '../../connectors/src/youtube-podcasts.js';
-import { createGeminiAudioTranscriber } from '../../connectors/src/audio-transcribe.js';
 import { executeAudioTranscription } from './audio-transcription-job.js';
 import { dedupeRollingCaptions, transcriptHash } from '../../domain/src/youtube-captions.js';
 import { localizePodcastCopy, repairYoutubeChineseCopy, runYoutubeArticlePass } from './youtube-article-job.js';
 import { runXVideoArticlePass, runXVideoArticleTweet } from './x-video-article-job.js';
+import { assembleXVideoTranscribeDeps } from './x-video-transcribe.js';
 import { xVideoArticleEnabled, X_VIDEO_ARTICLE_JOB_TYPE } from '../../domain/src/x-video-articles.js';
 import { retireYoutubeTranslationJobs } from './feed-translation-module.js';
 
@@ -351,7 +351,7 @@ export async function runYoutubePodcastRound(deps = {}) {
     run: deps.run,
     signal,
   }));
-  const audioTranscribe = deps.audioTranscribe || createGeminiAudioTranscriber();
+  const audioTranscribe = deps.audioTranscribe;
   const now = Number(deps.now) || Date.now();
   const timeZone = youtubePodcastClock(env).timeZone;
   let audioDisabled = false;
@@ -410,6 +410,7 @@ export async function runYoutubePodcastRound(deps = {}) {
             timeZone,
             gemmaGenerate: deps.gemmaGenerate,
             flashGenerate: deps.flashGenerate,
+            geminiTranscribe: deps.geminiTranscribe,
           });
           stats.articlesReady += xArticles.ready || 0;
           stats.articlePending += xArticles.pending || 0;
@@ -816,6 +817,7 @@ export async function runYoutubePodcastRound(deps = {}) {
 }
 
 export function createYoutubePodcastJobHandlers(options = {}) {
+  options = assembleXVideoTranscribeDeps(options);
   return {
     [YOUTUBE_PODCAST_JOB_TYPE]: (input = {}, ctx = {}) => runYoutubePodcastRound({
       ...options,

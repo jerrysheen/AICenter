@@ -66,6 +66,49 @@ const VISIBLE_CONTENT_SQL = `${USER_VISIBLE_CONTENT_SQL} AND NOT EXISTS (SELECT 
     AND json_extract(quality_capture.metadata_json,'$.filterDecision') IN ('DROP','REVIEW')
     AND json_extract(quality_capture.metadata_json,'$.filterApplied')=1)`;
 
+// 作者页和搜索来的帖留在原来的来源。推荐页用 x:home:for-you，不在这里。
+const X_AUTHOR_OR_SEARCH_SOURCE_SQL = `(
+  sa.external_id LIKE 'x:author:%'
+  OR sa.external_id LIKE 'x:profile:%'
+  OR sa.external_id LIKE 'x:user:%'
+  OR sa.external_id = 'x:search'
+  OR sa.external_id LIKE 'x:search:%'
+  OR LOWER(COALESCE(json_extract(sa.metadata_json, '$.sourceInput.feed'), '')) IN ('author', 'profile', 'user', 'search', 'author-page')
+  OR LOWER(COALESCE(json_extract(sa.metadata_json, '$.sourceId'), '')) IN ('content.x.author', 'content.x.profile', 'content.x.search')
+  OR LOWER(COALESCE(json_extract(c.metadata_json, '$.origin'), '')) IN ('author', 'author-page', 'profile', 'search')
+  OR LOWER(COALESCE(json_extract(c.metadata_json, '$.homeFeed'), '')) IN ('author', 'author-page', 'profile', 'search')
+)`;
+
+const X_VIDEO_POST_SQL = `(
+  EXISTS (
+    SELECT 1 FROM x_video_posts video_post
+    WHERE video_post.workspace_id = c.workspace_id
+      AND video_post.tweet_id = c.external_id
+  )
+  OR IFNULL(json_extract(c.metadata_json, '$.xVideo.own'), 0) = 1
+)`;
+
+const X_FOLLOWING_MARKER_SQL = `(
+  json_extract(c.metadata_json, '$.homeFeed') = 'following'
+  OR json_extract(c.metadata_json, '$.feed') = 'following'
+  OR json_extract(c.metadata_json, '$.sourceInput.feed') = 'following'
+  OR json_extract(sa.metadata_json, '$.sourceInput.feed') = 'following'
+)`;
+
+const X_FOLLOWED_AUTHOR_SQL = `EXISTS (
+  SELECT 1
+  FROM item_authors followed_link
+  JOIN authors followed_author
+    ON followed_author.workspace_id = followed_link.workspace_id
+   AND followed_author.author_id = followed_link.author_id
+  LEFT JOIN authors followed_target
+    ON followed_target.workspace_id = followed_author.workspace_id
+   AND followed_target.author_id = followed_author.merged_into
+  WHERE followed_link.workspace_id = ci.workspace_id
+    AND followed_link.content_item_id = ci.id
+    AND COALESCE(followed_target.followed, followed_author.followed) = 1
+)`;
+
 function fallbackReasonSql(alias) {
   return `(json_extract(${alias}.metadata_json,'$.filterReason') LIKE 'fallback-%' OR json_extract(${alias}.metadata_json,'$.filterReason') LIKE 'jev-disabled-%')`;
 }
@@ -350,6 +393,104 @@ export function createFeedRepository(database, emitEvent) {
       return row ? mapSourceAccount(row) : null;
     },
 
+    findSourceAccount(workspaceId, provider, externalId) {
+      const row = database.prepare(`SELECT * FROM source_accounts
+        WHERE workspace_id = ? AND provider = ? AND external_id = ?`)
+        .get(workspaceId, provider, String(externalId || ''));
+      return row ? mapSourceAccount(row) : null;
+    },
+
+    attachCaptureSource(workspaceId, provider, externalId, sourceAccountId) {
+      if (!sourceAccountId) return null;
+      database.prepare(`UPDATE captures SET source_account_id = ?
+        WHERE workspace_id = ? AND provider = ? AND external_id = ?
+          AND (source_account_id IS NULL OR source_account_id = '')`)
+        .run(sourceAccountId, workspaceId, provider, externalId);
+      const row = database.prepare(`SELECT * FROM captures
+        WHERE workspace_id = ? AND provider = ? AND external_id = ?`)
+        .get(workspaceId, provider, externalId);
+      return row ? mapCapture(row) : null;
+    },
+
+    placeCaptureOnAccount(workspaceId, provider, externalId, sourceAccountId) {
+      if (!sourceAccountId || !externalId) return null;
+      database.prepare(`UPDATE captures SET source_account_id = ?
+        WHERE workspace_id = ? AND provider = ? AND external_id = ?
+          AND COALESCE(source_account_id, '') != ?`)
+        .run(sourceAccountId, workspaceId, provider, externalId, sourceAccountId);
+      const row = database.prepare(`SELECT * FROM captures
+        WHERE workspace_id = ? AND provider = ? AND external_id = ?`)
+        .get(workspaceId, provider, externalId);
+      return row ? mapCapture(row) : null;
+    },
+
+    findSubscriptionBySource(workspaceId, sourceAccountId) {
+      if (!sourceAccountId) return null;
+      const row = database.prepare(`SELECT * FROM subscriptions
+        WHERE workspace_id = ? AND source_account_id = ?`).get(workspaceId, sourceAccountId);
+      return row ? mapSubscription(row) : null;
+    },
+
+    // 只列出该回到关注源的帖：作者已关注，或捕获上有 following 标记。
+    // 推荐页里没关注的作者、作者页、搜索来源、视频帖都不在里面。
+    listXPostsOffFollowing(workspaceId, { limit = 40, offset = 0 } = {}) {
+      const page = Math.max(1, Math.min(Number(limit) || 40, 500));
+      const skip = Math.max(0, Math.min(Number(offset) || 0, 10_000));
+      const where = `ci.workspace_id = ?
+        AND c.provider = 'x'
+        AND COALESCE(sa.external_id, '') != 'x:home:following'
+        AND ${VISIBLE_CONTENT_SQL}
+        AND ${EXCLUDE_OFFICIAL_MIRROR_SQL}
+        AND NOT ${X_VIDEO_POST_SQL}
+        AND NOT ${X_AUTHOR_OR_SEARCH_SOURCE_SQL}
+        AND (${X_FOLLOWED_AUTHOR_SQL} OR ${X_FOLLOWING_MARKER_SQL})`;
+      const from = `FROM content_items ci
+        JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
+        LEFT JOIN source_accounts sa ON sa.id = c.source_account_id
+        WHERE ${where}`;
+      const count = database.prepare(`SELECT COUNT(DISTINCT c.external_id) AS n ${from}`).get(workspaceId);
+      const posts = database.prepare(`SELECT c.id AS captureId, c.external_id AS externalId,
+          c.source_account_id AS sourceAccountId, c.title AS title,
+          COALESCE(sa.external_id, '') AS sourceExternalId
+        ${from}
+        GROUP BY c.id
+        ORDER BY MAX(COALESCE(c.published_at, 0)) DESC, c.external_id
+        LIMIT ? OFFSET ?`).all(workspaceId, page, skip);
+      return {
+        count: Number(count?.n) || 0,
+        posts: posts.map((row) => ({
+          captureId: row.captureId || '',
+          externalId: row.externalId || '',
+          sourceAccountId: row.sourceAccountId || null,
+          title: row.title || '',
+          sourceExternalId: row.sourceExternalId || '',
+        })),
+      };
+    },
+
+    // 按捕获 id 写回来源。不经过 saveCapture，关注源上的保留规则拦不住回滚。
+    restoreCaptureSource(workspaceId, captureId, sourceAccountId) {
+      const id = String(captureId || '').trim();
+      if (!id) return { status: 'missing' };
+      const next = sourceAccountId ? String(sourceAccountId) : null;
+      if (next) {
+        const account = database.prepare(`SELECT id FROM source_accounts
+          WHERE id = ? AND workspace_id = ?`).get(next, workspaceId);
+        if (!account) return { status: 'missing-account' };
+      }
+      const result = database.prepare(`UPDATE captures SET source_account_id = ?
+        WHERE id = ? AND workspace_id = ? AND provider = 'x'`).run(next, id, workspaceId);
+      if (!result.changes) return { status: 'missing' };
+      return { status: 'restored', sourceAccountId: next };
+    },
+
+    authorIdForContentItem(workspaceId, contentItemId) {
+      if (!contentItemId) return '';
+      const row = database.prepare(`SELECT author_id AS authorId FROM item_authors
+        WHERE workspace_id = ? AND content_item_id = ?`).get(workspaceId, contentItemId);
+      return row?.authorId || '';
+    },
+
     upsertSubscription(value) {
       const input = parseContract(UpsertSubscriptionInputSchema, value);
       const now = Date.now();
@@ -545,7 +686,36 @@ export function createFeedRepository(database, emitEvent) {
            filter_reading, filter_specific, filter_sufficient, feed_filter_ready, author_native_id)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
           ON CONFLICT(workspace_id, provider, external_id) DO UPDATE SET
-            source_account_id = excluded.source_account_id,
+            source_account_id = CASE
+              WHEN EXISTS (
+                SELECT 1 FROM source_accounts kept
+                WHERE kept.id = captures.source_account_id
+                  AND kept.provider = 'x'
+                  AND kept.external_id = 'x:home:following'
+              ) AND (
+                json_extract(captures.metadata_json, '$.homeFeed') = 'following'
+                OR json_extract(captures.metadata_json, '$.feed') = 'following'
+                OR json_extract(captures.metadata_json, '$.sourceInput.feed') = 'following'
+                OR EXISTS (
+                  SELECT 1
+                  FROM content_items sticky_item
+                  JOIN item_authors sticky_link
+                    ON sticky_link.workspace_id = sticky_item.workspace_id
+                   AND sticky_link.content_item_id = sticky_item.id
+                  JOIN authors sticky_author
+                    ON sticky_author.workspace_id = sticky_link.workspace_id
+                   AND sticky_author.author_id = sticky_link.author_id
+                  LEFT JOIN authors sticky_target
+                    ON sticky_target.workspace_id = sticky_author.workspace_id
+                   AND sticky_target.author_id = sticky_author.merged_into
+                  WHERE sticky_item.workspace_id = captures.workspace_id
+                    AND sticky_item.capture_id = captures.id
+                    AND COALESCE(sticky_target.followed, sticky_author.followed) = 1
+                )
+              ) THEN captures.source_account_id
+              WHEN excluded.source_account_id IS NULL OR excluded.source_account_id = '' THEN captures.source_account_id
+              ELSE excluded.source_account_id
+            END,
             source_url = excluded.source_url,
             title = excluded.title,
             content_hash = excluded.content_hash,
@@ -553,7 +723,12 @@ export function createFeedRepository(database, emitEvent) {
             status = excluded.status,
             published_at = excluded.published_at,
             captured_at = captures.captured_at,
-            metadata_json = excluded.metadata_json,
+            metadata_json = CASE
+              WHEN json_extract(captures.metadata_json, '$.homeFeed') = 'following'
+                AND IFNULL(json_extract(excluded.metadata_json, '$.homeFeed'), '') != 'following'
+              THEN json_set(excluded.metadata_json, '$.homeFeed', 'following')
+              ELSE excluded.metadata_json
+            END,
             author_handle = excluded.author_handle,
             filter_mode = excluded.filter_mode,
             filter_decision = excluded.filter_decision,
@@ -879,6 +1054,111 @@ export function createFeedRepository(database, emitEvent) {
         externalId: String(row.externalId || ''),
         text: row.text || '',
       }));
+    },
+
+    listModelScoredXCaptures(workspaceId, { since = 0, limit = 5000 } = {}) {
+      const size = Math.max(1, Math.min(Number(limit) || 5000, 5000));
+      const floor = Math.max(0, Number(since) || 0);
+      return database.prepare(`SELECT c.captured_at AS capturedAt, c.external_id AS externalId,
+          c.metadata_json AS metadataJson, c.title AS title, c.source_url AS sourceUrl,
+          ci.id AS contentItemId, sa.external_id AS sourceExternalId,
+          COALESCE(NULLIF(json_extract(c.metadata_json, '$.originalText'), ''), NULLIF(ci.body, ''), c.title, '') AS text,
+          COALESCE(NULLIF(c.author_handle, ''), NULLIF(json_extract(c.metadata_json, '$.authorHandle'), ''), NULLIF(json_extract(c.metadata_json, '$.authorProfile.handle'), '')) AS authorHandle,
+          COALESCE(NULLIF(json_extract(c.metadata_json, '$.authorProfile.name'), ''), '') AS authorName,
+          COALESCE(NULLIF(json_extract(c.metadata_json, '$.authorVerified'), ''), NULLIF(json_extract(c.metadata_json, '$.authorProfile.verified'), ''), NULLIF(json_extract(c.metadata_json, '$.authorProfile.verifiedType'), '')) AS authorVerified
+        FROM (
+          SELECT id, captured_at, external_id, metadata_json, title, source_url, source_account_id, author_handle
+          FROM captures INDEXED BY idx_captures_x_focus
+          WHERE workspace_id = ? AND captured_at >= ?
+            AND provider = 'x' AND json_extract(metadata_json, '$.xFocus.method') IS NOT NULL
+            AND json_extract(metadata_json, '$.xFocus.method') IN ('model', 'cache')
+          ORDER BY captured_at DESC
+          LIMIT ?
+        ) c
+        LEFT JOIN source_accounts sa ON sa.id = c.source_account_id
+        LEFT JOIN content_items ci ON ci.capture_id = c.id AND ci.workspace_id = ?`).all(
+        workspaceId, floor, size, workspaceId,
+      ).map((row) => ({
+        capturedAt: Number(row.capturedAt) || 0,
+        externalId: String(row.externalId || ''),
+        title: row.title || '',
+        text: row.text || '',
+        authorHandle: row.authorHandle || '',
+        authorName: row.authorName || '',
+        authorVerified: row.authorVerified || '',
+        sourceUrl: row.sourceUrl || '',
+        contentItemId: row.contentItemId || '',
+        sourceExternalId: row.sourceExternalId || '',
+        metadata: parseJson(row.metadataJson),
+      }));
+    },
+
+    saveNotInterestedAction(workspaceId, row) {
+      const tweetId = String(row?.tweetId || '').trim();
+      if (!tweetId) return false;
+      const at = Number(row.createdAt) || Date.now();
+      const score = Number(row.score);
+      const result = database.prepare(`INSERT INTO x_not_interested_actions (
+          workspace_id, tweet_id, content_item_id, author_handle, title, source_url, trigger, note,
+          score, primary_dir, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(workspace_id, tweet_id) DO NOTHING`).run(
+        workspaceId,
+        tweetId,
+        String(row.contentItemId || ''),
+        String(row.authorHandle || '').replace(/^@/, '').slice(0, 64),
+        String(row.title || '').slice(0, 300),
+        String(row.sourceUrl || '').slice(0, 500),
+        row.trigger === 'streak' ? 'streak' : 'post',
+        String(row.note || '').slice(0, 80),
+        Number.isFinite(score) ? score : null,
+        String(row.primaryDir || '').slice(0, 40),
+        String(row.status || 'queued').slice(0, 40),
+        at,
+        at,
+      );
+      return result.changes > 0;
+    },
+
+    updateNotInterestedStatus(workspaceId, tweetId, status) {
+      const id = String(tweetId || '').trim();
+      const next = String(status || '').trim().slice(0, 40);
+      if (!id || !next) return false;
+      const result = database.prepare(`UPDATE x_not_interested_actions
+        SET status = ?, updated_at = ?
+        WHERE workspace_id = ? AND tweet_id = ?`).run(next, Date.now(), workspaceId, id);
+      return result.changes > 0;
+    },
+
+    listNotInterestedTweetIds(workspaceId, since = 0) {
+      return database.prepare(`SELECT tweet_id AS tweetId FROM x_not_interested_actions
+        WHERE workspace_id = ? AND created_at >= ?
+        ORDER BY created_at DESC LIMIT 1000`).all(workspaceId, Math.max(0, Number(since) || 0))
+        .map((row) => String(row.tweetId || ''))
+        .filter(Boolean);
+    },
+
+    listNotInterestedActions(workspaceId, { since = 0, limit = 80 } = {}) {
+      const size = Math.max(1, Math.min(Number(limit) || 80, 500));
+      return database.prepare(`SELECT tweet_id AS tweetId, content_item_id AS contentItemId,
+          author_handle AS authorHandle, title, source_url AS sourceUrl, trigger, note, score,
+          primary_dir AS primaryDir, status, created_at AS createdAt
+        FROM x_not_interested_actions
+        WHERE workspace_id = ? AND created_at >= ?
+        ORDER BY created_at DESC LIMIT ?`).all(workspaceId, Math.max(0, Number(since) || 0), size)
+        .map((row) => ({
+          tweetId: String(row.tweetId || ''),
+          contentItemId: row.contentItemId || '',
+          authorHandle: row.authorHandle || '',
+          title: row.title || '',
+          sourceUrl: row.sourceUrl || '',
+          trigger: row.trigger || '',
+          note: row.note || '',
+          score: row.score == null ? null : Number(row.score),
+          primaryDir: row.primaryDir || '',
+          status: row.status || '',
+          createdAt: Number(row.createdAt) || 0,
+        }));
     },
 
     listXCapturesByContentIds(workspaceId, contentItemIds) {
@@ -1492,6 +1772,25 @@ export function createFeedRepository(database, emitEvent) {
       }));
     },
 
+    listUntaggedContentIds(workspaceId, { since = 0, limit = 20 } = {}) {
+      const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 100));
+      const rows = database.prepare(`SELECT ci.id FROM content_items ci
+        WHERE ci.workspace_id = ?
+          AND ci.created_at >= ?
+          AND ${VISIBLE_CONTENT_SQL}
+          AND ${EXCLUDE_YOUTUBE_SQL}
+          AND ${EXCLUDE_OFFICIAL_MIRROR_SQL}
+          AND NOT EXISTS (
+            SELECT 1 FROM resource_taggings rt
+            WHERE rt.workspace_id = ci.workspace_id
+              AND rt.resource_type = 'content-item'
+              AND rt.resource_id = ci.id
+          )
+        ORDER BY ci.created_at DESC, ci.id DESC
+        LIMIT ?`).all(workspaceId, Number(since) || 0, safeLimit);
+      return rows.map((row) => row.id);
+    },
+
     listContentItems(workspaceId, { limit = 50, before = null,qualityRule='' } = {}) {
       const safeLimit = Math.max(1, Math.min(Number(limit) || 50, 200));
       const rows = before === null
@@ -1508,6 +1807,67 @@ export function createFeedRepository(database, emitEvent) {
             ORDER BY ci.created_at DESC, ci.id DESC LIMIT ?`)
           .all(workspaceId, Number(before), safeLimit);
       return rows.map(mapContentItem);
+    },
+
+    // 信息流搜索不能只扫最近一页。作者名、handle 和旧帖都要能命中。
+    searchVisibleItems(workspaceId, { query = '', provider = '', limit = 40, qualityRule = '' } = {}) {
+      const terms = String(query || '').trim().toLocaleLowerCase().split(/\s+/).filter(Boolean).slice(0, 8);
+      if (!terms.length) return [];
+      const safeLimit = Math.max(1, Math.min(Number(limit) || 40, 40));
+      const providerId = String(provider || '').trim();
+      const haystack = `lower(
+        COALESCE(ci.title, '') || char(10) || COALESCE(ci.summary, '') || char(10) ||
+        COALESCE(ci.author_name, '') || char(10) || COALESCE(${AUTHOR_HANDLE_SQL}, '') || char(10) ||
+        COALESCE(a.name, '') || char(10) || COALESCE(a.handle, '') || char(10) ||
+        substr(COALESCE(ci.body, ''), 1, 4000)
+      )`;
+      const clauses = [
+        'ci.workspace_id = ?',
+        VISIBLE_CONTENT_SQL,
+        approvedQualitySql(qualityRule),
+        EXCLUDE_YOUTUBE_SQL,
+        EXCLUDE_OFFICIAL_MIRROR_SQL,
+      ];
+      const params = [workspaceId];
+      if (providerId) {
+        clauses.push('c.provider = ?');
+        params.push(providerId);
+      }
+      for (const term of terms) {
+        clauses.push(`${haystack} LIKE ? ESCAPE '\\'`);
+        params.push(`%${term.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`);
+      }
+      params.push(safeLimit);
+      const rows = database.prepare(`SELECT ci.id, ci.workspace_id, ci.capture_id, ci.origin_type, ci.content_type,
+          ci.title, substr(COALESCE(ci.body, ''), 1, 480) AS body, ci.summary, ci.source_url, ci.author_name,
+          ci.published_at, ci.created_at, ci.updated_at,
+          c.provider AS provider, c.external_id AS external_id, c.captured_at AS captured_at,
+          ${AUTHOR_HANDLE_SQL} AS author_handle,
+          COALESCE(item_state.is_read, 0) AS is_read,
+          ia.author_id AS author_id,
+          COALESCE(sub.id, '') AS subscription_id
+        FROM content_items ci
+        JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
+        LEFT JOIN user_item_states item_state
+          ON item_state.workspace_id = ci.workspace_id AND item_state.content_item_id = ci.id
+        LEFT JOIN item_authors ia ON ia.workspace_id = ci.workspace_id AND ia.content_item_id = ci.id
+        LEFT JOIN authors a ON a.workspace_id = ia.workspace_id AND a.author_id = ia.author_id
+        LEFT JOIN subscriptions sub
+          ON sub.workspace_id = c.workspace_id AND sub.source_account_id = c.source_account_id AND sub.enabled = 1
+        WHERE ${clauses.join(' AND ')}
+        ORDER BY COALESCE(ci.published_at, c.captured_at, ci.created_at) DESC, ci.id DESC
+        LIMIT ?`).all(...params);
+      return rows.map((row) => ({
+        ...mapContentItem(row),
+        provider: row.provider || '',
+        externalId: row.external_id || '',
+        capturedAt: row.captured_at || row.created_at,
+        authorHandle: row.author_handle || '',
+        captureMetadata: { authorHandle: row.author_handle || '' },
+        isRead: Boolean(row.is_read),
+        authorId: row.author_id || '',
+        subscriptionId: row.subscription_id || '',
+      }));
     },
 
     listWindowSources(workspaceId, { startAt, endAt,qualityRule='',excludedItemIds=[] }) {

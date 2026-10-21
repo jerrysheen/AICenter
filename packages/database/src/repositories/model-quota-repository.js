@@ -1,32 +1,119 @@
 import { randomUUID } from 'node:crypto';
 
+// Published Flash Lite limits are 15 RPM and 500 RPD per project. Leave one RPM and
+// 20 RPD unused so a later call switches before Google returns 429. Each key is its
+// own bucket unless GEMINI_API_KEY*_PROJECT names the same project.
+export const FLASH_LITE_PROJECT_CAP = Object.freeze({
+  'gemini-3.1-flash-lite': { requestsPerMinute: 14, requestsPerDay: 480 },
+  'gemini-3.5-flash-lite': { requestsPerMinute: 14, requestsPerDay: 480 },
+});
+
+export function flashLiteSibling(model) {
+  if (model === 'gemini-3.1-flash-lite') return 'gemini-3.5-flash-lite';
+  if (model === 'gemini-3.5-flash-lite') return 'gemini-3.1-flash-lite';
+  return '';
+}
+
+const QUOTA_LEASE_TTL_MS = 240000;
+
+function activeLeaseHolders(owner, untilAt, at) {
+  if (typeof owner === 'string' && owner.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(owner);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter((row) => row && typeof row.id === 'string' && Number(row.until) > at);
+    } catch {
+      return [];
+    }
+  }
+  if (owner && Number(untilAt) > at) return [{ id: String(owner), until: Number(untilAt) }];
+  return [];
+}
+
+function releaseLease(database, emitEvent, ticket) {
+  if (!ticket?.id) return;
+  const row = database.prepare('SELECT owner FROM model_quota_leases WHERE project=? AND model=?').get(ticket.project, ticket.model);
+  if (typeof row?.owner === 'string' && row.owner.startsWith('[')) {
+    const at = Date.now();
+    const next = activeLeaseHolders(row.owner, 0, at).filter((holder) => holder.id !== ticket.id);
+    if (!next.length) {
+      database.prepare('DELETE FROM model_quota_leases WHERE project=? AND model=?').run(ticket.project, ticket.model);
+    } else {
+      const until = next.reduce((max, holder) => Math.max(max, holder.until), at);
+      database.prepare('UPDATE model_quota_leases SET owner=?, until_at=? WHERE project=? AND model=?').run(JSON.stringify(next), until, ticket.project, ticket.model);
+    }
+    emitEvent('runtime.model-quota.released.v1', 'model-quota', ticket.id, { model: ticket.model }, 'local');
+    return;
+  }
+  const result = database.prepare('DELETE FROM model_quota_leases WHERE project=? AND model=? AND owner=?').run(ticket.project, ticket.model, ticket.id);
+  if (result.changes) emitEvent('runtime.model-quota.released.v1', 'model-quota', ticket.id, { model: ticket.model }, 'local');
+}
+
 export function createModelQuotaRepository(database, emitEvent) {
   return Object.freeze({
-    reserve({ slots, model, at, requestsPerHour, requestsPerMinute, minIntervalMs, estimatedTokensPerMinute, estimatedTokens, accountMode=false, requestsPerDay=Infinity, requestsPerKeyPerDay=Infinity, dayStart=at, dayEnd=at+86400000, legacyProject='', dryRun=false, pacingModels=[], balance='', idleAfterMs=0 }) {
+    reserve({ slots, model, at, requestsPerHour, requestsPerMinute, minIntervalMs, estimatedTokensPerMinute, estimatedTokens, accountMode=false, requestsPerDay=Infinity, requestsPerKeyPerDay=Infinity, dayStart=at, dayEnd=at+86400000, legacyProject='', dryRun=false, pacingModels=[], balance='', idleAfterMs=0, flashProjectCap=true, inflightLimit=1, inflightRetryMs=250 }) {
       return database.transaction(() => {
         const global = accountMode
           ? database.prepare('SELECT at FROM model_quota_reservations WHERE model=? AND at>? ORDER BY at').all(model,at-3600000)
           : database.prepare('SELECT at FROM model_quota_reservations WHERE at>? ORDER BY at').all(at-3600000);
         if(global.length>=requestsPerHour)return {admitted:false,retryAt:global[0].at+3600000};
+        const projectCap = flashProjectCap === false ? null : FLASH_LITE_PROJECT_CAP[model];
         const dayModels=JSON.stringify(pacingModels.length?pacingModels:[model]);
         const day=database.prepare('SELECT project,at FROM model_quota_reservations WHERE model IN (SELECT value FROM json_each(?)) AND at>=? AND at<? ORDER BY at').all(dayModels,dayStart,dayEnd);
-        if(day.length>=requestsPerDay)return {admitted:false,retryAt:dayEnd};
+        // Account mode still sums every key into requestsPerDay (default 2500) before the
+        // per-key Flash loop. That sum is a daily cap. Leaving it unlabeled made the sibling
+        // model look like a minute wait, so hourly kept the Pacific-midnight retry.
+        if(day.length>=requestsPerDay){
+          if(projectCap)return {admitted:false,retryAt:dayEnd,flashHeadroom:'rpd',model,quotaExhausted:true};
+          return {admitted:false,retryAt:dayEnd};
+        }
         const latest=global.at(-1)?.at;
         if(!accountMode && latest!==undefined && at<latest+minIntervalMs)return {admitted:false,retryAt:latest+minIntervalMs};
-        let retryAt=Infinity,cooldownCount=0;
+        let retryAt=Infinity,cooldownCount=0,flashRpm=0,flashRpd=0;
+        const inflightRooms=new Map();
+        const roomLimit=Math.max(1, Math.floor(Number(inflightLimit) || 1));
         const ordered=balance==='least-used' ? leastUsed(database,slots,model,at,dayStart,dayEnd,idleAfterMs) : accountMode ? [...slots].sort((a,b)=>{
           const rows=p=>day.filter(r=>r.project===p);
           return rows(a.project).length-rows(b.project).length || (rows(a.project).at(-1)?.at || 0)-(rows(b.project).at(-1)?.at || 0);
         }) : slots;
         for(const slot of ordered) {
+          if (projectCap) {
+            const scoped = flashReservationScope(slot);
+            const minuteRows = database.prepare(`SELECT at FROM model_quota_reservations WHERE model=? AND ${scoped.column}=? AND at>? ORDER BY at`).all(model, scoped.value, at - 60000);
+            if (minuteRows.length >= projectCap.requestsPerMinute) {
+              flashRpm++;
+              retryAt = Math.min(retryAt, minuteRows[0].at + 60000);
+              continue;
+            }
+            const dayCount = database.prepare(`SELECT COUNT(*) AS n FROM model_quota_reservations WHERE model=? AND ${scoped.column}=? AND at>=? AND at<?`).get(model, scoped.value, dayStart, dayEnd).n;
+            if (dayCount >= projectCap.requestsPerDay) {
+              flashRpd++;
+              retryAt = Math.min(retryAt, dayEnd);
+              continue;
+            }
+          }
           const cooldownKey=slot.cooldownKey || slot.project;
           const block=database.prepare('SELECT until_at FROM model_quota_cooldowns WHERE project=? AND model=?').get(cooldownKey,model);
           if(block?.until_at>at){cooldownCount++;retryAt=Math.min(retryAt,block.until_at);continue;}
           const keyDay=day.filter(r=>r.project===slot.project || (legacyProject && r.project===legacyProject));
-          if(keyDay.length>=requestsPerKeyPerDay){retryAt=Math.min(retryAt,dayEnd);continue;}
+          if(keyDay.length>=requestsPerKeyPerDay){
+            if(projectCap)flashRpd++;
+            retryAt=Math.min(retryAt,dayEnd);
+            continue;
+          }
           if(accountMode){
-            const lease=database.prepare('SELECT until_at FROM model_quota_leases WHERE project=? AND model=?').get(slot.project,model);
-            if(lease?.until_at>at){retryAt=Math.min(retryAt,lease.until_at);continue;}
+            if(roomLimit>1){
+              const row=database.prepare('SELECT owner, until_at FROM model_quota_leases WHERE project=? AND model=?').get(slot.project,model);
+              const holders=activeLeaseHolders(row?.owner, row?.until_at, at);
+              if(holders.length>=roomLimit){
+                retryAt=Math.min(retryAt, at+Math.max(250, Math.floor(Number(inflightRetryMs)||250)));
+                continue;
+              }
+              inflightRooms.set(slot.project, holders);
+            }else{
+              const lease=database.prepare('SELECT until_at FROM model_quota_leases WHERE project=? AND model=?').get(slot.project,model);
+              if(lease?.until_at>at){retryAt=Math.min(retryAt,lease.until_at);continue;}
+            }
             const last=pacingModels.length ? database.prepare('SELECT MAX(at) at FROM model_quota_reservations WHERE project=? AND model IN (SELECT value FROM json_each(?))').get(slot.project,JSON.stringify(pacingModels)).at : keyDay.at(-1)?.at;
             if(last!==undefined && at<last+minIntervalMs){retryAt=Math.min(retryAt,last+minIntervalMs);continue;}
           }
@@ -38,17 +125,32 @@ export function createModelQuotaRepository(database, emitEvent) {
           if(dryRun)return {admitted:true,project:slot.project,model,keyEnv:slot.keyEnv};
           const id=randomUUID();
           database.prepare('INSERT INTO model_quota_reservations(id,project,model,at,estimated_tokens,key_env) VALUES(?,?,?,?,?,?)').run(id,slot.project,model,at,estimatedTokens,slot.keyEnv || '');
-          if(accountMode)database.prepare('INSERT INTO model_quota_leases(project,model,owner,until_at) VALUES(?,?,?,?) ON CONFLICT(project,model) DO UPDATE SET owner=excluded.owner,until_at=excluded.until_at').run(slot.project,model,id,at+240000);
+          if(accountMode && roomLimit>1){
+            const holders=(inflightRooms.get(slot.project)||[]).concat([{id,until:at+QUOTA_LEASE_TTL_MS}]);
+            const until=holders.reduce((max,holder)=>Math.max(max,holder.until),at);
+            database.prepare('INSERT INTO model_quota_leases(project,model,owner,until_at) VALUES(?,?,?,?) ON CONFLICT(project,model) DO UPDATE SET owner=excluded.owner,until_at=excluded.until_at').run(slot.project,model,JSON.stringify(holders),until);
+          }else if(accountMode)database.prepare('INSERT INTO model_quota_leases(project,model,owner,until_at) VALUES(?,?,?,?) ON CONFLICT(project,model) DO UPDATE SET owner=excluded.owner,until_at=excluded.until_at').run(slot.project,model,id,at+QUOTA_LEASE_TTL_MS);
           emitEvent('runtime.model-quota.reserved.v1','model-quota',id,{model,at},'local');
           return {admitted:true,id,project:slot.project,cooldownKey,model,keyEnv:slot.keyEnv};
+        }
+        const flashBlocked=flashRpm+flashRpd;
+        if(flashBlocked===ordered.length && flashBlocked>0){
+          const flashHeadroom=flashRpm>0 ? 'rpm' : 'rpd';
+          return {admitted:false,retryAt,flashHeadroom,model,quotaExhausted:flashHeadroom==='rpd'};
         }
         return {admitted:false,retryAt,quotaExhausted:cooldownCount===slots.length};
       }).immediate();
     },
     release(ticket) {
-      database.transaction(()=>{
-        const result=database.prepare('DELETE FROM model_quota_leases WHERE project=? AND model=? AND owner=?').run(ticket.project,ticket.model,ticket.id);
-        if(result.changes)emitEvent('runtime.model-quota.released.v1','model-quota',ticket.id,{model:ticket.model},'local');
+      database.transaction(()=>{ releaseLease(database, emitEvent, ticket); }).immediate();
+    },
+    // Drops a file-transcription hold that never left the process, so it does not consume the daily 24.
+    discard(ticket) {
+      if (!ticket?.id) return 0;
+      return database.transaction(()=>{
+        const removed=database.prepare('DELETE FROM model_quota_reservations WHERE id=?').run(ticket.id).changes;
+        releaseLease(database, emitEvent, ticket);
+        return removed;
       }).immediate();
     },
     cooldown(project,model,untilAt) {
@@ -93,6 +195,13 @@ export function createModelQuotaRepository(database, emitEvent) {
       database.prepare('INSERT INTO model_quota_reservations(id,project,model,at,estimated_tokens,key_env) VALUES(?,?,?,?,?,?)')
         .run(randomUUID(),project,model,at,1,keyEnv || '');
     },
+    reservationDayCounts({ models, dayStart, dayEnd }) {
+      const rows = database.prepare(`SELECT model, key_env AS keyEnv, COUNT(*) AS calls
+        FROM model_quota_reservations
+        WHERE model IN (SELECT value FROM json_each(?)) AND at>=? AND at<?
+        GROUP BY model, key_env ORDER BY model, key_env`).all(JSON.stringify(models), dayStart, dayEnd);
+      return rows.map((row) => ({ model: String(row.model || ''), keyEnv: String(row.keyEnv || ''), calls: Number(row.calls) || 0 }));
+    },
     pairUsage({ models, dayStart, dayEnd }) {
       const rows = database.prepare(`SELECT model, key_env AS keyEnv, COUNT(*) AS n, MAX(at) AS last
         FROM model_quota_reservations
@@ -117,6 +226,11 @@ export function createModelQuotaRepository(database, emitEvent) {
         .run(poolKey, JSON.stringify(models), cursor, at);
     },
   });
+}
+
+function flashReservationScope(slot) {
+  if (slot?.explicitProject) return { column: 'project', value: slot.project };
+  return { column: 'key_env', value: slot?.keyEnv || '' };
 }
 
 function leastUsed(database, slots, model, at, dayStart, dayEnd, idleAfterMs) {

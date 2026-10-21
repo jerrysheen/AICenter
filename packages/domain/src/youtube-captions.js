@@ -52,13 +52,94 @@ function overlapChars(previous, next) {
   const words = nxt.split(' ');
   for (let count = words.length; count >= 1; count -= 1) {
     const prefix = words.slice(0, count).join(' ');
-    if (prefix.length < OVERLAP_MIN_CHARS) break;
-    const start = prevLower.length - prefix.length;
-    if (start < 0 || prevLower.slice(start) !== prefix.toLowerCase()) continue;
-    if (start > 0 && prevLower[start - 1] !== ' ') continue;
-    if (prefix.length >= 12 || count >= 2) return prefix.length;
+    if (prefix.length < 2) break;
+    if (prevLower.length < prefix.length) continue;
+    if (prevLower.slice(-prefix.length) !== prefix.toLowerCase()) continue;
+    if (prevLower.length > prefix.length && prevLower[prevLower.length - prefix.length - 1] !== ' ') continue;
+    const core = prefix.replace(/[^\p{L}\p{N}]/gu, '');
+    const punctuated = /[.!?。！？]$/.test(prefix);
+    if (count >= 2 || prefix.length >= 12 || (punctuated && core.length >= 3) || core.length >= OVERLAP_MIN_CHARS) {
+      return prefix.length;
+    }
+  }
+  if (!nxt.includes(' ') && nxt.length >= 2 && prev.endsWith(nxt)) {
+    const core = nxt.replace(/[^\p{L}\p{N}]/gu, '');
+    if (core.length >= 2) return nxt.length;
   }
   return 0;
+}
+
+function stripSpeakerMarks(text) {
+  return String(text || '').replace(/>>+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function sameCaptionLine(left, right) {
+  const a = String(left || '').replace(/\s+/g, ' ').trim();
+  const b = String(right || '').replace(/\s+/g, ' ').trim();
+  if (!a || !b) return false;
+  return a === b || a.toLowerCase() === b.toLowerCase();
+}
+
+function cuePieces(text) {
+  const raw = String(text || '');
+  return raw.split(/>>+/).map((part, index) => ({
+    text: part.replace(/\s+/g, ' ').trim(),
+    speaker: index > 0 || raw.trimStart().startsWith('>>'),
+  })).filter((part) => part.text);
+}
+
+function stripLeadingEnglishFragment(text) {
+  const value = String(text || '').trim();
+  if (!/\p{Script=Han}/u.test(value)) return value;
+  return value.replace(/^(?:[A-Za-z][A-Za-z0-9'’_-]*[.!?])(?:\s+[A-Za-z][A-Za-z0-9'’_-]*[.!?]){0,6}\s+/u, '').trim();
+}
+
+function englishSentence(value) {
+  return /^(?:[A-Za-z][A-Za-z0-9'’_-]*)(?:\s+[A-Za-z][A-Za-z0-9'’_-]*){2,}[.!?]?$/.test(String(value || '').trim());
+}
+
+// 译文里留下的整句英文。中文说话人后面整句仍是英文就删掉；英文半句后面已经有中文时只留中文。
+export function stripResidualEnglishLine(line) {
+  const raw = String(line ?? '');
+  const trimmed = raw.trim();
+  if (!trimmed) return raw;
+  const stamp = trimmed.match(/^(\[[^\]]+\])\s+/);
+  const stampText = stamp ? `${stamp[1]} ` : '';
+  const content = stamp ? trimmed.slice(stamp[0].length) : trimmed;
+  const speaker = content.match(/^([\p{Script=Han}][^：:\n]{0,12}[：:])\s*/u);
+  const speakerText = speaker ? speaker[1] : '';
+  const rest = (speaker ? content.slice(speaker[0].length) : content).trim();
+  if (speakerText && rest && !/\p{Script=Han}/u.test(rest) && englishSentence(rest)) return '';
+  const clause = rest.match(/^((?:[A-Za-z][A-Za-z0-9'’_-]*)(?:\s+[A-Za-z][A-Za-z0-9'’_-]*){2,}[.!?])\s+/);
+  if (clause && /\p{Script=Han}/u.test(rest.slice(clause[0].length))) {
+    const kept = `${speakerText}${rest.slice(clause[0].length).trim()}`.trim();
+    return kept ? `${stampText}${kept}` : '';
+  }
+  const leading = stripLeadingEnglishFragment(content);
+  if (!leading) return '';
+  if (leading === content) return stamp ? `${stampText}${content}` : trimmed;
+  return `${stampText}${leading}`.trim();
+}
+
+export function stripResidualEnglish(raw) {
+  const text = String(raw || '').replace(/\r\n/g, '\n');
+  if (!text.trim()) return '';
+  const kept = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) {
+      kept.push('');
+      continue;
+    }
+    const next = stripResidualEnglishLine(line);
+    if (next) kept.push(next);
+  }
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function isEnglishFragmentLine(text) {
+  const value = stripSpeakerMarks(text);
+  if (!value || /\p{Script=Han}/u.test(value) || value.length > 48) return false;
+  return /^(?:[A-Za-z][A-Za-z0-9'’_-]*[.!?])(?:\s+[A-Za-z][A-Za-z0-9'’_-]*[.!?]){0,5}$/.test(value);
 }
 
 export function dedupeRollingCaptions(raw) {
@@ -71,27 +152,85 @@ export function dedupeRollingCaptions(raw) {
   if (!cues.length) return decodeEntities(raw).replace(/\s+/g, ' ').trim();
   let spoken = '';
   let lastStamp = -1;
+  let lastTime = '';
+  let lastText = '';
   const blocks = [];
   let block = '';
-  for (const cue of cues) {
-    const overlap = overlapChars(spoken, cue.text);
-    const text = (overlap ? cue.text.slice(overlap) : cue.text).trim();
-    if (!text) continue;
-    const stamp = lastStamp < 0
-      || clockSeconds(cue.time) - lastStamp >= STAMP_GAP_SEC
-      || text.includes('>>');
-    if (stamp) {
+  const emit = (time, text, speaker) => {
+    const cleaned = stripSpeakerMarks(text).replace(/^[,.;:!?，。；：！？\s]+/, '').trim();
+    if (!cleaned || sameCaptionLine(lastText, cleaned)) return;
+    if (isEnglishFragmentLine(cleaned) && (speaker || /\p{Script=Han}/u.test(spoken))) return;
+    const seconds = clockSeconds(time);
+    const delta = lastStamp < 0 ? STAMP_GAP_SEC : seconds - lastStamp;
+    const fresh = lastStamp < 0 || delta >= STAMP_GAP_SEC || delta < 0 || speaker;
+    if (fresh) {
       if (block) blocks.push(block.trim());
-      block = `[${cue.time}] ${text}`;
-      lastStamp = clockSeconds(cue.time);
+      const repeatStamp = Boolean(time) && time === lastTime;
+      block = repeatStamp ? cleaned : `[${time}] ${cleaned}`;
+      lastStamp = seconds;
+      lastTime = time;
     } else {
-      block += ` ${text}`;
+      block += ` ${cleaned}`;
     }
-    spoken = `${spoken} ${text}`.trim();
+    lastText = cleaned;
+    spoken = `${spoken} ${cleaned}`.trim();
     if (spoken.length > 800) spoken = spoken.slice(-800);
+  };
+  for (const cue of cues) {
+    for (const piece of cuePieces(cue.text)) {
+      const overlap = overlapChars(spoken, piece.text);
+      emit(cue.time, overlap ? piece.text.slice(overlap) : piece.text, piece.speaker);
+    }
   }
   if (block) blocks.push(block.trim());
   return blocks.join('\n').trim();
+}
+
+function collapsePlainTranscript(raw) {
+  const blocks = [];
+  for (const chunk of String(raw || '').split(/\n{2,}/)) {
+    const lines = [];
+    for (const line of chunk.split('\n')) {
+      const body = stripSpeakerMarks(line);
+      if (!body || (lines.length && sameCaptionLine(lines[lines.length - 1], body))) continue;
+      lines.push(body);
+    }
+    if (!lines.length) continue;
+    const block = lines.join('\n');
+    if (blocks.length && sameCaptionLine(blocks[blocks.length - 1], block)) continue;
+    blocks.push(block);
+  }
+  return blocks.join('\n\n').trim();
+}
+
+function captionLineBody(line) {
+  const match = String(line || '').match(/^\[(\d{2}:\d{2}:\d{2})\]\s*(.*)$/);
+  if (!match) return { time: '', body: String(line || '').trim() };
+  return { time: match[1], body: match[2].trim() };
+}
+
+// 已经译好的滚动字幕在读取时再合并一次：去掉 >>、行首英文半句、相邻重复和重复时间戳。
+export function cleanDisplayedTranscript(raw) {
+  const text = String(raw || '').replace(/\r\n/g, '\n').trim();
+  if (!text) return '';
+  const merged = /\[\d{1,2}:\d{2}:\d{2}\]/.test(text)
+    ? dedupeRollingCaptions(text)
+    : collapsePlainTranscript(decodeEntities(text));
+  const hasHan = /\p{Script=Han}/u.test(`${text}\n${merged}`);
+  if (!hasHan && !merged.includes('>>')) return merged;
+  const kept = [];
+  let lastBody = '';
+  let lastTime = '';
+  for (const line of merged.split('\n')) {
+    const parsed = captionLineBody(line);
+    let body = stripResidualEnglishLine(stripLeadingEnglishFragment(stripSpeakerMarks(parsed.body)));
+    if (!body || (hasHan && isEnglishFragmentLine(body)) || sameCaptionLine(lastBody, body)) continue;
+    const time = parsed.time && parsed.time === lastTime ? '' : parsed.time;
+    kept.push(time ? `[${time}] ${body}` : body);
+    lastBody = body;
+    if (parsed.time) lastTime = parsed.time;
+  }
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 function firstClock(text) {
@@ -208,7 +347,7 @@ export function articlePartPrompt({ index, total, text, previousTail = '', fresh
   return `第 ${part}/${count} 段，沿用格式。\n\n字幕：\n${body}`;
 }
 
-export const GEMMA_TRANSLATE_SYSTEM = '你是翻译器。把英文播客字幕译成简体中文。不要总结，不要扩写，不要加评论。保留时间戳、说话人标记（>>）、人名、公司名、股票代码和数字。已经通用的英文术语保留英文。只输出译文。';
+export const GEMMA_TRANSLATE_SYSTEM = '你是翻译器。把英文播客字幕译成简体中文。不要总结，不要扩写，不要加评论。按句子或段落翻译，不要逐条滚动字幕各译一行，不要重复相邻句子。不要输出说话人标记。时间戳只在一段的开头保留一次，同一个时间不要写两次。人名、公司名、股票代码和数字保留。已经通用的英文术语保留英文。译文里不要留下整句英文：说话人后面如果整句还是英文就删掉；英文原句后面已经有中文时只留中文。只输出译文。';
 
 export const GEMMA_SECTION_SYSTEM = '把下面这段播客译文排成一个 Markdown 小节。只用一个 ## 小标题，小标题必须是这段的中文主题，不要只用时间。时间可以写在主题后面，例如 ## 利率路径（00:12:03），也可以不写时间。禁止写成 ## 00:00:00 这种只有时间的标题。没有时间就不要编。发言人写成「名字：」。听不出名字时用「主持人：」或「嘉宾：」。保留数字、公司名、股票代码和关键数据。不要写要点摘要，不要加评论。只输出这一节。';
 

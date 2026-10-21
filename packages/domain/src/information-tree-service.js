@@ -4,7 +4,7 @@ import {materialHash,materialHashYielding,prepareDailyMaterials} from './daily-m
 import {yieldEventLoop} from './event-loop.js';
 import {needsZhLocalization} from './localize-texts.js';
 import {runBounded} from './daily-analysis.js';
-import {treeCatalog,treeSource,treeFailure,formatCondenseFailureLog,formatTreeHourlyCallLog,describeCondenseFailure,isTerminalPendingReason,isTruncatedModelFailure,cachedTruncationFailure,HOURLY_TRUNCATION_FALLBACK_MODEL,HOURLY_TRUNCATION_MAX_TOKENS} from './information-tree-policy.js';
+import {treeCatalog,treeSource,treeFailure,formatCondenseFailureLog,formatTreeHourlyCallLog,describeCondenseFailure,isTerminalPendingReason,isTruncatedModelFailure,cachedTruncationFailure,cachedFlashQuotaWait,HOURLY_TRUNCATION_FALLBACK_MODEL,HOURLY_TRUNCATION_MAX_TOKENS} from './information-tree-policy.js';
 import {readingClassKeyEnvs} from './reading-hour-service.js';
 import {isFlashSource} from './flash-sources.js';
 import {boundedInt,isAttributionValidationError,isRetryableUpstreamStatus,modelRetryDelayMs,nextHourlyAttempt,sameIdSet,upstreamHttpStatus} from './report-reliability.js';
@@ -482,6 +482,11 @@ export function createInformationTreeService({repository,reportRepository,feedSe
       }
       output=await model('information',{source:{...modelSource,paragraphs:condensed},tags},check,s);
     }
+    if(articleStrategy && output?.status!=='needs_content') {
+      const hinted=tagHints?.(s.workspaceId,m);
+      const preferred=Array.isArray(hinted) ? hinted.find(id=>modelTags.has(id)) : '';
+      if(preferred) output={...output,tagId:preferred};
+    }
     if(output.status==='needs_content')throw Object.assign(new Error('保存材料不足以提炼'),{code:'needs-content'});
     const node=repository.saveNode(s.workspaceId,{...output,id,version,layer:'information',children:[],articleIds:[m.id],sourceId:m.id,
       sourceRefs:m.sourceRefs || [],window,eventAt:m.eventAt ?? m.publishedAt ?? window.startAt,sourceUpdatedAt:m.updatedAt ?? m.obtainedAt ?? m.publishedAt ?? window.startAt,generatedAt:now(),
@@ -505,7 +510,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
       let splitRuns=0;
       try {
       const manualTransientRetry=s.retryTransient===true && cached?.input?.failure?.reason==='retryable-model-error';
-      if(!cachedTruncationFailure(cached) && cached?.status==='failed' && cached.input?.failure?.retryAt>now() && !manualTransientRetry) {
+      if(!cachedTruncationFailure(cached) && !cachedFlashQuotaWait(cached) && cached?.status==='failed' && cached.input?.failure?.retryAt>now() && !manualTransientRetry) {
         const pending=cached.input.failure;
         throw Object.assign(new Error(pending.reason),{code:pending.reason,cachedPending:pending,priorError:cached.error || '',...(Number.isFinite(pending.queueMs) || Number.isFinite(pending.executionMs) ? {timing:{queueMs:pending.queueMs,executionMs:pending.executionMs}} : {})});
       }

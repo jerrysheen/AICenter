@@ -10,7 +10,7 @@ import {nextGeminiDailyReset} from '../packages/connectors/src/gemini-grok-task.
 import {ensureHourlyDigestSchedule,ensureDailyReportSchedule} from '../packages/runtime/src/report-module.js';
 import {resolveDailyConfig} from '../packages/domain/src/daily-window.js';
 import {treeFailure} from '../packages/domain/src/information-tree-policy.js';
-import {createHarnessAgentRuntime} from '../packages/harness/src/harness-agent-runtime.js';
+import {articleUsesGemmaFallback, createHarnessAgentRuntime} from '../packages/harness/src/harness-agent-runtime.js';
 import {createToolRegistry} from '../packages/runtime/src/tool-registry.js';
 
 test('Google route stays article-only and uses builtin native protocol without exposing credentials',()=>{
@@ -182,9 +182,56 @@ test('same Google key executes different request models with isolated cooldown a
   const b=await runtime.run({...input,googleModel:'gemini-test-b'});assert.equal(b.answer,'gemini-test-b');
   assert.deepEqual(launches.map(l=>[l.key,l.model]),[['GEMINI_API_KEY2','gemini-test-a'],['GEMINI_API_KEY2','gemini-test-b']]);
   assert.ok(launches.every(l=>l.settings.includes(`id: "${l.model}"`)));
-  at+=10000;await assert.rejects(runtime.run({...input,googleModel:'gemini-test-a'}),e=>e.code==='budget-deferred');
+  at+=10000;await assert.rejects(runtime.run({...input,googleModel:'gemini-test-a'}),e=>e.code==='budget-deferred' && articleUsesGemmaFallback(e)===false);
   await assert.rejects(runtime.run({...input,googleModel:'gemini-test-b',googleKeyEnv:'UNKNOWN_KEY'}),/not configured/);
   await assert.rejects(runtime.run({...input,googleModel:'unknown'}),/not configured/);
   assert.equal(launches.length,2);
  }finally{await runtime.close();store.close();fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+test('Flash Lite daily cap on article normalize uses Gemma and does not open Grok', async () => {
+  const at = Date.parse('2026-10-21T06:11:00Z');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'article-gemma-cap-'));
+  const store = createStore(':memory:');
+  const env = {
+    GEMINI_API_KEY: 'one', ELUCID_GROK_API_KEY: 'grok',
+    AI_CENTER_GEMINI_KEY_ENVS: 'GEMINI_API_KEY',
+    AI_CENTER_HARNESS_ARTICLE_PROVIDER: 'google',
+    AI_CENTER_HARNESS_ARTICLE_FALLBACK: 'elucid-grok',
+    AI_CENTER_GEMINI_ARTICLE_MIN_INTERVAL_MS: '1',
+    AI_CENTER_GEMINI_ARTICLE_REQUESTS_PER_MINUTE: '100',
+    AI_CENTER_GEMINI_ARTICLE_REQUESTS_PER_HOUR: '20000',
+    AI_CENTER_GEMINI_ARTICLE_REQUESTS_PER_DAY: '5000',
+    AI_CENTER_GEMINI_ARTICLE_KEY_REQUESTS_PER_DAY: '5000',
+    AI_CENTER_GEMINI_ARTICLE_ESTIMATED_TOKENS_PER_MINUTE: '100000000',
+  };
+  const earlier = at - 5 * 60_000;
+  for (const model of ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite']) {
+    for (let index = 0; index < 480; index += 1) {
+      store.repositories.modelQuota.recordProbeUse({ project: 'other', keyEnv: 'GEMINI_API_KEY', model, at: earlier });
+    }
+  }
+  const admission = createGeminiArticleAdmission({
+    repository: store.repositories.modelQuota, env, now: () => at,
+    models: ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite'], allowFallback: true,
+  });
+  let gemma = 0;
+  const runtime = createHarnessAgentRuntime({
+    tools: createToolRegistry(), env, runtimeDirectory: dir, articleAdmission: admission,
+    articleGemmaFallback: async () => {
+      gemma += 1;
+      return { answer: '{"title":"中文","tagId":null,"summary":"摘要","body":"正文"}', providerId: 'google', modelId: 'gemma-4-26b-a4b-it' };
+    },
+    createClient: async () => { throw new Error('flash or grok client must not start'); },
+  });
+  try {
+    const result = await runtime.run({ message: 'saved article', closedContext: true, closedTask: 'article-normalize', usageStage: 'tree-information' });
+    assert.equal(gemma, 1);
+    assert.equal(result.modelId, 'gemma-4-26b-a4b-it');
+    assert.equal(articleUsesGemmaFallback(Object.assign(new Error('cap'), { code: 'budget-deferred', quotaExhausted: true, flashHeadroom: 'rpd' })), true);
+  } finally {
+    await runtime.close();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

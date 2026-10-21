@@ -267,6 +267,13 @@ export function cachedTruncationFailure(cached) {
   return /截断|MAX_TOKENS|\btruncated\b/i.test(`${cached?.error || ''} ${cached?.input?.failure?.reason || ''}`);
 }
 
+// A saved Flash admission failure keeps retryAt at Pacific midnight. Replaying it
+// skips the model, so the Gemma daily-cap fallback never runs and the hour stays empty.
+export function cachedFlashQuotaWait(cached) {
+  if (cached?.status !== 'failed' || cached.input?.failure?.reason !== 'budget-deferred') return false;
+  return /Gemini 文章任务等待流量窗口|cooldownUntil=/.test(String(cached.error || ''));
+}
+
 export function treeFailure(error,id,sourceVersion='',at=Date.now()) {
   let reason=error.code;
   if(!reason)reason=error.name==='ModelQueueTimeout' ? 'queue-timeout' : error.name==='ModelExecutionTimeout' ? 'execution-timeout' : error.name==='StageBudgetTimeout' ? 'budget-deferred' : error.name==='ZodError' || error instanceof SyntaxError ? 'invalid-output' : 'retryable-model-error';

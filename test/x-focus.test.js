@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { createStore } from '../packages/database/src/index.js';
 import { runMigrations } from '../packages/database/src/migrations.js';
 import { createReportRepository } from '../packages/database/src/repositories/report-repository.js';
-import { loadXFocusConfig, composeFocus, keywordFocus, rankAutoLikeCandidates, buildDrift, buildDriftFromSnapshot, nextAutoLikeSettings, shanghaiDayStart, autoLikeLimits, xFocusInstruction, looksLikeOfficialBrandAccount, storedFocus } from '../packages/domain/src/x-focus.js';
+import { loadXFocusConfig, composeFocus, keywordFocus, rankAutoLikeCandidates, buildDrift, buildDriftFromSnapshot, nextAutoLikeSettings, shanghaiDayStart, autoLikeLimits, notInterestedLimits, xFocusInstruction, looksLikeOfficialBrandAccount, storedFocus } from '../packages/domain/src/x-focus.js';
 import { looksLikeFeedAd } from '../packages/domain/src/feed-ad.js';
 import { createXFocusScorer, X_FOCUS_SCORE_RESERVE_MS } from '../packages/domain/src/x-focus-score.js';
 import { createXFocusService, KEYWORD_RESCORE_LIMIT, FOCUS_POINT_LIMIT } from '../packages/domain/src/x-auto-like.js';
@@ -91,6 +91,10 @@ test('x-focus view is served before the generic feed platform route', async () =
     assert.equal(view.ok, true);
     assert.equal(view.autoLike.environmentOn, false);
     assert.equal(view.autoLike.pageOn, false);
+    assert.equal(view.notInterested.environmentOn, false);
+    assert.equal(view.notInterested.pageOn, false);
+    assert.equal(view.drift.likes.length, view.drift.notInterested.length);
+    assert.equal(view.notInterestedActions.length, 0);
     assert.equal(Object.hasOwn(view, 'dirScores'), false);
     const rejected = await fetch(`${address.localUrl}/api/v1/feed/x-focus/auto-like`, {
       method: 'POST',
@@ -127,10 +131,25 @@ test('x-focus config keeps seven directions and the highest oil weight', () => {
   assert.equal(autoLikeLimits(config, {
     AI_CENTER_JEV_ENABLED: 'false',
     AI_CENTER_CLASSIFICATION_PROVIDER: 'bamboo',
-  }).minScore, 0.75);
+  }).minScore, 0.8);
   assert.equal(autoLikeLimits(config, {}).minScore, 0.75);
   assert.match(xFocusInstruction(config), /孙宇晨/);
   assert.match(xFocusInstruction(config), /promotional/);
+  assert.match(xFocusInstruction(config), /体育竞猜/);
+  assert.match(xFocusInstruction(config), /SaaS 或 AI 工具的推广/);
+  assert.match(config.directions.find((dir) => dir.id === 'polymarket').question, /体育竞猜/);
+  const blank = composeFocus(dirScores('us-market', 0), config);
+  assert.equal(blank.primaryDir, '');
+  assert.equal(blank.focusScore, 0);
+  assert.equal(blank.rank, 0);
+  assert.equal(config.notInterested.dailyLimit, 10);
+  assert.equal(config.notInterested.hourlyLimit, 3);
+  assert.equal(config.notInterested.minIntervalMs, 600_000);
+  assert.equal(notInterestedLimits(config, {
+    AI_CENTER_X_NOT_INTERESTED_DAILY: '4',
+    AI_CENTER_X_NOT_INTERESTED_HOURLY: '1',
+    AI_CENTER_X_NOT_INTERESTED_INTERVAL_MS: '600000',
+  }).hourlyLimit, 1);
   assert.equal(config.batchSize, 20);
   assert.equal(config.maxExpand, 8);
 });
@@ -392,7 +411,7 @@ function autoService(env, state, calls) {
     config,
     env,
     now: () => state.now,
-    feedRepository: { listRecentXCaptures: () => state.rows },
+    feedRepository: { listModelScoredXCaptures: () => state.rows },
     runtimeRepository: {
       listJobsByType: (type) => state.jobs.filter((job) => job.type === type),
       listOpenJobs: (type) => (type === X_UNLIKE_JOB_TYPE ? state.openUnlike : state.openLike),

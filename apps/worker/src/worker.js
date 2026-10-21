@@ -1,6 +1,9 @@
 import {attachDailyProcessLog} from '../../../packages/runtime/src/process-log.js';
 import { audioTranscriptionManifest, createAudioTranscriptionJobHandlers } from '../../../packages/runtime/src/audio-transcription-job.js';
 import {createGeminiArticleAdmission,startGeminiQuotaProbe} from '../../../packages/runtime/src/gemini-article-admission.js';
+import { formatGeminiQuotaClock, geminiQuotaDay } from '../../../packages/connectors/src/gemini-grok-task.js';
+import { FLASH_LITE_PROJECT_CAP } from '../../../packages/database/src/repositories/model-quota-repository.js';
+import { GEMMA_26B, createGemmaTranslationRouter } from '../../../packages/connectors/src/translate/gemma.js';
 import {resolveGoogleHourlyAdmissionModels} from '../../../packages/harness/src/llm-route.js';
 import { backfillUntranslatedFeedTranslations, createFeedTranslationChunkStore, createFeedTranslationJobHandlers, demoteQueuedHashTranslationJobsBatched, feedTranslationManifest, fillUncoveredTranslations, formatTranslationBackfillLog, repairEllipsisLeadTexts, retireYoutubeTranslationJobsBatched, translationBackfillConcurrency, translationGapFillIntervalMs, translationGapFillLimit, translationStartupBackfillLimit } from '../../../packages/runtime/src/feed-translation-module.js';
 import { createHardwareArtifactStore } from '../../../packages/connectors/src/hardware-artifacts.js';
@@ -39,7 +42,11 @@ import { ensureMediaIndexSyncSchedule, enqueueMediaIndexEnrich, MEDIA_ENRICH_JOB
 import { loadTwkrFlags } from '../../../packages/connectors/src/twkr-sources.js';
 import { createTwkrJobHandlers, ensureTwkrSchedules, prepareTwkrEnqueue, TWKR_NEWS_JOB_TYPE, TWKR_REVENUE_JOB_TYPE } from '../../../packages/runtime/src/twkr-job.js';
 import { createYoutubePodcastJobHandlers, ensureYoutubeArticleSchedule, ensureYoutubePodcastSchedule, YOUTUBE_ARTICLE_JOB_TYPE, YOUTUBE_PODCAST_JOB_TYPE } from '../../../packages/runtime/src/youtube-podcasts-job.js';
+import { assembleXVideoTranscribeDeps } from '../../../packages/runtime/src/x-video-transcribe.js';
 import { X_VIDEO_ARTICLE_JOB_TYPE } from '../../../packages/domain/src/x-video-articles.js';
+import { X_LINK_ARTICLE_JOB_TYPE } from '../../../packages/domain/src/x-link-articles.js';
+import { loadXLinkPublisherIndex } from '../../../packages/domain/src/x-link-service.js';
+import { createXLinkArticleJobHandlers } from '../../../packages/runtime/src/x-link-article-job.js';
 import { youtubePodcastLimits } from '../../../packages/domain/src/youtube-podcasts.js';
 import { createMediaEnrichJobHandlers } from '../../../packages/runtime/src/media-enrich-module.js';
 import { createKnowledgeService } from '../../../packages/domain/src/knowledge-service.js';
@@ -60,7 +67,7 @@ import {
   resolveHarnessLlm,
 } from '../../../packages/harness/src/index.js';
 import { knowledgeStructureManifest, createStructureJobHandlers } from '../../../packages/runtime/src/structure-module.js';
-import { taggingManifest, createTaggingJobHandlers, readTagCatalogFile } from '../../../packages/runtime/src/tagging-module.js';
+import { taggingManifest, createTaggingJobHandlers, ensureTagRescanSchedule, readTagCatalogFile } from '../../../packages/runtime/src/tagging-module.js';
 import { workPackageDispatchManifest, createWorkPackageJobHandlers } from '../../../packages/runtime/src/work-package-module.js';
 import { createJobRunner, deadLocalWorkerLock, formatJobLoopDelay, formatStartupStep, shouldLogJobLoopDelay } from '../../../packages/runtime/src/job-runner.js';
 import { mainThreadWatchdogEnabled, startMainThreadWatchdog } from '../../../packages/runtime/src/main-thread-watchdog.js';
@@ -274,7 +281,7 @@ export function createAiCenterWorker(options = {}) {
     defaultBrowserId: instance.browserId,
   });
   let feedService;
-  const xFocusHooks = { scoreCards: null, afterIngest: null, recordLike: null };
+  const xFocusHooks = { scoreCards: null, afterIngest: null, recordLike: null, recordNotInterested: null };
   let xFocusConfig = null;
   try { xFocusConfig = options.xFocusConfig || loadXFocusConfig(instance.configDirectory); }
   catch (error) { console.log(`[worker] x-focus ${String(error?.message || error).slice(0, 160)}`); }
@@ -351,6 +358,7 @@ export function createAiCenterWorker(options = {}) {
   });
   registry.register({ manifest: feedInteractionManifest, jobHandlers: createFeedInteractionJobHandlers(feedInteraction, {
     onAutoLike: (workspaceId, output) => xFocusHooks.recordLike?.(workspaceId, output),
+    onNotInterested: (workspaceId, output) => xFocusHooks.recordNotInterested?.(workspaceId, output),
   }) });
   const translateService = options.translateService || (options.feedService ? null : createTranslateService({
     env,
@@ -441,7 +449,10 @@ export function createAiCenterWorker(options = {}) {
       existsSync(instance.tagCatalogPath) ? instance.tagCatalogPath : path.join(repositoryRoot, 'config/tags.default.json'),
     ),
     taggingRepository: store.repositories.tagging,
-    taggingPort: options.taggingPort || createGeminiTagPort(),
+    taggingPort: options.taggingPort || createGeminiTagPort({
+      env,
+      quotaRepository: store.repositories.modelQuota,
+    }),
   });
   const contextService = options.contextService || createContextService({
     feedService,
@@ -485,10 +496,38 @@ export function createAiCenterWorker(options = {}) {
   const quotaUsage=store.repositories.modelUsage;
   const articleAdmission=env.AI_CENTER_ARTICLE_NORMALIZE==='1' && env.AI_CENTER_HARNESS_ARTICLE_PROVIDER==='google' ? createGeminiArticleAdmission({repository:store.repositories.modelQuota,usage:quotaUsage,env}) : null;
   const hourlyAdmission=env.AI_CENTER_HARNESS_HOURLY_PROVIDER==='google' ? createGeminiArticleAdmission({repository:store.repositories.modelQuota,usage:quotaUsage,env,models:resolveGoogleHourlyAdmissionModels(env),allowFallback:false,modelOrder:'least-used'}) : null;
+  const gemmaClosedFallback = (task) => async (input) => {
+    const router = createGemmaTranslationRouter({
+      env,
+      quotaRepository: store.repositories.modelQuota,
+      models: [GEMMA_26B],
+      usageStage: input.usageStage || (task === 'article' ? 'tree-information' : 'tree-hourly'),
+    });
+    const maxOutputTokens = Number(input.hourlyMaxTokens) || Number(task === 'hourly' ? (env.AI_CENTER_HARNESS_HOURLY_MAX_TOKENS || 4096) : 8192);
+    const system = String(input.taskInstruction || '');
+    const prompt = String(input.message || '');
+    const estimatedTokens = Buffer.byteLength(`${system}\n\n${prompt}`, 'utf8') + Math.min(8192, maxOutputTokens);
+    const result = await router.generate({
+      system, prompt, model: GEMMA_26B, task, estimatedTokens, maxOutputTokens,
+    });
+    const answer = String(result.text || '').trim();
+    if (!answer) throw new Error(task === 'article' ? 'Gemma 没有返回文章整理' : 'Gemma 没有返回小时浓缩');
+    return {
+      answer,
+      providerId: 'google',
+      modelId: result.engine || GEMMA_26B,
+      toolCalls: [],
+      toolAudits: [],
+      refs: [],
+      warnings: [],
+    };
+  };
   const agentRuntime = runtimeMode === 'harness'
     ? createHarnessExecutionRuntime({
       articleAdmission,
       hourlyAdmission,
+      hourlyGemmaFallback: gemmaClosedFallback('hourly'),
+      articleGemmaFallback: gemmaClosedFallback('article'),
       tools: agentTools,
       quality: agentQuality,
       env,
@@ -520,6 +559,8 @@ export function createAiCenterWorker(options = {}) {
       reportRepository: store.repositories.report,
       scorer,
       requestLike: (workspaceId, input) => feedInteraction.requestLike(workspaceId, input),
+      requestNotInterested: (workspaceId, input) => feedInteraction.requestNotInterested(workspaceId, input),
+      authorRepository: store.repositories.authors,
       log: focusLog,
     });
     xFocusHooks.scoreCards = (cards, context) => scorer.scoreCards(cards, context);
@@ -527,8 +568,10 @@ export function createAiCenterWorker(options = {}) {
       await autoLike.rescoreKeywords(workspaceId);
       autoLike.refreshDrift(workspaceId);
       await autoLike.dispatch(workspaceId);
+      await autoLike.dispatchNotInterested(workspaceId);
     };
     xFocusHooks.recordLike = (workspaceId, output) => autoLike.recordAutoLike(workspaceId, output);
+    xFocusHooks.recordNotInterested = (workspaceId, output) => autoLike.recordNotInterested(workspaceId, output);
   }
   const agentTraceLog = options.agentTraceLog
     || (options.store && !options.dataDirectory && !options.instanceConfig
@@ -814,7 +857,7 @@ export function createAiCenterWorker(options = {}) {
       jobTypes: [YOUTUBE_PODCAST_JOB_TYPE, YOUTUBE_ARTICLE_JOB_TYPE, X_VIDEO_ARTICLE_JOB_TYPE],
       sourceIds: [],
     },
-    jobHandlers: options.youtubePodcastJobHandlers || createYoutubePodcastJobHandlers({
+    jobHandlers: options.youtubePodcastJobHandlers || createYoutubePodcastJobHandlers(assembleXVideoTranscribeDeps({
       repository: store.repositories.youtubePodcasts,
       xVideoRepository: store.repositories.xVideos,
       feedRepository: store.repositories.feed,
@@ -824,6 +867,21 @@ export function createAiCenterWorker(options = {}) {
       env,
       browserRuntime,
       store,
+    })),
+  });
+  registry.register({
+    manifest: {
+      id: 'x.links.article',
+      version: '1.0.0',
+      capabilities: [X_LINK_ARTICLE_JOB_TYPE],
+      jobTypes: [X_LINK_ARTICLE_JOB_TYPE],
+      sourceIds: [],
+    },
+    jobHandlers: options.xLinkArticleJobHandlers || createXLinkArticleJobHandlers({
+      repository: store.repositories.xLinks,
+      publishers: loadXLinkPublisherIndex(),
+      quotaRepository: store.repositories.modelQuota,
+      env,
     }),
   });
   registry.register({
@@ -854,6 +912,7 @@ export function createAiCenterWorker(options = {}) {
     ensureHourlyDigestSchedule(store,Date.now(),{minute:articleStrategy ? 30 : 0,env});
     ensureDividendStrategySchedule(store);
     ensureFeedSubscriptionSyncSchedule(store);
+    ensureTagRescanSchedule(store, Date.now(), env);
     ensureMediaIndexSyncSchedule(store);
     ensureEventQuoteSnapshotSchedule(store);
     ensureStaticSignalBoardSchedule(store);
@@ -1037,6 +1096,28 @@ export function createAiCenterWorker(options = {}) {
         Number(env.AI_CENTER_WORKER_TRANSLATION_CONCURRENCY || 5),
       );
       console.log(`[worker] translation-slots limit=${Number(env.AI_CENTER_WORKER_TRANSLATION_CONCURRENCY || 5)} backfillCap=${backfillCap}`);
+      try {
+        const { dayStart, dayEnd } = geminiQuotaDay(Date.now());
+        console.log(`[worker] quota-day window=pacific start=${dayStart} end=${dayEnd} ${formatGeminiQuotaClock(dayStart)} -> ${formatGeminiQuotaClock(dayEnd)} usage=model_usage_index reservations=model_quota_reservations`);
+        for (const row of store.repositories.modelUsage?.dailyCounts?.('local', { startAt: dayStart, endAt: dayEnd }) || []) {
+          if (!row.model) continue;
+          console.log(`[worker] model-usage pacific-day model=${row.model} calls=${row.calls}`);
+        }
+        const flashModels = ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite'];
+        const reservations = store.repositories.modelQuota?.reservationDayCounts?.({ models: flashModels, dayStart, dayEnd }) || [];
+        for (const model of flashModels) {
+          const rows = reservations.filter((row) => row.model === model);
+          const calls = rows.reduce((sum, row) => sum + row.calls, 0);
+          const cap = FLASH_LITE_PROJECT_CAP[model].requestsPerDay;
+          console.log(`[worker] flash-lite reservations pacific-day model=${model} calls=${calls} cap=${cap}`);
+          for (const row of rows) {
+            const key = row.keyEnv || '(empty)';
+            console.log(`[worker] flash-lite reservations pacific-day model=${model} key=${key} calls=${row.calls} full=${row.calls >= cap ? 1 : 0}`);
+          }
+        }
+      } catch (error) {
+        console.error('[worker] model-usage day failed:', error instanceof Error ? error.message : error);
+      }
       if (!startupMaintenanceStarted) {
         startupMaintenanceStarted = true;
         maintenancePromise = new Promise((resolve) => {

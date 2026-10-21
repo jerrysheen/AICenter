@@ -46,6 +46,16 @@ function parseAliases(value) {
   }
 }
 
+// `#author/x:@MilesCranmer` 用的是临时 id。库里的真人 id 是 `x:382008009`，handle 才是 MilesCranmer。
+function authorHandleAlias(authorId) {
+  const match = String(authorId || '').match(/^([a-z0-9_-]+):@?(.+)$/i);
+  if (!match) return null;
+  const platform = match[1].toLowerCase();
+  const label = match[2].trim().replace(/^@+/, '');
+  if (!label || /^\d+$/.test(label) || label.includes('/') || label.includes(':')) return null;
+  return { platform, label };
+}
+
 function sameAuthor(left, right) {
   const at = Number(left.at) || 0;
   const bt = Number(right.at) || 0;
@@ -472,6 +482,20 @@ const AUTHOR_FROM = `author_stats s
 const VISIBLE_AUTHOR = `a.kind != 'system' AND (a.merged_into IS NULL OR a.merged_into = '')`;
 const SOURCE_ACTIVITY = `(s.platform IN ('official', 'media') AND s.total_count >= 1)`;
 const SOCIAL_ACTIVITY = `(s.platform NOT IN ('official', 'media') AND s.recent_30d_count >= ?)`;
+// 长视频是点名收进来的。一条就出现在作者列表里，不改「近 30 天至少 2 条」，也不自动关注。
+const VIDEO_AUTHOR = `EXISTS (
+  SELECT 1 FROM item_authors video_ia
+  JOIN x_video_posts video_post
+    ON video_post.workspace_id = video_ia.workspace_id
+   AND video_post.content_item_id = video_ia.content_item_id
+  JOIN x_video_articles video_article
+    ON video_article.workspace_id = video_post.workspace_id
+   AND video_article.video_id = video_post.video_id
+  WHERE video_ia.workspace_id = s.workspace_id
+    AND video_ia.author_id = s.author_id
+    AND video_post.content_item_id != ''
+    AND video_article.status != 'skipped'
+)`;
 const AUTHOR_ORDER = `s.latest_item_at DESC, s.author_id DESC`;
 
 function platformClause(platform) {
@@ -550,7 +574,7 @@ export function createAuthorRepository(database, emitEvent = () => {}) {
       }
       const others = database.prepare(`SELECT ${AUTHOR_SELECT} FROM ${AUTHOR_FROM}
         WHERE s.workspace_id = ? AND ${VISIBLE_AUTHOR} AND s.followed = 0
-          AND (${SOURCE_ACTIVITY} OR ${SOCIAL_ACTIVITY})
+          AND (${SOURCE_ACTIVITY} OR ${SOCIAL_ACTIVITY} OR ${VIDEO_AUTHOR})
           ${filter.sql} ${cursorSql}
         ORDER BY ${AUTHOR_ORDER}
         LIMIT ?`).all(...params, page + 1).map(mapAuthor);
@@ -562,7 +586,7 @@ export function createAuthorRepository(database, emitEvent = () => {}) {
       const rows = database.prepare(`SELECT s.platform AS platform, COUNT(*) AS count
         FROM ${AUTHOR_FROM}
         WHERE s.workspace_id = ? AND ${VISIBLE_AUTHOR}
-          AND (s.followed = 1 OR ${SOURCE_ACTIVITY} OR ${SOCIAL_ACTIVITY})
+          AND (s.followed = 1 OR ${SOURCE_ACTIVITY} OR ${SOCIAL_ACTIVITY} OR ${VIDEO_AUTHOR})
         GROUP BY s.platform`).all(workspaceId, AUTHOR_ACTIVITY_MIN);
       const counts = { all: 0, x: 0, xueqiu: 0, bilibili: 0, youtube: 0, official: 0, media: 0 };
       for (const row of rows) {
@@ -579,13 +603,49 @@ export function createAuthorRepository(database, emitEvent = () => {}) {
       if (!row) {
         const author = database.prepare(`SELECT * FROM authors WHERE workspace_id = ? AND author_id = ?`)
           .get(workspaceId, authorId);
-        if (!author) return null;
+        if (!author) {
+          const alias = authorHandleAlias(authorId);
+          if (!alias) return null;
+          const linked = database.prepare(`SELECT author_id, merged_into FROM authors
+            WHERE workspace_id = ? AND platform = ?
+              AND (
+                lower(handle) = lower(?)
+                OR lower(name) = lower(?)
+                OR (json_valid(aliases_json) AND EXISTS (
+                  SELECT 1 FROM json_each(aliases_json) alias WHERE lower(alias.value) = lower(?)
+                ))
+              )
+            ORDER BY provisional ASC, author_id ASC
+            LIMIT 1`).get(workspaceId, alias.platform, alias.label, alias.label, alias.label);
+          const target = String(linked?.merged_into || linked?.author_id || '');
+          if (!target || target === authorId) return null;
+          return this.getAuthor(workspaceId, target);
+        }
         if (author.merged_into) return this.getAuthor(workspaceId, author.merged_into);
         return mapAuthor({ ...author, unread_count: 0, has_unread: 0, total_count: 0, latest_unread_at: 0,
           latest_item_at: 0, latest_item_id: '', latest_title_zh: '', recent_30d_count: 0, followed: author.followed });
       }
       if (row.merged_into) return this.getAuthor(workspaceId, row.merged_into);
       return mapAuthor(row);
+    },
+
+    listFollowedHandles(workspaceId, platform = 'x') {
+      const lane = String(platform || '').trim();
+      if (!lane) return [];
+      const rows = database.prepare(`SELECT handle, author_id FROM authors
+        WHERE workspace_id = ? AND platform = ? AND followed = 1`).all(workspaceId, lane);
+      const handles = new Set();
+      const prefix = `${lane}:@`;
+      for (const row of rows) {
+        const handle = String(row.handle || '').replace(/^@/, '').trim();
+        if (handle) handles.add(handle);
+        const authorId = String(row.author_id || '');
+        if (authorId.startsWith(prefix)) {
+          const fromId = authorId.slice(prefix.length).trim();
+          if (fromId) handles.add(fromId);
+        }
+      }
+      return [...handles];
     },
 
     setFollow(workspaceId, authorId, followed) {

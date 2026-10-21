@@ -48,8 +48,14 @@ import { commitReportHistory, reportViewOwnsScroll } from './report-history.js?v
 import { decodeHtmlEntities } from './html-text.js?v=dev';
 import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, prioritizeReadableFeedRows, renderNewsList, reportItemTime } from './news-list.js?v=dev';
 import { createAuthorView } from './author-view.js?v=dev';
-import { episodeArticleMessage, foldedOriginal, renderYoutubePodcasts, YOUTUBE_ARTICLE_POLL_SLOW_MS, youtubeArticlePollDelay, youtubeArticleRequestPath, youtubeReaderScopeLabel } from './youtube-podcasts.js?v=dev';
-import { xVideoArticleReady, xVideoArticleRequestPath, xVideoTweetId } from './x-video-article.js?v=dev';
+import { appendPartialArticle, episodeArticleMessage, foldedOriginal, partialArticleLabel, renderYoutubePodcasts, YOUTUBE_ARTICLE_POLL_SLOW_MS, youtubeArticlePollDelay, youtubeArticleRequestPath, youtubeReaderScopeLabel } from './youtube-podcasts.js?v=dev';
+import { xPostHasVideo, xVideoArticleReady, xVideoArticleRequestPath, xVideoReaderScopeLabel, xVideoTweetId } from './x-video-article.js?v=dev';
+import { createFeedTaggingLoader, FEED_TAG_QUERY_PATH } from './feed-tagging.js?v=dev';
+import { articleAuthorFields, articleAuthorTarget, feedSearchPath, socialArticleBodyPending } from './feed-search.js?v=dev';
+import {
+  xLinkArticleReady, xLinkArticleRequestPath, xLinkClosed, xLinkOwnsBody, xLinkReaderScope,
+  xLinkTerminal, xLinkTweetId, xPostHasOutboundLink,
+} from './x-link-article.js?v=dev';
 
 const requestLayer = createRequestLayer();
 const pageCache = createPageCache({
@@ -330,6 +336,8 @@ const state = {
   recentItems: {},
   lastOverviewTarget: '',
   feedQuery: '',
+  feedSearchQuery: '',
+  feedSearchItems: [],
   showHeaderSearch: false,
   feedSort: 'captured',
   feedRange: 'all',
@@ -532,6 +540,7 @@ function isFeedFocusItem(item) {
 }
 
 function snapshotFocusItem(item) {
+  const author = articleAuthorFields(item);
   return {
     id: item.id,
     resourceId: item.resourceId || '',
@@ -540,8 +549,10 @@ function snapshotFocusItem(item) {
     kind: item.kind || 'social',
     platform: item.platform || '',
     externalId: item.externalId || '',
-    author: item.author || '',
-    handle: item.handle || '',
+    author: author.author,
+    authorId: author.authorId,
+    handle: author.handle,
+    authorHandle: author.authorHandle,
     time: item.time || '',
     title: item.title || '',
     body: item.body || '',
@@ -4046,6 +4057,8 @@ function matchesFeedQuery(item, query) {
     translationFor(item)?.text,
     postListExcerpt(item),
     item.release?.title,
+    item.handle,
+    item.authorHandle,
     postTagNames(item).join(' '),
   ].join(' ').toLowerCase();
   return haystack.includes(query);
@@ -4102,6 +4115,8 @@ function visibleFeedItems() {
     state.feedSort,
     state.feedRange,
     state.feedQuery,
+    state.feedSearchQuery,
+    state.feedSearchItems,
     state.posts,
     state.xItems,
     state.xueqiuItems,
@@ -4138,6 +4153,15 @@ function visibleFeedItems() {
   }
   if (state.feedPlatform !== 'media') {
     const query = String(state.feedQuery || '').trim().toLowerCase();
+    if (query && String(state.feedSearchQuery || '').trim().toLowerCase() === query) {
+      const seen = new Set(items.map((item) => item.id));
+      for (const hit of state.feedSearchItems || []) {
+        const post = feedAsItem(hit, hit.platform || hit.provider || 'x');
+        if (!post?.id || seen.has(post.id) || isHiddenFeedItem(post)) continue;
+        seen.add(post.id);
+        items.push(post);
+      }
+    }
     items = items.filter((item) => item.platform !== 'bilibili' && matchesFeedQuery(item, query) && matchesFeedRange(item));
     items = sortFeedItems(items);
     if (typeof markBulkOfficialNotices === 'function') items = markBulkOfficialNotices(items);
@@ -9596,6 +9620,7 @@ function restoredArticleFromItem(id, item) {
     id,
     author: readerAuthorName(item, post.platform),
     complete: social ? Boolean(String(item.body || '').trim()) : level === 'full',
+    xVideo: Boolean(item.captureMetadata?.xVideo || item.xVideo),
     bodyScope: social ? '' : level === 'partial' ? '部分正文' : '仅摘要',
     contentLevel: level,
     articleKind: String(item.externalId || '').startsWith('research:') ? 'report-intro' : 'article',
@@ -9730,10 +9755,14 @@ function renderYoutubeWaiting(post) {
   const wrap = document.createElement('div');
   wrap.className = 'reader-content detail-body';
   const episode = state.youtubeEpisodes[youtubeEpisodeId(post)];
-  wrap.append(Object.assign(document.createElement('p'), {
-    className: 'podcast-pending',
-    textContent: episode ? (episodeArticleMessage(episode) || '中文整理排队中') : '正在查看整理进度',
-  }));
+  const line = partialArticleLabel(episode?.partial, episode?.article?.message || '');
+  if (line) appendPartialArticle(wrap, episode.partial, line);
+  else {
+    wrap.append(Object.assign(document.createElement('p'), {
+      className: 'podcast-pending',
+      textContent: episode ? (episodeArticleMessage(episode) || '中文整理排队中') : '正在查看整理进度',
+    }));
+  }
   const original = state.originalBodies[post.resourceId || post.id] || post.body;
   wrap.append(foldedOriginal(original));
   return wrap;
@@ -9770,6 +9799,7 @@ async function refreshYoutubeArticle(post) {
       videoId: payload.videoId || id,
       articleStatus: payload.articleStatus || current?.articleStatus || '',
       article,
+      partial: payload.partial || null,
     };
   } catch {
     if (!state.youtubeEpisodes[id]) {
@@ -9920,6 +9950,90 @@ function scheduleXVideoArticleWatch(post) {
   xVideoArticleWatch.set(id, { timer, delay });
 }
 
+const xLinkArticles = new Map();
+const xLinkArticleWatch = new Map();
+const xLinkArticleInflight = new Set();
+const X_LINK_POLL_MS = 4_000;
+
+function xLinkRecord(post) {
+  const id = xLinkTweetId(post);
+  return id ? xLinkArticles.get(id) : null;
+}
+
+function applyXLinkReady(post, record) {
+  if (!xLinkArticleReady(record)) return post;
+  const next = { ...post, complete: true, bodyScope: '' };
+  if (!next.xLinkOriginal) next.xLinkOriginal = post.xLinkOriginal || post.body;
+  next.body = record.body;
+  if (record.title) {
+    if (!next.originalTitle) next.originalTitle = post.title;
+    next.title = record.title;
+  }
+  const saved = state.restoredArticles[post.id];
+  if (saved) state.restoredArticles[post.id] = { ...saved, ...next, readerLoaded: true };
+  return next;
+}
+
+function clearXLinkArticleWatch(id) {
+  const existing = xLinkArticleWatch.get(id);
+  if (!existing) return;
+  clearTimeout(existing.timer);
+  xLinkArticleWatch.delete(id);
+}
+
+async function refreshXLinkArticle(post) {
+  const id = xLinkTweetId(post);
+  if (!id || xLinkArticleInflight.has(id)) return;
+  xLinkArticleInflight.add(id);
+  try {
+    const current = xLinkArticles.get(id);
+    if (xLinkClosed(current) || xLinkArticleReady(current)) return;
+    const payload = current
+      ? await api(xLinkArticleRequestPath(id))
+      : await api('/api/v1/x-links/article', { method: 'POST', body: JSON.stringify({ tweetId: id }) });
+    if (payload.eligible === false || payload.status === 'disabled' || payload.status === 'ineligible') {
+      xLinkArticles.set(id, { absent: true, eligible: false, tweetId: id, status: payload.status || 'ineligible' });
+      return;
+    }
+    if (payload.status === 'ready' && !payload.body) {
+      const full = await api(xLinkArticleRequestPath(id, { ready: true }));
+      xLinkArticles.set(id, { ...full, tweetId: id, eligible: true });
+      return;
+    }
+    xLinkArticles.set(id, { ...payload, tweetId: id, eligible: payload.eligible !== false });
+  } catch (error) {
+    const missing = Number(error?.status) === 404 || Number(error?.status) === 409 || Number(error?.status) === 400;
+    if (missing) xLinkArticles.set(id, { absent: true, eligible: false, tweetId: id, status: 'ineligible' });
+  } finally {
+    xLinkArticleInflight.delete(id);
+    if (document.body.dataset.view === 'page' && state.pageKind === 'article' && xLinkTweetId(state.dialogPost) === id) {
+      renderArticlePage();
+    }
+  }
+}
+
+function scheduleXLinkArticleWatch(post) {
+  const id = xLinkTweetId(post);
+  if (!id || !xPostHasOutboundLink(post)) return;
+  const record = xLinkArticles.get(id);
+  if (xLinkTerminal(record)) {
+    clearXLinkArticleWatch(id);
+    return;
+  }
+  if (!record && !xLinkArticleInflight.has(id)) refreshXLinkArticle(post);
+  const existing = xLinkArticleWatch.get(id);
+  if (existing) return;
+  const timer = setTimeout(() => {
+    xLinkArticleWatch.delete(id);
+    if (document.body.dataset.view !== 'page' || state.pageKind !== 'article') return;
+    if (xLinkTweetId(state.dialogPost) !== id) return;
+    refreshXLinkArticle(state.dialogPost).finally(() => {
+      if (!xLinkTerminal(xLinkArticles.get(id))) scheduleXLinkArticleWatch(state.dialogPost);
+    });
+  }, X_LINK_POLL_MS);
+  xLinkArticleWatch.set(id, { timer });
+}
+
 function renderArticlePage() {
   articleReadPosition().capture();
   if (!mediaModules || !feedLikeReady) {
@@ -9935,10 +10049,7 @@ function renderArticlePage() {
   let post = official
     ? officialFeedItems().find((item) => item.id === itemId || item.resourceId === itemId)
     : (state.restoredArticles[itemId]?.readerLoaded ? state.restoredArticles[itemId] : null);
-  if (!official && !post) {
-    const cached = findUnifiedItem(itemId);
-    if (cached?.platform === 'media') post = cached;
-  }
+  if (!official && !post) post = findUnifiedItem(itemId) || null;
   const needsReaderLoad = !official && Boolean(itemId) && post?.platform !== 'media'
     && !state.restoredArticles[itemId]?.readerLoaded && !restoredArticleErrors.has(itemId);
   if (needsReaderLoad && state.bootstrapped) restoreSavedArticle(itemId);
@@ -9965,17 +10076,21 @@ function renderArticlePage() {
       return;
     }
   }
-  if ((post?.platform === 'x' || post?.platform === 'xueqiu') && !String(post.body || '').trim() && post.resourceId && !state.restoredArticles[itemId] && !restoredArticleErrors.has(itemId)) {
+  const socialBodyPending = socialArticleBodyPending(post)
+    && !state.restoredArticles[itemId]?.readerLoaded
+    && !restoredArticleErrors.has(itemId);
+  if (socialBodyPending && state.bootstrapped) {
     markFeedItemRead(post);
     restoreSocialArticle(itemId, post);
-    renderViewState(root, { kind: 'loading', title: '正在读取文章…', message: '正在加载正文。' });
-    return;
   }
   if (post && youtubeArticleReady(state.youtubeEpisodes[youtubeEpisodeId(post)])) {
     post = applyYoutubeReady(post, state.youtubeEpisodes[youtubeEpisodeId(post)]);
   }
   if (post && xVideoArticleReady(xVideoRecord(post))) {
     post = applyXVideoReady(post, xVideoRecord(post));
+  }
+  if (post && xLinkArticleReady(xLinkRecord(post))) {
+    post = applyXLinkReady(post, xLinkRecord(post));
   }
   if (!post) {
     if(state.bootstrapped && !official) restoreSavedArticle(itemId);
@@ -10021,21 +10136,30 @@ function renderArticlePage() {
     original.className = 'reader-original';
     head.insertBefore(original, meta);
   }
+  const linkArticle = xLinkRecord(post);
+  if (linkArticle?.finalUrl && linkArticle.linkLabel && !xLinkClosed(linkArticle)) {
+    const sourceLink = appendExternalLink(head, linkArticle.finalUrl, linkArticle.linkLabel);
+    sourceLink.className = 'reader-original';
+    sourceLink.dataset.xLink = '1';
+    head.insertBefore(sourceLink, meta);
+  }
   if (youtubeId && originalTitle && originalTitle !== shownTitle) {
     const note = document.createElement('p');
     note.className = 'reader-original-title';
     note.textContent = `原标题：${originalTitle}`;
     head.insertBefore(note, meta);
   }
+  const authorAction = articleAuthorTarget(post, { authorView: state.authorView !== false });
   const authorLink = document.createElement('button');
   authorLink.type = 'button';
-  authorLink.className = post.authorId && state.authorView !== false ? 'text-button author-name-link' : 'text-button';
+  authorLink.className = authorAction.kind === 'author' ? 'text-button author-name-link' : 'text-button';
   authorLink.textContent = `${post.author} ›`;
-  if (post.authorId && state.authorView !== false) {
+  if (authorAction.kind !== 'none') {
     authorLink.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      openAuthor(post.authorId);
+      if (authorAction.kind === 'author') openAuthor(authorAction.id);
+      else openPage('source', authorAction.id);
     });
   }
   meta.append(
@@ -10049,17 +10173,17 @@ function renderArticlePage() {
   }
   const officialBody = post.kind === 'official' ? state.officialBodies[post.id] : null;
   const youtubeScope = youtubeReaderScopeLabel(post, state.youtubeEpisodes[youtubeEpisodeId(post)]);
+  const xVideoScope = xVideoReaderScopeLabel(post, xVideoRecord(post));
+  const linkScope = xLinkReaderScope(post, xLinkRecord(post));
   const completeLabel = post.articleKind === 'report-intro' ? '报告简介'
     : officialBody?.status === 'ready' ? '正文完整'
       : officialBody?.status === 'loading' ? '正在获取'
         : youtubeScope != null ? youtubeScope
-          : post.complete === false ? (post.bodyScope || '仅索引')
-            : '正文完整';
+          : xVideoScope != null ? xVideoScope
+            : linkScope != null ? linkScope
+              : post.complete === false ? (post.bodyScope || '仅索引')
+                : '正文完整';
   if (completeLabel) meta.append(Object.assign(document.createElement('span'), { className: 'kind-tag official', textContent: completeLabel }));
-  meta.querySelector('button').addEventListener('click', () => {
-    if (post.platform === 'official') openPage('source', `policy.${post.author}`);
-    else openPage('source', post.platform === 'manual' ? 'manual' : post.platform);
-  });
   const xLike = feedLikeButton(post);
   if (xLike) meta.append(xLike);
   const body = document.createElement('div');
@@ -10078,7 +10202,9 @@ function renderArticlePage() {
       if (!post.paragraphs?.length) body.append(brief);
     }
   }
-  if (post.platform === 'media' && post.paragraphs?.length) {
+  if (socialBodyPending) {
+    body.append(Object.assign(document.createElement('p'), { className: 'body-state', textContent: '正在读取正文…' }));
+  } else if (post.platform === 'media' && post.paragraphs?.length) {
     const article = post.articleTranslation;
     const ready = article?.status === 'ready';
     if (mediaReading?.notice) {
@@ -10134,7 +10260,7 @@ function renderArticlePage() {
       stateBox.querySelector('button').addEventListener('click', () => fetchOfficialBody(post));
     }
     if (status !== 'ready') body.append(metaGrid, stateBox);
-  } else if (xVideoTweetId(post) && xVideoRecord(post) && !xVideoRecord(post).absent && !xVideoArticleReady(xVideoRecord(post))) {
+  } else if (xPostHasVideo(post) && xVideoRecord(post) && !xVideoRecord(post).absent && !xVideoArticleReady(xVideoRecord(post))) {
     body.append(renderXVideoWaiting(post));
     const waitingTags = createTagRow(postTagNames(post));
     if (waitingTags) {
@@ -10151,7 +10277,7 @@ function renderArticlePage() {
     }
     ensurePostTags(post);
   } else {
-    const xReady = xVideoArticleReady(xVideoRecord(post));
+    const xReady = xVideoArticleReady(xVideoRecord(post)) || xLinkArticleReady(xLinkRecord(post));
     if (hasTranslation && !xReady) {
       const tabs = document.createElement('div');
       tabs.className = 'dense-tabs reader-tabs';
@@ -10263,13 +10389,17 @@ function renderArticlePage() {
   root.replaceChildren(shell);
   articleReadPosition().mount({ articleId: articleReadKey(itemId), shell });
   if (menuFocus) [...elements['reader-menu'].querySelectorAll('button')].find(button => button.dataset.detailAction === menuFocus)?.focus();
-  if (youtubeEpisodeId(post)) scheduleYoutubeArticleWatch(post);
-  else if (xVideoTweetId(post)) {
+  if (!socialBodyPending && xPostHasOutboundLink(post)) scheduleXLinkArticleWatch(post);
+  const linkOwns = xLinkOwnsBody(post, xLinkRecord(post));
+  if (socialBodyPending) {
+    // 正文还在读。作者已经在首屏，空正文不送去翻译。
+  } else if (youtubeEpisodeId(post)) scheduleYoutubeArticleWatch(post);
+  else if (xPostHasVideo(post)) {
     const record = xVideoRecord(post);
     if (record?.absent) {
-      if (shouldQueueTranslation(post)) requestTranslate(post).catch((error) => showToast(error.message));
+      if (!linkOwns && shouldQueueTranslation(post)) requestTranslate(post).catch((error) => showToast(error.message));
     } else scheduleXVideoArticleWatch(post);
-  } else if (shouldQueueTranslation(post)) {
+  } else if (!linkOwns && shouldQueueTranslation(post)) {
     requestTranslate(post).catch((error) => showToast(error.message));
   }
 }
@@ -15507,18 +15637,24 @@ async function ensureTagCatalog() {
   return state.tagCatalog;
 }
 
-async function loadFeedTaggings(items = [], resourceType = 'content-item') {
+const feedTaggingLoader = createFeedTaggingLoader({
+  post: (body) => api(FEED_TAG_QUERY_PATH, { method: 'POST', body: JSON.stringify(body) }),
+});
+
+function feedTagRefreshPaused() {
+  const view = typeof document === 'undefined' ? '' : (document.body?.dataset?.view || '');
+  return view === 'feed' && state.channel === 'author';
+}
+
+async function loadFeedTaggings(items = [], resourceType = 'content-item', options = {}) {
   const ids = [...new Set((items || []).map((item) => String(item?.resourceId || '').trim()).filter(Boolean))];
   if (!ids.length) return;
   await ensureTagCatalog();
-  const params = new URLSearchParams({ resourceType });
-  for (const id of ids) params.append('resourceId', id);
-  const payload = await api(`/api/v1/tagging?${params}`);
-  const rows = payload.items || (payload.tagging ? [payload.tagging] : []);
+  const rows = await feedTaggingLoader.load(ids, resourceType, options);
+  if (!rows?.length) return;
   const next = { ...state.feedTaggings };
-  for (const id of ids) {
-    const row = rows.find((item) => item.resourceId === id);
-    if (row) next[id] = row;
+  for (const row of rows) {
+    if (row?.resourceId) next[row.resourceId] = row;
   }
   state.feedTaggings = next;
 }
@@ -15713,7 +15849,7 @@ const payload = await api(`/api/v1/feed/x?${params}`, { timeoutMs: refresh ? 180
     paintLoadedSocialFeed('x', epoch);
     renderXToolbar();
     syncLocalTranslationsToServer(state.xItems).catch(() => {});
-    loadFeedTaggings(state.xItems).then(() => paintLoadedSocialFeed('x', epoch)).catch(() => {});
+    if (!feedTagRefreshPaused()) loadFeedTaggings(state.xItems, 'content-item', { maxBatches: 1 }).then(() => paintLoadedSocialFeed('x', epoch)).catch(() => {});
     if (autoTranslate) translateXBatch({ silent: true }).catch(() => {});
     return feed;
   } catch (error) {
@@ -15849,7 +15985,7 @@ const payload = await api(`/api/v1/feed/xueqiu?${params}`, { timeoutMs: refresh 
     hydrateFeedTranslations(state.xueqiuItems);
     paintLoadedSocialFeed('xueqiu', epoch);
     renderXueqiuToolbar();
-    loadFeedTaggings(state.xueqiuItems).then(() => paintLoadedSocialFeed('xueqiu', epoch)).catch(() => {});
+    if (!feedTagRefreshPaused()) loadFeedTaggings(state.xueqiuItems, 'content-item', { maxBatches: 1 }).then(() => paintLoadedSocialFeed('xueqiu', epoch)).catch(() => {});
     if (refresh) {
       if (feed.mode === 'error' || feed.mode === 'unavailable') showToast(feed.note || '雪球抓取失败');
       else showToast(feed.note || `已写入 ${state.xueqiuItems.length} 条`);
@@ -15969,7 +16105,7 @@ async function loadTrendForceFeed({ refresh = false } = {}) {
     state.trendforceNote = payload.feed?.note || '';
     state.trendforceLoaded = true;
     hydrateFeedTranslations(state.trendforceItems);
-    await loadFeedTaggings(state.trendforceItems);
+    if (!feedTagRefreshPaused()) await loadFeedTaggings(state.trendforceItems, 'content-item', { maxBatches: 1 });
     renderPosts();
     renderTrendForceToolbar();
     if (refresh) {
@@ -16007,7 +16143,7 @@ async function loadBilibiliFeed({ url = '', refresh = false } = {}) {
     state.bilibiliNote = payload.feed?.note || '';
     state.bilibiliLoaded = true;
     hydrateFeedTranslations(state.bilibiliItems);
-    await loadFeedTaggings(state.bilibiliItems);
+    if (!feedTagRefreshPaused()) await loadFeedTaggings(state.bilibiliItems, 'content-item', { maxBatches: 1 });
     renderPosts();
     renderBilibiliToolbar();
     if (state.pageKind === 'source' && state.pageId === 'bilibili') renderSourcePage();
@@ -16608,6 +16744,35 @@ elements['note-focus-entry']?.addEventListener('click', () => {
   state.noteFilter = 'focus';
   renderNotes();
 });
+function scheduleFeedSearch(query) {
+  clearTimeout(scheduleFeedSearch.timer);
+  const wanted = String(query || '').trim();
+  if (!wanted || !state.session) {
+    state.feedSearchQuery = '';
+    state.feedSearchItems = [];
+    return;
+  }
+  scheduleFeedSearch.timer = setTimeout(() => {
+    loadFeedSearch(wanted).catch(() => {});
+  }, 250);
+}
+
+async function loadFeedSearch(query) {
+  const wanted = String(query || '').trim();
+  const token = (loadFeedSearch.token = (Number(loadFeedSearch.token) || 0) + 1);
+  try {
+    const platform = state.feedPlatform === 'media' ? 'media' : (state.feedPlatform || '');
+    const payload = await api(feedSearchPath({ platform, query: wanted }), { timeoutMs: 15_000 });
+    if (loadFeedSearch.token !== token) return;
+    if (String(state.feedQuery || '').trim().toLowerCase() !== wanted.toLowerCase()) return;
+    state.feedSearchQuery = wanted;
+    state.feedSearchItems = Array.isArray(payload.items) ? payload.items : [];
+    if (document.body?.dataset?.view === 'feed') renderPosts();
+  } catch {
+    if (loadFeedSearch.token !== token) return;
+  }
+}
+
 elements['global-search']?.addEventListener('input', (event) => {
   const query = String(event.currentTarget.value || '').trim();
   const view = document.body.dataset.view;
@@ -16621,6 +16786,7 @@ elements['global-search']?.addEventListener('input', (event) => {
     state.feedQuery = query;
     if (view === 'feed') {
       resetFeedWindow();
+      scheduleFeedSearch(query);
       renderPosts();
     } else {
       renderOverviewTimeline();
@@ -16646,6 +16812,7 @@ elements['global-search']?.addEventListener('keydown', (event) => {
     state.feedQuery = query;
     if (view === 'feed') {
       resetFeedWindow();
+      scheduleFeedSearch(query);
       renderPosts();
     } else renderOverviewTimeline();
     return;

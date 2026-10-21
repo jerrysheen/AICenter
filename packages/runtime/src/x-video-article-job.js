@@ -17,7 +17,7 @@ import {
 } from '../../domain/src/x-video-articles.js';
 import { allowedMediaUrl, fetchXVideoMedia, selectLongVideo } from '../../connectors/src/x/video-media.js';
 import { runProcess } from '../../connectors/src/youtube-podcasts.js';
-import { executeAudioTranscription } from './audio-transcription-job.js';
+import { executeAudioTranscription, safeTranscribeMessage } from './audio-transcription-job.js';
 import { organizeGemmaTranscript, resumeArticleTitle } from './youtube-article-job.js';
 
 const PROBE_LIMIT = 8;
@@ -27,6 +27,23 @@ const TRANSCRIBE_MESSAGE = '正在转写，完成后开始整理';
 
 function emptyStats() {
   return { ready: 0, pending: 0, skipped: 0, discovered: 0, stopped: '', dailyLimit: 0 };
+}
+
+function releaseMissingTranscriber(deps, repository, row, workspaceId) {
+  if (row?.sourceTranscript) return row;
+  if (!/transcribe is not a function/.test(String(row?.reason || ''))) return row;
+  if (typeof deps.geminiTranscribe !== 'function' && typeof deps.transcribeAudio !== 'function') return row;
+  const state = holdOf(row);
+  delete state.holdDay;
+  delete state.holdReason;
+  return repository.saveArticle({
+    workspaceId,
+    videoId: row.videoId,
+    status: 'pending',
+    reason: '',
+    attempts: 0,
+    articleState: JSON.stringify(state),
+  }) || row;
 }
 
 function holdOf(row) {
@@ -95,13 +112,39 @@ async function extractWav(deps, mp4, wav, durationSec, signal) {
   if (result.code !== 0) throw new Error('音频抽取失败');
 }
 
-async function transcribeFile(deps, { workspaceId, relativePath, durationSec, signal, env }) {
+function transcriptSegments(row) {
+  const state = holdOf(row);
+  const rows = Array.isArray(state.transcriptSegments) ? state.transcriptSegments : [];
+  return rows.filter((segment) => Number.isInteger(segment?.index) && String(segment?.text || '').trim());
+}
+
+function storeTranscriptSegment(deps, row, workspaceId, segment) {
+  const state = holdOf(row);
+  const rows = transcriptSegments(row).filter((item) => item.index !== segment.index);
+  rows.push({
+    index: segment.index,
+    startMs: segment.startMs,
+    endMs: segment.endMs,
+    text: String(segment.text || '').trim(),
+  });
+  rows.sort((left, right) => left.index - right.index);
+  state.transcriptSegments = rows;
+  const articleState = JSON.stringify(state);
+  deps.repository.saveArticle({
+    workspaceId,
+    videoId: row.videoId,
+    articleState,
+  });
+  row.articleState = articleState;
+}
+
+async function transcribeFile(deps, row, { workspaceId, relativePath, durationSec, signal, env }) {
   if (typeof deps.transcribeAudio === 'function') {
     return deps.transcribeAudio({ workspaceId, relativePath, durationSec, signal });
   }
   const durationMs = Math.max(1000, Math.round(Number(durationSec) || 1) * 1000);
   const plan = describeAudioTranscription(env, durationMs);
-  return executeAudioTranscription({
+  const request = {
     input: {
       workspaceId,
       path: relativePath,
@@ -112,27 +155,30 @@ async function transcribeFile(deps, { workspaceId, relativePath, durationSec, si
     dataDirectory: deps.dataDirectory,
     env,
     quotaRepository: deps.quotaRepository,
-    transcribe: deps.geminiTranscribe,
     signal,
-  });
+    resumeSegments: transcriptSegments(row),
+    onSegment: (segment) => storeTranscriptSegment(deps, row, workspaceId, segment),
+  };
+  const transcribe = typeof deps.geminiTranscribe === 'function' ? deps.geminiTranscribe : executeAudioTranscription;
+  return transcribe(request);
 }
 
 async function writeTranscript(deps, row, media, workspaceId, signal, env) {
+  if (typeof deps.transcribeAudio === 'function' && deps.skipMedia) {
+    const result = await deps.transcribeAudio({ row, media, signal });
+    return stampTranscriptSegments(result?.segments) || String(result?.text || '').trim();
+  }
   const directory = path.join(deps.dataDirectory, 'tmp', 'x-videos', safeName(row.videoId));
   await mkdir(directory, { recursive: true });
   const mp4 = path.join(directory, 'audio.mp4');
   const wav = path.join(directory, 'audio.wav');
   const relativePath = path.posix.join('tmp', 'x-videos', safeName(row.videoId), 'audio.wav');
   try {
-    if (typeof deps.transcribeAudio === 'function' && deps.skipMedia) {
-      const result = await deps.transcribeAudio({ row, media, signal });
-      return stampTranscriptSegments(result?.segments) || String(result?.text || '').trim();
-    }
     const fetchImpl = deps.fetch || globalThis.fetch;
     if (typeof deps.downloadMedia === 'function') await deps.downloadMedia({ url: media.variant.url, file: mp4, signal });
     else await downloadMp4(media.variant.url, mp4, fetchImpl, signal);
     await extractWav(deps, mp4, wav, Math.ceil(media.durationMs / 1000), signal);
-    const result = await transcribeFile(deps, {
+    const result = await transcribeFile(deps, row, {
       workspaceId,
       relativePath,
       durationSec: Math.ceil(media.durationMs / 1000),
@@ -384,28 +430,29 @@ export async function runXVideoArticlePass(deps = {}) {
       if (row?.status === 'ready') stats.skipped += 1;
       continue;
     }
-    const saved = holdOf(row);
+    const current = releaseMissingTranscriber(deps, repository, row, workspaceId);
+    const saved = holdOf(current);
     if (saved.holdDay === day && saved.holdReason) {
       stats.pending += 1;
       if (saved.holdReason === 'daily-limit') stats.dailyLimit += 1;
       continue;
     }
-    if (row.status === 'probe' || !row.durationSec) {
+    if (current.status === 'probe' || !current.durationSec) {
       try {
-        const probed = await probeRow(deps, row, workspaceId, signal, env);
+        const probed = await probeRow(deps, current, workspaceId, signal, env);
         if (probed.status !== 'pending') {
           stats.skipped += 1;
           continue;
         }
-        Object.assign(row, probed.row || {});
+        Object.assign(current, probed.row || {});
       } catch (error) {
         stats.pending += 1;
         console.warn(`[worker] x-video 没有读到视频信息：${String(error?.message || error).slice(0, 160)}`);
         continue;
       }
     }
-    const manual = Boolean(deps.manual || row.manual);
-    if (row.articleDay !== day) {
+    const manual = Boolean(deps.manual || current.manual);
+    if (current.articleDay !== day) {
       const remaining = xVideoArticleSlots({
         sharedLimit,
         xLimit,
@@ -414,16 +461,16 @@ export async function runXVideoArticlePass(deps = {}) {
         manual,
       });
       if (remaining <= 0) {
-        markHold(repository, row, workspaceId, day, 'daily-limit');
+        markHold(repository, current, workspaceId, day, 'daily-limit');
         stats.dailyLimit += 1;
         stats.pending += 1;
         continue;
       }
-      repository.saveArticle({ workspaceId, videoId: row.videoId, articleDay: day, status: 'pending' });
-      row.articleDay = day;
+      repository.saveArticle({ workspaceId, videoId: current.videoId, articleDay: day, status: 'pending' });
+      current.articleDay = day;
     }
     try {
-      const result = await workRow(deps, row, workspaceId, day, signal, env, manual);
+      const result = await workRow(deps, current, workspaceId, day, signal, env, manual);
       if (result.status === 'ready') stats.ready += 1;
       else if (result.status === 'skipped') stats.skipped += 1;
       else stats.pending += 1;
@@ -432,18 +479,18 @@ export async function runXVideoArticlePass(deps = {}) {
         break;
       }
     } catch (error) {
-      const attempts = (Number(row.attempts) || 0) + 1;
-      if (attempts >= 3) markHold(repository, row, workspaceId, day, 'failed');
+      const attempts = (Number(current.attempts) || 0) + 1;
+      if (attempts >= 3) markHold(repository, current, workspaceId, day, 'failed');
       repository.saveArticle({
         workspaceId,
-        videoId: row.videoId,
+        videoId: current.videoId,
         status: 'pending',
         attempts,
-        reason: String(error?.message || error).slice(0, 160),
-        articleDay: row.articleDay || day,
+        reason: safeTranscribeMessage(error),
+        articleDay: current.articleDay || day,
       });
       stats.pending += 1;
-      console.warn(`[worker] x-video 整理没有完成：${String(error?.message || error).slice(0, 160)}`);
+      console.warn(`[worker] x-video 整理没有完成：${safeTranscribeMessage(error)}`);
     }
   }
   return stats;

@@ -52,6 +52,8 @@ copyModuleGraph('youtube-podcasts.js');
 const {
   renderYoutubePodcasts,
   youtubeArticlePollDelay,
+  appendPartialArticle,
+  partialArticleLabel,
   youtubeReaderScopeLabel,
   youtubeArticleRequestPath,
   YOUTUBE_ARTICLE_POLL_NEAR_MS,
@@ -134,6 +136,22 @@ test('queued article polls the status path slowly until the expected time is clo
   assert.equal(youtubeArticlePollDelay(finishing, now), YOUTUBE_ARTICLE_POLL_NEAR_MS);
   assert.equal(youtubeArticlePollDelay({ articleStatus: 'ready', article: { status: 'ready' } }, now), 0);
   assert.equal(youtubeReaderScopeLabel({ id: 'youtube:2Zj6uMv3kTA', platform: 'youtube', complete: false, bodyScope: '仅摘要' }, null), '');
+  assert.equal(youtubeReaderScopeLabel({ id: 'youtube:2Zj6uMv3kTA', platform: 'youtube' }, {
+    articleStatus: 'pending',
+    partial: { text: '主持人：已经译出的一段。', remaining: 4 },
+  }), '');
+  assert.equal(partialArticleLabel({ text: '主持人：已经译出的一段。', remaining: 4 }), '未完整 · 还剩 4 段');
+  assert.equal(
+    partialArticleLabel(
+      { text: '主持人：已经译出的一段。', remaining: 4 },
+      '已译 24/28 段，模型服务暂时出错，明天 00:10 继续',
+    ),
+    '未完整 · 还剩 4 段，明天 00:10 继续',
+  );
+  const partialRoot = new El('div');
+  appendPartialArticle(partialRoot, { text: '## 开场\n\n主持人：已经译出的一段。', remaining: 4 });
+  assert.equal(partialRoot.children[0].textContent, '未完整 · 还剩 4 段');
+  assert.match(partialRoot.children[1].innerHTML, /已经译出的一段/);
   assert.equal(youtubeReaderScopeLabel({ id: 'youtube:2Zj6uMv3kTA', platform: 'youtube' }, { articleStatus: 'ready' }), '正文完整');
   assert.equal(youtubeReaderScopeLabel({ id: 'media:1', platform: 'media', complete: false, bodyScope: '仅摘要' }, null), null);
   assert.equal(YOUTUBE_ARTICLE_POLL_SLOW_MS >= 3 * 60 * 1000, true);

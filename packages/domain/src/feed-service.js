@@ -168,7 +168,7 @@ function toFeedItem(providerId, row) {
     updatedAt: row.updatedAt || 0,
     needsTranslation: listNeedsTranslation(row),
     processing: '',
-    subscriptionId: '',
+    subscriptionId: row.subscriptionId || '',
     captureId: row.captureId || '',
     isRead: Boolean(row.isRead),
     isSaved: Boolean(row.isSaved),
@@ -701,6 +701,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
         ...(xVideoCaptureMetadata(item) ? { xVideo: xVideoCaptureMetadata(item) } : {}),
         ...(authorFields ? { authorProfile: authorFields.authorProfile } : {}),
         ...(verdict.metadata || {}),
+        ...(providerId === 'x' && replay.sourceInput?.feed === 'following' ? { homeFeed: 'following' } : {}),
       },
     });
     if (!verdict.createContentItem) {
@@ -827,9 +828,29 @@ function searchTerms(query) {
   return String(query || '').trim().toLocaleLowerCase().split(/\s+/).filter(Boolean).slice(0, 8);
 }
 
-function searchStoredItems(feedRepository, workspaceId, query, limit, qualityRule) {
+function presentSearchItem(item) {
+  const projected = projectListItem(item);
+  return {
+    ...item,
+    ...(projected.zhLead ? { zhLead: projected.zhLead } : {}),
+    translation: item.translation?.text ? {
+      text: item.translation.text,
+      status: projected.translation?.status || 'ready',
+      title: projected.translation?.title || '',
+      summary: projected.translation?.summary || '',
+      engine: item.translation.engine || '',
+      targetLang: item.translation.targetLang || 'zh',
+    } : null,
+  };
+}
+
+function searchStoredItems(feedRepository, workspaceId, query, limit, qualityRule, provider = '') {
   const terms = searchTerms(query);
   if (!terms.length) return [];
+  if (typeof feedRepository.searchVisibleItems === 'function') {
+    const searched = feedRepository.searchVisibleItems(workspaceId, { query, limit, qualityRule, provider });
+    if (Array.isArray(searched)) return searched;
+  }
   const rows = feedRepository.listContentItems(workspaceId, { limit: STORED_FEED_LIMIT, qualityRule }) || [];
   return rows.map((item) => {
     const searchable = [item.title, item.summary, item.body, item.authorName].join('\n').toLocaleLowerCase();
@@ -1204,6 +1225,9 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
     listWindowSources(workspaceId, window) {
       return feedRepository.listWindowSources(workspaceId, {...window,qualityRule,excludedItemIds:contentRoutingPort?.routedItemIds?.(workspaceId) || []});
     },
+    listUntaggedContentIds(workspaceId, query = {}) {
+      return feedRepository.listUntaggedContentIds?.(workspaceId, query) || [];
+    },
     listTaggableItems(workspaceId, { limit = 200, ids = [] } = {}) {
       const rows = feedRepository.listContentItemsWithSource
         ? feedRepository.listContentItemsWithSource(workspaceId, { limit, ids,qualityRule })
@@ -1273,6 +1297,14 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
     },
     searchContentItems(workspaceId, query, { limit = 8 } = {}) {
       return searchStoredItems(feedRepository, workspaceId, query, limit, qualityRule);
+    },
+    searchFeed(workspaceId, { query = '', platform = '', limit = 40 } = {}) {
+      const provider = String(platform || '').trim();
+      const source = provider && provider !== 'all' ? provider : '';
+      const rows = searchStoredItems(feedRepository, workspaceId, query, limit, qualityRule, source);
+      const items = rows.map((row) => toFeedItem(row.provider || source || 'manual', row));
+      return attachTranslations(feedRepository, workspaceId, items, 'zh', { verifyBody: false, preview: true })
+        .map(presentSearchItem);
     },
     upsertSourceAccount(input) {
       return feedRepository.upsertSourceAccount(input);

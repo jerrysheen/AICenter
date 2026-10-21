@@ -28,6 +28,15 @@ export function createModelUsageRepository(database, emitEvent) {
       return database.prepare(`SELECT record_json FROM model_usage_index WHERE ${where} ORDER BY occurred_at DESC,id LIMIT ? OFFSET ?`)
         .all(...args, limit, offset).map(row => ModelUsageRecordSchema.parse(JSON.parse(row.record_json)));
     },
+    dailyCounts(workspaceId, { startAt, endAt } = {}) {
+      const where = ["workspace_id=?", "json_extract(record_json,'$.kind')='request'"];
+      const args = [workspaceId];
+      if (startAt !== undefined) { where.push('occurred_at>=?'); args.push(startAt); }
+      if (endAt !== undefined) { where.push('occurred_at<?'); args.push(endAt); }
+      return database.prepare(`SELECT json_extract(record_json,'$.model') AS model, COUNT(*) AS calls
+        FROM model_usage_index WHERE ${where.join(' AND ')} GROUP BY 1 ORDER BY 1`).all(...args)
+        .map((row) => ({ model: String(row.model || ''), calls: Number(row.calls) || 0 }));
+    },
     summarize(workspaceId,{startAt,endAt,jobId,stage}={}) {
       const where=["m.workspace_id=?","json_extract(m.record_json,'$.kind')='request'"],args=[workspaceId];
       for(const [value,clause] of [[startAt,'m.occurred_at>=?'],[endAt,'m.occurred_at<?'],[jobId,'m.job_id=?'],[stage,"json_extract(m.record_json,'$.stage')=?"]])if(value!==undefined){where.push(clause);args.push(value);}

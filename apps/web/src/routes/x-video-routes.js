@@ -12,7 +12,7 @@ export function createXVideoRoutes() {
       access: 'operator',
       async handler({ request, response, services, identity, events }) {
         const body = await readJson(request);
-        const result = services.xVideos.enqueue(workspaceIdFrom(identity), body || {});
+        const result = await services.xVideos.enqueue(workspaceIdFrom(identity), body || {});
         events?.flush?.();
         const status = result.status === 'disabled' ? 409 : result.status === 'invalid' ? 400 : 202;
         json(response, result.status === 'ready' ? 200 : status, { ok: result.status !== 'disabled' && result.status !== 'invalid', ...result });

@@ -1,3 +1,4 @@
+import { cleanDisplayedTranscript } from './youtube-captions.js';
 import { addCalendarDays, zonedParts } from './zoned-time.js';
 
 const FAIL_REASON = {
@@ -48,6 +49,44 @@ export function articleProgress(raw) {
     summary: String(state?.summary || '').trim(),
     titleStatus: String(state?.titleStatus || ''),
     touchedAt: Number(state?.touchedAt) || 0,
+  };
+}
+
+function readArticleState(raw) {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
+  try {
+    const parsed = JSON.parse(raw || '');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function showUnorganizedTranslation(value) {
+  return cleanDisplayedTranscript(value);
+}
+
+// 还没写成整篇时，按段的先后给出已经整理好的小节，没有小节就给出去掉滚动字幕重复的译文。
+export function partialArticleBody(raw) {
+  const state = readArticleState(raw);
+  const parts = Array.isArray(state?.parts) ? state.parts : [];
+  const blocks = [];
+  for (const part of parts) {
+    const section = showUnorganizedTranslation(part?.section);
+    const reply = showUnorganizedTranslation(part?.reply);
+    const translation = showUnorganizedTranslation(part?.translation);
+    const text = section || reply || translation;
+    if (text) blocks.push(text);
+  }
+  const total = parts.length;
+  const shown = blocks.length;
+  const remaining = Math.max(0, total - shown);
+  return {
+    text: blocks.join('\n\n'),
+    shown,
+    total,
+    remaining,
   };
 }
 
