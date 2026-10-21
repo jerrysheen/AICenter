@@ -118,5 +118,6 @@ test('worker logs the hourly stop once at startup', () => {
   const source = readFileSync(new URL('../apps/worker/src/worker.js', import.meta.url), 'utf8');
   assert.equal(source.split('小时报已停用（AI_CENTER_HOURLY_DISABLED=1）').length - 1, 1);
   assert.match(source, /ensureHourlyDigestSchedule\(store,Date\.now\(\),\{minute:articleStrategy \? 30 : 0,env\}\)/);
+  assert.match(source, /ensureHourlyFailureCatchupSchedule\(store, Date\.now\(\), \{env\}\)/);
   assert.match(source, /allowHourlyScheduleEnqueue\(schedule, env\)/);
 });

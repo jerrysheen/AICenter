@@ -3,12 +3,15 @@ import { dailySlotOnInstant, zonedLocalToUtc } from '../../domain/src/zoned-time
 import {GenerateHourlyDigestInputSchema} from '../../contracts/src/report.js';
 import {resolveDailyConfig,resolveDailyWindow,resolveReportDate} from '../../domain/src/daily-window.js';
 import {condenseJobFailure, describeCondenseFailure, isTerminalPendingReason} from '../../domain/src/information-tree-policy.js';
+import {enqueueDueFailedHourRefreshes} from './information-tree-module.js';
 
 export const REPORT_DAILY_JOB_TYPE = 'report.daily.generate';
 export const REPORT_DAILY_BRIEF_JOB_TYPE = 'report.daily.brief.generate';
 export const REPORT_HOURLY_JOB_TYPE = 'report.hourly.extract';
+export const HOURLY_FAILURE_CATCHUP_JOB_TYPE = 'report.hourly.failure-catchup';
 export const DAILY_REPORT_SCHEDULE_KEY = 'report.daily.default';
 export const DAILY_REPORT_CATCHUP_KEY = 'report.daily.catchup';
+export const HOURLY_FAILURE_CATCHUP_KEY = 'report.hourly.failure-catchup';
 export const DAILY_BRIEF_CATCHUP_DELAY_MS = 30 * 60 * 1000;
 
 export function dailyRunAt(reportDate, config) {
@@ -51,8 +54,8 @@ export function scheduleDailyBriefCatchup(store, input, job, now = Date.now()) {
 export const reportDailyManifest = Object.freeze({
   id: 'report.daily',
   version: '1.0.0',
-  capabilities: ['report.daily.generate', 'report.daily.brief.generate', REPORT_HOURLY_JOB_TYPE],
-  jobTypes: [REPORT_DAILY_JOB_TYPE, REPORT_DAILY_BRIEF_JOB_TYPE, REPORT_HOURLY_JOB_TYPE],
+  capabilities: ['report.daily.generate', 'report.daily.brief.generate', REPORT_HOURLY_JOB_TYPE, HOURLY_FAILURE_CATCHUP_JOB_TYPE],
+  jobTypes: [REPORT_DAILY_JOB_TYPE, REPORT_DAILY_BRIEF_JOB_TYPE, REPORT_HOURLY_JOB_TYPE, HOURLY_FAILURE_CATCHUP_JOB_TYPE],
 });
 
 function rememberReportFailure(error, source) {
@@ -124,6 +127,14 @@ export function hourlySweepHours(env = process.env) {
 
 export function hourlySweepLimit(env = process.env) {
   return boundedHourlyInt(env?.AI_CENTER_HOURLY_SWEEP_LIMIT, 2, 0, 6);
+}
+
+export function hourlyFailureCatchupMinutes(env = process.env) {
+  return boundedHourlyInt(env?.AI_CENTER_HOURLY_FAILURE_CATCHUP_MINUTES, 10, 5, 60);
+}
+
+export function hourlyFailureCatchupLimit(env = process.env) {
+  return boundedHourlyInt(env?.AI_CENTER_HOURLY_FAILURE_CATCHUP_LIMIT, 2, 1, 4);
 }
 
 export function hourlyRunningSameVersion(jobs, current = {}) {
@@ -338,18 +349,29 @@ export function hourlyReadingFlushRemainder(digest) {
   return false;
 }
 
+const HOURLY_SCHEDULE_JOB_TYPES = new Set([REPORT_HOURLY_JOB_TYPE, HOURLY_FAILURE_CATCHUP_JOB_TYPE]);
+
 export function allowHourlyScheduleEnqueue(schedule, env = process.env) {
-  return !(schedule?.jobType === REPORT_HOURLY_JOB_TYPE && hourlyReportDisabled(env));
+  return !(HOURLY_SCHEDULE_JOB_TYPES.has(schedule?.jobType) && hourlyReportDisabled(env));
 }
 
 export function releaseOpenHourlyJobs(store, env = process.env, now = Date.now()) {
   if (!hourlyReportDisabled(env) || !store?.cancelOpenJobs) return 0;
-  return store.cancelOpenJobs(REPORT_HOURLY_JOB_TYPE, {status: 'skipped', reason: 'hourly-disabled'}, now);
+  let released = 0;
+  for (const type of HOURLY_SCHEDULE_JOB_TYPES) released += store.cancelOpenJobs(type, {status: 'skipped', reason: 'hourly-disabled'}, now);
+  return released;
 }
 
 export function createReportJobHandlers({ reportService, briefService = null, informationService=null, treeService=null, readingHour=null, beforeHourly=null, dailyConfig=resolveDailyConfig(), env=process.env }) {
   if (!reportService?.generateDailyReport) throw new Error('daily report jobs require reportService');
   return {
+    [HOURLY_FAILURE_CATCHUP_JOB_TYPE]: async (_raw, context) => {
+      if (hourlyReportDisabled(env)) return {status:'skipped', reason:'hourly-disabled'};
+      const service = treeService || informationService;
+      const jobs = enqueueDueFailedHourRefreshes(context?.store, service, 'local', Date.now(), {env});
+      if (jobs.length) console.log(`[worker] hourly-failure-catchup enqueued=${jobs.length} hours=${jobs.map((job) => job.input?.hourStart).join(',')}`);
+      return {status:'catchup', enqueued:jobs.length, hours:jobs.map((job) => job.input?.hourStart)};
+    },
     [REPORT_HOURLY_JOB_TYPE]: async (rawInput,context) => {
       if (hourlyReportDisabled(env)) return {status:'skipped', reason:'hourly-disabled'};
       if(!informationService) throw new Error('小时摘选服务未配置');
@@ -520,6 +542,25 @@ export function ensureDailyReportCatchupSchedule(store, config, now = Date.now()
     priority: 0,
     maxAttempts: 1,
     nextRunAt: !prior && dailyCatchupAllowed(now, config) ? now : now + minutes * 60_000,
+  });
+}
+
+export function ensureHourlyFailureCatchupSchedule(store, now = Date.now(), {env = process.env} = {}) {
+  if (hourlyReportDisabled(env)) return store.getJobSchedule?.('local', HOURLY_FAILURE_CATCHUP_KEY) || null;
+  const minutes = hourlyFailureCatchupMinutes(env);
+  const prior = store.getJobSchedule?.('local', HOURLY_FAILURE_CATCHUP_KEY);
+  const sameInterval = prior?.schedule?.kind === 'interval' && prior.schedule.intervalMinutes === minutes;
+  return store.upsertJobSchedule({
+    resetNextRunAt: !sameInterval,
+    workspaceId: 'local',
+    key: HOURLY_FAILURE_CATCHUP_KEY,
+    jobType: HOURLY_FAILURE_CATCHUP_JOB_TYPE,
+    enabled: true,
+    schedule: {kind: 'interval', intervalMinutes: minutes},
+    input: {},
+    priority: 0,
+    maxAttempts: 1,
+    nextRunAt: now,
   });
 }
 
