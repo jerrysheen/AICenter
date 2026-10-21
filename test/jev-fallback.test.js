@@ -246,7 +246,7 @@ test('approved lists recognize fallback markers without scanning', () => {
 });
 
 test('x focus partial index is migration 85 and the point query uses it', () => {
-  assert.deepEqual(unusedSchemaVersions, [63, 79, 80, 82, 95]);
+  assert.deepEqual(unusedSchemaVersions, [63, 79, 80, 82]);
   const migration = readFileSync(path.join(root, 'packages/database/src/migrations.js'), 'utf8');
   assert.match(migration, /version: 85, name: 'captures_x_focus'/);
   const repository = readFileSync(path.join(root, 'packages/database/src/repositories/feed-repository.js'), 'utf8');

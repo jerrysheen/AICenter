@@ -99,6 +99,7 @@ export function createTaggingService({ catalog, taggingRepository, taggingPort, 
     items = [],
     force = false,
     selection,
+    recordEmptyWhenUnlabeled = false,
   } = {}) {
     if (!taggingPort?.tagBatch) throw new Error('尚未配置 taggingPort');
     const mode = selection || selectionModeFor(resourceType);
@@ -148,6 +149,8 @@ export function createTaggingService({ catalog, taggingRepository, taggingPort, 
     const stamp = dateStamp(now());
     const saved = [];
     const missing = [];
+    const failedIds = new Set();
+    const answeredOmission = new Set();
     const batchReports = [];
     const warnings = [];
 
@@ -204,16 +207,23 @@ export function createTaggingService({ catalog, taggingRepository, taggingPort, 
         report = await submitBatch(batch.units, batchIndex);
       } catch (error) {
         logger.warn?.(`[tagging] batch ${batchIndex} failed`, error);
+        const failedItemIds = batch.units.map((unit) => unit.itemId);
+        for (const id of failedItemIds) failedIds.add(id);
         batchReports.push({
           customId: `tag_${stamp}_${String(batchIndex).padStart(4, '0')}`,
           status: 'failed',
           itemCount: batch.itemCount,
           saved: 0,
-          missingItemIds: batch.units.map((unit) => unit.itemId),
+          missingItemIds: failedItemIds,
         });
-        missing.push(...batch.units.map((unit) => unit.itemId));
+        missing.push(...failedItemIds);
         batchIndex += 1;
         continue;
+      }
+      if (report.status === 'failed' && report.parsed?.emptyAnswer !== true) {
+        for (const id of report.parsed.missingItemIds) failedIds.add(id);
+      } else {
+        for (const id of report.parsed.missingItemIds) answeredOmission.add(id);
       }
       batchReports.push({
         customId: report.customId,
@@ -243,13 +253,47 @@ export function createTaggingService({ catalog, taggingRepository, taggingPort, 
             missingItemIds: report.parsed.missingItemIds,
             unknownTags: report.parsed.unknownTags,
           });
+          const emptyAnswer = report.parsed?.emptyAnswer === true;
           const stillMissing = report.status === 'failed'
             ? retryIds
             : report.parsed.missingItemIds;
+          if (report.status === 'failed' && !emptyAnswer) {
+            for (const id of stillMissing) {
+              if (!answeredOmission.has(id)) failedIds.add(id);
+            }
+          } else {
+            for (const id of stillMissing) answeredOmission.add(id);
+          }
           missing.length = 0;
           missing.push(...stillMissing);
         } catch (error) {
           logger.warn?.('[tagging] retry batch failed', error);
+          for (const id of retryIds) {
+            if (!answeredOmission.has(id)) failedIds.add(id);
+          }
+        }
+      }
+    }
+
+    if (recordEmptyWhenUnlabeled) {
+      const savedIds = new Set(saved.map((row) => row.resourceId));
+      const unlabeledIds = [...answeredOmission].filter((id) => !savedIds.has(id) && !failedIds.has(id));
+      if (unlabeledIds.length) {
+        const records = unlabeledIds.map((id) => ({
+          workspaceId,
+          resourceType,
+          resourceId: id,
+          tags: [],
+          tagCatalogVersion: loaded.version,
+          promptVersion: TAG_PROMPT_VERSION,
+          model: '',
+          truncatedForModel: false,
+          analyzedAt: now(),
+        }));
+        saved.push(...(taggingRepository?.saveTaggings ? taggingRepository.saveTaggings(records) : records));
+        const unlabeled = new Set(unlabeledIds);
+        for (let index = missing.length - 1; index >= 0; index -= 1) {
+          if (unlabeled.has(missing[index])) missing.splice(index, 1);
         }
       }
     }

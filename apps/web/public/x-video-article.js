@@ -9,6 +9,14 @@ export function xVideoTweetId(post) {
   return fromUrl ? fromUrl[1] : '';
 }
 
+export function xPostHasVideo(post) {
+  if ((post?.platform || post?.provider) !== 'x') return false;
+  const video = post?.xVideo;
+  if (video === true) return true;
+  if (!video || typeof video !== 'object') return false;
+  return video.own === true || video.own === 1 || Boolean(String(video.quoteTweetId || '').trim());
+}
+
 export function xVideoArticleRequestPath(tweetId, { ready = false } = {}) {
   const id = encodeURIComponent(String(tweetId || ''));
   return ready ? `/api/v1/x-videos/${id}` : `/api/v1/x-videos/${id}/article`;

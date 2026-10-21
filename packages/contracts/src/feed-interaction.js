@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 export const X_LIKE_JOB_TYPE = 'feed.x.like';
 export const X_UNLIKE_JOB_TYPE = 'feed.x.unlike';
+export const X_NOT_INTERESTED_JOB_TYPE = 'feed.x.not-interested';
 export const LikeContentInputSchema = z.object({
   contentItemId: z.string().uuid(),
   source: z.enum(['manual', 'auto']).optional(),
@@ -21,6 +22,22 @@ export const UnlikeContentInputSchema = z.object({ contentItemId: z.string().uui
 export const UnlikeRequestSchema = z.object({ confirmed: z.literal(true) }).strict();
 export const UnlikeResultSchema = z.object({
   status: z.enum(['unliked', 'not-liked', 'login-required', 'blocked', 'unavailable', 'not-found', 'unconfirmed']),
+  accountHandle: z.string().max(32).default(''),
+  checkedAt: z.number().int().nonnegative(),
+}).strict();
+export const NotInterestedContentInputSchema = z.object({
+  contentItemId: z.string().uuid(),
+  source: z.literal('auto').optional(),
+  tweetId: z.string().regex(/^\d{1,25}$/).optional(),
+  focusScore: z.number().min(0).max(1).optional(),
+  primaryDir: z.string().max(40).optional(),
+  directionLabel: z.string().max(40).optional(),
+  reason: z.string().max(80).optional(),
+  authorHandle: z.string().max(64).optional(),
+  trigger: z.enum(['post', 'streak']).optional(),
+}).strict();
+export const NotInterestedResultSchema = z.object({
+  status: z.enum(['done', 'already', 'login-required', 'blocked', 'unavailable', 'not-found', 'unconfirmed']),
   accountHandle: z.string().max(32).default(''),
   checkedAt: z.number().int().nonnegative(),
 }).strict();

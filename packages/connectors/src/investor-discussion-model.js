@@ -2,6 +2,7 @@ import { createUsageFetch } from './model-usage-fetch.js';
 import { googleFetch, isGoogleConnectTimeout } from './google-fetch.js';
 import { geminiQuotaCooldown, parseGeminiGenerateContent } from './gemini-grok-task.js';
 import { resolveInvestorGeminiSlots } from './investor-jev-model.js';
+import { flashLiteSibling } from '../../database/src/repositories/model-quota-repository.js';
 
 const DEFAULT_MODEL = 'gemini-3.1-flash-lite';
 const DEFAULT_ROOT = 'https://generativelanguage.googleapis.com/v1beta';
@@ -27,6 +28,10 @@ export function investorSummaryModelList(env = process.env, primary = '') {
   const models = [];
   for (const id of [text(primary) || investorDiscussionModelId(env), ...extras]) {
     if (id && !models.includes(id)) models.push(id);
+  }
+  if (!extras.length) {
+    const sibling = flashLiteSibling(models[0]);
+    if (sibling && !models.includes(sibling)) models.push(sibling);
   }
   return models;
 }

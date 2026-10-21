@@ -1029,6 +1029,111 @@ export function createFeedRepository(database, emitEvent) {
       }));
     },
 
+    listModelScoredXCaptures(workspaceId, { since = 0, limit = 5000 } = {}) {
+      const size = Math.max(1, Math.min(Number(limit) || 5000, 5000));
+      const floor = Math.max(0, Number(since) || 0);
+      return database.prepare(`SELECT c.captured_at AS capturedAt, c.external_id AS externalId,
+          c.metadata_json AS metadataJson, c.title AS title, c.source_url AS sourceUrl,
+          ci.id AS contentItemId, sa.external_id AS sourceExternalId,
+          COALESCE(NULLIF(json_extract(c.metadata_json, '$.originalText'), ''), NULLIF(ci.body, ''), c.title, '') AS text,
+          COALESCE(NULLIF(c.author_handle, ''), NULLIF(json_extract(c.metadata_json, '$.authorHandle'), ''), NULLIF(json_extract(c.metadata_json, '$.authorProfile.handle'), '')) AS authorHandle,
+          COALESCE(NULLIF(json_extract(c.metadata_json, '$.authorProfile.name'), ''), '') AS authorName,
+          COALESCE(NULLIF(json_extract(c.metadata_json, '$.authorVerified'), ''), NULLIF(json_extract(c.metadata_json, '$.authorProfile.verified'), ''), NULLIF(json_extract(c.metadata_json, '$.authorProfile.verifiedType'), '')) AS authorVerified
+        FROM (
+          SELECT id, captured_at, external_id, metadata_json, title, source_url, source_account_id, author_handle
+          FROM captures INDEXED BY idx_captures_x_focus
+          WHERE workspace_id = ? AND captured_at >= ?
+            AND provider = 'x' AND json_extract(metadata_json, '$.xFocus.method') IS NOT NULL
+            AND json_extract(metadata_json, '$.xFocus.method') IN ('model', 'cache')
+          ORDER BY captured_at DESC
+          LIMIT ?
+        ) c
+        LEFT JOIN source_accounts sa ON sa.id = c.source_account_id
+        LEFT JOIN content_items ci ON ci.capture_id = c.id AND ci.workspace_id = ?`).all(
+        workspaceId, floor, size, workspaceId,
+      ).map((row) => ({
+        capturedAt: Number(row.capturedAt) || 0,
+        externalId: String(row.externalId || ''),
+        title: row.title || '',
+        text: row.text || '',
+        authorHandle: row.authorHandle || '',
+        authorName: row.authorName || '',
+        authorVerified: row.authorVerified || '',
+        sourceUrl: row.sourceUrl || '',
+        contentItemId: row.contentItemId || '',
+        sourceExternalId: row.sourceExternalId || '',
+        metadata: parseJson(row.metadataJson),
+      }));
+    },
+
+    saveNotInterestedAction(workspaceId, row) {
+      const tweetId = String(row?.tweetId || '').trim();
+      if (!tweetId) return false;
+      const at = Number(row.createdAt) || Date.now();
+      const score = Number(row.score);
+      const result = database.prepare(`INSERT INTO x_not_interested_actions (
+          workspace_id, tweet_id, content_item_id, author_handle, title, source_url, trigger, note,
+          score, primary_dir, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(workspace_id, tweet_id) DO NOTHING`).run(
+        workspaceId,
+        tweetId,
+        String(row.contentItemId || ''),
+        String(row.authorHandle || '').replace(/^@/, '').slice(0, 64),
+        String(row.title || '').slice(0, 300),
+        String(row.sourceUrl || '').slice(0, 500),
+        row.trigger === 'streak' ? 'streak' : 'post',
+        String(row.note || '').slice(0, 80),
+        Number.isFinite(score) ? score : null,
+        String(row.primaryDir || '').slice(0, 40),
+        String(row.status || 'queued').slice(0, 40),
+        at,
+        at,
+      );
+      return result.changes > 0;
+    },
+
+    updateNotInterestedStatus(workspaceId, tweetId, status) {
+      const id = String(tweetId || '').trim();
+      const next = String(status || '').trim().slice(0, 40);
+      if (!id || !next) return false;
+      const result = database.prepare(`UPDATE x_not_interested_actions
+        SET status = ?, updated_at = ?
+        WHERE workspace_id = ? AND tweet_id = ?`).run(next, Date.now(), workspaceId, id);
+      return result.changes > 0;
+    },
+
+    listNotInterestedTweetIds(workspaceId, since = 0) {
+      return database.prepare(`SELECT tweet_id AS tweetId FROM x_not_interested_actions
+        WHERE workspace_id = ? AND created_at >= ?
+        ORDER BY created_at DESC LIMIT 1000`).all(workspaceId, Math.max(0, Number(since) || 0))
+        .map((row) => String(row.tweetId || ''))
+        .filter(Boolean);
+    },
+
+    listNotInterestedActions(workspaceId, { since = 0, limit = 80 } = {}) {
+      const size = Math.max(1, Math.min(Number(limit) || 80, 500));
+      return database.prepare(`SELECT tweet_id AS tweetId, content_item_id AS contentItemId,
+          author_handle AS authorHandle, title, source_url AS sourceUrl, trigger, note, score,
+          primary_dir AS primaryDir, status, created_at AS createdAt
+        FROM x_not_interested_actions
+        WHERE workspace_id = ? AND created_at >= ?
+        ORDER BY created_at DESC LIMIT ?`).all(workspaceId, Math.max(0, Number(since) || 0), size)
+        .map((row) => ({
+          tweetId: String(row.tweetId || ''),
+          contentItemId: row.contentItemId || '',
+          authorHandle: row.authorHandle || '',
+          title: row.title || '',
+          sourceUrl: row.sourceUrl || '',
+          trigger: row.trigger || '',
+          note: row.note || '',
+          score: row.score == null ? null : Number(row.score),
+          primaryDir: row.primaryDir || '',
+          status: row.status || '',
+          createdAt: Number(row.createdAt) || 0,
+        }));
+    },
+
     listXCapturesByContentIds(workspaceId, contentItemIds) {
       const ids = [...new Set((contentItemIds || []).map((id) => String(id || '').trim()).filter(Boolean))].slice(0, 80);
       if (!ids.length) return [];
@@ -1667,6 +1772,25 @@ export function createFeedRepository(database, emitEvent) {
         provider: row.provider || '',
         externalId: row.external_id || '',
       }));
+    },
+
+    listUntaggedContentIds(workspaceId, { since = 0, limit = 20 } = {}) {
+      const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 100));
+      const rows = database.prepare(`SELECT ci.id FROM content_items ci
+        WHERE ci.workspace_id = ?
+          AND ci.created_at >= ?
+          AND ${VISIBLE_CONTENT_SQL}
+          AND ${EXCLUDE_YOUTUBE_SQL}
+          AND ${EXCLUDE_OFFICIAL_MIRROR_SQL}
+          AND NOT EXISTS (
+            SELECT 1 FROM resource_taggings rt
+            WHERE rt.workspace_id = ci.workspace_id
+              AND rt.resource_type = 'content-item'
+              AND rt.resource_id = ci.id
+          )
+        ORDER BY ci.created_at DESC, ci.id DESC
+        LIMIT ?`).all(workspaceId, Number(since) || 0, safeLimit);
+      return rows.map((row) => row.id);
     },
 
     listContentItems(workspaceId, { limit = 50, before = null,qualityRule='' } = {}) {

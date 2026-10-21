@@ -1,7 +1,9 @@
 import {previousDailyInstant,nextDailyInstant} from '../../domain/src/zoned-time.js';
+import { flashLiteSibling } from '../../database/src/repositories/model-quota-repository.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {resolveGoogleArticleModelPool} from '../../harness/src/llm-route.js';
 import {nextGeminiDailyReset} from '../../connectors/src/gemini-grok-task.js';
+import {GEMMA_26B, GEMMA_TRANSLATION_MODELS, gemmaQuotaDay, gemmaTranslationPolicy, resolveGemmaTranslationSlots} from '../../connectors/src/translate/gemma.js';
 import {googleFetch,isGoogleConnectTimeout} from '../../connectors/src/google-fetch.js';
 import {emptyTokenUsage} from '../../contracts/src/model-usage.js';
 
@@ -63,7 +65,7 @@ export function resolveGeminiArticlePolicy(env = process.env) {
     const keyIdentity=createHash('sha256').update(`gemini-key:${key}`).digest('hex');
     const project = configuredProject ? createHash('sha256').update(configuredProject).digest('hex') : accountMode ? keyIdentity : createHash('sha256').update('shared-unverified').digest('hex');
     const cooldownKey = configuredProject ? project : keyIdentity;
-    slots.push({ keyEnv: name, project, cooldownKey });
+    slots.push({ keyEnv: name, project, cooldownKey, explicitProject: Boolean(configuredProject) });
   }
   if (!slots.length) throw new Error('Gemini article task requires a configured API key');
   return {
@@ -110,6 +112,23 @@ export function createGeminiArticleAdmission({ repository, usage, env = process.
       dayStart:previousDailyInstant(at,PACIFIC),dayEnd:nextDailyInstant(at,PACIFIC),
       ...(policy.accountMode ? {} : {requestsPerDay:Infinity,requestsPerKeyPerDay:Infinity})});
   };
+  function admitFlash(model, estimated, keyEnv) {
+    const result = request(model, estimated, false, keyEnv);
+    if (result.admitted || !result.flashHeadroom) return result;
+    const sibling = flashLiteSibling(model);
+    if (!sibling) return result;
+    const alternate = request(sibling, estimated, false, keyEnv);
+    if (alternate.admitted) return alternate;
+    const retryAt = Math.min(result.retryAt, alternate.retryAt);
+    const bothDay = result.flashHeadroom === 'rpd' && alternate.flashHeadroom === 'rpd';
+    return {
+      admitted: false,
+      retryAt,
+      flashHeadroom: bothDay ? 'rpd' : 'rpm',
+      model: result.retryAt <= alternate.retryAt ? (result.model || model) : (alternate.model || sibling),
+      quotaExhausted: bothDay,
+    };
+  }
   function waitMessage(results,retryAt){
     const at=now();
     const names=[...new Set(results.map(item=>item.model).filter(Boolean))];
@@ -121,9 +140,53 @@ export function createGeminiArticleAdmission({ repository, usage, env = process.
     const label=blocks.length?(blocks.some(block=>dailyCooldown(block.untilAt,at))?'daily':'rate'):'window';
     return `quota=${label} key=${suffixes.join(',')||'-'} model=${names.join(',')||'-'} cooldownUntil=${Number.isFinite(retryAt)?retryAt:0} Gemini 文章任务等待流量窗口`;
   }
+  function gemmaFallbackReadyAt(at) {
+    let slots = [];
+    try { slots = resolveGemmaTranslationSlots(env); } catch { return at; }
+    if (!slots.length) return at;
+    const pacing = gemmaTranslationPolicy(env);
+    const day = gemmaQuotaDay(at);
+    const result = repository.reserve({
+      slots,
+      model: GEMMA_26B,
+      at,
+      dryRun: true,
+      accountMode: true,
+      requestsPerDay: Infinity,
+      requestsPerKeyPerDay: pacing.requestsPerKeyPerDay,
+      requestsPerHour: Infinity,
+      requestsPerMinute: pacing.requestsPerMinute,
+      minIntervalMs: pacing.intervalMinMs,
+      estimatedTokensPerMinute: pacing.tokensPerMinute,
+      estimatedTokens: 6144 + 8192,
+      inflightLimit: pacing.keyConcurrency,
+      pacingModels: GEMMA_TRANSLATION_MODELS,
+      dayStart: day.dayStart,
+      dayEnd: day.dayEnd,
+    });
+    if (result.admitted) return at;
+    return Number.isFinite(result.retryAt) ? result.retryAt : at;
+  }
+  function deferred(results, retryAt) {
+    const dayBlocked = results.length > 0 && results.every((item) => item.flashHeadroom === 'rpd');
+    return Object.assign(new Error(waitMessage(results, retryAt)), {
+      code: 'budget-deferred',
+      retryAt,
+      quotaExhausted: results.every((item) => item.quotaExhausted === true) || dayBlocked,
+      ...(dayBlocked ? { flashHeadroom: 'rpd' } : {}),
+    });
+  }
   return {
     policy,
-    nextReadyAt(model) {const results=(policy.models.length ? policy.models : [model]).map(m=>request(m,6144+8192,true));if(results.some(r=>r.admitted))return now();if(results.every(r=>r.quotaExhausted) && env.AI_CENTER_HARNESS_ARTICLE_FALLBACK==='elucid-grok'){const f=repository.reserve({...policy,accountMode:false,requestsPerDay:Infinity,requestsPerKeyPerDay:Infinity,slots:[{project:'article-fallback-elucid',keyEnv:'ELUCID_GROK_API_KEY'}],model:env.AI_CENTER_HARNESS_ARTICLE_FALLBACK_MODEL || 'grok-4.7',at:now(),estimatedTokens:6144+8192,dryRun:true});return f.admitted ? now() : f.retryAt;}return Math.min(...results.map(r=>r.retryAt));},
+    nextReadyAt(model) {
+      const results=(policy.models.length ? policy.models : [model]).map(m=>request(m,6144+8192,true));
+      if(results.some(r=>r.admitted))return now();
+      // Local Flash Lite daily cap falls back to Gemma 26B. If Gemma is also
+      // waiting, return that retryAt so the job does not spin until it is free.
+      if(results.length>0 && results.every(r=>r.flashHeadroom==='rpd'))return gemmaFallbackReadyAt(now());
+      if(results.every(r=>r.quotaExhausted) && env.AI_CENTER_HARNESS_ARTICLE_FALLBACK==='elucid-grok'){const f=repository.reserve({...policy,accountMode:false,requestsPerDay:Infinity,requestsPerKeyPerDay:Infinity,slots:[{project:'article-fallback-elucid',keyEnv:'ELUCID_GROK_API_KEY'}],model:env.AI_CENTER_HARNESS_ARTICLE_FALLBACK_MODEL || 'grok-4.7',at:now(),estimatedTokens:6144+8192,dryRun:true});return f.admitted ? now() : f.retryAt;}
+      return Math.min(...results.map(r=>r.retryAt));
+    },
     release(ticket){repository.release?.(ticket);},
     reserve({ model, keyEnv, inputBytes, maxTokens, useModelPool=false }) {
       const pool=useModelPool && policy.models.length ? policy.models : [model];
@@ -133,27 +196,25 @@ export function createGeminiArticleAdmission({ repository, usage, env = process.
         if(!pairs.length){
           const missed=request(pool[0],estimated,false,keyEnv);
           if(missed.admitted)return missed;
-          throw Object.assign(new Error(waitMessage([{...missed,model:pool[0]}],missed.retryAt)), { code: 'budget-deferred', retryAt: missed.retryAt, quotaExhausted:missed.quotaExhausted===true });
+          throw deferred([{...missed,model:pool[0]}], missed.retryAt);
         }
         const results=[];
         for(const pair of pairs){
-          const result=request(pair.model,estimated,false,pair.keyEnv);
+          const result=admitFlash(pair.model,estimated,pair.keyEnv);
           if(result.admitted)return result;
-          results.push({...result,model:pair.model});
+          results.push({...result,model:result.model||pair.model});
         }
-        const result={retryAt:Math.min(...results.map(item=>item.retryAt)),quotaExhausted:results.every(item=>item.quotaExhausted)};
-        throw Object.assign(new Error(waitMessage(results,result.retryAt)), { code: 'budget-deferred', retryAt: result.retryAt, quotaExhausted:result.quotaExhausted===true });
+        const result={retryAt:Math.min(...results.map(item=>item.retryAt))};
+        throw deferred(results, result.retryAt);
       }
       const results=[];
       const ordered=modelOrder==='ordered';
       for(let i=0;i<pool.length;i++){
-        const index=ordered?i:(modelCursor+i)%pool.length,chosen=pool[index],result=request(chosen,estimated,false,keyEnv);
-        if(result.admitted){if(useModelPool && !ordered)rememberCursor((index+1)%pool.length);return result;}
-        results.push({...result,model:chosen});
+        const index=ordered?i:(modelCursor+i)%pool.length,chosen=pool[index],result=admitFlash(chosen,estimated,keyEnv);
+        if(result.admitted){if(useModelPool && !ordered && result.model===chosen)rememberCursor((index+1)%pool.length);return result;}
+        results.push({...result,model:result.model||chosen});
       }
-      const result={retryAt:Math.min(...results.map(r=>r.retryAt)),quotaExhausted:results.every(r=>r.quotaExhausted)};
-      if (!result.admitted) throw Object.assign(new Error(waitMessage(results,result.retryAt)), { code: 'budget-deferred', retryAt: result.retryAt, quotaExhausted:result.quotaExhausted===true });
-      return result;
+      throw deferred(results, Math.min(...results.map(r=>r.retryAt)));
     },
     rankModels(models){
       const pool=(Array.isArray(models)?models:policy.models).map(item=>String(item||'').trim()).filter(Boolean);

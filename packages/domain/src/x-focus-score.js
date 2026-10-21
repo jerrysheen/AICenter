@@ -106,7 +106,9 @@ export function createXFocusScorer({
   const keyEnvs = xFocusKeyEnvs(env);
   // Hourly Grok/DeepSeek model ids must not be sent to Gemini. The Google
   // hourly route is the only place that already admits flash-lite models.
-  const models = googleHourly ? resolveGoogleHourlyAdmissionModels(env) : ['gemini-3.1-flash-lite'];
+  const models = googleHourly
+    ? resolveGoogleHourlyAdmissionModels(env)
+    : ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite'];
   let keyCursor = 0;
   const http = fetchImpl || googleFetch(fetch, env);
 
@@ -124,6 +126,7 @@ export function createXFocusScorer({
       sensitive: value.sensitive,
       officialSpeech: value.officialSpeech,
       promotional: value.promotional === true,
+      gossip: value.gossip === true,
       reason: value.reason,
     });
   }
@@ -138,7 +141,7 @@ export function createXFocusScorer({
   async function callModel(instruction, message, timeoutMs, signal) {
     const keyList = keyEnvs.length ? keyEnvs : [''];
     const keyEnv = keyList[keyCursor % keyList.length];
-    const model = models[0] || 'gemini-3.1-flash-lite';
+    const model = models[keyCursor % models.length] || 'gemini-3.1-flash-lite';
     keyCursor = (keyCursor + 1) % keyList.length;
     const attempt = () => {
       if (complete) return complete({ instruction, message, timeoutMs, keyEnv, model, signal });

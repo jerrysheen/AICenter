@@ -1,4 +1,6 @@
-const OUTBOUND_LINK = /https?:\/\/(?!(?:www\.)?(?:x|twitter)\.com\b)[^\s<>"')\]]+/i;
+const OUTBOUND_LINK = /https?:\/\/(?!(?:www\.)?(?:x|twitter|pic\.x)\.com\b)[^\s<>"')\]]+/i;
+const BARE_LINK = /(?:^|[\s([「『])((?:[a-z0-9-]+\.)+[a-z]{2,}\/[^\s<>"')\]]+)/i;
+const BARE_SKIP = /^(?:www\.)?(?:x|twitter|pic\.x)\.com$/i;
 
 export function xLinkTweetId(post) {
   const platform = post?.platform || post?.provider;
@@ -14,7 +16,10 @@ export function xLinkTweetId(post) {
 export function xPostHasOutboundLink(post) {
   if ((post?.platform || post?.provider) !== 'x') return false;
   const text = [post?.body, post?.summary, post?.title, post?.xLinkOriginal].filter(Boolean).join('\n');
-  return OUTBOUND_LINK.test(text);
+  if (OUTBOUND_LINK.test(text)) return true;
+  const bare = text.match(BARE_LINK);
+  if (!bare) return false;
+  return !BARE_SKIP.test(bare[1].split('/')[0]);
 }
 
 export function xLinkArticleRequestPath(tweetId, { ready = false } = {}) {

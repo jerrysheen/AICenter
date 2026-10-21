@@ -827,6 +827,22 @@ function searchTerms(query) {
   return String(query || '').trim().toLocaleLowerCase().split(/\s+/).filter(Boolean).slice(0, 8);
 }
 
+function presentSearchItem(item) {
+  const projected = projectListItem(item);
+  return {
+    ...item,
+    ...(projected.zhLead ? { zhLead: projected.zhLead } : {}),
+    translation: item.translation?.text ? {
+      text: item.translation.text,
+      status: projected.translation?.status || 'ready',
+      title: projected.translation?.title || '',
+      summary: projected.translation?.summary || '',
+      engine: item.translation.engine || '',
+      targetLang: item.translation.targetLang || 'zh',
+    } : null,
+  };
+}
+
 function searchStoredItems(feedRepository, workspaceId, query, limit, qualityRule, provider = '') {
   const terms = searchTerms(query);
   if (!terms.length) return [];
@@ -1208,6 +1224,9 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
     listWindowSources(workspaceId, window) {
       return feedRepository.listWindowSources(workspaceId, {...window,qualityRule,excludedItemIds:contentRoutingPort?.routedItemIds?.(workspaceId) || []});
     },
+    listUntaggedContentIds(workspaceId, query = {}) {
+      return feedRepository.listUntaggedContentIds?.(workspaceId, query) || [];
+    },
     listTaggableItems(workspaceId, { limit = 200, ids = [] } = {}) {
       const rows = feedRepository.listContentItemsWithSource
         ? feedRepository.listContentItemsWithSource(workspaceId, { limit, ids,qualityRule })
@@ -1283,7 +1302,8 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       const source = provider && provider !== 'all' ? provider : '';
       const rows = searchStoredItems(feedRepository, workspaceId, query, limit, qualityRule, source);
       const items = rows.map((row) => toFeedItem(row.provider || source || 'manual', row));
-      return attachTranslations(feedRepository, workspaceId, items, 'zh', { verifyBody: false, preview: true });
+      return attachTranslations(feedRepository, workspaceId, items, 'zh', { verifyBody: false, preview: true })
+        .map(presentSearchItem);
     },
     upsertSourceAccount(input) {
       return feedRepository.upsertSourceAccount(input);

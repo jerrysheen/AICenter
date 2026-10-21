@@ -45,7 +45,7 @@ test('migrations upgrade a v1 database without losing posts', () => {
   const schemaRows = upgraded.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get().count;
   const schemaLatest = latestSchemaVersion();
   const expectedHoles = unusedSchemaVersions.filter((version) => version <= schemaLatest).length;
-  assert.deepEqual(unusedSchemaVersions, [63, 79, 80, 82, 95]);
+  assert.deepEqual(unusedSchemaVersions, [63, 79, 80, 82]);
   assert.equal(upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, schemaLatest);
   assert.equal(schemaLatest - schemaRows, expectedHoles, `schema rows ${schemaRows} latest ${schemaLatest}`);
   assert.equal(schemaLatest, 96);
@@ -55,7 +55,7 @@ test('migrations upgrade a v1 database without losing posts', () => {
   assert.equal(upgraded.prepare(`SELECT name FROM schema_migrations WHERE version = 92`).get().name, 'feed_translation_chunk_failures');
   assert.equal(upgraded.prepare(`SELECT name FROM schema_migrations WHERE version = 93`).get().name, 'x_video_articles');
   assert.equal(upgraded.prepare(`SELECT name FROM schema_migrations WHERE version = 94`).get().name, 'x_link_articles');
-  assert.equal(upgraded.prepare(`SELECT name FROM schema_migrations WHERE version = 95`).get(), undefined);
+  assert.equal(upgraded.prepare(`SELECT name FROM schema_migrations WHERE version = 95`).get().name, 'x_not_interested_actions');
   assert.equal(upgraded.prepare(`SELECT name FROM schema_migrations WHERE version = 96`).get().name, 'content_item_fts');
   assert.equal(upgraded.prepare(`SELECT count(*) AS n FROM content_item_fts`).get().n, 0);
   assert.equal(upgraded.prepare(`SELECT done FROM feed_search_index_cursor WHERE id = 1`).get().done, 0);
@@ -63,6 +63,7 @@ test('migrations upgrade a v1 database without losing posts', () => {
   assert.ok(upgraded.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'x_video_articles'`).get());
   assert.ok(upgraded.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'x_video_posts'`).get());
   assert.ok(upgraded.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'x_link_articles'`).get());
+  assert.ok(upgraded.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'x_not_interested_actions'`).get());
   assert.ok(upgraded.prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'hardware_price_snapshot_rows_observation'`).get());
   assert.ok(upgraded.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'northbound_daily'`).get());
   assert.ok(upgraded.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'youtube_podcast_episodes'`).get());

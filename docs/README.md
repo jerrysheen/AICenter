@@ -27,6 +27,33 @@
 
 - `progress/2026-10-21-feed-search-fts.md`：信息流搜索改走 FTS5。三个字及以上用全文索引，两个字只查标题和作者。索引在启动之后分批写入。搜得到的帖按时间出现在「全部」：关注来源不再被后一次同步拉走，历史用 `scripts/repair-x-following-feed.mjs`，先 `--dry-run`。搜索和作者页共用已保存的译文。文章页首屏就显示作者。migration 96。需要同时重启 Web 和 Worker，浏览器再加载一次。
 
+- `progress/2026-10-21-gemma-rpm-tpm.md`：Gemma 五个账号不再做本地每日 1.44 万封顶，只守每分钟 25 次和 16000 token。请求间隔默认 0–500 毫秒，每把密钥同时 2 个请求，可用环境变量改成 3。240 秒租约不再把单密钥卡成串行。429 仍按原逻辑冷却。补扫起点改为 `AI_CENTER_TAG_RESCAN_NOT_BEFORE`，默认仍是 2026-10-21 14:47（UTC+8）。不新增 migration。需要重启 Worker。
+
+- `progress/2026-10-21-gemma-tag-rescan.md`：打标提示词改为按上市地，并且只标正文明确在讲的内容。宁德时代标 A 股，不标港股；中国移动不因公司名加 AI 算力；英文短标题不因此标半导体。每 15 分钟只补扫上线之后、最近 2 小时内还没有 `resource_taggings` 的新帖。起点用 `AI_CENTER_TAG_RESCAN_NOT_BEFORE`，默认 2026-10-21 14:47（UTC+8）。旧帖不补。窗口用 `AI_CENTER_TAG_RESCAN_HOURS`，默认 2 小时。正常看完但没有标签的，包括整批空回复，写一条空记录，避免反复选中同样 20 条。回复不是 JSON 或调用失败不写。Flash 日上限的下次可跑时间带上 Gemma 的等待。Bamboo 不动。不新增 migration。需要重启 Worker。
+
+- `progress/2026-10-21-hourly-quota-catchup.md`：账号并发的 2500 次合计仍会把小时报指到北京时间 15:00，缓存还会挡住 13/10/05 的补跑。现在这条日上限和按密钥的日上限都改走 Gemma 26B。文章整理上的 114 次 grok-4.7 是这条新标记碰到了 10-07 的旧回退；本地日上限改为 Gemma 26B。启动日志按太平洋日列出每把密钥是否到 480。没配 `GEMINI_API_KEY*_PROJECT` 不必补。不新增 migration。需要重启 Worker。
+
+- `progress/2026-10-21-feed-enrich-gemma-tags.md`：文章整理不再跳过短帖标注。`feed.items.enrich` 先用 Gemma 26B 写入 `resource_taggings`，信息树的 `tagId` 采用这份标签。打标失败只记条数和错误类别，信息树照常排队。10-07 起标签表停写，是因为文章整理旁路没有调用标注入口。Bamboo 准入分类不动。不新增 migration。需要重启 Worker。
+
+- `progress/2026-10-21-flash-lite-per-key.md`：Flash Lite 的 14 RPM 和 480 RPD 按密钥计数，不再把多把密钥加在一起。两把模型都到了当日上限时，小时浓缩和阅读分类改走 Gemma 26B。不新增 migration。需要重启 Worker。
+
+- `progress/2026-10-21-x-video-transcribe-resume.md`：X 视频转写在 Live 失败时只记错误类别。网络错误在任务内有限重试。任务失败会取消未完成的分段，已经完成的分段留下，下一轮续跑。续跑要比对起止时间，对不上就重转。文件转写在请求发出后才计入每天 24 次，重试不重复扣。不新增 migration。需要重启 Worker。
+
+- `progress/2026-10-21-gemma-feed-tags.md`：信息流短帖标签和单标签分类改走 Gemma 26B，按每分钟 16000 token 把一批再切开。不回退到 Flash Lite 或其他计费服务。Bamboo 准入分类不动。不新增 migration。需要重启 Worker。
+
+- `progress/2026-10-21-gemma-long-video-chunks.md`：YouTube 和 X 长视频在 16000 token 内加长分段，按说话人或句末切开，并按 26B、26B、31B 轮换。同一档字幕从 62 次降到 14 次。信息流翻译仍是 1500 字。不新增 migration。需要重启 Worker。
+
+- `progress/2026-10-21-x-video-transcribe.md`：X 视频的 `deps.geminiTranscribe` 接到 `executeAudioTranscription`。先走 Live，失败才用文件转写，不直接接 `createGeminiAudioTranscriber`。不新增 migration。需要重启 Worker。
+
+- `progress/2026-10-21-flash-lite-headroom.md`：两个 Flash Lite 按剩余 RPM、RPD 提前互换，不等 429。Worker 启动时按模型打出当天调用次数。不新增 migration。需要重启 Worker。
+
+- `progress/2026-10-21-feed-tag-refresh-test.md`：信息流翻页和作者列表测试抽函数时带上 `feedTagRefreshPaused`。线上脚本里这个函数本来就在，作者页仍跳过标注。不改页面。不新增 migration。Web 和 Worker 都不用为这项重启。
+
+- `progress/2026-10-21-live-transcribe.md`：语音转写默认走 `gemini-3.5-transcribe-live`，音频分帧并按每分钟 20000 token 限速。只有 Live 失败才回到 `gemini-3.5-transcribe`，本地每天停在 24 次。不新增 migration。需要重启 Worker。
+
+- `progress/2026-10-21-x-not-interested.md`：自动点赞改为从最近 24 小时已有模型分数的推文里按分数选。Bamboo 下没有分类结果的推文可以点，只排除明确丢弃的；分数线 0.8，企业动态仍是 0.9。全 0 分不再默认成美股大盘。低分营销号、八卦号和推广帖可以自动点「不感兴趣」，总开关和页面开关都默认关闭。推荐记录页能看到每天点赞、不感兴趣的条数，以及各方向命中率。migration 95。需要同时重启 Web 和 Worker，浏览器再加载一次。
+
+- `progress/2026-10-21-x-link-plain-url.md`：媒体帖的 t.co、bbc.in 和正文里的纯文本短链都会跟到新闻原文。译完才标「正文完整」，否则给出「阅读 BBC 原文」。已经在库里的用 `scripts/backfill-x-link-articles.mjs` 补跑，每天仍最多 8 篇。没有视频的帖子不再请求视频文章接口。作者列表打开时不再被整表标注请求堵住。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
 - `progress/2026-10-21-cranmer-author-search.md`：信息流搜索按作者名和 handle 查已保存的帖子，不再只看已加载的一页。`#author/x:@MilesCranmer` 打开 `x:382008009`。文章页点作者名进入作者页。YouTube 译文在显示时去掉整句英文残留，不重跑这一集。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
 
 - `progress/2026-10-20-youtube-caption-dedupe.md`：YouTube 译文在翻译前合并滚动字幕，已经译好的段落在显示时再去重。未完整状态合成一行。长视频帖标「视频待整理」或「视频已整理」，只有链接的帖子挂进 X 关注信息流并写出中文摘要。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。

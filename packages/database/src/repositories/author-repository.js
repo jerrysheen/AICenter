@@ -629,6 +629,25 @@ export function createAuthorRepository(database, emitEvent = () => {}) {
       return mapAuthor(row);
     },
 
+    listFollowedHandles(workspaceId, platform = 'x') {
+      const lane = String(platform || '').trim();
+      if (!lane) return [];
+      const rows = database.prepare(`SELECT handle, author_id FROM authors
+        WHERE workspace_id = ? AND platform = ? AND followed = 1`).all(workspaceId, lane);
+      const handles = new Set();
+      const prefix = `${lane}:@`;
+      for (const row of rows) {
+        const handle = String(row.handle || '').replace(/^@/, '').trim();
+        if (handle) handles.add(handle);
+        const authorId = String(row.author_id || '');
+        if (authorId.startsWith(prefix)) {
+          const fromId = authorId.slice(prefix.length).trim();
+          if (fromId) handles.add(fromId);
+        }
+      }
+      return [...handles];
+    },
+
     setFollow(workspaceId, authorId, followed) {
       const author = database.prepare(`SELECT author_id, kind, merged_into FROM authors
         WHERE workspace_id = ? AND author_id = ?`).get(workspaceId, authorId);

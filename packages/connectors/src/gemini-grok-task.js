@@ -13,6 +13,23 @@ export function parseGeminiGenerateContent(payload) {
   return Array.isArray(parts) ? parts.map(part => text(part?.text)).join('').trim() : '';
 }
 
+// Google's quota day is America/Los_Angeles midnight. While PDT is in effect that
+// instant is 15:00 in Asia/Shanghai. Callers that say "today" in Beijing cut this
+// window at 00:00 and drop the previous evening.
+export function geminiQuotaDay(at = Date.now()) {
+  const dayEnd = nextGeminiDailyReset(at);
+  const dayStart = nextGeminiDailyReset(dayEnd - 27 * 3600000);
+  return { dayStart, dayEnd };
+}
+
+export function formatGeminiQuotaClock(at) {
+  const clock = (timeZone) => new Intl.DateTimeFormat('sv-SE', {
+    timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).format(new Date(at));
+  return `pacific=${clock('America/Los_Angeles')} beijing=${clock('Asia/Shanghai')}`;
+}
+
 export function nextGeminiDailyReset(at) {
   const formatter = new Intl.DateTimeFormat('en-CA', {timeZone:'America/Los_Angeles',year:'numeric',month:'2-digit',day:'2-digit'});
   const today = formatter.format(at);

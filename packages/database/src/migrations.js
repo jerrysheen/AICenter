@@ -2252,7 +2252,7 @@ migrations.push({ version: 78, name: 'author_stats', up(database) {
 // 86 是 YouTube 播客的剧集和频道状态。87 只给频道补录状态加列。
 // 88 是北向资金 northbound_flow。89 是 YouTube 正文 youtube_podcast_article。
 // 90 是作者列表按最新原文发布时间排序的索引。
-export const unusedSchemaVersions = [63, 79, 80, 82, 95];
+export const unusedSchemaVersions = [63, 79, 80, 82];
 
 // 南向资金用 81，按 version 补执行，不看最大号。79、80、82 留空。
 migrations.push({ version: 81, name: 'southbound_flow', up(database) {
@@ -2475,6 +2475,27 @@ migrations.push({ version: 94, name: 'x_link_articles', up(database) {
     );
     CREATE INDEX IF NOT EXISTS idx_x_link_articles_final
       ON x_link_articles(workspace_id, final_url, status);`);
+}});
+
+migrations.push({ version: 95, name: 'x_not_interested_actions', up(database) {
+  database.exec(`CREATE TABLE IF NOT EXISTS x_not_interested_actions (
+      workspace_id TEXT NOT NULL,
+      tweet_id TEXT NOT NULL,
+      content_item_id TEXT NOT NULL DEFAULT '',
+      author_handle TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL DEFAULT '',
+      source_url TEXT NOT NULL DEFAULT '',
+      trigger TEXT NOT NULL DEFAULT '',
+      note TEXT NOT NULL DEFAULT '',
+      score REAL,
+      primary_dir TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'queued',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (workspace_id, tweet_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_x_not_interested_created
+      ON x_not_interested_actions(workspace_id, created_at DESC);`);
 }});
 
 migrations.push({ version: 96, name: 'content_item_fts', up(database) {

@@ -337,6 +337,7 @@ test('social feed polling does not repaint the author list', async () => {
   vm.runInContext([
     extract(appSource, 'paintLoadedSocialFeed'),
     extract(appSource, 'mergeLoadedFeedItem'),
+    extract(appSource, 'feedTagRefreshPaused'),
     extract(appSource, 'loadXFeed'),
     extract(appSource, 'loadXueqiuFeed'),
     'this.loadX = loadXFeed; this.loadQ = loadXueqiuFeed;',

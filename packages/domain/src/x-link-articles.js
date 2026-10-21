@@ -2,7 +2,10 @@ import { formatYmd, zonedParts } from './zoned-time.js';
 
 export const X_LINK_ARTICLE_JOB_TYPE = 'x.links.article';
 
-const SHORT_LINK_HOSTS = new Set(['t.co']);
+// t.co 落到 bbc.in，bbc.in 再落到 trib.al，最后才是 www.bbc.com。
+// 这三跳都只跟随，不把短链本身当成文章正文。
+export const X_LINK_HOP_HOSTS = Object.freeze(['t.co', 'bbc.in', 'trib.al']);
+const HOP_HOSTS = new Set(X_LINK_HOP_HOSTS);
 const HANDLE_SUFFIXES = new Set([
   'news', 'world', 'business', 'breaking', 'official', 'press', 'media', 'tv', 'radio',
   'wire', 'wires', 'live', 'alerts', 'cn', 'zh', 'uk', 'us', 'asia', 'tech', 'science',
@@ -55,10 +58,16 @@ function rememberHost(hosts, host, meta) {
   if (!name.startsWith('www.') && !hosts.has(`www.${name}`)) hosts.set(`www.${name}`, meta);
 }
 
+function bareHost(host) {
+  return String(host || '').trim().toLowerCase().replace(/^www\./, '');
+}
+
 export function buildXLinkPublisherIndex(sources = []) {
   const tokens = [];
   const hosts = new Map();
   const seen = new Set();
+  const articleHosts = new Set();
+  const redirectHosts = new Set();
   for (const source of sources) {
     const label = String(source?.publisher || source?.channelName || source?.sourceKey || '').trim();
     const sourceKey = String(source?.sourceKey || '').trim().toLowerCase();
@@ -70,11 +79,20 @@ export function buildXLinkPublisherIndex(sources = []) {
       seen.add(token);
       tokens.push({ token, label: meta.label });
     }
-    for (const host of [...(source?.articleHosts || []), ...(source?.redirectHosts || [])]) {
+    for (const host of source?.articleHosts || []) {
       rememberHost(hosts, host, meta);
+      articleHosts.add(bareHost(host));
+    }
+    for (const host of source?.redirectHosts || []) {
+      rememberHost(hosts, host, meta);
+      redirectHosts.add(bareHost(host));
     }
   }
-  return { tokens, hosts };
+  const hopHosts = new Set(X_LINK_HOP_HOSTS);
+  for (const host of redirectHosts) {
+    if (host && !articleHosts.has(host)) hopHosts.add(host);
+  }
+  return { tokens, hosts, hopHosts };
 }
 
 export function matchMediaOutlet({ handle = '', name = '' } = {}, index) {
@@ -96,35 +114,56 @@ export function readingLinkLabel(publisher) {
   return name ? `阅读 ${name} 原文` : '阅读原文';
 }
 
-const SKIP_HOST = /^(?:www\.)?(?:x|twitter)\.com$/i;
+const SKIP_HOST = /^(?:www\.)?(?:x|twitter|pic\.x)\.com$/i;
+
+function acceptedUrl(raw) {
+  const cleaned = String(raw || '').replace(/[.,;:!?，。！？]+$/g, '');
+  const withScheme = /^https?:\/\//i.test(cleaned) ? cleaned : `https://${cleaned}`;
+  let url;
+  try { url = new URL(withScheme); } catch { return ''; }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return '';
+  if (url.username || url.password) return '';
+  if (SKIP_HOST.test(url.hostname)) return '';
+  if (!url.pathname || url.pathname === '/') return '';
+  return url.toString();
+}
 
 export function extractOutboundUrls(text) {
   const found = [];
-  const pattern = /https?:\/\/[^\s<>"')\]]+/gi;
-  for (const match of String(text || '').matchAll(pattern)) {
-    const raw = match[0].replace(/[.,;:!?]+$/g, '');
-    let url;
-    try { url = new URL(raw); } catch { continue; }
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') continue;
-    if (url.username || url.password) continue;
-    if (SKIP_HOST.test(url.hostname)) continue;
-    found.push(url.toString());
+  const source = String(text || '');
+  for (const match of source.matchAll(/https?:\/\/[^\s<>"')\]]+/gi)) {
+    const url = acceptedUrl(match[0]);
+    if (url) found.push(url);
+  }
+  for (const match of source.matchAll(/(?:^|[\s([「『])((?:[a-z0-9-]+\.)+[a-z]{2,}\/[^\s<>"')\]]+)/gi)) {
+    const url = acceptedUrl(match[1]);
+    if (url) found.push(url);
   }
   return [...new Set(found)];
 }
 
-export function chooseOutboundUrl(urls = []) {
+function hostOf(value) {
+  try { return new URL(value).hostname.toLowerCase(); } catch { return ''; }
+}
+
+export function chooseOutboundUrl(urls = [], hopHosts = HOP_HOSTS) {
+  const hops = hopHosts instanceof Set ? hopHosts : new Set(hopHosts || []);
   const list = [...urls];
   const direct = list.find((item) => {
-    try { return !SHORT_LINK_HOSTS.has(new URL(item).hostname.toLowerCase()); } catch { return false; }
+    const host = hostOf(item);
+    return host && !hops.has(host) && !hops.has(host.replace(/^www\./, ''));
   });
-  return direct || list[0] || '';
+  if (direct) return direct;
+  const closer = list.find((item) => hostOf(item) && hostOf(item) !== 't.co');
+  return closer || list[0] || '';
 }
 
 export function canonicalArticleUrl(value) {
   const url = new URL(String(value || ''));
   for (const key of [...url.searchParams.keys()]) {
-    if (key.startsWith('utm_') || key === 'fbclid' || key === 'gclid') url.searchParams.delete(key);
+    if (key.startsWith('utm_') || key.startsWith('at_') || key === 'fbclid' || key === 'gclid' || key === 'xtor') {
+      url.searchParams.delete(key);
+    }
   }
   url.hash = '';
   return url.toString();

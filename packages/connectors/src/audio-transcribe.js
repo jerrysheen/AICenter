@@ -1,11 +1,18 @@
 import { googleFetch } from './google-fetch.js';
 import { createUsageFetch } from './model-usage-fetch.js';
 
-const MODEL = 'gemini-3.5-transcribe';
+import { resolveAudioTranscribeModels } from '../../domain/src/audio-transcription.js';
+
 const API_ROOT = 'https://generativelanguage.googleapis.com';
 
-function clip(value) {
-  return String(value || '').replace(/AQ\.[A-Za-z0-9_-]+/g, '[redacted]').replace(/\s+/g, ' ').trim().slice(0, 300);
+export function clipSecret(value) {
+  return String(value || '')
+    .replace(/AQ\.[A-Za-z0-9_-]+/g, '[redacted]')
+    .replace(/AIza[0-9A-Za-z\-_]{8,}/g, '[redacted]')
+    .replace(/([?&]key=)[^&\s]+/gi, '$1[redacted]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 300);
 }
 
 export function readAudioTranscript(payload) {
@@ -20,7 +27,7 @@ async function readJson(response) {
   try {
     return JSON.parse(text);
   } catch {
-    return { error: { message: clip(text) } };
+    return { error: { message: clipSecret(text) } };
   }
 }
 
@@ -28,11 +35,13 @@ function header(response, name) {
   return response.headers?.get?.(name) || response.headers?.get?.(name.toLowerCase()) || '';
 }
 
-export function createGeminiAudioTranscriber({ fetch: fetchImpl = fetch, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
+export function createGeminiAudioTranscriber({ fetch: fetchImpl = fetch, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), env = process.env, model } = {}) {
   fetchImpl = googleFetch(fetchImpl);
-  return async function transcribeAudio({ apiKey, audio, mimeType = 'audio/wav', languageCodes = [], mode = 'SMART', signal }) {
+  const fileModel = model || resolveAudioTranscribeModels(env).file;
+  return async function transcribeAudio({ apiKey, audio, mimeType = 'audio/wav', languageCodes = [], mode = 'SMART', signal, onRequest }) {
     const secret = String(apiKey || '').trim();
     if (!secret) throw new Error('转写密钥不可用');
+    onRequest?.();
     const started = await fetchImpl(`${API_ROOT}/upload/v1beta/files`, {
       method: 'POST',
       headers: {
@@ -48,7 +57,7 @@ export function createGeminiAudioTranscriber({ fetch: fetchImpl = fetch, sleep =
     });
     if (!started.ok) {
       const payload = await readJson(started);
-      throw new Error(clip(payload.error?.message) || `音频上传失败 (${started.status})`);
+      throw new Error(clipSecret(payload.error?.message) || `音频上传失败 (${started.status})`);
     }
     const uploadUrl = header(started, 'x-goog-upload-url').trim();
     if (!uploadUrl) throw new Error('音频上传没有返回地址');
@@ -63,7 +72,7 @@ export function createGeminiAudioTranscriber({ fetch: fetchImpl = fetch, sleep =
       signal,
     });
     const filePayload = await readJson(uploaded);
-    if (!uploaded.ok) throw new Error(clip(filePayload.error?.message) || `音频上传失败 (${uploaded.status})`);
+    if (!uploaded.ok) throw new Error(clipSecret(filePayload.error?.message) || `音频上传失败 (${uploaded.status})`);
     const file = filePayload.file || {};
     try {
       let state = file.state || 'ACTIVE';
@@ -74,11 +83,11 @@ export function createGeminiAudioTranscriber({ fetch: fetchImpl = fetch, sleep =
           signal,
         });
         const body = await readJson(polled);
-        if (!polled.ok) throw new Error(clip(body.error?.message) || `音频文件状态读取失败 (${polled.status})`);
+        if (!polled.ok) throw new Error(clipSecret(body.error?.message) || `音频文件状态读取失败 (${polled.status})`);
         state = body.state || body.file?.state || 'ACTIVE';
       }
       if (state !== 'ACTIVE') throw new Error('音频文件尚未就绪');
-      const response = await createUsageFetch(fetchImpl, { provider: 'gemini', model: MODEL, stage: 'audio-transcribe' })(`${API_ROOT}/v1beta/models/${MODEL}:generateContent`, {
+      const response = await createUsageFetch(fetchImpl, { provider: 'gemini', model: fileModel, stage: 'audio-transcribe' })(`${API_ROOT}/v1beta/models/${fileModel}:generateContent`, {
         method: 'POST',
         headers: { 'x-goog-api-key': secret, 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -89,7 +98,7 @@ export function createGeminiAudioTranscriber({ fetch: fetchImpl = fetch, sleep =
       });
       const payload = await readJson(response);
       if (!response.ok) {
-        const error = new Error(clip(payload.error?.message) || `转写失败 (${response.status})`);
+        const error = new Error(clipSecret(payload.error?.message) || `转写失败 (${response.status})`);
         if (response.status === 429 || /RESOURCE_EXHAUSTED|quota/i.test(error.message)) error.code = 'quota';
         throw error;
       }

@@ -440,7 +440,7 @@ npm run check
 - 单 Agent Runtime（无前置 Intent Router）。生产执行器是冻结 DeepSeek Harness；本地循环只作测试/回退。不改变页面 Contract。
 - B站贴链接抓 AI 中文字幕；雪球优先、同花顺回退的行情适配；Yahoo / X 等信息源。
 
-信息流 `translateMany` 和粗筛 Tag（Worker Job `tagging.analyze`）都走 Gemini。翻译缺 Key 时回退 DeepL / Google。后续批量整理走本地任务包给 Cursor。用户 view 不展示原文；原文接口为 `GET /api/v1/content-items/:id/original`。
+信息流粗筛 Tag（Worker Job `tagging.analyze`）走 Gemma 26B，不回退到其他计费服务。用户 view 不展示原文；原文接口为 `GET /api/v1/content-items/:id/original`。
 
 B站贴链接链路（已接入，本轮不扩展为关注同步）：
 
