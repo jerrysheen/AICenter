@@ -42,11 +42,22 @@ function boundedInt(value, fallback, min, max) {
 // #202 上线（2026-10-21 14:47 UTC+8）。补扫不覆盖这之前入库的旧帖。
 export const TAG_RESCAN_NOT_BEFORE = Date.parse('2026-10-21T14:47:00+08:00');
 
+export function tagRescanNotBefore(env = process.env) {
+  const raw = String(env.AI_CENTER_TAG_RESCAN_NOT_BEFORE ?? '').trim();
+  if (!raw) return TAG_RESCAN_NOT_BEFORE;
+  if (/^\d+$/.test(raw)) {
+    const parsed = Number(raw);
+    return Number.isSafeInteger(parsed) ? parsed : TAG_RESCAN_NOT_BEFORE;
+  }
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : TAG_RESCAN_NOT_BEFORE;
+}
+
 export function tagRescanPlan(env = process.env, now = Date.now()) {
   const hours = boundedInt(env.AI_CENTER_TAG_RESCAN_HOURS, 2, 1, 24 * 14);
   const limit = boundedInt(env.AI_CENTER_TAG_RESCAN_LIMIT, 20, 1, 100);
   const windowStart = now - hours * 3600000;
-  return { since: Math.max(TAG_RESCAN_NOT_BEFORE, windowStart), limit, hours };
+  return { since: Math.max(tagRescanNotBefore(env), windowStart), limit, hours };
 }
 
 function tagFailureCategory(error) {
