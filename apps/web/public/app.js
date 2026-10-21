@@ -51,7 +51,7 @@ import { createAuthorView } from './author-view.js?v=dev';
 import { appendPartialArticle, episodeArticleMessage, foldedOriginal, partialArticleLabel, renderYoutubePodcasts, YOUTUBE_ARTICLE_POLL_SLOW_MS, youtubeArticlePollDelay, youtubeArticleRequestPath, youtubeReaderScopeLabel } from './youtube-podcasts.js?v=dev';
 import { xPostHasVideo, xVideoArticleReady, xVideoArticleRequestPath, xVideoReaderScopeLabel, xVideoTweetId } from './x-video-article.js?v=dev';
 import { createFeedTaggingLoader, FEED_TAG_QUERY_PATH } from './feed-tagging.js?v=dev';
-import { articleAuthorFields, articleAuthorTarget, feedSearchPath, feedSearchQueryReady, linkAbortSignal, socialArticleBodyPending } from './feed-search.js?v=dev';
+import { articleAuthorFields, articleAuthorTarget, feedSearchCountText, feedSearchExcerpt, feedSearchMoreText, feedSearchPath, feedSearchPhase, feedSearchQueryReady, highlightParts, linkAbortSignal, socialArticleBodyPending } from './feed-search.js?v=dev';
 import { createListSkeleton, paintHubTickSkeleton, paintListSkeleton } from './list-skeleton.js?v=dev';
 import {
   xLinkArticleReady, xLinkArticleRequestPath, xLinkClosed, xLinkOwnsBody, xLinkReaderScope,
@@ -338,6 +338,7 @@ const state = {
   lastOverviewTarget: '',
   feedQuery: '',
   feedSearchQuery: '',
+  feedSearchPending: false,
   feedSearchItems: [],
   showHeaderSearch: false,
   feedSort: 'captured',
@@ -4134,6 +4135,7 @@ function visibleFeedItems() {
     state.feedSort,
     state.feedRange,
     state.feedQuery,
+    state.feedSearchPending,
     state.feedSearchQuery,
     state.feedSearchItems,
     state.posts,
@@ -4406,7 +4408,17 @@ function focusFeedPending(sources, flags) {
   return false;
 }
 
+function currentFeedSearchPhase() {
+  return feedSearchPhase({
+    query: state.feedQuery,
+    pending: state.feedSearchPending,
+    settledQuery: state.feedSearchQuery,
+  });
+}
+
 function feedCountLabel(shown, items) {
+  const phase = currentFeedSearchPhase();
+  if (phase !== 'idle') return feedSearchCountText({ phase, shown: shown.length, total: items.length });
   if (state.channel === 'recent') {
     return items.length > shown.length
       ? `按浏览时间 · 已显示 ${shown.length} / ${items.length} 条`
@@ -4462,7 +4474,7 @@ function applyFeedPlatform(id) {
   } else state.channel = channelForFeedScope(requested);
   state.feedEpoch = (Number(state.feedEpoch) || 0) + 1;
   if (typeof elements !== 'undefined' && elements?.feed && typeof paintListSkeleton === 'function') {
-    paintListSkeleton(elements.feed, { rows: 6, label: '正在读取内容…' });
+    paintListSkeleton(elements.feed, { rows: 6, label: '正在读取内容…', variant: 'feed' });
   }
   resetFeedWindow();
   renderChannels();
@@ -4551,18 +4563,19 @@ function renderFlashPosts() {
   if (!elements.feed) return;
   const items = [...(state.flashItems || [])].sort((a, b) => (Number(b.publishedAt) || 0) - (Number(a.publishedAt) || 0));
   if (!items.length && state.flashLoading && !state.flashError) {
-    paintListSkeleton(elements.feed, { rows: 6, label: '正在读取快讯…' });
+    paintListSkeleton(elements.feed, { rows: 6, label: '正在读取快讯…', variant: 'feed' });
     elements['feed-count'].textContent = '正在读取快讯…';
     return;
   }
-  elements.feed.removeAttribute('aria-busy');
-  elements.feed.replaceChildren();
+  const painted = [];
   elements['feed-count'].textContent = `${items.length} 条`;
   if (!items.length) {
     const empty = document.createElement('p');
     empty.className = 'feed-empty';
     empty.textContent = state.flashError || '还没有快讯。雪球 7x24 抓取后会按时间排在这里，不再送去小时报。';
-    elements.feed.append(empty);
+    painted.push(empty);
+    elements.feed.removeAttribute('aria-busy');
+    elements.feed.replaceChildren(...painted);
     return;
   }
   const host = document.createElement('div');
@@ -4578,7 +4591,9 @@ function renderFlashPosts() {
       open.addEventListener('click', () => window.open(item.sourceUrl, '_blank', 'noopener'));
     },
   })), { groupByDay: true, emptyText: '还没有快讯。' });
-  elements.feed.append(host);
+  painted.push(host);
+  elements.feed.removeAttribute('aria-busy');
+  elements.feed.replaceChildren(...painted);
 }
 
 function renderFeedActionButton() {
@@ -5040,6 +5055,13 @@ function socialFeedHasMore() {
 }
 
 function revealMoreFeed() {
+  if (typeof currentFeedSearchPhase === 'function' && currentFeedSearchPhase() === 'ready') {
+    const total = visibleFeedItems().length;
+    if (state.feedShown >= total) return;
+    state.feedShown = Math.min(total, state.feedShown + FEED_PAGE_SIZE);
+    renderPosts();
+    return;
+  }
   if (state.channel === 'social') {
     const unreadLoaded = visibleFeedItems().filter((item) => !item.isRead).length;
     if (state.feedShown < unreadLoaded) {
@@ -5154,6 +5176,17 @@ function feedListMoment(post, now = Date.now()) {
   };
 }
 
+function feedSearchRowCopy(title, post) {
+  if (currentFeedSearchPhase() !== 'ready') return {};
+  const query = state.feedQuery;
+  const body = [post?.body, translationFor(post)?.text].filter(Boolean).join('\n');
+  const excerpt = feedSearchExcerpt({ title, body, summary: post?.summary || post?.excerpt || '', query });
+  return {
+    titleParts: highlightParts(title, query),
+    ...(excerpt ? { summary: excerpt, summaryParts: highlightParts(excerpt, query) } : {}),
+  };
+}
+
 function feedToNewsRow(post) {
   const titled = feedListTitle(post);
   const tags = [];
@@ -5169,6 +5202,7 @@ function feedToNewsRow(post) {
     ingested: moment.ingested,
     effectiveLabel: moment.effectiveLabel,
     source: feedSourceLine(post),
+    ...feedSearchRowCopy(titled.title, post),
     authorId: state.authorView === false ? '' : (post.authorId || ''),
     authorName: post.author || '',
     onAuthor: post.authorId && state.authorView !== false ? () => openAuthor(post.authorId) : undefined,
@@ -5285,6 +5319,14 @@ function renderPosts() {
     renderFlashPosts();
     return;
   }
+  if (typeof currentFeedSearchPhase === 'function' && currentFeedSearchPhase() === 'loading') {
+    if (typeof paintListSkeleton === 'function') {
+      paintListSkeleton(elements.feed, { rows: 6, label: '搜索中…', variant: 'feed' });
+    }
+    if (elements['feed-count']) elements['feed-count'].textContent = '搜索中…';
+    observeFeedSentinel(null, false);
+    return;
+  }
   const restoreSwipeId = document.querySelector('#feed .swipe-front.is-open')?.dataset.postId || '';
   const items = visibleFeedItems();
   if (state.feedShown > items.length) state.feedShown = Math.max(FEED_PAGE_SIZE, items.length);
@@ -5319,14 +5361,13 @@ function renderPosts() {
     );
     if (focusPending || (!state.feedQuery && presentation === 'loading')) {
       const label = focusPending ? '正在读取重点…' : '正在读取内容…';
-      paintListSkeleton(elements.feed, { rows: 6, label });
+      paintListSkeleton(elements.feed, { rows: 6, label, variant: 'feed' });
       elements['feed-count'].textContent = label;
       observeFeedSentinel(null, false);
       return;
     }
   }
-  elements.feed.removeAttribute('aria-busy');
-  elements.feed.replaceChildren();
+  const painted = [];
   elements['feed-count'].textContent = feedCountLabel(shown, items);
   if (!items.length) {
     const presentation = state.feedQuery ? 'empty' : feedScopePresentation(
@@ -5349,28 +5390,57 @@ function renderPosts() {
         ensureFeedSources(feedSourcesForScope(state.channel, state.feedPlatform)).catch((error) => showToast(error.message));
       });
     }
-    elements.feed.append(empty);
-    if (state.feedPlatform === 'media' && state.mediaNextOffset != null || socialFeedHasMore()) {
+    painted.push(empty);
+    const searchSettled = typeof currentFeedSearchPhase === 'function' && currentFeedSearchPhase() === 'ready';
+    const keepReading = !searchSettled && !state.feedQuery && (
+      (state.feedPlatform === 'media' && state.mediaNextOffset != null) || socialFeedHasMore()
+    );
+    if (keepReading) {
       const more = document.createElement('div');
       more.className = 'feed-more';
       more.textContent = '继续读取文章…';
-      elements.feed.append(more);
+      painted.push(more);
+      elements.feed.removeAttribute('aria-busy');
+      elements.feed.replaceChildren(...painted);
       observeFeedSentinel(more, !state.mediaLoading);
-    } else observeFeedSentinel(null, false);
+    } else {
+      elements.feed.removeAttribute('aria-busy');
+      elements.feed.replaceChildren(...painted);
+      observeFeedSentinel(null, false);
+    }
     return;
   }
   const listHost = document.createElement('div');
   renderNewsList(listHost, orderedRows ? shown : shown.map(feedToNewsRow), { groupByDay: true, sinkMuted: true, emptyText: '这个筛选下还没有信息。' });
-  elements.feed.append(listHost);
+  painted.push(listHost);
   const more = document.createElement('div');
   more.className = 'feed-more';
   more.id = 'feed-sentinel';
-  const canLoad = shown.length < items.length
-    || (state.feedPlatform === 'media' && state.mediaNextOffset != null)
-    || socialFeedHasMore();
+  const searchReady = typeof currentFeedSearchPhase === 'function' && currentFeedSearchPhase() === 'ready';
+  const canLoad = searchReady
+    ? shown.length < items.length
+    : shown.length < items.length
+      || (state.feedPlatform === 'media' && state.mediaNextOffset != null)
+      || socialFeedHasMore();
   more.dataset.done = canLoad ? '0' : '1';
-  more.textContent = canLoad ? '下滑显示更多' : '已经到底了';
-  elements.feed.append(more);
+  const searchMore = searchReady && typeof feedSearchMoreText === 'function'
+    ? feedSearchMoreText({ phase: 'ready', shown: shown.length, total: items.length })
+    : '';
+  more.textContent = searchReady ? (searchMore || '已经到底了') : (canLoad ? '下滑显示更多' : '已经到底了');
+  if (searchReady && canLoad && typeof revealMoreFeed === 'function') {
+    more.setAttribute('role', 'button');
+    more.tabIndex = 0;
+    const loadMore = () => revealMoreFeed();
+    more.addEventListener('click', loadMore);
+    more.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      loadMore();
+    });
+  }
+  painted.push(more);
+  elements.feed.removeAttribute('aria-busy');
+  elements.feed.replaceChildren(...painted);
   observeFeedSentinel(more, canLoad);
   if (restoreSwipeId) {
     const front = elements.feed.querySelector(`.swipe-front[data-post-id="${restoreSwipeId}"]`);
@@ -16823,12 +16893,26 @@ function cancelFeedSearch() {
 function scheduleFeedSearch(query) {
   clearTimeout(scheduleFeedSearch.timer);
   const wanted = String(query || '').trim();
-  if (!state.session || !feedSearchQueryReady(wanted)) {
+  if (!feedSearchQueryReady(wanted)) {
     cancelFeedSearch();
+    state.feedSearchPending = false;
     state.feedSearchQuery = '';
     state.feedSearchItems = [];
     return;
   }
+  if (!state.session) {
+    cancelFeedSearch();
+    state.feedSearchPending = false;
+    state.feedSearchQuery = wanted;
+    state.feedSearchItems = [];
+    return;
+  }
+  const same = wanted.toLocaleLowerCase() === String(state.feedSearchQuery || '').trim().toLocaleLowerCase();
+  if (!same) {
+    state.feedSearchQuery = '';
+    state.feedSearchItems = [];
+  }
+  state.feedSearchPending = true;
   scheduleFeedSearch.timer = setTimeout(() => {
     loadFeedSearch(wanted).catch(() => {});
   }, 250);
@@ -16836,16 +16920,20 @@ function scheduleFeedSearch(query) {
 
 async function loadFeedSearch(query) {
   const wanted = String(query || '').trim();
-  if (!feedSearchQueryReady(wanted)) {
+  if (!feedSearchQueryReady(wanted) || !state.session) {
     cancelFeedSearch();
-    state.feedSearchQuery = '';
-    state.feedSearchItems = [];
+    state.feedSearchPending = false;
+    if (!feedSearchQueryReady(wanted)) {
+      state.feedSearchQuery = '';
+      state.feedSearchItems = [];
+    }
     return;
   }
   loadFeedSearch.controller?.abort();
   const controller = new AbortController();
   loadFeedSearch.controller = controller;
   const token = (loadFeedSearch.token = (Number(loadFeedSearch.token) || 0) + 1);
+  state.feedSearchPending = true;
   try {
     const platform = state.feedPlatform === 'media' ? 'media' : (state.feedPlatform || '');
     const payload = await api(feedSearchPath({ platform, query: wanted }), {
@@ -16856,11 +16944,17 @@ async function loadFeedSearch(query) {
     if (loadFeedSearch.token !== token) return;
     if (controller.signal.aborted) return;
     if (String(state.feedQuery || '').trim().toLowerCase() !== wanted.toLowerCase()) return;
+    state.feedSearchPending = false;
     state.feedSearchQuery = wanted;
     state.feedSearchItems = Array.isArray(payload.items) ? payload.items : [];
     if (document.body?.dataset?.view === 'feed') renderPosts();
   } catch (error) {
     if (error?.name === 'AbortError' || loadFeedSearch.token !== token) return;
+    if (String(state.feedQuery || '').trim().toLowerCase() !== wanted.toLowerCase()) return;
+    state.feedSearchPending = false;
+    state.feedSearchQuery = wanted;
+    state.feedSearchItems = [];
+    if (document.body?.dataset?.view === 'feed') renderPosts();
   }
 }
 

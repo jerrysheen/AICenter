@@ -5,6 +5,21 @@ import { newsDayLabel, newsRow, reportItemTime } from './news-list.js?v=dev';
 import { mountInvestorDigest } from './investor-digest.js?v=dev';
 import { shareTextBlocks, stripSharePlaceholders } from './share-card.js?v=dev';
 import { inclusiveWindowInstant, zonedCalendarParts, zonedClockParts } from './shanghai-time.js?v=dev';
+import { createListSkeleton, paintListSkeleton } from './list-skeleton.js?v=dev';
+
+// 贴在标题栏下面的行不算可见。coverBottom 是标题栏、子导航和简报条的下沿。
+export function briefVisibleAnchor(rows, coverBottom = 0) {
+  const line = Number(coverBottom) || 0;
+  for (const row of rows || []) {
+    if (typeof row?.getBoundingClientRect !== 'function') continue;
+    const rect = row.getBoundingClientRect();
+    const top = Number(rect?.top);
+    const bottom = Number(rect?.bottom);
+    if (!Number.isFinite(top) || !Number.isFinite(bottom) || bottom <= line + 1) continue;
+    return { anchorId: String(row.dataset?.nodeId || ''), anchorOffset: top };
+  }
+  return { anchorId: '', anchorOffset: 0 };
+}
 const el=(tag,text='',className='')=>{const n=document.createElement(tag);n.textContent=text;n.className=className;return n;};
 function cleanSourceName(value) {
   const text=String(value ?? '').replace(/\s+/g,' ').trim();
@@ -453,16 +468,28 @@ export function createInformationTreePage(host) {
     Promise.resolve(render()).finally(()=>{suppressHourHash=false;});
     return true;
   }
-  function firstVisibleAnchor() {
-    const rows=list?.querySelectorAll?.('[data-node-id]') || [];
-    for (const row of rows) {
-      if (typeof row.getBoundingClientRect !== 'function') continue;
-      const rect=row.getBoundingClientRect();
-      const top=Number(rect?.top), bottom=Number(rect?.bottom);
-      if (!Number.isFinite(top) || !Number.isFinite(bottom) || bottom <= 1) continue;
-      return { anchorId: String(row.dataset?.nodeId || ''), anchorOffset: top };
+  function stickyCoverBottom() {
+    const nodes = [];
+    if (typeof document !== 'undefined') {
+      const bar = document.querySelector?.('.title-bar');
+      const sub = document.querySelector?.('.overview-subnav.is-on');
+      if (bar) nodes.push(bar);
+      if (sub) nodes.push(sub);
     }
-    return { anchorId: '', anchorOffset: 0 };
+    const primary = root?.querySelector?.('.tree-primary');
+    if (primary) nodes.push(primary);
+    let cover = 0;
+    for (const node of nodes) {
+      const bottom = Number(node.getBoundingClientRect?.()?.bottom);
+      if (Number.isFinite(bottom) && bottom > 0) cover = Math.max(cover, bottom);
+    }
+    return cover;
+  }
+  function firstVisibleAnchor() {
+    return briefVisibleAnchor(list?.querySelectorAll?.('[data-node-id]') || [], stickyCoverBottom());
+  }
+  function listStillLoading() {
+    return Boolean(list?.querySelector?.('.tree-hour-skeleton') || list?.querySelector?.('.list-skeleton'));
   }
   function rememberPosition() {
     if (restoringScroll || !shownKey) return;
@@ -511,12 +538,12 @@ export function createInformationTreePage(host) {
   }
   function onReportScroll() {
     if (scrollLocked || restoringScroll || away || rendering || !active()) return;
-    if (list?.querySelector?.('.tree-hour-skeleton')) return;
+    if (listStillLoading()) return;
     if (scrollTimer) return;
     scrollTimer=setTimeout(()=>{
       scrollTimer=0;
       if (scrollLocked || restoringScroll || away || rendering || !active()) return;
-      if (list?.querySelector?.('.tree-hour-skeleton')) return;
+      if (listStillLoading()) return;
       rememberPosition();
     }, 80);
   }
@@ -844,9 +871,11 @@ export function createInformationTreePage(host) {
       list.replaceChildren(button('读取较慢 · 重试',()=>render()));
     },10000);
   }
-  function hourSkeleton(){
+  function hourSkeleton(compact=false){
     const box=el('div','','tree-hour-skeleton');box.setAttribute('aria-busy','true');
-    box.append(el('span','','tree-hour-skeleton-line'),el('span','','tree-hour-skeleton-line'),el('span','','tree-hour-skeleton-line'));
+    const doc=box.ownerDocument || (typeof document!=='undefined' ? document : null);
+    if (!compact && doc?.createElement) box.append(createListSkeleton(doc, { rows: 6, label: '正在读取简报…', variant: 'feed' }));
+    else box.append(el('span','','tree-hour-skeleton-line'),el('span','','tree-hour-skeleton-line'),el('span','','tree-hour-skeleton-line'));
     return box;
   }
   function chipText(edition){
@@ -988,16 +1017,16 @@ export function createInformationTreePage(host) {
     if(token!==epoch) return;
     const items=(nodes || []).filter(Boolean).map(n=>({n,edition}));
     const opened=openedId ? items.find(item=>item.n.id===openedId) : null;
-    list.replaceChildren();
     if(opened){
       host.syncHour?.(null, {node: opened.n.id});
       syncReadingChrome({node:opened.n,label:'返回日报',onBack:closeDaily});
       const article=await card(opened.n,token,{actions:false});
+      if(token!==epoch) return;
       const share=shareAction(()=>shareTreeNode(opened.n, edition, '日报'));
       const first=article.children?.[0];
       if(first) article.insertBefore(share, first);
       else article.append(share);
-      list.append(article);
+      list.replaceChildren(article);
       titleEl.hidden=false;titleEl.textContent=opened.n.title;
     } else {
       syncReadingChrome(null);
@@ -1005,7 +1034,7 @@ export function createInformationTreePage(host) {
       else {
         const rows=el('ol','','news-rows');
         for(const item of items) rows.append(compactCard(item));
-        list.append(rows);
+        list.replaceChildren(rows);
       }
     }
     if(!opened) paintSouthboundLine(list, token);
@@ -1147,7 +1176,7 @@ export function createInformationTreePage(host) {
     let loaded=false,slow=0;
     async function load() {
       if(!details.open){hourOpen().delete(id);clearTimeout(slow);return;}
-      hourOpen().add(id);if(loaded)return;loaded=true;panel.replaceChildren(hourSkeleton());
+      hourOpen().add(id);if(loaded)return;loaded=true;panel.replaceChildren(hourSkeleton(true));
       slow=setTimeout(()=>{
         if(!panel.querySelector('.tree-hour-skeleton'))return;
         loaded=false;panel.replaceChildren(button('读取较慢 · 重试',()=>{panel.replaceChildren();loaded=false;void load();}));
@@ -1443,7 +1472,7 @@ export function createInformationTreePage(host) {
     const openingClaim=hourlyFeed?beginOpening(hourRows().find(item=>item.window.startAt===selectedHourStart)||null):null;
     const cachedHour=hourlyFeed && readingCache.has(selectedHourStart);
     if(hourlyFeed && !cachedHour){list.replaceChildren(hourSkeleton());armHourSlow(token);}
-    else if(!hourlyFeed){clearHourSlow();list.textContent='读取中…';}
+    else if(!hourlyFeed){clearHourSlow();paintListSkeleton(list,{rows:6,label:'正在读取简报…',variant:'feed'});}
     setPrimary();syncHourChrome();
     if(hourlyFeed && openedId) syncReadingChrome({node:null,label:'返回小时报',onBack:closeHour});
     else if(dailyFeed && (openedId || openedDirection)) syncReadingChrome({node:null,label:'返回日报',onBack:closeDaily});
@@ -1476,10 +1505,18 @@ export function createInformationTreePage(host) {
       if(token!==epoch)return;
       const inDirection=source.filter(n=>n && group(n)===direction),tags=[...new Set(inDirection.map(n=>n.tagId))],chosen=tag.value;
       tag.replaceChildren(new Option('全部Tag','*'),...tags.map(t=>new Option(names.get(t) || t || '未分类',t || '')));tag.value=tags.some(t=>(t || '')===chosen) ? chosen : '*';
-      list.replaceChildren();
-      for(const n of inDirection.filter(n=>tag.value==='*' || n.tagId===tag.value)) list.append(await card(n,token));
       if(!source.length) list.textContent=showMaterials ? '本期没有可展开的原始信息。' : '本期没有可用内容。';
       else if(!inDirection.length) list.textContent=showMaterials ? '本期材料里这个方向没有条目。' : '本期这个方向没有模块。';
+      else {
+        const cards=[];
+        for(const n of inDirection.filter(n=>tag.value==='*' || n.tagId===tag.value)) {
+          const built=await card(n,token);
+          if(token!==epoch) return;
+          cards.push(built);
+        }
+        if(token!==epoch) return;
+        list.replaceChildren(...cards);
+      }
       rememberIssue();
       showPosition(`${mode}:${selected.window.startAt}:${direction}:${tag.value}:${showMaterials?'materials':'brief'}`, false);
     }catch(error){if(aborted(error) || token!==epoch || flightToken!==flight)return;clearHourSlow();finishOpening(openingClaim,false);paintHourUnread();
@@ -1585,7 +1622,7 @@ export function createInformationTreePage(host) {
     tools.append(materialsBtn);
     tagPanel=el('div','','tree-tag-panel');tagPanel.hidden=true;
     tag=el('select');tag.setAttribute('aria-label','主Tag筛选');tag.add(new Option('全部Tag','*'));tag.addEventListener('change',()=>{memory[mode]={...(memory[mode]||{}),tag:tag.value};render();});tagPanel.append(tag);
-    notice=el('div','','tree-update');notice.hidden=true;notice.setAttribute('role','status');list=el('div','','tree-list');bindHourSwipe(list);
+    notice=el('div','','tree-update');notice.hidden=true;notice.setAttribute('role','status');list=el('div','','tree-list');paintListSkeleton(list,{rows:6,label:'正在读取简报…',variant:'feed'});bindHourSwipe(list);
     const hourLayout=el('div','','tree-hour-layout');hourLayout.append(list);
     root.append(primary,issue,delayEl,backIssues,directionNav,tools,tagPanel,notice,hourLayout);
     const token=epoch;

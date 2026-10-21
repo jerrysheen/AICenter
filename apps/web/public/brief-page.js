@@ -1,4 +1,5 @@
 import {createInformationTreePage, sourceCaption} from './information-tree.js?v=dev';
+import {createListSkeleton, paintListSkeleton} from './list-skeleton.js?v=dev';
 import {decodeHtmlEntities} from './html-text.js?v=dev';
 import {mountInvestorDigest} from './investor-digest.js?v=dev';
 import {dateKey, zonedCalendarParts, zonedClockParts} from './shanghai-time.js?v=dev';
@@ -62,6 +63,18 @@ function node(tag, className='', text='') {
 function button(text, action, className='brief-button') {
   const el = node('button',className,text); el.type='button';
   el.addEventListener('click',action); return el;
+}
+
+function readingSkeleton(target, {hourly=false}={}) {
+  const doc = target?.ownerDocument || (typeof document !== 'undefined' ? document : null);
+  if (hourly) {
+    const box = node('div','tree-hour-skeleton');
+    box.setAttribute('aria-busy','true');
+    if (doc?.createElement) box.append(createListSkeleton(doc, {rows:6, label:'正在读取简报…', variant:'feed'}));
+    target.replaceChildren(box);
+    return;
+  }
+  paintListSkeleton(target, {rows:6, label:'正在读取简报…', variant:'feed'});
 }
 
 export function createBriefPage(host) {
@@ -191,14 +204,12 @@ export function createBriefPage(host) {
       let slow=0;
       if(!treeManifest){
         if(clockHour!=null){
-          const box=node('div','tree-hour-skeleton');
-          box.append(node('span','tree-hour-skeleton-line'),node('span','tree-hour-skeleton-line'),node('span','tree-hour-skeleton-line'));
-          root.replaceChildren(box);
+          readingSkeleton(root, {hourly:true});
           slow=setTimeout(()=>{
             if(token!==generation) return;
             root.replaceChildren(button('读取较慢 · 重试',()=>{clearTimeout(slow);routeKey='';treeReady=false;return mount(target,{date,history,archive,hour,node:focusId});}));
           },10000);
-        } else root.replaceChildren(node('p','brief-empty','正在读取简报…'));
+        } else readingSkeleton(root);
       }
       const manifest=await loadTreeManifest().catch(()=>null);
       clearTimeout(slow);
