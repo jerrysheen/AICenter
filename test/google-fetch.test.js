@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { Agent } from 'undici';
+import { http2StreamErrorSinkInstalled } from '../packages/connectors/src/http2-stream-error-sink.js';
 import {
   closeGoogleConnectDispatchers,
   googleConnectDispatcher,
@@ -27,6 +28,7 @@ test('withGoogleConnect reuses one agent and keeps the response abort signal', a
     const first = withGoogleConnect({ method: 'POST', signal }, env);
     const second = withGoogleConnect({ method: 'POST' }, env);
     assert.ok(first.dispatcher instanceof Agent);
+    assert.equal(http2StreamErrorSinkInstalled(), true);
     assert.equal(first.dispatcher, second.dispatcher);
     assert.equal(googleConnectDispatcher(env), first.dispatcher);
     assert.equal(first.signal, signal);
