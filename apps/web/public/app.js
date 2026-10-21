@@ -344,6 +344,7 @@ const state = {
   feedSort: 'captured',
   feedRange: 'all',
   feedPlatform: 'all',
+  socialPlatform: '',
   expandedFeedIds: new Set(),
   readerLang: 'translation',
   readerFont: 17,
@@ -2303,6 +2304,7 @@ function persistFeedBrowseState() {
     window.localStorage.setItem(LAST_LOCATION_KEY, JSON.stringify({
       hash: location.hash || '#sources',
       platform: state.feedPlatform || state.platform,
+      socialPlatform: state.socialPlatform || '',
       xFeed: state.xFeed,
       xueqiuFeed: state.xueqiuFeed,
       channel: state.channel,
@@ -2323,6 +2325,7 @@ function persistFeedBrowseState() {
       sort: state.feedSort,
       range: state.feedRange,
       platform: state.feedPlatform || state.platform,
+      socialPlatform: state.socialPlatform || '',
       channel: state.channel,
       xFeed: state.xFeed,
       xueqiuFeed: state.xueqiuFeed,
@@ -2343,6 +2346,8 @@ function restorePersistedFeedBrowseState() {
     if (Number.isFinite(saved.shown) && saved.shown > state.feedShown) {
       state.feedShown = saved.shown;
     }
+    if (saved.socialPlatform === 'x' || saved.socialPlatform === 'xueqiu') state.socialPlatform = saved.socialPlatform;
+    else if (saved.platform === 'x' || saved.platform === 'xueqiu') state.socialPlatform = saved.platform;
     if (saved.platform) {
       state.platform = ['x', 'xueqiu'].includes(saved.platform) ? 'social' : saved.platform === 'bilibili' ? 'all' : saved.platform;
       state.feedPlatform = state.platform;
@@ -3994,7 +3999,12 @@ async function syncLocalTranslationsToServer(items) {
 
 function matchesPlatform(item) {
   const platform = state.feedPlatform || state.platform;
-  if (platform === 'social') return item.platform === 'x' || item.platform === 'xueqiu';
+  if (platform === 'social') {
+    if (state.channel === 'social' && (state.socialPlatform === 'x' || state.socialPlatform === 'xueqiu')) {
+      return item.platform === state.socialPlatform;
+    }
+    return item.platform === 'x' || item.platform === 'xueqiu';
+  }
   return platform === 'all' || item.platform === platform;
 }
 
@@ -4143,6 +4153,7 @@ function visibleFeedItems() {
     state.feedViewEpoch,
     state.channel,
     state.feedPlatform,
+    state.socialPlatform,
     state.feedSort,
     state.feedRange,
     state.feedQuery,
@@ -4477,6 +4488,7 @@ function applyFeedPlatform(id) {
     state.mediaSourceKey = 'trendforce';
     state.mediaView = 'all';
   }
+  if (requested === 'x' || requested === 'xueqiu') state.socialPlatform = requested;
   next = ['x', 'xueqiu'].includes(next) ? 'social' : next === 'bilibili' ? 'all' : next || 'all';
   state.feedPlatform = next;
   state.platform = next;
@@ -4649,7 +4661,34 @@ function renderChannels() {
 }
 
 function renderPlatformFilters() {
-  elements['platform-filters']?.classList.add('hidden');
+  const row = typeof elements === 'undefined' ? null : elements?.['platform-filters'];
+  if (!row) return;
+  if (state.channel !== 'social') {
+    row.classList.add('hidden');
+    return;
+  }
+  row.classList.remove('hidden');
+  const current = state.socialPlatform === 'x' || state.socialPlatform === 'xueqiu' ? state.socialPlatform : '';
+  renderChipTabs(row, [
+    { id: '', label: '全部' },
+    { id: 'x', label: 'X' },
+    { id: 'xueqiu', label: '雪球' },
+  ], current, (id) => setSocialPlatform(id));
+}
+
+function setSocialPlatform(id) {
+  const next = id === 'x' || id === 'xueqiu' ? id : '';
+  if ((state.socialPlatform || '') === next && state.channel === 'social' && state.feedPlatform === 'social') return;
+  state.socialPlatform = next;
+  state.channel = 'social';
+  state.feedPlatform = 'social';
+  state.platform = 'social';
+  state.feedViewEpoch = (Number(state.feedViewEpoch) || 0) + 1;
+  resetFeedWindow();
+  persistFeedBrowseState();
+  renderChannels();
+  renderPlatformFilters();
+  renderPosts();
 }
 
 function xFeedLabel(feed = state.xFeed) {
@@ -5048,6 +5087,9 @@ function resetFeedWindow() {
 function socialFeedCanPage(platform = '') {
   if (state.feedPlatform === 'media' || state.channel === 'official' || state.channel === 'focus' || state.channel === 'recent') return false;
   const shows = (name) => {
+    if (state.channel === 'social' && (state.socialPlatform === 'x' || state.socialPlatform === 'xueqiu')) {
+      return name === state.socialPlatform;
+    }
     if (state.feedPlatform === 'x' || state.feedPlatform === 'xueqiu') return state.feedPlatform === name;
     return state.feedPlatform === 'social' || state.feedPlatform === 'all' || state.channel === 'social' || state.channel === 'all';
   };
@@ -5207,6 +5249,7 @@ function feedToNewsRow(post) {
   const canSwipe = state.channel !== 'official';
   return {
     id: post.id,
+    platform: post.platform || '',
     title: titled.title,
     at: moment.at,
     day: newsDayLabel(moment.at),
@@ -5279,7 +5322,32 @@ function socialShownRows(rows) {
   const unread = [];
   const read = [];
   for (const row of rows || []) (row?.isRead ? read : unread).push(row);
-  return [...unread.slice(0, state.feedShown), ...read];
+  return [...windowSocialUnread(unread), ...read];
+  function windowSocialUnread(list) {
+    const limit = Math.max(0, Number(state.feedShown) || 0);
+    if (state.socialPlatform === 'x' || state.socialPlatform === 'xueqiu') return list.slice(0, limit);
+    const groups = new Map();
+    for (const row of list) {
+      const key = row?.platform || '';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(row);
+    }
+    if (groups.size < 2) return list.slice(0, limit);
+    const reserved = new Set();
+    const page = typeof FEED_PAGE_SIZE === 'number' ? FEED_PAGE_SIZE : 12;
+    for (const group of groups.values()) {
+      for (const row of group.slice(0, page)) if (row?.id) reserved.add(row.id);
+    }
+    const kept = list.filter((row) => reserved.has(row?.id));
+    if (kept.length >= limit) return kept;
+    const extra = [];
+    for (const row of list) {
+      if (reserved.has(row?.id)) continue;
+      extra.push(row);
+      if (kept.length + extra.length >= limit) break;
+    }
+    return [...kept, ...extra];
+  }
 }
 
 function feedPaintId(row) {
@@ -6948,6 +7016,11 @@ function openSource(source) {
   }
   if (source.category === 'content') {
     if(source.providerId==='trendforce'){setView('feed');applyFeedPlatform('trendforce');return;}
+    if (source.providerId === 'x' || source.providerId === 'xueqiu') {
+      setView('feed');
+      applyFeedPlatform(source.providerId);
+      return;
+    }
     state.platform = source.providerId;
     resetFeedWindow();
     renderPlatformFilters();
@@ -15898,11 +15971,46 @@ function placeSocialItems(existing, incoming) {
   return [...unread, ...read];
 }
 
+async function confirmSocialUnread(platform, { epoch = null } = {}) {
+  if (state.channel !== 'social' || (epoch != null && state.feedEpoch !== epoch)) return;
+  const isXueqiu = platform === 'xueqiu';
+  const readCursor = isXueqiu ? state.xueqiuReadCursor : state.xReadCursor;
+  if (readCursor) return;
+  let payload;
+  try {
+    const params = new URLSearchParams({
+      platform,
+      feed: isXueqiu ? state.xueqiuFeed : state.xFeed,
+      limit: String(FEED_PAGE_SIZE),
+    });
+    payload = await api(`/api/v1/feed/${platform}?${params}`, { timeoutMs: 15_000, fresh: true });
+  } catch {
+    return;
+  }
+  if (epoch != null && state.feedEpoch !== epoch || state.channel !== 'social') return;
+  const feed = payload.feed || {};
+  const incoming = (feed.items || []).filter((item) => item?.id && !isHiddenFeedItem(item));
+  const unread = incoming.filter((item) => !item.isRead);
+  if (!unread.length) return;
+  const current = isXueqiu ? state.xueqiuItems : state.xItems;
+  const next = typeof placeSocialItems === 'function' ? placeSocialItems(current, incoming) : [...(current || []), ...incoming];
+  const cursor = String(feed.nextCursor || '');
+  if (isXueqiu) {
+    state.xueqiuItems = next;
+    if (cursor.startsWith('0,')) state.xueqiuNextCursor = cursor;
+  } else {
+    state.xItems = next;
+    if (cursor.startsWith('0,')) state.xNextCursor = cursor;
+  }
+  if (typeof mergeSocialReadHead === 'function') await mergeSocialReadHead(platform, { epoch });
+}
+
 async function mergeSocialReadHead(platform, { epoch = null } = {}) {
   if (state.channel !== 'social' || (epoch != null && state.feedEpoch !== epoch)) return;
   const isXueqiu = platform === 'xueqiu';
   const unreadCursor = isXueqiu ? state.xueqiuNextCursor : state.xNextCursor;
   const readCursor = isXueqiu ? state.xueqiuReadCursor : state.xReadCursor;
+  // 0, 表示这一页最后一条仍是未读，不是未读分区已经空了。未读条数为 0 时不进这里。
   if (readCursor || !String(unreadCursor || '').startsWith('0,')) return;
   try {
     const params = new URLSearchParams({
@@ -15995,8 +16103,14 @@ const payload = await api(`/api/v1/feed/x?${params}`, { timeoutMs: refresh ? 180
     state.xNote = feed.note || '';
     state.xError = '';
     state.xLoaded = true;
-    if (!saved && !focusWindow && !append && typeof mergeSocialReadHead === 'function') await mergeSocialReadHead('x', { epoch });
+    if (!saved && !focusWindow && !append && loadXFeed.replaceToken === pageToken) {
+      const unreadNow = (state.xItems || []).filter((item) => item && !item.isRead).length;
+      if (unreadNow > 0) {
+        if (typeof mergeSocialReadHead === 'function') await mergeSocialReadHead('x', { epoch });
+      } else if (typeof confirmSocialUnread === 'function') await confirmSocialUnread('x', { epoch });
+    }
     if (epoch != null && state.feedEpoch !== epoch) return feed;
+    if (!saved && !append && loadXFeed.replaceToken !== pageToken) return feed;
     hydrateFeedTranslations(state.xItems);
     paintLoadedSocialFeed('x', epoch);
     renderXToolbar();
@@ -16132,8 +16246,14 @@ const payload = await api(`/api/v1/feed/xueqiu?${params}`, { timeoutMs: refresh 
     state.xueqiuNote = feed.note || '';
     state.xueqiuError = '';
     state.xueqiuLoaded = true;
-    if (!saved && !focusWindow && !append && typeof mergeSocialReadHead === 'function') await mergeSocialReadHead('xueqiu', { epoch });
+    if (!saved && !focusWindow && !append && loadXueqiuFeed.replaceToken === pageToken) {
+      const unreadNow = (state.xueqiuItems || []).filter((item) => item && !item.isRead).length;
+      if (unreadNow > 0) {
+        if (typeof mergeSocialReadHead === 'function') await mergeSocialReadHead('xueqiu', { epoch });
+      } else if (typeof confirmSocialUnread === 'function') await confirmSocialUnread('xueqiu', { epoch });
+    }
     if (epoch != null && state.feedEpoch !== epoch) return feed;
+    if (!saved && !append && loadXueqiuFeed.replaceToken !== pageToken) return feed;
     hydrateFeedTranslations(state.xueqiuItems);
     paintLoadedSocialFeed('xueqiu', epoch);
     renderXueqiuToolbar();
