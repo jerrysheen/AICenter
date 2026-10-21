@@ -6,6 +6,7 @@ import {
   dueFailedHourCatchupPlan,
   enqueueDueFailedHourRefreshes,
   hourHasNewMaterial,
+  hourlyRetryLaneHourStarts,
 } from '../packages/runtime/src/information-tree-module.js';
 import {
   createReportJobHandlers,
@@ -71,11 +72,20 @@ test('older failed hours fill the cap before the current hour', () => {
   assert.deepEqual(first.map((item) => item.priority), [-1, -1]);
   const open = new Set(first.map((item) => item.hourStart));
   const second = dueFailedHourCatchupPlan({at, rows, openHourStarts: open, limit: 2});
-  assert.deepEqual(second, [{hourStart: latest, priority: 0}]);
-  assert.deepEqual(dueFailedHourCatchupPlan({at, rows, openHourStarts: new Set([...open, latest]), limit: 2}), []);
+  assert.deepEqual(second, [{hourStart: h12, priority: -1}, {hourStart: latest, priority: 0}]);
+  assert.deepEqual(dueFailedHourCatchupPlan({at, rows, openHourStarts: new Set([...open, h12, latest]), limit: 2}), []);
 });
 
-test('the scheduled check requeues still-failed hours without new material and does not repeat them', () => {
+test('a due failed hour is still selected when the attempt missed a node', () => {
+  const hour = latest - 2 * H;
+  assert.deepEqual(dueFailedHourCatchupPlan({
+    at,
+    rows: [{hourStart: hour, attempt: failed(hour), hasNewMaterial: true}],
+    limit: 2,
+  }), [{hourStart: hour, priority: -1}]);
+});
+
+test('the scheduled check requeues a due failure even when a newer node is uncovered', () => {
   const h10 = latest - 3 * H;
   const h11 = latest - 2 * H;
   const fresh = latest - H;
@@ -106,10 +116,47 @@ test('the scheduled check requeues still-failed hours without new material and d
     assert.deepEqual(jobs.map((job) => job.priority), [-1, -1]);
     assert.equal(jobs[0].availableAt, at);
     const again = enqueueDueFailedHourRefreshes(store, service, 'local', at, {limit: 2});
-    assert.deepEqual(again.map((job) => job.input.hourStart), [latest]);
-    assert.equal(again[0].priority, 0);
+    assert.deepEqual(again.map((job) => job.input.hourStart), [fresh, latest]);
+    assert.deepEqual(again.map((job) => job.priority), [-1, 0]);
     assert.equal(enqueueDueFailedHourRefreshes(store, service, 'local', at, {limit: 2}).length, 0);
-    assert.equal(store.listOpenJobs('report.hourly.extract').length, 3);
+    assert.equal(store.listOpenJobs('report.hourly.extract').length, 4);
+  } finally {
+    store.close();
+  }
+});
+
+test('a due failed hour parked below the retry lane is promoted instead of left queued', () => {
+  const hour = latest - 3 * H;
+  const service = {
+    list() {
+      return {hours: [{attempt: failed(hour), edition: null}], information: [node(hour)]};
+    },
+  };
+  const store = createStore(':memory:');
+  try {
+    const parked = store.createJob({
+      type: 'report.hourly.extract',
+      workspaceId: 'local',
+      priority: -5,
+      maxAttempts: 2,
+      availableAt: at + 30 * 60_000,
+      input: {workspaceId: 'local', hourStart: hour},
+    });
+    const running = {
+      status: 'running',
+      priority: -5,
+      input: {hourStart: hour + H},
+    };
+    assert.deepEqual([...hourlyRetryLaneHourStarts([parked, running])], [hour + H]);
+    const jobs = enqueueDueFailedHourRefreshes(store, service, 'local', at, {limit: 2});
+    assert.deepEqual(jobs.map((job) => job.id), [parked.id]);
+    assert.equal(jobs[0].priority, -1);
+    assert.equal(jobs[0].availableAt, at);
+    const open = store.listOpenJobs('report.hourly.extract');
+    assert.equal(open.length, 1);
+    assert.equal(open[0].priority, -1);
+    assert.equal(open[0].availableAt, at);
+    assert.equal(enqueueDueFailedHourRefreshes(store, service, 'local', at, {limit: 2}).length, 0);
   } finally {
     store.close();
   }
