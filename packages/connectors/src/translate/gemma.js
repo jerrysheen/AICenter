@@ -30,11 +30,18 @@ function boundedInteger(value, fallback, min, max) {
 
 export const GEMMA_DEFAULT_RETRY_STATUSES = [500, 502, 503, 408];
 
-// Defaults sit inside the per-project Google limits: 30 RPM, 16K TPM, 14.4K RPD.
-// Interval, retry statuses, backoff and retry count are local knobs with wider clamps.
+// RPM stays in the 25–28 band under the 30 RPM project limit. TPM stays 16K per key.
+// The daily 14.4K count is not a local cap unless the env sets one. 429 still cools down.
+function optionalDailyCap(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return Infinity;
+  const raw = Number(value);
+  if (!Number.isInteger(raw) || raw < 1) return Infinity;
+  return raw;
+}
+
 export function gemmaTranslationPolicy(env = process.env) {
-  const intervalMinMs = boundedInteger(env.AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MIN_MS, 2000, 0, 120_000);
-  const intervalMaxMs = Math.max(intervalMinMs, boundedInteger(env.AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MAX_MS, 3000, 0, 120_000));
+  const intervalMinMs = boundedInteger(env.AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MIN_MS, 0, 0, 120_000);
+  const intervalMaxMs = Math.max(intervalMinMs, boundedInteger(env.AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MAX_MS, 500, 0, 120_000));
   const backoffBaseMs = boundedInteger(env.AI_CENTER_GEMMA_TRANSLATION_BACKOFF_BASE_MS, 10_000, 0, 600_000);
   const backoffCapMs = Math.max(backoffBaseMs, boundedInteger(env.AI_CENTER_GEMMA_TRANSLATION_BACKOFF_CAP_MS, 40_000, 0, 600_000));
   return {
@@ -42,12 +49,29 @@ export function gemmaTranslationPolicy(env = process.env) {
     intervalMinMs,
     intervalMaxMs,
     tokensPerMinute: boundedInteger(env.AI_CENTER_GEMMA_TRANSLATION_TOKENS_PER_MINUTE, 16000, 1, 16000),
-    requestsPerKeyPerDay: boundedInteger(env.AI_CENTER_GEMMA_TRANSLATION_REQUESTS_PER_DAY, 14400, 1, 14400),
+    requestsPerKeyPerDay: optionalDailyCap(env.AI_CENTER_GEMMA_TRANSLATION_REQUESTS_PER_DAY),
+    keyConcurrency: boundedInteger(env.AI_CENTER_GEMMA_TRANSLATION_KEY_CONCURRENCY, 2, 2, 3),
     backoffBaseMs,
     backoffCapMs,
     maxRetries: boundedInteger(env.AI_CENTER_GEMMA_TRANSLATION_MAX_RETRIES, 2, 0, 8),
     retryStatuses: gemmaRetryStatuses(env.AI_CENTER_GEMMA_TRANSLATION_RETRY_STATUSES),
   };
+}
+
+// Latin text is about four characters per token. CJK counts as one. This is a
+// pre-call floor so an in-flight request occupies TPM; it is not a byte bill.
+export function estimateGemmaTokens(text) {
+  let quarter = 0;
+  for (const ch of String(text || '')) quarter += ch.codePointAt(0) > 127 ? 4 : 1;
+  return Math.ceil(quarter / 4);
+}
+
+export function gemmaReservedTokens(input, { estimatedTokens = 0, maxOutputTokens = 4096 } = {}) {
+  const outputCap = Number.isInteger(maxOutputTokens) && maxOutputTokens > 0 ? Math.min(8192, maxOutputTokens) : 4096;
+  const inputTokens = estimateGemmaTokens(input);
+  const outputBudget = Math.min(outputCap, Math.max(Math.ceil(inputTokens * 1.5), 256));
+  const caller = Math.max(0, Math.ceil(Number(estimatedTokens) || 0));
+  return Math.max(caller, inputTokens + outputBudget);
 }
 
 export function gemmaRetryStatuses(value) {
@@ -259,6 +283,7 @@ export function createGemmaTranslationRouter(options = {}) {
         requestsPerHour: Infinity, requestsPerMinute: policy.requestsPerMinute, minIntervalMs: policy.intervalMinMs,
         pacingModels: GEMMA_TRANSLATION_MODELS, estimatedTokensPerMinute: policy.tokensPerMinute, estimatedTokens,
         dayStart: day.dayStart, dayEnd: day.dayEnd,
+        inflightLimit: policy.keyConcurrency, inflightRetryMs: GEMMA_ADMIT_MIN_WAIT_MS,
       });
       if (ready.length) {
         const origin = pool === schedule ? scheduleCursor : pool === models ? cursor : 0;
@@ -323,7 +348,13 @@ export function createGemmaTranslationRouter(options = {}) {
     async generate({ system, prompt, model, task, estimatedTokens = 0, maxOutputTokens } = {}) {
       if (!slots.length) throw new Error('未配置 Gemma 翻译凭据');
       if (!repository?.reserve) throw new Error('Gemma 翻译需要持久化配额 Repository');
-      const reserved = Math.max(0, Math.ceil(Number(estimatedTokens) || 0));
+      const outputCap = Number.isInteger(maxOutputTokens) && maxOutputTokens > 0 ? Math.min(8192, maxOutputTokens) : 4096;
+      const input = task === 'tag'
+        ? gemmaTagInput(system, prompt)
+        : task === 'hourly' || task === 'article'
+          ? `${system}\n\n${prompt}`
+          : gemmaTranslationInput(system, prompt);
+      const reserved = gemmaReservedTokens(input, { estimatedTokens, maxOutputTokens: outputCap });
       if (reserved > policy.tokensPerMinute) {
         const noun = task === 'tag' ? '标注' : task === 'hourly' ? '浓缩' : task === 'article' ? '整理' : '翻译';
         throw Object.assign(new Error(`Gemma ${noun}这一段超过每分钟 token 上限`), {
@@ -331,14 +362,8 @@ export function createGemmaTranslationRouter(options = {}) {
           retryAt: now() + 60_000,
         });
       }
-      const outputCap = Number.isInteger(maxOutputTokens) && maxOutputTokens > 0 ? Math.min(8192, maxOutputTokens) : 4096;
       const firstPool = model ? gemmaLockedModels(model) : (schedule || models);
       const retryPool = model ? firstPool : retryModels;
-      const input = task === 'tag'
-        ? gemmaTagInput(system, prompt)
-        : task === 'hourly' || task === 'article'
-          ? `${system}\n\n${prompt}`
-          : gemmaTranslationInput(system, prompt);
       const inputBytes = Buffer.byteLength(input, 'utf8');
       let lastError;
       // 同一次 generate 最多再换一把密钥。多把密钥同时 500 时，不再在同一毫秒把后面的密钥也打满。
