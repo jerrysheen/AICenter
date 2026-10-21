@@ -793,7 +793,7 @@ test('gemma translates each part, stores it, then writes one article', async () 
 
 test('a quota window keeps finished parts and a gemma failure can use flash', async () => {
   const opened = openStore();
-  const transcript = sentences(30);
+  const transcript = sentences(100);
   let blocked = true;
   const gemma = fakeGemma((input) => {
     if (blocked && gemma.calls.length === 2) {
