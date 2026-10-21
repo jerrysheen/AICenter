@@ -488,7 +488,8 @@
       "identityParams": [],
       "redirectHosts": [
         "www.bbc.co.uk",
-        "www.bbc.com"
+        "www.bbc.com",
+        "bbc.in"
       ],
       "articleHosts": [
         "www.bbc.co.uk",
@@ -950,7 +951,8 @@
       "identityParams": [],
       "redirectHosts": [
         "www.bbc.co.uk",
-        "www.bbc.com"
+        "www.bbc.com",
+        "bbc.in"
       ],
       "articleHosts": [
         "www.bbc.co.uk",
@@ -1076,7 +1078,8 @@
       "identityParams": [],
       "redirectHosts": [
         "www.bbc.co.uk",
-        "www.bbc.com"
+        "www.bbc.com",
+        "bbc.in"
       ],
       "articleHosts": [
         "www.bbc.co.uk",
@@ -1118,7 +1121,8 @@
       "identityParams": [],
       "redirectHosts": [
         "www.bbc.co.uk",
-        "www.bbc.com"
+        "www.bbc.com",
+        "bbc.in"
       ],
       "articleHosts": [
         "www.bbc.co.uk",

@@ -479,7 +479,7 @@ export function createAuthorView({ api, openAuthor, openArticle }) {
   async function loadList(platform, cursor = '') {
     const query = new URLSearchParams({ platform: platform || 'all' });
     if (cursor) query.set('cursor', cursor);
-    return api(`/api/v1/authors?${query}`, { fresh: true });
+    return api(`/api/v1/authors?${query}`, { fresh: true, priority: 1 });
   }
 
   function showLoading(shell) {
