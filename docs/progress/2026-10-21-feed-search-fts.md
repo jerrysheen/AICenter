@@ -1,6 +1,6 @@
 # 信息流搜索改走全文索引
 
-2026-10-21。体验官复查 #189：信息流「全部」在 10 月 16 日缺了 22:43 的 Miles Cranmer「Here is the full talk」。搜索和作者页都有。原因不是页面在读 `subscriptionId`。「全部」只列挂在 `x:home:following` 上的帖，再按发布时间排。这条当时不在关注来源上。后来的时间线同步又会用 `saveCapture` 把已经挂上关注的帖写回来源账号，所以补录挂不上。现在关注来源一旦写上就留下；空的来源也不会把已有来源清掉。关注同步仍可以把推荐页上的帖领到关注。历史数据用 `node scripts/repair-x-following-feed.mjs --dry-run` 先看会动哪些帖，确认后再去掉 `--dry-run`。脚本只挪这几类、且搜索能看见的 X 帖：不在推荐页上的、所在来源没有启用订阅的、长视频整理过的、`filterReason` 以 `fallback-` 开头的。推荐页里已经有订阅的普通帖留在原处。不改标题，不另建整理任务。
+2026-10-21。体验官复查 #189：信息流「全部」在 10 月 16 日缺了 22:43 的 Miles Cranmer「Here is the full talk」。搜索和作者页都有。原因不是页面在读 `subscriptionId`。「全部」只列挂在 `x:home:following` 上的帖，再按发布时间排。这条当时不在关注来源上。修复只挪作者已经关注、或捕获上带有 following 标记的帖。推荐页里没关注的作者、作者页来源、搜索来源和视频帖都不挪。正式跑之前把 `capture_id` 和原来的来源写进备份，可以用 `--rollback` 还原。只有作者已关注，或标记写明来自 following，后续同步才留在关注源。空的来源也不会把已有来源清掉。陌生帖带着别的真实来源写入时会离开关注源。历史数据用 `node scripts/repair-x-following-feed.mjs --dry-run` 先看会动哪些帖，确认后再去掉 `--dry-run`。不改标题，不另建整理任务。
 
 搜索结果以前不带译文，英文标题就会标「暂未翻译」，作者页却用同一条译文预览。现在搜索附上已保存的译文预览，不拿截断后的正文去对哈希。两边都显示「以下是演讲全文：」。
 
@@ -14,4 +14,4 @@ migration 96 只建空的 `content_item_fts` 和进度表 `feed_search_index_cur
 
 搜索结果里的 `subscriptionId` 以前写死成空字符串。补录会把帖子挂到 `x:home:following`，但这个来源以前可能没有订阅行，接口也就看不出挂上了没有。现在补录会补上这条订阅，搜索按帖子所在来源返回订阅 id。已经挂在关注信息流、并且已有订阅时，重启后搜索就会带上 id，不必再跑补录。标题仍是「以下是演讲全文：」，不另建整理任务。
 
-需要同时重启 Web 和 Worker，浏览器再加载一次。索引在后台补，不挡住领任务。这一集不用重新整理。不要重建数据库。把历史里该出现在「全部」的帖挂到关注来源：先 `node scripts/repair-x-following-feed.mjs --dry-run`，再去掉 `--dry-run`。单条长视频仍可用 `node scripts/repair-x-video-feed.mjs --tweet 2111105654211608847`，也可以先加 `--dry-run`。
+需要同时重启 Web 和 Worker，浏览器再加载一次。索引在后台补，不挡住领任务。这一集不用重新整理。不要重建数据库。把作者已关注或带 following 标记、却还没挂上关注来源的帖补回去：先 `node scripts/repair-x-following-feed.mjs --dry-run`，再去掉 `--dry-run`。回滚用 `node scripts/repair-x-following-feed.mjs --rollback <备份文件>`。单条长视频仍可用 `node scripts/repair-x-video-feed.mjs --tweet 2111105654211608847`，也可以先加 `--dry-run`。

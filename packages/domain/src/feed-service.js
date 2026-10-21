@@ -701,6 +701,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
         ...(xVideoCaptureMetadata(item) ? { xVideo: xVideoCaptureMetadata(item) } : {}),
         ...(authorFields ? { authorProfile: authorFields.authorProfile } : {}),
         ...(verdict.metadata || {}),
+        ...(providerId === 'x' && replay.sourceInput?.feed === 'following' ? { homeFeed: 'following' } : {}),
       },
     });
     if (!verdict.createContentItem) {
@@ -847,7 +848,7 @@ function searchStoredItems(feedRepository, workspaceId, query, limit, qualityRul
   const terms = searchTerms(query);
   if (!terms.length) return [];
   if (typeof feedRepository.searchVisibleItems === 'function') {
-    const searched = feedRepository.searchVisibleItems(workspaceId, { query, provider, limit, qualityRule });
+    const searched = feedRepository.searchVisibleItems(workspaceId, { query, limit, qualityRule, provider });
     if (Array.isArray(searched)) return searched;
   }
   const rows = feedRepository.listContentItems(workspaceId, { limit: STORED_FEED_LIMIT, qualityRule }) || [];
