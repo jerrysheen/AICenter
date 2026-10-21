@@ -7,7 +7,7 @@ import {
   xLinkArticleDay,
   xLinkArticleEnabled,
 } from '../../domain/src/x-link-articles.js';
-import { linkLabelForUrl } from '../../domain/src/x-link-service.js';
+import { linkLabelForUrl, usableArticleLink } from '../../domain/src/x-link-service.js';
 
 function clip(value) {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, 180);
@@ -45,27 +45,32 @@ export async function runXLinkArticle({
   });
   const labeled = fetched.finalUrl ? linkLabelForUrl(fetched.finalUrl, publishers) : { publisher: '', linkLabel: '', finalUrl: '', meta: null };
   const publisher = labeled.publisher || row.publisher || '';
-  const base = {
-    workspaceId,
-    tweetId: id,
-    finalUrl: labeled.finalUrl || fetched.finalUrl || row.finalUrl || row.sourceUrl || '',
-    publisher,
-    linkLabel: labeled.linkLabel || row.linkLabel || (publisher ? readingLinkLabel(publisher) : ''),
-  };
   if (!fetched.ok) {
+    const landed = usableArticleLink(fetched.finalUrl, publishers);
     const terminal = fetched.reason === 'paywall' || fetched.reason === 'blocked' || fetched.reason === 'incomplete'
       || fetched.reason === 'blocked_host' || fetched.reason === 'blocked_url';
     const status = fetched.reason === 'paywall' || fetched.reason === 'blocked' || fetched.reason === 'incomplete'
       ? fetched.reason
       : 'failed';
     repository.save({
-      ...base,
+      workspaceId,
+      tweetId: id,
+      finalUrl: landed?.finalUrl || '',
+      publisher: landed?.publisher || row.publisher || '',
+      linkLabel: landed?.linkLabel || '',
       status: terminal || row.attempts + 1 >= 3 ? status : 'pending',
       reason: clip(fetched.reason),
       attempts: row.attempts + 1,
     });
     return { status };
   }
+  const base = {
+    workspaceId,
+    tweetId: id,
+    finalUrl: labeled.finalUrl || fetched.finalUrl || '',
+    publisher,
+    linkLabel: labeled.linkLabel || row.linkLabel || (publisher ? readingLinkLabel(publisher) : ''),
+  };
   const copied = repository.findReadyByFinalUrl(workspaceId, base.finalUrl);
   if (copied && copied.tweetId !== id) {
     repository.save({

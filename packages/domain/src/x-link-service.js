@@ -213,3 +213,15 @@ export function linkLabelForUrl(finalUrl, index) {
     finalUrl: canonicalArticleUrl(finalUrl),
   };
 }
+
+// 抓取失败时，短链不能当成「阅读原文」。只有落到媒体正文域名才保留链接。
+export function usableArticleLink(finalUrl, index) {
+  const labeled = linkLabelForUrl(finalUrl, index);
+  if (!labeled.finalUrl || !labeled.linkLabel) return null;
+  let host = '';
+  try { host = new URL(labeled.finalUrl).hostname.toLowerCase(); } catch { return null; }
+  const bare = host.replace(/^www\./, '');
+  const hops = index?.hopHosts;
+  if (hops && (hops.has(host) || hops.has(bare))) return null;
+  return labeled;
+}

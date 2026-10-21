@@ -295,7 +295,43 @@ test('a paywall keeps the original link and is not marked ready', async () => {
     const row = opened.store.repositories.xLinks.get('local', TWEET);
     assert.equal(row.status, 'paywall');
     assert.equal(row.linkLabel, '阅读 BBC 原文');
+    assert.match(row.finalUrl, /www\.bbc\.com\/news\/paid/);
     assert.equal(row.bodyZh, '');
+  } finally {
+    opened.close();
+  }
+});
+
+test('a failed short link is cleared so the reader falls back to the original post', async () => {
+  const opened = openStore();
+  try {
+    opened.store.repositories.xLinks.save({
+      workspaceId: 'local',
+      tweetId: TWEET,
+      sourceUrl: 'https://t.co/abc',
+      finalUrl: 'https://bbc.in/4yWhqSC',
+      publisher: 'BBC',
+      linkLabel: '阅读 BBC 原文',
+      status: 'pending',
+    });
+    const result = await runXLinkArticle({
+      repository: opened.store.repositories.xLinks,
+      publishers,
+      fetchArticle: async () => ({
+        ok: false,
+        reason: 'blocked_host',
+        finalUrl: 'https://bbc.in/4yWhqSC',
+        title: '',
+        text: '',
+        contentLevel: '',
+      }),
+      workspaceId: 'local',
+      tweetId: TWEET,
+    });
+    assert.equal(result.status, 'failed');
+    const row = opened.store.repositories.xLinks.get('local', TWEET);
+    assert.equal(row.finalUrl, '');
+    assert.equal(row.linkLabel, '');
   } finally {
     opened.close();
   }
