@@ -12,7 +12,7 @@
 
 研究召回见 `packages/contracts/src/research-recall.js`。研究 Tag 必须带定义、命中边界和排除边界；研究问题引用这些 Tag，并带 query、回看范围和证据要求。内容哈希识别定义变化，版本字符串本身不构成新发布。判断结果是直接相关、背景线索、不相关或材料不足；待处理和失败不是不相关。已发布研究报告按 id 冻结。页面不增加供应商字段。生产开关默认关闭。
 
-模型用量见 `model-usage-v1.md`：`ModelUsageRecord` 严格校验 Runtime 内部索引，区分 request 与官方 turn 汇总；所有缺失桶/供应商金额用 null。`ModelUsageView` 移除供应商路由与私有日志格式/路径，返回中立执行身份、业务阶段和独立版本费率估算。`ModelUsageQuery` 校验按 Job 分页，本机读取不得执行模型调用、导入或修复任务。
+模型用量见 `model-usage-v1.md`：`ModelUsageRecord` 严格校验 Runtime 内部索引，区分 request 与官方 turn 汇总；所有缺失桶/供应商金额用 null。`ModelUsageView` 移除供应商路由与私有日志格式/路径，返回中立执行身份、业务阶段和独立版本费率估算。`ModelUsageQuery` 校验按 Job 分页，本机读取不得执行模型调用、导入或修复任务。同一接口另返回 `bambooDays`：最近 14 个上海日的信息流准入次数和当日上限，默认 7000。每天只有 `day`、`count`、`limit`，不返回密钥、模型、地址或文件路径。这次读取不记入次数。
 
 硬件报价以独立结构化 Contract 保存完整规格、类型、Decimal 数值、币种/单位/报价期、来源更新时间与采集时间；未知字段为 null。列表里的 `rawCells` 为空，原单元格仍在系列明细。不带 `snapshotId` 的列表，以及 `category` 为 `dram`、`nand`、`ssd`、`other-storage` 的列表，只写出 Worker 快照里的缓冲区；还没有快照时返回 `{"ok":true,"pending":true}`。带 `snapshotId` 的列表在 Web 的 `worker_threads` 里读取、序列化并 gzip，请求等待后写出。系列明细仍按键读取。报告简介是内容种类，summary_only 是完整度，两者独立。报价高低不表示股票 OHLC。兼容与去重规则见 `hardware-prices-v1.md`。
 

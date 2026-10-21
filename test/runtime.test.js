@@ -258,7 +258,7 @@ test('job loop watchdog logs once while claim has not returned', async () => {
   const running = runner.start();
   await wait(140);
   assert.equal(lines.length, 1);
-  assert.match(lines[0], /^\[worker\] job loop has not ticked for \d+s$/);
+  assert.match(lines[0], /^\[worker\] job loop has not ticked for \d+s tasks=-$/);
   release();
   await wait(50);
   runner.stop();

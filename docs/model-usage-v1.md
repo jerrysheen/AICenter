@@ -31,7 +31,7 @@ Runtime 下的账本 Service/Repository 负责应用查询索引。原生 Sessio
 
 ## 费用与查询
 
-入口：本机「任务」页的「模型用量账本（本机）」。接口：`GET /api/v1/runtime/model-usage?limit=50&offset=0&jobId=...`，沿用 desktop 权限，公网/配对身份不能读取。分页最多200行。页面 Contract 不返回 provider/model、原始 SessionEvent 或 Host 文件路径；执行身份用中立 `executionId` 表示。
+入口：本机「任务」页的「模型用量账本（本机）」。接口：`GET /api/v1/runtime/model-usage?limit=50&offset=0&jobId=...`，沿用 desktop 权限，公网/配对身份不能读取。分页最多200行。页面 Contract 不返回 provider/model、原始 SessionEvent 或 Host 文件路径；执行身份用中立 `executionId` 表示。同一响应的 `bambooDays` 是最近 14 个上海日的信息流准入次数，上限默认 7000，来自已有的 `bamboo-usage-YYYYMMDD.json`。每天只有 `day`、`count`、`limit`。这次读取不占额度，也不改准入分类。
 
 供应商金额与估算分开。当前适配器没有可确认的供应商扣款金额/币种，保持 null。费率不默认猜测；通过 Instance 环境变量 `AI_CENTER_MODEL_USAGE_RATES_JSON` 输入数组，每项严格包含 provider、model、version、currency，以及每百万 token 的 inputTokens/outputTokens/cacheReadTokens/cacheWriteTokens 价格。路由来自实际请求，不按模型名猜供应商。
 

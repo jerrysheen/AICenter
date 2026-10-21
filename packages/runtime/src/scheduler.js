@@ -11,14 +11,28 @@ export function createScheduler(options) {
   const abortController = new AbortController();
   let running = false;
 
+  function reportScheduleError(error, schedule) {
+    const detail = error instanceof Error ? error.stack || error.message : String(error);
+    const key = schedule?.key || schedule?.id || '-';
+    const line = `[worker] schedule tick failed key=${key} ${detail}`;
+    if (typeof options.log === 'function') options.log(line);
+    else console.error(line);
+  }
+
   async function tick(at = now()) {
     const due = store.listDueSchedules(at, options.limit || 50) || [];
     const created = [];
     for (const schedule of due) {
-      if (!allowedJobTypes.has(schedule.jobType)) continue;
-      if (typeof options.beforeEnqueue === 'function' && options.beforeEnqueue(schedule, at) === false) continue;
-      const result = store.enqueueDueSchedule(schedule.id, at);
-      if (result) created.push(result);
+      try {
+        if (!allowedJobTypes.has(schedule.jobType)) continue;
+        if (typeof options.beforeEnqueue === 'function' && options.beforeEnqueue(schedule, at) === false) continue;
+        const result = store.enqueueDueSchedule(schedule.id, at);
+        if (result) created.push(result);
+      } catch (error) {
+        // One schedule must not reject the loop. Node exits on an unhandled rejection,
+        // the launcher starts a new Worker, and running jobs become WorkerLeaseExpired.
+        reportScheduleError(error, schedule);
+      }
     }
     return created;
   }
@@ -28,7 +42,12 @@ export function createScheduler(options) {
     running = true;
     try {
       while (!abortController.signal.aborted) {
-        await tick();
+        try {
+          await tick();
+        } catch (error) {
+          reportScheduleError(error);
+        }
+        if (abortController.signal.aborted) break;
         await wait(pollIntervalMs, abortController.signal);
       }
     } finally {

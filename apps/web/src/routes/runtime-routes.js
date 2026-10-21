@@ -87,7 +87,11 @@ export function createRuntimeRoutes() {
       method: 'GET', path: '/api/v1/runtime/model-usage', access: 'desktop',
       forbidden: '模型用量仅在本机显示',
       handler({ response, services, url }) {
-        json(response, 200, { ok: true, records: services.modelUsage.list(Object.fromEntries(url.searchParams)) });
+        json(response, 200, {
+          ok: true,
+          records: services.modelUsage.list(Object.fromEntries(url.searchParams)),
+          bambooDays: services.bambooUsage?.listDays?.() || [],
+        });
       },
     },
     {
