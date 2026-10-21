@@ -51,7 +51,7 @@ import { createAuthorView } from './author-view.js?v=dev';
 import { appendPartialArticle, episodeArticleMessage, foldedOriginal, partialArticleLabel, renderYoutubePodcasts, YOUTUBE_ARTICLE_POLL_SLOW_MS, youtubeArticlePollDelay, youtubeArticleRequestPath, youtubeReaderScopeLabel } from './youtube-podcasts.js?v=dev';
 import { xPostHasVideo, xVideoArticleReady, xVideoArticleRequestPath, xVideoReaderScopeLabel, xVideoTweetId } from './x-video-article.js?v=dev';
 import { createFeedTaggingLoader, FEED_TAG_QUERY_PATH } from './feed-tagging.js?v=dev';
-import { articleAuthorFields, articleAuthorTarget, feedSearchPath, socialArticleBodyPending } from './feed-search.js?v=dev';
+import { articleAuthorFields, articleAuthorTarget, feedSearchPath, feedSearchQueryReady, linkAbortSignal, socialArticleBodyPending } from './feed-search.js?v=dev';
 import { createListSkeleton, paintHubTickSkeleton, paintListSkeleton } from './list-skeleton.js?v=dev';
 import {
   xLinkArticleReady, xLinkArticleRequestPath, xLinkClosed, xLinkOwnsBody, xLinkReaderScope,
@@ -1662,9 +1662,10 @@ function callerGate(promise, { timeoutMs, signal }) {
   });
 }
 
-async function performApi(path, fetchOptions, timeoutMs, onResponse) {
+async function performApi(path, fetchOptions, timeoutMs, onResponse, callerSignal) {
   const controller = new AbortController();
   const timer = timeoutMs ? window.setTimeout(() => controller.abort(), timeoutMs) : 0;
+  const unlink = linkAbortSignal(controller, callerSignal);
   try {
     const response = await fetch(path, {
       credentials: 'include',
@@ -1694,10 +1695,18 @@ async function performApi(path, fetchOptions, timeoutMs, onResponse) {
     }
     return payload;
   } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') throw new Error('请求超时，请稍后重试');
+    if (error instanceof Error && error.name === 'AbortError') {
+      if (callerSignal?.aborted) {
+        const aborted = new Error('The operation was aborted.');
+        aborted.name = 'AbortError';
+        throw aborted;
+      }
+      throw new Error('请求超时，请稍后重试');
+    }
     throw error;
   } finally {
     if (timer) window.clearTimeout(timer);
+    unlink();
   }
 }
 
@@ -1726,7 +1735,7 @@ function api(path, options = {}) {
   const key = requestDedupeKey(method, path);
   const ttl = bypass ? 0 : cacheTtlFor(method, path);
   const safetyMs = Math.max(Number(timeoutMs) || 0, 20_000);
-  const load = () => performApi(path, fetchOptions, safetyMs, onResponse);
+  const load = () => performApi(path, fetchOptions, safetyMs, onResponse, signal);
   const shared = requestLayer.run(key, () => (method === 'GET' ? resolvePreparedPending(load, { signal }) : load()), {
     ttl,
     bypass,
@@ -16805,10 +16814,17 @@ elements['note-focus-entry']?.addEventListener('click', () => {
   state.noteFilter = 'focus';
   renderNotes();
 });
+function cancelFeedSearch() {
+  loadFeedSearch.token = (Number(loadFeedSearch.token) || 0) + 1;
+  loadFeedSearch.controller?.abort();
+  loadFeedSearch.controller = null;
+}
+
 function scheduleFeedSearch(query) {
   clearTimeout(scheduleFeedSearch.timer);
   const wanted = String(query || '').trim();
-  if (!wanted || !state.session) {
+  if (!state.session || !feedSearchQueryReady(wanted)) {
+    cancelFeedSearch();
     state.feedSearchQuery = '';
     state.feedSearchItems = [];
     return;
@@ -16820,17 +16836,31 @@ function scheduleFeedSearch(query) {
 
 async function loadFeedSearch(query) {
   const wanted = String(query || '').trim();
+  if (!feedSearchQueryReady(wanted)) {
+    cancelFeedSearch();
+    state.feedSearchQuery = '';
+    state.feedSearchItems = [];
+    return;
+  }
+  loadFeedSearch.controller?.abort();
+  const controller = new AbortController();
+  loadFeedSearch.controller = controller;
   const token = (loadFeedSearch.token = (Number(loadFeedSearch.token) || 0) + 1);
   try {
     const platform = state.feedPlatform === 'media' ? 'media' : (state.feedPlatform || '');
-    const payload = await api(feedSearchPath({ platform, query: wanted }), { timeoutMs: 15_000 });
+    const payload = await api(feedSearchPath({ platform, query: wanted }), {
+      timeoutMs: 15_000,
+      signal: controller.signal,
+      fresh: true,
+    });
     if (loadFeedSearch.token !== token) return;
+    if (controller.signal.aborted) return;
     if (String(state.feedQuery || '').trim().toLowerCase() !== wanted.toLowerCase()) return;
     state.feedSearchQuery = wanted;
     state.feedSearchItems = Array.isArray(payload.items) ? payload.items : [];
     if (document.body?.dataset?.view === 'feed') renderPosts();
-  } catch {
-    if (loadFeedSearch.token !== token) return;
+  } catch (error) {
+    if (error?.name === 'AbortError' || loadFeedSearch.token !== token) return;
   }
 }
 

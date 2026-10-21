@@ -48,7 +48,7 @@ test('migrations upgrade a v1 database without losing posts', () => {
   assert.deepEqual(unusedSchemaVersions, [63, 79, 80, 82]);
   assert.equal(upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version, schemaLatest);
   assert.equal(schemaLatest - schemaRows, expectedHoles, `schema rows ${schemaRows} latest ${schemaLatest}`);
-  assert.equal(schemaLatest, 95);
+  assert.equal(schemaLatest, 96);
   assert.equal(upgraded.prepare(`SELECT name FROM schema_migrations WHERE version = 89`).get().name, 'youtube_podcast_article');
   assert.equal(upgraded.prepare(`SELECT name FROM schema_migrations WHERE version = 90`).get().name, 'author_stats_published');
   assert.equal(upgraded.prepare(`SELECT name FROM schema_migrations WHERE version = 91`).get().name, 'hardware_price_snapshot_rows_observation');
@@ -56,6 +56,9 @@ test('migrations upgrade a v1 database without losing posts', () => {
   assert.equal(upgraded.prepare(`SELECT name FROM schema_migrations WHERE version = 93`).get().name, 'x_video_articles');
   assert.equal(upgraded.prepare(`SELECT name FROM schema_migrations WHERE version = 94`).get().name, 'x_link_articles');
   assert.equal(upgraded.prepare(`SELECT name FROM schema_migrations WHERE version = 95`).get().name, 'x_not_interested_actions');
+  assert.equal(upgraded.prepare(`SELECT name FROM schema_migrations WHERE version = 96`).get().name, 'content_item_fts');
+  assert.equal(upgraded.prepare(`SELECT count(*) AS n FROM content_item_fts`).get().n, 0);
+  assert.equal(upgraded.prepare(`SELECT done FROM feed_search_index_cursor WHERE id = 1`).get().done, 0);
   assert.ok(upgraded.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'feed_translation_chunk_failures'`).get());
   assert.ok(upgraded.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'x_video_articles'`).get());
   assert.ok(upgraded.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'x_video_posts'`).get());

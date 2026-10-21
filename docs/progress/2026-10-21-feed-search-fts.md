@@ -1,0 +1,17 @@
+# 信息流搜索改走全文索引
+
+2026-10-21。体验官复查 #189：信息流「全部」在 10 月 16 日缺了 22:43 的 Miles Cranmer「Here is the full talk」。搜索和作者页都有。原因不是页面在读 `subscriptionId`。「全部」只列挂在 `x:home:following` 上的帖，再按发布时间排。这条当时不在关注来源上。修复只挪作者已经关注、或捕获上带有 following 标记的帖。推荐页里没关注的作者、作者页来源、搜索来源和视频帖都不挪。正式跑之前把 `capture_id` 和原来的来源写进备份，可以用 `--rollback` 还原。只有作者已关注，或标记写明来自 following，后续同步才留在关注源。空的来源也不会把已有来源清掉。陌生帖带着别的真实来源写入时会离开关注源。历史数据用 `node scripts/repair-x-following-feed.mjs --dry-run` 先看会动哪些帖，确认后再去掉 `--dry-run`。不改标题，不另建整理任务。
+
+搜索结果以前不带译文，英文标题就会标「暂未翻译」，作者页却用同一条译文预览。现在搜索附上已保存的译文预览，不拿截断后的正文去对哈希。两边都显示「以下是演讲全文：」。
+
+文章页以前要等正文接口回来才画作者。现在打开时用已经在手里的那条，作者名在首屏就能点。正文还没到时，正文区写「正在读取正文…」，不因此去排队翻译。
+
+#189 上线后，搜「Cranmer」能找到 Miles Cranmer 的帖子，但本机每次要 3.8 到 4.5 秒。搜索把标题、摘要、作者和正文前 4000 字拼在一起做 `LIKE`，每一行还要再查可见性。
+
+现在三个字及以上走 SQLite FTS5 trigram 全文索引，忽略大小写。索引的 `rowid` 直接用 `content_items.rowid`。写入是 `INSERT INTO content_item_fts(rowid, content_item_id, workspace_id, text) VALUES(ci.rowid, ...)`。删掉旧行用 `DELETE FROM content_item_fts WHERE rowid = ?`，不再按未索引的 `content_item_id` 删。回填没完成（`feedSearchIndexStatus().done` 之前），三个字以上的搜索仍走原来的 LIKE，正文前 4000 字算在里面。回填完成之后才用全文索引。判断是否建完只读 `feed_search_index_cursor`，不对 `content_item_fts` 做 `count(*)`。`done` 一旦为真就记在当前进程里，后面的搜索不再读游标表。两个字 trigram 对不上，只查标题、摘要和作者，不扫正文。一个字不查。页面上少于两个字不发请求；发出新的搜索时取消上一个请求，搜索结果也不进 8 秒缓存。对主库做原地 VACUUM 时，要把 FTS 游标清零并重新建索引，再重启 Web 和 Worker，进程里记住的「已建完」才会丢掉。`VACUUM INTO` 备份不受影响。
+
+migration 96 只建空的 `content_item_fts` 和进度表 `feed_search_index_cursor`，不在迁移里灌入已有帖子。Web 和 Worker 启动并开始接请求之后，每次 40 条写入索引，写完一批就让出主线程。新保存的帖子当时就写入索引，不用等这一轮走完。当前 schema 是 96。下一号是 97。95 已是不感兴趣那张表。空号仍是 63、79、80、82。不要重建数据库。
+
+搜索结果里的 `subscriptionId` 以前写死成空字符串。补录会把帖子挂到 `x:home:following`，但这个来源以前可能没有订阅行，接口也就看不出挂上了没有。现在补录会补上这条订阅，搜索按帖子所在来源返回订阅 id。已经挂在关注信息流、并且已有订阅时，重启后搜索就会带上 id，不必再跑补录。标题仍是「以下是演讲全文：」，不另建整理任务。
+
+需要同时重启 Web 和 Worker，浏览器再加载一次。索引在后台补，不挡住领任务。这一集不用重新整理。不要重建数据库。把作者已关注或带 following 标记、却还没挂上关注来源的帖补回去：先 `node scripts/repair-x-following-feed.mjs --dry-run`，再去掉 `--dry-run`。回滚用 `node scripts/repair-x-following-feed.mjs --rollback <备份文件>`。单条长视频仍可用 `node scripts/repair-x-video-feed.mjs --tweet 2111105654211608847`，也可以先加 `--dry-run`。

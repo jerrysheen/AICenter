@@ -12,6 +12,13 @@ import {
   PatchUserItemStateInputSchema,
 } from '../../../contracts/src/index.js';
 import { preferNativeId } from '../../../domain/src/authors.js';
+import { escapeFts5MatchQuery } from '../fts-query.js';
+import {
+  feedSearchIndexStatus as readFeedSearchIndexStatus,
+  indexFeedSearchBatch as runFeedSearchIndexBatch,
+  replaceFeedSearchRow,
+  startFeedSearchIndex as launchFeedSearchIndex,
+} from '../feed-search-index.js';
 import { joinedFeedVisibilitySql } from '../feed-visibility.js';
 import {
   invalidateAuthorCache,
@@ -137,6 +144,65 @@ const LOW_VALUE_SQL = whenFilterReady(
 );
 
 const AUTHOR_HANDLE_SQL = `CASE WHEN c.feed_filter_ready = 1 THEN c.author_handle ELSE COALESCE(json_extract(c.metadata_json, '$.authorHandle'), '') END`;
+
+function likeTerm(term) {
+  return `%${String(term).replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+}
+
+// 回填没完成时，三个字以上仍走这条 LIKE，正文前 4000 字算在里面。
+const SEARCH_BODY_HAYSTACK = `lower(
+  COALESCE(ci.title, '') || char(10) || COALESCE(ci.summary, '') || char(10) ||
+  COALESCE(ci.author_name, '') || char(10) || COALESCE(${AUTHOR_HANDLE_SQL}, '') || char(10) ||
+  COALESCE((
+    SELECT group_concat(COALESCE(a.name, '') || char(10) || COALESCE(a.handle, ''), char(10))
+    FROM item_authors ia
+    JOIN authors a ON a.workspace_id = ia.workspace_id AND a.author_id = ia.author_id
+    WHERE ia.workspace_id = ci.workspace_id AND ia.content_item_id = ci.id
+  ), '') || char(10) ||
+  substr(COALESCE(ci.body, ''), 1, 4000)
+)`;
+
+// 两个字用不上 trigram。只拼标题、摘要和作者，不扫正文。
+const SEARCH_SHORT_HAYSTACK = `lower(
+  COALESCE(ci.title, '') || char(10) || COALESCE(ci.summary, '') || char(10) ||
+  COALESCE(ci.author_name, '') || char(10) || COALESCE(${AUTHOR_HANDLE_SQL}, '') || char(10) ||
+  COALESCE((
+    SELECT group_concat(COALESCE(a.name, '') || char(10) || COALESCE(a.handle, ''), char(10))
+    FROM item_authors ia
+    JOIN authors a ON a.workspace_id = ia.workspace_id AND a.author_id = ia.author_id
+    WHERE ia.workspace_id = ci.workspace_id AND ia.content_item_id = ci.id
+  ), '')
+)`;
+
+const FEED_SEARCH_SELECT = `SELECT ci.id, ci.workspace_id, ci.capture_id, ci.origin_type, ci.content_type,
+  ci.title, substr(COALESCE(ci.body, ''), 1, 480) AS body, ci.summary, ci.source_url, ci.author_name,
+  ci.published_at, ci.created_at, ci.updated_at,
+  c.provider AS provider, c.external_id AS external_id, c.captured_at AS captured_at,
+  ${AUTHOR_HANDLE_SQL} AS author_handle,
+  COALESCE(item_state.is_read, 0) AS is_read,
+  (SELECT ia.author_id FROM item_authors ia
+    WHERE ia.workspace_id = ci.workspace_id AND ia.content_item_id = ci.id LIMIT 1) AS author_id,
+  COALESCE(sub.id, '') AS subscription_id`;
+
+const FEED_SEARCH_TAILS = `
+  LEFT JOIN user_item_states item_state
+    ON item_state.workspace_id = ci.workspace_id AND item_state.content_item_id = ci.id
+  LEFT JOIN subscriptions sub
+    ON sub.workspace_id = ci.workspace_id AND sub.source_account_id = c.source_account_id AND sub.enabled = 1`;
+
+function mapSearchHit(row) {
+  return {
+    ...mapContentItem(row),
+    provider: row.provider || '',
+    externalId: row.external_id || '',
+    capturedAt: row.captured_at || row.created_at,
+    authorHandle: row.author_handle || '',
+    captureMetadata: { authorHandle: row.author_handle || '' },
+    isRead: Boolean(row.is_read),
+    authorId: row.author_id || '',
+    subscriptionId: row.subscription_id || '',
+  };
+}
 
 function feedVisibilitySql({ qualityRule = '', includeLowValue = false } = {}) {
   if (!includeLowValue) return `${VISIBLE_CONTENT_SQL} AND ${approvedQualitySql(qualityRule)}`;
@@ -424,13 +490,6 @@ export function createFeedRepository(database, emitEvent) {
       return row ? mapCapture(row) : null;
     },
 
-    findSubscriptionBySource(workspaceId, sourceAccountId) {
-      if (!sourceAccountId) return null;
-      const row = database.prepare(`SELECT * FROM subscriptions
-        WHERE workspace_id = ? AND source_account_id = ?`).get(workspaceId, sourceAccountId);
-      return row ? mapSubscription(row) : null;
-    },
-
     // 只列出该回到关注源的帖：作者已关注，或捕获上有 following 标记。
     // 推荐页里没关注的作者、作者页、搜索来源、视频帖都不在里面。
     listXPostsOffFollowing(workspaceId, { limit = 40, offset = 0 } = {}) {
@@ -483,6 +542,7 @@ export function createFeedRepository(database, emitEvent) {
       if (!result.changes) return { status: 'missing' };
       return { status: 'restored', sourceAccountId: next };
     },
+
 
     authorIdForContentItem(workspaceId, contentItemId) {
       if (!contentItemId) return '';
@@ -801,6 +861,7 @@ export function createFeedRepository(database, emitEvent) {
             createdAt: item.created_at,
           });
         }
+        if (item?.id) replaceFeedSearchRow(database, item.id);
         emitEvent('feed.content-item.saved.v1', 'content-item', item.id,
           { contentItemId: item.id, captureId: item.capture_id || null }, input.workspaceId);
       })();
@@ -897,6 +958,7 @@ export function createFeedRepository(database, emitEvent) {
         next.title, next.summary, next.body, next.authorName, next.sourceUrl, next.publishedAt, next.dedupKey || null,
         workspaceId, id,
       );
+      if (contentChanged) replaceFeedSearchRow(database, id);
       if (next.publishedAt && next.publishedAt !== (row.published_at || null)) {
         const captureId = database.prepare(`SELECT capture_id, created_at FROM content_items
           WHERE workspace_id = ? AND id = ?`).get(workspaceId, id);
@@ -945,7 +1007,7 @@ export function createFeedRepository(database, emitEvent) {
       const item = database.prepare(`SELECT id, title, published_at, created_at FROM content_items
         WHERE workspace_id = ? AND capture_id = ?`).get(workspaceId, captureId);
       if (!item) return null;
-      return recordCapturedAuthor(database, {
+      const noted = recordCapturedAuthor(database, {
         workspaceId,
         captureId,
         contentItemId: item.id,
@@ -954,6 +1016,8 @@ export function createFeedRepository(database, emitEvent) {
         publishedAtRaw: extras.publishedAtRaw || '',
         createdAt: item.created_at,
       });
+      replaceFeedSearchRow(database, item.id);
+      return noted;
     },
 
     listRecentXCaptures(workspaceId, { since = 0, limit = 500 } = {}) {
@@ -1744,8 +1808,37 @@ export function createFeedRepository(database, emitEvent) {
     },
 
     noteCaptureAuthor(value) {
-      const apply = database.transaction(() => writeCaptureAuthor(database, value));
+      const apply = database.transaction(() => {
+        const noted = writeCaptureAuthor(database, value);
+        if (value?.workspaceId && value?.provider && value?.externalId) {
+          const row = database.prepare(`SELECT ci.id AS id FROM captures c
+            JOIN content_items ci ON ci.capture_id = c.id AND ci.workspace_id = c.workspace_id
+            WHERE c.workspace_id = ? AND c.provider = ? AND c.external_id = ?`)
+            .get(value.workspaceId, value.provider, String(value.externalId));
+          if (row?.id) replaceFeedSearchRow(database, row.id);
+        }
+        return noted;
+      });
       return apply.immediate();
+    },
+
+    findSubscriptionBySource(workspaceId, sourceAccountId) {
+      if (!sourceAccountId) return null;
+      const row = database.prepare(`SELECT * FROM subscriptions
+        WHERE workspace_id = ? AND source_account_id = ?`).get(workspaceId, sourceAccountId);
+      return row ? mapSubscription(row) : null;
+    },
+
+    indexFeedSearchBatch(limit = 40) {
+      return runFeedSearchIndexBatch(database, { limit });
+    },
+
+    feedSearchIndexStatus() {
+      return readFeedSearchIndexStatus(database);
+    },
+
+    startFeedSearchIndex() {
+      return launchFeedSearchIndex(database, { log: (line) => console.log(line) });
     },
 
     listContentItemsWithSource(workspaceId, { limit = 200, ids = [],qualityRule='' } = {}) {
@@ -1809,18 +1902,16 @@ export function createFeedRepository(database, emitEvent) {
       return rows.map(mapContentItem);
     },
 
-    // 信息流搜索不能只扫最近一页。作者名、handle 和旧帖都要能命中。
+    // 回填完成前，三个字以上仍走 LIKE。完成之后才用 FTS5。两个字只查标题、摘要和作者。
     searchVisibleItems(workspaceId, { query = '', provider = '', limit = 40, qualityRule = '' } = {}) {
-      const terms = String(query || '').trim().toLocaleLowerCase().split(/\s+/).filter(Boolean).slice(0, 8);
+      const terms = String(query || '').trim().toLocaleLowerCase().split(/\s+/).filter((term) => term.length >= 2).slice(0, 8);
       if (!terms.length) return [];
       const safeLimit = Math.max(1, Math.min(Number(limit) || 40, 40));
       const providerId = String(provider || '').trim();
-      const haystack = `lower(
-        COALESCE(ci.title, '') || char(10) || COALESCE(ci.summary, '') || char(10) ||
-        COALESCE(ci.author_name, '') || char(10) || COALESCE(${AUTHOR_HANDLE_SQL}, '') || char(10) ||
-        COALESCE(a.name, '') || char(10) || COALESCE(a.handle, '') || char(10) ||
-        substr(COALESCE(ci.body, ''), 1, 4000)
-      )`;
+      const source = providerId && providerId !== 'all' ? providerId : '';
+      const longTerms = terms.filter((term) => term.length >= 3);
+      const shortTerms = terms.filter((term) => term.length < 3);
+      const indexDone = longTerms.length > 0 && readFeedSearchIndexStatus(database).done === true;
       const clauses = [
         'ci.workspace_id = ?',
         VISIBLE_CONTENT_SQL,
@@ -1829,45 +1920,37 @@ export function createFeedRepository(database, emitEvent) {
         EXCLUDE_OFFICIAL_MIRROR_SQL,
       ];
       const params = [workspaceId];
-      if (providerId) {
-        clauses.push('c.provider = ?');
-        params.push(providerId);
+      let from = `FROM content_items ci
+        JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id`;
+      if (indexDone) {
+        const match = escapeFts5MatchQuery(longTerms.join(' '));
+        if (!match) return [];
+        from = `FROM (
+          SELECT DISTINCT content_item_id FROM content_item_fts
+          WHERE content_item_fts MATCH ? AND workspace_id = ?
+        ) feed_search_hit
+        JOIN content_items ci ON ci.id = feed_search_hit.content_item_id AND ci.workspace_id = ?
+        JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id`;
+        params.unshift(match, workspaceId, workspaceId);
       }
-      for (const term of terms) {
+      if (source) {
+        clauses.push('c.provider = ?');
+        params.push(source);
+      }
+      const likeTerms = indexDone ? shortTerms : terms;
+      const haystack = indexDone || !longTerms.length ? SEARCH_SHORT_HAYSTACK : SEARCH_BODY_HAYSTACK;
+      for (const term of likeTerms) {
         clauses.push(`${haystack} LIKE ? ESCAPE '\\'`);
-        params.push(`%${term.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`);
+        params.push(likeTerm(term));
       }
       params.push(safeLimit);
-      const rows = database.prepare(`SELECT ci.id, ci.workspace_id, ci.capture_id, ci.origin_type, ci.content_type,
-          ci.title, substr(COALESCE(ci.body, ''), 1, 480) AS body, ci.summary, ci.source_url, ci.author_name,
-          ci.published_at, ci.created_at, ci.updated_at,
-          c.provider AS provider, c.external_id AS external_id, c.captured_at AS captured_at,
-          ${AUTHOR_HANDLE_SQL} AS author_handle,
-          COALESCE(item_state.is_read, 0) AS is_read,
-          ia.author_id AS author_id,
-          COALESCE(sub.id, '') AS subscription_id
-        FROM content_items ci
-        JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
-        LEFT JOIN user_item_states item_state
-          ON item_state.workspace_id = ci.workspace_id AND item_state.content_item_id = ci.id
-        LEFT JOIN item_authors ia ON ia.workspace_id = ci.workspace_id AND ia.content_item_id = ci.id
-        LEFT JOIN authors a ON a.workspace_id = ia.workspace_id AND a.author_id = ia.author_id
-        LEFT JOIN subscriptions sub
-          ON sub.workspace_id = c.workspace_id AND sub.source_account_id = c.source_account_id AND sub.enabled = 1
+      const rows = database.prepare(`${FEED_SEARCH_SELECT}
+        ${from}
+        ${FEED_SEARCH_TAILS}
         WHERE ${clauses.join(' AND ')}
         ORDER BY COALESCE(ci.published_at, c.captured_at, ci.created_at) DESC, ci.id DESC
         LIMIT ?`).all(...params);
-      return rows.map((row) => ({
-        ...mapContentItem(row),
-        provider: row.provider || '',
-        externalId: row.external_id || '',
-        capturedAt: row.captured_at || row.created_at,
-        authorHandle: row.author_handle || '',
-        captureMetadata: { authorHandle: row.author_handle || '' },
-        isRead: Boolean(row.is_read),
-        authorId: row.author_id || '',
-        subscriptionId: row.subscription_id || '',
-      }));
+      return rows.map(mapSearchHit);
     },
 
     listWindowSources(workspaceId, { startAt, endAt,qualityRule='',excludedItemIds=[] }) {
@@ -2075,6 +2158,7 @@ export function createFeedRepository(database, emitEvent) {
         if (!result.changes) return false;
         const item = database.prepare('SELECT id, capture_id FROM content_items WHERE workspace_id = ? AND id = ?')
           .get(workspaceId, id);
+        replaceFeedSearchRow(database, id);
         emitEvent('feed.content-item.saved.v1', 'content-item', id,
           { contentItemId: id, captureId: item?.capture_id || null }, workspaceId);
         return true;
