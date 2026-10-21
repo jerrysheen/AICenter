@@ -4,6 +4,7 @@ import {
   articlePartPrompt,
   continuedDoubaoChatUrl,
   dedupeRollingCaptions,
+  stripResidualEnglish,
   captionAlreadyChinese,
   GEMMA_ARTICLE_TITLE_SYSTEM,
   GEMMA_SECTION_SYSTEM,
@@ -708,7 +709,7 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
       touch();
       const sourceText = dedupeRollingCaptions(slot.text) || slot.text;
       const result = await withUpstreamRetry(deps, () => callArticleModel(deps, { system: GEMMA_TRANSLATE_SYSTEM, prompt: sourceText }));
-      slot.translation = result.text;
+      slot.translation = stripResidualEnglish(result.text);
       slot.provider = result.provider;
       addCalls(slot.calls, result.calls);
       slot.status = 'translated';
@@ -731,7 +732,7 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
     try {
       touch();
       const result = await withUpstreamRetry(deps, () => callArticleModel(deps, { system: GEMMA_SECTION_SYSTEM, prompt: slot.translation }));
-      slot.section = repairTimestampHeading(result.text, slot.start, slot.translation);
+      slot.section = stripResidualEnglish(repairTimestampHeading(result.text, slot.start, slot.translation));
       if (!slot.provider) slot.provider = result.provider;
       addCalls(slot.calls, result.calls);
       slot.status = 'done';

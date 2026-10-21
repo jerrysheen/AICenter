@@ -830,6 +830,10 @@ function searchTerms(query) {
 function searchStoredItems(feedRepository, workspaceId, query, limit, qualityRule) {
   const terms = searchTerms(query);
   if (!terms.length) return [];
+  if (typeof feedRepository.searchVisibleItems === 'function') {
+    const searched = feedRepository.searchVisibleItems(workspaceId, { query, limit, qualityRule });
+    if (Array.isArray(searched)) return searched;
+  }
   const rows = feedRepository.listContentItems(workspaceId, { limit: STORED_FEED_LIMIT, qualityRule }) || [];
   return rows.map((item) => {
     const searchable = [item.title, item.summary, item.body, item.authorName].join('\n').toLocaleLowerCase();
@@ -1273,6 +1277,11 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
     },
     searchContentItems(workspaceId, query, { limit = 8 } = {}) {
       return searchStoredItems(feedRepository, workspaceId, query, limit, qualityRule);
+    },
+    searchFeed(workspaceId, { query = '', platform = '', limit = 40 } = {}) {
+      const provider = String(platform || '').trim();
+      const rows = searchStoredItems(feedRepository, workspaceId, query, limit, qualityRule);
+      return rows.map((row) => toFeedItem(row.provider || provider || 'manual', row));
     },
     upsertSourceAccount(input) {
       return feedRepository.upsertSourceAccount(input);

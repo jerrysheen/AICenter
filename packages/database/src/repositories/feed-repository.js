@@ -369,6 +369,18 @@ export function createFeedRepository(database, emitEvent) {
       return row ? mapCapture(row) : null;
     },
 
+    placeCaptureOnAccount(workspaceId, provider, externalId, sourceAccountId) {
+      if (!sourceAccountId || !externalId) return null;
+      database.prepare(`UPDATE captures SET source_account_id = ?
+        WHERE workspace_id = ? AND provider = ? AND external_id = ?
+          AND COALESCE(source_account_id, '') != ?`)
+        .run(sourceAccountId, workspaceId, provider, externalId, sourceAccountId);
+      const row = database.prepare(`SELECT * FROM captures
+        WHERE workspace_id = ? AND provider = ? AND external_id = ?`)
+        .get(workspaceId, provider, externalId);
+      return row ? mapCapture(row) : null;
+    },
+
     authorIdForContentItem(workspaceId, contentItemId) {
       if (!contentItemId) return '';
       const row = database.prepare(`SELECT author_id AS authorId FROM item_authors
@@ -1534,6 +1546,63 @@ export function createFeedRepository(database, emitEvent) {
             ORDER BY ci.created_at DESC, ci.id DESC LIMIT ?`)
           .all(workspaceId, Number(before), safeLimit);
       return rows.map(mapContentItem);
+    },
+
+    // 信息流搜索不能只扫最近一页。作者名、handle 和旧帖都要能命中。
+    searchVisibleItems(workspaceId, { query = '', provider = '', limit = 40, qualityRule = '' } = {}) {
+      const terms = String(query || '').trim().toLocaleLowerCase().split(/\s+/).filter(Boolean).slice(0, 8);
+      if (!terms.length) return [];
+      const safeLimit = Math.max(1, Math.min(Number(limit) || 40, 40));
+      const providerId = String(provider || '').trim();
+      const haystack = `lower(
+        COALESCE(ci.title, '') || char(10) || COALESCE(ci.summary, '') || char(10) ||
+        COALESCE(ci.author_name, '') || char(10) || COALESCE(${AUTHOR_HANDLE_SQL}, '') || char(10) ||
+        COALESCE(a.name, '') || char(10) || COALESCE(a.handle, '') || char(10) ||
+        substr(COALESCE(ci.body, ''), 1, 4000)
+      )`;
+      const clauses = [
+        'ci.workspace_id = ?',
+        VISIBLE_CONTENT_SQL,
+        approvedQualitySql(qualityRule),
+        EXCLUDE_YOUTUBE_SQL,
+        EXCLUDE_OFFICIAL_MIRROR_SQL,
+      ];
+      const params = [workspaceId];
+      if (providerId) {
+        clauses.push('c.provider = ?');
+        params.push(providerId);
+      }
+      for (const term of terms) {
+        clauses.push(`${haystack} LIKE ? ESCAPE '\\'`);
+        params.push(`%${term.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`);
+      }
+      params.push(safeLimit);
+      const rows = database.prepare(`SELECT ci.id, ci.workspace_id, ci.capture_id, ci.origin_type, ci.content_type,
+          ci.title, substr(COALESCE(ci.body, ''), 1, 480) AS body, ci.summary, ci.source_url, ci.author_name,
+          ci.published_at, ci.created_at, ci.updated_at,
+          c.provider AS provider, c.external_id AS external_id, c.captured_at AS captured_at,
+          ${AUTHOR_HANDLE_SQL} AS author_handle,
+          COALESCE(item_state.is_read, 0) AS is_read,
+          ia.author_id AS author_id
+        FROM content_items ci
+        JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
+        LEFT JOIN user_item_states item_state
+          ON item_state.workspace_id = ci.workspace_id AND item_state.content_item_id = ci.id
+        LEFT JOIN item_authors ia ON ia.workspace_id = ci.workspace_id AND ia.content_item_id = ci.id
+        LEFT JOIN authors a ON a.workspace_id = ia.workspace_id AND a.author_id = ia.author_id
+        WHERE ${clauses.join(' AND ')}
+        ORDER BY COALESCE(ci.published_at, c.captured_at, ci.created_at) DESC, ci.id DESC
+        LIMIT ?`).all(...params);
+      return rows.map((row) => ({
+        ...mapContentItem(row),
+        provider: row.provider || '',
+        externalId: row.external_id || '',
+        capturedAt: row.captured_at || row.created_at,
+        authorHandle: row.author_handle || '',
+        captureMetadata: { authorHandle: row.author_handle || '' },
+        isRead: Boolean(row.is_read),
+        authorId: row.author_id || '',
+      }));
     },
 
     listWindowSources(workspaceId, { startAt, endAt,qualityRule='',excludedItemIds=[] }) {

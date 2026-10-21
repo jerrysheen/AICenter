@@ -27,6 +27,8 @@
 
 - `progress/2026-10-21-x-link-plain-url.md`：媒体帖的 t.co、bbc.in 和正文里的纯文本短链都会跟到新闻原文。译完才标「正文完整」，否则给出「阅读 BBC 原文」。已经在库里的用 `scripts/backfill-x-link-articles.mjs` 补跑，每天仍最多 8 篇。没有视频的帖子不再请求视频文章接口。作者列表打开时不再被整表标注请求堵住。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
 
+- `progress/2026-10-21-cranmer-author-search.md`：信息流搜索按作者名和 handle 查已保存的帖子，不再只看已加载的一页。`#author/x:@MilesCranmer` 打开 `x:382008009`。文章页点作者名进入作者页。YouTube 译文在显示时去掉整句英文残留，不重跑这一集。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
+
 - `progress/2026-10-20-youtube-caption-dedupe.md`：YouTube 译文在翻译前合并滚动字幕，已经译好的段落在显示时再去重。未完整状态合成一行。长视频帖标「视频待整理」或「视频已整理」，只有链接的帖子挂进 X 关注信息流并写出中文摘要。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
 
 - `progress/2026-10-20-x-link-article.md`：媒体或官方账号的 X 外链会抓新闻正文并翻译。抓不到不标「正文完整」，短链展开后显示「阅读 BBC 原文」。标注查询改为分批 POST。migration 94。需要同时重启 Web 和 Worker，浏览器再加载一次。
