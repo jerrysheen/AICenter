@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-21-flash-lite-headroom.md`：两个 Flash Lite 按剩余 RPM、RPD 提前互换，不等 429。Worker 启动时按模型打出当天调用次数。不新增 migration。需要重启 Worker。
+
 - `progress/2026-10-21-feed-tag-refresh-test.md`：信息流翻页和作者列表测试抽函数时带上 `feedTagRefreshPaused`。线上脚本里这个函数本来就在，作者页仍跳过标注。不改页面。不新增 migration。Web 和 Worker 都不用为这项重启。
 
 - `progress/2026-10-21-live-transcribe.md`：语音转写默认走 `gemini-3.5-transcribe-live`，音频分帧并按每分钟 20000 token 限速。只有 Live 失败才回到 `gemini-3.5-transcribe`，本地每天停在 24 次。不新增 migration。需要重启 Worker。

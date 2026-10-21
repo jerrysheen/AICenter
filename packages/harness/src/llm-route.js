@@ -60,6 +60,7 @@ export function resolveGoogleHourlyModelPool(env = process.env) {
 // Admission balances across (model, key) pairs. This order is only the fallback after the chosen model.
 export function resolveGoogleHourlyAdmissionModels(env = process.env) {
   const listed=[text(env.AI_CENTER_HARNESS_HOURLY_MODEL) || 'gemini-3.1-flash-lite',
+    'gemini-3.5-flash-lite',
     ...String(env.AI_CENTER_GEMINI_HOURLY_MODELS || '').split(',').map(text).filter(Boolean),
     ...String(env.AI_CENTER_GEMINI_HOURLY_MODEL_POOL || '').split(',').map(text).filter(Boolean)];
   return [...new Set(listed)].map(model=>resolveGoogleHourlyModel(env,model));
