@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-21-bamboo-daily-usage.md`：用量页列出 Bamboo 最近 14 个上海日的信息流准入次数，上限默认 7000。只读原来的计数文件，不另记一次，也不改准入分类。接口只有日期、次数和上限。不新增 migration。需要重启 Web，浏览器再加载一次。
+
 - `progress/2026-10-21-live-usage-and-feed.md`：Live 转写不再把密钥放进 WebSocket 地址，成功和失败都写入用量表。最终转写不再因为 `turnComplete` 没到就丢掉。关注流修复只挪作者已关注或带 following 标记的帖，挪之前备份 capture id 和原来的来源，可以用 `--rollback` 还原。陌生帖不会被锁在关注源。搜索和作者页用同一份译文，文章页先画出作者。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
 
 - `progress/2026-10-21-gemma-rpm-tpm.md`：Gemma 五个账号不再做本地每日 1.44 万封顶，只守每分钟 25 次和 16000 token。请求间隔默认 0–500 毫秒，每把密钥同时 2 个请求，可用环境变量改成 3。240 秒租约不再把单密钥卡成串行。429 仍按原逻辑冷却。补扫起点改为 `AI_CENTER_TAG_RESCAN_NOT_BEFORE`，默认仍是 2026-10-21 14:47（UTC+8）。不新增 migration。需要重启 Worker。

@@ -1,4 +1,5 @@
 .model-usage-dialog { width: min(900px, 92vw); max-height: 85vh; overflow: auto; padding: 20px; box-sizing: border-box; }
+.model-usage-bamboo { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 12px; }
 .model-usage-detail { overflow-wrap: anywhere; white-space: pre-wrap; }
 .model-usage-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
 .model-usage-actions input { min-width: 0; max-width: 100%; }

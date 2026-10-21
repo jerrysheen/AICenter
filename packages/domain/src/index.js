@@ -4,6 +4,7 @@ import { createFeedInteractionService } from './feed-interaction-service.js';
 import { createInformationTreeReader } from './information-tree-service.js';
 import { createReadingHourService, readingHourSourceAccess } from './reading-hour-service.js';
 import { createModelUsageService } from './model-usage-service.js';
+import { createBambooUsageView } from './bamboo-usage-view.js';
 import { createMediaIngestionService } from './media-ingestion-service.js';
 import { createIdentityService } from './identity-service.js';
 import { createKnowledgeService } from './knowledge-service.js';
@@ -173,6 +174,7 @@ export function createDomainServices({
       ...readingHourSourceAccess({ feed: store.repositories.feed, media: store.repositories.media }),
     }),
     modelUsage: createModelUsageService({ repository: store.repositories.modelUsage, workspaceId, rates: modelUsageRates, getJob: id => store.getJob(id) }),
+    bambooUsage: createBambooUsageView({ directory: dataDirectory, env }),
     identity: createIdentityService({ identityRepository: store, loginCredential }),
     feed,
     authors,
