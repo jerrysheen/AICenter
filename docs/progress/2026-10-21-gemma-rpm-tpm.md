@@ -22,4 +22,4 @@ RPM 默认仍是 25，环境变量仍可写成 28，上限钳制仍是 1–60。
 
 ## 验证
 
-`node --test test/gemma-translation.test.js test/tagging.test.js test/gemini-hourly.test.js`
+`node --test test/gemma-translation.test.js test/tagging.test.js test/gemini-hourly.test.js test/translation-reliability.test.js test/gemini-tag.test.js test/gemma-long-video.test.js`
