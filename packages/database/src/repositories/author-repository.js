@@ -46,6 +46,16 @@ function parseAliases(value) {
   }
 }
 
+// `#author/x:@MilesCranmer` 用的是临时 id。库里的真人 id 是 `x:382008009`，handle 才是 MilesCranmer。
+function authorHandleAlias(authorId) {
+  const match = String(authorId || '').match(/^([a-z0-9_-]+):@?(.+)$/i);
+  if (!match) return null;
+  const platform = match[1].toLowerCase();
+  const label = match[2].trim().replace(/^@+/, '');
+  if (!label || /^\d+$/.test(label) || label.includes('/') || label.includes(':')) return null;
+  return { platform, label };
+}
+
 function sameAuthor(left, right) {
   const at = Number(left.at) || 0;
   const bt = Number(right.at) || 0;
@@ -593,7 +603,24 @@ export function createAuthorRepository(database, emitEvent = () => {}) {
       if (!row) {
         const author = database.prepare(`SELECT * FROM authors WHERE workspace_id = ? AND author_id = ?`)
           .get(workspaceId, authorId);
-        if (!author) return null;
+        if (!author) {
+          const alias = authorHandleAlias(authorId);
+          if (!alias) return null;
+          const linked = database.prepare(`SELECT author_id, merged_into FROM authors
+            WHERE workspace_id = ? AND platform = ?
+              AND (
+                lower(handle) = lower(?)
+                OR lower(name) = lower(?)
+                OR (json_valid(aliases_json) AND EXISTS (
+                  SELECT 1 FROM json_each(aliases_json) alias WHERE lower(alias.value) = lower(?)
+                ))
+              )
+            ORDER BY provisional ASC, author_id ASC
+            LIMIT 1`).get(workspaceId, alias.platform, alias.label, alias.label, alias.label);
+          const target = String(linked?.merged_into || linked?.author_id || '');
+          if (!target || target === authorId) return null;
+          return this.getAuthor(workspaceId, target);
+        }
         if (author.merged_into) return this.getAuthor(workspaceId, author.merged_into);
         return mapAuthor({ ...author, unread_count: 0, has_unread: 0, total_count: 0, latest_unread_at: 0,
           latest_item_at: 0, latest_item_id: '', latest_title_zh: '', recent_30d_count: 0, followed: author.followed });

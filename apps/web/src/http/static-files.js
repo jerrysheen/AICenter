@@ -112,6 +112,7 @@ export function createStaticFileHandler(publicDirectory) {
     '/x-video-article.js': ['x-video-article.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/x-link-article.js': ['x-link-article.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/feed-tagging.js': ['feed-tagging.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
+    '/feed-search.js': ['feed-search.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/model-usage.js': ['model-usage.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/feed-interaction.js': ['feed-interaction.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],
     '/x-focus-page.js': ['x-focus-page.js', 'text/javascript; charset=utf-8', ASSET_CACHE_CONTROL],

@@ -244,6 +244,18 @@ export function createFeedRoutes({ slots = createPreparedSlotStore(), offthread 
       },
     },
     {
+      method: 'GET', path: '/api/v1/feed/search',
+      handler({ response, services, url, identity }) {
+        const query = String(url.searchParams.get('q') || '').trim();
+        const platform = String(url.searchParams.get('platform') || '').trim();
+        const limit = Number(url.searchParams.get('limit')) || 40;
+        const items = services.feed.searchFeed
+          ? services.feed.searchFeed(workspaceIdFrom(identity), { query, platform, limit })
+          : [];
+        json(response, 200, { ok: true, items });
+      },
+    },
+    {
       method: 'GET', path: /^\/api\/v1\/feed(?:\/([a-z0-9-]+))?$/i,
       async handler({ request, response, services, url, params, feedQueryParsers, identity }) {
         const providerId = params.values[0] || url.searchParams.get('platform') || 'x';

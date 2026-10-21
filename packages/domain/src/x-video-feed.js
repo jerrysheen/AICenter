@@ -74,8 +74,12 @@ function presentFeedCopy(item) {
 }
 
 function patchLinkedPost({ feedRepository, workspaceId, capture, linked, accountId, recomputeAuthor }) {
-  if (accountId && capture?.externalId && !capture.sourceAccountId) {
-    feedRepository.attachCaptureSource?.(workspaceId, 'x', capture.externalId, accountId);
+  if (accountId && capture?.externalId) {
+    if (typeof feedRepository.placeCaptureOnAccount === 'function') {
+      feedRepository.placeCaptureOnAccount(workspaceId, 'x', capture.externalId, accountId);
+    } else if (!capture.sourceAccountId) {
+      feedRepository.attachCaptureSource?.(workspaceId, 'x', capture.externalId, accountId);
+    }
   }
   const body = String(linked?.body || '');
   const title = String(linked?.title || '');
