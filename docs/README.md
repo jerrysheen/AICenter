@@ -25,7 +25,9 @@
 
 ## 当前
 
-- `progress/2026-10-21-gemma-tag-rescan.md`：打标提示词改为按上市地，并且只标正文明确在讲的内容。宁德时代标 A 股，不标港股；中国移动不因公司名加 AI 算力；英文短标题不因此标半导体。每 15 分钟只补扫 2026-10-21 14:47（UTC+8）上线之后、最近 2 小时内还没有 `resource_taggings` 的新帖。旧帖不补。窗口用 `AI_CENTER_TAG_RESCAN_HOURS`，默认 2 小时。正常看完但没有标签的，包括整批空回复，写一条空记录，避免反复选中同样 20 条。回复不是 JSON 或调用失败不写。Flash 日上限的下次可跑时间带上 Gemma 的等待。Bamboo 不动。不新增 migration。需要重启 Worker。
+- `progress/2026-10-21-gemma-rpm-tpm.md`：Gemma 五个账号不再做本地每日 1.44 万封顶，只守每分钟 25 次和 16000 token。请求间隔默认 0–500 毫秒，每把密钥同时 2 个请求，可用环境变量改成 3。240 秒租约不再把单密钥卡成串行。429 仍按原逻辑冷却。补扫起点改为 `AI_CENTER_TAG_RESCAN_NOT_BEFORE`，默认仍是 2026-10-21 14:47（UTC+8）。不新增 migration。需要重启 Worker。
+
+- `progress/2026-10-21-gemma-tag-rescan.md`：打标提示词改为按上市地，并且只标正文明确在讲的内容。宁德时代标 A 股，不标港股；中国移动不因公司名加 AI 算力；英文短标题不因此标半导体。每 15 分钟只补扫上线之后、最近 2 小时内还没有 `resource_taggings` 的新帖。起点用 `AI_CENTER_TAG_RESCAN_NOT_BEFORE`，默认 2026-10-21 14:47（UTC+8）。旧帖不补。窗口用 `AI_CENTER_TAG_RESCAN_HOURS`，默认 2 小时。正常看完但没有标签的，包括整批空回复，写一条空记录，避免反复选中同样 20 条。回复不是 JSON 或调用失败不写。Flash 日上限的下次可跑时间带上 Gemma 的等待。Bamboo 不动。不新增 migration。需要重启 Worker。
 
 - `progress/2026-10-21-hourly-quota-catchup.md`：账号并发的 2500 次合计仍会把小时报指到北京时间 15:00，缓存还会挡住 13/10/05 的补跑。现在这条日上限和按密钥的日上限都改走 Gemma 26B。文章整理上的 114 次 grok-4.7 是这条新标记碰到了 10-07 的旧回退；本地日上限改为 Gemma 26B。启动日志按太平洋日列出每把密钥是否到 480。没配 `GEMINI_API_KEY*_PROJECT` 不必补。不新增 migration。需要重启 Worker。
 

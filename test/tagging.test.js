@@ -10,7 +10,7 @@ import { TAG_PROMPT_VERSION, buildTagSystemPrompt } from '../packages/domain/src
 import { treeCatalog } from '../packages/domain/src/information-tree-policy.js';
 import { parseTagBatchOutput } from '../packages/domain/src/tag-parser.js';
 import { createTaggingService } from '../packages/domain/src/tagging-service.js';
-import { createTaggingJobHandlers, ensureTagRescanSchedule, tagRescanPlan, TAG_RESCAN_NOT_BEFORE } from '../packages/runtime/src/tagging-module.js';
+import { createTaggingJobHandlers, ensureTagRescanSchedule, tagRescanNotBefore, tagRescanPlan, TAG_RESCAN_NOT_BEFORE } from '../packages/runtime/src/tagging-module.js';
 import { createAiCenterServer } from '../apps/web/src/server.js';
 
 const CATALOG = {
@@ -471,6 +471,46 @@ test('a completed rescan records empty taggings for an empty item list and skips
   brokenStore.remove();
 });
 
+test('rescan writes an empty marker for an unlabeled new post and does not select it again', async () => {
+  const store = createStore(':memory:');
+  const now = TAG_RESCAN_NOT_BEFORE + 30 * 60 * 1000;
+  const feed = store.repositories.feed;
+  feed.saveContentItem({
+    id: 'plain-new', workspaceId: 'local', originType: 'subscription', contentType: 'post',
+    title: 'plain-new', body: '今天天气不错', createdAt: now - 5 * 60 * 1000,
+  });
+  const service = createTaggingService({
+    catalog: CATALOG,
+    taggingRepository: store.repositories.tagging,
+    taggingPort: {
+      async tagBatch() {
+        return { reply_text: JSON.stringify({ items: [] }), model: 'test' };
+      },
+    },
+  });
+  const handlers = createTaggingJobHandlers({
+    taggingService: service,
+    feedService: {
+      listUntaggedContentIds: (workspaceId, query) => feed.listUntaggedContentIds(workspaceId, query),
+      listTaggableItems: (workspaceId, query) => feed.listContentItems(workspaceId, { limit: 50 })
+        .filter((row) => query.ids.includes(row.id))
+        .map((row) => ({ id: row.id, title: row.title, body: row.body })),
+    },
+    knowledgeService: {},
+    env: {},
+    now: () => now,
+  });
+  try {
+    const first = await handlers['tagging.rescan']();
+    assert.equal(first.scanned, 1);
+    assert.deepEqual(service.getTagging('local', 'content-item', 'plain-new').tags, []);
+    const second = await handlers['tagging.rescan']();
+    assert.equal(second.scanned, 0);
+  } finally {
+    store.close();
+  }
+});
+
 test('untagged rescan selects recent items with no tagging row and keeps going when Gemma fails', async () => {
   const store = createStore(':memory:');
   const now = TAG_RESCAN_NOT_BEFORE + 3 * 3600000;
@@ -492,6 +532,10 @@ test('untagged rescan selects recent items with no tagging row and keeps going w
   assert.equal(plan.limit, 20);
   assert.equal(plan.since, now - 2 * 3600000);
   assert.equal(TAG_RESCAN_NOT_BEFORE, Date.parse('2026-10-21T14:47:00+08:00'));
+  assert.equal(tagRescanNotBefore({}), TAG_RESCAN_NOT_BEFORE);
+  assert.equal(tagRescanNotBefore({ AI_CENTER_TAG_RESCAN_NOT_BEFORE: 'not-a-time' }), TAG_RESCAN_NOT_BEFORE);
+  const moved = Date.parse('2026-10-22T00:00:00+08:00');
+  assert.equal(tagRescanPlan({ AI_CENTER_TAG_RESCAN_NOT_BEFORE: '2026-10-22T00:00:00+08:00' }, moved + 3 * 3600000).since, moved + 3600000);
   assert.deepEqual(feed.listUntaggedContentIds('local', plan), [fresh.id]);
   const wide = tagRescanPlan({ AI_CENTER_TAG_RESCAN_HOURS: '48' }, now);
   assert.equal(wide.since, TAG_RESCAN_NOT_BEFORE);

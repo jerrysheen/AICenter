@@ -159,6 +159,7 @@ export function createGeminiArticleAdmission({ repository, usage, env = process.
       minIntervalMs: pacing.intervalMinMs,
       estimatedTokensPerMinute: pacing.tokensPerMinute,
       estimatedTokens: 6144 + 8192,
+      inflightLimit: pacing.keyConcurrency,
       pacingModels: GEMMA_TRANSLATION_MODELS,
       dayStart: day.dayStart,
       dayEnd: day.dayEnd,
