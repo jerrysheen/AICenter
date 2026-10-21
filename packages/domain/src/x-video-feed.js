@@ -42,23 +42,62 @@ function noteAuthor(feedRepository, workspaceId, tweetId, item) {
 
 function ensureXHomeAccount(feedRepository, workspaceId) {
   const found = feedRepository.findSourceAccount?.(workspaceId, 'x', X_HOME_FOLLOWING_ACCOUNT);
-  if (found?.id) return found.id;
-  if (typeof feedRepository.upsertSourceAccount !== 'function') return '';
-  const created = feedRepository.upsertSourceAccount({
-    workspaceId,
-    provider: 'x',
-    externalId: X_HOME_FOLLOWING_ACCOUNT,
-    handle: '',
-    displayName: 'X 首页',
-    profileUrl: 'https://x.com/home',
-    authMode: 'browser-session',
-    metadata: {
-      sourceId: 'content.x.home',
-      sourceInput: { feed: 'following' },
-      autoRefresh: true,
-    },
-  });
-  return created?.id || '';
+  let accountId = found?.id || '';
+  if (!accountId && typeof feedRepository.upsertSourceAccount === 'function') {
+    const created = feedRepository.upsertSourceAccount({
+      workspaceId,
+      provider: 'x',
+      externalId: X_HOME_FOLLOWING_ACCOUNT,
+      handle: '',
+      displayName: 'X 首页',
+      profileUrl: 'https://x.com/home',
+      authMode: 'browser-session',
+      metadata: {
+        sourceId: 'content.x.home',
+        sourceInput: { feed: 'following' },
+        autoRefresh: true,
+      },
+    });
+    accountId = created?.id || '';
+  }
+  if (accountId && typeof feedRepository.ensureSubscription === 'function') {
+    feedRepository.ensureSubscription({
+      workspaceId,
+      sourceAccountId: accountId,
+      enabled: true,
+      refreshIntervalMinutes: 30,
+    });
+  }
+  return accountId;
+}
+
+// 把没挂上关注信息流、搜索却能找到的帖挪过去。不改标题，也不另建整理任务。
+export function repairXFollowingFeed({
+  feedRepository,
+  workspaceId = 'local',
+  dryRun = false,
+  limit = 40,
+} = {}) {
+  const preview = typeof feedRepository?.listXPostsOffFollowing === 'function'
+    ? feedRepository.listXPostsOffFollowing(workspaceId, { limit })
+    : { count: 0, posts: [] };
+  const posts = Array.isArray(preview?.posts) ? preview.posts : [];
+  const examples = posts.slice(0, 8).map((row) => ({
+    externalId: row.externalId || '',
+    title: row.title || '',
+    sourceExternalId: row.sourceExternalId || '',
+  }));
+  const count = Number(preview?.count) || 0;
+  if (dryRun) return { status: 'dry-run', count, moved: 0, examples };
+  const accountId = ensureXHomeAccount(feedRepository, workspaceId);
+  if (!accountId) return { status: 'missing-account', count, moved: 0, examples };
+  let moved = 0;
+  for (const row of posts) {
+    if (!row?.externalId) continue;
+    const placed = feedRepository.placeCaptureOnAccount?.(workspaceId, 'x', row.externalId, accountId);
+    if (placed?.sourceAccountId === accountId) moved += 1;
+  }
+  return { status: moved ? 'moved' : 'done', count, moved, examples, sourceAccountId: accountId };
 }
 
 function presentFeedCopy(item) {
