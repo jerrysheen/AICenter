@@ -46,7 +46,7 @@ test('feed tags call Gemma 26B and do not fall back to Flash or Grok', async () 
   const port = createGeminiTagPort({
     env: env(),
     quotaRepository: quota,
-    usageObserver: (row) => usage.push(row),
+    usageObserver: (row) => usage.push({ status: row.status, model: row.model, stage: row.stage, kind: row.kind }),
     async fetch(url, options = {}) {
       calls.push({ url: String(url), headers: options.headers, body: options.body });
       const request = JSON.parse(String(options.body));
