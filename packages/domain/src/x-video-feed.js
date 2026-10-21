@@ -71,7 +71,7 @@ function ensureXHomeAccount(feedRepository, workspaceId) {
   return accountId;
 }
 
-// 把没挂上关注信息流、搜索却能找到的帖挪过去。不改标题，也不另建整理任务。
+// 只挪作者已关注，或带有 following 标记的帖。不改标题，也不另建整理任务。
 export function repairXFollowingFeed({
   feedRepository,
   workspaceId = 'local',
@@ -83,21 +83,33 @@ export function repairXFollowingFeed({
     : { count: 0, posts: [] };
   const posts = Array.isArray(preview?.posts) ? preview.posts : [];
   const examples = posts.slice(0, 8).map((row) => ({
+    captureId: row.captureId || '',
     externalId: row.externalId || '',
+    sourceAccountId: row.sourceAccountId || null,
     title: row.title || '',
     sourceExternalId: row.sourceExternalId || '',
   }));
   const count = Number(preview?.count) || 0;
-  if (dryRun) return { status: 'dry-run', count, moved: 0, examples };
+  if (dryRun) return { status: 'dry-run', count, moved: 0, examples, posts };
+  const placed = placeXPostsOnFollowing({ feedRepository, workspaceId, posts });
+  return { ...placed, count, examples, posts };
+}
+
+// 只挪调用方已经选定的帖。备份要在这之前写好。
+export function placeXPostsOnFollowing({
+  feedRepository,
+  workspaceId = 'local',
+  posts = [],
+} = {}) {
   const accountId = ensureXHomeAccount(feedRepository, workspaceId);
-  if (!accountId) return { status: 'missing-account', count, moved: 0, examples };
+  if (!accountId) return { status: 'missing-account', moved: 0, sourceAccountId: '' };
   let moved = 0;
   for (const row of posts) {
     if (!row?.externalId) continue;
     const placed = feedRepository.placeCaptureOnAccount?.(workspaceId, 'x', row.externalId, accountId);
     if (placed?.sourceAccountId === accountId) moved += 1;
   }
-  return { status: moved ? 'moved' : 'done', count, moved, examples, sourceAccountId: accountId };
+  return { status: moved ? 'moved' : 'done', moved, sourceAccountId: accountId };
 }
 
 function presentFeedCopy(item) {

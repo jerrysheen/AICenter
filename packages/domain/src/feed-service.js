@@ -701,6 +701,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
         ...(xVideoCaptureMetadata(item) ? { xVideo: xVideoCaptureMetadata(item) } : {}),
         ...(authorFields ? { authorProfile: authorFields.authorProfile } : {}),
         ...(verdict.metadata || {}),
+        ...(providerId === 'x' && replay.sourceInput?.feed === 'following' ? { homeFeed: 'following' } : {}),
       },
     });
     if (!verdict.createContentItem) {
