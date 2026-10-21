@@ -65,13 +65,48 @@ function button(text, action, className='brief-button') {
   el.addEventListener('click',action); return el;
 }
 
+function hourChromeSkeleton() {
+  const primary = node('div', 'tree-primary source-control');
+  primary.setAttribute('aria-hidden', 'true');
+  const tabs = node('div', 'tree-mode-tabs channel-tabs');
+  for (const [label, active] of [['日报', false], ['小时报', true], ['股民讨论', false]]) {
+    const tab = node('button', 'channel-tab', label);
+    tab.type = 'button';
+    tab.tabIndex = -1;
+    if (active) tab.classList.add('is-active');
+    tabs.append(tab);
+  }
+  const period = node('div', 'tree-period-bar');
+  const switcher = node('div', 'tree-period-switch');
+  for (const label of ['‹', '00:00–01:00', '›']) {
+    const button = node('button', label === '00:00–01:00' ? 'tree-period-label' : 'tree-period-step', label);
+    button.type = 'button';
+    button.tabIndex = -1;
+    switcher.append(button);
+  }
+  period.append(switcher);
+  primary.append(tabs, period);
+  return primary;
+}
+
 function readingSkeleton(target, {hourly=false}={}) {
   const doc = target?.ownerDocument || (typeof document !== 'undefined' ? document : null);
-  if (hourly) {
-    const box = node('div','tree-hour-skeleton');
-    box.setAttribute('aria-busy','true');
-    if (doc?.createElement) box.append(createListSkeleton(doc, {rows:6, label:'正在读取简报…', variant:'feed'}));
-    target.replaceChildren(box);
+  if (hourly && doc?.createElement) {
+    target.classList.add('tree-page', 'brief-page', 'is-hourly');
+    const layout = node('div', 'tree-hour-layout');
+    const list = node('div', 'tree-list');
+    const box = node('div', 'tree-hour-skeleton is-page');
+    box.setAttribute('aria-busy', 'true');
+    const day = node('p', 'news-day-label', '\u00a0');
+    day.setAttribute('aria-hidden', 'true');
+    const block = node('section', 'reading-block');
+    const heading = node('h2', 'reading-direction news-section-title', '\u00a0');
+    heading.setAttribute('aria-hidden', 'true');
+    block.append(heading, createListSkeleton(doc, { rows: 6, label: '正在读取简报…', variant: 'feed' }));
+    box.append(day, block);
+    list.append(box);
+    layout.append(list);
+    target.replaceChildren(hourChromeSkeleton(), layout);
     return;
   }
   paintListSkeleton(target, {rows:6, label:'正在读取简报…', variant:'feed'});

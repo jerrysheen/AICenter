@@ -72,6 +72,7 @@ test('feed skeletons stay at a two-line row and brief skeletons match a three-li
   assert.match(css, /#report-list \.list-skeleton\.is-feed \.list-skeleton-title,\s*\.tree-list \.list-skeleton\.is-feed \.list-skeleton-title,\s*\.tree-hour-skeleton \.list-skeleton\.is-feed \.list-skeleton-title \{ height: 72px; \}/);
   assert.match(css, /\.tree-hour-skeleton\.is-page \{ display: block; gap: 0; padding: 0; \}/);
   assert.match(css, /\.southbound-daily-line \{[\s\S]*?min-height: calc\(22px \+ 2 \* var\(--space-3\)\);/);
+  assert.match(css, /@media \(max-width: 720px\) \{\s*\.southbound-daily-line,\s*\.daily-research > \.southbound-daily-line \{\s*min-height: calc\(44px \+ 2 \* var\(--space-3\)\);\s*\}/);
   assert.match(css, /\.news-row-summary\.is-search-excerpt \{/);
 });
 
