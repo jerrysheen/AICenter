@@ -2480,11 +2480,15 @@ button.source-card:active { transform: scale(0.985); background: var(--backgroun
 .list-skeleton.is-feed .list-skeleton-title { height: 48px; }
 .feed > .list-skeleton .list-skeleton-meta,
 .list-skeleton.is-feed .list-skeleton-meta { height: 18px; }
-/* 简报真实行大约 160：三行标题 72，再加上时间和来源。信息流两行标题仍是 112。 */
+/* 日报列表骨架大约 160。小时报真实行大约 150，和日报分开。信息流两行标题仍是 112。 */
 #report-list .list-skeleton.is-feed .list-skeleton-row,
 .tree-list .list-skeleton.is-feed .list-skeleton-row,
 .tree-hour-skeleton .list-skeleton.is-feed .list-skeleton-row {
   min-height: 160px;
+}
+#report-list .tree-list .tree-hour-skeleton .list-skeleton.is-feed .list-skeleton-row,
+#report-list > .tree-hour-skeleton.is-page .list-skeleton.is-feed .list-skeleton-row {
+  min-height: 150px;
 }
 #report-list .list-skeleton.is-feed .list-skeleton-title,
 .tree-list .list-skeleton.is-feed .list-skeleton-title,
@@ -5832,6 +5836,9 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
 .reading-hour-step { min-height: 44px; padding: 0; border: 0; background: transparent; color: var(--font-tertiary); font: inherit; font-size: 14px; cursor: pointer; }
 .tree-hour-fallback { margin: 0 0 8px; color: var(--font-tertiary); font-size: 12px; }
 .tree-hour-skeleton { display: grid; gap: 10px; padding: 12px 0; }
+.tree-hour-skeleton.is-page { display: block; gap: 0; padding: 0; }
+.tree-hour-skeleton.is-page .list-skeleton.is-feed { padding-top: 0; }
+.list-skeleton.is-feed:has(> .southbound-daily-line) { padding-top: 0; }
 .tree-hour-skeleton-line, .tree-hour-skeleton span { display: block; height: 12px; border-radius: 4px; background: var(--comp-tertiary); }
 .tree-list .reading-fold > summary { display: block; cursor: pointer; list-style: none; }
 .tree-list .reading-fold > summary::-webkit-details-marker { display: none; }
@@ -5997,7 +6004,21 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
 .southbound-history { margin-top: var(--space-4); }
 .southbound-history h3 { margin: 0 0 var(--space-2); font-size: 14px; }
 .southbound-history p { display: flex; justify-content: space-between; margin: 4px 0; }
-.southbound-daily-line { margin: 0 0 var(--space-3); padding: var(--space-3); border-radius: var(--radius-image); background: var(--background-secondary); }
+.southbound-daily-line {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-image);
+  background: var(--background-secondary);
+  font-size: 15px;
+  line-height: 22px;
+  min-height: calc(22px + 2 * var(--space-3));
+}
+.daily-research > .southbound-daily-line {
+  margin: 0;
+  font-size: 15px;
+  line-height: 22px;
+  min-height: calc(22px + 2 * var(--space-3));
+}
 @media (max-width: 720px) {
   .southbound-channels { grid-template-columns: 1fr; }
 }

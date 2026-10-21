@@ -68,7 +68,10 @@ test('feed skeletons stay at a two-line row and brief skeletons match a three-li
   assert.match(html, /id="report-list"[\s\S]*list-skeleton is-feed/);
   assert.match(css, /\.feed > \.list-skeleton \.list-skeleton-row,\s*\.list-skeleton\.is-feed \.list-skeleton-row \{\s*box-sizing: border-box;\s*min-height: 112px;/);
   assert.match(css, /#report-list \.list-skeleton\.is-feed \.list-skeleton-row,\s*\.tree-list \.list-skeleton\.is-feed \.list-skeleton-row,\s*\.tree-hour-skeleton \.list-skeleton\.is-feed \.list-skeleton-row \{\s*min-height: 160px;/);
+  assert.match(css, /#report-list \.tree-list \.tree-hour-skeleton \.list-skeleton\.is-feed \.list-skeleton-row,\s*#report-list > \.tree-hour-skeleton\.is-page \.list-skeleton\.is-feed \.list-skeleton-row \{\s*min-height: 150px;/);
   assert.match(css, /#report-list \.list-skeleton\.is-feed \.list-skeleton-title,\s*\.tree-list \.list-skeleton\.is-feed \.list-skeleton-title,\s*\.tree-hour-skeleton \.list-skeleton\.is-feed \.list-skeleton-title \{ height: 72px; \}/);
+  assert.match(css, /\.tree-hour-skeleton\.is-page \{ display: block; gap: 0; padding: 0; \}/);
+  assert.match(css, /\.southbound-daily-line \{[\s\S]*?min-height: calc\(22px \+ 2 \* var\(--space-3\)\);/);
   assert.match(css, /\.news-row-summary\.is-search-excerpt \{/);
 });
 
