@@ -48,6 +48,28 @@ test('a different row count replaces the skeleton', () => {
   assert.equal(createListSkeleton(document, { rows: 2 }).children[0].children.length, 2);
 });
 
+test('a feed skeleton is not reused as a short list', () => {
+  const document = mockDocument();
+  const root = document.createElement('div');
+  const feed = paintListSkeleton(root, { rows: 6, label: '搜索中…', variant: 'feed' });
+  assert.match(feed.className, /is-feed/);
+  assert.match(feed.children[0].children[0].className, /is-feed/);
+  const again = paintListSkeleton(root, { rows: 6, label: '正在读取内容…', variant: 'feed' });
+  assert.equal(again, feed);
+  assert.equal(feed.attrs['aria-label'], '正在读取内容…');
+  const replaced = paintListSkeleton(root, { rows: 6, label: '正在读取' });
+  assert.notEqual(replaced, feed);
+  assert.equal(replaced.className.includes('is-feed'), false);
+});
+
+test('feed and brief skeletons match a two-line news row', () => {
+  const html = readFileSync(new URL('../apps/web/public/index.html', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../apps/web/public/styles.css', import.meta.url), 'utf8');
+  assert.match(html, /id="report-list"[\s\S]*list-skeleton is-feed/);
+  assert.match(css, /#report-list \.list-skeleton-row,\s*\.tree-list \.list-skeleton-row,\s*\.tree-hour-skeleton \.list-skeleton-row \{\s*box-sizing: border-box;\s*min-height: 112px;/);
+  assert.match(css, /\.news-row-summary\.is-search-excerpt \{/);
+});
+
 test('quote ticks stay skeleton until replaced', () => {
   const document = mockDocument();
   const root = document.createElement('div');
