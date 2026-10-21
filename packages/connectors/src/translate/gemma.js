@@ -283,7 +283,9 @@ export function createGemmaTranslationRouter(options = {}) {
           if (probe.admitted) { probeAdmitted = true; break; }
           probeRetry = Math.min(probeRetry, probe.retryAt);
         }
-        quotaRetryAt = Math.min(quotaRetryAt, probeAdmitted ? earliest : probeRetry);
+        // 本地随机间隔可以比落库的最小间隔更长。若只等到数据库给出的时刻，
+        // 剩下不到 250ms 的本地间隔会被卡死保护当成失败。
+        quotaRetryAt = Math.min(quotaRetryAt, probeAdmitted ? earliest : Math.max(earliest, probeRetry));
       }
       if (ticket) break;
       const retryAt = Math.min(quotaRetryAt, upstreamRetryAt);
@@ -323,7 +325,7 @@ export function createGemmaTranslationRouter(options = {}) {
       if (!repository?.reserve) throw new Error('Gemma 翻译需要持久化配额 Repository');
       const reserved = Math.max(0, Math.ceil(Number(estimatedTokens) || 0));
       if (reserved > policy.tokensPerMinute) {
-        const noun = task === 'tag' ? '标注' : '翻译';
+        const noun = task === 'tag' ? '标注' : task === 'hourly' ? '浓缩' : '翻译';
         throw Object.assign(new Error(`Gemma ${noun}这一段超过每分钟 token 上限`), {
           code: 'budget-deferred',
           retryAt: now() + 60_000,
@@ -332,7 +334,11 @@ export function createGemmaTranslationRouter(options = {}) {
       const outputCap = Number.isInteger(maxOutputTokens) && maxOutputTokens > 0 ? Math.min(8192, maxOutputTokens) : 4096;
       const firstPool = model ? gemmaLockedModels(model) : (schedule || models);
       const retryPool = model ? firstPool : retryModels;
-      const input = task === 'tag' ? gemmaTagInput(system, prompt) : gemmaTranslationInput(system, prompt);
+      const input = task === 'tag'
+        ? gemmaTagInput(system, prompt)
+        : task === 'hourly'
+          ? `${system}\n\n${prompt}`
+          : gemmaTranslationInput(system, prompt);
       const inputBytes = Buffer.byteLength(input, 'utf8');
       let lastError;
       // 同一次 generate 最多再换一把密钥。多把密钥同时 500 时，不再在同一毫秒把后面的密钥也打满。

@@ -27,6 +27,8 @@
 
 - `progress/2026-10-21-feed-enrich-gemma-tags.md`：文章整理不再跳过短帖标注。`feed.items.enrich` 先用 Gemma 26B 写入 `resource_taggings`，信息树的 `tagId` 采用这份标签。打标失败只记条数和错误类别，信息树照常排队。10-07 起标签表停写，是因为文章整理旁路没有调用标注入口。Bamboo 准入分类不动。不新增 migration。需要重启 Worker。
 
+- `progress/2026-10-21-flash-lite-per-key.md`：Flash Lite 的 14 RPM 和 480 RPD 按密钥计数，不再把多把密钥加在一起。两把模型都到了当日上限时，小时浓缩和阅读分类改走 Gemma 26B。不新增 migration。需要重启 Worker。
+
 - `progress/2026-10-21-x-video-transcribe-resume.md`：X 视频转写在 Live 失败时只记错误类别。网络错误在任务内有限重试。任务失败会取消未完成的分段，已经完成的分段留下，下一轮续跑。续跑要比对起止时间，对不上就重转。文件转写在请求发出后才计入每天 24 次，重试不重复扣。不新增 migration。需要重启 Worker。
 
 - `progress/2026-10-21-gemma-feed-tags.md`：信息流短帖标签和单标签分类改走 Gemma 26B，按每分钟 16000 token 把一批再切开。不回退到 Flash Lite 或其他计费服务。Bamboo 准入分类不动。不新增 migration。需要重启 Worker。
