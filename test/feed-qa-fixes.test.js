@@ -123,7 +123,7 @@ test('social refresh keeps loaded read rows at the bottom and can page into the 
     document: { body: { dataset: { view: 'feed' } } },
     renderOverviewTimeline: () => {},
   });
-  vm.runInContext(`${extract(['paintLoadedSocialFeed', 'mergeLoadedFeedItem', 'mergeLoadedFeed', 'placeSocialItems', 'mergeSocialReadHead', 'loadXFeed', 'socialShownRows'])}\nthis.load=loadXFeed;this.shown=socialShownRows`, context);
+  vm.runInContext(`${extract(['paintLoadedSocialFeed', 'mergeLoadedFeedItem', 'mergeLoadedFeed', 'placeSocialItems', 'mergeSocialReadHead', 'feedTagRefreshPaused', 'loadXFeed', 'socialShownRows'])}\nthis.load=loadXFeed;this.shown=socialShownRows`, context);
   await context.load({ autoTranslate: false });
   assert.equal(calls.length, 2);
   assert.match(calls[1], /before=1%2C9007199254740991%2C%7E/);
@@ -154,7 +154,7 @@ test('a late social response does not replace the list after the tab changes', a
     document: { body: { dataset: { view: 'feed' } } },
     renderOverviewTimeline: () => {},
   });
-  vm.runInContext(`${extract(['paintLoadedSocialFeed', 'loadXFeed'])}\nthis.load=loadXFeed`, context);
+  vm.runInContext(`${extract(['paintLoadedSocialFeed', 'feedTagRefreshPaused', 'loadXFeed'])}\nthis.load=loadXFeed`, context);
   await context.load({ autoTranslate: false });
   assert.equal(context.state.xItems.length, 0);
   assert.match(functionSource('applyFeedPlatform'), /state\.feedEpoch = \(Number\(state\.feedEpoch\) \|\| 0\) \+ 1/);
