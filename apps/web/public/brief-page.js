@@ -65,15 +65,15 @@ function button(text, action, className='brief-button') {
   el.addEventListener('click',action); return el;
 }
 
-function hourChromeSkeleton() {
+function hourChromeSkeleton(active = 'hourly') {
   const primary = node('div', 'tree-primary source-control');
   primary.setAttribute('aria-hidden', 'true');
   const tabs = node('div', 'tree-mode-tabs channel-tabs');
-  for (const [label, active] of [['日报', false], ['小时报', true], ['股民讨论', false]]) {
+  for (const [label, mode] of [['日报', 'daily'], ['小时报', 'hourly'], ['股民讨论', 'discussion']]) {
     const tab = node('button', 'channel-tab', label);
     tab.type = 'button';
     tab.tabIndex = -1;
-    if (active) tab.classList.add('is-active');
+    if (mode === active) tab.classList.add('is-active');
     tabs.append(tab);
   }
   const period = node('div', 'tree-period-bar');
@@ -93,10 +93,15 @@ function hourChromeSkeleton() {
 
 function readingSkeleton(target, {hourly=false}={}) {
   const doc = target?.ownerDocument || (typeof document !== 'undefined' ? document : null);
-  if (hourly && doc?.createElement) {
-    target.classList.add('tree-page', 'brief-page', 'is-hourly');
-    const layout = node('div', 'tree-hour-layout');
-    const list = node('div', 'tree-list');
+  if (!doc?.createElement) {
+    paintListSkeleton(target, {rows:6, label:'正在读取简报…', variant:'feed'});
+    return;
+  }
+  target.classList.add('tree-page', 'brief-page');
+  target.classList.toggle('is-hourly', hourly);
+  const layout = node('div', 'tree-hour-layout');
+  const list = node('div', 'tree-list');
+  if (hourly) {
     const box = node('div', 'tree-hour-skeleton is-page');
     box.setAttribute('aria-busy', 'true');
     const day = node('p', 'news-day-label', '\u00a0');
@@ -111,7 +116,9 @@ function readingSkeleton(target, {hourly=false}={}) {
     target.replaceChildren(hourChromeSkeleton(), layout);
     return;
   }
-  paintListSkeleton(target, {rows:6, label:'正在读取简报…', variant:'feed'});
+  list.append(createListSkeleton(doc, { rows: 6, label: '正在读取简报…', variant: 'feed' }));
+  layout.append(list);
+  target.replaceChildren(hourChromeSkeleton('daily'), layout);
 }
 
 export function createBriefPage(host) {

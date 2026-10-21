@@ -5937,6 +5937,7 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
 .daily-research { display:flex; flex-direction:column; gap:12px; max-width:none; }
 .daily-research p, .daily-overview { margin:0; font-size:15px; line-height:1.6; overflow-wrap:anywhere; }
 .daily-direction-row { display:flex; align-items:flex-start; gap:8px; border-top:1px solid var(--comp-tertiary); }
+.daily-direction-stack { flex:1; min-width:0; }
 .daily-direction-row .daily-share,
 .daily-direction-row .news-share,
 .daily-detail-head .news-share { flex:none; margin-top:14px; }
