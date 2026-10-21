@@ -7,6 +7,7 @@ import { createStore } from '../packages/database/src/index.js';
 import {
   articlePartPrompt,
   cleanDisplayedTranscript,
+  stripResidualEnglish,
   dedupeRollingCaptions,
   captionAlreadyChinese,
   GEMMA_ARTICLE_TITLE_SYSTEM,
@@ -144,6 +145,27 @@ test('translated rolling captions drop leftover english, repeated lines and repe
   }
   assert.equal(GEMMA_TRANSLATE_SYSTEM.includes('>>'), false);
   assert.match(GEMMA_TRANSLATE_SYSTEM, /句子或段落/);
+  assert.match(GEMMA_TRANSLATE_SYSTEM, /整句英文/);
+});
+
+test('translated lines drop a leftover english sentence and keep the chinese reply', () => {
+  const raw = [
+    "主持人：Kai's power tools really cool.",
+    '主持人：the model fit by it. 是的。',
+    '每个人都可以成为 a maker',
+    'Hello there, this is a complete sentence.',
+  ].join('\n');
+  const cleaned = stripResidualEnglish(raw);
+  assert.equal(cleaned.includes("Kai's power tools"), false);
+  assert.equal(cleaned.includes('the model fit by it'), false);
+  assert.match(cleaned, /主持人：是的。/);
+  assert.match(cleaned, /每个人都可以成为 a maker/);
+  assert.match(cleaned, /Hello there, this is a complete sentence/);
+  const shown = cleanDisplayedTranscript(raw);
+  assert.equal(shown.includes("Kai's power tools"), false);
+  assert.equal(shown.includes('the model fit by it'), false);
+  assert.match(shown, /主持人：是的。/);
+  assert.match(shown, /每个人都可以成为 a maker/);
 });
 
 test('transcript parts cut on a sentence and stay inside the size window', () => {

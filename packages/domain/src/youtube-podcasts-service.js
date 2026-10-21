@@ -1,5 +1,6 @@
 import { statSync } from 'node:fs';
 import { articleProgress, describeYoutubeArticle, partialArticleBody, youtubeArticleJobLive, YOUTUBE_ARTICLE_TOUCH_MS } from './youtube-article-status.js';
+import { stripResidualEnglish } from './youtube-captions.js';
 import { formatYmd, zonedParts } from './zoned-time.js';
 import {
   loadYoutubePodcastConfig,
@@ -98,7 +99,7 @@ function present(row, { withBody = false, now = Date.now(), env = process.env, s
     contentItemId: row.contentItemId || '',
     article: articleView(row, now, env, store),
     ...(partial?.text ? { partial } : {}),
-    ...(withBody ? { body: row.body || '' } : {}),
+    ...(withBody ? { body: stripResidualEnglish(row.body || '') } : {}),
   };
 }
 

@@ -132,7 +132,9 @@ export function createAuthorService({ authorRepository, feedRepository, qualityR
   }
 
   async function readAll(workspaceId, authorId, { batchSize = AUTHOR_READ_BATCH, yield: pause } = {}) {
-    const cap = authorRepository.authorReadCap(workspaceId, decodeAuthorId(authorId));
+    const author = get(workspaceId, authorId);
+    if (!author) return null;
+    const cap = authorRepository.authorReadCap(workspaceId, author.authorId);
     if (!cap) return null;
     let changed = 0;
     for (;;) {
@@ -147,7 +149,9 @@ export function createAuthorService({ authorRepository, feedRepository, qualityR
   }
 
   function follow(workspaceId, authorId, followed) {
-    return authorRepository.setFollow(workspaceId, decodeAuthorId(authorId), Boolean(followed));
+    const author = get(workspaceId, authorId);
+    if (!author || author.kind === 'system') return null;
+    return authorRepository.setFollow(workspaceId, author.authorId, Boolean(followed));
   }
 
   return Object.freeze({ list, get, items, readAll, follow });
