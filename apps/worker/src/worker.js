@@ -278,7 +278,7 @@ export function createAiCenterWorker(options = {}) {
     defaultBrowserId: instance.browserId,
   });
   let feedService;
-  const xFocusHooks = { scoreCards: null, afterIngest: null, recordLike: null };
+  const xFocusHooks = { scoreCards: null, afterIngest: null, recordLike: null, recordNotInterested: null };
   let xFocusConfig = null;
   try { xFocusConfig = options.xFocusConfig || loadXFocusConfig(instance.configDirectory); }
   catch (error) { console.log(`[worker] x-focus ${String(error?.message || error).slice(0, 160)}`); }
@@ -355,6 +355,7 @@ export function createAiCenterWorker(options = {}) {
   });
   registry.register({ manifest: feedInteractionManifest, jobHandlers: createFeedInteractionJobHandlers(feedInteraction, {
     onAutoLike: (workspaceId, output) => xFocusHooks.recordLike?.(workspaceId, output),
+    onNotInterested: (workspaceId, output) => xFocusHooks.recordNotInterested?.(workspaceId, output),
   }) });
   const translateService = options.translateService || (options.feedService ? null : createTranslateService({
     env,
@@ -524,6 +525,8 @@ export function createAiCenterWorker(options = {}) {
       reportRepository: store.repositories.report,
       scorer,
       requestLike: (workspaceId, input) => feedInteraction.requestLike(workspaceId, input),
+      requestNotInterested: (workspaceId, input) => feedInteraction.requestNotInterested(workspaceId, input),
+      authorRepository: store.repositories.authors,
       log: focusLog,
     });
     xFocusHooks.scoreCards = (cards, context) => scorer.scoreCards(cards, context);
@@ -531,8 +534,10 @@ export function createAiCenterWorker(options = {}) {
       await autoLike.rescoreKeywords(workspaceId);
       autoLike.refreshDrift(workspaceId);
       await autoLike.dispatch(workspaceId);
+      await autoLike.dispatchNotInterested(workspaceId);
     };
     xFocusHooks.recordLike = (workspaceId, output) => autoLike.recordAutoLike(workspaceId, output);
+    xFocusHooks.recordNotInterested = (workspaceId, output) => autoLike.recordNotInterested(workspaceId, output);
   }
   const agentTraceLog = options.agentTraceLog
     || (options.store && !options.dataDirectory && !options.instanceConfig

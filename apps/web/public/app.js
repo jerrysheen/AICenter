@@ -49,8 +49,9 @@ import { decodeHtmlEntities } from './html-text.js?v=dev';
 import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, prioritizeReadableFeedRows, renderNewsList, reportItemTime } from './news-list.js?v=dev';
 import { createAuthorView } from './author-view.js?v=dev';
 import { appendPartialArticle, episodeArticleMessage, foldedOriginal, partialArticleLabel, renderYoutubePodcasts, YOUTUBE_ARTICLE_POLL_SLOW_MS, youtubeArticlePollDelay, youtubeArticleRequestPath, youtubeReaderScopeLabel } from './youtube-podcasts.js?v=dev';
-import { xVideoArticleReady, xVideoArticleRequestPath, xVideoReaderScopeLabel, xVideoTweetId } from './x-video-article.js?v=dev';
+import { xPostHasVideo, xVideoArticleReady, xVideoArticleRequestPath, xVideoReaderScopeLabel, xVideoTweetId } from './x-video-article.js?v=dev';
 import { createFeedTaggingLoader, FEED_TAG_QUERY_PATH } from './feed-tagging.js?v=dev';
+import { articleAuthorTarget, feedSearchPath } from './feed-search.js?v=dev';
 import {
   xLinkArticleReady, xLinkArticleRequestPath, xLinkClosed, xLinkOwnsBody, xLinkReaderScope,
   xLinkTerminal, xLinkTweetId, xPostHasOutboundLink,
@@ -335,6 +336,8 @@ const state = {
   recentItems: {},
   lastOverviewTarget: '',
   feedQuery: '',
+  feedSearchQuery: '',
+  feedSearchItems: [],
   showHeaderSearch: false,
   feedSort: 'captured',
   feedRange: 'all',
@@ -4051,6 +4054,8 @@ function matchesFeedQuery(item, query) {
     translationFor(item)?.text,
     postListExcerpt(item),
     item.release?.title,
+    item.handle,
+    item.authorHandle,
     postTagNames(item).join(' '),
   ].join(' ').toLowerCase();
   return haystack.includes(query);
@@ -4107,6 +4112,8 @@ function visibleFeedItems() {
     state.feedSort,
     state.feedRange,
     state.feedQuery,
+    state.feedSearchQuery,
+    state.feedSearchItems,
     state.posts,
     state.xItems,
     state.xueqiuItems,
@@ -4143,6 +4150,15 @@ function visibleFeedItems() {
   }
   if (state.feedPlatform !== 'media') {
     const query = String(state.feedQuery || '').trim().toLowerCase();
+    if (query && String(state.feedSearchQuery || '').trim().toLowerCase() === query) {
+      const seen = new Set(items.map((item) => item.id));
+      for (const hit of state.feedSearchItems || []) {
+        const post = feedAsItem(hit, hit.platform || hit.provider || 'x');
+        if (!post?.id || seen.has(post.id) || isHiddenFeedItem(post)) continue;
+        seen.add(post.id);
+        items.push(post);
+      }
+    }
     items = items.filter((item) => item.platform !== 'bilibili' && matchesFeedQuery(item, query) && matchesFeedRange(item));
     items = sortFeedItems(items);
     if (typeof markBulkOfficialNotices === 'function') items = markBulkOfficialNotices(items);
@@ -10132,15 +10148,17 @@ function renderArticlePage() {
     note.textContent = `原标题：${originalTitle}`;
     head.insertBefore(note, meta);
   }
+  const authorAction = articleAuthorTarget(post, { authorView: state.authorView !== false });
   const authorLink = document.createElement('button');
   authorLink.type = 'button';
-  authorLink.className = post.authorId && state.authorView !== false ? 'text-button author-name-link' : 'text-button';
+  authorLink.className = authorAction.kind === 'author' ? 'text-button author-name-link' : 'text-button';
   authorLink.textContent = `${post.author} ›`;
-  if (post.authorId && state.authorView !== false) {
+  if (authorAction.kind !== 'none') {
     authorLink.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      openAuthor(post.authorId);
+      if (authorAction.kind === 'author') openAuthor(authorAction.id);
+      else openPage('source', authorAction.id);
     });
   }
   meta.append(
@@ -10165,10 +10183,6 @@ function renderArticlePage() {
               : post.complete === false ? (post.bodyScope || '仅索引')
                 : '正文完整';
   if (completeLabel) meta.append(Object.assign(document.createElement('span'), { className: 'kind-tag official', textContent: completeLabel }));
-  meta.querySelector('button').addEventListener('click', () => {
-    if (post.platform === 'official') openPage('source', `policy.${post.author}`);
-    else openPage('source', post.platform === 'manual' ? 'manual' : post.platform);
-  });
   const xLike = feedLikeButton(post);
   if (xLike) meta.append(xLike);
   const body = document.createElement('div');
@@ -10243,7 +10257,7 @@ function renderArticlePage() {
       stateBox.querySelector('button').addEventListener('click', () => fetchOfficialBody(post));
     }
     if (status !== 'ready') body.append(metaGrid, stateBox);
-  } else if (xVideoTweetId(post) && xVideoRecord(post) && !xVideoRecord(post).absent && !xVideoArticleReady(xVideoRecord(post))) {
+  } else if (xPostHasVideo(post) && xVideoRecord(post) && !xVideoRecord(post).absent && !xVideoArticleReady(xVideoRecord(post))) {
     body.append(renderXVideoWaiting(post));
     const waitingTags = createTagRow(postTagNames(post));
     if (waitingTags) {
@@ -10375,7 +10389,7 @@ function renderArticlePage() {
   if (xPostHasOutboundLink(post)) scheduleXLinkArticleWatch(post);
   const linkOwns = xLinkOwnsBody(post, xLinkRecord(post));
   if (youtubeEpisodeId(post)) scheduleYoutubeArticleWatch(post);
-  else if (xVideoTweetId(post)) {
+  else if (xPostHasVideo(post)) {
     const record = xVideoRecord(post);
     if (record?.absent) {
       if (!linkOwns && shouldQueueTranslation(post)) requestTranslate(post).catch((error) => showToast(error.message));
@@ -15622,11 +15636,16 @@ const feedTaggingLoader = createFeedTaggingLoader({
   post: (body) => api(FEED_TAG_QUERY_PATH, { method: 'POST', body: JSON.stringify(body) }),
 });
 
-async function loadFeedTaggings(items = [], resourceType = 'content-item') {
+function feedTagRefreshPaused() {
+  const view = typeof document === 'undefined' ? '' : (document.body?.dataset?.view || '');
+  return view === 'feed' && state.channel === 'author';
+}
+
+async function loadFeedTaggings(items = [], resourceType = 'content-item', options = {}) {
   const ids = [...new Set((items || []).map((item) => String(item?.resourceId || '').trim()).filter(Boolean))];
   if (!ids.length) return;
   await ensureTagCatalog();
-  const rows = await feedTaggingLoader.load(ids, resourceType);
+  const rows = await feedTaggingLoader.load(ids, resourceType, options);
   if (!rows?.length) return;
   const next = { ...state.feedTaggings };
   for (const row of rows) {
@@ -15825,7 +15844,7 @@ const payload = await api(`/api/v1/feed/x?${params}`, { timeoutMs: refresh ? 180
     paintLoadedSocialFeed('x', epoch);
     renderXToolbar();
     syncLocalTranslationsToServer(state.xItems).catch(() => {});
-    loadFeedTaggings(state.xItems).then(() => paintLoadedSocialFeed('x', epoch)).catch(() => {});
+    if (!feedTagRefreshPaused()) loadFeedTaggings(state.xItems, 'content-item', { maxBatches: 1 }).then(() => paintLoadedSocialFeed('x', epoch)).catch(() => {});
     if (autoTranslate) translateXBatch({ silent: true }).catch(() => {});
     return feed;
   } catch (error) {
@@ -15961,7 +15980,7 @@ const payload = await api(`/api/v1/feed/xueqiu?${params}`, { timeoutMs: refresh 
     hydrateFeedTranslations(state.xueqiuItems);
     paintLoadedSocialFeed('xueqiu', epoch);
     renderXueqiuToolbar();
-    loadFeedTaggings(state.xueqiuItems).then(() => paintLoadedSocialFeed('xueqiu', epoch)).catch(() => {});
+    if (!feedTagRefreshPaused()) loadFeedTaggings(state.xueqiuItems, 'content-item', { maxBatches: 1 }).then(() => paintLoadedSocialFeed('xueqiu', epoch)).catch(() => {});
     if (refresh) {
       if (feed.mode === 'error' || feed.mode === 'unavailable') showToast(feed.note || '雪球抓取失败');
       else showToast(feed.note || `已写入 ${state.xueqiuItems.length} 条`);
@@ -16081,7 +16100,7 @@ async function loadTrendForceFeed({ refresh = false } = {}) {
     state.trendforceNote = payload.feed?.note || '';
     state.trendforceLoaded = true;
     hydrateFeedTranslations(state.trendforceItems);
-    await loadFeedTaggings(state.trendforceItems);
+    if (!feedTagRefreshPaused()) await loadFeedTaggings(state.trendforceItems, 'content-item', { maxBatches: 1 });
     renderPosts();
     renderTrendForceToolbar();
     if (refresh) {
@@ -16119,7 +16138,7 @@ async function loadBilibiliFeed({ url = '', refresh = false } = {}) {
     state.bilibiliNote = payload.feed?.note || '';
     state.bilibiliLoaded = true;
     hydrateFeedTranslations(state.bilibiliItems);
-    await loadFeedTaggings(state.bilibiliItems);
+    if (!feedTagRefreshPaused()) await loadFeedTaggings(state.bilibiliItems, 'content-item', { maxBatches: 1 });
     renderPosts();
     renderBilibiliToolbar();
     if (state.pageKind === 'source' && state.pageId === 'bilibili') renderSourcePage();
@@ -16720,6 +16739,35 @@ elements['note-focus-entry']?.addEventListener('click', () => {
   state.noteFilter = 'focus';
   renderNotes();
 });
+function scheduleFeedSearch(query) {
+  clearTimeout(scheduleFeedSearch.timer);
+  const wanted = String(query || '').trim();
+  if (!wanted || !state.session) {
+    state.feedSearchQuery = '';
+    state.feedSearchItems = [];
+    return;
+  }
+  scheduleFeedSearch.timer = setTimeout(() => {
+    loadFeedSearch(wanted).catch(() => {});
+  }, 250);
+}
+
+async function loadFeedSearch(query) {
+  const wanted = String(query || '').trim();
+  const token = (loadFeedSearch.token = (Number(loadFeedSearch.token) || 0) + 1);
+  try {
+    const platform = state.feedPlatform === 'media' ? 'media' : (state.feedPlatform || '');
+    const payload = await api(feedSearchPath({ platform, query: wanted }), { timeoutMs: 15_000 });
+    if (loadFeedSearch.token !== token) return;
+    if (String(state.feedQuery || '').trim().toLowerCase() !== wanted.toLowerCase()) return;
+    state.feedSearchQuery = wanted;
+    state.feedSearchItems = Array.isArray(payload.items) ? payload.items : [];
+    if (document.body?.dataset?.view === 'feed') renderPosts();
+  } catch {
+    if (loadFeedSearch.token !== token) return;
+  }
+}
+
 elements['global-search']?.addEventListener('input', (event) => {
   const query = String(event.currentTarget.value || '').trim();
   const view = document.body.dataset.view;
@@ -16733,6 +16781,7 @@ elements['global-search']?.addEventListener('input', (event) => {
     state.feedQuery = query;
     if (view === 'feed') {
       resetFeedWindow();
+      scheduleFeedSearch(query);
       renderPosts();
     } else {
       renderOverviewTimeline();
@@ -16758,6 +16807,7 @@ elements['global-search']?.addEventListener('keydown', (event) => {
     state.feedQuery = query;
     if (view === 'feed') {
       resetFeedWindow();
+      scheduleFeedSearch(query);
       renderPosts();
     } else renderOverviewTimeline();
     return;

@@ -21,5 +21,15 @@ export function createXFocusRoutes() {
         const settings = services.xFocus.setPageEnabled(identity?.device?.workspaceId || 'local', body.enabled);
         json(response, 200, { ok: true, pageOn: settings.pageEnabled && !settings.suspended });
       } },
+    { method: 'POST', path: '/api/v1/feed/x-focus/not-interested', access: 'operator',
+      async handler({ request, response, services, identity }) {
+        const body = parseContract(PageSwitchSchema, await readJson(request));
+        if (!services.xFocus) {
+          json(response, 404, { ok: false, error: '推荐记录还没有准备好' });
+          return;
+        }
+        const settings = services.xFocus.setNotInterestedEnabled(identity?.device?.workspaceId || 'local', body.enabled);
+        json(response, 200, { ok: true, pageOn: settings.pageEnabled && !settings.suspended });
+      } },
   ];
 }

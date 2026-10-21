@@ -4,6 +4,7 @@ import path from 'node:path';
 import { describeAudioTranscription, resolveAudioTranscriptionLanes } from '../../domain/src/audio-transcription.js';
 import { readChannelId, watchUrl } from '../../domain/src/youtube-podcasts.js';
 import { createGeminiAudioTranscriber } from './audio-transcribe.js';
+import { createGeminiLiveTranscriber } from './audio-transcribe-live.js';
 
 export const YOUTUBE_STDOUT_CAP = 16 * 1024 * 1024;
 export const YOUTUBE_STDERR_CAP = 256 * 1024;
@@ -548,14 +549,15 @@ function markTranscribeUnavailable(error) {
   return wrapped;
 }
 
-export function prepareYoutubeTranscriber(env = process.env, transcribe = createGeminiAudioTranscriber()) {
-  if (typeof transcribe !== 'function') throw markTranscribeUnavailable(new Error('transcribe is not a function'));
+export function prepareYoutubeTranscriber(env = process.env, transcribe) {
+  const client = transcribe || createGeminiLiveTranscriber({ env });
+  if (typeof client !== 'function') throw markTranscribeUnavailable(new Error('transcribe is not a function'));
   try {
     resolveAudioTranscriptionLanes(env);
   } catch (error) {
     throw markTranscribeUnavailable(error);
   }
-  return transcribe;
+  return client;
 }
 
 export async function ensureFreeDisk(dir, minimumBytes = MIN_FREE_BYTES) {
@@ -589,7 +591,7 @@ export async function transcribeYoutubeAudio({
   workspaceId = 'local',
   signal,
 }) {
-  const transcriber = prepareYoutubeTranscriber(env, transcribe || createGeminiAudioTranscriber());
+  const transcriber = prepareYoutubeTranscriber(env, transcribe || createGeminiLiveTranscriber({ env }));
   const parent = path.join(dataDirectory, 'tmp', 'youtube-podcasts');
   await mkdir(parent, { recursive: true });
   const dir = await mkdtemp(path.join(parent, `${videoId}-`));
@@ -632,6 +634,7 @@ export async function transcribeYoutubeAudio({
       env,
       quotaRepository,
       transcribe: transcriber,
+      fileTranscribe: transcribe ? null : createGeminiAudioTranscriber({ env }),
       signal,
     });
     return String(transcribed?.text || '').trim();

@@ -34,7 +34,7 @@ export function createFeedTaggingLoader({
   let chain = Promise.resolve();
   let lastAt = 0;
   return {
-    load(ids, resourceType = 'content-item') {
+    load(ids, resourceType = 'content-item', { maxBatches = 0 } = {}) {
       const requested = [...new Set((ids || []).map((id) => String(id || '').trim()).filter(Boolean))];
       if (!requested.length) return Promise.resolve([]);
       const run = chain.then(async () => {
@@ -43,7 +43,9 @@ export function createFeedTaggingLoader({
           const seen = seenAt.get(`${resourceType}:${id}`);
           return seen == null || current - seen >= freshMs;
         });
-        const batches = planFeedTaggingRequests(pending, { batch });
+        const planned = planFeedTaggingRequests(pending, { batch });
+        const cap = Number(maxBatches) || 0;
+        const batches = cap > 0 ? planned.slice(0, cap) : planned;
         const rows = [];
         for (const group of batches) {
           const wait = lastAt ? Math.max(0, gapMs - (now() - lastAt)) : 0;

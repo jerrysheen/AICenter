@@ -1,9 +1,10 @@
 import { lookup as defaultLookup } from 'node:dns/promises';
+import { X_LINK_HOP_HOSTS } from '../../../domain/src/x-link-articles.js';
 import { hostAllowed, isPrivateAddress, isPublicHttpsUrl, redactUrl } from '../media/article-url.js';
 import { fetchAllowlisted } from '../media/http.js';
 import { extractArticleText } from '../media/article-html.js';
 
-const SHORT_HOSTS = ['t.co'];
+const HOP_HOSTS = [...X_LINK_HOP_HOSTS];
 const MAX_REDIRECTS = 5;
 const ARTICLE_MAX_BYTES = 1_500_000;
 const TEXT_MAX_BYTES = 100_000;
@@ -29,21 +30,25 @@ function fail(reason, finalUrl = '') {
   return { ok: false, reason, finalUrl: finalUrl ? redactUrl(finalUrl) : '', host: '' };
 }
 
-// 短链只允许作为第一跳。不带 Cookie，落地域名必须在媒体白名单里。
+// t.co、bbc.in、trib.al 只作跳转。不带 Cookie，落地必须在媒体域名白名单里。
 export async function expandPublicUrl(url, {
   allowedHosts = [],
+  hopHosts = HOP_HOSTS,
   lookupImpl = defaultLookup,
   fetchImpl = globalThis.fetch,
   timeoutMs = 10_000,
 } = {}) {
   let current = String(url || '');
+  const hops = Array.isArray(hopHosts) ? hopHosts : [...(hopHosts || [])];
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
     if (!isPublicHttpsUrl(current)) return fail('blocked_url', current);
     const host = hostnameOf(current);
-    const short = hostAllowed(host, SHORT_HOSTS);
+    const short = hostAllowed(host, hops) || hostAllowed(host.replace(/^www\./, ''), hops);
     const allowed = hostAllowed(host, allowedHosts);
-    if (!short && !allowed) return fail('blocked_host', current);
-    if (!short && allowed) return { ok: true, reason: '', finalUrl: current, host };
+    if (short) {
+      // 短链继续跳，即使它也被写进了域名表。
+    } else if (!allowed) return fail('blocked_host', current);
+    else return { ok: true, reason: '', finalUrl: current, host };
     try {
       await assertPublicHost(host, lookupImpl);
     } catch {
@@ -86,6 +91,7 @@ function fetchReason(result) {
 export async function fetchLinkedArticle({
   url,
   allowedHosts = [],
+  hopHosts = HOP_HOSTS,
   sourceKey = '',
   publisherKey = '',
   publisherForHost,
@@ -93,7 +99,7 @@ export async function fetchLinkedArticle({
   lookupImpl,
   maxBytes = ARTICLE_MAX_BYTES,
 } = {}) {
-  const expanded = await expandPublicUrl(url, { allowedHosts, fetchImpl, lookupImpl });
+  const expanded = await expandPublicUrl(url, { allowedHosts, hopHosts, fetchImpl, lookupImpl });
   if (!expanded.ok) {
     return { ok: false, reason: expanded.reason, finalUrl: expanded.finalUrl || '', title: '', text: '', contentLevel: '' };
   }
