@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-21-gemma-long-video-chunks.md`：YouTube 和 X 长视频在 16000 token 内加长分段，按说话人或句末切开，并按 26B、26B、31B 轮换。同一档字幕从 62 次降到 14 次。信息流翻译仍是 1500 字。不新增 migration。需要重启 Worker。
+
 - `progress/2026-10-21-cranmer-author-search.md`：信息流搜索按作者名和 handle 查已保存的帖子，不再只看已加载的一页。`#author/x:@MilesCranmer` 打开 `x:382008009`。文章页点作者名进入作者页。YouTube 译文在显示时去掉整句英文残留，不重跑这一集。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
 
 - `progress/2026-10-20-youtube-caption-dedupe.md`：YouTube 译文在翻译前合并滚动字幕，已经译好的段落在显示时再去重。未完整状态合成一行。长视频帖标「视频待整理」或「视频已整理」，只有链接的帖子挂进 X 关注信息流并写出中文摘要。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
