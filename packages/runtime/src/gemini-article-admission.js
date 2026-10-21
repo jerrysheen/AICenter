@@ -64,7 +64,7 @@ export function resolveGeminiArticlePolicy(env = process.env) {
     const keyIdentity=createHash('sha256').update(`gemini-key:${key}`).digest('hex');
     const project = configuredProject ? createHash('sha256').update(configuredProject).digest('hex') : accountMode ? keyIdentity : createHash('sha256').update('shared-unverified').digest('hex');
     const cooldownKey = configuredProject ? project : keyIdentity;
-    slots.push({ keyEnv: name, project, cooldownKey });
+    slots.push({ keyEnv: name, project, cooldownKey, explicitProject: Boolean(configuredProject) });
   }
   if (!slots.length) throw new Error('Gemini article task requires a configured API key');
   return {
@@ -117,7 +117,16 @@ export function createGeminiArticleAdmission({ repository, usage, env = process.
     const sibling = flashLiteSibling(model);
     if (!sibling) return result;
     const alternate = request(sibling, estimated, false, keyEnv);
-    return alternate.admitted ? alternate : result;
+    if (alternate.admitted) return alternate;
+    const retryAt = Math.min(result.retryAt, alternate.retryAt);
+    const bothDay = result.flashHeadroom === 'rpd' && alternate.flashHeadroom === 'rpd';
+    return {
+      admitted: false,
+      retryAt,
+      flashHeadroom: bothDay ? 'rpd' : 'rpm',
+      model: result.retryAt <= alternate.retryAt ? (result.model || model) : (alternate.model || sibling),
+      quotaExhausted: bothDay,
+    };
   }
   function waitMessage(results,retryAt){
     const at=now();
@@ -129,6 +138,15 @@ export function createGeminiArticleAdmission({ repository, usage, env = process.
     }).filter(Boolean))];
     const label=blocks.length?(blocks.some(block=>dailyCooldown(block.untilAt,at))?'daily':'rate'):'window';
     return `quota=${label} key=${suffixes.join(',')||'-'} model=${names.join(',')||'-'} cooldownUntil=${Number.isFinite(retryAt)?retryAt:0} Gemini 文章任务等待流量窗口`;
+  }
+  function deferred(results, retryAt) {
+    const dayBlocked = results.length > 0 && results.every((item) => item.flashHeadroom === 'rpd');
+    return Object.assign(new Error(waitMessage(results, retryAt)), {
+      code: 'budget-deferred',
+      retryAt,
+      quotaExhausted: results.every((item) => item.quotaExhausted === true) || dayBlocked,
+      ...(dayBlocked ? { flashHeadroom: 'rpd' } : {}),
+    });
   }
   return {
     policy,
@@ -142,7 +160,7 @@ export function createGeminiArticleAdmission({ repository, usage, env = process.
         if(!pairs.length){
           const missed=request(pool[0],estimated,false,keyEnv);
           if(missed.admitted)return missed;
-          throw Object.assign(new Error(waitMessage([{...missed,model:pool[0]}],missed.retryAt)), { code: 'budget-deferred', retryAt: missed.retryAt, quotaExhausted:missed.quotaExhausted===true });
+          throw deferred([{...missed,model:pool[0]}], missed.retryAt);
         }
         const results=[];
         for(const pair of pairs){
@@ -150,8 +168,8 @@ export function createGeminiArticleAdmission({ repository, usage, env = process.
           if(result.admitted)return result;
           results.push({...result,model:result.model||pair.model});
         }
-        const result={retryAt:Math.min(...results.map(item=>item.retryAt)),quotaExhausted:results.every(item=>item.quotaExhausted)};
-        throw Object.assign(new Error(waitMessage(results,result.retryAt)), { code: 'budget-deferred', retryAt: result.retryAt, quotaExhausted:result.quotaExhausted===true });
+        const result={retryAt:Math.min(...results.map(item=>item.retryAt))};
+        throw deferred(results, result.retryAt);
       }
       const results=[];
       const ordered=modelOrder==='ordered';
@@ -160,9 +178,7 @@ export function createGeminiArticleAdmission({ repository, usage, env = process.
         if(result.admitted){if(useModelPool && !ordered && result.model===chosen)rememberCursor((index+1)%pool.length);return result;}
         results.push({...result,model:result.model||chosen});
       }
-      const result={retryAt:Math.min(...results.map(r=>r.retryAt)),quotaExhausted:results.every(r=>r.quotaExhausted)};
-      if (!result.admitted) throw Object.assign(new Error(waitMessage(results,result.retryAt)), { code: 'budget-deferred', retryAt: result.retryAt, quotaExhausted:result.quotaExhausted===true });
-      return result;
+      throw deferred(results, Math.min(...results.map(r=>r.retryAt)));
     },
     rankModels(models){
       const pool=(Array.isArray(models)?models:policy.models).map(item=>String(item||'').trim()).filter(Boolean);
