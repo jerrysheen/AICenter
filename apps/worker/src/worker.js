@@ -1,6 +1,7 @@
 import {attachDailyProcessLog} from '../../../packages/runtime/src/process-log.js';
 import { audioTranscriptionManifest, createAudioTranscriptionJobHandlers } from '../../../packages/runtime/src/audio-transcription-job.js';
 import {createGeminiArticleAdmission,startGeminiQuotaProbe} from '../../../packages/runtime/src/gemini-article-admission.js';
+import { nextGeminiDailyReset } from '../../../packages/connectors/src/gemini-grok-task.js';
 import {resolveGoogleHourlyAdmissionModels} from '../../../packages/harness/src/llm-route.js';
 import { backfillUntranslatedFeedTranslations, createFeedTranslationChunkStore, createFeedTranslationJobHandlers, demoteQueuedHashTranslationJobsBatched, feedTranslationManifest, fillUncoveredTranslations, formatTranslationBackfillLog, repairEllipsisLeadTexts, retireYoutubeTranslationJobsBatched, translationBackfillConcurrency, translationGapFillIntervalMs, translationGapFillLimit, translationStartupBackfillLimit } from '../../../packages/runtime/src/feed-translation-module.js';
 import { createHardwareArtifactStore } from '../../../packages/connectors/src/hardware-artifacts.js';
@@ -39,6 +40,7 @@ import { ensureMediaIndexSyncSchedule, enqueueMediaIndexEnrich, MEDIA_ENRICH_JOB
 import { loadTwkrFlags } from '../../../packages/connectors/src/twkr-sources.js';
 import { createTwkrJobHandlers, ensureTwkrSchedules, prepareTwkrEnqueue, TWKR_NEWS_JOB_TYPE, TWKR_REVENUE_JOB_TYPE } from '../../../packages/runtime/src/twkr-job.js';
 import { createYoutubePodcastJobHandlers, ensureYoutubeArticleSchedule, ensureYoutubePodcastSchedule, YOUTUBE_ARTICLE_JOB_TYPE, YOUTUBE_PODCAST_JOB_TYPE } from '../../../packages/runtime/src/youtube-podcasts-job.js';
+import { assembleXVideoTranscribeDeps } from '../../../packages/runtime/src/x-video-transcribe.js';
 import { X_VIDEO_ARTICLE_JOB_TYPE } from '../../../packages/domain/src/x-video-articles.js';
 import { X_LINK_ARTICLE_JOB_TYPE } from '../../../packages/domain/src/x-link-articles.js';
 import { loadXLinkPublisherIndex } from '../../../packages/domain/src/x-link-service.js';
@@ -277,7 +279,7 @@ export function createAiCenterWorker(options = {}) {
     defaultBrowserId: instance.browserId,
   });
   let feedService;
-  const xFocusHooks = { scoreCards: null, afterIngest: null, recordLike: null };
+  const xFocusHooks = { scoreCards: null, afterIngest: null, recordLike: null, recordNotInterested: null };
   let xFocusConfig = null;
   try { xFocusConfig = options.xFocusConfig || loadXFocusConfig(instance.configDirectory); }
   catch (error) { console.log(`[worker] x-focus ${String(error?.message || error).slice(0, 160)}`); }
@@ -354,6 +356,7 @@ export function createAiCenterWorker(options = {}) {
   });
   registry.register({ manifest: feedInteractionManifest, jobHandlers: createFeedInteractionJobHandlers(feedInteraction, {
     onAutoLike: (workspaceId, output) => xFocusHooks.recordLike?.(workspaceId, output),
+    onNotInterested: (workspaceId, output) => xFocusHooks.recordNotInterested?.(workspaceId, output),
   }) });
   const translateService = options.translateService || (options.feedService ? null : createTranslateService({
     env,
@@ -523,6 +526,8 @@ export function createAiCenterWorker(options = {}) {
       reportRepository: store.repositories.report,
       scorer,
       requestLike: (workspaceId, input) => feedInteraction.requestLike(workspaceId, input),
+      requestNotInterested: (workspaceId, input) => feedInteraction.requestNotInterested(workspaceId, input),
+      authorRepository: store.repositories.authors,
       log: focusLog,
     });
     xFocusHooks.scoreCards = (cards, context) => scorer.scoreCards(cards, context);
@@ -530,8 +535,10 @@ export function createAiCenterWorker(options = {}) {
       await autoLike.rescoreKeywords(workspaceId);
       autoLike.refreshDrift(workspaceId);
       await autoLike.dispatch(workspaceId);
+      await autoLike.dispatchNotInterested(workspaceId);
     };
     xFocusHooks.recordLike = (workspaceId, output) => autoLike.recordAutoLike(workspaceId, output);
+    xFocusHooks.recordNotInterested = (workspaceId, output) => autoLike.recordNotInterested(workspaceId, output);
   }
   const agentTraceLog = options.agentTraceLog
     || (options.store && !options.dataDirectory && !options.instanceConfig
@@ -817,7 +824,7 @@ export function createAiCenterWorker(options = {}) {
       jobTypes: [YOUTUBE_PODCAST_JOB_TYPE, YOUTUBE_ARTICLE_JOB_TYPE, X_VIDEO_ARTICLE_JOB_TYPE],
       sourceIds: [],
     },
-    jobHandlers: options.youtubePodcastJobHandlers || createYoutubePodcastJobHandlers({
+    jobHandlers: options.youtubePodcastJobHandlers || createYoutubePodcastJobHandlers(assembleXVideoTranscribeDeps({
       repository: store.repositories.youtubePodcasts,
       xVideoRepository: store.repositories.xVideos,
       feedRepository: store.repositories.feed,
@@ -827,7 +834,7 @@ export function createAiCenterWorker(options = {}) {
       env,
       browserRuntime,
       store,
-    }),
+    })),
   });
   registry.register({
     manifest: {
@@ -1052,6 +1059,17 @@ export function createAiCenterWorker(options = {}) {
         Number(env.AI_CENTER_WORKER_TRANSLATION_CONCURRENCY || 5),
       );
       console.log(`[worker] translation-slots limit=${Number(env.AI_CENTER_WORKER_TRANSLATION_CONCURRENCY || 5)} backfillCap=${backfillCap}`);
+      try {
+        const at = Date.now();
+        const dayEnd = nextGeminiDailyReset(at);
+        const dayStart = nextGeminiDailyReset(dayEnd - 27 * 3600000);
+        for (const row of store.repositories.modelUsage?.dailyCounts?.('local', { startAt: dayStart, endAt: dayEnd }) || []) {
+          if (!row.model) continue;
+          console.log(`[worker] model-usage day model=${row.model} calls=${row.calls}`);
+        }
+      } catch (error) {
+        console.error('[worker] model-usage day failed:', error instanceof Error ? error.message : error);
+      }
       if (!startupMaintenanceStarted) {
         startupMaintenanceStarted = true;
         setImmediate(() => {
