@@ -237,6 +237,13 @@ export function hourlyUsesGemmaFallback(error) {
   return true;
 }
 
+// Local Flash Lite daily cap (flashHeadroom rpd) is the path #200 started marking
+// quotaExhausted. That flag used to open the older Grok article route. Gemma 26B
+// takes this case. Supplier cooldown still has quotaExhausted without flashHeadroom.
+export function articleUsesGemmaFallback(error) {
+  return error?.code === 'budget-deferred' && error.quotaExhausted === true && error.flashHeadroom === 'rpd';
+}
+
 export function createHarnessAgentRuntime({
   tools,
   quality = null,
@@ -250,6 +257,7 @@ export function createHarnessAgentRuntime({
   articleAdmission = null,
   hourlyAdmission = null,
   hourlyGemmaFallback = null,
+  articleGemmaFallback = null,
 } = {}) {
   if (!tools || typeof tools.list !== 'function' || typeof tools.execute !== 'function') {
     throw new Error('Harness runtime 需要现有 ToolRegistry');
@@ -433,7 +441,16 @@ export function createHarnessAgentRuntime({
           throw gemmaError;
         }
       }
-      if(input.closedContext!==true || input.closedTask!=='article-normalize' || !error.quotaExhausted || env.AI_CENTER_HARNESS_ARTICLE_FALLBACK!=='elucid-grok')throw error;
+      if(input.closedContext===true && input.closedTask==='article-normalize' && articleUsesGemmaFallback(error)) {
+        if(!articleGemmaFallback) throw error;
+        await input.trace?.({event:'article.provider.fallback',detail:{from:'flash-lite',to:'gemma-26b',reason:'quota-exhausted'}});
+        try { return await articleGemmaFallback(input); }
+        catch (gemmaError) {
+          if (gemmaError?.code === 'budget-deferred') throw error;
+          throw gemmaError;
+        }
+      }
+      if(input.closedContext!==true || input.closedTask!=='article-normalize' || !error.quotaExhausted || error.flashHeadroom === 'rpd' || env.AI_CENTER_HARNESS_ARTICLE_FALLBACK!=='elucid-grok')throw error;
       await input.trace?.({event:'article.provider.fallback',detail:{from:'google',to:'elucid-grok',reason:'quota-exhausted'}});
       return runOnce(input,true);
     }

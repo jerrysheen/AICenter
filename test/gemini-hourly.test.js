@@ -4,7 +4,7 @@ import {resolveHarnessLlm,resolveGoogleHourlyModelPool,resolveGoogleHourlyAdmiss
 import {createGeminiArticleAdmission} from '../packages/runtime/src/gemini-article-admission.js';
 import {createStore} from '../packages/database/src/index.js';
 import {createRuntimeService} from '../packages/domain/src/runtime-service.js';
-import {createHarnessAgentRuntime, hourlyUsesGemmaFallback} from '../packages/harness/src/harness-agent-runtime.js';
+import {articleUsesGemmaFallback, createHarnessAgentRuntime, hourlyUsesGemmaFallback} from '../packages/harness/src/harness-agent-runtime.js';
 import {createToolRegistry} from '../packages/runtime/src/tool-registry.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -64,6 +64,60 @@ test('hourly Flash Lite day cap falls back to Gemma and does not open the Flash 
     assert.equal(fallback, 1);
     assert.equal(result.modelId, 'gemma-4-26b-a4b-it');
     assert.equal(result.answer, '{"modules":[]}');
+  } finally {
+    await runtime.close();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('merged Flash daily cap falls back to Gemma and does not open Grok', async () => {
+  const at = Date.parse('2026-10-21T06:11:00Z');
+  const store = createStore(':memory:');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hourly-merged-cap-'));
+  const env = {
+    GEMINI_API_KEY: 'fake', GEMINI_API_KEY2: 'two', ELUCID_GROK_API_KEY: 'grok',
+    AI_CENTER_GEMINI_KEY_ENVS: 'GEMINI_API_KEY,GEMINI_API_KEY2',
+    AI_CENTER_GEMINI_ARTICLE_POOL_CONCURRENCY: '2',
+    AI_CENTER_HARNESS_HOURLY_PROVIDER: 'google',
+    AI_CENTER_HARNESS_ARTICLE_PROVIDER: 'google',
+    AI_CENTER_HARNESS_ARTICLE_FALLBACK: 'elucid-grok',
+    AI_CENTER_GEMINI_ARTICLE_MIN_INTERVAL_MS: '1',
+    AI_CENTER_GEMINI_ARTICLE_REQUESTS_PER_MINUTE: '100',
+    AI_CENTER_GEMINI_ARTICLE_REQUESTS_PER_HOUR: '20000',
+    AI_CENTER_GEMINI_ARTICLE_REQUESTS_PER_DAY: '2500',
+    AI_CENTER_GEMINI_ARTICLE_KEY_REQUESTS_PER_DAY: '5000',
+    AI_CENTER_GEMINI_ARTICLE_ESTIMATED_TOKENS_PER_MINUTE: '100000000',
+  };
+  const earlier = at - 5 * 60_000;
+  for (const keyEnv of ['GEMINI_API_KEY', 'GEMINI_API_KEY2']) {
+    for (let index = 0; index < 480; index += 1) {
+      store.repositories.modelQuota.recordProbeUse({ project: 'other', keyEnv, model: 'gemini-3.1-flash-lite', at: earlier });
+    }
+  }
+  for (let index = 0; index < 2500; index += 1) {
+    store.repositories.modelQuota.recordProbeUse({
+      project: 'other', keyEnv: index % 2 ? 'GEMINI_API_KEY2' : 'GEMINI_API_KEY', model: 'gemini-3.5-flash-lite', at: earlier,
+    });
+  }
+  const admission = createGeminiArticleAdmission({
+    repository: store.repositories.modelQuota, env, now: () => at,
+    models: ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite'], allowFallback: false, modelOrder: 'least-used',
+  });
+  let gemma = 0;
+  const runtime = createHarnessAgentRuntime({
+    tools: createToolRegistry(), env, hourlyAdmission: admission, runtimeDirectory: dir,
+    hourlyGemmaFallback: async () => {
+      gemma += 1;
+      return { answer: '{"modules":[]}', providerId: 'google', modelId: 'gemma-4-26b-a4b-it' };
+    },
+    createClient: async () => { throw new Error('flash or grok client must not start'); },
+  });
+  try {
+    assert.equal(articleUsesGemmaFallback(Object.assign(new Error('supplier'), { code: 'budget-deferred', quotaExhausted: true })), false);
+    const result = await runtime.run({ message: 'saved summaries', closedContext: true, closedTask: 'hourly-brief', usageStage: 'tree-hourly' });
+    assert.equal(gemma, 1);
+    assert.equal(result.modelId, 'gemma-4-26b-a4b-it');
   } finally {
     await runtime.close();
     store.close();
