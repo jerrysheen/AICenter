@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createStore} from '../packages/database/src/index.js';
 import {createInformationTreeService} from '../packages/domain/src/information-tree-service.js';
+import {hourlyModelQueueTimeoutMs, treeFailure} from '../packages/domain/src/information-tree-policy.js';
 import {loadInformationTreeSkills} from '../packages/runtime/src/information-tree/skills.js';
 import {createInformationTreeJobHandlers,enqueueTreePreparation,TREE_PREPARE_JOB_TYPE,informationTreeManifest,enqueuePreparedHourRefreshes,prioritizeRecentTreePreparation,editionCoversMaterials} from '../packages/runtime/src/information-tree-module.js';
 import {createCapabilityRegistry} from '../packages/runtime/src/capability-registry.js';
@@ -346,6 +347,52 @@ test('a prepare refresh after the hourly slot is available within a minute',asyn
     assert.equal(jobs.length,1);
     assert.equal(jobs[0].availableAt,start+H+30*60000);
   }finally{early.store.close();}
+});
+
+test('hourly queue wait covers one running call plus one latest-hour cut-in', () => {
+  assert.equal(hourlyModelQueueTimeoutMs(), 180000 * 2 + 30_000);
+  assert.equal(hourlyModelQueueTimeoutMs({ queueTimeoutMs: 500000, timeoutMs: 180000 }), 500000);
+  const at = 1_700_000_000_000;
+  const queued = treeFailure(Object.assign(new Error('等待模型执行队列超时；本轮未获得执行机会'), { name: 'ModelQueueTimeout' }), 'stage', '', at);
+  assert.equal(queued.reason, 'queue-timeout');
+  assert.equal(queued.retryAt, at + 60_000);
+  const executed = treeFailure(Object.assign(new Error('模型执行超时'), { name: 'ModelExecutionTimeout' }), 'stage', '', at);
+  assert.equal(executed.retryAt, at + 30 * 60_000);
+});
+
+test('hourly tag groups admit one model call at a time', async () => {
+  const catalog = { tags: [{ id: 'macro', name: '宏观' }, { id: 'tech', name: '科技' }] };
+  const f = fixture({ catalog });
+  let active = 0, max = 0, watch = false;
+  f.runtime.run = async (input) => {
+    f.calls.push(input);
+    const hourly = watch && input.usageStage === 'tree-hourly';
+    if (hourly) {
+      active += 1;
+      max = Math.max(max, active);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      active -= 1;
+    }
+    const payload = JSON.parse(input.message);
+    if (input.usageStage === 'tree-information') {
+      const tagId = String(payload.source?.title || '').includes('科技') ? 'tech' : 'macro';
+      return { answer: JSON.stringify({ title: payload.source.title, text: payload.source.paragraphs.map((row) => row.text).join(''), tagId }) };
+    }
+    return { answer: JSON.stringify({ modules: (payload.inputs || []).map((row) => ({ title: row.title, text: row.text, tagId: payload.tagId, inputIds: [row.id] })) }) };
+  };
+  const macro = '关于计划状态和适用条件的较长正文。'.repeat(12);
+  try {
+    await f.service.prepareInformation({ materials: [
+      { ...material('a', macro), title: '宏观计划' },
+      { ...material('b', '科技产品已经开始交付给客户。'.repeat(12)), title: '科技交付' },
+    ] });
+    watch = true;
+    const hour = await f.service.generateHour({ hourStart: start });
+    const hourlyCalls = f.calls.filter((call) => call.usageStage === 'tree-hourly');
+    assert.ok(hourlyCalls.length >= 2);
+    assert.equal(max, 1);
+    assert.equal(hour.status === 'failed', false);
+  } finally { f.store.close(); }
 });
 
 test('explicit historical refresh uses low Harness priority while latest ended hour keeps foreground priority',async()=>{

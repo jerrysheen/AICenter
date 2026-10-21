@@ -4,7 +4,7 @@ import {materialHash,materialHashYielding,prepareDailyMaterials} from './daily-m
 import {yieldEventLoop} from './event-loop.js';
 import {needsZhLocalization} from './localize-texts.js';
 import {runBounded} from './daily-analysis.js';
-import {treeCatalog,treeSource,treeFailure,formatCondenseFailureLog,formatTreeHourlyCallLog,describeCondenseFailure,isTerminalPendingReason,isTruncatedModelFailure,cachedTruncationFailure,cachedFlashQuotaWait,HOURLY_TRUNCATION_FALLBACK_MODEL,HOURLY_TRUNCATION_MAX_TOKENS} from './information-tree-policy.js';
+import {treeCatalog,treeSource,treeFailure,formatCondenseFailureLog,formatTreeHourlyCallLog,describeCondenseFailure,isTerminalPendingReason,isTruncatedModelFailure,cachedTruncationFailure,cachedFlashQuotaWait,hourlyModelQueueTimeoutMs,HOURLY_TRUNCATION_FALLBACK_MODEL,HOURLY_TRUNCATION_MAX_TOKENS} from './information-tree-policy.js';
 import {readingClassKeyEnvs} from './reading-hour-service.js';
 import {isFlashSource} from './flash-sources.js';
 import {boundedInt,isAttributionValidationError,isRetryableUpstreamStatus,modelRetryDelayMs,nextHourlyAttempt,sameIdSet,upstreamHttpStatus} from './report-reliability.js';
@@ -241,6 +241,13 @@ export function createInformationTreeService({repository,reportRepository,feedSe
   hourlyModels:configuredHourlyModels=[],rankHourlyModels,upstreamRetries:configuredUpstreamRetries,upstreamRetryBaseMs,upstreamRetryMaxMs,sleep:configuredSleep,hourlyAttemptCap:configuredHourlyAttemptCap,prepAttemptCap:configuredPrepAttemptCap,flashSources=null,env=process.env,log=console.log}={}) {
   const validatorVersion=articleStrategy ? ARTICLE_VALIDATOR_VERSION : TREE_VALIDATOR_VERSION;
   const config={articleRequestBytes:100000,batchBytes:12000,maxCalls:80,totalMs:20*60000,timeoutMs:180000,dailyTimeoutMs:360000,dailyTotalMs:60*60000,queueTimeoutMs:120000,...budget};
+  const hourlyQueueTimeoutMs=hourlyModelQueueTimeoutMs(config);
+  let hourlyTail=Promise.resolve();
+  function enterHourlyModel(work) {
+    const run=hourlyTail.then(work, work);
+    hourlyTail=run.then(()=>{}, ()=>{});
+    return run;
+  }
   const hourlyModels=Array.isArray(configuredHourlyModels) ? configuredHourlyModels.map(model=>String(model || '').trim()).filter(Boolean) : [];
   const upstreamRetries=boundedInt(configuredUpstreamRetries, 3, 0, 6);
   const retryBaseMs=boundedInt(upstreamRetryBaseMs, 1000, 0, 60_000);
@@ -343,13 +350,14 @@ export function createInformationTreeService({repository,reportRepository,feedSe
               const message=JSON.stringify(articleStrategy && stage==='information' ? articleMessage() : {...payload,...(attempt ? {correction:`上一响应未通过校验：${correction}。${shape}不增加事实。`} : {})});
               sentMessage=message;
               try {
-                result=await runBounded(agentRuntime,{workspaceId:s.workspaceId,usageStage:`tree-${stage}`,closedContext:true,
+                const invoke=()=>runBounded(agentRuntime,{workspaceId:s.workspaceId,usageStage:`tree-${stage}`,closedContext:true,
                   closedTask:stage==='information' && articleStrategy ? 'article-normalize' : stage==='daily' ? 'daily-analysis' : 'hourly-brief',allowedToolIds:[],webMode:'off',enableAuxiliarySearch:false,executionPriority:s.priority,
                   taskInstruction:instruction,
                   ...(useFallbackModel ? {googleModel:HOURLY_TRUNCATION_FALLBACK_MODEL,hourlyMaxTokens:HOURLY_TRUNCATION_MAX_TOKENS} : (typeof googleModel==='string' ? {googleModel} : {})),
                   ...(keyEnv ? {googleKeyEnv: keyEnv} : {}),
                   message},
-                  Math.min(callTimeout,remaining),heartbeat,30000,{queueTimeoutMs:config.queueTimeoutMs,totalTimeoutMs:remaining,onTiming:value=>{timing=value;reportRepository.saveAnalysisStage(s.workspaceId,period,key,key,stageInput(),null,'running');}});
+                  Math.min(callTimeout,remaining),heartbeat,30000,{queueTimeoutMs:stage==='hourly' ? hourlyQueueTimeoutMs : config.queueTimeoutMs,totalTimeoutMs:remaining,onTiming:value=>{timing=value;reportRepository.saveAnalysisStage(s.workspaceId,period,key,key,stageInput(),null,'running');}});
+                result=await (stage==='hourly' ? enterHourlyModel(invoke) : invoke());
                 callResult=result;
               } catch(error) {
                 callError=error;
