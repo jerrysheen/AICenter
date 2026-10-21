@@ -1044,15 +1044,37 @@ export function createInformationTreePage(host) {
     } else {
       syncReadingChrome(null);
       if(!items.length) list.textContent='这一天还没有日报。';
-      else {
-        const rows=el('ol','','news-rows');
-        for(const item of items) rows.append(compactCard(item));
-        list.replaceChildren(rows);
-      }
+      else list.replaceChildren(dailyNewsWithSouthbound(items));
     }
-    if(!opened) ensureSouthboundSlot(list);
     showPosition(`daily-feed:${dailyStart}:${openedId || ''}`, Boolean(opened));
-    if(!opened) paintSouthboundLine(list, token);
+    const newsHost=list.querySelector('.daily-news');
+    if(!opened && newsHost) paintSouthboundLine(newsHost, token);
+  }
+  function dailyNewsWithSouthbound(items) {
+    const feed=el('div','','daily-news');
+    const financeAt=items.findIndex(item=>group(item.n)==='finance');
+    const cut=financeAt<0 ? items.length : financeAt;
+    const paint=bucket=>{
+      if(!bucket.length) return;
+      const rows=el('ol','','news-rows');
+      for(const item of bucket) rows.append(compactCard(item));
+      feed.append(rows);
+    };
+    const slot=()=>{
+      const line=el('p','\u00a0','southbound-daily-line');
+      line.setAttribute('aria-hidden','true');
+      feed.append(line);
+    };
+    if(financeAt===0){
+      paint(items.slice(0,1));
+      slot();
+      paint(items.slice(1));
+    }else{
+      paint(items.slice(0,cut));
+      slot();
+      paint(items.slice(cut));
+    }
+    return feed;
   }
   function directSouthbound(page) {
     const children = page?.children ? [...page.children] : [];
@@ -1134,16 +1156,22 @@ export function createInformationTreePage(host) {
     const page=el('div','','daily-research');
     syncReadingChrome(openedDirection ? {node:null,label:'返回日报',onBack:closeDaily} : null);
     if(!openedDirection) {
-      page.append(el('p',editorial.overview,'daily-overview'));
+      if(editorial.overview) page.append(el('p',editorial.overview,'daily-overview'));
       for(const article of editorial.articles) {
         const row=el('div','','daily-direction-row');
         const open=document.createElement('button');
         open.type='button';open.className='daily-direction-card';
         open.append(el('span',directions[article.direction] || '其他','daily-kicker'),el('h3',article.title),el('p',article.lead));
         open.addEventListener('click',()=>{openedDirection=article.direction;return render();});
-        row.append(open, shareAction(()=>shareDailyArticle(article, edition)));
+        const share=shareAction(()=>shareDailyArticle(article, edition));
+        if(article.direction==='finance'){
+          const stack=el('div','','daily-direction-stack');
+          stack.append(open, southboundSlot());
+          row.append(stack, share);
+        }else row.append(open, share);
         page.append(row);
       }
+      if(!editorial.articles.some(article=>article.direction==='finance')) page.append(southboundSlot());
     } else {
       const article=editorial.articles.find(item=>item.direction===openedDirection);
       if(!article) page.append(el('p','这个方向没有成稿。'));
@@ -1155,15 +1183,19 @@ export function createInformationTreePage(host) {
         attachSectionSources(page, editorial, article.leadEventIds, [lead]);
         const themes=article.sections.filter(section=>section.kind!=='other');
         const extras=article.sections.filter(section=>section.kind==='other');
-        for(const section of themes) {
+        const aShare=openedDirection==='finance' ? themes.findIndex(section=>/A股/.test(section.heading || '')) : -1;
+        const southAt=openedDirection==='finance' ? (aShare>=0 ? aShare : 0) : -1;
+        themes.forEach((section, index)=>{
           const block=el('section','','daily-section');
           block.append(el('h4',section.heading));
+          if(index===southAt) block.append(southboundSlot());
           const paragraphs=section.paragraphs.map(text=>{const p=el('p',text);block.append(p);return p;});
           attachSectionSources(block, editorial, section.eventIds, paragraphs);
           const related=editorial.relations.filter(relation=>section.eventIds.includes(relation.eventIds[0]));
           for(const relation of related) block.append(el('p',`${relationLabels[relation.type] || relation.type}：${relation.reason}`,'daily-note'));
           page.append(block);
-        }
+        });
+        if(openedDirection==='finance' && !page.querySelector('.southbound-daily-line')) page.append(southboundSlot());
         if(extras.length) {
           const extra=el('details','','daily-extra');
           const count=extras.reduce((sum,section)=>sum+section.eventIds.length,0);
@@ -1176,10 +1208,15 @@ export function createInformationTreePage(host) {
         }
       }
     }
-    if(!openedDirection) ensureSouthboundSlot(page);
     list.replaceChildren(page);
     showPosition(`daily-research:${dailyStart}:${openedDirection || ''}`, Boolean(openedDirection));
-    if(!openedDirection) paintSouthboundLine(page, token);
+    const southHost=page.querySelector('.southbound-daily-line')?.parentElement;
+    if(southHost) paintSouthboundLine(southHost, token);
+  }
+  function southboundSlot() {
+    const slot=el('p','\u00a0','southbound-daily-line');
+    slot.setAttribute('aria-hidden','true');
+    return slot;
   }
   function compactCard(item) {
     const at=reportItemTime(item.n, item.edition);
@@ -1513,9 +1550,6 @@ export function createInformationTreePage(host) {
     else if(!hourlyFeed){
       clearHourSlow();
       paintListSkeleton(list,{rows:6,label:'正在读取简报…',variant:'feed'});
-      const skeleton=list.querySelector('.list-skeleton');
-      if(dailyFeed && !openedId && !openedDirection) ensureSouthboundSlot(skeleton || list);
-      else directSouthbound(skeleton)?.remove();
     }
     setPrimary();syncHourChrome();
     if(hourlyFeed && openedId) syncReadingChrome({node:null,label:'返回小时报',onBack:closeHour});
@@ -1666,7 +1700,7 @@ export function createInformationTreePage(host) {
     tools.append(materialsBtn);
     tagPanel=el('div','','tree-tag-panel');tagPanel.hidden=true;
     tag=el('select');tag.setAttribute('aria-label','主Tag筛选');tag.add(new Option('全部Tag','*'));tag.addEventListener('change',()=>{memory[mode]={...(memory[mode]||{}),tag:tag.value};render();});tagPanel.append(tag);
-    notice=el('div','','tree-update');notice.hidden=true;notice.setAttribute('role','status');list=el('div','','tree-list');if(mode==='hourly')list.append(hourSkeleton());else{paintListSkeleton(list,{rows:6,label:'正在读取简报…',variant:'feed'});ensureSouthboundSlot(list.querySelector('.list-skeleton')||list);}bindHourSwipe(list);
+    notice=el('div','','tree-update');notice.hidden=true;notice.setAttribute('role','status');list=el('div','','tree-list');if(mode==='hourly')list.append(hourSkeleton());else paintListSkeleton(list,{rows:6,label:'正在读取简报…',variant:'feed'});bindHourSwipe(list);
     const hourLayout=el('div','','tree-hour-layout');hourLayout.append(list);
     root.append(primary,issue,delayEl,backIssues,directionNav,tools,tagPanel,notice,hourLayout);
     const token=epoch;

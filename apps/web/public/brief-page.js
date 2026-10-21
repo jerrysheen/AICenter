@@ -116,11 +116,7 @@ function readingSkeleton(target, {hourly=false}={}) {
     target.replaceChildren(hourChromeSkeleton(), layout);
     return;
   }
-  const skeleton = createListSkeleton(doc, { rows: 6, label: '正在读取简报…', variant: 'feed' });
-  const line = node('p', 'southbound-daily-line', '\u00a0');
-  line.setAttribute('aria-hidden', 'true');
-  skeleton.prepend(line);
-  list.append(skeleton);
+  list.append(createListSkeleton(doc, { rows: 6, label: '正在读取简报…', variant: 'feed' }));
   layout.append(list);
   target.replaceChildren(hourChromeSkeleton('daily'), layout);
 }
