@@ -22,7 +22,8 @@
   if (hasKnownSessionRecord()) document.documentElement.classList.add('has-known-session');
   try {
     var bootHash = String(location.hash || '').split('?')[0];
-    if (bootHash === '#feed') history.scrollRestoration = 'manual';
+    // 单页自己记滚动。浏览器后退若再套一次，简报会在离开时的位置上再偏一截。
+    history.scrollRestoration = 'manual';
     if (bootHash === '#feed' || bootHash.indexOf('#feed/') === 0) document.documentElement.classList.add('feed-boot');
     if (/^#quote\/[^/?#]+$/.test(bootHash)) document.documentElement.classList.add('quote-boot');
   } catch (_error) {

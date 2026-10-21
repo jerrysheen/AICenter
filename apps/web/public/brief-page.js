@@ -954,5 +954,5 @@ export function createBriefPage(host) {
   document.addEventListener('keydown',event=>{
     if(event.key==='Escape') for(const panel of root?.querySelectorAll('.brief-tools[open],.brief-date-picker[open],.brief-item-tools[open],.brief-paragraph-tools[open]') || []) panel.open=false;
   });
-  return {mount,stop,reset,check,selectDirection,hasHourScroll(){return Boolean(tree.hasHourScroll?.());},state:s};
+  return {mount,stop,reset,check,selectDirection,captureScroll(){tree.captureScroll?.();},hasHourScroll(){return Boolean(tree.hasHourScroll?.());},state:s};
 }
