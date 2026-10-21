@@ -6,11 +6,11 @@ import path from 'node:path';
 import { parseContract, TagAnalyzeJobInputSchema, ValidationError } from '../packages/contracts/src/index.js';
 import { createStore } from '../packages/database/src/index.js';
 import { loadTagCatalog, projectTagCatalog } from '../packages/domain/src/tag-catalog.js';
-import { buildTagSystemPrompt } from '../packages/domain/src/tag-prompt.js';
+import { TAG_PROMPT_VERSION, buildTagSystemPrompt } from '../packages/domain/src/tag-prompt.js';
 import { treeCatalog } from '../packages/domain/src/information-tree-policy.js';
 import { parseTagBatchOutput } from '../packages/domain/src/tag-parser.js';
 import { createTaggingService } from '../packages/domain/src/tagging-service.js';
-import { createTaggingJobHandlers } from '../packages/runtime/src/tagging-module.js';
+import { createTaggingJobHandlers, ensureTagRescanSchedule } from '../packages/runtime/src/tagging-module.js';
 import { createAiCenterServer } from '../apps/web/src/server.js';
 
 const CATALOG = {
@@ -218,7 +218,10 @@ test('instance tag catalog keeps the original 24 ids and adds eight content tags
   assert.equal(loaded.reading.directionByTag.geopolitics_diplomacy, 'policy');
   const projected = projectTagCatalog(loaded).find((tag) => tag.id === 'corporate_results');
   assert.match(projected.description, /经营指引/);
-  assert.match(buildTagSystemPrompt('multi'), /不因为公司在某个市场上市/);
+  assert.match(buildTagSystemPrompt('multi'), /宁德时代是 A 股，标 market_cn，不要标 market_hk/);
+  assert.match(buildTagSystemPrompt('multi'), /不要标 ai_compute/);
+  assert.match(buildTagSystemPrompt('multi'), /不要标 semiconductor/);
+  assert.equal(TAG_PROMPT_VERSION, 'tag_v3');
   assert.equal(treeCatalog(loaded).ids.size, 32);
 });
 
@@ -386,5 +389,135 @@ test('tagging analyze API enqueues a job that can be polled', async () => {
   } finally {
     await app.close();
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a completed rescan records an empty tagging when the model leaves an item unlabeled', async () => {
+  const temporary = temporaryStore();
+  const service = createTaggingService({
+    catalog: CATALOG,
+    taggingRepository: temporary.store.repositories.tagging,
+    taggingPort: {
+      async tagBatch(input) {
+        const ids = input.userPayload.items.map((item) => item.item_id);
+        return {
+          reply_text: JSON.stringify({
+            items: ids.filter((id) => id !== 'plain').map((id) => ({ item_id: id, tags: ['ai'] })),
+          }),
+          model: 'test',
+        };
+      },
+    },
+  });
+  const items = [
+    { id: 'marked', text: 'A new LLM was released' },
+    { id: 'plain', text: 'Weather is nice today' },
+  ];
+  const open = await service.analyzeItems({
+    workspaceId: 'local', resourceType: 'content-item', items,
+  });
+  assert.deepEqual(open.missingItemIds, ['plain']);
+  assert.equal(service.getTagging('local', 'content-item', 'plain'), null);
+  const recorded = await service.analyzeItems({
+    workspaceId: 'local', resourceType: 'content-item', items, recordEmptyWhenUnlabeled: true,
+  });
+  assert.deepEqual(recorded.missingItemIds, []);
+  assert.deepEqual(service.getTagging('local', 'content-item', 'plain').tags, []);
+  const again = await service.analyzeItems({
+    workspaceId: 'local', resourceType: 'content-item', items, recordEmptyWhenUnlabeled: true,
+  });
+  assert.equal(again.skipped, 2);
+  assert.deepEqual(again.saved, []);
+  temporary.remove();
+});
+
+test('a completed rescan records empty taggings for an empty item list and skips a bad reply', async () => {
+  const temporary = temporaryStore();
+  const items = [
+    { id: 'a', text: 'Weather is nice today' },
+    { id: 'b', text: 'Coffee this morning' },
+  ];
+  const empty = createTaggingService({
+    catalog: CATALOG,
+    taggingRepository: temporary.store.repositories.tagging,
+    taggingPort: {
+      async tagBatch() {
+        return { reply_text: JSON.stringify({ items: [] }), model: 'test' };
+      },
+    },
+  });
+  const recorded = await empty.analyzeItems({
+    workspaceId: 'local', resourceType: 'content-item', items, recordEmptyWhenUnlabeled: true,
+  });
+  assert.deepEqual(recorded.missingItemIds, []);
+  assert.deepEqual(empty.getTagging('local', 'content-item', 'a').tags, []);
+  assert.deepEqual(empty.getTagging('local', 'content-item', 'b').tags, []);
+  const brokenStore = temporaryStore();
+  const broken = createTaggingService({
+    catalog: CATALOG,
+    taggingRepository: brokenStore.store.repositories.tagging,
+    taggingPort: {
+      async tagBatch() {
+        return { reply_text: 'not json', model: 'test' };
+      },
+    },
+  });
+  await assert.rejects(() => broken.analyzeItems({
+    workspaceId: 'local', resourceType: 'content-item', items, recordEmptyWhenUnlabeled: true,
+  }), /标注全部失败/);
+  assert.equal(broken.getTagging('local', 'content-item', 'a'), null);
+  assert.equal(broken.getTagging('local', 'content-item', 'b'), null);
+  temporary.remove();
+  brokenStore.remove();
+});
+
+test('untagged rescan selects recent items with no tagging row and keeps going when Gemma fails', async () => {
+  const store = createStore(':memory:');
+  const now = Date.parse('2026-10-21T06:00:00Z');
+  const feed = store.repositories.feed;
+  const item = (id, createdAt) => feed.saveContentItem({
+    id, workspaceId: 'local', originType: 'subscription', contentType: 'post',
+    title: id, body: id, createdAt,
+  });
+  const recent = item('recent-untagged', now - 60_000);
+  const tagged = item('recent-tagged', now - 60_000);
+  item('old-untagged', now - 10 * 24 * 3600000);
+  store.repositories.tagging.saveTaggings([{
+    workspaceId: 'local', resourceType: 'content-item', resourceId: tagged.id,
+    tags: ['market_hk'], tagCatalogVersion: 'tags_v1', promptVersion: 'tag_v2', model: 'gemma', analyzedAt: now,
+  }]);
+  assert.deepEqual(feed.listUntaggedContentIds('local', { since: now - 48 * 3600000, limit: 20 }), [recent.id]);
+  const seen = [];
+  const lines = [];
+  const handlers = createTaggingJobHandlers({
+    taggingService: {
+      async analyzeItems(input) {
+        seen.push(input.items.map((row) => row.id));
+        throw Object.assign(new Error('配额窗口'), { code: 'budget-deferred' });
+      },
+    },
+    feedService: {
+      listUntaggedContentIds: (workspaceId, query) => feed.listUntaggedContentIds(workspaceId, query),
+      listTaggableItems: (workspaceId, query) => feed.listContentItems(workspaceId, { limit: 50 })
+        .filter((row) => query.ids.includes(row.id))
+        .map((row) => ({ id: row.id, title: row.title, body: row.body })),
+    },
+    knowledgeService: {},
+    log: (line) => lines.push(line),
+    env: { AI_CENTER_TAG_RESCAN_HOURS: '48', AI_CENTER_TAG_RESCAN_LIMIT: '20' },
+    now: () => now,
+  });
+  try {
+    const result = await handlers['tagging.rescan']();
+    assert.deepEqual(seen, [[recent.id]]);
+    assert.equal(result.tagged, 0);
+    assert.equal(result.taggingError, 'budget-deferred');
+    assert.match(lines[0], /count=1 category=budget-deferred/);
+    assert.equal(lines[0].includes('配额窗口'), false);
+    const schedule = ensureTagRescanSchedule(store, now);
+    assert.equal(schedule.jobType, 'tagging.rescan');
+    assert.equal(schedule.schedule.intervalMinutes, 15);
+  } finally {
+    store.close();
   }
 });
