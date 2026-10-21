@@ -994,7 +994,10 @@ export function createAiCenterWorker(options = {}) {
   let schedulePromise = null;
   let quotaProbe = null;
   let translationBackfill = null;
+  let maintenancePromise = null;
   let translationGapTimer = null;
+  let closed = false;
+  let closing = null;
   let translationGapRunning = false;
   let translationGapCursor = null;
   let hardwarePriceTimer = null;
@@ -1065,11 +1068,11 @@ export function createAiCenterWorker(options = {}) {
     }).catch((error) => {
       console.error('[worker] translation-backfill failed:', error instanceof Error ? error.message : error);
     }).then(() => {
-      if (gapLimit > 0 && gapInterval > 0) return runGapFill();
-      return null;
+      if (closed || gapLimit <= 0 || gapInterval <= 0) return null;
+      return runGapFill();
     });
     deferredStep('translation-backfill');
-    if (gapLimit > 0 && gapInterval > 0 && !translationGapTimer) {
+    if (!closed && gapLimit > 0 && gapInterval > 0 && !translationGapTimer) {
       translationGapTimer = setInterval(() => { runGapFill(); }, gapInterval);
       translationGapTimer.unref?.();
     }
@@ -1117,9 +1120,15 @@ export function createAiCenterWorker(options = {}) {
       }
       if (!startupMaintenanceStarted) {
         startupMaintenanceStarted = true;
-        setImmediate(() => {
-          runDeferredTranslationStartup().catch((error) => {
-            console.error('[worker] startup maintenance failed:', error instanceof Error ? error.message : error);
+        maintenancePromise = new Promise((resolve) => {
+          setImmediate(() => {
+            if (closed) {
+              resolve();
+              return;
+            }
+            runDeferredTranslationStartup().catch((error) => {
+              console.error('[worker] startup maintenance failed:', error instanceof Error ? error.message : error);
+            }).then(resolve, resolve);
           });
         });
       }
@@ -1139,21 +1148,34 @@ export function createAiCenterWorker(options = {}) {
       }
       return runPromise;
     },
-    async close() {
-      mainThreadWatchdog.stop();
-      if (translationGapTimer) clearInterval(translationGapTimer);
-      translationGapTimer = null;
-      if (hardwarePriceTimer) clearInterval(hardwarePriceTimer);
-      hardwarePriceTimer = null;
-      quotaProbe?.stop();
-      scheduler.stop();
-      runner.stop();
-      try {
-        await Promise.allSettled([schedulePromise, runPromise].filter(Boolean));
-      } finally {
-        try { await agentRuntime.close?.(); } catch {}
-        store.close();
-      }
+    close() {
+      if (closing) return closing;
+      closing = (async () => {
+        closed = true;
+        mainThreadWatchdog.stop();
+        if (translationGapTimer) clearInterval(translationGapTimer);
+        translationGapTimer = null;
+        if (hardwarePriceTimer) clearInterval(hardwarePriceTimer);
+        hardwarePriceTimer = null;
+        quotaProbe?.stop();
+        scheduler.stop();
+        runner.stop();
+        try {
+          await Promise.allSettled([schedulePromise, runPromise, maintenancePromise, translationBackfill].filter(Boolean));
+        } finally {
+          if (translationGapTimer) clearInterval(translationGapTimer);
+          translationGapTimer = null;
+          if (hardwarePriceTimer) clearInterval(hardwarePriceTimer);
+          hardwarePriceTimer = null;
+          try { await agentRuntime.close?.(); } catch { /* 运行时已经关掉 */ }
+          try {
+            store.close();
+          } catch (error) {
+            if (!String(error?.message || error).includes('not open')) throw error;
+          }
+        }
+      })();
+      return closing;
     },
   };
 }

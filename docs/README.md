@@ -27,6 +27,8 @@
 
 - `progress/2026-10-21-brief-back.md`：手机上从简报里的一条或阅读页按返回，回到简报列表，不再跳过简报。直接打开带条目的简报地址时，列表压在这条下面。已经离开简报后，小时地址不再改写详情页的历史。不新增 migration。需要重启 Web，浏览器再加载一次。
 
+- `progress/2026-10-20-worker-startup-test-cleanup.md`：启动测试收尾先停 Worker、清掉定时器、关掉数据库，再删临时目录。Windows 上删除带重试。断言失败不会被 EBUSY 盖住。这个测试有超时。不新增 migration。需要重启 Worker。
+
 - `progress/2026-10-21-live-usage-and-feed.md`：Live 转写不再把密钥放进 WebSocket 地址，成功和失败都写入用量表。最终转写不再因为 `turnComplete` 没到就丢掉。关注流修复只挪作者已关注或带 following 标记的帖，挪之前备份 capture id 和原来的来源，可以用 `--rollback` 还原。陌生帖不会被锁在关注源。搜索和作者页用同一份译文，文章页先画出作者。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
 
 - `progress/2026-10-21-gemma-rpm-tpm.md`：Gemma 五个账号不再做本地每日 1.44 万封顶，只守每分钟 25 次和 16000 token。请求间隔默认 0–500 毫秒，每把密钥同时 2 个请求，可用环境变量改成 3。240 秒租约不再把单密钥卡成串行。429 仍按原逻辑冷却。补扫起点改为 `AI_CENTER_TAG_RESCAN_NOT_BEFORE`，默认仍是 2026-10-21 14:47（UTC+8）。不新增 migration。需要重启 Worker。

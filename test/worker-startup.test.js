@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import os, { hostname } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -8,13 +8,36 @@ import { createStore } from '../packages/database/src/index.js';
 import { createJobRunner, deadLocalWorkerLock, formatStartupStep, wait } from '../packages/runtime/src/job-runner.js';
 import { createAiCenterWorker } from '../apps/worker/src/worker.js';
 
+function removeTemporaryDirectory(directory) {
+  rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+}
+
 function temporaryDatabase(prefix) {
   const directory = mkdtempSync(path.join(os.tmpdir(), prefix));
   return {
     directory,
     path: path.join(directory, 'test.db'),
-    remove: () => rmSync(directory, { recursive: true, force: true }),
+    remove: () => removeTemporaryDirectory(directory),
   };
+}
+
+async function releaseWorkerHarness(resources, removeDirectory = removeTemporaryDirectory) {
+  const errors = [];
+  const run = async (fn) => {
+    if (typeof fn !== 'function') return;
+    try {
+      await fn();
+    } catch (error) {
+      errors.push(error);
+    }
+  };
+  await run(resources.restore);
+  await run(() => resources.worker?.runner?.stop?.());
+  await run(() => resources.worker?.scheduler?.stop?.());
+  await run(() => resources.worker?.close?.());
+  await run(() => resources.store?.close?.());
+  if (resources.directory) await run(() => removeDirectory(resources.directory));
+  return errors[0] || null;
 }
 
 function insertJob(database, row) {
@@ -174,7 +197,7 @@ test('claiming skips a backlog of exhausted jobs and still takes the next one', 
   }
 });
 
-test('the runner logs ready and the first claim before later maintenance', async () => {
+test('the runner logs ready and the first claim before later maintenance', { timeout: 5_000 }, async (t) => {
   const temporary = temporaryDatabase('ai-center-runner-log-');
   const store = createStore(temporary.path);
   const lines = [];
@@ -186,37 +209,65 @@ test('the runner logs ready and the first claim before later maintenance', async
     handlers: { 'system.healthcheck': async () => ({ ok: true }) },
     log: (line) => { lines.push(line); },
   });
+  let running;
+  let failure = null;
+  t.after(async () => {
+    const cleanup = await releaseWorkerHarness({
+      worker: {
+        runner,
+        scheduler: { stop() {} },
+        async close() { if (running) await running; },
+      },
+      store,
+      directory: temporary.directory,
+    });
+    if (!failure && cleanup) throw cleanup;
+  });
   try {
-    const running = runner.start();
+    running = runner.start();
     const deadline = Date.now() + 2_000;
     while (Date.now() < deadline && !lines.some((line) => line.includes('startup first-claim'))) await wait(20);
     const ready = lines.findIndex((line) => line.includes('startup runner-ready'));
     const claim = lines.findIndex((line) => line.includes('startup first-claim'));
     assert.ok(ready >= 0);
     assert.ok(claim > ready);
-    runner.stop();
-    await running;
-  } finally {
-    store.close();
-    temporary.remove();
+  } catch (error) {
+    failure = error;
+    throw error;
   }
 });
 
-test('worker start claims a job before translation maintenance', async () => {
+test('worker start claims a job before translation maintenance', { timeout: 30_000 }, async (t) => {
   const temporary = temporaryDatabase('ai-center-worker-start-');
   const store = createStore(temporary.path);
   store.createJob({ type: 'system.healthcheck', input: { source: 'startup' }, maxAttempts: 1 });
   const lines = [];
   const original = console.log;
+  let worker = null;
+  let failure = null;
+  t.after(async () => {
+    const cleanup = await releaseWorkerHarness({
+      worker,
+      store,
+      directory: temporary.directory,
+      restore() { console.log = original; },
+    });
+    if (!failure && cleanup) throw cleanup;
+  }, { timeout: 10_000 });
   console.log = (...args) => { lines.push(args.join(' ')); };
-  const worker = createAiCenterWorker({
-    store,
-    workerId: 'startup-worker',
-    enableDefaultSchedules: false,
-    env: { AI_CENTER_AGENT_RUNTIME: 'local' },
-  });
   try {
-    const running = worker.start();
+    worker = createAiCenterWorker({
+      store,
+      workerId: 'startup-worker',
+      enableDefaultSchedules: false,
+      browserRuntime: {
+        async health() {
+          return { available: false, daemonConnected: false, browserConnected: false, browsers: 0 };
+        },
+      },
+      env: { AI_CENTER_AGENT_RUNTIME: 'local' },
+    });
+    worker.start();
     const deadline = Date.now() + 8_000;
     while (Date.now() < deadline && !lines.some((line) => line.includes('ellipsis-lead bodies='))) await wait(20);
     const claim = lines.findIndex((line) => line.includes('startup first-claim'));
@@ -225,13 +276,71 @@ test('worker start claims a job before translation maintenance', async () => {
     assert.ok(claim >= 0, lines.filter((line) => line.includes('startup')).join('\n'));
     assert.ok(retire > claim);
     assert.ok(demote > retire);
-    const job = store.listJobs(10).find((item) => item.type === 'system.healthcheck');
-    assert.equal(job.status, 'completed');
-    worker.runner.stop();
+    let job;
+    const statusDeadline = Date.now() + 2_000;
+    do {
+      job = store.listJobs(10).find((item) => item.type === 'system.healthcheck');
+      if (job?.status === 'completed') break;
+      await wait(20);
+    } while (Date.now() < statusDeadline);
+    assert.equal(job?.status, 'completed', job?.status || 'missing');
     await worker.close();
-    await running;
-  } finally {
-    console.log = original;
-    temporary.remove();
+    assert.equal(worker.runner.running, false);
+    assert.equal(worker.scheduler.running, false);
+    await worker.close();
+  } catch (error) {
+    failure = error;
+    throw error;
+  }
+});
+
+test('startup cleanup stops the worker before removing the directory', async () => {
+  const temporary = temporaryDatabase('ai-center-worker-cleanup-');
+  const events = [];
+  const cleanup = await releaseWorkerHarness({
+    worker: {
+      runner: { stop() { events.push('runner.stop'); } },
+      scheduler: { stop() { events.push('scheduler.stop'); } },
+      async close() { events.push('close'); },
+    },
+    store: { close() { events.push('store.close'); } },
+    restore() { events.push('console'); },
+    directory: temporary.directory,
+  });
+  assert.equal(cleanup, null);
+  assert.deepEqual(events, ['console', 'runner.stop', 'scheduler.stop', 'close', 'store.close']);
+  assert.equal(existsSync(temporary.directory), false);
+});
+
+test('directory cleanup does not replace an assertion failure', async () => {
+  const assertion = new assert.AssertionError({
+    message: 'job status',
+    actual: 'running',
+    expected: 'completed',
+    operator: 'strictEqual',
+  });
+  const events = [];
+  let reported = null;
+  try {
+    throw assertion;
+  } catch (error) {
+    reported = error;
+    const cleanup = await releaseWorkerHarness({
+      worker: {
+        runner: { stop() { events.push('stop'); } },
+        scheduler: { stop() {} },
+        async close() { events.push('close'); },
+      },
+      store: { close() { events.push('store'); } },
+      directory: 'locked',
+    }, () => {
+      events.push('remove');
+      const busy = new Error('EBUSY: resource busy or locked');
+      busy.code = 'EBUSY';
+      throw busy;
+    });
+    assert.equal(reported, assertion);
+    assert.equal(cleanup?.code, 'EBUSY');
+    assert.deepEqual(events, ['stop', 'close', 'store', 'remove']);
   }
 });
