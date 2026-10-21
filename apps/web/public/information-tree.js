@@ -1043,8 +1043,11 @@ export function createInformationTreePage(host) {
       titleEl.hidden=false;titleEl.textContent=opened.n.title;
     } else {
       syncReadingChrome(null);
-      if(!items.length) list.textContent='这一天还没有日报。';
-      else list.replaceChildren(dailyNewsWithSouthbound(items));
+      if(!items.length){
+        const feed=el('div','','daily-news');
+        feed.append(el('p','这一天还没有日报。'), southboundSlot());
+        list.replaceChildren(feed);
+      }else list.replaceChildren(dailyNewsWithSouthbound(items));
     }
     showPosition(`daily-feed:${dailyStart}:${openedId || ''}`, Boolean(opened));
     const newsHost=list.querySelector('.daily-news');
@@ -1207,6 +1210,7 @@ export function createInformationTreePage(host) {
           page.append(extra);
         }
       }
+      if(!editorial.articles.some(item=>item.direction==='finance') && !page.querySelector('.southbound-daily-line')) page.append(southboundSlot());
     }
     list.replaceChildren(page);
     showPosition(`daily-research:${dailyStart}:${openedDirection || ''}`, Boolean(openedDirection));
