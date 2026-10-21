@@ -878,8 +878,17 @@ export function createInformationTreePage(host) {
   function hourSkeleton(compact=false){
     const box=el('div','','tree-hour-skeleton');box.setAttribute('aria-busy','true');
     const doc=box.ownerDocument || (typeof document!=='undefined' ? document : null);
-    if (!compact && doc?.createElement) box.append(createListSkeleton(doc, { rows: 6, label: '正在读取简报…', variant: 'feed' }));
-    else box.append(el('span','','tree-hour-skeleton-line'),el('span','','tree-hour-skeleton-line'),el('span','','tree-hour-skeleton-line'));
+    if (!compact && doc?.createElement) {
+      // 日期行和方向标题先占位，骨架行才和换上后的第一条新闻对齐。
+      box.classList.add('is-page');
+      const label=el('p','\u00a0','news-day-label');
+      label.setAttribute('aria-hidden','true');
+      const block=el('section','','reading-block');
+      const heading=el('h2','\u00a0','reading-direction news-section-title');
+      heading.setAttribute('aria-hidden','true');
+      block.append(heading, createListSkeleton(doc, { rows: 6, label: '正在读取简报…', variant: 'feed' }));
+      box.append(label, block);
+    } else box.append(el('span','','tree-hour-skeleton-line'),el('span','','tree-hour-skeleton-line'),el('span','','tree-hour-skeleton-line'));
     return box;
   }
   function chipText(edition){
@@ -1041,15 +1050,39 @@ export function createInformationTreePage(host) {
         list.replaceChildren(rows);
       }
     }
-    if(!opened) paintSouthboundLine(list, token);
+    if(!opened) ensureSouthboundSlot(list);
     showPosition(`daily-feed:${dailyStart}:${openedId || ''}`, Boolean(opened));
+    if(!opened) paintSouthboundLine(list, token);
+  }
+  function directSouthbound(page) {
+    const children = page?.children ? [...page.children] : [];
+    return children.find((node) => String(node.className || '').split(/\s+/).includes('southbound-daily-line')) || null;
+  }
+  function ensureSouthboundSlot(page) {
+    if (!page?.prepend) return null;
+    let slot = directSouthbound(page);
+    if (!slot) {
+      slot = el('p', '\u00a0', 'southbound-daily-line');
+      slot.setAttribute('aria-hidden', 'true');
+      page.prepend(slot);
+    }
+    return slot;
   }
   let southboundLineTicket = 0;
   function paintSouthboundLine(page, token) {
+    const slot = ensureSouthboundSlot(page);
     const ticket = ++southboundLineTicket;
     api('/api/v1/market/southbound?days=20').then((data) => {
-      if (ticket !== southboundLineTicket || token !== epoch || !page.isConnected || !data?.line) return;
-      page.prepend(el('p', data.line, 'southbound-daily-line'));
+      if (ticket !== southboundLineTicket || token !== epoch || !page.isConnected) return;
+      const current = slot?.isConnected ? slot : directSouthbound(page);
+      if (!data?.line) {
+        current?.remove();
+        return;
+      }
+      if (current) {
+        current.textContent = data.line;
+        current.removeAttribute('aria-hidden');
+      } else page.prepend(el('p', data.line, 'southbound-daily-line'));
     }).catch((error) => { if (!aborted(error)) return; });
   }
   function loadEditorial(edition) {
@@ -1143,9 +1176,10 @@ export function createInformationTreePage(host) {
         }
       }
     }
+    if(!openedDirection) ensureSouthboundSlot(page);
     list.replaceChildren(page);
-    if(!openedDirection) paintSouthboundLine(page, token);
     showPosition(`daily-research:${dailyStart}:${openedDirection || ''}`, Boolean(openedDirection));
+    if(!openedDirection) paintSouthboundLine(page, token);
   }
   function compactCard(item) {
     const at=reportItemTime(item.n, item.edition);
@@ -1476,7 +1510,13 @@ export function createInformationTreePage(host) {
     const openingClaim=hourlyFeed?beginOpening(hourRows().find(item=>item.window.startAt===selectedHourStart)||null):null;
     const cachedHour=hourlyFeed && readingCache.has(selectedHourStart);
     if(hourlyFeed && !cachedHour){list.replaceChildren(hourSkeleton());armHourSlow(token);}
-    else if(!hourlyFeed){clearHourSlow();paintListSkeleton(list,{rows:6,label:'正在读取简报…',variant:'feed'});}
+    else if(!hourlyFeed){
+      clearHourSlow();
+      paintListSkeleton(list,{rows:6,label:'正在读取简报…',variant:'feed'});
+      const skeleton=list.querySelector('.list-skeleton');
+      if(dailyFeed && !openedId && !openedDirection) ensureSouthboundSlot(skeleton || list);
+      else directSouthbound(skeleton)?.remove();
+    }
     setPrimary();syncHourChrome();
     if(hourlyFeed && openedId) syncReadingChrome({node:null,label:'返回小时报',onBack:closeHour});
     else if(dailyFeed && (openedId || openedDirection)) syncReadingChrome({node:null,label:'返回日报',onBack:closeDaily});
