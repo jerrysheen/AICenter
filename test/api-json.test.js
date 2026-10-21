@@ -49,12 +49,22 @@ function extractFunction(source, signature) {
 }
 
 const source = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
-const apiSource = extractFunction(source, 'async function api(');
+const apiSource = [
+  extractFunction(source, 'function callerGate('),
+  extractFunction(source, 'async function performApi('),
+  extractFunction(source, 'function api('),
+].join('\n');
 const context = {
   AbortController,
   Error,
   window: { setTimeout, clearTimeout },
   fetch: async () => { throw new Error('fetch was not stubbed'); },
+  requestDedupeKey: (method, path) => `${method} ${path}`,
+  cacheTtlFor: () => 0,
+  resolvePreparedPending: (load) => load(),
+  requestLayer: { run: (_key, task) => task() },
+  rememberPageResponse() {},
+  linkAbortSignal: () => () => {},
 };
 vm.createContext(context);
 vm.runInContext(`${apiSource}\nthis.api = api;`, context);
