@@ -244,8 +244,9 @@ test('home feed asks for one page and opens the stored social article on demand'
   });
   const paint = source.match(/function paintLoadedSocialFeed\([^]*?\n\}/)[0];
   const mergeItem = source.match(/function mergeLoadedFeedItem\([^]*?\n\}/)[0];
+  const tagPause = source.match(/function feedTagRefreshPaused\([^]*?\n\}/)[0];
   const loadX = source.match(/async function loadXFeed\([^]*?\n\}/)[0];
-  vm.runInContext(`${paint}\n${mergeItem}\n${loadX}\nthis.load=loadXFeed`, context);
+  vm.runInContext(`${paint}\n${mergeItem}\n${tagPause}\n${loadX}\nthis.load=loadXFeed`, context);
   await context.load({ append: true, autoTranslate: false });
   assert.match(calls[0], /limit=12/);
   assert.match(calls[0], /before=0%2C10%2Cabc/);
@@ -376,7 +377,7 @@ test('a background reload keeps already paged items and opened text', async () =
     renderOverviewTimeline: () => {},
     settleSourcePage: () => {},
   });
-  vm.runInContext(`${extractFunctions(source, ['paintLoadedSocialFeed', 'mergeLoadedFeedItem', 'mergeLoadedFeed', 'loadXFeed'])}\nthis.load=loadXFeed`, context);
+  vm.runInContext(`${extractFunctions(source, ['paintLoadedSocialFeed', 'mergeLoadedFeedItem', 'mergeLoadedFeed', 'feedTagRefreshPaused', 'loadXFeed'])}\nthis.load=loadXFeed`, context);
   await context.load({ autoTranslate: false });
   await context.load({ append: true, autoTranslate: false });
   const opened = Array.from(context.state.xItems).find((item) => item.id === 'x:1');

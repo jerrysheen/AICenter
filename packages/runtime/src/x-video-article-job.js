@@ -118,7 +118,7 @@ async function transcribeFile(deps, { workspaceId, relativePath, durationSec, si
   }
   const durationMs = Math.max(1000, Math.round(Number(durationSec) || 1) * 1000);
   const plan = describeAudioTranscription(env, durationMs);
-  return executeAudioTranscription({
+  const request = {
     input: {
       workspaceId,
       path: relativePath,
@@ -129,10 +129,10 @@ async function transcribeFile(deps, { workspaceId, relativePath, durationSec, si
     dataDirectory: deps.dataDirectory,
     env,
     quotaRepository: deps.quotaRepository,
-    transcribe: deps.geminiTranscribe,
-    fileTranscribe: deps.geminiFileTranscribe,
     signal,
-  });
+  };
+  const transcribe = typeof deps.geminiTranscribe === 'function' ? deps.geminiTranscribe : executeAudioTranscription;
+  return transcribe(request);
 }
 
 async function writeTranscript(deps, row, media, workspaceId, signal, env) {

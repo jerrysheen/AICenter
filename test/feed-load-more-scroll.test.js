@@ -55,6 +55,7 @@ test('a background reload keeps paged posts and puts new posts in front', async 
   vm.runInContext([
     extract('paintLoadedSocialFeed'),
     extract('mergeLoadedFeedItem'),
+    extract('feedTagRefreshPaused'),
     extract('loadXFeed'),
     extract('loadXueqiuFeed'),
     'this.loadX = loadXFeed; this.loadQ = loadXueqiuFeed;',

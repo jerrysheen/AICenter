@@ -411,7 +411,6 @@ export async function runYoutubePodcastRound(deps = {}) {
             gemmaGenerate: deps.gemmaGenerate,
             flashGenerate: deps.flashGenerate,
             geminiTranscribe: deps.geminiTranscribe,
-            geminiFileTranscribe: deps.geminiFileTranscribe,
           });
           stats.articlesReady += xArticles.ready || 0;
           stats.articlePending += xArticles.pending || 0;
