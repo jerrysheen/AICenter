@@ -7,6 +7,7 @@ import Database from 'better-sqlite3';
 import { createStore } from '../packages/database/src/index.js';
 import { createJobRunner, deadLocalWorkerLock, formatStartupStep, wait } from '../packages/runtime/src/job-runner.js';
 import { createAiCenterWorker } from '../apps/worker/src/worker.js';
+import { http2StreamErrorSinkInstalled } from '../packages/connectors/src/http2-stream-error-sink.js';
 
 function removeTemporaryDirectory(directory) {
   rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
@@ -268,6 +269,7 @@ test('worker start claims a job before translation maintenance', { timeout: 30_0
       env: { AI_CENTER_AGENT_RUNTIME: 'local' },
     });
     worker.start();
+    assert.equal(http2StreamErrorSinkInstalled(), true);
     const deadline = Date.now() + 8_000;
     while (Date.now() < deadline && !lines.some((line) => line.includes('ellipsis-lead bodies='))) await wait(20);
     const claim = lines.findIndex((line) => line.includes('startup first-claim'));

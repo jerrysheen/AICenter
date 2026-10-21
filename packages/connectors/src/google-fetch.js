@@ -1,4 +1,5 @@
 import { Agent, fetch as undiciFetch } from 'undici';
+import { installHttp2StreamErrorSink } from './http2-stream-error-sink.js';
 
 const agents = new Map();
 
@@ -13,6 +14,7 @@ export function googleConnectTimeoutMs(env = process.env) {
 }
 
 export function googleConnectDispatcher(env = process.env) {
+  installHttp2StreamErrorSink();
   const timeout = googleConnectTimeoutMs(env);
   let agent = agents.get(timeout);
   if (!agent) {

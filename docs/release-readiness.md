@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-21 Worker 在 13:21、14:44、14:53、15:56、16:37 自己退出。原因是 undici HTTP/2 空闲超时：`socket idle timeout` 从 `ClientHttp2Stream` 的 `'error'` 事件抛出，不是 `unhandledRejection`，拒绝计数接不住。Google 和 Yahoo 的客户端默认协商 HTTP/2。空闲会话被拆掉时，Node 把这个错误转给会话仍记着的流，而 undici 已经摘掉自己的监听。现在 `http2.connect` 会给会话和之后每个流挂上错误监听，undici 摘自己的函数时这个监听还在。HTTP/2 仍开着。被接住的错误用 `console.debug` 记一行，带上累计次数，不把堆栈打出来。Worker 创建时就装上，启动之后 `http2StreamErrorSinkInstalled` 为真。不新增 migration。当前 schema 仍是 96。下一号是 97。空号仍是 63、79、80、82。不要重建数据库。需要重启 Worker。页面没有改，Web 不用为这项重启。见 `progress/2026-10-21-http2-idle-error-sink.md`。
+
 2026-10-21 10 点小时报在 16:00 之后仍没被重排，也没生成。05 点和 11 点已经补成 partial。按重试时间检查时，失败尝试没有盖住当前节点的小时被当成有新素材跳过；整理补跑一批只排最新的一个小时，10 点因此两边都进不去。另外，已经排在优先级 -5 的任务算成已覆盖，补跑通道却只领 -1，这条任务一直排队。现在重试时间已到、仍是失败、还没到尝试上限的小时都会进入检查。正在跑或已经排在 -1 及以上的不重复排。只排在更低优先级的抬到这条通道，并立刻可以领。不新增 migration。当前 schema 仍是 96。下一号是 97。空号仍是 63、79、80、82。不要重建数据库。需要重启 Worker。页面没有改，Web 不用为这项重启。见 `progress/2026-10-21-hourly-due-retry-cover.md`。
 
 2026-10-21 `#213` 合入后，信息流「重绘时可见卡片留在原地」必现失败，报 `elements.feed.removeAttribute is not a function`。`3c68715` 上通过。页面里的信息流是 `getElementById('feed')`，清掉骨架留下的 `aria-busy` 用的是元素自己的方法。失败的是这条测试自己造的节点，它只有 `replaceChildren` 和位置，没有属性方法。现在测试桩补上 `setAttribute`、`getAttribute`、`removeAttribute`，重绘后确认 `aria-busy` 被清掉，卡片仍停在原来的位置。页面代码不改。不新增 migration。当前 schema 是 96。下一号是 97。空号仍是 63、79、80、82。不要重建数据库。Web 和 Worker 都不用为这项重启。见 `progress/2026-10-21-feed-scroll-aria.md`。

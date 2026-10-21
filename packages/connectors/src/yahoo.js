@@ -1,3 +1,4 @@
+import { installHttp2StreamErrorSink } from './http2-stream-error-sink.js';
 import { createUsQuoteFallback } from './us-quote-fallback.js';
 
 const SPARK_URL = 'https://query1.finance.yahoo.com/v7/finance/spark';
@@ -646,6 +647,7 @@ export function createYahooClient(options = {}) {
 
   async function loadTransport() {
     if (transport) return transport;
+    installHttp2StreamErrorSink();
     const undici = await import('undici');
     agent = new undici.Agent({
       connections: 2,
