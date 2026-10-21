@@ -134,6 +134,88 @@ test('social refresh keeps loaded read rows at the bottom and can page into the 
   assert.equal(ids(context.shown(rows)), 'x:new,x:mid,x:read');
 });
 
+test('social all-platforms window keeps the first unread page of both X and Xueqiu', () => {
+  const context = vm.createContext({
+    FEED_PAGE_SIZE: 12,
+    state: { channel: 'social', socialPlatform: '', feedShown: 12 },
+  });
+  vm.runInContext(`${extract(['socialShownRows'])}\nthis.shown=socialShownRows`, context);
+  const rows = [];
+  for (let index = 0; index < 12; index += 1) rows.push({ id: `xq:${index}`, platform: 'xueqiu', isRead: false });
+  for (let index = 0; index < 12; index += 1) rows.push({ id: `x:${index}`, platform: 'x', isRead: false });
+  rows.push({ id: 'xq:read', platform: 'xueqiu', isRead: true });
+  const shown = context.shown(rows).map((row) => row.id);
+  assert.equal(shown.filter((id) => id.startsWith('x:')).length, 12);
+  assert.equal(shown.filter((id) => id.startsWith('xq:') && id !== 'xq:read').length, 12);
+  assert.equal(shown.at(-1), 'xq:read');
+});
+
+test('an empty unread first page confirms before opening the read partition', async () => {
+  const calls = [];
+  const context = vm.createContext({
+    URLSearchParams,
+    Number,
+    FEED_PAGE_SIZE: 12,
+    state: {
+      session: {}, channel: 'social', feedEpoch: 4, feedShown: 12,
+      xFeed: 'for-you', xItems: [], xNextCursor: '', xReadCursor: '',
+    },
+    api: async (url) => {
+      calls.push(String(url));
+      return { feed: { items: [{ id: 'x:old', isRead: true }], nextCursor: '1,30,x:old' } };
+    },
+    isHiddenFeedItem: () => false,
+    hydrateFeedTranslations: () => {},
+    renderPosts: () => {},
+    renderXToolbar: () => {},
+    syncLocalTranslationsToServer: () => Promise.resolve(),
+    loadFeedTaggings: () => Promise.resolve(),
+    translateXBatch: async () => {},
+    document: { body: { dataset: { view: 'feed' } } },
+    renderOverviewTimeline: () => {},
+  });
+  vm.runInContext(`${extract(['paintLoadedSocialFeed', 'mergeLoadedFeedItem', 'mergeLoadedFeed', 'placeSocialItems', 'confirmSocialUnread', 'mergeSocialReadHead', 'feedTagRefreshPaused', 'loadXFeed'])}\nthis.load=loadXFeed`, context);
+  await context.load({ autoTranslate: false });
+  assert.equal(calls.length, 2);
+  assert.equal(calls.some((url) => url.includes('9007199254740991')), false);
+  assert.equal(calls[1].includes('before='), false);
+});
+
+test('a confirmed unread page can still open the read partition', async () => {
+  const calls = [];
+  const context = vm.createContext({
+    URLSearchParams,
+    Number,
+    FEED_PAGE_SIZE: 12,
+    state: {
+      session: {}, channel: 'social', feedEpoch: 4, feedShown: 12,
+      xFeed: 'for-you', xItems: [], xNextCursor: '', xReadCursor: '',
+    },
+    api: async (url) => {
+      calls.push(String(url));
+      if (String(url).includes('9007199254740991')) {
+        return { feed: { items: [{ id: 'x:read', isRead: true }], nextCursor: '1,2,x:read' } };
+      }
+      if (calls.length === 1) return { feed: { items: [], nextCursor: null } };
+      return { feed: { items: [{ id: 'x:new', isRead: false }], nextCursor: '0,9,x:new' } };
+    },
+    isHiddenFeedItem: () => false,
+    hydrateFeedTranslations: () => {},
+    renderPosts: () => {},
+    renderXToolbar: () => {},
+    syncLocalTranslationsToServer: () => Promise.resolve(),
+    loadFeedTaggings: () => Promise.resolve(),
+    translateXBatch: async () => {},
+    document: { body: { dataset: { view: 'feed' } } },
+    renderOverviewTimeline: () => {},
+  });
+  vm.runInContext(`${extract(['paintLoadedSocialFeed', 'mergeLoadedFeedItem', 'mergeLoadedFeed', 'placeSocialItems', 'confirmSocialUnread', 'mergeSocialReadHead', 'feedTagRefreshPaused', 'loadXFeed'])}\nthis.load=loadXFeed`, context);
+  await context.load({ autoTranslate: false });
+  assert.equal(calls.length, 3);
+  assert.match(calls[2], /9007199254740991/);
+  assert.equal(ids(context.state.xItems), 'x:new,x:read');
+});
+
 test('a late social response does not replace the list after the tab changes', async () => {
   const context = vm.createContext({
     URLSearchParams,

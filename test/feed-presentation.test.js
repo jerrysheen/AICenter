@@ -109,7 +109,56 @@ test('old X and Xueqiu browse positions restore to social; Bilibili restores to 
     context.restorePersistedFeedBrowseState();
     assert.equal(context.state.feedPlatform, platform === 'bilibili' ? 'all' : 'social');
     assert.equal(context.state.channel, platform === 'bilibili' ? 'all' : 'social');
+    assert.equal(context.state.socialPlatform || '', platform === 'bilibili' ? '' : platform);
   }
+});
+
+test('social channel defaults to both platforms and a saved single-platform filter stays visible until cleared', () => {
+  const filters = functionSource('renderPlatformFilters');
+  assert.match(filters, /label: '全部'/);
+  assert.match(filters, /label: 'X'/);
+  assert.match(filters, /label: '雪球'/);
+  assert.match(filters, /classList\.remove\('hidden'\)/);
+  const context = vm.createContext({
+    state: { channel: 'all', feedPlatform: 'social', platform: 'social', socialPlatform: '', feedShown: 12, feedViewEpoch: 1 },
+    resetFeedWindow() {},
+    persistFeedBrowseState() {},
+    renderChannels() {},
+    renderPlatformFilters() {},
+    renderPosts() {},
+  });
+  vm.runInContext(`${functionSource('matchesPlatform')}\n${functionSource('setSocialPlatform')}`, context);
+  assert.equal(context.matchesPlatform({ platform: 'x' }), true);
+  assert.equal(context.matchesPlatform({ platform: 'xueqiu' }), true);
+  const saved = vm.createContext({
+    state: { feedShown: 12, channel: 'all', socialPlatform: '' },
+    viewScrollY: {},
+    pendingFeedDialogId: '',
+    FEED_BROWSE_KEY: 'browse',
+    window: { localStorage: { getItem: () => JSON.stringify({ platform: 'social', channel: 'social', socialPlatform: 'xueqiu' }) } },
+  });
+  vm.runInContext(functionSource('restorePersistedFeedBrowseState'), saved);
+  saved.restorePersistedFeedBrowseState();
+  assert.equal(saved.state.channel, 'social');
+  assert.equal(saved.state.feedPlatform, 'social');
+  assert.equal(saved.state.socialPlatform, 'xueqiu');
+  saved.matchesPlatform = null;
+  vm.runInContext(functionSource('matchesPlatform'), saved);
+  assert.equal(saved.matchesPlatform({ platform: 'x' }), false);
+  assert.equal(saved.matchesPlatform({ platform: 'xueqiu' }), true);
+  Object.assign(saved, {
+    resetFeedWindow() {},
+    persistFeedBrowseState() {},
+    renderChannels() {},
+    renderPlatformFilters() {},
+    renderPosts() {},
+  });
+  vm.runInContext(functionSource('setSocialPlatform'), saved);
+  saved.setSocialPlatform('');
+  assert.equal(saved.state.socialPlatform, '');
+  assert.equal(saved.state.feedPlatform, 'social');
+  assert.equal(saved.matchesPlatform({ platform: 'x' }), true);
+  assert.equal(saved.matchesPlatform({ platform: 'xueqiu' }), true);
 });
 
 test('focus and recent feed projections omit Bilibili without deleting saved history', () => {
