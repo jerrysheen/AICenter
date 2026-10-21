@@ -6,11 +6,12 @@ export function feedSearchTerms(query) {
   return String(query || '').trim().split(/\s+/).filter((term) => term.length >= 2).slice(0, 8);
 }
 
-// loading：请求还没结束。ready：这一轮结果已经回来。idle：没有够长的搜索词。
-export function feedSearchPhase({ query = '', pending = false, settledQuery = '' } = {}) {
+// loading：这一轮请求正在飞。ready：没有在飞的请求，列表先用手里已有的结果。
+// 整页重载会恢复搜索词，但不会把请求标成进行中。那种情况是 ready，不能写成「搜索中…」。
+export function feedSearchPhase({ query = '', pending = false } = {}) {
   const text = String(query || '').trim();
   if (!feedSearchQueryReady(text)) return 'idle';
-  if (pending || text.toLocaleLowerCase() !== String(settledQuery || '').trim().toLocaleLowerCase()) return 'loading';
+  if (pending) return 'loading';
   return 'ready';
 }
 

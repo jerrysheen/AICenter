@@ -62,11 +62,13 @@ test('a feed skeleton is not reused as a short list', () => {
   assert.equal(replaced.className.includes('is-feed'), false);
 });
 
-test('feed and brief skeletons match a two-line news row', () => {
+test('feed skeletons stay at a two-line row and brief skeletons match a three-line row', () => {
   const html = readFileSync(new URL('../apps/web/public/index.html', import.meta.url), 'utf8');
   const css = readFileSync(new URL('../apps/web/public/styles.css', import.meta.url), 'utf8');
   assert.match(html, /id="report-list"[\s\S]*list-skeleton is-feed/);
-  assert.match(css, /#report-list \.list-skeleton-row,\s*\.tree-list \.list-skeleton-row,\s*\.tree-hour-skeleton \.list-skeleton-row \{\s*box-sizing: border-box;\s*min-height: 112px;/);
+  assert.match(css, /\.feed > \.list-skeleton \.list-skeleton-row,\s*\.list-skeleton\.is-feed \.list-skeleton-row \{\s*box-sizing: border-box;\s*min-height: 112px;/);
+  assert.match(css, /#report-list \.list-skeleton\.is-feed \.list-skeleton-row,\s*\.tree-list \.list-skeleton\.is-feed \.list-skeleton-row,\s*\.tree-hour-skeleton \.list-skeleton\.is-feed \.list-skeleton-row \{\s*min-height: 160px;/);
+  assert.match(css, /#report-list \.list-skeleton\.is-feed \.list-skeleton-title,\s*\.tree-list \.list-skeleton\.is-feed \.list-skeleton-title,\s*\.tree-hour-skeleton \.list-skeleton\.is-feed \.list-skeleton-title \{ height: 72px; \}/);
   assert.match(css, /\.news-row-summary\.is-search-excerpt \{/);
 });
 

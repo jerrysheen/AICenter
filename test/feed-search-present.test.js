@@ -9,10 +9,11 @@ import {
   highlightParts,
 } from '../apps/web/public/feed-search.js';
 
-test('a search stays on 搜索中 until that query has settled', () => {
+test('a search stays on 搜索中 only while that request is in flight', () => {
   assert.equal(feedSearchPhase({ query: '美', pending: true, settledQuery: '' }), 'idle');
   assert.equal(feedSearchPhase({ query: '美联储', pending: true, settledQuery: '' }), 'loading');
-  assert.equal(feedSearchPhase({ query: '美联储', pending: false, settledQuery: '' }), 'loading');
+  // 整页重载只恢复搜索词，没有发出请求。这不是搜索中。
+  assert.equal(feedSearchPhase({ query: '美联储', pending: false, settledQuery: '' }), 'ready');
   assert.equal(feedSearchPhase({ query: '美联储', pending: false, settledQuery: '美联储' }), 'ready');
   assert.equal(feedSearchCountText({ phase: 'loading', shown: 2, total: 2 }), '搜索中…');
   assert.equal(feedSearchCountText({ phase: 'ready', shown: 0, total: 0 }), '共 0 条');
@@ -55,6 +56,8 @@ test('the feed keeps the skeleton until the finished list is ready', () => {
   const app = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
   const render = app.slice(app.indexOf('function renderPosts()'), app.indexOf('function syncDialogTranslation'));
   assert.match(render, /currentFeedSearchPhase\(\) === 'loading'/);
+  assert.equal(render.includes("state.feedQuery ? 'empty'"), false);
+  assert.match(render, /focusPending \|\| presentation === 'loading'/);
   assert.match(render, /label: '搜索中…', variant: 'feed'/);
   assert.equal(render.includes('elements.feed.replaceChildren()'), false);
   assert.match(render, /replaceChildren\(\.\.\.painted\)/);
