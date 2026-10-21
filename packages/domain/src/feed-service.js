@@ -1208,6 +1208,9 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
     listWindowSources(workspaceId, window) {
       return feedRepository.listWindowSources(workspaceId, {...window,qualityRule,excludedItemIds:contentRoutingPort?.routedItemIds?.(workspaceId) || []});
     },
+    listUntaggedContentIds(workspaceId, query = {}) {
+      return feedRepository.listUntaggedContentIds?.(workspaceId, query) || [];
+    },
     listTaggableItems(workspaceId, { limit = 200, ids = [] } = {}) {
       const rows = feedRepository.listContentItemsWithSource
         ? feedRepository.listContentItemsWithSource(workspaceId, { limit, ids,qualityRule })

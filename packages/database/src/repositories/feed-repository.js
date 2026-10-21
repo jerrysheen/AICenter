@@ -1635,6 +1635,25 @@ export function createFeedRepository(database, emitEvent) {
       }));
     },
 
+    listUntaggedContentIds(workspaceId, { since = 0, limit = 20 } = {}) {
+      const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 100));
+      const rows = database.prepare(`SELECT ci.id FROM content_items ci
+        WHERE ci.workspace_id = ?
+          AND ci.created_at >= ?
+          AND ${VISIBLE_CONTENT_SQL}
+          AND ${EXCLUDE_YOUTUBE_SQL}
+          AND ${EXCLUDE_OFFICIAL_MIRROR_SQL}
+          AND NOT EXISTS (
+            SELECT 1 FROM resource_taggings rt
+            WHERE rt.workspace_id = ci.workspace_id
+              AND rt.resource_type = 'content-item'
+              AND rt.resource_id = ci.id
+          )
+        ORDER BY ci.created_at DESC, ci.id DESC
+        LIMIT ?`).all(workspaceId, Number(since) || 0, safeLimit);
+      return rows.map((row) => row.id);
+    },
+
     listContentItems(workspaceId, { limit = 50, before = null,qualityRule='' } = {}) {
       const safeLimit = Math.max(1, Math.min(Number(limit) || 50, 200));
       const rows = before === null

@@ -66,7 +66,7 @@ import {
   resolveHarnessLlm,
 } from '../../../packages/harness/src/index.js';
 import { knowledgeStructureManifest, createStructureJobHandlers } from '../../../packages/runtime/src/structure-module.js';
-import { taggingManifest, createTaggingJobHandlers, readTagCatalogFile } from '../../../packages/runtime/src/tagging-module.js';
+import { taggingManifest, createTaggingJobHandlers, ensureTagRescanSchedule, readTagCatalogFile } from '../../../packages/runtime/src/tagging-module.js';
 import { workPackageDispatchManifest, createWorkPackageJobHandlers } from '../../../packages/runtime/src/work-package-module.js';
 import { createJobRunner, deadLocalWorkerLock, formatJobLoopDelay, formatStartupStep, shouldLogJobLoopDelay } from '../../../packages/runtime/src/job-runner.js';
 import { mainThreadWatchdogEnabled, startMainThreadWatchdog } from '../../../packages/runtime/src/main-thread-watchdog.js';
@@ -909,6 +909,7 @@ export function createAiCenterWorker(options = {}) {
     ensureHourlyDigestSchedule(store,Date.now(),{minute:articleStrategy ? 30 : 0,env});
     ensureDividendStrategySchedule(store);
     ensureFeedSubscriptionSyncSchedule(store);
+    ensureTagRescanSchedule(store, Date.now(), env);
     ensureMediaIndexSyncSchedule(store);
     ensureEventQuoteSnapshotSchedule(store);
     ensureStaticSignalBoardSchedule(store);
