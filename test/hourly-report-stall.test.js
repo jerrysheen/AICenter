@@ -18,6 +18,23 @@ test('worker log lines carry a timestamp and the running job id', () => {
   assert.equal(stampWorkerLogLine('idle', { at }), '[worker] 2026-10-20T00:00:00.000Z idle');
 });
 
+test('a watchdog reply that cannot be cloned does not escape the message handler', async () => {
+  const circular = {};
+  circular.self = circular;
+  const watchdog = startMainThreadWatchdog({
+    enabled: true,
+    intervalMs: 20,
+    blockMs: 60_000,
+    tasks: () => [circular],
+    log() { throw new Error('watchdog should not report a clone failure as a stall'); },
+  });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 80));
+  } finally {
+    watchdog.stop();
+  }
+});
+
 test('main thread watchdog stays off unless the env switch is 1', () => {
   assert.equal(mainThreadWatchdogEnabled({}), false);
   assert.equal(mainThreadWatchdogEnabled({ AI_CENTER_MAIN_THREAD_WATCHDOG: '0' }), false);

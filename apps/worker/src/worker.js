@@ -71,6 +71,7 @@ import { taggingManifest, createTaggingJobHandlers, ensureTagRescanSchedule, rea
 import { workPackageDispatchManifest, createWorkPackageJobHandlers } from '../../../packages/runtime/src/work-package-module.js';
 import { createJobRunner, deadLocalWorkerLock, formatJobLoopDelay, formatStartupStep, shouldLogJobLoopDelay } from '../../../packages/runtime/src/job-runner.js';
 import { mainThreadWatchdogEnabled, startMainThreadWatchdog } from '../../../packages/runtime/src/main-thread-watchdog.js';
+import { installWorkerRejectionGuard } from '../../../packages/runtime/src/worker-rejection-guard.js';
 import { installWorkerLogStamps } from '../../../packages/runtime/src/worker-log.js';
 import { createScheduler } from '../../../packages/runtime/src/scheduler.js';
 import { createDailyBriefService } from '../../../packages/domain/src/daily-brief-service.js';
@@ -1184,6 +1185,7 @@ async function main() {
 }
 
 if (isMain(import.meta.url)) {
+  installWorkerRejectionGuard();
   main().catch((error) => {
     console.error(error);
     process.exitCode = 1;

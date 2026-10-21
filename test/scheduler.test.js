@@ -239,3 +239,35 @@ test('utc and shanghai daily slots are different instants', () => {
   assert.equal(shanghai.nextRunAt, Date.parse('2026-09-23T00:00:00.000Z'));
   assert.equal(utc.nextRunAt, Date.parse('2026-09-23T08:00:00.000Z'));
 });
+
+test('one failing schedule does not reject the loop or skip the next schedule', async () => {
+  const lines = [];
+  const enqueued = [];
+  const scheduler = createScheduler({
+    store: {
+      listDueSchedules() {
+        return [
+          { id: 'bad', key: 'bad.schedule', jobType: 'demo.run' },
+          { id: 'good', key: 'good.schedule', jobType: 'demo.run' },
+        ];
+      },
+      enqueueDueSchedule(id) {
+        if (id === 'bad') throw new Error('database is locked');
+        enqueued.push(id);
+        return { jobId: id };
+      },
+    },
+    allowedJobTypes: ['demo.run'],
+    log: (line) => lines.push(line),
+    pollIntervalMs: 1000,
+  });
+  const created = await scheduler.tick();
+  assert.deepEqual(enqueued, ['good']);
+  assert.equal(created[0].jobId, 'good');
+  assert.match(lines[0], /schedule tick failed key=bad\.schedule/);
+  assert.match(lines[0], /database is locked/);
+  const running = scheduler.start();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  scheduler.stop();
+  await running;
+});
