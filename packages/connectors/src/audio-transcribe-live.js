@@ -1,4 +1,7 @@
+import { randomUUID } from 'node:crypto';
 import { clipSecret } from './audio-transcribe.js';
+import { emptyTokenUsage, normalizeTokenUsage } from '../../contracts/src/model-usage.js';
+import { modelUsageContext, observeModelUsage } from '../../runtime/src/model-usage-context.js';
 import {
   AUDIO_TRANSCRIBE_LIVE_MODEL,
   AUDIO_TRANSCRIBE_TOKENS_PER_MINUTE,
@@ -10,9 +13,8 @@ import {
 const LIVE_URL = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
 const FRAME_MS = 100;
 
-export function liveTranscribeUrl(apiKey) {
-  const key = encodeURIComponent(String(apiKey || '').trim());
-  return `${LIVE_URL}?key=${key}`;
+export function liveTranscribeUrl() {
+  return LIVE_URL;
 }
 
 export function wavToLivePcm(audio) {
@@ -76,6 +78,55 @@ async function messageText(data) {
   return '';
 }
 
+function geminiLiveUsage(metadata) {
+  if (!metadata || typeof metadata !== 'object') return null;
+  const prompt = metadata.promptTokenCount;
+  const cached = metadata.cachedContentTokenCount;
+  const usage = normalizeTokenUsage({
+    inputTokens: Number.isSafeInteger(prompt) && Number.isSafeInteger(cached) ? prompt - cached : prompt,
+    outputTokens: Number.isSafeInteger(metadata.totalTokenCount) && Number.isSafeInteger(prompt)
+      ? metadata.totalTokenCount - prompt
+      : metadata.candidatesTokenCount,
+    cacheReadTokens: cached,
+    reasoningTokens: metadata.thoughtsTokenCount,
+    totalTokens: metadata.totalTokenCount,
+  });
+  return Object.values(usage).some((value) => value !== null) ? usage : null;
+}
+
+function usageCompleteness(usage) {
+  if (usage.inputTokens !== null && usage.outputTokens !== null && usage.totalTokens !== null) return 'complete';
+  return Object.values(usage).some((value) => value !== null) ? 'partial' : 'missing';
+}
+
+function liveUsageRow(model, apiKey) {
+  const inherited = modelUsageContext();
+  return {
+    id: randomUUID(),
+    kind: 'request',
+    workspaceId: inherited.workspaceId || 'local',
+    jobId: inherited.jobId || '',
+    jobAttempt: inherited.jobAttempt ?? null,
+    itemId: String(inherited.itemId || '').slice(0, 256),
+    keySuffix: String(apiKey || inherited.keySuffix || '').slice(-4),
+    stage: inherited.stage || 'audio-transcribe',
+    applicationSessionId: inherited.applicationSessionId || '',
+    harnessSessionId: inherited.harnessSessionId || '',
+    turn: inherited.turn ?? null,
+    step: inherited.step ?? null,
+    attempt: null,
+    provider: 'gemini',
+    model,
+    status: 'pending',
+    completeness: 'missing',
+    usage: emptyTokenUsage(),
+    httpStatus: null,
+    occurredAt: Date.now(),
+    supplierAmount: null,
+    supplierCurrency: null,
+  };
+}
+
 export function createGeminiLiveTranscriber({
   WebSocket: WebSocketImpl = globalThis.WebSocket,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -100,11 +151,21 @@ export function createGeminiLiveTranscriber({
       throw Object.assign(new Error(clipSecret(error?.message) || 'Live 转写读不到音频'), { code: 'live-audio' });
     }
     if (!pcm.length) throw Object.assign(new Error('Live 转写音频为空'), { code: 'live-audio' });
-    const url = liveTranscribeUrl(secret);
+    const usage = liveUsageRow(liveModel, secret);
+    await observeModelUsage(usage);
+    const finishUsage = async (status, httpStatus = null) => {
+      usage.status = status;
+      usage.httpStatus = httpStatus;
+      usage.usage = usageTokens || emptyTokenUsage();
+      usage.completeness = usageCompleteness(usage.usage);
+      await observeModelUsage(usage);
+    };
+    let usageTokens = null;
     let socket;
     try {
-      socket = new WebSocketImpl(url);
+      socket = new WebSocketImpl(liveTranscribeUrl(), { headers: { 'x-goog-api-key': secret } });
     } catch (error) {
+      await finishUsage('failed');
       throw liveClientError(error, /fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND/i.test(String(error?.message || '')) ? 'network' : 'live-connect');
     }
     const finals = [];
@@ -131,6 +192,8 @@ export function createGeminiLiveTranscriber({
         try { message = raw ? JSON.parse(raw) : {}; } catch { message = {}; }
         if (message.error) fail(new Error(clipSecret(message.error.message || message.error.status) || 'Live 转写失败'));
         if (message.setupComplete) setupDone = true;
+        const reported = geminiLiveUsage(message.usageMetadata || message.serverContent?.usageMetadata);
+        if (reported) usageTokens = reported;
         const content = message.serverContent || {};
         if (content.inputTranscription?.text) finals.push(String(content.inputTranscription.text));
         if (content.interimInputTranscription?.text) interim = String(content.interimInputTranscription.text);
@@ -149,10 +212,11 @@ export function createGeminiLiveTranscriber({
     try {
       await opened;
       if (failed) throw failed;
+      // responseModalities TEXT suppresses the final inputTranscription on this endpoint.
+      // The session is still counted upstream, then times out here with no text to save.
       socket.send(JSON.stringify({
         setup: {
           model: `models/${liveModel}`,
-          generationConfig: { responseModalities: ['TEXT'] },
           inputAudioTranscription: { languageCodes },
         },
       }));
@@ -187,22 +251,35 @@ export function createGeminiLiveTranscriber({
         }));
       }
       socket.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
-      await waitFor(socket, (finish) => {
-        const check = () => {
-          if (failed) finish(failed);
-          else if (turnDone) finish(null, true);
-          else queued.push(check);
-        };
-        check();
-      }, timeoutMs, signal);
+      let turnError = null;
+      try {
+        await waitFor(socket, (finish) => {
+          const check = () => {
+            if (failed) finish(failed);
+            else if (turnDone) finish(null, true);
+            else queued.push(check);
+          };
+          check();
+        }, timeoutMs, signal);
+      } catch (error) {
+        turnError = error;
+      }
       const text = (finals.join('') || interim).trim();
+      if (text && turnError?.name !== 'AbortError') {
+        await finishUsage('succeeded');
+        return text;
+      }
+      if (turnError) throw turnError;
       if (!text) throw liveClientError(new Error('Live 转写结果为空'), 'live-empty');
+      await finishUsage('succeeded');
       return text;
     } catch (error) {
-      if (error?.name === 'AbortError') throw error;
+      const aborted = error?.name === 'AbortError';
+      await finishUsage(aborted ? 'interrupted' : 'failed', error?.code === 'live-timeout' ? 408 : null);
+      if (aborted) throw error;
       throw liveClientError(error, error?.code || 'live-failed');
     } finally {
-      try { socket.close?.(); } catch { /* The session is already done. */ }
+      try { socket?.close?.(); } catch { /* The session is already done. */ }
     }
   };
 }
