@@ -10,7 +10,7 @@ import { TAG_PROMPT_VERSION, buildTagSystemPrompt } from '../packages/domain/src
 import { treeCatalog } from '../packages/domain/src/information-tree-policy.js';
 import { parseTagBatchOutput } from '../packages/domain/src/tag-parser.js';
 import { createTaggingService } from '../packages/domain/src/tagging-service.js';
-import { createTaggingJobHandlers, ensureTagRescanSchedule } from '../packages/runtime/src/tagging-module.js';
+import { createTaggingJobHandlers, ensureTagRescanSchedule, tagRescanPlan, TAG_RESCAN_NOT_BEFORE } from '../packages/runtime/src/tagging-module.js';
 import { createAiCenterServer } from '../apps/web/src/server.js';
 
 const CATALOG = {
@@ -473,20 +473,29 @@ test('a completed rescan records empty taggings for an empty item list and skips
 
 test('untagged rescan selects recent items with no tagging row and keeps going when Gemma fails', async () => {
   const store = createStore(':memory:');
-  const now = Date.parse('2026-10-21T06:00:00Z');
+  const now = TAG_RESCAN_NOT_BEFORE + 3 * 3600000;
   const feed = store.repositories.feed;
   const item = (id, createdAt) => feed.saveContentItem({
     id, workspaceId: 'local', originType: 'subscription', contentType: 'post',
     title: id, body: id, createdAt,
   });
-  const recent = item('recent-untagged', now - 60_000);
-  const tagged = item('recent-tagged', now - 60_000);
-  item('old-untagged', now - 10 * 24 * 3600000);
+  const fresh = item('fresh-untagged', now - 30 * 60 * 1000);
+  const tagged = item('fresh-tagged', now - 30 * 60 * 1000);
+  const afterLaunch = item('after-launch-old', TAG_RESCAN_NOT_BEFORE + 10 * 60 * 1000);
+  item('before-launch', TAG_RESCAN_NOT_BEFORE - 60 * 1000);
   store.repositories.tagging.saveTaggings([{
     workspaceId: 'local', resourceType: 'content-item', resourceId: tagged.id,
     tags: ['market_hk'], tagCatalogVersion: 'tags_v1', promptVersion: 'tag_v2', model: 'gemma', analyzedAt: now,
   }]);
-  assert.deepEqual(feed.listUntaggedContentIds('local', { since: now - 48 * 3600000, limit: 20 }), [recent.id]);
+  const plan = tagRescanPlan({}, now);
+  assert.equal(plan.hours, 2);
+  assert.equal(plan.limit, 20);
+  assert.equal(plan.since, now - 2 * 3600000);
+  assert.equal(TAG_RESCAN_NOT_BEFORE, Date.parse('2026-10-21T14:47:00+08:00'));
+  assert.deepEqual(feed.listUntaggedContentIds('local', plan), [fresh.id]);
+  const wide = tagRescanPlan({ AI_CENTER_TAG_RESCAN_HOURS: '48' }, now);
+  assert.equal(wide.since, TAG_RESCAN_NOT_BEFORE);
+  assert.deepEqual(feed.listUntaggedContentIds('local', wide), [fresh.id, afterLaunch.id]);
   const seen = [];
   const lines = [];
   const handlers = createTaggingJobHandlers({
@@ -504,12 +513,12 @@ test('untagged rescan selects recent items with no tagging row and keeps going w
     },
     knowledgeService: {},
     log: (line) => lines.push(line),
-    env: { AI_CENTER_TAG_RESCAN_HOURS: '48', AI_CENTER_TAG_RESCAN_LIMIT: '20' },
+    env: { AI_CENTER_TAG_RESCAN_LIMIT: '20' },
     now: () => now,
   });
   try {
     const result = await handlers['tagging.rescan']();
-    assert.deepEqual(seen, [[recent.id]]);
+    assert.deepEqual(seen, [[fresh.id]]);
     assert.equal(result.tagged, 0);
     assert.equal(result.taggingError, 'budget-deferred');
     assert.match(lines[0], /count=1 category=budget-deferred/);
