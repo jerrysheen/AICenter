@@ -13,18 +13,19 @@
 | 限额 | 默认 | 环境变量 | 允许范围 |
 | --- | --- | --- | --- |
 | 可重试状态码 | 500,502,503,408 | `AI_CENTER_GEMMA_TRANSLATION_RETRY_STATUSES` | 400–599 的整数，逗号分隔；空或无效时回到默认 |
-| 每分钟请求 | 25 | `AI_CENTER_GEMMA_TRANSLATION_REQUESTS_PER_MINUTE` | 1–60 |
-| 同密钥间隔下限 | 2000 毫秒 | `AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MIN_MS` | 0–120000 |
-| 同密钥间隔上限 | 3000 毫秒 | `AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MAX_MS` | 0–120000，小于下限时抬到下限 |
+| 每分钟请求 | 25 | `AI_CENTER_GEMMA_TRANSLATION_REQUESTS_PER_MINUTE` | 1–60，常用 25–28 |
+| 同密钥间隔下限 | 0 毫秒 | `AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MIN_MS` | 0–120000 |
+| 同密钥间隔上限 | 500 毫秒 | `AI_CENTER_GEMMA_TRANSLATION_INTERVAL_MAX_MS` | 0–120000，小于下限时抬到下限 |
+| 同密钥同时请求 | 2 | `AI_CENTER_GEMMA_TRANSLATION_KEY_CONCURRENCY` | 2–3 |
 | 退避基数 | 10000 毫秒 | `AI_CENTER_GEMMA_TRANSLATION_BACKOFF_BASE_MS` | 0–600000 |
 | 退避上限 | 40000 毫秒 | `AI_CENTER_GEMMA_TRANSLATION_BACKOFF_CAP_MS` | 0–600000，小于基数时抬到基数 |
 | 同一次生成的最大重试 | 2 | `AI_CENTER_GEMMA_TRANSLATION_MAX_RETRIES` | 0–8 |
 | 每分钟 Token | 16000 | `AI_CENTER_GEMMA_TRANSLATION_TOKENS_PER_MINUTE` | 1–16000 |
-| 每个太平洋日请求 | 14400 | `AI_CENTER_GEMMA_TRANSLATION_REQUESTS_PER_DAY` | 1–14400 |
+| 每个太平洋日请求 | 不封顶 | `AI_CENTER_GEMMA_TRANSLATION_REQUESTS_PER_DAY` | 不填表示不封顶；正整数才作为本地上限 |
 
-未填或不是整数时用默认值，超出范围的整数收进上表。同密钥两次请求的间隔在下限和上限之间随机取整毫秒，默认 2–3 秒。这个随机值记在进程内。配额表持久保住的是下限，所以重启后下一跳至少相隔下限。每分钟最多 25 次也按密钥计算。
+未填或不是整数时用默认值，超出范围的整数收进上表。同密钥两次请求的间隔在下限和上限之间随机取整毫秒，默认 0–500 毫秒。这个随机值记在进程内。配额表持久保住的是下限，所以重启后下一跳至少相隔下限。每分钟最多 25 次也按密钥计算。同一把密钥默认可有 2 个请求同时在途。
 
-Token 只按响应里的 `usageMetadata` 记账。有 `totalTokenCount` 就用它；没有总数时用 `promptTokenCount` 加 `candidatesTokenCount`。没有用量就记 0，不按 UTF-8 字节估算。失败响应里若带 `usageMetadata`，同样记入这一次预留。每分钟 Token 上限只累计已经记下的实际用量。31B 只在显式加入模型池后参加第一次请求；间隔、每分钟请求、每分钟 Token 和每日次数仍按密钥把 31B 和 26B 算在一起。分钟窗口本地最多等待约 61 秒。跨模型节奏在同一 Repository 事务内检查并保存，重启不能绕过。
+调用前按输入字符估算加上这次输出上限占住每分钟 Token，调用方给得更低时抬到这个数。响应里的 `usageMetadata` 仍写回实际用量：有 `totalTokenCount` 就用它；没有总数时用 `promptTokenCount` 加 `candidatesTokenCount`。没有用量时保留调用前的估算，不改成 UTF-8 字节数。失败响应里若带 `usageMetadata`，同样记入这一次预留。31B 只在显式加入模型池后参加第一次请求；间隔、每分钟请求和每分钟 Token 仍按密钥把 31B 和 26B 算在一起。分钟窗口本地最多等待约 61 秒。跨模型节奏在同一 Repository 事务内检查并保存，重启不能绕过。
 
 供应商 429 或配额耗尽仍按 Google 给出的重试延迟冷却该密钥上的该模型，同一次请求不换密钥。每日配额冷却到下一个太平洋零点。HTTP 状态落在可重试列表里时不写冷却表。同一次 `generate` 最多再换一把密钥，不在同一毫秒把后面的密钥也打满。默认列表是 500、502、503、408。响应超时和 Google 连接超时按 408 计入这个列表。列表外的状态不换密钥。`AI_CENTER_GEMMA_TRANSLATION_MAX_RETRIES` 仍参与一次任务的调用预算；设为 0 时同一次请求不换密钥。同一密钥连续出现可重试错误时，进程内退避从基数开始，之后每次翻倍，直到上限；默认是 10 秒、20 秒、40 秒。成功后清零。这不是配额冷却，重启后不保留。线上重启后大约每分钟十几行上游 500 日志，主要来自信息流翻译。10 秒、20 秒、40 秒的退避本身不是紧循环。放大来自同一次请求立刻换多把密钥，再加上分段失败后的 12 秒、30 秒，以及任务级最多 4 次。重启会清空进程内退避，启动补译最多再入队 80 条。每次 500 会打两行日志（上游失败和退避），所以十几行大约是数次失败，不是把密钥池打满的热循环。现在同一次 `generate` 停在一把备用密钥。日志写 `[worker] Gemma 翻译上游 500 退避`。只有每分钟请求、每分钟 Token、每日上限、同密钥间隔或 429 冷却让席位排不上时，才抛出 `Gemma 翻译等待配额窗口`。上游退避超过本次准入时限时，抛出 `Gemma 翻译上游 500 退避`。下一席约 1.5 秒内排不上就抛出原来的上游错误，交给任务级最多 4 次重试。不回退 Flash、Grok、DeepL 或其他 API。
 
