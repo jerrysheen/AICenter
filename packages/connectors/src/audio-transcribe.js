@@ -38,9 +38,10 @@ function header(response, name) {
 export function createGeminiAudioTranscriber({ fetch: fetchImpl = fetch, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), env = process.env, model } = {}) {
   fetchImpl = googleFetch(fetchImpl);
   const fileModel = model || resolveAudioTranscribeModels(env).file;
-  return async function transcribeAudio({ apiKey, audio, mimeType = 'audio/wav', languageCodes = [], mode = 'SMART', signal }) {
+  return async function transcribeAudio({ apiKey, audio, mimeType = 'audio/wav', languageCodes = [], mode = 'SMART', signal, onRequest }) {
     const secret = String(apiKey || '').trim();
     if (!secret) throw new Error('转写密钥不可用');
+    onRequest?.();
     const started = await fetchImpl(`${API_ROOT}/upload/v1beta/files`, {
       method: 'POST',
       headers: {
