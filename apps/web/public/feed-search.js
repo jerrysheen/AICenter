@@ -1,3 +1,30 @@
+export function feedSearchQueryReady(query) {
+  return String(query || '').trim().length >= 2;
+}
+
+// 新的搜索请求取消上一次。target 是这次 fetch 的 AbortController。
+export function linkAbortSignal(target, signal) {
+  if (!target?.abort || !signal?.addEventListener) return () => {};
+  const abort = () => {
+    try { target.abort(); } catch { /* already aborted */ }
+  };
+  if (signal.aborted) {
+    abort();
+    return () => {};
+  }
+  signal.addEventListener('abort', abort, { once: true });
+  return () => signal.removeEventListener('abort', abort);
+}
+
+export function feedSearchPath({ platform = '', query = '' } = {}) {
+  const params = new URLSearchParams();
+  const text = String(query || '').trim();
+  if (text) params.set('q', text);
+  const source = String(platform || '').trim();
+  if (source && source !== 'all') params.set('platform', source);
+  return `/api/v1/feed/search?${params}`;
+}
+
 // 文章页首屏要用的作者字段。最近打开的快照会丢掉未列出的字段。
 export function articleAuthorFields(item) {
   return {
@@ -14,15 +41,6 @@ export function socialArticleBodyPending(post) {
   if (platform !== 'x' && platform !== 'xueqiu') return false;
   if (String(post?.body || '').trim()) return false;
   return Boolean(String(post?.resourceId || '').trim());
-}
-
-export function feedSearchPath({ platform = '', query = '' } = {}) {
-  const params = new URLSearchParams();
-  const text = String(query || '').trim();
-  if (text) params.set('q', text);
-  const source = String(platform || '').trim();
-  if (source && source !== 'all') params.set('platform', source);
-  return `/api/v1/feed/search?${params}`;
 }
 
 // 文章页作者名只打开作者。没有作者 id 时，X 的 handle 走 x:@handle，服务端再对到 x:数字。

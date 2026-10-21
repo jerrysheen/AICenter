@@ -98,6 +98,30 @@ function childByClass(parent, className) {
   return null;
 }
 
+function authorListSkeleton(rows = 8) {
+  const box = document.createElement('div');
+  box.className = 'list-skeleton';
+  box.setAttribute('role', 'status');
+  box.setAttribute('aria-busy', 'true');
+  box.setAttribute('aria-label', '正在读取作者…');
+  if (box.dataset) box.dataset.rows = String(rows);
+  const list = document.createElement('div');
+  list.className = 'list-skeleton-rows';
+  for (let index = 0; index < rows; index += 1) {
+    const row = document.createElement('div');
+    row.className = 'list-skeleton-row';
+    row.setAttribute('aria-hidden', 'true');
+    const title = document.createElement('span');
+    title.className = 'list-skeleton-title';
+    const meta = document.createElement('span');
+    meta.className = 'list-skeleton-meta';
+    row.append(title, meta);
+    list.append(row);
+  }
+  box.append(list);
+  return box;
+}
+
 function authorListOnScreen() {
   if (document.body?.dataset?.view !== 'feed') return false;
   if (document.body?.classList?.contains('is-dialog-open')) return false;
@@ -484,10 +508,7 @@ export function createAuthorView({ api, openAuthor, openArticle }) {
 
   function showLoading(shell) {
     shell.replaceChildren();
-    const loading = document.createElement('p');
-    loading.className = 'feed-empty';
-    loading.textContent = '正在读取作者…';
-    shell.append(loading);
+    shell.append(authorListSkeleton(8));
     shell.dataset.listStamp = '';
     shell.dataset.platform = '';
   }
@@ -521,8 +542,13 @@ export function createAuthorView({ api, openAuthor, openArticle }) {
         listCache = { platform, payload };
       } catch (error) {
         if (token !== listFetchToken || platform !== listPlatform) return;
-        const loading = shell.querySelector?.('.feed-empty');
-        if (loading && !childByClass(shell, 'author-list-rows')) loading.textContent = error?.message || '作者列表读取失败';
+        if (!childByClass(shell, 'author-list-rows')) {
+          shell.replaceChildren();
+          const failed = document.createElement('p');
+          failed.className = 'feed-empty';
+          failed.textContent = error?.message || '作者列表读取失败';
+          shell.append(failed);
+        }
         return;
       }
     }
@@ -631,6 +657,7 @@ export function createAuthorView({ api, openAuthor, openArticle }) {
       else rebuildRows(rows, followed, others, handlers);
     }
     syncMore(shell, payload);
+    childByClass(shell, 'list-skeleton')?.remove();
     childByClass(shell, 'feed-empty')?.remove();
     shell.dataset.platform = platform;
     shell.dataset.listStamp = stamp;
@@ -711,10 +738,7 @@ export function createAuthorView({ api, openAuthor, openArticle }) {
       return;
     }
     root.replaceChildren();
-    const loading = document.createElement('p');
-    loading.className = 'feed-empty';
-    loading.textContent = '正在读取作者…';
-    root.append(loading);
+    root.append(authorListSkeleton(6));
     try {
       const detail = await api(`/api/v1/authors/${encodeURIComponent(authorId)}`, { fresh: true });
       const unread = await loadItems(authorId, 'unread');
@@ -729,7 +753,12 @@ export function createAuthorView({ api, openAuthor, openArticle }) {
       pages.set(authorId, page);
       if (root.isConnected) paintPage(root, authorId, page);
     } catch (error) {
-      loading.textContent = error?.message || '作者不存在';
+      if (!root.isConnected) return;
+      root.replaceChildren();
+      const failed = document.createElement('p');
+      failed.className = 'feed-empty';
+      failed.textContent = error?.message || '作者不存在';
+      root.append(failed);
     }
   }
 

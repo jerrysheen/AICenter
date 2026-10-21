@@ -623,6 +623,12 @@ export function createAiCenterServer(options = {}) {
         events.flush();
       }, 250);
       eventTimer.unref?.();
+      setImmediate(() => {
+        try { store.repositories.feed.startFeedSearchIndex?.(); }
+        catch (error) {
+          console.error('[feed-search] index failed:', error instanceof Error ? error.message : error);
+        }
+      });
       return {
         host,
         port: actualPort,

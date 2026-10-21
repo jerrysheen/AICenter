@@ -1128,6 +1128,10 @@ export function createAiCenterWorker(options = {}) {
               resolve();
               return;
             }
+            try { store.repositories.feed.startFeedSearchIndex?.(); }
+            catch (error) {
+              console.error('[worker] feed-search index failed:', error instanceof Error ? error.message : error);
+            }
             runDeferredTranslationStartup().catch((error) => {
               console.error('[worker] startup maintenance failed:', error instanceof Error ? error.message : error);
             }).then(resolve, resolve);

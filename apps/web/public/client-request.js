@@ -37,6 +37,7 @@ export function cacheTtlFor(method, path) {
   if (pathname === '/api/v1/static-signals/board') return 20_000;
   if (pathname === '/api/v1/markets') return 15_000;
   if (pathname === '/api/v1/home/bootstrap') return 15_000;
+  if (pathname === '/api/v1/feed/search') return 0;
   if (pathname.startsWith('/api/v1/feed/')) return 8_000;
   if (pathname === '/api/v1/posts') return 5_000;
   return 4_000;

@@ -2498,6 +2498,21 @@ migrations.push({ version: 95, name: 'x_not_interested_actions', up(database) {
       ON x_not_interested_actions(workspace_id, created_at DESC);`);
 }});
 
+migrations.push({ version: 96, name: 'content_item_fts', up(database) {
+  database.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS content_item_fts USING fts5(
+      content_item_id UNINDEXED,
+      workspace_id UNINDEXED,
+      text,
+      tokenize = 'trigram case_sensitive 0'
+    );
+    CREATE TABLE IF NOT EXISTS feed_search_index_cursor (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      rowid_cursor INTEGER NOT NULL DEFAULT 0,
+      done INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT OR IGNORE INTO feed_search_index_cursor (id, rowid_cursor, done) VALUES (1, 0, 0);`);
+}});
+
 
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`

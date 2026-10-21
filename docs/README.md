@@ -25,6 +25,14 @@
 
 ## 当前
 
+- `progress/2026-10-21-feed-scroll-aria.md`：信息流重绘测试的假节点补上 `removeAttribute`。骨架清掉 `aria-busy` 的页面代码不变。可见卡片仍留在原地。不新增 migration。
+
+- `progress/2026-10-21-feed-search-fts.md`：信息流搜索改走 FTS5。索引 rowid 用 `content_items.rowid`，删除按这个主键。回填没完成时，三个字以上仍走 LIKE。回填完成后三个字及以上用全文索引，两个字只查标题和作者。索引在启动之后分批写入。判断索引是否建完只读游标表，建完之后记在进程里。关注流修复只挪作者已关注或带 following 标记的帖，挪之前备份，可以用 `--rollback` 还原。搜索和作者页共用已保存的译文。文章页首屏就显示作者。对主库做原地 VACUUM 时，要把 FTS 游标清零并重新建索引，再重启 Web 和 Worker。`VACUUM INTO` 备份不受影响。migration 96。需要同时重启 Web 和 Worker，浏览器再加载一次。
+
+- `progress/2026-10-21-list-skeleton.md`：总览、信息流和几份列表在数据回来前显示固定高度的骨架，不先留白或只写一行「正在读取」。直接打开 `#feed` 时第一帧就是信息流。报价未到时行情条保持骨架。不新增 migration。需要重启 Web，浏览器再加载一次。
+
+- `progress/2026-10-21-brief-back.md`：手机上从简报里的一条或阅读页按返回，回到简报列表，不再跳过简报。直接打开带条目的简报地址时，列表压在这条下面。已经离开简报后，小时地址不再改写详情页的历史。不新增 migration。需要重启 Web，浏览器再加载一次。
+
 - `progress/2026-10-21-sqlite-busy-not-repeat-exit.md`：`SQLITE_BUSY` 和 `database is locked` 只计入 10 分钟内的总次数，不再 3 次就退出。其它 `SQLITE_` 错误仍是同一种出现 3 次就 `exit(1)`。不新增 migration。需要重启 Worker。
 
 - `progress/2026-10-21-bamboo-daily-usage.md`：用量页列出 Bamboo 最近 14 个上海日的信息流准入次数，上限默认 7000。只读原来的计数文件，不另记一次，也不改准入分类。接口只有日期、次数和上限。不新增 migration。需要重启 Web，浏览器再加载一次。
@@ -64,7 +72,6 @@
 - `progress/2026-10-21-x-not-interested.md`：自动点赞改为从最近 24 小时已有模型分数的推文里按分数选。Bamboo 下没有分类结果的推文可以点，只排除明确丢弃的；分数线 0.8，企业动态仍是 0.9。全 0 分不再默认成美股大盘。低分营销号、八卦号和推广帖可以自动点「不感兴趣」，总开关和页面开关都默认关闭。推荐记录页能看到每天点赞、不感兴趣的条数，以及各方向命中率。migration 95。需要同时重启 Web 和 Worker，浏览器再加载一次。
 
 - `progress/2026-10-21-x-link-plain-url.md`：媒体帖的 t.co、bbc.in 和正文里的纯文本短链都会跟到新闻原文。译完才标「正文完整」，否则给出「阅读 BBC 原文」。已经在库里的用 `scripts/backfill-x-link-articles.mjs` 补跑，每天仍最多 8 篇。没有视频的帖子不再请求视频文章接口。作者列表打开时不再被整表标注请求堵住。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
-
 - `progress/2026-10-21-cranmer-author-search.md`：信息流搜索按作者名和 handle 查已保存的帖子，不再只看已加载的一页。`#author/x:@MilesCranmer` 打开 `x:382008009`。文章页点作者名进入作者页。YouTube 译文在显示时去掉整句英文残留，不重跑这一集。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
 
 - `progress/2026-10-20-youtube-caption-dedupe.md`：YouTube 译文在翻译前合并滚动字幕，已经译好的段落在显示时再去重。未完整状态合成一行。长视频帖标「视频待整理」或「视频已整理」，只有链接的帖子挂进 X 关注信息流并写出中文摘要。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。

@@ -23,6 +23,7 @@
   try {
     var bootHash = String(location.hash || '').split('?')[0];
     if (bootHash === '#feed') history.scrollRestoration = 'manual';
+    if (bootHash === '#feed' || bootHash.indexOf('#feed/') === 0) document.documentElement.classList.add('feed-boot');
     if (/^#quote\/[^/?#]+$/.test(bootHash)) document.documentElement.classList.add('quote-boot');
   } catch (_error) {
     // 浏览器不支持时仍由页面脚本把信息流拉回顶部。
