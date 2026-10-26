@@ -90,8 +90,8 @@ function gemmaGenerate({ system, prompt }) {
       }),
     };
   }
-  if (text.includes('"zh"') || text.includes('hint')) {
-    return { text: JSON.stringify({ zh: '这是按原文顺序译出的一句话。', hint: ['保留判断力'], topic: '开场说明' }) };
+  if (text.includes('"points"') || text.includes('事点')) {
+    return { text: JSON.stringify({ points: ['这是按原文顺序译出的一句话。', '判断力要按时间留下来。'], topic: '开场说明' }) };
   }
   if (text.includes('标题')) return { text: '如何避免人工智能把判断力带偏' };
   if (text.includes('对话') || text.includes('小节')) return { text: '## 开场说明（00:00:01）\n\n**主持人**：这是一段关于判断力的说明。' };

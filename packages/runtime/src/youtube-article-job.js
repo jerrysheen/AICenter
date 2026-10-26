@@ -36,14 +36,19 @@ import { createDoubaoChatClient } from '../../connectors/src/doubao/chat-browser
 import { createGeminiInvestorSummarizer } from '../../connectors/src/investor-discussion-model.js';
 import { createGemmaTranslationRouter, resolveGemmaTranslationSlots } from '../../connectors/src/translate/gemma.js';
 import {
+  EPISODE_COMPILE_SYSTEM,
   EPISODE_STRUCTURE_SYSTEM,
   GEMMA_26B,
   GEMMA_31B,
   GEMMA_SEGMENT_SYSTEM,
   LONG_VIDEO_GEMMA_SCHEDULE,
+  MERGE_CHAPTER_CONCAT,
+  MERGE_POINT_COMPILE,
   PARALLEL_SEGMENT_LAYOUT,
-  PROSE_SEGMENT_KIND,
+  POINTS_SEGMENT_KIND,
+  acceptCompiledArticle,
   chaptersCoverParts,
+  compilePrompt,
   fallbackEpisodeChapters,
   longVideoCallBudget,
   longVideoPartBounds,
@@ -53,17 +58,17 @@ import {
   parseEpisodeStructure,
   parseSegmentTranslation,
   resolvePodcastMergeRequest,
-  segmentTranslationOk,
+  segmentPointsOk,
   splitSummaryBlocks,
   structureMaterialBatches,
   structurePrompt,
 } from '../../domain/src/gemma-long-video.js';
 
 // 正文默认走现有 Gemma 26B 翻译池，只打官方 endpoint，不新接计费服务，也不在这里读写密钥。
-// 新开的整理：按段并行 Gemma 26B 写提炼正文（附 hint、topic）。Flash Lite 只切一次章。
-// 合并策略见 podcast-article-merge.js。默认把各段正文按章接上。未就绪的策略不会多打一轮。
-// Flash 额度紧或失败时，切章改由 Gemma 26B。已经 ready 的 parallel-segments 和 chapter-dialogue 不自动重写。
-// 进行中的旧要点稿仍接着写小节。段上还不是提炼正文的，丢掉旧译文，用一次提炼重写，不在译文上再改写。
+// 新开的整理：按段并行 Gemma 26B 写 2～5 个事点。Flash Lite 一次把事点统编成一篇长文。
+// 统编失败就降级到切章并把事点接上，不再润色第二轮。flash-polish 和 oneshot 不走这条路径。
+// 已经 ready 的 parallel-segments 和 chapter-dialogue 不自动重写。
+// 进行中的旧要点稿仍接着写小节。段上还不是事点的，丢掉旧正文，用一次事点重写。
 // 豆包只在引擎显式写成 doubao 时使用。
 // 标题和关键句的中文化仍只用 Gemma，不走 Flash。
 // 正文整理完成后，再用 Gemma 按中文正文写一句话标题；失败就留着原来的标题。
@@ -298,21 +303,27 @@ function loadGemmaPart(part) {
     calls: callCounts(part?.calls),
     hint: Array.isArray(part?.hint) ? part.hint.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 5) : [],
     topic: String(part?.topic || '').trim().slice(0, 40),
-    segmentKind: part?.segmentKind === PROSE_SEGMENT_KIND ? PROSE_SEGMENT_KIND : '',
+    points: Array.isArray(part?.points) ? part.points.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 5) : [],
+    segmentKind: part?.segmentKind === POINTS_SEGMENT_KIND ? POINTS_SEGMENT_KIND : '',
     dropped,
   };
 }
 
-// 旧的忠实译文不能当成新正文。清掉后这一段只再打一次提炼，不先译再改。
-function reuseProsePart(part) {
-  if (part?.segmentKind === PROSE_SEGMENT_KIND && part.translation) return part;
-  if (!part?.translation) return part;
+function pointSegmentReady(part) {
+  return part?.segmentKind === POINTS_SEGMENT_KIND && segmentPointsOk(part?.points) && part.translation;
+}
+
+// 旧的译文或提炼正文不能当成事点。清掉后这一段只再打一次，不先译再改。
+function reusePointPart(part) {
+  if (pointSegmentReady(part)) return part;
+  if (!part?.translation && !part?.points?.length) return part;
   return {
     ...part,
     translation: '',
     section: '',
     hint: [],
     topic: '',
+    points: [],
     status: 'pending',
     attempts: 0,
     provider: '',
@@ -673,8 +684,11 @@ async function organizeEpisode({ row, client, repository, feedRepository, worksp
 async function organizeParallelSegments({ state, deps, signal, day, row, repairing, persist, touch, pause, halted, stop }) {
   const status = repairing ? 'ready' : 'pending';
   for (const slot of state.parts) {
-    if (slot.translation && slot.segmentKind === PROSE_SEGMENT_KIND) continue;
-    if (slot.translation) slot.translation = '';
+    if (pointSegmentReady(slot)) continue;
+    if (slot.translation || slot.points?.length) {
+      slot.translation = '';
+      slot.points = [];
+    }
     if (slot.attempts >= PART_ATTEMPTS) {
       state.holdDay = day;
       state.holdReason = 'failed';
@@ -684,7 +698,7 @@ async function organizeParallelSegments({ state, deps, signal, day, row, repairi
   }
   const concurrency = podcastSegmentConcurrency(deps.env || process.env);
   const translateSlot = async (slot) => {
-    if ((slot.translation && slot.segmentKind === PROSE_SEGMENT_KIND) || signal?.aborted) return;
+    if (pointSegmentReady(slot) || signal?.aborted) return;
     const stopped = halted();
     if (stopped) return;
     try {
@@ -701,12 +715,13 @@ async function organizeParallelSegments({ state, deps, signal, day, row, repairi
         { lockModel: true },
       ));
       const parsed = parseSegmentTranslation(result.text);
-      const zh = stripResidualEnglish(parsed.zh);
-      if (!segmentTranslationOk(zh)) throw new Error('分段正文不完整');
-      slot.translation = zh;
-      slot.hint = parsed.hint;
+      const points = parsed.points.map((item) => stripResidualEnglish(item)).filter(Boolean);
+      if (!segmentPointsOk(points)) throw new Error('分段事点不完整');
+      slot.points = points;
+      slot.translation = points.join('\n');
+      slot.hint = points;
       slot.topic = parsed.topic;
-      slot.segmentKind = PROSE_SEGMENT_KIND;
+      slot.segmentKind = POINTS_SEGMENT_KIND;
       slot.provider = result.provider;
       addCalls(slot.calls, result.calls);
       slot.status = 'translated';
@@ -719,7 +734,7 @@ async function organizeParallelSegments({ state, deps, signal, day, row, repairi
       slot._error = error;
     }
   };
-  const pending = () => state.parts.filter((slot) => !(slot.translation && slot.segmentKind === PROSE_SEGMENT_KIND));
+  const pending = () => state.parts.filter((slot) => !pointSegmentReady(slot));
   await mapPool(pending(), concurrency, translateSlot);
   if (signal?.aborted) return pause('deadline');
   const succeeded = state.parts.some((slot) => slot.translation);
@@ -733,6 +748,11 @@ async function organizeParallelSegments({ state, deps, signal, day, row, repairi
     if (quota || upstream) return stop(quota || upstream, (quota || upstream)._error);
     return stop(still[0], still[0]._error);
   }
+  if (state.mergeStrategy === MERGE_POINT_COMPILE) {
+    return compilePointsOrFallback({
+      state, deps, signal, day, row, status, persist, touch, pause, halted, stop,
+    });
+  }
   if (chaptersCoverParts(state.chapters, state.parts.length)) return null;
   if (state.summaryAttempts >= PART_ATTEMPTS) {
     state.holdDay = day;
@@ -744,7 +764,7 @@ async function organizeParallelSegments({ state, deps, signal, day, row, repairi
   if (summaryStopped) return summaryStopped;
   try {
     touch();
-    const result = await withUpstreamRetry(deps, () => callEpisodeStructure(deps, state.parts, row?.title || ''));
+    const result = await withUpstreamRetry(deps, () => callEpisodeStructure(deps, state.parts, row?.title || '', {}));
     if (signal?.aborted) return pause('deadline');
     state.chapters = result.chapters;
     state.summaryProvider = result.provider;
@@ -757,9 +777,67 @@ async function organizeParallelSegments({ state, deps, signal, day, row, repairi
   }
 }
 
-async function callEpisodeStructure(deps, parts, title) {
-  const calls = callCounts();
+async function compilePointsOrFallback({ state, deps, signal, day, row, status, persist, touch, pause, halted, stop }) {
+  if (state.compiledArticle) return null;
+  if (state.mergeFallback === MERGE_CHAPTER_CONCAT && chaptersCoverParts(state.chapters, state.parts.length)) return null;
+  if (state.summaryAttempts >= PART_ATTEMPTS) {
+    state.holdDay = day;
+    state.holdReason = 'failed';
+    persist(status);
+    return { status: 'pending', reason: 'failed' };
+  }
+  const summaryStopped = halted();
+  if (summaryStopped) return summaryStopped;
   const flash = articleFlash(deps);
+  if (flash) {
+    const calls = callCounts();
+    try {
+      touch();
+      calls.flash += 1;
+      const result = await withUpstreamRetry(deps, () => flash({
+        system: EPISODE_COMPILE_SYSTEM,
+        prompt: compilePrompt(state.parts, row?.title || ''),
+      }));
+      if (signal?.aborted) return pause('deadline');
+      const article = acceptCompiledArticle(result?.text);
+      if (!article) throw new Error('统编正文不完整');
+      state.compiledArticle = article;
+      state.mergeFallback = '';
+      state.summaryProvider = 'flash';
+      addCalls(state.summaryCalls, calls);
+      state.summaryAttempts = 0;
+      persist(status);
+      return null;
+    } catch (error) {
+      addCalls(state.summaryCalls, calls);
+      if (signal?.aborted || deps.signal?.aborted) return pause('deadline');
+    }
+  }
+  try {
+    touch();
+    const result = await withUpstreamRetry(deps, () => callEpisodeStructure(
+      deps,
+      state.parts,
+      row?.title || '',
+      { skipFlash: true },
+    ));
+    if (signal?.aborted) return pause('deadline');
+    state.chapters = result.chapters;
+    state.compiledArticle = '';
+    state.mergeFallback = MERGE_CHAPTER_CONCAT;
+    state.summaryProvider = result.provider;
+    addCalls(state.summaryCalls, result.calls);
+    state.summaryAttempts = 0;
+    persist(status);
+    return null;
+  } catch (error) {
+    return stop(null, error);
+  }
+}
+
+async function callEpisodeStructure(deps, parts, title, options = {}) {
+  const calls = callCounts();
+  const flash = options.skipFlash ? null : articleFlash(deps);
   const readBatches = async (generate, batches, provider) => {
     const chapters = [];
     let titleZh = '';
@@ -824,7 +902,7 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
   const deduped = dedupeRollingCaptions(source);
   const bounds = longVideoPartBounds();
   const loaded = reusable ? saved.parts.map((part) => loadGemmaPart(part)) : null;
-  const prepared = loaded?.map((part) => (useParallel ? reuseProsePart(part) : part));
+  const prepared = loaded?.map((part) => (useParallel ? reusePointPart(part) : part));
   const parts = prepared
     ? prepared.map(({ dropped, ...part }) => part)
     : splitTranscriptParts(deduped, bounds).map((part) => ({
@@ -835,6 +913,7 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
       section: '',
       hint: [],
       topic: '',
+      points: [],
       segmentKind: '',
       attempts: 0,
       provider: '',
@@ -849,8 +928,10 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
     holdReason: reusable ? String(saved.holdReason || '') : '',
     summary: reusable && !repairing && !useParallel ? String(saved.summary || '') : '',
     chapters: freshParallel || !Array.isArray(saved?.chapters) ? [] : saved.chapters,
+    compiledArticle: freshParallel ? '' : String(saved?.compiledArticle || ''),
     mergeStrategy: useParallel ? mergeRequest.plan.id : String(saved?.mergeStrategy || ''),
     mergeRequested: useParallel && mergeRequest.pending ? mergeRequest.requested : '',
+    mergeFallback: freshParallel ? '' : String(saved?.mergeFallback || ''),
     chapterSummaries: [],
     summaryAttempts: reusable && !repairing && !freshParallel ? Number(saved.summaryAttempts) || 0 : 0,
     summaryProvider: reusable && !repairing && !freshParallel ? String(saved.summaryProvider || '') : '',
@@ -923,8 +1004,8 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
       stop,
     });
     if (parallelResult) return parallelResult;
-    // 模型侧只接了切章。polish / compile 还在试跑，这里不要按策略再打一轮。
-    const article = mergeParallelArticle(state.parts, state.chapters, state.mergeStrategy);
+    const article = String(state.compiledArticle || '').trim()
+      || mergeParallelArticle(state.parts, state.chapters);
     if (!article) {
       state.holdDay = day;
       state.holdReason = 'failed';

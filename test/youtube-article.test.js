@@ -28,6 +28,7 @@ import {
   transcriptHash,
 } from '../packages/domain/src/youtube-captions.js';
 import {
+  EPISODE_COMPILE_SYSTEM,
   EPISODE_STRUCTURE_SYSTEM,
   GEMMA_SEGMENT_SYSTEM,
   PARALLEL_SEGMENT_LAYOUT,
@@ -726,10 +727,15 @@ function summaryJson(prompt) {
 function segmentReply() {
   return {
     text: JSON.stringify({
-      zh: '主持人：利率会差 24%，NVDA 仍在讨论。',
-      hint: ['利率会差 24%'],
+      points: ['利率会差 24%，NVDA 仍在讨论。', '苹果把回购加到 1100 亿美元。'],
       topic: '利率路径',
     }),
+  };
+}
+
+function compileReply() {
+  return {
+    text: '## 利率（00:00:03）\n\n利率会差 24%，NVDA 仍在讨论。苹果把回购加到 1100 亿美元。',
   };
 }
 
@@ -752,6 +758,7 @@ function structureReply(prompt) {
 
 function articleReply(input) {
   if (input.system === GEMMA_SEGMENT_SYSTEM) return segmentReply();
+  if (input.system === EPISODE_COMPILE_SYSTEM) return compileReply();
   if (input.system === EPISODE_STRUCTURE_SYSTEM) return structureReply(input.prompt);
   if (input.system === GEMMA_TRANSLATE_SYSTEM) return { text: '主持人：利率会差 24%，NVDA 仍在讨论。' };
   if (input.system === GEMMA_DIALOGUE_SYSTEM || input.system === GEMMA_SECTION_SYSTEM) {
@@ -768,8 +775,8 @@ test('gemma translates each part, stores it, then writes one article', async () 
   const gemma = fakeGemma((input) => articleReply(input));
   const doubao = fakeDoubao(() => { throw new Error('默认不应调用豆包'); });
   const flash = fakeGemma((input) => {
-    if (input.system !== EPISODE_STRUCTURE_SYSTEM) throw new Error('成功时不应调用 Flash');
-    return structureReply(input.prompt);
+    if (input.system !== EPISODE_COMPILE_SYSTEM) throw new Error('成功时不应调用 Flash');
+    return compileReply();
   });
   try {
     await runYoutubePodcastRound({
@@ -803,10 +810,10 @@ test('gemma translates each part, stores it, then writes one article', async () 
     const saved = opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaarticle1');
     assert.equal(saved.articleStatus, 'ready');
     assert.match(saved.body, /## 利率（00:00:03）/);
-    assert.match(saved.body, /利率会差 24%。/);
-    assert.match(saved.body, /主持人：利率会差 24%/);
-    assert.ok(saved.body.indexOf('利率会差 24%。') < saved.body.indexOf('主持人：利率会差 24%'));
+    assert.match(saved.body, /利率会差 24%，NVDA 仍在讨论/);
+    assert.match(saved.body, /1100 亿美元/);
     assert.equal(saved.body.includes('### 章节总结'), false);
+    assert.equal(saved.body.includes('主持人：'), false);
     assert.equal(saved.body.includes('- NVDA'), false);
     assert.equal(saved.body.includes('### 对话'), false);
     assert.equal(/^# 利率/m.test(saved.body), false);
@@ -815,8 +822,9 @@ test('gemma translates each part, stores it, then writes one article', async () 
     assert.match(saved.sourceTranscript, /Rates move/);
     assert.equal(doubao.calls.length, 0);
     assert.equal(flash.calls.length, 1);
-    assert.equal(flash.calls[0].system, EPISODE_STRUCTURE_SYSTEM);
-    assert.equal(flash.calls[0].prompt.includes('excerpt'), true);
+    assert.equal(flash.calls[0].system, EPISODE_COMPILE_SYSTEM);
+    assert.match(flash.calls[0].prompt, /事点/);
+    assert.equal(flash.calls[0].prompt.includes('excerpt'), false);
     assert.equal(flash.calls[0].prompt.includes('Rates move'), false);
     assert.deepEqual(gemma.calls.map((call) => call.system), [GEMMA_SEGMENT_SYSTEM, GEMMA_ARTICLE_TITLE_SYSTEM]);
     assert.equal(saved.displayTitle, '利率路径仍在左右仓位');
@@ -828,10 +836,11 @@ test('gemma translates each part, stores it, then writes one article', async () 
     assert.equal(state.parts[0].provider, 'gemma');
     assert.deepEqual(state.parts[0].calls, { gemma: 1, flash: 0 });
     assert.equal(state.layout, PARALLEL_SEGMENT_LAYOUT);
-    assert.equal(state.mergeStrategy, 'chapter-concat');
+    assert.equal(state.mergeStrategy, 'point-compile');
     assert.equal(state.mergeRequested, '');
-    assert.equal(state.parts[0].segmentKind, 'prose');
-    assert.deepEqual(state.parts[0].hint, ['利率会差 24%']);
+    assert.equal(state.mergeFallback, '');
+    assert.equal(state.parts[0].segmentKind, 'points');
+    assert.deepEqual(state.parts[0].points, ['利率会差 24%，NVDA 仍在讨论。', '苹果把回购加到 1100 亿美元。']);
     assert.equal(state.summaryProvider, 'flash');
     assert.deepEqual(state.summaryCalls, { gemma: 0, flash: 1 });
     assert.equal(state.parts[0].translation.includes('24%'), true);
@@ -986,7 +995,8 @@ test('a failed gemma part falls back to flash and does not resend finished text'
     assert.equal(gemma.calls.length, 2);
     assert.equal(gemma.calls.at(-1).system, GEMMA_ARTICLE_TITLE_SYSTEM);
     assert.equal(flash.calls.some((call) => call.system === GEMMA_ARTICLE_TITLE_SYSTEM), false);
-    assert.equal(flash.calls.filter((call) => call.system === EPISODE_STRUCTURE_SYSTEM).length, 1);
+    assert.equal(flash.calls.filter((call) => call.system === EPISODE_COMPILE_SYSTEM).length, 1);
+    assert.equal(flash.calls.filter((call) => call.system === EPISODE_STRUCTURE_SYSTEM).length, 0);
     assert.equal(opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaflash01').displayTitle, '利率');
     assert.equal(opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaflash01').title, 'Rates');
     assert.equal(JSON.parse(opened.store.repositories.youtubePodcasts.episode('local', 'gemmaflash01').articleState).titleStatus, 'failed');
@@ -1056,7 +1066,7 @@ test('chinese captions are written as prose in one gemma pass', async () => {
     assert.equal(gemma.calls.some((call) => call.system === GEMMA_TRANSLATE_SYSTEM), false);
     const state = JSON.parse(opened.store.repositories.youtubePodcasts.episode('local', 'gemmachinese1').articleState);
     assert.equal(state.parts[0].provider, 'gemma');
-    assert.equal(state.parts[0].segmentKind, 'prose');
+    assert.equal(state.parts[0].segmentKind, 'points');
     assert.match(state.parts[0].translation, /24%/);
     assert.deepEqual(state.parts[0].calls, { gemma: 1, flash: 0 });
     const body = opened.store.repositories.youtubePodcasts.getReady('local', 'gemmachinese1').body;
@@ -1462,9 +1472,54 @@ test('the same part waits and retries inside the round when gemma keeps returnin
     assert.equal(result.ready, 1);
     assert.equal(result.stopped, '');
     assert.equal(flash.calls.length, 1);
-    assert.equal(flash.calls[0].system, EPISODE_STRUCTURE_SYSTEM);
+    assert.equal(flash.calls[0].system, EPISODE_COMPILE_SYSTEM);
+    assert.equal(gemma.calls.filter((call) => call.system === EPISODE_STRUCTURE_SYSTEM).length, 1);
+    assert.equal(gemma.calls.filter((call) => call.system === EPISODE_COMPILE_SYSTEM).length, 0);
     assert.deepEqual(waits, [10_000, 10_000]);
+    const failedCompile = JSON.parse(opened.store.repositories.youtubePodcasts.episode('local', 'gemma5xxretry').articleState);
+    assert.equal(failedCompile.mergeStrategy, 'point-compile');
+    assert.equal(failedCompile.mergeFallback, 'chapter-concat');
+    assert.equal(failedCompile.compiledArticle, '');
+    const fallbackBody = opened.store.repositories.youtubePodcasts.getReady('local', 'gemma5xxretry').body;
+    assert.match(fallbackBody, /利率会差 24%/);
+    assert.equal(fallbackBody.includes('### 章节总结'), false);
     assert.equal(opened.store.repositories.youtubePodcasts.episode('local', 'gemma5xxretry').articleStatus, 'ready');
+  } finally {
+    opened.close();
+  }
+});
+
+test('chapter-concat still asks flash only to cut chapters', async () => {
+  const opened = openStore();
+  const gemma = fakeGemma((input) => articleReply(input));
+  const flash = fakeGemma((input) => {
+    if (input.system === EPISODE_COMPILE_SYSTEM) throw new Error('切章路径不应统编');
+    if (input.system === EPISODE_STRUCTURE_SYSTEM) return structureReply(input.prompt);
+    throw new Error(`意外的 Flash：${input.system}`);
+  });
+  try {
+    await saveShortEpisode(opened, 'concatonly01');
+    const result = await runYoutubeArticlePass({
+      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1', AI_CENTER_PODCAST_MERGE: 'chapter-concat' },
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      gemmaGenerate: gemma.generate.bind(gemma),
+      flashGenerate: flash.generate.bind(flash),
+      now: Date.parse('2026-10-19T02:00:00Z'),
+    });
+    assert.equal(result.ready, 1);
+    assert.equal(flash.calls.length, 1);
+    assert.equal(flash.calls[0].system, EPISODE_STRUCTURE_SYSTEM);
+    assert.equal(gemma.calls.filter((call) => call.system === EPISODE_COMPILE_SYSTEM).length, 0);
+    const state = JSON.parse(opened.store.repositories.youtubePodcasts.episode('local', 'concatonly01').articleState);
+    assert.equal(state.mergeStrategy, 'chapter-concat');
+    assert.equal(state.mergeRequested, '');
+    assert.equal(state.compiledArticle || '', '');
+    const body = opened.store.repositories.youtubePodcasts.getReady('local', 'concatonly01').body;
+    assert.match(body, /## 利率（00:00:03）/);
+    assert.match(body, /利率会差 24%/);
+    assert.equal(body.includes('### 章节总结'), false);
   } finally {
     opened.close();
   }
@@ -1846,16 +1901,20 @@ test('a pending faithful segment is rewritten once as prose', async () => {
     assert.equal(gemma.calls.filter((call) => call.system === GEMMA_SEGMENT_SYSTEM).length, 1);
     assert.equal(gemma.calls.some((call) => call.system === GEMMA_TRANSLATE_SYSTEM), false);
     const state = JSON.parse(repo.episode('local', 'oldfaithful01').articleState);
-    assert.equal(state.mergeStrategy, 'chapter-concat');
+    assert.equal(state.mergeStrategy, 'point-compile');
     assert.equal(state.mergeRequested, 'flash-polish');
-    assert.equal(state.parts[0].segmentKind, 'prose');
+    assert.equal(state.mergeFallback, 'chapter-concat');
+    assert.equal(state.parts[0].segmentKind, 'points');
+    assert.equal(state.compiledArticle, '');
     assert.equal(state.parts[0].translation.includes('旧的逐句译文'), false);
     const body = repo.getReady('local', 'oldfaithful01').body;
     assert.equal(body.includes('旧的逐句译文'), false);
     assert.equal(body.includes('旧要点'), false);
     assert.equal(body.includes('### 章节总结'), false);
     assert.match(body, /## 利率（00:00:03）/);
-    assert.match(body, /主持人：利率会差 24%/);
+    assert.match(body, /利率会差 24%/);
+    assert.match(body, /1100 亿美元/);
+    assert.equal(body.includes('主持人：'), false);
   } finally {
     opened.close();
   }

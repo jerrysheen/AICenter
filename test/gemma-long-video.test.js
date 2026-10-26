@@ -201,7 +201,7 @@ test('youtube and x article calls pass the token budget and keep the title on 26
     async generate(input) {
       calls.push(input);
       if (input.system === GEMMA_SEGMENT_SYSTEM) {
-        return { text: JSON.stringify({ zh: '主持人：利率会差 24%，NVDA 仍在讨论。', hint: ['利率会差 24%'], topic: '利率' }) };
+        return { text: JSON.stringify({ points: ['利率会差 24%，NVDA 仍在讨论。', '回购加到 1100 亿美元。'], topic: '利率' }) };
       }
       if (input.system === EPISODE_STRUCTURE_SYSTEM) {
         return { text: JSON.stringify({ chapters: [{ title: '利率（00:00:03）', start: '00:00:03', partIds: [0], oneLiner: '利率会差 24%。', bullets: ['NVDA 仍在讨论'] }] }) };
@@ -281,9 +281,9 @@ test('structure partIds map back to full translations, not the excerpt', () => {
   assert.equal(material[0].excerpt.length, 1800);
   assert.equal(material[0].excerpt.includes('全文结尾'), false);
   assert.equal(material[1].i, 1);
-  const parsed = parseSegmentTranslation('```json\n{"zh":"主持人：利率会差 24%，NVDA 仍在讨论。","hint":["利率会差 24%"],"topic":"利率"}\n```');
+  const parsed = parseSegmentTranslation('```json\n{"points":["利率会差 24%，NVDA 仍在讨论。","回购加到 1100 亿美元。"],"topic":"利率"}\n```');
   assert.equal(parsed.topic, '利率');
-  assert.deepEqual(parsed.hint, ['利率会差 24%']);
+  assert.deepEqual(parsed.points, ['利率会差 24%，NVDA 仍在讨论。', '回购加到 1100 亿美元。']);
   const chapters = normalizeEpisodeChapters([
     { title: '后章', partIds: [1, 1], oneLiner: '先讲乙', bullets: ['乙要点'] },
     { title: '前章', partIds: [0], oneLiner: '再讲甲', bullets: ['甲要点'] },

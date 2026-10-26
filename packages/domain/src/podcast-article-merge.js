@@ -1,10 +1,9 @@
-// 播客成稿的合并策略。段产出已经定成「通顺提炼正文」；怎么合成一篇还在离线试跑。
+// 播客成稿的合并策略。默认是 A。
 //
-// A point-compile：段内多事点，再由 Flash 统编成文。段契约和本文件不同，试跑前不接。
-// B chapter-concat：Flash 只切章（title / start / partIds / 可选一行导语），各段正文按 partIds 首尾相接。当前默认。
-// C flash-polish：各段提炼正文交给 Flash 统编润色。会换成另一次整篇生成，试跑前不接。
-//
-// 未就绪的策略即使写进 AI_CENTER_PODCAST_MERGE，也仍用 B，避免误打第二轮模型。
+// A point-compile：每段 2～5 个带细节的事点，Flash 一次按主题统编成一篇长文。
+// B chapter-concat：只切章，再把事点按 partIds 接上。Flash 统编失败时用它降级，不再润色一轮。
+// C flash-polish：不接。写成环境变量也仍走 A。
+// E oneshot：不进这条路径。整集字幕一次灌给模型的做法不在这里。
 
 export const MERGE_CHAPTER_CONCAT = 'chapter-concat';
 export const MERGE_POINT_COMPILE = 'point-compile';
@@ -62,16 +61,19 @@ function plan(id, { ready, flash, merge }) {
   return Object.freeze({ id, ready, flash, merge });
 }
 
-// flash 是这一策略将来要的那一次模型角色。ready 为 false 时任务仍走 chapters，不发 polish / compile。
+// flash 是成功时那一次模型在做什么。merge 只负责 B 的本地拼接。
+// point-compile 的成稿是 Flash 返回的长文，不经过 merge。
+export const PODCAST_MERGE_DEFAULT = MERGE_POINT_COMPILE;
+
 export const PODCAST_MERGE_PLANS = Object.freeze({
+  [MERGE_POINT_COMPILE]: plan(MERGE_POINT_COMPILE, {
+    ready: true,
+    flash: 'compile',
+    merge: mergeChapterConcat,
+  }),
   [MERGE_CHAPTER_CONCAT]: plan(MERGE_CHAPTER_CONCAT, {
     ready: true,
     flash: 'chapters',
-    merge: mergeChapterConcat,
-  }),
-  [MERGE_POINT_COMPILE]: plan(MERGE_POINT_COMPILE, {
-    ready: false,
-    flash: 'compile',
     merge: mergeChapterConcat,
   }),
   [MERGE_FLASH_POLISH]: plan(MERGE_FLASH_POLISH, {
@@ -82,7 +84,7 @@ export const PODCAST_MERGE_PLANS = Object.freeze({
 });
 
 export function podcastMergePlan(strategy) {
-  return PODCAST_MERGE_PLANS[strategy] || PODCAST_MERGE_PLANS[MERGE_CHAPTER_CONCAT];
+  return PODCAST_MERGE_PLANS[strategy] || PODCAST_MERGE_PLANS[PODCAST_MERGE_DEFAULT];
 }
 
 export function resolvePodcastMergeRequest(source) {
@@ -91,7 +93,7 @@ export function resolvePodcastMergeRequest(source) {
     : String(source?.AI_CENTER_PODCAST_MERGE ?? '').trim();
   const selected = PODCAST_MERGE_PLANS[raw];
   const pending = Boolean(selected && !selected.ready);
-  const plan = selected?.ready ? selected : PODCAST_MERGE_PLANS[MERGE_CHAPTER_CONCAT];
+  const plan = selected?.ready ? selected : PODCAST_MERGE_PLANS[PODCAST_MERGE_DEFAULT];
   return {
     requested: pending ? selected.id : '',
     pending,
@@ -99,8 +101,41 @@ export function resolvePodcastMergeRequest(source) {
   };
 }
 
-export function mergeParallelArticle(parts, chapters, strategy = MERGE_CHAPTER_CONCAT) {
-  const selected = podcastMergePlan(strategy);
-  const active = selected.ready ? selected : PODCAST_MERGE_PLANS[MERGE_CHAPTER_CONCAT];
-  return active.merge(parts, chapters);
+export function segmentCompileMaterial(parts) {
+  return (Array.isArray(parts) ? parts : []).map((part, index) => {
+    const points = (Array.isArray(part?.points) ? part.points : [])
+      .map((item) => String(item || '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+      .slice(0, 5);
+    const fallback = String(part?.translation || '').split('\n').map((item) => item.trim()).filter(Boolean).slice(0, 5);
+    return {
+      i: index,
+      start: String(part?.start || ''),
+      topic: String(part?.topic || '').trim(),
+      points: points.length ? points : fallback,
+    };
+  });
+}
+
+export function compilePrompt(parts, title = '') {
+  return `选集：${String(title || '').trim()}\n\n各段事点：\n${JSON.stringify(segmentCompileMaterial(parts))}`;
+}
+
+// Flash 统编必须是一篇带章的正文。JSON、过短，或又拆出「章节总结 / 对话」，都当失败，交给 B。
+export function acceptCompiledArticle(raw) {
+  const text = String(raw || '')
+    .replace(/^```(?:markdown|md)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  if (!text || text.startsWith('{') || text.startsWith('[')) return '';
+  if (text.includes('### 章节总结') || text.includes('### 对话')) return '';
+  const han = (text.match(/\p{Script=Han}/gu) || []).length;
+  if (han < 8 || !/^##\s+\S/m.test(text)) return '';
+  return text;
+}
+
+export function mergeParallelArticle(parts, chapters) {
+  return mergeChapterConcat(parts, chapters);
 }
