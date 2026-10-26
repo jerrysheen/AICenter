@@ -353,6 +353,13 @@ export const GEMMA_SECTION_SYSTEM = '把下面这段播客译文整理成一节�
 
 export const GEMMA_SUMMARY_SYSTEM = '根据下面的小节，写这一集开头的要点，和后面的章节分开。用 Markdown。第一行只写 ## 要点。下面 5 到 8 条列表，每条先用 **加粗** 写出结论，再补一句依据或数字。不要写成「主持人：」或「嘉宾：」。不要重写全文，不要加评论。';
 
+// 新整理：Gemma 只排这一章的对话。章节总结另由 Flash 一次写成。
+export const GEMMA_DIALOGUE_SYSTEM = '把下面这段播客译文排成一节对话 Markdown。只用一个 ## 小标题，必须是这段的中文主题，不要只用时间。时间写在主题后面，例如 ## 利率路径（00:12:03）。禁止写成 ## 00:00:00。没有时间就不要编。不要再输出第二个标题，不要用 # 重复章名，不要写「章节总结」或「对话」这些小标题。说话人单独成段，写成 **名字**：。听不出名字时用 **主持人**：或 **嘉宾**：。同一个人连续说的话分成短段，不要连成「主持人：」墙。关键数字、公司名和结论用 **加粗**。并列观点可以写成列表。不要写摘要，不要加评论。只输出这一节。';
+
+export const CHAPTER_SUMMARY_SYSTEM = '为播客的每一章写短总结。只输出 JSON 数组，不要 Markdown，不要代码围栏。数组长度必须和输入章数一致，顺序相同。每一项是 {"oneLiner":"一句话结论","bullets":["要点"]}。oneLiner 不超过 40 个字。bullets 写 3 到 5 条，每条不超过 36 个字。保留人名和关键数字。不要写对话，不要加评论。';
+
+export const CHAPTER_DIALOGUE_LAYOUT = 'chapter-dialogue';
+
 export const GEMMA_ARTICLE_TITLE_SYSTEM = '根据下面这篇已经整理好的简体中文播客文章，写一个准确的中文标题。标题要具体点出这一集的话题和核心信息，不要标题党，不要用疑问句吊胃口，不要加引号、书名号或句号。建议 15 到 30 个字。只输出标题本身。';
 
 export function articleTitleSource(body, maxChars = 6000) {
@@ -393,6 +400,137 @@ export function gemmaSummarySource(sections) {
     const body = lines.filter((line) => line.trim() && !/^##\s/.test(line.trim())).join(' ').replace(/\s+/g, ' ').trim().slice(0, 180);
     return body ? `${heading.trim()}\n${body}` : heading.trim();
   }).filter(Boolean).join('\n\n');
+}
+
+export function chapterBlocks(sections) {
+  return (Array.isArray(sections) ? sections : []).map((section, index) => {
+    const lines = String(section || '').trim().split('\n');
+    const heading = (lines.find((line) => /^#{1,6}\s+\S/.test(line.trim())) || `第 ${index + 1} 章`)
+      .replace(/^#{1,6}\s+/, '')
+      .trim();
+    const body = lines
+      .filter((line) => line.trim() && !/^#{1,6}\s/.test(line.trim()))
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 1200);
+    const text = body ? `${index + 1}. ${heading}\n${body}` : `${index + 1}. ${heading}`;
+    return { heading, body, text };
+  });
+}
+
+export function chapterSummaryPrompt(blocks) {
+  const items = Array.isArray(blocks) ? blocks : [];
+  const body = items.map((item) => item.text || '').filter(Boolean).join('\n\n');
+  return `共 ${items.length} 章。按顺序为每一章写总结。\n\n${body}`;
+}
+
+// Flash 能一次吃下各章标题和摘录。只有超过约 8 万字才对半拆成两次，不再按旧的短摘录碎切。
+export function flashSummaryBatches(sections, maxChars = 80000) {
+  const blocks = chapterBlocks(sections);
+  if (!blocks.length) return [];
+  const whole = [...chapterSummaryPrompt(blocks)].length;
+  if (whole <= maxChars || blocks.length < 2) return [blocks];
+  const mid = Math.ceil(blocks.length / 2);
+  return [blocks.slice(0, mid), blocks.slice(mid)];
+}
+
+export function parseChapterSummaries(raw, count) {
+  const expected = Number(count) || 0;
+  if (!expected) return null;
+  let text = String(raw || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  const start = text.indexOf('[');
+  const end = text.lastIndexOf(']');
+  if (start < 0 || end <= start) return null;
+  let data;
+  try {
+    data = JSON.parse(text.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(data) || data.length !== expected) return null;
+  const summaries = data.map((item) => ({
+    oneLiner: String(item?.oneLiner || item?.one_liner || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+    bullets: (Array.isArray(item?.bullets) ? item.bullets : [])
+      .map((bullet) => String(bullet || '').replace(/^[-*]\s+/, '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+      .slice(0, 6),
+  }));
+  if (summaries.some((item) => !item.oneLiner && !item.bullets.length)) return null;
+  return summaries;
+}
+
+function headingKey(text) {
+  return String(text || '')
+    .replace(/\s+/g, '')
+    .replace(/[（(][^）)]*[)）]/g, '')
+    .replace(/[：:，,。.!！？?\-—]/g, '')
+    .toLowerCase();
+}
+
+function sameChapterTitle(left, right) {
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const shorter = left.length <= right.length ? left : right;
+  const longer = left.length <= right.length ? right : left;
+  return shorter.length >= 6 && longer.includes(shorter);
+}
+
+// 模型常在对话开头再印一次章名。留下第一节 ##，去掉后面重复的 # / ##。
+export function stripDuplicateChapterTitles(section) {
+  const lines = String(section || '').replace(/\r\n/g, '\n').split('\n');
+  let titleKey = '';
+  const kept = [];
+  for (const line of lines) {
+    const heading = line.trim().match(/^(#{1,6})\s+(.+)$/);
+    if (!heading) {
+      kept.push(line);
+      continue;
+    }
+    const label = heading[2].trim();
+    if (label === '章节总结' || label === '对话') continue;
+    const key = headingKey(label);
+    if (!titleKey) {
+      titleKey = key;
+      kept.push(`## ${label}`);
+      continue;
+    }
+    if (sameChapterTitle(titleKey, key)) continue;
+    kept.push(line);
+  }
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function chapterHeadingAndBody(section) {
+  const cleaned = stripDuplicateChapterTitles(section);
+  const lines = cleaned.split('\n');
+  const index = lines.findIndex((line) => /^##\s+\S/.test(line.trim()));
+  const title = index >= 0 ? lines[index].trim() : '## 本节';
+  const body = lines.filter((_, lineIndex) => lineIndex !== index).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  return { title, body };
+}
+
+function formatChapterSummary(summary) {
+  const oneLiner = String(summary?.oneLiner || '').trim();
+  const bullets = (Array.isArray(summary?.bullets) ? summary.bullets : [])
+    .map((item) => String(item || '').trim())
+    .filter(Boolean);
+  if (!oneLiner && !bullets.length) return '';
+  const lines = ['### 章节总结', ''];
+  if (oneLiner) lines.push(`**一句话：** ${oneLiner}`, '');
+  if (bullets.length) lines.push(bullets.map((item) => `- ${item}`).join('\n'));
+  return lines.join('\n').trim();
+}
+
+export function joinChapterDialogue(sections, summaries) {
+  const list = Array.isArray(sections) ? sections : [];
+  const notes = Array.isArray(summaries) ? summaries : [];
+  return list.map((section, index) => {
+    const { title, body } = chapterHeadingAndBody(section);
+    const summary = formatChapterSummary(notes[index]);
+    const dialogue = body ? `### 对话\n\n${body}` : '### 对话';
+    return [title, summary, dialogue].filter(Boolean).join('\n\n');
+  }).filter(Boolean).join('\n\n').trim();
 }
 
 export function joinGemmaArticle(summary, sections) {

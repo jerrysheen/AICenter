@@ -10,20 +10,25 @@ import {
   stripResidualEnglish,
   dedupeRollingCaptions,
   captionAlreadyChinese,
+  CHAPTER_SUMMARY_SYSTEM,
   GEMMA_ARTICLE_TITLE_SYSTEM,
+  GEMMA_DIALOGUE_SYSTEM,
   GEMMA_SECTION_SYSTEM,
   GEMMA_SUMMARY_SYSTEM,
   GEMMA_TRANSLATE_SYSTEM,
   gemmaArticleNeedsRepair,
+  joinChapterDialogue,
   joinGemmaArticle,
+  parseChapterSummaries,
   repairTimestampHeading,
+  stripDuplicateChapterTitles,
   needsChineseTitle,
   splitTranscriptParts,
   stripDoubaoReply,
   transcriptHash,
 } from '../packages/domain/src/youtube-captions.js';
 import { formatPodcastSummary } from '../packages/domain/src/youtube-podcasts.js';
-import { articlePauseReason, backfillYoutubeArticleTitles, repairYoutubeChineseCopy, runYoutubeArticlePass } from '../packages/runtime/src/youtube-article-job.js';
+import { articlePauseReason, backfillYoutubeArticleTitles, queueYoutubeChapterRerun, repairYoutubeChineseCopy, runYoutubeArticlePass } from '../packages/runtime/src/youtube-article-job.js';
 import { runYoutubePodcastRound, saveYoutubeEpisode } from '../packages/runtime/src/youtube-podcasts-job.js';
 
 const ROLLING = `[00:00:03] In general, the market does about 4% worse per
@@ -707,9 +712,18 @@ function fakeGemma(handler) {
   };
 }
 
+function summaryJson(prompt) {
+  const count = Number(String(prompt || '').match(/共\s*(\d+)\s*章/)?.[1]) || 1;
+  const items = Array.from({ length: count }, () => ({ oneLiner: '利率会差 24%。', bullets: ['NVDA 仍在讨论'] }));
+  return { text: JSON.stringify(items) };
+}
+
 function articleReply(input) {
   if (input.system === GEMMA_TRANSLATE_SYSTEM) return { text: '主持人：利率会差 24%，NVDA 仍在讨论。' };
-  if (input.system === GEMMA_SECTION_SYSTEM) return { text: '## 利率（00:00:03）\n\n主持人：利率会差 24%，NVDA 仍在讨论。' };
+  if (input.system === GEMMA_DIALOGUE_SYSTEM || input.system === GEMMA_SECTION_SYSTEM) {
+    return { text: '# 利率（00:00:03）\n\n## 利率（00:00:03）\n\n**主持人**：利率会差 24%，NVDA 仍在讨论。' };
+  }
+  if (input.system === CHAPTER_SUMMARY_SYSTEM) return summaryJson(input.prompt);
   if (input.system === GEMMA_SUMMARY_SYSTEM) return { text: '## 要点\n\n- 利率会差 24%。' };
   if (input.system === GEMMA_ARTICLE_TITLE_SYSTEM) return { text: '利率路径仍在左右仓位' };
   throw new Error(`意外的提示：${input.system}`);
@@ -719,7 +733,10 @@ test('gemma translates each part, stores it, then writes one article', async () 
   const opened = openStore();
   const gemma = fakeGemma((input) => articleReply(input));
   const doubao = fakeDoubao(() => { throw new Error('默认不应调用豆包'); });
-  const flash = fakeGemma(() => { throw new Error('成功时不应调用 Flash'); });
+  const flash = fakeGemma((input) => {
+    if (input.system !== CHAPTER_SUMMARY_SYSTEM) throw new Error('成功时不应调用 Flash');
+    return summaryJson(input.prompt);
+  });
   try {
     await runYoutubePodcastRound({
       env: {
@@ -751,14 +768,19 @@ test('gemma translates each part, stores it, then writes one article', async () 
     });
     const saved = opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaarticle1');
     assert.equal(saved.articleStatus, 'ready');
-    assert.match(saved.body, /^## 要点/);
     assert.match(saved.body, /## 利率（00:00:03）/);
-    assert.match(saved.body, /主持人：/);
+    assert.match(saved.body, /### 章节总结/);
+    assert.match(saved.body, /\*\*一句话：\*\* 利率会差 24%。/);
+    assert.match(saved.body, /### 对话/);
+    assert.match(saved.body, /\*\*主持人\*\*/);
+    assert.equal(/^# 利率/m.test(saved.body), false);
+    assert.equal((saved.body.match(/^## 利率/gm) || []).length, 1);
     assert.equal(saved.body.includes('Rates move'), false);
     assert.match(saved.sourceTranscript, /Rates move/);
     assert.equal(doubao.calls.length, 0);
-    assert.equal(flash.calls.length, 0);
-    assert.deepEqual(gemma.calls.map((call) => call.system), [GEMMA_TRANSLATE_SYSTEM, GEMMA_SECTION_SYSTEM, GEMMA_SUMMARY_SYSTEM, GEMMA_ARTICLE_TITLE_SYSTEM]);
+    assert.equal(flash.calls.length, 1);
+    assert.equal(flash.calls[0].system, CHAPTER_SUMMARY_SYSTEM);
+    assert.deepEqual(gemma.calls.map((call) => call.system), [GEMMA_TRANSLATE_SYSTEM, GEMMA_DIALOGUE_SYSTEM, GEMMA_ARTICLE_TITLE_SYSTEM]);
     assert.equal(saved.displayTitle, '利率路径仍在左右仓位');
     assert.equal(saved.title, 'Rates');
     assert.equal(JSON.parse(saved.articleState).titleStatus, 'ready');
@@ -767,8 +789,9 @@ test('gemma translates each part, stores it, then writes one article', async () 
     assert.equal(state.engine, 'gemma');
     assert.equal(state.parts[0].provider, 'gemma');
     assert.deepEqual(state.parts[0].calls, { gemma: 2, flash: 0 });
-    assert.equal(state.summaryProvider, 'gemma');
-    assert.deepEqual(state.summaryCalls, { gemma: 1, flash: 0 });
+    assert.equal(state.layout, 'chapter-dialogue');
+    assert.equal(state.summaryProvider, 'flash');
+    assert.deepEqual(state.summaryCalls, { gemma: 0, flash: 1 });
     assert.equal(state.parts[0].translation.includes('24%'), true);
     const again = gemma.calls.length;
     await runYoutubePodcastRound({
@@ -870,7 +893,8 @@ test('a quota window keeps finished parts and a gemma failure can use flash', as
     });
     assert.equal(second.ready, 1);
     assert.equal(gemma.calls.slice(finished).some((call) => call.prompt.includes('Sentence 0 discusses')), false);
-    assert.match(opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaquota01').body, /^## 要点/);
+    assert.match(opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaquota01').body, /### 章节总结/);
+    assert.match(opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaquota01').body, /### 对话/);
   } finally {
     opened.close();
   }
@@ -916,9 +940,10 @@ test('a failed gemma part falls back to flash and does not resend finished text'
     });
     assert.equal(result.ready, 1);
     assert.equal(flash.calls.length, 3);
-    assert.equal(gemma.calls.length, 4);
+    assert.equal(gemma.calls.length, 3);
     assert.equal(gemma.calls.at(-1).system, GEMMA_ARTICLE_TITLE_SYSTEM);
     assert.equal(flash.calls.some((call) => call.system === GEMMA_ARTICLE_TITLE_SYSTEM), false);
+    assert.equal(flash.calls.filter((call) => call.system === CHAPTER_SUMMARY_SYSTEM).length, 1);
     assert.equal(opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaflash01').displayTitle, '利率');
     assert.equal(opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaflash01').title, 'Rates');
     assert.equal(JSON.parse(opened.store.repositories.youtubePodcasts.episode('local', 'gemmaflash01').articleState).titleStatus, 'failed');
@@ -926,8 +951,8 @@ test('a failed gemma part falls back to flash and does not resend finished text'
     assert.equal(flashState.parts[0].provider, 'flash');
     assert.deepEqual(flashState.parts[0].calls, { gemma: 2, flash: 2 });
     assert.equal(flashState.summaryProvider, 'flash');
-    assert.deepEqual(flashState.summaryCalls, { gemma: 1, flash: 1 });
-    assert.match(opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaflash01').body, /主持人：/);
+    assert.deepEqual(flashState.summaryCalls, { gemma: 0, flash: 1 });
+    assert.match(opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaflash01').body, /\*\*主持人\*\*：/);
   } finally {
     opened.close();
   }
@@ -961,7 +986,7 @@ test('chinese captions are organized without a translation call', async () => {
   });
   const gemma = fakeGemma((input) => {
     if (input.system === GEMMA_TRANSLATE_SYSTEM) throw new Error('中文字幕不应再翻译');
-    if (input.system === GEMMA_SECTION_SYSTEM) return { text: '## 户外行走（00:00:01）\n\n主持人：Dyna Robotics 今天发布了新的机器人行走方案。' };
+    if (input.system === GEMMA_DIALOGUE_SYSTEM) return { text: '## 户外行走（00:00:01）\n\n**主持人**：Dyna Robotics 今天发布了新的机器人行走方案。' };
     return articleReply(input);
   });
   try {
@@ -975,7 +1000,7 @@ test('chinese captions are organized without a translation call', async () => {
       now: Date.parse('2026-10-19T02:00:00Z'),
     });
     assert.equal(result.ready, 1);
-    assert.deepEqual(gemma.calls.map((call) => call.system), [GEMMA_SECTION_SYSTEM, GEMMA_SUMMARY_SYSTEM, GEMMA_ARTICLE_TITLE_SYSTEM]);
+    assert.deepEqual(gemma.calls.map((call) => call.system), [GEMMA_DIALOGUE_SYSTEM, CHAPTER_SUMMARY_SYSTEM, GEMMA_ARTICLE_TITLE_SYSTEM]);
     assert.match(gemma.calls[0].prompt, /机器人行走方案/);
     const state = JSON.parse(opened.store.repositories.youtubePodcasts.episode('local', 'gemmachinese1').articleState);
     assert.equal(state.parts[0].provider, 'source');
@@ -1096,6 +1121,18 @@ test('a clock-only heading is rewritten from the section topic', async () => {
   assert.match(GEMMA_SECTION_SYSTEM, /不要每段都以「主持人：」/);
   assert.match(GEMMA_SUMMARY_SYSTEM, /## 要点/);
   assert.match(GEMMA_SUMMARY_SYSTEM, /\*\*加粗\*\*/);
+  assert.match(GEMMA_DIALOGUE_SYSTEM, /\*\*名字\*\*/);
+  assert.match(GEMMA_DIALOGUE_SYSTEM, /不要用 # 重复章名/);
+  assert.match(CHAPTER_SUMMARY_SYSTEM, /oneLiner/);
+  assert.equal(stripDuplicateChapterTitles('# 利率路径（00:12:03）\n\n## 利率路径（00:12:03）\n\n**主持人**：数字。'), '## 利率路径（00:12:03）\n\n**主持人**：数字。');
+  assert.equal(stripDuplicateChapterTitles('## 融资成本（00:08:28）\n\n# 融资成本（00:08:28）\n\n**嘉宾**：成本。\n\n### 客户集中度\n\n还在讲。'), '## 融资成本（00:08:28）\n\n**嘉宾**：成本。\n\n### 客户集中度\n\n还在讲。');
+  const joined = joinChapterDialogue(
+    ['## 利率路径（00:12:03）\n\n**主持人**：会差 **24%**。'],
+    [{ oneLiner: '利率预期变了。', bullets: ['差 24%'] }],
+  );
+  assert.match(joined, /^## 利率路径（00:12:03）\n\n### 章节总结\n\n\*\*一句话：\*\* 利率预期变了。\n\n- 差 24%\n\n### 对话\n\n\*\*主持人\*\*/);
+  assert.deepEqual(parseChapterSummaries('```json\n[{"oneLiner":"一句","bullets":["甲"]}]```', 1), [{ oneLiner: '一句', bullets: ['甲'] }]);
+  assert.equal(parseChapterSummaries('[{"oneLiner":"一句"}]', 2), null);
   assert.match(stripResidualEnglish('## 利率（00:00:03）\n\n市场认为 **24%** 会留下。'), /\*\*24%\*\*/);
   assert.equal(gemmaArticleNeedsRepair({
     engine: 'gemma',
@@ -1127,7 +1164,7 @@ test('a clock-only heading is rewritten from the section topic', async () => {
     articleStatus: 'pending',
   });
   const gemma = fakeGemma((input) => {
-    if (input.system === GEMMA_SECTION_SYSTEM) return { text: '## 00:00:03\n\n主持人：利率会差 24%，NVDA 仍在讨论。' };
+    if (input.system === GEMMA_DIALOGUE_SYSTEM) return { text: '## 00:00:03\n\n主持人：利率会差 24%，NVDA 仍在讨论。' };
     return articleReply(input);
   });
   try {
@@ -1370,7 +1407,8 @@ test('the same part waits and retries inside the round when gemma keeps returnin
     });
     assert.equal(result.ready, 1);
     assert.equal(result.stopped, '');
-    assert.equal(flash.calls.length, 0);
+    assert.equal(flash.calls.length, 1);
+    assert.equal(flash.calls[0].system, CHAPTER_SUMMARY_SYSTEM);
     assert.deepEqual(waits, [10_000, 10_000]);
     assert.equal(opened.store.repositories.youtubePodcasts.episode('local', 'gemma5xxretry').articleStatus, 'ready');
   } finally {
@@ -1418,7 +1456,7 @@ test('a round that hits its deadline records deadline instead of quota', async (
   const opened = openStore();
   const controller = new AbortController();
   const gemma = fakeGemma((input) => {
-    if (input.system === GEMMA_SECTION_SYSTEM) controller.abort();
+    if (input.system === GEMMA_DIALOGUE_SYSTEM) controller.abort();
     return articleReply(input);
   });
   try {
@@ -1438,6 +1476,62 @@ test('a round that hits its deadline records deadline instead of quota', async (
     const state = JSON.parse(opened.store.repositories.youtubePodcasts.episode('local', 'gemmadeadline').articleState);
     assert.equal(state.holdReason, 'deadline');
     assert.equal(state.parts[0].translation.includes('24%'), true);
+  } finally {
+    opened.close();
+  }
+});
+
+test('chapter rerun queues one ready episode and leaves the others', async () => {
+  const opened = openStore();
+  try {
+    await saveShortEpisode(opened, 'rerunkeep01');
+    await saveShortEpisode(opened, 'rerunone001');
+    await saveShortEpisode(opened, 'rerunpend01');
+    const repo = opened.store.repositories.youtubePodcasts;
+    const transcript = repo.episode('local', 'rerunone001').sourceTranscript;
+    for (const videoId of ['rerunkeep01', 'rerunone001']) {
+      const row = repo.episode('local', videoId);
+      repo.saveEpisode({
+        workspaceId: 'local',
+        videoId: row.videoId,
+        creatorId: row.creatorId,
+        channelKey: row.channelKey,
+        title: row.title,
+        durationSec: row.durationSec,
+        publishedAt: row.publishedAt,
+        status: row.status,
+        transcriptSource: row.transcriptSource,
+        contentItemId: row.contentItemId,
+        attempts: row.attempts,
+        sourceTranscript: row.sourceTranscript,
+        sourceHash: row.sourceHash,
+        articleStatus: 'ready',
+        articleDay: '2026-10-19',
+        articleState: JSON.stringify({ engine: 'gemma', parts: [{ section: '## 旧' }] }),
+      });
+    }
+    const dry = queueYoutubeChapterRerun({ repository: repo, videoId: 'rerunone001', dryRun: true });
+    assert.deepEqual(dry, { queued: ['rerunone001'], missing: false });
+    assert.equal(repo.episode('local', 'rerunone001').articleStatus, 'ready');
+    assert.equal(repo.episode('local', 'rerunone001').articleDay, '2026-10-19');
+    const queued = queueYoutubeChapterRerun({ repository: repo, videoId: 'rerunone001' });
+    assert.deepEqual(queued, { queued: ['rerunone001'], missing: false });
+    const changed = repo.episode('local', 'rerunone001');
+    assert.equal(changed.articleStatus, 'pending');
+    assert.equal(changed.articleDay, '');
+    assert.equal(changed.sourceTranscript, transcript);
+    const state = JSON.parse(changed.articleState);
+    assert.equal(state.layout, 'chapter-dialogue');
+    assert.equal(state.rerun, true);
+    assert.equal(state.hash, '');
+    assert.deepEqual(state.parts, []);
+    assert.equal(repo.episode('local', 'rerunkeep01').articleStatus, 'ready');
+    assert.equal(repo.episode('local', 'rerunpend01').articleStatus, 'pending');
+    const rest = queueYoutubeChapterRerun({ repository: repo, all: true });
+    assert.deepEqual(rest.queued.slice().sort(), ['rerunkeep01']);
+    assert.equal(repo.episode('local', 'rerunpend01').articleStatus, 'pending');
+    assert.deepEqual(queueYoutubeChapterRerun({ repository: repo, videoId: 'no-such' }), { queued: [], missing: true });
+    assert.deepEqual(queueYoutubeChapterRerun({ repository: repo }), { queued: [], missing: false });
   } finally {
     opened.close();
   }

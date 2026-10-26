@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-26-podcast-toc-chapter-dialogue.md`：单集阅读有至少两个标题时显示目录。宽屏固定在左侧，窄屏用「目录」打开侧栏，不占首屏。底栏去掉旧的 `podcast-reader-exit`。新整理先由 Flash 一次写各章总结，再由 Gemma 26B 按章排对话；旧稿不自动重写。重跑用 `scripts/rerun-youtube-chapter-articles.mjs`。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
+
 - `progress/2026-10-26-podcast-reader-bar.md`：单集阅读窄屏底栏改成信息流同款。四格 `.reader-mobile-bar.is-quad`，透明键、品牌色图标和 12px 竖排文案，返回键是「返回播客」。宽屏不另放一条大按钮。离开仍回到进来时的播客列表。不新增 migration。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。
 
 - `progress/2026-10-26-podcast-reader-exit.md`：单集阅读页底部固定「退出」。从播客列表或带频道的列表进来，就回到那一页；从其它页面进来或直接打开这一集，回到 `#podcasts`。窄屏阅读时底部页签让开。打开 YouTube 和速读切换仍在页头。不新增 migration。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。

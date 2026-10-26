@@ -325,7 +325,9 @@ test('podcast reader keeps the speed switch and does not call an unfinished arti
   assert.equal(textOf(floatBar).includes('返回播客'), false);
   assert.match(textOf(floatBar), /较早的一集/);
   assert.equal(findAll(floatBar, (node) => node.textContent === '速读版').length, 1);
-  const exitBar = findAll(root, (node) => node.className === 'reader-mobile-bar is-quad podcast-reader-exit')[0];
+  const exitBar = findAll(root, (node) => node.className === 'reader-mobile-bar is-quad')[0];
+  assert.equal(exitBar.dataset.podcastChrome, 'exit');
+  assert.equal(exitBar.className.includes('podcast-reader-exit'), false);
   const exitButton = findAll(exitBar, (node) => node.tagName === 'button')[0];
   assert.equal(exitButton.tagName, 'button');
   assert.equal(exitButton.className, 'is-back');
@@ -365,6 +367,20 @@ test('podcast reader keeps the speed switch and does not call an unfinished arti
   assert.match(rich, /<ul>/);
   assert.match(rich, /<blockquote>/);
   assert.match(rich, /<h3>/);
+  const tocButtons = findAll(root, (node) => node.className === 'podcast-toc-link').map((node) => node.textContent);
+  assert.deepEqual(tocButtons, ['要点', '利率路径（00:12:03）', '要点', '利率路径（00:12:03）']);
+  const tocNav = findAll(root, (node) => node.className === 'podcast-toc')[0];
+  assert.equal(tocNav['aria-label'], '章节目录');
+  const tocToggle = findAll(root, (node) => node.className === 'podcast-toc-toggle')[0];
+  assert.equal(tocToggle.textContent, '目录');
+  assert.equal(tocToggle['aria-expanded'], 'false');
+  tocToggle.listeners.click();
+  const tocSheet = findAll(root, (node) => String(node.className).includes('podcast-toc-sheet'))[0];
+  assert.equal(tocSheet.className.includes('is-open'), true);
+  assert.equal(tocToggle['aria-expanded'], 'true');
+  findAll(tocSheet, (node) => node.textContent === '利率路径（00:12:03）')[0].listeners.click();
+  assert.equal(tocSheet.className.includes('is-open'), false);
+  assert.equal(findAll(root, (node) => node.className === 'podcast-reader-float')[0].className.includes('is-shown'), false);
   assert.equal(podcastReaderFloatVisibility({ previousY: 0, nextY: 20, shown: false, narrow: true, revealAfter: 180 }), false);
   assert.equal(podcastReaderFloatVisibility({ previousY: 80, nextY: 420, shown: false, narrow: true, revealAfter: 180 }), false);
   assert.equal(podcastReaderFloatVisibility({ previousY: 420, nextY: 360, shown: false, narrow: true, revealAfter: 180 }), true);
@@ -382,8 +398,11 @@ test('podcast reader keeps the speed switch and does not call an unfinished arti
   assert.match(narrow, /body\[data-podcast-episode="1"\] \.bottom-tab/);
   assert.match(narrow, /body\[data-podcast-episode="1"\] main \{[^}]*padding-bottom:\s*calc\(80px \+ env\(safe-area-inset-bottom\)\)/);
   assert.match(css, /\.reader-mobile-bar \{ display: none; \}/);
+  assert.equal(readFileSync(path.join(publicDir, 'youtube-podcasts.js'), 'utf8').includes('podcast-reader-exit'), false);
   assert.doesNotMatch(css, /\.podcast-reader-exit button \{[^}]*background:\s*var\(--brand\)/);
   assert.doesNotMatch(css, /\.podcast-reader-exit \{[^}]*left:\s*var\(--side-nav\)/);
+  assert.match(css, /@media \(min-width: 1200px\) \{[^]*?\.podcast-toc \{[^}]*position:\s*sticky;/);
+  assert.match(css, /@media \(max-width: 1199px\) \{[^]*?\.podcast-toc-toggle \{[^}]*position:\s*fixed;/);
   assert.match(css, /@media \(max-width: 720px\) \{[^]*?\.podcast-reader-float \{[^}]*position:\s*fixed;/);
 });
 
