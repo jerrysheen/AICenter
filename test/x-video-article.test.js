@@ -75,12 +75,25 @@ function openStore() {
 
 function gemmaGenerate({ system, prompt }) {
   const text = String(system || '');
-  if (text.includes('标题')) return { text: '如何避免人工智能把判断力带偏' };
-  if (text.includes('oneLiner')) {
-    const count = Number(String(prompt || '').match(/共\s*(\d+)\s*章/)?.[1]) || 1;
-    const items = Array.from({ length: count }, () => ({ oneLiner: '讲座说明怎样避免被人工智能带偏', bullets: ['按时间保留判断力'] }));
-    return { text: JSON.stringify(items) };
+  if (text.includes('partIds')) {
+    const ids = [...String(prompt || '').matchAll(/"i":(\d+)/g)].map((match) => Number(match[1]));
+    const partIds = ids.length ? [...new Set(ids)] : [0];
+    return {
+      text: JSON.stringify({
+        chapters: [{
+          title: '开场说明（00:00:00）',
+          start: '00:00:00',
+          partIds,
+          oneLiner: '讲座说明怎样避免被人工智能带偏',
+          bullets: ['按时间保留判断力'],
+        }],
+      }),
+    };
   }
+  if (text.includes('"zh"') || text.includes('hint')) {
+    return { text: JSON.stringify({ zh: '这是按原文顺序译出的一句话。', hint: ['保留判断力'], topic: '开场说明' }) };
+  }
+  if (text.includes('标题')) return { text: '如何避免人工智能把判断力带偏' };
   if (text.includes('对话') || text.includes('小节')) return { text: '## 开场说明（00:00:01）\n\n**主持人**：这是一段关于判断力的说明。' };
   return { text: '这是按原文顺序译出的一句话。' };
 }
@@ -240,7 +253,8 @@ test('a long X video is transcribed once, keeps the tweet body, and shares the d
     const article = videos.article('local', `${TWEET}:1`);
     assert.equal(article.status, 'ready');
     assert.match(article.articleBody, /章节总结/);
-    assert.match(article.articleBody, /### 对话/);
+    assert.match(article.articleBody, /这是按原文顺序译出的一句话/);
+    assert.equal(article.articleBody.includes('### 对话'), false);
     assert.equal(article.articleTitle, '如何避免人工智能把判断力带偏');
     assert.match(article.sourceTranscript, /^\[00:00:00\]/);
     assert.equal(feed.getContentItem('local', item.id).body, '原帖不要被覆盖，这是推文正文。');

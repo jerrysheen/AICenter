@@ -7,24 +7,17 @@ import {
   stripResidualEnglish,
   captionAlreadyChinese,
   CHAPTER_DIALOGUE_LAYOUT,
-  CHAPTER_SUMMARY_SYSTEM,
   GEMMA_ARTICLE_TITLE_SYSTEM,
-  GEMMA_DIALOGUE_SYSTEM,
   GEMMA_SECTION_SYSTEM,
   GEMMA_SUMMARY_SYSTEM,
   GEMMA_TRANSLATE_SYSTEM,
   articleTitleSource,
-  chapterSummaryPrompt,
-  flashSummaryBatches,
   gemmaArticleNeedsRepair,
   gemmaSummarySource,
-  joinChapterDialogue,
   normalizeArticleTitle,
-  parseChapterSummaries,
   joinArticleParts,
   joinGemmaArticle,
   repairTimestampHeading,
-  stripDuplicateChapterTitles,
   timestampOnlyHeading,
   needsChineseTitle,
   needsEnglishQuote,
@@ -41,21 +34,33 @@ import {
 } from '../../domain/src/youtube-podcasts.js';
 import { createDoubaoChatClient } from '../../connectors/src/doubao/chat-browser.js';
 import { createGeminiInvestorSummarizer } from '../../connectors/src/investor-discussion-model.js';
-import { createGemmaTranslationRouter } from '../../connectors/src/translate/gemma.js';
+import { createGemmaTranslationRouter, resolveGemmaTranslationSlots } from '../../connectors/src/translate/gemma.js';
 import {
+  EPISODE_STRUCTURE_SYSTEM,
   GEMMA_26B,
   GEMMA_31B,
+  GEMMA_SEGMENT_SYSTEM,
   LONG_VIDEO_GEMMA_SCHEDULE,
-  gemmaRequestBudget,
+  PARALLEL_SEGMENT_LAYOUT,
+  chaptersCoverParts,
+  fallbackEpisodeChapters,
   longVideoCallBudget,
   longVideoPartBounds,
+  mergeParallelArticle,
+  normalizeEpisodeChapters,
+  parallelSegmentConcurrency,
+  parseEpisodeStructure,
+  parseSegmentTranslation,
+  segmentTranslationOk,
   splitSummaryBlocks,
+  structureMaterialBatches,
+  structurePrompt,
 } from '../../domain/src/gemma-long-video.js';
 
 // 正文默认走现有 Gemma 26B 翻译池，只打官方 endpoint，不新接计费服务，也不在这里读写密钥。
-// 新开的整理：Gemini Flash Lite 一次写出各章总结，Gemma 26B 按章排对话。
-// Flash 总结失败时改由 Gemma 写同一份 JSON；Gemma 对话失败时，这一章改用 Flash。
-// 已经落库、状态里没有 chapter-dialogue 的旧文不自动重写。豆包只在引擎显式写成 doubao 时使用。
+// 新开的整理：按段并行 Gemma 26B（译文 + hint + topic），再由 Flash Lite 一次写整集脉络，最后把 partIds 映回全文。
+// Flash 日额度紧或失败时，脉络改由 Gemma 26B 写。已经落库的 ready 不自动重写。
+// 进行中的旧要点稿仍接着写小节。豆包只在引擎显式写成 doubao 时使用。
 // 标题和关键句的中文化仍只用 Gemma，不走 Flash。
 // 正文整理完成后，再用 Gemma 按中文正文写一句话标题；失败就留着原来的标题。
 
@@ -153,69 +158,49 @@ function attachCalls(error, calls) {
   return error;
 }
 
-function gemmaSummaryBatches(sections) {
-  const batches = [];
-  let current = [];
-  const fits = (blocks) => gemmaRequestBudget(CHAPTER_SUMMARY_SYSTEM, chapterSummaryPrompt(blocks), 4096).fits;
-  for (const batch of flashSummaryBatches(sections, Number.MAX_SAFE_INTEGER)) {
-    for (const block of batch) {
-      const next = current.concat(block);
-      if (current.length && !fits(next)) {
-        batches.push(current);
-        current = [block];
-      } else {
-        current = next;
-      }
-    }
-  }
-  if (current.length) batches.push(current);
-  return batches;
+function gemmaKeyInflight(env) {
+  const raw = String(env?.AI_CENTER_GEMMA_TRANSLATION_KEY_CONCURRENCY ?? '').trim();
+  if (!raw) return 2;
+  const value = Number(raw);
+  if (!Number.isInteger(value)) return 2;
+  return Math.min(3, Math.max(2, value));
 }
 
-async function readSummaryBatches(generate, batches, calls, provider) {
-  const summaries = [];
-  for (const blocks of batches) {
-    calls[provider] += 1;
-    const result = await generate({ system: CHAPTER_SUMMARY_SYSTEM, prompt: chapterSummaryPrompt(blocks) });
-    const parsed = parseChapterSummaries(result?.text, blocks.length);
-    if (!parsed) throw new Error('章节总结不是完整 JSON');
-    summaries.push(...parsed);
-  }
-  return summaries;
-}
-
-// 总结优先一次 Flash。失败且不是配额窗口时，改由 Gemma 写同一份 JSON；放不进 26B 额度时才按章分批。
-async function callChapterSummaries(deps, sections) {
-  const calls = callCounts();
-  const flash = articleFlash(deps);
-  if (flash) {
-    try {
-      const summaries = await readSummaryBatches(flash, flashSummaryBatches(sections), calls, 'flash');
-      if (summaries.length !== sections.length) throw new Error('章节总结条数不对');
-      return { summaries, provider: 'flash', calls };
-    } catch (error) {
-      if (error?.code === 'budget-deferred' || deps.signal?.aborted) throw attachCalls(error, calls);
-    }
-  }
+export function podcastSegmentConcurrency(env = process.env) {
+  const source = env || process.env;
+  const raw = String(source.AI_CENTER_PODCAST_SEGMENT_CONCURRENCY ?? '').trim();
+  const cap = raw ? Number(raw) : 8;
+  let keyCount = 0;
   try {
-    const summaries = await readSummaryBatches(
-      articleGemma(deps),
-      gemmaSummaryBatches(sections),
-      calls,
-      'gemma',
-    );
-    if (summaries.length !== sections.length) throw new Error('章节总结条数不对');
-    return { summaries, provider: 'gemma', calls };
-  } catch (error) {
-    throw attachCalls(error, calls);
+    keyCount = resolveGemmaTranslationSlots(source).length;
+  } catch {
+    keyCount = 0;
   }
+  return parallelSegmentConcurrency({ keyCount, perKey: gemmaKeyInflight(source), cap });
 }
 
-async function callArticleModel(deps, input) {
+async function mapPool(items, concurrency, worker) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function runner() {
+    for (;;) {
+      const index = next;
+      next += 1;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index], index);
+    }
+  }
+  const workers = Math.max(1, Math.min(concurrency || 1, items.length || 1));
+  if (!items.length) return results;
+  await Promise.all(Array.from({ length: workers }, () => runner()));
+  return results;
+}
+
+async function callArticleModel(deps, input, options = {}) {
   const calls = callCounts();
   try {
     calls.gemma += 1;
-    const result = await articleGemma(deps)(input);
+    const result = await articleGemma(deps, { lockModel: options.lockModel === true })(input);
     const text = String(result?.text || '').trim();
     if (!text) throw new Error('Gemma 没有返回正文');
     return { text, provider: 'gemma', calls };
@@ -307,6 +292,8 @@ function loadGemmaPart(part) {
     attempts,
     provider,
     calls: callCounts(part?.calls),
+    hint: Array.isArray(part?.hint) ? part.hint.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 5) : [],
+    topic: String(part?.topic || '').trim().slice(0, 40),
     dropped,
   };
 }
@@ -660,6 +647,146 @@ async function organizeEpisode({ row, client, repository, feedRepository, worksp
   );
 }
 
+async function organizeParallelSegments({ state, deps, signal, day, row, repairing, persist, touch, pause, halted, stop }) {
+  const status = repairing ? 'ready' : 'pending';
+  for (const slot of state.parts) {
+    if (slot.translation) continue;
+    if (slot.attempts >= PART_ATTEMPTS) {
+      state.holdDay = day;
+      state.holdReason = 'failed';
+      persist(status);
+      return { status: 'pending', reason: 'failed' };
+    }
+    if (captionAlreadyChinese(slot.text)) {
+      slot.translation = slot.text;
+      slot.provider = slot.provider || 'source';
+      slot.status = 'translated';
+      slot.attempts = 0;
+      persist(status);
+    }
+  }
+  const concurrency = podcastSegmentConcurrency(deps.env || process.env);
+  const translateSlot = async (slot) => {
+    if (slot.translation || signal?.aborted) return;
+    const stopped = halted();
+    if (stopped) return;
+    try {
+      touch();
+      const sourceText = dedupeRollingCaptions(slot.text) || slot.text;
+      const prompt = JSON.stringify({
+        i: state.parts.indexOf(slot),
+        start: slot.start || '',
+        text: sourceText,
+      });
+      const result = await withUpstreamRetry(deps, () => callArticleModel(
+        deps,
+        { system: GEMMA_SEGMENT_SYSTEM, prompt },
+        { lockModel: true },
+      ));
+      const parsed = parseSegmentTranslation(result.text);
+      const zh = stripResidualEnglish(parsed.zh);
+      if (!segmentTranslationOk(zh)) throw new Error('分段译文不完整');
+      slot.translation = zh;
+      slot.hint = parsed.hint;
+      slot.topic = parsed.topic;
+      slot.provider = result.provider;
+      addCalls(slot.calls, result.calls);
+      slot.status = 'translated';
+      slot.attempts = 0;
+      slot._error = null;
+      persist(status);
+    } catch (error) {
+      addCalls(slot.calls, error?.articleCalls);
+      if (error && typeof error === 'object') error.articleCalls = null;
+      slot._error = error;
+    }
+  };
+  const pending = () => state.parts.filter((slot) => !slot.translation);
+  await mapPool(pending(), concurrency, translateSlot);
+  if (signal?.aborted) return pause('deadline');
+  const succeeded = state.parts.some((slot) => slot.translation);
+  const retry = pending().filter((slot) => articlePauseReason(slot._error) !== 'quota');
+  if (succeeded && retry.length) await mapPool(retry, concurrency, translateSlot);
+  if (signal?.aborted) return pause('deadline');
+  const still = pending();
+  if (still.length) {
+    const quota = still.find((slot) => articlePauseReason(slot._error) === 'quota');
+    const upstream = still.find((slot) => articlePauseReason(slot._error) === 'upstream');
+    if (quota || upstream) return stop(quota || upstream, (quota || upstream)._error);
+    return stop(still[0], still[0]._error);
+  }
+  if (chaptersCoverParts(state.chapters, state.parts.length)) return null;
+  if (state.summaryAttempts >= PART_ATTEMPTS) {
+    state.holdDay = day;
+    state.holdReason = 'failed';
+    persist(status);
+    return { status: 'pending', reason: 'failed' };
+  }
+  const summaryStopped = halted();
+  if (summaryStopped) return summaryStopped;
+  try {
+    touch();
+    const result = await withUpstreamRetry(deps, () => callEpisodeStructure(deps, state.parts, row?.title || ''));
+    if (signal?.aborted) return pause('deadline');
+    state.chapters = result.chapters;
+    state.summaryProvider = result.provider;
+    addCalls(state.summaryCalls, result.calls);
+    state.summaryAttempts = 0;
+    persist(status);
+    return null;
+  } catch (error) {
+    return stop(null, error);
+  }
+}
+
+async function callEpisodeStructure(deps, parts, title) {
+  const calls = callCounts();
+  const flash = articleFlash(deps);
+  const readBatches = async (generate, batches, provider) => {
+    const chapters = [];
+    let titleZh = '';
+    for (const batch of batches) {
+      calls[provider] += 1;
+      const result = await generate({ system: EPISODE_STRUCTURE_SYSTEM, prompt: structurePrompt(batch, title) });
+      const parsed = parseEpisodeStructure(result?.text);
+      if (!parsed?.chapters?.length) throw new Error('整集脉络不是完整 JSON');
+      if (parsed.titleZh) titleZh = parsed.titleZh;
+      chapters.push(...parsed.chapters);
+    }
+    return { titleZh, chapters };
+  };
+  let parsed = null;
+  let provider = '';
+  if (flash) {
+    try {
+      parsed = await readBatches(flash, structureMaterialBatches(parts, { title }), 'flash');
+      provider = 'flash';
+    } catch (error) {
+      if (deps.signal?.aborted) throw attachCalls(error, calls);
+      parsed = null;
+    }
+  }
+  if (!parsed) {
+    try {
+      const generate = articleGemma(deps, { lockModel: true });
+      parsed = await readBatches(
+        generate,
+        structureMaterialBatches(parts, { system: EPISODE_STRUCTURE_SYSTEM, title }),
+        'gemma',
+      );
+      provider = 'gemma';
+    } catch (error) {
+      if (error?.code === 'budget-deferred' || deps.signal?.aborted) throw attachCalls(error, calls);
+      parsed = null;
+    }
+  }
+  const chapters = parsed
+    ? normalizeEpisodeChapters(parsed.chapters, parts.length)
+    : fallbackEpisodeChapters(parts);
+  if (!chapters.length) throw attachCalls(new Error('整集脉络为空'), calls);
+  return { chapters, provider: provider || 'fallback', calls, titleZh: parsed?.titleZh || '' };
+}
+
 async function organizeWithGemma({ row, repository, feedRepository, workspaceId, day, signal, deps }) {
   const item = row.contentItemId ? feedRepository.getContentItem(workspaceId, row.contentItemId) : null;
   const source = row.sourceTranscript || item?.body || '';
@@ -667,10 +794,13 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
   const hash = transcriptHash(source);
   const saved = readState(row.articleState);
   const reusable = saved?.engine === 'gemma' && saved.hash === hash && Array.isArray(saved.parts) && saved.parts.length;
+  const savedLayout = String(saved?.layout || '');
+  // 已经落库的章节对话稿不自动换成新格式。缺段修复只留给旧要点稿和本路径自己的稿。
+  if (row.articleStatus === 'ready' && reusable && savedLayout === CHAPTER_DIALOGUE_LAYOUT) return { status: 'skipped', reason: 'ready' };
   if (row.articleStatus === 'ready' && reusable && !gemmaArticleNeedsRepair(saved)) return { status: 'skipped', reason: 'ready' };
   const repairing = row.articleStatus === 'ready' && reusable && gemmaArticleNeedsRepair(saved);
-  // 进行中的旧稿接着用原来的要点格式。只有新开的整理，或显式重跑清掉进度之后，才写章节总结和对话。
-  const layout = reusable && saved.layout !== CHAPTER_DIALOGUE_LAYOUT ? 'legacy' : CHAPTER_DIALOGUE_LAYOUT;
+  // 进行中的旧要点稿接着写小节。新开的整理、显式重跑，以及还没写完的章节对话，都走并行分段。
+  const useParallel = !reusable || savedLayout === PARALLEL_SEGMENT_LAYOUT || savedLayout === CHAPTER_DIALOGUE_LAYOUT;
   const deduped = dedupeRollingCaptions(source);
   const bounds = longVideoPartBounds();
   const loaded = reusable ? saved.parts.map((part) => loadGemmaPart(part)) : null;
@@ -682,23 +812,25 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
       status: 'pending',
       translation: '',
       section: '',
+      hint: [],
+      topic: '',
       attempts: 0,
       provider: '',
       calls: callCounts(),
     }));
+  const freshParallel = useParallel && (!reusable || savedLayout !== PARALLEL_SEGMENT_LAYOUT || loaded?.some((part) => part.dropped));
   const state = {
     engine: 'gemma',
     hash,
-    layout: layout === CHAPTER_DIALOGUE_LAYOUT ? CHAPTER_DIALOGUE_LAYOUT : '',
+    layout: useParallel ? PARALLEL_SEGMENT_LAYOUT : '',
     holdDay: reusable ? String(saved.holdDay || '') : '',
     holdReason: reusable ? String(saved.holdReason || '') : '',
-    summary: reusable && !repairing ? String(saved.summary || '') : '',
-    chapterSummaries: reusable && layout === CHAPTER_DIALOGUE_LAYOUT && Array.isArray(saved.chapterSummaries)
-      ? saved.chapterSummaries
-      : [],
-    summaryAttempts: reusable && !repairing ? Number(saved.summaryAttempts) || 0 : 0,
-    summaryProvider: reusable && !repairing ? String(saved.summaryProvider || '') : '',
-    summaryCalls: reusable && !repairing ? callCounts(saved.summaryCalls) : callCounts(),
+    summary: reusable && !repairing && !useParallel ? String(saved.summary || '') : '',
+    chapters: freshParallel || !Array.isArray(saved?.chapters) ? [] : saved.chapters,
+    chapterSummaries: [],
+    summaryAttempts: reusable && !repairing && !freshParallel ? Number(saved.summaryAttempts) || 0 : 0,
+    summaryProvider: reusable && !repairing && !freshParallel ? String(saved.summaryProvider || '') : '',
+    summaryCalls: reusable && !repairing && !freshParallel ? callCounts(saved.summaryCalls) : callCounts(),
     touchedAt: reusable ? Number(saved.touchedAt) || 0 : 0,
     parts,
   };
@@ -752,6 +884,33 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
     persist(repairing ? 'ready' : 'pending');
     return { status: 'pending', reason: attempts >= PART_ATTEMPTS ? 'failed' : 'retry' };
   };
+  if (useParallel) {
+    const parallelResult = await organizeParallelSegments({
+      state,
+      deps,
+      signal,
+      day,
+      row,
+      repairing,
+      persist,
+      touch,
+      pause,
+      halted,
+      stop,
+    });
+    if (parallelResult) return parallelResult;
+    const article = mergeParallelArticle(state.parts, state.chapters);
+    if (!article) {
+      state.holdDay = day;
+      state.holdReason = 'failed';
+      persist(repairing ? 'ready' : 'pending');
+      return { status: 'pending', reason: 'failed' };
+    }
+    return finishArticle(
+      { ...deps, signal },
+      { row, repository, feedRepository, workspaceId, article, state, persist },
+    );
+  }
   for (const slot of state.parts) {
     if (slot.translation) continue;
     if (slot.attempts >= PART_ATTEMPTS) {
@@ -796,10 +955,8 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
     if (sectionStopped) return sectionStopped;
     try {
       touch();
-      const sectionSystem = layout === CHAPTER_DIALOGUE_LAYOUT ? GEMMA_DIALOGUE_SYSTEM : GEMMA_SECTION_SYSTEM;
-      const result = await withUpstreamRetry(deps, () => callArticleModel(deps, { system: sectionSystem, prompt: slot.translation }));
-      const repaired = stripResidualEnglish(repairTimestampHeading(result.text, slot.start, slot.translation));
-      slot.section = layout === CHAPTER_DIALOGUE_LAYOUT ? stripDuplicateChapterTitles(repaired) : repaired;
+      const result = await withUpstreamRetry(deps, () => callArticleModel(deps, { system: GEMMA_SECTION_SYSTEM, prompt: slot.translation }));
+      slot.section = stripResidualEnglish(repairTimestampHeading(result.text, slot.start, slot.translation));
       if (!slot.provider) slot.provider = result.provider;
       addCalls(slot.calls, result.calls);
       slot.status = 'done';
@@ -808,40 +965,6 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
     } catch (error) {
       return stop(slot, error);
     }
-  }
-  if (layout === CHAPTER_DIALOGUE_LAYOUT) {
-    if (!Array.isArray(state.chapterSummaries) || state.chapterSummaries.length !== state.parts.length) {
-      if (state.summaryAttempts >= PART_ATTEMPTS) {
-        state.holdDay = day;
-        state.holdReason = 'failed';
-        persist('pending');
-        return { status: 'pending', reason: 'failed' };
-      }
-      const summaryStopped = halted();
-      if (summaryStopped) return summaryStopped;
-      try {
-        touch();
-        const result = await withUpstreamRetry(deps, () => callChapterSummaries(deps, state.parts.map((part) => part.section)));
-        state.chapterSummaries = result.summaries;
-        state.summaryProvider = result.provider;
-        addCalls(state.summaryCalls, result.calls);
-        state.summaryAttempts = 0;
-        persist('pending');
-      } catch (error) {
-        return stop(null, error);
-      }
-    }
-    const article = joinChapterDialogue(state.parts.map((part) => part.section), state.chapterSummaries);
-    if (!article) {
-      state.holdDay = day;
-      state.holdReason = 'failed';
-      persist('pending');
-      return { status: 'pending', reason: 'failed' };
-    }
-    return finishArticle(
-      { ...deps, signal },
-      { row, repository, feedRepository, workspaceId, article, state, persist },
-    );
   }
   if (!state.summary) {
     if (state.summaryAttempts >= PART_ATTEMPTS) {
@@ -954,6 +1077,10 @@ export async function runYoutubeArticlePass(deps = {}) {
       if (saved.holdReason === 'daily-limit') stats.dailyLimit += 1;
       continue;
     }
+    if (row.articleStatus === 'ready' && saved?.layout === CHAPTER_DIALOGUE_LAYOUT && saved?.titleStatus !== 'pending') {
+      stats.skipped += 1;
+      continue;
+    }
     if (row.articleStatus === 'ready' && saved?.titleStatus === 'pending' && !(engine === 'gemma' && gemmaArticleNeedsRepair(saved))) {
       try {
         const titled = await titlePendingArticle({ row, repository, feedRepository, workspaceId, deps });
@@ -1041,7 +1168,7 @@ export function queueYoutubeChapterRerun({ repository, workspaceId = 'local', vi
         articleDay: '',
         articleState: JSON.stringify({
           engine: 'gemma',
-          layout: CHAPTER_DIALOGUE_LAYOUT,
+          layout: PARALLEL_SEGMENT_LAYOUT,
           rerun: true,
           hash: '',
           parts: [],
