@@ -33,7 +33,7 @@ if (isMain(import.meta.url)) {
         console.error(`[youtube-chapter-rerun] 没有已整理的单集 ${videoId}`);
         process.exitCode = 1;
       }
-      console.log('[youtube-chapter-rerun] 不会在这条命令里调用模型。排队后由现有 youtube.podcasts.article 按每天名额重跑：各段写提炼正文，默认按章拼接。需要重启 Worker。');
+      console.log('[youtube-chapter-rerun] 不会在这条命令里调用模型。排队后由现有 youtube.podcasts.article 按每天名额重跑：各段写 2～5 个事点，Flash 一次统编成文。统编失败才按章拼接事点。需要重启 Worker。');
     } finally {
       store.close();
     }

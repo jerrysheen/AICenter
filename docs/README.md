@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-26-podcast-point-compile.md`：新整理默认改成事点统编。每一段由 Gemma 26B 写 2～5 个带细节的事点，`$N billion` 写成 `N×10 亿美元`。Flash Lite 只用一次，按主题写成一篇长文。统编失败就降级成切章后拼接事点，不再润色一轮。`flash-polish` 和整集字幕一次成稿都不上这条路径。已 `ready` 的稿不自动重写。不新增 migration。只需要重启 Worker。
+
 - `progress/2026-10-26-podcast-synthetic-article.md`：新整理的每一段由 Gemma 26B 写提炼正文（数字、人名、公司写进正文），Flash Lite 只切一次章。默认按章把正文接成一篇。`point-compile` 和 `flash-polish` 先登记，还没接模型。已 `ready` 的并行稿和章节对话稿不自动重写。不新增 migration。只需要重启 Worker。
 
 - `progress/2026-10-26-podcast-parallel-segments.md`：新整理改为 Gemma 26B 并行分段（译文 + hint + topic，默认并发 8），再由 Flash Lite 用摘录写一次整集脉络，按 `partIds` 合并全文。已 `ready` 的稿不自动重写。不新增 migration。只需要重启 Worker。

@@ -58,7 +58,7 @@ export function longVideoCallBudget(system, prompt) {
   let outputTokens = Math.max(1, chars);
   if (system === GEMMA_SEGMENT_SYSTEM) outputTokens = chars + 512;
   else if (system === GEMMA_SECTION_SYSTEM || system === GEMMA_DIALOGUE_SYSTEM) outputTokens = chars + 64;
-  else if (system === EPISODE_STRUCTURE_SYSTEM) outputTokens = 4096;
+  else if (system === EPISODE_STRUCTURE_SYSTEM || system === EPISODE_COMPILE_SYSTEM) outputTokens = 4096;
   else if (system === GEMMA_SUMMARY_SYSTEM || system === CHAPTER_SUMMARY_SYSTEM) outputTokens = system === CHAPTER_SUMMARY_SYSTEM ? 4096 : 1024;
   else if (system === GEMMA_ARTICLE_TITLE_SYSTEM) outputTokens = 64;
   return gemmaRequestBudget(system, text, outputTokens);
@@ -113,23 +113,35 @@ function plannedSection(start) {
 }
 
 // 英文稿的旧账：每段一次翻译、一次分节，要点按摘录分批，最后一次标题。只给 longVideoGemmaCalls 对照。
-// 新整理：每段一次 Gemma 26B，写出提炼正文，并附 hint、topic 供切章。不先译再改写。
+// 新整理：每段一次 Gemma 26B，写出 2～5 个带细节的事点。Flash 再统编成文。不先译再改写。
 export const PARALLEL_SEGMENT_LAYOUT = 'parallel-segments';
 export const PROSE_SEGMENT_KIND = 'prose';
+export const POINTS_SEGMENT_KIND = 'points';
 export const SEGMENT_EXCERPT_CHARS = 1800;
 export const STRUCTURE_PROMPT_CHARS = 80000;
 
-export const GEMMA_SEGMENT_SYSTEM = `你把一段播客字幕写成通顺的简体中文正文。这是给读者直接读的叙述，不是逐句翻译，也不是几条摘要。
+export const GEMMA_SEGMENT_SYSTEM = `你把一段播客字幕收成 2 到 5 个简体中文事点。事点要带细节，供后面统编成文，不是逐句翻译，也不是口语流水账。
 
 规则：
 - 只返回一个 JSON 对象，不要解释、不要 Markdown 围栏。
-- 格式：{"zh":"正文","hint":["要点1","要点2","要点3"],"topic":"本段主题"}
-- zh 写成一段或数段连贯叙述：写出观点、因果和立场。关键数字、人名、公司、股票代码和重要论据写进正文。值得留下的原话可以短引。
-- 去掉口头禅、重复和字幕碎句。不要逐条滚动字幕各写一行，不要写成「主持人：」墙，不要加 ## 标题。
-- hint 写 3 到 5 条，每条不超过 28 个字，只给后面切章用，写结论、数字或立场。
+- 格式：{"points":["事点1","事点2"],"topic":"本段主题"}
+- points 写 2 到 5 条。每条写清结论，并带上这段里的关键数字、人名、公司、股票代码和立场。
+- 金额换算：$N billion 写成 N×10 亿美元。例如 $4 billion 写成 40 亿美元，$2.5 billion 写成 25 亿美元。不要留着 billion。
+- 去掉口头禅、重复和字幕碎句。不要逐条滚动字幕各写一行，不要写成「主持人：」。
 - topic 是本段主题短名，不超过 20 个字。`;
 
-export const EPISODE_STRUCTURE_SYSTEM = `你是中文财经播客主编。根据各段正文摘录和 hint，只为整集划分章节。不要重写正文，不要写章节总结。
+export const EPISODE_COMPILE_SYSTEM = `你是中文财经播客主编。根据各段事点，按主题写成一篇通顺的简体中文长文。
+
+只输出 Markdown 正文，不要 JSON，不要 Markdown 围栏。
+
+规则：
+- 按主题分章。每章一个 ## 标题，标题是中文主题。材料里有时间就写在标题后面，例如 ## 利率路径（00:12:03）。没有时间就不要编。
+- 每章是合成叙述。事点里的数字、人名、公司、股票代码和立场写进正文。不要另起「章节总结」或「对话」，不要把事点原样贴成清单当正文。
+- 相邻事点连成因果和结构。不要逐段照搬字幕，不要写成「主持人：」墙。
+- 材料里已经写成「N×10 亿美元」的金额保持这个写法。
+- 简体中文。`;
+
+export const EPISODE_STRUCTURE_SYSTEM = `你是中文财经播客主编。根据各段事点，只为整集划分章节。不要重写正文，不要写章节总结。
 只输出一个 JSON 对象，不要 Markdown 围栏。格式：
 {"titleZh":"整集中文标题","chapters":[{"title":"章节中文标题","start":"HH:MM:SS","partIds":[0,1],"oneLiner":""}]}
 规则：
@@ -170,6 +182,13 @@ function cleanHintList(list, limit = 5) {
     .slice(0, limit);
 }
 
+function cleanPointList(list) {
+  return (Array.isArray(list) ? list : [])
+    .map((item) => String(item || '').replace(/^[-*]\s+/, '').replace(/^\d+[.、)]\s+/, '').replace(/\s+/g, ' ').trim().slice(0, 160))
+    .filter(Boolean)
+    .slice(0, 5);
+}
+
 export function parseSegmentTranslation(raw) {
   let parsed = null;
   try {
@@ -178,13 +197,26 @@ export function parseSegmentTranslation(raw) {
     parsed = null;
   }
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    const points = cleanPointList(parsed.points);
+    const hint = cleanHintList(parsed.hint);
     return {
-      zh: String(parsed.zh || parsed.translation || '').trim(),
-      hint: cleanHintList(parsed.hint),
+      points,
+      zh: points.length ? points.join('\n') : String(parsed.zh || parsed.translation || '').trim(),
+      hint: hint.length ? hint : points,
       topic: String(parsed.topic || '').replace(/\s+/g, ' ').trim().slice(0, 40),
     };
   }
-  return { zh: String(raw || '').trim(), hint: [], topic: '' };
+  return { points: [], zh: String(raw || '').trim(), hint: [], topic: '' };
+}
+
+export function segmentPointsOk(points) {
+  const list = Array.isArray(points) ? points : [];
+  if (list.length < 2 || list.length > 5) return false;
+  return list.every((item) => {
+    const text = String(item || '').trim();
+    const han = (text.match(/\p{Script=Han}/gu) || []).length;
+    return han >= 2 && [...text].length >= 4;
+  });
 }
 
 export function segmentTranslationOk(zh) {
@@ -320,9 +352,13 @@ export {
   MERGE_CHAPTER_CONCAT,
   MERGE_FLASH_POLISH,
   MERGE_POINT_COMPILE,
+  PODCAST_MERGE_DEFAULT,
+  acceptCompiledArticle,
+  compilePrompt,
   mergeParallelArticle,
   podcastMergePlan,
   resolvePodcastMergeRequest,
+  segmentCompileMaterial,
 } from './podcast-article-merge.js';
 
 export function longVideoGemmaCalls(text, bounds = longVideoPartBounds()) {
